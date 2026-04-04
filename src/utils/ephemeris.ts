@@ -46,6 +46,9 @@ function norm180(deg: number): number {
   return v;
 }
 
+const MS_PER_DAY = 86_400_000;
+const MS_PER_HOUR = 3_600_000;
+
 export interface SunPosition {
   longitude: number;  // ecliptic longitude (degrees)
   distance: number;   // AU
@@ -304,4 +307,128 @@ export function computeOrbitalState(date: Date): OrbitalState {
     moonDistance: moon.distance,
     sunDistance: sun.distance,
   };
+}
+
+// ================================================================
+// Event search — find next/previous full moon, new moon, eclipses
+// ================================================================
+
+export type EventType = 'full-moon' | 'new-moon' | 'lunar-eclipse' | 'solar-eclipse';
+
+/**
+ * Get the Sun-Moon elongation for a given date (signed, -180..180).
+ */
+function elongationAt(date: Date): number {
+  const jd = dateToJD(date);
+  const sun = sunPosition(jd);
+  const moon = moonPosition(jd);
+  return norm180(moon.longitude - sun.longitude);
+}
+
+/**
+ * Find the next/previous moment when elongation crosses a target value.
+ * Uses coarse scan + bisection refinement.
+ */
+function findElongationCrossing(
+  startDate: Date,
+  targetElong: number,
+  direction: 1 | -1,
+  maxDays: number,
+): Date | null {
+  const step = direction * MS_PER_HOUR * 6; // 6-hour steps
+  const maxSteps = Math.ceil((maxDays * MS_PER_DAY) / Math.abs(step));
+
+  let prevTime = startDate.getTime();
+  let prevElong = norm180(elongationAt(new Date(prevTime)) - targetElong);
+
+  for (let i = 1; i <= maxSteps; i++) {
+    const curTime = prevTime + step;
+    const curElong = norm180(elongationAt(new Date(curTime)) - targetElong);
+
+    // Detect sign change (crossing through 0), but ignore wraps through ±180
+    if (prevElong * curElong < 0 && Math.abs(prevElong - curElong) < 90) {
+      // Bisect to find precise crossing
+      let lo = prevTime;
+      let hi = curTime;
+      for (let j = 0; j < 20; j++) {
+        const mid = (lo + hi) / 2;
+        const midElong = norm180(elongationAt(new Date(mid)) - targetElong);
+        if (prevElong * midElong < 0) {
+          hi = mid;
+        } else {
+          lo = mid;
+          prevElong = midElong;
+        }
+      }
+      return new Date((lo + hi) / 2);
+    }
+
+    prevTime = curTime;
+    prevElong = curElong;
+  }
+  return null;
+}
+
+/**
+ * Find next/previous full moon from a given date.
+ */
+export function findFullMoon(from: Date, direction: 1 | -1): Date | null {
+  return findElongationCrossing(from, 180, direction, 45);
+}
+
+/**
+ * Find next/previous new moon from a given date.
+ */
+export function findNewMoon(from: Date, direction: 1 | -1): Date | null {
+  return findElongationCrossing(from, 0, direction, 45);
+}
+
+/**
+ * Find next/previous lunar eclipse: a full moon where Moon latitude is small.
+ */
+export function findLunarEclipse(from: Date, direction: 1 | -1): Date | null {
+  let cursor = new Date(from.getTime());
+  // Search up to ~3 years (about 36 lunations)
+  for (let i = 0; i < 40; i++) {
+    const fm = findFullMoon(cursor, direction);
+    if (!fm) return null;
+
+    const state = computeOrbitalState(fm);
+    if (Math.abs(state.moonLatitude) < 1.5) {
+      return fm;
+    }
+    // Skip ahead past this full moon
+    cursor = new Date(fm.getTime() + direction * MS_PER_DAY * 2);
+  }
+  return null;
+}
+
+/**
+ * Find next/previous solar eclipse: a new moon where Moon latitude is small.
+ */
+export function findSolarEclipse(from: Date, direction: 1 | -1): Date | null {
+  let cursor = new Date(from.getTime());
+  for (let i = 0; i < 40; i++) {
+    const nm = findNewMoon(cursor, direction);
+    if (!nm) return null;
+
+    const state = computeOrbitalState(nm);
+    if (Math.abs(state.moonLatitude) < 1.5) {
+      return nm;
+    }
+    cursor = new Date(nm.getTime() + direction * MS_PER_DAY * 2);
+  }
+  return null;
+}
+
+/**
+ * Unified search function.
+ */
+export function findEvent(type: EventType, from: Date, direction: 1 | -1): Date | null {
+  switch (type) {
+    case 'full-moon': return findFullMoon(from, direction);
+    case 'new-moon': return findNewMoon(from, direction);
+    case 'lunar-eclipse': return findLunarEclipse(from, direction);
+    case 'solar-eclipse': return findSolarEclipse(from, direction);
+  }
 }

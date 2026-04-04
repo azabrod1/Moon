@@ -7,7 +7,7 @@ import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
 
 import { SCENE, DEG2RAD, RAD2DEG, REAL } from './utils/constants';
 import { loadAllTextures } from './utils/textures';
-import { computeOrbitalState } from './utils/ephemeris';
+import { computeOrbitalState, findEvent, type EventType } from './utils/ephemeris';
 import { Earth } from './bodies/Earth';
 import { Moon } from './bodies/Moon';
 import { Sun } from './bodies/Sun';
@@ -21,7 +21,7 @@ const state = {
   nodeAngle: 0,        // ascending node
   timeSpeed: 0,        // 0=paused, 1=normal, >1=fast, <0=reverse
   animating: false,
-  mode: 'manual' as 'manual' | 'date',
+  mode: 'date' as 'manual' | 'date',
   currentDate: new Date(),
   dateTimeSpeed: 0,    // days per second in date mode
 };
@@ -474,6 +474,32 @@ document.getElementById('btn-date-reverse')!.addEventListener('click', () => {
   dateSpeedDisplay.textContent = `${state.dateTimeSpeed} day/s`;
 });
 
+// Jump-to-event nav buttons
+function jumpToEvent(eventType: EventType, direction: 1 | -1) {
+  const btn = document.activeElement as HTMLButtonElement | null;
+  if (btn) btn.disabled = true;
+
+  // Run search async to avoid blocking UI
+  setTimeout(() => {
+    const result = findEvent(eventType, state.currentDate, direction);
+    if (result) {
+      state.dateTimeSpeed = 0;
+      dateSpeedDisplay.textContent = 'Paused';
+      applyDateToState(result);
+    }
+    if (btn) btn.disabled = false;
+  }, 10);
+}
+
+document.getElementById('nav-prev-full')!.addEventListener('click', () => jumpToEvent('full-moon', -1));
+document.getElementById('nav-next-full')!.addEventListener('click', () => jumpToEvent('full-moon', 1));
+document.getElementById('nav-prev-new')!.addEventListener('click', () => jumpToEvent('new-moon', -1));
+document.getElementById('nav-next-new')!.addEventListener('click', () => jumpToEvent('new-moon', 1));
+document.getElementById('nav-prev-lunar')!.addEventListener('click', () => jumpToEvent('lunar-eclipse', -1));
+document.getElementById('nav-next-lunar')!.addEventListener('click', () => jumpToEvent('lunar-eclipse', 1));
+document.getElementById('nav-prev-solar')!.addEventListener('click', () => jumpToEvent('solar-eclipse', -1));
+document.getElementById('nav-next-solar')!.addEventListener('click', () => jumpToEvent('solar-eclipse', 1));
+
 // ================================================================
 // Main init
 // ================================================================
@@ -500,10 +526,10 @@ async function init() {
   const moonShadowCone = createShadowCone(SCENE.MOON_RADIUS * 0.8, 0x111133);
   scene.add(moonShadowCone);
 
-  // Initial state
+  // Initial state — date mode with current time
+  applyDateToState(new Date());
   sun.setPosition(state.sunAngle);
   moon.setOrbitalPosition(state.moonAngle, state.nodeAngle);
-  updateUIFromState();
 
   // Hide loading
   setTimeout(() => {

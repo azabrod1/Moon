@@ -1,0 +1,493 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Moon — Orbital Simulator</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    html, body { width: 100%; height: 100%; overflow: hidden; background: #000; }
+    canvas { display: block; }
+
+    #ui-overlay {
+      position: fixed;
+      top: 0; left: 0; right: 0; bottom: 0;
+      pointer-events: none;
+      z-index: 10;
+      font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+      color: #fff;
+    }
+
+    #controls-panel {
+      position: absolute;
+      top: 20px;
+      right: 20px;
+      width: 320px;
+      background: rgba(10, 10, 30, 0.85);
+      backdrop-filter: blur(12px);
+      border: 1px solid rgba(100, 140, 255, 0.2);
+      border-radius: 16px;
+      padding: 24px;
+      pointer-events: auto;
+    }
+
+    #controls-panel h2 {
+      font-size: 18px;
+      font-weight: 600;
+      margin-bottom: 20px;
+      letter-spacing: 0.5px;
+      color: #a8c4ff;
+    }
+
+    .control-group {
+      margin-bottom: 18px;
+    }
+
+    .control-group label {
+      display: block;
+      font-size: 12px;
+      text-transform: uppercase;
+      letter-spacing: 1px;
+      color: #7a8fbb;
+      margin-bottom: 6px;
+    }
+
+    .control-group input[type="range"] {
+      width: 100%;
+      -webkit-appearance: none;
+      height: 4px;
+      border-radius: 2px;
+      background: rgba(100, 140, 255, 0.2);
+      outline: none;
+    }
+
+    .control-group input[type="range"]::-webkit-slider-thumb {
+      -webkit-appearance: none;
+      width: 16px;
+      height: 16px;
+      border-radius: 50%;
+      background: #5b8cff;
+      cursor: pointer;
+      box-shadow: 0 0 8px rgba(91, 140, 255, 0.5);
+    }
+
+    .control-value {
+      font-size: 13px;
+      color: #c0d0ff;
+      margin-top: 4px;
+      font-variant-numeric: tabular-nums;
+    }
+
+    #phase-display {
+      text-align: center;
+      padding: 14px;
+      background: rgba(100, 140, 255, 0.08);
+      border-radius: 10px;
+      margin-bottom: 18px;
+    }
+
+    #phase-display .phase-name {
+      font-size: 20px;
+      font-weight: 600;
+      color: #e0e8ff;
+    }
+
+    #phase-display .phase-detail {
+      font-size: 12px;
+      color: #7a8fbb;
+      margin-top: 4px;
+    }
+
+    #eclipse-alert {
+      text-align: center;
+      padding: 10px;
+      border-radius: 8px;
+      margin-bottom: 14px;
+      font-weight: 600;
+      font-size: 14px;
+      display: none;
+    }
+
+    #eclipse-alert.lunar {
+      display: block;
+      background: rgba(255, 100, 80, 0.15);
+      border: 1px solid rgba(255, 100, 80, 0.3);
+      color: #ff9080;
+    }
+
+    #eclipse-alert.solar {
+      display: block;
+      background: rgba(255, 200, 50, 0.15);
+      border: 1px solid rgba(255, 200, 50, 0.3);
+      color: #ffd060;
+    }
+
+    .preset-buttons {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 8px;
+      margin-top: 8px;
+    }
+
+    .preset-btn {
+      padding: 8px 12px;
+      border: 1px solid rgba(100, 140, 255, 0.25);
+      border-radius: 8px;
+      background: rgba(100, 140, 255, 0.08);
+      color: #a8c4ff;
+      font-size: 12px;
+      cursor: pointer;
+      transition: all 0.2s;
+      text-align: center;
+    }
+
+    .preset-btn:hover {
+      background: rgba(100, 140, 255, 0.2);
+      border-color: rgba(100, 140, 255, 0.5);
+    }
+
+    .time-controls {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .time-btn {
+      width: 36px;
+      height: 36px;
+      border: 1px solid rgba(100, 140, 255, 0.25);
+      border-radius: 8px;
+      background: rgba(100, 140, 255, 0.08);
+      color: #a8c4ff;
+      font-size: 16px;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      transition: all 0.2s;
+    }
+
+    .time-btn:hover {
+      background: rgba(100, 140, 255, 0.2);
+    }
+
+    .time-btn.active {
+      background: rgba(91, 140, 255, 0.3);
+      border-color: #5b8cff;
+    }
+
+    #speed-display {
+      font-size: 13px;
+      color: #c0d0ff;
+      flex: 1;
+      text-align: center;
+    }
+
+    .view-buttons {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 8px;
+    }
+
+    .view-btn {
+      padding: 6px 10px;
+      border: 1px solid rgba(100, 140, 255, 0.15);
+      border-radius: 6px;
+      background: rgba(100, 140, 255, 0.05);
+      color: #8aa0cc;
+      font-size: 11px;
+      cursor: pointer;
+      transition: all 0.2s;
+      text-align: center;
+    }
+
+    .view-btn:hover {
+      background: rgba(100, 140, 255, 0.15);
+      color: #c0d0ff;
+    }
+
+    .date-input-row {
+      display: flex;
+      gap: 8px;
+      align-items: center;
+    }
+
+    .date-input-row input[type="datetime-local"] {
+      flex: 1;
+      padding: 6px 10px;
+      border: 1px solid rgba(100, 140, 255, 0.25);
+      border-radius: 6px;
+      background: rgba(100, 140, 255, 0.08);
+      color: #c0d0ff;
+      font-size: 12px;
+      font-family: inherit;
+      outline: none;
+    }
+
+    .date-input-row input[type="datetime-local"]:focus {
+      border-color: #5b8cff;
+    }
+
+    .date-input-row input[type="datetime-local"]::-webkit-calendar-picker-indicator {
+      filter: invert(0.7) sepia(1) saturate(3) hue-rotate(190deg);
+    }
+
+    .date-btn {
+      padding: 6px 12px;
+      border: 1px solid rgba(100, 140, 255, 0.25);
+      border-radius: 6px;
+      background: rgba(100, 140, 255, 0.08);
+      color: #a8c4ff;
+      font-size: 11px;
+      cursor: pointer;
+      transition: all 0.2s;
+      white-space: nowrap;
+    }
+
+    .date-btn:hover {
+      background: rgba(100, 140, 255, 0.2);
+      border-color: rgba(100, 140, 255, 0.5);
+    }
+
+    .date-btn.active {
+      background: rgba(91, 140, 255, 0.3);
+      border-color: #5b8cff;
+      color: #fff;
+    }
+
+    .mode-toggle {
+      display: flex;
+      gap: 4px;
+      margin-bottom: 16px;
+      background: rgba(100, 140, 255, 0.05);
+      border-radius: 8px;
+      padding: 3px;
+    }
+
+    .mode-toggle button {
+      flex: 1;
+      padding: 6px 12px;
+      border: none;
+      border-radius: 6px;
+      background: transparent;
+      color: #7a8fbb;
+      font-size: 12px;
+      cursor: pointer;
+      transition: all 0.2s;
+      font-family: inherit;
+    }
+
+    .mode-toggle button.active {
+      background: rgba(91, 140, 255, 0.25);
+      color: #c0d0ff;
+    }
+
+    #manual-controls {
+      display: block;
+    }
+
+    #date-controls {
+      display: none;
+    }
+
+    .date-info {
+      font-size: 11px;
+      color: #5a6a8a;
+      margin-top: 6px;
+      text-align: center;
+    }
+
+    #info-bar {
+      position: absolute;
+      bottom: 20px;
+      left: 50%;
+      transform: translateX(-50%);
+      background: rgba(10, 10, 30, 0.75);
+      backdrop-filter: blur(8px);
+      border: 1px solid rgba(100, 140, 255, 0.15);
+      border-radius: 12px;
+      padding: 12px 24px;
+      font-size: 13px;
+      color: #8aa0cc;
+      pointer-events: auto;
+      display: flex;
+      gap: 24px;
+    }
+
+    #info-bar span {
+      white-space: nowrap;
+    }
+
+    .info-value {
+      color: #c0d0ff;
+      font-weight: 500;
+    }
+
+    #title-bar {
+      position: absolute;
+      top: 20px;
+      left: 20px;
+      pointer-events: auto;
+    }
+
+    #title-bar h1 {
+      font-size: 28px;
+      font-weight: 300;
+      letter-spacing: 4px;
+      color: #c0d0ff;
+      text-transform: uppercase;
+    }
+
+    #title-bar p {
+      font-size: 12px;
+      color: #5a6a8a;
+      letter-spacing: 1px;
+      margin-top: 4px;
+    }
+
+    #loading-screen {
+      position: fixed;
+      top: 0; left: 0; right: 0; bottom: 0;
+      background: #050510;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      flex-direction: column;
+      z-index: 100;
+      transition: opacity 0.8s ease;
+    }
+
+    #loading-screen.hidden {
+      opacity: 0;
+      pointer-events: none;
+    }
+
+    #loading-screen h1 {
+      font-family: 'Segoe UI', system-ui, sans-serif;
+      font-size: 48px;
+      font-weight: 200;
+      letter-spacing: 12px;
+      color: #c0d0ff;
+      text-transform: uppercase;
+    }
+
+    #loading-screen p {
+      font-family: 'Segoe UI', system-ui, sans-serif;
+      font-size: 14px;
+      color: #5a6a8a;
+      margin-top: 16px;
+      letter-spacing: 2px;
+    }
+  </style>
+</head>
+<body>
+  <div id="loading-screen">
+    <h1>Moon</h1>
+    <p>Loading celestial bodies...</p>
+  </div>
+
+  <div id="ui-overlay">
+    <div id="title-bar">
+      <h1>Moon</h1>
+      <p>Orbital Simulator</p>
+    </div>
+
+    <div id="controls-panel">
+      <h2>Controls</h2>
+
+      <div class="mode-toggle">
+        <button id="mode-manual" class="active">Custom</button>
+        <button id="mode-date">Date</button>
+      </div>
+
+      <div id="eclipse-alert"></div>
+
+      <div id="phase-display">
+        <div class="phase-name" id="phase-name">Full Moon</div>
+        <div class="phase-detail" id="phase-detail">Illumination: 100%</div>
+      </div>
+
+      <div id="manual-controls">
+        <div class="control-group">
+          <label>Moon Position</label>
+          <input type="range" id="moon-slider" min="0" max="360" value="180" step="0.5" />
+          <div class="control-value" id="moon-angle-display">180.0&deg;</div>
+        </div>
+
+        <div class="control-group">
+          <label>Sun Direction</label>
+          <input type="range" id="sun-slider" min="0" max="360" value="0" step="0.5" />
+          <div class="control-value" id="sun-angle-display">0.0&deg;</div>
+        </div>
+
+        <div class="control-group">
+          <label>Moon Node (Ascending)</label>
+          <input type="range" id="node-slider" min="0" max="360" value="0" step="0.5" />
+          <div class="control-value" id="node-angle-display">0.0&deg;</div>
+        </div>
+
+        <div class="control-group">
+          <label>Time</label>
+          <div class="time-controls">
+            <button class="time-btn" id="btn-reverse" title="Reverse">&#9664;&#9664;</button>
+            <button class="time-btn" id="btn-pause" title="Pause">&#10074;&#10074;</button>
+            <button class="time-btn" id="btn-play" title="Play">&#9654;</button>
+            <button class="time-btn" id="btn-fast" title="Fast Forward">&#9654;&#9654;</button>
+            <span id="speed-display">Paused</span>
+          </div>
+        </div>
+
+        <div class="control-group">
+          <label>Presets</label>
+          <div class="preset-buttons">
+            <button class="preset-btn" id="preset-full-moon">Full Moon</button>
+            <button class="preset-btn" id="preset-new-moon">New Moon</button>
+            <button class="preset-btn" id="preset-lunar-eclipse">Lunar Eclipse</button>
+            <button class="preset-btn" id="preset-solar-eclipse">Solar Eclipse</button>
+          </div>
+        </div>
+      </div>
+
+      <div id="date-controls">
+        <div class="control-group">
+          <label>Date &amp; Time (UTC)</label>
+          <div class="date-input-row">
+            <input type="datetime-local" id="date-picker" />
+            <button class="date-btn" id="btn-now">Now</button>
+          </div>
+          <div class="date-info" id="date-info">Showing real astronomical positions</div>
+        </div>
+
+        <div class="control-group">
+          <label>Animate Time</label>
+          <div class="time-controls">
+            <button class="time-btn" id="btn-date-reverse" title="Reverse">&#9664;&#9664;</button>
+            <button class="time-btn" id="btn-date-pause" title="Pause">&#10074;&#10074;</button>
+            <button class="time-btn" id="btn-date-play" title="Play">&#9654;</button>
+            <button class="time-btn" id="btn-date-fast" title="Fast Forward">&#9654;&#9654;</button>
+            <span id="date-speed-display">Paused</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="control-group">
+        <label>Camera Views</label>
+        <div class="view-buttons">
+          <button class="view-btn" id="view-default">Overview</button>
+          <button class="view-btn" id="view-top">Top Down</button>
+          <button class="view-btn" id="view-earth">From Earth</button>
+          <button class="view-btn" id="view-side">Side View</button>
+        </div>
+      </div>
+    </div>
+
+    <div id="info-bar">
+      <span>Distance: <span class="info-value" id="info-distance">384,400 km</span></span>
+      <span>Phase Angle: <span class="info-value" id="info-phase-angle">180&deg;</span></span>
+      <span>Node Distance: <span class="info-value" id="info-node-dist">--</span></span>
+    </div>
+  </div>
+
+  <script type="module" src="/src/main.ts"></script>
+</body>
+</html>

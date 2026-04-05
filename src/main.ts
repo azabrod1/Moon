@@ -75,30 +75,67 @@ const ambientLight = new THREE.AmbientLight(0x111122, 0.15);
 scene.add(ambientLight);
 
 // ================================================================
-// Post-processing
+// Post-processing (with mobile fallback)
 // ================================================================
-let composer = new EffectComposer(renderer);
-composer.addPass(new RenderPass(scene, simCamera));
 
-const bloomPass = new UnrealBloomPass(
-  new THREE.Vector2(window.innerWidth, window.innerHeight),
-  1.2, 0.4, 0.85,
-);
-composer.addPass(bloomPass);
-composer.addPass(new OutputPass());
+// Detect if bloom is likely to fail (mobile GPU / no float render targets)
+function canUseBloom(): boolean {
+  const gl = renderer.getContext();
+  // Check for half-float render target support
+  if (gl instanceof WebGL2RenderingContext) {
+    const ext = gl.getExtension('EXT_color_buffer_float');
+    if (!ext) return false;
+  } else {
+    // WebGL1 needs OES_texture_half_float + EXT_color_buffer_half_float
+    if (!gl.getExtension('OES_texture_half_float') || !gl.getExtension('EXT_color_buffer_half_float')) {
+      return false;
+    }
+  }
+  return true;
+}
 
-function rebuildComposer(cam: THREE.Camera) {
-  composer.dispose();
+let useBloom = canUseBloom();
+let composer: EffectComposer | null = null;
+
+function buildComposer(cam: THREE.Camera) {
+  if (composer) composer.dispose();
+  if (!useBloom) { composer = null; return; }
+
   composer = new EffectComposer(renderer);
   composer.addPass(new RenderPass(scene, cam));
   const bloom = new UnrealBloomPass(
     new THREE.Vector2(window.innerWidth, window.innerHeight),
     cam === exploreCamera ? 0.8 : 1.2,
     0.4,
-    cam === exploreCamera ? 0.92 : 0.85, // higher threshold in explore = only bright objects bloom
+    cam === exploreCamera ? 0.92 : 0.85,
   );
   composer.addPass(bloom);
   composer.addPass(new OutputPass());
+}
+
+buildComposer(simCamera);
+
+// Render with fallback: if composer fails (GL error), disable and use direct render
+function renderScene(cam: THREE.Camera) {
+  if (composer) {
+    composer.render();
+    // Check for GL errors on first few frames
+    const gl = renderer.getContext();
+    const err = gl.getError();
+    if (err !== gl.NO_ERROR) {
+      console.warn('Bloom GL error, falling back to direct render');
+      useBloom = false;
+      composer.dispose();
+      composer = null;
+    }
+  } else {
+    renderer.render(scene, cam);
+  }
+}
+
+// Alias for mode switching
+function rebuildComposer(cam: THREE.Camera) {
+  buildComposer(cam);
 }
 
 // ================================================================
@@ -602,7 +639,7 @@ async function init() {
       exploreMode.update(dt);
     }
 
-    composer.render();
+    renderScene(camera);
   }
 
   animate();
@@ -658,7 +695,7 @@ window.addEventListener('resize', () => {
   exploreCamera.aspect = w / h;
   exploreCamera.updateProjectionMatrix();
   renderer.setSize(w, h);
-  composer.setSize(w, h);
+  if (composer) composer.setSize(w, h);
 });
 
 // ================================================================

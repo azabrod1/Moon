@@ -94,6 +94,23 @@
 
     .top-mode-btn:hover:not(.active) { color: var(--text-secondary); }
 
+    .panel-toggle-btn {
+      display: none;
+      margin-left: auto;
+      width: 34px; height: 34px;
+      border: 1px solid var(--panel-border);
+      border-radius: 6px;
+      background: var(--panel-bg);
+      backdrop-filter: blur(8px);
+      color: var(--text-secondary);
+      font-size: 16px;
+      cursor: pointer;
+      align-items: center;
+      justify-content: center;
+      transition: all 0.15s;
+    }
+    .panel-toggle-btn:hover { background: var(--accent-dim); color: var(--text-primary); }
+
     /* ============================================= */
     /* SIMULATOR MODE                                */
     /* ============================================= */
@@ -629,13 +646,18 @@
       #top-bar h1 { font-size: 14px; letter-spacing: 2px; }
       .top-mode-btn { padding: 5px 12px; font-size: 11px; }
 
+      .panel-toggle-btn { display: flex; }
+
       #controls-panel {
         width: calc(100vw - 20px);
         right: 10px;
         top: 48px;
         padding: 12px;
         max-height: calc(100vh - 60px);
+        /* Hidden by default on mobile */
+        display: none;
       }
+      #controls-panel.panel-open { display: block; }
 
       #info-bar { font-size: 10px; padding: 6px 12px; gap: 10px; bottom: 8px; }
 
@@ -658,55 +680,32 @@
   <div id="loading-screen">
     <h1>Moon</h1>
     <p id="loading-msg">Loading celestial bodies...</p>
-    <div id="debug-log" style="position:absolute;bottom:8px;left:8px;right:8px;max-height:40vh;overflow-y:auto;font-family:monospace;font-size:10px;color:#ff6060;background:rgba(0,0,0,0.8);padding:8px;border-radius:6px;display:none;white-space:pre-wrap;word-break:break-all;"></div>
+    <div id="debug-log" style="position:absolute;bottom:8px;left:8px;right:8px;max-height:30vh;overflow-y:auto;font-family:monospace;font-size:10px;color:#ff6060;background:rgba(0,0,0,0.8);padding:8px;border-radius:6px;display:none;white-space:pre-wrap;word-break:break-all;"></div>
   </div>
 
   <script>
-    // On-screen debug console for mobile
+    // On-screen error display — only shows if something goes wrong
     (function() {
       var dbg = document.getElementById('debug-log');
-      var msgs = [];
       function log(msg) {
-        msgs.push(msg);
-        if (msgs.length > 50) msgs.shift();
         dbg.style.display = 'block';
-        dbg.textContent = msgs.join('\n');
-        dbg.scrollTop = dbg.scrollHeight;
+        dbg.textContent = (dbg.textContent ? dbg.textContent + '\n' : '') + msg;
       }
-      window.__dbgLog = log;
-
-      // Immediately show that this script ran
-      log('Debug script OK, UA: ' + navigator.userAgent.slice(0, 80));
-
+      window.__dbgLog = function() {}; // no-op by default
       window.addEventListener('error', function(e) {
         log('[ERR] ' + e.message + ' @ ' + (e.filename||'').split('/').pop() + ':' + e.lineno);
       });
       window.addEventListener('unhandledrejection', function(e) {
         log('[REJECT] ' + (e.reason && (e.reason.message || String(e.reason))));
       });
-      var origWarn = console.warn;
-      console.warn = function() {
-        origWarn.apply(console, arguments);
-        log('[WARN] ' + Array.prototype.join.call(arguments, ' '));
-      };
-      var origError = console.error;
-      console.error = function() {
-        origError.apply(console, arguments);
-        log('[ERROR] ' + Array.prototype.join.call(arguments, ' '));
-      };
-
-      // Safety: if init hasn't started after 10s, something is very wrong
+      // Safety: if init hasn't started after 12s, force-hide loading
       setTimeout(function() {
         if (!window.__initStarted) {
-          log('[TIMEOUT] JS module never started after 10s');
-          log('Check: is the .js bundle loading? Network issue?');
-          // Force-hide loading screen so user isn't stuck
+          log('App failed to start. Try refreshing.');
           var ls = document.getElementById('loading-screen');
-          if (ls && !ls.classList.contains('hidden')) {
-            ls.classList.add('hidden');
-          }
+          if (ls && !ls.classList.contains('hidden')) ls.classList.add('hidden');
         }
-      }, 10000);
+      }, 12000);
     })();
   </script>
 
@@ -722,6 +721,7 @@
         <button class="top-mode-btn active" id="btn-mode-simulator">Simulator</button>
         <button class="top-mode-btn" id="btn-mode-explore">Explorer</button>
       </div>
+      <button id="btn-toggle-panel" class="panel-toggle-btn" aria-label="Toggle controls">&#9776;</button>
     </div>
 
     <!-- ======= SIMULATOR MODE ======= -->
@@ -901,6 +901,6 @@
     </div>
   </div>
 
-  <script type="module" src="/src/main.ts" onerror="window.__dbgLog && window.__dbgLog('[SCRIPT] Module failed to load')"></script>
+  <script type="module" src="/src/main.ts"></script>
 </body>
 </html>

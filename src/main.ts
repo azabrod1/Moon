@@ -16,11 +16,6 @@ import { ExploreMode } from './explore/ExploreMode';
 // ================================================================
 // Top-level mode
 // ================================================================
-{
-  const dbg = (window as any).__dbgLog as ((msg: string) => void) | undefined;
-  dbg?.('JS module executing (imports resolved)');
-}
-
 type AppMode = 'simulator' | 'explore';
 let appMode: AppMode = 'simulator';
 let exploreMode: ExploreMode | null = null;
@@ -55,7 +50,7 @@ renderer.shadowMap.type = THREE.PCFShadowMap;
 document.body.appendChild(renderer.domElement);
 
 const scene = new THREE.Scene();
-scene.background = new THREE.Color(0x020208);
+scene.background = new THREE.Color(0x000000);
 
 // --- Simulator camera + controls ---
 const simCamera = new THREE.PerspectiveCamera(50, window.innerWidth / window.innerHeight, 0.01, 500);
@@ -452,15 +447,15 @@ async function switchAppMode(newMode: AppMode) {
     btnModeSimulator.classList.remove('active');
     btnModeExplore.classList.add('active');
 
-    // Pure black background for space
-    scene.background = new THREE.Color(0x000000);
-
     // Hide simulator objects
     for (const obj of simObjects) obj.visible = false;
     simStarfield.visible = false;
     simulatorUI.style.display = 'none';
     simControls.enabled = false;
     ambientLight.visible = false;
+    // Hide mobile panel toggle
+    const toggle = document.getElementById('btn-toggle-panel');
+    if (toggle) toggle.style.display = 'none';
 
     // Switch camera
     camera = exploreCamera;
@@ -478,8 +473,7 @@ async function switchAppMode(newMode: AppMode) {
     btnModeSimulator.classList.add('active');
     btnModeExplore.classList.remove('active');
 
-    // Restore simulator background
-    scene.background = new THREE.Color(0x020208);
+    scene.background = new THREE.Color(0x000000);
 
     // Deactivate explore
     if (exploreMode) {
@@ -492,6 +486,9 @@ async function switchAppMode(newMode: AppMode) {
     simulatorUI.style.display = 'block';
     simControls.enabled = true;
     ambientLight.visible = true;
+    // Restore mobile panel toggle
+    const toggle = document.getElementById('btn-toggle-panel');
+    if (toggle) toggle.style.display = '';
 
     // Switch camera
     camera = simCamera;
@@ -506,6 +503,16 @@ async function switchAppMode(newMode: AppMode) {
 btnModeSimulator.addEventListener('click', () => switchAppMode('simulator'));
 btnModeExplore.addEventListener('click', () => switchAppMode('explore'));
 
+// Mobile panel toggle
+const panelToggleBtn = document.getElementById('btn-toggle-panel');
+const controlsPanel = document.getElementById('controls-panel');
+if (panelToggleBtn && controlsPanel) {
+  panelToggleBtn.addEventListener('click', () => {
+    controlsPanel.classList.toggle('panel-open');
+    panelToggleBtn.textContent = controlsPanel.classList.contains('panel-open') ? '\u2715' : '\u2630';
+  });
+}
+
 function sleep(ms: number): Promise<void> {
   return new Promise(r => setTimeout(r, ms));
 }
@@ -514,30 +521,22 @@ function sleep(ms: number): Promise<void> {
 // Main init
 // ================================================================
 async function init() {
-  const dbg = (window as any).__dbgLog as ((msg: string) => void) | undefined;
   (window as any).__initStarted = true;
-  dbg?.('init() started');
 
-  dbg?.('Loading textures...');
   const textures = await loadAllTextures((loaded, total) => {
     const pct = Math.round((loaded / total) * 100);
     const loadEl = document.getElementById('loading-msg');
     if (loadEl) loadEl.textContent = `Loading textures... ${pct}%`;
-    dbg?.(`Texture ${loaded}/${total}`);
   });
-  dbg?.('Textures loaded');
 
-  dbg?.('Creating Earth...');
   const earth = new Earth(textures);
   scene.add(earth.group);
   simObjects.push(earth.group);
 
-  dbg?.('Creating Moon...');
   const moon = new Moon(textures);
   scene.add(moon.orbitGroup);
   simObjects.push(moon.orbitGroup);
 
-  dbg?.('Creating Sun...');
   const sun = new Sun();
   scene.add(sun.group);
   simObjects.push(sun.group);
@@ -558,12 +557,9 @@ async function init() {
   applyDateToState(new Date());
   sun.setPosition(state.sunAngle);
   moon.setOrbitalPosition(state.moonAngle, state.nodeAngle);
-  dbg?.('Scene ready, hiding loading screen');
-
   // Hide loading
   setTimeout(() => {
     document.getElementById('loading-screen')!.classList.add('hidden');
-    dbg?.('Loading screen hidden');
   }, 500);
 
   // Animation loop

@@ -40,7 +40,6 @@ const state = {
 const renderer = new THREE.WebGLRenderer({
   antialias: true,
   powerPreference: 'high-performance',
-  logarithmicDepthBuffer: true,
 });
 renderer.setSize(window.innerWidth, window.innerHeight);
 renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
@@ -649,4 +648,20 @@ window.addEventListener('resize', () => {
 // ================================================================
 // Start
 // ================================================================
-init().catch(console.error);
+// Safety: never leave loading screen stuck for more than 15s
+setTimeout(() => {
+  const ls = document.getElementById('loading-screen');
+  if (ls && !ls.classList.contains('hidden')) {
+    console.warn('Loading timeout — forcing hide');
+    ls.classList.add('hidden');
+  }
+}, 15000);
+
+init().catch((err) => {
+  console.error('Init failed:', err);
+  // Never leave user stuck on loading screen
+  const loadingScreen = document.getElementById('loading-screen');
+  if (loadingScreen) loadingScreen.classList.add('hidden');
+  const loadingMsg = document.getElementById('loading-msg');
+  if (loadingMsg) loadingMsg.textContent = 'Something went wrong. Please refresh.';
+});

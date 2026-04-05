@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import { TEXTURES } from './constants';
+import { debugWarn } from './debug';
 
 const loader = new THREE.TextureLoader();
 loader.crossOrigin = 'anonymous';
@@ -57,7 +58,12 @@ export async function loadAllTextures(
     entries.map(async ([key, url]) => {
       try {
         results[key] = await load(url);
-      } catch {
+      } catch (err) {
+        debugWarn('Texture fallback activated', {
+          key,
+          url,
+          reason: err instanceof Error ? err.message : String(err),
+        });
         // Fallback: generate a solid color texture
         const canvas = document.createElement('canvas');
         canvas.width = 2;

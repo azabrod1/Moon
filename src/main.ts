@@ -12,6 +12,7 @@ import { Earth } from './bodies/Earth';
 import { Moon } from './bodies/Moon';
 import { Sun } from './bodies/Sun';
 import { ExploreMode } from './explore/ExploreMode';
+import { debugError, debugLog, debugWarn } from './utils/debug';
 
 // ================================================================
 // Top-level mode
@@ -39,15 +40,32 @@ const state = {
 // ================================================================
 const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent) ||
   (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
-const isMobile = 'ontouchstart' in window || navigator.maxTouchPoints > 0;
+const hasTouch = 'ontouchstart' in window || navigator.maxTouchPoints > 0;
+// True mobile: small screen OR iOS. Touchscreen laptops keep bloom.
+const isMobile = isIOS || (hasTouch && window.innerWidth <= 1024);
+debugLog('Device detection', {
+  isIOS,
+  hasTouch,
+  isMobile,
+  platform: navigator.platform,
+  touchPoints: navigator.maxTouchPoints,
+  viewport: `${window.innerWidth}x${window.innerHeight}`,
+  pixelRatio: window.devicePixelRatio,
+});
 
 // ================================================================
 // Scene setup
 // ================================================================
-const renderer = new THREE.WebGLRenderer({
-  antialias: true,
-  powerPreference: 'high-performance',
-});
+let renderer: THREE.WebGLRenderer;
+try {
+  renderer = new THREE.WebGLRenderer({
+    antialias: true,
+    powerPreference: 'high-performance',
+  });
+} catch (err) {
+  debugError('Failed to create WebGL renderer', err);
+  throw err;
+}
 renderer.setSize(window.innerWidth, window.innerHeight);
 renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
 renderer.toneMapping = THREE.ACESFilmicToneMapping;
@@ -55,6 +73,25 @@ renderer.toneMappingExposure = 1.0;
 renderer.shadowMap.enabled = !isMobile;
 renderer.shadowMap.type = THREE.PCFShadowMap;
 document.body.appendChild(renderer.domElement);
+renderer.domElement.addEventListener('webglcontextlost', (event) => {
+  event.preventDefault();
+  debugError('WebGL context lost');
+});
+renderer.domElement.addEventListener('webglcontextrestored', () => {
+  debugLog('WebGL context restored');
+});
+
+try {
+  const gl = renderer.getContext();
+  debugLog('Renderer ready', {
+    shadowMap: renderer.shadowMap.enabled,
+    useBloomCandidate: !isMobile,
+    glVersion: gl.getParameter(gl.VERSION),
+    shadingLanguage: gl.getParameter(gl.SHADING_LANGUAGE_VERSION),
+  });
+} catch (err) {
+  debugWarn('Unable to inspect WebGL context details', err);
+}
 
 const scene = new THREE.Scene();
 scene.background = new THREE.Color(0x000000);
@@ -87,6 +124,7 @@ scene.add(ambientLight);
 
 // Skip bloom on mobile — EffectComposer render targets break on iOS/mobile GPUs
 const useBloom = !isMobile;
+debugLog('Post-processing config', { useBloom });
 
 let composer: EffectComposer | null = null;
 
@@ -454,6 +492,7 @@ const simObjects: THREE.Object3D[] = [];
 
 async function switchAppMode(newMode: AppMode) {
   if (newMode === appMode) return;
+  debugLog('Switching app mode', { from: appMode, to: newMode });
 
   // Fade to black
   modeTransition.classList.add('active');
@@ -482,9 +521,12 @@ async function switchAppMode(newMode: AppMode) {
 
     // Initialize explore mode
     if (!exploreMode) {
+      debugLog('Creating explore mode');
       exploreMode = new ExploreMode(scene, exploreCamera, renderer);
     }
+    debugLog('Activating explore mode');
     await exploreMode.activate();
+    debugLog('Explore mode active');
 
   } else {
     // --- Switch to Simulator ---
@@ -512,6 +554,7 @@ async function switchAppMode(newMode: AppMode) {
     // Switch camera
     camera = simCamera;
     rebuildComposer(simCamera);
+    debugLog('Simulator mode active');
   }
 
   // Fade back in
@@ -541,12 +584,14 @@ function sleep(ms: number): Promise<void> {
 // ================================================================
 async function init() {
   (window as any).__initStarted = true;
+  debugLog('Init started');
 
   const textures = await loadAllTextures((loaded, total) => {
     const pct = Math.round((loaded / total) * 100);
     const loadEl = document.getElementById('loading-msg');
     if (loadEl) loadEl.textContent = `Loading textures... ${pct}%`;
   });
+  debugLog('Base textures loaded', Object.keys(textures));
 
   const earth = new Earth(textures);
   scene.add(earth.group);
@@ -576,6 +621,7 @@ async function init() {
   applyDateToState(new Date());
   sun.setPosition(state.sunAngle);
   moon.setOrbitalPosition(state.moonAngle, state.nodeAngle);
+  debugLog('Simulator scene ready');
   // Hide loading
   setTimeout(() => {
     document.getElementById('loading-screen')!.classList.add('hidden');
@@ -625,6 +671,7 @@ async function init() {
   }
 
   animate();
+  debugLog('Animation loop started');
 }
 
 // ================================================================
@@ -678,6 +725,7 @@ window.addEventListener('resize', () => {
   exploreCamera.updateProjectionMatrix();
   renderer.setSize(w, h);
   if (composer) composer.setSize(w, h);
+  debugLog('Resize', { width: w, height: h });
 });
 
 // ================================================================
@@ -686,13 +734,16 @@ window.addEventListener('resize', () => {
 // Safety: never leave loading screen stuck for more than 15s
 setTimeout(() => {
   const ls = document.getElementById('loading-screen');
-  if (ls && !ls.classList.contains('hidden')) {
+  const shouldForceHide = !!ls && !ls.classList.contains('hidden');
+  if (shouldForceHide) {
+    debugWarn('Loading timeout reached before init finished');
     console.warn('Loading timeout — forcing hide');
     ls.classList.add('hidden');
   }
 }, 15000);
 
 init().catch((err) => {
+  debugError('Init failed', err);
   console.error('Init failed:', err);
   // Never leave user stuck on loading screen
   const loadingScreen = document.getElementById('loading-screen');

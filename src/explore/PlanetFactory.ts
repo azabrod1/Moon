@@ -7,24 +7,26 @@ import {
   earthNightVertexShader,
   earthNightFragmentShader,
 } from '../shaders/atmosphere';
+import { debugWarn } from '../utils/debug';
 
 const loader = new THREE.TextureLoader();
 loader.crossOrigin = 'anonymous';
 
-// Texture URLs — Wikipedia (Wikimedia Commons), three-globe, high quality
+// Texture URLs — bundled locally in public/textures/ (Solar System Scope CC BY 4.0 + NASA)
+const BASE = import.meta.env.BASE_URL + 'textures/';
 const PLANET_TEXTURE_URLS: Record<string, string> = {
-  mercury: 'https://upload.wikimedia.org/wikipedia/commons/thumb/3/30/Mercury_in_color_-_Prockter07_centered.jpg/1024px-Mercury_in_color_-_Prockter07_centered.jpg',
-  venus: 'https://upload.wikimedia.org/wikipedia/commons/thumb/1/19/Cylindrical_Map_of_Venus.jpg/1024px-Cylindrical_Map_of_Venus.jpg',
-  earthDay: 'https://unpkg.com/three-globe@2.41.12/example/img/earth-blue-marble.jpg',
-  earthNight: 'https://unpkg.com/three-globe@2.41.12/example/img/earth-night.jpg',
-  earthClouds: 'https://unpkg.com/three-globe@2.41.12/example/img/earth-clouds.png',
-  earthBump: 'https://unpkg.com/three-globe@2.41.12/example/img/earth-topology.png',
-  mars: 'https://upload.wikimedia.org/wikipedia/commons/thumb/f/f8/Mars_cylindrical_map.jpg/1024px-Mars_cylindrical_map.jpg',
-  jupiter: 'https://upload.wikimedia.org/wikipedia/commons/thumb/a/a3/Cylindrical_Map_of_Jupiter.jpg/1024px-Cylindrical_Map_of_Jupiter.jpg',
-  saturn: 'https://upload.wikimedia.org/wikipedia/commons/thumb/1/1e/Solarsystemscope_texture_8k_saturn.jpg/1024px-Solarsystemscope_texture_8k_saturn.jpg',
-  uranus: 'https://upload.wikimedia.org/wikipedia/commons/thumb/9/95/Solarsystemscope_texture_2k_uranus.jpg/1024px-Solarsystemscope_texture_2k_uranus.jpg',
-  neptune: 'https://upload.wikimedia.org/wikipedia/commons/thumb/0/06/Solarsystemscope_texture_2k_neptune.jpg/1024px-Solarsystemscope_texture_2k_neptune.jpg',
-  pluto: 'https://upload.wikimedia.org/wikipedia/commons/thumb/7/78/Pluto_color_global_map.jpg/1024px-Pluto_color_global_map.jpg',
+  mercury: BASE + 'mercury.jpg',
+  venus: BASE + 'venus.jpg',
+  earthDay: BASE + 'earth-day.jpg',
+  earthNight: BASE + 'earth-night.jpg',
+  earthClouds: BASE + 'earth-clouds.jpg',
+  earthBump: BASE + 'earth-bump.png',
+  mars: BASE + 'mars.jpg',
+  jupiter: BASE + 'jupiter.jpg',
+  saturn: BASE + 'saturn.jpg',
+  uranus: BASE + 'uranus.jpg',
+  neptune: BASE + 'neptune.jpg',
+  pluto: BASE + 'pluto.jpg',
 };
 
 // Fallback colors if textures fail
@@ -121,7 +123,7 @@ function loadTexture(key: string, timeoutMs = 8000): Promise<THREE.Texture> {
     const timer = setTimeout(() => {
       if (!settled) {
         settled = true;
-        console.warn(`Texture timeout: ${key}`);
+        debugWarn('Planet texture timeout', { key, url });
         resolve(createFallbackTexture(key));
       }
     }, timeoutMs);
@@ -135,10 +137,15 @@ function loadTexture(key: string, timeoutMs = 8000): Promise<THREE.Texture> {
         resolve(tex);
       },
       undefined,
-      () => {
+      (err) => {
         if (settled) return;
         settled = true;
         clearTimeout(timer);
+        debugWarn('Planet texture fallback activated', {
+          key,
+          url,
+          reason: err instanceof Error ? err.message : String(err),
+        });
         resolve(createFallbackTexture(key));
       },
     );

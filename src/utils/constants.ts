@@ -27,11 +27,12 @@ export const SCENE = {
 export const DEG2RAD = Math.PI / 180;
 export const RAD2DEG = 180 / Math.PI;
 
-// Texture URLs — NASA public domain imagery from solar system scope
+// Texture URLs — bundled locally in public/textures/
+const BASE = import.meta.env.BASE_URL + 'textures/';
 export const TEXTURES = {
-  EARTH_DAY: 'https://unpkg.com/three-globe@2.41.12/example/img/earth-blue-marble.jpg',
-  EARTH_NIGHT: 'https://unpkg.com/three-globe@2.41.12/example/img/earth-night.jpg',
-  EARTH_CLOUDS: 'https://unpkg.com/three-globe@2.41.12/example/img/earth-clouds.png',
-  EARTH_BUMP: 'https://unpkg.com/three-globe@2.41.12/example/img/earth-topology.png',
-  MOON: 'https://unpkg.com/three-globe@2.41.12/example/img/lunar-surface.jpg',
+  EARTH_DAY: BASE + 'earth-day.jpg',
+  EARTH_NIGHT: BASE + 'earth-night.jpg',
+  EARTH_CLOUDS: BASE + 'earth-clouds.jpg',
+  EARTH_BUMP: BASE + 'earth-bump.png',
+  MOON: BASE + 'moon.jpg',
 };

@@ -1,3 +1,5 @@
+import { debugWarn } from '../utils/debug';
+
 const STORAGE_KEY = 'orbital-sim-explore-state';
 const AUTO_SAVE_INTERVAL = 30_000; // 30 seconds
 
@@ -28,22 +30,38 @@ export class SaveManager {
   private getState: (() => ExploreState) | null = null;
 
   hasSavedState(): boolean {
-    return localStorage.getItem(STORAGE_KEY) !== null;
+    try {
+      return localStorage.getItem(STORAGE_KEY) !== null;
+    } catch (err) {
+      debugWarn('localStorage getItem failed in hasSavedState', err);
+      return false;
+    }
   }
 
   loadState(): ExploreState | null {
-    const raw = localStorage.getItem(STORAGE_KEY);
+    let raw: string | null = null;
+    try {
+      raw = localStorage.getItem(STORAGE_KEY);
+    } catch (err) {
+      debugWarn('localStorage getItem failed in loadState', err);
+      return null;
+    }
     if (!raw) return null;
     try {
       return JSON.parse(raw) as ExploreState;
-    } catch {
+    } catch (err) {
+      debugWarn('Saved explore state JSON parse failed', err);
       return null;
     }
   }
 
   saveState(state: ExploreState): void {
     state.timestamp = Date.now();
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+    try {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+    } catch (err) {
+      debugWarn('localStorage setItem failed in saveState', err);
+    }
   }
 
   startAutoSave(getState: () => ExploreState): void {
@@ -68,7 +86,11 @@ export class SaveManager {
   }
 
   clearState(): void {
-    localStorage.removeItem(STORAGE_KEY);
+    try {
+      localStorage.removeItem(STORAGE_KEY);
+    } catch (err) {
+      debugWarn('localStorage removeItem failed in clearState', err);
+    }
   }
 
   private handleUnload = () => {

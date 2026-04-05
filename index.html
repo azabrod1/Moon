@@ -686,18 +686,45 @@
   <script>
     // On-screen error display — only shows if something goes wrong
     (function() {
+      var params = new URLSearchParams(window.location.search);
+      var debugEnabled = params.get('debug') === '1';
       var dbg = document.getElementById('debug-log');
+      window.__dbgEnabled = debugEnabled;
+
       function log(msg) {
         dbg.style.display = 'block';
-        dbg.textContent = (dbg.textContent ? dbg.textContent + '\n' : '') + msg;
+        var stamp = new Date().toISOString().slice(11, 19);
+        dbg.textContent = (dbg.textContent ? dbg.textContent + '\n' : '') + '[' + stamp + '] ' + msg;
+        dbg.scrollTop = dbg.scrollHeight;
       }
-      window.__dbgLog = function() {}; // no-op by default
+
+      window.__dbgLog = function(msg) {
+        if (debugEnabled) log(msg);
+      };
+
+      if (debugEnabled) {
+        log('[DBG] Debug overlay enabled');
+        log('[DBG] UA ' + navigator.userAgent);
+        log('[DBG] Platform ' + navigator.platform + ', touch=' + navigator.maxTouchPoints);
+        log('[DBG] Viewport ' + window.innerWidth + 'x' + window.innerHeight + ', dpr=' + window.devicePixelRatio);
+      }
+
       window.addEventListener('error', function(e) {
         log('[ERR] ' + e.message + ' @ ' + (e.filename||'').split('/').pop() + ':' + e.lineno);
       });
       window.addEventListener('unhandledrejection', function(e) {
         log('[REJECT] ' + (e.reason && (e.reason.message || String(e.reason))));
       });
+      window.addEventListener('pageshow', function() {
+        if (debugEnabled) log('[DBG] pageshow');
+      });
+      window.addEventListener('pagehide', function() {
+        if (debugEnabled) log('[DBG] pagehide');
+      });
+      document.addEventListener('visibilitychange', function() {
+        if (debugEnabled) log('[DBG] visibility=' + document.visibilityState);
+      });
+
       // Safety: if init hasn't started after 12s, force-hide loading
       setTimeout(function() {
         if (!window.__initStarted) {

@@ -55,8 +55,8 @@ export class ExploreMode {
     this.controls.enableDamping = true;
     this.controls.dampingFactor = 0.05;
     this.controls.enabled = false;
-    this.controls.minDistance = 0.00005;
-    this.controls.maxDistance = 2;
+    this.controls.minDistance = 0.00001;
+    this.controls.maxDistance = 5;
 
     // Key handlers
     this.handleKeyDown = this.handleKeyDown.bind(this);
@@ -298,23 +298,9 @@ export class ExploreMode {
   }
 
   private updateCameraFollow() {
-    // Camera follows behind and above the player
-    // The player is always at the scene origin due to floating origin
-    const followDist = 0.0005; // AU behind
-    const followHeight = 0.0002;
-
-    const camX = -Math.cos(this.player.heading) * followDist;
-    const camZ = -Math.sin(this.player.heading) * followDist;
-
-    // Only set if controls aren't being actively dragged
-    if (!this.controls.enabled || this.controls.enableRotate) {
-      this.controls.target.set(0, 0, 0);
-    }
-
-    // Smoothly move camera on initial setup
-    if (this.camera.position.lengthSq() < 0.000001 || !this.controls.enabled) {
-      this.camera.position.set(camX, followHeight, camZ);
-    }
+    // Player is always at scene origin due to floating origin
+    // Camera orbits around the player using OrbitControls
+    this.controls.target.set(0, 0, 0);
   }
 
   private processInput() {
@@ -435,10 +421,10 @@ export class ExploreMode {
     this.setStatText('stat-speed', `${stats.speedC.toFixed(1)}c`);
     this.setStatText('stat-speed-kms', `${Math.round(stats.speedKmS).toLocaleString()} km/s`);
     this.setStatText('stat-nearest',
-      stats.nearestPlanet ? `${stats.nearestPlanet.name} (${formatAU(stats.nearestPlanet.distanceAU)} AU)` : '--');
+      stats.nearestPlanet ? `${stats.nearestPlanet.name} ${formatAU(stats.nearestPlanet.distanceAU)}` : '--');
     this.setStatText('stat-next',
       stats.nextPlanetAhead
-        ? `${stats.nextPlanetAhead.name} (${formatAU(stats.nextPlanetAhead.distanceAU)} AU, ETA ${formatETA(stats.nextPlanetAhead.etaSeconds)})`
+        ? `${stats.nextPlanetAhead.name} ${formatETA(stats.nextPlanetAhead.etaSeconds)}`
         : '--');
     this.setStatText('stat-temp', `${Math.round(stats.blackbodyTempK)} K`);
     this.setStatText('stat-traveled', `${formatAU(stats.distanceTraveled)} AU`);
@@ -515,9 +501,10 @@ export class ExploreMode {
     const pos = this.planetWorldPositions.get(planet.name);
     if (!pos) return;
 
-    // Position player near the planet (3× radius away, facing it)
-    const offset = planet.radiusAU * 5;
-    this.player.posX = pos.x - offset;
+    // Position player near the planet: offset enough to see it nicely
+    // Use max of 5× radius or a minimum useful distance
+    const viewDist = Math.max(planet.radiusAU * 8, 0.001);
+    this.player.posX = pos.x - viewDist;
     this.player.posY = pos.y;
     this.player.posZ = pos.z;
     this.player.headToward(pos.x, pos.z);
@@ -528,8 +515,9 @@ export class ExploreMode {
 
     this.showNotification(`Jumped to ${planet.name}`);
 
-    // Reset camera
-    this.camera.position.set(-0.0003, 0.0002, 0.0002);
+    // Reset camera to look at the planet from behind the player
+    const camDist = viewDist * 0.3;
+    this.camera.position.set(-camDist, camDist * 0.5, camDist * 0.3);
     this.controls.target.set(0, 0, 0);
   }
 

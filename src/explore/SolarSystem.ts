@@ -91,9 +91,9 @@ export async function createSolarSystem(
   onProgress?.('Creating the Sun...');
   const sun = createExploreSun();
 
-  // Point light that illuminates everything
-  const sunLight = new THREE.PointLight(0xfff5e0, 3.0, 0, 2);
-  sun.add(sunLight);
+  // Sun already has a PointLight from createExploreSun()
+  // Get reference to it for the return object
+  const sunLight = sun.children.find(c => c instanceof THREE.PointLight) as THREE.PointLight;
 
   const ambientLight = new THREE.AmbientLight(0x111122, 0.08);
 

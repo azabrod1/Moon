@@ -66,7 +66,7 @@ simControls.target.set(0, 0, 0);
 
 // --- Explore camera ---
 const exploreCamera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.000001, 200);
-exploreCamera.position.set(-0.0003, 0.0002, 0.0002);
+exploreCamera.position.set(-0.005, 0.003, 0.003);
 
 // Active camera reference
 let camera = simCamera;

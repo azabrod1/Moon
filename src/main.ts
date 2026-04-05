@@ -509,20 +509,29 @@ function sleep(ms: number): Promise<void> {
 // Main init
 // ================================================================
 async function init() {
+  const dbg = (window as any).__dbgLog as ((msg: string) => void) | undefined;
+  dbg?.('init() started');
+
+  dbg?.('Loading textures...');
   const textures = await loadAllTextures((loaded, total) => {
     const pct = Math.round((loaded / total) * 100);
     const loadEl = document.getElementById('loading-msg');
     if (loadEl) loadEl.textContent = `Loading textures... ${pct}%`;
+    dbg?.(`Texture ${loaded}/${total}`);
   });
+  dbg?.('Textures loaded');
 
+  dbg?.('Creating Earth...');
   const earth = new Earth(textures);
   scene.add(earth.group);
   simObjects.push(earth.group);
 
+  dbg?.('Creating Moon...');
   const moon = new Moon(textures);
   scene.add(moon.orbitGroup);
   simObjects.push(moon.orbitGroup);
 
+  dbg?.('Creating Sun...');
   const sun = new Sun();
   scene.add(sun.group);
   simObjects.push(sun.group);
@@ -543,10 +552,12 @@ async function init() {
   applyDateToState(new Date());
   sun.setPosition(state.sunAngle);
   moon.setOrbitalPosition(state.moonAngle, state.nodeAngle);
+  dbg?.('Scene ready, hiding loading screen');
 
   // Hide loading
   setTimeout(() => {
     document.getElementById('loading-screen')!.classList.add('hidden');
+    dbg?.('Loading screen hidden');
   }, 500);
 
   // Animation loop

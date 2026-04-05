@@ -658,7 +658,41 @@
   <div id="loading-screen">
     <h1>Moon</h1>
     <p id="loading-msg">Loading celestial bodies...</p>
+    <div id="debug-log" style="position:absolute;bottom:8px;left:8px;right:8px;max-height:40vh;overflow-y:auto;font-family:monospace;font-size:10px;color:#ff6060;background:rgba(0,0,0,0.8);padding:8px;border-radius:6px;display:none;white-space:pre-wrap;word-break:break-all;"></div>
   </div>
+
+  <script>
+    // On-screen debug console for mobile — captures errors and logs them visually
+    (function() {
+      var dbg = document.getElementById('debug-log');
+      var msgs = [];
+      function log(msg) {
+        msgs.push(msg);
+        if (msgs.length > 40) msgs.shift();
+        dbg.style.display = 'block';
+        dbg.textContent = msgs.join('\n');
+        dbg.scrollTop = dbg.scrollHeight;
+      }
+      window.addEventListener('error', function(e) {
+        log('[ERR] ' + e.message + ' @ ' + (e.filename||'').split('/').pop() + ':' + e.lineno);
+      });
+      window.addEventListener('unhandledrejection', function(e) {
+        log('[REJECT] ' + (e.reason && (e.reason.message || e.reason)));
+      });
+      var origWarn = console.warn;
+      console.warn = function() {
+        origWarn.apply(console, arguments);
+        log('[WARN] ' + Array.prototype.join.call(arguments, ' '));
+      };
+      var origError = console.error;
+      console.error = function() {
+        origError.apply(console, arguments);
+        log('[ERROR] ' + Array.prototype.join.call(arguments, ' '));
+      };
+      // Also log when init stages complete
+      window.__dbgLog = log;
+    })();
+  </script>
 
   <div id="mode-transition">
     <p id="transition-msg">Loading Solar System...</p>

@@ -16,6 +16,11 @@ import { ExploreMode } from './explore/ExploreMode';
 // ================================================================
 // Top-level mode
 // ================================================================
+{
+  const dbg = (window as any).__dbgLog as ((msg: string) => void) | undefined;
+  dbg?.('JS module executing (imports resolved)');
+}
+
 type AppMode = 'simulator' | 'explore';
 let appMode: AppMode = 'simulator';
 let exploreMode: ExploreMode | null = null;
@@ -510,6 +515,7 @@ function sleep(ms: number): Promise<void> {
 // ================================================================
 async function init() {
   const dbg = (window as any).__dbgLog as ((msg: string) => void) | undefined;
+  (window as any).__initStarted = true;
   dbg?.('init() started');
 
   dbg?.('Loading textures...');

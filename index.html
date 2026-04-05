@@ -662,22 +662,27 @@
   </div>
 
   <script>
-    // On-screen debug console for mobile — captures errors and logs them visually
+    // On-screen debug console for mobile
     (function() {
       var dbg = document.getElementById('debug-log');
       var msgs = [];
       function log(msg) {
         msgs.push(msg);
-        if (msgs.length > 40) msgs.shift();
+        if (msgs.length > 50) msgs.shift();
         dbg.style.display = 'block';
         dbg.textContent = msgs.join('\n');
         dbg.scrollTop = dbg.scrollHeight;
       }
+      window.__dbgLog = log;
+
+      // Immediately show that this script ran
+      log('Debug script OK, UA: ' + navigator.userAgent.slice(0, 80));
+
       window.addEventListener('error', function(e) {
         log('[ERR] ' + e.message + ' @ ' + (e.filename||'').split('/').pop() + ':' + e.lineno);
       });
       window.addEventListener('unhandledrejection', function(e) {
-        log('[REJECT] ' + (e.reason && (e.reason.message || e.reason)));
+        log('[REJECT] ' + (e.reason && (e.reason.message || String(e.reason))));
       });
       var origWarn = console.warn;
       console.warn = function() {
@@ -689,8 +694,19 @@
         origError.apply(console, arguments);
         log('[ERROR] ' + Array.prototype.join.call(arguments, ' '));
       };
-      // Also log when init stages complete
-      window.__dbgLog = log;
+
+      // Safety: if init hasn't started after 10s, something is very wrong
+      setTimeout(function() {
+        if (!window.__initStarted) {
+          log('[TIMEOUT] JS module never started after 10s');
+          log('Check: is the .js bundle loading? Network issue?');
+          // Force-hide loading screen so user isn't stuck
+          var ls = document.getElementById('loading-screen');
+          if (ls && !ls.classList.contains('hidden')) {
+            ls.classList.add('hidden');
+          }
+        }
+      }, 10000);
     })();
   </script>
 
@@ -885,6 +901,6 @@
     </div>
   </div>
 
-  <script type="module" src="/src/main.ts"></script>
+  <script type="module" src="/src/main.ts" onerror="window.__dbgLog && window.__dbgLog('[SCRIPT] Module failed to load')"></script>
 </body>
 </html>

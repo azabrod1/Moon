@@ -11,25 +11,37 @@ import { computeOrbitalState, findEvent, type EventType } from './utils/ephemeri
 import { Earth } from './bodies/Earth';
 import { Moon } from './bodies/Moon';
 import { Sun } from './bodies/Sun';
+import { ExploreMode } from './explore/ExploreMode';
 
 // ================================================================
-// State
+// Top-level mode
+// ================================================================
+type AppMode = 'simulator' | 'explore';
+let appMode: AppMode = 'simulator';
+let exploreMode: ExploreMode | null = null;
+
+// ================================================================
+// Simulator State
 // ================================================================
 const state = {
-  moonAngle: 180,      // degrees (ecliptic longitude)
-  sunAngle: 0,         // degrees (ecliptic longitude)
-  nodeAngle: 0,        // ascending node
-  timeSpeed: 0,        // 0=paused, 1=normal, >1=fast, <0=reverse
+  moonAngle: 180,
+  sunAngle: 0,
+  nodeAngle: 0,
+  timeSpeed: 0,
   animating: false,
   mode: 'date' as 'manual' | 'date',
   currentDate: new Date(),
-  dateTimeSpeed: 0,    // days per second in date mode
+  dateTimeSpeed: 0,
 };
 
 // ================================================================
 // Scene setup
 // ================================================================
-const renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: 'high-performance' });
+const renderer = new THREE.WebGLRenderer({
+  antialias: true,
+  powerPreference: 'high-performance',
+  logarithmicDepthBuffer: true,
+});
 renderer.setSize(window.innerWidth, window.innerHeight);
 renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
 renderer.toneMapping = THREE.ACESFilmicToneMapping;
@@ -41,45 +53,63 @@ document.body.appendChild(renderer.domElement);
 const scene = new THREE.Scene();
 scene.background = new THREE.Color(0x020208);
 
-const camera = new THREE.PerspectiveCamera(50, window.innerWidth / window.innerHeight, 0.01, 500);
-camera.position.set(15, 12, 25);
+// --- Simulator camera + controls ---
+const simCamera = new THREE.PerspectiveCamera(50, window.innerWidth / window.innerHeight, 0.01, 500);
+simCamera.position.set(15, 12, 25);
 
-const controls = new OrbitControls(camera, renderer.domElement);
-controls.enableDamping = true;
-controls.dampingFactor = 0.05;
-controls.minDistance = 1.5;
-controls.maxDistance = 200;
-controls.target.set(0, 0, 0);
+const simControls = new OrbitControls(simCamera, renderer.domElement);
+simControls.enableDamping = true;
+simControls.dampingFactor = 0.05;
+simControls.minDistance = 1.5;
+simControls.maxDistance = 200;
+simControls.target.set(0, 0, 0);
 
-// Ambient light (very dim — space)
-scene.add(new THREE.AmbientLight(0x111122, 0.15));
+// --- Explore camera ---
+const exploreCamera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.000001, 200);
+exploreCamera.position.set(-0.0003, 0.0002, 0.0002);
+
+// Active camera reference
+let camera = simCamera;
+
+// Ambient light
+const ambientLight = new THREE.AmbientLight(0x111122, 0.15);
+scene.add(ambientLight);
 
 // ================================================================
 // Post-processing
 // ================================================================
-const composer = new EffectComposer(renderer);
-composer.addPass(new RenderPass(scene, camera));
+let composer = new EffectComposer(renderer);
+composer.addPass(new RenderPass(scene, simCamera));
 
 const bloomPass = new UnrealBloomPass(
   new THREE.Vector2(window.innerWidth, window.innerHeight),
-  1.2,   // strength
-  0.4,   // radius
-  0.85,  // threshold
+  1.2, 0.4, 0.85,
 );
 composer.addPass(bloomPass);
 composer.addPass(new OutputPass());
 
+function rebuildComposer(cam: THREE.Camera) {
+  composer = new EffectComposer(renderer);
+  composer.addPass(new RenderPass(scene, cam));
+  const bloom = new UnrealBloomPass(
+    new THREE.Vector2(window.innerWidth, window.innerHeight),
+    cam === exploreCamera ? 0.8 : 1.2,
+    0.4,
+    0.85,
+  );
+  composer.addPass(bloom);
+  composer.addPass(new OutputPass());
+}
+
 // ================================================================
-// Starfield
+// Starfield (simulator mode)
 // ================================================================
 function createStarfield(): THREE.Points {
   const starCount = 8000;
   const positions = new Float32Array(starCount * 3);
   const colors = new Float32Array(starCount * 3);
-  const sizes = new Float32Array(starCount);
 
   for (let i = 0; i < starCount; i++) {
-    // Distribute on a large sphere
     const theta = Math.random() * Math.PI * 2;
     const phi = Math.acos(2 * Math.random() - 1);
     const r = 200 + Math.random() * 50;
@@ -88,19 +118,15 @@ function createStarfield(): THREE.Points {
     positions[i * 3 + 1] = r * Math.sin(phi) * Math.sin(theta);
     positions[i * 3 + 2] = r * Math.cos(phi);
 
-    // Slight color variation
     const temp = 0.8 + Math.random() * 0.4;
     colors[i * 3] = temp;
     colors[i * 3 + 1] = temp * (0.9 + Math.random() * 0.1);
     colors[i * 3 + 2] = temp * (0.8 + Math.random() * 0.2);
-
-    sizes[i] = 0.3 + Math.random() * 1.2;
   }
 
   const geo = new THREE.BufferGeometry();
   geo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
   geo.setAttribute('color', new THREE.BufferAttribute(colors, 3));
-  geo.setAttribute('size', new THREE.BufferAttribute(sizes, 1));
 
   const mat = new THREE.PointsMaterial({
     size: 0.3,
@@ -114,20 +140,17 @@ function createStarfield(): THREE.Points {
   return new THREE.Points(geo, mat);
 }
 
-scene.add(createStarfield());
+const simStarfield = createStarfield();
+scene.add(simStarfield);
 
 // ================================================================
-// Orbit visualization
+// Orbit visualization (simulator mode)
 // ================================================================
 function createOrbitLine(radius: number, segments: number, color: number, inclination: number, nodeAngle: number): THREE.Line {
   const points: THREE.Vector3[] = [];
   for (let i = 0; i <= segments; i++) {
     const angle = (i / segments) * Math.PI * 2;
-    points.push(new THREE.Vector3(
-      radius * Math.cos(angle),
-      0,
-      radius * Math.sin(angle),
-    ));
+    points.push(new THREE.Vector3(radius * Math.cos(angle), 0, radius * Math.sin(angle)));
   }
   const geo = new THREE.BufferGeometry().setFromPoints(points);
   const mat = new THREE.LineBasicMaterial({ color, transparent: true, opacity: 0.25 });
@@ -141,9 +164,7 @@ function createOrbitLine(radius: number, segments: number, color: number, inclin
 const moonOrbitLine = createOrbitLine(SCENE.EARTH_MOON_DIST, 128, 0x4466aa, SCENE.MOON_INCLINATION, 0);
 scene.add(moonOrbitLine);
 
-// Ecliptic plane grid (subtle)
 const eclipticGrid = new THREE.GridHelper(80, 40, 0x111133, 0x0a0a22);
-eclipticGrid.position.y = 0;
 scene.add(eclipticGrid);
 
 // ================================================================
@@ -154,20 +175,17 @@ interface PhaseInfo {
   illumination: number;
   phaseAngle: number;
   eclipseType: 'none' | 'lunar' | 'solar';
-  eclipseQuality: number; // 0-1, how close to perfect alignment
+  eclipseQuality: number;
 }
 
 function computePhaseInfo(moonAngleDeg: number, sunAngleDeg: number, nodeAngleDeg: number): PhaseInfo {
-  // Phase angle = angle between Sun and Moon as seen from Earth
   let phaseAngle = moonAngleDeg - sunAngleDeg;
-  // Normalize to -180..180
   while (phaseAngle > 180) phaseAngle -= 360;
   while (phaseAngle < -180) phaseAngle += 360;
 
   const absPhase = Math.abs(phaseAngle);
   const illumination = (1 - Math.cos(absPhase * DEG2RAD)) / 2;
 
-  // Phase name
   let name: string;
   if (absPhase < 10) name = 'New Moon';
   else if (absPhase < 80) name = phaseAngle > 0 ? 'Waxing Crescent' : 'Waning Crescent';
@@ -175,27 +193,20 @@ function computePhaseInfo(moonAngleDeg: number, sunAngleDeg: number, nodeAngleDe
   else if (absPhase < 170) name = phaseAngle > 0 ? 'Waxing Gibbous' : 'Waning Gibbous';
   else name = 'Full Moon';
 
-  // Eclipse check: need Moon near a node
-  // The Moon's orbit crosses the ecliptic at the ascending node (nodeAngleDeg) and
-  // descending node (nodeAngleDeg + 180). Moon is at ecliptic plane when its
-  // orbital angle (relative to node) is near 0 or 180.
   let moonRelNode = moonAngleDeg - nodeAngleDeg;
   while (moonRelNode > 180) moonRelNode -= 360;
   while (moonRelNode < -180) moonRelNode += 360;
-
   const distFromNode = Math.min(Math.abs(moonRelNode), Math.abs(Math.abs(moonRelNode) - 180));
-  const nodeProximity = Math.max(0, 1 - distFromNode / 18); // within ~18 deg of node
+  const nodeProximity = Math.max(0, 1 - distFromNode / 18);
 
   let eclipseType: 'none' | 'lunar' | 'solar' = 'none';
   let eclipseQuality = 0;
 
   if (nodeProximity > 0) {
     if (absPhase > 170) {
-      // Near full moon + near node = lunar eclipse
       eclipseType = 'lunar';
       eclipseQuality = nodeProximity * (absPhase - 170) / 10;
     } else if (absPhase < 10) {
-      // Near new moon + near node = solar eclipse
       eclipseType = 'solar';
       eclipseQuality = nodeProximity * (10 - absPhase) / 10;
     }
@@ -205,7 +216,7 @@ function computePhaseInfo(moonAngleDeg: number, sunAngleDeg: number, nodeAngleDe
 }
 
 // ================================================================
-// UI bindings
+// UI bindings (simulator mode)
 // ================================================================
 const moonSlider = document.getElementById('moon-slider') as HTMLInputElement;
 const sunSlider = document.getElementById('sun-slider') as HTMLInputElement;
@@ -230,7 +241,6 @@ function updateUIFromState() {
   nodeAngleDisplay.innerHTML = `${state.nodeAngle.toFixed(1)}&deg;`;
 
   const phase = computePhaseInfo(state.moonAngle, state.sunAngle, state.nodeAngle);
-
   phaseNameEl.textContent = phase.name;
   phaseDetailEl.textContent = `Illumination: ${(phase.illumination * 100).toFixed(1)}%`;
 
@@ -242,14 +252,12 @@ function updateUIFromState() {
   }
   infoPhaseAngle.innerHTML = `${phase.phaseAngle.toFixed(1)}&deg;`;
 
-  // Node distance
   let moonRelNode = state.moonAngle - state.nodeAngle;
   while (moonRelNode > 180) moonRelNode -= 360;
   while (moonRelNode < -180) moonRelNode += 360;
   const distFromNode = Math.min(Math.abs(moonRelNode), Math.abs(Math.abs(moonRelNode) - 180));
   infoNodeDist.innerHTML = `${distFromNode.toFixed(1)}&deg; from node`;
 
-  // Eclipse alert
   if (phase.eclipseType === 'lunar') {
     eclipseAlert.className = 'lunar';
     eclipseAlert.style.display = 'block';
@@ -265,46 +273,18 @@ function updateUIFromState() {
   }
 }
 
-moonSlider.addEventListener('input', () => {
-  state.moonAngle = parseFloat(moonSlider.value);
-  updateUIFromState();
-});
-
-sunSlider.addEventListener('input', () => {
-  state.sunAngle = parseFloat(sunSlider.value);
-  updateUIFromState();
-});
-
-nodeSlider.addEventListener('input', () => {
-  state.nodeAngle = parseFloat(nodeSlider.value);
-  updateUIFromState();
-});
+// Slider listeners
+moonSlider.addEventListener('input', () => { state.moonAngle = parseFloat(moonSlider.value); updateUIFromState(); });
+sunSlider.addEventListener('input', () => { state.sunAngle = parseFloat(sunSlider.value); updateUIFromState(); });
+nodeSlider.addEventListener('input', () => { state.nodeAngle = parseFloat(nodeSlider.value); updateUIFromState(); });
 
 // Time controls
-document.getElementById('btn-pause')!.addEventListener('click', () => {
-  state.timeSpeed = 0;
-  state.animating = false;
-  speedDisplay.textContent = 'Paused';
-});
-
-document.getElementById('btn-play')!.addEventListener('click', () => {
-  state.timeSpeed = 1;
-  state.animating = true;
-  speedDisplay.textContent = '1x';
-});
-
-document.getElementById('btn-fast')!.addEventListener('click', () => {
-  state.timeSpeed = Math.min(state.timeSpeed * 2 || 2, 32);
-  state.animating = true;
-  speedDisplay.textContent = `${state.timeSpeed}x`;
-});
-
+document.getElementById('btn-pause')!.addEventListener('click', () => { state.timeSpeed = 0; state.animating = false; speedDisplay.textContent = 'Paused'; });
+document.getElementById('btn-play')!.addEventListener('click', () => { state.timeSpeed = 1; state.animating = true; speedDisplay.textContent = '1x'; });
+document.getElementById('btn-fast')!.addEventListener('click', () => { state.timeSpeed = Math.min(state.timeSpeed * 2 || 2, 32); state.animating = true; speedDisplay.textContent = `${state.timeSpeed}x`; });
 document.getElementById('btn-reverse')!.addEventListener('click', () => {
-  if (state.timeSpeed > 0) {
-    state.timeSpeed = -1;
-  } else {
-    state.timeSpeed = Math.max(state.timeSpeed * 2 || -1, -32);
-  }
+  if (state.timeSpeed > 0) state.timeSpeed = -1;
+  else state.timeSpeed = Math.max(state.timeSpeed * 2 || -1, -32);
   state.animating = true;
   speedDisplay.textContent = `${state.timeSpeed}x`;
 });
@@ -313,80 +293,53 @@ document.getElementById('btn-reverse')!.addEventListener('click', () => {
 document.getElementById('preset-full-moon')!.addEventListener('click', () => {
   state.moonAngle = state.sunAngle + 180;
   if (state.moonAngle >= 360) state.moonAngle -= 360;
-  state.timeSpeed = 0;
-  state.animating = false;
-  speedDisplay.textContent = 'Paused';
+  state.timeSpeed = 0; state.animating = false; speedDisplay.textContent = 'Paused';
   updateUIFromState();
 });
-
 document.getElementById('preset-new-moon')!.addEventListener('click', () => {
   state.moonAngle = state.sunAngle;
-  state.timeSpeed = 0;
-  state.animating = false;
-  speedDisplay.textContent = 'Paused';
+  state.timeSpeed = 0; state.animating = false; speedDisplay.textContent = 'Paused';
   updateUIFromState();
 });
-
 document.getElementById('preset-lunar-eclipse')!.addEventListener('click', () => {
-  // Full moon (opposite sun) + moon at node
-  state.nodeAngle = state.sunAngle; // node aligned with sun direction
+  state.nodeAngle = state.sunAngle;
   state.moonAngle = state.sunAngle + 180;
   if (state.moonAngle >= 360) state.moonAngle -= 360;
-  state.timeSpeed = 0;
-  state.animating = false;
-  speedDisplay.textContent = 'Paused';
+  state.timeSpeed = 0; state.animating = false; speedDisplay.textContent = 'Paused';
   updateUIFromState();
 });
-
 document.getElementById('preset-solar-eclipse')!.addEventListener('click', () => {
-  // New moon + moon at node
   state.nodeAngle = state.sunAngle;
   state.moonAngle = state.sunAngle;
-  state.timeSpeed = 0;
-  state.animating = false;
-  speedDisplay.textContent = 'Paused';
+  state.timeSpeed = 0; state.animating = false; speedDisplay.textContent = 'Paused';
   updateUIFromState();
 });
 
 // Camera views
-document.getElementById('view-default')!.addEventListener('click', () => {
-  animateCamera(new THREE.Vector3(15, 12, 25), new THREE.Vector3(0, 0, 0));
-});
-
-document.getElementById('view-top')!.addEventListener('click', () => {
-  animateCamera(new THREE.Vector3(0, 40, 0), new THREE.Vector3(0, 0, 0));
-});
-
-document.getElementById('view-earth')!.addEventListener('click', () => {
-  animateCamera(new THREE.Vector3(0, 0.5, 3), new THREE.Vector3(0, 0, 0));
-});
-
-document.getElementById('view-side')!.addEventListener('click', () => {
-  animateCamera(new THREE.Vector3(35, 0, 0), new THREE.Vector3(0, 0, 0));
-});
-
 function animateCamera(targetPos: THREE.Vector3, targetLook: THREE.Vector3) {
-  const startPos = camera.position.clone();
-  const startTarget = controls.target.clone();
+  const startPos = simCamera.position.clone();
+  const startTarget = simControls.target.clone();
   const duration = 1000;
   const startTime = performance.now();
-
   function step() {
     const elapsed = performance.now() - startTime;
     const t = Math.min(elapsed / duration, 1);
-    const ease = t * t * (3 - 2 * t); // smoothstep
-
-    camera.position.lerpVectors(startPos, targetPos, ease);
-    controls.target.lerpVectors(startTarget, targetLook, ease);
-    controls.update();
-
+    const ease = t * t * (3 - 2 * t);
+    simCamera.position.lerpVectors(startPos, targetPos, ease);
+    simControls.target.lerpVectors(startTarget, targetLook, ease);
+    simControls.update();
     if (t < 1) requestAnimationFrame(step);
   }
   requestAnimationFrame(step);
 }
 
+document.getElementById('view-default')!.addEventListener('click', () => animateCamera(new THREE.Vector3(15, 12, 25), new THREE.Vector3(0, 0, 0)));
+document.getElementById('view-top')!.addEventListener('click', () => animateCamera(new THREE.Vector3(0, 40, 0), new THREE.Vector3(0, 0, 0)));
+document.getElementById('view-earth')!.addEventListener('click', () => animateCamera(new THREE.Vector3(0, 0.5, 3), new THREE.Vector3(0, 0, 0)));
+document.getElementById('view-side')!.addEventListener('click', () => animateCamera(new THREE.Vector3(35, 0, 0), new THREE.Vector3(0, 0, 0)));
+
 // ================================================================
-// Mode toggle (Manual vs Real Date)
+// Mode toggle (Custom vs Date)
 // ================================================================
 const manualControls = document.getElementById('manual-controls')!;
 const dateControls = document.getElementById('date-controls')!;
@@ -421,72 +374,39 @@ function applyDateToState(date: Date) {
   state.moonAngle = orbital.moonLongitude;
   state.nodeAngle = orbital.moonNodeLongitude;
 
-  // Update date picker display
-  const localISO = new Date(date.getTime() - date.getTimezoneOffset() * 60000)
-    .toISOString().slice(0, 16);
+  const localISO = new Date(date.getTime() - date.getTimezoneOffset() * 60000).toISOString().slice(0, 16);
   datePicker.value = localISO;
-
-  const dateStr = date.toUTCString().replace('GMT', 'UTC');
-  dateInfo.textContent = dateStr;
-
+  dateInfo.textContent = date.toUTCString().replace('GMT', 'UTC');
   updateUIFromState();
 }
 
 modeManualBtn.addEventListener('click', () => setMode('manual'));
-modeDateBtn.addEventListener('click', () => {
-  state.currentDate = new Date();
-  setMode('date');
-});
-
+modeDateBtn.addEventListener('click', () => { state.currentDate = new Date(); setMode('date'); });
 datePicker.addEventListener('input', () => {
-  if (datePicker.value) {
-    const date = new Date(datePicker.value + 'Z'); // treat as UTC
-    applyDateToState(date);
-  }
+  if (datePicker.value) applyDateToState(new Date(datePicker.value + 'Z'));
 });
+document.getElementById('btn-now')!.addEventListener('click', () => applyDateToState(new Date()));
 
-document.getElementById('btn-now')!.addEventListener('click', () => {
-  applyDateToState(new Date());
-});
-
-// Date mode time controls
-document.getElementById('btn-date-pause')!.addEventListener('click', () => {
-  state.dateTimeSpeed = 0;
-  dateSpeedDisplay.textContent = 'Paused';
-});
-
-document.getElementById('btn-date-play')!.addEventListener('click', () => {
-  state.dateTimeSpeed = 1;
-  dateSpeedDisplay.textContent = '1 day/s';
-});
-
+// Date time controls
+document.getElementById('btn-date-pause')!.addEventListener('click', () => { state.dateTimeSpeed = 0; dateSpeedDisplay.textContent = 'Paused'; });
+document.getElementById('btn-date-play')!.addEventListener('click', () => { state.dateTimeSpeed = 1; dateSpeedDisplay.textContent = '1 day/s'; });
 document.getElementById('btn-date-fast')!.addEventListener('click', () => {
   state.dateTimeSpeed = Math.min((state.dateTimeSpeed || 1) * 2, 365);
   dateSpeedDisplay.textContent = `${state.dateTimeSpeed} day/s`;
 });
-
 document.getElementById('btn-date-reverse')!.addEventListener('click', () => {
-  if (state.dateTimeSpeed > 0) {
-    state.dateTimeSpeed = -1;
-  } else {
-    state.dateTimeSpeed = Math.max((state.dateTimeSpeed || -1) * 2, -365);
-  }
+  if (state.dateTimeSpeed > 0) state.dateTimeSpeed = -1;
+  else state.dateTimeSpeed = Math.max((state.dateTimeSpeed || -1) * 2, -365);
   dateSpeedDisplay.textContent = `${state.dateTimeSpeed} day/s`;
 });
 
-// Jump-to-event nav buttons
+// Jump-to-event
 function jumpToEvent(eventType: EventType, direction: 1 | -1) {
   const btn = document.activeElement as HTMLButtonElement | null;
   if (btn) btn.disabled = true;
-
-  // Run search async to avoid blocking UI
   setTimeout(() => {
     const result = findEvent(eventType, state.currentDate, direction);
-    if (result) {
-      state.dateTimeSpeed = 0;
-      dateSpeedDisplay.textContent = 'Paused';
-      applyDateToState(result);
-    }
+    if (result) { state.dateTimeSpeed = 0; dateSpeedDisplay.textContent = 'Paused'; applyDateToState(result); }
     if (btn) btn.disabled = false;
   }, 10);
 }
@@ -501,32 +421,125 @@ document.getElementById('nav-prev-solar')!.addEventListener('click', () => jumpT
 document.getElementById('nav-next-solar')!.addEventListener('click', () => jumpToEvent('solar-eclipse', 1));
 
 // ================================================================
+// Top-level mode switching (Simulator <-> Explore)
+// ================================================================
+const simulatorUI = document.getElementById('simulator-ui')!;
+const exploreUI = document.getElementById('explore-ui')!;
+const modeTransition = document.getElementById('mode-transition')!;
+const transitionMsg = document.getElementById('transition-msg')!;
+const btnModeSimulator = document.getElementById('btn-mode-simulator')!;
+const btnModeExplore = document.getElementById('btn-mode-explore')!;
+
+// Simulator scene objects (hidden during explore)
+const simObjects: THREE.Object3D[] = [];
+
+async function switchAppMode(newMode: AppMode) {
+  if (newMode === appMode) return;
+
+  // Fade to black
+  modeTransition.classList.add('active');
+  transitionMsg.textContent = newMode === 'explore' ? 'Entering Solar System...' : 'Returning to Simulator...';
+  await sleep(400);
+
+  if (newMode === 'explore') {
+    // --- Switch to Explore ---
+    appMode = 'explore';
+    btnModeSimulator.classList.remove('active');
+    btnModeExplore.classList.add('active');
+
+    // Pure black background for space
+    scene.background = new THREE.Color(0x000000);
+
+    // Hide simulator objects
+    for (const obj of simObjects) obj.visible = false;
+    simStarfield.visible = false;
+    simulatorUI.style.display = 'none';
+    simControls.enabled = false;
+    ambientLight.visible = false;
+
+    // Switch camera
+    camera = exploreCamera;
+    rebuildComposer(exploreCamera);
+
+    // Initialize explore mode
+    if (!exploreMode) {
+      exploreMode = new ExploreMode(scene, exploreCamera, renderer);
+    }
+    await exploreMode.activate();
+
+  } else {
+    // --- Switch to Simulator ---
+    appMode = 'simulator';
+    btnModeSimulator.classList.add('active');
+    btnModeExplore.classList.remove('active');
+
+    // Restore simulator background
+    scene.background = new THREE.Color(0x020208);
+
+    // Deactivate explore
+    if (exploreMode) {
+      exploreMode.deactivate();
+    }
+
+    // Show simulator objects
+    for (const obj of simObjects) obj.visible = true;
+    simStarfield.visible = true;
+    simulatorUI.style.display = 'block';
+    simControls.enabled = true;
+    ambientLight.visible = true;
+
+    // Switch camera
+    camera = simCamera;
+    rebuildComposer(simCamera);
+  }
+
+  // Fade back in
+  await sleep(100);
+  modeTransition.classList.remove('active');
+}
+
+btnModeSimulator.addEventListener('click', () => switchAppMode('simulator'));
+btnModeExplore.addEventListener('click', () => switchAppMode('explore'));
+
+function sleep(ms: number): Promise<void> {
+  return new Promise(r => setTimeout(r, ms));
+}
+
+// ================================================================
 // Main init
 // ================================================================
 async function init() {
   const textures = await loadAllTextures((loaded, total) => {
     const pct = Math.round((loaded / total) * 100);
-    const loadEl = document.querySelector('#loading-screen p');
+    const loadEl = document.getElementById('loading-msg');
     if (loadEl) loadEl.textContent = `Loading textures... ${pct}%`;
   });
 
   const earth = new Earth(textures);
   scene.add(earth.group);
+  simObjects.push(earth.group);
 
   const moon = new Moon(textures);
   scene.add(moon.orbitGroup);
+  simObjects.push(moon.orbitGroup);
 
   const sun = new Sun();
   scene.add(sun.group);
+  simObjects.push(sun.group);
 
-  // Shadow cones for eclipses
+  // Track orbit line and grid as sim objects
+  simObjects.push(moonOrbitLine, eclipticGrid);
+
+  // Shadow cones
   const earthShadowCone = createShadowCone(SCENE.EARTH_RADIUS, 0x331111);
   scene.add(earthShadowCone);
+  simObjects.push(earthShadowCone);
 
   const moonShadowCone = createShadowCone(SCENE.MOON_RADIUS * 0.8, 0x111133);
   scene.add(moonShadowCone);
+  simObjects.push(moonShadowCone);
 
-  // Initial state — date mode with current time
+  // Initial state
   applyDateToState(new Date());
   sun.setPosition(state.sunAngle);
   moon.setOrbitalPosition(state.moonAngle, state.nodeAngle);
@@ -543,45 +556,37 @@ async function init() {
     requestAnimationFrame(animate);
     const dt = clock.getDelta();
 
-    // Time-based animation
-    if (state.mode === 'manual' && state.animating && state.timeSpeed !== 0) {
-      // Moon moves ~12.2 deg/day; at speed 1, simulate 1 day per second
-      state.moonAngle += state.timeSpeed * 12.2 * dt;
-      // Sun moves ~1 deg/day
-      state.sunAngle += state.timeSpeed * 0.986 * dt;
-      // Node precesses ~0.053 deg/day (retrograde)
-      state.nodeAngle -= state.timeSpeed * 0.053 * dt;
+    if (appMode === 'simulator') {
+      // --- Simulator update ---
+      if (state.mode === 'manual' && state.animating && state.timeSpeed !== 0) {
+        state.moonAngle += state.timeSpeed * 12.2 * dt;
+        state.sunAngle += state.timeSpeed * 0.986 * dt;
+        state.nodeAngle -= state.timeSpeed * 0.053 * dt;
+        state.moonAngle = ((state.moonAngle % 360) + 360) % 360;
+        state.sunAngle = ((state.sunAngle % 360) + 360) % 360;
+        state.nodeAngle = ((state.nodeAngle % 360) + 360) % 360;
+        updateUIFromState();
+      } else if (state.mode === 'date' && state.dateTimeSpeed !== 0) {
+        const msPerDay = 86_400_000;
+        state.currentDate = new Date(state.currentDate.getTime() + state.dateTimeSpeed * msPerDay * dt);
+        applyDateToState(state.currentDate);
+      }
 
-      // Normalize
-      state.moonAngle = ((state.moonAngle % 360) + 360) % 360;
-      state.sunAngle = ((state.sunAngle % 360) + 360) % 360;
-      state.nodeAngle = ((state.nodeAngle % 360) + 360) % 360;
+      sun.setPosition(state.sunAngle);
+      sun.update(dt);
+      moon.setOrbitalPosition(state.moonAngle, state.nodeAngle);
+      const sunDir = sun.getDirection();
+      earth.update(dt, sunDir);
+      moonOrbitLine.rotation.y = state.nodeAngle * DEG2RAD;
+      moonOrbitLine.rotation.x = SCENE.MOON_INCLINATION;
+      updateShadowCones(earthShadowCone, moonShadowCone, sun, moon);
+      simControls.update();
 
-      updateUIFromState();
-    } else if (state.mode === 'date' && state.dateTimeSpeed !== 0) {
-      // Advance date by dateTimeSpeed days per real second
-      const msPerDay = 86_400_000;
-      state.currentDate = new Date(state.currentDate.getTime() + state.dateTimeSpeed * msPerDay * dt);
-      applyDateToState(state.currentDate);
+    } else if (appMode === 'explore' && exploreMode) {
+      // --- Explore update ---
+      exploreMode.update(dt);
     }
 
-    // Update bodies
-    sun.setPosition(state.sunAngle);
-    sun.update(dt);
-
-    moon.setOrbitalPosition(state.moonAngle, state.nodeAngle);
-
-    const sunDir = sun.getDirection();
-    earth.update(dt, sunDir);
-
-    // Update orbit line rotation to match node
-    moonOrbitLine.rotation.y = (state.nodeAngle * DEG2RAD);
-    moonOrbitLine.rotation.x = SCENE.MOON_INCLINATION;
-
-    // Shadow cones
-    updateShadowCones(earthShadowCone, moonShadowCone, sun, moon);
-
-    controls.update();
     composer.render();
   }
 
@@ -593,46 +598,34 @@ async function init() {
 // ================================================================
 function createShadowCone(baseRadius: number, color: number): THREE.Mesh {
   const length = SCENE.EARTH_MOON_DIST * 1.5;
-  // Cone tip at origin, extending along +Z
   const geo = new THREE.ConeGeometry(baseRadius, length, 32, 1, true);
-  // Move so tip is at y=0, base extends along +Y
   geo.translate(0, length / 2, 0);
-  // Rotate so cone extends along +Z instead of +Y
   geo.rotateX(-Math.PI / 2);
   const mat = new THREE.MeshBasicMaterial({
-    color,
-    transparent: true,
-    opacity: 0.1,
-    side: THREE.DoubleSide,
-    depthWrite: false,
+    color, transparent: true, opacity: 0.1, side: THREE.DoubleSide, depthWrite: false,
   });
   return new THREE.Mesh(geo, mat);
 }
 
-const _antiSun = new THREE.Vector3();
 const _quat = new THREE.Quaternion();
-const _up = new THREE.Vector3(0, 1, 0);
 
 function orientConeAlongDir(cone: THREE.Mesh, origin: THREE.Vector3, direction: THREE.Vector3) {
   cone.position.copy(origin);
-  // Align cone's local +Z with direction
   _quat.setFromUnitVectors(new THREE.Vector3(0, 0, 1), direction.clone().normalize());
   cone.quaternion.copy(_quat);
 }
 
 function updateShadowCones(earthCone: THREE.Mesh, moonCone: THREE.Mesh, sun: Sun, moon: Moon) {
   const sunDir = sun.getDirection();
-  _antiSun.copy(sunDir).negate();
+  const antiSun = sunDir.clone().negate();
 
-  // Earth's shadow: extends away from sun, starting at Earth (origin)
-  orientConeAlongDir(earthCone, new THREE.Vector3(0, 0, 0), _antiSun);
+  orientConeAlongDir(earthCone, new THREE.Vector3(0, 0, 0), antiSun);
   earthCone.visible = true;
 
-  // Moon's shadow: only visible near new moon
   const phase = computePhaseInfo(state.moonAngle, state.sunAngle, state.nodeAngle);
   const moonPos = moon.getWorldPosition();
   if (phase.phaseAngle < 20) {
-    orientConeAlongDir(moonCone, moonPos, _antiSun);
+    orientConeAlongDir(moonCone, moonPos, antiSun);
     moonCone.visible = true;
   } else {
     moonCone.visible = false;
@@ -643,10 +636,14 @@ function updateShadowCones(earthCone: THREE.Mesh, moonCone: THREE.Mesh, sun: Sun
 // Resize handler
 // ================================================================
 window.addEventListener('resize', () => {
-  camera.aspect = window.innerWidth / window.innerHeight;
-  camera.updateProjectionMatrix();
-  renderer.setSize(window.innerWidth, window.innerHeight);
-  composer.setSize(window.innerWidth, window.innerHeight);
+  const w = window.innerWidth;
+  const h = window.innerHeight;
+  simCamera.aspect = w / h;
+  simCamera.updateProjectionMatrix();
+  exploreCamera.aspect = w / h;
+  exploreCamera.updateProjectionMatrix();
+  renderer.setSize(w, h);
+  composer.setSize(w, h);
 });
 
 // ================================================================

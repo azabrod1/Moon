@@ -1,0 +1,224 @@
+// All planet data in real units
+// Distances in AU, radii in AU, periods in Earth years
+
+export interface PlanetData {
+  name: string;
+  symbol: string;
+  semiMajorAxisAU: number;
+  radiusAU: number;       // equatorial radius in AU
+  radiusKm: number;
+  orbitalPeriodYears: number;
+  eccentricity: number;
+  inclinationDeg: number;
+  axialTiltDeg: number;
+  orbitalVelocityKmS: number;
+  color: number;           // hex color for markers
+  textureKey: string;      // key into texture map
+  hasRings: boolean;
+  surfaceGravityG: number; // relative to Earth
+  rotationPeriodHours: number;
+  moons: number;
+  description: string;
+}
+
+const AU_KM = 149_597_870.7;
+
+function kmToAU(km: number): number {
+  return km / AU_KM;
+}
+
+export const SUN_DATA = {
+  name: 'Sun',
+  radiusAU: kmToAU(696_340),     // ~0.00465 AU
+  radiusKm: 696_340,
+  color: 0xfff5e0,
+};
+
+export const PLANETS: PlanetData[] = [
+  {
+    name: 'Mercury',
+    symbol: '\u263F',
+    semiMajorAxisAU: 0.387,
+    radiusAU: kmToAU(2_440),
+    radiusKm: 2_440,
+    orbitalPeriodYears: 0.2408,
+    eccentricity: 0.206,
+    inclinationDeg: 7.00,
+    axialTiltDeg: 0.034,
+    orbitalVelocityKmS: 47.87,
+    color: 0x8c7e6d,
+    textureKey: 'mercury',
+    hasRings: false,
+    surfaceGravityG: 0.38,
+    rotationPeriodHours: 1407.6,
+    moons: 0,
+    description: 'Smallest planet, heavily cratered',
+  },
+  {
+    name: 'Venus',
+    symbol: '\u2640',
+    semiMajorAxisAU: 0.723,
+    radiusAU: kmToAU(6_052),
+    radiusKm: 6_052,
+    orbitalPeriodYears: 0.6150,
+    eccentricity: 0.007,
+    inclinationDeg: 3.39,
+    axialTiltDeg: 177.36,
+    orbitalVelocityKmS: 35.02,
+    color: 0xe8cda0,
+    textureKey: 'venus',
+    hasRings: false,
+    surfaceGravityG: 0.90,
+    rotationPeriodHours: 5832.5,
+    moons: 0,
+    description: 'Thick sulfuric acid clouds, hellish surface',
+  },
+  {
+    name: 'Earth',
+    symbol: '\u2295',
+    semiMajorAxisAU: 1.000,
+    radiusAU: kmToAU(6_378),
+    radiusKm: 6_378,
+    orbitalPeriodYears: 1.000,
+    eccentricity: 0.017,
+    inclinationDeg: 0.00,
+    axialTiltDeg: 23.44,
+    orbitalVelocityKmS: 29.78,
+    color: 0x4488ff,
+    textureKey: 'earthDay',
+    hasRings: false,
+    surfaceGravityG: 1.00,
+    rotationPeriodHours: 23.93,
+    moons: 1,
+    description: 'Our home world',
+  },
+  {
+    name: 'Mars',
+    symbol: '\u2642',
+    semiMajorAxisAU: 1.524,
+    radiusAU: kmToAU(3_396),
+    radiusKm: 3_396,
+    orbitalPeriodYears: 1.8809,
+    eccentricity: 0.093,
+    inclinationDeg: 1.85,
+    axialTiltDeg: 25.19,
+    orbitalVelocityKmS: 24.08,
+    color: 0xc1440e,
+    textureKey: 'mars',
+    hasRings: false,
+    surfaceGravityG: 0.38,
+    rotationPeriodHours: 24.62,
+    moons: 2,
+    description: 'The Red Planet, with polar ice caps',
+  },
+  {
+    name: 'Jupiter',
+    symbol: '\u2643',
+    semiMajorAxisAU: 5.203,
+    radiusAU: kmToAU(71_492),
+    radiusKm: 71_492,
+    orbitalPeriodYears: 11.86,
+    eccentricity: 0.048,
+    inclinationDeg: 1.30,
+    axialTiltDeg: 3.13,
+    orbitalVelocityKmS: 13.07,
+    color: 0xc8a55a,
+    textureKey: 'jupiter',
+    hasRings: false,
+    surfaceGravityG: 2.53,
+    rotationPeriodHours: 9.93,
+    moons: 95,
+    description: 'Gas giant, Great Red Spot, cloud bands',
+  },
+  {
+    name: 'Saturn',
+    symbol: '\u2644',
+    semiMajorAxisAU: 9.588,
+    radiusAU: kmToAU(60_268),
+    radiusKm: 60_268,
+    orbitalPeriodYears: 29.46,
+    eccentricity: 0.056,
+    inclinationDeg: 2.49,
+    axialTiltDeg: 26.73,
+    orbitalVelocityKmS: 9.69,
+    color: 0xe8d5a3,
+    textureKey: 'saturn',
+    hasRings: true,
+    surfaceGravityG: 1.07,
+    rotationPeriodHours: 10.66,
+    moons: 274,
+    description: 'Iconic ring system, pale gold gas giant',
+  },
+  {
+    name: 'Uranus',
+    symbol: '\u26E2',
+    semiMajorAxisAU: 19.191,
+    radiusAU: kmToAU(25_559),
+    radiusKm: 25_559,
+    orbitalPeriodYears: 84.07,
+    eccentricity: 0.046,
+    inclinationDeg: 0.77,
+    axialTiltDeg: 97.77,
+    orbitalVelocityKmS: 6.81,
+    color: 0x7ec8e3,
+    textureKey: 'uranus',
+    hasRings: false,
+    surfaceGravityG: 0.89,
+    rotationPeriodHours: 17.24,
+    moons: 27,
+    description: 'Ice giant tilted on its side, pale cyan',
+  },
+  {
+    name: 'Neptune',
+    symbol: '\u2646',
+    semiMajorAxisAU: 30.061,
+    radiusAU: kmToAU(24_764),
+    radiusKm: 24_764,
+    orbitalPeriodYears: 164.82,
+    eccentricity: 0.010,
+    inclinationDeg: 1.77,
+    axialTiltDeg: 29.56,
+    orbitalVelocityKmS: 5.43,
+    color: 0x3355ff,
+    textureKey: 'neptune',
+    hasRings: false,
+    surfaceGravityG: 1.14,
+    rotationPeriodHours: 16.11,
+    moons: 14,
+    description: 'Deep blue ice giant, strongest winds',
+  },
+];
+
+export const PLUTO: PlanetData = {
+  name: 'Pluto',
+  symbol: '\u2647',
+  semiMajorAxisAU: 39.48,
+  radiusAU: kmToAU(1_188),
+  radiusKm: 1_188,
+  orbitalPeriodYears: 248.0,
+  eccentricity: 0.249,
+  inclinationDeg: 17.16,
+  axialTiltDeg: 119.6,
+  orbitalVelocityKmS: 4.67,
+  color: 0xbba88f,
+  textureKey: 'pluto',
+  hasRings: false,
+  surfaceGravityG: 0.06,
+  rotationPeriodHours: 153.3,
+  moons: 5,
+  description: 'Dwarf planet at the edge, icy surface',
+};
+
+// All bodies including Pluto
+export const ALL_BODIES: PlanetData[] = [...PLANETS, PLUTO];
+
+// Asteroid belt range
+export const ASTEROID_BELT = {
+  innerAU: 2.1,
+  outerAU: 3.3,
+};
+
+// Constants
+export const AU_IN_KM = AU_KM;
+export const LIGHT_SPEED_AU_PER_S = 1 / 499.0; // ~0.002 AU/s
+export const LIGHT_SPEED_KM_PER_S = 299_792.458;

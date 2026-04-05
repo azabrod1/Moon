@@ -30,6 +30,9 @@ export class ExploreMode {
   private notificationTimeout: number | null = null;
   private uiWired = false;
 
+  // Touch steer state
+  private touchSteer = 0; // -1 left, 0 none, 1 right
+
   // UI elements
   private statsEl: HTMLElement | null = null;
   private progressEl: HTMLElement | null = null;
@@ -117,12 +120,20 @@ export class ExploreMode {
       this.scene.add(this.starfield);
     }
 
-    // Check for saved state
-    if (this.saveManager.hasSavedState()) {
-      const saved = this.saveManager.loadState();
-      if (saved) {
-        this.restoreState(saved);
+    // Check for saved state — show resume prompt
+    const hasSaved = this.saveManager.hasSavedState();
+    if (hasSaved) {
+      const shouldResume = await this.showResumePrompt();
+      if (shouldResume) {
+        const saved = this.saveManager.loadState();
+        if (saved) this.restoreState(saved);
+      } else {
+        this.saveManager.clearState();
+        this.restoreState(createDefaultState());
+        this.pointTowardMercury();
       }
+    } else {
+      this.pointTowardMercury();
     }
 
     // Configure camera
@@ -304,10 +315,11 @@ export class ExploreMode {
   }
 
   private processInput() {
-    // Steering
+    // Steering (keyboard + touch)
     let steer = 0;
     if (this.keys.has('arrowleft') || this.keys.has('a')) steer = -1;
     if (this.keys.has('arrowright') || this.keys.has('d')) steer = 1;
+    if (this.touchSteer !== 0) steer = this.touchSteer;
     this.player.steerInput = steer;
 
     // Speed adjustment with up/down
@@ -337,6 +349,8 @@ export class ExploreMode {
     if (e.key === ' ') {
       e.preventDefault();
       this.player.moving = !this.player.moving;
+      const btn = document.getElementById('explore-btn-pause');
+      if (btn) btn.textContent = this.player.moving ? '\u23F8' : '\u25B6';
     }
   }
 
@@ -387,6 +401,9 @@ export class ExploreMode {
       if (dist < visitDist && !this.player.visitedPlanets.has(name)) {
         this.player.visitedPlanets.add(name);
         this.showNotification(`Arrived at ${name}! ${body.description}`);
+        // Mark chip as visited
+        const chip = document.getElementById(`jump-${name.toLowerCase()}`);
+        if (chip) chip.classList.add('visited');
       }
     }
   }
@@ -418,8 +435,7 @@ export class ExploreMode {
     this.setStatText('stat-distance', `${formatAU(stats.distanceFromSunAU)} AU`);
     this.setStatText('stat-light-time', stats.lightTravelTime);
     this.setStatText('stat-intensity', `${stats.solarIntensityPct.toFixed(1)}%`);
-    this.setStatText('stat-speed', `${stats.speedC.toFixed(1)}c`);
-    this.setStatText('stat-speed-kms', `${Math.round(stats.speedKmS).toLocaleString()} km/s`);
+    this.setStatText('stat-speed', `${stats.speedC.toFixed(1)}c / ${Math.round(stats.speedKmS).toLocaleString()} km/s`);
     this.setStatText('stat-nearest',
       stats.nearestPlanet ? `${stats.nearestPlanet.name} ${formatAU(stats.nearestPlanet.distanceAU)}` : '--');
     this.setStatText('stat-next',
@@ -495,6 +511,59 @@ export class ExploreMode {
       const btn = document.getElementById(`jump-${body.name.toLowerCase()}`);
       btn?.addEventListener('click', () => this.jumpToPlanet(body));
     }
+
+    // Touch steer zones
+    const touchLeft = document.getElementById('touch-steer-left');
+    const touchRight = document.getElementById('touch-steer-right');
+    if (touchLeft) {
+      touchLeft.addEventListener('touchstart', (e) => { e.preventDefault(); this.touchSteer = -1; touchLeft.classList.add('active'); }, { passive: false });
+      touchLeft.addEventListener('touchend', () => { this.touchSteer = 0; touchLeft.classList.remove('active'); });
+      touchLeft.addEventListener('touchcancel', () => { this.touchSteer = 0; touchLeft.classList.remove('active'); });
+    }
+    if (touchRight) {
+      touchRight.addEventListener('touchstart', (e) => { e.preventDefault(); this.touchSteer = 1; touchRight.classList.add('active'); }, { passive: false });
+      touchRight.addEventListener('touchend', () => { this.touchSteer = 0; touchRight.classList.remove('active'); });
+      touchRight.addEventListener('touchcancel', () => { this.touchSteer = 0; touchRight.classList.remove('active'); });
+    }
+  }
+
+  private showResumePrompt(): Promise<boolean> {
+    return new Promise((resolve) => {
+      const prompt = document.getElementById('explore-resume-prompt');
+      if (!prompt) { resolve(true); return; }
+
+      const saved = this.saveManager.loadState();
+      if (saved) {
+        const info = document.getElementById('resume-info');
+        if (info) {
+          const dist = Math.sqrt(saved.positionAU.x ** 2 + saved.positionAU.y ** 2 + saved.positionAU.z ** 2);
+          info.textContent = `${dist.toFixed(2)} AU from Sun, ${saved.visitedPlanets.length} planets visited`;
+        }
+      }
+
+      prompt.classList.add('visible');
+
+      const resumeBtn = document.getElementById('resume-btn-continue');
+      const newBtn = document.getElementById('resume-btn-new');
+
+      const cleanup = () => {
+        prompt.classList.remove('visible');
+        resumeBtn?.removeEventListener('click', onResume);
+        newBtn?.removeEventListener('click', onNew);
+      };
+      const onResume = () => { cleanup(); resolve(true); };
+      const onNew = () => { cleanup(); resolve(false); };
+
+      resumeBtn?.addEventListener('click', onResume);
+      newBtn?.addEventListener('click', onNew);
+    });
+  }
+
+  private pointTowardMercury() {
+    const mercuryPos = this.planetWorldPositions.get('Mercury');
+    if (mercuryPos) {
+      this.player.headToward(mercuryPos.x, mercuryPos.z);
+    }
   }
 
   jumpToPlanet(planet: PlanetData) {
@@ -547,6 +616,12 @@ export class ExploreMode {
     this.player.timeElapsed = saved.timeElapsed;
     this.player.visitedPlanets = new Set(saved.visitedPlanets);
     this.updateSpeedSlider();
+
+    // Restore visited chip styles
+    for (const name of saved.visitedPlanets) {
+      const chip = document.getElementById(`jump-${name.toLowerCase()}`);
+      if (chip) chip.classList.add('visited');
+    }
   }
 
   private createExploreStarfield(): THREE.Points {
@@ -599,13 +674,34 @@ export class ExploreMode {
     geo.setAttribute('color', new THREE.BufferAttribute(colors, 3));
     geo.setAttribute('size', new THREE.BufferAttribute(sizes, 1));
 
-    const mat = new THREE.PointsMaterial({
-      size: 1.5,
-      vertexColors: true,
+    // Custom shader for per-vertex star sizes
+    const mat = new THREE.ShaderMaterial({
+      uniforms: {
+        pixelRatio: { value: Math.min(window.devicePixelRatio, 2) },
+      },
+      vertexShader: `
+        attribute float size;
+        varying vec3 vColor;
+        uniform float pixelRatio;
+        void main() {
+          vColor = color;
+          vec4 mvPosition = modelViewMatrix * vec4(position, 1.0);
+          gl_Position = projectionMatrix * mvPosition;
+          gl_PointSize = size * pixelRatio;
+        }
+      `,
+      fragmentShader: `
+        varying vec3 vColor;
+        void main() {
+          float d = length(gl_PointCoord - vec2(0.5));
+          if (d > 0.5) discard;
+          float alpha = 1.0 - smoothstep(0.2, 0.5, d);
+          gl_FragColor = vec4(vColor, alpha);
+        }
+      `,
       transparent: true,
-      opacity: 1.0,
-      sizeAttenuation: false,
       depthWrite: false,
+      vertexColors: true,
     });
 
     return new THREE.Points(geo, mat);

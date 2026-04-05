@@ -492,6 +492,75 @@
     .planet-label-name { display: block; font-size: 10px; font-weight: 500; color: var(--text-primary); text-shadow: 0 0 6px rgba(0,0,0,0.9); }
     .planet-label-dist { display: block; font-size: 8px; color: var(--text-dim); margin-top: 1px; }
 
+    /* Touch steer zones (mobile only) */
+    .touch-steer-zone {
+      display: none;
+      position: absolute;
+      top: 90px;
+      bottom: 130px;
+      width: 25%;
+      pointer-events: auto;
+      z-index: 12;
+      opacity: 0;
+      transition: opacity 0.15s;
+    }
+    .touch-steer-zone:active, .touch-steer-zone.active { opacity: 1; }
+    .touch-steer-left { left: 0; background: linear-gradient(90deg, rgba(91,140,255,0.08) 0%, transparent 100%); }
+    .touch-steer-right { right: 0; background: linear-gradient(-90deg, rgba(91,140,255,0.08) 0%, transparent 100%); }
+
+    @media (hover: none) and (pointer: coarse) {
+      .touch-steer-zone { display: block; }
+      #explore-keys-hint { display: none; }
+    }
+
+    /* Resume prompt */
+    #explore-resume-prompt {
+      display: none;
+      position: fixed;
+      top: 0; left: 0; right: 0; bottom: 0;
+      z-index: 30;
+      background: rgba(2, 2, 6, 0.85);
+      align-items: center;
+      justify-content: center;
+    }
+    #explore-resume-prompt.visible { display: flex; }
+    .resume-dialog {
+      background: var(--panel-bg);
+      backdrop-filter: blur(16px);
+      border: 1px solid var(--panel-border);
+      border-radius: 12px;
+      padding: 28px 36px;
+      text-align: center;
+      max-width: 340px;
+    }
+    .resume-dialog h3 {
+      font-family: var(--font);
+      font-size: 16px;
+      font-weight: 500;
+      color: var(--text-primary);
+      margin-bottom: 8px;
+    }
+    .resume-dialog p {
+      font-family: var(--font);
+      font-size: 12px;
+      color: var(--text-secondary);
+      margin-bottom: 20px;
+    }
+    .resume-dialog-buttons { display: flex; gap: 8px; justify-content: center; }
+    .resume-btn {
+      padding: 8px 20px;
+      border: 1px solid var(--panel-border);
+      border-radius: 8px;
+      font-family: var(--font);
+      font-size: 12px;
+      cursor: pointer;
+      transition: all 0.15s;
+    }
+    .resume-btn-primary { background: var(--accent-glow); color: var(--text-primary); border-color: rgba(91,140,255,0.3); }
+    .resume-btn-primary:hover { background: rgba(91,140,255,0.35); }
+    .resume-btn-secondary { background: transparent; color: var(--text-secondary); }
+    .resume-btn-secondary:hover { background: var(--accent-dim); color: var(--text-primary); }
+
     /* Key hints */
     #explore-keys-hint {
       position: absolute;
@@ -736,10 +805,12 @@
         <div class="stat-row"><span class="stat-label">Sun dist</span><span class="stat-value" id="stat-distance">--</span></div>
         <div class="stat-row"><span class="stat-label">Light time</span><span class="stat-value" id="stat-light-time">--</span></div>
         <div class="stat-row"><span class="stat-label">Solar</span><span class="stat-value" id="stat-intensity">--</span></div>
+        <div class="stat-row"><span class="stat-label">Speed</span><span class="stat-value" id="stat-speed">--</span></div>
         <div class="stat-row"><span class="stat-label">Nearest</span><span class="stat-value" id="stat-nearest">--</span></div>
         <div class="stat-row"><span class="stat-label">Next</span><span class="stat-value" id="stat-next">--</span></div>
         <div class="stat-row"><span class="stat-label">Temp</span><span class="stat-value" id="stat-temp">--</span></div>
         <div class="stat-row"><span class="stat-label">Traveled</span><span class="stat-value" id="stat-traveled">--</span></div>
+        <div class="stat-row"><span class="stat-label">Time</span><span class="stat-value" id="stat-time">0:00</span></div>
         <div class="stat-row"><span class="stat-label">Visited</span><span class="stat-value" id="stat-visited">0/9</span></div>
       </div>
 
@@ -758,6 +829,21 @@
 
       <div id="explore-keys-hint">
         <kbd>A</kbd><kbd>D</kbd> steer &nbsp; <kbd>W</kbd><kbd>S</kbd> speed &nbsp; <kbd>Space</kbd> pause
+      </div>
+
+      <!-- Touch steer zones (mobile only) -->
+      <div id="touch-steer-left" class="touch-steer-zone touch-steer-left"></div>
+      <div id="touch-steer-right" class="touch-steer-zone touch-steer-right"></div>
+
+      <div id="explore-resume-prompt">
+        <div class="resume-dialog">
+          <h3>Welcome back</h3>
+          <p id="resume-info">You have a saved journey.</p>
+          <div class="resume-dialog-buttons">
+            <button class="resume-btn resume-btn-primary" id="resume-btn-continue">Resume</button>
+            <button class="resume-btn resume-btn-secondary" id="resume-btn-new">New Journey</button>
+          </div>
+        </div>
       </div>
 
       <div id="explore-notification"></div>

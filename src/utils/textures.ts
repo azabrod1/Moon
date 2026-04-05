@@ -4,16 +4,28 @@ import { TEXTURES } from './constants';
 const loader = new THREE.TextureLoader();
 loader.crossOrigin = 'anonymous';
 
-function load(url: string): Promise<THREE.Texture> {
+function load(url: string, timeoutMs = 8000): Promise<THREE.Texture> {
   return new Promise((resolve, reject) => {
+    let settled = false;
+    const timer = setTimeout(() => {
+      if (!settled) { settled = true; reject(new Error(`Texture load timeout: ${url}`)); }
+    }, timeoutMs);
     loader.load(
       url,
       (tex) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
         tex.colorSpace = THREE.SRGBColorSpace;
         resolve(tex);
       },
       undefined,
-      reject,
+      (err) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        reject(err);
+      },
     );
   });
 }

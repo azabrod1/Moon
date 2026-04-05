@@ -46,7 +46,7 @@ renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
 renderer.toneMapping = THREE.ACESFilmicToneMapping;
 renderer.toneMappingExposure = 1.0;
 renderer.shadowMap.enabled = true;
-renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+renderer.shadowMap.type = THREE.PCFShadowMap;
 document.body.appendChild(renderer.domElement);
 
 const scene = new THREE.Scene();
@@ -88,13 +88,14 @@ composer.addPass(bloomPass);
 composer.addPass(new OutputPass());
 
 function rebuildComposer(cam: THREE.Camera) {
+  composer.dispose();
   composer = new EffectComposer(renderer);
   composer.addPass(new RenderPass(scene, cam));
   const bloom = new UnrealBloomPass(
     new THREE.Vector2(window.innerWidth, window.innerHeight),
     cam === exploreCamera ? 0.8 : 1.2,
     0.4,
-    0.85,
+    cam === exploreCamera ? 0.92 : 0.85, // higher threshold in explore = only bright objects bloom
   );
   composer.addPass(bloom);
   composer.addPass(new OutputPass());
@@ -549,11 +550,13 @@ async function init() {
   }, 500);
 
   // Animation loop
-  const clock = new THREE.Clock();
+  let lastTime = performance.now();
 
   function animate() {
     requestAnimationFrame(animate);
-    const dt = clock.getDelta();
+    const now = performance.now();
+    const dt = Math.min((now - lastTime) / 1000, 0.1); // cap at 100ms to avoid huge jumps
+    lastTime = now;
 
     if (appMode === 'simulator') {
       // --- Simulator update ---

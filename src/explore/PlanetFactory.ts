@@ -112,19 +112,35 @@ const ATMOSPHERES: Record<string, AtmosphereConfig> = {
   },
 };
 
-function loadTexture(key: string): Promise<THREE.Texture> {
+function loadTexture(key: string, timeoutMs = 8000): Promise<THREE.Texture> {
   const url = PLANET_TEXTURE_URLS[key];
   if (!url) return Promise.resolve(createFallbackTexture(key));
 
   return new Promise((resolve) => {
+    let settled = false;
+    const timer = setTimeout(() => {
+      if (!settled) {
+        settled = true;
+        console.warn(`Texture timeout: ${key}`);
+        resolve(createFallbackTexture(key));
+      }
+    }, timeoutMs);
     loader.load(
       url,
       (tex) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
         tex.colorSpace = THREE.SRGBColorSpace;
         resolve(tex);
       },
       undefined,
-      () => resolve(createFallbackTexture(key)),
+      () => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        resolve(createFallbackTexture(key));
+      },
     );
   });
 }

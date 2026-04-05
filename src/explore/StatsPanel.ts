@@ -56,9 +56,11 @@ export function computeStats(
       nearestPlanet = { name: body.name, distanceAU: dist };
     }
 
-    // "Ahead" = further from Sun than us and in roughly our heading direction
-    const planetDist = Math.sqrt(pPos.x * pPos.x + pPos.y * pPos.y + pPos.z * pPos.z);
-    if (planetDist > distFromSun && dist < nextAheadDist) {
+    // "Ahead" = in roughly our heading direction (dot product > 0)
+    const headX = Math.cos(heading);
+    const headZ = Math.sin(heading);
+    const dot = dx * headX + dz * headZ; // positive = ahead of us
+    if (dot > 0 && dist < nextAheadDist) {
       nextAheadDist = dist;
       const eta = speedAUPerS > 0 ? dist / speedAUPerS : Infinity;
       nextPlanetAhead = { name: body.name, distanceAU: dist, etaSeconds: eta };

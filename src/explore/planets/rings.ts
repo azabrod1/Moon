@@ -13,13 +13,19 @@ export function createSaturnRings(planetRadiusAU: number): THREE.Mesh {
   canvas.height = 64;
   const ctx = canvas.getContext('2d')!;
 
+  // Deterministic hash for consistent ring texture
+  function seededRand(seed: number): number {
+    const x = Math.sin(seed * 127.1 + 311.7) * 43758.5453;
+    return x - Math.floor(x);
+  }
+
   // Draw ring bands
   for (let x = 0; x < 512; x++) {
     const t = x / 512; // 0 to 1 across the ring
 
     // Multiple ring bands with gaps (Cassini division, Encke gap, etc.)
     let alpha = 0.8;
-    const brightness = 180 + Math.random() * 40;
+    const brightness = 180 + seededRand(x * 7.3) * 40;
 
     // Cassini Division (around 60% of the way out)
     if (t > 0.57 && t < 0.63) alpha = 0.05;
@@ -44,8 +50,8 @@ export function createSaturnRings(planetRadiusAU: number): THREE.Mesh {
       alpha *= 0.7;
     }
 
-    // Add fine structure (random gaps)
-    if (Math.random() < 0.03) alpha *= 0.2;
+    // Add fine structure (deterministic gaps)
+    if (seededRand(x * 13.7) < 0.03) alpha *= 0.2;
 
     for (let y = 0; y < 64; y++) {
       ctx.fillStyle = `rgba(${Math.floor(r)}, ${Math.floor(g)}, ${Math.floor(b)}, ${alpha})`;

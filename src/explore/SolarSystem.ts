@@ -87,9 +87,10 @@ function createAsteroidBelt(): THREE.Points {
 
 export async function createSolarSystem(
   onProgress?: (msg: string) => void,
+  useBloom = true,
 ): Promise<SolarSystemObjects> {
   onProgress?.('Creating the Sun...');
-  const sun = createExploreSun();
+  const sun = createExploreSun(useBloom);
 
   // Sun already has a PointLight from createExploreSun()
   // Get reference to it for the return object

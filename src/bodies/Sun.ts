@@ -15,7 +15,7 @@ export class Sun {
   pointLight: THREE.PointLight;
   coronaMaterial: THREE.ShaderMaterial;
 
-  constructor() {
+  constructor(useBloom = true) {
     this.group = new THREE.Group();
     this.group.position.set(SCENE.EARTH_SUN_DIST, 0, 0);
 
@@ -31,8 +31,10 @@ export class Sun {
     this.mesh = new THREE.Mesh(sunGeo, this.coronaMaterial);
     this.group.add(this.mesh);
 
-    // Outer glow
-    const glowGeo = new THREE.SphereGeometry(SCENE.SUN_RADIUS * 1.8, 64, 32);
+    // Outer glow — larger and more intense when bloom is off
+    const glowScale = useBloom ? 1.8 : 2.8;
+    const glowAlpha = useBloom ? 0.4 : 0.7;
+    const glowGeo = new THREE.SphereGeometry(SCENE.SUN_RADIUS * glowScale, 64, 32);
     const glowMat = new THREE.ShaderMaterial({
       vertexShader: sunGlowVertexShader,
       fragmentShader: sunGlowFragmentShader,
@@ -40,9 +42,25 @@ export class Sun {
       side: THREE.BackSide,
       depthWrite: false,
       blending: THREE.AdditiveBlending,
+      uniforms: { alphaScale: { value: glowAlpha } },
     });
     this.glowMesh = new THREE.Mesh(glowGeo, glowMat);
     this.group.add(this.glowMesh);
+
+    // Extra soft outer halo when bloom is off (fake bloom)
+    if (!useBloom) {
+      const haloGeo = new THREE.SphereGeometry(SCENE.SUN_RADIUS * 5.0, 32, 16);
+      const haloMat = new THREE.ShaderMaterial({
+        vertexShader: sunGlowVertexShader,
+        fragmentShader: sunGlowFragmentShader,
+        transparent: true,
+        side: THREE.BackSide,
+        depthWrite: false,
+        blending: THREE.AdditiveBlending,
+        uniforms: { alphaScale: { value: 0.15 } },
+      });
+      this.group.add(new THREE.Mesh(haloGeo, haloMat));
+    }
 
     // Directional light toward Earth (origin)
     this.light = new THREE.DirectionalLight(0xfff5e0, 3.0);

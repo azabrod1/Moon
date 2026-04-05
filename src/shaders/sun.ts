@@ -80,6 +80,7 @@ void main() {
 `;
 
 export const sunGlowFragmentShader = /* glsl */ `
+uniform float alphaScale;
 varying vec3 vNormal;
 varying vec3 vPosition;
 
@@ -94,6 +95,6 @@ void main() {
     rimDot
   );
 
-  gl_FragColor = vec4(glowColor * intensity, intensity * 0.4);
+  gl_FragColor = vec4(glowColor * intensity, intensity * alphaScale);
 }
 `;

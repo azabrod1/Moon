@@ -41,15 +41,18 @@ export class ExploreMode {
   private speedValueEl: HTMLElement | null = null;
 
   active = false;
+  private useBloom: boolean;
 
   constructor(
     scene: THREE.Scene,
     camera: THREE.PerspectiveCamera,
     renderer: THREE.WebGLRenderer,
+    useBloom = true,
   ) {
     this.scene = scene;
     this.camera = camera;
     this.renderer = renderer;
+    this.useBloom = useBloom;
     this.player = new PlayerShip();
     this.saveManager = new SaveManager();
 
@@ -86,7 +89,7 @@ export class ExploreMode {
       if (loadingMsg) loadingMsg.style.display = 'block';
       this.solarSystem = await createSolarSystem((msg) => {
         if (loadingMsg) loadingMsg.textContent = msg;
-      });
+      }, this.useBloom);
       if (loadingMsg) loadingMsg.style.display = 'none';
 
       // Add everything to scene

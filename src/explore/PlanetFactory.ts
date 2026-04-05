@@ -333,7 +333,7 @@ export async function createPlanetMesh(planet: PlanetData): Promise<PlanetMesh> 
   return { group, mesh, data: planet, rings, atmosphere, nightMaterial, cloudsMesh };
 }
 
-export function createExploreSun(): THREE.Group {
+export function createExploreSun(useBloom = true): THREE.Group {
   const group = new THREE.Group();
   group.name = 'Sun';
 
@@ -399,8 +399,10 @@ export function createExploreSun(): THREE.Group {
   const mesh = new THREE.Mesh(geo, sunMat);
   group.add(mesh);
 
-  // Glow shell
-  const glowGeo = new THREE.SphereGeometry(SUN_DATA.radiusAU * 2.0, 32, 16);
+  // Glow shell — bigger and brighter when bloom is off
+  const glowScale = useBloom ? 2.0 : 3.0;
+  const glowAlpha = useBloom ? 0.3 : 0.6;
+  const glowGeo = new THREE.SphereGeometry(SUN_DATA.radiusAU * glowScale, 32, 16);
   const glowMat = new THREE.ShaderMaterial({
     vertexShader: `
       varying vec3 vNormal;
@@ -412,6 +414,7 @@ export function createExploreSun(): THREE.Group {
       }
     `,
     fragmentShader: `
+      uniform float alphaScale;
       varying vec3 vNormal;
       varying vec3 vPosition;
       void main() {
@@ -419,15 +422,48 @@ export function createExploreSun(): THREE.Group {
         float rimDot = 1.0 - max(dot(viewDir, vNormal), 0.0);
         float intensity = pow(rimDot, 2.0) * 2.0;
         vec3 glowColor = mix(vec3(1.0, 0.6, 0.1), vec3(1.0, 0.2, 0.0), rimDot);
-        gl_FragColor = vec4(glowColor * intensity, intensity * 0.3);
+        gl_FragColor = vec4(glowColor * intensity, intensity * alphaScale);
       }
     `,
+    uniforms: { alphaScale: { value: glowAlpha } },
     transparent: true,
     side: THREE.BackSide,
     depthWrite: false,
     blending: THREE.AdditiveBlending,
   });
   group.add(new THREE.Mesh(glowGeo, glowMat));
+
+  // Extra soft outer halo when bloom is off
+  if (!useBloom) {
+    const haloGeo = new THREE.SphereGeometry(SUN_DATA.radiusAU * 6.0, 32, 16);
+    const haloMat = new THREE.ShaderMaterial({
+      vertexShader: `
+        varying vec3 vNormal;
+        varying vec3 vPosition;
+        void main() {
+          vNormal = normalize(normalMatrix * normal);
+          vPosition = (modelViewMatrix * vec4(position, 1.0)).xyz;
+          gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+        }
+      `,
+      fragmentShader: `
+        varying vec3 vNormal;
+        varying vec3 vPosition;
+        void main() {
+          vec3 viewDir = normalize(-vPosition);
+          float rimDot = 1.0 - max(dot(viewDir, vNormal), 0.0);
+          float intensity = pow(rimDot, 3.0) * 1.5;
+          vec3 glowColor = mix(vec3(1.0, 0.7, 0.2), vec3(1.0, 0.3, 0.0), rimDot);
+          gl_FragColor = vec4(glowColor * intensity, intensity * 0.12);
+        }
+      `,
+      transparent: true,
+      side: THREE.BackSide,
+      depthWrite: false,
+      blending: THREE.AdditiveBlending,
+    });
+    group.add(new THREE.Mesh(haloGeo, haloMat));
+  }
 
   // Point light
   const light = new THREE.PointLight(0xfff5e0, 3.0, 0, 2);

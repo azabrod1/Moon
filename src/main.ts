@@ -549,7 +549,7 @@ async function switchAppMode(newMode: AppMode) {
     // Initialize explore mode
     if (!exploreMode) {
       debugLog('Creating explore mode');
-      exploreMode = new ExploreMode(scene, exploreCamera, renderer);
+      exploreMode = new ExploreMode(scene, exploreCamera, renderer, useBloom);
     }
     debugLog('Activating explore mode');
     await exploreMode.activate();
@@ -628,7 +628,7 @@ async function init() {
   scene.add(moon.orbitGroup);
   simObjects.push(moon.orbitGroup);
 
-  const sun = new Sun();
+  const sun = new Sun(useBloom);
   scene.add(sun.group);
   simObjects.push(sun.group);
 

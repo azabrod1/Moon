@@ -35,6 +35,13 @@ const state = {
 };
 
 // ================================================================
+// Device detection (must be before renderer setup)
+// ================================================================
+const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent) ||
+  (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+const isMobile = 'ontouchstart' in window || navigator.maxTouchPoints > 0;
+
+// ================================================================
 // Scene setup
 // ================================================================
 const renderer = new THREE.WebGLRenderer({
@@ -45,7 +52,7 @@ renderer.setSize(window.innerWidth, window.innerHeight);
 renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
 renderer.toneMapping = THREE.ACESFilmicToneMapping;
 renderer.toneMappingExposure = 1.0;
-renderer.shadowMap.enabled = true;
+renderer.shadowMap.enabled = !isMobile;
 renderer.shadowMap.type = THREE.PCFShadowMap;
 document.body.appendChild(renderer.domElement);
 
@@ -78,23 +85,9 @@ scene.add(ambientLight);
 // Post-processing (with mobile fallback)
 // ================================================================
 
-// Detect if bloom is likely to fail (mobile GPU / no float render targets)
-function canUseBloom(): boolean {
-  const gl = renderer.getContext();
-  // Check for half-float render target support
-  if (gl instanceof WebGL2RenderingContext) {
-    const ext = gl.getExtension('EXT_color_buffer_float');
-    if (!ext) return false;
-  } else {
-    // WebGL1 needs OES_texture_half_float + EXT_color_buffer_half_float
-    if (!gl.getExtension('OES_texture_half_float') || !gl.getExtension('EXT_color_buffer_half_float')) {
-      return false;
-    }
-  }
-  return true;
-}
+// Skip bloom on mobile — EffectComposer render targets break on iOS/mobile GPUs
+const useBloom = !isMobile;
 
-let useBloom = canUseBloom();
 let composer: EffectComposer | null = null;
 
 function buildComposer(cam: THREE.Camera) {
@@ -115,25 +108,14 @@ function buildComposer(cam: THREE.Camera) {
 
 buildComposer(simCamera);
 
-// Render with fallback: if composer fails (GL error), disable and use direct render
 function renderScene(cam: THREE.Camera) {
   if (composer) {
     composer.render();
-    // Check for GL errors on first few frames
-    const gl = renderer.getContext();
-    const err = gl.getError();
-    if (err !== gl.NO_ERROR) {
-      console.warn('Bloom GL error, falling back to direct render');
-      useBloom = false;
-      composer.dispose();
-      composer = null;
-    }
   } else {
     renderer.render(scene, cam);
   }
 }
 
-// Alias for mode switching
 function rebuildComposer(cam: THREE.Camera) {
   buildComposer(cam);
 }

@@ -70,7 +70,7 @@ renderer.setSize(window.innerWidth, window.innerHeight);
 renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
 renderer.toneMapping = THREE.ACESFilmicToneMapping;
 renderer.toneMappingExposure = 1.0;
-renderer.shadowMap.enabled = !isMobile;
+renderer.shadowMap.enabled = true;
 renderer.shadowMap.type = THREE.PCFShadowMap;
 document.body.appendChild(renderer.domElement);
 renderer.domElement.addEventListener('webglcontextlost', (event) => {
@@ -81,11 +81,41 @@ renderer.domElement.addEventListener('webglcontextrestored', () => {
   debugLog('WebGL context restored');
 });
 
+// Test if GPU can actually handle float render targets (needed for bloom)
+function canGPUDoBloom(): boolean {
+  try {
+    const gl = renderer.getContext();
+    const ext = gl.getExtension('EXT_color_buffer_float') || gl.getExtension('EXT_color_buffer_half_float');
+    if (!ext) { debugLog('Bloom test: no float buffer extension'); return false; }
+    // Actually create a small float framebuffer and check completeness
+    const fb = gl.createFramebuffer();
+    const tex = gl.createTexture();
+    gl.bindTexture(gl.TEXTURE_2D, tex);
+    gl.texImage2D(gl.TEXTURE_2D, 0, (gl as WebGL2RenderingContext).RGBA16F ?? gl.RGBA,
+      4, 4, 0, gl.RGBA, (gl as WebGL2RenderingContext).HALF_FLOAT ?? gl.FLOAT, null);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, fb);
+    gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, tex, 0);
+    const status = gl.checkFramebufferStatus(gl.FRAMEBUFFER);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+    gl.deleteTexture(tex);
+    gl.deleteFramebuffer(fb);
+    const ok = status === gl.FRAMEBUFFER_COMPLETE;
+    debugLog('Bloom test: float FBO', { ok, status });
+    return ok;
+  } catch (err) {
+    debugWarn('Bloom test failed', err);
+    return false;
+  }
+}
+
+const useBloom = canGPUDoBloom();
+
 try {
   const gl = renderer.getContext();
   debugLog('Renderer ready', {
     shadowMap: renderer.shadowMap.enabled,
-    useBloomCandidate: !isMobile,
+    useBloom,
+    isMobile,
     glVersion: gl.getParameter(gl.VERSION),
     shadingLanguage: gl.getParameter(gl.SHADING_LANGUAGE_VERSION),
   });
@@ -119,11 +149,8 @@ const ambientLight = new THREE.AmbientLight(0x111122, 0.15);
 scene.add(ambientLight);
 
 // ================================================================
-// Post-processing (with mobile fallback)
+// Post-processing (bloom enabled based on actual GPU capability)
 // ================================================================
-
-// Skip bloom on mobile — EffectComposer render targets break on iOS/mobile GPUs
-const useBloom = !isMobile;
 debugLog('Post-processing config', { useBloom });
 
 let composer: EffectComposer | null = null;

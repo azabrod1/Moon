@@ -466,7 +466,7 @@ export function createExploreSun(useBloom = true): THREE.Group {
   }
 
   // Point light
-  const light = new THREE.PointLight(0xfff5e0, 3.0, 0, 2);
+  const light = new THREE.PointLight(0xfff5e0, 2, 0, 0.5);
   group.add(light);
 
   group.userData.sunMaterial = sunMat;

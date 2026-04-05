@@ -34,9 +34,9 @@ export class PlayerShip {
   constructor() {
     this.group = new THREE.Group();
 
-    // The player is a small moon-like sphere
+    // The player ship is scaled to the size of Earth's Moon
     const moonRadiusAU = 1737.4 / 149_597_870.7; // Moon radius in AU
-    const geo = new THREE.SphereGeometry(moonRadiusAU * 50, 16, 8); // 50x larger for visibility
+    const geo = new THREE.SphereGeometry(moonRadiusAU, 16, 8);
     const mat = new THREE.MeshStandardMaterial({
       color: 0xaaaaaa,
       roughness: 0.9,
@@ -45,16 +45,6 @@ export class PlayerShip {
     this.mesh = new THREE.Mesh(geo, mat);
     this.group.add(this.mesh);
 
-    // Add a subtle glow around the player for visibility
-    const glowGeo = new THREE.SphereGeometry(moonRadiusAU * 100, 16, 8);
-    const glowMat = new THREE.MeshBasicMaterial({
-      color: 0x6688ff,
-      transparent: true,
-      opacity: 0.15,
-      side: THREE.BackSide,
-      depthWrite: false,
-    });
-    this.group.add(new THREE.Mesh(glowGeo, glowMat));
   }
 
   get speedAUPerS(): number {

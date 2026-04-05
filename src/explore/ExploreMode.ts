@@ -136,7 +136,9 @@ export class ExploreMode {
         this.pointTowardMercury();
       }
     } else {
+      this.restoreState(createDefaultState());
       this.pointTowardMercury();
+      this.showIntroText();
     }
 
     // Configure camera
@@ -411,6 +413,20 @@ export class ExploreMode {
     }
   }
 
+  private showIntroText() {
+    const el = document.getElementById('explore-intro');
+    if (!el) return;
+    el.classList.add('visible');
+    const dismiss = () => {
+      el.classList.remove('visible');
+      el.removeEventListener('click', dismiss);
+      window.removeEventListener('keydown', dismiss);
+    };
+    el.addEventListener('click', dismiss);
+    window.addEventListener('keydown', dismiss, { once: true });
+    setTimeout(dismiss, 12000);
+  }
+
   private showNotification(text: string) {
     if (!this.notificationEl) return;
     this.notificationEl.textContent = text;
@@ -534,6 +550,7 @@ export class ExploreMode {
     return new Promise((resolve) => {
       const prompt = document.getElementById('explore-resume-prompt');
       if (!prompt) { resolve(true); return; }
+      const uiOverlay = document.getElementById('ui-overlay');
 
       const saved = this.saveManager.loadState();
       if (saved) {
@@ -544,6 +561,7 @@ export class ExploreMode {
         }
       }
 
+      uiOverlay?.classList.add('resume-active');
       prompt.classList.add('visible');
 
       const resumeBtn = document.getElementById('resume-btn-continue');
@@ -551,6 +569,7 @@ export class ExploreMode {
 
       const cleanup = () => {
         prompt.classList.remove('visible');
+        uiOverlay?.classList.remove('resume-active');
         resumeBtn?.removeEventListener('click', onResume);
         newBtn?.removeEventListener('click', onNew);
       };
@@ -566,7 +585,16 @@ export class ExploreMode {
     const mercuryPos = this.planetWorldPositions.get('Mercury');
     if (mercuryPos) {
       this.player.headToward(mercuryPos.x, mercuryPos.z);
+      this.resetCruiseCamera();
     }
+  }
+
+  private resetCruiseCamera() {
+    const camDist = 0.0002;
+    const behindX = -Math.cos(this.player.heading) * camDist;
+    const behindZ = -Math.sin(this.player.heading) * camDist;
+    this.camera.position.set(behindX, camDist * 0.45, behindZ);
+    this.controls.target.set(0, 0, 0);
   }
 
   jumpToPlanet(planet: PlanetData) {
@@ -587,10 +615,8 @@ export class ExploreMode {
 
     this.showNotification(`Jumped to ${planet.name}`);
 
-    // Reset camera to look at the planet from behind the player
-    const camDist = viewDist * 0.3;
-    this.camera.position.set(-camDist, camDist * 0.5, camDist * 0.3);
-    this.controls.target.set(0, 0, 0);
+    // Reset camera to cruise position (behind player, looking toward planet)
+    this.resetCruiseCamera();
   }
 
   manualSave() {
@@ -625,6 +651,8 @@ export class ExploreMode {
       const chip = document.getElementById(`jump-${name.toLowerCase()}`);
       if (chip) chip.classList.add('visited');
     }
+
+    this.resetCruiseCamera();
   }
 
   private createExploreStarfield(): THREE.Points {

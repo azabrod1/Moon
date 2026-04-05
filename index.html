@@ -4,6 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no" />
   <title>Moon — Orbital Simulator</title>
+  <link rel="icon" href="data:," />
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600&display=swap" rel="stylesheet" />
@@ -38,6 +39,7 @@
       font-family: var(--font);
       color: #fff;
     }
+    #ui-overlay.resume-active { z-index: 70; }
 
     /* ============================================= */
     /* TOP BAR                                       */
@@ -477,6 +479,35 @@
     .explore-sm-btn:hover { background: var(--accent-dim); color: var(--text-secondary); }
 
     /* Notification */
+    #explore-intro {
+      display: none;
+      position: fixed;
+      bottom: 120px;
+      left: 50%;
+      transform: translateX(-50%);
+      background: rgba(2, 6, 20, 0.85);
+      backdrop-filter: blur(12px);
+      border: 1px solid rgba(91, 140, 255, 0.2);
+      border-radius: 10px;
+      padding: 16px 28px;
+      text-align: center;
+      pointer-events: auto;
+      color: var(--text-primary);
+      font-family: var(--font);
+      font-size: 13px;
+      line-height: 1.6;
+      max-width: 360px;
+      cursor: pointer;
+      z-index: 30;
+    }
+    #explore-intro.visible { display: block; }
+    #explore-intro .intro-dismiss {
+      display: block;
+      margin-top: 8px;
+      font-size: 9px;
+      color: var(--text-dim);
+    }
+
     #explore-notification {
       position: fixed;
       top: 88px;
@@ -535,10 +566,11 @@
       display: none;
       position: fixed;
       top: 0; left: 0; right: 0; bottom: 0;
-      z-index: 30;
+      z-index: 60;
       background: rgba(2, 2, 6, 0.85);
       align-items: center;
       justify-content: center;
+      pointer-events: auto;
     }
     #explore-resume-prompt.visible { display: flex; }
     .resume-dialog {
@@ -923,6 +955,10 @@
         </div>
       </div>
 
+      <div id="explore-intro">
+        <p>Your ship is scaled to the size of Earth's Moon.<br>Distances and planet sizes are to scale.</p>
+        <span class="intro-dismiss">Click or press any key to dismiss</span>
+      </div>
       <div id="explore-notification"></div>
       <div id="explore-loading-msg" style="position:absolute;bottom:50%;left:50%;transform:translate(-50%,50%);font-size:13px;color:var(--text-dim);letter-spacing:2px;display:none;"></div>
     </div>

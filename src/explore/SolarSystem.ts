@@ -96,7 +96,7 @@ export async function createSolarSystem(
   // Get reference to it for the return object
   const sunLight = sun.children.find(c => c instanceof THREE.PointLight) as THREE.PointLight;
 
-  const ambientLight = new THREE.AmbientLight(0x111122, 0.08);
+  const ambientLight = new THREE.AmbientLight(0x334466, 0.4);
 
   onProgress?.('Creating planets...');
   const planets: PlanetMesh[] = [];

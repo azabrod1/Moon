@@ -20,6 +20,8 @@ import { debugError, debugLog, debugWarn } from './utils/debug';
 type AppMode = 'simulator' | 'explore';
 let appMode: AppMode = 'simulator';
 let exploreMode: ExploreMode | null = null;
+let simMoonRef: Moon | null = null;
+let simSunRef: Sun | null = null;
 
 // ================================================================
 // Simulator State
@@ -108,7 +110,7 @@ function canGPUDoBloom(): boolean {
   }
 }
 
-const useBloom = canGPUDoBloom();
+const useBloom = !isMobile && canGPUDoBloom();
 
 try {
   const gl = renderer.getContext();
@@ -139,7 +141,7 @@ simControls.target.set(0, 0, 0);
 
 // --- Explore camera ---
 const exploreCamera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.000001, 200);
-exploreCamera.position.set(-0.005, 0.003, 0.003);
+exploreCamera.position.set(-0.0002, 0.0001, 0.0001);
 
 // Active camera reference
 let camera = simCamera;
@@ -417,10 +419,51 @@ function animateCamera(targetPos: THREE.Vector3, targetLook: THREE.Vector3) {
   requestAnimationFrame(step);
 }
 
-document.getElementById('view-default')!.addEventListener('click', () => animateCamera(new THREE.Vector3(15, 12, 25), new THREE.Vector3(0, 0, 0)));
-document.getElementById('view-top')!.addEventListener('click', () => animateCamera(new THREE.Vector3(0, 40, 0), new THREE.Vector3(0, 0, 0)));
-document.getElementById('view-earth')!.addEventListener('click', () => animateCamera(new THREE.Vector3(0, 0.5, 3), new THREE.Vector3(0, 0, 0)));
-document.getElementById('view-side')!.addEventListener('click', () => animateCamera(new THREE.Vector3(35, 0, 0), new THREE.Vector3(0, 0, 0)));
+function getSunDirForCamera(): THREE.Vector3 {
+  if (simSunRef) {
+    return simSunRef.group.position.clone().normalize();
+  }
+  return new THREE.Vector3(1, 0, 0);
+}
+
+function getMoonDirForCamera(): THREE.Vector3 {
+  if (simMoonRef) {
+    return simMoonRef.getWorldPosition().normalize();
+  }
+  return new THREE.Vector3(1, 0, 0);
+}
+
+function animateOverviewCamera() {
+  const sunDir = getSunDirForCamera();
+  const pos = sunDir.clone().multiplyScalar(-70).add(new THREE.Vector3(0, 28, 0));
+  animateCamera(pos, new THREE.Vector3(0, 0, 0));
+}
+
+function animateTopDownCamera() {
+  animateCamera(new THREE.Vector3(0, 160, 0.001), new THREE.Vector3(0, 0, 0));
+}
+
+function animateEarthObserverCamera() {
+  const phase = computePhaseInfo(state.moonAngle, state.sunAngle, state.nodeAngle);
+  const targetDir = phase.phaseAngle < 90 ? getSunDirForCamera() : getMoonDirForCamera();
+  // Use a near-geocentric viewpoint so eclipse alignments are judged by orbital geometry,
+  // not by an arbitrary surface location's parallax.
+  const camPos = targetDir.clone().multiplyScalar(SCENE.EARTH_RADIUS * 0.02);
+  const lookAt = targetDir.clone().multiplyScalar(SCENE.EARTH_SUN_DIST);
+  animateCamera(camPos, lookAt);
+}
+
+function animateSideCamera() {
+  const sunDir = getSunDirForCamera();
+  const sideDir = new THREE.Vector3(-sunDir.z, 0, sunDir.x).normalize();
+  const pos = sideDir.multiplyScalar(140).add(new THREE.Vector3(0, 18, 0));
+  animateCamera(pos, new THREE.Vector3(0, 0, 0));
+}
+
+document.getElementById('view-default')!.addEventListener('click', animateOverviewCamera);
+document.getElementById('view-top')!.addEventListener('click', animateTopDownCamera);
+document.getElementById('view-earth')!.addEventListener('click', animateEarthObserverCamera);
+document.getElementById('view-side')!.addEventListener('click', animateSideCamera);
 
 // ================================================================
 // Mode toggle (Custom vs Date)
@@ -542,6 +585,9 @@ async function switchAppMode(newMode: AppMode) {
     const toggle = document.getElementById('btn-toggle-panel');
     if (toggle) toggle.style.display = 'none';
 
+    // Ensure black background for space
+    scene.background = new THREE.Color(0x000000);
+
     // Switch camera
     camera = exploreCamera;
     rebuildComposer(exploreCamera);
@@ -606,6 +652,12 @@ function sleep(ms: number): Promise<void> {
   return new Promise(r => setTimeout(r, ms));
 }
 
+function getAutoMode(): AppMode | null {
+  const params = new URLSearchParams(window.location.search);
+  const auto = params.get('auto');
+  return auto === 'explore' || auto === 'simulator' ? auto : null;
+}
+
 // ================================================================
 // Main init
 // ================================================================
@@ -625,10 +677,12 @@ async function init() {
   simObjects.push(earth.group);
 
   const moon = new Moon(textures);
+  simMoonRef = moon;
   scene.add(moon.orbitGroup);
   simObjects.push(moon.orbitGroup);
 
   const sun = new Sun(useBloom);
+  simSunRef = sun;
   scene.add(sun.group);
   simObjects.push(sun.group);
 
@@ -682,6 +736,8 @@ async function init() {
       sun.setPosition(state.sunAngle);
       sun.update(dt);
       moon.setOrbitalPosition(state.moonAngle, state.nodeAngle);
+      const phase = computePhaseInfo(state.moonAngle, state.sunAngle, state.nodeAngle);
+      moon.setEclipseAppearance(phase.eclipseType, phase.eclipseQuality);
       const sunDir = sun.getDirection();
       earth.update(dt, sunDir);
       moonOrbitLine.rotation.y = state.nodeAngle * DEG2RAD;
@@ -699,6 +755,12 @@ async function init() {
 
   animate();
   debugLog('Animation loop started');
+
+  const autoMode = getAutoMode();
+  if (autoMode) {
+    debugLog('Auto mode requested', { autoMode });
+    void switchAppMode(autoMode);
+  }
 }
 
 // ================================================================

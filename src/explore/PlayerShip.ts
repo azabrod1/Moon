@@ -82,8 +82,8 @@ export class PlayerShip {
     const stripeGeo = new THREE.TorusGeometry(R * 1.005, R * 0.04, 8, 24);
     const stripeMat = new THREE.MeshStandardMaterial({
       color: 0x2266cc,
-      emissive: 0x1144aa,
-      emissiveIntensity: 0.4,
+      emissive: 0x0a1133,
+      emissiveIntensity: 0.15,
       roughness: 0.2,
       metalness: 0.8,
     });
@@ -102,12 +102,12 @@ export class PlayerShip {
     const canopyGeo = new THREE.SphereGeometry(R * 0.38, 16, 12, 0, Math.PI * 2, 0, Math.PI * 0.55);
     const canopyMat = new THREE.MeshPhysicalMaterial({
       color: 0x88ddff,
-      emissive: 0x2288bb,
-      emissiveIntensity: 0.5,
+      emissive: 0x112233,
+      emissiveIntensity: 0.2,
       roughness: 0.05,
       metalness: 0.1,
       transparent: true,
-      opacity: 0.85,
+      opacity: 0.75,
       clearcoat: 1.0,
       clearcoatRoughness: 0.05,
     });
@@ -128,11 +128,11 @@ export class PlayerShip {
     hull.add(bell);
 
     // Inner engine glow ring
-    const glowRingGeo = new THREE.TorusGeometry(R * 0.3, R * 0.06, 8, 16);
+    const glowRingGeo = new THREE.TorusGeometry(R * 0.3, R * 0.04, 8, 16);
     const glowRingMat = new THREE.MeshBasicMaterial({
-      color: 0xff6633,
+      color: 0x884422,
       transparent: true,
-      opacity: 0.6,
+      opacity: 0.25,
     });
     const glowRing = new THREE.Mesh(glowRingGeo, glowRingMat);
     glowRing.position.y = -L * 0.52;
@@ -147,39 +147,38 @@ export class PlayerShip {
     }
 
     // ── Exhaust plume (layered) ──
-    // Outer glow (wide, dim)
-    const outerGeo = new THREE.ConeGeometry(R * 0.9, L * 0.8, 12);
+    // Outer glow (wide, subtle)
+    const outerGeo = new THREE.ConeGeometry(R * 0.6, L * 0.5, 12);
     const outerMat = new THREE.MeshBasicMaterial({
-      color: 0x3366ff,
+      color: 0x223366,
       transparent: true,
-      opacity: 0.15,
-      side: THREE.DoubleSide,
+      opacity: 0.06,
     });
     this.exhaustCone = new THREE.Mesh(outerGeo, outerMat);
     this.exhaustCone.position.y = -L * 1.3;
     this.exhaustCone.rotation.x = Math.PI;
 
-    // Inner core (narrow, bright)
-    const coreGeo = new THREE.ConeGeometry(R * 0.3, L * 0.9, 8);
+    // Inner core (narrow, moderate)
+    const coreGeo = new THREE.ConeGeometry(R * 0.15, L * 0.5, 8);
     const coreMat = new THREE.MeshBasicMaterial({
-      color: 0xaaccff,
+      color: 0x6688bb,
       transparent: true,
-      opacity: 0.6,
+      opacity: 0.3,
     });
     this.exhaustCore = new THREE.Mesh(coreGeo, coreMat);
     this.exhaustCore.position.y = -L * 1.35;
     this.exhaustCore.rotation.x = Math.PI;
 
-    // Engine light
-    this.exhaustLight = new THREE.PointLight(0x4488ff, 0.6, L * 10);
+    // Engine light (subtle)
+    this.exhaustLight = new THREE.PointLight(0x334466, 0.15, L * 4);
     this.exhaustLight.position.y = -L * 0.7;
 
     // ── Nose tip accent ──
     const noseTipGeo = new THREE.SphereGeometry(R * 0.08, 8, 8);
     const noseTipMat = new THREE.MeshStandardMaterial({
-      color: 0xff3300,
-      emissive: 0xff2200,
-      emissiveIntensity: 0.8,
+      color: 0xcc2200,
+      emissive: 0x551100,
+      emissiveIntensity: 0.3,
       roughness: 0.3,
       metalness: 0.5,
     });
@@ -265,26 +264,26 @@ export class PlayerShip {
     this.exhaustLight.visible = exhaustOn;
 
     if (exhaustOn) {
-      const pulse = 0.92 + 0.08 * Math.sin(this.exhaustTime * 12);
-      const intensity = 0.3 + speedFrac * 0.7;
+      const pulse = 0.95 + 0.05 * Math.sin(this.exhaustTime * 10);
+      const intensity = 0.2 + speedFrac * 0.4;
 
-      // Outer plume — scales with speed, pulses slightly
-      (this.exhaustCone.material as THREE.MeshBasicMaterial).opacity = intensity * 0.2 * pulse;
+      // Outer plume — subtle haze
+      (this.exhaustCone.material as THREE.MeshBasicMaterial).opacity = intensity * 0.1 * pulse;
       this.exhaustCone.scale.set(
-        (0.6 + speedFrac * 0.6) * pulse,
-        0.5 + speedFrac * 1.2,
-        (0.6 + speedFrac * 0.6) * pulse,
+        (0.5 + speedFrac * 0.4) * pulse,
+        0.4 + speedFrac * 0.8,
+        (0.5 + speedFrac * 0.4) * pulse,
       );
 
-      // Inner core — brighter, longer at high speed
-      (this.exhaustCore.material as THREE.MeshBasicMaterial).opacity = intensity * 0.7;
+      // Inner core — moderate glow
+      (this.exhaustCore.material as THREE.MeshBasicMaterial).opacity = intensity * 0.35;
       this.exhaustCore.scale.set(
-        0.7 + speedFrac * 0.3,
-        0.4 + speedFrac * 1.5,
-        0.7 + speedFrac * 0.3,
+        0.6 + speedFrac * 0.3,
+        0.3 + speedFrac * 1.0,
+        0.6 + speedFrac * 0.3,
       );
 
-      this.exhaustLight.intensity = intensity * pulse;
+      this.exhaustLight.intensity = intensity * 0.3 * pulse;
     }
 
     if (!this.moving) return;

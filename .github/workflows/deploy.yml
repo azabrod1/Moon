@@ -23,7 +23,7 @@ jobs:
           node-version: 20
           cache: npm
       - run: npm ci
-      - run: npx vite build --base=/moon/
+      - run: npx vite build --base=/Moon/
       - uses: actions/upload-pages-artifact@v3
         with:
           path: dist

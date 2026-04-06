@@ -31,7 +31,7 @@ export function createDefaultState(): ExploreState {
     autopilot: true,
     layoutMode: 'aligned',
     simDate: Date.now(),
-    planetScale: 12,
+    planetScale: 16,
     showShip: true,
   };
 }

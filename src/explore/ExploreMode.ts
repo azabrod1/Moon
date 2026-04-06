@@ -47,7 +47,7 @@ export class ExploreMode {
   private simDate: Date = new Date();
 
   // Planet visual scale multiplier (real scale = 1, default 5x for visibility)
-  private planetScale = 12;
+  private planetScale = 16;
 
   // Show player ship mesh for size comparison
   private showShip = true;
@@ -146,7 +146,7 @@ export class ExploreMode {
           this.moonLabelContainer = document.createElement('div');
           this.moonLabelContainer.id = 'moon-labels';
           this.moonLabelContainer.style.cssText =
-            'position:fixed;top:0;left:0;right:0;bottom:0;pointer-events:none;z-index:14;overflow:hidden;';
+            'position:fixed;top:0;left:0;right:0;bottom:0;pointer-events:none;z-index:14;overflow:visible;';
           document.body.appendChild(this.moonLabelContainer);
         }
         // Create HTML labels for each moon
@@ -391,16 +391,23 @@ export class ExploreMode {
             m.mesh.scale.setScalar(1);
           }
 
-          // Update moon label position
+          // Update moon label position — clamp to screen edges
           if (label) {
             m.mesh.getWorldPosition(tempV);
             tempV.project(this.camera);
             if (tempV.z < 1) {
-              const sx = (tempV.x * 0.5 + 0.5) * canvasW;
-              const sy = (-tempV.y * 0.5 + 0.5) * canvasH;
+              let sx = (tempV.x * 0.5 + 0.5) * canvasW;
+              let sy = (-tempV.y * 0.5 + 0.5) * canvasH;
+              const margin = 30;
+              const onScreen = sx >= margin && sx <= canvasW - margin &&
+                               sy >= margin && sy <= canvasH - margin;
+              // Clamp to screen edges
+              sx = Math.max(margin, Math.min(canvasW - margin, sx));
+              sy = Math.max(margin, Math.min(canvasH - margin, sy));
               label.style.display = 'block';
               label.style.left = `${sx}px`;
               label.style.top = `${sy}px`;
+              label.classList.toggle('edge', !onScreen);
             } else {
               label.style.display = 'none';
             }

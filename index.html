@@ -635,11 +635,15 @@
       margin-top: -6px;
       font-size: 9px;
       font-weight: 400;
-      color: var(--text-dim);
-      text-shadow: 0 0 4px rgba(0,0,0,0.9);
+      color: rgba(200, 210, 230, 0.85);
+      text-shadow: 0 0 4px rgba(0,0,0,0.9), 0 0 8px rgba(100,140,255,0.3);
       white-space: nowrap;
       pointer-events: none;
       font-family: var(--font);
+    }
+    .moon-label.edge {
+      opacity: 0.6;
+      font-size: 8px;
     }
 
     /* Touch steer zones (mobile only) */
@@ -1063,8 +1067,8 @@
         <div class="settings-row">
           <span class="settings-label">Planet size</span>
           <div class="settings-scale-row">
-            <input type="range" id="settings-planet-scale" min="1" max="20" value="12" class="settings-slider" />
-            <span id="settings-scale-label">12x</span>
+            <input type="range" id="settings-planet-scale" min="1" max="64" value="16" class="settings-slider" />
+            <span id="settings-scale-label">16x</span>
           </div>
         </div>
         <div class="settings-row">

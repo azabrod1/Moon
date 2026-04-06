@@ -47,7 +47,7 @@ export class ExploreMode {
   private simDate: Date = new Date();
 
   // Planet visual scale multiplier (real scale = 1, default 5x for visibility)
-  private planetScale = 5;
+  private planetScale = 12;
 
   // Show player ship mesh for size comparison
   private showShip = true;
@@ -56,6 +56,10 @@ export class ExploreMode {
   private touchSteer = 0; // -1 left, 0 none, 1 right
   // Touch throttle state: 1 = accelerate, -1 = decelerate, 0 = none
   private touchThrottle = 0;
+
+  // Moon labels
+  private moonLabels = new Map<string, HTMLDivElement>();
+  private moonLabelContainer: HTMLDivElement | null = null;
 
   // UI elements
   private statsEl: HTMLElement | null = null;
@@ -135,6 +139,24 @@ export class ExploreMode {
           for (const m of moons) {
             planet.group.add(m.mesh);
           }
+        }
+
+        // Create moon label container if needed
+        if (!this.moonLabelContainer) {
+          this.moonLabelContainer = document.createElement('div');
+          this.moonLabelContainer.id = 'moon-labels';
+          this.moonLabelContainer.style.cssText =
+            'position:fixed;top:0;left:0;right:0;bottom:0;pointer-events:none;z-index:14;overflow:hidden;';
+          document.body.appendChild(this.moonLabelContainer);
+        }
+        // Create HTML labels for each moon
+        for (const m of moons) {
+          const label = document.createElement('div');
+          label.className = 'moon-label';
+          label.textContent = m.data.name;
+          label.style.display = 'none';
+          this.moonLabelContainer.appendChild(label);
+          this.moonLabels.set(m.data.name, label);
         }
       }
 
@@ -276,17 +298,29 @@ export class ExploreMode {
     // Check planet visits
     this.checkPlanetVisits();
 
-    // Distance-based planet scaling: ramp from 1x (far) to planetScale (close)
-    // Ship always gets full scale; camera distance compensates so ship looks same size
+    // Distance-based planet scaling:
+    //   Close (<0.5 AU): full planetScale
+    //   Mid (0.5–3 AU): ramps down to 0.5x
+    //   Far (>3 AU): 0.5x (smaller + dimmer so distant planets don't dominate)
     for (const planet of this.solarSystem.planets) {
       const wp = planet.group.userData.worldPosAU as { x: number; y: number; z: number };
       const dx = this.player.posX - wp.x;
       const dz = this.player.posZ - wp.z;
       const dist = Math.sqrt(dx * dx + dz * dz);
-      // Ramp: full scale within 0.5 AU, fades to 1x at 3 AU+
+      // t: 1 when close, 0 when far
       const t = 1 - Math.min(1, Math.max(0, (dist - 0.5) / 2.5));
-      const s = 1 + (this.planetScale - 1) * t;
+      // Scale: planetScale when close, 0.5 when far
+      const s = 0.5 + (this.planetScale - 0.5) * t;
       planet.group.scale.setScalar(s);
+
+      // Dim far-away planet atmosphere glows
+      if (planet.atmosphere) {
+        const glowMat = planet.atmosphere.material as THREE.ShaderMaterial;
+        if (glowMat.uniforms?.alphaScale) {
+          // Full glow when close, half when far
+          glowMat.uniforms.alphaScale.value = (0.15 + 0.3 * t);
+        }
+      }
     }
     this.player.group.scale.setScalar(this.planetScale);
 
@@ -312,7 +346,7 @@ export class ExploreMode {
       }
     }
 
-    // Update moons: visibility, scale, and orbital position
+    // Update moons: visibility, scale, and orbital position at real distances
     this.moonTime += dt;
     for (const planet of this.solarSystem.planets) {
       const moons = this.planetMoons.get(planet.data.name);
@@ -324,22 +358,23 @@ export class ExploreMode {
       const dz = this.player.posZ - wp.z;
       const distToPlayer = Math.sqrt(dx * dx + dz * dz);
 
-      // Show moons when within visibility threshold
-      const threshold = Math.max(planet.data.radiusAU * 50, 0.2);
+      // Show moons when close enough to the planet
+      const threshold = Math.max(planet.data.radiusAU * 120, 0.3);
       const visible = distToPlayer < threshold;
 
-      // The planet group is already scaled by planetScale, but moons at real AU
-      // sizes are still microscopic. Give moons an additional visual boost so they're
-      // at least ~15-30% of the parent planet's visual size (proportional to real ratio).
-      // We scale the mesh itself (not position), so orbital radii stay correct.
-      const planetGroupScale = planet.group.scale.x; // current planet scale
-      const parentRadiusAU = planet.data.radiusAU;
+      const parentR = planet.data.radiusAU;
+
+      const canvasW = this.renderer.domElement.clientWidth;
+      const canvasH = this.renderer.domElement.clientHeight;
+      const tempV = new THREE.Vector3();
 
       for (const m of moons) {
+        const label = this.moonLabels.get(m.data.name);
         m.mesh.visible = visible;
         if (visible) {
-          // Orbit around parent planet center (which is at group origin)
           const angle = (this.moonTime / (m.data.orbitalPeriodDays * 86400)) * Math.PI * 2;
+
+          // Real orbital radius — no compression
           const r = m.data.orbitalRadiusAU;
           m.mesh.position.set(
             r * Math.cos(angle),
@@ -347,14 +382,31 @@ export class ExploreMode {
             r * Math.sin(angle),
           );
 
-          // Scale up moon mesh so it's visible relative to parent planet.
-          // Real ratio is m.radiusAU/parentRadiusAU. We want the visual ratio to be
-          // at least ~0.1 (10% of planet), clamped so Earth's Moon isn't absurdly big.
-          const realRatio = m.data.radiusAU / parentRadiusAU;
-          const targetRatio = Math.max(realRatio, 0.08);
-          // How much to scale the mesh: targetRatio / realRatio
-          const moonBoost = targetRatio / realRatio;
-          m.mesh.scale.setScalar(moonBoost);
+          // Ensure tiny moons are at least a visible dot: minimum 5% of parent radius
+          const realRatio = m.data.radiusAU / parentR;
+          const minRatio = 0.05;
+          if (realRatio < minRatio) {
+            m.mesh.scale.setScalar(minRatio / realRatio);
+          } else {
+            m.mesh.scale.setScalar(1);
+          }
+
+          // Update moon label position
+          if (label) {
+            m.mesh.getWorldPosition(tempV);
+            tempV.project(this.camera);
+            if (tempV.z < 1) {
+              const sx = (tempV.x * 0.5 + 0.5) * canvasW;
+              const sy = (-tempV.y * 0.5 + 0.5) * canvasH;
+              label.style.display = 'block';
+              label.style.left = `${sx}px`;
+              label.style.top = `${sy}px`;
+            } else {
+              label.style.display = 'none';
+            }
+          }
+        } else if (label) {
+          label.style.display = 'none';
         }
       }
     }
@@ -1016,6 +1068,11 @@ export class ExploreMode {
     if (this.markers) {
       this.markers.dispose();
       this.markers = null;
+    }
+    if (this.moonLabelContainer) {
+      this.moonLabelContainer.remove();
+      this.moonLabelContainer = null;
+      this.moonLabels.clear();
     }
     // Clean up Three.js objects from scene
     if (this.solarSystem) {

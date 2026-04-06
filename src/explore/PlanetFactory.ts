@@ -534,8 +534,10 @@ export function createMoonMeshes(planetName: string): MoonMesh[] {
 
     const mat = new THREE.MeshStandardMaterial({
       map: texture,
-      roughness: 0.95,
-      metalness: 0.0,
+      roughness: 0.85,
+      metalness: 0.05,
+      emissive: new THREE.Color(moonData.color),
+      emissiveIntensity: 0.15,
     });
 
     const mesh = new THREE.Mesh(geo, mat);

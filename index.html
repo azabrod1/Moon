@@ -644,8 +644,44 @@
     .touch-steer-left { left: 0; background: linear-gradient(90deg, rgba(91,140,255,0.08) 0%, transparent 100%); }
     .touch-steer-right { right: 0; background: linear-gradient(-90deg, rgba(91,140,255,0.08) 0%, transparent 100%); }
 
+    /* Touch throttle buttons (mobile only) */
+    .touch-throttle-group {
+      display: none;
+      position: absolute;
+      right: 12px;
+      top: 50%;
+      transform: translateY(-50%);
+      flex-direction: column;
+      gap: 8px;
+      z-index: 14;
+      pointer-events: auto;
+    }
+    .touch-throttle-btn {
+      width: 52px;
+      height: 52px;
+      border-radius: 50%;
+      border: 1.5px solid var(--panel-border);
+      background: var(--panel-bg);
+      backdrop-filter: blur(8px);
+      color: var(--text-secondary);
+      font-size: 18px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      cursor: pointer;
+      transition: all 0.12s;
+      -webkit-tap-highlight-color: transparent;
+      touch-action: manipulation;
+    }
+    .touch-throttle-btn:active, .touch-throttle-btn.active {
+      background: rgba(91, 140, 255, 0.2);
+      color: var(--accent);
+      border-color: var(--accent);
+    }
+
     @media (hover: none) and (pointer: coarse) {
       .touch-steer-zone { display: block; }
+      .touch-throttle-group { display: flex; }
       #explore-keys-hint { display: none; }
     }
 
@@ -1054,12 +1090,18 @@
       </div>
 
       <div id="explore-keys-hint">
-        <kbd>A</kbd><kbd>D</kbd> steer &nbsp; <kbd>W</kbd><kbd>S</kbd> speed &nbsp; <kbd>Space</kbd> pause &nbsp; <kbd>P</kbd> autopilot
+        <kbd>A</kbd><kbd>D</kbd> steer &nbsp; <kbd>W</kbd><kbd>S</kbd> thrust &nbsp; <kbd>Space</kbd> pause &nbsp; <kbd>P</kbd> autopilot
       </div>
 
       <!-- Touch steer zones (mobile only) -->
       <div id="touch-steer-left" class="touch-steer-zone touch-steer-left"></div>
       <div id="touch-steer-right" class="touch-steer-zone touch-steer-right"></div>
+
+      <!-- Touch throttle buttons (mobile only) -->
+      <div id="touch-throttle" class="touch-throttle-group">
+        <button id="touch-accel" class="touch-throttle-btn touch-accel">&#x25B2;</button>
+        <button id="touch-decel" class="touch-throttle-btn touch-decel">&#x25BC;</button>
+      </div>
 
       <div id="explore-resume-prompt">
         <div class="resume-dialog">

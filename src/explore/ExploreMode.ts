@@ -54,6 +54,8 @@ export class ExploreMode {
 
   // Touch steer state
   private touchSteer = 0; // -1 left, 0 none, 1 right
+  // Touch throttle state: 1 = accelerate, -1 = decelerate, 0 = none
+  private touchThrottle = 0;
 
   // UI elements
   private statsEl: HTMLElement | null = null;
@@ -229,7 +231,7 @@ export class ExploreMode {
       for (const p of this.solarSystem.planets) p.group.visible = visible;
       for (const o of this.solarSystem.orbitLines) o.visible = visible;
     }
-    this.player.group.visible = visible;
+    this.player.group.visible = visible && this.showShip;
     if (this.starfield) this.starfield.visible = visible;
   }
 
@@ -408,19 +410,24 @@ export class ExploreMode {
     if (this.touchSteer !== 0) steer = this.touchSteer;
     this.player.steerInput = steer;
 
-    // Speed adjustment with up/down
-    if (this.keys.has('arrowup') || this.keys.has('w')) {
-      this.player.speedMultiplier = Math.min(
-        this.player.speedMultiplier * 1.01,
-        PlayerShip.SPEED_MAX,
-      );
+    // Throttle (keyboard + touch)
+    let throttle = 0;
+    if (this.keys.has('arrowup') || this.keys.has('w')) throttle = 1;
+    if (this.keys.has('arrowdown') || this.keys.has('s')) throttle = -1;
+    if (this.touchThrottle !== 0) throttle = this.touchThrottle;
+
+    if (throttle > 0) {
+      // Accelerate — use additive at low speeds for responsiveness from zero
+      if (this.player.speedMultiplier < 0.05) {
+        this.player.speedMultiplier = Math.min(this.player.speedMultiplier + 0.002, PlayerShip.SPEED_MAX);
+      } else {
+        this.player.speedMultiplier = Math.min(this.player.speedMultiplier * 1.01, PlayerShip.SPEED_MAX);
+      }
       this.updateSpeedSlider();
     }
-    if (this.keys.has('arrowdown') || this.keys.has('s')) {
-      this.player.speedMultiplier = Math.max(
-        this.player.speedMultiplier * 0.99,
-        PlayerShip.SPEED_MIN,
-      );
+    if (throttle < 0) {
+      // Decelerate — multiplicative, clamp to zero
+      this.player.speedMultiplier = Math.max(this.player.speedMultiplier * 0.99 - 0.001, 0);
       this.updateSpeedSlider();
     }
   }
@@ -566,13 +573,20 @@ export class ExploreMode {
 
   private updateSpeedSlider() {
     if (this.speedSliderEl) {
-      // Map speed multiplier to slider (logarithmic)
-      const logVal = Math.log(this.player.speedMultiplier / PlayerShip.SPEED_MIN) /
-                     Math.log(PlayerShip.SPEED_MAX / PlayerShip.SPEED_MIN);
-      this.speedSliderEl.value = String(logVal * 100);
+      // Map speed multiplier to slider (logarithmic, with 0 at far left)
+      if (this.player.speedMultiplier <= 0.01) {
+        this.speedSliderEl.value = '0';
+      } else {
+        const minLog = 0.05; // minimum for log scale
+        const logVal = Math.log(Math.max(this.player.speedMultiplier, minLog) / minLog) /
+                       Math.log(PlayerShip.SPEED_MAX / minLog);
+        this.speedSliderEl.value = String(logVal * 100);
+      }
     }
     if (this.speedValueEl) {
-      this.speedValueEl.textContent = `${this.player.speedC.toFixed(1)}c`;
+      this.speedValueEl.textContent = this.player.speedMultiplier < 0.01
+        ? '0c'
+        : `${this.player.speedC.toFixed(1)}c`;
     }
   }
 
@@ -582,11 +596,17 @@ export class ExploreMode {
     if (speedSlider) {
       speedSlider.addEventListener('input', () => {
         const t = parseFloat(speedSlider.value) / 100;
-        // Logarithmic mapping
-        this.player.speedMultiplier = PlayerShip.SPEED_MIN *
-          Math.pow(PlayerShip.SPEED_MAX / PlayerShip.SPEED_MIN, t);
+        if (t < 0.01) {
+          this.player.speedMultiplier = 0;
+        } else {
+          // Logarithmic mapping
+          const minLog = 0.05;
+          this.player.speedMultiplier = minLog * Math.pow(PlayerShip.SPEED_MAX / minLog, t);
+        }
         if (this.speedValueEl) {
-          this.speedValueEl.textContent = `${this.player.speedC.toFixed(1)}c`;
+          this.speedValueEl.textContent = this.player.speedMultiplier < 0.01
+            ? '0c'
+            : `${this.player.speedC.toFixed(1)}c`;
         }
       });
     }
@@ -660,7 +680,7 @@ export class ExploreMode {
     // Show ship toggle
     document.getElementById('settings-ship-toggle')?.addEventListener('click', () => {
       this.showShip = !this.showShip;
-      this.player.mesh.visible = this.showShip;
+      this.player.group.visible = this.showShip;
       const label = document.getElementById('settings-ship-label');
       if (label) label.textContent = this.showShip ? 'On' : 'Off';
     });
@@ -677,6 +697,20 @@ export class ExploreMode {
       touchRight.addEventListener('touchstart', (e) => { e.preventDefault(); this.touchSteer = 1; touchRight.classList.add('active'); }, { passive: false });
       touchRight.addEventListener('touchend', () => { this.touchSteer = 0; touchRight.classList.remove('active'); });
       touchRight.addEventListener('touchcancel', () => { this.touchSteer = 0; touchRight.classList.remove('active'); });
+    }
+
+    // Touch throttle buttons
+    const touchAccel = document.getElementById('touch-accel');
+    const touchDecel = document.getElementById('touch-decel');
+    if (touchAccel) {
+      touchAccel.addEventListener('touchstart', (e) => { e.preventDefault(); this.touchThrottle = 1; touchAccel.classList.add('active'); }, { passive: false });
+      touchAccel.addEventListener('touchend', () => { this.touchThrottle = 0; touchAccel.classList.remove('active'); });
+      touchAccel.addEventListener('touchcancel', () => { this.touchThrottle = 0; touchAccel.classList.remove('active'); });
+    }
+    if (touchDecel) {
+      touchDecel.addEventListener('touchstart', (e) => { e.preventDefault(); this.touchThrottle = -1; touchDecel.classList.add('active'); }, { passive: false });
+      touchDecel.addEventListener('touchend', () => { this.touchThrottle = 0; touchDecel.classList.remove('active'); });
+      touchDecel.addEventListener('touchcancel', () => { this.touchThrottle = 0; touchDecel.classList.remove('active'); });
     }
   }
 
@@ -791,7 +825,7 @@ export class ExploreMode {
     this.simDate = new Date(saved.simDate);
     this.planetScale = saved.planetScale;
     this.showShip = saved.showShip;
-    this.player.mesh.visible = this.showShip;
+    this.player.group.visible = this.showShip;
 
     // Update UI to reflect state
     const apBtn = document.getElementById('explore-btn-autopilot');
@@ -924,7 +958,20 @@ export class ExploreMode {
     this.autopilot = !this.autopilot;
     const btn = document.getElementById('explore-btn-autopilot');
     if (btn) btn.classList.toggle('active', this.autopilot);
-    this.showNotification(this.autopilot ? 'Autopilot ON' : 'Autopilot OFF — use A/D to steer');
+
+    if (!this.autopilot) {
+      // Manual mode: start at speed 0
+      this.player.speedMultiplier = 0;
+      this.updateSpeedSlider();
+      this.showNotification('Manual — W/S or ▲▼ to thrust, A/D to steer');
+    } else {
+      // Returning to autopilot: restore default speed if stopped
+      if (this.player.speedMultiplier < 0.05) {
+        this.player.speedMultiplier = PlayerShip.SPEED_DEFAULT;
+        this.updateSpeedSlider();
+      }
+      this.showNotification('Autopilot ON');
+    }
   }
 
   rebuildPlanetPositions() {

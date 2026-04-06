@@ -761,6 +761,9 @@ async function init() {
   if (autoMode) {
     debugLog('Auto mode requested', { autoMode });
     void switchAppMode(autoMode);
+  } else {
+    // Default to Planets mode
+    void switchAppMode('explore');
   }
 }
 

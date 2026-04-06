@@ -1,11 +1,12 @@
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
-import { createSolarSystem, type SolarSystemObjects } from './SolarSystem';
+import { createSolarSystem, getPlanetOrbitalPosition, type SolarSystemObjects, type LayoutMode } from './SolarSystem';
 import { PlayerShip } from './PlayerShip';
 import { PlanetMarkers } from './PlanetMarker';
 import { SaveManager, createDefaultState, type ExploreState } from './SaveManager';
 import { computeStats, formatAU, formatETA } from './StatsPanel';
 import { ALL_BODIES, type PlanetData } from './planets/planetData';
+import { createMoonMeshes, type MoonMesh } from './PlanetFactory';
 
 export class ExploreMode {
   private scene: THREE.Scene;
@@ -22,6 +23,12 @@ export class ExploreMode {
   // Planet world positions in AU (true positions, not offset)
   private planetWorldPositions = new Map<string, { x: number; y: number; z: number }>();
 
+  // Planet moons: map from planet name to array of moon meshes
+  private planetMoons = new Map<string, MoonMesh[]>();
+
+  // Elapsed time for moon orbital animation
+  private moonTime = 0;
+
   // Keyboard state
   private keys = new Set<string>();
 
@@ -29,6 +36,21 @@ export class ExploreMode {
   private lastCrossedOrbit: string | null = null;
   private notificationTimeout: number | null = null;
   private uiWired = false;
+
+  // Autopilot: auto-steer toward next planet outward
+  private autopilot = true;
+
+  // Planet layout mode
+  private layoutMode: LayoutMode = 'aligned';
+
+  // Simulation date for realistic mode
+  private simDate: Date = new Date();
+
+  // Planet visual scale multiplier (real scale = 1, default 5x for visibility)
+  private planetScale = 5;
+
+  // Show player ship mesh for size comparison
+  private showShip = true;
 
   // Touch steer state
   private touchSteer = 0; // -1 left, 0 none, 1 right
@@ -89,7 +111,7 @@ export class ExploreMode {
       if (loadingMsg) loadingMsg.style.display = 'block';
       this.solarSystem = await createSolarSystem((msg) => {
         if (loadingMsg) loadingMsg.textContent = msg;
-      }, this.useBloom);
+      }, this.useBloom, this.layoutMode, this.simDate);
       if (loadingMsg) loadingMsg.style.display = 'none';
 
       // Add everything to scene
@@ -103,6 +125,15 @@ export class ExploreMode {
         const pos = planet.group.position;
         planet.group.userData.worldPosAU = { x: pos.x, y: pos.y, z: pos.z };
         this.planetWorldPositions.set(planet.data.name, { x: pos.x, y: pos.y, z: pos.z });
+
+        // Create moons for this planet
+        const moons = createMoonMeshes(planet.data.name);
+        if (moons.length > 0) {
+          this.planetMoons.set(planet.data.name, moons);
+          for (const m of moons) {
+            planet.group.add(m.mesh);
+          }
+        }
       }
 
       for (const orbit of this.solarSystem.orbitLines) {
@@ -208,6 +239,11 @@ export class ExploreMode {
     // Process keyboard input
     this.processInput();
 
+    // Autopilot: steer toward next planet if no manual input
+    if (this.autopilot && this.player.steerInput === 0) {
+      this.applyAutopilot();
+    }
+
     // Update player
     this.player.update(dt);
 
@@ -238,6 +274,20 @@ export class ExploreMode {
     // Check planet visits
     this.checkPlanetVisits();
 
+    // Distance-based planet scaling: ramp from 1x (far) to planetScale (close)
+    // Ship always gets full scale; camera distance compensates so ship looks same size
+    for (const planet of this.solarSystem.planets) {
+      const wp = planet.group.userData.worldPosAU as { x: number; y: number; z: number };
+      const dx = this.player.posX - wp.x;
+      const dz = this.player.posZ - wp.z;
+      const dist = Math.sqrt(dx * dx + dz * dz);
+      // Ramp: full scale within 0.5 AU, fades to 1x at 3 AU+
+      const t = 1 - Math.min(1, Math.max(0, (dist - 0.5) / 2.5));
+      const s = 1 + (this.planetScale - 1) * t;
+      planet.group.scale.setScalar(s);
+    }
+    this.player.group.scale.setScalar(this.planetScale);
+
     // Update planet rotations, clouds, and night lights
     for (const planet of this.solarSystem.planets) {
       if (planet.mesh) {
@@ -257,6 +307,37 @@ export class ExploreMode {
           sunWorldPos.z - planetPos.z,
         ).normalize();
         planet.nightMaterial.uniforms.sunDirection.value.copy(sunDir);
+      }
+    }
+
+    // Update moons: visibility + orbital position
+    this.moonTime += dt;
+    for (const planet of this.solarSystem.planets) {
+      const moons = this.planetMoons.get(planet.data.name);
+      if (!moons || moons.length === 0) continue;
+
+      // Distance from player to planet
+      const wp = planet.group.userData.worldPosAU as { x: number; y: number; z: number };
+      const dx = this.player.posX - wp.x;
+      const dz = this.player.posZ - wp.z;
+      const distToPlayer = Math.sqrt(dx * dx + dz * dz);
+
+      // Show moons when within visibility threshold
+      const threshold = Math.max(planet.data.radiusAU * 30, 0.15);
+      const visible = distToPlayer < threshold;
+
+      for (const m of moons) {
+        m.mesh.visible = visible;
+        if (visible) {
+          // Orbit around parent planet center (which is at group origin)
+          const angle = (this.moonTime / (m.data.orbitalPeriodDays * 86400)) * Math.PI * 2;
+          const r = m.data.orbitalRadiusAU;
+          m.mesh.position.set(
+            r * Math.cos(angle),
+            0,
+            r * Math.sin(angle),
+          );
+        }
       }
     }
 
@@ -356,6 +437,11 @@ export class ExploreMode {
       this.player.moving = !this.player.moving;
       const btn = document.getElementById('explore-btn-pause');
       if (btn) btn.textContent = this.player.moving ? '\u23F8' : '\u25B6';
+    }
+
+    // P toggles autopilot
+    if (e.key.toLowerCase() === 'p') {
+      this.toggleAutopilot();
     }
   }
 
@@ -531,6 +617,54 @@ export class ExploreMode {
       btn?.addEventListener('click', () => this.jumpToPlanet(body));
     }
 
+    // Autopilot toggle
+    document.getElementById('explore-btn-autopilot')?.addEventListener('click', () => {
+      this.toggleAutopilot();
+    });
+
+    // Settings panel toggle
+    document.getElementById('explore-btn-settings')?.addEventListener('click', () => {
+      const panel = document.getElementById('explore-settings-panel');
+      if (panel) panel.classList.toggle('visible');
+    });
+
+    // Planet layout toggle
+    document.getElementById('settings-layout-toggle')?.addEventListener('click', () => {
+      this.toggleLayout();
+    });
+
+    // Date input for realistic mode
+    const dateInput = document.getElementById('settings-date-input') as HTMLInputElement;
+    if (dateInput) {
+      dateInput.value = this.simDate.toISOString().slice(0, 10);
+      dateInput.addEventListener('input', () => {
+        const d = new Date(dateInput.value + 'T12:00:00Z');
+        if (!isNaN(d.getTime())) {
+          this.simDate = d;
+          this.rebuildPlanetPositions();
+        }
+      });
+    }
+
+    // Planet scale slider
+    const scaleSlider = document.getElementById('settings-planet-scale') as HTMLInputElement;
+    if (scaleSlider) {
+      scaleSlider.addEventListener('input', () => {
+        this.planetScale = parseInt(scaleSlider.value, 10);
+        const label = document.getElementById('settings-scale-label');
+        if (label) label.textContent = `${this.planetScale}x`;
+        this.resetCruiseCamera();
+      });
+    }
+
+    // Show ship toggle
+    document.getElementById('settings-ship-toggle')?.addEventListener('click', () => {
+      this.showShip = !this.showShip;
+      this.player.mesh.visible = this.showShip;
+      const label = document.getElementById('settings-ship-label');
+      if (label) label.textContent = this.showShip ? 'On' : 'Off';
+    });
+
     // Touch steer zones
     const touchLeft = document.getElementById('touch-steer-left');
     const touchRight = document.getElementById('touch-steer-right');
@@ -590,7 +724,8 @@ export class ExploreMode {
   }
 
   private resetCruiseCamera() {
-    const camDist = 0.0002;
+    // Scale camera distance with planetScale so ship stays same apparent size
+    const camDist = 0.0002 * this.planetScale;
     const behindX = -Math.cos(this.player.heading) * camDist;
     const behindZ = -Math.sin(this.player.heading) * camDist;
     this.camera.position.set(behindX, camDist * 0.45, behindZ);
@@ -632,6 +767,11 @@ export class ExploreMode {
       distanceTraveled: this.player.distanceTraveled,
       timeElapsed: this.player.timeElapsed,
       timestamp: Date.now(),
+      autopilot: this.autopilot,
+      layoutMode: this.layoutMode,
+      simDate: this.simDate.getTime(),
+      planetScale: this.planetScale,
+      showShip: this.showShip,
     };
   }
 
@@ -644,6 +784,34 @@ export class ExploreMode {
     this.player.distanceTraveled = saved.distanceTraveled;
     this.player.timeElapsed = saved.timeElapsed;
     this.player.visitedPlanets = new Set(saved.visitedPlanets);
+
+    // Restore settings
+    this.autopilot = saved.autopilot;
+    this.layoutMode = saved.layoutMode as LayoutMode;
+    this.simDate = new Date(saved.simDate);
+    this.planetScale = saved.planetScale;
+    this.showShip = saved.showShip;
+    this.player.mesh.visible = this.showShip;
+
+    // Update UI to reflect state
+    const apBtn = document.getElementById('explore-btn-autopilot');
+    if (apBtn) apBtn.classList.toggle('active', this.autopilot);
+    const layoutLabel = document.getElementById('settings-layout-label');
+    if (layoutLabel) layoutLabel.textContent = this.layoutMode === 'aligned' ? 'Lined up' : 'Realistic';
+    const dateRow = document.getElementById('settings-date-row');
+    if (dateRow) dateRow.style.display = this.layoutMode === 'realistic' ? 'flex' : 'none';
+    const dateInput = document.getElementById('settings-date-input') as HTMLInputElement;
+    if (dateInput) dateInput.value = this.simDate.toISOString().slice(0, 10);
+    const scaleSlider = document.getElementById('settings-planet-scale') as HTMLInputElement;
+    if (scaleSlider) scaleSlider.value = String(this.planetScale);
+    const scaleLabel = document.getElementById('settings-scale-label');
+    if (scaleLabel) scaleLabel.textContent = `${this.planetScale}x`;
+    const shipLabel = document.getElementById('settings-ship-label');
+    if (shipLabel) shipLabel.textContent = this.showShip ? 'On' : 'Off';
+
+    // Rebuild planet positions if alignment changed
+    this.rebuildPlanetPositions();
+
     this.updateSpeedSlider();
 
     // Restore visited chip styles
@@ -736,6 +904,48 @@ export class ExploreMode {
     });
 
     return new THREE.Points(geo, mat);
+  }
+
+  private applyAutopilot() {
+    // Find next planet outward in orbital order from player's Sun distance
+    const playerDist = this.player.getDistanceFromSun();
+    for (const body of ALL_BODIES) {
+      if (body.semiMajorAxisAU > playerDist) {
+        const pos = this.planetWorldPositions.get(body.name);
+        if (pos) {
+          this.player.headToward(pos.x, pos.z);
+        }
+        break;
+      }
+    }
+  }
+
+  private toggleAutopilot() {
+    this.autopilot = !this.autopilot;
+    const btn = document.getElementById('explore-btn-autopilot');
+    if (btn) btn.classList.toggle('active', this.autopilot);
+    this.showNotification(this.autopilot ? 'Autopilot ON' : 'Autopilot OFF — use A/D to steer');
+  }
+
+  rebuildPlanetPositions() {
+    if (!this.solarSystem) return;
+    for (let i = 0; i < this.solarSystem.planets.length; i++) {
+      const planet = this.solarSystem.planets[i];
+      const body = ALL_BODIES[i];
+      const pos = getPlanetOrbitalPosition(body, i + 1, this.layoutMode, this.simDate);
+      planet.group.userData.worldPosAU = { x: pos.x, y: pos.y, z: pos.z };
+      this.planetWorldPositions.set(body.name, { x: pos.x, y: pos.y, z: pos.z });
+    }
+  }
+
+  private toggleLayout() {
+    this.layoutMode = this.layoutMode === 'aligned' ? 'realistic' : 'aligned';
+    this.rebuildPlanetPositions();
+    const label = document.getElementById('settings-layout-label');
+    if (label) label.textContent = this.layoutMode === 'aligned' ? 'Lined up' : 'Realistic';
+    const dateRow = document.getElementById('settings-date-row');
+    if (dateRow) dateRow.style.display = this.layoutMode === 'realistic' ? 'flex' : 'none';
+    this.showNotification(this.layoutMode === 'aligned' ? 'Planets lined up' : 'Realistic orbits');
   }
 
   dispose() {

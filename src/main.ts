@@ -566,7 +566,7 @@ async function switchAppMode(newMode: AppMode) {
 
   // Fade to black
   modeTransition.classList.add('active');
-  transitionMsg.textContent = newMode === 'explore' ? 'Entering Solar System...' : 'Returning to Simulator...';
+  transitionMsg.textContent = newMode === 'explore' ? 'Entering Planets...' : 'Returning to Moon...';
   await sleep(400);
 
   if (newMode === 'explore') {

@@ -17,7 +17,9 @@ export const REAL = {
 export const SCENE = {
   EARTH_RADIUS: 1,
   MOON_RADIUS: REAL.MOON_RADIUS / REAL.EARTH_RADIUS,     // ~0.2727
-  SUN_RADIUS: 8,                                           // artistic (real = 109, too big)
+  // Artistic distances are heavily compressed, so bias the apparent Sun slightly smaller
+  // to represent a plausible total-eclipse case in the preset camera views.
+  SUN_RADIUS: (REAL.MOON_RADIUS / REAL.EARTH_RADIUS) * (120 / 20) * 0.98,
   EARTH_MOON_DIST: 20,                                     // artistic (real = 60.3, too far)
   EARTH_SUN_DIST: 120,                                     // artistic (real = 23455, way too far)
   MOON_INCLINATION: (REAL.MOON_INCLINATION_DEG * Math.PI) / 180,

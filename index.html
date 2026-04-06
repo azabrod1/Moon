@@ -418,7 +418,7 @@
       cursor: pointer;
     }
 
-    .speed-label-sm { font-size: 10px; color: var(--text-dim); text-transform: uppercase; letter-spacing: 0.5px; white-space: nowrap; }
+    .speed-label-sm { font-size: 10px; color: var(--text-secondary); text-transform: uppercase; letter-spacing: 0.5px; white-space: nowrap; }
 
     #explore-speed-value {
       font-size: 13px; font-weight: 600; color: var(--text-primary);
@@ -426,12 +426,13 @@
     }
 
     .explore-icon-btn {
-      width: 30px; height: 30px;
+      min-width: 30px; height: 30px;
+      padding: 0 6px;
       border: 1px solid var(--panel-border);
       border-radius: 6px;
       background: rgba(91, 140, 255, 0.04);
       color: var(--text-secondary);
-      font-size: 14px;
+      font-size: 11px;
       cursor: pointer;
       display: flex; align-items: center; justify-content: center;
       transition: all 0.15s;
@@ -477,6 +478,91 @@
       font-family: var(--font);
     }
     .explore-sm-btn:hover { background: var(--accent-dim); color: var(--text-secondary); }
+
+    /* Autopilot button active state */
+    .explore-icon-btn.active {
+      background: rgba(91, 140, 255, 0.15);
+      color: var(--accent);
+      border-color: var(--accent);
+    }
+
+    /* Settings panel */
+    #explore-settings-panel {
+      display: none;
+      position: absolute;
+      top: 44px;
+      right: 12px;
+      background: var(--panel-bg);
+      backdrop-filter: blur(12px);
+      border: 1px solid var(--panel-border);
+      border-radius: 8px;
+      padding: 10px 14px;
+      pointer-events: auto;
+      min-width: 170px;
+    }
+    #explore-settings-panel.visible { display: block; }
+
+    .settings-row {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 12px;
+      padding: 4px 0;
+    }
+    .settings-label {
+      color: var(--text-dim);
+      font-size: 10px;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+    }
+    .settings-scale-row {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+    .settings-slider {
+      width: 80px;
+      -webkit-appearance: none;
+      height: 2px;
+      background: rgba(100, 140, 255, 0.15);
+      border-radius: 1px;
+      outline: none;
+    }
+    .settings-slider::-webkit-slider-thumb {
+      -webkit-appearance: none;
+      width: 10px; height: 10px; border-radius: 50%;
+      background: var(--accent);
+      cursor: pointer;
+    }
+    #settings-scale-label {
+      font-size: 11px;
+      color: var(--text-secondary);
+      min-width: 24px;
+      font-variant-numeric: tabular-nums;
+    }
+    .settings-toggle {
+      padding: 3px 10px;
+      border: 1px solid var(--panel-border);
+      border-radius: 4px;
+      background: rgba(91, 140, 255, 0.06);
+      color: var(--text-secondary);
+      font-size: 11px;
+      cursor: pointer;
+      font-family: var(--font);
+      transition: all 0.15s;
+    }
+    .settings-toggle:hover { background: var(--accent-dim); color: var(--text-primary); }
+    .settings-date {
+      background: rgba(91, 140, 255, 0.06);
+      border: 1px solid var(--panel-border);
+      border-radius: 4px;
+      color: var(--text-secondary);
+      font-size: 11px;
+      font-family: var(--font);
+      padding: 3px 6px;
+      outline: none;
+      color-scheme: dark;
+    }
 
     /* Notification */
     #explore-intro {
@@ -777,8 +863,8 @@
     <div id="top-bar">
       <h1>Moon</h1>
       <div class="top-mode-toggle">
-        <button class="top-mode-btn active" id="btn-mode-simulator">Simulator</button>
-        <button class="top-mode-btn" id="btn-mode-explore">Explorer</button>
+        <button class="top-mode-btn active" id="btn-mode-simulator">Moon</button>
+        <button class="top-mode-btn" id="btn-mode-explore">Planets</button>
       </div>
       <button id="btn-toggle-panel" class="panel-toggle-btn" aria-label="Toggle controls">&#9776;</button>
     </div>
@@ -903,10 +989,38 @@
         <button class="planet-chip" id="jump-pluto"><span class="dot" style="background:#bba88f"></span><span class="chip-name">Pluto</span></button>
       </div>
 
-      <!-- Save/New (top right) -->
+      <!-- Save/Settings/New (top right) -->
       <div id="explore-actions">
         <button class="explore-sm-btn" id="explore-btn-save">Save</button>
+        <button class="explore-sm-btn" id="explore-btn-settings">&#x2699;</button>
         <button class="explore-sm-btn" id="explore-btn-new">New</button>
+      </div>
+
+      <!-- Settings dropdown -->
+      <div id="explore-settings-panel">
+        <div class="settings-row">
+          <span class="settings-label">Planet layout</span>
+          <button class="settings-toggle" id="settings-layout-toggle">
+            <span id="settings-layout-label">Lined up</span>
+          </button>
+        </div>
+        <div class="settings-row" id="settings-date-row" style="display:none">
+          <span class="settings-label">Date</span>
+          <input type="date" id="settings-date-input" class="settings-date" min="2000-01-01" max="2050-12-31" />
+        </div>
+        <div class="settings-row">
+          <span class="settings-label">Planet size</span>
+          <div class="settings-scale-row">
+            <input type="range" id="settings-planet-scale" min="1" max="20" value="5" class="settings-slider" />
+            <span id="settings-scale-label">5x</span>
+          </div>
+        </div>
+        <div class="settings-row">
+          <span class="settings-label">Show ship</span>
+          <button class="settings-toggle" id="settings-ship-toggle">
+            <span id="settings-ship-label">On</span>
+          </button>
+        </div>
       </div>
 
       <!-- Compact stats (bottom right) -->
@@ -927,6 +1041,7 @@
       <div id="explore-speed-bar">
         <div class="speed-row">
           <button class="explore-icon-btn" id="explore-btn-pause">&#x23F8;</button>
+          <button class="explore-icon-btn active" id="explore-btn-autopilot" title="Auto-steers toward the next planet. Turn off to fly freely in any direction. (P)">Auto</button>
           <span class="speed-label-sm">Speed</span>
           <input type="range" id="explore-speed-slider" min="0" max="100" value="33" />
           <span id="explore-speed-value">2.8c</span>
@@ -937,7 +1052,7 @@
       </div>
 
       <div id="explore-keys-hint">
-        <kbd>A</kbd><kbd>D</kbd> steer &nbsp; <kbd>W</kbd><kbd>S</kbd> speed &nbsp; <kbd>Space</kbd> pause
+        <kbd>A</kbd><kbd>D</kbd> steer &nbsp; <kbd>W</kbd><kbd>S</kbd> speed &nbsp; <kbd>Space</kbd> pause &nbsp; <kbd>P</kbd> autopilot
       </div>
 
       <!-- Touch steer zones (mobile only) -->

@@ -32,6 +32,8 @@ export class Earth {
       metalness: 0.1,
     });
     this.mesh = new THREE.Mesh(earthGeo, earthMat);
+    this.mesh.castShadow = true;
+    this.mesh.receiveShadow = true;
     this.group.add(this.mesh);
 
     // Night lights layer (slightly larger to avoid z-fighting)
@@ -60,6 +62,7 @@ export class Earth {
       roughness: 1.0,
     });
     this.cloudsMesh = new THREE.Mesh(cloudsGeo, cloudsMat);
+    this.cloudsMesh.receiveShadow = true;
     this.group.add(this.cloudsMesh);
 
     // Atmosphere glow

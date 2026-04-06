@@ -59,58 +59,58 @@ const ATMOSPHERES: Record<string, AtmosphereConfig> = {
   Venus: {
     color1: [1.0, 0.9, 0.6],
     color2: [0.9, 0.7, 0.3],
-    power: 3.0,
-    intensity: 1.2,
-    scale: 1.08,
-    alpha: 0.5,
+    power: 4.0,
+    intensity: 0.6,
+    scale: 1.06,
+    alpha: 0.25,
   },
   Earth: {
     color1: [0.35, 0.6, 1.0],
     color2: [0.15, 0.35, 0.9],
     power: 5.0,
-    intensity: 0.8,
-    scale: 1.06,
-    alpha: 0.35,
-  },
-  Mars: {
-    color1: [1.0, 0.6, 0.3],
-    color2: [0.8, 0.4, 0.2],
-    power: 6.0,
-    intensity: 0.4,
+    intensity: 0.5,
     scale: 1.04,
     alpha: 0.2,
+  },
+  Mars: {
+    color1: [0.75, 0.55, 0.45],
+    color2: [0.6, 0.4, 0.3],
+    power: 8.0,
+    intensity: 0.2,
+    scale: 1.03,
+    alpha: 0.1,
   },
   Jupiter: {
     color1: [0.9, 0.8, 0.5],
     color2: [0.7, 0.5, 0.3],
-    power: 4.0,
-    intensity: 0.6,
-    scale: 1.03,
-    alpha: 0.25,
+    power: 5.0,
+    intensity: 0.3,
+    scale: 1.02,
+    alpha: 0.12,
   },
   Saturn: {
     color1: [0.9, 0.85, 0.6],
     color2: [0.7, 0.6, 0.4],
-    power: 4.0,
-    intensity: 0.5,
-    scale: 1.03,
-    alpha: 0.2,
+    power: 5.0,
+    intensity: 0.25,
+    scale: 1.02,
+    alpha: 0.1,
   },
   Uranus: {
     color1: [0.5, 0.8, 0.9],
     color2: [0.3, 0.6, 0.8],
-    power: 3.5,
-    intensity: 0.7,
-    scale: 1.05,
-    alpha: 0.3,
+    power: 4.0,
+    intensity: 0.4,
+    scale: 1.04,
+    alpha: 0.18,
   },
   Neptune: {
     color1: [0.2, 0.4, 1.0],
     color2: [0.1, 0.2, 0.8],
-    power: 3.5,
-    intensity: 0.8,
-    scale: 1.05,
-    alpha: 0.35,
+    power: 4.0,
+    intensity: 0.45,
+    scale: 1.04,
+    alpha: 0.2,
   },
 };
 
@@ -471,4 +471,79 @@ export function createExploreSun(useBloom = true): THREE.Group {
 
   group.userData.sunMaterial = sunMat;
   return group;
+}
+
+// ---- Moon meshes ----
+
+import { type MoonData, getMoonsByPlanet } from './planets/moonData';
+
+export interface MoonMesh {
+  mesh: THREE.Mesh;
+  data: MoonData;
+}
+
+function createMoonColorTexture(color: number): THREE.Texture {
+  const canvas = document.createElement('canvas');
+  canvas.width = 128;
+  canvas.height = 64;
+  const ctx = canvas.getContext('2d')!;
+  const c = new THREE.Color(color);
+  const r = Math.floor(c.r * 255);
+  const g = Math.floor(c.g * 255);
+  const b = Math.floor(c.b * 255);
+  ctx.fillStyle = `rgb(${r},${g},${b})`;
+  ctx.fillRect(0, 0, 128, 64);
+  // Add subtle noise for realism
+  const imageData = ctx.getImageData(0, 0, 128, 64);
+  const data = imageData.data;
+  for (let i = 0; i < data.length; i += 4) {
+    const noise = (Math.random() - 0.5) * 20;
+    data[i] = Math.max(0, Math.min(255, data[i] + noise));
+    data[i + 1] = Math.max(0, Math.min(255, data[i + 1] + noise));
+    data[i + 2] = Math.max(0, Math.min(255, data[i + 2] + noise));
+  }
+  ctx.putImageData(imageData, 0, 0);
+  const tex = new THREE.CanvasTexture(canvas);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  return tex;
+}
+
+/**
+ * Create moon meshes for a planet. Moons are added to the planet group
+ * and orbit at their real orbital radius (in AU).
+ */
+export function createMoonMeshes(planetName: string): MoonMesh[] {
+  const moons = getMoonsByPlanet(planetName);
+  const result: MoonMesh[] = [];
+
+  for (const moonData of moons) {
+    const segments = moonData.radiusKm > 500 ? 16 : 8;
+    const geo = new THREE.SphereGeometry(moonData.radiusAU, segments, segments / 2);
+
+    let texture: THREE.Texture;
+    if (moonData.textureKey && PLANET_TEXTURE_URLS[moonData.textureKey]) {
+      // Try loading real texture, but use procedural as immediate fallback
+      texture = createMoonColorTexture(moonData.color);
+      loadTexture(moonData.textureKey).then((tex) => {
+        mat.map = tex;
+        mat.needsUpdate = true;
+      });
+    } else {
+      texture = createMoonColorTexture(moonData.color);
+    }
+
+    const mat = new THREE.MeshStandardMaterial({
+      map: texture,
+      roughness: 0.95,
+      metalness: 0.0,
+    });
+
+    const mesh = new THREE.Mesh(geo, mat);
+    mesh.name = moonData.name;
+    mesh.visible = false; // hidden by default, shown when player is close
+
+    result.push({ mesh, data: moonData });
+  }
+
+  return result;
 }

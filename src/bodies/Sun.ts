@@ -12,7 +12,6 @@ export class Sun {
   mesh: THREE.Mesh;
   glowMesh: THREE.Mesh;
   light: THREE.DirectionalLight;
-  pointLight: THREE.PointLight;
   coronaMaterial: THREE.ShaderMaterial;
 
   constructor(useBloom = true) {
@@ -31,9 +30,9 @@ export class Sun {
     this.mesh = new THREE.Mesh(sunGeo, this.coronaMaterial);
     this.group.add(this.mesh);
 
-    // Outer glow — larger and more intense when bloom is off
-    const glowScale = useBloom ? 1.8 : 2.8;
-    const glowAlpha = useBloom ? 0.4 : 0.7;
+    // Use a broader, softer corona so eclipses read as a diffuse halo instead of an annulus.
+    const glowScale = useBloom ? 2.4 : 3.4;
+    const glowAlpha = useBloom ? 0.22 : 0.35;
     const glowGeo = new THREE.SphereGeometry(SCENE.SUN_RADIUS * glowScale, 64, 32);
     const glowMat = new THREE.ShaderMaterial({
       vertexShader: sunGlowVertexShader,
@@ -77,9 +76,7 @@ export class Sun {
     this.light.target.position.set(-SCENE.EARTH_SUN_DIST, 0, 0);
     this.group.add(this.light.target);
 
-    // Point light for more natural falloff
-    this.pointLight = new THREE.PointLight(0xfff5e0, 1.0, SCENE.EARTH_SUN_DIST * 3);
-    this.group.add(this.pointLight);
+    // Avoid an extra unshadowed fill light here, otherwise eclipsed bodies stay visibly lit.
   }
 
   /**

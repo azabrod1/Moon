@@ -36,11 +36,10 @@ export function computeStats(
   const speedC = speedAUPerS / LIGHT_SPEED_AU_PER_S;
   const speedKmS = speedAUPerS * AU_IN_KM;
 
-  // Find nearest planet and next planet ahead
+  // Find nearest planet and next planet outward (by orbital order)
   let nearestPlanet: { name: string; distanceAU: number } | null = null;
   let nearestDist = Infinity;
   let nextPlanetAhead: { name: string; distanceAU: number; etaSeconds: number } | null = null;
-  let nextAheadDist = Infinity;
 
   for (const body of ALL_BODIES) {
     const pPos = planetPositions.get(body.name);
@@ -55,15 +54,21 @@ export function computeStats(
       nearestDist = dist;
       nearestPlanet = { name: body.name, distanceAU: dist };
     }
+  }
 
-    // "Ahead" = in roughly our heading direction (dot product > 0)
-    const headX = Math.cos(heading);
-    const headZ = Math.sin(heading);
-    const dot = dx * headX + dz * headZ; // positive = ahead of us
-    if (dot > 0 && dist < nextAheadDist) {
-      nextAheadDist = dist;
+  // "Next" = first planet in orbital order whose orbit is farther than player
+  // ALL_BODIES is already sorted by semiMajorAxisAU (Mercury → Pluto)
+  for (const body of ALL_BODIES) {
+    if (body.semiMajorAxisAU > distFromSun) {
+      const pPos = planetPositions.get(body.name);
+      if (!pPos) continue;
+      const dx = pPos.x - posX;
+      const dy = pPos.y - posY;
+      const dz = pPos.z - posZ;
+      const dist = Math.sqrt(dx * dx + dy * dy + dz * dz);
       const eta = speedAUPerS > 0 ? dist / speedAUPerS : Infinity;
       nextPlanetAhead = { name: body.name, distanceAU: dist, etaSeconds: eta };
+      break;
     }
   }
 

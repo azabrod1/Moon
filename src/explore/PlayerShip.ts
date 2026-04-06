@@ -43,6 +43,7 @@ export class PlayerShip {
       metalness: 0.0,
     });
     this.mesh = new THREE.Mesh(geo, mat);
+    // Ship visible by default for size comparison with planets
     this.group.add(this.mesh);
 
   }
@@ -94,7 +95,7 @@ export class PlayerShip {
 
   // Speed presets
   static readonly SPEED_MIN = 0.05;
-  static readonly SPEED_MAX = 50;
+  static readonly SPEED_MAX = 3.6; // ~30c at max
   static readonly SPEED_DEFAULT = 1.0;
   static readonly DEFAULT_SPEED_AU_S = DEFAULT_SPEED_AU_S;
 }

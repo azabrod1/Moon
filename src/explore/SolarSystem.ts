@@ -1,6 +1,9 @@
 import * as THREE from 'three';
 import { ALL_BODIES, ASTEROID_BELT, type PlanetData, SUN_DATA } from './planets/planetData';
 import { createPlanetMesh, createExploreSun, type PlanetMesh } from './PlanetFactory';
+import { computePlanetPosition, dateToJD } from './orbitalMechanics';
+
+export type LayoutMode = 'aligned' | 'realistic';
 
 export interface SolarSystemObjects {
   sun: THREE.Group;
@@ -11,17 +14,20 @@ export interface SolarSystemObjects {
   ambientLight: THREE.AmbientLight;
 }
 
-// Place planets on their orbits at fixed positions (simplified: circular orbits)
-// Each planet starts at a random-ish position along its orbit for visual variety
-function getPlanetOrbitalPosition(planet: PlanetData, seed: number): { x: number; y: number; z: number } {
-  // Use a deterministic angle based on the planet name for consistency
-  const angle = (seed * 137.508) % (Math.PI * 2); // golden angle for nice spacing
+// Place planets on their orbits
+export function getPlanetOrbitalPosition(
+  planet: PlanetData,
+  seed: number,
+  layoutMode: LayoutMode,
+  date?: Date,
+): { x: number; y: number; z: number } {
+  if (layoutMode === 'realistic' && date) {
+    return computePlanetPosition(planet, dateToJD(date));
+  }
+  // Aligned: roughly lined up within ±15° cone
   const r = planet.semiMajorAxisAU;
-  return {
-    x: r * Math.cos(angle),
-    y: 0,
-    z: r * Math.sin(angle),
-  };
+  const spread = ((seed * 7.13) % 1 - 0.5) * (Math.PI / 6);
+  return { x: r * Math.cos(spread), y: 0, z: r * Math.sin(spread) };
 }
 
 function createOrbitLine(radiusAU: number, color: number, opacity: number): THREE.Line {
@@ -88,6 +94,8 @@ function createAsteroidBelt(): THREE.Points {
 export async function createSolarSystem(
   onProgress?: (msg: string) => void,
   useBloom = true,
+  layoutMode: LayoutMode = 'aligned',
+  date?: Date,
 ): Promise<SolarSystemObjects> {
   onProgress?.('Creating the Sun...');
   const sun = createExploreSun(useBloom);
@@ -106,7 +114,7 @@ export async function createSolarSystem(
     const planetMesh = await createPlanetMesh(body);
 
     // Position on orbit
-    const pos = getPlanetOrbitalPosition(body, i + 1);
+    const pos = getPlanetOrbitalPosition(body, i + 1, layoutMode, date);
     planetMesh.group.position.set(pos.x, pos.y, pos.z);
 
     planets.push(planetMesh);

@@ -19,6 +19,9 @@ export interface PlanetData {
   rotationPeriodHours: number;
   moons: number;
   description: string;
+  // Keplerian orbital elements at J2000.0 epoch
+  meanLongitudeDeg: number;   // mean longitude at J2000.0
+  lonPerihelionDeg: number;   // longitude of perihelion at J2000.0
 }
 
 const AU_KM = 149_597_870.7;
@@ -53,6 +56,8 @@ export const PLANETS: PlanetData[] = [
     rotationPeriodHours: 1407.6,
     moons: 0,
     description: 'Smallest planet, heavily cratered',
+    meanLongitudeDeg: 252.25,
+    lonPerihelionDeg: 77.46,
   },
   {
     name: 'Venus',
@@ -72,6 +77,8 @@ export const PLANETS: PlanetData[] = [
     rotationPeriodHours: 5832.5,
     moons: 0,
     description: 'Thick sulfuric acid clouds, hellish surface',
+    meanLongitudeDeg: 181.98,
+    lonPerihelionDeg: 131.53,
   },
   {
     name: 'Earth',
@@ -91,6 +98,8 @@ export const PLANETS: PlanetData[] = [
     rotationPeriodHours: 23.93,
     moons: 1,
     description: 'Our home world',
+    meanLongitudeDeg: 100.46,
+    lonPerihelionDeg: 102.93,
   },
   {
     name: 'Mars',
@@ -110,6 +119,8 @@ export const PLANETS: PlanetData[] = [
     rotationPeriodHours: 24.62,
     moons: 2,
     description: 'The Red Planet, with polar ice caps',
+    meanLongitudeDeg: 355.45,
+    lonPerihelionDeg: 336.04,
   },
   {
     name: 'Jupiter',
@@ -129,6 +140,8 @@ export const PLANETS: PlanetData[] = [
     rotationPeriodHours: 9.93,
     moons: 95,
     description: 'Gas giant, Great Red Spot, cloud bands',
+    meanLongitudeDeg: 34.40,
+    lonPerihelionDeg: 14.33,
   },
   {
     name: 'Saturn',
@@ -148,6 +161,8 @@ export const PLANETS: PlanetData[] = [
     rotationPeriodHours: 10.66,
     moons: 274,
     description: 'Iconic ring system, pale gold gas giant',
+    meanLongitudeDeg: 49.94,
+    lonPerihelionDeg: 92.43,
   },
   {
     name: 'Uranus',
@@ -167,6 +182,8 @@ export const PLANETS: PlanetData[] = [
     rotationPeriodHours: 17.24,
     moons: 27,
     description: 'Ice giant tilted on its side, pale cyan',
+    meanLongitudeDeg: 313.23,
+    lonPerihelionDeg: 170.96,
   },
   {
     name: 'Neptune',
@@ -186,6 +203,8 @@ export const PLANETS: PlanetData[] = [
     rotationPeriodHours: 16.11,
     moons: 14,
     description: 'Deep blue ice giant, strongest winds',
+    meanLongitudeDeg: 304.88,
+    lonPerihelionDeg: 44.97,
   },
 ];
 
@@ -207,6 +226,8 @@ export const PLUTO: PlanetData = {
   rotationPeriodHours: 153.3,
   moons: 5,
   description: 'Dwarf planet at the edge, icy surface',
+  meanLongitudeDeg: 238.93,
+  lonPerihelionDeg: 224.07,
 };
 
 // All bodies including Pluto

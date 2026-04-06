@@ -87,12 +87,12 @@ varying vec3 vPosition;
 void main() {
   vec3 viewDir = normalize(-vPosition);
   float rimDot = 1.0 - max(dot(viewDir, vNormal), 0.0);
-  float intensity = pow(rimDot, 2.5) * 2.0;
+  float intensity = pow(rimDot, 1.8) * 0.9;
 
   vec3 glowColor = mix(
-    vec3(1.0, 0.6, 0.1),
-    vec3(1.0, 0.2, 0.0),
-    rimDot
+    vec3(1.0, 0.96, 0.9),
+    vec3(1.0, 0.84, 0.62),
+    pow(rimDot, 0.6)
   );
 
   gl_FragColor = vec4(glowColor * intensity, intensity * alphaScale);

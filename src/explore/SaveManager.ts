@@ -11,17 +11,28 @@ export interface ExploreState {
   distanceTraveled: number;  // AU
   timeElapsed: number;       // seconds
   timestamp: number;
+  autopilot: boolean;        // true = auto-steer toward next planet
+  layoutMode: string;        // 'aligned' or 'realistic'
+  simDate: number;           // timestamp for realistic orbital positions
+  planetScale: number;       // visual scale multiplier for planets
+  showShip: boolean;         // show player ship mesh
 }
 
 export function createDefaultState(): ExploreState {
   return {
-    positionAU: { x: 0.05, y: 0, z: 0 }, // just outside the Sun
-    headingRad: 0,  // facing outward (+X)
+    // Start inside Mercury's orbit, but far enough from the Sun to avoid a blown-out first view.
+    positionAU: { x: 0.28, y: 0.015, z: -0.04 },
+    headingRad: 0,
     speed: 1.0,
     visitedPlanets: [],
     distanceTraveled: 0,
     timeElapsed: 0,
     timestamp: Date.now(),
+    autopilot: true,
+    layoutMode: 'aligned',
+    simDate: Date.now(),
+    planetScale: 5,
+    showShip: true,
   };
 }
 

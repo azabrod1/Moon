@@ -71,9 +71,11 @@ export class PlayerShip {
     // ── Hull ──
     const hullGeo = createHullGeometry(R, L);
     const hullMat = new THREE.MeshStandardMaterial({
-      color: 0xc8ccd0,
-      roughness: 0.28,
-      metalness: 0.75,
+      color: 0xb0c0d8,
+      emissive: 0x1a2540,
+      emissiveIntensity: 0.35,
+      roughness: 0.32,
+      metalness: 0.6,
     });
     const hull = new THREE.Mesh(hullGeo, hullMat);
     this.mesh = hull;
@@ -119,9 +121,11 @@ export class PlayerShip {
     // ── Engine bell ──
     const bellGeo = createEngineBell(R, L);
     const bellMat = new THREE.MeshStandardMaterial({
-      color: 0x3a3a3a,
+      color: 0x4a5058,
+      emissive: 0x0c1018,
+      emissiveIntensity: 0.25,
       roughness: 0.4,
-      metalness: 0.95,
+      metalness: 0.9,
     });
     const bell = new THREE.Mesh(bellGeo, bellMat);
     bell.position.y = -L * 0.5;
@@ -150,20 +154,20 @@ export class PlayerShip {
     // Outer glow (wide, subtle)
     const outerGeo = new THREE.ConeGeometry(R * 0.6, L * 0.5, 12);
     const outerMat = new THREE.MeshBasicMaterial({
-      color: 0x223366,
+      color: 0x2a3d66,
       transparent: true,
-      opacity: 0.06,
+      opacity: 0.08,
     });
     this.exhaustCone = new THREE.Mesh(outerGeo, outerMat);
     this.exhaustCone.position.y = -L * 1.3;
     this.exhaustCone.rotation.x = Math.PI;
 
     // Inner core (narrow, moderate)
-    const coreGeo = new THREE.ConeGeometry(R * 0.15, L * 0.5, 8);
+    const coreGeo = new THREE.ConeGeometry(R * 0.18, L * 0.55, 8);
     const coreMat = new THREE.MeshBasicMaterial({
-      color: 0x6688bb,
+      color: 0x7799cc,
       transparent: true,
-      opacity: 0.3,
+      opacity: 0.35,
     });
     this.exhaustCore = new THREE.Mesh(coreGeo, coreMat);
     this.exhaustCore.position.y = -L * 1.35;
@@ -219,7 +223,9 @@ export class PlayerShip {
       bevelSegments: 2,
     });
     const mat = new THREE.MeshStandardMaterial({
-      color: 0x889099,
+      color: 0x8090a8,
+      emissive: 0x141c28,
+      emissiveIntensity: 0.25,
       roughness: 0.3,
       metalness: 0.7,
       side: THREE.DoubleSide,

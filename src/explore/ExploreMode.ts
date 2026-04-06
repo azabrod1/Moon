@@ -312,7 +312,7 @@ export class ExploreMode {
       }
     }
 
-    // Update moons: visibility + orbital position
+    // Update moons: visibility, scale, and orbital position
     this.moonTime += dt;
     for (const planet of this.solarSystem.planets) {
       const moons = this.planetMoons.get(planet.data.name);
@@ -325,8 +325,15 @@ export class ExploreMode {
       const distToPlayer = Math.sqrt(dx * dx + dz * dz);
 
       // Show moons when within visibility threshold
-      const threshold = Math.max(planet.data.radiusAU * 30, 0.15);
+      const threshold = Math.max(planet.data.radiusAU * 50, 0.2);
       const visible = distToPlayer < threshold;
+
+      // The planet group is already scaled by planetScale, but moons at real AU
+      // sizes are still microscopic. Give moons an additional visual boost so they're
+      // at least ~15-30% of the parent planet's visual size (proportional to real ratio).
+      // We scale the mesh itself (not position), so orbital radii stay correct.
+      const planetGroupScale = planet.group.scale.x; // current planet scale
+      const parentRadiusAU = planet.data.radiusAU;
 
       for (const m of moons) {
         m.mesh.visible = visible;
@@ -339,6 +346,15 @@ export class ExploreMode {
             0,
             r * Math.sin(angle),
           );
+
+          // Scale up moon mesh so it's visible relative to parent planet.
+          // Real ratio is m.radiusAU/parentRadiusAU. We want the visual ratio to be
+          // at least ~0.1 (10% of planet), clamped so Earth's Moon isn't absurdly big.
+          const realRatio = m.data.radiusAU / parentRadiusAU;
+          const targetRatio = Math.max(realRatio, 0.08);
+          // How much to scale the mesh: targetRatio / realRatio
+          const moonBoost = targetRatio / realRatio;
+          m.mesh.scale.setScalar(moonBoost);
         }
       }
     }

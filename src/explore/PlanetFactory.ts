@@ -399,9 +399,9 @@ export function createExploreSun(useBloom = true): THREE.Group {
   const mesh = new THREE.Mesh(geo, sunMat);
   group.add(mesh);
 
-  // Glow shell — bigger and brighter when bloom is off
-  const glowScale = useBloom ? 2.0 : 3.0;
-  const glowAlpha = useBloom ? 0.3 : 0.6;
+  // Glow shell — slightly bigger when bloom is off
+  const glowScale = useBloom ? 2.0 : 2.5;
+  const glowAlpha = useBloom ? 0.3 : 0.45;
   const glowGeo = new THREE.SphereGeometry(SUN_DATA.radiusAU * glowScale, 32, 16);
   const glowMat = new THREE.ShaderMaterial({
     vertexShader: `
@@ -435,7 +435,7 @@ export function createExploreSun(useBloom = true): THREE.Group {
 
   // Extra soft outer halo when bloom is off
   if (!useBloom) {
-    const haloGeo = new THREE.SphereGeometry(SUN_DATA.radiusAU * 6.0, 32, 16);
+    const haloGeo = new THREE.SphereGeometry(SUN_DATA.radiusAU * 3.5, 32, 16);
     const haloMat = new THREE.ShaderMaterial({
       vertexShader: `
         varying vec3 vNormal;

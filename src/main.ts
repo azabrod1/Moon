@@ -110,7 +110,8 @@ function canGPUDoBloom(): boolean {
   }
 }
 
-const useBloom = !isMobile && canGPUDoBloom();
+// Enable bloom on any device whose GPU supports float framebuffers
+const useBloom = canGPUDoBloom();
 
 try {
   const gl = renderer.getContext();

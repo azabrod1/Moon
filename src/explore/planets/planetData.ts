@@ -22,6 +22,11 @@ export interface PlanetData {
   // Keplerian orbital elements at J2000.0 epoch
   meanLongitudeDeg: number;   // mean longitude at J2000.0
   lonPerihelionDeg: number;   // longitude of perihelion at J2000.0
+  ascendingNodeDeg: number;   // longitude of ascending node at J2000.0
+  poleRaDeg: number;          // IAU north pole right ascension
+  poleDecDeg: number;         // IAU north pole declination
+  primeMeridianDegAtJ2000: number;   // IAU prime meridian angle at J2000.0
+  primeMeridianRateDegPerDay: number; // rotation rate in degrees/day
 }
 
 const AU_KM = 149_597_870.7;
@@ -58,6 +63,11 @@ export const PLANETS: PlanetData[] = [
     description: 'Smallest planet, heavily cratered',
     meanLongitudeDeg: 252.25,
     lonPerihelionDeg: 77.46,
+    ascendingNodeDeg: 48.331,
+    poleRaDeg: 281.0097,
+    poleDecDeg: 61.4143,
+    primeMeridianDegAtJ2000: 329.5469,
+    primeMeridianRateDegPerDay: 6.1385025,
   },
   {
     name: 'Venus',
@@ -79,6 +89,11 @@ export const PLANETS: PlanetData[] = [
     description: 'Thick sulfuric acid clouds, hellish surface',
     meanLongitudeDeg: 181.98,
     lonPerihelionDeg: 131.53,
+    ascendingNodeDeg: 76.680,
+    poleRaDeg: 272.76,
+    poleDecDeg: 67.16,
+    primeMeridianDegAtJ2000: 160.20,
+    primeMeridianRateDegPerDay: -1.4813688,
   },
   {
     name: 'Earth',
@@ -100,6 +115,11 @@ export const PLANETS: PlanetData[] = [
     description: 'Our home world',
     meanLongitudeDeg: 100.46,
     lonPerihelionDeg: 102.93,
+    ascendingNodeDeg: 0,
+    poleRaDeg: 0,
+    poleDecDeg: 90,
+    primeMeridianDegAtJ2000: 190.147,
+    primeMeridianRateDegPerDay: 360.9856235,
   },
   {
     name: 'Mars',
@@ -121,6 +141,11 @@ export const PLANETS: PlanetData[] = [
     description: 'The Red Planet, with polar ice caps',
     meanLongitudeDeg: 355.45,
     lonPerihelionDeg: 336.04,
+    ascendingNodeDeg: 49.558,
+    poleRaDeg: 317.269202,
+    poleDecDeg: 54.432516,
+    primeMeridianDegAtJ2000: 176.049863,
+    primeMeridianRateDegPerDay: 350.89198226,
   },
   {
     name: 'Jupiter',
@@ -142,6 +167,11 @@ export const PLANETS: PlanetData[] = [
     description: 'Gas giant, Great Red Spot, cloud bands',
     meanLongitudeDeg: 34.40,
     lonPerihelionDeg: 14.33,
+    ascendingNodeDeg: 100.464,
+    poleRaDeg: 268.056595,
+    poleDecDeg: 64.495303,
+    primeMeridianDegAtJ2000: 284.95,
+    primeMeridianRateDegPerDay: 870.536,
   },
   {
     name: 'Saturn',
@@ -163,6 +193,11 @@ export const PLANETS: PlanetData[] = [
     description: 'Iconic ring system, pale gold gas giant',
     meanLongitudeDeg: 49.94,
     lonPerihelionDeg: 92.43,
+    ascendingNodeDeg: 113.665,
+    poleRaDeg: 40.589,
+    poleDecDeg: 83.537,
+    primeMeridianDegAtJ2000: 38.90,
+    primeMeridianRateDegPerDay: 810.7939024,
   },
   {
     name: 'Uranus',
@@ -184,6 +219,11 @@ export const PLANETS: PlanetData[] = [
     description: 'Ice giant tilted on its side, pale cyan',
     meanLongitudeDeg: 313.23,
     lonPerihelionDeg: 170.96,
+    ascendingNodeDeg: 74.006,
+    poleRaDeg: 257.311,
+    poleDecDeg: -15.175,
+    primeMeridianDegAtJ2000: 203.81,
+    primeMeridianRateDegPerDay: -501.1600928,
   },
   {
     name: 'Neptune',
@@ -205,6 +245,11 @@ export const PLANETS: PlanetData[] = [
     description: 'Deep blue ice giant, strongest winds',
     meanLongitudeDeg: 304.88,
     lonPerihelionDeg: 44.97,
+    ascendingNodeDeg: 131.784,
+    poleRaDeg: 299.36,
+    poleDecDeg: 43.46,
+    primeMeridianDegAtJ2000: 249.978,
+    primeMeridianRateDegPerDay: 541.1397757,
   },
 ];
 
@@ -228,6 +273,11 @@ export const PLUTO: PlanetData = {
   description: 'Dwarf planet at the edge, icy surface',
   meanLongitudeDeg: 238.93,
   lonPerihelionDeg: 224.07,
+  ascendingNodeDeg: 110.299,
+  poleRaDeg: 132.993,
+  poleDecDeg: -6.163,
+  primeMeridianDegAtJ2000: 302.695,
+  primeMeridianRateDegPerDay: -56.3625225,
 };
 
 // All bodies including Pluto

@@ -6,6 +6,7 @@ const AUTO_SAVE_INTERVAL = 30_000; // 30 seconds
 export interface ExploreState {
   positionAU: { x: number; y: number; z: number };
   headingRad: number;
+  pitchRad?: number;
   speed: number;         // multiplier of default speed
   visitedPlanets: string[];
   distanceTraveled: number;  // AU
@@ -14,6 +15,9 @@ export interface ExploreState {
   autopilot: boolean;        // true = auto-steer toward next planet
   layoutMode: string;        // 'aligned' or 'realistic'
   simDate: number;           // timestamp for realistic orbital positions
+  astroTimeUtcMs?: number;
+  astroTimeRate?: number;
+  astroTimePaused?: boolean;
   planetScale: number;       // visual scale multiplier for planets
   showShip: boolean;         // show player ship mesh
 }
@@ -29,8 +33,11 @@ export function createDefaultState(): ExploreState {
     timeElapsed: 0,
     timestamp: Date.now(),
     autopilot: true,
-    layoutMode: 'aligned',
+    layoutMode: 'realistic',
     simDate: Date.now(),
+    astroTimeUtcMs: Date.now(),
+    astroTimeRate: 1,
+    astroTimePaused: false,
     planetScale: 16,
     showShip: true,
   };

@@ -3,6 +3,7 @@ import { LIGHT_SPEED_AU_PER_S } from './planets/planetData';
 
 // Default speed: traverse solar system (~30 AU) in ~30 minutes
 const DEFAULT_SPEED_AU_S = 30 / 1800;
+const FORWARD_VECTOR = new THREE.Vector3(1, 0, 0);
 
 /** Build a smooth hull profile via LatheGeometry */
 function createHullGeometry(radius: number, length: number): THREE.LatheGeometry {
@@ -54,9 +55,11 @@ export class PlayerShip {
   posY = 0;
   posZ = 0;
   heading = 0;
+  pitch = 0;
   speedMultiplier = 1.0;
   moving = true;
-  steerInput = 0;
+  yawInput = 0;
+  pitchInput = 0;
   distanceTraveled = 0;
   timeElapsed = 0;
   visitedPlanets: Set<string> = new Set();
@@ -258,7 +261,8 @@ export class PlayerShip {
   }
 
   update(dt: number) {
-    this.group.rotation.y = -this.heading;
+    const direction = this.getForwardDirection();
+    this.group.quaternion.setFromUnitVectors(FORWARD_VECTOR, direction);
 
     // Animate exhaust
     this.exhaustTime += dt;
@@ -296,17 +300,25 @@ export class PlayerShip {
 
     const speed = this.speedAUPerS;
 
-    if (this.steerInput !== 0) {
-      this.heading += this.steerInput * dt * 0.8;
+    if (this.yawInput !== 0) {
+      this.heading += this.yawInput * dt * 0.8;
+    }
+    if (this.pitchInput !== 0) {
+      this.pitch = Math.max(-Math.PI * 0.49, Math.min(Math.PI * 0.49, this.pitch + this.pitchInput * dt * 0.65));
     }
 
-    const dx = Math.cos(this.heading) * speed * dt;
-    const dz = Math.sin(this.heading) * speed * dt;
+    const updatedDirection = this.getForwardDirection();
+    this.group.quaternion.setFromUnitVectors(FORWARD_VECTOR, updatedDirection);
+
+    const dx = updatedDirection.x * speed * dt;
+    const dy = updatedDirection.y * speed * dt;
+    const dz = updatedDirection.z * speed * dt;
 
     this.posX += dx;
+    this.posY += dy;
     this.posZ += dz;
 
-    this.distanceTraveled += Math.sqrt(dx * dx + dz * dz);
+    this.distanceTraveled += Math.sqrt(dx * dx + dy * dy + dz * dz);
     this.timeElapsed += dt;
   }
 
@@ -316,12 +328,26 @@ export class PlayerShip {
     this.posZ = z;
   }
 
-  headToward(targetX: number, targetZ: number) {
-    this.heading = Math.atan2(targetZ - this.posZ, targetX - this.posX);
+  headToward(targetX: number, targetZ: number, targetY = this.posY) {
+    const dx = targetX - this.posX;
+    const dy = targetY - this.posY;
+    const dz = targetZ - this.posZ;
+    const horizontal = Math.sqrt(dx * dx + dz * dz);
+    this.heading = Math.atan2(dz, dx);
+    this.pitch = Math.atan2(dy, Math.max(horizontal, 1e-8));
   }
 
   getDistanceFromSun(): number {
     return Math.sqrt(this.posX * this.posX + this.posY * this.posY + this.posZ * this.posZ);
+  }
+
+  getForwardDirection(): THREE.Vector3 {
+    const cosPitch = Math.cos(this.pitch);
+    return new THREE.Vector3(
+      Math.cos(this.heading) * cosPitch,
+      Math.sin(this.pitch),
+      Math.sin(this.heading) * cosPitch,
+    ).normalize();
   }
 
   static readonly SPEED_MIN = 0;

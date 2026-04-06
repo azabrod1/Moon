@@ -1,14 +1,27 @@
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
-import { createSolarSystem, getPlanetOrbitalPosition, type SolarSystemObjects, type LayoutMode } from './SolarSystem';
+import { createSolarSystem, type SolarSystemObjects, type LayoutMode } from './SolarSystem';
 import { PlayerShip } from './PlayerShip';
 import { PlanetMarkers } from './PlanetMarker';
 import { SaveManager, createDefaultState, type ExploreState } from './SaveManager';
 import { computeStats, formatAU, formatETA } from './StatsPanel';
 import { ALL_BODIES, type PlanetData } from './planets/planetData';
 import { createMoonMeshes, type MoonMesh } from './PlanetFactory';
+import {
+  advanceExploreTime,
+  computeBodyState,
+  formatTimeRateLabel,
+  formatUtcInputValue,
+  formatUtcLabel,
+  parseUtcInputValue,
+  type ExploreTimeState,
+} from './astronomy';
+import { BRIGHT_STAR_CATALOG } from './data/brightStars';
 
 export class ExploreMode {
+  private static readonly TIME_RATE_PRESETS = [1, 10, 30, 60, 300, 900, 3600, 21600, 86400, 604800, 31557600];
+  private static readonly SHIP_CLEARANCE_AU = (1_737.4 / 149_597_870.7) * 1.5;
+
   private scene: THREE.Scene;
   private camera: THREE.PerspectiveCamera;
   private renderer: THREE.WebGLRenderer;
@@ -26,9 +39,6 @@ export class ExploreMode {
   // Planet moons: map from planet name to array of moon meshes
   private planetMoons = new Map<string, MoonMesh[]>();
 
-  // Elapsed time for moon orbital animation
-  private moonTime = 0;
-
   // Keyboard state
   private keys = new Set<string>();
 
@@ -41,10 +51,13 @@ export class ExploreMode {
   private autopilot = true;
 
   // Planet layout mode
-  private layoutMode: LayoutMode = 'aligned';
+  private layoutMode: LayoutMode = 'realistic';
 
-  // Simulation date for realistic mode
-  private simDate: Date = new Date();
+  private timeState: ExploreTimeState = {
+    currentUtcMs: Date.now(),
+    rate: 1,
+    paused: false,
+  };
 
   // Planet visual scale multiplier (real scale = 1, default 5x for visibility)
   private planetScale = 16;
@@ -52,10 +65,15 @@ export class ExploreMode {
   // Show player ship mesh for size comparison
   private showShip = true;
 
-  // Touch steer state
-  private touchSteer = 0; // -1 left, 0 none, 1 right
-  // Touch throttle state: 1 = accelerate, -1 = decelerate, 0 = none
+  // Touch and gyro flight state
+  private touchYaw = 0;
+  private touchPitch = 0;
   private touchThrottle = 0;
+  private activeFlightTouchId: number | null = null;
+  private gyroEnabled = false;
+  private gyroPermissionRequested = false;
+  private gyroYaw = 0;
+  private gyroPitch = 0;
 
   // Moon labels
   private moonLabels = new Map<string, HTMLDivElement>();
@@ -67,6 +85,12 @@ export class ExploreMode {
   private notificationEl: HTMLElement | null = null;
   private speedSliderEl: HTMLInputElement | null = null;
   private speedValueEl: HTMLElement | null = null;
+  private timeValueEl: HTMLElement | null = null;
+  private timeRateEl: HTMLElement | null = null;
+  private timeInputEl: HTMLInputElement | null = null;
+  private lastTimeLabel = '';
+  private lastTimeRateLabel = '';
+  private lastTimeInputValue = '';
 
   active = false;
   private useBloom: boolean;
@@ -95,6 +119,7 @@ export class ExploreMode {
     // Key handlers
     this.handleKeyDown = this.handleKeyDown.bind(this);
     this.handleKeyUp = this.handleKeyUp.bind(this);
+    this.handleDeviceOrientation = this.handleDeviceOrientation.bind(this);
   }
 
   async activate(): Promise<void> {
@@ -110,6 +135,9 @@ export class ExploreMode {
     this.notificationEl = document.getElementById('explore-notification');
     this.speedSliderEl = document.getElementById('explore-speed-slider') as HTMLInputElement;
     this.speedValueEl = document.getElementById('explore-speed-value');
+    this.timeValueEl = document.getElementById('explore-time-value');
+    this.timeRateEl = document.getElementById('explore-time-rate');
+    this.timeInputEl = document.getElementById('explore-time-input') as HTMLInputElement;
 
     // Create solar system if not yet created
     if (!this.solarSystem) {
@@ -117,7 +145,7 @@ export class ExploreMode {
       if (loadingMsg) loadingMsg.style.display = 'block';
       this.solarSystem = await createSolarSystem((msg) => {
         if (loadingMsg) loadingMsg.textContent = msg;
-      }, this.useBloom, this.layoutMode, this.simDate);
+      }, this.useBloom, this.layoutMode, new Date(this.timeState.currentUtcMs));
       if (loadingMsg) loadingMsg.style.display = 'none';
 
       // Add everything to scene
@@ -206,6 +234,9 @@ export class ExploreMode {
     // Wire up keyboard
     window.addEventListener('keydown', this.handleKeyDown);
     window.addEventListener('keyup', this.handleKeyUp);
+    if (this.gyroEnabled) {
+      window.addEventListener('deviceorientation', this.handleDeviceOrientation);
+    }
 
     // Wire up UI controls (once only)
     if (!this.uiWired) {
@@ -227,6 +258,12 @@ export class ExploreMode {
     // Remove keyboard handlers
     window.removeEventListener('keydown', this.handleKeyDown);
     window.removeEventListener('keyup', this.handleKeyUp);
+    window.removeEventListener('deviceorientation', this.handleDeviceOrientation);
+    this.touchYaw = 0;
+    this.touchPitch = 0;
+    this.touchThrottle = 0;
+    this.gyroYaw = 0;
+    this.gyroPitch = 0;
 
     // Disable controls
     this.controls.enabled = false;
@@ -264,12 +301,14 @@ export class ExploreMode {
     this.processInput();
 
     // Autopilot: steer toward next planet if no manual input
-    if (this.autopilot && this.player.steerInput === 0) {
+    if (this.autopilot && this.player.yawInput === 0 && this.player.pitchInput === 0) {
       this.applyAutopilot();
     }
 
     // Update player
     this.player.update(dt);
+    this.timeState = advanceExploreTime(this.timeState, dt);
+    this.rebuildPlanetPositions(dt);
 
     // Apply floating origin: offset everything by player position
     this.applyFloatingOrigin();
@@ -305,8 +344,9 @@ export class ExploreMode {
     for (const planet of this.solarSystem.planets) {
       const wp = planet.group.userData.worldPosAU as { x: number; y: number; z: number };
       const dx = this.player.posX - wp.x;
+      const dy = this.player.posY - wp.y;
       const dz = this.player.posZ - wp.z;
-      const dist = Math.sqrt(dx * dx + dz * dz);
+      const dist = Math.sqrt(dx * dx + dy * dy + dz * dz);
       // t: 1 when close, 0 when far
       const t = 1 - Math.min(1, Math.max(0, (dist - 0.5) / 2.5));
       // Scale: planetScale when close, 0.5 when far
@@ -323,31 +363,10 @@ export class ExploreMode {
       }
     }
     this.player.group.scale.setScalar(this.planetScale);
+    this.resolvePlanetCollisions();
 
-    // Update planet rotations, clouds, and night lights
-    for (const planet of this.solarSystem.planets) {
-      if (planet.mesh) {
-        planet.mesh.rotation.y += dt * (10 / planet.data.rotationPeriodHours);
-      }
-      // Rotate Earth's clouds slightly faster
-      if (planet.cloudsMesh) {
-        planet.cloudsMesh.rotation.y += dt * (12 / planet.data.rotationPeriodHours);
-      }
-      // Update Earth night lights sun direction
-      if (planet.nightMaterial) {
-        const sunWorldPos = this.solarSystem.sun.position;
-        const planetPos = planet.group.position;
-        const sunDir = new THREE.Vector3(
-          sunWorldPos.x - planetPos.x,
-          sunWorldPos.y - planetPos.y,
-          sunWorldPos.z - planetPos.z,
-        ).normalize();
-        planet.nightMaterial.uniforms.sunDirection.value.copy(sunDir);
-      }
-    }
-
-    // Update moons: visibility, scale, and orbital position at real distances
-    this.moonTime += dt;
+    // Update moons: visibility, scale, and orbital position at astronomical time
+    const moonTimeSeconds = this.timeState.currentUtcMs / 1000;
     for (const planet of this.solarSystem.planets) {
       const moons = this.planetMoons.get(planet.data.name);
       if (!moons || moons.length === 0) continue;
@@ -355,8 +374,9 @@ export class ExploreMode {
       // Distance from player to planet
       const wp = planet.group.userData.worldPosAU as { x: number; y: number; z: number };
       const dx = this.player.posX - wp.x;
+      const dy = this.player.posY - wp.y;
       const dz = this.player.posZ - wp.z;
-      const distToPlayer = Math.sqrt(dx * dx + dz * dz);
+      const distToPlayer = Math.sqrt(dx * dx + dy * dy + dz * dz);
 
       // Show moons when close enough to the planet
       const threshold = Math.max(planet.data.radiusAU * 120, 0.3);
@@ -372,7 +392,7 @@ export class ExploreMode {
         const label = this.moonLabels.get(m.data.name);
         m.mesh.visible = visible;
         if (visible) {
-          const angle = (this.moonTime / (m.data.orbitalPeriodDays * 86400)) * Math.PI * 2;
+          const angle = (moonTimeSeconds / (m.data.orbitalPeriodDays * 86400)) * Math.PI * 2;
 
           // Real orbital radius — no compression
           const r = m.data.orbitalRadiusAU;
@@ -436,6 +456,7 @@ export class ExploreMode {
 
     // Update UI stats
     this.updateStatsUI();
+    this.updateTimeUI();
   }
 
   private applyFloatingOrigin() {
@@ -478,17 +499,23 @@ export class ExploreMode {
   }
 
   private processInput() {
-    // Steering (keyboard + touch)
-    let steer = 0;
-    if (this.keys.has('arrowleft') || this.keys.has('a')) steer = -1;
-    if (this.keys.has('arrowright') || this.keys.has('d')) steer = 1;
-    if (this.touchSteer !== 0) steer = this.touchSteer;
-    this.player.steerInput = steer;
+    // Flight controls
+    let yaw = 0;
+    if (this.keys.has('arrowleft') || this.keys.has('a')) yaw = -1;
+    if (this.keys.has('arrowright') || this.keys.has('d')) yaw = 1;
+    yaw = THREE.MathUtils.clamp(yaw + this.touchYaw + this.gyroYaw, -1, 1);
+    this.player.yawInput = yaw;
+
+    let pitch = 0;
+    if (this.keys.has('arrowup')) pitch = 1;
+    if (this.keys.has('arrowdown')) pitch = -1;
+    pitch = THREE.MathUtils.clamp(pitch + this.touchPitch + this.gyroPitch, -1, 1);
+    this.player.pitchInput = pitch;
 
     // Throttle (keyboard + touch)
     let throttle = 0;
-    if (this.keys.has('arrowup') || this.keys.has('w')) throttle = 1;
-    if (this.keys.has('arrowdown') || this.keys.has('s')) throttle = -1;
+    if (this.keys.has('w')) throttle = 1;
+    if (this.keys.has('s')) throttle = -1;
     if (this.touchThrottle !== 0) throttle = this.touchThrottle;
 
     if (throttle > 0) {
@@ -678,13 +705,25 @@ export class ExploreMode {
           const minLog = 0.05;
           this.player.speedMultiplier = minLog * Math.pow(PlayerShip.SPEED_MAX / minLog, t);
         }
-        if (this.speedValueEl) {
-          this.speedValueEl.textContent = this.player.speedMultiplier < 0.01
-            ? '0c'
-            : `${this.player.speedC.toFixed(1)}c`;
-        }
+        this.updateSpeedSlider();
       });
     }
+    document.getElementById('explore-speed-up')?.addEventListener('click', () => {
+      if (this.player.speedMultiplier < 0.05) {
+        this.player.speedMultiplier = 0.05;
+      } else {
+        this.player.speedMultiplier = Math.min(this.player.speedMultiplier * 1.35, PlayerShip.SPEED_MAX);
+      }
+      this.updateSpeedSlider();
+    });
+    document.getElementById('explore-speed-down')?.addEventListener('click', () => {
+      if (this.player.speedMultiplier < 0.06) {
+        this.player.speedMultiplier = 0;
+      } else {
+        this.player.speedMultiplier = Math.max(this.player.speedMultiplier * 0.72, 0);
+      }
+      this.updateSpeedSlider();
+    });
 
     // Play/Pause
     document.getElementById('explore-btn-pause')?.addEventListener('click', () => {
@@ -703,6 +742,7 @@ export class ExploreMode {
     document.getElementById('explore-btn-new')?.addEventListener('click', () => {
       this.saveManager.clearState();
       this.restoreState(createDefaultState());
+      this.pointTowardMercury();
       this.showNotification('New journey started!');
     });
 
@@ -723,20 +763,40 @@ export class ExploreMode {
       if (panel) panel.classList.toggle('visible');
     });
 
-    // Planet layout toggle
-    document.getElementById('settings-layout-toggle')?.addEventListener('click', () => {
-      this.toggleLayout();
+    // Astronomy time controls
+    document.getElementById('explore-time-pause')?.addEventListener('click', () => {
+      this.timeState.paused = !this.timeState.paused;
+      this.updateTimeUI();
     });
-
-    // Date input for realistic mode
-    const dateInput = document.getElementById('settings-date-input') as HTMLInputElement;
-    if (dateInput) {
-      dateInput.value = this.simDate.toISOString().slice(0, 10);
-      dateInput.addEventListener('input', () => {
-        const d = new Date(dateInput.value + 'T12:00:00Z');
-        if (!isNaN(d.getTime())) {
-          this.simDate = d;
+    document.getElementById('explore-time-play')?.addEventListener('click', () => {
+      this.timeState.paused = false;
+      if (this.timeState.rate < 0) this.timeState.rate *= -1;
+      this.updateTimeUI();
+    });
+    document.getElementById('explore-time-reverse')?.addEventListener('click', () => {
+      this.timeState.paused = false;
+      this.timeState.rate = -Math.abs(this.timeState.rate);
+      this.updateTimeUI();
+    });
+    document.getElementById('explore-time-slower')?.addEventListener('click', () => {
+      this.stepTimeRate(-1);
+    });
+    document.getElementById('explore-time-faster')?.addEventListener('click', () => {
+      this.stepTimeRate(1);
+    });
+    document.getElementById('explore-time-now')?.addEventListener('click', () => {
+      this.timeState.currentUtcMs = Date.now();
+      this.rebuildPlanetPositions();
+      this.updateTimeUI();
+    });
+    if (this.timeInputEl) {
+      this.timeInputEl.value = formatUtcInputValue(this.timeState.currentUtcMs);
+      this.timeInputEl.addEventListener('change', () => {
+        const utcMs = parseUtcInputValue(this.timeInputEl?.value ?? '');
+        if (utcMs !== null) {
+          this.timeState.currentUtcMs = utcMs;
           this.rebuildPlanetPositions();
+          this.updateTimeUI();
         }
       });
     }
@@ -760,33 +820,60 @@ export class ExploreMode {
       if (label) label.textContent = this.showShip ? 'On' : 'Off';
     });
 
-    // Touch steer zones
-    const touchLeft = document.getElementById('touch-steer-left');
-    const touchRight = document.getElementById('touch-steer-right');
-    if (touchLeft) {
-      touchLeft.addEventListener('touchstart', (e) => { e.preventDefault(); this.touchSteer = -1; touchLeft.classList.add('active'); }, { passive: false });
-      touchLeft.addEventListener('touchend', () => { this.touchSteer = 0; touchLeft.classList.remove('active'); });
-      touchLeft.addEventListener('touchcancel', () => { this.touchSteer = 0; touchLeft.classList.remove('active'); });
-    }
-    if (touchRight) {
-      touchRight.addEventListener('touchstart', (e) => { e.preventDefault(); this.touchSteer = 1; touchRight.classList.add('active'); }, { passive: false });
-      touchRight.addEventListener('touchend', () => { this.touchSteer = 0; touchRight.classList.remove('active'); });
-      touchRight.addEventListener('touchcancel', () => { this.touchSteer = 0; touchRight.classList.remove('active'); });
+    document.getElementById('settings-gyro-toggle')?.addEventListener('click', () => {
+      void this.toggleGyroControls();
+    });
+
+    // Full-screen mobile flight zone
+    const flightZone = document.getElementById('touch-flight-zone');
+    if (flightZone) {
+      flightZone.addEventListener('pointerdown', (event) => {
+        event.preventDefault();
+        (flightZone as HTMLElement).setPointerCapture?.(event.pointerId);
+        this.activeFlightTouchId = event.pointerId;
+        this.setFlightTouchFromPoint(event.clientX, event.clientY);
+        flightZone.classList.add('active');
+      });
+      flightZone.addEventListener('pointermove', (event) => {
+        if (this.activeFlightTouchId === event.pointerId) {
+          this.setFlightTouchFromPoint(event.clientX, event.clientY);
+        }
+      });
+      const clearFlightTouch = (event?: PointerEvent) => {
+        if (!event || this.activeFlightTouchId === event.pointerId) {
+          this.activeFlightTouchId = null;
+          this.touchYaw = 0;
+          this.touchPitch = 0;
+          flightZone.classList.remove('active');
+        }
+      };
+      flightZone.addEventListener('pointerup', clearFlightTouch);
+      flightZone.addEventListener('pointercancel', clearFlightTouch);
+      flightZone.addEventListener('pointerleave', clearFlightTouch);
     }
 
     // Touch throttle buttons
     const touchAccel = document.getElementById('touch-accel');
     const touchDecel = document.getElementById('touch-decel');
-    if (touchAccel) {
-      touchAccel.addEventListener('touchstart', (e) => { e.preventDefault(); this.touchThrottle = 1; touchAccel.classList.add('active'); }, { passive: false });
-      touchAccel.addEventListener('touchend', () => { this.touchThrottle = 0; touchAccel.classList.remove('active'); });
-      touchAccel.addEventListener('touchcancel', () => { this.touchThrottle = 0; touchAccel.classList.remove('active'); });
-    }
-    if (touchDecel) {
-      touchDecel.addEventListener('touchstart', (e) => { e.preventDefault(); this.touchThrottle = -1; touchDecel.classList.add('active'); }, { passive: false });
-      touchDecel.addEventListener('touchend', () => { this.touchThrottle = 0; touchDecel.classList.remove('active'); });
-      touchDecel.addEventListener('touchcancel', () => { this.touchThrottle = 0; touchDecel.classList.remove('active'); });
-    }
+    const bindThrottleButton = (element: HTMLElement | null, value: number) => {
+      if (!element) return;
+      element.addEventListener('pointerdown', (event) => {
+        event.preventDefault();
+        this.touchThrottle = value;
+        element.classList.add('active');
+      });
+      const clear = () => {
+        this.touchThrottle = 0;
+        element.classList.remove('active');
+      };
+      element.addEventListener('pointerup', clear);
+      element.addEventListener('pointercancel', clear);
+      element.addEventListener('pointerleave', clear);
+    };
+    bindThrottleButton(touchAccel, 1);
+    bindThrottleButton(touchDecel, -1);
+
+    this.updateTimeUI();
   }
 
   private showResumePrompt(): Promise<boolean> {
@@ -814,52 +901,116 @@ export class ExploreMode {
         prompt.classList.remove('visible');
         uiOverlay?.classList.remove('resume-active');
         resumeBtn?.removeEventListener('click', onResume);
+        resumeBtn?.removeEventListener('pointerup', onResume);
         newBtn?.removeEventListener('click', onNew);
+        newBtn?.removeEventListener('pointerup', onNew);
       };
       const onResume = () => { cleanup(); resolve(true); };
       const onNew = () => { cleanup(); resolve(false); };
 
       resumeBtn?.addEventListener('click', onResume);
+      resumeBtn?.addEventListener('pointerup', onResume);
       newBtn?.addEventListener('click', onNew);
+      newBtn?.addEventListener('pointerup', onNew);
     });
   }
 
   private pointTowardMercury() {
     const mercuryPos = this.planetWorldPositions.get('Mercury');
     if (mercuryPos) {
-      this.player.headToward(mercuryPos.x, mercuryPos.z);
+      this.player.headToward(mercuryPos.x, mercuryPos.z, mercuryPos.y);
       this.resetCruiseCamera();
     }
   }
 
   private resetCruiseCamera() {
-    // Scale camera distance with planetScale so ship stays same apparent size
     const camDist = 0.0002 * this.planetScale;
-    const behindX = -Math.cos(this.player.heading) * camDist;
-    const behindZ = -Math.sin(this.player.heading) * camDist;
-    this.camera.position.set(behindX, camDist * 0.45, behindZ);
+    const forward = this.player.getForwardDirection();
+    this.camera.position.set(
+      -forward.x * camDist,
+      -forward.y * camDist + camDist * 0.45,
+      -forward.z * camDist,
+    );
     this.controls.target.set(0, 0, 0);
+  }
+
+  private getPlanetCollisionRadius(radiusAU: number, renderedScale: number): number {
+    return radiusAU * Math.max(renderedScale, 1) + ExploreMode.SHIP_CLEARANCE_AU * this.planetScale;
+  }
+
+  private resolvePlanetCollisions() {
+    if (!this.solarSystem) return;
+
+    const offset = new THREE.Vector3();
+    const outwardHeading = new THREE.Vector3();
+    const forward = this.player.getForwardDirection();
+
+    for (const planet of this.solarSystem.planets) {
+      const worldPos = planet.group.userData.worldPosAU as { x: number; y: number; z: number } | undefined;
+      if (!worldPos) continue;
+
+      offset.set(
+        this.player.posX - worldPos.x,
+        this.player.posY - worldPos.y,
+        this.player.posZ - worldPos.z,
+      );
+
+      let distance = offset.length();
+      const collisionRadius = this.getPlanetCollisionRadius(planet.data.radiusAU, planet.group.scale.x);
+      if (distance >= collisionRadius) continue;
+
+      if (distance < 1e-8) {
+        offset.copy(forward).multiplyScalar(-1);
+        distance = offset.length();
+      }
+      if (distance < 1e-8) {
+        offset.set(1, 0, 0);
+        distance = 1;
+      }
+
+      offset.divideScalar(distance);
+      this.player.posX = worldPos.x + offset.x * collisionRadius;
+      this.player.posY = worldPos.y + offset.y * collisionRadius;
+      this.player.posZ = worldPos.z + offset.z * collisionRadius;
+
+      if (forward.dot(offset) < 0.15) {
+        outwardHeading.copy(offset).multiplyScalar(collisionRadius * 2);
+        this.player.headToward(
+          this.player.posX + outwardHeading.x,
+          this.player.posZ + outwardHeading.z,
+          this.player.posY + outwardHeading.y,
+        );
+      }
+
+      if (this.player.speedMultiplier > 0.5) {
+        this.player.speedMultiplier *= 0.7;
+      }
+    }
   }
 
   jumpToPlanet(planet: PlanetData) {
     const pos = this.planetWorldPositions.get(planet.name);
     if (!pos) return;
 
-    // Position player near the planet: offset enough to see it nicely
-    // Use max of 5× radius or a minimum useful distance
-    const viewDist = Math.max(planet.radiusAU * 8, 0.001);
-    this.player.posX = pos.x - viewDist;
-    this.player.posY = pos.y;
-    this.player.posZ = pos.z;
-    this.player.headToward(pos.x, pos.z);
+    const viewDist = Math.max(
+      planet.radiusAU * 8,
+      this.getPlanetCollisionRadius(planet.radiusAU, this.planetScale) + planet.radiusAU * 2,
+      0.001,
+    );
+    const offsetDir = new THREE.Vector3(-pos.x, -pos.y, -pos.z);
+    if (offsetDir.lengthSq() < 1e-8) {
+      offsetDir.set(-1, 0.25, 0);
+    }
+    offsetDir.normalize();
+    this.player.posX = pos.x + offsetDir.x * viewDist;
+    this.player.posY = pos.y + offsetDir.y * viewDist;
+    this.player.posZ = pos.z + offsetDir.z * viewDist;
+    this.player.headToward(pos.x, pos.z, pos.y);
 
-    // Slow down for viewing
     this.player.speedMultiplier = 0.1;
     this.updateSpeedSlider();
 
     this.showNotification(`Jumped to ${planet.name}`);
-
-    // Reset camera to cruise position (behind player, looking toward planet)
     this.resetCruiseCamera();
   }
 
@@ -871,6 +1022,7 @@ export class ExploreMode {
     return {
       positionAU: { x: this.player.posX, y: this.player.posY, z: this.player.posZ },
       headingRad: this.player.heading,
+      pitchRad: this.player.pitch,
       speed: this.player.speedMultiplier,
       visitedPlanets: Array.from(this.player.visitedPlanets),
       distanceTraveled: this.player.distanceTraveled,
@@ -878,7 +1030,10 @@ export class ExploreMode {
       timestamp: Date.now(),
       autopilot: this.autopilot,
       layoutMode: this.layoutMode,
-      simDate: this.simDate.getTime(),
+      simDate: this.timeState.currentUtcMs,
+      astroTimeUtcMs: this.timeState.currentUtcMs,
+      astroTimeRate: this.timeState.rate,
+      astroTimePaused: this.timeState.paused,
       planetScale: this.planetScale,
       showShip: this.showShip,
     };
@@ -889,28 +1044,25 @@ export class ExploreMode {
     this.player.posY = saved.positionAU.y;
     this.player.posZ = saved.positionAU.z;
     this.player.heading = saved.headingRad;
+    this.player.pitch = saved.pitchRad ?? 0;
     this.player.speedMultiplier = saved.speed;
     this.player.distanceTraveled = saved.distanceTraveled;
     this.player.timeElapsed = saved.timeElapsed;
     this.player.visitedPlanets = new Set(saved.visitedPlanets);
 
-    // Restore settings
     this.autopilot = saved.autopilot;
-    this.layoutMode = saved.layoutMode as LayoutMode;
-    this.simDate = new Date(saved.simDate);
+    this.layoutMode = 'realistic';
+    this.timeState = {
+      currentUtcMs: saved.astroTimeUtcMs ?? saved.simDate ?? Date.now(),
+      rate: saved.astroTimeRate ?? 1,
+      paused: saved.astroTimePaused ?? false,
+    };
     this.planetScale = saved.planetScale;
     this.showShip = saved.showShip;
     this.player.group.visible = this.showShip;
 
-    // Update UI to reflect state
     const apBtn = document.getElementById('explore-btn-autopilot');
     if (apBtn) apBtn.classList.toggle('active', this.autopilot);
-    const layoutLabel = document.getElementById('settings-layout-label');
-    if (layoutLabel) layoutLabel.textContent = this.layoutMode === 'aligned' ? 'Lined up' : 'Realistic';
-    const dateRow = document.getElementById('settings-date-row');
-    if (dateRow) dateRow.style.display = this.layoutMode === 'realistic' ? 'flex' : 'none';
-    const dateInput = document.getElementById('settings-date-input') as HTMLInputElement;
-    if (dateInput) dateInput.value = this.simDate.toISOString().slice(0, 10);
     const scaleSlider = document.getElementById('settings-planet-scale') as HTMLInputElement;
     if (scaleSlider) scaleSlider.value = String(this.planetScale);
     const scaleLabel = document.getElementById('settings-scale-label');
@@ -918,12 +1070,14 @@ export class ExploreMode {
     const shipLabel = document.getElementById('settings-ship-label');
     if (shipLabel) shipLabel.textContent = this.showShip ? 'On' : 'Off';
 
-    // Rebuild planet positions if alignment changed
     this.rebuildPlanetPositions();
 
     this.updateSpeedSlider();
+    this.updateTimeUI();
 
-    // Restore visited chip styles
+    for (const body of ALL_BODIES) {
+      document.getElementById(`jump-${body.name.toLowerCase()}`)?.classList.remove('visited');
+    }
     for (const name of saved.visitedPlanets) {
       const chip = document.getElementById(`jump-${name.toLowerCase()}`);
       if (chip) chip.classList.add('visited');
@@ -932,49 +1086,43 @@ export class ExploreMode {
     this.resetCruiseCamera();
   }
 
+  private getStarColor(colorIndex: number): THREE.Color {
+    const clamped = THREE.MathUtils.clamp(colorIndex, -0.3, 1.8);
+    const t = (clamped + 0.3) / 2.1;
+    const cool = new THREE.Color(0.66, 0.78, 1.0);
+    const neutral = new THREE.Color(1.0, 0.98, 0.94);
+    const warm = new THREE.Color(1.0, 0.76, 0.5);
+    return t < 0.5
+      ? cool.clone().lerp(neutral, t * 2)
+      : neutral.clone().lerp(warm, (t - 0.5) * 2);
+  }
+
   private createExploreStarfield(): THREE.Points {
-    const starCount = 15000;
+    const starCount = BRIGHT_STAR_CATALOG.length;
     const positions = new Float32Array(starCount * 3);
     const colors = new Float32Array(starCount * 3);
     const sizes = new Float32Array(starCount);
 
     for (let i = 0; i < starCount; i++) {
-      const theta = Math.random() * Math.PI * 2;
-      const phi = Math.acos(2 * Math.random() - 1);
-      const r = 60 + Math.random() * 30;
+      const star = BRIGHT_STAR_CATALOG[i];
+      const radius = 85;
+      const ra = THREE.MathUtils.degToRad(star.raDeg);
+      const dec = THREE.MathUtils.degToRad(star.decDeg);
+      const cosDec = Math.cos(dec);
+      const color = this.getStarColor(star.colorIndex);
+      const brightness = THREE.MathUtils.clamp(1.2 - (star.magnitude + 1.44) / 8, 0.25, 1.2);
 
-      positions[i * 3] = r * Math.sin(phi) * Math.cos(theta);
-      positions[i * 3 + 1] = r * Math.sin(phi) * Math.sin(theta);
-      positions[i * 3 + 2] = r * Math.cos(phi);
+      positions[i * 3] = radius * cosDec * Math.cos(ra);
+      positions[i * 3 + 1] = radius * Math.sin(dec);
+      positions[i * 3 + 2] = radius * cosDec * Math.sin(ra);
 
       // Realistic star color temperature distribution
-      const rand = Math.random();
-      if (rand < 0.6) {
-        // White/warm white (most common)
-        const t = 0.85 + Math.random() * 0.15;
-        colors[i * 3] = t;
-        colors[i * 3 + 1] = t * (0.92 + Math.random() * 0.08);
-        colors[i * 3 + 2] = t * (0.85 + Math.random() * 0.15);
-      } else if (rand < 0.8) {
-        // Cool blue-white
-        colors[i * 3] = 0.8 + Math.random() * 0.1;
-        colors[i * 3 + 1] = 0.85 + Math.random() * 0.1;
-        colors[i * 3 + 2] = 0.95 + Math.random() * 0.05;
-      } else if (rand < 0.92) {
-        // Warm yellow/orange
-        colors[i * 3] = 0.95 + Math.random() * 0.05;
-        colors[i * 3 + 1] = 0.75 + Math.random() * 0.15;
-        colors[i * 3 + 2] = 0.5 + Math.random() * 0.2;
-      } else {
-        // Red-ish
-        colors[i * 3] = 0.9 + Math.random() * 0.1;
-        colors[i * 3 + 1] = 0.5 + Math.random() * 0.2;
-        colors[i * 3 + 2] = 0.3 + Math.random() * 0.2;
-      }
+      colors[i * 3] = color.r * brightness;
+      colors[i * 3 + 1] = color.g * brightness;
+      colors[i * 3 + 2] = color.b * brightness;
 
       // Variable sizes — most small, few bright
-      const sizeRand = Math.random();
-      sizes[i] = sizeRand < 0.9 ? 1.0 + Math.random() * 1.0 : 2.0 + Math.random() * 2.5;
+      sizes[i] = THREE.MathUtils.clamp(5.4 - star.magnitude, 1.2, 5.4);
     }
 
     const geo = new THREE.BufferGeometry();
@@ -1022,7 +1170,7 @@ export class ExploreMode {
       if (body.semiMajorAxisAU > playerDist) {
         const pos = this.planetWorldPositions.get(body.name);
         if (pos) {
-          this.player.headToward(pos.x, pos.z);
+          this.player.headToward(pos.x, pos.z, pos.y);
         }
         break;
       }
@@ -1038,7 +1186,7 @@ export class ExploreMode {
       // Manual mode: start at speed 0
       this.player.speedMultiplier = 0;
       this.updateSpeedSlider();
-      this.showNotification('Manual — W/S or ▲▼ to thrust, A/D to steer');
+      this.showNotification('Manual flight: W/S throttle, arrows pitch/yaw, drag on mobile');
     } else {
       // Returning to autopilot: restore default speed if stopped
       if (this.player.speedMultiplier < 0.05) {
@@ -1049,25 +1197,138 @@ export class ExploreMode {
     }
   }
 
-  rebuildPlanetPositions() {
+  rebuildPlanetPositions(_dt = 0) {
     if (!this.solarSystem) return;
     for (let i = 0; i < this.solarSystem.planets.length; i++) {
       const planet = this.solarSystem.planets[i];
       const body = ALL_BODIES[i];
-      const pos = getPlanetOrbitalPosition(body, i + 1, this.layoutMode, this.simDate);
-      planet.group.userData.worldPosAU = { x: pos.x, y: pos.y, z: pos.z };
-      this.planetWorldPositions.set(body.name, { x: pos.x, y: pos.y, z: pos.z });
+      const state = computeBodyState(body, this.timeState.currentUtcMs);
+
+      planet.group.quaternion.copy(state.orientationQuaternion);
+      planet.mesh.rotation.y = 0;
+      if (planet.cloudsMesh) {
+        const cloudDrift = body.name === 'Earth'
+          ? ((this.timeState.currentUtcMs / 3_600_000) * 0.02) % (Math.PI * 2)
+          : 0;
+        planet.cloudsMesh.rotation.y = cloudDrift;
+      }
+      if (planet.nightMaterial) {
+        const localSunDir = state.sunDirection
+          .clone()
+          .applyQuaternion(planet.group.quaternion.clone().invert());
+        planet.nightMaterial.uniforms.sunDirection.value.copy(localSunDir);
+      }
+
+      planet.group.userData.worldPosAU = {
+        x: state.positionAU.x,
+        y: state.positionAU.y,
+        z: state.positionAU.z,
+      };
+      this.planetWorldPositions.set(body.name, {
+        x: state.positionAU.x,
+        y: state.positionAU.y,
+        z: state.positionAU.z,
+      });
     }
   }
 
-  private toggleLayout() {
-    this.layoutMode = this.layoutMode === 'aligned' ? 'realistic' : 'aligned';
-    this.rebuildPlanetPositions();
-    const label = document.getElementById('settings-layout-label');
-    if (label) label.textContent = this.layoutMode === 'aligned' ? 'Lined up' : 'Realistic';
-    const dateRow = document.getElementById('settings-date-row');
-    if (dateRow) dateRow.style.display = this.layoutMode === 'realistic' ? 'flex' : 'none';
-    this.showNotification(this.layoutMode === 'aligned' ? 'Planets lined up' : 'Realistic orbits');
+  private stepTimeRate(direction: -1 | 1) {
+    const currentMagnitude = Math.abs(this.timeState.rate);
+    const presets = ExploreMode.TIME_RATE_PRESETS;
+    let index = presets.findIndex(rate => Math.abs(rate - currentMagnitude) < 1e-6);
+    if (index === -1) {
+      index = presets.findIndex(rate => rate > currentMagnitude);
+      if (index === -1) index = presets.length - 1;
+    }
+    index = THREE.MathUtils.clamp(index + direction, 0, presets.length - 1);
+    this.timeState.rate = presets[index] * (this.timeState.rate < 0 ? -1 : 1);
+    this.timeState.paused = false;
+    this.updateTimeUI();
+  }
+
+  private updateTimeUI() {
+    const nextTimeLabel = formatUtcLabel(this.timeState.currentUtcMs);
+    const nextTimeRateLabel = formatTimeRateLabel(this.timeState.rate, this.timeState.paused);
+    const nextInputValue = formatUtcInputValue(this.timeState.currentUtcMs);
+
+    if (this.timeValueEl && this.lastTimeLabel !== nextTimeLabel) {
+      this.timeValueEl.textContent = nextTimeLabel;
+      this.lastTimeLabel = nextTimeLabel;
+    }
+    if (this.timeRateEl && this.lastTimeRateLabel !== nextTimeRateLabel) {
+      this.timeRateEl.textContent = nextTimeRateLabel;
+      this.lastTimeRateLabel = nextTimeRateLabel;
+    }
+    if (this.timeInputEl && this.lastTimeInputValue !== nextInputValue && document.activeElement !== this.timeInputEl) {
+      this.timeInputEl.value = nextInputValue;
+      this.lastTimeInputValue = nextInputValue;
+    }
+    const pauseBtn = document.getElementById('explore-time-pause');
+    if (pauseBtn) pauseBtn.textContent = this.timeState.paused ? 'Resume' : 'Pause';
+    const gyroLabel = document.getElementById('settings-gyro-label');
+    if (gyroLabel) gyroLabel.textContent = this.gyroEnabled ? 'On' : 'Off';
+  }
+
+  private setFlightTouchFromPoint(clientX: number, clientY: number) {
+    const zone = document.getElementById('touch-flight-zone');
+    if (!zone) return;
+    const rect = zone.getBoundingClientRect();
+    const rawX = ((clientX - rect.left) / rect.width) * 2 - 1;
+    const rawY = 1 - ((clientY - rect.top) / rect.height) * 2;
+    const applyDeadZone = (value: number) => {
+      const deadZone = 0.12;
+      if (Math.abs(value) < deadZone) return 0;
+      return THREE.MathUtils.clamp(
+        ((Math.abs(value) - deadZone) / (1 - deadZone)) * Math.sign(value),
+        -1,
+        1,
+      );
+    };
+
+    this.touchYaw = applyDeadZone(rawX);
+    this.touchPitch = applyDeadZone(rawY);
+  }
+
+  private async toggleGyroControls() {
+    if (this.gyroEnabled) {
+      this.gyroEnabled = false;
+      this.gyroYaw = 0;
+      this.gyroPitch = 0;
+      window.removeEventListener('deviceorientation', this.handleDeviceOrientation);
+      this.updateTimeUI();
+      this.showNotification('Gyro steering off');
+      return;
+    }
+
+    const orientationCtor = window.DeviceOrientationEvent as typeof DeviceOrientationEvent & {
+      requestPermission?: () => Promise<'granted' | 'denied'>;
+    };
+    if (typeof orientationCtor === 'undefined') {
+      this.showNotification('Gyro steering is not available on this device');
+      return;
+    }
+
+    if (typeof orientationCtor.requestPermission === 'function' && !this.gyroPermissionRequested) {
+      this.gyroPermissionRequested = true;
+      const permission = await orientationCtor.requestPermission();
+      if (permission !== 'granted') {
+        this.showNotification('Gyro permission denied');
+        return;
+      }
+    }
+
+    this.gyroEnabled = true;
+    window.addEventListener('deviceorientation', this.handleDeviceOrientation);
+    this.updateTimeUI();
+    this.showNotification('Gyro steering on');
+  }
+
+  private handleDeviceOrientation(event: DeviceOrientationEvent) {
+    if (!this.gyroEnabled) return;
+    const gamma = event.gamma ?? 0;
+    const beta = event.beta ?? 0;
+    this.gyroYaw = THREE.MathUtils.clamp(gamma / 35, -1, 1);
+    this.gyroPitch = THREE.MathUtils.clamp((10 - beta) / 35, -1, 1);
   }
 
   dispose() {

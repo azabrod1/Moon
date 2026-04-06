@@ -242,6 +242,7 @@ export interface PlanetMesh {
   data: PlanetData;
   rings?: THREE.Mesh;
   atmosphere?: THREE.Mesh;
+  nightMesh?: THREE.Mesh;
   nightMaterial?: THREE.ShaderMaterial; // For Earth night lights
   cloudsMesh?: THREE.Mesh;
 }
@@ -267,7 +268,6 @@ export async function createPlanetMesh(planet: PlanetData): Promise<PlanetMesh> 
   });
 
   const mesh = new THREE.Mesh(geo, mat);
-  mesh.rotation.z = (planet.axialTiltDeg * Math.PI) / 180;
   group.add(mesh);
 
   // Atmosphere glow for planets with atmospheres
@@ -275,12 +275,12 @@ export async function createPlanetMesh(planet: PlanetData): Promise<PlanetMesh> 
   const atmosConfig = ATMOSPHERES[planet.name];
   if (atmosConfig) {
     atmosphere = createAtmosphereGlow(planet.radiusAU, atmosConfig);
-    atmosphere.rotation.z = (planet.axialTiltDeg * Math.PI) / 180;
     group.add(atmosphere);
   }
 
   // Earth-specific enhancements: night lights + clouds
   let nightMaterial: THREE.ShaderMaterial | undefined;
+  let nightMesh: THREE.Mesh | undefined;
   let cloudsMesh: THREE.Mesh | undefined;
 
   if (planet.name === 'Earth') {
@@ -298,8 +298,7 @@ export async function createPlanetMesh(planet: PlanetData): Promise<PlanetMesh> 
       blending: THREE.AdditiveBlending,
       depthWrite: false,
     });
-    const nightMesh = new THREE.Mesh(nightGeo, nightMaterial);
-    nightMesh.rotation.z = (planet.axialTiltDeg * Math.PI) / 180;
+    nightMesh = new THREE.Mesh(nightGeo, nightMaterial);
     group.add(nightMesh);
 
     // Cloud layer
@@ -313,7 +312,6 @@ export async function createPlanetMesh(planet: PlanetData): Promise<PlanetMesh> 
       roughness: 1.0,
     });
     cloudsMesh = new THREE.Mesh(cloudGeo, cloudMat);
-    cloudsMesh.rotation.z = (planet.axialTiltDeg * Math.PI) / 180;
     group.add(cloudsMesh);
 
     // Use bump map too
@@ -326,11 +324,10 @@ export async function createPlanetMesh(planet: PlanetData): Promise<PlanetMesh> 
   let rings: THREE.Mesh | undefined;
   if (planet.hasRings) {
     rings = createSaturnRings(planet.radiusAU);
-    rings.rotation.z = (planet.axialTiltDeg * Math.PI) / 180;
     group.add(rings);
   }
 
-  return { group, mesh, data: planet, rings, atmosphere, nightMaterial, cloudsMesh };
+  return { group, mesh, data: planet, rings, atmosphere, nightMesh, nightMaterial, cloudsMesh };
 }
 
 export function createExploreSun(useBloom = true): THREE.Group {

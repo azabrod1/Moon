@@ -389,33 +389,86 @@
       bottom: 12px;
       left: 50%;
       transform: translateX(-50%);
-      width: min(560px, calc(100vw - 24px));
+      width: auto;
       background: var(--panel-bg);
       backdrop-filter: blur(8px);
       border: 1px solid var(--panel-border);
       border-radius: 8px;
-      padding: 10px 14px;
+      padding: 9px 12px;
       pointer-events: auto;
+      z-index: 18;
+    }
+
+    #explore-time-panel {
+      position: absolute;
+      left: 12px;
+      bottom: 12px;
+      width: min(380px, calc(100vw - 36px));
+      background:
+        linear-gradient(180deg, rgba(13, 22, 40, 0.88) 0%, rgba(7, 12, 24, 0.9) 100%);
+      backdrop-filter: blur(12px);
+      border: 1px solid rgba(91, 140, 255, 0.18);
+      border-radius: 12px;
+      padding: 12px 14px;
+      pointer-events: auto;
+      box-shadow: 0 16px 40px rgba(0, 0, 0, 0.35);
+      z-index: 18;
+    }
+    .time-panel-top {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+    }
+    .time-panel-label {
+      font-size: 10px;
+      color: var(--text-dim);
+      text-transform: uppercase;
+      letter-spacing: 1.4px;
+    }
+    #explore-time-rate {
+      font-size: 11px;
+      color: rgba(166, 194, 255, 0.92);
+      font-variant-numeric: tabular-nums;
+      white-space: nowrap;
+    }
+    #explore-time-value {
+      margin-top: 6px;
+      font-size: 16px;
+      letter-spacing: 1px;
+      color: var(--text-primary);
+      font-variant-numeric: tabular-nums;
+    }
+    .time-panel-caption {
+      margin-top: 4px;
+      font-size: 10px;
+      color: var(--text-dim);
+      line-height: 1.4;
+    }
+    .time-controls {
+      display: grid;
+      grid-template-columns: repeat(6, minmax(0, 1fr));
+      gap: 6px;
+      margin-top: 10px;
+    }
+    .time-input-row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin-top: 10px;
+    }
+    .time-input-row .settings-label {
+      flex-shrink: 0;
+    }
+    #explore-time-input {
+      flex: 1;
+      min-width: 0;
     }
 
     .speed-row {
       display: flex;
       align-items: center;
-      gap: 10px;
-    }
-
-    .speed-row input[type="range"] {
-      flex: 1;
-      -webkit-appearance: none;
-      height: 2px; border-radius: 1px;
-      background: rgba(100, 140, 255, 0.12);
-      outline: none;
-    }
-    .speed-row input[type="range"]::-webkit-slider-thumb {
-      -webkit-appearance: none;
-      width: 12px; height: 12px; border-radius: 50%;
-      background: var(--accent);
-      cursor: pointer;
+      gap: 8px;
     }
 
     .speed-label-sm { font-size: 10px; color: var(--text-secondary); text-transform: uppercase; letter-spacing: 0.5px; white-space: nowrap; }
@@ -440,22 +493,6 @@
     }
     .explore-icon-btn:hover { background: var(--accent-dim); color: var(--text-primary); }
 
-    /* Progress track */
-    .progress-track {
-      margin-top: 8px;
-      height: 2px;
-      background: rgba(100, 140, 255, 0.08);
-      border-radius: 1px;
-      overflow: hidden;
-    }
-    .progress-fill {
-      height: 100%;
-      background: linear-gradient(90deg, var(--accent), #8b5cf6);
-      border-radius: 1px;
-      width: 0%;
-      transition: width 0.3s ease;
-    }
-
     /* Save/Settings/New buttons - top right, same level as top bar */
     #explore-actions {
       position: absolute;
@@ -468,17 +505,25 @@
     }
     .explore-sm-btn {
       padding: 5px 12px;
-      border: 1px solid var(--panel-border);
+      border: 1px solid rgba(108, 154, 255, 0.24);
       border-radius: 6px;
-      background: var(--panel-bg);
+      background:
+        linear-gradient(180deg, rgba(16, 24, 45, 0.92) 0%, rgba(8, 13, 26, 0.96) 100%);
+      box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04);
       backdrop-filter: blur(8px);
-      color: var(--text-dim);
-      font-size: 10px;
+      color: rgba(218, 230, 255, 0.9);
+      font-size: 11px;
+      letter-spacing: 0.2px;
       cursor: pointer;
       transition: all 0.15s;
       font-family: var(--font);
     }
-    .explore-sm-btn:hover { background: var(--accent-dim); color: var(--text-secondary); }
+    .explore-sm-btn:hover {
+      background:
+        linear-gradient(180deg, rgba(28, 42, 77, 0.96) 0%, rgba(12, 20, 38, 0.98) 100%);
+      border-color: rgba(123, 171, 255, 0.42);
+      color: #f4f8ff;
+    }
 
     /* Autopilot button active state */
     .explore-icon-btn.active {
@@ -647,20 +692,24 @@
     }
 
     /* Touch steer zones (mobile only) */
-    .touch-steer-zone {
+    .touch-flight-zone {
       display: none;
       position: absolute;
       top: 90px;
       bottom: 130px;
-      width: 25%;
+      left: 0;
+      right: 0;
       pointer-events: auto;
       z-index: 12;
       opacity: 0;
-      transition: opacity 0.15s;
+      transition: opacity 0.15s, background 0.15s;
+      touch-action: none;
     }
-    .touch-steer-zone:active, .touch-steer-zone.active { opacity: 1; }
-    .touch-steer-left { left: 0; background: linear-gradient(90deg, rgba(91,140,255,0.08) 0%, transparent 100%); }
-    .touch-steer-right { right: 0; background: linear-gradient(-90deg, rgba(91,140,255,0.08) 0%, transparent 100%); }
+    .touch-flight-zone:active, .touch-flight-zone.active {
+      opacity: 1;
+      background:
+        radial-gradient(circle at center, rgba(91, 140, 255, 0.08) 0%, rgba(91, 140, 255, 0.02) 35%, transparent 70%);
+    }
 
     /* Touch throttle buttons (mobile only) */
     .touch-throttle-group {
@@ -698,7 +747,7 @@
     }
 
     @media (hover: none) and (pointer: coarse) {
-      .touch-steer-zone { display: block; }
+      .touch-flight-zone { display: block; }
       .touch-throttle-group { display: flex; }
       #explore-keys-hint { display: none; }
     }
@@ -708,7 +757,7 @@
       display: none;
       position: fixed;
       top: 0; left: 0; right: 0; bottom: 0;
-      z-index: 60;
+      z-index: 120;
       background: rgba(2, 2, 6, 0.85);
       align-items: center;
       justify-content: center;
@@ -754,6 +803,7 @@
 
     /* Key hints */
     #explore-keys-hint {
+      display: none;
       position: absolute;
       bottom: 62px;
       left: 50%;
@@ -835,7 +885,16 @@
 
       #info-bar { font-size: 10px; padding: 6px 12px; gap: 10px; bottom: 8px; }
 
-      #explore-stats-compact { bottom: 60px; right: 8px; padding: 8px 10px; min-width: 150px; }
+      #explore-stats-compact { bottom: 214px; right: 8px; padding: 8px 10px; min-width: 150px; }
+      #explore-time-panel {
+        left: 10px;
+        right: 10px;
+        width: auto;
+        bottom: 76px;
+        padding: 10px 12px;
+      }
+      #explore-time-value { font-size: 14px; }
+      .time-controls { grid-template-columns: repeat(3, minmax(0, 1fr)); }
       .stat-row { padding: 2px 0; }
       .stat-label { font-size: 9px; }
       .stat-value { font-size: 10px; }
@@ -1055,16 +1114,6 @@
       <!-- Settings dropdown -->
       <div id="explore-settings-panel">
         <div class="settings-row">
-          <span class="settings-label">Planet layout</span>
-          <button class="settings-toggle" id="settings-layout-toggle">
-            <span id="settings-layout-label">Lined up</span>
-          </button>
-        </div>
-        <div class="settings-row" id="settings-date-row" style="display:none">
-          <span class="settings-label">Date</span>
-          <input type="date" id="settings-date-input" class="settings-date" min="2000-01-01" max="2050-12-31" />
-        </div>
-        <div class="settings-row">
           <span class="settings-label">Planet size</span>
           <div class="settings-scale-row">
             <input type="range" id="settings-planet-scale" min="1" max="64" value="16" class="settings-slider" />
@@ -1076,6 +1125,33 @@
           <button class="settings-toggle" id="settings-ship-toggle">
             <span id="settings-ship-label">On</span>
           </button>
+        </div>
+        <div class="settings-row">
+          <span class="settings-label">Gyro steer</span>
+          <button class="settings-toggle" id="settings-gyro-toggle">
+            <span id="settings-gyro-label">Off</span>
+          </button>
+        </div>
+      </div>
+
+      <div id="explore-time-panel">
+        <div class="time-panel-top">
+          <span class="time-panel-label">Astronomy Time</span>
+          <span id="explore-time-rate">1x real-time</span>
+        </div>
+        <div id="explore-time-value">--</div>
+        <div class="time-panel-caption">Changes orbit and rotation time only. Ship thrust stays separate.</div>
+        <div class="time-controls">
+          <button class="explore-icon-btn" id="explore-time-pause">Pause</button>
+          <button class="explore-icon-btn" id="explore-time-play">Play</button>
+          <button class="explore-icon-btn" id="explore-time-reverse">Reverse</button>
+          <button class="explore-icon-btn" id="explore-time-slower">Slower</button>
+          <button class="explore-icon-btn" id="explore-time-faster">Faster</button>
+          <button class="explore-icon-btn" id="explore-time-now">Now</button>
+        </div>
+        <div class="time-input-row">
+          <span class="settings-label">UTC</span>
+          <input type="datetime-local" id="explore-time-input" class="settings-date" step="60" />
         </div>
       </div>
 
@@ -1098,22 +1174,19 @@
         <div class="speed-row">
           <button class="explore-icon-btn" id="explore-btn-pause">&#x23F8;</button>
           <button class="explore-icon-btn active" id="explore-btn-autopilot" title="Auto-steers toward the next planet. Turn off to fly freely in any direction. (P)">Auto</button>
-          <span class="speed-label-sm">Speed</span>
-          <input type="range" id="explore-speed-slider" min="0" max="100" value="33" />
+          <button class="explore-icon-btn" id="explore-speed-down" title="Reduce cruise speed">-</button>
+          <span class="speed-label-sm">Cruise</span>
           <span id="explore-speed-value">2.8c</span>
-        </div>
-        <div class="progress-track">
-          <div class="progress-fill" id="explore-progress-fill"></div>
+          <button class="explore-icon-btn" id="explore-speed-up" title="Increase cruise speed">+</button>
         </div>
       </div>
 
       <div id="explore-keys-hint">
-        <kbd>A</kbd><kbd>D</kbd> steer &nbsp; <kbd>W</kbd><kbd>S</kbd> thrust &nbsp; <kbd>Space</kbd> pause &nbsp; <kbd>P</kbd> autopilot
+        <kbd>A</kbd><kbd>D</kbd> yaw &nbsp; <kbd>↑</kbd><kbd>↓</kbd> pitch &nbsp; <kbd>W</kbd><kbd>S</kbd> thrust &nbsp; <kbd>P</kbd> autopilot
       </div>
 
-      <!-- Touch steer zones (mobile only) -->
-      <div id="touch-steer-left" class="touch-steer-zone touch-steer-left"></div>
-      <div id="touch-steer-right" class="touch-steer-zone touch-steer-right"></div>
+      <!-- Touch flight zone (mobile only) -->
+      <div id="touch-flight-zone" class="touch-flight-zone"></div>
 
       <!-- Touch throttle buttons (mobile only) -->
       <div id="touch-throttle" class="touch-throttle-group">

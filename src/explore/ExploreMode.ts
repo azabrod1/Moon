@@ -1542,12 +1542,12 @@ export class ExploreMode {
 
     this.gyroYaw = THREE.MathUtils.lerp(
       this.gyroYaw,
-      this.normalizeGyroDelta(mapped.yawDeg - this.gyroBaseline.yawDeg),
+      this.normalizeGyroDelta(this.gyroBaseline.yawDeg - mapped.yawDeg),
       0.18,
     );
     this.gyroPitch = THREE.MathUtils.lerp(
       this.gyroPitch,
-      this.normalizeGyroDelta(this.gyroBaseline.pitchDeg - mapped.pitchDeg),
+      this.normalizeGyroDelta(mapped.pitchDeg - this.gyroBaseline.pitchDeg),
       0.18,
     );
   }

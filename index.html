@@ -400,15 +400,22 @@
     }
 
     /* Time row in stats — clickable to expand controls */
+    #stat-time-section {
+      border-top: 1px solid var(--panel-border);
+      margin-top: 4px;
+      padding-top: 4px;
+    }
     .stat-time-header {
       display: flex;
       align-items: center;
       justify-content: space-between;
       cursor: pointer;
-      padding: 4px 0;
+      padding: 5px 0;
       -webkit-tap-highlight-color: transparent;
+      min-height: 36px;
     }
-    .stat-time-header:hover .stat-time-chevron { opacity: 0.9; }
+    .stat-time-header:hover .stat-time-chevron,
+    .stat-time-header:active .stat-time-chevron { opacity: 1; }
     .stat-time-left {
       display: flex;
       flex-direction: column;
@@ -429,19 +436,17 @@
       white-space: nowrap;
     }
     .stat-time-chevron {
-      font-size: 8px;
-      color: var(--text-dim);
-      opacity: 0.5;
+      font-size: 10px;
+      color: var(--accent);
+      opacity: 0.7;
       transition: transform 0.2s, opacity 0.15s;
       flex-shrink: 0;
-      margin-left: 6px;
+      margin-left: 8px;
     }
-    .stat-time-expanded .stat-time-chevron { transform: rotate(180deg); opacity: 0.8; }
+    .stat-time-expanded .stat-time-chevron { transform: rotate(180deg); opacity: 1; }
     .stat-time-controls {
       display: none;
       padding-top: 6px;
-      border-top: 1px solid var(--panel-border);
-      margin-top: 4px;
     }
     .stat-time-expanded .stat-time-controls { display: block; }
     .time-controls {
@@ -1130,7 +1135,7 @@
       <div id="explore-speed-bar">
         <div class="speed-row">
           <button class="explore-icon-btn" id="explore-btn-pause">&#x23F8;</button>
-          <button class="explore-icon-btn active" id="explore-btn-autopilot" title="Auto-steers toward the next planet. Turn off to fly freely in any direction. (P)">Auto</button>
+          <button class="explore-icon-btn active" id="explore-btn-autopilot" title="Autopilot: steers toward the next planet. Turn off to fly freely. (P)">&#x27A4; Pilot</button>
           <button class="explore-icon-btn" id="explore-speed-down" title="Reduce cruise speed">-</button>
           <span class="speed-label-sm">Cruise</span>
           <span id="explore-speed-value">2.8c</span>

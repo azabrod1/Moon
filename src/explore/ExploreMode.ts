@@ -799,10 +799,19 @@ export class ExploreMode {
     });
 
     // Time section expand/collapse
-    document.getElementById('stat-time-toggle')?.addEventListener('click', () => {
-      const section = document.getElementById('stat-time-section');
-      if (section) section.classList.toggle('stat-time-expanded');
-    });
+    const timeToggle = document.getElementById('stat-time-toggle');
+    const timeSection = document.getElementById('stat-time-section');
+    if (timeToggle && timeSection) {
+      timeToggle.addEventListener('click', (e) => {
+        e.stopPropagation();
+        timeSection.classList.toggle('stat-time-expanded');
+      });
+      // Prevent control button clicks from closing the panel
+      const timeControls = timeSection.querySelector('.stat-time-controls');
+      if (timeControls) {
+        timeControls.addEventListener('click', (e) => e.stopPropagation());
+      }
+    }
 
     // Astronomy time controls
     document.getElementById('explore-time-pause')?.addEventListener('click', () => {
@@ -1202,7 +1211,7 @@ export class ExploreMode {
     this.autopilot = false;
     const btn = document.getElementById('explore-btn-autopilot');
     if (btn) btn.classList.toggle('active', false);
-    this.showNotification('Manual flight');
+    this.showNotification('Manual flight — steer freely');
   }
 
   private toggleAutopilot() {
@@ -1220,7 +1229,7 @@ export class ExploreMode {
         this.player.speedMultiplier = PlayerShip.SPEED_DEFAULT;
         this.updateSpeedSlider();
       }
-      this.showNotification('Autopilot ON');
+      this.showNotification('Pilot engaged — heading to next planet');
     }
   }
 

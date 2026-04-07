@@ -9,8 +9,8 @@ import { SCENE, DEG2RAD, RAD2DEG } from './utils/constants';
 import { loadAllTextures } from './utils/textures';
 import { computeOrbitalState, findEvent, type EventType } from './utils/ephemeris';
 import {
-  LUNAR_ORBIT,
   createOrbitPoints,
+  getLunarOrbitMetrics,
   longitudeDegFromMeanAnomaly,
   meanAnomalyDegFromTrueAnomaly,
   meanMotionDegPerDay,
@@ -22,6 +22,7 @@ import { Earth } from './bodies/Earth';
 import { Moon } from './bodies/Moon';
 import { Sun } from './bodies/Sun';
 import { ExploreMode } from './explore/ExploreMode';
+import { OrbitDetailsOverlay } from './simulator/OrbitDetailsOverlay';
 import { debugError, debugLog, debugWarn } from './utils/debug';
 
 // ================================================================
@@ -47,6 +48,8 @@ const state = {
   currentDate: new Date(),
   dateTimeSpeed: 0,
 };
+
+const lunarOrbitMetrics = getLunarOrbitMetrics();
 
 // ================================================================
 // Device detection (must be before renderer setup)
@@ -142,7 +145,7 @@ scene.background = new THREE.Color(0x000000);
 
 // --- Simulator camera + controls ---
 const simCamera = new THREE.PerspectiveCamera(50, window.innerWidth / window.innerHeight, 0.01, 500);
-const moonOrbitApoapsis = SCENE.EARTH_MOON_DIST * (1 + LUNAR_ORBIT.eccentricity);
+const moonOrbitApoapsis = lunarOrbitMetrics.apoapsisScene;
 simCamera.position.set(moonOrbitApoapsis * 1.1, moonOrbitApoapsis * 0.42, moonOrbitApoapsis * 1.45);
 
 const simControls = new OrbitControls(simCamera, renderer.domElement);
@@ -324,6 +327,18 @@ const infoDistance = document.getElementById('info-distance')!;
 const infoPhaseAngle = document.getElementById('info-phase-angle')!;
 const infoNodeDist = document.getElementById('info-node-dist')!;
 const speedDisplay = document.getElementById('speed-display')!;
+const orbitDetailsToggle = document.getElementById('orbit-details-toggle') as HTMLInputElement;
+const orbitDetailsPanel = document.getElementById('orbit-details-panel')!;
+const orbitMajorAxisReadout = document.getElementById('orbit-major-axis-readout')!;
+const orbitMinorAxisReadout = document.getElementById('orbit-minor-axis-readout')!;
+const orbitFocusOffsetReadout = document.getElementById('orbit-focus-offset-readout')!;
+const orbitApsidesReadout = document.getElementById('orbit-apsides-readout')!;
+const orbitFocusLabelF1 = document.getElementById('orbit-focus-label-f1')!;
+const orbitFocusLabelF2 = document.getElementById('orbit-focus-label-f2')!;
+const focusWorld1 = new THREE.Vector3();
+const focusWorld2 = new THREE.Vector3();
+const projectedFocus1 = new THREE.Vector3();
+const projectedFocus2 = new THREE.Vector3();
 
 function syncMoonMeanAnomalyFromDisplayedAngle() {
   const trueAnomalyDeg = trueAnomalyDegFromLongitude(state.moonAngle, state.nodeAngle);
@@ -333,6 +348,57 @@ function syncMoonMeanAnomalyFromDisplayedAngle() {
 function syncDisplayedMoonAngleFromMeanAnomaly() {
   state.moonAngle = longitudeDegFromMeanAnomaly(state.moonMeanAnomaly, state.nodeAngle);
 }
+
+function applyOrbitDetailsVisibility(visible: boolean) {
+  orbitDetailsPanel.classList.toggle('visible', visible);
+  orbitDetailsOverlay.setVisible(visible);
+  orbitFocusLabelF1.classList.toggle('visible', visible);
+  orbitFocusLabelF2.classList.toggle('visible', visible);
+}
+
+function formatKm(valueKm: number) {
+  return `${Math.round(valueKm).toLocaleString()} km`;
+}
+
+function placeFocusLabel(label: HTMLElement, worldPosition: THREE.Vector3, cam: THREE.Camera, yOffsetPx: number) {
+  const projected = worldPosition.clone().project(cam);
+  const isVisible = projected.z >= -1 && projected.z <= 1;
+
+  if (!isVisible) {
+    label.style.display = 'none';
+    return;
+  }
+
+  const x = ((projected.x + 1) / 2) * window.innerWidth;
+  const y = ((-projected.y + 1) / 2) * window.innerHeight + yOffsetPx;
+  label.style.display = 'block';
+  label.style.left = `${x}px`;
+  label.style.top = `${y}px`;
+}
+
+function updateOrbitFocusLabels(cam: THREE.Camera) {
+  if (!orbitDetailsToggle.checked || appMode !== 'simulator') {
+    orbitFocusLabelF1.style.display = 'none';
+    orbitFocusLabelF2.style.display = 'none';
+    return;
+  }
+
+  orbitDetailsOverlay.getFocusWorldPositions(focusWorld1, focusWorld2);
+  projectedFocus1.copy(focusWorld1);
+  projectedFocus2.copy(focusWorld2);
+  placeFocusLabel(orbitFocusLabelF1, projectedFocus1, cam, -14);
+  placeFocusLabel(orbitFocusLabelF2, projectedFocus2, cam, -12);
+}
+
+const orbitDetailsOverlay = new OrbitDetailsOverlay();
+const orbitDetailsReadout = orbitDetailsOverlay.getReadout();
+orbitMajorAxisReadout.textContent = formatKm(orbitDetailsReadout.majorAxisKm);
+orbitMinorAxisReadout.textContent = formatKm(orbitDetailsReadout.minorAxisKm);
+orbitFocusOffsetReadout.textContent = formatKm(orbitDetailsReadout.focalOffsetKm);
+orbitApsidesReadout.textContent =
+  `${formatKm(orbitDetailsReadout.periapsisKm)} / ${formatKm(orbitDetailsReadout.apoapsisKm)}`;
+orbitDetailsToggle.checked = false;
+applyOrbitDetailsVisibility(false);
 
 function updateUIFromState() {
   moonSlider.value = String(state.moonAngle);
@@ -382,6 +448,9 @@ nodeSlider.addEventListener('input', () => {
   state.nodeAngle = parseFloat(nodeSlider.value);
   syncMoonMeanAnomalyFromDisplayedAngle();
   updateUIFromState();
+});
+orbitDetailsToggle.addEventListener('change', () => {
+  applyOrbitDetailsVisibility(orbitDetailsToggle.checked);
 });
 
 // Time controls
@@ -643,6 +712,7 @@ async function switchAppMode(newMode: AppMode) {
 
     // Show simulator objects
     for (const obj of simObjects) obj.visible = true;
+    orbitDetailsOverlay.group.visible = orbitDetailsToggle.checked;
     simStarfield.visible = true;
     simulatorUI.style.display = 'block';
     simControls.enabled = true;
@@ -708,6 +778,9 @@ async function init() {
   scene.add(moon.orbitGroup);
   simObjects.push(moon.orbitGroup);
 
+  scene.add(orbitDetailsOverlay.group);
+  simObjects.push(orbitDetailsOverlay.group);
+
   const sun = new Sun(useBloom);
   simSunRef = sun;
   scene.add(sun.group);
@@ -769,6 +842,7 @@ async function init() {
       const sunDir = sun.getDirection();
       earth.update(dt, sunDir);
       orientOrbitPlane(moonOrbitLine, SCENE.MOON_INCLINATION, state.nodeAngle * DEG2RAD);
+      orbitDetailsOverlay.update(state.nodeAngle, state.moonMeanAnomaly);
       updateShadowCones(earthShadowCone, moonShadowCone, sun, moon);
       simControls.update();
 
@@ -777,6 +851,7 @@ async function init() {
       exploreMode.update(dt);
     }
 
+    updateOrbitFocusLabels(camera);
     renderScene(camera);
   }
 

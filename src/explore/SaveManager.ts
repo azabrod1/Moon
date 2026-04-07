@@ -89,7 +89,7 @@ export function createDefaultState(): ExploreState {
     astroTimeUtcMs: Date.now(),
     astroTimeRate: 1,
     astroTimePaused: false,
-    planetScale: 16,
+    planetScale: 32,
     showShip: true,
   };
 }

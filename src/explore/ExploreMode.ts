@@ -62,8 +62,8 @@ export class ExploreMode {
     paused: false,
   };
 
-  // Planet visual scale multiplier (real scale = 1, default 5x for visibility)
-  private planetScale = 16;
+  // Planet visual scale multiplier (real scale = 1)
+  private planetScale = 32;
 
   // Show player ship mesh for size comparison
   private showShip = true;
@@ -94,9 +94,9 @@ export class ExploreMode {
   private lastSunTransform = '';
   private lastSunDistText = '';
 
-  // FPS tracking
+  // FPS tracking (uses wall-clock time, not dt, for accuracy)
   private fpsFrames = 0;
-  private fpsAccumulator = 0;
+  private fpsLastTime = performance.now();
   private fpsDisplay = 0;
 
   // UI elements
@@ -361,13 +361,14 @@ export class ExploreMode {
     this.updateCameraFollow();
     this.controls.update();
 
-    // FPS tracking
+    // FPS tracking (wall-clock, independent of dt capping)
     this.fpsFrames++;
-    this.fpsAccumulator += dt;
-    if (this.fpsAccumulator >= 0.5) {
-      this.fpsDisplay = Math.round(this.fpsFrames / this.fpsAccumulator);
+    const fpsNow = performance.now();
+    const fpsElapsed = (fpsNow - this.fpsLastTime) / 1000;
+    if (fpsElapsed >= 0.5) {
+      this.fpsDisplay = Math.round(this.fpsFrames / fpsElapsed);
       this.fpsFrames = 0;
-      this.fpsAccumulator = 0;
+      this.fpsLastTime = fpsNow;
     }
 
     this.uiRefreshAccumulator += dt;
@@ -394,19 +395,21 @@ export class ExploreMode {
     this.updateSunLabel();
 
     // Distance-based planet scaling:
-    //   Close (<0.5 AU): full planetScale
-    //   Mid (0.5–3 AU): ramps down to 0.25x
-    //   Far (>3 AU): 0.25x (smaller + dimmer so distant planets don't dominate)
+    //   Close (<0.3 AU): full planetScale
+    //   Mid (0.3–2.5 AU): smooth ramp to half planetScale
+    //   Far (>2.5 AU): planetScale * 0.5
     for (const planet of this.solarSystem.planets) {
       const wp = planet.group.userData.worldPosAU as { x: number; y: number; z: number };
       const dx = this.player.posX - wp.x;
       const dy = this.player.posY - wp.y;
       const dz = this.player.posZ - wp.z;
       const dist = Math.sqrt(dx * dx + dy * dy + dz * dz);
-      // t: 1 when close, 0 when far
-      const t = 1 - Math.min(1, Math.max(0, (dist - 0.5) / 2.5));
-      // Scale: planetScale when close, 0.25 when far
-      const s = 0.25 + (this.planetScale - 0.25) * t;
+      // t: 1 when close, 0 when far (smoothstep for seamless feel)
+      const linear = 1 - Math.min(1, Math.max(0, (dist - 0.3) / 2.2));
+      const t = linear * linear * (3 - 2 * linear);
+      // Scale: planetScale when close, fixed 8x when far (distant planets stay modest)
+      const farScale = Math.min(8, this.planetScale);
+      const s = farScale + (this.planetScale - farScale) * t;
       planet.group.scale.setScalar(s);
 
       // Dim far-away planet atmosphere glows
@@ -583,7 +586,7 @@ export class ExploreMode {
     // Chase camera: smoothly lerp behind the ship unless user is orbiting
     if (this.userOrbiting) return;
 
-    const camDist = 0.0002 * this.planetScale;
+    const camDist = 0.003;
     const forward = this.player.getForwardDirection();
     const idealPos = new THREE.Vector3(
       -forward.x * camDist,
@@ -985,7 +988,7 @@ export class ExploreMode {
       scaleSlider.addEventListener('input', () => {
         this.planetScale = parseInt(scaleSlider.value, 10);
         const label = document.getElementById('settings-scale-label');
-        if (label) label.textContent = `${this.planetScale}x`;
+        if (label) label.textContent = `${this.planetScale}×`;
         this.resetCruiseCamera();
       });
     }
@@ -1078,7 +1081,7 @@ export class ExploreMode {
   }
 
   private resetCruiseCamera() {
-    const camDist = 0.0002 * this.planetScale;
+    const camDist = 0.003;
     const forward = this.player.getForwardDirection();
     this.camera.position.set(
       -forward.x * camDist,
@@ -1220,7 +1223,7 @@ export class ExploreMode {
     const scaleSlider = document.getElementById('settings-planet-scale') as HTMLInputElement;
     if (scaleSlider) scaleSlider.value = String(this.planetScale);
     const scaleLabel = document.getElementById('settings-scale-label');
-    if (scaleLabel) scaleLabel.textContent = `${this.planetScale}x`;
+    if (scaleLabel) scaleLabel.textContent = `${this.planetScale}×`;
     const shipLabel = document.getElementById('settings-ship-label');
     if (shipLabel) shipLabel.textContent = this.showShip ? 'On' : 'Off';
 

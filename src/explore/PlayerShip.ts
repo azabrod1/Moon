@@ -48,7 +48,6 @@ export class PlayerShip {
   mesh: THREE.Mesh;
   private exhaustCone: THREE.Mesh;
   private exhaustCore: THREE.Mesh;
-  private exhaustLight: THREE.PointLight;
   private exhaustTime = 0;
 
   posX = 0.05;
@@ -75,10 +74,10 @@ export class PlayerShip {
     const hullGeo = createHullGeometry(R, L);
     const hullMat = new THREE.MeshStandardMaterial({
       color: 0xb0c0d8,
-      emissive: 0x1a2540,
-      emissiveIntensity: 0.2,
-      roughness: 0.45,
-      metalness: 0.4,
+      emissive: 0x0a1220,
+      emissiveIntensity: 0.08,
+      roughness: 0.7,
+      metalness: 0.15,
     });
     const hull = new THREE.Mesh(hullGeo, hullMat);
     this.mesh = hull;
@@ -88,9 +87,9 @@ export class PlayerShip {
     const stripeMat = new THREE.MeshStandardMaterial({
       color: 0x2266cc,
       emissive: 0x0a1133,
-      emissiveIntensity: 0.15,
-      roughness: 0.2,
-      metalness: 0.8,
+      emissiveIntensity: 0.08,
+      roughness: 0.5,
+      metalness: 0.3,
     });
     const stripe = new THREE.Mesh(stripeGeo, stripeMat);
     stripe.position.y = L * 0.3;
@@ -108,13 +107,13 @@ export class PlayerShip {
     const canopyMat = new THREE.MeshPhysicalMaterial({
       color: 0x88ddff,
       emissive: 0x112233,
-      emissiveIntensity: 0.2,
-      roughness: 0.05,
-      metalness: 0.1,
+      emissiveIntensity: 0.08,
+      roughness: 0.15,
+      metalness: 0.05,
       transparent: true,
-      opacity: 0.75,
-      clearcoat: 1.0,
-      clearcoatRoughness: 0.05,
+      opacity: 0.65,
+      clearcoat: 0.5,
+      clearcoatRoughness: 0.2,
     });
     const canopy = new THREE.Mesh(canopyGeo, canopyMat);
     canopy.position.set(0, L * 0.55, R * 0.65);
@@ -126,9 +125,9 @@ export class PlayerShip {
     const bellMat = new THREE.MeshStandardMaterial({
       color: 0x4a5058,
       emissive: 0x0c1018,
-      emissiveIntensity: 0.25,
-      roughness: 0.4,
-      metalness: 0.9,
+      emissiveIntensity: 0.1,
+      roughness: 0.6,
+      metalness: 0.3,
     });
     const bell = new THREE.Mesh(bellGeo, bellMat);
     bell.position.y = -L * 0.5;
@@ -176,10 +175,6 @@ export class PlayerShip {
     this.exhaustCore.position.y = -L * 1.35;
     this.exhaustCore.rotation.x = Math.PI;
 
-    // Engine light (subtle)
-    this.exhaustLight = new THREE.PointLight(0x334466, 0.15, L * 4, 0);
-    this.exhaustLight.position.y = -L * 0.7;
-
     // ── Nose tip accent ──
     const noseTipGeo = new THREE.SphereGeometry(R * 0.08, 8, 8);
     const noseTipMat = new THREE.MeshStandardMaterial({
@@ -195,7 +190,7 @@ export class PlayerShip {
 
     // ── Assemble ──
     const shipModel = new THREE.Group();
-    shipModel.add(hull, this.exhaustCone, this.exhaustCore, this.exhaustLight);
+    shipModel.add(hull, this.exhaustCone, this.exhaustCore);
     // Orient: ship's +Y (forward) aligns with world +X
     shipModel.rotation.z = -Math.PI / 2;
     this.group.add(shipModel);
@@ -271,7 +266,6 @@ export class PlayerShip {
 
     this.exhaustCone.visible = exhaustOn;
     this.exhaustCore.visible = exhaustOn;
-    this.exhaustLight.visible = exhaustOn;
 
     if (exhaustOn) {
       const pulse = 0.95 + 0.05 * Math.sin(this.exhaustTime * 10);
@@ -293,7 +287,6 @@ export class PlayerShip {
         0.6 + speedFrac * 0.3,
       );
 
-      this.exhaustLight.intensity = intensity * 0.3 * pulse;
     }
 
     if (!this.moving) return;

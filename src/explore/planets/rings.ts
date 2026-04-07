@@ -91,7 +91,6 @@ export function createSaturnRings(planetRadiusAU: number): THREE.Mesh {
   const mat = new THREE.MeshStandardMaterial({
     map: texture,
     transparent: true,
-    alphaMap: texture,
     side: THREE.DoubleSide,
     roughness: 0.85,
     metalness: 0.0,

@@ -75,6 +75,10 @@ export class ExploreMode {
   private gyroYaw = 0;
   private gyroPitch = 0;
 
+  // Chase camera state
+  private userOrbiting = false;
+  private userOrbitTimeout: number | null = null;
+
   // Moon labels
   private moonLabels = new Map<string, HTMLDivElement>();
   private moonLabelContainer: HTMLDivElement | null = null;
@@ -115,6 +119,17 @@ export class ExploreMode {
     this.controls.enabled = false;
     this.controls.minDistance = 0.00001;
     this.controls.maxDistance = 5;
+
+    // Detect when user manually orbits (so chase cam yields temporarily)
+    this.controls.addEventListener('start', () => {
+      this.userOrbiting = true;
+      if (this.userOrbitTimeout !== null) clearTimeout(this.userOrbitTimeout);
+    });
+    this.controls.addEventListener('end', () => {
+      // Resume chase cam after 2s of no interaction
+      if (this.userOrbitTimeout !== null) clearTimeout(this.userOrbitTimeout);
+      this.userOrbitTimeout = window.setTimeout(() => { this.userOrbiting = false; }, 2000);
+    });
 
     // Key handlers
     this.handleKeyDown = this.handleKeyDown.bind(this);
@@ -494,8 +509,23 @@ export class ExploreMode {
 
   private updateCameraFollow() {
     // Player is always at scene origin due to floating origin
-    // Camera orbits around the player using OrbitControls
     this.controls.target.set(0, 0, 0);
+
+    // Chase camera: smoothly lerp behind the ship unless user is orbiting
+    if (this.userOrbiting) return;
+
+    const camDist = this.camera.position.length();
+    const forward = this.player.getForwardDirection();
+    const idealPos = new THREE.Vector3(
+      -forward.x * camDist,
+      -forward.y * camDist + camDist * 0.35,
+      -forward.z * camDist,
+    );
+
+    // Smooth follow — faster when actively turning
+    const turning = Math.abs(this.player.yawInput) + Math.abs(this.player.pitchInput);
+    const lerpSpeed = turning > 0 ? 0.06 : 0.025;
+    this.camera.position.lerp(idealPos, lerpSpeed);
   }
 
   private processInput() {

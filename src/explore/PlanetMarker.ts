@@ -7,16 +7,18 @@ import { type PlanetData, ALL_BODIES } from './planets/planetData';
 export interface MarkerInstance {
   sprite: THREE.Sprite;
   label: HTMLDivElement;
+  distEl: HTMLSpanElement;
   planet: PlanetData;
+  labelVisible: boolean;
+  lastTransform: string;
+  lastDistanceText: string;
 }
-
-const MARKER_MIN_SIZE = 0.001;  // minimum visual size in AU (screen-space adjusted)
-const MARKER_MAX_SIZE = 0.05;
 
 export class PlanetMarkers {
   markers: MarkerInstance[] = [];
   private labelContainer: HTMLDivElement;
   private camera: THREE.PerspectiveCamera;
+  private tempV = new THREE.Vector3();
 
   constructor(scene: THREE.Scene, camera: THREE.PerspectiveCamera) {
     this.camera = camera;
@@ -71,6 +73,7 @@ export class PlanetMarkers {
       const sprite = new THREE.Sprite(spriteMat);
       sprite.name = `marker-${body.name}`;
       sprite.renderOrder = 999;
+      sprite.scale.setScalar(0.03);
       scene.add(sprite);
 
       // Create HTML label
@@ -81,8 +84,17 @@ export class PlanetMarkers {
         <span class="planet-label-dist"></span>
       `;
       this.labelContainer.appendChild(label);
+      const distEl = label.querySelector('.planet-label-dist') as HTMLSpanElement;
 
-      this.markers.push({ sprite, label, planet: body });
+      this.markers.push({
+        sprite,
+        label,
+        distEl,
+        planet: body,
+        labelVisible: false,
+        lastTransform: '',
+        lastDistanceText: '',
+      });
     }
   }
 
@@ -91,7 +103,6 @@ export class PlanetMarkers {
     playerPos: { x: number; y: number; z: number },
     renderer: THREE.WebGLRenderer,
   ) {
-    const tempV = new THREE.Vector3();
     const canvasWidth = renderer.domElement.clientWidth;
     const canvasHeight = renderer.domElement.clientHeight;
 
@@ -99,7 +110,10 @@ export class PlanetMarkers {
       const pos = planetPositions.get(marker.planet.name);
       if (!pos) {
         marker.sprite.visible = false;
-        marker.label.style.display = 'none';
+        if (marker.labelVisible) {
+          marker.label.style.display = 'none';
+          marker.labelVisible = false;
+        }
         continue;
       }
 
@@ -122,37 +136,46 @@ export class PlanetMarkers {
       if (angularSize > 0.01) {
         // Planet is visible on its own
         marker.sprite.visible = false;
-        marker.label.style.display = 'none';
+        if (marker.labelVisible) {
+          marker.label.style.display = 'none';
+          marker.labelVisible = false;
+        }
         continue;
       }
 
       marker.sprite.visible = true;
 
-      // Fixed screen-space size for marker
-      marker.sprite.scale.setScalar(0.03);
-
       // Project to screen for label positioning
-      tempV.set(pos.x, pos.y, pos.z);
-      tempV.project(this.camera);
+      this.tempV.set(pos.x, pos.y, pos.z);
+      this.tempV.project(this.camera);
 
-      const screenX = (tempV.x * 0.5 + 0.5) * canvasWidth;
-      const screenY = (-tempV.y * 0.5 + 0.5) * canvasHeight;
+      const screenX = (this.tempV.x * 0.5 + 0.5) * canvasWidth;
+      const screenY = (-this.tempV.y * 0.5 + 0.5) * canvasHeight;
 
       // Only show if in front of camera
-      if (tempV.z < 1 && screenX > -50 && screenX < canvasWidth + 50 &&
+      if (this.tempV.z < 1 && screenX > -50 && screenX < canvasWidth + 50 &&
           screenY > -50 && screenY < canvasHeight + 50) {
-        marker.label.style.display = 'block';
-        marker.label.style.transform = `translate(${screenX}px, ${screenY + 16}px)`;
+        if (!marker.labelVisible) {
+          marker.label.style.display = 'block';
+          marker.labelVisible = true;
+        }
+        const transform = `translate(${screenX}px, ${screenY + 16}px)`;
+        if (transform !== marker.lastTransform) {
+          marker.label.style.transform = transform;
+          marker.lastTransform = transform;
+        }
 
         // Update distance text
-        const distEl = marker.label.querySelector('.planet-label-dist') as HTMLElement;
-        if (distEl) {
-          distEl.textContent = distFromPlayer < 0.01
-            ? `${(distFromPlayer * 149597870.7).toFixed(0)} km`
-            : `${distFromPlayer.toFixed(2)} AU`;
+        const distanceText = distFromPlayer < 0.01
+          ? `${(distFromPlayer * 149597870.7).toFixed(0)} km`
+          : `${distFromPlayer.toFixed(2)} AU`;
+        if (distanceText !== marker.lastDistanceText) {
+          marker.distEl.textContent = distanceText;
+          marker.lastDistanceText = distanceText;
         }
-      } else {
+      } else if (marker.labelVisible) {
         marker.label.style.display = 'none';
+        marker.labelVisible = false;
       }
     }
   }
@@ -160,7 +183,9 @@ export class PlanetMarkers {
   dispose() {
     for (const marker of this.markers) {
       marker.sprite.removeFromParent();
-      (marker.sprite.material as THREE.SpriteMaterial).dispose();
+      const material = marker.sprite.material as THREE.SpriteMaterial;
+      material.map?.dispose();
+      material.dispose();
     }
     this.labelContainer.remove();
     this.markers = [];

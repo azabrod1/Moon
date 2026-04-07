@@ -93,15 +93,15 @@ export async function createSolarSystem(
   const ambientLight = new THREE.AmbientLight(0x334466, 0.4);
 
   onProgress?.('Creating planets...');
-  const planets: PlanetMesh[] = [];
-  for (let i = 0; i < ALL_BODIES.length; i++) {
-    const body = ALL_BODIES[i];
-    onProgress?.(`Loading ${body.name}...`);
+  let planetsLoaded = 0;
+  const planets = await Promise.all(ALL_BODIES.map(async (body, index) => {
     const planetMesh = await createPlanetMesh(body);
-    const position = getPlanetOrbitalPosition(body, i + 1, layoutMode, date);
+    const position = getPlanetOrbitalPosition(body, index + 1, layoutMode, date);
     planetMesh.group.position.set(position.x, position.y, position.z);
-    planets.push(planetMesh);
-  }
+    planetsLoaded += 1;
+    onProgress?.(`Loaded planets... ${planetsLoaded}/${ALL_BODIES.length}`);
+    return planetMesh;
+  }));
 
   onProgress?.('Drawing orbits...');
   const orbitLines: THREE.Line[] = [];

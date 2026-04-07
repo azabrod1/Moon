@@ -1,8 +1,8 @@
 import * as THREE from 'three';
 import { LIGHT_SPEED_AU_PER_S } from './planets/planetData';
 
-// Default speed: traverse solar system (~30 AU) in ~30 minutes
-const DEFAULT_SPEED_AU_S = 30 / 1800;
+// Default cruise speed: 1c
+const DEFAULT_SPEED_AU_S = LIGHT_SPEED_AU_PER_S;
 const FORWARD_VECTOR = new THREE.Vector3(1, 0, 0);
 
 /** Build a smooth hull profile via LatheGeometry */

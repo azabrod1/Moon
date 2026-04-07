@@ -32,6 +32,7 @@ let appMode: AppMode = 'simulator';
 let exploreMode: ExploreMode | null = null;
 let simMoonRef: Moon | null = null;
 let simSunRef: Sun | null = null;
+let modeSwitchInFlight = false;
 
 // ================================================================
 // Simulator State
@@ -588,78 +589,97 @@ const btnModeExplore = document.getElementById('btn-mode-explore')!;
 const simObjects: THREE.Object3D[] = [];
 
 async function switchAppMode(newMode: AppMode) {
-  if (newMode === appMode) return;
+  btnModeSimulator.classList.toggle('active', newMode === 'simulator');
+  btnModeExplore.classList.toggle('active', newMode === 'explore');
+
+  if (newMode === appMode) {
+    if (newMode === 'simulator') {
+      simulatorUI.style.display = 'block';
+      exploreUI.style.display = 'none';
+      simControls.enabled = true;
+      ambientLight.visible = true;
+      for (const obj of simObjects) obj.visible = true;
+      simStarfield.visible = true;
+      const toggle = document.getElementById('btn-toggle-panel');
+      if (toggle) toggle.style.display = '';
+      camera = simCamera;
+      rebuildComposer(simCamera);
+    }
+    return;
+  }
+  if (modeSwitchInFlight) return;
+  modeSwitchInFlight = true;
   debugLog('Switching app mode', { from: appMode, to: newMode });
 
-  // Fade to black
-  modeTransition.classList.add('active');
-  transitionMsg.textContent = newMode === 'explore' ? 'Entering Planets...' : 'Returning to Moon...';
-  await sleep(400);
+  try {
+    // Fade to black
+    modeTransition.classList.add('active');
+    transitionMsg.textContent = newMode === 'explore' ? 'Entering Planets...' : 'Returning to Moon...';
+    await sleep(400);
 
-  if (newMode === 'explore') {
-    // --- Switch to Explore ---
-    appMode = 'explore';
-    btnModeSimulator.classList.remove('active');
-    btnModeExplore.classList.add('active');
+    if (newMode === 'explore') {
+      // --- Switch to Explore ---
+      appMode = 'explore';
 
-    // Hide simulator objects
-    for (const obj of simObjects) obj.visible = false;
-    simStarfield.visible = false;
-    simulatorUI.style.display = 'none';
-    simControls.enabled = false;
-    ambientLight.visible = false;
-    // Hide mobile panel toggle
-    const toggle = document.getElementById('btn-toggle-panel');
-    if (toggle) toggle.style.display = 'none';
+      // Hide simulator objects
+      for (const obj of simObjects) obj.visible = false;
+      simStarfield.visible = false;
+      simulatorUI.style.display = 'none';
+      simControls.enabled = false;
+      ambientLight.visible = false;
+      // Hide mobile panel toggle
+      const toggle = document.getElementById('btn-toggle-panel');
+      if (toggle) toggle.style.display = 'none';
 
-    // Ensure black background for space
-    scene.background = new THREE.Color(0x000000);
+      // Ensure black background for space
+      scene.background = new THREE.Color(0x000000);
 
-    // Switch camera
-    camera = exploreCamera;
-    rebuildComposer(exploreCamera);
+      // Switch camera
+      camera = exploreCamera;
+      rebuildComposer(exploreCamera);
 
-    // Initialize explore mode
-    if (!exploreMode) {
-      debugLog('Creating explore mode');
-      exploreMode = new ExploreMode(scene, exploreCamera, renderer, useBloom);
+      // Initialize explore mode
+      if (!exploreMode) {
+        debugLog('Creating explore mode');
+        exploreMode = new ExploreMode(scene, exploreCamera, renderer, useBloom);
+      }
+      debugLog('Activating explore mode');
+      await exploreMode.activate();
+      debugLog('Explore mode active');
+
+    } else {
+      // --- Switch to Simulator ---
+      appMode = 'simulator';
+
+      scene.background = new THREE.Color(0x000000);
+
+      // Deactivate explore
+      if (exploreMode) {
+        exploreMode.deactivate();
+      }
+
+      // Show simulator objects
+      for (const obj of simObjects) obj.visible = true;
+      simStarfield.visible = true;
+      simulatorUI.style.display = 'block';
+      simControls.enabled = true;
+      ambientLight.visible = true;
+      // Restore mobile panel toggle
+      const toggle = document.getElementById('btn-toggle-panel');
+      if (toggle) toggle.style.display = '';
+
+      // Switch camera
+      camera = simCamera;
+      rebuildComposer(simCamera);
+      debugLog('Simulator mode active');
     }
-    debugLog('Activating explore mode');
-    await exploreMode.activate();
-    debugLog('Explore mode active');
 
-  } else {
-    // --- Switch to Simulator ---
-    appMode = 'simulator';
-    btnModeSimulator.classList.add('active');
-    btnModeExplore.classList.remove('active');
-
-    scene.background = new THREE.Color(0x000000);
-
-    // Deactivate explore
-    if (exploreMode) {
-      exploreMode.deactivate();
-    }
-
-    // Show simulator objects
-    for (const obj of simObjects) obj.visible = true;
-    simStarfield.visible = true;
-    simulatorUI.style.display = 'block';
-    simControls.enabled = true;
-    ambientLight.visible = true;
-    // Restore mobile panel toggle
-    const toggle = document.getElementById('btn-toggle-panel');
-    if (toggle) toggle.style.display = '';
-
-    // Switch camera
-    camera = simCamera;
-    rebuildComposer(simCamera);
-    debugLog('Simulator mode active');
+    // Fade back in
+    await sleep(100);
+    modeTransition.classList.remove('active');
+  } finally {
+    modeSwitchInFlight = false;
   }
-
-  // Fade back in
-  await sleep(100);
-  modeTransition.classList.remove('active');
 }
 
 btnModeSimulator.addEventListener('click', () => switchAppMode('simulator'));
@@ -730,10 +750,6 @@ async function init() {
   sun.setPosition(state.sunAngle);
   moon.setOrbitalPosition(state.moonAngle, state.nodeAngle);
   debugLog('Simulator scene ready');
-  // Hide loading
-  setTimeout(() => {
-    document.getElementById('loading-screen')!.classList.add('hidden');
-  }, 500);
 
   // Animation loop
   let lastTime = performance.now();
@@ -784,13 +800,21 @@ async function init() {
   debugLog('Animation loop started');
 
   const autoMode = getAutoMode();
+  const initialMode = autoMode ?? 'explore';
+  debugLog('Initial mode selected', { initialMode });
   if (autoMode) {
     debugLog('Auto mode requested', { autoMode });
-    void switchAppMode(autoMode);
+    if (autoMode === 'explore') {
+      await switchAppMode('explore');
+    } else {
+      await switchAppMode('simulator');
+    }
   } else {
     // Default to Planets mode
-    void switchAppMode('explore');
+    await switchAppMode('explore');
   }
+
+  document.getElementById('loading-screen')?.classList.add('hidden');
 }
 
 // ================================================================

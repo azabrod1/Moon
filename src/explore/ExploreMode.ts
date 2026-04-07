@@ -4,7 +4,7 @@ import { createSolarSystem, type SolarSystemObjects, type LayoutMode } from './S
 import { PlayerShip } from './PlayerShip';
 import { PlanetMarkers } from './PlanetMarker';
 import { SaveManager, createDefaultState, type ExploreState } from './SaveManager';
-import { computeStats, formatAU, formatETA } from './StatsPanel';
+import { computeStats, formatAU } from './StatsPanel';
 import { ALL_BODIES, type PlanetData } from './planets/planetData';
 import { createMoonMeshes, type MoonMesh } from './PlanetFactory';
 import {
@@ -21,6 +21,9 @@ import { BRIGHT_STAR_CATALOG } from './data/brightStars';
 export class ExploreMode {
   private static readonly TIME_RATE_PRESETS = [1, 60, 1200, 3600, 21600, 86400, 604800, 2592000, 31557600];
   private static readonly SHIP_CLEARANCE_AU = (1_737.4 / 149_597_870.7) * 1.5;
+  private static readonly UI_REFRESH_INTERVAL_S = 1 / 8;
+  private static readonly EARTH_DETAIL_MIN_DISTANCE_AU = 0.03;
+  private static readonly EARTH_DETAIL_MIN_ANGULAR_DIAMETER_RAD = 0.003;
 
   private scene: THREE.Scene;
   private camera: THREE.PerspectiveCamera;
@@ -71,7 +74,9 @@ export class ExploreMode {
   private touchThrottle = 0;
   private activeFlightTouchId: number | null = null;
   private gyroEnabled = false;
-  private gyroPermissionRequested = false;
+  private gyroAvailability: 'unknown' | 'granted' | 'denied' | 'unavailable' = 'unknown';
+  private gyroBaseline: { yawDeg: number; pitchDeg: number } | null = null;
+  private gyroScreenAngle = 0;
   private gyroYaw = 0;
   private gyroPitch = 0;
 
@@ -82,6 +87,17 @@ export class ExploreMode {
   // Moon labels
   private moonLabels = new Map<string, HTMLDivElement>();
   private moonLabelContainer: HTMLDivElement | null = null;
+
+  // Sun label
+  private sunLabel: HTMLDivElement | null = null;
+  private sunLabelVisible = false;
+  private lastSunTransform = '';
+  private lastSunDistText = '';
+
+  // FPS tracking
+  private fpsFrames = 0;
+  private fpsAccumulator = 0;
+  private fpsDisplay = 0;
 
   // UI elements
   private statsEl: HTMLElement | null = null;
@@ -95,6 +111,7 @@ export class ExploreMode {
   private lastTimeLabel = '';
   private lastTimeRateLabel = '';
   private lastTimeInputValue = '';
+  private uiRefreshAccumulator = ExploreMode.UI_REFRESH_INTERVAL_S;
 
   active = false;
   private useBloom: boolean;
@@ -222,12 +239,11 @@ export class ExploreMode {
     }
 
     // Check for saved state — show resume prompt
-    const hasSaved = this.saveManager.hasSavedState();
-    if (hasSaved) {
-      const shouldResume = await this.showResumePrompt();
+    const savedState = this.saveManager.loadState();
+    if (savedState) {
+      const shouldResume = await this.showResumePrompt(savedState);
       if (shouldResume) {
-        const saved = this.saveManager.loadState();
-        if (saved) this.restoreState(saved);
+        this.restoreState(savedState);
       } else {
         this.saveManager.clearState();
         this.restoreState(createDefaultState());
@@ -261,6 +277,7 @@ export class ExploreMode {
 
     // Show all solar system objects
     this.setObjectsVisible(true);
+    this.uiRefreshAccumulator = ExploreMode.UI_REFRESH_INTERVAL_S;
   }
 
   deactivate(): void {
@@ -277,8 +294,10 @@ export class ExploreMode {
     this.touchYaw = 0;
     this.touchPitch = 0;
     this.touchThrottle = 0;
+    this.gyroBaseline = null;
     this.gyroYaw = 0;
     this.gyroPitch = 0;
+    this.uiRefreshAccumulator = ExploreMode.UI_REFRESH_INTERVAL_S;
 
     // Disable controls
     this.controls.enabled = false;
@@ -332,6 +351,21 @@ export class ExploreMode {
     this.updateCameraFollow();
     this.controls.update();
 
+    // FPS tracking
+    this.fpsFrames++;
+    this.fpsAccumulator += dt;
+    if (this.fpsAccumulator >= 0.5) {
+      this.fpsDisplay = Math.round(this.fpsFrames / this.fpsAccumulator);
+      this.fpsFrames = 0;
+      this.fpsAccumulator = 0;
+    }
+
+    this.uiRefreshAccumulator += dt;
+    const shouldRefreshUi = this.uiRefreshAccumulator >= ExploreMode.UI_REFRESH_INTERVAL_S;
+    if (shouldRefreshUi) {
+      this.uiRefreshAccumulator %= ExploreMode.UI_REFRESH_INTERVAL_S;
+    }
+
     // Update markers
     if (this.markers) {
       // Pass scene-space positions (already offset)
@@ -346,11 +380,8 @@ export class ExploreMode {
       this.markers.update(scenePositions, { x: 0, y: 0, z: 0 }, this.renderer);
     }
 
-    // Check orbit crossings
-    this.checkOrbitCrossings();
-
-    // Check planet visits
-    this.checkPlanetVisits();
+    // Update Sun label
+    this.updateSunLabel();
 
     // Distance-based planet scaling:
     //   Close (<0.5 AU): full planetScale
@@ -376,9 +407,33 @@ export class ExploreMode {
           glowMat.uniforms.alphaScale.value = (0.15 + 0.3 * t);
         }
       }
+
+      // Earth's cloud/night shells are beautiful up close, but expensive when
+      // Earth is both far away and visually tiny. Be conservative before
+      // disabling them so distant fly-bys still look intact.
+      if (planet.data.name === 'Earth') {
+        const renderedAngularDiameter = dist > 1e-8
+          ? (planet.data.radiusAU * planet.group.scale.x * 2) / dist
+          : Infinity;
+        const keepEarthDetail =
+          dist <= ExploreMode.EARTH_DETAIL_MIN_DISTANCE_AU ||
+          renderedAngularDiameter >= ExploreMode.EARTH_DETAIL_MIN_ANGULAR_DIAMETER_RAD;
+
+        if (planet.nightMesh) {
+          planet.nightMesh.visible = keepEarthDetail;
+        }
+        if (planet.cloudsMesh) {
+          planet.cloudsMesh.visible = keepEarthDetail;
+        }
+      }
     }
     this.player.group.scale.setScalar(this.planetScale);
     this.resolvePlanetCollisions();
+
+    // Check orbit crossings and visits after scale/collision are applied so the
+    // reachable interaction shell matches the visual shell.
+    this.checkOrbitCrossings();
+    this.checkPlanetVisits();
 
     // Update moons: visibility, scale, and orbital position at astronomical time
     const moonTimeSeconds = this.timeState.currentUtcMs / 1000;
@@ -399,9 +454,10 @@ export class ExploreMode {
 
       const parentR = planet.data.radiusAU;
 
-      const canvasW = this.renderer.domElement.clientWidth;
-      const canvasH = this.renderer.domElement.clientHeight;
-      const tempV = new THREE.Vector3();
+      const shouldRefreshMoonLabels = this.moonLabelContainer !== null;
+      const canvasW = shouldRefreshMoonLabels ? this.renderer.domElement.clientWidth : 0;
+      const canvasH = shouldRefreshMoonLabels ? this.renderer.domElement.clientHeight : 0;
+      const tempV = shouldRefreshMoonLabels ? new THREE.Vector3() : null;
 
       for (const m of moons) {
         const label = this.moonLabels.get(m.data.name);
@@ -427,7 +483,7 @@ export class ExploreMode {
           }
 
           // Update moon label position — clamp to screen edges
-          if (label) {
+          if (label && shouldRefreshMoonLabels && tempV) {
             m.mesh.getWorldPosition(tempV);
             tempV.project(this.camera);
             if (tempV.z < 1) {
@@ -447,7 +503,7 @@ export class ExploreMode {
               label.style.display = 'none';
             }
           }
-        } else if (label) {
+        } else if (label && label.style.display !== 'none') {
           label.style.display = 'none';
         }
       }
@@ -469,9 +525,12 @@ export class ExploreMode {
       (orbit.material as THREE.LineBasicMaterial).opacity = opacity;
     }
 
-    // Update UI stats
-    this.updateStatsUI();
-    this.updateTimeUI();
+    // Update stats/time overlays on a lower cadence than the render loop to avoid
+    // forcing layout/style work every frame.
+    if (shouldRefreshUi) {
+      this.updateStatsUI();
+      this.updateTimeUI();
+    }
   }
 
   private applyFloatingOrigin() {
@@ -530,22 +589,24 @@ export class ExploreMode {
 
   private processInput() {
     // Flight controls
-    let yaw = 0;
-    if (this.keys.has('arrowleft') || this.keys.has('a')) yaw = -1;
-    if (this.keys.has('arrowright') || this.keys.has('d')) yaw = 1;
+    const yawFromKeys =
+      (this.keys.has('arrowright') || this.keys.has('d') ? 1 : 0) -
+      (this.keys.has('arrowleft') || this.keys.has('a') ? 1 : 0);
+    let yaw = yawFromKeys;
     yaw = THREE.MathUtils.clamp(yaw + this.touchYaw + this.gyroYaw, -1, 1);
     this.player.yawInput = yaw;
 
-    let pitch = 0;
-    if (this.keys.has('arrowup')) pitch = 1;
-    if (this.keys.has('arrowdown')) pitch = -1;
+    const pitchFromKeys =
+      (this.keys.has('arrowup') ? 1 : 0) -
+      (this.keys.has('arrowdown') ? 1 : 0);
+    let pitch = pitchFromKeys;
     pitch = THREE.MathUtils.clamp(pitch + this.touchPitch + this.gyroPitch, -1, 1);
     this.player.pitchInput = pitch;
 
     // Throttle (keyboard + touch)
-    let throttle = 0;
-    if (this.keys.has('w')) throttle = 1;
-    if (this.keys.has('s')) throttle = -1;
+    let throttle =
+      (this.keys.has('w') ? 1 : 0) -
+      (this.keys.has('s') ? 1 : 0);
     if (this.touchThrottle !== 0) throttle = this.touchThrottle;
 
     // Any manual steering input disengages autopilot
@@ -622,22 +683,27 @@ export class ExploreMode {
   }
 
   private checkPlanetVisits() {
-    for (const [name, pos] of this.planetWorldPositions) {
+    if (!this.solarSystem) return;
+
+    for (const planet of this.solarSystem.planets) {
+      const pos = planet.group.userData.worldPosAU as { x: number; y: number; z: number } | undefined;
+      if (!pos) continue;
       const dx = this.player.posX - pos.x;
       const dy = this.player.posY - pos.y;
       const dz = this.player.posZ - pos.z;
       const dist = Math.sqrt(dx * dx + dy * dy + dz * dz);
 
-      const body = ALL_BODIES.find(b => b.name === name);
-      if (!body) continue;
+      const visitDist = Math.max(
+        planet.data.radiusAU * 10,
+        this.getPlanetCollisionRadius(planet.data.radiusAU, planet.group.scale.x) * 1.02,
+      );
 
       // "Visit" if within 10× planet radius
-      const visitDist = body.radiusAU * 10;
-      if (dist < visitDist && !this.player.visitedPlanets.has(name)) {
-        this.player.visitedPlanets.add(name);
-        this.showNotification(`Arrived at ${name}! ${body.description}`);
+      if (dist < visitDist && !this.player.visitedPlanets.has(planet.data.name)) {
+        this.player.visitedPlanets.add(planet.data.name);
+        this.showNotification(`Arrived at ${planet.data.name}! ${planet.data.description}`);
         // Mark chip as visited
-        const chip = document.getElementById(`jump-${name.toLowerCase()}`);
+        const chip = document.getElementById(`jump-${planet.data.name.toLowerCase()}`);
         if (chip) chip.classList.add('visited');
       }
     }
@@ -674,32 +740,65 @@ export class ExploreMode {
     const stats = computeStats(
       this.player.posX, this.player.posY, this.player.posZ,
       this.player.speedAUPerS,
-      this.player.heading,
       this.player.distanceTraveled,
       this.player.timeElapsed,
       this.planetWorldPositions,
     );
 
     // Update stats panel
+    this.setStatText('stat-fps', `${this.fpsDisplay}`);
     this.setStatText('stat-distance', `${formatAU(stats.distanceFromSunAU)} AU`);
     this.setStatText('stat-light-time', stats.lightTravelTime);
     this.setStatText('stat-intensity', `${stats.solarIntensityPct.toFixed(1)}%`);
     this.setStatText('stat-speed', `${stats.speedC.toFixed(1)}c / ${Math.round(stats.speedKmS).toLocaleString()} km/s`);
     this.setStatText('stat-nearest',
       stats.nearestPlanet ? `${stats.nearestPlanet.name} ${formatAU(stats.nearestPlanet.distanceAU)}` : '--');
-    this.setStatText('stat-next',
-      stats.nextPlanetAhead
-        ? `${stats.nextPlanetAhead.name} ${formatETA(stats.nextPlanetAhead.etaSeconds)}`
-        : '--');
     this.setStatText('stat-temp', `${Math.round(stats.blackbodyTempK)} K`);
     this.setStatText('stat-traveled', `${formatAU(stats.distanceTraveled)} AU`);
     this.setStatText('stat-time', stats.timeElapsed);
-    this.setStatText('stat-visited', `${this.player.visitedPlanets.size}/${ALL_BODIES.length}`);
 
     // Update progress bar (0 to ~40 AU = Pluto)
     if (this.progressEl) {
       const pct = Math.min(100, (this.player.getDistanceFromSun() / 42) * 100);
       this.progressEl.style.width = `${pct}%`;
+    }
+  }
+
+  private readonly _sunProjV = new THREE.Vector3();
+
+  private updateSunLabel() {
+    if (!this.sunLabel || !this.solarSystem) return;
+    const sunPos = this.solarSystem.sun.position;
+    this._sunProjV.set(sunPos.x, sunPos.y, sunPos.z);
+    this._sunProjV.project(this.camera);
+
+    const canvas = this.renderer.domElement;
+    const screenX = (this._sunProjV.x * 0.5 + 0.5) * canvas.clientWidth;
+    const screenY = (-this._sunProjV.y * 0.5 + 0.5) * canvas.clientHeight;
+
+    if (this._sunProjV.z < 1 && screenX > -50 && screenX < canvas.clientWidth + 50 &&
+        screenY > -50 && screenY < canvas.clientHeight + 50) {
+      if (!this.sunLabelVisible) {
+        this.sunLabel.style.display = 'block';
+        this.sunLabelVisible = true;
+      }
+      const transform = `translate(${screenX}px, ${screenY + 16}px)`;
+      if (transform !== this.lastSunTransform) {
+        this.sunLabel.style.transform = transform;
+        this.lastSunTransform = transform;
+      }
+      const distAU = this.player.getDistanceFromSun();
+      const distText = distAU < 0.01
+        ? `${(distAU * 149597870.7).toFixed(0)} km`
+        : `${distAU.toFixed(2)} AU`;
+      if (distText !== this.lastSunDistText) {
+        const distEl = this.sunLabel.querySelector('.planet-label-dist');
+        if (distEl) distEl.textContent = distText;
+        this.lastSunDistText = distText;
+      }
+    } else if (this.sunLabelVisible) {
+      this.sunLabel.style.display = 'none';
+      this.sunLabelVisible = false;
     }
   }
 
@@ -798,6 +897,15 @@ export class ExploreMode {
       if (panel) panel.classList.toggle('visible');
     });
 
+    // Stats panel expand/collapse
+    const statsToggle = document.getElementById('stats-toggle');
+    const statsPanel = document.getElementById('explore-stats-compact');
+    if (statsToggle && statsPanel) {
+      statsToggle.addEventListener('click', () => {
+        statsPanel.classList.toggle('stats-expanded');
+      });
+    }
+
     // Time section expand/collapse
     const timeToggle = document.getElementById('stat-time-toggle');
     const timeSection = document.getElementById('stat-time-section');
@@ -811,6 +919,16 @@ export class ExploreMode {
       if (timeControls) {
         timeControls.addEventListener('click', (e) => e.stopPropagation());
       }
+    }
+
+    // Sun label
+    const labelContainer = document.getElementById('planet-labels');
+    if (labelContainer) {
+      this.sunLabel = document.createElement('div');
+      this.sunLabel.className = 'planet-label';
+      this.sunLabel.innerHTML = '<span class="planet-label-name">Sun</span><span class="planet-label-dist"></span>';
+      this.sunLabel.style.display = 'none';
+      labelContainer.appendChild(this.sunLabel);
     }
 
     // Astronomy time controls
@@ -905,19 +1023,16 @@ export class ExploreMode {
     this.updateTimeUI();
   }
 
-  private showResumePrompt(): Promise<boolean> {
+  private showResumePrompt(saved: ExploreState): Promise<boolean> {
     return new Promise((resolve) => {
       const prompt = document.getElementById('explore-resume-prompt');
       if (!prompt) { resolve(true); return; }
       const uiOverlay = document.getElementById('ui-overlay');
 
-      const saved = this.saveManager.loadState();
-      if (saved) {
-        const info = document.getElementById('resume-info');
-        if (info) {
-          const dist = Math.sqrt(saved.positionAU.x ** 2 + saved.positionAU.y ** 2 + saved.positionAU.z ** 2);
-          info.textContent = `${dist.toFixed(2)} AU from Sun, ${saved.visitedPlanets.length} planets visited`;
-        }
+      const info = document.getElementById('resume-info');
+      if (info) {
+        const dist = Math.sqrt(saved.positionAU.x ** 2 + saved.positionAU.y ** 2 + saved.positionAU.z ** 2);
+        info.textContent = `${dist.toFixed(2)} AU from Sun, ${saved.visitedPlanets.length} planets visited`;
       }
 
       uiOverlay?.classList.add('resume-active');
@@ -1302,7 +1417,22 @@ export class ExploreMode {
     const pauseBtn = document.getElementById('explore-time-pause');
     if (pauseBtn) pauseBtn.textContent = this.timeState.paused ? 'Resume' : 'Pause';
     const gyroLabel = document.getElementById('settings-gyro-label');
-    if (gyroLabel) gyroLabel.textContent = this.gyroEnabled ? 'On' : 'Off';
+    if (gyroLabel) gyroLabel.textContent = this.getGyroStatusLabel();
+    const gyroToggle = document.getElementById('settings-gyro-toggle');
+    if (gyroToggle) {
+      gyroToggle.classList.toggle('active', this.gyroEnabled);
+      gyroToggle.setAttribute('aria-pressed', this.gyroEnabled ? 'true' : 'false');
+      const status = this.getGyroStatusLabel();
+      gyroToggle.setAttribute('title',
+        status === 'Denied'
+          ? 'Motion sensor permission was denied'
+          : status === 'N/A'
+            ? 'Motion sensors are not available on this device'
+            : this.gyroEnabled
+              ? 'Gyro steering is active'
+              : 'Enable gyro steering',
+      );
+    }
   }
 
   private setFlightTouchFromPoint(clientX: number, clientY: number) {
@@ -1328,6 +1458,7 @@ export class ExploreMode {
   private async toggleGyroControls() {
     if (this.gyroEnabled) {
       this.gyroEnabled = false;
+      this.gyroBaseline = null;
       this.gyroYaw = 0;
       this.gyroPitch = 0;
       window.removeEventListener('deviceorientation', this.handleDeviceOrientation);
@@ -1340,31 +1471,114 @@ export class ExploreMode {
       requestPermission?: () => Promise<'granted' | 'denied'>;
     };
     if (typeof orientationCtor === 'undefined') {
+      this.gyroAvailability = 'unavailable';
+      this.updateTimeUI();
       this.showNotification('Gyro steering is not available on this device');
       return;
     }
 
-    if (typeof orientationCtor.requestPermission === 'function' && !this.gyroPermissionRequested) {
-      this.gyroPermissionRequested = true;
-      const permission = await orientationCtor.requestPermission();
+    if (typeof orientationCtor.requestPermission === 'function' && this.gyroAvailability !== 'granted') {
+      let permission: 'granted' | 'denied';
+      try {
+        permission = await orientationCtor.requestPermission();
+      } catch {
+        permission = 'denied';
+      }
       if (permission !== 'granted') {
+        this.gyroAvailability = 'denied';
+        this.gyroEnabled = false;
+        this.gyroBaseline = null;
+        this.gyroYaw = 0;
+        this.gyroPitch = 0;
+        this.updateTimeUI();
         this.showNotification('Gyro permission denied');
         return;
       }
     }
 
+    this.gyroAvailability = 'granted';
     this.gyroEnabled = true;
+    this.gyroBaseline = null;
+    this.gyroYaw = 0;
+    this.gyroPitch = 0;
+    this.gyroScreenAngle = this.getGyroScreenAngle();
     window.addEventListener('deviceorientation', this.handleDeviceOrientation);
     this.updateTimeUI();
-    this.showNotification('Gyro steering on');
+    this.showNotification('Gyro steering on — hold your phone at a comfortable angle to calibrate');
   }
 
   private handleDeviceOrientation(event: DeviceOrientationEvent) {
     if (!this.gyroEnabled) return;
-    const gamma = event.gamma ?? 0;
-    const beta = event.beta ?? 0;
-    this.gyroYaw = THREE.MathUtils.clamp(gamma / 35, -1, 1);
-    this.gyroPitch = THREE.MathUtils.clamp((10 - beta) / 35, -1, 1);
+    const rawGamma = event.gamma;
+    const rawBeta = event.beta;
+    if (!Number.isFinite(rawGamma) || !Number.isFinite(rawBeta)) return;
+    const gamma = rawGamma as number;
+    const beta = rawBeta as number;
+
+    const angle = this.getGyroScreenAngle();
+    const mapped = this.mapGyroAxes(beta, gamma, angle);
+    if (!mapped) return;
+
+    if (this.gyroBaseline === null || angle !== this.gyroScreenAngle) {
+      this.gyroScreenAngle = angle;
+      this.gyroBaseline = mapped;
+      this.gyroYaw = 0;
+      this.gyroPitch = 0;
+      return;
+    }
+
+    this.gyroYaw = THREE.MathUtils.lerp(
+      this.gyroYaw,
+      this.normalizeGyroDelta(mapped.yawDeg - this.gyroBaseline.yawDeg),
+      0.18,
+    );
+    this.gyroPitch = THREE.MathUtils.lerp(
+      this.gyroPitch,
+      this.normalizeGyroDelta(this.gyroBaseline.pitchDeg - mapped.pitchDeg),
+      0.18,
+    );
+  }
+
+  private getGyroStatusLabel() {
+    if (this.gyroEnabled) return 'On';
+    if (this.gyroAvailability === 'denied') return 'Denied';
+    if (this.gyroAvailability === 'unavailable') return 'N/A';
+    return 'Off';
+  }
+
+  private getGyroScreenAngle() {
+    const orientation = screen.orientation;
+    if (orientation && typeof orientation.angle === 'number') {
+      return ((orientation.angle % 360) + 360) % 360;
+    }
+    const legacyOrientation = (window as Window & { orientation?: number }).orientation;
+    return typeof legacyOrientation === 'number'
+      ? ((legacyOrientation % 360) + 360) % 360
+      : 0;
+  }
+
+  private mapGyroAxes(beta: number, gamma: number, angle: number) {
+    if (!Number.isFinite(beta) || !Number.isFinite(gamma)) return null;
+
+    if (angle === 90) {
+      return { yawDeg: beta, pitchDeg: -gamma };
+    }
+    if (angle === 180) {
+      return { yawDeg: -gamma, pitchDeg: -beta };
+    }
+    if (angle === 270) {
+      return { yawDeg: -beta, pitchDeg: gamma };
+    }
+    return { yawDeg: gamma, pitchDeg: beta };
+  }
+
+  private normalizeGyroDelta(deltaDeg: number) {
+    const deadZone = 3;
+    const fullTilt = 28;
+    const absDelta = Math.abs(deltaDeg);
+    if (absDelta <= deadZone) return 0;
+    const normalized = (absDelta - deadZone) / (fullTilt - deadZone);
+    return THREE.MathUtils.clamp(normalized * Math.sign(deltaDeg), -1, 1);
   }
 
   dispose() {
@@ -1377,6 +1591,10 @@ export class ExploreMode {
       this.moonLabelContainer.remove();
       this.moonLabelContainer = null;
       this.moonLabels.clear();
+    }
+    if (this.sunLabel) {
+      this.sunLabel.remove();
+      this.sunLabel = null;
     }
     // Clean up Three.js objects from scene
     if (this.solarSystem) {

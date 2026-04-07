@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no" />
-  <title>Moon — Orbital Simulator</title>
+  <title>Planetarium: Explore Space</title>
   <link rel="icon" href="data:," />
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
@@ -373,6 +373,31 @@
       min-width: 180px;
     }
 
+    .stats-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      cursor: pointer;
+      -webkit-tap-highlight-color: transparent;
+      padding-bottom: 4px;
+    }
+    .stats-title {
+      font-size: 10px;
+      color: var(--text-dim);
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+    }
+    .stats-chevron {
+      font-size: 10px;
+      color: var(--accent);
+      opacity: 0.7;
+      transition: transform 0.2s, opacity 0.15s;
+    }
+    .stats-header:hover .stats-chevron { opacity: 1; }
+    .stats-expanded .stats-chevron { transform: rotate(180deg); opacity: 1; }
+    .stats-body { display: none; }
+    .stats-expanded .stats-body { display: block; }
+
     .stat-row {
       display: flex;
       justify-content: space-between;
@@ -603,6 +628,12 @@
       transition: all 0.15s;
     }
     .settings-toggle:hover { background: var(--accent-dim); color: var(--text-primary); }
+    .settings-toggle.active {
+      background: rgba(91, 140, 255, 0.18);
+      border-color: rgba(123, 171, 255, 0.7);
+      color: #eef4ff;
+      box-shadow: inset 0 0 0 1px rgba(123, 171, 255, 0.18);
+    }
     .settings-date {
       background: rgba(91, 140, 255, 0.06);
       border: 1px solid var(--panel-border);
@@ -1094,17 +1125,21 @@
       </div>
 
       <!-- Compact stats (bottom right) -->
-      <div id="explore-stats-compact">
+      <div id="explore-stats-compact" class="stats-expanded">
+        <div class="stats-header" id="stats-toggle">
+          <span class="stats-title">Stats</span>
+          <span class="stats-chevron">&#x25BC;</span>
+        </div>
+        <div class="stats-body">
+        <div class="stat-row"><span class="stat-label">FPS</span><span class="stat-value" id="stat-fps">--</span></div>
         <div class="stat-row"><span class="stat-label">Sun dist</span><span class="stat-value" id="stat-distance">--</span></div>
         <div class="stat-row"><span class="stat-label">Light time</span><span class="stat-value" id="stat-light-time">--</span></div>
         <div class="stat-row"><span class="stat-label">Solar</span><span class="stat-value" id="stat-intensity">--</span></div>
         <div class="stat-row"><span class="stat-label">Speed</span><span class="stat-value" id="stat-speed">--</span></div>
         <div class="stat-row"><span class="stat-label">Nearest</span><span class="stat-value" id="stat-nearest">--</span></div>
-        <div class="stat-row"><span class="stat-label">Next</span><span class="stat-value" id="stat-next">--</span></div>
         <div class="stat-row"><span class="stat-label">Temp</span><span class="stat-value" id="stat-temp">--</span></div>
         <div class="stat-row"><span class="stat-label">Traveled</span><span class="stat-value" id="stat-traveled">--</span></div>
         <div class="stat-row"><span class="stat-label">Flight</span><span class="stat-value" id="stat-time">0:00</span></div>
-        <div class="stat-row"><span class="stat-label">Visited</span><span class="stat-value" id="stat-visited">0/9</span></div>
         <!-- Integrated time control -->
         <div id="stat-time-section">
           <div class="stat-time-header" id="stat-time-toggle">
@@ -1128,6 +1163,7 @@
               <input type="datetime-local" id="explore-time-input" class="settings-date" step="60" />
             </div>
           </div>
+        </div>
         </div>
       </div>
 

@@ -424,7 +424,7 @@ export function createExploreSun(useBloom = true): THREE.Group {
         vec3 edgeColor = vec3(1.0, 0.3, 0.05);
         vec3 surfaceColor = mix(coreColor, midColor, rimDot * 0.7 + n * 0.3);
         surfaceColor = mix(surfaceColor, edgeColor, pow(rimDot, 2.0));
-        float intensity = 2.5 - rimDot * 1.2 + n * 0.3;
+        float intensity = 3.1 - rimDot * 1.2 + n * 0.3;
         gl_FragColor = vec4(surfaceColor * intensity, 1.0);
       }
     `,
@@ -450,21 +450,21 @@ export function createExploreSun(useBloom = true): THREE.Group {
 
   const innerGlow = createSunGlowSprite(
     SUN_DATA.radiusAU,
-    useBloom ? 4.2 : 5.2,
+    useBloom ? 4.6 : 5.4,
     innerGlowTexture,
-    useBloom ? 0.95 : 1.0,
+    useBloom ? 1.0 : 1.0,
   );
   const outerGlow = createSunGlowSprite(
     SUN_DATA.radiusAU,
-    useBloom ? 7.0 : 8.5,
+    useBloom ? 7.5 : 9.0,
     outerGlowTexture,
-    useBloom ? 0.42 : 0.55,
+    useBloom ? 0.50 : 0.58,
   );
   group.add(outerGlow);
   group.add(innerGlow);
 
   // Point light
-  const light = new THREE.PointLight(0xfff5e0, 2, 0, 0.5);
+  const light = new THREE.PointLight(0xfff5e0, 3, 0, 0.5);
   group.add(light);
 
   group.userData.sunMaterial = sunMat;

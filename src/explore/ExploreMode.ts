@@ -277,6 +277,11 @@ export class ExploreMode {
 
     // Show all solar system objects
     this.setObjectsVisible(true);
+
+    // Restore moon labels visibility
+    if (this.moonLabelContainer) {
+      this.moonLabelContainer.style.display = '';
+    }
     this.uiRefreshAccumulator = ExploreMode.UI_REFRESH_INTERVAL_S;
   }
 
@@ -313,6 +318,11 @@ export class ExploreMode {
     if (this.markers) {
       this.markers.dispose();
       this.markers = null;
+    }
+
+    // Hide moon labels
+    if (this.moonLabelContainer) {
+      this.moonLabelContainer.style.display = 'none';
     }
   }
 

@@ -76,9 +76,9 @@ export class PlayerShip {
     const hullMat = new THREE.MeshStandardMaterial({
       color: 0xb0c0d8,
       emissive: 0x1a2540,
-      emissiveIntensity: 0.35,
-      roughness: 0.32,
-      metalness: 0.6,
+      emissiveIntensity: 0.2,
+      roughness: 0.45,
+      metalness: 0.4,
     });
     const hull = new THREE.Mesh(hullGeo, hullMat);
     this.mesh = hull;
@@ -177,7 +177,7 @@ export class PlayerShip {
     this.exhaustCore.rotation.x = Math.PI;
 
     // Engine light (subtle)
-    this.exhaustLight = new THREE.PointLight(0x334466, 0.15, L * 4);
+    this.exhaustLight = new THREE.PointLight(0x334466, 0.15, L * 4, 0);
     this.exhaustLight.position.y = -L * 0.7;
 
     // ── Nose tip accent ──

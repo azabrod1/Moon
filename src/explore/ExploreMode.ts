@@ -440,7 +440,7 @@ export class ExploreMode {
         }
       }
     }
-    this.player.group.scale.setScalar(this.planetScale);
+    this.player.group.scale.setScalar(32);
     this.resolvePlanetCollisions();
 
     // Check orbit crossings and visits after scale/collision are applied so the

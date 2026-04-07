@@ -217,7 +217,7 @@ function createSunGlowSprite(radiusAU: number, scale: number, texture: THREE.Tex
     transparent: true,
     opacity,
     depthWrite: false,
-    depthTest: false,
+    depthTest: true,
     blending: THREE.AdditiveBlending,
   });
 

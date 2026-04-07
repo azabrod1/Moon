@@ -67,7 +67,7 @@ function sanitizeExploreState(raw: unknown): ExploreState | null {
       ? record.astroTimePaused
       : defaults.astroTimePaused,
     planetScale: isFiniteNumber(record.planetScale)
-      ? Math.min(64, Math.max(1, Math.round(record.planetScale)))
+      ? Math.min(128, Math.max(1, Math.round(record.planetScale)))
       : defaults.planetScale,
     showShip: typeof record.showShip === 'boolean' ? record.showShip : defaults.showShip,
   };

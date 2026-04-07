@@ -10,6 +10,34 @@ export const LUNAR_ORBIT = {
   siderealPeriodDays: REAL.MOON_SIDEREAL_PERIOD_DAYS,
 };
 
+export function getLunarOrbitMetrics() {
+  const eccentricity = LUNAR_ORBIT.eccentricity;
+  const semiMajorAxisScene = LUNAR_ORBIT.semiMajorAxisScene;
+  const semiMajorAxisKm = LUNAR_ORBIT.semiMajorAxisKm;
+  const semiMinorAxisScene = semiMajorAxisScene * Math.sqrt(1 - eccentricity * eccentricity);
+  const semiMinorAxisKm = semiMajorAxisKm * Math.sqrt(1 - eccentricity * eccentricity);
+  const focalOffsetScene = semiMajorAxisScene * eccentricity;
+  const focalOffsetKm = semiMajorAxisKm * eccentricity;
+  const periapsisScene = semiMajorAxisScene * (1 - eccentricity);
+  const apoapsisScene = semiMajorAxisScene * (1 + eccentricity);
+  const periapsisKm = semiMajorAxisKm * (1 - eccentricity);
+  const apoapsisKm = semiMajorAxisKm * (1 + eccentricity);
+
+  return {
+    eccentricity,
+    semiMajorAxisScene,
+    semiMinorAxisScene,
+    focalOffsetScene,
+    periapsisScene,
+    apoapsisScene,
+    semiMajorAxisKm,
+    semiMinorAxisKm,
+    focalOffsetKm,
+    periapsisKm,
+    apoapsisKm,
+  };
+}
+
 export function normalizeDegrees(angleDeg: number): number {
   return ((angleDeg % 360) + 360) % 360;
 }

@@ -190,6 +190,43 @@ function createFallbackTexture(key: string): THREE.Texture {
   return tex;
 }
 
+function createRadialGlowTexture(stops: Array<{ stop: number; color: string }>, size = 256): THREE.Texture {
+  const canvas = document.createElement('canvas');
+  canvas.width = size;
+  canvas.height = size;
+  const ctx = canvas.getContext('2d')!;
+  const center = size / 2;
+
+  const gradient = ctx.createRadialGradient(center, center, 0, center, center, center);
+  for (const { stop, color } of stops) {
+    gradient.addColorStop(stop, color);
+  }
+
+  ctx.clearRect(0, 0, size, size);
+  ctx.fillStyle = gradient;
+  ctx.fillRect(0, 0, size, size);
+
+  const texture = new THREE.CanvasTexture(canvas);
+  texture.colorSpace = THREE.SRGBColorSpace;
+  return texture;
+}
+
+function createSunGlowSprite(radiusAU: number, scale: number, texture: THREE.Texture, opacity: number): THREE.Sprite {
+  const material = new THREE.SpriteMaterial({
+    map: texture,
+    transparent: true,
+    opacity,
+    depthWrite: false,
+    depthTest: false,
+    blending: THREE.AdditiveBlending,
+  });
+
+  const sprite = new THREE.Sprite(material);
+  sprite.scale.setScalar(radiusAU * scale * 2);
+  sprite.renderOrder = 8;
+  return sprite;
+}
+
 function createAtmosphereGlow(radiusAU: number, config: AtmosphereConfig): THREE.Mesh {
   const geo = new THREE.SphereGeometry(radiusAU * config.scale, 64, 32);
   const mat = new THREE.ShaderMaterial({
@@ -396,71 +433,35 @@ export function createExploreSun(useBloom = true): THREE.Group {
   const mesh = new THREE.Mesh(geo, sunMat);
   group.add(mesh);
 
-  // Glow shell — slightly bigger when bloom is off
-  const glowScale = useBloom ? 2.0 : 2.5;
-  const glowAlpha = useBloom ? 0.3 : 0.45;
-  const glowGeo = new THREE.SphereGeometry(SUN_DATA.radiusAU * glowScale, 32, 16);
-  const glowMat = new THREE.ShaderMaterial({
-    vertexShader: `
-      varying vec3 vNormal;
-      varying vec3 vPosition;
-      void main() {
-        vNormal = normalize(normalMatrix * normal);
-        vPosition = (modelViewMatrix * vec4(position, 1.0)).xyz;
-        gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
-      }
-    `,
-    fragmentShader: `
-      uniform float alphaScale;
-      varying vec3 vNormal;
-      varying vec3 vPosition;
-      void main() {
-        vec3 viewDir = normalize(-vPosition);
-        float rimDot = 1.0 - max(dot(viewDir, vNormal), 0.0);
-        float intensity = pow(rimDot, 2.0) * 2.0;
-        vec3 glowColor = mix(vec3(1.0, 0.6, 0.1), vec3(1.0, 0.2, 0.0), rimDot);
-        gl_FragColor = vec4(glowColor * intensity, intensity * alphaScale);
-      }
-    `,
-    uniforms: { alphaScale: { value: glowAlpha } },
-    transparent: true,
-    side: THREE.BackSide,
-    depthWrite: false,
-    blending: THREE.AdditiveBlending,
-  });
-  group.add(new THREE.Mesh(glowGeo, glowMat));
+  // Use billboarded radial glow sprites so the solar halo stays circular on screen.
+  const innerGlowTexture = createRadialGlowTexture([
+    { stop: 0.0, color: 'rgba(255,255,245,1.0)' },
+    { stop: 0.18, color: 'rgba(255,244,220,0.95)' },
+    { stop: 0.42, color: 'rgba(255,188,92,0.45)' },
+    { stop: 0.72, color: 'rgba(255,120,26,0.12)' },
+    { stop: 1.0, color: 'rgba(255,120,26,0.0)' },
+  ]);
+  const outerGlowTexture = createRadialGlowTexture([
+    { stop: 0.0, color: 'rgba(255,235,190,0.26)' },
+    { stop: 0.35, color: 'rgba(255,190,96,0.12)' },
+    { stop: 0.7, color: 'rgba(255,130,36,0.04)' },
+    { stop: 1.0, color: 'rgba(255,130,36,0.0)' },
+  ]);
 
-  // Extra soft outer halo when bloom is off
-  if (!useBloom) {
-    const haloGeo = new THREE.SphereGeometry(SUN_DATA.radiusAU * 3.5, 32, 16);
-    const haloMat = new THREE.ShaderMaterial({
-      vertexShader: `
-        varying vec3 vNormal;
-        varying vec3 vPosition;
-        void main() {
-          vNormal = normalize(normalMatrix * normal);
-          vPosition = (modelViewMatrix * vec4(position, 1.0)).xyz;
-          gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
-        }
-      `,
-      fragmentShader: `
-        varying vec3 vNormal;
-        varying vec3 vPosition;
-        void main() {
-          vec3 viewDir = normalize(-vPosition);
-          float rimDot = 1.0 - max(dot(viewDir, vNormal), 0.0);
-          float intensity = pow(rimDot, 3.0) * 1.5;
-          vec3 glowColor = mix(vec3(1.0, 0.7, 0.2), vec3(1.0, 0.3, 0.0), rimDot);
-          gl_FragColor = vec4(glowColor * intensity, intensity * 0.12);
-        }
-      `,
-      transparent: true,
-      side: THREE.BackSide,
-      depthWrite: false,
-      blending: THREE.AdditiveBlending,
-    });
-    group.add(new THREE.Mesh(haloGeo, haloMat));
-  }
+  const innerGlow = createSunGlowSprite(
+    SUN_DATA.radiusAU,
+    useBloom ? 4.2 : 5.2,
+    innerGlowTexture,
+    useBloom ? 0.95 : 1.0,
+  );
+  const outerGlow = createSunGlowSprite(
+    SUN_DATA.radiusAU,
+    useBloom ? 7.0 : 8.5,
+    outerGlowTexture,
+    useBloom ? 0.42 : 0.55,
+  );
+  group.add(outerGlow);
+  group.add(innerGlow);
 
   // Point light
   const light = new THREE.PointLight(0xfff5e0, 2, 0, 0.5);

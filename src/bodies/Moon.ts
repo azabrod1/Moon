@@ -1,5 +1,7 @@
 import * as THREE from 'three';
 import { SCENE } from '../utils/constants';
+import { positionInOrbitPlaneFromLongitude } from '../utils/lunarOrbit';
+import { orientOrbitPlane } from '../utils/orbitPlane';
 import { LoadedTextures } from '../utils/textures';
 
 export class Moon {
@@ -11,11 +13,11 @@ export class Moon {
   constructor(textures: LoadedTextures) {
     // orbitGroup sits at Earth's center; rotates by node (Y) then tilts by inclination (X)
     this.orbitGroup = new THREE.Group();
-    this.orbitGroup.rotation.order = 'YXZ';
+    orientOrbitPlane(this.orbitGroup, SCENE.MOON_INCLINATION, 0);
 
     // group holds the moon mesh at the orbital distance
     this.group = new THREE.Group();
-    this.group.position.set(SCENE.EARTH_MOON_DIST, 0, 0);
+    this.group.position.copy(positionInOrbitPlaneFromLongitude(0, 0));
     this.orbitGroup.add(this.group);
 
     const moonGeo = new THREE.SphereGeometry(SCENE.MOON_RADIUS, 64, 32);
@@ -33,30 +35,20 @@ export class Moon {
   }
 
   /**
-   * Set the Moon's orbital angle (radians, 0 = +X from Earth).
+   * Set the Moon's orbital angle (degrees, 0 = +X from Earth).
    * Node angle rotates the orbit's line of nodes.
    */
   setOrbitalPosition(angleDeg: number, nodeAngleDeg: number) {
     const nodeAngle = (nodeAngleDeg * Math.PI) / 180;
-    // angleDeg is an ecliptic longitude; convert it to an angle within the tilted orbital plane
-    // so the ascending node rotation is only applied once.
-    const angle = ((angleDeg - nodeAngleDeg) * Math.PI) / 180;
-
-    // Rotate the orbit plane around Y by the node angle
-    this.orbitGroup.rotation.y = -nodeAngle;
-    // Tilt the orbit plane by inclination around X
-    this.orbitGroup.rotation.x = SCENE.MOON_INCLINATION;
+    const localPosition = positionInOrbitPlaneFromLongitude(angleDeg, nodeAngleDeg);
+    orientOrbitPlane(this.orbitGroup, SCENE.MOON_INCLINATION, nodeAngle);
 
     // Position moon along orbit
-    this.group.position.set(
-      SCENE.EARTH_MOON_DIST * Math.cos(angle),
-      0,
-      SCENE.EARTH_MOON_DIST * Math.sin(angle),
-    );
+    this.group.position.copy(localPosition);
 
     // Tidal locking: moon always faces Earth
     // The moon's -Z should point toward Earth (origin)
-    this.mesh.rotation.y = -angle + Math.PI;
+    this.mesh.rotation.y = -Math.atan2(localPosition.z, localPosition.x) + Math.PI;
   }
 
   getWorldPosition(): THREE.Vector3 {

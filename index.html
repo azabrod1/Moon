@@ -399,66 +399,65 @@
       z-index: 18;
     }
 
-    #explore-time-panel {
-      position: absolute;
-      left: 12px;
-      bottom: 12px;
-      width: min(380px, calc(100vw - 36px));
-      background:
-        linear-gradient(180deg, rgba(13, 22, 40, 0.88) 0%, rgba(7, 12, 24, 0.9) 100%);
-      backdrop-filter: blur(12px);
-      border: 1px solid rgba(91, 140, 255, 0.18);
-      border-radius: 12px;
-      padding: 12px 14px;
-      pointer-events: auto;
-      box-shadow: 0 16px 40px rgba(0, 0, 0, 0.35);
-      z-index: 18;
-    }
-    .time-panel-top {
+    /* Time row in stats — clickable to expand controls */
+    .stat-time-header {
       display: flex;
       align-items: center;
       justify-content: space-between;
-      gap: 10px;
+      cursor: pointer;
+      padding: 4px 0;
+      -webkit-tap-highlight-color: transparent;
     }
-    .time-panel-label {
-      font-size: 10px;
-      color: var(--text-dim);
-      text-transform: uppercase;
-      letter-spacing: 1.4px;
+    .stat-time-header:hover .stat-time-chevron { opacity: 0.9; }
+    .stat-time-left {
+      display: flex;
+      flex-direction: column;
+      gap: 1px;
+      min-width: 0;
     }
-    #explore-time-rate {
+    .stat-time-date {
       font-size: 11px;
-      color: rgba(166, 194, 255, 0.92);
+      font-weight: 500;
+      color: var(--text-primary);
       font-variant-numeric: tabular-nums;
       white-space: nowrap;
     }
-    #explore-time-value {
-      margin-top: 6px;
-      font-size: 16px;
-      letter-spacing: 1px;
-      color: var(--text-primary);
+    #explore-time-rate {
+      font-size: 9px;
+      color: rgba(166, 194, 255, 0.7);
       font-variant-numeric: tabular-nums;
+      white-space: nowrap;
     }
-    .time-panel-caption {
-      margin-top: 4px;
-      font-size: 10px;
+    .stat-time-chevron {
+      font-size: 8px;
       color: var(--text-dim);
-      line-height: 1.4;
+      opacity: 0.5;
+      transition: transform 0.2s, opacity 0.15s;
+      flex-shrink: 0;
+      margin-left: 6px;
     }
+    .stat-time-expanded .stat-time-chevron { transform: rotate(180deg); opacity: 0.8; }
+    .stat-time-controls {
+      display: none;
+      padding-top: 6px;
+      border-top: 1px solid var(--panel-border);
+      margin-top: 4px;
+    }
+    .stat-time-expanded .stat-time-controls { display: block; }
     .time-controls {
       display: grid;
-      grid-template-columns: repeat(6, minmax(0, 1fr));
-      gap: 6px;
-      margin-top: 10px;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 4px;
     }
     .time-input-row {
       display: flex;
       align-items: center;
-      gap: 8px;
-      margin-top: 10px;
+      gap: 6px;
+      margin-top: 6px;
     }
     .time-input-row .settings-label {
       flex-shrink: 0;
+      font-size: 9px;
     }
     #explore-time-input {
       flex: 1;
@@ -711,44 +710,8 @@
         radial-gradient(circle at center, rgba(91, 140, 255, 0.08) 0%, rgba(91, 140, 255, 0.02) 35%, transparent 70%);
     }
 
-    /* Touch throttle buttons (mobile only) */
-    .touch-throttle-group {
-      display: none;
-      position: absolute;
-      right: 12px;
-      top: 50%;
-      transform: translateY(-50%);
-      flex-direction: column;
-      gap: 8px;
-      z-index: 14;
-      pointer-events: auto;
-    }
-    .touch-throttle-btn {
-      width: 52px;
-      height: 52px;
-      border-radius: 50%;
-      border: 1.5px solid var(--panel-border);
-      background: var(--panel-bg);
-      backdrop-filter: blur(8px);
-      color: var(--text-secondary);
-      font-size: 18px;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      cursor: pointer;
-      transition: all 0.12s;
-      -webkit-tap-highlight-color: transparent;
-      touch-action: manipulation;
-    }
-    .touch-throttle-btn:active, .touch-throttle-btn.active {
-      background: rgba(91, 140, 255, 0.2);
-      color: var(--accent);
-      border-color: var(--accent);
-    }
-
     @media (hover: none) and (pointer: coarse) {
       .touch-flight-zone { display: block; }
-      .touch-throttle-group { display: flex; }
       #explore-keys-hint { display: none; }
     }
 
@@ -885,16 +848,7 @@
 
       #info-bar { font-size: 10px; padding: 6px 12px; gap: 10px; bottom: 8px; }
 
-      #explore-stats-compact { bottom: 214px; right: 8px; padding: 8px 10px; min-width: 150px; }
-      #explore-time-panel {
-        left: 10px;
-        right: 10px;
-        width: auto;
-        bottom: 76px;
-        padding: 10px 12px;
-      }
-      #explore-time-value { font-size: 14px; }
-      .time-controls { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+      #explore-stats-compact { bottom: 70px; right: 8px; padding: 8px 10px; min-width: 150px; }
       .stat-row { padding: 2px 0; }
       .stat-label { font-size: 9px; }
       .stat-value { font-size: 10px; }
@@ -1134,27 +1088,6 @@
         </div>
       </div>
 
-      <div id="explore-time-panel">
-        <div class="time-panel-top">
-          <span class="time-panel-label">Astronomy Time</span>
-          <span id="explore-time-rate">1x real-time</span>
-        </div>
-        <div id="explore-time-value">--</div>
-        <div class="time-panel-caption">Changes orbit and rotation time only. Ship thrust stays separate.</div>
-        <div class="time-controls">
-          <button class="explore-icon-btn" id="explore-time-pause">Pause</button>
-          <button class="explore-icon-btn" id="explore-time-play">Play</button>
-          <button class="explore-icon-btn" id="explore-time-reverse">Reverse</button>
-          <button class="explore-icon-btn" id="explore-time-slower">Slower</button>
-          <button class="explore-icon-btn" id="explore-time-faster">Faster</button>
-          <button class="explore-icon-btn" id="explore-time-now">Now</button>
-        </div>
-        <div class="time-input-row">
-          <span class="settings-label">UTC</span>
-          <input type="datetime-local" id="explore-time-input" class="settings-date" step="60" />
-        </div>
-      </div>
-
       <!-- Compact stats (bottom right) -->
       <div id="explore-stats-compact">
         <div class="stat-row"><span class="stat-label">Sun dist</span><span class="stat-value" id="stat-distance">--</span></div>
@@ -1165,8 +1098,32 @@
         <div class="stat-row"><span class="stat-label">Next</span><span class="stat-value" id="stat-next">--</span></div>
         <div class="stat-row"><span class="stat-label">Temp</span><span class="stat-value" id="stat-temp">--</span></div>
         <div class="stat-row"><span class="stat-label">Traveled</span><span class="stat-value" id="stat-traveled">--</span></div>
-        <div class="stat-row"><span class="stat-label">Time</span><span class="stat-value" id="stat-time">0:00</span></div>
+        <div class="stat-row"><span class="stat-label">Flight</span><span class="stat-value" id="stat-time">0:00</span></div>
         <div class="stat-row"><span class="stat-label">Visited</span><span class="stat-value" id="stat-visited">0/9</span></div>
+        <!-- Integrated time control -->
+        <div id="stat-time-section">
+          <div class="stat-time-header" id="stat-time-toggle">
+            <div class="stat-time-left">
+              <span class="stat-time-date" id="explore-time-value">--</span>
+              <span id="explore-time-rate">1x real-time</span>
+            </div>
+            <span class="stat-time-chevron">&#x25BC;</span>
+          </div>
+          <div class="stat-time-controls">
+            <div class="time-controls">
+              <button class="explore-icon-btn" id="explore-time-pause">Pause</button>
+              <button class="explore-icon-btn" id="explore-time-play">Play</button>
+              <button class="explore-icon-btn" id="explore-time-reverse">Reverse</button>
+              <button class="explore-icon-btn" id="explore-time-slower">Slower</button>
+              <button class="explore-icon-btn" id="explore-time-faster">Faster</button>
+              <button class="explore-icon-btn" id="explore-time-now">Now</button>
+            </div>
+            <div class="time-input-row">
+              <span class="settings-label">UTC</span>
+              <input type="datetime-local" id="explore-time-input" class="settings-date" step="60" />
+            </div>
+          </div>
+        </div>
       </div>
 
       <!-- Speed control (bottom center) -->
@@ -1188,11 +1145,7 @@
       <!-- Touch flight zone (mobile only) -->
       <div id="touch-flight-zone" class="touch-flight-zone"></div>
 
-      <!-- Touch throttle buttons (mobile only) -->
-      <div id="touch-throttle" class="touch-throttle-group">
-        <button id="touch-accel" class="touch-throttle-btn touch-accel">&#x25B2;</button>
-        <button id="touch-decel" class="touch-throttle-btn touch-decel">&#x25BC;</button>
-      </div>
+      <!-- Touch throttle removed — speed bar +/- handles this -->
 
       <div id="explore-resume-prompt">
         <div class="resume-dialog">

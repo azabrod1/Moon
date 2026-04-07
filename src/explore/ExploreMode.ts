@@ -19,7 +19,7 @@ import {
 import { BRIGHT_STAR_CATALOG } from './data/brightStars';
 
 export class ExploreMode {
-  private static readonly TIME_RATE_PRESETS = [1, 10, 30, 60, 300, 900, 3600, 21600, 86400, 604800, 31557600];
+  private static readonly TIME_RATE_PRESETS = [1, 60, 1200, 3600, 21600, 86400, 604800, 2592000, 31557600];
   private static readonly SHIP_CLEARANCE_AU = (1_737.4 / 149_597_870.7) * 1.5;
 
   private scene: THREE.Scene;
@@ -339,8 +339,8 @@ export class ExploreMode {
 
     // Distance-based planet scaling:
     //   Close (<0.5 AU): full planetScale
-    //   Mid (0.5–3 AU): ramps down to 0.5x
-    //   Far (>3 AU): 0.5x (smaller + dimmer so distant planets don't dominate)
+    //   Mid (0.5–3 AU): ramps down to 0.25x
+    //   Far (>3 AU): 0.25x (smaller + dimmer so distant planets don't dominate)
     for (const planet of this.solarSystem.planets) {
       const wp = planet.group.userData.worldPosAU as { x: number; y: number; z: number };
       const dx = this.player.posX - wp.x;
@@ -349,8 +349,8 @@ export class ExploreMode {
       const dist = Math.sqrt(dx * dx + dy * dy + dz * dz);
       // t: 1 when close, 0 when far
       const t = 1 - Math.min(1, Math.max(0, (dist - 0.5) / 2.5));
-      // Scale: planetScale when close, 0.5 when far
-      const s = 0.5 + (this.planetScale - 0.5) * t;
+      // Scale: planetScale when close, 0.25 when far
+      const s = 0.25 + (this.planetScale - 0.25) * t;
       planet.group.scale.setScalar(s);
 
       // Dim far-away planet atmosphere glows
@@ -517,6 +517,11 @@ export class ExploreMode {
     if (this.keys.has('w')) throttle = 1;
     if (this.keys.has('s')) throttle = -1;
     if (this.touchThrottle !== 0) throttle = this.touchThrottle;
+
+    // Any manual steering input disengages autopilot
+    if (this.autopilot && (yaw !== 0 || pitch !== 0 || throttle !== 0)) {
+      this.disableAutopilot();
+    }
 
     if (throttle > 0) {
       // Accelerate — use additive at low speeds for responsiveness from zero
@@ -763,6 +768,12 @@ export class ExploreMode {
       if (panel) panel.classList.toggle('visible');
     });
 
+    // Time section expand/collapse
+    document.getElementById('stat-time-toggle')?.addEventListener('click', () => {
+      const section = document.getElementById('stat-time-section');
+      if (section) section.classList.toggle('stat-time-expanded');
+    });
+
     // Astronomy time controls
     document.getElementById('explore-time-pause')?.addEventListener('click', () => {
       this.timeState.paused = !this.timeState.paused;
@@ -851,27 +862,6 @@ export class ExploreMode {
       flightZone.addEventListener('pointercancel', clearFlightTouch);
       flightZone.addEventListener('pointerleave', clearFlightTouch);
     }
-
-    // Touch throttle buttons
-    const touchAccel = document.getElementById('touch-accel');
-    const touchDecel = document.getElementById('touch-decel');
-    const bindThrottleButton = (element: HTMLElement | null, value: number) => {
-      if (!element) return;
-      element.addEventListener('pointerdown', (event) => {
-        event.preventDefault();
-        this.touchThrottle = value;
-        element.classList.add('active');
-      });
-      const clear = () => {
-        this.touchThrottle = 0;
-        element.classList.remove('active');
-      };
-      element.addEventListener('pointerup', clear);
-      element.addEventListener('pointercancel', clear);
-      element.addEventListener('pointerleave', clear);
-    };
-    bindThrottleButton(touchAccel, 1);
-    bindThrottleButton(touchDecel, -1);
 
     this.updateTimeUI();
   }
@@ -1177,17 +1167,24 @@ export class ExploreMode {
     }
   }
 
-  private toggleAutopilot() {
-    this.autopilot = !this.autopilot;
+  private disableAutopilot() {
+    if (!this.autopilot) return;
+    this.autopilot = false;
     const btn = document.getElementById('explore-btn-autopilot');
-    if (btn) btn.classList.toggle('active', this.autopilot);
+    if (btn) btn.classList.toggle('active', false);
+    this.showNotification('Manual flight');
+  }
 
-    if (!this.autopilot) {
-      // Manual mode: start at speed 0
+  private toggleAutopilot() {
+    if (this.autopilot) {
+      this.disableAutopilot();
+      // When explicitly toggling off via button/key, zero speed
       this.player.speedMultiplier = 0;
       this.updateSpeedSlider();
-      this.showNotification('Manual flight: W/S throttle, arrows pitch/yaw, drag on mobile');
     } else {
+      this.autopilot = true;
+      const btn = document.getElementById('explore-btn-autopilot');
+      if (btn) btn.classList.toggle('active', true);
       // Returning to autopilot: restore default speed if stopped
       if (this.player.speedMultiplier < 0.05) {
         this.player.speedMultiplier = PlayerShip.SPEED_DEFAULT;

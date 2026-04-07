@@ -514,7 +514,7 @@ export class ExploreMode {
     // Chase camera: smoothly lerp behind the ship unless user is orbiting
     if (this.userOrbiting) return;
 
-    const camDist = this.camera.position.length();
+    const camDist = 0.0002 * this.planetScale;
     const forward = this.player.getForwardDirection();
     const idealPos = new THREE.Vector3(
       -forward.x * camDist,

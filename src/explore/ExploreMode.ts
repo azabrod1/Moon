@@ -18,6 +18,7 @@ import {
 } from './astronomy';
 import { BRIGHT_STAR_CATALOG } from './data/brightStars';
 import { getMoonsByPlanet } from './planets/moonData';
+import { formatScaleMultiplier } from '../utils/formatting';
 
 export class ExploreMode {
   private static readonly TIME_RATE_PRESETS = [1, 60, 1200, 3600, 21600, 86400, 604800, 2592000, 31557600];
@@ -118,6 +119,15 @@ export class ExploreMode {
   private timeInputEl: HTMLInputElement | null = null;
   private lastTimeLabel = '';
   private lastTimeRateLabel = '';
+
+  private formatPlanetScaleLabel(): string {
+    return formatScaleMultiplier(this.planetScale);
+  }
+
+  private updatePlanetScaleLabel() {
+    const label = document.getElementById('settings-scale-label');
+    if (label) label.textContent = this.formatPlanetScaleLabel();
+  }
   private lastTimeInputValue = '';
   private uiRefreshAccumulator = ExploreMode.UI_REFRESH_INTERVAL_S;
 
@@ -1104,8 +1114,7 @@ export class ExploreMode {
     if (scaleSlider) {
       scaleSlider.addEventListener('input', () => {
         this.planetScale = parseInt(scaleSlider.value, 10);
-        const label = document.getElementById('settings-scale-label');
-        if (label) label.textContent = `${this.planetScale}×`;
+        this.updatePlanetScaleLabel();
         this.resetCruiseCamera();
       });
     }
@@ -1707,8 +1716,7 @@ export class ExploreMode {
     if (apBtn) apBtn.classList.toggle('active', this.autopilot);
     const scaleSlider = document.getElementById('settings-planet-scale') as HTMLInputElement;
     if (scaleSlider) scaleSlider.value = String(this.planetScale);
-    const scaleLabel = document.getElementById('settings-scale-label');
-    if (scaleLabel) scaleLabel.textContent = `${this.planetScale}×`;
+    this.updatePlanetScaleLabel();
     const shipLabel = document.getElementById('settings-ship-label');
     if (shipLabel) shipLabel.textContent = this.showShip ? 'On' : 'Off';
 

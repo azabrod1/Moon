@@ -70,4 +70,8 @@ export class Moon {
     this.material.emissive.setRGB(0, 0, 0);
     this.material.emissiveIntensity = 0;
   }
+
+  setVisualScale(scale: number) {
+    this.mesh.scale.setScalar(scale);
+  }
 }

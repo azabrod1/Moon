@@ -299,8 +299,13 @@
       display: flex;
       align-items: center;
       gap: 8px;
-      color: var(--text-secondary);
-      font-size: 11px;
+      color: var(--text-dim);
+      font-size: 10px;
+      line-height: 1.2;
+      font-weight: 400;
+      letter-spacing: 0;
+      text-transform: none;
+      margin-bottom: 0;
       user-select: none;
     }
 
@@ -308,6 +313,20 @@
       width: 14px;
       height: 14px;
       accent-color: var(--accent);
+    }
+
+    .toggle-row span {
+      font-size: 10px;
+      color: var(--text-dim);
+      font-weight: 400;
+      letter-spacing: 0;
+      text-transform: none;
+    }
+
+    .options-list {
+      display: grid;
+      gap: 8px;
+      margin-top: 4px;
     }
 
     #orbit-details-panel {
@@ -664,6 +683,10 @@
       text-transform: uppercase;
       letter-spacing: 0.5px;
     }
+    .settings-label.is-mixed {
+      text-transform: none;
+      letter-spacing: 0;
+    }
     .settings-scale-row {
       display: flex;
       align-items: center;
@@ -683,10 +706,12 @@
       background: var(--accent);
       cursor: pointer;
     }
-    #settings-scale-label {
+    .settings-scale-value {
+      display: inline-block;
       font-size: 11px;
       color: var(--text-secondary);
-      min-width: 24px;
+      min-width: 38px;
+      text-align: right;
       font-variant-numeric: tabular-nums;
     }
     .settings-toggle {
@@ -1356,10 +1381,20 @@
         </div>
 
         <div class="control-group">
-          <label class="toggle-row">
-            <input type="checkbox" id="orbit-details-toggle" />
-            <span>Orbit details</span>
-          </label>
+          <label>Options</label>
+          <div class="options-list">
+            <div class="settings-row">
+              <span class="settings-label is-mixed">Body size <span style="opacity:0.5;font-size:0.85em">(× real)</span></span>
+              <div class="settings-scale-row">
+                <input type="range" id="moon-body-scale-slider" min="1" max="8" value="1" step="0.1" class="settings-slider" />
+                <span id="moon-body-scale-label" class="settings-scale-value">1×</span>
+              </div>
+            </div>
+            <label class="toggle-row">
+              <input type="checkbox" id="orbit-details-toggle" />
+              <span>Orbit details</span>
+            </label>
+          </div>
         </div>
       </div>
 
@@ -1402,10 +1437,10 @@
         <button class="menu-action" id="explore-btn-new">New Journey</button>
         <div class="menu-divider"></div>
         <div class="settings-row">
-          <span class="settings-label">Planet size <span style="opacity:0.5;font-size:0.85em">(× real)</span></span>
+          <span class="settings-label is-mixed">Planet size <span style="opacity:0.5;font-size:0.85em">(× real)</span></span>
           <div class="settings-scale-row">
             <input type="range" id="settings-planet-scale" min="1" max="128" value="32" class="settings-slider" />
-            <span id="settings-scale-label">32×</span>
+            <span id="settings-scale-label" class="settings-scale-value">32×</span>
           </div>
         </div>
         <div class="settings-row">

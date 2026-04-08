@@ -93,4 +93,8 @@ export class Earth {
     localSunDir.transformDirection(invMatrix);
     this.nightMaterial.uniforms.sunDirection.value.copy(localSunDir);
   }
+
+  setVisualScale(scale: number) {
+    this.group.scale.setScalar(scale);
+  }
 }

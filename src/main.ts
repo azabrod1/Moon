@@ -24,6 +24,7 @@ import { Sun } from './bodies/Sun';
 import { ExploreMode } from './explore/ExploreMode';
 import { OrbitDetailsOverlay } from './simulator/OrbitDetailsOverlay';
 import { debugError, debugLog, debugWarn } from './utils/debug';
+import { formatScaleMultiplier } from './utils/formatting';
 
 // ================================================================
 // Top-level mode
@@ -326,7 +327,8 @@ const infoDistance = document.getElementById('info-distance')!;
 const infoPhaseAngle = document.getElementById('info-phase-angle')!;
 const infoNodeDist = document.getElementById('info-node-dist')!;
 const speedDisplay = document.getElementById('speed-display')!;
-const largerBodiesToggle = document.getElementById('larger-bodies-toggle') as HTMLInputElement;
+const moonBodyScaleSlider = document.getElementById('moon-body-scale-slider') as HTMLInputElement;
+const moonBodyScaleLabel = document.getElementById('moon-body-scale-label')!;
 const orbitDetailsToggle = document.getElementById('orbit-details-toggle') as HTMLInputElement;
 const orbitDetailsPanel = document.getElementById('orbit-details-panel')!;
 const orbitMajorAxisReadout = document.getElementById('orbit-major-axis-readout')!;
@@ -338,7 +340,7 @@ const orbitFocusLabelF2 = document.getElementById('orbit-focus-label-f2')!;
 const focusWorld1 = new THREE.Vector3();
 const focusWorld2 = new THREE.Vector3();
 const PROPORTIONAL_BODY_SCALE = 1;
-const ENLARGED_BODY_SCALE = 7.8;
+const MAX_MOON_BODY_SCALE = 8;
 
 function syncMoonMeanAnomalyFromDisplayedAngle() {
   const trueAnomalyDeg = trueAnomalyDegFromLongitude(state.moonAngle, state.nodeAngle);
@@ -362,14 +364,17 @@ function applyMoonBodyScale(
   sun: Sun,
   earthShadowCone: THREE.Mesh,
   moonShadowCone: THREE.Mesh,
-  enlarged: boolean,
+  scale: number,
 ) {
-  const scale = enlarged ? ENLARGED_BODY_SCALE : PROPORTIONAL_BODY_SCALE;
   earth.setVisualScale(scale);
   moon.setVisualScale(scale);
   sun.setVisualScale(scale);
   earthShadowCone.scale.set(scale, scale, 1);
   moonShadowCone.scale.set(scale, scale, 1);
+}
+
+function updateMoonBodyScaleLabel(scale: number) {
+  moonBodyScaleLabel.textContent = formatScaleMultiplier(scale);
 }
 
 function formatKm(valueKm: number) {
@@ -834,10 +839,16 @@ async function init() {
   scene.add(moonShadowCone);
   simObjects.push(moonShadowCone);
 
-  largerBodiesToggle.checked = false;
-  applyMoonBodyScale(earth, moon, sun, earthShadowCone, moonShadowCone, false);
-  largerBodiesToggle.addEventListener('change', () => {
-    applyMoonBodyScale(earth, moon, sun, earthShadowCone, moonShadowCone, largerBodiesToggle.checked);
+  moonBodyScaleSlider.min = String(PROPORTIONAL_BODY_SCALE);
+  moonBodyScaleSlider.max = String(MAX_MOON_BODY_SCALE);
+  moonBodyScaleSlider.step = '0.1';
+  moonBodyScaleSlider.value = String(PROPORTIONAL_BODY_SCALE);
+  updateMoonBodyScaleLabel(PROPORTIONAL_BODY_SCALE);
+  applyMoonBodyScale(earth, moon, sun, earthShadowCone, moonShadowCone, PROPORTIONAL_BODY_SCALE);
+  moonBodyScaleSlider.addEventListener('input', () => {
+    const scale = parseFloat(moonBodyScaleSlider.value);
+    updateMoonBodyScaleLabel(scale);
+    applyMoonBodyScale(earth, moon, sun, earthShadowCone, moonShadowCone, scale);
   });
 
   // Initial state

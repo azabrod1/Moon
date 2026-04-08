@@ -90,6 +90,7 @@ export class ExploreMode {
   private preLandSpeed = 0;
   private preLandAutopilot = false;
   private nearbyLandTarget: NonNullable<LandedTarget> | null = null;
+  private travelSelection: NonNullable<LandedTarget> | null = null;
 
   // Moon labels
   private moonLabels = new Map<string, HTMLDivElement>();
@@ -783,9 +784,6 @@ export class ExploreMode {
       if (dist < visitDist && !this.player.visitedPlanets.has(planet.data.name)) {
         this.player.visitedPlanets.add(planet.data.name);
         this.showNotification(`Arrived at ${planet.data.name}! ${planet.data.description}`);
-        // Mark chip as visited
-        const chip = document.getElementById(`jump-${planet.data.name.toLowerCase()}`);
-        if (chip) chip.classList.add('visited');
       }
     }
   }
@@ -1018,20 +1016,14 @@ export class ExploreMode {
       this.showNotification('New journey started!');
     });
 
-    // Jump to planet buttons
-    for (const body of ALL_BODIES) {
-      const btn = document.getElementById(`jump-${body.name.toLowerCase()}`);
-      btn?.addEventListener('click', () => this.jumpToPlanet(body));
-    }
-
     // Autopilot toggle
     document.getElementById('explore-btn-autopilot')?.addEventListener('click', () => {
       this.toggleAutopilot();
     });
 
-    // Settings panel toggle
-    document.getElementById('explore-btn-settings')?.addEventListener('click', () => {
-      const panel = document.getElementById('explore-settings-panel');
+    // Menu panel toggle (replaces separate settings + save/new buttons)
+    document.getElementById('explore-btn-menu')?.addEventListener('click', () => {
+      const panel = document.getElementById('explore-menu-panel');
       if (panel) panel.classList.toggle('visible');
     });
 
@@ -1177,6 +1169,29 @@ export class ExploreMode {
         this.enterLandedMode(this.nearbyLandTarget);
       }
     });
+    // Travel action bar: Land vs Jump
+    document.getElementById('travel-action-land')?.addEventListener('click', () => {
+      if (this.travelSelection) {
+        const sel = this.travelSelection;
+        this.closeTravelMenu();
+        this.enterLandedMode(sel);
+      }
+    });
+    document.getElementById('travel-action-jump')?.addEventListener('click', () => {
+      if (this.travelSelection) {
+        const sel = this.travelSelection;
+        this.closeTravelMenu();
+        if (this.landedOn) this.exitLandedMode();
+        if (sel.type === 'planet') {
+          const body = ALL_BODIES.find(b => b.name === sel.name);
+          if (body) this.jumpToPlanet(body);
+        } else {
+          // Jump near the moon's parent planet
+          const body = ALL_BODIES.find(b => b.name === sel.parentPlanet);
+          if (body) this.jumpToPlanet(body);
+        }
+      }
+    });
     this.buildTravelList();
 
     this.updateTimeUI();
@@ -1200,8 +1215,7 @@ export class ExploreMode {
           <span class="travel-item-detail">${body.description.split('.')[0]}</span>
         </span>`;
       item.addEventListener('click', () => {
-        this.closeTravelMenu();
-        this.enterLandedMode({ type: 'planet', name: body.name });
+        this.selectTravelTarget({ type: 'planet', name: body.name });
       });
       list.appendChild(item);
 
@@ -1220,8 +1234,7 @@ export class ExploreMode {
             <span class="travel-item-detail">Moon of ${moon.parentPlanet} · r = ${moon.radiusKm.toLocaleString()} km</span>
           </span>`;
         moonItem.addEventListener('click', () => {
-          this.closeTravelMenu();
-          this.enterLandedMode({ type: 'moon', name: moon.name, parentPlanet: moon.parentPlanet });
+          this.selectTravelTarget({ type: 'moon', name: moon.name, parentPlanet: moon.parentPlanet });
         });
         list.appendChild(moonItem);
       }
@@ -1235,7 +1248,12 @@ export class ExploreMode {
     if (isVisible) {
       this.closeTravelMenu();
     } else {
+      // Close menu panel if open
+      document.getElementById('explore-menu-panel')?.classList.remove('visible');
       menu.classList.add('visible');
+      this.travelSelection = null;
+      const actionBar = document.getElementById('travel-action-bar');
+      if (actionBar) actionBar.style.display = 'none';
       const search = document.getElementById('travel-search') as HTMLInputElement;
       if (search) {
         search.value = '';
@@ -1248,6 +1266,15 @@ export class ExploreMode {
   private closeTravelMenu() {
     const menu = document.getElementById('travel-menu');
     if (menu) menu.classList.remove('visible');
+    this.travelSelection = null;
+  }
+
+  private selectTravelTarget(target: NonNullable<LandedTarget>) {
+    this.travelSelection = target;
+    const actionBar = document.getElementById('travel-action-bar');
+    const nameEl = document.getElementById('travel-action-name');
+    if (actionBar) actionBar.style.display = '';
+    if (nameEl) nameEl.textContent = target.name;
   }
 
   private isTravelMenuOpen(): boolean {
@@ -1467,7 +1494,7 @@ export class ExploreMode {
     this.camera.lookAt(0, 0, 0);
 
     // UI: hide flight controls, show leave button
-    const hide = ['explore-speed-bar', 'explore-keys-hint', 'touch-flight-zone', 'explore-planet-bar', 'explore-btn-travel', 'explore-btn-land'];
+    const hide = ['explore-speed-bar', 'explore-keys-hint', 'touch-flight-zone', 'explore-btn-travel', 'explore-btn-land'];
     for (const id of hide) {
       const el = document.getElementById(id);
       if (el) el.style.display = 'none';
@@ -1534,7 +1561,6 @@ export class ExploreMode {
     // UI: restore flight controls, hide leave button
     const show: Array<[string, string]> = [
       ['explore-speed-bar', 'flex'],
-      ['explore-planet-bar', 'flex'],
       ['explore-btn-travel', ''],
     ];
     for (const [id, display] of show) {
@@ -1680,14 +1706,6 @@ export class ExploreMode {
 
     this.updateSpeedSlider();
     this.updateTimeUI();
-
-    for (const body of ALL_BODIES) {
-      document.getElementById(`jump-${body.name.toLowerCase()}`)?.classList.remove('visited');
-    }
-    for (const name of saved.visitedPlanets) {
-      const chip = document.getElementById(`jump-${name.toLowerCase()}`);
-      if (chip) chip.classList.add('visited');
-    }
 
     // Restore landed state if saved
     if (saved.landedOn) {

@@ -400,62 +400,7 @@
 
     #explore-ui { display: none; }
 
-    /* Compact horizontal planet nav bar (top, below top-bar) */
-    #explore-planet-bar {
-      position: absolute;
-      top: 50px;
-      left: 50%;
-      transform: translateX(-50%);
-      display: flex;
-      gap: 2px;
-      background: var(--panel-bg);
-      backdrop-filter: blur(8px);
-      border: 1px solid var(--panel-border);
-      border-radius: 8px;
-      padding: 3px;
-      pointer-events: auto;
-    }
-
-    .planet-chip {
-      display: flex;
-      align-items: center;
-      gap: 4px;
-      padding: 5px 10px;
-      border: none;
-      border-radius: 6px;
-      background: transparent;
-      color: var(--text-dim);
-      font-size: 11px;
-      font-weight: 500;
-      cursor: pointer;
-      transition: all 0.15s;
-      font-family: var(--font);
-      white-space: nowrap;
-    }
-
-    .planet-chip:hover {
-      background: var(--accent-dim);
-      color: var(--text-primary);
-    }
-
-    .planet-chip.visited { color: var(--text-secondary); }
-
-    .planet-chip .dot {
-      width: 6px; height: 6px;
-      border-radius: 50%;
-      flex-shrink: 0;
-    }
-
-    /* On smaller screens, make chips scrollable */
-    @media (max-width: 900px) {
-      #explore-planet-bar {
-        max-width: calc(100vw - 32px);
-        overflow-x: auto;
-        -webkit-overflow-scrolling: touch;
-      }
-      #explore-planet-bar::-webkit-scrollbar { height: 0; }
-      .planet-chip { padding: 5px 8px; font-size: 10px; }
-    }
+    /* (planet bar removed — travel menu replaces it) */
 
     /* Compact stats - bottom right */
     #explore-stats-compact {
@@ -661,8 +606,8 @@
       border-color: var(--accent);
     }
 
-    /* Settings panel */
-    #explore-settings-panel {
+    /* Menu panel (replaces separate settings panel) */
+    #explore-menu-panel {
       display: none;
       position: absolute;
       top: 42px;
@@ -671,12 +616,32 @@
       backdrop-filter: blur(12px);
       border: 1px solid var(--panel-border);
       border-radius: 8px;
-      padding: 10px 14px;
+      padding: 8px;
       pointer-events: auto;
-      min-width: 170px;
+      min-width: 190px;
       z-index: 21;
     }
-    #explore-settings-panel.visible { display: block; }
+    #explore-menu-panel.visible { display: block; }
+    .menu-action {
+      display: block;
+      width: 100%;
+      padding: 7px 10px;
+      border: none;
+      border-radius: 5px;
+      background: none;
+      color: var(--text-primary);
+      font-size: 12px;
+      font-family: var(--font);
+      text-align: left;
+      cursor: pointer;
+      transition: background 0.12s;
+    }
+    .menu-action:hover { background: var(--accent-dim); }
+    .menu-divider {
+      height: 1px;
+      background: var(--panel-border);
+      margin: 6px 0;
+    }
 
     .settings-row {
       display: flex;
@@ -1103,6 +1068,49 @@
       color: var(--text-dim);
     }
 
+    .travel-action-bar {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 10px 14px;
+      border-top: 1px solid var(--panel-border);
+      background: rgba(10, 14, 30, 0.5);
+    }
+    .travel-action-name {
+      flex: 1;
+      font-size: 13px;
+      font-weight: 500;
+      color: var(--text-primary);
+      font-family: var(--font);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .travel-action-btn {
+      padding: 6px 14px;
+      border: 1px solid rgba(91, 140, 255, 0.35);
+      border-radius: 6px;
+      background: rgba(91, 140, 255, 0.12);
+      color: var(--text-primary);
+      font-size: 12px;
+      font-family: var(--font);
+      cursor: pointer;
+      transition: all 0.12s;
+      white-space: nowrap;
+    }
+    .travel-action-btn:hover {
+      background: rgba(91, 140, 255, 0.22);
+      border-color: rgba(123, 171, 255, 0.5);
+    }
+    .travel-action-btn-dim {
+      background: none;
+      border-color: var(--panel-border);
+      color: var(--text-secondary);
+    }
+    .travel-action-btn-dim:hover {
+      background: var(--accent-dim);
+    }
+
     #explore-btn-leave,
     #explore-btn-land {
       position: fixed;
@@ -1163,8 +1171,6 @@
     }
 
     @media (max-width: 420px) {
-      .planet-chip .chip-name { display: none; }
-      .planet-chip { padding: 5px 6px; }
       .travel-btn-text { display: none; }
     }
   </style>
@@ -1376,31 +1382,19 @@
 
     <!-- ======= EXPLORE MODE ======= -->
     <div id="explore-ui">
-      <!-- Compact horizontal planet bar -->
-      <div id="explore-planet-bar">
-        <button class="planet-chip" id="jump-mercury"><span class="dot" style="background:#8c7e6d"></span><span class="chip-name">Mercury</span></button>
-        <button class="planet-chip" id="jump-venus"><span class="dot" style="background:#e8cda0"></span><span class="chip-name">Venus</span></button>
-        <button class="planet-chip" id="jump-earth"><span class="dot" style="background:#4488ff"></span><span class="chip-name">Earth</span></button>
-        <button class="planet-chip" id="jump-mars"><span class="dot" style="background:#c1440e"></span><span class="chip-name">Mars</span></button>
-        <button class="planet-chip" id="jump-jupiter"><span class="dot" style="background:#c8a55a"></span><span class="chip-name">Jupiter</span></button>
-        <button class="planet-chip" id="jump-saturn"><span class="dot" style="background:#e8d5a3"></span><span class="chip-name">Saturn</span></button>
-        <button class="planet-chip" id="jump-uranus"><span class="dot" style="background:#7ec8e3"></span><span class="chip-name">Uranus</span></button>
-        <button class="planet-chip" id="jump-neptune"><span class="dot" style="background:#3355ff"></span><span class="chip-name">Neptune</span></button>
-        <button class="planet-chip" id="jump-pluto"><span class="dot" style="background:#bba88f"></span><span class="chip-name">Pluto</span></button>
-      </div>
-
-      <!-- Save/Settings/New (top right) -->
+      <!-- Top right: Travel + Menu -->
       <div id="explore-actions">
         <button class="explore-sm-btn" id="explore-btn-travel">&#x1F680;<span class="travel-btn-text"> Travel</span></button>
-        <button class="explore-sm-btn" id="explore-btn-save">Save</button>
-        <button class="explore-sm-btn" id="explore-btn-settings">&#x2699;</button>
-        <button class="explore-sm-btn" id="explore-btn-new">New</button>
+        <button class="explore-sm-btn" id="explore-btn-menu">&#x2630;</button>
       </div>
 
-      <!-- Settings dropdown -->
-      <div id="explore-settings-panel">
+      <!-- Menu dropdown (Save, New, Settings) -->
+      <div id="explore-menu-panel">
+        <button class="menu-action" id="explore-btn-save">Save</button>
+        <button class="menu-action" id="explore-btn-new">New Journey</button>
+        <div class="menu-divider"></div>
         <div class="settings-row">
-          <span class="settings-label">Planet size <span style="opacity:0.5;font-size:0.85em">(× real radius)</span></span>
+          <span class="settings-label">Planet size <span style="opacity:0.5;font-size:0.85em">(× real)</span></span>
           <div class="settings-scale-row">
             <input type="range" id="settings-planet-scale" min="1" max="128" value="32" class="settings-slider" />
             <span id="settings-scale-label">32×</span>
@@ -1430,6 +1424,11 @@
           <input type="text" id="travel-search" placeholder="Search planets &amp; moons..." autocomplete="off" />
         </div>
         <div class="travel-list" id="travel-list"></div>
+        <div class="travel-action-bar" id="travel-action-bar" style="display:none">
+          <span class="travel-action-name" id="travel-action-name"></span>
+          <button class="travel-action-btn" id="travel-action-land">Land &amp; Orbit</button>
+          <button class="travel-action-btn travel-action-btn-dim" id="travel-action-jump">Jump Nearby</button>
+        </div>
       </div>
 
       <!-- Leave planet button (shown when landed) -->

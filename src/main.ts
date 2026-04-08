@@ -359,6 +359,7 @@ function applyOrbitDetailsVisibility(visible: boolean) {
 function applyMoonBodyScale(
   earth: Earth,
   moon: Moon,
+  sun: Sun,
   earthShadowCone: THREE.Mesh,
   moonShadowCone: THREE.Mesh,
   enlarged: boolean,
@@ -366,6 +367,7 @@ function applyMoonBodyScale(
   const scale = enlarged ? ENLARGED_BODY_SCALE : PROPORTIONAL_BODY_SCALE;
   earth.setVisualScale(scale);
   moon.setVisualScale(scale);
+  sun.setVisualScale(scale);
   earthShadowCone.scale.set(scale, scale, 1);
   moonShadowCone.scale.set(scale, scale, 1);
 }
@@ -833,9 +835,9 @@ async function init() {
   simObjects.push(moonShadowCone);
 
   largerBodiesToggle.checked = false;
-  applyMoonBodyScale(earth, moon, earthShadowCone, moonShadowCone, false);
+  applyMoonBodyScale(earth, moon, sun, earthShadowCone, moonShadowCone, false);
   largerBodiesToggle.addEventListener('change', () => {
-    applyMoonBodyScale(earth, moon, earthShadowCone, moonShadowCone, largerBodiesToggle.checked);
+    applyMoonBodyScale(earth, moon, sun, earthShadowCone, moonShadowCone, largerBodiesToggle.checked);
   });
 
   // Initial state

@@ -326,6 +326,7 @@ const infoDistance = document.getElementById('info-distance')!;
 const infoPhaseAngle = document.getElementById('info-phase-angle')!;
 const infoNodeDist = document.getElementById('info-node-dist')!;
 const speedDisplay = document.getElementById('speed-display')!;
+const largerBodiesToggle = document.getElementById('larger-bodies-toggle') as HTMLInputElement;
 const orbitDetailsToggle = document.getElementById('orbit-details-toggle') as HTMLInputElement;
 const orbitDetailsPanel = document.getElementById('orbit-details-panel')!;
 const orbitMajorAxisReadout = document.getElementById('orbit-major-axis-readout')!;
@@ -336,6 +337,8 @@ const orbitFocusLabelF1 = document.getElementById('orbit-focus-label-f1')!;
 const orbitFocusLabelF2 = document.getElementById('orbit-focus-label-f2')!;
 const focusWorld1 = new THREE.Vector3();
 const focusWorld2 = new THREE.Vector3();
+const PROPORTIONAL_BODY_SCALE = 1;
+const ENLARGED_BODY_SCALE = 7.8;
 
 function syncMoonMeanAnomalyFromDisplayedAngle() {
   const trueAnomalyDeg = trueAnomalyDegFromLongitude(state.moonAngle, state.nodeAngle);
@@ -351,6 +354,20 @@ function applyOrbitDetailsVisibility(visible: boolean) {
   orbitDetailsOverlay.setVisible(visible);
   orbitFocusLabelF1.classList.toggle('visible', visible);
   orbitFocusLabelF2.classList.toggle('visible', visible);
+}
+
+function applyMoonBodyScale(
+  earth: Earth,
+  moon: Moon,
+  earthShadowCone: THREE.Mesh,
+  moonShadowCone: THREE.Mesh,
+  enlarged: boolean,
+) {
+  const scale = enlarged ? ENLARGED_BODY_SCALE : PROPORTIONAL_BODY_SCALE;
+  earth.setVisualScale(scale);
+  moon.setVisualScale(scale);
+  earthShadowCone.scale.set(scale, scale, 1);
+  moonShadowCone.scale.set(scale, scale, 1);
 }
 
 function formatKm(valueKm: number) {
@@ -814,6 +831,12 @@ async function init() {
   const moonShadowCone = createShadowCone(SCENE.MOON_RADIUS * 0.8, 0x111133);
   scene.add(moonShadowCone);
   simObjects.push(moonShadowCone);
+
+  largerBodiesToggle.checked = false;
+  applyMoonBodyScale(earth, moon, earthShadowCone, moonShadowCone, false);
+  largerBodiesToggle.addEventListener('change', () => {
+    applyMoonBodyScale(earth, moon, earthShadowCone, moonShadowCone, largerBodiesToggle.checked);
+  });
 
   // Initial state
   applyDateToState(new Date());

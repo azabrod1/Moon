@@ -1254,6 +1254,11 @@ export class ExploreMode {
       this.travelSelection = null;
       const actionBar = document.getElementById('travel-action-bar');
       if (actionBar) actionBar.style.display = 'none';
+      // Hide planet/moon labels so they don't show through the menu
+      const pl = document.getElementById('planet-labels');
+      const ml = this.moonLabelContainer;
+      if (pl) pl.style.display = 'none';
+      if (ml) ml.style.display = 'none';
       const search = document.getElementById('travel-search') as HTMLInputElement;
       if (search) {
         search.value = '';
@@ -1267,6 +1272,11 @@ export class ExploreMode {
     const menu = document.getElementById('travel-menu');
     if (menu) menu.classList.remove('visible');
     this.travelSelection = null;
+    // Restore planet/moon labels
+    const pl = document.getElementById('planet-labels');
+    const ml = this.moonLabelContainer;
+    if (pl) pl.style.display = '';
+    if (ml) ml.style.display = '';
   }
 
   private selectTravelTarget(target: NonNullable<LandedTarget>) {

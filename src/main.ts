@@ -146,6 +146,8 @@ scene.background = new THREE.Color(0x000000);
 // --- Simulator camera + controls ---
 const simCamera = new THREE.PerspectiveCamera(50, window.innerWidth / window.innerHeight, 0.01, 500);
 const moonOrbitApoapsis = SCENE.EARTH_MOON_DIST * (1 + LUNAR_ORBIT.eccentricity);
+const PROPORTIONAL_BODY_SCALE = 1;
+const MAX_MOON_BODY_SCALE = 8;
 simCamera.position.set(moonOrbitApoapsis * 1.1, moonOrbitApoapsis * 0.42, moonOrbitApoapsis * 1.45);
 
 const simControls = new OrbitControls(simCamera, renderer.domElement);
@@ -257,10 +259,68 @@ function createOrbitLine(segments: number, color: number, inclination: number, n
   return line;
 }
 
+function createEclipticGrid(
+  size: number,
+  divisions: number,
+  centerColor: number,
+  gridColor: number,
+  exclusionRadius: number,
+): THREE.LineSegments {
+  const positions: number[] = [];
+  const colors: number[] = [];
+  const half = size / 2;
+  const step = size / divisions;
+  const center = divisions / 2;
+  const centerColor3 = new THREE.Color(centerColor);
+  const gridColor3 = new THREE.Color(gridColor);
+
+  const pushSegment = (x1: number, z1: number, x2: number, z2: number, color: THREE.Color) => {
+    positions.push(x1, 0, z1, x2, 0, z2);
+    colors.push(color.r, color.g, color.b, color.r, color.g, color.b);
+  };
+
+  for (let i = 0; i <= divisions; i++) {
+    const offset = -half + i * step;
+    const color = i === center ? centerColor3 : gridColor3;
+
+    if (Math.abs(offset) >= exclusionRadius) {
+      pushSegment(-half, offset, half, offset, color);
+      pushSegment(offset, -half, offset, half, color);
+      continue;
+    }
+
+    const clippedHalfSpan = Math.sqrt(Math.max(exclusionRadius * exclusionRadius - offset * offset, 0));
+    pushSegment(-half, offset, -clippedHalfSpan, offset, color);
+    pushSegment(clippedHalfSpan, offset, half, offset, color);
+    pushSegment(offset, -half, offset, -clippedHalfSpan, color);
+    pushSegment(offset, clippedHalfSpan, offset, half, color);
+  }
+
+  const geometry = new THREE.BufferGeometry();
+  geometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+  geometry.setAttribute('color', new THREE.Float32BufferAttribute(colors, 3));
+
+  return new THREE.LineSegments(
+    geometry,
+    new THREE.LineBasicMaterial({
+      vertexColors: true,
+      transparent: true,
+      opacity: 0.8,
+      depthWrite: false,
+    }),
+  );
+}
+
 const moonOrbitLine = createOrbitLine(192, 0x4466aa, SCENE.MOON_INCLINATION, 0);
 scene.add(moonOrbitLine);
 
-const eclipticGrid = new THREE.GridHelper(moonOrbitApoapsis * 4, 48, 0x111133, 0x0a0a22);
+const eclipticGrid = createEclipticGrid(
+  moonOrbitApoapsis * 4,
+  48,
+  0x111133,
+  0x0a0a22,
+  MAX_MOON_BODY_SCALE * 1.15,
+);
 scene.add(eclipticGrid);
 
 // ================================================================
@@ -339,8 +399,6 @@ const orbitFocusLabelF1 = document.getElementById('orbit-focus-label-f1')!;
 const orbitFocusLabelF2 = document.getElementById('orbit-focus-label-f2')!;
 const focusWorld1 = new THREE.Vector3();
 const focusWorld2 = new THREE.Vector3();
-const PROPORTIONAL_BODY_SCALE = 1;
-const MAX_MOON_BODY_SCALE = 8;
 
 function syncMoonMeanAnomalyFromDisplayedAngle() {
   const trueAnomalyDeg = trueAnomalyDegFromLongitude(state.moonAngle, state.nodeAngle);

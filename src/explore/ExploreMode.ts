@@ -1196,7 +1196,7 @@ export class ExploreMode {
       item.innerHTML = `
         <span class="travel-item-dot" style="background:#${body.color.toString(16).padStart(6, '0')}"></span>
         <span class="travel-item-info">
-          <span class="travel-item-name">${body.symbol} ${body.name}</span>
+          <span class="travel-item-name">${body.name}</span>
           <span class="travel-item-detail">${body.description.split('.')[0]}</span>
         </span>`;
       item.addEventListener('click', () => {

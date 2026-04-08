@@ -18,6 +18,24 @@ import {
 } from './astronomy';
 import { BRIGHT_STAR_CATALOG } from './data/brightStars';
 import { getMoonsByPlanet } from './planets/moonData';
+import {
+  VOYAGER_JOURNEYS,
+  type VoyagerJourney,
+  type VoyagerMissionId,
+  type VoyagerMilestone,
+} from './voyagerJourney';
+
+type ScriptedTransfer = {
+  elapsed: number;
+  duration: number;
+  startPos: THREE.Vector3;
+  endPos: THREE.Vector3;
+  startHeading: number;
+  endHeading: number;
+  startPitch: number;
+  endPitch: number;
+  endMoving: boolean;
+};
 
 export class ExploreMode {
   private static readonly TIME_RATE_PRESETS = [1, 60, 1200, 3600, 21600, 86400, 604800, 2592000, 31557600];
@@ -120,6 +138,9 @@ export class ExploreMode {
   private lastTimeRateLabel = '';
   private lastTimeInputValue = '';
   private uiRefreshAccumulator = ExploreMode.UI_REFRESH_INTERVAL_S;
+  private activeVoyagerJourney: VoyagerJourney | null = null;
+  private voyagerMilestoneIndex = 0;
+  private scriptedTransfer: ScriptedTransfer | null = null;
 
   active = false;
   private useBloom: boolean;
@@ -366,16 +387,19 @@ export class ExploreMode {
       return;
     }
 
-    // Process keyboard input
-    this.processInput();
+    const isScriptedTransfer = this.updateScriptedTransfer(dt);
+    if (!isScriptedTransfer) {
+      // Process keyboard input
+      this.processInput();
 
-    // Autopilot: steer toward next planet if no manual input
-    if (this.autopilot && this.player.yawInput === 0 && this.player.pitchInput === 0) {
-      this.applyAutopilot();
+      // Autopilot: steer toward next planet if no manual input
+      if (this.autopilot && this.player.yawInput === 0 && this.player.pitchInput === 0) {
+        this.applyAutopilot();
+      }
+
+      // Update player
+      this.player.update(dt);
     }
-
-    // Update player
-    this.player.update(dt);
     this.timeState = advanceExploreTime(this.timeState, dt);
     this.rebuildPlanetPositions(dt);
 
@@ -565,6 +589,8 @@ export class ExploreMode {
         if (planet.cloudsMesh) planet.cloudsMesh.visible = keepEarthDetail;
       }
     }
+
+    this.player.setProfile(this.activeVoyagerJourney ? 'voyager' : 'default');
   }
 
   private updateMoonPositions() {
@@ -1010,10 +1036,27 @@ export class ExploreMode {
     // New Journey button
     document.getElementById('explore-btn-new')?.addEventListener('click', () => {
       if (this.landedOn) this.exitLandedMode();
+      this.stopVoyagerJourney();
       this.saveManager.clearState();
       this.restoreState(createDefaultState());
       this.pointTowardMercury();
       this.showNotification('New journey started!');
+    });
+
+    document.getElementById('explore-btn-voyager-1')?.addEventListener('click', () => {
+      this.startVoyagerJourney('voyager1');
+    });
+    document.getElementById('explore-btn-voyager-2')?.addEventListener('click', () => {
+      this.startVoyagerJourney('voyager2');
+    });
+    document.getElementById('voyager-close')?.addEventListener('click', () => {
+      this.stopVoyagerJourney();
+    });
+    document.getElementById('voyager-prev')?.addEventListener('click', () => {
+      this.showVoyagerMilestone(this.voyagerMilestoneIndex - 1);
+    });
+    document.getElementById('voyager-next')?.addEventListener('click', () => {
+      this.showVoyagerMilestone(this.voyagerMilestoneIndex + 1);
     });
 
     // Autopilot toggle
@@ -1025,6 +1068,12 @@ export class ExploreMode {
     document.getElementById('explore-btn-menu')?.addEventListener('click', () => {
       const panel = document.getElementById('explore-menu-panel');
       if (panel) panel.classList.toggle('visible');
+    });
+    document.getElementById('explore-btn-historic')?.addEventListener('click', () => {
+      const submenu = document.getElementById('explore-historic-submenu');
+      const trigger = document.getElementById('explore-btn-historic');
+      const expanded = submenu?.classList.toggle('visible') ?? false;
+      trigger?.classList.toggle('expanded', expanded);
     });
 
     // Stats panel expand/collapse
@@ -1366,6 +1415,163 @@ export class ExploreMode {
     });
   }
 
+  private startVoyagerJourney(missionId: VoyagerMissionId) {
+    const journey = VOYAGER_JOURNEYS[missionId];
+    if (this.landedOn) this.exitLandedMode();
+    this.activeVoyagerJourney = journey;
+    this.showShip = true;
+    this.player.group.visible = true;
+    this.player.setProfile('voyager');
+    const shipLabel = document.getElementById('settings-ship-label');
+    if (shipLabel) shipLabel.textContent = 'On';
+    document.getElementById('explore-menu-panel')?.classList.remove('visible');
+    document.getElementById('explore-historic-submenu')?.classList.remove('visible');
+    document.getElementById('explore-btn-historic')?.classList.remove('expanded');
+    this.showVoyagerMilestone(0);
+    this.showNotification(journey.readyNotification);
+  }
+
+  private stopVoyagerJourney() {
+    this.activeVoyagerJourney = null;
+    this.scriptedTransfer = null;
+    this.player.setProfile('default');
+    const panel = document.getElementById('voyager-panel');
+    if (panel) panel.classList.remove('visible');
+  }
+
+  private showVoyagerMilestone(index: number) {
+    const journey = this.activeVoyagerJourney;
+    if (!journey) return;
+    const nextIndex = THREE.MathUtils.clamp(index, 0, journey.milestones.length - 1);
+    this.voyagerMilestoneIndex = nextIndex;
+    const milestone = journey.milestones[nextIndex];
+    this.applyVoyagerMilestone(milestone);
+
+    const panel = document.getElementById('voyager-panel');
+    if (panel) panel.classList.add('visible');
+
+    const kickerEl = document.getElementById('voyager-kicker');
+    const stepEl = document.getElementById('voyager-step');
+    const titleEl = document.getElementById('voyager-title');
+    const dateEl = document.getElementById('voyager-date');
+    const descEl = document.getElementById('voyager-description');
+    const noteEl = document.getElementById('voyager-note');
+    const imageEl = document.getElementById('voyager-image') as HTMLImageElement | null;
+    const imageLinkEl = document.getElementById('voyager-image-link') as HTMLAnchorElement | null;
+    const imageCaptionEl = document.getElementById('voyager-image-caption');
+    const imageCreditEl = document.getElementById('voyager-image-credit');
+    if (kickerEl) kickerEl.textContent = journey.label;
+    if (stepEl) stepEl.textContent = `${nextIndex + 1} / ${journey.milestones.length}`;
+    if (titleEl) titleEl.textContent = milestone.title;
+    if (dateEl) dateEl.textContent = milestone.dateLabel;
+    if (descEl) descEl.textContent = milestone.description;
+    if (noteEl) noteEl.textContent = milestone.note;
+    if (imageEl) {
+      imageEl.src = milestone.imageUrl;
+      imageEl.alt = milestone.imageAlt;
+    }
+    if (imageLinkEl) {
+      imageLinkEl.href = milestone.imageSourceUrl;
+      imageLinkEl.textContent = milestone.imageSourceLabel;
+    }
+    if (imageCaptionEl) imageCaptionEl.textContent = milestone.imageAlt;
+    if (imageCreditEl) imageCreditEl.textContent = milestone.imageCredit;
+
+    const prevBtn = document.getElementById('voyager-prev') as HTMLButtonElement | null;
+    const nextBtn = document.getElementById('voyager-next') as HTMLButtonElement | null;
+    if (prevBtn) prevBtn.disabled = nextIndex === 0;
+    if (nextBtn) nextBtn.disabled = nextIndex === journey.milestones.length - 1;
+  }
+
+  private applyVoyagerMilestone(milestone: VoyagerMilestone) {
+    this.timeState.currentUtcMs = milestone.dateUtcMs;
+    this.timeState.paused = true;
+    this.rebuildPlanetPositions();
+    this.updateTimeUI();
+
+    if (milestone.target === 'Interstellar') {
+      if (this.landedOn) this.exitLandedMode();
+      this.startScriptedTransfer({
+        targetPosition: milestone.customScenePosition
+          ? new THREE.Vector3(
+            milestone.customScenePosition.x,
+            milestone.customScenePosition.y,
+            milestone.customScenePosition.z,
+          )
+          : new THREE.Vector3(118, 6, -18),
+        lookTarget: milestone.customLookTarget
+          ? new THREE.Vector3(
+            milestone.customLookTarget.x,
+            milestone.customLookTarget.y,
+            milestone.customLookTarget.z,
+          )
+          : new THREE.Vector3(0, 0, 0),
+        movingAfter: false,
+      });
+      this.player.speedMultiplier = 0.15;
+      this.updateSpeedSlider();
+      return;
+    }
+
+    const body = ALL_BODIES.find((planet) => planet.name === milestone.target);
+    if (!body) return;
+    const destination = this.getJumpDestination(body, milestone.viewDistanceMultiplier ?? 1);
+    if (!destination) return;
+    this.player.speedMultiplier = 0.15;
+    this.updateSpeedSlider();
+    this.startScriptedTransfer({
+      targetPosition: destination.position,
+      lookTarget: destination.lookTarget,
+      movingAfter: false,
+    });
+  }
+
+  private startScriptedTransfer(options: {
+    targetPosition: THREE.Vector3;
+    lookTarget: THREE.Vector3;
+    movingAfter: boolean;
+  }) {
+    const dx = options.lookTarget.x - options.targetPosition.x;
+    const dy = options.lookTarget.y - options.targetPosition.y;
+    const dz = options.lookTarget.z - options.targetPosition.z;
+    const horizontal = Math.sqrt(dx * dx + dz * dz);
+    this.scriptedTransfer = {
+      elapsed: 0,
+      duration: 1.15,
+      startPos: new THREE.Vector3(this.player.posX, this.player.posY, this.player.posZ),
+      endPos: options.targetPosition.clone(),
+      startHeading: this.player.heading,
+      endHeading: Math.atan2(dz, dx),
+      startPitch: this.player.pitch,
+      endPitch: Math.atan2(dy, Math.max(horizontal, 1e-8)),
+      endMoving: options.movingAfter,
+    };
+    this.player.moving = true;
+    this.userOrbiting = false;
+  }
+
+  private updateScriptedTransfer(dt: number): boolean {
+    if (!this.scriptedTransfer) return false;
+
+    const transfer = this.scriptedTransfer;
+    transfer.elapsed = Math.min(transfer.elapsed + dt, transfer.duration);
+    const t = transfer.elapsed / transfer.duration;
+    const ease = t * t * (3 - 2 * t);
+
+    this.player.posX = THREE.MathUtils.lerp(transfer.startPos.x, transfer.endPos.x, ease);
+    this.player.posY = THREE.MathUtils.lerp(transfer.startPos.y, transfer.endPos.y, ease);
+    this.player.posZ = THREE.MathUtils.lerp(transfer.startPos.z, transfer.endPos.z, ease);
+    this.player.heading = THREE.MathUtils.lerp(transfer.startHeading, transfer.endHeading, ease);
+    this.player.pitch = THREE.MathUtils.lerp(transfer.startPitch, transfer.endPitch, ease);
+
+    if (t >= 1) {
+      this.player.moving = transfer.endMoving;
+      this.scriptedTransfer = null;
+    }
+
+    return true;
+  }
+
   private pointTowardMercury() {
     const mercuryPos = this.planetWorldPositions.get('Mercury');
     if (mercuryPos) {
@@ -1387,6 +1593,31 @@ export class ExploreMode {
 
   private getPlanetCollisionRadius(radiusAU: number, renderedScale: number): number {
     return radiusAU * Math.max(renderedScale, 1) + ExploreMode.SHIP_CLEARANCE_AU * this.planetScale;
+  }
+
+  private getJumpDestination(planet: PlanetData, distanceMultiplier = 1) {
+    const pos = this.planetWorldPositions.get(planet.name);
+    if (!pos) return null;
+
+    const viewDist = Math.max(
+      planet.radiusAU * 8,
+      this.getPlanetCollisionRadius(planet.radiusAU, this.planetScale) + planet.radiusAU * 2,
+      0.001,
+    ) * distanceMultiplier;
+    const offsetDir = new THREE.Vector3(-pos.x, -pos.y, -pos.z);
+    if (offsetDir.lengthSq() < 1e-8) {
+      offsetDir.set(-1, 0.25, 0);
+    }
+    offsetDir.normalize();
+
+    return {
+      position: new THREE.Vector3(
+        pos.x + offsetDir.x * viewDist,
+        pos.y + offsetDir.y * viewDist,
+        pos.z + offsetDir.z * viewDist,
+      ),
+      lookTarget: new THREE.Vector3(pos.x, pos.y, pos.z),
+    };
   }
 
   private resolvePlanetCollisions() {
@@ -1439,29 +1670,20 @@ export class ExploreMode {
     }
   }
 
-  jumpToPlanet(planet: PlanetData) {
-    const pos = this.planetWorldPositions.get(planet.name);
-    if (!pos) return;
-
-    const viewDist = Math.max(
-      planet.radiusAU * 8,
-      this.getPlanetCollisionRadius(planet.radiusAU, this.planetScale) + planet.radiusAU * 2,
-      0.001,
-    );
-    const offsetDir = new THREE.Vector3(-pos.x, -pos.y, -pos.z);
-    if (offsetDir.lengthSq() < 1e-8) {
-      offsetDir.set(-1, 0.25, 0);
-    }
-    offsetDir.normalize();
-    this.player.posX = pos.x + offsetDir.x * viewDist;
-    this.player.posY = pos.y + offsetDir.y * viewDist;
-    this.player.posZ = pos.z + offsetDir.z * viewDist;
-    this.player.headToward(pos.x, pos.z, pos.y);
+  jumpToPlanet(planet: PlanetData, options: { notify?: boolean; distanceMultiplier?: number } = {}) {
+    const destination = this.getJumpDestination(planet, options.distanceMultiplier ?? 1);
+    if (!destination) return;
+    this.player.posX = destination.position.x;
+    this.player.posY = destination.position.y;
+    this.player.posZ = destination.position.z;
+    this.player.headToward(destination.lookTarget.x, destination.lookTarget.z, destination.lookTarget.y);
 
     this.player.speedMultiplier = 0.1;
     this.updateSpeedSlider();
 
-    this.showNotification(`Jumped to ${planet.name}`);
+    if (options.notify !== false) {
+      this.showNotification(`Jumped to ${planet.name}`);
+    }
     this.resetCruiseCamera();
   }
 

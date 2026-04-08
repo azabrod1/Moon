@@ -5,6 +5,8 @@ import { LIGHT_SPEED_AU_PER_S } from './planets/planetData';
 const DEFAULT_SPEED_AU_S = LIGHT_SPEED_AU_PER_S;
 const FORWARD_VECTOR = new THREE.Vector3(1, 0, 0);
 
+export type ShipProfile = 'default' | 'voyager';
+
 /** Build a smooth hull profile via LatheGeometry */
 function createHullGeometry(radius: number, length: number): THREE.LatheGeometry {
   // Profile points from nose tip (top) to engine base (bottom)
@@ -46,6 +48,9 @@ function createEngineBell(radius: number, length: number): THREE.LatheGeometry {
 export class PlayerShip {
   group: THREE.Group;
   mesh: THREE.Mesh;
+  private defaultModel: THREE.Group;
+  private voyagerModel: THREE.Group;
+  private profile: ShipProfile = 'default';
   private exhaustCone: THREE.Mesh;
   private exhaustCore: THREE.Mesh;
   private exhaustTime = 0;
@@ -188,13 +193,129 @@ export class PlayerShip {
     noseTip.position.y = L * 1.12;
     hull.add(noseTip);
 
-    // ── Assemble ──
-    const shipModel = new THREE.Group();
-    shipModel.add(hull, this.exhaustCone, this.exhaustCore);
-    // Orient: ship's +Y (forward) aligns with world +X
-    shipModel.rotation.z = -Math.PI / 2;
-    this.group.add(shipModel);
-    this.group.userData.shipModel = shipModel;
+    // ── Assemble default ship ──
+    this.defaultModel = new THREE.Group();
+    this.defaultModel.add(hull, this.exhaustCone, this.exhaustCore);
+    this.defaultModel.rotation.z = -Math.PI / 2;
+    this.group.add(this.defaultModel);
+
+    this.voyagerModel = this.createVoyagerModel(moonRadiusAU);
+    this.voyagerModel.visible = false;
+    this.group.add(this.voyagerModel);
+    this.group.userData.shipModel = this.defaultModel;
+  }
+
+  private createVoyagerModel(referenceRadiusAU: number): THREE.Group {
+    const model = new THREE.Group();
+    const busSize = referenceRadiusAU * 0.55;
+    const dishRadius = referenceRadiusAU * 1.05;
+
+    const bus = new THREE.Mesh(
+      new THREE.BoxGeometry(busSize, busSize * 0.7, busSize * 0.7),
+      new THREE.MeshStandardMaterial({
+        color: 0xa68b58,
+        emissive: 0x171109,
+        emissiveIntensity: 0.12,
+        roughness: 0.6,
+        metalness: 0.35,
+      }),
+    );
+    model.add(bus);
+
+    const dish = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.01, dishRadius, referenceRadiusAU * 0.18, 28, 1, true),
+      new THREE.MeshStandardMaterial({
+        color: 0xe8ecf2,
+        emissive: 0x0d1118,
+        emissiveIntensity: 0.05,
+        roughness: 0.45,
+        metalness: 0.18,
+        side: THREE.DoubleSide,
+      }),
+    );
+    dish.rotation.z = Math.PI / 2;
+    dish.position.x = referenceRadiusAU * 0.18;
+    model.add(dish);
+
+    const dishFeed = new THREE.Mesh(
+      new THREE.SphereGeometry(referenceRadiusAU * 0.08, 10, 10),
+      new THREE.MeshStandardMaterial({
+        color: 0xd8dde8,
+        roughness: 0.35,
+        metalness: 0.22,
+      }),
+    );
+    dishFeed.position.x = referenceRadiusAU * 0.52;
+    model.add(dishFeed);
+
+    const boom = new THREE.Mesh(
+      new THREE.CylinderGeometry(referenceRadiusAU * 0.03, referenceRadiusAU * 0.03, referenceRadiusAU * 2.7, 8),
+      new THREE.MeshStandardMaterial({
+        color: 0xc4c9d4,
+        roughness: 0.5,
+        metalness: 0.4,
+      }),
+    );
+    boom.rotation.z = Math.PI / 2;
+    boom.position.x = referenceRadiusAU * 0.75;
+    model.add(boom);
+
+    const magnetometer = new THREE.Mesh(
+      new THREE.SphereGeometry(referenceRadiusAU * 0.05, 8, 8),
+      new THREE.MeshBasicMaterial({ color: 0x88b7ff }),
+    );
+    magnetometer.position.x = referenceRadiusAU * 2.1;
+    model.add(magnetometer);
+
+    const rtgBoom = new THREE.Mesh(
+      new THREE.CylinderGeometry(referenceRadiusAU * 0.025, referenceRadiusAU * 0.025, referenceRadiusAU * 1.6, 8),
+      new THREE.MeshStandardMaterial({
+        color: 0xb5bcc9,
+        roughness: 0.45,
+        metalness: 0.4,
+      }),
+    );
+    rtgBoom.rotation.z = -Math.PI / 2.8;
+    rtgBoom.position.set(-referenceRadiusAU * 0.25, -referenceRadiusAU * 0.52, 0);
+    model.add(rtgBoom);
+
+    for (let i = -1; i <= 1; i++) {
+      const rtg = new THREE.Mesh(
+        new THREE.CylinderGeometry(referenceRadiusAU * 0.11, referenceRadiusAU * 0.11, referenceRadiusAU * 0.36, 10),
+        new THREE.MeshStandardMaterial({
+          color: 0x59616c,
+          emissive: 0x141821,
+          emissiveIntensity: 0.08,
+          roughness: 0.55,
+          metalness: 0.35,
+        }),
+      );
+      rtg.rotation.x = Math.PI / 2;
+      rtg.position.set(
+        -referenceRadiusAU * 0.78,
+        -referenceRadiusAU * (0.72 + i * 0.18),
+        0,
+      );
+      model.add(rtg);
+    }
+
+    const antennaStrutMaterial = new THREE.MeshStandardMaterial({
+      color: 0xc9d3e6,
+      roughness: 0.4,
+      metalness: 0.32,
+    });
+    for (const sign of [-1, 1]) {
+      const strut = new THREE.Mesh(
+        new THREE.CylinderGeometry(referenceRadiusAU * 0.015, referenceRadiusAU * 0.015, referenceRadiusAU * 1.1, 6),
+        antennaStrutMaterial,
+      );
+      strut.rotation.z = Math.PI / 2 + sign * 0.38;
+      strut.position.set(referenceRadiusAU * 0.1, sign * referenceRadiusAU * 0.18, 0);
+      model.add(strut);
+    }
+
+    model.rotation.z = -Math.PI / 2;
+    return model;
   }
 
   private createFin(R: number, L: number): THREE.Mesh {
@@ -264,10 +385,11 @@ export class PlayerShip {
     const speedFrac = this.speedMultiplier / PlayerShip.SPEED_MAX;
     const exhaustOn = this.moving && this.speedMultiplier > 0.01;
 
-    this.exhaustCone.visible = exhaustOn;
-    this.exhaustCore.visible = exhaustOn;
+    const showExhaust = this.profile === 'default' && exhaustOn;
+    this.exhaustCone.visible = showExhaust;
+    this.exhaustCore.visible = showExhaust;
 
-    if (exhaustOn) {
+    if (showExhaust) {
       const pulse = 0.95 + 0.05 * Math.sin(this.exhaustTime * 10);
       const intensity = 0.2 + speedFrac * 0.4;
 
@@ -347,4 +469,11 @@ export class PlayerShip {
   static readonly SPEED_MAX = 3.6;
   static readonly SPEED_DEFAULT = 1.0;
   static readonly DEFAULT_SPEED_AU_S = DEFAULT_SPEED_AU_S;
+
+  setProfile(profile: ShipProfile) {
+    this.profile = profile;
+    this.defaultModel.visible = profile === 'default';
+    this.voyagerModel.visible = profile === 'voyager';
+    this.group.userData.shipModel = profile === 'voyager' ? this.voyagerModel : this.defaultModel;
+  }
 }

@@ -961,6 +961,170 @@
     }
 
     /* ============================================= */
+    /* TRAVEL MENU & LEAVE BUTTON                    */
+    /* ============================================= */
+
+    #explore-btn-travel {
+      background: linear-gradient(180deg, rgba(20, 32, 60, 0.92) 0%, rgba(10, 16, 32, 0.96) 100%);
+      border-color: rgba(91, 140, 255, 0.35);
+    }
+    #explore-btn-travel:hover {
+      border-color: rgba(123, 171, 255, 0.55);
+      box-shadow: 0 0 12px rgba(91, 140, 255, 0.15);
+    }
+
+    #travel-menu {
+      display: none;
+      position: fixed;
+      top: 50%;
+      left: 50%;
+      transform: translate(-50%, -50%);
+      width: min(380px, calc(100vw - 32px));
+      max-height: min(520px, calc(100vh - 80px));
+      background: rgba(6, 8, 20, 0.92);
+      backdrop-filter: blur(16px);
+      border: 1px solid rgba(91, 140, 255, 0.2);
+      border-radius: 12px;
+      z-index: 60;
+      pointer-events: auto;
+      flex-direction: column;
+      overflow: hidden;
+      box-shadow: 0 8px 32px rgba(0, 0, 0, 0.6), 0 0 1px rgba(91, 140, 255, 0.3);
+    }
+    #travel-menu.visible {
+      display: flex;
+    }
+
+    .travel-menu-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 14px 18px 10px;
+    }
+    .travel-menu-header h3 {
+      font-family: var(--font);
+      font-size: 15px;
+      font-weight: 500;
+      color: var(--text-primary);
+      letter-spacing: 0.5px;
+      margin: 0;
+    }
+    .travel-menu-close {
+      background: none;
+      border: none;
+      color: var(--text-dim);
+      font-size: 20px;
+      cursor: pointer;
+      padding: 4px 8px;
+      border-radius: 4px;
+      transition: all 0.15s;
+    }
+    .travel-menu-close:hover {
+      color: var(--text-primary);
+      background: var(--accent-dim);
+    }
+
+    .travel-search-row {
+      padding: 0 18px 10px;
+    }
+    #travel-search {
+      width: 100%;
+      padding: 8px 12px;
+      background: rgba(91, 140, 255, 0.06);
+      border: 1px solid var(--panel-border);
+      border-radius: 6px;
+      color: var(--text-primary);
+      font-family: var(--font);
+      font-size: 13px;
+      outline: none;
+      transition: border-color 0.15s;
+      box-sizing: border-box;
+    }
+    #travel-search:focus {
+      border-color: rgba(91, 140, 255, 0.4);
+    }
+    #travel-search::placeholder {
+      color: var(--text-dim);
+    }
+
+    .travel-list {
+      flex: 1;
+      overflow-y: auto;
+      padding: 0 10px 12px;
+    }
+    .travel-list::-webkit-scrollbar { width: 3px; }
+    .travel-list::-webkit-scrollbar-track { background: transparent; }
+    .travel-list::-webkit-scrollbar-thumb { background: rgba(91, 140, 255, 0.15); border-radius: 2px; }
+
+    .travel-item {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 8px 10px;
+      border-radius: 6px;
+      cursor: pointer;
+      transition: all 0.12s;
+      border: none;
+      background: none;
+      width: 100%;
+      text-align: left;
+      font-family: var(--font);
+    }
+    .travel-item:hover {
+      background: var(--accent-dim);
+    }
+    .travel-item-dot {
+      width: 10px;
+      height: 10px;
+      border-radius: 50%;
+      flex-shrink: 0;
+    }
+    .travel-item-moon .travel-item-dot {
+      width: 7px;
+      height: 7px;
+    }
+    .travel-item-info {
+      flex: 1;
+      min-width: 0;
+    }
+    .travel-item-name {
+      font-size: 13px;
+      font-weight: 500;
+      color: var(--text-primary);
+    }
+    .travel-item-moon .travel-item-name {
+      font-size: 12px;
+      padding-left: 12px;
+    }
+    .travel-item-detail {
+      font-size: 10px;
+      color: var(--text-dim);
+    }
+    .travel-item-moon .travel-item-detail {
+      padding-left: 12px;
+    }
+
+    #explore-btn-leave,
+    #explore-btn-land {
+      position: fixed;
+      left: 50%;
+      transform: translateX(-50%);
+      z-index: 25;
+      padding: 8px 20px;
+      font-size: 13px;
+      pointer-events: auto;
+      min-height: 44px;
+    }
+    #explore-btn-leave {
+      bottom: 20px;
+    }
+    #explore-btn-land {
+      bottom: 68px;
+      border-color: rgba(91, 140, 255, 0.4);
+      box-shadow: 0 0 12px rgba(91, 140, 255, 0.12);
+    }
+
+    /* ============================================= */
     /* MOBILE RESPONSIVE                             */
     /* ============================================= */
 
@@ -1002,6 +1166,7 @@
     @media (max-width: 420px) {
       .planet-chip .chip-name { display: none; }
       .planet-chip { padding: 5px 6px; }
+      .travel-btn-text { display: none; }
     }
   </style>
 </head>
@@ -1227,6 +1392,7 @@
 
       <!-- Save/Settings/New (top right) -->
       <div id="explore-actions">
+        <button class="explore-sm-btn" id="explore-btn-travel">&#x1F680;<span class="travel-btn-text"> Travel</span></button>
         <button class="explore-sm-btn" id="explore-btn-save">Save</button>
         <button class="explore-sm-btn" id="explore-btn-settings">&#x2699;</button>
         <button class="explore-sm-btn" id="explore-btn-new">New</button>
@@ -1254,6 +1420,28 @@
           </button>
         </div>
       </div>
+
+      <!-- Travel menu (centered modal) -->
+      <div id="travel-menu">
+        <div class="travel-menu-header">
+          <h3>Travel to...</h3>
+          <button class="travel-menu-close" id="travel-menu-close">&times;</button>
+        </div>
+        <div class="travel-search-row">
+          <input type="text" id="travel-search" placeholder="Search planets &amp; moons..." autocomplete="off" />
+        </div>
+        <div class="travel-list" id="travel-list"></div>
+      </div>
+
+      <!-- Leave planet button (shown when landed) -->
+      <button class="explore-sm-btn" id="explore-btn-leave" style="display:none">
+        Leave <span id="leave-body-name"></span>
+      </button>
+
+      <!-- Proximity land button (shown when near a body) -->
+      <button class="explore-sm-btn" id="explore-btn-land" style="display:none">
+        Land on <span id="land-body-name"></span>
+      </button>
 
       <!-- Compact stats (bottom right) -->
       <div id="explore-stats-compact" class="stats-expanded">

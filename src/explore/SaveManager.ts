@@ -3,6 +3,11 @@ import { debugWarn } from '../utils/debug';
 const STORAGE_KEY = 'orbital-sim-explore-state';
 const AUTO_SAVE_INTERVAL = 30_000; // 30 seconds
 
+export type LandedTarget =
+  | { type: 'planet'; name: string }
+  | { type: 'moon'; name: string; parentPlanet: string }
+  | null;
+
 export interface ExploreState {
   positionAU: { x: number; y: number; z: number };
   headingRad: number;
@@ -20,10 +25,23 @@ export interface ExploreState {
   astroTimePaused?: boolean;
   planetScale: number;       // visual scale multiplier for planets
   showShip: boolean;         // show player ship mesh
+  landedOn?: LandedTarget;   // planet/moon the player is currently landed on
 }
 
 function isFiniteNumber(value: unknown): value is number {
   return typeof value === 'number' && Number.isFinite(value);
+}
+
+function sanitizeLandedOn(raw: unknown): LandedTarget {
+  if (!raw || typeof raw !== 'object') return null;
+  const lo = raw as Record<string, unknown>;
+  if (lo.type === 'planet' && typeof lo.name === 'string') {
+    return { type: 'planet', name: lo.name };
+  }
+  if (lo.type === 'moon' && typeof lo.name === 'string' && typeof lo.parentPlanet === 'string') {
+    return { type: 'moon', name: lo.name, parentPlanet: lo.parentPlanet };
+  }
+  return null;
 }
 
 function sanitizeExploreState(raw: unknown): ExploreState | null {
@@ -70,6 +88,7 @@ function sanitizeExploreState(raw: unknown): ExploreState | null {
       ? Math.min(128, Math.max(1, Math.round(record.planetScale)))
       : defaults.planetScale,
     showShip: typeof record.showShip === 'boolean' ? record.showShip : defaults.showShip,
+    landedOn: sanitizeLandedOn(record.landedOn),
   };
 }
 
@@ -91,6 +110,7 @@ export function createDefaultState(): ExploreState {
     astroTimePaused: false,
     planetScale: 32,
     showShip: true,
+    landedOn: null,
   };
 }
 

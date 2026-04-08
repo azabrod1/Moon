@@ -3,7 +3,7 @@ import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { createSolarSystem, type SolarSystemObjects, type LayoutMode } from './SolarSystem';
 import { PlayerShip } from './PlayerShip';
 import { PlanetMarkers } from './PlanetMarker';
-import { SaveManager, createDefaultState, type ExploreState } from './SaveManager';
+import { SaveManager, createDefaultState, type ExploreState, type LandedTarget } from './SaveManager';
 import { computeStats, formatAU } from './StatsPanel';
 import { ALL_BODIES, type PlanetData } from './planets/planetData';
 import { createMoonMeshes, type MoonMesh } from './PlanetFactory';
@@ -17,6 +17,7 @@ import {
   type ExploreTimeState,
 } from './astronomy';
 import { BRIGHT_STAR_CATALOG } from './data/brightStars';
+import { getMoonsByPlanet } from './planets/moonData';
 
 export class ExploreMode {
   private static readonly TIME_RATE_PRESETS = [1, 60, 1200, 3600, 21600, 86400, 604800, 2592000, 31557600];
@@ -83,6 +84,13 @@ export class ExploreMode {
   // Chase camera state
   private userOrbiting = false;
   private userOrbitTimeout: number | null = null;
+
+  // Landed mode: camera orbits a planet/moon while ship is hidden
+  private landedOn: LandedTarget = null;
+  private preLandSpeed = 0;
+  private preLandAutopilot = false;
+  private nearbyLandTarget: NonNullable<LandedTarget> | null = null;
+  private travelSelection: NonNullable<LandedTarget> | null = null;
 
   // Moon labels
   private moonLabels = new Map<string, HTMLDivElement>();
@@ -257,7 +265,9 @@ export class ExploreMode {
 
     // Configure camera
     this.controls.enabled = true;
-    this.updateCameraFollow();
+    if (!this.landedOn) {
+      this.updateCameraFollow();
+    }
 
     // Start auto-save
     this.saveManager.startAutoSave(() => this.getState());
@@ -277,6 +287,10 @@ export class ExploreMode {
 
     // Show all solar system objects
     this.setObjectsVisible(true);
+    // If landed, the ship should stay hidden
+    if (this.landedOn) {
+      this.player.group.visible = false;
+    }
 
     // Restore moon labels visibility
     if (this.moonLabelContainer) {
@@ -286,6 +300,11 @@ export class ExploreMode {
   }
 
   deactivate(): void {
+    // Exit landed mode cleanly before deactivation
+    if (this.landedOn) {
+      this.exitLandedMode();
+    }
+
     this.active = false;
 
     // Save before leaving
@@ -341,6 +360,12 @@ export class ExploreMode {
   update(dt: number): void {
     if (!this.active || !this.solarSystem) return;
 
+    // Landed mode: camera orbits body, skip flight controls
+    if (this.landedOn) {
+      this.updateLanded(dt);
+      return;
+    }
+
     // Process keyboard input
     this.processInput();
 
@@ -394,52 +419,7 @@ export class ExploreMode {
     // Update Sun label
     this.updateSunLabel();
 
-    // Distance-based planet scaling:
-    //   Close (<0.3 AU): full planetScale
-    //   Mid (0.3–2.5 AU): smooth ramp to half planetScale
-    //   Far (>2.5 AU): planetScale * 0.5
-    for (const planet of this.solarSystem.planets) {
-      const wp = planet.group.userData.worldPosAU as { x: number; y: number; z: number };
-      const dx = this.player.posX - wp.x;
-      const dy = this.player.posY - wp.y;
-      const dz = this.player.posZ - wp.z;
-      const dist = Math.sqrt(dx * dx + dy * dy + dz * dz);
-      // t: 1 when close, 0 when far (smoothstep for seamless feel)
-      const linear = 1 - Math.min(1, Math.max(0, (dist - 0.3) / 2.2));
-      const t = linear * linear * (3 - 2 * linear);
-      // Scale: planetScale when close, fixed 8x when far (distant planets stay modest)
-      const farScale = Math.min(8, this.planetScale);
-      const s = farScale + (this.planetScale - farScale) * t;
-      planet.group.scale.setScalar(s);
-
-      // Dim far-away planet atmosphere glows
-      if (planet.atmosphere) {
-        const glowMat = planet.atmosphere.material as THREE.ShaderMaterial;
-        if (glowMat.uniforms?.alphaScale) {
-          // Full glow when close, half when far
-          glowMat.uniforms.alphaScale.value = (0.15 + 0.3 * t);
-        }
-      }
-
-      // Earth's cloud/night shells are beautiful up close, but expensive when
-      // Earth is both far away and visually tiny. Be conservative before
-      // disabling them so distant fly-bys still look intact.
-      if (planet.data.name === 'Earth') {
-        const renderedAngularDiameter = dist > 1e-8
-          ? (planet.data.radiusAU * planet.group.scale.x * 2) / dist
-          : Infinity;
-        const keepEarthDetail =
-          dist <= ExploreMode.EARTH_DETAIL_MIN_DISTANCE_AU ||
-          renderedAngularDiameter >= ExploreMode.EARTH_DETAIL_MIN_ANGULAR_DIAMETER_RAD;
-
-        if (planet.nightMesh) {
-          planet.nightMesh.visible = keepEarthDetail;
-        }
-        if (planet.cloudsMesh) {
-          planet.cloudsMesh.visible = keepEarthDetail;
-        }
-      }
-    }
+    this.updatePlanetScaling();
     this.player.group.scale.setScalar(16);
     this.resolvePlanetCollisions();
 
@@ -447,96 +427,11 @@ export class ExploreMode {
     // reachable interaction shell matches the visual shell.
     this.checkOrbitCrossings();
     this.checkPlanetVisits();
+    this.checkProximityLand();
 
-    // Update moons: visibility, scale, and orbital position at astronomical time
-    const moonTimeSeconds = this.timeState.currentUtcMs / 1000;
-    for (const planet of this.solarSystem.planets) {
-      const moons = this.planetMoons.get(planet.data.name);
-      if (!moons || moons.length === 0) continue;
-
-      // Distance from player to planet
-      const wp = planet.group.userData.worldPosAU as { x: number; y: number; z: number };
-      const dx = this.player.posX - wp.x;
-      const dy = this.player.posY - wp.y;
-      const dz = this.player.posZ - wp.z;
-      const distToPlayer = Math.sqrt(dx * dx + dy * dy + dz * dz);
-
-      // Show moons when close enough to the planet
-      const threshold = Math.max(planet.data.radiusAU * 120, 0.3);
-      const visible = distToPlayer < threshold;
-
-      const parentR = planet.data.radiusAU;
-
-      const shouldRefreshMoonLabels = this.moonLabelContainer !== null;
-      const canvasW = shouldRefreshMoonLabels ? this.renderer.domElement.clientWidth : 0;
-      const canvasH = shouldRefreshMoonLabels ? this.renderer.domElement.clientHeight : 0;
-      const tempV = shouldRefreshMoonLabels ? new THREE.Vector3() : null;
-
-      for (const m of moons) {
-        const label = this.moonLabels.get(m.data.name);
-        m.mesh.visible = visible;
-        if (visible) {
-          const angle = (moonTimeSeconds / (m.data.orbitalPeriodDays * 86400)) * Math.PI * 2;
-
-          // Real orbital radius — no compression
-          const r = m.data.orbitalRadiusAU;
-          m.mesh.position.set(
-            r * Math.cos(angle),
-            0,
-            r * Math.sin(angle),
-          );
-
-          // Ensure tiny moons are at least a visible dot: minimum 5% of parent radius
-          const realRatio = m.data.radiusAU / parentR;
-          const minRatio = 0.05;
-          if (realRatio < minRatio) {
-            m.mesh.scale.setScalar(minRatio / realRatio);
-          } else {
-            m.mesh.scale.setScalar(1);
-          }
-
-          // Update moon label position — clamp to screen edges
-          if (label && shouldRefreshMoonLabels && tempV) {
-            m.mesh.getWorldPosition(tempV);
-            tempV.project(this.camera);
-            if (tempV.z < 1) {
-              let sx = (tempV.x * 0.5 + 0.5) * canvasW;
-              let sy = (-tempV.y * 0.5 + 0.5) * canvasH;
-              const margin = 30;
-              const onScreen = sx >= margin && sx <= canvasW - margin &&
-                               sy >= margin && sy <= canvasH - margin;
-              // Clamp to screen edges
-              sx = Math.max(margin, Math.min(canvasW - margin, sx));
-              sy = Math.max(margin, Math.min(canvasH - margin, sy));
-              label.style.display = 'block';
-              label.style.left = `${sx}px`;
-              label.style.top = `${sy}px`;
-              label.classList.toggle('edge', !onScreen);
-            } else {
-              label.style.display = 'none';
-            }
-          }
-        } else if (label && label.style.display !== 'none') {
-          label.style.display = 'none';
-        }
-      }
-    }
-
-    // Update sun shader time
-    const sunMat = this.solarSystem.sun.userData.sunMaterial as THREE.ShaderMaterial | undefined;
-    if (sunMat) {
-      sunMat.uniforms.time.value += dt;
-    }
-
-    // Update orbit line visibility (fade based on distance)
-    for (let i = 0; i < this.solarSystem.orbitLines.length; i++) {
-      const orbit = this.solarSystem.orbitLines[i];
-      const body = ALL_BODIES[i];
-      const distToOrbit = Math.abs(this.player.getDistanceFromSun() - body.semiMajorAxisAU);
-      const fadeRange = Math.max(body.semiMajorAxisAU * 0.3, 1.0);
-      const opacity = Math.max(0.05, Math.min(0.4, 1 - distToOrbit / fadeRange));
-      (orbit.material as THREE.LineBasicMaterial).opacity = opacity;
-    }
+    this.updateMoonPositions();
+    this.updateSunShader(dt);
+    this.updateOrbitLineVisibility();
 
     // Update stats/time overlays on a lower cadence than the render loop to avoid
     // forcing layout/style work every frame.
@@ -600,7 +495,164 @@ export class ExploreMode {
     this.camera.position.lerp(idealPos, lerpSpeed);
   }
 
+  private getLandedBodyWorldPosition(): { x: number; y: number; z: number } | null {
+    if (!this.landedOn) return null;
+    if (this.landedOn.type === 'planet') {
+      return this.planetWorldPositions.get(this.landedOn.name) ?? null;
+    }
+    // Moon: parent position + orbital offset
+    const parentPos = this.planetWorldPositions.get(this.landedOn.parentPlanet);
+    if (!parentPos) return null;
+    const moons = this.planetMoons.get(this.landedOn.parentPlanet);
+    if (!moons) return null;
+    const moonMesh = moons.find(m => m.data.name === this.landedOn!.name);
+    if (!moonMesh) return null;
+    const moonTimeSeconds = this.timeState.currentUtcMs / 1000;
+    const angle = (moonTimeSeconds / (moonMesh.data.orbitalPeriodDays * 86400)) * Math.PI * 2;
+    const r = moonMesh.data.orbitalRadiusAU;
+    return {
+      x: parentPos.x + r * Math.cos(angle),
+      y: parentPos.y,
+      z: parentPos.z + r * Math.sin(angle),
+    };
+  }
+
+  private getLandedBodyRadiusAU(): number {
+    if (!this.landedOn) return 0;
+    if (this.landedOn.type === 'planet') {
+      const body = ALL_BODIES.find(b => b.name === this.landedOn!.name);
+      return body ? body.radiusAU : 0;
+    }
+    const moons = this.planetMoons.get(this.landedOn.parentPlanet);
+    if (!moons) return 0;
+    const moonMesh = moons.find(m => m.data.name === this.landedOn!.name);
+    return moonMesh ? moonMesh.data.radiusAU : 0;
+  }
+
+  private updatePlanetScaling() {
+    if (!this.solarSystem) return;
+    // Distance-based planet scaling:
+    //   Close (<0.3 AU): full planetScale
+    //   Mid (0.3–2.5 AU): smooth ramp to half planetScale
+    //   Far (>2.5 AU): planetScale * 0.5
+    for (const planet of this.solarSystem.planets) {
+      const wp = planet.group.userData.worldPosAU as { x: number; y: number; z: number };
+      const dx = this.player.posX - wp.x;
+      const dy = this.player.posY - wp.y;
+      const dz = this.player.posZ - wp.z;
+      const dist = Math.sqrt(dx * dx + dy * dy + dz * dz);
+      const linear = 1 - Math.min(1, Math.max(0, (dist - 0.3) / 2.2));
+      const t = linear * linear * (3 - 2 * linear);
+      const farScale = Math.min(8, this.planetScale);
+      const s = farScale + (this.planetScale - farScale) * t;
+      planet.group.scale.setScalar(s);
+
+      if (planet.atmosphere) {
+        const glowMat = planet.atmosphere.material as THREE.ShaderMaterial;
+        if (glowMat.uniforms?.alphaScale) {
+          glowMat.uniforms.alphaScale.value = (0.15 + 0.3 * t);
+        }
+      }
+
+      if (planet.data.name === 'Earth') {
+        const renderedAngularDiameter = dist > 1e-8
+          ? (planet.data.radiusAU * planet.group.scale.x * 2) / dist
+          : Infinity;
+        const keepEarthDetail =
+          dist <= ExploreMode.EARTH_DETAIL_MIN_DISTANCE_AU ||
+          renderedAngularDiameter >= ExploreMode.EARTH_DETAIL_MIN_ANGULAR_DIAMETER_RAD;
+        if (planet.nightMesh) planet.nightMesh.visible = keepEarthDetail;
+        if (planet.cloudsMesh) planet.cloudsMesh.visible = keepEarthDetail;
+      }
+    }
+  }
+
+  private updateMoonPositions() {
+    if (!this.solarSystem) return;
+    const moonTimeSeconds = this.timeState.currentUtcMs / 1000;
+    for (const planet of this.solarSystem.planets) {
+      const moons = this.planetMoons.get(planet.data.name);
+      if (!moons || moons.length === 0) continue;
+
+      const wp = planet.group.userData.worldPosAU as { x: number; y: number; z: number };
+      const dx = this.player.posX - wp.x;
+      const dy = this.player.posY - wp.y;
+      const dz = this.player.posZ - wp.z;
+      const distToPlayer = Math.sqrt(dx * dx + dy * dy + dz * dz);
+
+      const threshold = Math.max(planet.data.radiusAU * 120, 0.3);
+      const visible = distToPlayer < threshold;
+      const parentR = planet.data.radiusAU;
+
+      const shouldRefreshMoonLabels = this.moonLabelContainer !== null;
+      const canvasW = shouldRefreshMoonLabels ? this.renderer.domElement.clientWidth : 0;
+      const canvasH = shouldRefreshMoonLabels ? this.renderer.domElement.clientHeight : 0;
+      const tempV = shouldRefreshMoonLabels ? new THREE.Vector3() : null;
+
+      for (const m of moons) {
+        const label = this.moonLabels.get(m.data.name);
+        m.mesh.visible = visible;
+        if (visible) {
+          const angle = (moonTimeSeconds / (m.data.orbitalPeriodDays * 86400)) * Math.PI * 2;
+          const r = m.data.orbitalRadiusAU;
+          m.mesh.position.set(r * Math.cos(angle), 0, r * Math.sin(angle));
+
+          const realRatio = m.data.radiusAU / parentR;
+          const minRatio = 0.05;
+          if (realRatio < minRatio) {
+            m.mesh.scale.setScalar(minRatio / realRatio);
+          } else {
+            m.mesh.scale.setScalar(1);
+          }
+
+          if (label && shouldRefreshMoonLabels && tempV) {
+            m.mesh.getWorldPosition(tempV);
+            tempV.project(this.camera);
+            if (tempV.z < 1) {
+              let sx = (tempV.x * 0.5 + 0.5) * canvasW;
+              let sy = (-tempV.y * 0.5 + 0.5) * canvasH;
+              const margin = 30;
+              const onScreen = sx >= margin && sx <= canvasW - margin &&
+                               sy >= margin && sy <= canvasH - margin;
+              sx = Math.max(margin, Math.min(canvasW - margin, sx));
+              sy = Math.max(margin, Math.min(canvasH - margin, sy));
+              label.style.display = 'block';
+              label.style.left = `${sx}px`;
+              label.style.top = `${sy}px`;
+              label.classList.toggle('edge', !onScreen);
+            } else {
+              label.style.display = 'none';
+            }
+          }
+        } else if (label && label.style.display !== 'none') {
+          label.style.display = 'none';
+        }
+      }
+    }
+  }
+
+  private updateSunShader(dt: number) {
+    if (!this.solarSystem) return;
+    const sunMat = this.solarSystem.sun.userData.sunMaterial as THREE.ShaderMaterial | undefined;
+    if (sunMat) {
+      sunMat.uniforms.time.value += dt;
+    }
+  }
+
+  private updateOrbitLineVisibility() {
+    if (!this.solarSystem) return;
+    for (let i = 0; i < this.solarSystem.orbitLines.length; i++) {
+      const orbit = this.solarSystem.orbitLines[i];
+      const body = ALL_BODIES[i];
+      const distToOrbit = Math.abs(this.player.getDistanceFromSun() - body.semiMajorAxisAU);
+      const fadeRange = Math.max(body.semiMajorAxisAU * 0.3, 1.0);
+      const opacity = Math.max(0.05, Math.min(0.4, 1 - distToOrbit / fadeRange));
+      (orbit.material as THREE.LineBasicMaterial).opacity = opacity;
+    }
+  }
+
   private processInput() {
+    if (this.landedOn) return;
     // Flight controls
     const yawFromKeys =
       (this.keys.has('arrowright') || this.keys.has('d') ? 1 : 0) -
@@ -645,8 +697,25 @@ export class ExploreMode {
 
   private handleKeyDown(e: KeyboardEvent) {
     if (!this.active) return;
-    // Don't capture if typing in an input
+
+    // Escape always works — even while typing in search input
+    if (e.key === 'Escape') {
+      if (this.isTravelMenuOpen()) { this.closeTravelMenu(); return; }
+      if (this.landedOn) { this.exitLandedMode(); return; }
+    }
+
+    // Don't capture other keys if typing in an input
     if ((e.target as HTMLElement).tagName === 'INPUT') return;
+
+    // T opens/closes travel menu
+    if (e.key.toLowerCase() === 't') {
+      this.toggleTravelMenu();
+      return;
+    }
+
+    // Suppress all other keys while landed
+    if (this.landedOn) return;
+
     this.keys.add(e.key.toLowerCase());
 
     // Space toggles pause
@@ -715,11 +784,64 @@ export class ExploreMode {
       if (dist < visitDist && !this.player.visitedPlanets.has(planet.data.name)) {
         this.player.visitedPlanets.add(planet.data.name);
         this.showNotification(`Arrived at ${planet.data.name}! ${planet.data.description}`);
-        // Mark chip as visited
-        const chip = document.getElementById(`jump-${planet.data.name.toLowerCase()}`);
-        if (chip) chip.classList.add('visited');
       }
     }
+  }
+
+  private checkProximityLand() {
+    if (!this.solarSystem || this.landedOn) {
+      this.setNearbyLandTarget(null);
+      return;
+    }
+
+    let closest: NonNullable<LandedTarget> | null = null;
+    let closestDist = Infinity;
+
+    // Check planets
+    for (const planet of this.solarSystem.planets) {
+      const wp = planet.group.userData.worldPosAU as { x: number; y: number; z: number } | undefined;
+      if (!wp) continue;
+      const dx = this.player.posX - wp.x;
+      const dy = this.player.posY - wp.y;
+      const dz = this.player.posZ - wp.z;
+      const dist = Math.sqrt(dx * dx + dy * dy + dz * dz);
+      const threshold = this.getPlanetCollisionRadius(planet.data.radiusAU, planet.group.scale.x) * 2;
+      if (dist < threshold && dist < closestDist) {
+        closestDist = dist;
+        closest = { type: 'planet', name: planet.data.name };
+      }
+
+      // Check moons of nearby planets
+      const moons = this.planetMoons.get(planet.data.name);
+      if (!moons) continue;
+      const moonThreshold = Math.max(planet.data.radiusAU * 120, 0.3);
+      if (dist > moonThreshold) continue;
+      for (const m of moons) {
+        const moonWorldPos = m.mesh.getWorldPosition(new THREE.Vector3());
+        // moonWorldPos is in scene space (offset by floating origin)
+        // player is at origin in scene space
+        const md = moonWorldPos.length();
+        const moonLandThreshold = Math.max(m.data.radiusAU * this.planetScale * 3, 0.0003);
+        if (md < moonLandThreshold && md < closestDist) {
+          closestDist = md;
+          closest = { type: 'moon', name: m.data.name, parentPlanet: planet.data.name };
+        }
+      }
+    }
+
+    this.setNearbyLandTarget(closest);
+  }
+
+  private setNearbyLandTarget(target: NonNullable<LandedTarget> | null) {
+    const prevName = this.nearbyLandTarget?.name ?? null;
+    const newName = target?.name ?? null;
+    if (prevName === newName) return;
+
+    this.nearbyLandTarget = target;
+    const btn = document.getElementById('explore-btn-land');
+    const nameEl = document.getElementById('land-body-name');
+    if (btn) btn.style.display = target ? '' : 'none';
+    if (nameEl) nameEl.textContent = target?.name ?? '';
   }
 
   private showIntroText() {
@@ -887,26 +1009,21 @@ export class ExploreMode {
 
     // New Journey button
     document.getElementById('explore-btn-new')?.addEventListener('click', () => {
+      if (this.landedOn) this.exitLandedMode();
       this.saveManager.clearState();
       this.restoreState(createDefaultState());
       this.pointTowardMercury();
       this.showNotification('New journey started!');
     });
 
-    // Jump to planet buttons
-    for (const body of ALL_BODIES) {
-      const btn = document.getElementById(`jump-${body.name.toLowerCase()}`);
-      btn?.addEventListener('click', () => this.jumpToPlanet(body));
-    }
-
     // Autopilot toggle
     document.getElementById('explore-btn-autopilot')?.addEventListener('click', () => {
       this.toggleAutopilot();
     });
 
-    // Settings panel toggle
-    document.getElementById('explore-btn-settings')?.addEventListener('click', () => {
-      const panel = document.getElementById('explore-settings-panel');
+    // Menu panel toggle (replaces separate settings + save/new buttons)
+    document.getElementById('explore-btn-menu')?.addEventListener('click', () => {
+      const panel = document.getElementById('explore-menu-panel');
       if (panel) panel.classList.toggle('visible');
     });
 
@@ -996,7 +1113,7 @@ export class ExploreMode {
     // Show ship toggle
     document.getElementById('settings-ship-toggle')?.addEventListener('click', () => {
       this.showShip = !this.showShip;
-      this.player.group.visible = this.showShip;
+      this.player.group.visible = this.showShip && !this.landedOn;
       const label = document.getElementById('settings-ship-label');
       if (label) label.textContent = this.showShip ? 'On' : 'Off';
     });
@@ -1033,7 +1150,184 @@ export class ExploreMode {
       flightZone.addEventListener('pointerleave', clearFlightTouch);
     }
 
+    // Travel menu
+    document.getElementById('explore-btn-travel')?.addEventListener('click', () => {
+      this.toggleTravelMenu();
+    });
+    document.getElementById('travel-menu-close')?.addEventListener('click', () => {
+      this.closeTravelMenu();
+    });
+    const travelSearch = document.getElementById('travel-search') as HTMLInputElement;
+    travelSearch?.addEventListener('input', () => {
+      this.filterTravelList(travelSearch.value);
+    });
+    document.getElementById('explore-btn-leave')?.addEventListener('click', () => {
+      this.exitLandedMode();
+    });
+    document.getElementById('explore-btn-land')?.addEventListener('click', () => {
+      if (this.nearbyLandTarget) {
+        this.enterLandedMode(this.nearbyLandTarget);
+      }
+    });
+    // Travel action bar: Land vs Jump
+    document.getElementById('travel-action-land')?.addEventListener('click', () => {
+      if (this.travelSelection) {
+        const sel = this.travelSelection;
+        this.closeTravelMenu();
+        this.enterLandedMode(sel);
+      }
+    });
+    document.getElementById('travel-action-jump')?.addEventListener('click', () => {
+      if (this.travelSelection) {
+        const sel = this.travelSelection;
+        this.closeTravelMenu();
+        if (this.landedOn) this.exitLandedMode();
+        if (sel.type === 'planet') {
+          const body = ALL_BODIES.find(b => b.name === sel.name);
+          if (body) this.jumpToPlanet(body);
+        } else {
+          // Jump near the moon's parent planet
+          const body = ALL_BODIES.find(b => b.name === sel.parentPlanet);
+          if (body) this.jumpToPlanet(body);
+        }
+      }
+    });
+    this.buildTravelList();
+
     this.updateTimeUI();
+  }
+
+  private buildTravelList() {
+    const list = document.getElementById('travel-list');
+    if (!list) return;
+    list.innerHTML = '';
+
+    for (const body of ALL_BODIES) {
+      // Planet item
+      const item = document.createElement('button');
+      item.className = 'travel-item';
+      item.dataset.type = 'planet';
+      item.dataset.name = body.name;
+      item.innerHTML = `
+        <span class="travel-item-dot" style="background:#${body.color.toString(16).padStart(6, '0')}"></span>
+        <span class="travel-item-info">
+          <span class="travel-item-name">${body.name}</span>
+          <span class="travel-item-detail">${body.description.split('.')[0]}</span>
+        </span>`;
+      item.addEventListener('click', () => {
+        this.selectTravelTarget({ type: 'planet', name: body.name });
+      });
+      list.appendChild(item);
+
+      // Moons for this planet
+      const moons = getMoonsByPlanet(body.name);
+      for (const moon of moons) {
+        const moonItem = document.createElement('button');
+        moonItem.className = 'travel-item travel-item-moon';
+        moonItem.dataset.type = 'moon';
+        moonItem.dataset.name = moon.name;
+        moonItem.dataset.parent = moon.parentPlanet;
+        moonItem.innerHTML = `
+          <span class="travel-item-dot" style="background:#${moon.color.toString(16).padStart(6, '0')}"></span>
+          <span class="travel-item-info">
+            <span class="travel-item-name">${moon.name}</span>
+            <span class="travel-item-detail">Moon of ${moon.parentPlanet} · r = ${moon.radiusKm.toLocaleString()} km</span>
+          </span>`;
+        moonItem.addEventListener('click', () => {
+          this.selectTravelTarget({ type: 'moon', name: moon.name, parentPlanet: moon.parentPlanet });
+        });
+        list.appendChild(moonItem);
+      }
+    }
+  }
+
+  private toggleTravelMenu() {
+    const menu = document.getElementById('travel-menu');
+    if (!menu) return;
+    const isVisible = menu.classList.contains('visible');
+    if (isVisible) {
+      this.closeTravelMenu();
+    } else {
+      // Close menu panel if open
+      document.getElementById('explore-menu-panel')?.classList.remove('visible');
+      menu.classList.add('visible');
+      this.travelSelection = null;
+      const actionBar = document.getElementById('travel-action-bar');
+      if (actionBar) actionBar.style.display = 'none';
+      // Hide planet/moon labels so they don't show through the menu
+      const pl = document.getElementById('planet-labels');
+      const ml = this.moonLabelContainer;
+      if (pl) pl.style.display = 'none';
+      if (ml) ml.style.display = 'none';
+      const search = document.getElementById('travel-search') as HTMLInputElement;
+      if (search) {
+        search.value = '';
+        this.filterTravelList('');
+        search.focus();
+      }
+    }
+  }
+
+  private closeTravelMenu() {
+    const menu = document.getElementById('travel-menu');
+    if (menu) menu.classList.remove('visible');
+    this.travelSelection = null;
+    // Restore planet/moon labels
+    const pl = document.getElementById('planet-labels');
+    const ml = this.moonLabelContainer;
+    if (pl) pl.style.display = '';
+    if (ml) ml.style.display = '';
+  }
+
+  private selectTravelTarget(target: NonNullable<LandedTarget>) {
+    this.travelSelection = target;
+    const actionBar = document.getElementById('travel-action-bar');
+    const nameEl = document.getElementById('travel-action-name');
+    if (actionBar) actionBar.style.display = '';
+    if (nameEl) nameEl.textContent = target.name;
+  }
+
+  private isTravelMenuOpen(): boolean {
+    return document.getElementById('travel-menu')?.classList.contains('visible') ?? false;
+  }
+
+  private filterTravelList(query: string) {
+    const list = document.getElementById('travel-list');
+    if (!list) return;
+    const q = query.toLowerCase().trim();
+    const items = list.querySelectorAll('.travel-item') as NodeListOf<HTMLElement>;
+
+    if (!q) {
+      for (const item of items) item.style.display = '';
+      return;
+    }
+
+    // First pass: determine which planets match (either directly or via a matching moon)
+    const matchingParents = new Set<string>();
+    for (const item of items) {
+      const name = (item.dataset.name ?? '').toLowerCase();
+      const parent = item.dataset.parent ?? '';
+      if (name.includes(q)) {
+        if (item.dataset.type === 'moon') matchingParents.add(parent);
+        else matchingParents.add(item.dataset.name ?? '');
+      }
+    }
+
+    // Second pass: show/hide
+    for (const item of items) {
+      const name = (item.dataset.name ?? '').toLowerCase();
+      if (name.includes(q)) {
+        item.style.display = '';
+      } else if (item.dataset.type === 'planet' && matchingParents.has(item.dataset.name ?? '')) {
+        // Show parent planet if a moon matches
+        item.style.display = '';
+      } else if (item.dataset.type === 'moon' && matchingParents.has(item.dataset.parent ?? '')) {
+        // Show sibling moons when planet matches
+        item.style.display = '';
+      } else {
+        item.style.display = 'none';
+      }
+    }
   }
 
   private showResumePrompt(saved: ExploreState): Promise<boolean> {
@@ -1171,6 +1465,194 @@ export class ExploreMode {
     this.resetCruiseCamera();
   }
 
+  enterLandedMode(target: NonNullable<LandedTarget>) {
+    this.landedOn = target;
+    this.preLandSpeed = this.player.speedMultiplier;
+    this.preLandAutopilot = this.autopilot;
+
+    // Stop ship
+    this.player.speedMultiplier = 0;
+    this.player.moving = false;
+    this.player.group.visible = false;
+
+    // Disable autopilot silently
+    this.autopilot = false;
+    const apBtn = document.getElementById('explore-btn-autopilot');
+    if (apBtn) apBtn.classList.toggle('active', false);
+
+    // Move player to body position so floating origin centers on it
+    const pos = this.getLandedBodyWorldPosition();
+    if (pos) {
+      this.player.posX = pos.x;
+      this.player.posY = pos.y;
+      this.player.posZ = pos.z;
+    }
+
+    // Configure OrbitControls to orbit the body
+    const radiusAU = this.getLandedBodyRadiusAU();
+    const visualRadius = radiusAU * this.planetScale;
+    this.controls.target.set(0, 0, 0);
+    this.controls.minDistance = visualRadius * 1.5;
+    this.controls.maxDistance = Math.max(visualRadius * 30, 0.01);
+    this.controls.autoRotate = true;
+    this.controls.autoRotateSpeed = 0.5;
+    this.userOrbiting = false;
+
+    // Position camera for a nice initial view
+    const camDist = Math.max(visualRadius * 4, 0.0005);
+    this.camera.position.set(camDist, camDist * 0.5, camDist);
+    this.camera.lookAt(0, 0, 0);
+
+    // UI: hide flight controls, show leave button
+    const hide = ['explore-speed-bar', 'explore-keys-hint', 'touch-flight-zone', 'explore-btn-travel', 'explore-btn-land'];
+    for (const id of hide) {
+      const el = document.getElementById(id);
+      if (el) el.style.display = 'none';
+    }
+    const leaveBtn = document.getElementById('explore-btn-leave');
+    if (leaveBtn) leaveBtn.style.display = '';
+    const leaveName = document.getElementById('leave-body-name');
+    if (leaveName) leaveName.textContent = target.name;
+
+    this.showNotification(`Landed on ${target.name}`);
+  }
+
+  exitLandedMode() {
+    if (!this.landedOn) return;
+    const bodyName = this.landedOn.name;
+
+    // Get body's current world position
+    const bodyPos = this.getLandedBodyWorldPosition();
+    const radiusAU = this.getLandedBodyRadiusAU();
+
+    if (bodyPos) {
+      // Compute clearance: safe distance from body
+      const clearance = this.landedOn.type === 'planet'
+        ? this.getPlanetCollisionRadius(radiusAU, this.planetScale) * 1.5
+        : radiusAU * this.planetScale * 3;
+      const safeDist = Math.max(clearance, 0.001);
+
+      // Direction away from Sun (outward from body)
+      const awayDir = new THREE.Vector3(bodyPos.x, bodyPos.y, bodyPos.z);
+      if (awayDir.lengthSq() < 1e-8) awayDir.set(1, 0.1, 0);
+      awayDir.normalize();
+
+      this.player.posX = bodyPos.x + awayDir.x * safeDist;
+      this.player.posY = bodyPos.y + awayDir.y * safeDist;
+      this.player.posZ = bodyPos.z + awayDir.z * safeDist;
+
+      // Head away from the body
+      this.player.headToward(
+        this.player.posX + awayDir.x,
+        this.player.posZ + awayDir.z,
+        this.player.posY + awayDir.y,
+      );
+    }
+
+    // Restore speed and movement
+    this.player.speedMultiplier = Math.max(this.preLandSpeed, 0.1);
+    this.player.moving = true;
+    this.player.group.visible = this.showShip;
+    this.updateSpeedSlider();
+
+    // Reset OrbitControls
+    this.controls.autoRotate = false;
+    this.controls.minDistance = 0.00001;
+    this.controls.maxDistance = 5;
+    this.resetCruiseCamera();
+
+    // Restore autopilot
+    this.autopilot = this.preLandAutopilot;
+    const apBtn = document.getElementById('explore-btn-autopilot');
+    if (apBtn) apBtn.classList.toggle('active', this.autopilot);
+
+    this.landedOn = null;
+
+    // UI: restore flight controls, hide leave button
+    const show: Array<[string, string]> = [
+      ['explore-speed-bar', 'flex'],
+      ['explore-btn-travel', ''],
+    ];
+    for (const [id, display] of show) {
+      const el = document.getElementById(id);
+      if (el) el.style.display = display;
+    }
+    // Conditionally show touch/keyboard hints
+    const isTouchDevice = 'ontouchstart' in window;
+    const keysHint = document.getElementById('explore-keys-hint');
+    if (keysHint) keysHint.style.display = isTouchDevice ? 'none' : '';
+    const touchZone = document.getElementById('touch-flight-zone');
+    if (touchZone) touchZone.style.display = isTouchDevice ? '' : 'none';
+
+    const leaveBtn = document.getElementById('explore-btn-leave');
+    if (leaveBtn) leaveBtn.style.display = 'none';
+
+    this.showNotification(`Departing ${bodyName}`);
+  }
+
+  private updateLanded(dt: number) {
+    if (!this.solarSystem) return;
+
+    // Advance astronomical time — planets keep moving/rotating
+    this.timeState = advanceExploreTime(this.timeState, dt);
+    this.rebuildPlanetPositions(dt);
+
+    // Track the landed body: update player position to body's world position
+    const bodyPos = this.getLandedBodyWorldPosition();
+    if (bodyPos) {
+      this.player.posX = bodyPos.x;
+      this.player.posY = bodyPos.y;
+      this.player.posZ = bodyPos.z;
+    }
+
+    // Apply floating origin (scene offset by player = body position)
+    this.applyFloatingOrigin();
+
+    // OrbitControls orbits the body at origin
+    this.controls.target.set(0, 0, 0);
+    this.controls.update();
+
+    // FPS tracking
+    this.fpsFrames++;
+    const fpsNow = performance.now();
+    const fpsElapsed = (fpsNow - this.fpsLastTime) / 1000;
+    if (fpsElapsed >= 0.5) {
+      this.fpsDisplay = Math.round(this.fpsFrames / fpsElapsed);
+      this.fpsFrames = 0;
+      this.fpsLastTime = fpsNow;
+    }
+
+    this.uiRefreshAccumulator += dt;
+    const shouldRefreshUi = this.uiRefreshAccumulator >= ExploreMode.UI_REFRESH_INTERVAL_S;
+    if (shouldRefreshUi) {
+      this.uiRefreshAccumulator %= ExploreMode.UI_REFRESH_INTERVAL_S;
+    }
+
+    // Update markers
+    if (this.markers) {
+      const scenePositions = new Map<string, { x: number; y: number; z: number }>();
+      for (const planet of this.solarSystem.planets) {
+        scenePositions.set(planet.data.name, {
+          x: planet.group.position.x,
+          y: planet.group.position.y,
+          z: planet.group.position.z,
+        });
+      }
+      this.markers.update(scenePositions, { x: 0, y: 0, z: 0 }, this.renderer);
+    }
+
+    this.updateSunLabel();
+    this.updatePlanetScaling();
+    this.updateMoonPositions();
+    this.updateSunShader(dt);
+    this.updateOrbitLineVisibility();
+
+    if (shouldRefreshUi) {
+      this.updateStatsUI();
+      this.updateTimeUI();
+    }
+  }
+
   manualSave() {
     this.saveManager.saveState(this.getState());
   }
@@ -1180,12 +1662,14 @@ export class ExploreMode {
       positionAU: { x: this.player.posX, y: this.player.posY, z: this.player.posZ },
       headingRad: this.player.heading,
       pitchRad: this.player.pitch,
-      speed: this.player.speedMultiplier,
+      // When landed, speed/autopilot are zeroed — save the pre-land originals
+      // so they restore correctly on load.
+      speed: this.landedOn ? this.preLandSpeed : this.player.speedMultiplier,
       visitedPlanets: Array.from(this.player.visitedPlanets),
       distanceTraveled: this.player.distanceTraveled,
       timeElapsed: this.player.timeElapsed,
       timestamp: Date.now(),
-      autopilot: this.autopilot,
+      autopilot: this.landedOn ? this.preLandAutopilot : this.autopilot,
       layoutMode: this.layoutMode,
       simDate: this.timeState.currentUtcMs,
       astroTimeUtcMs: this.timeState.currentUtcMs,
@@ -1193,6 +1677,7 @@ export class ExploreMode {
       astroTimePaused: this.timeState.paused,
       planetScale: this.planetScale,
       showShip: this.showShip,
+      landedOn: this.landedOn,
     };
   }
 
@@ -1232,15 +1717,12 @@ export class ExploreMode {
     this.updateSpeedSlider();
     this.updateTimeUI();
 
-    for (const body of ALL_BODIES) {
-      document.getElementById(`jump-${body.name.toLowerCase()}`)?.classList.remove('visited');
+    // Restore landed state if saved
+    if (saved.landedOn) {
+      this.enterLandedMode(saved.landedOn);
+    } else {
+      this.resetCruiseCamera();
     }
-    for (const name of saved.visitedPlanets) {
-      const chip = document.getElementById(`jump-${name.toLowerCase()}`);
-      if (chip) chip.classList.add('visited');
-    }
-
-    this.resetCruiseCamera();
   }
 
   private getStarColor(colorIndex: number): THREE.Color {

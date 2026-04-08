@@ -295,6 +295,105 @@
 
     .info-value { color: var(--text-primary); font-weight: 500; }
 
+    .toggle-row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      color: var(--text-secondary);
+      font-size: 11px;
+      user-select: none;
+    }
+
+    .toggle-row input[type="checkbox"] {
+      width: 14px;
+      height: 14px;
+      accent-color: var(--accent);
+    }
+
+    #orbit-details-panel {
+      position: absolute;
+      top: 58px;
+      left: 12px;
+      display: none;
+      min-width: 220px;
+      background: rgba(9, 13, 28, 0.34);
+      backdrop-filter: blur(8px);
+      border: 1px solid rgba(170, 208, 255, 0.14);
+      border-radius: 10px;
+      padding: 10px 12px;
+      color: var(--text-secondary);
+      pointer-events: none;
+      box-shadow: 0 10px 28px rgba(0, 0, 0, 0.15);
+    }
+
+    #orbit-details-panel.visible { display: block; }
+
+    #orbit-details-panel h3 {
+      font-size: 10px;
+      letter-spacing: 1px;
+      text-transform: uppercase;
+      color: rgba(224, 236, 255, 0.9);
+      margin-bottom: 8px;
+    }
+
+    .orbit-details-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 14px;
+      font-size: 10px;
+      line-height: 1.4;
+      padding: 2px 0;
+    }
+
+    .orbit-details-row strong {
+      color: var(--text-primary);
+      font-weight: 500;
+    }
+
+    .orbit-details-note {
+      margin-top: 8px;
+      padding-top: 8px;
+      border-top: 1px solid rgba(170, 208, 255, 0.12);
+      font-size: 9px;
+      line-height: 1.45;
+      color: rgba(196, 214, 240, 0.8);
+    }
+
+    .orbit-legend {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      margin-right: 10px;
+    }
+
+    .orbit-swatch {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      flex-shrink: 0;
+    }
+
+    #orbit-focus-labels {
+      position: absolute;
+      inset: 0;
+      pointer-events: none;
+    }
+
+    .orbit-focus-label {
+      position: absolute;
+      transform: translate(-50%, -50%);
+      font-size: 11px;
+      font-weight: 600;
+      letter-spacing: 0.2px;
+      text-shadow: 0 1px 6px rgba(0, 0, 0, 0.6);
+      opacity: 0;
+    }
+
+    .orbit-focus-label.visible { opacity: 1; }
+    .orbit-focus-label.f1 { color: rgba(255, 232, 164, 0.94); }
+    .orbit-focus-label.f2 { color: rgba(188, 222, 255, 0.94); }
+
     /* ============================================= */
     /* EXPLORE MODE                                  */
     /* ============================================= */
@@ -884,6 +983,12 @@
       #controls-panel.panel-open { display: block; }
 
       #info-bar { font-size: 10px; padding: 6px 12px; gap: 10px; bottom: 8px; }
+      #orbit-details-panel {
+        top: 56px;
+        left: 10px;
+        min-width: 0;
+        width: min(230px, calc(100vw - 20px));
+      }
 
       #explore-stats-compact { bottom: 70px; right: 8px; padding: 8px 10px; min-width: 150px; }
       .stat-row { padding: 2px 0; }
@@ -1071,12 +1176,37 @@
             <button class="view-btn" id="view-side">Side View</button>
           </div>
         </div>
+
+        <div class="control-group">
+          <label class="toggle-row">
+            <input type="checkbox" id="orbit-details-toggle" />
+            <span>Orbit details</span>
+          </label>
+        </div>
       </div>
 
       <div id="info-bar">
         <span>Dist: <span class="info-value" id="info-distance">384,400 km</span></span>
         <span>Phase: <span class="info-value" id="info-phase-angle">180&deg;</span></span>
         <span>Node: <span class="info-value" id="info-node-dist">--</span></span>
+      </div>
+
+      <div id="orbit-details-panel">
+        <h3>Orbit Details</h3>
+        <div class="orbit-details-row"><span>Major axis</span><strong id="orbit-major-axis-readout">--</strong></div>
+        <div class="orbit-details-row"><span>Minor axis</span><strong id="orbit-minor-axis-readout">--</strong></div>
+        <div class="orbit-details-row"><span>Focus offset</span><strong id="orbit-focus-offset-readout">--</strong></div>
+        <div class="orbit-details-row"><span>Perigee / Apogee</span><strong id="orbit-apsides-readout">--</strong></div>
+        <div class="orbit-details-note">
+          <span class="orbit-legend"><span class="orbit-swatch" style="background: rgba(157, 215, 255, 0.85)"></span>1-day area</span>
+          <span class="orbit-legend"><span class="orbit-swatch" style="background: rgba(255, 223, 150, 0.82)"></span>equal 1-day area</span>
+          The orbit plane marks f1 and f2 directly on the diagram.
+        </div>
+      </div>
+
+      <div id="orbit-focus-labels">
+        <div class="orbit-focus-label f1" id="orbit-focus-label-f1">f1</div>
+        <div class="orbit-focus-label f2" id="orbit-focus-label-f2">f2</div>
       </div>
     </div>
 

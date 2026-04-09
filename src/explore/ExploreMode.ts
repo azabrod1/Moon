@@ -111,6 +111,7 @@ export class ExploreMode {
   // Moon labels
   private moonLabels = new Map<string, HTMLDivElement>();
   private moonLabelContainer: HTMLDivElement | null = null;
+  private cancelResumePrompt: (() => void) | null = null;
 
   // Sun label
   private sunLabel: HTMLDivElement | null = null;
@@ -215,7 +216,8 @@ export class ExploreMode {
     this.timeInputEl = document.getElementById('explore-time-input') as HTMLInputElement;
 
     const savedState = this.saveManager.loadState();
-    const resumeChoicePromise = savedState ? this.showResumePrompt(savedState) : null;
+    const shouldPromptForResume = !this.solarSystem && !!savedState;
+    const resumeChoicePromise = shouldPromptForResume ? this.showResumePrompt(savedState) : null;
     reportActivationProgress(this.solarSystem ? CREATE_SOLAR_SYSTEM_TOTAL_UNITS : 0);
 
     // Create solar system if not yet created
@@ -224,9 +226,14 @@ export class ExploreMode {
         savedState?.astroTimeUtcMs
         ?? savedState?.simDate
         ?? this.timeState.currentUtcMs;
-      this.solarSystem = await createSolarSystem((progress) => {
-        reportActivationProgress(progress.completedUnits);
-      }, this.useBloom, this.layoutMode, new Date(initialWorldUtcMs));
+      try {
+        this.solarSystem = await createSolarSystem((progress) => {
+          reportActivationProgress(progress.completedUnits);
+        }, this.useBloom, this.layoutMode, new Date(initialWorldUtcMs));
+      } catch (error) {
+        this.cancelResumePrompt?.();
+        throw error;
+      }
 
       // Add everything to scene
       this.scene.add(this.solarSystem.sun);
@@ -294,7 +301,7 @@ export class ExploreMode {
       this.constellations.setVisible(this.showConstellations);
     }
 
-    if (savedState) {
+    if (savedState && shouldPromptForResume) {
       const shouldResume = await resumeChoicePromise!;
       if (shouldResume) {
         this.restoreState(savedState);
@@ -304,6 +311,8 @@ export class ExploreMode {
         this.pointTowardMercury();
         this.showIntroText();
       }
+    } else if (savedState) {
+      this.restoreState(savedState);
     } else {
       this.restoreState(createDefaultState());
       this.pointTowardMercury();
@@ -348,6 +357,8 @@ export class ExploreMode {
   }
 
   deactivate(): void {
+    this.cancelResumePrompt?.();
+
     // Exit landed mode cleanly before deactivation
     if (this.landedOn) {
       this.exitLandedMode();
@@ -1436,6 +1447,9 @@ export class ExploreMode {
         resumeBtn?.removeEventListener('pointerup', onResume);
         newBtn?.removeEventListener('click', onNew);
         newBtn?.removeEventListener('pointerup', onNew);
+        if (this.cancelResumePrompt === cancel) {
+          this.cancelResumePrompt = null;
+        }
       };
       const finish = (shouldResume: boolean) => {
         if (settled) return;
@@ -1443,9 +1457,16 @@ export class ExploreMode {
         cleanup();
         resolve(shouldResume);
       };
+      const cancel = () => {
+        if (settled) return;
+        settled = true;
+        cleanup();
+        resolve(false);
+      };
       const onResume = () => { finish(true); };
       const onNew = () => { finish(false); };
 
+      this.cancelResumePrompt = cancel;
       resumeBtn?.addEventListener('click', onResume);
       resumeBtn?.addEventListener('pointerup', onResume);
       newBtn?.addEventListener('click', onNew);

@@ -1518,21 +1518,62 @@ export class ExploreMode {
     if (dateEl) dateEl.textContent = milestone.dateLabel;
     if (descEl) descEl.textContent = milestone.description;
     if (noteEl) noteEl.textContent = milestone.note;
-    if (imageEl) {
-      imageEl.src = milestone.imageUrl;
-      imageEl.alt = milestone.imageAlt;
-    }
-    if (imageLinkEl) {
-      imageLinkEl.href = milestone.imageSourceUrl;
-      imageLinkEl.textContent = milestone.imageSourceLabel;
-    }
-    if (imageCaptionEl) imageCaptionEl.textContent = milestone.imageAlt;
-    if (imageCreditEl) imageCreditEl.textContent = milestone.imageCredit;
+    this.updateVoyagerImage(milestone, imageEl, imageLinkEl, imageCaptionEl, imageCreditEl);
 
     const prevBtn = document.getElementById('voyager-prev') as HTMLButtonElement | null;
     const nextBtn = document.getElementById('voyager-next') as HTMLButtonElement | null;
     if (prevBtn) prevBtn.disabled = nextIndex === 0;
     if (nextBtn) nextBtn.disabled = nextIndex === journey.milestones.length - 1;
+  }
+
+  private updateVoyagerImage(
+    milestone: VoyagerMilestone,
+    imageEl: HTMLImageElement | null,
+    imageLinkEl: HTMLAnchorElement | null,
+    imageCaptionEl: HTMLElement | null,
+    imageCreditEl: HTMLElement | null,
+  ) {
+    if (!imageEl) return;
+
+    const applyMeta = (
+      alt: string,
+      credit: string,
+      sourceLabel: string,
+      sourceUrl?: string,
+    ) => {
+      imageEl.alt = alt;
+      if (imageCaptionEl) imageCaptionEl.textContent = alt;
+      if (imageCreditEl) imageCreditEl.textContent = credit;
+      if (imageLinkEl) {
+        imageLinkEl.textContent = sourceLabel;
+        if (sourceUrl) {
+          imageLinkEl.href = sourceUrl;
+          imageLinkEl.style.display = '';
+        } else {
+          imageLinkEl.removeAttribute('href');
+          imageLinkEl.style.display = 'none';
+        }
+      }
+    };
+
+    imageEl.onerror = null;
+    applyMeta(
+      milestone.imageAlt,
+      milestone.imageCredit,
+      milestone.imageSourceLabel,
+      milestone.imageSourceUrl,
+    );
+    imageEl.onerror = () => {
+      imageEl.onerror = null;
+      imageEl.src = milestone.fallbackImageUrl;
+      applyMeta(
+        milestone.fallbackImageAlt,
+        milestone.fallbackImageCredit,
+        milestone.fallbackImageSourceLabel,
+        milestone.fallbackImageSourceUrl,
+      );
+    };
+    imageEl.src = milestone.imageUrl;
   }
 
   private applyVoyagerMilestone(milestone: VoyagerMilestone) {

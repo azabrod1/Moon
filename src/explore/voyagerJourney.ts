@@ -15,6 +15,11 @@ export type VoyagerMilestone = {
   imageCredit: string;
   imageSourceLabel: string;
   imageSourceUrl: string;
+  fallbackImageUrl: string;
+  fallbackImageAlt: string;
+  fallbackImageCredit: string;
+  fallbackImageSourceLabel: string;
+  fallbackImageSourceUrl?: string;
   customScenePosition?: { x: number; y: number; z: number };
   customLookTarget?: { x: number; y: number; z: number };
 };
@@ -26,6 +31,9 @@ export type VoyagerJourney = {
   milestones: VoyagerMilestone[];
 };
 
+const VOYAGER_BASE = `${import.meta.env.BASE_URL}historic/voyager/`;
+const TEXTURE_BASE = `${import.meta.env.BASE_URL}textures/`;
+
 const voyager1Milestones: VoyagerMilestone[] = [
   {
     id: 'launch',
@@ -36,11 +44,15 @@ const voyager1Milestones: VoyagerMilestone[] = [
     description: 'Voyager 1 lifted off from Cape Canaveral and began the fastest outward path ever attempted at the time.',
     note: 'This stop frames the mission near Earth so the story starts with a recognizable scale.',
     viewDistanceMultiplier: 1.35,
-    imageUrl: 'https://science.nasa.gov/wp-content/uploads/2024/04/pia21739.jpg',
+    imageUrl: `${VOYAGER_BASE}voyager1-launch.jpg`,
     imageAlt: 'Voyager 1 launch vehicle on the pad.',
     imageCredit: 'NASA',
     imageSourceLabel: 'Voyager 1’s Launch Vehicle',
     imageSourceUrl: 'https://science.nasa.gov/image-detail/pia21739/',
+    fallbackImageUrl: `${TEXTURE_BASE}earth-day.jpg`,
+    fallbackImageAlt: 'Earth from the simulator texture set.',
+    fallbackImageCredit: 'Simulator texture',
+    fallbackImageSourceLabel: 'Earth',
   },
   {
     id: 'jupiter',
@@ -51,11 +63,15 @@ const voyager1Milestones: VoyagerMilestone[] = [
     description: 'Voyager 1 transformed our view of Jupiter, revealing violent cloud dynamics, active volcanoes on Io, and the drama of the giant planet up close.',
     note: 'The gravity assist here bent the mission outward and accelerated the spacecraft toward Saturn.',
     viewDistanceMultiplier: 1.9,
-    imageUrl: 'https://d2pn8kiwq2w21t.cloudfront.net/original_images/jpegPIA01371.jpg',
+    imageUrl: `${VOYAGER_BASE}voyager-jupiter.jpg`,
     imageAlt: 'Voyager view of Jupiter with the Great Red Spot.',
     imageCredit: 'NASA/JPL',
     imageSourceLabel: 'Voyager picture of Jupiter',
     imageSourceUrl: 'https://www.jpl.nasa.gov/images/pia01371-voyager-picture-of-jupiter/',
+    fallbackImageUrl: `${TEXTURE_BASE}jupiter.jpg`,
+    fallbackImageAlt: 'Jupiter from the simulator texture set.',
+    fallbackImageCredit: 'Simulator texture',
+    fallbackImageSourceLabel: 'Jupiter',
   },
   {
     id: 'saturn',
@@ -66,11 +82,15 @@ const voyager1Milestones: VoyagerMilestone[] = [
     description: 'Voyager 1 skimmed past Saturn, delivered iconic ring and moon imagery, and then left the plane of the planets for the outer dark.',
     note: 'After Saturn, the mission no longer targeted another planet and became a long outward voyage.',
     viewDistanceMultiplier: 2.1,
-    imageUrl: 'https://www.nasa.gov/wp-content/uploads/2023/03/pia01969-saturn-voyager1.png',
+    imageUrl: `${VOYAGER_BASE}voyager1-saturn.png`,
     imageAlt: 'Voyager 1 image of Saturn and its rings.',
     imageCredit: 'NASA/JPL',
     imageSourceLabel: 'Voyager 1 Image of Saturn',
     imageSourceUrl: 'https://www.nasa.gov/image-article/voyager-1-image-of-saturn/',
+    fallbackImageUrl: `${TEXTURE_BASE}saturn.jpg`,
+    fallbackImageAlt: 'Saturn from the simulator texture set.',
+    fallbackImageCredit: 'Simulator texture',
+    fallbackImageSourceLabel: 'Saturn',
   },
   {
     id: 'interstellar',
@@ -80,11 +100,16 @@ const voyager1Milestones: VoyagerMilestone[] = [
     target: 'Interstellar',
     description: 'Voyager 1 crossed into interstellar space, where the Sun still influences the spacecraft but the local environment is no longer dominated by the solar wind.',
     note: 'This scene is intentionally not to the real 2012 distance, but it captures the feeling of the mission heading beyond the planets.',
-    imageUrl: 'https://assets.science.nasa.gov/content/dam/science/psd/photojournal/pia/pia04/pia04927/PIA04927.jpg/jcr:content/renditions/cq5dam.web.1280.1280.jpeg',
+    imageUrl: `${VOYAGER_BASE}voyager-interstellar.jpg`,
     imageAlt: 'Artist concept of Voyager heading toward the final frontier.',
     imageCredit: 'NASA/JPL-Caltech',
     imageSourceLabel: 'Voyager Approaches Final Frontier',
     imageSourceUrl: 'https://science.nasa.gov/photojournal/voyager-approaches-final-frontier-artists-concept/',
+    fallbackImageUrl: `${VOYAGER_BASE}voyager-interstellar.jpg`,
+    fallbackImageAlt: 'Artist concept of Voyager heading beyond the planets.',
+    fallbackImageCredit: 'NASA/JPL-Caltech',
+    fallbackImageSourceLabel: 'Voyager Approaches Final Frontier',
+    fallbackImageSourceUrl: 'https://science.nasa.gov/photojournal/voyager-approaches-final-frontier-artists-concept/',
     customScenePosition: { x: 118, y: 6, z: -18 },
     customLookTarget: { x: 0, y: 0, z: 0 },
   },
@@ -100,11 +125,15 @@ const voyager2Milestones: VoyagerMilestone[] = [
     description: 'Voyager 2 launched first, setting off on the grand tour that would ultimately include Jupiter, Saturn, Uranus, and Neptune.',
     note: 'Voyager 2 became the only spacecraft to visit the two ice giants up close.',
     viewDistanceMultiplier: 1.35,
-    imageUrl: 'https://assets.science.nasa.gov/content/dam/science/psd/photojournal/pia/pia21/pia21746/PIA21746.jpg/jcr:content/renditions/cq5dam.web.1280.1280.jpeg',
+    imageUrl: `${VOYAGER_BASE}voyager2-launch.jpg`,
     imageAlt: 'Voyager 2 spacecraft during prelaunch testing.',
     imageCredit: 'NASA/JPL',
     imageSourceLabel: 'Voyager 2 prelaunch view',
     imageSourceUrl: 'https://photojournal.jpl.nasa.gov/catalog/PIA21746',
+    fallbackImageUrl: `${TEXTURE_BASE}earth-day.jpg`,
+    fallbackImageAlt: 'Earth from the simulator texture set.',
+    fallbackImageCredit: 'Simulator texture',
+    fallbackImageSourceLabel: 'Earth',
   },
   {
     id: 'jupiter',
@@ -115,11 +144,15 @@ const voyager2Milestones: VoyagerMilestone[] = [
     description: 'Voyager 2 built on the first encounter by extending the survey of Jupiter’s atmosphere, moons, and magnetosphere from a new geometry.',
     note: 'Together, the two Voyager flybys turned Jupiter into a dynamic world instead of a distant disk.',
     viewDistanceMultiplier: 1.9,
-    imageUrl: 'https://science.nasa.gov/wp-content/uploads/2024/04/pia00459.jpg',
+    imageUrl: `${VOYAGER_BASE}voyager2-jupiter.jpg`,
     imageAlt: 'Voyager image of Jupiter with storms and cloud detail.',
     imageCredit: 'NASA/JPL',
     imageSourceLabel: 'Voyager at Jupiter',
     imageSourceUrl: 'https://science.nasa.gov/gallery/voyager-at-jupiter/',
+    fallbackImageUrl: `${TEXTURE_BASE}jupiter.jpg`,
+    fallbackImageAlt: 'Jupiter from the simulator texture set.',
+    fallbackImageCredit: 'Simulator texture',
+    fallbackImageSourceLabel: 'Jupiter',
   },
   {
     id: 'saturn',
@@ -130,11 +163,15 @@ const voyager2Milestones: VoyagerMilestone[] = [
     description: 'Voyager 2 refined the Saturn story and then made the critical bend that kept the grand tour alive toward Uranus.',
     note: 'Its Saturn flyby was planned differently from Voyager 1 so the mission could continue outward.',
     viewDistanceMultiplier: 2.1,
-    imageUrl: 'https://www.nasa.gov/wp-content/uploads/2023/03/pia01929-saturn-voyager2.jpg',
+    imageUrl: `${VOYAGER_BASE}voyager2-saturn.jpg`,
     imageAlt: 'Voyager 2 image of Saturn with rings in view.',
     imageCredit: 'NASA/JPL',
     imageSourceLabel: 'Voyager 2 view of Saturn',
     imageSourceUrl: 'https://www.nasa.gov/image-article/voyager-2-image-of-saturn/',
+    fallbackImageUrl: `${TEXTURE_BASE}saturn.jpg`,
+    fallbackImageAlt: 'Saturn from the simulator texture set.',
+    fallbackImageCredit: 'Simulator texture',
+    fallbackImageSourceLabel: 'Saturn',
   },
   {
     id: 'uranus',
@@ -145,11 +182,15 @@ const voyager2Milestones: VoyagerMilestone[] = [
     description: 'Voyager 2 revealed Uranus as a strangely calm-looking but deeply unusual world, rotating on its side with a tilted and offset magnetic field.',
     note: 'This remains humanity’s only close visit to Uranus.',
     viewDistanceMultiplier: 2.35,
-    imageUrl: 'https://www.nasa.gov/wp-content/uploads/2023/03/pia18182-uranus-voyager1.png',
+    imageUrl: `${VOYAGER_BASE}voyager2-uranus.png`,
     imageAlt: 'Voyager 2 era image of Uranus.',
     imageCredit: 'NASA/JPL',
     imageSourceLabel: 'Voyager 2 Image of Uranus',
     imageSourceUrl: 'https://www.nasa.gov/image-article/voyager-2-image-of-uranus/',
+    fallbackImageUrl: `${TEXTURE_BASE}uranus.jpg`,
+    fallbackImageAlt: 'Uranus from the simulator texture set.',
+    fallbackImageCredit: 'Simulator texture',
+    fallbackImageSourceLabel: 'Uranus',
   },
   {
     id: 'neptune',
@@ -160,11 +201,15 @@ const voyager2Milestones: VoyagerMilestone[] = [
     description: 'Voyager 2 completed the planetary grand tour at Neptune, showing a deep blue world with fierce winds, bright methane clouds, and a restless atmosphere.',
     note: 'This was the final planetary encounter of the entire Voyager program.',
     viewDistanceMultiplier: 2.45,
-    imageUrl: 'https://www.nasa.gov/wp-content/uploads/2023/03/neptune1.png',
+    imageUrl: `${VOYAGER_BASE}voyager2-neptune.png`,
     imageAlt: 'Voyager 2 image of Neptune.',
     imageCredit: 'NASA/JPL',
     imageSourceLabel: 'Voyager 2 Image of Neptune',
     imageSourceUrl: 'https://www.nasa.gov/image-article/voyager-2-image-of-neptune/',
+    fallbackImageUrl: `${TEXTURE_BASE}neptune.jpg`,
+    fallbackImageAlt: 'Neptune from the simulator texture set.',
+    fallbackImageCredit: 'Simulator texture',
+    fallbackImageSourceLabel: 'Neptune',
   },
   {
     id: 'interstellar',
@@ -174,11 +219,16 @@ const voyager2Milestones: VoyagerMilestone[] = [
     target: 'Interstellar',
     description: 'Voyager 2 later crossed into interstellar space as well, carrying the long arc of the grand tour into the region beyond the heliosphere.',
     note: 'Voyager 2 followed a different outward direction than Voyager 1, but reached the same profound frontier.',
-    imageUrl: 'https://assets.science.nasa.gov/content/dam/science/psd/photojournal/pia/pia04/pia04927/PIA04927.jpg/jcr:content/renditions/cq5dam.web.1280.1280.jpeg',
+    imageUrl: `${VOYAGER_BASE}voyager-interstellar.jpg`,
     imageAlt: 'Artist concept of Voyager heading beyond the planets.',
     imageCredit: 'NASA/JPL-Caltech',
     imageSourceLabel: 'Voyager Approaches Final Frontier',
     imageSourceUrl: 'https://science.nasa.gov/photojournal/voyager-approaches-final-frontier-artists-concept/',
+    fallbackImageUrl: `${VOYAGER_BASE}voyager-interstellar.jpg`,
+    fallbackImageAlt: 'Artist concept of Voyager heading beyond the planets.',
+    fallbackImageCredit: 'NASA/JPL-Caltech',
+    fallbackImageSourceLabel: 'Voyager Approaches Final Frontier',
+    fallbackImageSourceUrl: 'https://science.nasa.gov/photojournal/voyager-approaches-final-frontier-artists-concept/',
     customScenePosition: { x: 104, y: -8, z: 24 },
     customLookTarget: { x: 0, y: 0, z: 0 },
   },

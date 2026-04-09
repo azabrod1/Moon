@@ -3,14 +3,50 @@ import { SCENE } from '../utils/constants';
 import {
   sunCoronaVertexShader,
   sunCoronaFragmentShader,
-  sunGlowVertexShader,
-  sunGlowFragmentShader,
 } from '../shaders/sun';
+
+function createRadialGlowTexture(stops: Array<{ stop: number; color: string }>, size = 256): THREE.Texture {
+  const canvas = document.createElement('canvas');
+  canvas.width = size;
+  canvas.height = size;
+  const ctx = canvas.getContext('2d')!;
+  const center = size / 2;
+
+  const gradient = ctx.createRadialGradient(center, center, 0, center, center, center);
+  for (const { stop, color } of stops) {
+    gradient.addColorStop(stop, color);
+  }
+
+  ctx.clearRect(0, 0, size, size);
+  ctx.fillStyle = gradient;
+  ctx.fillRect(0, 0, size, size);
+
+  const texture = new THREE.CanvasTexture(canvas);
+  texture.colorSpace = THREE.SRGBColorSpace;
+  return texture;
+}
+
+function createSunGlowSprite(radius: number, scale: number, texture: THREE.Texture, opacity: number): THREE.Sprite {
+  const material = new THREE.SpriteMaterial({
+    map: texture,
+    transparent: true,
+    opacity,
+    depthWrite: false,
+    depthTest: true,
+    blending: THREE.AdditiveBlending,
+  });
+
+  const sprite = new THREE.Sprite(material);
+  sprite.scale.setScalar(radius * scale * 2);
+  sprite.renderOrder = 8;
+  return sprite;
+}
 
 export class Sun {
   group: THREE.Group;
   mesh: THREE.Mesh;
-  glowMesh: THREE.Mesh;
+  glowMesh: THREE.Sprite;
+  haloMesh: THREE.Sprite;
   light: THREE.DirectionalLight;
   coronaMaterial: THREE.ShaderMaterial;
 
@@ -30,36 +66,35 @@ export class Sun {
     this.mesh = new THREE.Mesh(sunGeo, this.coronaMaterial);
     this.group.add(this.mesh);
 
-    // Use a broader, softer corona so eclipses read as a diffuse halo instead of an annulus.
-    const glowScale = useBloom ? 2.4 : 3.4;
-    const glowAlpha = useBloom ? 0.22 : 0.35;
-    const glowGeo = new THREE.SphereGeometry(SCENE.SUN_RADIUS * glowScale, 64, 32);
-    const glowMat = new THREE.ShaderMaterial({
-      vertexShader: sunGlowVertexShader,
-      fragmentShader: sunGlowFragmentShader,
-      transparent: true,
-      side: THREE.BackSide,
-      depthWrite: false,
-      blending: THREE.AdditiveBlending,
-      uniforms: { alphaScale: { value: glowAlpha } },
-    });
-    this.glowMesh = new THREE.Mesh(glowGeo, glowMat);
-    this.group.add(this.glowMesh);
+    // Use billboarded radial glows so the Sun always stays circular on screen.
+    const innerGlowTexture = createRadialGlowTexture([
+      { stop: 0.0, color: 'rgba(255,255,245,1.0)' },
+      { stop: 0.18, color: 'rgba(255,244,220,0.95)' },
+      { stop: 0.42, color: 'rgba(255,188,92,0.45)' },
+      { stop: 0.72, color: 'rgba(255,120,26,0.12)' },
+      { stop: 1.0, color: 'rgba(255,120,26,0.0)' },
+    ]);
+    const outerGlowTexture = createRadialGlowTexture([
+      { stop: 0.0, color: 'rgba(255,235,190,0.24)' },
+      { stop: 0.35, color: 'rgba(255,190,96,0.12)' },
+      { stop: 0.7, color: 'rgba(255,130,36,0.04)' },
+      { stop: 1.0, color: 'rgba(255,130,36,0.0)' },
+    ]);
 
-    // Extra soft outer halo when bloom is off (fake bloom)
-    if (!useBloom) {
-      const haloGeo = new THREE.SphereGeometry(SCENE.SUN_RADIUS * 5.0, 32, 16);
-      const haloMat = new THREE.ShaderMaterial({
-        vertexShader: sunGlowVertexShader,
-        fragmentShader: sunGlowFragmentShader,
-        transparent: true,
-        side: THREE.BackSide,
-        depthWrite: false,
-        blending: THREE.AdditiveBlending,
-        uniforms: { alphaScale: { value: 0.15 } },
-      });
-      this.group.add(new THREE.Mesh(haloGeo, haloMat));
-    }
+    this.glowMesh = createSunGlowSprite(
+      SCENE.SUN_RADIUS,
+      useBloom ? 4.6 : 5.4,
+      innerGlowTexture,
+      1.0,
+    );
+    this.haloMesh = createSunGlowSprite(
+      SCENE.SUN_RADIUS,
+      useBloom ? 7.5 : 9.0,
+      outerGlowTexture,
+      useBloom ? 0.5 : 0.58,
+    );
+    this.group.add(this.haloMesh);
+    this.group.add(this.glowMesh);
 
     // Directional light toward Earth (origin)
     this.light = new THREE.DirectionalLight(0xfff5e0, 3.0);
@@ -104,5 +139,11 @@ export class Sun {
 
   update(dt: number) {
     this.coronaMaterial.uniforms.time.value += dt;
+  }
+
+  setVisualScale(scale: number) {
+    this.mesh.scale.setScalar(scale);
+    this.glowMesh.scale.setScalar(scale);
+    this.haloMesh.scale.setScalar(scale);
   }
 }

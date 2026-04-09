@@ -5,6 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
+    "gen:stars": "node gen-stars.mjs",
     "build": "tsc && vite build",
     "preview": "vite preview"
   },

@@ -14,9 +14,12 @@ export const REAL = {
 };
 
 // === Scene scale: 1 unit = Earth radius ===
+const BODY_VISUAL_SCALE = 1;
+
 export const SCENE = {
-  EARTH_RADIUS: 1,
-  MOON_RADIUS: REAL.MOON_RADIUS / REAL.EARTH_RADIUS,     // ~0.2727
+  // Keep body sizes proportional by default. Optional readability scaling is applied at runtime.
+  EARTH_RADIUS: BODY_VISUAL_SCALE,
+  MOON_RADIUS: (REAL.MOON_RADIUS / REAL.EARTH_RADIUS) * BODY_VISUAL_SCALE,
   // Keep the Moon orbit proportional to reality and size the artistic Sun so its
   // apparent diameter remains close to the real value at the simulator's Sun distance.
   SUN_RADIUS: 120 * Math.tan((REAL.SUN_ANGULAR_SIZE_DEG * Math.PI) / 360),

@@ -25,6 +25,7 @@ export interface ExploreState {
   astroTimePaused?: boolean;
   planetScale: number;       // visual scale multiplier for planets
   showShip: boolean;         // show player ship mesh
+  showConstellations?: boolean; // show constellation lines overlay
   landedOn?: LandedTarget;   // planet/moon the player is currently landed on
 }
 
@@ -88,6 +89,7 @@ function sanitizeExploreState(raw: unknown): ExploreState | null {
       ? Math.min(128, Math.max(1, Math.round(record.planetScale)))
       : defaults.planetScale,
     showShip: typeof record.showShip === 'boolean' ? record.showShip : defaults.showShip,
+    showConstellations: typeof record.showConstellations === 'boolean' ? record.showConstellations : defaults.showConstellations,
     landedOn: sanitizeLandedOn(record.landedOn),
   };
 }
@@ -110,6 +112,7 @@ export function createDefaultState(): ExploreState {
     astroTimePaused: false,
     planetScale: 32,
     showShip: true,
+    showConstellations: false,
     landedOn: null,
   };
 }

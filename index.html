@@ -664,6 +664,31 @@
       transition: background 0.12s;
     }
     .menu-action:hover { background: var(--accent-dim); }
+    .menu-submenu {
+      display: none;
+      margin: 2px 0 4px;
+      padding-left: 10px;
+    }
+    .menu-submenu.visible { display: block; }
+    .menu-action-parent {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+    }
+    .menu-action-chevron {
+      color: var(--text-dim);
+      font-size: 10px;
+      transition: transform 0.15s ease;
+    }
+    .menu-action-parent.expanded .menu-action-chevron {
+      transform: rotate(90deg);
+    }
+    .menu-action-subitem {
+      font-size: 11px;
+      color: var(--text-secondary);
+      padding-left: 12px;
+    }
     .menu-divider {
       height: 1px;
       background: var(--panel-border);
@@ -794,6 +819,141 @@
       white-space: nowrap;
     }
     #explore-notification.visible { opacity: 1; transform: translateX(-50%) translateY(0); }
+
+    #voyager-panel {
+      display: none;
+      position: absolute;
+      top: 88px;
+      left: 12px;
+      max-width: 310px;
+      background: rgba(5, 9, 22, 0.84);
+      backdrop-filter: blur(12px);
+      border: 1px solid rgba(96, 132, 215, 0.2);
+      border-radius: 10px;
+      padding: 12px;
+      color: var(--text-secondary);
+      pointer-events: auto;
+      z-index: 24;
+      box-shadow: 0 12px 32px rgba(0, 0, 0, 0.25);
+    }
+    #voyager-panel.visible { display: block; }
+    .voyager-header {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 10px;
+      margin-bottom: 8px;
+    }
+    .voyager-kicker {
+      display: block;
+      font-size: 9px;
+      letter-spacing: 1.2px;
+      text-transform: uppercase;
+      color: var(--text-dim);
+      margin-bottom: 4px;
+    }
+    .voyager-step {
+      font-size: 10px;
+      color: var(--text-dim);
+      font-variant-numeric: tabular-nums;
+    }
+    .voyager-close {
+      border: none;
+      background: transparent;
+      color: var(--text-dim);
+      font-size: 18px;
+      line-height: 1;
+      cursor: pointer;
+      padding: 0;
+    }
+    .voyager-title {
+      font-size: 17px;
+      color: var(--text-primary);
+      font-weight: 500;
+      margin: 0;
+    }
+    .voyager-date {
+      margin-top: 4px;
+      font-size: 11px;
+      color: #a8c4ff;
+      font-variant-numeric: tabular-nums;
+    }
+    .voyager-description {
+      margin-top: 10px;
+      font-size: 12px;
+      line-height: 1.55;
+      color: var(--text-secondary);
+    }
+    .voyager-image-wrap {
+      margin-top: 12px;
+      border-radius: 8px;
+      overflow: hidden;
+      border: 1px solid rgba(96, 132, 215, 0.15);
+      background: rgba(255, 255, 255, 0.02);
+    }
+    .voyager-image-wrap img {
+      display: block;
+      width: 100%;
+      aspect-ratio: 16 / 10;
+      object-fit: cover;
+      background: rgba(255, 255, 255, 0.03);
+    }
+    .voyager-image-meta {
+      padding: 8px 10px;
+      border-top: 1px solid rgba(96, 132, 215, 0.1);
+    }
+    .voyager-image-caption {
+      font-size: 10px;
+      line-height: 1.45;
+      color: var(--text-secondary);
+    }
+    .voyager-image-credit {
+      margin-top: 6px;
+      font-size: 9px;
+      color: var(--text-dim);
+    }
+    .voyager-image-source {
+      display: inline-block;
+      margin-top: 6px;
+      font-size: 9px;
+      color: #a8c4ff;
+      text-decoration: none;
+    }
+    .voyager-image-source:hover {
+      color: #d2e1ff;
+    }
+    .voyager-note {
+      margin-top: 10px;
+      padding-top: 10px;
+      border-top: 1px solid rgba(96, 132, 215, 0.14);
+      font-size: 10px;
+      line-height: 1.45;
+      color: var(--text-dim);
+    }
+    .voyager-actions {
+      display: flex;
+      gap: 6px;
+      margin-top: 12px;
+    }
+    .voyager-btn {
+      border: 1px solid var(--panel-border);
+      border-radius: 6px;
+      background: rgba(91, 140, 255, 0.05);
+      color: var(--text-secondary);
+      padding: 6px 10px;
+      font-size: 10px;
+      font-family: var(--font);
+      cursor: pointer;
+      transition: all 0.15s;
+    }
+    .voyager-btn:hover:not(:disabled) {
+      background: var(--accent-dim);
+      color: var(--text-primary);
+    }
+    .voyager-btn:disabled {
+      opacity: 0.35;
+      cursor: default;
+    }
 
     /* Planet labels */
     .planet-label {
@@ -1451,6 +1611,14 @@
       <div id="explore-menu-panel">
         <button class="menu-action" id="explore-btn-save">Save</button>
         <button class="menu-action" id="explore-btn-new">New Journey</button>
+        <button class="menu-action menu-action-parent" id="explore-btn-historic">
+          <span>Historic Journeys</span>
+          <span class="menu-action-chevron">&#9654;</span>
+        </button>
+        <div class="menu-submenu" id="explore-historic-submenu">
+          <button class="menu-action menu-action-subitem" id="explore-btn-voyager-1">Voyager 1</button>
+          <button class="menu-action menu-action-subitem" id="explore-btn-voyager-2">Voyager 2</button>
+        </div>
         <div class="menu-divider"></div>
         <div class="settings-row">
           <span class="settings-label is-mixed">Planet size <span style="opacity:0.5;font-size:0.85em">(× real)</span></span>
@@ -1493,6 +1661,32 @@
           <span class="travel-action-name" id="travel-action-name"></span>
           <button class="travel-action-btn" id="travel-action-land">Land &amp; Orbit</button>
           <button class="travel-action-btn travel-action-btn-dim" id="travel-action-jump">Jump Nearby</button>
+        </div>
+      </div>
+
+      <div id="voyager-panel">
+        <div class="voyager-header">
+          <div>
+            <span class="voyager-kicker" id="voyager-kicker">Voyager 1 Journey</span>
+            <div class="voyager-step" id="voyager-step">1 / 4</div>
+          </div>
+          <button class="voyager-close" id="voyager-close" aria-label="Close Voyager journey">&times;</button>
+        </div>
+        <h3 class="voyager-title" id="voyager-title">Launch From Earth</h3>
+        <div class="voyager-date" id="voyager-date">September 5, 1977</div>
+        <div class="voyager-description" id="voyager-description"></div>
+        <div class="voyager-image-wrap">
+          <img id="voyager-image" alt="" />
+          <div class="voyager-image-meta">
+            <div class="voyager-image-caption" id="voyager-image-caption"></div>
+            <div class="voyager-image-credit" id="voyager-image-credit"></div>
+            <a class="voyager-image-source" id="voyager-image-link" href="#" target="_blank" rel="noreferrer">Source</a>
+          </div>
+        </div>
+        <div class="voyager-note" id="voyager-note"></div>
+        <div class="voyager-actions">
+          <button class="voyager-btn" id="voyager-prev">Previous</button>
+          <button class="voyager-btn" id="voyager-next">Next</button>
         </div>
       </div>
 

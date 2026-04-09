@@ -85,8 +85,6 @@ try {
   debugError('Failed to create WebGL renderer', err);
   throw err;
 }
-renderer.setSize(window.innerWidth, window.innerHeight);
-renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
 renderer.toneMapping = THREE.ACESFilmicToneMapping;
 renderer.toneMappingExposure = 1.0;
 renderer.shadowMap.enabled = true;
@@ -178,11 +176,29 @@ debugLog('Post-processing config', { useBloom });
 
 let composer: EffectComposer | null = null;
 
+function getTargetPixelRatio(mode: AppMode): number {
+  if (isMobile) return Math.min(window.devicePixelRatio, 2);
+  if (mode === 'explore') return Math.min(Math.max(window.devicePixelRatio, 1.5), 2.5);
+  return Math.min(window.devicePixelRatio, 2);
+}
+
+function applyRenderResolution(mode: AppMode) {
+  const pixelRatio = getTargetPixelRatio(mode);
+  renderer.setPixelRatio(pixelRatio);
+  renderer.setSize(window.innerWidth, window.innerHeight);
+  if (composer) {
+    composer.setPixelRatio(pixelRatio);
+    composer.setSize(window.innerWidth, window.innerHeight);
+  }
+}
+
 function buildComposer(cam: THREE.Camera) {
   if (composer) composer.dispose();
   if (!useBloom) { composer = null; return; }
 
   composer = new EffectComposer(renderer);
+  composer.setPixelRatio(getTargetPixelRatio(appMode));
+  composer.setSize(window.innerWidth, window.innerHeight);
   composer.addPass(new RenderPass(scene, cam));
   const bloom = new UnrealBloomPass(
     new THREE.Vector2(window.innerWidth, window.innerHeight),
@@ -194,6 +210,7 @@ function buildComposer(cam: THREE.Camera) {
   composer.addPass(new OutputPass());
 }
 
+applyRenderResolution(appMode);
 buildComposer(simCamera);
 
 function renderScene(cam: THREE.Camera) {
@@ -769,6 +786,7 @@ async function switchAppMode(newMode: AppMode) {
       const toggle = document.getElementById('btn-toggle-panel');
       if (toggle) toggle.style.display = '';
       camera = simCamera;
+      applyRenderResolution('simulator');
       rebuildComposer(simCamera);
     }
     return;
@@ -802,6 +820,7 @@ async function switchAppMode(newMode: AppMode) {
 
       // Switch camera
       camera = exploreCamera;
+      applyRenderResolution('explore');
       rebuildComposer(exploreCamera);
 
       // Initialize explore mode
@@ -850,6 +869,7 @@ async function switchAppMode(newMode: AppMode) {
 
       // Switch camera
       camera = simCamera;
+      applyRenderResolution('simulator');
       rebuildComposer(simCamera);
       debugLog('Simulator mode active');
     }
@@ -1071,8 +1091,7 @@ window.addEventListener('resize', () => {
   simCamera.updateProjectionMatrix();
   exploreCamera.aspect = w / h;
   exploreCamera.updateProjectionMatrix();
-  renderer.setSize(w, h);
-  if (composer) composer.setSize(w, h);
+  applyRenderResolution(appMode);
   debugLog('Resize', { width: w, height: h });
 });
 

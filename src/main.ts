@@ -21,7 +21,7 @@ import { orientOrbitPlane } from './utils/orbitPlane';
 import { Earth } from './bodies/Earth';
 import { Moon } from './bodies/Moon';
 import { Sun } from './bodies/Sun';
-import { ExploreMode } from './explore/ExploreMode';
+import { ExploreMode, FIRST_EXPLORE_ACTIVATION_TOTAL_UNITS } from './explore/ExploreMode';
 import { OrbitDetailsOverlay } from './simulator/OrbitDetailsOverlay';
 import { debugError, debugLog, debugWarn } from './utils/debug';
 import { formatScaleMultiplier } from './utils/formatting';
@@ -35,6 +35,9 @@ let exploreMode: ExploreMode | null = null;
 let simMoonRef: Moon | null = null;
 let simSunRef: Sun | null = null;
 let modeSwitchInFlight = false;
+const BASE_PLANETS_BOOT_TEXTURE_UNITS = 5;
+const INITIAL_PLANETS_BOOT_TOTAL_UNITS =
+  BASE_PLANETS_BOOT_TEXTURE_UNITS + FIRST_EXPLORE_ACTIVATION_TOTAL_UNITS;
 
 // ================================================================
 // Simulator State
@@ -735,6 +738,21 @@ const btnModeExplore = document.getElementById('btn-mode-explore')!;
 // Simulator scene objects (hidden during explore)
 const simObjects: THREE.Object3D[] = [];
 
+function isLoadingScreenVisible(): boolean {
+  const loadingScreen = document.getElementById('loading-screen');
+  return !!loadingScreen && !loadingScreen.classList.contains('hidden');
+}
+
+function setPlanetsLoadingPercent(completedUnits: number, totalUnits: number) {
+  const clampedTotalUnits = Math.max(totalUnits, 1);
+  const clampedCompletedUnits = Math.min(Math.max(completedUnits, 0), clampedTotalUnits);
+  const pct = Math.round((clampedCompletedUnits / clampedTotalUnits) * 100);
+  const text = `Loading Planets... ${pct}%`;
+  const loadEl = document.getElementById('loading-msg');
+  if (loadEl) loadEl.textContent = text;
+  transitionMsg.textContent = text;
+}
+
 async function switchAppMode(newMode: AppMode) {
   btnModeSimulator.classList.toggle('active', newMode === 'simulator');
   btnModeExplore.classList.toggle('active', newMode === 'explore');
@@ -792,7 +810,20 @@ async function switchAppMode(newMode: AppMode) {
         exploreMode = new ExploreMode(scene, exploreCamera, renderer, useBloom);
       }
       debugLog('Activating explore mode');
-      await exploreMode.activate();
+      if (!exploreMode.hasLoadedSolarSystem()) {
+        const totalUnits = isLoadingScreenVisible()
+          ? INITIAL_PLANETS_BOOT_TOTAL_UNITS
+          : FIRST_EXPLORE_ACTIVATION_TOTAL_UNITS;
+        const baseOffset = totalUnits === INITIAL_PLANETS_BOOT_TOTAL_UNITS
+          ? BASE_PLANETS_BOOT_TEXTURE_UNITS
+          : 0;
+        setPlanetsLoadingPercent(baseOffset, totalUnits);
+        await exploreMode.activate((progress) => {
+          setPlanetsLoadingPercent(baseOffset + progress.completedUnits, totalUnits);
+        });
+      } else {
+        await exploreMode.activate();
+      }
       debugLog('Explore mode active');
 
     } else {
@@ -860,12 +891,22 @@ function getAutoMode(): AppMode | null {
 async function init() {
   (window as any).__initStarted = true;
   debugLog('Init started');
+  const autoMode = getAutoMode();
+  const initialMode = autoMode ?? 'explore';
+  const showInitialPlanetsBootProgress = initialMode === 'explore';
 
   const textures = await loadAllTextures((loaded, total) => {
+    if (showInitialPlanetsBootProgress) {
+      setPlanetsLoadingPercent(Math.min(loaded, BASE_PLANETS_BOOT_TEXTURE_UNITS), INITIAL_PLANETS_BOOT_TOTAL_UNITS);
+      return;
+    }
     const pct = Math.round((loaded / total) * 100);
     const loadEl = document.getElementById('loading-msg');
     if (loadEl) loadEl.textContent = `Loading textures... ${pct}%`;
   });
+  if (showInitialPlanetsBootProgress) {
+    setPlanetsLoadingPercent(BASE_PLANETS_BOOT_TEXTURE_UNITS, INITIAL_PLANETS_BOOT_TOTAL_UNITS);
+  }
   debugLog('Base textures loaded', Object.keys(textures));
 
   const earth = new Earth(textures);
@@ -965,8 +1006,6 @@ async function init() {
   animate();
   debugLog('Animation loop started');
 
-  const autoMode = getAutoMode();
-  const initialMode = autoMode ?? 'explore';
   debugLog('Initial mode selected', { initialMode });
   if (autoMode) {
     debugLog('Auto mode requested', { autoMode });

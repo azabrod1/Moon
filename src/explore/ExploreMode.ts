@@ -505,6 +505,21 @@ export class ExploreMode {
     this.camera.position.lerp(idealPos, lerpSpeed);
   }
 
+  private getMoonAngleRad(moon: MoonMesh['data']): number {
+    const moonTimeSeconds = this.timeState.currentUtcMs / 1000;
+    const orbitalAngle = (moonTimeSeconds / (moon.orbitalPeriodDays * 86400)) * Math.PI * 2;
+    return orbitalAngle + THREE.MathUtils.degToRad(moon.orbitalPhaseDeg);
+  }
+
+  private getMoonSystemThresholdAU(planetRadiusAU: number, moons: MoonMesh[]): number {
+    let farthestOrbitAU = 0;
+    for (const moon of moons) {
+      farthestOrbitAU = Math.max(farthestOrbitAU, moon.data.orbitalRadiusAU);
+    }
+
+    return Math.max(planetRadiusAU * 120, farthestOrbitAU * 1.15, 0.3);
+  }
+
   private getLandedBodyWorldPosition(): { x: number; y: number; z: number } | null {
     if (!this.landedOn) return null;
     if (this.landedOn.type === 'planet') {
@@ -517,8 +532,7 @@ export class ExploreMode {
     if (!moons) return null;
     const moonMesh = moons.find(m => m.data.name === this.landedOn!.name);
     if (!moonMesh) return null;
-    const moonTimeSeconds = this.timeState.currentUtcMs / 1000;
-    const angle = (moonTimeSeconds / (moonMesh.data.orbitalPeriodDays * 86400)) * Math.PI * 2;
+    const angle = this.getMoonAngleRad(moonMesh.data);
     const r = moonMesh.data.orbitalRadiusAU;
     return {
       x: parentPos.x + r * Math.cos(angle),
@@ -579,7 +593,6 @@ export class ExploreMode {
 
   private updateMoonPositions() {
     if (!this.solarSystem) return;
-    const moonTimeSeconds = this.timeState.currentUtcMs / 1000;
     for (const planet of this.solarSystem.planets) {
       const moons = this.planetMoons.get(planet.data.name);
       if (!moons || moons.length === 0) continue;
@@ -590,7 +603,7 @@ export class ExploreMode {
       const dz = this.player.posZ - wp.z;
       const distToPlayer = Math.sqrt(dx * dx + dy * dy + dz * dz);
 
-      const threshold = Math.max(planet.data.radiusAU * 120, 0.3);
+      const threshold = this.getMoonSystemThresholdAU(planet.data.radiusAU, moons);
       const visible = distToPlayer < threshold;
       const parentR = planet.data.radiusAU;
 
@@ -603,7 +616,7 @@ export class ExploreMode {
         const label = this.moonLabels.get(m.data.name);
         m.mesh.visible = visible;
         if (visible) {
-          const angle = (moonTimeSeconds / (m.data.orbitalPeriodDays * 86400)) * Math.PI * 2;
+          const angle = this.getMoonAngleRad(m.data);
           const r = m.data.orbitalRadiusAU;
           m.mesh.position.set(r * Math.cos(angle), 0, r * Math.sin(angle));
 
@@ -824,7 +837,7 @@ export class ExploreMode {
       // Check moons of nearby planets
       const moons = this.planetMoons.get(planet.data.name);
       if (!moons) continue;
-      const moonThreshold = Math.max(planet.data.radiusAU * 120, 0.3);
+      const moonThreshold = this.getMoonSystemThresholdAU(planet.data.radiusAU, moons);
       if (dist > moonThreshold) continue;
       for (const m of moons) {
         const moonWorldPos = m.mesh.getWorldPosition(new THREE.Vector3());

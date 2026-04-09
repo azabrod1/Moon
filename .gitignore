@@ -2,3 +2,12 @@ node_modules/
 dist/
 .vite/
 *.local
+.claude/
+.chrome-*/
+.edge-headless-profile/
+browser-*.png
+explore-*.png
+orbit-details-browser-check.png
+preview-*.log
+vite-*.log
+http-test*.log

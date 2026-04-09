@@ -288,7 +288,15 @@ export async function createPlanetMesh(planet: PlanetData): Promise<PlanetMesh> 
   const group = new THREE.Group();
   group.name = planet.name;
 
-  const texture = await loadTexture(planet.textureKey);
+  const surfaceTexturePromise = loadTexture(planet.textureKey);
+  const earthDetailTexturePromise = planet.name === 'Earth'
+    ? Promise.all([
+        loadTexture('earthNight'),
+        loadTexture('earthClouds'),
+        loadTexture('earthBump'),
+      ])
+    : null;
+  const texture = await surfaceTexturePromise;
 
   // High segment counts for quality
   const segments = planet.radiusKm > 50000 ? 128 : planet.radiusKm > 5000 ? 96 : 64;
@@ -320,9 +328,10 @@ export async function createPlanetMesh(planet: PlanetData): Promise<PlanetMesh> 
   let nightMesh: THREE.Mesh | undefined;
   let cloudsMesh: THREE.Mesh | undefined;
 
-  if (planet.name === 'Earth') {
+  if (planet.name === 'Earth' && earthDetailTexturePromise) {
+    const [nightTex, cloudTex, bumpTex] = await earthDetailTexturePromise;
+
     // Night lights layer
-    const nightTex = await loadTexture('earthNight');
     const nightGeo = new THREE.SphereGeometry(planet.radiusAU * 1.001, segments, segments / 2);
     nightMaterial = new THREE.ShaderMaterial({
       uniforms: {
@@ -339,7 +348,6 @@ export async function createPlanetMesh(planet: PlanetData): Promise<PlanetMesh> 
     group.add(nightMesh);
 
     // Cloud layer
-    const cloudTex = await loadTexture('earthClouds');
     const cloudGeo = new THREE.SphereGeometry(planet.radiusAU * 1.01, segments, segments / 2);
     const cloudMat = new THREE.MeshStandardMaterial({
       map: cloudTex,
@@ -352,7 +360,6 @@ export async function createPlanetMesh(planet: PlanetData): Promise<PlanetMesh> 
     group.add(cloudsMesh);
 
     // Use bump map too
-    const bumpTex = await loadTexture('earthBump');
     (mesh.material as THREE.MeshStandardMaterial).bumpMap = bumpTex;
     (mesh.material as THREE.MeshStandardMaterial).bumpScale = planet.radiusAU * 0.02;
   }

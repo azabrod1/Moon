@@ -4,6 +4,12 @@ import { createPlanetMesh, createExploreSun, type PlanetMesh } from './PlanetFac
 import { computePlanetPositionEquatorial, sampleOrbitLinePoints, utcMsToJD } from './astronomy';
 
 export type LayoutMode = 'aligned' | 'realistic';
+export const CREATE_SOLAR_SYSTEM_TOTAL_UNITS = 1 + ALL_BODIES.length + ALL_BODIES.length + 1;
+
+export interface SolarSystemLoadProgress {
+  completedUnits: number;
+  totalUnits: number;
+}
 
 export interface SolarSystemObjects {
   sun: THREE.Group;
@@ -82,28 +88,31 @@ function createAsteroidBelt(): THREE.Points {
 }
 
 export async function createSolarSystem(
-  onProgress?: (msg: string) => void,
+  onProgress?: (progress: SolarSystemLoadProgress) => void,
   useBloom = true,
   layoutMode: LayoutMode = 'realistic',
   date?: Date,
 ): Promise<SolarSystemObjects> {
-  onProgress?.('Creating the Sun...');
+  const totalUnits = CREATE_SOLAR_SYSTEM_TOTAL_UNITS;
+  let completedUnits = 0;
+  const reportProgress = () => onProgress?.({ completedUnits, totalUnits });
+
+  reportProgress();
   const sun = createExploreSun(useBloom);
   const sunLight = sun.children.find(child => child instanceof THREE.PointLight) as THREE.PointLight;
   const ambientLight = new THREE.AmbientLight(0x334466, 0.4);
+  completedUnits += 1;
+  reportProgress();
 
-  onProgress?.('Creating planets...');
-  let planetsLoaded = 0;
   const planets = await Promise.all(ALL_BODIES.map(async (body, index) => {
     const planetMesh = await createPlanetMesh(body);
     const position = getPlanetOrbitalPosition(body, index + 1, layoutMode, date);
     planetMesh.group.position.set(position.x, position.y, position.z);
-    planetsLoaded += 1;
-    onProgress?.(`Loaded planets... ${planetsLoaded}/${ALL_BODIES.length}`);
+    completedUnits += 1;
+    reportProgress();
     return planetMesh;
   }));
 
-  onProgress?.('Drawing orbits...');
   const orbitLines: THREE.Line[] = [];
   for (let i = 0; i < ALL_BODIES.length; i++) {
     const body = ALL_BODIES[i];
@@ -123,10 +132,13 @@ export async function createSolarSystem(
     const line = createOrbitLine(orbitPoints, body.color, 0.2);
     line.name = `orbit-${body.name}`;
     orbitLines.push(line);
+    completedUnits += 1;
+    reportProgress();
   }
 
-  onProgress?.('Generating asteroid belt...');
   const asteroidBelt = createAsteroidBelt();
+  completedUnits += 1;
+  reportProgress();
 
   return {
     sun,

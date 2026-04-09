@@ -173,8 +173,12 @@ export class SaveManager {
       }
     }, AUTO_SAVE_INTERVAL);
 
-    // Also save on page unload
+    // Persist immediately so resume works even before the first autosave tick.
+    this.saveState(getState());
+
+    // Also save on page unload/hide for better reliability across browsers.
     window.addEventListener('beforeunload', this.handleUnload);
+    window.addEventListener('pagehide', this.handleUnload);
   }
 
   stopAutoSave(): void {
@@ -183,6 +187,7 @@ export class SaveManager {
       this.intervalId = null;
     }
     window.removeEventListener('beforeunload', this.handleUnload);
+    window.removeEventListener('pagehide', this.handleUnload);
   }
 
   clearState(): void {

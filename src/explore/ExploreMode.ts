@@ -1,6 +1,11 @@
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
-import { createSolarSystem, type SolarSystemObjects, type LayoutMode } from './SolarSystem';
+import {
+  CREATE_SOLAR_SYSTEM_TOTAL_UNITS,
+  createSolarSystem,
+  type SolarSystemObjects,
+  type LayoutMode,
+} from './SolarSystem';
 import { PlayerShip } from './PlayerShip';
 import { PlanetMarkers } from './PlanetMarker';
 import { SaveManager, createDefaultState, type ExploreState, type LandedTarget } from './SaveManager';
@@ -38,6 +43,13 @@ type ScriptedTransfer = {
   endPitch: number;
   endMoving: boolean;
 };
+
+export const FIRST_EXPLORE_ACTIVATION_TOTAL_UNITS = CREATE_SOLAR_SYSTEM_TOTAL_UNITS + 1;
+
+export interface ExploreActivationProgress {
+  completedUnits: number;
+  totalUnits: number;
+}
 
 export class ExploreMode {
   private static readonly TIME_RATE_PRESETS = [1, 60, 1200, 3600, 21600, 86400, 604800, 2592000, 31557600];
@@ -117,6 +129,7 @@ export class ExploreMode {
   // Moon labels
   private moonLabels = new Map<string, HTMLDivElement>();
   private moonLabelContainer: HTMLDivElement | null = null;
+  private cancelResumePrompt: (() => void) | null = null;
 
   // Sun label
   private sunLabel: HTMLDivElement | null = null;
@@ -196,8 +209,18 @@ export class ExploreMode {
     this.handleDeviceOrientation = this.handleDeviceOrientation.bind(this);
   }
 
-  async activate(): Promise<void> {
+  hasLoadedSolarSystem(): boolean {
+    return this.solarSystem !== null;
+  }
+
+  async activate(onProgress?: (progress: ExploreActivationProgress) => void): Promise<void> {
     this.active = true;
+    const reportActivationProgress = (completedUnits: number) => {
+      onProgress?.({
+        completedUnits,
+        totalUnits: FIRST_EXPLORE_ACTIVATION_TOTAL_UNITS,
+      });
+    };
 
     // Show explore UI
     const exploreUI = document.getElementById('explore-ui');
@@ -213,14 +236,25 @@ export class ExploreMode {
     this.timeRateEl = document.getElementById('explore-time-rate');
     this.timeInputEl = document.getElementById('explore-time-input') as HTMLInputElement;
 
+    const savedState = this.saveManager.loadState();
+    const shouldPromptForResume = !this.solarSystem && !!savedState;
+    const resumeChoicePromise = shouldPromptForResume ? this.showResumePrompt(savedState) : null;
+    reportActivationProgress(this.solarSystem ? CREATE_SOLAR_SYSTEM_TOTAL_UNITS : 0);
+
     // Create solar system if not yet created
     if (!this.solarSystem) {
-      const loadingMsg = document.getElementById('explore-loading-msg');
-      if (loadingMsg) loadingMsg.style.display = 'block';
-      this.solarSystem = await createSolarSystem((msg) => {
-        if (loadingMsg) loadingMsg.textContent = msg;
-      }, this.useBloom, this.layoutMode, new Date(this.timeState.currentUtcMs));
-      if (loadingMsg) loadingMsg.style.display = 'none';
+      const initialWorldUtcMs =
+        savedState?.astroTimeUtcMs
+        ?? savedState?.simDate
+        ?? this.timeState.currentUtcMs;
+      try {
+        this.solarSystem = await createSolarSystem((progress) => {
+          reportActivationProgress(progress.completedUnits);
+        }, this.useBloom, this.layoutMode, new Date(initialWorldUtcMs));
+      } catch (error) {
+        this.cancelResumePrompt?.();
+        throw error;
+      }
 
       // Add everything to scene
       this.scene.add(this.solarSystem.sun);
@@ -267,6 +301,7 @@ export class ExploreMode {
       }
 
       this.scene.add(this.player.group);
+      reportActivationProgress(CREATE_SOLAR_SYSTEM_TOTAL_UNITS);
     }
 
     // Create markers
@@ -287,17 +322,18 @@ export class ExploreMode {
       this.constellations.setVisible(this.showConstellations);
     }
 
-    // Check for saved state — show resume prompt
-    const savedState = this.saveManager.loadState();
-    if (savedState) {
-      const shouldResume = await this.showResumePrompt(savedState);
+    if (savedState && shouldPromptForResume) {
+      const shouldResume = await resumeChoicePromise!;
       if (shouldResume) {
         this.restoreState(savedState);
       } else {
         this.saveManager.clearState();
         this.restoreState(createDefaultState());
         this.pointTowardMercury();
+        this.showIntroText();
       }
+    } else if (savedState) {
+      this.restoreState(savedState);
     } else {
       this.restoreState(createDefaultState());
       this.pointTowardMercury();
@@ -338,9 +374,12 @@ export class ExploreMode {
       this.moonLabelContainer.style.display = '';
     }
     this.uiRefreshAccumulator = ExploreMode.UI_REFRESH_INTERVAL_S;
+    reportActivationProgress(FIRST_EXPLORE_ACTIVATION_TOTAL_UNITS);
   }
 
   deactivate(): void {
+    this.cancelResumePrompt?.();
+
     // Exit landed mode cleanly before deactivation
     if (this.landedOn) {
       this.exitLandedMode();
@@ -1448,6 +1487,7 @@ export class ExploreMode {
 
       const resumeBtn = document.getElementById('resume-btn-continue');
       const newBtn = document.getElementById('resume-btn-new');
+      let settled = false;
 
       const cleanup = () => {
         prompt.classList.remove('visible');
@@ -1456,10 +1496,26 @@ export class ExploreMode {
         resumeBtn?.removeEventListener('pointerup', onResume);
         newBtn?.removeEventListener('click', onNew);
         newBtn?.removeEventListener('pointerup', onNew);
+        if (this.cancelResumePrompt === cancel) {
+          this.cancelResumePrompt = null;
+        }
       };
-      const onResume = () => { cleanup(); resolve(true); };
-      const onNew = () => { cleanup(); resolve(false); };
+      const finish = (shouldResume: boolean) => {
+        if (settled) return;
+        settled = true;
+        cleanup();
+        resolve(shouldResume);
+      };
+      const cancel = () => {
+        if (settled) return;
+        settled = true;
+        cleanup();
+        resolve(false);
+      };
+      const onResume = () => { finish(true); };
+      const onNew = () => { finish(false); };
 
+      this.cancelResumePrompt = cancel;
       resumeBtn?.addEventListener('click', onResume);
       resumeBtn?.addEventListener('pointerup', onResume);
       newBtn?.addEventListener('click', onNew);

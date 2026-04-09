@@ -17,6 +17,7 @@ import {
   type ExploreTimeState,
 } from './astronomy';
 import { BRIGHT_STAR_CATALOG } from './data/brightStars';
+import { Constellations } from './Constellations';
 import { getMoonsByPlanet } from './planets/moonData';
 import { formatScaleMultiplier } from '../utils/formatting';
 
@@ -37,6 +38,8 @@ export class ExploreMode {
   private markers: PlanetMarkers | null = null;
   private saveManager: SaveManager;
   private starfield: THREE.Points | null = null;
+  private constellations: Constellations | null = null;
+  private showConstellations = false;
 
   // Planet world positions in AU (true positions, not offset)
   private planetWorldPositions = new Map<string, { x: number; y: number; z: number }>();
@@ -256,6 +259,13 @@ export class ExploreMode {
       this.scene.add(this.starfield);
     }
 
+    // Create constellation overlay
+    if (!this.constellations) {
+      this.constellations = new Constellations();
+      this.scene.add(this.constellations.lines);
+      this.constellations.setVisible(this.showConstellations);
+    }
+
     // Check for saved state — show resume prompt
     const savedState = this.saveManager.loadState();
     if (savedState) {
@@ -365,6 +375,7 @@ export class ExploreMode {
     }
     this.player.group.visible = visible && this.showShip;
     if (this.starfield) this.starfield.visible = visible;
+    if (this.constellations) this.constellations.setVisible(visible && this.showConstellations);
   }
 
   update(dt: number): void {
@@ -426,6 +437,15 @@ export class ExploreMode {
       this.markers.update(scenePositions, { x: 0, y: 0, z: 0 }, this.renderer);
     }
 
+    // Update constellation labels
+    if (this.constellations && this.showConstellations) {
+      this.constellations.updateLabels(
+        this.camera,
+        this.renderer.domElement.clientWidth,
+        this.renderer.domElement.clientHeight,
+      );
+    }
+
     // Update Sun label
     this.updateSunLabel();
 
@@ -478,9 +498,12 @@ export class ExploreMode {
     // Player is at origin (or very close)
     this.player.group.position.set(0, 0, 0);
 
-    // Starfield follows camera (always centered on player)
+    // Starfield + constellations follow camera (always centered on player)
     if (this.starfield) {
       this.starfield.position.set(0, 0, 0);
+    }
+    if (this.constellations) {
+      this.constellations.lines.position.set(0, 0, 0);
     }
   }
 
@@ -1144,6 +1167,13 @@ export class ExploreMode {
       void this.toggleGyroControls();
     });
 
+    document.getElementById('settings-constellations-toggle')?.addEventListener('click', () => {
+      this.showConstellations = !this.showConstellations;
+      if (this.constellations) this.constellations.setVisible(this.showConstellations);
+      const label = document.getElementById('settings-constellations-label');
+      if (label) label.textContent = this.showConstellations ? 'On' : 'Off';
+    });
+
     // Full-screen mobile flight zone
     const flightZone = document.getElementById('touch-flight-zone');
     if (flightZone) {
@@ -1663,6 +1693,15 @@ export class ExploreMode {
       this.markers.update(scenePositions, { x: 0, y: 0, z: 0 }, this.renderer);
     }
 
+    // Update constellation labels while landed
+    if (this.constellations && this.showConstellations) {
+      this.constellations.updateLabels(
+        this.camera,
+        this.renderer.domElement.clientWidth,
+        this.renderer.domElement.clientHeight,
+      );
+    }
+
     this.updateSunLabel();
     this.updatePlanetScaling();
     this.updateMoonPositions();
@@ -1699,6 +1738,7 @@ export class ExploreMode {
       astroTimePaused: this.timeState.paused,
       planetScale: this.planetScale,
       showShip: this.showShip,
+      showConstellations: this.showConstellations,
       landedOn: this.landedOn,
     };
   }
@@ -1724,6 +1764,10 @@ export class ExploreMode {
     this.planetScale = saved.planetScale;
     this.showShip = saved.showShip;
     this.player.group.visible = this.showShip;
+    this.showConstellations = saved.showConstellations ?? false;
+    if (this.constellations) this.constellations.setVisible(this.showConstellations);
+    const constLabel = document.getElementById('settings-constellations-label');
+    if (constLabel) constLabel.textContent = this.showConstellations ? 'On' : 'Off';
 
     const apBtn = document.getElementById('explore-btn-autopilot');
     if (apBtn) apBtn.classList.toggle('active', this.autopilot);
@@ -2122,5 +2166,9 @@ export class ExploreMode {
     }
     this.player.group.removeFromParent();
     if (this.starfield) this.starfield.removeFromParent();
+    if (this.constellations) {
+      this.constellations.dispose();
+      this.constellations = null;
+    }
   }
 }

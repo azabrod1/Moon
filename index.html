@@ -806,6 +806,22 @@
     .planet-label-name { display: block; font-size: 10px; font-weight: 500; color: var(--text-primary); text-shadow: 0 0 6px rgba(0,0,0,0.9); }
     .planet-label-dist { display: block; font-size: 8px; color: var(--text-dim); margin-top: 1px; }
 
+    /* Constellation labels */
+    .constellation-label {
+      position: absolute;
+      display: none;
+      font-family: var(--font);
+      font-size: 9px;
+      font-weight: 400;
+      color: rgba(130, 170, 220, 0.55);
+      text-transform: uppercase;
+      letter-spacing: 1.5px;
+      pointer-events: none;
+      text-shadow: 0 0 4px rgba(0,0,0,0.8);
+      transform: translate(-50%, -50%);
+      white-space: nowrap;
+    }
+
     /* Moon labels */
     .moon-label {
       position: absolute;
@@ -1453,6 +1469,12 @@
           <span class="settings-label">Gyro steer</span>
           <button class="settings-toggle" id="settings-gyro-toggle">
             <span id="settings-gyro-label">Off</span>
+          </button>
+        </div>
+        <div class="settings-row">
+          <span class="settings-label">Constellations</span>
+          <button class="settings-toggle" id="settings-constellations-toggle">
+            <span id="settings-constellations-label">Off</span>
           </button>
         </div>
       </div>

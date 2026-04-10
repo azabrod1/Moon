@@ -25,11 +25,11 @@ import { BRIGHT_STAR_CATALOG } from './data/brightStars';
 import { Constellations } from './Constellations';
 import { getMoonsByPlanet } from './planets/moonData';
 import {
-  VOYAGER_JOURNEYS,
-  type VoyagerJourney,
-  type VoyagerMissionId,
-  type VoyagerMilestone,
-} from './voyagerJourney';
+  HISTORIC_JOURNEYS,
+  type HistoricJourney,
+  type HistoricMissionId,
+  type HistoricMilestone,
+} from './historicJourney';
 import { formatScaleMultiplier } from '../utils/formatting';
 
 type ScriptedTransfer = {
@@ -164,7 +164,7 @@ export class ExploreMode {
   }
   private lastTimeInputValue = '';
   private uiRefreshAccumulator = ExploreMode.UI_REFRESH_INTERVAL_S;
-  private activeVoyagerJourney: VoyagerJourney | null = null;
+  private activeVoyagerJourney: HistoricJourney | null = null;
   private voyagerMilestoneIndex = 0;
   private scriptedTransfer: ScriptedTransfer | null = null;
 
@@ -676,7 +676,7 @@ export class ExploreMode {
       }
     }
 
-    this.player.setProfile(this.activeVoyagerJourney ? 'voyager' : 'default');
+    this.player.setProfile(this.activeVoyagerJourney?.shipProfile ?? 'default');
   }
 
   private updateMoonPositions() {
@@ -1129,10 +1129,19 @@ export class ExploreMode {
     });
 
     document.getElementById('explore-btn-voyager-1')?.addEventListener('click', () => {
-      this.startVoyagerJourney('voyager1');
+      void this.startVoyagerJourney('voyager1');
     });
     document.getElementById('explore-btn-voyager-2')?.addEventListener('click', () => {
-      this.startVoyagerJourney('voyager2');
+      void this.startVoyagerJourney('voyager2');
+    });
+    document.getElementById('explore-btn-cassini')?.addEventListener('click', () => {
+      void this.startVoyagerJourney('cassini');
+    });
+    document.getElementById('explore-btn-new-horizons')?.addEventListener('click', () => {
+      void this.startVoyagerJourney('newHorizons');
+    });
+    document.getElementById('explore-btn-juno')?.addEventListener('click', () => {
+      void this.startVoyagerJourney('juno');
     });
     document.getElementById('voyager-close')?.addEventListener('click', () => {
       this.stopVoyagerJourney();
@@ -1523,13 +1532,14 @@ export class ExploreMode {
     });
   }
 
-  private startVoyagerJourney(missionId: VoyagerMissionId) {
-    const journey = VOYAGER_JOURNEYS[missionId];
+  private async startVoyagerJourney(missionId: HistoricMissionId) {
+    const journey = HISTORIC_JOURNEYS[missionId];
+    await this.player.ensureProfileLoaded(journey.shipProfile);
     if (this.landedOn) this.exitLandedMode();
     this.activeVoyagerJourney = journey;
     this.showShip = true;
     this.player.group.visible = true;
-    this.player.setProfile('voyager');
+    this.player.setProfile(journey.shipProfile);
     const shipLabel = document.getElementById('settings-ship-label');
     if (shipLabel) shipLabel.textContent = 'On';
     document.getElementById('explore-menu-panel')?.classList.remove('visible');
@@ -1583,7 +1593,7 @@ export class ExploreMode {
   }
 
   private updateVoyagerImage(
-    milestone: VoyagerMilestone,
+    milestone: HistoricMilestone,
     imageEl: HTMLImageElement | null,
     imageLinkEl: HTMLAnchorElement | null,
     imageCaptionEl: HTMLElement | null,
@@ -1632,13 +1642,13 @@ export class ExploreMode {
     imageEl.src = milestone.imageUrl;
   }
 
-  private applyVoyagerMilestone(milestone: VoyagerMilestone) {
+  private applyVoyagerMilestone(milestone: HistoricMilestone) {
     this.timeState.currentUtcMs = milestone.dateUtcMs;
     this.timeState.paused = true;
     this.rebuildPlanetPositions();
     this.updateTimeUI();
 
-    if (milestone.target === 'Interstellar') {
+    if (milestone.customScenePosition || milestone.target === 'Interstellar' || milestone.target === 'Custom') {
       if (this.landedOn) this.exitLandedMode();
       this.startScriptedTransfer({
         targetPosition: milestone.customScenePosition

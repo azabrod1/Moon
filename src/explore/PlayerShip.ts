@@ -1,11 +1,12 @@
 import * as THREE from 'three';
+import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { LIGHT_SPEED_AU_PER_S } from './planets/planetData';
 
 // Default cruise speed: 1c
 const DEFAULT_SPEED_AU_S = LIGHT_SPEED_AU_PER_S;
 const FORWARD_VECTOR = new THREE.Vector3(1, 0, 0);
 
-export type ShipProfile = 'default' | 'voyager';
+export type ShipProfile = 'default' | 'voyager' | 'cassini' | 'newHorizons' | 'juno';
 
 /** Build a smooth hull profile via LatheGeometry */
 function createHullGeometry(radius: number, length: number): THREE.LatheGeometry {
@@ -81,11 +82,17 @@ function createRodBetween(
 }
 
 export class PlayerShip {
+  private static readonly gltfLoader = new GLTFLoader();
+
   group: THREE.Group;
   mesh: THREE.Mesh;
   private defaultModel: THREE.Group;
   private voyagerModel: THREE.Group | null = null;
-  private voyagerReferenceRadiusAU: number;
+  private cassiniModel: THREE.Group | null = null;
+  private cassiniModelPromise: Promise<THREE.Group> | null = null;
+  private newHorizonsModel: THREE.Group | null = null;
+  private junoModel: THREE.Group | null = null;
+  private spacecraftReferenceRadiusAU: number;
   private profile: ShipProfile = 'default';
   private exhaustCone: THREE.Mesh;
   private exhaustCore: THREE.Mesh;
@@ -108,7 +115,7 @@ export class PlayerShip {
     this.group = new THREE.Group();
 
     const moonRadiusAU = 1737.4 / 149_597_870.7;
-    this.voyagerReferenceRadiusAU = moonRadiusAU;
+    this.spacecraftReferenceRadiusAU = moonRadiusAU;
     const R = moonRadiusAU * 0.7;   // hull radius
     const L = moonRadiusAU * 3;     // overall length reference
 
@@ -239,14 +246,102 @@ export class PlayerShip {
     this.group.userData.shipModel = this.defaultModel;
   }
 
-  private getOrCreateVoyagerModel(): THREE.Group {
-    if (this.voyagerModel) return this.voyagerModel;
+  private getOrCreateProbeModel(profile: Exclude<ShipProfile, 'default'>): THREE.Group {
+    const existing = profile === 'voyager'
+      ? this.voyagerModel
+      : profile === 'cassini'
+        ? this.cassiniModel
+        : profile === 'newHorizons'
+          ? this.newHorizonsModel
+          : this.junoModel;
+    if (existing) return existing;
 
-    const voyagerModel = this.createVoyagerModel(this.voyagerReferenceRadiusAU);
-    voyagerModel.visible = false;
-    this.group.add(voyagerModel);
-    this.voyagerModel = voyagerModel;
-    return voyagerModel;
+    const referenceRadiusAU = this.spacecraftReferenceRadiusAU;
+    const model = profile === 'voyager'
+      ? this.createVoyagerModel(referenceRadiusAU)
+      : profile === 'cassini'
+        ? this.createCassiniModel(referenceRadiusAU)
+        : profile === 'newHorizons'
+          ? this.createNewHorizonsModel(referenceRadiusAU)
+          : this.createJunoModel(referenceRadiusAU);
+    model.visible = false;
+    this.group.add(model);
+
+    if (profile === 'voyager') this.voyagerModel = model;
+    else if (profile === 'cassini') this.cassiniModel = model;
+    else if (profile === 'newHorizons') this.newHorizonsModel = model;
+    else this.junoModel = model;
+
+    return model;
+  }
+
+  async ensureProfileLoaded(profile: Exclude<ShipProfile, 'default'>): Promise<void> {
+    if (profile === 'cassini') {
+      await this.getOrCreateCassiniAssetModel();
+      return;
+    }
+    this.getOrCreateProbeModel(profile);
+  }
+
+  private async getOrCreateCassiniAssetModel(): Promise<THREE.Group> {
+    if (this.cassiniModel) return this.cassiniModel;
+    if (this.cassiniModelPromise) return this.cassiniModelPromise;
+
+    this.cassiniModelPromise = PlayerShip.gltfLoader.loadAsync(
+      `${import.meta.env.BASE_URL}models/cassini-assembly.glb`,
+    ).then((gltf) => {
+      const root = new THREE.Group();
+      const scene = gltf.scene;
+      scene.traverse((obj) => {
+        if (obj instanceof THREE.Mesh) {
+          obj.castShadow = false;
+          obj.receiveShadow = false;
+          const materials = Array.isArray(obj.material) ? obj.material : [obj.material];
+          for (const material of materials) {
+            if ('metalness' in material) material.metalness = Math.min(material.metalness ?? 0, 0.65);
+            if ('roughness' in material) material.roughness = Math.max(material.roughness ?? 0.5, 0.38);
+          }
+        }
+      });
+
+      const bounds = new THREE.Box3().setFromObject(scene);
+      const size = bounds.getSize(new THREE.Vector3());
+      const maxDimension = Math.max(size.x, size.y, size.z, 1e-8);
+      const targetDimension = this.spacecraftReferenceRadiusAU * 5.6;
+      const scale = targetDimension / maxDimension;
+      scene.scale.setScalar(scale);
+
+      bounds.setFromObject(scene);
+      const center = bounds.getCenter(new THREE.Vector3());
+      scene.position.sub(center);
+
+      root.add(scene);
+      root.rotation.x = -Math.PI / 2;
+      root.rotation.z = -Math.PI / 2;
+      root.rotation.y = Math.PI;
+      root.scale.setScalar(1.18);
+      root.visible = false;
+      this.group.add(root);
+      this.cassiniModel = root;
+      return root;
+    }).catch(() => {
+      const fallback = this.createCassiniModel(this.spacecraftReferenceRadiusAU);
+      fallback.visible = false;
+      this.group.add(fallback);
+      this.cassiniModel = fallback;
+      return fallback;
+    }).finally(() => {
+      this.cassiniModelPromise = null;
+    });
+
+    return this.cassiniModelPromise;
+  }
+
+  private setProbeModelsVisible(visible: boolean) {
+    if (this.voyagerModel) this.voyagerModel.visible = visible;
+    if (this.cassiniModel) this.cassiniModel.visible = visible;
+    if (this.newHorizonsModel) this.newHorizonsModel.visible = visible;
+    if (this.junoModel) this.junoModel.visible = visible;
   }
 
   private createVoyagerModel(referenceRadiusAU: number): THREE.Group {
@@ -491,6 +586,486 @@ export class PlayerShip {
     return model;
   }
 
+  private createCassiniModel(referenceRadiusAU: number): THREE.Group {
+    const model = new THREE.Group();
+    const dishRadius = referenceRadiusAU * 1.52;
+    const dishDepth = referenceRadiusAU * 0.34;
+    const busRadius = referenceRadiusAU * 0.34;
+    const busHeight = referenceRadiusAU * 1.02;
+
+    const whiteMetal = new THREE.MeshStandardMaterial({
+      color: 0xe7ebf1,
+      emissive: 0x111824,
+      emissiveIntensity: 0.06,
+      roughness: 0.34,
+      metalness: 0.4,
+    });
+    const goldFoil = new THREE.MeshPhysicalMaterial({
+      color: 0xb89955,
+      emissive: 0x201507,
+      emissiveIntensity: 0.18,
+      roughness: 0.46,
+      metalness: 0.8,
+      clearcoat: 0.12,
+      clearcoatRoughness: 0.34,
+    });
+    const darkMetal = new THREE.MeshStandardMaterial({
+      color: 0x4f5863,
+      emissive: 0x121824,
+      emissiveIntensity: 0.08,
+      roughness: 0.6,
+      metalness: 0.35,
+    });
+
+    const dish = new THREE.Mesh(
+      createVoyagerDishGeometry(dishRadius, dishDepth),
+      new THREE.MeshStandardMaterial({
+        color: 0xf2f5f8,
+        roughness: 0.28,
+        metalness: 0.22,
+        side: THREE.DoubleSide,
+      }),
+    );
+    dish.position.y = referenceRadiusAU * 1.08;
+    model.add(dish);
+
+    const dishRim = new THREE.Mesh(
+      new THREE.TorusGeometry(dishRadius, referenceRadiusAU * 0.02, 12, 64),
+      whiteMetal,
+    );
+    dishRim.rotation.x = Math.PI / 2;
+    dishRim.position.y = referenceRadiusAU * 1.08;
+    model.add(dishRim);
+
+    const bus = new THREE.Mesh(
+      new THREE.CylinderGeometry(busRadius, busRadius, busHeight, 12),
+      goldFoil,
+    );
+    bus.position.y = referenceRadiusAU * 0.02;
+    bus.rotation.y = Math.PI / 12;
+    model.add(bus);
+
+    const engineBell = new THREE.Mesh(
+      createEngineBell(referenceRadiusAU * 0.22, referenceRadiusAU * 0.92),
+      darkMetal,
+    );
+    engineBell.rotation.z = Math.PI;
+    engineBell.position.y = -referenceRadiusAU * 0.88;
+    model.add(engineBell);
+
+    const upperDeck = new THREE.Mesh(
+      new THREE.CylinderGeometry(busRadius * 1.04, busRadius * 1.04, referenceRadiusAU * 0.09, 12),
+      whiteMetal,
+    );
+    upperDeck.position.y = referenceRadiusAU * 0.55;
+    model.add(upperDeck);
+
+    const lowerDeck = upperDeck.clone();
+    lowerDeck.position.y = -referenceRadiusAU * 0.46;
+    model.add(lowerDeck);
+
+    for (let i = 0; i < 12; i++) {
+      const blanket = new THREE.Mesh(
+        new THREE.BoxGeometry(referenceRadiusAU * 0.18, referenceRadiusAU * 0.54, referenceRadiusAU * 0.014),
+        goldFoil,
+      );
+      const angle = (i / 12) * Math.PI * 2;
+      blanket.position.set(
+        Math.cos(angle) * busRadius * 1.04,
+        referenceRadiusAU * 0.04,
+        Math.sin(angle) * busRadius * 1.04,
+      );
+      blanket.rotation.y = angle;
+      model.add(blanket);
+    }
+
+    const feedBase = new THREE.Mesh(
+      new THREE.CylinderGeometry(referenceRadiusAU * 0.04, referenceRadiusAU * 0.04, referenceRadiusAU * 0.18, 16),
+      darkMetal,
+    );
+    feedBase.position.y = referenceRadiusAU * 1.25;
+    model.add(feedBase);
+
+    const feedHorn = new THREE.Mesh(
+      new THREE.ConeGeometry(referenceRadiusAU * 0.07, referenceRadiusAU * 0.28, 18),
+      whiteMetal,
+    );
+    feedHorn.rotation.x = Math.PI;
+    feedHorn.position.y = referenceRadiusAU * 1.43;
+    model.add(feedHorn);
+
+    const feedAnchor = new THREE.Vector3(0, referenceRadiusAU * 1.22, 0);
+    const spread = dishRadius * 0.46;
+    for (const anchor of [
+      new THREE.Vector3(spread, referenceRadiusAU * 1.03, 0),
+      new THREE.Vector3(-spread, referenceRadiusAU * 1.03, 0),
+      new THREE.Vector3(0, referenceRadiusAU * 1.03, spread),
+      new THREE.Vector3(0, referenceRadiusAU * 1.03, -spread),
+    ]) {
+      model.add(createRodBetween(anchor, feedAnchor, referenceRadiusAU * 0.011, whiteMetal, 6));
+    }
+
+    const huygens = new THREE.Mesh(
+      new THREE.CylinderGeometry(referenceRadiusAU * 0.24, referenceRadiusAU * 0.21, referenceRadiusAU * 0.2, 20),
+      new THREE.MeshStandardMaterial({
+        color: 0xc68e35,
+        emissive: 0x281606,
+        emissiveIntensity: 0.18,
+        roughness: 0.44,
+        metalness: 0.58,
+      }),
+    );
+    huygens.position.set(0, -referenceRadiusAU * 0.18, 0);
+    model.add(huygens);
+
+    const magnetometerBoom = createRodBetween(
+      new THREE.Vector3(0, referenceRadiusAU * 0.54, 0),
+      new THREE.Vector3(0, referenceRadiusAU * 3.1, 0),
+      referenceRadiusAU * 0.012,
+      whiteMetal,
+      8,
+    );
+    model.add(magnetometerBoom);
+
+    const magnetometer = new THREE.Mesh(
+      new THREE.SphereGeometry(referenceRadiusAU * 0.05, 16, 16),
+      new THREE.MeshBasicMaterial({ color: 0x8ec2ff }),
+    );
+    magnetometer.position.y = referenceRadiusAU * 3.22;
+    model.add(magnetometer);
+
+    const rtgBoomEnd = new THREE.Vector3(-referenceRadiusAU * 2.1, -referenceRadiusAU * 0.92, 0);
+    model.add(createRodBetween(
+      new THREE.Vector3(0, -referenceRadiusAU * 0.26, 0),
+      rtgBoomEnd,
+      referenceRadiusAU * 0.018,
+      whiteMetal,
+      8,
+    ));
+    for (const pos of [
+      new THREE.Vector3(-referenceRadiusAU * 0.95, -referenceRadiusAU * 0.55, 0),
+      new THREE.Vector3(-referenceRadiusAU * 1.42, -referenceRadiusAU * 0.74, 0),
+      new THREE.Vector3(-referenceRadiusAU * 1.89, -referenceRadiusAU * 0.94, 0),
+    ]) {
+      const rtg = new THREE.Mesh(
+        new THREE.CylinderGeometry(referenceRadiusAU * 0.11, referenceRadiusAU * 0.11, referenceRadiusAU * 0.42, 18),
+        darkMetal,
+      );
+      rtg.rotation.z = Math.PI / 2;
+      rtg.position.copy(pos);
+      model.add(rtg);
+    }
+
+    const cameraPlatform = new THREE.Group();
+    cameraPlatform.position.set(referenceRadiusAU * 0.55, -referenceRadiusAU * 0.16, 0);
+    const platformBase = new THREE.Mesh(
+      new THREE.CylinderGeometry(referenceRadiusAU * 0.13, referenceRadiusAU * 0.13, referenceRadiusAU * 0.09, 14),
+      darkMetal,
+    );
+    platformBase.rotation.z = Math.PI / 2;
+    cameraPlatform.add(platformBase);
+    for (const offset of [-0.12, 0.12]) {
+      const cameraTube = new THREE.Mesh(
+        new THREE.CylinderGeometry(referenceRadiusAU * 0.045, referenceRadiusAU * 0.045, referenceRadiusAU * 0.28, 18),
+        whiteMetal,
+      );
+      cameraTube.rotation.z = Math.PI / 2;
+      cameraTube.position.set(referenceRadiusAU * 0.18, offset * referenceRadiusAU, 0);
+      cameraPlatform.add(cameraTube);
+    }
+    model.add(cameraPlatform);
+
+    model.rotation.z = -Math.PI / 2;
+    model.scale.setScalar(1.22);
+    return model;
+  }
+
+  private createNewHorizonsModel(referenceRadiusAU: number): THREE.Group {
+    const model = new THREE.Group();
+
+    const whiteMetal = new THREE.MeshStandardMaterial({
+      color: 0xeaedf2,
+      emissive: 0x121925,
+      emissiveIntensity: 0.05,
+      roughness: 0.35,
+      metalness: 0.38,
+    });
+    const goldFoil = new THREE.MeshPhysicalMaterial({
+      color: 0xb79a5e,
+      emissive: 0x1c1408,
+      emissiveIntensity: 0.16,
+      roughness: 0.48,
+      metalness: 0.78,
+      clearcoat: 0.12,
+      clearcoatRoughness: 0.32,
+    });
+    const darkMetal = new THREE.MeshStandardMaterial({
+      color: 0x515965,
+      emissive: 0x111824,
+      emissiveIntensity: 0.08,
+      roughness: 0.58,
+      metalness: 0.34,
+    });
+
+    const body = new THREE.Mesh(
+      new THREE.BoxGeometry(referenceRadiusAU * 0.68, referenceRadiusAU * 0.5, referenceRadiusAU * 0.34),
+      goldFoil,
+    );
+    body.position.y = referenceRadiusAU * 0.02;
+    model.add(body);
+
+    const topPlate = new THREE.Mesh(
+      new THREE.BoxGeometry(referenceRadiusAU * 0.74, referenceRadiusAU * 0.06, referenceRadiusAU * 0.4),
+      whiteMetal,
+    );
+    topPlate.position.y = referenceRadiusAU * 0.28;
+    model.add(topPlate);
+
+    const dishRadius = referenceRadiusAU * 0.95;
+    const dish = new THREE.Mesh(
+      createVoyagerDishGeometry(dishRadius, referenceRadiusAU * 0.22),
+      new THREE.MeshStandardMaterial({
+        color: 0xf0f4f8,
+        roughness: 0.28,
+        metalness: 0.2,
+        side: THREE.DoubleSide,
+      }),
+    );
+    dish.position.y = referenceRadiusAU * 0.82;
+    model.add(dish);
+
+    const rim = new THREE.Mesh(
+      new THREE.TorusGeometry(dishRadius, referenceRadiusAU * 0.018, 10, 48),
+      whiteMetal,
+    );
+    rim.rotation.x = Math.PI / 2;
+    rim.position.y = referenceRadiusAU * 0.82;
+    model.add(rim);
+
+    const feedHorn = new THREE.Mesh(
+      new THREE.ConeGeometry(referenceRadiusAU * 0.052, referenceRadiusAU * 0.18, 18),
+      whiteMetal,
+    );
+    feedHorn.rotation.x = Math.PI;
+    feedHorn.position.y = referenceRadiusAU * 0.98;
+    model.add(feedHorn);
+
+    const feedAnchor = new THREE.Vector3(0, referenceRadiusAU * 0.93, 0);
+    for (const anchor of [
+      new THREE.Vector3(dishRadius * 0.42, referenceRadiusAU * 0.77, 0),
+      new THREE.Vector3(-dishRadius * 0.42, referenceRadiusAU * 0.77, 0),
+      new THREE.Vector3(0, referenceRadiusAU * 0.77, dishRadius * 0.34),
+    ]) {
+      model.add(createRodBetween(anchor, feedAnchor, referenceRadiusAU * 0.01, whiteMetal, 6));
+    }
+
+    const rtgBoom = createRodBetween(
+      new THREE.Vector3(-referenceRadiusAU * 0.1, -referenceRadiusAU * 0.04, 0),
+      new THREE.Vector3(-referenceRadiusAU * 1.18, -referenceRadiusAU * 0.86, 0),
+      referenceRadiusAU * 0.017,
+      whiteMetal,
+      8,
+    );
+    model.add(rtgBoom);
+
+    const rtg = new THREE.Mesh(
+      new THREE.CylinderGeometry(referenceRadiusAU * 0.12, referenceRadiusAU * 0.12, referenceRadiusAU * 0.52, 18),
+      darkMetal,
+    );
+    rtg.rotation.z = Math.PI / 2;
+    rtg.position.set(-referenceRadiusAU * 0.92, -referenceRadiusAU * 0.67, 0);
+    model.add(rtg);
+
+    const instrumentDeck = new THREE.Group();
+    instrumentDeck.position.set(referenceRadiusAU * 0.43, -referenceRadiusAU * 0.1, 0);
+    const box = new THREE.Mesh(
+      new THREE.BoxGeometry(referenceRadiusAU * 0.24, referenceRadiusAU * 0.18, referenceRadiusAU * 0.16),
+      whiteMetal,
+    );
+    instrumentDeck.add(box);
+    const tube = new THREE.Mesh(
+      new THREE.CylinderGeometry(referenceRadiusAU * 0.045, referenceRadiusAU * 0.045, referenceRadiusAU * 0.3, 16),
+      darkMetal,
+    );
+    tube.rotation.z = Math.PI / 2;
+    tube.position.x = referenceRadiusAU * 0.2;
+    instrumentDeck.add(tube);
+    model.add(instrumentDeck);
+
+    const tracker = new THREE.Mesh(
+      new THREE.BoxGeometry(referenceRadiusAU * 0.12, referenceRadiusAU * 0.12, referenceRadiusAU * 0.12),
+      whiteMetal,
+    );
+    tracker.position.set(referenceRadiusAU * 0.12, referenceRadiusAU * 0.22, referenceRadiusAU * 0.2);
+    model.add(tracker);
+
+    const boom = createRodBetween(
+      new THREE.Vector3(referenceRadiusAU * 0.1, referenceRadiusAU * 0.08, 0),
+      new THREE.Vector3(referenceRadiusAU * 1.08, referenceRadiusAU * 0.06, 0),
+      referenceRadiusAU * 0.012,
+      whiteMetal,
+      8,
+    );
+    model.add(boom);
+
+    const sensor = new THREE.Mesh(
+      new THREE.BoxGeometry(referenceRadiusAU * 0.12, referenceRadiusAU * 0.08, referenceRadiusAU * 0.08),
+      darkMetal,
+    );
+    sensor.position.set(referenceRadiusAU * 1.14, referenceRadiusAU * 0.06, 0);
+    model.add(sensor);
+
+    model.rotation.z = -Math.PI / 2;
+    model.scale.setScalar(1.28);
+    return model;
+  }
+
+  private createJunoModel(referenceRadiusAU: number): THREE.Group {
+    const model = new THREE.Group();
+
+    const whiteMetal = new THREE.MeshStandardMaterial({
+      color: 0xe8ecf2,
+      emissive: 0x111924,
+      emissiveIntensity: 0.05,
+      roughness: 0.34,
+      metalness: 0.4,
+    });
+    const goldFoil = new THREE.MeshPhysicalMaterial({
+      color: 0xb49758,
+      emissive: 0x1d1407,
+      emissiveIntensity: 0.14,
+      roughness: 0.48,
+      metalness: 0.8,
+      clearcoat: 0.1,
+      clearcoatRoughness: 0.35,
+    });
+    const solarBlue = new THREE.MeshStandardMaterial({
+      color: 0x1e3557,
+      emissive: 0x091427,
+      emissiveIntensity: 0.18,
+      roughness: 0.62,
+      metalness: 0.18,
+    });
+    const darkMetal = new THREE.MeshStandardMaterial({
+      color: 0x515967,
+      emissive: 0x121823,
+      emissiveIntensity: 0.08,
+      roughness: 0.58,
+      metalness: 0.34,
+    });
+
+    const core = new THREE.Mesh(
+      new THREE.CylinderGeometry(referenceRadiusAU * 0.34, referenceRadiusAU * 0.34, referenceRadiusAU * 0.7, 12),
+      goldFoil,
+    );
+    core.rotation.y = Math.PI / 12;
+    model.add(core);
+
+    const deck = new THREE.Mesh(
+      new THREE.CylinderGeometry(referenceRadiusAU * 0.42, referenceRadiusAU * 0.42, referenceRadiusAU * 0.08, 12),
+      whiteMetal,
+    );
+    deck.position.y = referenceRadiusAU * 0.18;
+    model.add(deck);
+
+    const dishRadius = referenceRadiusAU * 0.78;
+    const dish = new THREE.Mesh(
+      createVoyagerDishGeometry(dishRadius, referenceRadiusAU * 0.18),
+      new THREE.MeshStandardMaterial({
+        color: 0xf2f5f8,
+        roughness: 0.28,
+        metalness: 0.18,
+        side: THREE.DoubleSide,
+      }),
+    );
+    dish.position.y = referenceRadiusAU * 0.64;
+    model.add(dish);
+
+    const rim = new THREE.Mesh(
+      new THREE.TorusGeometry(dishRadius, referenceRadiusAU * 0.016, 10, 48),
+      whiteMetal,
+    );
+    rim.rotation.x = Math.PI / 2;
+    rim.position.y = referenceRadiusAU * 0.64;
+    model.add(rim);
+
+    const feed = new THREE.Mesh(
+      new THREE.ConeGeometry(referenceRadiusAU * 0.045, referenceRadiusAU * 0.14, 18),
+      whiteMetal,
+    );
+    feed.rotation.x = Math.PI;
+    feed.position.y = referenceRadiusAU * 0.76;
+    model.add(feed);
+
+    const panelGroup = new THREE.Group();
+    const panelLength = referenceRadiusAU * 2.9;
+    const panelWidth = referenceRadiusAU * 0.34;
+    const panelThickness = referenceRadiusAU * 0.03;
+    for (let i = 0; i < 3; i++) {
+      const arm = new THREE.Group();
+      arm.rotation.y = (i / 3) * Math.PI * 2;
+
+      const truss = createRodBetween(
+        new THREE.Vector3(0, 0, 0),
+        new THREE.Vector3(panelLength * 0.22, 0, 0),
+        referenceRadiusAU * 0.013,
+        whiteMetal,
+        8,
+      );
+      arm.add(truss);
+
+      const panel = new THREE.Mesh(
+        new THREE.BoxGeometry(panelLength, panelThickness, panelWidth),
+        solarBlue,
+      );
+      panel.position.x = panelLength * 0.72;
+      arm.add(panel);
+
+      for (const x of [-0.28, 0, 0.28]) {
+        const seam = new THREE.Mesh(
+          new THREE.BoxGeometry(referenceRadiusAU * 0.018, panelThickness * 1.15, panelWidth * 0.96),
+          new THREE.MeshStandardMaterial({
+            color: 0x60728d,
+            roughness: 0.5,
+            metalness: 0.24,
+          }),
+        );
+        seam.position.set(panel.position.x + x * panelLength, 0, 0);
+        arm.add(seam);
+      }
+
+      panelGroup.add(arm);
+    }
+    model.add(panelGroup);
+
+    const magnetometerBoom = createRodBetween(
+      new THREE.Vector3(panelLength * 1.43, 0, 0),
+      new THREE.Vector3(panelLength * 1.82, 0, 0),
+      referenceRadiusAU * 0.01,
+      whiteMetal,
+      6,
+    );
+    model.add(magnetometerBoom);
+
+    const magSensor = new THREE.Mesh(
+      new THREE.SphereGeometry(referenceRadiusAU * 0.04, 14, 14),
+      new THREE.MeshBasicMaterial({ color: 0x8ab8ff }),
+    );
+    magSensor.position.x = panelLength * 1.9;
+    model.add(magSensor);
+
+    const lowerAssembly = new THREE.Mesh(
+      new THREE.CylinderGeometry(referenceRadiusAU * 0.18, referenceRadiusAU * 0.24, referenceRadiusAU * 0.24, 18),
+      darkMetal,
+    );
+    lowerAssembly.position.y = -referenceRadiusAU * 0.42;
+    model.add(lowerAssembly);
+
+    model.rotation.z = -Math.PI / 2;
+    model.scale.setScalar(1.32);
+    return model;
+  }
+
   private createFin(R: number, L: number): THREE.Mesh {
     const shape = new THREE.Shape();
     // Swept delta fin profile
@@ -646,12 +1221,19 @@ export class PlayerShip {
   setProfile(profile: ShipProfile) {
     this.profile = profile;
     this.defaultModel.visible = profile === 'default';
-    if (profile === 'voyager') {
-      const voyagerModel = this.getOrCreateVoyagerModel();
-      voyagerModel.visible = true;
-      this.group.userData.shipModel = voyagerModel;
+    if (profile !== 'default') {
+      this.setProbeModelsVisible(false);
+      const probeModel = profile === 'cassini'
+        ? this.cassiniModel
+        : this.getOrCreateProbeModel(profile);
+      if (!probeModel) {
+        this.group.userData.shipModel = this.defaultModel;
+        return;
+      }
+      probeModel.visible = true;
+      this.group.userData.shipModel = probeModel;
     } else {
-      if (this.voyagerModel) this.voyagerModel.visible = false;
+      this.setProbeModelsVisible(false);
       this.group.userData.shipModel = this.defaultModel;
     }
   }

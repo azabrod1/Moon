@@ -236,7 +236,12 @@ export class ExploreMode {
     this.timeRateEl = document.getElementById('explore-time-rate');
     this.timeInputEl = document.getElementById('explore-time-input') as HTMLInputElement;
 
-    const savedState = this.saveManager.loadState();
+    const savedState = await this.saveManager.loadState();
+    const initialDefaultState = savedState ? null : createDefaultState();
+    if (initialDefaultState) {
+      // Persist a starter journey immediately so slow mobile loads can still resume.
+      this.saveManager.saveState(initialDefaultState);
+    }
     const shouldPromptForResume = !this.solarSystem && !!savedState;
     const resumeChoicePromise = shouldPromptForResume ? this.showResumePrompt(savedState) : null;
     reportActivationProgress(this.solarSystem ? CREATE_SOLAR_SYSTEM_TOTAL_UNITS : 0);
@@ -335,7 +340,7 @@ export class ExploreMode {
     } else if (savedState) {
       this.restoreState(savedState);
     } else {
-      this.restoreState(createDefaultState());
+      this.restoreState(initialDefaultState ?? createDefaultState());
       this.pointTowardMercury();
       this.showIntroText();
     }

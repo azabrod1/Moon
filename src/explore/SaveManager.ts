@@ -2,6 +2,8 @@ import { debugWarn } from '../utils/debug';
 
 const STORAGE_KEY = 'orbital-sim-explore-state';
 const AUTO_SAVE_INTERVAL = 30_000; // 30 seconds
+const FALLBACK_DB_NAME = 'orbital-sim-storage';
+const FALLBACK_STORE_NAME = 'state';
 
 export type LandedTarget =
   | { type: 'planet'; name: string }
@@ -94,6 +96,15 @@ function sanitizeExploreState(raw: unknown): ExploreState | null {
   };
 }
 
+function parseSavedState(raw: string): ExploreState | null {
+  try {
+    return sanitizeExploreState(JSON.parse(raw) as unknown);
+  } catch (err) {
+    debugWarn('Saved explore state JSON parse failed', err);
+    return null;
+  }
+}
+
 export function createDefaultState(): ExploreState {
   return {
     // Start inside Mercury's orbit, but far enough from the Sun to avoid a blown-out first view.
@@ -120,48 +131,34 @@ export function createDefaultState(): ExploreState {
 export class SaveManager {
   private intervalId: number | null = null;
   private getState: (() => ExploreState) | null = null;
+  private dbPromise: Promise<IDBDatabase | null> | null = null;
 
   hasSavedState(): boolean {
-    try {
-      return localStorage.getItem(STORAGE_KEY) !== null;
-    } catch (err) {
-      debugWarn('localStorage getItem failed in hasSavedState', err);
-      return false;
-    }
+    return this.readWebStorage('local') !== null || this.readWebStorage('session') !== null;
   }
 
-  loadState(): ExploreState | null {
-    let raw: string | null = null;
-    try {
-      raw = localStorage.getItem(STORAGE_KEY);
-    } catch (err) {
-      debugWarn('localStorage getItem failed in loadState', err);
-      return null;
-    }
+  async loadState(): Promise<ExploreState | null> {
+    let raw = this.readWebStorage('local');
+    if (!raw) raw = this.readWebStorage('session');
+    if (!raw) raw = await this.readIndexedDb();
     if (!raw) return null;
-    try {
-      const parsed = JSON.parse(raw) as unknown;
-      const sanitized = sanitizeExploreState(parsed);
-      if (!sanitized) {
-        debugWarn('Saved explore state failed validation');
-        this.clearState();
-        return null;
-      }
+
+    const sanitized = parseSavedState(raw);
+    if (sanitized) {
       return sanitized;
-    } catch (err) {
-      debugWarn('Saved explore state JSON parse failed', err);
-      this.clearState();
-      return null;
     }
+
+    debugWarn('Saved explore state failed validation');
+    this.clearState();
+    return null;
   }
 
   saveState(state: ExploreState): void {
     state.timestamp = Date.now();
-    try {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
-    } catch (err) {
-      debugWarn('localStorage setItem failed in saveState', err);
-    }
+    const raw = JSON.stringify(state);
+    this.writeWebStorage('local', raw);
+    this.writeWebStorage('session', raw);
+    void this.writeIndexedDb(raw);
   }
 
   startAutoSave(getState: () => ExploreState): void {
@@ -191,11 +188,141 @@ export class SaveManager {
   }
 
   clearState(): void {
+    this.removeWebStorage('local');
+    this.removeWebStorage('session');
+    void this.removeIndexedDb();
+  }
+
+  private getWebStorage(kind: 'local' | 'session'): Storage | null {
     try {
-      localStorage.removeItem(STORAGE_KEY);
+      return kind === 'local' ? window.localStorage : window.sessionStorage;
     } catch (err) {
-      debugWarn('localStorage removeItem failed in clearState', err);
+      debugWarn(`window.${kind}Storage access failed`, err);
+      return null;
     }
+  }
+
+  private readWebStorage(kind: 'local' | 'session'): string | null {
+    const storage = this.getWebStorage(kind);
+    if (!storage) return null;
+    try {
+      return storage.getItem(STORAGE_KEY);
+    } catch (err) {
+      debugWarn(`${kind}Storage getItem failed in loadState`, err);
+      return null;
+    }
+  }
+
+  private writeWebStorage(kind: 'local' | 'session', raw: string): void {
+    const storage = this.getWebStorage(kind);
+    if (!storage) return;
+    try {
+      storage.setItem(STORAGE_KEY, raw);
+    } catch (err) {
+      debugWarn(`${kind}Storage setItem failed in saveState`, err);
+    }
+  }
+
+  private removeWebStorage(kind: 'local' | 'session'): void {
+    const storage = this.getWebStorage(kind);
+    if (!storage) return;
+    try {
+      storage.removeItem(STORAGE_KEY);
+    } catch (err) {
+      debugWarn(`${kind}Storage removeItem failed in clearState`, err);
+    }
+  }
+
+  private getDb(): Promise<IDBDatabase | null> {
+    if (this.dbPromise) return this.dbPromise;
+    if (typeof indexedDB === 'undefined') {
+      this.dbPromise = Promise.resolve(null);
+      return this.dbPromise;
+    }
+
+    this.dbPromise = new Promise((resolve) => {
+      try {
+        const request = indexedDB.open(FALLBACK_DB_NAME, 1);
+        request.onupgradeneeded = () => {
+          const db = request.result;
+          if (!db.objectStoreNames.contains(FALLBACK_STORE_NAME)) {
+            db.createObjectStore(FALLBACK_STORE_NAME);
+          }
+        };
+        request.onsuccess = () => resolve(request.result);
+        request.onerror = () => {
+          debugWarn('indexedDB open failed', request.error);
+          resolve(null);
+        };
+      } catch (err) {
+        debugWarn('indexedDB open threw', err);
+        resolve(null);
+      }
+    });
+
+    return this.dbPromise;
+  }
+
+  private async readIndexedDb(): Promise<string | null> {
+    const db = await this.getDb();
+    if (!db) return null;
+
+    return await new Promise((resolve) => {
+      try {
+        const tx = db.transaction(FALLBACK_STORE_NAME, 'readonly');
+        const request = tx.objectStore(FALLBACK_STORE_NAME).get(STORAGE_KEY);
+        request.onsuccess = () => {
+          resolve(typeof request.result === 'string' ? request.result : null);
+        };
+        request.onerror = () => {
+          debugWarn('indexedDB get failed', request.error);
+          resolve(null);
+        };
+      } catch (err) {
+        debugWarn('indexedDB get threw', err);
+        resolve(null);
+      }
+    });
+  }
+
+  private async writeIndexedDb(raw: string): Promise<void> {
+    const db = await this.getDb();
+    if (!db) return;
+
+    await new Promise<void>((resolve) => {
+      try {
+        const tx = db.transaction(FALLBACK_STORE_NAME, 'readwrite');
+        tx.objectStore(FALLBACK_STORE_NAME).put(raw, STORAGE_KEY);
+        tx.oncomplete = () => resolve();
+        tx.onerror = () => {
+          debugWarn('indexedDB put failed', tx.error);
+          resolve();
+        };
+      } catch (err) {
+        debugWarn('indexedDB put threw', err);
+        resolve();
+      }
+    });
+  }
+
+  private async removeIndexedDb(): Promise<void> {
+    const db = await this.getDb();
+    if (!db) return;
+
+    await new Promise<void>((resolve) => {
+      try {
+        const tx = db.transaction(FALLBACK_STORE_NAME, 'readwrite');
+        tx.objectStore(FALLBACK_STORE_NAME).delete(STORAGE_KEY);
+        tx.oncomplete = () => resolve();
+        tx.onerror = () => {
+          debugWarn('indexedDB delete failed', tx.error);
+          resolve();
+        };
+      } catch (err) {
+        debugWarn('indexedDB delete threw', err);
+        resolve();
+      }
+    });
   }
 
   private handleUnload = () => {

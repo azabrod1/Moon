@@ -1040,6 +1040,7 @@ async function init() {
   }
 
   document.getElementById('loading-screen')?.classList.add('hidden');
+  await exploreMode?.showDeferredResumePromptIfNeeded();
 }
 
 // ================================================================

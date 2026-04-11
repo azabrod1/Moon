@@ -185,6 +185,7 @@ export class ExploreMode {
   private activeVoyagerJourney: HistoricJourney | null = null;
   private voyagerMilestoneIndex = 0;
   private scriptedTransfer: ScriptedTransfer | null = null;
+  private deferredResumePromptState: ExploreState | null = null;
 
   active = false;
   private useBloom: boolean;
@@ -261,7 +262,6 @@ export class ExploreMode {
       this.saveManager.saveState(initialDefaultState);
     }
     const shouldPromptForResume = !this.solarSystem && !!savedState;
-    const resumeChoicePromise = shouldPromptForResume ? this.showResumePrompt(savedState) : null;
     reportActivationProgress(this.solarSystem ? CREATE_SOLAR_SYSTEM_TOTAL_UNITS : 0);
 
     // Create solar system if not yet created
@@ -311,29 +311,19 @@ export class ExploreMode {
       this.scene.add(this.starfield);
     }
 
-    // Create constellation overlay
-    if (!this.constellations) {
-      this.constellations = new Constellations();
-      this.scene.add(this.constellations.lines);
-      this.constellations.setVisible(this.showConstellations);
-    }
-
     if (savedState && shouldPromptForResume) {
-      const shouldResume = await resumeChoicePromise!;
-      if (shouldResume) {
-        this.restoreState(savedState);
-      } else {
-        this.saveManager.clearState();
-        this.restoreState(createDefaultState());
-        this.pointTowardMercury();
-        this.showIntroText();
-      }
+      this.restoreState(savedState);
+      this.deferredResumePromptState = savedState;
     } else if (savedState) {
       this.restoreState(savedState);
     } else {
       this.restoreState(initialDefaultState ?? createDefaultState());
       this.pointTowardMercury();
       this.showIntroText();
+    }
+
+    if (this.showConstellations) {
+      this.ensureConstellationsReady();
     }
 
     // Configure camera
@@ -371,6 +361,31 @@ export class ExploreMode {
     }
     this.uiRefreshAccumulator = ExploreMode.UI_REFRESH_INTERVAL_S;
     reportActivationProgress(FIRST_EXPLORE_ACTIVATION_TOTAL_UNITS);
+  }
+
+  private ensureConstellationsReady() {
+    if (!this.constellations) {
+      this.constellations = new Constellations();
+      this.scene.add(this.constellations.lines);
+    }
+    this.constellations.setVisible(this.showConstellations);
+  }
+
+  async showDeferredResumePromptIfNeeded(): Promise<void> {
+    const savedState = this.deferredResumePromptState;
+    if (!savedState || !this.active) return;
+
+    this.deferredResumePromptState = null;
+    const shouldResume = await this.showResumePrompt(savedState);
+    if (!this.active || shouldResume) return;
+
+    if (this.landedOn) {
+      this.exitLandedMode();
+    }
+    this.saveManager.clearState();
+    this.restoreState(createDefaultState());
+    this.pointTowardMercury();
+    this.showIntroText();
   }
 
   deactivate(): void {
@@ -1429,7 +1444,11 @@ export class ExploreMode {
 
     document.getElementById('settings-constellations-toggle')?.addEventListener('click', () => {
       this.showConstellations = !this.showConstellations;
-      if (this.constellations) this.constellations.setVisible(this.showConstellations);
+      if (this.showConstellations) {
+        this.ensureConstellationsReady();
+      } else if (this.constellations) {
+        this.constellations.setVisible(false);
+      }
       const label = document.getElementById('settings-constellations-label');
       if (label) label.textContent = this.showConstellations ? 'On' : 'Off';
     });

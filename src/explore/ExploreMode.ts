@@ -641,7 +641,10 @@ export class ExploreMode {
     if (this.landedOn.type === 'planet') {
       return this.planetWorldPositions.get(this.landedOn.name) ?? null;
     }
-    // Moon: parent position + orbital offset scaled by planet group scale
+    // Moon: parent position + real orbital offset (unscaled).
+    // The player sits at the moon's true AU position. The camera target
+    // is adjusted in updateLanded to account for the visual offset caused
+    // by planet group scaling.
     const parentPlanet = this.landedOn.parentPlanet;
     const parentPos = this.planetWorldPositions.get(parentPlanet);
     if (!parentPos) return null;
@@ -651,17 +654,10 @@ export class ExploreMode {
     if (!moonMesh) return null;
     const angle = this.getMoonAngleRad(moonMesh.data);
     const r = moonMesh.data.orbitalRadiusAU;
-    // Moon meshes are children of the planet group, so their world offset
-    // is scaled by the group's current scale (planetScale with distance ramp).
-    let groupScale = 1;
-    if (this.solarSystem) {
-      const parent = this.solarSystem.planets.find(p => p.data.name === parentPlanet);
-      if (parent) groupScale = parent.group.scale.x;
-    }
     return {
-      x: parentPos.x + r * groupScale * Math.cos(angle),
+      x: parentPos.x + r * Math.cos(angle),
       y: parentPos.y,
-      z: parentPos.z + r * groupScale * Math.sin(angle),
+      z: parentPos.z + r * Math.sin(angle),
     };
   }
 
@@ -2021,18 +2017,6 @@ export class ExploreMode {
     if (apBtn) apBtn.classList.toggle('active', false);
 
     // Move player to body position so floating origin centers on it.
-    // For moons: first move to the parent planet so updatePlanetScaling
-    // computes the correct (close-range) group scale, then recompute
-    // the moon's world position using that scale.
-    if (target.type === 'moon') {
-      const parentPos = this.planetWorldPositions.get(target.parentPlanet);
-      if (parentPos) {
-        this.player.posX = parentPos.x;
-        this.player.posY = parentPos.y;
-        this.player.posZ = parentPos.z;
-        this.updatePlanetScaling();
-      }
-    }
     const pos = this.getLandedBodyWorldPosition();
     if (pos) {
       this.player.posX = pos.x;
@@ -2043,7 +2027,25 @@ export class ExploreMode {
     // Configure OrbitControls to orbit the body
     const radiusAU = this.getLandedBodyRadiusAU();
     const visualRadius = radiusAU * this.planetScale;
-    this.controls.target.set(0, 0, 0);
+
+    // For moons the visual mesh is offset from origin due to planet group
+    // scaling. Run a floating-origin + scaling pass so we can find the
+    // moon's scene-space position and point the camera at it.
+    let orbitCenter = new THREE.Vector3(0, 0, 0);
+    if (target.type === 'moon' && this.solarSystem) {
+      this.applyFloatingOrigin();
+      this.updatePlanetScaling();
+      this.updateMoonPositions();
+      const parent = this.solarSystem.planets.find(p => p.data.name === target.parentPlanet);
+      const moons = this.planetMoons.get(target.parentPlanet);
+      const moonMesh = moons?.find(m => m.data.name === target.name);
+      if (moonMesh && parent) {
+        parent.group.updateMatrixWorld(true);
+        orbitCenter = moonMesh.mesh.getWorldPosition(new THREE.Vector3());
+      }
+    }
+
+    this.controls.target.copy(orbitCenter);
     this.controls.minDistance = visualRadius * 1.5;
     this.controls.maxDistance = Math.max(visualRadius * 30, 0.01);
     this.controls.autoRotate = true;
@@ -2052,8 +2054,12 @@ export class ExploreMode {
 
     // Position camera for a nice initial view
     const camDist = Math.max(visualRadius * 4, 0.0005);
-    this.camera.position.set(camDist, camDist * 0.5, camDist);
-    this.camera.lookAt(0, 0, 0);
+    this.camera.position.set(
+      orbitCenter.x + camDist,
+      orbitCenter.y + camDist * 0.5,
+      orbitCenter.z + camDist,
+    );
+    this.camera.lookAt(orbitCenter);
 
     // UI: hide flight controls, show leave button
     const hide = ['explore-speed-bar', 'explore-keys-hint', 'touch-flight-zone', 'explore-btn-travel', 'explore-btn-land'];
@@ -2160,8 +2166,22 @@ export class ExploreMode {
     // Apply floating origin (scene offset by player = body position)
     this.applyFloatingOrigin();
 
-    // OrbitControls orbits the body at origin
-    this.controls.target.set(0, 0, 0);
+    // For moons, the player is at the real AU position but the visual mesh
+    // is offset due to planet group scaling. Find the moon mesh's actual
+    // scene-space position and orbit the camera around that.
+    if (this.landedOn?.type === 'moon' && this.solarSystem) {
+      const landed = this.landedOn;
+      const parent = this.solarSystem.planets.find(p => p.data.name === landed.parentPlanet);
+      const moons = this.planetMoons.get(landed.parentPlanet);
+      const moonMesh = moons?.find(m => m.data.name === landed.name);
+      if (moonMesh && parent) {
+        parent.group.updateMatrixWorld(true);
+        const moonScenePos = moonMesh.mesh.getWorldPosition(new THREE.Vector3());
+        this.controls.target.copy(moonScenePos);
+      }
+    } else {
+      this.controls.target.set(0, 0, 0);
+    }
     this.controls.update();
 
     // FPS tracking

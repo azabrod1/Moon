@@ -57,6 +57,13 @@ export class ExploreMode {
   private static readonly UI_REFRESH_INTERVAL_S = 1 / 8;
   private static readonly EARTH_DETAIL_MIN_DISTANCE_AU = 0.03;
   private static readonly EARTH_DETAIL_MIN_ANGULAR_DIAMETER_RAD = 0.003;
+  private static readonly MISSION_CONTROL_IDS = [
+    'explore-btn-travel',
+    'explore-btn-pause',
+    'explore-btn-autopilot',
+    'explore-speed-up',
+    'explore-speed-down',
+  ] as const;
 
   private scene: THREE.Scene;
   private camera: THREE.PerspectiveCamera;
@@ -167,6 +174,8 @@ export class ExploreMode {
   private activeVoyagerJourney: HistoricJourney | null = null;
   private voyagerMilestoneIndex = 0;
   private scriptedTransfer: ScriptedTransfer | null = null;
+  private preMissionState: ExploreState | null = null;
+  private preMissionMenuVisible = false;
 
   active = false;
   private useBloom: boolean;
@@ -379,6 +388,7 @@ export class ExploreMode {
       this.moonLabelContainer.style.display = '';
     }
     this.uiRefreshAccumulator = ExploreMode.UI_REFRESH_INTERVAL_S;
+    this.updateMissionControlState();
     reportActivationProgress(FIRST_EXPLORE_ACTIVATION_TOTAL_UNITS);
   }
 
@@ -825,12 +835,14 @@ export class ExploreMode {
 
     // T opens/closes travel menu
     if (e.key.toLowerCase() === 't') {
+      if (this.isMissionActive()) return;
       this.toggleTravelMenu();
       return;
     }
 
     // Suppress all other keys while landed
     if (this.landedOn) return;
+    if (this.isMissionActive()) return;
 
     this.keys.add(e.key.toLowerCase());
 
@@ -949,6 +961,13 @@ export class ExploreMode {
   }
 
   private setNearbyLandTarget(target: NonNullable<LandedTarget> | null) {
+    if (this.isMissionActive()) {
+      this.nearbyLandTarget = null;
+      const btn = document.getElementById('explore-btn-land');
+      if (btn) btn.style.display = 'none';
+      return;
+    }
+
     const prevName = this.nearbyLandTarget?.name ?? null;
     const newName = target?.name ?? null;
     if (prevName === newName) return;
@@ -1077,6 +1096,81 @@ export class ExploreMode {
     }
   }
 
+  private isMissionActive(): boolean {
+    return this.activeVoyagerJourney !== null;
+  }
+
+  private setVoyagerPanelVisible(visible: boolean) {
+    document.getElementById('voyager-panel')?.classList.toggle('visible', visible);
+  }
+
+  private collapseHistoricJourneyMenu() {
+    document.getElementById('explore-historic-submenu')?.classList.remove('visible');
+    document.getElementById('explore-btn-historic')?.classList.remove('expanded');
+  }
+
+  private rememberPreMissionState() {
+    if (this.activeVoyagerJourney) return;
+    this.preMissionState = this.getState();
+    this.preMissionMenuVisible =
+      document.getElementById('explore-menu-panel')?.classList.contains('visible') ?? false;
+  }
+
+  private restorePreMissionState() {
+    const previousState = this.preMissionState;
+    const previousMenuVisible = this.preMissionMenuVisible;
+    this.preMissionState = null;
+    this.preMissionMenuVisible = false;
+
+    if (!previousState) return;
+
+    this.restoreState(previousState);
+    document.getElementById('explore-menu-panel')?.classList.toggle('visible', previousMenuVisible);
+  }
+
+  private updateMissionControlState() {
+    const missionActive = this.isMissionActive();
+
+    for (const id of ExploreMode.MISSION_CONTROL_IDS) {
+      const button = document.getElementById(id) as HTMLButtonElement | null;
+      if (button) button.disabled = missionActive;
+    }
+
+    const speedSlider = document.getElementById('explore-speed-slider') as HTMLInputElement | null;
+    if (speedSlider) speedSlider.disabled = missionActive;
+
+    const speedBar = document.getElementById('explore-speed-bar');
+    if (speedBar) {
+      speedBar.style.opacity = missionActive ? '0.45' : '';
+    }
+
+    const landBtn = document.getElementById('explore-btn-land');
+    if (landBtn) {
+      landBtn.style.display = missionActive ? 'none' : (this.nearbyLandTarget ? '' : 'none');
+      (landBtn as HTMLButtonElement).disabled = missionActive;
+    }
+
+    const leaveBtn = document.getElementById('explore-btn-leave') as HTMLButtonElement | null;
+    if (leaveBtn) leaveBtn.disabled = missionActive;
+
+    const touchZone = document.getElementById('touch-flight-zone');
+    if (touchZone) {
+      touchZone.style.pointerEvents = missionActive ? 'none' : '';
+      if (missionActive) {
+        touchZone.classList.remove('active');
+        this.activeFlightTouchId = null;
+        this.touchYaw = 0;
+        this.touchPitch = 0;
+        this.touchThrottle = 0;
+      }
+    }
+
+    if (missionActive) {
+      this.keys.clear();
+      this.closeTravelMenu();
+    }
+  }
+
   private wireUpUI() {
     // Speed slider
     const speedSlider = document.getElementById('explore-speed-slider') as HTMLInputElement;
@@ -1094,6 +1188,7 @@ export class ExploreMode {
       });
     }
     document.getElementById('explore-speed-up')?.addEventListener('click', () => {
+      if (this.isMissionActive()) return;
       if (this.player.speedMultiplier < 0.05) {
         this.player.speedMultiplier = 0.05;
       } else {
@@ -1102,6 +1197,7 @@ export class ExploreMode {
       this.updateSpeedSlider();
     });
     document.getElementById('explore-speed-down')?.addEventListener('click', () => {
+      if (this.isMissionActive()) return;
       if (this.player.speedMultiplier < 0.06) {
         this.player.speedMultiplier = 0;
       } else {
@@ -1112,6 +1208,7 @@ export class ExploreMode {
 
     // Play/Pause
     document.getElementById('explore-btn-pause')?.addEventListener('click', () => {
+      if (this.isMissionActive()) return;
       this.player.moving = !this.player.moving;
       const btn = document.getElementById('explore-btn-pause');
       if (btn) btn.textContent = this.player.moving ? '\u23F8' : '\u25B6';
@@ -1151,6 +1248,9 @@ export class ExploreMode {
     document.getElementById('voyager-close')?.addEventListener('click', () => {
       this.stopVoyagerJourney();
     });
+    document.getElementById('voyager-exit')?.addEventListener('click', () => {
+      this.stopVoyagerJourney();
+    });
     document.getElementById('voyager-prev')?.addEventListener('click', () => {
       this.showVoyagerMilestone(this.voyagerMilestoneIndex - 1);
     });
@@ -1160,6 +1260,7 @@ export class ExploreMode {
 
     // Autopilot toggle
     document.getElementById('explore-btn-autopilot')?.addEventListener('click', () => {
+      if (this.isMissionActive()) return;
       this.toggleAutopilot();
     });
 
@@ -1306,6 +1407,7 @@ export class ExploreMode {
 
     // Travel menu
     document.getElementById('explore-btn-travel')?.addEventListener('click', () => {
+      if (this.isMissionActive()) return;
       this.toggleTravelMenu();
     });
     document.getElementById('travel-menu-close')?.addEventListener('click', () => {
@@ -1349,6 +1451,7 @@ export class ExploreMode {
     this.buildTravelList();
 
     this.updateTimeUI();
+    this.updateMissionControlState();
   }
 
   private buildTravelList() {
@@ -1396,6 +1499,7 @@ export class ExploreMode {
   }
 
   private toggleTravelMenu() {
+    if (this.isMissionActive()) return;
     const menu = document.getElementById('travel-menu');
     if (!menu) return;
     const isVisible = menu.classList.contains('visible');
@@ -1540,6 +1644,7 @@ export class ExploreMode {
   private async startVoyagerJourney(missionId: HistoricMissionId) {
     const journey = HISTORIC_JOURNEYS[missionId];
     await this.player.ensureProfileLoaded(journey.shipProfile);
+    this.rememberPreMissionState();
     if (this.landedOn) this.exitLandedMode();
     this.activeVoyagerJourney = journey;
     this.showShip = true;
@@ -1548,18 +1653,55 @@ export class ExploreMode {
     const shipLabel = document.getElementById('settings-ship-label');
     if (shipLabel) shipLabel.textContent = 'On';
     document.getElementById('explore-menu-panel')?.classList.remove('visible');
-    document.getElementById('explore-historic-submenu')?.classList.remove('visible');
-    document.getElementById('explore-btn-historic')?.classList.remove('expanded');
+    this.collapseHistoricJourneyMenu();
+    this.updateMissionControlState();
     this.showVoyagerMilestone(0);
     this.showNotification(journey.readyNotification);
   }
 
-  private stopVoyagerJourney() {
+  private stopVoyagerJourney(restorePreviousState = true) {
     this.activeVoyagerJourney = null;
+    this.voyagerMilestoneIndex = 0;
     this.scriptedTransfer = null;
     this.player.setProfile('default');
-    const panel = document.getElementById('voyager-panel');
-    if (panel) panel.classList.remove('visible');
+    this.setVoyagerPanelVisible(false);
+    if (restorePreviousState) this.restorePreMissionState();
+    else {
+      this.preMissionState = null;
+      this.preMissionMenuVisible = false;
+    }
+    this.updateMissionControlState();
+  }
+
+  private updateVoyagerPanel(
+    journey: HistoricJourney,
+    milestone: HistoricMilestone,
+    stepIndex: number,
+  ) {
+    const setText = (id: string, text: string) => {
+      const el = document.getElementById(id);
+      if (el) el.textContent = text;
+    };
+
+    setText('voyager-kicker', journey.label);
+    setText('voyager-step', `${stepIndex + 1} / ${journey.milestones.length}`);
+    setText('voyager-title', milestone.title);
+    setText('voyager-date', milestone.dateLabel);
+    setText('voyager-description', milestone.description);
+    setText('voyager-note', milestone.note);
+
+    this.updateVoyagerImage(
+      milestone,
+      document.getElementById('voyager-image') as HTMLImageElement | null,
+      document.getElementById('voyager-image-link') as HTMLAnchorElement | null,
+      document.getElementById('voyager-image-caption'),
+      document.getElementById('voyager-image-credit'),
+    );
+
+    const prevBtn = document.getElementById('voyager-prev') as HTMLButtonElement | null;
+    const nextBtn = document.getElementById('voyager-next') as HTMLButtonElement | null;
+    if (prevBtn) prevBtn.disabled = stepIndex === 0;
+    if (nextBtn) nextBtn.disabled = stepIndex === journey.milestones.length - 1;
   }
 
   private showVoyagerMilestone(index: number) {
@@ -1569,32 +1711,8 @@ export class ExploreMode {
     this.voyagerMilestoneIndex = nextIndex;
     const milestone = journey.milestones[nextIndex];
     this.applyVoyagerMilestone(milestone);
-
-    const panel = document.getElementById('voyager-panel');
-    if (panel) panel.classList.add('visible');
-
-    const kickerEl = document.getElementById('voyager-kicker');
-    const stepEl = document.getElementById('voyager-step');
-    const titleEl = document.getElementById('voyager-title');
-    const dateEl = document.getElementById('voyager-date');
-    const descEl = document.getElementById('voyager-description');
-    const noteEl = document.getElementById('voyager-note');
-    const imageEl = document.getElementById('voyager-image') as HTMLImageElement | null;
-    const imageLinkEl = document.getElementById('voyager-image-link') as HTMLAnchorElement | null;
-    const imageCaptionEl = document.getElementById('voyager-image-caption');
-    const imageCreditEl = document.getElementById('voyager-image-credit');
-    if (kickerEl) kickerEl.textContent = journey.label;
-    if (stepEl) stepEl.textContent = `${nextIndex + 1} / ${journey.milestones.length}`;
-    if (titleEl) titleEl.textContent = milestone.title;
-    if (dateEl) dateEl.textContent = milestone.dateLabel;
-    if (descEl) descEl.textContent = milestone.description;
-    if (noteEl) noteEl.textContent = milestone.note;
-    this.updateVoyagerImage(milestone, imageEl, imageLinkEl, imageCaptionEl, imageCreditEl);
-
-    const prevBtn = document.getElementById('voyager-prev') as HTMLButtonElement | null;
-    const nextBtn = document.getElementById('voyager-next') as HTMLButtonElement | null;
-    if (prevBtn) prevBtn.disabled = nextIndex === 0;
-    if (nextBtn) nextBtn.disabled = nextIndex === journey.milestones.length - 1;
+    this.setVoyagerPanelVisible(true);
+    this.updateVoyagerPanel(journey, milestone, nextIndex);
   }
 
   private updateVoyagerImage(
@@ -1653,41 +1771,41 @@ export class ExploreMode {
     this.rebuildPlanetPositions();
     this.updateTimeUI();
 
+    const destination = this.getVoyagerDestination(milestone);
+    if (!destination) return;
+
+    this.player.speedMultiplier = 0.15;
+    this.updateSpeedSlider();
+    this.startScriptedTransfer({ ...destination, movingAfter: false });
+  }
+
+  private vectorFromCoords(
+    coords: { x: number; y: number; z: number } | undefined,
+    fallback: THREE.Vector3,
+  ): THREE.Vector3 {
+    if (!coords) return fallback.clone();
+    return new THREE.Vector3(coords.x, coords.y, coords.z);
+  }
+
+  private getVoyagerDestination(milestone: HistoricMilestone) {
     if (milestone.customScenePosition || milestone.target === 'Interstellar' || milestone.target === 'Custom') {
       if (this.landedOn) this.exitLandedMode();
-      this.startScriptedTransfer({
-        targetPosition: milestone.customScenePosition
-          ? new THREE.Vector3(
-            milestone.customScenePosition.x,
-            milestone.customScenePosition.y,
-            milestone.customScenePosition.z,
-          )
-          : new THREE.Vector3(118, 6, -18),
-        lookTarget: milestone.customLookTarget
-          ? new THREE.Vector3(
-            milestone.customLookTarget.x,
-            milestone.customLookTarget.y,
-            milestone.customLookTarget.z,
-          )
-          : new THREE.Vector3(0, 0, 0),
-        movingAfter: false,
-      });
-      this.player.speedMultiplier = 0.15;
-      this.updateSpeedSlider();
-      return;
+      return {
+        targetPosition: this.vectorFromCoords(milestone.customScenePosition, new THREE.Vector3(118, 6, -18)),
+        lookTarget: this.vectorFromCoords(milestone.customLookTarget, new THREE.Vector3(0, 0, 0)),
+      };
     }
 
     const body = ALL_BODIES.find((planet) => planet.name === milestone.target);
-    if (!body) return;
+    if (!body) return null;
+
     const destination = this.getJumpDestination(body, milestone.viewDistanceMultiplier ?? 1);
-    if (!destination) return;
-    this.player.speedMultiplier = 0.15;
-    this.updateSpeedSlider();
-    this.startScriptedTransfer({
+    if (!destination) return null;
+
+    return {
       targetPosition: destination.position,
       lookTarget: destination.lookTarget,
-      movingAfter: false,
-    });
+    };
   }
 
   private startScriptedTransfer(options: {
@@ -1835,6 +1953,7 @@ export class ExploreMode {
   }
 
   jumpToPlanet(planet: PlanetData, options: { notify?: boolean; distanceMultiplier?: number } = {}) {
+    if (this.isMissionActive()) return;
     const destination = this.getJumpDestination(planet, options.distanceMultiplier ?? 1);
     if (!destination) return;
     this.player.posX = destination.position.x;
@@ -1852,6 +1971,7 @@ export class ExploreMode {
   }
 
   enterLandedMode(target: NonNullable<LandedTarget>) {
+    if (this.isMissionActive()) return;
     this.landedOn = target;
     this.preLandSpeed = this.player.speedMultiplier;
     this.preLandAutopilot = this.autopilot;

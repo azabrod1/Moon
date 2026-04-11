@@ -296,7 +296,7 @@ export class ExploreMode {
           this.moonLabelContainer = document.createElement('div');
           this.moonLabelContainer.id = 'moon-labels';
           this.moonLabelContainer.style.cssText =
-            'position:fixed;top:0;left:0;right:0;bottom:0;pointer-events:none;z-index:14;overflow:visible;';
+            'position:fixed;top:0;left:0;right:0;bottom:0;pointer-events:none;z-index:9;overflow:visible;';
           document.body.appendChild(this.moonLabelContainer);
         }
         // Create HTML labels for each moon

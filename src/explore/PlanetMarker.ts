@@ -28,7 +28,7 @@ export class PlanetMarkers {
     this.labelContainer.id = 'planet-labels';
     this.labelContainer.style.cssText = `
       position: fixed; top: 0; left: 0; right: 0; bottom: 0;
-      pointer-events: none; z-index: 15; overflow: hidden;
+      pointer-events: none; z-index: 9; overflow: hidden;
     `;
     document.body.appendChild(this.labelContainer);
 
@@ -64,7 +64,7 @@ export class PlanetMarkers {
       const spriteMat = new THREE.SpriteMaterial({
         map: spriteTex,
         transparent: true,
-        depthTest: false,
+        depthTest: true,
         depthWrite: false,
         blending: THREE.AdditiveBlending,
         sizeAttenuation: false,
@@ -72,7 +72,7 @@ export class PlanetMarkers {
 
       const sprite = new THREE.Sprite(spriteMat);
       sprite.name = `marker-${body.name}`;
-      sprite.renderOrder = 999;
+      sprite.renderOrder = 10;
       sprite.scale.setScalar(0.03);
       scene.add(sprite);
 

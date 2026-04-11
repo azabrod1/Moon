@@ -15,6 +15,7 @@ export interface ExploreState {
   headingRad: number;
   pitchRad?: number;
   speed: number;         // multiplier of default speed
+  moving?: boolean;
   visitedPlanets: string[];
   distanceTraveled: number;  // AU
   timeElapsed: number;       // seconds
@@ -67,6 +68,7 @@ function sanitizeExploreState(raw: unknown): ExploreState | null {
     headingRad: isFiniteNumber(record.headingRad) ? record.headingRad : defaults.headingRad,
     pitchRad: isFiniteNumber(record.pitchRad) ? record.pitchRad : 0,
     speed: isFiniteNumber(record.speed) ? Math.max(0, record.speed) : defaults.speed,
+    moving: typeof record.moving === 'boolean' ? record.moving : defaults.moving,
     visitedPlanets: Array.isArray(record.visitedPlanets)
       ? record.visitedPlanets.filter((planet): planet is string => typeof planet === 'string')
       : defaults.visitedPlanets,
@@ -111,6 +113,7 @@ export function createDefaultState(): ExploreState {
     positionAU: { x: 0.28, y: 0.015, z: -0.04 },
     headingRad: 0,
     speed: 1.0,
+    moving: true,
     visitedPlanets: [],
     distanceTraveled: 0,
     timeElapsed: 0,

@@ -23,7 +23,7 @@ import {
 } from './astronomy';
 import { BRIGHT_STAR_CATALOG } from './data/brightStars';
 import { Constellations } from './Constellations';
-import { getMoonsByPlanet, type MoonData } from './planets/moonData';
+import { getMoonsByPlanet } from './planets/moonData';
 import {
   HISTORIC_JOURNEYS,
   type HistoricJourney,
@@ -44,14 +44,6 @@ type ScriptedTransfer = {
   endMoving: boolean;
 };
 
-type IdleSchedulerWindow = Window & {
-  requestIdleCallback?: (
-    callback: (deadline: { didTimeout: boolean; timeRemaining(): number }) => void,
-    options?: { timeout: number },
-  ) => number;
-  cancelIdleCallback?: (handle: number) => void;
-};
-
 export const FIRST_EXPLORE_ACTIVATION_TOTAL_UNITS = CREATE_SOLAR_SYSTEM_TOTAL_UNITS + 1;
 
 export interface ExploreActivationProgress {
@@ -65,10 +57,13 @@ export class ExploreMode {
   private static readonly UI_REFRESH_INTERVAL_S = 1 / 8;
   private static readonly EARTH_DETAIL_MIN_DISTANCE_AU = 0.03;
   private static readonly EARTH_DETAIL_MIN_ANGULAR_DIAMETER_RAD = 0.003;
-  private static readonly MOON_PREWARM_START_DELAY_MS = 1500;
-  private static readonly MOON_PREWARM_IDLE_TIMEOUT_MS = 1000;
-  private static readonly MOON_PREWARM_FALLBACK_DELAY_MS = 250;
-  private static readonly MOON_PREWARM_MIN_IDLE_BUDGET_MS = 8;
+  private static readonly MISSION_CONTROL_IDS = [
+    'explore-btn-travel',
+    'explore-btn-pause',
+    'explore-btn-autopilot',
+    'explore-speed-up',
+    'explore-speed-down',
+  ] as const;
 
   private scene: THREE.Scene;
   private camera: THREE.PerspectiveCamera;
@@ -88,12 +83,6 @@ export class ExploreMode {
 
   // Planet moons: map from planet name to array of moon meshes
   private planetMoons = new Map<string, MoonMesh[]>();
-  private readonly moonDataByPlanet = new Map<string, MoonData[]>(
-    ALL_BODIES.map(body => [body.name, getMoonsByPlanet(body.name)]),
-  );
-  private moonPrewarmQueue: string[] = [];
-  private moonPrewarmStartTimeout: number | null = null;
-  private moonPrewarmIdleHandle: number | null = null;
 
   // Keyboard state
   private keys = new Set<string>();
@@ -185,6 +174,8 @@ export class ExploreMode {
   private activeVoyagerJourney: HistoricJourney | null = null;
   private voyagerMilestoneIndex = 0;
   private scriptedTransfer: ScriptedTransfer | null = null;
+  private preMissionState: ExploreState | null = null;
+  private preMissionMenuVisible = false;
   private deferredResumePromptState: ExploreState | null = null;
 
   active = false;
@@ -290,6 +281,33 @@ export class ExploreMode {
         const pos = planet.group.position;
         planet.group.userData.worldPosAU = { x: pos.x, y: pos.y, z: pos.z };
         this.planetWorldPositions.set(planet.data.name, { x: pos.x, y: pos.y, z: pos.z });
+
+        // Create moons for this planet
+        const moons = createMoonMeshes(planet.data.name);
+        if (moons.length > 0) {
+          this.planetMoons.set(planet.data.name, moons);
+          for (const m of moons) {
+            planet.group.add(m.mesh);
+          }
+        }
+
+        // Create moon label container if needed
+        if (!this.moonLabelContainer) {
+          this.moonLabelContainer = document.createElement('div');
+          this.moonLabelContainer.id = 'moon-labels';
+          this.moonLabelContainer.style.cssText =
+            'position:fixed;top:0;left:0;right:0;bottom:0;pointer-events:none;z-index:14;overflow:visible;';
+          document.body.appendChild(this.moonLabelContainer);
+        }
+        // Create HTML labels for each moon
+        for (const m of moons) {
+          const label = document.createElement('div');
+          label.className = 'moon-label';
+          label.textContent = m.data.name;
+          label.style.display = 'none';
+          this.moonLabelContainer.appendChild(label);
+          this.moonLabels.set(m.data.name, label);
+        }
       }
 
       for (const orbit of this.solarSystem.orbitLines) {
@@ -360,6 +378,7 @@ export class ExploreMode {
       this.moonLabelContainer.style.display = '';
     }
     this.uiRefreshAccumulator = ExploreMode.UI_REFRESH_INTERVAL_S;
+    this.updateMissionControlState();
     reportActivationProgress(FIRST_EXPLORE_ACTIVATION_TOTAL_UNITS);
   }
 
@@ -397,7 +416,6 @@ export class ExploreMode {
     }
 
     this.active = false;
-    this.cancelMoonPrewarm();
 
     // Save before leaving
     this.saveManager.saveState(this.getState());
@@ -609,165 +627,10 @@ export class ExploreMode {
     return orbitalAngle + THREE.MathUtils.degToRad(moon.orbitalPhaseDeg);
   }
 
-  private getMoonDataForPlanet(planetName: string): MoonData[] {
-    return this.moonDataByPlanet.get(planetName) ?? [];
-  }
-
-  private getMoonDataByName(parentPlanet: string, moonName: string): MoonData | null {
-    return this.getMoonDataForPlanet(parentPlanet).find(moon => moon.name === moonName) ?? null;
-  }
-
-  private ensureMoonLabelContainer() {
-    if (this.moonLabelContainer) return;
-
-    this.moonLabelContainer = document.createElement('div');
-    this.moonLabelContainer.id = 'moon-labels';
-    this.moonLabelContainer.style.cssText =
-      'position:fixed;top:0;left:0;right:0;bottom:0;pointer-events:none;z-index:14;overflow:visible;';
-    document.body.appendChild(this.moonLabelContainer);
-  }
-
-  private ensurePlanetMoonMeshes(planetName: string, planetGroup: THREE.Group): MoonMesh[] {
-    const existing = this.planetMoons.get(planetName);
-    if (existing) return existing;
-
-    const moonData = this.getMoonDataForPlanet(planetName);
-    if (moonData.length === 0) return [];
-
-    const moons = createMoonMeshes(planetName);
-    this.planetMoons.set(planetName, moons);
-    if (moons.length === 0) return moons;
-
-    this.ensureMoonLabelContainer();
-    for (const moon of moons) {
-      planetGroup.add(moon.mesh);
-      if (this.moonLabelContainer && !this.moonLabels.has(moon.data.name)) {
-        const label = document.createElement('div');
-        label.className = 'moon-label';
-        label.textContent = moon.data.name;
-        label.style.display = 'none';
-        this.moonLabelContainer.appendChild(label);
-        this.moonLabels.set(moon.data.name, label);
-      }
-    }
-
-    return moons;
-  }
-
-  private cancelMoonPrewarm() {
-    if (this.moonPrewarmStartTimeout !== null) {
-      clearTimeout(this.moonPrewarmStartTimeout);
-      this.moonPrewarmStartTimeout = null;
-    }
-
-    if (this.moonPrewarmIdleHandle !== null) {
-      const idleWindow = window as IdleSchedulerWindow;
-      if (idleWindow.cancelIdleCallback) {
-        idleWindow.cancelIdleCallback(this.moonPrewarmIdleHandle);
-      } else {
-        clearTimeout(this.moonPrewarmIdleHandle);
-      }
-      this.moonPrewarmIdleHandle = null;
-    }
-
-    this.moonPrewarmQueue = [];
-  }
-
-  private getMoonPrewarmOrder(): string[] {
-    if (!this.solarSystem) return [];
-
-    return this.solarSystem.planets
-      .map((planet) => {
-        const moonData = this.getMoonDataForPlanet(planet.data.name);
-        if (moonData.length === 0 || this.planetMoons.has(planet.data.name)) {
-          return null;
-        }
-
-        const wp = planet.group.userData.worldPosAU as { x: number; y: number; z: number };
-        const dx = this.player.posX - wp.x;
-        const dy = this.player.posY - wp.y;
-        const dz = this.player.posZ - wp.z;
-        return {
-          name: planet.data.name,
-          distanceSq: dx * dx + dy * dy + dz * dz,
-          moonCount: moonData.length,
-          semiMajorAxisAU: planet.data.semiMajorAxisAU,
-        };
-      })
-      .filter((planet): planet is {
-        name: string;
-        distanceSq: number;
-        moonCount: number;
-        semiMajorAxisAU: number;
-      } => planet !== null)
-      .sort((a, b) =>
-        a.distanceSq - b.distanceSq ||
-        a.moonCount - b.moonCount ||
-        a.semiMajorAxisAU - b.semiMajorAxisAU,
-      )
-      .map(planet => planet.name);
-  }
-
-  private scheduleMoonPrewarmSlice() {
-    if (!this.active || !this.solarSystem || this.moonPrewarmQueue.length === 0 || this.moonPrewarmIdleHandle !== null) {
-      return;
-    }
-
-    const idleWindow = window as IdleSchedulerWindow;
-    if (idleWindow.requestIdleCallback) {
-      this.moonPrewarmIdleHandle = idleWindow.requestIdleCallback((deadline) => {
-        this.moonPrewarmIdleHandle = null;
-        if (!deadline.didTimeout && deadline.timeRemaining() < ExploreMode.MOON_PREWARM_MIN_IDLE_BUDGET_MS) {
-          this.scheduleMoonPrewarmSlice();
-          return;
-        }
-        this.runMoonPrewarmSlice();
-      }, { timeout: ExploreMode.MOON_PREWARM_IDLE_TIMEOUT_MS });
-      return;
-    }
-
-    this.moonPrewarmIdleHandle = window.setTimeout(() => {
-      this.moonPrewarmIdleHandle = null;
-      this.runMoonPrewarmSlice();
-    }, ExploreMode.MOON_PREWARM_FALLBACK_DELAY_MS);
-  }
-
-  private runMoonPrewarmSlice() {
-    if (!this.active || !this.solarSystem) return;
-
-    while (this.moonPrewarmQueue.length > 0) {
-      const planetName = this.moonPrewarmQueue.shift()!;
-      if (this.planetMoons.has(planetName)) continue;
-
-      const planet = this.solarSystem.planets.find(item => item.data.name === planetName);
-      if (!planet) continue;
-
-      this.ensurePlanetMoonMeshes(planetName, planet.group);
-      break;
-    }
-
-    if (this.moonPrewarmQueue.length > 0) {
-      this.scheduleMoonPrewarmSlice();
-    }
-  }
-
-  private restartMoonPrewarm() {
-    this.cancelMoonPrewarm();
-    if (!this.active || !this.solarSystem) return;
-
-    this.moonPrewarmQueue = this.getMoonPrewarmOrder();
-    if (this.moonPrewarmQueue.length === 0) return;
-
-    this.moonPrewarmStartTimeout = window.setTimeout(() => {
-      this.moonPrewarmStartTimeout = null;
-      this.scheduleMoonPrewarmSlice();
-    }, ExploreMode.MOON_PREWARM_START_DELAY_MS);
-  }
-
-  private getMoonSystemThresholdAU(planetRadiusAU: number, moons: ReadonlyArray<MoonData>): number {
+  private getMoonSystemThresholdAU(planetRadiusAU: number, moons: MoonMesh[]): number {
     let farthestOrbitAU = 0;
     for (const moon of moons) {
-      farthestOrbitAU = Math.max(farthestOrbitAU, moon.orbitalRadiusAU);
+      farthestOrbitAU = Math.max(farthestOrbitAU, moon.data.orbitalRadiusAU);
     }
 
     return Math.max(planetRadiusAU * 120, farthestOrbitAU * 1.15, 0.3);
@@ -782,10 +645,12 @@ export class ExploreMode {
     const parentPlanet = this.landedOn.parentPlanet;
     const parentPos = this.planetWorldPositions.get(parentPlanet);
     if (!parentPos) return null;
-    const moonData = this.getMoonDataByName(parentPlanet, this.landedOn.name);
-    if (!moonData) return null;
-    const angle = this.getMoonAngleRad(moonData);
-    const r = moonData.orbitalRadiusAU;
+    const moons = this.planetMoons.get(parentPlanet);
+    if (!moons) return null;
+    const moonMesh = moons.find(m => m.data.name === this.landedOn!.name);
+    if (!moonMesh) return null;
+    const angle = this.getMoonAngleRad(moonMesh.data);
+    const r = moonMesh.data.orbitalRadiusAU;
     // Moon meshes are children of the planet group, so their world offset
     // is scaled by the group's current scale (planetScale with distance ramp).
     let groupScale = 1;
@@ -806,7 +671,10 @@ export class ExploreMode {
       const body = ALL_BODIES.find(b => b.name === this.landedOn!.name);
       return body ? body.radiusAU : 0;
     }
-    return this.getMoonDataByName(this.landedOn.parentPlanet, this.landedOn.name)?.radiusAU ?? 0;
+    const moons = this.planetMoons.get(this.landedOn.parentPlanet);
+    if (!moons) return 0;
+    const moonMesh = moons.find(m => m.data.name === this.landedOn!.name);
+    return moonMesh ? moonMesh.data.radiusAU : 0;
   }
 
   private updatePlanetScaling() {
@@ -852,8 +720,8 @@ export class ExploreMode {
   private updateMoonPositions() {
     if (!this.solarSystem) return;
     for (const planet of this.solarSystem.planets) {
-      const moonData = this.getMoonDataForPlanet(planet.data.name);
-      if (moonData.length === 0) continue;
+      const moons = this.planetMoons.get(planet.data.name);
+      if (!moons || moons.length === 0) continue;
 
       const wp = planet.group.userData.worldPosAU as { x: number; y: number; z: number };
       const dx = this.player.posX - wp.x;
@@ -861,15 +729,8 @@ export class ExploreMode {
       const dz = this.player.posZ - wp.z;
       const distToPlayer = Math.sqrt(dx * dx + dy * dy + dz * dz);
 
-      const threshold = this.getMoonSystemThresholdAU(planet.data.radiusAU, moonData);
+      const threshold = this.getMoonSystemThresholdAU(planet.data.radiusAU, moons);
       const visible = distToPlayer < threshold;
-      let moons = this.planetMoons.get(planet.data.name);
-      if (!moons) {
-        if (!visible) continue;
-        moons = this.ensurePlanetMoonMeshes(planet.data.name, planet.group);
-      }
-      if (moons.length === 0) continue;
-
       const parentR = planet.data.radiusAU;
 
       const shouldRefreshMoonLabels = this.moonLabelContainer !== null;
@@ -997,12 +858,14 @@ export class ExploreMode {
 
     // T opens/closes travel menu
     if (e.key.toLowerCase() === 't') {
+      if (this.isMissionActive()) return;
       this.toggleTravelMenu();
       return;
     }
 
     // Suppress all other keys while landed
     if (this.landedOn) return;
+    if (this.isMissionActive()) return;
 
     this.keys.add(e.key.toLowerCase());
 
@@ -1100,11 +963,10 @@ export class ExploreMode {
       }
 
       // Check moons of nearby planets
-      const moonData = this.getMoonDataForPlanet(planet.data.name);
-      if (moonData.length === 0) continue;
-      const moonThreshold = this.getMoonSystemThresholdAU(planet.data.radiusAU, moonData);
+      const moons = this.planetMoons.get(planet.data.name);
+      if (!moons) continue;
+      const moonThreshold = this.getMoonSystemThresholdAU(planet.data.radiusAU, moons);
       if (dist > moonThreshold) continue;
-      const moons = this.ensurePlanetMoonMeshes(planet.data.name, planet.group);
       for (const m of moons) {
         const moonWorldPos = m.mesh.getWorldPosition(new THREE.Vector3());
         // moonWorldPos is in scene space (offset by floating origin)
@@ -1122,6 +984,13 @@ export class ExploreMode {
   }
 
   private setNearbyLandTarget(target: NonNullable<LandedTarget> | null) {
+    if (this.isMissionActive()) {
+      this.nearbyLandTarget = null;
+      const btn = document.getElementById('explore-btn-land');
+      if (btn) btn.style.display = 'none';
+      return;
+    }
+
     const prevName = this.nearbyLandTarget?.name ?? null;
     const newName = target?.name ?? null;
     if (prevName === newName) return;
@@ -1250,6 +1119,81 @@ export class ExploreMode {
     }
   }
 
+  private isMissionActive(): boolean {
+    return this.activeVoyagerJourney !== null;
+  }
+
+  private setVoyagerPanelVisible(visible: boolean) {
+    document.getElementById('voyager-panel')?.classList.toggle('visible', visible);
+  }
+
+  private collapseHistoricJourneyMenu() {
+    document.getElementById('explore-historic-submenu')?.classList.remove('visible');
+    document.getElementById('explore-btn-historic')?.classList.remove('expanded');
+  }
+
+  private rememberPreMissionState() {
+    if (this.activeVoyagerJourney) return;
+    this.preMissionState = this.getState();
+    this.preMissionMenuVisible =
+      document.getElementById('explore-menu-panel')?.classList.contains('visible') ?? false;
+  }
+
+  private restorePreMissionState() {
+    const previousState = this.preMissionState;
+    const previousMenuVisible = this.preMissionMenuVisible;
+    this.preMissionState = null;
+    this.preMissionMenuVisible = false;
+
+    if (!previousState) return;
+
+    this.restoreState(previousState);
+    document.getElementById('explore-menu-panel')?.classList.toggle('visible', previousMenuVisible);
+  }
+
+  private updateMissionControlState() {
+    const missionActive = this.isMissionActive();
+
+    for (const id of ExploreMode.MISSION_CONTROL_IDS) {
+      const button = document.getElementById(id) as HTMLButtonElement | null;
+      if (button) button.disabled = missionActive;
+    }
+
+    const speedSlider = document.getElementById('explore-speed-slider') as HTMLInputElement | null;
+    if (speedSlider) speedSlider.disabled = missionActive;
+
+    const speedBar = document.getElementById('explore-speed-bar');
+    if (speedBar) {
+      speedBar.style.opacity = missionActive ? '0.45' : '';
+    }
+
+    const landBtn = document.getElementById('explore-btn-land');
+    if (landBtn) {
+      landBtn.style.display = missionActive ? 'none' : (this.nearbyLandTarget ? '' : 'none');
+      (landBtn as HTMLButtonElement).disabled = missionActive;
+    }
+
+    const leaveBtn = document.getElementById('explore-btn-leave') as HTMLButtonElement | null;
+    if (leaveBtn) leaveBtn.disabled = missionActive;
+
+    const touchZone = document.getElementById('touch-flight-zone');
+    if (touchZone) {
+      touchZone.style.pointerEvents = missionActive ? 'none' : '';
+      if (missionActive) {
+        touchZone.classList.remove('active');
+        this.activeFlightTouchId = null;
+        this.touchYaw = 0;
+        this.touchPitch = 0;
+        this.touchThrottle = 0;
+      }
+    }
+
+    if (missionActive) {
+      this.keys.clear();
+      this.closeTravelMenu();
+    }
+  }
+
   private wireUpUI() {
     // Speed slider
     const speedSlider = document.getElementById('explore-speed-slider') as HTMLInputElement;
@@ -1267,6 +1211,7 @@ export class ExploreMode {
       });
     }
     document.getElementById('explore-speed-up')?.addEventListener('click', () => {
+      if (this.isMissionActive()) return;
       if (this.player.speedMultiplier < 0.05) {
         this.player.speedMultiplier = 0.05;
       } else {
@@ -1275,6 +1220,7 @@ export class ExploreMode {
       this.updateSpeedSlider();
     });
     document.getElementById('explore-speed-down')?.addEventListener('click', () => {
+      if (this.isMissionActive()) return;
       if (this.player.speedMultiplier < 0.06) {
         this.player.speedMultiplier = 0;
       } else {
@@ -1285,6 +1231,7 @@ export class ExploreMode {
 
     // Play/Pause
     document.getElementById('explore-btn-pause')?.addEventListener('click', () => {
+      if (this.isMissionActive()) return;
       this.player.moving = !this.player.moving;
       const btn = document.getElementById('explore-btn-pause');
       if (btn) btn.textContent = this.player.moving ? '\u23F8' : '\u25B6';
@@ -1324,6 +1271,9 @@ export class ExploreMode {
     document.getElementById('voyager-close')?.addEventListener('click', () => {
       this.stopVoyagerJourney();
     });
+    document.getElementById('voyager-exit')?.addEventListener('click', () => {
+      this.stopVoyagerJourney();
+    });
     document.getElementById('voyager-prev')?.addEventListener('click', () => {
       this.showVoyagerMilestone(this.voyagerMilestoneIndex - 1);
     });
@@ -1333,6 +1283,7 @@ export class ExploreMode {
 
     // Autopilot toggle
     document.getElementById('explore-btn-autopilot')?.addEventListener('click', () => {
+      if (this.isMissionActive()) return;
       this.toggleAutopilot();
     });
 
@@ -1483,6 +1434,7 @@ export class ExploreMode {
 
     // Travel menu
     document.getElementById('explore-btn-travel')?.addEventListener('click', () => {
+      if (this.isMissionActive()) return;
       this.toggleTravelMenu();
     });
     document.getElementById('travel-menu-close')?.addEventListener('click', () => {
@@ -1526,6 +1478,7 @@ export class ExploreMode {
     this.buildTravelList();
 
     this.updateTimeUI();
+    this.updateMissionControlState();
   }
 
   private buildTravelList() {
@@ -1573,6 +1526,7 @@ export class ExploreMode {
   }
 
   private toggleTravelMenu() {
+    if (this.isMissionActive()) return;
     const menu = document.getElementById('travel-menu');
     if (!menu) return;
     const isVisible = menu.classList.contains('visible');
@@ -1664,7 +1618,10 @@ export class ExploreMode {
   private showResumePrompt(saved: ExploreState): Promise<boolean> {
     return new Promise((resolve) => {
       const prompt = document.getElementById('explore-resume-prompt');
-      if (!prompt) { resolve(true); return; }
+      if (!prompt) {
+        resolve(true);
+        return;
+      }
       const uiOverlay = document.getElementById('ui-overlay');
 
       const info = document.getElementById('resume-info');
@@ -1717,6 +1674,7 @@ export class ExploreMode {
   private async startVoyagerJourney(missionId: HistoricMissionId) {
     const journey = HISTORIC_JOURNEYS[missionId];
     await this.player.ensureProfileLoaded(journey.shipProfile);
+    this.rememberPreMissionState();
     if (this.landedOn) this.exitLandedMode();
     this.activeVoyagerJourney = journey;
     this.showShip = true;
@@ -1725,18 +1683,55 @@ export class ExploreMode {
     const shipLabel = document.getElementById('settings-ship-label');
     if (shipLabel) shipLabel.textContent = 'On';
     document.getElementById('explore-menu-panel')?.classList.remove('visible');
-    document.getElementById('explore-historic-submenu')?.classList.remove('visible');
-    document.getElementById('explore-btn-historic')?.classList.remove('expanded');
+    this.collapseHistoricJourneyMenu();
+    this.updateMissionControlState();
     this.showVoyagerMilestone(0);
     this.showNotification(journey.readyNotification);
   }
 
-  private stopVoyagerJourney() {
+  private stopVoyagerJourney(restorePreviousState = true) {
     this.activeVoyagerJourney = null;
+    this.voyagerMilestoneIndex = 0;
     this.scriptedTransfer = null;
     this.player.setProfile('default');
-    const panel = document.getElementById('voyager-panel');
-    if (panel) panel.classList.remove('visible');
+    this.setVoyagerPanelVisible(false);
+    if (restorePreviousState) this.restorePreMissionState();
+    else {
+      this.preMissionState = null;
+      this.preMissionMenuVisible = false;
+    }
+    this.updateMissionControlState();
+  }
+
+  private updateVoyagerPanel(
+    journey: HistoricJourney,
+    milestone: HistoricMilestone,
+    stepIndex: number,
+  ) {
+    const setText = (id: string, text: string) => {
+      const el = document.getElementById(id);
+      if (el) el.textContent = text;
+    };
+
+    setText('voyager-kicker', journey.label);
+    setText('voyager-step', `${stepIndex + 1} / ${journey.milestones.length}`);
+    setText('voyager-title', milestone.title);
+    setText('voyager-date', milestone.dateLabel);
+    setText('voyager-description', milestone.description);
+    setText('voyager-note', milestone.note);
+
+    this.updateVoyagerImage(
+      milestone,
+      document.getElementById('voyager-image') as HTMLImageElement | null,
+      document.getElementById('voyager-image-link') as HTMLAnchorElement | null,
+      document.getElementById('voyager-image-caption'),
+      document.getElementById('voyager-image-credit'),
+    );
+
+    const prevBtn = document.getElementById('voyager-prev') as HTMLButtonElement | null;
+    const nextBtn = document.getElementById('voyager-next') as HTMLButtonElement | null;
+    if (prevBtn) prevBtn.disabled = stepIndex === 0;
+    if (nextBtn) nextBtn.disabled = stepIndex === journey.milestones.length - 1;
   }
 
   private showVoyagerMilestone(index: number) {
@@ -1746,32 +1741,8 @@ export class ExploreMode {
     this.voyagerMilestoneIndex = nextIndex;
     const milestone = journey.milestones[nextIndex];
     this.applyVoyagerMilestone(milestone);
-
-    const panel = document.getElementById('voyager-panel');
-    if (panel) panel.classList.add('visible');
-
-    const kickerEl = document.getElementById('voyager-kicker');
-    const stepEl = document.getElementById('voyager-step');
-    const titleEl = document.getElementById('voyager-title');
-    const dateEl = document.getElementById('voyager-date');
-    const descEl = document.getElementById('voyager-description');
-    const noteEl = document.getElementById('voyager-note');
-    const imageEl = document.getElementById('voyager-image') as HTMLImageElement | null;
-    const imageLinkEl = document.getElementById('voyager-image-link') as HTMLAnchorElement | null;
-    const imageCaptionEl = document.getElementById('voyager-image-caption');
-    const imageCreditEl = document.getElementById('voyager-image-credit');
-    if (kickerEl) kickerEl.textContent = journey.label;
-    if (stepEl) stepEl.textContent = `${nextIndex + 1} / ${journey.milestones.length}`;
-    if (titleEl) titleEl.textContent = milestone.title;
-    if (dateEl) dateEl.textContent = milestone.dateLabel;
-    if (descEl) descEl.textContent = milestone.description;
-    if (noteEl) noteEl.textContent = milestone.note;
-    this.updateVoyagerImage(milestone, imageEl, imageLinkEl, imageCaptionEl, imageCreditEl);
-
-    const prevBtn = document.getElementById('voyager-prev') as HTMLButtonElement | null;
-    const nextBtn = document.getElementById('voyager-next') as HTMLButtonElement | null;
-    if (prevBtn) prevBtn.disabled = nextIndex === 0;
-    if (nextBtn) nextBtn.disabled = nextIndex === journey.milestones.length - 1;
+    this.setVoyagerPanelVisible(true);
+    this.updateVoyagerPanel(journey, milestone, nextIndex);
   }
 
   private updateVoyagerImage(
@@ -1830,41 +1801,41 @@ export class ExploreMode {
     this.rebuildPlanetPositions();
     this.updateTimeUI();
 
+    const destination = this.getVoyagerDestination(milestone);
+    if (!destination) return;
+
+    this.player.speedMultiplier = 0.15;
+    this.updateSpeedSlider();
+    this.startScriptedTransfer({ ...destination, movingAfter: false });
+  }
+
+  private vectorFromCoords(
+    coords: { x: number; y: number; z: number } | undefined,
+    fallback: THREE.Vector3,
+  ): THREE.Vector3 {
+    if (!coords) return fallback.clone();
+    return new THREE.Vector3(coords.x, coords.y, coords.z);
+  }
+
+  private getVoyagerDestination(milestone: HistoricMilestone) {
     if (milestone.customScenePosition || milestone.target === 'Interstellar' || milestone.target === 'Custom') {
       if (this.landedOn) this.exitLandedMode();
-      this.startScriptedTransfer({
-        targetPosition: milestone.customScenePosition
-          ? new THREE.Vector3(
-            milestone.customScenePosition.x,
-            milestone.customScenePosition.y,
-            milestone.customScenePosition.z,
-          )
-          : new THREE.Vector3(118, 6, -18),
-        lookTarget: milestone.customLookTarget
-          ? new THREE.Vector3(
-            milestone.customLookTarget.x,
-            milestone.customLookTarget.y,
-            milestone.customLookTarget.z,
-          )
-          : new THREE.Vector3(0, 0, 0),
-        movingAfter: false,
-      });
-      this.player.speedMultiplier = 0.15;
-      this.updateSpeedSlider();
-      return;
+      return {
+        targetPosition: this.vectorFromCoords(milestone.customScenePosition, new THREE.Vector3(118, 6, -18)),
+        lookTarget: this.vectorFromCoords(milestone.customLookTarget, new THREE.Vector3(0, 0, 0)),
+      };
     }
 
     const body = ALL_BODIES.find((planet) => planet.name === milestone.target);
-    if (!body) return;
+    if (!body) return null;
+
     const destination = this.getJumpDestination(body, milestone.viewDistanceMultiplier ?? 1);
-    if (!destination) return;
-    this.player.speedMultiplier = 0.15;
-    this.updateSpeedSlider();
-    this.startScriptedTransfer({
+    if (!destination) return null;
+
+    return {
       targetPosition: destination.position,
       lookTarget: destination.lookTarget,
-      movingAfter: false,
-    });
+    };
   }
 
   private startScriptedTransfer(options: {
@@ -2012,6 +1983,7 @@ export class ExploreMode {
   }
 
   jumpToPlanet(planet: PlanetData, options: { notify?: boolean; distanceMultiplier?: number } = {}) {
+    if (this.isMissionActive()) return;
     const destination = this.getJumpDestination(planet, options.distanceMultiplier ?? 1);
     if (!destination) return;
     this.player.posX = destination.position.x;
@@ -2029,16 +2001,10 @@ export class ExploreMode {
   }
 
   enterLandedMode(target: NonNullable<LandedTarget>) {
+    if (this.isMissionActive()) return;
     this.landedOn = target;
     this.preLandSpeed = this.player.speedMultiplier;
     this.preLandAutopilot = this.autopilot;
-
-    if (target.type === 'moon' && this.solarSystem) {
-      const parentPlanet = this.solarSystem.planets.find(planet => planet.data.name === target.parentPlanet);
-      if (parentPlanet) {
-        this.ensurePlanetMoonMeshes(parentPlanet.data.name, parentPlanet.group);
-      }
-    }
 
     // Stop ship
     this.player.speedMultiplier = 0;
@@ -2295,7 +2261,11 @@ export class ExploreMode {
     this.showShip = saved.showShip;
     this.player.group.visible = this.showShip;
     this.showConstellations = saved.showConstellations ?? false;
-    if (this.constellations) this.constellations.setVisible(this.showConstellations);
+    if (this.showConstellations) {
+      this.ensureConstellationsReady();
+    } else if (this.constellations) {
+      this.constellations.setVisible(false);
+    }
     const constLabel = document.getElementById('settings-constellations-label');
     if (constLabel) constLabel.textContent = this.showConstellations ? 'On' : 'Off';
 
@@ -2318,8 +2288,6 @@ export class ExploreMode {
     } else {
       this.resetCruiseCamera();
     }
-
-    this.restartMoonPrewarm();
   }
 
   private getStarColor(colorIndex: number): THREE.Color {

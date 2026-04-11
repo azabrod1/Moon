@@ -35,9 +35,18 @@ let exploreMode: ExploreMode | null = null;
 let simMoonRef: Moon | null = null;
 let simSunRef: Sun | null = null;
 let modeSwitchInFlight = false;
-const BASE_PLANETS_BOOT_TEXTURE_UNITS = 5;
-const INITIAL_PLANETS_BOOT_TOTAL_UNITS =
-  BASE_PLANETS_BOOT_TEXTURE_UNITS + FIRST_EXPLORE_ACTIVATION_TOTAL_UNITS;
+
+interface SimulatorSceneState {
+  earth: Earth;
+  moon: Moon;
+  sun: Sun;
+  earthShadowCone: THREE.Mesh;
+  moonShadowCone: THREE.Mesh;
+}
+
+let simulatorScene: SimulatorSceneState | null = null;
+let simulatorSceneInitPromise: Promise<SimulatorSceneState> | null = null;
+let simulatorScaleSliderBound = false;
 
 // ================================================================
 // Simulator State
@@ -770,6 +779,103 @@ function setPlanetsLoadingPercent(completedUnits: number, totalUnits: number) {
   transitionMsg.textContent = text;
 }
 
+function setSimulatorLoadingPercent(loaded: number, total: number) {
+  const pct = Math.round((Math.min(Math.max(loaded, 0), Math.max(total, 1)) / Math.max(total, 1)) * 100);
+  const text = `Loading Moon... ${pct}%`;
+  const loadEl = document.getElementById('loading-msg');
+  if (loadEl) loadEl.textContent = text;
+  transitionMsg.textContent = text;
+}
+
+async function ensureSimulatorScene(
+  onProgress?: (loaded: number, total: number) => void,
+): Promise<SimulatorSceneState> {
+  if (simulatorScene) {
+    onProgress?.(1, 1);
+    return simulatorScene;
+  }
+
+  if (!simulatorSceneInitPromise) {
+    simulatorSceneInitPromise = (async () => {
+      const textures = await loadAllTextures((loaded, total) => {
+        onProgress?.(loaded, total);
+      });
+      debugLog('Base textures loaded', Object.keys(textures));
+
+      const earth = new Earth(textures);
+      scene.add(earth.group);
+      simObjects.push(earth.group);
+
+      const moon = new Moon(textures);
+      simMoonRef = moon;
+      scene.add(moon.orbitGroup);
+      simObjects.push(moon.orbitGroup);
+
+      scene.add(orbitDetailsOverlay.group);
+      simObjects.push(orbitDetailsOverlay.group);
+
+      const sun = new Sun(useBloom);
+      simSunRef = sun;
+      scene.add(sun.group);
+      simObjects.push(sun.group);
+
+      simObjects.push(moonOrbitLine, eclipticGrid);
+
+      const earthShadowCone = createShadowCone(SCENE.EARTH_RADIUS, 0x331111);
+      scene.add(earthShadowCone);
+      simObjects.push(earthShadowCone);
+
+      const moonShadowCone = createShadowCone(SCENE.MOON_RADIUS * 0.8, 0x111133);
+      scene.add(moonShadowCone);
+      simObjects.push(moonShadowCone);
+
+      moonBodyScaleSlider.min = String(PROPORTIONAL_BODY_SCALE);
+      moonBodyScaleSlider.max = String(MAX_MOON_BODY_SCALE);
+      moonBodyScaleSlider.step = '0.1';
+      moonBodyScaleSlider.value = String(PROPORTIONAL_BODY_SCALE);
+      updateMoonBodyScaleLabel(PROPORTIONAL_BODY_SCALE);
+
+      simulatorScene = {
+        earth,
+        moon,
+        sun,
+        earthShadowCone,
+        moonShadowCone,
+      };
+
+      applyMoonBodyScale(earth, moon, sun, earthShadowCone, moonShadowCone, PROPORTIONAL_BODY_SCALE);
+      if (!simulatorScaleSliderBound) {
+        moonBodyScaleSlider.addEventListener('input', () => {
+          const scale = parseFloat(moonBodyScaleSlider.value);
+          updateMoonBodyScaleLabel(scale);
+          if (!simulatorScene) return;
+          applyMoonBodyScale(
+            simulatorScene.earth,
+            simulatorScene.moon,
+            simulatorScene.sun,
+            simulatorScene.earthShadowCone,
+            simulatorScene.moonShadowCone,
+            scale,
+          );
+        });
+        simulatorScaleSliderBound = true;
+      }
+
+      applyDateToState(state.currentDate);
+      sun.setPosition(state.sunAngle);
+      moon.setOrbitalPosition(state.moonAngle, state.nodeAngle);
+      debugLog('Simulator scene ready');
+
+      return simulatorScene;
+    })();
+    simulatorSceneInitPromise.catch(() => {
+      simulatorSceneInitPromise = null;
+    });
+  }
+
+  return simulatorSceneInitPromise;
+}
+
 async function switchAppMode(newMode: AppMode) {
   btnModeSimulator.classList.toggle('active', newMode === 'simulator');
   btnModeExplore.classList.toggle('active', newMode === 'explore');
@@ -783,6 +889,8 @@ async function switchAppMode(newMode: AppMode) {
       for (const obj of simObjects) obj.visible = true;
       orbitDetailsOverlay.group.visible = orbitDetailsToggle.checked;
       simStarfield.visible = true;
+      moonOrbitLine.visible = true;
+      eclipticGrid.visible = true;
       const toggle = document.getElementById('btn-toggle-panel');
       if (toggle) toggle.style.display = '';
       camera = simCamera;
@@ -808,6 +916,8 @@ async function switchAppMode(newMode: AppMode) {
       // Hide simulator objects
       for (const obj of simObjects) obj.visible = false;
       simStarfield.visible = false;
+      moonOrbitLine.visible = false;
+      eclipticGrid.visible = false;
       simulatorUI.style.display = 'none';
       simControls.enabled = false;
       ambientLight.visible = false;
@@ -830,15 +940,10 @@ async function switchAppMode(newMode: AppMode) {
       }
       debugLog('Activating explore mode');
       if (!exploreMode.hasLoadedSolarSystem()) {
-        const totalUnits = isLoadingScreenVisible()
-          ? INITIAL_PLANETS_BOOT_TOTAL_UNITS
-          : FIRST_EXPLORE_ACTIVATION_TOTAL_UNITS;
-        const baseOffset = totalUnits === INITIAL_PLANETS_BOOT_TOTAL_UNITS
-          ? BASE_PLANETS_BOOT_TEXTURE_UNITS
-          : 0;
-        setPlanetsLoadingPercent(baseOffset, totalUnits);
+        const totalUnits = FIRST_EXPLORE_ACTIVATION_TOTAL_UNITS;
+        setPlanetsLoadingPercent(0, totalUnits);
         await exploreMode.activate((progress) => {
-          setPlanetsLoadingPercent(baseOffset + progress.completedUnits, totalUnits);
+          setPlanetsLoadingPercent(progress.completedUnits, totalUnits);
         });
       } else {
         await exploreMode.activate();
@@ -847,6 +952,13 @@ async function switchAppMode(newMode: AppMode) {
 
     } else {
       // --- Switch to Simulator ---
+      if (!simulatorScene) {
+        setSimulatorLoadingPercent(0, 1);
+        await ensureSimulatorScene((loaded, total) => {
+          setSimulatorLoadingPercent(loaded, total);
+        });
+      }
+
       appMode = 'simulator';
 
       scene.background = new THREE.Color(0x000000);
@@ -860,6 +972,8 @@ async function switchAppMode(newMode: AppMode) {
       for (const obj of simObjects) obj.visible = true;
       orbitDetailsOverlay.group.visible = orbitDetailsToggle.checked;
       simStarfield.visible = true;
+      moonOrbitLine.visible = true;
+      eclipticGrid.visible = true;
       simulatorUI.style.display = 'block';
       simControls.enabled = true;
       ambientLight.visible = true;
@@ -913,68 +1027,13 @@ async function init() {
   debugLog('Init started');
   const autoMode = getAutoMode();
   const initialMode = autoMode ?? 'explore';
-  const showInitialPlanetsBootProgress = initialMode === 'explore';
-
-  const textures = await loadAllTextures((loaded, total) => {
-    if (showInitialPlanetsBootProgress) {
-      setPlanetsLoadingPercent(Math.min(loaded, BASE_PLANETS_BOOT_TEXTURE_UNITS), INITIAL_PLANETS_BOOT_TOTAL_UNITS);
-      return;
-    }
-    const pct = Math.round((loaded / total) * 100);
-    const loadEl = document.getElementById('loading-msg');
-    if (loadEl) loadEl.textContent = `Loading textures... ${pct}%`;
-  });
-  if (showInitialPlanetsBootProgress) {
-    setPlanetsLoadingPercent(BASE_PLANETS_BOOT_TEXTURE_UNITS, INITIAL_PLANETS_BOOT_TOTAL_UNITS);
+  if (initialMode === 'simulator') {
+    await ensureSimulatorScene((loaded, total) => {
+      const pct = Math.round((loaded / total) * 100);
+      const loadEl = document.getElementById('loading-msg');
+      if (loadEl) loadEl.textContent = `Loading textures... ${pct}%`;
+    });
   }
-  debugLog('Base textures loaded', Object.keys(textures));
-
-  const earth = new Earth(textures);
-  scene.add(earth.group);
-  simObjects.push(earth.group);
-
-  const moon = new Moon(textures);
-  simMoonRef = moon;
-  scene.add(moon.orbitGroup);
-  simObjects.push(moon.orbitGroup);
-
-  scene.add(orbitDetailsOverlay.group);
-  simObjects.push(orbitDetailsOverlay.group);
-
-  const sun = new Sun(useBloom);
-  simSunRef = sun;
-  scene.add(sun.group);
-  simObjects.push(sun.group);
-
-  // Track orbit line and grid as sim objects
-  simObjects.push(moonOrbitLine, eclipticGrid);
-
-  // Shadow cones
-  const earthShadowCone = createShadowCone(SCENE.EARTH_RADIUS, 0x331111);
-  scene.add(earthShadowCone);
-  simObjects.push(earthShadowCone);
-
-  const moonShadowCone = createShadowCone(SCENE.MOON_RADIUS * 0.8, 0x111133);
-  scene.add(moonShadowCone);
-  simObjects.push(moonShadowCone);
-
-  moonBodyScaleSlider.min = String(PROPORTIONAL_BODY_SCALE);
-  moonBodyScaleSlider.max = String(MAX_MOON_BODY_SCALE);
-  moonBodyScaleSlider.step = '0.1';
-  moonBodyScaleSlider.value = String(PROPORTIONAL_BODY_SCALE);
-  updateMoonBodyScaleLabel(PROPORTIONAL_BODY_SCALE);
-  applyMoonBodyScale(earth, moon, sun, earthShadowCone, moonShadowCone, PROPORTIONAL_BODY_SCALE);
-  moonBodyScaleSlider.addEventListener('input', () => {
-    const scale = parseFloat(moonBodyScaleSlider.value);
-    updateMoonBodyScaleLabel(scale);
-    applyMoonBodyScale(earth, moon, sun, earthShadowCone, moonShadowCone, scale);
-  });
-
-  // Initial state
-  applyDateToState(new Date());
-  sun.setPosition(state.sunAngle);
-  moon.setOrbitalPosition(state.moonAngle, state.nodeAngle);
-  debugLog('Simulator scene ready');
 
   // Animation loop
   let lastTime = performance.now();
@@ -985,7 +1044,8 @@ async function init() {
     const dt = Math.min((now - lastTime) / 1000, 0.1); // cap at 100ms to avoid huge jumps
     lastTime = now;
 
-    if (appMode === 'simulator') {
+    const sim = simulatorScene;
+    if (appMode === 'simulator' && sim) {
       // --- Simulator update ---
       if (state.mode === 'manual' && state.animating && state.timeSpeed !== 0) {
         state.moonMeanAnomaly += state.timeSpeed * meanMotionDegPerDay() * dt;
@@ -1002,16 +1062,16 @@ async function init() {
         applyDateToState(state.currentDate);
       }
 
-      sun.setPosition(state.sunAngle);
-      sun.update(dt);
-      moon.setOrbitalPosition(state.moonAngle, state.nodeAngle);
+      sim.sun.setPosition(state.sunAngle);
+      sim.sun.update(dt);
+      sim.moon.setOrbitalPosition(state.moonAngle, state.nodeAngle);
       const phase = computePhaseInfo(state.moonAngle, state.sunAngle, state.nodeAngle);
-      moon.setEclipseAppearance(phase.eclipseType, phase.eclipseQuality);
-      const sunDir = sun.getDirection();
-      earth.update(dt, sunDir);
+      sim.moon.setEclipseAppearance(phase.eclipseType, phase.eclipseQuality);
+      const sunDir = sim.sun.getDirection();
+      sim.earth.update(dt, sunDir);
       orientOrbitPlane(moonOrbitLine, SCENE.MOON_INCLINATION, state.nodeAngle * DEG2RAD);
       orbitDetailsOverlay.update(state.nodeAngle, state.moonMeanAnomaly);
-      updateShadowCones(earthShadowCone, moonShadowCone, sun, moon);
+      updateShadowCones(sim.earthShadowCone, sim.moonShadowCone, sim.sun, sim.moon);
       simControls.update();
 
     } else if (appMode === 'explore' && exploreMode) {

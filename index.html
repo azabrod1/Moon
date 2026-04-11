@@ -587,6 +587,15 @@
       flex-shrink: 0;
     }
     .explore-icon-btn:hover { background: var(--accent-dim); color: var(--text-primary); }
+    .explore-icon-btn:disabled {
+      opacity: 0.4;
+      cursor: default;
+      box-shadow: none;
+    }
+    .explore-icon-btn:disabled:hover {
+      background: rgba(91, 140, 255, 0.04);
+      color: var(--text-secondary);
+    }
 
     /* Save/Settings/New buttons - top right, same level as top bar */
     #explore-actions {
@@ -618,6 +627,17 @@
         linear-gradient(180deg, rgba(28, 42, 77, 0.96) 0%, rgba(12, 20, 38, 0.98) 100%);
       border-color: rgba(123, 171, 255, 0.42);
       color: #f4f8ff;
+    }
+    .explore-sm-btn:disabled {
+      opacity: 0.4;
+      cursor: default;
+      box-shadow: none;
+    }
+    .explore-sm-btn:disabled:hover {
+      background:
+        linear-gradient(180deg, rgba(16, 24, 45, 0.92) 0%, rgba(8, 13, 26, 0.96) 100%);
+      border-color: rgba(108, 154, 255, 0.24);
+      color: rgba(218, 230, 255, 0.9);
     }
 
     /* Autopilot button active state */
@@ -934,6 +954,9 @@
       display: flex;
       gap: 6px;
       margin-top: 12px;
+    }
+    .voyager-btn-exit {
+      margin-right: auto;
     }
     .voyager-btn {
       border: 1px solid var(--panel-border);
@@ -1688,6 +1711,7 @@
         </div>
         <div class="voyager-note" id="voyager-note"></div>
         <div class="voyager-actions">
+          <button class="voyager-btn voyager-btn-exit" id="voyager-exit">Exit mission</button>
           <button class="voyager-btn" id="voyager-prev">Previous</button>
           <button class="voyager-btn" id="voyager-next">Next</button>
         </div>

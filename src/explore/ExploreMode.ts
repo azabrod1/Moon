@@ -1003,6 +1003,9 @@ export class ExploreMode {
   }
 
   private showIntroText() {
+    try {
+      if (localStorage.getItem('explore-intro-seen')) return;
+    } catch { /* private browsing — show it once per session */ }
     const el = document.getElementById('explore-intro');
     if (!el) return;
     el.classList.add('visible');
@@ -1010,6 +1013,7 @@ export class ExploreMode {
       el.classList.remove('visible');
       el.removeEventListener('click', dismiss);
       window.removeEventListener('keydown', dismiss);
+      try { localStorage.setItem('explore-intro-seen', '1'); } catch { /* ignore */ }
     };
     el.addEventListener('click', dismiss);
     window.addEventListener('keydown', dismiss, { once: true });

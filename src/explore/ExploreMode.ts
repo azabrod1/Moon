@@ -57,6 +57,10 @@ export class ExploreMode {
   private static readonly UI_REFRESH_INTERVAL_S = 1 / 8;
   private static readonly EARTH_DETAIL_MIN_DISTANCE_AU = 0.03;
   private static readonly EARTH_DETAIL_MIN_ANGULAR_DIAMETER_RAD = 0.003;
+  private static readonly MOON_PREWARM_START_DELAY_MS = 1500;
+  private static readonly MOON_PREWARM_IDLE_TIMEOUT_MS = 1000;
+  private static readonly MOON_PREWARM_FALLBACK_DELAY_MS = 250;
+  private static readonly MOON_PREWARM_MIN_IDLE_BUDGET_MS = 8;
   private static readonly MISSION_CONTROL_IDS = [
     'explore-btn-travel',
     'explore-btn-pause',
@@ -173,6 +177,7 @@ export class ExploreMode {
   private uiRefreshAccumulator = ExploreMode.UI_REFRESH_INTERVAL_S;
   private activeVoyagerJourney: HistoricJourney | null = null;
   private voyagerMilestoneIndex = 0;
+  private voyagerPanelDismissed = false;
   private scriptedTransfer: ScriptedTransfer | null = null;
   private preMissionState: ExploreState | null = null;
   private preMissionMenuVisible = false;
@@ -869,8 +874,7 @@ export class ExploreMode {
     if (e.key === ' ') {
       e.preventDefault();
       this.player.moving = !this.player.moving;
-      const btn = document.getElementById('explore-btn-pause');
-      if (btn) btn.textContent = this.player.moving ? '\u23F8' : '\u25B6';
+      this.updatePauseButtonLabel();
     }
 
     // P toggles autopilot
@@ -1119,12 +1123,34 @@ export class ExploreMode {
     }
   }
 
+  private updatePauseButtonLabel() {
+    const btn = document.getElementById('explore-btn-pause');
+    if (btn) btn.textContent = this.player.moving ? '\u23F8' : '\u25B6';
+  }
+
   private isMissionActive(): boolean {
     return this.activeVoyagerJourney !== null;
   }
 
   private setVoyagerPanelVisible(visible: boolean) {
     document.getElementById('voyager-panel')?.classList.toggle('visible', visible);
+    const reopenBtn = document.getElementById('voyager-reopen');
+    const journey = this.activeVoyagerJourney;
+    if (!reopenBtn) return;
+
+    if (!journey || visible || !this.voyagerPanelDismissed) {
+      reopenBtn.classList.remove('visible');
+      return;
+    }
+
+    reopenBtn.textContent = `${journey.label} · ${this.voyagerMilestoneIndex + 1}/${journey.milestones.length}`;
+    reopenBtn.classList.add('visible');
+  }
+
+  private dismissVoyagerPanel() {
+    if (!this.isMissionActive()) return;
+    this.voyagerPanelDismissed = true;
+    this.setVoyagerPanelVisible(false);
   }
 
   private collapseHistoricJourneyMenu() {
@@ -1165,7 +1191,11 @@ export class ExploreMode {
     const speedBar = document.getElementById('explore-speed-bar');
     if (speedBar) {
       speedBar.style.opacity = missionActive ? '0.45' : '';
+      speedBar.style.display = missionActive || this.landedOn ? 'none' : 'flex';
     }
+
+    const speedStatRow = document.getElementById('stat-speed-row');
+    if (speedStatRow) speedStatRow.style.display = missionActive ? 'none' : '';
 
     const landBtn = document.getElementById('explore-btn-land');
     if (landBtn) {
@@ -1233,8 +1263,7 @@ export class ExploreMode {
     document.getElementById('explore-btn-pause')?.addEventListener('click', () => {
       if (this.isMissionActive()) return;
       this.player.moving = !this.player.moving;
-      const btn = document.getElementById('explore-btn-pause');
-      if (btn) btn.textContent = this.player.moving ? '\u23F8' : '\u25B6';
+      this.updatePauseButtonLabel();
     });
 
     // Save button
@@ -1269,7 +1298,10 @@ export class ExploreMode {
       void this.startVoyagerJourney('juno');
     });
     document.getElementById('voyager-close')?.addEventListener('click', () => {
-      this.stopVoyagerJourney();
+      this.dismissVoyagerPanel();
+    });
+    document.getElementById('voyager-reopen')?.addEventListener('click', () => {
+      this.showVoyagerMilestone(this.voyagerMilestoneIndex);
     });
     document.getElementById('voyager-exit')?.addEventListener('click', () => {
       this.stopVoyagerJourney();
@@ -1677,6 +1709,7 @@ export class ExploreMode {
     this.rememberPreMissionState();
     if (this.landedOn) this.exitLandedMode();
     this.activeVoyagerJourney = journey;
+    this.voyagerPanelDismissed = false;
     this.showShip = true;
     this.player.group.visible = true;
     this.player.setProfile(journey.shipProfile);
@@ -1692,6 +1725,7 @@ export class ExploreMode {
   private stopVoyagerJourney(restorePreviousState = true) {
     this.activeVoyagerJourney = null;
     this.voyagerMilestoneIndex = 0;
+    this.voyagerPanelDismissed = false;
     this.scriptedTransfer = null;
     this.player.setProfile('default');
     this.setVoyagerPanelVisible(false);
@@ -1739,6 +1773,7 @@ export class ExploreMode {
     if (!journey) return;
     const nextIndex = THREE.MathUtils.clamp(index, 0, journey.milestones.length - 1);
     this.voyagerMilestoneIndex = nextIndex;
+    this.voyagerPanelDismissed = false;
     const milestone = journey.milestones[nextIndex];
     this.applyVoyagerMilestone(milestone);
     this.setVoyagerPanelVisible(true);
@@ -1859,6 +1894,7 @@ export class ExploreMode {
       endMoving: options.movingAfter,
     };
     this.player.moving = true;
+    this.updatePauseButtonLabel();
     this.userOrbiting = false;
   }
 
@@ -1878,6 +1914,7 @@ export class ExploreMode {
 
     if (t >= 1) {
       this.player.moving = transfer.endMoving;
+      this.updatePauseButtonLabel();
       this.scriptedTransfer = null;
     }
 
@@ -2246,6 +2283,7 @@ export class ExploreMode {
       // When landed, speed/autopilot are zeroed — save the pre-land originals
       // so they restore correctly on load.
       speed: this.landedOn ? this.preLandSpeed : this.player.speedMultiplier,
+      moving: this.landedOn ? false : this.player.moving,
       visitedPlanets: Array.from(this.player.visitedPlanets),
       distanceTraveled: this.player.distanceTraveled,
       timeElapsed: this.player.timeElapsed,
@@ -2270,6 +2308,7 @@ export class ExploreMode {
     this.player.heading = saved.headingRad;
     this.player.pitch = saved.pitchRad ?? 0;
     this.player.speedMultiplier = saved.speed;
+    this.player.moving = saved.landedOn ? false : (saved.moving ?? saved.speed > 0);
     this.player.distanceTraveled = saved.distanceTraveled;
     this.player.timeElapsed = saved.timeElapsed;
     this.player.visitedPlanets = new Set(saved.visitedPlanets);
@@ -2304,6 +2343,7 @@ export class ExploreMode {
     this.rebuildPlanetPositions();
 
     this.updateSpeedSlider();
+    this.updatePauseButtonLabel();
     this.updateTimeUI();
 
     // Restore landed state if saved

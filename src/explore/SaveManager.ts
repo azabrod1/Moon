@@ -97,7 +97,7 @@ function sanitizeExploreState(raw: unknown): ExploreState | null {
     showConstellations: typeof record.showConstellations === 'boolean' ? record.showConstellations : defaults.showConstellations,
     landedOn: sanitizeLandedOn(record.landedOn),
     systemSpeed: isFiniteNumber(record.systemSpeed)
-      ? Math.max(0, Math.min(0.2, record.systemSpeed))
+      ? Math.max(0, Math.min(0.4, record.systemSpeed))
       : defaults.systemSpeed,
   };
 }

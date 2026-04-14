@@ -69,7 +69,7 @@ export const PLANETS: PlanetData[] = [
     poleDecDeg: 61.4143,
     primeMeridianDegAtJ2000: 329.5469,
     primeMeridianRateDegPerDay: 6.1385025,
-    systemRadiusAU: 0.02,
+    systemRadiusAU: 0.01,
   },
   {
     name: 'Venus',
@@ -96,7 +96,7 @@ export const PLANETS: PlanetData[] = [
     poleDecDeg: 67.16,
     primeMeridianDegAtJ2000: 160.20,
     primeMeridianRateDegPerDay: -1.4813688,
-    systemRadiusAU: 0.02,
+    systemRadiusAU: 0.01,
   },
   {
     name: 'Earth',
@@ -123,7 +123,7 @@ export const PLANETS: PlanetData[] = [
     poleDecDeg: 90,
     primeMeridianDegAtJ2000: 190.147,
     primeMeridianRateDegPerDay: 360.9856235,
-    systemRadiusAU: 0.02,
+    systemRadiusAU: 0.01,
   },
   {
     name: 'Mars',
@@ -150,7 +150,7 @@ export const PLANETS: PlanetData[] = [
     poleDecDeg: 54.432516,
     primeMeridianDegAtJ2000: 176.049863,
     primeMeridianRateDegPerDay: 350.89198226,
-    systemRadiusAU: 0.02,
+    systemRadiusAU: 0.01,
   },
   {
     name: 'Jupiter',
@@ -177,7 +177,7 @@ export const PLANETS: PlanetData[] = [
     poleDecDeg: 64.495303,
     primeMeridianDegAtJ2000: 284.95,
     primeMeridianRateDegPerDay: 870.536,
-    systemRadiusAU: 0.063,
+    systemRadiusAU: 0.032,
   },
   {
     name: 'Saturn',
@@ -204,7 +204,7 @@ export const PLANETS: PlanetData[] = [
     poleDecDeg: 83.537,
     primeMeridianDegAtJ2000: 38.90,
     primeMeridianRateDegPerDay: 810.7939024,
-    systemRadiusAU: 0.071,
+    systemRadiusAU: 0.036,
   },
   {
     name: 'Uranus',
@@ -231,7 +231,7 @@ export const PLANETS: PlanetData[] = [
     poleDecDeg: -15.175,
     primeMeridianDegAtJ2000: 203.81,
     primeMeridianRateDegPerDay: -501.1600928,
-    systemRadiusAU: 0.02,
+    systemRadiusAU: 0.01,
   },
   {
     name: 'Neptune',
@@ -258,7 +258,7 @@ export const PLANETS: PlanetData[] = [
     poleDecDeg: 43.46,
     primeMeridianDegAtJ2000: 249.978,
     primeMeridianRateDegPerDay: 541.1397757,
-    systemRadiusAU: 0.02,
+    systemRadiusAU: 0.01,
   },
 ];
 

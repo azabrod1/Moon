@@ -713,7 +713,7 @@ export class ExploreMode {
         this.player.posY * this.player.posY +
         this.player.posZ * this.player.posZ,
       );
-      const sunSystemRadius = 0.02;
+      const sunSystemRadius = 0.01;
       if (dist < sunSystemRadius) {
         const inner = sunSystemRadius * 0.05;
         const t = Math.min(1, Math.max(0, (dist - inner) / (sunSystemRadius - inner)));
@@ -2081,9 +2081,6 @@ export class ExploreMode {
         );
       }
 
-      if (this.player.speedMultiplier > 0.5) {
-        this.player.speedMultiplier *= 0.7;
-      }
     }
   }
 
@@ -2096,7 +2093,16 @@ export class ExploreMode {
     this.player.posZ = destination.position.z;
     this.player.headToward(destination.lookTarget.x, destination.lookTarget.z, destination.lookTarget.y);
 
-    this.player.speedMultiplier = 0.1;
+    // Don't touch cruise speedMultiplier — the system throttle automatically
+    // slows the player near the planet. Just ensure cruise is at least 1c
+    // so they can leave the system.
+    if (this.player.speedMultiplier < PlayerShip.SPEED_DEFAULT) {
+      this.player.speedMultiplier = PlayerShip.SPEED_DEFAULT;
+    }
+    // Cap system speed for safe planet approach
+    if (this.player.systemSpeedMultiplier > PlayerShip.SYSTEM_SPEED_DEFAULT) {
+      this.player.systemSpeedMultiplier = PlayerShip.SYSTEM_SPEED_DEFAULT;
+    }
     this.updateSpeedSlider();
 
     if (options.notify !== false) {
@@ -2213,7 +2219,8 @@ export class ExploreMode {
     }
 
     // Restore speed and movement
-    this.player.speedMultiplier = Math.max(this.preLandSpeed, 0.1);
+    // Restore cruise speed — ensure at least default so player can leave the system
+    this.player.speedMultiplier = Math.max(this.preLandSpeed, PlayerShip.SPEED_DEFAULT);
     this.player.moving = true;
     this.player.group.visible = this.showShip;
     this.updateSpeedSlider();

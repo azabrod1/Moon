@@ -1222,7 +1222,7 @@ export class PlayerShip {
   static readonly SPEED_MIN = 0;
   static readonly SPEED_MAX = 20;
   static readonly SPEED_DEFAULT = 1.0;
-  static readonly SYSTEM_SPEED_MAX = 0.2;     // 0.2c ≈ 60k km/s
+  static readonly SYSTEM_SPEED_MAX = 0.4;     // 0.4c ≈ 120k km/s
   static readonly SYSTEM_SPEED_DEFAULT = 0.083; // ~25k km/s
   static readonly DEFAULT_SPEED_AU_S = DEFAULT_SPEED_AU_S;
 

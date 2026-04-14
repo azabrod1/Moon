@@ -245,7 +245,7 @@ export class ExploreMode {
     if (exploreUI) exploreUI.style.display = 'block';
 
     // Cache UI element references
-    this.statsEl = document.getElementById('explore-stats-compact');
+    this.statsEl = document.getElementById('explore-bottom-bar');
     this.progressEl = document.getElementById('explore-progress-fill');
     this.notificationEl = document.getElementById('explore-notification');
     this.speedValueEl = document.getElementById('explore-speed-value');
@@ -1305,10 +1305,10 @@ export class ExploreMode {
       if (button) button.disabled = missionActive;
     }
 
-    const speedBar = document.getElementById('explore-speed-bar');
-    if (speedBar) {
-      speedBar.style.opacity = missionActive ? '0.45' : '';
-      speedBar.style.display = missionActive || this.landedOn ? 'none' : 'flex';
+    const bottomBar = document.getElementById('explore-bottom-bar');
+    if (bottomBar) {
+      bottomBar.style.opacity = missionActive ? '0.45' : '';
+      bottomBar.style.display = missionActive || this.landedOn ? 'none' : '';
     }
 
     const speedStatRow = document.getElementById('stat-speed-row');
@@ -1460,29 +1460,46 @@ export class ExploreMode {
       trigger?.classList.toggle('expanded', expanded);
     });
 
-    // Stats panel expand/collapse
-    const statsToggle = document.getElementById('stats-toggle');
-    const statsPanel = document.getElementById('explore-stats-compact');
-    if (statsToggle && statsPanel) {
-      statsToggle.addEventListener('click', () => {
-        statsPanel.classList.toggle('stats-expanded');
-      });
-    }
+    // Bottom bar popover toggles (stats + time)
+    const statsPopover = document.getElementById('stats-popover');
+    const timePopover = document.getElementById('time-popover');
+    const statsChevron = document.getElementById('stats-chevron');
+    const timeChevron = document.getElementById('time-chevron');
 
-    // Time section expand/collapse
-    const timeToggle = document.getElementById('stat-time-toggle');
-    const timeSection = document.getElementById('stat-time-section');
-    if (timeToggle && timeSection) {
-      timeToggle.addEventListener('click', (e) => {
-        e.stopPropagation();
-        timeSection.classList.toggle('stat-time-expanded');
-      });
-      // Prevent control button clicks from closing the panel
-      const timeControls = timeSection.querySelector('.stat-time-controls');
-      if (timeControls) {
-        timeControls.addEventListener('click', (e) => e.stopPropagation());
+    document.getElementById('bar-stats-toggle')?.addEventListener('click', () => {
+      const opening = !statsPopover?.classList.contains('visible');
+      statsPopover?.classList.toggle('visible');
+      statsChevron?.classList.toggle('expanded');
+      if (opening) {
+        timePopover?.classList.remove('visible');
+        timeChevron?.classList.remove('expanded');
       }
-    }
+    });
+
+    document.getElementById('bar-time-toggle')?.addEventListener('click', () => {
+      const opening = !timePopover?.classList.contains('visible');
+      timePopover?.classList.toggle('visible');
+      timeChevron?.classList.toggle('expanded');
+      if (opening) {
+        statsPopover?.classList.remove('visible');
+        statsChevron?.classList.remove('expanded');
+      }
+    });
+
+    // Prevent clicks inside popovers from closing them
+    timePopover?.addEventListener('click', (e) => e.stopPropagation());
+    statsPopover?.addEventListener('click', (e) => e.stopPropagation());
+
+    // Close popovers when clicking outside the bottom bar
+    document.addEventListener('click', (e) => {
+      const bottomBar = document.getElementById('explore-bottom-bar');
+      if (bottomBar && !bottomBar.contains(e.target as Node)) {
+        statsPopover?.classList.remove('visible');
+        statsChevron?.classList.remove('expanded');
+        timePopover?.classList.remove('visible');
+        timeChevron?.classList.remove('expanded');
+      }
+    });
 
     // Sun label
     const labelContainer = document.getElementById('planet-labels');
@@ -2237,7 +2254,12 @@ export class ExploreMode {
     this.camera.lookAt(orbitCenter);
 
     // UI: hide flight controls, show leave button
-    const hide = ['explore-speed-bar', 'explore-keys-hint', 'touch-flight-zone', 'explore-btn-travel', 'explore-btn-land'];
+    // Close any open popovers before hiding
+    document.getElementById('stats-popover')?.classList.remove('visible');
+    document.getElementById('stats-chevron')?.classList.remove('expanded');
+    document.getElementById('time-popover')?.classList.remove('visible');
+    document.getElementById('time-chevron')?.classList.remove('expanded');
+    const hide = ['explore-bottom-bar', 'explore-keys-hint', 'touch-flight-zone', 'explore-btn-travel', 'explore-btn-land'];
     for (const id of hide) {
       const el = document.getElementById(id);
       if (el) el.style.display = 'none';
@@ -2303,7 +2325,7 @@ export class ExploreMode {
 
     // UI: restore flight controls, hide leave button
     const show: Array<[string, string]> = [
-      ['explore-speed-bar', 'flex'],
+      ['explore-bottom-bar', ''],
       ['explore-btn-travel', ''],
     ];
     for (const [id, display] of show) {

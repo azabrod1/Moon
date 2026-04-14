@@ -15,9 +15,9 @@ import { createMoonMeshes, type MoonMesh } from './PlanetFactory';
 import {
   advanceExploreTime,
   computeBodyState,
+  formatDateCompact,
   formatTimeRateLabel,
   formatUtcInputValue,
-  formatUtcLabel,
   parseUtcInputValue,
   type ExploreTimeState,
 } from './astronomy';
@@ -2713,7 +2713,7 @@ export class ExploreMode {
   }
 
   private updateTimeUI() {
-    const nextTimeLabel = formatUtcLabel(this.timeState.currentUtcMs);
+    const nextTimeLabel = formatDateCompact(this.timeState.currentUtcMs);
     const nextTimeRateLabel = formatTimeRateLabel(this.timeState.rate, this.timeState.paused);
     const nextInputValue = formatUtcInputValue(this.timeState.currentUtcMs);
 

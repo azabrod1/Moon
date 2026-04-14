@@ -163,10 +163,17 @@ function formatUtcPart(value: number): string {
   return value.toString().padStart(2, '0');
 }
 
+const MONTH_SHORT = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+
 export function formatUtcLabel(utcMs: number): string {
-  const date = new Date(utcMs);
-  return `${date.getUTCFullYear()}-${formatUtcPart(date.getUTCMonth() + 1)}-${formatUtcPart(date.getUTCDate())} ` +
-    `${formatUtcPart(date.getUTCHours())}:${formatUtcPart(date.getUTCMinutes())}:${formatUtcPart(date.getUTCSeconds())} UTC`;
+  const d = new Date(utcMs);
+  return `${MONTH_SHORT[d.getUTCMonth()]} ${d.getUTCDate()} ${d.getUTCFullYear()}, ` +
+    `${formatUtcPart(d.getUTCHours())}:${formatUtcPart(d.getUTCMinutes())}:${formatUtcPart(d.getUTCSeconds())} UTC`;
+}
+
+export function formatDateCompact(utcMs: number): string {
+  const d = new Date(utcMs);
+  return `${MONTH_SHORT[d.getUTCMonth()]} ${d.getUTCDate()} ${d.getUTCFullYear()}`;
 }
 
 export function formatUtcInputValue(utcMs: number): string {

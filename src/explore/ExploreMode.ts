@@ -114,6 +114,8 @@ export class ExploreMode {
   private systemSpeedFactor = 1.0; // 1 = open space, 0 = deep in system
   private nearestSystemPlanet: string | null = null;
   private inSystemMode = false;
+  private throttleOverride = false; // true = user temporarily disabled system throttle (tap)
+  private systemSlowdown = true;   // false = user permanently disabled via settings
 
   // Show player ship mesh for size comparison
   private showShip = true;
@@ -492,7 +494,7 @@ export class ExploreMode {
       const throttleResult = this.computeSystemSpeedFactor();
       this.systemSpeedFactor = throttleResult.factor;
       this.nearestSystemPlanet = throttleResult.planet;
-      this.player.systemSpeedFactor = this.systemSpeedFactor;
+      this.player.systemSpeedFactor = (this.throttleOverride || !this.systemSlowdown) ? 1.0 : this.systemSpeedFactor;
 
       // Update player
       this.player.update(dt);
@@ -1181,14 +1183,30 @@ export class ExploreMode {
   }
 
   private updateSpeedSlider() {
-    // Update mode detection with hysteresis
-    if (this.systemSpeedFactor < 0.5) this.inSystemMode = true;
-    else if (this.systemSpeedFactor > 0.6) this.inSystemMode = false;
+    // Update mode detection with hysteresis (but override forces space mode)
+    if (this.throttleOverride || !this.systemSlowdown) {
+      this.inSystemMode = false;
+    } else if (this.systemSpeedFactor < 0.5) {
+      this.inSystemMode = true;
+    } else if (this.systemSpeedFactor > 0.6) {
+      this.inSystemMode = false;
+    }
+
+    // Auto-disable override when leaving all planet systems
+    if (this.throttleOverride && this.systemSpeedFactor >= 1.0) {
+      this.throttleOverride = false;
+    }
 
     if (this.speedLabelEl) {
       this.speedLabelEl.textContent = this.inSystemMode
         ? (this.nearestSystemPlanet ?? 'System')
         : 'Space';
+    }
+
+    // Visual feedback for override state
+    const centerEl = document.querySelector('.speed-center') as HTMLElement | null;
+    if (centerEl) {
+      centerEl.classList.toggle('throttle-override', this.throttleOverride);
     }
     if (this.speedValueEl) {
       if (this.inSystemMode) {
@@ -1302,6 +1320,14 @@ export class ExploreMode {
   }
 
   private wireUpUI() {
+    // Tap speed center to toggle system throttle override (temporary)
+    document.querySelector('.speed-center')?.addEventListener('click', () => {
+      if (this.isMissionActive()) return;
+      if (!this.systemSlowdown) return; // already disabled globally
+      this.throttleOverride = !this.throttleOverride;
+      this.updateSpeedSlider();
+    });
+
     document.getElementById('explore-speed-up')?.addEventListener('click', () => {
       if (this.isMissionActive()) return;
       if (this.inSystemMode) {
@@ -1502,6 +1528,13 @@ export class ExploreMode {
       }
       const label = document.getElementById('settings-constellations-label');
       if (label) label.textContent = this.showConstellations ? 'On' : 'Off';
+    });
+
+    document.getElementById('settings-throttle-toggle')?.addEventListener('click', () => {
+      this.systemSlowdown = !this.systemSlowdown;
+      const label = document.getElementById('settings-throttle-label');
+      if (label) label.textContent = this.systemSlowdown ? 'On' : 'Off';
+      this.updateSpeedSlider();
     });
 
     // Full-screen mobile flight zone

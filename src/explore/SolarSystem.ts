@@ -100,7 +100,7 @@ export async function createSolarSystem(
   reportProgress();
   const sun = createExploreSun(useBloom);
   const sunLight = sun.children.find(child => child instanceof THREE.PointLight) as THREE.PointLight;
-  const ambientLight = new THREE.AmbientLight(0x334466, 0.4);
+  const ambientLight = new THREE.AmbientLight(0x334466, 0.15);
   completedUnits += 1;
   reportProgress();
 

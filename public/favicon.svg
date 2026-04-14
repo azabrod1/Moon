@@ -1,0 +1,26 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="Moon favicon">
+  <defs>
+    <radialGradient id="bg" cx="50%" cy="42%" r="70%">
+      <stop offset="0%" stop-color="#14254d" />
+      <stop offset="65%" stop-color="#091127" />
+      <stop offset="100%" stop-color="#040812" />
+    </radialGradient>
+    <linearGradient id="ring" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#4fc3ff" />
+      <stop offset="100%" stop-color="#8f8cff" />
+    </linearGradient>
+    <linearGradient id="moon" x1="20%" y1="15%" x2="80%" y2="85%">
+      <stop offset="0%" stop-color="#f6fbff" />
+      <stop offset="55%" stop-color="#cfe0ff" />
+      <stop offset="100%" stop-color="#8ea3d9" />
+    </linearGradient>
+  </defs>
+
+  <rect width="64" height="64" rx="14" fill="url(#bg)" />
+  <circle cx="32" cy="32" r="22" fill="none" stroke="url(#ring)" stroke-width="2.5" opacity="0.85" />
+  <circle cx="44.5" cy="19.5" r="2.6" fill="#85cfff" />
+  <path d="M36 15c-8.9 0-16 7.1-16 16s7.1 16 16 16c4.1 0 7.8-1.5 10.7-4.1-2.3 0.8-4.6 1.2-7 1.2-10.1 0-18.2-8.2-18.2-18.2 0-3.4 0.9-6.6 2.6-9.4 3.1-1 6-1.5 8.9-1.5z" fill="url(#moon)" />
+  <circle cx="28" cy="25" r="1.7" fill="#9eb4e8" opacity="0.65" />
+  <circle cx="32.8" cy="35.5" r="1.2" fill="#91a7dc" opacity="0.55" />
+  <path d="M50.8 40.2l1.1 2.3 2.5 0.3-1.8 1.7 0.5 2.4-2.3-1.2-2.2 1.2 0.4-2.4-1.7-1.7 2.4-0.3z" fill="#fff3a1" opacity="0.95" />
+</svg>

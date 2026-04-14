@@ -95,8 +95,12 @@ export class ExploreMode {
   private notificationTimeout: number | null = null;
   private uiWired = false;
 
-  // Autopilot: auto-steer toward next planet outward
+  // Autopilot: auto-steer toward target
   private autopilot = true;
+  private autopilotTarget: NonNullable<LandedTarget> | null = null;
+
+  // Moon world positions in AU (true positions, not offset)
+  private moonWorldPositions = new Map<string, { x: number; y: number; z: number }>();
 
   // Planet layout mode
   private layoutMode: LayoutMode = 'realistic';
@@ -342,6 +346,10 @@ export class ExploreMode {
     } else {
       this.restoreState(initialDefaultState ?? createDefaultState());
       this.pointTowardMercury();
+      // Auto-engage autopilot toward Mercury for new users
+      this.autopilotTarget = { type: 'planet', name: 'Mercury' };
+      this.autopilot = true;
+      this.updateAutopilotButton();
       this.showIntroText();
     }
 
@@ -409,6 +417,9 @@ export class ExploreMode {
     this.saveManager.clearState();
     this.restoreState(createDefaultState());
     this.pointTowardMercury();
+    this.autopilotTarget = { type: 'planet', name: 'Mercury' };
+    this.autopilot = true;
+    this.updateAutopilotButton();
     this.showIntroText();
   }
 
@@ -487,8 +498,8 @@ export class ExploreMode {
       // Process keyboard input
       this.processInput();
 
-      // Autopilot: steer toward next planet if no manual input
-      if (this.autopilot && this.player.yawInput === 0 && this.player.pitchInput === 0) {
+      // Autopilot: steer toward target if no manual input
+      if (this.autopilot && this.autopilotTarget && this.player.yawInput === 0 && this.player.pitchInput === 0) {
         this.applyAutopilot();
       }
 
@@ -564,6 +575,9 @@ export class ExploreMode {
     this.checkProximityLand();
 
     this.updateMoonPositions();
+    if (this.autopilotTarget) {
+      this.checkAutopilotArrival();
+    }
     this.updateSunShader(dt);
     this.updateOrbitLineVisibility();
 
@@ -802,6 +816,13 @@ export class ExploreMode {
           const angle = this.getMoonAngleRad(m.data);
           const r = m.data.orbitalRadiusAU;
           m.mesh.position.set(r * Math.cos(angle), 0, r * Math.sin(angle));
+
+          // Store moon world position (planet AU pos + orbital offset)
+          this.moonWorldPositions.set(m.data.name, {
+            x: wp.x + r * Math.cos(angle),
+            y: wp.y,
+            z: wp.z + r * Math.sin(angle),
+          });
 
           const realRatio = m.data.radiusAU / parentR;
           const minRatio = 0.05;
@@ -1384,6 +1405,9 @@ export class ExploreMode {
       this.saveManager.clearState();
       this.restoreState(createDefaultState());
       this.pointTowardMercury();
+      this.autopilotTarget = { type: 'planet', name: 'Mercury' };
+      this.autopilot = true;
+      this.updateAutopilotButton();
       this.showNotification('New journey started!');
     });
 
@@ -1586,7 +1610,14 @@ export class ExploreMode {
         this.enterLandedMode(this.nearbyLandTarget);
       }
     });
-    // Travel action bar: Land vs Jump
+    // Travel action bar: Fly To, Jump, Land
+    document.getElementById('travel-action-fly')?.addEventListener('click', () => {
+      if (!this.travelSelection) return;
+      const sel = this.travelSelection;
+      this.closeTravelMenu();
+      if (this.landedOn) this.exitLandedMode();
+      this.engageAutopilot(sel);
+    });
     document.getElementById('travel-action-land')?.addEventListener('click', () => {
       if (this.travelSelection) {
         const sel = this.travelSelection;
@@ -2156,10 +2187,9 @@ export class ExploreMode {
     this.player.moving = false;
     this.player.group.visible = false;
 
-    // Disable autopilot silently
+    // Disable autopilot silently (target preserved for restore)
     this.autopilot = false;
-    const apBtn = document.getElementById('explore-btn-autopilot');
-    if (apBtn) apBtn.classList.toggle('active', false);
+    this.updateAutopilotButton();
 
     // Move player to body position so floating origin centers on it.
     const pos = this.getLandedBodyWorldPosition();
@@ -2267,8 +2297,7 @@ export class ExploreMode {
 
     // Restore autopilot
     this.autopilot = this.preLandAutopilot;
-    const apBtn = document.getElementById('explore-btn-autopilot');
-    if (apBtn) apBtn.classList.toggle('active', this.autopilot);
+    this.updateAutopilotButton();
 
     this.landedOn = null;
 
@@ -2409,6 +2438,7 @@ export class ExploreMode {
       landedOn: this.landedOn,
       systemSpeed: this.player.systemSpeedMultiplier,
       systemSlowdown: this.systemSlowdown,
+      autopilotTarget: this.autopilotTarget,
     };
   }
 
@@ -2447,8 +2477,13 @@ export class ExploreMode {
     const constLabel = document.getElementById('settings-constellations-label');
     if (constLabel) constLabel.textContent = this.showConstellations ? 'On' : 'Off';
 
-    const apBtn = document.getElementById('explore-btn-autopilot');
-    if (apBtn) apBtn.classList.toggle('active', this.autopilot);
+    // Restore autopilot target (kept even when landed — resumes on exit)
+    this.autopilotTarget = saved.autopilotTarget ?? null;
+    // Migration: old saves may have autopilot=true with no target — disable
+    if (this.autopilot && !this.autopilotTarget && !saved.landedOn) {
+      this.autopilot = false;
+    }
+    this.updateAutopilotButton();
     const shipLabel = document.getElementById('settings-ship-label');
     if (shipLabel) shipLabel.textContent = this.showShip ? 'On' : 'Off';
 
@@ -2543,44 +2578,92 @@ export class ExploreMode {
     return new THREE.Points(geo, mat);
   }
 
-  private applyAutopilot() {
-    // Find next planet outward in orbital order from player's Sun distance
-    const playerDist = this.player.getDistanceFromSun();
-    for (const body of ALL_BODIES) {
-      if (body.semiMajorAxisAU > playerDist) {
-        const pos = this.planetWorldPositions.get(body.name);
-        if (pos) {
-          this.player.headToward(pos.x, pos.z, pos.y);
-        }
-        break;
-      }
+  private getTargetWorldPosition(target: NonNullable<LandedTarget>): { x: number; y: number; z: number } | null {
+    if (target.type === 'planet') {
+      return this.planetWorldPositions.get(target.name) ?? null;
     }
+    // For moons, use precise position when available; fall back to parent planet
+    return this.moonWorldPositions.get(target.name)
+      ?? this.planetWorldPositions.get(target.parentPlanet)
+      ?? null;
+  }
+
+  private applyAutopilot() {
+    if (!this.autopilotTarget) return;
+    const pos = this.getTargetWorldPosition(this.autopilotTarget);
+    if (!pos) return;
+    this.player.headToward(pos.x, pos.z, pos.y);
+  }
+
+  private engageAutopilot(target: NonNullable<LandedTarget>) {
+    this.autopilotTarget = target;
+    this.autopilot = true;
+    this.player.moving = true;
+    this.updatePauseButtonLabel();
+    // Ensure reasonable cruise speed
+    if (this.player.speedMultiplier < PlayerShip.SPEED_DEFAULT) {
+      this.player.speedMultiplier = PlayerShip.SPEED_DEFAULT;
+    }
+    this.updateSpeedSlider();
+    this.updateAutopilotButton();
+    this.showNotification(`Autopilot: heading to ${target.name}`);
+  }
+
+  private disengageAutopilot() {
+    this.autopilotTarget = null;
+    this.autopilot = false;
+    this.updateAutopilotButton();
   }
 
   private disableAutopilot() {
     if (!this.autopilot) return;
-    this.autopilot = false;
-    const btn = document.getElementById('explore-btn-autopilot');
-    if (btn) btn.classList.toggle('active', false);
+    this.disengageAutopilot();
     this.showNotification('Manual flight — steer freely');
+  }
+
+  private updateAutopilotButton() {
+    const btn = document.getElementById('explore-btn-autopilot');
+    if (!btn) return;
+    btn.classList.toggle('active', this.autopilot);
+    if (this.autopilotTarget) {
+      btn.innerHTML = '&#x1F916; &rarr; ' + this.autopilotTarget.name;
+    } else {
+      btn.innerHTML = '&#x1F916; Pilot';
+    }
   }
 
   private toggleAutopilot() {
     if (this.autopilot) {
-      this.disableAutopilot();
-      // When explicitly toggling off via button/key, zero speed
-      this.player.speedMultiplier = 0;
-      this.updateSpeedSlider();
+      this.disengageAutopilot();
+      this.showNotification('Autopilot disengaged');
     } else {
-      this.autopilot = true;
-      const btn = document.getElementById('explore-btn-autopilot');
-      if (btn) btn.classList.toggle('active', true);
-      // Returning to autopilot: restore default speed if stopped
-      if (this.player.speedMultiplier < 0.05) {
-        this.player.speedMultiplier = PlayerShip.SPEED_DEFAULT;
-        this.updateSpeedSlider();
-      }
-      this.showNotification('Pilot engaged — heading to next planet');
+      this.toggleTravelMenu();
+    }
+  }
+
+  private checkAutopilotArrival() {
+    if (!this.autopilotTarget) return;
+    const pos = this.getTargetWorldPosition(this.autopilotTarget);
+    if (!pos) return;
+    const dx = this.player.posX - pos.x;
+    const dy = this.player.posY - pos.y;
+    const dz = this.player.posZ - pos.z;
+    const dist = Math.sqrt(dx * dx + dy * dy + dz * dz);
+
+    let threshold: number;
+    if (this.autopilotTarget.type === 'planet') {
+      const body = ALL_BODIES.find(b => b.name === this.autopilotTarget!.name);
+      threshold = body ? body.systemRadiusAU * 0.3 : 0.003;
+    } else {
+      const moons = this.planetMoons.get(this.autopilotTarget.parentPlanet);
+      const moonMesh = moons?.find(m => m.data.name === this.autopilotTarget!.name);
+      threshold = moonMesh ? Math.max(moonMesh.data.radiusAU * 10, 0.0003) : 0.0003;
+    }
+
+    if (dist < threshold) {
+      const name = this.autopilotTarget.name;
+      this.disengageAutopilot();
+      this.showNotification(`Arrived at ${name}`);
     }
   }
 

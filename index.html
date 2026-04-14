@@ -664,6 +664,12 @@
       color: var(--accent);
       border-color: var(--accent);
     }
+    #explore-btn-autopilot {
+      max-width: 120px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
 
     #explore-btn-menu {
       font-size: 16px;
@@ -1360,10 +1366,11 @@
     .travel-action-bar {
       display: flex;
       align-items: center;
-      gap: 8px;
+      gap: 6px;
       padding: 10px 14px;
       border-top: 1px solid var(--panel-border);
       background: rgba(10, 14, 30, 0.5);
+      flex-wrap: wrap;
     }
     .travel-action-name {
       flex: 1;
@@ -1376,7 +1383,7 @@
       text-overflow: ellipsis;
     }
     .travel-action-btn {
-      padding: 6px 14px;
+      padding: 6px 10px;
       border: 1px solid rgba(91, 140, 255, 0.35);
       border-radius: 6px;
       background: rgba(91, 140, 255, 0.12);
@@ -1807,8 +1814,9 @@
         <div class="travel-list" id="travel-list"></div>
         <div class="travel-action-bar" id="travel-action-bar" style="display:none">
           <span class="travel-action-name" id="travel-action-name"></span>
-          <button class="travel-action-btn" id="travel-action-land">Land &amp; Orbit</button>
+          <button class="travel-action-btn" id="travel-action-fly">Fly To</button>
           <button class="travel-action-btn travel-action-btn-dim" id="travel-action-jump">Jump Nearby</button>
+          <button class="travel-action-btn travel-action-btn-dim" id="travel-action-land">Land &amp; Orbit</button>
         </div>
       </div>
 
@@ -1899,7 +1907,7 @@
       <div id="explore-speed-bar">
         <div class="speed-row">
           <button class="explore-icon-btn" id="explore-btn-pause">&#x23F8;</button>
-          <button class="explore-icon-btn active" id="explore-btn-autopilot" title="Autopilot: steers toward the next planet. Turn off to fly freely. (P)">&#x1F916; Pilot</button>
+          <button class="explore-icon-btn" id="explore-btn-autopilot" title="Autopilot: fly to a destination. Click to choose target or disengage. (P)">&#x1F916; Pilot</button>
           <button class="explore-icon-btn" id="explore-speed-down" title="Reduce speed">-</button>
           <div class="speed-center">
             <span id="explore-speed-label" class="speed-label-sm">Space</span>

@@ -32,6 +32,7 @@ export interface ExploreState {
   landedOn?: LandedTarget;   // planet/moon the player is currently landed on
   systemSpeed?: number;      // system speed multiplier (fraction of c)
   systemSlowdown?: boolean;  // whether system slowdown is enabled
+  autopilotTarget?: LandedTarget; // destination for fly-to autopilot
 }
 
 function isFiniteNumber(value: unknown): value is number {
@@ -101,6 +102,7 @@ function sanitizeExploreState(raw: unknown): ExploreState | null {
       ? Math.max(0, Math.min(0.4, record.systemSpeed))
       : defaults.systemSpeed,
     systemSlowdown: typeof record.systemSlowdown === 'boolean' ? record.systemSlowdown : defaults.systemSlowdown,
+    autopilotTarget: sanitizeLandedOn(record.autopilotTarget),
   };
 }
 

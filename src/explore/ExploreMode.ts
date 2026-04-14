@@ -2479,10 +2479,6 @@ export class ExploreMode {
 
     // Restore autopilot target (kept even when landed — resumes on exit)
     this.autopilotTarget = saved.autopilotTarget ?? null;
-    // Migration: old saves may have autopilot=true with no target — disable
-    if (this.autopilot && !this.autopilotTarget && !saved.landedOn) {
-      this.autopilot = false;
-    }
     this.updateAutopilotButton();
     const shipLabel = document.getElementById('settings-ship-label');
     if (shipLabel) shipLabel.textContent = this.showShip ? 'On' : 'Off';

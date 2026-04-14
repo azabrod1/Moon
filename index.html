@@ -568,9 +568,16 @@
 
     .speed-label-sm { font-size: 10px; color: var(--text-secondary); text-transform: uppercase; letter-spacing: 0.5px; white-space: nowrap; }
 
+    .speed-center {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      min-width: 64px;
+    }
+
     #explore-speed-value {
       font-size: 13px; font-weight: 600; color: var(--text-primary);
-      min-width: 40px; text-align: right; font-variant-numeric: tabular-nums;
+      min-width: 64px; text-align: center; font-variant-numeric: tabular-nums;
     }
 
     .explore-icon-btn {
@@ -1752,13 +1759,6 @@
         </div>
         <div class="menu-divider"></div>
         <div class="settings-row">
-          <span class="settings-label is-mixed">Planet size <span style="opacity:0.5;font-size:0.85em">(× real)</span></span>
-          <div class="settings-scale-row">
-            <input type="range" id="settings-planet-scale" min="1" max="128" value="32" class="settings-slider" />
-            <span id="settings-scale-label" class="settings-scale-value">32×</span>
-          </div>
-        </div>
-        <div class="settings-row">
           <span class="settings-label">Show ship</span>
           <button class="settings-toggle" id="settings-ship-toggle">
             <span id="settings-ship-label">On</span>
@@ -1883,10 +1883,12 @@
         <div class="speed-row">
           <button class="explore-icon-btn" id="explore-btn-pause">&#x23F8;</button>
           <button class="explore-icon-btn active" id="explore-btn-autopilot" title="Autopilot: steers toward the next planet. Turn off to fly freely. (P)">&#x1F916; Pilot</button>
-          <button class="explore-icon-btn" id="explore-speed-down" title="Reduce cruise speed">-</button>
-          <span class="speed-label-sm">Cruise</span>
-          <span id="explore-speed-value">2.8c</span>
-          <button class="explore-icon-btn" id="explore-speed-up" title="Increase cruise speed">+</button>
+          <button class="explore-icon-btn" id="explore-speed-down" title="Reduce speed">-</button>
+          <div class="speed-center">
+            <span id="explore-speed-label" class="speed-label-sm">Space</span>
+            <span id="explore-speed-value">1.0c</span>
+          </div>
+          <button class="explore-icon-btn" id="explore-speed-up" title="Increase speed">+</button>
         </div>
       </div>
 
@@ -1911,7 +1913,7 @@
       </div>
 
       <div id="explore-intro">
-        <p>Planet sizes are enlarged so you can see them.<br>Distances between planets are to scale.</p>
+        <p>Everything is to scale — planets, orbits, and distances.<br>Your ship slows down near planet systems.</p>
         <span class="intro-dismiss">Click or press any key to dismiss</span>
       </div>
       <div id="explore-notification"></div>

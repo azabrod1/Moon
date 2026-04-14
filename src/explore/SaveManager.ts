@@ -30,6 +30,7 @@ export interface ExploreState {
   showShip: boolean;         // show player ship mesh
   showConstellations?: boolean; // show constellation lines overlay
   landedOn?: LandedTarget;   // planet/moon the player is currently landed on
+  systemSpeed?: number;      // system speed multiplier (fraction of c)
 }
 
 function isFiniteNumber(value: unknown): value is number {
@@ -95,6 +96,9 @@ function sanitizeExploreState(raw: unknown): ExploreState | null {
     showShip: typeof record.showShip === 'boolean' ? record.showShip : defaults.showShip,
     showConstellations: typeof record.showConstellations === 'boolean' ? record.showConstellations : defaults.showConstellations,
     landedOn: sanitizeLandedOn(record.landedOn),
+    systemSpeed: isFiniteNumber(record.systemSpeed)
+      ? Math.max(0, Math.min(0.2, record.systemSpeed))
+      : defaults.systemSpeed,
   };
 }
 
@@ -124,10 +128,11 @@ export function createDefaultState(): ExploreState {
     astroTimeUtcMs: Date.now(),
     astroTimeRate: 1,
     astroTimePaused: false,
-    planetScale: 32,
+    planetScale: 1,
     showShip: true,
     showConstellations: false,
     landedOn: null,
+    systemSpeed: 0.083,
   };
 }
 

@@ -10,7 +10,7 @@ import { PlayerShip } from './PlayerShip';
 import { PlanetMarkers } from './PlanetMarker';
 import { SaveManager, createDefaultState, type ExploreState, type LandedTarget } from './SaveManager';
 import { computeStats, formatAU } from './StatsPanel';
-import { ALL_BODIES, type PlanetData } from './planets/planetData';
+import { ALL_BODIES, SUN_DATA, type PlanetData } from './planets/planetData';
 import { createMoonMeshes, type MoonMesh } from './PlanetFactory';
 import {
   advanceExploreTime,
@@ -30,7 +30,6 @@ import {
   type HistoricMissionId,
   type HistoricMilestone,
 } from './historicJourney';
-import { formatScaleMultiplier } from '../utils/formatting';
 
 type ScriptedTransfer = {
   elapsed: number;
@@ -109,7 +108,12 @@ export class ExploreMode {
   };
 
   // Planet visual scale multiplier (real scale = 1)
-  private planetScale = 32;
+  private planetScale = 1;
+
+  // Dual-speed system: throttle near planets
+  private systemSpeedFactor = 1.0; // 1 = open space, 0 = deep in system
+  private nearestSystemPlanet: string | null = null;
+  private inSystemMode = false;
 
   // Show player ship mesh for size comparison
   private showShip = true;
@@ -157,22 +161,14 @@ export class ExploreMode {
   private statsEl: HTMLElement | null = null;
   private progressEl: HTMLElement | null = null;
   private notificationEl: HTMLElement | null = null;
-  private speedSliderEl: HTMLInputElement | null = null;
   private speedValueEl: HTMLElement | null = null;
+  private speedLabelEl: HTMLElement | null = null;
   private timeValueEl: HTMLElement | null = null;
   private timeRateEl: HTMLElement | null = null;
   private timeInputEl: HTMLInputElement | null = null;
   private lastTimeLabel = '';
   private lastTimeRateLabel = '';
 
-  private formatPlanetScaleLabel(): string {
-    return formatScaleMultiplier(this.planetScale);
-  }
-
-  private updatePlanetScaleLabel() {
-    const label = document.getElementById('settings-scale-label');
-    if (label) label.textContent = this.formatPlanetScaleLabel();
-  }
   private lastTimeInputValue = '';
   private uiRefreshAccumulator = ExploreMode.UI_REFRESH_INTERVAL_S;
   private activeVoyagerJourney: HistoricJourney | null = null;
@@ -245,8 +241,8 @@ export class ExploreMode {
     this.statsEl = document.getElementById('explore-stats-compact');
     this.progressEl = document.getElementById('explore-progress-fill');
     this.notificationEl = document.getElementById('explore-notification');
-    this.speedSliderEl = document.getElementById('explore-speed-slider') as HTMLInputElement;
     this.speedValueEl = document.getElementById('explore-speed-value');
+    this.speedLabelEl = document.getElementById('explore-speed-label');
     this.timeValueEl = document.getElementById('explore-time-value');
     this.timeRateEl = document.getElementById('explore-time-rate');
     this.timeInputEl = document.getElementById('explore-time-input') as HTMLInputElement;
@@ -492,6 +488,12 @@ export class ExploreMode {
         this.applyAutopilot();
       }
 
+      // Compute system speed throttle before player update
+      const throttleResult = this.computeSystemSpeedFactor();
+      this.systemSpeedFactor = throttleResult.factor;
+      this.nearestSystemPlanet = throttleResult.planet;
+      this.player.systemSpeedFactor = this.systemSpeedFactor;
+
       // Update player
       this.player.update(dt);
     }
@@ -548,7 +550,7 @@ export class ExploreMode {
     this.updateSunLabel();
 
     this.updatePlanetScaling();
-    this.player.group.scale.setScalar(16);
+    this.player.group.scale.setScalar(0.5);
     this.resolvePlanetCollisions();
 
     // Check orbit crossings and visits after scale/collision are applied so the
@@ -566,6 +568,7 @@ export class ExploreMode {
     if (shouldRefreshUi) {
       this.updateStatsUI();
       this.updateTimeUI();
+      this.updateSpeedSlider();
     }
   }
 
@@ -612,7 +615,7 @@ export class ExploreMode {
     // Chase camera: smoothly lerp behind the ship unless user is orbiting
     if (this.userOrbiting) return;
 
-    const camDist = 0.003;
+    const camDist = 0.000094;
     const forward = this.player.getForwardDirection();
     const idealPos = new THREE.Vector3(
       -forward.x * camDist,
@@ -678,34 +681,83 @@ export class ExploreMode {
     return moonMesh ? moonMesh.data.radiusAU : 0;
   }
 
-  private updatePlanetScaling() {
-    if (!this.solarSystem) return;
-    // Distance-based planet scaling:
-    //   Close (<0.3 AU): full planetScale
-    //   Mid (0.3–2.5 AU): smooth ramp to half planetScale
-    //   Far (>2.5 AU): planetScale * 0.5
-    for (const planet of this.solarSystem.planets) {
-      const wp = planet.group.userData.worldPosAU as { x: number; y: number; z: number };
+  private computeSystemSpeedFactor(): { factor: number; planet: string | null } {
+    let minFactor = 1.0;
+    let nearestPlanet: string | null = null;
+
+    // Check all planets
+    for (const body of ALL_BODIES) {
+      const wp = this.planetWorldPositions.get(body.name);
+      if (!wp) continue;
       const dx = this.player.posX - wp.x;
       const dy = this.player.posY - wp.y;
       const dz = this.player.posZ - wp.z;
       const dist = Math.sqrt(dx * dx + dy * dy + dz * dz);
-      const linear = 1 - Math.min(1, Math.max(0, (dist - 0.3) / 2.2));
-      const t = linear * linear * (3 - 2 * linear);
-      const farScale = Math.min(8, this.planetScale);
-      const s = farScale + (this.planetScale - farScale) * t;
-      planet.group.scale.setScalar(s);
 
+      const systemRadius = body.systemRadiusAU;
+      if (dist >= systemRadius) continue;
+
+      const inner = systemRadius * 0.05;
+      const t = Math.min(1, Math.max(0, (dist - inner) / (systemRadius - inner)));
+      const factor = t * t * (3 - 2 * t); // smoothstep
+      if (factor < minFactor) {
+        minFactor = factor;
+        nearestPlanet = body.name;
+      }
+    }
+
+    // Check Sun (always at origin in world coordinates)
+    {
+      const dist = Math.sqrt(
+        this.player.posX * this.player.posX +
+        this.player.posY * this.player.posY +
+        this.player.posZ * this.player.posZ,
+      );
+      const sunSystemRadius = 0.02;
+      if (dist < sunSystemRadius) {
+        const inner = sunSystemRadius * 0.05;
+        const t = Math.min(1, Math.max(0, (dist - inner) / (sunSystemRadius - inner)));
+        const factor = t * t * (3 - 2 * t);
+        if (factor < minFactor) {
+          minFactor = factor;
+          nearestPlanet = 'Sun';
+        }
+      }
+    }
+
+    return { factor: minFactor, planet: nearestPlanet };
+  }
+
+  private updatePlanetScaling() {
+    if (!this.solarSystem) return;
+    for (const planet of this.solarSystem.planets) {
+      planet.group.scale.setScalar(1);
+
+      // Atmosphere alpha: fade in as player approaches the planet's system radius
       if (planet.atmosphere) {
+        const wp = planet.group.userData.worldPosAU as { x: number; y: number; z: number };
+        const dx = this.player.posX - wp.x;
+        const dy = this.player.posY - wp.y;
+        const dz = this.player.posZ - wp.z;
+        const dist = Math.sqrt(dx * dx + dy * dy + dz * dz);
+        const systemR = planet.data.systemRadiusAU;
+        const innerR = systemR * 0.1;
+        const linear = 1 - Math.min(1, Math.max(0, (dist - innerR) / (systemR - innerR)));
+        const t = linear * linear * (3 - 2 * linear);
         const glowMat = planet.atmosphere.material as THREE.ShaderMaterial;
         if (glowMat.uniforms?.alphaScale) {
-          glowMat.uniforms.alphaScale.value = (0.15 + 0.3 * t);
+          glowMat.uniforms.alphaScale.value = 0.15 + 0.3 * t;
         }
       }
 
       if (planet.data.name === 'Earth') {
+        const wp = planet.group.userData.worldPosAU as { x: number; y: number; z: number };
+        const dx = this.player.posX - wp.x;
+        const dy = this.player.posY - wp.y;
+        const dz = this.player.posZ - wp.z;
+        const dist = Math.sqrt(dx * dx + dy * dy + dz * dz);
         const renderedAngularDiameter = dist > 1e-8
-          ? (planet.data.radiusAU * planet.group.scale.x * 2) / dist
+          ? (planet.data.radiusAU * 2) / dist
           : Infinity;
         const keepEarthDetail =
           dist <= ExploreMode.EARTH_DETAIL_MIN_DISTANCE_AU ||
@@ -830,17 +882,29 @@ export class ExploreMode {
     }
 
     if (throttle > 0) {
-      // Accelerate — use additive at low speeds for responsiveness from zero
-      if (this.player.speedMultiplier < 0.05) {
-        this.player.speedMultiplier = Math.min(this.player.speedMultiplier + 0.002, PlayerShip.SPEED_MAX);
+      // Accelerate — route to whichever speed mode is active
+      if (this.inSystemMode) {
+        if (this.player.systemSpeedMultiplier < 0.001) {
+          this.player.systemSpeedMultiplier = Math.min(this.player.systemSpeedMultiplier + 0.0001, PlayerShip.SYSTEM_SPEED_MAX);
+        } else {
+          this.player.systemSpeedMultiplier = Math.min(this.player.systemSpeedMultiplier * 1.01, PlayerShip.SYSTEM_SPEED_MAX);
+        }
       } else {
-        this.player.speedMultiplier = Math.min(this.player.speedMultiplier * 1.01, PlayerShip.SPEED_MAX);
+        if (this.player.speedMultiplier < 0.05) {
+          this.player.speedMultiplier = Math.min(this.player.speedMultiplier + 0.002, PlayerShip.SPEED_MAX);
+        } else {
+          this.player.speedMultiplier = Math.min(this.player.speedMultiplier * 1.01, PlayerShip.SPEED_MAX);
+        }
       }
       this.updateSpeedSlider();
     }
     if (throttle < 0) {
-      // Decelerate — multiplicative, clamp to zero
-      this.player.speedMultiplier = Math.max(this.player.speedMultiplier * 0.99 - 0.001, 0);
+      // Decelerate — route to whichever speed mode is active
+      if (this.inSystemMode) {
+        this.player.systemSpeedMultiplier = Math.max(this.player.systemSpeedMultiplier * 0.99 - 0.0001, 0);
+      } else {
+        this.player.speedMultiplier = Math.max(this.player.speedMultiplier * 0.99 - 0.001, 0);
+      }
       this.updateSpeedSlider();
     }
   }
@@ -962,16 +1026,22 @@ export class ExploreMode {
         closest = { type: 'planet', name: planet.data.name };
       }
 
-      // Check moons of nearby planets
+      // Check moons of nearby planets using real AU positions
       const moons = this.planetMoons.get(planet.data.name);
       if (!moons) continue;
       const moonThreshold = this.getMoonSystemThresholdAU(planet.data.radiusAU, moons);
       if (dist > moonThreshold) continue;
       for (const m of moons) {
-        const moonWorldPos = m.mesh.getWorldPosition(new THREE.Vector3());
-        // moonWorldPos is in scene space (offset by floating origin)
-        // player is at origin in scene space
-        const md = moonWorldPos.length();
+        // Compute moon's real AU position (parent + orbital offset)
+        const angle = this.getMoonAngleRad(m.data);
+        const r = m.data.orbitalRadiusAU;
+        const moonRealX = wp.x + r * Math.cos(angle);
+        const moonRealY = wp.y;
+        const moonRealZ = wp.z + r * Math.sin(angle);
+        const mdx = this.player.posX - moonRealX;
+        const mdy = this.player.posY - moonRealY;
+        const mdz = this.player.posZ - moonRealZ;
+        const md = Math.sqrt(mdx * mdx + mdy * mdy + mdz * mdz);
         const moonLandThreshold = Math.max(m.data.radiusAU * this.planetScale * 3, 0.0003);
         if (md < moonLandThreshold && md < closestDist) {
           closestDist = md;
@@ -1104,22 +1174,32 @@ export class ExploreMode {
     if (el) el.textContent = text;
   }
 
+  private formatSystemSpeed(speedMultiplier: number): string {
+    const kmPerS = speedMultiplier * 299792.458;
+    if (kmPerS < 1000) return Math.round(kmPerS) + ' km/s';
+    return Math.round(kmPerS / 1000) + 'k km/s';
+  }
+
   private updateSpeedSlider() {
-    if (this.speedSliderEl) {
-      // Map speed multiplier to slider (logarithmic, with 0 at far left)
-      if (this.player.speedMultiplier <= 0.01) {
-        this.speedSliderEl.value = '0';
-      } else {
-        const minLog = 0.05; // minimum for log scale
-        const logVal = Math.log(Math.max(this.player.speedMultiplier, minLog) / minLog) /
-                       Math.log(PlayerShip.SPEED_MAX / minLog);
-        this.speedSliderEl.value = String(logVal * 100);
-      }
+    // Update mode detection with hysteresis
+    if (this.systemSpeedFactor < 0.5) this.inSystemMode = true;
+    else if (this.systemSpeedFactor > 0.6) this.inSystemMode = false;
+
+    if (this.speedLabelEl) {
+      this.speedLabelEl.textContent = this.inSystemMode
+        ? (this.nearestSystemPlanet ?? 'System')
+        : 'Space';
     }
     if (this.speedValueEl) {
-      this.speedValueEl.textContent = this.player.speedMultiplier < 0.01
-        ? '0c'
-        : `${this.player.speedC.toFixed(1)}c`;
+      if (this.inSystemMode) {
+        this.speedValueEl.textContent = this.player.systemSpeedMultiplier < 0.0005
+          ? '0 km/s'
+          : this.formatSystemSpeed(this.player.systemSpeedMultiplier);
+      } else {
+        this.speedValueEl.textContent = this.player.speedMultiplier < 0.01
+          ? '0c'
+          : `${this.player.speedC.toFixed(1)}c`;
+      }
     }
   }
 
@@ -1185,9 +1265,6 @@ export class ExploreMode {
       if (button) button.disabled = missionActive;
     }
 
-    const speedSlider = document.getElementById('explore-speed-slider') as HTMLInputElement | null;
-    if (speedSlider) speedSlider.disabled = missionActive;
-
     const speedBar = document.getElementById('explore-speed-bar');
     if (speedBar) {
       speedBar.style.opacity = missionActive ? '0.45' : '';
@@ -1225,36 +1302,37 @@ export class ExploreMode {
   }
 
   private wireUpUI() {
-    // Speed slider
-    const speedSlider = document.getElementById('explore-speed-slider') as HTMLInputElement;
-    if (speedSlider) {
-      speedSlider.addEventListener('input', () => {
-        const t = parseFloat(speedSlider.value) / 100;
-        if (t < 0.01) {
-          this.player.speedMultiplier = 0;
-        } else {
-          // Logarithmic mapping
-          const minLog = 0.05;
-          this.player.speedMultiplier = minLog * Math.pow(PlayerShip.SPEED_MAX / minLog, t);
-        }
-        this.updateSpeedSlider();
-      });
-    }
     document.getElementById('explore-speed-up')?.addEventListener('click', () => {
       if (this.isMissionActive()) return;
-      if (this.player.speedMultiplier < 0.05) {
-        this.player.speedMultiplier = 0.05;
+      if (this.inSystemMode) {
+        if (this.player.systemSpeedMultiplier < 0.001) {
+          this.player.systemSpeedMultiplier = 0.001;
+        } else {
+          this.player.systemSpeedMultiplier = Math.min(this.player.systemSpeedMultiplier * 1.35, PlayerShip.SYSTEM_SPEED_MAX);
+        }
       } else {
-        this.player.speedMultiplier = Math.min(this.player.speedMultiplier * 1.35, PlayerShip.SPEED_MAX);
+        if (this.player.speedMultiplier < 0.05) {
+          this.player.speedMultiplier = 0.05;
+        } else {
+          this.player.speedMultiplier = Math.min(this.player.speedMultiplier * 1.35, PlayerShip.SPEED_MAX);
+        }
       }
       this.updateSpeedSlider();
     });
     document.getElementById('explore-speed-down')?.addEventListener('click', () => {
       if (this.isMissionActive()) return;
-      if (this.player.speedMultiplier < 0.06) {
-        this.player.speedMultiplier = 0;
+      if (this.inSystemMode) {
+        if (this.player.systemSpeedMultiplier < 0.002) {
+          this.player.systemSpeedMultiplier = 0;
+        } else {
+          this.player.systemSpeedMultiplier = Math.max(this.player.systemSpeedMultiplier * 0.72, 0);
+        }
       } else {
-        this.player.speedMultiplier = Math.max(this.player.speedMultiplier * 0.72, 0);
+        if (this.player.speedMultiplier < 0.06) {
+          this.player.speedMultiplier = 0;
+        } else {
+          this.player.speedMultiplier = Math.max(this.player.speedMultiplier * 0.72, 0);
+        }
       }
       this.updateSpeedSlider();
     });
@@ -1400,16 +1478,6 @@ export class ExploreMode {
           this.rebuildPlanetPositions();
           this.updateTimeUI();
         }
-      });
-    }
-
-    // Planet scale slider
-    const scaleSlider = document.getElementById('settings-planet-scale') as HTMLInputElement;
-    if (scaleSlider) {
-      scaleSlider.addEventListener('input', () => {
-        this.planetScale = parseInt(scaleSlider.value, 10);
-        this.updatePlanetScaleLabel();
-        this.resetCruiseCamera();
       });
     }
 
@@ -1930,7 +1998,7 @@ export class ExploreMode {
   }
 
   private resetCruiseCamera() {
-    const camDist = 0.003;
+    const camDist = 0.000094;
     const forward = this.player.getForwardDirection();
     this.camera.position.set(
       -forward.x * camDist,
@@ -1941,7 +2009,7 @@ export class ExploreMode {
   }
 
   private getPlanetCollisionRadius(radiusAU: number, renderedScale: number): number {
-    return radiusAU * Math.max(renderedScale, 1) + ExploreMode.SHIP_CLEARANCE_AU * this.planetScale;
+    return radiusAU * Math.max(renderedScale, 1) + ExploreMode.SHIP_CLEARANCE_AU;
   }
 
   private getJumpDestination(planet: PlanetData, distanceMultiplier = 1) {
@@ -2298,6 +2366,7 @@ export class ExploreMode {
       showShip: this.showShip,
       showConstellations: this.showConstellations,
       landedOn: this.landedOn,
+      systemSpeed: this.player.systemSpeedMultiplier,
     };
   }
 
@@ -2320,7 +2389,8 @@ export class ExploreMode {
       rate: saved.astroTimeRate ?? 1,
       paused: saved.astroTimePaused ?? false,
     };
-    this.planetScale = saved.planetScale;
+    this.planetScale = 1; // Always use true scale regardless of saved value
+    this.player.systemSpeedMultiplier = saved.systemSpeed ?? PlayerShip.SYSTEM_SPEED_DEFAULT;
     this.showShip = saved.showShip;
     this.player.group.visible = this.showShip;
     this.showConstellations = saved.showConstellations ?? false;
@@ -2334,9 +2404,6 @@ export class ExploreMode {
 
     const apBtn = document.getElementById('explore-btn-autopilot');
     if (apBtn) apBtn.classList.toggle('active', this.autopilot);
-    const scaleSlider = document.getElementById('settings-planet-scale') as HTMLInputElement;
-    if (scaleSlider) scaleSlider.value = String(this.planetScale);
-    this.updatePlanetScaleLabel();
     const shipLabel = document.getElementById('settings-ship-label');
     if (shipLabel) shipLabel.textContent = this.showShip ? 'On' : 'Off';
 

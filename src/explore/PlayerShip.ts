@@ -104,6 +104,8 @@ export class PlayerShip {
   heading = 0;
   pitch = 0;
   speedMultiplier = 1.0;
+  systemSpeedMultiplier = 0.083; // ~25k km/s default system speed
+  systemSpeedFactor = 1.0;      // 1 = open space, 0 = deep in system (set by ExploreMode)
   moving = true;
   yawInput = 0;
   pitchInput = 0;
@@ -1117,7 +1119,10 @@ export class PlayerShip {
   }
 
   get speedAUPerS(): number {
-    return this.moving ? DEFAULT_SPEED_AU_S * this.speedMultiplier : 0;
+    if (!this.moving) return 0;
+    const cruise = DEFAULT_SPEED_AU_S * this.speedMultiplier;
+    const system = DEFAULT_SPEED_AU_S * Math.min(this.systemSpeedMultiplier, this.speedMultiplier);
+    return system + (cruise - system) * this.systemSpeedFactor;
   }
 
   get speedC(): number {
@@ -1130,8 +1135,9 @@ export class PlayerShip {
 
     // Animate exhaust
     this.exhaustTime += dt;
-    const speedFrac = this.speedMultiplier / PlayerShip.SPEED_MAX;
-    const exhaustOn = this.moving && this.speedMultiplier > 0.01;
+    const effectiveMultiplier = this.speedAUPerS / DEFAULT_SPEED_AU_S;
+    const speedFrac = effectiveMultiplier / PlayerShip.SPEED_MAX;
+    const exhaustOn = this.moving && effectiveMultiplier > 0.01;
 
     const showExhaust = this.profile === 'default' && exhaustOn;
     this.exhaustCone.visible = showExhaust;
@@ -1214,8 +1220,10 @@ export class PlayerShip {
   }
 
   static readonly SPEED_MIN = 0;
-  static readonly SPEED_MAX = 3.6;
+  static readonly SPEED_MAX = 20;
   static readonly SPEED_DEFAULT = 1.0;
+  static readonly SYSTEM_SPEED_MAX = 0.2;     // 0.2c ≈ 60k km/s
+  static readonly SYSTEM_SPEED_DEFAULT = 0.083; // ~25k km/s
   static readonly DEFAULT_SPEED_AU_S = DEFAULT_SPEED_AU_S;
 
   setProfile(profile: ShipProfile) {

@@ -62,7 +62,6 @@ export class ExploreMode {
   private static readonly MOON_PREWARM_MIN_IDLE_BUDGET_MS = 8;
   private static readonly MISSION_CONTROL_IDS = [
     'explore-btn-travel',
-    'explore-btn-pause',
     'explore-btn-autopilot',
     'explore-speed-up',
     'explore-speed-down',
@@ -185,6 +184,8 @@ export class ExploreMode {
   private preMissionState: ExploreState | null = null;
   private preMissionMenuVisible = false;
   private deferredResumePromptState: ExploreState | null = null;
+  private _menuPausedShip = false;
+  private _menuPausedTime = false;
 
   active = false;
   private useBloom: boolean;
@@ -1385,13 +1386,6 @@ export class ExploreMode {
       this.updateSpeedSlider();
     });
 
-    // Play/Pause
-    document.getElementById('explore-btn-pause')?.addEventListener('click', () => {
-      if (this.isMissionActive()) return;
-      this.player.moving = !this.player.moving;
-      this.updatePauseButtonLabel();
-    });
-
     // Save button
     document.getElementById('explore-btn-save')?.addEventListener('click', () => {
       this.saveManager.saveState(this.getState());
@@ -1448,10 +1442,25 @@ export class ExploreMode {
       this.toggleAutopilot();
     });
 
-    // Menu panel toggle (replaces separate settings + save/new buttons)
+    // Menu panel toggle — auto-pause while open
     document.getElementById('explore-btn-menu')?.addEventListener('click', () => {
       const panel = document.getElementById('explore-menu-panel');
-      if (panel) panel.classList.toggle('visible');
+      if (!panel) return;
+      const wasVisible = panel.classList.contains('visible');
+      panel.classList.toggle('visible');
+      if (!wasVisible) {
+        // Opening: pause ship + time
+        this._menuPausedShip = this.player.moving;
+        this._menuPausedTime = !this.timeState.paused;
+        this.player.moving = false;
+        this.timeState.paused = true;
+      } else {
+        // Closing: restore previous state
+        if (this._menuPausedShip) this.player.moving = true;
+        if (this._menuPausedTime) this.timeState.paused = false;
+        this._menuPausedShip = false;
+        this._menuPausedTime = false;
+      }
     });
     document.getElementById('explore-btn-historic')?.addEventListener('click', () => {
       const submenu = document.getElementById('explore-historic-submenu');

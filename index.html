@@ -452,32 +452,31 @@
       padding: 0 8px;
     }
 
-    /* Dividers between sections */
-    .bar-speed {
-      border-left: 1px solid var(--panel-border);
-      border-right: 1px solid var(--panel-border);
-      padding: 0 10px;
-      gap: 8px;
-    }
-
-    /* Time section (left) - clickable */
-    .bar-time {
+    /* Date/time label row above the bar */
+    .bar-date-row {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 6px;
+      padding: 4px 8px;
       cursor: pointer;
       -webkit-tap-highlight-color: transparent;
-      min-width: 0;
     }
     .bar-date {
-      font-size: 10px;
+      font-size: 11px;
       font-weight: 500;
       color: var(--text-primary);
       font-variant-numeric: tabular-nums;
       white-space: nowrap;
-      overflow: hidden;
-      text-overflow: ellipsis;
+    }
+    .bar-rate-sep {
+      font-size: 10px;
+      color: var(--text-dim);
+      opacity: 0.5;
     }
     .bar-rate {
-      font-size: 9px;
-      color: var(--text-dim);
+      font-size: 11px;
+      color: var(--text-secondary);
       white-space: nowrap;
     }
     .bar-chevron {
@@ -492,10 +491,24 @@
       opacity: 1;
     }
 
+    /* Speed section — no left border since date moved above */
+    .bar-speed-main {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 0 10px;
+    }
+    .speed-group {
+      display: flex;
+      align-items: center;
+      gap: 2px;
+    }
+
     /* Stats section (right) - clickable */
     .bar-stats {
       cursor: pointer;
       -webkit-tap-highlight-color: transparent;
+      border-left: 1px solid var(--panel-border);
     }
     .bar-stats-label {
       font-size: 10px;
@@ -518,7 +531,7 @@
       min-width: 180px;
     }
     .bar-popover.visible { display: block; }
-    .bar-popover-left { left: 0; }
+    .bar-popover-left { left: 0; right: 0; }
     .bar-popover-right { right: 0; }
 
     .stat-row {
@@ -527,7 +540,7 @@
       padding: 3px 0;
       gap: 12px;
     }
-    .stat-label { color: var(--text-dim); font-size: 10px; }
+    .stat-label { color: var(--text-secondary); font-size: 10px; }
     .stat-value { color: var(--text-primary); font-weight: 500; font-variant-numeric: tabular-nums; font-size: 11px; }
 
     /* time rate inherits .bar-rate styles */
@@ -1445,8 +1458,10 @@
       #explore-bottom-bar { bottom: 8px; max-width: calc(100vw - 12px); }
       .bar-row { padding: 5px 2px; }
       .bar-section { padding: 0 5px; }
-      .bar-speed { padding: 0 6px; gap: 6px; }
-      .bar-date { font-size: 9px; }
+      .bar-speed-main { padding: 0 6px; gap: 6px; }
+      .bar-date-row { padding: 2px 6px; gap: 4px; }
+      .bar-date { font-size: 10px; }
+      .bar-rate { font-size: 10px; }
       .stat-row { padding: 2px 0; }
       .stat-label { font-size: 9px; }
       .stat-value { font-size: 10px; }
@@ -1878,25 +1893,27 @@
           <div class="stat-row"><span class="stat-label">Flight</span><span class="stat-value" id="stat-time">0:00</span></div>
         </div>
 
+        <!-- Date/time label above bar -->
+        <div class="bar-date-row" id="bar-time-toggle">
+          <span class="bar-date" id="explore-time-value">--</span>
+          <span class="bar-rate-sep">&middot;</span>
+          <span class="bar-rate" id="explore-time-rate">1x</span>
+          <span class="bar-chevron" id="time-chevron">&#x25BC;</span>
+        </div>
+
         <!-- Main bar row -->
         <div class="bar-row">
-          <!-- Left: date/time toggle -->
-          <div class="bar-section bar-time" id="bar-time-toggle">
-            <span class="bar-date" id="explore-time-value">--</span>
-            <span class="bar-rate" id="explore-time-rate">1x</span>
-            <span class="bar-chevron" id="time-chevron">&#x25BC;</span>
-          </div>
-
-          <!-- Center: speed controls -->
-          <div class="bar-section bar-speed">
-            <button class="explore-icon-btn" id="explore-btn-pause">&#x23F8;</button>
+          <!-- Speed controls -->
+          <div class="bar-section bar-speed-main">
             <button class="explore-icon-btn" id="explore-btn-autopilot" title="Autopilot: fly to a destination. Click to choose target or disengage. (P)">&#x1F916; Pilot</button>
-            <button class="explore-icon-btn" id="explore-speed-down" title="Reduce speed">-</button>
-            <div class="speed-center">
-              <span id="explore-speed-label" class="speed-label-sm">Space</span>
-              <span id="explore-speed-value">1.0c</span>
+            <div class="speed-group">
+              <button class="explore-icon-btn" id="explore-speed-down" title="Reduce speed">-</button>
+              <div class="speed-center">
+                <span id="explore-speed-label" class="speed-label-sm">Space</span>
+                <span id="explore-speed-value">1.0c</span>
+              </div>
+              <button class="explore-icon-btn" id="explore-speed-up" title="Increase speed">+</button>
             </div>
-            <button class="explore-icon-btn" id="explore-speed-up" title="Increase speed">+</button>
           </div>
 
           <!-- Right: stats toggle -->

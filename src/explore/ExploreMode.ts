@@ -165,6 +165,7 @@ export class ExploreMode {
   private notificationEl: HTMLElement | null = null;
   private speedValueEl: HTMLElement | null = null;
   private speedLabelEl: HTMLElement | null = null;
+  private speedCenterEl: HTMLElement | null = null;
   private timeValueEl: HTMLElement | null = null;
   private timeRateEl: HTMLElement | null = null;
   private timeInputEl: HTMLInputElement | null = null;
@@ -245,6 +246,7 @@ export class ExploreMode {
     this.notificationEl = document.getElementById('explore-notification');
     this.speedValueEl = document.getElementById('explore-speed-value');
     this.speedLabelEl = document.getElementById('explore-speed-label');
+    this.speedCenterEl = document.querySelector('.speed-center') as HTMLElement | null;
     this.timeValueEl = document.getElementById('explore-time-value');
     this.timeRateEl = document.getElementById('explore-time-rate');
     this.timeInputEl = document.getElementById('explore-time-input') as HTMLInputElement;
@@ -1204,9 +1206,8 @@ export class ExploreMode {
     }
 
     // Visual feedback for override state
-    const centerEl = document.querySelector('.speed-center') as HTMLElement | null;
-    if (centerEl) {
-      centerEl.classList.toggle('throttle-override', this.throttleOverride);
+    if (this.speedCenterEl) {
+      this.speedCenterEl.classList.toggle('throttle-override', this.throttleOverride);
     }
     if (this.speedValueEl) {
       if (this.inSystemMode) {
@@ -2407,6 +2408,7 @@ export class ExploreMode {
       showConstellations: this.showConstellations,
       landedOn: this.landedOn,
       systemSpeed: this.player.systemSpeedMultiplier,
+      systemSlowdown: this.systemSlowdown,
     };
   }
 
@@ -2431,6 +2433,9 @@ export class ExploreMode {
     };
     this.planetScale = 1; // Always use true scale regardless of saved value
     this.player.systemSpeedMultiplier = saved.systemSpeed ?? PlayerShip.SYSTEM_SPEED_DEFAULT;
+    this.systemSlowdown = saved.systemSlowdown ?? true;
+    const throttleLabel = document.getElementById('settings-throttle-label');
+    if (throttleLabel) throttleLabel.textContent = this.systemSlowdown ? 'On' : 'Off';
     this.showShip = saved.showShip;
     this.player.group.visible = this.showShip;
     this.showConstellations = saved.showConstellations ?? false;

@@ -27,6 +27,7 @@ const PLANET_TEXTURE_URLS: Record<string, string> = {
   uranus: BASE + 'uranus.jpg',
   neptune: BASE + 'neptune.jpg',
   pluto: BASE + 'pluto.jpg',
+  moon: BASE + 'moon.jpg',
 };
 
 // Fallback colors if textures fail
@@ -488,26 +489,62 @@ export interface MoonMesh {
 }
 
 function createMoonColorTexture(color: number): THREE.Texture {
+  const W = 256;
+  const H = 128;
   const canvas = document.createElement('canvas');
-  canvas.width = 128;
-  canvas.height = 64;
+  canvas.width = W;
+  canvas.height = H;
   const ctx = canvas.getContext('2d')!;
   const c = new THREE.Color(color);
-  const r = Math.floor(c.r * 255);
-  const g = Math.floor(c.g * 255);
-  const b = Math.floor(c.b * 255);
-  ctx.fillStyle = `rgb(${r},${g},${b})`;
-  ctx.fillRect(0, 0, 128, 64);
-  // Add subtle noise for realism
-  const imageData = ctx.getImageData(0, 0, 128, 64);
+  const baseR = Math.floor(c.r * 255);
+  const baseG = Math.floor(c.g * 255);
+  const baseB = Math.floor(c.b * 255);
+  ctx.fillStyle = `rgb(${baseR},${baseG},${baseB})`;
+  ctx.fillRect(0, 0, W, H);
+
+  // Add dark patches (maria-like features) — large-scale variation
+  const patchCount = 4 + Math.floor(Math.random() * 5);
+  for (let p = 0; p < patchCount; p++) {
+    const px = Math.random() * W;
+    const py = Math.random() * H;
+    const pr = 15 + Math.random() * 35;
+    const darkness = 0.7 + Math.random() * 0.2;
+    const grad = ctx.createRadialGradient(px, py, 0, px, py, pr);
+    grad.addColorStop(0, `rgba(0,0,0,${(1 - darkness) * 0.6})`);
+    grad.addColorStop(1, 'rgba(0,0,0,0)');
+    ctx.fillStyle = grad;
+    ctx.fillRect(0, 0, W, H);
+  }
+
+  // Add craters — small bright-rimmed dark circles
+  const craterCount = 8 + Math.floor(Math.random() * 12);
+  for (let i = 0; i < craterCount; i++) {
+    const cx = Math.random() * W;
+    const cy = Math.random() * H;
+    const cr = 2 + Math.random() * 8;
+    // Dark crater floor
+    const grad = ctx.createRadialGradient(cx, cy, 0, cx, cy, cr);
+    grad.addColorStop(0, 'rgba(0,0,0,0.25)');
+    grad.addColorStop(0.7, 'rgba(0,0,0,0.15)');
+    grad.addColorStop(0.85, 'rgba(255,255,255,0.1)');
+    grad.addColorStop(1, 'rgba(0,0,0,0)');
+    ctx.fillStyle = grad;
+    ctx.beginPath();
+    ctx.arc(cx, cy, cr, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
+  // Per-pixel noise for fine grain
+  const imageData = ctx.getImageData(0, 0, W, H);
   const data = imageData.data;
   for (let i = 0; i < data.length; i += 4) {
-    const noise = (Math.random() - 0.5) * 20;
+    const noise = (Math.random() - 0.5) * 18;
     data[i] = Math.max(0, Math.min(255, data[i] + noise));
     data[i + 1] = Math.max(0, Math.min(255, data[i + 1] + noise));
     data[i + 2] = Math.max(0, Math.min(255, data[i + 2] + noise));
   }
   ctx.putImageData(imageData, 0, 0);
+
   const tex = new THREE.CanvasTexture(canvas);
   tex.colorSpace = THREE.SRGBColorSpace;
   return tex;
@@ -522,7 +559,7 @@ export function createMoonMeshes(planetName: string): MoonMesh[] {
   const result: MoonMesh[] = [];
 
   for (const moonData of moons) {
-    const segments = moonData.radiusKm > 500 ? 16 : 8;
+    const segments = moonData.radiusKm > 1000 ? 32 : moonData.radiusKm > 200 ? 16 : 8;
     const geo = new THREE.SphereGeometry(moonData.radiusAU, segments, segments / 2);
 
     let texture: THREE.Texture;
@@ -542,7 +579,7 @@ export function createMoonMeshes(planetName: string): MoonMesh[] {
       roughness: 0.85,
       metalness: 0.05,
       emissive: new THREE.Color(moonData.color),
-      emissiveIntensity: 0.15,
+      emissiveIntensity: 0.08,
     });
 
     const mesh = new THREE.Mesh(geo, mat);

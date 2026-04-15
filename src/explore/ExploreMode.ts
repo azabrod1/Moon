@@ -2607,9 +2607,9 @@ export class ExploreMode {
       colors[i * 3 + 1] = color.g * brightness;
       colors[i * 3 + 2] = color.b * brightness;
 
-      // Exponential size — Sirius ~9px, Vega ~6px, dim stars ~1px
-      const rawSize = 2.0 * Math.pow(1.45, 3.0 - star.magnitude);
-      sizes[i] = THREE.MathUtils.clamp(rawSize, 1.0, 14.0);
+      // Exponential size — Sirius ~7px, Vega ~5px, dim stars ~1.5px
+      const rawSize = 2.0 * Math.pow(1.35, 3.0 - star.magnitude);
+      sizes[i] = THREE.MathUtils.clamp(rawSize, 1.5, 8.0);
     }
 
     // Load Milky Way skybox (async — appears when texture is ready)
@@ -2662,10 +2662,12 @@ export class ExploreMode {
         map: tex,
         side: THREE.BackSide,
         transparent: true,
-        opacity: 0.15,
+        opacity: 0.35,
         depthWrite: false,
       });
       const mesh = new THREE.Mesh(geo, mat);
+      // Render before stars so it sits behind them
+      mesh.renderOrder = -1;
       // Rotate from galactic coordinates to equatorial (J2000):
       // Galactic north pole is at RA=192.86°, Dec=27.13° — rotate to align
       mesh.rotation.set(

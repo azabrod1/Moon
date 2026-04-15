@@ -67,7 +67,7 @@ function createAsteroidBelt(): THREE.Points {
     positions[i * 3 + 1] = y;
     positions[i * 3 + 2] = radius * Math.sin(angle);
 
-    const brightness = 0.25 + Math.random() * 0.25;
+    const brightness = 0.35 + Math.random() * 0.35;
     const tint = Math.random();
     if (tint < 0.6) {
       // Brownish rocky
@@ -140,7 +140,7 @@ function createAsteroidBelt(): THREE.Points {
 
         // Slight surface shading — darker toward edges
         float shade = 1.0 - smoothstep(edge * 0.3, edge, dist);
-        float alpha = 0.45 * shade;
+        float alpha = 0.6 * shade;
 
         gl_FragColor = vec4(vColor * shade, alpha);
       }

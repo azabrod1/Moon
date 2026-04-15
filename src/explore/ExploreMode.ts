@@ -2370,6 +2370,10 @@ export class ExploreMode {
 
     this.landedOn = null;
 
+    // Restore bottom bar (hidden by updateMissionControlState when landedOn was set)
+    const bottomBar = document.getElementById('explore-bottom-bar');
+    if (bottomBar) bottomBar.style.display = '';
+
     // UI: restore flight controls, hide leave button
     const speedSection = document.querySelector('.bar-speed-main') as HTMLElement | null;
     if (speedSection) speedSection.style.display = '';

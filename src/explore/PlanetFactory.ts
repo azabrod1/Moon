@@ -28,6 +28,11 @@ const PLANET_TEXTURE_URLS: Record<string, string> = {
   neptune: BASE + 'neptune.jpg',
   pluto: BASE + 'pluto.jpg',
   moon: BASE + 'moon.jpg',
+  io: BASE + 'io.jpg',
+  europa: BASE + 'europa.jpg',
+  ganymede: BASE + 'ganymede.jpg',
+  callisto: BASE + 'callisto.jpg',
+  triton: BASE + 'triton.jpg',
 };
 
 // Fallback colors if textures fail
@@ -488,66 +493,160 @@ export interface MoonMesh {
   data: MoonData;
 }
 
-function createMoonColorTexture(color: number): THREE.Texture {
-  const W = 256;
-  const H = 128;
-  const canvas = document.createElement('canvas');
-  canvas.width = W;
-  canvas.height = H;
-  const ctx = canvas.getContext('2d')!;
+// Seeded pseudo-random number generator
+function seededRng(seed: number) {
+  let s = seed;
+  return () => {
+    s = (s * 16807 + 0) % 2147483647;
+    return (s - 1) / 2147483646;
+  };
+}
+
+// Hash a string to a numeric seed
+function hashString(str: string): number {
+  let hash = 5381;
+  for (let i = 0; i < str.length; i++) {
+    hash = ((hash << 5) + hash + str.charCodeAt(i)) | 0;
+  }
+  return Math.abs(hash);
+}
+
+// Layered sine-based value noise (no library needed)
+function valueNoise(x: number, y: number, seed: number): number {
+  const a = Math.sin(x * 12.9898 + y * 78.233 + seed) * 43758.5453;
+  return a - Math.floor(a);
+}
+
+function fractalNoise(x: number, y: number, seed: number, octaves: number): number {
+  let value = 0;
+  let amplitude = 1;
+  let frequency = 1;
+  let maxAmp = 0;
+  for (let i = 0; i < octaves; i++) {
+    value += valueNoise(x * frequency, y * frequency, seed + i * 100) * amplitude;
+    maxAmp += amplitude;
+    amplitude *= 0.5;
+    frequency *= 2.2;
+  }
+  return value / maxAmp;
+}
+
+function createMoonTextures(color: number, name: string): { colorTex: THREE.Texture; bumpTex: THREE.Texture } {
+  const W = 512;
+  const H = 256;
+  const seed = hashString(name);
+  const rng = seededRng(seed);
+
+  // Determine moon "type" from color brightness/hue
   const c = new THREE.Color(color);
-  const baseR = Math.floor(c.r * 255);
-  const baseG = Math.floor(c.g * 255);
-  const baseB = Math.floor(c.b * 255);
-  ctx.fillStyle = `rgb(${baseR},${baseG},${baseB})`;
-  ctx.fillRect(0, 0, W, H);
+  const brightness = c.r * 0.299 + c.g * 0.587 + c.b * 0.114;
+  const isIcy = brightness > 0.55;
+  const isVolcanic = c.r > 0.6 && c.g > 0.4 && c.b < 0.35;
 
-  // Add dark patches (maria-like features) — large-scale variation
-  const patchCount = 4 + Math.floor(Math.random() * 5);
-  for (let p = 0; p < patchCount; p++) {
-    const px = Math.random() * W;
-    const py = Math.random() * H;
-    const pr = 15 + Math.random() * 35;
-    const darkness = 0.7 + Math.random() * 0.2;
-    const grad = ctx.createRadialGradient(px, py, 0, px, py, pr);
-    grad.addColorStop(0, `rgba(0,0,0,${(1 - darkness) * 0.6})`);
-    grad.addColorStop(1, 'rgba(0,0,0,0)');
-    ctx.fillStyle = grad;
-    ctx.fillRect(0, 0, W, H);
+  const colorCanvas = document.createElement('canvas');
+  colorCanvas.width = W;
+  colorCanvas.height = H;
+  const ctx = colorCanvas.getContext('2d')!;
+
+  const bumpCanvas = document.createElement('canvas');
+  bumpCanvas.width = W;
+  bumpCanvas.height = H;
+  const bCtx = bumpCanvas.getContext('2d')!;
+
+  // Generate per-pixel with fractal noise
+  const colorData = ctx.createImageData(W, H);
+  const bumpData = bCtx.createImageData(W, H);
+  const cd = colorData.data;
+  const bd = bumpData.data;
+
+  const baseR = c.r * 255;
+  const baseG = c.g * 255;
+  const baseB = c.b * 255;
+
+  for (let y = 0; y < H; y++) {
+    for (let x = 0; x < W; x++) {
+      const idx = (y * W + x) * 4;
+      const nx = x / W;
+      const ny = y / H;
+
+      // Large-scale terrain variation (3 octaves)
+      const terrain = fractalNoise(nx * 6, ny * 6, seed, 3);
+      // Medium detail
+      const detail = fractalNoise(nx * 18, ny * 18, seed + 500, 2);
+      // Fine grain
+      const grain = valueNoise(nx * 50, ny * 50, seed + 1000);
+
+      // Combine: terrain drives large color shifts, detail adds texture
+      let variation: number;
+      if (isIcy) {
+        // Icy: smoother, subtle cracks
+        variation = terrain * 0.15 + detail * 0.08 + grain * 0.03;
+      } else if (isVolcanic) {
+        // Volcanic: splotchy, high contrast
+        variation = terrain * 0.3 + detail * 0.12 + grain * 0.04;
+      } else {
+        // Rocky: moderate cratering and noise
+        variation = terrain * 0.22 + detail * 0.1 + grain * 0.04;
+      }
+
+      // Apply variation as brightness shift centered around 0
+      const shift = (variation - 0.15) * 255;
+      cd[idx] = Math.max(0, Math.min(255, baseR + shift));
+      cd[idx + 1] = Math.max(0, Math.min(255, baseG + shift));
+      cd[idx + 2] = Math.max(0, Math.min(255, baseB + shift));
+      cd[idx + 3] = 255;
+
+      // Bump map: terrain + detail as height
+      const height = Math.max(0, Math.min(255, (terrain * 0.7 + detail * 0.3) * 255));
+      bd[idx] = height;
+      bd[idx + 1] = height;
+      bd[idx + 2] = height;
+      bd[idx + 3] = 255;
+    }
   }
 
-  // Add craters — small bright-rimmed dark circles
-  const craterCount = 8 + Math.floor(Math.random() * 12);
+  // Add craters (seeded)
+  const craterCount = isIcy ? 5 + Math.floor(rng() * 8) : 10 + Math.floor(rng() * 15);
   for (let i = 0; i < craterCount; i++) {
-    const cx = Math.random() * W;
-    const cy = Math.random() * H;
-    const cr = 2 + Math.random() * 8;
-    // Dark crater floor
-    const grad = ctx.createRadialGradient(cx, cy, 0, cx, cy, cr);
-    grad.addColorStop(0, 'rgba(0,0,0,0.25)');
-    grad.addColorStop(0.7, 'rgba(0,0,0,0.15)');
-    grad.addColorStop(0.85, 'rgba(255,255,255,0.1)');
-    grad.addColorStop(1, 'rgba(0,0,0,0)');
-    ctx.fillStyle = grad;
-    ctx.beginPath();
-    ctx.arc(cx, cy, cr, 0, Math.PI * 2);
-    ctx.fill();
+    const cx = Math.floor(rng() * W);
+    const cy = Math.floor(rng() * H);
+    const cr = isIcy ? 2 + rng() * 5 : 3 + rng() * 12;
+    for (let dy = -Math.ceil(cr); dy <= Math.ceil(cr); dy++) {
+      for (let dx = -Math.ceil(cr); dx <= Math.ceil(cr); dx++) {
+        const dist = Math.sqrt(dx * dx + dy * dy);
+        if (dist > cr) continue;
+        const px = ((cx + dx) % W + W) % W;
+        const py = Math.max(0, Math.min(H - 1, cy + dy));
+        const idx = (py * W + px) * 4;
+        const t = dist / cr;
+        if (t < 0.75) {
+          // Dark crater floor
+          const darken = (1 - t / 0.75) * 30;
+          cd[idx] = Math.max(0, cd[idx] - darken);
+          cd[idx + 1] = Math.max(0, cd[idx + 1] - darken);
+          cd[idx + 2] = Math.max(0, cd[idx + 2] - darken);
+          bd[idx] = Math.max(0, bd[idx] - darken * 2);
+          bd[idx + 1] = bd[idx]; bd[idx + 2] = bd[idx];
+        } else {
+          // Bright rim
+          const brighten = (1 - (t - 0.75) / 0.25) * 20;
+          cd[idx] = Math.min(255, cd[idx] + brighten);
+          cd[idx + 1] = Math.min(255, cd[idx + 1] + brighten);
+          cd[idx + 2] = Math.min(255, cd[idx + 2] + brighten);
+          bd[idx] = Math.min(255, bd[idx] + brighten * 2);
+          bd[idx + 1] = bd[idx]; bd[idx + 2] = bd[idx];
+        }
+      }
+    }
   }
 
-  // Per-pixel noise for fine grain
-  const imageData = ctx.getImageData(0, 0, W, H);
-  const data = imageData.data;
-  for (let i = 0; i < data.length; i += 4) {
-    const noise = (Math.random() - 0.5) * 18;
-    data[i] = Math.max(0, Math.min(255, data[i] + noise));
-    data[i + 1] = Math.max(0, Math.min(255, data[i + 1] + noise));
-    data[i + 2] = Math.max(0, Math.min(255, data[i + 2] + noise));
-  }
-  ctx.putImageData(imageData, 0, 0);
+  ctx.putImageData(colorData, 0, 0);
+  bCtx.putImageData(bumpData, 0, 0);
 
-  const tex = new THREE.CanvasTexture(canvas);
-  tex.colorSpace = THREE.SRGBColorSpace;
-  return tex;
+  const colorTex = new THREE.CanvasTexture(colorCanvas);
+  colorTex.colorSpace = THREE.SRGBColorSpace;
+  const bumpTex = new THREE.CanvasTexture(bumpCanvas);
+  return { colorTex, bumpTex };
 }
 
 /**
@@ -559,28 +658,26 @@ export function createMoonMeshes(planetName: string): MoonMesh[] {
   const result: MoonMesh[] = [];
 
   for (const moonData of moons) {
-    const segments = moonData.radiusKm > 1000 ? 32 : moonData.radiusKm > 200 ? 16 : 8;
+    const segments = moonData.radiusKm > 1000 ? 48 : moonData.radiusKm > 200 ? 24 : 16;
     const geo = new THREE.SphereGeometry(moonData.radiusAU, segments, segments / 2);
 
-    let texture: THREE.Texture;
-    if (moonData.textureKey && PLANET_TEXTURE_URLS[moonData.textureKey]) {
-      // Try loading real texture, but use procedural as immediate fallback
-      texture = createMoonColorTexture(moonData.color);
-      loadTexture(moonData.textureKey).then((tex) => {
-        mat.map = tex;
-        mat.needsUpdate = true;
-      });
-    } else {
-      texture = createMoonColorTexture(moonData.color);
-    }
-
+    const { colorTex, bumpTex } = createMoonTextures(moonData.color, moonData.name);
     const mat = new THREE.MeshStandardMaterial({
-      map: texture,
+      map: colorTex,
+      bumpMap: bumpTex,
+      bumpScale: Math.max(moonData.radiusAU * 0.15, 0.0000005),
       roughness: 0.85,
       metalness: 0.05,
       emissive: new THREE.Color(moonData.color),
       emissiveIntensity: 0.08,
     });
+
+    if (moonData.textureKey && PLANET_TEXTURE_URLS[moonData.textureKey]) {
+      loadTexture(moonData.textureKey).then((tex) => {
+        mat.map = tex;
+        mat.needsUpdate = true;
+      });
+    }
 
     const mesh = new THREE.Mesh(geo, mat);
     mesh.name = moonData.name;

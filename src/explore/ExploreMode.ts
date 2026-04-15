@@ -2596,7 +2596,7 @@ export class ExploreMode {
 
       // Exponential brightness — steeper falloff so bright stars pop
       const brightness = THREE.MathUtils.clamp(
-        1.4 * Math.pow(0.72, star.magnitude + 1.44), 0.15, 1.5,
+        1.4 * Math.pow(0.72, star.magnitude + 1.44), 0.20, 1.5,
       );
 
       positions[i * 3] = radius * cosDec * Math.cos(ra);

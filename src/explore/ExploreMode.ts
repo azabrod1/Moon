@@ -2656,7 +2656,7 @@ export class ExploreMode {
         map: tex,
         side: THREE.BackSide,
         blending: THREE.AdditiveBlending,
-        opacity: 0.45,
+        opacity: 1.0,
         depthWrite: false,
         depthTest: false,
       });

@@ -2313,12 +2313,13 @@ export class ExploreMode {
     const radiusAU = this.getLandedBodyRadiusAU();
 
     if (bodyPos) {
-      // Place just outside collision boundary
-      // Planets: use collision radius (collision handler pushes out otherwise)
-      // Moons: use visual radius (no collision handler for moons)
-      const safeDist = this.landedOn.type === 'planet'
-        ? this.getPlanetCollisionRadius(radiusAU, this.planetScale) * 1.02
-        : radiusAU * this.planetScale * 1.5;
+      // Place just outside the body's visual surface
+      const visualRadius = radiusAU * this.planetScale;
+      let safeDist = visualRadius * 2;
+      if (this.landedOn.type === 'planet') {
+        const collisionR = this.getPlanetCollisionRadius(radiusAU, this.planetScale);
+        safeDist = Math.max(safeDist, collisionR * 1.02);
+      }
 
       // Direction: for moons, move away from parent planet so the moon
       // stays between ship and planet. For planets, move away from Sun.

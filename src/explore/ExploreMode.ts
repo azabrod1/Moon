@@ -2605,8 +2605,8 @@ export class ExploreMode {
       colors[i * 3 + 1] = color.g * brightness;
       colors[i * 3 + 2] = color.b * brightness;
 
-      // Original linear size with wider range: bright stars slightly bigger
-      sizes[i] = THREE.MathUtils.clamp(6.0 - star.magnitude * 0.7, 1.2, 7.0);
+      // Wider range at the bright end, dim stars stay small like original
+      sizes[i] = THREE.MathUtils.clamp(6.5 - star.magnitude, 1.2, 7.0);
     }
 
     // Milky Way skybox disabled for performance testing

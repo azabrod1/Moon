@@ -75,12 +75,11 @@ function createAsteroidBelt(): THREE.Points {
     colors[i * 3 + 1] = brightness * (0.85 + Math.random() * 0.1);
     colors[i * 3 + 2] = brightness * warmth * 0.75;
 
-    // Per-particle size variation: most small, a few larger
-    // Power distribution so most are small with rare large ones
+    // Per-particle size variation: most tiny, a few slightly larger
     const sizeRng = Math.random();
-    sizes[i] = sizeRng < 0.9
-      ? 1.5 + Math.random() * 2.0   // 90%: small (1.5-3.5)
-      : 3.5 + Math.random() * 4.0;  // 10%: larger (3.5-7.5)
+    sizes[i] = sizeRng < 0.92
+      ? 0.4 + Math.random() * 0.6   // 92%: tiny (0.4-1.0)
+      : 1.0 + Math.random() * 1.5;  // 8%: slightly larger (1.0-2.5)
   }
 
   const geometry = new THREE.BufferGeometry();
@@ -102,8 +101,8 @@ function createAsteroidBelt(): THREE.Points {
         vec4 mvPosition = modelViewMatrix * vec4(position, 1.0);
         gl_Position = projectionMatrix * mvPosition;
         // Size attenuation: scale by distance
-        gl_PointSize = size * pixelRatio * (200.0 / -mvPosition.z);
-        gl_PointSize = clamp(gl_PointSize, 0.5, 12.0);
+        gl_PointSize = size * pixelRatio * (30.0 / -mvPosition.z);
+        gl_PointSize = clamp(gl_PointSize, 0.5, 6.0);
       }
     `,
     fragmentShader: `

@@ -2597,8 +2597,8 @@ export class ExploreMode {
       colors[i * 3 + 1] = color.g * brightness;
       colors[i * 3 + 2] = color.b * brightness;
 
-      // More spread in bright range, dim stars (mag 5+) stay at floor
-      sizes[i] = THREE.MathUtils.clamp(5.6 - star.magnitude * 0.95, 1.2, 6.5);
+      // More spread so constellation stars (mag 1-3) stand out from dim ones
+      sizes[i] = THREE.MathUtils.clamp(6.0 - star.magnitude * 1.1, 1.2, 6.5);
     }
 
     const geo = new THREE.BufferGeometry();

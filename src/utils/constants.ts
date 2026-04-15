@@ -40,5 +40,4 @@ export const TEXTURES = {
   EARTH_CLOUDS: BASE + 'earth-clouds.jpg',
   EARTH_BUMP: BASE + 'earth-bump.png',
   MOON: BASE + 'moon.jpg',
-  MILKY_WAY: BASE + 'starmap_milkyway.jpg',
 };

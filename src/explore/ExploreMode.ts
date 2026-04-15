@@ -22,7 +22,6 @@ import {
   type ExploreTimeState,
 } from './astronomy';
 import { BRIGHT_STAR_CATALOG } from './data/brightStars';
-import { TEXTURES } from '../utils/constants';
 import { Constellations } from './Constellations';
 import { getMoonsByPlanet } from './planets/moonData';
 import {
@@ -78,7 +77,6 @@ export class ExploreMode {
   private markers: PlanetMarkers | null = null;
   private saveManager: SaveManager;
   private starfield: THREE.Points | null = null;
-  private skybox: THREE.Mesh | null = null;
   private constellations: Constellations | null = null;
   private showConstellations = false;
 
@@ -147,7 +145,6 @@ export class ExploreMode {
   private preLandAutopilot = false;
   private nearbyLandTarget: NonNullable<LandedTarget> | null = null;
   private travelSelection: NonNullable<LandedTarget> | null = null;
-  private travelMenuAutopilotMode = false;
 
   // Moon labels
   private moonLabels = new Map<string, HTMLDivElement>();
@@ -189,16 +186,6 @@ export class ExploreMode {
   private deferredResumePromptState: ExploreState | null = null;
   private _menuPausedShip = false;
   private _menuPausedTime = false;
-
-  private closeMenuPanel() {
-    const panel = document.getElementById('explore-menu-panel');
-    if (!panel?.classList.contains('visible')) return;
-    panel.classList.remove('visible');
-    if (this._menuPausedShip) this.player.moving = true;
-    if (this._menuPausedTime) this.timeState.paused = false;
-    this._menuPausedShip = false;
-    this._menuPausedTime = false;
-  }
 
   active = false;
   private useBloom: boolean;
@@ -495,7 +482,6 @@ export class ExploreMode {
     }
     this.player.group.visible = visible && this.showShip;
     if (this.starfield) this.starfield.visible = visible;
-    if (this.skybox) this.skybox.visible = visible;
     if (this.constellations) this.constellations.setVisible(visible && this.showConstellations);
   }
 
@@ -632,12 +618,9 @@ export class ExploreMode {
     // Player is at origin (or very close)
     this.player.group.position.set(0, 0, 0);
 
-    // Starfield + skybox + constellations follow camera (always centered on player)
+    // Starfield + constellations follow camera (always centered on player)
     if (this.starfield) {
       this.starfield.position.set(0, 0, 0);
-    }
-    if (this.skybox) {
-      this.skybox.position.set(0, 0, 0);
     }
     if (this.constellations) {
       this.constellations.lines.position.set(0, 0, 0);
@@ -1464,15 +1447,19 @@ export class ExploreMode {
       const panel = document.getElementById('explore-menu-panel');
       if (!panel) return;
       const wasVisible = panel.classList.contains('visible');
-      if (wasVisible) {
-        this.closeMenuPanel();
-      } else {
+      panel.classList.toggle('visible');
+      if (!wasVisible) {
         // Opening: pause ship + time
         this._menuPausedShip = this.player.moving;
         this._menuPausedTime = !this.timeState.paused;
         this.player.moving = false;
         this.timeState.paused = true;
-        panel.classList.add('visible');
+      } else {
+        // Closing: restore previous state
+        if (this._menuPausedShip) this.player.moving = true;
+        if (this._menuPausedTime) this.timeState.paused = false;
+        this._menuPausedShip = false;
+        this._menuPausedTime = false;
       }
     });
     document.getElementById('explore-btn-historic')?.addEventListener('click', () => {
@@ -1729,7 +1716,7 @@ export class ExploreMode {
     }
   }
 
-  private toggleTravelMenu(autopilotMode = false) {
+  private toggleTravelMenu() {
     if (this.isMissionActive()) return;
     const menu = document.getElementById('travel-menu');
     if (!menu) return;
@@ -1738,22 +1725,9 @@ export class ExploreMode {
       this.closeTravelMenu();
     } else {
       // Close menu panel if open
-      this.closeMenuPanel();
+      document.getElementById('explore-menu-panel')?.classList.remove('visible');
       menu.classList.add('visible');
       this.travelSelection = null;
-      this.travelMenuAutopilotMode = autopilotMode;
-      // Swap primary button styling based on mode
-      const landBtn = document.getElementById('travel-action-land');
-      const flyBtn = document.getElementById('travel-action-fly');
-      if (landBtn && flyBtn) {
-        if (autopilotMode) {
-          flyBtn.className = 'travel-action-btn';
-          landBtn.className = 'travel-action-btn travel-action-btn-dim';
-        } else {
-          landBtn.className = 'travel-action-btn';
-          flyBtn.className = 'travel-action-btn travel-action-btn-dim';
-        }
-      }
       const actionBar = document.getElementById('travel-action-bar');
       if (actionBar) actionBar.style.display = 'none';
       // Hide planet/moon labels so they don't show through the menu
@@ -1900,7 +1874,7 @@ export class ExploreMode {
     this.player.setProfile(journey.shipProfile);
     const shipLabel = document.getElementById('settings-ship-label');
     if (shipLabel) shipLabel.textContent = 'On';
-    this.closeMenuPanel();
+    document.getElementById('explore-menu-panel')?.classList.remove('visible');
     this.collapseHistoricJourneyMenu();
     this.updateMissionControlState();
     this.showVoyagerMilestone(0);
@@ -2294,10 +2268,7 @@ export class ExploreMode {
     document.getElementById('stats-chevron')?.classList.remove('expanded');
     document.getElementById('time-popover')?.classList.remove('visible');
     document.getElementById('time-chevron')?.classList.remove('expanded');
-    // Hide speed controls inside bar but keep bar visible for time controls
-    const speedSection = document.querySelector('.bar-speed-main') as HTMLElement | null;
-    if (speedSection) speedSection.style.display = 'none';
-    const hide = ['explore-keys-hint', 'touch-flight-zone', 'explore-btn-travel', 'explore-btn-land'];
+    const hide = ['explore-bottom-bar', 'explore-keys-hint', 'touch-flight-zone', 'explore-btn-travel', 'explore-btn-land'];
     for (const id of hide) {
       const el = document.getElementById(id);
       if (el) el.style.display = 'none';
@@ -2319,19 +2290,11 @@ export class ExploreMode {
     const radiusAU = this.getLandedBodyRadiusAU();
 
     if (bodyPos) {
-      // The cruise camera sits camDist behind the player. By facing AWAY
-      // from the body, the camera ends up between the player and the body,
-      // giving a close-up view of the body as you depart.
-      const camDist = 0.000094; // must match resetCruiseCamera
-      let safeDist: number;
-      if (this.landedOn.type === 'planet') {
-        // Camera must clear collision radius
-        const collisionR = this.getPlanetCollisionRadius(radiusAU, this.planetScale);
-        safeDist = camDist + collisionR * 1.5;
-      } else {
-        // Moons: no collision handler, place so camera is close
-        safeDist = camDist * 1.5;
-      }
+      // Compute clearance: safe distance from body
+      const clearance = this.landedOn.type === 'planet'
+        ? this.getPlanetCollisionRadius(radiusAU, this.planetScale) * 1.5
+        : radiusAU * this.planetScale * 3;
+      const safeDist = Math.max(clearance, 0.001);
 
       // Direction away from Sun (outward from body)
       const awayDir = new THREE.Vector3(bodyPos.x, bodyPos.y, bodyPos.z);
@@ -2342,7 +2305,7 @@ export class ExploreMode {
       this.player.posY = bodyPos.y + awayDir.y * safeDist;
       this.player.posZ = bodyPos.z + awayDir.z * safeDist;
 
-      // Head AWAY from the body — camera (behind player) ends up close to body
+      // Head away from the body
       this.player.headToward(
         this.player.posX + awayDir.x,
         this.player.posZ + awayDir.z,
@@ -2350,10 +2313,9 @@ export class ExploreMode {
       );
     }
 
-    // Restore speed and movement — set a gentle system speed for nearby flight
+    // Restore speed and movement
+    // Restore cruise speed — ensure at least default so player can leave the system
     this.player.speedMultiplier = Math.max(this.preLandSpeed, PlayerShip.SPEED_DEFAULT);
-    this.player.systemSpeedMultiplier = 0.02; // ~6k km/s — slow near planet
-    this.inSystemMode = true; // force system mode display since we're near the body
     this.player.moving = true;
     this.player.group.visible = this.showShip;
     this.updateSpeedSlider();
@@ -2371,9 +2333,8 @@ export class ExploreMode {
     this.landedOn = null;
 
     // UI: restore flight controls, hide leave button
-    const speedSection = document.querySelector('.bar-speed-main') as HTMLElement | null;
-    if (speedSection) speedSection.style.display = '';
     const show: Array<[string, string]> = [
+      ['explore-bottom-bar', ''],
       ['explore-btn-travel', ''],
     ];
     for (const [id, display] of show) {
@@ -2579,38 +2540,32 @@ export class ExploreMode {
   }
 
   private createExploreStarfield(): THREE.Points {
-    // Filter out Sol (rendered as 3D mesh) — its extreme magnitude breaks exponential scaling
-    const catalog = BRIGHT_STAR_CATALOG.filter((s) => s.magnitude > -10);
-    const starCount = catalog.length;
+    const starCount = BRIGHT_STAR_CATALOG.length;
     const positions = new Float32Array(starCount * 3);
     const colors = new Float32Array(starCount * 3);
     const sizes = new Float32Array(starCount);
 
     for (let i = 0; i < starCount; i++) {
-      const star = catalog[i];
+      const star = BRIGHT_STAR_CATALOG[i];
       const radius = 85;
       const ra = THREE.MathUtils.degToRad(star.raDeg);
       const dec = THREE.MathUtils.degToRad(star.decDeg);
       const cosDec = Math.cos(dec);
       const color = this.getStarColor(star.colorIndex);
-
-      // Original linear brightness, unchanged
       const brightness = THREE.MathUtils.clamp(1.2 - (star.magnitude + 1.44) / 8, 0.25, 1.2);
 
       positions[i * 3] = radius * cosDec * Math.cos(ra);
       positions[i * 3 + 1] = radius * Math.sin(dec);
       positions[i * 3 + 2] = radius * cosDec * Math.sin(ra);
 
+      // Realistic star color temperature distribution
       colors[i * 3] = color.r * brightness;
       colors[i * 3 + 1] = color.g * brightness;
       colors[i * 3 + 2] = color.b * brightness;
 
-      // Wider range at the bright end, dim stars stay small like original
-      sizes[i] = THREE.MathUtils.clamp(6.5 - star.magnitude, 1.2, 7.0);
+      // Variable sizes — most small, few bright
+      sizes[i] = THREE.MathUtils.clamp(5.4 - star.magnitude, 1.2, 5.4);
     }
-
-    // Milky Way skybox disabled for performance testing
-    // this.createSkybox();
 
     const geo = new THREE.BufferGeometry();
     geo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
@@ -2648,35 +2603,6 @@ export class ExploreMode {
     });
 
     return new THREE.Points(geo, mat);
-  }
-
-  private createSkybox(): void {
-    const loader = new THREE.TextureLoader();
-    loader.load(TEXTURES.MILKY_WAY, (tex) => {
-      tex.colorSpace = THREE.SRGBColorSpace;
-      const geo = new THREE.SphereGeometry(84, 64, 32);
-      const mat = new THREE.MeshBasicMaterial({
-        map: tex,
-        side: THREE.BackSide,
-        transparent: true,
-        opacity: 0.7,
-        depthWrite: false,
-      });
-      const mesh = new THREE.Mesh(geo, mat);
-      // Render before stars so it sits behind them
-      mesh.renderOrder = -1;
-      // Rotate from galactic coordinates to equatorial (J2000):
-      // Galactic north pole is at RA=192.86°, Dec=27.13° — rotate to align
-      mesh.rotation.set(
-        THREE.MathUtils.degToRad(60.2),   // x: tilt galactic plane to equatorial
-        THREE.MathUtils.degToRad(192.86), // y: align galactic center RA
-        0,
-      );
-      this.skybox = mesh;
-      this.scene.add(mesh);
-      // Pin to origin like starfield
-      mesh.position.set(0, 0, 0);
-    });
   }
 
   private getTargetWorldPosition(target: NonNullable<LandedTarget>): { x: number; y: number; z: number } | null {
@@ -2738,7 +2664,7 @@ export class ExploreMode {
       this.disengageAutopilot();
       this.showNotification('Autopilot disengaged');
     } else {
-      this.toggleTravelMenu(true);
+      this.toggleTravelMenu();
     }
   }
 
@@ -3026,13 +2952,6 @@ export class ExploreMode {
     }
     this.player.group.removeFromParent();
     if (this.starfield) this.starfield.removeFromParent();
-    if (this.skybox) {
-      this.skybox.removeFromParent();
-      (this.skybox.material as THREE.MeshBasicMaterial).map?.dispose();
-      (this.skybox.material as THREE.MeshBasicMaterial).dispose();
-      this.skybox.geometry.dispose();
-      this.skybox = null;
-    }
     if (this.constellations) {
       this.constellations.dispose();
       this.constellations = null;

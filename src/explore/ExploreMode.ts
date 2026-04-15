@@ -2313,11 +2313,9 @@ export class ExploreMode {
     const radiusAU = this.getLandedBodyRadiusAU();
 
     if (bodyPos) {
-      // Compute clearance: safe distance from body
-      const clearance = this.landedOn.type === 'planet'
-        ? this.getPlanetCollisionRadius(radiusAU, this.planetScale) * 1.5
-        : radiusAU * this.planetScale * 3;
-      const safeDist = Math.max(clearance, 0.001);
+      // Place just outside collision radius so collision handler doesn't push us further
+      const collisionR = this.getPlanetCollisionRadius(radiusAU, this.planetScale);
+      const safeDist = collisionR * 1.02;
 
       // Direction away from Sun (outward from body)
       const awayDir = new THREE.Vector3(bodyPos.x, bodyPos.y, bodyPos.z);
@@ -2337,8 +2335,8 @@ export class ExploreMode {
     }
 
     // Restore speed and movement — use a slow exit speed so player doesn't overshoot
-    const exitSpeed = Math.min(this.preLandSpeed, PlayerShip.SPEED_DEFAULT * 0.1);
-    this.player.speedMultiplier = Math.max(exitSpeed, 0.01);
+    const exitSpeed = Math.min(this.preLandSpeed, 0.01);
+    this.player.speedMultiplier = Math.max(exitSpeed, 0.005);
     this.player.moving = true;
     this.player.group.visible = this.showShip;
     this.updateSpeedSlider();

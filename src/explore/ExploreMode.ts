@@ -2320,8 +2320,23 @@ export class ExploreMode {
         ? this.getPlanetCollisionRadius(radiusAU, this.planetScale) * 1.02
         : radiusAU * this.planetScale * 1.5;
 
-      // Direction away from Sun (outward from body)
-      const awayDir = new THREE.Vector3(bodyPos.x, bodyPos.y, bodyPos.z);
+      // Direction: for moons, move away from parent planet so the moon
+      // stays between ship and planet. For planets, move away from Sun.
+      let awayDir: THREE.Vector3;
+      if (this.landedOn.type === 'moon' && this.landedOn.parentPlanet) {
+        const parentPos = this.planetWorldPositions.get(this.landedOn.parentPlanet);
+        if (parentPos) {
+          awayDir = new THREE.Vector3(
+            bodyPos.x - parentPos.x,
+            bodyPos.y - parentPos.y,
+            bodyPos.z - parentPos.z,
+          );
+        } else {
+          awayDir = new THREE.Vector3(bodyPos.x, bodyPos.y, bodyPos.z);
+        }
+      } else {
+        awayDir = new THREE.Vector3(bodyPos.x, bodyPos.y, bodyPos.z);
+      }
       if (awayDir.lengthSq() < 1e-8) awayDir.set(1, 0.1, 0);
       awayDir.normalize();
 
@@ -2329,11 +2344,11 @@ export class ExploreMode {
       this.player.posY = bodyPos.y + awayDir.y * safeDist;
       this.player.posZ = bodyPos.z + awayDir.z * safeDist;
 
-      // Head away from the body
+      // Head toward the body so it's visible on exit
       this.player.headToward(
-        this.player.posX + awayDir.x,
-        this.player.posZ + awayDir.z,
-        this.player.posY + awayDir.y,
+        bodyPos.x,
+        bodyPos.z,
+        bodyPos.y,
       );
     }
 

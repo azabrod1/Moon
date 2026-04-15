@@ -92,8 +92,9 @@ export function createSaturnRings(planetRadiusAU: number): THREE.Mesh {
     map: texture,
     transparent: true,
     side: THREE.DoubleSide,
-    roughness: 0.85,
-    metalness: 0.0,
+    roughness: 0.6,
+    metalness: 0.05,
+    emissive: new THREE.Color(0x1a1510),
     depthWrite: false,
   });
 

@@ -2609,8 +2609,8 @@ export class ExploreMode {
       sizes[i] = THREE.MathUtils.clamp(6.0 - star.magnitude * 0.7, 1.2, 7.0);
     }
 
-    // Load Milky Way skybox (async — appears when texture is ready)
-    this.createSkybox();
+    // Milky Way skybox disabled for performance testing
+    // this.createSkybox();
 
     const geo = new THREE.BufferGeometry();
     geo.setAttribute('position', new THREE.BufferAttribute(positions, 3));

@@ -145,6 +145,7 @@ export class ExploreMode {
   private preLandAutopilot = false;
   private nearbyLandTarget: NonNullable<LandedTarget> | null = null;
   private travelSelection: NonNullable<LandedTarget> | null = null;
+  private travelMenuAutopilotMode = false;
 
   // Moon labels
   private moonLabels = new Map<string, HTMLDivElement>();
@@ -186,6 +187,16 @@ export class ExploreMode {
   private deferredResumePromptState: ExploreState | null = null;
   private _menuPausedShip = false;
   private _menuPausedTime = false;
+
+  private closeMenuPanel() {
+    const panel = document.getElementById('explore-menu-panel');
+    if (!panel?.classList.contains('visible')) return;
+    panel.classList.remove('visible');
+    if (this._menuPausedShip) this.player.moving = true;
+    if (this._menuPausedTime) this.timeState.paused = false;
+    this._menuPausedShip = false;
+    this._menuPausedTime = false;
+  }
 
   active = false;
   private useBloom: boolean;
@@ -1447,19 +1458,15 @@ export class ExploreMode {
       const panel = document.getElementById('explore-menu-panel');
       if (!panel) return;
       const wasVisible = panel.classList.contains('visible');
-      panel.classList.toggle('visible');
-      if (!wasVisible) {
+      if (wasVisible) {
+        this.closeMenuPanel();
+      } else {
         // Opening: pause ship + time
         this._menuPausedShip = this.player.moving;
         this._menuPausedTime = !this.timeState.paused;
         this.player.moving = false;
         this.timeState.paused = true;
-      } else {
-        // Closing: restore previous state
-        if (this._menuPausedShip) this.player.moving = true;
-        if (this._menuPausedTime) this.timeState.paused = false;
-        this._menuPausedShip = false;
-        this._menuPausedTime = false;
+        panel.classList.add('visible');
       }
     });
     document.getElementById('explore-btn-historic')?.addEventListener('click', () => {
@@ -1716,7 +1723,7 @@ export class ExploreMode {
     }
   }
 
-  private toggleTravelMenu() {
+  private toggleTravelMenu(autopilotMode = false) {
     if (this.isMissionActive()) return;
     const menu = document.getElementById('travel-menu');
     if (!menu) return;
@@ -1725,9 +1732,22 @@ export class ExploreMode {
       this.closeTravelMenu();
     } else {
       // Close menu panel if open
-      document.getElementById('explore-menu-panel')?.classList.remove('visible');
+      this.closeMenuPanel();
       menu.classList.add('visible');
       this.travelSelection = null;
+      this.travelMenuAutopilotMode = autopilotMode;
+      // Swap primary button styling based on mode
+      const landBtn = document.getElementById('travel-action-land');
+      const flyBtn = document.getElementById('travel-action-fly');
+      if (landBtn && flyBtn) {
+        if (autopilotMode) {
+          flyBtn.className = 'travel-action-btn';
+          landBtn.className = 'travel-action-btn travel-action-btn-dim';
+        } else {
+          landBtn.className = 'travel-action-btn';
+          flyBtn.className = 'travel-action-btn travel-action-btn-dim';
+        }
+      }
       const actionBar = document.getElementById('travel-action-bar');
       if (actionBar) actionBar.style.display = 'none';
       // Hide planet/moon labels so they don't show through the menu
@@ -1874,7 +1894,7 @@ export class ExploreMode {
     this.player.setProfile(journey.shipProfile);
     const shipLabel = document.getElementById('settings-ship-label');
     if (shipLabel) shipLabel.textContent = 'On';
-    document.getElementById('explore-menu-panel')?.classList.remove('visible');
+    this.closeMenuPanel();
     this.collapseHistoricJourneyMenu();
     this.updateMissionControlState();
     this.showVoyagerMilestone(0);
@@ -2268,7 +2288,10 @@ export class ExploreMode {
     document.getElementById('stats-chevron')?.classList.remove('expanded');
     document.getElementById('time-popover')?.classList.remove('visible');
     document.getElementById('time-chevron')?.classList.remove('expanded');
-    const hide = ['explore-bottom-bar', 'explore-keys-hint', 'touch-flight-zone', 'explore-btn-travel', 'explore-btn-land'];
+    // Hide speed controls inside bar but keep bar visible for time controls
+    const speedSection = document.querySelector('.bar-speed-main') as HTMLElement | null;
+    if (speedSection) speedSection.style.display = 'none';
+    const hide = ['explore-keys-hint', 'touch-flight-zone', 'explore-btn-travel', 'explore-btn-land'];
     for (const id of hide) {
       const el = document.getElementById(id);
       if (el) el.style.display = 'none';
@@ -2290,11 +2313,19 @@ export class ExploreMode {
     const radiusAU = this.getLandedBodyRadiusAU();
 
     if (bodyPos) {
-      // Compute clearance: safe distance from body
-      const clearance = this.landedOn.type === 'planet'
-        ? this.getPlanetCollisionRadius(radiusAU, this.planetScale) * 1.5
-        : radiusAU * this.planetScale * 3;
-      const safeDist = Math.max(clearance, 0.001);
+      // The cruise camera sits camDist behind the player. By facing AWAY
+      // from the body, the camera ends up between the player and the body,
+      // giving a close-up view of the body as you depart.
+      const camDist = 0.000094; // must match resetCruiseCamera
+      let safeDist: number;
+      if (this.landedOn.type === 'planet') {
+        // Camera must clear collision radius
+        const collisionR = this.getPlanetCollisionRadius(radiusAU, this.planetScale);
+        safeDist = camDist + collisionR * 1.5;
+      } else {
+        // Moons: no collision handler, place so camera is close
+        safeDist = camDist * 1.5;
+      }
 
       // Direction away from Sun (outward from body)
       const awayDir = new THREE.Vector3(bodyPos.x, bodyPos.y, bodyPos.z);
@@ -2305,7 +2336,7 @@ export class ExploreMode {
       this.player.posY = bodyPos.y + awayDir.y * safeDist;
       this.player.posZ = bodyPos.z + awayDir.z * safeDist;
 
-      // Head away from the body
+      // Head AWAY from the body — camera (behind player) ends up close to body
       this.player.headToward(
         this.player.posX + awayDir.x,
         this.player.posZ + awayDir.z,
@@ -2313,9 +2344,10 @@ export class ExploreMode {
       );
     }
 
-    // Restore speed and movement
-    // Restore cruise speed — ensure at least default so player can leave the system
+    // Restore speed and movement — set a gentle system speed for nearby flight
     this.player.speedMultiplier = Math.max(this.preLandSpeed, PlayerShip.SPEED_DEFAULT);
+    this.player.systemSpeedMultiplier = 0.02; // ~6k km/s — slow near planet
+    this.inSystemMode = true; // force system mode display since we're near the body
     this.player.moving = true;
     this.player.group.visible = this.showShip;
     this.updateSpeedSlider();
@@ -2333,8 +2365,9 @@ export class ExploreMode {
     this.landedOn = null;
 
     // UI: restore flight controls, hide leave button
+    const speedSection = document.querySelector('.bar-speed-main') as HTMLElement | null;
+    if (speedSection) speedSection.style.display = '';
     const show: Array<[string, string]> = [
-      ['explore-bottom-bar', ''],
       ['explore-btn-travel', ''],
     ];
     for (const [id, display] of show) {
@@ -2664,7 +2697,7 @@ export class ExploreMode {
       this.disengageAutopilot();
       this.showNotification('Autopilot disengaged');
     } else {
-      this.toggleTravelMenu();
+      this.toggleTravelMenu(true);
     }
   }
 

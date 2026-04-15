@@ -2564,22 +2564,24 @@ export class ExploreMode {
   private getStarColor(colorIndex: number): THREE.Color {
     const clamped = THREE.MathUtils.clamp(colorIndex, -0.3, 1.8);
     const t = (clamped + 0.3) / 2.1;
-    const cool = new THREE.Color(0.66, 0.78, 1.0);
-    const neutral = new THREE.Color(1.0, 0.98, 0.94);
-    const warm = new THREE.Color(1.0, 0.76, 0.5);
+    const cool = new THREE.Color(0.55, 0.70, 1.0);
+    const neutral = new THREE.Color(1.0, 0.97, 0.92);
+    const warm = new THREE.Color(1.0, 0.68, 0.38);
     return t < 0.5
       ? cool.clone().lerp(neutral, t * 2)
       : neutral.clone().lerp(warm, (t - 0.5) * 2);
   }
 
   private createExploreStarfield(): THREE.Points {
-    const starCount = BRIGHT_STAR_CATALOG.length;
+    // Filter out Sol (rendered as 3D mesh)
+    const catalog = BRIGHT_STAR_CATALOG.filter((s) => s.magnitude > -10);
+    const starCount = catalog.length;
     const positions = new Float32Array(starCount * 3);
     const colors = new Float32Array(starCount * 3);
     const sizes = new Float32Array(starCount);
 
     for (let i = 0; i < starCount; i++) {
-      const star = BRIGHT_STAR_CATALOG[i];
+      const star = catalog[i];
       const radius = 85;
       const ra = THREE.MathUtils.degToRad(star.raDeg);
       const dec = THREE.MathUtils.degToRad(star.decDeg);
@@ -2591,13 +2593,12 @@ export class ExploreMode {
       positions[i * 3 + 1] = radius * Math.sin(dec);
       positions[i * 3 + 2] = radius * cosDec * Math.sin(ra);
 
-      // Realistic star color temperature distribution
       colors[i * 3] = color.r * brightness;
       colors[i * 3 + 1] = color.g * brightness;
       colors[i * 3 + 2] = color.b * brightness;
 
-      // Variable sizes — most small, few bright
-      sizes[i] = THREE.MathUtils.clamp(5.4 - star.magnitude, 1.2, 5.4);
+      // More spread in bright range, dim stars (mag 5+) stay at floor
+      sizes[i] = THREE.MathUtils.clamp(5.6 - star.magnitude * 0.95, 1.2, 6.5);
     }
 
     const geo = new THREE.BufferGeometry();

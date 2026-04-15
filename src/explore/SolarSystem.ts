@@ -52,71 +52,36 @@ function createOrbitLine(points: THREE.Vector3[], color: number, opacity: number
 }
 
 function createAsteroidBelt(): THREE.Points {
-  const count = 6000;
+  const count = 3000;
   const positions = new Float32Array(count * 3);
   const colors = new Float32Array(count * 3);
-  const sizes = new Float32Array(count);
 
   for (let i = 0; i < count; i++) {
-    // Concentrate more asteroids in the middle of the belt
-    const t = Math.random();
-    const radius = ASTEROID_BELT.innerAU + t * (ASTEROID_BELT.outerAU - ASTEROID_BELT.innerAU);
+    const radius = ASTEROID_BELT.innerAU + Math.random() * (ASTEROID_BELT.outerAU - ASTEROID_BELT.innerAU);
     const angle = Math.random() * Math.PI * 2;
-    const y = (Math.random() - 0.5) * 0.06;
+    const y = (Math.random() - 0.5) * 0.05;
 
     positions[i * 3] = radius * Math.cos(angle);
     positions[i * 3 + 1] = y;
     positions[i * 3 + 2] = radius * Math.sin(angle);
 
-    // More color variety: gray-brown with occasional lighter/darker rocks
-    const brightness = 0.3 + Math.random() * 0.45;
-    const warmth = 0.7 + Math.random() * 0.3; // some more gray, some more brown
+    const brightness = 0.4 + Math.random() * 0.3;
     colors[i * 3] = brightness;
-    colors[i * 3 + 1] = brightness * (0.85 + Math.random() * 0.1);
-    colors[i * 3 + 2] = brightness * warmth * 0.75;
-
-    // Per-particle size variation: most tiny, a few slightly larger
-    const sizeRng = Math.random();
-    sizes[i] = sizeRng < 0.92
-      ? 0.4 + Math.random() * 0.6   // 92%: tiny (0.4-1.0)
-      : 1.0 + Math.random() * 1.5;  // 8%: slightly larger (1.0-2.5)
+    colors[i * 3 + 1] = brightness * 0.9;
+    colors[i * 3 + 2] = brightness * 0.7;
   }
 
   const geometry = new THREE.BufferGeometry();
   geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
   geometry.setAttribute('color', new THREE.BufferAttribute(colors, 3));
-  geometry.setAttribute('size', new THREE.BufferAttribute(sizes, 1));
 
-  // Custom shader for per-particle sizes (like star shader)
-  const material = new THREE.ShaderMaterial({
-    uniforms: {
-      pixelRatio: { value: Math.min(window.devicePixelRatio, 2) },
-    },
-    vertexShader: `
-      attribute float size;
-      varying vec3 vColor;
-      uniform float pixelRatio;
-      void main() {
-        vColor = color;
-        vec4 mvPosition = modelViewMatrix * vec4(position, 1.0);
-        gl_Position = projectionMatrix * mvPosition;
-        // Size attenuation: scale by distance
-        gl_PointSize = size * pixelRatio * (30.0 / -mvPosition.z);
-        gl_PointSize = clamp(gl_PointSize, 0.5, 6.0);
-      }
-    `,
-    fragmentShader: `
-      varying vec3 vColor;
-      void main() {
-        float d = length(gl_PointCoord - vec2(0.5));
-        if (d > 0.5) discard;
-        float alpha = 0.7 * (1.0 - smoothstep(0.3, 0.5, d));
-        gl_FragColor = vec4(vColor, alpha);
-      }
-    `,
-    transparent: true,
-    depthWrite: false,
+  const material = new THREE.PointsMaterial({
+    size: 0.003,
     vertexColors: true,
+    transparent: true,
+    opacity: 0.6,
+    sizeAttenuation: true,
+    depthWrite: false,
   });
 
   return new THREE.Points(geometry, material);

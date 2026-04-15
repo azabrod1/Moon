@@ -52,11 +52,9 @@ function createOrbitLine(points: THREE.Vector3[], color: number, opacity: number
 }
 
 function createAsteroidBelt(): THREE.Points {
-  const count = 5000;
+  const count = 3000;
   const positions = new Float32Array(count * 3);
   const colors = new Float32Array(count * 3);
-  const sizes = new Float32Array(count);
-  const seeds = new Float32Array(count);
 
   for (let i = 0; i < count; i++) {
     const radius = ASTEROID_BELT.innerAU + Math.random() * (ASTEROID_BELT.outerAU - ASTEROID_BELT.innerAU);
@@ -67,85 +65,23 @@ function createAsteroidBelt(): THREE.Points {
     positions[i * 3 + 1] = y;
     positions[i * 3 + 2] = radius * Math.sin(angle);
 
-    const brightness = 0.5 + Math.random() * 0.4;
-    const tint = Math.random();
-    if (tint < 0.6) {
-      // Brownish rocky
-      colors[i * 3] = brightness;
-      colors[i * 3 + 1] = brightness * 0.88;
-      colors[i * 3 + 2] = brightness * 0.65;
-    } else if (tint < 0.85) {
-      // Grey metallic
-      colors[i * 3] = brightness * 0.9;
-      colors[i * 3 + 1] = brightness * 0.9;
-      colors[i * 3 + 2] = brightness * 0.92;
-    } else {
-      // Dark reddish
-      colors[i * 3] = brightness * 1.1;
-      colors[i * 3 + 1] = brightness * 0.7;
-      colors[i * 3 + 2] = brightness * 0.6;
-    }
-
-    // Most are tiny specks, a few slightly larger
-    sizes[i] = 0.3 + Math.random() * 0.7 + (Math.random() < 0.05 ? 1.0 : 0.0);
-    seeds[i] = Math.random() * 100.0;
+    const brightness = 0.4 + Math.random() * 0.3;
+    colors[i * 3] = brightness;
+    colors[i * 3 + 1] = brightness * 0.9;
+    colors[i * 3 + 2] = brightness * 0.7;
   }
 
   const geometry = new THREE.BufferGeometry();
   geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
   geometry.setAttribute('color', new THREE.BufferAttribute(colors, 3));
-  geometry.setAttribute('aSize', new THREE.BufferAttribute(sizes, 1));
-  geometry.setAttribute('aSeed', new THREE.BufferAttribute(seeds, 1));
 
-  const material = new THREE.ShaderMaterial({
-    transparent: true,
-    depthWrite: false,
-    vertexShader: `
-      attribute float aSize;
-      attribute float aSeed;
-      varying vec3 vColor;
-      varying float vSeed;
-      void main() {
-        vColor = color;
-        vSeed = aSeed;
-        vec4 mvPosition = modelViewMatrix * vec4(position, 1.0);
-        gl_PointSize = aSize * (4.0 / -mvPosition.z);
-        gl_PointSize = clamp(gl_PointSize, 0.5, 4.0);
-        gl_Position = projectionMatrix * mvPosition;
-      }
-    `,
-    fragmentShader: `
-      varying vec3 vColor;
-      varying float vSeed;
-
-      // Hash for irregular shape
-      float hash(vec2 p, float s) {
-        return fract(sin(dot(p + s, vec2(127.1, 311.7))) * 43758.5453);
-      }
-
-      void main() {
-        vec2 uv = gl_PointCoord - 0.5;
-
-        // Distort the radius check per-angle to make irregular rocky edges
-        float angle = atan(uv.y, uv.x);
-        float irregularity = 0.0;
-        irregularity += 0.12 * sin(angle * 3.0 + vSeed * 6.28);
-        irregularity += 0.08 * sin(angle * 5.0 + vSeed * 12.5);
-        irregularity += 0.05 * sin(angle * 8.0 + vSeed * 25.1);
-
-        float dist = length(uv);
-        float edge = 0.38 + irregularity;
-
-        if (dist > edge) discard;
-
-        // Slight surface shading — darker toward edges
-        float shade = 1.0 - smoothstep(edge * 0.3, edge, dist);
-        float alpha = 0.75 * shade;
-
-        gl_FragColor = vec4(vColor * shade, alpha);
-      }
-    `,
+  const material = new THREE.PointsMaterial({
+    size: 0.003,
     vertexColors: true,
+    transparent: true,
+    opacity: 0.6,
+    sizeAttenuation: true,
+    depthWrite: false,
   });
 
   return new THREE.Points(geometry, material);

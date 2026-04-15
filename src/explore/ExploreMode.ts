@@ -2594,12 +2594,8 @@ export class ExploreMode {
       const cosDec = Math.cos(dec);
       const color = this.getStarColor(star.colorIndex);
 
-      // Linear brightness with a boost for the brightest stars
-      // Base linear: mag -1.5 → 1.2, mag 6.5 → 0.25 (similar to original)
-      const linearBright = THREE.MathUtils.clamp(1.2 - (star.magnitude + 1.44) / 8, 0.25, 1.2);
-      // Small exponential bonus for stars brighter than mag 2
-      const bonus = star.magnitude < 2 ? 0.3 * Math.pow(0.6, star.magnitude + 1.44) : 0;
-      const brightness = Math.min(linearBright + bonus, 1.5);
+      // Original linear brightness, unchanged
+      const brightness = THREE.MathUtils.clamp(1.2 - (star.magnitude + 1.44) / 8, 0.25, 1.2);
 
       positions[i * 3] = radius * cosDec * Math.cos(ra);
       positions[i * 3 + 1] = radius * Math.sin(dec);
@@ -2609,12 +2605,8 @@ export class ExploreMode {
       colors[i * 3 + 1] = color.g * brightness;
       colors[i * 3 + 2] = color.b * brightness;
 
-      // Linear size with exponential boost for bright stars
-      // Base: mag -1.5 → 5.4, mag 6.5 → 1.5 (keeps mid-range visible)
-      const linearSize = THREE.MathUtils.clamp(5.8 - star.magnitude * 0.65, 1.5, 5.8);
-      // Boost only for mag < 1 so constellation stars stand out
-      const sizeBonus = star.magnitude < 1 ? 2.5 * Math.pow(0.5, star.magnitude + 1.44) : 0;
-      sizes[i] = Math.min(linearSize + sizeBonus, 10.0);
+      // Original linear size with wider range: bright stars slightly bigger
+      sizes[i] = THREE.MathUtils.clamp(6.0 - star.magnitude * 0.7, 1.2, 7.0);
     }
 
     // Load Milky Way skybox (async — appears when texture is ready)

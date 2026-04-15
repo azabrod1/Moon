@@ -2607,8 +2607,6 @@ export class ExploreMode {
       sizes[i] = THREE.MathUtils.clamp(6.0 - star.magnitude * 1.1, 1.2, 6.5);
     }
 
-    this.createSkybox();
-
     const geo = new THREE.BufferGeometry();
     geo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
     geo.setAttribute('color', new THREE.BufferAttribute(colors, 3));

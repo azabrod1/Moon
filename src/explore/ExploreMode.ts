@@ -2313,9 +2313,12 @@ export class ExploreMode {
     const radiusAU = this.getLandedBodyRadiusAU();
 
     if (bodyPos) {
-      // Place just outside collision radius so collision handler doesn't push us further
-      const collisionR = this.getPlanetCollisionRadius(radiusAU, this.planetScale);
-      const safeDist = collisionR * 1.02;
+      // Place just outside collision boundary
+      // Planets: use collision radius (collision handler pushes out otherwise)
+      // Moons: use visual radius (no collision handler for moons)
+      const safeDist = this.landedOn.type === 'planet'
+        ? this.getPlanetCollisionRadius(radiusAU, this.planetScale) * 1.02
+        : radiusAU * this.planetScale * 1.5;
 
       // Direction away from Sun (outward from body)
       const awayDir = new THREE.Vector3(bodyPos.x, bodyPos.y, bodyPos.z);
@@ -2334,9 +2337,9 @@ export class ExploreMode {
       );
     }
 
-    // Restore speed and movement — use a slow exit speed so player doesn't overshoot
-    const exitSpeed = Math.min(this.preLandSpeed, 0.01);
-    this.player.speedMultiplier = Math.max(exitSpeed, 0.005);
+    // Restore speed and movement — set a gentle system speed for nearby flight
+    this.player.speedMultiplier = Math.max(this.preLandSpeed, PlayerShip.SPEED_DEFAULT);
+    this.player.systemSpeedMultiplier = 0.02; // ~6k km/s — slow near planet
     this.player.moving = true;
     this.player.group.visible = this.showShip;
     this.updateSpeedSlider();

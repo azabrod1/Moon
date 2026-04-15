@@ -22,6 +22,7 @@ import {
   type ExploreTimeState,
 } from './astronomy';
 import { BRIGHT_STAR_CATALOG } from './data/brightStars';
+import { TEXTURES } from '../utils/constants';
 import { Constellations } from './Constellations';
 import { getMoonsByPlanet } from './planets/moonData';
 import {
@@ -77,6 +78,7 @@ export class ExploreMode {
   private markers: PlanetMarkers | null = null;
   private saveManager: SaveManager;
   private starfield: THREE.Points | null = null;
+  private skybox: THREE.Mesh | null = null;
   private constellations: Constellations | null = null;
   private showConstellations = false;
 
@@ -493,6 +495,7 @@ export class ExploreMode {
     }
     this.player.group.visible = visible && this.showShip;
     if (this.starfield) this.starfield.visible = visible;
+    if (this.skybox) this.skybox.visible = visible;
     if (this.constellations) this.constellations.setVisible(visible && this.showConstellations);
   }
 
@@ -629,9 +632,12 @@ export class ExploreMode {
     // Player is at origin (or very close)
     this.player.group.position.set(0, 0, 0);
 
-    // Starfield + constellations follow camera (always centered on player)
+    // Starfield + skybox + constellations follow camera (always centered on player)
     if (this.starfield) {
       this.starfield.position.set(0, 0, 0);
+    }
+    if (this.skybox) {
+      this.skybox.position.set(0, 0, 0);
     }
     if (this.constellations) {
       this.constellations.lines.position.set(0, 0, 0);
@@ -2573,32 +2579,41 @@ export class ExploreMode {
   }
 
   private createExploreStarfield(): THREE.Points {
-    const starCount = BRIGHT_STAR_CATALOG.length;
+    // Filter out Sol (rendered as 3D mesh) — its extreme magnitude breaks exponential scaling
+    const catalog = BRIGHT_STAR_CATALOG.filter((s) => s.magnitude > -10);
+    const starCount = catalog.length;
     const positions = new Float32Array(starCount * 3);
     const colors = new Float32Array(starCount * 3);
     const sizes = new Float32Array(starCount);
 
     for (let i = 0; i < starCount; i++) {
-      const star = BRIGHT_STAR_CATALOG[i];
+      const star = catalog[i];
       const radius = 85;
       const ra = THREE.MathUtils.degToRad(star.raDeg);
       const dec = THREE.MathUtils.degToRad(star.decDeg);
       const cosDec = Math.cos(dec);
       const color = this.getStarColor(star.colorIndex);
-      const brightness = THREE.MathUtils.clamp(1.2 - (star.magnitude + 1.44) / 8, 0.25, 1.2);
+
+      // Exponential brightness — steeper falloff so bright stars pop
+      const brightness = THREE.MathUtils.clamp(
+        1.4 * Math.pow(0.72, star.magnitude + 1.44), 0.15, 1.5,
+      );
 
       positions[i * 3] = radius * cosDec * Math.cos(ra);
       positions[i * 3 + 1] = radius * Math.sin(dec);
       positions[i * 3 + 2] = radius * cosDec * Math.sin(ra);
 
-      // Realistic star color temperature distribution
       colors[i * 3] = color.r * brightness;
       colors[i * 3 + 1] = color.g * brightness;
       colors[i * 3 + 2] = color.b * brightness;
 
-      // Variable sizes — most small, few bright
-      sizes[i] = THREE.MathUtils.clamp(5.4 - star.magnitude, 1.2, 5.4);
+      // Exponential size — Sirius ~9px, Vega ~6px, dim stars ~1px
+      const rawSize = 2.0 * Math.pow(1.45, 3.0 - star.magnitude);
+      sizes[i] = THREE.MathUtils.clamp(rawSize, 1.0, 14.0);
     }
+
+    // Load Milky Way skybox (async — appears when texture is ready)
+    this.createSkybox();
 
     const geo = new THREE.BufferGeometry();
     geo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
@@ -2636,6 +2651,33 @@ export class ExploreMode {
     });
 
     return new THREE.Points(geo, mat);
+  }
+
+  private createSkybox(): void {
+    const loader = new THREE.TextureLoader();
+    loader.load(TEXTURES.MILKY_WAY, (tex) => {
+      tex.colorSpace = THREE.SRGBColorSpace;
+      const geo = new THREE.SphereGeometry(84, 64, 32);
+      const mat = new THREE.MeshBasicMaterial({
+        map: tex,
+        side: THREE.BackSide,
+        transparent: true,
+        opacity: 0.15,
+        depthWrite: false,
+      });
+      const mesh = new THREE.Mesh(geo, mat);
+      // Rotate from galactic coordinates to equatorial (J2000):
+      // Galactic north pole is at RA=192.86°, Dec=27.13° — rotate to align
+      mesh.rotation.set(
+        THREE.MathUtils.degToRad(60.2),   // x: tilt galactic plane to equatorial
+        THREE.MathUtils.degToRad(192.86), // y: align galactic center RA
+        0,
+      );
+      this.skybox = mesh;
+      this.scene.add(mesh);
+      // Pin to origin like starfield
+      mesh.position.set(0, 0, 0);
+    });
   }
 
   private getTargetWorldPosition(target: NonNullable<LandedTarget>): { x: number; y: number; z: number } | null {
@@ -2985,6 +3027,13 @@ export class ExploreMode {
     }
     this.player.group.removeFromParent();
     if (this.starfield) this.starfield.removeFromParent();
+    if (this.skybox) {
+      this.skybox.removeFromParent();
+      (this.skybox.material as THREE.MeshBasicMaterial).map?.dispose();
+      (this.skybox.material as THREE.MeshBasicMaterial).dispose();
+      this.skybox.geometry.dispose();
+      this.skybox = null;
+    }
     if (this.constellations) {
       this.constellations.dispose();
       this.constellations = null;

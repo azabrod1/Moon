@@ -2659,7 +2659,7 @@ export class ExploreMode {
         map: tex,
         side: THREE.BackSide,
         transparent: true,
-        opacity: 0.35,
+        opacity: 0.7,
         depthWrite: false,
       });
       const mesh = new THREE.Mesh(geo, mat);

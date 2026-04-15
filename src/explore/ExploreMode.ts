@@ -145,6 +145,7 @@ export class ExploreMode {
   private preLandAutopilot = false;
   private nearbyLandTarget: NonNullable<LandedTarget> | null = null;
   private travelSelection: NonNullable<LandedTarget> | null = null;
+  private travelMenuAutopilotMode = false;
 
   // Moon labels
   private moonLabels = new Map<string, HTMLDivElement>();
@@ -1722,7 +1723,7 @@ export class ExploreMode {
     }
   }
 
-  private toggleTravelMenu() {
+  private toggleTravelMenu(autopilotMode = false) {
     if (this.isMissionActive()) return;
     const menu = document.getElementById('travel-menu');
     if (!menu) return;
@@ -1734,6 +1735,19 @@ export class ExploreMode {
       this.closeMenuPanel();
       menu.classList.add('visible');
       this.travelSelection = null;
+      this.travelMenuAutopilotMode = autopilotMode;
+      // Swap primary button styling based on mode
+      const landBtn = document.getElementById('travel-action-land');
+      const flyBtn = document.getElementById('travel-action-fly');
+      if (landBtn && flyBtn) {
+        if (autopilotMode) {
+          flyBtn.className = 'travel-action-btn';
+          landBtn.className = 'travel-action-btn travel-action-btn-dim';
+        } else {
+          landBtn.className = 'travel-action-btn';
+          flyBtn.className = 'travel-action-btn travel-action-btn-dim';
+        }
+      }
       const actionBar = document.getElementById('travel-action-bar');
       if (actionBar) actionBar.style.display = 'none';
       // Hide planet/moon labels so they don't show through the menu
@@ -2274,7 +2288,10 @@ export class ExploreMode {
     document.getElementById('stats-chevron')?.classList.remove('expanded');
     document.getElementById('time-popover')?.classList.remove('visible');
     document.getElementById('time-chevron')?.classList.remove('expanded');
-    const hide = ['explore-bottom-bar', 'explore-keys-hint', 'touch-flight-zone', 'explore-btn-travel', 'explore-btn-land'];
+    // Hide speed controls inside bar but keep bar visible for time controls
+    const speedSection = document.querySelector('.bar-speed-main') as HTMLElement | null;
+    if (speedSection) speedSection.style.display = 'none';
+    const hide = ['explore-keys-hint', 'touch-flight-zone', 'explore-btn-travel', 'explore-btn-land'];
     for (const id of hide) {
       const el = document.getElementById(id);
       if (el) el.style.display = 'none';
@@ -2319,9 +2336,9 @@ export class ExploreMode {
       );
     }
 
-    // Restore speed and movement
-    // Restore cruise speed — ensure at least default so player can leave the system
-    this.player.speedMultiplier = Math.max(this.preLandSpeed, PlayerShip.SPEED_DEFAULT);
+    // Restore speed and movement — use a slow exit speed so player doesn't overshoot
+    const exitSpeed = Math.min(this.preLandSpeed, PlayerShip.SPEED_DEFAULT * 0.1);
+    this.player.speedMultiplier = Math.max(exitSpeed, 0.01);
     this.player.moving = true;
     this.player.group.visible = this.showShip;
     this.updateSpeedSlider();
@@ -2339,8 +2356,9 @@ export class ExploreMode {
     this.landedOn = null;
 
     // UI: restore flight controls, hide leave button
+    const speedSection = document.querySelector('.bar-speed-main') as HTMLElement | null;
+    if (speedSection) speedSection.style.display = '';
     const show: Array<[string, string]> = [
-      ['explore-bottom-bar', ''],
       ['explore-btn-travel', ''],
     ];
     for (const [id, display] of show) {
@@ -2670,7 +2688,7 @@ export class ExploreMode {
       this.disengageAutopilot();
       this.showNotification('Autopilot disengaged');
     } else {
-      this.toggleTravelMenu();
+      this.toggleTravelMenu(true);
     }
   }
 

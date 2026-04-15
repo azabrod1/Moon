@@ -187,6 +187,16 @@ export class ExploreMode {
   private _menuPausedShip = false;
   private _menuPausedTime = false;
 
+  private closeMenuPanel() {
+    const panel = document.getElementById('explore-menu-panel');
+    if (!panel?.classList.contains('visible')) return;
+    panel.classList.remove('visible');
+    if (this._menuPausedShip) this.player.moving = true;
+    if (this._menuPausedTime) this.timeState.paused = false;
+    this._menuPausedShip = false;
+    this._menuPausedTime = false;
+  }
+
   active = false;
   private useBloom: boolean;
 
@@ -1447,19 +1457,15 @@ export class ExploreMode {
       const panel = document.getElementById('explore-menu-panel');
       if (!panel) return;
       const wasVisible = panel.classList.contains('visible');
-      panel.classList.toggle('visible');
-      if (!wasVisible) {
+      if (wasVisible) {
+        this.closeMenuPanel();
+      } else {
         // Opening: pause ship + time
         this._menuPausedShip = this.player.moving;
         this._menuPausedTime = !this.timeState.paused;
         this.player.moving = false;
         this.timeState.paused = true;
-      } else {
-        // Closing: restore previous state
-        if (this._menuPausedShip) this.player.moving = true;
-        if (this._menuPausedTime) this.timeState.paused = false;
-        this._menuPausedShip = false;
-        this._menuPausedTime = false;
+        panel.classList.add('visible');
       }
     });
     document.getElementById('explore-btn-historic')?.addEventListener('click', () => {
@@ -1725,7 +1731,7 @@ export class ExploreMode {
       this.closeTravelMenu();
     } else {
       // Close menu panel if open
-      document.getElementById('explore-menu-panel')?.classList.remove('visible');
+      this.closeMenuPanel();
       menu.classList.add('visible');
       this.travelSelection = null;
       const actionBar = document.getElementById('travel-action-bar');
@@ -1874,7 +1880,7 @@ export class ExploreMode {
     this.player.setProfile(journey.shipProfile);
     const shipLabel = document.getElementById('settings-ship-label');
     if (shipLabel) shipLabel.textContent = 'On';
-    document.getElementById('explore-menu-panel')?.classList.remove('visible');
+    this.closeMenuPanel();
     this.collapseHistoricJourneyMenu();
     this.updateMissionControlState();
     this.showVoyagerMilestone(0);

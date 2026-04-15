@@ -2340,6 +2340,7 @@ export class ExploreMode {
     // Restore speed and movement — set a gentle system speed for nearby flight
     this.player.speedMultiplier = Math.max(this.preLandSpeed, PlayerShip.SPEED_DEFAULT);
     this.player.systemSpeedMultiplier = 0.02; // ~6k km/s — slow near planet
+    this.inSystemMode = true; // force system mode display since we're near the body
     this.player.moving = true;
     this.player.group.visible = this.showShip;
     this.updateSpeedSlider();

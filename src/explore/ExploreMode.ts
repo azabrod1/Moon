@@ -22,6 +22,7 @@ import {
   type ExploreTimeState,
 } from './astronomy';
 import { BRIGHT_STAR_CATALOG } from './data/brightStars';
+import { TEXTURES } from '../utils/constants';
 import { Constellations } from './Constellations';
 import { getMoonsByPlanet } from './planets/moonData';
 import {
@@ -77,6 +78,7 @@ export class ExploreMode {
   private markers: PlanetMarkers | null = null;
   private saveManager: SaveManager;
   private starfield: THREE.Points | null = null;
+  private skybox: THREE.Mesh | null = null;
   private constellations: Constellations | null = null;
   private showConstellations = false;
 
@@ -493,6 +495,7 @@ export class ExploreMode {
     }
     this.player.group.visible = visible && this.showShip;
     if (this.starfield) this.starfield.visible = visible;
+    if (this.skybox) this.skybox.visible = visible;
     if (this.constellations) this.constellations.setVisible(visible && this.showConstellations);
   }
 
@@ -629,9 +632,12 @@ export class ExploreMode {
     // Player is at origin (or very close)
     this.player.group.position.set(0, 0, 0);
 
-    // Starfield + constellations follow camera (always centered on player)
+    // Starfield + skybox + constellations follow camera (always centered on player)
     if (this.starfield) {
       this.starfield.position.set(0, 0, 0);
+    }
+    if (this.skybox) {
+      this.skybox.position.set(0, 0, 0);
     }
     if (this.constellations) {
       this.constellations.lines.position.set(0, 0, 0);
@@ -2601,6 +2607,8 @@ export class ExploreMode {
       sizes[i] = THREE.MathUtils.clamp(6.0 - star.magnitude * 1.1, 1.2, 6.5);
     }
 
+    this.createSkybox();
+
     const geo = new THREE.BufferGeometry();
     geo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
     geo.setAttribute('color', new THREE.BufferAttribute(colors, 3));
@@ -2637,6 +2645,33 @@ export class ExploreMode {
     });
 
     return new THREE.Points(geo, mat);
+  }
+
+  private createSkybox(): void {
+    const loader = new THREE.TextureLoader();
+    loader.load(TEXTURES.MILKY_WAY, (tex) => {
+      tex.colorSpace = THREE.SRGBColorSpace;
+      const geo = new THREE.SphereGeometry(84, 64, 32);
+      const mat = new THREE.MeshBasicMaterial({
+        map: tex,
+        side: THREE.BackSide,
+        blending: THREE.AdditiveBlending,
+        opacity: 0.45,
+        depthWrite: false,
+        depthTest: false,
+      });
+      const mesh = new THREE.Mesh(geo, mat);
+      mesh.renderOrder = -1;
+      // Solar System Scope texture is in galactic coordinates —
+      // rotate so the Milky Way band aligns with the equatorial star catalog
+      mesh.rotation.set(
+        THREE.MathUtils.degToRad(60.2),
+        THREE.MathUtils.degToRad(192.86),
+        0,
+      );
+      this.skybox = mesh;
+      this.scene.add(mesh);
+    });
   }
 
   private getTargetWorldPosition(target: NonNullable<LandedTarget>): { x: number; y: number; z: number } | null {
@@ -2986,6 +3021,13 @@ export class ExploreMode {
     }
     this.player.group.removeFromParent();
     if (this.starfield) this.starfield.removeFromParent();
+    if (this.skybox) {
+      this.skybox.removeFromParent();
+      (this.skybox.material as THREE.MeshBasicMaterial).map?.dispose();
+      (this.skybox.material as THREE.MeshBasicMaterial).dispose();
+      this.skybox.geometry.dispose();
+      this.skybox = null;
+    }
     if (this.constellations) {
       this.constellations.dispose();
       this.constellations = null;

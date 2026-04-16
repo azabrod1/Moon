@@ -72,6 +72,7 @@ export class ExploreMode {
   private camera: THREE.PerspectiveCamera;
   private renderer: THREE.WebGLRenderer;
   private controls: OrbitControls;
+  private isTouchDevice = 'ontouchstart' in window;
 
   private solarSystem: SolarSystemObjects | null = null;
   private player: PlayerShip;
@@ -371,8 +372,9 @@ export class ExploreMode {
       this.ensureConstellationsReady();
     }
 
-    // Configure camera
-    this.controls.enabled = true;
+    // Configure camera — disable OrbitControls on touch devices during flight
+    // to prevent accidental camera rotation from touches near the bottom bar
+    this.controls.enabled = !!this.landedOn || !this.isTouchDevice;
     if (!this.landedOn) {
       this.updateCameraFollow();
     }
@@ -2272,6 +2274,7 @@ export class ExploreMode {
       }
     }
 
+    this.controls.enabled = true;
     this.controls.target.copy(orbitCenter);
     this.controls.minDistance = visualRadius * 1.5;
     this.controls.maxDistance = Math.max(visualRadius * 30, 0.01);
@@ -2358,7 +2361,8 @@ export class ExploreMode {
     this.player.group.visible = this.showShip;
     this.updateSpeedSlider();
 
-    // Reset OrbitControls
+    // Reset OrbitControls — disable on touch devices during flight
+    this.controls.enabled = !this.isTouchDevice;
     this.controls.autoRotate = false;
     this.controls.minDistance = 0.00001;
     this.controls.maxDistance = 5;

@@ -35,6 +35,7 @@ export class MoonFlightMode {
   private active = false;
   private uiEl: HTMLElement | null = null;
   private onExitCallback: (() => void) | null = null;
+  private _camWorldPos = new THREE.Vector3();
   private handleKeyDown = (e: KeyboardEvent) => {
     if (!this.active) return;
     if (e.key === 'Escape') this.requestExit();
@@ -167,7 +168,10 @@ export class MoonFlightMode {
 
   update(_dt: number): void {
     if (!this.active) return;
-    // Phase 2: static scene. Phase 3 adds flight controls + dynamic camera near/far.
+    if (this.sky) {
+      this.camera.getWorldPosition(this._camWorldPos);
+      this.sky.update(this._camWorldPos);
+    }
   }
 
   onResize(aspect: number): void {

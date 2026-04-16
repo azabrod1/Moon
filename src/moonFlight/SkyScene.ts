@@ -39,6 +39,8 @@ export class SkyScene {
   /** Soft earthshine ambient. Intensity scales with Earth phase. */
   readonly earthshine: THREE.AmbientLight;
 
+  private snapshot: LightingSnapshot | null = null;
+
   constructor() {
     this.group = new THREE.Group();
     this.group.name = 'MoonFlightSky';
@@ -58,7 +60,7 @@ export class SkyScene {
     // Sun disk: bright emissive sphere. Light source is a separate DirectionalLight.
     const sunRadius = 1;
     const sunGeo = new THREE.SphereGeometry(sunRadius, 32, 16);
-    const sunMat = new THREE.MeshBasicMaterial({ color: 0xffeec8 });
+    const sunMat = new THREE.MeshBasicMaterial({ color: 0xffeec8, toneMapped: false });
     this.sunDisk = new THREE.Mesh(sunGeo, sunMat);
     this.sunDisk.name = 'SkySun';
     this.group.add(this.sunDisk);
@@ -94,12 +96,15 @@ export class SkyScene {
     this.group.add(this.sunGlow);
 
     // Stars: large inverted sphere with equirectangular milky way texture.
+    // Positioned relative to camera each frame (see update()) so it's always
+    // visible regardless of camera's world position and never hits the far plane.
     const starGeo = new THREE.SphereGeometry(STAR_SPHERE_RADIUS_KM, 64, 32);
     const starMat = new THREE.MeshBasicMaterial({
       color: 0xffffff,
       side: THREE.BackSide,
       depthWrite: false,
       fog: false,
+      toneMapped: false, // keep stars at full brightness on tone-mapped renderers
     });
     this.stars = new THREE.Mesh(starGeo, starMat);
     this.stars.name = 'SkyStars';
@@ -155,32 +160,49 @@ export class SkyScene {
     (this.stars.material as THREE.MeshBasicMaterial).needsUpdate = true;
   }
 
-  /** Apply snapshot: position Earth/Sun, size by angular diameter, set light direction. */
+  /** Apply snapshot: size objects by angular diameter + set lighting direction. */
   applySnapshot(snap: LightingSnapshot): void {
-    // Earth: real angular diameter from current Moon-Earth distance.
+    this.snapshot = snap;
+
+    // Earth mesh radius = display_distance * tan(angular_radius), so from the
+    // camera (which is always at display_distance from the mesh) it subtends the
+    // correct angular diameter.
     const earthAng = angularDiameterRad(EARTH_RADIUS_KM, snap.earthDistanceKm);
     const earthDisplayRadius = EARTH_DISPLAY_DISTANCE_KM * Math.tan(earthAng / 2);
     this.earth.scale.setScalar(earthDisplayRadius);
-    this.earth.position.copy(snap.earthDir).multiplyScalar(EARTH_DISPLAY_DISTANCE_KM);
 
-    // Sun: same treatment.
     const sunAng = angularDiameterRad(SUN_RADIUS_KM, snap.sunDistanceKm);
     const sunDisplayRadius = SUN_DISPLAY_DISTANCE_KM * Math.tan(sunAng / 2);
     this.sunDisk.scale.setScalar(sunDisplayRadius);
-    this.sunDisk.position.copy(snap.sunDir).multiplyScalar(SUN_DISPLAY_DISTANCE_KM);
     this.sunGlow.scale.setScalar(sunDisplayRadius);
-    this.sunGlow.position.copy(this.sunDisk.position);
 
-    // Directional light: aim a distant source in the sun direction toward origin.
-    // In Three.js, DirectionalLight.position relative to .target defines the
-    // incoming light direction. Place it far along +sunDir so rays travel -sunDir.
+    // Directional light: a DirectionalLight in Three.js uses (target - position)
+    // as its incoming-light vector. Parking it at origin - sunDir*D and pointing
+    // at origin means rays travel in -sunDir, which is correct for sunlight from
+    // +sunDir. Position/target are static — only direction matters for unshadowed
+    // directional lights.
     this.sunLight.position.copy(snap.sunDir).multiplyScalar(SUN_DISPLAY_DISTANCE_KM);
     this.sunLight.target.position.set(0, 0, 0);
     this.sunLight.target.updateMatrixWorld();
 
-    // Earthshine fill: tint + intensity scale with Earth phase brightness.
-    // Earth is ~4x brighter than a full moon on the Moon, but we want a subtle fill.
     this.earthshine.intensity = snap.earthPhaseFrac * 0.18;
+  }
+
+  /**
+   * Each frame, re-anchor sky objects to the camera so they render at a fixed
+   * display distance regardless of where the camera is in the moon-local frame.
+   * This is the angular-size trick done correctly: the sky follows the viewer.
+   */
+  update(cameraWorldPos: THREE.Vector3): void {
+    if (!this.snapshot) return;
+    this.stars.position.copy(cameraWorldPos);
+    this.earth.position
+      .copy(this.snapshot.earthDir).multiplyScalar(EARTH_DISPLAY_DISTANCE_KM)
+      .add(cameraWorldPos);
+    this.sunDisk.position
+      .copy(this.snapshot.sunDir).multiplyScalar(SUN_DISPLAY_DISTANCE_KM)
+      .add(cameraWorldPos);
+    this.sunGlow.position.copy(this.sunDisk.position);
   }
 
   dispose(): void {

@@ -200,7 +200,7 @@ export function formatTimeRateLabel(rate: number, paused: boolean): string {
   if (paused) return 'Paused';
   const direction = rate < 0 ? 'Reverse ' : '';
   const magnitude = Math.abs(rate);
-  if (magnitude === 1) return `${direction}1x real-time`;
+  if (magnitude === 1) return `${direction}Realtime`;
   if (magnitude < 60) return `${direction}${magnitude.toFixed(0)} sec/s`;
   if (magnitude < 3600) return `${direction}${(magnitude / 60).toFixed(0)} min/s`;
   if (magnitude < 86400) return `${direction}${(magnitude / 3600).toFixed(0)} hr/s`;

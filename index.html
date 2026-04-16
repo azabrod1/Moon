@@ -435,6 +435,7 @@
     }
 
     .bar-row {
+      position: relative;
       display: flex;
       align-items: center;
       gap: 0;
@@ -453,8 +454,13 @@
       padding: 0 8px;
     }
 
-    /* Date/time label row above the bar */
+    /* Date/time — positioned above bar on desktop, inline on mobile */
     .bar-date-row {
+      position: absolute;
+      bottom: calc(100% + 2px);
+      left: 50%;
+      transform: translateX(-50%);
+      width: max-content;
       display: flex;
       align-items: center;
       justify-content: center;
@@ -1455,7 +1461,16 @@
       .bar-row { padding: 5px 2px; }
       .bar-section { padding: 0 5px; }
       .bar-speed-main { padding: 0 6px; gap: 6px; }
-      .bar-date-row { padding: 2px 6px; gap: 4px; }
+      .bar-date-row {
+        position: static;
+        transform: none;
+        width: auto;
+        flex-direction: column;
+        gap: 0;
+        padding: 2px 8px;
+        border-right: 1px solid rgba(255, 255, 255, 0.04);
+      }
+      .bar-rate-sep { display: none; }
       .bar-date { font-size: 10px; }
       .bar-rate { font-size: 10px; }
       .stat-row { padding: 2px 0; }
@@ -1889,16 +1904,16 @@
           <div class="stat-row"><span class="stat-label">Flight</span><span class="stat-value" id="stat-time">0:00</span></div>
         </div>
 
-        <!-- Date/time label above bar -->
-        <div class="bar-date-row" id="bar-time-toggle">
-          <span class="bar-date" id="explore-time-value">--</span>
-          <span class="bar-rate-sep">&middot;</span>
-          <span class="bar-rate" id="explore-time-rate">1x</span>
-          <span class="bar-chevron" id="time-chevron">&#x25BC;</span>
-        </div>
-
         <!-- Main bar row -->
         <div class="bar-row">
+          <!-- Date/time (floats above bar on desktop, inline on mobile) -->
+          <div class="bar-date-row" id="bar-time-toggle">
+            <span class="bar-date" id="explore-time-value">--</span>
+            <span class="bar-rate-sep">&middot;</span>
+            <span class="bar-rate" id="explore-time-rate">1x</span>
+            <span class="bar-chevron" id="time-chevron">&#x25BC;</span>
+          </div>
+
           <!-- Speed controls -->
           <div class="bar-section bar-speed-main">
             <button class="explore-icon-btn" id="explore-btn-autopilot" title="Autopilot: fly to a destination. Click to choose target or disengage. (P)">&#x1F916; Pilot</button>

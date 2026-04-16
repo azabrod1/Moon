@@ -994,12 +994,13 @@ async function switchAppMode(newMode: AppMode) {
         });
       }
       debugLog('Activating moon flight mode');
+      const entryDate = new Date(state.currentDate.getTime());
       if (!moonFlightMode.hasLoaded()) {
-        await moonFlightMode.activate((progress) => {
+        await moonFlightMode.activate(entryDate, (progress) => {
           setFlightLoadingPercent(progress.completedUnits, progress.totalUnits);
         });
       } else {
-        await moonFlightMode.activate();
+        await moonFlightMode.activate(entryDate);
       }
       debugLog('Moon flight mode active');
 

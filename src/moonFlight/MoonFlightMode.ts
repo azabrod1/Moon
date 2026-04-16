@@ -1,24 +1,24 @@
 import * as THREE from 'three';
+import { TEXTURES } from '../utils/constants';
+import { SkyScene } from './SkyScene';
+import { snapshotLighting, MOON_RADIUS_KM, type LightingSnapshot } from './lightingSnapshot';
 
 export interface MoonFlightActivationProgress {
   completedUnits: number;
   totalUnits: number;
 }
 
-export const FIRST_MOON_FLIGHT_ACTIVATION_TOTAL_UNITS = 1;
+export const FIRST_MOON_FLIGHT_ACTIVATION_TOTAL_UNITS = 4;
 
 /**
  * Moon flight mode.
  *
- * Phase 1: mode shell only. A placeholder lunar sphere + directional light
- * so we can verify mode entry/exit, loading UI, composer swap, and disposal
- * work correctly before adding the real asset pipeline in later phases.
+ * Phase 2: proper sky (Earth, Sun, stars) lit from the snapshot ephemeris,
+ * plus a real-textured Moon. Still no flight controls — camera is parked at
+ * an orbital pose. Flight controls, streamed tiles, and procedural detail
+ * arrive in later phases.
  *
- * Integration contract (mirrors ExploreMode):
- *   - ctor is cheap; all heavy work happens in activate()
- *   - activate(onProgress) is idempotent and reports loader progress
- *   - deactivate() hides content and DOM but keeps GPU resources for fast re-entry
- *   - dispose() releases every GPU/DOM resource this mode owns
+ * Scene unit: 1 km. Moon sits at origin with radius 1737.4.
  */
 export class MoonFlightMode {
   private scene: THREE.Scene;
@@ -27,8 +27,9 @@ export class MoonFlightMode {
 
   private group: THREE.Group;
   private moon: THREE.Mesh | null = null;
-  private sunLight: THREE.DirectionalLight | null = null;
-  private ambient: THREE.AmbientLight | null = null;
+  private moonTexture: THREE.Texture | null = null;
+  private sky: SkyScene | null = null;
+  private snapshot: LightingSnapshot | null = null;
 
   private loaded = false;
   private active = false;
@@ -44,6 +45,7 @@ export class MoonFlightMode {
     this.camera = camera;
     this.renderer = renderer;
     this.group = new THREE.Group();
+    this.group.name = 'MoonFlightRoot';
     this.group.visible = false;
     this.scene.add(this.group);
   }
@@ -52,7 +54,6 @@ export class MoonFlightMode {
     return this.loaded;
   }
 
-  /** Register callback invoked when the user hits Escape or clicks Exit. */
   onExit(cb: () => void): void {
     this.onExitCallback = cb;
   }
@@ -61,23 +62,67 @@ export class MoonFlightMode {
     this.onExitCallback?.();
   }
 
-  async activate(onProgress?: (p: MoonFlightActivationProgress) => void): Promise<void> {
+  /**
+   * Activate flight mode. If first entry, loads assets and builds scene.
+   *
+   * @param date  Current simulator date — used to snapshot sun/earth positions
+   *              so the flight sky matches whatever lunar phase / eclipse state
+   *              the user was just looking at.
+   */
+  async activate(date: Date, onProgress?: (p: MoonFlightActivationProgress) => void): Promise<void> {
     this.active = true;
+    this.snapshot = snapshotLighting(date);
 
     if (!this.loaded) {
-      onProgress?.({ completedUnits: 0, totalUnits: FIRST_MOON_FLIGHT_ACTIVATION_TOTAL_UNITS });
-      await this.buildPlaceholderScene();
+      let completed = 0;
+      const report = () => onProgress?.({
+        completedUnits: completed,
+        totalUnits: FIRST_MOON_FLIGHT_ACTIVATION_TOTAL_UNITS,
+      });
+      report();
+
+      // Load moon texture in parallel with sky textures.
+      this.sky = new SkyScene();
+      const skyLoad = this.sky.load(() => {
+        completed++;
+        report();
+      });
+
+      await Promise.all([
+        this.buildMoon().then(() => {
+          completed++;
+          report();
+        }),
+        skyLoad,
+      ]);
+
+      this.group.add(this.sky.group);
+      this.group.add(this.sky.sunLight);
+      this.group.add(this.sky.sunLight.target);
+      this.group.add(this.sky.earthshine);
+
       this.loaded = true;
-      onProgress?.({ completedUnits: FIRST_MOON_FLIGHT_ACTIVATION_TOTAL_UNITS, totalUnits: FIRST_MOON_FLIGHT_ACTIVATION_TOTAL_UNITS });
     }
 
-    // Camera: default orbital pose. Looking down at the placeholder Moon.
-    // Placeholder uses scene-unit sphere of radius 1; real lunar-km frame
-    // lands in phase 3 when the real sphere arrives.
-    this.camera.near = 0.01;
-    this.camera.far = 2000;
+    if (this.sky) this.sky.applySnapshot(this.snapshot);
+
+    // Opening shot: high orbit so the whole Moon sphere + stars + Earth fit
+    // on both landscape and portrait aspect ratios. ~37% surface visible.
+    // Future phases will let the player pick a site and drop to low orbit.
+    const orbitAltitudeKm = 5000;
+    const orbitRadiusKm = MOON_RADIUS_KM + orbitAltitudeKm;
+    // Position slightly offset from the earth-sun plane so the terminator runs
+    // at a photogenic angle rather than straight down the middle.
+    const camPos = this.snapshot.earthDir.clone()
+      .multiplyScalar(0.15)
+      .add(this.snapshot.sunDir.clone().multiplyScalar(0.3))
+      .add(new THREE.Vector3(0, 0, 1).multiplyScalar(0.9))
+      .normalize()
+      .multiplyScalar(orbitRadiusKm);
+    this.camera.near = 1;
+    this.camera.far = 12000;
     this.camera.fov = 55;
-    this.camera.position.set(0, 0.4, 2.6);
+    this.camera.position.copy(camPos);
     this.camera.lookAt(0, 0, 0);
     this.camera.updateProjectionMatrix();
 
@@ -95,9 +140,7 @@ export class MoonFlightMode {
 
   dispose(): void {
     this.deactivate();
-    if (this.uiEl?.parentElement) {
-      this.uiEl.parentElement.removeChild(this.uiEl);
-    }
+    if (this.uiEl?.parentElement) this.uiEl.parentElement.removeChild(this.uiEl);
     this.uiEl = null;
 
     if (this.moon) {
@@ -106,21 +149,25 @@ export class MoonFlightMode {
       this.group.remove(this.moon);
       this.moon = null;
     }
-    if (this.sunLight) {
-      this.group.remove(this.sunLight);
-      this.sunLight = null;
+    this.moonTexture?.dispose();
+    this.moonTexture = null;
+
+    if (this.sky) {
+      this.group.remove(this.sky.group);
+      this.group.remove(this.sky.sunLight);
+      this.group.remove(this.sky.sunLight.target);
+      this.group.remove(this.sky.earthshine);
+      this.sky.dispose();
+      this.sky = null;
     }
-    if (this.ambient) {
-      this.group.remove(this.ambient);
-      this.ambient = null;
-    }
+
     this.scene.remove(this.group);
     this.loaded = false;
   }
 
   update(_dt: number): void {
     if (!this.active) return;
-    // Phase 1: no flight controls yet — scene is static. Phase 3+ fills this in.
+    // Phase 2: static scene. Phase 3 adds flight controls + dynamic camera near/far.
   }
 
   onResize(aspect: number): void {
@@ -128,22 +175,25 @@ export class MoonFlightMode {
     this.camera.updateProjectionMatrix();
   }
 
-  private async buildPlaceholderScene(): Promise<void> {
-    const geo = new THREE.SphereGeometry(1.0, 128, 64);
+  private async buildMoon(): Promise<void> {
+    const loader = new THREE.TextureLoader();
+    const moonTex = await loader.loadAsync(TEXTURES.MOON);
+    moonTex.colorSpace = THREE.SRGBColorSpace;
+    moonTex.anisotropy = 8;
+    this.moonTexture = moonTex;
+
+    const geo = new THREE.SphereGeometry(MOON_RADIUS_KM, 256, 128);
     const mat = new THREE.MeshStandardMaterial({
-      color: 0x8a867e,
-      roughness: 0.95,
+      map: moonTex,
+      bumpMap: moonTex,
+      bumpScale: 6, // km of apparent displacement (exaggerated for visual)
+      roughness: 0.96,
       metalness: 0.0,
+      color: 0xffffff,
     });
     this.moon = new THREE.Mesh(geo, mat);
+    this.moon.name = 'FlightMoon';
     this.group.add(this.moon);
-
-    this.sunLight = new THREE.DirectionalLight(0xfff4e0, 3.0);
-    this.sunLight.position.set(5, 2, 3);
-    this.group.add(this.sunLight);
-
-    this.ambient = new THREE.AmbientLight(0x0a0a14, 0.4);
-    this.group.add(this.ambient);
   }
 
   private showUI(): void {

@@ -22,6 +22,7 @@ import { Earth } from './bodies/Earth';
 import { Moon } from './bodies/Moon';
 import { Sun } from './bodies/Sun';
 import { ExploreMode, FIRST_EXPLORE_ACTIVATION_TOTAL_UNITS } from './explore/ExploreMode';
+import type { MoonFlightMode } from './moonFlight/MoonFlightMode';
 import { OrbitDetailsOverlay } from './simulator/OrbitDetailsOverlay';
 import { debugError, debugLog, debugWarn } from './utils/debug';
 import { formatScaleMultiplier } from './utils/formatting';
@@ -29,9 +30,10 @@ import { formatScaleMultiplier } from './utils/formatting';
 // ================================================================
 // Top-level mode
 // ================================================================
-type AppMode = 'simulator' | 'explore';
+type AppMode = 'simulator' | 'explore' | 'moonFlight';
 let appMode: AppMode = 'simulator';
 let exploreMode: ExploreMode | null = null;
+let moonFlightMode: MoonFlightMode | null = null;
 let simMoonRef: Moon | null = null;
 let simSunRef: Sun | null = null;
 let modeSwitchInFlight = false;
@@ -171,6 +173,9 @@ simControls.target.set(0, 0, 0);
 const exploreCamera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.000001, 200);
 exploreCamera.position.set(-0.0002, 0.0001, 0.0001);
 
+// --- Moon flight camera (own camera so near/far are independent of other modes) ---
+const flightCamera = new THREE.PerspectiveCamera(55, window.innerWidth / window.innerHeight, 0.01, 2000);
+
 // Active camera reference
 let camera = simCamera;
 
@@ -188,6 +193,7 @@ let composer: EffectComposer | null = null;
 function getTargetPixelRatio(mode: AppMode): number {
   if (isMobile) return Math.min(window.devicePixelRatio, 2);
   if (mode === 'explore') return Math.min(Math.max(window.devicePixelRatio, 1.5), 2.5);
+  if (mode === 'moonFlight') return Math.min(Math.max(window.devicePixelRatio, 1.5), 2.5);
   return Math.min(window.devicePixelRatio, 2);
 }
 
@@ -787,6 +793,16 @@ function setSimulatorLoadingPercent(loaded: number, total: number) {
   transitionMsg.textContent = text;
 }
 
+function setFlightLoadingPercent(completedUnits: number, totalUnits: number) {
+  const clampedTotal = Math.max(totalUnits, 1);
+  const clampedDone = Math.min(Math.max(completedUnits, 0), clampedTotal);
+  const pct = Math.round((clampedDone / clampedTotal) * 100);
+  const text = `Entering Flight... ${pct}%`;
+  const loadEl = document.getElementById('loading-msg');
+  if (loadEl) loadEl.textContent = text;
+  transitionMsg.textContent = text;
+}
+
 async function ensureSimulatorScene(
   onProgress?: (loaded: number, total: number) => void,
 ): Promise<SimulatorSceneState> {
@@ -876,23 +892,39 @@ async function ensureSimulatorScene(
   return simulatorSceneInitPromise;
 }
 
+function showSimulatorVisuals() {
+  for (const obj of simObjects) obj.visible = true;
+  orbitDetailsOverlay.group.visible = orbitDetailsToggle.checked;
+  simStarfield.visible = true;
+  moonOrbitLine.visible = true;
+  eclipticGrid.visible = true;
+  simulatorUI.style.display = 'block';
+  simControls.enabled = true;
+  ambientLight.visible = true;
+  const toggle = document.getElementById('btn-toggle-panel');
+  if (toggle) toggle.style.display = '';
+}
+
+function hideSimulatorVisuals() {
+  for (const obj of simObjects) obj.visible = false;
+  simStarfield.visible = false;
+  moonOrbitLine.visible = false;
+  eclipticGrid.visible = false;
+  simulatorUI.style.display = 'none';
+  simControls.enabled = false;
+  ambientLight.visible = false;
+  const toggle = document.getElementById('btn-toggle-panel');
+  if (toggle) toggle.style.display = 'none';
+}
+
 async function switchAppMode(newMode: AppMode) {
   btnModeSimulator.classList.toggle('active', newMode === 'simulator');
   btnModeExplore.classList.toggle('active', newMode === 'explore');
 
   if (newMode === appMode) {
     if (newMode === 'simulator') {
-      simulatorUI.style.display = 'block';
       exploreUI.style.display = 'none';
-      simControls.enabled = true;
-      ambientLight.visible = true;
-      for (const obj of simObjects) obj.visible = true;
-      orbitDetailsOverlay.group.visible = orbitDetailsToggle.checked;
-      simStarfield.visible = true;
-      moonOrbitLine.visible = true;
-      eclipticGrid.visible = true;
-      const toggle = document.getElementById('btn-toggle-panel');
-      if (toggle) toggle.style.display = '';
+      showSimulatorVisuals();
       camera = simCamera;
       applyRenderResolution('simulator');
       rebuildComposer(simCamera);
@@ -906,34 +938,22 @@ async function switchAppMode(newMode: AppMode) {
   try {
     // Fade to black
     modeTransition.classList.add('active');
-    transitionMsg.textContent = newMode === 'explore' ? 'Entering Planets...' : 'Returning to Moon...';
+    if (newMode === 'explore') transitionMsg.textContent = 'Entering Planets...';
+    else if (newMode === 'moonFlight') transitionMsg.textContent = 'Entering Flight...';
+    else transitionMsg.textContent = 'Returning to Moon...';
     await sleep(400);
 
     if (newMode === 'explore') {
       // --- Switch to Explore ---
       appMode = 'explore';
-
-      // Hide simulator objects
-      for (const obj of simObjects) obj.visible = false;
-      simStarfield.visible = false;
-      moonOrbitLine.visible = false;
-      eclipticGrid.visible = false;
-      simulatorUI.style.display = 'none';
-      simControls.enabled = false;
-      ambientLight.visible = false;
-      // Hide mobile panel toggle
-      const toggle = document.getElementById('btn-toggle-panel');
-      if (toggle) toggle.style.display = 'none';
-
-      // Ensure black background for space
+      hideSimulatorVisuals();
+      if (moonFlightMode) moonFlightMode.deactivate();
       scene.background = new THREE.Color(0x000000);
 
-      // Switch camera
       camera = exploreCamera;
       applyRenderResolution('explore');
       rebuildComposer(exploreCamera);
 
-      // Initialize explore mode
       if (!exploreMode) {
         debugLog('Creating explore mode');
         exploreMode = new ExploreMode(scene, exploreCamera, renderer, useBloom);
@@ -950,6 +970,39 @@ async function switchAppMode(newMode: AppMode) {
       }
       debugLog('Explore mode active');
 
+    } else if (newMode === 'moonFlight') {
+      // --- Switch to Moon Flight ---
+      appMode = 'moonFlight';
+      hideSimulatorVisuals();
+      if (exploreMode) exploreMode.deactivate();
+      exploreUI.style.display = 'none';
+      scene.background = new THREE.Color(0x000000);
+
+      camera = flightCamera;
+      applyRenderResolution('moonFlight');
+      rebuildComposer(flightCamera);
+
+      // Dynamic import: flight code + future assets stay out of the initial bundle
+      // until the user actually enters this mode.
+      if (!moonFlightMode) {
+        setFlightLoadingPercent(0, 1);
+        debugLog('Loading moon flight module');
+        const mod = await import('./moonFlight/MoonFlightMode');
+        moonFlightMode = new mod.MoonFlightMode(scene, flightCamera, renderer);
+        moonFlightMode.onExit(() => {
+          void switchAppMode('simulator');
+        });
+      }
+      debugLog('Activating moon flight mode');
+      if (!moonFlightMode.hasLoaded()) {
+        await moonFlightMode.activate((progress) => {
+          setFlightLoadingPercent(progress.completedUnits, progress.totalUnits);
+        });
+      } else {
+        await moonFlightMode.activate();
+      }
+      debugLog('Moon flight mode active');
+
     } else {
       // --- Switch to Simulator ---
       if (!simulatorScene) {
@@ -963,25 +1016,11 @@ async function switchAppMode(newMode: AppMode) {
 
       scene.background = new THREE.Color(0x000000);
 
-      // Deactivate explore
-      if (exploreMode) {
-        exploreMode.deactivate();
-      }
+      if (exploreMode) exploreMode.deactivate();
+      if (moonFlightMode) moonFlightMode.deactivate();
 
-      // Show simulator objects
-      for (const obj of simObjects) obj.visible = true;
-      orbitDetailsOverlay.group.visible = orbitDetailsToggle.checked;
-      simStarfield.visible = true;
-      moonOrbitLine.visible = true;
-      eclipticGrid.visible = true;
-      simulatorUI.style.display = 'block';
-      simControls.enabled = true;
-      ambientLight.visible = true;
-      // Restore mobile panel toggle
-      const toggle = document.getElementById('btn-toggle-panel');
-      if (toggle) toggle.style.display = '';
+      showSimulatorVisuals();
 
-      // Switch camera
       camera = simCamera;
       applyRenderResolution('simulator');
       rebuildComposer(simCamera);
@@ -998,6 +1037,13 @@ async function switchAppMode(newMode: AppMode) {
 
 btnModeSimulator.addEventListener('click', () => switchAppMode('simulator'));
 btnModeExplore.addEventListener('click', () => switchAppMode('explore'));
+
+const btnLaunchFlight = document.getElementById('btn-launch-flight');
+if (btnLaunchFlight) {
+  btnLaunchFlight.addEventListener('click', () => {
+    void switchAppMode('moonFlight');
+  });
+}
 
 // Mobile panel toggle
 const panelToggleBtn = document.getElementById('btn-toggle-panel');
@@ -1077,6 +1123,9 @@ async function init() {
     } else if (appMode === 'explore' && exploreMode) {
       // --- Explore update ---
       exploreMode.update(dt);
+    } else if (appMode === 'moonFlight' && moonFlightMode) {
+      // --- Moon flight update ---
+      moonFlightMode.update(dt);
     }
 
     updateOrbitFocusLabels(camera);
@@ -1152,6 +1201,9 @@ window.addEventListener('resize', () => {
   simCamera.updateProjectionMatrix();
   exploreCamera.aspect = w / h;
   exploreCamera.updateProjectionMatrix();
+  flightCamera.aspect = w / h;
+  flightCamera.updateProjectionMatrix();
+  moonFlightMode?.onResize(w / h);
   applyRenderResolution(appMode);
   debugLog('Resize', { width: w, height: h });
 });

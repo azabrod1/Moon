@@ -2,6 +2,9 @@ import * as THREE from 'three';
 import { TEXTURES } from '../utils/constants';
 import { SkyScene } from './SkyScene';
 import { snapshotLighting, MOON_RADIUS_KM, type LightingSnapshot } from './lightingSnapshot';
+import { FlightController } from './FlightController';
+import { CombinedInput, KeyboardMouseInput, TouchInput, type FlightInput } from './FlightInput';
+import { FlightHUD } from './FlightHUD';
 
 export interface MoonFlightActivationProgress {
   completedUnits: number;
@@ -36,6 +39,10 @@ export class MoonFlightMode {
   private uiEl: HTMLElement | null = null;
   private onExitCallback: (() => void) | null = null;
   private _camWorldPos = new THREE.Vector3();
+
+  private controller = new FlightController();
+  private input: FlightInput | null = null;
+  private hud: FlightHUD | null = null;
   private handleKeyDown = (e: KeyboardEvent) => {
     if (!this.active) return;
     if (e.key === 'Escape') this.requestExit();
@@ -108,40 +115,43 @@ export class MoonFlightMode {
     if (this.sky) this.sky.applySnapshot(this.snapshot);
     this.orientMoonToFrame(this.snapshot);
 
-    // Opening shot: high orbit on the far side relative to Earth, so Earth
-    // peeks past the moon's limb (~22° above view center, just inside the
-    // 27.5° vertical fov half-angle). The moon's lit hemisphere depends on
-    // sun direction; tilt biases toward sunDir so the lit limb usually faces
-    // the camera.
-    const orbitAltitudeKm = 5000;
-    const orbitRadiusKm = MOON_RADIUS_KM + orbitAltitudeKm;
-    const earthDir = this.snapshot.earthDir.clone().normalize();
-    const eclipticNorth = new THREE.Vector3(0, 0, 1);
-    const tiltRaw = eclipticNorth.clone().multiplyScalar(0.85)
-      .add(this.snapshot.sunDir.clone().multiplyScalar(0.4));
-    const tilt = tiltRaw.sub(earthDir.clone().multiplyScalar(tiltRaw.dot(earthDir))).normalize();
-    const camDir = earthDir.clone().multiplyScalar(-0.93)
-      .add(tilt.multiplyScalar(0.367))
-      .normalize();
-    const camPos = camDir.multiplyScalar(orbitRadiusKm);
-
-    this.camera.near = 1;
-    this.camera.far = 12000;
     this.camera.fov = 55;
     this.camera.up.set(0, 0, 1);
-    this.camera.position.copy(camPos);
-    this.camera.lookAt(0, 0, 0);
-    this.camera.updateProjectionMatrix();
+    this.controller.initializeFromSnapshot(this.snapshot);
+    this.controller.applyToCamera(this.camera);
 
     this.group.visible = true;
     this.showUI();
+    this.attachFlightInput();
     window.addEventListener('keydown', this.handleKeyDown);
+  }
+
+  private attachFlightInput(): void {
+    if (this.input) return;
+    const canvas = this.renderer.domElement;
+    const isTouch = typeof window !== 'undefined'
+      && (window.matchMedia?.('(pointer: coarse)').matches || 'ontouchstart' in window);
+    const kbd = new KeyboardMouseInput(canvas);
+    this.input = isTouch
+      ? new CombinedInput([kbd, new TouchInput(document.body)])
+      : kbd;
+    this.input.attach();
+    this.hud = new FlightHUD(document.body);
+    this.hud.attach();
+  }
+
+  private detachFlightInput(): void {
+    this.input?.detach();
+    this.input = null;
+    this.hud?.detach();
+    this.hud = null;
   }
 
   deactivate(): void {
     this.active = false;
     this.group.visible = false;
     this.hideUI();
+    this.detachFlightInput();
     window.removeEventListener('keydown', this.handleKeyDown);
   }
 
@@ -172,8 +182,14 @@ export class MoonFlightMode {
     this.loaded = false;
   }
 
-  update(_dt: number): void {
+  update(dt: number): void {
     if (!this.active) return;
+    if (this.input) {
+      const state = this.input.poll();
+      this.controller.update(dt, state);
+      this.controller.applyToCamera(this.camera);
+      this.hud?.update(this.controller.getState());
+    }
     if (this.sky) {
       this.camera.getWorldPosition(this._camWorldPos);
       this.sky.update(this._camWorldPos);

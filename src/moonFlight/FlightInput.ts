@@ -102,6 +102,8 @@ export class TouchInput implements FlightInput {
   private radialDown = false;
   private boostHeld = false;
   private brakeHeld = false;
+  private prevBodyTouchAction = '';
+  private prevBodyOverscroll = '';
 
   constructor(parent: HTMLElement) {
     this.parent = parent;
@@ -109,6 +111,10 @@ export class TouchInput implements FlightInput {
 
   attach(): void {
     this.buildDOM();
+    this.prevBodyTouchAction = document.body.style.touchAction;
+    this.prevBodyOverscroll = document.body.style.overscrollBehavior;
+    document.body.style.touchAction = 'none';
+    document.body.style.overscrollBehavior = 'none';
     window.addEventListener('touchstart', this.onTouchStart, { passive: false });
     window.addEventListener('touchmove', this.onTouchMove, { passive: false });
     window.addEventListener('touchend', this.onTouchEnd);
@@ -120,6 +126,8 @@ export class TouchInput implements FlightInput {
     window.removeEventListener('touchmove', this.onTouchMove);
     window.removeEventListener('touchend', this.onTouchEnd);
     window.removeEventListener('touchcancel', this.onTouchEnd);
+    document.body.style.touchAction = this.prevBodyTouchAction;
+    document.body.style.overscrollBehavior = this.prevBodyOverscroll;
     if (this.container.parentElement) this.container.parentElement.removeChild(this.container);
     this.leftStick = null;
     this.rightStick = null;

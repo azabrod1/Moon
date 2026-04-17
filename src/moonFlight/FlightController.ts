@@ -82,6 +82,19 @@ export class FlightController {
       const refRight = new THREE.Vector3().crossVectors(refNorth, radial);
       this.headingYaw = Math.atan2(lookTangent.dot(refRight), lookTangent.dot(refNorth));
     }
+
+    this.rebuildQuaternion();
+  }
+
+  private rebuildQuaternion(): void {
+    const radial = this.position.clone().normalize();
+    const refNorth = this.referenceNorth(radial);
+    const tangentForward = refNorth.clone().applyAxisAngle(radial, this.headingYaw);
+    const tangentRight = new THREE.Vector3().crossVectors(tangentForward, radial);
+    const lookForward = tangentForward.clone().applyAxisAngle(tangentRight, -this.pitch);
+    const localUp = new THREE.Vector3().crossVectors(tangentRight, lookForward).normalize();
+    const m = new THREE.Matrix4().makeBasis(tangentRight, localUp, lookForward.clone().negate());
+    this.quat.setFromRotationMatrix(m);
   }
 
   update(dt: number, input: FlightInputState): void {
@@ -91,15 +104,13 @@ export class FlightController {
     this.pitch += input.lookPitch;
     this.pitch = THREE.MathUtils.clamp(this.pitch, -PITCH_LIMIT, PITCH_LIMIT);
 
+    this.rebuildQuaternion();
+
     const radial = this.position.clone().normalize();
     const refNorth = this.referenceNorth(radial);
     const tangentForward = refNorth.clone().applyAxisAngle(radial, this.headingYaw);
     const tangentRight = new THREE.Vector3().crossVectors(tangentForward, radial);
     const lookForward = tangentForward.clone().applyAxisAngle(tangentRight, -this.pitch);
-    const localUp = new THREE.Vector3().crossVectors(tangentRight, lookForward).normalize();
-
-    const m = new THREE.Matrix4().makeBasis(tangentRight, localUp, lookForward.clone().negate());
-    this.quat.setFromRotationMatrix(m);
 
     const boostMul = this.boostActive ? BOOST_MULTIPLIER : 1;
     const accelMag = THRUST_ACCEL_KM_S2 * boostMul;
@@ -132,8 +143,12 @@ export class FlightController {
     camera.position.copy(this.position);
     camera.quaternion.copy(this.quat);
     const altitude = Math.max(0, this.position.length() - MOON_RADIUS_KM);
-    camera.near = Math.max(0.01, altitude * 0.01);
-    camera.far = Math.max(8000, altitude * 4 + 8000);
+    // Star sphere renders at 9500 km from camera, so far must stay above that.
+    // Near scales with altitude to preserve depth precision when the scene
+    // gets large; at the surface we need it tight to avoid clipping nearby
+    // terrain once tile streaming lands in phase 5.
+    camera.near = THREE.MathUtils.clamp(altitude * 0.002, 0.01, 10);
+    camera.far = Math.max(10500, altitude + 5000);
     camera.updateProjectionMatrix();
   }
 

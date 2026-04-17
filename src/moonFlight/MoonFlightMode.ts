@@ -106,23 +106,29 @@ export class MoonFlightMode {
     }
 
     if (this.sky) this.sky.applySnapshot(this.snapshot);
+    this.orientMoonToFrame(this.snapshot);
 
-    // Opening shot: high orbit so the whole Moon sphere + stars + Earth fit
-    // on both landscape and portrait aspect ratios. ~37% surface visible.
-    // Future phases will let the player pick a site and drop to low orbit.
+    // Opening shot: high orbit on the far side relative to Earth, so Earth
+    // peeks past the moon's limb (~22° above view center, just inside the
+    // 27.5° vertical fov half-angle). The moon's lit hemisphere depends on
+    // sun direction; tilt biases toward sunDir so the lit limb usually faces
+    // the camera.
     const orbitAltitudeKm = 5000;
     const orbitRadiusKm = MOON_RADIUS_KM + orbitAltitudeKm;
-    // Position slightly offset from the earth-sun plane so the terminator runs
-    // at a photogenic angle rather than straight down the middle.
-    const camPos = this.snapshot.earthDir.clone()
-      .multiplyScalar(0.15)
-      .add(this.snapshot.sunDir.clone().multiplyScalar(0.3))
-      .add(new THREE.Vector3(0, 0, 1).multiplyScalar(0.9))
-      .normalize()
-      .multiplyScalar(orbitRadiusKm);
+    const earthDir = this.snapshot.earthDir.clone().normalize();
+    const eclipticNorth = new THREE.Vector3(0, 0, 1);
+    const tiltRaw = eclipticNorth.clone().multiplyScalar(0.85)
+      .add(this.snapshot.sunDir.clone().multiplyScalar(0.4));
+    const tilt = tiltRaw.sub(earthDir.clone().multiplyScalar(tiltRaw.dot(earthDir))).normalize();
+    const camDir = earthDir.clone().multiplyScalar(-0.93)
+      .add(tilt.multiplyScalar(0.367))
+      .normalize();
+    const camPos = camDir.multiplyScalar(orbitRadiusKm);
+
     this.camera.near = 1;
     this.camera.far = 12000;
     this.camera.fov = 55;
+    this.camera.up.set(0, 0, 1);
     this.camera.position.copy(camPos);
     this.camera.lookAt(0, 0, 0);
     this.camera.updateProjectionMatrix();
@@ -177,6 +183,24 @@ export class MoonFlightMode {
   onResize(aspect: number): void {
     this.camera.aspect = aspect;
     this.camera.updateProjectionMatrix();
+  }
+
+  /**
+   * Rotate the moon mesh so the texture's sub-Earth point (selenographic
+   * longitude 0, mapped to mesh +X by Three.js's SphereGeometry) actually
+   * points at Earth, with the spin axis ≈ ecliptic north. Tidal locking +
+   * librations are not modeled; this is a static "snapshot" orientation.
+   */
+  private orientMoonToFrame(snap: LightingSnapshot): void {
+    if (!this.moon) return;
+    const earthDir = snap.earthDir.clone().normalize();
+    const north = new THREE.Vector3(0, 0, 1);
+    const yAxis = north.clone()
+      .sub(earthDir.clone().multiplyScalar(north.dot(earthDir)))
+      .normalize();
+    const zAxis = new THREE.Vector3().crossVectors(earthDir, yAxis);
+    const m = new THREE.Matrix4().makeBasis(earthDir, yAxis, zAxis);
+    this.moon.quaternion.setFromRotationMatrix(m);
   }
 
   private async buildMoon(): Promise<void> {

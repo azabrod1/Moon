@@ -52,6 +52,7 @@ export class SkyScene {
       color: 0xffffff,
       roughness: 0.85,
       metalness: 0.0,
+      toneMapped: false,
     });
     this.earth = new THREE.Mesh(earthGeo, earthMat);
     this.earth.name = 'SkyEarth';

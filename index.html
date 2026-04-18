@@ -836,36 +836,6 @@
     }
 
     /* Notification */
-    #explore-intro {
-      display: none;
-      position: fixed;
-      bottom: 120px;
-      left: 50%;
-      transform: translateX(-50%);
-      background: var(--panel-bg);
-      backdrop-filter: blur(12px);
-      border: 1px solid var(--panel-border);
-      border-radius: 10px;
-      padding: 16px 28px;
-      text-align: center;
-      pointer-events: auto;
-      color: var(--text-primary);
-      font-family: var(--font);
-      font-size: 13px;
-      line-height: 1.6;
-      max-width: 360px;
-      cursor: pointer;
-      z-index: 30;
-      box-shadow: 0 8px 32px rgba(0, 0, 0, 0.4);
-    }
-    #explore-intro.visible { display: block; }
-    #explore-intro .intro-dismiss {
-      display: block;
-      margin-top: 8px;
-      font-size: 10px;
-      color: var(--text-dim);
-    }
-
     #explore-notification {
       position: fixed;
       top: 88px;
@@ -1253,6 +1223,113 @@
     #explore-btn-travel:hover {
       background: rgba(124, 154, 255, 0.14);
       border-color: rgba(124, 154, 255, 0.3);
+    }
+
+    /* Help modal */
+    #explore-help {
+      display: none;
+      position: fixed;
+      inset: 0;
+      z-index: 70;
+      pointer-events: auto;
+    }
+    #explore-help.visible { display: block; }
+    .explore-help-backdrop {
+      position: absolute;
+      inset: 0;
+      background: rgba(0, 0, 0, 0.55);
+      backdrop-filter: blur(2px);
+    }
+    .explore-help-card {
+      position: absolute;
+      top: 50%;
+      left: 50%;
+      transform: translate(-50%, -50%);
+      width: min(460px, calc(100vw - 32px));
+      max-height: min(640px, calc(100vh - 80px));
+      display: flex;
+      flex-direction: column;
+      background: rgba(10, 12, 24, 0.94);
+      backdrop-filter: blur(16px);
+      border: 1px solid var(--panel-border);
+      border-radius: 12px;
+      overflow: hidden;
+      box-shadow: 0 16px 48px rgba(0, 0, 0, 0.5), inset 0 1px 0 rgba(255, 255, 255, 0.04);
+    }
+    .explore-help-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 14px 18px 10px;
+      border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+    }
+    .explore-help-header h3 {
+      font-family: var(--font);
+      font-size: 15px;
+      font-weight: 500;
+      color: var(--text-primary);
+      letter-spacing: 0.5px;
+      margin: 0;
+    }
+    .explore-help-close {
+      background: none;
+      border: none;
+      color: var(--text-dim);
+      font-size: 22px;
+      line-height: 1;
+      cursor: pointer;
+      padding: 4px 8px;
+      border-radius: 4px;
+      transition: all 0.15s;
+    }
+    .explore-help-close:hover {
+      color: var(--text-primary);
+      background: var(--accent-dim);
+    }
+    .explore-help-body {
+      padding: 6px 20px 18px;
+      overflow-y: auto;
+      color: var(--text-primary);
+      font-family: var(--font);
+      font-size: 13px;
+      line-height: 1.55;
+    }
+    .help-section {
+      margin-top: 14px;
+    }
+    .help-section h4 {
+      font-size: 12px;
+      font-weight: 600;
+      letter-spacing: 0.8px;
+      text-transform: uppercase;
+      color: var(--text-secondary);
+      margin: 0 0 4px;
+    }
+    .help-section p {
+      margin: 0;
+      color: var(--text-primary);
+    }
+    .help-section p + p { margin-top: 6px; }
+    .help-section em { color: var(--text-secondary); font-style: normal; }
+    .help-list {
+      list-style: none;
+      padding: 6px 0 0;
+      margin: 0;
+    }
+    .help-list li {
+      position: relative;
+      padding: 2px 0 2px 14px;
+    }
+    .help-list li::before {
+      content: "·";
+      position: absolute;
+      left: 2px;
+      top: 1px;
+      color: var(--text-dim);
+    }
+    .help-list strong {
+      color: var(--text-primary);
+      font-weight: 600;
     }
 
     #travel-menu {
@@ -1798,6 +1875,7 @@
 
       <!-- Menu dropdown (Save, New, Settings) -->
       <div id="explore-menu-panel">
+        <button class="menu-action" id="explore-btn-help">Help</button>
         <button class="menu-action" id="explore-btn-save">Save</button>
         <button class="menu-action" id="explore-btn-new">New Journey</button>
         <button class="menu-action menu-action-parent" id="explore-btn-historic">
@@ -1835,6 +1913,48 @@
           <button class="settings-toggle" id="settings-throttle-toggle">
             <span id="settings-throttle-label">On</span>
           </button>
+        </div>
+      </div>
+
+      <!-- Help modal (centered) -->
+      <div id="explore-help">
+        <div class="explore-help-backdrop"></div>
+        <div class="explore-help-card">
+          <div class="explore-help-header">
+            <h3>A few things worth knowing</h3>
+            <button class="explore-help-close" id="explore-help-close" aria-label="Close help">&times;</button>
+          </div>
+          <div class="explore-help-body">
+            <section class="help-section">
+              <h4>Two speeds</h4>
+              <p>You can fly up to 20c between planets. The moment you enter a planet's system, the ship throttles way down so you don't blast straight through it. Want to stay fast? Flip <em>Slower near planets</em> off in the menu.</p>
+            </section>
+            <section class="help-section">
+              <h4>Go anywhere (🚀 Travel)</h4>
+              <p>The 🚀 button up top lists every planet and moon. Pick one, then:</p>
+              <ul class="help-list">
+                <li><strong>Autopilot</strong> — flies you there. Grab the controls and it lets go.</li>
+                <li><strong>Land &amp; Orbit</strong> — drops you into a camera orbit of the body.</li>
+                <li><strong>Jump Nearby</strong> — skips the travel when you don't feel like flying it.</li>
+              </ul>
+            </section>
+            <section class="help-section">
+              <h4>Landing</h4>
+              <p>Get close to a body and a <strong>Land on…</strong> button appears on its own. Drag to look around. <strong>Leave</strong> (or Esc) puts you back in the ship.</p>
+            </section>
+            <section class="help-section">
+              <h4>Time is a separate dial</h4>
+              <p>Click the date on the bottom bar. You can pause, reverse, fast-forward, or jump to any UTC moment. Your ship's speed is unaffected — time just runs how you want.</p>
+            </section>
+            <section class="help-section">
+              <h4>Fly real missions</h4>
+              <p>The menu has <strong>Historic Journeys</strong> — Voyager 1 &amp; 2, Cassini, New Horizons, Juno. Each one puts you in the actual spacecraft on its real trajectory.</p>
+            </section>
+            <section class="help-section">
+              <h4>It saves itself</h4>
+              <p>Every 30 seconds. Close the tab whenever — you'll get a resume prompt next time.</p>
+            </section>
+          </div>
         </div>
       </div>
 
@@ -1978,10 +2098,6 @@
         </div>
       </div>
 
-      <div id="explore-intro">
-        <p>Everything is to scale — planets, orbits, and distances.<br>Your ship slows down near planet systems.</p>
-        <span class="intro-dismiss">Click or press any key to dismiss</span>
-      </div>
       <div id="explore-notification"></div>
       <div id="explore-loading-msg" style="position:absolute;bottom:50%;left:50%;transform:translate(-50%,50%);font-size:13px;color:var(--text-dim);letter-spacing:2px;display:none;"></div>
     </div>

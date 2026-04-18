@@ -190,6 +190,8 @@ export class ExploreMode {
   private deferredResumePromptState: ExploreState | null = null;
   private _menuPausedShip = false;
   private _menuPausedTime = false;
+  private _helpPausedShip = false;
+  private _helpPausedTime = false;
 
   private closeMenuPanel() {
     const panel = document.getElementById('explore-menu-panel');
@@ -199,6 +201,31 @@ export class ExploreMode {
     if (this._menuPausedTime) this.timeState.paused = false;
     this._menuPausedShip = false;
     this._menuPausedTime = false;
+  }
+
+  private isHelpOpen(): boolean {
+    return document.getElementById('explore-help')?.classList.contains('visible') ?? false;
+  }
+
+  private showHelp() {
+    const el = document.getElementById('explore-help');
+    if (!el || el.classList.contains('visible')) return;
+    this._helpPausedShip = this.player.moving;
+    this._helpPausedTime = !this.timeState.paused;
+    this.player.moving = false;
+    this.timeState.paused = true;
+    el.classList.add('visible');
+  }
+
+  private hideHelp() {
+    const el = document.getElementById('explore-help');
+    if (!el?.classList.contains('visible')) return;
+    el.classList.remove('visible');
+    if (this._helpPausedShip) this.player.moving = true;
+    if (this._helpPausedTime) this.timeState.paused = false;
+    this._helpPausedShip = false;
+    this._helpPausedTime = false;
+    try { localStorage.setItem('explore-help-seen', '1'); } catch { /* ignore */ }
   }
 
   active = false;
@@ -959,6 +986,7 @@ export class ExploreMode {
 
     // Escape always works — even while typing in search input
     if (e.key === 'Escape') {
+      if (this.isHelpOpen()) { this.hideHelp(); return; }
       if (this.isTravelMenuOpen()) { this.closeTravelMenu(); return; }
       if (this.landedOn) { this.exitLandedMode(); return; }
     }
@@ -1119,20 +1147,10 @@ export class ExploreMode {
 
   private showIntroText() {
     try {
-      if (localStorage.getItem('explore-intro-seen')) return;
+      if (localStorage.getItem('explore-help-seen')) return;
     } catch { /* private browsing — show it once per session */ }
-    const el = document.getElementById('explore-intro');
-    if (!el) return;
-    el.classList.add('visible');
-    const dismiss = () => {
-      el.classList.remove('visible');
-      el.removeEventListener('click', dismiss);
-      window.removeEventListener('keydown', dismiss);
-      try { localStorage.setItem('explore-intro-seen', '1'); } catch { /* ignore */ }
-    };
-    el.addEventListener('click', dismiss);
-    window.addEventListener('keydown', dismiss, { once: true });
-    setTimeout(dismiss, 12000);
+    if (document.getElementById('explore-resume-prompt')?.classList.contains('visible')) return;
+    this.showHelp();
   }
 
   private showNotification(text: string) {
@@ -1477,6 +1495,14 @@ export class ExploreMode {
         panel.classList.add('visible');
       }
     });
+    // Help button: close menu, open help modal
+    document.getElementById('explore-btn-help')?.addEventListener('click', () => {
+      this.closeMenuPanel();
+      this.showHelp();
+    });
+    document.getElementById('explore-help-close')?.addEventListener('click', () => this.hideHelp());
+    document.querySelector('#explore-help .explore-help-backdrop')?.addEventListener('click', () => this.hideHelp());
+
     document.getElementById('explore-btn-historic')?.addEventListener('click', () => {
       const submenu = document.getElementById('explore-historic-submenu');
       const trigger = document.getElementById('explore-btn-historic');

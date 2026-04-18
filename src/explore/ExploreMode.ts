@@ -2095,13 +2095,20 @@ export class ExploreMode {
     const dy = options.lookTarget.y - options.targetPosition.y;
     const dz = options.lookTarget.z - options.targetPosition.z;
     const horizontal = Math.sqrt(dx * dx + dz * dz);
+    const startHeading = this.player.heading;
+    let endHeading = Math.atan2(dz, dx);
+    // Shortest-path heading lerp: pick the equivalent endHeading within ±π of start
+    // so we never sweep the long way around when crossing the ±π branch cut.
+    const dh = endHeading - startHeading;
+    if (dh > Math.PI) endHeading -= 2 * Math.PI;
+    else if (dh < -Math.PI) endHeading += 2 * Math.PI;
     this.scriptedTransfer = {
       elapsed: 0,
       duration: 1.15,
       startPos: new THREE.Vector3(this.player.posX, this.player.posY, this.player.posZ),
       endPos: options.targetPosition.clone(),
-      startHeading: this.player.heading,
-      endHeading: Math.atan2(dz, dx),
+      startHeading,
+      endHeading,
       startPitch: this.player.pitch,
       endPitch: Math.atan2(dy, Math.max(horizontal, 1e-8)),
       endMoving: options.movingAfter,

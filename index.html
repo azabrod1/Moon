@@ -316,7 +316,7 @@
 
     .info-value { color: var(--text-primary); font-weight: 500; }
 
-    .toggle-row {
+    label.toggle-row {
       display: flex;
       align-items: center;
       gap: 8px;
@@ -778,6 +778,12 @@
     .settings-label.is-mixed {
       text-transform: none;
       letter-spacing: 0;
+    }
+    .settings-label-note {
+      display: inline-block;
+      white-space: nowrap;
+      opacity: 0.5;
+      font-size: 0.85em;
     }
     .settings-scale-row {
       display: flex;
@@ -1830,7 +1836,7 @@
           <label>Options</label>
           <div class="options-list">
             <div class="settings-row">
-              <span class="settings-label is-mixed">Body size <span style="opacity:0.5;font-size:0.85em">(× real)</span></span>
+              <span class="settings-label is-mixed">Body size <span class="settings-label-note">(× real)</span></span>
               <div class="settings-scale-row">
                 <input type="range" id="moon-body-scale-slider" min="1" max="8" value="1" step="0.1" class="settings-slider" />
                 <span id="moon-body-scale-label" class="settings-scale-value">1×</span>

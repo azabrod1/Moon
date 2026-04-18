@@ -5,12 +5,11 @@ import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
 import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
 import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
 
-import { SCENE, DEG2RAD, RAD2DEG } from './utils/constants';
+import { SCENE, DEG2RAD } from './utils/constants';
 import { loadAllTextures } from './utils/textures';
 import { computeOrbitalState, findEvent, type EventType } from './utils/ephemeris';
 import {
   LUNAR_ORBIT,
-  createOrbitPoints,
   longitudeDegFromMeanAnomaly,
   meanAnomalyDegFromTrueAnomaly,
   meanMotionDegPerDay,
@@ -24,6 +23,7 @@ import { Sun } from './bodies/Sun';
 import { ExploreMode, FIRST_EXPLORE_ACTIVATION_TOTAL_UNITS } from './explore/ExploreMode';
 import type { MoonFlightMode } from './moonFlight/MoonFlightMode';
 import { OrbitDetailsOverlay } from './simulator/OrbitDetailsOverlay';
+import { createMoonOrbitLine, updateMoonOrbitLine } from './simulator/moonOrbitLine';
 import { debugError, debugLog, debugWarn } from './utils/debug';
 import { formatScaleMultiplier } from './utils/formatting';
 
@@ -49,6 +49,7 @@ interface SimulatorSceneState {
 let simulatorScene: SimulatorSceneState | null = null;
 let simulatorSceneInitPromise: Promise<SimulatorSceneState> | null = null;
 let simulatorScaleSliderBound = false;
+const SHOW_SIMULATOR_GUIDES = false;
 
 // ================================================================
 // Simulator State
@@ -283,17 +284,6 @@ const simStarfield = createStarfield();
 scene.add(simStarfield);
 
 // ================================================================
-// Orbit visualization (simulator mode)
-// ================================================================
-function createOrbitLine(segments: number, color: number, inclination: number, nodeAngle: number): THREE.Line {
-  const points = createOrbitPoints(segments);
-  const geo = new THREE.BufferGeometry().setFromPoints(points);
-  const mat = new THREE.LineBasicMaterial({ color, transparent: true, opacity: 0.25 });
-  const line = new THREE.Line(geo, mat);
-  orientOrbitPlane(line, inclination, nodeAngle);
-  return line;
-}
-
 function createEclipticGrid(
   size: number,
   divisions: number,
@@ -346,7 +336,7 @@ function createEclipticGrid(
   );
 }
 
-const moonOrbitLine = createOrbitLine(192, 0x4466aa, SCENE.MOON_INCLINATION, 0);
+const moonOrbitLine = createMoonOrbitLine(0x4466aa, SCENE.MOON_INCLINATION, 0);
 scene.add(moonOrbitLine);
 
 const eclipticGrid = createEclipticGrid(
@@ -493,7 +483,7 @@ function placeFocusLabel(label: HTMLElement, worldPosition: THREE.Vector3, cam: 
 }
 
 function updateOrbitFocusLabels(cam: THREE.Camera) {
-  if (!orbitDetailsToggle.checked || appMode !== 'simulator') {
+  if (!orbitDetailsToggle.checked || appMode !== 'simulator' || !orbitDetailsOverlay.group.visible) {
     orbitFocusLabelF1.style.display = 'none';
     orbitFocusLabelF2.style.display = 'none';
     return;
@@ -897,7 +887,7 @@ function showSimulatorVisuals() {
   orbitDetailsOverlay.group.visible = orbitDetailsToggle.checked;
   simStarfield.visible = true;
   moonOrbitLine.visible = true;
-  eclipticGrid.visible = true;
+  eclipticGrid.visible = SHOW_SIMULATOR_GUIDES;
   simulatorUI.style.display = 'block';
   simControls.enabled = true;
   ambientLight.visible = true;
@@ -1112,11 +1102,17 @@ async function init() {
       sim.sun.setPosition(state.sunAngle);
       sim.sun.update(dt);
       sim.moon.setOrbitalPosition(state.moonAngle, state.nodeAngle);
+      updateMoonOrbitLine(
+        moonOrbitLine,
+        sim.moon.group.position,
+        sim.moon.mesh.scale.x,
+        SCENE.MOON_INCLINATION,
+        state.nodeAngle * DEG2RAD,
+      );
       const phase = computePhaseInfo(state.moonAngle, state.sunAngle, state.nodeAngle);
       sim.moon.setEclipseAppearance(phase.eclipseType, phase.eclipseQuality);
       const sunDir = sim.sun.getDirection();
       sim.earth.update(dt, sunDir);
-      orientOrbitPlane(moonOrbitLine, SCENE.MOON_INCLINATION, state.nodeAngle * DEG2RAD);
       orbitDetailsOverlay.update(state.nodeAngle, state.moonMeanAnomaly);
       updateShadowCones(sim.earthShadowCone, sim.moonShadowCone, sim.sun, sim.moon);
       simControls.update();

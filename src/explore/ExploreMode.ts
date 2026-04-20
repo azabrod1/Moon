@@ -1206,8 +1206,9 @@ export class ExploreMode {
     const screenX = (this._sunProjV.x * 0.5 + 0.5) * canvas.clientWidth;
     const screenY = (-this._sunProjV.y * 0.5 + 0.5) * canvas.clientHeight;
 
-    const distFromSun = this.player.getDistanceFromSun();
-    const occluded = this.markers?.isScreenPointOccluded(screenX, screenY, distFromSun) ?? false;
+    // Depth for occlusion test is camera→Sun (discs are camera-based too)
+    const distCamToSun = this.camera.position.distanceTo(sunPos);
+    const occluded = this.markers?.isScreenPointOccluded(screenX, screenY, distCamToSun) ?? false;
 
     if (!occluded && this._sunProjV.z < 1 && screenX > -50 && screenX < canvas.clientWidth + 50 &&
         screenY > -50 && screenY < canvas.clientHeight + 50) {
@@ -2335,9 +2336,9 @@ export class ExploreMode {
     document.getElementById('stats-chevron')?.classList.remove('expanded');
     document.getElementById('time-popover')?.classList.remove('visible');
     document.getElementById('time-chevron')?.classList.remove('expanded');
-    // Hide speed controls inside bar but keep bar visible for time controls
-    const speedSection = document.querySelector('.bar-speed-main') as HTMLElement | null;
-    if (speedSection) speedSection.style.display = 'none';
+    // Hide +/- speed group inside bar but keep Pilot button (doubles as "travel" while landed)
+    const speedGroup = document.querySelector('.bar-speed-main .speed-group') as HTMLElement | null;
+    if (speedGroup) speedGroup.style.display = 'none';
     const hide = ['explore-keys-hint', 'touch-flight-zone', 'explore-btn-travel', 'explore-btn-land'];
     for (const id of hide) {
       const el = document.getElementById(id);
@@ -2417,8 +2418,8 @@ export class ExploreMode {
     if (bottomBar) bottomBar.style.display = '';
 
     // UI: restore flight controls, hide leave button
-    const speedSection = document.querySelector('.bar-speed-main') as HTMLElement | null;
-    if (speedSection) speedSection.style.display = '';
+    const speedGroup = document.querySelector('.bar-speed-main .speed-group') as HTMLElement | null;
+    if (speedGroup) speedGroup.style.display = '';
     const show: Array<[string, string]> = [
       ['explore-btn-travel', ''],
     ];

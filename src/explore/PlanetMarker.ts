@@ -18,7 +18,9 @@ interface ForegroundDisc {
   screenX: number;
   screenY: number;
   radiusPx: number;
-  distFromPlayer: number;
+  // Distance from camera (not player). Camera-based so the landed case
+  // (player sits at body center) doesn't collapse the depth comparison.
+  distFromCamera: number;
   name: string;
 }
 
@@ -117,18 +119,23 @@ export class PlanetMarkers {
 
     // First pass: find "foreground" planets (rendered as mesh, large enough to
     // occlude markers behind them). Compute each one's screen-space disc so we
-    // can cull labels that fall inside it.
+    // can cull labels that fall inside it. Distances are measured from the
+    // CAMERA, not the player — when landed they differ (player sits at the
+    // body's center while the camera orbits around it).
     this.foregroundDiscs.length = 0;
     const projV = new THREE.Vector3();
     const halfFovTan = Math.tan((this.camera.fov * Math.PI) / 360);
+    const camX = this.camera.position.x;
+    const camY = this.camera.position.y;
+    const camZ = this.camera.position.z;
     for (const marker of this.markers) {
       const pos = planetPositions.get(marker.planet.name);
       if (!pos) continue;
-      const dx = pos.x - playerPos.x;
-      const dy = pos.y - playerPos.y;
-      const dz = pos.z - playerPos.z;
-      const distFromPlayer = Math.sqrt(dx * dx + dy * dy + dz * dz);
-      const angularSize = (marker.planet.radiusAU * 2) / Math.max(distFromPlayer, 0.0001);
+      const dx = pos.x - camX;
+      const dy = pos.y - camY;
+      const dz = pos.z - camZ;
+      const distFromCamera = Math.sqrt(dx * dx + dy * dy + dz * dz);
+      const angularSize = (marker.planet.radiusAU * 2) / Math.max(distFromCamera, 0.0001);
       if (angularSize <= 0.01) continue;
 
       projV.set(pos.x, pos.y, pos.z);
@@ -137,8 +144,8 @@ export class PlanetMarkers {
       const screenX = (projV.x * 0.5 + 0.5) * canvasWidth;
       const screenY = (-projV.y * 0.5 + 0.5) * canvasHeight;
       // Project disc radius to pixels. Pad by 1.1x to cover atmosphere glow.
-      const radiusPx = (marker.planet.radiusAU * 1.1 / (distFromPlayer * halfFovTan)) * (canvasHeight / 2);
-      this.foregroundDiscs.push({ screenX, screenY, radiusPx, distFromPlayer, name: marker.planet.name });
+      const radiusPx = (marker.planet.radiusAU * 1.1 / (Math.max(distFromCamera, marker.planet.radiusAU) * halfFovTan)) * (canvasHeight / 2);
+      this.foregroundDiscs.push({ screenX, screenY, radiusPx, distFromCamera, name: marker.planet.name });
     }
     const foregroundDiscs = this.foregroundDiscs;
 
@@ -156,11 +163,18 @@ export class PlanetMarkers {
       // Scene position (already offset by floating origin)
       marker.sprite.position.set(pos.x, pos.y, pos.z);
 
-      // Distance from player (in AU)
+      // Distance from player (in AU) — used for label text and visibility
       const dx = pos.x - playerPos.x;
       const dy = pos.y - playerPos.y;
       const dz = pos.z - playerPos.z;
       const distFromPlayer = Math.sqrt(dx * dx + dy * dy + dz * dz);
+
+      // Separate camera distance for occlusion (differs when landed: player is
+      // at body center while camera orbits above).
+      const cdx = pos.x - camX;
+      const cdy = pos.y - camY;
+      const cdz = pos.z - camZ;
+      const distFromCamera = Math.sqrt(cdx * cdx + cdy * cdy + cdz * cdz);
 
       // Scale marker: larger when farther, minimum size
       // But switch to planet mesh when close enough
@@ -189,10 +203,12 @@ export class PlanetMarkers {
       const screenY = (-this.tempV.y * 0.5 + 0.5) * canvasHeight;
 
       // Occluded by a nearer foreground body? (e.g. Pluto marker behind Earth)
+      // Compare camera distances so the landed case (player sits at body center)
+      // doesn't collapse every marker's depth to zero.
       let occluded = false;
       for (const disc of foregroundDiscs) {
         if (disc.name === marker.planet.name) continue;
-        if (distFromPlayer <= disc.distFromPlayer) continue;
+        if (distFromCamera <= disc.distFromCamera) continue;
         const ddx = screenX - disc.screenX;
         const ddy = screenY - disc.screenY;
         if (ddx * ddx + ddy * ddy < disc.radiusPx * disc.radiusPx) {
@@ -237,13 +253,15 @@ export class PlanetMarkers {
 
   /**
    * True if a screen-space point sits inside the disc of a closer foreground
-   * planet computed during the last update() call. Pass excludeName when the
-   * caller knows its own body should never occlude itself.
+   * planet computed during the last update() call. `distFromCamera` should be
+   * the camera-space depth of the point (NOT player distance) to match how
+   * the discs themselves were measured. Pass excludeName when the caller
+   * knows its own body should never occlude itself.
    */
-  isScreenPointOccluded(screenX: number, screenY: number, distFromPlayer: number, excludeName?: string): boolean {
+  isScreenPointOccluded(screenX: number, screenY: number, distFromCamera: number, excludeName?: string): boolean {
     for (const disc of this.foregroundDiscs) {
       if (excludeName && disc.name === excludeName) continue;
-      if (distFromPlayer <= disc.distFromPlayer) continue;
+      if (distFromCamera <= disc.distFromCamera) continue;
       const ddx = screenX - disc.screenX;
       const ddy = screenY - disc.screenY;
       if (ddx * ddx + ddy * ddy < disc.radiusPx * disc.radiusPx) return true;

@@ -669,7 +669,7 @@ export function createMoonMeshes(planetName: string): MoonMesh[] {
       roughness: 0.85,
       metalness: 0.05,
       emissive: new THREE.Color(moonData.color),
-      emissiveIntensity: 0.08,
+      emissiveIntensity: 0.03,
     });
 
     if (moonData.textureKey && PLANET_TEXTURE_URLS[moonData.textureKey]) {

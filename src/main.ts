@@ -1029,13 +1029,6 @@ async function switchAppMode(newMode: AppMode) {
 btnModeSimulator.addEventListener('click', () => switchAppMode('simulator'));
 btnModeExplore.addEventListener('click', () => switchAppMode('explore'));
 
-const btnLaunchFlight = document.getElementById('btn-launch-flight');
-if (btnLaunchFlight) {
-  btnLaunchFlight.addEventListener('click', () => {
-    void switchAppMode('moonFlight');
-  });
-}
-
 // Mobile panel toggle
 const panelToggleBtn = document.getElementById('btn-toggle-panel');
 const controlsPanel = document.getElementById('controls-panel');

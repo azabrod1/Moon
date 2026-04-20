@@ -881,6 +881,7 @@ export class ExploreMode {
 
           if (label && shouldRefreshMoonLabels && tempV) {
             m.mesh.getWorldPosition(tempV);
+            const moonCamDist = tempV.distanceTo(this.camera.position);
             tempV.project(this.camera);
             if (tempV.z < 1) {
               let sx = (tempV.x * 0.5 + 0.5) * canvasW;
@@ -890,10 +891,20 @@ export class ExploreMode {
                                sy >= margin && sy <= canvasH - margin;
               sx = Math.max(margin, Math.min(canvasW - margin, sx));
               sy = Math.max(margin, Math.min(canvasH - margin, sy));
-              label.style.display = 'block';
-              label.style.left = `${sx}px`;
-              label.style.top = `${sy}px`;
-              label.classList.toggle('edge', !onScreen);
+              // Label sits above the moon (translate(-50%, -100%) + -6px margin).
+              // Test that position against foreground planet discs so the label
+              // hides when it'd sit on top of (e.g.) Jupiter while the moon is
+              // behind. Pass the parent planet's name so the moon's own parent
+              // doesn't count as an occluder unless the moon is truly behind it.
+              const labelOccluded = this.markers?.isScreenPointOccluded(sx, sy - 10, moonCamDist) ?? false;
+              if (labelOccluded) {
+                label.style.display = 'none';
+              } else {
+                label.style.display = 'block';
+                label.style.left = `${sx}px`;
+                label.style.top = `${sy}px`;
+                label.classList.toggle('edge', !onScreen);
+              }
             } else {
               label.style.display = 'none';
             }

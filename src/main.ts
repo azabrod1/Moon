@@ -599,9 +599,12 @@ document.getElementById('preset-solar-eclipse')!.addEventListener('click', () =>
 });
 
 // Camera views
-function animateCamera(targetPos: THREE.Vector3, targetLook: THREE.Vector3) {
+const SIM_DEFAULT_FOV = 50;
+
+function animateCamera(targetPos: THREE.Vector3, targetLook: THREE.Vector3, targetFov: number = SIM_DEFAULT_FOV) {
   const startPos = simCamera.position.clone();
   const startTarget = simControls.target.clone();
+  const startFov = simCamera.fov;
   const duration = 1000;
   const startTime = performance.now();
   function step() {
@@ -610,6 +613,11 @@ function animateCamera(targetPos: THREE.Vector3, targetLook: THREE.Vector3) {
     const ease = t * t * (3 - 2 * t);
     simCamera.position.lerpVectors(startPos, targetPos, ease);
     simControls.target.lerpVectors(startTarget, targetLook, ease);
+    const fov = startFov + (targetFov - startFov) * ease;
+    if (fov !== simCamera.fov) {
+      simCamera.fov = fov;
+      simCamera.updateProjectionMatrix();
+    }
     simControls.update();
     if (t < 1) requestAnimationFrame(step);
   }
@@ -643,13 +651,15 @@ function animateTopDownCamera() {
 }
 
 function animateEarthObserverCamera() {
-  const phase = computePhaseInfo(state.moonAngle, state.sunAngle, state.nodeAngle);
-  const targetDir = phase.phaseAngle < 90 ? getSunDirForCamera() : getMoonDirForCamera();
-  // Use a near-geocentric viewpoint so eclipse alignments are judged by orbital geometry,
-  // not by an arbitrary surface location's parallax.
-  const camPos = targetDir.clone().multiplyScalar(SCENE.EARTH_RADIUS * 0.02);
-  const lookAt = targetDir.clone().multiplyScalar(SCENE.EARTH_SUN_DIST);
-  animateCamera(camPos, lookAt);
+  // Always face the Moon. Sit just above Earth's atmosphere shell (1.06 radii)
+  // so we don't render the backside of the atmosphere glow, but close enough to
+  // geocentric that eclipse geometry still reads correctly.
+  const moonDir = getMoonDirForCamera();
+  const camPos = moonDir.clone().multiplyScalar(SCENE.EARTH_RADIUS * 1.08);
+  const lookAt = moonDir.clone().multiplyScalar(SCENE.EARTH_SUN_DIST);
+  // Narrow FOV so the Moon's 0.5° disc is actually visible — wide enough to
+  // keep the Sun in frame during crescent/eclipse phases.
+  animateCamera(camPos, lookAt, 12);
 }
 
 function animateSideCamera() {

@@ -1206,7 +1206,10 @@ export class ExploreMode {
     const screenX = (this._sunProjV.x * 0.5 + 0.5) * canvas.clientWidth;
     const screenY = (-this._sunProjV.y * 0.5 + 0.5) * canvas.clientHeight;
 
-    if (this._sunProjV.z < 1 && screenX > -50 && screenX < canvas.clientWidth + 50 &&
+    const distFromSun = this.player.getDistanceFromSun();
+    const occluded = this.markers?.isScreenPointOccluded(screenX, screenY, distFromSun) ?? false;
+
+    if (!occluded && this._sunProjV.z < 1 && screenX > -50 && screenX < canvas.clientWidth + 50 &&
         screenY > -50 && screenY < canvas.clientHeight + 50) {
       if (!this.sunLabelVisible) {
         this.sunLabel.style.display = 'block';
@@ -1346,7 +1349,7 @@ export class ExploreMode {
     const bottomBar = document.getElementById('explore-bottom-bar');
     if (bottomBar) {
       bottomBar.style.opacity = missionActive ? '0.45' : '';
-      bottomBar.style.display = missionActive || this.landedOn ? 'none' : '';
+      bottomBar.style.display = missionActive ? 'none' : '';
     }
 
     const speedStatRow = document.getElementById('stat-speed-row');
@@ -1476,6 +1479,8 @@ export class ExploreMode {
     // Autopilot toggle
     document.getElementById('explore-btn-autopilot')?.addEventListener('click', () => {
       if (this.isMissionActive()) return;
+      // If landed, take off first so the travel menu can actually fly somewhere.
+      if (this.landedOn) this.exitLandedMode();
       this.toggleAutopilot();
     });
 

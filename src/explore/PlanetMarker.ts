@@ -14,8 +14,17 @@ export interface MarkerInstance {
   lastDistanceText: string;
 }
 
+interface ForegroundDisc {
+  screenX: number;
+  screenY: number;
+  radiusPx: number;
+  distFromPlayer: number;
+  name: string;
+}
+
 export class PlanetMarkers {
   markers: MarkerInstance[] = [];
+  foregroundDiscs: ForegroundDisc[] = [];
   private labelContainer: HTMLDivElement;
   private camera: THREE.PerspectiveCamera;
   private tempV = new THREE.Vector3();
@@ -109,8 +118,9 @@ export class PlanetMarkers {
     // First pass: find "foreground" planets (rendered as mesh, large enough to
     // occlude markers behind them). Compute each one's screen-space disc so we
     // can cull labels that fall inside it.
-    const foregroundDiscs: { screenX: number; screenY: number; radiusPx: number; distFromPlayer: number; name: string }[] = [];
+    this.foregroundDiscs.length = 0;
     const projV = new THREE.Vector3();
+    const halfFovTan = Math.tan((this.camera.fov * Math.PI) / 360);
     for (const marker of this.markers) {
       const pos = planetPositions.get(marker.planet.name);
       if (!pos) continue;
@@ -126,11 +136,11 @@ export class PlanetMarkers {
       if (projV.z >= 1) continue;
       const screenX = (projV.x * 0.5 + 0.5) * canvasWidth;
       const screenY = (-projV.y * 0.5 + 0.5) * canvasHeight;
-      // Project disc radius to pixels: use vertical FOV since we scaled Y by canvasHeight.
-      const halfFovTan = Math.tan((this.camera.fov * Math.PI) / 360);
-      const radiusPx = (marker.planet.radiusAU / (distFromPlayer * halfFovTan)) * (canvasHeight / 2);
-      foregroundDiscs.push({ screenX, screenY, radiusPx, distFromPlayer, name: marker.planet.name });
+      // Project disc radius to pixels. Pad by 1.1x to cover atmosphere glow.
+      const radiusPx = (marker.planet.radiusAU * 1.1 / (distFromPlayer * halfFovTan)) * (canvasHeight / 2);
+      this.foregroundDiscs.push({ screenX, screenY, radiusPx, distFromPlayer, name: marker.planet.name });
     }
+    const foregroundDiscs = this.foregroundDiscs;
 
     for (const marker of this.markers) {
       const pos = planetPositions.get(marker.planet.name);
@@ -223,6 +233,22 @@ export class PlanetMarkers {
         marker.sprite.visible = false;
       }
     }
+  }
+
+  /**
+   * True if a screen-space point sits inside the disc of a closer foreground
+   * planet computed during the last update() call. Pass excludeName when the
+   * caller knows its own body should never occlude itself.
+   */
+  isScreenPointOccluded(screenX: number, screenY: number, distFromPlayer: number, excludeName?: string): boolean {
+    for (const disc of this.foregroundDiscs) {
+      if (excludeName && disc.name === excludeName) continue;
+      if (distFromPlayer <= disc.distFromPlayer) continue;
+      const ddx = screenX - disc.screenX;
+      const ddy = screenY - disc.screenY;
+      if (ddx * ddx + ddy * ddy < disc.radiusPx * disc.radiusPx) return true;
+    }
+    return false;
   }
 
   dispose() {

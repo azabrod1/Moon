@@ -242,12 +242,6 @@ export class PlanetMarkers {
         marker.label.style.display = 'none';
         marker.labelVisible = false;
       }
-
-      // Also hide the billboard sprite when occluded, so we don't get the glow
-      // punching through a foreground body.
-      if (occluded) {
-        marker.sprite.visible = false;
-      }
     }
   }
 

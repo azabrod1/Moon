@@ -1666,6 +1666,8 @@ export class ExploreMode {
     // Travel menu
     document.getElementById('explore-btn-travel')?.addEventListener('click', () => {
       if (this.isMissionActive()) return;
+      // If landed, take off first so the travel menu can actually fly somewhere.
+      if (this.landedOn) this.exitLandedMode();
       this.toggleTravelMenu();
     });
     document.getElementById('travel-menu-close')?.addEventListener('click', () => {
@@ -2339,7 +2341,7 @@ export class ExploreMode {
     // Hide +/- speed group inside bar but keep Pilot button (doubles as "travel" while landed)
     const speedGroup = document.querySelector('.bar-speed-main .speed-group') as HTMLElement | null;
     if (speedGroup) speedGroup.style.display = 'none';
-    const hide = ['explore-keys-hint', 'touch-flight-zone', 'explore-btn-travel', 'explore-btn-land'];
+    const hide = ['explore-keys-hint', 'touch-flight-zone', 'explore-btn-land'];
     for (const id of hide) {
       const el = document.getElementById(id);
       if (el) el.style.display = 'none';

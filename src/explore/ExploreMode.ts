@@ -1206,9 +1206,10 @@ export class ExploreMode {
     const screenX = (this._sunProjV.x * 0.5 + 0.5) * canvas.clientWidth;
     const screenY = (-this._sunProjV.y * 0.5 + 0.5) * canvas.clientHeight;
 
-    // Depth for occlusion test is camera→Sun (discs are camera-based too)
+    // Depth for occlusion test is camera→Sun (discs are camera-based too).
+    // Test the label's y (offset below the Sun), not the Sun's own center.
     const distCamToSun = this.camera.position.distanceTo(sunPos);
-    const occluded = this.markers?.isScreenPointOccluded(screenX, screenY, distCamToSun) ?? false;
+    const occluded = this.markers?.isScreenPointOccluded(screenX, screenY + 24, distCamToSun) ?? false;
 
     if (!occluded && this._sunProjV.z < 1 && screenX > -50 && screenX < canvas.clientWidth + 50 &&
         screenY > -50 && screenY < canvas.clientHeight + 50) {

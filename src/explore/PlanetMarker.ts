@@ -202,15 +202,17 @@ export class PlanetMarkers {
       const screenX = (this.tempV.x * 0.5 + 0.5) * canvasWidth;
       const screenY = (-this.tempV.y * 0.5 + 0.5) * canvasHeight;
 
-      // Occluded by a nearer foreground body? (e.g. Pluto marker behind Earth)
-      // Compare camera distances so the landed case (player sits at body center)
-      // doesn't collapse every marker's depth to zero.
+      // Occluded by a nearer foreground body? Test the LABEL's position
+      // (below the marker), not the marker itself — the user wants the label
+      // to hide only when it actually sits over a foreground planet, even if
+      // the sprite above it is in clear sky.
+      const labelY = screenY + 24;
       let occluded = false;
       for (const disc of foregroundDiscs) {
         if (disc.name === marker.planet.name) continue;
         if (distFromCamera <= disc.distFromCamera) continue;
         const ddx = screenX - disc.screenX;
-        const ddy = screenY - disc.screenY;
+        const ddy = labelY - disc.screenY;
         if (ddx * ddx + ddy * ddy < disc.radiusPx * disc.radiusPx) {
           occluded = true;
           break;

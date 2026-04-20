@@ -662,6 +662,17 @@ function animateEarthObserverCamera() {
   animateCamera(camPos, lookAt, 12);
 }
 
+function animateMoonObserverCamera() {
+  // Mirror of "From Earth": sit just above the Moon on the Earth-facing side,
+  // look back at Earth. Earth from the Moon is ~1.9° across, so the same 12° FOV
+  // frames it larger than the Moon appears from Earth — which is realistic.
+  if (!simMoonRef) return;
+  const moonPos = simMoonRef.getWorldPosition();
+  const earthDir = moonPos.clone().negate().normalize();
+  const camPos = moonPos.clone().add(earthDir.clone().multiplyScalar(SCENE.MOON_RADIUS * 1.05));
+  animateCamera(camPos, new THREE.Vector3(0, 0, 0), 12);
+}
+
 function animateSideCamera() {
   const sunDir = getSunDirForCamera();
   const sideDir = new THREE.Vector3(-sunDir.z, 0, sunDir.x).normalize();
@@ -672,6 +683,7 @@ function animateSideCamera() {
 document.getElementById('view-default')!.addEventListener('click', animateOverviewCamera);
 document.getElementById('view-top')!.addEventListener('click', animateTopDownCamera);
 document.getElementById('view-earth')!.addEventListener('click', animateEarthObserverCamera);
+document.getElementById('view-moon')!.addEventListener('click', animateMoonObserverCamera);
 document.getElementById('view-side')!.addEventListener('click', animateSideCamera);
 
 // ================================================================

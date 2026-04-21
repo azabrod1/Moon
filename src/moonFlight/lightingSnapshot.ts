@@ -1,6 +1,6 @@
 import * as THREE from 'three';
-import { dateToJD, moonPosition, sunPosition } from '../utils/ephemeris';
-import { REAL } from '../utils/constants';
+import { dateToJD, moonPosition, sunPosition } from '../astronomy/ephemeris';
+import { KM_CONSTANTS } from '../shared/constants/physicalData';
 
 /**
  * Frozen lighting / sky geometry as seen from the Moon at a single instant.
@@ -85,6 +85,6 @@ export function angularDiameterRad(radiusKm: number, distanceKm: number): number
   return 2 * Math.atan(radiusKm / distanceKm);
 }
 
-export const EARTH_RADIUS_KM = REAL.EARTH_RADIUS;
-export const SUN_RADIUS_KM = REAL.SUN_RADIUS;
-export const MOON_RADIUS_KM = REAL.MOON_RADIUS;
+export const EARTH_RADIUS_KM = KM_CONSTANTS.EARTH_RADIUS;
+export const SUN_RADIUS_KM = KM_CONSTANTS.SUN_RADIUS;
+export const MOON_RADIUS_KM = KM_CONSTANTS.MOON_RADIUS;

@@ -1,3 +1,8 @@
+/**
+ * Moon Flight HUD: altitude, velocity, attitude, and fuel readouts plus
+ * landing/crash end-screen. Pure DOM consumer of FlightState; owns its own
+ * container and styling.
+ */
 import type { FlightState } from './FlightController';
 
 export class FlightHUD {

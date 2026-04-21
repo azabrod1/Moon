@@ -1,5 +1,11 @@
+/**
+ * Mode controller for the Moon Flight lunar-landing mini-game. Composes the
+ * SkyScene (frozen-lighting lunar panorama), FlightController (physics),
+ * FlightInput (keyboard/touch), and FlightHUD. Lighting is snapshotted once
+ * on entry — see lightingSnapshot.ts for why that's fine.
+ */
 import * as THREE from 'three';
-import { TEXTURES } from '../utils/constants';
+import { TEXTURES } from '../shared/assets/textures';
 import { SkyScene } from './SkyScene';
 import { snapshotLighting, MOON_RADIUS_KM, type LightingSnapshot } from './lightingSnapshot';
 import { FlightController } from './FlightController';

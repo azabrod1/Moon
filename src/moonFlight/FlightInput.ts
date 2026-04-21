@@ -1,3 +1,8 @@
+/**
+ * Moon Flight input handlers: a keyboard+mouse source for desktop and a
+ * virtual-stick touch source for mobile, plus a CombinedInput that adds their
+ * channels. All produce a FlightInputState consumed by FlightController.
+ */
 import type { FlightInputState } from './FlightController';
 import { ZERO_INPUT } from './FlightController';
 

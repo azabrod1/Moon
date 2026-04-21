@@ -1,3 +1,9 @@
+/**
+ * 6-DOF flight physics for the Moon Flight lunar-landing mini-game: translation
+ * + rotation integration, lunar-gravity model, collision with the Moon's
+ * surface, and landing success/crash state. Consumes FlightInputState (thrust
+ * and attitude commands) and exposes a kinematic pose for the renderer.
+ */
 import * as THREE from 'three';
 import { MOON_RADIUS_KM, type LightingSnapshot } from './lightingSnapshot';
 

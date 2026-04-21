@@ -1,3 +1,11 @@
+/**
+ * App entry point. Builds the shared Three.js renderer / scene / camera rig,
+ * detects GPU capability (for bloom), owns the animation loop, and coordinates
+ * switching between the three modes — Moon view, Planetarium, Moon Flight.
+ * All Moon-view-specific UI state (sliders, presets, date mode, camera
+ * animations) lives here and will be split out in Phase 3 of the refactor
+ * plan (app/ + moonView/ trees).
+ */
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
@@ -5,9 +13,10 @@ import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
 import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
 import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
 
-import { SCENE, DEG2RAD } from './utils/constants';
-import { loadAllTextures } from './utils/textures';
-import { computeOrbitalState, findEvent, type EventType } from './utils/ephemeris';
+import { SCENE_UNITS } from './shared/constants/sceneUnits';
+import { DEG2RAD } from './shared/math/angles';
+import { loadAllTextures } from './shared/assets/textureLoader';
+import { computeOrbitalState, findEvent, type EventType } from './astronomy/ephemeris';
 import {
   LUNAR_ORBIT,
   longitudeDegFromMeanAnomaly,
@@ -15,30 +24,30 @@ import {
   meanMotionDegPerDay,
   orbitDistanceKmFromLongitude,
   trueAnomalyDegFromLongitude,
-} from './utils/lunarOrbit';
-import { orientOrbitPlane } from './utils/orbitPlane';
-import { Earth } from './bodies/Earth';
-import { Moon } from './bodies/Moon';
-import { Sun } from './bodies/Sun';
-import { ExploreMode, FIRST_EXPLORE_ACTIVATION_TOTAL_UNITS } from './explore/ExploreMode';
+} from './astronomy/lunarOrbit';
+import { orientOrbitPlane } from './moonView/orbitPlane';
+import { Earth } from './moonView/bodies/Earth';
+import { Moon } from './moonView/bodies/Moon';
+import { Sun } from './moonView/bodies/Sun';
+import { PlanetariumMode, FIRST_PLANETARIUM_ACTIVATION_TOTAL_UNITS } from './planetarium/PlanetariumMode';
 import type { MoonFlightMode } from './moonFlight/MoonFlightMode';
-import { OrbitDetailsOverlay } from './simulator/OrbitDetailsOverlay';
-import { createMoonOrbitLine, updateMoonOrbitLine } from './simulator/moonOrbitLine';
-import { debugError, debugLog, debugWarn } from './utils/debug';
-import { formatScaleMultiplier } from './utils/formatting';
+import { OrbitDetailsOverlay } from './moonView/OrbitDetailsOverlay';
+import { createMoonOrbitLine, updateMoonOrbitLine } from './moonView/moonOrbitLine';
+import { debugError, debugLog, debugWarn } from './shared/debug';
+import { formatScaleMultiplier } from './shared/format';
 
 // ================================================================
 // Top-level mode
 // ================================================================
-type AppMode = 'simulator' | 'explore' | 'moonFlight';
-let appMode: AppMode = 'simulator';
-let exploreMode: ExploreMode | null = null;
+type AppMode = 'moonView' | 'planetarium' | 'moonFlight';
+let appMode: AppMode = 'moonView';
+let planetariumMode: PlanetariumMode | null = null;
 let moonFlightMode: MoonFlightMode | null = null;
-let simMoonRef: Moon | null = null;
-let simSunRef: Sun | null = null;
+let moonViewMoon: Moon | null = null;
+let moonViewSun: Sun | null = null;
 let modeSwitchInFlight = false;
 
-interface SimulatorSceneState {
+interface MoonViewSceneState {
   earth: Earth;
   moon: Moon;
   sun: Sun;
@@ -46,13 +55,13 @@ interface SimulatorSceneState {
   moonShadowCone: THREE.Mesh;
 }
 
-let simulatorScene: SimulatorSceneState | null = null;
-let simulatorSceneInitPromise: Promise<SimulatorSceneState> | null = null;
-let simulatorScaleSliderBound = false;
-const SHOW_SIMULATOR_GUIDES = false;
+let moonViewScene: MoonViewSceneState | null = null;
+let moonViewSceneInitPromise: Promise<MoonViewSceneState> | null = null;
+let moonViewScaleSliderBound = false;
+const SHOW_MOON_VIEW_GUIDES = false;
 
 // ================================================================
-// Simulator State
+// Moon-view state
 // ================================================================
 const state = {
   moonAngle: 180,
@@ -156,29 +165,29 @@ try {
 const scene = new THREE.Scene();
 scene.background = new THREE.Color(0x000000);
 
-// --- Simulator camera + controls ---
-const simCamera = new THREE.PerspectiveCamera(50, window.innerWidth / window.innerHeight, 0.01, 500);
-const moonOrbitApoapsis = SCENE.EARTH_MOON_DIST * (1 + LUNAR_ORBIT.eccentricity);
+// --- Moon-view camera + controls ---
+const moonViewCamera = new THREE.PerspectiveCamera(50, window.innerWidth / window.innerHeight, 0.01, 500);
+const moonOrbitApoapsis = SCENE_UNITS.EARTH_MOON_DIST * (1 + LUNAR_ORBIT.eccentricity);
 const PROPORTIONAL_BODY_SCALE = 1;
 const MAX_MOON_BODY_SCALE = 8;
-simCamera.position.set(moonOrbitApoapsis * 1.1, moonOrbitApoapsis * 0.42, moonOrbitApoapsis * 1.45);
+moonViewCamera.position.set(moonOrbitApoapsis * 1.1, moonOrbitApoapsis * 0.42, moonOrbitApoapsis * 1.45);
 
-const simControls = new OrbitControls(simCamera, renderer.domElement);
-simControls.enableDamping = true;
-simControls.dampingFactor = 0.05;
-simControls.minDistance = 1.5;
-simControls.maxDistance = Math.max(240, moonOrbitApoapsis * 5);
-simControls.target.set(0, 0, 0);
+const moonViewControls = new OrbitControls(moonViewCamera, renderer.domElement);
+moonViewControls.enableDamping = true;
+moonViewControls.dampingFactor = 0.05;
+moonViewControls.minDistance = 1.5;
+moonViewControls.maxDistance = Math.max(240, moonOrbitApoapsis * 5);
+moonViewControls.target.set(0, 0, 0);
 
-// --- Explore camera ---
-const exploreCamera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.000001, 200);
-exploreCamera.position.set(-0.0002, 0.0001, 0.0001);
+// --- Planetarium camera ---
+const planetariumCamera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.000001, 200);
+planetariumCamera.position.set(-0.0002, 0.0001, 0.0001);
 
 // --- Moon flight camera (own camera so near/far are independent of other modes) ---
 const flightCamera = new THREE.PerspectiveCamera(55, window.innerWidth / window.innerHeight, 0.01, 2000);
 
 // Active camera reference
-let camera = simCamera;
+let camera = moonViewCamera;
 
 // Ambient light
 const ambientLight = new THREE.AmbientLight(0x111122, 0.15);
@@ -193,7 +202,7 @@ let composer: EffectComposer | null = null;
 
 function getTargetPixelRatio(mode: AppMode): number {
   if (isMobile) return Math.min(window.devicePixelRatio, 2);
-  if (mode === 'explore') return Math.min(Math.max(window.devicePixelRatio, 1.5), 2.5);
+  if (mode === 'planetarium') return Math.min(Math.max(window.devicePixelRatio, 1.5), 2.5);
   if (mode === 'moonFlight') return Math.min(Math.max(window.devicePixelRatio, 1.5), 2.5);
   return Math.min(window.devicePixelRatio, 2);
 }
@@ -218,16 +227,16 @@ function buildComposer(cam: THREE.Camera) {
   composer.addPass(new RenderPass(scene, cam));
   const bloom = new UnrealBloomPass(
     new THREE.Vector2(window.innerWidth, window.innerHeight),
-    cam === exploreCamera ? 0.8 : 1.2,
+    cam === planetariumCamera ? 0.8 : 1.2,
     0.4,
-    cam === exploreCamera ? 0.92 : 0.85,
+    cam === planetariumCamera ? 0.92 : 0.85,
   );
   composer.addPass(bloom);
   composer.addPass(new OutputPass());
 }
 
 applyRenderResolution(appMode);
-buildComposer(simCamera);
+buildComposer(moonViewCamera);
 
 function renderScene(cam: THREE.Camera) {
   if (composer) {
@@ -242,7 +251,7 @@ function rebuildComposer(cam: THREE.Camera) {
 }
 
 // ================================================================
-// Starfield (simulator mode)
+// Starfield (Moon-view mode)
 // ================================================================
 function createStarfield(): THREE.Points {
   const starCount = 8000;
@@ -280,8 +289,8 @@ function createStarfield(): THREE.Points {
   return new THREE.Points(geo, mat);
 }
 
-const simStarfield = createStarfield();
-scene.add(simStarfield);
+const moonViewStarfield = createStarfield();
+scene.add(moonViewStarfield);
 
 // ================================================================
 function createEclipticGrid(
@@ -336,7 +345,7 @@ function createEclipticGrid(
   );
 }
 
-const moonOrbitLine = createMoonOrbitLine(0x4466aa, SCENE.MOON_INCLINATION, 0);
+const moonOrbitLine = createMoonOrbitLine(0x4466aa, SCENE_UNITS.MOON_INCLINATION, 0);
 scene.add(moonOrbitLine);
 
 const eclipticGrid = createEclipticGrid(
@@ -397,7 +406,7 @@ function computePhaseInfo(moonAngleDeg: number, sunAngleDeg: number, nodeAngleDe
 }
 
 // ================================================================
-// UI bindings (simulator mode)
+// UI bindings (Moon-view mode)
 // ================================================================
 const moonSlider = document.getElementById('moon-slider') as HTMLInputElement;
 const sunSlider = document.getElementById('sun-slider') as HTMLInputElement;
@@ -483,7 +492,7 @@ function placeFocusLabel(label: HTMLElement, worldPosition: THREE.Vector3, cam: 
 }
 
 function updateOrbitFocusLabels(cam: THREE.Camera) {
-  if (!orbitDetailsToggle.checked || appMode !== 'simulator' || !orbitDetailsOverlay.group.visible) {
+  if (!orbitDetailsToggle.checked || appMode !== 'moonView' || !orbitDetailsOverlay.group.visible) {
     orbitFocusLabelF1.style.display = 'none';
     orbitFocusLabelF2.style.display = 'none';
     return;
@@ -599,41 +608,41 @@ document.getElementById('preset-solar-eclipse')!.addEventListener('click', () =>
 });
 
 // Camera views
-const SIM_DEFAULT_FOV = 50;
+const MOON_VIEW_DEFAULT_FOV = 50;
 
-function animateCamera(targetPos: THREE.Vector3, targetLook: THREE.Vector3, targetFov: number = SIM_DEFAULT_FOV) {
-  const startPos = simCamera.position.clone();
-  const startTarget = simControls.target.clone();
-  const startFov = simCamera.fov;
+function animateCamera(targetPos: THREE.Vector3, targetLook: THREE.Vector3, targetFov: number = MOON_VIEW_DEFAULT_FOV) {
+  const startPos = moonViewCamera.position.clone();
+  const startTarget = moonViewControls.target.clone();
+  const startFov = moonViewCamera.fov;
   const duration = 1000;
   const startTime = performance.now();
   function step() {
     const elapsed = performance.now() - startTime;
     const t = Math.min(elapsed / duration, 1);
     const ease = t * t * (3 - 2 * t);
-    simCamera.position.lerpVectors(startPos, targetPos, ease);
-    simControls.target.lerpVectors(startTarget, targetLook, ease);
+    moonViewCamera.position.lerpVectors(startPos, targetPos, ease);
+    moonViewControls.target.lerpVectors(startTarget, targetLook, ease);
     const fov = startFov + (targetFov - startFov) * ease;
-    if (fov !== simCamera.fov) {
-      simCamera.fov = fov;
-      simCamera.updateProjectionMatrix();
+    if (fov !== moonViewCamera.fov) {
+      moonViewCamera.fov = fov;
+      moonViewCamera.updateProjectionMatrix();
     }
-    simControls.update();
+    moonViewControls.update();
     if (t < 1) requestAnimationFrame(step);
   }
   requestAnimationFrame(step);
 }
 
 function getSunDirForCamera(): THREE.Vector3 {
-  if (simSunRef) {
-    return simSunRef.group.position.clone().normalize();
+  if (moonViewSun) {
+    return moonViewSun.group.position.clone().normalize();
   }
   return new THREE.Vector3(1, 0, 0);
 }
 
 function getMoonDirForCamera(): THREE.Vector3 {
-  if (simMoonRef) {
-    return simMoonRef.getWorldPosition().normalize();
+  if (moonViewMoon) {
+    return moonViewMoon.getWorldPosition().normalize();
   }
   return new THREE.Vector3(1, 0, 0);
 }
@@ -655,8 +664,8 @@ function animateEarthObserverCamera() {
   // so we don't render the backside of the atmosphere glow, but close enough to
   // geocentric that eclipse geometry still reads correctly.
   const moonDir = getMoonDirForCamera();
-  const camPos = moonDir.clone().multiplyScalar(SCENE.EARTH_RADIUS * 1.08);
-  const lookAt = moonDir.clone().multiplyScalar(SCENE.EARTH_SUN_DIST);
+  const camPos = moonDir.clone().multiplyScalar(SCENE_UNITS.EARTH_RADIUS * 1.08);
+  const lookAt = moonDir.clone().multiplyScalar(SCENE_UNITS.EARTH_SUN_DIST);
   // Narrow FOV so the Moon's 0.5° disc is actually visible — wide enough to
   // keep the Sun in frame during crescent/eclipse phases.
   animateCamera(camPos, lookAt, 12);
@@ -666,10 +675,10 @@ function animateMoonObserverCamera() {
   // Mirror of "From Earth": sit just above the Moon on the Earth-facing side,
   // look back at Earth. Earth from the Moon is ~1.9° across, so the same 12° FOV
   // frames it larger than the Moon appears from Earth — which is realistic.
-  if (!simMoonRef) return;
-  const moonPos = simMoonRef.getWorldPosition();
+  if (!moonViewMoon) return;
+  const moonPos = moonViewMoon.getWorldPosition();
   const earthDir = moonPos.clone().negate().normalize();
-  const camPos = moonPos.clone().add(earthDir.clone().multiplyScalar(SCENE.MOON_RADIUS * 1.05));
+  const camPos = moonPos.clone().add(earthDir.clone().multiplyScalar(SCENE_UNITS.MOON_RADIUS * 1.05));
   animateCamera(camPos, new THREE.Vector3(0, 0, 0), 12);
 }
 
@@ -770,17 +779,17 @@ document.getElementById('nav-prev-solar')!.addEventListener('click', () => jumpT
 document.getElementById('nav-next-solar')!.addEventListener('click', () => jumpToEvent('solar-eclipse', 1));
 
 // ================================================================
-// Top-level mode switching (Simulator <-> Explore)
+// Top-level mode switching (Moon view <-> Planetarium)
 // ================================================================
-const simulatorUI = document.getElementById('simulator-ui')!;
-const exploreUI = document.getElementById('explore-ui')!;
+const moonViewUI = document.getElementById('moon-view-ui')!;
+const planetariumUI = document.getElementById('planetarium-ui')!;
 const modeTransition = document.getElementById('mode-transition')!;
 const transitionMsg = document.getElementById('transition-msg')!;
-const btnModeSimulator = document.getElementById('btn-mode-simulator')!;
-const btnModeExplore = document.getElementById('btn-mode-explore')!;
+const btnModeMoonView = document.getElementById('btn-mode-moon-view')!;
+const btnModePlanetarium = document.getElementById('btn-mode-planetarium')!;
 
-// Simulator scene objects (hidden during explore)
-const simObjects: THREE.Object3D[] = [];
+// Moon-view scene objects (hidden while Planetarium is active)
+const moonViewObjects: THREE.Object3D[] = [];
 
 function isLoadingScreenVisible(): boolean {
   const loadingScreen = document.getElementById('loading-screen');
@@ -797,7 +806,7 @@ function setPlanetsLoadingPercent(completedUnits: number, totalUnits: number) {
   transitionMsg.textContent = text;
 }
 
-function setSimulatorLoadingPercent(loaded: number, total: number) {
+function setMoonViewLoadingPercent(loaded: number, total: number) {
   const pct = Math.round((Math.min(Math.max(loaded, 0), Math.max(total, 1)) / Math.max(total, 1)) * 100);
   const text = `Loading Moon... ${pct}%`;
   const loadEl = document.getElementById('loading-msg');
@@ -815,16 +824,16 @@ function setFlightLoadingPercent(completedUnits: number, totalUnits: number) {
   transitionMsg.textContent = text;
 }
 
-async function ensureSimulatorScene(
+async function ensureMoonViewScene(
   onProgress?: (loaded: number, total: number) => void,
-): Promise<SimulatorSceneState> {
-  if (simulatorScene) {
+): Promise<MoonViewSceneState> {
+  if (moonViewScene) {
     onProgress?.(1, 1);
-    return simulatorScene;
+    return moonViewScene;
   }
 
-  if (!simulatorSceneInitPromise) {
-    simulatorSceneInitPromise = (async () => {
+  if (!moonViewSceneInitPromise) {
+    moonViewSceneInitPromise = (async () => {
       const textures = await loadAllTextures((loaded, total) => {
         onProgress?.(loaded, total);
       });
@@ -832,30 +841,30 @@ async function ensureSimulatorScene(
 
       const earth = new Earth(textures);
       scene.add(earth.group);
-      simObjects.push(earth.group);
+      moonViewObjects.push(earth.group);
 
       const moon = new Moon(textures);
-      simMoonRef = moon;
+      moonViewMoon = moon;
       scene.add(moon.orbitGroup);
-      simObjects.push(moon.orbitGroup);
+      moonViewObjects.push(moon.orbitGroup);
 
       scene.add(orbitDetailsOverlay.group);
-      simObjects.push(orbitDetailsOverlay.group);
+      moonViewObjects.push(orbitDetailsOverlay.group);
 
       const sun = new Sun(useBloom);
-      simSunRef = sun;
+      moonViewSun = sun;
       scene.add(sun.group);
-      simObjects.push(sun.group);
+      moonViewObjects.push(sun.group);
 
-      simObjects.push(moonOrbitLine, eclipticGrid);
+      moonViewObjects.push(moonOrbitLine, eclipticGrid);
 
-      const earthShadowCone = createShadowCone(SCENE.EARTH_RADIUS, 0x331111);
+      const earthShadowCone = createShadowCone(SCENE_UNITS.EARTH_RADIUS, 0x331111);
       scene.add(earthShadowCone);
-      simObjects.push(earthShadowCone);
+      moonViewObjects.push(earthShadowCone);
 
-      const moonShadowCone = createShadowCone(SCENE.MOON_RADIUS * 0.8, 0x111133);
+      const moonShadowCone = createShadowCone(SCENE_UNITS.MOON_RADIUS * 0.8, 0x111133);
       scene.add(moonShadowCone);
-      simObjects.push(moonShadowCone);
+      moonViewObjects.push(moonShadowCone);
 
       moonBodyScaleSlider.min = String(PROPORTIONAL_BODY_SCALE);
       moonBodyScaleSlider.max = String(MAX_MOON_BODY_SCALE);
@@ -863,7 +872,7 @@ async function ensureSimulatorScene(
       moonBodyScaleSlider.value = String(PROPORTIONAL_BODY_SCALE);
       updateMoonBodyScaleLabel(PROPORTIONAL_BODY_SCALE);
 
-      simulatorScene = {
+      moonViewScene = {
         earth,
         moon,
         sun,
@@ -872,74 +881,74 @@ async function ensureSimulatorScene(
       };
 
       applyMoonBodyScale(earth, moon, sun, earthShadowCone, moonShadowCone, PROPORTIONAL_BODY_SCALE);
-      if (!simulatorScaleSliderBound) {
+      if (!moonViewScaleSliderBound) {
         moonBodyScaleSlider.addEventListener('input', () => {
           const scale = parseFloat(moonBodyScaleSlider.value);
           updateMoonBodyScaleLabel(scale);
-          if (!simulatorScene) return;
+          if (!moonViewScene) return;
           applyMoonBodyScale(
-            simulatorScene.earth,
-            simulatorScene.moon,
-            simulatorScene.sun,
-            simulatorScene.earthShadowCone,
-            simulatorScene.moonShadowCone,
+            moonViewScene.earth,
+            moonViewScene.moon,
+            moonViewScene.sun,
+            moonViewScene.earthShadowCone,
+            moonViewScene.moonShadowCone,
             scale,
           );
         });
-        simulatorScaleSliderBound = true;
+        moonViewScaleSliderBound = true;
       }
 
       applyDateToState(state.currentDate);
       sun.setPosition(state.sunAngle);
       moon.setOrbitalPosition(state.moonAngle, state.nodeAngle);
-      debugLog('Simulator scene ready');
+      debugLog('Moon-view scene ready');
 
-      return simulatorScene;
+      return moonViewScene;
     })();
-    simulatorSceneInitPromise.catch(() => {
-      simulatorSceneInitPromise = null;
+    moonViewSceneInitPromise.catch(() => {
+      moonViewSceneInitPromise = null;
     });
   }
 
-  return simulatorSceneInitPromise;
+  return moonViewSceneInitPromise;
 }
 
-function showSimulatorVisuals() {
-  for (const obj of simObjects) obj.visible = true;
+function showMoonViewVisuals() {
+  for (const obj of moonViewObjects) obj.visible = true;
   orbitDetailsOverlay.group.visible = orbitDetailsToggle.checked;
-  simStarfield.visible = true;
+  moonViewStarfield.visible = true;
   moonOrbitLine.visible = true;
-  eclipticGrid.visible = SHOW_SIMULATOR_GUIDES;
-  simulatorUI.style.display = 'block';
-  simControls.enabled = true;
+  eclipticGrid.visible = SHOW_MOON_VIEW_GUIDES;
+  moonViewUI.style.display = 'block';
+  moonViewControls.enabled = true;
   ambientLight.visible = true;
   const toggle = document.getElementById('btn-toggle-panel');
   if (toggle) toggle.style.display = '';
 }
 
-function hideSimulatorVisuals() {
-  for (const obj of simObjects) obj.visible = false;
-  simStarfield.visible = false;
+function hideMoonViewVisuals() {
+  for (const obj of moonViewObjects) obj.visible = false;
+  moonViewStarfield.visible = false;
   moonOrbitLine.visible = false;
   eclipticGrid.visible = false;
-  simulatorUI.style.display = 'none';
-  simControls.enabled = false;
+  moonViewUI.style.display = 'none';
+  moonViewControls.enabled = false;
   ambientLight.visible = false;
   const toggle = document.getElementById('btn-toggle-panel');
   if (toggle) toggle.style.display = 'none';
 }
 
 async function switchAppMode(newMode: AppMode) {
-  btnModeSimulator.classList.toggle('active', newMode === 'simulator');
-  btnModeExplore.classList.toggle('active', newMode === 'explore');
+  btnModeMoonView.classList.toggle('active', newMode === 'moonView');
+  btnModePlanetarium.classList.toggle('active', newMode === 'planetarium');
 
   if (newMode === appMode) {
-    if (newMode === 'simulator') {
-      exploreUI.style.display = 'none';
-      showSimulatorVisuals();
-      camera = simCamera;
-      applyRenderResolution('simulator');
-      rebuildComposer(simCamera);
+    if (newMode === 'moonView') {
+      planetariumUI.style.display = 'none';
+      showMoonViewVisuals();
+      camera = moonViewCamera;
+      applyRenderResolution('moonView');
+      rebuildComposer(moonViewCamera);
     }
     return;
   }
@@ -950,44 +959,44 @@ async function switchAppMode(newMode: AppMode) {
   try {
     // Fade to black
     modeTransition.classList.add('active');
-    if (newMode === 'explore') transitionMsg.textContent = 'Entering Planets...';
+    if (newMode === 'planetarium') transitionMsg.textContent = 'Entering Planets...';
     else if (newMode === 'moonFlight') transitionMsg.textContent = 'Entering Flight...';
     else transitionMsg.textContent = 'Returning to Moon...';
     await sleep(400);
 
-    if (newMode === 'explore') {
-      // --- Switch to Explore ---
-      appMode = 'explore';
-      hideSimulatorVisuals();
+    if (newMode === 'planetarium') {
+      // --- Switch to Planetarium ---
+      appMode = 'planetarium';
+      hideMoonViewVisuals();
       if (moonFlightMode) moonFlightMode.deactivate();
       scene.background = new THREE.Color(0x000000);
 
-      camera = exploreCamera;
-      applyRenderResolution('explore');
-      rebuildComposer(exploreCamera);
+      camera = planetariumCamera;
+      applyRenderResolution('planetarium');
+      rebuildComposer(planetariumCamera);
 
-      if (!exploreMode) {
-        debugLog('Creating explore mode');
-        exploreMode = new ExploreMode(scene, exploreCamera, renderer, useBloom);
+      if (!planetariumMode) {
+        debugLog('Creating Planetarium mode');
+        planetariumMode = new PlanetariumMode(scene, planetariumCamera, renderer, useBloom);
       }
-      debugLog('Activating explore mode');
-      if (!exploreMode.hasLoadedSolarSystem()) {
-        const totalUnits = FIRST_EXPLORE_ACTIVATION_TOTAL_UNITS;
+      debugLog('Activating Planetarium mode');
+      if (!planetariumMode.hasLoadedSolarSystem()) {
+        const totalUnits = FIRST_PLANETARIUM_ACTIVATION_TOTAL_UNITS;
         setPlanetsLoadingPercent(0, totalUnits);
-        await exploreMode.activate((progress) => {
+        await planetariumMode.activate((progress) => {
           setPlanetsLoadingPercent(progress.completedUnits, totalUnits);
         });
       } else {
-        await exploreMode.activate();
+        await planetariumMode.activate();
       }
-      debugLog('Explore mode active');
+      debugLog('Planetarium mode active');
 
     } else if (newMode === 'moonFlight') {
       // --- Switch to Moon Flight ---
       appMode = 'moonFlight';
-      hideSimulatorVisuals();
-      if (exploreMode) exploreMode.deactivate();
-      exploreUI.style.display = 'none';
+      hideMoonViewVisuals();
+      if (planetariumMode) planetariumMode.deactivate();
+      planetariumUI.style.display = 'none';
       scene.background = new THREE.Color(0x000000);
 
       camera = flightCamera;
@@ -1002,7 +1011,7 @@ async function switchAppMode(newMode: AppMode) {
         const mod = await import('./moonFlight/MoonFlightMode');
         moonFlightMode = new mod.MoonFlightMode(scene, flightCamera, renderer);
         moonFlightMode.onExit(() => {
-          void switchAppMode('simulator');
+          void switchAppMode('moonView');
         });
       }
       debugLog('Activating moon flight mode');
@@ -1017,27 +1026,27 @@ async function switchAppMode(newMode: AppMode) {
       debugLog('Moon flight mode active');
 
     } else {
-      // --- Switch to Simulator ---
-      if (!simulatorScene) {
-        setSimulatorLoadingPercent(0, 1);
-        await ensureSimulatorScene((loaded, total) => {
-          setSimulatorLoadingPercent(loaded, total);
+      // --- Switch to Moon view ---
+      if (!moonViewScene) {
+        setMoonViewLoadingPercent(0, 1);
+        await ensureMoonViewScene((loaded, total) => {
+          setMoonViewLoadingPercent(loaded, total);
         });
       }
 
-      appMode = 'simulator';
+      appMode = 'moonView';
 
       scene.background = new THREE.Color(0x000000);
 
-      if (exploreMode) exploreMode.deactivate();
+      if (planetariumMode) planetariumMode.deactivate();
       if (moonFlightMode) moonFlightMode.deactivate();
 
-      showSimulatorVisuals();
+      showMoonViewVisuals();
 
-      camera = simCamera;
-      applyRenderResolution('simulator');
-      rebuildComposer(simCamera);
-      debugLog('Simulator mode active');
+      camera = moonViewCamera;
+      applyRenderResolution('moonView');
+      rebuildComposer(moonViewCamera);
+      debugLog('Moon-view mode active');
     }
 
     // Fade back in
@@ -1048,8 +1057,8 @@ async function switchAppMode(newMode: AppMode) {
   }
 }
 
-btnModeSimulator.addEventListener('click', () => switchAppMode('simulator'));
-btnModeExplore.addEventListener('click', () => switchAppMode('explore'));
+btnModeMoonView.addEventListener('click', () => switchAppMode('moonView'));
+btnModePlanetarium.addEventListener('click', () => switchAppMode('planetarium'));
 
 // Mobile panel toggle
 const panelToggleBtn = document.getElementById('btn-toggle-panel');
@@ -1068,7 +1077,7 @@ function sleep(ms: number): Promise<void> {
 function getAutoMode(): AppMode | null {
   const params = new URLSearchParams(window.location.search);
   const auto = params.get('auto');
-  return auto === 'explore' || auto === 'simulator' ? auto : null;
+  return auto === 'planetarium' || auto === 'moonView' ? auto : null;
 }
 
 // ================================================================
@@ -1078,9 +1087,9 @@ async function init() {
   (window as any).__initStarted = true;
   debugLog('Init started');
   const autoMode = getAutoMode();
-  const initialMode = autoMode ?? 'explore';
-  if (initialMode === 'simulator') {
-    await ensureSimulatorScene((loaded, total) => {
+  const initialMode = autoMode ?? 'planetarium';
+  if (initialMode === 'moonView') {
+    await ensureMoonViewScene((loaded, total) => {
       const pct = Math.round((loaded / total) * 100);
       const loadEl = document.getElementById('loading-msg');
       if (loadEl) loadEl.textContent = `Loading textures... ${pct}%`;
@@ -1096,9 +1105,9 @@ async function init() {
     const dt = Math.min((now - lastTime) / 1000, 0.1); // cap at 100ms to avoid huge jumps
     lastTime = now;
 
-    const sim = simulatorScene;
-    if (appMode === 'simulator' && sim) {
-      // --- Simulator update ---
+    const mv = moonViewScene;
+    if (appMode === 'moonView' && mv) {
+      // --- Moon view update ---
       if (state.mode === 'manual' && state.animating && state.timeSpeed !== 0) {
         state.moonMeanAnomaly += state.timeSpeed * meanMotionDegPerDay() * dt;
         state.sunAngle += state.timeSpeed * 0.986 * dt;
@@ -1114,27 +1123,27 @@ async function init() {
         applyDateToState(state.currentDate);
       }
 
-      sim.sun.setPosition(state.sunAngle);
-      sim.sun.update(dt);
-      sim.moon.setOrbitalPosition(state.moonAngle, state.nodeAngle);
+      mv.sun.setPosition(state.sunAngle);
+      mv.sun.update(dt);
+      mv.moon.setOrbitalPosition(state.moonAngle, state.nodeAngle);
       updateMoonOrbitLine(
         moonOrbitLine,
-        sim.moon.group.position,
-        sim.moon.mesh.scale.x,
-        SCENE.MOON_INCLINATION,
+        mv.moon.group.position,
+        mv.moon.mesh.scale.x,
+        SCENE_UNITS.MOON_INCLINATION,
         state.nodeAngle * DEG2RAD,
       );
       const phase = computePhaseInfo(state.moonAngle, state.sunAngle, state.nodeAngle);
-      sim.moon.setEclipseAppearance(phase.eclipseType, phase.eclipseQuality);
-      const sunDir = sim.sun.getDirection();
-      sim.earth.update(dt, sunDir);
+      mv.moon.setEclipseAppearance(phase.eclipseType, phase.eclipseQuality);
+      const sunDir = mv.sun.getDirection();
+      mv.earth.update(dt, sunDir);
       orbitDetailsOverlay.update(state.nodeAngle, state.moonMeanAnomaly);
-      updateShadowCones(sim.earthShadowCone, sim.moonShadowCone, sim.sun, sim.moon);
-      simControls.update();
+      updateShadowCones(mv.earthShadowCone, mv.moonShadowCone, mv.sun, mv.moon);
+      moonViewControls.update();
 
-    } else if (appMode === 'explore' && exploreMode) {
-      // --- Explore update ---
-      exploreMode.update(dt);
+    } else if (appMode === 'planetarium' && planetariumMode) {
+      // --- Planetarium update ---
+      planetariumMode.update(dt);
     } else if (appMode === 'moonFlight' && moonFlightMode) {
       // --- Moon flight update ---
       moonFlightMode.update(dt);
@@ -1150,25 +1159,25 @@ async function init() {
   debugLog('Initial mode selected', { initialMode });
   if (autoMode) {
     debugLog('Auto mode requested', { autoMode });
-    if (autoMode === 'explore') {
-      await switchAppMode('explore');
+    if (autoMode === 'planetarium') {
+      await switchAppMode('planetarium');
     } else {
-      await switchAppMode('simulator');
+      await switchAppMode('moonView');
     }
   } else {
     // Default to Planets mode
-    await switchAppMode('explore');
+    await switchAppMode('planetarium');
   }
 
   document.getElementById('loading-screen')?.classList.add('hidden');
-  await exploreMode?.showDeferredResumePromptIfNeeded();
+  await planetariumMode?.showDeferredResumePromptIfNeeded();
 }
 
 // ================================================================
 // Shadow cone visualization
 // ================================================================
 function createShadowCone(baseRadius: number, color: number): THREE.Mesh {
-  const length = SCENE.EARTH_MOON_DIST * 1.5;
+  const length = SCENE_UNITS.EARTH_MOON_DIST * 1.5;
   const geo = new THREE.ConeGeometry(baseRadius, length, 32, 1, true);
   geo.translate(0, length / 2, 0);
   geo.rotateX(-Math.PI / 2);
@@ -1209,10 +1218,10 @@ function updateShadowCones(earthCone: THREE.Mesh, moonCone: THREE.Mesh, sun: Sun
 window.addEventListener('resize', () => {
   const w = window.innerWidth;
   const h = window.innerHeight;
-  simCamera.aspect = w / h;
-  simCamera.updateProjectionMatrix();
-  exploreCamera.aspect = w / h;
-  exploreCamera.updateProjectionMatrix();
+  moonViewCamera.aspect = w / h;
+  moonViewCamera.updateProjectionMatrix();
+  planetariumCamera.aspect = w / h;
+  planetariumCamera.updateProjectionMatrix();
   flightCamera.aspect = w / h;
   flightCamera.updateProjectionMatrix();
   moonFlightMode?.onResize(w / h);

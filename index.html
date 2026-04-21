@@ -118,7 +118,7 @@
     /* SIMULATOR MODE                                */
     /* ============================================= */
 
-    #simulator-ui { display: block; }
+    #moon-view-ui { display: block; }
 
     #controls-panel {
       position: absolute;
@@ -417,12 +417,12 @@
     /* EXPLORE MODE                                  */
     /* ============================================= */
 
-    #explore-ui { display: none; }
+    #planetarium-ui { display: none; }
 
     /* (planet bar removed — travel menu replaces it) */
 
     /* Unified bottom bar */
-    #explore-bottom-bar {
+    #planetarium-bottom-bar {
       position: absolute;
       bottom: 12px;
       left: 50%;
@@ -566,7 +566,7 @@
       flex-shrink: 0;
       font-size: 10px;
     }
-    #explore-time-input {
+    #planetarium-time-input {
       flex: 1;
       min-width: 0;
     }
@@ -587,16 +587,16 @@
     .speed-center:active {
       background: rgba(255, 255, 255, 0.06);
     }
-    .speed-center.throttle-override #explore-speed-label {
+    .speed-center.throttle-override #planetarium-speed-label {
       color: var(--accent);
     }
 
-    #explore-speed-value {
+    #planetarium-speed-value {
       font-size: 13px; font-weight: 600; color: var(--text-primary);
       min-width: 64px; text-align: center; font-variant-numeric: tabular-nums;
     }
 
-    .explore-icon-btn {
+    .planetarium-icon-btn {
       min-width: 28px; height: 28px;
       padding: 0 6px;
       border: 1px solid transparent;
@@ -609,19 +609,19 @@
       transition: all 0.15s;
       flex-shrink: 0;
     }
-    .explore-icon-btn:hover { background: rgba(255, 255, 255, 0.08); color: var(--text-primary); }
-    .explore-icon-btn:disabled {
+    .planetarium-icon-btn:hover { background: rgba(255, 255, 255, 0.08); color: var(--text-primary); }
+    .planetarium-icon-btn:disabled {
       opacity: 0.4;
       cursor: default;
       box-shadow: none;
     }
-    .explore-icon-btn:disabled:hover {
+    .planetarium-icon-btn:disabled:hover {
       background: rgba(255, 255, 255, 0.04);
       color: var(--text-secondary);
     }
 
     /* Save/Settings/New buttons - top right, same level as top bar */
-    #explore-actions {
+    #planetarium-actions {
       position: absolute;
       top: 10px;
       right: 12px;
@@ -630,7 +630,7 @@
       pointer-events: auto;
       z-index: 21;
     }
-    .explore-sm-btn {
+    .planetarium-sm-btn {
       padding: 5px 14px;
       border: 1px solid rgba(255, 255, 255, 0.08);
       border-radius: 999px;
@@ -644,43 +644,43 @@
       transition: all 0.15s;
       font-family: var(--font);
     }
-    .explore-sm-btn:hover {
+    .planetarium-sm-btn:hover {
       background: rgba(255, 255, 255, 0.08);
       border-color: rgba(255, 255, 255, 0.12);
       color: #f4f8ff;
     }
-    .explore-sm-btn:disabled {
+    .planetarium-sm-btn:disabled {
       opacity: 0.4;
       cursor: default;
       box-shadow: none;
     }
-    .explore-sm-btn:disabled:hover {
+    .planetarium-sm-btn:disabled:hover {
       background: rgba(255, 255, 255, 0.04);
       border-color: rgba(255, 255, 255, 0.08);
       color: var(--text-primary);
     }
 
     /* Autopilot button active state */
-    .explore-icon-btn.active {
+    .planetarium-icon-btn.active {
       background: rgba(124, 154, 255, 0.12);
       color: var(--accent);
       border-color: rgba(124, 154, 255, 0.3);
     }
-    #explore-btn-autopilot {
+    #planetarium-btn-autopilot {
       max-width: 120px;
       overflow: hidden;
       text-overflow: ellipsis;
       white-space: nowrap;
     }
 
-    #explore-btn-menu {
+    #planetarium-btn-menu {
       font-size: 16px;
       line-height: 1;
       padding: 3px 10px;
     }
 
     /* Menu panel (replaces separate settings panel) */
-    #explore-menu-panel {
+    #planetarium-menu-panel {
       display: none;
       position: absolute;
       top: 42px;
@@ -695,7 +695,7 @@
       z-index: 21;
       box-shadow: 0 8px 32px rgba(0, 0, 0, 0.4), inset 0 1px 0 rgba(255, 255, 255, 0.04);
     }
-    #explore-menu-panel.visible { display: block; }
+    #planetarium-menu-panel.visible { display: block; }
     .menu-action {
       display: block;
       width: 100%;
@@ -821,7 +821,7 @@
     }
 
     /* Notification */
-    #explore-notification {
+    #planetarium-notification {
       position: fixed;
       top: 88px;
       left: 50%;
@@ -841,9 +841,9 @@
       white-space: nowrap;
       box-shadow: 0 4px 20px rgba(0, 0, 0, 0.3);
     }
-    #explore-notification.visible { opacity: 1; transform: translateX(-50%) translateY(0); }
+    #planetarium-notification.visible { opacity: 1; transform: translateX(-50%) translateY(0); }
 
-    #voyager-panel {
+    #historic-panel {
       display: none;
       position: absolute;
       top: 88px;
@@ -859,8 +859,8 @@
       z-index: 24;
       box-shadow: 0 12px 32px rgba(0, 0, 0, 0.35), inset 0 1px 0 rgba(255, 255, 255, 0.04);
     }
-    #voyager-panel.visible { display: block; }
-    #voyager-reopen {
+    #historic-panel.visible { display: block; }
+    #historic-reopen {
       display: none;
       position: absolute;
       top: 88px;
@@ -882,27 +882,27 @@
       text-overflow: ellipsis;
       box-shadow: 0 12px 32px rgba(0, 0, 0, 0.35);
     }
-    #voyager-reopen.visible { display: block; }
-    .voyager-header {
+    #historic-reopen.visible { display: block; }
+    .historic-header {
       display: flex;
       align-items: flex-start;
       justify-content: space-between;
       gap: 10px;
       margin-bottom: 8px;
     }
-    .voyager-kicker {
+    .historic-kicker {
       display: block;
       font-size: 10px;
       letter-spacing: 0.2px;
       color: var(--text-dim);
       margin-bottom: 4px;
     }
-    .voyager-step {
+    .historic-step {
       font-size: 10px;
       color: var(--text-dim);
       font-variant-numeric: tabular-nums;
     }
-    .voyager-close {
+    .historic-close {
       border: 1px solid transparent;
       border-radius: 999px;
       background: rgba(255, 255, 255, 0.04);
@@ -915,73 +915,73 @@
       flex-shrink: 0;
       transition: all 0.15s;
     }
-    .voyager-close:hover {
+    .historic-close:hover {
       color: var(--text-primary);
       background: rgba(255, 255, 255, 0.08);
     }
-    .voyager-title {
+    .historic-title {
       font-size: 17px;
       color: var(--text-primary);
       font-weight: 500;
       margin: 0;
     }
-    .voyager-title-row {
+    .historic-title-row {
       display: flex;
       align-items: baseline;
       justify-content: space-between;
       gap: 10px;
     }
-    .voyager-date {
+    .historic-date {
       margin-top: 4px;
       font-size: 11px;
       color: var(--accent);
       font-variant-numeric: tabular-nums;
     }
-    .voyager-description {
+    .historic-description {
       margin-top: 10px;
       font-size: 12px;
       line-height: 1.55;
       color: var(--text-secondary);
     }
-    .voyager-image-wrap {
+    .historic-image-wrap {
       margin-top: 12px;
       border-radius: 8px;
       overflow: hidden;
       border: 1px solid var(--panel-border);
       background: rgba(255, 255, 255, 0.02);
     }
-    .voyager-image-wrap img {
+    .historic-image-wrap img {
       display: block;
       width: 100%;
       aspect-ratio: 16 / 10;
       object-fit: cover;
       background: rgba(255, 255, 255, 0.03);
     }
-    .voyager-image-meta {
+    .historic-image-meta {
       padding: 8px 10px;
       border-top: 1px solid var(--panel-border);
     }
-    .voyager-image-caption {
+    .historic-image-caption {
       font-size: 10px;
       line-height: 1.45;
       color: var(--text-secondary);
     }
-    .voyager-image-credit {
+    .historic-image-credit {
       margin-top: 6px;
       font-size: 10px;
       color: var(--text-dim);
     }
-    .voyager-image-source {
+    .historic-image-source {
       display: inline-block;
       margin-top: 6px;
       font-size: 10px;
       color: var(--accent);
       text-decoration: none;
     }
-    .voyager-image-source:hover {
+    .historic-image-source:hover {
       color: var(--text-primary);
     }
-    .voyager-note {
+    .historic-note {
       margin-top: 10px;
       padding-top: 10px;
       border-top: 1px solid var(--panel-border);
@@ -989,16 +989,16 @@
       line-height: 1.45;
       color: var(--text-dim);
     }
-    .voyager-actions {
+    .historic-actions {
       display: flex;
       flex-wrap: wrap;
       gap: 6px;
       margin-top: 12px;
     }
-    .voyager-btn-exit {
+    .historic-btn-exit {
       margin-right: auto;
     }
-    .voyager-btn {
+    .historic-btn {
       border: 1px solid transparent;
       border-radius: 6px;
       background: rgba(255, 255, 255, 0.04);
@@ -1009,11 +1009,11 @@
       cursor: pointer;
       transition: all 0.15s;
     }
-    .voyager-btn:hover:not(:disabled) {
+    .historic-btn:hover:not(:disabled) {
       background: rgba(255, 255, 255, 0.08);
       color: var(--text-primary);
     }
-    .voyager-btn:disabled {
+    .historic-btn:disabled {
       opacity: 0.35;
       cursor: default;
     }
@@ -1085,11 +1085,11 @@
 
     @media (hover: none) and (pointer: coarse) {
       .touch-flight-zone { display: block; }
-      #explore-keys-hint { display: none; }
+      #planetarium-keys-hint { display: none; }
     }
 
     /* Resume prompt */
-    #explore-resume-prompt {
+    #planetarium-resume-prompt {
       display: none;
       position: fixed;
       top: 0; left: 0; right: 0; bottom: 0;
@@ -1099,7 +1099,7 @@
       justify-content: center;
       pointer-events: auto;
     }
-    #explore-resume-prompt.visible { display: flex; }
+    #planetarium-resume-prompt.visible { display: flex; }
     .resume-dialog {
       background: var(--panel-bg);
       backdrop-filter: blur(16px);
@@ -1138,7 +1138,7 @@
     .resume-btn-secondary:hover { background: rgba(255,255,255,0.06); color: var(--text-primary); }
 
     /* Key hints */
-    #explore-keys-hint {
+    #planetarium-keys-hint {
       display: none;
       position: absolute;
       bottom: 62px;
@@ -1150,7 +1150,7 @@
       pointer-events: none;
       opacity: 0.5;
     }
-    #explore-keys-hint kbd {
+    #planetarium-keys-hint kbd {
       display: inline-block;
       padding: 1px 4px;
       background: rgba(255, 255, 255, 0.04);
@@ -1201,31 +1201,31 @@
     /* TRAVEL MENU & LEAVE BUTTON                    */
     /* ============================================= */
 
-    #explore-btn-travel {
+    #planetarium-btn-travel {
       background: rgba(124, 154, 255, 0.08);
       border-color: rgba(124, 154, 255, 0.2);
     }
-    #explore-btn-travel:hover {
+    #planetarium-btn-travel:hover {
       background: rgba(124, 154, 255, 0.14);
       border-color: rgba(124, 154, 255, 0.3);
     }
 
     /* Help modal */
-    #explore-help {
+    #planetarium-help {
       display: none;
       position: fixed;
       inset: 0;
       z-index: 70;
       pointer-events: auto;
     }
-    #explore-help.visible { display: block; }
-    .explore-help-backdrop {
+    #planetarium-help.visible { display: block; }
+    .planetarium-help-backdrop {
       position: absolute;
       inset: 0;
       background: rgba(0, 0, 0, 0.55);
       backdrop-filter: blur(2px);
     }
-    .explore-help-card {
+    .planetarium-help-card {
       position: absolute;
       top: 50%;
       left: 50%;
@@ -1241,14 +1241,14 @@
       overflow: hidden;
       box-shadow: 0 16px 48px rgba(0, 0, 0, 0.5), inset 0 1px 0 rgba(255, 255, 255, 0.04);
     }
-    .explore-help-header {
+    .planetarium-help-header {
       display: flex;
       align-items: center;
       justify-content: space-between;
       padding: 14px 18px 10px;
       border-bottom: 1px solid rgba(255, 255, 255, 0.05);
     }
-    .explore-help-header h3 {
+    .planetarium-help-header h3 {
       font-family: var(--font);
       font-size: 15px;
       font-weight: 500;
@@ -1256,7 +1256,7 @@
       letter-spacing: 0.5px;
       margin: 0;
     }
-    .explore-help-close {
+    .planetarium-help-close {
       background: none;
       border: none;
       color: var(--text-dim);
@@ -1267,11 +1267,11 @@
       border-radius: 4px;
       transition: all 0.15s;
     }
-    .explore-help-close:hover {
+    .planetarium-help-close:hover {
       color: var(--text-primary);
       background: var(--accent-dim);
     }
-    .explore-help-body {
+    .planetarium-help-body {
       padding: 6px 20px 18px;
       overflow-y: auto;
       color: var(--text-primary);
@@ -1495,8 +1495,8 @@
       background: rgba(255, 255, 255, 0.06);
     }
 
-    #explore-btn-leave,
-    #explore-btn-land {
+    #planetarium-btn-leave,
+    #planetarium-btn-land {
       position: fixed;
       left: 50%;
       transform: translateX(-50%);
@@ -1506,10 +1506,10 @@
       pointer-events: auto;
       min-height: 36px;
     }
-    #explore-btn-leave {
+    #planetarium-btn-leave {
       bottom: 68px;
     }
-    #explore-btn-land {
+    #planetarium-btn-land {
       bottom: 68px;
       border-color: rgba(124, 154, 255, 0.25);
     }
@@ -1544,8 +1544,8 @@
         width: min(230px, calc(100vw - 20px));
       }
 
-      #explore-bottom-bar { bottom: 8px; max-width: calc(100vw - 12px); }
-      #explore-btn-leave, #explore-btn-land { bottom: 100px; }
+      #planetarium-bottom-bar { bottom: 8px; max-width: calc(100vw - 12px); }
+      #planetarium-btn-leave, #planetarium-btn-land { bottom: 100px; }
       .bar-row { padding: 5px 2px; }
       .bar-section { padding: 0 5px; }
       .bar-speed-main { padding: 0 6px; gap: 6px; }
@@ -1564,9 +1564,9 @@
       .stat-row { padding: 2px 0; }
       .stat-label { font-size: 10px; }
       .stat-value { font-size: 10px; }
-      #explore-keys-hint { display: none; }
+      #planetarium-keys-hint { display: none; }
 
-      #voyager-panel {
+      #historic-panel {
         top: auto;
         left: 8px;
         right: 8px;
@@ -1577,7 +1577,7 @@
         padding: 10px 10px calc(10px + env(safe-area-inset-bottom));
         border-radius: 12px;
       }
-      #voyager-reopen {
+      #historic-reopen {
         top: auto;
         left: 8px;
         right: 8px;
@@ -1586,49 +1586,49 @@
         padding: 10px 14px;
         border-radius: 12px;
       }
-      .voyager-header {
+      .historic-header {
         margin-bottom: 6px;
       }
-      .voyager-title-row {
+      .historic-title-row {
         gap: 8px;
         margin-bottom: 2px;
       }
-      .voyager-title { font-size: 15px; }
-      .voyager-step {
+      .historic-title { font-size: 15px; }
+      .historic-step {
         font-size: 10px;
         white-space: nowrap;
       }
-      .voyager-date {
+      .historic-date {
         margin-top: 0;
         font-size: 10px;
       }
-      .voyager-description {
+      .historic-description {
         margin-top: 8px;
         font-size: 10px;
         line-height: 1.35;
       }
-      .voyager-image-wrap { display: none; }
-      .voyager-note {
+      .historic-image-wrap { display: none; }
+      .historic-note {
         margin-top: 8px;
         padding-top: 8px;
         font-size: 10px;
         line-height: 1.35;
       }
-      .voyager-actions {
+      .historic-actions {
         position: sticky;
         bottom: calc(-10px - env(safe-area-inset-bottom));
         margin: 6px -10px calc(-10px - env(safe-area-inset-bottom));
         padding: 6px 10px calc(8px + env(safe-area-inset-bottom));
         background: linear-gradient(180deg, rgba(5, 9, 22, 0) 0%, rgba(5, 9, 22, 0.92) 22%, rgba(5, 9, 22, 0.98) 100%);
       }
-      .voyager-btn {
+      .historic-btn {
         flex: 1 1 0;
         min-height: 26px;
         padding: 4px 6px;
         font-size: 10px;
         border-radius: 5px;
       }
-      .voyager-btn-exit {
+      .historic-btn-exit {
         margin-right: 0;
       }
     }
@@ -1707,14 +1707,14 @@
     <div id="top-bar">
       <h1>Moon</h1>
       <div class="top-mode-toggle">
-        <button class="top-mode-btn active" id="btn-mode-explore">Planets</button>
-        <button class="top-mode-btn" id="btn-mode-simulator">Moon</button>
+        <button class="top-mode-btn active" id="btn-mode-planetarium">Planets</button>
+        <button class="top-mode-btn" id="btn-mode-moon-view">Moon</button>
       </div>
       <button id="btn-toggle-panel" class="panel-toggle-btn" aria-label="Toggle controls">&#9776;</button>
     </div>
 
     <!-- ======= SIMULATOR MODE ======= -->
-    <div id="simulator-ui">
+    <div id="moon-view-ui">
       <div id="controls-panel">
         <h2>Controls</h2>
         <div class="mode-toggle">
@@ -1855,28 +1855,28 @@
     </div>
 
     <!-- ======= EXPLORE MODE ======= -->
-    <div id="explore-ui">
+    <div id="planetarium-ui">
       <!-- Top right: Travel + Menu -->
-      <div id="explore-actions">
-        <button class="explore-sm-btn" id="explore-btn-travel">&#x1F680;<span class="travel-btn-text"> Travel</span></button>
-        <button class="explore-sm-btn" id="explore-btn-menu">&#x2630;</button>
+      <div id="planetarium-actions">
+        <button class="planetarium-sm-btn" id="planetarium-btn-travel">&#x1F680;<span class="travel-btn-text"> Travel</span></button>
+        <button class="planetarium-sm-btn" id="planetarium-btn-menu">&#x2630;</button>
       </div>
 
       <!-- Menu dropdown (Save, New, Settings) -->
-      <div id="explore-menu-panel">
-        <button class="menu-action" id="explore-btn-help">Help</button>
-        <button class="menu-action" id="explore-btn-save">Save</button>
-        <button class="menu-action" id="explore-btn-new">New Journey</button>
-        <button class="menu-action menu-action-parent" id="explore-btn-historic">
+      <div id="planetarium-menu-panel">
+        <button class="menu-action" id="planetarium-btn-help">Help</button>
+        <button class="menu-action" id="planetarium-btn-save">Save</button>
+        <button class="menu-action" id="planetarium-btn-new">New Journey</button>
+        <button class="menu-action menu-action-parent" id="planetarium-btn-historic">
           <span>Historic Journeys</span>
           <span class="menu-action-chevron">&#9654;</span>
         </button>
-        <div class="menu-submenu" id="explore-historic-submenu">
-          <button class="menu-action menu-action-subitem" id="explore-btn-voyager-1">Voyager 1 (1977)</button>
-          <button class="menu-action menu-action-subitem" id="explore-btn-voyager-2">Voyager 2 (1977)</button>
-          <button class="menu-action menu-action-subitem" id="explore-btn-cassini">Cassini-Huygens (1997)</button>
-          <button class="menu-action menu-action-subitem" id="explore-btn-new-horizons">New Horizons (2006)</button>
-          <button class="menu-action menu-action-subitem" id="explore-btn-juno">Juno (2011)</button>
+        <div class="menu-submenu" id="planetarium-historic-submenu">
+          <button class="menu-action menu-action-subitem" id="planetarium-btn-historic-1">Voyager 1 (1977)</button>
+          <button class="menu-action menu-action-subitem" id="planetarium-btn-historic-2">Voyager 2 (1977)</button>
+          <button class="menu-action menu-action-subitem" id="planetarium-btn-cassini">Cassini-Huygens (1997)</button>
+          <button class="menu-action menu-action-subitem" id="planetarium-btn-new-horizons">New Horizons (2006)</button>
+          <button class="menu-action menu-action-subitem" id="planetarium-btn-juno">Juno (2011)</button>
         </div>
         <div class="menu-divider"></div>
         <div class="settings-row">
@@ -1906,14 +1906,14 @@
       </div>
 
       <!-- Help modal (centered) -->
-      <div id="explore-help">
-        <div class="explore-help-backdrop"></div>
-        <div class="explore-help-card">
-          <div class="explore-help-header">
+      <div id="planetarium-help">
+        <div class="planetarium-help-backdrop"></div>
+        <div class="planetarium-help-card">
+          <div class="planetarium-help-header">
             <h3>A few things worth knowing</h3>
-            <button class="explore-help-close" id="explore-help-close" aria-label="Close help">&times;</button>
+            <button class="planetarium-help-close" id="planetarium-help-close" aria-label="Close help">&times;</button>
           </div>
-          <div class="explore-help-body">
+          <div class="planetarium-help-body">
             <p class="help-lead">Everything you see is to real scale and in its real place. Planets, moons, and the background stars match where they actually are for the date on screen.</p>
             <section class="help-section">
               <h4>Two speeds</h4>
@@ -1958,61 +1958,61 @@
         </div>
       </div>
 
-      <div id="voyager-panel">
-        <div class="voyager-header">
+      <div id="historic-panel">
+        <div class="historic-header">
           <div>
-            <span class="voyager-kicker" id="voyager-kicker">Voyager 1 (1977) Journey</span>
+            <span class="historic-kicker" id="historic-kicker">Voyager 1 (1977) Journey</span>
           </div>
-          <button class="voyager-close" id="voyager-close" aria-label="Hide mission info">&times;</button>
+          <button class="historic-close" id="historic-close" aria-label="Hide mission info">&times;</button>
         </div>
-        <div class="voyager-title-row">
-          <h3 class="voyager-title" id="voyager-title">Launch From Earth</h3>
-          <div class="voyager-step" id="voyager-step">1 / 4</div>
+        <div class="historic-title-row">
+          <h3 class="historic-title" id="historic-title">Launch From Earth</h3>
+          <div class="historic-step" id="historic-step">1 / 4</div>
         </div>
-        <div class="voyager-date" id="voyager-date">September 5, 1977</div>
-        <div class="voyager-description" id="voyager-description"></div>
-        <div class="voyager-image-wrap">
-          <img id="voyager-image" alt="" />
-          <div class="voyager-image-meta">
-            <div class="voyager-image-caption" id="voyager-image-caption"></div>
-            <div class="voyager-image-credit" id="voyager-image-credit"></div>
-            <a class="voyager-image-source" id="voyager-image-link" href="#" target="_blank" rel="noreferrer">Source</a>
+        <div class="historic-date" id="historic-date">September 5, 1977</div>
+        <div class="historic-description" id="historic-description"></div>
+        <div class="historic-image-wrap">
+          <img id="historic-image" alt="" />
+          <div class="historic-image-meta">
+            <div class="historic-image-caption" id="historic-image-caption"></div>
+            <div class="historic-image-credit" id="historic-image-credit"></div>
+            <a class="historic-image-source" id="historic-image-link" href="#" target="_blank" rel="noreferrer">Source</a>
           </div>
         </div>
-        <div class="voyager-note" id="voyager-note"></div>
-        <div class="voyager-actions">
-          <button class="voyager-btn voyager-btn-exit" id="voyager-exit">Exit</button>
-          <button class="voyager-btn" id="voyager-prev">Previous</button>
-          <button class="voyager-btn" id="voyager-next">Next</button>
+        <div class="historic-note" id="historic-note"></div>
+        <div class="historic-actions">
+          <button class="historic-btn historic-btn-exit" id="historic-exit">Exit</button>
+          <button class="historic-btn" id="historic-prev">Previous</button>
+          <button class="historic-btn" id="historic-next">Next</button>
         </div>
       </div>
-      <button id="voyager-reopen" aria-label="Show mission info">Mission info</button>
+      <button id="historic-reopen" aria-label="Show mission info">Mission info</button>
 
       <!-- Leave planet button (shown when landed) -->
-      <button class="explore-sm-btn" id="explore-btn-leave" style="display:none">
+      <button class="planetarium-sm-btn" id="planetarium-btn-leave" style="display:none">
         Leave <span id="leave-body-name"></span>
       </button>
 
       <!-- Proximity land button (shown when near a body) -->
-      <button class="explore-sm-btn" id="explore-btn-land" style="display:none">
+      <button class="planetarium-sm-btn" id="planetarium-btn-land" style="display:none">
         Land on <span id="land-body-name"></span>
       </button>
 
       <!-- Unified bottom bar -->
-      <div id="explore-bottom-bar">
+      <div id="planetarium-bottom-bar">
         <!-- Time popover (expands upward) -->
         <div id="time-popover" class="bar-popover bar-popover-left">
           <div class="time-controls">
-            <button class="explore-icon-btn" id="explore-time-pause">Pause</button>
-            <button class="explore-icon-btn" id="explore-time-play">Play</button>
-            <button class="explore-icon-btn" id="explore-time-reverse">Reverse</button>
-            <button class="explore-icon-btn" id="explore-time-slower">Slower</button>
-            <button class="explore-icon-btn" id="explore-time-faster">Faster</button>
-            <button class="explore-icon-btn" id="explore-time-now">Now</button>
+            <button class="planetarium-icon-btn" id="planetarium-time-pause">Pause</button>
+            <button class="planetarium-icon-btn" id="planetarium-time-play">Play</button>
+            <button class="planetarium-icon-btn" id="planetarium-time-reverse">Reverse</button>
+            <button class="planetarium-icon-btn" id="planetarium-time-slower">Slower</button>
+            <button class="planetarium-icon-btn" id="planetarium-time-faster">Faster</button>
+            <button class="planetarium-icon-btn" id="planetarium-time-now">Now</button>
           </div>
           <div class="time-input-row">
             <span class="settings-label">UTC</span>
-            <input type="datetime-local" id="explore-time-input" class="settings-date" step="60" />
+            <input type="datetime-local" id="planetarium-time-input" class="settings-date" step="60" />
           </div>
         </div>
 
@@ -2033,22 +2033,22 @@
         <div class="bar-row">
           <!-- Date/time (floats above bar on desktop, inline on mobile) -->
           <div class="bar-date-row" id="bar-time-toggle">
-            <span class="bar-date" id="explore-time-value">--</span>
+            <span class="bar-date" id="planetarium-time-value">--</span>
             <span class="bar-rate-sep">&middot;</span>
-            <span class="bar-rate" id="explore-time-rate">1x</span>
+            <span class="bar-rate" id="planetarium-time-rate">1x</span>
             <span class="bar-chevron" id="time-chevron">&#x25BC;</span>
           </div>
 
           <!-- Speed controls -->
           <div class="bar-section bar-speed-main">
-            <button class="explore-icon-btn" id="explore-btn-autopilot" title="Autopilot: fly to a destination. Click to choose target or disengage. (P)">&#x1F916; Pilot</button>
+            <button class="planetarium-icon-btn" id="planetarium-btn-autopilot" title="Autopilot: fly to a destination. Click to choose target or disengage. (P)">&#x1F916; Pilot</button>
             <div class="speed-group">
-              <button class="explore-icon-btn" id="explore-speed-down" title="Reduce speed">-</button>
+              <button class="planetarium-icon-btn" id="planetarium-speed-down" title="Reduce speed">-</button>
               <div class="speed-center">
-                <span id="explore-speed-label" class="speed-label-sm">Space</span>
-                <span id="explore-speed-value">1.0c</span>
+                <span id="planetarium-speed-label" class="speed-label-sm">Space</span>
+                <span id="planetarium-speed-value">1.0c</span>
               </div>
-              <button class="explore-icon-btn" id="explore-speed-up" title="Increase speed">+</button>
+              <button class="planetarium-icon-btn" id="planetarium-speed-up" title="Increase speed">+</button>
             </div>
           </div>
 
@@ -2060,7 +2060,7 @@
         </div>
       </div>
 
-      <div id="explore-keys-hint">
+      <div id="planetarium-keys-hint">
         <kbd>A</kbd><kbd>D</kbd> yaw &nbsp; <kbd>↑</kbd><kbd>↓</kbd> pitch &nbsp; <kbd>W</kbd><kbd>S</kbd> thrust &nbsp; <kbd>P</kbd> autopilot
       </div>
 
@@ -2069,7 +2069,7 @@
 
       <!-- Touch throttle removed — speed bar +/- handles this -->
 
-      <div id="explore-resume-prompt">
+      <div id="planetarium-resume-prompt">
         <div class="resume-dialog">
           <h3>Welcome back</h3>
           <p id="resume-info">You have a saved journey.</p>
@@ -2080,8 +2080,8 @@
         </div>
       </div>
 
-      <div id="explore-notification"></div>
-      <div id="explore-loading-msg" style="position:absolute;bottom:50%;left:50%;transform:translate(-50%,50%);font-size:13px;color:var(--text-dim);letter-spacing:2px;display:none;"></div>
+      <div id="planetarium-notification"></div>
+      <div id="planetarium-loading-msg" style="position:absolute;bottom:50%;left:50%;transform:translate(-50%,50%);font-size:13px;color:var(--text-dim);letter-spacing:2px;display:none;"></div>
     </div>
   </div>
 

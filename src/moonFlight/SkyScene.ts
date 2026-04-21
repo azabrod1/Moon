@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { TEXTURES } from '../utils/constants';
+import { TEXTURES } from '../shared/assets/textures';
 import {
   angularDiameterRad,
   EARTH_RADIUS_KM,

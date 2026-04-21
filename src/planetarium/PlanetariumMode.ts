@@ -45,6 +45,7 @@ import { PlanetariumNotification } from './ui/PlanetariumNotification';
 import { PlanetariumResumePrompt } from './ui/PlanetariumResumePrompt';
 import { PlanetariumStatsPanel } from './ui/PlanetariumStatsPanel';
 import { PlanetariumTimePanel } from './ui/PlanetariumTimePanel';
+import { SunLabel } from './ui/SunLabel';
 
 type ScriptedTransfer = {
   elapsed: number;
@@ -175,10 +176,7 @@ export class PlanetariumMode {
   private timePanel = new PlanetariumTimePanel();
 
   // Sun label
-  private sunLabel: HTMLDivElement | null = null;
-  private sunLabelVisible = false;
-  private lastSunTransform = '';
-  private lastSunDistText = '';
+  private sunLabel = new SunLabel();
 
   // FPS tracking (uses wall-clock time, not dt, for accuracy)
   private fpsFrames = 0;
@@ -1172,47 +1170,15 @@ export class PlanetariumMode {
     this.statsPanel.render(stats, this.fpsDisplay, this.player.getDistanceFromSun());
   }
 
-  private readonly _sunProjV = new THREE.Vector3();
-
   private updateSunLabel() {
-    if (!this.sunLabel || !this.solarSystem) return;
-    const sunPos = this.solarSystem.sun.position;
-    this._sunProjV.set(sunPos.x, sunPos.y, sunPos.z);
-    this._sunProjV.project(this.camera);
-
-    const canvas = this.renderer.domElement;
-    const screenX = (this._sunProjV.x * 0.5 + 0.5) * canvas.clientWidth;
-    const screenY = (-this._sunProjV.y * 0.5 + 0.5) * canvas.clientHeight;
-
-    // Depth for occlusion test is camera→Sun (discs are camera-based too).
-    // Test the label's y (offset below the Sun), not the Sun's own center.
-    const distCamToSun = this.camera.position.distanceTo(sunPos);
-    const occluded = this.planetLabels?.isScreenPointOccluded(screenX, screenY + 24, distCamToSun) ?? false;
-
-    if (!occluded && this._sunProjV.z < 1 && screenX > -50 && screenX < canvas.clientWidth + 50 &&
-        screenY > -50 && screenY < canvas.clientHeight + 50) {
-      if (!this.sunLabelVisible) {
-        this.sunLabel.style.display = 'block';
-        this.sunLabelVisible = true;
-      }
-      const transform = `translate(${screenX}px, ${screenY + 16}px)`;
-      if (transform !== this.lastSunTransform) {
-        this.sunLabel.style.transform = transform;
-        this.lastSunTransform = transform;
-      }
-      const distAU = this.player.getDistanceFromSun();
-      const distText = distAU < 0.01
-        ? `${(distAU * 149597870.7).toFixed(0)} km`
-        : `${distAU.toFixed(2)} AU`;
-      if (distText !== this.lastSunDistText) {
-        const distEl = this.sunLabel.querySelector('.planet-label-dist');
-        if (distEl) distEl.textContent = distText;
-        this.lastSunDistText = distText;
-      }
-    } else if (this.sunLabelVisible) {
-      this.sunLabel.style.display = 'none';
-      this.sunLabelVisible = false;
-    }
+    if (!this.solarSystem) return;
+    this.sunLabel.update(
+      this.solarSystem.sun.position,
+      this.camera,
+      this.renderer.domElement,
+      this.player.getDistanceFromSun(),
+      (x, y, depth) => this.planetLabels?.isScreenPointOccluded(x, y, depth) ?? false,
+    );
   }
 
 
@@ -1488,15 +1454,7 @@ export class PlanetariumMode {
 
     this.bottomBar.bind();
 
-    // Sun label
-    const labelContainer = document.getElementById('planet-labels');
-    if (labelContainer) {
-      this.sunLabel = document.createElement('div');
-      this.sunLabel.className = 'planet-label';
-      this.sunLabel.innerHTML = '<span class="planet-label-name">Sun</span><span class="planet-label-dist"></span>';
-      this.sunLabel.style.display = 'none';
-      labelContainer.appendChild(this.sunLabel);
-    }
+    this.sunLabel.attach();
 
     // Astronomy time controls
     document.getElementById('planetarium-time-pause')?.addEventListener('click', () => {
@@ -2913,10 +2871,7 @@ export class PlanetariumMode {
       this.moonLabelContainer = null;
       this.moonLabels.clear();
     }
-    if (this.sunLabel) {
-      this.sunLabel.remove();
-      this.sunLabel = null;
-    }
+    this.sunLabel.dispose();
     // Clean up Three.js objects from scene
     if (this.solarSystem) {
       this.solarSystem.sun.removeFromParent();

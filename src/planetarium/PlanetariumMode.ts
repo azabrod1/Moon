@@ -42,6 +42,7 @@ import {
   type HistoricMilestone,
 } from './missions/historicJourneys';
 import { PlanetariumNotification } from './ui/PlanetariumNotification';
+import { PlanetariumResumePrompt } from './ui/PlanetariumResumePrompt';
 
 type ScriptedTransfer = {
   elapsed: number;
@@ -164,7 +165,7 @@ export class PlanetariumMode {
   // Moon labels
   private moonLabels = new Map<string, HTMLDivElement>();
   private moonLabelContainer: HTMLDivElement | null = null;
-  private cancelResumePrompt: (() => void) | null = null;
+  private resumePrompt = new PlanetariumResumePrompt();
 
   // Sun label
   private sunLabel: HTMLDivElement | null = null;
@@ -322,7 +323,7 @@ export class PlanetariumMode {
           reportActivationProgress(progress.completedUnits);
         }, this.useBloom, this.layoutMode, new Date(initialWorldUtcMs));
       } catch (error) {
-        this.cancelResumePrompt?.();
+        this.resumePrompt.cancel();
         throw error;
       }
 
@@ -456,7 +457,7 @@ export class PlanetariumMode {
     if (!savedState || !this.active) return;
 
     this.deferredResumePromptState = null;
-    const shouldResume = await this.showResumePrompt(savedState);
+    const shouldResume = await this.resumePrompt.ask(savedState);
     if (!this.active || shouldResume) return;
 
     if (this.landedOn) {
@@ -472,7 +473,7 @@ export class PlanetariumMode {
   }
 
   deactivate(): void {
-    this.cancelResumePrompt?.();
+    this.resumePrompt.cancel();
 
     // Exit landed mode cleanly before deactivation
     if (this.landedOn) {
@@ -1164,7 +1165,7 @@ export class PlanetariumMode {
     try {
       if (localStorage.getItem('planetarium-help-seen') || localStorage.getItem('explore-help-seen')) return;
     } catch { /* private browsing — show it once per session */ }
-    if (document.getElementById('planetarium-resume-prompt')?.classList.contains('visible')) return;
+    if (this.resumePrompt.isVisible()) return;
     this.showHelp();
   }
 
@@ -1871,62 +1872,6 @@ export class PlanetariumMode {
         item.style.display = 'none';
       }
     }
-  }
-
-  private showResumePrompt(saved: PlanetariumState): Promise<boolean> {
-    return new Promise((resolve) => {
-      const prompt = document.getElementById('planetarium-resume-prompt');
-      if (!prompt) {
-        resolve(true);
-        return;
-      }
-      const uiOverlay = document.getElementById('ui-overlay');
-
-      const info = document.getElementById('resume-info');
-      if (info) {
-        const dist = Math.sqrt(saved.positionAU.x ** 2 + saved.positionAU.y ** 2 + saved.positionAU.z ** 2);
-        info.textContent = `${dist.toFixed(2)} AU from Sun, ${saved.visitedPlanets.length} planets visited`;
-      }
-
-      uiOverlay?.classList.add('resume-active');
-      prompt.classList.add('visible');
-
-      const resumeBtn = document.getElementById('resume-btn-continue');
-      const newBtn = document.getElementById('resume-btn-new');
-      let settled = false;
-
-      const cleanup = () => {
-        prompt.classList.remove('visible');
-        uiOverlay?.classList.remove('resume-active');
-        resumeBtn?.removeEventListener('click', onResume);
-        resumeBtn?.removeEventListener('pointerup', onResume);
-        newBtn?.removeEventListener('click', onNew);
-        newBtn?.removeEventListener('pointerup', onNew);
-        if (this.cancelResumePrompt === cancel) {
-          this.cancelResumePrompt = null;
-        }
-      };
-      const finish = (shouldResume: boolean) => {
-        if (settled) return;
-        settled = true;
-        cleanup();
-        resolve(shouldResume);
-      };
-      const cancel = () => {
-        if (settled) return;
-        settled = true;
-        cleanup();
-        resolve(false);
-      };
-      const onResume = () => { finish(true); };
-      const onNew = () => { finish(false); };
-
-      this.cancelResumePrompt = cancel;
-      resumeBtn?.addEventListener('click', onResume);
-      resumeBtn?.addEventListener('pointerup', onResume);
-      newBtn?.addEventListener('click', onNew);
-      newBtn?.addEventListener('pointerup', onNew);
-    });
   }
 
   private async startHistoricJourney(missionId: HistoricMissionId) {

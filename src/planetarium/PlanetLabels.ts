@@ -17,7 +17,7 @@ export interface PlanetLabel {
   lastDistanceText: string;
 }
 
-interface ForegroundDisc {
+export interface ForegroundDisc {
   screenX: number;
   screenY: number;
   radiusPx: number;
@@ -112,19 +112,18 @@ export class PlanetLabels {
     }
   }
 
-  update(
+  /**
+   * Populates `foregroundDiscs` with the planets that are rendered as meshes
+   * this frame (angular size large enough to occlude labels). Callers may
+   * then `addForegroundDisc()` additional occluders (moons, ship) before
+   * invoking `renderLabels()` so those external occluders are considered.
+   */
+  collectForegroundDiscs(
     planetPositions: Map<string, { x: number; y: number; z: number }>,
-    playerPos: { x: number; y: number; z: number },
     renderer: THREE.WebGLRenderer,
   ) {
     const canvasWidth = renderer.domElement.clientWidth;
     const canvasHeight = renderer.domElement.clientHeight;
-
-    // First pass: find "foreground" planets (rendered as mesh, large enough to
-    // occlude markers behind them). Compute each one's screen-space disc so we
-    // can cull labels that fall inside it. Distances are measured from the
-    // CAMERA, not the player — when landed they differ (player sits at the
-    // body's center while the camera orbits around it).
     this.foregroundDiscs.length = 0;
     const projV = new THREE.Vector3();
     const halfFovTan = Math.tan((this.camera.fov * Math.PI) / 360);
@@ -150,6 +149,28 @@ export class PlanetLabels {
       const radiusPx = (entry.planet.radiusAU * 1.1 / (Math.max(distFromCamera, entry.planet.radiusAU) * halfFovTan)) * (canvasHeight / 2);
       this.foregroundDiscs.push({ screenX, screenY, radiusPx, distFromCamera, name: entry.planet.name });
     }
+  }
+
+  /** Append an external foreground disc (e.g. a visible moon or the ship). */
+  addForegroundDisc(disc: ForegroundDisc): void {
+    this.foregroundDiscs.push(disc);
+  }
+
+  /**
+   * Places each planet's marker/label, occlusion-culled against the current
+   * `foregroundDiscs`. Caller must have run `collectForegroundDiscs()` and
+   * any `addForegroundDisc()` calls first.
+   */
+  renderLabels(
+    planetPositions: Map<string, { x: number; y: number; z: number }>,
+    playerPos: { x: number; y: number; z: number },
+    renderer: THREE.WebGLRenderer,
+  ) {
+    const canvasWidth = renderer.domElement.clientWidth;
+    const canvasHeight = renderer.domElement.clientHeight;
+    const camX = this.camera.position.x;
+    const camY = this.camera.position.y;
+    const camZ = this.camera.position.z;
     const foregroundDiscs = this.foregroundDiscs;
 
     for (const entry of this.labels) {
@@ -251,11 +272,26 @@ export class PlanetLabels {
   }
 
   /**
+   * Convenience: collect foreground discs for planets, then place labels in a
+   * single call. Callers that want to contribute additional occluders
+   * (moons, ship) should invoke `collectForegroundDiscs` →
+   * `addForegroundDisc` → `renderLabels` directly.
+   */
+  update(
+    planetPositions: Map<string, { x: number; y: number; z: number }>,
+    playerPos: { x: number; y: number; z: number },
+    renderer: THREE.WebGLRenderer,
+  ) {
+    this.collectForegroundDiscs(planetPositions, renderer);
+    this.renderLabels(planetPositions, playerPos, renderer);
+  }
+
+  /**
    * True if a screen-space point sits inside the disc of a closer foreground
-   * planet computed during the last update() call. `distFromCamera` should be
-   * the camera-space depth of the point (NOT player distance) to match how
-   * the discs themselves were measured. Pass excludeName when the caller
-   * knows its own body should never occlude itself.
+   * body computed during the current frame. `distFromCamera` should be the
+   * camera-space depth of the point (NOT player distance) to match how the
+   * discs themselves were measured. Pass excludeName when the caller knows
+   * its own body should never occlude itself.
    */
   isScreenPointOccluded(screenX: number, screenY: number, distFromCamera: number, excludeName?: string): boolean {
     for (const disc of this.foregroundDiscs) {

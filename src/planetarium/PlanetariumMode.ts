@@ -69,6 +69,9 @@ export interface PlanetariumActivationProgress {
 export class PlanetariumMode {
   private static readonly TIME_RATE_PRESETS = [1, 60, 1200, 3600, 21600, 86400, 604800, 2592000, 31557600];
   private static readonly SHIP_CLEARANCE_AU = (1_737.4 / 149_597_870.7) * 1.5;
+  // Conservative disc radius for ship occlusion. Default hull is ~3 moon-radii
+  // long with 0.5x group scale applied → half-length ≈ 0.75 moon-radii.
+  private static readonly SHIP_OCCLUDER_RADIUS_AU = (1_737.4 / 149_597_870.7) * 0.75;
   private static readonly UI_REFRESH_INTERVAL_S = 1 / 8;
   private static readonly EARTH_DETAIL_MIN_DISTANCE_AU = 0.03;
   private static readonly EARTH_DETAIL_MIN_ANGULAR_DIAMETER_RAD = 0.003;
@@ -577,9 +580,22 @@ export class PlanetariumMode {
       this.uiRefreshAccumulator %= PlanetariumMode.UI_REFRESH_INTERVAL_S;
     }
 
-    // Update markers
+    this.updatePlanetScaling();
+    this.player.group.scale.setScalar(0.5);
+    this.resolvePlanetCollisions();
+
+    // Check orbit crossings and visits after scale/collision are applied so the
+    // reachable interaction shell matches the visual shell.
+    this.checkOrbitCrossings();
+    this.checkPlanetVisits();
+    this.checkProximityLand();
+
+    // Position moon meshes first so `collectDynamicOccluders` can read their
+    // scene-space positions and record discs for label culling.
+    this.updateMoonPositions();
+
+    // Occlusion pipeline: planet discs → moon + ship discs → render labels.
     if (this.planetLabels) {
-      // Pass scene-space positions (already offset)
       const scenePositions = new Map<string, { x: number; y: number; z: number }>();
       for (const planet of this.solarSystem.planets) {
         scenePositions.set(planet.data.name, {
@@ -588,7 +604,9 @@ export class PlanetariumMode {
           z: planet.group.position.z,
         });
       }
-      this.planetLabels.update(scenePositions, { x: 0, y: 0, z: 0 }, this.renderer);
+      this.planetLabels.collectForegroundDiscs(scenePositions, this.renderer);
+      this.collectDynamicOccluders();
+      this.planetLabels.renderLabels(scenePositions, { x: 0, y: 0, z: 0 }, this.renderer);
     }
 
     // Update constellation labels
@@ -600,20 +618,9 @@ export class PlanetariumMode {
       );
     }
 
-    // Update Sun label
+    this.renderMoonLabels();
     this.updateSunLabel();
 
-    this.updatePlanetScaling();
-    this.player.group.scale.setScalar(0.5);
-    this.resolvePlanetCollisions();
-
-    // Check orbit crossings and visits after scale/collision are applied so the
-    // reachable interaction shell matches the visual shell.
-    this.checkOrbitCrossings();
-    this.checkPlanetVisits();
-    this.checkProximityLand();
-
-    this.updateMoonPositions();
     if (this.autopilotTarget) {
       this.checkAutopilotArrival();
     }
@@ -830,6 +837,12 @@ export class PlanetariumMode {
     this.player.setProfile(this.activeHistoricJourney?.shipProfile ?? 'default');
   }
 
+  /**
+   * First pass: position moon meshes, update visibility, and record world AU
+   * positions. Label placement is split into `renderMoonLabels()` so that
+   * moon labels can consult the full set of foreground occluders (planets,
+   * other moons, ship) gathered mid-frame.
+   */
   private updateMoonPositions() {
     if (!this.solarSystem) return;
     for (const planet of this.solarSystem.planets) {
@@ -846,66 +859,144 @@ export class PlanetariumMode {
       const visible = distToPlayer < threshold;
       const parentR = planet.data.radiusAU;
 
-      const shouldRefreshMoonLabels = this.moonLabelContainer !== null;
-      const canvasW = shouldRefreshMoonLabels ? this.renderer.domElement.clientWidth : 0;
-      const canvasH = shouldRefreshMoonLabels ? this.renderer.domElement.clientHeight : 0;
-      const tempV = shouldRefreshMoonLabels ? new THREE.Vector3() : null;
+      for (const m of moons) {
+        m.mesh.visible = visible;
+        if (!visible) {
+          const hiddenLabel = this.moonLabels.get(m.data.name);
+          if (hiddenLabel && hiddenLabel.style.display !== 'none') {
+            hiddenLabel.style.display = 'none';
+          }
+          continue;
+        }
 
+        const angle = this.getMoonAngleRad(m.data);
+        const r = m.data.orbitalRadiusAU;
+        m.mesh.position.set(r * Math.cos(angle), 0, r * Math.sin(angle));
+
+        this.moonWorldPositions.set(m.data.name, {
+          x: wp.x + r * Math.cos(angle),
+          y: wp.y,
+          z: wp.z + r * Math.sin(angle),
+        });
+
+        const realRatio = m.data.radiusAU / parentR;
+        const minRatio = 0.05;
+        if (realRatio < minRatio) {
+          m.mesh.scale.setScalar(minRatio / realRatio);
+        } else {
+          m.mesh.scale.setScalar(1);
+        }
+      }
+    }
+  }
+
+  /**
+   * Second pass: contribute foreground discs for visible moons and the
+   * player ship to `planetLabels`, so any label rendered afterwards (planet,
+   * moon, sun) is occluded when it would sit on top of one of them. Must
+   * run AFTER `planetLabels.collectForegroundDiscs()` and BEFORE any label
+   * rendering (`renderLabels`, `renderMoonLabels`, `updateSunLabel`).
+   */
+  private collectDynamicOccluders() {
+    if (!this.planetLabels || !this.solarSystem) return;
+    const canvasH = this.renderer.domElement.clientHeight;
+    const halfFovTan = Math.tan((this.camera.fov * Math.PI) / 360);
+    const camX = this.camera.position.x;
+    const camY = this.camera.position.y;
+    const camZ = this.camera.position.z;
+    const tempV = new THREE.Vector3();
+
+    // Visible moons
+    for (const planet of this.solarSystem.planets) {
+      const moons = this.planetMoons.get(planet.data.name);
+      if (!moons) continue;
+      const parentR = planet.data.radiusAU;
+      for (const m of moons) {
+        if (!m.mesh.visible) continue;
+        m.mesh.getWorldPosition(tempV);
+        const dx = tempV.x - camX;
+        const dy = tempV.y - camY;
+        const dz = tempV.z - camZ;
+        const distFromCamera = Math.sqrt(dx * dx + dy * dy + dz * dz);
+        // Effective rendered radius: small moons are scaled up to a floor ratio.
+        const effectiveRadiusAU = Math.max(m.data.radiusAU, 0.05 * parentR);
+        const angularSize = (effectiveRadiusAU * 2) / Math.max(distFromCamera, 0.0001);
+        if (angularSize <= 0.01) continue;
+
+        const proj = tempV.clone().project(this.camera);
+        if (proj.z >= 1) continue;
+        const canvasW = this.renderer.domElement.clientWidth;
+        const screenX = (proj.x * 0.5 + 0.5) * canvasW;
+        const screenY = (-proj.y * 0.5 + 0.5) * canvasH;
+        const radiusPx = (effectiveRadiusAU * 1.1 / (Math.max(distFromCamera, effectiveRadiusAU) * halfFovTan)) * (canvasH / 2);
+        this.planetLabels.addForegroundDisc({ screenX, screenY, radiusPx, distFromCamera, name: `moon:${m.data.name}` });
+      }
+    }
+
+    // Player ship (visible + not landed): sits at scene origin (floating
+    // origin), so its camera distance is just the camera's magnitude.
+    if (this.player.group.visible && !this.landedOn) {
+      const distFromCamera = this.camera.position.length();
+      if (distFromCamera > 0) {
+        const shipSceneRadiusAU = PlanetariumMode.SHIP_OCCLUDER_RADIUS_AU;
+        const angularSize = (shipSceneRadiusAU * 2) / distFromCamera;
+        if (angularSize > 0.005) {
+          const proj = tempV.set(0, 0, 0).project(this.camera);
+          if (proj.z < 1) {
+            const canvasW = this.renderer.domElement.clientWidth;
+            const screenX = (proj.x * 0.5 + 0.5) * canvasW;
+            const screenY = (-proj.y * 0.5 + 0.5) * canvasH;
+            const radiusPx = (shipSceneRadiusAU / (Math.max(distFromCamera, shipSceneRadiusAU) * halfFovTan)) * (canvasH / 2);
+            this.planetLabels.addForegroundDisc({ screenX, screenY, radiusPx, distFromCamera, name: 'ship' });
+          }
+        }
+      }
+    }
+  }
+
+  /**
+   * Third pass: place HTML labels for visible moons. Uses the occluder set
+   * populated by `planetLabels.collectForegroundDiscs` + `collectDynamicOccluders`.
+   */
+  private renderMoonLabels() {
+    if (!this.solarSystem || this.moonLabelContainer === null) return;
+    const canvasW = this.renderer.domElement.clientWidth;
+    const canvasH = this.renderer.domElement.clientHeight;
+    const tempV = new THREE.Vector3();
+
+    for (const planet of this.solarSystem.planets) {
+      const moons = this.planetMoons.get(planet.data.name);
+      if (!moons) continue;
       for (const m of moons) {
         const label = this.moonLabels.get(m.data.name);
-        m.mesh.visible = visible;
-        if (visible) {
-          const angle = this.getMoonAngleRad(m.data);
-          const r = m.data.orbitalRadiusAU;
-          m.mesh.position.set(r * Math.cos(angle), 0, r * Math.sin(angle));
+        if (!label) continue;
+        if (!m.mesh.visible) continue;
 
-          // Store moon world position (planet AU pos + orbital offset)
-          this.moonWorldPositions.set(m.data.name, {
-            x: wp.x + r * Math.cos(angle),
-            y: wp.y,
-            z: wp.z + r * Math.sin(angle),
-          });
+        m.mesh.getWorldPosition(tempV);
+        const moonCamDist = tempV.distanceTo(this.camera.position);
+        tempV.project(this.camera);
+        if (tempV.z >= 1) {
+          if (label.style.display !== 'none') label.style.display = 'none';
+          continue;
+        }
 
-          const realRatio = m.data.radiusAU / parentR;
-          const minRatio = 0.05;
-          if (realRatio < minRatio) {
-            m.mesh.scale.setScalar(minRatio / realRatio);
-          } else {
-            m.mesh.scale.setScalar(1);
-          }
-
-          if (label && shouldRefreshMoonLabels && tempV) {
-            m.mesh.getWorldPosition(tempV);
-            const moonCamDist = tempV.distanceTo(this.camera.position);
-            tempV.project(this.camera);
-            if (tempV.z < 1) {
-              let sx = (tempV.x * 0.5 + 0.5) * canvasW;
-              let sy = (-tempV.y * 0.5 + 0.5) * canvasH;
-              const margin = 30;
-              const onScreen = sx >= margin && sx <= canvasW - margin &&
-                               sy >= margin && sy <= canvasH - margin;
-              sx = Math.max(margin, Math.min(canvasW - margin, sx));
-              sy = Math.max(margin, Math.min(canvasH - margin, sy));
-              // Label sits above the moon (translate(-50%, -100%) + -6px margin).
-              // Test that position against foreground planet discs so the label
-              // hides when it'd sit on top of (e.g.) Jupiter while the moon is
-              // behind. Pass the parent planet's name so the moon's own parent
-              // doesn't count as an occluder unless the moon is truly behind it.
-              const labelOccluded = this.planetLabels?.isScreenPointOccluded(sx, sy - 10, moonCamDist) ?? false;
-              if (labelOccluded) {
-                label.style.display = 'none';
-              } else {
-                label.style.display = 'block';
-                label.style.left = `${sx}px`;
-                label.style.top = `${sy}px`;
-                label.classList.toggle('edge', !onScreen);
-              }
-            } else {
-              label.style.display = 'none';
-            }
-          }
-        } else if (label && label.style.display !== 'none') {
+        let sx = (tempV.x * 0.5 + 0.5) * canvasW;
+        let sy = (-tempV.y * 0.5 + 0.5) * canvasH;
+        const margin = 30;
+        const onScreen = sx >= margin && sx <= canvasW - margin &&
+                         sy >= margin && sy <= canvasH - margin;
+        sx = Math.max(margin, Math.min(canvasW - margin, sx));
+        sy = Math.max(margin, Math.min(canvasH - margin, sy));
+        // Label sits above the moon (translate(-50%, -100%) + -6px margin).
+        // Exclude this moon's own disc so it doesn't cull itself.
+        const labelOccluded = this.planetLabels?.isScreenPointOccluded(sx, sy - 10, moonCamDist, `moon:${m.data.name}`) ?? false;
+        if (labelOccluded) {
           label.style.display = 'none';
+        } else {
+          label.style.display = 'block';
+          label.style.left = `${sx}px`;
+          label.style.top = `${sy}px`;
+          label.classList.toggle('edge', !onScreen);
         }
       }
     }
@@ -2328,7 +2419,10 @@ export class PlanetariumMode {
       this.uiRefreshAccumulator %= PlanetariumMode.UI_REFRESH_INTERVAL_S;
     }
 
-    // Update markers
+    this.updatePlanetScaling();
+    this.updateMoonPositions();
+
+    // Occlusion pipeline while landed: planets → moons + ship → labels.
     if (this.planetLabels) {
       const scenePositions = new Map<string, { x: number; y: number; z: number }>();
       for (const planet of this.solarSystem.planets) {
@@ -2338,7 +2432,9 @@ export class PlanetariumMode {
           z: planet.group.position.z,
         });
       }
-      this.planetLabels.update(scenePositions, { x: 0, y: 0, z: 0 }, this.renderer);
+      this.planetLabels.collectForegroundDiscs(scenePositions, this.renderer);
+      this.collectDynamicOccluders();
+      this.planetLabels.renderLabels(scenePositions, { x: 0, y: 0, z: 0 }, this.renderer);
     }
 
     // Update constellation labels while landed
@@ -2350,9 +2446,8 @@ export class PlanetariumMode {
       );
     }
 
+    this.renderMoonLabels();
     this.updateSunLabel();
-    this.updatePlanetScaling();
-    this.updateMoonPositions();
     this.updateSunShader(dt);
     this.updateOrbitLineVisibility();
 

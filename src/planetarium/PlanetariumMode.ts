@@ -42,6 +42,7 @@ import {
   type HistoricMilestone,
 } from './missions/historicJourneys';
 import { PlanetariumHelpModal } from './ui/PlanetariumHelpModal';
+import { PlanetariumMenuPanel } from './ui/PlanetariumMenuPanel';
 import { PlanetariumNotification } from './ui/PlanetariumNotification';
 import { PlanetariumResumePrompt } from './ui/PlanetariumResumePrompt';
 
@@ -168,6 +169,7 @@ export class PlanetariumMode {
   private moonLabelContainer: HTMLDivElement | null = null;
   private resumePrompt = new PlanetariumResumePrompt();
   private helpModal = new PlanetariumHelpModal();
+  private menuPanel = new PlanetariumMenuPanel();
 
   // Sun label
   private sunLabel: HTMLDivElement | null = null;
@@ -207,9 +209,8 @@ export class PlanetariumMode {
   private resumeTimeAfterHelp = false;
 
   private closeMenuPanel() {
-    const panel = document.getElementById('planetarium-menu-panel');
-    if (!panel?.classList.contains('visible')) return;
-    panel.classList.remove('visible');
+    if (!this.menuPanel.isOpen()) return;
+    this.menuPanel.hide();
     if (this.resumeShipAfterMenu) this.player.moving = true;
     if (this.resumeTimeAfterMenu) this.timeState.paused = false;
     this.resumeShipAfterMenu = false;
@@ -1329,8 +1330,7 @@ export class PlanetariumMode {
   private rememberPreMissionState() {
     if (this.activeHistoricJourney) return;
     this.preMissionState = this.getState();
-    this.preMissionMenuVisible =
-      document.getElementById('planetarium-menu-panel')?.classList.contains('visible') ?? false;
+    this.preMissionMenuVisible = this.menuPanel.isOpen();
   }
 
   private restorePreMissionState() {
@@ -1342,7 +1342,7 @@ export class PlanetariumMode {
     if (!previousState) return;
 
     this.restoreState(previousState);
-    document.getElementById('planetarium-menu-panel')?.classList.toggle('visible', previousMenuVisible);
+    this.menuPanel.setVisible(previousMenuVisible);
   }
 
   private updateMissionControlState() {
@@ -1493,18 +1493,14 @@ export class PlanetariumMode {
 
     // Menu panel toggle — auto-pause while open
     document.getElementById('planetarium-btn-menu')?.addEventListener('click', () => {
-      const panel = document.getElementById('planetarium-menu-panel');
-      if (!panel) return;
-      const wasVisible = panel.classList.contains('visible');
-      if (wasVisible) {
+      if (this.menuPanel.isOpen()) {
         this.closeMenuPanel();
       } else {
-        // Opening: pause ship + time
         this.resumeShipAfterMenu = this.player.moving;
         this.resumeTimeAfterMenu = !this.timeState.paused;
         this.player.moving = false;
         this.timeState.paused = true;
-        panel.classList.add('visible');
+        this.menuPanel.show();
       }
     });
     // Help button: close menu, open help modal

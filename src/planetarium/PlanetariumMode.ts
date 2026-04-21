@@ -41,6 +41,7 @@ import {
   type HistoricMissionId,
   type HistoricMilestone,
 } from './missions/historicJourneys';
+import { PlanetariumBottomBar } from './ui/PlanetariumBottomBar';
 import { PlanetariumHelpModal } from './ui/PlanetariumHelpModal';
 import { PlanetariumMenuPanel } from './ui/PlanetariumMenuPanel';
 import { PlanetariumNotification } from './ui/PlanetariumNotification';
@@ -170,6 +171,7 @@ export class PlanetariumMode {
   private resumePrompt = new PlanetariumResumePrompt();
   private helpModal = new PlanetariumHelpModal();
   private menuPanel = new PlanetariumMenuPanel();
+  private bottomBar = new PlanetariumBottomBar();
 
   // Sun label
   private sunLabel: HTMLDivElement | null = null;
@@ -1518,46 +1520,7 @@ export class PlanetariumMode {
       trigger?.classList.toggle('expanded', expanded);
     });
 
-    // Bottom bar popover toggles (stats + time)
-    const statsPopover = document.getElementById('stats-popover');
-    const timePopover = document.getElementById('time-popover');
-    const statsChevron = document.getElementById('stats-chevron');
-    const timeChevron = document.getElementById('time-chevron');
-
-    document.getElementById('bar-stats-toggle')?.addEventListener('click', () => {
-      const opening = !statsPopover?.classList.contains('visible');
-      statsPopover?.classList.toggle('visible');
-      statsChevron?.classList.toggle('expanded');
-      if (opening) {
-        timePopover?.classList.remove('visible');
-        timeChevron?.classList.remove('expanded');
-      }
-    });
-
-    document.getElementById('bar-time-toggle')?.addEventListener('click', () => {
-      const opening = !timePopover?.classList.contains('visible');
-      timePopover?.classList.toggle('visible');
-      timeChevron?.classList.toggle('expanded');
-      if (opening) {
-        statsPopover?.classList.remove('visible');
-        statsChevron?.classList.remove('expanded');
-      }
-    });
-
-    // Prevent clicks inside popovers from closing them
-    timePopover?.addEventListener('click', (e) => e.stopPropagation());
-    statsPopover?.addEventListener('click', (e) => e.stopPropagation());
-
-    // Close popovers when clicking outside the bottom bar
-    document.addEventListener('click', (e) => {
-      const bottomBar = document.getElementById('planetarium-bottom-bar');
-      if (bottomBar && !bottomBar.contains(e.target as Node)) {
-        statsPopover?.classList.remove('visible');
-        statsChevron?.classList.remove('expanded');
-        timePopover?.classList.remove('visible');
-        timeChevron?.classList.remove('expanded');
-      }
-    });
+    this.bottomBar.bind();
 
     // Sun label
     const labelContainer = document.getElementById('planet-labels');

@@ -165,6 +165,7 @@ export class PlanetLabels {
     planetPositions: Map<string, { x: number; y: number; z: number }>,
     playerPos: { x: number; y: number; z: number },
     renderer: THREE.WebGLRenderer,
+    excludeName?: string,
   ) {
     const canvasWidth = renderer.domElement.clientWidth;
     const canvasHeight = renderer.domElement.clientHeight;
@@ -175,7 +176,10 @@ export class PlanetLabels {
 
     for (const entry of this.labels) {
       const pos = planetPositions.get(entry.planet.name);
-      if (!pos) {
+      // Suppress the landed body's own label/sprite entirely — no need to
+      // label the thing you're standing on, and its own disc would dominate
+      // the view.
+      if (!pos || entry.planet.name === excludeName) {
         entry.sprite.visible = false;
         if (entry.labelVisible) {
           entry.label.style.display = 'none';

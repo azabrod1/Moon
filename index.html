@@ -1495,7 +1495,6 @@
       background: rgba(255, 255, 255, 0.06);
     }
 
-    #planetarium-btn-leave,
     #planetarium-btn-land {
       position: fixed;
       left: 50%;
@@ -1505,11 +1504,6 @@
       font-size: 12px;
       pointer-events: auto;
       min-height: 36px;
-    }
-    #planetarium-btn-leave {
-      bottom: 68px;
-    }
-    #planetarium-btn-land {
       bottom: 68px;
       border-color: rgba(124, 154, 255, 0.25);
     }
@@ -1545,7 +1539,7 @@
       }
 
       #planetarium-bottom-bar { bottom: 8px; max-width: calc(100vw - 12px); }
-      #planetarium-btn-leave, #planetarium-btn-land { bottom: 100px; }
+      #planetarium-btn-land { bottom: 100px; }
       .bar-row { padding: 5px 2px; }
       .bar-section { padding: 0 5px; }
       .bar-speed-main { padding: 0 6px; gap: 6px; }
@@ -1856,8 +1850,11 @@
 
     <!-- ======= EXPLORE MODE ======= -->
     <div id="planetarium-ui">
-      <!-- Top right: Travel + Menu -->
+      <!-- Top right: Leave (when landed) + Travel + Menu -->
       <div id="planetarium-actions">
+        <button class="planetarium-sm-btn" id="planetarium-btn-leave" style="display:none">
+          Leave <span id="leave-body-name"></span>
+        </button>
         <button class="planetarium-sm-btn" id="planetarium-btn-travel">&#x1F680;<span class="travel-btn-text"> Travel</span></button>
         <button class="planetarium-sm-btn" id="planetarium-btn-menu">&#x2630;</button>
       </div>
@@ -1987,11 +1984,6 @@
         </div>
       </div>
       <button id="historic-reopen" aria-label="Show mission info">Mission info</button>
-
-      <!-- Leave planet button (shown when landed) -->
-      <button class="planetarium-sm-btn" id="planetarium-btn-leave" style="display:none">
-        Leave <span id="leave-body-name"></span>
-      </button>
 
       <!-- Proximity land button (shown when near a body) -->
       <button class="planetarium-sm-btn" id="planetarium-btn-land" style="display:none">

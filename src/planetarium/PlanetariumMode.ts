@@ -606,6 +606,7 @@ export class PlanetariumMode {
       }
       this.planetLabels.collectForegroundDiscs(scenePositions, this.renderer);
       this.collectDynamicOccluders();
+      // Main (flight) path: landedOn is null here — narrowed by early return above.
       this.planetLabels.renderLabels(scenePositions, { x: 0, y: 0, z: 0 }, this.renderer);
     }
 
@@ -970,6 +971,11 @@ export class PlanetariumMode {
       for (const m of moons) {
         const label = this.moonLabels.get(m.data.name);
         if (!label) continue;
+        // Suppress the landed moon's own label — no need to label what you're standing on.
+        if (this.landedOn?.type === 'moon' && this.landedOn.name === m.data.name) {
+          if (label.style.display !== 'none') label.style.display = 'none';
+          continue;
+        }
         if (!m.mesh.visible) continue;
 
         m.mesh.getWorldPosition(tempV);
@@ -2434,7 +2440,8 @@ export class PlanetariumMode {
       }
       this.planetLabels.collectForegroundDiscs(scenePositions, this.renderer);
       this.collectDynamicOccluders();
-      this.planetLabels.renderLabels(scenePositions, { x: 0, y: 0, z: 0 }, this.renderer);
+      const landedPlanetName = this.landedOn?.type === 'planet' ? this.landedOn.name : undefined;
+      this.planetLabels.renderLabels(scenePositions, { x: 0, y: 0, z: 0 }, this.renderer, landedPlanetName);
     }
 
     // Update constellation labels while landed

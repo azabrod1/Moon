@@ -19,7 +19,7 @@ import {
 import { PlayerShip } from './PlayerShip';
 import { PlanetLabels } from './PlanetLabels';
 import { PlanetariumStore, createDefaultPlanetariumState, type PlanetariumState, type LandedTarget } from './PlanetariumStore';
-import { computeStats, formatAU } from './stats';
+import { computeStats } from './stats';
 import { PLANETARIUM_BODIES, SUN_DATA, type PlanetData } from './planets/planetData';
 import { createMoonMeshes, type MoonMesh } from './PlanetFactory';
 import {
@@ -46,6 +46,7 @@ import { PlanetariumHelpModal } from './ui/PlanetariumHelpModal';
 import { PlanetariumMenuPanel } from './ui/PlanetariumMenuPanel';
 import { PlanetariumNotification } from './ui/PlanetariumNotification';
 import { PlanetariumResumePrompt } from './ui/PlanetariumResumePrompt';
+import { PlanetariumStatsPanel } from './ui/PlanetariumStatsPanel';
 
 type ScriptedTransfer = {
   elapsed: number;
@@ -172,6 +173,7 @@ export class PlanetariumMode {
   private helpModal = new PlanetariumHelpModal();
   private menuPanel = new PlanetariumMenuPanel();
   private bottomBar = new PlanetariumBottomBar();
+  private statsPanel = new PlanetariumStatsPanel();
 
   // Sun label
   private sunLabel: HTMLDivElement | null = null;
@@ -185,8 +187,6 @@ export class PlanetariumMode {
   private fpsDisplay = 0;
 
   // UI elements
-  private statsEl: HTMLElement | null = null;
-  private progressEl: HTMLElement | null = null;
   private speedValueEl: HTMLElement | null = null;
   private speedLabelEl: HTMLElement | null = null;
   private speedCenterEl: HTMLElement | null = null;
@@ -300,8 +300,7 @@ export class PlanetariumMode {
     if (planetariumUI) planetariumUI.style.display = 'block';
 
     // Cache UI element references
-    this.statsEl = document.getElementById('planetarium-bottom-bar');
-    this.progressEl = document.getElementById('planetarium-progress-fill');
+    this.statsPanel.bind();
     this.speedValueEl = document.getElementById('planetarium-speed-value');
     this.speedLabelEl = document.getElementById('planetarium-speed-label');
     this.speedCenterEl = document.querySelector('.speed-center') as HTMLElement | null;
@@ -1173,8 +1172,6 @@ export class PlanetariumMode {
   }
 
   private updateStatsUI() {
-    if (!this.statsEl) return;
-
     const stats = computeStats(
       this.player.posX, this.player.posY, this.player.posZ,
       this.player.speedAUPerS,
@@ -1182,24 +1179,7 @@ export class PlanetariumMode {
       this.player.timeElapsed,
       this.planetWorldPositions,
     );
-
-    // Update stats panel
-    this.setStatText('stat-fps', `${this.fpsDisplay}`);
-    this.setStatText('stat-distance', `${formatAU(stats.distanceFromSunAU)} AU`);
-    this.setStatText('stat-light-time', stats.lightTravelTime);
-    this.setStatText('stat-intensity', `${stats.solarIntensityPct.toFixed(1)}%`);
-    this.setStatText('stat-speed', `${stats.speedC.toFixed(1)}c / ${Math.round(stats.speedKmS).toLocaleString()} km/s`);
-    this.setStatText('stat-nearest',
-      stats.nearestPlanet ? `${stats.nearestPlanet.name} ${formatAU(stats.nearestPlanet.distanceAU)}` : '--');
-    this.setStatText('stat-temp', `${Math.round(stats.blackbodyTempK)} K`);
-    this.setStatText('stat-traveled', `${formatAU(stats.distanceTraveled)} AU`);
-    this.setStatText('stat-time', stats.timeElapsed);
-
-    // Update progress bar (0 to ~40 AU = Pluto)
-    if (this.progressEl) {
-      const pct = Math.min(100, (this.player.getDistanceFromSun() / 42) * 100);
-      this.progressEl.style.width = `${pct}%`;
-    }
+    this.statsPanel.render(stats, this.fpsDisplay, this.player.getDistanceFromSun());
   }
 
   private readonly _sunProjV = new THREE.Vector3();
@@ -1245,10 +1225,6 @@ export class PlanetariumMode {
     }
   }
 
-  private setStatText(id: string, text: string) {
-    const el = document.getElementById(id);
-    if (el) el.textContent = text;
-  }
 
   private formatSystemSpeed(speedMultiplier: number): string {
     const kmPerS = speedMultiplier * 299792.458;

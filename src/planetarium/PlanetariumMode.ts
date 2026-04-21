@@ -41,6 +41,7 @@ import {
   type HistoricMissionId,
   type HistoricMilestone,
 } from './missions/historicJourneys';
+import { PlanetariumHelpModal } from './ui/PlanetariumHelpModal';
 import { PlanetariumNotification } from './ui/PlanetariumNotification';
 import { PlanetariumResumePrompt } from './ui/PlanetariumResumePrompt';
 
@@ -166,6 +167,7 @@ export class PlanetariumMode {
   private moonLabels = new Map<string, HTMLDivElement>();
   private moonLabelContainer: HTMLDivElement | null = null;
   private resumePrompt = new PlanetariumResumePrompt();
+  private helpModal = new PlanetariumHelpModal();
 
   // Sun label
   private sunLabel: HTMLDivElement | null = null;
@@ -215,23 +217,21 @@ export class PlanetariumMode {
   }
 
   private isHelpOpen(): boolean {
-    return document.getElementById('planetarium-help')?.classList.contains('visible') ?? false;
+    return this.helpModal.isOpen();
   }
 
   private showHelp() {
-    const el = document.getElementById('planetarium-help');
-    if (!el || el.classList.contains('visible')) return;
+    if (this.helpModal.isOpen()) return;
     this.resumeShipAfterHelp = this.player.moving;
     this.resumeTimeAfterHelp = !this.timeState.paused;
     this.player.moving = false;
     this.timeState.paused = true;
-    el.classList.add('visible');
+    this.helpModal.show();
   }
 
   private hideHelp() {
-    const el = document.getElementById('planetarium-help');
-    if (!el?.classList.contains('visible')) return;
-    el.classList.remove('visible');
+    if (!this.helpModal.isOpen()) return;
+    this.helpModal.hide();
     if (this.resumeShipAfterHelp) this.player.moving = true;
     if (this.resumeTimeAfterHelp) this.timeState.paused = false;
     this.resumeShipAfterHelp = false;

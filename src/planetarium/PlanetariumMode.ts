@@ -25,9 +25,6 @@ import { createMoonMeshes, type MoonMesh } from './PlanetFactory';
 import {
   advancePlanetariumTime,
   computeBodyState,
-  formatDateCompact,
-  formatTimeRateLabel,
-  formatUtcInputValue,
   parseUtcInputValue,
   type SimulationTime,
 } from '../astronomy/planetary';
@@ -47,6 +44,7 @@ import { PlanetariumMenuPanel } from './ui/PlanetariumMenuPanel';
 import { PlanetariumNotification } from './ui/PlanetariumNotification';
 import { PlanetariumResumePrompt } from './ui/PlanetariumResumePrompt';
 import { PlanetariumStatsPanel } from './ui/PlanetariumStatsPanel';
+import { PlanetariumTimePanel } from './ui/PlanetariumTimePanel';
 
 type ScriptedTransfer = {
   elapsed: number;
@@ -174,6 +172,7 @@ export class PlanetariumMode {
   private menuPanel = new PlanetariumMenuPanel();
   private bottomBar = new PlanetariumBottomBar();
   private statsPanel = new PlanetariumStatsPanel();
+  private timePanel = new PlanetariumTimePanel();
 
   // Sun label
   private sunLabel: HTMLDivElement | null = null;
@@ -190,13 +189,6 @@ export class PlanetariumMode {
   private speedValueEl: HTMLElement | null = null;
   private speedLabelEl: HTMLElement | null = null;
   private speedCenterEl: HTMLElement | null = null;
-  private timeValueEl: HTMLElement | null = null;
-  private timeRateEl: HTMLElement | null = null;
-  private timeInputEl: HTMLInputElement | null = null;
-  private lastTimeLabel = '';
-  private lastTimeRateLabel = '';
-
-  private lastTimeInputValue = '';
   private uiRefreshAccumulator = PlanetariumMode.UI_REFRESH_INTERVAL_S;
   private activeHistoricJourney: HistoricJourney | null = null;
   private historicMilestoneIndex = 0;
@@ -301,12 +293,10 @@ export class PlanetariumMode {
 
     // Cache UI element references
     this.statsPanel.bind();
+    this.timePanel.bind();
     this.speedValueEl = document.getElementById('planetarium-speed-value');
     this.speedLabelEl = document.getElementById('planetarium-speed-label');
     this.speedCenterEl = document.querySelector('.speed-center') as HTMLElement | null;
-    this.timeValueEl = document.getElementById('planetarium-time-value');
-    this.timeRateEl = document.getElementById('planetarium-time-rate');
-    this.timeInputEl = document.getElementById('planetarium-time-input') as HTMLInputElement;
 
     const savedState = await this.store.loadState();
     const initialDefaultState = savedState ? null : createDefaultPlanetariumState();
@@ -1534,10 +1524,11 @@ export class PlanetariumMode {
       this.rebuildPlanetPositions();
       this.updateTimeUI();
     });
-    if (this.timeInputEl) {
-      this.timeInputEl.value = formatUtcInputValue(this.timeState.currentUtcMs);
-      this.timeInputEl.addEventListener('change', () => {
-        const utcMs = parseUtcInputValue(this.timeInputEl?.value ?? '');
+    const timeInputEl = this.timePanel.getInputEl();
+    if (timeInputEl) {
+      this.timePanel.syncInputValue(this.timeState.currentUtcMs);
+      timeInputEl.addEventListener('change', () => {
+        const utcMs = parseUtcInputValue(timeInputEl.value);
         if (utcMs !== null) {
           this.timeState.currentUtcMs = utcMs;
           this.rebuildPlanetPositions();
@@ -2744,24 +2735,7 @@ export class PlanetariumMode {
   }
 
   private updateTimeUI() {
-    const nextTimeLabel = formatDateCompact(this.timeState.currentUtcMs);
-    const nextTimeRateLabel = formatTimeRateLabel(this.timeState.rate, this.timeState.paused);
-    const nextInputValue = formatUtcInputValue(this.timeState.currentUtcMs);
-
-    if (this.timeValueEl && this.lastTimeLabel !== nextTimeLabel) {
-      this.timeValueEl.textContent = nextTimeLabel;
-      this.lastTimeLabel = nextTimeLabel;
-    }
-    if (this.timeRateEl && this.lastTimeRateLabel !== nextTimeRateLabel) {
-      this.timeRateEl.textContent = nextTimeRateLabel;
-      this.lastTimeRateLabel = nextTimeRateLabel;
-    }
-    if (this.timeInputEl && this.lastTimeInputValue !== nextInputValue && document.activeElement !== this.timeInputEl) {
-      this.timeInputEl.value = nextInputValue;
-      this.lastTimeInputValue = nextInputValue;
-    }
-    const pauseBtn = document.getElementById('planetarium-time-pause');
-    if (pauseBtn) pauseBtn.textContent = this.timeState.paused ? 'Resume' : 'Pause';
+    this.timePanel.render(this.timeState);
     const gyroLabel = document.getElementById('settings-gyro-label');
     if (gyroLabel) gyroLabel.textContent = this.getGyroStatusLabel();
     const gyroToggle = document.getElementById('settings-gyro-toggle');

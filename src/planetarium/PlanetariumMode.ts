@@ -41,6 +41,7 @@ import {
   type HistoricMissionId,
   type HistoricMilestone,
 } from './missions/historicJourneys';
+import { PlanetariumNotification } from './ui/PlanetariumNotification';
 
 type ScriptedTransfer = {
   elapsed: number;
@@ -104,7 +105,7 @@ export class PlanetariumMode {
 
   // Orbit crossing notifications
   private lastCrossedOrbit: string | null = null;
-  private notificationTimeout: number | null = null;
+  private notification = new PlanetariumNotification();
   private uiWired = false;
 
   // Autopilot: auto-steer toward target
@@ -179,7 +180,6 @@ export class PlanetariumMode {
   // UI elements
   private statsEl: HTMLElement | null = null;
   private progressEl: HTMLElement | null = null;
-  private notificationEl: HTMLElement | null = null;
   private speedValueEl: HTMLElement | null = null;
   private speedLabelEl: HTMLElement | null = null;
   private speedCenterEl: HTMLElement | null = null;
@@ -298,7 +298,6 @@ export class PlanetariumMode {
     // Cache UI element references
     this.statsEl = document.getElementById('planetarium-bottom-bar');
     this.progressEl = document.getElementById('planetarium-progress-fill');
-    this.notificationEl = document.getElementById('planetarium-notification');
     this.speedValueEl = document.getElementById('planetarium-speed-value');
     this.speedLabelEl = document.getElementById('planetarium-speed-label');
     this.speedCenterEl = document.querySelector('.speed-center') as HTMLElement | null;
@@ -1050,7 +1049,7 @@ export class PlanetariumMode {
       if (Math.abs(playerDist - orbitDist) < crossThreshold) {
         if (this.lastCrossedOrbit !== body.name) {
           this.lastCrossedOrbit = body.name;
-          this.showNotification(`Crossing ${body.name}'s orbit \u2014 ${body.semiMajorAxisAU.toFixed(2)} AU`);
+          this.notification.show(`Crossing ${body.name}'s orbit \u2014 ${body.semiMajorAxisAU.toFixed(2)} AU`);
         }
         return;
       }
@@ -1087,7 +1086,7 @@ export class PlanetariumMode {
       // "Visit" if within 10× planet radius
       if (dist < visitDist && !this.player.visitedPlanets.has(planet.data.name)) {
         this.player.visitedPlanets.add(planet.data.name);
-        this.showNotification(`Arrived at ${planet.data.name}! ${planet.data.description}`);
+        this.notification.show(`Arrived at ${planet.data.name}! ${planet.data.description}`);
       }
     }
   }
@@ -1167,17 +1166,6 @@ export class PlanetariumMode {
     } catch { /* private browsing — show it once per session */ }
     if (document.getElementById('planetarium-resume-prompt')?.classList.contains('visible')) return;
     this.showHelp();
-  }
-
-  private showNotification(text: string) {
-    if (!this.notificationEl) return;
-    this.notificationEl.textContent = text;
-    this.notificationEl.classList.add('visible');
-
-    if (this.notificationTimeout) clearTimeout(this.notificationTimeout);
-    this.notificationTimeout = window.setTimeout(() => {
-      this.notificationEl?.classList.remove('visible');
-    }, 4000);
   }
 
   private updateStatsUI() {
@@ -1447,7 +1435,7 @@ export class PlanetariumMode {
     // Save button
     document.getElementById('planetarium-btn-save')?.addEventListener('click', () => {
       this.store.saveState(this.getState());
-      this.showNotification('Game saved!');
+      this.notification.show('Game saved!');
     });
 
     // New Journey button
@@ -1460,7 +1448,7 @@ export class PlanetariumMode {
       this.autopilotTarget = { type: 'planet', name: 'Mercury' };
       this.autopilot = true;
       this.updateAutopilotButton();
-      this.showNotification('New journey started!');
+      this.notification.show('New journey started!');
     });
 
     document.getElementById('planetarium-btn-historic-1')?.addEventListener('click', () => {
@@ -1957,7 +1945,7 @@ export class PlanetariumMode {
     this.collapseHistoricJourneyMenu();
     this.updateMissionControlState();
     this.showHistoricMilestone(0);
-    this.showNotification(journey.readyNotification);
+    this.notification.show(journey.readyNotification);
   }
 
   private stopHistoricJourney(restorePreviousState = true) {
@@ -2283,7 +2271,7 @@ export class PlanetariumMode {
     this.updateSpeedSlider();
 
     if (options.notify !== false) {
-      this.showNotification(`Jumped to ${planet.name}`);
+      this.notification.show(`Jumped to ${planet.name}`);
     }
     this.resetCruiseCamera();
   }
@@ -2368,7 +2356,7 @@ export class PlanetariumMode {
     const leaveName = document.getElementById('leave-body-name');
     if (leaveName) leaveName.textContent = target.name;
 
-    this.showNotification(`Landed on ${target.name}`);
+    this.notification.show(`Landed on ${target.name}`);
   }
 
   exitLandedMode() {
@@ -2456,7 +2444,7 @@ export class PlanetariumMode {
     const leaveBtn = document.getElementById('planetarium-btn-leave');
     if (leaveBtn) leaveBtn.style.display = 'none';
 
-    this.showNotification(`Departing ${bodyName}`);
+    this.notification.show(`Departing ${bodyName}`);
   }
 
   private updateLanded(dt: number) {
@@ -2765,7 +2753,7 @@ export class PlanetariumMode {
     }
     this.updateSpeedSlider();
     this.updateAutopilotButton();
-    this.showNotification(`Autopilot: heading to ${target.name}`);
+    this.notification.show(`Autopilot: heading to ${target.name}`);
   }
 
   private disengageAutopilot() {
@@ -2777,7 +2765,7 @@ export class PlanetariumMode {
   private disableAutopilot() {
     if (!this.autopilot) return;
     this.disengageAutopilot();
-    this.showNotification('Manual flight — steer freely');
+    this.notification.show('Manual flight — steer freely');
   }
 
   private updateAutopilotButton() {
@@ -2794,7 +2782,7 @@ export class PlanetariumMode {
   private toggleAutopilot() {
     if (this.autopilot) {
       this.disengageAutopilot();
-      this.showNotification('Autopilot disengaged');
+      this.notification.show('Autopilot disengaged');
     } else {
       this.toggleTravelMenu(true);
     }
@@ -2822,7 +2810,7 @@ export class PlanetariumMode {
     if (dist < threshold) {
       const name = this.autopilotTarget.name;
       this.disengageAutopilot();
-      this.showNotification(`Arrived at ${name}`);
+      this.notification.show(`Arrived at ${name}`);
     }
   }
 
@@ -2941,7 +2929,7 @@ export class PlanetariumMode {
       this.gyroPitch = 0;
       window.removeEventListener('deviceorientation', this.handleDeviceOrientation);
       this.updateTimeUI();
-      this.showNotification('Gyro steering off');
+      this.notification.show('Gyro steering off');
       return;
     }
 
@@ -2951,7 +2939,7 @@ export class PlanetariumMode {
     if (typeof orientationCtor === 'undefined') {
       this.gyroAvailability = 'unavailable';
       this.updateTimeUI();
-      this.showNotification('Gyro steering is not available on this device');
+      this.notification.show('Gyro steering is not available on this device');
       return;
     }
 
@@ -2969,7 +2957,7 @@ export class PlanetariumMode {
         this.gyroYaw = 0;
         this.gyroPitch = 0;
         this.updateTimeUI();
-        this.showNotification('Gyro permission denied');
+        this.notification.show('Gyro permission denied');
         return;
       }
     }
@@ -2982,7 +2970,7 @@ export class PlanetariumMode {
     this.gyroScreenAngle = this.getGyroScreenAngle();
     window.addEventListener('deviceorientation', this.handleDeviceOrientation);
     this.updateTimeUI();
-    this.showNotification('Gyro steering on — hold your phone at a comfortable angle to calibrate');
+    this.notification.show('Gyro steering on — hold your phone at a comfortable angle to calibrate');
   }
 
   private handleDeviceOrientation(event: DeviceOrientationEvent) {
@@ -3061,6 +3049,7 @@ export class PlanetariumMode {
 
   dispose() {
     this.deactivate();
+    this.notification.dispose();
     if (this.planetLabels) {
       this.planetLabels.dispose();
       this.planetLabels = null;

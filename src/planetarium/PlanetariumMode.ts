@@ -234,7 +234,7 @@ export class PlanetariumMode {
     if (this.resumeTimeAfterHelp) this.timeState.paused = false;
     this.resumeShipAfterHelp = false;
     this.resumeTimeAfterHelp = false;
-    try { localStorage.setItem('planetarium-help-seen', '1'); } catch { /* ignore */ }
+    this.store.markHelpSeen();
   }
 
   active = false;
@@ -1251,9 +1251,7 @@ export class PlanetariumMode {
   }
 
   private showIntroText() {
-    try {
-      if (localStorage.getItem('planetarium-help-seen') || localStorage.getItem('explore-help-seen')) return;
-    } catch { /* private browsing — show it once per session */ }
+    if (this.store.hasSeenHelp()) return;
     if (this.resumePrompt.isVisible()) return;
     this.showHelp();
   }

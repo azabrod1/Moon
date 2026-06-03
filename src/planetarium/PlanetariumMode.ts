@@ -31,6 +31,7 @@ import {
 import { BRIGHT_STAR_CATALOG } from './data/brightStars';
 import { TEXTURES } from '../shared/assets/textures';
 import { smoothstep } from '../shared/math/smoothstep';
+import { projectToScreen } from '../shared/three/projectToScreen';
 import { Constellations } from './Constellations';
 import { getMoonsByPlanet } from './planets/moonData';
 import {
@@ -925,11 +926,11 @@ export class PlanetariumMode {
         const angularSize = (effectiveRadiusAU * 2) / Math.max(distFromCamera, 0.0001);
         if (angularSize <= 0.01) continue;
 
-        const proj = tempV.clone().project(this.camera);
-        if (proj.z >= 1) continue;
         const canvasW = this.renderer.domElement.clientWidth;
-        const screenX = (proj.x * 0.5 + 0.5) * canvasW;
-        const screenY = (-proj.y * 0.5 + 0.5) * canvasH;
+        const proj = projectToScreen(tempV, this.camera, canvasW, canvasH);
+        if (proj.ndcZ >= 1) continue;
+        const screenX = proj.x;
+        const screenY = proj.y;
         const radiusPx = (effectiveRadiusAU * 1.1 / (Math.max(distFromCamera, effectiveRadiusAU) * halfFovTan)) * (canvasH / 2);
         this.planetLabels.addForegroundDisc({ screenX, screenY, radiusPx, distFromCamera, name: `moon:${m.data.name}` });
       }
@@ -943,11 +944,11 @@ export class PlanetariumMode {
         const shipSceneRadiusAU = PlanetariumMode.SHIP_OCCLUDER_RADIUS_AU;
         const angularSize = (shipSceneRadiusAU * 2) / distFromCamera;
         if (angularSize > 0.005) {
-          const proj = tempV.set(0, 0, 0).project(this.camera);
-          if (proj.z < 1) {
-            const canvasW = this.renderer.domElement.clientWidth;
-            const screenX = (proj.x * 0.5 + 0.5) * canvasW;
-            const screenY = (-proj.y * 0.5 + 0.5) * canvasH;
+          const canvasW = this.renderer.domElement.clientWidth;
+          const proj = projectToScreen(tempV.set(0, 0, 0), this.camera, canvasW, canvasH);
+          if (proj.ndcZ < 1) {
+            const screenX = proj.x;
+            const screenY = proj.y;
             const radiusPx = (shipSceneRadiusAU / (Math.max(distFromCamera, shipSceneRadiusAU) * halfFovTan)) * (canvasH / 2);
             this.planetLabels.addForegroundDisc({ screenX, screenY, radiusPx, distFromCamera, name: 'ship' });
           }
@@ -981,14 +982,14 @@ export class PlanetariumMode {
 
         m.mesh.getWorldPosition(tempV);
         const moonCamDist = tempV.distanceTo(this.camera.position);
-        tempV.project(this.camera);
-        if (tempV.z >= 1) {
+        const proj = projectToScreen(tempV, this.camera, canvasW, canvasH);
+        if (proj.ndcZ >= 1) {
           if (label.style.display !== 'none') label.style.display = 'none';
           continue;
         }
 
-        let sx = (tempV.x * 0.5 + 0.5) * canvasW;
-        let sy = (-tempV.y * 0.5 + 0.5) * canvasH;
+        let sx = proj.x;
+        let sy = proj.y;
         const margin = 30;
         const onScreen = sx >= margin && sx <= canvasW - margin &&
                          sy >= margin && sy <= canvasH - margin;

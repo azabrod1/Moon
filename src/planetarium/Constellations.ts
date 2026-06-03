@@ -6,6 +6,7 @@
 import * as THREE from 'three';
 import { CONSTELLATIONS } from './data/constellations';
 import { BRIGHT_STAR_CATALOG } from './data/brightStars';
+import { projectToScreen } from '../shared/three/projectToScreen';
 
 const STAR_SPHERE_RADIUS = 85;
 const SNAP_RADIUS_DEG = 3; // max degrees to snap a constellation vertex to a catalog star
@@ -54,7 +55,6 @@ export class Constellations {
   readonly lines: THREE.LineSegments;
   private labels: LabelState[] = [];
   private labelContainer: HTMLDivElement;
-  private tempV = new THREE.Vector3();
 
   constructor() {
     // Build a cache of snapped positions: for each unique RA/Dec endpoint
@@ -180,14 +180,12 @@ export class Constellations {
     if (!this.lines.visible) return;
 
     for (const label of this.labels) {
-      this.tempV.copy(label.pos);
-      this.tempV.project(camera);
-
-      const screenX = (this.tempV.x * 0.5 + 0.5) * canvasWidth;
-      const screenY = (-this.tempV.y * 0.5 + 0.5) * canvasHeight;
+      const proj = projectToScreen(label.pos, camera, canvasWidth, canvasHeight);
+      const screenX = proj.x;
+      const screenY = proj.y;
 
       if (
-        this.tempV.z < 1 &&
+        proj.ndcZ < 1 &&
         screenX > -20 &&
         screenX < canvasWidth + 20 &&
         screenY > -20 &&

@@ -16,6 +16,7 @@ import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
 import { SCENE_UNITS } from './shared/constants/sceneUnits';
 import { DEG2RAD } from './shared/math/angles';
 import { smoothstep } from './shared/math/smoothstep';
+import { projectToScreen } from './shared/three/projectToScreen';
 import { loadAllTextures } from './shared/assets/textureLoader';
 import { computeOrbitalState, findEvent, type EventType } from './astronomy/ephemeris';
 import {
@@ -475,18 +476,18 @@ function formatKm(valueKm: number) {
 }
 
 function placeFocusLabel(label: HTMLElement, worldPosition: THREE.Vector3, cam: THREE.Camera, yOffsetPx: number) {
-  const projected = worldPosition.clone().project(cam);
-  const isVisible = projected.z >= -1 && projected.z <= 1 &&
-    projected.x >= -1 && projected.x <= 1 &&
-    projected.y >= -1 && projected.y <= 1;
+  const projected = projectToScreen(worldPosition, cam, window.innerWidth, window.innerHeight);
+  const isVisible = projected.ndcZ >= -1 && projected.ndcZ <= 1 &&
+    projected.ndcX >= -1 && projected.ndcX <= 1 &&
+    projected.ndcY >= -1 && projected.ndcY <= 1;
 
   if (!isVisible) {
     label.style.display = 'none';
     return;
   }
 
-  const x = ((projected.x + 1) / 2) * window.innerWidth;
-  const y = ((-projected.y + 1) / 2) * window.innerHeight + yOffsetPx;
+  const x = projected.x;
+  const y = projected.y + yOffsetPx;
   label.style.display = 'block';
   label.style.left = `${x}px`;
   label.style.top = `${y}px`;

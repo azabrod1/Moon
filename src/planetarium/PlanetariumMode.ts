@@ -32,6 +32,7 @@ import { BRIGHT_STAR_CATALOG } from './data/brightStars';
 import { TEXTURES } from '../shared/assets/textures';
 import { smoothstep } from '../shared/math/smoothstep';
 import { projectToScreen } from '../shared/three/projectToScreen';
+import { setText } from '../shared/dom';
 import { Constellations } from './Constellations';
 import { getMoonsByPlanet } from './planets/moonData';
 import {
@@ -1894,11 +1895,6 @@ export class PlanetariumMode {
     milestone: HistoricMilestone,
     stepIndex: number,
   ) {
-    const setText = (id: string, text: string) => {
-      const el = document.getElementById(id);
-      if (el) el.textContent = text;
-    };
-
     setText('historic-kicker', journey.label);
     setText('historic-step', `${stepIndex + 1} / ${journey.milestones.length}`);
     setText('historic-title', milestone.title);

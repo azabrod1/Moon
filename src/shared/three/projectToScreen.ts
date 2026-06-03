@@ -7,6 +7,11 @@
  * visibility/margin/clamp/offset decisions: those differ at every call site
  * (full NDC-box vs `ndcZ < 1` vs per-site pixel margins vs edge-clamping) and
  * deliberately stay at the call site. Does not mutate `pos`.
+ *
+ * Uses a shared scratch vector internally and returns copied scalars, so each
+ * result is independent of the next call — but it is single-threaded /
+ * non-reentrant by design (don't nest two calls in one expression expecting
+ * separate buffers).
  */
 import * as THREE from 'three';
 

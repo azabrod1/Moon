@@ -30,6 +30,7 @@ import {
 } from '../astronomy/planetary';
 import { BRIGHT_STAR_CATALOG } from './data/brightStars';
 import { TEXTURES } from '../shared/assets/textures';
+import { smoothstep } from '../shared/math/smoothstep';
 import { Constellations } from './Constellations';
 import { getMoonsByPlanet } from './planets/moonData';
 import {
@@ -767,7 +768,7 @@ export class PlanetariumMode {
 
       const inner = systemRadius * 0.05;
       const t = Math.min(1, Math.max(0, (dist - inner) / (systemRadius - inner)));
-      const factor = t * t * (3 - 2 * t); // smoothstep
+      const factor = smoothstep(t);
       if (factor < minFactor) {
         minFactor = factor;
         nearestPlanet = body.name;
@@ -785,7 +786,7 @@ export class PlanetariumMode {
       if (dist < sunSystemRadius) {
         const inner = sunSystemRadius * 0.05;
         const t = Math.min(1, Math.max(0, (dist - inner) / (sunSystemRadius - inner)));
-        const factor = t * t * (3 - 2 * t);
+        const factor = smoothstep(t);
         if (factor < minFactor) {
           minFactor = factor;
           nearestPlanet = 'Sun';
@@ -811,7 +812,7 @@ export class PlanetariumMode {
         const systemR = planet.data.systemRadiusAU;
         const innerR = systemR * 0.1;
         const linear = 1 - Math.min(1, Math.max(0, (dist - innerR) / (systemR - innerR)));
-        const t = linear * linear * (3 - 2 * linear);
+        const t = smoothstep(linear);
         const glowMat = planet.atmosphere.material as THREE.ShaderMaterial;
         if (glowMat.uniforms?.alphaScale) {
           glowMat.uniforms.alphaScale.value = 0.15 + 0.3 * t;
@@ -2063,7 +2064,7 @@ export class PlanetariumMode {
     const transfer = this.scriptedTransfer;
     transfer.elapsed = Math.min(transfer.elapsed + dt, transfer.duration);
     const t = transfer.elapsed / transfer.duration;
-    const ease = t * t * (3 - 2 * t);
+    const ease = smoothstep(t);
 
     this.player.posX = THREE.MathUtils.lerp(transfer.startPos.x, transfer.endPos.x, ease);
     this.player.posY = THREE.MathUtils.lerp(transfer.startPos.y, transfer.endPos.y, ease);

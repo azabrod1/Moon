@@ -5,7 +5,7 @@
  * phase/eclipse visualization.
  */
 
-import { DEG, RAD } from './constants';
+import { DEG, J2000 } from './constants';
 
 /** Julian Day Number from a Date object (UTC). */
 export function dateToJD(date: Date): number {
@@ -30,7 +30,7 @@ export function dateToJD(date: Date): number {
 
 /** Centuries since J2000.0 epoch. */
 function T(jd: number): number {
-  return (jd - 2451545.0) / 36525.0;
+  return (jd - J2000) / 36525.0;
 }
 
 /** Normalize angle to 0..360. */

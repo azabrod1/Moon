@@ -5,6 +5,7 @@
  * current FPS and sun distance.
  */
 import { formatAU, type PlanetariumStats } from '../stats';
+import { setText } from '../../shared/dom';
 
 const PLUTO_AU = 42;
 
@@ -20,32 +21,27 @@ export class PlanetariumStatsPanel {
   render(stats: PlanetariumStats, fps: number, distanceFromSunAU: number): void {
     if (!this.rootEl) return;
 
-    this.setText('stat-fps', `${fps}`);
-    this.setText('stat-distance', `${formatAU(stats.distanceFromSunAU)} AU`);
-    this.setText('stat-light-time', stats.lightTravelTime);
-    this.setText('stat-intensity', `${stats.solarIntensityPct.toFixed(1)}%`);
-    this.setText(
+    setText('stat-fps', `${fps}`);
+    setText('stat-distance', `${formatAU(stats.distanceFromSunAU)} AU`);
+    setText('stat-light-time', stats.lightTravelTime);
+    setText('stat-intensity', `${stats.solarIntensityPct.toFixed(1)}%`);
+    setText(
       'stat-speed',
       `${stats.speedC.toFixed(1)}c / ${Math.round(stats.speedKmS).toLocaleString()} km/s`,
     );
-    this.setText(
+    setText(
       'stat-nearest',
       stats.nearestPlanet
         ? `${stats.nearestPlanet.name} ${formatAU(stats.nearestPlanet.distanceAU)}`
         : '--',
     );
-    this.setText('stat-temp', `${Math.round(stats.blackbodyTempK)} K`);
-    this.setText('stat-traveled', `${formatAU(stats.distanceTraveled)} AU`);
-    this.setText('stat-time', stats.timeElapsed);
+    setText('stat-temp', `${Math.round(stats.blackbodyTempK)} K`);
+    setText('stat-traveled', `${formatAU(stats.distanceTraveled)} AU`);
+    setText('stat-time', stats.timeElapsed);
 
     if (this.progressEl) {
       const pct = Math.min(100, (distanceFromSunAU / PLUTO_AU) * 100);
       this.progressEl.style.width = `${pct}%`;
     }
-  }
-
-  private setText(id: string, text: string): void {
-    const el = document.getElementById(id);
-    if (el) el.textContent = text;
   }
 }

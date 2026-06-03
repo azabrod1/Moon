@@ -29,6 +29,7 @@ import {
   type SimulationTime,
 } from '../astronomy/planetary';
 import { createPlanetariumStarfield } from './world/starfield';
+import { GyroSteering } from './input/GyroSteering';
 import { smoothstep } from '../shared/math/smoothstep';
 import { projectToScreen } from '../shared/three/projectToScreen';
 import { setText } from '../shared/dom';
@@ -150,12 +151,7 @@ export class PlanetariumMode {
   private touchPitch = 0;
   private touchThrottle = 0;
   private activeFlightTouchId: number | null = null;
-  private gyroEnabled = false;
-  private gyroAvailability: 'unknown' | 'granted' | 'denied' | 'unavailable' = 'unknown';
-  private gyroBaseline: { yawDeg: number; pitchDeg: number } | null = null;
-  private gyroScreenAngle = 0;
-  private gyroYaw = 0;
-  private gyroPitch = 0;
+  private gyro: GyroSteering;
 
   // Chase camera state
   private userOrbiting = false;
@@ -274,7 +270,7 @@ export class PlanetariumMode {
     // Key handlers
     this.handleKeyDown = this.handleKeyDown.bind(this);
     this.handleKeyUp = this.handleKeyUp.bind(this);
-    this.handleDeviceOrientation = this.handleDeviceOrientation.bind(this);
+    this.gyro = new GyroSteering((message) => this.notification.show(message), () => this.updateTimeUI());
   }
 
   hasLoadedSolarSystem(): boolean {
@@ -412,9 +408,7 @@ export class PlanetariumMode {
     // Wire up keyboard
     window.addEventListener('keydown', this.handleKeyDown);
     window.addEventListener('keyup', this.handleKeyUp);
-    if (this.gyroEnabled) {
-      window.addEventListener('deviceorientation', this.handleDeviceOrientation);
-    }
+    this.gyro.attach();
 
     // Wire up UI controls (once only)
     if (!this.uiWired) {
@@ -483,13 +477,10 @@ export class PlanetariumMode {
     // Remove keyboard handlers
     window.removeEventListener('keydown', this.handleKeyDown);
     window.removeEventListener('keyup', this.handleKeyUp);
-    window.removeEventListener('deviceorientation', this.handleDeviceOrientation);
+    this.gyro.detach();
     this.touchYaw = 0;
     this.touchPitch = 0;
     this.touchThrottle = 0;
-    this.gyroBaseline = null;
-    this.gyroYaw = 0;
-    this.gyroPitch = 0;
     this.uiRefreshAccumulator = PlanetariumMode.UI_REFRESH_INTERVAL_S;
 
     // Disable controls
@@ -1032,14 +1023,14 @@ export class PlanetariumMode {
       (this.keys.has('arrowright') || this.keys.has('d') ? 1 : 0) -
       (this.keys.has('arrowleft') || this.keys.has('a') ? 1 : 0);
     let yaw = yawFromKeys;
-    yaw = THREE.MathUtils.clamp(yaw + this.touchYaw + this.gyroYaw, -1, 1);
+    yaw = THREE.MathUtils.clamp(yaw + this.touchYaw + this.gyro.yaw, -1, 1);
     this.player.yawInput = yaw;
 
     const pitchFromKeys =
       (this.keys.has('arrowup') ? 1 : 0) -
       (this.keys.has('arrowdown') ? 1 : 0);
     let pitch = pitchFromKeys;
-    pitch = THREE.MathUtils.clamp(pitch + this.touchPitch + this.gyroPitch, -1, 1);
+    pitch = THREE.MathUtils.clamp(pitch + this.touchPitch + this.gyro.pitch, -1, 1);
     this.player.pitchInput = pitch;
 
     // Throttle (keyboard + touch)
@@ -1595,7 +1586,7 @@ export class PlanetariumMode {
     });
 
     document.getElementById('settings-gyro-toggle')?.addEventListener('click', () => {
-      void this.toggleGyroControls();
+      void this.gyro.toggle();
     });
 
     document.getElementById('settings-constellations-toggle')?.addEventListener('click', () => {
@@ -2682,18 +2673,18 @@ export class PlanetariumMode {
   private updateTimeUI() {
     this.timePanel.render(this.timeState);
     const gyroLabel = document.getElementById('settings-gyro-label');
-    if (gyroLabel) gyroLabel.textContent = this.getGyroStatusLabel();
+    if (gyroLabel) gyroLabel.textContent = this.gyro.statusLabel();
     const gyroToggle = document.getElementById('settings-gyro-toggle');
     if (gyroToggle) {
-      gyroToggle.classList.toggle('active', this.gyroEnabled);
-      gyroToggle.setAttribute('aria-pressed', this.gyroEnabled ? 'true' : 'false');
-      const status = this.getGyroStatusLabel();
+      gyroToggle.classList.toggle('active', this.gyro.enabled);
+      gyroToggle.setAttribute('aria-pressed', this.gyro.enabled ? 'true' : 'false');
+      const status = this.gyro.statusLabel();
       gyroToggle.setAttribute('title',
         status === 'Denied'
           ? 'Motion sensor permission was denied'
           : status === 'N/A'
             ? 'Motion sensors are not available on this device'
-            : this.gyroEnabled
+            : this.gyro.enabled
               ? 'Gyro steering is active'
               : 'Enable gyro steering',
       );
@@ -2718,132 +2709,6 @@ export class PlanetariumMode {
 
     this.touchYaw = applyDeadZone(rawX);
     this.touchPitch = applyDeadZone(rawY);
-  }
-
-  private async toggleGyroControls() {
-    if (this.gyroEnabled) {
-      this.gyroEnabled = false;
-      this.gyroBaseline = null;
-      this.gyroYaw = 0;
-      this.gyroPitch = 0;
-      window.removeEventListener('deviceorientation', this.handleDeviceOrientation);
-      this.updateTimeUI();
-      this.notification.show('Gyro steering off');
-      return;
-    }
-
-    const orientationCtor = window.DeviceOrientationEvent as typeof DeviceOrientationEvent & {
-      requestPermission?: () => Promise<'granted' | 'denied'>;
-    };
-    if (typeof orientationCtor === 'undefined') {
-      this.gyroAvailability = 'unavailable';
-      this.updateTimeUI();
-      this.notification.show('Gyro steering is not available on this device');
-      return;
-    }
-
-    if (typeof orientationCtor.requestPermission === 'function' && this.gyroAvailability !== 'granted') {
-      let permission: 'granted' | 'denied';
-      try {
-        permission = await orientationCtor.requestPermission();
-      } catch {
-        permission = 'denied';
-      }
-      if (permission !== 'granted') {
-        this.gyroAvailability = 'denied';
-        this.gyroEnabled = false;
-        this.gyroBaseline = null;
-        this.gyroYaw = 0;
-        this.gyroPitch = 0;
-        this.updateTimeUI();
-        this.notification.show('Gyro permission denied');
-        return;
-      }
-    }
-
-    this.gyroAvailability = 'granted';
-    this.gyroEnabled = true;
-    this.gyroBaseline = null;
-    this.gyroYaw = 0;
-    this.gyroPitch = 0;
-    this.gyroScreenAngle = this.getGyroScreenAngle();
-    window.addEventListener('deviceorientation', this.handleDeviceOrientation);
-    this.updateTimeUI();
-    this.notification.show('Gyro steering on — hold your phone at a comfortable angle to calibrate');
-  }
-
-  private handleDeviceOrientation(event: DeviceOrientationEvent) {
-    if (!this.gyroEnabled) return;
-    const rawGamma = event.gamma;
-    const rawBeta = event.beta;
-    if (!Number.isFinite(rawGamma) || !Number.isFinite(rawBeta)) return;
-    const gamma = rawGamma as number;
-    const beta = rawBeta as number;
-
-    const angle = this.getGyroScreenAngle();
-    const mapped = this.mapGyroAxes(beta, gamma, angle);
-    if (!mapped) return;
-
-    if (this.gyroBaseline === null || angle !== this.gyroScreenAngle) {
-      this.gyroScreenAngle = angle;
-      this.gyroBaseline = mapped;
-      this.gyroYaw = 0;
-      this.gyroPitch = 0;
-      return;
-    }
-
-    this.gyroYaw = THREE.MathUtils.lerp(
-      this.gyroYaw,
-      this.normalizeGyroDelta(this.gyroBaseline.yawDeg - mapped.yawDeg),
-      0.18,
-    );
-    this.gyroPitch = THREE.MathUtils.lerp(
-      this.gyroPitch,
-      this.normalizeGyroDelta(mapped.pitchDeg - this.gyroBaseline.pitchDeg),
-      0.18,
-    );
-  }
-
-  private getGyroStatusLabel() {
-    if (this.gyroEnabled) return 'On';
-    if (this.gyroAvailability === 'denied') return 'Denied';
-    if (this.gyroAvailability === 'unavailable') return 'N/A';
-    return 'Off';
-  }
-
-  private getGyroScreenAngle() {
-    const orientation = screen.orientation;
-    if (orientation && typeof orientation.angle === 'number') {
-      return ((orientation.angle % 360) + 360) % 360;
-    }
-    const legacyOrientation = (window as Window & { orientation?: number }).orientation;
-    return typeof legacyOrientation === 'number'
-      ? ((legacyOrientation % 360) + 360) % 360
-      : 0;
-  }
-
-  private mapGyroAxes(beta: number, gamma: number, angle: number) {
-    if (!Number.isFinite(beta) || !Number.isFinite(gamma)) return null;
-
-    if (angle === 90) {
-      return { yawDeg: beta, pitchDeg: -gamma };
-    }
-    if (angle === 180) {
-      return { yawDeg: -gamma, pitchDeg: -beta };
-    }
-    if (angle === 270) {
-      return { yawDeg: -beta, pitchDeg: gamma };
-    }
-    return { yawDeg: gamma, pitchDeg: beta };
-  }
-
-  private normalizeGyroDelta(deltaDeg: number) {
-    const deadZone = 3;
-    const fullTilt = 28;
-    const absDelta = Math.abs(deltaDeg);
-    if (absDelta <= deadZone) return 0;
-    const normalized = (absDelta - deadZone) / (fullTilt - deadZone);
-    return THREE.MathUtils.clamp(normalized * Math.sign(deltaDeg), -1, 1);
   }
 
   dispose() {

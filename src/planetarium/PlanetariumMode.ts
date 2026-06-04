@@ -1128,7 +1128,6 @@ export class PlanetariumMode {
     if (e.key === ' ') {
       e.preventDefault();
       this.player.moving = !this.player.moving;
-      this.updatePauseButtonLabel();
     }
 
     // P toggles autopilot
@@ -1332,11 +1331,6 @@ export class PlanetariumMode {
           : `${this.player.speedC.toFixed(1)}c`;
       }
     }
-  }
-
-  private updatePauseButtonLabel() {
-    const btn = document.getElementById('planetarium-btn-pause');
-    if (btn) btn.textContent = this.player.moving ? '\u23F8' : '\u25B6';
   }
 
   private isMissionActive(): boolean {
@@ -2059,7 +2053,6 @@ export class PlanetariumMode {
       endMoving: options.movingAfter,
     };
     this.player.moving = true;
-    this.updatePauseButtonLabel();
     this.userOrbiting = false;
   }
 
@@ -2079,7 +2072,6 @@ export class PlanetariumMode {
 
     if (t >= 1) {
       this.player.moving = transfer.endMoving;
-      this.updatePauseButtonLabel();
       this.scriptedTransfer = null;
     }
 
@@ -2546,7 +2538,6 @@ export class PlanetariumMode {
     this.rebuildPlanetPositions();
 
     this.updateSpeedSlider();
-    this.updatePauseButtonLabel();
     this.updateTimeUI();
 
     // Restore landed state if saved
@@ -2556,7 +2547,6 @@ export class PlanetariumMode {
       this.resetCruiseCamera();
     }
   }
-
 
   private getTargetWorldPosition(target: NonNullable<LandedTarget>): { x: number; y: number; z: number } | null {
     if (target.type === 'planet') {
@@ -2579,7 +2569,6 @@ export class PlanetariumMode {
     this.autopilotTarget = target;
     this.autopilot = true;
     this.player.moving = true;
-    this.updatePauseButtonLabel();
     // Ensure reasonable cruise speed
     if (this.player.speedMultiplier < PlayerShip.SPEED_DEFAULT) {
       this.player.speedMultiplier = PlayerShip.SPEED_DEFAULT;

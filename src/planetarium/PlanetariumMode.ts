@@ -1,12 +1,14 @@
 /**
- * PlanetariumMode — top-level controller for the "Planets" fly-through mode.
- * Owns the player ship, scene population (Sun, planets, moons, starfield,
- * constellations), DOM HUD wiring, autopilot/landing state, historic journey
- * playback, and persistence. Uses a floating-origin pattern: the player sits
- * at scene origin and all world objects are offset by the player's AU
- * position each frame. This file is the pre-refactor god object; Phase 1 of
- * the refactor plan splits it into World / Input / Navigation / Landing /
- * UI / State controllers behind a thin facade.
+ * PlanetariumMode — controller for the "Planets" fly-through mode. Owns the
+ * player ship, scene population (Sun, planets, moons, starfield, constellations),
+ * DOM HUD wiring, autopilot/landing state, historic-journey playback, and
+ * persistence. Uses a floating-origin pattern: the player sits at scene origin
+ * and all world objects are offset by the player's AU position each frame.
+ * Self-contained pieces are extracted to siblings — world/starfield,
+ * input/GyroSteering, ui/* panels, labels (PlanetLabels / SunLabel /
+ * Constellations), persistence (PlanetariumStore). The tightly-coupled
+ * per-frame core (update pipeline, camera, navigation, landing, missions) stays
+ * here on purpose: splitting it would scatter shared state behind indirection.
  */
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';

@@ -1,10 +1,10 @@
 /**
  * App entry point. Builds the shared Three.js renderer / scene / camera rig,
- * detects GPU capability (for bloom), owns the animation loop, and coordinates
- * switching between the three modes — Moon view, Planetarium, Moon Flight.
- * All Moon-view-specific UI state (sliders, presets, date mode, camera
- * animations) lives here and will be split out in Phase 3 of the refactor
- * plan (app/ + moonView/ trees).
+ * probes GPU capability for bloom (app/gpuCapability), owns the animation loop,
+ * and coordinates switching between the three modes — Moon view, Planetarium,
+ * Moon Flight. The Moon-view scene builders live in moonView/ (phase, starfield,
+ * eclipticGrid, shadowCones); the Moon-view UI state (sliders, presets, date
+ * mode, camera animations) is still hosted here.
  */
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';

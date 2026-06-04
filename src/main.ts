@@ -36,6 +36,10 @@ import { PlanetariumMode, FIRST_PLANETARIUM_ACTIVATION_TOTAL_UNITS } from './pla
 import type { MoonFlightMode } from './moonFlight/MoonFlightMode';
 import { OrbitDetailsOverlay } from './moonView/OrbitDetailsOverlay';
 import { createMoonOrbitLine, updateMoonOrbitLine } from './moonView/moonOrbitLine';
+import { createStarfield } from './moonView/starfield';
+import { createEclipticGrid } from './moonView/eclipticGrid';
+import { createShadowCone, updateShadowCones } from './moonView/shadowCones';
+import { canGPUDoBloom } from './app/gpuCapability';
 import { debugError, debugLog, debugWarn } from './shared/debug';
 import { formatScaleMultiplier } from './shared/format';
 
@@ -122,35 +126,8 @@ renderer.domElement.addEventListener('webglcontextrestored', () => {
   debugLog('WebGL context restored');
 });
 
-// Test if GPU can actually handle float render targets (needed for bloom)
-function canGPUDoBloom(): boolean {
-  try {
-    const gl = renderer.getContext();
-    const ext = gl.getExtension('EXT_color_buffer_float') || gl.getExtension('EXT_color_buffer_half_float');
-    if (!ext) { debugLog('Bloom test: no float buffer extension'); return false; }
-    // Actually create a small float framebuffer and check completeness
-    const fb = gl.createFramebuffer();
-    const tex = gl.createTexture();
-    gl.bindTexture(gl.TEXTURE_2D, tex);
-    gl.texImage2D(gl.TEXTURE_2D, 0, (gl as WebGL2RenderingContext).RGBA16F ?? gl.RGBA,
-      4, 4, 0, gl.RGBA, (gl as WebGL2RenderingContext).HALF_FLOAT ?? gl.FLOAT, null);
-    gl.bindFramebuffer(gl.FRAMEBUFFER, fb);
-    gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, tex, 0);
-    const status = gl.checkFramebufferStatus(gl.FRAMEBUFFER);
-    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
-    gl.deleteTexture(tex);
-    gl.deleteFramebuffer(fb);
-    const ok = status === gl.FRAMEBUFFER_COMPLETE;
-    debugLog('Bloom test: float FBO', { ok, status });
-    return ok;
-  } catch (err) {
-    debugWarn('Bloom test failed', err);
-    return false;
-  }
-}
-
 // Enable bloom on any device whose GPU supports float framebuffers
-const useBloom = canGPUDoBloom();
+const useBloom = canGPUDoBloom(renderer);
 
 try {
   const gl = renderer.getContext();
@@ -253,100 +230,8 @@ function rebuildComposer(cam: THREE.Camera) {
   buildComposer(cam);
 }
 
-// ================================================================
-// Starfield (Moon-view mode)
-// ================================================================
-function createStarfield(): THREE.Points {
-  const starCount = 8000;
-  const positions = new Float32Array(starCount * 3);
-  const colors = new Float32Array(starCount * 3);
-
-  for (let i = 0; i < starCount; i++) {
-    const theta = Math.random() * Math.PI * 2;
-    const phi = Math.acos(2 * Math.random() - 1);
-    const r = 200 + Math.random() * 50;
-
-    positions[i * 3] = r * Math.sin(phi) * Math.cos(theta);
-    positions[i * 3 + 1] = r * Math.sin(phi) * Math.sin(theta);
-    positions[i * 3 + 2] = r * Math.cos(phi);
-
-    const temp = 0.8 + Math.random() * 0.4;
-    colors[i * 3] = temp;
-    colors[i * 3 + 1] = temp * (0.9 + Math.random() * 0.1);
-    colors[i * 3 + 2] = temp * (0.8 + Math.random() * 0.2);
-  }
-
-  const geo = new THREE.BufferGeometry();
-  geo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
-  geo.setAttribute('color', new THREE.BufferAttribute(colors, 3));
-
-  const mat = new THREE.PointsMaterial({
-    size: 0.3,
-    vertexColors: true,
-    transparent: true,
-    opacity: 0.9,
-    sizeAttenuation: true,
-    depthWrite: false,
-  });
-
-  return new THREE.Points(geo, mat);
-}
-
 const moonViewStarfield = createStarfield();
 scene.add(moonViewStarfield);
-
-// ================================================================
-function createEclipticGrid(
-  size: number,
-  divisions: number,
-  centerColor: number,
-  gridColor: number,
-  exclusionRadius: number,
-): THREE.LineSegments {
-  const positions: number[] = [];
-  const colors: number[] = [];
-  const half = size / 2;
-  const step = size / divisions;
-  const center = divisions / 2;
-  const centerColor3 = new THREE.Color(centerColor);
-  const gridColor3 = new THREE.Color(gridColor);
-
-  const pushSegment = (x1: number, z1: number, x2: number, z2: number, color: THREE.Color) => {
-    positions.push(x1, 0, z1, x2, 0, z2);
-    colors.push(color.r, color.g, color.b, color.r, color.g, color.b);
-  };
-
-  for (let i = 0; i <= divisions; i++) {
-    const offset = -half + i * step;
-    const color = i === center ? centerColor3 : gridColor3;
-
-    if (Math.abs(offset) >= exclusionRadius) {
-      pushSegment(-half, offset, half, offset, color);
-      pushSegment(offset, -half, offset, half, color);
-      continue;
-    }
-
-    const clippedHalfSpan = Math.sqrt(Math.max(exclusionRadius * exclusionRadius - offset * offset, 0));
-    pushSegment(-half, offset, -clippedHalfSpan, offset, color);
-    pushSegment(clippedHalfSpan, offset, half, offset, color);
-    pushSegment(offset, -half, offset, -clippedHalfSpan, color);
-    pushSegment(offset, clippedHalfSpan, offset, half, color);
-  }
-
-  const geometry = new THREE.BufferGeometry();
-  geometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
-  geometry.setAttribute('color', new THREE.Float32BufferAttribute(colors, 3));
-
-  return new THREE.LineSegments(
-    geometry,
-    new THREE.LineBasicMaterial({
-      vertexColors: true,
-      transparent: true,
-      opacity: 0.8,
-      depthWrite: false,
-    }),
-  );
-}
 
 const moonOrbitLine = createMoonOrbitLine(0x4466aa, SCENE_UNITS.MOON_INCLINATION, 0);
 scene.add(moonOrbitLine);
@@ -1093,7 +978,7 @@ async function init() {
       const sunDir = mv.sun.getDirection();
       mv.earth.update(dt, sunDir);
       orbitDetailsOverlay.update(state.nodeAngle, state.moonMeanAnomaly);
-      updateShadowCones(mv.earthShadowCone, mv.moonShadowCone, mv.sun, mv.moon);
+      updateShadowCones(mv.earthShadowCone, mv.moonShadowCone, mv.sun, mv.moon, state.moonAngle, state.sunAngle, state.nodeAngle);
       moonViewControls.update();
 
     } else if (appMode === 'planetarium' && planetariumMode) {
@@ -1126,45 +1011,6 @@ async function init() {
 
   document.getElementById('loading-screen')?.classList.add('hidden');
   await planetariumMode?.showDeferredResumePromptIfNeeded();
-}
-
-// ================================================================
-// Shadow cone visualization
-// ================================================================
-function createShadowCone(baseRadius: number, color: number): THREE.Mesh {
-  const length = SCENE_UNITS.EARTH_MOON_DIST * 1.5;
-  const geo = new THREE.ConeGeometry(baseRadius, length, 32, 1, true);
-  geo.translate(0, length / 2, 0);
-  geo.rotateX(-Math.PI / 2);
-  const mat = new THREE.MeshBasicMaterial({
-    color, transparent: true, opacity: 0.1, side: THREE.DoubleSide, depthWrite: false,
-  });
-  return new THREE.Mesh(geo, mat);
-}
-
-const _quat = new THREE.Quaternion();
-
-function orientConeAlongDir(cone: THREE.Mesh, origin: THREE.Vector3, direction: THREE.Vector3) {
-  cone.position.copy(origin);
-  _quat.setFromUnitVectors(new THREE.Vector3(0, 0, 1), direction.clone().normalize());
-  cone.quaternion.copy(_quat);
-}
-
-function updateShadowCones(earthCone: THREE.Mesh, moonCone: THREE.Mesh, sun: Sun, moon: Moon) {
-  const sunDir = sun.getDirection();
-  const antiSun = sunDir.clone().negate();
-
-  orientConeAlongDir(earthCone, new THREE.Vector3(0, 0, 0), antiSun);
-  earthCone.visible = true;
-
-  const phase = computePhaseInfo(state.moonAngle, state.sunAngle, state.nodeAngle);
-  const moonPos = moon.getWorldPosition();
-  if (phase.phaseAngle < 20) {
-    orientConeAlongDir(moonCone, moonPos, antiSun);
-    moonCone.visible = true;
-  } else {
-    moonCone.visible = false;
-  }
 }
 
 // ================================================================

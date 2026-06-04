@@ -30,7 +30,7 @@ import {
 } from '../astronomy/planetary';
 import { createPlanetariumStarfield } from './world/starfield';
 import { GyroSteering } from './input/GyroSteering';
-import { smoothstep } from '../shared/math/smoothstep';
+import { smoothstepUnclamped } from '../shared/math/smoothstep';
 import { projectToScreen } from '../shared/three/projectToScreen';
 import { setText } from '../shared/dom';
 import { Constellations } from './Constellations';
@@ -781,7 +781,7 @@ export class PlanetariumMode {
 
       const inner = systemRadius * 0.05;
       const t = Math.min(1, Math.max(0, (dist - inner) / (systemRadius - inner)));
-      const factor = smoothstep(t);
+      const factor = smoothstepUnclamped(t);
       if (factor < minFactor) {
         minFactor = factor;
         nearestPlanet = body.name;
@@ -799,7 +799,7 @@ export class PlanetariumMode {
       if (dist < sunSystemRadius) {
         const inner = sunSystemRadius * 0.05;
         const t = Math.min(1, Math.max(0, (dist - inner) / (sunSystemRadius - inner)));
-        const factor = smoothstep(t);
+        const factor = smoothstepUnclamped(t);
         if (factor < minFactor) {
           minFactor = factor;
           nearestPlanet = 'Sun';
@@ -825,7 +825,7 @@ export class PlanetariumMode {
         const systemR = planet.data.systemRadiusAU;
         const innerR = systemR * 0.1;
         const linear = 1 - Math.min(1, Math.max(0, (dist - innerR) / (systemR - innerR)));
-        const t = smoothstep(linear);
+        const t = smoothstepUnclamped(linear);
         const glowMat = planet.atmosphere.material as THREE.ShaderMaterial;
         if (glowMat.uniforms?.alphaScale) {
           glowMat.uniforms.alphaScale.value = 0.15 + 0.3 * t;
@@ -2069,7 +2069,7 @@ export class PlanetariumMode {
     const transfer = this.scriptedTransfer;
     transfer.elapsed = Math.min(transfer.elapsed + dt, transfer.duration);
     const t = transfer.elapsed / transfer.duration;
-    const ease = smoothstep(t);
+    const ease = smoothstepUnclamped(t);
 
     this.player.posX = THREE.MathUtils.lerp(transfer.startPos.x, transfer.endPos.x, ease);
     this.player.posY = THREE.MathUtils.lerp(transfer.startPos.y, transfer.endPos.y, ease);

@@ -15,7 +15,7 @@ import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
 
 import { SCENE_UNITS } from './shared/constants/sceneUnits';
 import { DEG2RAD } from './shared/math/angles';
-import { smoothstep } from './shared/math/smoothstep';
+import { smoothstepUnclamped } from './shared/math/smoothstep';
 import { computePhaseInfo } from './moonView/phase';
 import { projectToScreen } from './shared/three/projectToScreen';
 import { loadAllTextures } from './shared/assets/textureLoader';
@@ -574,7 +574,7 @@ function animateCamera(targetPos: THREE.Vector3, targetLook: THREE.Vector3, targ
   function step() {
     const elapsed = performance.now() - startTime;
     const t = Math.min(elapsed / duration, 1);
-    const ease = smoothstep(t);
+    const ease = smoothstepUnclamped(t);
     moonViewCamera.position.lerpVectors(startPos, targetPos, ease);
     moonViewControls.target.lerpVectors(startTarget, targetLook, ease);
     const fov = startFov + (targetFov - startFov) * ease;

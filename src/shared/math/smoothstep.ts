@@ -1,10 +1,11 @@
 /**
- * Hermite smoothstep of an already-clamped `t` in [0, 1] → `t*t*(3-2*t)`.
+ * Hermite smoothstep WITHOUT input clamping: `t*t*(3-2*t)`.
  *
- * Intentionally 1-arg and NON-clamping: every call site pre-clamps its input
- * (e.g. `Math.min(1, Math.max(0, …))`), so this mirrors the inlined
- * `t*t*(3-2*t)` it replaces exactly. Do not pass an unclamped value.
+ * Named to make the no-clamp behaviour explicit (unlike GLSL/lodash
+ * `smoothstep(edge0, edge1, x)`, which clamps). Every call site already
+ * pre-clamps t to [0,1] (e.g. `Math.min(1, Math.max(0, …))`), so this mirrors
+ * the inlined polynomial it replaced. Pass only values already in [0,1].
  */
-export function smoothstep(t: number): number {
+export function smoothstepUnclamped(t: number): number {
   return t * t * (3 - 2 * t);
 }

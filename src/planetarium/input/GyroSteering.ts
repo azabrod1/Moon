@@ -15,6 +15,7 @@ interface GyroAxes {
 
 export class GyroSteering {
   private enabledFlag = false;
+  private live = false;
   private availability: 'unknown' | 'granted' | 'denied' | 'unavailable' = 'unknown';
   private baseline: GyroAxes | null = null;
   private screenAngle = 0;
@@ -38,6 +39,7 @@ export class GyroSteering {
 
   /** Re-attach the listener on mode (re)activation if gyro is enabled. */
   attach(): void {
+    this.live = true;
     if (this.enabledFlag) {
       window.addEventListener('deviceorientation', this.handleDeviceOrientation);
     }
@@ -45,6 +47,7 @@ export class GyroSteering {
 
   /** Detach on deactivation; keeps `enabled` so re-activation restores it. */
   detach(): void {
+    this.live = false;
     window.removeEventListener('deviceorientation', this.handleDeviceOrientation);
     this.baseline = null;
     this.yawValue = 0;
@@ -91,6 +94,10 @@ export class GyroSteering {
         return;
       }
     }
+
+    // The async permission prompt can resolve after the mode was deactivated;
+    // don't attach a listener to a torn-down mode.
+    if (!this.live) return;
 
     this.availability = 'granted';
     this.enabledFlag = true;

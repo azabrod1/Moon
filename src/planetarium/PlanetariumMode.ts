@@ -289,7 +289,7 @@ export class PlanetariumMode {
       // Resume the chase cam 2s after an actual orbit; a click never yielded it.
       if (!this.userOrbiting) return;
       if (this.userOrbitTimeout !== null) clearTimeout(this.userOrbitTimeout);
-      this.userOrbitTimeout = window.setTimeout(() => { this.userOrbiting = false; }, 2000);
+      this.userOrbitTimeout = window.setTimeout(() => { this.userOrbiting = false; }, 600);
     };
     orbitDom.addEventListener('pointerup', endOrbitDrag);
     orbitDom.addEventListener('pointercancel', endOrbitDrag);
@@ -1067,8 +1067,20 @@ export class PlanetariumMode {
       (this.keys.has('s') ? 1 : 0);
     if (this.touchThrottle !== 0) throttle = this.touchThrottle;
 
+    const hasManualInput = yaw !== 0 || pitch !== 0 || throttle !== 0;
+
+    // Flying immediately resumes the chase camera — don't make the user wait out
+    // the post-drag look-around grace period when they start steering/throttling.
+    if (this.userOrbiting && hasManualInput) {
+      this.userOrbiting = false;
+      if (this.userOrbitTimeout !== null) {
+        clearTimeout(this.userOrbitTimeout);
+        this.userOrbitTimeout = null;
+      }
+    }
+
     // Any manual steering input disengages autopilot
-    if (this.autopilot && (yaw !== 0 || pitch !== 0 || throttle !== 0)) {
+    if (this.autopilot && hasManualInput) {
       this.disableAutopilot();
     }
 

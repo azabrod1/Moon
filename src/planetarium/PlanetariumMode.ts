@@ -1275,7 +1275,7 @@ export class PlanetariumMode {
       this.player.timeElapsed,
       this.planetWorldPositions,
     );
-    this.statsPanel.render(stats, this.fpsDisplay, this.player.getDistanceFromSun());
+    this.statsPanel.render(stats, this.fpsDisplay);
   }
 
   private updateSunLabel() {

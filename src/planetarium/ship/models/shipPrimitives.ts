@@ -73,7 +73,10 @@ export function createRodBetween(
     material,
   );
   rod.position.copy(start).add(end).multiplyScalar(0.5);
-  rod.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), direction.normalize());
+  // Guard a zero-length rod: normalize() of a zero vector yields NaN.
+  if (length > 1e-9) {
+    rod.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), direction.divideScalar(length));
+  }
   return rod;
 }
 

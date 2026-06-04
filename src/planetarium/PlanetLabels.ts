@@ -6,7 +6,7 @@
  */
 import * as THREE from 'three';
 import { type PlanetData, PLANETARIUM_BODIES } from './planets/planetData';
-import { projectToScreen } from '../shared/three/projectToScreen';
+import { projectToScreen, type ScreenProjection } from '../shared/three/projectToScreen';
 
 export interface PlanetLabel {
   sprite: THREE.Sprite;
@@ -33,6 +33,7 @@ export class PlanetLabels {
   foregroundDiscs: ForegroundDisc[] = [];
   private labelContainer: HTMLDivElement;
   private camera: THREE.PerspectiveCamera;
+  private projScratch: ScreenProjection = { x: 0, y: 0, ndcX: 0, ndcY: 0, ndcZ: 0 };
 
   constructor(scene: THREE.Scene, camera: THREE.PerspectiveCamera) {
     this.camera = camera;
@@ -139,7 +140,7 @@ export class PlanetLabels {
       const angularSize = (entry.planet.radiusAU * 2) / Math.max(distFromCamera, 0.0001);
       if (angularSize <= 0.01) continue;
 
-      const proj = projectToScreen(pos, this.camera, canvasWidth, canvasHeight);
+      const proj = projectToScreen(pos, this.camera, canvasWidth, canvasHeight, this.projScratch);
       if (proj.ndcZ >= 1) continue;
       const screenX = proj.x;
       const screenY = proj.y;
@@ -222,7 +223,7 @@ export class PlanetLabels {
       entry.sprite.visible = true;
 
       // Project to screen for label positioning
-      const proj = projectToScreen(pos, this.camera, canvasWidth, canvasHeight);
+      const proj = projectToScreen(pos, this.camera, canvasWidth, canvasHeight, this.projScratch);
       const screenX = proj.x;
       const screenY = proj.y;
 

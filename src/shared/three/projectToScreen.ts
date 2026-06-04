@@ -11,7 +11,8 @@
  * Uses a shared scratch vector internally and returns copied scalars, so each
  * result is independent of the next call — but it is single-threaded /
  * non-reentrant by design (don't nest two calls in one expression expecting
- * separate buffers).
+ * separate buffers). Pass a reused `out` object to avoid per-call
+ * allocation in hot per-frame loops.
  */
 import * as THREE from 'three';
 
@@ -35,13 +36,14 @@ export function projectToScreen(
   camera: THREE.Camera,
   width: number,
   height: number,
+  out?: ScreenProjection,
 ): ScreenProjection {
   scratch.set(pos.x, pos.y, pos.z).project(camera);
-  return {
-    x: (scratch.x * 0.5 + 0.5) * width,
-    y: (-scratch.y * 0.5 + 0.5) * height,
-    ndcX: scratch.x,
-    ndcY: scratch.y,
-    ndcZ: scratch.z,
-  };
+  const result = out ?? { x: 0, y: 0, ndcX: 0, ndcY: 0, ndcZ: 0 };
+  result.x = (scratch.x * 0.5 + 0.5) * width;
+  result.y = (-scratch.y * 0.5 + 0.5) * height;
+  result.ndcX = scratch.x;
+  result.ndcY = scratch.y;
+  result.ndcZ = scratch.z;
+  return result;
 }

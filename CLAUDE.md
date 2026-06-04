@@ -11,7 +11,7 @@ npm run preview    # Serve production build locally
 npm run gen:stars  # Regenerate the bright-star catalog (gen-stars.mjs)
 ```
 
-No test framework is configured. No linter is configured. **`npm run build` (which runs `tsc` then `vite build`) is the only automated safety net — run it locally after every change.** Note that CI (`.github/workflows/deploy.yml`) runs `vite build` directly and does **not** run `tsc`, so type errors only surface in a local `npm run build`. `tsconfig` is `strict` but does not set `noUnusedLocals`, so dead code is not flagged by the build.
+No test framework is configured. No linter is configured. **`npm run build` (which runs `tsc` then `vite build`) is the only automated safety net — run it locally after every change.** Note that CI (`.github/workflows/deploy.yml`) runs `vite build` directly and does **not** run `tsc`, so type errors only surface in a local `npm run build`. `tsconfig` is `strict` and sets `noUnusedLocals`/`noUnusedParameters`, so unused imports, locals, and parameters fail a local `npm run build` (this is what catches refactor leftovers — but CI skips `tsc`, so run the build locally).
 
 ## Architecture
 

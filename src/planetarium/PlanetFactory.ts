@@ -9,8 +9,6 @@ import * as THREE from 'three';
 import { type PlanetData, SUN_DATA } from './planets/planetData';
 import { createSaturnRings } from './planets/rings';
 import {
-  atmosphereVertexShader,
-  atmosphereFragmentShader,
   earthNightVertexShader,
   earthNightFragmentShader,
 } from '../shared/shaders/atmosphere';

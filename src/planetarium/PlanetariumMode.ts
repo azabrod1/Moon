@@ -22,7 +22,7 @@ import { PlayerShip } from './PlayerShip';
 import { PlanetLabels } from './PlanetLabels';
 import { PlanetariumStore, createDefaultPlanetariumState, type PlanetariumState, type LandedTarget } from './PlanetariumStore';
 import { computeStats } from './stats';
-import { PLANETARIUM_BODIES, SUN_DATA, type PlanetData } from './planets/planetData';
+import { PLANETARIUM_BODIES, type PlanetData } from './planets/planetData';
 import { createMoonMeshes, type MoonMesh } from './PlanetFactory';
 import {
   advancePlanetariumTime,
@@ -80,10 +80,6 @@ export class PlanetariumMode {
   private static readonly UI_REFRESH_INTERVAL_S = 1 / 8;
   private static readonly EARTH_DETAIL_MIN_DISTANCE_AU = 0.03;
   private static readonly EARTH_DETAIL_MIN_ANGULAR_DIAMETER_RAD = 0.003;
-  private static readonly MOON_PREWARM_START_DELAY_MS = 1500;
-  private static readonly MOON_PREWARM_IDLE_TIMEOUT_MS = 1000;
-  private static readonly MOON_PREWARM_FALLBACK_DELAY_MS = 250;
-  private static readonly MOON_PREWARM_MIN_IDLE_BUDGET_MS = 8;
   private static readonly MISSION_CONTROL_IDS = [
     'planetarium-btn-travel',
     'planetarium-btn-autopilot',
@@ -168,7 +164,6 @@ export class PlanetariumMode {
   private preLandAutopilot = false;
   private nearbyLandTarget: NonNullable<LandedTarget> | null = null;
   private travelSelection: NonNullable<LandedTarget> | null = null;
-  private travelMenuAutopilotMode = false;
 
   // Moon labels
   private moonLabels = new Map<string, HTMLDivElement>();
@@ -851,6 +846,11 @@ export class PlanetariumMode {
       }
     }
 
+    // Idempotent re-assert of the ship model that matches the active mission
+    // (or the default ship when none). Mission start/end already call
+    // setProfile explicitly; this per-frame reapply is a deliberate, cheap
+    // safety net guaranteeing the displayed model tracks mission state through
+    // every code path (incl. state restore) — do not "optimize" it away.
     this.player.setProfile(this.activeHistoricJourney?.shipProfile ?? 'default');
   }
 
@@ -1783,7 +1783,6 @@ export class PlanetariumMode {
       this.closeMenuPanel();
       menu.classList.add('visible');
       this.travelSelection = null;
-      this.travelMenuAutopilotMode = autopilotMode;
       // Swap primary button styling based on mode
       const landBtn = document.getElementById('travel-action-land');
       const flyBtn = document.getElementById('travel-action-fly');

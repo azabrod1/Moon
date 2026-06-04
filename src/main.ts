@@ -28,7 +28,6 @@ import {
   orbitDistanceKmFromLongitude,
   trueAnomalyDegFromLongitude,
 } from './astronomy/lunarOrbit';
-import { orientOrbitPlane } from './moonView/orbitPlane';
 import { Earth } from './moonView/bodies/Earth';
 import { Moon } from './moonView/bodies/Moon';
 import { Sun } from './moonView/bodies/Sun';
@@ -630,11 +629,6 @@ const btnModePlanetarium = document.getElementById('btn-mode-planetarium')!;
 
 // Moon-view scene objects (hidden while Planetarium is active)
 const moonViewObjects: THREE.Object3D[] = [];
-
-function isLoadingScreenVisible(): boolean {
-  const loadingScreen = document.getElementById('loading-screen');
-  return !!loadingScreen && !loadingScreen.classList.contains('hidden');
-}
 
 function setPlanetsLoadingPercent(completedUnits: number, totalUnits: number) {
   const clampedTotalUnits = Math.max(totalUnits, 1);

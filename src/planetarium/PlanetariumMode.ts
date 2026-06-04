@@ -156,6 +156,9 @@ export class PlanetariumMode {
   // Chase camera state
   private userOrbiting = false;
   private userOrbitTimeout: number | null = null;
+  private orbitDragging = false;
+  private orbitPointerStartX = 0;
+  private orbitPointerStartY = 0;
 
   // Landed mode: camera orbits a planet/moon while ship is hidden
   private landedOn: LandedTarget = null;
@@ -256,16 +259,39 @@ export class PlanetariumMode {
     this.controls.minDistance = 0.00001;
     this.controls.maxDistance = 5;
 
-    // Detect when user manually orbits (so chase cam yields temporarily)
-    this.controls.addEventListener('start', () => {
-      this.userOrbiting = true;
-      if (this.userOrbitTimeout !== null) clearTimeout(this.userOrbitTimeout);
+    // Yield the chase cam only on an actual orbit DRAG, never on a plain click.
+    // We track raw pointer pixels (pure user input) rather than OrbitControls'
+    // 'start'/'change' — the chase cam moves the camera every frame, so an
+    // angle-based test would false-trigger. A click used to set userOrbiting and
+    // freeze the chase cam for 2s, which reads as "everything froze" in open space.
+    const orbitDom = renderer.domElement;
+    orbitDom.addEventListener('pointerdown', (e) => {
+      if (!this.active) return;
+      this.orbitDragging = true;
+      this.orbitPointerStartX = e.clientX;
+      this.orbitPointerStartY = e.clientY;
+      if (this.userOrbitTimeout !== null) {
+        clearTimeout(this.userOrbitTimeout);
+        this.userOrbitTimeout = null;
+      }
     });
-    this.controls.addEventListener('end', () => {
-      // Resume chase cam after 2s of no interaction
+    orbitDom.addEventListener('pointermove', (e) => {
+      if (!this.orbitDragging || this.userOrbiting) return;
+      const dx = e.clientX - this.orbitPointerStartX;
+      const dy = e.clientY - this.orbitPointerStartY;
+      if (dx * dx + dy * dy > 16) this.userOrbiting = true; // moved > 4px = a drag
+    });
+    const endOrbitDrag = () => {
+      if (!this.orbitDragging) return;
+      this.orbitDragging = false;
+      // Resume the chase cam 2s after an actual orbit; a click never yielded it.
+      if (!this.userOrbiting) return;
       if (this.userOrbitTimeout !== null) clearTimeout(this.userOrbitTimeout);
       this.userOrbitTimeout = window.setTimeout(() => { this.userOrbiting = false; }, 2000);
-    });
+    };
+    orbitDom.addEventListener('pointerup', endOrbitDrag);
+    orbitDom.addEventListener('pointercancel', endOrbitDrag);
+    window.addEventListener('blur', endOrbitDrag); // failsafe if focus is lost mid-drag
 
     // Key handlers
     this.handleKeyDown = this.handleKeyDown.bind(this);

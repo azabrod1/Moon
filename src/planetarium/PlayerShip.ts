@@ -275,21 +275,23 @@ export class PlayerShip {
 
   setProfile(profile: ShipProfile) {
     this.profile = profile;
-    this.defaultModel.visible = profile === 'default';
+    this.setProbeModelsVisible(false);
     if (profile !== 'default') {
-      this.setProbeModelsVisible(false);
+      // Cassini's model loads asynchronously (GLB), so `cassiniModel` is null
+      // until it resolves. Resolve the probe model BEFORE hiding the default
+      // ship: a not-yet-loaded profile then falls back to the visible default
+      // rather than blanking the player out entirely.
       const probeModel = profile === 'cassini'
         ? this.cassiniModel
         : this.getOrCreateProbeModel(profile);
-      if (!probeModel) {
-        this.group.userData.shipModel = this.defaultModel;
+      if (probeModel) {
+        this.defaultModel.visible = false;
+        probeModel.visible = true;
+        this.group.userData.shipModel = probeModel;
         return;
       }
-      probeModel.visible = true;
-      this.group.userData.shipModel = probeModel;
-    } else {
-      this.setProbeModelsVisible(false);
-      this.group.userData.shipModel = this.defaultModel;
     }
+    this.defaultModel.visible = true;
+    this.group.userData.shipModel = this.defaultModel;
   }
 }

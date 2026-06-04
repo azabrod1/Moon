@@ -6,6 +6,7 @@
  */
 import * as THREE from 'three';
 import { type PlanetData, PLANETARIUM_BODIES } from './planets/planetData';
+import { projectToScreen, type ScreenProjection } from '../shared/three/projectToScreen';
 
 export interface PlanetLabel {
   sprite: THREE.Sprite;
@@ -32,7 +33,7 @@ export class PlanetLabels {
   foregroundDiscs: ForegroundDisc[] = [];
   private labelContainer: HTMLDivElement;
   private camera: THREE.PerspectiveCamera;
-  private tempV = new THREE.Vector3();
+  private projScratch: ScreenProjection = { x: 0, y: 0, ndcX: 0, ndcY: 0, ndcZ: 0 };
 
   constructor(scene: THREE.Scene, camera: THREE.PerspectiveCamera) {
     this.camera = camera;
@@ -125,7 +126,6 @@ export class PlanetLabels {
     const canvasWidth = renderer.domElement.clientWidth;
     const canvasHeight = renderer.domElement.clientHeight;
     this.foregroundDiscs.length = 0;
-    const projV = new THREE.Vector3();
     const halfFovTan = Math.tan((this.camera.fov * Math.PI) / 360);
     const camX = this.camera.position.x;
     const camY = this.camera.position.y;
@@ -140,11 +140,10 @@ export class PlanetLabels {
       const angularSize = (entry.planet.radiusAU * 2) / Math.max(distFromCamera, 0.0001);
       if (angularSize <= 0.01) continue;
 
-      projV.set(pos.x, pos.y, pos.z);
-      projV.project(this.camera);
-      if (projV.z >= 1) continue;
-      const screenX = (projV.x * 0.5 + 0.5) * canvasWidth;
-      const screenY = (-projV.y * 0.5 + 0.5) * canvasHeight;
+      const proj = projectToScreen(pos, this.camera, canvasWidth, canvasHeight, this.projScratch);
+      if (proj.ndcZ >= 1) continue;
+      const screenX = proj.x;
+      const screenY = proj.y;
       // Project disc radius to pixels. Pad by 1.1x to cover atmosphere glow.
       const radiusPx = (entry.planet.radiusAU * 1.1 / (Math.max(distFromCamera, entry.planet.radiusAU) * halfFovTan)) * (canvasHeight / 2);
       this.foregroundDiscs.push({ screenX, screenY, radiusPx, distFromCamera, name: entry.planet.name });
@@ -224,11 +223,9 @@ export class PlanetLabels {
       entry.sprite.visible = true;
 
       // Project to screen for label positioning
-      this.tempV.set(pos.x, pos.y, pos.z);
-      this.tempV.project(this.camera);
-
-      const screenX = (this.tempV.x * 0.5 + 0.5) * canvasWidth;
-      const screenY = (-this.tempV.y * 0.5 + 0.5) * canvasHeight;
+      const proj = projectToScreen(pos, this.camera, canvasWidth, canvasHeight, this.projScratch);
+      const screenX = proj.x;
+      const screenY = proj.y;
 
       // Occluded by a nearer foreground body? Test the LABEL's position
       // (below the marker), not the marker itself — the user wants the label
@@ -248,7 +245,7 @@ export class PlanetLabels {
       }
 
       // Only show if in front of camera and not occluded
-      if (!occluded && this.tempV.z < 1 && screenX > -50 && screenX < canvasWidth + 50 &&
+      if (!occluded && proj.ndcZ < 1 && screenX > -50 && screenX < canvasWidth + 50 &&
           screenY > -50 && screenY < canvasHeight + 50) {
         if (!entry.labelVisible) {
           entry.label.style.display = 'block';

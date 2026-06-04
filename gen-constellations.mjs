@@ -5,7 +5,7 @@ import { gunzipSync } from 'zlib';
 
 const HYG_V37_URL = 'https://raw.githubusercontent.com/astronexus/HYG-Database/main/hyg/v3/hyg_v37.csv.gz';
 const STELLARIUM_INDEX_URL = 'https://raw.githubusercontent.com/Stellarium/stellarium/master/skycultures/modern/index.json';
-const OUTPUT_PATH = path.resolve(process.cwd(), 'src/explore/data/constellations.ts');
+const OUTPUT_PATH = path.resolve(process.cwd(), 'src/planetarium/data/constellations.ts');
 
 /** Full names for IAU constellation abbreviations. */
 const CONSTELLATION_NAMES = {

@@ -6,6 +6,8 @@
 import * as THREE from 'three';
 import { CONSTELLATIONS } from './data/constellations';
 import { BRIGHT_STAR_CATALOG } from './data/brightStars';
+import { projectToScreen } from '../shared/three/projectToScreen';
+import { DEG2RAD, RAD2DEG } from '../shared/math/angles';
 
 const STAR_SPHERE_RADIUS = 85;
 const SNAP_RADIUS_DEG = 3; // max degrees to snap a constellation vertex to a catalog star
@@ -30,17 +32,16 @@ function celestialToVec3(raDeg: number, decDeg: number, out: THREE.Vector3): THR
  * Returns degrees.
  */
 function angularDistDeg(ra1: number, dec1: number, ra2: number, dec2: number): number {
-  const toRad = Math.PI / 180;
-  const d1 = dec1 * toRad;
-  const d2 = dec2 * toRad;
-  const dRa = (ra2 - ra1) * toRad;
+  const d1 = dec1 * DEG2RAD;
+  const d2 = dec2 * DEG2RAD;
+  const dRa = (ra2 - ra1) * DEG2RAD;
   const sinD1 = Math.sin(d1), cosD1 = Math.cos(d1);
   const sinD2 = Math.sin(d2), cosD2 = Math.cos(d2);
   const sinDRa = Math.sin(dRa), cosDRa = Math.cos(dRa);
   const a = cosD2 * sinDRa;
   const b = cosD1 * sinD2 - sinD1 * cosD2 * cosDRa;
   const c = sinD1 * sinD2 + cosD1 * cosD2 * cosDRa;
-  return Math.atan2(Math.sqrt(a * a + b * b), c) * (180 / Math.PI);
+  return Math.atan2(Math.sqrt(a * a + b * b), c) * RAD2DEG;
 }
 
 interface LabelState {
@@ -54,7 +55,6 @@ export class Constellations {
   readonly lines: THREE.LineSegments;
   private labels: LabelState[] = [];
   private labelContainer: HTMLDivElement;
-  private tempV = new THREE.Vector3();
 
   constructor() {
     // Build a cache of snapped positions: for each unique RA/Dec endpoint
@@ -180,14 +180,12 @@ export class Constellations {
     if (!this.lines.visible) return;
 
     for (const label of this.labels) {
-      this.tempV.copy(label.pos);
-      this.tempV.project(camera);
-
-      const screenX = (this.tempV.x * 0.5 + 0.5) * canvasWidth;
-      const screenY = (-this.tempV.y * 0.5 + 0.5) * canvasHeight;
+      const proj = projectToScreen(label.pos, camera, canvasWidth, canvasHeight);
+      const screenX = proj.x;
+      const screenY = proj.y;
 
       if (
-        this.tempV.z < 1 &&
+        proj.ndcZ < 1 &&
         screenX > -20 &&
         screenX < canvasWidth + 20 &&
         screenY > -20 &&

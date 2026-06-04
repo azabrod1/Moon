@@ -12,6 +12,10 @@ import { debugWarn } from '../shared/debug';
 
 const STORAGE_KEY = 'orbital-sim-planetarium-state';
 const LEGACY_STORAGE_KEY = 'orbital-sim-explore-state';
+const HELP_SEEN_KEY = 'planetarium-help-seen';
+// Pre-rename key, read-only compat: a user who dismissed help in the old
+// "explore" build shouldn't be shown it again after upgrading.
+const LEGACY_HELP_SEEN_KEY = 'explore-help-seen';
 const AUTO_SAVE_INTERVAL = 30_000; // 30 seconds
 const FALLBACK_DB_NAME = 'orbital-sim-storage';
 const FALLBACK_STORE_NAME = 'state';
@@ -232,6 +236,27 @@ export class PlanetariumStore {
     this.removeWebStorage('session', STORAGE_KEY);
     void this.removeIndexedDb(STORAGE_KEY);
     this.removeLegacyState();
+  }
+
+  /** True if the intro help has been dismissed before (this or a prior build). */
+  hasSeenHelp(): boolean {
+    try {
+      return Boolean(
+        localStorage.getItem(HELP_SEEN_KEY) || localStorage.getItem(LEGACY_HELP_SEEN_KEY),
+      );
+    } catch {
+      // Private browsing — treat as unseen so help still shows once per session.
+      return false;
+    }
+  }
+
+  /** Record that the intro help has been dismissed. */
+  markHelpSeen(): void {
+    try {
+      localStorage.setItem(HELP_SEEN_KEY, '1');
+    } catch {
+      /* ignore: private browsing */
+    }
   }
 
   private removeLegacyState(): void {

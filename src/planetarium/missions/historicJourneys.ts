@@ -68,16 +68,6 @@ function textureFallback(textureFile: string, label: string) {
   };
 }
 
-function textureImage(textureFile: string, label: string) {
-  return {
-    imageUrl: `${TEXTURE_BASE}${textureFile}`,
-    imageAlt: `${label} from the simulator texture set.`,
-    imageCredit: 'Simulator texture',
-    imageSourceLabel: label,
-    ...textureFallback(textureFile, label),
-  };
-}
-
 const voyager1Milestones: HistoricMilestone[] = [
   {
     id: 'launch',

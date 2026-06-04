@@ -1,12 +1,14 @@
 /**
- * PlanetariumMode — top-level controller for the "Planets" fly-through mode.
- * Owns the player ship, scene population (Sun, planets, moons, starfield,
- * constellations), DOM HUD wiring, autopilot/landing state, historic journey
- * playback, and persistence. Uses a floating-origin pattern: the player sits
- * at scene origin and all world objects are offset by the player's AU
- * position each frame. This file is the pre-refactor god object; Phase 1 of
- * the refactor plan splits it into World / Input / Navigation / Landing /
- * UI / State controllers behind a thin facade.
+ * PlanetariumMode — controller for the "Planets" fly-through mode. Owns the
+ * player ship, scene population (Sun, planets, moons, starfield, constellations),
+ * DOM HUD wiring, autopilot/landing state, historic-journey playback, and
+ * persistence. Uses a floating-origin pattern: the player sits at scene origin
+ * and all world objects are offset by the player's AU position each frame.
+ * Self-contained pieces are extracted to siblings — world/starfield,
+ * input/GyroSteering, ui/* panels, labels (PlanetLabels / SunLabel /
+ * Constellations), persistence (PlanetariumStore). The tightly-coupled
+ * per-frame core (update pipeline, camera, navigation, landing, missions) stays
+ * here on purpose: splitting it would scatter shared state behind indirection.
  */
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
@@ -20,7 +22,7 @@ import { PlayerShip } from './PlayerShip';
 import { PlanetLabels } from './PlanetLabels';
 import { PlanetariumStore, createDefaultPlanetariumState, type PlanetariumState, type LandedTarget } from './PlanetariumStore';
 import { computeStats } from './stats';
-import { PLANETARIUM_BODIES, SUN_DATA, type PlanetData } from './planets/planetData';
+import { PLANETARIUM_BODIES, type PlanetData } from './planets/planetData';
 import { createMoonMeshes, type MoonMesh } from './PlanetFactory';
 import {
   advancePlanetariumTime,
@@ -28,8 +30,11 @@ import {
   parseUtcInputValue,
   type SimulationTime,
 } from '../astronomy/planetary';
-import { BRIGHT_STAR_CATALOG } from './data/brightStars';
-import { TEXTURES } from '../shared/assets/textures';
+import { createPlanetariumStarfield } from './world/starfield';
+import { GyroSteering } from './input/GyroSteering';
+import { smoothstepUnclamped } from '../shared/math/smoothstep';
+import { projectToScreen } from '../shared/three/projectToScreen';
+import { setText } from '../shared/dom';
 import { Constellations } from './Constellations';
 import { getMoonsByPlanet } from './planets/moonData';
 import {
@@ -75,10 +80,6 @@ export class PlanetariumMode {
   private static readonly UI_REFRESH_INTERVAL_S = 1 / 8;
   private static readonly EARTH_DETAIL_MIN_DISTANCE_AU = 0.03;
   private static readonly EARTH_DETAIL_MIN_ANGULAR_DIAMETER_RAD = 0.003;
-  private static readonly MOON_PREWARM_START_DELAY_MS = 1500;
-  private static readonly MOON_PREWARM_IDLE_TIMEOUT_MS = 1000;
-  private static readonly MOON_PREWARM_FALLBACK_DELAY_MS = 250;
-  private static readonly MOON_PREWARM_MIN_IDLE_BUDGET_MS = 8;
   private static readonly MISSION_CONTROL_IDS = [
     'planetarium-btn-travel',
     'planetarium-btn-autopilot',
@@ -97,7 +98,6 @@ export class PlanetariumMode {
   private planetLabels: PlanetLabels | null = null;
   private store: PlanetariumStore;
   private starfield: THREE.Points | null = null;
-  private skybox: THREE.Mesh | null = null;
   private constellations: Constellations | null = null;
   private showConstellations = false;
 
@@ -149,16 +149,14 @@ export class PlanetariumMode {
   private touchPitch = 0;
   private touchThrottle = 0;
   private activeFlightTouchId: number | null = null;
-  private gyroEnabled = false;
-  private gyroAvailability: 'unknown' | 'granted' | 'denied' | 'unavailable' = 'unknown';
-  private gyroBaseline: { yawDeg: number; pitchDeg: number } | null = null;
-  private gyroScreenAngle = 0;
-  private gyroYaw = 0;
-  private gyroPitch = 0;
+  private gyro: GyroSteering;
 
   // Chase camera state
   private userOrbiting = false;
   private userOrbitTimeout: number | null = null;
+  private orbitDragging = false;
+  private orbitPointerStartX = 0;
+  private orbitPointerStartY = 0;
 
   // Landed mode: camera orbits a planet/moon while ship is hidden
   private landedOn: LandedTarget = null;
@@ -166,7 +164,6 @@ export class PlanetariumMode {
   private preLandAutopilot = false;
   private nearbyLandTarget: NonNullable<LandedTarget> | null = null;
   private travelSelection: NonNullable<LandedTarget> | null = null;
-  private travelMenuAutopilotMode = false;
 
   // Moon labels
   private moonLabels = new Map<string, HTMLDivElement>();
@@ -232,7 +229,7 @@ export class PlanetariumMode {
     if (this.resumeTimeAfterHelp) this.timeState.paused = false;
     this.resumeShipAfterHelp = false;
     this.resumeTimeAfterHelp = false;
-    try { localStorage.setItem('planetarium-help-seen', '1'); } catch { /* ignore */ }
+    this.store.markHelpSeen();
   }
 
   active = false;
@@ -259,21 +256,44 @@ export class PlanetariumMode {
     this.controls.minDistance = 0.00001;
     this.controls.maxDistance = 5;
 
-    // Detect when user manually orbits (so chase cam yields temporarily)
-    this.controls.addEventListener('start', () => {
-      this.userOrbiting = true;
-      if (this.userOrbitTimeout !== null) clearTimeout(this.userOrbitTimeout);
+    // Yield the chase cam only on an actual orbit DRAG, never on a plain click.
+    // We track raw pointer pixels (pure user input) rather than OrbitControls'
+    // 'start'/'change' — the chase cam moves the camera every frame, so an
+    // angle-based test would false-trigger. A click used to set userOrbiting and
+    // freeze the chase cam for 2s, which reads as "everything froze" in open space.
+    const orbitDom = renderer.domElement;
+    orbitDom.addEventListener('pointerdown', (e) => {
+      if (!this.active) return;
+      this.orbitDragging = true;
+      this.orbitPointerStartX = e.clientX;
+      this.orbitPointerStartY = e.clientY;
+      if (this.userOrbitTimeout !== null) {
+        clearTimeout(this.userOrbitTimeout);
+        this.userOrbitTimeout = null;
+      }
     });
-    this.controls.addEventListener('end', () => {
-      // Resume chase cam after 2s of no interaction
-      if (this.userOrbitTimeout !== null) clearTimeout(this.userOrbitTimeout);
-      this.userOrbitTimeout = window.setTimeout(() => { this.userOrbiting = false; }, 2000);
+    orbitDom.addEventListener('pointermove', (e) => {
+      if (!this.orbitDragging || this.userOrbiting) return;
+      const dx = e.clientX - this.orbitPointerStartX;
+      const dy = e.clientY - this.orbitPointerStartY;
+      if (dx * dx + dy * dy > 16) this.userOrbiting = true; // moved > 4px = a drag
     });
+    const endOrbitDrag = () => {
+      if (!this.orbitDragging) return;
+      this.orbitDragging = false;
+      // Resume the chase cam 2s after an actual orbit; a click never yielded it.
+      if (!this.userOrbiting) return;
+      if (this.userOrbitTimeout !== null) clearTimeout(this.userOrbitTimeout);
+      this.userOrbitTimeout = window.setTimeout(() => { this.userOrbiting = false; }, 600);
+    };
+    orbitDom.addEventListener('pointerup', endOrbitDrag);
+    orbitDom.addEventListener('pointercancel', endOrbitDrag);
+    window.addEventListener('blur', endOrbitDrag); // failsafe if focus is lost mid-drag
 
     // Key handlers
     this.handleKeyDown = this.handleKeyDown.bind(this);
     this.handleKeyUp = this.handleKeyUp.bind(this);
-    this.handleDeviceOrientation = this.handleDeviceOrientation.bind(this);
+    this.gyro = new GyroSteering((message) => this.notification.show(message), () => this.updateTimeUI());
   }
 
   hasLoadedSolarSystem(): boolean {
@@ -375,7 +395,7 @@ export class PlanetariumMode {
 
     // Create starfield for the Planetarium (much larger than Moon view)
     if (!this.starfield) {
-      this.starfield = this.createPlanetariumStarfield();
+      this.starfield = createPlanetariumStarfield();
       this.scene.add(this.starfield);
     }
 
@@ -411,9 +431,7 @@ export class PlanetariumMode {
     // Wire up keyboard
     window.addEventListener('keydown', this.handleKeyDown);
     window.addEventListener('keyup', this.handleKeyUp);
-    if (this.gyroEnabled) {
-      window.addEventListener('deviceorientation', this.handleDeviceOrientation);
-    }
+    this.gyro.attach();
 
     // Wire up UI controls (once only)
     if (!this.uiWired) {
@@ -482,13 +500,10 @@ export class PlanetariumMode {
     // Remove keyboard handlers
     window.removeEventListener('keydown', this.handleKeyDown);
     window.removeEventListener('keyup', this.handleKeyUp);
-    window.removeEventListener('deviceorientation', this.handleDeviceOrientation);
+    this.gyro.detach();
     this.touchYaw = 0;
     this.touchPitch = 0;
     this.touchThrottle = 0;
-    this.gyroBaseline = null;
-    this.gyroYaw = 0;
-    this.gyroPitch = 0;
     this.uiRefreshAccumulator = PlanetariumMode.UI_REFRESH_INTERVAL_S;
 
     // Disable controls
@@ -522,7 +537,6 @@ export class PlanetariumMode {
     }
     this.player.group.visible = visible && this.showShip;
     if (this.starfield) this.starfield.visible = visible;
-    if (this.skybox) this.skybox.visible = visible;
     if (this.constellations) this.constellations.setVisible(visible && this.showConstellations);
   }
 
@@ -664,12 +678,9 @@ export class PlanetariumMode {
     // Player is at origin (or very close)
     this.player.group.position.set(0, 0, 0);
 
-    // Starfield + skybox + constellations follow camera (always centered on player)
+    // Starfield + constellations follow camera (always centered on player)
     if (this.starfield) {
       this.starfield.position.set(0, 0, 0);
-    }
-    if (this.skybox) {
-      this.skybox.position.set(0, 0, 0);
     }
     if (this.constellations) {
       this.constellations.lines.position.set(0, 0, 0);
@@ -767,7 +778,7 @@ export class PlanetariumMode {
 
       const inner = systemRadius * 0.05;
       const t = Math.min(1, Math.max(0, (dist - inner) / (systemRadius - inner)));
-      const factor = t * t * (3 - 2 * t); // smoothstep
+      const factor = smoothstepUnclamped(t);
       if (factor < minFactor) {
         minFactor = factor;
         nearestPlanet = body.name;
@@ -785,7 +796,7 @@ export class PlanetariumMode {
       if (dist < sunSystemRadius) {
         const inner = sunSystemRadius * 0.05;
         const t = Math.min(1, Math.max(0, (dist - inner) / (sunSystemRadius - inner)));
-        const factor = t * t * (3 - 2 * t);
+        const factor = smoothstepUnclamped(t);
         if (factor < minFactor) {
           minFactor = factor;
           nearestPlanet = 'Sun';
@@ -811,7 +822,7 @@ export class PlanetariumMode {
         const systemR = planet.data.systemRadiusAU;
         const innerR = systemR * 0.1;
         const linear = 1 - Math.min(1, Math.max(0, (dist - innerR) / (systemR - innerR)));
-        const t = linear * linear * (3 - 2 * linear);
+        const t = smoothstepUnclamped(linear);
         const glowMat = planet.atmosphere.material as THREE.ShaderMaterial;
         if (glowMat.uniforms?.alphaScale) {
           glowMat.uniforms.alphaScale.value = 0.15 + 0.3 * t;
@@ -835,6 +846,11 @@ export class PlanetariumMode {
       }
     }
 
+    // Idempotent re-assert of the ship model that matches the active mission
+    // (or the default ship when none). Mission start/end already call
+    // setProfile explicitly; this per-frame reapply is a deliberate, cheap
+    // safety net guaranteeing the displayed model tracks mission state through
+    // every code path (incl. state restore) — do not "optimize" it away.
     this.player.setProfile(this.activeHistoricJourney?.shipProfile ?? 'default');
   }
 
@@ -924,11 +940,11 @@ export class PlanetariumMode {
         const angularSize = (effectiveRadiusAU * 2) / Math.max(distFromCamera, 0.0001);
         if (angularSize <= 0.01) continue;
 
-        const proj = tempV.clone().project(this.camera);
-        if (proj.z >= 1) continue;
         const canvasW = this.renderer.domElement.clientWidth;
-        const screenX = (proj.x * 0.5 + 0.5) * canvasW;
-        const screenY = (-proj.y * 0.5 + 0.5) * canvasH;
+        const proj = projectToScreen(tempV, this.camera, canvasW, canvasH);
+        if (proj.ndcZ >= 1) continue;
+        const screenX = proj.x;
+        const screenY = proj.y;
         const radiusPx = (effectiveRadiusAU * 1.1 / (Math.max(distFromCamera, effectiveRadiusAU) * halfFovTan)) * (canvasH / 2);
         this.planetLabels.addForegroundDisc({ screenX, screenY, radiusPx, distFromCamera, name: `moon:${m.data.name}` });
       }
@@ -942,11 +958,11 @@ export class PlanetariumMode {
         const shipSceneRadiusAU = PlanetariumMode.SHIP_OCCLUDER_RADIUS_AU;
         const angularSize = (shipSceneRadiusAU * 2) / distFromCamera;
         if (angularSize > 0.005) {
-          const proj = tempV.set(0, 0, 0).project(this.camera);
-          if (proj.z < 1) {
-            const canvasW = this.renderer.domElement.clientWidth;
-            const screenX = (proj.x * 0.5 + 0.5) * canvasW;
-            const screenY = (-proj.y * 0.5 + 0.5) * canvasH;
+          const canvasW = this.renderer.domElement.clientWidth;
+          const proj = projectToScreen(tempV.set(0, 0, 0), this.camera, canvasW, canvasH);
+          if (proj.ndcZ < 1) {
+            const screenX = proj.x;
+            const screenY = proj.y;
             const radiusPx = (shipSceneRadiusAU / (Math.max(distFromCamera, shipSceneRadiusAU) * halfFovTan)) * (canvasH / 2);
             this.planetLabels.addForegroundDisc({ screenX, screenY, radiusPx, distFromCamera, name: 'ship' });
           }
@@ -980,14 +996,14 @@ export class PlanetariumMode {
 
         m.mesh.getWorldPosition(tempV);
         const moonCamDist = tempV.distanceTo(this.camera.position);
-        tempV.project(this.camera);
-        if (tempV.z >= 1) {
+        const proj = projectToScreen(tempV, this.camera, canvasW, canvasH);
+        if (proj.ndcZ >= 1) {
           if (label.style.display !== 'none') label.style.display = 'none';
           continue;
         }
 
-        let sx = (tempV.x * 0.5 + 0.5) * canvasW;
-        let sy = (-tempV.y * 0.5 + 0.5) * canvasH;
+        let sx = proj.x;
+        let sy = proj.y;
         const margin = 30;
         const onScreen = sx >= margin && sx <= canvasW - margin &&
                          sy >= margin && sy <= canvasH - margin;
@@ -1035,14 +1051,14 @@ export class PlanetariumMode {
       (this.keys.has('arrowright') || this.keys.has('d') ? 1 : 0) -
       (this.keys.has('arrowleft') || this.keys.has('a') ? 1 : 0);
     let yaw = yawFromKeys;
-    yaw = THREE.MathUtils.clamp(yaw + this.touchYaw + this.gyroYaw, -1, 1);
+    yaw = THREE.MathUtils.clamp(yaw + this.touchYaw + this.gyro.yaw, -1, 1);
     this.player.yawInput = yaw;
 
     const pitchFromKeys =
       (this.keys.has('arrowup') ? 1 : 0) -
       (this.keys.has('arrowdown') ? 1 : 0);
     let pitch = pitchFromKeys;
-    pitch = THREE.MathUtils.clamp(pitch + this.touchPitch + this.gyroPitch, -1, 1);
+    pitch = THREE.MathUtils.clamp(pitch + this.touchPitch + this.gyro.pitch, -1, 1);
     this.player.pitchInput = pitch;
 
     // Throttle (keyboard + touch)
@@ -1051,8 +1067,20 @@ export class PlanetariumMode {
       (this.keys.has('s') ? 1 : 0);
     if (this.touchThrottle !== 0) throttle = this.touchThrottle;
 
+    const hasManualInput = yaw !== 0 || pitch !== 0 || throttle !== 0;
+
+    // Flying immediately resumes the chase camera — don't make the user wait out
+    // the post-drag look-around grace period when they start steering/throttling.
+    if (this.userOrbiting && hasManualInput) {
+      this.userOrbiting = false;
+      if (this.userOrbitTimeout !== null) {
+        clearTimeout(this.userOrbitTimeout);
+        this.userOrbitTimeout = null;
+      }
+    }
+
     // Any manual steering input disengages autopilot
-    if (this.autopilot && (yaw !== 0 || pitch !== 0 || throttle !== 0)) {
+    if (this.autopilot && hasManualInput) {
       this.disableAutopilot();
     }
 
@@ -1114,7 +1142,6 @@ export class PlanetariumMode {
     if (e.key === ' ') {
       e.preventDefault();
       this.player.moving = !this.player.moving;
-      this.updatePauseButtonLabel();
     }
 
     // P toggles autopilot
@@ -1249,9 +1276,7 @@ export class PlanetariumMode {
   }
 
   private showIntroText() {
-    try {
-      if (localStorage.getItem('planetarium-help-seen') || localStorage.getItem('explore-help-seen')) return;
-    } catch { /* private browsing — show it once per session */ }
+    if (this.store.hasSeenHelp()) return;
     if (this.resumePrompt.isVisible()) return;
     this.showHelp();
   }
@@ -1264,7 +1289,7 @@ export class PlanetariumMode {
       this.player.timeElapsed,
       this.planetWorldPositions,
     );
-    this.statsPanel.render(stats, this.fpsDisplay, this.player.getDistanceFromSun());
+    this.statsPanel.render(stats, this.fpsDisplay);
   }
 
   private updateSunLabel() {
@@ -1277,7 +1302,6 @@ export class PlanetariumMode {
       (x, y, depth) => this.planetLabels?.isScreenPointOccluded(x, y, depth) ?? false,
     );
   }
-
 
   private formatSystemSpeed(speedMultiplier: number): string {
     const kmPerS = speedMultiplier * 299792.458;
@@ -1321,11 +1345,6 @@ export class PlanetariumMode {
           : `${this.player.speedC.toFixed(1)}c`;
       }
     }
-  }
-
-  private updatePauseButtonLabel() {
-    const btn = document.getElementById('planetarium-btn-pause');
-    if (btn) btn.textContent = this.player.moving ? '\u23F8' : '\u25B6';
   }
 
   private isMissionActive(): boolean {
@@ -1601,7 +1620,7 @@ export class PlanetariumMode {
     });
 
     document.getElementById('settings-gyro-toggle')?.addEventListener('click', () => {
-      void this.toggleGyroControls();
+      void this.gyro.toggle();
     });
 
     document.getElementById('settings-constellations-toggle')?.addEventListener('click', () => {
@@ -1764,7 +1783,6 @@ export class PlanetariumMode {
       this.closeMenuPanel();
       menu.classList.add('visible');
       this.travelSelection = null;
-      this.travelMenuAutopilotMode = autopilotMode;
       // Swap primary button styling based on mode
       const landBtn = document.getElementById('travel-action-land');
       const flyBtn = document.getElementById('travel-action-fly');
@@ -1894,11 +1912,6 @@ export class PlanetariumMode {
     milestone: HistoricMilestone,
     stepIndex: number,
   ) {
-    const setText = (id: string, text: string) => {
-      const el = document.getElementById(id);
-      if (el) el.textContent = text;
-    };
-
     setText('historic-kicker', journey.label);
     setText('historic-step', `${stepIndex + 1} / ${journey.milestones.length}`);
     setText('historic-title', milestone.title);
@@ -2053,7 +2066,6 @@ export class PlanetariumMode {
       endMoving: options.movingAfter,
     };
     this.player.moving = true;
-    this.updatePauseButtonLabel();
     this.userOrbiting = false;
   }
 
@@ -2063,7 +2075,7 @@ export class PlanetariumMode {
     const transfer = this.scriptedTransfer;
     transfer.elapsed = Math.min(transfer.elapsed + dt, transfer.duration);
     const t = transfer.elapsed / transfer.duration;
-    const ease = t * t * (3 - 2 * t);
+    const ease = smoothstepUnclamped(t);
 
     this.player.posX = THREE.MathUtils.lerp(transfer.startPos.x, transfer.endPos.x, ease);
     this.player.posY = THREE.MathUtils.lerp(transfer.startPos.y, transfer.endPos.y, ease);
@@ -2073,7 +2085,6 @@ export class PlanetariumMode {
 
     if (t >= 1) {
       this.player.moving = transfer.endMoving;
-      this.updatePauseButtonLabel();
       this.scriptedTransfer = null;
     }
 
@@ -2540,7 +2551,6 @@ export class PlanetariumMode {
     this.rebuildPlanetPositions();
 
     this.updateSpeedSlider();
-    this.updatePauseButtonLabel();
     this.updateTimeUI();
 
     // Restore landed state if saved
@@ -2549,111 +2559,6 @@ export class PlanetariumMode {
     } else {
       this.resetCruiseCamera();
     }
-  }
-
-  private getStarColor(colorIndex: number): THREE.Color {
-    const clamped = THREE.MathUtils.clamp(colorIndex, -0.3, 1.8);
-    const t = (clamped + 0.3) / 2.1;
-    const cool = new THREE.Color(0.55, 0.70, 1.0);
-    const neutral = new THREE.Color(1.0, 0.97, 0.92);
-    const warm = new THREE.Color(1.0, 0.68, 0.38);
-    return t < 0.5
-      ? cool.clone().lerp(neutral, t * 2)
-      : neutral.clone().lerp(warm, (t - 0.5) * 2);
-  }
-
-  private createPlanetariumStarfield(): THREE.Points {
-    // Filter out Sol (rendered as 3D mesh)
-    const catalog = BRIGHT_STAR_CATALOG.filter((s) => s.magnitude > -10);
-    const starCount = catalog.length;
-    const positions = new Float32Array(starCount * 3);
-    const colors = new Float32Array(starCount * 3);
-    const sizes = new Float32Array(starCount);
-
-    for (let i = 0; i < starCount; i++) {
-      const star = catalog[i];
-      const radius = 85;
-      const ra = THREE.MathUtils.degToRad(star.raDeg);
-      const dec = THREE.MathUtils.degToRad(star.decDeg);
-      const cosDec = Math.cos(dec);
-      const color = this.getStarColor(star.colorIndex);
-      const brightness = THREE.MathUtils.clamp(1.2 - (star.magnitude + 1.44) / 8, 0.25, 1.2);
-
-      positions[i * 3] = radius * cosDec * Math.cos(ra);
-      positions[i * 3 + 1] = radius * Math.sin(dec);
-      positions[i * 3 + 2] = radius * cosDec * Math.sin(ra);
-
-      colors[i * 3] = color.r * brightness;
-      colors[i * 3 + 1] = color.g * brightness;
-      colors[i * 3 + 2] = color.b * brightness;
-
-      // More spread so constellation stars (mag 1-3) stand out from dim ones
-      sizes[i] = THREE.MathUtils.clamp(6.0 - star.magnitude * 1.1, 1.2, 6.5);
-    }
-
-    const geo = new THREE.BufferGeometry();
-    geo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
-    geo.setAttribute('color', new THREE.BufferAttribute(colors, 3));
-    geo.setAttribute('size', new THREE.BufferAttribute(sizes, 1));
-
-    // Custom shader for per-vertex star sizes
-    const mat = new THREE.ShaderMaterial({
-      uniforms: {
-        pixelRatio: { value: Math.min(window.devicePixelRatio, 2) },
-      },
-      vertexShader: `
-        attribute float size;
-        varying vec3 vColor;
-        uniform float pixelRatio;
-        void main() {
-          vColor = color;
-          vec4 mvPosition = modelViewMatrix * vec4(position, 1.0);
-          gl_Position = projectionMatrix * mvPosition;
-          gl_PointSize = size * pixelRatio;
-        }
-      `,
-      fragmentShader: `
-        varying vec3 vColor;
-        void main() {
-          float d = length(gl_PointCoord - vec2(0.5));
-          if (d > 0.5) discard;
-          float alpha = 1.0 - smoothstep(0.2, 0.5, d);
-          gl_FragColor = vec4(vColor, alpha);
-        }
-      `,
-      transparent: true,
-      depthWrite: false,
-      vertexColors: true,
-    });
-
-    return new THREE.Points(geo, mat);
-  }
-
-  private createSkybox(): void {
-    const loader = new THREE.TextureLoader();
-    loader.load(TEXTURES.MILKY_WAY, (tex) => {
-      tex.colorSpace = THREE.SRGBColorSpace;
-      const geo = new THREE.SphereGeometry(84, 64, 32);
-      const mat = new THREE.MeshBasicMaterial({
-        map: tex,
-        side: THREE.BackSide,
-        blending: THREE.AdditiveBlending,
-        opacity: 1.0,
-        depthWrite: false,
-        depthTest: false,
-      });
-      const mesh = new THREE.Mesh(geo, mat);
-      mesh.renderOrder = -1;
-      // Solar System Scope texture is in galactic coordinates —
-      // rotate so the Milky Way band aligns with the equatorial star catalog
-      mesh.rotation.set(
-        THREE.MathUtils.degToRad(60.2),
-        THREE.MathUtils.degToRad(192.86),
-        0,
-      );
-      this.skybox = mesh;
-      this.scene.add(mesh);
-    });
   }
 
   private getTargetWorldPosition(target: NonNullable<LandedTarget>): { x: number; y: number; z: number } | null {
@@ -2677,7 +2582,6 @@ export class PlanetariumMode {
     this.autopilotTarget = target;
     this.autopilot = true;
     this.player.moving = true;
-    this.updatePauseButtonLabel();
     // Ensure reasonable cruise speed
     if (this.player.speedMultiplier < PlayerShip.SPEED_DEFAULT) {
       this.player.speedMultiplier = PlayerShip.SPEED_DEFAULT;
@@ -2797,18 +2701,18 @@ export class PlanetariumMode {
   private updateTimeUI() {
     this.timePanel.render(this.timeState);
     const gyroLabel = document.getElementById('settings-gyro-label');
-    if (gyroLabel) gyroLabel.textContent = this.getGyroStatusLabel();
+    if (gyroLabel) gyroLabel.textContent = this.gyro.statusLabel();
     const gyroToggle = document.getElementById('settings-gyro-toggle');
     if (gyroToggle) {
-      gyroToggle.classList.toggle('active', this.gyroEnabled);
-      gyroToggle.setAttribute('aria-pressed', this.gyroEnabled ? 'true' : 'false');
-      const status = this.getGyroStatusLabel();
+      gyroToggle.classList.toggle('active', this.gyro.enabled);
+      gyroToggle.setAttribute('aria-pressed', this.gyro.enabled ? 'true' : 'false');
+      const status = this.gyro.statusLabel();
       gyroToggle.setAttribute('title',
         status === 'Denied'
           ? 'Motion sensor permission was denied'
           : status === 'N/A'
             ? 'Motion sensors are not available on this device'
-            : this.gyroEnabled
+            : this.gyro.enabled
               ? 'Gyro steering is active'
               : 'Enable gyro steering',
       );
@@ -2835,132 +2739,6 @@ export class PlanetariumMode {
     this.touchPitch = applyDeadZone(rawY);
   }
 
-  private async toggleGyroControls() {
-    if (this.gyroEnabled) {
-      this.gyroEnabled = false;
-      this.gyroBaseline = null;
-      this.gyroYaw = 0;
-      this.gyroPitch = 0;
-      window.removeEventListener('deviceorientation', this.handleDeviceOrientation);
-      this.updateTimeUI();
-      this.notification.show('Gyro steering off');
-      return;
-    }
-
-    const orientationCtor = window.DeviceOrientationEvent as typeof DeviceOrientationEvent & {
-      requestPermission?: () => Promise<'granted' | 'denied'>;
-    };
-    if (typeof orientationCtor === 'undefined') {
-      this.gyroAvailability = 'unavailable';
-      this.updateTimeUI();
-      this.notification.show('Gyro steering is not available on this device');
-      return;
-    }
-
-    if (typeof orientationCtor.requestPermission === 'function' && this.gyroAvailability !== 'granted') {
-      let permission: 'granted' | 'denied';
-      try {
-        permission = await orientationCtor.requestPermission();
-      } catch {
-        permission = 'denied';
-      }
-      if (permission !== 'granted') {
-        this.gyroAvailability = 'denied';
-        this.gyroEnabled = false;
-        this.gyroBaseline = null;
-        this.gyroYaw = 0;
-        this.gyroPitch = 0;
-        this.updateTimeUI();
-        this.notification.show('Gyro permission denied');
-        return;
-      }
-    }
-
-    this.gyroAvailability = 'granted';
-    this.gyroEnabled = true;
-    this.gyroBaseline = null;
-    this.gyroYaw = 0;
-    this.gyroPitch = 0;
-    this.gyroScreenAngle = this.getGyroScreenAngle();
-    window.addEventListener('deviceorientation', this.handleDeviceOrientation);
-    this.updateTimeUI();
-    this.notification.show('Gyro steering on — hold your phone at a comfortable angle to calibrate');
-  }
-
-  private handleDeviceOrientation(event: DeviceOrientationEvent) {
-    if (!this.gyroEnabled) return;
-    const rawGamma = event.gamma;
-    const rawBeta = event.beta;
-    if (!Number.isFinite(rawGamma) || !Number.isFinite(rawBeta)) return;
-    const gamma = rawGamma as number;
-    const beta = rawBeta as number;
-
-    const angle = this.getGyroScreenAngle();
-    const mapped = this.mapGyroAxes(beta, gamma, angle);
-    if (!mapped) return;
-
-    if (this.gyroBaseline === null || angle !== this.gyroScreenAngle) {
-      this.gyroScreenAngle = angle;
-      this.gyroBaseline = mapped;
-      this.gyroYaw = 0;
-      this.gyroPitch = 0;
-      return;
-    }
-
-    this.gyroYaw = THREE.MathUtils.lerp(
-      this.gyroYaw,
-      this.normalizeGyroDelta(this.gyroBaseline.yawDeg - mapped.yawDeg),
-      0.18,
-    );
-    this.gyroPitch = THREE.MathUtils.lerp(
-      this.gyroPitch,
-      this.normalizeGyroDelta(mapped.pitchDeg - this.gyroBaseline.pitchDeg),
-      0.18,
-    );
-  }
-
-  private getGyroStatusLabel() {
-    if (this.gyroEnabled) return 'On';
-    if (this.gyroAvailability === 'denied') return 'Denied';
-    if (this.gyroAvailability === 'unavailable') return 'N/A';
-    return 'Off';
-  }
-
-  private getGyroScreenAngle() {
-    const orientation = screen.orientation;
-    if (orientation && typeof orientation.angle === 'number') {
-      return ((orientation.angle % 360) + 360) % 360;
-    }
-    const legacyOrientation = (window as Window & { orientation?: number }).orientation;
-    return typeof legacyOrientation === 'number'
-      ? ((legacyOrientation % 360) + 360) % 360
-      : 0;
-  }
-
-  private mapGyroAxes(beta: number, gamma: number, angle: number) {
-    if (!Number.isFinite(beta) || !Number.isFinite(gamma)) return null;
-
-    if (angle === 90) {
-      return { yawDeg: beta, pitchDeg: -gamma };
-    }
-    if (angle === 180) {
-      return { yawDeg: -gamma, pitchDeg: -beta };
-    }
-    if (angle === 270) {
-      return { yawDeg: -beta, pitchDeg: gamma };
-    }
-    return { yawDeg: gamma, pitchDeg: beta };
-  }
-
-  private normalizeGyroDelta(deltaDeg: number) {
-    const deadZone = 3;
-    const fullTilt = 28;
-    const absDelta = Math.abs(deltaDeg);
-    if (absDelta <= deadZone) return 0;
-    const normalized = (absDelta - deadZone) / (fullTilt - deadZone);
-    return THREE.MathUtils.clamp(normalized * Math.sign(deltaDeg), -1, 1);
-  }
-
   dispose() {
     this.deactivate();
     this.notification.dispose();
@@ -2984,13 +2762,6 @@ export class PlanetariumMode {
     }
     this.player.group.removeFromParent();
     if (this.starfield) this.starfield.removeFromParent();
-    if (this.skybox) {
-      this.skybox.removeFromParent();
-      (this.skybox.material as THREE.MeshBasicMaterial).map?.dispose();
-      (this.skybox.material as THREE.MeshBasicMaterial).dispose();
-      this.skybox.geometry.dispose();
-      this.skybox = null;
-    }
     if (this.constellations) {
       this.constellations.dispose();
       this.constellations = null;

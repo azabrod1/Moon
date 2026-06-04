@@ -5,7 +5,7 @@
  * phase/eclipse visualization.
  */
 
-import { DEG, RAD } from './constants';
+import { DEG, J2000 } from './constants';
 
 /** Julian Day Number from a Date object (UTC). */
 export function dateToJD(date: Date): number {
@@ -30,7 +30,7 @@ export function dateToJD(date: Date): number {
 
 /** Centuries since J2000.0 epoch. */
 function T(jd: number): number {
-  return (jd - 2451545.0) / 36525.0;
+  return (jd - J2000) / 36525.0;
 }
 
 /** Normalize angle to 0..360. */
@@ -270,13 +270,8 @@ export function computeOrbitalState(date: Date): OrbitalState {
   else if (absElong < 170) phaseName = elongation > 0 ? 'Waxing Gibbous' : 'Waning Gibbous';
   else phaseName = 'Full Moon';
 
-  // Eclipse detection: Moon near node AND at conjunction/opposition
-  const moonRelNode = norm180(moon.longitude - moon.ascending_node);
-  const distFromNode = Math.min(
-    Math.abs(moonRelNode),
-    Math.abs(Math.abs(moonRelNode) - 180),
-  );
-  // Also use latitude — Moon close to ecliptic
+  // Eclipse detection: Moon close to the ecliptic (small latitude) at
+  // conjunction/opposition.
   const absLat = Math.abs(moon.latitude);
   const nodeProximity = Math.max(0, 1 - absLat / 1.5); // within ~1.5° of ecliptic
 

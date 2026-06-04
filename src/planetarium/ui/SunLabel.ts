@@ -6,6 +6,7 @@
  * churn out of the hot path.
  */
 import * as THREE from 'three';
+import { projectToScreen } from '../../shared/three/projectToScreen';
 
 const AU_IN_KM = 149597870.7;
 const LABEL_MARGIN_PX = 50;
@@ -17,7 +18,6 @@ export class SunLabel {
   private visible = false;
   private lastTransform = '';
   private lastDistText = '';
-  private readonly projected = new THREE.Vector3();
 
   attach(): void {
     const container = document.getElementById('planet-labels');
@@ -38,14 +38,14 @@ export class SunLabel {
   ): void {
     if (!this.el) return;
 
-    this.projected.copy(sunWorldPos).project(camera);
-    const screenX = (this.projected.x * 0.5 + 0.5) * canvas.clientWidth;
-    const screenY = (-this.projected.y * 0.5 + 0.5) * canvas.clientHeight;
+    const projected = projectToScreen(sunWorldPos, camera, canvas.clientWidth, canvas.clientHeight);
+    const screenX = projected.x;
+    const screenY = projected.y;
 
     const depth = camera.position.distanceTo(sunWorldPos);
     const occluded = isOccluded(screenX, screenY + OCCLUSION_TEST_OFFSET_PX, depth);
 
-    const onScreen = this.projected.z < 1
+    const onScreen = projected.ndcZ < 1
       && screenX > -LABEL_MARGIN_PX && screenX < canvas.clientWidth + LABEL_MARGIN_PX
       && screenY > -LABEL_MARGIN_PX && screenY < canvas.clientHeight + LABEL_MARGIN_PX;
 

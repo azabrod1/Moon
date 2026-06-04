@@ -66,8 +66,8 @@ npm run preview
 - Astronomy datasets are generated locally from the HYG Database and Stellarium source data.
 - GitHub Pages deployment is configured in [`.github/workflows/deploy.yml`](./.github/workflows/deploy.yml) and builds with a `/Moon/` base path.
 - Supported startup URL params:
-  - `?auto=explore`
-  - `?auto=simulator`
+  - `?auto=planetarium` — boot directly into the Planetarium (solar-system flight)
+  - `?auto=moonView` — boot directly into the Moon view (Earth–Moon–Sun simulator)
 
 ## Data and Scripts
 
@@ -77,7 +77,7 @@ Available scripts and generators:
 - `npm run build` runs TypeScript compilation and creates a production build in `dist/`.
 - `npm run preview` serves the production build locally.
 - `npm run gen:stars` regenerates the bright-star catalog from HYG data.
-- `node gen-constellations.mjs` regenerates constellation line data from Stellarium and HYG inputs.
+- `npm run gen:constellations` regenerates constellation line data from Stellarium and HYG inputs.
 
 ## Developer Notes
 

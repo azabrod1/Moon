@@ -5,7 +5,7 @@ import { gunzipSync } from 'zlib';
 
 const DEFAULT_MAGNITUDE = 6.8;
 const HYG_V37_URL = 'https://raw.githubusercontent.com/astronexus/HYG-Database/main/hyg/v3/hyg_v37.csv.gz';
-const OUTPUT_PATH = path.resolve(process.cwd(), 'src/explore/data/brightStars.ts');
+const OUTPUT_PATH = path.resolve(process.cwd(), 'src/planetarium/data/brightStars.ts');
 
 function parseMagnitudeArg(rawValue) {
   if (rawValue === undefined) return DEFAULT_MAGNITUDE;

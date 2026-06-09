@@ -408,7 +408,8 @@ const newHorizonsMilestones: HistoricMilestone[] = [
     ...textureFallback('pluto.jpg', 'Pluto'),
     // Camera sits past Pluto's Jan 2019 position (11.9, -12.6, -28.9) along the
     // outbound radial, looking back at it — Pluto's world position comes from
-    // computePlanetPositionEquatorial; retune if the planet model changes.
+    // computeBodyState (Standish elements); retune if the planet model changes.
+    // Checked at the Standish switch: Pluto moved 0.024 AU — no retune needed.
     customScenePosition: { x: 14.3, y: -12.6, z: -34.7 },
     customLookTarget: { x: 11.9, y: -12.6, z: -28.9 },
   },

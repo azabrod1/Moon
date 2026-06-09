@@ -15,6 +15,7 @@ import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import {
   CREATE_SOLAR_SYSTEM_TOTAL_UNITS,
   createSolarSystem,
+  getOrbitLineElements,
   type SolarSystemObjects,
   type PlanetariumLayout,
 } from './SolarSystem';
@@ -31,6 +32,7 @@ import {
   computeMoonGeocentricEquatorialAU,
   formatUtcLabel,
   parseUtcInputValue,
+  sampleOrbitLinePoints,
   ttJDFromUtcMs,
   type SimulationTime,
 } from '../astronomy/planetary';
@@ -2771,8 +2773,39 @@ export class PlanetariumMode {
     }
   }
 
+  /**
+   * Re-sample the orbit lines when the sim clock has drifted far from the
+   * epoch they were built at. Secular element rates move the lines ≤ ~0.2°
+   * per century (Mercury ϖ̇/Ω̇ worst), so 50 years bounds the on-screen error
+   * at ~0.1° — invisible at 0.2 opacity — while still tracking mission jumps
+   * to 1977 and deep time-travel. Geometry is mutated in place: replacing the
+   * Line objects would break the orbitLines[i] ↔ PLANETARIUM_BODIES[i]
+   * coupling and orphan GPU buffers.
+   */
+  private rebuildOrbitLinesIfStale() {
+    if (!this.solarSystem || this.layoutMode !== 'realistic') return;
+    const FIFTY_YEARS_MS = 50 * 365.25 * 86_400_000;
+    if (Math.abs(this.timeState.currentUtcMs - this.solarSystem.orbitLinesEpochUtcMs) < FIFTY_YEARS_MS) {
+      return;
+    }
+    for (let i = 0; i < this.solarSystem.orbitLines.length; i++) {
+      const body = PLANETARIUM_BODIES[i];
+      const points = sampleOrbitLinePoints(
+        getOrbitLineElements(body, this.layoutMode, this.timeState.currentUtcMs),
+        256,
+      );
+      const geometry = this.solarSystem.orbitLines[i].geometry;
+      geometry.setFromPoints(points);
+      // setFromPoints updates the attribute but never invalidates the cached
+      // bounding sphere — stale culling otherwise.
+      geometry.computeBoundingSphere();
+    }
+    this.solarSystem.orbitLinesEpochUtcMs = this.timeState.currentUtcMs;
+  }
+
   rebuildPlanetPositions(_dt = 0) {
     if (!this.solarSystem) return;
+    this.rebuildOrbitLinesIfStale();
     for (let i = 0; i < this.solarSystem.planets.length; i++) {
       const planet = this.solarSystem.planets[i];
       const body = PLANETARIUM_BODIES[i];
@@ -2880,7 +2913,11 @@ export class PlanetariumMode {
       this.solarSystem.ambientLight.removeFromParent();
       this.solarSystem.asteroidBelt.removeFromParent();
       for (const p of this.solarSystem.planets) p.group.removeFromParent();
-      for (const o of this.solarSystem.orbitLines) o.removeFromParent();
+      for (const o of this.solarSystem.orbitLines) {
+        o.removeFromParent();
+        o.geometry.dispose();
+        (o.material as THREE.Material).dispose();
+      }
       for (const g of this.moonSystemGroups.values()) g.removeFromParent();
     }
     this.player.group.removeFromParent();

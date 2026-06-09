@@ -6,7 +6,8 @@
 import * as THREE from 'three';
 import { PLANETARIUM_BODIES, ASTEROID_BELT, type PlanetData } from './planets/planetData';
 import { createPlanetMesh, createPlanetariumSun, type PlanetMesh } from './PlanetFactory';
-import { computePlanetPositionEquatorial, sampleOrbitLinePoints, ttJDFromUtcMs } from '../astronomy/planetary';
+import { computeBodyPositionAU, sampleOrbitLinePoints, ttJDFromUtcMs } from '../astronomy/planetary';
+import { getStandishElements, type KeplerElements } from '../astronomy/standish';
 
 export type PlanetariumLayout = 'aligned' | 'realistic';
 export const CREATE_SOLAR_SYSTEM_TOTAL_UNITS =
@@ -21,6 +22,8 @@ export interface SolarSystemObjects {
   sun: THREE.Group;
   planets: PlanetMesh[];
   orbitLines: THREE.Line[];
+  /** Sim epoch the orbit lines were last sampled at (lazy drift rebuild). */
+  orbitLinesEpochUtcMs: number;
   asteroidBelt: THREE.Points;
   sunLight: THREE.PointLight;
   ambientLight: THREE.AmbientLight;
@@ -42,8 +45,32 @@ export function getPlanetOrbitalPosition(
     return createAlignedPlanetPosition(planet, seed);
   }
 
-  const position = computePlanetPositionEquatorial(planet, ttJDFromUtcMs((date ?? new Date()).getTime()));
+  const position = computeBodyPositionAU(planet, (date ?? new Date()).getTime());
   return { x: position.x, y: position.y, z: position.z };
+}
+
+/**
+ * Orbit-line elements for one body at a sim epoch. Realistic mode resolves
+ * real Standish elements (Earth's line uses its EMB row — decorative, the
+ * Meeus-rendered Earth sits within arcminutes of it); aligned mode draws
+ * epoch-free circles at the catalog radius.
+ */
+export function getOrbitLineElements(
+  planet: PlanetData,
+  layoutMode: PlanetariumLayout,
+  utcMs: number,
+): KeplerElements {
+  if (layoutMode === 'aligned') {
+    return {
+      semiMajorAxisAU: planet.semiMajorAxisAU,
+      eccentricity: 0,
+      inclinationDeg: 0,
+      lonPerihelionDeg: 0,
+      ascendingNodeDeg: 0,
+      meanAnomalyDeg: 0,
+    };
+  }
+  return getStandishElements(planet.name, ttJDFromUtcMs(utcMs));
 }
 
 function createOrbitLine(points: THREE.Vector3[], color: number, opacity: number): THREE.Line {
@@ -119,22 +146,15 @@ export async function createSolarSystem(
     return planetMesh;
   }));
 
+  // Lines, planets, and the restored clock share one epoch at startup.
+  const orbitLinesEpochUtcMs = (date ?? new Date()).getTime();
   const orbitLines: THREE.Line[] = [];
   for (let i = 0; i < PLANETARIUM_BODIES.length; i++) {
     const body = PLANETARIUM_BODIES[i];
-    const orbitPoints =
-      layoutMode === 'aligned'
-        ? sampleOrbitLinePoints(
-            {
-              ...body,
-              eccentricity: 0,
-              inclinationDeg: 0,
-              ascendingNodeDeg: 0,
-              lonPerihelionDeg: 0,
-            },
-            256,
-          )
-        : sampleOrbitLinePoints(body, 256);
+    const orbitPoints = sampleOrbitLinePoints(
+      getOrbitLineElements(body, layoutMode, orbitLinesEpochUtcMs),
+      256,
+    );
     const line = createOrbitLine(orbitPoints, body.color, 0.2);
     line.name = `orbit-${body.name}`;
     orbitLines.push(line);
@@ -150,19 +170,9 @@ export async function createSolarSystem(
     sun,
     planets,
     orbitLines,
+    orbitLinesEpochUtcMs,
     asteroidBelt,
     sunLight,
     ambientLight,
   };
-}
-
-export function getPlanetWorldPositions(planets: PlanetMesh[]): Map<string, { x: number; y: number; z: number }> {
-  const map = new Map<string, { x: number; y: number; z: number }>();
-  for (const planet of planets) {
-    const position = planet.group.userData.worldPosAU as { x: number; y: number; z: number } | undefined;
-    if (position) {
-      map.set(planet.data.name, position);
-    }
-  }
-  return map;
 }

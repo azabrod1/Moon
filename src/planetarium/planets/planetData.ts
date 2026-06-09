@@ -1,7 +1,9 @@
 /**
- * Canonical planet + moon reference data for the Planetarium.
- * Distances in AU, radii in AU, periods in Earth years. Orbital elements are at
- * J2000.0. PLANETARIUM_BODIES is the ordered list driving scene construction.
+ * Canonical planet + moon reference data for the Planetarium: physical and
+ * display properties only. Orbital elements live in astronomy/standish.ts
+ * (keyed by these names); semiMajorAxisAU here is a static catalog value for
+ * UI heuristics (ring radii, fades, crossing toasts), not the position source.
+ * PLANETARIUM_BODIES is the ordered list driving scene construction.
  */
 
 export interface PlanetData {
@@ -10,9 +12,6 @@ export interface PlanetData {
   semiMajorAxisAU: number;
   radiusAU: number;       // equatorial radius in AU
   radiusKm: number;
-  orbitalPeriodYears: number;
-  eccentricity: number;
-  inclinationDeg: number;
   axialTiltDeg: number;
   orbitalVelocityKmS: number;
   color: number;           // hex color for markers
@@ -22,10 +21,6 @@ export interface PlanetData {
   rotationPeriodHours: number;
   moons: number;
   description: string;
-  // Keplerian orbital elements at J2000.0 epoch
-  meanLongitudeDeg: number;   // mean longitude at J2000.0
-  lonPerihelionDeg: number;   // longitude of perihelion at J2000.0
-  ascendingNodeDeg: number;   // longitude of ascending node at J2000.0
   poleRaDeg: number;          // IAU north pole right ascension
   poleDecDeg: number;         // IAU north pole declination
   primeMeridianDegAtJ2000: number;   // IAU prime meridian angle at J2000.0
@@ -53,9 +48,6 @@ export const PLANETS: PlanetData[] = [
     semiMajorAxisAU: 0.387,
     radiusAU: kmToAU(2_440),
     radiusKm: 2_440,
-    orbitalPeriodYears: 0.2408,
-    eccentricity: 0.206,
-    inclinationDeg: 7.00,
     axialTiltDeg: 0.034,
     orbitalVelocityKmS: 47.87,
     color: 0x7a7168,
@@ -65,9 +57,6 @@ export const PLANETS: PlanetData[] = [
     rotationPeriodHours: 1407.6,
     moons: 0,
     description: 'Smallest planet, heavily cratered',
-    meanLongitudeDeg: 252.25,
-    lonPerihelionDeg: 77.46,
-    ascendingNodeDeg: 48.331,
     poleRaDeg: 281.0097,
     poleDecDeg: 61.4143,
     primeMeridianDegAtJ2000: 329.5469,
@@ -80,9 +69,6 @@ export const PLANETS: PlanetData[] = [
     semiMajorAxisAU: 0.723,
     radiusAU: kmToAU(6_052),
     radiusKm: 6_052,
-    orbitalPeriodYears: 0.6150,
-    eccentricity: 0.007,
-    inclinationDeg: 3.39,
     axialTiltDeg: 177.36,
     orbitalVelocityKmS: 35.02,
     color: 0xc4b08a,
@@ -92,9 +78,6 @@ export const PLANETS: PlanetData[] = [
     rotationPeriodHours: 5832.5,
     moons: 0,
     description: 'Thick sulfuric acid clouds, hellish surface',
-    meanLongitudeDeg: 181.98,
-    lonPerihelionDeg: 131.53,
-    ascendingNodeDeg: 76.680,
     poleRaDeg: 272.76,
     poleDecDeg: 67.16,
     primeMeridianDegAtJ2000: 160.20,
@@ -107,9 +90,6 @@ export const PLANETS: PlanetData[] = [
     semiMajorAxisAU: 1.000,
     radiusAU: kmToAU(6_378),
     radiusKm: 6_378,
-    orbitalPeriodYears: 1.000,
-    eccentricity: 0.017,
-    inclinationDeg: 0.00,
     axialTiltDeg: 23.44,
     orbitalVelocityKmS: 29.78,
     color: 0x3a6ec0,
@@ -119,9 +99,6 @@ export const PLANETS: PlanetData[] = [
     rotationPeriodHours: 23.93,
     moons: 1,
     description: 'Our home world',
-    meanLongitudeDeg: 100.46,
-    lonPerihelionDeg: 102.93,
-    ascendingNodeDeg: 0,
     poleRaDeg: 0,
     poleDecDeg: 90,
     primeMeridianDegAtJ2000: 190.147,
@@ -134,9 +111,6 @@ export const PLANETS: PlanetData[] = [
     semiMajorAxisAU: 1.524,
     radiusAU: kmToAU(3_396),
     radiusKm: 3_396,
-    orbitalPeriodYears: 1.8809,
-    eccentricity: 0.093,
-    inclinationDeg: 1.85,
     axialTiltDeg: 25.19,
     orbitalVelocityKmS: 24.08,
     color: 0x9a4a2a,
@@ -146,9 +120,6 @@ export const PLANETS: PlanetData[] = [
     rotationPeriodHours: 24.62,
     moons: 2,
     description: 'The Red Planet, with polar ice caps',
-    meanLongitudeDeg: 355.45,
-    lonPerihelionDeg: 336.04,
-    ascendingNodeDeg: 49.558,
     poleRaDeg: 317.269202,
     poleDecDeg: 54.432516,
     primeMeridianDegAtJ2000: 176.049863,
@@ -161,9 +132,6 @@ export const PLANETS: PlanetData[] = [
     semiMajorAxisAU: 5.203,
     radiusAU: kmToAU(71_492),
     radiusKm: 71_492,
-    orbitalPeriodYears: 11.86,
-    eccentricity: 0.048,
-    inclinationDeg: 1.30,
     axialTiltDeg: 3.13,
     orbitalVelocityKmS: 13.07,
     color: 0xa89060,
@@ -173,9 +141,6 @@ export const PLANETS: PlanetData[] = [
     rotationPeriodHours: 9.93,
     moons: 95,
     description: 'Gas giant, Great Red Spot, cloud bands',
-    meanLongitudeDeg: 34.40,
-    lonPerihelionDeg: 14.33,
-    ascendingNodeDeg: 100.464,
     poleRaDeg: 268.056595,
     poleDecDeg: 64.495303,
     primeMeridianDegAtJ2000: 284.95,
@@ -188,9 +153,6 @@ export const PLANETS: PlanetData[] = [
     semiMajorAxisAU: 9.588,
     radiusAU: kmToAU(60_268),
     radiusKm: 60_268,
-    orbitalPeriodYears: 29.46,
-    eccentricity: 0.056,
-    inclinationDeg: 2.49,
     axialTiltDeg: 26.73,
     orbitalVelocityKmS: 9.69,
     color: 0xbfb08a,
@@ -200,9 +162,6 @@ export const PLANETS: PlanetData[] = [
     rotationPeriodHours: 10.66,
     moons: 274,
     description: 'Iconic ring system, pale gold gas giant',
-    meanLongitudeDeg: 49.94,
-    lonPerihelionDeg: 92.43,
-    ascendingNodeDeg: 113.665,
     poleRaDeg: 40.589,
     poleDecDeg: 83.537,
     primeMeridianDegAtJ2000: 38.90,
@@ -215,9 +174,6 @@ export const PLANETS: PlanetData[] = [
     semiMajorAxisAU: 19.191,
     radiusAU: kmToAU(25_559),
     radiusKm: 25_559,
-    orbitalPeriodYears: 84.07,
-    eccentricity: 0.046,
-    inclinationDeg: 0.77,
     axialTiltDeg: 97.77,
     orbitalVelocityKmS: 6.81,
     color: 0x6aa0b8,
@@ -227,9 +183,6 @@ export const PLANETS: PlanetData[] = [
     rotationPeriodHours: 17.24,
     moons: 27,
     description: 'Ice giant tilted on its side, pale cyan',
-    meanLongitudeDeg: 313.23,
-    lonPerihelionDeg: 170.96,
-    ascendingNodeDeg: 74.006,
     poleRaDeg: 257.311,
     poleDecDeg: -15.175,
     primeMeridianDegAtJ2000: 203.81,
@@ -242,9 +195,6 @@ export const PLANETS: PlanetData[] = [
     semiMajorAxisAU: 30.061,
     radiusAU: kmToAU(24_764),
     radiusKm: 24_764,
-    orbitalPeriodYears: 164.82,
-    eccentricity: 0.010,
-    inclinationDeg: 1.77,
     axialTiltDeg: 29.56,
     orbitalVelocityKmS: 5.43,
     color: 0x2a4ab8,
@@ -254,9 +204,6 @@ export const PLANETS: PlanetData[] = [
     rotationPeriodHours: 16.11,
     moons: 14,
     description: 'Deep blue ice giant, strongest winds',
-    meanLongitudeDeg: 304.88,
-    lonPerihelionDeg: 44.97,
-    ascendingNodeDeg: 131.784,
     poleRaDeg: 299.36,
     poleDecDeg: 43.46,
     primeMeridianDegAtJ2000: 249.978,
@@ -271,9 +218,6 @@ export const PLUTO: PlanetData = {
   semiMajorAxisAU: 39.48,
   radiusAU: kmToAU(1_188),
   radiusKm: 1_188,
-  orbitalPeriodYears: 248.0,
-  eccentricity: 0.249,
-  inclinationDeg: 17.16,
   axialTiltDeg: 119.6,
   orbitalVelocityKmS: 4.67,
   color: 0x9a8e7a,
@@ -283,9 +227,6 @@ export const PLUTO: PlanetData = {
   rotationPeriodHours: 153.3,
   moons: 5,
   description: 'Dwarf planet at the edge, icy surface',
-  meanLongitudeDeg: 238.93,
-  lonPerihelionDeg: 224.07,
-  ascendingNodeDeg: 110.299,
   poleRaDeg: 132.993,
   poleDecDeg: -6.163,
   primeMeridianDegAtJ2000: 302.695,

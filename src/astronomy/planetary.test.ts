@@ -21,9 +21,10 @@ import {
   ttJDFromUtcMs,
 } from './planetary';
 import { dateToJD, findEvent, sunPosition } from './ephemeris';
+import { accumulatedPrecessionLonDeg } from './precession';
+import { getStandishElements, type KeplerElements } from './standish';
 import { DEG, J2000, OBLIQUITY_DEG, RAD } from './constants';
 import { PLANETARIUM_BODIES, PLANETS } from '../planetarium/planets/planetData';
-import type { PlanetData } from '../planetarium/planets/planetData';
 
 function norm360(deg: number): number {
   return ((deg % 360) + 360) % 360;
@@ -37,13 +38,13 @@ function norm180(deg: number): number {
 /**
  * Textbook heliocentric ecliptic position from Kepler elements (Meeus ch. 33 /
  * standard orbital mechanics), mapped into the scene frame. Written
- * independently of planetary.ts so the two implementations check each other.
+ * independently of planetary.ts so the two implementations check each other —
+ * its job is pinning the scene-frame rotations, independent of where the
+ * elements came from (both sides consume the same getStandishElements output).
  */
-function referenceEclipticPosition(planet: PlanetData, jd: number): THREE.Vector3 {
-  const meanMotionRadPerDay = (Math.PI * 2) / (planet.orbitalPeriodYears * 365.25);
-  const meanAnomaly =
-    (planet.meanLongitudeDeg - planet.lonPerihelionDeg) * DEG + meanMotionRadPerDay * (jd - J2000);
-  const e = planet.eccentricity;
+function referenceEclipticPosition(el: KeplerElements): THREE.Vector3 {
+  const meanAnomaly = el.meanAnomalyDeg * DEG;
+  const e = el.eccentricity;
 
   let eccentricAnomaly = meanAnomaly;
   for (let i = 0; i < 30; i++) {
@@ -56,11 +57,11 @@ function referenceEclipticPosition(planet: PlanetData, jd: number): THREE.Vector
     Math.sqrt(1 - e * e) * Math.sin(eccentricAnomaly),
     Math.cos(eccentricAnomaly) - e,
   );
-  const radius = planet.semiMajorAxisAU * (1 - e * Math.cos(eccentricAnomaly));
+  const radius = el.semiMajorAxisAU * (1 - e * Math.cos(eccentricAnomaly));
 
-  const argPerihelion = (planet.lonPerihelionDeg - planet.ascendingNodeDeg) * DEG;
-  const node = planet.ascendingNodeDeg * DEG;
-  const inclination = planet.inclinationDeg * DEG;
+  const argPerihelion = (el.lonPerihelionDeg - el.ascendingNodeDeg) * DEG;
+  const node = el.ascendingNodeDeg * DEG;
+  const inclination = el.inclinationDeg * DEG;
   const argLatitude = argPerihelion + trueAnomaly;
 
   const xToEquinox =
@@ -76,6 +77,19 @@ function referenceEclipticPosition(planet: PlanetData, jd: number): THREE.Vector
   // Scene frame: north is +Y, longitude increases toward +Z.
   return new THREE.Vector3(xToEquinox, zToNorth, yToLon90);
 }
+
+describe('J2000 frame unification (accumulatedPrecessionLonDeg)', () => {
+  it('is zero at J2000 and matches p_A at the fixture epochs', () => {
+    expect(accumulatedPrecessionLonDeg(J2000)).toBe(0);
+    expect(accumulatedPrecessionLonDeg(2461200.5)).toBeCloseTo(0.3693, 3); // 2026-06-09
+    expect(accumulatedPrecessionLonDeg(2467900.5)).toBeCloseTo(0.6256, 3); // ~2044
+  });
+
+  it('is positive after J2000 (of-date λ exceeds J2000 λ)', () => {
+    expect(accumulatedPrecessionLonDeg(J2000 + 36525)).toBeGreaterThan(1.39);
+    expect(accumulatedPrecessionLonDeg(J2000 - 36525)).toBeLessThan(-1.39);
+  });
+});
 
 describe('celestial frame', () => {
   it('puts RA 90° at +Z and the north pole at +Y', () => {
@@ -98,8 +112,9 @@ describe('computePlanetPositionEcliptic', () => {
   for (const planet of PLANETARIUM_BODIES) {
     it(`matches textbook element propagation for ${planet.name}`, () => {
       for (const jd of testJDs) {
-        const scene = computePlanetPositionEcliptic(planet, jd);
-        const reference = referenceEclipticPosition(planet, jd);
+        const el = getStandishElements(planet.name, jd);
+        const scene = computePlanetPositionEcliptic(el);
+        const reference = referenceEclipticPosition(el);
         const separationDeg = scene.angleTo(reference) * RAD;
         expect(separationDeg, `${planet.name} at JD ${jd}`).toBeLessThan(0.01);
       }
@@ -107,13 +122,14 @@ describe('computePlanetPositionEcliptic', () => {
   }
 });
 
-describe('Earth vs Meeus Sun (reality cross-check)', () => {
-  // Geocentric Sun longitude + 180° = heliocentric Earth longitude. Locks the
-  // scene frame against the real sky, and measures the rounded-Kepler ↔ Meeus
-  // delta that motivates deriving Earth's render position from the Meeus Sun:
-  // measured +0.002° (2000) drifting to −0.235° (2026) — J2000 elements vs
-  // ecliptic-of-date precession, approaching the Sun's 0.27° disc radius.
-  const earth = PLANETS.find((p) => p.name === 'Earth')!;
+describe('Standish EMB vs Meeus Sun (cross-model check)', () => {
+  // Two independent models of the same body: the Standish EMB elements vs the
+  // inverted Meeus Sun, precessed to J2000 exactly like the Earth render seam.
+  // Budget for the 0.04° bound: EMB elements quoted 20″ ≈ 0.006°, Meeus ch. 25
+  // truncation ~0.01°, aberration −20.5″ + nutation ±18″ ≈ 0.010° (sunPosition
+  // is apparent, elements are geometric), EMB-vs-Earth geometry ~0.002°.
+  // (The pre-Standish version of this test measured +0.002°…−0.235° — that
+  // delta was precession plus element rounding, and both are now gone.)
   const dates = [
     '2000-01-01T12:00:00Z',
     '2010-06-15T00:00:00Z',
@@ -121,14 +137,16 @@ describe('Earth vs Meeus Sun (reality cross-check)', () => {
     '2026-08-12T17:46:00Z',
   ];
 
-  it('places Earth within 1° of the Meeus-derived heliocentric longitude', () => {
+  it('keeps the two Earth models within 0.04° of each other', () => {
     for (const iso of dates) {
       const jd = dateToJD(new Date(iso));
-      const scene = computePlanetPositionEcliptic(earth, jd);
-      const sceneLonDeg = norm360(Math.atan2(scene.z, scene.x) * RAD);
-      const expectedLonDeg = norm360(sunPosition(jd).longitude + 180);
+      const emb = computePlanetPositionEcliptic(getStandishElements('Earth', jd));
+      const sceneLonDeg = norm360(Math.atan2(emb.z, emb.x) * RAD);
+      const expectedLonDeg = norm360(
+        sunPosition(jd).longitude + 180 - accumulatedPrecessionLonDeg(jd),
+      );
       const deltaDeg = norm180(sceneLonDeg - expectedLonDeg);
-      expect(Math.abs(deltaDeg), `at ${iso}: scene ${sceneLonDeg.toFixed(3)}°, Meeus ${expectedLonDeg.toFixed(3)}°`).toBeLessThan(1);
+      expect(Math.abs(deltaDeg), `at ${iso}: EMB ${sceneLonDeg.toFixed(4)}°, Meeus ${expectedLonDeg.toFixed(4)}°`).toBeLessThan(0.04);
     }
   });
 });

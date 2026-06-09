@@ -1,8 +1,10 @@
 /**
  * Simplified astronomical ephemeris based on Jean Meeus's "Astronomical Algorithms".
- * Computes Sun and Moon ecliptic longitude, latitude, and distance for any date.
- * Accuracy: ~1° for Moon longitude, ~0.5° for Sun longitude — sufficient for
- * phase/eclipse visualization.
+ * Computes Sun and Moon ecliptic-of-date longitude, latitude, and distance for
+ * any date. Measured accuracy (ephemeris.test.ts / standish.test.ts goldens):
+ * Sun ~0.01°; Moon ~0.01° lon / ~0.01° lat / ~25 km — the truncated series
+ * far outperform their original ~1° header claim. The planetarium consumes
+ * these through planetary.ts, which precesses longitudes to J2000.
  */
 
 import { DEG, J2000 } from './constants';
@@ -102,7 +104,8 @@ export interface MoonPosition {
 /**
  * Simplified Moon position (Meeus Ch. 47, reduced terms).
  * Uses the main periodic terms for longitude, latitude, and distance.
- * Accuracy: ~1° longitude, ~0.5° latitude.
+ * Measured at the Meeus 47.a worked example: +0.0009° lon, +0.0105° lat,
+ * −5 km (see ephemeris.test.ts).
  */
 export function moonPosition(jd: number): MoonPosition {
   const t = T(jd);

@@ -11,7 +11,7 @@ npm run preview    # Serve production build locally
 npm run gen:stars  # Regenerate the bright-star catalog (gen-stars.mjs)
 ```
 
-No test framework is configured. No linter is configured. **`npm run build` (which runs `tsc` then `vite build`) is the only automated safety net — run it locally after every change.** Note that CI (`.github/workflows/deploy.yml`) runs `vite build` directly and does **not** run `tsc`, so type errors only surface in a local `npm run build`. `tsconfig` is `strict` and sets `noUnusedLocals`/`noUnusedParameters`, so unused imports, locals, and parameters fail a local `npm run build` (this is what catches refactor leftovers — but CI skips `tsc`, so run the build locally).
+No linter is configured. **Run `npm run build` and `npm test` locally after every change.** Tests are vitest, colocated as `src/astronomy/*.test.ts` (Meeus worked examples, event catalogs, JPL Horizons vector goldens — update fixtures deliberately, never by copying new output). CI (`.github/workflows/deploy.yml`) runs `tsc`, the tests, then the Pages build. `tsconfig` is `strict` and sets `noUnusedLocals`/`noUnusedParameters`, so unused imports, locals, and parameters fail the build (this is what catches refactor leftovers).
 
 ## Architecture
 
@@ -35,7 +35,9 @@ A fly-through of the full solar system (Mercury–Pluto) in **AU**. Uses a **flo
 Lunar-landing mini-game and the **cleanest decomposition to emulate**: `MoonFlightMode` (thin controller) composes `FlightController` (physics), `FlightInput` (keyboard/touch), `FlightHUD` (DOM), `SkyScene`, `lightingSnapshot`. Note: there is currently **no UI entry point** to this mode (the button was removed in git history); the code is intact and reachable only by restoring an entry call.
 
 ### Astronomy — `src/astronomy/`
-Meeus-based ephemeris: `ephemeris` (Sun/Moon ecliptic position, phase, event search), `kepler`, `planetary`, `lunarOrbit`, and `constants` (`J2000`, `OBLIQUITY_DEG`, and `DEG`/`RAD` re-exported from `shared/math/angles`).
+Meeus ephemeris + JPL/Standish planet elements: `ephemeris` (Sun/Moon ecliptic-of-date position, phase, event search), `standish` (Standish/JPL propagated Kepler elements — the planets' element source; Table 1 inside 1800–2050, Table 2 beyond with clamped 3000 BC–3000 AD validity; values transcribed verbatim, never re-round), `planetary` (element→scene-vector math, the Meeus Earth/Moon seams, body state), `precession` (of-date→J2000 longitude), `deltaT` (Espenak–Meeus ΔT; theories evaluate at TT), `lunarOrbit`, and `constants` (`J2000`, `OBLIQUITY_DEG`, and `DEG`/`RAD` re-exported from `shared/math/angles`).
+
+**Frame contract: J2000 everywhere.** The star sphere is built from J2000 RA/Dec; planets are native-J2000 Standish; Meeus Earth/Moon longitudes (ecliptic-of-date) are precessed to J2000 at the `planetary.ts` vector seams — never inside `ephemeris.ts` (its goldens quote of-date values). Earth's render position stays Meeus (−Sun vector, precessed) for exact Sun–Earth–Moon coherence; Earth's Standish EMB row draws only the decorative orbit line.
 
 ### Shared — `src/shared/`
 Cross-cutting, framework-free helpers: `math/` (`angles` — the single source for `DEG2RAD`/`RAD2DEG`; `smoothstepUnclamped`), `three/projectToScreen` (world→screen projection with an optional zero-alloc `out`), `dom` (`setText`), `debug`, `format`, `assets/` (`textureLoader`, `textures`), `constants/` (`sceneUnits`, `physicalData`), `shaders/` (`atmosphere`, `sun`). **`src/app/`** holds app-shell helpers (`gpuCapability` — the float-FBO bloom probe).

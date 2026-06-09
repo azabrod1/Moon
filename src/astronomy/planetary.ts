@@ -1,12 +1,16 @@
 /**
- * Planet-position math for the Planetarium: Kepler solver, J2000-epoch element
- * propagation, ecliptic-to-equatorial frame rotation, and the shared simulation
- * time type. Consumed by the Planetarium world and nav controllers.
+ * Planet-position math for the Planetarium: Kepler solver, element-to-vector
+ * transforms in the scene's J2000 frame, the Meeus Earth/Moon seams, and the
+ * shared simulation time type. Elements come from the Standish provider
+ * (standish.ts); Earth's render position alone stays Meeus-derived. Consumed
+ * by the Planetarium world and nav controllers.
  */
 import * as THREE from 'three';
 import type { PlanetData } from '../planetarium/planets/planetData';
 import { dateToJD, moonPosition, sunPosition } from './ephemeris';
 import { deltaTDaysAtDate } from './deltaT';
+import { accumulatedPrecessionLonDeg } from './precession';
+import { getStandishElements, type KeplerElements } from './standish';
 import { DEG, J2000, OBLIQUITY_DEG } from './constants';
 
 const REFERENCE_NORTH = new THREE.Vector3(0, 1, 0);
@@ -28,11 +32,6 @@ export interface BodyState {
   sunDirection: THREE.Vector3;
 }
 
-function normalizeRadians(value: number): number {
-  const twoPi = Math.PI * 2;
-  return ((value % twoPi) + twoPi) % twoPi;
-}
-
 function solveKepler(meanAnomalyRad: number, eccentricity: number): number {
   let eccentricAnomaly = eccentricity < 0.8 ? meanAnomalyRad : Math.PI;
   for (let i = 0; i < 10; i++) {
@@ -49,19 +48,20 @@ function getDaysSinceJ2000(jd: number): number {
   return jd - J2000;
 }
 
-function computeOrbitalPlanePosition(planet: PlanetData, eccentricAnomalyRad: number): THREE.Vector3 {
-  const x = planet.semiMajorAxisAU * (Math.cos(eccentricAnomalyRad) - planet.eccentricity);
+function computeOrbitalPlanePosition(el: KeplerElements, eccentricAnomalyRad: number): THREE.Vector3 {
+  const x = el.semiMajorAxisAU * (Math.cos(eccentricAnomalyRad) - el.eccentricity);
   const z =
-    planet.semiMajorAxisAU *
-    Math.sqrt(1 - planet.eccentricity * planet.eccentricity) *
+    el.semiMajorAxisAU *
+    Math.sqrt(1 - el.eccentricity * el.eccentricity) *
     Math.sin(eccentricAnomalyRad);
   return new THREE.Vector3(x, 0, z);
 }
 
-function applyOrbitalOrientation(position: THREE.Vector3, planet: PlanetData): THREE.Vector3 {
-  const argPerihelionRad = (planet.lonPerihelionDeg - planet.ascendingNodeDeg) * DEG;
-  const inclinationRad = planet.inclinationDeg * DEG;
-  const ascendingNodeRad = planet.ascendingNodeDeg * DEG;
+function applyOrbitalOrientation(position: THREE.Vector3, el: KeplerElements): THREE.Vector3 {
+  // ω = ϖ − Ω: the tables give the longitude of perihelion, not the argument.
+  const argPerihelionRad = (el.lonPerihelionDeg - el.ascendingNodeDeg) * DEG;
+  const inclinationRad = el.inclinationDeg * DEG;
+  const ascendingNodeRad = el.ascendingNodeDeg * DEG;
 
   // Scene ecliptic frame: +Y north, longitude increasing toward +Z (matching
   // raDecToVector's star sphere). A rotation about +Y by +θ moves longitude by
@@ -97,28 +97,30 @@ export function raDecToVector(raDeg: number, decDeg: number, radius = 1): THREE.
   );
 }
 
-export function computePlanetPositionEcliptic(planet: PlanetData, jd: number): THREE.Vector3 {
-  const meanMotionRadPerDay = (Math.PI * 2) / (planet.orbitalPeriodYears * 365.25);
-  const meanAnomalyAtJ2000Rad = (planet.meanLongitudeDeg - planet.lonPerihelionDeg) * DEG;
-  const meanAnomalyRad = normalizeRadians(
-    meanAnomalyAtJ2000Rad + meanMotionRadPerDay * getDaysSinceJ2000(jd),
-  );
-  const eccentricAnomalyRad = solveKepler(meanAnomalyRad, planet.eccentricity);
-  return applyOrbitalOrientation(computeOrbitalPlanePosition(planet, eccentricAnomalyRad), planet);
+/**
+ * Heliocentric position from of-epoch elements (the mean anomaly arrives
+ * propagated inside the KeplerElements — see getStandishElements), in the
+ * scene's intermediate ecliptic frame.
+ */
+export function computePlanetPositionEcliptic(el: KeplerElements): THREE.Vector3 {
+  const eccentricAnomalyRad = solveKepler(el.meanAnomalyDeg * DEG, el.eccentricity);
+  return applyOrbitalOrientation(computeOrbitalPlanePosition(el, eccentricAnomalyRad), el);
 }
 
-export function computePlanetPositionEquatorial(planet: PlanetData, jd: number): THREE.Vector3 {
-  return eclipticToEquatorial(computePlanetPositionEcliptic(planet, jd));
+export function computePlanetPositionEquatorial(el: KeplerElements): THREE.Vector3 {
+  return eclipticToEquatorial(computePlanetPositionEcliptic(el));
 }
 
 /**
  * Geocentric position of Earth's Moon in the scene's equatorial frame (AU),
  * from the Meeus lunar theory. Replaces the circular clock model for the one
  * moon whose real geometry (phase, nodes, eclipses) the app showcases.
+ * Meeus longitudes are ecliptic-of-date; the scene (like its star sphere) is
+ * J2000, so accumulated precession is subtracted before the vector is built.
  */
 export function computeMoonGeocentricEquatorialAU(jdTT: number, out: THREE.Vector3): THREE.Vector3 {
   const moon = moonPosition(jdTT);
-  const lonRad = moon.longitude * DEG;
+  const lonRad = (moon.longitude - accumulatedPrecessionLonDeg(jdTT)) * DEG;
   const latRad = moon.latitude * DEG;
   const rAU = moon.distance / KM_PER_AU;
   const cosLat = Math.cos(latRad);
@@ -134,14 +136,17 @@ export function computeMoonGeocentricEquatorialAU(jdTT: number, out: THREE.Vecto
 /**
  * Heliocentric Earth in the scene's equatorial frame (AU): the Meeus
  * geocentric Sun mirrored through the origin — same distance, longitude
- * + 180°, latitude 0. Earth, Moon, and sunlight direction then form one
- * coherent ecliptic-of-date set, so full moons render full and eclipse
- * alignments actually align; the rounded J2000 Kepler elements drift a
- * Sun-disc-width off by the 2020s (see planetary.test.ts).
+ * + 180°, latitude 0 — then precessed of-date → J2000 like the Moon seam.
+ * Earth deliberately does NOT use its Standish EMB elements: deriving Earth
+ * from the same Meeus theory as the Moon and the sunlight direction keeps
+ * Sun–Earth–Moon exactly coherent (full moons render full, eclipse
+ * alignments align to the theory's own accuracy), which beats one-model
+ * uniformity. The Standish EMB row still draws Earth's decorative orbit line
+ * and cross-checks this function in planetary.test.ts.
  */
 export function computeEarthPositionEquatorial(jdTT: number): THREE.Vector3 {
   const sun = sunPosition(jdTT);
-  const lonRad = sun.longitude * DEG;
+  const lonRad = (sun.longitude - accumulatedPrecessionLonDeg(jdTT)) * DEG;
   const ecliptic = new THREE.Vector3(
     -sun.distance * Math.cos(lonRad),
     0,
@@ -150,13 +155,13 @@ export function computeEarthPositionEquatorial(jdTT: number): THREE.Vector3 {
   return ecliptic.applyMatrix4(ECLIPTIC_TO_EQUATORIAL);
 }
 
-export function sampleOrbitLinePoints(planet: PlanetData, segments = 256): THREE.Vector3[] {
+export function sampleOrbitLinePoints(el: KeplerElements, segments = 256): THREE.Vector3[] {
   const points: THREE.Vector3[] = [];
   for (let i = 0; i <= segments; i++) {
     const eccentricAnomalyRad = (i / segments) * Math.PI * 2;
     const ecliptic = applyOrbitalOrientation(
-      computeOrbitalPlanePosition(planet, eccentricAnomalyRad),
-      planet,
+      computeOrbitalPlanePosition(el, eccentricAnomalyRad),
+      el,
     );
     points.push(eclipticToEquatorial(ecliptic));
   }
@@ -198,11 +203,22 @@ export function computeBodyPoleQuaternion(planet: PlanetData): THREE.Quaternion 
   return buildPoleBasisQuaternion(planet, 0);
 }
 
+/**
+ * The single heliocentric position path for every planetarium body — initial
+ * scene construction and per-frame rebuilds both go through here, so the two
+ * can never disagree. Earth dispatches to the Meeus seam (see
+ * computeEarthPositionEquatorial for why); everything else is Standish.
+ */
+export function computeBodyPositionAU(planet: PlanetData, utcMs: number): THREE.Vector3 {
+  const jd = ttJDFromUtcMs(utcMs);
+  return planet.name === 'Earth'
+    ? computeEarthPositionEquatorial(jd)
+    : computePlanetPositionEquatorial(getStandishElements(planet.name, jd));
+}
+
 export function computeBodyState(planet: PlanetData, utcMs: number): BodyState {
   const jd = ttJDFromUtcMs(utcMs);
-  const positionAU = planet.name === 'Earth'
-    ? computeEarthPositionEquatorial(jd)
-    : computePlanetPositionEquatorial(planet, jd);
+  const positionAU = computeBodyPositionAU(planet, utcMs);
   const orientationQuaternion = computeBodyOrientationQuaternion(planet, jd);
   const sunDirection = positionAU.clone().multiplyScalar(-1).normalize();
 

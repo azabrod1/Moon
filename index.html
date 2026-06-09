@@ -711,6 +711,68 @@
       transition: background 0.12s;
     }
     .menu-action:hover { background: rgba(255, 255, 255, 0.06); }
+
+    /* Sky panel (landed on Earth or the Moon): phase readout + event jumps */
+    #sky-panel {
+      display: none;
+      position: absolute;
+      top: 42px;
+      right: 12px;
+      background: var(--panel-bg);
+      backdrop-filter: blur(12px);
+      border: 1px solid var(--panel-border);
+      border-radius: 8px;
+      padding: 10px 12px;
+      pointer-events: auto;
+      width: 216px;
+      z-index: 21;
+      box-shadow: 0 8px 32px rgba(0, 0, 0, 0.4), inset 0 1px 0 rgba(255, 255, 255, 0.04);
+    }
+    #sky-panel.visible { display: block; }
+    .sky-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 6px;
+    }
+    #sky-subject {
+      font-size: 10px;
+      letter-spacing: 0.6px;
+      text-transform: uppercase;
+      color: var(--text-secondary);
+    }
+    .sky-close {
+      background: none;
+      border: none;
+      color: var(--text-secondary);
+      font-size: 15px;
+      line-height: 1;
+      cursor: pointer;
+      padding: 0 2px;
+    }
+    .sky-close:hover { color: var(--text-primary); }
+    .sky-phase-row {
+      display: flex;
+      justify-content: space-between;
+      align-items: baseline;
+      margin-bottom: 8px;
+    }
+    #sky-phase-name { font-size: 13px; color: var(--text-primary); }
+    #sky-illumination { font-size: 11px; color: var(--text-secondary); }
+    .sky-event-row {
+      display: grid;
+      grid-template-columns: 30px 1fr 30px;
+      gap: 4px;
+      align-items: center;
+      margin-top: 4px;
+    }
+    .sky-event-label {
+      text-align: center;
+      font-size: 10px;
+      letter-spacing: 0.3px;
+      color: var(--text-secondary);
+    }
+
     .menu-submenu {
       display: none;
       margin: 2px 0 4px;
@@ -1855,6 +1917,7 @@
         <button class="planetarium-sm-btn" id="planetarium-btn-leave" style="display:none">
           Leave <span id="leave-body-name"></span>
         </button>
+        <button class="planetarium-sm-btn" id="planetarium-btn-sky" style="display:none">&#x263D; Sky</button>
         <button class="planetarium-sm-btn" id="planetarium-btn-travel">&#x1F680;<span class="travel-btn-text"> Travel</span></button>
         <button class="planetarium-sm-btn" id="planetarium-btn-menu">&#x2630;</button>
       </div>
@@ -1899,6 +1962,38 @@
           <button class="settings-toggle" id="settings-throttle-toggle">
             <span id="settings-throttle-label">On</span>
           </button>
+        </div>
+      </div>
+
+      <!-- Sky panel: phase + event jumps while landed on Earth or the Moon -->
+      <div id="sky-panel">
+        <div class="sky-header">
+          <span id="sky-subject">Moon · from Earth</span>
+          <button class="sky-close" id="sky-close" aria-label="Close sky panel">&times;</button>
+        </div>
+        <div class="sky-phase-row">
+          <span id="sky-phase-name">--</span>
+          <span id="sky-illumination">--</span>
+        </div>
+        <div class="sky-event-row">
+          <button class="nav-btn" id="sky-prev-full" title="Previous full moon">&#9664;</button>
+          <span class="sky-event-label">Full Moon</span>
+          <button class="nav-btn" id="sky-next-full" title="Next full moon">&#9654;</button>
+        </div>
+        <div class="sky-event-row">
+          <button class="nav-btn" id="sky-prev-new" title="Previous new moon">&#9664;</button>
+          <span class="sky-event-label">New Moon</span>
+          <button class="nav-btn" id="sky-next-new" title="Next new moon">&#9654;</button>
+        </div>
+        <div class="sky-event-row">
+          <button class="nav-btn" id="sky-prev-lunar" title="Previous lunar eclipse">&#9664;</button>
+          <span class="sky-event-label">Lunar Eclipse</span>
+          <button class="nav-btn" id="sky-next-lunar" title="Next lunar eclipse">&#9654;</button>
+        </div>
+        <div class="sky-event-row">
+          <button class="nav-btn" id="sky-prev-solar" title="Previous solar eclipse">&#9664;</button>
+          <span class="sky-event-label">Solar Eclipse</span>
+          <button class="nav-btn" id="sky-next-solar" title="Next solar eclipse">&#9654;</button>
         </div>
       </div>
 

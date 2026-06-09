@@ -6,7 +6,7 @@
 import * as THREE from 'three';
 import { PLANETARIUM_BODIES, ASTEROID_BELT, type PlanetData } from './planets/planetData';
 import { createPlanetMesh, createPlanetariumSun, type PlanetMesh } from './PlanetFactory';
-import { computePlanetPositionEquatorial, sampleOrbitLinePoints, utcMsToJD } from '../astronomy/planetary';
+import { computePlanetPositionEquatorial, sampleOrbitLinePoints, ttJDFromUtcMs } from '../astronomy/planetary';
 
 export type PlanetariumLayout = 'aligned' | 'realistic';
 export const CREATE_SOLAR_SYSTEM_TOTAL_UNITS =
@@ -42,7 +42,7 @@ export function getPlanetOrbitalPosition(
     return createAlignedPlanetPosition(planet, seed);
   }
 
-  const position = computePlanetPositionEquatorial(planet, utcMsToJD((date ?? new Date()).getTime()));
+  const position = computePlanetPositionEquatorial(planet, ttJDFromUtcMs((date ?? new Date()).getTime()));
   return { x: position.x, y: position.y, z: position.z };
 }
 

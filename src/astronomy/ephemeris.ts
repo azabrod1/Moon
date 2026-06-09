@@ -6,6 +6,7 @@
  */
 
 import { DEG, J2000 } from './constants';
+import { deltaTDaysAtDate } from './deltaT';
 
 /** Julian Day Number from a Date object (UTC). */
 export function dateToJD(date: Date): number {
@@ -249,7 +250,8 @@ export interface OrbitalState {
 }
 
 export function computeOrbitalState(date: Date): OrbitalState {
-  const jd = dateToJD(date);
+  // Theories run on Terrestrial Time; the date is civil UTC.
+  const jd = dateToJD(date) + deltaTDaysAtDate(date);
   const sun = sunPosition(jd);
   const moon = moonPosition(jd);
 
@@ -313,7 +315,7 @@ export type EventType = 'full-moon' | 'new-moon' | 'lunar-eclipse' | 'solar-ecli
  * Get the Sun-Moon elongation for a given date (signed, -180..180).
  */
 function elongationAt(date: Date): number {
-  const jd = dateToJD(date);
+  const jd = dateToJD(date) + deltaTDaysAtDate(date);
   const sun = sunPosition(jd);
   const moon = moonPosition(jd);
   return norm180(moon.longitude - sun.longitude);

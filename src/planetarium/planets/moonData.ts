@@ -52,7 +52,8 @@ function moon(
 }
 
 export const MOONS: MoonData[] = [
-  // Earth
+  // Earth — rendered from the Meeus ephemeris (planetary.ts), not the circular
+  // model: orbitalPeriodDays/orbitalPhaseDeg are unused for this one entry.
   moon('Moon', 'Earth', 1737.4, 384_400, 27.32, 0xaaaaaa, { textureKey: 'moon' }),
 
   // Mars

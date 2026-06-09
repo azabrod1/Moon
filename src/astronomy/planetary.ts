@@ -5,13 +5,16 @@
  */
 import * as THREE from 'three';
 import type { PlanetData } from '../planetarium/planets/planetData';
-import { dateToJD } from './ephemeris';
+import { dateToJD, moonPosition, sunPosition } from './ephemeris';
+import { deltaTDaysAtDate } from './deltaT';
 import { DEG, J2000, OBLIQUITY_DEG } from './constants';
 
 const REFERENCE_NORTH = new THREE.Vector3(0, 1, 0);
 const REFERENCE_PRIME = new THREE.Vector3(1, 0, 0);
 
 const ECLIPTIC_TO_EQUATORIAL = new THREE.Matrix4().makeRotationX(-OBLIQUITY_DEG * DEG);
+
+const KM_PER_AU = 149_597_870.7;
 
 export interface SimulationTime {
   currentUtcMs: number;
@@ -60,23 +63,26 @@ function applyOrbitalOrientation(position: THREE.Vector3, planet: PlanetData): T
   const inclinationRad = planet.inclinationDeg * DEG;
   const ascendingNodeRad = planet.ascendingNodeDeg * DEG;
 
+  // Scene ecliptic frame: +Y north, longitude increasing toward +Z (matching
+  // raDecToVector's star sphere). A rotation about +Y by +θ moves longitude by
+  // −θ, so element angles are applied negated; −inclination about +X makes the
+  // body head north after the ascending node. planetary.test.ts pins this
+  // against the textbook element formula and the Meeus Sun.
   return position
     .clone()
-    .applyAxisAngle(REFERENCE_NORTH, argPerihelionRad)
-    .applyAxisAngle(new THREE.Vector3(1, 0, 0), inclinationRad)
-    .applyAxisAngle(REFERENCE_NORTH, ascendingNodeRad);
+    .applyAxisAngle(REFERENCE_NORTH, -argPerihelionRad)
+    .applyAxisAngle(new THREE.Vector3(1, 0, 0), -inclinationRad)
+    .applyAxisAngle(REFERENCE_NORTH, -ascendingNodeRad);
 }
 
 export function eclipticToEquatorial(vector: THREE.Vector3): THREE.Vector3 {
   return vector.clone().applyMatrix4(ECLIPTIC_TO_EQUATORIAL);
 }
 
-export function utcMsToDate(utcMs: number): Date {
-  return new Date(utcMs);
-}
-
-export function utcMsToJD(utcMs: number): number {
-  return dateToJD(new Date(utcMs));
+/** TT Julian Day from civil UTC ms — what ephemeris/rotation theories expect. */
+export function ttJDFromUtcMs(utcMs: number): number {
+  const date = new Date(utcMs);
+  return dateToJD(date) + deltaTDaysAtDate(date);
 }
 
 export function raDecToVector(raDeg: number, decDeg: number, radius = 1): THREE.Vector3 {
@@ -105,6 +111,45 @@ export function computePlanetPositionEquatorial(planet: PlanetData, jd: number):
   return eclipticToEquatorial(computePlanetPositionEcliptic(planet, jd));
 }
 
+/**
+ * Geocentric position of Earth's Moon in the scene's equatorial frame (AU),
+ * from the Meeus lunar theory. Replaces the circular clock model for the one
+ * moon whose real geometry (phase, nodes, eclipses) the app showcases.
+ */
+export function computeMoonGeocentricEquatorialAU(jdTT: number, out: THREE.Vector3): THREE.Vector3 {
+  const moon = moonPosition(jdTT);
+  const lonRad = moon.longitude * DEG;
+  const latRad = moon.latitude * DEG;
+  const rAU = moon.distance / KM_PER_AU;
+  const cosLat = Math.cos(latRad);
+  // Scene ecliptic frame: +X at λ=0, +Y north, longitude increasing toward +Z.
+  out.set(
+    rAU * cosLat * Math.cos(lonRad),
+    rAU * Math.sin(latRad),
+    rAU * cosLat * Math.sin(lonRad),
+  );
+  return out.applyMatrix4(ECLIPTIC_TO_EQUATORIAL);
+}
+
+/**
+ * Heliocentric Earth in the scene's equatorial frame (AU): the Meeus
+ * geocentric Sun mirrored through the origin — same distance, longitude
+ * + 180°, latitude 0. Earth, Moon, and sunlight direction then form one
+ * coherent ecliptic-of-date set, so full moons render full and eclipse
+ * alignments actually align; the rounded J2000 Kepler elements drift a
+ * Sun-disc-width off by the 2020s (see planetary.test.ts).
+ */
+export function computeEarthPositionEquatorial(jdTT: number): THREE.Vector3 {
+  const sun = sunPosition(jdTT);
+  const lonRad = sun.longitude * DEG;
+  const ecliptic = new THREE.Vector3(
+    -sun.distance * Math.cos(lonRad),
+    0,
+    -sun.distance * Math.sin(lonRad),
+  );
+  return ecliptic.applyMatrix4(ECLIPTIC_TO_EQUATORIAL);
+}
+
 export function sampleOrbitLinePoints(planet: PlanetData, segments = 256): THREE.Vector3[] {
   const points: THREE.Vector3[] = [];
   for (let i = 0; i <= segments; i++) {
@@ -126,12 +171,8 @@ function getBasePrimeDirection(poleDirection: THREE.Vector3): THREE.Vector3 {
   return ascendingNodeDirection.normalize();
 }
 
-export function computeBodyOrientationQuaternion(planet: PlanetData, jd: number): THREE.Quaternion {
+function buildPoleBasisQuaternion(planet: PlanetData, primeMeridianDeg: number): THREE.Quaternion {
   const poleDirection = raDecToVector(planet.poleRaDeg, planet.poleDecDeg).normalize();
-  const daysSinceJ2000 = getDaysSinceJ2000(jd);
-  const primeMeridianDeg =
-    planet.primeMeridianDegAtJ2000 + planet.primeMeridianRateDegPerDay * daysSinceJ2000;
-
   const primeDirection = getBasePrimeDirection(poleDirection)
     .applyAxisAngle(poleDirection, primeMeridianDeg * DEG)
     .normalize();
@@ -141,9 +182,27 @@ export function computeBodyOrientationQuaternion(planet: PlanetData, jd: number)
   return new THREE.Quaternion().setFromRotationMatrix(basis);
 }
 
+export function computeBodyOrientationQuaternion(planet: PlanetData, jd: number): THREE.Quaternion {
+  const daysSinceJ2000 = getDaysSinceJ2000(jd);
+  const primeMeridianDeg =
+    planet.primeMeridianDegAtJ2000 + planet.primeMeridianRateDegPerDay * daysSinceJ2000;
+  return buildPoleBasisQuaternion(planet, primeMeridianDeg);
+}
+
+/**
+ * Orientation of the body's equatorial frame without the daily spin: the
+ * inertial frame regular moons orbit in. Time-independent — compute once
+ * per planet and cache.
+ */
+export function computeBodyPoleQuaternion(planet: PlanetData): THREE.Quaternion {
+  return buildPoleBasisQuaternion(planet, 0);
+}
+
 export function computeBodyState(planet: PlanetData, utcMs: number): BodyState {
-  const jd = utcMsToJD(utcMs);
-  const positionAU = computePlanetPositionEquatorial(planet, jd);
+  const jd = ttJDFromUtcMs(utcMs);
+  const positionAU = planet.name === 'Earth'
+    ? computeEarthPositionEquatorial(jd)
+    : computePlanetPositionEquatorial(planet, jd);
   const orientationQuaternion = computeBodyOrientationQuaternion(planet, jd);
   const sunDirection = positionAU.clone().multiplyScalar(-1).normalize();
 

@@ -26,17 +26,22 @@ import { PLANETARIUM_BODIES, type PlanetData } from './planets/planetData';
 import { createMoonMeshes, type MoonMesh } from './PlanetFactory';
 import {
   advancePlanetariumTime,
+  computeBodyPoleQuaternion,
   computeBodyState,
+  computeMoonGeocentricEquatorialAU,
+  formatUtcLabel,
   parseUtcInputValue,
+  ttJDFromUtcMs,
   type SimulationTime,
 } from '../astronomy/planetary';
+import { findEvent, type EventType } from '../astronomy/ephemeris';
 import { createPlanetariumStarfield } from './world/starfield';
 import { GyroSteering } from './input/GyroSteering';
 import { smoothstepUnclamped } from '../shared/math/smoothstep';
 import { projectToScreen } from '../shared/three/projectToScreen';
 import { setText } from '../shared/dom';
 import { Constellations } from './Constellations';
-import { getMoonsByPlanet } from './planets/moonData';
+import { getMoonsByPlanet, type MoonData } from './planets/moonData';
 import {
   HISTORIC_JOURNEYS,
   type HistoricJourney,
@@ -50,6 +55,7 @@ import { PlanetariumNotification } from './ui/PlanetariumNotification';
 import { PlanetariumResumePrompt } from './ui/PlanetariumResumePrompt';
 import { PlanetariumStatsPanel } from './ui/PlanetariumStatsPanel';
 import { PlanetariumTimePanel } from './ui/PlanetariumTimePanel';
+import { SkyPanel } from './ui/SkyPanel';
 import { SunLabel } from './ui/SunLabel';
 
 type ScriptedTransfer = {
@@ -66,6 +72,13 @@ type ScriptedTransfer = {
 
 export const FIRST_PLANETARIUM_ACTIVATION_TOTAL_UNITS = CREATE_SOLAR_SYSTEM_TOTAL_UNITS + 1;
 
+const SKY_EVENT_LABELS: Record<EventType, string> = {
+  'full-moon': 'Full Moon',
+  'new-moon': 'New Moon',
+  'lunar-eclipse': 'Lunar Eclipse',
+  'solar-eclipse': 'Solar Eclipse',
+};
+
 export interface PlanetariumActivationProgress {
   completedUnits: number;
   totalUnits: number;
@@ -78,6 +91,7 @@ export class PlanetariumMode {
   // long with 0.5x group scale applied → half-length ≈ 0.75 moon-radii.
   private static readonly SHIP_OCCLUDER_RADIUS_AU = (1_737.4 / 149_597_870.7) * 0.75;
   private static readonly UI_REFRESH_INTERVAL_S = 1 / 8;
+  private static readonly SCENE_NORTH = new THREE.Vector3(0, 1, 0);
   private static readonly EARTH_DETAIL_MIN_DISTANCE_AU = 0.03;
   private static readonly EARTH_DETAIL_MIN_ANGULAR_DIAMETER_RAD = 0.003;
   private static readonly MISSION_CONTROL_IDS = [
@@ -106,6 +120,17 @@ export class PlanetariumMode {
 
   // Planet moons: map from planet name to array of moon meshes
   private planetMoons = new Map<string, MoonMesh[]>();
+
+  // One scene-level group per planet-with-moons, translated to the planet each
+  // frame. Moons parent here rather than in planet.group, whose quaternion
+  // includes the daily spin — satellites orbit the pole, not the surface.
+  private moonSystemGroups = new Map<string, THREE.Group>();
+  private polePlaneQuaternions = new Map<string, THREE.Quaternion>();
+  private tmpMoonOffset = new THREE.Vector3();
+  private tmpLockToParent = new THREE.Vector3();
+  private tmpLockEast = new THREE.Vector3();
+  private tmpLockUp = new THREE.Vector3();
+  private tmpLockBasis = new THREE.Matrix4();
 
   // Keyboard state
   private keys = new Set<string>();
@@ -174,6 +199,7 @@ export class PlanetariumMode {
   private bottomBar = new PlanetariumBottomBar();
   private statsPanel = new PlanetariumStatsPanel();
   private timePanel = new PlanetariumTimePanel();
+  private skyPanel = new SkyPanel((type, direction) => this.handleSkyJump(type, direction));
 
   // Sun label
   private sunLabel = new SunLabel();
@@ -300,6 +326,18 @@ export class PlanetariumMode {
     return this.solarSystem !== null;
   }
 
+  /** The planetarium's simulation clock (UTC ms) — the app's authoritative time. */
+  getCurrentUtcMs(): number {
+    return this.timeState.currentUtcMs;
+  }
+
+  /** Set the simulation clock and refresh world positions + time UI immediately. */
+  setCurrentUtcMs(utcMs: number) {
+    this.timeState = { ...this.timeState, currentUtcMs: utcMs };
+    this.rebuildPlanetPositions();
+    this.updateTimeUI();
+  }
+
   async activate(onProgress?: (progress: PlanetariumActivationProgress) => void): Promise<void> {
     this.active = true;
     const reportActivationProgress = (completedUnits: number) => {
@@ -315,6 +353,7 @@ export class PlanetariumMode {
     // Cache UI element references
     this.statsPanel.bind();
     this.timePanel.bind();
+    this.skyPanel.bind();
     this.speedValueEl = document.getElementById('planetarium-speed-value');
     this.speedLabelEl = document.getElementById('planetarium-speed-label');
     this.speedCenterEl = document.querySelector('.speed-center') as HTMLElement | null;
@@ -356,9 +395,12 @@ export class PlanetariumMode {
         const moons = createMoonMeshes(planet.data.name);
         if (moons.length > 0) {
           this.planetMoons.set(planet.data.name, moons);
+          const systemGroup = new THREE.Group();
           for (const m of moons) {
-            planet.group.add(m.mesh);
+            systemGroup.add(m.mesh);
           }
+          this.moonSystemGroups.set(planet.data.name, systemGroup);
+          this.scene.add(systemGroup);
         }
 
         // Create moon label container if needed
@@ -511,6 +553,7 @@ export class PlanetariumMode {
 
     const planetariumUI = document.getElementById('planetarium-ui');
     if (planetariumUI) planetariumUI.style.display = 'none';
+    this.skyPanel.hide();
 
     // Hide all solar system objects
     this.setObjectsVisible(false);
@@ -534,6 +577,7 @@ export class PlanetariumMode {
       this.solarSystem.ambientLight.visible = visible;
       for (const p of this.solarSystem.planets) p.group.visible = visible;
       for (const o of this.solarSystem.orbitLines) o.visible = visible;
+      for (const g of this.moonSystemGroups.values()) g.visible = visible;
     }
     this.player.group.visible = visible && this.showShip;
     if (this.starfield) this.starfield.visible = visible;
@@ -661,10 +705,12 @@ export class PlanetariumMode {
     // Offset Sun
     this.solarSystem.sun.position.set(-px, -py, -pz);
 
-    // Offset planets
+    // Offset planets (and their moon-system groups, which track the planet)
     for (const planet of this.solarSystem.planets) {
       const wp = planet.group.userData.worldPosAU as { x: number; y: number; z: number };
       planet.group.position.set(wp.x - px, wp.y - py, wp.z - pz);
+      const systemGroup = this.moonSystemGroups.get(planet.data.name);
+      if (systemGroup) systemGroup.position.copy(planet.group.position);
     }
 
     // Offset orbit lines
@@ -714,6 +760,47 @@ export class PlanetariumMode {
     return orbitalAngle + THREE.MathUtils.degToRad(moon.orbitalPhaseDeg);
   }
 
+  /** Pole-frame quaternion per planet (equator without daily spin), cached. */
+  private getPoleQuaternion(planet: PlanetData): THREE.Quaternion {
+    let quaternion = this.polePlaneQuaternions.get(planet.name);
+    if (!quaternion) {
+      quaternion = computeBodyPoleQuaternion(planet);
+      this.polePlaneQuaternions.set(planet.name, quaternion);
+    }
+    return quaternion;
+  }
+
+  /**
+   * Major moons are tidally locked: keep the near side (texture longitude 0,
+   * which SphereGeometry puts on the mesh's +X axis) facing the parent. Roll
+   * around that axis keeps the moon's north toward scene north.
+   */
+  private orientTidallyLockedMoon(mesh: THREE.Mesh, offsetFromParent: THREE.Vector3) {
+    const toParent = this.tmpLockToParent.copy(offsetFromParent).multiplyScalar(-1).normalize();
+    const east = this.tmpLockEast.crossVectors(toParent, PlanetariumMode.SCENE_NORTH);
+    if (east.lengthSq() < 1e-10) return; // degenerate: moon directly over a pole
+    east.normalize();
+    const up = this.tmpLockUp.crossVectors(east, toParent);
+    mesh.quaternion.setFromRotationMatrix(this.tmpLockBasis.makeBasis(toParent, up, east));
+  }
+
+  /**
+   * Single source of truth for a moon's offset from its parent planet (AU,
+   * world frame). Rendering, landing, proximity, and autopilot all read this,
+   * so the moon you see is the moon you fly to. Earth's Moon gets the real
+   * Meeus ephemeris (phases/nodes/eclipses); every other moon uses the
+   * circular model — uniform motion in the parent's equatorial plane.
+   */
+  private getMoonWorldOffsetAU(moon: MoonData, parentPlanet: PlanetData, out: THREE.Vector3): THREE.Vector3 {
+    if (moon.name === 'Moon' && parentPlanet.name === 'Earth') {
+      return computeMoonGeocentricEquatorialAU(ttJDFromUtcMs(this.timeState.currentUtcMs), out);
+    }
+    const angle = this.getMoonAngleRad(moon);
+    const r = moon.orbitalRadiusAU;
+    out.set(r * Math.cos(angle), 0, r * Math.sin(angle));
+    return out.applyQuaternion(this.getPoleQuaternion(parentPlanet));
+  }
+
   private getMoonSystemThresholdAU(planetRadiusAU: number, moons: MoonMesh[]): number {
     let farthestOrbitAU = 0;
     for (const moon of moons) {
@@ -728,23 +815,21 @@ export class PlanetariumMode {
     if (this.landedOn.type === 'planet') {
       return this.planetWorldPositions.get(this.landedOn.name) ?? null;
     }
-    // Moon: parent position + real orbital offset (unscaled).
-    // The player sits at the moon's true AU position. The camera target
-    // is adjusted in updateLanded to account for the visual offset caused
-    // by planet group scaling.
+    // Moon: parent position + orbital offset from the shared seam — the same
+    // position the mesh renders at, so the floating origin centers exactly on it.
     const parentPlanet = this.landedOn.parentPlanet;
     const parentPos = this.planetWorldPositions.get(parentPlanet);
     if (!parentPos) return null;
+    const parentBody = PLANETARIUM_BODIES.find(b => b.name === parentPlanet);
     const moons = this.planetMoons.get(parentPlanet);
-    if (!moons) return null;
+    if (!parentBody || !moons) return null;
     const moonMesh = moons.find(m => m.data.name === this.landedOn!.name);
     if (!moonMesh) return null;
-    const angle = this.getMoonAngleRad(moonMesh.data);
-    const r = moonMesh.data.orbitalRadiusAU;
+    const offset = this.getMoonWorldOffsetAU(moonMesh.data, parentBody, this.tmpMoonOffset);
     return {
-      x: parentPos.x + r * Math.cos(angle),
-      y: parentPos.y,
-      z: parentPos.z + r * Math.sin(angle),
+      x: parentPos.x + offset.x,
+      y: parentPos.y + offset.y,
+      z: parentPos.z + offset.z,
     };
   }
 
@@ -886,14 +971,14 @@ export class PlanetariumMode {
           continue;
         }
 
-        const angle = this.getMoonAngleRad(m.data);
-        const r = m.data.orbitalRadiusAU;
-        m.mesh.position.set(r * Math.cos(angle), 0, r * Math.sin(angle));
+        const offset = this.getMoonWorldOffsetAU(m.data, planet.data, this.tmpMoonOffset);
+        m.mesh.position.copy(offset);
+        this.orientTidallyLockedMoon(m.mesh, offset);
 
         this.moonWorldPositions.set(m.data.name, {
-          x: wp.x + r * Math.cos(angle),
-          y: wp.y,
-          z: wp.z + r * Math.sin(angle),
+          x: wp.x + offset.x,
+          y: wp.y + offset.y,
+          z: wp.z + offset.z,
         });
 
         const realRatio = m.data.radiusAU / parentR;
@@ -1119,6 +1204,7 @@ export class PlanetariumMode {
     if (e.key === 'Escape') {
       if (this.isHelpOpen()) { this.hideHelp(); return; }
       if (this.isTravelMenuOpen()) { this.closeTravelMenu(); return; }
+      if (this.skyPanel.isOpen()) { this.skyPanel.hide(); return; }
       if (this.landedOn) { this.exitLandedMode(); return; }
     }
 
@@ -1236,14 +1322,10 @@ export class PlanetariumMode {
       if (dist > moonThreshold) continue;
       for (const m of moons) {
         // Compute moon's real AU position (parent + orbital offset)
-        const angle = this.getMoonAngleRad(m.data);
-        const r = m.data.orbitalRadiusAU;
-        const moonRealX = wp.x + r * Math.cos(angle);
-        const moonRealY = wp.y;
-        const moonRealZ = wp.z + r * Math.sin(angle);
-        const mdx = this.player.posX - moonRealX;
-        const mdy = this.player.posY - moonRealY;
-        const mdz = this.player.posZ - moonRealZ;
+        const offset = this.getMoonWorldOffsetAU(m.data, planet.data, this.tmpMoonOffset);
+        const mdx = this.player.posX - (wp.x + offset.x);
+        const mdy = this.player.posY - (wp.y + offset.y);
+        const mdz = this.player.posZ - (wp.z + offset.z);
         const md = Math.sqrt(mdx * mdx + mdy * mdy + mdz * mdz);
         const moonLandThreshold = Math.max(m.data.radiusAU * this.planetScale * 3, 0.0003);
         if (md < moonLandThreshold && md < closestDist) {
@@ -1347,7 +1429,7 @@ export class PlanetariumMode {
     }
   }
 
-  private isMissionActive(): boolean {
+  isMissionActive(): boolean {
     return this.activeHistoricJourney !== null;
   }
 
@@ -1437,6 +1519,8 @@ export class PlanetariumMode {
       this.keys.clear();
       this.closeTravelMenu();
     }
+
+    this.updateSkyButtonVisibility();
   }
 
   private wireUpUI() {
@@ -1685,6 +1769,14 @@ export class PlanetariumMode {
     });
     document.getElementById('planetarium-btn-leave')?.addEventListener('click', () => {
       this.exitLandedMode();
+    });
+    document.getElementById('planetarium-btn-sky')?.addEventListener('click', () => {
+      if (this.skyPanel.isOpen()) {
+        this.skyPanel.hide();
+      } else {
+        this.skyPanel.show();
+        this.renderSkyPanel();
+      }
     });
     document.getElementById('planetarium-btn-land')?.addEventListener('click', () => {
       if (this.nearbyLandTarget) {
@@ -2213,6 +2305,66 @@ export class PlanetariumMode {
     this.resetCruiseCamera();
   }
 
+  /** The Sky panel covers the Earth system only (until per-moon ephemerides land). */
+  private isSkySubject(target: LandedTarget): boolean {
+    if (!target) return false;
+    return target.type === 'planet' ? target.name === 'Earth' : target.parentPlanet === 'Earth';
+  }
+
+  private updateSkyButtonVisibility() {
+    const button = document.getElementById('planetarium-btn-sky');
+    if (!button) return;
+    const show = !this.isMissionActive() && this.isSkySubject(this.landedOn);
+    button.style.display = show ? '' : 'none';
+    if (!show) this.skyPanel.hide();
+  }
+
+  private renderSkyPanel() {
+    if (!this.skyPanel.isOpen()) return;
+    const subject = this.landedOn?.type === 'moon' ? 'Earth' : 'Moon';
+    this.skyPanel.render(this.timeState.currentUtcMs, subject);
+  }
+
+  private handleSkyJump(type: EventType, direction: 1 | -1) {
+    const found = findEvent(type, new Date(this.timeState.currentUtcMs), direction);
+    if (!found) {
+      this.notification.show('No event found within the search range');
+      return;
+    }
+    this.timeState = { ...this.timeState, currentUtcMs: found.getTime(), paused: true };
+    this.rebuildPlanetPositions();
+    this.updateTimeUI();
+    this.frameSkyEvent();
+    this.renderSkyPanel();
+    this.notification.show(`${SKY_EVENT_LABELS[type]} — ${formatUtcLabel(found.getTime())}`);
+  }
+
+  /**
+   * Swing the landed orbit camera so the companion body (the Moon from Earth,
+   * Earth from the Moon) sits in frame next to the landed body — which stays
+   * at scene origin. A side nudge keeps the landed body's limb from occluding
+   * the companion; auto-rotate is stopped so the framed event doesn't drift.
+   */
+  private frameSkyEvent() {
+    if (!this.landedOn || !this.isSkySubject(this.landedOn)) return;
+    const earthBody = PLANETARIUM_BODIES.find(b => b.name === 'Earth');
+    const moonMesh = this.planetMoons.get('Earth')?.find(m => m.data.name === 'Moon');
+    if (!earthBody || !moonMesh) return;
+
+    const dir = this.getMoonWorldOffsetAU(moonMesh.data, earthBody, this.tmpMoonOffset).normalize();
+    if (this.landedOn.type === 'moon') dir.negate();
+
+    const wantedDist = this.landedOn.type === 'moon' ? 0.0006 : 0.001;
+    const camDist = THREE.MathUtils.clamp(wantedDist, this.controls.minDistance, this.controls.maxDistance);
+    const side = new THREE.Vector3().crossVectors(dir, PlanetariumMode.SCENE_NORTH);
+    if (side.lengthSq() < 1e-10) side.set(1, 0, 0);
+    else side.normalize();
+
+    this.camera.position.copy(dir).multiplyScalar(-camDist).addScaledVector(side, camDist / 5);
+    this.camera.lookAt(0, 0, 0);
+    this.controls.autoRotate = false;
+  }
+
   enterLandedMode(target: NonNullable<LandedTarget>) {
     if (this.isMissionActive()) return;
     this.landedOn = target;
@@ -2236,29 +2388,14 @@ export class PlanetariumMode {
       this.player.posZ = pos.z;
     }
 
-    // Configure OrbitControls to orbit the body
+    // Configure OrbitControls to orbit the body. The player is parked at the
+    // body's world position, so the next floating-origin pass puts the body —
+    // planet or moon — exactly at scene origin.
     const radiusAU = this.getLandedBodyRadiusAU();
     const visualRadius = radiusAU * this.planetScale;
 
-    // For moons the visual mesh is offset from origin due to planet group
-    // scaling. Run a floating-origin + scaling pass so we can find the
-    // moon's scene-space position and point the camera at it.
-    let orbitCenter = new THREE.Vector3(0, 0, 0);
-    if (target.type === 'moon' && this.solarSystem) {
-      this.applyFloatingOrigin();
-      this.updatePlanetScaling();
-      this.updateMoonPositions();
-      const parent = this.solarSystem.planets.find(p => p.data.name === target.parentPlanet);
-      const moons = this.planetMoons.get(target.parentPlanet);
-      const moonMesh = moons?.find(m => m.data.name === target.name);
-      if (moonMesh && parent) {
-        parent.group.updateMatrixWorld(true);
-        orbitCenter = moonMesh.mesh.getWorldPosition(new THREE.Vector3());
-      }
-    }
-
     this.controls.enabled = true;
-    this.controls.target.copy(orbitCenter);
+    this.controls.target.set(0, 0, 0);
     this.controls.minDistance = visualRadius * 1.5;
     this.controls.maxDistance = Math.max(visualRadius * 30, 0.01);
     this.controls.autoRotate = true;
@@ -2267,12 +2404,8 @@ export class PlanetariumMode {
 
     // Position camera for a nice initial view
     const camDist = Math.max(visualRadius * 4, 0.0005);
-    this.camera.position.set(
-      orbitCenter.x + camDist,
-      orbitCenter.y + camDist * 0.5,
-      orbitCenter.z + camDist,
-    );
-    this.camera.lookAt(orbitCenter);
+    this.camera.position.set(camDist, camDist * 0.5, camDist);
+    this.camera.lookAt(0, 0, 0);
 
     // UI: hide flight controls, show leave button
     // Close any open popovers before hiding
@@ -2293,6 +2426,7 @@ export class PlanetariumMode {
     const leaveName = document.getElementById('leave-body-name');
     if (leaveName) leaveName.textContent = target.name;
 
+    this.updateSkyButtonVisibility();
     this.notification.show(`Landed on ${target.name}`);
   }
 
@@ -2381,6 +2515,7 @@ export class PlanetariumMode {
     const leaveBtn = document.getElementById('planetarium-btn-leave');
     if (leaveBtn) leaveBtn.style.display = 'none';
 
+    this.updateSkyButtonVisibility();
     this.notification.show(`Departing ${bodyName}`);
   }
 
@@ -2399,25 +2534,11 @@ export class PlanetariumMode {
       this.player.posZ = bodyPos.z;
     }
 
-    // Apply floating origin (scene offset by player = body position)
+    // Apply floating origin (scene offset by player = body position). The
+    // landed body — planet or moon — renders exactly at scene origin because
+    // its mesh position comes from the same seam the player tracks.
     this.applyFloatingOrigin();
-
-    // For moons, the player is at the real AU position but the visual mesh
-    // is offset due to planet group scaling. Find the moon mesh's actual
-    // scene-space position and orbit the camera around that.
-    if (this.landedOn?.type === 'moon' && this.solarSystem) {
-      const landed = this.landedOn;
-      const parent = this.solarSystem.planets.find(p => p.data.name === landed.parentPlanet);
-      const moons = this.planetMoons.get(landed.parentPlanet);
-      const moonMesh = moons?.find(m => m.data.name === landed.name);
-      if (moonMesh && parent) {
-        parent.group.updateMatrixWorld(true);
-        const moonScenePos = moonMesh.mesh.getWorldPosition(new THREE.Vector3());
-        this.controls.target.copy(moonScenePos);
-      }
-    } else {
-      this.controls.target.set(0, 0, 0);
-    }
+    this.controls.target.set(0, 0, 0);
     this.controls.update();
 
     // FPS tracking
@@ -2472,6 +2593,7 @@ export class PlanetariumMode {
     if (shouldRefreshUi) {
       this.updateStatsUI();
       this.updateTimeUI();
+      this.renderSkyPanel();
     }
   }
 
@@ -2759,6 +2881,7 @@ export class PlanetariumMode {
       this.solarSystem.asteroidBelt.removeFromParent();
       for (const p of this.solarSystem.planets) p.group.removeFromParent();
       for (const o of this.solarSystem.orbitLines) o.removeFromParent();
+      for (const g of this.moonSystemGroups.values()) g.removeFromParent();
     }
     this.player.group.removeFromParent();
     if (this.starfield) this.starfield.removeFromParent();

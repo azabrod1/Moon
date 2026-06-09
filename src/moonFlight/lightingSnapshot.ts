@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import { dateToJD, moonPosition, sunPosition } from '../astronomy/ephemeris';
+import { deltaTDaysAtDate } from '../astronomy/deltaT';
 import { KM_CONSTANTS } from '../shared/constants/physicalData';
 
 /**
@@ -42,7 +43,7 @@ function eclipticToCartesian(longDeg: number, latDeg: number, distance: number):
 }
 
 export function snapshotLighting(date: Date): LightingSnapshot {
-  const jd = dateToJD(date);
+  const jd = dateToJD(date) + deltaTDaysAtDate(date);
   const sun = sunPosition(jd);
   const moon = moonPosition(jd);
 

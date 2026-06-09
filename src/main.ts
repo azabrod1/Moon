@@ -823,6 +823,13 @@ async function switchAppMode(newMode: AppMode) {
       } else {
         await planetariumMode.activate();
       }
+      // One clock: carry the Moon view's date into the planetarium. Must run
+      // after activate() resolves — restoreState() reloads the persisted clock
+      // and would clobber an earlier push. Manual-slider mode doesn't define a
+      // date, and an active mission owns the clock; skip both.
+      if (state.mode === 'date' && !planetariumMode.isMissionActive()) {
+        planetariumMode.setCurrentUtcMs(state.currentDate.getTime());
+      }
       debugLog('Planetarium mode active');
 
     } else if (newMode === 'moonFlight') {
@@ -861,6 +868,7 @@ async function switchAppMode(newMode: AppMode) {
 
     } else {
       // --- Switch to Moon view ---
+      const cameFromPlanetarium = appMode === 'planetarium';
       if (!moonViewScene) {
         setMoonViewLoadingPercent(0, 1);
         await ensureMoonViewScene((loaded, total) => {
@@ -880,6 +888,12 @@ async function switchAppMode(newMode: AppMode) {
       camera = moonViewCamera;
       applyRenderResolution('moonView');
       rebuildComposer(moonViewCamera);
+
+      // One clock: pull the planetarium's time back into the Moon view.
+      if (cameFromPlanetarium && planetariumMode) {
+        state.currentDate = new Date(planetariumMode.getCurrentUtcMs());
+        if (state.mode === 'date') applyDateToState(state.currentDate);
+      }
       debugLog('Moon-view mode active');
     }
 

@@ -406,8 +406,11 @@ const newHorizonsMilestones: HistoricMilestone[] = [
     imageSourceLabel: 'First images of Arrokoth',
     imageSourceUrl: 'https://science.nasa.gov/resource/first-images-of-arrokoth-2014-mu69/',
     ...textureFallback('pluto.jpg', 'Pluto'),
-    customScenePosition: { x: 46.5, y: 2.8, z: -10.5 },
-    customLookTarget: { x: 39.2, y: 0.4, z: -5.8 },
+    // Camera sits past Pluto's Jan 2019 position (11.9, -12.6, -28.9) along the
+    // outbound radial, looking back at it — Pluto's world position comes from
+    // computePlanetPositionEquatorial; retune if the planet model changes.
+    customScenePosition: { x: 14.3, y: -12.6, z: -34.7 },
+    customLookTarget: { x: 11.9, y: -12.6, z: -28.9 },
   },
 ];
 

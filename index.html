@@ -4,11 +4,13 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no" />
   <title>Planetarium: Explore Space</title>
-  <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+  <!-- ?v=2 busts the browser's favicon cache, which ignores page reloads —
+       bump it whenever the icon art changes. -->
+  <link rel="icon" type="image/svg+xml" href="/favicon.svg?v=2" />
   <!-- Safari/dock-installed apps ignore SVG favicons; they want a PNG touch icon.
        Full-bleed square (the OS applies its own corner mask); regenerate from
        favicon.svg if the art changes. -->
-  <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png" />
+  <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png?v=2" />
   <meta name="theme-color" content="#050814" />
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />

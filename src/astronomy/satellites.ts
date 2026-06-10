@@ -10,12 +10,18 @@
  * into the scene's equatorial embedding via raDecToVector/eclipticToEquatorial,
  * so a moon and its sky backdrop agree. Pinned by satellites.test.ts goldens.
  *
- * Earth's Moon is NOT served here — it stays on the Meeus ephemeris
- * (computeMoonGeocentricEquatorialAU in planetary.ts).
+ * Earth's Moon propagates on the Meeus ephemeris, not these elements — the
+ * name-keyed seam computeMoonOffsetEquatorialAU dispatches it to
+ * computeMoonGeocentricEquatorialAU (planetary.ts) and everything else here.
  */
 import * as THREE from 'three';
 import { SATELLITE_ELEMENTS, type SatelliteElementsRecord } from './satelliteElements';
-import { eclipticToEquatorial, raDecToVector } from './planetary';
+import {
+  computeMoonGeocentricEquatorialAU,
+  eclipticToEquatorial,
+  raDecToVector,
+  ttJDFromUtcMs,
+} from './planetary';
 import type { KeplerElements } from './standish';
 import { DEG, KM_PER_AU } from './constants';
 
@@ -145,4 +151,75 @@ export function computeSatelliteOffsetEquatorialAU(
 export function getSatelliteApoapsisAU(name: string): number {
   const { record } = getFrame(name);
   return (record.aKm / KM_PER_AU) * (1 + record.eccentricity);
+}
+
+/** Orbit shape/rate summary for search heuristics (shadow-engine season
+ *  prefilter and step sizing) — not a positions API. */
+export interface SatelliteOrbitMeta {
+  semiMajorAxisKm: number;
+  eccentricity: number;
+  /** Anomalistic-ish period from the calibrated mean-anomaly rate. */
+  periodDays: number;
+  /** |Ω̇|, the node-precession rate — bounds how fast the orbit plane drifts. */
+  nodeRateDegPerDay: number;
+  /** Inclination to the moon's own reference plane (the precession cone half-angle). */
+  inclinationDeg: number;
+}
+
+export function getSatelliteOrbitMeta(name: string): SatelliteOrbitMeta {
+  const { record } = getFrame(name);
+  return {
+    semiMajorAxisKm: record.aKm,
+    eccentricity: record.eccentricity,
+    periodDays: 360 / Math.abs(record.meanAnomalyRateDegPerDay),
+    nodeRateDegPerDay: Math.abs(record.ascendingNodeRateDegPerDay),
+    inclinationDeg: record.inclinationDeg,
+  };
+}
+
+/** Same shape for Earth's Moon (mean lunar orbit; Meeus serves positions). */
+export const EARTH_MOON_ORBIT_META: SatelliteOrbitMeta = {
+  semiMajorAxisKm: 384_400,
+  eccentricity: 0.0549,
+  periodDays: 27.321661,
+  nodeRateDegPerDay: 0.0529539, // 18.6-year node regression
+  inclinationDeg: 5.145, // to the ecliptic
+};
+
+// Finite-difference baseline for the Earth-Moon orbit normal: long enough to
+// be numerically clean, far shorter than anything that bends the orbit.
+const MOON_NORMAL_STEP_DAYS = 0.25;
+const tmpNormalA = new THREE.Vector3();
+const tmpNormalB = new THREE.Vector3();
+
+/**
+ * Planetocentric offset of ANY catalog moon in the scene equatorial frame
+ * (AU), keyed by name — the single position seam shared by the renderer
+ * (PlanetariumMode.getMoonWorldOffsetAU) and the shadow engine, so an event
+ * the engine finds is an event the renderer shows. Earth's Moon → Meeus;
+ * everything else → the JPL mean elements above.
+ *
+ * `outOrbitNormal` receives the actual orbit normal. For Earth's Moon that is
+ * the true 5.1°-tilted normal from a finite difference of two Meeus samples —
+ * in scene coordinates the det(−1) embedding flips cross products, so the
+ * sample order is reversed (r(t+dt) × r(t)) to keep the normal pointing north.
+ */
+export function computeMoonOffsetEquatorialAU(
+  moonName: string,
+  parentPlanetName: string,
+  utcMs: number,
+  out: THREE.Vector3,
+  outOrbitNormal?: THREE.Vector3,
+): THREE.Vector3 {
+  if (moonName === 'Moon' && parentPlanetName === 'Earth') {
+    const jdTT = ttJDFromUtcMs(utcMs);
+    computeMoonGeocentricEquatorialAU(jdTT, out);
+    if (outOrbitNormal) {
+      tmpNormalA.copy(out);
+      computeMoonGeocentricEquatorialAU(jdTT + MOON_NORMAL_STEP_DAYS, tmpNormalB);
+      outOrbitNormal.crossVectors(tmpNormalB, tmpNormalA).normalize();
+    }
+    return out;
+  }
+  return computeSatelliteOffsetEquatorialAU(moonName, ttJDFromUtcMs(utcMs), out, outOrbitNormal);
 }

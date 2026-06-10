@@ -5,6 +5,10 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no" />
   <title>Planetarium: Explore Space</title>
   <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+  <!-- Safari/dock-installed apps ignore SVG favicons; they want a PNG touch icon.
+       Full-bleed square (the OS applies its own corner mask); regenerate from
+       favicon.svg if the art changes. -->
+  <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png" />
   <meta name="theme-color" content="#050814" />
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
@@ -692,7 +696,8 @@
       padding: 8px;
       pointer-events: auto;
       min-width: 190px;
-      z-index: 21;
+      /* Above the sky panel (21): both anchor top-right, the transient menu wins. */
+      z-index: 22;
       box-shadow: 0 8px 32px rgba(0, 0, 0, 0.4), inset 0 1px 0 rgba(255, 255, 255, 0.04);
     }
     #planetarium-menu-panel.visible { display: block; }
@@ -724,7 +729,7 @@
       border-radius: 8px;
       padding: 10px 12px;
       pointer-events: auto;
-      width: 216px;
+      width: 240px;
       z-index: 21;
       box-shadow: 0 8px 32px rgba(0, 0, 0, 0.4), inset 0 1px 0 rgba(255, 255, 255, 0.04);
     }
@@ -771,6 +776,48 @@
       font-size: 10px;
       letter-spacing: 0.3px;
       color: var(--text-secondary);
+    }
+    .sky-events-title {
+      margin-top: 10px;
+      padding-top: 8px;
+      border-top: 1px solid var(--panel-border);
+      font-size: 10px;
+      letter-spacing: 0.6px;
+      text-transform: uppercase;
+      color: var(--text-secondary);
+    }
+    #sky-events-status {
+      margin-top: 4px;
+      font-size: 10px;
+      color: var(--text-secondary);
+    }
+    #sky-events-status:empty { display: none; }
+    .sky-upcoming-row {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 6px;
+      margin-top: 6px;
+    }
+    .sky-upcoming-info { min-width: 0; }
+    .sky-upcoming-label {
+      font-size: 11px;
+      color: var(--text-primary);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .sky-upcoming-time { font-size: 10px; color: var(--text-secondary); white-space: nowrap; }
+    .sky-upcoming-jump { flex: none; }
+    .sky-cones-row {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      margin-top: 10px;
+      font-size: 11px;
+      color: var(--text-secondary);
+      cursor: pointer;
+      user-select: none;
     }
 
     .menu-submenu {
@@ -1965,7 +2012,7 @@
         </div>
       </div>
 
-      <!-- Sky panel: phase + event jumps while landed on Earth or the Moon -->
+      <!-- Sky panel: phase + event jumps while landed in any moon system -->
       <div id="sky-panel">
         <div class="sky-header">
           <span id="sky-subject">Moon · from Earth</span>
@@ -1975,26 +2022,34 @@
           <span id="sky-phase-name">--</span>
           <span id="sky-illumination">--</span>
         </div>
-        <div class="sky-event-row">
-          <button class="nav-btn" id="sky-prev-full" title="Previous full moon">&#9664;</button>
-          <span class="sky-event-label">Full Moon</span>
-          <button class="nav-btn" id="sky-next-full" title="Next full moon">&#9654;</button>
+        <div id="sky-earth-rows">
+          <div class="sky-event-row">
+            <button class="nav-btn" id="sky-prev-full" title="Previous full moon">&#9664;</button>
+            <span class="sky-event-label">Full Moon</span>
+            <button class="nav-btn" id="sky-next-full" title="Next full moon">&#9654;</button>
+          </div>
+          <div class="sky-event-row">
+            <button class="nav-btn" id="sky-prev-new" title="Previous new moon">&#9664;</button>
+            <span class="sky-event-label">New Moon</span>
+            <button class="nav-btn" id="sky-next-new" title="Next new moon">&#9654;</button>
+          </div>
+          <div class="sky-event-row">
+            <button class="nav-btn" id="sky-prev-lunar" title="Previous lunar eclipse">&#9664;</button>
+            <span class="sky-event-label">Lunar Eclipse</span>
+            <button class="nav-btn" id="sky-next-lunar" title="Next lunar eclipse">&#9654;</button>
+          </div>
+          <div class="sky-event-row">
+            <button class="nav-btn" id="sky-prev-solar" title="Previous solar eclipse">&#9664;</button>
+            <span class="sky-event-label">Solar Eclipse</span>
+            <button class="nav-btn" id="sky-next-solar" title="Next solar eclipse">&#9654;</button>
+          </div>
         </div>
-        <div class="sky-event-row">
-          <button class="nav-btn" id="sky-prev-new" title="Previous new moon">&#9664;</button>
-          <span class="sky-event-label">New Moon</span>
-          <button class="nav-btn" id="sky-next-new" title="Next new moon">&#9654;</button>
-        </div>
-        <div class="sky-event-row">
-          <button class="nav-btn" id="sky-prev-lunar" title="Previous lunar eclipse">&#9664;</button>
-          <span class="sky-event-label">Lunar Eclipse</span>
-          <button class="nav-btn" id="sky-next-lunar" title="Next lunar eclipse">&#9654;</button>
-        </div>
-        <div class="sky-event-row">
-          <button class="nav-btn" id="sky-prev-solar" title="Previous solar eclipse">&#9664;</button>
-          <span class="sky-event-label">Solar Eclipse</span>
-          <button class="nav-btn" id="sky-next-solar" title="Next solar eclipse">&#9654;</button>
-        </div>
+        <div class="sky-events-title">Upcoming events</div>
+        <div id="sky-events-status">--</div>
+        <div id="sky-events-list"></div>
+        <label class="sky-cones-row">
+          <input type="checkbox" id="sky-cones-toggle"> Shadow cones
+        </label>
       </div>
 
       <!-- Help modal (centered) -->

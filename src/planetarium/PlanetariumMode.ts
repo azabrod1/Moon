@@ -27,7 +27,6 @@ import { PLANETARIUM_BODIES, type PlanetData } from './planets/planetData';
 import { createMoonMeshes, type MoonMesh } from './PlanetFactory';
 import {
   advancePlanetariumTime,
-  computeBodyPoleQuaternion,
   computeBodyState,
   computeMoonGeocentricEquatorialAU,
   eclipticToEquatorial,
@@ -36,6 +35,7 @@ import {
   ttJDFromUtcMs,
   type SimulationTime,
 } from '../astronomy/planetary';
+import { computeSatelliteOffsetEquatorialAU, getSatelliteApoapsisAU } from '../astronomy/satellites';
 import { findEvent, type EventType } from '../astronomy/ephemeris';
 import { KM_PER_AU } from '../astronomy/constants';
 import { createPlanetariumStarfield } from './world/starfield';
@@ -128,14 +128,14 @@ export class PlanetariumMode {
 
   // One scene-level group per planet-with-moons, translated to the planet each
   // frame. Moons parent here rather than in planet.group, whose quaternion
-  // includes the daily spin — satellites orbit the pole, not the surface.
+  // includes the daily spin — moon offsets are world-frame and must not rotate
+  // with the surface.
   private moonSystemGroups = new Map<string, THREE.Group>();
-  private poleQuaternions = new Map<string, THREE.Quaternion>();
   private tmpMoonOffset = new THREE.Vector3();
+  private tmpMoonOrbitNormal = new THREE.Vector3();
   private tmpLockToParent = new THREE.Vector3();
   private tmpLockEast = new THREE.Vector3();
   private tmpLockUp = new THREE.Vector3();
-  private tmpLockRollNorth = new THREE.Vector3();
   private tmpLockBasis = new THREE.Matrix4();
 
   // Keyboard state
@@ -760,43 +760,20 @@ export class PlanetariumMode {
     this.camera.position.lerp(idealPos, lerpSpeed);
   }
 
-  private getMoonAngleRad(moon: MoonMesh['data']): number {
-    const moonTimeSeconds = this.timeState.currentUtcMs / 1000;
-    const orbitalAngle = (moonTimeSeconds / (moon.orbitalPeriodDays * 86400)) * Math.PI * 2;
-    return orbitalAngle + THREE.MathUtils.degToRad(moon.orbitalPhaseDeg);
-  }
-
-  /** Pole-frame quaternion per planet (equator without daily spin), cached. */
-  private getPoleQuaternion(planet: PlanetData): THREE.Quaternion {
-    let quaternion = this.poleQuaternions.get(planet.name);
-    if (!quaternion) {
-      quaternion = computeBodyPoleQuaternion(planet);
-      this.poleQuaternions.set(planet.name, quaternion);
-    }
-    return quaternion;
-  }
-
   /**
    * Major moons are tidally locked: keep the near side (texture longitude 0,
    * which SphereGeometry puts on the mesh's +X axis) facing the parent. The
-   * roll reference is the moon's orbit normal, not scene north: the parent's
-   * pole for circular-model moons (perpendicular to toParent by construction)
-   * and ecliptic north for Earth's Moon (the real lunar axis sits within
-   * ~1.5° of the ecliptic pole). Scene-equatorial north would roll the lunar
-   * disk up to ~23° and make near-polar passes (Charon, Uranus's moons)
-   * visibly tumble as toParent swept past it.
+   * roll reference is the moon's own orbit normal (from the element frame),
+   * so inclined and retrograde moons (Iapetus 7.6°, Phoebe 175°) don't tumble
+   * as toParent sweeps past a fixed axis. Earth's Moon uses ecliptic north
+   * (the real lunar axis sits within ~1.5° of the ecliptic pole).
    */
   private orientTidallyLockedMoon(
     mesh: THREE.Mesh,
     offsetFromParent: THREE.Vector3,
-    moon: MoonData,
-    parentPlanet: PlanetData,
+    rollNorth: THREE.Vector3,
   ) {
     const toParent = this.tmpLockToParent.copy(offsetFromParent).multiplyScalar(-1).normalize();
-    const rollNorth =
-      moon.name === 'Moon' && parentPlanet.name === 'Earth'
-        ? PlanetariumMode.ECLIPTIC_NORTH
-        : this.tmpLockRollNorth.set(0, 1, 0).applyQuaternion(this.getPoleQuaternion(parentPlanet));
     const east = this.tmpLockEast.crossVectors(toParent, rollNorth);
     if (east.lengthSq() < 1e-10) return; // unreachable for valid orbit geometry; cheap safety
     east.normalize();
@@ -808,23 +785,39 @@ export class PlanetariumMode {
    * Single source of truth for a moon's offset from its parent planet (AU,
    * world frame). Rendering, landing, proximity, and autopilot all read this,
    * so the moon you see is the moon you fly to. Earth's Moon gets the real
-   * Meeus ephemeris (phases/nodes/eclipses); every other moon uses the
-   * circular model — uniform motion in the parent's equatorial plane.
+   * Meeus ephemeris (phases/nodes/eclipses); every other moon propagates its
+   * JPL mean elements (satellites.ts). `outOrbitNormal`, when given, receives
+   * the unit orbit normal — the tidal-lock roll reference.
    */
-  private getMoonWorldOffsetAU(moon: MoonData, parentPlanet: PlanetData, out: THREE.Vector3): THREE.Vector3 {
+  private getMoonWorldOffsetAU(
+    moon: MoonData,
+    parentPlanet: PlanetData,
+    out: THREE.Vector3,
+    outOrbitNormal?: THREE.Vector3,
+  ): THREE.Vector3 {
     if (moon.name === 'Moon' && parentPlanet.name === 'Earth') {
+      if (outOrbitNormal) outOrbitNormal.copy(PlanetariumMode.ECLIPTIC_NORTH);
       return computeMoonGeocentricEquatorialAU(ttJDFromUtcMs(this.timeState.currentUtcMs), out);
     }
-    const angle = this.getMoonAngleRad(moon);
-    const r = moon.orbitalRadiusAU;
-    out.set(r * Math.cos(angle), 0, r * Math.sin(angle));
-    return out.applyQuaternion(this.getPoleQuaternion(parentPlanet));
+    return computeSatelliteOffsetEquatorialAU(
+      moon.name,
+      ttJDFromUtcMs(this.timeState.currentUtcMs),
+      out,
+      outOrbitNormal,
+    );
   }
 
   private getMoonSystemThresholdAU(planetRadiusAU: number, moons: MoonMesh[]): number {
+    // Apoapsis, not the catalog semi-major axis: eccentric outer moons (Neso
+    // e≈0.46 reaches ~0.49 AU) would otherwise leave the visibility/landing
+    // threshold near apoapsis and become unreachable.
     let farthestOrbitAU = 0;
     for (const moon of moons) {
-      farthestOrbitAU = Math.max(farthestOrbitAU, moon.data.orbitalRadiusAU);
+      const reachAU =
+        moon.data.parentPlanet === 'Earth'
+          ? moon.data.orbitalRadiusAU
+          : getSatelliteApoapsisAU(moon.data.name);
+      farthestOrbitAU = Math.max(farthestOrbitAU, reachAU);
     }
 
     return Math.max(planetRadiusAU * 120, farthestOrbitAU * 1.15, 0.3);
@@ -991,9 +984,9 @@ export class PlanetariumMode {
           continue;
         }
 
-        const offset = this.getMoonWorldOffsetAU(m.data, planet.data, this.tmpMoonOffset);
+        const offset = this.getMoonWorldOffsetAU(m.data, planet.data, this.tmpMoonOffset, this.tmpMoonOrbitNormal);
         m.mesh.position.copy(offset);
-        this.orientTidallyLockedMoon(m.mesh, offset, m.data, planet.data);
+        this.orientTidallyLockedMoon(m.mesh, offset, this.tmpMoonOrbitNormal);
 
         this.moonWorldPositions.set(m.data.name, {
           x: wp.x + offset.x,

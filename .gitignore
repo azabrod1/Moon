@@ -11,3 +11,4 @@ orbit-details-browser-check.png
 preview-*.log
 vite-*.log
 http-test*.log
+.moon-data-cache/

@@ -206,9 +206,10 @@ export function computeBodyOrientationQuaternion(planet: PlanetData, jd: number)
 }
 
 /**
- * Orientation of the body's equatorial frame without the daily spin: the
- * inertial frame regular moons orbit in. Time-independent — compute once
- * per planet and cache.
+ * Orientation of the body's equatorial frame without the daily spin.
+ * Time-independent. (Moon positions no longer use this — they propagate JPL
+ * element frames in satellites.ts; this pins the pole/spin-axis split and
+ * stays available for orientation work.)
  */
 export function computeBodyPoleQuaternion(planet: PlanetData): THREE.Quaternion {
   return buildPoleBasisQuaternion(planet, 0);

@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "vite",
     "gen:stars": "node gen-stars.mjs",
+    "gen:moons": "node gen-moons.mjs",
     "gen:constellations": "node gen-constellations.mjs",
     "build": "tsc && vite build",
     "preview": "vite preview",

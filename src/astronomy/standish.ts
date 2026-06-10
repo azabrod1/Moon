@@ -130,7 +130,7 @@ export function getStandishElements(name: string, jdTT: number): KeplerElements 
   return getElementsFromTable(table, name, jdTT);
 }
 
-/** @internal Exposed for the Table-1/Table-2 handoff test only. */
+/** @internal Exposed for tests only (table handoff + verbatim value spot-checks). */
 export function getElementsFromTable(table: 1 | 2, name: string, jdTT: number): KeplerElements {
   const row = (table === 1 ? TABLE_1 : TABLE_2)[name];
   if (!row) {

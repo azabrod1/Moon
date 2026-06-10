@@ -15,7 +15,7 @@ import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import {
   CREATE_SOLAR_SYSTEM_TOTAL_UNITS,
   createSolarSystem,
-  getOrbitLineElements,
+  resampleOrbitLines,
   type SolarSystemObjects,
   type PlanetariumLayout,
 } from './SolarSystem';
@@ -30,13 +30,14 @@ import {
   computeBodyPoleQuaternion,
   computeBodyState,
   computeMoonGeocentricEquatorialAU,
+  eclipticToEquatorial,
   formatUtcLabel,
   parseUtcInputValue,
-  sampleOrbitLinePoints,
   ttJDFromUtcMs,
   type SimulationTime,
 } from '../astronomy/planetary';
 import { findEvent, type EventType } from '../astronomy/ephemeris';
+import { KM_PER_AU } from '../astronomy/constants';
 import { createPlanetariumStarfield } from './world/starfield';
 import { GyroSteering } from './input/GyroSteering';
 import { smoothstepUnclamped } from '../shared/math/smoothstep';
@@ -88,12 +89,14 @@ export interface PlanetariumActivationProgress {
 
 export class PlanetariumMode {
   private static readonly TIME_RATE_PRESETS = [1, 60, 1200, 3600, 21600, 86400, 604800, 2592000, 31557600];
-  private static readonly SHIP_CLEARANCE_AU = (1_737.4 / 149_597_870.7) * 1.5;
+  private static readonly SHIP_CLEARANCE_AU = (1_737.4 / KM_PER_AU) * 1.5;
   // Conservative disc radius for ship occlusion. Default hull is ~3 moon-radii
   // long with 0.5x group scale applied → half-length ≈ 0.75 moon-radii.
-  private static readonly SHIP_OCCLUDER_RADIUS_AU = (1_737.4 / 149_597_870.7) * 0.75;
+  private static readonly SHIP_OCCLUDER_RADIUS_AU = (1_737.4 / KM_PER_AU) * 0.75;
   private static readonly UI_REFRESH_INTERVAL_S = 1 / 8;
   private static readonly SCENE_NORTH = new THREE.Vector3(0, 1, 0);
+  /** Ecliptic north in the scene's equatorial frame (tidal-lock roll reference for Earth's Moon). */
+  private static readonly ECLIPTIC_NORTH = eclipticToEquatorial(new THREE.Vector3(0, 1, 0));
   private static readonly EARTH_DETAIL_MIN_DISTANCE_AU = 0.03;
   private static readonly EARTH_DETAIL_MIN_ANGULAR_DIAMETER_RAD = 0.003;
   private static readonly MISSION_CONTROL_IDS = [
@@ -127,11 +130,12 @@ export class PlanetariumMode {
   // frame. Moons parent here rather than in planet.group, whose quaternion
   // includes the daily spin — satellites orbit the pole, not the surface.
   private moonSystemGroups = new Map<string, THREE.Group>();
-  private polePlaneQuaternions = new Map<string, THREE.Quaternion>();
+  private poleQuaternions = new Map<string, THREE.Quaternion>();
   private tmpMoonOffset = new THREE.Vector3();
   private tmpLockToParent = new THREE.Vector3();
   private tmpLockEast = new THREE.Vector3();
   private tmpLockUp = new THREE.Vector3();
+  private tmpLockRollNorth = new THREE.Vector3();
   private tmpLockBasis = new THREE.Matrix4();
 
   // Keyboard state
@@ -764,23 +768,37 @@ export class PlanetariumMode {
 
   /** Pole-frame quaternion per planet (equator without daily spin), cached. */
   private getPoleQuaternion(planet: PlanetData): THREE.Quaternion {
-    let quaternion = this.polePlaneQuaternions.get(planet.name);
+    let quaternion = this.poleQuaternions.get(planet.name);
     if (!quaternion) {
       quaternion = computeBodyPoleQuaternion(planet);
-      this.polePlaneQuaternions.set(planet.name, quaternion);
+      this.poleQuaternions.set(planet.name, quaternion);
     }
     return quaternion;
   }
 
   /**
    * Major moons are tidally locked: keep the near side (texture longitude 0,
-   * which SphereGeometry puts on the mesh's +X axis) facing the parent. Roll
-   * around that axis keeps the moon's north toward scene north.
+   * which SphereGeometry puts on the mesh's +X axis) facing the parent. The
+   * roll reference is the moon's orbit normal, not scene north: the parent's
+   * pole for circular-model moons (perpendicular to toParent by construction)
+   * and ecliptic north for Earth's Moon (the real lunar axis sits within
+   * ~1.5° of the ecliptic pole). Scene-equatorial north would roll the lunar
+   * disk up to ~23° and make near-polar passes (Charon, Uranus's moons)
+   * visibly tumble as toParent swept past it.
    */
-  private orientTidallyLockedMoon(mesh: THREE.Mesh, offsetFromParent: THREE.Vector3) {
+  private orientTidallyLockedMoon(
+    mesh: THREE.Mesh,
+    offsetFromParent: THREE.Vector3,
+    moon: MoonData,
+    parentPlanet: PlanetData,
+  ) {
     const toParent = this.tmpLockToParent.copy(offsetFromParent).multiplyScalar(-1).normalize();
-    const east = this.tmpLockEast.crossVectors(toParent, PlanetariumMode.SCENE_NORTH);
-    if (east.lengthSq() < 1e-10) return; // degenerate: moon directly over a pole
+    const rollNorth =
+      moon.name === 'Moon' && parentPlanet.name === 'Earth'
+        ? PlanetariumMode.ECLIPTIC_NORTH
+        : this.tmpLockRollNorth.set(0, 1, 0).applyQuaternion(this.getPoleQuaternion(parentPlanet));
+    const east = this.tmpLockEast.crossVectors(toParent, rollNorth);
+    if (east.lengthSq() < 1e-10) return; // unreachable for valid orbit geometry; cheap safety
     east.normalize();
     const up = this.tmpLockUp.crossVectors(east, toParent);
     mesh.quaternion.setFromRotationMatrix(this.tmpLockBasis.makeBasis(toParent, up, east));
@@ -975,7 +993,7 @@ export class PlanetariumMode {
 
         const offset = this.getMoonWorldOffsetAU(m.data, planet.data, this.tmpMoonOffset);
         m.mesh.position.copy(offset);
-        this.orientTidallyLockedMoon(m.mesh, offset);
+        this.orientTidallyLockedMoon(m.mesh, offset, m.data, planet.data);
 
         this.moonWorldPositions.set(m.data.name, {
           x: wp.x + offset.x,
@@ -2333,9 +2351,8 @@ export class PlanetariumMode {
       this.notification.show('No event found within the search range');
       return;
     }
-    this.timeState = { ...this.timeState, currentUtcMs: found.getTime(), paused: true };
-    this.rebuildPlanetPositions();
-    this.updateTimeUI();
+    this.timeState = { ...this.timeState, paused: true };
+    this.setCurrentUtcMs(found.getTime());
     this.frameSkyEvent();
     this.renderSkyPanel();
     this.notification.show(`${SKY_EVENT_LABELS[type]} — ${formatUtcLabel(found.getTime())}`);
@@ -2778,9 +2795,7 @@ export class PlanetariumMode {
    * epoch they were built at. Secular element rates move the lines ≤ ~0.2°
    * per century (Mercury ϖ̇/Ω̇ worst), so 50 years bounds the on-screen error
    * at ~0.1° — invisible at 0.2 opacity — while still tracking mission jumps
-   * to 1977 and deep time-travel. Geometry is mutated in place: replacing the
-   * Line objects would break the orbitLines[i] ↔ PLANETARIUM_BODIES[i]
-   * coupling and orphan GPU buffers.
+   * to 1977 and deep time-travel. The mechanics live in resampleOrbitLines.
    */
   private rebuildOrbitLinesIfStale() {
     if (!this.solarSystem || this.layoutMode !== 'realistic') return;
@@ -2788,19 +2803,7 @@ export class PlanetariumMode {
     if (Math.abs(this.timeState.currentUtcMs - this.solarSystem.orbitLinesEpochUtcMs) < FIFTY_YEARS_MS) {
       return;
     }
-    for (let i = 0; i < this.solarSystem.orbitLines.length; i++) {
-      const body = PLANETARIUM_BODIES[i];
-      const points = sampleOrbitLinePoints(
-        getOrbitLineElements(body, this.layoutMode, this.timeState.currentUtcMs),
-        256,
-      );
-      const geometry = this.solarSystem.orbitLines[i].geometry;
-      geometry.setFromPoints(points);
-      // setFromPoints updates the attribute but never invalidates the cached
-      // bounding sphere — stale culling otherwise.
-      geometry.computeBoundingSphere();
-    }
-    this.solarSystem.orbitLinesEpochUtcMs = this.timeState.currentUtcMs;
+    resampleOrbitLines(this.solarSystem, this.layoutMode, this.timeState.currentUtcMs);
   }
 
   rebuildPlanetPositions(_dt = 0) {

@@ -28,10 +28,10 @@ export interface PlanetData {
   systemRadiusAU: number;             // radius at which speed throttle begins
 }
 
-const AU_KM = 149_597_870.7;
+import { KM_PER_AU } from '../../astronomy/constants';
 
 function kmToAU(km: number): number {
-  return km / AU_KM;
+  return km / KM_PER_AU;
 }
 
 export const SUN_DATA = {
@@ -244,6 +244,5 @@ export const ASTEROID_BELT = {
 };
 
 // Constants
-export const AU_IN_KM = AU_KM;
 export const LIGHT_SPEED_AU_PER_S = 1 / 499.0; // ~0.002 AU/s
 export const LIGHT_SPEED_KM_PER_S = 299_792.458;

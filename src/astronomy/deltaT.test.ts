@@ -19,7 +19,7 @@ describe('deltaTSeconds', () => {
   });
 
   it('is continuous across polynomial branch boundaries', () => {
-    for (const boundary of [500, 1600, 1700, 1800, 1860, 1900, 1920, 1941, 1961, 1986, 2005, 2050, 2150]) {
+    for (const boundary of [-500, 500, 1600, 1700, 1800, 1860, 1900, 1920, 1941, 1961, 1986, 2005, 2050, 2150]) {
       const below = deltaTSeconds(boundary - 0.01);
       const above = deltaTSeconds(boundary + 0.01);
       expect(Math.abs(below - above), `at year ${boundary}`).toBeLessThan(2);

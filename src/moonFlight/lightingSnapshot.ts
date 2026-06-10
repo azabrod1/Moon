@@ -33,7 +33,7 @@ export interface LightingSnapshot {
   date: Date;
 }
 
-const AU_KM = 149_597_870.7;
+import { KM_PER_AU } from '../astronomy/constants';
 
 function eclipticToCartesian(longDeg: number, latDeg: number, distance: number): THREE.Vector3 {
   const lon = (longDeg * Math.PI) / 180;
@@ -49,7 +49,7 @@ export function snapshotLighting(date: Date): LightingSnapshot {
 
   // Sun: ecliptic longitude only (latitude ≈ 0 by definition of ecliptic).
   // Positions are geocentric; Earth is at origin of this intermediate frame.
-  const sunGeocentricKm = eclipticToCartesian(sun.longitude, 0, sun.distance * AU_KM);
+  const sunGeocentricKm = eclipticToCartesian(sun.longitude, 0, sun.distance * KM_PER_AU);
   const moonGeocentricKm = eclipticToCartesian(moon.longitude, moon.latitude, moon.distance);
 
   // Translate to Moon-centric: subtract Moon's geocentric position.

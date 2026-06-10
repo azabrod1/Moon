@@ -11,7 +11,7 @@
  * barycenter offsets are ≤ 1.4e-5 AU, far below every tolerance here).
  * Values are byte-verbatim from the responses — never re-round them.
  * CENTER matters: the Horizons default is the solar-system barycenter, whose
- * Sun offset (~0.01 AU) would pass the loose baselines below yet fail every
+ * Sun offset (~0.01 AU) would pass the loose self-checks yet fail every
  * tight golden — re-fetch with CENTER='500@10' if a fixture is ever redone.
  *
  * Epochs are TDB; |TDB − TT| < 2 ms, so fixtures feed the TT-expecting math
@@ -23,12 +23,12 @@ import {
   computeBodyState,
   computeEarthPositionEquatorial,
   computeMoonGeocentricEquatorialAU,
-  computePlanetPositionEquatorial,
+  computeKeplerPositionEquatorial,
   eclipticToEquatorial,
   sampleOrbitLinePoints,
 } from './planetary';
 import { getElementsFromTable, getStandishElements } from './standish';
-import { J2000, RAD } from './constants';
+import { J2000, KM_PER_AU, RAD } from './constants';
 import { PLANETARIUM_BODIES } from '../planetarium/planets/planetData';
 
 interface HorizonsFixture {
@@ -96,7 +96,7 @@ const MOON_FIXTURES: HorizonsFixture[] = [
   { body: 'Moon', jdTdb: 2461200.5, x: 2.543836847885256e-3, y: -2.277512676401544e-4, z: 8.580666750393029e-5 },
 ];
 
-const BASELINE_EPOCHS = [2360234.5, 2447892.5, 2461200.5, 2467900.5];
+const FIXTURE_EPOCHS = [2360234.5, 2447892.5, 2461200.5, 2467900.5];
 
 /**
  * Horizons ecliptic-J2000 (x, y, z) → the scene's world (equatorial) frame.
@@ -111,6 +111,11 @@ function horizonsToScene(f: HorizonsFixture): THREE.Vector3 {
 
 function separationDeg(a: THREE.Vector3, b: THREE.Vector3): number {
   return a.angleTo(b) * RAD;
+}
+
+function norm180(deg: number): number {
+  const wrapped = ((deg % 360) + 360) % 360;
+  return wrapped > 180 ? wrapped - 360 : wrapped;
 }
 
 function fixture(body: string, jdTdb: number): HorizonsFixture {
@@ -134,8 +139,8 @@ describe('Horizons fixture self-checks', () => {
 
   it('keeps EMB at heliocentric distance ~1 AU (center-body tripwire)', () => {
     // A solar-system-barycenter-centered fixture (the Horizons default) is the
-    // mistake that would pass the loose baselines and fail the tight goldens.
-    for (const jd of BASELINE_EPOCHS) {
+    // mistake that would pass the loose self-checks and fail the tight goldens.
+    for (const jd of FIXTURE_EPOCHS) {
       const f = fixture('EMB', jd);
       const r = Math.sqrt(f.x * f.x + f.y * f.y + f.z * f.z);
       expect(r).toBeGreaterThan(0.981);
@@ -150,52 +155,51 @@ describe('Horizons fixture self-checks', () => {
 // (e.g. Saturn Table-1: 1500 → 3.0e6 km ≈ 0.0201 AU). The historical
 // pre-Standish baselines this replaced measured: Mercury 4.4°→9.0° across
 // 1990→2044 (rounded-period drift), Venus 1.9°→8.5°, every other body ≤1.7°.
-const KM_PER_AU = 149_597_870.7;
-const radialAU = (thousandKm: number) => (thousandKm * 1000 * 2) / KM_PER_AU;
+const radialToleranceAU = (thousandKm: number) => (thousandKm * 1000 * 2) / KM_PER_AU;
 
 const TABLE1_TOL: Record<string, { angDeg: number; radAU: number }> = {
-  Mercury: { angDeg: 0.01, radAU: radialAU(1) },
-  Venus: { angDeg: 0.011, radAU: radialAU(4) },
-  Earth: { angDeg: 0.011, radAU: radialAU(6) }, // EMB row vs EMB fixture
-  Mars: { angDeg: 0.022, radAU: radialAU(25) },
-  Jupiter: { angDeg: 0.222, radAU: radialAU(600) },
-  Saturn: { angDeg: 0.333, radAU: radialAU(1500) },
-  Uranus: { angDeg: 0.028, radAU: radialAU(1000) },
-  Neptune: { angDeg: 0.01, radAU: radialAU(200) },
+  Mercury: { angDeg: 0.01, radAU: radialToleranceAU(1) },
+  Venus: { angDeg: 0.011, radAU: radialToleranceAU(4) },
+  Earth: { angDeg: 0.011, radAU: radialToleranceAU(6) }, // EMB row vs EMB fixture
+  Mars: { angDeg: 0.022, radAU: radialToleranceAU(25) },
+  Jupiter: { angDeg: 0.222, radAU: radialToleranceAU(600) },
+  Saturn: { angDeg: 0.333, radAU: radialToleranceAU(1500) },
+  Uranus: { angDeg: 0.028, radAU: radialToleranceAU(1000) },
+  Neptune: { angDeg: 0.01, radAU: radialToleranceAU(200) },
   // Pluto's quoted 300-thousand-km distance accuracy predates DE441; measured
   // |Δr| against the DE441 fixtures: 0.0022 (1990) → 0.0039 (2026) → 0.0057 AU
   // (2044). Angular accuracy holds at the 0.01° floor — bound radius honestly.
   Pluto: { angDeg: 0.01, radAU: 0.008 },
 };
 const TABLE2_TOL: Record<string, { angDeg: number; radAU: number }> = {
-  Mercury: { angDeg: 0.011, radAU: radialAU(1) },
-  Venus: { angDeg: 0.022, radAU: radialAU(8) },
-  Earth: { angDeg: 0.022, radAU: radialAU(15) },
-  Mars: { angDeg: 0.056, radAU: radialAU(30) },
-  Jupiter: { angDeg: 0.333, radAU: radialAU(1000) },
-  Saturn: { angDeg: 0.556, radAU: radialAU(4000) },
-  Uranus: { angDeg: 1.111, radAU: radialAU(8000) },
-  Neptune: { angDeg: 0.222, radAU: radialAU(4000) },
-  Pluto: { angDeg: 0.222, radAU: radialAU(2500) },
+  Mercury: { angDeg: 0.011, radAU: radialToleranceAU(1) },
+  Venus: { angDeg: 0.022, radAU: radialToleranceAU(8) },
+  Earth: { angDeg: 0.022, radAU: radialToleranceAU(15) },
+  Mars: { angDeg: 0.056, radAU: radialToleranceAU(30) },
+  Jupiter: { angDeg: 0.333, radAU: radialToleranceAU(1000) },
+  Saturn: { angDeg: 0.556, radAU: radialToleranceAU(4000) },
+  Uranus: { angDeg: 1.111, radAU: radialToleranceAU(8000) },
+  Neptune: { angDeg: 0.222, radAU: radialToleranceAU(4000) },
+  Pluto: { angDeg: 0.222, radAU: radialToleranceAU(2500) },
 };
 const TABLE2_EPOCHS = [2360234.5, 2634166.5];
 
 describe('Standish propagation vs Horizons goldens', () => {
   // The body named 'Earth' resolves the EMB element row, so it is compared
   // against the EMB fixture (the 'Earth' fixture belongs to the Meeus golden
-  // above). If a body marginally fails here, check the accuracy table and the
+  // further down). If a body marginally fails here, check the accuracy table and the
   // apparent-vs-geometric systematics before touching any tolerance.
   for (const planet of PLANETARIUM_BODIES) {
     it(`puts ${planet.name} within quoted Standish accuracy at every fixture epoch`, () => {
       const fixtureBody = planet.name === 'Earth' ? 'EMB' : planet.name;
       const epochs =
         planet.name === 'Jupiter' || planet.name === 'Saturn' || planet.name === 'Pluto'
-          ? [...BASELINE_EPOCHS, 2634166.5]
-          : BASELINE_EPOCHS;
+          ? [...FIXTURE_EPOCHS, 2634166.5]
+          : FIXTURE_EPOCHS;
       for (const jd of epochs) {
         const tol = (TABLE2_EPOCHS.includes(jd) ? TABLE2_TOL : TABLE1_TOL)[planet.name];
         const el = getStandishElements(planet.name, jd);
-        const scene = computePlanetPositionEquatorial(el);
+        const scene = computeKeplerPositionEquatorial(el);
         const golden = horizonsToScene(fixture(fixtureBody, jd));
         expect(separationDeg(scene, golden), `${planet.name} angle @ JD ${jd}`).toBeLessThan(tol.angDeg);
         expect(Math.abs(scene.length() - golden.length()), `${planet.name} radius @ JD ${jd}`).toBeLessThan(tol.radAU);
@@ -226,7 +230,7 @@ describe('planet sits on its own orbit line', () => {
     const closest = new THREE.Vector3();
     for (const planet of PLANETARIUM_BODIES) {
       const el = getStandishElements(planet.name, 2461200.5);
-      const position = computePlanetPositionEquatorial(el);
+      const position = computeKeplerPositionEquatorial(el);
       const points = sampleOrbitLinePoints(el, 256);
       let minDistance = Infinity;
       for (let i = 0; i < points.length - 1; i++) {
@@ -249,8 +253,8 @@ describe('Table-1/Table-2 handoff', () => {
     const boundaries = [J2000 - 2.0 * 36525, J2000 + 0.5 * 36525];
     for (const planet of PLANETARIUM_BODIES) {
       for (const jd of boundaries) {
-        const fromT1 = computePlanetPositionEquatorial(getElementsFromTable(1, planet.name, jd));
-        const fromT2 = computePlanetPositionEquatorial(getElementsFromTable(2, planet.name, jd));
+        const fromT1 = computeKeplerPositionEquatorial(getElementsFromTable(1, planet.name, jd));
+        const fromT2 = computeKeplerPositionEquatorial(getElementsFromTable(2, planet.name, jd));
         const tolDeg = TABLE1_TOL[planet.name].angDeg + TABLE2_TOL[planet.name].angDeg;
         expect(separationDeg(fromT1, fromT2), `${planet.name} @ JD ${jd}`).toBeLessThan(tolDeg);
         expect(
@@ -298,9 +302,12 @@ describe('getStandishElements', () => {
   });
 
   it('clamps T to Table-2 validity beyond 3000 BC / 3000 AD', () => {
-    const atClamp = getStandishElements('Mars', J2000 + 10 * 36525); // 3000 AD
-    const pastClamp = getStandishElements('Mars', J2000 + 30 * 36525); // 5000 AD
-    expect(pastClamp).toEqual(atClamp);
+    const atMaxClamp = getStandishElements('Mars', J2000 + 10 * 36525); // 3000 AD
+    const pastMaxClamp = getStandishElements('Mars', J2000 + 30 * 36525); // 5000 AD
+    expect(pastMaxClamp).toEqual(atMaxClamp);
+    const atMinClamp = getStandishElements('Mars', J2000 - 50 * 36525); // 3000 BC
+    const pastMinClamp = getStandishElements('Mars', J2000 - 80 * 36525); // 6000 BC
+    expect(pastMinClamp).toEqual(atMinClamp);
   });
 
   it('applies the Table-2b M corrections to Jupiter–Pluto only, Pluto b-only', () => {
@@ -342,11 +349,6 @@ describe('getStandishElements', () => {
   });
 });
 
-function norm180(deg: number): number {
-  const wrapped = ((deg % 360) + 360) % 360;
-  return wrapped > 180 ? wrapped - 360 : wrapped;
-}
-
 describe('Meeus Earth golden vs Horizons — the absolute J2000 frame pin', () => {
   // Every coherent-set test is *relative* (both seams rotating together with
   // the wrong precession sign stays green); this golden is absolute and does
@@ -363,7 +365,7 @@ describe('Meeus Earth golden vs Horizons — the absolute J2000 frame pin', () =
   };
 
   it('puts the Meeus-derived Earth on the Horizons J2000 Earth at all epochs', () => {
-    for (const jd of BASELINE_EPOCHS) {
+    for (const jd of FIXTURE_EPOCHS) {
       const sep = separationDeg(
         computeEarthPositionEquatorial(jd),
         horizonsToScene(fixture('Earth', jd)),

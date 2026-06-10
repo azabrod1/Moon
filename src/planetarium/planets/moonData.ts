@@ -3,7 +3,7 @@
  * Only notable/named moons are included, not all 200+ known moons.
  */
 
-const AU_KM = 149_597_870.7;
+import { KM_PER_AU } from '../../astronomy/constants';
 
 export interface MoonData {
   name: string;
@@ -41,9 +41,9 @@ function moon(
     name,
     parentPlanet,
     radiusKm,
-    radiusAU: radiusKm / AU_KM,
+    radiusAU: radiusKm / KM_PER_AU,
     orbitalRadiusKm,
-    orbitalRadiusAU: orbitalRadiusKm / AU_KM,
+    orbitalRadiusAU: orbitalRadiusKm / KM_PER_AU,
     orbitalPeriodDays,
     orbitalPhaseDeg,
     color,

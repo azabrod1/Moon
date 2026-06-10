@@ -10,9 +10,11 @@ import { describe, expect, it } from 'vitest';
 import * as THREE from 'three';
 import {
   advancePlanetariumTime,
+  computeBodyOrientationQuaternion,
+  computeBodyPoleQuaternion,
   computeBodyState,
   computeMoonGeocentricEquatorialAU,
-  computePlanetPositionEcliptic,
+  computeKeplerPositionEcliptic,
   eclipticToEquatorial,
   formatTimeRateLabel,
   formatUtcInputValue,
@@ -106,14 +108,37 @@ describe('celestial frame', () => {
   });
 });
 
-describe('computePlanetPositionEcliptic', () => {
+describe('computeBodyPoleQuaternion (de-spin foundation)', () => {
+  it('maps local +Y to the IAU pole direction for every body', () => {
+    for (const planet of PLANETARIUM_BODIES) {
+      const pole = new THREE.Vector3(0, 1, 0).applyQuaternion(computeBodyPoleQuaternion(planet));
+      const expected = raDecToVector(planet.poleRaDeg, planet.poleDecDeg);
+      expect(pole.angleTo(expected) * RAD, planet.name).toBeLessThan(1e-6);
+    }
+  });
+
+  it('shares its pole axis with the spinning orientation at any time', () => {
+    // The de-spun moon frame and the daily-spinning planet frame must agree on
+    // the axis — they differ only by the prime-meridian rotation about it.
+    const saturn = PLANETARIUM_BODIES.find((p) => p.name === 'Saturn')!;
+    const poleAxis = new THREE.Vector3(0, 1, 0).applyQuaternion(computeBodyPoleQuaternion(saturn));
+    for (const jd of [J2000, J2000 + 1234.5678]) {
+      const spinningAxis = new THREE.Vector3(0, 1, 0).applyQuaternion(
+        computeBodyOrientationQuaternion(saturn, jd),
+      );
+      expect(spinningAxis.angleTo(poleAxis) * RAD, `JD ${jd}`).toBeLessThan(1e-6);
+    }
+  });
+});
+
+describe('computeKeplerPositionEcliptic', () => {
   const testJDs = [J2000, J2000 + 1234.5, J2000 + 9000];
 
   for (const planet of PLANETARIUM_BODIES) {
     it(`matches textbook element propagation for ${planet.name}`, () => {
       for (const jd of testJDs) {
         const el = getStandishElements(planet.name, jd);
-        const scene = computePlanetPositionEcliptic(el);
+        const scene = computeKeplerPositionEcliptic(el);
         const reference = referenceEclipticPosition(el);
         const separationDeg = scene.angleTo(reference) * RAD;
         expect(separationDeg, `${planet.name} at JD ${jd}`).toBeLessThan(0.01);
@@ -140,7 +165,7 @@ describe('Standish EMB vs Meeus Sun (cross-model check)', () => {
   it('keeps the two Earth models within 0.04° of each other', () => {
     for (const iso of dates) {
       const jd = dateToJD(new Date(iso));
-      const emb = computePlanetPositionEcliptic(getStandishElements('Earth', jd));
+      const emb = computeKeplerPositionEcliptic(getStandishElements('Earth', jd));
       const sceneLonDeg = norm360(Math.atan2(emb.z, emb.x) * RAD);
       const expectedLonDeg = norm360(
         sunPosition(jd).longitude + 180 - accumulatedPrecessionLonDeg(jd),

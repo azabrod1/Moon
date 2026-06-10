@@ -3,7 +3,8 @@
  * nearest planet, blackbody temperature, speed in c, etc. No DOM — the DOM
  * writer lives in the UI layer and consumes these numbers.
  */
-import { PLANETARIUM_BODIES, LIGHT_SPEED_AU_PER_S, AU_IN_KM } from './planets/planetData';
+import { PLANETARIUM_BODIES, LIGHT_SPEED_AU_PER_S } from './planets/planetData';
+import { KM_PER_AU } from '../astronomy/constants';
 
 export interface PlanetariumStats {
   distanceFromSunAU: number;
@@ -37,7 +38,7 @@ export function computeStats(
 
   // Speed
   const speedC = speedAUPerS / LIGHT_SPEED_AU_PER_S;
-  const speedKmS = speedAUPerS * AU_IN_KM;
+  const speedKmS = speedAUPerS * KM_PER_AU;
 
   // Find nearest planet
   let nearestPlanet: { name: string; distanceAU: number } | null = null;

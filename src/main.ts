@@ -47,6 +47,10 @@ import { formatScaleMultiplier } from './shared/format';
 // ================================================================
 type AppMode = 'moonView' | 'planetarium' | 'moonFlight';
 let appMode: AppMode = 'moonView';
+// True once the Moon view has actually been shown this session. Until then
+// its date is just the module-load wall clock, not something the user chose —
+// pushing it into the planetarium would wipe the persisted sim time on boot.
+let moonViewSeenThisSession = false;
 let planetariumMode: PlanetariumMode | null = null;
 let moonFlightMode: MoonFlightMode | null = null;
 let moonViewMoon: Moon | null = null;
@@ -826,8 +830,15 @@ async function switchAppMode(newMode: AppMode) {
       // One clock: carry the Moon view's date into the planetarium. Must run
       // after activate() resolves — restoreState() reloads the persisted clock
       // and would clobber an earlier push. Manual-slider mode doesn't define a
-      // date, and an active mission owns the clock; skip both.
-      if (state.mode === 'date' && !planetariumMode.isMissionActive()) {
+      // date, an active mission owns the clock, and a Moon view that was never
+      // shown this session has nothing user-chosen to carry (its date is the
+      // module-load wall clock; pushing it would discard the saved sim time
+      // restoreState just reloaded) — skip all three.
+      if (
+        moonViewSeenThisSession &&
+        state.mode === 'date' &&
+        !planetariumMode.isMissionActive()
+      ) {
         planetariumMode.setCurrentUtcMs(state.currentDate.getTime());
       }
       debugLog('Planetarium mode active');
@@ -877,6 +888,7 @@ async function switchAppMode(newMode: AppMode) {
       }
 
       appMode = 'moonView';
+      moonViewSeenThisSession = true;
 
       scene.background = new THREE.Color(0x000000);
 

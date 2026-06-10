@@ -6,6 +6,7 @@
  * procedural fallback). All procedural geometry lives in ship/models/.
  */
 import * as THREE from 'three';
+import { KM_PER_AU } from '../astronomy/constants';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { LIGHT_SPEED_AU_PER_S } from './planets/planetData';
 import { createDefaultShip } from './ship/models/defaultShip';
@@ -55,7 +56,7 @@ export class PlayerShip {
   constructor() {
     this.group = new THREE.Group();
 
-    const moonRadiusAU = 1737.4 / 149_597_870.7;
+    const moonRadiusAU = 1737.4 / KM_PER_AU;
     this.spacecraftReferenceRadiusAU = moonRadiusAU;
 
     const ship = createDefaultShip(moonRadiusAU);

@@ -55,7 +55,7 @@ export function getPlanetOrbitalPosition(
  * Meeus-rendered Earth sits within arcminutes of it); aligned mode draws
  * epoch-free circles at the catalog radius.
  */
-export function getOrbitLineElements(
+function getOrbitLineElements(
   planet: PlanetData,
   layoutMode: PlanetariumLayout,
   utcMs: number,
@@ -71,6 +71,34 @@ export function getOrbitLineElements(
     };
   }
   return getStandishElements(planet.name, ttJDFromUtcMs(utcMs));
+}
+
+export const ORBIT_LINE_SEGMENTS = 256;
+
+/**
+ * Re-sample every orbit line's geometry at the given sim epoch and re-stamp
+ * orbitLinesEpochUtcMs. Mutates the existing geometry in place — replacing
+ * the Line objects would break the orbitLines[i] ↔ PLANETARIUM_BODIES[i]
+ * coupling and orphan GPU buffers — and recomputes each bounding sphere
+ * (setFromPoints updates attributes but never invalidates the cached sphere,
+ * which would leave frustum culling stale). The staleness *policy* (when to
+ * call this) lives with the caller, PlanetariumMode.rebuildOrbitLinesIfStale.
+ */
+export function resampleOrbitLines(
+  objects: Pick<SolarSystemObjects, 'orbitLines' | 'orbitLinesEpochUtcMs'>,
+  layoutMode: PlanetariumLayout,
+  utcMs: number,
+): void {
+  for (let i = 0; i < objects.orbitLines.length; i++) {
+    const points = sampleOrbitLinePoints(
+      getOrbitLineElements(PLANETARIUM_BODIES[i], layoutMode, utcMs),
+      ORBIT_LINE_SEGMENTS,
+    );
+    const geometry = objects.orbitLines[i].geometry;
+    geometry.setFromPoints(points);
+    geometry.computeBoundingSphere();
+  }
+  objects.orbitLinesEpochUtcMs = utcMs;
 }
 
 function createOrbitLine(points: THREE.Vector3[], color: number, opacity: number): THREE.Line {
@@ -153,7 +181,7 @@ export async function createSolarSystem(
     const body = PLANETARIUM_BODIES[i];
     const orbitPoints = sampleOrbitLinePoints(
       getOrbitLineElements(body, layoutMode, orbitLinesEpochUtcMs),
-      256,
+      ORBIT_LINE_SEGMENTS,
     );
     const line = createOrbitLine(orbitPoints, body.color, 0.2);
     line.name = `orbit-${body.name}`;

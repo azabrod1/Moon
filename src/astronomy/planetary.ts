@@ -11,14 +11,12 @@ import { dateToJD, moonPosition, sunPosition } from './ephemeris';
 import { deltaTDaysAtDate } from './deltaT';
 import { accumulatedPrecessionLonDeg } from './precession';
 import { getStandishElements, type KeplerElements } from './standish';
-import { DEG, J2000, OBLIQUITY_DEG } from './constants';
+import { DEG, J2000, KM_PER_AU, OBLIQUITY_DEG } from './constants';
 
 const REFERENCE_NORTH = new THREE.Vector3(0, 1, 0);
 const REFERENCE_PRIME = new THREE.Vector3(1, 0, 0);
 
 const ECLIPTIC_TO_EQUATORIAL = new THREE.Matrix4().makeRotationX(-OBLIQUITY_DEG * DEG);
-
-const KM_PER_AU = 149_597_870.7;
 
 export interface SimulationTime {
   currentUtcMs: number;
@@ -102,13 +100,13 @@ export function raDecToVector(raDeg: number, decDeg: number, radius = 1): THREE.
  * propagated inside the KeplerElements — see getStandishElements), in the
  * scene's intermediate ecliptic frame.
  */
-export function computePlanetPositionEcliptic(el: KeplerElements): THREE.Vector3 {
+export function computeKeplerPositionEcliptic(el: KeplerElements): THREE.Vector3 {
   const eccentricAnomalyRad = solveKepler(el.meanAnomalyDeg * DEG, el.eccentricity);
   return applyOrbitalOrientation(computeOrbitalPlanePosition(el, eccentricAnomalyRad), el);
 }
 
-export function computePlanetPositionEquatorial(el: KeplerElements): THREE.Vector3 {
-  return eclipticToEquatorial(computePlanetPositionEcliptic(el));
+export function computeKeplerPositionEquatorial(el: KeplerElements): THREE.Vector3 {
+  return eclipticToEquatorial(computeKeplerPositionEcliptic(el));
 }
 
 /**
@@ -168,6 +166,19 @@ export function sampleOrbitLinePoints(el: KeplerElements, segments = 256): THREE
   return points;
 }
 
+/**
+ * KNOWN LIMITATION (roadmapped, do not "fix" piecemeal): the scene embeds the
+ * sky through the y/z swap in raDecToVector — a det(−1), mirror-image map.
+ * Star positions, planet positions, and all relative alignments (phases,
+ * eclipses, conjunctions) are mutually consistent and golden-tested, but the
+ * rendered celestial sphere is E–W flipped vs reality, and a consequence is
+ * that no rigid spin model can make a properly-chiral planet texture show the
+ * correct absolute rotation phase (which continents face the Sun at a given
+ * UTC) in this frame: the construction below keeps the *daily* terminator
+ * sweep correct and leaves the absolute phase approximate. The real fix is a
+ * scene-wide chirality flip — its own milestone (touches the starfield,
+ * constellations, every frame test, and this whole pole/prime construction).
+ */
 function getBasePrimeDirection(poleDirection: THREE.Vector3): THREE.Vector3 {
   const ascendingNodeDirection = new THREE.Vector3().crossVectors(REFERENCE_NORTH, poleDirection);
   if (ascendingNodeDirection.lengthSq() < 1e-8) {
@@ -213,7 +224,7 @@ export function computeBodyPositionAU(planet: PlanetData, utcMs: number): THREE.
   const jd = ttJDFromUtcMs(utcMs);
   return planet.name === 'Earth'
     ? computeEarthPositionEquatorial(jd)
-    : computePlanetPositionEquatorial(getStandishElements(planet.name, jd));
+    : computeKeplerPositionEquatorial(getStandishElements(planet.name, jd));
 }
 
 export function computeBodyState(planet: PlanetData, utcMs: number): BodyState {

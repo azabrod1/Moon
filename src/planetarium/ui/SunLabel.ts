@@ -6,9 +6,9 @@
  * churn out of the hot path.
  */
 import * as THREE from 'three';
+import { KM_PER_AU } from '../../astronomy/constants';
 import { projectToScreen } from '../../shared/three/projectToScreen';
 
-const AU_IN_KM = 149597870.7;
 const LABEL_MARGIN_PX = 50;
 const LABEL_OFFSET_PX = 16;
 const OCCLUSION_TEST_OFFSET_PX = 24;
@@ -60,7 +60,7 @@ export class SunLabel {
         this.lastTransform = transform;
       }
       const distText = distanceFromSunAU < 0.01
-        ? `${(distanceFromSunAU * AU_IN_KM).toFixed(0)} km`
+        ? `${(distanceFromSunAU * KM_PER_AU).toFixed(0)} km`
         : `${distanceFromSunAU.toFixed(2)} AU`;
       if (distText !== this.lastDistText) {
         const distEl = this.el.querySelector('.planet-label-dist');

@@ -12,9 +12,16 @@ import {
   computeShadowSpotVantage,
   computeSubTargetVantage,
   entryFovDeg,
+  formatDiscDeg,
+  isBelowResolutionAtMaxZoom,
+  MARKER_BRACKETS_MIN_PX,
+  MARKER_RETICLE_MAX_PX,
+  projectedDiscPx,
+  resolveMarkerKind,
   selectSurfaceTarget,
   SURFACE_FOV_DEFAULT_DEG,
   SURFACE_MIN_ALTITUDE_AU,
+  SURFACE_TARGET_ELEVATION_DEG,
   surfaceAltitudeAU,
   surfaceEventNarrative,
   transportTrackingUp,
@@ -23,6 +30,7 @@ import {
 } from './surfaceView';
 import { shadowAxisSphereHitAU, shadowAxisSurfacePoint } from '../astronomy/shadows';
 import { KM_PER_AU } from '../astronomy/constants';
+import { RAD2DEG, DEG2RAD } from '../shared/math/angles';
 
 const onEarth: SurfaceLandedInfo = { type: 'planet', name: 'Earth' };
 const onMoon: SurfaceLandedInfo = { type: 'moon', name: 'Moon', parentPlanet: 'Earth' };
@@ -136,11 +144,125 @@ describe('surfaceEventNarrative — observer/event relationship, not camera targ
 describe('surface vantage geometry', () => {
   const EARTH_RADIUS_AU = 6371 / KM_PER_AU;
 
-  it('hovers above the sub-target point along the target direction', () => {
+  const POLE = new THREE.Vector3(0, 1, 0);
+
+  it('elevation 90° reproduces the legacy sub-target hover', () => {
     const dir = new THREE.Vector3(3, -4, 12); // deliberately unnormalized
-    const out = computeSubTargetVantage(EARTH_RADIUS_AU, dir, new THREE.Vector3());
+    const out = computeSubTargetVantage(EARTH_RADIUS_AU, dir, POLE, 90, new THREE.Vector3());
     expect(out.length()).toBeCloseTo(EARTH_RADIUS_AU + surfaceAltitudeAU(EARTH_RADIUS_AU), 12);
     expect(out.clone().normalize().dot(dir.clone().normalize())).toBeCloseTo(1, 12);
+  });
+
+  it('default elevation: the zenith angle to the target direction is 90° − 68°', () => {
+    const dir = new THREE.Vector3(1, 0.2, -0.5).normalize();
+    const out = computeSubTargetVantage(
+      EARTH_RADIUS_AU, dir, POLE, SURFACE_TARGET_ELEVATION_DEG, new THREE.Vector3(),
+    );
+    const up = out.clone().normalize();
+    const zenithAngleDeg = Math.acos(THREE.MathUtils.clamp(up.dot(dir), -1, 1)) * RAD2DEG;
+    expect(zenithAngleDeg).toBeCloseTo(90 - SURFACE_TARGET_ELEVATION_DEG, 9);
+    expect(out.length()).toBeCloseTo(EARTH_RADIUS_AU + surfaceAltitudeAU(EARTH_RADIUS_AU), 12);
+  });
+
+  it('observer is displaced toward the pole — the target culminates toward local south', () => {
+    const dir = new THREE.Vector3(1, 0, 0); // equatorial target, pole = +y
+    const out = computeSubTargetVantage(
+      EARTH_RADIUS_AU, dir, POLE, SURFACE_TARGET_ELEVATION_DEG, new THREE.Vector3(),
+    );
+    expect(out.y).toBeGreaterThan(0);
+  });
+
+  it('finite-distance elevation stays ~68° for real geometry (Saturn from Titan)', () => {
+    const titanRadiusAU = 2_574 / KM_PER_AU;
+    const target = new THREE.Vector3(1_221_870 / KM_PER_AU, 0, 0);
+    const out = computeSubTargetVantage(
+      titanRadiusAU, target, POLE, SURFACE_TARGET_ELEVATION_DEG, new THREE.Vector3(),
+    );
+    const toTarget = target.clone().sub(out).normalize();
+    const up = out.clone().normalize();
+    const elevationDeg = 90 - Math.acos(THREE.MathUtils.clamp(up.dot(toTarget), -1, 1)) * RAD2DEG;
+    // Parallax across Titan's radius costs well under a tenth of a degree.
+    expect(Math.abs(elevationDeg - SURFACE_TARGET_ELEVATION_DEG)).toBeLessThan(0.2);
+  });
+
+  it('close-in targets sit lower than nominal but never below the horizon (Metis from Jupiter)', () => {
+    // The observer stands a body radius off-center; for a target orbiting at
+    // 1.79 body radii the true elevation degrades from the nominal 68°.
+    const jupiterRadiusAU = 71_492 / KM_PER_AU;
+    const target = new THREE.Vector3(128_000 / KM_PER_AU, 0, 0);
+    const out = computeSubTargetVantage(
+      jupiterRadiusAU, target, POLE, SURFACE_TARGET_ELEVATION_DEG, new THREE.Vector3(),
+    );
+    const toTarget = target.clone().sub(out).normalize();
+    const up = out.clone().normalize();
+    const elevationDeg = 90 - Math.acos(THREE.MathUtils.clamp(up.dot(toTarget), -1, 1)) * RAD2DEG;
+    expect(elevationDeg).toBeGreaterThan(35);
+    expect(elevationDeg).toBeLessThan(SURFACE_TARGET_ELEVATION_DEG);
+  });
+
+  it('formatDiscDeg floors at "<0.01" and switches precision at 1°', () => {
+    expect(formatDiscDeg(0.004)).toBe('<0.01');
+    expect(formatDiscDeg(0.005)).toBe('0.01');
+    expect(formatDiscDeg(0.31)).toBe('0.31');
+    expect(formatDiscDeg(0.999)).toBe('1.00');
+    expect(formatDiscDeg(5.71)).toBe('5.7');
+  });
+
+  it('a target drifting through the pole-degeneracy band moves the vantage continuously', () => {
+    // Sweep the target from 0.05° to 30° off the pole (through the blend
+    // band) in 0.1°-ish steps; consecutive vantage points must never jump.
+    let prev: THREE.Vector3 | null = null;
+    let maxStepDeg = 0;
+    for (let i = 0; i <= 300; i++) {
+      const offDeg = 0.05 + (29.95 * i) / 300;
+      const t = new THREE.Vector3(Math.sin(offDeg * DEG2RAD), Math.cos(offDeg * DEG2RAD), 0);
+      const u = computeSubTargetVantage(
+        EARTH_RADIUS_AU, t, POLE, SURFACE_TARGET_ELEVATION_DEG, new THREE.Vector3(),
+      ).normalize();
+      if (prev) {
+        const stepDeg = Math.acos(THREE.MathUtils.clamp(prev.dot(u), -1, 1)) * RAD2DEG;
+        maxStepDeg = Math.max(maxStepDeg, stepDeg);
+      }
+      prev = u;
+    }
+    expect(maxStepDeg).toBeLessThan(2);
+  });
+
+  it('a target circling the pole inside the band crosses axis ties without a jump', () => {
+    // The hard path: 2° off the pole (deep inside the blend band), azimuth
+    // sweeping a full circle — the target's two near-zero components cross
+    // each other repeatedly. A fallback axis picked against the *target*
+    // flips ~90° at each crossing; picked against the constant pole it
+    // cannot. Per-step vantage motion must stay proportional to the sweep.
+    const offRad = 2 * DEG2RAD;
+    let prev: THREE.Vector3 | null = null;
+    let maxStepDeg = 0;
+    for (let i = 0; i <= 360; i++) {
+      const phi = i * DEG2RAD;
+      const t = new THREE.Vector3(
+        Math.sin(offRad) * Math.cos(phi),
+        Math.cos(offRad),
+        Math.sin(offRad) * Math.sin(phi),
+      );
+      const u = computeSubTargetVantage(
+        EARTH_RADIUS_AU, t, POLE, SURFACE_TARGET_ELEVATION_DEG, new THREE.Vector3(),
+      ).normalize();
+      if (prev) {
+        const stepDeg = Math.acos(THREE.MathUtils.clamp(prev.dot(u), -1, 1)) * RAD2DEG;
+        maxStepDeg = Math.max(maxStepDeg, stepDeg);
+      }
+      prev = u;
+    }
+    expect(maxStepDeg).toBeLessThan(2);
+  });
+
+  it('target along the pole still yields a valid tilted vantage', () => {
+    const out = computeSubTargetVantage(
+      EARTH_RADIUS_AU, POLE.clone(), POLE, SURFACE_TARGET_ELEVATION_DEG, new THREE.Vector3(),
+    );
+    const zenithAngleDeg =
+      Math.acos(THREE.MathUtils.clamp(out.clone().normalize().dot(POLE), -1, 1)) * RAD2DEG;
+    expect(zenithAngleDeg).toBeCloseTo(90 - SURFACE_TARGET_ELEVATION_DEG, 6);
   });
 
   it('altitude is 2% of the radius, floored at the near-plane clearance', () => {
@@ -154,7 +276,9 @@ describe('surface vantage geometry', () => {
   });
 
   it('degenerate target direction still produces a valid vantage', () => {
-    const out = computeSubTargetVantage(EARTH_RADIUS_AU, new THREE.Vector3(0, 0, 0), new THREE.Vector3());
+    const out = computeSubTargetVantage(
+      EARTH_RADIUS_AU, new THREE.Vector3(0, 0, 0), POLE, SURFACE_TARGET_ELEVATION_DEG, new THREE.Vector3(),
+    );
     expect(out.length()).toBeGreaterThan(EARTH_RADIUS_AU);
   });
 
@@ -275,14 +399,49 @@ describe('surface FOV', () => {
     expect(clampSurfaceFovDeg(10)).toBe(10);
   });
 
-  it('entry FOV keeps the realistic default for small discs', () => {
+  it('companion entry FOV keeps the realistic default for small discs', () => {
     expect(entryFovDeg(0.53)).toBe(SURFACE_FOV_DEFAULT_DEG);
+    expect(entryFovDeg(0.53, 'companion')).toBe(SURFACE_FOV_DEFAULT_DEG);
   });
 
-  it('entry FOV widens for big discs so they fill ~60% of frame', () => {
+  it('companion entry FOV widens for big discs so they fill ~60% of frame', () => {
     // Jupiter from Io: ∅ ≈ 19.5° → ~33° view, disc fills ~59%.
     expect(entryFovDeg(19.5)).toBeCloseTo(33.15, 6);
     expect(entryFovDeg(40)).toBe(45); // clamped at the wide end
+  });
+
+  it('event entry FOV frames the event at ~8× the disc, clamped to the zoom range', () => {
+    // Solar eclipse from Mars: Sun ∅ ≈ 0.35° → 2.8° view (~1/8 of frame).
+    expect(entryFovDeg(0.35, 'event')).toBeCloseTo(2.8, 9);
+    // Speck targets clamp at the tightest zoom rather than zooming past it.
+    expect(entryFovDeg(0.04, 'event')).toBe(1.5);
+    // Big discs clamp at the wide end.
+    expect(entryFovDeg(19.5, 'event')).toBe(45);
+  });
+
+  it('marker kind swaps with hysteresis on the projected disc size', () => {
+    expect(resolveMarkerKind(MARKER_BRACKETS_MIN_PX + 1, 'reticle')).toBe('brackets');
+    expect(resolveMarkerKind(MARKER_RETICLE_MAX_PX - 1, 'brackets')).toBe('reticle');
+    // Between the bounds: sticky.
+    const between = (MARKER_RETICLE_MAX_PX + MARKER_BRACKETS_MIN_PX) / 2;
+    expect(resolveMarkerKind(between, 'brackets')).toBe('brackets');
+    expect(resolveMarkerKind(between, 'reticle')).toBe('reticle');
+  });
+
+  it('projected disc px and the static list speck flag agree with the optics', () => {
+    // Jupiter from Io at 10° FOV on a 900px canvas: enormous.
+    expect(projectedDiscPx(19.5, 10, 900)).toBeCloseTo(1755, 0);
+    // Metis from Europa (∅ ≈ 0.005°) can never resolve: speck.
+    expect(isBelowResolutionAtMaxZoom(0.005)).toBe(true);
+    // Io from Europa (∅ ≈ 0.3°+) resolves easily at max zoom.
+    expect(isBelowResolutionAtMaxZoom(0.3)).toBe(false);
+    // One resolvability meaning everywhere: the list's ● promise must match
+    // the HUD's bracket threshold, or a "shows a disc" row turns into a
+    // "below resolution at any zoom" reticle after its own jump. The
+    // boundary is MARKER_BRACKETS_MIN_PX at max zoom on the nominal canvas
+    // (14px · 1.5° / 800px ≈ 0.026°).
+    expect(isBelowResolutionAtMaxZoom(0.02)).toBe(true);
+    expect(isBelowResolutionAtMaxZoom(0.03)).toBe(false);
   });
 
   it('angular diameters match the real sky', () => {

@@ -8,7 +8,7 @@
  */
 import * as THREE from 'three';
 import { shadowAxisSurfacePoint } from '../astronomy/shadows';
-import { RAD2DEG } from '../shared/math/angles';
+import { DEG2RAD, RAD2DEG } from '../shared/math/angles';
 
 /** What the surface view points at (resolved to scene positions by the owner). */
 export type SurfaceTarget =
@@ -106,17 +106,64 @@ export function surfaceAltitudeAU(bodyRadiusAU: number): number {
 }
 
 /**
- * Default vantage: hover above the sub-target point — the surface point
- * directly beneath the look target — so the target culminates overhead and
- * the landed body's limb stays out of frame. Body-centered scene AU.
+ * Elevation above the local horizon the tracked target sits at by default.
+ * A zenith target gives drag-yaw nothing to pan against — horizontal drag
+ * becomes a roll about the look axis and the sky pivots around the target
+ * (design-brief #26). 68° keeps the target commanding while leaving a
+ * horizon band in frame as a stable pan reference.
+ */
+export const SURFACE_TARGET_ELEVATION_DEG = 68;
+
+const tmpVantageT = new THREE.Vector3();
+const tmpVantageH = new THREE.Vector3();
+
+/**
+ * Default vantage: hover above a surface point chosen so the look target
+ * sits at `targetElevationDeg` above the local horizon (90° = the legacy
+ * sub-target zenith). The observer is displaced from the sub-target point
+ * toward `poleAxis` — the body's north — so the target culminates toward
+ * the local south, the way a mid-latitude observer sees the sky.
+ *
+ * The azimuth reference is simply the pole's component ⊥ the target
+ * direction — continuous everywhere except the exact pole. A target passing
+ * NEAR the pole swings the standing point quickly but smoothly (a compass
+ * carried past the pole does the same); only at true float-degeneracy
+ * (target along the pole, e.g. a Uranus-solstice Sun) does a deterministic
+ * fallback take over, picked against the constant pole so it can never flip
+ * mid-track. Blended/banded schemes were tried and rejected: any mix of a
+ * rotating reference with a fixed one must either cancel through zero or
+ * flip sign somewhere on a circle around the pole (pinned by the circling
+ * test in surfaceView.test.ts). Body-centered scene AU. The elevation is
+ * nominal for distant targets; close-in ones sit lower because the observer
+ * stands a body radius off-center (Metis from Jupiter culminates near 44°,
+ * Phobos from Mars near 56°) — never below the horizon, which would need an
+ * orbit under ~1.08 body radii. Pinned by the close-in test.
  */
 export function computeSubTargetVantage(
   bodyRadiusAU: number,
   dirToTarget: THREE.Vector3,
+  poleAxis: THREE.Vector3,
+  targetElevationDeg: number,
   out: THREE.Vector3,
 ): THREE.Vector3 {
-  out.copy(dirToTarget);
-  if (out.lengthSq() < 1e-30) out.set(1, 0, 0);
+  const t = tmpVantageT.copy(dirToTarget);
+  if (t.lengthSq() < 1e-30) t.set(1, 0, 0);
+  t.normalize();
+  const h = tmpVantageH.copy(poleAxis).addScaledVector(t, -poleAxis.dot(t));
+  if (h.lengthSq() < 1e-12) {
+    const ax = Math.abs(poleAxis.x);
+    const ay = Math.abs(poleAxis.y);
+    const az = Math.abs(poleAxis.z);
+    if (ax <= ay && ax <= az) h.set(1, 0, 0);
+    else if (ay <= az) h.set(0, 1, 0);
+    else h.set(0, 0, 1);
+    h.addScaledVector(t, -h.dot(t));
+  }
+  h.normalize();
+  const tiltRad = (90 - targetElevationDeg) * DEG2RAD;
+  out.copy(t)
+    .multiplyScalar(Math.cos(tiltRad))
+    .addScaledVector(h, Math.sin(tiltRad));
   return out.normalize().multiplyScalar(bodyRadiusAU + surfaceAltitudeAU(bodyRadiusAU));
 }
 
@@ -170,15 +217,73 @@ export function clampSurfaceFovDeg(fovDeg: number): number {
   return Math.min(SURFACE_FOV_MAX_DEG, Math.max(SURFACE_FOV_MIN_DEG, fovDeg));
 }
 
+/** How the surface view was entered: pointed at a specific event (jump /
+ * live event) or at the standing companion subject. */
+export type SurfaceEntryContext = 'event' | 'companion';
+
 /**
- * Entry FOV fits the target: the realistic-sky default unless the target's
- * disc would overflow it — then widen so the disc fills ~60% of the frame
- * (Jupiter from Io is ∅19.5° and must not overflow a 10° view).
+ * Entry FOV fits the subject. Companion entries keep the realistic-sky
+ * default unless the target's disc would overflow it — then widen so the
+ * disc fills ~60% of the frame (Jupiter from Io is ∅19.5° and must not
+ * overflow a 10° view). Event entries frame the event instead: ~8× the
+ * target disc, so a solar eclipse opens on a Sun that reads as a disc
+ * (∅0.4° → 3.2° FOV ≈ 1/8 of the frame), clamped to the zoom range.
  */
-export function entryFovDeg(targetAngularDiameterDeg: number): number {
+export function entryFovDeg(
+  targetAngularDiameterDeg: number,
+  context: SurfaceEntryContext = 'companion',
+): number {
+  if (context === 'event') {
+    return clampSurfaceFovDeg(targetAngularDiameterDeg * 8);
+  }
   return Math.min(
     SURFACE_FOV_MAX_DEG,
     Math.max(SURFACE_FOV_DEFAULT_DEG, targetAngularDiameterDeg * 1.7),
+  );
+}
+
+/** Projected disc height in pixels for a disc of `discDeg` at `fovDeg`. */
+export function projectedDiscPx(discDeg: number, fovDeg: number, viewportHeightPx: number): number {
+  return (discDeg / fovDeg) * viewportHeightPx;
+}
+
+/** Marker-swap thresholds (px, with hysteresis): below the reticle bound the
+ * HUD shows the sub-resolution reticle; above the brackets bound, the
+ * resolvable-disc brackets; between, whatever it already shows. */
+export const MARKER_RETICLE_MAX_PX = 10;
+export const MARKER_BRACKETS_MIN_PX = 14;
+
+export type SurfaceMarkerKind = 'brackets' | 'reticle';
+
+/**
+ * Which target marker the HUD draws — the shared resolvability decision
+ * (one helper so the panel, HUD, and scene never disagree about "too
+ * small"). Hysteresis keeps the swap from flickering as the disc breathes
+ * around the threshold.
+ */
+export function resolveMarkerKind(
+  discPx: number,
+  current: SurfaceMarkerKind,
+): SurfaceMarkerKind {
+  if (discPx >= MARKER_BRACKETS_MIN_PX) return 'brackets';
+  if (discPx <= MARKER_RETICLE_MAX_PX) return 'reticle';
+  return current;
+}
+
+/** Nominal viewport for the events list's static speck flag — the list can't
+ * know the live canvas, so it judges against a typical screen height. */
+const LIST_FLAG_VIEWPORT_PX = 800;
+
+/**
+ * True when a disc of `discDeg` can never resolve from this vantage, even at
+ * the tightest zoom — the events list dims these rows. "Resolve" means the
+ * same thing everywhere: the disc would earn the brackets marker
+ * (≥ MARKER_BRACKETS_MIN_PX), so a row's ● promise and the HUD's
+ * reticle/caption can't contradict each other after a jump.
+ */
+export function isBelowResolutionAtMaxZoom(discDeg: number): boolean {
+  return (
+    projectedDiscPx(discDeg, SURFACE_FOV_MIN_DEG, LIST_FLAG_VIEWPORT_PX) < MARKER_BRACKETS_MIN_PX
   );
 }
 
@@ -186,4 +291,11 @@ export function entryFovDeg(targetAngularDiameterDeg: number): number {
 export function angularDiameterDeg(radiusAU: number, distanceAU: number): number {
   if (distanceAU <= radiusAU) return 180;
   return 2 * Math.asin(radiusAU / distanceAU) * RAD2DEG;
+}
+
+/** Display formatting for an apparent diameter — never prints "0.00°": below
+ * the two-decimal floor it reads "<0.01" (an honest speck, not a zero). */
+export function formatDiscDeg(deg: number): string {
+  if (deg < 0.005) return '<0.01';
+  return deg >= 1 ? deg.toFixed(1) : deg.toFixed(2);
 }

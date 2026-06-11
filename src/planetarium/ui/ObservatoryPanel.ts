@@ -11,6 +11,7 @@
 import { computeOrbitalState, type EventType } from '../../astronomy/ephemeris';
 import { formatDateCompact } from '../../astronomy/planetary';
 import type { ShadowEvent } from '../../astronomy/shadows';
+import { formatDiscDeg } from '../surfaceView';
 import { setText } from '../../shared/dom';
 
 /** What the phase hero shows for the current landed body. */
@@ -55,6 +56,12 @@ export interface ObservatoryEventRow {
   classification: string;
   /** 'mag 1.10' — Earth system only; generic systems keep the badge alone. */
   magnitudeText: string | null;
+  /** Apparent ∅ of the body this event is watched on, from the current
+   * vantage (the surface-target table decides which body that is). */
+  discDeg: number;
+  /** True when that body can never resolve from here, even at max zoom —
+   * the row dims and its rail glyph becomes the hollow ring. */
+  speck: boolean;
 }
 
 // The phase of Earth seen from the Moon is the complement of the Moon's phase.
@@ -267,7 +274,23 @@ export class ObservatoryPanel {
       // The year earns its width only when the event is far out.
       const includeYear = Math.abs(row.event.peakUtcMs - nowUtcMs) > 300 * 86_400_000;
       const rowEl = document.createElement('div');
-      rowEl.className = 'obs-ev';
+      rowEl.className = row.speck ? 'obs-ev speck' : 'obs-ev';
+      // Rail glyph: a disc sized to the apparent ∅ (log scale, 3–9px), or
+      // the hollow "nothing to see from here" ring for specks.
+      const railEl = document.createElement('span');
+      railEl.className = 'obs-ev-rail';
+      const glyphEl = document.createElement('i');
+      if (row.speck) {
+        glyphEl.className = 'obs-ev-ring';
+      } else {
+        glyphEl.className = 'obs-ev-disc';
+        const px = Math.round(
+          Math.min(9, Math.max(3, 3 + 1.5 * Math.log10(Math.max(row.discDeg, 0.01) / 0.01))),
+        );
+        glyphEl.style.width = `${px}px`;
+        glyphEl.style.height = `${px}px`;
+      }
+      railEl.appendChild(glyphEl);
       const mainEl = document.createElement('div');
       mainEl.className = 'obs-ev-main';
       const nameEl = document.createElement('div');
@@ -287,12 +310,18 @@ export class ObservatoryPanel {
       cdEl.className = 'obs-cd';
       metaEl.append(badgeEl, timeEl, cdEl);
       mainEl.append(nameEl, metaEl);
+      const rightEl = document.createElement('span');
+      rightEl.className = 'obs-ev-right';
       const jumpEl = document.createElement('button');
       jumpEl.className = 'obs-tpill';
       jumpEl.textContent = 'Jump';
       jumpEl.title = `Jump to ${row.label}`;
       jumpEl.addEventListener('click', () => this.onEventJump(row.event));
-      rowEl.append(mainEl, jumpEl);
+      const diaEl = document.createElement('span');
+      diaEl.className = 'obs-ev-dia';
+      diaEl.textContent = `∅ ${formatDiscDeg(row.discDeg)}°`;
+      rightEl.append(jumpEl, diaEl);
+      rowEl.append(railEl, mainEl, rightEl);
       this.eventsListEl.appendChild(rowEl);
       this.renderedRows.push({ row, rowEl, cdEl });
     }

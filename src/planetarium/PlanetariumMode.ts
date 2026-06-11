@@ -34,6 +34,7 @@ import {
   formatTimeRateLabel,
   formatUtcLabel,
   parseUtcInputValue,
+  raDecToVector,
   type SimulationTime,
 } from '../astronomy/planetary';
 import { computeMoonOffsetEquatorialAU, getSatelliteApoapsisAU } from '../astronomy/satellites';
@@ -59,10 +60,20 @@ import {
   computeShadowSpotVantage,
   computeSubTargetVantage,
   entryFovDeg,
+  formatDiscDeg,
+  isBelowResolutionAtMaxZoom,
+  MARKER_BRACKETS_MIN_PX,
+  projectedDiscPx,
+  resolveMarkerKind,
   selectSurfaceTarget,
   SURFACE_FOV_DEFAULT_DEG,
+  SURFACE_FOV_MIN_DEG,
+  SURFACE_TARGET_ELEVATION_DEG,
+  surfaceAltitudeAU,
   surfaceEventNarrative,
   transportTrackingUp,
+  type SurfaceEntryContext,
+  type SurfaceMarkerKind,
   type SurfaceTarget,
 } from './surfaceView';
 import { DEG2RAD } from '../shared/math/angles';
@@ -276,10 +287,29 @@ export class PlanetariumMode {
   // Tracking-camera up, parallel-transported frame to frame (see
   // updateSurfaceCamera). Persistent state, not a scratch vector.
   private surfaceUpTangent = new THREE.Vector3(0, 1, 0);
+  // Vantage azimuth reference: the landed body's north. Planets cache their
+  // IAU pole at landing; moons refresh their orbit normal per frame (the
+  // same reference the tidal lock rolls on).
+  private surfacePoleAxis = new THREE.Vector3(0, 1, 0);
+  private tmpSurfacePoleOffset = new THREE.Vector3();
+  // Marker over the tracked target — sticky across the hysteresis band.
+  private surfaceMarkerKind: SurfaceMarkerKind = 'brackets';
+  // Observatory-panel left edge, cached per viewport size for the chevron
+  // clamp (the panel is CSS-fixed; it only moves on resize).
+  private panelLeftCache: { w: number; h: number; left: number } | null = null;
 
   // Moon labels
   private moonLabels = new Map<string, HTMLDivElement>();
   private moonLabelContainer: HTMLDivElement | null = null;
+  // Pooled per-frame scratch for renderMoonLabels' de-overlap pass.
+  private moonLabelCandidates: Array<{
+    label: HTMLDivElement;
+    sx: number;
+    sy: number;
+    onScreen: boolean;
+    priorityPx: number;
+    halfW: number;
+  }> = [];
   private resumePrompt = new PlanetariumResumePrompt();
   private helpModal = new PlanetariumHelpModal();
   private menuPanel = new PlanetariumMenuPanel();
@@ -301,6 +331,9 @@ export class PlanetariumMode {
     () => this.exitSurfaceView(),
     () => this.swapLandedVantage(),
     () => {
+      // Mid-exit the affordance is dead: re-tracking would fight the ease
+      // and the exit completes anyway.
+      if (this.landedView !== 'surface' || this.surfaceFovAnim?.finalizeExit) return;
       this.surfaceTracking = true;
       // Resume from the free-look orientation without a roll snap.
       this.surfaceUpTangent.set(0, 1, 0).applyQuaternion(this.camera.quaternion);
@@ -1290,6 +1323,14 @@ export class PlanetariumMode {
     const canvasH = this.renderer.domElement.clientHeight;
     const tempV = new THREE.Vector3();
 
+    // Two passes: gather placeable labels, then place big-to-small with
+    // greedy screen-rect suppression — on approach a system's labels pile
+    // onto near-identical pixels ("PhoDeimos"); the smaller apparent moon
+    // yields. Rects are estimated (reading offsetWidth would force reflow).
+    // Candidate objects are pooled — steady-state frames allocate nothing.
+    const candidates = this.moonLabelCandidates;
+    let candidateCount = 0;
+
     for (const planet of this.solarSystem.planets) {
       const moons = this.planetMoons.get(planet.data.name);
       if (!moons) continue;
@@ -1323,13 +1364,58 @@ export class PlanetariumMode {
         const labelOccluded = this.planetLabels?.isScreenPointOccluded(sx, sy - 10, moonCamDist, `moon:${m.data.name}`) ?? false;
         if (labelOccluded) {
           label.style.display = 'none';
-        } else {
-          label.style.display = 'block';
-          label.style.left = `${sx}px`;
-          label.style.top = `${sy}px`;
-          label.classList.toggle('edge', !onScreen);
+          continue;
+        }
+        let c = candidates[candidateCount];
+        if (!c) {
+          c = { label, sx: 0, sy: 0, onScreen: false, priorityPx: 0, halfW: 0 };
+          candidates.push(c);
+        }
+        c.label = label;
+        c.sx = sx;
+        c.sy = sy;
+        c.onScreen = onScreen;
+        c.priorityPx = m.data.radiusAU / Math.max(moonCamDist, 1e-12);
+        c.halfW = (m.data.name.length * 6.5 + 12) / 2;
+        candidateCount++;
+      }
+    }
+
+    candidates.length = candidateCount;
+    // Visible labels outrank edge-clamped ones (an off-screen moon pinned to
+    // the margin must not suppress a genuinely visible neighbor), then
+    // bigger apparent discs win.
+    candidates.sort(
+      (a, b) => Number(b.onScreen) - Number(a.onScreen) || b.priorityPx - a.priorityPx,
+    );
+    const LABEL_H = 18;
+    let placedCount = 0;
+    // In-place partition: indices [0, placedCount) hold the placed labels.
+    for (let i = 0; i < candidates.length; i++) {
+      const c = candidates[i];
+      let collides = false;
+      for (let j = 0; j < placedCount; j++) {
+        const p = candidates[j];
+        if (
+          Math.abs(c.sx - p.sx) < c.halfW + p.halfW &&
+          Math.abs(c.sy - p.sy) < LABEL_H
+        ) {
+          collides = true;
+          break;
         }
       }
+      if (collides) {
+        c.label.style.display = 'none';
+        continue;
+      }
+      const swap = candidates[placedCount];
+      candidates[placedCount] = c;
+      candidates[i] = swap;
+      placedCount++;
+      c.label.style.display = 'block';
+      c.label.style.left = `${c.sx}px`;
+      c.label.style.top = `${c.sy}px`;
+      c.label.classList.toggle('edge', !c.onScreen);
     }
   }
 
@@ -2871,7 +2957,7 @@ export class PlanetariumMode {
     }
 
     let discNote: string | null = null;
-    const fmtDeg = (deg: number) => (deg >= 1 ? deg.toFixed(1) : deg.toFixed(2));
+    const fmtDeg = formatDiscDeg;
     const targetPos = this.resolveSurfaceTargetScenePos(this.surfaceTarget, this.tmpSurfaceTargetPos);
     if (targetPos) {
       const targetDeg = angularDiameterDeg(
@@ -2880,6 +2966,17 @@ export class PlanetariumMode {
       );
       const baseName = this.surfaceTargetDisplayName(this.surfaceTarget).replace(/^the /, '');
       discNote = `${baseName} ∅ ${fmtDeg(targetDeg)}°`;
+      // Honesty caption while the reticle is up: say why there is no disc,
+      // and whether tightening the zoom would produce one. ("Resolve" — a
+      // borderline target can still render a few marginal pixels.)
+      if (this.surfaceMarkerKind === 'reticle') {
+        const canvasH = this.renderer.domElement.clientHeight;
+        const resolvesAtMaxZoom =
+          projectedDiscPx(targetDeg, SURFACE_FOV_MIN_DEG, canvasH) >= MARKER_BRACKETS_MIN_PX;
+        discNote += resolvesAtMaxZoom
+          ? ' · zoom in to resolve'
+          : ' · too small to resolve at any zoom';
+      }
       if (this.surfaceTarget.kind === 'sun-from-spot') {
         const parentName = this.observatoryParentPlanetName();
         const occluder = this.planetMoons
@@ -3081,12 +3178,26 @@ export class PlanetariumMode {
     const events = [...this.observatoryEventResults.values()]
       .sort((a, b) => a.peakUtcMs - b.peakUtcMs)
       .slice(0, PlanetariumMode.OBSERVATORY_EVENTS_MAX_ROWS);
-    const rows: ObservatoryEventRow[] = events.map(e => ({
-      event: e,
-      label: PlanetariumMode.shadowEventLabel(e.spec),
-      classification: e.classification,
-      magnitudeText: PlanetariumMode.eventMagnitudeText(e),
-    }));
+    const landedInfo = this.surfaceLandedInfo();
+    const rows: ObservatoryEventRow[] = events.map(e => {
+      // ∅ of the body this event is *watched* on from here — the surface-
+      // target table decides which body that is (a transit seen from the
+      // parent means watching the Sun; your own eclipse likewise — so
+      // self-event rows never read as specks). Measured at the CURRENT
+      // clock, accepted: sibling distances can swing by peak time, but the
+      // jump republishes and the badge answers "from here, now".
+      const discDeg = landedInfo
+        ? this.surfaceTargetAngularDiameterDeg(selectSurfaceTarget(landedInfo, e.spec))
+        : 0;
+      return {
+        event: e,
+        label: PlanetariumMode.shadowEventLabel(e.spec),
+        classification: e.classification,
+        magnitudeText: PlanetariumMode.eventMagnitudeText(e),
+        discDeg,
+        speck: isBelowResolutionAtMaxZoom(discDeg),
+      };
+    });
     this.observatoryRowsMinEndUtcMs = events.length
       ? events.reduce((min, e) => Math.min(min, e.endUtcMs), Infinity)
       : null;
@@ -3107,7 +3218,7 @@ export class PlanetariumMode {
       // Surface view active: re-point it at the event's observer-level target
       // instead of orbit-framing (jumps never auto-enter the surface view).
       const landedInfo = this.surfaceLandedInfo();
-      if (landedInfo) this.enterSurfaceView(selectSurfaceTarget(landedInfo, event.spec));
+      if (landedInfo) this.enterSurfaceView(selectSurfaceTarget(landedInfo, event.spec), 'event');
     } else {
       this.frameObservatoryEvent(event.spec);
     }
@@ -3163,7 +3274,7 @@ export class PlanetariumMode {
       // Phase jumps point the surface view at the companion (the Moon you
       // just made full), never at an event geometry.
       const landedInfo = this.surfaceLandedInfo();
-      if (landedInfo) this.enterSurfaceView(selectSurfaceTarget(landedInfo, null));
+      if (landedInfo) this.enterSurfaceView(selectSurfaceTarget(landedInfo, null), 'companion');
     } else {
       this.frameObservatoryEvent();
     }
@@ -3285,8 +3396,17 @@ export class PlanetariumMode {
   private surfaceTargetAngularDiameterDeg(target: SurfaceTarget): number {
     const pos = this.resolveSurfaceTargetScenePos(target, this.tmpSurfaceTargetPos);
     if (!pos) return 0;
-    // The landed body sits at scene origin.
-    return angularDiameterDeg(this.surfaceTargetRadiusAU(target), pos.length());
+    // The landed body sits at scene origin, but the OBSERVER stands on its
+    // surface — measure from there, not the center. For inner moons watched
+    // from their parent the difference is a full planet radius (Metis from
+    // Jupiter: ∅0.019° center vs ∅0.045° vantage) and flips the speck
+    // classification the HUD would then contradict.
+    const bodyRadiusAU = this.getLandedBodyRadiusAU();
+    const observerDistAU = Math.max(
+      pos.length() - (bodyRadiusAU + surfaceAltitudeAU(bodyRadiusAU)),
+      1e-9,
+    );
+    return angularDiameterDeg(this.surfaceTargetRadiusAU(target), observerDistAU);
   }
 
   /**
@@ -3295,18 +3415,24 @@ export class PlanetariumMode {
    * surface, and tracks the target until the user drags. OrbitControls hand
    * the pointer to SurfaceLook until exit.
    */
-  enterSurfaceView(target?: SurfaceTarget) {
+  enterSurfaceView(target?: SurfaceTarget, entryContext?: SurfaceEntryContext) {
     const landedInfo = this.surfaceLandedInfo();
     if (!landedInfo) return;
     // Manual entry right after an event jump points at the event's
     // observer-level target — "Look up" during an eclipse shows the eclipse.
-    this.surfaceTarget =
-      target ?? selectSurfaceTarget(landedInfo, this.relevantObservatoryEvent()?.spec ?? null);
+    const liveEvent = this.relevantObservatoryEvent();
+    this.surfaceTarget = target ?? selectSurfaceTarget(landedInfo, liveEvent?.spec ?? null);
+    // No explicit context: entries derived while an event is live frame the
+    // event; plain "Look up" frames the companion subject.
+    const context = entryContext ?? (target === undefined && liveEvent ? 'event' : 'companion');
     this.surfaceTracking = true;
+    // Fresh target, fresh marker: the hysteresis band must not inherit the
+    // previous target's brackets/reticle state across entries/jumps/swaps.
+    this.surfaceMarkerKind = 'brackets';
     // Re-seed the transported tracking-up from the camera's current local up
     // so the first tracked frame is continuous with what's on screen.
     this.surfaceUpTangent.set(0, 1, 0).applyQuaternion(this.camera.quaternion);
-    const entryFov = entryFovDeg(this.surfaceTargetAngularDiameterDeg(this.surfaceTarget));
+    const entryFov = entryFovDeg(this.surfaceTargetAngularDiameterDeg(this.surfaceTarget), context);
     this.surfaceFovDeg = entryFov;
     if (this.landedView === 'surface') {
       // Re-point: a short ease to the new target's fitted FOV (predictable
@@ -3475,7 +3601,32 @@ export class PlanetariumMode {
       }
     }
     if (!spotPosed) {
-      computeSubTargetVantage(radiusAU, targetPos, vantage);
+      // Moons: refresh the orbit-normal pole reference (planets cached theirs
+      // at landing). Cheap — one element propagation; Earth's Moon is a copy.
+      if (this.landedOn?.type === 'moon') {
+        const landedMoon = this.landedOn;
+        const parentBody = PLANETARIUM_BODIES.find(b => b.name === landedMoon.parentPlanet);
+        const moonMesh = this.planetMoons
+          .get(landedMoon.parentPlanet)
+          ?.find(m => m.data.name === landedMoon.name);
+        if (parentBody && moonMesh) {
+          this.getMoonWorldOffsetAU(
+            moonMesh.data,
+            parentBody,
+            this.tmpSurfacePoleOffset,
+            this.surfacePoleAxis,
+          );
+          if (this.surfacePoleAxis.lengthSq() > 0) this.surfacePoleAxis.normalize();
+          else this.surfacePoleAxis.set(0, 1, 0);
+        }
+      }
+      computeSubTargetVantage(
+        radiusAU,
+        targetPos,
+        this.surfacePoleAxis,
+        SURFACE_TARGET_ELEVATION_DEG,
+        vantage,
+      );
     }
 
     const anim = this.surfaceFovAnim;
@@ -3518,19 +3669,89 @@ export class PlanetariumMode {
       this.camera.lookAt(targetPos);
     }
 
-    // Bracket cluster around the tracked target (per-frame screen projection).
+    // Marker over the tracked target (per-frame screen projection): brackets
+    // for a resolvable disc, the hairline reticle for sub-pixel specks (the
+    // 70px bracket floor around empty sky read as "something visible here"),
+    // and an edge chevron pointing back when free look loses the target.
     const canvas = this.renderer.domElement;
-    const proj = projectToScreen(targetPos, this.camera, canvas.clientWidth, canvas.clientHeight);
+    const w = canvas.clientWidth;
+    const h = canvas.clientHeight;
+    const proj = projectToScreen(targetPos, this.camera, w, h);
     const discDeg = angularDiameterDeg(
       this.surfaceTargetRadiusAU(this.surfaceTarget),
       targetPos.distanceTo(this.camera.position),
     );
-    const sizePx = THREE.MathUtils.clamp(
-      (discDeg / this.camera.fov) * canvas.clientHeight * 1.3,
-      70,
-      canvas.clientHeight * 0.85,
-    );
-    this.observatoryHud.updateBrackets(proj.ndcZ < 1, proj.x, proj.y, sizePx);
+    const discPx = projectedDiscPx(discDeg, this.camera.fov, h);
+    this.surfaceMarkerKind = resolveMarkerKind(discPx, this.surfaceMarkerKind);
+    // On-frame test inflated by the disc radius: a big disc (Jupiter fills
+    // ~60% of the frame) must not flip to "off frame" the moment its CENTER
+    // leaves the viewport while half of it is plainly visible.
+    const discR = discPx / 2;
+    const onFrame =
+      proj.ndcZ < 1 &&
+      proj.x >= -discR && proj.x <= w + discR &&
+      proj.y >= -discR && proj.y <= h + discR;
+    if (onFrame) {
+      const sizePx = THREE.MathUtils.clamp(
+        (discDeg / this.camera.fov) * h * 1.3,
+        70,
+        h * 0.85,
+      );
+      this.observatoryHud.updateMarker({
+        mode: this.surfaceMarkerKind,
+        xPx: proj.x,
+        yPx: proj.y,
+        sizePx,
+      });
+    } else {
+      // Edge chevron: direction from screen center toward the target's
+      // projection (mirrored when it's behind the camera), placed by
+      // component-wise clamp of a far point along that ray into an inset
+      // frame — never mirrored or off-rect even when an inset crosses the
+      // screen center (a ray-march's t went negative there). Insets reserve
+      // the HUD bands — top chips and the bottom narrative/FOV/transport
+      // zone (cross-component policy 3).
+      let dx = proj.x - w / 2;
+      let dy = proj.y - h / 2;
+      if (proj.ndcZ >= 1) {
+        dx = -dx;
+        dy = -dy;
+      }
+      const len = Math.hypot(dx, dy);
+      if (len > 0) {
+        dx /= len;
+        dy /= len;
+      } else {
+        dy = -1;
+      }
+      const insetX = 28;
+      const insetTop = 96;
+      const insetBottom = 150;
+      // Clamp against the Observatory panel when it's open over the surface
+      // view (policy 3): a right-edge chevron would land beneath it, visible
+      // but unclickable. The rect is cached per viewport size — the panel is
+      // CSS-fixed and only moves on resize (per-frame getBoundingClientRect
+      // after the HUD's style writes would force reflow).
+      let insetRight = insetX;
+      if (this.observatoryPanel.isOpen()) {
+        if (!this.panelLeftCache || this.panelLeftCache.w !== w || this.panelLeftCache.h !== h) {
+          const rect = document.getElementById('observatory-panel')?.getBoundingClientRect();
+          this.panelLeftCache = { w, h, left: rect ? rect.left : w };
+        }
+        insetRight = Math.min(
+          Math.max(insetX, w - this.panelLeftCache.left + 12),
+          Math.max(insetX, w - insetX - 44),
+        );
+      }
+      const ex = THREE.MathUtils.clamp(w / 2 + dx * (w + h), insetX, Math.max(insetX + 1, w - insetRight));
+      const ey = THREE.MathUtils.clamp(h / 2 + dy * (w + h), insetTop, Math.max(insetTop + 1, h - insetBottom));
+      this.observatoryHud.updateMarker({
+        mode: 'chevron',
+        xPx: ex,
+        yPx: ey,
+        angleDeg: (Math.atan2(dy, dx) * 180) / Math.PI,
+      });
+    }
   }
 
   enterLandedMode(target: NonNullable<LandedTarget>) {
@@ -3549,6 +3770,13 @@ export class PlanetariumMode {
    */
   private applyLandedTarget(target: NonNullable<LandedTarget>) {
     this.landedOn = target;
+
+    // Vantage azimuth reference (planets: constant IAU pole, cached here;
+    // moons refresh their orbit normal per frame in updateSurfaceCamera).
+    if (target.type === 'planet') {
+      const body = PLANETARIUM_BODIES.find(b => b.name === target.name);
+      if (body) this.surfacePoleAxis.copy(raDecToVector(body.poleRaDeg, body.poleDecDeg)).normalize();
+    }
 
     // Stop ship
     this.player.speedMultiplier = 0;
@@ -3663,12 +3891,14 @@ export class PlanetariumMode {
       // the same event reads differently from the companion: a transit seen
       // from the parent is a solar eclipse, from the moon it's your own
       // shadow). Without a live event, point back at the body you left.
+      const liveSwapEvent = this.relevantObservatoryEvent();
       this.enterSurfaceView(
-        this.relevantObservatoryEvent()
+        liveSwapEvent
           ? undefined
           : previous.type === 'moon'
             ? { kind: 'moon', moonName: previous.name }
             : { kind: 'parent' },
+        liveSwapEvent ? 'event' : 'companion',
       );
     }
     this.notification.show(`Standing on ${companion.name}`);

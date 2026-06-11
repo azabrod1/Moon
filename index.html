@@ -820,6 +820,20 @@
     .obs-tpill:disabled { opacity: 0.4; cursor: default; }
     .obs-ev { display: flex; align-items: center; gap: 10px; padding: 8px 0; }
     .obs-ev + .obs-ev { border-top: 1px solid rgba(255, 255, 255, 0.03); }
+    /* Leading glyph rail: filled disc scaled to the apparent ∅ from this
+       vantage; hollow ring = below resolution even at max zoom. */
+    .obs-ev-rail { flex: none; width: 12px; display: flex; align-items: center; justify-content: center; }
+    .obs-ev-disc { border-radius: 50%; background: #cfd6e4; }
+    .obs-ev-ring { width: 7px; height: 7px; border-radius: 50%; border: 1px solid var(--obs-t2); }
+    .obs-ev-right { display: flex; flex-direction: column; align-items: flex-end; gap: 3px; flex: none; }
+    .obs-ev-dia { font-family: var(--obs-mono, ui-monospace, monospace); font-size: 10px; letter-spacing: 0.4px; color: var(--obs-t2); white-space: nowrap; }
+    .obs-key { float: right; font-size: 9.5px; letter-spacing: 0.6px; color: var(--obs-t2); text-transform: none; }
+    /* Speck rows dim by color remap — the ∅ value stays readable (it is the
+       explanation), the classification badge keeps one step more ink than
+       the time (it still carries information), live countdowns and Jump
+       pills never dim. */
+    .obs-ev.speck .obs-ev-name, .obs-ev.speck .obs-badge { color: var(--obs-t2); }
+    .obs-ev.speck .obs-ev-time { color: var(--obs-t3); }
     .obs-ev-main { flex: 1; min-width: 0; }
     .obs-ev-name { font-size: 12.5px; color: var(--obs-t1); line-height: 1.35; }
     .obs-ev-meta {
@@ -868,6 +882,23 @@
     .shud-brackets i:nth-child(3) { bottom: 0; left: 0; border-right: none; border-top: none; border-bottom-left-radius: 4px; }
     .shud-brackets i:nth-child(4) { bottom: 0; right: 0; border-left: none; border-top: none; border-bottom-right-radius: 4px; }
     @keyframes shud-breathe { 0%, 100% { opacity: 0.42; transform: scale(1); } 50% { opacity: 0.22; transform: scale(1.025); } }
+    /* Sub-resolution target marker: hairline circle + 4 ticks, center
+       deliberately empty (no fabricated dot of light). Distinct from a star. */
+    .shud-reticle { position: absolute; width: 12px; height: 12px; border: 1px solid rgba(220, 230, 255, 0.8); border-radius: 50%; opacity: 0.75; animation: shud-breathe 3.6s ease-in-out infinite; }
+    .shud-reticle i { position: absolute; background: rgba(220, 230, 255, 0.8); }
+    .shud-reticle i:nth-child(1) { left: 50%; top: -6px; width: 1px; height: 4px; margin-left: -0.5px; }
+    .shud-reticle i:nth-child(2) { left: 50%; bottom: -6px; width: 1px; height: 4px; margin-left: -0.5px; }
+    .shud-reticle i:nth-child(3) { top: 50%; left: -6px; height: 1px; width: 4px; margin-top: -0.5px; }
+    .shud-reticle i:nth-child(4) { top: 50%; right: -6px; height: 1px; width: 4px; margin-top: -0.5px; }
+    /* Off-frame tracked target: edge chevron pointing toward it. */
+    .shud-chevron {
+      position: absolute; width: 30px; height: 30px; padding: 0; cursor: pointer;
+      background: rgba(10, 14, 26, 0.55); border: 1px solid rgba(140, 160, 200, 0.25);
+      border-radius: 50%; color: rgba(220, 230, 255, 0.85); pointer-events: auto;
+      display: flex; align-items: center; justify-content: center;
+    }
+    .shud-chevron:hover { border-color: rgba(124, 154, 255, 0.5); }
+    .shud-chevron i { font-style: normal; font-size: 15px; line-height: 1; transform: translateY(-1px); }
     .shud-discnote {
       position: absolute; transform: translateX(-50%); white-space: nowrap;
       font-family: var(--obs-mono); font-size: 10px; letter-spacing: 0.08em;
@@ -2195,7 +2226,7 @@
             <button class="obs-tpill" id="observatory-next-solar" title="Next solar eclipse">Next &#8250;</button>
           </div>
         </div>
-        <div class="obs-sec">Upcoming</div>
+        <div class="obs-sec">Upcoming <span class="obs-key">&#9679; shows a disc &nbsp;&#9675; too small to see</span></div>
         <div id="observatory-events-list"></div>
         <div class="obs-scan" id="observatory-events-status"></div>
         <label class="obs-foot">
@@ -2209,6 +2240,8 @@
            target, narrative stack, FOV cluster, top-right chips. -->
       <div id="surface-hud">
         <div class="shud-brackets" id="surface-brackets" style="display:none"><i></i><i></i><i></i><i></i></div>
+        <div class="shud-reticle" id="surface-reticle" style="display:none"><i></i><i></i><i></i><i></i></div>
+        <button class="shud-chevron" id="surface-chevron" style="display:none" title="Target off frame — resume tracking"><i>&#x2039;</i></button>
         <div class="shud-discnote" id="surface-discnote" style="display:none"></div>
         <button class="shud-trackpill" id="surface-trackpill" style="display:none"><i>&#x2316;</i><span id="surface-trackpill-text"></span></button>
         <div class="shud-tr">

@@ -1,7 +1,7 @@
 /**
  * True-scale shadow visuals for the landed moon system: the parent planet's
  * umbra/penumbra cones (+ the landed moon's own cones near syzygy) behind the
- * Sky panel's "shadow cones" toggle, and always-on transit shadow spots — the
+ * Observatory panel's "shadow cones" toggle, and always-on transit shadow spots — the
  * classic Io dot crawling across Jupiter, or the Moon's shadow on Earth during
  * a solar eclipse. Everything lives in the parent's moon-system group (parent
  * at local origin, AU units), so the floating origin is free. Cone radii come
@@ -14,7 +14,7 @@
  */
 import * as THREE from 'three';
 import { KM_PER_AU } from '../../astronomy/constants';
-import { occluderEnlargement } from '../../astronomy/shadows';
+import { occluderEnlargement, shadowAxisSphereHitAU } from '../../astronomy/shadows';
 import { KM_CONSTANTS } from '../../shared/constants/physicalData';
 import type { MoonMesh } from '../PlanetFactory';
 
@@ -219,15 +219,10 @@ export class ShadowVisuals {
     parentRadiusKm: number,
   ): void {
     const parentRadiusAU = parentRadiusKm / KM_PER_AU;
-    const b = moonOffsetAU.dot(moonAxis);
-    const c = moonOffsetAU.lengthSq() - parentRadiusAU * parentRadiusAU;
-    const discriminant = b * b - c;
-    if (discriminant <= 0) {
-      spot.visible = false;
-      return;
-    }
-    const tAU = -b - Math.sqrt(discriminant); // near-surface hit along the shadow ray
-    if (tAU <= 0) {
+    // Near-surface hit along the shadow ray — same helper the surface-view
+    // vantage stands on, so the spot and the observer agree by construction.
+    const tAU = shadowAxisSphereHitAU(moonOffsetAU, moonAxis, parentRadiusAU);
+    if (tAU === null) {
       spot.visible = false;
       return;
     }

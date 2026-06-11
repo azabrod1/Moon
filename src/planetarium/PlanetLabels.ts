@@ -156,6 +156,22 @@ export class PlanetLabels {
   }
 
   /**
+   * Hide every marker sprite + HTML label at once. The surface view skips the
+   * label pipeline entirely, so without this, sprites already visible when it
+   * opens would stay frozen in the sky (the renderLabels loop is what owns
+   * `sprite.visible`).
+   */
+  hideAll(): void {
+    for (const entry of this.labels) {
+      entry.sprite.visible = false;
+      if (entry.labelVisible) {
+        entry.label.style.display = 'none';
+        entry.labelVisible = false;
+      }
+    }
+  }
+
+  /**
    * Places each planet's marker/label, occlusion-culled against the current
    * `foregroundDiscs`. Caller must have run `collectForegroundDiscs()` and
    * any `addForegroundDisc()` calls first.

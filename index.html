@@ -698,7 +698,7 @@
       padding: 8px;
       pointer-events: auto;
       min-width: 190px;
-      /* Above the sky panel (21): both anchor top-right, the transient menu wins. */
+      /* Above the observatory panel (21): both anchor top-right, the transient menu wins. */
       z-index: 22;
       box-shadow: 0 8px 32px rgba(0, 0, 0, 0.4), inset 0 1px 0 rgba(255, 255, 255, 0.04);
     }
@@ -719,108 +719,214 @@
     }
     .menu-action:hover { background: rgba(255, 255, 255, 0.06); }
 
-    /* Sky panel (landed on Earth or the Moon): phase readout + event jumps */
-    #sky-panel {
+    /* ── Observatory (landed mode) — Option D "Cinematic Instrument".
+       Cool glass, accent #7c9aff; warm is reserved for "happening now".
+       Reference mockups: ~/.claude/plans/moon-design/. Scoped --obs-* vars
+       so the eventual whole-app design pass can merge them deliberately. ── */
+    :root {
+      --obs-accent: #7c9aff;
+      --obs-accent-soft: rgba(124, 154, 255, 0.14);
+      --obs-glass: rgba(8, 10, 20, 0.58);
+      --obs-hairline: rgba(255, 255, 255, 0.08);
+      --obs-hairline-dim: rgba(255, 255, 255, 0.05);
+      --obs-t1: #eef1f8;
+      --obs-t2: #9ba8c0;
+      --obs-t3: #5d6a84;
+      --obs-warm: #ffb88a;
+      --obs-mono: ui-monospace, 'SF Mono', Menlo, monospace;
+    }
+    #observatory-panel {
       display: none;
       position: absolute;
       top: 42px;
       right: 12px;
-      background: var(--panel-bg);
-      backdrop-filter: blur(12px);
-      border: 1px solid var(--panel-border);
-      border-radius: 8px;
-      padding: 10px 12px;
+      width: min(334px, calc(100vw - 24px));
+      max-height: calc(100vh - 120px);
+      overflow-y: auto;
+      border-radius: 14px;
+      background: var(--obs-glass);
+      -webkit-backdrop-filter: blur(24px) saturate(140%);
+      backdrop-filter: blur(24px) saturate(140%);
+      border: 1px solid var(--obs-hairline);
+      box-shadow: 0 18px 50px rgba(0, 0, 0, 0.45), inset 0 1px 0 rgba(255, 255, 255, 0.05);
+      padding: 14px 16px 12px;
       pointer-events: auto;
-      width: 240px;
       z-index: 21;
-      box-shadow: 0 8px 32px rgba(0, 0, 0, 0.4), inset 0 1px 0 rgba(255, 255, 255, 0.04);
     }
-    #sky-panel.visible { display: block; }
-    .sky-header {
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-      margin-bottom: 6px;
+    #observatory-panel.visible { display: block; }
+    .obs-eyebrow { display: flex; justify-content: space-between; align-items: center; }
+    .obs-eyebrow b { font-size: 10px; font-weight: 600; letter-spacing: 0.18em; text-transform: uppercase; color: var(--obs-t3); }
+    .obs-close {
+      background: none; border: none; font-size: 14px; color: var(--obs-t3);
+      line-height: 1; cursor: pointer; padding: 2px 3px; font-family: var(--font);
     }
-    #sky-subject {
-      font-size: 10px;
-      letter-spacing: 0.6px;
-      text-transform: uppercase;
-      color: var(--text-secondary);
+    .obs-close:hover { color: var(--obs-t1); }
+    .obs-vantage { display: flex; justify-content: space-between; align-items: center; margin-top: 8px; }
+    .obs-vantage h2 { font-size: 15px; font-weight: 500; color: var(--obs-t1); letter-spacing: 0.01em; margin: 0; }
+    .obs-swap {
+      display: flex; align-items: center; gap: 5px; font-size: 10.5px; color: var(--obs-t2);
+      padding: 4px 10px; border-radius: 999px; background: rgba(255, 255, 255, 0.05);
+      border: 1px solid var(--obs-hairline-dim); cursor: pointer; white-space: nowrap; font-family: var(--font);
     }
-    .sky-close {
-      background: none;
-      border: none;
-      color: var(--text-secondary);
-      font-size: 15px;
-      line-height: 1;
-      cursor: pointer;
-      padding: 0 2px;
+    .obs-swap:hover { background: var(--obs-accent-soft); color: var(--obs-t1); border-color: rgba(124, 154, 255, 0.3); }
+    .obs-swap i { font-style: normal; font-size: 11px; color: var(--obs-accent); }
+    .obs-hero { display: flex; align-items: center; gap: 14px; margin: 16px 0 4px; padding: 0 2px; }
+    .obs-glyph { width: 40px; height: 40px; flex: none; filter: drop-shadow(0 0 8px rgba(220, 230, 255, 0.14)); }
+    .obs-glyph-disc { fill: #cfd6e4; }
+    .obs-glyph-shadow { fill: #070a13; opacity: 0.92; }
+    .obs-hero-text { min-width: 0; }
+    .obs-hero-text h1 { font-size: 22px; font-weight: 300; letter-spacing: 0.005em; color: var(--obs-t1); line-height: 1.1; margin: 0; }
+    .obs-hero-text p { font-size: 11px; color: var(--obs-t2); margin: 4px 0 0; }
+    .obs-num { font-family: var(--obs-mono); font-size: 10px; color: var(--obs-t2); }
+    .obs-nowbar {
+      display: flex; align-items: center; gap: 8px; margin-top: 12px; padding: 7px 10px;
+      border-radius: 9px; background: var(--obs-accent-soft); border: 1px solid rgba(124, 154, 255, 0.14);
+      font-size: 11px; color: var(--obs-t1);
     }
-    .sky-close:hover { color: var(--text-primary); }
-    .sky-phase-row {
-      display: flex;
-      justify-content: space-between;
-      align-items: baseline;
-      margin-bottom: 8px;
+    .obs-dot { width: 5px; height: 5px; border-radius: 50%; background: var(--obs-accent); flex: none; animation: obs-pulse 2.4s ease-in-out infinite; }
+    .obs-now-text { font-family: var(--obs-mono); font-size: 10.5px; }
+    .obs-nowbar small { margin-left: auto; font-size: 10px; color: var(--obs-t3); letter-spacing: 0.06em; text-transform: uppercase; }
+    .obs-nowbar.flash { animation: obs-nowflash 0.6s ease-out; }
+    @keyframes obs-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.35; } }
+    @keyframes obs-nowflash {
+      0% { box-shadow: 0 0 0 1px rgba(124, 154, 255, 0.7), 0 0 22px rgba(124, 154, 255, 0.35); }
+      100% { box-shadow: none; }
     }
-    #sky-phase-name { font-size: 13px; color: var(--text-primary); }
-    #sky-illumination { font-size: 11px; color: var(--text-secondary); }
-    .sky-event-row {
-      display: grid;
-      grid-template-columns: 30px 1fr 30px;
-      gap: 4px;
-      align-items: center;
-      margin-top: 4px;
+    .obs-lookup {
+      display: flex; align-items: center; justify-content: center; gap: 7px; margin-top: 10px;
+      width: 100%; padding: 10px 12px; border-radius: 10px;
+      background: rgba(255, 255, 255, 0.045); border: 1px solid var(--obs-hairline);
+      font-size: 12.5px; font-weight: 500; color: var(--obs-t1); cursor: pointer; font-family: var(--font);
     }
-    .sky-event-label {
-      text-align: center;
-      font-size: 10px;
-      letter-spacing: 0.3px;
-      color: var(--text-secondary);
+    .obs-lookup:hover { background: rgba(124, 154, 255, 0.10); border-color: rgba(124, 154, 255, 0.3); }
+    .obs-lookup i { font-style: normal; color: var(--obs-accent); font-size: 12px; }
+    .obs-lookup em { font-style: normal; font-weight: 400; color: var(--obs-t3); font-size: 11px; }
+    .obs-sec {
+      margin-top: 16px; padding-top: 12px; border-top: 1px solid var(--obs-hairline-dim);
+      font-size: 10px; font-weight: 600; letter-spacing: 0.18em; text-transform: uppercase; color: var(--obs-t3);
     }
-    .sky-events-title {
-      margin-top: 10px;
-      padding-top: 8px;
-      border-top: 1px solid var(--panel-border);
-      font-size: 10px;
-      letter-spacing: 0.6px;
-      text-transform: uppercase;
-      color: var(--text-secondary);
+    .obs-jrow { display: flex; align-items: center; gap: 8px; padding: 7px 0; }
+    .obs-jrow + .obs-jrow { border-top: 1px solid rgba(255, 255, 255, 0.03); }
+    .obs-lblwrap { flex: 1; min-width: 0; }
+    .obs-lbl { font-size: 12.5px; color: var(--obs-t1); }
+    .obs-nextdate { margin-top: 2px; font-size: 10px; color: var(--obs-t3); font-variant-numeric: tabular-nums; min-height: 12px; }
+    .obs-tpill {
+      flex: none; font-size: 10px; font-weight: 500; letter-spacing: 0.03em; padding: 4px 9px;
+      border-radius: 999px; background: rgba(255, 255, 255, 0.05); border: 1px solid var(--obs-hairline-dim);
+      color: var(--obs-t2); cursor: pointer; white-space: nowrap; font-variant-numeric: tabular-nums;
+      font-family: var(--font); min-width: 46px; text-align: center;
     }
-    #sky-events-status {
-      margin-top: 4px;
-      font-size: 10px;
-      color: var(--text-secondary);
-    }
-    #sky-events-status:empty { display: none; }
-    .sky-upcoming-row {
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-      gap: 6px;
-      margin-top: 6px;
-    }
-    .sky-upcoming-info { min-width: 0; }
-    .sky-upcoming-label {
-      font-size: 11px;
-      color: var(--text-primary);
-      white-space: nowrap;
+    .obs-tpill:hover:not(:disabled) { background: rgba(124, 154, 255, 0.12); color: var(--obs-t1); border-color: rgba(124, 154, 255, 0.3); }
+    .obs-tpill:disabled { opacity: 0.4; cursor: default; }
+    .obs-ev { display: flex; align-items: center; gap: 10px; padding: 8px 0; }
+    .obs-ev + .obs-ev { border-top: 1px solid rgba(255, 255, 255, 0.03); }
+    .obs-ev-main { flex: 1; min-width: 0; }
+    .obs-ev-name { font-size: 12.5px; color: var(--obs-t1); line-height: 1.35; }
+    .obs-ev-meta {
+      display: flex; align-items: center; gap: 6px; margin-top: 3px; font-size: 10.5px;
+      color: var(--obs-t3); font-variant-numeric: tabular-nums; white-space: nowrap;
       overflow: hidden;
-      text-overflow: ellipsis;
     }
-    .sky-upcoming-time { font-size: 10px; color: var(--text-secondary); white-space: nowrap; }
-    .sky-upcoming-jump { flex: none; }
-    .sky-cones-row {
-      display: flex;
-      align-items: center;
-      gap: 6px;
-      margin-top: 10px;
-      font-size: 11px;
-      color: var(--text-secondary);
-      cursor: pointer;
-      user-select: none;
+    .obs-ev-time { overflow: hidden; text-overflow: ellipsis; min-width: 0; flex: 0 1 auto; }
+    .obs-badge {
+      font-size: 8px; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase;
+      padding: 2px 6px; border-radius: 4px; background: rgba(255, 255, 255, 0.06); color: var(--obs-t2); flex: none;
     }
+    .obs-cd { color: var(--obs-t2); margin-left: auto; padding-left: 8px; min-width: 52px; text-align: right; }
+    .obs-ev.live .obs-cd { color: var(--obs-warm); font-weight: 500; }
+    .obs-ev.live .obs-cd::before {
+      content: ''; display: inline-block; width: 4px; height: 4px; border-radius: 50%;
+      background: var(--obs-warm); margin-right: 5px; vertical-align: 1px; animation: obs-pulse 1.8s ease-in-out infinite;
+    }
+    .obs-scan { margin-top: 8px; font-size: 10px; color: var(--obs-t3); letter-spacing: 0.02em; }
+    .obs-scan:empty { display: none; }
+    .obs-foot {
+      display: flex; justify-content: space-between; align-items: center; margin-top: 12px;
+      padding-top: 11px; border-top: 1px solid var(--obs-hairline-dim);
+      font-size: 11.5px; color: var(--obs-t2); cursor: pointer; user-select: none;
+    }
+    .obs-foot input { position: absolute; opacity: 0; pointer-events: none; }
+    .obs-tgl { width: 30px; height: 18px; border-radius: 9px; background: rgba(255, 255, 255, 0.12); position: relative; transition: background 0.15s; }
+    .obs-tgl::after {
+      content: ''; position: absolute; width: 14px; height: 14px; border-radius: 50%;
+      background: #cdd5e4; top: 2px; left: 2px; transition: left 0.15s;
+    }
+    .obs-foot input:checked + .obs-tgl { background: rgba(124, 154, 255, 0.55); }
+    .obs-foot input:checked + .obs-tgl::after { left: 14px; }
+
+    /* ── Surface-view HUD: brackets on the tracked target, narrative stack,
+       FOV cluster, top-right chips. Fades in after the camera settles. ── */
+    #surface-hud {
+      position: absolute; inset: 0; pointer-events: none; z-index: 15;
+      visibility: hidden; opacity: 0; transition: opacity 0.3s ease, visibility 0s 0.3s;
+    }
+    #surface-hud.visible { visibility: visible; opacity: 1; transition: opacity 0.6s ease 0.45s, visibility 0s; }
+    .shud-brackets { position: absolute; opacity: 0.4; animation: shud-breathe 3.6s ease-in-out infinite; }
+    .shud-brackets i { position: absolute; width: 18px; height: 18px; border: 1px solid rgba(220, 230, 255, 0.85); font-style: normal; }
+    .shud-brackets i:nth-child(1) { top: 0; left: 0; border-right: none; border-bottom: none; border-top-left-radius: 4px; }
+    .shud-brackets i:nth-child(2) { top: 0; right: 0; border-left: none; border-bottom: none; border-top-right-radius: 4px; }
+    .shud-brackets i:nth-child(3) { bottom: 0; left: 0; border-right: none; border-top: none; border-bottom-left-radius: 4px; }
+    .shud-brackets i:nth-child(4) { bottom: 0; right: 0; border-left: none; border-top: none; border-bottom-right-radius: 4px; }
+    @keyframes shud-breathe { 0%, 100% { opacity: 0.42; transform: scale(1); } 50% { opacity: 0.22; transform: scale(1.025); } }
+    .shud-discnote {
+      position: absolute; transform: translateX(-50%); white-space: nowrap;
+      font-family: var(--obs-mono); font-size: 10px; letter-spacing: 0.08em;
+      color: var(--obs-t3); text-transform: uppercase;
+    }
+    .shud-trackpill {
+      position: absolute; transform: translateX(-50%);
+      display: flex; align-items: center; gap: 7px; padding: 5px 12px; border-radius: 999px;
+      background: rgba(8, 10, 20, 0.4); border: 1px solid var(--obs-hairline-dim);
+      backdrop-filter: blur(8px); font-size: 10px; letter-spacing: 0.14em; text-transform: uppercase;
+      color: var(--obs-t2); pointer-events: auto; cursor: pointer; font-family: var(--font); white-space: nowrap;
+    }
+    .shud-trackpill:hover { color: var(--obs-t1); border-color: rgba(124, 154, 255, 0.3); }
+    .shud-trackpill i { font-style: normal; color: var(--obs-accent); font-size: 12px; letter-spacing: 0; }
+    .shud-tr { position: absolute; top: 14px; right: 16px; display: flex; gap: 8px; }
+    .shud-chip {
+      display: flex; align-items: center; gap: 7px; padding: 8px 15px; border-radius: 999px;
+      background: var(--obs-glass); border: 1px solid var(--obs-hairline-dim); backdrop-filter: blur(8px);
+      font-size: 12px; font-weight: 500; color: var(--obs-t2); white-space: nowrap;
+      pointer-events: auto; cursor: pointer; font-family: var(--font);
+    }
+    .shud-chip:hover { color: var(--obs-t1); border-color: rgba(124, 154, 255, 0.35); }
+    .shud-chip i { font-style: normal; color: var(--obs-accent); }
+    .shud-bl { position: absolute; left: 24px; bottom: 86px; max-width: 46vw; }
+    .shud-eyebrow {
+      font-size: 10px; font-weight: 600; letter-spacing: 0.2em; text-transform: uppercase;
+      color: var(--obs-t3); display: flex; align-items: center; gap: 8px;
+    }
+    .shud-eyebrow i { font-style: normal; letter-spacing: 0; color: var(--obs-accent); font-size: 11px; }
+    .shud-bl h1 {
+      margin: 10px 0 0; font-size: 34px; font-weight: 200; letter-spacing: 0.01em;
+      color: var(--obs-t1); text-shadow: 0 2px 24px rgba(0, 0, 0, 0.6);
+    }
+    .shud-sub { margin-top: 7px; font-size: 12.5px; color: var(--obs-t2); }
+    .shud-sub b { color: var(--obs-warm); font-weight: 500; }
+    .shud-when { display: flex; align-items: center; gap: 8px; margin-top: 12px; font-size: 11px; color: var(--obs-t2); }
+    .shud-dot { width: 5px; height: 5px; border-radius: 50%; background: var(--obs-t3); flex: none; }
+    .shud-when small { font-size: 10px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--obs-t3); }
+    .shud-br { position: absolute; right: 24px; bottom: 86px; text-align: right; }
+    .shud-fov { margin-top: 6px; font-size: 26px; font-weight: 200; color: var(--obs-t1); font-variant-numeric: tabular-nums; }
+    .shud-fovscale { position: relative; width: 150px; height: 2px; margin: 12px 0 0 auto; background: rgba(255, 255, 255, 0.10); border-radius: 1px; }
+    .shud-fovmark {
+      position: absolute; top: -3px; width: 2px; height: 8px; border-radius: 1px;
+      background: var(--obs-accent); left: 56%; box-shadow: 0 0 8px rgba(124, 154, 255, 0.6);
+    }
+    .shud-fovend { position: absolute; top: 8px; font-size: 9px; color: var(--obs-t3); font-variant-numeric: tabular-nums; }
+    .shud-fovend.lo { left: 0; }
+    .shud-fovend.hi { right: 0; }
+    .shud-hint { margin-top: 22px; font-size: 10.5px; color: var(--obs-t3); }
+    @media (max-width: 640px) {
+      .shud-bl h1 { font-size: 24px; }
+      .shud-bl { bottom: 120px; max-width: 60vw; }
+      .shud-br { bottom: 120px; }
+    }
+    /* Surface view active: cinema — the top-right chrome yields to HUD chips,
+       the top bar fades and stops catching pointer events (it spans the full
+       width and would block the HUD chips). The time pill stays. */
+    body.surface-view-active #planetarium-actions { display: none; }
+    body.surface-view-active #top-bar { opacity: 0.25; pointer-events: none; transition: opacity 0.3s; }
 
     .menu-submenu {
       display: none;
@@ -1966,7 +2072,7 @@
         <button class="planetarium-sm-btn" id="planetarium-btn-leave" style="display:none">
           Leave <span id="leave-body-name"></span>
         </button>
-        <button class="planetarium-sm-btn" id="planetarium-btn-sky" style="display:none">&#x263D; Sky</button>
+        <button class="planetarium-sm-btn" id="planetarium-btn-observatory" style="display:none">&#x1F52D; Observatory</button>
         <button class="planetarium-sm-btn" id="planetarium-btn-travel">&#x1F680;<span class="travel-btn-text"> Travel</span></button>
         <button class="planetarium-sm-btn" id="planetarium-btn-menu">&#x2630;</button>
       </div>
@@ -2014,44 +2120,105 @@
         </div>
       </div>
 
-      <!-- Sky panel: phase + event jumps while landed in any moon system -->
-      <div id="sky-panel">
-        <div class="sky-header">
-          <span id="sky-subject">Moon · from Earth</span>
-          <button class="sky-close" id="sky-close" aria-label="Close sky panel">&times;</button>
+      <!-- Observatory panel: vantage + phase hero + surface-view entry + event jumps -->
+      <div id="observatory-panel">
+        <div class="obs-eyebrow">
+          <b>Observatory</b>
+          <button class="obs-close" id="observatory-close" aria-label="Close observatory panel">&times;</button>
         </div>
-        <div class="sky-phase-row">
-          <span id="sky-phase-name">--</span>
-          <span id="sky-illumination">--</span>
+        <div class="obs-vantage">
+          <h2 id="observatory-vantage">--</h2>
+          <button class="obs-swap" id="observatory-swap" style="display:none"><i>&#x21C4;</i><span id="observatory-swap-name"></span></button>
         </div>
-        <div id="sky-earth-rows">
-          <div class="sky-event-row">
-            <button class="nav-btn" id="sky-prev-full" title="Previous full moon">&#9664;</button>
-            <span class="sky-event-label">Full Moon</span>
-            <button class="nav-btn" id="sky-next-full" title="Next full moon">&#9654;</button>
-          </div>
-          <div class="sky-event-row">
-            <button class="nav-btn" id="sky-prev-new" title="Previous new moon">&#9664;</button>
-            <span class="sky-event-label">New Moon</span>
-            <button class="nav-btn" id="sky-next-new" title="Next new moon">&#9654;</button>
-          </div>
-          <div class="sky-event-row">
-            <button class="nav-btn" id="sky-prev-lunar" title="Previous lunar eclipse">&#9664;</button>
-            <span class="sky-event-label">Lunar Eclipse</span>
-            <button class="nav-btn" id="sky-next-lunar" title="Next lunar eclipse">&#9654;</button>
-          </div>
-          <div class="sky-event-row">
-            <button class="nav-btn" id="sky-prev-solar" title="Previous solar eclipse">&#9664;</button>
-            <span class="sky-event-label">Solar Eclipse</span>
-            <button class="nav-btn" id="sky-next-solar" title="Next solar eclipse">&#9654;</button>
+        <div class="obs-hero" id="observatory-hero">
+          <svg class="obs-glyph" viewBox="0 0 40 40" aria-hidden="true">
+            <circle class="obs-glyph-disc" cx="20" cy="20" r="19"></circle>
+            <path class="obs-glyph-shadow" id="observatory-glyph-shadow" d=""></path>
+          </svg>
+          <div class="obs-hero-text">
+            <h1 id="observatory-phase-name">--</h1>
+            <p id="observatory-phase-meta">--</p>
+            <p><span class="obs-num" id="observatory-phase-data"></span></p>
           </div>
         </div>
-        <div class="sky-events-title">Upcoming events</div>
-        <div id="sky-events-status">--</div>
-        <div id="sky-events-list"></div>
-        <label class="sky-cones-row">
-          <input type="checkbox" id="sky-cones-toggle"> Shadow cones
+        <div class="obs-nowbar" id="observatory-nowbar">
+          <span class="obs-dot"></span>
+          <span class="obs-now-text" id="observatory-now">--</span>
+          <small id="observatory-now-tag">realtime</small>
+        </div>
+        <button class="obs-lookup" id="observatory-lookup"><i>&#x2726;</i><span id="observatory-lookup-label">Look up</span><em id="observatory-lookup-hint">&mdash; watch from the surface</em></button>
+        <div id="observatory-earth-rows">
+          <div class="obs-sec">Jump to</div>
+          <div class="obs-jrow">
+            <div class="obs-lblwrap">
+              <div class="obs-lbl">Full Moon</div>
+              <div class="obs-nextdate" id="observatory-meta-full"></div>
+            </div>
+            <button class="obs-tpill" id="observatory-prev-full" title="Previous full moon">&#8249; Last</button>
+            <button class="obs-tpill" id="observatory-next-full" title="Next full moon">Next &#8250;</button>
+          </div>
+          <div class="obs-jrow">
+            <div class="obs-lblwrap">
+              <div class="obs-lbl">New Moon</div>
+              <div class="obs-nextdate" id="observatory-meta-new"></div>
+            </div>
+            <button class="obs-tpill" id="observatory-prev-new" title="Previous new moon">&#8249; Last</button>
+            <button class="obs-tpill" id="observatory-next-new" title="Next new moon">Next &#8250;</button>
+          </div>
+          <div class="obs-jrow">
+            <div class="obs-lblwrap">
+              <div class="obs-lbl">Lunar Eclipse</div>
+              <div class="obs-nextdate" id="observatory-meta-lunar"></div>
+            </div>
+            <button class="obs-tpill" id="observatory-prev-lunar" title="Previous lunar eclipse">&#8249; Last</button>
+            <button class="obs-tpill" id="observatory-next-lunar" title="Next lunar eclipse">Next &#8250;</button>
+          </div>
+          <div class="obs-jrow">
+            <div class="obs-lblwrap">
+              <div class="obs-lbl">Solar Eclipse</div>
+              <div class="obs-nextdate" id="observatory-meta-solar"></div>
+            </div>
+            <button class="obs-tpill" id="observatory-prev-solar" title="Previous solar eclipse">&#8249; Last</button>
+            <button class="obs-tpill" id="observatory-next-solar" title="Next solar eclipse">Next &#8250;</button>
+          </div>
+        </div>
+        <div class="obs-sec">Upcoming</div>
+        <div id="observatory-events-list"></div>
+        <div class="obs-scan" id="observatory-events-status"></div>
+        <label class="obs-foot">
+          <span>Shadow cones</span>
+          <input type="checkbox" id="observatory-cones-toggle">
+          <span class="obs-tgl" aria-hidden="true"></span>
         </label>
+      </div>
+
+      <!-- Surface-view HUD (Observatory "Look up"): brackets on the tracked
+           target, narrative stack, FOV cluster, top-right chips. -->
+      <div id="surface-hud">
+        <div class="shud-brackets" id="surface-brackets" style="display:none"><i></i><i></i><i></i><i></i></div>
+        <div class="shud-discnote" id="surface-discnote" style="display:none"></div>
+        <button class="shud-trackpill" id="surface-trackpill" style="display:none"><i>&#x2316;</i><span id="surface-trackpill-text"></span></button>
+        <div class="shud-tr">
+          <button class="shud-chip" id="surface-observatory">&#x1F52D; Observatory</button>
+          <button class="shud-chip" id="surface-swap" style="display:none"><i>&#x21C4;</i><span id="surface-swap-name"></span></button>
+          <button class="shud-chip" id="surface-exit">&#x2715; Exit surface view</button>
+        </div>
+        <div class="shud-bl">
+          <div class="shud-eyebrow"><i>&#x2726;</i><span id="surface-eyebrow"></span></div>
+          <h1 id="surface-headline">--</h1>
+          <div class="shud-sub" id="surface-sub"></div>
+          <div class="shud-when">
+            <span class="shud-dot"></span>
+            <span class="obs-now-text" id="surface-when">--</span>
+            <small id="surface-when-tag"></small>
+          </div>
+        </div>
+        <div class="shud-br">
+          <div class="shud-eyebrow">Field of view</div>
+          <div class="shud-fov" id="surface-fov">10&deg;</div>
+          <div class="shud-fovscale"><span class="shud-fovmark" id="surface-fov-mark"></span><span class="shud-fovend lo">1.5&deg;</span><span class="shud-fovend hi">45&deg;</span></div>
+          <div class="shud-hint">scroll to zoom &middot; drag to look</div>
+        </div>
       </div>
 
       <!-- Help modal (centered) -->

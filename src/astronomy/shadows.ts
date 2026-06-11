@@ -190,6 +190,60 @@ export function classifyShadowTransit(
 }
 
 // ================================================================
+// Shadow-axis surface geometry (shared by ShadowVisuals + surface views)
+// ================================================================
+
+/**
+ * Distance along a shadow-axis ray to its near intersection with a sphere:
+ * the ray starts at the occluder's center (`occluderOffsetAU`, sphere-centered
+ * coordinates) and runs anti-sunward along the unit `shadowAxis`. Returns the
+ * ray parameter in AU, or null when the axis misses the sphere or the sphere
+ * sits sunward of the occluder. Dots and norms only (mirror-invariant).
+ */
+export function shadowAxisSphereHitAU(
+  occluderOffsetAU: THREE.Vector3,
+  shadowAxis: THREE.Vector3,
+  sphereRadiusAU: number,
+): number | null {
+  const b = occluderOffsetAU.dot(shadowAxis);
+  const c = occluderOffsetAU.lengthSq() - sphereRadiusAU * sphereRadiusAU;
+  const discriminant = b * b - c;
+  if (discriminant <= 0) return null;
+  const tAU = -b - Math.sqrt(discriminant);
+  return tAU > 0 ? tAU : null;
+}
+
+/**
+ * Surface point swept by a shadow axis, with graceful degradation for partial
+ * events: the near axis/sphere intersection when the umbral axis pierces the
+ * disc, else the surface point nearest the axis (the deepest-cover point of a
+ * partial event), else the sub-occluder point when the shadow recedes from
+ * the sphere entirely. Always returns a point on the sphere (sphere-centered
+ * AU) — the Observatory's stand-in-the-shadow vantage.
+ */
+export function shadowAxisSurfacePoint(
+  occluderOffsetAU: THREE.Vector3,
+  shadowAxis: THREE.Vector3,
+  sphereRadiusAU: number,
+  out: THREE.Vector3,
+): THREE.Vector3 {
+  const tAU = shadowAxisSphereHitAU(occluderOffsetAU, shadowAxis, sphereRadiusAU);
+  if (tAU !== null) {
+    return out
+      .copy(occluderOffsetAU)
+      .addScaledVector(shadowAxis, tAU)
+      .normalize()
+      .multiplyScalar(sphereRadiusAU);
+  }
+  const tClosestAU = -occluderOffsetAU.dot(shadowAxis);
+  if (tClosestAU > 0) {
+    out.copy(occluderOffsetAU).addScaledVector(shadowAxis, tClosestAU);
+    if (out.lengthSq() > 1e-30) return out.normalize().multiplyScalar(sphereRadiusAU);
+  }
+  return out.copy(occluderOffsetAU).normalize().multiplyScalar(sphereRadiusAU);
+}
+
+// ================================================================
 // Spec resolution — positions through the renderer's own seams
 // ================================================================
 

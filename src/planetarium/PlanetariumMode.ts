@@ -27,8 +27,11 @@ import { PLANETARIUM_BODIES, type PlanetData } from './planets/planetData';
 import { createMoonMeshes, type MoonMesh } from './PlanetFactory';
 import {
   advancePlanetariumTime,
+  computeBodyPositionAU,
   computeBodyState,
   eclipticToEquatorial,
+  formatDateCompact,
+  formatTimeRateLabel,
   formatUtcLabel,
   parseUtcInputValue,
   type SimulationTime,
@@ -48,6 +51,19 @@ import { findEvent, type EventType } from '../astronomy/ephemeris';
 import { KM_PER_AU } from '../astronomy/constants';
 import { createPlanetariumStarfield } from './world/starfield';
 import { GyroSteering } from './input/GyroSteering';
+import { SurfaceLook } from './input/SurfaceLook';
+import {
+  angularDiameterDeg,
+  clampSurfaceFovDeg,
+  computeShadowSpotVantage,
+  computeSubTargetVantage,
+  entryFovDeg,
+  selectSurfaceTarget,
+  SURFACE_FOV_DEFAULT_DEG,
+  type SurfaceTarget,
+} from './surfaceView';
+import { DEG2RAD } from '../shared/math/angles';
+import { KM_CONSTANTS } from '../shared/constants/physicalData';
 import { smoothstepUnclamped } from '../shared/math/smoothstep';
 import { projectToScreen } from '../shared/three/projectToScreen';
 import { setText } from '../shared/dom';
@@ -67,7 +83,15 @@ import { PlanetariumNotification } from './ui/PlanetariumNotification';
 import { PlanetariumResumePrompt } from './ui/PlanetariumResumePrompt';
 import { PlanetariumStatsPanel } from './ui/PlanetariumStatsPanel';
 import { PlanetariumTimePanel } from './ui/PlanetariumTimePanel';
-import { SkyPanel, type SkyEventRow, type SkySubjectInfo } from './ui/SkyPanel';
+import {
+  formatObservatoryClock,
+  ObservatoryPanel,
+  observatoryPhaseText,
+  type ObservatoryEventRow,
+  type ObservatoryRenderExtras,
+  type ObservatorySubjectInfo,
+} from './ui/ObservatoryPanel';
+import { ObservatoryHUD, type SurfaceHudState } from './ui/ObservatoryHUD';
 import { SunLabel } from './ui/SunLabel';
 
 type ScriptedTransfer = {
@@ -84,7 +108,7 @@ type ScriptedTransfer = {
 
 export const FIRST_PLANETARIUM_ACTIVATION_TOTAL_UNITS = CREATE_SOLAR_SYSTEM_TOTAL_UNITS + 1;
 
-const SKY_EVENT_LABELS: Record<EventType, string> = {
+const OBSERVATORY_EVENT_LABELS: Record<EventType, string> = {
   'full-moon': 'Full Moon',
   'new-moon': 'New Moon',
   'lunar-eclipse': 'Lunar Eclipse',
@@ -108,9 +132,9 @@ export class PlanetariumMode {
   private static readonly ECLIPTIC_NORTH = eclipticToEquatorial(new THREE.Vector3(0, 1, 0));
   private static readonly EARTH_DETAIL_MIN_DISTANCE_AU = 0.03;
   private static readonly EARTH_DETAIL_MIN_ANGULAR_DIAMETER_RAD = 0.003;
-  /** Per-frame wall-clock slice for the Sky panel's upcoming-events search. */
-  private static readonly SKY_SEARCH_FRAME_BUDGET_MS = 4;
-  private static readonly SKY_EVENTS_MAX_ROWS = 6;
+  /** Per-frame wall-clock slice for the Observatory panel's upcoming-events search. */
+  private static readonly OBSERVATORY_SEARCH_FRAME_BUDGET_MS = 4;
+  private static readonly OBSERVATORY_EVENTS_MAX_ROWS = 6;
   private static readonly MISSION_CONTROL_IDS = [
     'planetarium-btn-travel',
     'planetarium-btn-autopilot',
@@ -148,7 +172,7 @@ export class PlanetariumMode {
   private tmpShadingParentPos = new THREE.Vector3();
   private moonShading: MoonShadingState = { sunVisibleFraction: 1, inUmbra: false };
   // Landed-system shadow visuals: transit spots always on, cones behind the
-  // Sky panel toggle (session-only, deliberately not persisted).
+  // Observatory panel toggle (session-only, deliberately not persisted).
   private shadowVisuals = new ShadowVisuals();
   private showShadowCones = false;
   private tmpLockToParent = new THREE.Vector3();
@@ -214,6 +238,35 @@ export class PlanetariumMode {
   private nearbyLandTarget: NonNullable<LandedTarget> | null = null;
   private travelSelection: NonNullable<LandedTarget> | null = null;
 
+  // Surface view (Observatory): narrow-FOV look-from-the-surface sub-state of
+  // landed mode. Session-only — never persisted; restore always lands in orbit
+  // view. While active, OrbitControls hand over to SurfaceLook and the camera
+  // is re-pinned every frame at the end of updateLanded.
+  private landedView: 'orbit' | 'surface' = 'orbit';
+  private surfaceTarget: SurfaceTarget = { kind: 'sun' };
+  private surfaceFovDeg = SURFACE_FOV_DEFAULT_DEG;
+  private surfaceTracking = true;
+  private surfaceLook: SurfaceLook;
+  private preSurfaceCameraPos = new THREE.Vector3();
+  private preSurfaceAutoRotate = false;
+  // Entry/exit/re-point FOV ease. fromPos is set on entry only (the camera
+  // glides from its orbit position down to the vantage); finalizeExit runs
+  // the orbit-view restore when the ease completes.
+  private surfaceFovAnim: {
+    fromFov: number;
+    toFov: number;
+    fromPos: THREE.Vector3 | null;
+    elapsed: number;
+    duration: number;
+    finalizeExit: boolean;
+  } | null = null;
+  private tmpSurfaceTargetPos = new THREE.Vector3();
+  private tmpSurfaceVantage = new THREE.Vector3();
+  private tmpSurfaceAxis = new THREE.Vector3();
+  private tmpSurfaceZenith = new THREE.Vector3();
+  private tmpSurfaceRight = new THREE.Vector3();
+  private tmpSurfaceQuat = new THREE.Quaternion();
+
   // Moon labels
   private moonLabels = new Map<string, HTMLDivElement>();
   private moonLabelContainer: HTMLDivElement | null = null;
@@ -223,26 +276,45 @@ export class PlanetariumMode {
   private bottomBar = new PlanetariumBottomBar();
   private statsPanel = new PlanetariumStatsPanel();
   private timePanel = new PlanetariumTimePanel();
-  private skyPanel = new SkyPanel(
-    (type, direction) => this.handleSkyJump(type, direction),
-    (key) => this.handleSkyEventJump(key),
+  private observatoryPanel = new ObservatoryPanel(
+    (type, direction) => this.handleObservatoryJump(type, direction),
+    (key) => this.handleObservatoryEventJump(key),
     (on) => {
       this.showShadowCones = on;
       this.shadowVisuals.setConesVisible(on);
     },
-    () => this.cancelSkyEventSearch(),
+    () => this.cancelObservatoryEventSearch(),
+    () => this.toggleSurfaceView(),
+    () => this.swapLandedVantage(),
   );
+  private observatoryHud = new ObservatoryHUD(
+    () => this.exitSurfaceView(),
+    () => this.swapLandedVantage(),
+    () => {
+      this.surfaceTracking = true;
+      this.renderSurfaceHud();
+    },
+    () => this.toggleObservatoryPanel(),
+  );
+  // The most recent event jump — gives "Look up" and the surface HUD their
+  // narrative while the clock still sits inside the event's window.
+  private lastObservatoryEvent: ShadowEvent | null = null;
+  private observatoryNextDatesCache: {
+    computedAtUtcMs: number;
+    fullMs: number | null;
+    newMs: number | null;
+  } | null = null;
 
-  // Chunked upcoming-events search for the Sky panel: one spec at a time under
+  // Chunked upcoming-events search for the Observatory panel: one spec at a time under
   // a per-frame time budget, restarted on open/jump/date-set, dropped on close.
-  private skyEventSearch: {
+  private observatoryEventSearch: {
     parentPlanet: string;
     specs: ShadowEventSpec[];
     index: number;
     resumeCursorUtcMs: number | null;
     fromUtcMs: number;
   } | null = null;
-  private skyEventResults = new Map<string, ShadowEvent>();
+  private observatoryEventResults = new Map<string, ShadowEvent>();
 
   // Sun label
   private sunLabel = new SunLabel();
@@ -332,7 +404,9 @@ export class PlanetariumMode {
     // freeze the chase cam for 2s, which reads as "everything froze" in open space.
     const orbitDom = renderer.domElement;
     orbitDom.addEventListener('pointerdown', (e) => {
-      if (!this.active) return;
+      // Surface view owns the pointer (SurfaceLook): don't let its drags
+      // pollute the orbit chase-cam bookkeeping.
+      if (!this.active || this.landedView === 'surface') return;
       this.orbitDragging = true;
       this.orbitPointerStartX = e.clientX;
       this.orbitPointerStartY = e.clientY;
@@ -363,6 +437,11 @@ export class PlanetariumMode {
     this.handleKeyDown = this.handleKeyDown.bind(this);
     this.handleKeyUp = this.handleKeyUp.bind(this);
     this.gyro = new GyroSteering((message) => this.notification.show(message), () => this.updateTimeUI());
+    this.surfaceLook = new SurfaceLook(
+      renderer.domElement,
+      (dxPx, dyPx) => this.applySurfaceLook(dxPx, dyPx),
+      (factor) => this.applySurfaceZoom(factor),
+    );
   }
 
   hasLoadedSolarSystem(): boolean {
@@ -396,7 +475,8 @@ export class PlanetariumMode {
     // Cache UI element references
     this.statsPanel.bind();
     this.timePanel.bind();
-    this.skyPanel.bind();
+    this.observatoryPanel.bind();
+    this.observatoryHud.bind();
     this.speedValueEl = document.getElementById('planetarium-speed-value');
     this.speedLabelEl = document.getElementById('planetarium-speed-label');
     this.speedCenterEl = document.querySelector('.speed-center') as HTMLElement | null;
@@ -596,7 +676,7 @@ export class PlanetariumMode {
 
     const planetariumUI = document.getElementById('planetarium-ui');
     if (planetariumUI) planetariumUI.style.display = 'none';
-    this.closeSkyPanel();
+    this.closeObservatoryPanel();
 
     // Hide all solar system objects
     this.setObjectsVisible(false);
@@ -1060,7 +1140,14 @@ export class PlanetariumMode {
 
         const realRatio = m.data.radiusAU / parentR;
         const minRatio = 0.05;
-        if (realRatio < minRatio) {
+        // Surface view sees true angular sizes: the landed system drops the
+        // small-moon visual floor while it's active (an Io silhouette on the
+        // Sun must be Io-sized, and a landed small moon's inflated mesh must
+        // not swallow the vantage point). Orbit view keeps the floor.
+        const trueScale =
+          this.landedView === 'surface' &&
+          planet.data.name === this.observatoryParentPlanetName();
+        if (!trueScale && realRatio < minRatio) {
           m.mesh.scale.setScalar(minRatio / realRatio);
         } else {
           m.mesh.scale.setScalar(1);
@@ -1091,7 +1178,7 @@ export class PlanetariumMode {
 
   /** Re-pose the landed system's shadow cones + transit spots for this frame. */
   private updateShadowVisuals() {
-    const parentName = this.skyParentPlanetName();
+    const parentName = this.observatoryParentPlanetName();
     if (!parentName) return;
     const wp = this.planetWorldPositions.get(parentName);
     const parentBody = PLANETARIUM_BODIES.find(b => b.name === parentName);
@@ -1234,8 +1321,13 @@ export class PlanetariumMode {
 
   private updateOrbitLineVisibility() {
     if (!this.solarSystem) return;
+    // Surface view shows the sky, not the scene furniture — a planet's orbit
+    // line crossing the ecliptic would streak straight through the eclipse.
+    const hideAll = this.landedView === 'surface';
     for (let i = 0; i < this.solarSystem.orbitLines.length; i++) {
       const orbit = this.solarSystem.orbitLines[i];
+      orbit.visible = !hideAll;
+      if (hideAll) continue;
       const body = PLANETARIUM_BODIES[i];
       const distToOrbit = Math.abs(this.player.getDistanceFromSun() - body.semiMajorAxisAU);
       const fadeRange = Math.max(body.semiMajorAxisAU * 0.3, 1.0);
@@ -1319,16 +1411,18 @@ export class PlanetariumMode {
     if (e.key === 'Escape') {
       if (this.isHelpOpen()) { this.hideHelp(); return; }
       if (this.isTravelMenuOpen()) { this.closeTravelMenu(); return; }
-      if (this.skyPanel.isOpen()) { this.closeSkyPanel(); return; }
+      if (this.landedView === 'surface') { this.exitSurfaceView(); return; }
+      if (this.observatoryPanel.isOpen()) { this.closeObservatoryPanel(); return; }
       if (this.landedOn) { this.exitLandedMode(); return; }
     }
 
     // Don't capture other keys if typing in an input
     if ((e.target as HTMLElement).tagName === 'INPUT') return;
 
-    // T opens/closes travel menu
+    // T opens/closes travel menu (not from the surface view — its label and
+    // chrome state would leak; exit the view first)
     if (e.key.toLowerCase() === 't') {
-      if (this.isMissionActive()) return;
+      if (this.isMissionActive() || this.landedView === 'surface') return;
       this.toggleTravelMenu();
       return;
     }
@@ -1635,7 +1729,7 @@ export class PlanetariumMode {
       this.closeTravelMenu();
     }
 
-    this.updateSkyButtonVisibility();
+    this.updateObservatoryButtonVisibility();
   }
 
   private wireUpUI() {
@@ -1796,8 +1890,8 @@ export class PlanetariumMode {
       this.timeState.currentUtcMs = Date.now();
       this.rebuildPlanetPositions();
       this.updateTimeUI();
-      // Clock jump invalidates the Sky panel's upcoming-events list.
-      this.startSkyEventSearch();
+      // Clock jump invalidates the Observatory panel's upcoming-events list.
+      this.startObservatoryEventSearch();
     });
     const timeInputEl = this.timePanel.getInputEl();
     if (timeInputEl) {
@@ -1808,7 +1902,7 @@ export class PlanetariumMode {
           this.timeState.currentUtcMs = utcMs;
           this.rebuildPlanetPositions();
           this.updateTimeUI();
-          this.startSkyEventSearch();
+          this.startObservatoryEventSearch();
         }
       });
     }
@@ -1888,14 +1982,8 @@ export class PlanetariumMode {
     document.getElementById('planetarium-btn-leave')?.addEventListener('click', () => {
       this.exitLandedMode();
     });
-    document.getElementById('planetarium-btn-sky')?.addEventListener('click', () => {
-      if (this.skyPanel.isOpen()) {
-        this.closeSkyPanel();
-      } else {
-        this.skyPanel.show();
-        this.renderSkyPanel();
-        this.startSkyEventSearch();
-      }
+    document.getElementById('planetarium-btn-observatory')?.addEventListener('click', () => {
+      this.toggleObservatoryPanel();
     });
     document.getElementById('planetarium-btn-land')?.addEventListener('click', () => {
       if (this.nearbyLandTarget) {
@@ -2026,7 +2114,9 @@ export class PlanetariumMode {
     const menu = document.getElementById('travel-menu');
     if (menu) menu.classList.remove('visible');
     this.travelSelection = null;
-    // Restore planet/moon labels
+    // Restore planet/moon labels — unless the surface view owns their hidden
+    // state (its skipped label pipeline would never re-hide them).
+    if (this.landedView === 'surface') return;
     const pl = document.getElementById('planet-labels');
     const ml = this.moonLabelContainer;
     if (pl) pl.style.display = '';
@@ -2425,49 +2515,277 @@ export class PlanetariumMode {
     this.resetCruiseCamera();
   }
 
-  /** Any landed body whose system has catalog moons gets the Sky panel. */
-  private isSkySubject(target: LandedTarget): boolean {
+  /** Any landed body whose system has catalog moons gets the Observatory panel. */
+  private isObservatorySubject(target: LandedTarget): boolean {
     if (!target) return false;
     const parentName = target.type === 'planet' ? target.name : target.parentPlanet;
     return getMoonsByPlanet(parentName).length > 0;
   }
 
   /** The landed system's parent planet name, or null when not landed. */
-  private skyParentPlanetName(): string | null {
+  private observatoryParentPlanetName(): string | null {
     if (!this.landedOn) return null;
     return this.landedOn.type === 'planet' ? this.landedOn.name : this.landedOn.parentPlanet;
   }
 
-  private updateSkyButtonVisibility() {
-    const button = document.getElementById('planetarium-btn-sky');
+  private updateObservatoryButtonVisibility() {
+    const button = document.getElementById('planetarium-btn-observatory');
     if (!button) return;
-    const show = !this.isMissionActive() && this.isSkySubject(this.landedOn);
+    const show = !this.isMissionActive() && this.isObservatorySubject(this.landedOn);
     button.style.display = show ? '' : 'none';
-    if (!show) this.closeSkyPanel();
+    if (!show) this.closeObservatoryPanel();
   }
 
-  private closeSkyPanel() {
-    this.skyPanel.hide();
-    this.cancelSkyEventSearch();
+  private closeObservatoryPanel() {
+    this.observatoryPanel.hide();
+    this.cancelObservatoryEventSearch();
   }
 
-  private renderSkyPanel() {
-    if (!this.skyPanel.isOpen() || !this.landedOn) return;
-    const parentName = this.skyParentPlanetName()!;
-    let subject: SkySubjectInfo;
+  private toggleObservatoryPanel() {
+    if (this.observatoryPanel.isOpen()) {
+      this.closeObservatoryPanel();
+    } else {
+      this.observatoryPanel.show();
+      this.renderObservatoryPanel();
+      this.startObservatoryEventSearch();
+    }
+  }
+
+  private toggleSurfaceView() {
+    if (this.landedView === 'surface') this.exitSurfaceView();
+    else this.enterSurfaceView();
+  }
+
+  private renderObservatoryPanel() {
+    if (!this.observatoryPanel.isOpen() || !this.landedOn) return;
+    const subject = this.buildObservatorySubject();
+    if (!subject) return;
+    const extras: ObservatoryRenderExtras = {
+      vantageName: `You're on ${this.landedOn.name}`,
+      swapName: this.swapCompanionTarget()?.name ?? null,
+      nowTag: this.observatoryNowTag(),
+      surfaceActive: this.landedView === 'surface',
+      nextDates: this.observatoryNextDates(),
+    };
+    this.observatoryPanel.render(this.timeState.currentUtcMs, subject, extras);
+  }
+
+  /** The phase hero's subject, with disc data read from the rendered scene objects. */
+  private buildObservatorySubject(): ObservatorySubjectInfo | null {
+    if (!this.landedOn) return null;
+    const parentName = this.observatoryParentPlanetName()!;
     if (parentName === 'Earth') {
-      subject = { kind: 'earth', subject: this.landedOn.type === 'moon' ? 'Earth' : 'Moon' };
-    } else if (this.landedOn.type === 'moon') {
-      subject = {
+      const subject = this.landedOn.type === 'moon' ? ('Earth' as const) : ('Moon' as const);
+      const target: SurfaceTarget =
+        subject === 'Moon' ? { kind: 'moon', moonName: 'Moon' } : { kind: 'parent' };
+      const pos = this.resolveSurfaceTargetScenePos(target, this.tmpSurfaceTargetPos);
+      const distAU = pos ? pos.length() : 0;
+      return {
+        kind: 'earth',
+        subject,
+        angularDiameterDeg: angularDiameterDeg(this.surfaceTargetRadiusAU(target), distAU),
+        distanceKm: distAU * KM_PER_AU,
+      };
+    }
+    if (this.landedOn.type === 'moon') {
+      const pos = this.resolveSurfaceTargetScenePos({ kind: 'parent' }, this.tmpSurfaceTargetPos);
+      const distAU = pos ? pos.length() : 0;
+      return {
         kind: 'moon-phase',
         parentName,
         moonName: this.landedOn.name,
         illumination: this.computeParentIllumination(parentName, this.landedOn.name),
+        waxing: this.isParentWaxing(parentName, this.landedOn.name),
+        angularDiameterDeg: angularDiameterDeg(this.surfaceTargetRadiusAU({ kind: 'parent' }), distAU),
+        distanceKm: distAU * KM_PER_AU,
       };
-    } else {
-      subject = { kind: 'events-only', parentName };
     }
-    this.skyPanel.render(this.timeState.currentUtcMs, subject);
+    return { kind: 'events-only', parentName };
+  }
+
+  /** Is the parent's lit fraction (seen from the moon) increasing? Glyph side. */
+  private isParentWaxing(parentName: string, moonName: string): boolean {
+    const body = PLANETARIUM_BODIES.find(b => b.name === parentName);
+    if (!body) return true;
+    const illuminationAt = (utcMs: number) => {
+      const parentPos = computeBodyPositionAU(body, utcMs);
+      const offset = computeMoonOffsetEquatorialAU(moonName, parentName, utcMs, this.tmpSurfaceVantage);
+      const d = parentPos.length() * offset.length();
+      if (d === 0) return 0.5;
+      return (1 - parentPos.dot(offset) / d) / 2;
+    };
+    const now = this.timeState.currentUtcMs;
+    return illuminationAt(now + 3_600_000) >= illuminationAt(now);
+  }
+
+  private observatoryNowTag(): string {
+    return formatTimeRateLabel(this.timeState.rate, this.timeState.paused).toLowerCase();
+  }
+
+  /**
+   * Earth finder metas: full/new via findEvent (cached until stale or
+   * crossed), eclipse rows reuse the chunked upcoming-search results.
+   */
+  private observatoryNextDates(): { full: string; new: string; lunar: string; solar: string } | null {
+    if (this.observatoryParentPlanetName() !== 'Earth') return null;
+    const now = this.timeState.currentUtcMs;
+    const cache = this.observatoryNextDatesCache;
+    // Stale on drift, on any backward move (a short back-jump can put a
+    // closer event in front of the cached one), or once the cached event is
+    // crossed. The +60s search epsilon keeps a parked-at syzygy from
+    // re-reporting itself as "next".
+    const stale =
+      !cache ||
+      now < cache.computedAtUtcMs ||
+      now - cache.computedAtUtcMs > 6 * 3_600_000 ||
+      (cache.fullMs !== null && now > cache.fullMs) ||
+      (cache.newMs !== null && now > cache.newMs);
+    if (stale) {
+      const from = new Date(now + 60_000);
+      this.observatoryNextDatesCache = {
+        computedAtUtcMs: now,
+        fullMs: findEvent('full-moon', from, 1)?.getTime() ?? null,
+        newMs: findEvent('new-moon', from, 1)?.getTime() ?? null,
+      };
+    }
+    const fresh = this.observatoryNextDatesCache!;
+    const searchActive = this.observatoryEventSearch !== null;
+    const dateMeta = (ms: number | null) => (ms ? `next · ${formatDateCompact(ms)}` : '');
+    // Eclipse rows reuse the single-result upcoming search, which reports an
+    // in-progress event — label that case "now" instead of a parked-at date.
+    const eclipseMeta = (event: ShadowEvent | undefined) => {
+      if (!event) return searchActive ? '· · ·' : '';
+      if (now >= event.startUtcMs && now <= event.endUtcMs) return 'happening now';
+      return `next · ${formatDateCompact(event.peakUtcMs)}`;
+    };
+    return {
+      full: dateMeta(fresh.fullMs),
+      new: dateMeta(fresh.newMs),
+      lunar: eclipseMeta(this.observatoryEventResults.get('eclipse|Moon')),
+      solar: eclipseMeta(this.observatoryEventResults.get('shadow-transit|Moon')),
+    };
+  }
+
+  /** The last jumped-to event while the clock sits inside its (padded) window. */
+  private relevantObservatoryEvent(): ShadowEvent | null {
+    const event = this.lastObservatoryEvent;
+    if (!event) return null;
+    if (event.spec.parentPlanet !== this.observatoryParentPlanetName()) return null;
+    const now = this.timeState.currentUtcMs;
+    const padMs = 3_600_000;
+    if (now < event.startUtcMs - padMs || now > event.endUtcMs + padMs) return null;
+    return event;
+  }
+
+  private surfaceTargetDisplayName(target: SurfaceTarget): string {
+    switch (target.kind) {
+      case 'sun':
+      case 'sun-from-spot':
+        return 'the Sun';
+      case 'parent':
+        return this.landedOn?.type === 'moon' ? this.landedOn.parentPlanet : 'the planet';
+      case 'moon':
+        return target.moonName === 'Moon' ? 'the Moon' : target.moonName;
+    }
+  }
+
+  /** Present-tense one-liner for what the surface observer is watching. */
+  private surfaceNarrative(spec: ShadowEventSpec): string {
+    const isEarthPair = spec.parentPlanet === 'Earth' && spec.moonName === 'Moon';
+    switch (this.surfaceTarget.kind) {
+      case 'sun-from-spot':
+        return `${isEarthPair ? 'The Moon' : spec.moonName} is crossing the Sun`;
+      case 'sun':
+        return `${spec.parentPlanet} is covering the Sun`;
+      case 'moon':
+        return `${isEarthPair ? 'The Moon' : spec.moonName} is in ${spec.parentPlanet}'s shadow`;
+      case 'parent':
+        return this.landedOn?.name === spec.moonName
+          ? `Your shadow is crossing ${spec.parentPlanet}`
+          : `${spec.moonName}'s shadow is crossing ${spec.parentPlanet}`;
+    }
+  }
+
+  /** Warm countdown for the HUD subline — always relative to the engine's peak/contacts. */
+  private static peakCountdown(nowUtcMs: number, event: ShadowEvent): string | null {
+    const fmt = (ms: number) => {
+      const minutes = Math.max(1, Math.round(ms / 60_000));
+      if (minutes < 60) return `${minutes}m`;
+      const hours = Math.floor(minutes / 60);
+      return `${hours}h ${minutes % 60}m`;
+    };
+    if (nowUtcMs < event.startUtcMs) return `starts in ${fmt(event.startUtcMs - nowUtcMs)}`;
+    if (nowUtcMs < event.peakUtcMs) return `peak in ${fmt(event.peakUtcMs - nowUtcMs)}`;
+    if (nowUtcMs <= event.endUtcMs) return `ends in ${fmt(event.endUtcMs - nowUtcMs)}`;
+    return null;
+  }
+
+  /** 8 Hz surface-HUD text pass (headline, narrative, when-line, FOV, disc note). */
+  private renderSurfaceHud() {
+    if (!this.landedOn || this.landedView !== 'surface') return;
+    const now = this.timeState.currentUtcMs;
+    const event = this.relevantObservatoryEvent();
+    let headline: string;
+    let subText: string;
+    let subWarm: string | null = null;
+    if (event) {
+      headline = PlanetariumMode.shadowEventLabel(event.spec);
+      subText = this.surfaceNarrative(event.spec);
+      subWarm = PlanetariumMode.peakCountdown(now, event);
+    } else {
+      const subject = this.buildObservatorySubject();
+      const phase = subject ? observatoryPhaseText(now, subject) : null;
+      headline = phase?.headline ?? `${this.landedOn.name} sky`;
+      subText = phase?.meta ?? '';
+    }
+
+    let discNote: string | null = null;
+    const fmtDeg = (deg: number) => (deg >= 1 ? deg.toFixed(1) : deg.toFixed(2));
+    const targetPos = this.resolveSurfaceTargetScenePos(this.surfaceTarget, this.tmpSurfaceTargetPos);
+    if (targetPos) {
+      const targetDeg = angularDiameterDeg(
+        this.surfaceTargetRadiusAU(this.surfaceTarget),
+        targetPos.distanceTo(this.camera.position),
+      );
+      const baseName = this.surfaceTargetDisplayName(this.surfaceTarget).replace(/^the /, '');
+      discNote = `${baseName} ∅ ${fmtDeg(targetDeg)}°`;
+      if (this.surfaceTarget.kind === 'sun-from-spot') {
+        const parentName = this.observatoryParentPlanetName();
+        const occluder = this.planetMoons
+          .get(parentName ?? '')
+          ?.find(m => m.data.name === (this.surfaceTarget as { occluderMoonName: string }).occluderMoonName);
+        const systemGroup = this.moonSystemGroups.get(parentName ?? '');
+        if (occluder && systemGroup) {
+          const moonDeg = angularDiameterDeg(
+            occluder.data.radiusAU,
+            this.tmpSurfaceAxis
+              .copy(systemGroup.position)
+              .add(occluder.mesh.position)
+              .distanceTo(this.camera.position),
+          );
+          discNote += ` · ${occluder.data.name} ∅ ${fmtDeg(moonDeg)}°`;
+          if (event && now >= event.startUtcMs && now <= event.endUtcMs) discNote += ' · transiting';
+        }
+      }
+    }
+
+    const companion = this.swapCompanionTarget();
+    const state: SurfaceHudState = {
+      eyebrow: `Surface view · standing on ${this.landedOn.name}`,
+      headline,
+      subText,
+      subWarm,
+      whenText: formatObservatoryClock(now),
+      whenTag: this.observatoryNowTag(),
+      fovDeg: this.camera.fov,
+      tracking: this.surfaceTracking,
+      targetName: this.surfaceTargetDisplayName(this.surfaceTarget),
+      discNote,
+      swapLabel: companion
+        ? `Stand on ${companion.name === 'Moon' ? 'the Moon' : companion.name}`
+        : null,
+    };
+    this.observatoryHud.render(state);
   }
 
   /**
@@ -2494,49 +2812,66 @@ export class PlanetariumMode {
     return `${spec.kind}|${spec.moonName}`;
   }
 
+  /** Event title — reads like an event, not engineer notation (design brief items 6/7). */
   private static shadowEventLabel(spec: ShadowEventSpec): string {
     if (spec.parentPlanet === 'Earth' && spec.moonName === 'Moon') {
       return spec.kind === 'eclipse' ? 'Lunar Eclipse' : 'Solar Eclipse';
     }
     return spec.kind === 'eclipse'
-      ? `${spec.moonName} → ${spec.parentPlanet}'s shadow`
-      : `${spec.moonName}'s shadow → ${spec.parentPlanet}`;
+      ? `${spec.moonName} eclipsed by ${spec.parentPlanet}`
+      : `${spec.moonName}'s shadow crosses ${spec.parentPlanet}`;
   }
 
+  /**
+   * Magnitude shown only where it reads sanely: Earth's eclipses ("mag 1.10").
+   * A tiny moon deep in Jupiter's umbra produces meaningless four-digit
+   * immersion magnitudes — generic systems keep the classification badge only.
+   */
+  private static eventMagnitudeText(event: ShadowEvent): string | null {
+    if (event.spec.parentPlanet !== 'Earth' || event.spec.kind !== 'eclipse') return null;
+    const magnitude =
+      event.classification === 'annular' ? event.antumbralMagnitude
+      : event.classification === 'penumbral' ? event.penumbralMagnitude
+      : event.umbralMagnitude;
+    return magnitude !== undefined ? `mag ${magnitude.toFixed(2)}` : null;
+  }
+
+  /** Jump toast: date first, then present-tense narration + classification. */
   private describeShadowEvent(event: ShadowEvent): string {
-    let text = `${PlanetariumMode.shadowEventLabel(event.spec)} — ${event.classification}`;
-    if (event.spec.kind === 'eclipse') {
-      // Magnitude of the deepest contacted shadow region (transits report class only).
-      const magnitude =
-        event.classification === 'annular' ? event.antumbralMagnitude
-        : event.classification === 'penumbral' ? event.penumbralMagnitude
-        : event.umbralMagnitude;
-      if (magnitude !== undefined) text += ` (mag ${magnitude.toFixed(2)})`;
-    }
-    return `${text} — ${formatUtcLabel(event.peakUtcMs)}`;
+    const spec = event.spec;
+    const narration =
+      spec.parentPlanet === 'Earth' && spec.moonName === 'Moon'
+        ? PlanetariumMode.shadowEventLabel(spec)
+        : spec.kind === 'eclipse'
+          ? `${spec.moonName} is eclipsed by ${spec.parentPlanet}`
+          : `${spec.moonName}'s shadow is crossing ${spec.parentPlanet}`;
+    let text = `${formatUtcLabel(event.peakUtcMs)} — ${narration} · ${event.classification}`;
+    const magnitudeText = PlanetariumMode.eventMagnitudeText(event);
+    if (magnitudeText) text += ` (${magnitudeText})`;
+    return text;
   }
 
   /** Restart the chunked upcoming-events search from the current clock. */
-  private startSkyEventSearch() {
-    const parentPlanet = this.skyParentPlanetName();
-    if (!parentPlanet || !this.skyPanel.isOpen()) {
-      this.cancelSkyEventSearch();
+  private startObservatoryEventSearch() {
+    const parentPlanet = this.observatoryParentPlanetName();
+    if (!parentPlanet || !this.observatoryPanel.isOpen()) {
+      this.cancelObservatoryEventSearch();
       return;
     }
-    this.skyEventResults.clear();
-    this.skyEventSearch = {
+    this.observatoryEventResults.clear();
+    this.observatoryEventSearch = {
       parentPlanet,
       specs: listShadowEventSpecs(parentPlanet),
       index: 0,
       resumeCursorUtcMs: null,
       fromUtcMs: this.timeState.currentUtcMs,
     };
-    this.publishSkyEvents();
+    this.publishObservatoryEvents();
   }
 
-  private cancelSkyEventSearch() {
-    this.skyEventSearch = null;
-    this.skyEventResults.clear();
+  private cancelObservatoryEventSearch() {
+    this.observatoryEventSearch = null;
+    this.observatoryEventResults.clear();
   }
 
   /**
@@ -2545,14 +2880,14 @@ export class PlanetariumMode {
    * at the frame budget and resumes from the returned cursor next frame, so a
    * full-system sweep (Saturn: 36 specs) never blocks the main thread.
    */
-  private pumpSkyEventSearch() {
-    const search = this.skyEventSearch;
+  private pumpObservatoryEventSearch() {
+    const search = this.observatoryEventSearch;
     if (!search) return;
-    if (!this.skyPanel.isOpen()) {
-      this.cancelSkyEventSearch();
+    if (!this.observatoryPanel.isOpen()) {
+      this.cancelObservatoryEventSearch();
       return;
     }
-    const deadlineMs = performance.now() + PlanetariumMode.SKY_SEARCH_FRAME_BUDGET_MS;
+    const deadlineMs = performance.now() + PlanetariumMode.OBSERVATORY_SEARCH_FRAME_BUDGET_MS;
     let listChanged = false;
     while (search.index < search.specs.length) {
       const remainingMs = deadlineMs - performance.now();
@@ -2569,27 +2904,28 @@ export class PlanetariumMode {
         break;
       }
       if (result.status === 'found') {
-        this.skyEventResults.set(PlanetariumMode.shadowSpecKey(spec), result.event);
+        this.observatoryEventResults.set(PlanetariumMode.shadowSpecKey(spec), result.event);
         listChanged = true;
       }
       search.index++;
       search.resumeCursorUtcMs = null;
     }
     const done = search.index >= search.specs.length;
-    if (listChanged || done) this.publishSkyEvents();
-    if (done) this.skyEventSearch = null;
+    if (listChanged || done) this.publishObservatoryEvents();
+    if (done) this.observatoryEventSearch = null;
   }
 
   /** Push the current result set (sorted, capped) + search status into the panel. */
-  private publishSkyEvents() {
-    const search = this.skyEventSearch;
-    const events = [...this.skyEventResults.values()]
+  private publishObservatoryEvents() {
+    const search = this.observatoryEventSearch;
+    const events = [...this.observatoryEventResults.values()]
       .sort((a, b) => a.peakUtcMs - b.peakUtcMs)
-      .slice(0, PlanetariumMode.SKY_EVENTS_MAX_ROWS);
-    const rows: SkyEventRow[] = events.map(e => ({
+      .slice(0, PlanetariumMode.OBSERVATORY_EVENTS_MAX_ROWS);
+    const rows: ObservatoryEventRow[] = events.map(e => ({
       key: PlanetariumMode.shadowSpecKey(e.spec),
       label: PlanetariumMode.shadowEventLabel(e.spec),
       classification: e.classification,
+      magnitudeText: PlanetariumMode.eventMagnitudeText(e),
       startUtcMs: e.startUtcMs,
       peakUtcMs: e.peakUtcMs,
       endUtcMs: e.endUtcMs,
@@ -2597,24 +2933,33 @@ export class PlanetariumMode {
     const status = search && search.index < search.specs.length
       ? `Scanning ${search.index + 1}/${search.specs.length}…`
       : rows.length === 0 ? 'No events in range' : '';
-    this.skyPanel.setEvents(rows, status);
+    this.observatoryPanel.setEvents(rows, status, this.timeState.currentUtcMs);
   }
 
-  private handleSkyEventJump(key: string) {
-    const event = this.skyEventResults.get(key);
+  private handleObservatoryEventJump(key: string) {
+    const event = this.observatoryEventResults.get(key);
     if (event) this.jumpToShadowEvent(event);
   }
 
   private jumpToShadowEvent(event: ShadowEvent) {
+    this.lastObservatoryEvent = event;
     this.timeState = { ...this.timeState, paused: true };
     this.setCurrentUtcMs(event.peakUtcMs);
-    this.frameSkyEvent(event.spec);
-    this.renderSkyPanel();
-    this.startSkyEventSearch();
+    this.observatoryPanel.flashNowBar();
+    if (this.landedView === 'surface') {
+      // Surface view active: re-point it at the event's observer-level target
+      // instead of orbit-framing (jumps never auto-enter the surface view).
+      const landedInfo = this.surfaceLandedInfo();
+      if (landedInfo) this.enterSurfaceView(selectSurfaceTarget(landedInfo, event.spec));
+    } else {
+      this.frameObservatoryEvent(event.spec);
+    }
+    this.renderObservatoryPanel();
+    this.startObservatoryEventSearch();
     this.notification.show(this.describeShadowEvent(event));
   }
 
-  private handleSkyJump(type: EventType, direction: 1 | -1) {
+  private handleObservatoryJump(type: EventType, direction: 1 | -1) {
     if (type === 'lunar-eclipse' || type === 'solar-eclipse') {
       // Eclipse jumps run on the shadow engine: it lands on the true peak
       // (not the syzygy instant) and knows the classification for the toast.
@@ -2645,10 +2990,19 @@ export class PlanetariumMode {
     }
     this.timeState = { ...this.timeState, paused: true };
     this.setCurrentUtcMs(found.getTime());
-    this.frameSkyEvent();
-    this.renderSkyPanel();
-    this.startSkyEventSearch();
-    this.notification.show(`${SKY_EVENT_LABELS[type]} — ${formatUtcLabel(found.getTime())}`);
+    this.observatoryPanel.flashNowBar();
+    if (this.landedView === 'surface') {
+      // Phase jumps point the surface view at the companion (the Moon you
+      // just made full), never at an event geometry.
+      const landedInfo = this.surfaceLandedInfo();
+      if (landedInfo) this.enterSurfaceView(selectSurfaceTarget(landedInfo, null));
+    } else {
+      this.frameObservatoryEvent();
+    }
+    this.renderObservatoryPanel();
+    this.startObservatoryEventSearch();
+    // Toast leads with the date — after a jump, *when* is the headline.
+    this.notification.show(`${formatUtcLabel(found.getTime())} — ${OBSERVATORY_EVENT_LABELS[type]}`);
   }
 
   /**
@@ -2659,9 +3013,9 @@ export class PlanetariumMode {
    * side nudge keeps the landed body's limb from occluding the companion;
    * auto-rotate is stopped so the framed event doesn't drift.
    */
-  private frameSkyEvent(spec?: ShadowEventSpec) {
-    if (!this.landedOn || !this.isSkySubject(this.landedOn)) return;
-    const parentName = this.skyParentPlanetName()!;
+  private frameObservatoryEvent(spec?: ShadowEventSpec) {
+    if (!this.landedOn || !this.isObservatorySubject(this.landedOn)) return;
+    const parentName = this.observatoryParentPlanetName()!;
     const parentBody = PLANETARIUM_BODIES.find(b => b.name === parentName);
     const moonName = spec?.moonName ?? 'Moon';
     const moonMesh = this.planetMoons.get(parentName)?.find(m => m.data.name === moonName);
@@ -2702,11 +3056,319 @@ export class PlanetariumMode {
     this.controls.autoRotate = false;
   }
 
+  // ================================================================
+  // Surface view — the Observatory's narrow-FOV look-from-the-surface camera
+  // ================================================================
+
+  /** The landed body as the pure target-selection table's input shape. */
+  private surfaceLandedInfo(): { type: 'planet' | 'moon'; name: string; parentPlanet?: string } | null {
+    if (!this.landedOn) return null;
+    return this.landedOn.type === 'planet'
+      ? { type: 'planet', name: this.landedOn.name }
+      : { type: 'moon', name: this.landedOn.name, parentPlanet: this.landedOn.parentPlanet };
+  }
+
+  /** Scene position of a surface target — read from the same objects the renderer draws. */
+  private resolveSurfaceTargetScenePos(target: SurfaceTarget, out: THREE.Vector3): THREE.Vector3 | null {
+    if (!this.solarSystem) return null;
+    switch (target.kind) {
+      case 'sun':
+      case 'sun-from-spot':
+        // Floating origin: sun.position is already body→Sun in scene coords.
+        return out.copy(this.solarSystem.sun.position);
+      case 'parent': {
+        if (this.landedOn?.type !== 'moon') return null;
+        const parentPlanet = this.landedOn.parentPlanet;
+        const parent = this.solarSystem.planets.find(p => p.data.name === parentPlanet);
+        return parent ? out.copy(parent.group.position) : null;
+      }
+      case 'moon': {
+        const parentName = this.observatoryParentPlanetName();
+        if (!parentName) return null;
+        const moonMesh = this.planetMoons.get(parentName)?.find(m => m.data.name === target.moonName);
+        const systemGroup = this.moonSystemGroups.get(parentName);
+        if (!moonMesh || !systemGroup) return null;
+        return out.copy(systemGroup.position).add(moonMesh.mesh.position);
+      }
+    }
+  }
+
+  /** True radius of a surface target (AU). */
+  private surfaceTargetRadiusAU(target: SurfaceTarget): number {
+    switch (target.kind) {
+      case 'sun':
+      case 'sun-from-spot':
+        return KM_CONSTANTS.SUN_RADIUS / KM_PER_AU;
+      case 'parent': {
+        const parentName = this.landedOn?.type === 'moon' ? this.landedOn.parentPlanet : null;
+        return PLANETARIUM_BODIES.find(b => b.name === parentName)?.radiusAU ?? 0;
+      }
+      case 'moon': {
+        const parentName = this.observatoryParentPlanetName();
+        return (
+          this.planetMoons.get(parentName ?? '')?.find(m => m.data.name === target.moonName)?.data
+            .radiusAU ?? 0
+        );
+      }
+    }
+  }
+
+  /** True angular diameter (deg) of a surface target from the landed body, for the entry FOV. */
+  private surfaceTargetAngularDiameterDeg(target: SurfaceTarget): number {
+    const pos = this.resolveSurfaceTargetScenePos(target, this.tmpSurfaceTargetPos);
+    if (!pos) return 0;
+    // The landed body sits at scene origin.
+    return angularDiameterDeg(this.surfaceTargetRadiusAU(target), pos.length());
+  }
+
+  /**
+   * Enter the surface view (or re-point an active one after a jump/swap):
+   * the camera leaves orbit, glides down to a vantage on the landed body's
+   * surface, and tracks the target until the user drags. OrbitControls hand
+   * the pointer to SurfaceLook until exit.
+   */
+  enterSurfaceView(target?: SurfaceTarget) {
+    const landedInfo = this.surfaceLandedInfo();
+    if (!landedInfo) return;
+    // Manual entry right after an event jump points at the event's
+    // observer-level target — "Look up" during an eclipse shows the eclipse.
+    this.surfaceTarget =
+      target ?? selectSurfaceTarget(landedInfo, this.relevantObservatoryEvent()?.spec ?? null);
+    this.surfaceTracking = true;
+    const entryFov = entryFovDeg(this.surfaceTargetAngularDiameterDeg(this.surfaceTarget));
+    this.surfaceFovDeg = entryFov;
+    if (this.landedView === 'surface') {
+      // Re-point: a short ease to the new target's fitted FOV (predictable
+      // framing beats preserving a zoom tuned for the previous subject).
+      this.surfaceFovAnim = {
+        fromFov: this.camera.fov,
+        toFov: entryFov,
+        fromPos: null,
+        elapsed: 0,
+        duration: 0.45,
+        finalizeExit: false,
+      };
+      return;
+    }
+    this.landedView = 'surface';
+    this.preSurfaceCameraPos.copy(this.camera.position);
+    this.preSurfaceAutoRotate = this.controls.autoRotate;
+    this.controls.enabled = false;
+    this.surfaceLook.attach();
+    this.setSurfaceLabelContainersHidden(true);
+    this.surfaceFovAnim = {
+      fromFov: this.camera.fov,
+      toFov: entryFov,
+      fromPos: this.preSurfaceCameraPos.clone(),
+      elapsed: 0,
+      duration: 0.9,
+      finalizeExit: false,
+    };
+    document.body.classList.add('surface-view-active');
+    this.observatoryHud.show();
+    this.renderSurfaceHud();
+    this.renderObservatoryPanel(); // the Look up button flips to "Return to orbit"
+  }
+
+  /**
+   * Leave the surface view: ease the FOV back to the shared 60° and then
+   * restore the orbit camera/controls/labels (`immediate` skips the ease —
+   * the teardown paths exitLandedMode/deactivate call it that way). This is
+   * the single FOV restore point.
+   */
+  exitSurfaceView(immediate = false) {
+    if (this.landedView !== 'surface') return;
+    // Finish now on teardown, on a second Escape mid-ease, or when aborting
+    // the entry glide (easing out from mid-glide would snap down to the
+    // vantage first — abort means "put me back").
+    if (immediate || this.surfaceFovAnim?.finalizeExit || this.surfaceFovAnim?.fromPos) {
+      this.finalizeSurfaceExit();
+      return;
+    }
+    this.surfaceFovAnim = {
+      fromFov: this.camera.fov,
+      toFov: 60,
+      fromPos: null,
+      elapsed: 0,
+      duration: 0.45,
+      finalizeExit: true,
+    };
+  }
+
+  private finalizeSurfaceExit() {
+    this.landedView = 'orbit';
+    this.surfaceFovAnim = null;
+    this.surfaceLook.detach();
+    this.camera.up.set(0, 1, 0); // OrbitControls assumes world-up
+    this.camera.fov = 60;
+    this.camera.updateProjectionMatrix();
+    this.setSurfaceLabelContainersHidden(false);
+    this.observatoryHud.hide();
+    document.body.classList.remove('surface-view-active');
+    if (this.landedOn) {
+      this.controls.enabled = true;
+      this.controls.autoRotate = this.preSurfaceAutoRotate;
+      this.camera.position.copy(this.preSurfaceCameraPos);
+      this.camera.lookAt(0, 0, 0);
+      this.controls.target.set(0, 0, 0);
+      this.renderObservatoryPanel(); // Look up label flips back
+    }
+  }
+
+  private setSurfaceLabelContainersHidden(hidden: boolean) {
+    // A half-degree disc at 10° FOV doesn't want a 14px DOM label on it.
+    // #planet-labels also hosts the Sun label; constellation labels stay
+    // (they're the sky itself).
+    const planetLabelsEl = document.getElementById('planet-labels');
+    if (planetLabelsEl) planetLabelsEl.style.display = hidden ? 'none' : '';
+    if (this.moonLabelContainer) this.moonLabelContainer.style.display = hidden ? 'none' : '';
+    // The marker sprites are Three.js objects owned by the renderLabels loop —
+    // which surface view skips — so hide them explicitly on entry.
+    if (hidden) this.planetLabels?.hideAll();
+  }
+
+  /** Drag look-around: content follows the finger; any drag breaks tracking. */
+  private applySurfaceLook(dxPx: number, dyPx: number) {
+    if (this.landedView !== 'surface') return;
+    this.surfaceTracking = false;
+    // A full-viewport-height drag pans one FOV — "grab the sky".
+    const radPerPx =
+      (this.camera.fov * DEG2RAD) / Math.max(this.renderer.domElement.clientHeight, 1);
+    const zenith = this.tmpSurfaceZenith.copy(this.camera.position).normalize();
+    // Yaw about the local zenith keeps panning level with the horizon.
+    this.camera.quaternion.premultiply(
+      this.tmpSurfaceQuat.setFromAxisAngle(zenith, dxPx * radPerPx),
+    );
+    // Pitch about the camera's right axis, clamped short of zenith/nadir so
+    // the view can never flip over the pole.
+    const forward = this.camera.getWorldDirection(this.tmpSurfaceAxis);
+    const elevation = Math.asin(THREE.MathUtils.clamp(forward.dot(zenith), -1, 1));
+    const maxElevation = 89 * DEG2RAD;
+    const targetElevation = THREE.MathUtils.clamp(
+      elevation + dyPx * radPerPx,
+      -maxElevation,
+      maxElevation,
+    );
+    const right = this.tmpSurfaceRight.set(1, 0, 0).applyQuaternion(this.camera.quaternion);
+    this.camera.quaternion.premultiply(
+      this.tmpSurfaceQuat.setFromAxisAngle(right, targetElevation - elevation),
+    );
+  }
+
+  /** Wheel/pinch zoom: multiplicative FOV change, clamped to [1.5°, 45°]. */
+  private applySurfaceZoom(factor: number) {
+    if (this.landedView !== 'surface' || this.surfaceFovAnim?.finalizeExit) return;
+    this.surfaceFovDeg = clampSurfaceFovDeg(this.surfaceFovDeg * factor);
+    if (this.surfaceFovAnim) {
+      this.surfaceFovAnim.toFov = this.surfaceFovDeg;
+    } else {
+      this.camera.fov = this.surfaceFovDeg;
+      this.camera.updateProjectionMatrix();
+    }
+  }
+
+  /**
+   * Per-frame surface camera: re-pin the vantage (sub-target point, or the
+   * shadow-spot point for solar-eclipse views), advance the FOV ease, and
+   * track the target while tracking is on. Runs at the end of updateLanded
+   * so this frame's moon positions are already in place.
+   */
+  private updateSurfaceCamera(dt: number) {
+    const targetPos = this.resolveSurfaceTargetScenePos(this.surfaceTarget, this.tmpSurfaceTargetPos);
+    if (!targetPos) {
+      // Unresolvable target must not stall a pending exit ease forever.
+      if (this.surfaceFovAnim?.finalizeExit) this.finalizeSurfaceExit();
+      return;
+    }
+
+    const radiusAU = this.getLandedBodyRadiusAU(); // true radius — planetScale is 1
+    const vantage = this.tmpSurfaceVantage;
+    let spotPosed = false;
+    if (this.surfaceTarget.kind === 'sun-from-spot' && this.landedOn?.type === 'planet') {
+      const parentName = this.landedOn.name;
+      const parentPos = this.planetWorldPositions.get(parentName);
+      const occluder = this.planetMoons
+        .get(parentName)
+        ?.find(m => m.data.name === (this.surfaceTarget as { occluderMoonName: string }).occluderMoonName);
+      if (parentPos && occluder) {
+        // Occluder offset from the landed parent = the mesh's parent-relative
+        // position (the parent sits at scene origin); shadow axis = the
+        // moon's anti-sunward heliocentric direction. Same helper chain as
+        // the rendered transit spot, so observer and spot agree.
+        const axis = this.tmpSurfaceAxis
+          .set(parentPos.x, parentPos.y, parentPos.z)
+          .add(occluder.mesh.position)
+          .normalize();
+        computeShadowSpotVantage(radiusAU, occluder.mesh.position, axis, vantage);
+        spotPosed = true;
+      }
+    }
+    if (!spotPosed) {
+      computeSubTargetVantage(radiusAU, targetPos, vantage);
+    }
+
+    const anim = this.surfaceFovAnim;
+    if (anim) {
+      anim.elapsed = Math.min(anim.elapsed + dt, anim.duration);
+      const t = smoothstepUnclamped(anim.elapsed / anim.duration);
+      this.camera.fov = THREE.MathUtils.lerp(anim.fromFov, anim.toFov, t);
+      this.camera.updateProjectionMatrix();
+      if (anim.fromPos) {
+        this.camera.position.lerpVectors(anim.fromPos, vantage, t);
+      } else {
+        this.camera.position.copy(vantage);
+      }
+      if (anim.elapsed >= anim.duration) {
+        const finalize = anim.finalizeExit;
+        this.surfaceFovAnim = null;
+        if (finalize) {
+          this.finalizeSurfaceExit();
+          return;
+        }
+      }
+    } else {
+      this.camera.position.copy(vantage);
+      if (this.camera.fov !== this.surfaceFovDeg) {
+        this.camera.fov = this.surfaceFovDeg;
+        this.camera.updateProjectionMatrix();
+      }
+    }
+
+    // Local zenith as camera-up: tracking shots stay level with the horizon.
+    this.camera.up.copy(this.tmpSurfaceZenith.copy(this.camera.position).normalize());
+    if (this.surfaceTracking) this.camera.lookAt(targetPos);
+
+    // Bracket cluster around the tracked target (per-frame screen projection).
+    const canvas = this.renderer.domElement;
+    const proj = projectToScreen(targetPos, this.camera, canvas.clientWidth, canvas.clientHeight);
+    const discDeg = angularDiameterDeg(
+      this.surfaceTargetRadiusAU(this.surfaceTarget),
+      targetPos.distanceTo(this.camera.position),
+    );
+    const sizePx = THREE.MathUtils.clamp(
+      (discDeg / this.camera.fov) * canvas.clientHeight * 1.3,
+      70,
+      canvas.clientHeight * 0.85,
+    );
+    this.observatoryHud.updateBrackets(proj.ndcZ < 1, proj.x, proj.y, sizePx);
+  }
+
   enterLandedMode(target: NonNullable<LandedTarget>) {
     if (this.isMissionActive()) return;
-    this.landedOn = target;
     this.preLandSpeed = this.player.speedMultiplier;
     this.preLandAutopilot = this.autopilot;
+    this.applyLandedTarget(target);
+    this.notification.show(`Landed on ${target.name}`);
+  }
+
+  /**
+   * State-configuration core of landing: everything `enterLandedMode` does
+   * except capturing `preLand*` and the arrival toast — so the Observatory's
+   * vantage swap can re-land on the companion body without the exit/enter
+   * ceremony (no speed restore, no "Departing" toast, take-off state intact).
+   */
+  private applyLandedTarget(target: NonNullable<LandedTarget>) {
+    this.landedOn = target;
 
     // Stop ship
     this.player.speedMultiplier = 0;
@@ -2763,21 +3425,63 @@ export class PlanetariumMode {
     const leaveName = document.getElementById('leave-body-name');
     if (leaveName) leaveName.textContent = target.name;
 
-    this.updateSkyButtonVisibility();
+    this.updateObservatoryButtonVisibility();
 
     // Shadow visuals live in the landed system's moon group (Mercury/Venus
     // have none — attach is skipped and update() finds no moons).
-    const systemGroup = this.moonSystemGroups.get(this.skyParentPlanetName() ?? '');
+    const systemGroup = this.moonSystemGroups.get(this.observatoryParentPlanetName() ?? '');
     if (systemGroup) {
       this.shadowVisuals.attach(systemGroup);
       this.shadowVisuals.setConesVisible(this.showShadowCones);
     }
+  }
 
-    this.notification.show(`Landed on ${target.name}`);
+  /** The unique companion body for the vantage swap: moon → its parent, Earth → the Moon. */
+  swapCompanionTarget(): NonNullable<LandedTarget> | null {
+    if (!this.landedOn) return null;
+    if (this.landedOn.type === 'moon') {
+      return { type: 'planet', name: this.landedOn.parentPlanet };
+    }
+    if (this.landedOn.name === 'Earth') {
+      return { type: 'moon', name: 'Moon', parentPlanet: 'Earth' };
+    }
+    return null;
+  }
+
+  /**
+   * Vantage swap: re-land on the companion body (Moon ↔ Earth, moon ↔ parent)
+   * in place — no departure, no toast ceremony. Same system, so moon
+   * positions and the upcoming-events search stay valid. If the surface view
+   * is active it stays active, pointed back at the body you just left.
+   */
+  swapLandedVantage() {
+    if (this.isMissionActive()) return;
+    const companion = this.swapCompanionTarget();
+    if (!companion || !this.landedOn) return;
+    const previous = this.landedOn;
+    const wasSurface = this.landedView === 'surface';
+    this.applyLandedTarget(companion);
+    if (wasSurface) {
+      // applyLandedTarget re-enabled OrbitControls and reset the camera for
+      // orbit view — re-assert the surface invariants. Its fresh orbit camera
+      // position becomes the exit restore point for the *new* body (the old
+      // one was scaled to the previous body's radius).
+      this.preSurfaceCameraPos.copy(this.camera.position);
+      this.preSurfaceAutoRotate = this.controls.autoRotate;
+      this.controls.enabled = false;
+      this.enterSurfaceView(
+        previous.type === 'moon' ? { kind: 'moon', moonName: previous.name } : { kind: 'parent' },
+      );
+    }
+    this.notification.show(`Standing on ${companion.name}`);
+    this.renderObservatoryPanel();
   }
 
   exitLandedMode() {
     if (!this.landedOn) return;
+    // Teardown path: restore FOV/controls/labels instantly — the code below
+    // reconfigures the controls and camera for flight anyway.
+    this.exitSurfaceView(true);
     const bodyName = this.landedOn.name;
 
     // Get body's current world position
@@ -2862,7 +3566,7 @@ export class PlanetariumMode {
     if (leaveBtn) leaveBtn.style.display = 'none';
 
     this.shadowVisuals.detach();
-    this.updateSkyButtonVisibility();
+    this.updateObservatoryButtonVisibility();
     this.notification.show(`Departing ${bodyName}`);
   }
 
@@ -2885,8 +3589,10 @@ export class PlanetariumMode {
     // landed body — planet or moon — renders exactly at scene origin because
     // its mesh position comes from the same seam the player tracks.
     this.applyFloatingOrigin();
-    this.controls.target.set(0, 0, 0);
-    this.controls.update();
+    if (this.landedView !== 'surface') {
+      this.controls.target.set(0, 0, 0);
+      this.controls.update();
+    }
 
     // FPS tracking
     this.fpsFrames++;
@@ -2907,10 +3613,12 @@ export class PlanetariumMode {
     this.updatePlanetScaling();
     this.updateMoonPositions();
     this.updateShadowVisuals();
-    this.pumpSkyEventSearch();
+    this.pumpObservatoryEventSearch();
 
     // Occlusion pipeline while landed: planets → moons + ship → labels.
-    if (this.planetLabels) {
+    // Surface view: the label containers are hidden and these per-frame
+    // renders would re-show them — the pipeline only feeds labels, skip it.
+    if (this.planetLabels && this.landedView !== 'surface') {
       const scenePositions = new Map<string, { x: number; y: number; z: number }>();
       for (const planet of this.solarSystem.planets) {
         scenePositions.set(planet.data.name, {
@@ -2934,15 +3642,25 @@ export class PlanetariumMode {
       );
     }
 
-    this.renderMoonLabels();
-    this.updateSunLabel();
+    if (this.landedView !== 'surface') {
+      this.renderMoonLabels();
+      this.updateSunLabel();
+    }
     this.updateSunShader(dt);
     this.updateOrbitLineVisibility();
+
+    // Surface camera last — after updateMoonPositions/updateShadowVisuals —
+    // so the vantage and look target use this frame's positions (the skipped
+    // controls block above runs before those refreshes).
+    if (this.landedView === 'surface') {
+      this.updateSurfaceCamera(dt);
+    }
 
     if (shouldRefreshUi) {
       this.updateStatsUI();
       this.updateTimeUI();
-      this.renderSkyPanel();
+      this.renderObservatoryPanel();
+      if (this.landedView === 'surface') this.renderSurfaceHud();
     }
   }
 

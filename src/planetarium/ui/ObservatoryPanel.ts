@@ -212,6 +212,10 @@ export class ObservatoryPanel {
       this.hide();
       this.onClose(); // owner drops its chunked search immediately, not next frame
     });
+    this.wireSheetDrag();
+    // Crossing the 640px breakpoint re-houses the panel (sheet ↔ side
+    // panel) — the published inset must follow.
+    window.addEventListener('resize', () => this.updateSheetInset());
     const conesToggle = document.getElementById('observatory-cones-toggle') as HTMLInputElement | null;
     conesToggle?.addEventListener('change', () => this.onConesToggle(conesToggle.checked));
     document.getElementById('observatory-lookup')?.addEventListener('click', () => this.onLookup());
@@ -247,12 +251,76 @@ export class ObservatoryPanel {
     return this.panelEl?.classList.contains('visible') ?? false;
   }
 
+  /** ≤640px the panel renders as a bottom sheet (CSS media query). */
+  private isSheetForm(): boolean {
+    return window.innerWidth <= 640;
+  }
+
+  /**
+   * Publish the sheet's height as --sheet-inset so bottom-anchored chrome
+   * (the surface transport strip) rides its top edge instead of being
+   * buried — cross-component policy 2: a sheet never seals the transport.
+   */
+  private updateSheetInset(): void {
+    if (this.isOpen() && this.isSheetForm() && this.panelEl) {
+      document.body.style.setProperty('--sheet-inset', `${this.panelEl.offsetHeight}px`);
+    } else {
+      document.body.style.removeProperty('--sheet-inset');
+    }
+  }
+
   show(): void {
     this.panelEl?.classList.add('visible');
+    document.body.classList.add('observatory-sheet-open');
+    this.updateSheetInset();
   }
 
   hide(): void {
     this.panelEl?.classList.remove('visible');
+    document.body.classList.remove('observatory-sheet-open');
+    this.updateSheetInset();
+  }
+
+  /**
+   * Sheet-form swipe-to-dismiss: a downward drag on the header (the grab
+   * handle + eyebrow row — not the scrollable body, so list scrolling never
+   * arms it) follows the finger and releases past a threshold. Pointer
+   * events only on the handle keep the sky above the sheet gesture-live.
+   */
+  private wireSheetDrag(): void {
+    const handle = document.querySelector('#observatory-panel .obs-eyebrow') as HTMLElement | null;
+    if (!handle || !this.panelEl) return;
+    const panel = this.panelEl;
+    let startY: number | null = null;
+    let activePointer: number | null = null;
+    handle.addEventListener('pointerdown', (e) => {
+      if (!this.isSheetForm()) return;
+      // A tap on the close X (a child of the header) must stay a click —
+      // capturing would retarget its pointerup to the handle and eat it.
+      if ((e.target as HTMLElement).closest('button')) return;
+      if (activePointer !== null) return; // one finger drives the sheet
+      activePointer = e.pointerId;
+      startY = e.clientY;
+      handle.setPointerCapture(e.pointerId);
+    });
+    handle.addEventListener('pointermove', (e) => {
+      if (e.pointerId !== activePointer || startY === null) return;
+      const dy = Math.max(0, e.clientY - startY);
+      panel.style.transform = `translateY(${dy}px)`;
+    });
+    const release = (e: PointerEvent) => {
+      if (e.pointerId !== activePointer || startY === null) return;
+      const dy = e.clientY - startY;
+      activePointer = null;
+      startY = null;
+      panel.style.transform = '';
+      if (dy > 80) {
+        this.hide();
+        this.onClose();
+      }
+    };
+    handle.addEventListener('pointerup', release);
+    handle.addEventListener('pointercancel', release);
   }
 
   /** One ~600ms accent glow on the now-bar — called after any time jump. */
@@ -325,6 +393,8 @@ export class ObservatoryPanel {
       this.eventsListEl.appendChild(rowEl);
       this.renderedRows.push({ row, rowEl, cdEl });
     }
+    // List rebuilds change the sheet's height — keep the inset current.
+    this.updateSheetInset();
   }
 
   /** Re-render all live text (phase hero, now-bar, countdowns) — 8 Hz cadence. */
@@ -351,7 +421,15 @@ export class ObservatoryPanel {
     }
 
     const phase = observatoryPhaseText(utcMs, info);
-    if (this.heroEl) this.heroEl.style.display = phase ? '' : 'none';
+    if (this.heroEl) {
+      const show = phase ? '' : 'none';
+      if (this.heroEl.style.display !== show) {
+        // Hero visibility changes the sheet's height (vantage swaps flip
+        // subject kinds) — republish the inset.
+        this.heroEl.style.display = show;
+        this.updateSheetInset();
+      }
+    }
     if (phase && info.kind !== 'events-only') {
       setText('observatory-phase-name', phase.headline);
       setText('observatory-phase-meta', phase.meta);

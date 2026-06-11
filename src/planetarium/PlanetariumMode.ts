@@ -35,6 +35,7 @@ import {
   formatUtcLabel,
   parseUtcInputValue,
   raDecToVector,
+  stepSimulationRate,
   type SimulationTime,
 } from '../astronomy/planetary';
 import { computeMoonOffsetEquatorialAU, getSatelliteApoapsisAU } from '../astronomy/satellites';
@@ -294,9 +295,10 @@ export class PlanetariumMode {
   private tmpSurfacePoleOffset = new THREE.Vector3();
   // Marker over the tracked target — sticky across the hysteresis band.
   private surfaceMarkerKind: SurfaceMarkerKind = 'brackets';
-  // Observatory-panel left edge, cached per viewport size for the chevron
-  // clamp (the panel is CSS-fixed; it only moves on resize).
-  private panelLeftCache: { w: number; h: number; left: number } | null = null;
+  // Observatory-panel rect, cached per viewport size for the chevron clamp
+  // (the panel is CSS-fixed; it only moves on resize — desktop side panel
+  // vs ≤640px bottom sheet).
+  private panelRectCache: { w: number; h: number; left: number; top: number } | null = null;
 
   // Moon labels
   private moonLabels = new Map<string, HTMLDivElement>();
@@ -340,6 +342,15 @@ export class PlanetariumMode {
       this.renderSurfaceHud();
     },
     () => this.toggleObservatoryPanel(),
+    (action) => {
+      // The strip and the bottom bar drive the same clock through the same
+      // handlers — one idiom, no duplicate state (policy 1).
+      if (action === 'toggle-pause') this.timeTogglePause();
+      else if (action === 'slower') this.stepTimeRate(-1);
+      else if (action === 'faster') this.stepTimeRate(1);
+      else this.timeJumpToNow();
+      this.renderSurfaceHud();
+    },
   );
   // The most recent event jump — gives "Look up" and the surface HUD their
   // narrative while the clock still sits inside the event's window.
@@ -509,6 +520,21 @@ export class PlanetariumMode {
     this.timeState = { ...this.timeState, currentUtcMs: utcMs };
     this.rebuildPlanetPositions();
     this.updateTimeUI();
+  }
+
+  // Shared clock handlers — the time popover and the surface transport
+  // strip drive the same state through these (one clock, one idiom).
+  private timeTogglePause() {
+    this.timeState.paused = !this.timeState.paused;
+    this.updateTimeUI();
+  }
+
+  private timeJumpToNow() {
+    this.timeState.currentUtcMs = Date.now();
+    this.rebuildPlanetPositions();
+    this.updateTimeUI();
+    // Clock jump invalidates the Observatory panel's upcoming-events list.
+    this.startObservatoryEventSearch();
   }
 
   async activate(onProgress?: (progress: PlanetariumActivationProgress) => void): Promise<void> {
@@ -1980,8 +2006,7 @@ export class PlanetariumMode {
 
     // Astronomy time controls
     document.getElementById('planetarium-time-pause')?.addEventListener('click', () => {
-      this.timeState.paused = !this.timeState.paused;
-      this.updateTimeUI();
+      this.timeTogglePause();
     });
     document.getElementById('planetarium-time-play')?.addEventListener('click', () => {
       this.timeState.paused = false;
@@ -2000,11 +2025,7 @@ export class PlanetariumMode {
       this.stepTimeRate(1);
     });
     document.getElementById('planetarium-time-now')?.addEventListener('click', () => {
-      this.timeState.currentUtcMs = Date.now();
-      this.rebuildPlanetPositions();
-      this.updateTimeUI();
-      // Clock jump invalidates the Observatory panel's upcoming-events list.
-      this.startObservatoryEventSearch();
+      this.timeJumpToNow();
     });
     const timeInputEl = this.timePanel.getInputEl();
     if (timeInputEl) {
@@ -3005,6 +3026,7 @@ export class PlanetariumMode {
       subWarm,
       whenText: formatObservatoryClock(now),
       whenTag: this.observatoryNowTag(),
+      paused: this.timeState.paused,
       fovDeg: this.camera.fov,
       tracking: this.surfaceTracking,
       targetName: this.surfaceTargetDisplayName(this.surfaceTarget),
@@ -3201,6 +3223,9 @@ export class PlanetariumMode {
     this.observatoryRowsMinEndUtcMs = events.length
       ? events.reduce((min, e) => Math.min(min, e.endUtcMs), Infinity)
       : null;
+    // Sheet-form panel height follows the row count — the chevron's cached
+    // clamp rect must re-measure.
+    this.panelRectCache = null;
     const status = search && search.index < search.specs.length
       ? `Scanning ${search.index + 1}/${search.specs.length}…`
       : rows.length === 0 ? 'No events in range' : '';
@@ -3222,6 +3247,11 @@ export class PlanetariumMode {
     } else {
       this.frameObservatoryEvent(event.spec);
     }
+    // Sheet form: a jump dismisses the sheet so the framed event isn't
+    // behind it (the toast carries the what/when; the chip reopens). Closing
+    // first lets the render/search calls below no-op instead of rebuilding a
+    // list that's about to disappear.
+    if (window.innerWidth <= 640) this.closeObservatoryPanel();
     this.renderObservatoryPanel();
     this.startObservatoryEventSearch();
     this.notification.show(this.describeShadowEvent(event));
@@ -3278,6 +3308,7 @@ export class PlanetariumMode {
     } else {
       this.frameObservatoryEvent();
     }
+    if (window.innerWidth <= 640) this.closeObservatoryPanel();
     this.renderObservatoryPanel();
     this.startObservatoryEventSearch();
     // Toast leads with the date — after a jump, *when* is the headline.
@@ -3448,11 +3479,21 @@ export class PlanetariumMode {
       return;
     }
     this.landedView = 'surface';
+    // The panel makes way for the sky (#15/#21): it covered the event on
+    // mobile and intercepted HUD clicks on desktop. The HUD's Observatory
+    // chip reopens it over the surface view as an explicit opt-in; exiting
+    // does not auto-reopen.
+    this.closeObservatoryPanel();
     this.preSurfaceCameraPos.copy(this.camera.position);
     this.preSurfaceAutoRotate = this.controls.autoRotate;
     this.controls.enabled = false;
     this.surfaceLook.attach();
     this.setSurfaceLabelContainersHidden(true);
+    // One-time controls hint on first-ever surface entry.
+    if (!this.store.hasSeenSurfaceHint()) {
+      this.store.markSurfaceHintSeen();
+      this.notification.show('Drag to look around · scroll or pinch to zoom');
+    }
     this.surfaceFovAnim = {
       fromFov: this.camera.fov,
       toFov: entryFov,
@@ -3728,23 +3769,30 @@ export class PlanetariumMode {
       const insetTop = 96;
       const insetBottom = 150;
       // Clamp against the Observatory panel when it's open over the surface
-      // view (policy 3): a right-edge chevron would land beneath it, visible
-      // but unclickable. The rect is cached per viewport size — the panel is
-      // CSS-fixed and only moves on resize (per-frame getBoundingClientRect
-      // after the HUD's style writes would force reflow).
+      // view (policy 3): a chevron under it is visible but unclickable. The
+      // rect is cached per viewport size — the panel is CSS-fixed and only
+      // moves on resize (per-frame getBoundingClientRect after the HUD's
+      // style writes would force reflow). Desktop docks it right (clamp the
+      // right inset); ≤640px it's a bottom sheet (grow the bottom inset).
       let insetRight = insetX;
+      let sheetBottom = insetBottom;
       if (this.observatoryPanel.isOpen()) {
-        if (!this.panelLeftCache || this.panelLeftCache.w !== w || this.panelLeftCache.h !== h) {
+        if (!this.panelRectCache || this.panelRectCache.w !== w || this.panelRectCache.h !== h) {
           const rect = document.getElementById('observatory-panel')?.getBoundingClientRect();
-          this.panelLeftCache = { w, h, left: rect ? rect.left : w };
+          this.panelRectCache = { w, h, left: rect ? rect.left : w, top: rect ? rect.top : h };
         }
-        insetRight = Math.min(
-          Math.max(insetX, w - this.panelLeftCache.left + 12),
-          Math.max(insetX, w - insetX - 44),
-        );
+        const cache = this.panelRectCache;
+        if (cache.left > w * 0.4) {
+          insetRight = Math.min(
+            Math.max(insetX, w - cache.left + 12),
+            Math.max(insetX, w - insetX - 44),
+          );
+        } else if (cache.top > h * 0.4) {
+          sheetBottom = Math.max(insetBottom, h - cache.top + 12);
+        }
       }
       const ex = THREE.MathUtils.clamp(w / 2 + dx * (w + h), insetX, Math.max(insetX + 1, w - insetRight));
-      const ey = THREE.MathUtils.clamp(h / 2 + dy * (w + h), insetTop, Math.max(insetTop + 1, h - insetBottom));
+      const ey = THREE.MathUtils.clamp(h / 2 + dy * (w + h), insetTop, Math.max(insetTop + 1, h - sheetBottom));
       this.observatoryHud.updateMarker({
         mode: 'chevron',
         xPx: ex,
@@ -3770,6 +3818,11 @@ export class PlanetariumMode {
    */
   private applyLandedTarget(target: NonNullable<LandedTarget>) {
     this.landedOn = target;
+    // Chrome hook: ≤640px the landed top bar drops the wordmark/mode toggle.
+    document.body.classList.add('planetarium-landed');
+    // A different subject can show/hide panel sections — the chevron's
+    // cached clamp rect must re-measure.
+    this.panelRectCache = null;
 
     // Vantage azimuth reference (planets: constant IAU pole, cached here;
     // moons refresh their orbit normal per frame in updateSurfaceCamera).
@@ -3968,6 +4021,7 @@ export class PlanetariumMode {
     this.updateAutopilotButton();
 
     this.landedOn = null;
+    document.body.classList.remove('planetarium-landed');
 
     // Restore bottom bar (hidden by updateMissionControlState when landedOn was set)
     const bottomBar = document.getElementById('planetarium-bottom-bar');
@@ -4332,16 +4386,7 @@ export class PlanetariumMode {
   }
 
   private stepTimeRate(direction: -1 | 1) {
-    const currentMagnitude = Math.abs(this.timeState.rate);
-    const presets = PlanetariumMode.TIME_RATE_PRESETS;
-    let index = presets.findIndex(rate => Math.abs(rate - currentMagnitude) < 1e-6);
-    if (index === -1) {
-      index = presets.findIndex(rate => rate > currentMagnitude);
-      if (index === -1) index = presets.length - 1;
-    }
-    index = THREE.MathUtils.clamp(index + direction, 0, presets.length - 1);
-    this.timeState.rate = presets[index] * (this.timeState.rate < 0 ? -1 : 1);
-    this.timeState.paused = false;
+    this.timeState = stepSimulationRate(this.timeState, direction, PlanetariumMode.TIME_RATE_PRESETS);
     this.updateTimeUI();
   }
 

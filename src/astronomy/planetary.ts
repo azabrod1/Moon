@@ -287,6 +287,31 @@ export function advancePlanetariumTime(state: SimulationTime, dtSeconds: number)
   };
 }
 
+/**
+ * Step the simulation rate along a preset magnitude ladder, preserving the
+ * sign (reverse stays reverse) and unpausing — the shared core behind the
+ * time popover's Slower/Faster and the surface transport strip's −/+. An
+ * off-ladder magnitude snaps to the next larger preset before stepping.
+ */
+export function stepSimulationRate(
+  state: SimulationTime,
+  direction: -1 | 1,
+  presets: readonly number[],
+): SimulationTime {
+  const currentMagnitude = Math.abs(state.rate);
+  let index = presets.findIndex(rate => Math.abs(rate - currentMagnitude) < 1e-6);
+  if (index === -1) {
+    index = presets.findIndex(rate => rate > currentMagnitude);
+    if (index === -1) index = presets.length - 1;
+  }
+  index = Math.min(presets.length - 1, Math.max(0, index + direction));
+  return {
+    ...state,
+    rate: presets[index] * (state.rate < 0 ? -1 : 1),
+    paused: false,
+  };
+}
+
 function formatUtcPart(value: number): string {
   return value.toString().padStart(2, '0');
 }

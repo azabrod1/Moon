@@ -12,6 +12,7 @@ import { describe, expect, it } from 'vitest';
 import * as THREE from 'three';
 import {
   advancePlanetariumTime,
+  stepSimulationRate,
   computeBodyOrientationQuaternion,
   computeBodyPoleQuaternion,
   computeBodyState,
@@ -259,5 +260,24 @@ describe('time helpers', () => {
     expect(formatTimeRateLabel(120, false)).toBe('2 min/s');
     expect(formatTimeRateLabel(-3600, false)).toBe('Reverse 1 hr/s');
     expect(formatTimeRateLabel(86400 * 365, false)).toBe('1.0 yr/s');
+  });
+
+  it('steps the rate ladder, unpauses, preserves reverse, clamps the ends', () => {
+    const presets = [1, 60, 1200] as const;
+    const at = (rate: number, paused = false) => ({ currentUtcMs: 0, rate, paused });
+    // Walk up and down the ladder.
+    expect(stepSimulationRate(at(1), 1, presets).rate).toBe(60);
+    expect(stepSimulationRate(at(60), -1, presets).rate).toBe(1);
+    // Stepping always unpauses (the strip's −/+ resume a paused clock —
+    // deliberate, same as the popover).
+    expect(stepSimulationRate(at(60, true), 1, presets).paused).toBe(false);
+    // Reverse stays reverse: only the magnitude walks the ladder.
+    expect(stepSimulationRate(at(-60), 1, presets).rate).toBe(-1200);
+    // Off-ladder magnitudes snap to the next larger preset before stepping.
+    expect(stepSimulationRate(at(30), 1, presets).rate).toBe(1200);
+    expect(stepSimulationRate(at(30), -1, presets).rate).toBe(1);
+    // Clamped at both ends.
+    expect(stepSimulationRate(at(1), -1, presets).rate).toBe(1);
+    expect(stepSimulationRate(at(1200), 1, presets).rate).toBe(1200);
   });
 });

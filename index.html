@@ -935,6 +935,27 @@
     .shud-sub { margin-top: 7px; font-size: 12.5px; color: var(--obs-t2); }
     .shud-sub b { color: var(--obs-warm); font-weight: 500; }
     .shud-when { display: flex; align-items: center; gap: 8px; margin-top: 12px; font-size: 11px; color: var(--obs-t2); }
+    /* Bottom-center transport strip (design round D-1c): the surface view's
+       only time control — readout + state + pause/rate/now, one idiom with
+       the bottom bar's named-rate vocabulary. Sits above the sheet inset on
+       mobile (policy 2: a sheet never seals the transport). */
+    .shud-timebar {
+      position: absolute; left: 50%; transform: translateX(-50%);
+      bottom: calc(var(--sheet-inset, 0px) + 14px);
+      display: flex; align-items: center; gap: 10px;
+      padding: 7px 12px; border-radius: 11px; white-space: nowrap;
+      background: rgba(10, 14, 26, 0.6); border: 1px solid rgba(140, 160, 200, 0.18);
+      -webkit-backdrop-filter: blur(10px); backdrop-filter: blur(10px);
+      pointer-events: auto;
+    }
+    .shud-timebar .shud-when { margin-top: 0; }
+    .shud-tb-btn {
+      background: rgba(255, 255, 255, 0.05); border: 1px solid rgba(140, 160, 200, 0.22);
+      border-radius: 7px; color: var(--obs-t1); cursor: pointer;
+      font-family: var(--obs-mono); font-size: 10.5px; letter-spacing: 0.04em;
+      padding: 5px 9px; min-height: 26px;
+    }
+    .shud-tb-btn:hover { border-color: rgba(124, 154, 255, 0.4); color: var(--obs-t1); }
     .shud-dot { width: 5px; height: 5px; border-radius: 50%; background: var(--obs-t3); flex: none; }
     .shud-when small { font-size: 10px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--obs-t3); }
     .shud-br { position: absolute; right: 24px; bottom: 86px; text-align: right; }
@@ -958,6 +979,12 @@
        width and would block the HUD chips). The time pill stays. */
     body.surface-view-active #planetarium-actions { display: none; }
     body.surface-view-active #top-bar { opacity: 0.25; pointer-events: none; transition: opacity 0.3s; }
+    /* Surface view owns one clock — the transport strip (cross-component
+       policy 1). The planetarium bottom bar showed a second clock and
+       overlapped the tracking pill; the panel's now-bar duplicates the strip
+       when reopened over the surface view. */
+    body.surface-view-active #planetarium-bottom-bar { display: none; }
+    body.surface-view-active #observatory-panel .obs-nowbar { display: none; }
 
     .menu-submenu {
       display: none;
@@ -1891,6 +1918,55 @@
     @media (max-width: 420px) {
       .travel-btn-text { display: none; }
     }
+
+    /* ===== Observatory mobile chrome (cycle 3.2 C) ===== */
+    @media (max-width: 640px) {
+      /* Landed top bar becomes a single action row: the wordmark and mode
+         toggle have no room next to Leave/Observatory/Travel/☰ (mode
+         switching stays reachable after Leave). */
+      body.planetarium-landed #top-bar h1 { display: none; }
+      body.planetarium-landed #top-bar .top-mode-toggle { display: none; }
+      /* The Observatory panel re-houses as a bottom sheet: the sky stays
+         visible and gesture-live (the centered 334px panel covered 86% of a
+         phone and ate every swipe). Same DOM, same ids. */
+      #observatory-panel {
+        top: auto; bottom: 0; left: 0; right: 0;
+        width: 100%; max-width: none;
+        max-height: min(55vh, calc(100vh - 220px));
+        border-radius: 18px 18px 0 0;
+      }
+      /* The header is the drag handle — sticky, so the dismiss gesture
+         survives scrolling the list, with the grab pill drawn inside it
+         (a pill the finger can't actually grab is a lie). */
+      #observatory-panel .obs-eyebrow {
+        position: sticky; top: -14px; z-index: 2;
+        margin: -14px -16px 10px; padding: 16px 16px 8px;
+        background: rgba(12, 15, 28, 0.95);
+        border-radius: 18px 18px 0 0;
+        touch-action: none;
+      }
+      #observatory-panel .obs-eyebrow::before {
+        content: ''; position: absolute; left: 50%; top: 5px;
+        transform: translateX(-50%);
+        width: 36px; height: 4px; border-radius: 2px;
+        background: rgba(255, 255, 255, 0.18);
+      }
+      /* One clock: the sheet's now-bar replaces the bottom time pill while
+         the sheet is open. */
+      body.observatory-sheet-open #planetarium-bottom-bar { display: none; }
+      /* The strip stacks on narrow screens (readout row + controls row) —
+         inline it overflows 390px and clips the Now button. */
+      .shud-timebar {
+        flex-wrap: wrap; justify-content: center; row-gap: 6px;
+        max-width: calc(100vw - 16px);
+      }
+    }
+    @media (hover: none) {
+      .obs-close { padding: 8px 12px; margin: -8px -8px -8px 0; }
+      .obs-tpill { min-height: 28px; }
+      .obs-foot { min-height: 32px; }
+      .shud-tb-btn { min-height: 32px; }
+    }
   </style>
 </head>
 <body>
@@ -2253,17 +2329,23 @@
           <div class="shud-eyebrow"><i>&#x2726;</i><span id="surface-eyebrow"></span></div>
           <h1 id="surface-headline">--</h1>
           <div class="shud-sub" id="surface-sub"></div>
-          <div class="shud-when">
-            <span class="shud-dot"></span>
-            <span class="obs-now-text" id="surface-when">--</span>
-            <small id="surface-when-tag"></small>
-          </div>
         </div>
         <div class="shud-br">
           <div class="shud-eyebrow">Field of view</div>
           <div class="shud-fov" id="surface-fov">10&deg;</div>
           <div class="shud-fovscale"><span class="shud-fovmark" id="surface-fov-mark"></span><span class="shud-fovend lo">1.5&deg;</span><span class="shud-fovend hi">45&deg;</span></div>
           <div class="shud-hint">scroll to zoom &middot; drag to look</div>
+        </div>
+        <div class="shud-timebar" id="surface-timebar">
+          <div class="shud-when">
+            <span class="shud-dot"></span>
+            <span class="obs-now-text" id="surface-when">--</span>
+            <small id="surface-when-tag"></small>
+          </div>
+          <button class="shud-tb-btn" id="surface-tb-pause">Pause</button>
+          <button class="shud-tb-btn" id="surface-tb-slower" title="Slower">&minus;</button>
+          <button class="shud-tb-btn" id="surface-tb-faster" title="Faster">+</button>
+          <button class="shud-tb-btn" id="surface-tb-now" title="Jump to the present">Now</button>
         </div>
       </div>
 

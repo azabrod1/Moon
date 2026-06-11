@@ -30,7 +30,12 @@ export interface SurfaceHudState {
   discNote: string | null;
   /** Swap chip label ("Stand on the Moon"), or null to hide. */
   swapLabel: string | null;
+  /** Clock paused — the transport strip's pause button flips to "Resume". */
+  paused: boolean;
 }
+
+/** Transport-strip actions, routed to the owner's shared time handlers. */
+export type SurfaceTimeAction = 'toggle-pause' | 'slower' | 'faster' | 'now';
 
 /** Which marker the HUD draws over the tracked target this frame. */
 export type SurfaceMarkerMode = 'hidden' | 'brackets' | 'reticle' | 'chevron';
@@ -63,6 +68,7 @@ export class ObservatoryHUD {
     private onSwap: () => void,
     private onResumeTracking: () => void,
     private onObservatory: () => void,
+    private onTimeAction: (action: SurfaceTimeAction) => void,
   ) {}
 
   bind(): void {
@@ -83,6 +89,11 @@ export class ObservatoryHUD {
     this.trackPillEl?.addEventListener('click', () => this.onResumeTracking());
     // The chevron is the way back when the target left the frame in free look.
     this.chevronEl?.addEventListener('click', () => this.onResumeTracking());
+    // Transport strip — the surface view's only time controls (policy 1).
+    document.getElementById('surface-tb-pause')?.addEventListener('click', () => this.onTimeAction('toggle-pause'));
+    document.getElementById('surface-tb-slower')?.addEventListener('click', () => this.onTimeAction('slower'));
+    document.getElementById('surface-tb-faster')?.addEventListener('click', () => this.onTimeAction('faster'));
+    document.getElementById('surface-tb-now')?.addEventListener('click', () => this.onTimeAction('now'));
   }
 
   show(): void {
@@ -165,6 +176,7 @@ export class ObservatoryHUD {
     }
     setText('surface-when', state.whenText);
     setText('surface-when-tag', state.whenTag);
+    setText('surface-tb-pause', state.paused ? 'Resume' : 'Pause');
     setText(
       'surface-fov',
       `${state.fovDeg >= 10 ? Math.round(state.fovDeg) : state.fovDeg.toFixed(1)}°`,

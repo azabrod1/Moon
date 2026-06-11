@@ -13,6 +13,7 @@ import { debugWarn } from '../shared/debug';
 const STORAGE_KEY = 'orbital-sim-planetarium-state';
 const LEGACY_STORAGE_KEY = 'orbital-sim-explore-state';
 const HELP_SEEN_KEY = 'planetarium-help-seen';
+const SURFACE_HINT_SEEN_KEY = 'planetarium-surface-hint-seen';
 // Pre-rename key, read-only compat: a user who dismissed help in the old
 // "explore" build shouldn't be shown it again after upgrading.
 const LEGACY_HELP_SEEN_KEY = 'explore-help-seen';
@@ -276,6 +277,23 @@ export class PlanetariumStore {
   markHelpSeen(): void {
     try {
       localStorage.setItem(HELP_SEEN_KEY, '1');
+    } catch {
+      /* ignore: private browsing */
+    }
+  }
+
+  /** True if the surface view's one-time controls hint has been shown. */
+  hasSeenSurfaceHint(): boolean {
+    try {
+      return Boolean(localStorage.getItem(SURFACE_HINT_SEEN_KEY));
+    } catch {
+      return false;
+    }
+  }
+
+  markSurfaceHintSeen(): void {
+    try {
+      localStorage.setItem(SURFACE_HINT_SEEN_KEY, '1');
     } catch {
       /* ignore: private browsing */
     }

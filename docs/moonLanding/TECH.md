@@ -190,7 +190,7 @@ deterministic given seed + input script (replayable for QA goldens).
 | Site patches ×5 | **LROC NAC DTM + ortho** (PDS) | 2–5 m/px DTM, 0.5–2 m/px ortho | PD. Shackleton coverage is sparse — pipeline risk R7 |
 | Sky | NASA SVS **Deep Star Maps 2020** | 8k/16k equirect | PD |
 | Bright stars / constellations | repo data (HYG v3.7 derived) | — | **CC BY-SA, not PD** — ship attribution in-app (credits panel) |
-| Earth | existing `public/textures/earth-*.jpg` | 2k | ample at ~55 px |
+| Earth | existing `public/textures/earth-*.jpg` (2k) for the naked-eye view; **4k day+clouds in the `hd`/binocular path** | 2k → 4k | 2k is ample at Earth's true ~55 px; the hold-to-zoom binoculars (DESIGN §2.2) can push the disc to ~600 px, where 4k earns its bytes |
 | Temperatures | analytic Diviner-fit in `thermal.ts` | — | no texture |
 
 Offline preprocessing in `tools/moonLanding/` (Node + GDAL, not shipped): cube-face

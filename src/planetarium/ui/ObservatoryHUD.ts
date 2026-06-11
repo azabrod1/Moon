@@ -113,11 +113,14 @@ export class ObservatoryHUD {
    */
   updateMarker(p: SurfaceMarkerPlacement): void {
     if (!this.bracketsEl || !this.reticleEl || !this.chevronEl || !this.discNoteEl || !this.trackPillEl) return;
-    const x = Math.round(p.xPx ?? 0);
-    const y = Math.round(p.yPx ?? 0);
-    const size = Math.round(p.sizePx ?? 0);
-    const angle = Math.round(p.angleDeg ?? 0);
-    const css = `${p.mode}|${x}|${y}|${size}|${angle}`;
+    // Fractional coords, positioned via transform (left/top pixel-snap at
+    // paint): a slow sky crawl must render sub-pixel-smooth, not twitch.
+    // The dedup key quantizes to 0.1 px so steady frames still skip writes.
+    const x = p.xPx ?? 0;
+    const y = p.yPx ?? 0;
+    const size = p.sizePx ?? 0;
+    const angle = p.angleDeg ?? 0;
+    const css = `${p.mode}|${x.toFixed(1)}|${y.toFixed(1)}|${size.toFixed(1)}|${angle.toFixed(1)}`;
     if (css === this.lastMarkerCss) return;
     this.lastMarkerCss = css;
 
@@ -129,31 +132,25 @@ export class ObservatoryHUD {
     this.trackPillEl.style.display = anchored ? '' : 'none';
 
     if (p.mode === 'brackets') {
-      const left = x - size / 2;
       const top = y - size / 2;
-      this.bracketsEl.style.left = `${left}px`;
-      this.bracketsEl.style.top = `${top}px`;
+      this.bracketsEl.style.transform = `translate(${x - size / 2}px, ${top}px)`;
       this.bracketsEl.style.width = `${size}px`;
       this.bracketsEl.style.height = `${size}px`;
       this.anchorCluster(x, top + size);
     } else if (p.mode === 'reticle') {
-      this.reticleEl.style.left = `${x - 6}px`;
-      this.reticleEl.style.top = `${y - 6}px`;
+      this.reticleEl.style.transform = `translate(${x - 6}px, ${y - 6}px)`;
       this.anchorCluster(x, y + 8);
     } else if (p.mode === 'chevron') {
-      this.chevronEl.style.left = `${x - 15}px`;
-      this.chevronEl.style.top = `${y - 15}px`;
       // The ‹ glyph points −x at rotation 0; flip it onto the target bearing.
-      this.chevronEl.style.transform = `rotate(${angle + 180}deg)`;
+      this.chevronEl.style.transform = `translate(${x - 15}px, ${y - 15}px) rotate(${angle + 180}deg)`;
     }
   }
 
   private anchorCluster(xPx: number, belowYPx: number): void {
     if (!this.discNoteEl || !this.trackPillEl) return;
-    this.discNoteEl.style.left = `${xPx}px`;
-    this.discNoteEl.style.top = `${belowYPx + 12}px`;
-    this.trackPillEl.style.left = `${xPx}px`;
-    this.trackPillEl.style.top = `${belowYPx + 32}px`;
+    // translateX(-50%) re-applies the CSS centering the inline transform overrides.
+    this.discNoteEl.style.transform = `translate(${xPx}px, ${belowYPx + 12}px) translateX(-50%)`;
+    this.trackPillEl.style.transform = `translate(${xPx}px, ${belowYPx + 32}px) translateX(-50%)`;
   }
 
   /** 8 Hz text pass — no layout writes besides the FOV mark position. */

@@ -1366,8 +1366,9 @@ export class PlanetariumMode {
         if (proj.ndcZ < 1 && proj.x >= 0 && proj.x <= w && proj.y >= 0 && proj.y <= h) {
           const el = this.ensureFootprintReticleEl();
           if (el) {
-            el.style.left = `${proj.x - 6}px`;
-            el.style.top = `${proj.y - 6}px`;
+            // Transform, not left/top: layout offsets pixel-snap at paint and
+            // the spot's slow crawl would twitch (design-brief #27).
+            el.style.transform = `translate(${proj.x - 6}px, ${proj.y - 6}px)`;
             el.style.display = '';
             reticleVisible = true;
           }

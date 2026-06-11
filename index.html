@@ -881,7 +881,13 @@
       visibility: hidden; opacity: 0; transition: opacity 0.3s ease, visibility 0s 0.3s;
     }
     #surface-hud.visible { visibility: visible; opacity: 1; transition: opacity 0.6s ease 0.45s, visibility 0s; }
-    .shud-brackets { position: absolute; opacity: 0.4; animation: shud-breathe 3.6s ease-in-out infinite; }
+    /* Markers position via inline transform with left/top pinned to 0: layout
+       offsets pixel-snap at paint, so a slow sky crawl (Phobos moves ~2 px/s
+       at realtime in a 3° FOV) read as twitching. The breathe animation owns
+       transform, so it lives on an inner <b> wrapper, not the positioned box. */
+    .shud-brackets { position: absolute; left: 0; top: 0; }
+    .shud-brackets b, .shud-reticle b { position: absolute; inset: 0; display: block; animation: shud-breathe 3.6s ease-in-out infinite; }
+    .shud-brackets b { opacity: 0.4; }
     .shud-brackets i { position: absolute; width: 18px; height: 18px; border: 1px solid rgba(220, 230, 255, 0.85); font-style: normal; }
     .shud-brackets i:nth-child(1) { top: 0; left: 0; border-right: none; border-bottom: none; border-top-left-radius: 4px; }
     .shud-brackets i:nth-child(2) { top: 0; right: 0; border-left: none; border-bottom: none; border-top-right-radius: 4px; }
@@ -890,9 +896,10 @@
     @keyframes shud-breathe { 0%, 100% { opacity: 0.42; transform: scale(1); } 50% { opacity: 0.22; transform: scale(1.025); } }
     /* Sub-resolution target marker: hairline circle + 4 ticks, center
        deliberately empty (no fabricated dot of light). Distinct from a star. */
-    .shud-reticle { position: absolute; width: 12px; height: 12px; border: 1px solid rgba(220, 230, 255, 0.8); border-radius: 50%; opacity: 0.75; animation: shud-breathe 3.6s ease-in-out infinite; }
+    .shud-reticle { position: absolute; left: 0; top: 0; width: 12px; height: 12px; }
+    .shud-reticle b { border: 1px solid rgba(220, 230, 255, 0.8); border-radius: 50%; opacity: 0.75; }
     /* Standalone (non-HUD) instance over the canvas: the shadow-guide footprint marker. */
-    .shadow-fp-reticle { position: fixed; z-index: 8; pointer-events: none; }
+    .shadow-fp-reticle { position: fixed; left: 0; top: 0; z-index: 8; pointer-events: none; }
     .shud-reticle i { position: absolute; background: rgba(220, 230, 255, 0.8); }
     .shud-reticle i:nth-child(1) { left: 50%; top: -6px; width: 1px; height: 4px; margin-left: -0.5px; }
     .shud-reticle i:nth-child(2) { left: 50%; bottom: -6px; width: 1px; height: 4px; margin-left: -0.5px; }
@@ -900,7 +907,7 @@
     .shud-reticle i:nth-child(4) { top: 50%; right: -6px; height: 1px; width: 4px; margin-top: -0.5px; }
     /* Off-frame tracked target: edge chevron pointing toward it. */
     .shud-chevron {
-      position: absolute; width: 30px; height: 30px; padding: 0; cursor: pointer;
+      position: absolute; left: 0; top: 0; width: 30px; height: 30px; padding: 0; cursor: pointer;
       background: rgba(10, 14, 26, 0.55); border: 1px solid rgba(140, 160, 200, 0.25);
       border-radius: 50%; color: rgba(220, 230, 255, 0.85); pointer-events: auto;
       display: flex; align-items: center; justify-content: center;
@@ -908,12 +915,12 @@
     .shud-chevron:hover { border-color: rgba(124, 154, 255, 0.5); }
     .shud-chevron i { font-style: normal; font-size: 15px; line-height: 1; transform: translateY(-1px); }
     .shud-discnote {
-      position: absolute; transform: translateX(-50%); white-space: nowrap;
+      position: absolute; left: 0; top: 0; transform: translateX(-50%); white-space: nowrap;
       font-family: var(--obs-mono); font-size: 10px; letter-spacing: 0.08em;
       color: var(--obs-t3); text-transform: uppercase;
     }
     .shud-trackpill {
-      position: absolute; transform: translateX(-50%);
+      position: absolute; left: 0; top: 0; transform: translateX(-50%);
       display: flex; align-items: center; gap: 7px; padding: 5px 12px; border-radius: 999px;
       background: rgba(8, 10, 20, 0.4); border: 1px solid var(--obs-hairline-dim);
       backdrop-filter: blur(8px); font-size: 10px; letter-spacing: 0.14em; text-transform: uppercase;
@@ -2325,13 +2332,13 @@
            reused as a marker over a transit footprint whose true-scale rings
            collapsed below resolvability (a label, not geometry). Positioned
            per frame by PlanetariumMode in both landed-orbit and surface views. -->
-      <div class="shud-reticle shadow-fp-reticle" id="shadow-footprint-reticle" style="display:none"><i></i><i></i><i></i><i></i></div>
+      <div class="shud-reticle shadow-fp-reticle" id="shadow-footprint-reticle" style="display:none"><b><i></i><i></i><i></i><i></i></b></div>
 
       <!-- Surface-view HUD (Observatory "Look up"): brackets on the tracked
            target, narrative stack, FOV cluster, top-right chips. -->
       <div id="surface-hud">
-        <div class="shud-brackets" id="surface-brackets" style="display:none"><i></i><i></i><i></i><i></i></div>
-        <div class="shud-reticle" id="surface-reticle" style="display:none"><i></i><i></i><i></i><i></i></div>
+        <div class="shud-brackets" id="surface-brackets" style="display:none"><b><i></i><i></i><i></i><i></i></b></div>
+        <div class="shud-reticle" id="surface-reticle" style="display:none"><b><i></i><i></i><i></i><i></i></b></div>
         <button class="shud-chevron" id="surface-chevron" style="display:none" title="Target off frame — resume tracking"><i>&#x2039;</i></button>
         <div class="shud-discnote" id="surface-discnote" style="display:none"></div>
         <button class="shud-trackpill" id="surface-trackpill" style="display:none"><i>&#x2316;</i><span id="surface-trackpill-text"></span></button>

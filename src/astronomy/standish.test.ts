@@ -126,10 +126,11 @@ function fixture(body: string, jdTdb: number): HorizonsFixture {
 
 describe('Horizons fixture self-checks', () => {
   it('keeps every fixture near the ecliptic (axis-order tripwire)', () => {
-    // An (x, y, z) → (x, z, y) mapping mistake moves heliocentric *longitude*
-    // into the scene's north component and blows this up for almost every row;
-    // unlike a longitude comparison it cannot be fooled by along-track element
-    // error. Max real value: Pluto at 15.6°.
+    // Forgetting the y/z swap — passing Horizons (x, y, z) straight through —
+    // moves heliocentric *longitude* into the scene's north component and
+    // blows this up for almost every row; unlike a longitude comparison it
+    // cannot be fooled by along-track element error. (The z *sign* is the
+    // chirality pin's job, not this one's.) Max real value: Pluto at 15.6°.
     for (const f of [...HELIO_FIXTURES, ...MOON_FIXTURES]) {
       const scene = new THREE.Vector3(f.x, f.z, -f.y); // intermediate ecliptic frame
       const latDeg = Math.asin(scene.y / scene.length()) * RAD;

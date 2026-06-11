@@ -55,6 +55,7 @@ import { Constellations } from './Constellations';
 import { getMoonsByPlanet, type MoonData } from './planets/moonData';
 import {
   HISTORIC_JOURNEYS,
+  INTERSTELLAR_SCENE_POSITION,
   type HistoricJourney,
   type HistoricMissionId,
   type HistoricMilestone,
@@ -151,7 +152,7 @@ export class PlanetariumMode {
   private shadowVisuals = new ShadowVisuals();
   private showShadowCones = false;
   private tmpLockToParent = new THREE.Vector3();
-  private tmpLockEast = new THREE.Vector3();
+  private tmpLockBasisZ = new THREE.Vector3();
   private tmpLockUp = new THREE.Vector3();
   private tmpLockBasis = new THREE.Matrix4();
 
@@ -810,14 +811,15 @@ export class PlanetariumMode {
     rollNorth: THREE.Vector3,
   ) {
     const toParent = this.tmpLockToParent.copy(offsetFromParent).multiplyScalar(-1).normalize();
-    // "east" is the basis Z column = toParent×up; it holds *texture* longitude
-    // 90°W (geographic east on the body is its negation). Only the RH-ness of
-    // the basis matters: X×Y=Z keeps det(+1), so textures are never mirrored.
-    const east = this.tmpLockEast.crossVectors(toParent, rollNorth);
-    if (east.lengthSq() < 1e-10) return; // unreachable for valid orbit geometry; cheap safety
-    east.normalize();
-    const up = this.tmpLockUp.crossVectors(east, toParent);
-    mesh.quaternion.setFromRotationMatrix(this.tmpLockBasis.makeBasis(toParent, up, east));
+    // The basis Z column = toParent×up holds *texture* longitude 90°W, not
+    // geographic east (east is its negation, pole×prime — same naming note as
+    // buildPoleBasisQuaternion in planetary.ts). Only the RH-ness of the
+    // basis matters: X×Y=Z keeps det(+1), so textures are never mirrored.
+    const basisZ = this.tmpLockBasisZ.crossVectors(toParent, rollNorth);
+    if (basisZ.lengthSq() < 1e-10) return; // unreachable for valid orbit geometry; cheap safety
+    basisZ.normalize();
+    const up = this.tmpLockUp.crossVectors(basisZ, toParent);
+    mesh.quaternion.setFromRotationMatrix(this.tmpLockBasis.makeBasis(toParent, up, basisZ));
   }
 
   /**
@@ -2229,8 +2231,9 @@ export class PlanetariumMode {
   private getHistoricDestination(milestone: HistoricMilestone) {
     if (milestone.customScenePosition || milestone.target === 'Interstellar' || milestone.target === 'Custom') {
       if (this.landedOn) this.exitLandedMode();
+      const coords = milestone.customScenePosition ?? INTERSTELLAR_SCENE_POSITION;
       return {
-        targetPosition: this.vectorFromCoords(milestone.customScenePosition, new THREE.Vector3(118, 6, 18)),
+        targetPosition: new THREE.Vector3(coords.x, coords.y, coords.z),
         lookTarget: this.vectorFromCoords(milestone.customLookTarget, new THREE.Vector3(0, 0, 0)),
       };
     }

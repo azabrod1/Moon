@@ -8,9 +8,9 @@ import { CONSTELLATIONS } from './data/constellations';
 import { BRIGHT_STAR_CATALOG } from './data/brightStars';
 import { projectToScreen } from '../shared/three/projectToScreen';
 import { raDecToVector } from '../astronomy/planetary';
+import { STAR_SPHERE_RADIUS } from './world/starfield';
 import { DEG2RAD, RAD2DEG } from '../shared/math/angles';
 
-const STAR_SPHERE_RADIUS = 85;
 const SNAP_RADIUS_DEG = 3; // max degrees to snap a constellation vertex to a catalog star
 const LINE_COLOR = 0x6688bb;
 const LINE_OPACITY = 0.28;

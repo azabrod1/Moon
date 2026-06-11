@@ -7,6 +7,10 @@ import * as THREE from 'three';
 import { BRIGHT_STAR_CATALOG } from '../data/brightStars';
 import { raDecToVector } from '../../astronomy/planetary';
 
+/** Celestial-sphere radius (AU) shared by the stars and the constellation
+ *  overlay (Constellations.ts) — the lines must land on the stars. */
+export const STAR_SPHERE_RADIUS = 85;
+
 /** Map a stellar colour index (B–V) to an approximate RGB tint. */
 export function getStarColor(colorIndex: number): THREE.Color {
   const clamped = THREE.MathUtils.clamp(colorIndex, -0.3, 1.8);
@@ -34,7 +38,7 @@ export function createPlanetariumStarfield(): THREE.Points {
 
     // raDecToVector is the single chirality definition site — every sky
     // embedding routes through it (build-time allocation is fine here).
-    const position = raDecToVector(star.raDeg, star.decDeg, 85);
+    const position = raDecToVector(star.raDeg, star.decDeg, STAR_SPHERE_RADIUS);
     positions[i * 3] = position.x;
     positions[i * 3 + 1] = position.y;
     positions[i * 3 + 2] = position.z;

@@ -227,10 +227,16 @@ export const PLUTO: PlanetData = {
   rotationPeriodHours: 153.3,
   moons: 5,
   description: 'Dwarf planet at the edge, icy surface',
+  // WGCCRE 2009 right-hand-rule convention (post-2006 dwarf-planet rules):
+  // W = 302.695 + 56.3625225·d about this pole — the rate is POSITIVE by
+  // construction (RHR derives the pole from the spin, so W can never run
+  // backward). The retired pre-2006 convention used the anti-pole (313.02,
+  // +9.09) with a negative rate; mixing the two (this pole, negative rate)
+  // spun Pluto backward — caught in the cycle-2 implementation review.
   poleRaDeg: 132.993,
   poleDecDeg: -6.163,
   primeMeridianDegAtJ2000: 302.695,
-  primeMeridianRateDegPerDay: -56.3625225,
+  primeMeridianRateDegPerDay: 56.3625225,
   systemRadiusAU: 0.02,
 };
 

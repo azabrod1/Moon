@@ -54,6 +54,12 @@ export type HistoricJourney = {
   milestones: HistoricMilestone[];
 };
 
+/** Deep-space vantage for the Voyager-1 "Into Interstellar Space" milestone —
+ *  also PlanetariumMode's fallback for Interstellar/Custom milestones without
+ *  a customScenePosition. One definition: the two copies drifted apart once
+ *  (caught at the cycle-2 chirality flip). */
+export const INTERSTELLAR_SCENE_POSITION = { x: 118, y: 6, z: 18 };
+
 const TEXTURE_BASE = `${import.meta.env.BASE_URL}textures/`;
 const VOYAGER_BASE = `${import.meta.env.BASE_URL}historic/voyager/`;
 const CASSINI_BASE = `${import.meta.env.BASE_URL}historic/cassini/`;
@@ -135,7 +141,7 @@ const voyager1Milestones: HistoricMilestone[] = [
     fallbackImageCredit: 'NASA/JPL-Caltech',
     fallbackImageSourceLabel: 'Voyager Approaches Final Frontier',
     fallbackImageSourceUrl: 'https://science.nasa.gov/photojournal/voyager-approaches-final-frontier-artists-concept/',
-    customScenePosition: { x: 118, y: 6, z: 18 },
+    customScenePosition: INTERSTELLAR_SCENE_POSITION,
     customLookTarget: { x: 0, y: 0, z: 0 },
   },
 ];

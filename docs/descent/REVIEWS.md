@@ -143,6 +143,33 @@ is manual (tagging, aiming), not narrated.
 specced now); mode name → owner question in README (reviewer pitches: Descent / Earthrise / Window
 Seat) — **owner chose "Descent"**; code identifiers `descent`, design branch stays `moonLanding`; scenic-spot content beyond Tranquility → lands with each site pack (P5).
 
+## Round 3 — external review (owner-solicited, ChatGPT)
+
+The owner ran the plan past an external reviewer (which saw a *truncated DESIGN.md only* — no
+TECH/ROADMAP/REVIEWS). Triage of its findings:
+
+**Real catches, accepted and fixed:** (1) **The burn row didn't close** — v1 said the burn ends
+at 437 km while building −1,400 m/s in 90 s; averaging the push costs ~63 km, so the burn ends
+≈ 385 km. Profile re-derived (push −1,450; fall 385→60 km in 3:26; default commit→contact
+8:10, envelope ≈5:45–10:15, ΔV ≈ 4.1); mockup METs updated; the −1,612 m/s readout stays
+exact. Our round-1 astronomy audit verified the fall segment but never re-derived the burn —
+credit where due. (2) "Engine-off fall" vs nudges — nudges are now explicitly cold-gas RCS
+with a budgeted ΔV. (3) Plume glow declared as theatrical license (real vacuum plumes are
+nearly invisible in daylight). (4) First-entry card said MORNING LIGHT while dates default to
+"now" — now BEST LIGHT (AUTO) with the jump labeled. (5) The J2000-vs-Moon-ecliptic frame seam
+needs one tested contract (TECH §2.5). (6) A headless **flight oracle** (1,000 seeded runs
+asserting the invariants) — adopted into TECH §10 + P2 AC.
+
+**Right in spirit, already in the plan it couldn't see:** one-site vertical slice first
+(= P1→P3b; now stated explicitly as "MVP = P3b exit"), corridor-before-sites (P0.5/S3),
+zero-input baseline as a gate (it quoted our own numbers back), HUD staging rule (§4.2),
+activation-await trap (round-1 #10), phased mobile controls.
+
+**Declined as wrong-in-context or nitpick:** "sun elevation ⇒ Earth phase is too compressed"
+(at a fixed site with morning/evening stated, it does pin the phase — App. A says exactly
+that); "plan reuses moonFlight's FlightController" (it doesn't — lifecycle pattern only);
+"zero ambient too absolute" (reworded for clarity, but the renderer claim was correct).
+
 ## Process note
 
 Mockups are generated (`mockups/generate.mjs`), so every numeric fix above was applied to the

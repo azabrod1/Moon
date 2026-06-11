@@ -59,7 +59,12 @@ by `renderer.info.memory` returning to baseline and a moonView visual check afte
 long-exposure mode.
 
 **2.5 Lighting source:** `snapshotLighting(date)` (moonFlight pattern) freezes Sun/Earth at
-entry — also what legalizes baked tile shadows (§4.3).
+entry — also what legalizes baked tile shadows (§4.3). **One frame contract, tested:** the
+repo's astronomy is J2000-pinned while moonFlight's snapshot works in a Moon-centered ecliptic
+frame — Descent defines a single selenographic seam (site → Earth/Sun az-el, star orientation,
+globe texture orientation all through it) with a unit check against DESIGN App. A's anchors
+(Earth at Tranquility = 66.5° el / az ≈ 268°) before P1 ships. Frame mismatches are the
+classic silent-wrongness bug farm.
 
 **2.6 Persistence:** small `descentStore` (localStorage, PlanetariumStore's defensive
 style): stats/medals history, Heritage unlock, HD consent, last site/seat. Write-on-event.
@@ -320,7 +325,12 @@ when `canGPUDoBloom`.
 `?auto=descent&site=tycho&seat=left&t=lowGate` deep links; `?debug=1` adds frame ms,
 resident tiles/VRAM estimate, LOD histogram, guidance phase, exposure value. Determinism
 harness: record seed + input script → replay → screenshot at each beat (procedure lands as
-`QA.md` in P2). `npm run build` (tsc strict) locally before every push — CI runs vite only
+`QA.md` in P2). The 50 Hz sim runs **headless** (no renderer import), enabling the **flight
+oracle**: a script sweeps ~1,000 seeded runs across bias/seats and asserts the invariants —
+always lands; zero-input baseline = FIRM-in-ellipse; commit→contact inside the envelope; fuel
+ledger non-negative (ROADMAP P2 AC). The same harness hosts astronomy checks (site Sun/Earth
+az-el, phase complement, lunar-night detection, next-good-light) and a beat-state test that
+live controls / HUD set / audio eligibility match DESIGN §3's matrix. `npm run build` (tsc strict) locally before every push — CI runs vite only
 (CLAUDE.md), and `noUnusedLocals` is the refactor-leftover net.
 
 ## 11. Risks & spikes

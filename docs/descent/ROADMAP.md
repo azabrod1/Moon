@@ -3,7 +3,8 @@
 Phases are PR-sized, each independently shippable behind the mode's entry point, each with
 acceptance criteria (AC) that are checkable by running the app (no test framework exists —
 see TECH §10 for the QA approach). Order optimizes for **killing risk early** and **having a
-beautiful screenshot at every milestone**.
+beautiful screenshot at every milestone**. **MVP = the exit of P3b**: a one-site (Tranquility),
+Window+Right-Seat vertical slice — everything after it is expansion, not completion.
 
 ---
 
@@ -53,7 +54,9 @@ DescentGuidance + FlightDynamics (fixed-step, deterministic), beat machine throu
 and high gate (incl. **commit windows + arming + skip-to-window**), descent-rate bias +
 cross-range nudge, HUD core (journey tape, speed block + scale-swap blips, compass with
 edge-pinned markers, MET/phase, callout engine v1) in Glass, corridor streaming L6–L9.
-**AC:** commit → contact at default bias = 8:50 ± 20 s, bias endpoints ≈ 6:00 / 10:30; **every
+**AC:** commit → contact at default bias = 8:10 ± 20 s, bias endpoints ≈ 5:45 / 10:15; **the
+headless flight oracle is green** (1,000 seeded rendererless runs across the bias range:
+always lands, zero-input grades FIRM-in-ellipse, envelope held, fuel ledger non-negative); **every
 HUD number cross-checks** (countdowns vs integrator, V-SPD vs altitude math); **a zero-input
 Right Seat run grades FIRM · IN THE ELLIPSE** (never Feather, never on-pad — the felt-agency
 keystone); **guidance drives throttle+attitude through the single engine model** (no direct

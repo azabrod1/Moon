@@ -66,8 +66,10 @@ the one-time download is part of the fiction (mockup `00`):
   down — "GUIDANCE ALIGNING" is honest cover). The first wow happens *during* the download.
 
 **First entry is one card, not a form.** A new player sees a single summary —
-"TRANQUILITY BASE · MORNING LIGHT · RIGHT SEAT — *you steer, guidance keeps you safe*" — with
-a huge arming BEGIN and one CHANGE link that expands the full board. The three-panel board
+"TRANQUILITY BASE · BEST LIGHT (AUTO) · RIGHT SEAT — *you steer, guidance keeps you safe*" — with
+a huge arming BEGIN and one CHANGE link that expands the full board. ("Best light" is the
+next good morning at the site, auto-jumped from "now" when "now" is lunar night — the jump
+is always labeled; "now" and the full date picker live behind CHANGE.) The three-panel board
 (site/light/seat) becomes the default only after the first landing, when medals and the light
 preview have *meaning*. Same DOM, one collapsed state. Seat subtitles are load-bearing
 everywhere they appear: "just watch · cannot fail" / "you steer · it keeps you safe" /
@@ -77,7 +79,7 @@ everywhere they appear: "just watch · cannot fail" / "you steer · it keeps you
 
 Default Right Seat profile. **The trajectory closes** (full derivation in Appendix A): vector
 deorbit burn, then a true engine-off ballistic fall, then a hard braking burn — ~4.0 km/s of
-ΔV, descent (commit → contact) **8:50**, swung **6:00–10:30** by the player's descent-rate
+ΔV, descent (commit → contact) **8:10**, swung **≈5:45–10:15** by the player's descent-rate
 bias. There is no time-warp; the only clock trick in the mode is the *skippable orbital coast*
 below, declared on the REALISM card.
 
@@ -86,12 +88,12 @@ below, declared on the REALISM card.
 | 0:00 | **AOS** | 450 km | Fade in over the far side's last dark kilometers; radio static resolves into a voice; the HUD boots line by line. |
 | 0:10–1:00 | **Earthrise** | 450 km | Earth's blue limb breaks the gray horizon and climbs — full disc in ~50 s (the true rate at this orbit). Free look; a one-time "pinch/scroll to look closer" nudge. |
 | 1:00–3:00 | **The overture** | 450 km | Coasting toward the descent point at 1.50 km/s. Tour-guide radio lines keyed to the geography sliding past (Smythii, Crisium…) — the chatter lives *here*, not in the fall. The COMMIT button is visible and **filling** — "GUIDANCE ALIGNING — DESCENT WINDOW 2:28". The window renders as a **bar with a center tick**: committing dead-center is free; committing at the edges visibly spends ΔV reserve (it feeds the fuel-margin stat) — the ride's first micro-skill. Impatient? **SKIP TO WINDOW** jump-cuts the coast (declared license). Miss it? ~90 s grace, then the radio owns the apology and the HUD shows the next one. |
-| 3:00–4:30 | **The burn** | 450 → 437 km | Commit → 90 s retrograde-and-down vector burn, **ΔV ≈ 2.0 km/s, ~2.2 g sensed** — the seat finally pushes back. Orbit ribbon on the HUD bends to intersect the surface. |
-| 4:30–8:35 | **The long fall** | 437 → 60 km | **Engine cutoff — a thunk, a pump spin-down, then mechanical quiet** (the cabin hiss floor stays; *absolute* silence is saved for contact). Vertical speed builds −1,400 → −1,704 m/s under gravity alone; the Moon inflates from a globe into a *place*. Mid-fall the craft pitches windows-down (soft-recentered look, §3.4). The hands stay busy without breaking the hush: cross-range nudges aimed at the **visible downrange site marker**, **binocular feature-tagging** (hold the glass on a crater and its IAU name resolves — "SPOTTED 4/7" logs to the stats card), the in-flight camera (N). Radio is hard-capped here: one geography line in the first half, then only *"She's straight above you. You'll get her back on the ground."* and, at −45 s, *"Coming up on the wall. Brace."* The dread of the building speed tape **is** the content. HUD label stays plain: **BRAKING BURN 1:14** (the radio is the only one who calls it the wall). |
-| 8:35–9:35 | **The wall** | 60 → 6 km | The braking burn. Ignition **bang** (the one "Brace" promised), **~2.9 g**, one minute of thunder and g-keyed structural creaks, plume glow on the terrain, the speed tape unwinding 1,704 → 140 m/s. The ride's loud counterweight to the quiet fall. |
-| 9:35–10:50 | **High gate** | 6 km → 500 m | Staged as the **arrival beat**: pitch-over rotates the forward horizon into view and the radio names your destination — *"There's your pad — the bright scar at one o'clock"* — the first sight of the ground you'll stand on. Footprint ellipse + hazard tint appear; **redesignation** unlocks (tap/click-drag). Window Seat gets a one-time, dismissible chip: "tap the ground to choose your spot — or just enjoy the ride." The most "pilot" moment. |
-| 10:50–11:50 | **Low gate & final** | 500 → 0 m | Vertical descent, V-SPD capped −30 m/s then tapering. Approach furniture retires; **big docked AGL/V-SPD digits** appear by the reticle. At ~40 m the **dust** starts — ballistic radial sheets, not billows — washing out the surface exactly when you need instruments most. Radar callouts: *"30 meters — down at 2½ — dust visible — trust the tape."* |
-| 11:50 | **Contact** | 0 m | Probe light, engine stop — and **everything cuts, including the cabin hiss you'd stopped hearing.** That subtraction is what makes the silence audible. The dust drops out of the sky. **6–8 seconds.** |
+| 3:00–4:30 | **The burn** | 450 → ≈385 km | Commit → 90 s retrograde-and-down vector burn, **ΔV ≈ 2.0 km/s, ~2.3 g sensed** — the seat finally pushes back, and the push itself spends **~63 km of altitude** while the descent rate builds (the table's honesty checkpoint). Orbit ribbon on the HUD bends to intersect the surface. |
+| 4:30–7:55 | **The long fall** | 385 → 60 km | **Engine cutoff — a thunk, a pump spin-down, then mechanical quiet** (the cabin hiss floor stays; *absolute* silence is saved for contact). Vertical speed builds −1,450 → −1,704 m/s under gravity alone; the Moon inflates from a globe into a *place*. Mid-fall the craft pitches windows-down (soft-recentered look, §3.4). The hands stay busy without breaking the hush: **RCS** cross-range nudges (cold-gas thumps — the *main engine* stays off; a small, budgeted ΔV) aimed at the **visible downrange site marker**, **binocular feature-tagging** (hold the glass on a crater and its IAU name resolves — "SPOTTED 4/7" logs to the stats card), the in-flight camera (N). Radio is hard-capped here: one geography line in the first half, then only *"She's straight above you. You'll get her back on the ground."* and, at −45 s, *"Coming up on the wall. Brace."* The dread of the building speed tape **is** the content. HUD label stays plain: **BRAKING BURN 1:14** (the radio is the only one who calls it the wall). |
+| 7:55–8:55 | **The wall** | 60 → 6 km | The braking burn. Ignition **bang** (the one "Brace" promised), **~2.9 g**, one minute of thunder and g-keyed structural creaks, plume glow on the terrain, the speed tape unwinding 1,704 → 140 m/s. The ride's loud counterweight to the quiet fall. |
+| 8:55–10:10 | **High gate** | 6 km → 500 m | Staged as the **arrival beat**: pitch-over rotates the forward horizon into view and the radio names your destination — *"There's your pad — the bright scar at one o'clock"* — the first sight of the ground you'll stand on. Footprint ellipse + hazard tint appear; **redesignation** unlocks (tap/click-drag). Window Seat gets a one-time, dismissible chip: "tap the ground to choose your spot — or just enjoy the ride." The most "pilot" moment. |
+| 10:10–11:10 | **Low gate & final** | 500 → 0 m | Vertical descent, V-SPD capped −30 m/s then tapering. Approach furniture retires; **big docked AGL/V-SPD digits** appear by the reticle. At ~40 m the **dust** starts — ballistic radial sheets, not billows — washing out the surface exactly when you need instruments most. Radar callouts: *"30 meters — down at 2½ — dust visible — trust the tape."* |
+| 11:10 | **Contact** | 0 m | Probe light, engine stop — and **everything cuts, including the cabin hiss you'd stopped hearing.** That subtraction is what makes the silence audible. The dust drops out of the sky. **6–8 seconds.** |
 | after | **The landing, staged** | 0 m | The first sound is one **cooling-hull tick** (the temperature story, audible). The camera **soft-drifts up to Earth** over ~6–8 s — interruptible the instant you touch anything (free look is never locked) — *then* the radio: *"Tranquility, we copy you down. Enjoy the view."* The stats card waits for your **first input** (or ~15 s). The summit is an image, not a UI screen. |
 | after | **Stillness** | 0 m | Free look; Earth fixed at the site's true azimuth/elevation — a fact the game never *prints*, only proves. Contextual chips (mobile-first, faint): **NIGHT EXPOSURE** (long-exposure — the Milky Way blooms), **TIME-LAPSE** (the stars wheel while Earth holds perfectly still), **PHOTO** (nameplate, §1.4); desktop keys L/T/N do the same. Stay as long as you want. |
 
@@ -188,7 +190,9 @@ REALISM card says exactly that.
 
 ### 2.3 Light, shadow, exposure
 
-- **One light.** The Sun, white and harsh. **Zero ambient.**
+- **One light.** The Sun, white and harsh. **No constant ambient term** — every photon of
+  fill is accounted for (earthshine and the surge below; real secondary regolith bounce is
+  small and out of scope).
 - **Earthshine** — the second light: faint blue-gray fill from Earth's direction, scaled by
   Earth's phase (full Earth lights the lunar night ~40× brighter than full moonlight lights
   Earth; ~10–15 lux vs 130,000 lux of sunlight). Boosted ~3× over physical for shadow
@@ -442,6 +446,7 @@ instant settling; Apollo's low-sun landing doctrine.
 | "High gate / low gate" used at ~3×/3× Apollo's altitudes (P64 pitch-over was ~2.2 km; low gate ~150 m) | Borrowed vocabulary at our trajectory's scale, named honestly |
 | Procedural terrain below real data resolution (statistical, deterministic) | No global data exists at that scale; we never invent *named* features |
 | Idealized instruments (surface temp, hazard map) | 2070 tourist craft; Diviner and ALHAT are real systems we're "productizing" |
+| Visible engine glare/plume light on the terrain during the burns | Real vacuum plumes are nearly invisible in daylight; the glow is theatrical |
 
 ---
 
@@ -485,14 +490,17 @@ Horizon √(h(2R+h)): **1,329 km** from 450 km; **2.6 km** at 2 m eye height. v_
 1.9° disc clears the limb in **~49 s**. Ground speed 1.19 km/s ⇒ the 300 km overture to the
 descent window takes ~3 min (or one button press).
 
-**The descent closes.** Free-fall from rest at 450 km (radial Kepler): **904 s = 15.1 min**,
-impact 1.077 km/s — hence powered compression. Default profile: vector burn 90 s (kill 1,497 →
-60 m/s horizontal, push −1,400 m/s vertical; ΔV ≈ 2.0 km/s; sensed ~2.2 g) → ballistic 437 →
-60 km in 245 s (v_v → −1,704 m/s = −6,130 km/h) → wall burn 59 s, 60 → 6 km, −1,704 → −140
-(≈ 2.9 g; ΔV ≈ 1.68) → approach 76 s to 500 m (−30 m/s) → final 60 s to contact (−2 m/s).
-**Commit → contact 8:50; ΔV ≈ 4.0 km/s.** Bias envelope: ~6:00 at ≈ 5.0 km/s ↔ ~10:30 at
-≈ 3.3 km/s (impulsive bounds + finite-burn losses). Mockup cross-checks: at 180.4 km coasting,
-v_v = √(1,400² + 2·1.24·(437−180)·10³) ≈ **−1,612 m/s**, wall arrival in **74 s** ✓.
+**The descent closes** (re-derived after an external review caught v1's burn ending 13 km
+lower despite a −1,400 m/s push — averaging the push over 90 s costs ~63 km, not 13). Free-fall
+from rest at 450 km (radial Kepler): **904 s = 15.1 min**, impact 1.077 km/s — hence powered
+compression. Default profile: vector burn 90 s (kill 1,497 → 60 m/s horizontal, build
+−1,450 m/s vertical; mean v_v ≈ −700 ⇒ **burn ends ≈ 385 km**; ΔV ≈ 2.04 km/s; sensed ~2.3 g)
+→ ballistic 385 → 60 km in 206 s (v_v → −1,704 m/s = −6,130 km/h) → wall burn 59 s, 60 → 6 km,
+−1,704 → −140 (≈ 2.9 g; ΔV ≈ 1.67) → approach 76 s to 500 m (−30 m/s) → final 60 s to contact
+(−2 m/s). **Commit → contact 8:11 ≈ 8:10; ΔV ≈ 4.1 km/s.** Bias envelope: ~5:45 at ≈ 5.0 km/s
+↔ ~10:15 at ≈ 3.4 km/s (impulsive bounds + finite-burn losses). Mockup cross-checks: at
+180.4 km coasting, v_v = √(1,450² + 2·1.24·(385−180.4)·10³) ≈ **−1,615 m/s** (HUD shows
+−1,612), wall arrival in **73 s** ✓.
 
 **Earth & Sun from the Moon.** Earth 1.90° (3.67× the Moon-from-Earth, ~13× area); ≈ 55 px at
 1080p/60° *horizontal* FOV (31 px at 60° vertical — convention matters, both quoted). Sun

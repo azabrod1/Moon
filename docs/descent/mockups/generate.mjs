@@ -651,7 +651,7 @@ function sceneLongFall(t) {
     { frac: 0.94, kind: 'earth', label: 'EARTH 79° UP' },
   ], 64, ['E', 'SE', 'S', 'SW', 'W']);
   // instruments speak plainly; only the radio calls it "the wall" (DESIGN §4.2)
-  s += metBlock(t, { met: 'T+07:21', phase: 'THE LONG FALL · ENGINE OFF', next: 'BRAKING BURN 1:14' });
+  s += metBlock(t, { met: 'T+06:44', phase: 'THE LONG FALL · ENGINE OFF', next: 'BRAKING BURN 1:13' });
   s += journeyTape(t, {
     value: '180.4', unit: 'KM', source: 'ORBITAL', dotFrac: 0.34, phaseIdx: 2,
     ticks: [[0.06, '400'], [0.22, '200'], [0.4, '60'], [0.58, '10'], [0.78, '1'], [0.95, '0']],
@@ -678,7 +678,7 @@ function sceneLongFall(t) {
   }
   const cap = t.name === 'heritage'
     ? 'MOCKUP 02B · THE LONG FALL · HERITAGE SKIN (art direction B): phosphor, scanlines, DSKY · same layout grid as Glass'
-    : 'MOCKUP 02 · THE LONG FALL · GLASS HUD (A) · ballistic coast 180.4 km, V-SPD −1,612 m/s ⇒ braking burn (60 km) in 74 s — numbers cross-check · cross-lit, 60° hFOV · no stars over sunlit ground';
+    : 'MOCKUP 02 · THE LONG FALL · GLASS HUD (A) · ballistic coast 180.4 km, V-SPD −1,612 m/s ⇒ braking burn (60 km) in 73 s — numbers cross-check · cross-lit, 60° hFOV · no stars over sunlit ground';
   s += captionStrip(cap);
   return s + svgClose;
 }
@@ -711,7 +711,7 @@ function sceneFinalApproach() {
     { frac: 0.5, kind: 'site', label: 'PAD' },
     { frac: 0.94, kind: 'earth', label: 'EARTH 79° UP' },
   ], 64, ['E', 'SE', 'S', 'SW', 'W']);
-  s += metBlock(t, { met: 'T+11:36', phase: 'FINAL · RADAR', next: 'CONTACT ~0:14' });
+  s += metBlock(t, { met: 'T+10:56', phase: 'FINAL · RADAR', next: 'CONTACT ~0:14' });
   s += journeyTape(t, {
     value: '31', unit: 'M', source: 'RADAR AGL', dotFrac: 0.93, phaseIdx: 4,
     ticks: [[0.06, '400 KM'], [0.3, '60 KM'], [0.55, '2 KM'], [0.78, '100'], [0.93, '30'], [0.99, '0']],
@@ -753,7 +753,7 @@ function sceneStillness() {
   </g>`;
 
   // near-zero HUD
-  s += text(W / 2, 60, 'CONTACT · ENGINE STOP · T+11:50', { size: 22, fill: t.ink, anchor: 'middle', bold: true, glow: true, spacing: 4 });
+  s += text(W / 2, 60, 'CONTACT · ENGINE STOP · T+11:10', { size: 22, fill: t.ink, anchor: 'middle', bold: true, glow: true, spacing: 4 });
   s += text(W / 2, 88, 'TRANQUILITY BASE · 0.674° N  23.473° E · EARTH 66° UP, AZIMUTH 268°', { size: 14, fill: t.dim, anchor: 'middle' });
   s += text(1240, 330, 'EARTH · 384,400 KM · GIBBOUS 61%', { size: 13, fill: t.faint, anchor: 'middle' });
 
@@ -763,7 +763,7 @@ function sceneStillness() {
   s += text(cx2 + 24, cy2 + 36, 'TOUCHDOWN', { size: 15, fill: t.faint, spacing: 6 });
   const rows = [
     ['VERTICAL AT CONTACT', '-1.8 M/S'], ['TILT', '2.1°'], ['DIST FROM PAD', '412 M'],
-    ['PEAK G (THE WALL)', '2.9 G'], ['DESCENT', '8:50'], ['MISSION', '11:50'],
+    ['PEAK G (THE WALL)', '2.9 G'], ['DESCENT', '8:10'], ['MISSION', '11:10'],
   ];
   rows.forEach(([k, v], i) => {
     const y = cy2 + 66 + i * 25;

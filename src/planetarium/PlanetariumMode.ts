@@ -71,6 +71,7 @@ import {
   SURFACE_FOV_MIN_DEG,
   SURFACE_TARGET_ELEVATION_DEG,
   surfaceAltitudeAU,
+  surfaceEventExpectation,
   surfaceEventNarrative,
   transportTrackingUp,
   type SurfaceEntryContext,
@@ -3089,6 +3090,10 @@ export class PlanetariumMode {
     if (event) {
       headline = PlanetariumMode.shadowEventLabel(event.spec);
       subText = this.surfaceNarrative(event.spec);
+      // "What you'll see" (design-brief #28): without it, an honest penumbral
+      // dimming reads as nothing-happened while you watch.
+      const hint = this.eventExpectation(event);
+      if (hint) subText += ` — ${hint}`;
       subWarm = PlanetariumMode.peakCountdown(now, event);
     } else {
       const subject = this.buildObservatorySubject();
@@ -3206,7 +3211,7 @@ export class PlanetariumMode {
     return magnitude !== undefined ? `mag ${magnitude.toFixed(2)}` : null;
   }
 
-  /** Jump toast: date first, then present-tense narration + classification. */
+  /** Jump toast: date first, then narration + classification + what-you'll-see. */
   private describeShadowEvent(event: ShadowEvent): string {
     const spec = event.spec;
     const narration =
@@ -3218,7 +3223,15 @@ export class PlanetariumMode {
     let text = `${formatUtcLabel(event.peakUtcMs)} — ${narration} · ${event.classification}`;
     const magnitudeText = PlanetariumMode.eventMagnitudeText(event);
     if (magnitudeText) text += ` (${magnitudeText})`;
+    const hint = this.eventExpectation(event);
+    if (hint) text += ` · ${hint}`;
     return text;
+  }
+
+  /** Observer-conditioned "what you'll see" for an event, '' off-surface. */
+  private eventExpectation(event: ShadowEvent): string {
+    const landed = this.surfaceLandedInfo();
+    return landed ? surfaceEventExpectation(landed, event.spec, event.classification) : '';
   }
 
   /**
@@ -3335,6 +3348,7 @@ export class PlanetariumMode {
         event: e,
         label: PlanetariumMode.shadowEventLabel(e.spec),
         classification: e.classification,
+        hint: this.eventExpectation(e),
         magnitudeText: PlanetariumMode.eventMagnitudeText(e),
         discDeg,
         speck: isBelowResolutionAtMaxZoom(discDeg),

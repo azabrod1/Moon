@@ -54,6 +54,8 @@ export interface ObservatoryEventRow {
   event: ShadowEvent;
   label: string;
   classification: string;
+  /** Observer-conditioned "what you'll see" one-liner ('' when unknown). */
+  hint: string;
   /** 'mag 1.10' — Earth system only; generic systems keep the badge alone. */
   magnitudeText: string | null;
   /** Apparent ∅ of the body this event is watched on, from the current
@@ -376,6 +378,13 @@ export class ObservatoryPanel {
       const badgeEl = document.createElement('span');
       badgeEl.className = 'obs-badge';
       badgeEl.textContent = row.classification;
+      // "What you'll see" rides the row as a tooltip for now — the jump toast
+      // and surface-HUD subline carry it in full; an in-row treatment is the
+      // design pass's call (density, brief #5).
+      if (row.hint) {
+        rowEl.title = row.hint;
+        badgeEl.title = row.hint;
+      }
       const timeEl = document.createElement('span');
       timeEl.className = 'obs-ev-time';
       timeEl.textContent = row.magnitudeText

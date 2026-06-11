@@ -26,6 +26,7 @@ import {
   SURFACE_MIN_ALTITUDE_AU,
   SURFACE_TARGET_ELEVATION_DEG,
   surfaceAltitudeAU,
+  surfaceEventExpectation,
   surfaceEventNarrative,
   transportTrackingUp,
   type SurfaceEventInfo,
@@ -141,6 +142,70 @@ describe('surfaceEventNarrative — observer/event relationship, not camera targ
 
   it("Earth's Moon keeps its article", () => {
     expect(surfaceEventNarrative(onEarth, lunarEclipse)).toBe("The Moon is in Earth's shadow");
+  });
+});
+
+describe("surfaceEventExpectation — honest what-you'll-see per kind (brief #28)", () => {
+  const phobosEclipse: SurfaceEventInfo = { kind: 'eclipse', parentPlanet: 'Mars', moonName: 'Phobos' };
+  const phobosTransit: SurfaceEventInfo = { kind: 'shadow-transit', parentPlanet: 'Mars', moonName: 'Phobos' };
+  const onMars: SurfaceLandedInfo = { type: 'planet', name: 'Mars' };
+  const onDeimos: SurfaceLandedInfo = { type: 'moon', name: 'Deimos', parentPlanet: 'Mars' };
+  const onPhobos: SurfaceLandedInfo = { type: 'moon', name: 'Phobos', parentPlanet: 'Mars' };
+
+  it("the trigger case: a penumbral eclipse watched from the parent admits it's subtle", () => {
+    // Alex watched a penumbral Phobos eclipse from Mars and asked "what am I
+    // supposed to see" — the honest answer belongs in the UI, not a surprise.
+    expect(surfaceEventExpectation(onMars, phobosEclipse, 'penumbral')).toBe(
+      'subtle dimming only, easy to miss',
+    );
+  });
+
+  it('watched eclipses scale with classification; only Earth\'s Moon goes blood-red', () => {
+    expect(surfaceEventExpectation(onMars, phobosEclipse, 'total')).toBe('fades to black at totality');
+    expect(surfaceEventExpectation(onEarth, lunarEclipse, 'total')).toBe('turns blood-red at totality');
+    expect(surfaceEventExpectation(onEarth, lunarEclipse, 'partial')).toBe('partly darkened at peak');
+    expect(surfaceEventExpectation(onEuropa, ioEclipse, 'annular')).toBe('dims, never fully dark');
+  });
+
+  it('standing in the shadow spot, a transit reads as the solar eclipse seen from there', () => {
+    expect(surfaceEventExpectation(onEarth, solarEclipse, 'total')).toBe(
+      'the Sun is fully covered at peak',
+    );
+    expect(surfaceEventExpectation(onEarth, solarEclipse, 'annular')).toBe(
+      'a ring of Sun remains around the Moon at peak',
+    );
+    // Phobos' umbra never reaches Mars — its transits are annular at best.
+    expect(surfaceEventExpectation(onMars, phobosTransit, 'annular')).toBe(
+      'a ring of Sun remains around Phobos at peak',
+    );
+    expect(surfaceEventExpectation(onMars, phobosTransit, 'partial')).toBe(
+      'the Sun is only partly covered, no darkness',
+    );
+  });
+
+  it('on the involved moon, hints are personal and follow the geometry', () => {
+    expect(surfaceEventExpectation(onMoon, lunarEclipse, 'total')).toBe(
+      'the Sun vanishes behind Earth',
+    );
+    expect(surfaceEventExpectation(onMoon, lunarEclipse, 'penumbral')).toBe('daylight barely dims');
+    // Annular immersion means the parent's disc is too small to hide the Sun.
+    expect(surfaceEventExpectation(onPhobos, phobosEclipse, 'annular')).toBe(
+      'a bright ring of Sun remains around Mars',
+    );
+    expect(surfaceEventExpectation(onIo, ioTransit, 'total')).toBe('a crisp dark spot on Jupiter');
+  });
+
+  it('sibling watchers see the shadow on the disc, scaled to its core', () => {
+    expect(surfaceEventExpectation(onDeimos, phobosTransit, 'total')).toBe(
+      'a small dark dot crawling across Mars',
+    );
+    expect(surfaceEventExpectation(onDeimos, phobosTransit, 'partial')).toBe(
+      'a pale grazing shadow, barely visible',
+    );
+  });
+
+  it("classification 'none' yields no hint", () => {
+    expect(surfaceEventExpectation(onMars, phobosEclipse, 'none')).toBe('');
   });
 });
 

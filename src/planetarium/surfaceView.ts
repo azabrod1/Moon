@@ -7,7 +7,7 @@
  * own seams and passes plain vectors in. Unit-tested in surfaceView.test.ts.
  */
 import * as THREE from 'three';
-import { shadowAxisSurfacePoint } from '../astronomy/shadows';
+import { shadowAxisSurfacePoint, type ShadowClassification } from '../astronomy/shadows';
 import { DEG2RAD, RAD2DEG } from '../shared/math/angles';
 
 /** What the surface view points at (resolved to scene positions by the owner). */
@@ -92,6 +92,72 @@ export function surfaceEventNarrative(landed: SurfaceLandedInfo, spec: SurfaceEv
   return spec.kind === 'eclipse'
     ? `${moonDisplay} is in ${spec.parentPlanet}'s shadow`
     : `${moonDisplay}'s shadow is crossing ${spec.parentPlanet}`;
+}
+
+/**
+ * "What you'll see" hint for an event, from this observer (design-brief #28):
+ * a penumbral eclipse honestly renders as a subtle dimming, which reads as
+ * nothing-happened unless the UI says that's the show. Branches mirror
+ * surfaceEventNarrative; phrases stay short (toast/row-friendly) and never
+ * promise drama the classification can't deliver. The engine's transit
+ * classifier never emits 'penumbral' (penumbra-only contact is 'partial');
+ * the branch folds them together defensively.
+ */
+export function surfaceEventExpectation(
+  landed: SurfaceLandedInfo,
+  spec: SurfaceEventInfo,
+  classification: ShadowClassification,
+): string {
+  if (classification === 'none') return '';
+  const parent = spec.parentPlanet;
+  const moonMid =
+    parent === 'Earth' && spec.moonName === 'Moon' ? 'the Moon' : spec.moonName;
+  if (landed.type === 'moon' && landed.name === spec.moonName) {
+    if (spec.kind === 'eclipse') {
+      // You are the eclipsed moon: the parent covers (some of) your Sun.
+      switch (classification) {
+        case 'penumbral': return 'daylight barely dims';
+        case 'partial': return 'the Sun is partly covered';
+        case 'annular': return `a bright ring of Sun remains around ${parent}`;
+        case 'total': return `the Sun vanishes behind ${parent}`;
+      }
+    }
+    // Your own shadow on the parent's disc.
+    switch (classification) {
+      case 'penumbral':
+      case 'partial': return `just a faint penumbral shading on ${parent}`;
+      case 'annular': return 'a soft-edged spot, the dark core falls short';
+      case 'total': return `a crisp dark spot on ${parent}`;
+    }
+  }
+  if (landed.type === 'planet' && landed.name === parent && spec.kind === 'shadow-transit') {
+    // Standing in the shadow spot, watching a solar eclipse.
+    switch (classification) {
+      case 'penumbral':
+      case 'partial': return 'the Sun is only partly covered, no darkness';
+      case 'annular': return `a ring of Sun remains around ${moonMid} at peak`;
+      case 'total': return 'the Sun is fully covered at peak';
+    }
+  }
+  if (spec.kind === 'eclipse') {
+    // Watching the eclipsed moon from the parent or a sibling.
+    switch (classification) {
+      case 'penumbral': return 'subtle dimming only, easy to miss';
+      case 'partial': return 'partly darkened at peak';
+      case 'annular': return 'dims, never fully dark';
+      case 'total':
+        return parent === 'Earth' && spec.moonName === 'Moon'
+          ? 'turns blood-red at totality'
+          : 'fades to black at totality';
+    }
+  }
+  // Watching the shadow crawl the parent's disc from a sibling.
+  switch (classification) {
+    case 'penumbral':
+    case 'partial': return 'a pale grazing shadow, barely visible';
+    case 'annular': return 'a soft shadow dot, no dark core';
+    case 'total': return `a small dark dot crawling across ${parent}`;
+  }
 }
 
 /** Minimum eye height: the camera near plane is 1e-6 AU (~150 km) — stay clear of it. */

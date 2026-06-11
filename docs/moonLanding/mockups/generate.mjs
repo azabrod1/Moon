@@ -15,7 +15,7 @@
  * These are MOCKUPS: hand-tuned theatrical lighting, but every HUD number is
  * physically consistent with DESIGN.md Appendix A.
  */
-import { writeFileSync } from 'node:fs';
+import { writeFileSync, existsSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -23,6 +23,17 @@ const OUT = dirname(fileURLToPath(import.meta.url));
 const W = 1920;
 const H = 1080;
 const MONO = 'DejaVu Sans Mono, Liberation Mono, monospace';
+
+/**
+ * Raster terrain plate (see terrainPlate.mjs) — referenced by filename;
+ * render.mjs inlines it as base64 for resvg. Returns null if not generated,
+ * letting scenes fall back to the vector painters.
+ */
+function plate(name) {
+  return existsSync(join(OUT, name))
+    ? `<image x="0" y="0" width="${W}" height="${H}" href="${name}"/>`
+    : null;
+}
 
 // ---------------------------------------------------------------- utilities
 
@@ -594,7 +605,7 @@ function sceneArrival() {
   // Earth drawn BEFORE the Moon so the dark limb occludes its lower half:
   // mid-Earthrise, the disc straddles the limb (true rise rate 0.039°/s)
   s += earth(620, 700, 38, { darkSide: 'left', seed: 5, lit: 0.61 });
-  s += moonFromOrbit(horizonY, 42);
+  s += plate('plate-01.png') ?? moonFromOrbit(horizonY, 42);
 
   // minimal booting HUD
   s += compassStrip(t, [
@@ -631,7 +642,7 @@ function sceneLongFall(t) {
   let s = svgOpen();
   // sky: black. Stars do NOT render over a sunlit scene (accuracy review) —
   // the low sun announces itself from frame-left instead.
-  s += groundPerspective(horizonY, 77, { sunDx: -1, shadowK: 4.2, craters: 210, RR: 4200 });
+  s += plate('plate-02.png') ?? groundPerspective(horizonY, 77, { sunDx: -1, shadowK: 4.2, craters: 210, RR: 4200 });
   s += sunGlare(t, horizonY - 10, 'left');
 
   s += compassStrip(t, [
@@ -679,7 +690,7 @@ function sceneFinalApproach() {
   const horizonY = 150;
   let s = svgOpen();
   // black sky, no stars over sunlit ground; horizon effectively straight at 31 m
-  s += groundPerspective(horizonY, 99, { sunDx: -1, shadowK: 5.2, craters: 160, boulders: 80, RR: 90000 });
+  s += plate('plate-03.png') ?? groundPerspective(horizonY, 99, { sunDx: -1, shadowK: 5.2, craters: 160, boulders: 80, RR: 90000 });
   s += sunGlare(t, horizonY - 6, 'left');
 
   s += reticle(t, 960, 640, 74, 'SLOPE 1.8°');
@@ -722,12 +733,16 @@ function sceneStillness() {
   const t = GLASS;
   const horizonY = 1004;
   let s = svgOpen();
-  // Earth: lit limb faces the low sun behind the viewer ⇒ rotated phase
-  s += `<g transform="rotate(90 1240 250)">${earth(1240, 250, 38, { darkSide: 'left', seed: 5, lit: 0.61 })}</g>`;
-  s += groundPerspective(horizonY, 123, { sunDx: +1, shadowK: 5.6, craters: 40, boulders: 24, RR: 900000 });
-
-  // distant crater-rim silhouettes on the (straight) horizon
-  s += `<path d="M 0 ${horizonY} L 220 ${horizonY - 8} L 460 ${horizonY - 2} L 700 ${horizonY - 12} L 980 ${horizonY - 3} L 1300 ${horizonY - 9} L 1620 ${horizonY - 2} L 1920 ${horizonY - 6} L 1920 ${horizonY + 3} L 0 ${horizonY + 3} Z" fill="#73737A"/>`;
+  // Earth: lit limb tilted toward the low sun behind the viewer ⇒ rotated phase
+  s += `<g transform="rotate(48 1240 250)">${earth(1240, 250, 38, { darkSide: 'left', seed: 5, lit: 0.61 })}</g>`;
+  const p04 = plate('plate-04.png');
+  if (p04) {
+    s += p04;
+  } else {
+    s += groundPerspective(horizonY, 123, { sunDx: +1, shadowK: 5.6, craters: 40, boulders: 24, RR: 900000 });
+    // distant crater-rim silhouettes on the (straight) horizon
+    s += `<path d="M 0 ${horizonY} L 220 ${horizonY - 8} L 460 ${horizonY - 2} L 700 ${horizonY - 12} L 980 ${horizonY - 3} L 1300 ${horizonY - 9} L 1620 ${horizonY - 2} L 1920 ${horizonY - 6} L 1920 ${horizonY + 3} L 0 ${horizonY + 3} Z" fill="#73737A"/>`;
+  }
   // our shadow runs ahead of us toward the horizon (sun low, directly behind)
   s += `<g fill="#000" opacity="0.7" filter="url(#b2)">
     <path d="M 870 ${H} L 1010 ${H} L 985 ${horizonY + 26} L 925 ${horizonY + 26} Z"/>

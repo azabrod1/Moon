@@ -23,18 +23,24 @@ real LRO terrain, under real ephemeris lighting, with instruments that tell the 
 | `03-final-approach` | 31 m AGL: reticle + big docked digits, radar callouts, ballistic dust (approach furniture retired) |
 | `04-stillness` | Post-landing, looking up: Earth alone in a black daylight sky at her true 66°, stats card |
 
-Mockups are **generated, not drawn** — `mockups/generate.mjs` (zero-dep Node) paints them
-deterministically so they can be tweaked like code:
+Mockups are **generated, not drawn** — and the terrain is a real render:
+`mockups/terrainPlate.mjs` builds an actual heightfield (power-law crater bowls + fBm
+regolith + rocks), hillshades it with **marched cast shadows under the frozen sun**, and
+projects it through a ray-sphere camera (true horizon curvature at every altitude) — i.e.,
+**a working miniature of the exact terrain recipe in TECH §4**. The orbital frame samples the
+repo's real `public/textures/moon.jpg` for albedo. `generate.mjs` lays the vector HUD/sky
+over those plates (and falls back to pure vector if plates are absent):
 
 ```bash
 cd docs/moonLanding/mockups
-node generate.mjs                      # writes the SVGs
-npm i --no-save @resvg/resvg-js        # renderer (not a project dependency)
-node render.mjs                        # SVG → PNG (uses system DejaVu fonts)
+npm i --no-save pngjs jpeg-js @resvg/resvg-js   # ad hoc, not project deps
+node terrainPlate.mjs                  # renders plate-01..04.png (~20 s)
+node generate.mjs                      # writes the SVGs (reference the plates)
+node render.mjs                        # SVG → PNG (inlines plates, system DejaVu fonts)
 ```
 
-They are mockups, not renders: theatrical but consistent lighting, and every HUD number is
-physically consistent (cross-checked in DESIGN Appendix A).
+They are mockups, not engine output: consistent staging and lighting, and every HUD number is
+physically cross-checked (DESIGN Appendix A, REVIEWS.md).
 
 ## Decision log
 

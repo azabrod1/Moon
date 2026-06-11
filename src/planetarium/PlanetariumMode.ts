@@ -266,6 +266,17 @@ export class PlanetariumMode {
   private landedOn: LandedTarget = null;
   private preLandSpeed = 0;
   private preLandAutopilot = false;
+  /** Cruise pose stashed when the Observatory menu grabs the ship out of
+   * flight (an "excursion"): Leave then returns it exactly there instead of
+   * the takeoff vector. Survives vantage swaps and event jumps (re-lands via
+   * applyLandedTarget); session-only by design — never persisted, and cleared
+   * by New Journey, mission start, and deactivate. */
+  private observatoryExcursion: {
+    posX: number; posY: number; posZ: number;
+    heading: number; pitch: number;
+    speedMultiplier: number; systemSpeedMultiplier: number;
+    inSystemMode: boolean; moving: boolean;
+  } | null = null;
   private nearbyLandTarget: NonNullable<LandedTarget> | null = null;
   private travelSelection: NonNullable<LandedTarget> | null = null;
 
@@ -727,6 +738,7 @@ export class PlanetariumMode {
     const shouldResume = await this.resumePrompt.ask(savedState);
     if (!this.active || shouldResume) return;
 
+    this.observatoryExcursion = null;
     if (this.landedOn) {
       this.exitLandedMode();
     }
@@ -743,7 +755,10 @@ export class PlanetariumMode {
   deactivate(): void {
     this.resumePrompt.cancel();
 
-    // Exit landed mode cleanly before deactivation
+    // Exit landed mode cleanly before deactivation. The excursion pose is
+    // session-only — drop it first so the exit (and the save below) keep
+    // today's takeoff state instead of teleporting the ship back to cruise.
+    this.observatoryExcursion = null;
     if (this.landedOn) {
       this.exitLandedMode();
     }
@@ -1676,6 +1691,9 @@ export class PlanetariumMode {
     if (e.key.toLowerCase() === 't') {
       if (this.isMissionActive() || this.landedView === 'surface') return;
       this.toggleTravelMenu();
+      // The toggle focuses the search input; without this the same keystroke
+      // then types "t" into it and the list opens pre-filtered.
+      e.preventDefault();
       return;
     }
 
@@ -2037,6 +2055,8 @@ export class PlanetariumMode {
 
     // New Journey button
     document.getElementById('planetarium-btn-new')?.addEventListener('click', () => {
+      // The reset throws the journey away — the excursion return pose with it.
+      this.observatoryExcursion = null;
       if (this.landedOn) this.exitLandedMode();
       // Discard the pre-mission stash: restoring it would re-land a
       // mission-started-landed player AFTER the landedOn check above, and
@@ -2086,7 +2106,9 @@ export class PlanetariumMode {
     // Autopilot toggle
     document.getElementById('planetarium-btn-autopilot')?.addEventListener('click', () => {
       if (this.isMissionActive()) return;
-      // If landed, take off first so the travel menu can actually fly somewhere.
+      // If landed, take off first so the travel menu can actually fly
+      // somewhere (on an Observatory excursion that's the return-to-cruise
+      // pose — deliberate: leaving by any door goes back where you were).
       if (this.landedOn) this.exitLandedMode();
       this.toggleAutopilot();
     });
@@ -2268,6 +2290,11 @@ export class PlanetariumMode {
       if (this.travelSelection) {
         const sel = this.travelSelection;
         this.closeTravelMenu();
+        // The T-key opens this menu while landed: exit first so the landing
+        // gets the full ceremony — preLand* captured from real flight state,
+        // and any excursion stash consumed rather than outliving its landing
+        // (Leave from the new body must not teleport to a stale cruise pose).
+        if (this.landedOn) this.exitLandedMode();
         this.enterLandedMode(sel);
       }
     });
@@ -2473,6 +2500,17 @@ export class PlanetariumMode {
         this.applyLandedTarget(target);
         this.notification.show(`Standing on ${target.name}`);
       } else {
+        // Excursion entry: the menu grabs the ship out of cruise — remember
+        // the pose so Leave puts it back exactly. Manual/proximity landings
+        // and Land & Orbit keep the classic takeoff (they don't stash).
+        this.observatoryExcursion = {
+          posX: this.player.posX, posY: this.player.posY, posZ: this.player.posZ,
+          heading: this.player.heading, pitch: this.player.pitch,
+          speedMultiplier: this.player.speedMultiplier,
+          systemSpeedMultiplier: this.player.systemSpeedMultiplier,
+          inSystemMode: this.inSystemMode,
+          moving: this.player.moving,
+        };
         this.enterLandedMode(target);
       }
     }
@@ -2536,6 +2574,10 @@ export class PlanetariumMode {
   private async startHistoricJourney(missionId: HistoricMissionId) {
     const journey = HISTORIC_JOURNEYS[missionId];
     await this.player.ensureProfileLoaded(journey.shipProfile);
+    // Missions own the ship from here: drop the excursion return pose BEFORE
+    // exiting landed mode, so the pre-mission stash captures the classic
+    // takeoff state rather than a mid-air teleport back to cruise.
+    this.observatoryExcursion = null;
     this.rememberPreMissionState();
     if (this.landedOn) this.exitLandedMode();
     this.activeHistoricJourney = journey;
@@ -4094,6 +4136,11 @@ export class PlanetariumMode {
     }
     this.notification.show(`Standing on ${companion.name}`);
     this.renderObservatoryPanel();
+    // Row hints/∅ badges are observer-conditioned and baked at publish time —
+    // republish from the cached results so they describe the NEW vantage (the
+    // same penumbral eclipse is "subtle dimming" from Mars but "daylight
+    // barely dims" standing on Phobos).
+    this.publishObservatoryEvents();
   }
 
   exitLandedMode() {
@@ -4103,47 +4150,64 @@ export class PlanetariumMode {
     this.exitSurfaceView(true);
     const bodyName = this.landedOn.name;
 
-    // Get body's current world position
-    const bodyPos = this.getLandedBodyWorldPosition();
-    const radiusAU = this.getLandedBodyRadiusAU();
+    const excursion = this.observatoryExcursion;
+    this.observatoryExcursion = null;
+    if (excursion) {
+      // Observatory excursion: the menu grabbed the ship out of cruise, so
+      // Leave returns it exactly there — pose, speed, motion state — instead
+      // of departing from the body.
+      this.player.posX = excursion.posX;
+      this.player.posY = excursion.posY;
+      this.player.posZ = excursion.posZ;
+      this.player.heading = excursion.heading;
+      this.player.pitch = excursion.pitch;
+      this.player.speedMultiplier = excursion.speedMultiplier;
+      this.player.systemSpeedMultiplier = excursion.systemSpeedMultiplier;
+      this.inSystemMode = excursion.inSystemMode;
+      this.player.moving = excursion.moving;
+    } else {
+      // Get body's current world position
+      const bodyPos = this.getLandedBodyWorldPosition();
+      const radiusAU = this.getLandedBodyRadiusAU();
 
-    if (bodyPos) {
-      // The cruise camera sits camDist behind the player. By facing AWAY
-      // from the body, the camera ends up between the player and the body,
-      // giving a close-up view of the body as you depart.
-      const camDist = 0.000094; // must match resetCruiseCamera
-      let safeDist: number;
-      if (this.landedOn.type === 'planet') {
-        // Camera must clear collision radius
-        const collisionR = this.getPlanetCollisionRadius(radiusAU, this.planetScale);
-        safeDist = camDist + collisionR * 1.5;
-      } else {
-        // Moons: no collision handler, place so camera is close
-        safeDist = camDist * 1.5;
+      if (bodyPos) {
+        // The cruise camera sits camDist behind the player. By facing AWAY
+        // from the body, the camera ends up between the player and the body,
+        // giving a close-up view of the body as you depart.
+        const camDist = 0.000094; // must match resetCruiseCamera
+        let safeDist: number;
+        if (this.landedOn.type === 'planet') {
+          // Camera must clear collision radius
+          const collisionR = this.getPlanetCollisionRadius(radiusAU, this.planetScale);
+          safeDist = camDist + collisionR * 1.5;
+        } else {
+          // Moons: no collision handler, place so camera is close
+          safeDist = camDist * 1.5;
+        }
+
+        // Direction away from Sun (outward from body)
+        const awayDir = new THREE.Vector3(bodyPos.x, bodyPos.y, bodyPos.z);
+        if (awayDir.lengthSq() < 1e-8) awayDir.set(1, 0.1, 0);
+        awayDir.normalize();
+
+        this.player.posX = bodyPos.x + awayDir.x * safeDist;
+        this.player.posY = bodyPos.y + awayDir.y * safeDist;
+        this.player.posZ = bodyPos.z + awayDir.z * safeDist;
+
+        // Head AWAY from the body — camera (behind player) ends up close to body
+        this.player.headToward(
+          this.player.posX + awayDir.x,
+          this.player.posZ + awayDir.z,
+          this.player.posY + awayDir.y,
+        );
       }
 
-      // Direction away from Sun (outward from body)
-      const awayDir = new THREE.Vector3(bodyPos.x, bodyPos.y, bodyPos.z);
-      if (awayDir.lengthSq() < 1e-8) awayDir.set(1, 0.1, 0);
-      awayDir.normalize();
-
-      this.player.posX = bodyPos.x + awayDir.x * safeDist;
-      this.player.posY = bodyPos.y + awayDir.y * safeDist;
-      this.player.posZ = bodyPos.z + awayDir.z * safeDist;
-
-      // Head AWAY from the body — camera (behind player) ends up close to body
-      this.player.headToward(
-        this.player.posX + awayDir.x,
-        this.player.posZ + awayDir.z,
-        this.player.posY + awayDir.y,
-      );
+      // Restore speed and movement — set a gentle system speed for nearby flight
+      this.player.speedMultiplier = Math.max(this.preLandSpeed, PlayerShip.SPEED_DEFAULT);
+      this.player.systemSpeedMultiplier = 0.02; // ~6k km/s — slow near planet
+      this.inSystemMode = true; // force system mode display since we're near the body
+      this.player.moving = true;
     }
-
-    // Restore speed and movement — set a gentle system speed for nearby flight
-    this.player.speedMultiplier = Math.max(this.preLandSpeed, PlayerShip.SPEED_DEFAULT);
-    this.player.systemSpeedMultiplier = 0.02; // ~6k km/s — slow near planet
-    this.inSystemMode = true; // force system mode display since we're near the body
-    this.player.moving = true;
     this.player.group.visible = this.showShip;
     this.updateSpeedSlider();
 

@@ -335,7 +335,15 @@ that's what it shows. Players screenshot these; people will check. (They did —
 
 ## 5. Art direction
 
-### 5.1 Direction A — **"Glass"** (recommended default)
+**Decided: Glass is the default** (owner sign-off), **and Descent owns its design language
+outright.** The mode deliberately does *not* inherit the host app's existing UI styling — the
+owner's call: invent a better theme rather than match the shell. Every surface the player
+touches — pre-flight board, contextual chips, pause sheet, stats card, loading checklist,
+moment nudges — is built in the Glass system below, scoped under the mode's own root class so
+styles bleed in neither direction. If Glass earns it, it can become the app-wide design
+refresh later; that is explicitly out of this mode's scope.
+
+### 5.1 Direction A — **"Glass"** (the default)
 
 Modern crew-vehicle glass cockpit floating on the void: ice-cyan `#BFE7FF` hairlines and text
 on true black; one accent per semantic (amber = next event/warning, green = safe/GO, red =

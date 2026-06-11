@@ -58,10 +58,22 @@ physically cross-checked (DESIGN Appendix A, REVIEWS.md).
 | D7 | Lazy mode chunk + asset packs (pack files + HTTP Range) behind the pre-flight checklist; `activate()` resolves at board-interactive; full disposal incl. shared-renderer state restore | Zero cost to the rest of the app (TECH §2, §5) |
 | D8 | Surface-temp instrument driven by an analytic Diviner-fit model | The requested "cool graphics" made meaningful (DESIGN §4.2) |
 | D9 | **Honest star exposure**: stars never render over sunlit ground; the night side and post-landing long-exposure/time-lapse modes are the payoff | Matches every Apollo surface photo; turns a constraint into a feature (DESIGN §2.2; REVIEWS M4) |
+| D10 | **Glass is the default art direction, and Descent owns its own design language** — no inheritance from the host app's existing UI (owner: "invent a better theme"); Heritage = unlockable skin | Owner decision; DESIGN §5 |
+| D11 | **Assets ship in-repo on GitHub Pages**; promotion to R2/CDN pre-wired behind one base-URL constant, triggered by >~200 MB, bandwidth pressure, or tile-regen git bloat | Owner decision; zero ops + atomic code/asset versioning now, cheap exit later (TECH §5.2) |
 
 ## Open questions for the owner
 
-1. **Art direction default** — Glass (recommended) vs Heritage: see `02` vs `02b`.
-2. **Asset hosting** — start in-repo (~180 MB across packs) vs CDN/release assets from day one (TECH R3/Q2).
+1. ~~Art direction default~~ — **decided: Glass** (owner). And broader: **Descent owns its own
+   design language** — the owner explicitly does *not* want the host app's existing UI style
+   copied ("invent a better theme"). Everything the player touches (pre-flight board, chips,
+   pause sheet, stats card, loading checklist) ships in the Glass system; Heritage remains the
+   unlockable skin. If Glass proves out, it can become the app-wide refresh direction later
+   (out of scope here).
+2. ~~Asset hosting~~ — **decided: start in-repo on GitHub Pages, escape hatch pre-wired.**
+   ~130 MB of packs (≤ 25 MB per file) is comfortably inside Pages limits, zero ops/cost/CORS,
+   and assets version atomically with the code (manifest can never skew from the app).
+   Promotion triggers, any of: total assets > ~200 MB · Pages bandwidth pressure · frequent
+   tile regeneration bloating git history. Then: move packs to Cloudflare R2 (or similar) —
+   a one-line base-URL change in `assets.ts` plus an upload script (TECH §5.2, R5).
 3. Appetite for the **eclipse cameo** (descend inside Earth's shadow) — it's the app's signature theme, but it invalidates the baked sun-shadows, so it ships only with its real price (fade/rebake path) paid (DESIGN §7, TECH §4.3).
 4. ~~The mode's name~~ — **decided: "Descent"** (owner, from the round-2 pitches Descent / Earthrise / Window Seat). Code identifiers are `descent` throughout the plan (`src/descent/`, `?auto=descent`, `DescentMode`); only this design-phase git branch keeps its original `moonLanding` name.

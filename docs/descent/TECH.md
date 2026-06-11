@@ -44,9 +44,12 @@ mid-download (one `AbortController` for the mode; BEGIN arms only when the check
 
 **2.3 UI.** The mode builds its DOM **programmatically** (the `MoonFlightMode.ts:249–283`
 precedent), not as permanent `index.html` sections — keeps ROADMAP P1's "zero descent-mode
-bytes until entry" honest. Entry button beside `#btn-mode-planetarium` (`index.html:1704`);
-`?auto=descent` in `getAutoMode()` (`src/main.ts:911`), plus `&site=&seat=&t=` deep links
-for QA.
+bytes until entry" honest. **Descent ships its own design system** (owner decision, DESIGN §5):
+its stylesheet/tokens live in the mode's chunk, scoped under a single root class (e.g.
+`.descent-root`), with **zero dependence on the app's existing CSS classes** — no inherited
+look, no style bleed in either direction. Entry button beside `#btn-mode-planetarium`
+(`index.html:1704`) is the one shell touchpoint; `?auto=descent` in `getAutoMode()`
+(`src/main.ts:911`), plus `&site=&seat=&t=` deep links for QA.
 
 **2.4 Disposal.** Dispose terrain geometries/textures, KTX2 transcoder workers
 (`setWorkerLimit` honors the mobile budget), synth workers, audio context, DOM, in-flight
@@ -222,10 +225,15 @@ millions.
   = **78 m terraces** across ±10 km of lunar relief. (Fallback: worker-side PNG parse with
   `DecompressionStream` — zero-dep.)
 - Mobile caps: 4k color, 4k sky, no `hd`, halved tile cache.
-- Totals: core + 5 sites ≈ **130 MB** of `public/` — in-repo is fine to start (< 100 MB/file
-  hard limit respected by pack splitting); every fetch goes through one base-URL constant in
-  `assets.ts` so a CDN/release-asset move is a one-line change (and the CLAUDE.md caveat
-  stands: `BASE_URL` paths are invisible to tsc/Vite — verify in the running app).
+- Totals: core + 5 sites ≈ **130 MB** of `public/`. **Hosting decided (owner): in-repo on
+  GitHub Pages** — zero ops/cost/CORS, assets version atomically with the code (manifest can
+  never skew from the deployed app), well inside Pages limits with pack splitting (< 100 MB/
+  file). Every fetch goes through one base-URL constant in `assets.ts`, so promotion to
+  Cloudflare R2 (or similar) is a one-line change plus an upload script. **Promotion triggers,
+  any of:** total assets > ~200 MB (HD pack + growth) · Pages bandwidth pressure · frequent
+  tile regeneration bloating git history (the strongest one — packs are write-once today).
+  (CLAUDE.md caveat stands: `BASE_URL` paths are invisible to tsc/Vite — verify in the running
+  app.)
 - **Experiment E1 (probe before P2):** NASA Trek WMTS streaming for deep-zoom tiles —
   CORS/latency/availability unproven; if it lands, site packs shrink to NAC pads only.
 
@@ -327,8 +335,8 @@ harness: record seed + input script → replay → screenshot at each beat (proc
 | R6 | Mobile OOM / throttling | PR policy, 128² bakes, halved caches, no `hd`, iOS decode spikes watched in P1 |
 | R7 | Procedural seams/pops | world-hashed stamps, apron contract, skirts, hysteresis; CDLOD in reserve |
 | R8 | Scope creep in guidance & radio | DESIGN §9 descope is contractual; callout engine budgeted (P4); Left Seat last (P5) |
-| Q1 | Glass default vs Heritage | DESIGN recommends Glass; owner sign-off wanted |
-| Q2 | Packs in-repo vs CDN day one | start in-repo; revisit at P5 |
+| ~~Q1~~ | Glass default vs Heritage | **Decided: Glass**, and Descent owns its design language (DESIGN §5, README D10) |
+| ~~Q2~~ | Packs in-repo vs CDN day one | **Decided: in-repo on Pages**, R2 promotion pre-wired with triggers (§5.2, README D11) |
 
 ## Appendix — derivations
 

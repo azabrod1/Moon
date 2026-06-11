@@ -118,8 +118,12 @@ function milkyWay(cx, cy, angleDeg, len, width, seed, dimming = 1) {
   return s + '</g>';
 }
 
-/** Earth disc, correct-ish gibbous phase. r is the DISC radius in px. */
-function earth(cx, cy, r, { darkSide = 'left', seed = 5 } = {}) {
+/**
+ * Earth disc. r is the disc radius in px. `lit` = illuminated fraction
+ * (phase complement of the Moon's: sun 10.3° morning at Tranquility ⇒
+ * Moon 39% ⇒ Earth 61% gibbous — see DESIGN App. A).
+ */
+function earth(cx, cy, r, { darkSide = 'left', seed = 5, lit = 0.61 } = {}) {
   const rng = mulberry32(seed);
   const sgn = darkSide === 'left' ? -1 : 1;
   let s = `<g>`;
@@ -136,8 +140,9 @@ function earth(cx, cy, r, { darkSide = 'left', seed = 5 } = {}) {
     const a = rng() * Math.PI * 2, d = rng() * r * 0.75;
     s += `<ellipse cx="${fx(cx + Math.cos(a) * d)}" cy="${fx(cy + Math.sin(a) * d)}" rx="${fx(r * (0.3 + rng() * 0.3))}" ry="${fx(r * (0.07 + rng() * 0.06))}" fill="#FFFFFF" opacity="${fx(0.5 + rng() * 0.3, 2)}" filter="url(#b2)" transform="rotate(${fx(-25 + rng() * 50)} ${fx(cx + Math.cos(a) * d)} ${fx(cy + Math.sin(a) * d)})"/>`;
   }
-  // phase shadow: offset dark disc carves a gibbous terminator
-  s += `<circle cx="${fx(cx + sgn * r * 1.55)}" cy="${cy}" r="${fx(r * 1.42)}" fill="#000208" opacity="0.96" filter="url(#b2)"/>`;
+  // phase shadow: offset dark disc carves the terminator (offset tuned to `lit`)
+  const off = Math.max(0.2, Math.min(1.8, 0.45 + 1.45 * lit));
+  s += `<circle cx="${fx(cx + sgn * r * off)}" cy="${cy}" r="${fx(r * 1.42)}" fill="#000208" opacity="0.96" filter="url(#b2)"/>`;
   s += `</g>`;
   s += `<circle cx="${cx}" cy="${cy}" r="${fx(r + 0.8)}" fill="none" stroke="#9FD0FF" stroke-width="1.2" opacity="0.45" filter="url(#b2)"/>`; // thin atmosphere rim
   return s + '</g>';
@@ -237,9 +242,9 @@ function moonFromOrbit(horizonY, seed) {
  * Perspective ground for the descent frames. Camera pitched down; horizon at
  * horizonY with subtle curvature. Sun low from the left ⇒ long shadows right.
  */
-function groundPerspective(horizonY, seed, { sunDx = -1, shadowK = 4.5, craters = 120, boulders = 0, hazard = false } = {}) {
+function groundPerspective(horizonY, seed, { sunDx = -1, shadowK = 4.5, craters = 120, boulders = 0, RR = 9000 } = {}) {
   const rng = mulberry32(seed);
-  const RR = 9000, cx = W / 2, cy = horizonY + RR;
+  const cx = W / 2, cy = horizonY + RR;
   let s = `<clipPath id="gnd${seed}"><circle cx="${cx}" cy="${cy}" r="${RR}"/></clipPath>`;
   s += `<g clip-path="url(#gnd${seed})">`;
   s += `<linearGradient id="gfade${seed}" x1="0" y1="0" x2="0" y2="1">
@@ -284,40 +289,45 @@ function panel(x, y, w, h, t) {
   return `<rect x="${x}" y="${y}" width="${w}" height="${h}" fill="${t.panel}" rx="3"/>` + bracketFrame(x, y, w, h, t, 14, 0.7);
 }
 
-/** Vertical descent-progress ribbon, far left. dotFrac: 0 top (orbit) → 1 ground. */
-function descentRibbon(t, dotFrac, phaseIdx) {
-  const x = 46, yTop = 200, yBot = 880;
+/**
+ * Journey tape — ONE left-edge vertical instrument (design review merged the
+ * old descent-ribbon + altitude tape: on a log scale they were near-duplicates).
+ * Log altitude 500 km → 1 m with phase ticks on the flank and a "you" marker.
+ * dotFrac 0 = top (orbit) → 1 = ground; phaseIdx highlights the active phase.
+ */
+function journeyTape(t, { x = 96, value, unit, source, ticks, dotFrac, phaseIdx }) {
+  const yTop = 220, yBot = 880;
   const phases = ['ORBIT', 'BURN', 'FALL', 'APPROACH', 'FINAL'];
-  let s = `<g opacity="0.92">`;
-  s += `<line x1="${x}" y1="${yTop}" x2="${x}" y2="${yBot}" stroke="${t.dim}" stroke-width="${t.stroke}"/>`;
-  phases.forEach((p, i) => {
-    const y = lerp(yTop, yBot, i / (phases.length - 1));
-    const on = i === phaseIdx;
-    s += `<line x1="${x - 7}" y1="${fx(y)}" x2="${x + 7}" y2="${fx(y)}" stroke="${on ? t.ink : t.dim}" stroke-width="${t.stroke}"/>`;
-    s += text(x + 16, y + 5, p, { size: 15, fill: on ? t.ink : t.faint, bold: on });
-  });
-  const dy = lerp(yTop, yBot, dotFrac);
-  s += `<circle cx="${x}" cy="${fx(dy)}" r="7" fill="${t.ink}" filter="url(#glow)"/>`;
-  s += text(x - 14, yTop - 18, 'DESCENT', { size: 14, fill: t.faint });
-  return s + `</g>`;
-}
-
-/** Log-scale altitude tape. value/labels supplied by the scene. */
-function altTape(t, { x = 150, value, unit, ticks, source }) {
-  const yTop = 260, yBot = 820, yMid = (yTop + yBot) / 2;
   let s = `<g opacity="0.95">`;
+  s += text(x, yTop - 24, `ALTITUDE · ${source}`, { size: 14, fill: t.faint });
   s += `<line x1="${x}" y1="${yTop}" x2="${x}" y2="${yBot}" stroke="${t.dim}" stroke-width="${t.stroke}"/>`;
   for (const [frac, label] of ticks) {
     const y = lerp(yTop, yBot, frac);
     s += `<line x1="${x}" y1="${fx(y)}" x2="${x + 12}" y2="${fx(y)}" stroke="${t.dim}" stroke-width="${t.stroke}"/>`;
-    s += text(x + 18, y + 5, label, { size: 14, fill: t.faint });
+    s += text(x + 18, y + 5, label, { size: 13, fill: t.faint });
   }
-  s += `<path d="M ${x - 6} ${yMid} l -12 -9 v 18 Z" fill="${t.ink}"/>`;
-  s += panel(x - 178, yMid - 26, 152, 52, t);
-  s += text(x - 40, yMid + 9, value, { size: 30, fill: t.ink, anchor: 'end', bold: true, glow: true });
-  s += text(x - 36, yMid + 7, unit, { size: 14, fill: t.dim });
-  s += text(x - 178, yMid - 38, `ALTITUDE · ${source}`, { size: 14, fill: t.faint });
+  phases.forEach((p, i) => {
+    const y = lerp(yTop + 6, yBot - 6, i / (phases.length - 1));
+    const on = i === phaseIdx;
+    s += `<line x1="${x - 16}" y1="${fx(y)}" x2="${x - 6}" y2="${fx(y)}" stroke="${on ? t.ink : t.dim}" stroke-width="${t.stroke}"/>`;
+    s += text(x - 22, y + 4, p, { size: 12, fill: on ? t.ink : t.faint, bold: on, anchor: 'end' });
+  });
+  const dy = lerp(yTop, yBot, dotFrac);
+  s += `<circle cx="${x}" cy="${fx(dy)}" r="6.5" fill="${t.ink}" filter="url(#glow)"/>`;
+  s += panel(x + 56, dy - 26, 168, 52, t);
+  s += text(x + 196, dy + 9, value, { size: 30, fill: t.ink, anchor: 'end', bold: true, glow: true });
+  s += text(x + 200, dy + 7, unit, { size: 14, fill: t.dim });
   return s + '</g>';
+}
+
+/** Low morning sun just off frame-left: glare + horizon streak (honest replacement
+ *  for stars over a sunlit scene — the sky stays black, the Sun announces itself). */
+function sunGlare(t, y, edge = 'left') {
+  const x = edge === 'left' ? -40 : W + 40;
+  let s = `<radialGradient id="sgl${edge}" cx="0.5" cy="0.5" r="0.5"><stop offset="0" stop-color="#FFF6E8" stop-opacity="0.9"/><stop offset="0.25" stop-color="#FFE9C4" stop-opacity="0.35"/><stop offset="1" stop-color="#FFE9C4" stop-opacity="0"/></radialGradient>`;
+  s += `<circle cx="${x}" cy="${y}" r="250" fill="url(#sgl${edge})"/>`;
+  s += `<rect x="${edge === 'left' ? -40 : W - 560}" y="${y - 2}" width="600" height="4" fill="#FFF2DC" opacity="0.25" filter="url(#b4)"/>`;
+  return s;
 }
 
 /** Speed block + V/H split bars, right side. */
@@ -357,14 +367,14 @@ function tempPanel(t, { x = W - 332, y = 470, temp, trend, points, footnote }) {
 }
 
 /** Heading strip across the top with vector marker glyphs (no unicode risk). */
-function compassStrip(t, markers, y = 64) {
+function compassStrip(t, markers, y = 64, labels = ['W', 'NW', 'N', 'NE', 'E']) {
   const x0 = W / 2 - 420, x1 = W / 2 + 420;
   let s = `<g opacity="0.9"><line x1="${x0}" y1="${y}" x2="${x1}" y2="${y}" stroke="${t.dim}" stroke-width="${t.stroke}"/>`;
   for (let i = 0; i <= 12; i++) {
     const x = lerp(x0, x1, i / 12);
     s += `<line x1="${fx(x)}" y1="${y}" x2="${fx(x)}" y2="${y - (i % 3 === 0 ? 10 : 5)}" stroke="${t.dim}" stroke-width="1"/>`;
   }
-  ['W', 'NW', 'N', 'NE', 'E'].forEach((c, i) => s += text(lerp(x0, x1, i / 4), y - 16, c, { size: 14, fill: t.faint, anchor: 'middle' }));
+  labels.forEach((c, i) => s += text(lerp(x0, x1, i / 4), y - 16, c, { size: 14, fill: t.faint, anchor: 'middle' }));
   s += `<path d="M ${W / 2} ${y + 4} l -7 12 h 14 Z" fill="${t.ink}"/>`;
   for (const m of markers) {
     const x = lerp(x0, x1, m.frac);
@@ -458,8 +468,8 @@ function dustStreaks(seed, intensity = 1) {
     const x1 = cx + Math.cos(a) * r1, y1 = oy + Math.sin(a) * r1 * 0.55;
     s += `<line x1="${fx(x0)}" y1="${fx(y0)}" x2="${fx(x1)}" y2="${fx(y1)}" stroke="#F2ECE2" stroke-width="${fx(1 + rng() * 2.2, 1)}" opacity="${fx((0.09 + rng() * 0.22) * intensity, 2)}"${rng() > 0.6 ? ' filter="url(#b2)"' : ''}/>`;
   }
-  s += `<linearGradient id="dustveil" x1="0" y1="1" x2="0" y2="0"><stop offset="0" stop-color="#E4DED4" stop-opacity="${fx(0.38 * intensity, 2)}"/><stop offset="1" stop-color="#E4DED4" stop-opacity="0"/></linearGradient>`;
-  s += `<rect x="0" y="${H * 0.4}" width="${W}" height="${H * 0.6}" fill="url(#dustveil)"/>`;
+  s += `<linearGradient id="dustveil" x1="0" y1="1" x2="0" y2="0"><stop offset="0" stop-color="#E4DED4" stop-opacity="${fx(0.4 * intensity, 2)}"/><stop offset="1" stop-color="#E4DED4" stop-opacity="0"/></linearGradient>`;
+  s += `<rect x="0" y="${H * 0.62}" width="${W}" height="${H * 0.38}" fill="url(#dustveil)"/>`;
   return s + '</g>';
 }
 
@@ -487,18 +497,21 @@ function scenePreflight() {
   s += panel(90, 180, 540, 600, t);
   s += text(116, 220, '1 · SITE', { size: 16, fill: t.faint });
   const sites = [
-    ['TRANQUILITY BASE', 'land where it began · forgiving', true],
-    ['HADLEY-APENNINE', '4 km mountain wall + rille', false],
-    ['ARISTARCHUS PLATEAU', 'the brightest ground', false],
-    ['TYCHO CENTRAL PEAK', 'boulders. everywhere.', false],
-    ['SHACKLETON RIM', 'eternal sunset · -240°C below', false],
-    ['FREE DESCENT', 'pick any point from orbit', false],
+    ['TRANQUILITY BASE', 'land where it began · forgiving', true, 'FEATHER · 86 M'],
+    ['HADLEY-APENNINE', '4 km mountain wall + rille', false, 'FIRM'],
+    ['ARISTARCHUS PLATEAU', 'the brightest ground', false, null],
+    ['TYCHO CENTRAL PEAK', 'boulders. everywhere.', false, null],
+    ['SHACKLETON RIM', 'eternal low sun · -185°C floor below', false, null],
+    ['FREE DESCENT', 'pick any point from orbit (v1.1)', false, null],
   ];
-  sites.forEach(([name, hook, sel], i) => {
+  sites.forEach(([name, hook, sel, best], i) => {
     const y = 252 + i * 62;
     if (sel) s += `<rect x="108" y="${y - 24}" width="380" height="48" fill="rgba(191,231,255,0.08)" stroke="${t.ink}" stroke-width="1"/>`;
     s += text(124, y, name, { size: 18, fill: sel ? t.ink : t.dim, bold: sel });
     s += text(124, y + 18, hook, { size: 13, fill: t.faint });
+    // per-site best-landing medal (replayability loop)
+    s += `<circle cx="455" cy="${y - 5}" r="6" fill="${best ? (best.startsWith('FEATHER') ? t.green : t.amber) : 'none'}" stroke="${t.faint}" stroke-width="1"/>`;
+    if (best) s += text(455, y + 16, best, { size: 10, fill: t.faint, anchor: 'middle' });
   });
   // mini moon globe with site dots
   const gx = 555, gy = 430, gr = 58;
@@ -513,8 +526,8 @@ function scenePreflight() {
   // --- LIGHT column
   s += panel(690, 180, 540, 290, t);
   s += text(716, 220, '2 · LIGHT', { size: 16, fill: t.faint });
-  s += text(716, 258, 'DATE  2026-06-11 19:40 UTC', { size: 18, fill: t.ink });
-  s += text(716, 284, 'NEXT GOOD LIGHT IN 2 D 4 H', { size: 14, fill: t.faint });
+  s += text(716, 258, 'DATE  2026-06-21 06:05 UTC', { size: 18, fill: t.ink });
+  s += text(716, 284, "LIGHT NOW: * EXCELLENT ('now' was lunar night — jumped to next sunrise)", { size: 13, fill: t.amber });
   // sun elevation arc
   const ax = 850, ay = 420, ar = 110;
   s += `<path d="M ${ax - ar} ${ay} A ${ar} ${ar} 0 0 1 ${ax + ar} ${ay}" stroke="${t.dim}" stroke-width="1.5" fill="none"/>`;
@@ -524,9 +537,10 @@ function scenePreflight() {
   s += `<circle cx="${fx(sx2)}" cy="${fx(sy2)}" r="9" fill="${t.amber}" filter="url(#glow)"/>`;
   s += text(fx(sx2 + 18), fx(sy2 + 4), 'SUN 10.3° — BEST LIGHT *', { size: 15, fill: t.amber, bold: true });
   s += text(716, 452, 'LONG SHADOWS · APOLLO LANDED AT 5-14°', { size: 13, fill: t.faint });
-  // Earth phase preview
-  s += earth(1150, 410, 34, { darkSide: 'left', seed: 9 });
-  s += text(1150, 462, 'EARTH: WAXING GIBBOUS 78%', { size: 13, fill: t.faint, anchor: 'middle' });
+  // Earth phase preview — the complement of the Moon's phase: sun 10.3° at
+  // Tranquility ⇒ Moon 39% ⇒ Earth 61% (accuracy review M2)
+  s += earth(1150, 410, 34, { darkSide: 'left', seed: 9, lit: 0.61 });
+  s += text(1150, 462, 'EARTH: GIBBOUS 61% · 66° HIGH ALL MISSION', { size: 13, fill: t.faint, anchor: 'middle' });
 
   // --- SEAT column
   s += panel(690, 500, 540, 280, t);
@@ -561,24 +575,26 @@ function scenePreflight() {
   s += `<rect x="1316" y="556" width="488" height="8" fill="none" stroke="${t.dim}" stroke-width="1"/>`;
   s += `<rect x="1316" y="556" width="${fx(488 * 0.84)}" height="8" fill="${t.ink}" opacity="0.8"/>`;
   s += text(1316, 588, 'FIRST ENTRY ONLY — CACHED AFTER · 42 MB TOTAL', { size: 13, fill: t.faint });
-  s += `<rect x="1316" y="640" width="488" height="74" fill="rgba(191,231,255,0.07)" stroke="${t.ink}" stroke-width="1.5"/>`;
-  s += text(1560, 678, 'BEGIN DESCENT', { size: 26, fill: t.ink, anchor: 'middle', bold: true, glow: true, spacing: 6 });
-  s += text(1560, 702, 'READY IN 0:07', { size: 13, fill: t.amber, anchor: 'middle' });
+  s += `<rect x="1316" y="640" width="488" height="74" fill="rgba(191,231,255,0.04)" stroke="${t.dim}" stroke-width="1.5" stroke-dasharray="6 4"/>`;
+  s += text(1560, 678, 'BEGIN DESCENT', { size: 26, fill: t.dim, anchor: 'middle', bold: true, spacing: 6 });
+  s += text(1560, 702, 'ARMING — SITE PACK 64% · ~0:07', { size: 13, fill: t.amber, anchor: 'middle' });
 
-  s += text(W / 2, 830, 'REALISM NOTES: REAL SCALE · REAL EPHEMERIS · REAL TERRAIN DATA · DESCENT SHORTENED BY A SPORTY 3.0 KM/S BUDGET', { size: 13, fill: t.faint, anchor: 'middle' });
+  s += text(W / 2, 830, 'REALISM NOTES: REAL SCALE · REAL EPHEMERIS · REAL TERRAIN DATA · DESCENT COMPRESSED BY A HOT ~4 KM/S BUDGET (APOLLO: 2)', { size: 13, fill: t.faint, anchor: 'middle' });
   s += captionStrip('MOCKUP 00 · PRE-FLIGHT BOARD = LOADING SCREEN · assets stream while you choose (DESIGN §1.1)');
   return s + svgClose;
 }
 
-/** 01 — orbit, Earthrise, HUD booting. */
+/** 01 — orbit, Earthrise (Earth straddling the limb), HUD booting. */
 function sceneArrival() {
   const t = GLASS;
   const horizonY = 700;
   let s = svgOpen();
   s += starField(7, 620, { yMax: horizonY + 60 });
   s += milkyWay(1450, 260, -28, 1500, 110, 8);
+  // Earth drawn BEFORE the Moon so the dark limb occludes its lower half:
+  // mid-Earthrise, the disc straddles the limb (true rise rate 0.039°/s)
+  s += earth(620, 700, 38, { darkSide: 'left', seed: 5, lit: 0.61 });
   s += moonFromOrbit(horizonY, 42);
-  s += earth(620, 330, 41, { darkSide: 'left', seed: 5 });
 
   // minimal booting HUD
   s += compassStrip(t, [
@@ -586,106 +602,106 @@ function sceneArrival() {
     { frac: 0.86, kind: 'sun', label: 'SUN' },
     { frac: 0.55, kind: 'site', label: 'SITE' },
   ]);
-  s += metBlock(t, { met: 'T+00:32', phase: 'LUNAR ORBIT · 450.3 KM', next: null });
-  s += descentRibbon(t, 0.02, 0);
-  s += text(150, 300, 'V  1.50 KM/S', { size: 20, fill: t.dim });
-  s += text(150, 330, 'ORBITAL PERIOD 153 MIN', { size: 14, fill: t.faint });
-  s += text(150, 360, 'SURFACE IN VIEW 10.3%', { size: 14, fill: t.faint });
-  s += text(620, 410, 'EARTHRISE', { size: 15, fill: t.dim, anchor: 'middle', spacing: 8 });
-  s += text(620, 432, 'FULL DISC IN 0:21', { size: 13, fill: t.faint, anchor: 'middle' });
+  s += metBlock(t, { met: 'T+00:32', phase: 'LUNAR ORBIT · 450.3 KM', next: 'WINDOW 2:28' });
+  s += journeyTape(t, {
+    value: '450.3', unit: 'KM', source: 'ORBITAL', dotFrac: 0.02, phaseIdx: 0,
+    ticks: [[0.02, '450'], [0.2, '200'], [0.4, '60'], [0.6, '10'], [0.8, '1'], [0.97, '0']],
+  });
+  s += text(330, 300, 'V 1.50 KM/S · PERIOD 153 MIN', { size: 15, fill: t.faint });
+  s += text(330, 324, 'SURFACE IN VIEW 10.3%', { size: 15, fill: t.faint });
+  s += text(620, 600, 'EARTHRISE', { size: 15, fill: t.dim, anchor: 'middle', spacing: 8 });
+  s += text(620, 622, 'FULL DISC IN 0:19', { size: 13, fill: t.faint, anchor: 'middle' });
 
-  s += featureName(t, 'MARE SMYTHII — FARSIDE BEHIND, TRANQUILITY 1,329 KM AHEAD', 905);
-  s += calloutLine(t, 'AOS — RADIO: "GOOD MORNING. COMMIT WHEN YOU ARE READY."', 960);
-  // commit prompt
-  s += `<rect x="${W / 2 - 190}" y="990" width="380" height="56" fill="rgba(8,14,22,0.55)" stroke="${t.ink}" stroke-width="1.5"/>`;
-  s += text(W / 2, 1018, '[ SPACE ]  COMMIT TO DESCENT', { size: 19, fill: t.ink, anchor: 'middle', bold: true, glow: true });
-  s += text(W / 2, 1038, 'or stay a while — the orbit can wait', { size: 13, fill: t.faint, anchor: 'middle' });
-  s += captionStrip('MOCKUP 01 · ARRIVAL & EARTHRISE · alt 450 km, 10.3% of the Moon in view, Earth 1.9° at true angular size (FOV 45°) · HUD booting, beat waits for player');
+  s += featureName(t, 'MARE SMYTHII — FARSIDE NIGHT BEHIND · TRANQUILITY 300 KM AHEAD', 905);
+  s += calloutLine(t, 'AOS — RADIO: "GOOD MORNING. GUIDANCE IS ALIGNING YOUR WINDOW."', 960);
+  // commit prompt: armed by the descent window, not instantly (design review)
+  s += `<rect x="${W / 2 - 230}" y="990" width="460" height="56" fill="rgba(8,14,22,0.55)" stroke="${t.ink}" stroke-width="1.5"/>`;
+  s += `<rect x="${W / 2 - 230}" y="1040" width="${fx(460 * 0.18)}" height="6" fill="${t.amber}" opacity="0.9"/>`;
+  s += text(W / 2, 1014, '[ SPACE ]  COMMIT — WINDOW IN 2:28', { size: 19, fill: t.ink, anchor: 'middle', bold: true, glow: true });
+  s += text(W / 2, 1034, 'or stay a while — miss it, and the next window is one orbit (153 min)', { size: 13, fill: t.faint, anchor: 'middle' });
+  s += captionStrip('MOCKUP 01 · ARRIVAL & EARTHRISE · 450 km, 10.3% of the Moon in view · Earth 1.9° true size at 45° horizontal FOV, mid-rise on the limb · exposure keyed to the night side (stars legitimately visible) · night fraction theatrically compressed');
   return s + svgClose;
 }
 
-/** 02 — the long fall (parameterized for both skins). */
+/** 02 — the long fall: ballistic coast, engine off (parameterized for both skins).
+ *  Staging: heading SW, morning sun low in the east = screen-left (cross-lit);
+ *  Earth is ~79° overhead — honestly NOT in a surface-pitched frame. */
 function sceneLongFall(t) {
   const horizonY = 286;
   let s = svgOpen();
-  s += starField(17, 230, { yMax: horizonY });
-  s += groundPerspective(horizonY, 77, { sunDx: -1, shadowK: 4.2, craters: 210 });
-  s += earth(300, 138, 30, { darkSide: 'right', seed: 5 });   // sun screen-left lights Earth's left limb
+  // sky: black. Stars do NOT render over a sunlit scene (accuracy review) —
+  // the low sun announces itself from frame-left instead.
+  s += groundPerspective(horizonY, 77, { sunDx: -1, shadowK: 4.2, craters: 210, RR: 4200 });
+  s += sunGlare(t, horizonY - 10, 'left');
 
   s += compassStrip(t, [
-    { frac: 0.08, kind: 'sun', label: 'SUN' },
-    { frac: 0.2, kind: 'earth', label: 'EARTH' },
-    { frac: 0.52, kind: 'site', label: 'SITE 96 KM' },
-  ]);
-  s += metBlock(t, { met: 'T+03:58', phase: 'THE LONG FALL', next: 'HIGH GATE 0:43' });
-  s += descentRibbon(t, 0.52, 2);
-  s += altTape(t, {
-    value: '43.1', unit: 'KM', source: 'ORBITAL',
-    ticks: [[0.06, '200'], [0.2, '100'], [0.38, '50'], [0.56, '20'], [0.74, '10'], [0.9, '5']],
+    { frac: 0.04, kind: 'sun', label: 'SUN 19°' },
+    { frac: 0.5, kind: 'site', label: 'SITE' },
+    { frac: 0.94, kind: 'earth', label: 'EARTH 79° UP' },
+  ], 64, ['E', 'SE', 'S', 'SW', 'W']);
+  s += metBlock(t, { met: 'T+07:21', phase: 'THE LONG FALL · ENGINE OFF', next: 'THE WALL 1:14' });
+  s += journeyTape(t, {
+    value: '180.4', unit: 'KM', source: 'ORBITAL', dotFrac: 0.34, phaseIdx: 2,
+    ticks: [[0.06, '400'], [0.22, '200'], [0.4, '60'], [0.58, '10'], [0.78, '1'], [0.95, '0']],
   });
-  s += speedBlock(t, { spd: '305', kmh: 'M/S · 1,098 KM/H', vspd: '-302', hspd: '45' });
+  s += speedBlock(t, { spd: '1614', kmh: 'M/S · 5,810 KM/H', vspd: '-1612', hspd: '60' });
   s += tempPanel(t, {
     temp: '+21°C', trend: 'down',
     points: [0.92, 0.9, 0.88, 0.84, 0.8, 0.74, 0.7, 0.62, 0.55, 0.5, 0.44, 0.4],
-    footnote: 'FALLING — SUN 14° AND SINKING AHEAD',
+    footnote: 'SUN 19° UNDER TRACK — LOWER TOWARD SITE',
   });
-  s += attitudeRing(t, 285, 905, 64, -38);
-  s += trajectoryRibbon(t, [[520, 950], [860, 700, 660, 820], [1030, 480, 980, 560], [1080, 396, 1065, 430]], { label: 'TRANQUILITY · 96 KM' });
+  s += attitudeRing(t, 285, 905, 64, -58);
+  s += trajectoryRibbon(t, [[760, 980], [905, 640, 830, 800], [962, 430, 945, 520]], { label: 'SITE · 12 KM DOWNRANGE' });
   s += featureName(t, 'MARE TRANQUILLITATIS');
-  s += calloutLine(t, 'GUIDANCE GREEN — PITCH-OVER AT HIGH GATE IN 0:43', 1006, t.amber);
+  s += calloutLine(t, 'RADIO: "COMING UP ON THE WALL. BRACE FOR BRAKING."', 1006, t.amber);
 
   if (t.name === 'heritage') {
     // DSKY homage block
     s += panel(W - 332, 700, 268, 140, t);
-    s += text(W - 316, 730, 'PGM 63 — BRAKING', { size: 15, fill: t.green, bold: true });
+    s += text(W - 316, 730, 'PGM 63 — BRAKING NEXT', { size: 15, fill: t.green, bold: true });
     s += text(W - 316, 762, 'VERB 06  NOUN 63', { size: 17, fill: t.ink, bold: true });
-    s += text(W - 80, 794, '+04310', { size: 22, fill: t.green, anchor: 'end', bold: true, spacing: 3 });
-    s += text(W - 80, 822, '-00302', { size: 22, fill: t.green, anchor: 'end', bold: true, spacing: 3 });
+    s += text(W - 80, 794, '+18040', { size: 22, fill: t.green, anchor: 'end', bold: true, spacing: 3 });
+    s += text(W - 80, 822, '-01612', { size: 22, fill: t.green, anchor: 'end', bold: true, spacing: 3 });
     s += scanlines();
   }
   const cap = t.name === 'heritage'
     ? 'MOCKUP 02B · THE LONG FALL · HERITAGE SKIN (art direction B): phosphor, scanlines, DSKY · same layout grid as Glass'
-    : 'MOCKUP 02 · THE LONG FALL · GLASS HUD (art direction A) · 43.1 km, V-SPD -302 m/s ⇒ high gate (30 km) in 43 s — numbers cross-check';
+    : 'MOCKUP 02 · THE LONG FALL · GLASS HUD (A) · ballistic coast 180.4 km, V-SPD −1,612 m/s ⇒ braking burn (60 km) in 74 s — numbers cross-check · cross-lit, 60° hFOV · no stars over sunlit ground';
   s += captionStrip(cap);
   return s + svgClose;
 }
 
-/** 03 — final approach: hazard map, reticle, dust. */
+/** 03 — final, 31 m: dust wash-out, trust the tape. Approach furniture
+ *  (footprint ellipse, redesignation, hazard tint) retired at low gate —
+ *  this frame is reticle + dust + instruments (design review #9/#10). */
 function sceneFinalApproach() {
   const t = GLASS;
   const horizonY = 150;
   let s = svgOpen();
-  s += starField(23, 90, { yMax: horizonY });
-  s += groundPerspective(horizonY, 99, { sunDx: -1, shadowK: 5.2, craters: 160, boulders: 80 });
+  // black sky, no stars over sunlit ground; horizon effectively straight at 31 m
+  s += groundPerspective(horizonY, 99, { sunDx: -1, shadowK: 5.2, craters: 160, boulders: 80, RR: 90000 });
+  s += sunGlare(t, horizonY - 6, 'left');
 
-  // hazard overlay: red = no-go (hatched for color-blind redundancy), amber = marginal, green pad
-  s += `<pattern id="hatchR" width="11" height="11" patternTransform="rotate(45)" patternUnits="userSpaceOnUse"><line x1="0" y1="0" x2="0" y2="11" stroke="${t.red}" stroke-width="2.2"/></pattern>`;
-  const blobs = [[640, 690, 120, t.red], [1330, 520, 95, t.red], [1500, 840, 140, t.red], [420, 460, 80, '#FFB75C'], [1130, 940, 90, '#FFB75C'], [820, 380, 70, '#FFB75C']];
-  for (const [bx, by, br, c] of blobs) {
-    s += `<circle cx="${bx}" cy="${by}" r="${br}" fill="${c}" opacity="0.20" filter="url(#b18)"/>`;
-    s += `<circle cx="${bx}" cy="${by}" r="${fx(br * 0.6)}" fill="${c}" opacity="0.16" filter="url(#b9)"/>`;
-    if (c === t.red) s += `<circle cx="${bx}" cy="${by}" r="${fx(br * 0.82)}" fill="url(#hatchR)" opacity="0.30"/>`;
-  }
-  s += `<circle cx="960" cy="640" r="120" fill="${t.green}" opacity="0.13" filter="url(#b18)"/>`;
-  // reachable footprint ellipse
-  s += `<ellipse cx="960" cy="620" rx="560" ry="300" fill="none" stroke="${t.ink}" stroke-width="1.6" stroke-dasharray="16 11" opacity="0.7"/>`;
-  s += text(960, 300, 'REACHABLE FOOTPRINT', { size: 13, fill: t.dim, anchor: 'middle' });
   s += reticle(t, 960, 640, 74, 'SLOPE 1.8°');
-  s += text(960, 740, 'CLICK-DRAG TO REDESIGNATE', { size: 13, fill: t.faint, anchor: 'middle' });
+  // big docked digits — the dust-blind numbers (radar AGL + V-SPD)
+  s += panel(840, 750, 240, 96, t);
+  s += text(1056, 794, '31 M', { size: 44, fill: t.ink, anchor: 'end', bold: true, glow: true });
+  s += text(1056, 830, '-2.4 M/S', { size: 26, fill: t.green, anchor: 'end', bold: true, glow: true });
+  s += text(864, 794, 'AGL', { size: 14, fill: t.faint });
+  s += text(864, 830, 'V-SPD', { size: 14, fill: t.faint });
 
-  s += dustStreaks(31, 0.9);
+  s += dustStreaks(31, 1.0);
   s += legSilhouettes();
 
   s += compassStrip(t, [
-    { frac: 0.12, kind: 'sun', label: 'SUN' },
-    { frac: 0.27, kind: 'earth', label: 'EARTH' },
-    { frac: 0.5, kind: 'site', label: 'SITE' },
-  ]);
-  s += metBlock(t, { met: 'T+07:12', phase: 'FINAL · RADAR', next: 'DUST WASH-OUT' });
-  s += descentRibbon(t, 0.97, 4);
-  s += altTape(t, {
-    value: '31', unit: 'M', source: 'RADAR AGL',
-    ticks: [[0.08, '150'], [0.26, '100'], [0.5, '50'], [0.68, '25'], [0.86, '10']],
+    { frac: 0.04, kind: 'sun', label: 'SUN' },
+    { frac: 0.5, kind: 'site', label: 'PAD' },
+    { frac: 0.94, kind: 'earth', label: 'EARTH 79° UP' },
+  ], 64, ['E', 'SE', 'S', 'SW', 'W']);
+  s += metBlock(t, { met: 'T+11:36', phase: 'FINAL · RADAR', next: 'CONTACT ~0:14' });
+  s += journeyTape(t, {
+    value: '31', unit: 'M', source: 'RADAR AGL', dotFrac: 0.93, phaseIdx: 4,
+    ticks: [[0.06, '400 KM'], [0.3, '60 KM'], [0.55, '2 KM'], [0.78, '100'], [0.93, '30'], [0.99, '0']],
   });
   s += speedBlock(t, { spd: '2.5', kmh: 'M/S TOTAL', vspd: '-2.4', hspd: '0.6', vSafe: true });
   s += tempPanel(t, {
@@ -695,57 +711,55 @@ function sceneFinalApproach() {
   });
   s += attitudeRing(t, 285, 905, 64, -2);
   s += calloutLine(t, 'RADIO: "30 METERS — DOWN AT 2½ — DUST VISIBLE — TRUST THE TAPE."', 1006, t.green);
-  s += captionStrip('MOCKUP 03 · FINAL APPROACH · 31 m AGL, camera pitched ~18° below horizon · V-SPD in green band, hazard tint + redesignation, ballistic dust (no billowing — vacuum)');
+  s += captionStrip('MOCKUP 03 · FINAL · 31 m AGL, camera ~18° below horizon, 60° hFOV · approach furniture retired; big docked digits for the dust-blind beat · ballistic dust sheets (no billowing — vacuum) · horizon straight at this height');
   return s + svgClose;
 }
 
-/** 04 — stillness: down, silent, Earth fixed in the sky. */
+/** 04 — stillness: down, silent, looking UP. Camera pitched ~36° above the
+ *  horizon so Earth sits at her TRUE 66° elevation (accuracy review M5);
+ *  daylight exposure ⇒ black sky, Earth alone in it (cf. Apollo photos). */
 function sceneStillness() {
   const t = GLASS;
-  const horizonY = 640;
+  const horizonY = 1004;
   let s = svgOpen();
-  // sunlit ground mutes the stars (honest exposure) — keep only the brighter ones
-  s += starField(57, 250, { yMax: horizonY - 6, dimming: 0.75 });
-  s += milkyWay(1500, 220, -24, 1300, 90, 58, 0.45);
-  s += earth(1430, 200, 41, { darkSide: 'left', seed: 5 });   // sun screen-right: lander shadow left, Earth lit on its right limb
-  s += groundPerspective(horizonY, 123, { sunDx: +1, shadowK: 5.6, craters: 90, boulders: 60 });
+  // Earth: lit limb faces the low sun behind the viewer ⇒ rotated phase
+  s += `<g transform="rotate(90 1240 250)">${earth(1240, 250, 38, { darkSide: 'left', seed: 5, lit: 0.61 })}</g>`;
+  s += groundPerspective(horizonY, 123, { sunDx: +1, shadowK: 5.6, craters: 40, boulders: 24, RR: 900000 });
 
-  // distant crater-rim silhouettes on the horizon
-  s += `<path d="M 0 ${horizonY} L 120 ${horizonY - 14} L 260 ${horizonY - 4} L 420 ${horizonY - 22} L 560 ${horizonY - 6} L 760 ${horizonY - 10} L 980 ${horizonY} L 1240 ${horizonY - 18} L 1420 ${horizonY - 2} L 1640 ${horizonY - 12} L 1920 ${horizonY - 4} L 1920 ${horizonY + 4} L 0 ${horizonY + 4} Z" fill="#6F6F75"/>`;
-
-  // the lander's long shadow stretching anti-sun (sun low on the right)
-  s += `<g fill="#000" opacity="0.78" filter="url(#b2)">
-    <ellipse cx="600" cy="985" rx="195" ry="26"/>
-    <path d="M 470 985 L 350 1016 L 395 1024 L 520 995 Z"/><ellipse cx="368" cy="1020" rx="34" ry="9"/>
-    <path d="M 560 995 L 470 1052 L 516 1058 L 610 1000 Z"/><ellipse cx="492" cy="1054" rx="36" ry="10"/>
-    <path d="M 680 995 L 760 1048 L 802 1042 L 720 992 Z"/><ellipse cx="782" cy="1044" rx="36" ry="10"/>
-    <path d="M 740 982 L 845 1004 L 870 996 L 770 976 Z"/><ellipse cx="858" cy="1000" rx="32" ry="8"/>
-    <rect x="585" y="952" width="110" height="12" transform="rotate(-8 585 952)"/>
+  // distant crater-rim silhouettes on the (straight) horizon
+  s += `<path d="M 0 ${horizonY} L 220 ${horizonY - 8} L 460 ${horizonY - 2} L 700 ${horizonY - 12} L 980 ${horizonY - 3} L 1300 ${horizonY - 9} L 1620 ${horizonY - 2} L 1920 ${horizonY - 6} L 1920 ${horizonY + 3} L 0 ${horizonY + 3} Z" fill="#73737A"/>`;
+  // our shadow runs ahead of us toward the horizon (sun low, directly behind)
+  s += `<g fill="#000" opacity="0.7" filter="url(#b2)">
+    <path d="M 870 ${H} L 1010 ${H} L 985 ${horizonY + 26} L 925 ${horizonY + 26} Z"/>
+    <path d="M 700 ${H} L 800 ${H} L 905 ${horizonY + 40} L 880 ${horizonY + 34} Z"/>
+    <path d="M 1080 ${H} L 1180 ${H} L 1005 ${horizonY + 40} L 1030 ${horizonY + 34} Z"/>
   </g>`;
 
   // near-zero HUD
-  s += text(W / 2, 60, 'CONTACT · ENGINE STOP · T+07:26', { size: 22, fill: t.ink, anchor: 'middle', bold: true, glow: true, spacing: 4 });
-  s += text(W / 2, 88, 'TRANQUILITY BASE · 0.674° N  23.473° E · EARTH FIXED AT 66° WEST — IT NEVER MOVES', { size: 14, fill: t.dim, anchor: 'middle' });
+  s += text(W / 2, 60, 'CONTACT · ENGINE STOP · T+11:50', { size: 22, fill: t.ink, anchor: 'middle', bold: true, glow: true, spacing: 4 });
+  s += text(W / 2, 88, 'TRANQUILITY BASE · 0.674° N  23.473° E · EARTH FIXED AT 66°, AZIMUTH 268° — IT NEVER MOVES', { size: 14, fill: t.dim, anchor: 'middle' });
+  s += text(1240, 330, 'EARTH · 384,400 KM · GIBBOUS 61%', { size: 13, fill: t.faint, anchor: 'middle' });
 
-  // stats card
-  const cx2 = 96, cy2 = 780;
-  s += panel(cx2, cy2, 392, 218, t);
+  // stats card (composite grade: touchdown quality + accuracy — design review #8)
+  const cx2 = 96, cy2 = 700;
+  s += panel(cx2, cy2, 392, 246, t);
   s += text(cx2 + 24, cy2 + 36, 'TOUCHDOWN', { size: 15, fill: t.faint, spacing: 6 });
   const rows = [
-    ['VERTICAL AT CONTACT', '-1.8 M/S'], ['TILT', '2.1°'], ['DIST FROM TARGET', '412 M'],
-    ['PEAK G', '0.41 G'], ['MISSION TIME', '07:26'],
+    ['VERTICAL AT CONTACT', '-1.8 M/S'], ['TILT', '2.1°'], ['DIST FROM PAD', '412 M'],
+    ['PEAK G (THE WALL)', '2.9 G'], ['DESCENT', '8:50'], ['MISSION', '11:50'],
   ];
   rows.forEach(([k, v], i) => {
     const y = cy2 + 66 + i * 25;
     s += text(cx2 + 24, y, k, { size: 14, fill: t.dim });
     s += text(cx2 + 368, y, v, { size: 14, fill: t.ink, anchor: 'end', bold: true });
   });
-  s += text(cx2 + 24, cy2 + 200, 'GRADE: FEATHER', { size: 20, fill: t.green, bold: true, glow: true });
+  s += text(cx2 + 24, cy2 + 226, 'FEATHER · NEAR PAD', { size: 20, fill: t.green, bold: true, glow: true });
 
-  s += text(W - 96, 940, 'HOLD L — LONG-EXPOSURE SKY', { size: 14, fill: t.dim, anchor: 'end' });
-  s += text(W - 96, 964, 'V — STAND-UP VIEW    N — NAMEPLATE PHOTO', { size: 13, fill: t.faint, anchor: 'end' });
+  s += text(W - 96, 880, 'HOLD L — LONG-EXPOSURE: THE MILKY WAY', { size: 14, fill: t.dim, anchor: 'end' });
+  s += text(W - 96, 904, 'T — TIME-LAPSE: WATCH THE STARS WHEEL, EARTH HOLD STILL', { size: 13, fill: t.faint, anchor: 'end' });
+  s += text(W - 96, 928, 'N — NAMEPLATE PHOTO    V — STAND-UP VIEW', { size: 13, fill: t.faint, anchor: 'end' });
   s += calloutLine(t, 'RADIO: "TRANQUILITY, WE COPY YOU DOWN. ENJOY THE VIEW."', 1006);
-  s += captionStrip('MOCKUP 04 · STILLNESS · post-landing free look · Earth at the site’s true fixed az/el · 3 s of silence before this card fades in');
+  s += captionStrip('MOCKUP 04 · STILLNESS · camera pitched up ~36° — Earth at her true 66° elevation · daylight exposure: black sky, no stars (hold L for the real night sky) · 3 s of silence before this card fades in');
   return s + svgClose;
 }
 

@@ -20,8 +20,8 @@ real LRO terrain, under real ephemeris lighting, with instruments that tell the 
 | `01-arrival` | Orbit & Earthrise over the terminator, HUD booting, commit prompt |
 | `02-long-fall` | Mid-descent, full **Glass** HUD (recommended direction) |
 | `02b-long-fall-heritage` | Same frame in the **Heritage** skin (unlockable) |
-| `03-final-approach` | 31 m AGL: hazard map, reticle, radar callouts, ballistic dust |
-| `04-stillness` | Post-landing: stats card, Earth fixed in a black sky |
+| `03-final-approach` | 31 m AGL: reticle + big docked digits, radar callouts, ballistic dust (approach furniture retired) |
+| `04-stillness` | Post-landing, looking up: Earth alone in a black daylight sky at her true 66°, stats card |
 
 Mockups are **generated, not drawn** — `mockups/generate.mjs` (zero-dep Node) paints them
 deterministically so they can be tweaked like code:
@@ -40,17 +40,18 @@ physically consistent (cross-checked in DESIGN Appendix A).
 
 | # | Decision | Why (details in docs) |
 |---|---|---|
-| D1 | Descent is **powered**, 5–10 min via ~3.0 km/s ΔV — no time-warp, no "gliding" | Vacuum honesty: free-fall from 450 km is ~14 min; atmosphereless descent must be propulsive (DESIGN §1.2) |
-| D2 | Start at **450 km** | h/2(R+h) = 10.3% of the Moon in view — the brief's 5–10% target (App. A) |
-| D3 | **Guided descent with player expression**, 3 seats (Window/Right/Left) | "Between a camera and a very easy sim" (DESIGN §3) |
-| D4 | **Glass** HUD default, **Heritage** as unlockable skin on the same grid | Max view, min noise; nostalgia preserved (DESIGN §5) — owner sign-off wanted |
-| D5 | Real scale, meters, **camera-relative rendering + sky/world depth split** (no log-depth) | Shared renderer forbids constructor flags; split keeps 24-bit depth happy (TECH §3) |
-| D6 | Terrain = cube-sphere quadtree; real data to ~L9, **deterministic procedural below**, NAC patches at 5 curated sites; **per-tile baked sun shadows** (sun frozen by snapshot) | Terminator-grade shadows at zero per-frame cost (TECH §4) |
-| D7 | Lazy mode chunk (existing `import()` precedent) + asset packs behind the pre-flight checklist; full disposal on exit | Zero cost to the rest of the app (TECH §2, §5) |
+| D1 | Descent is **powered**: burn → engine-off ballistic fall → braking "wall". Default 8:50, envelope 6–10½ min, **ΔV ≈ 3.3–5.0 km/s (default ≈ 4.0; Apollo flew ~2.0)** — no time-warp; the only clock trick is a *declared* skippable orbital coast | Vacuum honesty: you can't glide on the Moon; free-fall from 450 km is 15.1 min. The trajectory now closes end-to-end (DESIGN §1.2, App. A; REVIEWS B1) |
+| D2 | Start at **450 km** | h/2(R+h) = 10.3% of the Moon in view — the brief's 5–10% target. Kept over a "cheaper-ΔV" 200 km start; the ledger pays the price honestly (REVIEWS) |
+| D3 | **Guided descent with player expression**, 3 seats (Window/Right/Left), commit windows, camera = craft-frame with soft recentering | "Between a camera and a very easy sim" (DESIGN §3) |
+| D4 | **Glass** HUD default, **Heritage** unlockable (first Feather) on the same grid | Max view, min noise (DESIGN §5) — owner sign-off wanted |
+| D5 | Real scale, meters, **camera-relative rendering + sky/world depth split** (no log-depth); relief-aware far plane | Shared renderer forbids constructor flags (TECH §3) |
+| D6 | Terrain = cube-sphere quadtree; real data **global to L5, corridor/site cones to L9/L13**, deterministic procedural below; **two-stage baked sun shadows** (far-field vs coarse global + tile/apron near field; sun frozen by snapshot) | Terminator-grade shadows at zero per-frame cost; asset math that actually closes (TECH §4–5; REVIEWS B2/B3) |
+| D7 | Lazy mode chunk + asset packs (pack files + HTTP Range) behind the pre-flight checklist; `activate()` resolves at board-interactive; full disposal incl. shared-renderer state restore | Zero cost to the rest of the app (TECH §2, §5) |
 | D8 | Surface-temp instrument driven by an analytic Diviner-fit model | The requested "cool graphics" made meaningful (DESIGN §4.2) |
+| D9 | **Honest star exposure**: stars never render over sunlit ground; the night side and post-landing long-exposure/time-lapse modes are the payoff | Matches every Apollo surface photo; turns a constraint into a feature (DESIGN §2.2; REVIEWS M4) |
 
 ## Open questions for the owner
 
 1. **Art direction default** — Glass (recommended) vs Heritage: see `02` vs `02b`.
 2. **Asset hosting** — start in-repo (~180 MB across packs) vs CDN/release assets from day one (TECH R3/Q2).
-3. Appetite for the **eclipse cameo** (descend inside Earth's shadow) in P5 — it's the app's signature theme.
+3. Appetite for the **eclipse cameo** (descend inside Earth's shadow) — it's the app's signature theme, but it invalidates the baked sun-shadows, so it ships only with its real price (fade/rebake path) paid (DESIGN §7, TECH §4.3).

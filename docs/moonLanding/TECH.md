@@ -1,295 +1,335 @@
 # Moon Landing Mode — Technical Plan
 
-> Companion to [DESIGN.md](DESIGN.md) (the experience this must serve) and [ROADMAP.md](ROADMAP.md)
-> (delivery order). File/line references are to the repo at the time of writing.
+> Companion to [DESIGN.md](DESIGN.md) and [ROADMAP.md](ROADMAP.md). Revised after engineering
+> review (REVIEWS.md): asset arithmetic corrected, shadow bake split into two stages, composer
+> integration stated honestly against the actual code. File/line references current at writing.
 
-## 1. Hard requirements (from the brief + design)
+## 1. Hard requirements
 
-1. **Zero impact on the rest of the app.** No code in the initial bundle beyond a ~1 KB entry
-   stub; no assets fetched until the mode is entered; full disposal on exit (GPU memory, DOM,
-   listeners, workers).
-2. **Real-scale Moon** (R = 1,737.4 km) viewable from 450 km down to a 2 m eye height, 60 fps on
-   a mid-tier desktop GPU, 30 fps on a recent phone.
-3. **Accurate lighting**: Sun/Earth directions from the app's own ephemeris; Earth phase correct;
-   earthshine; black-sky exposure behavior.
-4. **New, HD asset set** for this mode (existing `public/textures/moon.jpg` is 448 KB — nowhere
-   near enough), streamed on entry with progress UI.
+1. **Zero impact on the rest of the app**: ~1 KB entry stub in the initial bundle, no assets
+   fetched until entry, full disposal on exit (GPU memory, DOM, listeners, workers, **and
+   shared-renderer state** — see §2.4).
+2. **Real-scale Moon** (R = 1,737.4 km), 450 km → 2 m eye height, 60 fps mid-tier desktop,
+   30 fps recent phone (with the mobile *mechanisms* of §9, not just budget hopes).
+3. **Accurate lighting** from the app's own ephemeris (Sun/Earth direction, Earth phase),
+   earthshine, honest exposure.
+4. **New HD asset set**, streamed on entry behind the pre-flight board.
 
 ## 2. Integration with the app shell
 
-The mode follows the established contract exactly (`activate(date, onProgress)/deactivate()/
-update(dt)`), patterned on `MoonFlightMode` (`src/moonFlight/MoonFlightMode.ts:86,156,191`) —
-CLAUDE.md already names it the decomposition to emulate.
+Mode contract as established (`activate(date, onProgress)/deactivate()/update(dt)`, patterned
+on `MoonFlightMode` — `src/moonFlight/MoonFlightMode.ts:86,156,191`), registered by extending
+`AppMode` (`src/main.ts:48`) and dynamic-imported exactly like moonFlight (`src/main.ts:845`)
+— Vite code-splits automatically.
 
-- **Mode registration:** extend `type AppMode` (`src/main.ts:48`) with `'moonLanding'`; add a
-  branch in `switchAppMode` (`src/main.ts:775`) using the **existing dynamic-import precedent**
-  (`src/main.ts:845` does `await import('./moonFlight/MoonFlightMode')`):
+**2.1 Rendering integration — requires a small, explicit shell refactor.** The current
+`buildComposer(cam)` hardcodes the *shared* scene into its RenderPass (`src/main.ts:206`), and
+the no-bloom fallback renders `renderer.render(scene, cam)` (`src/main.ts:224`). A mode that
+owns a private scene therefore cannot just "pass its camera": the shell gets a per-mode render
+delegate — `buildComposer(passes, cam)` taking a pass list (sky RenderPass, world RenderPass
+with `clearDepth`, bloom, OutputPass), or the mode owns its composer and `renderScene()`
+delegates to `mode.render()`. The **no-bloom path needs the same two-scene treatment**
+(`autoClear = false`, render sky, `clearDepth()`, render world). Bloom strength/threshold are
+currently a `cam === planetariumCamera` ternary (`src/main.ts:209–211`) — replace with
+per-mode bloom params so this mode doesn't inherit moonView's 1.2/0.85 tuning. All of this is
+**Spike S1's** scope, including its acceptance test "terrain never blooms at any exposure"
+(see §6 ordering trap).
 
-  ```ts
-  const mod = await import('./moonLanding/MoonLandingMode');   // separate Vite chunk
-  moonLandingMode = new mod.MoonLandingMode(renderer);
-  ```
+**2.2 Activation vs loading.** `switchAppMode` raises the fade overlay and *awaits*
+`activate()` behind a `modeSwitchInFlight` guard (`src/main.ts:789–795`) — awaiting a 45 MB
+fetch there would trap the user behind a black overlay with Esc dead. So: `activate()`
+resolves as soon as the **pre-flight board is interactive** (DESIGN §1.1 — the board *is* the
+loading screen); `assets.ts` streams packs afterward with progress events; cancel/exit works
+mid-download (one `AbortController` for the mode; BEGIN arms only when the checklist is green).
 
-  Vite code-splits on dynamic import automatically — no config needed. Everything under
-  `src/moonLanding/` plus its three/addons imports (KTX2Loader etc.) lands in that chunk.
-- **Own scene + own camera.** Unlike moonFlight (which borrows the shared scene), this mode owns
-  a private `THREE.Scene` and `PerspectiveCamera` — cleanest disposal story and no cross-mode
-  state bleed. `buildComposer(cam)` (`src/main.ts:199–228`) is already rebuilt per mode switch;
-  we pass our camera the same way. Bloom availability comes from `canGPUDoBloom(renderer)`
-  (`src/app/gpuCapability.ts`) exactly like the other modes.
-- **Lighting source:** reuse `snapshotLighting(date)` (moonFlight's pattern): freeze Sun/Earth
-  direction vectors + distances + Earth phase at entry. Frozen sun is also what makes per-tile
-  shadow baking legal (§6).
-- **UI:** new `#moon-landing-ui` section in `index.html`, toggled via `display` like
-  `#planetarium-ui` (`src/main.ts:756–781`); entry button next to `#btn-mode-planetarium`
-  (`index.html:1704`); `?auto=moonLanding` added to `getAutoMode()` (`src/main.ts:911–915`),
-  plus dev params `&site=&seat=&t=` for deep-linking any beat in QA.
-- **Disposal:** `deactivate()` must dispose terrain tile geometries/textures, the KTX2 loader's
-  transcoder workers, the synth Web Workers, audio context, DOM panel, and abort in-flight
-  fetches (single `AbortController` for the whole mode). Verified by a debug counter of
-  `renderer.info.memory` before/after (target: returns to pre-entry values ±0).
-- **Persistence:** a small `moonLandingStore` (localStorage, same defensive style as
-  `PlanetariumStore`) for: stats history, unlocked Heritage skin, HD-pack consent, last
-  site/seat. No 30 s auto-save loop needed — write on event.
+**2.3 UI.** The mode builds its DOM **programmatically** (the `MoonFlightMode.ts:249–283`
+precedent), not as permanent `index.html` sections — keeps ROADMAP P1's "zero moonLanding
+bytes until entry" honest. Entry button beside `#btn-mode-planetarium` (`index.html:1704`);
+`?auto=moonLanding` in `getAutoMode()` (`src/main.ts:911`), plus `&site=&seat=&t=` deep links
+for QA.
 
-### Module layout (mirrors moonFlight's decomposition, one responsibility each)
+**2.4 Disposal.** Dispose terrain geometries/textures, KTX2 transcoder workers
+(`setWorkerLimit` honors the mobile budget), synth workers, audio context, DOM, in-flight
+fetches — **and restore shared renderer state**: `toneMappingExposure` (set once at startup,
+`src/main.ts:116`, and slewed by our exposure system), autoClear, shadow-map flags. Verified
+by `renderer.info.memory` returning to baseline and a moonView visual check after an exit from
+long-exposure mode.
+
+**2.5 Lighting source:** `snapshotLighting(date)` (moonFlight pattern) freezes Sun/Earth at
+entry — also what legalizes baked tile shadows (§4.3).
+
+**2.6 Persistence:** small `moonLandingStore` (localStorage, PlanetariumStore's defensive
+style): stats/medals history, Heritage unlock, HD consent, last site/seat. Write-on-event.
+
+### Module layout (one responsibility each)
 
 ```
 src/moonLanding/
-  MoonLandingMode.ts      thin controller: lifecycle, beat state machine, wiring
-  assets.ts               manifest, pack fetching, progress events, AbortController
-  guidance/DescentGuidance.ts   phase targets, envelope clamps, player-bias blending
-  guidance/FlightDynamics.ts    f64 state integration (semi-implicit Euler, fixed 50 Hz)
-  input/LandingInput.ts   keyboard/touch/gyro → intent struct (reuse GyroSteering pattern)
-  globe/MoonGlobe.ts      cube-sphere quadtree, tile lifecycle, frustum+horizon culling
-  globe/TileSource.ts     fetch/decode real tiles; hand off to synth worker below data res
-  globe/synthWorker.ts    procedural amplification + normal/AO/shadow bake (Web Worker)
-  globe/collision.ts      heightfield sampling under the craft (CPU, finest resident tile)
-  sky/SkyDome.ts          stars (reuse data/brightStars), Milky Way pano, Earth, Sun glare
-  sky/exposure.ts         analytic auto-exposure (§6) + long-exposure mode
-  hud/LandingHUD.ts       DOM/SVG panels; theme tokens (Glass/Heritage); callout queue
-  hud/instruments/*.ts    tape, ribbon, compass, tempPanel, attitude, reticle (one file each)
-  thermal.ts              Diviner-fit surface temperature model (DESIGN App. A)
-  audio/LandingAudio.ts   WebAudio: rumble synth, RCS, radio/Quindar, music ducking
-  sites.ts                curated sites, nomenclature list for feature names
+  MoonLandingMode.ts      thin controller: lifecycle, beat machine, wiring, render delegate
+  assets.ts               pack manifest, streaming, progress, AbortController, base-URL const
+  guidance/DescentGuidance.ts   phase profiles, envelope clamps, bias/nudge blending, windows
+  guidance/FlightDynamics.ts    f64 point-mass + attitude, fixed 50 Hz, deterministic
+  input/LandingInput.ts   keyboard/touch/gyro → intents (GyroSteering pattern)
+  globe/MoonGlobe.ts      cube-sphere quadtree, lifecycle, frustum+horizon cull, prefetch
+  globe/TileSource.ts     real-tile fetch/decode; apron assembly; synth handoff
+  globe/synthWorker.ts    amplification + normals/AO + two-stage shadow bake (Worker)
+  globe/collision.ts      heightfield sample under craft (finest resident tile)
+  sky/SkyDome.ts          stars (reuse data/brightStars), Milky Way, Earth, Sun glare
+  sky/exposure.ts         analytic exposure (sunlit + shadow fractions) + long-exposure
+  hud/LandingHUD.ts       programmatic DOM/SVG; Glass/Heritage tokens; callout engine
+  hud/instruments/*.ts    journeyTape, speedBlock, compass, tempPanel, attitude, reticle…
+  thermal.ts              Diviner-fit model (DESIGN App. A)
+  audio/LandingAudio.ts   rumble/RCS synth, radio + Quindar, ducking
+  sites.ts                curated sites, IAU nomenclature for feature names
 ```
 
-`brightStars`/`constellations` (`src/planetarium/data/`) are plain RA/Dec data — imported
-directly into this mode's chunk; promote to `src/shared/data/` only if a tidiness pass wants it.
+## 3. Coordinates, precision, depth
 
-## 3. Coordinates, precision, depth — the three classic traps
-
-- **Units: meters, selenocentric, f64 on CPU.** All sim state (craft position, tile origins) in
-  JS numbers (f64 — exact enough at 2×10⁶ m scale). The GPU never sees absolute coordinates:
-  **camera-relative rendering** — each frame, every visible tile gets
-  `tileOriginRelCamera = tileOrigin − cameraPos` computed in f64 and written to its transform;
-  vertex positions inside a tile are tile-local (small floats). This is the planetarium's
-  floating-origin idea (`PlanetariumMode.applyFloatingOrigin`, line ~670) pushed down one level.
-  Float32 absolute coords would quantize at ~0.25 m at lunar-radius magnitudes — visible jitter;
-  camera-relative kills it.
-- **Depth: two-pass sky/world split, NOT logarithmic depth.** `logarithmicDepthBuffer` is a
-  `WebGLRenderer` **constructor** flag and the renderer is shared app-wide (`src/main.ts`) — we
-  will not flip a global flag for one mode. Instead: render the sky scene first (stars/Milky
-  Way/Earth/Sun at fixed modest distances, depth cleared after), then the world scene with a
-  **dynamic near/far** fitted to content: `near ≈ max(0.4 m, alt/3000)`, `far ≈ slant distance
-  to limb + margin`. Worst case (touchdown: near 0.4 m, far ~12 km) is a 3×10⁴ ratio — fine for
-  a 24-bit depth buffer. The composer gets one extra RenderPass (`clearDepth`), same pattern as
-  any two-scene three.js setup. **Spike S1 (ROADMAP) proves this against the existing composer
-  before anything else is built.**
-- **Curvature is free:** tiles are true cube-sphere patches (vertices on the sphere), so the
-  horizon, limb and "10% of the Moon beneath you" come out of the geometry; no faking.
+- **Meters, selenocentric, f64 on CPU; camera-relative on GPU.** Tile vertices are tile-local;
+  per-frame `tileOrigin − cameraPos` computed in f64 → small float offsets (float32 absolute
+  coords would quantize ~0.25 m at lunar radius — visible jitter). Planetarium's
+  floating-origin idea (`PlanetariumMode.ts` ~654) one level down.
+- **Two-pass sky/world split, not log depth** (`logarithmicDepthBuffer` is a renderer
+  *constructor* flag on the shared renderer — not togglable per mode). Sky scene (stars/Milky
+  Way/Earth/Sun at fixed distances) renders first, depth cleared; world scene uses dynamic
+  near/far. World scene `background = null` (else it repaints over the sky pass — S1
+  checklist).
+- **Near/far honestly computed.** `near ≈ max(0.4 m, alt/3000)`. **Far must include relief,
+  not just the smooth-sphere limb**: terrain of height H is visible to ≈ √(2R·h_eye) + √(2R·H)
+  — at a 2 m eye, a 4.5 km massif is visible from ~125 km (Mons Hadley stands ~25 km from the
+  Apollo 15 pad; DESIGN sells that view). So far = relief-inflated horizon + margin → ~150–200
+  km at touchdown. Precision still fine on 24-bit depth: δz ≈ z²/(near·2²⁴) → ~1.5 mm at
+  100 m, ~60 m at 20 km (a distant silhouette), ~6 km at 200 km (sky-adjacent). Worst ratio
+  ~5×10⁵ near 2 km altitude — still comfortable. Craft furniture (leg silhouettes) closer than
+  the near plane renders in the overlay/sky pass or as 2D HUD art.
+- Curvature is free: tiles are true sphere patches; horizon/limb geometry falls out.
 
 ## 4. Terrain: quadtree cube-sphere with baked-light tiles
 
 ### 4.1 Structure & LOD
 
-- 6 root faces → quadtree; tile = **65×65 vertex grid** (electron-microscope standard: shared
-  edge vertices, skirts hide T-junction cracks; optional CDLOD geomorph later if pops annoy).
-- Split metric: screen-space error `ρ = (tileGeometricError / distance) · (screenH / (2·tan(fov/2)))`,
-  split while `ρ > 1.5 px`, with hysteresis band to stop flicker; hard cap by altitude band.
-- Culling: frustum + **horizon cull** (tile's bounding sphere vs. cap visible from camera
-  height — from 450 km that rejects ~90% of the sphere immediately).
-- Level table (face edge ≈ 2,730 km): edge/level ≈ 2730/2ⁿ km; **vertex pitch ≈ edge/64**:
+- 6 root faces → quadtree; **65×65 vertex** tiles, shared-edge + skirts (cracks), optional
+  CDLOD morph in reserve.
+- Split on screen-space error with **per-tile max height deviation** as the geometric error
+  (known at bake time) — *not* vertex pitch, which over-splits flat maria. Threshold ~1.5 px
+  with hysteresis; altitude-banded caps.
+- Culling: frustum + horizon (cap test rejects ~90% of the sphere from 450 km).
+- Level table (face edge ≈ 2,728 km; vertex pitch = edge/(64·2ⁿ)):
 
-  | Level | Vertex pitch | Source |
-  |---|---|---|
-  | 0–6 | 42.7 km → 667 m | real data (downsampled LOLA/SLDEM + WAC color) |
-  | 7–9 | 333 → 83 m | real data (SLDEM2015 ~59–118 m/px) — global floor |
-  | 10–13 | 42 → 5.2 m | **curated sites:** LROC NAC DTM patches (2–5 m/px) · elsewhere: procedural |
-  | 14–16 | 2.6 → 0.65 m | procedural everywhere (+ boulder instancing) |
+  | Level | Pitch | Height source | Color source |
+  |---|---|---|---|
+  | 0–5 | 42.7 km → 1.33 km | real, global, **in core pack** | global 8k KTX2 |
+  | 6–9 | 667 → 83 m | real, **descent-corridor + site cones only** | corridor/site tiles |
+  | 10–13 | 42 → 5.2 m | curated sites: NAC DTM patches · elsewhere procedural | procedural albedo modulated by parent |
+  | 14–16 | 2.6 → 0.65 m | procedural + boulder instancing (≤ 20k, fade-in < 500 m AGL) | procedural |
 
-- Budgets: ≤ ~220 resident tiles, LRU cache ~350; split/merge ≤ 4 tile builds in flight.
+  The guidance trajectory is known at commit — **the corridor is prefetchable** (§4.4). "Real
+  data globally to L9" died in review: L9 height alone is ~13 GB (≈ SLDEM2015's own 8.5 GB
+  global raster — §5 budgets versus that reality).
+- Budgets: ≤ ~220 resident tiles (self-consistent with the SSE threshold at 1080p), LRU ~350,
+  ≤ 4 builds in flight.
 
-### 4.2 Procedural amplification (below data resolution)
+### 4.2 Procedural amplification (synth worker, deterministic)
 
-In the synth worker, per tile, **deterministic** (seed = hash of face/level/x/y — every flight
-sees the same Moon):
+Per tile, seeded by world position (face/level/x/y hash — same Moon every flight):
+parent-height bicubic upsample → band-limited regolith fBm (roughness-classed: maria smooth,
+highlands rough) → **crater stamping** by power-law SFD, stamps hashed on *world* coordinates
+so neighbors regenerate identical overlapping craters (seam-free by construction) → boulders
+near fresh stamps (deep levels only) → bake normals + AO + shadow (below) into one RGBA
+texture + displaced mesh, transferables to main thread.
 
-1. Upsample parent heightfield (bicubic).
-2. Add band-limited regolith fBm (2–3 octaves, amplitude tied to local roughness class:
-   maria smooth, highlands rough).
-3. **Crater stamping** by Neukum-style power-law SFD (N ∝ D⁻²·⁸ per km²/Myr-equivalent, tuned
-   per region class), stamp = parametric bowl+rim+ejecta falloff; depth/diameter ≈ 0.2 fresh →
-   0.05 degraded; degradation randomized. Stamps respect tile borders by hashing on **world**
-   position (neighbor tiles regenerate identical overlapping craters — seam-free by construction).
-4. Boulder pass (final levels only): instanced rock meshes clustered around the freshest stamped
-   craters; ≤ 20k instances resident, fade-in below 500 m AGL.
-5. Bake per-texel **normals**, **AO**, and §6's **sun-shadow term**; emit one RGBA texture
-   (normal.xy, AO, shadow) + height mesh displacement → transferable buffers to main thread.
+**Apron contract:** TileSource hands the worker the tile **plus an N-texel apron** (neighbor
+data) — normals, AO, and near-field shadows computed without aprons seam at every tile border.
+This is an explicit interface, not an optimization.
 
-### 4.3 Why baking works: the sun is frozen
+### 4.3 Shadows: two-stage bake under a frozen sun
 
-`snapshotLighting` freezes the sun for the session (it moves 0.008°/min — invisible during a
-10-minute descent, already the moonFlight precedent). So each tile can **ray-march its own
-heightfield toward the sun once at build time** and store a soft shadow/penumbra factor per
-texel. Result: terminator-grade long shadows at *every* LOD with zero per-frame cost, no
-shadow-map swimming, no cascade tuning for terrain. Real-time shadow maps are reserved for one
-small cascade (~2048², ≤ 2 km radius) below 5 km AGL — for the craft's own shadow and dust
-light occlusion. (If the player changes the date in pre-flight, tiles rebuild; that's the
-loading checklist again, not a runtime path.)
+The sun is snapshot-frozen (moves 0.008°/min — invisible in a 12-minute ride), so shadows bake
+at tile-build time. **One stage is not enough**: at 5–14° sun, a 4 km peak shadows ~45 km of
+ground — occluders live tens of kilometers outside any tile. So:
 
-### 4.4 Collision
+- **Far field:** ray-march against the always-resident coarse global heightfield (L0–L5 core
+  pack — shipped to the worker once). Catches mountain/crater-wall shadows at terminator
+  scale, identical across neighboring tiles by construction.
+- **Near field:** march the tile + apron for local relief; **below ~L12, inherit the parent's
+  shadow term** and add only the tile's own stamped-crater shadows (long shadows are
+  low-frequency; they don't need re-marching per level).
+- Penumbra: soften by miss distance (sun is 0.53° wide). Output packs into the tile RGBA.
+- Real-time shadow map: **one** small cascade (≤ 2048², ≤ 2 km radius) below 5 km AGL, casters
+  = **craft only** (terrain casting would re-draw ~220 tiles into the depth pass and
+  double-darken against the bake); terrain receives.
+- Date change in pre-flight ⇒ tiles rebuild behind the checklist (not a runtime path). The
+  eclipse cameo invalidates the baked term — its real price (fade/rebake) is on DESIGN §7.
 
-`collision.ts` samples the finest resident heightfield under the craft (bilinear) for AGL,
-plus 4 pad points + local normal at touchdown for tilt/slope grading. No physics engine —
-`FlightDynamics` is a point mass + attitude state with guidance-shaped accelerations (50 Hz
-fixed-step, deterministic given seed+inputs; replayable for QA goldens).
+### 4.4 Streaming throughput (the mobile truth)
+
+Demand: 30 km → 150 m crosses ~7–8 LOD levels in ~130 s ⇒ sustained **3–7 tile builds/s,
+peaking 10–15/s** at pitch-over. Supply: a 256² bake dominated by the shadow march runs
+~100–400 ms in a JS worker ⇒ 2 desktop workers ≈ 5–20/s (OK if tuned); one mobile worker is
+**2–5× short**. Mechanisms, not hope: **corridor prefetch** (guidance knows the future camera
+path — queue the cone at commit), **128² bakes** on mobile and for L≥14 (0.33 m shadow texels
+at L14 is overkill anyway), **parent shadow inheritance** (kills the march where it's
+costliest), and build prioritization by screen-space error. **Spike S3 benchmarks exactly
+this** (one tile + apron, two-stage march, mid desktop + low-end Android; gates: ≤ ~100 ms /
+≤ ~300 ms, seam-free pair render).
+
+### 4.5 Collision
+
+Bilinear heightfield sample under the craft (finest resident tile) for AGL; 4 pad points +
+normal at touchdown → tilt/slope grading. `FlightDynamics` is a 50 Hz fixed-step point mass —
+deterministic given seed + input script (replayable for QA goldens).
 
 ## 5. Data & asset pipeline
 
-### 5.1 Sources (all public domain / NASA)
+### 5.1 Sources (honest resolutions; licensing noted)
 
-| Asset | Source | Native res |
-|---|---|---|
-| Global color | LROC WAC mosaic via NASA SVS **CGI Moon Kit** | up to 27,360×13,680 (~100 m/px) |
-| Global elevation | LOLA / **SLDEM2015** (CGI Moon Kit displacement) | 59–118 m/px |
-| Site patches (5) | LROC **NAC DTM + orthophoto** (PDS) | 2–5 m/px DTM, 0.5–2 m/px ortho |
-| Sky | NASA SVS **Deep Star Maps 2020** Milky Way pano | 8k/16k equirect |
-| Bright stars/constellations | already in repo (HYG-derived TS data) | — |
-| Earth (1.9° disc) | reuse existing `public/textures/earth-*.jpg` | 2k — ample at ~60 px |
-| Temperatures | analytic Diviner-fit model in `thermal.ts` (no texture needed) | — |
-
-Offline preprocessing in `tools/moonLanding/` (Node + GDAL, **not shipped**): reproject to cube
-faces, build tile pyramids, encode **KTX2/Basis-UASTC→BC/ASTC** color + 16-bit PNG heights,
-emit `manifest.json` (tile index, byte sizes, sha) consumed by `assets.ts`.
-
-### 5.2 Packs & budgets (gzip'd over-the-wire targets)
-
-| Pack | Contents | Size target | When |
+| Asset | Source | Native res | Note |
 |---|---|---|---|
-| `core` | mode chunk (~150 KB), 8k×4k global color KTX2, global height L0–L7, 4k Milky Way KTX2, audio (≤ 2 MB) | **≤ 45 MB** | on entry, behind pre-flight checklist |
-| `site-<name>` ×5 | color+height L8–L13 cone around pad | ≤ 15 MB each | when site selected (parallel with choosing) |
-| `hd` (optional) | 16k global color, 8k sky | ≤ 60 MB | desktop + opt-in toggle only |
+| Global color | **LROC WAC mosaic** (LROC/PDS) | ~100 m/px (109k×55k) | The CGI Moon Kit's 27,360×13,680 color is ~**399 m/px** — kit is a convenience derivative, not the data ceiling. PD |
+| Global elevation | **SLDEM2015 / LOLA** (PDS) | 512 ppd ≈ **59 m/px** (60°S–60°N), LOLA poleward | Kit displacement (64 ppd ≈ 474 m/px) is *not* enough for L7+; source native. PD |
+| Site patches ×5 | **LROC NAC DTM + ortho** (PDS) | 2–5 m/px DTM, 0.5–2 m/px ortho | PD. Shackleton coverage is sparse — pipeline risk R7 |
+| Sky | NASA SVS **Deep Star Maps 2020** | 8k/16k equirect | PD |
+| Bright stars / constellations | repo data (HYG v3.7 derived) | — | **CC BY-SA, not PD** — ship attribution in-app (credits panel) |
+| Earth | existing `public/textures/earth-*.jpg` | 2k | ample at ~55 px |
+| Temperatures | analytic Diviner-fit in `thermal.ts` | — | no texture |
 
-Mobile caps: 4k global color, 4k sky, no `hd`, tile cache halved (§9). All fetches go through
-`assets.ts` with progress → checklist lines, `AbortController` on exit, and standard HTTP
-caching (GitHub Pages serves long-lived `ETag`s; an explicit Cache API layer is a later nicety).
+Offline preprocessing in `tools/moonLanding/` (Node + GDAL, not shipped): cube-face
+reprojection, pyramid build, KTX2 (UASTC→BC/ASTC) color, height packing, `manifest.json`.
+**This pipeline is scheduled work (ROADMAP P0.5), not a footnote** — polar reprojection,
+NAC-into-procedural blending at cone borders, and grazing-sun Shackleton bakes are where the
+calendar lives.
 
-**Hosting reality check (GitHub Pages):** individual files must stay < 100 MB (hard git limit;
-Pages doesn't serve LFS) and the whole site reasonably ≤ ~1 GB. core + 5 sites + hd ≈ **180 MB**
-of `public/` — acceptable, but tiles are committed as many small files (they're a pyramid
-anyway). If asset growth ever threatens the repo, the documented fallback is moving packs to a
-release-asset/CDN URL — `assets.ts` already routes every fetch through one base-URL constant
-(and note the CLAUDE.md caveat: `BASE_URL`-built paths are invisible to tsc/Vite — verify in
-the running app). **Experiment E1 (non-blocking):** stream deep-zoom tiles at runtime from NASA
-Trek's public WMTS endpoints instead of shipping site packs; needs a CORS/availability/latency
-probe before we trust it for anything.
+### 5.2 Packs & budgets (corrected arithmetic)
+
+Height tile = 65×65×2 B ≈ 8.5 KB raw. Cumulative global tile counts: L0–5 ≈ 8,190 tiles
+(~70 MB raw, **~20–25 MB packed**); L0–6 ≈ 32,766 (~280 MB raw) — *that's why the global real
+floor is L5–6, not L7–9 (L9 alone ≈ 13 GB)*. Corridor/site cones are thousands of tiles, not
+millions.
+
+| Pack | Contents | Wire target | When |
+|---|---|---|---|
+| `core` | mode chunk (~150 KB) · global color 8k×4k KTX2 (~22 MB) · global height **L0–L5** (~20 MB) · 4k Milky Way KTX2 (~11 MB) · audio (≤ 2 MB) | **≤ 55 MB** | on entry, behind the board (orbit view needs only L0–L4 — first frame fast) |
+| `site-<name>` ×5 | height+color **corridor cone L6–L9** + pad cone **L10–L13** (NAC where curated) | ≤ 15 MB each | on site select, parallel with choosing |
+| `hd` (optional, desktop opt-in) | 16k global color, 8k sky | ≤ 60 MB | toggle |
+
+- **Pack files, not tile files:** per-level/per-cone binary packs fetched with **HTTP Range**
+  requests (Pages serves `Accept-Ranges`) + a small JSON index. 10⁵ loose files would bloat
+  git and slow the Pages artifact tar (`.github/workflows/deploy.yml`); ranges also make the
+  manifest format stable from day one.
+- **Height encoding:** Mapbox-style **terrain-RGB in ordinary 8-bit PNG** (height split across
+  R/G/B), decoded via `createImageBitmap` with `colorSpaceConversion:'none'`,
+  `premultiplyAlpha:'none'` — a naive 16-bit-PNG-through-canvas path silently clamps to 8 bits
+  = **78 m terraces** across ±10 km of lunar relief. (Fallback: worker-side PNG parse with
+  `DecompressionStream` — zero-dep.)
+- Mobile caps: 4k color, 4k sky, no `hd`, halved tile cache.
+- Totals: core + 5 sites ≈ **130 MB** of `public/` — in-repo is fine to start (< 100 MB/file
+  hard limit respected by pack splitting); every fetch goes through one base-URL constant in
+  `assets.ts` so a CDN/release-asset move is a one-line change (and the CLAUDE.md caveat
+  stands: `BASE_URL` paths are invisible to tsc/Vite — verify in the running app).
+- **Experiment E1 (probe before P2):** NASA Trek WMTS streaming for deep-zoom tiles —
+  CORS/latency/availability unproven; if it lands, site packs shrink to NAC pads only.
 
 ## 6. Lighting, exposure, sky
 
-- **Sun:** one `DirectionalLight` (direction from snapshot), intensity normalized so sunlit
-  albedo-0.12 regolith hits the tone-curve's key. Disc itself is glare: bloom-driven sprite +
-  corona when `canGPUDoBloom`, the moonView fallback trick (extra glow shells) otherwise.
-- **Earthshine:** second faint `DirectionalLight` from the Earth direction, blue-gray, intensity
-  ∝ Earth phase illumination × ~3 artistic boost (DESIGN §8). Lights the night side and softens
-  black shadows. **Ambient: none.**
-- **Regolith BRDF:** custom `onBeforeCompile` chunk on the terrain material: Lambert ×
-  (1 + opposition surge term peaking within ~2° of anti-sun direction — the retro-reflectance
-  halo) × baked AO × baked sun-shadow. Cheap (a dot product and a smoothstep), unmistakably lunar.
-- **Exposure:** analytic — no GPU luminance readback. Estimate scene key from (a) fraction of
-  frame subtended by sunlit terrain (camera pitch + altitude + terminator geometry, closed
-  form), (b) Earth/Sun in frustum flags. Drive `renderer.toneMappingExposure` through a slewed
-  (~1.5 s time-constant, like an iris) curve; star/Milky-Way material opacity keys off the same
-  value so stars fade *physically* rather than by script. **Long-exposure mode** (post-landing,
-  hold key): +6 EV target, grain shader, Milky Way fully out.
-- **Sky pass:** stars as one `Points` buffer from `brightStars` (magnitude → size/intensity,
-  B-V → color), Milky Way pano on an inside-out sphere, Earth as a small textured sphere with
-  day/night/cloud shader reusing existing earth textures, all at fixed comfortable distances in
-  the sky scene (depth-independent, §3).
+- **Sun:** one DirectionalLight from the snapshot; disc = glare sprite + corona via bloom when
+  `canGPUDoBloom` (float-FBO probe, `src/app/gpuCapability.ts`), glow-shell fallback otherwise.
+- **Earthshine:** second faint DirectionalLight from the Earth direction, blue-gray, ∝ Earth
+  phase × ~3 boost (declared). Ambient: none.
+- **Regolith BRDF (shader-architecture note, learned in review):** the baked **sun-shadow term
+  gates the sun light only** — inside the lighting loop via a custom direct-light chunk
+  (`onBeforeCompile`), keyed to the sun's light index. Multiplying the whole lighting sum
+  would re-blacken the shadows earthshine exists to lift. AO multiplies both lights.
+  Opposition surge: a dot-product/smoothstep boost peaking within ~2° of anti-sun.
+- **Exposure:** analytic, no readback — scene key from (a) sunlit-terrain frame fraction
+  (closed form from pitch/altitude/terminator geometry), (b) **mean baked-shadow factor of
+  resident tiles** (free: each bake emits its mean — a terminator frame is mostly shadow and
+  must expose *up*), (c) Sun/Earth-in-frustum flags. Slewed ~1.5 s. **Ordering trap:** in this
+  composer chain, tone mapping (and `toneMappingExposure`) applies in OutputPass *after*
+  bloom — driving the renderer exposure can never pull terrain below the bloom threshold. So
+  exposure is applied **pre-bloom** (material/uniform scale), bloom threshold per-mode, and S1
+  carries the AC "terrain never blooms". Star/Milky-Way opacity keys off the same exposure
+  value (honest star policy, DESIGN §2.2). Long-exposure mode: +6 EV target, grain, MW out.
+- **Sky pass:** stars as one Points buffer from `brightStars` (mag → size/intensity, B−V →
+  color), MW pano sphere, Earth as small textured sphere (existing textures) with phase
+  shader, fixed comfortable distances (§3 split).
 
-## 7. Guidance & beats (the "ride" machinery)
+## 7. Guidance & beats
 
-A small state machine in `MoonLandingMode` sequences DESIGN §1.2's beats; `DescentGuidance`
-holds per-phase **target profiles** (altitude→velocity curves precomputed at activation for the
-chosen descent-rate bias) and clamps:
+State machine in the controller sequences DESIGN §1.2; `DescentGuidance` precomputes per-phase
+altitude→velocity profiles at commit for the chosen bias and clamps:
 
-- Window/Right Seat: craft acceleration = guidance PD toward profile + player nudge vector
-  (bounded); guidance authority ramps up as the player's input decays (soft hand-back, DESIGN
-  §3.4). Vertical speed hard-capped per phase (e.g. −30 m/s below low gate).
-- Left Seat: player throttle/attitude integrate directly; guidance only annunciates (and SAS
-  damps rates). Fuel = ΔV budget bookkeeping.
-- Redesignation: clicked terrain point ray-cast → reachability check against remaining
-  ΔV envelope → new target for the profile generator.
-- All beat boundaries (`highGate`, `lowGate`, dust threshold, contact) emit events the HUD,
-  audio, and callout queue subscribe to. Deterministic: fixed-step sim + seeded synth ⇒ a
-  recorded input script replays identically (QA goldens, §10).
+- Window/Right Seat: accel = PD toward profile + bounded player nudge; authority ramps back as
+  input decays (soft hand-back). V-SPD hard caps per phase. **Commit windows** are first-class:
+  window timing from site geometry; ~90 s grace via ΔV reserve; miss → next-window state (the
+  radio owns it), skippable by the declared jump-cut.
+- Left Seat: direct throttle/attitude with SAS rate damping; guidance annunciates only; fuel =
+  ΔV bookkeeping.
+- Redesignation: terrain raycast → reachability vs remaining ΔV → new profile target.
+- Beat boundaries emit events (HUD, audio, **callout engine** — a priority/dedup queue against
+  one display slot, DESIGN §6). Deterministic: fixed-step sim + seeded synth ⇒ replayable
+  goldens.
 
 ## 8. HUD implementation
 
-Vanilla DOM/SVG inside `#moon-landing-ui` (repo convention — no framework, ids in `index.html`,
-`setText` from `src/shared/dom`): panels are absolutely-positioned elements updated at 10–20 Hz
-(numbers) while smooth elements (tapes, attitude ring, sparkline) are tiny inline `<svg>`s
-updated per-frame via transform — cheap, crisp at any DPI, and the Glass/Heritage **skins are
-CSS custom-property token sets** (`--hud-ink`, `--hud-accent`, fonts, scanline overlay class)
-exactly as the mockup generator models them. World-anchored elements (site chevron, reticle,
-Earth/Sun compass markers) use `projectToScreen` (`src/shared/three/projectToScreen.ts`) with
-its zero-alloc `out` form. Callout/caption queue is one element with CSS transitions.
+Programmatic DOM/SVG (per §2.3), `setText` from `src/shared/dom`, numbers at 10–20 Hz, smooth
+elements (journey tape, attitude, sparkline) as small inline `<svg>` transforms per frame.
+Glass/Heritage = CSS custom-property token sets *plus* the two named Heritage extras (FDAI
+instrument, CRT overlay) costed in P4. World-anchored elements (reticle, chevron, compass
+markers with edge-pinning) use `projectToScreen` (`src/shared/three/projectToScreen.ts`,
+zero-alloc `out` form).
 
-## 9. Performance budgets (acceptance numbers for ROADMAP)
+## 9. Performance budgets
 
 | Budget | Desktop (mid GPU) | Mobile (recent) |
 |---|---|---|
-| Frame | 16.6 ms: terrain ≤ 4, sky ≤ 1, fx ≤ 1.5, sim+JS ≤ 2, headroom rest | 33 ms equivalents |
-| Draw calls | ≤ 300 | ≤ 180 |
-| Resident VRAM | ≤ 350 MB | ≤ 160 MB |
-| Tile builds | ≤ 4 in flight, ≤ 3 ms/frame main-thread upload (sliced texSubImage) | ≤ 2 / ≤ 3 ms |
-| Workers | 2 synth + KTX2 transcoder pool | 1 + 1 |
-| Entry → first orbital frame | ≤ 8 s on 50 Mbps (core pack streams progressively; orbit needs only L0–L4) | ditto, smaller pack |
+| Frame | 16.6 ms: terrain ≤ 4, sky ≤ 1, fx ≤ 1.5, sim+JS ≤ 2 | 33 ms equivalents |
+| Draw calls | ≤ 300 (terrain ≤ 220 + sky + fx + craft) | ≤ 180 |
+| **Pixel ratio policy** | **≤ 1.5 for this mode** (needs its own branch in `getTargetPixelRatio`, `src/main.ts:186`) | 1.0–1.25 |
+| VRAM — content | ~165 MB (8k color KTX2 43 · tile RGBA cache 350×256² ≈ 92 (+⅓ if mipped — decide at S3) · meshes ~30 (per-tile position buffers) · sky 11) | ~80 MB (4k + 128² halves) |
+| VRAM — **composer** (forgotten in v1 of this doc) | 2× RGBA16F + depth + bloom chain ≈ **130 MB at 1080p×1.5** (was ~227 MB at dpr 2 — hence the PR policy) | ~60 MB |
+| Headroom check | ~295 MB ≤ 350 budget ✓ | ~140 ≤ 160 ✓ |
+| AA | composer bypasses canvas MSAA — either `target.samples = 4` (+VRAM) or FXAA pass; decide in S1 (1.5 px SSE terrain will crawl unaided) | FXAA |
+| Workers | 2 synth + KTX2 pool (`setWorkerLimit`) | 1 + 1 |
+| Tile builds | §4.4 mechanisms; ≤ 4 in flight | 128² bakes, corridor prefetch mandatory |
+| Entry → first orbital frame | ≤ 8 s @ 50 Mbps (orbit needs L0–L4 + color) | ditto |
 
-Bloom only when `canGPUDoBloom` (existing gate). Dust: GPU-instanced quads (≤ 4k particles,
-ballistic analytic motion in the vertex shader — no per-particle CPU) + the screen-space veil.
+Dust: ≤ 4k instanced quads, ballistic motion in the vertex shader, + screen veil. Bloom only
+when `canGPUDoBloom`.
 
-## 10. QA & debug (no test framework exists — make verification cheap)
+## 10. QA & debug
 
-- `?auto=moonLanding&site=tycho&seat=left&t=lowGate` deep links; `?debug=1` reuses the existing
-  debug overlay and adds: frame ms, resident tiles/VRAM estimate, current LOD histogram,
-  guidance phase/targets, exposure value.
-- Determinism harness: record input script + seed → replay → screenshot at each beat; goldens
-  checked by eye (documented procedure in `docs/moonLanding/QA.md` when P2 lands).
-- `npm run build` (tsc strict + vite) stays the gate — remember CI does **not** run tsc
-  (CLAUDE.md), so local builds before push are mandatory, and `noUnusedLocals` will catch
-  refactor leftovers.
+`?auto=moonLanding&site=tycho&seat=left&t=lowGate` deep links; `?debug=1` adds frame ms,
+resident tiles/VRAM estimate, LOD histogram, guidance phase, exposure value. Determinism
+harness: record seed + input script → replay → screenshot at each beat (procedure lands as
+`QA.md` in P2). `npm run build` (tsc strict) locally before every push — CI runs vite only
+(CLAUDE.md), and `noUnusedLocals` is the refactor-leftover net.
 
-## 11. Risks & open questions
+## 11. Risks & spikes
 
 | # | Risk | Mitigation |
 |---|---|---|
-| R1 | Two-scene depth split fights the shared composer (render order, bloom pass placement) | **Spike S1 first** — a gray-sphere prototype proving composer + sky/world split + camera-relative transforms at 450 km→2 m |
-| R2 | KTX2 transcoder (wasm) hosting/MIME on GitHub Pages; three `^0.183` KTX2Loader API | **Spike S2**: load one KTX2 in a Pages-deployed branch; fallback = WebP/JPEG + runtime-generated mips (costs VRAM headroom, not correctness) |
-| R3 | Repo bloat from tile packs (~180 MB) | Pack sizes enforced by the build script; CDN/release-asset fallback wired from day one (one base-URL constant); E1 Trek streaming probe |
-| R4 | Mobile OOM (4k caps may still be tight with composer + tiles) | Mobile budget table is acceptance criteria in every phase; tile cache halves; `hd` never offered |
-| R5 | Procedural terrain seams/pops at LOD boundaries | World-position-hashed stamps (seam-free by construction), skirts, hysteresis; CDLOD morph held in reserve |
-| R6 | Scope creep in guidance (it's a ride, not KSP) | DESIGN §9 descope list is contractual; Left Seat ships *after* the ride feels right (ROADMAP) |
-| Q1 | Art direction default | DESIGN recommends Glass; Heritage as unlock — **owner sign-off wanted** |
-| Q2 | Site packs in-repo vs CDN from day one | Start in-repo (≤ 180 MB), revisit at P5 if the repo groans |
+| R1 | Two-scene split vs shared composer (render order, bloom placement, fallback path, exposure ordering) | **Spike S1**: gray sphere at real scale through the *refactored* composer & no-bloom path, 450 km→2 m; ACs: no z-art, terrain never blooms, sky pass correct in both paths, exposure restored on exit |
+| R2 | KTX2 transcoder (wasm) on GitHub Pages; three `^0.183` KTX2Loader | **Spike S2** on a Pages deploy; fallback WebP + runtime mips (costs VRAM headroom only) |
+| R3 | Tile-build throughput vs descent (esp. mobile) | **Spike S3**: bake benchmark + seam-pair proof + apron contract validation; corridor prefetch design |
+| R4 | Asset pipeline is the schedule (polar reprojection, NAC blending, Shackleton grazing-sun bakes, pack format) | **P0.5 phase** with a one-face dry run measuring real bytes before P1 locks the manifest |
+| R5 | Repo growth (~130 MB packs) | pack-file + Range design; one base-URL constant → CDN move is one line; E1 Trek probe |
+| R6 | Mobile OOM / throttling | PR policy, 128² bakes, halved caches, no `hd`, iOS decode spikes watched in P1 |
+| R7 | Procedural seams/pops | world-hashed stamps, apron contract, skirts, hysteresis; CDLOD in reserve |
+| R8 | Scope creep in guidance & radio | DESIGN §9 descope is contractual; callout engine budgeted (P4); Left Seat last (P5) |
+| Q1 | Glass default vs Heritage | DESIGN recommends Glass; owner sign-off wanted |
+| Q2 | Packs in-repo vs CDN day one | start in-repo; revisit at P5 |
 
-## Appendix — derivations behind the budget numbers
+## Appendix — derivations
 
-- Visible fraction f(h) = h / (2(R+h)) → 450 km ⇒ 10.3%. Horizon d = √(h(2R+h)) ⇒ 1,329 km.
-- v_circ(450 km) = √(μ/r) = √(4902.8/2187.4) ≈ 1.497 km/s; T = 2π√(r³/μ) ≈ 153 min.
-- Free-fall from rest at 450 km: v_impact = √(2μ(1/R − 1/r)) ≈ 1.077 km/s; t ≈ 13.9 min — the
-  basis of the 5–10 min powered envelope and the ~3.0 km/s ΔV claim (1.497 kill + ~1.1 brake + margin).
-- Tile level pitch: cube face edge ≈ (π/2)·R ≈ 2,728 km; pitch(n) = edge/(64·2ⁿ) → n=16 ⇒ 0.65 m.
-- VRAM: 8k×4k color KTX2 (BC7, 1 B/px) ≈ 32 MB + mips ≈ 43 MB; per-tile 256² normal/AO/shadow
-  RGBA ≈ 256 KB × 350 cached ≈ 90 MB; height meshes 65² × f32 ≈ 50 KB × 350 ≈ 18 MB; sky 4k
-  KTX2 ≈ 11 MB; comfortably inside the 350 MB desktop budget with composer targets.
+- f(h) = h/2(R+h) → 10.29% @ 450 km. Horizon √(h(2R+h)) → 1,329 km; relief-visible distance
+  adds √(2R·H) → a 4.5 km peak shows from ~125 km at ground level (drives the far plane, §3).
+- v_circ(450) = 1.497 km/s; T = 153 min; ground speed 1.19 km/s.
+- Radial-Kepler free fall 450 km → surface: t = √(r₀³/2μ)·(arccos√(R/r₀) + √(R/r₀·(1−R/r₀)))
+  = **904 s**; impact √(2μ(1/R−1/r₀)) = 1.077 km/s. Powered-profile family and the 3.3–5.0
+  km/s bias envelope: DESIGN App. A (numbers shared).
+- Tile arithmetic: counts 6·(4^(n+1)−1)/3 → L0–5 = 8,190; L0–6 = 32,766; L9 global ≈ 1.57 M
+  tiles ≈ 13 GB raw — the §5.2 scope line. Height tile 8.5 KB raw; 65² mesh ≈ 50 KB; 256² RGBA
+  ≈ 262 KB.
+- VRAM: 8k×4k KTX2(BC7) ≈ 32 MB + mips ≈ 43; composer at 2880×1620: 2×RGBA16F (75) + depth
+  (19) + bloom chain (~37) ≈ 130 MB.
+- Depth: δz(z) ≈ z²/(near·2²⁴); near 0.4 / far 200 km → 1.5 mm @ 100 m, 60 m @ 20 km.

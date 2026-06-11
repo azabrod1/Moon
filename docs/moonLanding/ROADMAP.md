@@ -9,16 +9,31 @@ beautiful screenshot at every milestone**.
 
 ## P0 — Design package *(this PR)*
 Experience design, mockups, tech plan, critique log. **AC:** docs + rendered mockups reviewable
-in-repo; open questions (art direction default, hosting) surfaced to the owner.
+in-repo; critique round run and dispositioned (REVIEWS.md); open questions (art direction
+default, hosting) surfaced to the owner.
 
-## S1 + S2 — Spikes *(throwaway code, timeboxed, before any feature work)*
-- **S1 Depth/composer spike:** gray sphere at real scale, camera-relative transforms, sky/world
-  two-pass on the *shared* renderer+composer, fly 450 km → 2 m.
-  **AC:** no z-fighting/jitter at either extreme; bloom pass still works in both scenes;
-  measured frame cost of the extra pass < 0.5 ms.
-- **S2 KTX2-on-Pages spike:** one KTX2 texture + transcoder wasm loaded from a Pages deploy.
-  **AC:** loads on Chrome/Firefox/Safari + one Android phone; documented MIME/caching behavior.
-  Fallback decision (WebP) made here, not later.
+## P0.5 — Asset pipeline *(scheduled work, not a footnote — review finding)*
+`tools/moonLanding/`: cube-face reprojection (GDAL), pyramid build, KTX2 encode, terrain-RGB
+height packing, pack-file + Range-index format, manifest. **AC:** one full cube face dry-run
+with **measured** output bytes vs TECH §5.2 targets; one NAC site cone blended into procedural
+border without visible seam in a viewer; pack format frozen before P1.
+
+## S1 + S2 + S3 — Spikes *(throwaway code, timeboxed, before feature work)*
+- **S1 Depth/composer spike** *(scope widened by review)*: gray sphere at real scale,
+  camera-relative transforms, sky/world two-pass through a **refactored composer** (per-mode
+  pass list) **and the no-bloom fallback path**, fly 450 km → 2 m.
+  **AC:** no z-fighting/jitter at either extreme; **terrain never blooms at any exposure**
+  (exposure applied pre-bloom); world scene background null verified; both render paths
+  correct; `toneMappingExposure` restored on exit; extra pass cost < 0.5 ms.
+- **S2 KTX2-on-Pages spike:** one KTX2 + transcoder wasm from a Pages deploy.
+  **AC:** Chrome/Firefox/Safari + one Android; MIME/caching documented; WebP fallback decision
+  made here.
+- **S3 Bake-throughput spike** *(new, from review)*: one 256² tile bake in a worker — apron
+  assembly, two-stage shadow march (far field vs coarse global, near field vs tile+apron),
+  crater stamps — on a mid desktop and a low-end Android; render two adjacent tiles side by side.
+  **AC:** ≤ ~100 ms/tile desktop, ≤ ~300 ms phone (else 128² becomes the default and budgets
+  re-derive); **no normal/shadow seam** on the pair; terrain-RGB decode path proves 16-bit
+  fidelity (no 78 m terraces).
 
 ## P1 — "Orbit Postcard"
 Mode skeleton (lazy chunk, activate/deactivate/update, entry button, `?auto=moonLanding`),
@@ -31,36 +46,45 @@ entry); 60 fps desktop / 30 fps phone in orbit; Earthrise matches ephemeris for 
 date; first orbital frame ≤ 8 s on 50 Mbps.
 
 ## P2 — "The Fall"
-DescentGuidance + FlightDynamics (fixed-step, deterministic), beat state machine through low
-gate, descent-rate bias + cross-range nudge, HUD core (descent ribbon, alt tape, speed block,
-compass, MET/phase, callout line) in Glass skin, quadtree streaming to L9 global.
-**AC:** full ride orbit → 2 km at default bias lands in 7–8.5 min, bias endpoints hit ~5 and
-~10 min; HUD numbers cross-check (next-event countdowns vs actual); tile pops acceptable at
-fall speeds; budgets (TECH §9) hold over the whole fall.
+DescentGuidance + FlightDynamics (fixed-step, deterministic), beat machine through the wall
+and high gate (incl. **commit windows + arming + skip-to-window**), descent-rate bias +
+cross-range nudge, HUD core (journey tape, speed block + scale-swap blips, compass with
+edge-pinned markers, MET/phase, callout engine v1) in Glass, corridor streaming L6–L9.
+**AC:** commit → contact at default bias = 8:50 ± 20 s, bias endpoints ≈ 6:00 / 10:30; **every
+HUD number cross-checks** (the review's standard: countdowns vs integrator, V-SPD vs altitude
+math); corridor prefetch keeps finest-needed tiles resident through the wall; budgets hold.
 
-## P3 — "Touch the Ground"
-Procedural amplification L10–L16 + boulders, site pack loading (Tranquility first), collision +
-touchdown grading, low-gate/final beats, landing reticle + redesignation, radar callouts,
-stats card, post-landing free look.
-**AC:** land at Tranquility with 1 m-scale detail at 60 fps desktop; same seed ⇒ same boulders
-twice; touchdown classification matches DESIGN limits; no seam/crack visible in a slow 360°
-pan at 50 m and at 2 m.
+## P3a — "Ground Truth" *(review split P3 — terrain is its own PR)*
+Procedural amplification L10–L16 + boulders, apron contract + two-stage shadows in production,
+site pack loading (Tranquility), deep-LRU streaming, collision.
+**AC:** 1 m-scale detail at 60 fps desktop / 30 fps phone at Tranquility; same seed ⇒ same
+boulders; no seam/crack/normal-seam in a slow 360° pan at 50 m and 2 m; throttled-phone tile
+latency within S3 gates.
+
+## P3b — "The Landing"
+Low-gate/final beats, reticle + hazard tint + redesignation (tap + confirm on touch), big
+docked digits, radar callouts, touchdown grading + composite grade, stats card, stillness
+free look.
+**AC:** full default ride lands; grading matches DESIGN limits; approach furniture retires at
+low gate; dust-blind final flyable on instruments alone (playtest).
 
 ## P4 — "Make It Sing"
-Dust system (ballistic streaks + veil + instant settle), audio (rumble/RCS/radio/Quindar/music
-ducking), surface-temp instrument + thermal model, hazard tint + slope readout, attitude ring,
-binocular zoom, long-exposure mode, comfort/accessibility items (captions, HUD scale, hatch
-redundancy), Heritage skin tokens.
-**AC:** the four "beauty moments" mockups are reproducible in-engine (side-by-side check);
-temp readout swings correctly crossing a terminator descent; captions cover every radio line.
+Dust system (ballistic streaks + veil + instant settle), audio + **callout engine** (priority/
+dedup, ducking, Quindar), surface-temp instrument + thermal model, attitude ring, binoculars +
+Earthrise nudge, long-exposure + **time-lapse** modes, **nameplate photo**, comfort/
+accessibility set, Heritage skin (tokens + **FDAI instrument + CRT pass — the two real costs**),
+medals on the pre-flight board, Heritage unlock.
+**AC:** the mockup beats are reproducible in-engine side-by-side; temp swings correctly on a
+morning-terminator descent; every radio line captioned; nameplate photo shares at device res.
 
 ## P5 — "Open the Moon"
-Remaining 4 site packs, free-descent (land anywhere on procedural floor), full pre-flight board
-(site/light/seat with live lighting preview + "best light"), Left Seat (manual + fuel + crash/
-retry), night-side and Shackleton lighting QA, mobile perf hardening, eclipse cameo if in
-budget (it's a shader tint + ephemeris check — the app already classifies eclipses).
-**AC:** all five sites within budgets on phone; Left Seat crash→retry loop < 5 s; free-descent
-quality floor documented with screenshots; data caps respected on cellular (consent flow).
+Remaining 4 site packs (Shackleton last — hardest light), full pre-flight board (live lighting
+preview, "best light", night-descent offer), Left Seat (manual + fuel + crash/retry),
+night-side + Shackleton QA, mobile hardening pass, **eclipse cameo only with its real price
+paid** (baked-shadow fade/rebake path). *Free descent moved out of v1 → v1.1 (review: QA
+explodes from five cones to a sphere).*
+**AC:** five sites in budget on phone; Left Seat crash→retry < 5 s; cellular consent flow;
+Shackleton temp instrument shows pad ≈ −60…0 °C vs floor −185 °C per the corrected model.
 
 ## P6 — Polish & ship
 Loading-checklist UX final, stats history in store, REALISM NOTES card, docs (QA.md, asset
@@ -71,9 +95,11 @@ new mode's architecture section.
 ---
 
 ### Sequencing notes
-- Spikes S1/S2 are *gates* for P1; their failure modes change TECH §3/§5 cheaply at that stage.
-- Heritage skin lands in P4 only because it depends on the full instrument set existing.
-- Left Seat is deliberately last-but-one: the ride (Window/Right) is the product; the sim layer
-  is a bonus and must not warp guidance tuning earlier.
+- P0.5 + S1/S2/S3 are *gates* for P1/P2; their failure modes change TECH §3/§4/§5 cheaply on
+  paper instead of expensively in code.
+- Heritage lands in P4 because it depends on the full instrument set existing (and carries the
+  FDAI/CRT real costs).
+- Left Seat is deliberately late: the ride (Window/Right) is the product; the sim layer must
+  not warp guidance tuning earlier.
 - Every phase ends with the "screenshot of the milestone" attached to the PR — keeps the
   pillar-1 pressure on.

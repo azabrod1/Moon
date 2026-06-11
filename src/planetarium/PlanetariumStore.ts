@@ -47,6 +47,11 @@ export interface PlanetariumState {
   systemSpeed?: number;      // system speed multiplier (fraction of c)
   systemSlowdown?: boolean;  // whether system slowdown is enabled
   autopilotTarget?: LandedTarget; // destination for fly-to autopilot
+  /** True only when the user picked the autopilot target themselves — the
+   * onboarding default (Mercury) is not user-engaged and must not render a
+   * destination chip or survive a landing. Saves predating the flag migrate
+   * by heuristic: only user picks ever produce a non-Mercury target. */
+  autopilotUserEngaged?: boolean;
 }
 
 function isFiniteNumber(value: unknown): value is number {
@@ -65,7 +70,8 @@ function sanitizeLandedOn(raw: unknown): LandedTarget {
   return null;
 }
 
-function sanitizePlanetariumState(raw: unknown): PlanetariumState | null {
+/** Exported for tests — load-path sanitation incl. legacy-save migrations. */
+export function sanitizePlanetariumState(raw: unknown): PlanetariumState | null {
   if (!raw || typeof raw !== 'object') return null;
 
   const record = raw as Record<string, unknown>;
@@ -117,7 +123,22 @@ function sanitizePlanetariumState(raw: unknown): PlanetariumState | null {
       : defaults.systemSpeed,
     systemSlowdown: typeof record.systemSlowdown === 'boolean' ? record.systemSlowdown : defaults.systemSlowdown,
     autopilotTarget: sanitizeLandedOn(record.autopilotTarget),
+    autopilotUserEngaged:
+      typeof record.autopilotUserEngaged === 'boolean'
+        ? record.autopilotUserEngaged
+        : legacyAutopilotEngagement(sanitizeLandedOn(record.autopilotTarget)),
   };
+}
+
+/**
+ * Provenance for saves predating `autopilotUserEngaged`: only the onboarding
+ * default ever points at Mercury without a user pick, so a non-Mercury target
+ * must be user-engaged (keeps real journeys' chips); a Mercury target is
+ * ambiguous and migrates un-engaged (the stale-chip bug case).
+ */
+function legacyAutopilotEngagement(target: LandedTarget): boolean {
+  if (!target) return false;
+  return !(target.type === 'planet' && target.name === 'Mercury');
 }
 
 function parseSavedState(raw: string): PlanetariumState | null {
@@ -151,6 +172,7 @@ export function createDefaultPlanetariumState(): PlanetariumState {
     landedOn: null,
     systemSpeed: 0.083,
     systemSlowdown: true,
+    autopilotUserEngaged: false,
   };
 }
 

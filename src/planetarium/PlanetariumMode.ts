@@ -47,6 +47,7 @@ import {
   type ShadowEventSpec,
 } from '../astronomy/shadows';
 import { ShadowVisuals } from './world/ShadowVisuals';
+import { OBSERVATORY_JUMP_LEAD_MS, stepperSearchFromUtcMs } from './observatoryTime';
 import { findEvent, type EventType } from '../astronomy/ephemeris';
 import { KM_PER_AU } from '../astronomy/constants';
 import { createPlanetariumStarfield } from './world/starfield';
@@ -139,6 +140,7 @@ export class PlanetariumMode {
   private static readonly OBSERVATORY_EVENTS_MAX_ROWS = 6;
   private static readonly MISSION_CONTROL_IDS = [
     'planetarium-btn-travel',
+    'planetarium-btn-observatory',
     'planetarium-btn-autopilot',
     'planetarium-speed-up',
     'planetarium-speed-down',
@@ -193,6 +195,9 @@ export class PlanetariumMode {
   // Autopilot: auto-steer toward target
   private autopilot = true;
   private autopilotTarget: NonNullable<LandedTarget> | null = null;
+  // Provenance: did the user pick the target, or is it the onboarding default?
+  // Only user-engaged targets render the "→ name" chip or survive a landing.
+  private autopilotUserEngaged = false;
 
   // Moon world positions in AU (true positions, not offset)
   private moonWorldPositions = new Map<string, { x: number; y: number; z: number }>();
@@ -283,7 +288,7 @@ export class PlanetariumMode {
   private timePanel = new PlanetariumTimePanel();
   private observatoryPanel = new ObservatoryPanel(
     (type, direction) => this.handleObservatoryJump(type, direction),
-    (key) => this.handleObservatoryEventJump(key),
+    (event) => this.jumpToShadowEvent(event),
     (on) => {
       this.showShadowCones = on;
       this.shadowVisuals.setConesVisible(on);
@@ -306,6 +311,9 @@ export class PlanetariumMode {
   // The most recent event jump — gives "Look up" and the surface HUD their
   // narrative while the clock still sits inside the event's window.
   private lastObservatoryEvent: ShadowEvent | null = null;
+  // The most recent phase jump (full/new moon) — steppers dedupe against it
+  // the same way the eclipse steppers dedupe against lastObservatoryEvent.
+  private lastPhaseJump: { type: EventType; utcMs: number } | null = null;
   private observatoryNextDatesCache: {
     computedAtUtcMs: number;
     fullMs: number | null;
@@ -322,6 +330,9 @@ export class PlanetariumMode {
     fromUtcMs: number;
   } | null = null;
   private observatoryEventResults = new Map<string, ShadowEvent>();
+  // Earliest end among the *displayed* event rows — with the clock running,
+  // crossing it means a row has completed and the search must refresh.
+  private observatoryRowsMinEndUtcMs: number | null = null;
 
   // Sun label
   private sunLabel = new SunLabel();
@@ -579,9 +590,11 @@ export class PlanetariumMode {
     } else {
       this.restoreState(initialDefaultState ?? createDefaultPlanetariumState());
       this.pointTowardMercury();
-      // Auto-engage autopilot toward Mercury for new users
+      // Auto-engage autopilot toward Mercury for new users — an onboarding
+      // default, not a user destination (no chip; retired on first landing).
       this.autopilotTarget = { type: 'planet', name: 'Mercury' };
       this.autopilot = true;
+      this.autopilotUserEngaged = false;
       this.updateAutopilotButton();
       this.showIntroText();
     }
@@ -651,6 +664,7 @@ export class PlanetariumMode {
     this.pointTowardMercury();
     this.autopilotTarget = { type: 'planet', name: 'Mercury' };
     this.autopilot = true;
+    this.autopilotUserEngaged = false;
     this.updateAutopilotButton();
     this.showIntroText();
   }
@@ -684,6 +698,7 @@ export class PlanetariumMode {
     const planetariumUI = document.getElementById('planetarium-ui');
     if (planetariumUI) planetariumUI.style.display = 'none';
     this.closeObservatoryPanel();
+    this.closeObservatoryMenu();
 
     // Hide all solar system objects
     this.setObjectsVisible(false);
@@ -1418,6 +1433,7 @@ export class PlanetariumMode {
     if (e.key === 'Escape') {
       if (this.isHelpOpen()) { this.hideHelp(); return; }
       if (this.isTravelMenuOpen()) { this.closeTravelMenu(); return; }
+      if (this.isObservatoryMenuOpen()) { this.closeObservatoryMenu(); return; }
       if (this.landedView === 'surface') { this.exitSurfaceView(); return; }
       if (this.observatoryPanel.isOpen()) { this.closeObservatoryPanel(); return; }
       if (this.landedOn) { this.exitLandedMode(); return; }
@@ -1734,6 +1750,7 @@ export class PlanetariumMode {
     if (missionActive) {
       this.keys.clear();
       this.closeTravelMenu();
+      this.closeObservatoryMenu();
     }
 
     this.updateObservatoryButtonVisibility();
@@ -1846,6 +1863,9 @@ export class PlanetariumMode {
       if (this.menuPanel.isOpen()) {
         this.closeMenuPanel();
       } else {
+        // One modal at a time (the body menus close ☰ on open, symmetric).
+        this.closeTravelMenu();
+        this.closeObservatoryMenu();
         this.resumeShipAfterMenu = this.player.moving;
         this.resumeTimeAfterMenu = !this.timeState.paused;
         this.player.moving = false;
@@ -1984,13 +2004,24 @@ export class PlanetariumMode {
     });
     const travelSearch = document.getElementById('travel-search') as HTMLInputElement;
     travelSearch?.addEventListener('input', () => {
-      this.filterTravelList(travelSearch.value);
+      this.filterBodyList(document.getElementById('travel-list'), travelSearch.value);
+    });
+    document.getElementById('observatory-menu-close')?.addEventListener('click', () => {
+      this.closeObservatoryMenu();
+    });
+    const observatorySearch = document.getElementById('observatory-search') as HTMLInputElement;
+    observatorySearch?.addEventListener('input', () => {
+      this.filterBodyList(document.getElementById('observatory-list'), observatorySearch.value);
     });
     document.getElementById('planetarium-btn-leave')?.addEventListener('click', () => {
       this.exitLandedMode();
     });
+    // One button, two states: landed it toggles the panel; cruising it opens
+    // the vantage menu (pick a body → land there with the panel open).
     document.getElementById('planetarium-btn-observatory')?.addEventListener('click', () => {
-      this.toggleObservatoryPanel();
+      if (this.isMissionActive()) return;
+      if (this.landedOn) this.toggleObservatoryPanel();
+      else this.toggleObservatoryMenu();
     });
     document.getElementById('planetarium-btn-land')?.addEventListener('click', () => {
       if (this.nearbyLandTarget) {
@@ -2028,36 +2059,47 @@ export class PlanetariumMode {
       }
     });
     this.buildTravelList();
+    this.buildObservatoryList();
 
     this.updateTimeUI();
     this.updateMissionControlState();
   }
 
-  private buildTravelList() {
-    const list = document.getElementById('travel-list');
-    if (!list) return;
+  /**
+   * Populate a planets-and-moons list (travel menu + observatory menu share
+   * the layout; they differ in which bodies appear and what a tap does).
+   */
+  private buildBodyList(
+    list: HTMLElement,
+    opts: {
+      filter?: (target: NonNullable<LandedTarget>) => boolean;
+      onPick: (target: NonNullable<LandedTarget>) => void;
+    },
+  ) {
     list.innerHTML = '';
 
     for (const body of PLANETARIUM_BODIES) {
-      // Planet item
-      const item = document.createElement('button');
-      item.className = 'travel-item';
-      item.dataset.type = 'planet';
-      item.dataset.name = body.name;
-      item.innerHTML = `
-        <span class="travel-item-dot" style="background:#${body.color.toString(16).padStart(6, '0')}"></span>
-        <span class="travel-item-info">
-          <span class="travel-item-name">${body.name}</span>
-          <span class="travel-item-detail">${body.description.split('.')[0]}</span>
-        </span>`;
-      item.addEventListener('click', () => {
-        this.selectTravelTarget({ type: 'planet', name: body.name });
-      });
-      list.appendChild(item);
+      const planetTarget = { type: 'planet', name: body.name } as const;
+      if (!opts.filter || opts.filter(planetTarget)) {
+        const item = document.createElement('button');
+        item.className = 'travel-item';
+        item.dataset.type = 'planet';
+        item.dataset.name = body.name;
+        item.innerHTML = `
+          <span class="travel-item-dot" style="background:#${body.color.toString(16).padStart(6, '0')}"></span>
+          <span class="travel-item-info">
+            <span class="travel-item-name">${body.name}</span>
+            <span class="travel-item-detail">${body.description.split('.')[0]}</span>
+          </span>`;
+        item.addEventListener('click', () => opts.onPick(planetTarget));
+        list.appendChild(item);
+      }
 
       // Moons for this planet
       const moons = getMoonsByPlanet(body.name);
       for (const moon of moons) {
+        const moonTarget = { type: 'moon', name: moon.name, parentPlanet: moon.parentPlanet } as const;
+        if (opts.filter && !opts.filter(moonTarget)) continue;
         const moonItem = document.createElement('button');
         moonItem.className = 'travel-item travel-item-moon';
         moonItem.dataset.type = 'moon';
@@ -2069,12 +2111,29 @@ export class PlanetariumMode {
             <span class="travel-item-name">${moon.name}</span>
             <span class="travel-item-detail">Moon of ${moon.parentPlanet} · r = ${moon.radiusKm.toLocaleString()} km</span>
           </span>`;
-        moonItem.addEventListener('click', () => {
-          this.selectTravelTarget({ type: 'moon', name: moon.name, parentPlanet: moon.parentPlanet });
-        });
+        moonItem.addEventListener('click', () => opts.onPick(moonTarget));
         list.appendChild(moonItem);
       }
     }
+  }
+
+  private buildTravelList() {
+    const list = document.getElementById('travel-list');
+    if (!list) return;
+    this.buildBodyList(list, {
+      onPick: (target) => this.selectTravelTarget(target),
+    });
+  }
+
+  /** Subjects only: bodies whose system has catalog moons. Mercury/Venus stay
+   * travel-only — their landed state has no Observatory panel to open. */
+  private buildObservatoryList() {
+    const list = document.getElementById('observatory-list');
+    if (!list) return;
+    this.buildBodyList(list, {
+      filter: (target) => this.isObservatorySubject(target),
+      onPick: (target) => this.pickObservatoryBody(target),
+    });
   }
 
   private toggleTravelMenu(autopilotMode = false) {
@@ -2085,8 +2144,9 @@ export class PlanetariumMode {
     if (isVisible) {
       this.closeTravelMenu();
     } else {
-      // Close menu panel if open
+      // Close sibling popovers — one modal at a time
       this.closeMenuPanel();
+      this.closeObservatoryMenu();
       menu.classList.add('visible');
       this.travelSelection = null;
       // Swap primary button styling based on mode
@@ -2104,14 +2164,11 @@ export class PlanetariumMode {
       const actionBar = document.getElementById('travel-action-bar');
       if (actionBar) actionBar.style.display = 'none';
       // Hide planet/moon labels so they don't show through the menu
-      const pl = document.getElementById('planet-labels');
-      const ml = this.moonLabelContainer;
-      if (pl) pl.style.display = 'none';
-      if (ml) ml.style.display = 'none';
+      this.setWorldLabelsVisible(false);
       const search = document.getElementById('travel-search') as HTMLInputElement;
       if (search) {
         search.value = '';
-        this.filterTravelList('');
+        this.filterBodyList(document.getElementById('travel-list'), '');
         if (!('ontouchstart' in window)) search.focus();
       }
     }
@@ -2121,13 +2178,81 @@ export class PlanetariumMode {
     const menu = document.getElementById('travel-menu');
     if (menu) menu.classList.remove('visible');
     this.travelSelection = null;
-    // Restore planet/moon labels — unless the surface view owns their hidden
-    // state (its skipped label pipeline would never re-hide them).
-    if (this.landedView === 'surface') return;
+    this.setWorldLabelsVisible(true);
+  }
+
+  /**
+   * Hide/restore the planet+moon label layers around a modal. Restoring
+   * defers to the surface view when it owns the hidden state (its skipped
+   * label pipeline would never re-hide them).
+   */
+  private setWorldLabelsVisible(visible: boolean) {
+    if (visible && this.landedView === 'surface') return;
     const pl = document.getElementById('planet-labels');
     const ml = this.moonLabelContainer;
-    if (pl) pl.style.display = '';
-    if (ml) ml.style.display = '';
+    if (pl) pl.style.display = visible ? '' : 'none';
+    if (ml) ml.style.display = visible ? '' : 'none';
+  }
+
+  /** Cruise-state Observatory entry: a travel-style menu of vantage bodies. */
+  private toggleObservatoryMenu() {
+    if (this.isMissionActive()) return;
+    const menu = document.getElementById('observatory-menu');
+    if (!menu) return;
+    if (menu.classList.contains('visible')) {
+      this.closeObservatoryMenu();
+      return;
+    }
+    this.closeMenuPanel();
+    this.closeTravelMenu();
+    menu.classList.add('visible');
+    this.setWorldLabelsVisible(false);
+    const search = document.getElementById('observatory-search') as HTMLInputElement;
+    if (search) {
+      search.value = '';
+      this.filterBodyList(document.getElementById('observatory-list'), '');
+      if (!('ontouchstart' in window)) search.focus();
+    }
+  }
+
+  private closeObservatoryMenu() {
+    const menu = document.getElementById('observatory-menu');
+    if (!menu || !menu.classList.contains('visible')) return;
+    menu.classList.remove('visible');
+    this.setWorldLabelsVisible(true);
+  }
+
+  private isObservatoryMenuOpen(): boolean {
+    return document.getElementById('observatory-menu')?.classList.contains('visible') ?? false;
+  }
+
+  /**
+   * Observatory-menu pick: land on (or re-land to) the body and open its
+   * panel. The panel opens here, at the pick site only — enterLandedMode
+   * itself never auto-opens it (restore/proximity/Land & Orbit stay as-is).
+   */
+  private pickObservatoryBody(target: NonNullable<LandedTarget>) {
+    if (this.isMissionActive()) return;
+    this.closeObservatoryMenu();
+    const sameBody =
+      this.landedOn?.type === target.type && this.landedOn.name === target.name;
+    const panelWasOpen = this.observatoryPanel.isOpen();
+    if (!sameBody) {
+      if (this.landedOn) {
+        // Re-land without the exit/enter ceremony. A live surface view would
+        // keep a stale cross-system target — tear it down first.
+        if (this.landedView === 'surface') this.exitSurfaceView(true);
+        this.applyLandedTarget(target);
+        this.notification.show(`Standing on ${target.name}`);
+      } else {
+        this.enterLandedMode(target);
+      }
+    }
+    if (!sameBody || !panelWasOpen) {
+      this.observatoryPanel.show();
+      this.renderObservatoryPanel();
+      this.startObservatoryEventSearch();
+    }
   }
 
   private selectTravelTarget(target: NonNullable<LandedTarget>) {
@@ -2142,8 +2267,7 @@ export class PlanetariumMode {
     return document.getElementById('travel-menu')?.classList.contains('visible') ?? false;
   }
 
-  private filterTravelList(query: string) {
-    const list = document.getElementById('travel-list');
+  private filterBodyList(list: HTMLElement | null, query: string) {
     if (!list) return;
     const q = query.toLowerCase().trim();
     const items = list.querySelectorAll('.travel-item') as NodeListOf<HTMLElement>;
@@ -2538,9 +2662,16 @@ export class PlanetariumMode {
   private updateObservatoryButtonVisibility() {
     const button = document.getElementById('planetarium-btn-observatory');
     if (!button) return;
-    const show = !this.isMissionActive() && this.isObservatorySubject(this.landedOn);
+    const missionActive = this.isMissionActive();
+    const landedSubject = this.landedOn !== null && this.isObservatorySubject(this.landedOn);
+    // Landed: only systems with catalog moons have observatory content.
+    // Cruising: always shown — the button opens the vantage menu instead.
+    const show = !missionActive && (this.landedOn ? landedSubject : true);
     button.style.display = show ? '' : 'none';
-    if (!show) this.closeObservatoryPanel();
+    // The panel is a landed-state surface (takeoff must close it even though
+    // the cruise button stays visible); the vantage menu a cruise-state one.
+    if (missionActive || !landedSubject) this.closeObservatoryPanel();
+    if (missionActive || this.landedOn) this.closeObservatoryMenu();
   }
 
   private closeObservatoryPanel() {
@@ -2851,14 +2982,27 @@ export class PlanetariumMode {
     return text;
   }
 
-  /** Restart the chunked upcoming-events search from the current clock. */
-  private startObservatoryEventSearch() {
+  /**
+   * Restart the chunked upcoming-events search from the current clock.
+   * Open/jump/date-set restarts clear the old results (the clock may have
+   * moved anywhere); the expiry path keeps still-valid rows on screen and
+   * only drops completed ones, so the list never blanks mid-watch while the
+   * sweep re-fills (fresh finds overwrite per spec key as they arrive).
+   */
+  private startObservatoryEventSearch(opts?: { preserveValidResults?: boolean }) {
     const parentPlanet = this.observatoryParentPlanetName();
     if (!parentPlanet || !this.observatoryPanel.isOpen()) {
       this.cancelObservatoryEventSearch();
       return;
     }
-    this.observatoryEventResults.clear();
+    if (opts?.preserveValidResults) {
+      const now = this.timeState.currentUtcMs;
+      for (const [key, event] of this.observatoryEventResults) {
+        if (event.endUtcMs <= now) this.observatoryEventResults.delete(key);
+      }
+    } else {
+      this.observatoryEventResults.clear();
+    }
     this.observatoryEventSearch = {
       parentPlanet,
       specs: listShadowEventSpecs(parentPlanet),
@@ -2872,6 +3016,22 @@ export class PlanetariumMode {
   private cancelObservatoryEventSearch() {
     this.observatoryEventSearch = null;
     this.observatoryEventResults.clear();
+    this.observatoryRowsMinEndUtcMs = null;
+  }
+
+  /**
+   * With the clock running (jumps park at T−3 min, 1×), displayed events
+   * complete on their own: once `now` crosses the earliest displayed end,
+   * restart the chunked search so the list and the Earth eclipse metas roll
+   * forward — preserving still-valid rows so the list never blanks. Cheap
+   * 8 Hz check; never fires while a search is in flight (which also bounds
+   * the restart churn at absurd time rates to one sweep per completion).
+   */
+  private invalidateExpiredObservatoryEvents() {
+    if (!this.observatoryPanel.isOpen() || this.observatoryEventSearch) return;
+    const minEnd = this.observatoryRowsMinEndUtcMs;
+    if (minEnd === null || this.timeState.currentUtcMs <= minEnd) return;
+    this.startObservatoryEventSearch({ preserveValidResults: true });
   }
 
   /**
@@ -2922,29 +3082,26 @@ export class PlanetariumMode {
       .sort((a, b) => a.peakUtcMs - b.peakUtcMs)
       .slice(0, PlanetariumMode.OBSERVATORY_EVENTS_MAX_ROWS);
     const rows: ObservatoryEventRow[] = events.map(e => ({
-      key: PlanetariumMode.shadowSpecKey(e.spec),
+      event: e,
       label: PlanetariumMode.shadowEventLabel(e.spec),
       classification: e.classification,
       magnitudeText: PlanetariumMode.eventMagnitudeText(e),
-      startUtcMs: e.startUtcMs,
-      peakUtcMs: e.peakUtcMs,
-      endUtcMs: e.endUtcMs,
     }));
+    this.observatoryRowsMinEndUtcMs = events.length
+      ? events.reduce((min, e) => Math.min(min, e.endUtcMs), Infinity)
+      : null;
     const status = search && search.index < search.specs.length
       ? `Scanning ${search.index + 1}/${search.specs.length}…`
       : rows.length === 0 ? 'No events in range' : '';
     this.observatoryPanel.setEvents(rows, status, this.timeState.currentUtcMs);
   }
 
-  private handleObservatoryEventJump(key: string) {
-    const event = this.observatoryEventResults.get(key);
-    if (event) this.jumpToShadowEvent(event);
-  }
-
   private jumpToShadowEvent(event: ShadowEvent) {
     this.lastObservatoryEvent = event;
-    this.timeState = { ...this.timeState, paused: true };
-    this.setCurrentUtcMs(event.peakUtcMs);
+    // Park shortly before the peak with the clock running at 1× real time —
+    // the user watches the event happen instead of landing on a frozen peak.
+    this.timeState = { ...this.timeState, rate: 1, paused: false };
+    this.setCurrentUtcMs(event.peakUtcMs - OBSERVATORY_JUMP_LEAD_MS);
     this.observatoryPanel.flashNowBar();
     if (this.landedView === 'surface') {
       // Surface view active: re-point it at the event's observer-level target
@@ -2959,6 +3116,10 @@ export class PlanetariumMode {
     this.notification.show(this.describeShadowEvent(event));
   }
 
+  private static shadowSpecsEqual(a: ShadowEventSpec, b: ShadowEventSpec): boolean {
+    return a.kind === b.kind && a.parentPlanet === b.parentPlanet && a.moonName === b.moonName;
+  }
+
   private handleObservatoryJump(type: EventType, direction: 1 | -1) {
     if (type === 'lunar-eclipse' || type === 'solar-eclipse') {
       // Eclipse jumps run on the shadow engine: it lands on the true peak
@@ -2968,13 +3129,12 @@ export class PlanetariumMode {
         parentPlanet: 'Earth',
         moonName: 'Moon',
       };
-      const fromUtcMs = this.timeState.currentUtcMs;
-      let event = findShadowEvent(spec, fromUtcMs, direction);
-      if (event && Math.abs(event.peakUtcMs - fromUtcMs) < 60_000) {
-        // Already parked at this peak (a previous jump): step past the event.
-        const resumeFromMs = direction === 1 ? event.endUtcMs + 60_000 : event.startUtcMs - 60_000;
-        event = findShadowEvent(spec, resumeFromMs, direction);
-      }
+      // The clock sits inside the last jumped-to event (parked at T−lead,
+      // running) — a plain search from now would re-find it forever.
+      const last = this.lastObservatoryEvent;
+      const parked = last && PlanetariumMode.shadowSpecsEqual(last.spec, spec) ? last : null;
+      const fromUtcMs = stepperSearchFromUtcMs(parked, this.timeState.currentUtcMs, direction);
+      const event = findShadowEvent(spec, fromUtcMs, direction);
       if (!event) {
         this.notification.show('No event found within the search range');
         return;
@@ -2983,13 +3143,21 @@ export class PlanetariumMode {
       return;
     }
 
-    const found = findEvent(type, new Date(this.timeState.currentUtcMs), direction);
+    const lastPhase = this.lastPhaseJump;
+    const parkedPhase =
+      lastPhase && lastPhase.type === type
+        ? { startUtcMs: lastPhase.utcMs, peakUtcMs: lastPhase.utcMs, endUtcMs: lastPhase.utcMs }
+        : null;
+    const fromUtcMs = stepperSearchFromUtcMs(parkedPhase, this.timeState.currentUtcMs, direction);
+    const found = findEvent(type, new Date(fromUtcMs), direction);
     if (!found) {
       this.notification.show('No event found within the search range');
       return;
     }
-    this.timeState = { ...this.timeState, paused: true };
-    this.setCurrentUtcMs(found.getTime());
+    this.lastPhaseJump = { type, utcMs: found.getTime() };
+    // Same park-and-watch policy as the shadow jumps.
+    this.timeState = { ...this.timeState, rate: 1, paused: false };
+    this.setCurrentUtcMs(found.getTime() - OBSERVATORY_JUMP_LEAD_MS);
     this.observatoryPanel.flashNowBar();
     if (this.landedView === 'surface') {
       // Phase jumps point the surface view at the companion (the Moon you
@@ -3389,6 +3557,13 @@ export class PlanetariumMode {
 
     // Disable autopilot silently (target preserved for restore)
     this.autopilot = false;
+    // Landing retires a destination the user never chose (the onboarding
+    // default) — otherwise takeoff resumes a ghost trip and the bottom-bar
+    // chip keeps pointing at it forever.
+    if (!this.autopilotUserEngaged) {
+      this.autopilotTarget = null;
+      this.preLandAutopilot = false;
+    }
     this.updateAutopilotButton();
 
     // Move player to body position so floating origin centers on it.
@@ -3680,6 +3855,7 @@ export class PlanetariumMode {
     }
 
     if (shouldRefreshUi) {
+      this.invalidateExpiredObservatoryEvents();
       this.updateStatsUI();
       this.updateTimeUI();
       this.renderObservatoryPanel();
@@ -3716,6 +3892,7 @@ export class PlanetariumMode {
       systemSpeed: this.player.systemSpeedMultiplier,
       systemSlowdown: this.systemSlowdown,
       autopilotTarget: this.autopilotTarget,
+      autopilotUserEngaged: this.autopilotUserEngaged,
     };
   }
 
@@ -3754,8 +3931,11 @@ export class PlanetariumMode {
     const constLabel = document.getElementById('settings-constellations-label');
     if (constLabel) constLabel.textContent = this.showConstellations ? 'On' : 'Off';
 
-    // Restore autopilot target (kept even when landed — resumes on exit)
+    // Restore autopilot target (kept even when landed — resumes on exit).
+    // Pre-provenance saves migrate by heuristic in the store sanitizer (only
+    // user picks ever produce a non-Mercury target).
     this.autopilotTarget = saved.autopilotTarget ?? null;
+    this.autopilotUserEngaged = saved.autopilotUserEngaged ?? false;
     this.updateAutopilotButton();
     const shipLabel = document.getElementById('settings-ship-label');
     if (shipLabel) shipLabel.textContent = this.showShip ? 'On' : 'Off';
@@ -3793,6 +3973,7 @@ export class PlanetariumMode {
   private engageAutopilot(target: NonNullable<LandedTarget>) {
     this.autopilotTarget = target;
     this.autopilot = true;
+    this.autopilotUserEngaged = true;
     this.player.moving = true;
     // Ensure reasonable cruise speed
     if (this.player.speedMultiplier < PlayerShip.SPEED_DEFAULT) {
@@ -3806,6 +3987,7 @@ export class PlanetariumMode {
   private disengageAutopilot() {
     this.autopilotTarget = null;
     this.autopilot = false;
+    this.autopilotUserEngaged = false;
     this.updateAutopilotButton();
   }
 
@@ -3819,7 +4001,9 @@ export class PlanetariumMode {
     const btn = document.getElementById('planetarium-btn-autopilot');
     if (!btn) return;
     btn.classList.toggle('active', this.autopilot);
-    if (this.autopilotTarget) {
+    // Only a destination the user picked earns the chip — the onboarding
+    // default steers silently and reads as plain "Pilot".
+    if (this.autopilotTarget && this.autopilotUserEngaged) {
       btn.innerHTML = '&#x1F916; &rarr; ' + this.autopilotTarget.name;
     } else {
       btn.innerHTML = '&#x1F916; Pilot';

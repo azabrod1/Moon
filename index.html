@@ -1538,7 +1538,8 @@
       font-weight: 600;
     }
 
-    #travel-menu {
+    #travel-menu,
+    #observatory-menu {
       display: none;
       position: fixed;
       top: 50%;
@@ -1556,7 +1557,8 @@
       overflow: hidden;
       box-shadow: 0 16px 48px rgba(0, 0, 0, 0.5), inset 0 1px 0 rgba(255, 255, 255, 0.04);
     }
-    #travel-menu.visible {
+    #travel-menu.visible,
+    #observatory-menu.visible {
       display: flex;
     }
 
@@ -1589,10 +1591,19 @@
       background: var(--accent-dim);
     }
 
+    .travel-menu-sub {
+      padding: 0 18px 10px;
+      font-size: 11.5px;
+      line-height: 1.4;
+      color: var(--text-dim);
+      letter-spacing: 0.3px;
+    }
+
     .travel-search-row {
       padding: 0 18px 10px;
     }
-    #travel-search {
+    #travel-search,
+    #observatory-search {
       width: 100%;
       padding: 8px 12px;
       background: rgba(255, 255, 255, 0.04);
@@ -1605,10 +1616,12 @@
       transition: border-color 0.15s;
       box-sizing: border-box;
     }
-    #travel-search:focus {
+    #travel-search:focus,
+    #observatory-search:focus {
       border-color: rgba(124, 154, 255, 0.3);
     }
-    #travel-search::placeholder {
+    #travel-search::placeholder,
+    #observatory-search::placeholder {
       color: var(--text-dim);
     }
 
@@ -2272,6 +2285,19 @@
           <button class="travel-action-btn travel-action-btn-dim" id="travel-action-fly">Autopilot</button>
           <button class="travel-action-btn travel-action-btn-dim" id="travel-action-jump">Jump Nearby</button>
         </div>
+      </div>
+
+      <!-- Observatory menu (cruise state): one tap lands on the picked body with the sky panel open -->
+      <div id="observatory-menu">
+        <div class="travel-menu-header">
+          <h3>Observatory</h3>
+          <button class="travel-menu-close" id="observatory-menu-close">&times;</button>
+        </div>
+        <div class="travel-menu-sub">Pick a vantage &mdash; you&rsquo;ll land there with its sky open.</div>
+        <div class="travel-search-row">
+          <input type="text" id="observatory-search" placeholder="Search planets &amp; moons..." autocomplete="off" />
+        </div>
+        <div class="travel-list" id="observatory-list"></div>
       </div>
 
       <div id="historic-panel">

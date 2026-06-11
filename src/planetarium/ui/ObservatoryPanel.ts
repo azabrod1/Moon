@@ -10,6 +10,7 @@
  */
 import { computeOrbitalState, type EventType } from '../../astronomy/ephemeris';
 import { formatDateCompact } from '../../astronomy/planetary';
+import type { ShadowEvent } from '../../astronomy/shadows';
 import { setText } from '../../shared/dom';
 
 /** What the phase hero shows for the current landed body. */
@@ -45,16 +46,15 @@ export interface ObservatoryRenderExtras {
   nextDates: { full: string; new: string; lunar: string; solar: string } | null;
 }
 
-/** One row of the upcoming-events list (display data only; jumps go by key). */
+/** One row of the upcoming-events list. Each row closes over its engine
+ * event, so a click jumps to exactly what the row showed — a key re-lookup
+ * would silently no-op while a restarted search repopulates its map. */
 export interface ObservatoryEventRow {
-  key: string;
+  event: ShadowEvent;
   label: string;
   classification: string;
   /** 'mag 1.10' — Earth system only; generic systems keep the badge alone. */
   magnitudeText: string | null;
-  startUtcMs: number;
-  peakUtcMs: number;
-  endUtcMs: number;
 }
 
 // The phase of Earth seen from the Moon is the complement of the Moon's phase.
@@ -107,16 +107,16 @@ function formatDiscDataLine(angularDiameterDeg: number, distanceKm: number): str
   return `∅ ${deg}° · ${Math.round(distanceKm).toLocaleString('en-US')} km`;
 }
 
-function formatCountdown(nowUtcMs: number, row: ObservatoryEventRow): string {
-  if (nowUtcMs > row.endUtcMs) return 'ended';
-  if (nowUtcMs >= row.startUtcMs) return 'now';
-  const totalMinutes = Math.floor((row.peakUtcMs - nowUtcMs) / 60_000);
+function formatCountdown(nowUtcMs: number, event: ShadowEvent): string {
+  if (nowUtcMs > event.endUtcMs) return 'ended';
+  if (nowUtcMs >= event.startUtcMs) return 'now';
+  const totalMinutes = Math.floor((event.peakUtcMs - nowUtcMs) / 60_000);
   if (totalMinutes < 60) return `in ${Math.max(totalMinutes, 1)}m`;
   const totalHours = Math.floor(totalMinutes / 60);
   if (totalHours < 48) return `in ${totalHours}h ${totalMinutes % 60}m`;
   const totalDays = Math.floor(totalHours / 24);
   if (totalDays < 365) return `in ${totalDays}d`;
-  return `in ${((row.peakUtcMs - nowUtcMs) / (365.25 * 86_400_000)).toFixed(1)}y`;
+  return `in ${((event.peakUtcMs - nowUtcMs) / (365.25 * 86_400_000)).toFixed(1)}y`;
 }
 
 /**
@@ -184,7 +184,7 @@ export class ObservatoryPanel {
 
   constructor(
     private onJump: (type: EventType, direction: 1 | -1) => void,
-    private onEventJump: (key: string) => void,
+    private onEventJump: (event: ShadowEvent) => void,
     private onConesToggle: (on: boolean) => void,
     private onClose: () => void,
     private onLookup: () => void,
@@ -265,7 +265,7 @@ export class ObservatoryPanel {
     this.renderedRows = [];
     for (const row of rows) {
       // The year earns its width only when the event is far out.
-      const includeYear = Math.abs(row.peakUtcMs - nowUtcMs) > 300 * 86_400_000;
+      const includeYear = Math.abs(row.event.peakUtcMs - nowUtcMs) > 300 * 86_400_000;
       const rowEl = document.createElement('div');
       rowEl.className = 'obs-ev';
       const mainEl = document.createElement('div');
@@ -281,8 +281,8 @@ export class ObservatoryPanel {
       const timeEl = document.createElement('span');
       timeEl.className = 'obs-ev-time';
       timeEl.textContent = row.magnitudeText
-        ? `${formatRowTime(row.peakUtcMs, includeYear)} · ${row.magnitudeText}`
-        : formatRowTime(row.peakUtcMs, includeYear);
+        ? `${formatRowTime(row.event.peakUtcMs, includeYear)} · ${row.magnitudeText}`
+        : formatRowTime(row.event.peakUtcMs, includeYear);
       const cdEl = document.createElement('span');
       cdEl.className = 'obs-cd';
       metaEl.append(badgeEl, timeEl, cdEl);
@@ -291,7 +291,7 @@ export class ObservatoryPanel {
       jumpEl.className = 'obs-tpill';
       jumpEl.textContent = 'Jump';
       jumpEl.title = `Jump to ${row.label}`;
-      jumpEl.addEventListener('click', () => this.onEventJump(row.key));
+      jumpEl.addEventListener('click', () => this.onEventJump(row.event));
       rowEl.append(mainEl, jumpEl);
       this.eventsListEl.appendChild(rowEl);
       this.renderedRows.push({ row, rowEl, cdEl });
@@ -334,9 +334,9 @@ export class ObservatoryPanel {
     setText('observatory-now-tag', extras.nowTag);
 
     for (const { row, rowEl, cdEl } of this.renderedRows) {
-      const text = formatCountdown(utcMs, row);
+      const text = formatCountdown(utcMs, row.event);
       if (cdEl.textContent !== text) cdEl.textContent = text;
-      const live = utcMs >= row.startUtcMs && utcMs <= row.endUtcMs;
+      const live = utcMs >= row.event.startUtcMs && utcMs <= row.event.endUtcMs;
       if (rowEl.classList.contains('live') !== live) rowEl.classList.toggle('live', live);
     }
   }

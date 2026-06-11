@@ -2036,7 +2036,11 @@ export class PlanetariumMode {
     // New Journey button
     document.getElementById('planetarium-btn-new')?.addEventListener('click', () => {
       if (this.landedOn) this.exitLandedMode();
-      this.stopHistoricJourney();
+      // Discard the pre-mission stash: restoring it would re-land a
+      // mission-started-landed player AFTER the landedOn check above, and
+      // restoreState's not-landed branch never exits landed mode — the
+      // landedOn leak. The stash is being thrown away with everything else.
+      this.stopHistoricJourney(false);
       this.store.clearState();
       this.restoreState(createDefaultPlanetariumState());
       this.pointTowardMercury();

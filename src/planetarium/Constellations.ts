@@ -7,6 +7,7 @@ import * as THREE from 'three';
 import { CONSTELLATIONS } from './data/constellations';
 import { BRIGHT_STAR_CATALOG } from './data/brightStars';
 import { projectToScreen } from '../shared/three/projectToScreen';
+import { raDecToVector } from '../astronomy/planetary';
 import { DEG2RAD, RAD2DEG } from '../shared/math/angles';
 
 const STAR_SPHERE_RADIUS = 85;
@@ -14,17 +15,10 @@ const SNAP_RADIUS_DEG = 3; // max degrees to snap a constellation vertex to a ca
 const LINE_COLOR = 0x6688bb;
 const LINE_OPACITY = 0.28;
 
-/** Convert RA/Dec (degrees) to a 3D point on the star sphere. */
+/** Convert RA/Dec (degrees) to a 3D point on the star sphere — a thin
+ *  out-param wrapper over raDecToVector, the single chirality definition site. */
 function celestialToVec3(raDeg: number, decDeg: number, out: THREE.Vector3): THREE.Vector3 {
-  const ra = THREE.MathUtils.degToRad(raDeg);
-  const dec = THREE.MathUtils.degToRad(decDeg);
-  const cosDec = Math.cos(dec);
-  out.set(
-    STAR_SPHERE_RADIUS * cosDec * Math.cos(ra),
-    STAR_SPHERE_RADIUS * Math.sin(dec),
-    STAR_SPHERE_RADIUS * cosDec * Math.sin(ra),
-  );
-  return out;
+  return out.copy(raDecToVector(raDeg, decDeg, STAR_SPHERE_RADIUS));
 }
 
 /**

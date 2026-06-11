@@ -810,6 +810,9 @@ export class PlanetariumMode {
     rollNorth: THREE.Vector3,
   ) {
     const toParent = this.tmpLockToParent.copy(offsetFromParent).multiplyScalar(-1).normalize();
+    // "east" is the basis Z column = toParent×up; it holds *texture* longitude
+    // 90°W (geographic east on the body is its negation). Only the RH-ness of
+    // the basis matters: X×Y=Z keeps det(+1), so textures are never mirrored.
     const east = this.tmpLockEast.crossVectors(toParent, rollNorth);
     if (east.lengthSq() < 1e-10) return; // unreachable for valid orbit geometry; cheap safety
     east.normalize();
@@ -2227,7 +2230,7 @@ export class PlanetariumMode {
     if (milestone.customScenePosition || milestone.target === 'Interstellar' || milestone.target === 'Custom') {
       if (this.landedOn) this.exitLandedMode();
       return {
-        targetPosition: this.vectorFromCoords(milestone.customScenePosition, new THREE.Vector3(118, 6, -18)),
+        targetPosition: this.vectorFromCoords(milestone.customScenePosition, new THREE.Vector3(118, 6, 18)),
         lookTarget: this.vectorFromCoords(milestone.customLookTarget, new THREE.Vector3(0, 0, 0)),
       };
     }

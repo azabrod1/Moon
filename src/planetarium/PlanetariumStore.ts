@@ -132,7 +132,7 @@ function parseSavedState(raw: string): PlanetariumState | null {
 export function createDefaultPlanetariumState(): PlanetariumState {
   return {
     // Start inside Mercury's orbit, but far enough from the Sun to avoid a blown-out first view.
-    positionAU: { x: 0.28, y: 0.015, z: -0.04 },
+    positionAU: { x: 0.28, y: 0.015, z: 0.04 },
     headingRad: 0,
     speed: 1.0,
     moving: true,

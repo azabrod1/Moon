@@ -29,8 +29,8 @@ interface SatelliteFrameBasis {
   record: SatelliteElementsRecord;
   /** Scene images of the frame axes: A = in-plane origin (node of the
    *  reference plane on the ICRF equator), C = reference-plane pole,
-   *  B = A×C — the det(−1) scene embedding flips the handedness of the
-   *  third axis (map(p̂×n̂) = map(n̂)×map(p̂)). */
+   *  B = C×A — the scene embedding is a proper rotation, so cross products
+   *  carry over directly (map(n̂×p̂) = map(n̂)×map(p̂)). */
   basisA: THREE.Vector3;
   basisB: THREE.Vector3;
   basisC: THREE.Vector3;
@@ -53,7 +53,7 @@ function getFrame(name: string): SatelliteFrameBasis {
     basisA = raDecToVector(record.poleRaDeg + 90, 0);
     basisC = raDecToVector(record.poleRaDeg, record.poleDecDeg);
   }
-  const basisB = new THREE.Vector3().crossVectors(basisA, basisC);
+  const basisB = new THREE.Vector3().crossVectors(basisC, basisA);
   frame = { record, basisA, basisB, basisC };
   frameCache.set(name, frame);
   return frame;
@@ -200,9 +200,8 @@ const tmpNormalB = new THREE.Vector3();
  * everything else → the JPL mean elements above.
  *
  * `outOrbitNormal` receives the actual orbit normal. For Earth's Moon that is
- * the true 5.1°-tilted normal from a finite difference of two Meeus samples —
- * in scene coordinates the det(−1) embedding flips cross products, so the
- * sample order is reversed (r(t+dt) × r(t)) to keep the normal pointing north.
+ * the true 5.1°-tilted normal from a finite difference of two Meeus samples:
+ * L ≈ r(t) × r(t+dt), pointing north in the scene's proper (det +1) frame.
  */
 export function computeMoonOffsetEquatorialAU(
   moonName: string,
@@ -217,7 +216,7 @@ export function computeMoonOffsetEquatorialAU(
     if (outOrbitNormal) {
       tmpNormalA.copy(out);
       computeMoonGeocentricEquatorialAU(jdTT + MOON_NORMAL_STEP_DAYS, tmpNormalB);
-      outOrbitNormal.crossVectors(tmpNormalB, tmpNormalA).normalize();
+      outOrbitNormal.crossVectors(tmpNormalA, tmpNormalB).normalize();
     }
     return out;
   }

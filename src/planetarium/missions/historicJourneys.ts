@@ -135,7 +135,7 @@ const voyager1Milestones: HistoricMilestone[] = [
     fallbackImageCredit: 'NASA/JPL-Caltech',
     fallbackImageSourceLabel: 'Voyager Approaches Final Frontier',
     fallbackImageSourceUrl: 'https://science.nasa.gov/photojournal/voyager-approaches-final-frontier-artists-concept/',
-    customScenePosition: { x: 118, y: 6, z: -18 },
+    customScenePosition: { x: 118, y: 6, z: 18 },
     customLookTarget: { x: 0, y: 0, z: 0 },
   },
 ];
@@ -239,7 +239,7 @@ const voyager2Milestones: HistoricMilestone[] = [
     fallbackImageCredit: 'NASA/JPL-Caltech',
     fallbackImageSourceLabel: 'Voyager Approaches Final Frontier',
     fallbackImageSourceUrl: 'https://science.nasa.gov/photojournal/voyager-approaches-final-frontier-artists-concept/',
-    customScenePosition: { x: 104, y: -8, z: 24 },
+    customScenePosition: { x: 104, y: -8, z: -24 },
     customLookTarget: { x: 0, y: 0, z: 0 },
   },
 ];
@@ -406,12 +406,13 @@ const newHorizonsMilestones: HistoricMilestone[] = [
     imageSourceLabel: 'First images of Arrokoth',
     imageSourceUrl: 'https://science.nasa.gov/resource/first-images-of-arrokoth-2014-mu69/',
     ...textureFallback('pluto.jpg', 'Pluto'),
-    // Camera sits past Pluto's Jan 2019 position (11.9, -12.6, -28.9) along the
+    // Camera sits past Pluto's Jan 2019 position (11.9, -12.6, 28.9) along the
     // outbound radial, looking back at it — Pluto's world position comes from
     // computeBodyState (Standish elements); retune if the planet model changes.
     // Checked at the Standish switch: Pluto moved 0.024 AU — no retune needed.
-    customScenePosition: { x: 14.3, y: -12.6, z: -34.7 },
-    customLookTarget: { x: 11.9, y: -12.6, z: -28.9 },
+    // z negated at the cycle-2 chirality flip along with the world.
+    customScenePosition: { x: 14.3, y: -12.6, z: 34.7 },
+    customLookTarget: { x: 11.9, y: -12.6, z: 28.9 },
   },
 ];
 

@@ -14,9 +14,11 @@ import { getStandishElements, type KeplerElements } from './standish';
 import { DEG, J2000, KM_PER_AU, OBLIQUITY_DEG } from './constants';
 
 const REFERENCE_NORTH = new THREE.Vector3(0, 1, 0);
-const REFERENCE_PRIME = new THREE.Vector3(1, 0, 0);
 
-const ECLIPTIC_TO_EQUATORIAL = new THREE.Matrix4().makeRotationX(-OBLIQUITY_DEG * DEG);
+// RotX(+ε): carries the ecliptic pole (0,1,0) to (0, cos ε, sin ε) =
+// raDecToVector(270°, 90°−ε), the J2000 equatorial position of the north
+// ecliptic pole. Pinned by the ecliptic-pole test in planetary.test.ts.
+const ECLIPTIC_TO_EQUATORIAL = new THREE.Matrix4().makeRotationX(OBLIQUITY_DEG * DEG);
 
 export interface SimulationTime {
   currentUtcMs: number;
@@ -48,11 +50,13 @@ function getDaysSinceJ2000(jd: number): number {
 
 function computeOrbitalPlanePosition(el: KeplerElements, eccentricAnomalyRad: number): THREE.Vector3 {
   const x = el.semiMajorAxisAU * (Math.cos(eccentricAnomalyRad) - el.eccentricity);
-  const z =
+  const yInPlane =
     el.semiMajorAxisAU *
     Math.sqrt(1 - el.eccentricity * el.eccentricity) *
     Math.sin(eccentricAnomalyRad);
-  return new THREE.Vector3(x, 0, z);
+  // Scene ecliptic frame: longitude increases toward −Z, so the textbook
+  // in-plane (x, y) lands at (x, 0, −y).
+  return new THREE.Vector3(x, 0, -yInPlane);
 }
 
 function applyOrbitalOrientation(position: THREE.Vector3, el: KeplerElements): THREE.Vector3 {
@@ -61,16 +65,16 @@ function applyOrbitalOrientation(position: THREE.Vector3, el: KeplerElements): T
   const inclinationRad = el.inclinationDeg * DEG;
   const ascendingNodeRad = el.ascendingNodeDeg * DEG;
 
-  // Scene ecliptic frame: +Y north, longitude increasing toward +Z (matching
-  // raDecToVector's star sphere). A rotation about +Y by +θ moves longitude by
-  // −θ, so element angles are applied negated; −inclination about +X makes the
-  // body head north after the ascending node. planetary.test.ts pins this
-  // against the textbook element formula and the Meeus Sun.
+  // Scene ecliptic frame: +Y north, longitude increasing toward −Z, so a +θ
+  // rotation about +Y advances longitude by +θ — the textbook rotation chain
+  // applies with no negations: +ω about the pole, +i about the node line
+  // (+X), +Ω about the pole. planetary.test.ts pins this against the textbook
+  // element formula and the Meeus Sun.
   return position
     .clone()
-    .applyAxisAngle(REFERENCE_NORTH, -argPerihelionRad)
-    .applyAxisAngle(new THREE.Vector3(1, 0, 0), -inclinationRad)
-    .applyAxisAngle(REFERENCE_NORTH, -ascendingNodeRad);
+    .applyAxisAngle(REFERENCE_NORTH, argPerihelionRad)
+    .applyAxisAngle(new THREE.Vector3(1, 0, 0), inclinationRad)
+    .applyAxisAngle(REFERENCE_NORTH, ascendingNodeRad);
 }
 
 export function eclipticToEquatorial(vector: THREE.Vector3): THREE.Vector3 {
@@ -83,6 +87,12 @@ export function ttJDFromUtcMs(utcMs: number): number {
   return dateToJD(date) + deltaTDaysAtDate(date);
 }
 
+/**
+ * THE chirality definition site: J2000 equatorial RA/Dec → scene vector via
+ * the proper rotation (x, z, −y) — +X = vernal equinox (RA 0), +Y = celestial
+ * north, +Z = RA 270°. det = +1, so the rendered sky has real-world chirality.
+ * Every scene embedding of sky coordinates must route through here.
+ */
 export function raDecToVector(raDeg: number, decDeg: number, radius = 1): THREE.Vector3 {
   const ra = raDeg * DEG;
   const dec = decDeg * DEG;
@@ -91,7 +101,7 @@ export function raDecToVector(raDeg: number, decDeg: number, radius = 1): THREE.
   return new THREE.Vector3(
     radius * cosDec * Math.cos(ra),
     radius * Math.sin(dec),
-    radius * cosDec * Math.sin(ra),
+    -radius * cosDec * Math.sin(ra),
   );
 }
 
@@ -122,11 +132,11 @@ export function computeMoonGeocentricEquatorialAU(jdTT: number, out: THREE.Vecto
   const latRad = moon.latitude * DEG;
   const rAU = moon.distance / KM_PER_AU;
   const cosLat = Math.cos(latRad);
-  // Scene ecliptic frame: +X at λ=0, +Y north, longitude increasing toward +Z.
+  // Scene ecliptic frame: +X at λ=0, +Y north, longitude increasing toward −Z.
   out.set(
     rAU * cosLat * Math.cos(lonRad),
     rAU * Math.sin(latRad),
-    rAU * cosLat * Math.sin(lonRad),
+    -rAU * cosLat * Math.sin(lonRad),
   );
   return out.applyMatrix4(ECLIPTIC_TO_EQUATORIAL);
 }
@@ -145,10 +155,11 @@ export function computeMoonGeocentricEquatorialAU(jdTT: number, out: THREE.Vecto
 export function computeEarthPositionEquatorial(jdTT: number): THREE.Vector3 {
   const sun = sunPosition(jdTT);
   const lonRad = (sun.longitude - accumulatedPrecessionLonDeg(jdTT)) * DEG;
+  // Negated Sun vector in the λ→−Z ecliptic frame: −(d cos λ, 0, −d sin λ).
   const ecliptic = new THREE.Vector3(
     -sun.distance * Math.cos(lonRad),
     0,
-    -sun.distance * Math.sin(lonRad),
+    sun.distance * Math.sin(lonRad),
   );
   return ecliptic.applyMatrix4(ECLIPTIC_TO_EQUATORIAL);
 }
@@ -167,34 +178,36 @@ export function sampleOrbitLinePoints(el: KeplerElements, segments = 256): THREE
 }
 
 /**
- * KNOWN LIMITATION (roadmapped, do not "fix" piecemeal): the scene embeds the
- * sky through the y/z swap in raDecToVector — a det(−1), mirror-image map.
- * Star positions, planet positions, and all relative alignments (phases,
- * eclipses, conjunctions) are mutually consistent and golden-tested, but the
- * rendered celestial sphere is E–W flipped vs reality, and a consequence is
- * that no rigid spin model can make a properly-chiral planet texture show the
- * correct absolute rotation phase (which continents face the Sun at a given
- * UTC) in this frame: the construction below keeps the *daily* terminator
- * sweep correct and leaves the absolute phase approximate. The real fix is a
- * scene-wide chirality flip — its own milestone (touches the starfield,
- * constellations, every frame test, and this whole pole/prime construction).
+ * Frame contract (the cycle-2 chirality flip): the scene is J2000 equatorial,
+ * right-handed — +X vernal equinox, +Y celestial north, +Z = RA 270°; the
+ * intermediate ecliptic frame runs longitude toward −Z. det = +1 throughout,
+ * so cross products and spin senses are physically meaningful and the IAU
+ * pole + W construction below gives the true absolute rotation phase (which
+ * continents face the Sun at a UTC instant — pinned against GMST in
+ * planetary.test.ts). Exception: the legacy Moon view keeps its own mirrored
+ * mini-scene until it retires.
+ *
+ * The IAU prime-meridian reference is the node of the body's equator on the
+ * J2000 Earth equator, at RA = poleRA + 90° (always perpendicular to the
+ * pole, no degenerate case) — the same construction satellites.ts uses for
+ * moon orbit frames. W is measured easterly from that node, which in this RH
+ * frame is a +W rotation about the pole.
  */
-function getBasePrimeDirection(poleDirection: THREE.Vector3): THREE.Vector3 {
-  const ascendingNodeDirection = new THREE.Vector3().crossVectors(REFERENCE_NORTH, poleDirection);
-  if (ascendingNodeDirection.lengthSq() < 1e-8) {
-    return REFERENCE_PRIME.clone();
-  }
-  return ascendingNodeDirection.normalize();
+function getBasePrimeDirection(planet: PlanetData): THREE.Vector3 {
+  return raDecToVector(planet.poleRaDeg + 90, 0);
 }
 
 function buildPoleBasisQuaternion(planet: PlanetData, primeMeridianDeg: number): THREE.Quaternion {
   const poleDirection = raDecToVector(planet.poleRaDeg, planet.poleDecDeg).normalize();
-  const primeDirection = getBasePrimeDirection(poleDirection)
+  const primeDirection = getBasePrimeDirection(planet)
     .applyAxisAngle(poleDirection, primeMeridianDeg * DEG)
     .normalize();
-  const eastDirection = new THREE.Vector3().crossVectors(primeDirection, poleDirection).normalize();
+  // Third basis column, prime×pole: holds *texture* longitude 90°W, not
+  // geographic east (east = pole×prime = the −Z column's image). Only the
+  // RH-ness of the basis matters here; the name is deliberately not "east".
+  const basisZ = new THREE.Vector3().crossVectors(primeDirection, poleDirection).normalize();
 
-  const basis = new THREE.Matrix4().makeBasis(primeDirection, poleDirection, eastDirection);
+  const basis = new THREE.Matrix4().makeBasis(primeDirection, poleDirection, basisZ);
   return new THREE.Quaternion().setFromRotationMatrix(basis);
 }
 

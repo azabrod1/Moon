@@ -29,6 +29,8 @@ export interface SolarSystemObjects {
   ambientLight: THREE.AmbientLight;
 }
 
+// Decorative scene-space spread (aligned overview mode), not frame-bound —
+// the ± wobble is symmetric, so the z sign carries no chirality meaning.
 function createAlignedPlanetPosition(planet: PlanetData, seed: number): { x: number; y: number; z: number } {
   const radius = planet.semiMajorAxisAU;
   const spread = ((seed * 7.13) % 1 - 0.5) * (Math.PI / 6);
@@ -117,6 +119,8 @@ function createAsteroidBelt(): THREE.Points {
   const positions = new Float32Array(count * 3);
   const colors = new Float32Array(count * 3);
 
+  // Decorative scene-space ring (random circularly-symmetric scatter), not
+  // frame-bound — the z=+sin convention here carries no chirality meaning.
   for (let i = 0; i < count; i++) {
     const radius = ASTEROID_BELT.innerAU + Math.random() * (ASTEROID_BELT.outerAU - ASTEROID_BELT.innerAU);
     const angle = Math.random() * Math.PI * 2;

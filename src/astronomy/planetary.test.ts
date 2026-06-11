@@ -3,8 +3,10 @@
  *
  * Scene ecliptic frame (locked by these tests): +X at ecliptic longitude 0°
  * (vernal equinox), +Y at the north ecliptic pole, longitude increasing
- * toward +Z — the same sense raDecToVector uses for the star sphere
- * (RA 90° = +Z), so a body and its sky backdrop agree.
+ * toward −Z — the same right-handed sense raDecToVector uses for the star
+ * sphere (RA 90° = −Z), so a body and its sky backdrop agree. The chirality
+ * pin (RA0 × RA90 = north) proves the embedding is a proper rotation: the
+ * rendered sky has real-world chirality, not a mirror image.
  */
 import { describe, expect, it } from 'vitest';
 import * as THREE from 'three';
@@ -76,8 +78,8 @@ function referenceEclipticPosition(el: KeplerElements): THREE.Vector3 {
       Math.cos(node) * Math.sin(argLatitude) * Math.cos(inclination));
   const zToNorth = radius * Math.sin(argLatitude) * Math.sin(inclination);
 
-  // Scene frame: north is +Y, longitude increases toward +Z.
-  return new THREE.Vector3(xToEquinox, zToNorth, yToLon90);
+  // Scene frame: north is +Y, longitude increases toward −Z.
+  return new THREE.Vector3(xToEquinox, zToNorth, -yToLon90);
 }
 
 describe('J2000 frame unification (accumulatedPrecessionLonDeg)', () => {
@@ -94,11 +96,19 @@ describe('J2000 frame unification (accumulatedPrecessionLonDeg)', () => {
 });
 
 describe('celestial frame', () => {
-  it('puts RA 90° at +Z and the north pole at +Y', () => {
+  it('puts RA 90° at −Z and the north pole at +Y', () => {
     const ra90 = raDecToVector(90, 0);
     expect(ra90.x).toBeCloseTo(0, 6);
-    expect(ra90.z).toBeCloseTo(1, 6);
+    expect(ra90.z).toBeCloseTo(-1, 6);
     expect(raDecToVector(123, 90).y).toBeCloseTo(1, 6);
+  });
+
+  it('embeds the sky with real-world chirality (the cycle-2 flip)', () => {
+    // In the real sky, (RA 0) × (RA 90) along the equator points to celestial
+    // north. A mirrored embedding gives −north — this is the test that fails
+    // on the pre-flip det(−1) frame and pins the milestone.
+    const north = new THREE.Vector3().crossVectors(raDecToVector(0, 0), raDecToVector(90, 0));
+    expect(north.angleTo(new THREE.Vector3(0, 1, 0)) * RAD).toBeLessThan(1e-6);
   });
 
   it('maps the north ecliptic pole to its real equatorial position (RA 270°, Dec 90°−ε)', () => {
@@ -115,6 +125,20 @@ describe('computeBodyPoleQuaternion (de-spin foundation)', () => {
       const expected = raDecToVector(planet.poleRaDeg, planet.poleDecDeg);
       expect(pole.angleTo(expected) * RAD, planet.name).toBeLessThan(1e-6);
     }
+  });
+
+  it('puts Earth\'s prime meridian at GMST (absolute rotation phase)', () => {
+    // At 2000-01-01 12:00 UTC, GMST ≈ 280.46°: Greenwich points at that RA.
+    // Evaluated through ttJDFromUtcMs — the production computeBodyState path —
+    // the IAU W model lands within ~0.05°; the 0.5° tolerance absorbs the
+    // UT1/ΔT-level coarseness of the pin value. Do not tighten. This is the
+    // absolute-phase test that no spin model could pass in the mirrored frame.
+    const earth = PLANETS.find((p) => p.name === 'Earth')!;
+    const jdTT = ttJDFromUtcMs(Date.UTC(2000, 0, 1, 12, 0, 0));
+    const prime = new THREE.Vector3(1, 0, 0).applyQuaternion(
+      computeBodyOrientationQuaternion(earth, jdTT),
+    );
+    expect(prime.angleTo(raDecToVector(280.46, 0)) * RAD).toBeLessThan(0.5);
   });
 
   it('shares its pole axis with the spinning orientation at any time', () => {
@@ -166,7 +190,7 @@ describe('Standish EMB vs Meeus Sun (cross-model check)', () => {
     for (const iso of dates) {
       const jd = dateToJD(new Date(iso));
       const emb = computeKeplerPositionEcliptic(getStandishElements('Earth', jd));
-      const sceneLonDeg = norm360(Math.atan2(emb.z, emb.x) * RAD);
+      const sceneLonDeg = norm360(Math.atan2(-emb.z, emb.x) * RAD);
       const expectedLonDeg = norm360(
         sunPosition(jd).longitude + 180 - accumulatedPrecessionLonDeg(jd),
       );

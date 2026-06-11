@@ -60,6 +60,8 @@ describe('resampleOrbitLines', () => {
   it('draws catalog-radius ecliptic circles in aligned mode', () => {
     // Aligned rings are circles in the ecliptic plane expressed in the
     // equatorial scene frame (same obliquity tilt as every orbit) — epoch-free.
+    // Independent expectation: longitude `angle` sits at (cos, 0, −sin) in the
+    // scene's ecliptic frame (longitude runs toward −Z; planetary.test.ts).
     const objects = makeBareObjects();
     resampleOrbitLines(objects, 'aligned', J2000_UTC_MS);
     for (let i = 0; i < objects.orbitLines.length; i++) {
@@ -68,7 +70,7 @@ describe('resampleOrbitLines', () => {
       for (const vertexIndex of [0, 64, 192]) {
         const angle = (vertexIndex / ORBIT_LINE_SEGMENTS) * Math.PI * 2;
         const expected = eclipticToEquatorial(
-          new THREE.Vector3(radiusAU * Math.cos(angle), 0, radiusAU * Math.sin(angle)),
+          new THREE.Vector3(radiusAU * Math.cos(angle), 0, -radiusAU * Math.sin(angle)),
         );
         // BufferAttribute is float32: ~1e-7 relative quantization.
         const v = new THREE.Vector3().fromBufferAttribute(position, vertexIndex);

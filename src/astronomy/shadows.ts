@@ -11,8 +11,8 @@
  * resolves positions through the exact functions the renderer uses
  * (computeBodyPositionAU, computeMoonOffsetEquatorialAU), so an event found
  * here is an event the scene shows. The geometry uses only dot products and
- * norms, which the det(−1) scene embedding preserves — the engine is
- * indifferent to the roadmapped chirality flip.
+ * norms, so it is indifferent to the scene's frame convention (it survived
+ * the cycle-2 chirality flip unchanged, by design).
  *
  * Classification is kind-split deliberately: a moon is "totally eclipsed"
  * when it fits inside the umbra (immersion), but a solar eclipse is "total"

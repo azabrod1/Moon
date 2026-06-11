@@ -5,6 +5,7 @@
  */
 import * as THREE from 'three';
 import { BRIGHT_STAR_CATALOG } from '../data/brightStars';
+import { raDecToVector } from '../../astronomy/planetary';
 
 /** Map a stellar colour index (B–V) to an approximate RGB tint. */
 export function getStarColor(colorIndex: number): THREE.Color {
@@ -28,16 +29,15 @@ export function createPlanetariumStarfield(): THREE.Points {
 
   for (let i = 0; i < starCount; i++) {
     const star = catalog[i];
-    const radius = 85;
-    const ra = THREE.MathUtils.degToRad(star.raDeg);
-    const dec = THREE.MathUtils.degToRad(star.decDeg);
-    const cosDec = Math.cos(dec);
     const color = getStarColor(star.colorIndex);
     const brightness = THREE.MathUtils.clamp(1.2 - (star.magnitude + 1.44) / 8, 0.25, 1.2);
 
-    positions[i * 3] = radius * cosDec * Math.cos(ra);
-    positions[i * 3 + 1] = radius * Math.sin(dec);
-    positions[i * 3 + 2] = radius * cosDec * Math.sin(ra);
+    // raDecToVector is the single chirality definition site — every sky
+    // embedding routes through it (build-time allocation is fine here).
+    const position = raDecToVector(star.raDeg, star.decDeg, 85);
+    positions[i * 3] = position.x;
+    positions[i * 3 + 1] = position.y;
+    positions[i * 3 + 2] = position.z;
 
     colors[i * 3] = color.r * brightness;
     colors[i * 3 + 1] = color.g * brightness;

@@ -101,12 +101,12 @@ const FIXTURE_EPOCHS = [2360234.5, 2447892.5, 2461200.5, 2467900.5];
 /**
  * Horizons ecliptic-J2000 (x, y, z) → the scene's world (equatorial) frame.
  * Horizons: +x at the equinox, +z ecliptic north, +y at longitude 90°.
- * Scene intermediate ecliptic vector: +X equinox, +Y north, +Z longitude 90°
- * (the convention pinned by planetary.test.ts) — i.e. (x, z, y) — then the
- * production obliquity rotation.
+ * Scene intermediate ecliptic vector: +X equinox, +Y north, longitude
+ * running toward −Z (the convention pinned by planetary.test.ts) — i.e. the
+ * proper rotation (x, z, −y) — then the production obliquity rotation.
  */
 function horizonsToScene(f: HorizonsFixture): THREE.Vector3 {
-  return eclipticToEquatorial(new THREE.Vector3(f.x, f.z, f.y));
+  return eclipticToEquatorial(new THREE.Vector3(f.x, f.z, -f.y));
 }
 
 function separationDeg(a: THREE.Vector3, b: THREE.Vector3): number {
@@ -131,7 +131,7 @@ describe('Horizons fixture self-checks', () => {
     // unlike a longitude comparison it cannot be fooled by along-track element
     // error. Max real value: Pluto at 15.6°.
     for (const f of [...HELIO_FIXTURES, ...MOON_FIXTURES]) {
-      const scene = new THREE.Vector3(f.x, f.z, f.y); // intermediate ecliptic frame
+      const scene = new THREE.Vector3(f.x, f.z, -f.y); // intermediate ecliptic frame
       const latDeg = Math.asin(scene.y / scene.length()) * RAD;
       expect(Math.abs(latDeg), `${f.body} @ ${f.jdTdb}`).toBeLessThan(18);
     }

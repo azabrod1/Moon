@@ -38,9 +38,10 @@ const goldens = goldensJson as unknown as {
   moons: Record<string, MoonGolden>;
 };
 
-/** Horizons ecliptic-J2000 → scene equatorial (same convention as standish.test.ts). */
+/** Horizons ecliptic-J2000 → scene equatorial (same convention as standish.test.ts):
+ *  the proper rotation (x, z, −y) — scene ecliptic longitude runs toward −Z. */
 function horizonsToScene(raw: [string, string, string]): THREE.Vector3 {
-  return eclipticToEquatorial(new THREE.Vector3(Number(raw[0]), Number(raw[2]), Number(raw[1])));
+  return eclipticToEquatorial(new THREE.Vector3(Number(raw[0]), Number(raw[2]), -Number(raw[1])));
 }
 
 const HOLDOUT_KEY = goldens.provenance.holdoutJdTdb.toFixed(1);

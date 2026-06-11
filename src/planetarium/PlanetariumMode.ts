@@ -61,6 +61,7 @@ import {
   selectSurfaceTarget,
   SURFACE_FOV_DEFAULT_DEG,
   surfaceEventNarrative,
+  transportTrackingUp,
   type SurfaceTarget,
 } from './surfaceView';
 import { DEG2RAD } from '../shared/math/angles';
@@ -267,6 +268,9 @@ export class PlanetariumMode {
   private tmpSurfaceZenith = new THREE.Vector3();
   private tmpSurfaceRight = new THREE.Vector3();
   private tmpSurfaceQuat = new THREE.Quaternion();
+  // Tracking-camera up, parallel-transported frame to frame (see
+  // updateSurfaceCamera). Persistent state, not a scratch vector.
+  private surfaceUpTangent = new THREE.Vector3(0, 1, 0);
 
   // Moon labels
   private moonLabels = new Map<string, HTMLDivElement>();
@@ -293,6 +297,8 @@ export class PlanetariumMode {
     () => this.swapLandedVantage(),
     () => {
       this.surfaceTracking = true;
+      // Resume from the free-look orientation without a roll snap.
+      this.surfaceUpTangent.set(0, 1, 0).applyQuaternion(this.camera.quaternion);
       this.renderSurfaceHud();
     },
     () => this.toggleObservatoryPanel(),
@@ -3129,6 +3135,9 @@ export class PlanetariumMode {
     this.surfaceTarget =
       target ?? selectSurfaceTarget(landedInfo, this.relevantObservatoryEvent()?.spec ?? null);
     this.surfaceTracking = true;
+    // Re-seed the transported tracking-up from the camera's current local up
+    // so the first tracked frame is continuous with what's on screen.
+    this.surfaceUpTangent.set(0, 1, 0).applyQuaternion(this.camera.quaternion);
     const entryFov = entryFovDeg(this.surfaceTargetAngularDiameterDeg(this.surfaceTarget));
     this.surfaceFovDeg = entryFov;
     if (this.landedView === 'surface') {
@@ -3328,9 +3337,18 @@ export class PlanetariumMode {
       }
     }
 
-    // Local zenith as camera-up: tracking shots stay level with the horizon.
-    this.camera.up.copy(this.tmpSurfaceZenith.copy(this.camera.position).normalize());
-    if (this.surfaceTracking) this.camera.lookAt(targetPos);
+    // Tracking-camera orientation. The vantage puts the target at the local
+    // zenith, so a zenith up would be parallel to the look direction and
+    // lookAt's basis degenerate (orientation was fp noise — frames wandered
+    // up to ~20° off-target). Parallel-transport a tangent up instead; it is
+    // seeded from the camera's current up on entry/re-point/resume so
+    // tracking never starts with a roll snap.
+    if (this.surfaceTracking) {
+      const forward = this.tmpSurfaceZenith.copy(targetPos).sub(this.camera.position);
+      if (forward.lengthSq() > 0) forward.normalize();
+      this.camera.up.copy(transportTrackingUp(this.surfaceUpTangent, forward));
+      this.camera.lookAt(targetPos);
+    }
 
     // Bracket cluster around the tracked target (per-frame screen projection).
     const canvas = this.renderer.domElement;

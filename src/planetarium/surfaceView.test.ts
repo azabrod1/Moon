@@ -17,6 +17,7 @@ import {
   SURFACE_MIN_ALTITUDE_AU,
   surfaceAltitudeAU,
   surfaceEventNarrative,
+  transportTrackingUp,
   type SurfaceEventInfo,
   type SurfaceLandedInfo,
 } from './surfaceView';
@@ -201,6 +202,69 @@ describe('surface vantage geometry', () => {
       const axis = new THREE.Vector3(0, 0, -1);
       expect(shadowAxisSphereHitAU(offset, axis, R)).toBeNull();
     });
+  });
+});
+
+describe('transportTrackingUp — tracking-camera up at a zenith target', () => {
+  // Both vantage builders put the target at the observer's zenith, so the
+  // naive zenith-up is parallel to the look direction and lookAt's basis is
+  // degenerate (this was the empty-sky-on-entry bug: orientation noise up to
+  // ~20° off-target). These pin the transported up's contract.
+
+  it('returns a unit vector perpendicular to forward', () => {
+    const forward = new THREE.Vector3(0.3, -0.8, 0.52).normalize();
+    const up = transportTrackingUp(new THREE.Vector3(0, 1, 0), forward);
+    expect(up.length()).toBeCloseTo(1, 12);
+    expect(up.dot(forward)).toBeCloseTo(0, 12);
+  });
+
+  it('is continuous: a small forward change barely moves the up', () => {
+    const up = new THREE.Vector3(0, 1, 0);
+    const f1 = new THREE.Vector3(1, 0.001, 0).normalize();
+    transportTrackingUp(up, f1);
+    const before = up.clone();
+    const f2 = new THREE.Vector3(1, 0.002, 0.001).normalize();
+    transportTrackingUp(up, f2);
+    expect(up.angleTo(before)).toBeLessThan(0.01);
+  });
+
+  it('recovers a valid basis from a seed parallel to forward (the old degenerate case)', () => {
+    const forward = new THREE.Vector3(0, 1, 0);
+    const up = transportTrackingUp(new THREE.Vector3(0, 1, 0), forward);
+    expect(up.length()).toBeCloseTo(1, 12);
+    expect(Math.abs(up.dot(forward))).toBeLessThan(1e-9);
+  });
+
+  it('recovers along any axis-aligned forward (fallback picks a non-parallel world axis)', () => {
+    for (const axis of [
+      new THREE.Vector3(1, 0, 0),
+      new THREE.Vector3(0, 1, 0),
+      new THREE.Vector3(0, 0, 1),
+      new THREE.Vector3(-1, 0, 0),
+      new THREE.Vector3(0.577, 0.577, 0.577).normalize(),
+    ]) {
+      const up = transportTrackingUp(axis.clone(), axis);
+      expect(up.length()).toBeCloseTo(1, 9);
+      expect(Math.abs(up.dot(axis))).toBeLessThan(1e-9);
+    }
+  });
+
+  it('keeps the up stable across many frames of a slowly moving target', () => {
+    // Simulate ~10 minutes of a tracked target drifting across the sky.
+    const up = new THREE.Vector3(0, 1, 0);
+    let prev: THREE.Vector3 | null = null;
+    for (let i = 0; i <= 600; i++) {
+      const theta = 0.4 + i * 0.0005;
+      const forward = new THREE.Vector3(
+        Math.cos(theta),
+        Math.sin(theta),
+        0.2 * Math.sin(theta * 3),
+      ).normalize();
+      transportTrackingUp(up, forward);
+      expect(Math.abs(up.dot(forward))).toBeLessThan(1e-9);
+      if (prev) expect(up.angleTo(prev)).toBeLessThan(0.01); // no frame-to-frame roll jumps
+      prev = up.clone();
+    }
   });
 });
 

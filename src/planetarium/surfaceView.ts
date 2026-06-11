@@ -138,6 +138,30 @@ export function computeShadowSpotVantage(
   return out.normalize().multiplyScalar(bodyRadiusAU + surfaceAltitudeAU(bodyRadiusAU));
 }
 
+/**
+ * Up vector for the tracking camera, parallel-transported frame to frame.
+ * Both vantages above put the target at the observer's local zenith, so a
+ * zenith up is parallel to the look direction and lookAt's basis is
+ * degenerate — the orientation comes out as floating-point noise. Instead,
+ * project last frame's up off the current forward axis: continuous roll,
+ * never parallel to forward. Mutates and returns `up` (per-frame zero-alloc).
+ * If the seed itself is parallel to forward, restarts from the world axis
+ * least aligned with the look direction.
+ */
+export function transportTrackingUp(up: THREE.Vector3, forward: THREE.Vector3): THREE.Vector3 {
+  up.addScaledVector(forward, -up.dot(forward));
+  if (up.lengthSq() < 1e-12) {
+    const ax = Math.abs(forward.x);
+    const ay = Math.abs(forward.y);
+    const az = Math.abs(forward.z);
+    if (ax <= ay && ax <= az) up.set(1, 0, 0);
+    else if (ay <= az) up.set(0, 1, 0);
+    else up.set(0, 0, 1);
+    up.addScaledVector(forward, -up.dot(forward));
+  }
+  return up.normalize();
+}
+
 export const SURFACE_FOV_MIN_DEG = 1.5;
 export const SURFACE_FOV_MAX_DEG = 45;
 export const SURFACE_FOV_DEFAULT_DEG = 10;

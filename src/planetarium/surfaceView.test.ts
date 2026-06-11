@@ -16,6 +16,7 @@ import {
   SURFACE_FOV_DEFAULT_DEG,
   SURFACE_MIN_ALTITUDE_AU,
   surfaceAltitudeAU,
+  surfaceEventNarrative,
   type SurfaceEventInfo,
   type SurfaceLandedInfo,
 } from './surfaceView';
@@ -89,6 +90,45 @@ describe('selectSurfaceTarget — the observer-circumstances table', () => {
         if (target.kind === 'parent') expect(landed.type).toBe('moon');
       }
     }
+  });
+});
+
+describe('surfaceEventNarrative — observer/event relationship, not camera target', () => {
+  const phobosTransit: SurfaceEventInfo = {
+    kind: 'shadow-transit',
+    parentPlanet: 'Mars',
+    moonName: 'Phobos',
+  };
+  const onMars: SurfaceLandedInfo = { type: 'planet', name: 'Mars' };
+  const onDeimos: SurfaceLandedInfo = { type: 'moon', name: 'Deimos', parentPlanet: 'Mars' };
+  const onPhobos: SurfaceLandedInfo = { type: 'moon', name: 'Phobos', parentPlanet: 'Mars' };
+
+  it('on the parent, a transit reads as the solar eclipse it is', () => {
+    // The vantage-swap regression (Deimos → swap to Mars during a Phobos
+    // transit) showed "Phobos is in Mars's shadow" — the eclipse sentence,
+    // geometrically the OPPOSITE of a transit. The sentence must follow the
+    // observer/event relationship even when the camera points elsewhere.
+    expect(surfaceEventNarrative(onMars, phobosTransit)).toBe('Phobos is crossing the Sun');
+    expect(surfaceEventNarrative(onEarth, solarEclipse)).toBe('The Moon is crossing the Sun');
+  });
+
+  it('on the involved moon, events are personal: your Sun, your shadow', () => {
+    expect(surfaceEventNarrative(onMoon, lunarEclipse)).toBe('Earth is covering the Sun');
+    expect(surfaceEventNarrative(onPhobos, phobosTransit)).toBe('Your shadow is crossing Mars');
+    expect(surfaceEventNarrative(onIo, ioTransit)).toBe('Your shadow is crossing Jupiter');
+  });
+
+  it('from a sibling (or any third vantage), events read in the third person', () => {
+    expect(surfaceEventNarrative(onDeimos, phobosTransit)).toBe(
+      "Phobos's shadow is crossing Mars",
+    );
+    expect(surfaceEventNarrative(onEuropa, ioEclipse)).toBe("Io is in Jupiter's shadow");
+    expect(surfaceEventNarrative(onMars, { kind: 'eclipse', parentPlanet: 'Mars', moonName: 'Deimos' }))
+      .toBe("Deimos is in Mars's shadow");
+  });
+
+  it("Earth's Moon keeps its article", () => {
+    expect(surfaceEventNarrative(onEarth, lunarEclipse)).toBe("The Moon is in Earth's shadow");
   });
 });
 

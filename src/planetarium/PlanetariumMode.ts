@@ -60,6 +60,7 @@ import {
   entryFovDeg,
   selectSurfaceTarget,
   SURFACE_FOV_DEFAULT_DEG,
+  surfaceEventNarrative,
   type SurfaceTarget,
 } from './surfaceView';
 import { DEG2RAD } from '../shared/math/angles';
@@ -2689,21 +2690,14 @@ export class PlanetariumMode {
     }
   }
 
-  /** Present-tense one-liner for what the surface observer is watching. */
+  /**
+   * Present-tense one-liner for what the surface observer sees of the event.
+   * Pure observer/event relationship (surfaceView.ts) — never derived from
+   * the camera target, which the vantage swap and free look re-point.
+   */
   private surfaceNarrative(spec: ShadowEventSpec): string {
-    const isEarthPair = spec.parentPlanet === 'Earth' && spec.moonName === 'Moon';
-    switch (this.surfaceTarget.kind) {
-      case 'sun-from-spot':
-        return `${isEarthPair ? 'The Moon' : spec.moonName} is crossing the Sun`;
-      case 'sun':
-        return `${spec.parentPlanet} is covering the Sun`;
-      case 'moon':
-        return `${isEarthPair ? 'The Moon' : spec.moonName} is in ${spec.parentPlanet}'s shadow`;
-      case 'parent':
-        return this.landedOn?.name === spec.moonName
-          ? `Your shadow is crossing ${spec.parentPlanet}`
-          : `${spec.moonName}'s shadow is crossing ${spec.parentPlanet}`;
-    }
+    const landed = this.surfaceLandedInfo();
+    return landed ? surfaceEventNarrative(landed, spec) : '';
   }
 
   /** Warm countdown for the HUD subline — always relative to the engine's peak/contacts. */
@@ -3452,7 +3446,10 @@ export class PlanetariumMode {
    * Vantage swap: re-land on the companion body (Moon ↔ Earth, moon ↔ parent)
    * in place — no departure, no toast ceremony. Same system, so moon
    * positions and the upcoming-events search stay valid. If the surface view
-   * is active it stays active, pointed back at the body you just left.
+   * is active it stays active — pointed at the live event's observer-level
+   * target when the clock sits inside one (swapping mid-eclipse must keep
+   * showing the eclipse from the new vantage), otherwise back at the body
+   * you just left.
    */
   swapLandedVantage() {
     if (this.isMissionActive()) return;
@@ -3469,8 +3466,16 @@ export class PlanetariumMode {
       this.preSurfaceCameraPos.copy(this.camera.position);
       this.preSurfaceAutoRotate = this.controls.autoRotate;
       this.controls.enabled = false;
+      // No-arg re-derives from the relevant event (landedOn just changed —
+      // the same event reads differently from the companion: a transit seen
+      // from the parent is a solar eclipse, from the moon it's your own
+      // shadow). Without a live event, point back at the body you left.
       this.enterSurfaceView(
-        previous.type === 'moon' ? { kind: 'moon', moonName: previous.name } : { kind: 'parent' },
+        this.relevantObservatoryEvent()
+          ? undefined
+          : previous.type === 'moon'
+            ? { kind: 'moon', moonName: previous.name }
+            : { kind: 'parent' },
       );
     }
     this.notification.show(`Standing on ${companion.name}`);
@@ -3839,16 +3844,20 @@ export class PlanetariumMode {
   }
 
   /**
-   * Re-sample the orbit lines when the sim clock has drifted far from the
-   * epoch they were built at. Secular element rates move the lines ≤ ~0.2°
-   * per century (Mercury ϖ̇/Ω̇ worst), so 50 years bounds the on-screen error
-   * at ~0.1° — invisible at 0.2 opacity — while still tracking mission jumps
-   * to 1977 and deep time-travel. The mechanics live in resampleOrbitLines.
+   * Re-sample the orbit lines when the sim clock has drifted from the epoch
+   * they were sampled at. The realistic lines are the bodies' rendered
+   * trajectories over one period centered on that epoch, so each planet sits
+   * on its own line by construction — but only near the epoch: past half a
+   * period (Mercury: 44 d) a body re-treads a loop that has precessed a
+   * little, and year-over-year perturbation wiggle (Earth: ~0.5 R⊕) creeps
+   * in. 60 days keeps every body within ~a third of its own radius of the
+   * drawn line (pinned in SolarSystem.test.ts) for a few-ms resample a
+   * handful of times per simulated year. Mechanics live in resampleOrbitLines.
    */
   private rebuildOrbitLinesIfStale() {
     if (!this.solarSystem || this.layoutMode !== 'realistic') return;
-    const FIFTY_YEARS_MS = 50 * 365.25 * 86_400_000;
-    if (Math.abs(this.timeState.currentUtcMs - this.solarSystem.orbitLinesEpochUtcMs) < FIFTY_YEARS_MS) {
+    const SIXTY_DAYS_MS = 60 * 86_400_000;
+    if (Math.abs(this.timeState.currentUtcMs - this.solarSystem.orbitLinesEpochUtcMs) < SIXTY_DAYS_MS) {
       return;
     }
     resampleOrbitLines(this.solarSystem, this.layoutMode, this.timeState.currentUtcMs);

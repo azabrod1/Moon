@@ -1,13 +1,18 @@
 /**
  * Tests for the orbit-line resampling seam — the only part of the lazy
- * 50-year rebuild that contains mechanics (the staleness policy in
+ * drift rebuild that contains mechanics (the staleness policy in
  * PlanetariumMode is a two-line threshold check). Runs headless: THREE
  * BufferGeometry math needs no WebGL context.
  */
 import { describe, expect, it } from 'vitest';
 import * as THREE from 'three';
-import { ORBIT_LINE_SEGMENTS, resampleOrbitLines, type SolarSystemObjects } from './SolarSystem';
-import { eclipticToEquatorial } from '../astronomy/planetary';
+import {
+  ORBIT_LINE_SEGMENTS,
+  orbitLineSegmentCount,
+  resampleOrbitLines,
+  type SolarSystemObjects,
+} from './SolarSystem';
+import { computeBodyPositionAU, eclipticToEquatorial } from '../astronomy/planetary';
 import { PLANETARIUM_BODIES } from './planets/planetData';
 
 const J2000_UTC_MS = Date.UTC(2000, 0, 1, 12, 0, 0);
@@ -22,6 +27,25 @@ function makeBareObjects(): Pick<SolarSystemObjects, 'orbitLines' | 'orbitLinesE
   };
 }
 
+function minDistToPolyline(p: THREE.Vector3, position: THREE.BufferAttribute): number {
+  let best = Infinity;
+  const a = new THREE.Vector3();
+  const b = new THREE.Vector3();
+  const ab = new THREE.Vector3();
+  const ap = new THREE.Vector3();
+  const closest = new THREE.Vector3();
+  for (let i = 0; i + 1 < position.count; i++) {
+    a.fromBufferAttribute(position, i);
+    b.fromBufferAttribute(position, i + 1);
+    ab.subVectors(b, a);
+    ap.subVectors(p, a);
+    const t = Math.max(0, Math.min(1, ap.dot(ab) / ab.lengthSq()));
+    closest.copy(a).addScaledVector(ab, t);
+    best = Math.min(best, p.distanceTo(closest));
+  }
+  return best;
+}
+
 describe('resampleOrbitLines', () => {
   it('fills every line with a closed orbit and stamps the epoch', () => {
     const objects = makeBareObjects();
@@ -31,12 +55,46 @@ describe('resampleOrbitLines', () => {
     for (let i = 0; i < objects.orbitLines.length; i++) {
       const geometry = objects.orbitLines[i].geometry;
       const position = geometry.getAttribute('position');
-      expect(position.count, PLANETARIUM_BODIES[i].name).toBe(ORBIT_LINE_SEGMENTS + 1);
+      expect(position.count, PLANETARIUM_BODIES[i].name).toBe(
+        orbitLineSegmentCount(PLANETARIUM_BODIES[i]) + 1,
+      );
       expect(geometry.boundingSphere, PLANETARIUM_BODIES[i].name).not.toBeNull();
       // Bounding sphere must be orbit-sized, not the default empty sphere.
       expect(geometry.boundingSphere!.radius).toBeGreaterThan(
         PLANETARIUM_BODIES[i].semiMajorAxisAU * 0.5,
       );
+    }
+  });
+
+  it('keeps every planet on its own drawn line, even at the staleness bound', () => {
+    // The user-facing guarantee behind the trajectory sampling + the 60-day
+    // rebuild threshold: at landed zoom the planet must sit ON its orbit
+    // line. Half a body radius of slack covers Pluto's clamped segment count
+    // (~0.37 R sagitta) and Mercury's worst-case one-orbit-old precession at
+    // 59 days stale. The old element-ellipse lines failed this by 1.4 R⊕
+    // (Earth's Meeus/EMB seam) up to ~200 R (Pluto at 256 segments).
+    const epochs = [
+      Date.UTC(1977, 8, 5), // Voyager mission jump territory
+      Date.UTC(2026, 5, 11),
+      Date.UTC(2032, 0, 1),
+    ];
+    const STALE_MS = 59 * 86_400_000; // just under the rebuild threshold
+    const objects = makeBareObjects();
+    for (const epoch of epochs) {
+      resampleOrbitLines(objects, 'realistic', epoch);
+      for (const staleMs of [0, STALE_MS]) {
+        for (let i = 0; i < objects.orbitLines.length; i++) {
+          const body = PLANETARIUM_BODIES[i];
+          const pos = computeBodyPositionAU(body, epoch + staleMs);
+          const p = new THREE.Vector3(pos.x, pos.y, pos.z);
+          const offAU = minDistToPolyline(
+            p,
+            objects.orbitLines[i].geometry.getAttribute('position') as THREE.BufferAttribute,
+          );
+          expect(offAU, `${body.name} @ ${new Date(epoch).toISOString()} +${staleMs / 86_400_000}d`)
+            .toBeLessThan(body.radiusAU * 0.5);
+        }
+      }
     }
   });
 
@@ -51,10 +109,13 @@ describe('resampleOrbitLines', () => {
 
     expect(objects.orbitLinesEpochUtcMs).toBe(later);
     const after = new THREE.Vector3().fromBufferAttribute(mercury.getAttribute('position'), 0);
-    // Mercury's node/perihelion drift ~0.3°/cy: the perihelion vertex must
-    // have moved measurably, and in place (same attribute object count).
+    // The strip starts half a period before the epoch — 200 years later that
+    // vertex sits somewhere else entirely on the (precessed) orbit, and the
+    // resample must land in place (same attribute, same count).
     expect(after.distanceTo(before)).toBeGreaterThan(1e-4);
-    expect(mercury.getAttribute('position').count).toBe(ORBIT_LINE_SEGMENTS + 1);
+    expect(mercury.getAttribute('position').count).toBe(
+      orbitLineSegmentCount(PLANETARIUM_BODIES[0]) + 1,
+    );
   });
 
   it('draws catalog-radius ecliptic circles in aligned mode', () => {

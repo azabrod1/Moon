@@ -6,8 +6,13 @@
 import * as THREE from 'three';
 import { PLANETARIUM_BODIES, ASTEROID_BELT, type PlanetData } from './planets/planetData';
 import { createPlanetMesh, createPlanetariumSun, type PlanetMesh } from './PlanetFactory';
-import { computeBodyPositionAU, sampleOrbitLinePoints, ttJDFromUtcMs } from '../astronomy/planetary';
-import { getStandishElements, type KeplerElements } from '../astronomy/standish';
+import {
+  computeBodyPositionAU,
+  sampleOrbitLinePoints,
+  sampleTrajectoryLinePoints,
+} from '../astronomy/planetary';
+import { KM_PER_AU } from '../astronomy/constants';
+import type { KeplerElements } from '../astronomy/standish';
 
 export type PlanetariumLayout = 'aligned' | 'realistic';
 export const CREATE_SOLAR_SYSTEM_TOTAL_UNITS =
@@ -51,31 +56,51 @@ export function getPlanetOrbitalPosition(
   return { x: position.x, y: position.y, z: position.z };
 }
 
+/** Aligned-mode ring: an epoch-free ecliptic circle at the catalog radius. */
+function alignedCircleElements(planet: PlanetData): KeplerElements {
+  return {
+    semiMajorAxisAU: planet.semiMajorAxisAU,
+    eccentricity: 0,
+    inclinationDeg: 0,
+    lonPerihelionDeg: 0,
+    ascendingNodeDeg: 0,
+    meanAnomalyDeg: 0,
+  };
+}
+
+/** Aligned-mode circle segment count (planets sit exactly on the circles). */
+export const ORBIT_LINE_SEGMENTS = 256;
+
 /**
- * Orbit-line elements for one body at a sim epoch. Realistic mode resolves
- * real Standish elements (Earth's line uses its EMB row — decorative, the
- * Meeus-rendered Earth sits within arcminutes of it); aligned mode draws
- * epoch-free circles at the catalog radius.
+ * Realistic-mode segment count, sized so the polyline's chord sagitta stays
+ * under ~a quarter of the body's own radius — the planet has to sit ON its
+ * line even at landed zoom: N ≈ 2π·√(a / (8·R/4)), rounded up to a multiple
+ * of 256. The old global 256 left every planet 1–13 body radii off its line
+ * mid-chord (Pluto: ~200 — tiny body, enormous orbit; it clamps at 8192 for
+ * ~0.37 R there).
  */
-function getOrbitLineElements(
+export function orbitLineSegmentCount(planet: PlanetData): number {
+  const aKm = planet.semiMajorAxisAU * KM_PER_AU;
+  const ideal = Math.ceil(2 * Math.PI * Math.sqrt(aKm / (2 * planet.radiusKm)));
+  return Math.min(8192, Math.max(1024, Math.ceil(ideal / 256) * 256));
+}
+
+/**
+ * One body's orbit-line vertices at a sim epoch. Realistic mode samples the
+ * body's actual rendered trajectory (computeBodyPositionAU — see
+ * sampleTrajectoryLinePoints for why elements aren't enough); aligned mode
+ * draws epoch-free circles at the catalog radius.
+ */
+function sampleLinePoints(
   planet: PlanetData,
   layoutMode: PlanetariumLayout,
   utcMs: number,
-): KeplerElements {
+): THREE.Vector3[] {
   if (layoutMode === 'aligned') {
-    return {
-      semiMajorAxisAU: planet.semiMajorAxisAU,
-      eccentricity: 0,
-      inclinationDeg: 0,
-      lonPerihelionDeg: 0,
-      ascendingNodeDeg: 0,
-      meanAnomalyDeg: 0,
-    };
+    return sampleOrbitLinePoints(alignedCircleElements(planet), ORBIT_LINE_SEGMENTS);
   }
-  return getStandishElements(planet.name, ttJDFromUtcMs(utcMs));
+  return sampleTrajectoryLinePoints(planet, utcMs, orbitLineSegmentCount(planet));
 }
-
-export const ORBIT_LINE_SEGMENTS = 256;
 
 /**
  * Re-sample every orbit line's geometry at the given sim epoch and re-stamp
@@ -92,10 +117,7 @@ export function resampleOrbitLines(
   utcMs: number,
 ): void {
   for (let i = 0; i < objects.orbitLines.length; i++) {
-    const points = sampleOrbitLinePoints(
-      getOrbitLineElements(PLANETARIUM_BODIES[i], layoutMode, utcMs),
-      ORBIT_LINE_SEGMENTS,
-    );
+    const points = sampleLinePoints(PLANETARIUM_BODIES[i], layoutMode, utcMs);
     const geometry = objects.orbitLines[i].geometry;
     geometry.setFromPoints(points);
     geometry.computeBoundingSphere();
@@ -183,10 +205,7 @@ export async function createSolarSystem(
   const orbitLines: THREE.Line[] = [];
   for (let i = 0; i < PLANETARIUM_BODIES.length; i++) {
     const body = PLANETARIUM_BODIES[i];
-    const orbitPoints = sampleOrbitLinePoints(
-      getOrbitLineElements(body, layoutMode, orbitLinesEpochUtcMs),
-      ORBIT_LINE_SEGMENTS,
-    );
+    const orbitPoints = sampleLinePoints(body, layoutMode, orbitLinesEpochUtcMs);
     const line = createOrbitLine(orbitPoints, body.color, 0.2);
     line.name = `orbit-${body.name}`;
     orbitLines.push(line);

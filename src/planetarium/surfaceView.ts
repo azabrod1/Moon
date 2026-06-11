@@ -71,6 +71,29 @@ export function selectSurfaceTarget(
   return { kind: 'sun' };
 }
 
+/**
+ * Present-tense one-liner for what a surface observer on `landed` sees of the
+ * event — a pure function of the observer/event relationship, deliberately
+ * NOT of the camera target: the camera can be re-pointed (vantage swap, free
+ * look) while the sentence must keep describing the sky truthfully. Mirrors
+ * the selectSurfaceTarget table row for row.
+ */
+export function surfaceEventNarrative(landed: SurfaceLandedInfo, spec: SurfaceEventInfo): string {
+  const moonDisplay =
+    spec.parentPlanet === 'Earth' && spec.moonName === 'Moon' ? 'The Moon' : spec.moonName;
+  if (landed.type === 'moon' && landed.name === spec.moonName) {
+    return spec.kind === 'eclipse'
+      ? `${spec.parentPlanet} is covering the Sun`
+      : `Your shadow is crossing ${spec.parentPlanet}`;
+  }
+  if (landed.type === 'planet' && landed.name === spec.parentPlanet && spec.kind === 'shadow-transit') {
+    return `${moonDisplay} is crossing the Sun`;
+  }
+  return spec.kind === 'eclipse'
+    ? `${moonDisplay} is in ${spec.parentPlanet}'s shadow`
+    : `${moonDisplay}'s shadow is crossing ${spec.parentPlanet}`;
+}
+
 /** Minimum eye height: the camera near plane is 1e-6 AU (~150 km) — stay clear of it. */
 export const SURFACE_MIN_ALTITUDE_AU = 2.5e-6;
 

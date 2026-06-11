@@ -178,6 +178,31 @@ export function sampleOrbitLinePoints(el: KeplerElements, segments = 256): THREE
 }
 
 /**
+ * Sample a body's actual rendered trajectory over one orbital period centered
+ * on `centerUtcMs`. Because every sample goes through computeBodyPositionAU —
+ * the renderer's own position seam — the line passes through the drawn body
+ * by construction, which an osculating-element ellipse cannot guarantee:
+ * Earth renders from the Meeus theory (≈1.4 R⊕ off its decorative EMB
+ * ellipse), and the other bodies carry Standish secular terms the frozen
+ * ellipse ignores. The strip's two ends meet half a period away from the
+ * body, where the element drift accumulated over one period leaves a gap far
+ * too small to see. The period only places that seam, so Kepler's third law
+ * from the catalog semi-major axis is plenty.
+ */
+export function sampleTrajectoryLinePoints(
+  planet: PlanetData,
+  centerUtcMs: number,
+  segments: number,
+): THREE.Vector3[] {
+  const periodMs = 365.25 * Math.pow(planet.semiMajorAxisAU, 1.5) * 86_400_000;
+  const points: THREE.Vector3[] = [];
+  for (let i = 0; i <= segments; i++) {
+    points.push(computeBodyPositionAU(planet, centerUtcMs + (i / segments - 0.5) * periodMs));
+  }
+  return points;
+}
+
+/**
  * Frame contract (the cycle-2 chirality flip): the scene is J2000 equatorial,
  * right-handed — +X vernal equinox, +Y celestial north, +Z = RA 270°; the
  * intermediate ecliptic frame runs longitude toward −Z. det = +1 throughout,

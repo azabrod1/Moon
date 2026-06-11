@@ -650,7 +650,8 @@ function sceneLongFall(t) {
     { frac: 0.5, kind: 'site', label: 'SITE' },
     { frac: 0.94, kind: 'earth', label: 'EARTH 79° UP' },
   ], 64, ['E', 'SE', 'S', 'SW', 'W']);
-  s += metBlock(t, { met: 'T+07:21', phase: 'THE LONG FALL · ENGINE OFF', next: 'THE WALL 1:14' });
+  // instruments speak plainly; only the radio calls it "the wall" (DESIGN §4.2)
+  s += metBlock(t, { met: 'T+07:21', phase: 'THE LONG FALL · ENGINE OFF', next: 'BRAKING BURN 1:14' });
   s += journeyTape(t, {
     value: '180.4', unit: 'KM', source: 'ORBITAL', dotFrac: 0.34, phaseIdx: 2,
     ticks: [[0.06, '400'], [0.22, '200'], [0.4, '60'], [0.58, '10'], [0.78, '1'], [0.95, '0']],
@@ -694,8 +695,9 @@ function sceneFinalApproach() {
   s += sunGlare(t, horizonY - 6, 'left');
 
   s += reticle(t, 960, 640, 74, 'SLOPE 1.8°');
-  // big docked digits — the dust-blind numbers (radar AGL + V-SPD)
-  s += panel(840, 750, 240, 96, t);
+  // big docked digits — the dust-blind numbers (radar AGL + V-SPD);
+  // corner brackets only, never a filled panel at frame center (DESIGN §4.2)
+  s += bracketFrame(840, 750, 240, 96, t);
   s += text(1056, 794, '31 M', { size: 44, fill: t.ink, anchor: 'end', bold: true, glow: true });
   s += text(1056, 830, '-2.4 M/S', { size: 26, fill: t.green, anchor: 'end', bold: true, glow: true });
   s += text(864, 794, 'AGL', { size: 14, fill: t.faint });
@@ -752,7 +754,7 @@ function sceneStillness() {
 
   // near-zero HUD
   s += text(W / 2, 60, 'CONTACT · ENGINE STOP · T+11:50', { size: 22, fill: t.ink, anchor: 'middle', bold: true, glow: true, spacing: 4 });
-  s += text(W / 2, 88, 'TRANQUILITY BASE · 0.674° N  23.473° E · EARTH FIXED AT 66°, AZIMUTH 268° — IT NEVER MOVES', { size: 14, fill: t.dim, anchor: 'middle' });
+  s += text(W / 2, 88, 'TRANQUILITY BASE · 0.674° N  23.473° E · EARTH 66° UP, AZIMUTH 268°', { size: 14, fill: t.dim, anchor: 'middle' });
   s += text(1240, 330, 'EARTH · 384,400 KM · GIBBOUS 61%', { size: 13, fill: t.faint, anchor: 'middle' });
 
   // stats card (composite grade: touchdown quality + accuracy — design review #8)
@@ -770,11 +772,18 @@ function sceneStillness() {
   });
   s += text(cx2 + 24, cy2 + 226, 'FEATHER · NEAR PAD', { size: 20, fill: t.green, bold: true, glow: true });
 
-  s += text(W - 96, 880, 'HOLD L — LONG-EXPOSURE: THE MILKY WAY', { size: 14, fill: t.dim, anchor: 'end' });
-  s += text(W - 96, 904, 'T — TIME-LAPSE: WATCH THE STARS WHEEL, EARTH HOLD STILL', { size: 13, fill: t.faint, anchor: 'end' });
-  s += text(W - 96, 928, 'N — NAMEPLATE PHOTO    V — STAND-UP VIEW', { size: 13, fill: t.faint, anchor: 'end' });
+  // stillness camera chips — tap targets, not keyboard keys (mobile-first)
+  const chips = [['NIGHT EXPOSURE', 'L'], ['TIME-LAPSE', 'T'], ['PHOTO', 'N']];
+  let chx = W - 96;
+  for (const [label, key] of [...chips].reverse()) {
+    const cw = label.length * 10.5 + 46;
+    chx -= cw + 14;
+    s += `<rect x="${fx(chx)}" y="876" width="${fx(cw)}" height="40" rx="3" fill="${t.panel}" stroke="${t.dim}" stroke-width="1.2"/>`;
+    s += text(chx + 14, 901, label, { size: 14, fill: t.ink });
+    s += text(chx + cw - 14, 901, key, { size: 12, fill: t.faint, anchor: 'end' });
+  }
   s += calloutLine(t, 'RADIO: "TRANQUILITY, WE COPY YOU DOWN. ENJOY THE VIEW."', 1006);
-  s += captionStrip('MOCKUP 04 · STILLNESS · camera pitched up ~36° — Earth at her true 66° elevation · daylight exposure: black sky, no stars (hold L for the real night sky) · 3 s of silence before this card fades in');
+  s += captionStrip('MOCKUP 04 · STILLNESS · camera pitched up ~36° — Earth at her true 66° elevation · daylight exposure: black sky, no stars (NIGHT EXPOSURE chip for the real sky) · total silence 6–8 s, then one hull tick; this card waits for first input');
   return s + svgClose;
 }
 

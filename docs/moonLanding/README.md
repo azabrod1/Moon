@@ -61,3 +61,4 @@ physically cross-checked (DESIGN Appendix A, REVIEWS.md).
 1. **Art direction default** — Glass (recommended) vs Heritage: see `02` vs `02b`.
 2. **Asset hosting** — start in-repo (~180 MB across packs) vs CDN/release assets from day one (TECH R3/Q2).
 3. Appetite for the **eclipse cameo** (descend inside Earth's shadow) — it's the app's signature theme, but it invalidates the baked sun-shadows, so it ships only with its real price (fade/rebake path) paid (DESIGN §7, TECH §4.3).
+4. **The mode's name.** "Moon Landing" is generic and makes a third Moon-prefixed mode (Moon view, Moon flight). Round-2 review pitched: **"Descent"** (calm-ominous, matches the tone — reviewer's pick), **"Earthrise"** (names the emotional anchor; subtitle "a descent to the surface"), **"Window Seat"** (names the promise, friendliest). Code/branch names stay `moonLanding` until you pick.

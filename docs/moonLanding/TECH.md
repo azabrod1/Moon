@@ -258,12 +258,23 @@ millions.
 State machine in the controller sequences DESIGN §1.2; `DescentGuidance` precomputes per-phase
 altitude→velocity profiles at commit for the chosen bias and clamps:
 
-- Window/Right Seat: accel = PD toward profile + bounded player nudge; authority ramps back as
-  input decays (soft hand-back). V-SPD hard caps per phase. **Commit windows** are first-class:
-  window timing from site geometry; ~90 s grace via ΔV reserve; miss → next-window state (the
-  radio owns it), skippable by the declared jump-cut.
-- Left Seat: direct throttle/attitude with SAS rate damping; guidance annunciates only; fuel =
-  ΔV bookkeeping.
+- **One engine model, every seat (P2 architecture rule — game-design review):** guidance never
+  commands acceleration directly. It outputs **throttle + attitude commands into the single
+  engine model** in `FlightDynamics` (mass-flow so thrust/weight rises as fuel burns, ~200 ms
+  throttle lag, rate-limited attitude), and the seats differ only in *who closes the loop*.
+  This makes engine audio pitch, plume/dust intensity, the g-meter, and the fuel ledger all
+  read from one truth source — and means Left Seat (P5) is a controller swap, not a parallel
+  flight model retrofit.
+- Window/Right Seat: guidance closes the loop (PD toward profile through the engine model) +
+  bounded player nudge; authority ramps back as input decays (soft hand-back). V-SPD hard caps
+  per phase. **Zero-input baseline is specced and tested**: hands-off lands FIRM inside the
+  ellipse with seeded dispersion (DESIGN §1.3) — a P2 acceptance criterion. **Commit windows**
+  are first-class: timing from site geometry; ~90 s grace via ΔV reserve, drained visibly off
+  window-center (feeds the fuel stat); miss → next-window state, skippable by the declared
+  jump-cut. Bias feedback: touching W/S re-runs the profile generator and re-animates the burn
+  forecast + footprint ellipse (margin ↔ reach).
+- Left Seat: the player closes the loop (throttle/attitude with SAS rate damping); guidance
+  annunciates only; fuel = the same ΔV bookkeeping.
 - Redesignation: terrain raycast → reachability vs remaining ΔV → new profile target.
 - Beat boundaries emit events (HUD, audio, **callout engine** — a priority/dedup queue against
   one display slot, DESIGN §6). Deterministic: fixed-step sim + seeded synth ⇒ replayable

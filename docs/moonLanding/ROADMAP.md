@@ -43,7 +43,10 @@ analytic exposure v1, free-look orbit drift with Earthrise timing.
 **AC:** entering from planetarium and back leaks nothing (`renderer.info.memory` returns to
 baseline); other modes' load time unchanged (network tab shows zero moonLanding bytes until
 entry); 60 fps desktop / 30 fps phone in orbit; Earthrise matches ephemeris for the chosen
-date; first orbital frame ≤ 8 s on 50 Mbps.
+date; **BEGIN unlocks at orbit-ready with the live orbit scene behind the board** (full
+checklist completes under the overture, SKIP disabled until corridor pack lands); first
+orbital frame ≤ 8 s on 50 Mbps; a **portrait key-frame** added to the mockup set before the
+HUD grid freezes.
 
 ## P2 — "The Fall"
 DescentGuidance + FlightDynamics (fixed-step, deterministic), beat machine through the wall
@@ -51,8 +54,11 @@ and high gate (incl. **commit windows + arming + skip-to-window**), descent-rate
 cross-range nudge, HUD core (journey tape, speed block + scale-swap blips, compass with
 edge-pinned markers, MET/phase, callout engine v1) in Glass, corridor streaming L6–L9.
 **AC:** commit → contact at default bias = 8:50 ± 20 s, bias endpoints ≈ 6:00 / 10:30; **every
-HUD number cross-checks** (the review's standard: countdowns vs integrator, V-SPD vs altitude
-math); corridor prefetch keeps finest-needed tiles resident through the wall; budgets hold.
+HUD number cross-checks** (countdowns vs integrator, V-SPD vs altitude math); **a zero-input
+Right Seat run grades FIRM · IN THE ELLIPSE** (never Feather, never on-pad — the felt-agency
+keystone); **guidance drives throttle+attitude through the single engine model** (no direct
+acceleration writes — verified by the g-meter/audio/fuel reading one source); corridor
+prefetch keeps finest-needed tiles resident through the wall; budgets hold.
 
 ## P3a — "Ground Truth" *(review split P3 — terrain is its own PR)*
 Procedural amplification L10–L16 + boulders, apron contract + two-stage shadows in production,
@@ -62,11 +68,16 @@ boulders; no seam/crack/normal-seam in a slow 360° pan at 50 m and 2 m; throttl
 latency within S3 gates.
 
 ## P3b — "The Landing"
-Low-gate/final beats, reticle + hazard tint + redesignation (tap + confirm on touch), big
-docked digits, radar callouts, touchdown grading + composite grade, stats card, stillness
-free look.
-**AC:** full default ride lands; grading matches DESIGN limits; approach furniture retires at
-low gate; dust-blind final flyable on instruments alone (playtest).
+Low-gate/final beats, reticle + hazard tint + redesignation (tap + confirm on touch; ΔV-margin
+ellipse shrink visible), **scenic spots at Tranquility** (2 tagged spots + medal), big docked
+digits (bracket-style), radar callouts, touchdown grading + composite grade with **visible
+margins** ("0.6 m/s over Feather"), stats card (waits for first input), **the staged contact
+sequence** (silence cut incl. hiss → 6–8 s → hull tick → camera drift to Earth → radio →
+card), stillness free look + chips.
+**AC:** full default ride lands; zero-input baseline AC re-verified end-to-end; grading
+matches DESIGN limits incl. designated-point accuracy; approach furniture retires at low
+gate; dust-blind final flyable on instruments alone (playtest); the contact sequence plays
+uninterrupted unless the player interrupts it.
 
 ## P4 — "Make It Sing"
 Dust system (ballistic streaks + veil + instant settle), audio + **callout engine** (priority/

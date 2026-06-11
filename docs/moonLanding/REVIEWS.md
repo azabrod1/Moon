@@ -95,6 +95,54 @@ was the hidden schedule); S3 added; free descent → v1.1; eclipse cameo carries
   night fraction of the orbital view for composition; mockup terrain is painterly (SVG), not
   data-derived. Both are P0-mockup licenses, not product licenses.
 
+## Round 2 — game design (three personas, post-revision)
+
+A second round ran on the revised package at the owner's request: **game feel/systems** (flight-game
+veteran lens), **onboarding/retention** (casual/mobile lens), **emotional pacing/sensory** (narrative
+lens). Verdicts: "one revision away from the player *feeling* the agency it architecturally
+contains" / "finish yes, come back no — as specified for phones" / "the descent is designed;
+the landing, emotionally speaking, is not yet." All three were right. Accepted and actioned:
+
+**Agency got costs and a baseline (game feel).** The zero-input Right Seat ride now lands
+FIRM-in-the-ellipse with seeded dispersion — every better grade is provably player-made (P2
+AC). Redesignation gained its missing tradeoff: accuracy judged against *your* point, visible
+ΔV-margin cost, and **scenic spots** (named, view-rich, medal-bearing, amber-adjacent —
+safe-flat vs spectacular-tight, the tourist fiction become mechanic). Bias now animates its
+consequences (burn forecast + ellipse shrink) and locks at the wall; commit timing is a
+visible margin micro-skill; the fall got *hands* (binocular feature-tagging, marker-aimed
+nudges, in-flight camera) instead of more radio; a beat × control matrix pins what's live
+when; compass markers are look-snap buttons; "smoothness" is now a kept promise (commendation
+line). Architecture: guidance drives throttle+attitude **through the single engine model** —
+seats differ only in who closes the loop (kills the Left Seat retrofit trap; P2 AC).
+
+**The phone path got fixed (onboarding).** BEGIN unlocks at orbit-ready with the live orbit
+scene behind a translucent board (the wow happens *during* the download); first entry is one
+summary card, the three-panel board unlocks after the first landing; portrait-first declared
+with the HUD collapse specced and a portrait key-frame due in P1; stillness payoffs and SHARE
+are chips, not keyboard keys; "a phase owns one control" rule; instruments say BRAKING BURN
+while the radio says "the wall"; seat subtitles load-bearing; "FINAL APPROACH · ~3 MIN" short
+ride after first completion; ephemeris-driven return hooks ("Hadley hits sunrise June 18");
+visible grade margins ("0.6 m/s over Feather") as the failure-free tension; type floor (12/14 pt).
+
+**The ending got staged (emotional).** Contact now cuts *everything including the cabin hiss*
+(the silence ladder: unscored Earthrise → mechanically-quiet fall → total-cut contact), holds
+6–8 s, then one cooling-hull tick → interruptible camera drift up to Earth → the radio line →
+stats card only on first input. The Earth-withhold (given at Earthrise, taken for the descent,
+returned at stillness) is declared load-bearing with one protecting radio line. One radio
+voice defined (off-duty test pilot register; text-only + Quindar as the *stronger* choice).
+High gate staged as the arrival beat ("There's your pad"). Transients row added (cutoff thunk,
+ignition bang, g-creaks, dust crackle that cuts at engine stop, haptics) with the kitsch line
+drawn (no heartbeat, no breathing). "IT NEVER MOVES" is no longer printed — it's discovered.
+
+**Round 2 refined a Round 1 disposition:** Round 1 added tour-guide radio "in the overture and
+fall"; Round 2's emotional reviewer correctly pushed back — the fall is now hard-capped (one
+geography line + the brace call), and the chatter lives in the overture. The fall's engagement
+is manual (tagging, aiming), not narrated.
+
+**Deferred / owner decisions:** portrait mockup frame → P1 deliverable (policy + collapse
+specced now); mode name → owner question #4 in README (reviewer pitches: Descent / Earthrise /
+Window Seat); scenic-spot content beyond Tranquility → lands with each site pack (P5).
+
 ## Process note
 
 Mockups are generated (`mockups/generate.mjs`), so every numeric fix above was applied to the

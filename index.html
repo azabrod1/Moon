@@ -867,6 +867,12 @@
     }
     .obs-foot input:checked + .obs-tgl { background: rgba(124, 154, 255, 0.55); }
     .obs-foot input:checked + .obs-tgl::after { left: 14px; }
+    /* Honesty caption under the Shadow guides row — shown only while the
+       guides are on (everything drawn is true scale except line width). */
+    .obs-guides-cap {
+      margin-top: 5px; text-align: right; font-family: var(--obs-mono);
+      font-size: 8px; letter-spacing: 0.14em; color: var(--obs-t3); text-transform: uppercase;
+    }
 
     /* ── Surface-view HUD: brackets on the tracked target, narrative stack,
        FOV cluster, top-right chips. Fades in after the camera settles. ── */
@@ -885,6 +891,8 @@
     /* Sub-resolution target marker: hairline circle + 4 ticks, center
        deliberately empty (no fabricated dot of light). Distinct from a star. */
     .shud-reticle { position: absolute; width: 12px; height: 12px; border: 1px solid rgba(220, 230, 255, 0.8); border-radius: 50%; opacity: 0.75; animation: shud-breathe 3.6s ease-in-out infinite; }
+    /* Standalone (non-HUD) instance over the canvas: the shadow-guide footprint marker. */
+    .shadow-fp-reticle { position: fixed; z-index: 8; pointer-events: none; }
     .shud-reticle i { position: absolute; background: rgba(220, 230, 255, 0.8); }
     .shud-reticle i:nth-child(1) { left: 50%; top: -6px; width: 1px; height: 4px; margin-left: -0.5px; }
     .shud-reticle i:nth-child(2) { left: 50%; bottom: -6px; width: 1px; height: 4px; margin-left: -0.5px; }
@@ -2306,11 +2314,18 @@
         <div id="observatory-events-list"></div>
         <div class="obs-scan" id="observatory-events-status"></div>
         <label class="obs-foot">
-          <span>Shadow cones</span>
-          <input type="checkbox" id="observatory-cones-toggle">
+          <span>Shadow guides</span>
+          <input type="checkbox" id="observatory-guides-toggle">
           <span class="obs-tgl" aria-hidden="true"></span>
         </label>
+        <div class="obs-guides-cap" id="observatory-guides-cap" style="display:none">True positions &middot; lines widened to stay visible</div>
       </div>
+
+      <!-- Shadow-guide footprint reticle: the HUD's sub-resolution glyph
+           reused as a marker over a transit footprint whose true-scale rings
+           collapsed below resolvability (a label, not geometry). Positioned
+           per frame by PlanetariumMode in both landed-orbit and surface views. -->
+      <div class="shud-reticle shadow-fp-reticle" id="shadow-footprint-reticle" style="display:none"><i></i><i></i><i></i><i></i></div>
 
       <!-- Surface-view HUD (Observatory "Look up"): brackets on the tracked
            target, narrative stack, FOV cluster, top-right chips. -->

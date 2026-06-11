@@ -24,6 +24,8 @@ import { describe, it, expect } from 'vitest';
 import * as THREE from 'three';
 import {
   computeShadowGeometry,
+  computeShadowConeProfileKm,
+  computeConeSilhouette,
   classifyEclipse,
   classifyShadowTransit,
   computeMoonShading,
@@ -32,6 +34,7 @@ import {
   listShadowEventSpecs,
   upcomingSystemEvents,
   type EclipseCircumstance,
+  type ShadowConeProfile,
   type ShadowEventSpec,
   type ShadowGeometry,
   type MoonShadingState,
@@ -124,6 +127,87 @@ describe('cone geometry (synthetic, hand-derived values)', () => {
     expect(classifyShadowTransit(gPartial, 1737.4, 6371, KM_PER_AU)).toBe('partial');
     const gNone = computeShadowGeometry(moonPos, 1737.4, onAxis(370_000, 25_000), geometryScratch());
     expect(classifyShadowTransit(gNone, 1737.4, 6371, KM_PER_AU)).toBe('none');
+  });
+});
+
+describe('cone profile + silhouette (the promoted ShadowVisuals seams)', () => {
+  it('cone radii at the Moon match independent hand values; the engine routes through the helper', () => {
+    // Hand-computed closed forms (independent of the implementation), Earth
+    // R = 6371 km at Ds = 1 AU, axial d = 384,400 km, Rs = 696,340 km:
+    //   umbra length   R·Ds/(Rs−R)     = 1,381,349 km
+    //   umbra radius   R − d·(Rs−R)/Ds = 4,598.1 km (the classic ~4,600 km
+    //                                    lunar-eclipse umbra)
+    //   penumbra       R + d·(Rs+R)/Ds = 8,176.7 km
+    const profile: ShadowConeProfile = { umbraLengthKm: 0, pinchKm: 0, umbraRadiusKm: 0, penumbraRadiusKm: 0 };
+    computeShadowConeProfileKm(6371, KM_PER_AU, 384_400, profile);
+    expect(profile.umbraLengthKm).toBeCloseTo(1_381_349, -1);
+    expect(profile.umbraRadiusKm).toBeCloseTo(4_598.1, 0);
+    expect(profile.penumbraRadiusKm).toBeCloseTo(8_176.7, 0);
+
+    // Routing, not algebra (the engine calls this same helper): geometry's
+    // radii at its measured axial distance are the profile's radii.
+    const occluder = new THREE.Vector3(1, 0, 0);
+    const target = new THREE.Vector3(1 + 384_400 / KM_PER_AU, 5_000 / KM_PER_AU, 0);
+    const g = computeShadowGeometry(occluder, 6371, target, geometryScratch());
+    computeShadowConeProfileKm(6371, KM_PER_AU, g.axialKm, profile);
+    expect(profile.penumbraRadiusKm).toBeCloseTo(g.penumbraRadiusKm, 6);
+    expect(profile.umbraRadiusKm).toBeCloseTo(g.umbraRadiusKm, 6);
+  });
+
+  it('penumbra pinch matches the closed form (hand value)', () => {
+    // pinch = R·Ds/(Rs+R) = 6371·149597870.7/(696340+6371) = 1,356,302 km
+    const profile: ShadowConeProfile = { umbraLengthKm: 0, pinchKm: 0, umbraRadiusKm: 0, penumbraRadiusKm: 0 };
+    computeShadowConeProfileKm(6371, KM_PER_AU, 0, profile);
+    expect(profile.pinchKm).toBeCloseTo(1_356_302, -1);
+    // At the occluder plane both cones measure the occluder itself.
+    expect(profile.penumbraRadiusKm).toBeCloseTo(6371, 9);
+    expect(profile.umbraRadiusKm).toBeCloseTo(6371, 9);
+  });
+
+  describe('computeConeSilhouette', () => {
+    const apex = new THREE.Vector3(2, 1, -3);
+    const axis = new THREE.Vector3(0.5, -1, 0.25).normalize();
+    const half = 0.18; // rad
+    const perp = new THREE.Vector3(1, 0, 0).cross(axis).normalize();
+    const outA = new THREE.Vector3();
+    const outB = new THREE.Vector3();
+
+    it('returns two distinct unit generatrices, tangent to the view point', () => {
+      const camera = apex.clone().addScaledVector(axis, 4).addScaledVector(perp, 7);
+      expect(computeConeSilhouette(apex, axis, half, camera, outA, outB)).toBe('edges');
+      expect(outA.distanceTo(outB)).toBeGreaterThan(1e-3);
+      for (const g of [outA, outB]) {
+        expect(g.length()).toBeCloseTo(1, 12);
+        // A generatrix lies on the cone: angle to the axis = half-angle.
+        expect(g.dot(axis)).toBeCloseTo(Math.cos(half), 12);
+        // Tangency: the outward normal along this generatrix
+        // (cos α·r̂ − sin α·â) is ⊥ the apex→camera vector.
+        const radial = g
+          .clone()
+          .addScaledVector(axis, -Math.cos(half))
+          .divideScalar(Math.sin(half));
+        const normal = radial.multiplyScalar(Math.cos(half)).addScaledVector(axis, -Math.sin(half));
+        expect(Math.abs(normal.dot(camera.clone().sub(apex)))).toBeLessThan(1e-9);
+      }
+    });
+
+    it('reports inside from within the cone, hidden from the mirror cone', () => {
+      const onAxisInside = apex.clone().addScaledVector(axis, 5);
+      expect(computeConeSilhouette(apex, axis, half, onAxisInside, outA, outB)).toBe('inside');
+      const offAxisInside = apex
+        .clone()
+        .addScaledVector(axis, 5)
+        .addScaledVector(perp, Math.tan(half) * 5 * 0.5); // half-way to the wall
+      expect(computeConeSilhouette(apex, axis, half, offAxisInside, outA, outB)).toBe('inside');
+      const mirror = apex.clone().addScaledVector(axis, -5);
+      expect(computeConeSilhouette(apex, axis, half, mirror, outA, outB)).toBe('hidden');
+      // Just OUTSIDE the wall: edges again.
+      const grazing = apex
+        .clone()
+        .addScaledVector(axis, 5)
+        .addScaledVector(perp, Math.tan(half) * 5 * 1.2);
+      expect(computeConeSilhouette(apex, axis, half, grazing, outA, outB)).toBe('edges');
+    });
   });
 });
 

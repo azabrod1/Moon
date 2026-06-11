@@ -48,7 +48,7 @@ import {
   type ShadowEvent,
   type ShadowEventSpec,
 } from '../astronomy/shadows';
-import { ShadowVisuals } from './world/ShadowVisuals';
+import { ShadowVisuals, type GuideSlotInput } from './world/ShadowVisuals';
 import { OBSERVATORY_JUMP_LEAD_MS, stepperSearchFromUtcMs } from './observatoryTime';
 import { findEvent, type EventType } from '../astronomy/ephemeris';
 import { KM_PER_AU } from '../astronomy/constants';
@@ -80,7 +80,7 @@ import {
 import { DEG2RAD } from '../shared/math/angles';
 import { KM_CONSTANTS } from '../shared/constants/physicalData';
 import { smoothstepUnclamped } from '../shared/math/smoothstep';
-import { projectToScreen } from '../shared/three/projectToScreen';
+import { projectToScreen, type ScreenProjection } from '../shared/three/projectToScreen';
 import { setText } from '../shared/dom';
 import { Constellations } from './Constellations';
 import { getMoonsByPlanet, type MoonData } from './planets/moonData';
@@ -187,10 +187,21 @@ export class PlanetariumMode {
   private tmpMoonOrbitNormal = new THREE.Vector3();
   private tmpShadingParentPos = new THREE.Vector3();
   private moonShading: MoonShadingState = { sunVisibleFraction: 1, inUmbra: false };
-  // Landed-system shadow visuals: transit spots always on, cones behind the
+  // Landed-system shadow visuals: transit spots always on, guides behind the
   // Observatory panel toggle (session-only, deliberately not persisted).
   private shadowVisuals = new ShadowVisuals();
-  private showShadowCones = false;
+  private showShadowGuides = false;
+  // Moons the guides follow: [0] the landed/companion subject, [1] the live
+  // event's moon when it differs. Names + orbit normals refreshed per frame.
+  private guideSlotInputs: GuideSlotInput[] = [
+    { name: null, orbitNormal: new THREE.Vector3(0, 1, 0) },
+    { name: null, orbitNormal: new THREE.Vector3(0, 1, 0) },
+  ];
+  private tmpGuideOffset = new THREE.Vector3();
+  private tmpGuideCamLocal = new THREE.Vector3();
+  private tmpGuideReticle = new THREE.Vector3();
+  private guideReticleProjection: ScreenProjection = { x: 0, y: 0, ndcX: 0, ndcY: 0, ndcZ: 0 };
+  private footprintReticleEl: HTMLElement | null = null;
   private tmpLockToParent = new THREE.Vector3();
   private tmpLockBasisZ = new THREE.Vector3();
   private tmpLockUp = new THREE.Vector3();
@@ -322,8 +333,8 @@ export class PlanetariumMode {
     (type, direction) => this.handleObservatoryJump(type, direction),
     (event) => this.jumpToShadowEvent(event),
     (on) => {
-      this.showShadowCones = on;
-      this.shadowVisuals.setConesVisible(on);
+      this.showShadowGuides = on;
+      this.shadowVisuals.setGuidesVisible(on);
     },
     () => this.cancelObservatoryEventSearch(),
     () => this.toggleSurfaceView(),
@@ -762,6 +773,10 @@ export class PlanetariumMode {
     // Hide all solar system objects
     this.setObjectsVisible(false);
 
+    // The footprint reticle is driven by the per-frame guide pass, which
+    // stops with the mode — hide it explicitly so it can't linger.
+    this.hideFootprintReticle();
+
     // Clean up markers
     if (this.planetLabels) {
       this.planetLabels.dispose();
@@ -1010,8 +1025,8 @@ export class PlanetariumMode {
     if (outOrbitNormal && isEarthMoon) {
       // Roll reference, not orbit normal: the Moon's spin axis sits ~1.5° from
       // ecliptic north (Cassini state) vs 5.1° for the orbit normal, so the
-      // tidal-lock roll stays on ecliptic north. The shadow engine reads the
-      // true normal straight from the seam.
+      // tidal-lock roll stays on ecliptic north. The shadow engine and the
+      // guide slots read the true normal straight from the seam.
       outOrbitNormal.copy(PlanetariumMode.ECLIPTIC_NORTH);
     }
     return out;
@@ -1257,7 +1272,7 @@ export class PlanetariumMode {
     material.emissiveIntensity = 0.03 * Math.max(fraction, 0.03);
   }
 
-  /** Re-pose the landed system's shadow cones + transit spots for this frame. */
+  /** Re-pose the landed system's shadow guides + transit spots for this frame. */
   private updateShadowVisuals() {
     const parentName = this.observatoryParentPlanetName();
     if (!parentName) return;
@@ -1265,6 +1280,7 @@ export class PlanetariumMode {
     const parentBody = PLANETARIUM_BODIES.find(b => b.name === parentName);
     const moons = this.planetMoons.get(parentName);
     if (!wp || !parentBody || !moons) return;
+    this.refreshGuideSlotInputs(parentBody, moons);
     this.shadowVisuals.update(
       wp,
       parentBody.name,
@@ -1272,7 +1288,106 @@ export class PlanetariumMode {
       moons,
       this.landedOn?.type === 'moon' ? this.landedOn.name : null,
       this.getFarthestMoonReachAU(moons),
+      this.guideSlotInputs,
     );
+  }
+
+  /**
+   * Which moons the shadow guides follow this frame: the landed moon (or
+   * Earth's companion Moon when standing on the parent), plus the jumped/live
+   * event's moon when it names a different one. Orbit normals come from the
+   * same seam that drives the rendered positions.
+   */
+  private refreshGuideSlotInputs(parentBody: PlanetData, moons: MoonMesh[]) {
+    const slots = this.guideSlotInputs;
+    slots[0].name = null;
+    slots[1].name = null;
+    if (!this.showShadowGuides) return;
+    const landedMoon = this.landedOn?.type === 'moon' ? this.landedOn.name : null;
+    // Companion moon without swapCompanionTarget()'s per-frame allocation:
+    // standing on a planet, only Earth has a companion vantage (the Moon) —
+    // keep in step with swapCompanionTarget if that policy ever grows.
+    const primary =
+      landedMoon ??
+      (this.landedOn?.type === 'planet' && this.landedOn.name === 'Earth' ? 'Moon' : null);
+    const liveEvent = this.relevantObservatoryEvent();
+    const eventMoon =
+      liveEvent && liveEvent.spec.moonName !== primary ? liveEvent.spec.moonName : null;
+    let next = 0;
+    if (primary && this.fillGuideSlot(slots[next], primary, parentBody, moons)) next++;
+    if (eventMoon) this.fillGuideSlot(slots[next], eventMoon, parentBody, moons);
+  }
+
+  private fillGuideSlot(
+    slot: GuideSlotInput,
+    moonName: string,
+    parentBody: PlanetData,
+    moons: MoonMesh[],
+  ): boolean {
+    for (const m of moons) {
+      if (m.data.name !== moonName) continue;
+      slot.name = moonName;
+      // Straight to the seam, not getMoonWorldOffsetAU: the wrapper's normal
+      // is the tidal-lock roll reference (ecliptic north for Earth's Moon),
+      // and the crossing tick's season miss r·sinβ needs the true 5.1° orbit
+      // normal — on the roll reference it would read "in season" forever.
+      computeMoonOffsetEquatorialAU(
+        moonName,
+        parentBody.name,
+        this.timeState.currentUtcMs,
+        this.tmpGuideOffset,
+        slot.orbitNormal,
+      );
+      return true;
+    }
+    return false;
+  }
+
+  /**
+   * Camera-dependent guide pass + the footprint reticle. Runs at the end of
+   * the frame, after the surface camera re-pins, so silhouette edges and
+   * resolvability gates read the camera pose that will actually render. The
+   * reticle is the HUD's sub-resolution glyph reused as an HTML marker over
+   * a collapsed (sub-resolution) true-scale footprint.
+   */
+  private updateShadowGuideCamera() {
+    const parentName = this.observatoryParentPlanetName();
+    const systemGroup = parentName ? this.moonSystemGroups.get(parentName) : null;
+    const canvas = this.renderer.domElement;
+    const w = canvas.clientWidth;
+    const h = canvas.clientHeight;
+    let reticleVisible = false;
+    if (systemGroup) {
+      this.tmpGuideCamLocal.copy(this.camera.position).sub(systemGroup.position);
+      this.shadowVisuals.updateCameraGuides(this.tmpGuideCamLocal, this.camera.fov, w, h);
+      if (this.shadowVisuals.getFootprintReticleLocal(this.tmpGuideReticle)) {
+        this.tmpGuideReticle.add(systemGroup.position);
+        const proj = projectToScreen(this.tmpGuideReticle, this.camera, w, h, this.guideReticleProjection);
+        if (proj.ndcZ < 1 && proj.x >= 0 && proj.x <= w && proj.y >= 0 && proj.y <= h) {
+          const el = this.ensureFootprintReticleEl();
+          if (el) {
+            el.style.left = `${proj.x - 6}px`;
+            el.style.top = `${proj.y - 6}px`;
+            el.style.display = '';
+            reticleVisible = true;
+          }
+        }
+      }
+    }
+    if (!reticleVisible && this.footprintReticleEl) {
+      this.footprintReticleEl.style.display = 'none';
+    }
+  }
+
+  private ensureFootprintReticleEl(): HTMLElement | null {
+    if (!this.footprintReticleEl) {
+      this.footprintReticleEl = document.getElementById('shadow-footprint-reticle');
+    }
+    return this.footprintReticleEl;
+  }
+
+  private hideFootprintReticle(): void {
+    if (this.footprintReticleEl) this.footprintReticleEl.style.display = 'none';
   }
 
   /**
@@ -3818,6 +3933,10 @@ export class PlanetariumMode {
    */
   private applyLandedTarget(target: NonNullable<LandedTarget>) {
     this.landedOn = target;
+    // The reticle's screen position belongs to the previous target — drop it
+    // now rather than letting it float stale until the next landed frame
+    // (cross-system picks can interpose a transition with no guide pass).
+    this.hideFootprintReticle();
     // Chrome hook: ≤640px the landed top bar drops the wordmark/mode toggle.
     document.body.classList.add('planetarium-landed');
     // A different subject can show/hide panel sections — the chevron's
@@ -3900,7 +4019,7 @@ export class PlanetariumMode {
     const systemGroup = this.moonSystemGroups.get(this.observatoryParentPlanetName() ?? '');
     if (systemGroup) {
       this.shadowVisuals.attach(systemGroup);
-      this.shadowVisuals.setConesVisible(this.showShadowCones);
+      this.shadowVisuals.setGuidesVisible(this.showShadowGuides);
     }
   }
 
@@ -4048,6 +4167,9 @@ export class PlanetariumMode {
     if (leaveBtn) leaveBtn.style.display = 'none';
 
     this.shadowVisuals.detach();
+    // The guide camera pass only runs while landed — takeoff is its last
+    // word, so the reticle must drop here, not wait for a pass that won't come.
+    this.hideFootprintReticle();
     this.updateObservatoryButtonVisibility();
     this.notification.show(`Departing ${bodyName}`);
   }
@@ -4137,6 +4259,7 @@ export class PlanetariumMode {
     if (this.landedView === 'surface') {
       this.updateSurfaceCamera(dt);
     }
+    this.updateShadowGuideCamera();
 
     if (shouldRefreshUi) {
       this.invalidateExpiredObservatoryEvents();

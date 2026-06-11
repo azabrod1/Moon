@@ -270,6 +270,21 @@ export function resolveMarkerKind(
   return current;
 }
 
+/** Shadow-guide resolvability thresholds (px, with hysteresis): cone
+ * silhouette edges and footprint rings activate once their projected size
+ * clears the ON bound and hold until it drops below the OFF bound. Sits
+ * below the marker scale (MARKER_BRACKETS_MIN_PX) deliberately — guides are
+ * hairlines, legible a little earlier than a bracketed disc. */
+export const GUIDE_RESOLVABLE_ON_PX = 8;
+export const GUIDE_RESOLVABLE_OFF_PX = 6;
+
+/** Hysteresis gate for a shadow guide whose projected size is `discPx`. */
+export function resolveGuideVisibility(discPx: number, current: boolean): boolean {
+  if (discPx >= GUIDE_RESOLVABLE_ON_PX) return true;
+  if (discPx <= GUIDE_RESOLVABLE_OFF_PX) return false;
+  return current;
+}
+
 /** Nominal viewport for the events list's static speck flag — the list can't
  * know the live canvas, so it judges against a typical screen height. */
 const LIST_FLAG_VIEWPORT_PX = 800;

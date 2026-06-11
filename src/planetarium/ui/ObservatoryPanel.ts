@@ -192,7 +192,7 @@ export class ObservatoryPanel {
   constructor(
     private onJump: (type: EventType, direction: 1 | -1) => void,
     private onEventJump: (event: ShadowEvent) => void,
-    private onConesToggle: (on: boolean) => void,
+    private onGuidesToggle: (on: boolean) => void,
     private onClose: () => void,
     private onLookup: () => void,
     private onSwap: () => void,
@@ -216,8 +216,15 @@ export class ObservatoryPanel {
     // Crossing the 640px breakpoint re-houses the panel (sheet ↔ side
     // panel) — the published inset must follow.
     window.addEventListener('resize', () => this.updateSheetInset());
-    const conesToggle = document.getElementById('observatory-cones-toggle') as HTMLInputElement | null;
-    conesToggle?.addEventListener('change', () => this.onConesToggle(conesToggle.checked));
+    const guidesToggle = document.getElementById('observatory-guides-toggle') as HTMLInputElement | null;
+    const guidesCaption = document.getElementById('observatory-guides-cap');
+    guidesToggle?.addEventListener('change', () => {
+      this.onGuidesToggle(guidesToggle.checked);
+      // The honesty caption belongs to the drawn lines: show it only while
+      // they're on. (Toggle state is session-only and starts unchecked, so
+      // markup default display:none always agrees.)
+      if (guidesCaption) guidesCaption.style.display = guidesToggle.checked ? '' : 'none';
+    });
     document.getElementById('observatory-lookup')?.addEventListener('click', () => this.onLookup());
     this.swapEl?.addEventListener('click', () => this.onSwap());
     this.wireJump('observatory-prev-full', 'full-moon', -1);

@@ -10,9 +10,12 @@
  * Everything runs in the heliocentric scene frame (Sun at the origin) and
  * resolves positions through the exact functions the renderer uses
  * (computeBodyPositionAU, computeMoonOffsetEquatorialAU), so an event found
- * here is an event the scene shows. The geometry uses only dot products and
- * norms, so it is indifferent to the scene's frame convention (it survived
- * the cycle-2 chirality flip unchanged, by design).
+ * here is an event the scene shows. The event-engine geometry uses only dot
+ * products and norms, so it is indifferent to the scene's frame convention
+ * (it survived the cycle-2 chirality flip unchanged, by design). One
+ * render-side helper, computeConeSilhouette, builds a cross-product basis —
+ * its outputs are basis-independent (only the A/B edge labels can swap), so
+ * the contract holds in spirit; the event search never touches it.
  *
  * Classification is kind-split deliberately: a moon is "totally eclipsed"
  * when it fits inside the umbra (immersion), but a solar eclipse is "total"
@@ -60,6 +63,46 @@ export function occluderEnlargement(occluderName: string): number {
 
 export type ShadowClassification = 'none' | 'penumbral' | 'partial' | 'total' | 'annular';
 
+/**
+ * Closed-form cone profile of an occluder's shadow, evaluated at one axial
+ * distance: the radii both ShadowVisuals' drawn guides and the event engine
+ * read, promoted here so they can never disagree. `umbraRadiusKm` goes
+ * negative past the apex, where |value| is the antumbra radius.
+ */
+export interface ShadowConeProfile {
+  /** Occluder center → umbra apex (km). */
+  umbraLengthKm: number;
+  /** Occluder center → penumbra apex, on the sunward side (km). */
+  pinchKm: number;
+  /** Umbra cone radius at `axialKm` (km); negative past the apex. */
+  umbraRadiusKm: number;
+  /** Penumbra cone radius at `axialKm` (km). */
+  penumbraRadiusKm: number;
+}
+
+export function computeShadowConeProfileKm(
+  occluderRadiusKm: number,
+  occluderSunDistKm: number,
+  axialKm: number,
+  out: ShadowConeProfile,
+): ShadowConeProfile {
+  const sunRadiusKm = KM_CONSTANTS.SUN_RADIUS;
+  out.umbraLengthKm = (occluderRadiusKm * occluderSunDistKm) / (sunRadiusKm - occluderRadiusKm);
+  out.pinchKm = (occluderRadiusKm * occluderSunDistKm) / (sunRadiusKm + occluderRadiusKm);
+  out.penumbraRadiusKm =
+    occluderRadiusKm + (axialKm * (sunRadiusKm + occluderRadiusKm)) / occluderSunDistKm;
+  out.umbraRadiusKm =
+    occluderRadiusKm - (axialKm * (sunRadiusKm - occluderRadiusKm)) / occluderSunDistKm;
+  return out;
+}
+
+const tmpProfile: ShadowConeProfile = {
+  umbraLengthKm: 0,
+  pinchKm: 0,
+  umbraRadiusKm: 0,
+  penumbraRadiusKm: 0,
+};
+
 export interface ShadowGeometry {
   /** Distance of the target center beyond the occluder along the shadow axis (km); ≤ 0 = sunward of the occluder. */
   axialKm: number;
@@ -97,18 +140,16 @@ export function computeShadowGeometry(
   const missKm = Math.sqrt(Math.max(0, relSq - axialKm * axialKm));
 
   const effectiveRadiusKm = occluderRadiusKm * shadowEnlargement;
-  const sunRadiusKm = KM_CONSTANTS.SUN_RADIUS;
-  const penumbraSlope = (sunRadiusKm + effectiveRadiusKm) / sunDistKm;
-  const umbraSlope = (sunRadiusKm - effectiveRadiusKm) / sunDistKm;
   // Cone radii are clamped to the occluder plane on the sunward side so the
   // search metric stays continuous across axialKm = 0.
   const axialClampedKm = Math.max(0, axialKm);
+  computeShadowConeProfileKm(effectiveRadiusKm, sunDistKm, axialClampedKm, tmpProfile);
 
   out.axialKm = axialKm;
   out.missKm = missKm;
-  out.penumbraRadiusKm = effectiveRadiusKm + axialClampedKm * penumbraSlope;
-  out.umbraRadiusKm = effectiveRadiusKm - axialClampedKm * umbraSlope;
-  out.umbraLengthKm = (effectiveRadiusKm * sunDistKm) / (sunRadiusKm - effectiveRadiusKm);
+  out.penumbraRadiusKm = tmpProfile.penumbraRadiusKm;
+  out.umbraRadiusKm = tmpProfile.umbraRadiusKm;
+  out.umbraLengthKm = tmpProfile.umbraLengthKm;
   return out;
 }
 
@@ -177,11 +218,9 @@ export function classifyShadowTransit(
 
   const pierceKm = Math.sqrt(Math.max(0, rt * rt - Math.min(rho, rt) * Math.min(rho, rt)));
   const nearAxialKm = Math.max(0, d - pierceKm);
-  const sunRadiusKm = KM_CONSTANTS.SUN_RADIUS;
-  const umbraNearKm =
-    occluderRadiusKm - (nearAxialKm * (sunRadiusKm - occluderRadiusKm)) / occluderSunDistKm;
-  const penumbraNearKm =
-    occluderRadiusKm + (nearAxialKm * (sunRadiusKm + occluderRadiusKm)) / occluderSunDistKm;
+  computeShadowConeProfileKm(occluderRadiusKm, occluderSunDistKm, nearAxialKm, tmpProfile);
+  const umbraNearKm = tmpProfile.umbraRadiusKm;
+  const penumbraNearKm = tmpProfile.penumbraRadiusKm;
 
   if (umbraNearKm > 0 && rho < umbraNearKm + rt) return 'total';
   if (umbraNearKm <= 0 && rho < -umbraNearKm + rt) return 'annular';
@@ -241,6 +280,77 @@ export function shadowAxisSurfacePoint(
     if (out.lengthSq() > 1e-30) return out.normalize().multiplyScalar(sphereRadiusAU);
   }
   return out.copy(occluderOffsetAU).normalize().multiplyScalar(sphereRadiusAU);
+}
+
+export type ConeSilhouetteStatus = 'edges' | 'inside' | 'hidden';
+
+const tmpSilhouetteU = new THREE.Vector3();
+const tmpSilhouetteV = new THREE.Vector3();
+const tmpSilhouetteD = new THREE.Vector3();
+
+/**
+ * Silhouette generatrices of an (infinite) cone seen from a camera point —
+ * the two surface lines along which the cone's outline projects, written to
+ * `outDirA`/`outDirB` as unit directions from the apex. `axisUnit` points
+ * from the apex toward the cone's opening.
+ *
+ * Returns 'inside' when the camera sits within the cone's solid angle (no
+ * silhouette exists, and the camera is physically inside the shadow volume —
+ * callers hide the fill too), and 'hidden' when it sits inside the mirror
+ * cone behind the apex (the outline degenerates toward a circle; callers
+ * just hide the edges). Tangency: with r̂(θ) the radial basis direction, the
+ * outward normal n(θ) = cos α·r̂ − sin α·â is constant along a generatrix,
+ * so the tangent condition n·(camera − apex) = 0 reduces to
+ * cos(θ − φ) = tan α · d_axial / d_radial. Render-side helper: unlike the
+ * event engine it uses cross products for its basis, harmlessly (see the
+ * basis note below).
+ */
+export function computeConeSilhouette(
+  apex: THREE.Vector3,
+  axisUnit: THREE.Vector3,
+  halfAngleRad: number,
+  cameraPos: THREE.Vector3,
+  outDirA: THREE.Vector3,
+  outDirB: THREE.Vector3,
+): ConeSilhouetteStatus {
+  // Radial basis ⊥ axis, seeded from the world axis least aligned with the
+  // cone axis. The basis choice is not load-bearing: any seed yields the
+  // same two generatrix directions (only their A/B labels can swap).
+  const ax = Math.abs(axisUnit.x);
+  const ay = Math.abs(axisUnit.y);
+  const az = Math.abs(axisUnit.z);
+  if (ax <= ay && ax <= az) tmpSilhouetteU.set(1, 0, 0);
+  else if (ay <= az) tmpSilhouetteU.set(0, 1, 0);
+  else tmpSilhouetteU.set(0, 0, 1);
+  tmpSilhouetteU.cross(axisUnit).normalize();
+  tmpSilhouetteV.crossVectors(axisUnit, tmpSilhouetteU);
+
+  const d = tmpSilhouetteD.copy(cameraPos).sub(apex);
+  const dAxial = d.dot(axisUnit);
+  const dU = d.dot(tmpSilhouetteU);
+  const dV = d.dot(tmpSilhouetteV);
+  const dRadial = Math.hypot(dU, dV);
+  if (dRadial < 1e-30) return dAxial > 0 ? 'inside' : 'hidden';
+
+  const k = (Math.tan(halfAngleRad) * dAxial) / dRadial;
+  if (k >= 1) return 'inside';
+  if (k <= -1) return 'hidden';
+
+  const phi = Math.atan2(dV, dU);
+  const spread = Math.acos(k);
+  const sinHalf = Math.sin(halfAngleRad);
+  const cosHalf = Math.cos(halfAngleRad);
+  outDirA
+    .copy(axisUnit)
+    .multiplyScalar(cosHalf)
+    .addScaledVector(tmpSilhouetteU, sinHalf * Math.cos(phi + spread))
+    .addScaledVector(tmpSilhouetteV, sinHalf * Math.sin(phi + spread));
+  outDirB
+    .copy(axisUnit)
+    .multiplyScalar(cosHalf)
+    .addScaledVector(tmpSilhouetteU, sinHalf * Math.cos(phi - spread))
+    .addScaledVector(tmpSilhouetteV, sinHalf * Math.sin(phi - spread));
+  return 'edges';
 }
 
 // ================================================================

@@ -13,10 +13,13 @@ import {
   computeSubTargetVantage,
   entryFovDeg,
   formatDiscDeg,
+  GUIDE_RESOLVABLE_OFF_PX,
+  GUIDE_RESOLVABLE_ON_PX,
   isBelowResolutionAtMaxZoom,
   MARKER_BRACKETS_MIN_PX,
   MARKER_RETICLE_MAX_PX,
   projectedDiscPx,
+  resolveGuideVisibility,
   resolveMarkerKind,
   selectSurfaceTarget,
   SURFACE_FOV_DEFAULT_DEG,
@@ -426,6 +429,17 @@ describe('surface FOV', () => {
     const between = (MARKER_RETICLE_MAX_PX + MARKER_BRACKETS_MIN_PX) / 2;
     expect(resolveMarkerKind(between, 'brackets')).toBe('brackets');
     expect(resolveMarkerKind(between, 'reticle')).toBe('reticle');
+  });
+
+  it('shadow-guide visibility gates with hysteresis below the marker scale', () => {
+    expect(GUIDE_RESOLVABLE_OFF_PX).toBeLessThan(GUIDE_RESOLVABLE_ON_PX);
+    expect(GUIDE_RESOLVABLE_ON_PX).toBeLessThan(MARKER_BRACKETS_MIN_PX);
+    expect(resolveGuideVisibility(GUIDE_RESOLVABLE_ON_PX, false)).toBe(true);
+    expect(resolveGuideVisibility(GUIDE_RESOLVABLE_OFF_PX, true)).toBe(false);
+    // Between the bounds: sticky both ways.
+    const between = (GUIDE_RESOLVABLE_OFF_PX + GUIDE_RESOLVABLE_ON_PX) / 2;
+    expect(resolveGuideVisibility(between, true)).toBe(true);
+    expect(resolveGuideVisibility(between, false)).toBe(false);
   });
 
   it('projected disc px and the static list speck flag agree with the optics', () => {

@@ -1,4 +1,4 @@
-# Moon Landing Mode — Experience Design
+# Descent — Experience Design
 
 > **Status:** P0 design package, revised after the three-persona design review (see
 > [REVIEWS.md](REVIEWS.md) for findings → dispositions). Companion docs: [TECH.md](TECH.md)

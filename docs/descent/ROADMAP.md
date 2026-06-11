@@ -1,4 +1,4 @@
-# Moon Landing Mode — Delivery Roadmap
+# Descent — Delivery Roadmap
 
 Phases are PR-sized, each independently shippable behind the mode's entry point, each with
 acceptance criteria (AC) that are checkable by running the app (no test framework exists —
@@ -13,7 +13,7 @@ in-repo; critique round run and dispositioned (REVIEWS.md); open questions (art 
 default, hosting) surfaced to the owner.
 
 ## P0.5 — Asset pipeline *(scheduled work, not a footnote — review finding)*
-`tools/moonLanding/`: cube-face reprojection (GDAL), pyramid build, KTX2 encode, terrain-RGB
+`tools/descent/`: cube-face reprojection (GDAL), pyramid build, KTX2 encode, terrain-RGB
 height packing, pack-file + Range-index format, manifest. **AC:** one full cube face dry-run
 with **measured** output bytes vs TECH §5.2 targets; one NAC site cone blended into procedural
 border without visible seam in a viewer; pack format frozen before P1.
@@ -36,12 +36,12 @@ border without visible seam in a viewer; pack format frozen before P1.
   fidelity (no 78 m terraces).
 
 ## P1 — "Orbit Postcard"
-Mode skeleton (lazy chunk, activate/deactivate/update, entry button, `?auto=moonLanding`),
+Mode skeleton (lazy chunk, activate/deactivate/update, entry button, `?auto=descent`),
 core-pack loader behind a minimal pre-flight screen, MoonGlobe L0–L6 with real color+height,
 SkyDome (stars, Milky Way, Earth with correct phase/position, Sun glare), snapshot lighting,
 analytic exposure v1, free-look orbit drift with Earthrise timing.
 **AC:** entering from planetarium and back leaks nothing (`renderer.info.memory` returns to
-baseline); other modes' load time unchanged (network tab shows zero moonLanding bytes until
+baseline); other modes' load time unchanged (network tab shows zero descent-mode bytes until
 entry); 60 fps desktop / 30 fps phone in orbit; Earthrise matches ephemeris for the chosen
 date; **BEGIN unlocks at orbit-ready with the live orbit scene behind the board** (full
 checklist completes under the overture, SKIP disabled until corridor pack lands); first

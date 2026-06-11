@@ -140,8 +140,8 @@ geography line + the brace call), and the chatter lives in the overture. The fal
 is manual (tagging, aiming), not narrated.
 
 **Deferred / owner decisions:** portrait mockup frame → P1 deliverable (policy + collapse
-specced now); mode name → owner question #4 in README (reviewer pitches: Descent / Earthrise /
-Window Seat); scenic-spot content beyond Tranquility → lands with each site pack (P5).
+specced now); mode name → owner question in README (reviewer pitches: Descent / Earthrise / Window
+Seat) — **owner chose "Descent"**; code identifiers `descent`, design branch stays `moonLanding`; scenic-spot content beyond Tranquility → lands with each site pack (P5).
 
 ## Process note
 

@@ -1,4 +1,7 @@
-# Moon Landing Mode — Design Package (P0)
+# Descent — Design Package (P0)
+
+> Mode name: **Descent** (owner-approved). Code identifiers use `descent`; this design-phase
+> branch keeps its original name `moonLanding`.
 
 A new lazily-loaded app mode: begin in lunar orbit ~450 km up (a tenth of the Moon beneath
 you, Earth rising over the limb), ride a guided 5–10 minute powered descent, and land — on
@@ -32,7 +35,7 @@ repo's real `public/textures/moon.jpg` for albedo. `generate.mjs` lays the vecto
 over those plates (and falls back to pure vector if plates are absent):
 
 ```bash
-cd docs/moonLanding/mockups
+cd docs/descent/mockups
 npm i --no-save pngjs jpeg-js @resvg/resvg-js   # ad hoc, not project deps
 node terrainPlate.mjs                  # renders plate-01..04.png (~20 s)
 node generate.mjs                      # writes the SVGs (reference the plates)
@@ -61,4 +64,4 @@ physically cross-checked (DESIGN Appendix A, REVIEWS.md).
 1. **Art direction default** — Glass (recommended) vs Heritage: see `02` vs `02b`.
 2. **Asset hosting** — start in-repo (~180 MB across packs) vs CDN/release assets from day one (TECH R3/Q2).
 3. Appetite for the **eclipse cameo** (descend inside Earth's shadow) — it's the app's signature theme, but it invalidates the baked sun-shadows, so it ships only with its real price (fade/rebake path) paid (DESIGN §7, TECH §4.3).
-4. **The mode's name.** "Moon Landing" is generic and makes a third Moon-prefixed mode (Moon view, Moon flight). Round-2 review pitched: **"Descent"** (calm-ominous, matches the tone — reviewer's pick), **"Earthrise"** (names the emotional anchor; subtitle "a descent to the surface"), **"Window Seat"** (names the promise, friendliest). Code/branch names stay `moonLanding` until you pick.
+4. ~~The mode's name~~ — **decided: "Descent"** (owner, from the round-2 pitches Descent / Earthrise / Window Seat). Code identifiers are `descent` throughout the plan (`src/descent/`, `?auto=descent`, `DescentMode`); only this design-phase git branch keeps its original `moonLanding` name.

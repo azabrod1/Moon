@@ -501,7 +501,7 @@ function scenePreflight() {
   const t = GLASS;
   let s = svgOpen();
   s += starField(101, 240, { dimming: 0.5 });
-  s += text(W / 2, 92, 'MOON LANDING', { size: 40, fill: t.ink, anchor: 'middle', bold: true, glow: true, spacing: 14 });
+  s += text(W / 2, 92, 'DESCENT', { size: 40, fill: t.ink, anchor: 'middle', bold: true, glow: true, spacing: 14 });
   s += text(W / 2, 124, 'PRE-FLIGHT', { size: 17, fill: t.dim, anchor: 'middle', spacing: 10 });
 
   // --- SITE column

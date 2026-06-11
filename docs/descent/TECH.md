@@ -1,4 +1,4 @@
-# Moon Landing Mode — Technical Plan
+# Descent — Technical Plan
 
 > Companion to [DESIGN.md](DESIGN.md) and [ROADMAP.md](ROADMAP.md). Revised after engineering
 > review (REVIEWS.md): asset arithmetic corrected, shadow bake split into two stages, composer
@@ -43,9 +43,9 @@ loading screen); `assets.ts` streams packs afterward with progress events; cance
 mid-download (one `AbortController` for the mode; BEGIN arms only when the checklist is green).
 
 **2.3 UI.** The mode builds its DOM **programmatically** (the `MoonFlightMode.ts:249–283`
-precedent), not as permanent `index.html` sections — keeps ROADMAP P1's "zero moonLanding
+precedent), not as permanent `index.html` sections — keeps ROADMAP P1's "zero descent-mode
 bytes until entry" honest. Entry button beside `#btn-mode-planetarium` (`index.html:1704`);
-`?auto=moonLanding` in `getAutoMode()` (`src/main.ts:911`), plus `&site=&seat=&t=` deep links
+`?auto=descent` in `getAutoMode()` (`src/main.ts:911`), plus `&site=&seat=&t=` deep links
 for QA.
 
 **2.4 Disposal.** Dispose terrain geometries/textures, KTX2 transcoder workers
@@ -58,14 +58,14 @@ long-exposure mode.
 **2.5 Lighting source:** `snapshotLighting(date)` (moonFlight pattern) freezes Sun/Earth at
 entry — also what legalizes baked tile shadows (§4.3).
 
-**2.6 Persistence:** small `moonLandingStore` (localStorage, PlanetariumStore's defensive
+**2.6 Persistence:** small `descentStore` (localStorage, PlanetariumStore's defensive
 style): stats/medals history, Heritage unlock, HD consent, last site/seat. Write-on-event.
 
 ### Module layout (one responsibility each)
 
 ```
-src/moonLanding/
-  MoonLandingMode.ts      thin controller: lifecycle, beat machine, wiring, render delegate
+src/descent/
+  DescentMode.ts          thin controller: lifecycle, beat machine, wiring, render delegate
   assets.ts               pack manifest, streaming, progress, AbortController, base-URL const
   guidance/DescentGuidance.ts   phase profiles, envelope clamps, bias/nudge blending, windows
   guidance/FlightDynamics.ts    f64 point-mass + attitude, fixed 50 Hz, deterministic
@@ -193,7 +193,7 @@ deterministic given seed + input script (replayable for QA goldens).
 | Earth | existing `public/textures/earth-*.jpg` (2k) for the naked-eye view; **4k day+clouds in the `hd`/binocular path** | 2k → 4k | 2k is ample at Earth's true ~55 px; the hold-to-zoom binoculars (DESIGN §2.2) can push the disc to ~600 px, where 4k earns its bytes |
 | Temperatures | analytic Diviner-fit in `thermal.ts` | — | no texture |
 
-Offline preprocessing in `tools/moonLanding/` (Node + GDAL, not shipped): cube-face
+Offline preprocessing in `tools/descent/` (Node + GDAL, not shipped): cube-face
 reprojection, pyramid build, KTX2 (UASTC→BC/ASTC) color, height packing, `manifest.json`.
 **This pipeline is scheduled work (ROADMAP P0.5), not a footnote** — polar reprojection,
 NAC-into-procedural blending at cone borders, and grazing-sun Shackleton bakes are where the
@@ -309,7 +309,7 @@ when `canGPUDoBloom`.
 
 ## 10. QA & debug
 
-`?auto=moonLanding&site=tycho&seat=left&t=lowGate` deep links; `?debug=1` adds frame ms,
+`?auto=descent&site=tycho&seat=left&t=lowGate` deep links; `?debug=1` adds frame ms,
 resident tiles/VRAM estimate, LOD histogram, guidance phase, exposure value. Determinism
 harness: record seed + input script → replay → screenshot at each beat (procedure lands as
 `QA.md` in P2). `npm run build` (tsc strict) locally before every push — CI runs vite only

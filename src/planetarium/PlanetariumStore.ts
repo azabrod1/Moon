@@ -44,6 +44,8 @@ export interface PlanetariumState {
   planetScale: number;       // visual scale multiplier for planets
   showShip: boolean;         // show player ship mesh
   showConstellations?: boolean; // show constellation lines overlay
+  showBodyLabels?: boolean;  // show planet/moon/Sun name labels
+  showOrbitLines?: boolean;  // show planet orbit lines
   landedOn?: LandedTarget;   // planet/moon the player is currently landed on
   systemSpeed?: number;      // system speed multiplier (fraction of c)
   systemSlowdown?: boolean;  // whether system slowdown is enabled
@@ -118,6 +120,8 @@ export function sanitizePlanetariumState(raw: unknown): PlanetariumState | null 
       : defaults.planetScale,
     showShip: typeof record.showShip === 'boolean' ? record.showShip : defaults.showShip,
     showConstellations: typeof record.showConstellations === 'boolean' ? record.showConstellations : defaults.showConstellations,
+    showBodyLabels: typeof record.showBodyLabels === 'boolean' ? record.showBodyLabels : defaults.showBodyLabels,
+    showOrbitLines: typeof record.showOrbitLines === 'boolean' ? record.showOrbitLines : defaults.showOrbitLines,
     landedOn: sanitizeLandedOn(record.landedOn),
     systemSpeed: isFiniteNumber(record.systemSpeed)
       ? Math.max(0, Math.min(0.4, record.systemSpeed))
@@ -170,6 +174,8 @@ export function createDefaultPlanetariumState(): PlanetariumState {
     planetScale: 1,
     showShip: true,
     showConstellations: false,
+    showBodyLabels: true,
+    showOrbitLines: true,
     landedOn: null,
     systemSpeed: 0.083,
     systemSlowdown: true,

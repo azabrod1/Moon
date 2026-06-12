@@ -95,8 +95,16 @@ export function surfaceEventNarrative(landed: SurfaceLandedInfo, spec: SurfaceEv
 }
 
 /**
- * "What you'll see" hint for an event, from this observer (design-brief #28):
- * a penumbral eclipse honestly renders as a subtle dimming, which reads as
+ * Display name with the article convention: Earth's Moon reads "the Moon"
+ * in prose ("look up from the Moon"), every proper-named moon stays bare.
+ */
+export function bodyDisplayName(name: string): string {
+  return name === 'Moon' ? 'the Moon' : name;
+}
+
+/**
+ * "What you'll see" hint for an event, from this observer: a penumbral
+ * eclipse honestly renders as a subtle dimming, which reads as
  * nothing-happened unless the UI says that's the show. Branches mirror
  * surfaceEventNarrative; phrases stay short (toast/row-friendly) and never
  * promise drama the classification can't deliver. The engine's transit
@@ -110,8 +118,7 @@ export function surfaceEventExpectation(
 ): string {
   if (classification === 'none') return '';
   const parent = spec.parentPlanet;
-  const moonMid =
-    parent === 'Earth' && spec.moonName === 'Moon' ? 'the Moon' : spec.moonName;
+  const moonMid = bodyDisplayName(spec.moonName);
   if (landed.type === 'moon' && landed.name === spec.moonName) {
     if (spec.kind === 'eclipse') {
       // You are the eclipsed moon: the parent covers (some of) your Sun.

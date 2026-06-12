@@ -11,7 +11,7 @@
 import { computeOrbitalState, type EventType } from '../../astronomy/ephemeris';
 import { formatDateCompact } from '../../astronomy/planetary';
 import type { ShadowEvent } from '../../astronomy/shadows';
-import { formatDiscDeg } from '../surfaceView';
+import { bodyDisplayName, formatDiscDeg } from '../surfaceView';
 import { setText } from '../../shared/dom';
 
 /** What the phase hero shows for the current landed body. */
@@ -37,6 +37,8 @@ export type ObservatorySubjectInfo =
 export interface ObservatoryRenderExtras {
   /** "You're on Earth" */
   vantageName: string;
+  /** Bare landed-body name for copy ("Moon", not "You're on Moon"). */
+  vantageBody: string;
   /** Companion body name for the swap chip, or null to hide it. */
   swapName: string | null;
   /** Now-bar tag: 'paused' | 'realtime' | a rate label. */
@@ -78,41 +80,49 @@ const EARTH_PHASE_NAME: Record<string, string> = {
   'Waning Crescent': 'Waxing Gibbous',
 };
 
-/** Bottom-sheet detents (≤640px): 'peek' shows the summary through the
- * now-bar; 'full' is today's whole sheet. */
-export type SheetDetent = 'peek' | 'full';
+/** Where the bottom sheet is parked (≤640px): 'peek' tracks the floor of the
+ * drag range (the summary through the now-bar), 'full' tracks the content
+ * ceiling even as the chunked event search grows it, and a number is a
+ * hand-picked height in px — clamped on apply, never re-grown. Free drag:
+ * the sheet stays wherever the finger leaves it. */
+export type SheetPark = 'peek' | 'full' | number;
 
-// Sheet-drag release thresholds (px of finger travel).
+// Sheet-drag release thresholds (px). Dismiss = finger travel past the peek
+// floor. The snap epsilon maps near-edge releases onto the tracking states —
+// a release 5px shy of an edge is intent for the edge, and a park 1px above
+// the floor would scroll instead of whole-card-dragging, so make those
+// heights unreachable by hand.
 const SHEET_DISMISS_DRAG_PX = 80;
-const SHEET_EXPAND_DRAG_PX = 60;
-const SHEET_COLLAPSE_DRAG_PX = 60;
+const SHEET_SNAP_EPSILON_PX = 8;
 
 /**
- * Where the sheet settles when a drag releases. Pure — unit-tested. dyPx is
- * finger travel (down positive). From full, a dismiss must travel past the
- * peek position plus the dismiss threshold (a short pull collapses, it never
- * skips straight off-screen). Degenerate panels (content no taller than the
- * peek) have one real detent: only a dismiss-sized pull does anything.
- * Tap-vs-drag discrimination happens at the call site, not here.
+ * Where a sheet drag settles on release. Pure — unit-tested. dyPx is finger
+ * travel (down positive); the sheet parks wherever the finger leaves it
+ * (free drag, no detent snap), except: past the dismiss threshold below the
+ * peek floor it dismisses, and within the snap epsilon of either edge it
+ * resolves to the tracking state so the park follows future floor/ceiling
+ * changes. From the floor a dismiss needs the same >80px pull as the old
+ * detent model; from height the pull must travel the whole stack plus the
+ * threshold — it can't skip straight off-screen. Degenerate panels (ceiling
+ * ≈ floor) resolve every non-dismiss release to 'peek'. Tap-vs-drag
+ * discrimination happens at the call site, not here.
  */
-export function sheetReleaseAction(
-  detent: SheetDetent,
+export function sheetReleaseTarget(
+  startHeightPx: number,
   dyPx: number,
   fullHeightPx: number,
   peekHeightPx: number,
-): 'dismiss' | SheetDetent {
+): 'dismiss' | SheetPark {
   const peek = Math.min(peekHeightPx, fullHeightPx);
-  if (fullHeightPx - peek <= 1) {
-    return dyPx > SHEET_DISMISS_DRAG_PX ? 'dismiss' : detent;
-  }
-  if (detent === 'peek') {
-    if (dyPx <= -SHEET_EXPAND_DRAG_PX) return 'full';
-    if (dyPx > SHEET_DISMISS_DRAG_PX) return 'dismiss';
-    return 'peek';
-  }
-  if (dyPx >= fullHeightPx - peek + SHEET_DISMISS_DRAG_PX) return 'dismiss';
-  if (dyPx >= SHEET_COLLAPSE_DRAG_PX) return 'peek';
-  return 'full';
+  const target = startHeightPx - dyPx;
+  if (target < peek - SHEET_DISMISS_DRAG_PX) return 'dismiss';
+  // Clamp before the edge checks so a degenerate range (ceiling ≈ floor)
+  // resolves to 'peek' — 'full' there would disarm the whole-card drag
+  // surface. When the epsilons overlap, peek deliberately wins.
+  const clamped = Math.max(peek, Math.min(fullHeightPx, target));
+  if (clamped <= peek + SHEET_SNAP_EPSILON_PX) return 'peek';
+  if (clamped >= fullHeightPx - SHEET_SNAP_EPSILON_PX) return 'full';
+  return clamped;
 }
 
 /** Coarse phase bucket for bodies without a named-lunation convention. */
@@ -231,9 +241,15 @@ export class ObservatoryPanel {
   private orbitAvailable = false;
   private renderedRows: { row: ObservatoryEventRow; rowEl: HTMLElement; cdEl: HTMLElement }[] = [];
   private wired = false;
-  // Sheet-form detent state (≤640px). Entering sheet form — open or a
-  // breakpoint crossing — always means peek; `wasSheetForm` detects crossings.
-  private sheetDetent: SheetDetent = 'peek';
+  // Sheet-form park state (≤640px) — the user's INTENT. Entering sheet form —
+  // open or a breakpoint crossing — always means peek; `wasSheetForm` detects
+  // crossings. Mutated only by release/tap/show/collapse, never by layout.
+  private sheetPark: SheetPark = 'peek';
+  // BEHAVIOR derived from the applied height: a content shrink can pin a
+  // hand-picked park to the floor — it must act like peek (overflow hidden,
+  // whole-card drag surface) without destroying the picked height for when
+  // the content returns.
+  private sheetAtPeek = true;
   private wasSheetForm = false;
   // A live handle/panel drag owns the sheet's height — content rebuilds must
   // not re-assert the detent mid-gesture (the chunked event search publishes
@@ -333,8 +349,11 @@ export class ObservatoryPanel {
   }
 
   /**
-   * The peek detent shows the summary through the now-bar. The anchor chain
-   * is visibility-aware (offsetHeight, not inline style): surface view hides
+   * The peek height — the floor of the drag range: the summary through the
+   * now-bar. The sheet never parks lower (short of dismissing) because the
+   * bottom time pill hides while the sheet is open — the now-bar is the only
+   * clock on screen, and the floor keeps it there. The anchor chain is
+   * visibility-aware (offsetHeight, not inline style): surface view hides
    * the now-bar via a body class and events-only subjects hide the hero
    * inline — falling through to the vantage row keeps the sheet from
    * collapsing to a sliver when both are gone.
@@ -352,41 +371,56 @@ export class ObservatoryPanel {
   }
 
   /**
-   * The full detent's real height: content extent (scrollHeight ignores the
-   * inline peek height) under the CSS max-height cap — read from computed
-   * style rather than twinning the stylesheet's min(55vh, …) formula.
+   * The drag ceiling: content extent under the CSS max-height cap — read
+   * from computed style rather than twinning the stylesheet's min(55vh, …)
+   * formula. scrollHeight reads back a pinned inline height whenever the
+   * content is SHORTER than it (a stale ceiling after rows shrink), so the
+   * measurement runs with the inline height cleared and restores it —
+   * synchronous, nothing paints in between.
    */
   private sheetFullHeightPx(): number {
     const panel = this.panelEl;
     if (!panel) return 0;
+    const inline = panel.style.height;
+    panel.style.height = '';
     const cap = parseFloat(getComputedStyle(panel).maxHeight);
-    return Math.min(panel.scrollHeight, Number.isFinite(cap) ? cap : Infinity);
+    const full = Math.min(panel.scrollHeight, Number.isFinite(cap) ? cap : Infinity);
+    panel.style.height = inline;
+    return full;
   }
 
   /**
-   * Single owner of sheet layout: applies the current detent (≤640px), then
-   * publishes the sheet's height as --sheet-inset so bottom-anchored chrome
-   * (the surface transport strip, the surface-HUD corners) rides its top
-   * edge instead of being buried — cross-component policy 2: a sheet never
-   * seals the transport. Desktop or closed, it clears every sheet artifact —
-   * a stale inline height would truncate the desktop side panel.
+   * Single owner of sheet layout: applies the current park (≤640px) clamped
+   * to the live floor/ceiling, then publishes the sheet's height as
+   * --sheet-inset so bottom-anchored chrome (the surface transport strip,
+   * the surface-HUD corners) rides its top edge instead of being buried —
+   * cross-component policy 2: a sheet never seals the transport. Behavior
+   * (.sheet-peek, scrollTop) keys off the APPLIED height while sheetPark
+   * keeps the intent, so a transient content shrink acts like peek and the
+   * hand-picked height recovers when the content regrows. Desktop or closed,
+   * it clears every sheet artifact — a stale inline height would truncate
+   * the desktop side panel.
    */
   private updateSheetInset(): void {
     if (this.sheetDragging) return; // a live drag owns the height
     const panel = this.panelEl;
     const sheetForm = this.isSheetForm();
     // Crossing into sheet form always lands at peek (same rule as show()).
-    if (sheetForm && !this.wasSheetForm) this.sheetDetent = 'peek';
+    if (sheetForm && !this.wasSheetForm) this.sheetPark = 'peek';
     this.wasSheetForm = sheetForm;
     if (panel && this.isOpen() && sheetForm) {
-      if (this.sheetDetent === 'peek') {
-        panel.style.height = `${this.peekHeightPx()}px`;
-        panel.classList.add('sheet-peek');
-        panel.scrollTop = 0;
-      } else {
-        panel.style.height = '';
-        panel.classList.remove('sheet-peek');
-      }
+      const full = this.sheetFullHeightPx();
+      const peek = this.peekHeightPx();
+      const h =
+        this.sheetPark === 'peek'
+          ? peek
+          : this.sheetPark === 'full'
+            ? full
+            : Math.max(peek, Math.min(full, this.sheetPark));
+      this.sheetAtPeek = h <= peek + 1;
+      panel.style.height = `${h}px`;
+      panel.classList.toggle('sheet-peek', this.sheetAtPeek);
+      if (this.sheetAtPeek) panel.scrollTop = 0;
       document.body.style.setProperty('--sheet-inset', `${panel.offsetHeight}px`);
     } else {
       if (panel) {
@@ -394,6 +428,7 @@ export class ObservatoryPanel {
         panel.style.transform = '';
         panel.classList.remove('sheet-peek');
       }
+      this.sheetAtPeek = true;
       document.body.style.removeProperty('--sheet-inset');
     }
     this.onLayoutChange();
@@ -414,7 +449,7 @@ export class ObservatoryPanel {
    */
   collapseSheetToPeek(): void {
     if (!this.isOpen() || !this.isSheetForm()) return;
-    this.sheetDetent = 'peek';
+    this.sheetPark = 'peek';
     this.updateSheetInset();
   }
 
@@ -423,7 +458,7 @@ export class ObservatoryPanel {
     document.body.classList.add('observatory-sheet-open');
     // Opening (or re-targeting — show() also fires on landed→landed switches)
     // always starts at peek: the sky stays visible, drag up for the rest.
-    this.sheetDetent = 'peek';
+    this.sheetPark = 'peek';
     this.updateSheetInset();
   }
 
@@ -437,15 +472,20 @@ export class ObservatoryPanel {
   }
 
   /**
-   * Sheet-form detent drag. At FULL only the header (grab handle + eyebrow
-   * row) arms the gesture — the body scrolls a list there. At PEEK nothing
-   * scrolls (overflow hidden), so the whole card is the drag surface: a
-   * swipe up on it is the natural expand gesture. Buttons stay excluded
-   * (capturing would retarget their pointerup and eat the click). Drag up
-   * from peek live-grows the height toward full; drag down translates
-   * (dismiss preview); the release settles via pure sheetReleaseAction. A
-   * tap on the handle (|dy| < 6, pointerup only — a cancelled gesture
-   * reverts) toggles the detents.
+   * Sheet-form free drag: the sheet parks wherever the finger leaves it
+   * between the peek floor and the content ceiling — no detent snap. AT
+   * PEEK nothing scrolls (overflow hidden), so the whole card is
+   * the drag surface: a swipe up on it is the natural expand gesture. Above
+   * the floor the body scrolls a list, so only the header (grab handle +
+   * eyebrow row) arms the gesture. Buttons stay excluded (capturing would
+   * retarget their pointerup and eat the click). Below the floor the card
+   * translates down (dismiss preview); the release settles via pure
+   * sheetReleaseTarget. A tap on the handle (|dy| < 6, pointerup only — a
+   * cancelled gesture reverts) toggles peek ⇄ full: collapse-first from any
+   * height, because the phone's most urgent need is the sky back. Known
+   * trade vs the old detents: a fast flick under-travels (no velocity
+   * projection — the tap covers "give me everything"; flick physics is
+   * design-pass material).
    */
   private wireSheetDrag(): void {
     const panel = this.panelEl;
@@ -453,7 +493,6 @@ export class ObservatoryPanel {
     let startY: number | null = null;
     let activePointer: number | null = null;
     let fromHandle = false;
-    let startDetent: SheetDetent = 'peek';
     let startHeight = 0;
     let fullHeight = 0;
     let peekHeight = 0;
@@ -477,7 +516,8 @@ export class ObservatoryPanel {
       const target = e.target as HTMLElement;
       if (target.closest('button')) return;
       const viaHandle = target.closest('.obs-eyebrow') !== null;
-      if (this.sheetDetent === 'full' && !viaHandle) return;
+      // Above the floor the body scrolls — only the handle drags there.
+      if (!this.sheetAtPeek && !viaHandle) return;
       if (activePointer !== null) return; // one finger drives the sheet
       try {
         panel.setPointerCapture(e.pointerId);
@@ -487,7 +527,6 @@ export class ObservatoryPanel {
       activePointer = e.pointerId;
       startY = e.clientY;
       fromHandle = viaHandle;
-      startDetent = this.sheetDetent;
       startHeight = panel.offsetHeight;
       fullHeight = this.sheetFullHeightPx();
       peekHeight = this.peekHeightPx();
@@ -501,20 +540,22 @@ export class ObservatoryPanel {
         this.updateSheetInset();
         return;
       }
-      const dy = e.clientY - startY;
-      if (startDetent === 'peek' && dy < 0) {
-        // Expand preview: grow toward full. The transport strip rides the
-        // live height (policy 2 holds mid-gesture too).
-        const h = Math.min(startHeight - dy, fullHeight);
-        panel.style.transform = '';
-        panel.style.height = `${h}px`;
-        document.body.style.setProperty('--sheet-inset', `${h}px`);
-      } else {
-        const down = Math.max(0, dy);
-        if (startDetent === 'peek') panel.style.height = `${startHeight}px`;
-        panel.style.transform = `translateY(${down}px)`;
-        document.body.style.setProperty('--sheet-inset', `${Math.max(0, startHeight - down)}px`);
-      }
+      // One continuous law: the finger asks for a height; clamp it to the
+      // drag range and render below-floor overshoot as a downward translate
+      // (dismiss preview). The transport strip rides the visible height
+      // (policy 2 holds mid-gesture too) — clamped at 0: a long mouse pull
+      // can report clientY past the viewport under pointer capture, and a
+      // negative inset would push the bottom chrome off-screen.
+      const target = startHeight - (e.clientY - startY);
+      const floor = Math.min(peekHeight, fullHeight);
+      const h = Math.max(floor, Math.min(fullHeight, target));
+      const down = Math.max(0, floor - target);
+      panel.style.height = `${h}px`;
+      panel.style.transform = down > 0 ? `translateY(${down}px)` : '';
+      document.body.style.setProperty('--sheet-inset', `${Math.max(0, h - down)}px`);
+      // The live height moves the panel's top edge — owner caches (the
+      // surface-HUD chevron clamp) must not read a stale rect mid-gesture.
+      this.onLayoutChange();
     });
     const release = (e: PointerEvent, cancelled: boolean) => {
       if (e.pointerId !== activePointer || startY === null) return;
@@ -530,17 +571,22 @@ export class ObservatoryPanel {
         return;
       }
       if (fromHandle && Math.abs(dy) < 6) {
-        this.sheetDetent = this.sheetDetent === 'peek' ? 'full' : 'peek';
+        // Tap: expand from the floor, park back at the floor from anywhere
+        // above; no-op when there's no real range to toggle across (the
+        // degenerate park would silently disarm the whole-card drag surface).
+        if (fullHeight - peekHeight > 1) {
+          this.sheetPark = this.sheetAtPeek ? 'full' : 'peek';
+        }
         this.updateSheetInset();
         return;
       }
-      const action = sheetReleaseAction(startDetent, dy, fullHeight, peekHeight);
-      if (action === 'dismiss') {
+      const park = sheetReleaseTarget(startHeight, dy, fullHeight, peekHeight);
+      if (park === 'dismiss') {
         this.hide();
         this.onClose();
         return;
       }
-      this.sheetDetent = action;
+      this.sheetPark = park;
       this.updateSheetInset();
     };
     panel.addEventListener('pointerup', (e) => release(e, false));
@@ -691,10 +737,12 @@ export class ObservatoryPanel {
       this.swapEl.style.display = extras.swapName ? '' : 'none';
       if (extras.swapName) setText('observatory-swap-name', extras.swapName);
     }
-    setText('observatory-lookup-label', extras.surfaceActive ? 'Return to orbit' : 'Look up');
+    setText('observatory-lookup-label', extras.surfaceActive ? 'Return to orbit' : 'Surface view');
     setText(
       'observatory-lookup-hint',
-      extras.surfaceActive ? '— leave the surface' : '— watch from the surface',
+      extras.surfaceActive
+        ? '— leave the surface'
+        : `— look up from ${bodyDisplayName(extras.vantageBody)}`,
     );
 
     if (this.earthRowsEl) this.earthRowsEl.style.display = extras.nextDates ? '' : 'none';

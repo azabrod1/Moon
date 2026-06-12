@@ -75,6 +75,7 @@ import { GyroSteering } from './input/GyroSteering';
 import { SurfaceLook } from './input/SurfaceLook';
 import {
   angularDiameterDeg,
+  bodyDisplayName,
   clampSurfaceFovDeg,
   computeShadowSpotVantage,
   computeSubTargetVantage,
@@ -190,6 +191,8 @@ export class PlanetariumMode {
   private starfield: THREE.Points | null = null;
   private constellations: Constellations | null = null;
   private showConstellations = false;
+  private showBodyLabels = true;
+  private showOrbitLines = true;
 
   // Planet world positions in AU (true positions, not offset)
   private planetWorldPositions = new Map<string, { x: number; y: number; z: number }>();
@@ -753,9 +756,9 @@ export class PlanetariumMode {
       this.player.group.visible = false;
     }
 
-    // Restore moon labels visibility
+    // Restore moon labels visibility — unless the labels setting owns the hide
     if (this.moonLabelContainer) {
-      this.moonLabelContainer.style.display = '';
+      this.moonLabelContainer.style.display = this.showBodyLabels ? '' : 'none';
     }
     this.uiRefreshAccumulator = PlanetariumMode.UI_REFRESH_INTERVAL_S;
     this.updateMissionControlState();
@@ -853,7 +856,7 @@ export class PlanetariumMode {
       this.solarSystem.asteroidBelt.visible = visible;
       this.solarSystem.ambientLight.visible = visible;
       for (const p of this.solarSystem.planets) p.group.visible = visible;
-      for (const o of this.solarSystem.orbitLines) o.visible = visible;
+      for (const o of this.solarSystem.orbitLines) o.visible = visible && this.showOrbitLines;
       for (const g of this.moonSystemGroups.values()) g.visible = visible;
     }
     this.player.group.visible = visible && this.showShip;
@@ -930,7 +933,8 @@ export class PlanetariumMode {
     this.updateMoonPositions();
 
     // Occlusion pipeline: planet discs → moon + ship discs → render labels.
-    if (this.planetLabels) {
+    // The labels setting gates the whole pipeline — it only feeds labels.
+    if (this.planetLabels && this.showBodyLabels) {
       const scenePositions = new Map<string, { x: number; y: number; z: number }>();
       for (const planet of this.solarSystem.planets) {
         scenePositions.set(planet.data.name, {
@@ -954,8 +958,10 @@ export class PlanetariumMode {
       );
     }
 
-    this.renderMoonLabels();
-    this.updateSunLabel();
+    if (this.showBodyLabels) {
+      this.renderMoonLabels();
+      this.updateSunLabel();
+    }
 
     if (this.autopilotTarget) {
       this.checkAutopilotArrival();
@@ -1631,7 +1637,8 @@ export class PlanetariumMode {
     if (!this.solarSystem) return;
     // Surface view shows the sky, not the scene furniture — a planet's orbit
     // line crossing the ecliptic would streak straight through the eclipse.
-    const hideAll = this.landedView === 'surface';
+    // The "Orbit lines" setting hides the same furniture everywhere else.
+    const hideAll = this.landedView === 'surface' || !this.showOrbitLines;
     for (let i = 0; i < this.solarSystem.orbitLines.length; i++) {
       const orbit = this.solarSystem.orbitLines[i];
       orbit.visible = !hideAll;
@@ -2249,6 +2256,20 @@ export class PlanetariumMode {
       if (label) label.textContent = this.showConstellations ? 'On' : 'Off';
     });
 
+    document.getElementById('settings-labels-toggle')?.addEventListener('click', () => {
+      this.showBodyLabels = !this.showBodyLabels;
+      this.applyBodyLabelVisibility();
+      const label = document.getElementById('settings-labels-label');
+      if (label) label.textContent = this.showBodyLabels ? 'On' : 'Off';
+    });
+
+    document.getElementById('settings-orbits-toggle')?.addEventListener('click', () => {
+      // Per-frame updateOrbitLineVisibility applies the flag.
+      this.showOrbitLines = !this.showOrbitLines;
+      const label = document.getElementById('settings-orbits-label');
+      if (label) label.textContent = this.showOrbitLines ? 'On' : 'Off';
+    });
+
     document.getElementById('settings-throttle-toggle')?.addEventListener('click', () => {
       this.systemSlowdown = !this.systemSlowdown;
       const label = document.getElementById('settings-throttle-label');
@@ -2481,15 +2502,29 @@ export class PlanetariumMode {
 
   /**
    * Hide/restore the planet+moon label layers around a modal. Restoring
-   * defers to the surface view when it owns the hidden state (its skipped
-   * label pipeline would never re-hide them).
+   * defers to the surface view and to the labels setting when one of them
+   * owns the hidden state (their skipped label pipeline would never re-hide
+   * stale labels a modal-close revealed).
    */
   private setWorldLabelsVisible(visible: boolean) {
-    if (visible && this.landedView === 'surface') return;
+    if (visible && (this.landedView === 'surface' || !this.showBodyLabels)) return;
     const pl = document.getElementById('planet-labels');
     const ml = this.moonLabelContainer;
     if (pl) pl.style.display = visible ? '' : 'none';
     if (ml) ml.style.display = visible ? '' : 'none';
+  }
+
+  /** Apply the "Planet labels" setting: drop the HTML label layers and the
+   *  in-scene marker sprites (the per-frame pipeline is gated off, so nothing
+   *  re-shows them); re-showing defers to surface view, which owns its own
+   *  label hiding. */
+  private applyBodyLabelVisibility() {
+    if (this.showBodyLabels) {
+      this.setWorldLabelsVisible(true);
+    } else {
+      this.setWorldLabelsVisible(false);
+      this.planetLabels?.hideAll();
+    }
   }
 
   /** Cruise-state Observatory entry: a travel-style menu of vantage bodies. */
@@ -3042,7 +3077,8 @@ export class PlanetariumMode {
     const subject = this.buildObservatorySubject();
     if (!subject) return;
     const extras: ObservatoryRenderExtras = {
-      vantageName: `You're on ${this.landedOn.name}`,
+      vantageName: `You're on ${bodyDisplayName(this.landedOn.name)}`,
+      vantageBody: this.landedOn.name,
       swapName: this.swapCompanionTarget()?.name ?? null,
       nowTag: this.observatoryNowTag(),
       surfaceActive: this.landedView === 'surface',
@@ -3166,7 +3202,7 @@ export class PlanetariumMode {
       case 'parent':
         return this.landedOn?.type === 'moon' ? this.landedOn.parentPlanet : 'the planet';
       case 'moon':
-        return target.moonName === 'Moon' ? 'the Moon' : target.moonName;
+        return bodyDisplayName(target.moonName);
     }
   }
 
@@ -3260,7 +3296,7 @@ export class PlanetariumMode {
 
     const companion = this.swapCompanionTarget();
     const state: SurfaceHudState = {
-      eyebrow: `Surface view · standing on ${this.landedOn.name}`,
+      eyebrow: `Surface view · standing on ${bodyDisplayName(this.landedOn.name)}`,
       headline,
       subText,
       subWarm,
@@ -3271,9 +3307,7 @@ export class PlanetariumMode {
       tracking: this.surfaceTracking,
       targetName: this.surfaceTargetDisplayName(this.surfaceTarget),
       discNote,
-      swapLabel: companion
-        ? `Stand on ${companion.name === 'Moon' ? 'the Moon' : companion.name}`
-        : null,
+      swapLabel: companion ? `Stand on ${bodyDisplayName(companion.name)}` : null,
     };
     this.observatoryHud.render(state);
   }
@@ -3812,13 +3846,15 @@ export class PlanetariumMode {
   private setSurfaceLabelContainersHidden(hidden: boolean) {
     // A half-degree disc at 10° FOV doesn't want a 14px DOM label on it.
     // #planet-labels also hosts the Sun label; constellation labels stay
-    // (they're the sky itself).
+    // (they're the sky itself). Un-hiding on surface exit still respects the
+    // "Planet labels" setting.
+    const show = !hidden && this.showBodyLabels;
     const planetLabelsEl = document.getElementById('planet-labels');
-    if (planetLabelsEl) planetLabelsEl.style.display = hidden ? 'none' : '';
-    if (this.moonLabelContainer) this.moonLabelContainer.style.display = hidden ? 'none' : '';
+    if (planetLabelsEl) planetLabelsEl.style.display = show ? '' : 'none';
+    if (this.moonLabelContainer) this.moonLabelContainer.style.display = show ? '' : 'none';
     // The marker sprites are Three.js objects owned by the renderLabels loop —
-    // which surface view skips — so hide them explicitly on entry.
-    if (hidden) this.planetLabels?.hideAll();
+    // which surface view (and the setting) skips — so hide them explicitly.
+    if (!show) this.planetLabels?.hideAll();
   }
 
   /** Drag look-around: content follows the finger; any drag breaks tracking. */
@@ -4641,9 +4677,10 @@ export class PlanetariumMode {
     this.pumpObservatoryEventSearch();
 
     // Occlusion pipeline while landed: planets → moons + ship → labels.
-    // Surface view: the label containers are hidden and these per-frame
-    // renders would re-show them — the pipeline only feeds labels, skip it.
-    if (this.planetLabels && this.landedView !== 'surface') {
+    // Surface view and the labels setting: the label containers are hidden
+    // and these per-frame renders would re-show them — the pipeline only
+    // feeds labels, skip it.
+    if (this.planetLabels && this.landedView !== 'surface' && this.showBodyLabels) {
       const scenePositions = new Map<string, { x: number; y: number; z: number }>();
       for (const planet of this.solarSystem.planets) {
         scenePositions.set(planet.data.name, {
@@ -4667,7 +4704,7 @@ export class PlanetariumMode {
       );
     }
 
-    if (this.landedView !== 'surface') {
+    if (this.landedView !== 'surface' && this.showBodyLabels) {
       this.renderMoonLabels();
       this.updateSunLabel();
     }
@@ -4717,6 +4754,8 @@ export class PlanetariumMode {
       planetScale: this.planetScale,
       showShip: this.showShip,
       showConstellations: this.showConstellations,
+      showBodyLabels: this.showBodyLabels,
+      showOrbitLines: this.showOrbitLines,
       landedOn: this.landedOn,
       systemSpeed: this.player.systemSpeedMultiplier,
       systemSlowdown: this.systemSlowdown,
@@ -4759,6 +4798,13 @@ export class PlanetariumMode {
     }
     const constLabel = document.getElementById('settings-constellations-label');
     if (constLabel) constLabel.textContent = this.showConstellations ? 'On' : 'Off';
+    this.showBodyLabels = saved.showBodyLabels ?? true;
+    this.applyBodyLabelVisibility();
+    const labelsLabel = document.getElementById('settings-labels-label');
+    if (labelsLabel) labelsLabel.textContent = this.showBodyLabels ? 'On' : 'Off';
+    this.showOrbitLines = saved.showOrbitLines ?? true;
+    const orbitsLabel = document.getElementById('settings-orbits-label');
+    if (orbitsLabel) orbitsLabel.textContent = this.showOrbitLines ? 'On' : 'Off';
 
     // Restore autopilot target (kept even when landed — resumes on exit).
     // Pre-provenance saves migrate by heuristic in the store sanitizer (only

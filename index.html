@@ -452,6 +452,7 @@
       font-size: 12.5px; font-weight: 500; color: var(--obs-t1); cursor: pointer; font-family: var(--font);
     }
     .obs-lookup:hover { background: rgba(124, 154, 255, 0.10); border-color: rgba(124, 154, 255, 0.3); }
+    .obs-lookup span { font-weight: 600; }
     .obs-lookup i { font-style: normal; color: var(--obs-accent); font-size: 12px; }
     .obs-lookup em { font-style: normal; font-weight: 400; color: var(--obs-t3); font-size: 11px; }
     .obs-sec {
@@ -1781,6 +1782,18 @@
           </button>
         </div>
         <div class="settings-row">
+          <span class="settings-label">Planet labels</span>
+          <button class="settings-toggle" id="settings-labels-toggle">
+            <span id="settings-labels-label">On</span>
+          </button>
+        </div>
+        <div class="settings-row">
+          <span class="settings-label">Orbit lines</span>
+          <button class="settings-toggle" id="settings-orbits-toggle">
+            <span id="settings-orbits-label">On</span>
+          </button>
+        </div>
+        <div class="settings-row">
           <span class="settings-label">Slower near planets</span>
           <button class="settings-toggle" id="settings-throttle-toggle">
             <span id="settings-throttle-label">On</span>
@@ -1814,7 +1827,7 @@
           <span class="obs-now-text" id="observatory-now">--</span>
           <small id="observatory-now-tag">realtime</small>
         </div>
-        <button class="obs-lookup" id="observatory-lookup"><i>&#x2726;</i><span id="observatory-lookup-label">Look up</span><em id="observatory-lookup-hint">&mdash; watch from the surface</em></button>
+        <button class="obs-lookup" id="observatory-lookup"><i>&#x2726;</i><span id="observatory-lookup-label">Surface view</span><em id="observatory-lookup-hint">&mdash; look up from the surface</em></button>
         <div id="observatory-earth-rows">
           <div class="obs-sec">Jump to</div>
           <div class="obs-jrow">

@@ -515,8 +515,26 @@
       content: ''; position: absolute; width: 14px; height: 14px; border-radius: 50%;
       background: #cdd5e4; top: 2px; left: 2px; transition: left 0.15s;
     }
-    .obs-foot input:checked + .obs-tgl { background: rgba(124, 154, 255, 0.55); }
-    .obs-foot input:checked + .obs-tgl::after { left: 14px; }
+    /* General sibling (~): the hidden input sits first in the label so it is
+       the label's control (the ⓘ button is also labelable), not beside the pill. */
+    .obs-foot input:checked ~ .obs-tgl { background: rgba(124, 154, 255, 0.55); }
+    .obs-foot input:checked ~ .obs-tgl::after { left: 14px; }
+    .obs-footlbl { display: inline-flex; align-items: center; gap: 7px; }
+    .obs-info {
+      flex: none; width: 15px; height: 15px; padding: 0; position: relative;
+      border: 1px solid rgba(255, 255, 255, 0.22); border-radius: 50%;
+      background: none; color: var(--obs-t3); font-family: var(--obs-mono);
+      font-size: 9px; line-height: 13px; text-align: center; cursor: pointer;
+    }
+    /* Invisible halo so the 15px glyph is tappable without flipping the
+       surrounding label's checkbox on a near-miss. */
+    .obs-info::before { content: ''; position: absolute; inset: -7px; }
+    .obs-info[aria-expanded="true"] { color: var(--obs-t1); border-color: rgba(255, 255, 255, 0.45); }
+    .obs-info:focus-visible { outline: 1px solid var(--accent); outline-offset: 2px; }
+    .obs-explain {
+      margin: 7px 0 2px; padding-left: 9px; border-left: 2px solid var(--obs-hairline-dim);
+      font-size: 10.5px; line-height: 1.55; color: var(--obs-t2);
+    }
     /* Honesty caption under the Shadow guides row — shown only while the
        guides are on (everything drawn is true scale except line width). */
     .obs-guides-cap {
@@ -1858,17 +1876,22 @@
         <div class="obs-sec">Upcoming <span class="obs-key">&#9679; shows a disc &nbsp;&#9675; too small to see</span></div>
         <div id="observatory-events-list"></div>
         <div class="obs-scan" id="observatory-events-status"></div>
+        <!-- The hidden checkbox must precede the ⓘ button: a <button> is
+             labelable, and the label binds to its FIRST labelable descendant —
+             input-first keeps row/pill clicks flipping the toggle, not the ⓘ. -->
         <label class="obs-foot">
-          <span>Shadow guides</span>
           <input type="checkbox" id="observatory-guides-toggle">
+          <span class="obs-footlbl">Shadow guides<button type="button" class="obs-info" id="observatory-guides-info" aria-expanded="false" aria-controls="observatory-guides-explain" aria-label="What are shadow guides?">i</button></span>
           <span class="obs-tgl" aria-hidden="true"></span>
         </label>
+        <div class="obs-explain" id="observatory-guides-explain" style="display:none">Every planet and moon trails an invisible cone of shadow away from the Sun; an eclipse is one body passing through another&rsquo;s cone. This draws the cones of the system you&rsquo;re in at true scale &mdash; so during an event you can see the moon sitting inside its planet&rsquo;s shadow, or its own shadow touching the planet.</div>
         <div class="obs-guides-cap" id="observatory-guides-cap" style="display:none">True positions &middot; lines widened to stay visible</div>
         <label class="obs-foot" id="observatory-orbit-row" style="display:none">
-          <span>Orbit details</span>
           <input type="checkbox" id="observatory-orbit-toggle">
+          <span class="obs-footlbl">Orbit details<button type="button" class="obs-info" id="observatory-orbit-info" aria-expanded="false" aria-controls="observatory-orbit-explain" aria-label="What are orbit details?">i</button></span>
           <span class="obs-tgl" aria-hidden="true"></span>
         </label>
+        <div class="obs-explain" id="observatory-orbit-explain" style="display:none">Annotates the moon&rsquo;s real path like a textbook ellipse: nearest and farthest points, plus the two foci &mdash; the planet sits at one (Kepler&rsquo;s first law). The shaded sectors sweep equal areas in equal times, which is why the moon runs faster when it&rsquo;s closer (the second law).</div>
         <div class="obs-orbit-cap" id="observatory-orbit-cap" style="display:none"></div>
       </div>
 

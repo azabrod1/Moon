@@ -238,6 +238,12 @@ export class ObservatoryPanel {
   private orbitRowEl: HTMLElement | null = null;
   private orbitToggleEl: HTMLInputElement | null = null;
   private orbitCapEl: HTMLElement | null = null;
+  // ⓘ explainer notes under the footer toggles. Open state is per-open only:
+  // they collapse with the panel so a read note doesn't eat sheet space forever.
+  private guidesInfoEl: HTMLElement | null = null;
+  private guidesExplainEl: HTMLElement | null = null;
+  private orbitInfoEl: HTMLElement | null = null;
+  private orbitExplainEl: HTMLElement | null = null;
   private orbitAvailable = false;
   private renderedRows: { row: ObservatoryEventRow; rowEl: HTMLElement; countdownEl: HTMLElement }[] = [];
   private wired = false;
@@ -283,6 +289,10 @@ export class ObservatoryPanel {
     this.orbitRowEl = document.getElementById('observatory-orbit-row');
     this.orbitToggleEl = document.getElementById('observatory-orbit-toggle') as HTMLInputElement | null;
     this.orbitCapEl = document.getElementById('observatory-orbit-cap');
+    this.guidesInfoEl = document.getElementById('observatory-guides-info');
+    this.guidesExplainEl = document.getElementById('observatory-guides-explain');
+    this.orbitInfoEl = document.getElementById('observatory-orbit-info');
+    this.orbitExplainEl = document.getElementById('observatory-orbit-explain');
     if (this.wired) return;
     this.wired = true;
     // Seed the crossing detector — the first updateSheetInset call must not
@@ -310,6 +320,8 @@ export class ObservatoryPanel {
       this.onOrbitDetailsToggle(orbitToggle.checked);
       this.syncOrbitCapDisplay();
     });
+    this.wireInfoNote(this.guidesInfoEl, this.guidesExplainEl);
+    this.wireInfoNote(this.orbitInfoEl, this.orbitExplainEl);
     document.getElementById('observatory-lookup')?.addEventListener('click', () => this.onLookup());
     this.swapEl?.addEventListener('click', () => this.onSwap());
     this.wireJump('observatory-prev-full', 'full-moon', -1);
@@ -320,6 +332,32 @@ export class ObservatoryPanel {
     this.wireJump('observatory-next-lunar', 'lunar-eclipse', 1);
     this.wireJump('observatory-prev-solar', 'solar-eclipse', -1);
     this.wireJump('observatory-next-solar', 'solar-eclipse', 1);
+  }
+
+  /** ⓘ button toggles its explainer note open/closed. */
+  private wireInfoNote(button: HTMLElement | null, explain: HTMLElement | null): void {
+    if (!button || !explain) return;
+    button.addEventListener('click', (event) => {
+      // The button lives inside the toggle's <label>; eat the click so it
+      // can't double as a checkbox flip.
+      event.preventDefault();
+      event.stopPropagation();
+      const open = explain.style.display === 'none';
+      explain.style.display = open ? '' : 'none';
+      button.setAttribute('aria-expanded', String(open));
+      // The note changes the panel's height — the sheet's full park and the
+      // chevron clamp both measure it.
+      this.updateSheetInset();
+      this.onLayoutChange();
+      // A hand-picked or max-height-capped sheet won't grow to fit the note —
+      // it can open entirely below the scrollport.
+      if (open) explain.scrollIntoView({ block: 'nearest' });
+    });
+  }
+
+  private collapseInfoNote(button: HTMLElement | null, explain: HTMLElement | null): void {
+    if (explain) explain.style.display = 'none';
+    button?.setAttribute('aria-expanded', 'false');
   }
 
   private wireJump(buttonId: string, type: EventType, direction: 1 | -1): void {
@@ -466,6 +504,8 @@ export class ObservatoryPanel {
     // A close mid-drag must terminate the gesture first, or the dragging
     // guard would make updateSheetInset skip its cleanup below.
     this.abortSheetDrag?.();
+    this.collapseInfoNote(this.guidesInfoEl, this.guidesExplainEl);
+    this.collapseInfoNote(this.orbitInfoEl, this.orbitExplainEl);
     this.panelEl?.classList.remove('visible');
     document.body.classList.remove('observatory-sheet-open');
     this.updateSheetInset();
@@ -619,6 +659,9 @@ export class ObservatoryPanel {
   setOrbitDetailsAvailable(available: boolean): void {
     this.orbitAvailable = available;
     if (this.orbitRowEl) this.orbitRowEl.style.display = available ? '' : 'none';
+    // The row's explainer note must not outlive the row (it would read as an
+    // orphaned paragraph between the remaining footer rows).
+    if (!available) this.collapseInfoNote(this.orbitInfoEl, this.orbitExplainEl);
     this.syncOrbitCapDisplay();
   }
 

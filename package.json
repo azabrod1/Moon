@@ -1,7 +1,7 @@
 {
   "name": "moon",
   "version": "1.0.0",
-  "description": "Earth-Moon-Sun orbital simulator",
+  "description": "Flyable solar-system planetarium: real ephemerides, eclipses, and surface observatories",
   "type": "module",
   "scripts": {
     "dev": "vite",

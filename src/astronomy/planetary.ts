@@ -209,8 +209,7 @@ export function sampleTrajectoryLinePoints(
  * so cross products and spin senses are physically meaningful and the IAU
  * pole + W construction below gives the true absolute rotation phase (which
  * continents face the Sun at a UTC instant — pinned against GMST in
- * planetary.test.ts). Exception: the legacy Moon view keeps its own mirrored
- * mini-scene until it retires.
+ * planetary.test.ts).
  *
  * The IAU prime-meridian reference is the node of the body's equator on the
  * J2000 Earth equator, at RA = poleRA + 90° (always perpendicular to the

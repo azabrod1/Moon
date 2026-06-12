@@ -1,8 +1,8 @@
 /**
  * 6-DOF flight physics for the Moon Flight lunar-landing mini-game: translation
- * + rotation integration, lunar-gravity model, collision with the Moon's
- * surface, and landing success/crash state. Consumes FlightInputState (thrust
- * and attitude commands) and exposes a kinematic pose for the renderer.
+ * + rotation integration, altitude bounds around the Moon and speed clamping.
+ * Consumes FlightInputState (thrust and attitude commands) and exposes a
+ * kinematic pose for the renderer.
  */
 import * as THREE from 'three';
 import { MOON_RADIUS_KM, type LightingSnapshot } from './lightingSnapshot';
@@ -60,10 +60,10 @@ export class FlightController {
   private boostActive = false;
   private quat = new THREE.Quaternion();
 
-  initializeFromSnapshot(snap: LightingSnapshot): void {
-    const earthDir = snap.earthDir.clone().normalize();
+  initializeFromSnapshot(snapshot: LightingSnapshot): void {
+    const earthDir = snapshot.earthDir.clone().normalize();
     const tiltRaw = ECLIPTIC_NORTH.clone().multiplyScalar(0.85)
-      .add(snap.sunDir.clone().multiplyScalar(0.4));
+      .add(snapshot.sunDir.clone().multiplyScalar(0.4));
     const tilt = tiltRaw.sub(earthDir.clone().multiplyScalar(tiltRaw.dot(earthDir))).normalize();
     const camDir = earthDir.clone().multiplyScalar(-0.93)
       .add(tilt.multiplyScalar(0.367))
@@ -152,7 +152,7 @@ export class FlightController {
     // Star sphere renders at 9500 km from camera, so far must stay above that.
     // Near scales with altitude to preserve depth precision when the scene
     // gets large; at the surface we need it tight to avoid clipping nearby
-    // terrain once tile streaming lands in phase 5.
+    // terrain.
     camera.near = THREE.MathUtils.clamp(altitude * 0.002, 0.01, 10);
     camera.far = Math.max(10500, altitude + 5000);
     camera.updateProjectionMatrix();

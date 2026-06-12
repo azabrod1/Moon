@@ -118,7 +118,7 @@ export function surfaceEventExpectation(
 ): string {
   if (classification === 'none') return '';
   const parent = spec.parentPlanet;
-  const moonMid = bodyDisplayName(spec.moonName);
+  const moonDisplay = bodyDisplayName(spec.moonName);
   if (landed.type === 'moon' && landed.name === spec.moonName) {
     if (spec.kind === 'eclipse') {
       // You are the eclipsed moon: the parent covers (some of) your Sun.
@@ -142,7 +142,7 @@ export function surfaceEventExpectation(
     switch (classification) {
       case 'penumbral':
       case 'partial': return 'the Sun is only partly covered, no darkness';
-      case 'annular': return `a ring of Sun remains around ${moonMid} at peak`;
+      case 'annular': return `a ring of Sun remains around ${moonDisplay} at peak`;
       case 'total': return 'the Sun is fully covered at peak';
     }
   }
@@ -181,18 +181,18 @@ export function surfaceAltitudeAU(bodyRadiusAU: number): number {
 /**
  * Elevation above the local horizon the tracked target sits at by default.
  * A zenith target gives drag-yaw nothing to pan against — horizontal drag
- * becomes a roll about the look axis and the sky pivots around the target
- * (design-brief #26). 68° keeps the target commanding while leaving a
+ * becomes a roll about the look axis and the sky pivots around the target.
+ * 68° keeps the target commanding while leaving a
  * horizon band in frame as a stable pan reference.
  */
 export const SURFACE_TARGET_ELEVATION_DEG = 68;
 
-const tmpVantageT = new THREE.Vector3();
-const tmpVantageH = new THREE.Vector3();
+const tmpTargetDir = new THREE.Vector3();
+const tmpPoleTangent = new THREE.Vector3();
 
 /**
  * Default vantage: hover above a surface point chosen so the look target
- * sits at `targetElevationDeg` above the local horizon (90° = the legacy
+ * sits at `targetElevationDeg` above the local horizon (90° = the
  * sub-target zenith). The observer is displaced from the sub-target point
  * toward `poleAxis` — the body's north — so the target culminates toward
  * the local south, the way a mid-latitude observer sees the sky.
@@ -219,24 +219,24 @@ export function computeSubTargetVantage(
   targetElevationDeg: number,
   out: THREE.Vector3,
 ): THREE.Vector3 {
-  const t = tmpVantageT.copy(dirToTarget);
-  if (t.lengthSq() < 1e-30) t.set(1, 0, 0);
-  t.normalize();
-  const h = tmpVantageH.copy(poleAxis).addScaledVector(t, -poleAxis.dot(t));
-  if (h.lengthSq() < 1e-12) {
+  const targetDir = tmpTargetDir.copy(dirToTarget);
+  if (targetDir.lengthSq() < 1e-30) targetDir.set(1, 0, 0);
+  targetDir.normalize();
+  const poleTangent = tmpPoleTangent.copy(poleAxis).addScaledVector(targetDir, -poleAxis.dot(targetDir));
+  if (poleTangent.lengthSq() < 1e-12) {
     const ax = Math.abs(poleAxis.x);
     const ay = Math.abs(poleAxis.y);
     const az = Math.abs(poleAxis.z);
-    if (ax <= ay && ax <= az) h.set(1, 0, 0);
-    else if (ay <= az) h.set(0, 1, 0);
-    else h.set(0, 0, 1);
-    h.addScaledVector(t, -h.dot(t));
+    if (ax <= ay && ax <= az) poleTangent.set(1, 0, 0);
+    else if (ay <= az) poleTangent.set(0, 1, 0);
+    else poleTangent.set(0, 0, 1);
+    poleTangent.addScaledVector(targetDir, -poleTangent.dot(targetDir));
   }
-  h.normalize();
+  poleTangent.normalize();
   const tiltRad = (90 - targetElevationDeg) * DEG2RAD;
-  out.copy(t)
+  out.copy(targetDir)
     .multiplyScalar(Math.cos(tiltRad))
-    .addScaledVector(h, Math.sin(tiltRad));
+    .addScaledVector(poleTangent, Math.sin(tiltRad));
   return out.normalize().multiplyScalar(bodyRadiusAU + surfaceAltitudeAU(bodyRadiusAU));
 }
 

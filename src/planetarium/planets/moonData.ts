@@ -127,7 +127,7 @@ export const MOONS: MoonData[] = [
   moon('Hydra', 'Pluto', 25.5, 64_738, 0xa8a8a8),
 ];
 
-// Group moons by parent planet for quick lookup.
+// Return moons belonging to a parent planet.
 export function getMoonsByPlanet(planetName: string): MoonData[] {
   return MOONS.filter((moonEntry) => moonEntry.parentPlanet === planetName);
 }

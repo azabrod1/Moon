@@ -1,5 +1,5 @@
 /**
- * Surface-view HUD for the Observatory (Option D, reference d-s3.png):
+ * Surface-view HUD for the Observatory:
  * bottom-left narrative stack (eyebrow / headline / subline with the warm
  * peak countdown / mono when-line), bottom-right FOV cluster with a
  * log-scale hairline, breathing corner brackets over the tracked target with
@@ -89,7 +89,7 @@ export class ObservatoryHUD {
     this.trackPillEl?.addEventListener('click', () => this.onResumeTracking());
     // The chevron is the way back when the target left the frame in free look.
     this.chevronEl?.addEventListener('click', () => this.onResumeTracking());
-    // Transport strip — the surface view's only time controls (policy 1).
+    // Transport strip — the surface view's only time controls.
     document.getElementById('surface-tb-pause')?.addEventListener('click', () => this.onTimeAction('toggle-pause'));
     document.getElementById('surface-tb-slower')?.addEventListener('click', () => this.onTimeAction('slower'));
     document.getElementById('surface-tb-faster')?.addEventListener('click', () => this.onTimeAction('faster'));
@@ -111,36 +111,36 @@ export class ObservatoryHUD {
    * them; the off-frame chevron hugs the screen edge pointing toward the
    * target and replaces the anchored cluster entirely.
    */
-  updateMarker(p: SurfaceMarkerPlacement): void {
+  updateMarker(placement: SurfaceMarkerPlacement): void {
     if (!this.bracketsEl || !this.reticleEl || !this.chevronEl || !this.discNoteEl || !this.trackPillEl) return;
     // Fractional coords, positioned via transform (left/top pixel-snap at
     // paint): a slow sky crawl must render sub-pixel-smooth, not twitch.
     // The dedup key quantizes to 0.1 px so steady frames still skip writes.
-    const x = p.xPx ?? 0;
-    const y = p.yPx ?? 0;
-    const size = p.sizePx ?? 0;
-    const angle = p.angleDeg ?? 0;
-    const css = `${p.mode}|${x.toFixed(1)}|${y.toFixed(1)}|${size.toFixed(1)}|${angle.toFixed(1)}`;
+    const x = placement.xPx ?? 0;
+    const y = placement.yPx ?? 0;
+    const size = placement.sizePx ?? 0;
+    const angle = placement.angleDeg ?? 0;
+    const css = `${placement.mode}|${x.toFixed(1)}|${y.toFixed(1)}|${size.toFixed(1)}|${angle.toFixed(1)}`;
     if (css === this.lastMarkerCss) return;
     this.lastMarkerCss = css;
 
-    this.bracketsEl.style.display = p.mode === 'brackets' ? '' : 'none';
-    this.reticleEl.style.display = p.mode === 'reticle' ? '' : 'none';
-    this.chevronEl.style.display = p.mode === 'chevron' ? '' : 'none';
-    const anchored = p.mode === 'brackets' || p.mode === 'reticle';
+    this.bracketsEl.style.display = placement.mode === 'brackets' ? '' : 'none';
+    this.reticleEl.style.display = placement.mode === 'reticle' ? '' : 'none';
+    this.chevronEl.style.display = placement.mode === 'chevron' ? '' : 'none';
+    const anchored = placement.mode === 'brackets' || placement.mode === 'reticle';
     this.discNoteEl.style.display = anchored ? '' : 'none';
     this.trackPillEl.style.display = anchored ? '' : 'none';
 
-    if (p.mode === 'brackets') {
+    if (placement.mode === 'brackets') {
       const top = y - size / 2;
       this.bracketsEl.style.transform = `translate(${x - size / 2}px, ${top}px)`;
       this.bracketsEl.style.width = `${size}px`;
       this.bracketsEl.style.height = `${size}px`;
       this.anchorCluster(x, top + size);
-    } else if (p.mode === 'reticle') {
+    } else if (placement.mode === 'reticle') {
       this.reticleEl.style.transform = `translate(${x - 6}px, ${y - 6}px)`;
       this.anchorCluster(x, y + 8);
-    } else if (p.mode === 'chevron') {
+    } else if (placement.mode === 'chevron') {
       // The ‹ glyph points −x at rotation 0; flip it onto the target bearing.
       this.chevronEl.style.transform = `translate(${x - 15}px, ${y - 15}px) rotate(${angle + 180}deg)`;
     }
@@ -179,10 +179,10 @@ export class ObservatoryHUD {
       `${state.fovDeg >= 10 ? Math.round(state.fovDeg) : state.fovDeg.toFixed(1)}°`,
     );
     if (this.fovMarkEl) {
-      const t =
+      const normalizedFov =
         Math.log(state.fovDeg / SURFACE_FOV_MIN_DEG) /
         Math.log(SURFACE_FOV_MAX_DEG / SURFACE_FOV_MIN_DEG);
-      this.fovMarkEl.style.left = `${(Math.min(1, Math.max(0, t)) * 100).toFixed(1)}%`;
+      this.fovMarkEl.style.left = `${(Math.min(1, Math.max(0, normalizedFov)) * 100).toFixed(1)}%`;
     }
     setText(
       'surface-trackpill-text',

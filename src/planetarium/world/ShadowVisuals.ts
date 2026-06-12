@@ -19,7 +19,7 @@
  * resolves on screen, and fade out with the camera inside a cone (you can't
  * see a volume's outline from inside it — and you'd be inside that shadow).
  *
- * Honesty contract (design round D-3): every position, radius and length is
+ * Honesty contract: every position, radius and length is
  * true scale, computed from the same closed forms the event engine
  * classifies with (computeShadowConeProfileKm, shadowAxisSphereHitAU — the
  * guides and the event list can never disagree). Only line WIDTH is
@@ -34,7 +34,7 @@
  * origin, AU units), so the floating origin is free; lines are shared unit
  * geometry re-posed per frame by transform with zero allocations.
  *
- * Caveat (documented in the plan): small moons render with a 5%-of-parent
+ * Caveat: small moons render with a 5%-of-parent
  * minimum mesh scale in orbit view, so a tiny moon's inflated ball can dwarf
  * its own true-scale guides — Phobos' drawn ball swallows its real ∅59 km
  * footprint rings. The rings and spot are real; the ball isn't. Surface view
@@ -64,7 +64,7 @@ const FORWARD = new THREE.Vector3(0, 0, 1); // CircleGeometry's / unit ring's fa
 /** Show the landed moon's cones once its shadow axis passes within this many parent radii. */
 const MOON_CONE_GATE_RADII = 3;
 
-// Instrument line spec (design round D-3): one neutral core color over a
+// Instrument line spec: one neutral core color over a
 // dark casing so lines read over black *and* a lit limb without glowing
 // (far below the bloom threshold); identity tints live only in the cone
 // fills. Solid = umbra, dashed = penumbra; the axis is the faintest line.
@@ -238,7 +238,7 @@ export class ShadowVisuals {
   private tmpHelio = new THREE.Vector3();
   private tmpVec = new THREE.Vector3();
   private tmpOrigin = new THREE.Vector3();
-  private tmpW = new THREE.Vector3();
+  private tmpAxisInOrbitPlane = new THREE.Vector3();
   private tmpRingCenter = new THREE.Vector3();
   private tmpSyzygy = new THREE.Vector3();
   private tmpTickDir = new THREE.Vector3();
@@ -285,7 +285,7 @@ export class ShadowVisuals {
     new Line2(this.unitSegment, this.styleUmbra.core).computeLineDistances();
 
     // Same visual language as before: parent shadow warm-dark, moon shadow
-    // cool-dark (D-3 fill tints); umbra denser than penumbra.
+    // cool-dark; umbra denser than penumbra.
     this.parentUmbraRec = this.makeConeRecord(coneMaterial(PARENT_FILL_COLOR, 0.16), this.styleUmbra);
     this.parentPenumbraRec = this.makeConeRecord(coneMaterial(PARENT_FILL_COLOR, 0.07), this.stylePenumbra);
     this.moonUmbraRec = this.makeConeRecord(coneMaterial(MOON_FILL_COLOR, 0.18), this.styleUmbra);
@@ -578,18 +578,18 @@ export class ShadowVisuals {
    */
   private poseEclipseRings(
     slot: GuideSlot,
-    m: MoonMesh,
+    moon: MoonMesh,
     axis: THREE.Vector3,
     parentDistAU: number,
     parentEffRadiusKm: number,
   ): number {
-    const offset = m.mesh.position;
+    const offset = moon.mesh.position;
     const orbitRadiusAU = offset.length();
     if (orbitRadiusAU <= 0) return 0;
-    const n = slot.orbitNormal;
-    const sinBeta = axis.dot(n);
-    const w = this.tmpW.copy(axis).addScaledVector(n, -sinBeta);
-    const wLen = w.length();
+    const orbitNormal = slot.orbitNormal;
+    const sinBeta = axis.dot(orbitNormal);
+    const axisInOrbitPlane = this.tmpAxisInOrbitPlane.copy(axis).addScaledVector(orbitNormal, -sinBeta);
+    const wLen = axisInOrbitPlane.length();
     // Pole-on (axis ⊥ orbit plane): the orbit never approaches the shadow
     // axis — there is no crossing to mark. Drawing anything here would be a
     // fabrication; resetFrame already hid the rings and tick.
@@ -612,8 +612,8 @@ export class ShadowVisuals {
     slot.ringPenumbra.setRing(this.tmpRingCenter, axis, penumbraAU);
     if (umbraAbsAU > 1e-12) slot.ringUmbra.setRing(this.tmpRingCenter, axis, umbraAbsAU);
 
-    const syzygy = this.tmpSyzygy.copy(w).divideScalar(wLen).multiplyScalar(orbitRadiusAU);
-    const tickDir = this.tmpTickDir.crossVectors(n, syzygy).normalize();
+    const syzygy = this.tmpSyzygy.copy(axisInOrbitPlane).divideScalar(wLen).multiplyScalar(orbitRadiusAU);
+    const tickDir = this.tmpTickDir.crossVectors(orbitNormal, syzygy).normalize();
     const halfLenAU = penumbraAU * 0.35;
     this.tmpSegA.copy(syzygy).addScaledVector(tickDir, -halfLenAU);
     this.tmpSegB.copy(syzygy).addScaledVector(tickDir, halfLenAU);
@@ -639,18 +639,18 @@ export class ShadowVisuals {
    */
   private poseTransitGuides(
     slot: GuideSlot,
-    m: MoonMesh,
+    moon: MoonMesh,
     moonAxis: THREE.Vector3,
     moonDistAU: number,
     parentRadiusAU: number,
   ): void {
-    const offset = m.mesh.position;
+    const offset = moon.mesh.position;
     const tHitAU = shadowAxisSphereHitAU(offset, moonAxis, parentRadiusAU);
     const tNearAU = tHitAU ?? -offset.dot(moonAxis);
     if (tNearAU <= 0) return;
 
     computeShadowConeProfileKm(
-      m.data.radiusKm,
+      moon.data.radiusKm,
       moonDistAU * KM_PER_AU,
       tNearAU * KM_PER_AU,
       this.profileScratch,
@@ -693,7 +693,7 @@ export class ShadowVisuals {
       const tickDir = this.tmpTickDir.crossVectors(slot.orbitNormal, moonAxis);
       if (tickDir.lengthSq() > 1e-12) {
         tickDir.normalize();
-        const halfLenAU = m.data.radiusAU * 0.8;
+        const halfLenAU = moon.data.radiusAU * 0.8;
         this.tmpSegA.copy(offset).addScaledVector(moonAxis, apexAU);
         this.tmpSegB.copy(this.tmpSegA).addScaledVector(tickDir, halfLenAU);
         this.tmpSegA.addScaledVector(tickDir, -halfLenAU);

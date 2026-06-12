@@ -1,6 +1,6 @@
 /**
- * Observatory panel for the Planetarium's landed mode — Option D "Cinematic
- * Instrument" (design reference: ~/.claude/plans/moon-design). Vantage header
+ * Observatory panel for the Planetarium's landed mode — cool-glass instrument
+ * styling (accent reserved for happening-now warmth). Vantage header
  * with swap chip, phase hero (SVG glyph + angular-diameter data line), live
  * now-bar, the surface-view entry, Earth's prev/next jump rows with next-date
  * metas, and the per-system upcoming-events list with classification badges.
@@ -101,8 +101,8 @@ const SHEET_SNAP_EPSILON_PX = 8;
  * (free drag, no detent snap), except: past the dismiss threshold below the
  * peek floor it dismisses, and within the snap epsilon of either edge it
  * resolves to the tracking state so the park follows future floor/ceiling
- * changes. From the floor a dismiss needs the same >80px pull as the old
- * detent model; from height the pull must travel the whole stack plus the
+ * changes. From the floor a dismiss needs a >80px pull;
+ * from height the pull must travel the whole stack plus the
  * threshold — it can't skip straight off-screen. Degenerate panels (ceiling
  * ≈ floor) resolve every non-dismiss release to 'peek'. Tap-vs-drag
  * discrimination happens at the call site, not here.
@@ -239,7 +239,7 @@ export class ObservatoryPanel {
   private orbitToggleEl: HTMLInputElement | null = null;
   private orbitCapEl: HTMLElement | null = null;
   private orbitAvailable = false;
-  private renderedRows: { row: ObservatoryEventRow; rowEl: HTMLElement; cdEl: HTMLElement }[] = [];
+  private renderedRows: { row: ObservatoryEventRow; rowEl: HTMLElement; countdownEl: HTMLElement }[] = [];
   private wired = false;
   // Sheet-form park state (≤640px) — the user's INTENT. Entering sheet form —
   // open or a breakpoint crossing — always means peek; `wasSheetForm` detects
@@ -394,7 +394,7 @@ export class ObservatoryPanel {
    * to the live floor/ceiling, then publishes the sheet's height as
    * --sheet-inset so bottom-anchored chrome (the surface transport strip,
    * the surface-HUD corners) rides its top edge instead of being buried —
-   * cross-component policy 2: a sheet never seals the transport. Behavior
+   * the sheet never covers the surface transport strip. Behavior
    * (.sheet-peek, scrollTop) keys off the APPLIED height while sheetPark
    * keeps the intent, so a transient content shrink acts like peek and the
    * hand-picked height recovers when the content regrows. Desktop or closed,
@@ -483,9 +483,9 @@ export class ObservatoryPanel {
    * sheetReleaseTarget. A tap on the handle (|dy| < 6, pointerup only — a
    * cancelled gesture reverts) toggles peek ⇄ full: collapse-first from any
    * height, because the phone's most urgent need is the sky back. Known
-   * trade vs the old detents: a fast flick under-travels (no velocity
-   * projection — the tap covers "give me everything"; flick physics is
-   * design-pass material).
+   * trade: a fast flick under-travels (release parks where the finger
+   * stopped — no velocity projection); the handle tap covers "give me
+   * everything".
    */
   private wireSheetDrag(): void {
     const panel = this.panelEl;
@@ -543,7 +543,8 @@ export class ObservatoryPanel {
       // One continuous law: the finger asks for a height; clamp it to the
       // drag range and render below-floor overshoot as a downward translate
       // (dismiss preview). The transport strip rides the visible height
-      // (policy 2 holds mid-gesture too) — clamped at 0: a long mouse pull
+      // (the sheet must not cover the transport strip mid-gesture either) —
+      // clamped at 0: a long mouse pull
       // can report clientY past the viewport under pointer capture, and a
       // negative inset would push the bottom chrome off-screen.
       const target = startHeight - (e.clientY - startY);
@@ -630,7 +631,7 @@ export class ObservatoryPanel {
     this.orbitCapEl.style.display =
       this.orbitAvailable && this.orbitToggleEl?.checked ? '' : 'none';
     // Row/cap visibility changes the sheet's height — keep the inset current
-    // (policy 2: a sheet never seals the surface-view transport strip).
+    // (the sheet must not cover the surface-view transport strip).
     this.updateSheetInset();
   }
 
@@ -694,8 +695,8 @@ export class ObservatoryPanel {
       badgeEl.className = 'obs-badge';
       badgeEl.textContent = row.classification;
       // "What you'll see" rides the row as a tooltip for now — the jump toast
-      // and surface-HUD subline carry it in full; an in-row treatment is the
-      // design pass's call (density, brief #5).
+      // and surface-HUD subline carry it in full; an in-row treatment is
+      // kept out to preserve density.
       if (row.hint) {
         rowEl.title = row.hint;
         badgeEl.title = row.hint;
@@ -705,9 +706,9 @@ export class ObservatoryPanel {
       timeEl.textContent = row.magnitudeText
         ? `${formatRowTime(row.event.peakUtcMs, includeYear)} · ${row.magnitudeText}`
         : formatRowTime(row.event.peakUtcMs, includeYear);
-      const cdEl = document.createElement('span');
-      cdEl.className = 'obs-cd';
-      metaEl.append(badgeEl, timeEl, cdEl);
+      const countdownEl = document.createElement('span');
+      countdownEl.className = 'obs-cd';
+      metaEl.append(badgeEl, timeEl, countdownEl);
       mainEl.append(nameEl, metaEl);
       const rightEl = document.createElement('span');
       rightEl.className = 'obs-ev-right';
@@ -716,13 +717,13 @@ export class ObservatoryPanel {
       jumpEl.textContent = 'Jump';
       jumpEl.title = `Jump to ${row.label}`;
       jumpEl.addEventListener('click', () => this.onEventJump(row.event));
-      const diaEl = document.createElement('span');
-      diaEl.className = 'obs-ev-dia';
-      diaEl.textContent = `∅ ${formatDiscDeg(row.discDeg)}°`;
-      rightEl.append(jumpEl, diaEl);
+      const diameterEl = document.createElement('span');
+      diameterEl.className = 'obs-ev-dia';
+      diameterEl.textContent = `∅ ${formatDiscDeg(row.discDeg)}°`;
+      rightEl.append(jumpEl, diameterEl);
       rowEl.append(railEl, mainEl, rightEl);
       this.eventsListEl.appendChild(rowEl);
-      this.renderedRows.push({ row, rowEl, cdEl });
+      this.renderedRows.push({ row, rowEl, countdownEl });
     }
     // List rebuilds change the sheet's height — keep the inset current.
     this.updateSheetInset();
@@ -773,9 +774,9 @@ export class ObservatoryPanel {
     setText('observatory-now', formatObservatoryClock(utcMs));
     setText('observatory-now-tag', extras.nowTag);
 
-    for (const { row, rowEl, cdEl } of this.renderedRows) {
+    for (const { row, rowEl, countdownEl } of this.renderedRows) {
       const text = formatCountdown(utcMs, row.event);
-      if (cdEl.textContent !== text) cdEl.textContent = text;
+      if (countdownEl.textContent !== text) countdownEl.textContent = text;
       const live = utcMs >= row.event.startUtcMs && utcMs <= row.event.endUtcMs;
       if (rowEl.classList.contains('live') !== live) rowEl.classList.toggle('live', live);
     }

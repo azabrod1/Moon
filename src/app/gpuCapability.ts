@@ -11,17 +11,17 @@ export function canGPUDoBloom(renderer: THREE.WebGLRenderer): boolean {
     const ext = gl.getExtension('EXT_color_buffer_float') || gl.getExtension('EXT_color_buffer_half_float');
     if (!ext) { debugLog('Bloom test: no float buffer extension'); return false; }
     // Actually create a small float framebuffer and check completeness
-    const fb = gl.createFramebuffer();
-    const tex = gl.createTexture();
-    gl.bindTexture(gl.TEXTURE_2D, tex);
+    const framebuffer = gl.createFramebuffer();
+    const texture = gl.createTexture();
+    gl.bindTexture(gl.TEXTURE_2D, texture);
     gl.texImage2D(gl.TEXTURE_2D, 0, (gl as WebGL2RenderingContext).RGBA16F ?? gl.RGBA,
       4, 4, 0, gl.RGBA, (gl as WebGL2RenderingContext).HALF_FLOAT ?? gl.FLOAT, null);
-    gl.bindFramebuffer(gl.FRAMEBUFFER, fb);
-    gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, tex, 0);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, framebuffer);
+    gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, texture, 0);
     const status = gl.checkFramebufferStatus(gl.FRAMEBUFFER);
     gl.bindFramebuffer(gl.FRAMEBUFFER, null);
-    gl.deleteTexture(tex);
-    gl.deleteFramebuffer(fb);
+    gl.deleteTexture(texture);
+    gl.deleteFramebuffer(framebuffer);
     const ok = status === gl.FRAMEBUFFER_COMPLETE;
     debugLog('Bloom test: float FBO', { ok, status });
     return ok;

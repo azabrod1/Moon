@@ -63,12 +63,12 @@ function isFiniteNumber(value: unknown): value is number {
 
 function sanitizeLandedOn(raw: unknown): LandedTarget {
   if (!raw || typeof raw !== 'object') return null;
-  const lo = raw as Record<string, unknown>;
-  if (lo.type === 'planet' && typeof lo.name === 'string') {
-    return { type: 'planet', name: lo.name };
+  const landedRecord = raw as Record<string, unknown>;
+  if (landedRecord.type === 'planet' && typeof landedRecord.name === 'string') {
+    return { type: 'planet', name: landedRecord.name };
   }
-  if (lo.type === 'moon' && typeof lo.name === 'string' && typeof lo.parentPlanet === 'string') {
-    return { type: 'moon', name: lo.name, parentPlanet: lo.parentPlanet };
+  if (landedRecord.type === 'moon' && typeof landedRecord.name === 'string' && typeof landedRecord.parentPlanet === 'string') {
+    return { type: 'moon', name: landedRecord.name, parentPlanet: landedRecord.parentPlanet };
   }
   return null;
 }
@@ -279,7 +279,6 @@ export class PlanetariumStore {
     }
   }
 
-  /** Record that the intro help has been dismissed. */
   markHelpSeen(): void {
     try {
       localStorage.setItem(HELP_SEEN_KEY, '1');

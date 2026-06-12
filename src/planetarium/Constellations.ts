@@ -78,41 +78,39 @@ export class Constellations {
       return result;
     };
 
-    // Count total line segments
     let totalSegments = 0;
-    for (const c of CONSTELLATIONS) totalSegments += c.lines.length;
+    for (const constellation of CONSTELLATIONS) totalSegments += constellation.lines.length;
 
     const positions = new Float32Array(totalSegments * 6); // 2 vertices × 3 components
     let idx = 0;
-    const v = new THREE.Vector3();
+    const vectorScratch = new THREE.Vector3();
 
-    // Label container
     this.labelContainer = document.createElement('div');
     this.labelContainer.id = 'constellation-labels';
     this.labelContainer.style.cssText =
       'position:fixed;top:0;left:0;width:100%;height:100%;pointer-events:none;z-index:14;overflow:hidden;';
     document.body.appendChild(this.labelContainer);
 
-    for (const c of CONSTELLATIONS) {
+    for (const constellation of CONSTELLATIONS) {
       // Build line geometry and compute centroid
       let centroidRa = 0;
       let centroidDec = 0;
       let nPoints = 0;
       const pointSet = new Set<string>();
 
-      for (const [ra1, dec1, ra2, dec2] of c.lines) {
+      for (const [ra1, dec1, ra2, dec2] of constellation.lines) {
         const [sra1, sdec1] = snap(ra1, dec1);
         const [sra2, sdec2] = snap(ra2, dec2);
 
-        celestialToVec3(sra1, sdec1, v);
-        positions[idx++] = v.x;
-        positions[idx++] = v.y;
-        positions[idx++] = v.z;
+        celestialToVec3(sra1, sdec1, vectorScratch);
+        positions[idx++] = vectorScratch.x;
+        positions[idx++] = vectorScratch.y;
+        positions[idx++] = vectorScratch.z;
 
-        celestialToVec3(sra2, sdec2, v);
-        positions[idx++] = v.x;
-        positions[idx++] = v.y;
-        positions[idx++] = v.z;
+        celestialToVec3(sra2, sdec2, vectorScratch);
+        positions[idx++] = vectorScratch.x;
+        positions[idx++] = vectorScratch.y;
+        positions[idx++] = vectorScratch.z;
 
         const k1 = `${sra1},${sdec1}`;
         const k2 = `${sra2},${sdec2}`;
@@ -130,14 +128,13 @@ export class Constellations {
         }
       }
 
-      // Create label at centroid
       if (nPoints > 0) {
         centroidRa /= nPoints;
         centroidDec /= nPoints;
 
         const labelEl = document.createElement('div');
         labelEl.className = 'constellation-label';
-        labelEl.textContent = c.name;
+        labelEl.textContent = constellation.name;
         labelEl.style.display = 'none';
         this.labelContainer.appendChild(labelEl);
 
@@ -153,7 +150,6 @@ export class Constellations {
       }
     }
 
-    // Build geometry
     const geo = new THREE.BufferGeometry();
     geo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
 

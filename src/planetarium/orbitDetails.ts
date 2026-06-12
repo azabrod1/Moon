@@ -20,7 +20,7 @@ const MS_PER_DAY = 86_400_000;
 const RESAMPLE_MAX_MS = 6 * 3_600_000;
 /** Span starts P/8 before the reference time (seam ~45° behind the subject). */
 export const SPAN_LEAD_FRACTION = 1 / 8;
-/** The old overlay swept 1 day of a 27.32-day lunation; generalized as P/27.32. */
+/** Sweep one day for a 27.32-day lunation; generalized as P/27.32. */
 export const SECTOR_SWEEP_FRACTION = 1 / 27.321661;
 /** Sampling density: high-e orbits thin out near periapsis (dν/dM at peri is
  *  (1+e)²/(1−e²)^1.5 ≈ 10.6× for Nereid) and need the denser grid there. */

@@ -203,7 +203,7 @@ export function sampleTrajectoryLinePoints(
 }
 
 /**
- * Frame contract (the cycle-2 chirality flip): the scene is J2000 equatorial,
+ * Frame contract: the scene is J2000 equatorial,
  * right-handed — +X vernal equinox, +Y celestial north, +Z = RA 270°; the
  * intermediate ecliptic frame runs longitude toward −Z. det = +1 throughout,
  * so cross products and spin senses are physically meaningful and the IAU
@@ -244,9 +244,8 @@ export function computeBodyOrientationQuaternion(planet: PlanetData, jd: number)
 
 /**
  * Orientation of the body's equatorial frame without the daily spin.
- * Time-independent. (Moon positions no longer use this — they propagate JPL
- * element frames in satellites.ts; this pins the pole/spin-axis split and
- * stays available for orientation work.)
+ * Time-independent. (Moon positions propagate JPL element frames in
+ * satellites.ts; this pins the pole/spin-axis split for orientation work.)
  */
 export function computeBodyPoleQuaternion(planet: PlanetData): THREE.Quaternion {
   return buildPoleBasisQuaternion(planet, 0);

@@ -2,7 +2,7 @@
  * New Horizons spacecraft model — procedural THREE.Group geometry.
  */
 import * as THREE from 'three';
-import { createVoyagerDishGeometry, createRodBetween } from './shipPrimitives';
+import { createParabolicDishGeometry, createRodBetween } from './shipPrimitives';
 
 export function createNewHorizonsModel(referenceRadiusAU: number): THREE.Group {
   const model = new THREE.Group();
@@ -47,7 +47,7 @@ export function createNewHorizonsModel(referenceRadiusAU: number): THREE.Group {
 
   const dishRadius = referenceRadiusAU * 0.95;
   const dish = new THREE.Mesh(
-    createVoyagerDishGeometry(dishRadius, referenceRadiusAU * 0.22),
+    createParabolicDishGeometry(dishRadius, referenceRadiusAU * 0.22),
     new THREE.MeshStandardMaterial({
       color: 0xf0f4f8,
       roughness: 0.28,

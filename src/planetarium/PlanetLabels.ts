@@ -38,7 +38,6 @@ export class PlanetLabels {
   constructor(scene: THREE.Scene, camera: THREE.PerspectiveCamera) {
     this.camera = camera;
 
-    // Create label container
     this.labelContainer = document.createElement('div');
     this.labelContainer.id = 'planet-labels';
     this.labelContainer.style.cssText = `
@@ -48,13 +47,11 @@ export class PlanetLabels {
     document.body.appendChild(this.labelContainer);
 
     for (const body of PLANETARIUM_BODIES) {
-      // Create sprite
       const canvas = document.createElement('canvas');
       canvas.width = 64;
       canvas.height = 64;
       const ctx = canvas.getContext('2d')!;
 
-      // Draw a glowing circle
       const color = new THREE.Color(body.color);
       const r = Math.floor(color.r * 255);
       const g = Math.floor(color.g * 255);
@@ -91,7 +88,6 @@ export class PlanetLabels {
       sprite.scale.setScalar(0.03);
       scene.add(sprite);
 
-      // Create HTML label
       const label = document.createElement('div');
       label.className = 'planet-label';
       label.innerHTML = `
@@ -219,15 +215,10 @@ export class PlanetLabels {
       const cdz = pos.z - camZ;
       const distFromCamera = Math.sqrt(cdx * cdx + cdy * cdy + cdz * cdz);
 
-      // Scale marker: larger when farther, minimum size
-      // But switch to planet mesh when close enough
+      // Hide marker once the planet subtends enough pixels to be visible as a mesh.
       const planetVisualSize = entry.planet.radiusAU * 2;
-
-      // Hide marker when the planet itself is big enough to see
-      // (when planet subtends > ~2 pixels)
       const angularSize = planetVisualSize / Math.max(distFromPlayer, 0.0001);
       if (angularSize > 0.01) {
-        // Planet is visible on its own
         entry.sprite.visible = false;
         if (entry.labelVisible) {
           entry.label.style.display = 'none';
@@ -238,7 +229,6 @@ export class PlanetLabels {
 
       entry.sprite.visible = true;
 
-      // Project to screen for label positioning
       const proj = projectToScreen(pos, this.camera, canvasWidth, canvasHeight, this.projScratch);
       const screenX = proj.x;
       const screenY = proj.y;
@@ -273,7 +263,6 @@ export class PlanetLabels {
           entry.lastTransform = transform;
         }
 
-        // Update distance text
         const distanceText = distFromPlayer < 0.01
           ? `${(distFromPlayer * 149597870.7).toFixed(0)} km`
           : `${distFromPlayer.toFixed(2)} AU`;

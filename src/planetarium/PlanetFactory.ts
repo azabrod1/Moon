@@ -309,7 +309,6 @@ export async function createPlanetMesh(planet: PlanetData): Promise<PlanetMesh> 
     : null;
   const texture = await surfaceTexturePromise;
 
-  // High segment counts for quality
   const segments = planet.radiusKm > 50000 ? 128 : planet.radiusKm > 5000 ? 96 : 64;
 
   const geo = new THREE.SphereGeometry(planet.radiusAU, segments, segments / 2);
@@ -342,7 +341,6 @@ export async function createPlanetMesh(planet: PlanetData): Promise<PlanetMesh> 
   if (planet.name === 'Earth' && earthDetailTexturePromise) {
     const [nightTex, cloudTex, bumpTex] = await earthDetailTexturePromise;
 
-    // Night lights layer
     const nightGeo = new THREE.SphereGeometry(planet.radiusAU * 1.001, segments, segments / 2);
     nightMaterial = new THREE.ShaderMaterial({
       uniforms: {
@@ -358,7 +356,6 @@ export async function createPlanetMesh(planet: PlanetData): Promise<PlanetMesh> 
     nightMesh = new THREE.Mesh(nightGeo, nightMaterial);
     group.add(nightMesh);
 
-    // Cloud layer
     const cloudGeo = new THREE.SphereGeometry(planet.radiusAU * 1.01, segments, segments / 2);
     const cloudMat = new THREE.MeshStandardMaterial({
       map: cloudTex,
@@ -370,12 +367,10 @@ export async function createPlanetMesh(planet: PlanetData): Promise<PlanetMesh> 
     cloudsMesh = new THREE.Mesh(cloudGeo, cloudMat);
     group.add(cloudsMesh);
 
-    // Use bump map too
     (mesh.material as THREE.MeshStandardMaterial).bumpMap = bumpTex;
     (mesh.material as THREE.MeshStandardMaterial).bumpScale = planet.radiusAU * 0.02;
   }
 
-  // Saturn rings
   let rings: THREE.Mesh | undefined;
   if (planet.hasRings) {
     rings = createSaturnRings(planet.radiusAU);
@@ -481,7 +476,6 @@ export function createPlanetariumSun(useBloom = true): THREE.Group {
   group.add(outerGlow);
   group.add(innerGlow);
 
-  // Point light
   const light = new THREE.PointLight(0xfff5e0, 3, 0, 0.3);
   group.add(light);
 
@@ -498,16 +492,14 @@ export interface MoonMesh {
   data: MoonData;
 }
 
-// Seeded pseudo-random number generator
 function seededRng(seed: number) {
-  let s = seed;
+  let state = seed;
   return () => {
-    s = (s * 16807 + 0) % 2147483647;
-    return (s - 1) / 2147483646;
+    state = (state * 16807 + 0) % 2147483647;
+    return (state - 1) / 2147483646;
   };
 }
 
-// Hash a string to a numeric seed
 function hashString(str: string): number {
   let hash = 5381;
   for (let i = 0; i < str.length; i++) {
@@ -537,42 +529,42 @@ function fractalNoise(x: number, y: number, seed: number, octaves: number): numb
 }
 
 function createMoonTextures(color: number, name: string): { colorTex: THREE.Texture; bumpTex: THREE.Texture } {
-  const W = 512;
-  const H = 256;
+  const textureWidth = 512;
+  const textureHeight = 256;
   const seed = hashString(name);
   const rng = seededRng(seed);
 
   // Determine moon "type" from color brightness/hue
-  const c = new THREE.Color(color);
-  const brightness = c.r * 0.299 + c.g * 0.587 + c.b * 0.114;
+  const baseColor = new THREE.Color(color);
+  const brightness = baseColor.r * 0.299 + baseColor.g * 0.587 + baseColor.b * 0.114;
   const isIcy = brightness > 0.55;
-  const isVolcanic = c.r > 0.6 && c.g > 0.4 && c.b < 0.35;
+  const isVolcanic = baseColor.r > 0.6 && baseColor.g > 0.4 && baseColor.b < 0.35;
 
   const colorCanvas = document.createElement('canvas');
-  colorCanvas.width = W;
-  colorCanvas.height = H;
+  colorCanvas.width = textureWidth;
+  colorCanvas.height = textureHeight;
   const ctx = colorCanvas.getContext('2d')!;
 
   const bumpCanvas = document.createElement('canvas');
-  bumpCanvas.width = W;
-  bumpCanvas.height = H;
+  bumpCanvas.width = textureWidth;
+  bumpCanvas.height = textureHeight;
   const bCtx = bumpCanvas.getContext('2d')!;
 
   // Generate per-pixel with fractal noise
-  const colorData = ctx.createImageData(W, H);
-  const bumpData = bCtx.createImageData(W, H);
-  const cd = colorData.data;
-  const bd = bumpData.data;
+  const colorData = ctx.createImageData(textureWidth, textureHeight);
+  const bumpData = bCtx.createImageData(textureWidth, textureHeight);
+  const colorPixels = colorData.data;
+  const bumpPixels = bumpData.data;
 
-  const baseR = c.r * 255;
-  const baseG = c.g * 255;
-  const baseB = c.b * 255;
+  const baseR = baseColor.r * 255;
+  const baseG = baseColor.g * 255;
+  const baseB = baseColor.b * 255;
 
-  for (let y = 0; y < H; y++) {
-    for (let x = 0; x < W; x++) {
-      const idx = (y * W + x) * 4;
-      const nx = x / W;
-      const ny = y / H;
+  for (let y = 0; y < textureHeight; y++) {
+    for (let x = 0; x < textureWidth; x++) {
+      const idx = (y * textureWidth + x) * 4;
+      const nx = x / textureWidth;
+      const ny = y / textureHeight;
 
       // Large-scale terrain variation (3 octaves)
       const terrain = fractalNoise(nx * 6, ny * 6, seed, 3);
@@ -596,50 +588,50 @@ function createMoonTextures(color: number, name: string): { colorTex: THREE.Text
 
       // Apply variation as brightness shift centered around 0
       const shift = (variation - 0.15) * 255;
-      cd[idx] = Math.max(0, Math.min(255, baseR + shift));
-      cd[idx + 1] = Math.max(0, Math.min(255, baseG + shift));
-      cd[idx + 2] = Math.max(0, Math.min(255, baseB + shift));
-      cd[idx + 3] = 255;
+      colorPixels[idx] = Math.max(0, Math.min(255, baseR + shift));
+      colorPixels[idx + 1] = Math.max(0, Math.min(255, baseG + shift));
+      colorPixels[idx + 2] = Math.max(0, Math.min(255, baseB + shift));
+      colorPixels[idx + 3] = 255;
 
       // Bump map: terrain + detail as height
       const height = Math.max(0, Math.min(255, (terrain * 0.7 + detail * 0.3) * 255));
-      bd[idx] = height;
-      bd[idx + 1] = height;
-      bd[idx + 2] = height;
-      bd[idx + 3] = 255;
+      bumpPixels[idx] = height;
+      bumpPixels[idx + 1] = height;
+      bumpPixels[idx + 2] = height;
+      bumpPixels[idx + 3] = 255;
     }
   }
 
   // Add craters (seeded)
   const craterCount = isIcy ? 5 + Math.floor(rng() * 8) : 10 + Math.floor(rng() * 15);
   for (let i = 0; i < craterCount; i++) {
-    const cx = Math.floor(rng() * W);
-    const cy = Math.floor(rng() * H);
+    const cx = Math.floor(rng() * textureWidth);
+    const cy = Math.floor(rng() * textureHeight);
     const cr = isIcy ? 2 + rng() * 5 : 3 + rng() * 12;
     for (let dy = -Math.ceil(cr); dy <= Math.ceil(cr); dy++) {
       for (let dx = -Math.ceil(cr); dx <= Math.ceil(cr); dx++) {
         const dist = Math.sqrt(dx * dx + dy * dy);
         if (dist > cr) continue;
-        const px = ((cx + dx) % W + W) % W;
-        const py = Math.max(0, Math.min(H - 1, cy + dy));
-        const idx = (py * W + px) * 4;
+        const px = ((cx + dx) % textureWidth + textureWidth) % textureWidth;
+        const py = Math.max(0, Math.min(textureHeight - 1, cy + dy));
+        const idx = (py * textureWidth + px) * 4;
         const t = dist / cr;
         if (t < 0.75) {
           // Dark crater floor
           const darken = (1 - t / 0.75) * 30;
-          cd[idx] = Math.max(0, cd[idx] - darken);
-          cd[idx + 1] = Math.max(0, cd[idx + 1] - darken);
-          cd[idx + 2] = Math.max(0, cd[idx + 2] - darken);
-          bd[idx] = Math.max(0, bd[idx] - darken * 2);
-          bd[idx + 1] = bd[idx]; bd[idx + 2] = bd[idx];
+          colorPixels[idx] = Math.max(0, colorPixels[idx] - darken);
+          colorPixels[idx + 1] = Math.max(0, colorPixels[idx + 1] - darken);
+          colorPixels[idx + 2] = Math.max(0, colorPixels[idx + 2] - darken);
+          bumpPixels[idx] = Math.max(0, bumpPixels[idx] - darken * 2);
+          bumpPixels[idx + 1] = bumpPixels[idx]; bumpPixels[idx + 2] = bumpPixels[idx];
         } else {
           // Bright rim
           const brighten = (1 - (t - 0.75) / 0.25) * 20;
-          cd[idx] = Math.min(255, cd[idx] + brighten);
-          cd[idx + 1] = Math.min(255, cd[idx + 1] + brighten);
-          cd[idx + 2] = Math.min(255, cd[idx + 2] + brighten);
-          bd[idx] = Math.min(255, bd[idx] + brighten * 2);
-          bd[idx + 1] = bd[idx]; bd[idx + 2] = bd[idx];
+          colorPixels[idx] = Math.min(255, colorPixels[idx] + brighten);
+          colorPixels[idx + 1] = Math.min(255, colorPixels[idx + 1] + brighten);
+          colorPixels[idx + 2] = Math.min(255, colorPixels[idx + 2] + brighten);
+          bumpPixels[idx] = Math.min(255, bumpPixels[idx] + brighten * 2);
+          bumpPixels[idx + 1] = bumpPixels[idx]; bumpPixels[idx + 2] = bumpPixels[idx];
         }
       }
     }

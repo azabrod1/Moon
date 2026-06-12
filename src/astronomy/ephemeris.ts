@@ -98,7 +98,7 @@ export interface MoonPosition {
   longitude: number;   // ecliptic longitude (degrees)
   latitude: number;    // ecliptic latitude (degrees)
   distance: number;    // km
-  ascending_node: number;  // longitude of ascending node (degrees)
+  ascendingNodeLongitude: number;  // longitude of ascending node (degrees)
 }
 
 /**
@@ -147,7 +147,6 @@ export function moonPosition(jd: number): MoonPosition {
     0.0021 * t * t + t * t * t / 467441 - t * t * t * t / 60616000
   );
 
-  // Convert to radians for trig
   const Dr = D * DEG;
   const Mr = M * DEG;
   const Mpr = Mp * DEG;
@@ -193,7 +192,7 @@ export function moonPosition(jd: number): MoonPosition {
   sumB += 9266 * Math.sin(2 * Dr + Mpr - Fr);              // 2D + M' - F
   sumB += 8822 * Math.sin(2 * Mpr - Fr);                   // 2M' - F
   sumB += -8143 * Math.sin(2 * Dr - Mr - Fr);              // 2D - M - F
-  sumB += 4120 * Math.sin(2 * Dr - Mr + Fr) * -1;          // sign correction
+  sumB += 4120 * Math.sin(2 * Dr - Mr + Fr) * -1;          // −4120·sin(2D − M + F)
   sumB += -3958 * Math.sin(Mr + Fr) * -1;
 
   // Distance terms (main from Meeus Table 47.A)
@@ -230,14 +229,11 @@ export function moonPosition(jd: number): MoonPosition {
   return {
     longitude,
     latitude,
-    ascending_node: norm360(omega),
+    ascendingNodeLongitude: norm360(omega),
     distance,
   };
 }
 
-/**
- * Compute all relevant orbital info for a given date.
- */
 export interface OrbitalState {
   sunLongitude: number;    // degrees
   moonLongitude: number;   // degrees
@@ -267,7 +263,6 @@ export function computeOrbitalState(date: Date): OrbitalState {
   const phaseAngle = absElong;
   const illumination = (1 - Math.cos(phaseAngle * DEG)) / 2;
 
-  // Phase name
   let phaseName: string;
   if (absElong < 10) phaseName = 'New Moon';
   else if (absElong < 80) phaseName = elongation > 0 ? 'Waxing Crescent' : 'Waning Crescent';
@@ -297,7 +292,7 @@ export function computeOrbitalState(date: Date): OrbitalState {
     sunLongitude: sun.longitude,
     moonLongitude: moon.longitude,
     moonLatitude: moon.latitude,
-    moonNodeLongitude: moon.ascending_node,
+    moonNodeLongitude: moon.ascendingNodeLongitude,
     phaseAngle,
     illumination,
     phaseName,
@@ -346,7 +341,6 @@ function findElongationCrossing(
 
     // Detect sign change (crossing through 0), but ignore wraps through ±180
     if (prevElong * curElong < 0 && Math.abs(prevElong - curElong) < 90) {
-      // Bisect to find precise crossing
       let lo = prevTime;
       let hi = curTime;
       for (let j = 0; j < 20; j++) {
@@ -396,7 +390,6 @@ export function findLunarEclipse(from: Date, direction: 1 | -1): Date | null {
     if (Math.abs(state.moonLatitude) < 1.5) {
       return fm;
     }
-    // Skip ahead past this full moon
     cursor = new Date(fm.getTime() + direction * MS_PER_DAY * 2);
   }
   return null;
@@ -420,9 +413,6 @@ export function findSolarEclipse(from: Date, direction: 1 | -1): Date | null {
   return null;
 }
 
-/**
- * Unified search function.
- */
 export function findEvent(type: EventType, from: Date, direction: 1 | -1): Date | null {
   switch (type) {
     case 'full-moon': return findFullMoon(from, direction);

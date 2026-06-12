@@ -12,9 +12,7 @@
  * so the foci are fixed-px HTML glyphs — "a label, not geometry" — projected
  * per frame by PlanetariumMode from getFocusLocalPositions().
  *
- * Palette: cool monochrome only, per the locked Option D rule (warm is
- * reserved for happening-now). The legacy overlay's gold focus/sector colors
- * are deliberately not carried over.
+ * Palette: cool monochrome only; warm is reserved for happening-now states.
  */
 import * as THREE from 'three';
 import type { OrbitGeometry } from '../orbitDetails';

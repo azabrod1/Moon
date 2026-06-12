@@ -54,10 +54,9 @@ export type HistoricJourney = {
   milestones: HistoricMilestone[];
 };
 
-/** Deep-space vantage for the Voyager-1 "Into Interstellar Space" milestone —
+/** Deep-space vantage for the Voyager-1 "Into Interstellar Space" milestone,
  *  also PlanetariumMode's fallback for Interstellar/Custom milestones without
- *  a customScenePosition. One definition: the two copies drifted apart once
- *  (caught at the cycle-2 chirality flip). */
+ *  a customScenePosition. */
 export const INTERSTELLAR_SCENE_POSITION = { x: 118, y: 6, z: 18 };
 
 const TEXTURE_BASE = `${import.meta.env.BASE_URL}textures/`;
@@ -415,8 +414,7 @@ const newHorizonsMilestones: HistoricMilestone[] = [
     // Camera sits past Pluto's Jan 2019 position (11.9, -12.6, 28.9) along the
     // outbound radial, looking back at it — Pluto's world position comes from
     // computeBodyState (Standish elements); retune if the planet model changes.
-    // Checked at the Standish switch: Pluto moved 0.024 AU — no retune needed.
-    // z negated at the cycle-2 chirality flip along with the world.
+    // z follows the scene-frame chirality.
     customScenePosition: { x: 14.3, y: -12.6, z: 34.7 },
     customLookTarget: { x: 11.9, y: -12.6, z: 28.9 },
   },

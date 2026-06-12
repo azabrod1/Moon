@@ -63,7 +63,7 @@ describe('moonPosition', () => {
     expect(Math.abs(moon.longitude - 133.162655)).toBeLessThan(0.005);
     expect(Math.abs(moon.latitude - -3.229126)).toBeLessThan(0.02);
     expect(Math.abs(moon.distance - 368409.7)).toBeLessThan(25);
-    expect(moon.ascending_node).toBeCloseTo(274.4005, 1);
+    expect(moon.ascendingNodeLongitude).toBeCloseTo(274.4005, 1);
   });
 });
 

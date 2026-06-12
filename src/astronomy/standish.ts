@@ -11,9 +11,9 @@
  * ~0.11°/0.17° for Jupiter/Saturn.
  *
  * Values are transcribed VERBATIM from the JPL p_elem_t1.txt / p_elem_t2.txt
- * files (research copies + provenance: ~/.claude/plans/standish-data/) —
- * never re-round them; standish.test.ts spot-checks oddball digits and pins
- * five epochs of JPL Horizons vectors against the propagation. The "Earth"
+ * source files — never re-round them; standish.test.ts spot-checks oddball
+ * digits and pins five epochs of JPL Horizons vectors against the
+ * propagation. The "Earth"
  * rows are the Earth–Moon barycenter ("EM Bary"): consumed only for Earth's
  * decorative orbit line and cross-model tests — the rendered Earth stays
  * Meeus (see computeEarthPositionEquatorial).

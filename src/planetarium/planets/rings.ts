@@ -24,7 +24,6 @@ export function createSaturnRings(planetRadiusAU: number): THREE.Mesh {
     uv.setXY(i, t, uv.getY(i));
   }
 
-  // Generate a ring texture procedurally
   const canvas = document.createElement('canvas');
   canvas.width = 1024;
   canvas.height = 1;
@@ -40,7 +39,7 @@ export function createSaturnRings(planetRadiusAU: number): THREE.Mesh {
   const data = imgData.data;
 
   for (let x = 0; x < 1024; x++) {
-    const t = x / 1024; // 0 to 1 across the ring
+    const t = x / 1024;
 
     // Multiple ring bands with gaps (Cassini division, Encke gap, etc.)
     let alpha = 0.75;

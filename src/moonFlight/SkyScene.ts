@@ -45,7 +45,7 @@ export class SkyScene {
     this.group = new THREE.Group();
     this.group.name = 'MoonFlightSky';
 
-    // Earth: lit sphere, textured day side only for phase 2.
+    // Earth: lit sphere with the day-side texture.
     const earthRadius = 1; // placeholder; resized in applySnapshot
     const earthGeo = new THREE.SphereGeometry(earthRadius, 64, 32);
     const earthMat = new THREE.MeshStandardMaterial({
@@ -149,10 +149,10 @@ export class SkyScene {
 
     earthBump.anisotropy = 4;
     this.earthBumpTexture = earthBump;
-    const em = this.earth.material as THREE.MeshStandardMaterial;
-    em.bumpMap = earthBump;
-    em.bumpScale = 0.002;
-    em.needsUpdate = true;
+    const earthMaterial = this.earth.material as THREE.MeshStandardMaterial;
+    earthMaterial.bumpMap = earthBump;
+    earthMaterial.bumpScale = 0.002;
+    earthMaterial.needsUpdate = true;
 
     stars.colorSpace = THREE.SRGBColorSpace;
     stars.anisotropy = 2;

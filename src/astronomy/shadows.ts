@@ -11,9 +11,9 @@
  * resolves positions through the exact functions the renderer uses
  * (computeBodyPositionAU, computeMoonOffsetEquatorialAU), so an event found
  * here is an event the scene shows. The event-engine geometry uses only dot
- * products and norms, so it is indifferent to the scene's frame convention
- * (it survived the cycle-2 chirality flip unchanged, by design). One
- * render-side helper, computeConeSilhouette, builds a cross-product basis —
+ * products and norms, so it is indifferent to the scene's frame convention.
+ * One render-side helper, computeConeSilhouette, builds a cross-product
+ * basis —
  * its outputs are basis-independent (only the A/B edge labels can swap), so
  * the contract holds in spirit; the event search never touches it.
  *

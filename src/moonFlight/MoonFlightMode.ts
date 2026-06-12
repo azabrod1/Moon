@@ -22,11 +22,6 @@ export const FIRST_MOON_FLIGHT_ACTIVATION_TOTAL_UNITS = 4;
 /**
  * Moon flight mode.
  *
- * Phase 2: proper sky (Earth, Sun, stars) lit from the snapshot ephemeris,
- * plus a real-textured Moon. Still no flight controls — camera is parked at
- * an orbital pose. Flight controls, streamed tiles, and procedural detail
- * arrive in later phases.
- *
  * Scene unit: 1 km. Moon sits at origin with radius 1737.4.
  */
 export class MoonFlightMode {
@@ -44,7 +39,7 @@ export class MoonFlightMode {
   private active = false;
   private uiEl: HTMLElement | null = null;
   private onExitCallback: (() => void) | null = null;
-  private _camWorldPos = new THREE.Vector3();
+  private cameraWorldPositionScratch = new THREE.Vector3();
 
   private controller = new FlightController();
   private input: FlightInput | null = null;
@@ -197,8 +192,8 @@ export class MoonFlightMode {
       this.hud?.update(this.controller.getState());
     }
     if (this.sky) {
-      this.camera.getWorldPosition(this._camWorldPos);
-      this.sky.update(this._camWorldPos);
+      this.camera.getWorldPosition(this.cameraWorldPositionScratch);
+      this.sky.update(this.cameraWorldPositionScratch);
     }
   }
 

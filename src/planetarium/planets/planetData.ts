@@ -232,7 +232,7 @@ export const PLUTO: PlanetData = {
   // construction (RHR derives the pole from the spin, so W can never run
   // backward). The retired pre-2006 convention used the anti-pole (313.02,
   // +9.09) with a negative rate; mixing the two (this pole, negative rate)
-  // spun Pluto backward — caught in the cycle-2 implementation review.
+  // spins Pluto backward.
   poleRaDeg: 132.993,
   poleDecDeg: -6.163,
   primeMeridianDegAtJ2000: 302.695,
@@ -240,15 +240,12 @@ export const PLUTO: PlanetData = {
   systemRadiusAU: 0.02,
 };
 
-// All bodies including Pluto
 export const PLANETARIUM_BODIES: PlanetData[] = [...PLANETS, PLUTO];
 
-// Asteroid belt range
 export const ASTEROID_BELT = {
   innerAU: 2.1,
   outerAU: 3.3,
 };
 
-// Constants
 export const LIGHT_SPEED_AU_PER_S = 1 / 499.0; // ~0.002 AU/s
 export const LIGHT_SPEED_KM_PER_S = 299_792.458;

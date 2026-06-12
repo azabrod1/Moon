@@ -78,8 +78,6 @@
 
     #planetarium-ui { display: none; }
 
-    /* (planet bar removed — travel menu replaces it) */
-
     /* Unified bottom bar */
     #planetarium-bottom-bar {
       position: absolute;
@@ -157,7 +155,7 @@
       opacity: 1;
     }
 
-    /* Speed section — no left border since date moved above */
+    /* Speed controls */
     .bar-speed-main {
       display: flex;
       align-items: center;
@@ -209,7 +207,6 @@
     .stat-label { color: var(--text-secondary); font-size: 10px; }
     .stat-value { color: var(--text-primary); font-weight: 500; font-variant-numeric: tabular-nums; font-size: 11px; }
 
-    /* time rate inherits .bar-rate styles */
     .time-controls {
       display: grid;
       grid-template-columns: repeat(3, minmax(0, 1fr));
@@ -279,7 +276,7 @@
       color: var(--text-secondary);
     }
 
-    /* Save/Settings/New buttons - top right, same level as top bar */
+    /* Top-right planetarium actions */
     #planetarium-actions {
       position: absolute;
       top: 10px;
@@ -338,7 +335,7 @@
       padding: 3px 10px;
     }
 
-    /* Menu panel (replaces separate settings panel) */
+    /* Menu panel */
     #planetarium-menu-panel {
       display: none;
       position: absolute;
@@ -372,10 +369,9 @@
     }
     .menu-action:hover { background: rgba(255, 255, 255, 0.06); }
 
-    /* ── Observatory (landed mode) — Option D "Cinematic Instrument".
-       Cool glass, accent #7c9aff; warm is reserved for "happening now".
-       Reference mockups: ~/.claude/plans/moon-design/. Scoped --obs-* vars
-       so the eventual whole-app design pass can merge them deliberately. ── */
+    /* ── Observatory (landed mode). Cool glass, accent #7c9aff; warm is
+       reserved for "happening now". Scoped --obs-* vars keep Observatory
+       theme tokens isolated. ── */
     :root {
       --obs-accent: #7c9aff;
       --obs-accent-soft: rgba(124, 154, 255, 0.14);
@@ -527,8 +523,8 @@
       margin-top: 5px; text-align: right; font-family: var(--obs-mono);
       font-size: 8px; letter-spacing: 0.14em; color: var(--obs-t3); text-transform: uppercase;
     }
-    /* Orbit-details readout under its footer row: dense mono data lines
-       (hero data-line idiom) plus honesty captions in the guides-cap voice. */
+    /* Orbit-details readout under its footer row: dense monospace data
+       lines plus captions matching the shadow-guide caption style. */
     .obs-orbit-cap { margin-top: 6px; }
     .obs-orbit-line {
       font-family: var(--obs-mono); font-size: 10px; letter-spacing: 0.04em;
@@ -538,8 +534,8 @@
       margin-top: 3px; text-align: right; font-family: var(--obs-mono);
       font-size: 8px; letter-spacing: 0.14em; color: var(--obs-t3); text-transform: uppercase;
     }
-    /* Fixed-px focus glyphs (#27 idiom: layout pinned at 0,0, position via
-       inline fractional transform; ring centered on the projected point). */
+    /* Fixed-px focus glyphs: layout pinned at 0,0, positioned via inline
+       fractional transform; ring centered on the projected point. */
     .orbit-focus { position: fixed; left: 0; top: 0; z-index: 8; pointer-events: none; }
     .orbit-focus i {
       position: absolute; left: -5px; top: -5px; width: 10px; height: 10px;
@@ -626,10 +622,9 @@
     .shud-sub { margin-top: 7px; font-size: 12.5px; color: var(--obs-t2); }
     .shud-sub b { color: var(--obs-warm); font-weight: 500; }
     .shud-when { display: flex; align-items: center; gap: 8px; margin-top: 12px; font-size: 11px; color: var(--obs-t2); }
-    /* Bottom-center transport strip (design round D-1c): the surface view's
-       only time control — readout + state + pause/rate/now, one idiom with
-       the bottom bar's named-rate vocabulary. Sits above the sheet inset on
-       mobile (policy 2: a sheet never seals the transport). */
+    /* Bottom-center transport strip: the surface view's only time control.
+       Sits above the sheet inset on mobile so the sheet never seals the
+       transport. */
     .shud-timebar {
       position: absolute; left: 50%; transform: translateX(-50%);
       bottom: calc(var(--sheet-inset, 0px) + 14px);
@@ -672,10 +667,8 @@
        width and would block the HUD chips). The time pill stays. */
     body.surface-view-active #planetarium-actions { display: none; }
     body.surface-view-active #top-bar { opacity: 0.25; pointer-events: none; transition: opacity 0.3s; }
-    /* Surface view owns one clock — the transport strip (cross-component
-       policy 1). The planetarium bottom bar showed a second clock and
-       overlapped the tracking pill; the panel's now-bar duplicates the strip
-       when reopened over the surface view. */
+    /* Surface view owns one clock: the transport strip. Hide duplicate time
+       surfaces that would overlap tracking or repeat the same state. */
     body.surface-view-active #planetarium-bottom-bar { display: none; }
     body.surface-view-active #observatory-panel .obs-nowbar { display: none; }
 
@@ -1609,11 +1602,10 @@
       .travel-btn-text { display: none; }
     }
 
-    /* ===== Observatory mobile chrome (cycle 3.2 C) ===== */
+    /* ===== Observatory mobile chrome ===== */
     @media (max-width: 640px) {
-      /* Landed top bar becomes a single action row: the wordmark and mode
-         toggle have no room next to Leave/Observatory/Travel/☰ (mode
-         switching stays reachable after Leave). */
+      /* In landed mode, hide the wordmark so the action row has room for
+         Leave/Observatory/Travel/menu. */
       body.planetarium-landed #top-bar h1 { display: none; }
       /* The Observatory panel re-houses as a bottom sheet: the sky stays
          visible and gesture-live (the centered 334px panel covered 86% of a
@@ -1672,7 +1664,7 @@
   </div>
 
   <script>
-    // On-screen error display — only shows if something goes wrong
+    // On-screen debug and startup error display
     (function() {
       var params = new URLSearchParams(window.location.search);
       var debugEnabled = params.get('debug') === '1';
@@ -1746,7 +1738,7 @@
         <button class="planetarium-sm-btn" id="planetarium-btn-menu">&#x2630;</button>
       </div>
 
-      <!-- Menu dropdown (Save, New, Settings) -->
+      <!-- Menu dropdown (Help, journey actions, settings) -->
       <div id="planetarium-menu-panel">
         <button class="menu-action" id="planetarium-btn-help">Help</button>
         <button class="menu-action" id="planetarium-btn-save">Save</button>
@@ -2100,7 +2092,6 @@
       <!-- Touch flight zone (mobile only) -->
       <div id="touch-flight-zone" class="touch-flight-zone"></div>
 
-      <!-- Touch throttle removed — speed bar +/- handles this -->
 
       <div id="planetarium-resume-prompt">
         <div class="resume-dialog">

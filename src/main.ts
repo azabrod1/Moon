@@ -2,8 +2,8 @@
  * App entry point. Builds the shared Three.js renderer / scene / camera rig,
  * probes GPU capability for bloom (app/gpuCapability), owns the animation
  * loop, and coordinates switching between the two modes — Planetarium (the
- * app's face) and the dormant Moon Flight mini-game (no UI entry point; see
- * CLAUDE.md). The legacy Moon view retired in favor of the Planetarium's
+ * app's face) and the dormant Moon Flight mini-game (no UI entry
+ * point). The legacy Moon view retired in favor of the Planetarium's
  * Observatory; `?auto=moonView` still boots the app (into the Planetarium).
  */
 import * as THREE from 'three';
@@ -99,7 +99,6 @@ planetariumCamera.position.set(-0.0002, 0.0001, 0.0001);
 // --- Moon flight camera (own camera so near/far are independent of other modes) ---
 const flightCamera = new THREE.PerspectiveCamera(55, window.innerWidth / window.innerHeight, 0.01, 2000);
 
-// Active camera reference
 let camera: THREE.PerspectiveCamera = planetariumCamera;
 
 // ================================================================
@@ -171,9 +170,9 @@ function setPlanetsLoadingPercent(completedUnits: number, totalUnits: number) {
 }
 
 function setFlightLoadingPercent(completedUnits: number, totalUnits: number) {
-  const clampedTotal = Math.max(totalUnits, 1);
-  const clampedDone = Math.min(Math.max(completedUnits, 0), clampedTotal);
-  const pct = Math.round((clampedDone / clampedTotal) * 100);
+  const clampedTotalUnits = Math.max(totalUnits, 1);
+  const clampedCompletedUnits = Math.min(Math.max(completedUnits, 0), clampedTotalUnits);
+  const pct = Math.round((clampedCompletedUnits / clampedTotalUnits) * 100);
   const text = `Entering Flight... ${pct}%`;
   const loadEl = document.getElementById('loading-msg');
   if (loadEl) loadEl.textContent = text;
@@ -187,7 +186,6 @@ async function switchAppMode(newMode: AppMode) {
   debugLog('Switching app mode', { from: appMode, to: newMode });
 
   try {
-    // Fade to black
     modeTransition.classList.add('active');
     transitionMsg.textContent = newMode === 'planetarium' ? 'Entering Planets...' : 'Entering Flight...';
     await sleep(400);
@@ -255,7 +253,6 @@ async function switchAppMode(newMode: AppMode) {
 
     appModeInitialized = true;
 
-    // Fade back in
     await sleep(100);
     modeTransition.classList.remove('active');
   } finally {
@@ -264,7 +261,7 @@ async function switchAppMode(newMode: AppMode) {
 }
 
 function sleep(ms: number): Promise<void> {
-  return new Promise(r => setTimeout(r, ms));
+  return new Promise(resolve => setTimeout(resolve, ms));
 }
 
 function isAutoBootParam(): boolean {
@@ -282,7 +279,6 @@ async function init() {
   (window as any).__initStarted = true;
   debugLog('Init started');
 
-  // Animation loop
   let lastTime = performance.now();
 
   function animate() {

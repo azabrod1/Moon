@@ -9,8 +9,8 @@
  * ecliptic plane itself (~47″/cy): an error of ≈ 47″·|T| — 0.033° at 1750,
  * ~0.4° at the ±3000 AD Standish clamp — acceptable beside the Standish
  * planets' own 0.1–0.6° accuracy out there. Revisit (full Lieske three-angle
- * reduction) only if a later milestone needs arcsecond star registration at
- * remote epochs.
+ * reduction) only if arcsecond star registration at remote epochs becomes
+ * required.
  */
 import { J2000 } from './constants';
 

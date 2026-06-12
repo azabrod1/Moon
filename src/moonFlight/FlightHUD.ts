@@ -1,7 +1,6 @@
 /**
- * Moon Flight HUD: altitude, velocity, attitude, and fuel readouts plus
- * landing/crash end-screen. Pure DOM consumer of FlightState; owns its own
- * container and styling.
+ * Moon Flight HUD: altitude, velocity, and boost readouts. Pure DOM consumer
+ * of FlightState; owns its own container and styling.
  */
 import type { FlightState } from './FlightController';
 
@@ -19,9 +18,9 @@ export class FlightHUD {
 
   attach(): void {
     if (this.container) return;
-    const c = document.createElement('div');
-    c.id = 'moonflight-hud';
-    c.style.cssText = [
+    const container = document.createElement('div');
+    container.id = 'moonflight-hud';
+    container.style.cssText = [
       'position:fixed',
       'inset:0',
       'pointer-events:none',
@@ -47,7 +46,7 @@ export class FlightHUD {
     this.velEl = makeRow('VEL', '— m/s');
     readout.appendChild(this.altEl);
     readout.appendChild(this.velEl);
-    c.appendChild(readout);
+    container.appendChild(readout);
 
     this.boostEl = document.createElement('div');
     this.boostEl.textContent = 'BOOST';
@@ -64,7 +63,7 @@ export class FlightHUD {
       'opacity:0',
       'transition:opacity 0.12s',
     ].join(';');
-    c.appendChild(this.boostEl);
+    container.appendChild(this.boostEl);
 
     this.reticle = document.createElement('div');
     this.reticle.style.cssText = [
@@ -77,10 +76,10 @@ export class FlightHUD {
       'background:rgba(255,255,255,0.55)',
       'transform:translate(-50%, -50%)',
     ].join(';');
-    c.appendChild(this.reticle);
+    container.appendChild(this.reticle);
 
-    this.parent.appendChild(c);
-    this.container = c;
+    this.parent.appendChild(container);
+    this.container = container;
   }
 
   detach(): void {
@@ -99,21 +98,21 @@ export class FlightHUD {
 function makeRow(label: string, value: string): HTMLElement {
   const row = document.createElement('div');
   row.style.cssText = 'display:flex;justify-content:space-between;gap:18px';
-  const l = document.createElement('span');
-  l.textContent = label;
-  l.style.cssText = 'opacity:0.6';
-  const v = document.createElement('span');
-  v.textContent = value;
-  v.dataset.role = 'value';
-  v.style.cssText = 'font-variant-numeric:tabular-nums';
-  row.appendChild(l);
-  row.appendChild(v);
+  const labelEl = document.createElement('span');
+  labelEl.textContent = label;
+  labelEl.style.cssText = 'opacity:0.6';
+  const valueEl = document.createElement('span');
+  valueEl.textContent = value;
+  valueEl.dataset.role = 'value';
+  valueEl.style.cssText = 'font-variant-numeric:tabular-nums';
+  row.appendChild(labelEl);
+  row.appendChild(valueEl);
   return row;
 }
 
 function setRowValue(row: HTMLElement, value: string): void {
-  const v = row.querySelector('[data-role="value"]') as HTMLElement | null;
-  if (v) v.textContent = value;
+  const valueEl = row.querySelector('[data-role="value"]') as HTMLElement | null;
+  if (valueEl) valueEl.textContent = value;
 }
 
 function formatAltitude(km: number): string {

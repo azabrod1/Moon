@@ -186,6 +186,64 @@ export const EARTH_MOON_ORBIT_META: SatelliteOrbitMeta = {
   inclinationDeg: 5.145, // to the ecliptic
 };
 
+/** Orbit summary for display (the Observatory's orbit-details overlay). */
+export interface MoonDisplayOrbit {
+  aKm: number;
+  eccentricity: number;
+  inclinationDeg: number;
+  /** Mean-longitude period: time for one full revolution around the parent. */
+  periodDays: number;
+  tier: 'verbatim' | 'fitted' | 'librator';
+  /** Max angular separation vs Horizons over the calibration epochs (deg). */
+  maxCalibrationSeparationDeg: number;
+}
+
+/**
+ * Name-keyed display-orbit accessor (Earth's Moon → mean lunar orbit; catalog
+ * moons → their record). The period is 360/|Ṁ+ω̇+Ω̇| — NOT 360/|Ṁ|: fitted
+ * near-circular rows trade mean motion against the apsidal rate (e≈0 makes
+ * the decomposition degenerate; Tethys carries Ṁ=−6.2°/d with ω̇=+197°/d, so
+ * its |Ṁ| "period" would be 58 d against the real 1.888 d). Only the summed
+ * longitude rate survives the degeneracy.
+ */
+export function getMoonDisplayOrbit(moonName: string, parentPlanetName: string): MoonDisplayOrbit {
+  if (moonName === 'Moon' && parentPlanetName === 'Earth') {
+    return {
+      aKm: EARTH_MOON_ORBIT_META.semiMajorAxisKm,
+      eccentricity: EARTH_MOON_ORBIT_META.eccentricity,
+      inclinationDeg: EARTH_MOON_ORBIT_META.inclinationDeg,
+      periodDays: EARTH_MOON_ORBIT_META.periodDays,
+      tier: 'verbatim',
+      maxCalibrationSeparationDeg: 0,
+    };
+  }
+  const { record } = getFrame(moonName);
+  const longitudeRateDegPerDay =
+    record.meanAnomalyRateDegPerDay +
+    record.argPeriapsisRateDegPerDay +
+    record.ascendingNodeRateDegPerDay;
+  return {
+    aKm: record.aKm,
+    eccentricity: record.eccentricity,
+    inclinationDeg: record.inclinationDeg,
+    periodDays: 360 / Math.abs(longitudeRateDegPerDay),
+    tier: record.tier,
+    maxCalibrationSeparationDeg: record.maxCalibrationSeparationDeg,
+  };
+}
+
+/** Name-keyed apoapsis (AU) — getSatelliteApoapsisAU throws for Earth's Moon,
+ *  which has no catalog record; this wrapper is safe for all 65 moons. */
+export function getMoonApoapsisAU(moonName: string, parentPlanetName: string): number {
+  if (moonName === 'Moon' && parentPlanetName === 'Earth') {
+    return (
+      (EARTH_MOON_ORBIT_META.semiMajorAxisKm / KM_PER_AU) *
+      (1 + EARTH_MOON_ORBIT_META.eccentricity)
+    );
+  }
+  return getSatelliteApoapsisAU(moonName);
+}
+
 // Finite-difference baseline for the Earth-Moon orbit normal: long enough to
 // be numerically clean, far shorter than anything that bends the orbit.
 const MOON_NORMAL_STEP_DAYS = 0.25;

@@ -38,7 +38,25 @@ import {
   stepSimulationRate,
   type SimulationTime,
 } from '../astronomy/planetary';
-import { computeMoonOffsetEquatorialAU, getSatelliteApoapsisAU } from '../astronomy/satellites';
+import {
+  computeMoonOffsetEquatorialAU,
+  getMoonApoapsisAU,
+  getMoonDisplayOrbit,
+  getSatelliteApoapsisAU,
+  type MoonDisplayOrbit,
+} from '../astronomy/satellites';
+import {
+  areFociMerged,
+  deriveOrbitGeometry,
+  formatOrbitReadout,
+  isCircularDegenerate,
+  needsResample,
+  orbitSampleSegments,
+  sampleSpanTimesMs,
+  sectorWindows,
+  shouldCloseLoop,
+} from './orbitDetails';
+import { OrbitDetailsVisuals } from './world/OrbitDetailsVisuals';
 import {
   computeMoonShading,
   findShadowEvent,
@@ -192,6 +210,22 @@ export class PlanetariumMode {
   // Observatory panel toggle (session-only, deliberately not persisted).
   private shadowVisuals = new ShadowVisuals();
   private showShadowGuides = false;
+  // Orbit-details overlay (Observatory footer toggle; session-only, like the
+  // shadow guides). orbitPairMoon remembers the moon of the vantage pair
+  // across a moon→parent swap so the subject survives standing on the parent
+  // (a generic parent has no swap chip back to the moon).
+  private orbitDetailsVisuals = new OrbitDetailsVisuals();
+  private showOrbitDetails = false;
+  private orbitPairMoon: { moonName: string; parentName: string } | null = null;
+  private orbitSampleRefTMs = 0;
+  private orbitSampledSubject: string | null = null;
+  private orbitFocusF1El: HTMLElement | null = null;
+  private orbitFocusF2El: HTMLElement | null = null;
+  private orbitFocusF1SpanEl: HTMLElement | null = null;
+  private orbitFocusF2SpanEl: HTMLElement | null = null;
+  private tmpOrbitFocus1 = new THREE.Vector3();
+  private tmpOrbitFocus2 = new THREE.Vector3();
+  private orbitFocusProjection: ScreenProjection = { x: 0, y: 0, ndcX: 0, ndcY: 0, ndcZ: 0 };
   // Moons the guides follow: [0] the landed/companion subject, [1] the live
   // event's moon when it differs. Names + orbit normals refreshed per frame.
   private guideSlotInputs: GuideSlotInput[] = [
@@ -351,6 +385,7 @@ export class PlanetariumMode {
     () => this.cancelObservatoryEventSearch(),
     () => this.toggleSurfaceView(),
     () => this.swapLandedVantage(),
+    (on) => this.handleOrbitDetailsToggle(on),
   );
   private observatoryHud = new ObservatoryHUD(
     () => this.exitSurfaceView(),
@@ -790,8 +825,10 @@ export class PlanetariumMode {
     this.setObjectsVisible(false);
 
     // The footprint reticle is driven by the per-frame guide pass, which
-    // stops with the mode — hide it explicitly so it can't linger.
+    // stops with the mode — hide it explicitly so it can't linger. Same for
+    // the orbit-details focus glyphs (their pass also stops with the mode).
     this.hideFootprintReticle();
+    this.hideOrbitFocusLabels();
 
     // Clean up markers
     if (this.planetLabels) {
@@ -3660,6 +3697,9 @@ export class PlanetariumMode {
     // chip reopens it over the surface view as an explicit opt-in; exiting
     // does not auto-reopen.
     this.closeObservatoryPanel();
+    // The orbit-details overlay is an orbit-view instrument — the surface sky
+    // must not carry ellipse axes/sectors across it.
+    this.syncOrbitDetailsVisibility();
     this.preSurfaceCameraPos.copy(this.camera.position);
     this.preSurfaceAutoRotate = this.controls.autoRotate;
     this.controls.enabled = false;
@@ -3727,6 +3767,7 @@ export class PlanetariumMode {
       this.controls.target.set(0, 0, 0);
       this.renderObservatoryPanel(); // Look up label flips back
     }
+    this.syncOrbitDetailsVisibility();
   }
 
   private setSurfaceLabelContainersHidden(hidden: boolean) {
@@ -3992,7 +4033,13 @@ export class PlanetariumMode {
    * vantage swap can re-land on the companion body without the exit/enter
    * ceremony (no speed restore, no "Departing" toast, take-off state intact).
    */
-  private applyLandedTarget(target: NonNullable<LandedTarget>) {
+  private applyLandedTarget(target: NonNullable<LandedTarget>, preserveOrbitPair = false) {
+    // Every landing path funnels through here (enterLandedMode, restoreState,
+    // the Observatory menu's landed→landed re-land) — clearing the vantage
+    // pair here, not per call site, is what keeps a stale pair from
+    // resurrecting a moon subject on a later fresh landing on its parent.
+    // Only the vantage swap preserves the pair it just set.
+    if (!preserveOrbitPair) this.orbitPairMoon = null;
     this.landedOn = target;
     // The reticle's screen position belongs to the previous target — drop it
     // now rather than letting it float stale until the next landed frame
@@ -4044,7 +4091,7 @@ export class PlanetariumMode {
     this.controls.enabled = true;
     this.controls.target.set(0, 0, 0);
     this.controls.minDistance = visualRadius * 1.5;
-    this.controls.maxDistance = Math.max(visualRadius * 30, 0.01);
+    this.controls.maxDistance = this.landedMaxDistanceAU(visualRadius);
     this.controls.autoRotate = true;
     this.controls.autoRotateSpeed = 0.5;
     this.userOrbiting = false;
@@ -4081,7 +4128,12 @@ export class PlanetariumMode {
     if (systemGroup) {
       this.shadowVisuals.attach(systemGroup);
       this.shadowVisuals.setGuidesVisible(this.showShadowGuides);
+      this.orbitDetailsVisuals.attach(systemGroup);
     }
+    const orbitSubject = this.resolveOrbitSubject();
+    this.observatoryPanel.setOrbitDetailsAvailable(orbitSubject !== null);
+    if (!orbitSubject) this.observatoryPanel.setOrbitReadout(null);
+    this.updateOrbitDetails(true);
   }
 
   /** The unique companion body for the vantage swap: moon → its parent, Earth → the Moon. */
@@ -4111,7 +4163,13 @@ export class PlanetariumMode {
     if (!companion || !this.landedOn) return;
     const previous = this.landedOn;
     const wasSurface = this.landedView === 'surface';
-    this.applyLandedTarget(companion);
+    // Remember the pair moon across a moon→parent swap: the orbit-details
+    // subject survives standing on the parent (the better vantage on the
+    // whole ellipse — and there is no one-tap swap back from a generic parent).
+    if (previous.type === 'moon' && companion.type === 'planet') {
+      this.orbitPairMoon = { moonName: previous.name, parentName: previous.parentPlanet };
+    }
+    this.applyLandedTarget(companion, true);
     if (wasSurface) {
       // applyLandedTarget re-enabled OrbitControls and reset the camera for
       // orbit view — re-assert the surface invariants. Its fresh orbit camera
@@ -4141,6 +4199,232 @@ export class PlanetariumMode {
     // same penumbral eclipse is "subtle dimming" from Mars but "daylight
     // barely dims" standing on Phobos).
     this.publishObservatoryEvents();
+  }
+
+  // ── Orbit details (Observatory footer toggle) ────────────────────────────
+
+  /**
+   * The orbit-details subject: the moon member of the landed vantage pair —
+   * the landed moon itself, Earth's companion Moon, or (standing on a parent
+   * after a vantage swap) the remembered pair moon. A generic parent with no
+   * pair memory has no subject; the footer row hides.
+   */
+  private resolveOrbitSubject(): { moonName: string; parentName: string } | null {
+    if (!this.landedOn) return null;
+    if (this.landedOn.type === 'moon') {
+      return { moonName: this.landedOn.name, parentName: this.landedOn.parentPlanet };
+    }
+    const companion = this.swapCompanionTarget();
+    if (companion?.type === 'moon') {
+      return { moonName: companion.name, parentName: companion.parentPlanet };
+    }
+    if (this.orbitPairMoon && this.orbitPairMoon.parentName === this.landedOn.name) {
+      return this.orbitPairMoon;
+    }
+    return null;
+  }
+
+  private handleOrbitDetailsToggle(on: boolean) {
+    this.showOrbitDetails = on;
+    if (this.landedOn) {
+      this.controls.maxDistance = this.landedMaxDistanceAU(
+        this.getLandedBodyRadiusAU() * this.planetScale,
+      );
+      this.updateOrbitDetails(true);
+    }
+    this.syncOrbitDetailsVisibility();
+  }
+
+  /**
+   * Landed zoom-out limit. With orbit details on it must contain the
+   * SUBJECT's orbit (Nereid's apoapsis is 0.064 AU, Neso's 0.49 — far past
+   * the stock 0.01 floor), keyed off the resolved subject so a post-swap
+   * parent vantage reaches the ellipse too. Earth's Moon (apo 0.0027 AU)
+   * never exceeds the stock floor — the max() simply no-ops there; don't
+   * "fix" that. Toggle-off returns the stock value and OrbitControls
+   * re-clamps on the next update (accepted jump cut).
+   */
+  private landedMaxDistanceAU(visualRadius: number): number {
+    let max = Math.max(visualRadius * 30, 0.01);
+    if (this.showOrbitDetails) {
+      const subject = this.resolveOrbitSubject();
+      if (subject) {
+        max = Math.max(max, getMoonApoapsisAU(subject.moonName, subject.parentName) * 2.2);
+      }
+    }
+    return max;
+  }
+
+  /** Central visibility gate: the overlay is an orbit-view instrument —
+   *  toggle on, subject resolved, landed, NOT in surface view. */
+  private syncOrbitDetailsVisibility() {
+    const visible =
+      this.showOrbitDetails &&
+      this.landedOn !== null &&
+      this.landedView !== 'surface' &&
+      this.orbitDetailsVisuals.isAttached() &&
+      this.resolveOrbitSubject() !== null;
+    this.orbitDetailsVisuals.setVisible(visible);
+    if (!visible) this.hideOrbitFocusLabels();
+  }
+
+  private hideOrbitFocusLabels() {
+    if (this.orbitFocusF1El) this.orbitFocusF1El.style.display = 'none';
+    if (this.orbitFocusF2El) this.orbitFocusF2El.style.display = 'none';
+  }
+
+  private ensureOrbitFocusEls() {
+    if (!this.orbitFocusF1El) {
+      this.orbitFocusF1El = document.getElementById('orbit-focus-f1');
+      this.orbitFocusF1SpanEl = this.orbitFocusF1El?.querySelector('span') ?? null;
+    }
+    if (!this.orbitFocusF2El) {
+      this.orbitFocusF2El = document.getElementById('orbit-focus-f2');
+      this.orbitFocusF2SpanEl = this.orbitFocusF2El?.querySelector('span') ?? null;
+    }
+  }
+
+  /**
+   * 8 Hz pass: resample the orbit when the clock drifts past the staleness
+   * guard (or the subject changed), and rebuild the two Kepler sectors from
+   * fresh seam evals. All positions come from computeMoonOffsetEquatorialAU —
+   * the seam the renderer draws with, so the subject sits on the line.
+   */
+  private updateOrbitDetails(force = false) {
+    if (!this.showOrbitDetails || !this.landedOn || !this.orbitDetailsVisuals.isAttached()) {
+      this.syncOrbitDetailsVisibility();
+      return;
+    }
+    const subject = this.resolveOrbitSubject();
+    if (!subject) {
+      this.syncOrbitDetailsVisibility();
+      return;
+    }
+    const nowMs = this.timeState.currentUtcMs;
+    const display = getMoonDisplayOrbit(subject.moonName, subject.parentName);
+    if (
+      force ||
+      this.orbitSampledSubject !== subject.moonName ||
+      needsResample(nowMs, this.orbitSampleRefTMs, display.periodDays)
+    ) {
+      this.resampleOrbitDetails(subject, display, nowMs);
+    }
+    // Surface view hides the overlay — skip the 8 Hz sector rebuild (34 seam
+    // evals + geometry swaps for an invisible result). The resample/readout
+    // path above stays live so a swap-during-surface-view still publishes
+    // the new subject's readout and zoom limit.
+    if (this.landedView !== 'surface') {
+      const windows = sectorWindows(nowMs, display.periodDays);
+      this.orbitDetailsVisuals.updateSectors(
+        this.sampleOrbitArc(subject, windows.trailingStartMs, windows.trailingEndMs),
+        this.sampleOrbitArc(subject, windows.offsetStartMs, windows.offsetEndMs),
+      );
+    }
+    this.syncOrbitDetailsVisibility();
+  }
+
+  private resampleOrbitDetails(
+    subject: { moonName: string; parentName: string },
+    display: MoonDisplayOrbit,
+    nowMs: number,
+  ) {
+    const segments = orbitSampleSegments(display.eccentricity);
+    const times = sampleSpanTimesMs(nowMs, display.periodDays, segments);
+    const points = times.map((t) =>
+      computeMoonOffsetEquatorialAU(subject.moonName, subject.parentName, t, new THREE.Vector3()),
+    );
+    const geometry = deriveOrbitGeometry(points);
+    const parentRadiusAU =
+      PLANETARIUM_BODIES.find((b) => b.name === subject.parentName)?.radiusAU ?? 0;
+    this.orbitDetailsVisuals.setOrbit(points, geometry, {
+      closeLoop: shouldCloseLoop(geometry),
+      suppressApsides: isCircularDegenerate(geometry),
+      suppressEmptyFocus: areFociMerged(geometry, parentRadiusAU),
+    });
+    this.orbitSampleRefTMs = nowMs;
+    this.orbitSampledSubject = subject.moonName;
+    this.observatoryPanel.setOrbitReadout(
+      formatOrbitReadout(geometry, display, {
+        isEarthMoon: subject.moonName === 'Moon' && subject.parentName === 'Earth',
+        parentRadiusAU,
+      }),
+    );
+    // A subject change can change how far the zoom must reach.
+    this.controls.maxDistance = this.landedMaxDistanceAU(
+      this.getLandedBodyRadiusAU() * this.planetScale,
+    );
+  }
+
+  private sampleOrbitArc(
+    subject: { moonName: string; parentName: string },
+    startMs: number,
+    endMs: number,
+  ): THREE.Vector3[] {
+    const STEPS = 16;
+    const arc: THREE.Vector3[] = [];
+    for (let i = 0; i <= STEPS; i++) {
+      const t = startMs + ((endMs - startMs) * i) / STEPS;
+      arc.push(
+        computeMoonOffsetEquatorialAU(subject.moonName, subject.parentName, t, new THREE.Vector3()),
+      );
+    }
+    return arc;
+  }
+
+  /**
+   * Per-frame F1/F2 focus-glyph projection ("a label, not geometry" — the
+   * world-space rings would be sub-pixel for the irregulars). Orbit view
+   * only: unlike the footprint reticle, which deliberately stays alive in
+   * surface view, the focus glyphs are part of the orbit instrument.
+   */
+  private updateOrbitFocusLabels() {
+    if (this.landedView === 'surface' || !this.orbitDetailsVisuals.isVisible()) {
+      this.hideOrbitFocusLabels();
+      return;
+    }
+    const subject = this.resolveOrbitSubject();
+    const systemGroup = subject ? this.moonSystemGroups.get(subject.parentName) : null;
+    if (!subject || !systemGroup) {
+      this.hideOrbitFocusLabels();
+      return;
+    }
+    const { hasOrbit, showF2 } = this.orbitDetailsVisuals.getFocusLocalPositions(
+      this.tmpOrbitFocus1,
+      this.tmpOrbitFocus2,
+    );
+    if (!hasOrbit) {
+      this.hideOrbitFocusLabels();
+      return;
+    }
+    this.ensureOrbitFocusEls();
+    const canvas = this.renderer.domElement;
+    const w = canvas.clientWidth;
+    const h = canvas.clientHeight;
+    const place = (
+      el: HTMLElement | null,
+      span: HTMLElement | null,
+      local: THREE.Vector3,
+      label: string,
+      show: boolean,
+    ) => {
+      if (!el) return;
+      if (!show) {
+        el.style.display = 'none';
+        return;
+      }
+      local.add(systemGroup.position);
+      const proj = projectToScreen(local, this.camera, w, h, this.orbitFocusProjection);
+      if (proj.ndcZ >= 1 || proj.x < 0 || proj.x > w || proj.y < 0 || proj.y > h) {
+        el.style.display = 'none';
+        return;
+      }
+      if (span && span.textContent !== label) span.textContent = label;
+      // Transform, not left/top (#27): fractional positioning, no paint snap.
+      el.style.transform = `translate(${proj.x}px, ${proj.y}px)`;
+      el.style.display = '';
+    };
+    place(this.orbitFocusF1El, this.orbitFocusF1SpanEl, this.tmpOrbitFocus1, `F1 · ${subject.parentName}`, true);
+    place(this.orbitFocusF2El, this.orbitFocusF2SpanEl, this.tmpOrbitFocus2, 'F2 · empty focus', showF2);
   }
 
   exitLandedMode() {
@@ -4250,6 +4534,12 @@ export class PlanetariumMode {
     if (leaveBtn) leaveBtn.style.display = 'none';
 
     this.shadowVisuals.detach();
+    this.orbitDetailsVisuals.detach();
+    this.hideOrbitFocusLabels();
+    this.orbitPairMoon = null;
+    this.orbitSampledSubject = null;
+    this.observatoryPanel.setOrbitDetailsAvailable(false);
+    this.observatoryPanel.setOrbitReadout(null);
     // The guide camera pass only runs while landed — takeoff is its last
     // word, so the reticle must drop here, not wait for a pass that won't come.
     this.hideFootprintReticle();
@@ -4300,6 +4590,7 @@ export class PlanetariumMode {
     this.updatePlanetScaling();
     this.updateMoonPositions();
     this.updateShadowVisuals();
+    if (shouldRefreshUi) this.updateOrbitDetails();
     this.pumpObservatoryEventSearch();
 
     // Occlusion pipeline while landed: planets → moons + ship → labels.
@@ -4343,6 +4634,7 @@ export class PlanetariumMode {
       this.updateSurfaceCamera(dt);
     }
     this.updateShadowGuideCamera();
+    this.updateOrbitFocusLabels();
 
     if (shouldRefreshUi) {
       this.invalidateExpiredObservatoryEvents();
@@ -4651,6 +4943,8 @@ export class PlanetariumMode {
     }
     this.sunLabel.dispose();
     this.shadowVisuals.dispose();
+    this.orbitDetailsVisuals.dispose();
+    this.hideOrbitFocusLabels();
     // Clean up Three.js objects from scene
     if (this.solarSystem) {
       this.solarSystem.sun.removeFromParent();

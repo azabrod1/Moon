@@ -873,6 +873,28 @@
       margin-top: 5px; text-align: right; font-family: var(--obs-mono);
       font-size: 8px; letter-spacing: 0.14em; color: var(--obs-t3); text-transform: uppercase;
     }
+    /* Orbit-details readout under its footer row: dense mono data lines
+       (hero data-line idiom) plus honesty captions in the guides-cap voice. */
+    .obs-orbit-cap { margin-top: 6px; }
+    .obs-orbit-line {
+      font-family: var(--obs-mono); font-size: 10px; letter-spacing: 0.04em;
+      color: var(--obs-t2); padding: 1px 0; font-variant-numeric: tabular-nums;
+    }
+    .obs-orbit-note {
+      margin-top: 3px; text-align: right; font-family: var(--obs-mono);
+      font-size: 8px; letter-spacing: 0.14em; color: var(--obs-t3); text-transform: uppercase;
+    }
+    /* Fixed-px focus glyphs (#27 idiom: layout pinned at 0,0, position via
+       inline fractional transform; ring centered on the projected point). */
+    .orbit-focus { position: fixed; left: 0; top: 0; z-index: 8; pointer-events: none; }
+    .orbit-focus i {
+      position: absolute; left: -5px; top: -5px; width: 10px; height: 10px;
+      border: 1px solid rgba(207, 226, 255, 0.75); border-radius: 50%; display: block;
+    }
+    .orbit-focus span {
+      position: absolute; left: 9px; top: -6px; font-family: var(--obs-mono);
+      font-size: 9px; letter-spacing: 0.08em; color: rgba(207, 226, 255, 0.8); white-space: nowrap;
+    }
 
     /* ── Surface-view HUD: brackets on the tracked target, narrative stack,
        FOV cluster, top-right chips. Fades in after the camera settles. ── */
@@ -2326,6 +2348,12 @@
           <span class="obs-tgl" aria-hidden="true"></span>
         </label>
         <div class="obs-guides-cap" id="observatory-guides-cap" style="display:none">True positions &middot; lines widened to stay visible</div>
+        <label class="obs-foot" id="observatory-orbit-row" style="display:none">
+          <span>Orbit details</span>
+          <input type="checkbox" id="observatory-orbit-toggle">
+          <span class="obs-tgl" aria-hidden="true"></span>
+        </label>
+        <div class="obs-orbit-cap" id="observatory-orbit-cap" style="display:none"></div>
       </div>
 
       <!-- Shadow-guide footprint reticle: the HUD's sub-resolution glyph
@@ -2333,6 +2361,13 @@
            collapsed below resolvability (a label, not geometry). Positioned
            per frame by PlanetariumMode in both landed-orbit and surface views. -->
       <div class="shud-reticle shadow-fp-reticle" id="shadow-footprint-reticle" style="display:none"><b><i></i><i></i><i></i><i></i></b></div>
+
+      <!-- Orbit-details focus markers: fixed-px glyphs ("a label, not
+           geometry" — world-space focus rings collapse sub-pixel for the
+           irregular moons). Positioned per frame by PlanetariumMode;
+           landed ORBIT view only, unlike the footprint reticle above. -->
+      <div class="orbit-focus" id="orbit-focus-f1" style="display:none"><i></i><span></span></div>
+      <div class="orbit-focus" id="orbit-focus-f2" style="display:none"><i></i><span></span></div>
 
       <!-- Surface-view HUD (Observatory "Look up"): brackets on the tracked
            target, narrative stack, FOV cluster, top-right chips. -->

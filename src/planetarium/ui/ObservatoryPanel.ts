@@ -188,6 +188,10 @@ export class ObservatoryPanel {
   private nowBarEl: HTMLElement | null = null;
   private swapEl: HTMLElement | null = null;
   private eventsListEl: HTMLElement | null = null;
+  private orbitRowEl: HTMLElement | null = null;
+  private orbitToggleEl: HTMLInputElement | null = null;
+  private orbitCapEl: HTMLElement | null = null;
+  private orbitAvailable = false;
   private renderedRows: { row: ObservatoryEventRow; rowEl: HTMLElement; cdEl: HTMLElement }[] = [];
   private wired = false;
 
@@ -198,6 +202,7 @@ export class ObservatoryPanel {
     private onClose: () => void,
     private onLookup: () => void,
     private onSwap: () => void,
+    private onOrbitDetailsToggle: (on: boolean) => void,
   ) {}
 
   bind(): void {
@@ -208,6 +213,9 @@ export class ObservatoryPanel {
     this.nowBarEl = document.getElementById('observatory-nowbar');
     this.swapEl = document.getElementById('observatory-swap');
     this.eventsListEl = document.getElementById('observatory-events-list');
+    this.orbitRowEl = document.getElementById('observatory-orbit-row');
+    this.orbitToggleEl = document.getElementById('observatory-orbit-toggle') as HTMLInputElement | null;
+    this.orbitCapEl = document.getElementById('observatory-orbit-cap');
     if (this.wired) return;
     this.wired = true;
     document.getElementById('observatory-close')?.addEventListener('click', () => {
@@ -226,6 +234,11 @@ export class ObservatoryPanel {
       // they're on. (Toggle state is session-only and starts unchecked, so
       // markup default display:none always agrees.)
       if (guidesCaption) guidesCaption.style.display = guidesToggle.checked ? '' : 'none';
+    });
+    const orbitToggle = this.orbitToggleEl;
+    orbitToggle?.addEventListener('change', () => {
+      this.onOrbitDetailsToggle(orbitToggle.checked);
+      this.syncOrbitCapDisplay();
     });
     document.getElementById('observatory-lookup')?.addEventListener('click', () => this.onLookup());
     this.swapEl?.addEventListener('click', () => this.onSwap());
@@ -339,6 +352,52 @@ export class ObservatoryPanel {
     // Force a reflow so re-adding the class restarts the animation.
     void this.nowBarEl.offsetWidth;
     this.nowBarEl.classList.add('flash');
+  }
+
+  /**
+   * Show/hide the Orbit-details footer row (no orbit subject → no row). The
+   * checkbox state is left alone — like Shadow guides it's session-sticky,
+   * so landing back on a moon restores the user's choice.
+   */
+  setOrbitDetailsAvailable(available: boolean): void {
+    this.orbitAvailable = available;
+    if (this.orbitRowEl) this.orbitRowEl.style.display = available ? '' : 'none';
+    this.syncOrbitCapDisplay();
+  }
+
+  isOrbitDetailsOn(): boolean {
+    return this.orbitToggleEl?.checked ?? false;
+  }
+
+  private syncOrbitCapDisplay(): void {
+    if (!this.orbitCapEl) return;
+    this.orbitCapEl.style.display =
+      this.orbitAvailable && this.orbitToggleEl?.checked ? '' : 'none';
+    // Row/cap visibility changes the sheet's height — keep the inset current
+    // (policy 2: a sheet never seals the surface-view transport strip).
+    this.updateSheetInset();
+  }
+
+  /** Replace the readout lines + honesty captions (null clears). Called on
+   *  subject/geometry change only, never on the 8 Hz text cadence. */
+  setOrbitReadout(readout: { lines: string[]; captions: string[] } | null): void {
+    if (!this.orbitCapEl) return;
+    this.orbitCapEl.textContent = '';
+    if (!readout) return;
+    for (const line of readout.lines) {
+      const el = document.createElement('div');
+      el.className = 'obs-orbit-line';
+      el.textContent = line;
+      this.orbitCapEl.appendChild(el);
+    }
+    for (const caption of readout.captions) {
+      const el = document.createElement('div');
+      el.className = 'obs-orbit-note';
+      el.textContent = caption;
+      this.orbitCapEl.appendChild(el);
+    }
+    // Readout rebuilds change the sheet's height — keep the inset current.
+    this.updateSheetInset();
   }
 
   /** Replace the upcoming-events list; an empty statusText hides the status line. */

@@ -144,12 +144,33 @@ function buildComposer(cam: THREE.Camera) {
 applyRenderResolution();
 buildComposer(planetariumCamera);
 
+// Armed after first Planetarium activation: that render compiles the scene's
+// shaders and uploads textures, so its duration is a startup phase of its own.
+let measureNextSceneFrame = false;
+
 function renderScene(cam: THREE.Camera) {
+  const measuring = measureNextSceneFrame;
+  if (measuring) {
+    measureNextSceneFrame = false;
+    performance.mark('plm:first-frame:start');
+  }
   if (composer) {
     composer.render();
   } else {
     renderer.render(scene, cam);
   }
+  if (measuring) performance.measure('plm:first-frame', 'plm:first-frame:start');
+}
+
+/** One console line with every startup phase, once the first frame is in. */
+function logStartupTimings() {
+  requestAnimationFrame(() => requestAnimationFrame(() => {
+    const phases = performance
+      .getEntriesByType('measure')
+      .filter((m) => m.name.startsWith('plm:'))
+      .map((m) => `${m.name.slice(4)} ${Math.round(m.duration)}ms`);
+    debugLog('Startup timings', `${phases.join(', ')} | total ${Math.round(performance.now())}ms`);
+  }));
 }
 
 // ================================================================
@@ -211,6 +232,7 @@ async function switchAppMode(newMode: AppMode) {
         await planetariumMode.activate((progress) => {
           setPlanetsLoadingPercent(progress.completedUnits, totalUnits);
         });
+        measureNextSceneFrame = true;
       } else {
         await planetariumMode.activate();
       }
@@ -301,6 +323,7 @@ async function init() {
 
   debugLog('Boot mode', { autoBoot: isAutoBootParam() });
   await switchAppMode('planetarium');
+  logStartupTimings();
 
   document.getElementById('loading-screen')?.classList.add('hidden');
   await planetariumMode?.showDeferredResumePromptIfNeeded();

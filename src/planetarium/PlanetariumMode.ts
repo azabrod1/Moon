@@ -600,6 +600,9 @@ export class PlanetariumMode {
 
   async activate(onProgress?: (progress: PlanetariumActivationProgress) => void): Promise<void> {
     this.active = true;
+    // Startup-phase marks — summarized in one console line after the first
+    // frame (logStartupTimings in main.ts).
+    performance.mark('plm:activate:start');
     const reportActivationProgress = (completedUnits: number) => {
       onProgress?.({
         completedUnits,
@@ -630,6 +633,7 @@ export class PlanetariumMode {
 
     if (!this.solarSystem) {
       const initialWorldUtcMs = savedState?.astroTimeUtcMs ?? this.timeState.currentUtcMs;
+      performance.mark('plm:solar-system:start');
       try {
         this.solarSystem = await createSolarSystem((progress) => {
           reportActivationProgress(progress.completedUnits);
@@ -639,11 +643,14 @@ export class PlanetariumMode {
         throw error;
       }
 
+      performance.measure('plm:solar-system', 'plm:solar-system:start');
+
       // Add everything to scene
       this.scene.add(this.solarSystem.sun);
       this.scene.add(this.solarSystem.ambientLight);
       this.scene.add(this.solarSystem.asteroidBelt);
 
+      performance.mark('plm:moon-meshes:start');
       for (const planet of this.solarSystem.planets) {
         this.scene.add(planet.group);
         const pos = planet.group.position;
@@ -677,6 +684,7 @@ export class PlanetariumMode {
           this.moonLabels.set(m.data.name, label);
         }
       }
+      performance.measure('plm:moon-meshes', 'plm:moon-meshes:start');
 
       for (const orbit of this.solarSystem.orbitLines) {
         this.scene.add(orbit);
@@ -693,8 +701,10 @@ export class PlanetariumMode {
 
     // Create the Planetarium starfield.
     if (!this.starfield) {
+      performance.mark('plm:starfield:start');
       this.starfield = createPlanetariumStarfield();
       this.scene.add(this.starfield);
+      performance.measure('plm:starfield', 'plm:starfield:start');
     }
 
     if (savedState && shouldPromptForResume) {
@@ -750,6 +760,7 @@ export class PlanetariumMode {
     this.uiRefreshAccumulator = PlanetariumMode.UI_REFRESH_INTERVAL_S;
     this.updateMissionControlState();
     reportActivationProgress(FIRST_PLANETARIUM_ACTIVATION_TOTAL_UNITS);
+    performance.measure('plm:activate', 'plm:activate:start');
   }
 
   private ensureConstellationsReady() {

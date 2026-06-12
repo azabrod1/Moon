@@ -661,8 +661,10 @@
     .shud-hint { margin-top: 22px; font-size: 10.5px; color: var(--obs-t3); }
     @media (max-width: 640px) {
       .shud-bl h1 { font-size: 24px; }
-      .shud-bl { bottom: 120px; max-width: 60vw; }
-      .shud-br { bottom: 120px; }
+      /* The HUD corners join the one bottom-inset exclusion zone: a jump
+         parks the sheet at peek, and the narrative must not sit under it. */
+      .shud-bl { bottom: calc(var(--sheet-inset, 0px) + 120px); max-width: 60vw; }
+      .shud-br { bottom: calc(var(--sheet-inset, 0px) + 120px); }
     }
     /* Surface view active: cinema — the top-right chrome yields to HUD chips,
        the top bar fades and stops catching pointer events (it spans the full
@@ -803,7 +805,16 @@
       opacity: 0;
       transition: all 0.25s ease;
       z-index: 25;
-      white-space: nowrap;
+      /* Long event toasts wrap instead of clipping off both edges (phones)
+         or stretching to a 700px pill (desktop). width: max-content opts out
+         of abspos shrink-to-fit, which would cap a left:50% element at 50vw
+         and wrap phone toasts into a ~195px column. */
+      width: max-content;
+      max-width: min(620px, calc(100vw - 24px));
+      white-space: normal;
+      overflow-wrap: break-word;
+      text-align: center;
+      line-height: 1.45;
       box-shadow: 0 4px 20px rgba(0, 0, 0, 0.3);
     }
     #planetarium-notification.visible { opacity: 1; transform: translateX(-50%) translateY(0); }
@@ -1412,6 +1423,16 @@
       width: 7px;
       height: 7px;
     }
+    /* Observatory menu, opened while landed: the current vantage. */
+    .travel-item-current {
+      background: rgba(255, 255, 255, 0.05);
+    }
+    .travel-item-current .travel-item-name::after {
+      content: ' · you’re here';
+      color: var(--text-dim);
+      font-size: 11px;
+      font-weight: 400;
+    }
     .travel-item-info {
       flex: 1;
       min-width: 0;
@@ -1617,6 +1638,12 @@
         transform: translateX(-50%);
         width: 36px; height: 4px; border-radius: 2px;
         background: rgba(255, 255, 255, 0.18);
+      }
+      /* Peek detent: the summary through the now-bar. Nothing scrolls, the
+         whole card is a drag surface (height set inline by ObservatoryPanel). */
+      #observatory-panel.sheet-peek {
+        overflow: hidden;
+        touch-action: none;
       }
       /* One clock: the sheet's now-bar replaces the bottom time pill while
          the sheet is open. */
@@ -1949,7 +1976,7 @@
           <h3>Observatory</h3>
           <button class="travel-menu-close" id="observatory-menu-close">&times;</button>
         </div>
-        <div class="travel-menu-sub">Pick a vantage &mdash; you&rsquo;ll land there with its sky open.</div>
+        <div class="travel-menu-sub" id="observatory-menu-sub">Pick a vantage &mdash; you&rsquo;ll land there with its sky open.</div>
         <div class="travel-search-row">
           <input type="text" id="observatory-search" placeholder="Search planets &amp; moons..." autocomplete="off" />
         </div>

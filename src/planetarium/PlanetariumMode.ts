@@ -386,6 +386,11 @@ export class PlanetariumMode {
     () => this.toggleSurfaceView(),
     () => this.swapLandedVantage(),
     (on) => this.handleOrbitDetailsToggle(on),
+    () => {
+      // Sheet detents move the panel's top edge at constant viewport — the
+      // chevron clamp's per-viewport rect cache must re-measure.
+      this.panelRectCache = null;
+    },
   );
   private observatoryHud = new ObservatoryHUD(
     () => this.exitSurfaceView(),
@@ -2303,12 +2308,13 @@ export class PlanetariumMode {
     document.getElementById('planetarium-btn-leave')?.addEventListener('click', () => {
       this.exitLandedMode();
     });
-    // One button, two states: landed it toggles the panel; cruising it opens
-    // the vantage menu (pick a body → land there with the panel open).
+    // One button, one meaning: the vantage menu, cruising or landed (like the
+    // Travel button). Landed, picking another body re-lands directly — the
+    // un-intuitive Leave-then-Observatory dance is gone (design brief #31);
+    // picking the body you're on just (re)opens its panel.
     document.getElementById('planetarium-btn-observatory')?.addEventListener('click', () => {
       if (this.isMissionActive()) return;
-      if (this.landedOn) this.toggleObservatoryPanel();
-      else this.toggleObservatoryMenu();
+      this.toggleObservatoryMenu();
     });
     document.getElementById('planetarium-btn-land')?.addEventListener('click', () => {
       if (this.nearbyLandTarget) {
@@ -2499,12 +2505,42 @@ export class PlanetariumMode {
     this.closeTravelMenu();
     menu.classList.add('visible');
     this.setWorldLabelsVisible(false);
+    // Landed, the menu doubles as the switch-body path (brief #31) — the
+    // subtitle says so, and the current vantage is marked and scrolled into
+    // view (Carme sits below thirty Jupiter rows; an off-screen marker is
+    // no affordance at all). Picking the marked row just reopens the panel.
+    setText(
+      'observatory-menu-sub',
+      this.landedOn
+        ? 'Pick a vantage — or reopen this sky.'
+        : 'Pick a vantage — you’ll land there with its sky open.',
+    );
     const search = document.getElementById('observatory-search') as HTMLInputElement;
     if (search) {
       search.value = '';
       this.filterBodyList(document.getElementById('observatory-list'), '');
       if (!('ontouchstart' in window)) search.focus();
     }
+    // After the filter reset: scrollIntoView on a row a stale search left
+    // display:none would no-op, and rows un-hidden above it would shove the
+    // marker off-screen anyway.
+    this.markObservatoryCurrentRow();
+  }
+
+  /** Re-derived on every open: mark (and reveal) the landed body's row. */
+  private markObservatoryCurrentRow() {
+    const list = document.getElementById('observatory-list');
+    if (!list) return;
+    let current: HTMLElement | null = null;
+    for (const item of list.querySelectorAll<HTMLElement>('.travel-item')) {
+      const isCurrent =
+        this.landedOn !== null &&
+        item.dataset.type === this.landedOn.type &&
+        item.dataset.name === this.landedOn.name;
+      item.classList.toggle('travel-item-current', isCurrent);
+      if (isCurrent) current = item;
+    }
+    if (current) current.scrollIntoView({ block: 'center' });
   }
 
   private closeObservatoryMenu() {
@@ -2971,14 +3007,14 @@ export class PlanetariumMode {
     if (!button) return;
     const missionActive = this.isMissionActive();
     const landedSubject = this.landedOn !== null && this.isObservatorySubject(this.landedOn);
-    // Landed: only systems with catalog moons have observatory content.
-    // Cruising: always shown — the button opens the vantage menu instead.
-    const show = !missionActive && (this.landedOn ? landedSubject : true);
-    button.style.display = show ? '' : 'none';
-    // The panel is a landed-state surface (takeoff must close it even though
-    // the cruise button stays visible); the vantage menu a cruise-state one.
+    // The button always opens the vantage menu, so it shows everywhere
+    // outside missions — even landed on a moonless body (Mercury), where the
+    // menu is the way TO an observatory.
+    button.style.display = missionActive ? 'none' : '';
+    // The panel is a landed-state surface: takeoff and moonless bodies close
+    // it. The menu is legal in any state but missions own the ship.
     if (missionActive || !landedSubject) this.closeObservatoryPanel();
-    if (missionActive || this.landedOn) this.closeObservatoryMenu();
+    if (missionActive) this.closeObservatoryMenu();
   }
 
   private closeObservatoryPanel() {
@@ -3460,11 +3496,10 @@ export class PlanetariumMode {
     } else {
       this.frameObservatoryEvent(event.spec);
     }
-    // Sheet form: a jump dismisses the sheet so the framed event isn't
-    // behind it (the toast carries the what/when; the chip reopens). Closing
-    // first lets the render/search calls below no-op instead of rebuilding a
-    // list that's about to disappear.
-    if (window.innerWidth <= 640) this.closeObservatoryPanel();
+    // Sheet form: a jump parks the sheet at peek (brief #30) — the framed
+    // event clears the sheet AND the peek's now-bar shows when you are
+    // (brief #1; the bottom time pill is hidden while the sheet is open).
+    this.observatoryPanel.collapseSheetToPeek();
     this.renderObservatoryPanel();
     this.startObservatoryEventSearch();
     this.notification.show(this.describeShadowEvent(event));
@@ -3521,7 +3556,8 @@ export class PlanetariumMode {
     } else {
       this.frameObservatoryEvent();
     }
-    if (window.innerWidth <= 640) this.closeObservatoryPanel();
+    // Same sheet-to-peek policy as the shadow jumps.
+    this.observatoryPanel.collapseSheetToPeek();
     this.renderObservatoryPanel();
     this.startObservatoryEventSearch();
     // Toast leads with the date — after a jump, *when* is the headline.
@@ -3767,6 +3803,9 @@ export class PlanetariumMode {
       this.controls.target.set(0, 0, 0);
       this.renderObservatoryPanel(); // Look up label flips back
     }
+    // The now-bar's visibility just flipped via the body class — no content
+    // rebuild tracks that, so the peek height must re-measure here.
+    this.observatoryPanel.refreshSheetLayout();
     this.syncOrbitDetailsVisibility();
   }
 
@@ -4040,6 +4079,11 @@ export class PlanetariumMode {
     // resurrecting a moon subject on a later fresh landing on its parent.
     // Only the vantage swap preserves the pair it just set.
     if (!preserveOrbitPair) this.orbitPairMoon = null;
+    // The menu has no backdrop, so non-menu landing paths (Land button,
+    // proximity, T-key) can fire while it's open — its "you're here" marker
+    // would go stale the instant the ground changes. Menu-initiated picks
+    // already closed it (no-op here).
+    this.closeObservatoryMenu();
     this.landedOn = target;
     // The reticle's screen position belongs to the previous target — drop it
     // now rather than letting it float stale until the next landed frame
@@ -4429,6 +4473,9 @@ export class PlanetariumMode {
 
   exitLandedMode() {
     if (!this.landedOn) return;
+    // A menu opened while landed describes a ground that's about to vanish
+    // (Leave is clickable around the backdrop-less menu) — close it.
+    this.closeObservatoryMenu();
     // Teardown path: restore FOV/controls/labels instantly — the code below
     // reconfigures the controls and camera for flight anyway.
     this.exitSurfaceView(true);

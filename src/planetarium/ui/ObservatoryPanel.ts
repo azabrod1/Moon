@@ -78,6 +78,43 @@ const EARTH_PHASE_NAME: Record<string, string> = {
   'Waning Crescent': 'Waxing Gibbous',
 };
 
+/** Bottom-sheet detents (≤640px): 'peek' shows the summary through the
+ * now-bar; 'full' is today's whole sheet. */
+export type SheetDetent = 'peek' | 'full';
+
+// Sheet-drag release thresholds (px of finger travel).
+const SHEET_DISMISS_DRAG_PX = 80;
+const SHEET_EXPAND_DRAG_PX = 60;
+const SHEET_COLLAPSE_DRAG_PX = 60;
+
+/**
+ * Where the sheet settles when a drag releases. Pure — unit-tested. dyPx is
+ * finger travel (down positive). From full, a dismiss must travel past the
+ * peek position plus the dismiss threshold (a short pull collapses, it never
+ * skips straight off-screen). Degenerate panels (content no taller than the
+ * peek) have one real detent: only a dismiss-sized pull does anything.
+ * Tap-vs-drag discrimination happens at the call site, not here.
+ */
+export function sheetReleaseAction(
+  detent: SheetDetent,
+  dyPx: number,
+  fullHeightPx: number,
+  peekHeightPx: number,
+): 'dismiss' | SheetDetent {
+  const peek = Math.min(peekHeightPx, fullHeightPx);
+  if (fullHeightPx - peek <= 1) {
+    return dyPx > SHEET_DISMISS_DRAG_PX ? 'dismiss' : detent;
+  }
+  if (detent === 'peek') {
+    if (dyPx <= -SHEET_EXPAND_DRAG_PX) return 'full';
+    if (dyPx > SHEET_DISMISS_DRAG_PX) return 'dismiss';
+    return 'peek';
+  }
+  if (dyPx >= fullHeightPx - peek + SHEET_DISMISS_DRAG_PX) return 'dismiss';
+  if (dyPx >= SHEET_COLLAPSE_DRAG_PX) return 'peek';
+  return 'full';
+}
+
 /** Coarse phase bucket for bodies without a named-lunation convention. */
 function genericPhaseName(illumination: number): string {
   if (illumination < 0.02) return 'New';
@@ -194,6 +231,19 @@ export class ObservatoryPanel {
   private orbitAvailable = false;
   private renderedRows: { row: ObservatoryEventRow; rowEl: HTMLElement; cdEl: HTMLElement }[] = [];
   private wired = false;
+  // Sheet-form detent state (≤640px). Entering sheet form — open or a
+  // breakpoint crossing — always means peek; `wasSheetForm` detects crossings.
+  private sheetDetent: SheetDetent = 'peek';
+  private wasSheetForm = false;
+  // A live handle/panel drag owns the sheet's height — content rebuilds must
+  // not re-assert the detent mid-gesture (the chunked event search publishes
+  // rows for seconds right after open).
+  private sheetDragging = false;
+  // Escape/mission/surface-entry can hide() mid-drag; if the browser drops
+  // the pointer capture with the panel display:none, no terminal pointer
+  // event ever reaches it and sheetDragging would wedge true forever. Set by
+  // wireSheetDrag (closure state lives there); called by hide().
+  private abortSheetDrag: (() => void) | null = null;
 
   constructor(
     private onJump: (type: EventType, direction: 1 | -1) => void,
@@ -203,6 +253,7 @@ export class ObservatoryPanel {
     private onLookup: () => void,
     private onSwap: () => void,
     private onOrbitDetailsToggle: (on: boolean) => void,
+    private onLayoutChange: () => void,
   ) {}
 
   bind(): void {
@@ -218,6 +269,9 @@ export class ObservatoryPanel {
     this.orbitCapEl = document.getElementById('observatory-orbit-cap');
     if (this.wired) return;
     this.wired = true;
+    // Seed the crossing detector — the first updateSheetInset call must not
+    // read the initial form as a breakpoint crossing.
+    this.wasSheetForm = this.isSheetForm();
     document.getElementById('observatory-close')?.addEventListener('click', () => {
       this.hide();
       this.onClose(); // owner drops its chunked search immediately, not next frame
@@ -279,70 +333,226 @@ export class ObservatoryPanel {
   }
 
   /**
-   * Publish the sheet's height as --sheet-inset so bottom-anchored chrome
-   * (the surface transport strip) rides its top edge instead of being
-   * buried — cross-component policy 2: a sheet never seals the transport.
+   * The peek detent shows the summary through the now-bar. The anchor chain
+   * is visibility-aware (offsetHeight, not inline style): surface view hides
+   * the now-bar via a body class and events-only subjects hide the hero
+   * inline — falling through to the vantage row keeps the sheet from
+   * collapsing to a sliver when both are gone.
+   */
+  private peekHeightPx(): number {
+    const panel = this.panelEl;
+    if (!panel) return 0;
+    const vantage = panel.querySelector('.obs-vantage') as HTMLElement | null;
+    for (const anchor of [this.nowBarEl, this.heroEl, vantage]) {
+      if (anchor && anchor.offsetHeight > 0) {
+        return Math.min(anchor.offsetTop + anchor.offsetHeight + 12, this.sheetFullHeightPx());
+      }
+    }
+    return this.sheetFullHeightPx();
+  }
+
+  /**
+   * The full detent's real height: content extent (scrollHeight ignores the
+   * inline peek height) under the CSS max-height cap — read from computed
+   * style rather than twinning the stylesheet's min(55vh, …) formula.
+   */
+  private sheetFullHeightPx(): number {
+    const panel = this.panelEl;
+    if (!panel) return 0;
+    const cap = parseFloat(getComputedStyle(panel).maxHeight);
+    return Math.min(panel.scrollHeight, Number.isFinite(cap) ? cap : Infinity);
+  }
+
+  /**
+   * Single owner of sheet layout: applies the current detent (≤640px), then
+   * publishes the sheet's height as --sheet-inset so bottom-anchored chrome
+   * (the surface transport strip, the surface-HUD corners) rides its top
+   * edge instead of being buried — cross-component policy 2: a sheet never
+   * seals the transport. Desktop or closed, it clears every sheet artifact —
+   * a stale inline height would truncate the desktop side panel.
    */
   private updateSheetInset(): void {
-    if (this.isOpen() && this.isSheetForm() && this.panelEl) {
-      document.body.style.setProperty('--sheet-inset', `${this.panelEl.offsetHeight}px`);
+    if (this.sheetDragging) return; // a live drag owns the height
+    const panel = this.panelEl;
+    const sheetForm = this.isSheetForm();
+    // Crossing into sheet form always lands at peek (same rule as show()).
+    if (sheetForm && !this.wasSheetForm) this.sheetDetent = 'peek';
+    this.wasSheetForm = sheetForm;
+    if (panel && this.isOpen() && sheetForm) {
+      if (this.sheetDetent === 'peek') {
+        panel.style.height = `${this.peekHeightPx()}px`;
+        panel.classList.add('sheet-peek');
+        panel.scrollTop = 0;
+      } else {
+        panel.style.height = '';
+        panel.classList.remove('sheet-peek');
+      }
+      document.body.style.setProperty('--sheet-inset', `${panel.offsetHeight}px`);
     } else {
+      if (panel) {
+        panel.style.height = '';
+        panel.style.transform = '';
+        panel.classList.remove('sheet-peek');
+      }
       document.body.style.removeProperty('--sheet-inset');
     }
+    this.onLayoutChange();
+  }
+
+  /**
+   * Re-measure the sheet when a peek anchor's visibility flips via a body
+   * class no content rebuild tracks (the now-bar across surface-view exit).
+   */
+  refreshSheetLayout(): void {
+    this.updateSheetInset();
+  }
+
+  /**
+   * Jumps park the sheet at peek instead of dismissing it: the framed event
+   * stays visible AND the now-bar carries the new date. No-op on desktop or
+   * when closed.
+   */
+  collapseSheetToPeek(): void {
+    if (!this.isOpen() || !this.isSheetForm()) return;
+    this.sheetDetent = 'peek';
+    this.updateSheetInset();
   }
 
   show(): void {
     this.panelEl?.classList.add('visible');
     document.body.classList.add('observatory-sheet-open');
+    // Opening (or re-targeting — show() also fires on landed→landed switches)
+    // always starts at peek: the sky stays visible, drag up for the rest.
+    this.sheetDetent = 'peek';
     this.updateSheetInset();
   }
 
   hide(): void {
+    // A close mid-drag must terminate the gesture first, or the dragging
+    // guard would make updateSheetInset skip its cleanup below.
+    this.abortSheetDrag?.();
     this.panelEl?.classList.remove('visible');
     document.body.classList.remove('observatory-sheet-open');
     this.updateSheetInset();
   }
 
   /**
-   * Sheet-form swipe-to-dismiss: a downward drag on the header (the grab
-   * handle + eyebrow row — not the scrollable body, so list scrolling never
-   * arms it) follows the finger and releases past a threshold. Pointer
-   * events only on the handle keep the sky above the sheet gesture-live.
+   * Sheet-form detent drag. At FULL only the header (grab handle + eyebrow
+   * row) arms the gesture — the body scrolls a list there. At PEEK nothing
+   * scrolls (overflow hidden), so the whole card is the drag surface: a
+   * swipe up on it is the natural expand gesture. Buttons stay excluded
+   * (capturing would retarget their pointerup and eat the click). Drag up
+   * from peek live-grows the height toward full; drag down translates
+   * (dismiss preview); the release settles via pure sheetReleaseAction. A
+   * tap on the handle (|dy| < 6, pointerup only — a cancelled gesture
+   * reverts) toggles the detents.
    */
   private wireSheetDrag(): void {
-    const handle = document.querySelector('#observatory-panel .obs-eyebrow') as HTMLElement | null;
-    if (!handle || !this.panelEl) return;
     const panel = this.panelEl;
+    if (!panel) return;
     let startY: number | null = null;
     let activePointer: number | null = null;
-    handle.addEventListener('pointerdown', (e) => {
+    let fromHandle = false;
+    let startDetent: SheetDetent = 'peek';
+    let startHeight = 0;
+    let fullHeight = 0;
+    let peekHeight = 0;
+    // Terminal cleanup for non-release endings (hide() mid-drag, capture
+    // loss). Leaves height/class/inset to the caller's updateSheetInset.
+    const abort = () => {
+      if (activePointer === null) return;
+      try {
+        panel.releasePointerCapture(activePointer);
+      } catch {
+        // capture already gone
+      }
+      activePointer = null;
+      startY = null;
+      this.sheetDragging = false;
+      panel.style.transform = '';
+    };
+    this.abortSheetDrag = abort;
+    panel.addEventListener('pointerdown', (e) => {
       if (!this.isSheetForm()) return;
-      // A tap on the close X (a child of the header) must stay a click —
-      // capturing would retarget its pointerup to the handle and eat it.
-      if ((e.target as HTMLElement).closest('button')) return;
+      const target = e.target as HTMLElement;
+      if (target.closest('button')) return;
+      const viaHandle = target.closest('.obs-eyebrow') !== null;
+      if (this.sheetDetent === 'full' && !viaHandle) return;
       if (activePointer !== null) return; // one finger drives the sheet
+      try {
+        panel.setPointerCapture(e.pointerId);
+      } catch {
+        return; // pointer already gone — don't arm a gesture we can't end
+      }
       activePointer = e.pointerId;
       startY = e.clientY;
-      handle.setPointerCapture(e.pointerId);
+      fromHandle = viaHandle;
+      startDetent = this.sheetDetent;
+      startHeight = panel.offsetHeight;
+      fullHeight = this.sheetFullHeightPx();
+      peekHeight = this.peekHeightPx();
+      this.sheetDragging = true;
     });
-    handle.addEventListener('pointermove', (e) => {
+    panel.addEventListener('pointermove', (e) => {
       if (e.pointerId !== activePointer || startY === null) return;
-      const dy = Math.max(0, e.clientY - startY);
-      panel.style.transform = `translateY(${dy}px)`;
+      if (!this.isOpen()) {
+        // Closed under the finger and capture survived — end it here.
+        abort();
+        this.updateSheetInset();
+        return;
+      }
+      const dy = e.clientY - startY;
+      if (startDetent === 'peek' && dy < 0) {
+        // Expand preview: grow toward full. The transport strip rides the
+        // live height (policy 2 holds mid-gesture too).
+        const h = Math.min(startHeight - dy, fullHeight);
+        panel.style.transform = '';
+        panel.style.height = `${h}px`;
+        document.body.style.setProperty('--sheet-inset', `${h}px`);
+      } else {
+        const down = Math.max(0, dy);
+        if (startDetent === 'peek') panel.style.height = `${startHeight}px`;
+        panel.style.transform = `translateY(${down}px)`;
+        document.body.style.setProperty('--sheet-inset', `${Math.max(0, startHeight - down)}px`);
+      }
     });
-    const release = (e: PointerEvent) => {
+    const release = (e: PointerEvent, cancelled: boolean) => {
       if (e.pointerId !== activePointer || startY === null) return;
       const dy = e.clientY - startY;
       activePointer = null;
       startY = null;
+      this.sheetDragging = false;
       panel.style.transform = '';
-      if (dy > 80) {
+      // Closed under us (mission force-close), breakpoint crossed mid-drag,
+      // or the gesture was cancelled: settle to a clean current state.
+      if (!this.isOpen() || !this.isSheetForm() || cancelled) {
+        this.updateSheetInset();
+        return;
+      }
+      if (fromHandle && Math.abs(dy) < 6) {
+        this.sheetDetent = this.sheetDetent === 'peek' ? 'full' : 'peek';
+        this.updateSheetInset();
+        return;
+      }
+      const action = sheetReleaseAction(startDetent, dy, fullHeight, peekHeight);
+      if (action === 'dismiss') {
         this.hide();
         this.onClose();
+        return;
       }
+      this.sheetDetent = action;
+      this.updateSheetInset();
     };
-    handle.addEventListener('pointerup', release);
-    handle.addEventListener('pointercancel', release);
+    panel.addEventListener('pointerup', (e) => release(e, false));
+    panel.addEventListener('pointercancel', (e) => release(e, true));
+    // Any capture loss the handlers above didn't see (browser took it away,
+    // element hidden) still terminates the gesture. After a normal release
+    // activePointer is already null — this no-ops.
+    panel.addEventListener('lostpointercapture', (e) => {
+      if (e.pointerId !== activePointer) return;
+      abort();
+      this.updateSheetInset();
+    });
   }
 
   /** One ~600ms accent glow on the now-bar — called after any time jump. */

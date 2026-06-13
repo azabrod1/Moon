@@ -3,7 +3,7 @@ import https from 'https';
 import path from 'path';
 import { gunzipSync } from 'zlib';
 
-const DEFAULT_MAGNITUDE = 6.8;
+const DEFAULT_MAGNITUDE = 7.02;
 const HYG_V37_URL = 'https://raw.githubusercontent.com/astronexus/HYG-Database/main/hyg/v3/hyg_v37.csv.gz';
 const OUTPUT_PATH = path.resolve(process.cwd(), 'src/planetarium/data/brightStars.ts');
 

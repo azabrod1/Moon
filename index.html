@@ -1184,6 +1184,25 @@
       font-family: var(--font); font-size: 14px;
       color: var(--text-dim); letter-spacing: 2px;
     }
+    /* Arrival veil: covers the scene while a quick-travel destination's moon
+       textures paint, so they never pop in. .covering snaps fully opaque (no
+       fade-in) so it covers before the synchronous paint blocks the main thread;
+       removing the class fades it back out to reveal the painted scene, and
+       pointer-events:auto blocks clicks landing through it mid-arrival. */
+    #arrival-veil {
+      position: fixed;
+      top: 0; left: 0; right: 0; bottom: 0;
+      background: #04040a;
+      z-index: 50;
+      opacity: 0;
+      pointer-events: none;
+      transition: opacity 0.3s ease;
+    }
+    #arrival-veil.covering {
+      opacity: 1;
+      pointer-events: auto;
+      transition: none;
+    }
 
     /* ============================================= */
     /* TRAVEL MENU & LEAVE BUTTON                    */
@@ -1741,6 +1760,7 @@
   <div id="mode-transition">
     <p id="transition-msg">Loading Solar System...</p>
   </div>
+  <div id="arrival-veil"></div>
 
   <div id="ui-overlay">
     <!-- TOP BAR -->

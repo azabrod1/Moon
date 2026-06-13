@@ -490,6 +490,9 @@ import { type MoonData, getMoonsByPlanet } from './planets/moonData';
 export interface MoonMesh {
   mesh: THREE.Mesh;
   data: MoonData;
+  /** Procedural surface textures generated yet? Painted lazily (MoonPainter);
+   *  a moon is never made visible before this is true. */
+  painted: boolean;
 }
 
 function seededRng(seed: number) {
@@ -528,9 +531,19 @@ function fractalNoise(x: number, y: number, seed: number, octaves: number): numb
   return value / maxAmp;
 }
 
-function createMoonTextures(color: number, name: string): { colorTex: THREE.Texture; bumpTex: THREE.Texture } {
-  const textureWidth = 512;
-  const textureHeight = 256;
+// Tiny irregular moons (the outer-planet swarms, Phobos/Deimos, the small
+// shepherd moons) render as a handful of pixels even up close, so they get
+// half-dimension textures — a quarter of the per-moon pixel work — while round,
+// inspectable moons keep full resolution.
+const SMALL_MOON_RADIUS_KM = 150;
+
+function createMoonTextures(
+  color: number,
+  name: string,
+  radiusKm: number,
+): { colorTex: THREE.Texture; bumpTex: THREE.Texture } {
+  const textureWidth = radiusKm < SMALL_MOON_RADIUS_KM ? 256 : 512;
+  const textureHeight = textureWidth / 2;
   const seed = hashString(name);
   const rng = seededRng(seed);
 
@@ -560,11 +573,15 @@ function createMoonTextures(color: number, name: string): { colorTex: THREE.Text
   const baseG = baseColor.g * 255;
   const baseB = baseColor.b * 255;
 
+  // The image buffers are Uint8ClampedArray, so writes clamp to 0–255 and round
+  // on assignment — the per-channel Math.max/min below are redundant. ny and the
+  // row base depend only on y; hoist them out of the inner loop.
   for (let y = 0; y < textureHeight; y++) {
+    const ny = y / textureHeight;
+    const rowBase = y * textureWidth;
     for (let x = 0; x < textureWidth; x++) {
-      const idx = (y * textureWidth + x) * 4;
+      const idx = (rowBase + x) * 4;
       const nx = x / textureWidth;
-      const ny = y / textureHeight;
 
       // Large-scale terrain variation (3 octaves)
       const terrain = fractalNoise(nx * 6, ny * 6, seed, 3);
@@ -588,13 +605,13 @@ function createMoonTextures(color: number, name: string): { colorTex: THREE.Text
 
       // Apply variation as brightness shift centered around 0
       const shift = (variation - 0.15) * 255;
-      colorPixels[idx] = Math.max(0, Math.min(255, baseR + shift));
-      colorPixels[idx + 1] = Math.max(0, Math.min(255, baseG + shift));
-      colorPixels[idx + 2] = Math.max(0, Math.min(255, baseB + shift));
+      colorPixels[idx] = baseR + shift;
+      colorPixels[idx + 1] = baseG + shift;
+      colorPixels[idx + 2] = baseB + shift;
       colorPixels[idx + 3] = 255;
 
       // Bump map: terrain + detail as height
-      const height = Math.max(0, Math.min(255, (terrain * 0.7 + detail * 0.3) * 255));
+      const height = (terrain * 0.7 + detail * 0.3) * 255;
       bumpPixels[idx] = height;
       bumpPixels[idx + 1] = height;
       bumpPixels[idx + 2] = height;
@@ -619,18 +636,18 @@ function createMoonTextures(color: number, name: string): { colorTex: THREE.Text
         if (t < 0.75) {
           // Dark crater floor
           const darken = (1 - t / 0.75) * 30;
-          colorPixels[idx] = Math.max(0, colorPixels[idx] - darken);
-          colorPixels[idx + 1] = Math.max(0, colorPixels[idx + 1] - darken);
-          colorPixels[idx + 2] = Math.max(0, colorPixels[idx + 2] - darken);
-          bumpPixels[idx] = Math.max(0, bumpPixels[idx] - darken * 2);
+          colorPixels[idx] = colorPixels[idx] - darken;
+          colorPixels[idx + 1] = colorPixels[idx + 1] - darken;
+          colorPixels[idx + 2] = colorPixels[idx + 2] - darken;
+          bumpPixels[idx] = bumpPixels[idx] - darken * 2;
           bumpPixels[idx + 1] = bumpPixels[idx]; bumpPixels[idx + 2] = bumpPixels[idx];
         } else {
           // Bright rim
           const brighten = (1 - (t - 0.75) / 0.25) * 20;
-          colorPixels[idx] = Math.min(255, colorPixels[idx] + brighten);
-          colorPixels[idx + 1] = Math.min(255, colorPixels[idx + 1] + brighten);
-          colorPixels[idx + 2] = Math.min(255, colorPixels[idx + 2] + brighten);
-          bumpPixels[idx] = Math.min(255, bumpPixels[idx] + brighten * 2);
+          colorPixels[idx] = colorPixels[idx] + brighten;
+          colorPixels[idx + 1] = colorPixels[idx + 1] + brighten;
+          colorPixels[idx + 2] = colorPixels[idx + 2] + brighten;
+          bumpPixels[idx] = bumpPixels[idx] + brighten * 2;
           bumpPixels[idx + 1] = bumpPixels[idx]; bumpPixels[idx + 2] = bumpPixels[idx];
         }
       }
@@ -647,8 +664,33 @@ function createMoonTextures(color: number, name: string): { colorTex: THREE.Text
 }
 
 /**
- * Create moon meshes for a planet. Moons are added to the planet group
- * and orbit at their real orbital radius (in AU).
+ * Generate and attach a moon's procedural surface textures. Idempotent — the
+ * lazy painter and the visibility gate both call this and may reach the same
+ * moon more than once. If the real photo already streamed in (photoLoaded),
+ * only the bump is applied; the procedural colour is the floor that shows
+ * until/unless a photo wins, so a moon whose JPG fails stays textured, not grey.
+ */
+export function paintMoonTextures(moon: MoonMesh): void {
+  if (moon.painted) return;
+  const mat = moon.mesh.material as THREE.MeshStandardMaterial;
+  const { colorTex, bumpTex } = createMoonTextures(moon.data.color, moon.data.name, moon.data.radiusKm);
+  mat.bumpMap = bumpTex;
+  mat.bumpScale = Math.max(moon.data.radiusAU * 0.15, 0.0000005);
+  if (mat.userData.photoLoaded) {
+    colorTex.dispose();
+  } else {
+    mat.map = colorTex;
+    mat.color.setRGB(1, 1, 1);
+  }
+  mat.needsUpdate = true;
+  moon.painted = true;
+}
+
+/**
+ * Create moon meshes for a planet. Moons orbit at their real orbital radius
+ * (in AU). The surface texture is NOT generated here — it's painted lazily
+ * (paintMoonTextures / MoonPainter) so first load isn't blocked on ~65 canvas
+ * generations; meshes start with a flat placeholder material.
  */
 export function createMoonMeshes(planetName: string): MoonMesh[] {
   const moons = getMoonsByPlanet(planetName);
@@ -658,29 +700,49 @@ export function createMoonMeshes(planetName: string): MoonMesh[] {
     const segments = moonData.radiusKm > 1000 ? 48 : moonData.radiusKm > 200 ? 24 : 16;
     const geo = new THREE.SphereGeometry(moonData.radiusAU, segments, segments / 2);
 
-    const { colorTex, bumpTex } = createMoonTextures(moonData.color, moonData.name);
+    // Flat placeholder. A moon is never made visible before it's painted (the
+    // gate in updateMoonPositions), so this colour is a safety floor, not a
+    // state the player normally sees.
     const mat = new THREE.MeshStandardMaterial({
-      map: colorTex,
-      bumpMap: bumpTex,
-      bumpScale: Math.max(moonData.radiusAU * 0.15, 0.0000005),
+      color: moonData.color,
       roughness: 0.85,
       metalness: 0.05,
       emissive: new THREE.Color(moonData.color),
       emissiveIntensity: 0.03,
     });
 
-    if (moonData.textureKey && PLANET_TEXTURE_URLS[moonData.textureKey]) {
-      loadTexture(moonData.textureKey).then((tex) => {
-        mat.map = tex;
-        mat.needsUpdate = true;
-      });
+    // Photo-textured moons (Moon, Io, …) stream their real image; on true
+    // success it replaces the procedural colour. Load directly rather than via
+    // loadTexture (which resolves a grey fallback on failure) so a failed JPG
+    // keeps the procedural texture. photoLoaded tells the painter not to
+    // clobber a photo that already won.
+    const photoUrl = moonData.textureKey ? PLANET_TEXTURE_URLS[moonData.textureKey] : undefined;
+    if (photoUrl) {
+      loader.load(
+        photoUrl,
+        (tex) => {
+          tex.colorSpace = THREE.SRGBColorSpace;
+          mat.userData.photoLoaded = true;
+          const prev = mat.map;
+          mat.map = tex;
+          mat.color.setRGB(1, 1, 1);
+          mat.needsUpdate = true;
+          if (prev) prev.dispose();
+        },
+        undefined,
+        (err) =>
+          debugWarn('Moon texture load failed', {
+            name: moonData.name,
+            reason: err instanceof Error ? err.message : String(err),
+          }),
+      );
     }
 
     const mesh = new THREE.Mesh(geo, mat);
     mesh.name = moonData.name;
-    mesh.visible = false; // hidden by default, shown when player is close
+    mesh.visible = false; // hidden until painted and the player is close
 
-    result.push({ mesh, data: moonData });
+    result.push({ mesh, data: moonData, painted: false });
   }
 
   return result;

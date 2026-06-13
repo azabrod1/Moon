@@ -24,7 +24,7 @@ import { PlanetLabels } from './PlanetLabels';
 import { PlanetariumStore, createDefaultPlanetariumState, type PlanetariumState, type LandedTarget } from './PlanetariumStore';
 import { computeStats } from './stats';
 import { PLANETARIUM_BODIES, type PlanetData } from './planets/planetData';
-import { createMoonMeshes, type MoonMesh } from './PlanetFactory';
+import { createMoonMeshes, paintMoonTextures, type MoonMesh } from './PlanetFactory';
 import {
   advancePlanetariumTime,
   computeBodyPositionAU,
@@ -71,6 +71,8 @@ import { OBSERVATORY_JUMP_LEAD_MS, stepperSearchFromUtcMs } from './observatoryT
 import { findEvent, type EventType } from '../astronomy/ephemeris';
 import { KM_PER_AU } from '../astronomy/constants';
 import { createPlanetariumStarfield } from './world/starfield';
+import { MoonPainter } from './world/MoonPainter';
+import { debugError } from '../shared/debug';
 import { GyroSteering } from './input/GyroSteering';
 import { SurfaceLook } from './input/SurfaceLook';
 import {
@@ -205,6 +207,14 @@ export class PlanetariumMode {
   // includes the daily spin — moon offsets are world-frame and must not rotate
   // with the surface.
   private moonSystemGroups = new Map<string, THREE.Group>();
+  // Lazy moon-texture painter (see MoonPainter). The injected paint fn keeps it
+  // testable; the controller drives the background drain from updateMoonPositions
+  // and the synchronous gate paint when a system is about to become visible.
+  private moonPainter = new MoonPainter(paintMoonTextures);
+  private static readonly MOON_PAINT_FRAME_BUDGET_MS = 8;
+  // Arrival veil re-entrancy guard (rapid picks, or a pick while one is running).
+  private arrivalInFlight = false;
+  private static readonly ARRIVAL_MIN_DWELL_MS = 150;
   private tmpMoonOffset = new THREE.Vector3();
   private tmpMoonOrbitNormal = new THREE.Vector3();
   private tmpShadingParentPos = new THREE.Vector3();
@@ -666,6 +676,9 @@ export class PlanetariumMode {
           }
           this.moonSystemGroups.set(planet.data.name, systemGroup);
           this.scene.add(systemGroup);
+          // Queue this system's textures for the background drain. The gate
+          // paints any system synchronously before it's shown regardless.
+          this.moonPainter.enqueue(planet.data.name, moons);
         }
 
         if (!this.moonLabelContainer) {
@@ -1240,6 +1253,10 @@ export class PlanetariumMode {
    */
   private updateMoonPositions() {
     if (!this.solarSystem) return;
+    // Nearest system with textures still queued — the background drain paints it
+    // first (you're likeliest to reach it next). Tracked across the planet loop.
+    let nearestPending: string | null = null;
+    let nearestPendingDist = Infinity;
     for (const planet of this.solarSystem.planets) {
       const moons = this.planetMoons.get(planet.data.name);
       if (!moons || moons.length === 0) continue;
@@ -1254,9 +1271,21 @@ export class PlanetariumMode {
       const visible = distToPlayer < threshold;
       const parentR = planet.data.radiusAU;
 
+      // Hard rule: paint a system before it's shown. The gate runs every frame
+      // before the scene renders, so a moon can never reach the screen unpainted.
+      if (visible && this.moonPainter.hasPending(planet.data.name)) {
+        this.moonPainter.paintSystemNow(planet.data.name, moons);
+      } else if (this.moonPainter.hasPending(planet.data.name) && distToPlayer < nearestPendingDist) {
+        nearestPendingDist = distToPlayer;
+        nearestPending = planet.data.name;
+      }
+
       for (const m of moons) {
-        m.mesh.visible = visible;
-        if (!visible) {
+        // Never flip visible while unpainted: the worst case is a moon that pops
+        // in a frame late, never a flat-coloured one.
+        const show = visible && m.painted;
+        m.mesh.visible = show;
+        if (!show) {
           const hiddenLabel = this.moonLabels.get(m.data.name);
           if (hiddenLabel && hiddenLabel.style.display !== 'none') {
             hiddenLabel.style.display = 'none';
@@ -1301,6 +1330,16 @@ export class PlanetariumMode {
           m.mesh.scale.setScalar(1);
         }
       }
+    }
+
+    // Background drain: paint a slice of any still-queued systems, the one the
+    // player is in/heading toward first. Costs nothing once everything's painted.
+    if (!this.moonPainter.isEmpty()) {
+      const target = this.autopilotTarget ?? this.landedOn;
+      const targetSystem = target ? this.parentSystemOf(target) : null;
+      const preferred =
+        targetSystem && this.moonPainter.hasPending(targetSystem) ? targetSystem : nearestPending;
+      this.moonPainter.pump(PlanetariumMode.MOON_PAINT_FRAME_BUDGET_MS, preferred);
     }
   }
 
@@ -2339,27 +2378,31 @@ export class PlanetariumMode {
       if (this.travelSelection) {
         const selectedTarget = this.travelSelection;
         this.closeTravelMenu();
-        // The T-key opens this menu while landed: exit first so the landing
-        // gets the full ceremony — preLand* captured from real flight state,
-        // and any excursion stash consumed rather than outliving its landing
-        // (Leave from the new body must not teleport to a stale cruise pose).
-        if (this.landedOn) this.exitLandedMode();
-        this.enterLandedMode(selectedTarget);
+        this.arriveThen(selectedTarget, () => {
+          // The T-key opens this menu while landed: exit first so the landing
+          // gets the full ceremony — preLand* captured from real flight state,
+          // and any excursion stash consumed rather than outliving its landing
+          // (Leave from the new body must not teleport to a stale cruise pose).
+          if (this.landedOn) this.exitLandedMode();
+          this.enterLandedMode(selectedTarget);
+        });
       }
     });
     document.getElementById('travel-action-jump')?.addEventListener('click', () => {
       if (this.travelSelection) {
         const selectedTarget = this.travelSelection;
         this.closeTravelMenu();
-        if (this.landedOn) this.exitLandedMode();
-        if (selectedTarget.type === 'planet') {
-          const body = PLANETARIUM_BODIES.find(b => b.name === selectedTarget.name);
-          if (body) this.jumpToPlanet(body);
-        } else {
-          // Jump near the moon's parent planet
-          const body = PLANETARIUM_BODIES.find(b => b.name === selectedTarget.parentPlanet);
-          if (body) this.jumpToPlanet(body);
-        }
+        this.arriveThen(selectedTarget, () => {
+          if (this.landedOn) this.exitLandedMode();
+          if (selectedTarget.type === 'planet') {
+            const body = PLANETARIUM_BODIES.find(b => b.name === selectedTarget.name);
+            if (body) this.jumpToPlanet(body);
+          } else {
+            // Jump near the moon's parent planet
+            const body = PLANETARIUM_BODIES.find(b => b.name === selectedTarget.parentPlanet);
+            if (body) this.jumpToPlanet(body);
+          }
+        });
       }
     });
     this.buildTravelList();
@@ -2584,18 +2627,23 @@ export class PlanetariumMode {
     const sameBody =
       this.landedOn?.type === target.type && this.landedOn.name === target.name;
     const panelWasOpen = this.observatoryPanel.isOpen();
-    if (!sameBody) {
-      if (this.landedOn) {
-        // Re-land without the exit/enter ceremony. A live surface view would
-        // keep a stale cross-system target — tear it down first.
-        if (this.landedView === 'surface') this.exitSurfaceView(true);
-        this.applyLandedTarget(target);
-        this.notification.show(`Standing on ${target.name}`);
-      } else {
-        // Excursion entry: the menu grabs the ship out of cruise — remember
-        // the pose so Leave puts it back exactly. Manual/proximity landings
-        // and Land & Orbit keep the classic takeoff (they don't stash).
-        this.observatoryExcursion = {
+    const openPanel = () => {
+      this.observatoryPanel.show();
+      this.renderObservatoryPanel();
+      this.startObservatoryEventSearch();
+    };
+    if (sameBody) {
+      if (!panelWasOpen) openPanel();
+      return;
+    }
+    // Excursion entry: the menu grabs the ship out of cruise — remember the
+    // pose so Leave puts it back exactly. Capture it NOW, synchronously: the
+    // ship keeps moving while a cold system paints behind the veil, so a stash
+    // taken inside the deferred closure would be a couple frames downrange.
+    // Manual/proximity landings and Land & Orbit keep the classic takeoff.
+    const excursionStash = this.landedOn
+      ? null
+      : {
           posX: this.player.posX, posY: this.player.posY, posZ: this.player.posZ,
           heading: this.player.heading, pitch: this.player.pitch,
           speedMultiplier: this.player.speedMultiplier,
@@ -2603,14 +2651,21 @@ export class PlanetariumMode {
           inSystemMode: this.inSystemMode,
           moving: this.player.moving,
         };
+    // Teleport behind the arrival veil if the destination isn't painted yet; the
+    // panel opens after the landing so it reads the new subject, not the old.
+    this.arriveThen(target, () => {
+      if (this.landedOn) {
+        // Re-land without the exit/enter ceremony. A live surface view would
+        // keep a stale cross-system target — tear it down first.
+        if (this.landedView === 'surface') this.exitSurfaceView(true);
+        this.applyLandedTarget(target);
+        this.notification.show(`Standing on ${target.name}`);
+      } else {
+        this.observatoryExcursion = excursionStash;
         this.enterLandedMode(target);
       }
-    }
-    if (!sameBody || !panelWasOpen) {
-      this.observatoryPanel.show();
-      this.renderObservatoryPanel();
-      this.startObservatoryEventSearch();
-    }
+      openPanel();
+    });
   }
 
   private selectTravelTarget(target: NonNullable<LandedTarget>) {
@@ -4076,6 +4131,57 @@ export class PlanetariumMode {
         angleDeg: (Math.atan2(dy, dx) * 180) / Math.PI,
       });
     }
+  }
+
+  /** The moon-system (parent planet name) a target belongs to. */
+  private parentSystemOf(target: NonNullable<LandedTarget>): string {
+    return target.type === 'moon' ? target.parentPlanet : target.name;
+  }
+
+  /**
+   * Run an instant teleport (`action`), but if the destination system's moons
+   * aren't painted yet, cover the screen first, paint them, then reveal — so a
+   * quick-travel never flashes an unpainted (or, with the visibility gate, a
+   * missing) moon. Warm systems (already painted, or none) act immediately,
+   * exactly as before. A second arrival while one is mid-flight is ignored.
+   */
+  private arriveThen(target: NonNullable<LandedTarget>, action: () => void): void {
+    if (this.arrivalInFlight) return;
+    const parentName = this.parentSystemOf(target);
+    const moons = this.planetMoons.get(parentName);
+    if (!moons || moons.every((m) => m.painted)) {
+      action();
+      return;
+    }
+    this.arrivalInFlight = true;
+    const veil = document.getElementById('arrival-veil');
+    const coverStart = performance.now();
+    veil?.classList.add('covering'); // snaps fully opaque (no fade-in) — see CSS
+    // Two frames so the opaque veil is actually composited before we block the
+    // main thread painting; otherwise the paint freezes a half-covered veil and
+    // the unpainted scene shows through it.
+    requestAnimationFrame(() =>
+      requestAnimationFrame(() => {
+        try {
+          // The mode could have been left during the two-frame cover window —
+          // don't paint or teleport into a deactivated mode (the finally still
+          // clears the flag and lifts the veil).
+          if (!this.active) return;
+          this.moonPainter.paintSystemNow(parentName, moons);
+          action();
+        } catch (err) {
+          debugError('Arrival failed', err);
+        } finally {
+          this.arrivalInFlight = false;
+          // Hold the cover until the painted, teleported scene has rendered (the
+          // landed/jumped system first appears on the next update→render) and at
+          // least the min dwell, so a fast machine reads it as an intentional
+          // beat rather than a flicker. Removing the class fades it back out.
+          const wait = Math.max(48, PlanetariumMode.ARRIVAL_MIN_DWELL_MS - (performance.now() - coverStart));
+          window.setTimeout(() => veil?.classList.remove('covering'), wait);
+        }
+      }),
+    );
   }
 
   enterLandedMode(target: NonNullable<LandedTarget>) {

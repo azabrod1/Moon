@@ -661,7 +661,6 @@ export class PlanetariumMode {
 
       // Add everything to scene
       this.scene.add(this.solarSystem.sun);
-      this.scene.add(this.solarSystem.ambientLight);
       this.scene.add(this.solarSystem.asteroidBelt);
 
       performance.mark('plm:moon-meshes:start');
@@ -864,7 +863,6 @@ export class PlanetariumMode {
     if (this.solarSystem) {
       this.solarSystem.sun.visible = visible;
       this.solarSystem.asteroidBelt.visible = visible;
-      this.solarSystem.ambientLight.visible = visible;
       for (const p of this.solarSystem.planets) p.group.visible = visible;
       for (const o of this.solarSystem.orbitLines) o.visible = visible && this.showOrbitLines;
       for (const g of this.moonSystemGroups.values()) g.visible = visible;
@@ -1312,6 +1310,12 @@ export class PlanetariumMode {
           this.moonShading,
         );
         this.applyMoonShading(m, this.moonShading);
+
+        if (m.fx) {
+          m.fx.uSunDirWorld.value
+            .set(-(wp.x + offset.x), -(wp.y + offset.y), -(wp.z + offset.z))
+            .normalize();
+        }
 
         this.moonWorldPositions.set(m.data.name, {
           x: wp.x + offset.x,
@@ -5052,6 +5056,9 @@ export class PlanetariumMode {
           .applyQuaternion(planet.group.quaternion.clone().invert());
         planet.nightMaterial.uniforms.sunDirection.value.copy(localSunDir);
       }
+      if (planet.fx) {
+        planet.fx.uSunDirWorld.value.copy(state.sunDirection);
+      }
 
       planet.group.userData.worldPosAU = {
         x: state.positionAU.x,
@@ -5130,7 +5137,6 @@ export class PlanetariumMode {
     this.hideOrbitFocusLabels();
     if (this.solarSystem) {
       this.solarSystem.sun.removeFromParent();
-      this.solarSystem.ambientLight.removeFromParent();
       this.solarSystem.asteroidBelt.removeFromParent();
       for (const p of this.solarSystem.planets) p.group.removeFromParent();
       for (const o of this.solarSystem.orbitLines) {

@@ -31,7 +31,6 @@ export interface SolarSystemObjects {
   orbitLinesEpochUtcMs: number;
   asteroidBelt: THREE.Points;
   sunLight: THREE.PointLight;
-  ambientLight: THREE.AmbientLight;
 }
 
 // Decorative scene-space spread (aligned overview mode), not frame-bound —
@@ -187,7 +186,6 @@ export async function createSolarSystem(
   reportProgress();
   const sun = createPlanetariumSun(useBloom);
   const sunLight = sun.children.find(child => child instanceof THREE.PointLight) as THREE.PointLight;
-  const ambientLight = new THREE.AmbientLight(0x334466, 0.22);
   completedUnits += 1;
   reportProgress();
 
@@ -224,6 +222,5 @@ export async function createSolarSystem(
     orbitLinesEpochUtcMs,
     asteroidBelt,
     sunLight,
-    ambientLight,
   };
 }

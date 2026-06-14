@@ -14,6 +14,7 @@ import {
 } from '../shared/shaders/atmosphere';
 import { debugWarn } from '../shared/debug';
 import { applyTextureDefaults, resolveTextureUrl, type TextureTier } from './world/texturePolicy';
+import { augmentSurfaceMaterial, type SurfaceArchetype, type SurfaceShadingFx } from './world/surfaceShading';
 
 const loader = new THREE.TextureLoader();
 loader.crossOrigin = 'anonymous';
@@ -296,6 +297,27 @@ export interface PlanetMesh {
   nightMesh?: THREE.Mesh;
   nightMaterial?: THREE.ShaderMaterial; // For Earth night lights
   cloudsMesh?: THREE.Mesh;
+  fx?: SurfaceShadingFx;
+}
+
+// Icy / high-albedo moons get the icy night-fill (and, later, a specular ice
+// response); dark or rocky bodies (our Moon, Io, Phobos, Deimos, Hyperion,
+// Phoebe) fall through to the airless floor.
+const ICY_MOONS = new Set([
+  'Europa', 'Ganymede', 'Callisto', 'Titan', 'Mimas', 'Enceladus', 'Tethys',
+  'Dione', 'Rhea', 'Iapetus', 'Miranda', 'Ariel', 'Umbriel', 'Titania',
+  'Oberon', 'Triton', 'Charon',
+]);
+
+function planetArchetype(planet: PlanetData): SurfaceArchetype {
+  if (planet.name === 'Earth') return 'earth';
+  if (planet.isGasGiant) return 'gas';
+  if (planet.name === 'Mercury' || planet.name === 'Pluto') return 'airless';
+  return 'rocky'; // Venus, Mars
+}
+
+function moonArchetype(moon: MoonData): SurfaceArchetype {
+  return ICY_MOONS.has(moon.name) ? 'icy' : 'airless';
 }
 
 export async function createPlanetMesh(planet: PlanetData): Promise<PlanetMesh> {
@@ -319,11 +341,14 @@ export async function createPlanetMesh(planet: PlanetData): Promise<PlanetMesh> 
   // Use texture as both color map and bump map for surface detail
   const mat = new THREE.MeshStandardMaterial({
     map: texture,
-    bumpMap: texture,
+    // Gas giants drop the colour-as-bump hack — embossing cloud bands as relief
+    // just reads as fake crinkle; their banding lives entirely in the albedo.
+    bumpMap: planet.isGasGiant ? null : texture,
     bumpScale: planet.radiusAU * 0.01, // subtle bump
     roughness: planet.name === 'Mercury' || planet.name === 'Mars' ? 0.95 : 0.8,
     metalness: 0.05,
   });
+  const fx = augmentSurfaceMaterial(mat, planetArchetype(planet));
 
   const mesh = new THREE.Mesh(geo, mat);
   group.add(mesh);
@@ -380,7 +405,7 @@ export async function createPlanetMesh(planet: PlanetData): Promise<PlanetMesh> 
     group.add(rings);
   }
 
-  return { group, mesh, data: planet, rings, atmosphere, nightMesh, nightMaterial, cloudsMesh };
+  return { group, mesh, data: planet, rings, atmosphere, nightMesh, nightMaterial, cloudsMesh, fx };
 }
 
 export function createPlanetariumSun(useBloom = true): THREE.Group {
@@ -496,6 +521,7 @@ export interface MoonMesh {
   /** Procedural surface textures generated yet? Painted lazily (MoonPainter);
    *  a moon is never made visible before this is true. */
   painted: boolean;
+  fx?: SurfaceShadingFx;
 }
 
 function seededRng(seed: number) {
@@ -714,6 +740,7 @@ export function createMoonMeshes(planetName: string): MoonMesh[] {
       emissive: new THREE.Color(moonData.color),
       emissiveIntensity: 0.03,
     });
+    const fx = augmentSurfaceMaterial(mat, moonArchetype(moonData));
 
     // Photo-textured moons (Moon, Io, …) stream their real image; on true
     // success it replaces the procedural colour. Load directly rather than via
@@ -747,7 +774,7 @@ export function createMoonMeshes(planetName: string): MoonMesh[] {
     mesh.name = moonData.name;
     mesh.visible = false; // hidden until painted and the player is close
 
-    result.push({ mesh, data: moonData, painted: false });
+    result.push({ mesh, data: moonData, painted: false, fx });
   }
 
   return result;

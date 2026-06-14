@@ -39,6 +39,7 @@ const PLANET_TEXTURE_FILES: Record<string, string> = {
   neptune: 'neptune.jpg',
   pluto: 'pluto.jpg',
   moon: 'moon.jpg',
+  moonNormal: 'moon-normal.png',
   io: 'io.jpg',
   europa: 'europa.jpg',
   ganymede: 'ganymede.jpg',
@@ -695,8 +696,14 @@ export function paintMoonTextures(moon: MoonMesh): void {
   if (moon.painted) return;
   const mat = moon.mesh.material as THREE.MeshStandardMaterial;
   const { colorTex, bumpTex } = createMoonTextures(moon.data.color, moon.data.name, moon.data.radiusKm);
-  mat.bumpMap = bumpTex;
-  mat.bumpScale = Math.max(moon.data.radiusAU * 0.15, 0.0000005);
+  // A real measured normal map (e.g. the Moon's LOLA relief) supersedes the
+  // procedural bump — don't stack both.
+  if (mat.userData.hasRealNormal) {
+    bumpTex.dispose();
+  } else {
+    mat.bumpMap = bumpTex;
+    mat.bumpScale = Math.max(moon.data.radiusAU * 0.15, 0.0000005);
+  }
   if (mat.userData.photoLoaded) {
     colorTex.dispose();
   } else {
@@ -706,6 +713,13 @@ export function paintMoonTextures(moon: MoonMesh): void {
   mat.needsUpdate = true;
   moon.painted = true;
 }
+
+// Moons with a real measured elevation-derived normal map (linear data map,
+// keyed into PLANET_TEXTURE_FILES). Only Earth's Moon today (LOLA via gen-maps);
+// others fall back to the procedural bump.
+const MOON_NORMAL_KEYS: Record<string, string> = {
+  Moon: 'moonNormal',
+};
 
 /**
  * Create moon meshes for a planet. Moons orbit at their real orbital radius
@@ -735,6 +749,30 @@ export function createMoonMeshes(planetName: string): MoonMesh[] {
       emissiveIntensity: 0.03,
     });
     const fx = augmentSurfaceMaterial(mat, archetype);
+
+    // Real elevation-derived normal map (linear), where one exists. Load directly
+    // so a failed fetch leaves no normal rather than a noise fallback; the flag is
+    // set up front so the lazy painter skips its procedural bump for this moon.
+    const normalKey = MOON_NORMAL_KEYS[moonData.name];
+    if (normalKey) {
+      mat.userData.hasRealNormal = true;
+      const normalUrl = resolveTextureUrl(PLANET_TEXTURE_FILES[normalKey], '2k');
+      loader.load(
+        normalUrl,
+        (tex) => {
+          applyTextureDefaults(tex, 'data');
+          mat.normalMap = tex;
+          mat.normalScale.set(1, 1);
+          mat.needsUpdate = true;
+        },
+        undefined,
+        (err) =>
+          debugWarn('Moon normal load failed', {
+            name: moonData.name,
+            reason: err instanceof Error ? err.message : String(err),
+          }),
+      );
+    }
 
     // Photo-textured moons (Moon, Io, …) stream their real image; on true
     // success it replaces the procedural colour. Load directly rather than via

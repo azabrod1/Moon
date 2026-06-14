@@ -100,7 +100,7 @@ const ATMOSPHERES: Record<string, AtmosphereConfig> = {
   },
   Earth: {
     dayColor: [0.25, 0.5, 1.0], sunsetColor: [1.0, 0.45, 0.22], mieColor: [1.0, 0.96, 0.9],
-    rayleighStrength: 1.1, mieStrength: 0.5, mieG: 0.76, power: 3.0, intensity: 1.3, haloStrength: 1.0, scale: 1.03,
+    rayleighStrength: 1.1, mieStrength: 0.5, mieG: 0.76, power: 3.0, intensity: 1.05, haloStrength: 0.55, scale: 1.03,
   },
   Mars: {
     dayColor: [0.78, 0.6, 0.5], sunsetColor: [0.6, 0.55, 0.65], mieColor: [0.85, 0.72, 0.6],

@@ -15,7 +15,7 @@ import {
   earthNightFragmentShader,
 } from '../shared/shaders/atmosphere';
 import { debugWarn } from '../shared/debug';
-import { applyTextureDefaults, resolveTextureUrl, type TextureTier, type MapKind } from './world/texturePolicy';
+import { applyTextureDefaults, clampTier, resolveTextureUrl, type TextureTier, type MapKind } from './world/texturePolicy';
 import { augmentSurfaceMaterial, type SurfaceArchetype, type SurfaceShadingFx } from './world/surfaceShading';
 
 const loader = new THREE.TextureLoader();
@@ -163,6 +163,91 @@ function loadTexture(key: string, tier: TextureTier = '2k', kind: MapKind = 'col
   });
 }
 
+/**
+ * Streamed colour-map upgrade for a body that grows large on screen. Bodies
+ * start at 2K (fast first paint); when the player gets close — or zooms the
+ * Observatory telescope onto them — a 4K colour map is fetched once and swapped
+ * in. Only bodies with a 4K variant on disk (public/textures/4k/) carry one.
+ */
+export interface TextureUpgrade {
+  key: string; // PLANET_TEXTURE_FILES key
+  material: THREE.MeshStandardMaterial;
+  state: 'idle' | 'loading' | 'done' | 'failed';
+}
+
+// Texture keys with a 4K colour variant under public/textures/4k/. A 4K variant
+// must be the SAME albedo product as its 2K base and colour-matched to it, so the
+// on-approach swap reads as a pure sharpen — no brightness/contrast pop — and
+// never double-counts relief against a normal map. Mars (same source at 2x) and
+// the Moon (SVS LRO natural-colour albedo, colour-matched to the 2K via
+// tools/colormatch.mjs) qualify. Gas giants / Venus carry no real high-frequency
+// detail at 4K; Io/Europa/Ganymede/Triton already ship 4K as their base map.
+const TEXTURE_4K_KEYS = new Set(['mars', 'moon']);
+
+function makeTextureUpgrade(
+  key: string | undefined,
+  material: THREE.MeshStandardMaterial,
+): TextureUpgrade | undefined {
+  if (!key || !TEXTURE_4K_KEYS.has(key)) return undefined;
+  return { key, material, state: 'idle' };
+}
+
+// Apply a freshly loaded colour map only if it out-ranks what's already on the
+// material (procedural floor = 0, 2K = 2, 4K = 4). Makes the 2K stream, the 4K
+// upgrade, and the lazy painter order-independent: a late 2K arrival can't
+// downgrade a 4K that already won. Disposes whatever it replaces (or itself).
+function applyColorTierTexture(mat: THREE.MeshStandardMaterial, tex: THREE.Texture, rank: number): boolean {
+  const current = (mat.userData.colorTierRank as number | undefined) ?? 0;
+  if (rank <= current) {
+    tex.dispose();
+    return false;
+  }
+  const prev = mat.map;
+  mat.map = tex;
+  // Colour-as-bump bodies (non-gas planets with no normal map) alias the same
+  // texture as bumpMap; move the alias onto the upgraded map so the dispose
+  // below can't leave bumpMap pointing at freed GPU memory.
+  if (mat.bumpMap === prev) mat.bumpMap = tex;
+  mat.color.setRGB(1, 1, 1);
+  mat.userData.colorTierRank = rank;
+  mat.needsUpdate = true;
+  if (prev) prev.dispose();
+  return true;
+}
+
+/**
+ * Fetch and swap in a body's 4K colour map. One-shot (guarded by the upgrade's
+ * own state). Loads directly rather than via loadTexture so a failed fetch
+ * leaves the 2K map in place instead of resolving a grey fallback. No-ops on a
+ * GPU that can't hold a 4096 map (clampTier), so it never thrashes there.
+ */
+export function upgradeTextureOnApproach(up: TextureUpgrade): void {
+  if (up.state !== 'idle') return;
+  if (clampTier('4k') !== '4k') {
+    up.state = 'done'; // device stays at 2K; don't re-check every frame
+    return;
+  }
+  up.state = 'loading';
+  const url = resolveTextureUrl(PLANET_TEXTURE_FILES[up.key], '4k');
+  loader.load(
+    url,
+    (tex) => {
+      applyTextureDefaults(tex, 'color');
+      applyColorTierTexture(up.material, tex, 4);
+      up.material.userData.photoLoaded = true; // keep the lazy painter off it
+      up.state = 'done';
+    },
+    undefined,
+    (err) => {
+      up.state = 'failed';
+      debugWarn('4K texture upgrade failed', {
+        key: up.key,
+        reason: err instanceof Error ? err.message : String(err),
+      });
+    },
+  );
+}
+
 function createFallbackTexture(key: string, kind: MapKind = 'color'): THREE.Texture {
   const canvas = document.createElement('canvas');
   canvas.width = 256;
@@ -288,6 +373,7 @@ export interface PlanetMesh {
   nightMaterial?: THREE.ShaderMaterial; // For Earth night lights
   cloudsMesh?: THREE.Mesh;
   fx?: SurfaceShadingFx;
+  textureUpgrade?: TextureUpgrade; // 4K colour map streamed in on close approach
 }
 
 // Icy / high-albedo moons get the icy night-fill (and, later, a specular ice
@@ -347,6 +433,9 @@ export async function createPlanetMesh(planet: PlanetData): Promise<PlanetMesh> 
     : undefined;
   const sunTan = SUN_RADIUS_AU / planet.semiMajorAxisAU; // solar angular radius at the planet
   const fx = augmentSurfaceMaterial(mat, planetArchetype(planet), ringShadow, sunTan);
+  // 4K colour upgrade on close approach, for the bodies that carry a 4K variant
+  // (Mars). The base 2K map above is the floor; updateTextureLOD swaps in 4K.
+  const textureUpgrade = makeTextureUpgrade(planet.textureKey, mat);
 
   // Real elevation-derived normal map where one exists (Mars/MOLA): it replaces
   // the colour-as-bump fallback. Load directly so a failed fetch leaves the
@@ -438,7 +527,7 @@ export async function createPlanetMesh(planet: PlanetData): Promise<PlanetMesh> 
     group.add(rings);
   }
 
-  return { group, mesh, data: planet, rings, ringFx, atmosphere, nightMesh, nightMaterial, cloudsMesh, fx };
+  return { group, mesh, data: planet, rings, ringFx, atmosphere, nightMesh, nightMaterial, cloudsMesh, fx, textureUpgrade };
 }
 
 export function createPlanetariumSun(useBloom = true): THREE.Group {
@@ -555,6 +644,7 @@ export interface MoonMesh {
    *  a moon is never made visible before this is true. */
   painted: boolean;
   fx?: SurfaceShadingFx;
+  textureUpgrade?: TextureUpgrade; // 4K colour map streamed in on close approach
 }
 
 function seededRng(seed: number) {
@@ -828,11 +918,9 @@ export function createMoonMeshes(planetName: string): MoonMesh[] {
         (tex) => {
           applyTextureDefaults(tex, 'color');
           mat.userData.photoLoaded = true;
-          const prev = mat.map;
-          mat.map = tex;
-          mat.color.setRGB(1, 1, 1);
-          mat.needsUpdate = true;
-          if (prev) prev.dispose();
+          // Rank 2: a later 4K upgrade (rank 4) supersedes this; a 4K that
+          // already won can't be downgraded by a late-arriving 2K.
+          applyColorTierTexture(mat, tex, 2);
         },
         undefined,
         (err) =>
@@ -847,7 +935,7 @@ export function createMoonMeshes(planetName: string): MoonMesh[] {
     mesh.name = moonData.name;
     mesh.visible = false; // hidden until painted and the player is close
 
-    result.push({ mesh, data: moonData, painted: false, fx });
+    result.push({ mesh, data: moonData, painted: false, fx, textureUpgrade: makeTextureUpgrade(moonData.textureKey, mat) });
   }
 
   return result;

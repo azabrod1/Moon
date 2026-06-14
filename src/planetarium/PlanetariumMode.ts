@@ -24,7 +24,7 @@ import { PlanetLabels } from './PlanetLabels';
 import { PlanetariumStore, createDefaultPlanetariumState, type PlanetariumState, type LandedTarget } from './PlanetariumStore';
 import { computeStats } from './stats';
 import { PLANETARIUM_BODIES, type PlanetData } from './planets/planetData';
-import { createMoonMeshes, paintMoonTextures, type MoonMesh } from './PlanetFactory';
+import { createMoonMeshes, paintMoonTextures, upgradeTextureOnApproach, type MoonMesh } from './PlanetFactory';
 import {
   advancePlanetariumTime,
   computeBodyPositionAU,
@@ -885,6 +885,11 @@ export class PlanetariumMode {
   update(dt: number): void {
     if (!this.active || !this.solarSystem) return;
 
+    // Stream a higher-res surface map for any body that grows large on screen.
+    // Runs in every mode — ahead of the landed early-return — because the landed
+    // Observatory telescope (narrow FOV) is exactly where 2K softness would show.
+    this.updateTextureLOD();
+
     // Landed mode: camera orbits body, skip flight controls
     if (this.landedOn) {
       this.updateLanded(dt);
@@ -1026,6 +1031,41 @@ export class PlanetariumMode {
     }
     if (this.constellations) {
       this.constellations.lines.position.set(0, 0, 0);
+    }
+  }
+
+  private readonly texLODTmp = new THREE.Vector3();
+  /**
+   * Stream a higher-resolution colour map for any body that grows large on
+   * screen. The trigger is screen-fraction (apparent diameter ÷ vertical FOV),
+   * not raw distance, so a body magnified by the Observatory's narrow-FOV
+   * telescope upgrades the same as a close fly-by would. The Moon and Mars carry
+   * an upgrade today; for every other body this is a no-op. Cheap to call each
+   * frame — the upgrade's own state short-circuits once it has fired.
+   */
+  private updateTextureLOD(): void {
+    if (!this.solarSystem) return;
+    const fovRad = this.camera.fov * DEG2RAD;
+    if (fovRad <= 0) return;
+    // Upgrade once a body spans ~15% of the viewport height: enough that 2K
+    // texels start to soften, with lead time to fetch 4K before it grows.
+    const UPGRADE_AT = 0.15;
+    const cam = this.camera.position;
+    for (const planet of this.solarSystem.planets) {
+      const up = planet.textureUpgrade;
+      if (!up) continue;
+      planet.group.getWorldPosition(this.texLODTmp);
+      const dist = Math.max(this.texLODTmp.distanceTo(cam), 1e-6);
+      if ((planet.data.radiusAU * 2) / dist / fovRad > UPGRADE_AT) upgradeTextureOnApproach(up);
+    }
+    for (const moons of this.planetMoons.values()) {
+      for (const m of moons) {
+        const up = m.textureUpgrade;
+        if (!up) continue;
+        m.mesh.getWorldPosition(this.texLODTmp);
+        const dist = Math.max(this.texLODTmp.distanceTo(cam), 1e-6);
+        if ((m.data.radiusAU * 2) / dist / fovRad > UPGRADE_AT) upgradeTextureOnApproach(up);
+      }
     }
   }
 

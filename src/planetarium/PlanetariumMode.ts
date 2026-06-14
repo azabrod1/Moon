@@ -218,6 +218,8 @@ export class PlanetariumMode {
   private static readonly ARRIVAL_MIN_DWELL_MS = 150;
   private tmpMoonOffset = new THREE.Vector3();
   private tmpMoonOrbitNormal = new THREE.Vector3();
+  private tmpMoonShadowLocal = new THREE.Vector3();
+  private tmpMoonShadowQuat = new THREE.Quaternion();
   private tmpShadingParentPos = new THREE.Vector3();
   private moonShading: MoonShadingState = { sunVisibleFraction: 1, inUmbra: false };
   // Landed-system shadow visuals: transit spots always on, guides behind the
@@ -1279,6 +1281,12 @@ export class PlanetariumMode {
       const visible = distToPlayer < threshold;
       const parentR = planet.data.radiusAU;
 
+      // Moon-shadow casters fed to the parent surface shader (Io on Jupiter,
+      // etc.): reset per frame, accumulate the larger moons in the loop below.
+      const surfFx = planet.fx;
+      let moonShadowCount = 0;
+      if (surfFx) this.tmpMoonShadowQuat.copy(planet.group.quaternion).invert();
+
       // Hard rule: paint a system before it's shown. The gate runs every frame
       // before the scene renders, so a moon can never reach the screen unpainted.
       if (visible && this.moonPainter.hasPending(planet.data.name)) {
@@ -1343,7 +1351,22 @@ export class PlanetariumMode {
         } else {
           m.mesh.scale.setScalar(1);
         }
+
+        // Feed this moon as a shadow caster on the parent (skip tiny moons whose
+        // umbra never reaches the surface). Offset rotated into the parent frame.
+        if (surfFx && realRatio > 0.003 && moonShadowCount < surfFx.uMoonShadow.value.length) {
+          this.tmpMoonShadowLocal.copy(offset).applyQuaternion(this.tmpMoonShadowQuat);
+          surfFx.uMoonShadow.value[moonShadowCount].set(
+            this.tmpMoonShadowLocal.x,
+            this.tmpMoonShadowLocal.y,
+            this.tmpMoonShadowLocal.z,
+            m.data.radiusAU,
+          );
+          moonShadowCount++;
+        }
       }
+
+      if (surfFx) surfFx.uMoonShadowCount.value = moonShadowCount;
     }
 
     // Background drain: paint a slice of any still-queued systems, the one the

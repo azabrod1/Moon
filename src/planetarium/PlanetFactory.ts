@@ -81,6 +81,9 @@ interface AtmosphereConfig {
   scale: number;
 }
 
+// Sun's physical radius in AU — for solar angular radius (penumbra width) at a planet.
+const SUN_RADIUS_AU = 695_700 / 149_597_870.7;
+
 const ATMOSPHERES: Record<string, AtmosphereConfig> = {
   Venus: {
     dayColor: [0.95, 0.85, 0.55], sunsetColor: [1.0, 0.7, 0.4], mieColor: [1.0, 0.93, 0.78],
@@ -321,7 +324,8 @@ export async function createPlanetMesh(planet: PlanetData): Promise<PlanetMesh> 
   const ringShadow = ringCfg?.style === 'saturn'
     ? { inner: planet.radiusAU * ringCfg.innerFactor, outer: planet.radiusAU * ringCfg.outerFactor }
     : undefined;
-  const fx = augmentSurfaceMaterial(mat, planetArchetype(planet), ringShadow);
+  const sunTan = SUN_RADIUS_AU / planet.semiMajorAxisAU; // solar angular radius at the planet
+  const fx = augmentSurfaceMaterial(mat, planetArchetype(planet), ringShadow, sunTan);
 
   const mesh = new THREE.Mesh(geo, mat);
   group.add(mesh);
@@ -374,8 +378,6 @@ export async function createPlanetMesh(planet: PlanetData): Promise<PlanetMesh> 
 
   let rings: THREE.Mesh | undefined;
   if (planet.hasRings && ringCfg) {
-    const SUN_RADIUS_AU = 695_700 / 149_597_870.7;
-    const sunTan = SUN_RADIUS_AU / planet.semiMajorAxisAU; // solar angular radius at the planet
     rings = createPlanetRings(planet.radiusAU, ringCfg, sunTan);
     group.add(rings);
   }

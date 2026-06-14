@@ -5,14 +5,17 @@
  * keyed to where the Sun actually is for that body — so the dark hemisphere
  * keeps its shape without washing out daylight contrast. Further view-space
  * lighting terms layer onto this same onBeforeCompile hook — they share the
- * sun-direction varying.
+ * sun-direction varyings.
  *
- * Saturn additionally casts its ring shadow onto the globe: each fragment traces
- * toward the Sun (in the body's local frame) to the ring plane and, if it lands
- * within the ring annulus, dims by the rings' opacity there. The trace is gated
- * by `uRingOuter > 0`, so the injected GLSL is byte-identical for every body
- * (only uniforms differ) and materials still share compiled programs — no custom
- * cache key needed.
+ * Two cast-shadow terms also live here, both traced in the body's own frame
+ * (so they read the raw `position` varying, unaffected by pole orientation):
+ *   - Ring shadow (Saturn): trace toward the Sun to the ring plane; dim by the
+ *     rings' opacity where it lands. Gated by `uRingOuter > 0`.
+ *   - Moon-shadow transits: a moon between the Sun and a fragment casts an
+ *     umbra/penumbra spot onto the globe (Io's shadow crawling across Jupiter).
+ *
+ * The injected GLSL is byte-identical for every body (only uniforms differ), so
+ * materials still share compiled programs — no custom cache key needed.
  */
 import * as THREE from 'three';
 
@@ -24,10 +27,15 @@ export interface RingShadowConfig {
   outer: number;
 }
 
+/** Up to this many moons cast a shadow onto any one parent at once. */
+export const MAX_MOON_SHADOWS = 4;
+
 /** Per-frame-updated uniforms the mode feeds from each body's real position. */
 export interface SurfaceShadingFx {
-  uSunDirWorld: { value: THREE.Vector3 };   // world-space sun, for the night-fill terminator
-  uSunDirLocal: { value: THREE.Vector3 };   // sun in the body's own frame, for the ring-shadow trace
+  uSunDirWorld: { value: THREE.Vector3 };       // world sun, for the night-fill terminator
+  uSunDirLocal: { value: THREE.Vector3 };       // sun in the body's frame, for the cast-shadow traces
+  uMoonShadow: { value: THREE.Vector4[] };      // [xyz = moon centre in body frame (AU), w = moon radius AU]
+  uMoonShadowCount: { value: number };          // active entries in uMoonShadow
 }
 
 interface NightFill {
@@ -69,29 +77,38 @@ export function augmentSurfaceMaterial(
   mat: THREE.MeshStandardMaterial,
   archetype: SurfaceArchetype,
   ringShadow?: RingShadowConfig,
+  sunTan = 0,
 ): SurfaceShadingFx {
   const night = NIGHT_FILL[archetype];
 
   // Created up front so the mode can update these refs even before the material
   // lazily compiles; onBeforeCompile assigns the same objects into the shader.
+  const moonShadow: THREE.Vector4[] = [];
+  for (let i = 0; i < MAX_MOON_SHADOWS; i++) moonShadow.push(new THREE.Vector4());
   const fx: SurfaceShadingFx = {
     uSunDirWorld: { value: new THREE.Vector3(1, 0, 0) },
     uSunDirLocal: { value: new THREE.Vector3(1, 0, 0) },
+    uMoonShadow: { value: moonShadow },
+    uMoonShadowCount: { value: 0 },
   };
   const uNightColor = { value: new THREE.Color(night.color) };
   const uNightStrength = { value: night.strength };
   const uTermWidth = { value: night.termWidth };
   const uRingInner = { value: ringShadow ? ringShadow.inner : 0 };
   const uRingOuter = { value: ringShadow ? ringShadow.outer : 0 };
+  const uSunTan = { value: sunTan };
 
   mat.onBeforeCompile = (shader) => {
     shader.uniforms.uSunDirWorld = fx.uSunDirWorld;
     shader.uniforms.uSunDirLocal = fx.uSunDirLocal;
+    shader.uniforms.uMoonShadow = fx.uMoonShadow;
+    shader.uniforms.uMoonShadowCount = fx.uMoonShadowCount;
     shader.uniforms.uNightColor = uNightColor;
     shader.uniforms.uNightStrength = uNightStrength;
     shader.uniforms.uTermWidth = uTermWidth;
     shader.uniforms.uRingInner = uRingInner;
     shader.uniforms.uRingOuter = uRingOuter;
+    shader.uniforms.uSunTan = uSunTan;
 
     shader.vertexShader = shader.vertexShader
       .replace(
@@ -115,6 +132,9 @@ export function augmentSurfaceMaterial(
           + 'uniform vec3 uSunDirLocal;\n'
           + 'uniform float uRingInner;\n'
           + 'uniform float uRingOuter;\n'
+          + 'uniform float uSunTan;\n'
+          + `uniform vec4 uMoonShadow[${MAX_MOON_SHADOWS}];\n`
+          + 'uniform int uMoonShadowCount;\n'
           + 'varying vec3 vSunViewDir;\n'
           + 'varying vec3 vObjPos;\n'
           + RING_SHADOW_OPACITY_GLSL,
@@ -127,17 +147,28 @@ export function augmentSurfaceMaterial(
         '{\n'
           + '  float dayFactor = smoothstep(-uTermWidth, uTermWidth, dot(normalize(normal), normalize(vSunViewDir)));\n'
           + '  outgoingLight += diffuseColor.rgb * uNightColor * (uNightStrength * (1.0 - dayFactor));\n'
-          + '  // Ring shadow on the globe: trace toward the Sun (local frame) to\n'
-          + '  // the ring plane (y = 0) and dim by the rings opacity where it lands.\n'
-          + '  if (uRingOuter > 0.0) {\n'
-          + '    vec3 sd = normalize(uSunDirLocal);\n'
-          + '    if (abs(sd.y) > 1e-4) {\n'
-          + '      float tHit = -vObjPos.y / sd.y;\n'
-          + '      if (tHit > 0.0) {\n'
-          + '        vec3 hit = vObjPos + sd * tHit;\n'
-          + '        float t01 = (length(hit.xz) - uRingInner) / (uRingOuter - uRingInner);\n'
-          + '        outgoingLight *= 1.0 - 0.9 * ringShadowOpacity(t01) * dayFactor;\n'
-          + '      }\n'
+          + '  vec3 sd = normalize(uSunDirLocal);\n'
+          + '  // Ring shadow on the globe: trace toward the Sun to the ring plane\n'
+          + '  // (y = 0) and dim by the rings opacity where it lands.\n'
+          + '  if (uRingOuter > 0.0 && abs(sd.y) > 1e-4) {\n'
+          + '    float tHit = -vObjPos.y / sd.y;\n'
+          + '    if (tHit > 0.0) {\n'
+          + '      vec3 hit = vObjPos + sd * tHit;\n'
+          + '      float t01 = (length(hit.xz) - uRingInner) / (uRingOuter - uRingInner);\n'
+          + '      outgoingLight *= 1.0 - 0.9 * ringShadowOpacity(t01) * dayFactor;\n'
+          + '    }\n'
+          + '  }\n'
+          + '  // Moon-shadow transits: a moon sunward of this fragment casts an\n'
+          + '  // umbra/penumbra spot (cone narrows with distance behind the moon).\n'
+          + '  for (int i = 0; i < ' + MAX_MOON_SHADOWS + '; i++) {\n'
+          + '    if (i >= uMoonShadowCount) break;\n'
+          + '    vec3 toMoon = uMoonShadow[i].xyz - vObjPos;\n'
+          + '    float along = dot(toMoon, sd);\n'
+          + '    if (along > 0.0) {\n'
+          + '      float perp = length(toMoon - sd * along);\n'
+          + '      float mr = uMoonShadow[i].w;\n'
+          + '      float occ = 1.0 - smoothstep(max(mr - along * uSunTan, 0.0), mr + along * uSunTan, perp);\n'
+          + '      outgoingLight *= 1.0 - occ * dayFactor;\n'
           + '    }\n'
           + '  }\n'
           + '}\n'

@@ -5171,14 +5171,23 @@ export class PlanetariumMode {
           : 0;
         planet.cloudsMesh.rotation.y = cloudDrift;
       }
+      const localSunDir = state.sunDirection
+        .clone()
+        .applyQuaternion(planet.group.quaternion.clone().invert());
       if (planet.nightMaterial) {
-        const localSunDir = state.sunDirection
-          .clone()
-          .applyQuaternion(planet.group.quaternion.clone().invert());
         planet.nightMaterial.uniforms.sunDirection.value.copy(localSunDir);
       }
       if (planet.fx) {
         planet.fx.uSunDirWorld.value.copy(state.sunDirection);
+        planet.fx.uSunDirLocal.value.copy(localSunDir);
+      }
+      if (planet.rings) {
+        const ringFx = (planet.rings.material as THREE.MeshStandardMaterial).userData.fx as
+          { uSunDirLocal: { value: THREE.Vector3 }; uSunDirWorld: { value: THREE.Vector3 } } | undefined;
+        if (ringFx) {
+          ringFx.uSunDirLocal.value.copy(localSunDir);
+          ringFx.uSunDirWorld.value.copy(state.sunDirection);
+        }
       }
       if (planet.atmosphere) {
         const atmoMat = planet.atmosphere.material as THREE.ShaderMaterial;

@@ -111,7 +111,87 @@ function paintRing(x: number, style: RingStyle): [number, number, number, number
   return [v * 0.82, v * 0.86, v, a * 255];
 }
 
-export function createPlanetRings(planetRadiusAU: number, cfg: RingConfig): THREE.Mesh {
+/** Per-frame uniforms the mode feeds so shadow + translucency track the Sun. */
+export interface RingShadingFx {
+  uSunDirLocal: { value: THREE.Vector3 };  // sun in the planet's frame, for the cast shadow
+  uSunDirWorld: { value: THREE.Vector3 };  // world sun, for the backlit transmission glow
+}
+
+// Two analytic terms on the ring material, both in the planet group's local
+// frame (the ring rotation is baked into the geometry, so `position` is
+// group-local with y ~ 0):
+//   1. Planet shadow — darken ring fragments inside the planet's anti-sunward
+//      shadow cone (penumbra width from the Sun's angular radius, sunTan).
+//   2. Backlit translucency — when the Sun is on the far face from the camera,
+//      thin rings transmit a forward-scatter glow while dense rings stay dark.
+function augmentRingMaterial(
+  mat: THREE.MeshStandardMaterial,
+  planetRadiusAU: number,
+  sunTan: number,
+): RingShadingFx {
+  const fx: RingShadingFx = {
+    uSunDirLocal: { value: new THREE.Vector3(1, 0, 0) },
+    uSunDirWorld: { value: new THREE.Vector3(1, 0, 0) },
+  };
+  const uPlanetRadius = { value: planetRadiusAU };
+  const uSunTan = { value: sunTan };
+
+  mat.onBeforeCompile = (shader) => {
+    shader.uniforms.uSunDirLocal = fx.uSunDirLocal;
+    shader.uniforms.uSunDirWorld = fx.uSunDirWorld;
+    shader.uniforms.uPlanetRadius = uPlanetRadius;
+    shader.uniforms.uSunTan = uSunTan;
+
+    shader.vertexShader = shader.vertexShader
+      .replace(
+        '#include <common>',
+        '#include <common>\nuniform vec3 uSunDirWorld;\nvarying vec3 vRingLocal;\nvarying vec3 vSunView;',
+      )
+      .replace(
+        '#include <begin_vertex>',
+        '#include <begin_vertex>\n'
+          + 'vRingLocal = position;\n'
+          + 'vSunView = normalize((viewMatrix * vec4(uSunDirWorld, 0.0)).xyz);',
+      );
+
+    shader.fragmentShader = shader.fragmentShader
+      .replace(
+        '#include <common>',
+        '#include <common>\n'
+          + 'uniform vec3 uSunDirLocal;\n'
+          + 'uniform float uPlanetRadius;\n'
+          + 'uniform float uSunTan;\n'
+          + 'varying vec3 vRingLocal;\n'
+          + 'varying vec3 vSunView;',
+      )
+      .replace(
+        '#include <opaque_fragment>',
+        '{\n'
+          + '  vec3 sd = normalize(uSunDirLocal);\n'
+          + '  float axial = dot(vRingLocal, -sd);\n'          // distance anti-sunward of the planet
+          + '  if (axial > 0.0) {\n'
+          + '    float perp = length(vRingLocal + sd * axial);\n'  // distance from the shadow axis
+          + '    float umbra = uPlanetRadius - axial * uSunTan;\n'
+          + '    float penumbra = uPlanetRadius + axial * uSunTan;\n'
+          + '    float shadow = 1.0 - smoothstep(umbra, penumbra, perp);\n'
+          + '    outgoingLight *= 1.0 - 0.92 * shadow;\n'
+          + '  }\n'
+          + '  // Backlit: Sun on the far face (DoubleSide flips normal to camera,\n'
+          + '  // so dot(normal, sunView) < 0 means back-lit). Thin rings glow.\n'
+          + '  float ndl = dot(normalize(normal), normalize(vSunView));\n'
+          + '  if (ndl < 0.0) {\n'
+          + '    float transmit = exp(-(diffuseColor.a * 2.5) / max(-ndl, 0.15));\n'
+          + '    outgoingLight += diffuseColor.rgb * transmit * 0.5;\n'
+          + '  }\n'
+          + '}\n'
+          + '#include <opaque_fragment>',
+      );
+  };
+  mat.needsUpdate = true;
+  return fx;
+}
+
+export function createPlanetRings(planetRadiusAU: number, cfg: RingConfig, sunTan: number): THREE.Mesh {
   const innerRadius = planetRadiusAU * cfg.innerFactor;
   const outerRadius = planetRadiusAU * cfg.outerFactor;
 
@@ -129,6 +209,11 @@ export function createPlanetRings(planetRadiusAU: number, cfg: RingConfig): THRE
     const tt = (r - innerRadius) / (outerRadius - innerRadius);
     uv.setXY(i, tt, uv.getY(i));
   }
+
+  // Bake the equatorial tilt into the geometry so a ring fragment's object
+  // position is already group-local (XZ plane, y ~ 0) — the planet-shadow test
+  // in augmentRingMaterial reads `position` directly, no mesh rotation to undo.
+  geo.rotateX(-Math.PI / 2);
 
   const canvas = document.createElement('canvas');
   canvas.width = STRIP_WIDTH;
@@ -162,7 +247,8 @@ export function createPlanetRings(planetRadiusAU: number, cfg: RingConfig): THRE
     depthWrite: false,
   });
 
+  mat.userData.fx = augmentRingMaterial(mat, planetRadiusAU, sunTan);
+
   const mesh = new THREE.Mesh(geo, mat);
-  mesh.rotation.x = -Math.PI / 2; // lie flat in the equatorial (XZ) plane
   return mesh;
 }

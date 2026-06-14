@@ -315,7 +315,13 @@ export async function createPlanetMesh(planet: PlanetData): Promise<PlanetMesh> 
     roughness: planet.name === 'Mercury' || planet.name === 'Mars' ? 0.95 : 0.8,
     metalness: 0.05,
   });
-  const fx = augmentSurfaceMaterial(mat, planetArchetype(planet));
+  // Saturn's dense rings shadow its globe; hand the surface shader the annulus
+  // so it can trace the cast shadow. Other giants' rings are too faint to bother.
+  const ringCfg = RING_CONFIGS[planet.name];
+  const ringShadow = ringCfg?.style === 'saturn'
+    ? { inner: planet.radiusAU * ringCfg.innerFactor, outer: planet.radiusAU * ringCfg.outerFactor }
+    : undefined;
+  const fx = augmentSurfaceMaterial(mat, planetArchetype(planet), ringShadow);
 
   const mesh = new THREE.Mesh(geo, mat);
   group.add(mesh);
@@ -367,9 +373,10 @@ export async function createPlanetMesh(planet: PlanetData): Promise<PlanetMesh> 
   }
 
   let rings: THREE.Mesh | undefined;
-  const ringCfg = RING_CONFIGS[planet.name];
   if (planet.hasRings && ringCfg) {
-    rings = createPlanetRings(planet.radiusAU, ringCfg);
+    const SUN_RADIUS_AU = 695_700 / 149_597_870.7;
+    const sunTan = SUN_RADIUS_AU / planet.semiMajorAxisAU; // solar angular radius at the planet
+    rings = createPlanetRings(planet.radiusAU, ringCfg, sunTan);
     group.add(rings);
   }
 

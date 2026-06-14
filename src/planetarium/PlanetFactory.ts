@@ -237,7 +237,7 @@ function createAtmosphereGlow(radiusAU: number, config: AtmosphereConfig): THREE
     uniforms: {
       // Fed per frame from the body's sun direction and approach distance.
       uSunDirWorld: { value: new THREE.Vector3(0, 0, 1) },
-      alphaScale: { value: 1.0 },
+      alphaScale: { value: 0.0 }, // faded out until the per-frame distance feed runs (no first-frame flash)
       uDayColor: { value: new THREE.Vector3(...config.dayColor) },
       uSunsetColor: { value: new THREE.Vector3(...config.sunsetColor) },
       uMieColor: { value: new THREE.Vector3(...config.mieColor) },

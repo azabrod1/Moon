@@ -61,7 +61,9 @@ const NIGHT_FILL: Record<SurfaceArchetype, NightFill> = {
 // Analytic stand-in for Saturn's ring opacity across the annulus (t: 0 inner …
 // 1 outer), used only for the shadow it casts — the major features that read on
 // the globe are the dense B ring, the clear Cassini Division, and the slightly
-// thinner A ring. Matches the broad strokes of the texture in rings.ts.
+// thinner A ring. This mirrors the band layout painted by paintRing('saturn') in
+// planets/rings.ts; keep the two in step so the cast shadow lines up with the
+// ring that casts it (this is a coarse re-derivation, not a shared source).
 const RING_SHADOW_OPACITY_GLSL = /* glsl */ `
 float ringShadowOpacity(float t) {
   if (t < 0.0 || t > 1.0) return 0.0;
@@ -171,10 +173,13 @@ export function augmentSurfaceMaterial(
           + '    outgoingLight += diffuseColor.rgb * uPlanetshineColor * (uPlanetshineIntensity * pl * (1.0 - dayFactor));\n'
           + '  }\n'
           + '  // Icy moons: a cool Fresnel rim on the back-lit limb (ice scatters light).\n'
+          + '  // Scaled by the (eclipse-dimmed) albedo brightness so it fades when the\n'
+          + '  // moon sits in its parent shadow and no sunlight is there to scatter.\n'
           + '  if (uIcyRim > 0.5) {\n'
           + '    float rim = pow(1.0 - max(dot(normalize(normal), normalize(vViewPosition)), 0.0), 3.0);\n'
           + '    float back = max(-dot(normalize(normal), normalize(vSunViewDir)), 0.0);\n'
-          + '    outgoingLight += vec3(0.55, 0.75, 1.0) * (rim * back * 0.4);\n'
+          + '    float lit = max(diffuseColor.r, max(diffuseColor.g, diffuseColor.b));\n'
+          + '    outgoingLight += vec3(0.55, 0.75, 1.0) * (rim * back * 0.55 * lit);\n'
           + '  }\n'
           + '  vec3 sd = normalize(uSunDirLocal);\n'
           + '  // Ring shadow on the globe: trace toward the Sun to the ring plane\n'

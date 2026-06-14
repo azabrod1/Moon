@@ -108,6 +108,7 @@ import { projectToScreen, type ScreenProjection } from '../shared/three/projectT
 import { setText } from '../shared/dom';
 import { Constellations } from './Constellations';
 import { getMoonsByPlanet, type MoonData } from './planets/moonData';
+import { type RingShadingFx } from './planets/rings';
 import {
   HISTORIC_JOURNEYS,
   INTERSTELLAR_SCENE_POSITION,
@@ -1266,6 +1267,7 @@ export class PlanetariumMode {
   private updateMoonPositions() {
     if (!this.solarSystem) return;
     const PLANETSHINE_GAIN = 500; // lift faint physical planetshine to a visible night-side glow
+    const PLANETSHINE_MAX = 0.12; // cap well below daylight; large/near parents (Jupiter) sit at the cap
     // Nearest system with textures still queued — the background drain paints it
     // first (you're likeliest to reach it next). Tracked across the planet loop.
     let nearestPending: string | null = null;
@@ -1340,10 +1342,11 @@ export class PlanetariumMode {
           const sl = Math.hypot(sx, sy, sz) || 1;
           const cosPhase = (sx / sl) * this.tmpPlanetshine.x
             + (sy / sl) * this.tmpPlanetshine.y + (sz / sl) * this.tmpPlanetshine.z;
+          // 0.4 ~ a representative parent bond albedo (Earth ~0.3, gas giants ~0.5)
           const shine = planetshineIntensity(0.4, parentR, distAU, cosPhase) * PLANETSHINE_GAIN;
           m.fx.uPlanetshineDir.value.copy(this.tmpPlanetshine);
           m.fx.uPlanetshineColor.value.set(planet.data.color);
-          m.fx.uPlanetshineIntensity.value = Math.min(shine, 0.12);
+          m.fx.uPlanetshineIntensity.value = Math.min(shine, PLANETSHINE_MAX);
         }
 
         this.moonWorldPositions.set(m.data.name, {
@@ -5239,7 +5242,7 @@ export class PlanetariumMode {
       }
       if (planet.rings) {
         const ringFx = (planet.rings.material as THREE.MeshStandardMaterial).userData.fx as
-          { uSunDirLocal: { value: THREE.Vector3 }; uSunDirWorld: { value: THREE.Vector3 } } | undefined;
+          RingShadingFx | undefined;
         if (ringFx) {
           ringFx.uSunDirLocal.value.copy(localSunDir);
           ringFx.uSunDirWorld.value.copy(state.sunDirection);

@@ -50,6 +50,8 @@ function paintRing(x: number, style: RingStyle): [number, number, number, number
   const t = x / STRIP_WIDTH;
 
   if (style === 'saturn') {
+    // Band layout (C/B/Cassini/A/Encke) is mirrored by ringShadowOpacity() in
+    // world/surfaceShading.ts for the cast shadow — keep the two in step.
     let alpha = 0.75;
     if (t < 0.18) alpha *= 0.3 + (t / 0.18) * 0.4; // C ring (inner, faint)
     if (t > 0.57 && t < 0.63) alpha = 0.04; // Cassini Division
@@ -169,19 +171,21 @@ function augmentRingMaterial(
         '{\n'
           + '  vec3 sd = normalize(uSunDirLocal);\n'
           + '  float axial = dot(vRingLocal, -sd);\n'          // distance anti-sunward of the planet
+          + '  float shadow = 0.0;\n'
           + '  if (axial > 0.0) {\n'
           + '    float perp = length(vRingLocal + sd * axial);\n'  // distance from the shadow axis
           + '    float umbra = uPlanetRadius - axial * uSunTan;\n'
           + '    float penumbra = uPlanetRadius + axial * uSunTan;\n'
-          + '    float shadow = 1.0 - smoothstep(umbra, penumbra, perp);\n'
+          + '    shadow = 1.0 - smoothstep(umbra, penumbra, perp);\n'
           + '    outgoingLight *= 1.0 - 0.92 * shadow;\n'
           + '  }\n'
           + '  // Backlit: Sun on the far face (DoubleSide flips normal to camera,\n'
-          + '  // so dot(normal, sunView) < 0 means back-lit). Thin rings glow.\n'
+          + '  // so dot(normal, sunView) < 0 means back-lit). Thin rings glow — but\n'
+          + '  // not where the planet shadow already blocks the sunlight.\n'
           + '  float ndl = dot(normalize(normal), normalize(vSunView));\n'
           + '  if (ndl < 0.0) {\n'
           + '    float transmit = exp(-(diffuseColor.a * 2.5) / max(-ndl, 0.15));\n'
-          + '    outgoingLight += diffuseColor.rgb * transmit * 0.5;\n'
+          + '    outgoingLight += diffuseColor.rgb * transmit * (0.5 * (1.0 - 0.92 * shadow));\n'
           + '  }\n'
           + '}\n'
           + '#include <opaque_fragment>',

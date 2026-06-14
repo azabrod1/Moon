@@ -195,7 +195,11 @@ function augmentRingMaterial(
   return fx;
 }
 
-export function createPlanetRings(planetRadiusAU: number, cfg: RingConfig, sunTan: number): THREE.Mesh {
+export function createPlanetRings(
+  planetRadiusAU: number,
+  cfg: RingConfig,
+  sunTan: number,
+): { mesh: THREE.Mesh; fx: RingShadingFx } {
   const innerRadius = planetRadiusAU * cfg.innerFactor;
   const outerRadius = planetRadiusAU * cfg.outerFactor;
 
@@ -251,8 +255,8 @@ export function createPlanetRings(planetRadiusAU: number, cfg: RingConfig, sunTa
     depthWrite: false,
   });
 
-  mat.userData.fx = augmentRingMaterial(mat, planetRadiusAU, sunTan);
+  const fx = augmentRingMaterial(mat, planetRadiusAU, sunTan);
 
   const mesh = new THREE.Mesh(geo, mat);
-  return mesh;
+  return { mesh, fx };
 }

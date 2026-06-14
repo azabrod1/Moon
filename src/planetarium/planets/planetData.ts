@@ -16,7 +16,6 @@ export interface PlanetData {
   orbitalVelocityKmS: number;
   color: number;           // hex color for markers
   textureKey: string;      // key into texture map
-  hasRings: boolean;
   isGasGiant: boolean;     // Jupiter/Saturn/Uranus/Neptune — drives gas-giant-only shading
   surfaceGravityG: number; // relative to Earth
   rotationPeriodHours: number;
@@ -53,7 +52,6 @@ export const PLANETS: PlanetData[] = [
     orbitalVelocityKmS: 47.87,
     color: 0x7a7168,
     textureKey: 'mercury',
-    hasRings: false,
     isGasGiant: false,
     surfaceGravityG: 0.38,
     rotationPeriodHours: 1407.6,
@@ -75,7 +73,6 @@ export const PLANETS: PlanetData[] = [
     orbitalVelocityKmS: 35.02,
     color: 0xc4b08a,
     textureKey: 'venus',
-    hasRings: false,
     isGasGiant: false,
     surfaceGravityG: 0.90,
     rotationPeriodHours: 5832.5,
@@ -97,7 +94,6 @@ export const PLANETS: PlanetData[] = [
     orbitalVelocityKmS: 29.78,
     color: 0x3a6ec0,
     textureKey: 'earthDay',
-    hasRings: false,
     isGasGiant: false,
     surfaceGravityG: 1.00,
     rotationPeriodHours: 23.93,
@@ -119,7 +115,6 @@ export const PLANETS: PlanetData[] = [
     orbitalVelocityKmS: 24.08,
     color: 0x9a4a2a,
     textureKey: 'mars',
-    hasRings: false,
     isGasGiant: false,
     surfaceGravityG: 0.38,
     rotationPeriodHours: 24.62,
@@ -141,7 +136,6 @@ export const PLANETS: PlanetData[] = [
     orbitalVelocityKmS: 13.07,
     color: 0xa89060,
     textureKey: 'jupiter',
-    hasRings: true,
     isGasGiant: true,
     surfaceGravityG: 2.53,
     rotationPeriodHours: 9.93,
@@ -163,7 +157,6 @@ export const PLANETS: PlanetData[] = [
     orbitalVelocityKmS: 9.69,
     color: 0xbfb08a,
     textureKey: 'saturn',
-    hasRings: true,
     isGasGiant: true,
     surfaceGravityG: 1.07,
     rotationPeriodHours: 10.66,
@@ -185,7 +178,6 @@ export const PLANETS: PlanetData[] = [
     orbitalVelocityKmS: 6.81,
     color: 0x6aa0b8,
     textureKey: 'uranus',
-    hasRings: true,
     isGasGiant: true,
     surfaceGravityG: 0.89,
     rotationPeriodHours: 17.24,
@@ -207,7 +199,6 @@ export const PLANETS: PlanetData[] = [
     orbitalVelocityKmS: 5.43,
     color: 0x2a4ab8,
     textureKey: 'neptune',
-    hasRings: true,
     isGasGiant: true,
     surfaceGravityG: 1.14,
     rotationPeriodHours: 16.11,
@@ -231,7 +222,6 @@ export const PLUTO: PlanetData = {
   orbitalVelocityKmS: 4.67,
   color: 0x9a8e7a,
   textureKey: 'pluto',
-  hasRings: false,
   isGasGiant: false,
   surfaceGravityG: 0.06,
   rotationPeriodHours: 153.3,

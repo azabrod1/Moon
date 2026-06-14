@@ -80,6 +80,87 @@ float ringShadowOpacity(float t) {
 }
 `;
 
+// The augmentation GLSL, lifted out of onBeforeCompile so the shader reads as
+// shader code rather than string concatenation. Computed once at module load,
+// so every body injects the identical text (only the uniform *values* differ) —
+// materials keep sharing one compiled program, no custom cache key needed.
+const SURFACE_VERTEX_DECLS = /* glsl */ `
+uniform vec3 uSunDirWorld;
+uniform vec3 uPlanetshineDir;
+varying vec3 vSunViewDir;
+varying vec3 vObjPos;
+varying vec3 vPlanetshineViewDir;`;
+
+const SURFACE_VERTEX_BODY = /* glsl */ `
+vSunViewDir = normalize((viewMatrix * vec4(uSunDirWorld, 0.0)).xyz);
+vPlanetshineViewDir = normalize((viewMatrix * vec4(uPlanetshineDir, 0.0)).xyz);
+vObjPos = position;`;
+
+const SURFACE_FRAGMENT_DECLS = /* glsl */ `
+uniform vec3 uNightColor;
+uniform float uNightStrength;
+uniform float uTermWidth;
+uniform vec3 uSunDirLocal;
+uniform float uRingInner;
+uniform float uRingOuter;
+uniform float uSunTan;
+uniform vec4 uMoonShadow[${MAX_MOON_SHADOWS}];
+uniform int uMoonShadowCount;
+uniform vec3 uPlanetshineColor;
+uniform float uPlanetshineIntensity;
+uniform float uIcyRim;
+varying vec3 vSunViewDir;
+varying vec3 vObjPos;
+varying vec3 vPlanetshineViewDir;
+${RING_SHADOW_OPACITY_GLSL}`;
+
+// Injected after lighting but before <opaque_fragment> writes outgoingLight into
+// gl_FragColor — so terms land in linear radiance (tone-mapped downstream) and
+// read the perturbed view-space `normal`.
+const SURFACE_FRAGMENT_BODY = /* glsl */ `{
+  float dayFactor = smoothstep(-uTermWidth, uTermWidth, dot(normalize(normal), normalize(vSunViewDir)));
+  outgoingLight += diffuseColor.rgb * uNightColor * (uNightStrength * (1.0 - dayFactor));
+  // Planetshine: parent-lit glow on the night side. Albedo-multiplicative,
+  // so the eclipse color-dim carries through it automatically.
+  if (uPlanetshineIntensity > 0.0) {
+    float pl = max(dot(normalize(normal), normalize(vPlanetshineViewDir)), 0.0);
+    outgoingLight += diffuseColor.rgb * uPlanetshineColor * (uPlanetshineIntensity * pl * (1.0 - dayFactor));
+  }
+  // Icy moons: a cool Fresnel rim on the back-lit limb (ice scatters light).
+  // Scaled by the (eclipse-dimmed) albedo brightness so it fades when the
+  // moon sits in its parent shadow and no sunlight is there to scatter.
+  if (uIcyRim > 0.5) {
+    float rim = pow(1.0 - max(dot(normalize(normal), normalize(vViewPosition)), 0.0), 3.0);
+    float back = max(-dot(normalize(normal), normalize(vSunViewDir)), 0.0);
+    float lit = max(diffuseColor.r, max(diffuseColor.g, diffuseColor.b));
+    outgoingLight += vec3(0.55, 0.75, 1.0) * (rim * back * 0.55 * lit);
+  }
+  vec3 sd = normalize(uSunDirLocal);
+  // Ring shadow on the globe: trace toward the Sun to the ring plane
+  // (y = 0) and dim by the rings opacity where it lands.
+  if (uRingOuter > 0.0 && abs(sd.y) > 1e-4) {
+    float tHit = -vObjPos.y / sd.y;
+    if (tHit > 0.0) {
+      vec3 hit = vObjPos + sd * tHit;
+      float t01 = (length(hit.xz) - uRingInner) / (uRingOuter - uRingInner);
+      outgoingLight *= 1.0 - 0.9 * ringShadowOpacity(t01) * dayFactor;
+    }
+  }
+  // Moon-shadow transits: a moon sunward of this fragment casts an
+  // umbra/penumbra spot (cone narrows with distance behind the moon).
+  for (int i = 0; i < ${MAX_MOON_SHADOWS}; i++) {
+    if (i >= uMoonShadowCount) break;
+    vec3 toMoon = uMoonShadow[i].xyz - vObjPos;
+    float along = dot(toMoon, sd);
+    if (along > 0.0) {
+      float perp = length(toMoon - sd * along);
+      float mr = uMoonShadow[i].w;
+      float occ = 1.0 - smoothstep(max(mr - along * uSunTan, 0.0), mr + along * uSunTan, perp);
+      outgoingLight *= 1.0 - occ * dayFactor;
+    }
+  }
+}`;
+
 export function augmentSurfaceMaterial(
   mat: THREE.MeshStandardMaterial,
   archetype: SurfaceArchetype,
@@ -126,90 +207,12 @@ export function augmentSurfaceMaterial(
     shader.uniforms.uIcyRim = uIcyRim;
 
     shader.vertexShader = shader.vertexShader
-      .replace(
-        '#include <common>',
-        '#include <common>\nuniform vec3 uSunDirWorld;\nuniform vec3 uPlanetshineDir;\n'
-          + 'varying vec3 vSunViewDir;\nvarying vec3 vObjPos;\nvarying vec3 vPlanetshineViewDir;',
-      )
-      .replace(
-        '#include <begin_vertex>',
-        '#include <begin_vertex>\n'
-          + 'vSunViewDir = normalize((viewMatrix * vec4(uSunDirWorld, 0.0)).xyz);\n'
-          + 'vPlanetshineViewDir = normalize((viewMatrix * vec4(uPlanetshineDir, 0.0)).xyz);\n'
-          + 'vObjPos = position;',
-      );
+      .replace('#include <common>', `#include <common>${SURFACE_VERTEX_DECLS}`)
+      .replace('#include <begin_vertex>', `#include <begin_vertex>${SURFACE_VERTEX_BODY}`);
 
     shader.fragmentShader = shader.fragmentShader
-      .replace(
-        '#include <common>',
-        '#include <common>\n'
-          + 'uniform vec3 uNightColor;\n'
-          + 'uniform float uNightStrength;\n'
-          + 'uniform float uTermWidth;\n'
-          + 'uniform vec3 uSunDirLocal;\n'
-          + 'uniform float uRingInner;\n'
-          + 'uniform float uRingOuter;\n'
-          + 'uniform float uSunTan;\n'
-          + `uniform vec4 uMoonShadow[${MAX_MOON_SHADOWS}];\n`
-          + 'uniform int uMoonShadowCount;\n'
-          + 'uniform vec3 uPlanetshineColor;\n'
-          + 'uniform float uPlanetshineIntensity;\n'
-          + 'uniform float uIcyRim;\n'
-          + 'varying vec3 vSunViewDir;\n'
-          + 'varying vec3 vObjPos;\n'
-          + 'varying vec3 vPlanetshineViewDir;\n'
-          + RING_SHADOW_OPACITY_GLSL,
-      )
-      // Inject after lighting but before <opaque_fragment> writes outgoingLight
-      // into gl_FragColor — so terms land in linear radiance (tone-mapped
-      // downstream) and read the perturbed view-space `normal`.
-      .replace(
-        '#include <opaque_fragment>',
-        '{\n'
-          + '  float dayFactor = smoothstep(-uTermWidth, uTermWidth, dot(normalize(normal), normalize(vSunViewDir)));\n'
-          + '  outgoingLight += diffuseColor.rgb * uNightColor * (uNightStrength * (1.0 - dayFactor));\n'
-          + '  // Planetshine: parent-lit glow on the night side. Albedo-multiplicative,\n'
-          + '  // so the eclipse color-dim carries through it automatically.\n'
-          + '  if (uPlanetshineIntensity > 0.0) {\n'
-          + '    float pl = max(dot(normalize(normal), normalize(vPlanetshineViewDir)), 0.0);\n'
-          + '    outgoingLight += diffuseColor.rgb * uPlanetshineColor * (uPlanetshineIntensity * pl * (1.0 - dayFactor));\n'
-          + '  }\n'
-          + '  // Icy moons: a cool Fresnel rim on the back-lit limb (ice scatters light).\n'
-          + '  // Scaled by the (eclipse-dimmed) albedo brightness so it fades when the\n'
-          + '  // moon sits in its parent shadow and no sunlight is there to scatter.\n'
-          + '  if (uIcyRim > 0.5) {\n'
-          + '    float rim = pow(1.0 - max(dot(normalize(normal), normalize(vViewPosition)), 0.0), 3.0);\n'
-          + '    float back = max(-dot(normalize(normal), normalize(vSunViewDir)), 0.0);\n'
-          + '    float lit = max(diffuseColor.r, max(diffuseColor.g, diffuseColor.b));\n'
-          + '    outgoingLight += vec3(0.55, 0.75, 1.0) * (rim * back * 0.55 * lit);\n'
-          + '  }\n'
-          + '  vec3 sd = normalize(uSunDirLocal);\n'
-          + '  // Ring shadow on the globe: trace toward the Sun to the ring plane\n'
-          + '  // (y = 0) and dim by the rings opacity where it lands.\n'
-          + '  if (uRingOuter > 0.0 && abs(sd.y) > 1e-4) {\n'
-          + '    float tHit = -vObjPos.y / sd.y;\n'
-          + '    if (tHit > 0.0) {\n'
-          + '      vec3 hit = vObjPos + sd * tHit;\n'
-          + '      float t01 = (length(hit.xz) - uRingInner) / (uRingOuter - uRingInner);\n'
-          + '      outgoingLight *= 1.0 - 0.9 * ringShadowOpacity(t01) * dayFactor;\n'
-          + '    }\n'
-          + '  }\n'
-          + '  // Moon-shadow transits: a moon sunward of this fragment casts an\n'
-          + '  // umbra/penumbra spot (cone narrows with distance behind the moon).\n'
-          + '  for (int i = 0; i < ' + MAX_MOON_SHADOWS + '; i++) {\n'
-          + '    if (i >= uMoonShadowCount) break;\n'
-          + '    vec3 toMoon = uMoonShadow[i].xyz - vObjPos;\n'
-          + '    float along = dot(toMoon, sd);\n'
-          + '    if (along > 0.0) {\n'
-          + '      float perp = length(toMoon - sd * along);\n'
-          + '      float mr = uMoonShadow[i].w;\n'
-          + '      float occ = 1.0 - smoothstep(max(mr - along * uSunTan, 0.0), mr + along * uSunTan, perp);\n'
-          + '      outgoingLight *= 1.0 - occ * dayFactor;\n'
-          + '    }\n'
-          + '  }\n'
-          + '}\n'
-          + '#include <opaque_fragment>',
-      );
+      .replace('#include <common>', `#include <common>${SURFACE_FRAGMENT_DECLS}`)
+      .replace('#include <opaque_fragment>', `${SURFACE_FRAGMENT_BODY}\n#include <opaque_fragment>`);
   };
   mat.needsUpdate = true;
   return fx;

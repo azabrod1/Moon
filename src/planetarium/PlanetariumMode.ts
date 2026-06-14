@@ -108,7 +108,6 @@ import { projectToScreen, type ScreenProjection } from '../shared/three/projectT
 import { setText } from '../shared/dom';
 import { Constellations } from './Constellations';
 import { getMoonsByPlanet, type MoonData } from './planets/moonData';
-import { type RingShadingFx } from './planets/rings';
 import {
   HISTORIC_JOURNEYS,
   INTERSTELLAR_SCENE_POSITION,
@@ -5266,13 +5265,9 @@ export class PlanetariumMode {
         planet.fx.uSunDirWorld.value.copy(state.sunDirection);
         planet.fx.uSunDirLocal.value.copy(localSunDir);
       }
-      if (planet.rings) {
-        const ringFx = (planet.rings.material as THREE.MeshStandardMaterial).userData.fx as
-          RingShadingFx | undefined;
-        if (ringFx) {
-          ringFx.uSunDirLocal.value.copy(localSunDir);
-          ringFx.uSunDirWorld.value.copy(state.sunDirection);
-        }
+      if (planet.ringFx) {
+        planet.ringFx.uSunDirLocal.value.copy(localSunDir);
+        planet.ringFx.uSunDirWorld.value.copy(state.sunDirection);
       }
       if (planet.atmosphere) {
         const atmoMat = planet.atmosphere.material as THREE.ShaderMaterial;

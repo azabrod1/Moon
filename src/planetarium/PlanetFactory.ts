@@ -7,7 +7,7 @@
  */
 import * as THREE from 'three';
 import { type PlanetData, SUN_DATA } from './planets/planetData';
-import { createPlanetRings, RING_CONFIGS } from './planets/rings';
+import { createPlanetRings, RING_CONFIGS, type RingShadingFx } from './planets/rings';
 import {
   atmosphereVertexShader,
   atmosphereFragmentShader,
@@ -263,6 +263,7 @@ export interface PlanetMesh {
   mesh: THREE.Mesh;
   data: PlanetData;
   rings?: THREE.Mesh;
+  ringFx?: RingShadingFx; // per-frame sun-direction feed for the ring shadow/translucency
   atmosphere?: THREE.Mesh;
   nightMesh?: THREE.Mesh;
   nightMaterial?: THREE.ShaderMaterial; // For Earth night lights
@@ -377,12 +378,15 @@ export async function createPlanetMesh(planet: PlanetData): Promise<PlanetMesh> 
   }
 
   let rings: THREE.Mesh | undefined;
-  if (planet.hasRings && ringCfg) {
-    rings = createPlanetRings(planet.radiusAU, ringCfg, sunTan);
+  let ringFx: RingShadingFx | undefined;
+  if (ringCfg) {
+    const built = createPlanetRings(planet.radiusAU, ringCfg, sunTan);
+    rings = built.mesh;
+    ringFx = built.fx;
     group.add(rings);
   }
 
-  return { group, mesh, data: planet, rings, atmosphere, nightMesh, nightMaterial, cloudsMesh, fx };
+  return { group, mesh, data: planet, rings, ringFx, atmosphere, nightMesh, nightMaterial, cloudsMesh, fx };
 }
 
 export function createPlanetariumSun(useBloom = true): THREE.Group {

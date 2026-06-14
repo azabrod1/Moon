@@ -7,7 +7,7 @@
  */
 import * as THREE from 'three';
 import { type PlanetData, SUN_DATA } from './planets/planetData';
-import { createSaturnRings } from './planets/rings';
+import { createPlanetRings, RING_CONFIGS } from './planets/rings';
 import {
   atmosphereVertexShader,
   atmosphereFragmentShader,
@@ -367,8 +367,9 @@ export async function createPlanetMesh(planet: PlanetData): Promise<PlanetMesh> 
   }
 
   let rings: THREE.Mesh | undefined;
-  if (planet.hasRings) {
-    rings = createSaturnRings(planet.radiusAU);
+  const ringCfg = RING_CONFIGS[planet.name];
+  if (planet.hasRings && ringCfg) {
+    rings = createPlanetRings(planet.radiusAU, ringCfg);
     group.add(rings);
   }
 

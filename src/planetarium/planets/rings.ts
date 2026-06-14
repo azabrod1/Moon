@@ -1,111 +1,168 @@
 /**
- * Saturn ring mesh: a flat disc with a procedurally generated radial gradient
- * texture. Rings extend from 1.24 to 2.27 Saturn radii per Cassini data.
+ * Procedural ring systems. A flat disc with a 1024×1 radial gradient texture
+ * (u = 0 inner edge … u = 1 outer edge) laid in the planet's equatorial plane,
+ * so it inherits the planet group's pole orientation (Uranus's rings stand
+ * near-vertical from its 98° tilt for free).
+ *
+ * Saturn is the showpiece. The others are faint and dark in reality — Uranus's
+ * narrow charcoal ringlets, Jupiter's single dust ring, Neptune's tenuous
+ * sheet — present for realism, not spectacle.
  */
 import * as THREE from 'three';
 import { applyTextureDefaults } from '../world/texturePolicy';
 
-export function createSaturnRings(planetRadiusAU: number): THREE.Mesh {
-  // Saturn's rings extend from ~1.24 to ~2.27 planet radii
-  const innerRadius = planetRadiusAU * 1.24;
-  const outerRadius = planetRadiusAU * 2.27;
+export type RingStyle = 'saturn' | 'uranus' | 'jupiter' | 'neptune';
 
-  const segments = 128;
-  const geo = new THREE.RingGeometry(innerRadius, outerRadius, segments, 3);
+export interface RingConfig {
+  innerFactor: number; // inner radius ÷ planet radius
+  outerFactor: number; // outer radius ÷ planet radius
+  style: RingStyle;
+}
 
-  // Fix UVs: RingGeometry default UVs are cartesian (bad for radial texture).
-  // Remap so u = 0 at inner edge, u = 1 at outer edge.
-  const pos = geo.attributes.position;
-  const uv = geo.attributes.uv;
-  for (let i = 0; i < pos.count; i++) {
-    const x = pos.getX(i);
-    const z = pos.getY(i); // RingGeometry is in XY plane before we rotate
-    const r = Math.sqrt(x * x + z * z);
-    const t = (r - innerRadius) / (outerRadius - innerRadius);
-    uv.setXY(i, t, uv.getY(i));
+export const RING_CONFIGS: Record<string, RingConfig> = {
+  Saturn: { innerFactor: 1.24, outerFactor: 2.27, style: 'saturn' },
+  Uranus: { innerFactor: 1.64, outerFactor: 2.01, style: 'uranus' },
+  Jupiter: { innerFactor: 1.4, outerFactor: 1.81, style: 'jupiter' },
+  Neptune: { innerFactor: 1.7, outerFactor: 2.54, style: 'neptune' },
+};
+
+const STRIP_WIDTH = 1024;
+
+// Deterministic hash so the ring texture is identical every run.
+function seededRand(seed: number): number {
+  const x = Math.sin(seed * 127.1 + 311.7) * 43758.5453;
+  return x - Math.floor(x);
+}
+
+// Brightest contribution of a set of narrow bands at the given position.
+function bandPeak(t: number, bands: Array<[number, number, number]>): number {
+  let a = 0;
+  for (const [center, halfWidth, strength] of bands) {
+    const d = Math.abs(t - center);
+    if (d < halfWidth) a = Math.max(a, (1 - d / halfWidth) * strength);
   }
+  return a;
+}
 
-  const canvas = document.createElement('canvas');
-  canvas.width = 1024;
-  canvas.height = 1;
-  const ctx = canvas.getContext('2d')!;
+// Paint one texel of the radial strip (x: 0…STRIP_WIDTH). Returns [r,g,b,a],
+// each 0–255. t runs 0 at the inner edge to 1 at the outer edge.
+function paintRing(x: number, style: RingStyle): [number, number, number, number] {
+  const t = x / STRIP_WIDTH;
 
-  // Deterministic hash for consistent ring texture
-  function seededRand(seed: number): number {
-    const x = Math.sin(seed * 127.1 + 311.7) * 43758.5453;
-    return x - Math.floor(x);
-  }
-
-  const imgData = ctx.createImageData(1024, 1);
-  const data = imgData.data;
-
-  for (let x = 0; x < 1024; x++) {
-    const t = x / 1024;
-
-    // Multiple ring bands with gaps (Cassini division, Encke gap, etc.)
+  if (style === 'saturn') {
     let alpha = 0.75;
+    if (t < 0.18) alpha *= 0.3 + (t / 0.18) * 0.4; // C ring (inner, faint)
+    if (t > 0.57 && t < 0.63) alpha = 0.04; // Cassini Division
+    if (t > 0.82 && t < 0.84) alpha = 0.08; // Encke Gap
+    if (t < 0.05) alpha *= t / 0.05; // inner edge falloff
+    if (t > 0.92) alpha *= (1 - t) / 0.08; // outer edge falloff
 
-    // C Ring (inner, faint)
-    if (t < 0.18) {
-      alpha *= 0.3 + t / 0.18 * 0.4;
-    }
-
-    // Cassini Division (around 60% of the way out)
-    if (t > 0.57 && t < 0.63) alpha = 0.04;
-    // Encke Gap
-    if (t > 0.82 && t < 0.84) alpha = 0.08;
-    // Inner edge falloff
-    if (t < 0.05) alpha *= t / 0.05;
-    // Outer edge falloff
-    if (t > 0.92) alpha *= (1 - t) / 0.08;
-
-    // Base color: warm ivory/tan
-    const brightness = 200 + seededRand(x * 7.3) * 30;
+    const brightness = 200 + seededRand(x * 7.3) * 30; // warm ivory/tan
     let r = brightness;
     let g = brightness * 0.92;
     let b = brightness * 0.78;
-
     if (t < 0.57) {
-      // B ring (brightest, inner half)
-      r *= 1.05;
+      r *= 1.05; // B ring (brightest, inner half)
       g *= 1.0;
     } else if (t > 0.63) {
-      // A ring (slightly dimmer, outer)
-      r *= 0.88;
+      r *= 0.88; // A ring (slightly dimmer, outer)
       g *= 0.85;
       b *= 0.82;
       alpha *= 0.75;
     }
+    if (seededRand(x * 13.7) < 0.04) alpha *= 0.15; // fine structure
+    return [r, g, b, alpha * 255];
+  }
 
-    // Add fine structure (deterministic gaps)
-    if (seededRand(x * 13.7) < 0.04) alpha *= 0.15;
+  if (style === 'uranus') {
+    // A handful of narrow charcoal ringlets; the ε ring (outermost) is the
+    // widest and brightest. Nearly black between them.
+    const alpha = bandPeak(t, [
+      [0.18, 0.012, 0.4],
+      [0.34, 0.01, 0.35],
+      [0.5, 0.012, 0.4],
+      [0.66, 0.014, 0.45],
+      [0.81, 0.016, 0.5],
+      [0.96, 0.035, 0.8], // ε ring
+    ]);
+    const v = 64 + seededRand(x * 5.1) * 26; // dark neutral grey
+    return [v, v, v * 1.03, alpha * 255];
+  }
 
+  if (style === 'jupiter') {
+    // One faint reddish dust ring, brightest at the outer (main) edge with a
+    // tenuous halo falling away inward.
+    let a = 0.015 + t * 0.03;
+    if (t > 0.72) a += ((t - 0.72) / 0.28) * 0.06; // main ring
+    if (t < 0.1) a *= t / 0.1;
+    if (t > 0.97) a *= (1 - t) / 0.03;
+    const v = 120 + seededRand(x * 3.3) * 24; // reddish-brown dust
+    return [v, v * 0.74, v * 0.5, a * 255];
+  }
+
+  // neptune — tenuous dark sheet with two faint ringlets (Le Verrier, Adams).
+  let a = 0.018 + bandPeak(t, [
+    [0.42, 0.02, 0.22],
+    [0.95, 0.035, 0.4], // Adams ring (outer)
+  ]);
+  if (t < 0.08) a *= t / 0.08;
+  if (t > 0.97) a *= (1 - t) / 0.03;
+  const v = 58 + seededRand(x * 4.7) * 20; // dark blue-grey
+  return [v * 0.82, v * 0.86, v, a * 255];
+}
+
+export function createPlanetRings(planetRadiusAU: number, cfg: RingConfig): THREE.Mesh {
+  const innerRadius = planetRadiusAU * cfg.innerFactor;
+  const outerRadius = planetRadiusAU * cfg.outerFactor;
+
+  const segments = 128;
+  const geo = new THREE.RingGeometry(innerRadius, outerRadius, segments, 3);
+
+  // RingGeometry's default UVs are cartesian (bad for a radial texture). Remap
+  // so u = 0 at the inner edge, u = 1 at the outer edge.
+  const pos = geo.attributes.position;
+  const uv = geo.attributes.uv;
+  for (let i = 0; i < pos.count; i++) {
+    const x = pos.getX(i);
+    const z = pos.getY(i); // RingGeometry is in the XY plane before we rotate
+    const r = Math.sqrt(x * x + z * z);
+    const tt = (r - innerRadius) / (outerRadius - innerRadius);
+    uv.setXY(i, tt, uv.getY(i));
+  }
+
+  const canvas = document.createElement('canvas');
+  canvas.width = STRIP_WIDTH;
+  canvas.height = 1;
+  const ctx = canvas.getContext('2d')!;
+  const imgData = ctx.createImageData(STRIP_WIDTH, 1);
+  const data = imgData.data;
+  for (let x = 0; x < STRIP_WIDTH; x++) {
+    const [r, g, b, a] = paintRing(x, cfg.style);
     const idx = x * 4;
     data[idx] = Math.floor(Math.min(255, r));
     data[idx + 1] = Math.floor(Math.min(255, g));
     data[idx + 2] = Math.floor(Math.min(255, b));
-    data[idx + 3] = Math.floor(Math.min(255, alpha * 255));
+    data[idx + 3] = Math.floor(Math.min(255, a));
   }
-
   ctx.putImageData(imgData, 0, 0);
 
   const texture = new THREE.CanvasTexture(canvas);
   applyTextureDefaults(texture, 'color');
 
+  // Warm self-glow for the icy/dusty bright systems; near-black for the dark
+  // charcoal ones so they don't read as lit in shadow.
+  const warm = cfg.style === 'saturn' || cfg.style === 'jupiter';
   const mat = new THREE.MeshStandardMaterial({
     map: texture,
     transparent: true,
     side: THREE.DoubleSide,
     roughness: 0.6,
     metalness: 0.05,
-    emissive: new THREE.Color(0x1a1510),
+    emissive: new THREE.Color(warm ? 0x1a1510 : 0x050506),
     depthWrite: false,
   });
 
   const mesh = new THREE.Mesh(geo, mat);
-
-  // Rings lie in the equatorial plane — rotate to lie flat (XZ plane)
-  mesh.rotation.x = -Math.PI / 2;
-
+  mesh.rotation.x = -Math.PI / 2; // lie flat in the equatorial (XZ) plane
   return mesh;
 }

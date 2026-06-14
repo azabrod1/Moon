@@ -9,6 +9,8 @@ import * as THREE from 'three';
 import { type PlanetData, SUN_DATA } from './planets/planetData';
 import { createSaturnRings } from './planets/rings';
 import {
+  atmosphereVertexShader,
+  atmosphereFragmentShader,
   earthNightVertexShader,
   earthNightFragmentShader,
 } from '../shared/shaders/atmosphere';
@@ -59,72 +61,54 @@ const FALLBACK_COLORS: Record<string, string> = {
   pluto: '#9a8e7a',
 };
 
-// Atmosphere configs per planet — color, intensity, scale
+// Atmosphere configs per planet. Drives the single-scatter shell: a Rayleigh
+// day-limb tint that warms toward `sunsetColor` at the terminator, plus a Mie
+// forward-scatter halo (`mieColor`, asymmetry `mieG`). `intensity` is overall
+// brightness, `scale` the shell radius relative to the planet. `haloStrength`
+// scales the glow that spills past the limb into space: ~1 for a thin atmosphere
+// over a surface (Earth/Venus/Mars), low for all-atmosphere giants whose limb
+// would otherwise ring against black.
 interface AtmosphereConfig {
-  color1: [number, number, number];
-  color2: [number, number, number];
+  dayColor: [number, number, number];
+  sunsetColor: [number, number, number];
+  mieColor: [number, number, number];
+  rayleighStrength: number;
+  mieStrength: number;
+  mieG: number;
   power: number;
   intensity: number;
-  scale: number; // atmosphere shell size relative to planet
-  alpha: number;
+  haloStrength: number;
+  scale: number;
 }
 
 const ATMOSPHERES: Record<string, AtmosphereConfig> = {
   Venus: {
-    color1: [0.85, 0.78, 0.55],
-    color2: [0.7, 0.58, 0.3],
-    power: 5.0,
-    intensity: 0.3,
-    scale: 1.04,
-    alpha: 0.12,
+    dayColor: [0.95, 0.85, 0.55], sunsetColor: [1.0, 0.7, 0.4], mieColor: [1.0, 0.93, 0.78],
+    rayleighStrength: 0.9, mieStrength: 1.1, mieG: 0.7, power: 2.5, intensity: 1.5, haloStrength: 1.0, scale: 1.045,
   },
   Earth: {
-    color1: [0.3, 0.5, 0.85],
-    color2: [0.12, 0.3, 0.7],
-    power: 5.0,
-    intensity: 0.3,
-    scale: 1.03,
-    alpha: 0.12,
+    dayColor: [0.25, 0.5, 1.0], sunsetColor: [1.0, 0.45, 0.22], mieColor: [1.0, 0.96, 0.9],
+    rayleighStrength: 1.1, mieStrength: 0.5, mieG: 0.76, power: 3.0, intensity: 1.3, haloStrength: 1.0, scale: 1.03,
   },
   Mars: {
-    color1: [0.6, 0.45, 0.38],
-    color2: [0.5, 0.35, 0.25],
-    power: 8.0,
-    intensity: 0.15,
-    scale: 1.02,
-    alpha: 0.06,
+    dayColor: [0.78, 0.6, 0.5], sunsetColor: [0.6, 0.55, 0.65], mieColor: [0.85, 0.72, 0.6],
+    rayleighStrength: 0.35, mieStrength: 0.4, mieG: 0.6, power: 4.0, intensity: 0.55, haloStrength: 1.0, scale: 1.02,
   },
   Jupiter: {
-    color1: [0.75, 0.65, 0.42],
-    color2: [0.55, 0.42, 0.25],
-    power: 5.0,
-    intensity: 0.2,
-    scale: 1.02,
-    alpha: 0.08,
+    dayColor: [0.8, 0.7, 0.52], sunsetColor: [0.85, 0.6, 0.4], mieColor: [0.9, 0.83, 0.68],
+    rayleighStrength: 0.55, mieStrength: 0.5, mieG: 0.65, power: 3.5, intensity: 0.7, haloStrength: 0.4, scale: 1.015,
   },
   Saturn: {
-    color1: [0.75, 0.7, 0.5],
-    color2: [0.55, 0.48, 0.32],
-    power: 5.0,
-    intensity: 0.18,
-    scale: 1.02,
-    alpha: 0.07,
+    dayColor: [0.82, 0.74, 0.54], sunsetColor: [0.85, 0.62, 0.42], mieColor: [0.92, 0.85, 0.68],
+    rayleighStrength: 0.5, mieStrength: 0.45, mieG: 0.65, power: 3.5, intensity: 0.6, haloStrength: 0.4, scale: 1.015,
   },
   Uranus: {
-    color1: [0.4, 0.65, 0.75],
-    color2: [0.25, 0.5, 0.65],
-    power: 4.5,
-    intensity: 0.25,
-    scale: 1.03,
-    alpha: 0.1,
+    dayColor: [0.45, 0.72, 0.8], sunsetColor: [0.55, 0.72, 0.75], mieColor: [0.75, 0.88, 0.88],
+    rayleighStrength: 0.8, mieStrength: 0.4, mieG: 0.6, power: 3.2, intensity: 0.5, haloStrength: 0.12, scale: 1.02,
   },
   Neptune: {
-    color1: [0.18, 0.32, 0.75],
-    color2: [0.1, 0.18, 0.6],
-    power: 4.5,
-    intensity: 0.28,
-    scale: 1.03,
-    alpha: 0.12,
+    dayColor: [0.2, 0.4, 0.9], sunsetColor: [0.35, 0.42, 0.72], mieColor: [0.6, 0.72, 0.92],
+    rayleighStrength: 0.95, mieStrength: 0.4, mieG: 0.6, power: 3.2, intensity: 0.55, haloStrength: 0.12, scale: 1.02,
   },
 };
 
@@ -245,39 +229,22 @@ function createSunGlowSprite(radiusAU: number, scale: number, texture: THREE.Tex
 function createAtmosphereGlow(radiusAU: number, config: AtmosphereConfig): THREE.Mesh {
   const geo = new THREE.SphereGeometry(radiusAU * config.scale, 64, 32);
   const mat = new THREE.ShaderMaterial({
-    vertexShader: `
-      varying vec3 vNormal;
-      varying vec3 vPosition;
-      void main() {
-        vNormal = normalize(normalMatrix * normal);
-        vPosition = (modelViewMatrix * vec4(position, 1.0)).xyz;
-        gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
-      }
-    `,
-    fragmentShader: `
-      uniform vec3 color1;
-      uniform vec3 color2;
-      uniform float power;
-      uniform float intensity;
-      uniform float alpha;
-
-      varying vec3 vNormal;
-      varying vec3 vPosition;
-
-      void main() {
-        vec3 viewDir = normalize(-vPosition);
-        float rimDot = 1.0 - max(dot(viewDir, vNormal), 0.0);
-        float glow = pow(rimDot, power) * intensity;
-        vec3 color = mix(color1, color2, rimDot);
-        gl_FragColor = vec4(color, glow * alpha);
-      }
-    `,
+    vertexShader: atmosphereVertexShader,
+    fragmentShader: atmosphereFragmentShader,
     uniforms: {
-      color1: { value: new THREE.Vector3(...config.color1) },
-      color2: { value: new THREE.Vector3(...config.color2) },
-      power: { value: config.power },
-      intensity: { value: config.intensity },
-      alpha: { value: config.alpha },
+      // Fed per frame from the body's sun direction and approach distance.
+      uSunDirWorld: { value: new THREE.Vector3(0, 0, 1) },
+      alphaScale: { value: 1.0 },
+      uDayColor: { value: new THREE.Vector3(...config.dayColor) },
+      uSunsetColor: { value: new THREE.Vector3(...config.sunsetColor) },
+      uMieColor: { value: new THREE.Vector3(...config.mieColor) },
+      uRayleighStrength: { value: config.rayleighStrength },
+      uMieStrength: { value: config.mieStrength },
+      uMieG: { value: config.mieG },
+      uPower: { value: config.power },
+      uIntensity: { value: config.intensity },
+      uHaloStrength: { value: config.haloStrength },
+      uPlanetRadius: { value: radiusAU },
     },
     transparent: true,
     side: THREE.BackSide,

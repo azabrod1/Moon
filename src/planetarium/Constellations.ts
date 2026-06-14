@@ -6,7 +6,7 @@
 import * as THREE from 'three';
 import { CONSTELLATIONS } from './data/constellations';
 import { BRIGHT_STAR_CATALOG } from './data/brightStars';
-import { projectToScreen } from '../shared/three/projectToScreen';
+import { projectToScreen, type ScreenProjection } from '../shared/three/projectToScreen';
 import { raDecToVector } from '../astronomy/planetary';
 import { STAR_SPHERE_RADIUS } from './world/starfield';
 import { DEG2RAD, RAD2DEG } from '../shared/math/angles';
@@ -49,6 +49,10 @@ export class Constellations {
   readonly lines: THREE.LineSegments;
   private labels: LabelState[] = [];
   private labelContainer: HTMLDivElement;
+  // Reused projection result: updateLabels runs every frame over ~all 88
+  // figures, so a fresh object per label was the scene's biggest per-frame
+  // allocation source whenever constellations are shown.
+  private projScratch: ScreenProjection = { x: 0, y: 0, ndcX: 0, ndcY: 0, ndcZ: 0 };
 
   constructor() {
     // Build a cache of snapped positions: for each unique RA/Dec endpoint
@@ -170,7 +174,7 @@ export class Constellations {
     if (!this.lines.visible) return;
 
     for (const label of this.labels) {
-      const proj = projectToScreen(label.pos, camera, canvasWidth, canvasHeight);
+      const proj = projectToScreen(label.pos, camera, canvasWidth, canvasHeight, this.projScratch);
       const screenX = proj.x;
       const screenY = proj.y;
 

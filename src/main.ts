@@ -16,6 +16,7 @@ import { PlanetariumMode, FIRST_PLANETARIUM_ACTIVATION_TOTAL_UNITS } from './pla
 import type { MoonFlightMode } from './moonFlight/MoonFlightMode';
 import { canGPUDoBloom } from './app/gpuCapability';
 import { debugError, debugLog, debugWarn } from './shared/debug';
+import { profiler, wireProfilerHotkey } from './shared/perf/FrameProfiler';
 
 // ================================================================
 // Top-level mode
@@ -301,10 +302,14 @@ async function init() {
   (window as any).__initStarted = true;
   debugLog('Init started');
 
+  // Frame profiler: ?profile=1 to auto-enable, or press ` (backquote) to toggle.
+  wireProfilerHotkey();
+
   let lastTime = performance.now();
 
   function animate() {
     requestAnimationFrame(animate);
+    profiler.beginFrame();
     const now = performance.now();
     const dt = Math.min((now - lastTime) / 1000, 0.1); // cap at 100ms to avoid huge jumps
     lastTime = now;
@@ -315,7 +320,10 @@ async function init() {
       moonFlightMode.update(dt);
     }
 
+    profiler.begin('render');
     renderScene(camera);
+    profiler.end('render');
+    profiler.endFrame();
   }
 
   animate();

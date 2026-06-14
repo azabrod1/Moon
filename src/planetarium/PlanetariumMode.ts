@@ -104,6 +104,7 @@ import { KM_CONSTANTS } from '../shared/constants/physicalData';
 import { smoothstepUnclamped } from '../shared/math/smoothstep';
 import { projectToScreen, type ScreenProjection } from '../shared/three/projectToScreen';
 import { setText } from '../shared/dom';
+import { profiler } from '../shared/perf/FrameProfiler';
 import { Constellations } from './Constellations';
 import { getMoonsByPlanet, type MoonData } from './planets/moonData';
 import {
@@ -254,6 +255,26 @@ export class PlanetariumMode {
   private tmpLockBasisZ = new THREE.Vector3();
   private tmpLockUp = new THREE.Vector3();
   private tmpLockBasis = new THREE.Matrix4();
+
+  // --- Per-frame hot-path scratch (reused so steady-state frames allocate
+  // nothing — GC stutter is what costs frame-to-frame fluidity while you fly
+  // and look around). ---
+  // Ephemeris memo: rebuildPlanetPositions is a pure function of the sim clock,
+  // so when the clock hasn't advanced since the last build (paused, or the
+  // player is just panning/orbiting the camera) the planet loop is skipped
+  // wholesale. NaN forces the first build of each activation. Set only on a
+  // full (non-memoized) rebuild; reset in activate().
+  private lastBuiltPlanetUtcMs = Number.NaN;
+  private tmpIdealCamPos = new THREE.Vector3();
+  private tmpOccluderWorld = new THREE.Vector3();
+  private tmpMoonLabelWorld = new THREE.Vector3();
+  private tmpNightSunDir = new THREE.Vector3();
+  private tmpNightInvQuat = new THREE.Quaternion();
+  private tmpOccluderProj: ScreenProjection = { x: 0, y: 0, ndcX: 0, ndcY: 0, ndcZ: 0 };
+  private tmpMoonLabelProj: ScreenProjection = { x: 0, y: 0, ndcX: 0, ndcY: 0, ndcZ: 0 };
+  // Pooled scene-position map for the label/occlusion pipeline: the entry
+  // objects are mutated in place each frame rather than reallocated.
+  private scenePositionsPool = new Map<string, { x: number; y: number; z: number }>();
 
   private keys = new Set<string>();
 
@@ -610,6 +631,9 @@ export class PlanetariumMode {
 
   async activate(onProgress?: (progress: PlanetariumActivationProgress) => void): Promise<void> {
     this.active = true;
+    // Force a full ephemeris rebuild on the first frame after (re)activation,
+    // regardless of where the memo's clock landed last time.
+    this.lastBuiltPlanetUtcMs = Number.NaN;
     // Startup-phase marks — summarized in one console line after the first
     // frame (logStartupTimings in main.ts).
     performance.mark('plm:activate:start');
@@ -879,6 +903,7 @@ export class PlanetariumMode {
       return;
     }
 
+    profiler.begin('input+player');
     const isScriptedTransfer = this.updateScriptedTransfer(dt);
     if (!isScriptedTransfer) {
       // Process keyboard input
@@ -898,13 +923,19 @@ export class PlanetariumMode {
       this.player.update(dt);
     }
     this.timeState = advancePlanetariumTime(this.timeState, dt);
-    this.rebuildPlanetPositions(dt);
+    profiler.end('input+player');
+
+    profiler.begin('ephemeris');
+    this.rebuildPlanetPositionsIfClockMoved();
+    profiler.end('ephemeris');
 
     // Apply floating origin: offset everything by player position
+    profiler.begin('floatingOrigin');
     this.applyFloatingOrigin();
 
     this.updateCameraFollow();
     this.controls.update();
+    profiler.end('floatingOrigin');
 
     // FPS tracking (wall-clock, independent of dt capping)
     this.fpsFrames++;
@@ -922,6 +953,7 @@ export class PlanetariumMode {
       this.uiRefreshAccumulator %= PlanetariumMode.UI_REFRESH_INTERVAL_S;
     }
 
+    profiler.begin('scaling+checks');
     this.updatePlanetScaling();
     this.player.group.scale.setScalar(0.5);
     this.resolvePlanetCollisions();
@@ -931,22 +963,19 @@ export class PlanetariumMode {
     this.checkOrbitCrossings();
     this.checkPlanetVisits();
     this.checkProximityLand();
+    profiler.end('scaling+checks');
 
     // Position moon meshes first so `collectDynamicOccluders` can read their
     // scene-space positions and record discs for label culling.
+    profiler.begin('moons');
     this.updateMoonPositions();
+    profiler.end('moons');
 
     // Occlusion pipeline: planet discs → moon + ship discs → render labels.
     // The labels setting gates the whole pipeline — it only feeds labels.
+    profiler.begin('labels');
     if (this.planetLabels && this.showBodyLabels) {
-      const scenePositions = new Map<string, { x: number; y: number; z: number }>();
-      for (const planet of this.solarSystem.planets) {
-        scenePositions.set(planet.data.name, {
-          x: planet.group.position.x,
-          y: planet.group.position.y,
-          z: planet.group.position.z,
-        });
-      }
+      const scenePositions = this.collectScenePositions();
       this.planetLabels.collectForegroundDiscs(scenePositions, this.renderer);
       this.collectDynamicOccluders();
       // Main (flight) path: landedOn is null here — narrowed by early return above.
@@ -966,6 +995,7 @@ export class PlanetariumMode {
       this.renderMoonLabels();
       this.updateSunLabel();
     }
+    profiler.end('labels');
 
     if (this.autopilotTarget) {
       this.checkAutopilotArrival();
@@ -1017,6 +1047,30 @@ export class PlanetariumMode {
     }
   }
 
+  /**
+   * Fill and return the pooled scene-position map from the planets' current
+   * (floating-origin-offset) group positions — the coordinates the label and
+   * occlusion pipeline projects. Entry objects are mutated in place, so the
+   * per-frame label pass reuses one Map and N objects instead of reallocating
+   * them every frame. The planet set is fixed, so no stale keys accumulate.
+   */
+  private collectScenePositions(): Map<string, { x: number; y: number; z: number }> {
+    const pool = this.scenePositionsPool;
+    if (!this.solarSystem) return pool;
+    for (const planet of this.solarSystem.planets) {
+      const p = planet.group.position;
+      const entry = pool.get(planet.data.name);
+      if (entry) {
+        entry.x = p.x;
+        entry.y = p.y;
+        entry.z = p.z;
+      } else {
+        pool.set(planet.data.name, { x: p.x, y: p.y, z: p.z });
+      }
+    }
+    return pool;
+  }
+
   private updateCameraFollow() {
     // Player is always at scene origin due to floating origin
     this.controls.target.set(0, 0, 0);
@@ -1026,7 +1080,7 @@ export class PlanetariumMode {
 
     const camDist = 0.000094;
     const forward = this.player.getForwardDirection();
-    const idealPos = new THREE.Vector3(
+    const idealPos = this.tmpIdealCamPos.set(
       -forward.x * camDist,
       -forward.y * camDist + camDist * 0.35,
       -forward.z * camDist,
@@ -1309,11 +1363,18 @@ export class PlanetariumMode {
         );
         this.applyMoonShading(m, this.moonShading);
 
-        this.moonWorldPositions.set(m.data.name, {
-          x: wp.x + offset.x,
-          y: wp.y + offset.y,
-          z: wp.z + offset.z,
-        });
+        const storedMoonPos = this.moonWorldPositions.get(m.data.name);
+        if (storedMoonPos) {
+          storedMoonPos.x = wp.x + offset.x;
+          storedMoonPos.y = wp.y + offset.y;
+          storedMoonPos.z = wp.z + offset.z;
+        } else {
+          this.moonWorldPositions.set(m.data.name, {
+            x: wp.x + offset.x,
+            y: wp.y + offset.y,
+            z: wp.z + offset.z,
+          });
+        }
 
         const realRatio = m.data.radiusAU / parentR;
         const minRatio = 0.05;
@@ -1496,7 +1557,7 @@ export class PlanetariumMode {
     const camX = this.camera.position.x;
     const camY = this.camera.position.y;
     const camZ = this.camera.position.z;
-    const tempV = new THREE.Vector3();
+    const tempV = this.tmpOccluderWorld;
 
     // Visible moons
     for (const planet of this.solarSystem.planets) {
@@ -1516,7 +1577,7 @@ export class PlanetariumMode {
         if (angularSize <= 0.01) continue;
 
         const canvasW = this.renderer.domElement.clientWidth;
-        const proj = projectToScreen(tempV, this.camera, canvasW, canvasH);
+        const proj = projectToScreen(tempV, this.camera, canvasW, canvasH, this.tmpOccluderProj);
         if (proj.ndcZ >= 1) continue;
         const screenX = proj.x;
         const screenY = proj.y;
@@ -1534,7 +1595,7 @@ export class PlanetariumMode {
         const angularSize = (shipSceneRadiusAU * 2) / distFromCamera;
         if (angularSize > 0.005) {
           const canvasW = this.renderer.domElement.clientWidth;
-          const proj = projectToScreen(tempV.set(0, 0, 0), this.camera, canvasW, canvasH);
+          const proj = projectToScreen(tempV.set(0, 0, 0), this.camera, canvasW, canvasH, this.tmpOccluderProj);
           if (proj.ndcZ < 1) {
             const screenX = proj.x;
             const screenY = proj.y;
@@ -1554,7 +1615,7 @@ export class PlanetariumMode {
     if (!this.solarSystem || this.moonLabelContainer === null) return;
     const canvasW = this.renderer.domElement.clientWidth;
     const canvasH = this.renderer.domElement.clientHeight;
-    const tempV = new THREE.Vector3();
+    const tempV = this.tmpMoonLabelWorld;
 
     // Two passes: gather placeable labels, then place big-to-small with
     // greedy screen-rect suppression — on approach a system's labels pile
@@ -1579,7 +1640,7 @@ export class PlanetariumMode {
 
         m.mesh.getWorldPosition(tempV);
         const moonCamDist = tempV.distanceTo(this.camera.position);
-        const proj = projectToScreen(tempV, this.camera, canvasW, canvasH);
+        const proj = projectToScreen(tempV, this.camera, canvasW, canvasH, this.tmpMoonLabelProj);
         if (proj.ndcZ >= 1) {
           if (label.style.display !== 'none') label.style.display = 'none';
           continue;
@@ -4724,7 +4785,9 @@ export class PlanetariumMode {
 
     // Advance astronomical time — planets keep moving/rotating
     this.timeState = advancePlanetariumTime(this.timeState, dt);
-    this.rebuildPlanetPositions(dt);
+    profiler.begin('ephemeris');
+    this.rebuildPlanetPositionsIfClockMoved();
+    profiler.end('ephemeris');
 
     // Track the landed body: update player position to body's world position
     const bodyPos = this.getLandedBodyWorldPosition();
@@ -4758,25 +4821,21 @@ export class PlanetariumMode {
       this.uiRefreshAccumulator %= PlanetariumMode.UI_REFRESH_INTERVAL_S;
     }
 
+    profiler.begin('moons');
     this.updatePlanetScaling();
     this.updateMoonPositions();
     this.updateShadowVisuals();
     if (shouldRefreshUi) this.updateOrbitDetails();
     this.pumpObservatoryEventSearch();
+    profiler.end('moons');
 
     // Occlusion pipeline while landed: planets → moons + ship → labels.
     // Surface view and the labels setting: the label containers are hidden
     // and these per-frame renders would re-show them — the pipeline only
     // feeds labels, skip it.
+    profiler.begin('labels');
     if (this.planetLabels && this.landedView !== 'surface' && this.showBodyLabels) {
-      const scenePositions = new Map<string, { x: number; y: number; z: number }>();
-      for (const planet of this.solarSystem.planets) {
-        scenePositions.set(planet.data.name, {
-          x: planet.group.position.x,
-          y: planet.group.position.y,
-          z: planet.group.position.z,
-        });
-      }
+      const scenePositions = this.collectScenePositions();
       this.planetLabels.collectForegroundDiscs(scenePositions, this.renderer);
       this.collectDynamicOccluders();
       const landedPlanetName = this.landedOn?.type === 'planet' ? this.landedOn.name : undefined;
@@ -4798,6 +4857,7 @@ export class PlanetariumMode {
     }
     this.updateSunShader(dt);
     this.updateOrbitLineVisibility();
+    profiler.end('labels');
 
     // Surface camera last — after updateMoonPositions/updateShadowVisuals —
     // so the vantage and look target use this frame's positions (the skipped
@@ -5026,6 +5086,24 @@ export class PlanetariumMode {
     resampleOrbitLines(this.solarSystem, this.layoutMode, this.timeState.currentUtcMs);
   }
 
+  /**
+   * Per-frame entry point: rebuild the ephemeris only when the sim clock has
+   * actually moved since the last build. Planet positions/orientations are a
+   * pure function of `currentUtcMs`, so a paused clock — or one held still
+   * while the player just orbits/pans the camera — would otherwise repeat the
+   * identical Standish/Meeus propagation (and its allocations) every frame.
+   * The orbit-line staleness check still runs (it's its own cheap clock-drift
+   * guard) so a resample can't be skipped on the frame the clock lands.
+   */
+  private rebuildPlanetPositionsIfClockMoved() {
+    if (!this.solarSystem) return;
+    if (this.timeState.currentUtcMs === this.lastBuiltPlanetUtcMs) {
+      this.rebuildOrbitLinesIfStale();
+      return;
+    }
+    this.rebuildPlanetPositions();
+  }
+
   rebuildPlanetPositions(_dt = 0) {
     if (!this.solarSystem) return;
     this.rebuildOrbitLinesIfStale();
@@ -5043,23 +5121,42 @@ export class PlanetariumMode {
         planet.cloudsMesh.rotation.y = cloudDrift;
       }
       if (planet.nightMaterial) {
-        const localSunDir = state.sunDirection
-          .clone()
-          .applyQuaternion(planet.group.quaternion.clone().invert());
+        // Reused scratch (no per-frame Vector3/Quaternion clones): rotate the
+        // world-frame sun direction into the planet's local frame.
+        const localSunDir = this.tmpNightSunDir
+          .copy(state.sunDirection)
+          .applyQuaternion(this.tmpNightInvQuat.copy(planet.group.quaternion).invert());
         planet.nightMaterial.uniforms.sunDirection.value.copy(localSunDir);
       }
 
-      planet.group.userData.worldPosAU = {
-        x: state.positionAU.x,
-        y: state.positionAU.y,
-        z: state.positionAU.z,
-      };
-      this.planetWorldPositions.set(body.name, {
-        x: state.positionAU.x,
-        y: state.positionAU.y,
-        z: state.positionAU.z,
-      });
+      // Mutate the stored position objects in place rather than reallocating a
+      // pair of literals per planet per frame.
+      const wp = planet.group.userData.worldPosAU as { x: number; y: number; z: number } | undefined;
+      if (wp) {
+        wp.x = state.positionAU.x;
+        wp.y = state.positionAU.y;
+        wp.z = state.positionAU.z;
+      } else {
+        planet.group.userData.worldPosAU = {
+          x: state.positionAU.x,
+          y: state.positionAU.y,
+          z: state.positionAU.z,
+        };
+      }
+      const stored = this.planetWorldPositions.get(body.name);
+      if (stored) {
+        stored.x = state.positionAU.x;
+        stored.y = state.positionAU.y;
+        stored.z = state.positionAU.z;
+      } else {
+        this.planetWorldPositions.set(body.name, {
+          x: state.positionAU.x,
+          y: state.positionAU.y,
+          z: state.positionAU.z,
+        });
+      }
     }
+    this.lastBuiltPlanetUtcMs = this.timeState.currentUtcMs;
   }
 
   private stepTimeRate(direction: -1 | 1) {

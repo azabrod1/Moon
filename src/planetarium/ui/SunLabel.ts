@@ -7,7 +7,7 @@
  */
 import * as THREE from 'three';
 import { KM_PER_AU } from '../../astronomy/constants';
-import { projectToScreen } from '../../shared/three/projectToScreen';
+import { projectToScreen, type ScreenProjection } from '../../shared/three/projectToScreen';
 
 const LABEL_MARGIN_PX = 50;
 const LABEL_OFFSET_PX = 16;
@@ -18,6 +18,7 @@ export class SunLabel {
   private visible = false;
   private lastTransform = '';
   private lastDistText = '';
+  private projScratch: ScreenProjection = { x: 0, y: 0, ndcX: 0, ndcY: 0, ndcZ: 0 };
 
   attach(): void {
     const container = document.getElementById('planet-labels');
@@ -38,7 +39,7 @@ export class SunLabel {
   ): void {
     if (!this.el) return;
 
-    const projected = projectToScreen(sunWorldPos, camera, canvas.clientWidth, canvas.clientHeight);
+    const projected = projectToScreen(sunWorldPos, camera, canvas.clientWidth, canvas.clientHeight, this.projScratch);
     const screenX = projected.x;
     const screenY = projected.y;
 

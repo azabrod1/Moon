@@ -15,7 +15,7 @@ import {
   earthNightFragmentShader,
 } from '../shared/shaders/atmosphere';
 import { debugWarn } from '../shared/debug';
-import { applyTextureDefaults, resolveTextureUrl, type TextureTier } from './world/texturePolicy';
+import { applyTextureDefaults, resolveTextureUrl, type TextureTier, type MapKind } from './world/texturePolicy';
 import { augmentSurfaceMaterial, type SurfaceArchetype, type SurfaceShadingFx } from './world/surfaceShading';
 
 const loader = new THREE.TextureLoader();
@@ -115,7 +115,7 @@ const ATMOSPHERES: Record<string, AtmosphereConfig> = {
   },
 };
 
-function loadTexture(key: string, tier: TextureTier = '2k', timeoutMs = 8000): Promise<THREE.Texture> {
+function loadTexture(key: string, tier: TextureTier = '2k', kind: MapKind = 'color', timeoutMs = 8000): Promise<THREE.Texture> {
   const file = PLANET_TEXTURE_FILES[key];
   if (!file) return Promise.resolve(createFallbackTexture(key));
   const url = resolveTextureUrl(file, tier);
@@ -135,7 +135,7 @@ function loadTexture(key: string, tier: TextureTier = '2k', timeoutMs = 8000): P
         if (settled) return;
         settled = true;
         clearTimeout(timer);
-        applyTextureDefaults(tex, 'color');
+        applyTextureDefaults(tex, kind);
         resolve(tex);
       },
       undefined,
@@ -299,7 +299,7 @@ export async function createPlanetMesh(planet: PlanetData): Promise<PlanetMesh> 
     ? Promise.all([
         loadTexture('earthNight'),
         loadTexture('earthClouds'),
-        loadTexture('earthBump'),
+        loadTexture('earthBump', '2k', 'data'), // height map: linear, not sRGB
       ])
     : null;
   const texture = await surfaceTexturePromise;

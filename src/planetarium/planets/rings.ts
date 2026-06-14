@@ -3,6 +3,7 @@
  * texture. Rings extend from 1.24 to 2.27 Saturn radii per Cassini data.
  */
 import * as THREE from 'three';
+import { applyTextureDefaults } from '../world/texturePolicy';
 
 export function createSaturnRings(planetRadiusAU: number): THREE.Mesh {
   // Saturn's rings extend from ~1.24 to ~2.27 planet radii
@@ -89,7 +90,7 @@ export function createSaturnRings(planetRadiusAU: number): THREE.Mesh {
   ctx.putImageData(imgData, 0, 0);
 
   const texture = new THREE.CanvasTexture(canvas);
-  texture.colorSpace = THREE.SRGBColorSpace;
+  applyTextureDefaults(texture, 'color');
 
   const mat = new THREE.MeshStandardMaterial({
     map: texture,

@@ -13,31 +13,33 @@ import {
   earthNightFragmentShader,
 } from '../shared/shaders/atmosphere';
 import { debugWarn } from '../shared/debug';
+import { applyTextureDefaults, resolveTextureUrl, type TextureTier } from './world/texturePolicy';
 
 const loader = new THREE.TextureLoader();
 loader.crossOrigin = 'anonymous';
 
-// Texture URLs — bundled locally in public/textures/ (Solar System Scope CC BY 4.0 + NASA)
-const BASE = import.meta.env.BASE_URL + 'textures/';
-const PLANET_TEXTURE_URLS: Record<string, string> = {
-  mercury: BASE + 'mercury.jpg',
-  venus: BASE + 'venus.jpg',
-  earthDay: BASE + 'earth-day.jpg',
-  earthNight: BASE + 'earth-night.jpg',
-  earthClouds: BASE + 'earth-clouds.jpg',
-  earthBump: BASE + 'earth-bump.png',
-  mars: BASE + 'mars.jpg',
-  jupiter: BASE + 'jupiter.jpg',
-  saturn: BASE + 'saturn.jpg',
-  uranus: BASE + 'uranus.jpg',
-  neptune: BASE + 'neptune.jpg',
-  pluto: BASE + 'pluto.jpg',
-  moon: BASE + 'moon.jpg',
-  io: BASE + 'io.jpg',
-  europa: BASE + 'europa.jpg',
-  ganymede: BASE + 'ganymede.jpg',
-  callisto: BASE + 'callisto.jpg',
-  triton: BASE + 'triton.jpg',
+// Texture filenames — bundled locally in public/textures/ (Solar System Scope
+// CC BY 4.0 + NASA). The filename stays resolution-agnostic; world/texturePolicy
+// maps it through the active tier to a URL.
+const PLANET_TEXTURE_FILES: Record<string, string> = {
+  mercury: 'mercury.jpg',
+  venus: 'venus.jpg',
+  earthDay: 'earth-day.jpg',
+  earthNight: 'earth-night.jpg',
+  earthClouds: 'earth-clouds.jpg',
+  earthBump: 'earth-bump.png',
+  mars: 'mars.jpg',
+  jupiter: 'jupiter.jpg',
+  saturn: 'saturn.jpg',
+  uranus: 'uranus.jpg',
+  neptune: 'neptune.jpg',
+  pluto: 'pluto.jpg',
+  moon: 'moon.jpg',
+  io: 'io.jpg',
+  europa: 'europa.jpg',
+  ganymede: 'ganymede.jpg',
+  callisto: 'callisto.jpg',
+  triton: 'triton.jpg',
 };
 
 // Fallback colors if textures fail
@@ -125,9 +127,10 @@ const ATMOSPHERES: Record<string, AtmosphereConfig> = {
   },
 };
 
-function loadTexture(key: string, timeoutMs = 8000): Promise<THREE.Texture> {
-  const url = PLANET_TEXTURE_URLS[key];
-  if (!url) return Promise.resolve(createFallbackTexture(key));
+function loadTexture(key: string, tier: TextureTier = '2k', timeoutMs = 8000): Promise<THREE.Texture> {
+  const file = PLANET_TEXTURE_FILES[key];
+  if (!file) return Promise.resolve(createFallbackTexture(key));
+  const url = resolveTextureUrl(file, tier);
 
   return new Promise((resolve) => {
     let settled = false;
@@ -144,7 +147,7 @@ function loadTexture(key: string, timeoutMs = 8000): Promise<THREE.Texture> {
         if (settled) return;
         settled = true;
         clearTimeout(timer);
-        tex.colorSpace = THREE.SRGBColorSpace;
+        applyTextureDefaults(tex, 'color');
         resolve(tex);
       },
       undefined,
@@ -197,7 +200,7 @@ function createFallbackTexture(key: string): THREE.Texture {
 
   ctx.putImageData(imageData, 0, 0);
   const tex = new THREE.CanvasTexture(canvas);
-  tex.colorSpace = THREE.SRGBColorSpace;
+  applyTextureDefaults(tex, 'color');
   return tex;
 }
 
@@ -658,8 +661,9 @@ function createMoonTextures(
   bCtx.putImageData(bumpData, 0, 0);
 
   const colorTex = new THREE.CanvasTexture(colorCanvas);
-  colorTex.colorSpace = THREE.SRGBColorSpace;
+  applyTextureDefaults(colorTex, 'color');
   const bumpTex = new THREE.CanvasTexture(bumpCanvas);
+  applyTextureDefaults(bumpTex, 'data');
   return { colorTex, bumpTex };
 }
 
@@ -716,12 +720,13 @@ export function createMoonMeshes(planetName: string): MoonMesh[] {
     // loadTexture (which resolves a grey fallback on failure) so a failed JPG
     // keeps the procedural texture. photoLoaded tells the painter not to
     // clobber a photo that already won.
-    const photoUrl = moonData.textureKey ? PLANET_TEXTURE_URLS[moonData.textureKey] : undefined;
+    const photoFile = moonData.textureKey ? PLANET_TEXTURE_FILES[moonData.textureKey] : undefined;
+    const photoUrl = photoFile ? resolveTextureUrl(photoFile, '2k') : undefined;
     if (photoUrl) {
       loader.load(
         photoUrl,
         (tex) => {
-          tex.colorSpace = THREE.SRGBColorSpace;
+          applyTextureDefaults(tex, 'color');
           mat.userData.photoLoaded = true;
           const prev = mat.map;
           mat.map = tex;

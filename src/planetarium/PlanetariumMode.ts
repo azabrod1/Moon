@@ -72,6 +72,7 @@ import { findEvent, type EventType } from '../astronomy/ephemeris';
 import { KM_PER_AU } from '../astronomy/constants';
 import { createPlanetariumStarfield } from './world/starfield';
 import { MoonPainter } from './world/MoonPainter';
+import { captureDeviceTextureCaps } from './world/texturePolicy';
 import { debugError } from '../shared/debug';
 import { GyroSteering } from './input/GyroSteering';
 import { SurfaceLook } from './input/SurfaceLook';
@@ -522,6 +523,9 @@ export class PlanetariumMode {
     this.camera = camera;
     this.renderer = renderer;
     this.useBloom = useBloom;
+    // Capture device texture caps from the live renderer before any body loads,
+    // so anisotropy and tier limits apply to the very first textures created.
+    captureDeviceTextureCaps(renderer);
     this.player = new PlayerShip();
     this.store = new PlanetariumStore();
 

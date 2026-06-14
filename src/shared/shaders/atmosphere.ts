@@ -112,7 +112,7 @@ void main() {
   vec4 nightColor = texture2D(nightTexture, vUv);
   // Show night lights only on dark side
   float sunDot = dot(vNormal, vSunDir);
-  float nightMix = smoothstep(-0.1, -0.3, sunDot);
+  float nightMix = 1.0 - smoothstep(-0.3, -0.1, sunDot); // ordered edges (reversed smoothstep is undefined)
   gl_FragColor = vec4(nightColor.rgb * nightMix * 1.5, nightMix * nightColor.a);
 }
 `;

@@ -223,6 +223,8 @@ export class PlanetariumMode {
   private tmpMoonShadowLocal = new THREE.Vector3();
   private tmpMoonShadowQuat = new THREE.Quaternion();
   private tmpPlanetshine = new THREE.Vector3();
+  private tmpLocalSunDir = new THREE.Vector3();
+  private tmpInvGroupQuat = new THREE.Quaternion();
   private tmpShadingParentPos = new THREE.Vector3();
   private moonShading: MoonShadingState = { sunVisibleFraction: 1, inUmbra: false };
   // Landed-system shadow visuals: transit spots always on, guides behind the
@@ -1301,9 +1303,15 @@ export class PlanetariumMode {
         sunTanAtParent = SUN_RADIUS_AU / Math.max(Math.hypot(wp.x, wp.y, wp.z), 1e-9);
         casterNames = new Set(
           [...moons]
+            // Filter to moons whose umbra actually reaches the surface FIRST,
+            // then take the largest few — else a big, far moon whose umbra falls
+            // short (Iapetus, Nereid) steals a slot from a real caster (Tethys,
+            // Galatea). orbitalRadiusAU is the mean distance; the loop re-checks
+            // the live distance per frame.
+            .filter((mm) => mm.data.radiusAU / parentR > 0.003
+              && mm.data.radiusAU > mm.data.orbitalRadiusAU * sunTanAtParent)
             .sort((a, b) => b.data.radiusAU - a.data.radiusAU)
             .slice(0, surfFx.uMoonShadow.value.length)
-            .filter((mm) => mm.data.radiusAU / parentR > 0.003)
             .map((mm) => mm.data.name),
         );
       }
@@ -5248,9 +5256,9 @@ export class PlanetariumMode {
           : 0;
         planet.cloudsMesh.rotation.y = cloudDrift;
       }
-      const localSunDir = state.sunDirection
-        .clone()
-        .applyQuaternion(planet.group.quaternion.clone().invert());
+      const localSunDir = this.tmpLocalSunDir
+        .copy(state.sunDirection)
+        .applyQuaternion(this.tmpInvGroupQuat.copy(planet.group.quaternion).invert());
       if (planet.nightMaterial) {
         planet.nightMaterial.uniforms.sunDirection.value.copy(localSunDir);
       }

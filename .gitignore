@@ -2,7 +2,8 @@ node_modules/
 dist/
 .vite/
 *.local
-.claude/
+.claude/*
+!.claude/skills/
 .chrome-*/
 .edge-headless-profile/
 browser-*.png

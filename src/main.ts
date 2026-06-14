@@ -294,6 +294,26 @@ function isAutoBootParam(): boolean {
   return auto === 'planetarium' || auto === 'moonView';
 }
 
+// Dev-only bridge for the headless screenshot harness: pose the camera and set
+// the clock from out of process. The call site is guarded by a DEV check, so a
+// production build dead-code-eliminates this entirely.
+function installDevHooks() {
+  (window as any).__moon = {
+    ready: () => !!planetariumMode?.hasLoadedSolarSystem(),
+    bodies: () => planetariumMode?.devListBodies() ?? [],
+    jumpTo: (name: string, distanceMultiplier?: number) =>
+      planetariumMode?.devJumpToBody(name, distanceMultiplier) ?? false,
+    frame: (name: string, fillFraction?: number, phaseAngleDeg?: number) =>
+      planetariumMode?.devFrameBody(name, fillFraction, phaseAngleDeg) ?? false,
+    probe: (name: string) => planetariumMode?.devProbe(name) ?? null,
+    setChrome: (visible: boolean) => planetariumMode?.devSetChrome(visible),
+    setFov: (deg: number) => planetariumMode?.devSetFov(deg),
+    setTimeMs: (utcMs: number) => planetariumMode?.setCurrentUtcMs(utcMs),
+    getTimeMs: () => planetariumMode?.getCurrentUtcMs() ?? 0,
+  };
+  debugLog('Dev hooks installed (window.__moon)');
+}
+
 // ================================================================
 // Main init
 // ================================================================
@@ -323,6 +343,7 @@ async function init() {
 
   debugLog('Boot mode', { autoBoot: isAutoBootParam() });
   await switchAppMode('planetarium');
+  if (import.meta.env.DEV) installDevHooks();
   logStartupTimings();
 
   document.getElementById('loading-screen')?.classList.add('hidden');

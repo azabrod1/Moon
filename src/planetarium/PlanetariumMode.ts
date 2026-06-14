@@ -293,6 +293,10 @@ export class PlanetariumMode {
 
   // Show player ship mesh for size comparison
   private showShip = true;
+  // Headless screenshot framing: when set, the per-frame collision resolver is
+  // skipped so the camera can sit a few radii from a body without being pushed
+  // back out past its moon system.
+  private devFreeCamera = false;
 
   // Touch and gyro flight state
   private touchYaw = 0;
@@ -906,7 +910,7 @@ export class PlanetariumMode {
     this.applyFloatingOrigin();
 
     this.updateCameraFollow();
-    this.controls.update();
+    if (!this.devFreeCamera) this.controls.update();
 
     // FPS tracking (wall-clock, independent of dt capping)
     this.fpsFrames++;
@@ -926,7 +930,7 @@ export class PlanetariumMode {
 
     this.updatePlanetScaling();
     this.player.group.scale.setScalar(0.5);
-    this.resolvePlanetCollisions();
+    if (!this.devFreeCamera) this.resolvePlanetCollisions();
 
     // Check orbit crossings and visits after scale/collision are applied so the
     // reachable interaction shell matches the visual shell.
@@ -1020,6 +1024,7 @@ export class PlanetariumMode {
   }
 
   private updateCameraFollow() {
+    if (this.devFreeCamera) return; // headless framing drives the camera directly
     // Player is always at scene origin due to floating origin
     this.controls.target.set(0, 0, 0);
 
@@ -1218,7 +1223,8 @@ export class PlanetariumMode {
         const t = smoothstepUnclamped(linear);
         const glowMat = planet.atmosphere.material as THREE.ShaderMaterial;
         if (glowMat.uniforms?.alphaScale) {
-          glowMat.uniforms.alphaScale.value = 0.15 + 0.3 * t;
+          // Fade fully out at system-edge distance; full strength on close approach.
+          glowMat.uniforms.alphaScale.value = t;
         }
       }
 
@@ -3069,6 +3075,121 @@ export class PlanetariumMode {
       this.notification.show(`Jumped to ${planet.name}`);
     }
     this.resetCruiseCamera();
+  }
+
+  /**
+   * Headless-screenshot support: pose the camera at a planet by name, with no
+   * "Jumped to…" toast. Installed on `window.__moon` by the entry point under
+   * Vite dev only. Returns false when the name isn't a top-level planet.
+   */
+  devJumpToBody(name: string, distanceMultiplier = 1): boolean {
+    if (!this.solarSystem) return false;
+    const mesh = this.solarSystem.planets.find((p) => p.data.name === name);
+    if (!mesh) return false;
+    this.jumpToPlanet(mesh.data, { notify: false, distanceMultiplier });
+    this.player.moving = false; // hold position so the body stays centered for capture
+    return true;
+  }
+
+  /** Names of the top-level planets, for the dev screenshot harness. */
+  devListBodies(): string[] {
+    return this.solarSystem ? this.solarSystem.planets.map((p) => p.data.name) : [];
+  }
+
+  /**
+   * Headless-screenshot support: hide the spacecraft, orbit lines, body labels,
+   * and the HTML HUD so a capture shows only the sky and the framed body. Pass
+   * true to restore. Dev bridge only.
+   */
+  devSetChrome(visible: boolean): void {
+    this.showShip = visible;
+    this.showOrbitLines = visible;
+    this.showBodyLabels = visible;
+    this.player.group.visible = visible;
+    if (this.solarSystem) {
+      for (const o of this.solarSystem.orbitLines) o.visible = visible;
+    }
+    if (!visible) this.planetLabels?.hideAll();
+    // HTML overlays that sit outside the per-frame visibility loop: the HUD,
+    // the wordmark header, and the Sun/distance label container.
+    for (const id of ['planetarium-ui', 'top-bar', 'planet-labels']) {
+      const el = document.getElementById(id);
+      if (el) el.style.display = visible ? '' : 'none';
+    }
+  }
+
+  /** Headless-screenshot support: set the planetarium camera FOV (degrees) to zoom. */
+  devSetFov(deg: number): void {
+    const cam = this.camera as THREE.PerspectiveCamera;
+    cam.fov = deg;
+    cam.updateProjectionMatrix();
+  }
+
+  /**
+   * Headless-screenshot support: frame a planet centered, filling `fillFraction`
+   * of the vertical view. Sits a few radii out, points at it, halts, and skips
+   * collision so the close vantage holds. `phaseAngleDeg` is the Sun–planet–camera
+   * angle: 0 sits sunward (full-phase lit); swing toward 180 for the night side,
+   * the only view where the back-lit crescent (warm terminator + Mie forward
+   * scatter) shows. Dev bridge only.
+   */
+  devFrameBody(name: string, fillFraction = 0.6, phaseAngleDeg = 0): boolean {
+    if (!this.solarSystem) return false;
+    const mesh = this.solarSystem.planets.find((p) => p.data.name === name);
+    const pos = this.planetWorldPositions.get(name);
+    if (!mesh || !pos) return false;
+    this.devFreeCamera = true;
+    const r = mesh.data.radiusAU; // planets render at true scale (group scale 1)
+    const dist = r * 5;
+    // Camera direction from the planet, rotated off the sun line by the phase
+    // angle. The rotation axis is any vector perpendicular to the sun line.
+    const toSun = new THREE.Vector3(-pos.x, -pos.y, -pos.z);
+    if (toSun.lengthSq() < 1e-8) toSun.set(-1, 0.25, 0);
+    toSun.normalize();
+    const axis = new THREE.Vector3(0, 1, 0).cross(toSun);
+    if (axis.lengthSq() < 1e-6) axis.set(1, 0, 0); // sun line parallel to world up
+    axis.normalize();
+    const dir = toSun.clone().applyAxisAngle(axis, THREE.MathUtils.degToRad(phaseAngleDeg));
+    this.player.posX = pos.x + dir.x * dist;
+    this.player.posY = pos.y + dir.y * dist;
+    this.player.posZ = pos.z + dir.z * dist;
+    this.player.headToward(pos.x, pos.z, pos.y);
+    this.player.moving = false;
+    // Aim the camera straight at the body from the scene origin. The chase cam's
+    // ship-scale offset and downward tilt would shove a zoomed planet off-frame.
+    const sceneOffset = new THREE.Vector3(
+      pos.x - this.player.posX,
+      pos.y - this.player.posY,
+      pos.z - this.player.posZ,
+    );
+    const cam = this.camera as THREE.PerspectiveCamera;
+    cam.position.set(0, 0, 0);
+    cam.fov = THREE.MathUtils.radToDeg((2 * Math.atan(r / dist)) / fillFraction);
+    cam.updateProjectionMatrix();
+    cam.lookAt(sceneOffset);
+    this.controls.target.copy(sceneOffset);
+    return true;
+  }
+
+  /** Headless-screenshot diagnostics: read back camera/body geometry. */
+  devProbe(name: string): unknown {
+    const pos = this.planetWorldPositions.get(name);
+    const mesh = this.solarSystem?.planets.find((p) => p.data.name === name);
+    const cam = this.camera as THREE.PerspectiveCamera;
+    const playerAbs = { x: this.player.posX, y: this.player.posY, z: this.player.posZ };
+    return {
+      found: !!pos,
+      radiusAU: mesh?.data.radiusAU ?? null,
+      bodyAbs: pos ?? null,
+      playerAbs,
+      distToBodyAU: pos ? Math.hypot(playerAbs.x - pos.x, playerAbs.y - pos.y, playerAbs.z - pos.z) : null,
+      camPos: { x: cam.position.x, y: cam.position.y, z: cam.position.z },
+      camLen: Math.hypot(cam.position.x, cam.position.y, cam.position.z),
+      fov: cam.fov,
+      moving: this.player.moving,
+      devFree: this.devFreeCamera,
+      userOrbiting: this.userOrbiting,
+    };
   }
 
   /** Any landed body whose system has catalog moons gets the Observatory panel. */
@@ -5058,6 +5179,12 @@ export class PlanetariumMode {
       }
       if (planet.fx) {
         planet.fx.uSunDirWorld.value.copy(state.sunDirection);
+      }
+      if (planet.atmosphere) {
+        const atmoMat = planet.atmosphere.material as THREE.ShaderMaterial;
+        if (atmoMat.uniforms.uSunDirWorld) {
+          atmoMat.uniforms.uSunDirWorld.value.copy(state.sunDirection);
+        }
       }
 
       planet.group.userData.worldPosAU = {

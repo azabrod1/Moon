@@ -58,6 +58,19 @@ const NIGHT_FILL: Record<SurfaceArchetype, NightFill> = {
   earth:   { color: 0x1c2c44, strength: 0.05, termWidth: 0.16 },
 };
 
+// View-angle limb darkening: a body's disc dims toward its edge as the line of
+// sight grazes the surface — the single biggest "reads as a real photo" cue for
+// gaseous and thick-atmosphere worlds. Airless rock is nearly flat to the limb
+// (a full Moon reads as an even disc). Coefficient is the u in I/I0 = 1 - u(1-mu);
+// 0 disables it. Icy moons keep their cool Fresnel rim instead.
+const LIMB_DARKENING: Record<SurfaceArchetype, number> = {
+  airless: 0.0,
+  rocky:   0.18,
+  gas:     0.55,
+  icy:     0.0,
+  earth:   0.3,
+};
+
 // Analytic stand-in for Saturn's ring opacity across the annulus (t: 0 inner …
 // 1 outer), used only for the shadow it casts — the major features that read on
 // the globe are the dense B ring, the clear Cassini Division, and the slightly
@@ -109,6 +122,7 @@ uniform int uMoonShadowCount;
 uniform vec3 uPlanetshineColor;
 uniform float uPlanetshineIntensity;
 uniform float uIcyRim;
+uniform float uLimbDarkening;
 varying vec3 vSunViewDir;
 varying vec3 vObjPos;
 varying vec3 vPlanetshineViewDir;
@@ -159,6 +173,13 @@ const SURFACE_FRAGMENT_BODY = /* glsl */ `{
       outgoingLight *= 1.0 - occ * dayFactor;
     }
   }
+  // Limb darkening: the disc dims toward its edge as the view ray grazes the
+  // surface. mu = cos of the view angle — 1 at disc centre, 0 at the limb.
+  // Applied last so it shades every lit term equally; 0 disables it.
+  if (uLimbDarkening > 0.0) {
+    float mu = max(dot(normalize(normal), normalize(vViewPosition)), 0.0);
+    outgoingLight *= 1.0 - uLimbDarkening * (1.0 - mu);
+  }
 }`;
 
 export function augmentSurfaceMaterial(
@@ -189,6 +210,7 @@ export function augmentSurfaceMaterial(
   const uRingOuter = { value: ringShadow ? ringShadow.outer : 0 };
   const uSunTan = { value: sunTan };
   const uIcyRim = { value: archetype === 'icy' ? 1 : 0 };
+  const uLimbDarkening = { value: LIMB_DARKENING[archetype] };
 
   mat.onBeforeCompile = (shader) => {
     shader.uniforms.uSunDirWorld = fx.uSunDirWorld;
@@ -205,6 +227,7 @@ export function augmentSurfaceMaterial(
     shader.uniforms.uPlanetshineDir = fx.uPlanetshineDir;
     shader.uniforms.uPlanetshineIntensity = fx.uPlanetshineIntensity;
     shader.uniforms.uIcyRim = uIcyRim;
+    shader.uniforms.uLimbDarkening = uLimbDarkening;
 
     shader.vertexShader = shader.vertexShader
       .replace('#include <common>', `#include <common>${SURFACE_VERTEX_DECLS}`)

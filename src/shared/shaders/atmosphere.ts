@@ -66,7 +66,7 @@ void main() {
   // the fragment's own radial direction there.
   vec3 nClosest = b > 1e-9 ? normalize(closest - vCenter) : normalize(vWorldPos - vCenter);
   vec3 L = normalize(uSunDirWorld);
-  float day = smoothstep(-0.25, 0.25, dot(nClosest, L));
+  float day = smoothstep(-0.1, 0.35, dot(nClosest, L));
 
   // Blue in full phase, warming toward orange as the view turns back-lit.
   vec3 V = -D;

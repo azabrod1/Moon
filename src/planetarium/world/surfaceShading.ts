@@ -70,8 +70,10 @@ float ringShadowOpacity(float t) {
   float a = 0.9;
   a *= mix(0.4, 1.0, smoothstep(0.02, 0.18, t));         // C ring (faint inner)
   a *= mix(1.0, 0.8, smoothstep(0.58, 0.66, t));         // A ring a touch thinner than B
-  a *= 1.0 - 0.92 * exp(-pow((t - 0.6) / 0.022, 2.0));   // Cassini Division
-  a *= 1.0 - 0.6 * exp(-pow((t - 0.83) / 0.008, 2.0));   // Encke Gap
+  float cas = (t - 0.6) / 0.022;                          // squared explicitly: pow() of a
+  a *= 1.0 - 0.92 * exp(-cas * cas);                      // negative base is undefined in GLSL — Cassini
+  float enk = (t - 0.83) / 0.008;
+  a *= 1.0 - 0.6 * exp(-enk * enk);                       // Encke Gap
   a *= smoothstep(0.0, 0.04, t);                         // inner edge falloff
   a *= 1.0 - smoothstep(0.92, 1.0, t);                   // outer edge falloff
   return clamp(a, 0.0, 1.0);

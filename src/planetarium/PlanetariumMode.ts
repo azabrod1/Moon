@@ -1287,10 +1287,26 @@ export class PlanetariumMode {
       const parentR = planet.data.radiusAU;
 
       // Moon-shadow casters fed to the parent surface shader (Io on Jupiter,
-      // etc.): reset per frame, accumulate the larger moons in the loop below.
+      // etc.): reset per frame, accumulate in the loop below. Pick the largest
+      // moons by radius (catalog order isn't size order — Titan must outrank
+      // Mimas) and skip any whose umbra never reaches the surface (annular, e.g.
+      // Phobos), so a tiny moon can't paint a full black spot.
       const surfFx = planet.fx;
       let moonShadowCount = 0;
-      if (surfFx) this.tmpMoonShadowQuat.copy(planet.group.quaternion).invert();
+      let casterNames: Set<string> | null = null;
+      let sunTanAtParent = 0;
+      if (surfFx) {
+        this.tmpMoonShadowQuat.copy(planet.group.quaternion).invert();
+        const SUN_RADIUS_AU = 695_700 / 149_597_870.7;
+        sunTanAtParent = SUN_RADIUS_AU / Math.max(Math.hypot(wp.x, wp.y, wp.z), 1e-9);
+        casterNames = new Set(
+          [...moons]
+            .sort((a, b) => b.data.radiusAU - a.data.radiusAU)
+            .slice(0, surfFx.uMoonShadow.value.length)
+            .filter((mm) => mm.data.radiusAU / parentR > 0.003)
+            .map((mm) => mm.data.name),
+        );
+      }
 
       // Hard rule: paint a system before it's shown. The gate runs every frame
       // before the scene renders, so a moon can never reach the screen unpainted.
@@ -1370,9 +1386,11 @@ export class PlanetariumMode {
           m.mesh.scale.setScalar(1);
         }
 
-        // Feed this moon as a shadow caster on the parent (skip tiny moons whose
-        // umbra never reaches the surface). Offset rotated into the parent frame.
-        if (surfFx && realRatio > 0.003 && moonShadowCount < surfFx.uMoonShadow.value.length) {
+        // Feed this moon as a shadow caster on the parent: one of the largest
+        // few, and only if its umbra actually reaches the surface (mr > along*tan).
+        if (surfFx && casterNames && casterNames.has(m.data.name)
+            && m.data.radiusAU > offset.length() * sunTanAtParent
+            && moonShadowCount < surfFx.uMoonShadow.value.length) {
           this.tmpMoonShadowLocal.copy(offset).applyQuaternion(this.tmpMoonShadowQuat);
           surfFx.uMoonShadow.value[moonShadowCount].set(
             this.tmpMoonShadowLocal.x,

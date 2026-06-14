@@ -62,14 +62,16 @@ void main() {
   depth = pow(depth, uPower);
 
   // Day/night + tint evaluated where the ray dips closest to the surface.
-  vec3 nClosest = normalize(closest - vCenter);
+  // Guard the central ray (b -> 0): normalize(0) is undefined, so fall back to
+  // the fragment's own radial direction there.
+  vec3 nClosest = b > 1e-9 ? normalize(closest - vCenter) : normalize(vWorldPos - vCenter);
   vec3 L = normalize(uSunDirWorld);
   float day = smoothstep(-0.25, 0.25, dot(nClosest, L));
 
   // Blue in full phase, warming toward orange as the view turns back-lit.
   vec3 V = -D;
   float phase = dot(V, L);                             // +1 sun behind viewer, -1 crescent
-  float redden = smoothstep(0.4, -0.6, phase);
+  float redden = 1.0 - smoothstep(-0.6, 0.4, phase);   // ordered edges (reversed smoothstep is undefined)
   vec3 rayleighColor = mix(uDayColor, uSunsetColor, redden);
   float rayleigh = depth * day * uRayleighStrength;
 

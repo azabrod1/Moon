@@ -710,14 +710,17 @@ export function createMoonMeshes(planetName: string): MoonMesh[] {
     // Flat placeholder. A moon is never made visible before it's painted (the
     // gate in updateMoonPositions), so this colour is a safety floor, not a
     // state the player normally sees.
+    const archetype = moonArchetype(moonData);
     const mat = new THREE.MeshStandardMaterial({
       color: moonData.color,
-      roughness: 0.85,
-      metalness: 0.05,
+      // Ice is a low-roughness dielectric (broad moving glint); rock is matte.
+      // Neither is metallic.
+      roughness: archetype === 'icy' ? 0.4 : 0.9,
+      metalness: 0,
       emissive: new THREE.Color(moonData.color),
       emissiveIntensity: 0.03,
     });
-    const fx = augmentSurfaceMaterial(mat, moonArchetype(moonData));
+    const fx = augmentSurfaceMaterial(mat, archetype);
 
     // Photo-textured moons (Moon, Io, …) stream their real image; on true
     // success it replaces the procedural colour. Load directly rather than via

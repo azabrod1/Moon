@@ -73,6 +73,7 @@ import { KM_PER_AU } from '../astronomy/constants';
 import { createPlanetariumStarfield } from './world/starfield';
 import { MoonPainter } from './world/MoonPainter';
 import { captureDeviceTextureCaps } from './world/texturePolicy';
+import { planetshineIntensity } from './world/planetshine';
 import { debugError } from '../shared/debug';
 import { GyroSteering } from './input/GyroSteering';
 import { SurfaceLook } from './input/SurfaceLook';
@@ -220,6 +221,7 @@ export class PlanetariumMode {
   private tmpMoonOrbitNormal = new THREE.Vector3();
   private tmpMoonShadowLocal = new THREE.Vector3();
   private tmpMoonShadowQuat = new THREE.Quaternion();
+  private tmpPlanetshine = new THREE.Vector3();
   private tmpShadingParentPos = new THREE.Vector3();
   private moonShading: MoonShadingState = { sunVisibleFraction: 1, inUmbra: false };
   // Landed-system shadow visuals: transit spots always on, guides behind the
@@ -1263,6 +1265,7 @@ export class PlanetariumMode {
    */
   private updateMoonPositions() {
     if (!this.solarSystem) return;
+    const PLANETSHINE_GAIN = 500; // lift faint physical planetshine to a visible night-side glow
     // Nearest system with textures still queued — the background drain paints it
     // first (you're likeliest to reach it next). Tracked across the planet loop.
     let nearestPending: string | null = null;
@@ -1329,6 +1332,18 @@ export class PlanetariumMode {
           m.fx.uSunDirWorld.value
             .set(-(wp.x + offset.x), -(wp.y + offset.y), -(wp.z + offset.z))
             .normalize();
+          // Planetshine: night-side glow reflected off the parent. Direction is
+          // moon -> parent; intensity peaks when the parent is full from the moon.
+          const distAU = Math.max(offset.length(), 1e-9);
+          this.tmpPlanetshine.copy(offset).multiplyScalar(-1 / distAU); // unit moon -> parent (world)
+          const sx = -(wp.x + offset.x), sy = -(wp.y + offset.y), sz = -(wp.z + offset.z);
+          const sl = Math.hypot(sx, sy, sz) || 1;
+          const cosPhase = (sx / sl) * this.tmpPlanetshine.x
+            + (sy / sl) * this.tmpPlanetshine.y + (sz / sl) * this.tmpPlanetshine.z;
+          const shine = planetshineIntensity(0.4, parentR, distAU, cosPhase) * PLANETSHINE_GAIN;
+          m.fx.uPlanetshineDir.value.copy(this.tmpPlanetshine);
+          m.fx.uPlanetshineColor.value.set(planet.data.color);
+          m.fx.uPlanetshineIntensity.value = Math.min(shine, 0.12);
         }
 
         this.moonWorldPositions.set(m.data.name, {
@@ -3158,11 +3173,29 @@ export class PlanetariumMode {
    */
   devFrameBody(name: string, fillFraction = 0.6, phaseAngleDeg = 0): boolean {
     if (!this.solarSystem) return false;
-    const mesh = this.solarSystem.planets.find((p) => p.data.name === name);
-    const pos = this.planetWorldPositions.get(name);
-    if (!mesh || !pos) return false;
+    // Resolve a top-level planet or, failing that, a moon (parent world position
+    // plus the same offset the renderer uses) so the harness can frame either.
+    let pos: { x: number; y: number; z: number } | undefined;
+    let r = 0;
+    const planet = this.solarSystem.planets.find((p) => p.data.name === name);
+    if (planet) {
+      pos = this.planetWorldPositions.get(name);
+      r = planet.data.radiusAU; // planets render at true scale (group scale 1)
+    } else {
+      for (const [parentName, moons] of this.planetMoons) {
+        const moon = moons.find((mm) => mm.data.name === name);
+        if (!moon) continue;
+        const parentPos = this.planetWorldPositions.get(parentName);
+        if (parentPos) {
+          const off = computeMoonOffsetEquatorialAU(name, parentName, this.timeState.currentUtcMs, this.tmpMoonOffset);
+          pos = { x: parentPos.x + off.x, y: parentPos.y + off.y, z: parentPos.z + off.z };
+          r = moon.data.radiusAU;
+        }
+        break;
+      }
+    }
+    if (!pos || r === 0) return false;
     this.devFreeCamera = true;
-    const r = mesh.data.radiusAU; // planets render at true scale (group scale 1)
     const dist = r * 5;
     // Camera direction from the planet, rotated off the sun line by the phase
     // angle. The rotation axis is any vector perpendicular to the sun line.

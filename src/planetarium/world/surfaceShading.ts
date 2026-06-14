@@ -36,6 +36,9 @@ export interface SurfaceShadingFx {
   uSunDirLocal: { value: THREE.Vector3 };       // sun in the body's frame, for the cast-shadow traces
   uMoonShadow: { value: THREE.Vector4[] };      // [xyz = moon centre in body frame (AU), w = moon radius AU]
   uMoonShadowCount: { value: number };          // active entries in uMoonShadow
+  uPlanetshineColor: { value: THREE.Color };    // parent's reflected-light tint (moons only)
+  uPlanetshineDir: { value: THREE.Vector3 };    // world direction from the moon to its parent
+  uPlanetshineIntensity: { value: number };     // night-side parent glow; 0 for planets / no parent
 }
 
 interface NightFill {
@@ -90,6 +93,9 @@ export function augmentSurfaceMaterial(
     uSunDirLocal: { value: new THREE.Vector3(1, 0, 0) },
     uMoonShadow: { value: moonShadow },
     uMoonShadowCount: { value: 0 },
+    uPlanetshineColor: { value: new THREE.Color(0x6688aa) },
+    uPlanetshineDir: { value: new THREE.Vector3(1, 0, 0) },
+    uPlanetshineIntensity: { value: 0 },
   };
   const uNightColor = { value: new THREE.Color(night.color) };
   const uNightStrength = { value: night.strength };
@@ -97,6 +103,7 @@ export function augmentSurfaceMaterial(
   const uRingInner = { value: ringShadow ? ringShadow.inner : 0 };
   const uRingOuter = { value: ringShadow ? ringShadow.outer : 0 };
   const uSunTan = { value: sunTan };
+  const uIcyRim = { value: archetype === 'icy' ? 1 : 0 };
 
   mat.onBeforeCompile = (shader) => {
     shader.uniforms.uSunDirWorld = fx.uSunDirWorld;
@@ -109,16 +116,22 @@ export function augmentSurfaceMaterial(
     shader.uniforms.uRingInner = uRingInner;
     shader.uniforms.uRingOuter = uRingOuter;
     shader.uniforms.uSunTan = uSunTan;
+    shader.uniforms.uPlanetshineColor = fx.uPlanetshineColor;
+    shader.uniforms.uPlanetshineDir = fx.uPlanetshineDir;
+    shader.uniforms.uPlanetshineIntensity = fx.uPlanetshineIntensity;
+    shader.uniforms.uIcyRim = uIcyRim;
 
     shader.vertexShader = shader.vertexShader
       .replace(
         '#include <common>',
-        '#include <common>\nuniform vec3 uSunDirWorld;\nvarying vec3 vSunViewDir;\nvarying vec3 vObjPos;',
+        '#include <common>\nuniform vec3 uSunDirWorld;\nuniform vec3 uPlanetshineDir;\n'
+          + 'varying vec3 vSunViewDir;\nvarying vec3 vObjPos;\nvarying vec3 vPlanetshineViewDir;',
       )
       .replace(
         '#include <begin_vertex>',
         '#include <begin_vertex>\n'
           + 'vSunViewDir = normalize((viewMatrix * vec4(uSunDirWorld, 0.0)).xyz);\n'
+          + 'vPlanetshineViewDir = normalize((viewMatrix * vec4(uPlanetshineDir, 0.0)).xyz);\n'
           + 'vObjPos = position;',
       );
 
@@ -135,8 +148,12 @@ export function augmentSurfaceMaterial(
           + 'uniform float uSunTan;\n'
           + `uniform vec4 uMoonShadow[${MAX_MOON_SHADOWS}];\n`
           + 'uniform int uMoonShadowCount;\n'
+          + 'uniform vec3 uPlanetshineColor;\n'
+          + 'uniform float uPlanetshineIntensity;\n'
+          + 'uniform float uIcyRim;\n'
           + 'varying vec3 vSunViewDir;\n'
           + 'varying vec3 vObjPos;\n'
+          + 'varying vec3 vPlanetshineViewDir;\n'
           + RING_SHADOW_OPACITY_GLSL,
       )
       // Inject after lighting but before <opaque_fragment> writes outgoingLight
@@ -147,6 +164,18 @@ export function augmentSurfaceMaterial(
         '{\n'
           + '  float dayFactor = smoothstep(-uTermWidth, uTermWidth, dot(normalize(normal), normalize(vSunViewDir)));\n'
           + '  outgoingLight += diffuseColor.rgb * uNightColor * (uNightStrength * (1.0 - dayFactor));\n'
+          + '  // Planetshine: parent-lit glow on the night side. Albedo-multiplicative,\n'
+          + '  // so the eclipse color-dim carries through it automatically.\n'
+          + '  if (uPlanetshineIntensity > 0.0) {\n'
+          + '    float pl = max(dot(normalize(normal), normalize(vPlanetshineViewDir)), 0.0);\n'
+          + '    outgoingLight += diffuseColor.rgb * uPlanetshineColor * (uPlanetshineIntensity * pl * (1.0 - dayFactor));\n'
+          + '  }\n'
+          + '  // Icy moons: a cool Fresnel rim on the back-lit limb (ice scatters light).\n'
+          + '  if (uIcyRim > 0.5) {\n'
+          + '    float rim = pow(1.0 - max(dot(normalize(normal), normalize(vViewPosition)), 0.0), 3.0);\n'
+          + '    float back = max(-dot(normalize(normal), normalize(vSunViewDir)), 0.0);\n'
+          + '    outgoingLight += vec3(0.55, 0.75, 1.0) * (rim * back * 0.4);\n'
+          + '  }\n'
           + '  vec3 sd = normalize(uSunDirLocal);\n'
           + '  // Ring shadow on the globe: trace toward the Sun to the ring plane\n'
           + '  // (y = 0) and dim by the rings opacity where it lands.\n'

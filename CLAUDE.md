@@ -11,6 +11,7 @@ npm test           # vitest run — astronomy golden/consistency tests (src/astr
 npm run preview    # Serve production build locally
 npm run gen:stars  # Regenerate the bright-star catalog (gen-stars.mjs)
 npm run gen:moons  # Regenerate satellite elements + goldens from JPL (gen-moons.mjs; --offline uses .moon-data-cache/)
+npm run gen:maps   # Regenerate derived texture maps (gen-maps.mjs; ocean-glint roughness, height→normal — runs in headless Chromium)
 ```
 
 No linter is configured. **Run `npm run build` and `npm test` locally after every change.** CI (`.github/workflows/deploy.yml`) runs `tsc`, the tests, then the Pages build. `tsconfig` is `strict` and sets `noUnusedLocals`/`noUnusedParameters`, so unused imports, locals, and parameters fail the build (this is what catches refactor leftovers).

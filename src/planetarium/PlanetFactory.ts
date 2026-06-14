@@ -31,6 +31,7 @@ const PLANET_TEXTURE_FILES: Record<string, string> = {
   earthNight: 'earth-night.jpg',
   earthClouds: 'earth-clouds.jpg',
   earthBump: 'earth-bump.png',
+  earthRoughness: 'earth-roughness.png',
   mars: 'mars.jpg',
   jupiter: 'jupiter.jpg',
   saturn: 'saturn.jpg',
@@ -300,7 +301,8 @@ export async function createPlanetMesh(planet: PlanetData): Promise<PlanetMesh> 
     ? Promise.all([
         loadTexture('earthNight'),
         loadTexture('earthClouds'),
-        loadTexture('earthBump', '2k', 'data'), // height map: linear, not sRGB
+        loadTexture('earthBump', '2k', 'data'),      // height map: linear, not sRGB
+        loadTexture('earthRoughness', '2k', 'data'), // ocean-glint roughness: linear
       ])
     : null;
   const texture = await surfaceTexturePromise;
@@ -345,7 +347,7 @@ export async function createPlanetMesh(planet: PlanetData): Promise<PlanetMesh> 
   let cloudsMesh: THREE.Mesh | undefined;
 
   if (planet.name === 'Earth' && earthDetailTexturePromise) {
-    const [nightTex, cloudTex, bumpTex] = await earthDetailTexturePromise;
+    const [nightTex, cloudTex, bumpTex, roughTex] = await earthDetailTexturePromise;
 
     const nightGeo = new THREE.SphereGeometry(planet.radiusAU * 1.001, segments, segments / 2);
     nightMaterial = new THREE.ShaderMaterial({
@@ -373,8 +375,16 @@ export async function createPlanetMesh(planet: PlanetData): Promise<PlanetMesh> 
     cloudsMesh = new THREE.Mesh(cloudGeo, cloudMat);
     group.add(cloudsMesh);
 
-    (mesh.material as THREE.MeshStandardMaterial).bumpMap = bumpTex;
-    (mesh.material as THREE.MeshStandardMaterial).bumpScale = planet.radiusAU * 0.02;
+    const earthMat = mesh.material as THREE.MeshStandardMaterial;
+    earthMat.bumpMap = bumpTex;
+    earthMat.bumpScale = planet.radiusAU * 0.02;
+    // Ocean glint: the map drives roughness (ocean glossy, land/ice matte), so a
+    // tight solar specular reads as the blue-marble sun glint on the seas. Water
+    // is a dielectric — keep metalness 0; the gloss alone makes the highlight.
+    earthMat.roughnessMap = roughTex;
+    earthMat.roughness = 1.0;
+    earthMat.metalness = 0.0;
+    earthMat.needsUpdate = true;
   }
 
   let rings: THREE.Mesh | undefined;

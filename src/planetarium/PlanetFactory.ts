@@ -126,7 +126,7 @@ const ATMOSPHERES: Record<string, AtmosphereConfig> = {
 
 function loadTexture(key: string, tier: TextureTier = '2k', kind: MapKind = 'color', timeoutMs = 8000): Promise<THREE.Texture> {
   const file = PLANET_TEXTURE_FILES[key];
-  if (!file) return Promise.resolve(createFallbackTexture(key));
+  if (!file) return Promise.resolve(createFallbackTexture(key, kind));
   const url = resolveTextureUrl(file, tier);
 
   return new Promise((resolve) => {
@@ -135,7 +135,7 @@ function loadTexture(key: string, tier: TextureTier = '2k', kind: MapKind = 'col
       if (!settled) {
         settled = true;
         debugWarn('Planet texture timeout', { key, url });
-        resolve(createFallbackTexture(key));
+        resolve(createFallbackTexture(key, kind));
       }
     }, timeoutMs);
     loader.load(
@@ -157,17 +157,27 @@ function loadTexture(key: string, tier: TextureTier = '2k', kind: MapKind = 'col
           url,
           reason: err instanceof Error ? err.message : String(err),
         });
-        resolve(createFallbackTexture(key));
+        resolve(createFallbackTexture(key, kind));
       },
     );
   });
 }
 
-function createFallbackTexture(key: string): THREE.Texture {
+function createFallbackTexture(key: string, kind: MapKind = 'color'): THREE.Texture {
   const canvas = document.createElement('canvas');
   canvas.width = 256;
   canvas.height = 128;
   const ctx = canvas.getContext('2d')!;
+
+  if (kind === 'data') {
+    // A failed data map (roughness / bump) should read neutral, not as colour
+    // noise: flat mid-grey in linear space.
+    ctx.fillStyle = '#808080';
+    ctx.fillRect(0, 0, 256, 128);
+    const tex = new THREE.CanvasTexture(canvas);
+    applyTextureDefaults(tex, 'data');
+    return tex;
+  }
 
   const baseColor = FALLBACK_COLORS[key] || '#888888';
   ctx.fillStyle = baseColor;

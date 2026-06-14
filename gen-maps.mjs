@@ -83,22 +83,35 @@ const PAGE_TRANSFORMS = `
     return clamp01((240 - hue) / 240); // blue(240deg)->low, red(0deg)->high
   }
 
-  // Height -> tangent-space normal via a central difference. Grayscale source
-  // holds height in red; opts.mola instead decodes a MOLA rainbow map. Longitude
-  // wraps; latitude clamps. ny is flipped for the OpenGL/Three normal convention.
+  // Decode a MOLA rainbow relief map to a grayscale height field (height in red).
+  // Run at native resolution before any downscale, so interpolation can't blend
+  // red+blue into purple (which molaElevation would read as a false low).
+  function molaToHeight(src, dst, w, h) {
+    const s = src.data, d = dst.data;
+    for (let i = 0; i < s.length; i += 4) {
+      const v = Math.round(molaElevation(s[i] / 255, s[i + 1] / 255, s[i + 2] / 255) * 255);
+      d[i] = v; d[i + 1] = v; d[i + 2] = v; d[i + 3] = 255;
+    }
+  }
+
+  // Grayscale height (red channel) -> tangent-space normal via central difference.
+  // Longitude wraps, latitude clamps. The longitude slope is divided by cos(lat):
+  // equirectangular x-texels collapse toward the poles, and Three samples normal
+  // maps in a normalized tangent frame, so that scaling has to live in the map.
+  // ny is flipped to match the OpenGL/Three normal convention.
   function heightToNormal(src, dst, w, h, opts) {
     const strength = (opts && opts.strength) || 2.0;
-    const mola = !!(opts && opts.mola);
     const s = src.data, d = dst.data;
     const H = (x, y) => {
       x = ((x % w) + w) % w;
       y = y < 0 ? 0 : y >= h ? h - 1 : y;
-      const i = (y * w + x) * 4;
-      return mola ? molaElevation(s[i] / 255, s[i + 1] / 255, s[i + 2] / 255) : s[i] / 255;
+      return s[(y * w + x) * 4] / 255;
     };
     for (let y = 0; y < h; y++) {
+      const lat = (0.5 - (y + 0.5) / h) * Math.PI;          // +pi/2 N .. -pi/2 S
+      const invCosLat = 1.0 / Math.max(Math.cos(lat), 0.2); // clamp so poles don't blow up
       for (let x = 0; x < w; x++) {
-        const dzdx = (H(x + 1, y) - H(x - 1, y)) * strength;
+        const dzdx = (H(x + 1, y) - H(x - 1, y)) * strength * invCosLat;
         const dzdy = (H(x, y + 1) - H(x, y - 1)) * strength;
         const nx = -dzdx, ny = dzdy, nz = 1.0;
         const inv = 1.0 / Math.sqrt(nx * nx + ny * ny + nz * nz);
@@ -111,7 +124,7 @@ const PAGE_TRANSFORMS = `
     }
   }
 
-  return { oceanRoughness, heightToNormal };
+  return { oceanRoughness, heightToNormal, molaToHeight };
 })()
 `;
 
@@ -130,16 +143,37 @@ async function runJob(page, name) {
     const img = new Image();
     img.src = `data:${mime};base64,${b64}`;
     await img.decode();
-    const w = Math.round(img.naturalWidth * scale);
-    const h = Math.round(img.naturalHeight * scale);
+    const nw = img.naturalWidth, nh = img.naturalHeight;
+    const w = Math.round(nw * scale), h = Math.round(nh * scale);
     const cv = document.createElement('canvas');
-    cv.width = w; cv.height = h;
     const ctx = cv.getContext('2d');
-    ctx.drawImage(img, 0, 0, w, h);
-    const srcData = ctx.getImageData(0, 0, w, h);
-    const dstData = ctx.createImageData(w, h);
+
+    let srcData;
+    if (opts && opts.mola) {
+      // Decode the rainbow -> grayscale height at native res, then downscale the
+      // grayscale (which interpolates cleanly), so colour blending can't fabricate
+      // false lows at sharp red/blue elevation boundaries.
+      cv.width = nw; cv.height = nh;
+      ctx.drawImage(img, 0, 0);
+      const grey = ctx.createImageData(nw, nh);
+      T.molaToHeight(ctx.getImageData(0, 0, nw, nh), grey, nw, nh);
+      ctx.putImageData(grey, 0, 0);
+      const small = document.createElement('canvas');
+      small.width = w; small.height = h;
+      const sctx = small.getContext('2d');
+      sctx.drawImage(cv, 0, 0, w, h);
+      srcData = sctx.getImageData(0, 0, w, h);
+    } else {
+      cv.width = w; cv.height = h;
+      ctx.drawImage(img, 0, 0, w, h);
+      srcData = ctx.getImageData(0, 0, w, h);
+    }
+
+    cv.width = w; cv.height = h; // (re)size for output
+    const outCtx = cv.getContext('2d');
+    const dstData = outCtx.createImageData(w, h);
     T[fn](srcData, dstData, w, h, opts);
-    ctx.putImageData(dstData, 0, 0);
+    outCtx.putImageData(dstData, 0, 0);
     return cv.toDataURL('image/png').split(',')[1];
   }, { b64: buf.toString('base64'), mime, fn: def.fn, scale: def.scale, opts: def.opts || {}, transforms: PAGE_TRANSFORMS });
   const outPath = path.join(TEX, def.out);

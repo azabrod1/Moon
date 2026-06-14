@@ -33,6 +33,7 @@ const PLANET_TEXTURE_FILES: Record<string, string> = {
   earthBump: 'earth-bump.png',
   earthRoughness: 'earth-roughness.png',
   mars: 'mars.jpg',
+  marsNormal: 'mars-normal.png',
   jupiter: 'jupiter.jpg',
   saturn: 'saturn.jpg',
   uranus: 'uranus.jpg',
@@ -45,6 +46,12 @@ const PLANET_TEXTURE_FILES: Record<string, string> = {
   ganymede: 'ganymede.jpg',
   callisto: 'callisto.jpg',
   triton: 'triton.jpg',
+};
+
+// Planets with a real measured elevation-derived normal map (linear data map):
+// they drop the colour-as-bump fallback in favour of the true relief.
+const PLANET_NORMAL_KEYS: Record<string, string> = {
+  Mars: 'marsNormal',
 };
 
 // Fallback colors if textures fail
@@ -330,6 +337,30 @@ export async function createPlanetMesh(planet: PlanetData): Promise<PlanetMesh> 
     : undefined;
   const sunTan = SUN_RADIUS_AU / planet.semiMajorAxisAU; // solar angular radius at the planet
   const fx = augmentSurfaceMaterial(mat, planetArchetype(planet), ringShadow, sunTan);
+
+  // Real elevation-derived normal map where one exists (Mars/MOLA): it replaces
+  // the colour-as-bump fallback. Load directly so a failed fetch leaves the
+  // surface flat rather than applying a noise normal.
+  const planetNormalKey = PLANET_NORMAL_KEYS[planet.name];
+  if (planetNormalKey) {
+    mat.bumpMap = null;
+    const normalUrl = resolveTextureUrl(PLANET_TEXTURE_FILES[planetNormalKey], '2k');
+    loader.load(
+      normalUrl,
+      (nrm) => {
+        applyTextureDefaults(nrm, 'data');
+        mat.normalMap = nrm;
+        mat.normalScale.set(1, 1);
+        mat.needsUpdate = true;
+      },
+      undefined,
+      (err) =>
+        debugWarn('Planet normal load failed', {
+          name: planet.name,
+          reason: err instanceof Error ? err.message : String(err),
+        }),
+    );
+  }
 
   const mesh = new THREE.Mesh(geo, mat);
   group.add(mesh);

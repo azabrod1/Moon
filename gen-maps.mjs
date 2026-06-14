@@ -29,12 +29,14 @@ const srcDir = path.resolve(arg('src', TEX));
 
 // Each job: source filename (resolved against srcDir), output (always TEX), the
 // transform name, an output scale (data maps don't need full color res), and
-// transform options.
+// transform options. earth-roughness runs from a shipped source; the normal jobs
+// need an elevation source dropped into srcDir (--src=...) first:
+//   moon-height.png  <- SVS CGI Moon Kit ldem_4_uint.tif (LOLA), TIFF->PNG via sips
+//   mars-mola.jpg    <- NASA marsoweb MOLA_cylin.jpg (colorized; mola:true decodes hue->elevation)
 const JOBS = {
-  'earth-roughness': { src: 'earth-day.jpg', out: 'earth-roughness.png', fn: 'oceanRoughness', scale: 0.25 },
-  'moon-normal':     { src: 'moon-height.png',    out: 'moon-normal.png',    fn: 'heightToNormal', scale: 1, opts: { strength: 3.0 } },
-  'mars-normal':     { src: 'mars-height.png',    out: 'mars-normal.png',    fn: 'heightToNormal', scale: 1, opts: { strength: 2.5 } },
-  'mercury-normal':  { src: 'mercury-height.png', out: 'mercury-normal.png', fn: 'heightToNormal', scale: 1, opts: { strength: 3.0 } },
+  'earth-roughness': { src: 'earth-day.jpg',  out: 'earth-roughness.png', fn: 'oceanRoughness', scale: 0.25 },
+  'moon-normal':     { src: 'moon-height.png', out: 'moon-normal.png',     fn: 'heightToNormal', scale: 1, opts: { strength: 3.0 } },
+  'mars-normal':     { src: 'mars-mola.jpg',   out: 'mars-normal.png',     fn: 'heightToNormal', scale: 0.25, opts: { strength: 2.4, mola: true } },
 };
 
 async function exists(p) {
@@ -64,16 +66,35 @@ const PAGE_TRANSFORMS = `
     }
   }
 
-  // Height -> tangent-space normal via a central difference. Red holds height
-  // (grayscale source). Longitude wraps; latitude clamps at the poles. ny is
-  // flipped to match the OpenGL/Three normal convention against the equirect UV.
+  // MOLA-style rainbow relief -> scalar elevation. The colormap sweeps blue
+  // (low) through cyan/green/yellow to red (high), so HUE tracks elevation
+  // monotonically and — unlike luminance — is largely immune to the hillshade
+  // baked into brightness. Desaturated pixels (white summits / dark basins) fall
+  // back to brightness. Used to recover a height field from the colorized map.
+  function molaElevation(r, g, b) {
+    const mx = Math.max(r, g, b), mn = Math.min(r, g, b), c = mx - mn;
+    const sat = mx > 1e-6 ? c / mx : 0;
+    if (sat < 0.15) return mx; // grey/white: bright = high peak, dark = low
+    let hue;
+    if (mx === r) hue = ((g - b) / c) % 6;
+    else if (mx === g) hue = (b - r) / c + 2;
+    else hue = (r - g) / c + 4;
+    hue = (hue * 60 + 360) % 360;
+    return clamp01((240 - hue) / 240); // blue(240deg)->low, red(0deg)->high
+  }
+
+  // Height -> tangent-space normal via a central difference. Grayscale source
+  // holds height in red; opts.mola instead decodes a MOLA rainbow map. Longitude
+  // wraps; latitude clamps. ny is flipped for the OpenGL/Three normal convention.
   function heightToNormal(src, dst, w, h, opts) {
     const strength = (opts && opts.strength) || 2.0;
+    const mola = !!(opts && opts.mola);
     const s = src.data, d = dst.data;
     const H = (x, y) => {
       x = ((x % w) + w) % w;
       y = y < 0 ? 0 : y >= h ? h - 1 : y;
-      return s[(y * w + x) * 4] / 255;
+      const i = (y * w + x) * 4;
+      return mola ? molaElevation(s[i] / 255, s[i + 1] / 255, s[i + 2] / 255) : s[i] / 255;
     };
     for (let y = 0; y < h; y++) {
       for (let x = 0; x < w; x++) {

@@ -449,7 +449,9 @@ export async function createPlanetMesh(planet: PlanetData): Promise<PlanetMesh> 
       (nrm) => {
         applyTextureDefaults(nrm, 'data');
         mat.normalMap = nrm;
-        mat.normalScale.set(1, 1);
+        // Softened: the MOLA rainbow-decoded relief is noisy and over-embossed,
+        // which reads as harsh facets on crater rims up close. Halve it.
+        mat.normalScale.set(0.5, 0.5);
         mat.needsUpdate = true;
       },
       undefined,

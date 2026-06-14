@@ -196,7 +196,7 @@ export class PlanetariumMode {
   private constellations: Constellations | null = null;
   private showConstellations = false;
   private showBodyLabels = true;
-  private showOrbitLines = true;
+  private showOrbitLines = false;
 
   // Planet world positions in AU (true positions, not offset)
   private planetWorldPositions = new Map<string, { x: number; y: number; z: number }>();
@@ -5143,7 +5143,7 @@ export class PlanetariumMode {
     this.applyBodyLabelVisibility();
     const labelsLabel = document.getElementById('settings-labels-label');
     if (labelsLabel) labelsLabel.textContent = this.showBodyLabels ? 'On' : 'Off';
-    this.showOrbitLines = saved.showOrbitLines ?? true;
+    this.showOrbitLines = saved.showOrbitLines ?? false;
     const orbitsLabel = document.getElementById('settings-orbits-label');
     if (orbitsLabel) orbitsLabel.textContent = this.showOrbitLines ? 'On' : 'Off';
 

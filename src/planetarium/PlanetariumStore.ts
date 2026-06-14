@@ -175,7 +175,7 @@ export function createDefaultPlanetariumState(): PlanetariumState {
     showShip: true,
     showConstellations: false,
     showBodyLabels: true,
-    showOrbitLines: true,
+    showOrbitLines: false,
     landedOn: null,
     systemSpeed: 0.083,
     systemSlowdown: true,

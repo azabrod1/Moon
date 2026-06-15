@@ -100,7 +100,7 @@ const ATMOSPHERES: Record<string, AtmosphereConfig> = {
   },
   Earth: {
     dayColor: [0.25, 0.5, 1.0], sunsetColor: [1.0, 0.45, 0.22], mieColor: [1.0, 0.96, 0.9],
-    rayleighStrength: 1.1, mieStrength: 0.5, mieG: 0.76, power: 3.0, intensity: 1.05, haloStrength: 0.55, scale: 1.03,
+    rayleighStrength: 0.85, mieStrength: 0.5, mieG: 0.76, power: 3.0, intensity: 0.72, haloStrength: 0.38, scale: 1.03,
   },
   Mars: {
     dayColor: [0.78, 0.6, 0.5], sunsetColor: [0.6, 0.55, 0.65], mieColor: [0.85, 0.72, 0.6],
@@ -108,19 +108,19 @@ const ATMOSPHERES: Record<string, AtmosphereConfig> = {
   },
   Jupiter: {
     dayColor: [0.8, 0.7, 0.52], sunsetColor: [0.85, 0.6, 0.4], mieColor: [0.9, 0.83, 0.68],
-    rayleighStrength: 0.55, mieStrength: 0.5, mieG: 0.65, power: 3.5, intensity: 0.7, haloStrength: 0.4, scale: 1.015,
+    rayleighStrength: 0.55, mieStrength: 0.5, mieG: 0.65, power: 3.5, intensity: 0.4, haloStrength: 0.18, scale: 1.015,
   },
   Saturn: {
     dayColor: [0.82, 0.74, 0.54], sunsetColor: [0.85, 0.62, 0.42], mieColor: [0.92, 0.85, 0.68],
-    rayleighStrength: 0.5, mieStrength: 0.45, mieG: 0.65, power: 3.5, intensity: 0.6, haloStrength: 0.4, scale: 1.015,
+    rayleighStrength: 0.5, mieStrength: 0.45, mieG: 0.65, power: 3.5, intensity: 0.36, haloStrength: 0.18, scale: 1.015,
   },
   Uranus: {
     dayColor: [0.45, 0.72, 0.8], sunsetColor: [0.55, 0.72, 0.75], mieColor: [0.75, 0.88, 0.88],
-    rayleighStrength: 0.8, mieStrength: 0.4, mieG: 0.6, power: 3.2, intensity: 0.5, haloStrength: 0.12, scale: 1.02,
+    rayleighStrength: 0.5, mieStrength: 0.4, mieG: 0.6, power: 3.2, intensity: 0.16, haloStrength: 0.07, scale: 1.02,
   },
   Neptune: {
     dayColor: [0.2, 0.4, 0.9], sunsetColor: [0.35, 0.42, 0.72], mieColor: [0.6, 0.72, 0.92],
-    rayleighStrength: 0.95, mieStrength: 0.4, mieG: 0.6, power: 3.2, intensity: 0.55, haloStrength: 0.12, scale: 1.02,
+    rayleighStrength: 0.55, mieStrength: 0.4, mieG: 0.6, power: 3.2, intensity: 0.17, haloStrength: 0.07, scale: 1.02,
   },
 };
 

@@ -78,17 +78,18 @@ function paintRing(x: number, style: RingStyle): [number, number, number, number
 
   if (style === 'uranus') {
     // A handful of narrow charcoal ringlets; the ε ring (outermost) is the
-    // widest and brightest. Nearly black between them.
+    // widest and brightest. Nearly black between them, and faint overall —
+    // the Uranian rings are among the darkest surfaces in the solar system.
     const alpha = bandPeak(t, [
-      [0.18, 0.012, 0.4],
-      [0.34, 0.01, 0.35],
-      [0.5, 0.012, 0.4],
-      [0.66, 0.014, 0.45],
-      [0.81, 0.016, 0.5],
-      [0.96, 0.035, 0.8], // ε ring
+      [0.18, 0.012, 0.3],
+      [0.34, 0.01, 0.27],
+      [0.5, 0.012, 0.3],
+      [0.66, 0.014, 0.34],
+      [0.81, 0.016, 0.38],
+      [0.96, 0.035, 0.56], // ε ring
     ]);
-    const v = 64 + seededRand(x * 5.1) * 26; // dark neutral grey
-    return [v, v, v * 1.03, alpha * 255];
+    const v = 60 + seededRand(x * 5.1) * 24; // dusty charcoal, faintly warm
+    return [v * 1.04, v * 0.97, v * 0.86, alpha * 255];
   }
 
   if (style === 'jupiter') {
@@ -103,14 +104,15 @@ function paintRing(x: number, style: RingStyle): [number, number, number, number
   }
 
   // neptune — tenuous dark sheet with two faint ringlets (Le Verrier, Adams).
-  let a = 0.018 + bandPeak(t, [
-    [0.42, 0.02, 0.22],
-    [0.95, 0.035, 0.4], // Adams ring (outer)
+  // Real Neptune rings are dark reddish dust; keep them faint, just nudge warm.
+  let a = 0.02 + bandPeak(t, [
+    [0.42, 0.02, 0.25],
+    [0.95, 0.035, 0.44], // Adams ring (outer)
   ]);
   if (t < 0.08) a *= t / 0.08;
   if (t > 0.97) a *= (1 - t) / 0.03;
-  const v = 58 + seededRand(x * 4.7) * 20; // dark blue-grey
-  return [v * 0.82, v * 0.86, v, a * 255];
+  const v = 72 + seededRand(x * 4.7) * 22; // dusty grey, faintly warm
+  return [v * 0.98, v * 0.9, v * 0.82, a * 255];
 }
 
 /** Per-frame uniforms the mode feeds so shadow + translucency track the Sun. */

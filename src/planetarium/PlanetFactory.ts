@@ -114,14 +114,10 @@ const ATMOSPHERES: Record<string, AtmosphereConfig> = {
     dayColor: [0.82, 0.74, 0.54], sunsetColor: [0.85, 0.62, 0.42], mieColor: [0.92, 0.85, 0.68],
     rayleighStrength: 0.5, mieStrength: 0.45, mieG: 0.65, power: 3.5, intensity: 0.36, haloStrength: 0.18, scale: 1.015,
   },
-  Uranus: {
-    dayColor: [0.45, 0.72, 0.8], sunsetColor: [0.55, 0.72, 0.75], mieColor: [0.75, 0.88, 0.88],
-    rayleighStrength: 0.5, mieStrength: 0.4, mieG: 0.6, power: 3.2, intensity: 0.16, haloStrength: 0.07, scale: 1.02,
-  },
-  Neptune: {
-    dayColor: [0.2, 0.4, 0.9], sunsetColor: [0.35, 0.42, 0.72], mieColor: [0.6, 0.72, 0.92],
-    rayleighStrength: 0.55, mieStrength: 0.4, mieG: 0.6, power: 3.2, intensity: 0.17, haloStrength: 0.07, scale: 1.02,
-  },
+  // Uranus and Neptune intentionally have no atmosphere shell. They are all
+  // atmosphere — no surface for a thin scattering layer to sit above — and at
+  // 19–30 AU the sunlight is far too weak to throw a visible limb glow. The
+  // gas-giant limb darkening on the body itself carries the soft edge.
 };
 
 function loadTexture(key: string, tier: TextureTier = '2k', kind: MapKind = 'color', timeoutMs = 8000): Promise<THREE.Texture> {

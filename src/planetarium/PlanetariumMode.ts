@@ -102,6 +102,7 @@ import {
   type SurfaceTarget,
 } from './surfaceView';
 import { DEG2RAD } from '../shared/math/angles';
+import { landedFrameCamDistAU, landedMinDistanceAU } from './landedView';
 import { KM_CONSTANTS } from '../shared/constants/physicalData';
 import { smoothstepUnclamped } from '../shared/math/smoothstep';
 import { projectToScreen, type ScreenProjection } from '../shared/three/projectToScreen';
@@ -167,6 +168,9 @@ export class PlanetariumMode {
   private static readonly SHIP_OCCLUDER_RADIUS_AU = (1_737.4 / KM_PER_AU) * 0.75;
   private static readonly UI_REFRESH_INTERVAL_S = 1 / 8;
   private static readonly SCENE_NORTH = new THREE.Vector3(0, 1, 0);
+  /** A moon's mesh never renders below this fraction of its parent's radius, so
+   *  tiny moons stay visible; the landed camera frames off the same inflated size. */
+  private static readonly MOON_MIN_RENDER_RATIO = 0.05;
   /** Ecliptic north in the scene's equatorial frame (tidal-lock roll reference for Earth's Moon). */
   private static readonly ECLIPTIC_NORTH = eclipticToEquatorial(new THREE.Vector3(0, 1, 0));
   private static readonly EARTH_DETAIL_MIN_DISTANCE_AU = 0.03;
@@ -1204,6 +1208,43 @@ export class PlanetariumMode {
     return moonMesh ? moonMesh.data.radiusAU : 0;
   }
 
+  /**
+   * Rendered radius (AU) of the landed body as drawn in orbit view: planets at
+   * true size, small moons inflated to a floor fraction of their parent (the
+   * same scaling updateMoonPositions applies so they stay visible). The landed
+   * camera frames off this, so a tiny moon's inflated mesh fills the view like
+   * any other body and the camera never seats itself inside the mesh.
+   */
+  private getLandedBodyRenderedRadiusAU(): number {
+    const trueRadiusAU = this.getLandedBodyRadiusAU();
+    if (!this.landedOn || this.landedOn.type === 'planet') return trueRadiusAU;
+    const parentName = this.landedOn.parentPlanet;
+    const parent = PLANETARIUM_BODIES.find(b => b.name === parentName);
+    if (!parent) return trueRadiusAU;
+    return Math.max(trueRadiusAU, PlanetariumMode.MOON_MIN_RENDER_RATIO * parent.radiusAU);
+  }
+
+  /**
+   * Initial landing view direction (unit vector): bias the camera onto the
+   * body's lit hemisphere so a landing never opens on a dark disc. The Sun sits
+   * at the heliocentric world origin, so body→Sun is the negated world position —
+   * read from the world position rather than the rendered sun.position, which is
+   * a frame stale here (the floating-origin pass that places it hasn't run yet).
+   * Tilted up and offset to the side so the lit face reads as a gibbous with the
+   * terminator near the limb for depth.
+   */
+  private computeLandedCameraDir(bodyWorldPos: { x: number; y: number; z: number } | null): THREE.Vector3 {
+    const sunDir = new THREE.Vector3();
+    if (bodyWorldPos) sunDir.set(-bodyWorldPos.x, -bodyWorldPos.y, -bodyWorldPos.z);
+    if (sunDir.lengthSq() < 1e-20) return sunDir.set(1, 0.5, 1).normalize(); // degenerate: legacy fixed view
+    sunDir.normalize();
+    const side = new THREE.Vector3().crossVectors(sunDir, PlanetariumMode.SCENE_NORTH);
+    if (side.lengthSq() < 1e-10) side.set(1, 0, 0);
+    else side.normalize();
+    const up = new THREE.Vector3().crossVectors(side, sunDir).normalize();
+    return sunDir.addScaledVector(up, 0.5).addScaledVector(side, 0.4).normalize();
+  }
+
   private computeSystemSpeedFactor(): { factor: number; planet: string | null } {
     let minFactor = 1.0;
     let nearestPlanet: string | null = null;
@@ -1419,7 +1460,7 @@ export class PlanetariumMode {
         });
 
         const realRatio = m.data.radiusAU / parentR;
-        const minRatio = 0.05;
+        const minRatio = PlanetariumMode.MOON_MIN_RENDER_RATIO;
         // Surface view sees true angular sizes: the landed system drops the
         // small-moon visual floor while it's active (an Io silhouette on the
         // Sun must be Io-sized, and a landed small moon's inflated mesh must
@@ -1631,7 +1672,7 @@ export class PlanetariumMode {
         const dz = tempV.z - camZ;
         const distFromCamera = Math.sqrt(dx * dx + dy * dy + dz * dz);
         // Effective rendered radius: small moons are scaled up to a floor ratio.
-        const effectiveRadiusAU = Math.max(m.data.radiusAU, 0.05 * parentR);
+        const effectiveRadiusAU = Math.max(m.data.radiusAU, PlanetariumMode.MOON_MIN_RENDER_RATIO * parentR);
         const angularSize = (effectiveRadiusAU * 2) / Math.max(distFromCamera, 0.0001);
         if (angularSize <= 0.01) continue;
 
@@ -4508,20 +4549,22 @@ export class PlanetariumMode {
     // Configure OrbitControls to orbit the body. The player is parked at the
     // body's world position, so the next floating-origin pass puts the body —
     // planet or moon — exactly at scene origin.
-    const radiusAU = this.getLandedBodyRadiusAU();
-    const visualRadius = radiusAU * this.planetScale;
+    const trueRadiusAU = this.getLandedBodyRadiusAU();
+    const renderedRadiusAU = this.getLandedBodyRenderedRadiusAU();
 
     this.controls.enabled = true;
     this.controls.target.set(0, 0, 0);
-    this.controls.minDistance = visualRadius * 1.5;
-    this.controls.maxDistance = this.landedMaxDistanceAU(visualRadius);
+    this.controls.minDistance = landedMinDistanceAU(renderedRadiusAU, this.camera.near);
+    this.controls.maxDistance = this.landedMaxDistanceAU(trueRadiusAU);
     this.controls.autoRotate = true;
     this.controls.autoRotateSpeed = 0.5;
     this.userOrbiting = false;
 
-    // Position camera for a nice initial view
-    const camDist = Math.max(visualRadius * 4, 0.0005);
-    this.camera.position.set(camDist, camDist * 0.5, camDist);
+    // Frame the body to ~⅓ of the view (see landedView), opening on its lit
+    // hemisphere. The camera ends up 1.5×camDist from the body at scene origin.
+    const camDist = landedFrameCamDistAU(renderedRadiusAU, this.camera.near);
+    const litDir = this.computeLandedCameraDir(pos);
+    this.camera.position.copy(litDir).multiplyScalar(camDist * 1.5);
     this.camera.lookAt(0, 0, 0);
 
     // UI: hide flight controls, show leave button

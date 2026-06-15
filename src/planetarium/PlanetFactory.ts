@@ -176,13 +176,14 @@ export interface TextureUpgrade {
 }
 
 // Texture keys with a 4K colour variant under public/textures/4k/. A 4K variant
-// must be the SAME albedo product as its 2K base and colour-matched to it, so the
-// on-approach swap reads as a pure sharpen — no brightness/contrast pop — and
-// never double-counts relief against a normal map. Mars (same source at 2x) and
-// the Moon (SVS LRO natural-colour albedo, colour-matched to the 2K via
-// tools/colormatch.mjs) qualify. Gas giants / Venus carry no real high-frequency
-// detail at 4K; Io/Europa/Ganymede/Triton already ship 4K as their base map.
-const TEXTURE_4K_KEYS = new Set(['mars', 'moon']);
+// must be the SAME albedo product as its 2K base (colour-matched if its grading
+// differs) so the on-approach swap reads as a pure sharpen — no brightness/contrast
+// pop — and never double-counts relief against a normal map. Mars (same source at
+// 2x), the Moon (SVS LRO albedo colour-matched via tools/colormatch.mjs), and
+// Jupiter (SSC 4K — same product as the 2K, needed no match) qualify. Venus / Uranus
+// / Neptune are genuinely low-frequency (no real 4K detail); Io/Europa/Ganymede/
+// Triton already ship 4K as their base map.
+const TEXTURE_4K_KEYS = new Set(['mars', 'moon', 'jupiter']);
 
 function makeTextureUpgrade(
   key: string | undefined,
@@ -434,7 +435,7 @@ export async function createPlanetMesh(planet: PlanetData): Promise<PlanetMesh> 
   const sunTan = SUN_RADIUS_AU / planet.semiMajorAxisAU; // solar angular radius at the planet
   const fx = augmentSurfaceMaterial(mat, planetArchetype(planet), ringShadow, sunTan);
   // 4K colour upgrade on close approach, for the bodies that carry a 4K variant
-  // (Mars). The base 2K map above is the floor; updateTextureLOD swaps in 4K.
+  // (Mars, Jupiter). The base 2K map above is the floor; updateTextureLOD swaps in 4K.
   const textureUpgrade = makeTextureUpgrade(planet.textureKey, mat);
 
   // Real elevation-derived normal map where one exists (Mars/MOLA): it replaces

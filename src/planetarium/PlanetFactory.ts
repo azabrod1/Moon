@@ -22,8 +22,9 @@ const loader = new THREE.TextureLoader();
 loader.crossOrigin = 'anonymous';
 
 // Texture filenames — bundled locally in public/textures/ (Solar System Scope
-// CC BY 4.0 + NASA). The filename stays resolution-agnostic; world/texturePolicy
-// maps it through the active tier to a URL.
+// CC BY 4.0 + NASA; Pluto is New Horizons / USGS, see TEXTURE_4K_KEYS). The
+// filename stays resolution-agnostic; world/texturePolicy maps it through the
+// active tier to a URL.
 const PLANET_TEXTURE_FILES: Record<string, string> = {
   mercury: 'mercury.jpg',
   venus: 'venus.jpg',
@@ -178,8 +179,14 @@ export interface TextureUpgrade {
 // 2x), the Moon (SVS LRO albedo colour-matched via tools/colormatch.mjs), and
 // Jupiter (SSC 4K — same product as the 2K, needed no match) qualify. Venus / Uranus
 // / Neptune are genuinely low-frequency (no real 4K detail); Io/Europa/Ganymede/
-// Triton already ship 4K as their base map.
-const TEXTURE_4K_KEYS = new Set(['mars', 'moon', 'jupiter']);
+// Triton already ship 4K as their base map. Pluto is a real New Horizons LORRI
+// mosaic (USGS, 300 m) registered to the IAU prime meridian and tinted through a
+// brightness->albedo ramp (the source is grayscale); its never-imaged south is an
+// honest dark cap, and its under-imaged far hemisphere is left as the real low-res
+// data — soft, but honest (synthetic relief/detail was tried and dropped: it read
+// as fake craters at grazing light). Both tiers bake from one source, so 4K is a
+// pure sharpen.
+const TEXTURE_4K_KEYS = new Set(['mars', 'moon', 'jupiter', 'pluto']);
 
 function makeTextureUpgrade(
   key: string | undefined,

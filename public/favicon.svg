@@ -1,25 +1,28 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="Moon favicon">
-  <!-- One bold motif so it stays legible at 16 px: a single fat crescent on
-       the dark-space tile, one accent star. (The previous icon's thin orbit
-       ring, craters, and 4-point star smeared into noise at tab size.) -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="Planetarium icon">
+  <!-- Orbit-logo motif: a ringed planet with one moon riding the ring and a
+       single sparkle. Kept deliberately minimal so it survives at 16 px (a tab
+       favicon) — no companion dot or band striping, which smear into noise that
+       small. White tile + deep burnt-orange planet for contrast on either a
+       light or dark browser chrome. -->
   <defs>
-    <radialGradient id="bg" cx="50%" cy="42%" r="70%">
-      <stop offset="0%" stop-color="#14254d" />
-      <stop offset="65%" stop-color="#091127" />
-      <stop offset="100%" stop-color="#040812" />
-    </radialGradient>
-    <linearGradient id="moon" x1="20%" y1="15%" x2="80%" y2="85%">
-      <stop offset="0%" stop-color="#f6fbff" />
-      <stop offset="55%" stop-color="#cfe0ff" />
-      <stop offset="100%" stop-color="#8ea3d9" />
+    <linearGradient id="planet" x1="28%" y1="16%" x2="72%" y2="94%">
+      <stop offset="0%" stop-color="#F2812A"/>
+      <stop offset="100%" stop-color="#AC430A"/>
     </linearGradient>
-    <mask id="bite">
-      <rect width="64" height="64" fill="white" />
-      <circle cx="43" cy="24" r="26" fill="black" />
-    </mask>
   </defs>
-
-  <rect width="64" height="64" rx="14" fill="url(#bg)" />
-  <circle cx="30" cy="34" r="24" fill="url(#moon)" mask="url(#bite)" />
-  <circle cx="47" cy="15" r="2.8" fill="#85cfff" />
+  <rect width="64" height="64" rx="14" fill="#FFFFFF"/>
+  <!-- ring back half (behind the planet) -->
+  <g transform="rotate(-18 32 35)" fill="none" stroke="#27272c" stroke-width="3.8" stroke-linecap="round">
+    <path d="M 7 35 A 25 10 0 0 1 57 35"/>
+  </g>
+  <!-- planet -->
+  <circle cx="32" cy="30.5" r="14" fill="url(#planet)"/>
+  <!-- ring front half (over the planet) -->
+  <g transform="rotate(-18 32 35)" fill="none" stroke="#27272c" stroke-width="3.8" stroke-linecap="round">
+    <path d="M 7 35 A 25 10 0 0 0 57 35"/>
+  </g>
+  <!-- moon riding the ring (upper right) -->
+  <circle cx="48.5" cy="23" r="4.4" fill="#27272c"/>
+  <!-- sparkle (upper left) -->
+  <path d="M14 8 Q14.6 12.4 19 13 Q14.6 13.6 14 18 Q13.4 13.6 9 13 Q14.6 12.4 14 8 Z" fill="#27272c"/>
 </svg>

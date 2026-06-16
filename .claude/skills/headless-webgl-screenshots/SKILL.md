@@ -114,11 +114,67 @@ Keep that surface dev-only (gate it on a build or env flag) so it never ships to
 5. Capture, then **read the image back** to confirm it's real.
 6. If it's black or errored, relaunch with the software fallback.
 
-## Provenance
+## This repo's harness (the Planetarium)
 
-This skill was distilled from wiring up GPU-accelerated headless screenshots for a Three.js solar-system
-app on macOS. A concrete reference implementation lives in this repo at `tools/shoot.mjs` (a Playwright
-harness) alongside a dev-only `window.__moon` control bridge installed from the app's entry point. There,
-switching from SwiftShader to ANGLE/Metal cut CPU work by roughly 15× (≈49s → ≈3s of CPU per run) with
-pixel-identical output. Read it for a worked example — then adapt rather than copy, because the right
-flags and the shape of the control hook depend on your own stack.
+Two pieces work together — reach for them before hand-rolling anything.
+
+**`tools/shoot.mjs`** — the Playwright harness. Launches headless Chromium on the GPU by default with the
+ANGLE/Metal flags above (`--software` drops to SwiftShader if the GPU path returns black), drives the app
+through `window.__moon` (no UI clicking), hides chrome, settles two `requestAnimationFrame`s, and writes
+one PNG per body to `/tmp/moon-shots/<label>/`. Run it:
+
+```
+node tools/shoot.mjs --label=mycheck --bodies=Earth,Jupiter --fill=0.6
+node tools/shoot.mjs --label=crescent --phase=145          # back-lit crescent
+node tools/shoot.mjs --time=2026-07-14T00:00:00Z --fill=0.85
+```
+
+Flags: `--label`, `--bodies`, `--time` (ISO), `--fill` (disc fraction), `--phase` (0 lit … ~145 back-lit),
+`--w`/`--h`, `--settle`, `--url`, `--software`. Switching SwiftShader→ANGLE/Metal here cut CPU ~15×
+(≈49s → ≈3s per run) with pixel-identical output.
+
+**`window.__moon`** — the dev-only control bridge it drives (installed in `src/main.ts`, dead-code-eliminated
+from prod). Also callable straight from the browser console under `npm run dev`:
+
+| method | does |
+|---|---|
+| `ready()` | solar system loaded? |
+| `bodies()` | list body names |
+| `jumpTo(name, distMult)` | cruise-jump near a body |
+| `frame(name, fill, phaseDeg)` | pose camera on a body to a fill fraction (phase 0 = lit, ~145 = crescent) |
+| `probe(name)` | camera/body diagnostics |
+| `setChrome(bool)` | hide ship / HUD / labels / orbit lines |
+| `setFov(deg)` · `setTimeMs(ms)` · `getTimeMs()` | FOV / clock |
+
+## Before/after is the core loop for this app
+
+Most visual work here is *tuning* — textures, shaders, lighting, atmosphere, relief. The reliable way to
+judge it is **two screenshots of the identical view, one before the change and one after**, composited
+side by side so you see exactly what got better or worse. Hold everything else fixed (same body, `--time`,
+`--fill`, `--phase`, viewport) so your change is the only variable.
+
+- Texture/shader tweak, same code: re-run the same `--label` before and after; compare the PNGs.
+- Comparing two *code* states: run a second dev server from a clean `git worktree` on another port
+  (`npm run dev -- --port 5175 --strictPort`), capture both, composite. A 2× zoom crop of the region of
+  interest makes subtle differences legible.
+- Lighting / relief / normal-map effects are **phase-dependent** — capture at a `--phase` angle or near the
+  terminator, not just phase 0 (sun behind camera), or you'll under-see them.
+
+## Gotchas (learned the hard way)
+
+- **Copy `shoot.mjs`'s launch line for ANY ad-hoc capture.** A bare `chromium.launch()` with no args is
+  software-rendered — slow, fan-pegging, sometimes black. The GPU flags are the ~15× saving regardless of
+  how you drive the app.
+- **`__moon.frame()` is `devFrameBody` (a camera-posing path), not the landed/Observatory framing
+  (`applyLandedTarget`).** To exercise landed-mode changes you need a `land()`-style hook or the real Land
+  button — `frame()` alone won't route through that code.
+- **Put ad-hoc Playwright scripts in `tools/` (or another in-repo dir), not `/tmp`.** ESM resolves
+  `node_modules` relative to the script file, so a `/tmp` script fails `ERR_MODULE_NOT_FOUND`. Write it
+  under `tools/`, run, then delete.
+- **Pick the time for rotation.** `frame()` lights the sub-solar face, which depends on the clock — to see
+  a specific hemisphere (e.g. Pluto's far side) set `--time` so it faces the camera, or sweep several times
+  and pick the best.
+- **Clear storage in the init script** so the "Welcome back" resume prompt never blocks the scene. It fires
+  whenever `PlanetariumStore` finds a saved journey, and `setChrome` doesn't hide it (the scene sits unentered
+  behind it). `localStorage.clear()` + `sessionStorage.clear()` + `indexedDB.deleteDatabase('orbital-sim-storage')`
+  in `addInitScript` → `?auto=planetarium` lands straight in the flythrough. Don't click the modal.

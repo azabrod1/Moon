@@ -52,6 +52,11 @@ try {
   // Mark first-run overlays as already seen so they don't cover the scene.
   await context.addInitScript(() => {
     try {
+      // Clean slate so the "Welcome back" resume prompt (PlanetariumStore finds a
+      // saved journey) never pre-empts ?auto=planetarium's straight-to-scene entry.
+      localStorage.clear();
+      sessionStorage.clear();
+      indexedDB.deleteDatabase('orbital-sim-storage');
       localStorage.setItem('planetarium-help-seen', '1');
       localStorage.setItem('planetarium-surface-hint-seen', '1');
     } catch { /* storage blocked — harmless */ }

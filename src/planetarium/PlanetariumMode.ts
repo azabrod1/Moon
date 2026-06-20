@@ -24,7 +24,7 @@ import { PlanetLabels } from './PlanetLabels';
 import { PlanetariumStore, createDefaultPlanetariumState, type PlanetariumState, type LandedTarget } from './PlanetariumStore';
 import { computeStats } from './stats';
 import { PLANETARIUM_BODIES, type PlanetData } from './planets/planetData';
-import { createMoonMeshes, paintMoonTextures, upgradeTextureOnApproach, type MoonMesh } from './PlanetFactory';
+import { createMoonMeshes, upgradeTextureOnApproach, type MoonMesh } from './PlanetFactory';
 import {
   advancePlanetariumTime,
   computeBodyPositionAU,
@@ -72,6 +72,7 @@ import { findEvent, type EventType } from '../astronomy/ephemeris';
 import { KM_PER_AU } from '../astronomy/constants';
 import { createPlanetariumStarfield } from './world/starfield';
 import { MoonPainter } from './world/MoonPainter';
+import { ProceduralMoonTexturer } from './world/ProceduralMoonTexturer';
 import { captureDeviceTextureCaps } from './world/texturePolicy';
 import { planetshineIntensity } from './world/planetshine';
 import { debugError } from '../shared/debug';
@@ -169,8 +170,15 @@ export class PlanetariumMode {
   private static readonly UI_REFRESH_INTERVAL_S = 1 / 8;
   private static readonly SCENE_NORTH = new THREE.Vector3(0, 1, 0);
   /** A moon's mesh never renders below this fraction of its parent's radius, so
-   *  tiny moons stay visible; the landed camera frames off the same inflated size. */
+   *  tiny moons stay visible; the landed camera frames off the same inflated size.
+   *  This is the flythrough/default floor — see moonRenderFloorRatio for how it
+   *  lowers while observing a planet. */
   private static readonly MOON_MIN_RENDER_RATIO = 0.05;
+  /** Lower floor used only while observing a planet: the moons shrink toward
+   *  their true relative sizes so the system reads honestly instead of every
+   *  moon pinning to one size. At ~2.5% the big moons (Galileans, Titan, the
+   *  Uranian majors) separate by true size while genuine specks stay visible. */
+  private static readonly OBSERVE_PLANET_MOON_FLOOR = 0.025;
   /** Ecliptic north in the scene's equatorial frame (tidal-lock roll reference for Earth's Moon). */
   private static readonly ECLIPTIC_NORTH = eclipticToEquatorial(new THREE.Vector3(0, 1, 0));
   private static readonly EARTH_DETAIL_MIN_DISTANCE_AU = 0.03;
@@ -215,9 +223,22 @@ export class PlanetariumMode {
   private moonSystemGroups = new Map<string, THREE.Group>();
   // Lazy moon-texture painter (see MoonPainter). The injected paint fn keeps it
   // testable; the controller drives the background drain from updateMoonPositions
-  // and the synchronous gate paint when a system is about to become visible.
-  private moonPainter = new MoonPainter(paintMoonTextures);
+  // and the synchronous gate paint when a system is about to become visible. The
+  // injected fn is the GPU texturer's paint (synchronous CPU fallback inside);
+  // both are assigned in the ctor once the renderer exists.
+  private moonTexturer!: ProceduralMoonTexturer;
+  private moonPainter!: MoonPainter;
   private static readonly MOON_PAINT_FRAME_BUDGET_MS = 8;
+  // Cap on background (pump) paints per frame. GPU paint submits in sub-ms, so
+  // the time budget alone wouldn't bound it — one call would burst every pending
+  // system's render targets/mipmaps in a frame. The gate path is uncapped (it
+  // must fully paint the system about to show).
+  private static readonly MOON_PAINT_MAX_PER_FRAME = 4;
+  // Resolution a procedural moon is re-rendered to when observed (landed): the
+  // Observatory frames any body to a fixed screen fraction regardless of size,
+  // so the flythrough baseline (256/512) looks low-res up close. GPU paint makes
+  // this nearly free; the result stays for the session.
+  private static readonly OBSERVE_MOON_TEXTURE_WIDTH = 1024;
   // Arrival veil re-entrancy guard (rapid picks, or a pick while one is running).
   private arrivalInFlight = false;
   private static readonly ARRIVAL_MIN_DWELL_MS = 150;
@@ -540,6 +561,21 @@ export class PlanetariumMode {
     // Capture device texture caps from the live renderer before any body loads,
     // so anisotropy and tier limits apply to the very first textures created.
     captureDeviceTextureCaps(renderer);
+    // GPU moon-texture painter (synchronous CPU fallback inside). Inject its
+    // paint into the lazy painter; MoonPainter's queue + the visibility gate +
+    // the arrival veil are unchanged — only the per-moon paint moves to the GPU.
+    this.moonTexturer = new ProceduralMoonTexturer(renderer);
+    this.moonPainter = new MoonPainter(this.moonTexturer.paint);
+    // WebGL context loss invalidates render-target textures (no CPU backing), so
+    // GPU-painted moons would render black after a restore. Reset them to repaint
+    // and re-validate the GPU path on restore (else it stays on the CPU path).
+    const glCanvas = renderer.domElement;
+    glCanvas.addEventListener('webglcontextlost', () => {
+      this.invalidateRtPaintedMoons(this.moonTexturer.onContextLost());
+    });
+    glCanvas.addEventListener('webglcontextrestored', () => {
+      this.moonTexturer.onContextRestored();
+    });
     this.player = new PlayerShip();
     this.store = new PlanetariumStore();
 
@@ -628,6 +664,10 @@ export class PlanetariumMode {
 
   async activate(onProgress?: (progress: PlanetariumActivationProgress) => void): Promise<void> {
     this.active = true;
+    // Compile + validate the GPU texturer once, before the visibility gate can
+    // run (the gate paints during update(), which only runs while active). The
+    // validation makes the GPU path fail closed to CPU; idempotent across calls.
+    this.moonTexturer.prewarm();
     // Startup-phase marks — summarized in one console line after the first
     // frame (logStartupTimings in main.ts).
     performance.mark('plm:activate:start');
@@ -1225,6 +1265,35 @@ export class PlanetariumMode {
   }
 
   /**
+   * Rendered-size floor (fraction of the parent's radius) for a moon in
+   * `parentName`'s system, given the current landed/view state. The floor
+   * inflates moons too small to see — most are a sliver of their giant parent,
+   * so without it they'd be sub-pixel — but the level depends on what you're
+   * looking at:
+   *  - Flying, or any system you're not landed in: the full flythrough floor, so
+   *    every moon stays a findable speck as you pass.
+   *  - Observing the parent PLANET: a smaller floor, so the moons shrink toward
+   *    their true relative sizes (the big ones separate instead of all pinning
+   *    to one size) — you're focused on the planet and the system should read
+   *    honestly.
+   *  - Observing a MOON: the flythrough floor (unchanged), so the siblings stay
+   *    findable around the one being inspected.
+   *  - Surface view: no floor — true angular sizes, a moon crossing the Sun must
+   *    be its real size.
+   * The floor only ever changes across a landing/leave/swap/surface transition,
+   * each of which reframes the camera, so the resize is never seen in-place.
+   * Centralised so the drawn mesh and the label-occlusion discs stay in sync.
+   */
+  private moonRenderFloorRatio(parentName: string): number {
+    if (parentName !== this.observatoryParentPlanetName()) {
+      return PlanetariumMode.MOON_MIN_RENDER_RATIO; // flythrough / other systems
+    }
+    if (this.landedView === 'surface') return 0; // true angular sizes
+    if (this.landedOn?.type === 'planet') return PlanetariumMode.OBSERVE_PLANET_MOON_FLOOR;
+    return PlanetariumMode.MOON_MIN_RENDER_RATIO; // observing a moon: unchanged
+  }
+
+  /**
    * Initial landing view direction (unit vector): bias the camera onto the
    * body's lit hemisphere so a landing never opens on a dark disc. The Sun sits
    * at the heliocentric world origin, so body→Sun is the negated world position —
@@ -1338,6 +1407,37 @@ export class PlanetariumMode {
     // safety net guaranteeing the displayed model tracks mission state through
     // every code path (incl. state restore) — do not "optimize" it away.
     this.player.setProfile(this.activeHistoricJourney?.shipProfile ?? 'default');
+  }
+
+  /**
+   * Reset GPU-painted moons after a WebGL context loss: their render-target
+   * textures have no CPU backing and would render black. Clearing `painted`
+   * drops them below the visibility gate (hidden, never shown black) and
+   * re-enqueuing makes the gate repaint them — on the CPU until the GPU path
+   * re-validates on context restore.
+   */
+  private invalidateRtPaintedMoons(moons: MoonMesh[]): void {
+    const parents = new Set<string>();
+    for (const m of moons) {
+      m.painted = false;
+      m.mesh.visible = false;
+      // Drop stale procedural metadata — the RTs are dead (context lost), and a
+      // repaint must start clean so a later observe re-upgrades from the real
+      // baseline instead of skipping on a stale width.
+      const mat = m.mesh.material as THREE.MeshStandardMaterial;
+      delete mat.userData.proceduralWidth;
+      delete mat.userData.proceduralColorRT;
+      delete mat.userData.proceduralBumpRT;
+      parents.add(m.data.parentPlanet);
+    }
+    // Re-enqueue the FULL authoritative moon list per parent, not just the
+    // invalidated subset: enqueue() replaces the parent's pending list, so
+    // enqueuing the subset would drop any moons still pending from the initial
+    // background drain and the gate would never repaint them.
+    for (const parent of parents) {
+      const all = this.planetMoons.get(parent);
+      if (all) this.moonPainter.enqueue(parent, all);
+    }
   }
 
   /**
@@ -1460,16 +1560,14 @@ export class PlanetariumMode {
         });
 
         const realRatio = m.data.radiusAU / parentR;
-        const minRatio = PlanetariumMode.MOON_MIN_RENDER_RATIO;
-        // Surface view sees true angular sizes: the landed system drops the
-        // small-moon visual floor while it's active (an Io silhouette on the
-        // Sun must be Io-sized, and a landed small moon's inflated mesh must
-        // not swallow the vantage point). Orbit view keeps the floor.
-        const trueScale =
-          this.landedView === 'surface' &&
-          planet.data.name === this.observatoryParentPlanetName();
-        if (!trueScale && realRatio < minRatio) {
-          m.mesh.scale.setScalar(minRatio / realRatio);
+        // Inflate moons below the floor up to it; draw the rest true-size. The
+        // floor varies with what you're observing (see moonRenderFloorRatio):
+        // smaller when focused on the parent planet so the system reads honestly,
+        // none in surface view where angular sizes must be real (an Io silhouette
+        // on the Sun must be Io-sized).
+        const floor = this.moonRenderFloorRatio(planet.data.name);
+        if (realRatio < floor) {
+          m.mesh.scale.setScalar(floor / realRatio);
         } else {
           m.mesh.scale.setScalar(1);
         }
@@ -1500,7 +1598,11 @@ export class PlanetariumMode {
       const targetSystem = target ? this.parentSystemOf(target) : null;
       const preferred =
         targetSystem && this.moonPainter.hasPending(targetSystem) ? targetSystem : nearestPending;
-      this.moonPainter.pump(PlanetariumMode.MOON_PAINT_FRAME_BUDGET_MS, preferred);
+      this.moonPainter.pump(
+        PlanetariumMode.MOON_PAINT_FRAME_BUDGET_MS,
+        preferred,
+        PlanetariumMode.MOON_PAINT_MAX_PER_FRAME,
+      );
     }
   }
 
@@ -1671,8 +1773,9 @@ export class PlanetariumMode {
         const dy = tempV.y - camY;
         const dz = tempV.z - camZ;
         const distFromCamera = Math.sqrt(dx * dx + dy * dy + dz * dz);
-        // Effective rendered radius: small moons are scaled up to a floor ratio.
-        const effectiveRadiusAU = Math.max(m.data.radiusAU, PlanetariumMode.MOON_MIN_RENDER_RATIO * parentR);
+        // Effective rendered radius: small moons are scaled up to the same floor
+        // the mesh uses, so the occlusion disc matches what's actually drawn.
+        const effectiveRadiusAU = Math.max(m.data.radiusAU, this.moonRenderFloorRatio(planet.data.name) * parentR);
         const angularSize = (effectiveRadiusAU * 2) / Math.max(distFromCamera, 0.0001);
         if (angularSize <= 0.01) continue;
 
@@ -3357,6 +3460,93 @@ export class PlanetariumMode {
     };
   }
 
+  /**
+   * Headless support: land on a body via the real landing path (routes through
+   * enterLandedMode → applyLandedTarget, unlike devFrameBody). Resolves a
+   * top-level planet, else a moon by name (with its parent). Dev bridge only.
+   */
+  devLand(name: string): boolean {
+    if (!this.solarSystem) return false;
+    if (this.solarSystem.planets.some((p) => p.data.name === name)) {
+      this.enterLandedMode({ type: 'planet', name });
+      return true;
+    }
+    for (const [parentName, moons] of this.planetMoons) {
+      if (moons.some((m) => m.data.name === name)) {
+        this.enterLandedMode({ type: 'moon', name, parentPlanet: parentName });
+        return true;
+      }
+    }
+    return false;
+  }
+
+  /** Headless support: enter the Observatory surface view ("Look up"). */
+  devLookUp(): boolean {
+    if (!this.landedOn) return false;
+    this.enterSurfaceView();
+    return true;
+  }
+
+  /** Headless support: leave the surface view (immediate, no ease). */
+  devExitSurface(): void {
+    this.exitSurfaceView(true);
+  }
+
+  /** Headless support: open the Observatory panel + start its upcoming-events
+   *  search (the per-frame work that loads when landed — for lag profiling). */
+  devOpenObservatory(): boolean {
+    if (!this.landedOn) return false;
+    this.observatoryPanel.show();
+    this.renderObservatoryPanel();
+    this.startObservatoryEventSearch();
+    return true;
+  }
+
+  /** Headless support: trigger the Observatory vantage swap ("Stand on …"). */
+  devSwapVantage(): boolean {
+    if (!this.landedOn || !this.swapCompanionTarget()) return false;
+    this.swapLandedVantage();
+    return true;
+  }
+
+  /** Headless support: jump to the prev/next Observatory event of a kind. */
+  devJumpEvent(type: EventType, direction: 1 | -1 = 1): boolean {
+    if (!this.landedOn) return false;
+    this.handleObservatoryJump(type, direction);
+    return true;
+  }
+
+  /**
+   * Headless diagnostics for the landed/Observatory state: the subject's
+   * on-screen fill fraction is the number the swap-shrink bug moves. In orbit
+   * view the subject is the landed body at scene origin; in surface view it's
+   * the tracked target measured from the surface vantage.
+   */
+  devProbeLanded(): unknown {
+    const cam = this.camera as THREE.PerspectiveCamera;
+    const camLen = cam.position.length();
+    let subjectName = '';
+    let subjectAngularDeg = 0;
+    if (this.landedView === 'surface' && this.surfaceTarget) {
+      subjectName = JSON.stringify(this.surfaceTarget);
+      subjectAngularDeg = this.surfaceTargetAngularDiameterDeg(this.surfaceTarget);
+    } else if (this.landedOn) {
+      subjectName = this.landedOn.name;
+      const r = this.getLandedBodyRenderedRadiusAU();
+      subjectAngularDeg = (2 * Math.atan(r / Math.max(camLen, 1e-12)) * 180) / Math.PI;
+    }
+    return {
+      landedOn: this.landedOn ? { type: this.landedOn.type, name: this.landedOn.name } : null,
+      view: this.landedView,
+      fov: cam.fov,
+      surfaceFovDeg: this.surfaceFovDeg,
+      camLenAU: camLen,
+      subjectName,
+      subjectAngularDeg,
+      subjectFillFraction: cam.fov > 0 ? subjectAngularDeg / cam.fov : 0,
+    };
+  }
+
   /** Any landed body whose system has catalog moons gets the Observatory panel. */
   private isObservatorySubject(target: LandedTarget): boolean {
     if (!target) return false;
@@ -3858,6 +4048,9 @@ export class PlanetariumMode {
     if (this.landedView === 'surface') {
       // Surface view active: re-point it at the event's observer-level target
       // instead of orbit-framing (jumps never auto-enter the surface view).
+      // The clock just moved, so refresh the scene graph before the re-entry
+      // fits its FOV off the (otherwise stale) target geometry.
+      this.refreshLandedScene();
       const landedInfo = this.surfaceLandedInfo();
       if (landedInfo) this.enterSurfaceView(selectSurfaceTarget(landedInfo, event.spec), 'event');
     } else {
@@ -3917,7 +4110,9 @@ export class PlanetariumMode {
     this.observatoryPanel.flashNowBar();
     if (this.landedView === 'surface') {
       // Phase jumps point the surface view at the companion (the Moon you
-      // just made full), never at an event geometry.
+      // just made full), never at an event geometry. The clock moved, so
+      // refresh the scene graph before the re-entry fits its FOV.
+      this.refreshLandedScene();
       const landedInfo = this.surfaceLandedInfo();
       if (landedInfo) this.enterSurfaceView(selectSurfaceTarget(landedInfo, null), 'companion');
     } else {
@@ -4060,9 +4255,11 @@ export class PlanetariumMode {
    * Enter the surface view (or re-point an active one after a jump/swap):
    * the camera leaves orbit, glides down to a vantage on the landed body's
    * surface, and tracks the target until the user drags. OrbitControls hand
-   * the pointer to SurfaceLook until exit.
+   * the pointer to SurfaceLook until exit. `immediate` snaps the FOV instead of
+   * easing it when already in surface view — used by the vantage swap, where
+   * the subject changes (see the re-point branch).
    */
-  enterSurfaceView(target?: SurfaceTarget, entryContext?: SurfaceEntryContext) {
+  enterSurfaceView(target?: SurfaceTarget, entryContext?: SurfaceEntryContext, immediate = false) {
     const landedInfo = this.surfaceLandedInfo();
     if (!landedInfo) return;
     // Manual entry right after an event jump points at the event's
@@ -4079,11 +4276,27 @@ export class PlanetariumMode {
     // Re-seed the transported tracking-up from the camera's current local up
     // so the first tracked frame is continuous with what's on screen.
     this.surfaceUpTangent.set(0, 1, 0).applyQuaternion(this.camera.quaternion);
-    const entryFov = entryFovDeg(this.surfaceTargetAngularDiameterDeg(this.surfaceTarget), context);
+    const entryFov = entryFovDeg(
+      this.surfaceTargetAngularDiameterDeg(this.surfaceTarget),
+      context,
+      this.surfaceTarget.kind === 'sun',
+    );
     this.surfaceFovDeg = entryFov;
     if (this.landedView === 'surface') {
-      // Re-point: a short ease to the new target's fitted FOV (predictable
-      // framing beats preserving a zoom tuned for the previous subject).
+      if (immediate) {
+        // Vantage swap: the subject itself changed, so easing the FOV would
+        // show the new body at the old body's zoom for ~½s — a jarring flash
+        // (swap to Earth briefly fills the frame; swap to the Moon opens as a
+        // speck and "grows in"), which reads as the swap lagging or not firing.
+        // Snap straight to the fitted framing; the vantage re-pins next frame.
+        this.surfaceFovAnim = null;
+        this.camera.fov = entryFov;
+        this.camera.updateProjectionMatrix();
+        return;
+      }
+      // Re-point (event jump): a short ease to the new target's fitted FOV
+      // (predictable framing beats preserving a zoom tuned for the previous
+      // subject).
       this.surfaceFovAnim = {
         fromFov: this.camera.fov,
         toFov: entryFov,
@@ -4520,6 +4733,22 @@ export class PlanetariumMode {
     if (target.type === 'planet') {
       const body = PLANETARIUM_BODIES.find(b => b.name === target.name);
       if (body) this.surfacePoleAxis.copy(raDecToVector(body.poleRaDeg, body.poleDecDeg)).normalize();
+    } else if (target.type === 'moon') {
+      // Observatory magnifies the moon to a fixed screen fraction, so re-render
+      // its procedural texture sharper than the flythrough baseline. No-op for
+      // photo moons / already-sharp ones; fail-closed; the upgrade stays for the
+      // session.
+      const moons = this.planetMoons.get(target.parentPlanet);
+      const moon = moons?.find((m) => m.data.name === target.name);
+      if (moon && moons) {
+        // Cold restore (restoreState → enterLandedMode) runs no gate/veil first,
+        // so the system may still be unpainted; paint it now so the upgrade has a
+        // baseline to sharpen (otherwise it no-ops and the moon stays low-res).
+        if (this.moonPainter.hasPending(target.parentPlanet)) {
+          this.moonPainter.paintSystemNow(target.parentPlanet, moons);
+        }
+        this.moonTexturer.upgrade(moon, PlanetariumMode.OBSERVE_MOON_TEXTURE_WIDTH);
+      }
     }
 
     // Stop ship
@@ -4602,6 +4831,30 @@ export class PlanetariumMode {
     this.updateOrbitDetails(true);
   }
 
+  /**
+   * Re-derive the landed scene graph — player offset, floating origin, and moon
+   * orbital offsets — from the current world positions. updateLanded does this
+   * every frame, so a read taken *between* frames sees last frame's geometry.
+   * The surface view's one-shot entry-FOV fit is exactly such a read when it
+   * fires synchronously right after a vantage swap (player moved to the
+   * companion) or a clock jump (time moved): the look target, still placed at
+   * the previous vantage's origin, reads a ~180° disc and pins the entry FOV to
+   * its widest, so the view opens zoomed all the way out. Refreshing here makes
+   * the fit measure true geometry. Callers must have current planet world
+   * positions first — a same-clock swap leaves them valid; setCurrentUtcMs
+   * rebuilds them after a jump.
+   */
+  private refreshLandedScene() {
+    const bodyPos = this.getLandedBodyWorldPosition();
+    if (bodyPos) {
+      this.player.posX = bodyPos.x;
+      this.player.posY = bodyPos.y;
+      this.player.posZ = bodyPos.z;
+    }
+    this.applyFloatingOrigin();
+    this.updateMoonPositions();
+  }
+
   /** The unique companion body for the vantage swap: moon → its parent, Earth → the Moon. */
   swapCompanionTarget(): NonNullable<LandedTarget> | null {
     if (!this.landedOn) return null;
@@ -4636,6 +4889,10 @@ export class PlanetariumMode {
       this.orbitPairMoon = { moonName: previous.name, parentName: previous.parentPlanet };
     }
     this.applyLandedTarget(companion, true);
+    // applyLandedTarget parked the player on the companion, but the scene graph
+    // still reflects the old vantage until the next frame — and the surface
+    // re-entry below reads it synchronously to fit the FOV. Refresh it now.
+    this.refreshLandedScene();
     if (wasSurface) {
       // applyLandedTarget re-enabled OrbitControls and reset the camera for
       // orbit view — re-assert the surface invariants. Its fresh orbit camera
@@ -4656,6 +4913,7 @@ export class PlanetariumMode {
             ? { kind: 'moon', moonName: previous.name }
             : { kind: 'parent' },
         liveSwapEvent ? 'event' : 'companion',
+        true, // snap the FOV — the subject changed, an ease would flash/lag
       );
     }
     this.notification.show(`Standing on ${companion.name}`);
@@ -5420,6 +5678,7 @@ export class PlanetariumMode {
 
   dispose() {
     this.deactivate();
+    this.moonTexturer.dispose();
     this.notification.dispose();
     if (this.planetLabels) {
       this.planetLabels.dispose();

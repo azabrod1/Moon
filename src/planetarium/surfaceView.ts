@@ -295,24 +295,28 @@ export function clampSurfaceFovDeg(fovDeg: number): number {
 export type SurfaceEntryContext = 'event' | 'companion';
 
 /**
- * Entry FOV fits the subject. Companion entries keep the realistic-sky
- * default unless the target's disc would overflow it — then widen so the
- * disc fills ~60% of the frame (Jupiter from Io is ∅19.5° and must not
- * overflow a 10° view). Event entries frame the event instead: ~8× the
- * target disc, so a solar eclipse opens on a Sun that reads as a disc
- * (∅0.4° → 3.2° FOV ≈ 1/8 of the frame), clamped to the zoom range.
+ * Entry FOV fits the subject's disc to a fraction of the frame, then clamps —
+ * so a target reads at a comfortable size whatever its true angular size: a
+ * tiny Moon (∅0.5°) isn't a speck and a looming parent (Jupiter from Io ∅19.5°)
+ * doesn't overflow. Event entries frame tightest, ~1/8 of the frame, leaving
+ * room around the disc to read the eclipse/transit geometry; the plain
+ * companion sky fills more, ~1/4, since there's no event to frame around it.
+ * Fitting (rather than a flat resting FOV) is what keeps the Moon from
+ * bottoming out tiny while still capping how large the companion can grow.
  */
 export function entryFovDeg(
   targetAngularDiameterDeg: number,
   context: SurfaceEntryContext = 'companion',
+  subjectIsSun = false,
 ): number {
-  if (context === 'event') {
-    return clampSurfaceFovDeg(targetAngularDiameterDeg * 8);
-  }
-  return Math.min(
-    SURFACE_FOV_MAX_DEG,
-    Math.max(SURFACE_FOV_DEFAULT_DEG, targetAngularDiameterDeg * 1.7),
-  );
+  // The Sun is a bright, near-featureless disc: fitting it like a textured body
+  // (below) fills the sky with glare and erases its real size cue (large from
+  // Mercury, a point from Neptune). Show it at the resting sky FOV instead, so
+  // its true apparent size reads. A solar eclipse is the 'event' path — there
+  // the framing is the whole point, so it still fits.
+  if (subjectIsSun && context !== 'event') return SURFACE_FOV_DEFAULT_DEG;
+  const fillMultiplier = context === 'event' ? 8 : 4;
+  return clampSurfaceFovDeg(targetAngularDiameterDeg * fillMultiplier);
 }
 
 /** Projected disc height in pixels for a disc of `discDeg` at `fovDeg`. */

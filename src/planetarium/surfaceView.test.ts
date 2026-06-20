@@ -467,15 +467,23 @@ describe('surface FOV', () => {
     expect(clampSurfaceFovDeg(10)).toBe(10);
   });
 
-  it('companion entry FOV keeps the realistic default for small discs', () => {
-    expect(entryFovDeg(0.53)).toBe(SURFACE_FOV_DEFAULT_DEG);
-    expect(entryFovDeg(0.53, 'companion')).toBe(SURFACE_FOV_DEFAULT_DEG);
+  it('companion entry FOV fits the disc to ~1/4 of the frame, clamped', () => {
+    // The Moon from Earth: ∅ ≈ 0.53° → ~2.1° view, disc ~1/4 of the frame.
+    expect(entryFovDeg(0.53)).toBeCloseTo(2.12, 9);
+    expect(entryFovDeg(0.53, 'companion')).toBeCloseTo(2.12, 9);
+    // A looming parent (Jupiter from Io ∅19.5°) clamps at the wide end.
+    expect(entryFovDeg(19.5)).toBe(45);
+    // A speck clamps at the tightest zoom rather than zooming past it.
+    expect(entryFovDeg(0.1)).toBe(1.5);
   });
 
-  it('companion entry FOV widens for big discs so they fill ~60% of frame', () => {
-    // Jupiter from Io: ∅ ≈ 19.5° → ~33° view, disc fills ~59%.
-    expect(entryFovDeg(19.5)).toBeCloseTo(33.15, 6);
-    expect(entryFovDeg(40)).toBe(45); // clamped at the wide end
+  it('keeps the Sun at the resting sky FOV as a companion (no glare zoom)', () => {
+    // From Mars the Sun is ∅~0.35°; fitting it to ¼ would fill the sky with
+    // glare and erase its real size cue, so the companion path holds it wide.
+    expect(entryFovDeg(0.35, 'companion', true)).toBe(SURFACE_FOV_DEFAULT_DEG);
+    expect(entryFovDeg(1.4, 'companion', true)).toBe(SURFACE_FOV_DEFAULT_DEG); // Sun from Mercury
+    // A solar eclipse is the 'event' path — there the framing is the point.
+    expect(entryFovDeg(0.35, 'event', true)).toBeCloseTo(2.8, 9);
   });
 
   it('event entry FOV frames the event at ~8× the disc, clamped to the zoom range', () => {

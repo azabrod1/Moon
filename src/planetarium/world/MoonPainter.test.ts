@@ -75,6 +75,17 @@ describe('MoonPainter', () => {
     expect(painter.isEmpty()).toBe(true);
   });
 
+  it('pump caps moons per call via maxMoons (GPU paint never trips the time budget)', () => {
+    const log: MoonMesh[] = [];
+    const painter = new MoonPainter(recordingPaint(log));
+    painter.enqueue('Jupiter', makeMoons(10));
+
+    // Huge time budget, but cap at 3 — only 3 paint this call.
+    painter.pump(10_000, null, 3);
+    expect(log).toHaveLength(3);
+    expect(painter.isEmpty()).toBe(false);
+  });
+
   it('pump eventually drains everything across calls', () => {
     const log: MoonMesh[] = [];
     const painter = new MoonPainter(recordingPaint(log));

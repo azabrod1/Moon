@@ -306,6 +306,14 @@ function installDevHooks() {
     frame: (name: string, fillFraction?: number, phaseAngleDeg?: number) =>
       planetariumMode?.devFrameBody(name, fillFraction, phaseAngleDeg) ?? false,
     probe: (name: string) => planetariumMode?.devProbe(name) ?? null,
+    land: (name: string) => planetariumMode?.devLand(name) ?? false,
+    lookUp: () => planetariumMode?.devLookUp() ?? false,
+    exitSurface: () => planetariumMode?.devExitSurface(),
+    openObservatory: () => planetariumMode?.devOpenObservatory() ?? false,
+    swapVantage: () => planetariumMode?.devSwapVantage() ?? false,
+    jumpEvent: (type: string, direction?: 1 | -1) =>
+      planetariumMode?.devJumpEvent(type as never, direction ?? 1) ?? false,
+    probeLanded: () => planetariumMode?.devProbeLanded() ?? null,
     setChrome: (visible: boolean) => planetariumMode?.devSetChrome(visible),
     setFov: (deg: number) => planetariumMode?.devSetFov(deg),
     setTimeMs: (utcMs: number) => planetariumMode?.setCurrentUtcMs(utcMs),

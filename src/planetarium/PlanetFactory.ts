@@ -215,7 +215,19 @@ function applyColorTierTexture(mat: THREE.MeshStandardMaterial, tex: THREE.Textu
   mat.color.setRGB(1, 1, 1);
   mat.userData.colorTierRank = rank;
   mat.needsUpdate = true;
-  if (prev) prev.dispose();
+  // Assign-new-before-dispose-old (above) so no frame samples a freed texture.
+  // A GPU procedural floor's texture is backed by a render target; dispose the
+  // whole RT (framebuffer + texture), not just the texture, to avoid leaking it.
+  if (prev) {
+    const owner = prev.userData?.ownerRenderTarget as THREE.WebGLRenderTarget | undefined;
+    if (owner) {
+      owner.dispose(); // disposes the RT (fires its tracked-removal listener)
+      // Drop the now-dangling procedural ref so nothing points at the freed RT.
+      if (mat.userData.proceduralColorRT === owner) mat.userData.proceduralColorRT = undefined;
+    } else {
+      prev.dispose();
+    }
+  }
   return true;
 }
 
@@ -642,6 +654,15 @@ export function createPlanetariumSun(useBloom = true): THREE.Group {
 // ---- Moon meshes ----
 
 import { type MoonData, getMoonsByPlanet } from './planets/moonData';
+import {
+  classifyMoonArchetype,
+  generateCraters,
+  hashString,
+  moonTextureSize,
+  seededRng,
+  valueNoise,
+  fractalNoise,
+} from './world/proceduralMoon';
 
 export interface MoonMesh {
   mesh: THREE.Mesh;
@@ -653,63 +674,19 @@ export interface MoonMesh {
   textureUpgrade?: TextureUpgrade; // 4K colour map streamed in on close approach
 }
 
-function seededRng(seed: number) {
-  let state = seed;
-  return () => {
-    state = (state * 16807 + 0) % 2147483647;
-    return (state - 1) / 2147483646;
-  };
-}
-
-function hashString(str: string): number {
-  let hash = 5381;
-  for (let i = 0; i < str.length; i++) {
-    hash = ((hash << 5) + hash + str.charCodeAt(i)) | 0;
-  }
-  return Math.abs(hash);
-}
-
-// Layered sine-based value noise (no library needed)
-function valueNoise(x: number, y: number, seed: number): number {
-  const a = Math.sin(x * 12.9898 + y * 78.233 + seed) * 43758.5453;
-  return a - Math.floor(a);
-}
-
-function fractalNoise(x: number, y: number, seed: number, octaves: number): number {
-  let value = 0;
-  let amplitude = 1;
-  let frequency = 1;
-  let maxAmp = 0;
-  for (let i = 0; i < octaves; i++) {
-    value += valueNoise(x * frequency, y * frequency, seed + i * 100) * amplitude;
-    maxAmp += amplitude;
-    amplitude *= 0.5;
-    frequency *= 2.2;
-  }
-  return value / maxAmp;
-}
-
-// Tiny irregular moons (the outer-planet swarms, Phobos/Deimos, the small
-// shepherd moons) render as a handful of pixels even up close, so they get
-// half-dimension textures — a quarter of the per-moon pixel work — while round,
-// inspectable moons keep full resolution.
-const SMALL_MOON_RADIUS_KM = 150;
-
 function createMoonTextures(
   color: number,
   name: string,
   radiusKm: number,
 ): { colorTex: THREE.Texture; bumpTex: THREE.Texture } {
-  const textureWidth = radiusKm < SMALL_MOON_RADIUS_KM ? 256 : 512;
-  const textureHeight = textureWidth / 2;
+  const { width: textureWidth, height: textureHeight } = moonTextureSize(radiusKm);
   const seed = hashString(name);
   const rng = seededRng(seed);
 
-  // Determine moon "type" from color brightness/hue
+  // Base colour + archetype (the exact brightness/hue classifier, shared with
+  // the GPU texturer via proceduralMoon so both paths agree).
   const baseColor = new THREE.Color(color);
-  const brightness = baseColor.r * 0.299 + baseColor.g * 0.587 + baseColor.b * 0.114;
-  const isIcy = brightness > 0.55;
-  const isVolcanic = baseColor.r > 0.6 && baseColor.g > 0.4 && baseColor.b < 0.35;
+  const { isIcy, isVolcanic } = classifyMoonArchetype(color);
 
   const colorCanvas = document.createElement('canvas');
   colorCanvas.width = textureWidth;
@@ -777,12 +754,9 @@ function createMoonTextures(
     }
   }
 
-  // Add craters (seeded)
-  const craterCount = isIcy ? 5 + Math.floor(rng() * 8) : 10 + Math.floor(rng() * 15);
-  for (let i = 0; i < craterCount; i++) {
-    const cx = Math.floor(rng() * textureWidth);
-    const cy = Math.floor(rng() * textureHeight);
-    const cr = isIcy ? 2 + rng() * 5 : 3 + rng() * 12;
+  // Add craters (seeded; placement shared with the GPU texturer).
+  const craters = generateCraters(rng, textureWidth, textureHeight, isIcy);
+  for (const { cx, cy, cr } of craters) {
     for (let dy = -Math.ceil(cr); dy <= Math.ceil(cr); dy++) {
       for (let dx = -Math.ceil(cr); dx <= Math.ceil(cr); dx++) {
         const dist = Math.sqrt(dx * dx + dy * dy);
@@ -869,7 +843,10 @@ export function createMoonMeshes(planetName: string): MoonMesh[] {
   const result: MoonMesh[] = [];
 
   for (const moonData of moons) {
-    const segments = moonData.radiusKm > 1000 ? 48 : moonData.radiusKm > 200 ? 24 : 16;
+    // Observatory frames every moon to a fixed screen fraction regardless of
+    // size, so even tiny moons need a smooth limb up close — the old 16/24
+    // segment tiers faceted visibly. Floor at 48 (cheap: ~2k tris); big moons 64.
+    const segments = moonData.radiusKm > 1000 ? 64 : 48;
     const geo = new THREE.SphereGeometry(moonData.radiusAU, segments, segments / 2);
 
     // Flat placeholder. A moon is never made visible before it's painted (the

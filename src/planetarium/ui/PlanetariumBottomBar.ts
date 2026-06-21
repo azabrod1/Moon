@@ -1,20 +1,25 @@
 /**
- * Bottom-bar popover toggles (stats + time) for the Planetarium HUD. Each
- * toggle closes the other popover; clicking outside the bottom bar closes
- * both. Clicks inside a popover do not bubble to the outside-click handler.
+ * Bottom-bar instrument toggles. The Time popover expands up from the bar; the
+ * Stats card docks bottom-right (relocated out of the bar). Opening one closes
+ * the other; a click outside both the bar and the card closes both. The Stats
+ * card is a single owned surface here — PlanetariumMode arbitrates one-instrument-
+ * at-a-time (vs the Observatory panel) through `onStatsToggle` + the public
+ * `closeStats()` / `isStatsOpen()` API.
  */
 export class PlanetariumBottomBar {
   private statsPopover = document.getElementById('stats-popover');
   private timePopover = document.getElementById('time-popover');
-  private statsChevron = document.getElementById('stats-chevron');
+  private statsToggle = document.getElementById('bar-stats-toggle');
   private timeChevron = document.getElementById('time-chevron');
 
+  /** Notified when the Stats card opens (true) or closes (false), so the mode
+   *  can enforce one instrument at a time (tuck the Observatory panel). */
+  onStatsToggle: ((open: boolean) => void) | null = null;
+
   bind(): void {
-    document.getElementById('bar-stats-toggle')?.addEventListener('click', () => {
-      const opening = !this.statsPopover?.classList.contains('visible');
-      this.statsPopover?.classList.toggle('visible');
-      this.statsChevron?.classList.toggle('expanded');
-      if (opening) this.closeTime();
+    this.statsToggle?.addEventListener('click', () => this.setStats(!this.isStatsOpen()));
+    this.statsToggle?.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); this.setStats(!this.isStatsOpen()); }
     });
 
     document.getElementById('bar-time-toggle')?.addEventListener('click', () => {
@@ -28,17 +33,33 @@ export class PlanetariumBottomBar {
     this.statsPopover?.addEventListener('click', (e) => e.stopPropagation());
 
     document.addEventListener('click', (e) => {
-      const bottomBar = document.getElementById('planetarium-bottom-bar');
-      if (bottomBar && !bottomBar.contains(e.target as Node)) {
+      const bar = document.getElementById('planetarium-bottom-bar');
+      const t = e.target as Node;
+      // The Stats card now lives outside the bar, so exclude it explicitly.
+      if (bar && !bar.contains(t) && !this.statsPopover?.contains(t)) {
         this.closeStats();
         this.closeTime();
       }
     });
   }
 
-  private closeStats(): void {
-    this.statsPopover?.classList.remove('visible');
-    this.statsChevron?.classList.remove('expanded');
+  isStatsOpen(): boolean {
+    return !!this.statsPopover?.classList.contains('visible');
+  }
+
+  /** Close the Stats card (idempotent). Clears the lit toggle + notifies the mode. */
+  closeStats(): void {
+    this.setStats(false);
+  }
+
+  /** Open/close the card, light the toggle, and announce the change. */
+  private setStats(open: boolean): void {
+    if (open === this.isStatsOpen()) return;
+    this.statsPopover?.classList.toggle('visible', open);
+    this.statsToggle?.classList.toggle('on', open);
+    this.statsToggle?.setAttribute('aria-expanded', open ? 'true' : 'false');
+    if (open) this.closeTime();
+    this.onStatsToggle?.(open);
   }
 
   private closeTime(): void {

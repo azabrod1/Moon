@@ -221,7 +221,11 @@
       display: flex;
       align-items: center;
       gap: 2px;
+      transition: opacity 0.2s ease;
     }
+    /* Parked: the speed group dims + goes inert (kept laid out) so the centered
+       bar never reflows when Pilot and the controls leave on landing. */
+    .speed-group.inert { opacity: 0.32; pointer-events: none; filter: grayscale(0.4); }
 
     /* Stats section (right) - clickable */
     .bar-stats {
@@ -247,7 +251,34 @@
     }
     .bar-popover.visible { display: block; }
     .bar-popover-left { left: 0; right: 0; }
-    .bar-popover-right { right: 0; }
+
+    /* Stats — a right-edge instrument card pinned bottom-right (the same zone as
+       the Observatory panel). It slides in from the edge and the bar toggle
+       lights, so the centre→corner hop reads as "the button summoned the card,"
+       not a teleport. Lives outside the bar (the bar's translateX would
+       re-anchor a position:fixed child). */
+    #stats-popover {
+      position: fixed; right: 14px; bottom: 72px; left: auto; top: auto;
+      width: 226px; z-index: 22; pointer-events: none;
+      padding: 12px 14px;
+      opacity: 0; transform: translateX(14px);
+      transition: opacity 0.22s var(--ease), transform 0.3s var(--ease);
+    }
+    #stats-popover.visible { opacity: 1; transform: none; pointer-events: auto; }
+    .stats-pop-head {
+      display: flex; align-items: center; gap: 7px; margin-bottom: 10px; padding-bottom: 9px;
+      border-bottom: 1px solid var(--line-dim);
+      font-size: 10px; font-weight: 600; letter-spacing: 0.16em; text-transform: uppercase; color: var(--t3);
+    }
+    .stats-pop-head svg { width: 13px; height: 13px; flex: none; color: var(--t2); }
+    /* Stats toggle lit while its card is open. */
+    .bar-stats.on .bar-stats-label { color: var(--accent); }
+    /* Failsafes: never float the card over the surface view or the mobile sheet. */
+    body.surface-view-active #stats-popover,
+    body.observatory-sheet-open #stats-popover { display: none; }
+    @media (prefers-reduced-motion: reduce) {
+      #stats-popover { transition: opacity 0.22s var(--ease); transform: none; }
+    }
 
     .stat-row {
       display: flex;
@@ -379,8 +410,15 @@
     .act-btn.act-icon { padding: 0 8px; }
     .act-goto .act-glyph { color: var(--accent); opacity: 1; }
     /* Active toggle chip (e.g. Observatory while its panel is open). */
-    .act-btn.on { background: rgba(var(--accent-rgb), 0.14); color: var(--t1); border-color: rgba(var(--accent-rgb), 0.35); }
-    .act-btn.on .act-glyph { color: var(--accent); opacity: 1; }
+    .act-btn.on, .act-btn.active { background: rgba(var(--accent-rgb), 0.14); color: var(--t1); border-color: rgba(var(--accent-rgb), 0.35); }
+    .act-btn.on .act-glyph, .act-btn.active .act-glyph { color: var(--accent); opacity: 1; }
+    /* Hand-off pulse — a one-shot ring when a panel tucks into this chip. */
+    @keyframes act-handoff {
+      0% { box-shadow: 0 0 0 0 rgba(var(--accent-rgb), 0.5); }
+      100% { box-shadow: 0 0 0 7px rgba(var(--accent-rgb), 0); }
+    }
+    .act-btn.handoff { animation: act-handoff 0.5s var(--ease); }
+    @media (prefers-reduced-motion: reduce) { .act-btn.handoff { animation: none; } }
     #planetarium-btn-autopilot {
       max-width: 120px;
       overflow: hidden;
@@ -1671,7 +1709,12 @@
     }
 
     @media (max-width: 420px) {
+      /* Collapse cluster chips to icons (Observatory keeps its label as the
+         contextual primary) so the row never crowds a narrow phone. */
       .travel-btn-text { display: none; }
+      .act-leave .act-lbl, .act-pilot .act-lbl { display: none; }
+      /* Lift the Stats card clear of the taller mobile bar. */
+      #stats-popover { bottom: 104px; right: 10px; }
     }
 
     /* ===== Observatory mobile chrome ===== */
@@ -1814,6 +1857,10 @@
         <button class="act-btn act-goto" id="planetarium-btn-travel" title="Travel">
           <svg class="act-glyph" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><g><g transform="rotate(42 8 8)"><path fill-rule="evenodd" d="M8 1.5 C 6.4 3.3 5.6 5.7 5.6 8.2 L 5.6 9.7 L 3.8 11.5 C 3.5 11.8 3.8 12.3 4.2 12.1 L 5.6 11.5 L 5.6 12.4 L 10.4 12.4 L 10.4 11.5 L 11.8 12.1 C 12.2 12.3 12.5 11.8 12.2 11.5 L 10.4 9.7 L 10.4 8.2 C 10.4 5.7 9.6 3.3 8 1.5 Z M8 4.6 a1.25 1.25 0 1 1 0 2.5 a1.25 1.25 0 0 1 0 -2.5 Z" fill="currentColor" stroke="none"></path><path d="M6.7 13 L8 15 L9.3 13 Z" fill="currentColor" stroke="none"></path></g><path d="M2.4 13.6 L4.4 11.6 L4.9 13.9 Z" fill="currentColor" stroke="none" opacity="0.55"></path></g></svg>
           <span class="act-lbl travel-btn-text">Travel</span>
+        </button>
+        <button class="act-btn act-pilot" id="planetarium-btn-autopilot" title="Autopilot: fly to a destination. Click to choose target or disengage. (P)">
+          <svg class="act-glyph" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 1.8 L12 14 L8 11.4 L4 14 Z" fill="currentColor" stroke="none"></path></svg>
+          <span class="act-lbl autopilot-lbl">Pilot</span>
         </button>
         <button class="act-btn act-icon act-menu" id="planetarium-btn-menu" title="Menu">
           <svg class="act-glyph" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 5.7 H13 M3 10.3 H13"></path></svg>
@@ -2133,19 +2180,6 @@
           </div>
         </div>
 
-        <!-- Stats popover (expands upward) -->
-        <div id="stats-popover" class="bar-popover bar-popover-right pn pn-high">
-          <div class="stat-row"><span class="stat-label">FPS</span><span class="stat-value" id="stat-fps">--</span></div>
-          <div class="stat-row"><span class="stat-label">Sun dist</span><span class="stat-value" id="stat-distance">--</span></div>
-          <div class="stat-row"><span class="stat-label">Light time</span><span class="stat-value" id="stat-light-time">--</span></div>
-          <div class="stat-row"><span class="stat-label">Solar</span><span class="stat-value" id="stat-intensity">--</span></div>
-          <div class="stat-row" id="stat-speed-row"><span class="stat-label">Speed</span><span class="stat-value" id="stat-speed">--</span></div>
-          <div class="stat-row"><span class="stat-label">Nearest</span><span class="stat-value" id="stat-nearest">--</span></div>
-          <div class="stat-row"><span class="stat-label">Temp</span><span class="stat-value" id="stat-temp">--</span></div>
-          <div class="stat-row"><span class="stat-label">Traveled</span><span class="stat-value" id="stat-traveled">--</span></div>
-          <div class="stat-row"><span class="stat-label">Flight</span><span class="stat-value" id="stat-time">0:00</span></div>
-        </div>
-
         <!-- Main bar row -->
         <div class="bar-row pn">
           <!-- Date/time (floats above bar on desktop, inline on mobile) -->
@@ -2156,9 +2190,8 @@
             <span class="bar-chevron" id="time-chevron">&#x25BC;</span>
           </div>
 
-          <!-- Speed controls -->
+          <!-- Speed controls (Pilot moved to the top cluster) -->
           <div class="bar-section bar-speed-main">
-            <button class="planetarium-icon-btn" id="planetarium-btn-autopilot" title="Autopilot: fly to a destination. Click to choose target or disengage. (P)"><svg class="bar-glyph" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 1.8 L12 14 L8 11.4 L4 14 Z" fill="currentColor" stroke="none"></path></svg><span class="autopilot-lbl">Pilot</span></button>
             <div class="speed-group">
               <button class="planetarium-icon-btn" id="planetarium-speed-down" title="Reduce speed">-</button>
               <div class="speed-center">
@@ -2169,12 +2202,30 @@
             </div>
           </div>
 
-          <!-- Right: stats toggle -->
-          <div class="bar-section bar-stats" id="bar-stats-toggle">
+          <!-- Right: stats toggle (lights when the docked card is open) -->
+          <div class="bar-section bar-stats" id="bar-stats-toggle" role="button" tabindex="0" aria-expanded="false" aria-controls="stats-popover">
             <span class="bar-stats-label">Stats</span>
-            <span class="bar-chevron" id="stats-chevron">&#x25BC;</span>
           </div>
         </div>
+      </div>
+
+      <!-- Stats card — docked bottom-right; summoned by the bar's Stats toggle.
+           Lives outside the bottom bar because the bar's translateX would
+           re-anchor a position:fixed descendant. -->
+      <div id="stats-popover" class="pn pn-high">
+        <div class="stats-pop-head">
+          <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 13 V8.5 M8 13 V3.5 M13 13 V6.5"></path></svg>
+          Stats
+        </div>
+        <div class="stat-row"><span class="stat-label">FPS</span><span class="stat-value" id="stat-fps">--</span></div>
+        <div class="stat-row"><span class="stat-label">Sun dist</span><span class="stat-value" id="stat-distance">--</span></div>
+        <div class="stat-row"><span class="stat-label">Light time</span><span class="stat-value" id="stat-light-time">--</span></div>
+        <div class="stat-row"><span class="stat-label">Solar</span><span class="stat-value" id="stat-intensity">--</span></div>
+        <div class="stat-row" id="stat-speed-row"><span class="stat-label">Speed</span><span class="stat-value" id="stat-speed">--</span></div>
+        <div class="stat-row"><span class="stat-label">Nearest</span><span class="stat-value" id="stat-nearest">--</span></div>
+        <div class="stat-row"><span class="stat-label">Temp</span><span class="stat-value" id="stat-temp">--</span></div>
+        <div class="stat-row"><span class="stat-label">Traveled</span><span class="stat-value" id="stat-traveled">--</span></div>
+        <div class="stat-row"><span class="stat-label">Flight</span><span class="stat-value" id="stat-time">0:00</span></div>
       </div>
 
       <div id="planetarium-keys-hint">

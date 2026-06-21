@@ -865,6 +865,7 @@ export class PlanetariumMode {
 
   deactivate(): void {
     this.resumePrompt.cancel();
+    this.bottomBar.closeStats();
 
     // Exit landed mode cleanly before deactivation. The excursion pose is
     // session-only — drop it first so the exit (and the save below) keep
@@ -2016,6 +2017,7 @@ export class PlanetariumMode {
     // Escape always works — even while typing in search input
     if (e.key === 'Escape') {
       if (this.isHelpOpen()) { this.hideHelp(); return; }
+      if (this.bottomBar.isStatsOpen()) { this.bottomBar.closeStats(); return; }
       if (this.isTravelMenuOpen()) { this.closeTravelMenu(); return; }
       if (this.isObservatoryMenuOpen()) { this.closeObservatoryMenu(); return; }
       if (this.landedView === 'surface') { this.exitSurfaceView(); return; }
@@ -2309,6 +2311,8 @@ export class PlanetariumMode {
       bottomBar.style.opacity = missionActive ? '0.45' : '';
       bottomBar.style.display = missionActive ? 'none' : '';
     }
+    // The Stats card lives outside the bar now — close it when a mission takes over.
+    if (missionActive) this.bottomBar.closeStats();
 
     const speedStatRow = document.getElementById('stat-speed-row');
     if (speedStatRow) speedStatRow.style.display = missionActive ? 'none' : '';
@@ -2482,6 +2486,14 @@ export class PlanetariumMode {
     });
 
     this.bottomBar.bind();
+    // One instrument at a time: opening the Stats card tucks the Observatory
+    // panel back into its chip, with a brief pulse so the hop reads.
+    this.bottomBar.onStatsToggle = (open) => {
+      if (open && this.observatoryPanel.isOpen()) {
+        this.closeObservatoryPanel();
+        this.pulseObservatoryChip();
+      }
+    };
 
     this.sunLabel.attach();
 
@@ -2892,6 +2904,7 @@ export class PlanetariumMode {
       this.landedOn?.type === target.type && this.landedOn.name === target.name;
     const panelWasOpen = this.observatoryPanel.isOpen();
     const openPanel = () => {
+      this.bottomBar.closeStats();
       this.observatoryPanel.show();
       this.renderObservatoryPanel();
       this.startObservatoryEventSearch();
@@ -3496,6 +3509,7 @@ export class PlanetariumMode {
    *  search (the per-frame work that loads when landed — for lag profiling). */
   devOpenObservatory(): boolean {
     if (!this.landedOn) return false;
+    this.bottomBar.closeStats();
     this.observatoryPanel.show();
     this.renderObservatoryPanel();
     this.startObservatoryEventSearch();
@@ -3580,10 +3594,21 @@ export class PlanetariumMode {
     this.cancelObservatoryEventSearch();
   }
 
+  /** Brief pulse on the Observatory chip — the visible hand-off when the panel
+   *  is tucked away (the Stats card taking the single instrument slot). */
+  private pulseObservatoryChip() {
+    const chip = document.getElementById('planetarium-btn-observatory');
+    if (!chip) return;
+    chip.classList.remove('handoff');
+    void chip.offsetWidth; // restart the keyframe if a pulse is mid-flight
+    chip.classList.add('handoff');
+  }
+
   private toggleObservatoryPanel() {
     if (this.observatoryPanel.isOpen()) {
       this.closeObservatoryPanel();
     } else {
+      this.bottomBar.closeStats();
       this.observatoryPanel.show();
       this.renderObservatoryPanel();
       this.startObservatoryEventSearch();
@@ -4262,6 +4287,7 @@ export class PlanetariumMode {
   enterSurfaceView(target?: SurfaceTarget, entryContext?: SurfaceEntryContext, immediate = false) {
     const landedInfo = this.surfaceLandedInfo();
     if (!landedInfo) return;
+    this.bottomBar.closeStats();
     // Manual entry right after an event jump points at the event's
     // observer-level target — "Look up" during an eclipse shows the eclipse.
     const liveEvent = this.relevantObservatoryEvent();
@@ -4798,13 +4824,15 @@ export class PlanetariumMode {
 
     // UI: hide flight controls, show leave button
     // Close any open popovers before hiding
-    document.getElementById('stats-popover')?.classList.remove('visible');
-    document.getElementById('stats-chevron')?.classList.remove('expanded');
+    this.bottomBar.closeStats();
     document.getElementById('time-popover')?.classList.remove('visible');
     document.getElementById('time-chevron')?.classList.remove('expanded');
-    // Hide +/- speed group inside bar but keep Pilot button (doubles as "travel" while landed)
+    // Parked: dim the speed group inert (kept laid out so the bar doesn't reflow)
+    // and hide Pilot — it's a flight control, and Travel covers "go elsewhere".
     const speedGroup = document.querySelector('.bar-speed-main .speed-group') as HTMLElement | null;
-    if (speedGroup) speedGroup.style.display = 'none';
+    if (speedGroup) speedGroup.classList.add('inert');
+    const autopilotBtn = document.getElementById('planetarium-btn-autopilot');
+    if (autopilotBtn) autopilotBtn.style.display = 'none';
     const hide = ['planetarium-keys-hint', 'touch-flight-zone', 'planetarium-btn-land'];
     for (const id of hide) {
       const el = document.getElementById(id);
@@ -5241,9 +5269,10 @@ export class PlanetariumMode {
 
     // UI: restore flight controls, hide leave button
     const speedGroup = document.querySelector('.bar-speed-main .speed-group') as HTMLElement | null;
-    if (speedGroup) speedGroup.style.display = '';
+    if (speedGroup) speedGroup.classList.remove('inert');
     const show: Array<[string, string]> = [
       ['planetarium-btn-travel', ''],
+      ['planetarium-btn-autopilot', ''],
     ];
     for (const [id, display] of show) {
       const el = document.getElementById(id);

@@ -5516,12 +5516,15 @@ export class PlanetariumMode {
     const btn = document.getElementById('planetarium-btn-autopilot');
     if (!btn) return;
     btn.classList.toggle('active', this.autopilot);
+    // Set only the label span — the SVG glyph sibling must survive every update.
+    const lbl = btn.querySelector('.autopilot-lbl');
+    if (!lbl) return;
     // Only a destination the user picked earns the chip — the onboarding
     // default steers silently and reads as plain "Pilot".
     if (this.autopilotTarget && this.autopilotUserEngaged) {
-      btn.innerHTML = '&#x1F916; &rarr; ' + this.autopilotTarget.name;
+      lbl.textContent = '→ ' + this.autopilotTarget.name;
     } else {
-      btn.innerHTML = '&#x1F916; Pilot';
+      lbl.textContent = 'Pilot';
     }
   }
 

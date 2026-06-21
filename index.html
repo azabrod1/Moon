@@ -14,7 +14,7 @@
   <meta name="theme-color" content="#050814" />
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600&display=swap" rel="stylesheet" />
+  <link href="https://fonts.googleapis.com/css2?family=Geist:wght@300;400;500;600&family=Geist+Mono:wght@400;500&display=swap" rel="stylesheet" />
   <style>
 
     * { margin: 0; padding: 0; box-sizing: border-box; }
@@ -22,16 +22,74 @@
     canvas { display: block; }
 
     :root {
-      --accent: #7c9aff;
-      --accent-dim: rgba(124, 154, 255, 0.10);
-      --accent-glow: rgba(124, 154, 255, 0.18);
-      --panel-bg: rgba(10, 10, 10, 0.74);
-      --panel-border: rgba(255, 255, 255, 0.06);
-      --text-primary: #e8ecf4;
-      --text-secondary: #9ba8c0;
-      --text-dim: #586880;
-      --font: 'Inter', 'Segoe UI', system-ui, -apple-system, sans-serif;
-      --radius: 10px;
+      /* Obsidian palette — one black-forward theme, a 16/10/7 radius scale, Geist type. */
+      --accent: #5e8bff;
+      --accent-rgb: 94, 139, 255;
+      --ember: #ffb88a;                  /* live / now only */
+      --ember-rgb: 255, 184, 138;
+      --glass-a: 0.58;
+      --r-l: 16px;                       /* panels */
+      --r-m: 10px;                       /* buttons */
+      --r-s: 7px;                        /* small controls */
+      --t1: #eef1f7;
+      --t2: #9aa4b8;
+      --t3: #5b6377;
+      --line: rgba(255, 255, 255, 0.08);
+      --line-dim: rgba(255, 255, 255, 0.05);
+      --font-ui: 'Geist', system-ui, -apple-system, sans-serif;
+      --font-mono: 'Geist Mono', ui-monospace, 'SF Mono', Menlo, monospace;
+      --ease: cubic-bezier(0.22, 1, 0.36, 1);
+      --dur: 300ms;
+
+      /* The older --obs-* / --text-* / --panel-* / --font / --radius names resolve to
+         the Obsidian palette, so every existing reference re-skins in place; new
+         surfaces use the canonical tokens above directly. */
+      --obs-accent: var(--accent);
+      --obs-accent-soft: rgba(var(--accent-rgb), 0.14);
+      --obs-glass: rgba(8, 10, 15, var(--glass-a));
+      --obs-hairline: var(--line);
+      --obs-hairline-dim: var(--line-dim);
+      --obs-t1: var(--t1);
+      --obs-t2: var(--t2);
+      --obs-t3: var(--t3);
+      --obs-warm: var(--ember);
+      --obs-mono: var(--font-mono);
+      --obs-slide: var(--ease);
+      --font: var(--font-ui);
+      --radius: var(--r-m);
+
+      --accent-dim: rgba(var(--accent-rgb), 0.10);
+      --accent-glow: rgba(var(--accent-rgb), 0.18);
+      --panel-bg: rgba(8, 10, 15, var(--glass-a));
+      --panel-border: var(--line);
+      --text-primary: var(--t1);
+      --text-secondary: var(--t2);
+      --text-dim: var(--t3);
+    }
+
+    /* ═══ Obsidian material — liquid-glass surfaces ═══
+       Near-black glass with a faint top-lit gradient + inset hairline highlights.
+       .pn = standard panel; .pn-high = elevated (menus, popovers — also carry .pn
+       for the blur + border). One material shared by every chrome surface. */
+    .pn { position: relative; border-radius: var(--r-l); color: var(--t1); }
+    body.mat-glass .pn {
+      background:
+        linear-gradient(168deg, rgba(255,255,255,0.05), rgba(255,255,255,0.012) 38%, rgba(0,0,0,0.05)),
+        rgba(8, 10, 15, var(--glass-a));
+      -webkit-backdrop-filter: blur(30px) saturate(160%);
+      backdrop-filter: blur(30px) saturate(160%);
+      border: 1px solid rgba(255, 255, 255, 0.085);
+      box-shadow: inset 0 1px 0 rgba(255,255,255,0.09),
+        inset 0 -1px 0 rgba(255,255,255,0.025),
+        0 16px 48px rgba(0, 0, 0, 0.55);
+    }
+    body.mat-glass .pn-high {
+      background:
+        linear-gradient(168deg, rgba(255,255,255,0.05), rgba(255,255,255,0.012) 38%, rgba(0,0,0,0.05)),
+        rgba(6, 8, 12, calc(var(--glass-a) + 0.24));
+      box-shadow: inset 0 1px 0 rgba(255,255,255,0.09),
+        inset 0 -1px 0 rgba(255,255,255,0.025),
+        0 28px 80px rgba(0, 0, 0, 0.7);
     }
 
     /* ============================================= */
@@ -91,17 +149,14 @@
       font-size: 11px;
     }
 
+    /* Shape only — the glass comes from .pn. A 16px rounded rect, not a stadium. */
     .bar-row {
       position: relative;
       display: flex;
       align-items: center;
       gap: 0;
-      background: var(--panel-bg);
-      backdrop-filter: blur(8px);
-      border: 1px solid var(--panel-border);
-      border-radius: 999px;
-      padding: 4px 6px;
-      box-shadow: 0 4px 20px rgba(0, 0, 0, 0.3), inset 0 1px 0 rgba(255, 255, 255, 0.04);
+      border-radius: var(--r-l);
+      padding: 5px;
     }
 
     .bar-section {
@@ -186,13 +241,9 @@
       position: absolute;
       bottom: 100%;
       margin-bottom: 6px;
-      background: var(--panel-bg);
-      backdrop-filter: blur(8px);
-      border: 1px solid var(--panel-border);
-      border-radius: 14px;
+      border-radius: var(--r-l);
       padding: 10px 14px;
       min-width: 180px;
-      box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
     }
     .bar-popover.visible { display: block; }
     .bar-popover-left { left: 0; right: 0; }
@@ -255,16 +306,19 @@
     .planetarium-icon-btn {
       min-width: 28px; height: 28px;
       padding: 0 6px;
-      border: 1px solid transparent;
-      border-radius: 999px;
+      border: 1px solid var(--line-dim);
+      border-radius: var(--r-s);
       background: rgba(255, 255, 255, 0.04);
       color: var(--text-secondary);
       font-size: 11px;
       cursor: pointer;
-      display: flex; align-items: center; justify-content: center;
+      display: flex; align-items: center; justify-content: center; gap: 5px;
       transition: all 0.15s;
       flex-shrink: 0;
+      font-family: var(--font);
     }
+    /* Monochrome stroke glyph inside bar buttons — tinted via currentColor. */
+    .bar-glyph { width: 13px; height: 13px; flex: none; display: block; }
     .planetarium-icon-btn:hover { background: rgba(255, 255, 255, 0.08); color: var(--text-primary); }
     .planetarium-icon-btn:disabled {
       opacity: 0.4;
@@ -275,53 +329,58 @@
       background: rgba(255, 255, 255, 0.04);
       color: var(--text-secondary);
     }
+    /* Autopilot button engaged state. */
+    .planetarium-icon-btn.active,
+    .planetarium-icon-btn.on {
+      background: rgba(var(--accent-rgb), 0.16);
+      color: var(--t1);
+      border-color: rgba(var(--accent-rgb), 0.4);
+    }
 
     /* Top-right planetarium actions */
     #planetarium-actions {
       position: absolute;
-      top: 10px;
-      right: 12px;
+      top: 14px;
+      right: 14px;
       display: flex;
-      gap: 4px;
+      align-items: center;
+      gap: 7px;
       pointer-events: auto;
       z-index: 21;
-    }
-    .planetarium-sm-btn {
-      padding: 5px 14px;
-      border: 1px solid rgba(255, 255, 255, 0.08);
-      border-radius: 999px;
-      background: rgba(255, 255, 255, 0.04);
-      box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04);
-      backdrop-filter: blur(8px);
-      color: var(--text-primary);
       font-size: 11px;
+    }
+    /* Action chips — flat glass (hairline + blur, no gradient/glint; the glint
+       belongs on the big surfaces). Equal-weight + neutral; Travel leads only
+       via an accent glyph, a hair above its siblings without shouting. */
+    .act-btn {
+      height: 34px;
+      padding: 0 10px;
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      border-radius: var(--r-m);
+      background: rgba(255, 255, 255, 0.04);
+      border: 1px solid var(--line);
+      -webkit-backdrop-filter: blur(12px);
+      backdrop-filter: blur(12px);
+      color: var(--t2);
+      font-family: var(--font-ui);
+      font-size: 12px;
+      font-weight: 500;
       letter-spacing: 0.2px;
       cursor: pointer;
-      transition: all 0.15s;
-      font-family: var(--font);
+      white-space: nowrap;
+      transition: background var(--dur) var(--ease), color var(--dur) var(--ease), border-color var(--dur) var(--ease);
     }
-    .planetarium-sm-btn:hover {
-      background: rgba(255, 255, 255, 0.08);
-      border-color: rgba(255, 255, 255, 0.12);
-      color: #f4f8ff;
-    }
-    .planetarium-sm-btn:disabled {
-      opacity: 0.4;
-      cursor: default;
-      box-shadow: none;
-    }
-    .planetarium-sm-btn:disabled:hover {
-      background: rgba(255, 255, 255, 0.04);
-      border-color: rgba(255, 255, 255, 0.08);
-      color: var(--text-primary);
-    }
-
-    /* Autopilot button active state */
-    .planetarium-icon-btn.active {
-      background: rgba(124, 154, 255, 0.12);
-      color: var(--accent);
-      border-color: rgba(124, 154, 255, 0.3);
-    }
+    .act-btn:hover { background: rgba(255, 255, 255, 0.08); color: var(--t1); border-color: rgba(255, 255, 255, 0.14); }
+    .act-btn:disabled { opacity: 0.4; cursor: default; }
+    .act-btn:disabled:hover { background: rgba(255, 255, 255, 0.04); color: var(--t2); border-color: var(--line); }
+    .act-btn .act-glyph { width: 14px; height: 14px; flex: none; display: block; opacity: 0.85; }
+    .act-btn.act-icon { padding: 0 8px; }
+    .act-goto .act-glyph { color: var(--accent); opacity: 1; }
+    /* Active toggle chip (e.g. Observatory while its panel is open). */
+    .act-btn.on { background: rgba(var(--accent-rgb), 0.14); color: var(--t1); border-color: rgba(var(--accent-rgb), 0.35); }
+    .act-btn.on .act-glyph { color: var(--accent); opacity: 1; }
     #planetarium-btn-autopilot {
       max-width: 120px;
       overflow: hidden;
@@ -369,21 +428,8 @@
     }
     .menu-action:hover { background: rgba(255, 255, 255, 0.06); }
 
-    /* ── Observatory (landed mode). Cool glass, accent #7c9aff; warm is
-       reserved for "happening now". Scoped --obs-* vars keep Observatory
-       theme tokens isolated. ── */
-    :root {
-      --obs-accent: #7c9aff;
-      --obs-accent-soft: rgba(124, 154, 255, 0.14);
-      --obs-glass: rgba(8, 10, 20, 0.58);
-      --obs-hairline: rgba(255, 255, 255, 0.08);
-      --obs-hairline-dim: rgba(255, 255, 255, 0.05);
-      --obs-t1: #eef1f8;
-      --obs-t2: #9ba8c0;
-      --obs-t3: #5d6a84;
-      --obs-warm: #ffb88a;
-      --obs-mono: ui-monospace, 'SF Mono', Menlo, monospace;
-    }
+    /* Observatory (landed-mode) tokens alias the Obsidian palette in :root above;
+       warm (--obs-warm / --ember) stays reserved for "happening now". */
     #observatory-panel {
       display: none;
       position: absolute;
@@ -392,12 +438,7 @@
       width: min(334px, calc(100vw - 24px));
       max-height: calc(100vh - 120px);
       overflow-y: auto;
-      border-radius: 14px;
-      background: var(--obs-glass);
-      -webkit-backdrop-filter: blur(24px) saturate(140%);
-      backdrop-filter: blur(24px) saturate(140%);
-      border: 1px solid var(--obs-hairline);
-      box-shadow: 0 18px 50px rgba(0, 0, 0, 0.45), inset 0 1px 0 rgba(255, 255, 255, 0.05);
+      border-radius: var(--r-l);
       padding: 14px 16px 12px;
       pointer-events: auto;
       z-index: 21;
@@ -417,7 +458,7 @@
       padding: 4px 10px; border-radius: 999px; background: rgba(255, 255, 255, 0.05);
       border: 1px solid var(--obs-hairline-dim); cursor: pointer; white-space: nowrap; font-family: var(--font);
     }
-    .obs-swap:hover { background: var(--obs-accent-soft); color: var(--obs-t1); border-color: rgba(124, 154, 255, 0.3); }
+    .obs-swap:hover { background: var(--obs-accent-soft); color: var(--obs-t1); border-color: rgba(var(--accent-rgb), 0.3); }
     .obs-swap i { font-style: normal; font-size: 11px; color: var(--obs-accent); }
     .obs-hero { display: flex; align-items: center; gap: 14px; margin: 16px 0 4px; padding: 0 2px; }
     .obs-glyph { width: 40px; height: 40px; flex: none; filter: drop-shadow(0 0 8px rgba(220, 230, 255, 0.14)); }
@@ -427,18 +468,19 @@
     .obs-hero-text h1 { font-size: 22px; font-weight: 300; letter-spacing: 0.005em; color: var(--obs-t1); line-height: 1.1; margin: 0; }
     .obs-hero-text p { font-size: 11px; color: var(--obs-t2); margin: 4px 0 0; }
     .obs-num { font-family: var(--obs-mono); font-size: 10px; color: var(--obs-t2); }
+    /* "Happening now" reads ember — the one warm signal in a cool panel. */
     .obs-nowbar {
       display: flex; align-items: center; gap: 8px; margin-top: 12px; padding: 7px 10px;
-      border-radius: 9px; background: var(--obs-accent-soft); border: 1px solid rgba(124, 154, 255, 0.14);
+      border-radius: var(--r-m); background: rgba(255, 255, 255, 0.035); border: 1px solid var(--line-dim);
       font-size: 11px; color: var(--obs-t1);
     }
-    .obs-dot { width: 5px; height: 5px; border-radius: 50%; background: var(--obs-accent); flex: none; animation: obs-pulse 2.4s ease-in-out infinite; }
+    .obs-dot { width: 5px; height: 5px; border-radius: 50%; background: var(--ember); box-shadow: 0 0 8px rgba(var(--ember-rgb), 0.7); flex: none; animation: obs-pulse 2.4s ease-in-out infinite; }
     .obs-now-text { font-family: var(--obs-mono); font-size: 10.5px; }
-    .obs-nowbar small { margin-left: auto; font-size: 10px; color: var(--obs-t3); letter-spacing: 0.06em; text-transform: uppercase; }
+    .obs-nowbar small { margin-left: auto; font-size: 9.5px; color: var(--ember); letter-spacing: 0.18em; text-transform: uppercase; }
     .obs-nowbar.flash { animation: obs-nowflash 0.6s ease-out; }
     @keyframes obs-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.35; } }
     @keyframes obs-nowflash {
-      0% { box-shadow: 0 0 0 1px rgba(124, 154, 255, 0.7), 0 0 22px rgba(124, 154, 255, 0.35); }
+      0% { box-shadow: 0 0 0 1px rgba(var(--ember-rgb), 0.7), 0 0 22px rgba(var(--ember-rgb), 0.35); }
       100% { box-shadow: none; }
     }
     .obs-lookup {
@@ -447,7 +489,7 @@
       background: rgba(255, 255, 255, 0.045); border: 1px solid var(--obs-hairline);
       font-size: 12.5px; font-weight: 500; color: var(--obs-t1); cursor: pointer; font-family: var(--font);
     }
-    .obs-lookup:hover { background: rgba(124, 154, 255, 0.10); border-color: rgba(124, 154, 255, 0.3); }
+    .obs-lookup:hover { background: rgba(var(--accent-rgb), 0.10); border-color: rgba(var(--accent-rgb), 0.3); }
     .obs-lookup span { font-weight: 600; }
     .obs-lookup i { font-style: normal; color: var(--obs-accent); font-size: 12px; }
     .obs-lookup em { font-style: normal; font-weight: 400; color: var(--obs-t3); font-size: 11px; }
@@ -466,7 +508,7 @@
       color: var(--obs-t2); cursor: pointer; white-space: nowrap; font-variant-numeric: tabular-nums;
       font-family: var(--font); min-width: 46px; text-align: center;
     }
-    .obs-tpill:hover:not(:disabled) { background: rgba(124, 154, 255, 0.12); color: var(--obs-t1); border-color: rgba(124, 154, 255, 0.3); }
+    .obs-tpill:hover:not(:disabled) { background: rgba(var(--accent-rgb), 0.12); color: var(--obs-t1); border-color: rgba(var(--accent-rgb), 0.3); }
     .obs-tpill:disabled { opacity: 0.4; cursor: default; }
     .obs-ev { display: flex; align-items: center; gap: 10px; padding: 8px 0; }
     .obs-ev + .obs-ev { border-top: 1px solid rgba(255, 255, 255, 0.03); }
@@ -517,7 +559,7 @@
     }
     /* General sibling (~): the hidden input sits first in the label so it is
        the label's control (the ⓘ button is also labelable), not beside the pill. */
-    .obs-foot input:checked ~ .obs-tgl { background: rgba(124, 154, 255, 0.55); }
+    .obs-foot input:checked ~ .obs-tgl { background: rgba(var(--accent-rgb), 0.55); }
     .obs-foot input:checked ~ .obs-tgl::after { left: 14px; }
     .obs-footlbl { display: inline-flex; align-items: center; gap: 7px; }
     .obs-info {
@@ -602,7 +644,7 @@
       border-radius: 50%; color: rgba(220, 230, 255, 0.85); pointer-events: auto;
       display: flex; align-items: center; justify-content: center;
     }
-    .shud-chevron:hover { border-color: rgba(124, 154, 255, 0.5); }
+    .shud-chevron:hover { border-color: rgba(var(--accent-rgb), 0.5); }
     .shud-chevron i { font-style: normal; font-size: 15px; line-height: 1; transform: translateY(-1px); }
     .shud-discnote {
       position: absolute; left: 0; top: 0; transform: translateX(-50%); white-space: nowrap;
@@ -616,7 +658,7 @@
       backdrop-filter: blur(8px); font-size: 10px; letter-spacing: 0.14em; text-transform: uppercase;
       color: var(--obs-t2); pointer-events: auto; cursor: pointer; font-family: var(--font); white-space: nowrap;
     }
-    .shud-trackpill:hover { color: var(--obs-t1); border-color: rgba(124, 154, 255, 0.3); }
+    .shud-trackpill:hover { color: var(--obs-t1); border-color: rgba(var(--accent-rgb), 0.3); }
     .shud-trackpill i { font-style: normal; color: var(--obs-accent); font-size: 12px; letter-spacing: 0; }
     .shud-tr { position: absolute; top: 14px; right: 16px; display: flex; gap: 8px; }
     .shud-chip {
@@ -625,7 +667,7 @@
       font-size: 12px; font-weight: 500; color: var(--obs-t2); white-space: nowrap;
       pointer-events: auto; cursor: pointer; font-family: var(--font);
     }
-    .shud-chip:hover { color: var(--obs-t1); border-color: rgba(124, 154, 255, 0.35); }
+    .shud-chip:hover { color: var(--obs-t1); border-color: rgba(var(--accent-rgb), 0.35); }
     .shud-chip i { font-style: normal; color: var(--obs-accent); }
     .shud-bl { position: absolute; left: 24px; bottom: 86px; max-width: 46vw; }
     .shud-eyebrow {
@@ -659,7 +701,7 @@
       font-family: var(--obs-mono); font-size: 10.5px; letter-spacing: 0.04em;
       padding: 5px 9px; min-height: 26px;
     }
-    .shud-tb-btn:hover { border-color: rgba(124, 154, 255, 0.4); color: var(--obs-t1); }
+    .shud-tb-btn:hover { border-color: rgba(var(--accent-rgb), 0.4); color: var(--obs-t1); }
     .shud-dot { width: 5px; height: 5px; border-radius: 50%; background: var(--obs-t3); flex: none; }
     .shud-when small { font-size: 10px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--obs-t3); }
     .shud-br { position: absolute; right: 24px; bottom: 86px; text-align: right; }
@@ -667,7 +709,7 @@
     .shud-fovscale { position: relative; width: 150px; height: 2px; margin: 12px 0 0 auto; background: rgba(255, 255, 255, 0.10); border-radius: 1px; }
     .shud-fovmark {
       position: absolute; top: -3px; width: 2px; height: 8px; border-radius: 1px;
-      background: var(--obs-accent); left: 56%; box-shadow: 0 0 8px rgba(124, 154, 255, 0.6);
+      background: var(--obs-accent); left: 56%; box-shadow: 0 0 8px rgba(var(--accent-rgb), 0.6);
     }
     .shud-fovend { position: absolute; top: 8px; font-size: 9px; color: var(--obs-t3); font-variant-numeric: tabular-nums; }
     .shud-fovend.lo { left: 0; }
@@ -783,8 +825,8 @@
     }
     .settings-toggle:hover { background: rgba(255, 255, 255, 0.08); color: var(--text-primary); }
     .settings-toggle.active {
-      background: rgba(124, 154, 255, 0.14);
-      border-color: rgba(124, 154, 255, 0.3);
+      background: rgba(var(--accent-rgb), 0.14);
+      border-color: rgba(var(--accent-rgb), 0.3);
       color: var(--text-primary);
     }
     .settings-date {
@@ -1120,8 +1162,8 @@
       cursor: pointer;
       transition: all 0.15s;
     }
-    .resume-btn-primary { background: rgba(124,154,255,0.18); color: var(--text-primary); border-color: rgba(124,154,255,0.25); }
-    .resume-btn-primary:hover { background: rgba(124,154,255,0.28); }
+    .resume-btn-primary { background: rgba(var(--accent-rgb),0.18); color: var(--text-primary); border-color: rgba(var(--accent-rgb),0.25); }
+    .resume-btn-primary:hover { background: rgba(var(--accent-rgb),0.28); }
     .resume-btn-secondary { background: transparent; color: var(--text-secondary); }
     .resume-btn-secondary:hover { background: rgba(255,255,255,0.06); color: var(--text-primary); }
 
@@ -1208,14 +1250,7 @@
     /* TRAVEL MENU & LEAVE BUTTON                    */
     /* ============================================= */
 
-    #planetarium-btn-travel {
-      background: rgba(124, 154, 255, 0.08);
-      border-color: rgba(124, 154, 255, 0.2);
-    }
-    #planetarium-btn-travel:hover {
-      background: rgba(124, 154, 255, 0.14);
-      border-color: rgba(124, 154, 255, 0.3);
-    }
+    /* The Travel chip leads via its accent glyph only — no fill (see .act-goto). */
 
     /* Help modal */
     #planetarium-help {
@@ -1341,15 +1376,11 @@
       transform: translate(-50%, -50%);
       width: min(380px, calc(100vw - 32px));
       max-height: min(520px, calc(100vh - 80px));
-      background: rgba(10, 10, 10, 0.84);
-      backdrop-filter: blur(16px);
-      border: 1px solid var(--panel-border);
-      border-radius: 12px;
+      border-radius: var(--r-l);
       z-index: 60;
       pointer-events: auto;
       flex-direction: column;
       overflow: hidden;
-      box-shadow: 0 16px 48px rgba(0, 0, 0, 0.5), inset 0 1px 0 rgba(255, 255, 255, 0.04);
     }
     #travel-menu.visible,
     #observatory-menu.visible {
@@ -1412,7 +1443,7 @@
     }
     #travel-search:focus,
     #observatory-search:focus {
-      border-color: rgba(124, 154, 255, 0.3);
+      border-color: rgba(var(--accent-rgb), 0.3);
     }
     #travel-search::placeholder,
     #observatory-search::placeholder {
@@ -1506,9 +1537,9 @@
     }
     .travel-action-btn {
       padding: 6px 10px;
-      border: 1px solid rgba(124, 154, 255, 0.25);
+      border: 1px solid rgba(var(--accent-rgb), 0.25);
       border-radius: 6px;
-      background: rgba(124, 154, 255, 0.12);
+      background: rgba(var(--accent-rgb), 0.12);
       color: var(--text-primary);
       font-size: 12px;
       font-family: var(--font);
@@ -1517,8 +1548,8 @@
       white-space: nowrap;
     }
     .travel-action-btn:hover {
-      background: rgba(124, 154, 255, 0.20);
-      border-color: rgba(124, 154, 255, 0.35);
+      background: rgba(var(--accent-rgb), 0.20);
+      border-color: rgba(var(--accent-rgb), 0.35);
     }
     .travel-action-btn-dim {
       background: none;
@@ -1539,7 +1570,7 @@
       pointer-events: auto;
       min-height: 36px;
       bottom: 68px;
-      border-color: rgba(124, 154, 255, 0.25);
+      border-color: rgba(var(--accent-rgb), 0.25);
     }
 
     /* ============================================= */
@@ -1697,7 +1728,7 @@
     }
   </style>
 </head>
-<body>
+<body class="mat-glass">
   <div id="loading-screen">
     <h1>Moon</h1>
     <p id="loading-msg">Loading celestial bodies...</p>
@@ -1772,12 +1803,21 @@
     <div id="planetarium-ui">
       <!-- Top right: Leave (when landed) + Travel + Menu -->
       <div id="planetarium-actions">
-        <button class="planetarium-sm-btn" id="planetarium-btn-leave" style="display:none">
-          Leave <span id="leave-body-name"></span>
+        <button class="act-btn act-leave" id="planetarium-btn-leave" style="display:none" title="Leave">
+          <svg class="act-glyph" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2.6 12.5 Q8 10.4 13.4 12.5"></path><path d="M8 10.4 V3.2"></path><path d="M5.1 6.1 L8 3.2 L10.9 6.1"></path></svg>
+          <span class="act-lbl">Leave <span id="leave-body-name"></span></span>
         </button>
-        <button class="planetarium-sm-btn" id="planetarium-btn-observatory" style="display:none">&#x1F52D; Observatory</button>
-        <button class="planetarium-sm-btn" id="planetarium-btn-travel">&#x1F680;<span class="travel-btn-text"> Travel</span></button>
-        <button class="planetarium-sm-btn" id="planetarium-btn-menu">&#x2630;</button>
+        <button class="act-btn act-obs" id="planetarium-btn-observatory" style="display:none" title="Observatory">
+          <svg class="act-glyph" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.55" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3.2 7.4 L10.7 3.7 L11.7 5.8 L4.2 9.5 Z"></path><path d="M10.7 3.7 L11.9 3.1"></path><path d="M6.5 8.6 L6 13.2 M6 13.2 L4.4 14.4 M6 13.2 L7.6 14.4"></path></svg>
+          <span class="act-lbl">Observatory</span>
+        </button>
+        <button class="act-btn act-goto" id="planetarium-btn-travel" title="Travel">
+          <svg class="act-glyph" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><g><g transform="rotate(42 8 8)"><path fill-rule="evenodd" d="M8 1.5 C 6.4 3.3 5.6 5.7 5.6 8.2 L 5.6 9.7 L 3.8 11.5 C 3.5 11.8 3.8 12.3 4.2 12.1 L 5.6 11.5 L 5.6 12.4 L 10.4 12.4 L 10.4 11.5 L 11.8 12.1 C 12.2 12.3 12.5 11.8 12.2 11.5 L 10.4 9.7 L 10.4 8.2 C 10.4 5.7 9.6 3.3 8 1.5 Z M8 4.6 a1.25 1.25 0 1 1 0 2.5 a1.25 1.25 0 0 1 0 -2.5 Z" fill="currentColor" stroke="none"></path><path d="M6.7 13 L8 15 L9.3 13 Z" fill="currentColor" stroke="none"></path></g><path d="M2.4 13.6 L4.4 11.6 L4.9 13.9 Z" fill="currentColor" stroke="none" opacity="0.55"></path></g></svg>
+          <span class="act-lbl travel-btn-text">Travel</span>
+        </button>
+        <button class="act-btn act-icon act-menu" id="planetarium-btn-menu" title="Menu">
+          <svg class="act-glyph" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 5.7 H13 M3 10.3 H13"></path></svg>
+        </button>
       </div>
 
       <!-- Menu dropdown (Help, journey actions, settings) -->
@@ -1836,7 +1876,7 @@
       </div>
 
       <!-- Observatory panel: vantage + phase hero + surface-view entry + event jumps -->
-      <div id="observatory-panel">
+      <div id="observatory-panel" class="pn">
         <div class="obs-eyebrow">
           <b>Observatory</b>
           <button class="obs-close" id="observatory-close" aria-label="Close observatory panel">&times;</button>
@@ -2010,7 +2050,7 @@
       </div>
 
       <!-- Travel menu (centered modal) -->
-      <div id="travel-menu">
+      <div id="travel-menu" class="pn pn-high">
         <div class="travel-menu-header">
           <h3>Travel to...</h3>
           <button class="travel-menu-close" id="travel-menu-close">&times;</button>
@@ -2028,7 +2068,7 @@
       </div>
 
       <!-- Observatory menu (cruise state): one tap lands on the picked body with the sky panel open -->
-      <div id="observatory-menu">
+      <div id="observatory-menu" class="pn pn-high">
         <div class="travel-menu-header">
           <h3>Observatory</h3>
           <button class="travel-menu-close" id="observatory-menu-close">&times;</button>
@@ -2071,14 +2111,14 @@
       <button id="historic-reopen" aria-label="Show mission info">Mission info</button>
 
       <!-- Proximity land button (shown when near a body) -->
-      <button class="planetarium-sm-btn" id="planetarium-btn-land" style="display:none">
+      <button class="act-btn" id="planetarium-btn-land" style="display:none">
         Land on <span id="land-body-name"></span>
       </button>
 
       <!-- Unified bottom bar -->
       <div id="planetarium-bottom-bar">
         <!-- Time popover (expands upward) -->
-        <div id="time-popover" class="bar-popover bar-popover-left">
+        <div id="time-popover" class="bar-popover bar-popover-left pn pn-high">
           <div class="time-controls">
             <button class="planetarium-icon-btn" id="planetarium-time-pause">Pause</button>
             <button class="planetarium-icon-btn" id="planetarium-time-play">Play</button>
@@ -2094,7 +2134,7 @@
         </div>
 
         <!-- Stats popover (expands upward) -->
-        <div id="stats-popover" class="bar-popover bar-popover-right">
+        <div id="stats-popover" class="bar-popover bar-popover-right pn pn-high">
           <div class="stat-row"><span class="stat-label">FPS</span><span class="stat-value" id="stat-fps">--</span></div>
           <div class="stat-row"><span class="stat-label">Sun dist</span><span class="stat-value" id="stat-distance">--</span></div>
           <div class="stat-row"><span class="stat-label">Light time</span><span class="stat-value" id="stat-light-time">--</span></div>
@@ -2107,7 +2147,7 @@
         </div>
 
         <!-- Main bar row -->
-        <div class="bar-row">
+        <div class="bar-row pn">
           <!-- Date/time (floats above bar on desktop, inline on mobile) -->
           <div class="bar-date-row" id="bar-time-toggle">
             <span class="bar-date" id="planetarium-time-value">--</span>
@@ -2118,7 +2158,7 @@
 
           <!-- Speed controls -->
           <div class="bar-section bar-speed-main">
-            <button class="planetarium-icon-btn" id="planetarium-btn-autopilot" title="Autopilot: fly to a destination. Click to choose target or disengage. (P)">&#x1F916; Pilot</button>
+            <button class="planetarium-icon-btn" id="planetarium-btn-autopilot" title="Autopilot: fly to a destination. Click to choose target or disengage. (P)"><svg class="bar-glyph" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 1.8 L12 14 L8 11.4 L4 14 Z" fill="currentColor" stroke="none"></path></svg><span class="autopilot-lbl">Pilot</span></button>
             <div class="speed-group">
               <button class="planetarium-icon-btn" id="planetarium-speed-down" title="Reduce speed">-</button>
               <div class="speed-center">

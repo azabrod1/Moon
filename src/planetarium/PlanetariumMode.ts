@@ -24,7 +24,8 @@ import { PlanetLabels } from './PlanetLabels';
 import { PlanetariumStore, createDefaultPlanetariumState, type PlanetariumState, type LandedTarget } from './PlanetariumStore';
 import { computeStats } from './stats';
 import { PLANETARIUM_BODIES, type PlanetData } from './planets/planetData';
-import { createMoonMeshes, upgradeTextureOnApproach, type MoonMesh } from './PlanetFactory';
+import { createMoonMeshes, createShaderWarmupProbes, setWarmEligibleMoonParents, upgradeTextureOnApproach, type MoonMesh, type TextureUpgrade } from './PlanetFactory';
+import { bindTextureWarmer, pumpTextureWarmQueue, queueTextureWarm, resetTextureWarmer } from './world/textureWarmer';
 import {
   advancePlanetariumTime,
   computeBodyPositionAU,
@@ -239,9 +240,17 @@ export class PlanetariumMode {
   // so the flythrough baseline (256/512) looks low-res up close. GPU paint makes
   // this nearly free; the result stays for the session.
   private static readonly OBSERVE_MOON_TEXTURE_WIDTH = 1024;
+
+  // Per-frame time budget for warm texture uploads: small maps batch within
+  // it, a 4K map takes its frame alone (the pump always uploads at least one).
+  private static readonly TEXTURE_WARM_BUDGET_MS = 6;
   // Arrival veil re-entrancy guard (rapid picks, or a pick while one is running).
   private arrivalInFlight = false;
   private static readonly ARRIVAL_MIN_DWELL_MS = 150;
+  // Longest the arrival cover waits (from cover start) for the landed pair's
+  // in-flight 4K fetch+decode before revealing anyway — a stalled fetch must
+  // never pin the veil.
+  private static readonly ARRIVAL_UPGRADE_HOLD_MAX_MS = 900;
   private tmpMoonOffset = new THREE.Vector3();
   private tmpMoonOrbitNormal = new THREE.Vector3();
   private tmpMoonShadowLocal = new THREE.Vector3();
@@ -561,6 +570,9 @@ export class PlanetariumMode {
     // Capture device texture caps from the live renderer before any body loads,
     // so anisotropy and tier limits apply to the very first textures created.
     captureDeviceTextureCaps(renderer);
+    // Warm uploads go through the renderer so freshly loaded maps reach the
+    // GPU on quiet frames instead of inside a gesture's first draw.
+    bindTextureWarmer((tex) => renderer.initTexture(tex));
     // GPU moon-texture painter (synchronous CPU fallback inside). Inject its
     // paint into the lazy painter; MoonPainter's queue + the visibility gate +
     // the arrival veil are unchanged — only the per-moon paint moves to the GPU.
@@ -691,6 +703,9 @@ export class PlanetariumMode {
     this.speedCenterEl = document.querySelector('.speed-center') as HTMLElement | null;
 
     const savedState = await this.store.loadState();
+    // Precompile below runs only on the activation that builds the scene —
+    // on later re-activations every program is already cached on the renderer.
+    const buildingSolarSystem = !this.solarSystem;
     const initialDefaultState = savedState ? null : createDefaultPlanetariumState();
     if (initialDefaultState) {
       // Persist a starter journey immediately so slow mobile loads can still resume.
@@ -825,6 +840,34 @@ export class PlanetariumMode {
     }
     this.uiRefreshAccumulator = PlanetariumMode.UI_REFRESH_INTERVAL_S;
     this.updateMissionControlState();
+
+    if (buildingSolarSystem) {
+      // Compile the scene's shader programs while the load screen still covers
+      // the canvas — with probe materials for the map/bump/normal combinations
+      // moon materials only reach after their async paints and photos arrive —
+      // so a first landing or surface view doesn't pay ANGLE program links
+      // mid-gesture. Runs after restoreState/starfield/constellations so the
+      // compiled set matches what a restored session actually renders.
+      // compileAsync submits synchronously and then polls; the race below only
+      // guards a hung poll (it cancels no work), and on any failure lazy
+      // first-draw compilation remains the fallback.
+      performance.mark('plm:precompile:start');
+      const probes = createShaderWarmupProbes();
+      this.scene.add(probes.group);
+      const compiled = this.renderer
+        .compileAsync(this.scene, this.camera)
+        .catch(() => undefined)
+        .then(() => {
+          // Probe materials are disposed only once the poll has fully settled —
+          // disposing a material mid-poll throws inside a timer callback that
+          // no try/catch around the await could reach.
+          this.scene.remove(probes.group);
+          probes.dispose();
+        });
+      await Promise.race([compiled, new Promise((resolve) => window.setTimeout(resolve, 3000))]);
+      performance.measure('plm:precompile', 'plm:precompile:start');
+    }
+
     reportActivationProgress(FIRST_PLANETARIUM_ACTIVATION_TOTAL_UNITS);
     performance.measure('plm:activate', 'plm:activate:start');
   }
@@ -922,10 +965,11 @@ export class PlanetariumMode {
   update(dt: number): void {
     if (!this.active || !this.solarSystem) return;
 
-    // Stream a higher-res surface map for any body that grows large on screen.
-    // Runs in every mode — ahead of the landed early-return — because the landed
-    // Observatory telescope (narrow FOV) is exactly where 2K softness would show.
-    this.updateTextureLOD();
+    // Upload one budget's worth of freshly loaded textures while nothing is
+    // being asked of the frame — otherwise the whole decode+upload bill lands
+    // inside whatever gesture first draws the map. Runs in every mode so
+    // landed sessions warm up too.
+    pumpTextureWarmQueue(PlanetariumMode.TEXTURE_WARM_BUDGET_MS);
 
     // Landed mode: camera orbits body, skip flight controls
     if (this.landedOn) {
@@ -989,6 +1033,12 @@ export class PlanetariumMode {
     // Position moon meshes first so `collectDynamicOccluders` can read their
     // scene-space positions and record discs for label culling.
     this.updateMoonPositions();
+
+    // Stream a higher-res surface map for any body that grows large on screen.
+    // Sits after the floating-origin and moon passes: the screen-fraction
+    // trigger may only measure same-frame geometry — frame-one and teleport
+    // frames otherwise read stale offsets, and one mis-read fires a 4K fetch.
+    this.updateTextureLOD();
 
     // Occlusion pipeline: planet discs → moon + ship discs → render labels.
     // The labels setting gates the whole pipeline — it only feeds labels.
@@ -1076,9 +1126,10 @@ export class PlanetariumMode {
    * Stream a higher-resolution colour map for any body that grows large on
    * screen. The trigger is screen-fraction (apparent diameter ÷ vertical FOV),
    * not raw distance, so a body magnified by the Observatory's narrow-FOV
-   * telescope upgrades the same as a close fly-by would. The Moon and Mars carry
-   * an upgrade today; for every other body this is a no-op. Cheap to call each
-   * frame — the upgrade's own state short-circuits once it has fired.
+   * telescope upgrades the same as a close fly-by would. Only bodies with a 4K
+   * variant on disk carry an upgrade; for every other body this is a no-op.
+   * Cheap to call each frame — the upgrade's own state short-circuits once it
+   * has fired.
    */
   private updateTextureLOD(): void {
     if (!this.solarSystem) return;
@@ -1099,6 +1150,10 @@ export class PlanetariumMode {
       for (const m of moons) {
         const up = m.textureUpgrade;
         if (!up) continue;
+        // Hidden moons sit at their parent's center (updateMoonPositions skips
+        // them) — a fake position the trigger must never measure. An invisible
+        // moon can't legitimately span 15% of the viewport anyway.
+        if (!m.mesh.visible) continue;
         m.mesh.getWorldPosition(this.texLODTmp);
         const dist = Math.max(this.texLODTmp.distanceTo(cam), 1e-6);
         if ((m.data.radiusAU * 2) / dist / fovRad > UPGRADE_AT) upgradeTextureOnApproach(up);
@@ -1430,6 +1485,9 @@ export class PlanetariumMode {
     for (const parent of parents) {
       const all = this.planetMoons.get(parent);
       if (all) this.moonPainter.enqueue(parent, all);
+      // The context loss also freed the photo uploads — the next arrival must
+      // get its covered drain again.
+      this.warmedSystems.delete(parent);
     }
   }
 
@@ -4660,18 +4718,69 @@ export class PlanetariumMode {
     return target.type === 'moon' ? target.parentPlanet : target.name;
   }
 
+  // Systems whose photo maps have already been drained to the GPU under an
+  // arrival cover — one veil beat per system per session (context loss clears
+  // the entry, since it frees the uploads).
+  private warmedSystems = new Set<string>();
+
+  /** Queue a system's arrived moon photo/normal maps for warm upload. Photos
+   * only — a GPU-painted procedural map is render-target-backed (already
+   * resident) and a CPU CanvasTexture is small; the real normal map (the
+   * Moon's) is the other multi-MB upload. */
+  private queueSystemMoonMapsForWarm(parentName: string): void {
+    for (const m of this.planetMoons.get(parentName) ?? []) {
+      const mat = m.mesh.material as THREE.MeshStandardMaterial;
+      if (mat.userData.photoLoaded && mat.map) queueTextureWarm(mat.map);
+      if (mat.normalMap) queueTextureWarm(mat.normalMap);
+    }
+  }
+
+  /** The one-shot 4K upgrade handles of the landed body and its vantage
+   * companion — the pair the Observatory magnifies regardless of distance. */
+  private landedPairUpgrades(): TextureUpgrade[] {
+    if (!this.landedOn) return [];
+    const ups: TextureUpgrade[] = [];
+    for (const body of [this.landedOn, this.swapCompanionTarget()]) {
+      if (!body) continue;
+      const up =
+        body.type === 'planet'
+          ? this.solarSystem?.planets.find((p) => p.data.name === body.name)?.textureUpgrade
+          : this.planetMoons.get(body.parentPlanet)?.find((m) => m.data.name === body.name)?.textureUpgrade;
+      if (up) ups.push(up);
+    }
+    return ups;
+  }
+
   /**
    * Run an instant teleport (`action`), but if the destination system's moons
-   * aren't painted yet, cover the screen first, paint them, then reveal — so a
-   * quick-travel never flashes an unpainted (or, with the visibility gate, a
-   * missing) moon. Warm systems (already painted, or none) act immediately,
-   * exactly as before. A second arrival while one is mid-flight is ignored.
+   * aren't painted yet — or carry 4K-class photo maps that haven't reached the
+   * GPU — cover the screen first, make the system drawable, then reveal. A
+   * quick-travel must never flash an unpainted (or, with the visibility gate,
+   * a missing) moon, and a first arrival must not play a train of ~100ms
+   * upload frames on screen (a 4096-wide upload is unsliceable and one lands
+   * per pump frame — four Galileans means four stalled frames in a row).
+   * Landings also hold the cover (bounded) for the landed pair's pre-triggered
+   * 4K fetch+decode, so those uploads drain under it instead of just after the
+   * reveal. Warm systems act immediately, exactly as before. A second arrival
+   * while one is mid-flight is ignored.
    */
   private arriveThen(target: NonNullable<LandedTarget>, action: () => void): void {
     if (this.arrivalInFlight) return;
     const parentName = this.parentSystemOf(target);
     const moons = this.planetMoons.get(parentName);
-    if (!moons || moons.every((m) => m.painted)) {
+    const needsPaint = !!moons && moons.some((m) => !m.painted);
+    // 4K-class photo maps still waiting for their first GPU upload get drained
+    // under the veil below. Smaller maps (the Moon's 2K photo) upload within a
+    // frame or two off-gesture via the warm pump — no veil beat for those.
+    const needsUploadCover =
+      !!moons &&
+      !this.warmedSystems.has(parentName) &&
+      moons.some((m) => {
+        const mat = m.mesh.material as THREE.MeshStandardMaterial;
+        const img = mat.map?.image as { width?: number } | undefined;
+        return !!mat.userData.photoLoaded && (img?.width ?? 0) >= 4096;
+      });
+    if (!moons || (!needsPaint && !needsUploadCover)) {
       action();
       return;
     }
@@ -4691,16 +4800,43 @@ export class PlanetariumMode {
           if (!this.active) return;
           this.moonPainter.paintSystemNow(parentName, moons);
           action();
+          // Upload the system's arrived photo/normal maps while the cover is
+          // opaque (a landing already queued them via applyLandedTarget; a
+          // cruise jump queues here), so the reveal frame draws a fully
+          // resident system instead of stalling once per big map.
+          this.queueSystemMoonMapsForWarm(parentName);
+          pumpTextureWarmQueue(Number.POSITIVE_INFINITY);
+          this.warmedSystems.add(parentName);
         } catch (err) {
           debugError('Arrival failed', err);
         } finally {
           this.arrivalInFlight = false;
-          // Hold the cover until the painted, teleported scene has rendered (the
-          // landed/jumped system first appears on the next update→render) and at
-          // least the min dwell, so a fast machine reads it as an intentional
-          // beat rather than a flicker. Removing the class fades it back out.
-          const wait = Math.max(48, PlanetariumMode.ARRIVAL_MIN_DWELL_MS - (performance.now() - coverStart));
-          window.setTimeout(() => veil?.classList.remove('covering'), wait);
+          // A landing pre-triggers the landed pair's 4K upgrades
+          // (applyLandedTarget), and their fetch+decode may still be in flight
+          // when the drain above runs — revealed too early, each finishes as a
+          // ~100ms upload frame on the fresh scene. Keep the opaque cover up
+          // until they resolve (bounded — a stalled fetch must never pin the
+          // veil), drain once more, then reveal.
+          const holdDeadline = coverStart + PlanetariumMode.ARRIVAL_UPGRADE_HOLD_MAX_MS;
+          const tryLift = () => {
+            if (
+              this.active &&
+              performance.now() < holdDeadline &&
+              this.landedPairUpgrades().some((up) => up.state === 'loading')
+            ) {
+              requestAnimationFrame(tryLift);
+              return;
+            }
+            pumpTextureWarmQueue(Number.POSITIVE_INFINITY);
+            // Hold the cover until the painted, teleported scene has rendered
+            // (the landed/jumped system first appears on the next
+            // update→render) and at least the min dwell, so a fast machine
+            // reads it as an intentional beat rather than a flicker. Removing
+            // the class fades it back out.
+            const wait = Math.max(48, PlanetariumMode.ARRIVAL_MIN_DWELL_MS - (performance.now() - coverStart));
+            window.setTimeout(() => veil?.classList.remove('covering'), wait);
+          };
+          tryLift();
         }
       }),
     );
@@ -4733,6 +4869,21 @@ export class PlanetariumMode {
     // already closed it (no-op here).
     this.closeObservatoryMenu();
     this.landedOn = target;
+    // The landed system's moons are about to be drawn up close: mark them
+    // warm-eligible (late-arriving photos/normals queue on arrival) and queue
+    // any already-arrived maps now, so their GPU uploads happen on the next
+    // quiet frames. Without this, frustum culling defers an off-screen moon's
+    // first draw — and its whole decode+upload bill — to exactly the gesture
+    // that points the camera at it (vantage swap, Look up, even Leave).
+    const warmParent = this.parentSystemOf(target);
+    setWarmEligibleMoonParents(new Set([warmParent]));
+    this.queueSystemMoonMapsForWarm(warmParent);
+    // The landed body and its vantage companion are this session's guaranteed
+    // close-ups (the Observatory magnifies them regardless of distance), so
+    // start their one-shot 4K upgrades now: fetch, decode, and upload spend
+    // the parked seconds right after touchdown instead of the first
+    // magnifying gesture (a 4096-wide upload alone is a ~100ms frame).
+    for (const up of this.landedPairUpgrades()) upgradeTextureOnApproach(up);
     // The reticle's screen position belongs to the previous target — drop it
     // now rather than letting it float stale until the next landed frame
     // (cross-system picks can interpose a transition with no guide pass).
@@ -5170,6 +5321,8 @@ export class PlanetariumMode {
 
   exitLandedMode() {
     if (!this.landedOn) return;
+    // Back to cruise: no landed system means no moons owed a warm upload.
+    setWarmEligibleMoonParents(new Set());
     // A menu opened while landed describes a ground that's about to vanish
     // (Leave is clickable around the backdrop-less menu) — close it.
     this.closeObservatoryMenu();
@@ -5332,6 +5485,10 @@ export class PlanetariumMode {
 
     this.updatePlanetScaling();
     this.updateMoonPositions();
+    // Same same-frame-geometry rule as the cruise path — and the landed
+    // Observatory telescope (narrow FOV) is exactly where 2K softness shows,
+    // so the 4K trigger keeps running while landed.
+    this.updateTextureLOD();
     this.updateShadowVisuals();
     if (shouldRefreshUi) this.updateOrbitDetails();
     this.pumpObservatoryEventSearch();
@@ -5702,6 +5859,7 @@ export class PlanetariumMode {
 
   dispose() {
     this.deactivate();
+    resetTextureWarmer(); // drop queued warm-ups and the renderer binding with the mode
     this.moonTexturer.dispose();
     this.notification.dispose();
     if (this.planetLabels) {

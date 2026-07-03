@@ -17,9 +17,42 @@ import {
 import { debugWarn } from '../shared/debug';
 import { applyTextureDefaults, clampTier, resolveTextureUrl, type TextureTier, type MapKind } from './world/texturePolicy';
 import { augmentSurfaceMaterial, type SurfaceArchetype, type SurfaceShadingFx } from './world/surfaceShading';
+import { queueTextureWarm } from './world/textureWarmer';
 
 const loader = new THREE.TextureLoader();
 loader.crossOrigin = 'anonymous';
+
+/**
+ * Decode a freshly loaded image off the render thread, then queue its GPU
+ * upload for the budgeted warm pump — so the first frame that draws the map
+ * pays neither a synchronous JPEG/PNG decode nor a 4K-scale upload. Planet-
+ * level maps only: moon photos/paints must NOT be warmed (they'd upload tens
+ * of MB of hidden moons at boot; cold arrivals upload under the arrival veil
+ * instead). Fire-and-forget — if decode is unavailable or rejects, the pump
+ * (or the first draw) pays the decode exactly as before.
+ */
+function decodeThenQueueWarm(tex: THREE.Texture): void {
+  const img = tex.image as { decode?: () => Promise<void> } | undefined;
+  const queue = () => queueTextureWarm(tex);
+  if (img && typeof img.decode === 'function') img.decode().then(queue, queue);
+  else queue();
+}
+
+/**
+ * Moon photo/normal uploads are warmed only for systems the player is landed
+ * in. Those moons are about to be drawn, so the upload is inevitable and
+ * warming moves it off the gesture frame at no extra VRAM — while warming
+ * every system's photos would push tens of MB of hidden moons to the GPU
+ * (the big base maps are 4096×2048). Frustum culling is why the landed case
+ * matters: a landed camera frames the parent, so an off-screen moon's first
+ * draw — and its whole upload bill — otherwise waits for exactly the gesture
+ * that points the camera at it (vantage swap, Look up).
+ */
+let warmEligibleMoonParents: ReadonlySet<string> = new Set();
+
+export function setWarmEligibleMoonParents(parents: ReadonlySet<string>): void {
+  warmEligibleMoonParents = parents;
+}
 
 // Texture filenames — bundled locally in public/textures/ (Solar System Scope
 // CC BY 4.0 + NASA; Pluto is New Horizons / USGS, see TEXTURE_4K_KEYS). The
@@ -142,6 +175,9 @@ function loadTexture(key: string, tier: TextureTier = '2k', kind: MapKind = 'col
         settled = true;
         clearTimeout(timer);
         applyTextureDefaults(tex, kind);
+        // loadTexture serves planet-level maps only (bases + Earth details),
+        // which are unconditionally on screen — always safe to warm.
+        decodeThenQueueWarm(tex);
         resolve(tex);
       },
       undefined,
@@ -249,9 +285,19 @@ export function upgradeTextureOnApproach(up: TextureUpgrade): void {
     url,
     (tex) => {
       applyTextureDefaults(tex, 'color');
-      applyColorTierTexture(up.material, tex, 4);
-      up.material.userData.photoLoaded = true; // keep the lazy painter off it
-      up.state = 'done';
+      // Decode before the rank swap: the material keeps its current map until
+      // the 4K is cheap to draw, so a mid-session upgrade never freezes the
+      // frame on a synchronous decode — and the warm queue then uploads it off
+      // any gesture frame. The 4K trigger only fires for a body filling the
+      // view, so warming here can't upload hidden bodies.
+      const img = tex.image as { decode?: () => Promise<void> } | undefined;
+      const applyUpgrade = () => {
+        if (applyColorTierTexture(up.material, tex, 4)) queueTextureWarm(tex);
+        up.material.userData.photoLoaded = true; // keep the lazy painter off it
+        up.state = 'done';
+      };
+      if (img && typeof img.decode === 'function') img.decode().then(applyUpgrade, applyUpgrade);
+      else applyUpgrade();
     },
     undefined,
     (err) => {
@@ -469,6 +515,7 @@ export async function createPlanetMesh(planet: PlanetData): Promise<PlanetMesh> 
         // which reads as harsh facets on crater rims up close. Halve it.
         mat.normalScale.set(0.5, 0.5);
         mat.needsUpdate = true;
+        decodeThenQueueWarm(nrm); // planet-level (always on screen) — safe to warm
       },
       undefined,
       (err) =>
@@ -833,6 +880,60 @@ const MOON_NORMAL_KEYS: Record<string, string> = {
 };
 
 /**
+ * Shader-variant warm-up probes. Moon materials start as bare placeholders;
+ * their maps arrive later (procedural paint, streamed photo, measured normal),
+ * and each arrival flips USE_MAP/USE_BUMPMAP/USE_NORMALMAP — a different
+ * shader program than the placeholder's. Compiling the scene at boot therefore
+ * builds the wrong variants, and the real ones still link mid-gesture (the
+ * measured surface-view stall). These three tiny meshes carry exactly the
+ * post-arrival combinations; the augmentation is byte-identical GLSL across
+ * bodies (uniforms only), so one compile per combination covers every moon.
+ * Add to the scene before renderer.compileAsync, remove + dispose after it
+ * settles. The group stays invisible — compile() traverses invisible objects,
+ * and nothing here may ever be drawn.
+ */
+export function createShaderWarmupProbes(): { group: THREE.Group; dispose: () => void } {
+  const makeTex = (kind: MapKind): THREE.Texture => {
+    const canvas = document.createElement('canvas');
+    canvas.width = 1;
+    canvas.height = 1;
+    const ctx = canvas.getContext('2d')!;
+    ctx.fillStyle = '#808080';
+    ctx.fillRect(0, 0, 1, 1);
+    const tex = new THREE.CanvasTexture(canvas);
+    applyTextureDefaults(tex, kind); // colour space is part of the program key
+    return tex;
+  };
+  const geo = new THREE.SphereGeometry(1e-9, 4, 2);
+  const group = new THREE.Group();
+  group.visible = false;
+  const mats: THREE.MeshStandardMaterial[] = [];
+  const combos: Array<Partial<Record<'map' | 'bumpMap' | 'normalMap', THREE.Texture>>> = [
+    { map: makeTex('color'), bumpMap: makeTex('data') }, // painted moon / photo + procedural bump
+    { map: makeTex('color'), normalMap: makeTex('data') }, // photo + measured normal (the Moon)
+    { map: makeTex('color') }, // photo arrived before the paint
+  ];
+  for (const combo of combos) {
+    const mat = new THREE.MeshStandardMaterial(combo);
+    augmentSurfaceMaterial(mat, 'rocky'); // archetype is uniform-only — any value keys the same program
+    mats.push(mat);
+    group.add(new THREE.Mesh(geo, mat));
+  }
+  return {
+    group,
+    dispose: () => {
+      for (const mat of mats) {
+        mat.map?.dispose();
+        mat.bumpMap?.dispose();
+        mat.normalMap?.dispose();
+        mat.dispose();
+      }
+      geo.dispose();
+    },
+  };
+}
+
+/**
  * Create moon meshes for a planet. Moons orbit at their real orbital radius
  * (in AU). The surface texture is NOT generated here — it's painted lazily
  * (paintMoonTextures / MoonPainter) so first load isn't blocked on ~65 canvas
@@ -875,9 +976,18 @@ export function createMoonMeshes(planetName: string): MoonMesh[] {
         normalUrl,
         (tex) => {
           applyTextureDefaults(tex, 'data');
-          mat.normalMap = tex;
-          mat.normalScale.set(1, 1);
-          mat.needsUpdate = true;
+          // Decode off-thread before assigning (the moon simply keeps its
+          // procedural bump until the normal is cheap to draw); warm the
+          // upload only when the player is landed in this system.
+          const img = tex.image as { decode?: () => Promise<void> } | undefined;
+          const applyNormal = () => {
+            mat.normalMap = tex;
+            mat.normalScale.set(1, 1);
+            mat.needsUpdate = true;
+            if (warmEligibleMoonParents.has(planetName)) queueTextureWarm(tex);
+          };
+          if (img && typeof img.decode === 'function') img.decode().then(applyNormal, applyNormal);
+          else applyNormal();
         },
         undefined,
         (err) =>
@@ -900,10 +1010,20 @@ export function createMoonMeshes(planetName: string): MoonMesh[] {
         photoUrl,
         (tex) => {
           applyTextureDefaults(tex, 'color');
-          mat.userData.photoLoaded = true;
-          // Rank 2: a later 4K upgrade (rank 4) supersedes this; a 4K that
-          // already won can't be downgraded by a late-arriving 2K.
-          applyColorTierTexture(mat, tex, 2);
+          // Decode off-thread before the rank swap — the procedural colour
+          // stays until the photo is cheap to draw, so the swap can't freeze
+          // a frame on a synchronous JPEG decode.
+          const img = tex.image as { decode?: () => Promise<void> } | undefined;
+          const applyPhoto = () => {
+            mat.userData.photoLoaded = true;
+            // Rank 2: a later 4K upgrade (rank 4) supersedes this; a 4K that
+            // already won can't be downgraded by a late-arriving 2K.
+            if (applyColorTierTexture(mat, tex, 2) && warmEligibleMoonParents.has(planetName)) {
+              queueTextureWarm(tex);
+            }
+          };
+          if (img && typeof img.decode === 'function') img.decode().then(applyPhoto, applyPhoto);
+          else applyPhoto();
         },
         undefined,
         (err) =>

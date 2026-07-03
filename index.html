@@ -263,6 +263,20 @@
     }
     .bar-popover.visible { display: block; }
     .bar-popover-left { left: 0; right: 0; }
+    /* The time instrument needs more width than the slim cruise bar offers
+       (transport + rate stepper are ~260px), so it floats at its own width,
+       centered over the bar, instead of inheriting the bar's edges. On
+       desktop it also clears the ~24px floating date row so the toggle that
+       opened it stays visible in the gap (reset where the date row goes
+       inline into the bar on mobile). */
+    #time-popover {
+      left: 50%;
+      right: auto;
+      transform: translateX(-50%);
+      width: min(316px, calc(100vw - 16px));
+      margin-bottom: 32px;
+      padding: 12px 14px;
+    }
 
     /* Stats — a right-edge instrument card pinned bottom-right (the same zone as
        the Observatory panel). It slides in from the edge and the bar toggle
@@ -307,24 +321,82 @@
     .stat-label { color: var(--text-secondary); font-size: 10px; }
     .stat-value { color: var(--text-primary); font-weight: 500; font-variant-numeric: tabular-nums; font-size: 11px; }
 
-    .time-controls {
-      display: grid;
-      grid-template-columns: repeat(3, minmax(0, 1fr));
-      gap: 4px;
+    .time-transport {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      /* Narrow bars drop the rate cluster onto its own line instead of
+         overflowing the popover. */
+      flex-wrap: wrap;
     }
+    .time-seg {
+      display: flex;
+      align-items: stretch;
+      border: 1px solid var(--line-dim);
+      border-radius: var(--r-s);
+      background: rgba(255, 255, 255, 0.04);
+      overflow: hidden;
+    }
+    .time-seg-btn {
+      width: 36px;
+      height: 28px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      border: none;
+      background: none;
+      color: var(--text-secondary);
+      cursor: pointer;
+      transition: background 0.15s, color 0.15s;
+    }
+    .time-seg-btn + .time-seg-btn { border-left: 1px solid var(--line-dim); }
+    .time-seg-btn:hover { background: rgba(255, 255, 255, 0.07); color: var(--text-primary); }
+    .time-seg-btn.on { background: rgba(var(--accent-rgb), 0.16); color: var(--accent); }
+    /* While paused, resuming keeps the clock's old direction (the rate keeps
+       its sign) — that segment stays faintly tinted so "resume goes backward"
+       is visible while the pause segment is the lit one. Never combined
+       with .on. */
+    .time-seg-btn.armed { color: var(--text-primary); background: rgba(var(--accent-rgb), 0.06); }
+    .time-rate { display: flex; align-items: center; gap: 4px; }
+    .time-rate-value {
+      /* Fixed width: the label between the − / + steppers must never resize,
+         or repeat-clicking a stepper walks it out from under the pointer. */
+      min-width: 76px;
+      text-align: center;
+      font-family: var(--font-mono);
+      font-variant-numeric: tabular-nums;
+      font-size: 11px;
+      color: var(--text-primary);
+    }
+    /* Paused: the readout is inert (it's what resume returns to) but the
+       steppers stay live — stepping deliberately unpauses. */
+    .time-rate-value.is-dim { color: var(--t3); }
     .time-input-row {
       display: flex;
       align-items: center;
-      gap: 6px;
-      margin-top: 6px;
+      gap: 8px;
+      margin-top: 10px;
     }
-    .time-input-row .settings-label {
+    .time-utc-label {
       flex-shrink: 0;
       font-size: 10px;
+      font-weight: 600;
+      letter-spacing: 0.14em;
+      color: var(--t3);
     }
     #planetarium-time-input {
       flex: 1;
       min-width: 0;
+      height: 28px;
+      padding: 0 8px;
+      font-family: var(--font-mono);
+      font-size: 11px;
+      color: var(--text-primary);
+      background: rgba(255, 255, 255, 0.04);
+      border: 1px solid var(--line-dim);
+      border-radius: var(--r-s);
+      color-scheme: dark;
     }
 
     .speed-label-sm { font-size: 10px; color: var(--text-secondary); letter-spacing: 0.1px; white-space: nowrap; }
@@ -1691,6 +1763,8 @@
         padding: 2px 8px;
         border-right: 1px solid rgba(255, 255, 255, 0.04);
       }
+      /* Date row is inline in the bar here — no floating strip to clear. */
+      #time-popover { margin-bottom: 6px; }
       .bar-rate-sep { display: none; }
       .bar-date { font-size: 10px; }
       .bar-rate { font-size: 10px; }
@@ -2226,17 +2300,36 @@
       <div id="planetarium-bottom-bar">
         <!-- Time popover (expands upward) -->
         <div id="time-popover" class="bar-popover bar-popover-left pn pn-high">
-          <div class="time-controls">
-            <button class="planetarium-icon-btn" id="planetarium-time-pause">Pause</button>
-            <button class="planetarium-icon-btn" id="planetarium-time-play">Play</button>
-            <button class="planetarium-icon-btn" id="planetarium-time-reverse">Reverse</button>
-            <button class="planetarium-icon-btn" id="planetarium-time-slower">Slower</button>
-            <button class="planetarium-icon-btn" id="planetarium-time-faster">Faster</button>
-            <button class="planetarium-icon-btn" id="planetarium-time-now">Now</button>
+          <div class="time-transport">
+            <!-- Transport tri-state: exactly one segment is the clock's state
+                 (paused / forward / backward), so radio semantics, not three
+                 toggles. Filled glyphs on purpose — a 1.6-stroke triangle at
+                 13px reads as a chevron, not "play". -->
+            <div class="time-seg" role="radiogroup" aria-label="Time playback">
+              <button class="time-seg-btn" id="planetarium-time-reverse" role="radio" aria-checked="false" aria-label="Play backward">
+                <svg class="bar-glyph" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M11.5 3.5v9L4.8 8l6.7-4.5Z"/></svg>
+              </button>
+              <button class="time-seg-btn" id="planetarium-time-pause" role="radio" aria-checked="false" aria-label="Pause">
+                <svg class="bar-glyph" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><rect x="4.6" y="3.8" width="2.2" height="8.4" rx="0.8"/><rect x="9.2" y="3.8" width="2.2" height="8.4" rx="0.8"/></svg>
+              </button>
+              <button class="time-seg-btn" id="planetarium-time-play" role="radio" aria-checked="true" aria-label="Play forward">
+                <svg class="bar-glyph" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M4.5 3.5v9L11.2 8 4.5 3.5Z"/></svg>
+              </button>
+            </div>
+            <div class="time-rate">
+              <button class="planetarium-icon-btn" id="planetarium-time-slower" aria-label="Slower">
+                <svg class="bar-glyph" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" aria-hidden="true"><path d="M3.5 8h9"/></svg>
+              </button>
+              <span class="time-rate-value" id="planetarium-time-rate-value">Realtime</span>
+              <button class="planetarium-icon-btn" id="planetarium-time-faster" aria-label="Faster">
+                <svg class="bar-glyph" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" aria-hidden="true"><path d="M3.5 8h9M8 3.5v9"/></svg>
+              </button>
+            </div>
           </div>
           <div class="time-input-row">
-            <span class="settings-label">UTC</span>
+            <span class="time-utc-label">UTC</span>
             <input type="datetime-local" id="planetarium-time-input" class="settings-date" step="60" />
+            <button class="planetarium-icon-btn" id="planetarium-time-now">Now</button>
           </div>
         </div>
 

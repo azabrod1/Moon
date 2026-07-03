@@ -50,9 +50,9 @@ export interface PlanetariumState {
   systemSpeed?: number;      // system speed multiplier (fraction of c)
   systemSlowdown?: boolean;  // whether system slowdown is enabled
   autopilotTarget?: LandedTarget; // destination for fly-to autopilot
-  /** True only when the user picked the autopilot target themselves — the
-   * onboarding default (Mercury) is not user-engaged and must not render a
-   * destination chip or survive a landing. Saves predating the flag migrate
+  /** True only when the user picked the autopilot target themselves — a
+   * non-user target (old saves once auto-cruised to Mercury) must not render
+   * a destination chip or survive a landing. Saves predating the flag migrate
    * by heuristic: only user picks ever produce a non-Mercury target. */
   autopilotUserEngaged?: boolean;
 }
@@ -136,10 +136,10 @@ export function sanitizePlanetariumState(raw: unknown): PlanetariumState | null 
 }
 
 /**
- * Provenance for saves predating `autopilotUserEngaged`: only the onboarding
- * default ever points at Mercury without a user pick, so a non-Mercury target
- * must be user-engaged (keeps real journeys' chips); a Mercury target is
- * ambiguous and migrates un-engaged (the stale-chip bug case).
+ * Provenance for saves predating `autopilotUserEngaged`: back then only the
+ * onboarding auto-cruise ever pointed at Mercury without a user pick, so a
+ * non-Mercury target must be user-engaged (keeps real journeys' chips); a
+ * Mercury target is ambiguous and migrates un-engaged (the stale-chip bug case).
  */
 function legacyAutopilotEngagement(target: LandedTarget): boolean {
   if (!target) return false;
@@ -166,7 +166,7 @@ export function createDefaultPlanetariumState(): PlanetariumState {
     distanceTraveled: 0,
     timeElapsed: 0,
     timestamp: Date.now(),
-    autopilot: true,
+    autopilot: false,
     layoutMode: 'realistic',
     astroTimeUtcMs: Date.now(),
     astroTimeRate: 1,

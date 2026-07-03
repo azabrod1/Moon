@@ -294,10 +294,10 @@ export class PlanetariumMode {
   private notification = new PlanetariumNotification();
   private uiWired = false;
 
-  // Autopilot: auto-steer toward target
-  private autopilot = true;
+  // Autopilot: auto-steer toward target. Off until the user engages it.
+  private autopilot = false;
   private autopilotTarget: NonNullable<LandedTarget> | null = null;
-  // Provenance: did the user pick the target, or is it the onboarding default?
+  // Provenance: did the user pick the target, or is it a legacy-save leftover?
   // Only user-engaged targets render the "→ name" chip or survive a landing.
   private autopilotUserEngaged = false;
 
@@ -784,13 +784,9 @@ export class PlanetariumMode {
       this.restoreState(savedState);
     } else {
       this.restoreState(initialDefaultState ?? createDefaultPlanetariumState());
+      // New users start already gliding, nose on Mercury — motion without a
+      // silent autopilot claiming the Pilot control they never touched.
       this.pointTowardMercury();
-      // Auto-engage autopilot toward Mercury for new users — an onboarding
-      // default, not a user destination (no chip; retired on first landing).
-      this.autopilotTarget = { type: 'planet', name: 'Mercury' };
-      this.autopilot = true;
-      this.autopilotUserEngaged = false;
-      this.updateAutopilotButton();
       this.showIntroText();
     }
 
@@ -856,10 +852,6 @@ export class PlanetariumMode {
     this.store.clearState();
     this.restoreState(createDefaultPlanetariumState());
     this.pointTowardMercury();
-    this.autopilotTarget = { type: 'planet', name: 'Mercury' };
-    this.autopilot = true;
-    this.autopilotUserEngaged = false;
-    this.updateAutopilotButton();
     this.showIntroText();
   }
 
@@ -2409,9 +2401,6 @@ export class PlanetariumMode {
       this.store.clearState();
       this.restoreState(createDefaultPlanetariumState());
       this.pointTowardMercury();
-      this.autopilotTarget = { type: 'planet', name: 'Mercury' };
-      this.autopilot = true;
-      this.updateAutopilotButton();
       this.notification.show('New journey started!');
     });
 
@@ -4784,9 +4773,9 @@ export class PlanetariumMode {
 
     // Disable autopilot silently (target preserved for restore)
     this.autopilot = false;
-    // Landing retires a destination the user never chose (the onboarding
-    // default) — otherwise takeoff resumes a ghost trip and the bottom-bar
-    // chip keeps pointing at it forever.
+    // Landing retires a destination the user never chose (a target migrated
+    // from an old save without provenance) — otherwise takeoff resumes a
+    // ghost trip and the bottom-bar chip keeps pointing at it forever.
     if (!this.autopilotUserEngaged) {
       this.autopilotTarget = null;
       this.preLandAutopilot = false;
@@ -5545,15 +5534,18 @@ export class PlanetariumMode {
     const btn = document.getElementById('planetarium-btn-autopilot');
     if (!btn) return;
     btn.classList.toggle('active', this.autopilot);
+    // Only a destination the user picked widens the chip with its name — a
+    // target migrated from an old save without provenance stays label-free.
+    const target = this.autopilotUserEngaged ? this.autopilotTarget : null;
+    btn.classList.toggle('act-wide', target !== null);
     // Set only the label span — the SVG glyph sibling must survive every update.
     const lbl = btn.querySelector('.autopilot-lbl');
-    if (!lbl) return;
-    // Only a destination the user picked earns the chip — the onboarding
-    // default steers silently and reads as plain "Pilot".
-    if (this.autopilotTarget && this.autopilotUserEngaged) {
-      lbl.textContent = '→ ' + this.autopilotTarget.name;
-    } else {
-      lbl.textContent = 'Pilot';
+    if (lbl) lbl.textContent = target ? target.name : '';
+    const tip = btn.querySelector('.act-tip');
+    if (tip) {
+      tip.innerHTML = this.autopilot
+        ? 'Autopilot engaged — click to disengage'
+        : 'Pilot <kbd>P</kbd>';
     }
   }
 

@@ -228,15 +228,27 @@
     .speed-group.inert { opacity: 0.32; pointer-events: none; filter: grayscale(0.4); }
 
     /* Stats section (right) - clickable */
+    /* Stats — a real chip in the bar's button family; as a bare word it read
+       as a caption (like "Space") instead of a control. */
     .bar-stats {
+      align-self: center;
+      height: 28px;
+      padding: 0 10px;
+      gap: 6px;
+      border: 1px solid var(--line-dim);
+      border-radius: var(--r-s);
+      background: rgba(255, 255, 255, 0.04);
+      color: var(--text-secondary);
       cursor: pointer;
       -webkit-tap-highlight-color: transparent;
-      border-left: 1px solid rgba(255, 255, 255, 0.04);
+      transition: all 0.15s;
     }
+    .bar-stats:hover { background: rgba(255, 255, 255, 0.08); color: var(--text-primary); }
+    .bar-stats-glyph { width: 13px; height: 13px; flex: none; display: block; }
     .bar-stats-label {
-      font-size: 10px;
-      color: var(--text-dim);
-      letter-spacing: 0.1px;
+      font-size: 11px;
+      font-weight: 500;
+      letter-spacing: 0.2px;
     }
 
     /* Popovers that expand upward */
@@ -271,8 +283,14 @@
       font-size: 10px; font-weight: 600; letter-spacing: 0.16em; text-transform: uppercase; color: var(--t3);
     }
     .stats-pop-head svg { width: 13px; height: 13px; flex: none; color: var(--t2); }
-    /* Stats toggle lit while its card is open. */
-    .bar-stats.on .bar-stats-label { color: var(--accent); }
+    /* Stats toggle lit while its card is open — same accent language as the
+       top-row buttons: tinted fill and border, accent glyph, bright label. */
+    .bar-stats.on {
+      background: rgba(var(--accent-rgb), 0.14);
+      border-color: rgba(var(--accent-rgb), 0.35);
+      color: var(--text-primary);
+    }
+    .bar-stats.on .bar-stats-glyph { color: var(--accent); }
     /* Failsafes: never float the card over the surface view or the mobile sheet. */
     body.surface-view-active #stats-popover,
     body.observatory-sheet-open #stats-popover { display: none; }
@@ -377,20 +395,24 @@
       align-items: center;
       gap: 7px;
       pointer-events: auto;
-      z-index: 21;
+      /* One notch above the observatory panel so button tooltips, which drop
+         below the row, stay readable over the panel's top edge. */
+      z-index: 22;
       font-size: 11px;
     }
-    /* Action chips — flat glass (hairline + blur, no gradient/glint; the glint
-       belongs on the big surfaces). Equal-weight + neutral; Travel leads only
-       via an accent glyph, a hair above its siblings without shouting. */
+    /* Action cluster — flat glass (hairline + blur, no gradient/glint; the
+       glint belongs on the big surfaces). All glyphs are monochrome so the row
+       reads as one family: accent marks only an on/engaged state. Leave keeps
+       its text label because it names the body being left. */
     .act-btn {
-      height: 34px;
-      padding: 0 10px;
+      position: relative;
+      height: 38px;
+      padding: 0 13px;
       display: inline-flex;
       align-items: center;
-      gap: 6px;
+      gap: 7px;
       border-radius: var(--r-m);
-      background: rgba(255, 255, 255, 0.04);
+      background: rgba(255, 255, 255, 0.045);
       border: 1px solid var(--line);
       -webkit-backdrop-filter: blur(12px);
       backdrop-filter: blur(12px);
@@ -403,40 +425,78 @@
       white-space: nowrap;
       transition: background var(--dur) var(--ease), color var(--dur) var(--ease), border-color var(--dur) var(--ease);
     }
-    .act-btn:hover { background: rgba(255, 255, 255, 0.08); color: var(--t1); border-color: rgba(255, 255, 255, 0.14); }
+    .act-btn:hover { background: rgba(255, 255, 255, 0.09); color: var(--t1); border-color: rgba(255, 255, 255, 0.14); }
     .act-btn:disabled { opacity: 0.4; cursor: default; }
-    .act-btn:disabled:hover { background: rgba(255, 255, 255, 0.04); color: var(--t2); border-color: var(--line); }
-    .act-btn .act-glyph { width: 14px; height: 14px; flex: none; display: block; opacity: 0.85; }
-    .act-btn.act-icon { padding: 0 8px; }
-    .act-goto .act-glyph { color: var(--accent); opacity: 1; }
-    /* Active toggle chip (e.g. Observatory while its panel is open). */
+    .act-btn:disabled:hover { background: rgba(255, 255, 255, 0.045); color: var(--t2); border-color: var(--line); }
+    .act-btn .act-glyph { width: 16px; height: 16px; flex: none; display: block; opacity: 0.85; }
+    /* Icon-only square: a 20 px glyph centered in a 38 px button. */
+    .act-btn.act-icon { width: 38px; padding: 0; justify-content: center; }
+    .act-icon .act-glyph { width: 20px; height: 20px; opacity: 1; }
+    .act-icon .act-lbl { display: none; }
+    /* Engaged Pilot widens to carry the destination name (set by the TS). */
+    .act-icon.act-wide { width: auto; padding: 0 13px 0 10px; }
+    .act-icon.act-wide .act-glyph { width: 18px; height: 18px; }
+    .act-icon.act-wide .act-lbl {
+      display: block;
+      max-width: 96px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    /* Active toggle chip (e.g. Pilot while autopilot is engaged). */
     .act-btn.on, .act-btn.active { background: rgba(var(--accent-rgb), 0.14); color: var(--t1); border-color: rgba(var(--accent-rgb), 0.35); }
     .act-btn.on .act-glyph, .act-btn.active .act-glyph { color: var(--accent); opacity: 1; }
+    /* Hover tooltips for the icon-only buttons — they carry the names the
+       labels used to. Pointer-fine devices only; buttons keep aria-labels.
+       Right-anchored, not centered: the row hugs the screen edge, and a
+       centered tip under the rightmost buttons would clip at the viewport. */
+    .act-tip {
+      position: absolute;
+      top: calc(100% + 9px);
+      right: 0;
+      transform: translateY(-3px);
+      opacity: 0;
+      pointer-events: none;
+      padding: 5px 9px;
+      border-radius: var(--r-s);
+      background: rgba(8, 10, 15, 0.94);
+      border: 1px solid var(--line);
+      box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
+      font-size: 11px;
+      font-weight: 400;
+      color: var(--t1);
+      white-space: nowrap;
+      transition: opacity 0.16s var(--ease) 0.38s, transform 0.16s var(--ease) 0.38s;
+    }
+    @media (hover: hover) and (pointer: fine) {
+      .act-btn:hover .act-tip { opacity: 1; transform: translateY(0); }
+    }
+    .act-tip kbd {
+      margin-left: 2px;
+      padding: 1px 5px;
+      border: 1px solid var(--line);
+      border-bottom-width: 2px;
+      border-radius: 4px;
+      background: rgba(255, 255, 255, 0.03);
+      font-family: var(--font-mono);
+      font-size: 9.5px;
+      color: var(--t2);
+    }
     /* Hand-off pulse — a one-shot ring when a panel tucks into this chip. */
     @keyframes act-handoff {
       0% { box-shadow: 0 0 0 0 rgba(var(--accent-rgb), 0.5); }
       100% { box-shadow: 0 0 0 7px rgba(var(--accent-rgb), 0); }
     }
     .act-btn.handoff { animation: act-handoff 0.5s var(--ease); }
-    @media (prefers-reduced-motion: reduce) { .act-btn.handoff { animation: none; } }
-    #planetarium-btn-autopilot {
-      max-width: 120px;
-      overflow: hidden;
-      text-overflow: ellipsis;
-      white-space: nowrap;
-    }
-
-    #planetarium-btn-menu {
-      font-size: 16px;
-      line-height: 1;
-      padding: 3px 10px;
+    @media (prefers-reduced-motion: reduce) {
+      .act-btn.handoff { animation: none; }
+      .act-tip { transition: none; }
     }
 
     /* Menu panel */
     #planetarium-menu-panel {
       display: none;
       position: absolute;
-      top: 42px;
+      top: 56px;
       right: 12px;
       background: var(--panel-bg);
       backdrop-filter: blur(12px);
@@ -471,7 +531,7 @@
     #observatory-panel {
       display: none;
       position: absolute;
-      top: 42px;
+      top: 56px;
       right: 12px;
       width: min(334px, calc(100vw - 24px));
       max-height: calc(100vh - 120px);
@@ -1288,8 +1348,6 @@
     /* TRAVEL MENU & LEAVE BUTTON                    */
     /* ============================================= */
 
-    /* The Travel chip leads via its accent glyph only — no fill (see .act-goto). */
-
     /* Help modal */
     #planetarium-help {
       display: none;
@@ -1709,10 +1767,9 @@
     }
 
     @media (max-width: 420px) {
-      /* Collapse cluster chips to icons (Observatory keeps its label as the
-         contextual primary) so the row never crowds a narrow phone. */
-      .travel-btn-text { display: none; }
-      .act-leave .act-lbl, .act-pilot .act-lbl { display: none; }
+      /* The icon row fits narrow phones as-is; only the Leave label grows
+         with the body name, so cap it and let long names ellipsize. */
+      .act-leave .act-lbl { max-width: 31vw; overflow: hidden; text-overflow: ellipsis; }
       /* Lift the Stats card clear of the taller mobile bar. */
       #stats-popover { bottom: 104px; right: 10px; }
     }
@@ -1844,26 +1901,29 @@
 
     <!-- ======= PLANETARIUM MODE ======= -->
     <div id="planetarium-ui">
-      <!-- Top right: Leave (when landed) + Travel + Menu -->
+      <!-- Top right: Leave keeps its text (it names the body); the rest are
+           icon-only squares with hover tooltips. Ids are read by the TS. -->
       <div id="planetarium-actions">
-        <button class="act-btn act-leave" id="planetarium-btn-leave" style="display:none" title="Leave">
-          <svg class="act-glyph" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2.6 12.5 Q8 10.4 13.4 12.5"></path><path d="M8 10.4 V3.2"></path><path d="M5.1 6.1 L8 3.2 L10.9 6.1"></path></svg>
+        <button class="act-btn act-leave" id="planetarium-btn-leave" style="display:none">
+          <svg class="act-glyph" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 15.4 Q10 12.6 17 15.4"></path><path d="M10 12.6 V3.4"></path><path d="M6.4 7 L10 3.4 L13.6 7"></path></svg>
           <span class="act-lbl">Leave <span id="leave-body-name"></span></span>
         </button>
-        <button class="act-btn act-obs" id="planetarium-btn-observatory" style="display:none" title="Observatory">
-          <svg class="act-glyph" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.55" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3.2 7.4 L10.7 3.7 L11.7 5.8 L4.2 9.5 Z"></path><path d="M10.7 3.7 L11.9 3.1"></path><path d="M6.5 8.6 L6 13.2 M6 13.2 L4.4 14.4 M6 13.2 L7.6 14.4"></path></svg>
-          <span class="act-lbl">Observatory</span>
+        <button class="act-btn act-icon" id="planetarium-btn-observatory" style="display:none" aria-label="Observatory">
+          <svg class="act-glyph" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4.15 8.11 L12.68 3.17 L14.12 6.03 L5.05 9.89 Z"></path><path d="M11.9 3.75 L13.15 6.35"></path><path d="M4.5 9.05 L3.1 9.75"></path><path d="M9.4 8.2 L9.0 15.6 M9.0 15.6 L6.7 17.8 M9.0 15.6 L11.3 17.8"></path></svg>
+          <span class="act-tip">Observatory</span>
         </button>
-        <button class="act-btn act-goto" id="planetarium-btn-travel" title="Travel">
-          <svg class="act-glyph" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><g><g transform="rotate(42 8 8)"><path fill-rule="evenodd" d="M8 1.5 C 6.4 3.3 5.6 5.7 5.6 8.2 L 5.6 9.7 L 3.8 11.5 C 3.5 11.8 3.8 12.3 4.2 12.1 L 5.6 11.5 L 5.6 12.4 L 10.4 12.4 L 10.4 11.5 L 11.8 12.1 C 12.2 12.3 12.5 11.8 12.2 11.5 L 10.4 9.7 L 10.4 8.2 C 10.4 5.7 9.6 3.3 8 1.5 Z M8 4.6 a1.25 1.25 0 1 1 0 2.5 a1.25 1.25 0 0 1 0 -2.5 Z" fill="currentColor" stroke="none"></path><path d="M6.7 13 L8 15 L9.3 13 Z" fill="currentColor" stroke="none"></path></g><path d="M2.4 13.6 L4.4 11.6 L4.9 13.9 Z" fill="currentColor" stroke="none" opacity="0.55"></path></g></svg>
-          <span class="act-lbl travel-btn-text">Travel</span>
+        <button class="act-btn act-icon" id="planetarium-btn-travel" aria-label="Travel">
+          <svg class="act-glyph" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><g transform="rotate(42 10 10)"><path fill-rule="evenodd" fill="currentColor" stroke="none" d="M10 1.4 C 8.1 3.4 7.1 6.3 7.1 9.5 L 7.1 14.2 C 7.1 14.75 7.5 15.1 8.05 15.1 L 11.95 15.1 C 12.5 15.1 12.9 14.75 12.9 14.2 L 12.9 9.5 C 12.9 6.3 11.9 3.4 10 1.4 Z M10 5.45 a1.65 1.65 0 1 1 0 3.3 a1.65 1.65 0 0 1 0 -3.3 Z M10 6.25 a0.85 0.85 0 1 1 0 1.7 a0.85 0.85 0 0 1 0 -1.7 Z"></path><path fill="currentColor" stroke="none" d="M7.1 10.6 C 5.6 11.5 4.6 13.1 4.3 15.0 C 4.25 15.4 4.6 15.7 5.0 15.55 L 7.1 14.7 Z"></path><path fill="currentColor" stroke="none" d="M12.9 10.6 C 14.4 11.5 15.4 13.1 15.7 15.0 C 15.75 15.4 15.4 15.7 15.0 15.55 L 12.9 14.7 Z"></path><path fill="currentColor" stroke="none" d="M10 19.2 C 9.0 18.0 8.55 17.0 8.75 16.0 L 11.25 16.0 C 11.45 17.0 11.0 18.0 10 19.2 Z"></path></g></svg>
+          <span class="act-tip">Travel</span>
         </button>
-        <button class="act-btn act-pilot" id="planetarium-btn-autopilot" title="Autopilot: fly to a destination. Click to choose target or disengage. (P)">
-          <svg class="act-glyph" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 1.8 L12 14 L8 11.4 L4 14 Z" fill="currentColor" stroke="none"></path></svg>
-          <span class="act-lbl autopilot-lbl">Pilot</span>
+        <button class="act-btn act-icon" id="planetarium-btn-autopilot" aria-label="Pilot">
+          <svg class="act-glyph" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="10" cy="10" r="7.4"></circle><path fill="currentColor" stroke="none" d="M10 5.2 L12.9 13 L10 11.15 L7.1 13 Z"></path></svg>
+          <span class="act-lbl autopilot-lbl"></span>
+          <span class="act-tip">Pilot <kbd>P</kbd></span>
         </button>
-        <button class="act-btn act-icon act-menu" id="planetarium-btn-menu" title="Menu">
-          <svg class="act-glyph" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 5.7 H13 M3 10.3 H13"></path></svg>
+        <button class="act-btn act-icon" id="planetarium-btn-menu" aria-label="Menu">
+          <svg class="act-glyph" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 5.5 H16 M4 10 H16 M4 14.5 H16"></path></svg>
+          <span class="act-tip">Menu</span>
         </button>
       </div>
 
@@ -2204,6 +2264,7 @@
 
           <!-- Right: stats toggle (lights when the docked card is open) -->
           <div class="bar-section bar-stats" id="bar-stats-toggle" role="button" tabindex="0" aria-expanded="false" aria-controls="stats-popover">
+            <svg class="bar-stats-glyph" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" aria-hidden="true"><path d="M3.5 13 V9.5"></path><path d="M8 13 V4.5"></path><path d="M12.5 13 V7"></path></svg>
             <span class="bar-stats-label">Stats</span>
           </div>
         </div>

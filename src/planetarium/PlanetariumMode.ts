@@ -2496,10 +2496,6 @@ export class PlanetariumMode {
     // Autopilot toggle
     document.getElementById('planetarium-btn-autopilot')?.addEventListener('click', () => {
       if (this.isMissionActive()) return;
-      // If landed, take off first so the travel menu can actually fly
-      // somewhere (on an Observatory excursion that's the return-to-cruise
-      // pose — deliberate: leaving by any door goes back where you were).
-      if (this.landedOn) this.exitLandedMode();
       this.toggleAutopilot();
     });
 
@@ -5710,8 +5706,15 @@ export class PlanetariumMode {
     if (this.autopilot) {
       this.disengageAutopilot();
       this.notification.show('Autopilot disengaged');
-    } else {
+    } else if (this.landedOn) {
+      // Keyboard-only path (the Pilot button hides while landed): taking off
+      // under autopilot needs a destination, so the picker is the door here.
       this.toggleTravelMenu(true);
+    } else {
+      // Idle in cruise there is never a stored destination (disengaging
+      // clears it), so this tap can't engage anything — explain instead of
+      // moonlighting as a second Travel button.
+      this.notification.show('Autopilot needs a destination. Pick one in Travel.');
     }
   }
 

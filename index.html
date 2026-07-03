@@ -1753,6 +1753,10 @@
       #planetarium-btn-land { bottom: 100px; }
       .bar-row { padding: 5px 2px; }
       .bar-section { padding: 0 5px; }
+      /* .bar-section's tightened padding would beat .bar-stats here (same
+         specificity, later in source) and leave the bordered chip's label
+         kissing its border — keep the chip's own inset. */
+      .bar-stats { padding: 0 9px; }
       .bar-speed-main { padding: 0 6px; gap: 6px; }
       .bar-date-row {
         position: static;

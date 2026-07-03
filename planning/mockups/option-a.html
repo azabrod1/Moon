@@ -1,0 +1,331 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Option A — Ink &amp; Instrument</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&family=Source+Serif+4:ital,opsz,wght@1,8..60,400;1,8..60,500&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bed: #050609;
+    --ink: #0b0d12;
+    --hairline: rgba(232, 227, 214, 0.10);
+    --hairline-dim: rgba(232, 227, 214, 0.06);
+    --rule: rgba(232, 227, 214, 0.16);
+    --t1: #e8e3d6;
+    --t2: #a9a294;
+    --t3: #6d685e;
+    --ember: #ffb88a;
+    --ember-deep: #ff9466;
+    --sans: 'IBM Plex Sans', sans-serif;
+    --mono: 'IBM Plex Mono', monospace;
+    --serif: 'Source Serif 4', serif;
+    --r-ctl: 3px;
+    --r-sheet: 14px;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body { height: 100%; }
+  body { background: var(--bed); font-family: var(--sans); color: var(--t1); overflow: hidden; }
+
+  /* ============ SCENE (stand-in for the WebGL canvas) ============ */
+  #scene { position: fixed; inset: 0; background:
+      radial-gradient(ellipse 120% 90% at 70% 110%, #0a0c11 0%, var(--bed) 55%); }
+  .stars, .stars2 { position: absolute; inset: 0; }
+  .stars { box-shadow: 12vw 18vh 0 0.5px #cfd2d8, 28vw 9vh 0 0.6px #b8bdc6, 44vw 31vh 0 0.4px #9aa0ab,
+      61vw 12vh 0 0.7px #d8dbe0, 75vw 26vh 0 0.4px #aeb3bd, 88vw 16vh 0 0.5px #c4c8cf,
+      8vw 44vh 0 0.4px #9aa0ab, 23vw 52vh 0 0.5px #c0c4cb, 37vw 41vh 0 0.6px #d2d5da,
+      55vw 47vh 0 0.4px #a5aab4, 69vw 39vh 0 0.5px #bcc0c8, 83vw 49vh 0 0.6px #ced1d7,
+      94vw 36vh 0 0.4px #a8adb7, 17vw 64vh 0 0.5px #b4b9c2, 49vw 58vh 0 0.4px #9ea4ae,
+      64vw 61vh 0 0.5px #c8ccd2, 79vw 57vh 0 0.4px #adb2bc, 33vw 22vh 0 0.8px #e2e4e8,
+      52vw 19vh 0 0.4px #a0a6b0, 91vw 8vh 0 0.5px #bfc3ca; width:1px; height:1px; border-radius:50%; }
+  .stars2 { box-shadow: 6vw 8vh 0 0.4px #8a909b, 19vw 28vh 0 0.3px #7e8590, 41vw 6vh 0 0.4px #939aa4,
+      58vw 33vh 0 0.3px #868d98, 72vw 7vh 0 0.4px #99a0aa, 86vw 30vh 0 0.3px #8d949e,
+      13vw 37vh 0 0.3px #79808c, 30vw 47vh 0 0.4px #8e95a0, 47vw 53vh 0 0.3px #828995,
+      66vw 51vh 0 0.4px #97a09e, 97vw 22vh 0 0.3px #848b96, 3vw 26vh 0 0.4px #9098a1; width:1px; height:1px; border-radius:50%; }
+  /* regolith horizon */
+  #ground { position: absolute; left: 0; right: 0; bottom: 0; height: 22vh;
+      background: radial-gradient(140% 200% at 50% 230%, #2a2b2e 0%, #1a1b1e 38%, #0e0f12 68%, transparent 100%); }
+  #ground::before { content:''; position:absolute; top:0; left:0; right:0; height:1px;
+      background: linear-gradient(90deg, transparent, rgba(214,210,200,0.14) 35%, rgba(214,210,200,0.2) 50%, rgba(214,210,200,0.12) 65%, transparent); }
+  /* Earth, waxing gibbous, hangs upper-centre-left */
+  #earth { position: absolute; left: 34%; top: 17%; width: 120px; height: 120px; border-radius: 50%;
+      background: radial-gradient(circle at 62% 40%, #b8d4e8 0%, #6fa3c8 18%, #3d6f9b 38%, #274d74 58%, #15293f 78%, #0a141f 100%);
+      box-shadow: inset 26px -6px 32px 12px rgba(3, 6, 10, 0.92), 0 0 26px rgba(110, 160, 210, 0.10); }
+  #earth::after { content:''; position:absolute; inset:-1px; border-radius:50%;
+      background: radial-gradient(circle at 30% 55%, rgba(4,7,11,0.85) 0%, rgba(4,7,11,0.55) 22%, transparent 46%); }
+
+  /* ============ SCENE ANNOTATION — leader-line labels ============ */
+  .ann { position: absolute; font-family: var(--mono); font-size: 10px; letter-spacing: 0.14em; color: var(--t2); }
+  .ann .lead { position: absolute; background: var(--rule); }
+  .ann-earth { left: calc(34% + 188px); top: calc(17% + 18px); }
+  .ann-earth .lead { width: 56px; height: 1px; left: -64px; top: 14px; }
+  .ann-earth b { font-weight: 500; color: var(--t1); letter-spacing: 0.18em; }
+  .ann-earth span { display: block; color: var(--t3); margin-top: 3px; letter-spacing: 0.06em; }
+  .ann-jupiter { left: 56%; top: 31%; }
+  .ann-jupiter .dot { position:absolute; left:-14px; top:4px; width:3px; height:3px; border-radius:50%; background:#d8cfc0; }
+  .ann-jupiter span { color: var(--t3); letter-spacing: 0.06em; }
+  .ann-antares { left: 12%; top: 35%; }
+  .ann-antares .dot { position:absolute; left:-11px; top:4px; width:2.5px; height:2.5px; border-radius:50%; background:#e0b5a4; }
+  .constellation { position: absolute; left: 9.5%; top: 41%; font-family: var(--serif); font-style: italic;
+      font-size: 13px; letter-spacing: 0.30em; color: rgba(169, 162, 148, 0.42); }
+
+  /* ============ TOP BAR ============ */
+  #top-bar { position: fixed; top: 0; left: 0; right: 0; display: flex; align-items: center;
+      padding: 14px 20px; gap: 10px; z-index: 20; }
+  #wordmark { font-family: var(--mono); font-size: 13px; font-weight: 500; letter-spacing: 0.42em;
+      color: var(--t1); margin-right: 6px; }
+  #wordmark i { font-style: normal; color: var(--t3); }
+  .top-status { font-family: var(--mono); font-size: 10px; letter-spacing: 0.12em; color: var(--t3); }
+  #top-bar .spacer { flex: 1; }
+  .tbtn { display: inline-flex; align-items: center; gap: 7px; background: var(--ink);
+      border: 1px solid var(--hairline); border-radius: var(--r-ctl); color: var(--t2);
+      font-family: var(--sans); font-size: 12px; font-weight: 500; letter-spacing: 0.02em;
+      padding: 7px 13px; cursor: pointer; transition: color 120ms cubic-bezier(0.2,0.9,0.2,1), border-color 120ms cubic-bezier(0.2,0.9,0.2,1); }
+  .tbtn:hover { color: var(--t1); border-color: var(--rule); }
+  .tbtn svg { width: 12px; height: 12px; stroke: currentColor; fill: none; stroke-width: 1.4; }
+  .tbtn.primary { color: var(--t1); }
+
+  /* ============ OBSERVATORY PANEL — opaque ink, hairlines ============ */
+  #obs { position: fixed; top: 58px; right: 18px; width: 348px; max-height: calc(100vh - 140px);
+      background: var(--ink); border: 1px solid var(--hairline); border-radius: var(--r-sheet);
+      padding: 16px 18px 14px; z-index: 21; overflow: hidden;
+      box-shadow: 0 12px 30px rgba(0,0,0,0.3); }
+  /* sun-aware glint: hairline brightens toward the sunward (upper-left) edge */
+  #obs::before { content: ''; position: absolute; top: 0; left: 0; right: 0; height: 1px;
+      background: linear-gradient(90deg, rgba(255, 220, 180, 0.34), rgba(232,227,214,0.10) 45%, transparent 90%); }
+  .obs-eyebrow { display: flex; justify-content: space-between; align-items: baseline; }
+  .obs-eyebrow b { font-family: var(--mono); font-size: 9.5px; font-weight: 500; letter-spacing: 0.26em;
+      color: var(--t3); text-transform: uppercase; }
+  .obs-close { background: none; border: none; color: var(--t3); cursor: pointer; padding: 2px;
+      line-height: 0; } .obs-close svg { width: 11px; height: 11px; stroke: currentColor; stroke-width: 1.5; }
+  .obs-close:hover { color: var(--t1); }
+
+  .obs-vantage { margin-top: 12px; display: flex; justify-content: space-between; align-items: flex-end; }
+  .obs-vantage h2 { font-size: 16px; font-weight: 600; letter-spacing: 0.01em; }
+  .obs-vantage h2 em { display: block; font-family: var(--serif); font-style: italic; font-weight: 400;
+      font-size: 12.5px; color: var(--t2); letter-spacing: 0.04em; margin-top: 3px; }
+  .obs-swap { display: inline-flex; align-items: center; gap: 6px; background: none;
+      border: 1px solid var(--hairline); border-radius: var(--r-ctl); color: var(--t2);
+      font-family: var(--sans); font-size: 11px; font-weight: 500; padding: 5px 9px; cursor: pointer; }
+  .obs-swap:hover { color: var(--t1); border-color: var(--rule); }
+  .obs-swap svg { width: 11px; height: 11px; stroke: currentColor; fill: none; stroke-width: 1.4; }
+
+  .obs-hero { display: flex; gap: 14px; align-items: center; margin-top: 14px;
+      padding: 13px 0 14px; border-top: 1px solid var(--hairline-dim); border-bottom: 1px solid var(--hairline-dim); }
+  .glyph { width: 58px; height: 58px; flex: none; }
+  .obs-hero-data h3 { font-size: 13.5px; font-weight: 600; letter-spacing: 0.01em; }
+  .obs-hero-data h3 span { color: var(--t2); font-weight: 400; }
+  .obs-hero-data .figures { font-family: var(--mono); font-size: 11px; color: var(--t2);
+      letter-spacing: 0.03em; margin-top: 5px; font-variant-numeric: tabular-nums; }
+  .obs-hero-data .figures b { color: var(--t1); font-weight: 500; }
+  .obs-hero-data .sub { font-size: 10.5px; color: var(--t3); margin-top: 4px; letter-spacing: 0.02em; }
+
+  .obs-now { display: flex; align-items: center; gap: 8px; margin-top: 11px;
+      font-family: var(--mono); font-size: 11px; letter-spacing: 0.04em; color: var(--t2);
+      font-variant-numeric: tabular-nums; }
+  .obs-now .live { display: inline-flex; align-items: center; gap: 5px; color: var(--ember);
+      font-size: 9.5px; letter-spacing: 0.22em; }
+  .obs-now .live i { width: 5px; height: 5px; border-radius: 50%; background: var(--ember);
+      animation: pulse 2.4s cubic-bezier(0.2,0.9,0.2,1) infinite; }
+  @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.35; } }
+
+  .obs-section { margin-top: 14px; }
+  .obs-section > b { display: block; font-family: var(--mono); font-size: 9px; font-weight: 500;
+      letter-spacing: 0.26em; color: var(--t3); text-transform: uppercase; margin-bottom: 8px; }
+  .finder { display: grid; grid-template-columns: 1fr auto auto; gap: 6px 8px; align-items: center; }
+  .finder-row { display: contents; }
+  .finder-row span.name { font-size: 12px; color: var(--t1); font-weight: 500; padding: 3px 0; }
+  .finder-row span.name em { font-style: normal; font-family: var(--mono); font-size: 10px;
+      color: var(--t3); margin-left: 7px; letter-spacing: 0.02em; }
+  .tpill { background: none; border: 1px solid var(--hairline); border-radius: var(--r-ctl);
+      color: var(--t2); font-family: var(--mono); font-size: 10px; letter-spacing: 0.04em;
+      padding: 4px 8px; cursor: pointer; font-variant-numeric: tabular-nums; white-space: nowrap; }
+  .tpill:hover { color: var(--t1); border-color: var(--rule); }
+  .tpill.next { color: var(--t1); }
+
+  .events .ev { padding: 9px 0; border-top: 1px solid var(--hairline-dim); cursor: pointer; }
+  .events .ev:hover .ev-name { color: var(--t1); }
+  .ev-top { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; }
+  .ev-name { font-size: 12.5px; font-weight: 500; color: var(--t1); transition: color 120ms; }
+  .ev-date { font-family: var(--mono); font-size: 10.5px; color: var(--t2); letter-spacing: 0.03em;
+      font-variant-numeric: tabular-nums; white-space: nowrap; }
+  .ev-kind { display: inline-block; font-family: var(--mono); font-size: 9px; letter-spacing: 0.16em;
+      text-transform: uppercase; color: var(--t3); border: 1px solid var(--hairline);
+      border-radius: var(--r-ctl); padding: 2px 6px; margin-right: 7px; vertical-align: 1px; }
+  .ev-hint { font-family: var(--serif); font-style: italic; font-size: 11.5px; color: var(--t3);
+      margin-top: 4px; letter-spacing: 0.02em; }
+  .ev.live-now { border-left: 2px solid var(--ember); padding-left: 10px; margin-left: -12px; }
+  .ev.live-now .ev-name, .ev.live-now .ev-date { color: var(--ember); }
+  .ev.live-now .ev-kind { color: var(--ember); border-color: rgba(255, 184, 138, 0.3); }
+  .searching { display: flex; align-items: center; gap: 8px; padding-top: 10px;
+      font-family: var(--mono); font-size: 9.5px; letter-spacing: 0.1em; color: var(--t3); }
+  .searching .scan { width: 54px; height: 1px; background: var(--hairline); position: relative; overflow: hidden; }
+  .searching .scan::after { content:''; position: absolute; width: 18px; height: 1px; background: var(--t3);
+      animation: scan 1.8s linear infinite; }
+  @keyframes scan { from { left: -18px; } to { left: 54px; } }
+
+  .obs-lookup { width: 100%; margin-top: 14px; display: flex; align-items: baseline; gap: 8px;
+      background: none; border: 1px solid var(--rule); border-radius: var(--r-ctl);
+      color: var(--t1); font-family: var(--sans); font-size: 12.5px; font-weight: 500;
+      padding: 10px 12px; cursor: pointer; transition: border-color 120ms; }
+  .obs-lookup:hover { border-color: var(--t3); }
+  .obs-lookup em { font-family: var(--serif); font-style: italic; font-weight: 400;
+      font-size: 11.5px; color: var(--t3); }
+
+  /* ============ TOAST ============ */
+  #toast { position: fixed; top: 64px; left: 50%; transform: translateX(-50%);
+      background: var(--ink); border: 1px solid var(--hairline); border-radius: var(--r-ctl);
+      padding: 9px 14px; z-index: 30; display: flex; align-items: baseline; gap: 10px; }
+  #toast b { font-family: var(--mono); font-size: 11px; font-weight: 500; color: var(--t1);
+      letter-spacing: 0.04em; font-variant-numeric: tabular-nums; }
+  #toast span { font-size: 11.5px; color: var(--t2); }
+  #toast .in { color: var(--t2); font-family: var(--mono); font-size: 10.5px; }
+
+  /* ============ TIME INSTRUMENT (bottom bar) ============ */
+  #time-bar { position: fixed; left: 50%; bottom: 18px; transform: translateX(-50%);
+      display: flex; align-items: center; gap: 0; background: var(--ink);
+      border: 1px solid var(--hairline); border-radius: var(--r-ctl); z-index: 22; }
+  #time-bar::before { content:''; position:absolute; top:0; left:8%; right:30%; height:1px;
+      background: linear-gradient(90deg, rgba(255,220,180,0.22), transparent); }
+  .t-seg { display: flex; align-items: center; padding: 9px 14px; gap: 10px; }
+  .t-seg + .t-seg { border-left: 1px solid var(--hairline-dim); }
+  .t-ctl { background: none; border: none; color: var(--t2); cursor: pointer; padding: 3px 4px; line-height: 0; }
+  .t-ctl:hover { color: var(--t1); }
+  .t-ctl svg { width: 13px; height: 13px; fill: none; stroke: currentColor; stroke-width: 1.4; }
+  /* the crown — a detented wheel */
+  #crown { width: 92px; height: 22px; position: relative; cursor: ew-resize; }
+  #crown .teeth { position: absolute; inset: 0;
+      background: repeating-linear-gradient(90deg, var(--rule) 0 1px, transparent 1px 7px);
+      mask-image: linear-gradient(90deg, transparent, #000 28%, #000 72%, transparent); -webkit-mask-image: linear-gradient(90deg, transparent, #000 28%, #000 72%, transparent); }
+  #crown .pointer { position: absolute; left: 50%; top: 0; bottom: 0; width: 1px; background: var(--ember); }
+  #crown .unit { position: absolute; left: 50%; transform: translateX(-50%); bottom: -1px;
+      font-family: var(--mono); font-size: 7.5px; letter-spacing: 0.2em; color: var(--t3); background: var(--ink); padding: 0 4px; }
+  #datetime { font-family: var(--mono); font-size: 12px; letter-spacing: 0.05em; color: var(--t1);
+      font-variant-numeric: tabular-nums; }
+  #datetime span { color: var(--t3); }
+  .t-live { display: inline-flex; align-items: center; gap: 6px; font-family: var(--mono);
+      font-size: 9.5px; letter-spacing: 0.22em; color: var(--ember); }
+  .t-live i { width: 5px; height: 5px; border-radius: 50%; background: var(--ember);
+      animation: pulse 2.4s cubic-bezier(0.2,0.9,0.2,1) infinite; }
+  .t-speed { font-family: var(--mono); font-size: 10.5px; color: var(--t2); letter-spacing: 0.06em; }
+
+  /* footer chip */
+  #mock-chip { position: fixed; left: 18px; bottom: 18px; font-family: var(--mono); font-size: 9.5px;
+      letter-spacing: 0.14em; color: var(--t3); z-index: 40; }
+  #mock-chip b { color: var(--t2); font-weight: 500; }
+  #mock-chip a { color: var(--t2); text-decoration: none; border-bottom: 1px solid var(--hairline); margin-left: 10px; }
+</style>
+</head>
+<body>
+  <div id="scene">
+    <div class="stars"></div><div class="stars2"></div>
+    <div id="earth"></div>
+    <div class="ann ann-earth"><span class="lead"></span><b>EARTH</b><span>∅ 1.87° · waxing gibbous</span></div>
+    <div class="ann ann-jupiter"><span class="dot"></span>JUPITER<span> · ∅ 0.01°</span></div>
+    <div class="ann ann-antares"><span class="dot"></span>ANTARES</div>
+    <div class="constellation">S c o r p i u s</div>
+    <div id="ground"></div>
+  </div>
+
+  <div id="top-bar">
+    <div id="wordmark">MOON<i>&nbsp;·&nbsp;PLANETARIUM</i></div>
+    <span class="top-status">MARE IMBRIUM · THE MOON</span>
+    <div class="spacer"></div>
+    <button class="tbtn"><svg viewBox="0 0 16 16"><path d="M2 14 L8 2 L14 14 M5 9 H11"/></svg>Travel</button>
+    <button class="tbtn primary"><svg viewBox="0 0 16 16"><circle cx="8" cy="7" r="4.5"/><path d="M8 11.5 V15 M5 15 H11"/></svg>Observatory</button>
+    <button class="tbtn">Leave the Moon</button>
+    <button class="tbtn" style="padding:7px 9px"><svg viewBox="0 0 16 16"><path d="M2 4h12 M2 8h12 M2 12h12"/></svg></button>
+  </div>
+
+  <div id="toast"><b>2026 AUG 12 · 17:46 UTC</b><span>Total solar eclipse</span><span class="in">in 62 days</span></div>
+
+  <aside id="obs">
+    <div class="obs-eyebrow"><b>Observatory</b>
+      <button class="obs-close"><svg viewBox="0 0 12 12"><path d="M1 1 L11 11 M11 1 L1 11"/></svg></button>
+    </div>
+    <div class="obs-vantage">
+      <h2>The Moon<em>your sky from Mare Imbrium</em></h2>
+      <button class="obs-swap"><svg viewBox="0 0 14 14"><path d="M2 5 H12 M9 2 L12 5 L9 8 M12 9 H2 M5 6 L2 9 L5 12"/></svg>Earth</button>
+    </div>
+
+    <div class="obs-hero">
+      <svg class="glyph" viewBox="0 0 100 100">
+        <circle cx="50" cy="50" r="44" fill="none" stroke="rgba(232,227,214,0.18)" stroke-width="1"/>
+        <g transform="rotate(0 50 50)">
+          <circle cx="50" cy="50" r="38" fill="#e8e3d6"/>
+          <path d="M50,12 A38,38 0 0 0 50,88 A17,38 0 0 0 50,12 Z" fill="#0b0d12"/>
+        </g>
+        <g stroke="rgba(232,227,214,0.25)" stroke-width="1">
+          <line x1="50" y1="2" x2="50" y2="7"/><line x1="50" y1="93" x2="50" y2="98"/>
+          <line x1="2" y1="50" x2="7" y2="50"/><line x1="93" y1="50" x2="98" y2="50"/>
+        </g>
+      </svg>
+      <div class="obs-hero-data">
+        <h3>Earth <span>· waxing gibbous</span></h3>
+        <div class="figures"><b>∅ 1.87°</b> · 391 420 km · 85% lit</div>
+        <div class="sub">hangs near zenith — it never sets from here</div>
+      </div>
+    </div>
+
+    <div class="obs-now">2026 Jun 11 · <span id="clock-a">21:47:03</span> UTC <span class="live"><i></i>LIVE</span></div>
+
+    <div class="obs-section">
+      <b>Find</b>
+      <div class="finder">
+        <div class="finder-row"><span class="name">Full Earth</span><button class="tpill">‹ May 16</button><button class="tpill next">Jun 15 ›</button></div>
+        <div class="finder-row"><span class="name">New Earth</span><button class="tpill">‹ May 31</button><button class="tpill next">Jun 29 ›</button></div>
+        <div class="finder-row"><span class="name">Lunar eclipse</span><button class="tpill">‹ Mar 3</button><button class="tpill next">Aug 28 ›</button></div>
+        <div class="finder-row"><span class="name">Solar eclipse</span><button class="tpill">‹ Feb 17</button><button class="tpill next">Aug 12 ›</button></div>
+      </div>
+    </div>
+
+    <div class="obs-section events">
+      <b>Upcoming</b>
+      <div class="ev">
+        <div class="ev-top"><span class="ev-name">Total solar eclipse</span><span class="ev-date">Aug 12 · 17:46</span></div>
+        <div class="ev-hint"><span class="ev-kind">total</span>our shadow sweeps the Atlantic into Iberia</div>
+      </div>
+      <div class="ev">
+        <div class="ev-top"><span class="ev-name">Partial lunar eclipse</span><span class="ev-date">Aug 28 · 04:13</span></div>
+        <div class="ev-hint"><span class="ev-kind">partial 0.93</span>the ground around you dims to ember red</div>
+      </div>
+      <div class="ev">
+        <div class="ev-top"><span class="ev-name">Annular solar eclipse</span><span class="ev-date">2027 Feb 6</span></div>
+        <div class="ev-hint"><span class="ev-kind">annular</span>our shadow's ring crosses the south Atlantic</div>
+      </div>
+      <div class="searching">SEARCHED TO 2027 MAR<span class="scan"></span></div>
+    </div>
+
+    <button class="obs-lookup">Look up<em>— watch from the surface</em></button>
+  </aside>
+
+  <div id="time-bar">
+    <div class="t-seg">
+      <button class="t-ctl" title="Previous event"><svg viewBox="0 0 16 16"><path d="M11 3 L5 8 L11 13 M4 3 V13"/></svg></button>
+      <button class="t-ctl" title="Step back"><svg viewBox="0 0 16 16"><path d="M10 3 L4 8 L10 13"/></svg></button>
+      <div id="crown"><div class="teeth"></div><div class="pointer"></div><div class="unit">HOUR</div></div>
+      <button class="t-ctl" title="Step forward"><svg viewBox="0 0 16 16"><path d="M6 3 L12 8 L6 13"/></svg></button>
+      <button class="t-ctl" title="Next event"><svg viewBox="0 0 16 16"><path d="M5 3 L11 8 L5 13 M12 3 V13"/></svg></button>
+    </div>
+    <div class="t-seg"><span id="datetime">2026 Jun 11 <span>·</span> <span id="clock-b">21:47:03</span> <span>UTC</span></span></div>
+    <div class="t-seg"><span class="t-live"><i></i>LIVE</span><span class="t-speed">×1</span></div>
+  </div>
+
+  <div id="mock-chip"><b>OPTION A</b> — INK &amp; INSTRUMENT · STATIC MOCKUP<a href="index.html">all options</a></div>
+
+<script>
+  // live seconds — the mock breathes
+  const t0 = Date.now(); const base = [21, 47, 3];
+  setInterval(() => {
+    const s = Math.floor((Date.now() - t0) / 1000) + base[2] + base[1] * 60 + base[0] * 3600;
+    const hh = String(Math.floor(s / 3600) % 24).padStart(2, '0');
+    const mm = String(Math.floor(s / 60) % 60).padStart(2, '0');
+    const ss = String(s % 60).padStart(2, '0');
+    const txt = `${hh}:${mm}:${ss}`;
+    document.getElementById('clock-a').textContent = txt;
+    document.getElementById('clock-b').textContent = txt;
+  }, 1000);
+</script>
+</body>
+</html>

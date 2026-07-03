@@ -1,0 +1,295 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Icon-only top actions — mockup</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin="anonymous">
+<link href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600&amp;family=Geist+Mono:wght@400;500&amp;display=swap" rel="stylesheet">
+<link rel="stylesheet" href="theme.css">
+<style>
+  html, body { overflow: auto !important; height: auto !important; }
+  body { margin: 0; background: #07080b; color: var(--t1); font-family: 'Geist', system-ui, sans-serif; -webkit-font-smoothing: antialiased; }
+  .wrap { max-width: 1040px; margin: 0 auto; padding: 46px 40px 90px; }
+  h1 { font-size: 21px; font-weight: 600; letter-spacing: -0.01em; margin: 0; }
+  .lede { color: var(--t3); font-size: 13px; line-height: 1.6; max-width: 70ch; margin: 8px 0 0; }
+  .lede b { color: var(--t2); font-weight: 500; }
+  .lede .acc { color: var(--accent); font-weight: 500; }
+  h2 { font-size: 11px; font-weight: 500; letter-spacing: 0.16em; text-transform: uppercase; color: var(--t3); margin: 46px 0 16px; padding-bottom: 10px; border-bottom: 1px solid var(--line-dim); }
+  .cap { font-family: 'Geist Mono', monospace; font-size: 10px; letter-spacing: 0.1em; text-transform: uppercase; color: var(--t3); margin: 0 0 8px; }
+  .cap b { color: var(--t2); font-weight: 500; }
+
+  /* ── context strips ─────────────────────────────── */
+  .strip { position: relative; height: 148px; border-radius: 16px; border: 1px solid var(--line-dim); overflow: hidden;
+    background: radial-gradient(120% 190% at 78% -40%, #10131c 0%, #090b11 45%, #05060a 100%); }
+  .strip + .capwrap { margin-top: 18px; }
+  .stars { position: absolute; top: 0; left: 0; width: 1px; height: 1px; border-radius: 50%; background: transparent; }
+  .disc { position: absolute; left: 11%; bottom: -34%; width: 96px; height: 96px; border-radius: 50%;
+    background: radial-gradient(circle at 64% 38%, #bcd6ea 0%, #6fa3c8 17%, #3d6f9b 38%, #264c73 58%, #142639 78%, #091220 100%);
+    box-shadow: inset 20px -5px 26px 8px rgba(2,5,9,0.92), 0 0 36px rgba(110,150,200,0.10); }
+  .wm { position: absolute; top: 16px; left: 18px; font-size: 10px; font-weight: 500; letter-spacing: 0.34em; color: var(--t3); }
+  .wm b { color: var(--t2); font-weight: 600; margin-right: 8px; }
+  .acts { position: absolute; top: 13px; right: 14px; display: flex; align-items: center; gap: 7px; }
+
+  /* current chips (for comparison) */
+  .oldchip { height: 34px; padding: 0 11px; display: inline-flex; align-items: center; gap: 6px; border-radius: var(--r-m);
+    background: rgba(255,255,255,0.04); border: 1px solid var(--line); color: var(--t2);
+    font-size: 12px; font-weight: 500; letter-spacing: 0.2px; white-space: nowrap; cursor: pointer; }
+  .oldchip svg { width: 14px; height: 14px; flex: none; opacity: 0.85; }
+  .oldchip.goto svg { color: var(--accent); opacity: 1; }
+  .oldchip.iconly { padding: 0 8px; }
+
+  /* proposed icon buttons */
+  .iact { position: relative; width: 38px; height: 38px; display: inline-flex; align-items: center; justify-content: center;
+    border-radius: var(--r-m); background: rgba(255,255,255,0.045); border: 1px solid var(--line);
+    -webkit-backdrop-filter: blur(12px); backdrop-filter: blur(12px); color: var(--t2); cursor: pointer;
+    transition: background var(--dur) var(--ease), color var(--dur) var(--ease), border-color var(--dur) var(--ease); }
+  .iact svg { width: 20px; height: 20px; display: block; }
+  .iact:hover { background: rgba(255,255,255,0.09); color: var(--t1); border-color: rgba(255,255,255,0.14); }
+  .iact.on { background: rgba(var(--accent-rgb), 0.14); border-color: rgba(var(--accent-rgb), 0.35); color: var(--t1); }
+  .iact.on svg { color: var(--accent); }
+  .iact.wide { width: auto; padding: 0 13px 0 10px; gap: 7px; }
+  .iact.wide span { font-size: 12px; font-weight: 500; letter-spacing: 0.2px; white-space: nowrap; }
+  .iact.wide svg { width: 18px; height: 18px; }
+  /* labeled Leave chip, bumped to match 38px */
+  .leavechip { height: 38px; padding: 0 13px; display: inline-flex; align-items: center; gap: 7px; border-radius: var(--r-m);
+    background: rgba(255,255,255,0.045); border: 1px solid var(--line); color: var(--t2);
+    -webkit-backdrop-filter: blur(12px); backdrop-filter: blur(12px);
+    font-size: 12px; font-weight: 500; letter-spacing: 0.2px; white-space: nowrap; cursor: pointer;
+    transition: background var(--dur) var(--ease), color var(--dur) var(--ease); }
+  .leavechip svg { width: 16px; height: 16px; flex: none; opacity: 0.85; }
+  .leavechip:hover { background: rgba(255,255,255,0.09); color: var(--t1); }
+
+  /* tooltip */
+  .tip { position: absolute; top: calc(100% + 9px); left: 50%; transform: translateX(-50%) translateY(-3px);
+    opacity: 0; pointer-events: none; z-index: 5;
+    background: rgba(8,10,15,0.94); border: 1px solid var(--line); border-radius: 7px; padding: 5px 9px;
+    font-size: 11px; font-weight: 400; color: var(--t1); white-space: nowrap;
+    box-shadow: 0 8px 24px rgba(0,0,0,0.5);
+    transition: opacity 0.16s var(--ease) 0.38s, transform 0.16s var(--ease) 0.38s; }
+  .tip kbd { margin-left: 6px; }
+  .iact:hover .tip, .tip.show { opacity: 1; transform: translateX(-50%) translateY(0); }
+  .tip.show { transition-delay: 0s; }
+
+  /* ── icon cards ─────────────────────────────────── */
+  .grid3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; }
+  .card { background: rgba(255,255,255,0.022); border: 1px solid var(--line-dim); border-radius: 14px; padding: 20px 18px 18px; display: flex; flex-direction: column; gap: 15px; }
+  .card .big { height: 56px; display: flex; align-items: center; justify-content: center; gap: 26px; color: var(--t1); }
+  .card .big svg { width: 44px; height: 44px; }
+  .card .big .was svg { width: 26px; height: 26px; color: var(--t3); }
+  .card .was { display: flex; flex-direction: column; align-items: center; gap: 5px; }
+  .card .was i { font-style: normal; font-family: 'Geist Mono', monospace; font-size: 8.5px; letter-spacing: 0.12em; text-transform: uppercase; color: var(--t3); }
+  .name { font-size: 12.5px; font-weight: 500; color: var(--t2); }
+  .desc { font-size: 11px; line-height: 1.55; color: var(--t3); text-wrap: pretty; }
+  .staterow { display: flex; align-items: center; gap: 8px; }
+
+  /* ── states + sizes ─────────────────────────────── */
+  .statebar { display: flex; align-items: flex-start; gap: 26px; flex-wrap: wrap; padding: 24px 22px 70px; border: 1px solid var(--line-dim); border-radius: 14px; background: rgba(255,255,255,0.016); }
+  .statecell { display: flex; flex-direction: column; align-items: center; gap: 16px; }
+  .statecell .demo { display: flex; align-items: center; gap: 8px; }
+  .statecell .cp { font-family: 'Geist Mono', monospace; font-size: 9px; letter-spacing: 0.1em; text-transform: uppercase; color: var(--t3); text-align: center; line-height: 1.6; }
+  .sizerow { display: flex; align-items: flex-end; gap: 34px; flex-wrap: wrap; padding: 24px 22px; border: 1px solid var(--line-dim); border-radius: 14px; background: rgba(255,255,255,0.016); }
+  .sizecell { display: flex; flex-direction: column; gap: 12px; }
+  .sizecell .cp { font-family: 'Geist Mono', monospace; font-size: 9px; letter-spacing: 0.1em; text-transform: uppercase; color: var(--t3); }
+  .sizecell .cp b { color: var(--t2); font-weight: 500; }
+  .sizecell .demo { display: flex; align-items: center; gap: 7px; }
+  .s34 .iact { width: 34px; height: 34px; } .s34 .iact svg { width: 17px; height: 17px; }
+  .s42 .iact { width: 42px; height: 42px; border-radius: 11px; } .s42 .iact svg { width: 22px; height: 22px; }
+  .tag { font-family: 'Geist Mono', monospace; font-size: 10px; letter-spacing: 0.12em; text-transform: uppercase; color: var(--t3); }
+  .tag.acc { color: var(--accent); }
+</style>
+</head>
+<body class="mat-glass">
+<div class="wrap">
+  <h1>Icon-only top actions</h1>
+  <p class="lede">Observatory, Travel and Pilot drop their labels; buttons grow from 34&nbsp;px chips to <b>38&nbsp;px squares</b> with icons redrawn at higher resolution (<b>20&nbsp;px</b>, on a finer 20-grid — tapered telescope tube with a lens band, swept-fin rocket, heading-hold ring). All three glyphs sit <b>mono</b> — accent is reserved for on-states, so no one button shouts. Three guards make it work: <b>Leave keeps its label</b> (it names the body — the one action that changes meaning per landing), every icon button gets a <b>hover tooltip</b>, and <b class="acc">Pilot grows a target label only while engaged</b> so autopilot state stays glanceable. Hover the strips below — tooltips are live.</p>
+
+  <h2>In context</h2>
+  <p class="cap"><b>Now</b> — landed · 34 px labeled chips</p>
+  <div class="strip" id="strip-now">
+    <div class="stars"></div><div class="disc"></div>
+    <span class="wm"><b>MOON</b>PLANETARIUM</span>
+    <div class="acts" id="acts-now"></div>
+  </div>
+  <div class="capwrap"><p class="cap"><b>Proposed</b> — landed · Leave labeled, rest icon-only 38 px</p></div>
+  <div class="strip" id="strip-landed">
+    <div class="stars"></div><div class="disc"></div>
+    <span class="wm"><b>MOON</b>PLANETARIUM</span>
+    <div class="acts" id="acts-landed"></div>
+  </div>
+  <div class="capwrap"><p class="cap"><b>Proposed</b> — in flight · Observatory stays · autopilot engaged to Mars</p></div>
+  <div class="strip" id="strip-flight">
+    <div class="stars"></div>
+    <span class="wm"><b>MOON</b>PLANETARIUM</span>
+    <div class="acts" id="acts-flight"></div>
+  </div>
+
+  <h2>The icons — redrawn for 20 px</h2>
+  <div class="grid3" id="icon-cards"></div>
+
+  <h2>Leave — alternates</h2>
+  <p class="cap">Leave keeps its label, so the glyph is supporting cast — each shown in the real chip.</p>
+  <div class="grid3" id="leave-grid"></div>
+
+  <h2>Autopilot — other directions</h2>
+  <p class="cap">Six candidates — the mark has to say “the ship flies itself” without a label.</p>
+  <div class="grid3" id="alt-grid"></div>
+
+  <h2>States</h2>
+  <div class="statebar" id="statebar"></div>
+
+  <h2>Size</h2>
+  <div class="sizerow" id="sizerow"></div>
+</div>
+
+<script>
+/* ── icon library ───────────────────────────────────────────── */
+// old 16-grid icons (current app)
+const I16 = {
+  leave: '<path d="M2.6 12.5 Q8 10.4 13.4 12.5"></path><path d="M8 10.4 V3.2"></path><path d="M5.1 6.1 L8 3.2 L10.9 6.1"></path>',
+  obs: '<path d="M3.2 7.4 L10.7 3.7 L11.7 5.8 L4.2 9.5 Z"></path><path d="M10.7 3.7 L11.9 3.1"></path><path d="M6.5 8.6 L6 13.2 M6 13.2 L4.4 14.4 M6 13.2 L7.6 14.4"></path>',
+  travel: '<g><g transform="rotate(42 8 8)"><path fill-rule="evenodd" d="M8 1.5 C 6.4 3.3 5.6 5.7 5.6 8.2 L 5.6 9.7 L 3.8 11.5 C 3.5 11.8 3.8 12.3 4.2 12.1 L 5.6 11.5 L 5.6 12.4 L 10.4 12.4 L 10.4 11.5 L 11.8 12.1 C 12.2 12.3 12.5 11.8 12.2 11.5 L 10.4 9.7 L 10.4 8.2 C 10.4 5.7 9.6 3.3 8 1.5 Z M8 4.6 a1.25 1.25 0 1 1 0 2.5 a1.25 1.25 0 0 1 0 -2.5 Z" fill="currentColor" stroke="none"></path><path d="M6.7 13 L8 15 L9.3 13 Z" fill="currentColor" stroke="none"></path></g><path d="M2.4 13.6 L4.4 11.6 L4.9 13.9 Z" fill="currentColor" stroke="none" opacity="0.55"></path></g>',
+  pilot: '<path d="M8 1.8 L12 14 L8 11.4 L4 14 Z" fill="currentColor" stroke="none"></path>',
+  menu: '<path d="M3 5.7 H13 M3 10.3 H13"></path>',
+};
+// new 20-grid icons (higher resolution)
+const I20 = {
+  obs: '<path d="M4.15 8.11 L12.68 3.17 L14.12 6.03 L5.05 9.89 Z"></path>'
+     + '<path d="M11.9 3.75 L13.15 6.35"></path>'
+     + '<path d="M4.5 9.05 L3.1 9.75"></path>'
+     + '<path d="M9.4 8.2 L9.0 15.6 M9.0 15.6 L6.7 17.8 M9.0 15.6 L11.3 17.8"></path>',
+  travel: '<g transform="rotate(42 10 10)">'
+     + '<path fill-rule="evenodd" fill="currentColor" stroke="none" d="M10 1.4 C 8.1 3.4 7.1 6.3 7.1 9.5 L 7.1 14.2 C 7.1 14.75 7.5 15.1 8.05 15.1 L 11.95 15.1 C 12.5 15.1 12.9 14.75 12.9 14.2 L 12.9 9.5 C 12.9 6.3 11.9 3.4 10 1.4 Z M10 5.45 a1.65 1.65 0 1 1 0 3.3 a1.65 1.65 0 0 1 0 -3.3 Z M10 6.25 a0.85 0.85 0 1 1 0 1.7 a0.85 0.85 0 0 1 0 -1.7 Z"></path>'
+     + '<path fill="currentColor" stroke="none" d="M7.1 10.6 C 5.6 11.5 4.6 13.1 4.3 15.0 C 4.25 15.4 4.6 15.7 5.0 15.55 L 7.1 14.7 Z"></path>'
+     + '<path fill="currentColor" stroke="none" d="M12.9 10.6 C 14.4 11.5 15.4 13.1 15.7 15.0 C 15.75 15.4 15.4 15.7 15.0 15.55 L 12.9 14.7 Z"></path>'
+     + '<path fill="currentColor" stroke="none" d="M10 19.2 C 9.0 18.0 8.55 17.0 8.75 16.0 L 11.25 16.0 C 11.45 17.0 11.0 18.0 10 19.2 Z"></path>'
+     + '</g>',
+  pilot: '<path d="M2.8 17.2 Q 7.6 16.8 10.2 10.4" stroke-width="1.8" stroke-dasharray="0.1 3.0"></path>'
+     + '<path fill="currentColor" stroke="none" d="M15.2 2.9 L15.1 9.63 L13.44 6.94 L10.34 7.55 Z"></path>',
+  leaveA: '<path d="M3 15.4 Q10 12.6 17 15.4"></path><path d="M10 12.6 V3.4"></path><path d="M6.4 7 L10 3.4 L13.6 7"></path>',
+  leaveB: '<path d="M2.8 16 Q9 13.4 15.4 16"></path><path d="M5.2 14.3 Q 8.8 7.8 14.6 4.9" stroke-width="1.8" stroke-dasharray="0.1 3.0"></path><path fill="currentColor" stroke="none" d="M17.5 3.6 L16.13 5.69 L15.04 3.21 Z"></path>',
+  leaveC: '<path d="M2.4 9.2 A 8.2 8.2 0 0 1 10.8 17.6"></path><path d="M7.8 12.2 L15.4 4.6"></path><path d="M15.4 7.4 V4.6 H12.6"></path>',
+  leaveD: '<path d="M3 16.2 Q10 13.6 17 16.2"></path><path d="M5.9 9.5 L10 5.4 L14.1 9.5"></path><path d="M5.9 13.5 L10 9.4 L14.1 13.5"></path>',
+  menu: '<path d="M4 5.5 H16 M4 10 H16 M4 14.5 H16"></path>',
+  heading: '<circle cx="10" cy="10" r="7.4"></circle><path fill="currentColor" stroke="none" d="M10 5.2 L12.9 13 L10 11.15 L7.1 13 Z"></path>',
+  lock: '<circle cx="10" cy="10" r="6.7"></circle><path d="M10 1.4 V4 M10 16 V18.6 M1.4 10 H4 M16 10 H18.6"></path><circle cx="10" cy="10" r="1.7" fill="currentColor" stroke="none"></circle>',
+  routestar: '<circle cx="3.4" cy="16.6" r="1.25" fill="currentColor" stroke="none"></circle><path d="M4.8 15.9 Q 9.8 14.8 12.6 9.4" stroke-width="1.8" stroke-dasharray="0.1 3.0"></path><path fill="currentColor" stroke="none" d="M15 2.2 L15.62 3.98 L17.4 4.6 L15.62 5.22 L15 7 L14.38 5.22 L12.6 4.6 L14.38 3.98 Z"></path>',
+  needle: '<circle cx="10" cy="10" r="7.4"></circle><path d="M10 4.6 L12 10 L10 15.4 L8 10 Z"></path><path fill="currentColor" stroke="none" d="M10 4.6 L12 10 L8 10 Z"></path>',
+  joystick: '<circle cx="10" cy="4.7" r="2" fill="currentColor" stroke="none"></circle><path d="M10 7 V11.6"></path><path d="M4.6 15.4 A5.4 5.4 0 0 1 15.4 15.4"></path><path d="M3 15.4 H17"></path>',
+};
+const svg16 = (k, sw) => `<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="${sw||1.4}" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${I16[k]}</svg>`;
+const svg20 = (k, sw) => `<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="${sw||1.6}" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${I20[k]}</svg>`;
+
+const iact = (k, tipHtml, cls) =>
+  `<button class="iact${cls ? ' ' + cls : ''}" aria-label="${tipHtml.replace(/<[^>]+>/g,'')}">${svg20(k)}<span class="tip">${tipHtml}</span></button>`;
+
+/* ── strips ─────────────────────────────────────────────────── */
+document.getElementById('acts-now').innerHTML =
+  `<button class="oldchip">${svg16('leave')}Leave the Moon</button>
+   <button class="oldchip">${svg16('obs',1.55)}Observatory</button>
+   <button class="oldchip goto">${svg16('travel')}Travel</button>
+   <button class="oldchip">${svg16('pilot')}Pilot</button>
+   <button class="oldchip iconly">${svg16('menu')}</button>`;
+
+document.getElementById('acts-landed').innerHTML =
+  `<button class="leavechip">${svg20('leaveA')}Leave the Moon</button>
+   ${iact('obs', 'Observatory')}
+   ${iact('travel', 'Travel')}
+   ${iact('heading', 'Pilot <kbd>P</kbd>')}
+   ${iact('menu', 'Menu')}`;
+
+document.getElementById('acts-flight').innerHTML =
+  `${iact('obs', 'Observatory')}
+   ${iact('travel', 'Travel')}
+   <button class="iact wide on" aria-label="Autopilot to Mars">${svg20('heading')}<span>Mars</span><span class="tip">Autopilot engaged — click to disengage</span></button>
+   ${iact('menu', 'Menu')}`;
+
+/* ── icon cards ─────────────────────────────────────────────── */
+const CARDS = [
+  { k: 'obs', was: 'obs', name: 'Observatory', sw: 1.6, desc: 'Tapered refractor with a lens band at the objective, eyepiece stub, wider tripod stance. The taper and band only become visible at 20 px — the flat 16-grid tube wasted the bigger canvas.' },
+  { k: 'travel', was: 'travel', name: 'Travel', sw: 1.6, desc: 'Rocket rebuilt: swept curved fins, a porthole with a proper ring, rounded tail and a teardrop flame — and the accent tint is dropped so the row reads as one family.' },
+  { k: 'heading', was: 'pilot', name: 'Pilot', sw: 1.6, desc: 'Heading hold — your pick: a craft marker locked inside a heading ring. Steady and badge-like; lights accent while autopilot is engaged.' },
+];
+document.getElementById('icon-cards').innerHTML = CARDS.map(c => `
+  <div class="card">
+    <div class="big">
+      <div class="was">${svg16(c.was)}<i>was</i></div>
+      ${svg20(c.k, c.sw)}
+    </div>
+    <div class="staterow">
+      <button class="iact">${svg20(c.k)}</button>
+      <button class="iact" style="background:rgba(255,255,255,0.09);color:var(--t1);border-color:rgba(255,255,255,0.14)">${svg20(c.k)}</button>
+      <button class="iact on">${svg20(c.k)}</button>
+    </div>
+    <div class="name">${c.name}</div>
+    <div class="desc">${c.desc}</div>
+  </div>`).join('');
+
+/* ── states ─────────────────────────────────────────────────── */
+/* ── leave alternates ──────────────────────────────── */
+const LEAVES = [
+  { k: 'leaveA', tag: 'A · recommended', acc: true, name: 'Lift-off', desc: 'The current mark on the 20-grid: longer ascent arrow off a wider horizon. It mirrors Land (arrow down to the same curve) — the pairing is worth keeping.' },
+  { k: 'leaveB', tag: 'B', name: 'Departure trajectory', desc: 'A dotted ascent curving away from the horizon — most cinematic, echoes the plotted-course language.' },
+  { k: 'leaveC', tag: 'C', name: 'Past the limb', desc: 'Arrow climbing away past the body’s limb — the Moon is explicit in the mark. (A closed circle here reads as the ♂ symbol, so the limb is an arc.)' },
+  { k: 'leaveD', tag: 'D', name: 'Ascend', desc: 'Double chevron off the horizon — fastest read, but generic “up”; loses the departure story.' },
+];
+document.getElementById('leave-grid').innerHTML = LEAVES.map(a => `
+  <div class="card">
+    <span class="tag${a.acc ? ' acc' : ''}">${a.tag}</span>
+    <div class="big">${svg20(a.k)}</div>
+    <div class="staterow"><button class="leavechip">${svg20(a.k)}Leave the Moon</button></div>
+    <div class="name">${a.name}</div>
+    <div class="desc">${a.desc}</div>
+  </div>`).join('');
+
+/* ── autopilot alternates ───────────────────────────── */
+const ALTS = [
+  { k: 'pilot', tag: 'A', name: 'Auto course', desc: 'Craft flying a plotted dotted route — the most literal “ship follows a computed path.”' },
+  { k: 'heading', tag: 'B · chosen', acc: true, name: 'Heading hold', desc: 'Craft marker locked inside a heading ring — aviation autopilot, steady and badge-like.' },
+  { k: 'lock', tag: 'C', name: 'Target lock', desc: 'Reticle on a destination — “acquire and fly to target.” Crisp, but leans weapon-y.' },
+  { k: 'routestar', tag: 'D', name: 'Route to star', desc: 'From here (dot) along a dotted course to a destination star — tells the whole story, no craft.' },
+  { k: 'needle', tag: 'E', name: 'Compass', desc: 'A needle in a bezel — “navigation is handled.” Quietest of the set; risks reading as “maps.”' },
+  { k: 'joystick', tag: 'F', name: 'Stick, released', desc: 'A joystick standing on its own — hands-off flying. Playful, fits the game side of the app.' },
+];
+document.getElementById('alt-grid').innerHTML = ALTS.map(a => `
+  <div class="card">
+    <span class="tag${a.acc ? ' acc' : ''}">${a.tag}</span>
+    <div class="big">${svg20(a.k)}</div>
+    <div class="staterow">
+      <button class="iact">${svg20(a.k)}</button>
+      <button class="iact on">${svg20(a.k)}</button>
+      <button class="iact wide on">${svg20(a.k)}<span>Mars</span></button>
+    </div>
+    <div class="name">${a.name}</div>
+    <div class="desc">${a.desc}</div>
+  </div>`).join('');
+
+document.getElementById('statebar').innerHTML = `
+  <div class="statecell"><span class="cp">rest</span><div class="demo">${iact('obs','Observatory')}</div></div>
+  <div class="statecell"><span class="cp">hover · tooltip after 400 ms</span><div class="demo"><button class="iact" style="background:rgba(255,255,255,0.09);color:var(--t1)">${svg20('obs')}<span class="tip show">Observatory</span></button></div></div>
+  <div class="statecell"><span class="cp">panel open</span><div class="demo"><button class="iact on">${svg20('obs')}</button></div></div>
+  <div class="statecell"><span class="cp">autopilot engaged</span><div class="demo"><button class="iact on">${svg20('heading')}</button></div></div>
+  <div class="statecell"><span class="cp">engaged + target<br>label only while flying</span><div class="demo"><button class="iact wide on">${svg20('heading')}<span>Mars</span></button></div></div>`;
+
+/* ── sizes ──────────────────────────────────────────────────── */
+const trio = () => `<button class="iact">${svg20('obs')}</button><button class="iact">${svg20('travel')}</button><button class="iact">${svg20('heading')}</button>`;
+document.getElementById('sizerow').innerHTML = `
+  <div class="sizecell s34"><div class="demo">${trio()}</div><span class="cp">34 px · current chip height</span></div>
+  <div class="sizecell"><div class="demo">${trio()}</div><span class="cp"><b>38 px · recommended</b> — icon 20 px</span></div>
+  <div class="sizecell s42"><div class="demo">${trio()}</div><span class="cp">42 px · touch-first</span></div>`;
+
+/* ── starfields ─────────────────────────────────────────────── */
+document.querySelectorAll('.strip').forEach(strip => {
+  const el = strip.querySelector('.stars');
+  const w = strip.offsetWidth, h = strip.offsetHeight, out = [];
+  for (let i = 0; i < 130; i++) {
+    const x = (Math.random() * w) | 0, y = (Math.random() * h) | 0;
+    const a = (0.15 + Math.random() * 0.75).toFixed(2);
+    out.push(`${x}px ${y}px 0 ${Math.random() < 0.14 ? '0.7px' : '0'} rgba(255,255,255,${a})`);
+  }
+  el.style.boxShadow = out.join(',');
+});
+</script>
+</body>
+</html>

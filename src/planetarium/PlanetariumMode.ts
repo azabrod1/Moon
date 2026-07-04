@@ -3741,18 +3741,23 @@ export class PlanetariumMode {
     const landedInfo = this.surfaceLandedInfo();
     if (!landedInfo) return [];
     const choices: SurfaceTargetChoice[] = [];
-    const add = (target: SurfaceTarget, name: string) =>
+    const add = (target: SurfaceTarget, name: string, color: number) =>
       choices.push(
-        makeSurfaceTargetChoice(target, name, this.surfaceTargetAngularDiameterDeg(target)),
+        makeSurfaceTargetChoice(target, name, this.surfaceTargetAngularDiameterDeg(target), color),
       );
     if (landedInfo.type === 'moon' && landedInfo.parentPlanet) {
-      add({ kind: 'parent' }, landedInfo.parentPlanet);
+      add(
+        { kind: 'parent' },
+        landedInfo.parentPlanet,
+        PLANETARIUM_BODIES.find((b) => b.name === landedInfo.parentPlanet)?.color ?? 0xffffff,
+      );
     }
-    add({ kind: 'sun' }, 'the Sun');
+    // The Sun has no catalog row color (it's never a travel target) — warm glint.
+    add({ kind: 'sun' }, 'the Sun', 0xffd580);
     const parentName = this.observatoryParentPlanetName();
     for (const m of this.planetMoons.get(parentName ?? '') ?? []) {
       if (m.data.name === landedInfo.name) continue; // never the ground underfoot
-      add({ kind: 'moon', moonName: m.data.name }, bodyDisplayName(m.data.name));
+      add({ kind: 'moon', moonName: m.data.name }, bodyDisplayName(m.data.name), m.data.color);
     }
     return orderSurfaceTargetChoices(choices);
   }

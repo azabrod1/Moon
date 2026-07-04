@@ -1578,18 +1578,20 @@
       flex-direction: column;
       overflow: hidden;
     }
-    .stm-row { justify-content: space-between; gap: 10px; }
+    .stm-row .travel-item-dot { width: 8px; height: 8px; }
     .stm-meta {
       font-family: var(--font-mono);
       font-size: 11px;
       color: var(--text-dim);
       white-space: nowrap;
       flex: none;
+      margin-left: auto;
     }
     /* Sub-resolution rows dim by text shade (the events-list speck idiom,
        not opacity) and stay pickable — the in-view reticle caption takes
        over the honesty from there. */
     .stm-dim .travel-item-name { color: var(--text-dim); font-weight: 400; }
+    .stm-dim .travel-item-dot { opacity: 0.4; }
     /* The shared current-row suffix says "you're here" — the right words for
        a landing menu, the wrong ones for a sky target you're looking AT. */
     #surface-target-menu .travel-item-current .travel-item-name::after { content: ' · current'; }

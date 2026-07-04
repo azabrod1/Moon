@@ -396,14 +396,17 @@ export interface SurfaceTargetChoice {
    *  zoom — the row dims but stays pickable (the reticle + honesty caption
    *  handle it in-view). */
   resolvable: boolean;
+  /** Row dot tint — the body's catalog color (the travel-menu dot idiom). */
+  color: number;
 }
 
 export function makeSurfaceTargetChoice(
   target: SurfaceTarget,
   name: string,
   discDeg: number,
+  color = 0xffffff,
 ): SurfaceTargetChoice {
-  return { target, name, discDeg, resolvable: !isBelowResolutionAtMaxZoom(discDeg) };
+  return { target, name, discDeg, resolvable: !isBelowResolutionAtMaxZoom(discDeg), color };
 }
 
 /**

@@ -54,13 +54,16 @@ export class SurfaceTargetMenu {
         'travel-item stm-row' +
         (choice.resolvable ? '' : ' stm-dim') +
         (current ? ' travel-item-current' : '');
+      const dot = document.createElement('span');
+      dot.className = 'travel-item-dot';
+      dot.style.background = `#${choice.color.toString(16).padStart(6, '0')}`;
       const name = document.createElement('span');
       name.className = 'travel-item-name';
       name.textContent = choice.name;
       const meta = document.createElement('span');
       meta.className = 'stm-meta';
       meta.textContent = `∅ ${formatDiscDeg(choice.discDeg)}°${choice.resolvable ? '' : ' · too small'}`;
-      row.append(name, meta);
+      row.append(dot, name, meta);
       row.addEventListener('click', () => this.onPick(choice.target));
       this.listEl.appendChild(row);
     }

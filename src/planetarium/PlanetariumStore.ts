@@ -55,6 +55,10 @@ export interface PlanetariumState {
    * a destination chip or survive a landing. Saves predating the flag migrate
    * by heuristic: only user picks ever produce a non-Mercury target. */
   autopilotUserEngaged?: boolean;
+  /** Sky-panel-on-arrival preference. Stays absent until the user flips the
+   * toggle: the default is device-dependent (on for fine pointers) and is
+   * resolved at read time, never persisted. */
+  skyPref?: boolean;
 }
 
 function isFiniteNumber(value: unknown): value is number {
@@ -132,6 +136,10 @@ export function sanitizePlanetariumState(raw: unknown): PlanetariumState | null 
       typeof record.autopilotUserEngaged === 'boolean'
         ? record.autopilotUserEngaged
         : legacyAutopilotEngagement(sanitizeLandedOn(record.autopilotTarget)),
+    // Unlike every field above, no default: skyPref must survive as undefined
+    // so the 30 s auto-save (JSON.stringify drops it) can't bake one device's
+    // hover/pointer default into a save that may be opened on another.
+    skyPref: typeof record.skyPref === 'boolean' ? record.skyPref : undefined,
   };
 }
 

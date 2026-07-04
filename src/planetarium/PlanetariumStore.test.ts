@@ -59,3 +59,27 @@ describe('autopilot provenance migration (autopilotUserEngaged)', () => {
     expect(createDefaultPlanetariumState().autopilotUserEngaged).toBe(false);
   });
 });
+
+describe('skyPref stays tri-state (absent until the user flips the toggle)', () => {
+  it('round-trips an explicit flip', () => {
+    expect(sanitizePlanetariumState(rawSave({ skyPref: false }))?.skyPref).toBe(false);
+    expect(sanitizePlanetariumState(rawSave({ skyPref: true }))?.skyPref).toBe(true);
+  });
+
+  it('a session that never touched the toggle saves no skyPref field at all', () => {
+    const state = sanitizePlanetariumState(rawSave({}));
+    expect(state?.skyPref).toBeUndefined();
+    // The auto-save writes JSON.stringify(state); the field must vanish there,
+    // not concretize, or one device's default would follow the save around.
+    expect('skyPref' in JSON.parse(JSON.stringify(state))).toBe(false);
+  });
+
+  it('non-boolean garbage sanitizes to absent, not to a default', () => {
+    expect(sanitizePlanetariumState(rawSave({ skyPref: 'yes' }))?.skyPref).toBeUndefined();
+    expect(sanitizePlanetariumState(rawSave({ skyPref: 1 }))?.skyPref).toBeUndefined();
+  });
+
+  it('the default state leaves it unset', () => {
+    expect('skyPref' in createDefaultPlanetariumState()).toBe(false);
+  });
+});

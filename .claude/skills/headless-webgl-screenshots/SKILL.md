@@ -143,6 +143,13 @@ from prod). Also callable straight from the browser console under `npm run dev`:
 | `jumpTo(name, distMult)` | cruise-jump near a body |
 | `frame(name, fill, phaseDeg)` | pose camera on a body to a fill fraction (phase 0 = lit, ~145 = crescent) |
 | `probe(name)` | camera/body diagnostics |
+| `land(name)` | land on a body — the real landed pipeline, not a camera pose |
+| `openObservatory()` | open the Observatory panel on the landed body |
+| `lookUp()` / `lookAt(name)` | enter surface view (default target / named target; re-points if already in view) |
+| `swapVantage()` | swap to the companion vantage |
+| `jumpEvent(kind, dir)` | jump the clock to the next (`1`) / previous (`-1`) Observatory event; kinds `'full-moon' \| 'new-moon' \| 'lunar-eclipse' \| 'solar-eclipse'` |
+| `exitSurface()` | leave surface view |
+| `probeLanded()` | landed/surface-state diagnostics |
 | `setChrome(bool)` | hide ship / HUD / labels / orbit lines |
 | `setFov(deg)` · `setTimeMs(ms)` · `getTimeMs()` | FOV / clock |
 
@@ -166,11 +173,13 @@ side by side so you see exactly what got better or worse. Hold everything else f
   software-rendered — slow, fan-pegging, sometimes black. The GPU flags are the ~15× saving regardless of
   how you drive the app.
 - **`__moon.frame()` is `devFrameBody` (a camera-posing path), not the landed/Observatory framing
-  (`applyLandedTarget`).** To exercise landed-mode changes you need a `land()`-style hook or the real Land
-  button — `frame()` alone won't route through that code.
+  (`applyLandedTarget`).** To exercise landed-mode changes drive the real pipeline —
+  `land(name)` → `openObservatory()` → `lookUp()`/`lookAt(name)` — and assert state with
+  `probeLanded()`; `frame()` alone won't route through that code.
 - **Put ad-hoc Playwright scripts in `tools/` (or another in-repo dir), not `/tmp`.** ESM resolves
   `node_modules` relative to the script file, so a `/tmp` script fails `ERR_MODULE_NOT_FOUND`. Write it
-  under `tools/`, run, then delete.
+  under `tools/` (or `planning/`, which is gitignored scratch), run, then delete — or promote it
+  into the `tools/` kit if it earns its keep.
 - **Pick the time for rotation.** `frame()` lights the sub-solar face, which depends on the clock — to see
   a specific hemisphere (e.g. Pluto's far side) set `--time` so it faces the camera, or sweep several times
   and pick the best.

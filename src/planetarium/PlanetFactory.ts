@@ -127,6 +127,12 @@ interface AtmosphereConfig {
 // Sun's physical radius in AU — for solar angular radius (penumbra width) at a planet.
 const SUN_RADIUS_AU = 695_700 / 149_597_870.7;
 
+// The single-scatter limb shell is held off pending a scattering-model rework:
+// its additive HDR rim blows out through the composer's bloom and reads far too
+// bright. The per-body configs and shader below stay as the rebuild's starting
+// point — set this back to true to restore the current shell.
+const ATMOSPHERE_SHELLS_ENABLED = false;
+
 const ATMOSPHERES: Record<string, AtmosphereConfig> = {
   Venus: {
     dayColor: [0.95, 0.85, 0.55], sunsetColor: [1.0, 0.7, 0.4], mieColor: [1.0, 0.93, 0.78],
@@ -532,7 +538,7 @@ export async function createPlanetMesh(planet: PlanetData): Promise<PlanetMesh> 
   // Atmosphere glow for planets with atmospheres
   let atmosphere: THREE.Mesh | undefined;
   const atmosConfig = ATMOSPHERES[planet.name];
-  if (atmosConfig) {
+  if (atmosConfig && ATMOSPHERE_SHELLS_ENABLED) {
     atmosphere = createAtmosphereGlow(planet.radiusAU, atmosConfig);
     group.add(atmosphere);
   }

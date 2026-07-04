@@ -25,12 +25,16 @@ import {
   SURFACE_FOV_DEFAULT_DEG,
   SURFACE_MIN_ALTITUDE_AU,
   SURFACE_TARGET_ELEVATION_DEG,
+  makeSurfaceTargetChoice,
+  orderSurfaceTargetChoices,
   surfaceAltitudeAU,
   surfaceEventExpectation,
   surfaceEventNarrative,
+  surfaceTargetKey,
   transportTrackingUp,
   type SurfaceEventInfo,
   type SurfaceLandedInfo,
+  type SurfaceTargetChoice,
 } from './surfaceView';
 import { shadowAxisSphereHitAU, shadowAxisSurfacePoint } from '../astronomy/shadows';
 import { KM_PER_AU } from '../astronomy/constants';
@@ -542,5 +546,58 @@ describe('surface FOV', () => {
     expect(jupiterFromIoDeg).toBeLessThan(20);
     // Inside-the-body degenerate case.
     expect(angularDiameterDeg(2, 1)).toBe(180);
+  });
+});
+
+describe('Look-at menu choices', () => {
+  const moon = (name: string, discDeg: number): SurfaceTargetChoice =>
+    makeSurfaceTargetChoice({ kind: 'moon', moonName: name }, name, discDeg);
+
+  it('computes resolvable exactly as the events-list speck rule', () => {
+    // 0.5° resolves easily at max zoom; 0.001° never earns brackets.
+    expect(makeSurfaceTargetChoice({ kind: 'sun' }, 'the Sun', 0.5).resolvable).toBe(true);
+    expect(moon('Kale', 0.001).resolvable).toBe(!isBelowResolutionAtMaxZoom(0.001));
+    expect(moon('Kale', 0.001).resolvable).toBe(false);
+  });
+
+  it('planet vantage: Sun pinned first, moons by descending apparent size', () => {
+    const ordered = orderSurfaceTargetChoices([
+      moon('Metis', 0.045),
+      moon('Ganymede', 0.29),
+      makeSurfaceTargetChoice({ kind: 'sun' }, 'the Sun', 0.1),
+      moon('Io', 0.6),
+    ]);
+    expect(ordered.map((c) => c.name)).toEqual(['the Sun', 'Io', 'Ganymede', 'Metis']);
+  });
+
+  it('moon vantage: parent pinned above the Sun, siblings sorted after', () => {
+    const ordered = orderSurfaceTargetChoices([
+      moon('Europa', 0.31),
+      makeSurfaceTargetChoice({ kind: 'sun' }, 'the Sun', 0.1),
+      makeSurfaceTargetChoice({ kind: 'parent' }, 'Jupiter', 19.5),
+      moon('Ganymede', 0.18),
+    ]);
+    expect(ordered.map((c) => c.name)).toEqual(['Jupiter', 'the Sun', 'Europa', 'Ganymede']);
+  });
+
+  it('equal-size moons keep input order', () => {
+    const ordered = orderSurfaceTargetChoices([moon('A', 0.1), moon('B', 0.1), moon('C', 0.1)]);
+    expect(ordered.map((c) => c.name)).toEqual(['A', 'B', 'C']);
+  });
+
+  it('does not mutate its input', () => {
+    const input = [moon('Small', 0.01), moon('Big', 0.5)];
+    orderSurfaceTargetChoices(input);
+    expect(input.map((c) => c.name)).toEqual(['Small', 'Big']);
+  });
+
+  it('keys both sun kinds to the same row identity', () => {
+    expect(surfaceTargetKey({ kind: 'sun' })).toBe(
+      surfaceTargetKey({ kind: 'sun-from-spot', occluderMoonName: 'Io' }),
+    );
+    expect(surfaceTargetKey({ kind: 'moon', moonName: 'Io' })).not.toBe(
+      surfaceTargetKey({ kind: 'moon', moonName: 'Europa' }),
+    );
+    expect(surfaceTargetKey({ kind: 'parent' })).toBe('parent');
   });
 });

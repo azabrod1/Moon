@@ -385,6 +385,60 @@ export function angularDiameterDeg(radiusAU: number, distanceAU: number): number
   return 2 * Math.asin(radiusAU / distanceAU) * RAD2DEG;
 }
 
+/** One row of the Look-at menu: a pickable sky target with its live size. */
+export interface SurfaceTargetChoice {
+  target: SurfaceTarget;
+  /** Display name, bodyDisplayName conventions ("the Moon", "Io"). */
+  name: string;
+  /** Apparent diameter from the vantage at menu-open time (degrees). */
+  discDeg: number;
+  /** False when the disc can never earn the brackets marker even at max
+   *  zoom — the row dims but stays pickable (the reticle + honesty caption
+   *  handle it in-view). */
+  resolvable: boolean;
+}
+
+export function makeSurfaceTargetChoice(
+  target: SurfaceTarget,
+  name: string,
+  discDeg: number,
+): SurfaceTargetChoice {
+  return { target, name, discDeg, resolvable: !isBelowResolutionAtMaxZoom(discDeg) };
+}
+
+/**
+ * Stable identity for marking the menu's current row: the solar-eclipse
+ * spot view is still "looking at the Sun", so both sun kinds share a key.
+ */
+export function surfaceTargetKey(target: SurfaceTarget): string {
+  switch (target.kind) {
+    case 'sun':
+    case 'sun-from-spot':
+      return 'sun';
+    case 'parent':
+      return 'parent';
+    case 'moon':
+      return `moon:${target.moonName}`;
+  }
+}
+
+/**
+ * Look-at menu order: pinned leads first — the parent (only present standing
+ * on a moon), then the Sun — then the moons by descending apparent size, so
+ * a big system reads Galileans-first with the irregular specks pooled at the
+ * scrollable bottom. Equal-size moons keep input order.
+ */
+export function orderSurfaceTargetChoices(choices: SurfaceTargetChoice[]): SurfaceTargetChoice[] {
+  const rank = (c: SurfaceTargetChoice) =>
+    c.target.kind === 'parent' ? 0 : c.target.kind === 'moon' ? 2 : 1;
+  return [...choices].sort((a, b) => {
+    const ra = rank(a);
+    const rb = rank(b);
+    if (ra !== rb) return ra - rb;
+    return ra === 2 ? b.discDeg - a.discDeg : 0;
+  });
+}
+
 /** Display formatting for an apparent diameter — never prints "0.00°": below
  * the two-decimal floor it reads "<0.01" (an honest speck, not a zero). */
 export function formatDiscDeg(deg: number): string {

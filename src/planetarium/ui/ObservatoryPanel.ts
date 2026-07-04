@@ -45,6 +45,8 @@ export interface ObservatoryRenderExtras {
   nowTag: string;
   /** Surface view active → the Look up button becomes the exit affordance. */
   surfaceActive: boolean;
+  /** Look up will open the Look-at picker first — the hint says so. */
+  lookupOpensMenu: boolean;
   /** Earth finder metas ('' hides one, '···' = still scanning); null = not the Earth system. */
   nextDates: { full: string; new: string; lunar: string; solar: string } | null;
 }
@@ -786,7 +788,9 @@ export class ObservatoryPanel {
       'observatory-lookup-hint',
       extras.surfaceActive
         ? '— leave the surface'
-        : `— look up from ${bodyDisplayName(extras.vantageBody)}`,
+        : extras.lookupOpensMenu
+          ? '— pick what to look at'
+          : `— look up from ${bodyDisplayName(extras.vantageBody)}`,
     );
 
     if (this.earthRowsEl) this.earthRowsEl.style.display = extras.nextDates ? '' : 'none';

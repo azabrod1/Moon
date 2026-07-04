@@ -308,6 +308,7 @@ function installDevHooks() {
     probe: (name: string) => planetariumMode?.devProbe(name) ?? null,
     land: (name: string) => planetariumMode?.devLand(name) ?? false,
     lookUp: () => planetariumMode?.devLookUp() ?? false,
+    lookAt: (name: string) => planetariumMode?.devLookAt(name) ?? false,
     exitSurface: () => planetariumMode?.devExitSurface(),
     openObservatory: () => planetariumMode?.devOpenObservatory() ?? false,
     swapVantage: () => planetariumMode?.devSwapVantage() ?? false,

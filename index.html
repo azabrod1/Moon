@@ -839,6 +839,8 @@
     }
     .shud-chip:hover { color: var(--obs-t1); border-color: rgba(var(--accent-rgb), 0.35); }
     .shud-chip i { font-style: normal; color: var(--obs-accent); }
+    /* Moon names run long (Epimetheus) — cap the chip label, never the row. */
+    #surface-lookat span { max-width: 14ch; overflow: hidden; text-overflow: ellipsis; }
     .shud-bl { position: absolute; left: 24px; bottom: 86px; max-width: 46vw; }
     .shud-eyebrow {
       font-size: 10px; font-weight: 600; letter-spacing: 0.2em; text-transform: uppercase;
@@ -1555,6 +1557,43 @@
       display: flex;
     }
 
+    /* Look-at menu (surface-view sky targets). The root is a full-screen
+       click-catcher: the Observatory panel/sheet behind it stay inert and a
+       tap outside the card closes; the card itself is the glass. */
+    #surface-target-menu {
+      display: none;
+      position: fixed;
+      inset: 0;
+      z-index: 60;
+      align-items: center;
+      justify-content: center;
+      pointer-events: auto;
+    }
+    #surface-target-menu.visible { display: flex; }
+    .stm-card {
+      width: min(320px, calc(100vw - 32px));
+      max-height: min(480px, calc(100vh - 80px));
+      border-radius: var(--r-l);
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+    .stm-row { justify-content: space-between; gap: 10px; }
+    .stm-meta {
+      font-family: var(--font-mono);
+      font-size: 11px;
+      color: var(--text-dim);
+      white-space: nowrap;
+      flex: none;
+    }
+    /* Sub-resolution rows dim by text shade (the events-list speck idiom,
+       not opacity) and stay pickable — the in-view reticle caption takes
+       over the honesty from there. */
+    .stm-dim .travel-item-name { color: var(--text-dim); font-weight: 400; }
+    /* The shared current-row suffix says "you're here" — the right words for
+       a landing menu, the wrong ones for a sky target you're looking AT. */
+    #surface-target-menu .travel-item-current .travel-item-name::after { content: ' · current'; }
+
     .travel-menu-header {
       display: flex;
       align-items: center;
@@ -1897,6 +1936,9 @@
         flex-wrap: wrap; justify-content: center; row-gap: 6px;
         max-width: calc(100vw - 16px);
       }
+      /* Four chips can't fit one row at 390px — give the cluster a left
+         edge and let it wrap, keeping chips ranked from the right. */
+      .shud-tr { left: 16px; flex-wrap: wrap; justify-content: flex-end; }
     }
     @media (hover: none) {
       .obs-close { padding: 8px 12px; margin: -8px -8px -8px 0; }
@@ -2166,6 +2208,7 @@
         <div class="shud-discnote" id="surface-discnote" style="display:none"></div>
         <button class="shud-trackpill" id="surface-trackpill" style="display:none"><i>&#x2316;</i><span id="surface-trackpill-text"></span></button>
         <div class="shud-tr">
+          <button class="shud-chip" id="surface-lookat" style="display:none" title="Choose what to look at"><i>&#x2316;</i><span id="surface-lookat-name"></span></button>
           <button class="shud-chip" id="surface-observatory">&#x1F52D; Observatory</button>
           <button class="shud-chip" id="surface-swap" style="display:none"><i>&#x21C4;</i><span id="surface-swap-name"></span></button>
           <button class="shud-chip" id="surface-exit">&#x2715; Exit surface view</button>
@@ -2263,6 +2306,18 @@
           <input type="text" id="observatory-search" placeholder="Search planets &amp; moons..." autocomplete="off" />
         </div>
         <div class="travel-list" id="observatory-list"></div>
+      </div>
+
+      <!-- Look-at menu: the surface view's sky-target picker. -->
+      <div id="surface-target-menu">
+        <div class="stm-card pn pn-high">
+          <div class="travel-menu-header">
+            <h3>Look at</h3>
+            <button class="travel-menu-close" id="surface-target-menu-close">&times;</button>
+          </div>
+          <div class="travel-menu-sub" id="surface-target-sub"></div>
+          <div class="travel-list" id="surface-target-list"></div>
+        </div>
       </div>
 
       <div id="historic-panel">

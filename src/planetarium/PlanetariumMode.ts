@@ -88,7 +88,9 @@ import {
   entryFovDeg,
   formatDiscDeg,
   isBelowResolutionAtMaxZoom,
+  makeSurfaceTargetChoice,
   MARKER_BRACKETS_MIN_PX,
+  orderSurfaceTargetChoices,
   projectedDiscPx,
   resolveMarkerKind,
   selectSurfaceTarget,
@@ -98,10 +100,12 @@ import {
   surfaceAltitudeAU,
   surfaceEventExpectation,
   surfaceEventNarrative,
+  surfaceTargetKey,
   transportTrackingUp,
   type SurfaceEntryContext,
   type SurfaceMarkerKind,
   type SurfaceTarget,
+  type SurfaceTargetChoice,
 } from './surfaceView';
 import { DEG2RAD } from '../shared/math/angles';
 import { landedFrameCamDistAU, landedMinDistanceAU } from './landedView';
@@ -134,6 +138,7 @@ import {
   type ObservatorySubjectInfo,
 } from './ui/ObservatoryPanel';
 import { ObservatoryHUD, type SurfaceHudState } from './ui/ObservatoryHUD';
+import { SurfaceTargetMenu } from './ui/SurfaceTargetMenu';
 import { SunLabel } from './ui/SunLabel';
 
 type ScriptedTransfer = {
@@ -376,6 +381,9 @@ export class PlanetariumMode {
   // is re-pinned every frame at the end of updateLanded.
   private landedView: 'orbit' | 'surface' = 'orbit';
   private surfaceTarget: SurfaceTarget = { kind: 'sun' };
+  // The Look-at menu pick "Look up" returns to for the rest of this landing —
+  // cleared on every ground change (applyLandedTarget) and on takeoff.
+  private surfacePickedTarget: SurfaceTarget | null = null;
   private surfaceFovDeg = SURFACE_FOV_DEFAULT_DEG;
   private surfaceTracking = true;
   private surfaceLook: SurfaceLook;
@@ -461,6 +469,10 @@ export class PlanetariumMode {
       this.renderSurfaceHud();
     },
     () => this.toggleObservatoryPanel(),
+    () => {
+      if (this.surfaceTargetMenu.isOpen()) this.closeSurfaceTargetMenu();
+      else this.openSurfaceTargetMenu();
+    },
     (action) => {
       // The strip and the bottom bar drive the same clock through the same
       // handlers — one idiom, no duplicate state.
@@ -470,6 +482,12 @@ export class PlanetariumMode {
       else this.timeJumpToNow();
       this.renderSurfaceHud();
     },
+  );
+  private surfaceTargetMenu = new SurfaceTargetMenu(
+    (target) => this.pickSurfaceTarget(target),
+    // Fires on every close, whatever triggered it — the helper self-gates on
+    // surface view and the labels setting, so this can't reveal stale labels.
+    () => this.setWorldLabelsVisible(true),
   );
   // The most recent event jump — gives "Look up" and the surface HUD their
   // narrative while the clock still sits inside the event's window.
@@ -698,6 +716,7 @@ export class PlanetariumMode {
     this.timePanel.bind();
     this.observatoryPanel.bind();
     this.observatoryHud.bind();
+    this.surfaceTargetMenu.bind();
     this.speedValueEl = document.getElementById('planetarium-speed-value');
     this.speedLabelEl = document.getElementById('planetarium-speed-label');
     this.speedCenterEl = document.querySelector('.speed-center') as HTMLElement | null;
@@ -929,6 +948,7 @@ export class PlanetariumMode {
     if (planetariumUI) planetariumUI.style.display = 'none';
     this.closeObservatoryPanel();
     this.closeObservatoryMenu();
+    this.closeSurfaceTargetMenu();
 
     this.setObjectsVisible(false);
 
@@ -2070,6 +2090,7 @@ export class PlanetariumMode {
       if (this.bottomBar.isStatsOpen()) { this.bottomBar.closeStats(); return; }
       if (this.isTravelMenuOpen()) { this.closeTravelMenu(); return; }
       if (this.isObservatoryMenuOpen()) { this.closeObservatoryMenu(); return; }
+      if (this.surfaceTargetMenu.isOpen()) { this.closeSurfaceTargetMenu(); return; }
       if (this.landedView === 'surface') { this.exitSurfaceView(); return; }
       if (this.observatoryPanel.isOpen()) { this.closeObservatoryPanel(); return; }
       if (this.landedOn) { this.exitLandedMode(); return; }
@@ -2507,6 +2528,7 @@ export class PlanetariumMode {
         // One modal at a time (the body menus close ☰ on open, symmetric).
         this.closeTravelMenu();
         this.closeObservatoryMenu();
+        this.closeSurfaceTargetMenu();
         this.resumeShipAfterMenu = this.player.moving;
         this.resumeTimeAfterMenu = !this.timeState.paused;
         this.player.moving = false;
@@ -2812,6 +2834,7 @@ export class PlanetariumMode {
       // Close sibling popovers — one modal at a time
       this.closeMenuPanel();
       this.closeObservatoryMenu();
+      this.closeSurfaceTargetMenu();
       menu.classList.add('visible');
       this.travelSelection = null;
       // Swap primary button styling based on mode
@@ -2884,6 +2907,7 @@ export class PlanetariumMode {
     }
     this.closeMenuPanel();
     this.closeTravelMenu();
+    this.closeSurfaceTargetMenu();
     menu.classList.add('visible');
     this.setWorldLabelsVisible(false);
     // Landed, the menu doubles as the switch-body path — the
@@ -3548,6 +3572,18 @@ export class PlanetariumMode {
     this.exitSurfaceView(true);
   }
 
+  /** Headless support: pick a Look-at target by name ("Io", "Sun", "Jupiter"). */
+  devLookAt(name: string): boolean {
+    if (!this.landedOn) return false;
+    const wanted = name.replace(/^the /i, '').toLowerCase();
+    const choice = this.buildSurfaceTargetChoices().find(
+      (c) => c.name.replace(/^the /, '').toLowerCase() === wanted,
+    );
+    if (!choice) return false;
+    this.pickSurfaceTarget(choice.target);
+    return true;
+  }
+
   /** Headless support: open the Observatory panel + start its upcoming-events
    *  search (the per-frame work that loads when landed — for lag profiling). */
   devOpenObservatory(): boolean {
@@ -3629,7 +3665,10 @@ export class PlanetariumMode {
     // The panel is a landed-state surface: takeoff and moonless bodies close
     // it. The menu is legal in any state but missions own the ship.
     if (missionActive || !landedSubject) this.closeObservatoryPanel();
-    if (missionActive) this.closeObservatoryMenu();
+    if (missionActive) {
+      this.closeObservatoryMenu();
+      this.closeSurfaceTargetMenu();
+    }
   }
 
   private closeObservatoryPanel() {
@@ -3659,8 +3698,100 @@ export class PlanetariumMode {
   }
 
   private toggleSurfaceView() {
-    if (this.landedView === 'surface') this.exitSurfaceView();
+    if (this.landedView === 'surface') {
+      this.exitSurfaceView();
+      return;
+    }
+    // Second click while the picker is up reads as "never mind".
+    if (this.surfaceTargetMenu.isOpen()) {
+      this.closeSurfaceTargetMenu();
+      return;
+    }
+    if (this.lookupOpensMenu()) {
+      this.openSurfaceTargetMenu();
+      return;
+    }
+    // A live event always outranks the remembered pick — "Look up" during an
+    // eclipse must show the eclipse (the no-arg path derives that target).
+    const pick = this.relevantObservatoryEvent() ? null : this.surfacePickedTarget;
+    if (pick) this.enterSurfaceView(pick, 'companion');
     else this.enterSurfaceView();
+  }
+
+  /**
+   * Will "Look up" ask what to look at first? Only where the default answer
+   * is arbitrary: a generic planet's no-event target is the Sun while its
+   * moons — the system's actual show — sit unlisted. Earth (→ the Moon) and
+   * moon vantages (→ the parent) have obvious defaults and enter directly,
+   * as do live events and a landing that already picked.
+   */
+  private lookupOpensMenu(): boolean {
+    return (
+      this.landedView !== 'surface' &&
+      this.landedOn?.type === 'planet' &&
+      this.landedOn.name !== 'Earth' &&
+      getMoonsByPlanet(this.landedOn.name).length > 0 &&
+      !this.relevantObservatoryEvent() &&
+      this.surfacePickedTarget === null
+    );
+  }
+
+  /** All pickable sky targets from the current vantage, menu-ordered. */
+  private buildSurfaceTargetChoices(): SurfaceTargetChoice[] {
+    const landedInfo = this.surfaceLandedInfo();
+    if (!landedInfo) return [];
+    const choices: SurfaceTargetChoice[] = [];
+    const add = (target: SurfaceTarget, name: string) =>
+      choices.push(
+        makeSurfaceTargetChoice(target, name, this.surfaceTargetAngularDiameterDeg(target)),
+      );
+    if (landedInfo.type === 'moon' && landedInfo.parentPlanet) {
+      add({ kind: 'parent' }, landedInfo.parentPlanet);
+    }
+    add({ kind: 'sun' }, 'the Sun');
+    const parentName = this.observatoryParentPlanetName();
+    for (const m of this.planetMoons.get(parentName ?? '') ?? []) {
+      if (m.data.name === landedInfo.name) continue; // never the ground underfoot
+      add({ kind: 'moon', moonName: m.data.name }, bodyDisplayName(m.data.name));
+    }
+    return orderSurfaceTargetChoices(choices);
+  }
+
+  /** Cheap row count for gating the ⌖ chip — no positions computed. Both
+   *  vantage types sum the same: on a planet it's the Sun + the moons; on a
+   *  moon the parent replaces yourself in that count. */
+  private surfaceTargetChoiceCount(): number {
+    if (!this.landedOn) return 0;
+    return 1 + getMoonsByPlanet(this.observatoryParentPlanetName() ?? '').length;
+  }
+
+  private openSurfaceTargetMenu() {
+    const choices = this.buildSurfaceTargetChoices();
+    if (choices.length === 0 || !this.landedOn) return;
+    // One modal at a time, extended to the picker.
+    this.closeMenuPanel();
+    this.closeTravelMenu();
+    this.closeObservatoryMenu();
+    const inView = this.landedView === 'surface';
+    this.setWorldLabelsVisible(false);
+    this.surfaceTargetMenu.open(
+      choices,
+      inView ? surfaceTargetKey(this.surfaceTarget) : null,
+      inView
+        ? 'Pick a target — the view swings to it.'
+        : `Pick a target — you’ll look up from ${bodyDisplayName(this.landedOn.name)}.`,
+    );
+  }
+
+  private closeSurfaceTargetMenu() {
+    // The menu's own close handler restores label visibility (self-gated).
+    this.surfaceTargetMenu.close();
+  }
+
+  /** Menu pick: remember it for this landing and point the view at it. */
+  private pickSurfaceTarget(target: SurfaceTarget) {
+    this.surfacePickedTarget = target;
+    this.enterSurfaceView(target, 'companion');
   }
 
   private renderObservatoryPanel() {
@@ -3673,6 +3804,7 @@ export class PlanetariumMode {
       swapName: this.swapCompanionTarget()?.name ?? null,
       nowTag: this.observatoryNowTag(),
       surfaceActive: this.landedView === 'surface',
+      lookupOpensMenu: this.lookupOpensMenu(),
       nextDates: this.observatoryNextDates(),
     };
     this.observatoryPanel.render(this.timeState.currentUtcMs, subject, extras);
@@ -3897,6 +4029,7 @@ export class PlanetariumMode {
       fovDeg: this.camera.fov,
       tracking: this.surfaceTracking,
       targetName: this.surfaceTargetDisplayName(this.surfaceTarget),
+      showLookatChip: this.surfaceTargetChoiceCount() >= 2,
       discNote,
       swapLabel: companion ? `Stand on ${bodyDisplayName(companion.name)}` : null,
     };
@@ -4107,6 +4240,8 @@ export class PlanetariumMode {
   }
 
   private jumpToShadowEvent(event: ShadowEvent) {
+    // A jump moves the clock — every ∅ the open picker baked is now wrong.
+    this.closeSurfaceTargetMenu();
     this.lastObservatoryEvent = event;
     // Park shortly before the peak with the clock running at 1× real time —
     // the user watches the event happen instead of landing on a frozen peak.
@@ -4138,6 +4273,8 @@ export class PlanetariumMode {
   }
 
   private handleObservatoryJump(type: EventType, direction: 1 | -1) {
+    // Same clock-move staleness as the shadow jumps (which close it again).
+    this.closeSurfaceTargetMenu();
     if (type === 'lunar-eclipse' || type === 'solar-eclipse') {
       // Eclipse jumps run on the shadow engine: it lands on the true peak
       // (not the syzygy instant) and knows the classification for the toast.
@@ -4330,6 +4467,9 @@ export class PlanetariumMode {
   enterSurfaceView(target?: SurfaceTarget, entryContext?: SurfaceEntryContext, immediate = false) {
     const landedInfo = this.surfaceLandedInfo();
     if (!landedInfo) return;
+    // Entering (or re-pointing — event jumps route here too) supersedes any
+    // open picker; this also makes the pick handler self-closing.
+    this.closeSurfaceTargetMenu();
     this.bottomBar.closeStats();
     // Manual entry right after an event jump points at the event's
     // observer-level target — "Look up" during an eclipse shows the eclipse.
@@ -4417,6 +4557,8 @@ export class PlanetariumMode {
    */
   exitSurfaceView(immediate = false) {
     if (this.landedView !== 'surface') return;
+    // The chip-opened picker must not outlive the sky it lists.
+    this.closeSurfaceTargetMenu();
     // Finish now on teardown, on a second Escape mid-ease, or when aborting
     // the entry glide (easing out from mid-glide would snap down to the
     // vantage first — abort means "put me back").
@@ -4864,6 +5006,10 @@ export class PlanetariumMode {
     // would go stale the instant the ground changes. Menu-initiated picks
     // already closed it (no-op here).
     this.closeObservatoryMenu();
+    // New ground, new sky: the picker's rows and the remembered Look-at
+    // target both describe the vantage being left behind.
+    this.closeSurfaceTargetMenu();
+    this.surfacePickedTarget = null;
     this.landedOn = target;
     // The landed system's moons are about to be drawn up close: mark them
     // warm-eligible (late-arriving photos/normals queue on arrival) and queue
@@ -5322,6 +5468,8 @@ export class PlanetariumMode {
     // A menu opened while landed describes a ground that's about to vanish
     // (Leave is clickable around the backdrop-less menu) — close it.
     this.closeObservatoryMenu();
+    this.closeSurfaceTargetMenu();
+    this.surfacePickedTarget = null;
     // Teardown path: restore FOV/controls/labels instantly — the code below
     // reconfigures the controls and camera for flight anyway.
     this.exitSurfaceView(true);

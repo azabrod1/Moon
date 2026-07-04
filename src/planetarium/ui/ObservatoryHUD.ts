@@ -26,6 +26,8 @@ export interface SurfaceHudState {
   tracking: boolean;
   /** Display name of the tracked target ("the Sun", "Io"). */
   targetName: string;
+  /** Look-at chip visibility — hidden when the sky offers only one target. */
+  showLookatChip: boolean;
   /** Mono disc annotation under the brackets; null hides it. */
   discNote: string | null;
   /** Swap chip label ("Stand on the Moon"), or null to hide. */
@@ -58,8 +60,14 @@ export class ObservatoryHUD {
   private discNoteEl: HTMLElement | null = null;
   private trackPillEl: HTMLElement | null = null;
   private swapEl: HTMLElement | null = null;
+  private lookatEl: HTMLElement | null = null;
   private fovMarkEl: HTMLElement | null = null;
   private subEl: HTMLElement | null = null;
+  private blEl: HTMLElement | null = null;
+  private brEl: HTMLElement | null = null;
+  private timebarEl: HTMLElement | null = null;
+  // Lowest anchor Y the marker cluster may take (see render's band measure).
+  private clusterMaxY = Infinity;
   private lastMarkerCss = '';
   private wired = false;
 
@@ -68,6 +76,7 @@ export class ObservatoryHUD {
     private onSwap: () => void,
     private onResumeTracking: () => void,
     private onObservatory: () => void,
+    private onTargetMenu: () => void,
     private onTimeAction: (action: SurfaceTimeAction) => void,
   ) {}
 
@@ -79,12 +88,17 @@ export class ObservatoryHUD {
     this.discNoteEl = document.getElementById('surface-discnote');
     this.trackPillEl = document.getElementById('surface-trackpill');
     this.swapEl = document.getElementById('surface-swap');
+    this.lookatEl = document.getElementById('surface-lookat');
     this.fovMarkEl = document.getElementById('surface-fov-mark');
     this.subEl = document.getElementById('surface-sub');
+    this.blEl = this.rootEl?.querySelector('.shud-bl') ?? null;
+    this.brEl = this.rootEl?.querySelector('.shud-br') ?? null;
+    this.timebarEl = document.getElementById('surface-timebar');
     if (this.wired) return;
     this.wired = true;
     document.getElementById('surface-exit')?.addEventListener('click', () => this.onExit());
     document.getElementById('surface-observatory')?.addEventListener('click', () => this.onObservatory());
+    this.lookatEl?.addEventListener('click', () => this.onTargetMenu());
     this.swapEl?.addEventListener('click', () => this.onSwap());
     this.trackPillEl?.addEventListener('click', () => this.onResumeTracking());
     // The chevron is the way back when the target left the frame in free look.
@@ -148,13 +162,27 @@ export class ObservatoryHUD {
 
   private anchorCluster(xPx: number, belowYPx: number): void {
     if (!this.discNoteEl || !this.trackPillEl) return;
+    // At wide FOV the bracket bottom dives into the HUD's bottom band —
+    // headline stack, FOV cluster, transport strip — and on a phone the
+    // centered cluster shares their horizontal space. Cap the anchor at the
+    // band's measured top; the cluster then floats inside the (empty)
+    // bracket interior instead of over text.
+    const y = Math.min(belowYPx, this.clusterMaxY);
     // translateX(-50%) re-applies the CSS centering the inline transform overrides.
-    this.discNoteEl.style.transform = `translate(${xPx}px, ${belowYPx + 12}px) translateX(-50%)`;
-    this.trackPillEl.style.transform = `translate(${xPx}px, ${belowYPx + 32}px) translateX(-50%)`;
+    this.discNoteEl.style.transform = `translate(${xPx}px, ${y + 12}px) translateX(-50%)`;
+    this.trackPillEl.style.transform = `translate(${xPx}px, ${y + 32}px) translateX(-50%)`;
   }
 
   /** 8 Hz text pass — no layout writes besides the FOV mark position. */
   render(state: SurfaceHudState): void {
+    // Re-measure the bottom band's top edge here (8 Hz), not per marker
+    // frame: the band moves only with content/viewport changes. 62 = the
+    // cluster's extent below its anchor (note at +12, pill at +32, ~26px
+    // pill height) plus a hairline of clearance.
+    const top = (el: HTMLElement | null) =>
+      el ? el.getBoundingClientRect().top : Infinity;
+    this.clusterMaxY =
+      Math.min(top(this.blEl), top(this.brEl), top(this.timebarEl)) - 62;
     setText('surface-eyebrow', state.eyebrow);
     setText('surface-headline', state.headline);
     if (this.subEl) {
@@ -198,6 +226,10 @@ export class ObservatoryHUD {
     if (this.swapEl) {
       this.swapEl.style.display = state.swapLabel ? '' : 'none';
       if (state.swapLabel) setText('surface-swap-name', state.swapLabel);
+    }
+    if (this.lookatEl) {
+      this.lookatEl.style.display = state.showLookatChip ? '' : 'none';
+      if (state.showLookatChip) setText('surface-lookat-name', state.targetName);
     }
   }
 }

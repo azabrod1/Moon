@@ -114,7 +114,8 @@ import { smoothstepUnclamped } from '../shared/math/smoothstep';
 import { projectToScreen, type ScreenProjection } from '../shared/three/projectToScreen';
 import { setText } from '../shared/dom';
 import { Constellations } from './Constellations';
-import { getMoonsByPlanet, type MoonData } from './planets/moonData';
+import { getMoonsByPlanet, MOONS, type MoonData } from './planets/moonData';
+import { filterDeckRows, groupDeckBodies, observeArrivalAction, type DeckRow } from './deckLogic';
 import {
   HISTORIC_JOURNEYS,
   INTERSTELLAR_SCENE_POSITION,
@@ -154,6 +155,19 @@ type ScriptedTransfer = {
 };
 
 export const FIRST_PLANETARIUM_ACTIVATION_TOTAL_UNITS = CREATE_SOLAR_SYSTEM_TOTAL_UNITS + 1;
+
+/** The deck's tabs — one per cluster button. */
+type DeckVerb = 'observe' | 'travel' | 'pilot';
+
+/** Mix a catalog color toward a target — the deck's planet-dot sphere shading. */
+function mixHex(hex: number, target: number, t: number): string {
+  const ch = (shift: number) => {
+    const a = (hex >> shift) & 255;
+    const b = (target >> shift) & 255;
+    return Math.round(a + (b - a) * t);
+  };
+  return `rgb(${ch(16)}, ${ch(8)}, ${ch(0)})`;
+}
 
 const OBSERVATORY_EVENT_LABELS: Record<EventType, string> = {
   'full-moon': 'Full Moon',
@@ -373,7 +387,20 @@ export class PlanetariumMode {
     inSystemMode: boolean; moving: boolean;
   } | null = null;
   private nearbyLandTarget: NonNullable<LandedTarget> | null = null;
-  private travelSelection: NonNullable<LandedTarget> | null = null;
+
+  // The deck: one centered picker (Observatory · Travel · Autopilot tabs)
+  // replacing the separate travel and observatory menus. Session UI only.
+  private deckVerb: DeckVerb | null = null;
+  /** Deck opened via the panel's "From ⟨body⟩ ▾": the observe pick keeps the
+   * panel open on arrival despite a quiet preference. Survives in-deck tab
+   * switches; resets on open, close, and cluster-button switches. */
+  private deckOpenedFromPanel = false;
+  /** Keyboard highlight index into the deck's visible rows (−1 = none). */
+  private deckHl = -1;
+  /** Stored sky-panel-on-arrival preference — null until the user flips the
+   * toggle. The effective value resolves the device default at read time
+   * (fine pointers → on) so an untouched preference is never persisted. */
+  private skyPrefStored: boolean | null = null;
 
   // Surface view (Observatory): narrow-FOV look-from-the-surface sub-state of
   // landed mode. Session-only — never persisted; restore always lands in orbit
@@ -947,7 +974,7 @@ export class PlanetariumMode {
     const planetariumUI = document.getElementById('planetarium-ui');
     if (planetariumUI) planetariumUI.style.display = 'none';
     this.closeObservatoryPanel();
-    this.closeObservatoryMenu();
+    this.closeDeck();
     this.closeSurfaceTargetMenu();
 
     this.setObjectsVisible(false);
@@ -2084,12 +2111,11 @@ export class PlanetariumMode {
   private handleKeyDown(e: KeyboardEvent) {
     if (!this.active) return;
 
-    // Escape always works — even while typing in search input
+    // Escape always works — even while typing in the deck search
     if (e.key === 'Escape') {
       if (this.isHelpOpen()) { this.hideHelp(); return; }
+      if (this.isDeckOpen()) { this.closeDeck(); return; }
       if (this.bottomBar.isStatsOpen()) { this.bottomBar.closeStats(); return; }
-      if (this.isTravelMenuOpen()) { this.closeTravelMenu(); return; }
-      if (this.isObservatoryMenuOpen()) { this.closeObservatoryMenu(); return; }
       if (this.surfaceTargetMenu.isOpen()) { this.closeSurfaceTargetMenu(); return; }
       if (this.landedView === 'surface') { this.exitSurfaceView(); return; }
       if (this.observatoryPanel.isOpen()) { this.closeObservatoryPanel(); return; }
@@ -2099,18 +2125,39 @@ export class PlanetariumMode {
     // Don't capture other keys if typing in an input
     if ((e.target as HTMLElement).tagName === 'INPUT') return;
 
-    // T opens/closes travel menu (not from the surface view — its label and
-    // chrome state would leak; exit the view first)
-    if (e.key.toLowerCase() === 't') {
-      if (this.isMissionActive() || this.landedView === 'surface') return;
-      this.toggleTravelMenu();
-      // The toggle focuses the search input; without this the same keystroke
-      // then types "t" into it and the list opens pre-filtered.
+    // Deck open: list keys work without focusing the search box first, and
+    // printable characters focus it — so keys can open the deck but not
+    // close or switch it (T while open just types "t" into the query).
+    if (this.isDeckOpen() && !e.metaKey && !e.ctrlKey && !e.altKey) {
+      if (e.key === 'ArrowDown') { e.preventDefault(); this.moveDeckHighlight(1); return; }
+      if (e.key === 'ArrowUp') { e.preventDefault(); this.moveDeckHighlight(-1); return; }
+      if (e.key === 'Enter' && !(e.target as HTMLElement).closest('button')) {
+        e.preventDefault();
+        this.commitDeckHighlight();
+        return;
+      }
+      if (e.key.length === 1 && /[\w ]/.test(e.key)) {
+        (document.getElementById('deck-search') as HTMLInputElement | null)?.focus();
+        return;
+      }
+      return;
+    }
+
+    // The deck verbs (and the panel toggle) work everywhere outside missions
+    // and the help modal — landed and in surface view included.
+    const key = e.key.toLowerCase();
+    if ((key === 't' || key === 'o' || key === 'p') && !e.metaKey && !e.ctrlKey && !e.altKey) {
+      if (this.isMissionActive() || this.isHelpOpen()) return;
+      if (key === 't') this.toggleDeck('travel');
+      else if (key === 'o') this.observatoryAction();
+      else this.toggleAutopilot();
+      // Opening the deck focuses its search; without this the same keystroke
+      // then types into it and the list opens pre-filtered.
       e.preventDefault();
       return;
     }
 
-    // Suppress all other keys while landed
+    // Suppress flight keys while landed
     if (this.landedOn) return;
     if (this.isMissionActive()) return;
 
@@ -2120,11 +2167,6 @@ export class PlanetariumMode {
     if (e.key === ' ') {
       e.preventDefault();
       this.player.moving = !this.player.moving;
-    }
-
-    // P toggles autopilot
-    if (e.key.toLowerCase() === 'p') {
-      this.toggleAutopilot();
     }
   }
 
@@ -2411,8 +2453,7 @@ export class PlanetariumMode {
 
     if (missionActive) {
       this.keys.clear();
-      this.closeTravelMenu();
-      this.closeObservatoryMenu();
+      this.closeDeck();
     }
 
     this.updateObservatoryButtonVisibility();
@@ -2525,9 +2566,8 @@ export class PlanetariumMode {
       if (this.menuPanel.isOpen()) {
         this.closeMenuPanel();
       } else {
-        // One modal at a time (the body menus close ☰ on open, symmetric).
-        this.closeTravelMenu();
-        this.closeObservatoryMenu();
+        // One modal at a time (the deck closes ☰ on open, symmetric).
+        this.closeDeck();
         this.closeSurfaceTargetMenu();
         this.resumeShipAfterMenu = this.player.moving;
         this.resumeTimeAfterMenu = !this.timeState.paused;
@@ -2671,202 +2711,318 @@ export class PlanetariumMode {
       flightZone.addEventListener('pointerleave', clearFlightTouch);
     }
 
-    // Travel menu
+    // The deck — cluster buttons open their tab; commits happen on the rows.
     document.getElementById('planetarium-btn-travel')?.addEventListener('click', () => {
       if (this.isMissionActive()) return;
-      // If landed, take off first so the travel menu can actually fly somewhere.
-      if (this.landedOn) this.exitLandedMode();
-      this.toggleTravelMenu();
+      // No takeoff here: the tap that commits a destination handles it.
+      this.toggleDeck('travel');
     });
-    document.getElementById('travel-menu-close')?.addEventListener('click', () => {
-      this.closeTravelMenu();
-    });
-    const travelSearch = document.getElementById('travel-search') as HTMLInputElement;
-    travelSearch?.addEventListener('input', () => {
-      this.filterBodyList(document.getElementById('travel-list'), travelSearch.value);
-    });
-    document.getElementById('observatory-menu-close')?.addEventListener('click', () => {
-      this.closeObservatoryMenu();
-    });
-    const observatorySearch = document.getElementById('observatory-search') as HTMLInputElement;
-    observatorySearch?.addEventListener('input', () => {
-      this.filterBodyList(document.getElementById('observatory-list'), observatorySearch.value);
+    document.getElementById('planetarium-btn-observatory')?.addEventListener('click', () => {
+      if (this.isMissionActive()) return;
+      this.observatoryAction();
     });
     document.getElementById('planetarium-btn-leave')?.addEventListener('click', () => {
       this.exitLandedMode();
-    });
-    // One button, one meaning: the vantage menu, cruising or landed.
-    // Landed, picking another body re-lands directly; picking the body
-    // you're on just (re)opens its panel.
-    document.getElementById('planetarium-btn-observatory')?.addEventListener('click', () => {
-      if (this.isMissionActive()) return;
-      this.toggleObservatoryMenu();
     });
     document.getElementById('planetarium-btn-land')?.addEventListener('click', () => {
       if (this.nearbyLandTarget) {
         this.enterLandedMode(this.nearbyLandTarget);
       }
     });
-    // Travel action bar: Fly To, Jump, Land
-    document.getElementById('travel-action-fly')?.addEventListener('click', () => {
-      if (!this.travelSelection) return;
-      const selectedTarget = this.travelSelection;
-      this.closeTravelMenu();
-      if (this.landedOn) this.exitLandedMode();
-      this.engageAutopilot(selectedTarget);
+    document.getElementById('deck-close')?.addEventListener('click', () => this.closeDeck());
+    document.getElementById('deck-backdrop')?.addEventListener('click', () => this.closeDeck());
+    // In-deck tabs preserve the query AND the from-panel flag; the cluster
+    // buttons reset the flag (a fresh errand, not a vantage change).
+    document.getElementById('deck-tab-observe')?.addEventListener('click', () => this.switchDeckTab('observe'));
+    document.getElementById('deck-tab-travel')?.addEventListener('click', () => this.switchDeckTab('travel'));
+    document.getElementById('deck-tab-pilot')?.addEventListener('click', () => this.switchDeckTab('pilot'));
+    document.getElementById('deck-pref-toggle')?.addEventListener('click', () => {
+      this.skyPrefStored = !this.effectiveSkyPref();
+      document.getElementById('deck-pref-toggle')?.classList.toggle('on', this.effectiveSkyPref());
     });
-    document.getElementById('travel-action-land')?.addEventListener('click', () => {
-      if (this.travelSelection) {
-        const selectedTarget = this.travelSelection;
-        this.closeTravelMenu();
-        this.arriveThen(selectedTarget, () => {
-          // The T-key opens this menu while landed: exit first so the landing
-          // gets the full ceremony — preLand* captured from real flight state,
-          // and any excursion stash consumed rather than outliving its landing
-          // (Leave from the new body must not teleport to a stale cruise pose).
-          if (this.landedOn) this.exitLandedMode();
-          this.enterLandedMode(selectedTarget);
-        });
-      }
+    const deckSearch = document.getElementById('deck-search') as HTMLInputElement | null;
+    deckSearch?.addEventListener('input', () => this.filterDeckList());
+    // The input owns list keys while focused; the document handler bails on
+    // INPUT targets, so each Enter commits exactly once.
+    deckSearch?.addEventListener('keydown', (e) => {
+      if (e.key === 'ArrowDown') { e.preventDefault(); this.moveDeckHighlight(1); }
+      if (e.key === 'ArrowUp') { e.preventDefault(); this.moveDeckHighlight(-1); }
+      if (e.key === 'Enter') { e.preventDefault(); this.commitDeckHighlight(); }
     });
-    document.getElementById('travel-action-jump')?.addEventListener('click', () => {
-      if (this.travelSelection) {
-        const selectedTarget = this.travelSelection;
-        this.closeTravelMenu();
-        this.arriveThen(selectedTarget, () => {
-          if (this.landedOn) this.exitLandedMode();
-          if (selectedTarget.type === 'planet') {
-            const body = PLANETARIUM_BODIES.find(b => b.name === selectedTarget.name);
-            if (body) this.jumpToPlanet(body);
-          } else {
-            // Jump near the moon's parent planet
-            const body = PLANETARIUM_BODIES.find(b => b.name === selectedTarget.parentPlanet);
-            if (body) this.jumpToPlanet(body);
-          }
-        });
-      }
-    });
-    this.buildTravelList();
-    this.buildObservatoryList();
 
     this.updateTimeUI();
     this.updateMissionControlState();
   }
 
-  /**
-   * Populate a planets-and-moons list (travel menu + observatory menu share
-   * the layout; they differ in which bodies appear and what a tap does).
-   */
-  private buildBodyList(
-    list: HTMLElement,
-    opts: {
-      filter?: (target: NonNullable<LandedTarget>) => boolean;
-      onPick: (target: NonNullable<LandedTarget>) => void;
-    },
-  ) {
-    list.innerHTML = '';
+  // ── The deck ─────────────────────────────────────────────
 
-    for (const body of PLANETARIUM_BODIES) {
-      const planetTarget = { type: 'planet', name: body.name } as const;
-      if (!opts.filter || opts.filter(planetTarget)) {
-        const item = document.createElement('button');
-        item.className = 'travel-item';
-        item.dataset.type = 'planet';
-        item.dataset.name = body.name;
-        item.innerHTML = `
-          <span class="travel-item-dot" style="background:#${body.color.toString(16).padStart(6, '0')}"></span>
-          <span class="travel-item-info">
-            <span class="travel-item-name">${body.name}</span>
-            <span class="travel-item-detail">${body.description.split('.')[0]}</span>
-          </span>`;
-        item.addEventListener('click', () => opts.onPick(planetTarget));
-        list.appendChild(item);
-      }
-
-      const moons = getMoonsByPlanet(body.name);
-      for (const moon of moons) {
-        const moonTarget = { type: 'moon', name: moon.name, parentPlanet: moon.parentPlanet } as const;
-        if (opts.filter && !opts.filter(moonTarget)) continue;
-        const moonItem = document.createElement('button');
-        moonItem.className = 'travel-item travel-item-moon';
-        moonItem.dataset.type = 'moon';
-        moonItem.dataset.name = moon.name;
-        moonItem.dataset.parent = moon.parentPlanet;
-        moonItem.innerHTML = `
-          <span class="travel-item-dot" style="background:#${moon.color.toString(16).padStart(6, '0')}"></span>
-          <span class="travel-item-info">
-            <span class="travel-item-name">${moon.name}</span>
-            <span class="travel-item-detail">Moon of ${moon.parentPlanet} · r = ${moon.radiusKm.toLocaleString()} km</span>
-          </span>`;
-        moonItem.addEventListener('click', () => opts.onPick(moonTarget));
-        list.appendChild(moonItem);
-      }
-    }
+  private isDeckOpen(): boolean {
+    return this.deckVerb !== null;
   }
 
-  private buildTravelList() {
-    const list = document.getElementById('travel-list');
-    if (!list) return;
-    this.buildBodyList(list, {
-      onPick: (target) => this.selectTravelTarget(target),
-    });
+  /** The sky-panel-on-arrival preference: stored flip, else the device default. */
+  private effectiveSkyPref(): boolean {
+    return this.skyPrefStored ?? window.matchMedia('(hover: hover) and (pointer: fine)').matches;
   }
 
-  /** Subjects only: bodies whose system has catalog moons. Mercury/Venus stay
-   * travel-only — their landed state has no Observatory panel to open. */
-  private buildObservatoryList() {
-    const list = document.getElementById('observatory-list');
-    if (!list) return;
-    this.buildBodyList(list, {
-      filter: (target) => this.isObservatorySubject(target),
-      onPick: (target) => this.pickObservatoryBody(target),
-    });
-  }
-
-  private toggleTravelMenu(autopilotMode = false) {
+  private openDeck(verb: DeckVerb, opts: { fromPanel?: boolean } = {}) {
     if (this.isMissionActive()) return;
-    const menu = document.getElementById('travel-menu');
-    if (!menu) return;
-    const isVisible = menu.classList.contains('visible');
-    if (isVisible) {
-      this.closeTravelMenu();
-    } else {
-      // Close sibling popovers — one modal at a time
+    const wasOpen = this.isDeckOpen();
+    this.deckVerb = verb;
+    this.deckOpenedFromPanel = opts.fromPanel ?? false;
+    const search = document.getElementById('deck-search') as HTMLInputElement | null;
+    if (!wasOpen) {
+      // One modal at a time; labels restore on close (deferring to surface
+      // view / the labels setting).
       this.closeMenuPanel();
-      this.closeObservatoryMenu();
       this.closeSurfaceTargetMenu();
-      menu.classList.add('visible');
-      this.travelSelection = null;
-      // Swap primary button styling based on mode
-      const landBtn = document.getElementById('travel-action-land');
-      const flyBtn = document.getElementById('travel-action-fly');
-      if (landBtn && flyBtn) {
-        if (autopilotMode) {
-          flyBtn.className = 'travel-action-btn';
-          landBtn.className = 'travel-action-btn travel-action-btn-dim';
-        } else {
-          landBtn.className = 'travel-action-btn';
-          flyBtn.className = 'travel-action-btn travel-action-btn-dim';
-        }
-      }
-      const actionBar = document.getElementById('travel-action-bar');
-      if (actionBar) actionBar.style.display = 'none';
-      // Hide planet/moon labels so they don't show through the menu
       this.setWorldLabelsVisible(false);
-      const search = document.getElementById('travel-search') as HTMLInputElement;
-      if (search) {
-        search.value = '';
-        this.filterBodyList(document.getElementById('travel-list'), '');
-        if (!('ontouchstart' in window)) search.focus();
-      }
+      if (search) search.value = '';
+    }
+    this.refreshDeck();
+    if (window.matchMedia('(hover: hover) and (pointer: fine)').matches) search?.focus();
+  }
+
+  private closeDeck() {
+    if (!this.isDeckOpen()) return;
+    this.deckVerb = null;
+    this.deckOpenedFromPanel = false;
+    // Blur before hiding: a focused-but-hidden search would keep swallowing
+    // flight keys (the key handler bails on INPUT targets).
+    (document.getElementById('deck-search') as HTMLInputElement | null)?.blur();
+    document.getElementById('deck')?.classList.remove('visible');
+    document.getElementById('deck-backdrop')?.classList.remove('visible');
+    this.setWorldLabelsVisible(true);
+    this.updateClusterOnStates();
+  }
+
+  /** Cluster button / key: close on the same verb, else open or switch to it. */
+  private toggleDeck(verb: DeckVerb) {
+    if (this.deckVerb === verb) {
+      this.closeDeck();
+    } else if (this.isDeckOpen()) {
+      // A different errand, not a vantage change — drop the from-panel flag.
+      this.deckOpenedFromPanel = false;
+      this.switchDeckTab(verb);
+    } else {
+      this.openDeck(verb);
     }
   }
 
-  private closeTravelMenu() {
-    const menu = document.getElementById('travel-menu');
-    if (menu) menu.classList.remove('visible');
-    this.travelSelection = null;
-    this.setWorldLabelsVisible(true);
+  /** In-deck tab switch: keeps the query and the from-panel flag. */
+  private switchDeckTab(verb: DeckVerb) {
+    if (!this.isDeckOpen() || this.deckVerb === verb) return;
+    this.deckVerb = verb;
+    this.refreshDeck();
+  }
+
+  /** Telescope chip / O: landed with the deck closed it toggles this sky's
+   * panel; otherwise it's the deck's Observatory tab. Moonless grounds fall
+   * back to the deck until every planet is a subject — their panel would
+   * render hollow today. */
+  private observatoryAction() {
+    if (!this.isDeckOpen() && this.landedOn) {
+      if (this.isObservatorySubject(this.landedOn)) {
+        this.toggleObservatoryPanel();
+      } else {
+        this.openDeck('observe');
+      }
+      return;
+    }
+    this.toggleDeck('observe');
+  }
+
+  /** Deck chrome + rows + filter, for the current verb. */
+  private refreshDeck() {
+    const open = this.isDeckOpen();
+    document.getElementById('deck')?.classList.toggle('visible', open);
+    document.getElementById('deck-backdrop')?.classList.toggle('visible', open);
+    if (!open) return;
+    const tabs: Array<[string, DeckVerb]> = [
+      ['deck-tab-observe', 'observe'],
+      ['deck-tab-travel', 'travel'],
+      ['deck-tab-pilot', 'pilot'],
+    ];
+    for (const [id, verb] of tabs) {
+      document.getElementById(id)?.classList.toggle('on', this.deckVerb === verb);
+    }
+    const pref = document.getElementById('deck-pref');
+    if (pref) pref.style.display = this.deckVerb === 'observe' ? '' : 'none';
+    document.getElementById('deck-pref-toggle')?.classList.toggle('on', this.effectiveSkyPref());
+    this.updateClusterOnStates();
+    this.buildDeckList();
+    this.filterDeckList();
+    // Landed on the Observatory tab with no query: bring your own row into
+    // view (Carme sits below thirty Jupiter rows; an off-screen HERE pill is
+    // no affordance at all).
+    const query = (document.getElementById('deck-search') as HTMLInputElement | null)?.value ?? '';
+    if (this.deckVerb === 'observe' && this.landedOn && !query.trim()) {
+      this.revealDeckRow(this.landedOn.name);
+    }
+  }
+
+  /** Accent states for the three cluster chips (`.on` = their tab is open;
+   * the telescope also lights while the panel is open — same instrument). */
+  private updateClusterOnStates() {
+    document.getElementById('planetarium-btn-observatory')?.classList.toggle(
+      'on',
+      this.deckVerb === 'observe' || this.observatoryPanel.isOpen(),
+    );
+    document.getElementById('planetarium-btn-travel')?.classList.toggle('on', this.deckVerb === 'travel');
+    document.getElementById('planetarium-btn-autopilot')?.classList.toggle('on', this.deckVerb === 'pilot');
+  }
+
+  private buildDeckList() {
+    const list = document.getElementById('deck-list');
+    const verb = this.deckVerb;
+    if (!list || !verb) return;
+    list.innerHTML = '';
+    this.deckHl = -1;
+    for (const group of groupDeckBodies(PLANETARIUM_BODIES, MOONS)) {
+      // Observatory tab: subjects only for now (bodies whose system has
+      // moons) — the guard drops when every planet grows a panel.
+      if (verb === 'observe' && group.moons.length === 0) continue;
+      list.appendChild(this.makeDeckRow(
+        { type: 'planet', name: group.planet.name },
+        group.planet.color,
+        group.planet.description.split('.')[0],
+      ));
+      for (const moon of group.moons) {
+        list.appendChild(this.makeDeckRow(
+          { type: 'moon', name: moon.name, parentPlanet: moon.parentPlanet },
+          moon.color,
+          null,
+        ));
+      }
+    }
+    const empty = document.createElement('div');
+    empty.className = 'pk-empty';
+    empty.textContent = 'No bodies match.';
+    list.appendChild(empty);
+  }
+
+  private makeDeckRow(target: NonNullable<LandedTarget>, color: number, detail: string | null): HTMLElement {
+    const isMoon = target.type === 'moon';
+    const here = this.landedOn?.type === target.type && this.landedOn.name === target.name;
+    const row = document.createElement('div');
+    row.className = `pk-row ${isMoon ? 'pk-moon' : 'pk-planet'}${here ? ' here' : ''}`;
+    row.dataset.name = target.name;
+    if (target.type === 'moon') row.dataset.parent = target.parentPlanet;
+    const css = `#${color.toString(16).padStart(6, '0')}`;
+    const dot = document.createElement('span');
+    dot.className = 'pk-dot';
+    dot.style.background = isMoon
+      ? css
+      : `radial-gradient(circle at 35% 30%, ${mixHex(color, 0xf4f7ff, 0.35)}, ${css} 60%, ${mixHex(color, 0x04060b, 0.45)})`;
+    row.appendChild(dot);
+    const info = document.createElement('span');
+    info.className = 'pk-info';
+    info.innerHTML = `<b>${target.name}</b>` + (detail ? `<small>${detail}</small>` : '');
+    row.appendChild(info);
+    if (here) {
+      const tag = document.createElement('span');
+      tag.className = 'pk-tag-here';
+      tag.textContent = 'here';
+      row.appendChild(tag);
+    }
+    row.addEventListener('click', () => this.commitDeckPick(target));
+    return row;
+  }
+
+  private filterDeckList() {
+    const list = document.getElementById('deck-list');
+    if (!list) return;
+    const query = (document.getElementById('deck-search') as HTMLInputElement | null)?.value ?? '';
+    const rows = Array.from(list.querySelectorAll<HTMLElement>('.pk-row'));
+    const keep = filterDeckRows(query, rows.map((row): DeckRow => ({
+      name: row.dataset.name ?? '',
+      parent: row.dataset.parent,
+    })));
+    let anyVisible = false;
+    rows.forEach((row, i) => {
+      row.style.display = keep[i] ? '' : 'none';
+      if (keep[i]) anyVisible = true;
+    });
+    const empty = list.querySelector<HTMLElement>('.pk-empty');
+    if (empty) empty.style.display = anyVisible ? 'none' : 'block';
+    for (const row of list.querySelectorAll('.pk-row.hl')) row.classList.remove('hl');
+    this.deckHl = -1;
+  }
+
+  private deckVisibleRows(list: HTMLElement): HTMLElement[] {
+    return Array.from(list.querySelectorAll<HTMLElement>('.pk-row')).filter(
+      (row) => row.style.display !== 'none',
+    );
+  }
+
+  private moveDeckHighlight(dir: 1 | -1) {
+    const list = document.getElementById('deck-list');
+    if (!list) return;
+    const rows = this.deckVisibleRows(list);
+    if (!rows.length) return;
+    const i = Math.max(0, Math.min(rows.length - 1, this.deckHl + dir));
+    for (const row of list.querySelectorAll('.pk-row.hl')) row.classList.remove('hl');
+    rows[i].classList.add('hl');
+    this.deckHl = i;
+    const row = rows[i];
+    const overshoot = row.offsetTop + row.offsetHeight - (list.scrollTop + list.clientHeight);
+    if (overshoot > 0) list.scrollTop += overshoot + 6;
+    if (row.offsetTop < list.scrollTop) list.scrollTop = row.offsetTop - 6;
+  }
+
+  /** Enter commits the highlighted row, or the first visible one. */
+  private commitDeckHighlight() {
+    const list = document.getElementById('deck-list');
+    if (!list) return;
+    const rows = this.deckVisibleRows(list);
+    const row = (this.deckHl >= 0 ? rows[this.deckHl] : rows[0]) ?? null;
+    if (!row?.dataset.name) return;
+    const parent = row.dataset.parent;
+    this.commitDeckPick(
+      parent
+        ? { type: 'moon', name: row.dataset.name, parentPlanet: parent }
+        : { type: 'planet', name: row.dataset.name },
+    );
+  }
+
+  private revealDeckRow(name: string) {
+    const list = document.getElementById('deck-list');
+    if (!list) return;
+    const row = Array.from(list.querySelectorAll<HTMLElement>('.pk-row')).find(
+      (r) => r.dataset.name === name,
+    );
+    // 64px clears the sticky system header pinned above the row.
+    if (row) list.scrollTop = Math.max(0, row.offsetTop - 64);
+  }
+
+  /** Every deck commit closes the deck; the tab decides the ride. */
+  private commitDeckPick(target: NonNullable<LandedTarget>) {
+    if (this.isMissionActive()) return;
+    const verb = this.deckVerb;
+    if (!verb) return;
+    const fromPanel = this.deckOpenedFromPanel;
+    this.closeDeck();
+    const sameBody = this.landedOn?.type === target.type && this.landedOn.name === target.name;
+    if (verb === 'observe') {
+      this.commitObservePick(target, sameBody, fromPanel);
+      return;
+    }
+    if (sameBody) {
+      // Your own row on Travel/Autopilot: lift off and park nearby.
+      this.exitLandedMode();
+      return;
+    }
+    if (verb === 'travel') {
+      this.arriveThen(target, () => {
+        if (this.landedOn) this.exitLandedMode();
+        const parentName = target.type === 'planet' ? target.name : target.parentPlanet;
+        const body = PLANETARIUM_BODIES.find((b) => b.name === parentName);
+        if (body) this.jumpToPlanet(body);
+      });
+      return;
+    }
+    if (this.landedOn) this.exitLandedMode();
+    this.engageAutopilot(target);
   }
 
   /**
@@ -2896,91 +3052,31 @@ export class PlanetariumMode {
     }
   }
 
-  /** Cruise-state Observatory entry: a travel-style menu of vantage bodies. */
-  private toggleObservatoryMenu() {
-    if (this.isMissionActive()) return;
-    const menu = document.getElementById('observatory-menu');
-    if (!menu) return;
-    if (menu.classList.contains('visible')) {
-      this.closeObservatoryMenu();
-      return;
-    }
-    this.closeMenuPanel();
-    this.closeTravelMenu();
-    this.closeSurfaceTargetMenu();
-    menu.classList.add('visible');
-    this.setWorldLabelsVisible(false);
-    // Landed, the menu doubles as the switch-body path — the
-    // subtitle says so, and the current vantage is marked and scrolled into
-    // view (Carme sits below thirty Jupiter rows; an off-screen marker is
-    // no affordance at all). Picking the marked row just reopens the panel.
-    setText(
-      'observatory-menu-sub',
-      this.landedOn
-        ? 'Pick a vantage — or reopen this sky.'
-        : 'Pick a vantage — you’ll land there with its sky open.',
-    );
-    const search = document.getElementById('observatory-search') as HTMLInputElement;
-    if (search) {
-      search.value = '';
-      this.filterBodyList(document.getElementById('observatory-list'), '');
-      if (!('ontouchstart' in window)) search.focus();
-    }
-    // After the filter reset: scrollIntoView on a row a stale search left
-    // display:none would no-op, and rows un-hidden above it would shove the
-    // marker off-screen anyway.
-    this.markObservatoryCurrentRow();
-  }
-
-  /** Re-derived on every open: mark (and reveal) the landed body's row. */
-  private markObservatoryCurrentRow() {
-    const list = document.getElementById('observatory-list');
-    if (!list) return;
-    let current: HTMLElement | null = null;
-    for (const item of list.querySelectorAll<HTMLElement>('.travel-item')) {
-      const isCurrent =
-        this.landedOn !== null &&
-        item.dataset.type === this.landedOn.type &&
-        item.dataset.name === this.landedOn.name;
-      item.classList.toggle('travel-item-current', isCurrent);
-      if (isCurrent) current = item;
-    }
-    if (current) current.scrollIntoView({ block: 'center' });
-  }
-
-  private closeObservatoryMenu() {
-    const menu = document.getElementById('observatory-menu');
-    if (!menu || !menu.classList.contains('visible')) return;
-    menu.classList.remove('visible');
-    this.setWorldLabelsVisible(true);
-  }
-
-  private isObservatoryMenuOpen(): boolean {
-    return document.getElementById('observatory-menu')?.classList.contains('visible') ?? false;
-  }
-
   /**
-   * Observatory-menu pick: land on (or re-land to) the body and open its
-   * panel. The panel opens here, at the pick site only — enterLandedMode
-   * itself never auto-opens it (restore/proximity/Land & Orbit stay as-is).
+   * Observe-tab commit: land on (or re-land to) the body; the arrival
+   * preference and its overrides decide whether the panel opens. The panel
+   * opens here, at the pick site only — enterLandedMode itself never
+   * auto-opens it (restore/proximity/Land & Orbit stay as-is).
    */
-  private pickObservatoryBody(target: NonNullable<LandedTarget>) {
-    if (this.isMissionActive()) return;
-    this.closeObservatoryMenu();
-    const sameBody =
-      this.landedOn?.type === target.type && this.landedOn.name === target.name;
-    const panelWasOpen = this.observatoryPanel.isOpen();
+  private commitObservePick(target: NonNullable<LandedTarget>, sameBody: boolean, fromPanel: boolean) {
+    const action = observeArrivalAction({
+      sameBody,
+      skyPref: this.effectiveSkyPref(),
+      companionless: target.type === 'planet' && getMoonsByPlanet(target.name).length === 0,
+      fromPanel,
+    });
     const openPanel = () => {
       this.bottomBar.closeStats();
       this.observatoryPanel.show();
       this.renderObservatoryPanel();
       this.startObservatoryEventSearch();
+      this.updateClusterOnStates();
     };
-    if (sameBody) {
-      if (!panelWasOpen) openPanel();
+    if (action === 'reopen') {
+      if (!this.observatoryPanel.isOpen()) openPanel();
       return;
     }
-    // Excursion entry: the menu grabs the ship out of cruise — remember the
+    // Excursion entry: the deck grabs the ship out of cruise — remember the
     // pose so Leave puts it back exactly. Capture it NOW, synchronously: the
     // ship keeps moving while a cold system paints behind the veil, so a stash
     // taken inside the deferred closure would be a couple frames downrange.
@@ -2995,8 +3091,8 @@ export class PlanetariumMode {
           inSystemMode: this.inSystemMode,
           moving: this.player.moving,
         };
-    // Teleport behind the arrival veil if the destination isn't painted yet; the
-    // panel opens after the landing so it reads the new subject, not the old.
+    // Teleport behind the arrival veil if the destination isn't painted yet;
+    // the panel decision applies after the landing so it reads the new subject.
     this.arriveThen(target, () => {
       if (this.landedOn) {
         // Re-land without the exit/enter ceremony. A live surface view would
@@ -3008,58 +3104,15 @@ export class PlanetariumMode {
         this.observatoryExcursion = excursionStash;
         this.enterLandedMode(target);
       }
-      openPanel();
-    });
-  }
-
-  private selectTravelTarget(target: NonNullable<LandedTarget>) {
-    this.travelSelection = target;
-    const actionBar = document.getElementById('travel-action-bar');
-    const nameEl = document.getElementById('travel-action-name');
-    if (actionBar) actionBar.style.display = '';
-    if (nameEl) nameEl.textContent = target.name;
-  }
-
-  private isTravelMenuOpen(): boolean {
-    return document.getElementById('travel-menu')?.classList.contains('visible') ?? false;
-  }
-
-  private filterBodyList(list: HTMLElement | null, query: string) {
-    if (!list) return;
-    const normalizedQuery = query.toLowerCase().trim();
-    const items = list.querySelectorAll('.travel-item') as NodeListOf<HTMLElement>;
-
-    if (!normalizedQuery) {
-      for (const item of items) item.style.display = '';
-      return;
-    }
-
-    // First pass: determine which planets match (either directly or via a matching moon)
-    const matchingParents = new Set<string>();
-    for (const item of items) {
-      const name = (item.dataset.name ?? '').toLowerCase();
-      const parent = item.dataset.parent ?? '';
-      if (name.includes(normalizedQuery)) {
-        if (item.dataset.type === 'moon') matchingParents.add(parent);
-        else matchingParents.add(item.dataset.name ?? '');
-      }
-    }
-
-    // Second pass: show/hide
-    for (const item of items) {
-      const name = (item.dataset.name ?? '').toLowerCase();
-      if (name.includes(normalizedQuery)) {
-        item.style.display = '';
-      } else if (item.dataset.type === 'planet' && matchingParents.has(item.dataset.name ?? '')) {
-        // Show parent planet if a moon matches
-        item.style.display = '';
-      } else if (item.dataset.type === 'moon' && matchingParents.has(item.dataset.parent ?? '')) {
-        // Show sibling moons when planet matches
-        item.style.display = '';
+      if (action === 'land-open') {
+        openPanel();
       } else {
-        item.style.display = 'none';
+        // Quiet arrival: the sky panel stays tucked into the telescope chip —
+        // pulse the chip so the hand-off reads.
+        this.closeObservatoryPanel();
+        this.pulseObservatoryChip();
       }
-    }
+    });
   }
 
   private async startHistoricJourney(missionId: HistoricMissionId) {
@@ -3658,15 +3711,15 @@ export class PlanetariumMode {
     if (!button) return;
     const missionActive = this.isMissionActive();
     const landedSubject = this.landedOn !== null && this.isObservatorySubject(this.landedOn);
-    // The button always opens the vantage menu, so it shows everywhere
-    // outside missions — even landed on a moonless body (Mercury), where the
-    // menu is the way TO an observatory.
+    // The button always reaches the deck's Observatory tab, so it shows
+    // everywhere outside missions — even landed on a moonless body
+    // (Mercury), where the deck is the way TO an observatory.
     button.style.display = missionActive ? 'none' : '';
     // The panel is a landed-state surface: takeoff and moonless bodies close
-    // it. The menu is legal in any state but missions own the ship.
+    // it. The deck is legal in any state but missions own the ship.
     if (missionActive || !landedSubject) this.closeObservatoryPanel();
     if (missionActive) {
-      this.closeObservatoryMenu();
+      this.closeDeck();
       this.closeSurfaceTargetMenu();
     }
   }
@@ -3674,6 +3727,7 @@ export class PlanetariumMode {
   private closeObservatoryPanel() {
     this.observatoryPanel.hide();
     this.cancelObservatoryEventSearch();
+    this.updateClusterOnStates();
   }
 
   /** Brief pulse on the Observatory chip — the visible hand-off when the panel
@@ -3694,6 +3748,7 @@ export class PlanetariumMode {
       this.observatoryPanel.show();
       this.renderObservatoryPanel();
       this.startObservatoryEventSearch();
+      this.updateClusterOnStates();
     }
   }
 
@@ -3775,8 +3830,7 @@ export class PlanetariumMode {
     if (choices.length === 0 || !this.landedOn) return;
     // One modal at a time, extended to the picker.
     this.closeMenuPanel();
-    this.closeTravelMenu();
-    this.closeObservatoryMenu();
+    this.closeDeck();
     const inView = this.landedView === 'surface';
     this.setWorldLabelsVisible(false);
     this.surfaceTargetMenu.open(
@@ -5006,11 +5060,11 @@ export class PlanetariumMode {
     // resurrecting a moon subject on a later fresh landing on its parent.
     // Only the vantage swap preserves the pair it just set.
     if (!preserveOrbitPair) this.orbitPairMoon = null;
-    // The menu has no backdrop, so non-menu landing paths (Land button,
-    // proximity, T-key) can fire while it's open — its "you're here" marker
-    // would go stale the instant the ground changes. Menu-initiated picks
-    // already closed it (no-op here).
-    this.closeObservatoryMenu();
+    // Every deck pick closes the deck before acting, but the cluster stays
+    // clickable above its backdrop — a landing can still fire under an open
+    // deck whose rows and HERE pill would go stale the instant the ground
+    // changes. Defensive close (no-op on deck-initiated landings).
+    this.closeDeck();
     // New ground, new sky: the picker's rows and the remembered Look-at
     // target both describe the vantage being left behind.
     this.closeSurfaceTargetMenu();
@@ -5114,12 +5168,10 @@ export class PlanetariumMode {
     this.bottomBar.closeStats();
     document.getElementById('time-popover')?.classList.remove('visible');
     document.getElementById('time-chevron')?.classList.remove('expanded');
-    // Parked: dim the speed group inert (kept laid out so the bar doesn't reflow)
-    // and hide Pilot — it's a flight control, and Travel covers "go elsewhere".
+    // Parked: dim the speed group inert (kept laid out so the bar doesn't
+    // reflow). Pilot stays visible — its tab lifts off and flies from here.
     const speedGroup = document.querySelector('.bar-speed-main .speed-group') as HTMLElement | null;
     if (speedGroup) speedGroup.classList.add('inert');
-    const autopilotBtn = document.getElementById('planetarium-btn-autopilot');
-    if (autopilotBtn) autopilotBtn.style.display = 'none';
     const hide = ['planetarium-keys-hint', 'touch-flight-zone', 'planetarium-btn-land'];
     for (const id of hide) {
       const el = document.getElementById(id);
@@ -5470,9 +5522,10 @@ export class PlanetariumMode {
     if (!this.landedOn) return;
     // Back to cruise: no landed system means no moons owed a warm upload.
     setWarmEligibleMoonParents(new Set());
-    // A menu opened while landed describes a ground that's about to vanish
-    // (Leave is clickable around the backdrop-less menu) — close it.
-    this.closeObservatoryMenu();
+    // Leave sits in the cluster above the deck's backdrop, so takeoff can
+    // fire while the deck is open — a deck describing the ground being left
+    // (HERE pill, reveal target) closes with it.
+    this.closeDeck();
     this.closeSurfaceTargetMenu();
     this.surfacePickedTarget = null;
     // Teardown path: restore FOV/controls/labels instantly — the code below
@@ -5727,6 +5780,10 @@ export class PlanetariumMode {
       systemSlowdown: this.systemSlowdown,
       autopilotTarget: this.autopilotTarget,
       autopilotUserEngaged: this.autopilotUserEngaged,
+      // Absent until the user flips the toggle — JSON.stringify drops the
+      // undefined, so an untouched preference never bakes a device default
+      // into the save.
+      skyPref: this.skyPrefStored ?? undefined,
     };
   }
 
@@ -5778,6 +5835,7 @@ export class PlanetariumMode {
     this.autopilotTarget = saved.autopilotTarget ?? null;
     this.autopilotUserEngaged = saved.autopilotUserEngaged ?? false;
     this.updateAutopilotButton();
+    this.skyPrefStored = saved.skyPref ?? null;
     const shipLabel = document.getElementById('settings-ship-label');
     if (shipLabel) shipLabel.textContent = this.showShip ? 'On' : 'Off';
 
@@ -5859,15 +5917,10 @@ export class PlanetariumMode {
     if (this.autopilot) {
       this.disengageAutopilot();
       this.notification.show('Autopilot disengaged');
-    } else if (this.landedOn) {
-      // Keyboard-only path (the Pilot button hides while landed): taking off
-      // under autopilot needs a destination, so the picker is the door here.
-      this.toggleTravelMenu(true);
     } else {
-      // Idle in cruise there is never a stored destination (disengaging
-      // clears it), so this tap can't engage anything — explain instead of
-      // moonlighting as a second Travel button.
-      this.notification.show('Autopilot needs a destination. Pick one in Travel.');
+      // Idle there is never a stored destination (disengaging clears it), so
+      // engaging always starts at the picker: the deck's Autopilot tab.
+      this.toggleDeck('pilot');
     }
   }
 

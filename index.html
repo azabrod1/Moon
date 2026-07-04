@@ -467,9 +467,11 @@
       align-items: center;
       gap: 7px;
       pointer-events: auto;
-      /* One notch above the observatory panel so button tooltips, which drop
-         below the row, stay readable over the panel's top edge. */
-      z-index: 22;
+      /* Top of the local stack: above the observatory panel (21) so button
+         tooltips stay readable over its top edge, and above the deck (27)
+         and its backdrop (26) so Leave and tab-switching by cluster click
+         keep working while the deck is open. */
+      z-index: 28;
       font-size: 11px;
     }
     /* Action cluster — flat glass (hairline + blur, no gradient/glint; the
@@ -1537,24 +1539,153 @@
       color: var(--text-secondary);
     }
 
-    #travel-menu,
-    #observatory-menu {
+    /* ═══ The deck — one centered picker, three tabs (Observatory · Travel ·
+       Autopilot), one-click rows. Stacking: the backdrop (26) dims the scene
+       and the Land button (25); the deck (27) rides above it; the action
+       cluster (28) stays clickable on top so Leave and switching tabs by
+       cluster click keep working while the deck is open. ═══ */
+    #deck-backdrop {
+      display: none;
+      position: fixed;
+      inset: 0;
+      z-index: 26;
+      background: rgba(2, 3, 6, 0.5);
+      pointer-events: auto;
+    }
+    #deck-backdrop.visible { display: block; }
+    #deck {
       display: none;
       position: fixed;
       top: 50%;
       left: 50%;
       transform: translate(-50%, -50%);
-      width: min(380px, calc(100vw - 32px));
-      max-height: min(520px, calc(100vh - 80px));
-      border-radius: var(--r-l);
-      z-index: 60;
-      pointer-events: auto;
+      z-index: 27;
+      width: min(430px, calc(100vw - 28px));
+      max-height: min(600px, calc(100vh - 90px));
       flex-direction: column;
-      overflow: hidden;
+      pointer-events: auto;
     }
-    #travel-menu.visible,
-    #observatory-menu.visible {
-      display: flex;
+    #deck.visible { display: flex; }
+
+    /* Tabs — one per cluster button */
+    .pk-tabs { display: flex; gap: 17px; margin: 6px 18px 0; border-bottom: 1px solid var(--line-dim); flex: none; }
+    .pk-tabs button {
+      display: inline-flex; align-items: center; gap: 8px; padding: 13px 2px 11px;
+      border: none; background: none; color: var(--t3); font-family: var(--font-ui);
+      font-size: 12.5px; font-weight: 500; cursor: pointer; position: relative;
+      transition: color 0.16s;
+    }
+    .pk-tabs button svg { width: 15px; height: 15px; }
+    .pk-tabs button:hover { color: var(--t2); }
+    .pk-tabs button.on { color: var(--t1); }
+    .pk-tabs button::after {
+      content: ''; position: absolute; left: 0; right: 0; bottom: -1px; height: 2px;
+      border-radius: 1px; background: transparent; transition: background 0.16s;
+    }
+    .pk-tabs button.on::after { background: var(--accent); }
+    .pk-tabs .pk-x { margin-left: auto; align-self: center; padding: 0; }
+
+    /* Search */
+    .pk-search {
+      display: flex; align-items: center; gap: 9px; margin: 12px 14px 8px;
+      padding: 0 11px; height: 34px; border-radius: var(--r-m);
+      border: 1px solid var(--line); background: rgba(255, 255, 255, 0.03);
+      color: var(--t3); flex: none;
+    }
+    .pk-search svg { width: 13px; height: 13px; flex: none; }
+    .pk-search input {
+      flex: 1; min-width: 0; background: none; border: none; outline: none;
+      color: var(--t1); font-family: var(--font-ui); font-size: 12.5px;
+    }
+    .pk-search input::placeholder { color: var(--t3); }
+
+    /* Body list */
+    .pk-list {
+      overflow-y: auto; overscroll-behavior: contain; padding: 0 14px 12px; flex: 1;
+      scrollbar-width: thin; scrollbar-color: rgba(255, 255, 255, 0.14) transparent;
+    }
+    .pk-list::-webkit-scrollbar { width: 4px; }
+    .pk-list::-webkit-scrollbar-thumb { background: rgba(255, 255, 255, 0.10); border-radius: 2px; }
+
+    .pk-row {
+      display: flex; align-items: center; gap: 10px; padding: 4px 9px; min-height: 31px;
+      border-radius: var(--r-s); cursor: pointer; position: relative;
+      -webkit-tap-highlight-color: transparent;
+      transition: background 0.14s var(--ease);
+    }
+    .pk-row:hover, .pk-row.hl { background: rgba(255, 255, 255, 0.05); }
+    .pk-row:active { background: rgba(255, 255, 255, 0.08); }
+    .pk-row + .pk-planet { margin-top: 4px; }
+    .pk-dot {
+      width: 9px; height: 9px; border-radius: 50%; flex: none;
+      box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.08) inset, 0 0 6px rgba(0, 0, 0, 0.4);
+    }
+    .pk-info {
+      flex: 1; min-width: 0; display: flex; align-items: baseline; gap: 8px;
+      white-space: nowrap; overflow: hidden;
+    }
+    .pk-info b { font-size: 12.5px; font-weight: 500; color: var(--t1); }
+    .pk-info small { font-size: 10.5px; color: var(--t3); overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+    .pk-moon { padding-left: 28px; min-height: 27px; }
+    .pk-moon .pk-dot { width: 5px; height: 5px; margin-left: 2px; }
+    .pk-moon .pk-info b { font-size: 12px; font-weight: 400; color: var(--t2); }
+    .pk-moon:hover .pk-info b, .pk-moon.hl .pk-info b { color: var(--t1); }
+
+    /* System headers pin while their moons scroll (blur — same surface, rows fade beneath). */
+    .pk-planet {
+      position: sticky; top: 0; z-index: 2; background: rgba(10, 13, 19, 0.78);
+      -webkit-backdrop-filter: blur(12px); backdrop-filter: blur(12px);
+    }
+    .pk-planet:hover, .pk-planet.hl { background: rgba(38, 44, 60, 0.72); }
+
+    /* Current vantage marker (landed) */
+    .pk-tag-here {
+      flex: none; font-family: var(--font-mono); font-size: 8px; letter-spacing: 0.14em;
+      color: var(--t3); text-transform: uppercase; padding: 2px 6px;
+      border: 1px solid var(--line); border-radius: 999px;
+    }
+    .pk-row.here .pk-tag-here { color: var(--t2); }
+
+    .pk-empty { display: none; padding: 22px 10px 14px; text-align: center; font-size: 11.5px; color: var(--t3); }
+
+    /* Footer preference (Observatory tab only) */
+    .pk-pref {
+      flex: none; display: flex; align-items: center; justify-content: space-between;
+      gap: 12px; padding: 11px 18px 13px; border-top: 1px solid var(--line-dim);
+    }
+    .pk-pref .pl b { font-size: 12px; font-weight: 500; color: var(--t1); }
+    .tgl {
+      position: relative; width: 30px; height: 18px; border-radius: 9px;
+      background: rgba(255, 255, 255, 0.12); cursor: pointer; border: none; flex: none;
+      transition: background var(--dur) var(--ease);
+    }
+    .tgl::after {
+      content: ''; position: absolute; top: 2px; left: 2px; width: 14px; height: 14px;
+      border-radius: 50%; background: #cfd6e4; transition: transform var(--dur) var(--ease);
+    }
+    .tgl.on { background: rgba(var(--accent-rgb), 0.55); }
+    .tgl.on::after { transform: translateX(12px); background: #fff; }
+
+    /* Shared close button */
+    .pk-x {
+      width: 26px; height: 26px; display: inline-flex; align-items: center; justify-content: center;
+      border: none; border-radius: var(--r-s); background: none; color: var(--t3);
+      cursor: pointer; transition: background 0.14s, color 0.14s;
+    }
+    .pk-x:hover { background: rgba(255, 255, 255, 0.07); color: var(--t1); }
+    .pk-x svg { width: 13px; height: 13px; }
+
+    /* ≤640px: the deck becomes a bottom sheet with a grab handle */
+    @media (max-width: 640px) {
+      #deck {
+        top: auto; left: 8px; right: 8px; bottom: 8px; transform: none;
+        width: auto; max-width: none; max-height: min(62vh, 540px);
+        border-bottom-left-radius: var(--r-l); border-bottom-right-radius: var(--r-l);
+      }
+      #deck::before {
+        content: ''; display: block; width: 36px; height: 4px; border-radius: 2px;
+        background: rgba(255, 255, 255, 0.16); margin: 8px auto 0; flex: none;
+      }
     }
 
     /* Look-at menu (surface-view sky targets). The root is a full-screen
@@ -2032,11 +2163,11 @@
         </button>
         <button class="act-btn act-icon" id="planetarium-btn-observatory" style="display:none" aria-label="Observatory">
           <svg class="act-glyph" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4.15 8.11 L12.68 3.17 L14.12 6.03 L5.05 9.89 Z"></path><path d="M11.9 3.75 L13.15 6.35"></path><path d="M4.5 9.05 L3.1 9.75"></path><path d="M9.4 8.2 L9.0 15.6 M9.0 15.6 L6.7 17.8 M9.0 15.6 L11.3 17.8"></path></svg>
-          <span class="act-tip">Observatory</span>
+          <span class="act-tip">Observatory <kbd>O</kbd></span>
         </button>
         <button class="act-btn act-icon" id="planetarium-btn-travel" aria-label="Travel">
           <svg class="act-glyph" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><g transform="rotate(42 10 10)"><path fill-rule="evenodd" fill="currentColor" stroke="none" d="M10 1.4 C 8.1 3.4 7.1 6.3 7.1 9.5 L 7.1 14.2 C 7.1 14.75 7.5 15.1 8.05 15.1 L 11.95 15.1 C 12.5 15.1 12.9 14.75 12.9 14.2 L 12.9 9.5 C 12.9 6.3 11.9 3.4 10 1.4 Z M10 5.45 a1.65 1.65 0 1 1 0 3.3 a1.65 1.65 0 0 1 0 -3.3 Z M10 6.25 a0.85 0.85 0 1 1 0 1.7 a0.85 0.85 0 0 1 0 -1.7 Z"></path><path fill="currentColor" stroke="none" d="M7.1 10.6 C 5.6 11.5 4.6 13.1 4.3 15.0 C 4.25 15.4 4.6 15.7 5.0 15.55 L 7.1 14.7 Z"></path><path fill="currentColor" stroke="none" d="M12.9 10.6 C 14.4 11.5 15.4 13.1 15.7 15.0 C 15.75 15.4 15.4 15.7 15.0 15.55 L 12.9 14.7 Z"></path><path fill="currentColor" stroke="none" d="M10 19.2 C 9.0 18.0 8.55 17.0 8.75 16.0 L 11.25 16.0 C 11.45 17.0 11.0 18.0 10 19.2 Z"></path></g></svg>
-          <span class="act-tip">Travel</span>
+          <span class="act-tip">Travel <kbd>T</kbd></span>
         </button>
         <button class="act-btn act-icon" id="planetarium-btn-autopilot" aria-label="Pilot">
           <svg class="act-glyph" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="10" cy="10" r="7.4"></circle><path fill="currentColor" stroke="none" d="M10 5.2 L12.9 13 L10 11.15 L7.1 13 Z"></path></svg>
@@ -2255,12 +2386,7 @@
             </section>
             <section class="help-section">
               <h4>Go anywhere (🚀 Travel)</h4>
-              <p>The 🚀 button up top lists every planet and moon. Pick one, then:</p>
-              <ul class="help-list">
-                <li><strong>Autopilot</strong> — flies you there. Grab the controls and it lets go.</li>
-                <li><strong>Land &amp; Orbit</strong> — drops you into a camera orbit of the body.</li>
-                <li><strong>Jump Nearby</strong> — skips the travel when you don't feel like flying it.</li>
-              </ul>
+              <p>The 🚀 button up top opens the deck: every planet and moon, one tap each. The tab decides what the tap does &mdash; <strong>Travel</strong> jumps you right next to the body, <strong>Autopilot</strong> flies you there (grab the controls and it lets go), and <strong>Observatory</strong> lands you on it. Type to search instead of scrolling.</p>
             </section>
             <section class="help-section">
               <h4>Landing</h4>
@@ -2268,7 +2394,7 @@
             </section>
             <section class="help-section">
               <h4>Stand on a world (🔭 Observatory)</h4>
-              <p>Tap 🔭 and pick any planet or moon. You'll land there with its sky open: the current phase, distances, and the next eclipses and shadow crossings, all worked out from the orbits. Tap an event to jump to it, then <strong>Surface view</strong> to watch from the ground.</p>
+              <p>Tap 🔭 and pick any planet or moon &mdash; you'll land there. Its sky panel shows the current phase, distances, and the next eclipses and shadow crossings, all worked out from the orbits; a switch at the bottom of the picker decides whether the panel opens on arrival by itself. Tap an event to jump to it, then <strong>Surface view</strong> to watch from the ground.</p>
             </section>
             <section class="help-section">
               <h4>Watch the orbits run</h4>
@@ -2279,35 +2405,34 @@
         </div>
       </div>
 
-      <!-- Travel menu (centered modal) -->
-      <div id="travel-menu" class="pn pn-high">
-        <div class="travel-menu-header">
-          <h3>Travel to...</h3>
-          <button class="travel-menu-close" id="travel-menu-close">&times;</button>
+      <!-- The deck: one centered picker, three tabs (Observatory · Travel ·
+           Autopilot), one-click rows. The backdrop dims the scene; the action
+           cluster stays clickable above it. -->
+      <div id="deck-backdrop"></div>
+      <div id="deck" class="pn pn-high">
+        <div class="pk-tabs">
+          <button id="deck-tab-observe">
+            <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4.15 8.11 L12.68 3.17 L14.12 6.03 L5.05 9.89 Z"></path><path d="M11.9 3.75 L13.15 6.35"></path><path d="M4.5 9.05 L3.1 9.75"></path><path d="M9.4 8.2 L9.0 15.6 M9.0 15.6 L6.7 17.8 M9.0 15.6 L11.3 17.8"></path></svg>Observatory
+          </button>
+          <button id="deck-tab-travel">
+            <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><g transform="rotate(42 10 10)"><path fill-rule="evenodd" fill="currentColor" stroke="none" d="M10 1.4 C 8.1 3.4 7.1 6.3 7.1 9.5 L 7.1 14.2 C 7.1 14.75 7.5 15.1 8.05 15.1 L 11.95 15.1 C 12.5 15.1 12.9 14.75 12.9 14.2 L 12.9 9.5 C 12.9 6.3 11.9 3.4 10 1.4 Z M10 5.45 a1.65 1.65 0 1 1 0 3.3 a1.65 1.65 0 0 1 0 -3.3 Z M10 6.25 a0.85 0.85 0 1 1 0 1.7 a0.85 0.85 0 0 1 0 -1.7 Z"></path><path fill="currentColor" stroke="none" d="M7.1 10.6 C 5.6 11.5 4.6 13.1 4.3 15.0 C 4.25 15.4 4.6 15.7 5.0 15.55 L 7.1 14.7 Z"></path><path fill="currentColor" stroke="none" d="M12.9 10.6 C 14.4 11.5 15.4 13.1 15.7 15.0 C 15.75 15.4 15.4 15.7 15.0 15.55 L 12.9 14.7 Z"></path><path fill="currentColor" stroke="none" d="M10 19.2 C 9.0 18.0 8.55 17.0 8.75 16.0 L 11.25 16.0 C 11.45 17.0 11.0 18.0 10 19.2 Z"></path></g></svg>Travel
+          </button>
+          <button id="deck-tab-pilot">
+            <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="10" cy="10" r="7.4"></circle><path fill="currentColor" stroke="none" d="M10 5.2 L12.9 13 L10 11.15 L7.1 13 Z"></path></svg>Autopilot
+          </button>
+          <button class="pk-x" id="deck-close" aria-label="Close">
+            <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5.5 5.5 L14.5 14.5 M14.5 5.5 L5.5 14.5"></path></svg>
+          </button>
         </div>
-        <div class="travel-search-row">
-          <input type="text" id="travel-search" placeholder="Search planets &amp; moons..." autocomplete="off" />
+        <label class="pk-search">
+          <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="9" cy="9" r="5.6"></circle><path d="M13.2 13.2 L17 17"></path></svg>
+          <input type="text" id="deck-search" placeholder="Search planets &amp; moons" autocomplete="off" />
+        </label>
+        <div class="pk-list" id="deck-list"></div>
+        <div class="pk-pref" id="deck-pref">
+          <span class="pl"><b>Open sky panel on arrival</b></span>
+          <button class="tgl" id="deck-pref-toggle" role="switch" aria-label="Open sky panel on arrival"></button>
         </div>
-        <div class="travel-list" id="travel-list"></div>
-        <div class="travel-action-bar" id="travel-action-bar" style="display:none">
-          <span class="travel-action-name" id="travel-action-name"></span>
-          <button class="travel-action-btn" id="travel-action-land">Land &amp; Orbit</button>
-          <button class="travel-action-btn travel-action-btn-dim" id="travel-action-fly">Autopilot</button>
-          <button class="travel-action-btn travel-action-btn-dim" id="travel-action-jump">Jump Nearby</button>
-        </div>
-      </div>
-
-      <!-- Observatory menu (cruise state): one tap lands on the picked body with the sky panel open -->
-      <div id="observatory-menu" class="pn pn-high">
-        <div class="travel-menu-header">
-          <h3>Observatory</h3>
-          <button class="travel-menu-close" id="observatory-menu-close">&times;</button>
-        </div>
-        <div class="travel-menu-sub" id="observatory-menu-sub">Pick a vantage &mdash; you&rsquo;ll land there with its sky open.</div>
-        <div class="travel-search-row">
-          <input type="text" id="observatory-search" placeholder="Search planets &amp; moons..." autocomplete="off" />
-        </div>
-        <div class="travel-list" id="observatory-list"></div>
       </div>
 
       <!-- Look-at menu: the surface view's sky-target picker. -->
@@ -2444,7 +2569,7 @@
       </div>
 
       <div id="planetarium-keys-hint">
-        <kbd>A</kbd><kbd>D</kbd> yaw &nbsp; <kbd>↑</kbd><kbd>↓</kbd> pitch &nbsp; <kbd>W</kbd><kbd>S</kbd> thrust &nbsp; <kbd>P</kbd> autopilot
+        <kbd>A</kbd><kbd>D</kbd> yaw &nbsp; <kbd>↑</kbd><kbd>↓</kbd> pitch &nbsp; <kbd>W</kbd><kbd>S</kbd> thrust &nbsp; <kbd>O</kbd> observatory &nbsp; <kbd>T</kbd> travel &nbsp; <kbd>P</kbd> autopilot
       </div>
 
       <!-- Touch flight zone (mobile only) -->

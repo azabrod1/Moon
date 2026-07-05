@@ -115,6 +115,7 @@ import { projectToScreen, type ScreenProjection } from '../shared/three/projectT
 import { setText } from '../shared/dom';
 import { Constellations } from './Constellations';
 import { getMoonsByPlanet, MOONS, type MoonData } from './planets/moonData';
+import { RING_CONFIGS } from './planets/rings';
 import { filterDeckRows, groupDeckBodies, observeArrivalAction, type DeckRow } from './deckLogic';
 import {
   HISTORIC_JOURNEYS,
@@ -3015,9 +3016,13 @@ export class PlanetariumMode {
     if (verb === 'travel') {
       this.arriveThen(target, () => {
         if (this.landedOn) this.exitLandedMode();
-        const parentName = target.type === 'planet' ? target.name : target.parentPlanet;
-        const body = PLANETARIUM_BODIES.find((b) => b.name === parentName);
-        if (body) this.jumpToPlanet(body);
+        if (target.type === 'moon') {
+          const moon = MOONS.find((m) => m.name === target.name);
+          if (moon) this.jumpToMoon(moon);
+        } else {
+          const body = PLANETARIUM_BODIES.find((b) => b.name === target.name);
+          if (body) this.jumpToPlanet(body);
+        }
       });
       return;
     }
@@ -3437,6 +3442,26 @@ export class PlanetariumMode {
     if (this.isMissionActive()) return;
     const destination = this.getJumpDestination(planet, options.distanceMultiplier ?? 1);
     if (!destination) return;
+    this.applyJumpDestination(destination, planet.name, options.notify !== false);
+  }
+
+  jumpToMoon(moon: MoonData, options: { notify?: boolean } = {}) {
+    if (this.isMissionActive()) return;
+    const destination = this.getMoonJumpDestination(moon);
+    if (!destination) return;
+    this.applyJumpDestination(destination, moon.name, options.notify !== false);
+    // Park on arrival. Planet jumps glide in under the system throttle, but a
+    // moon standoff is a few of ITS radii — and the irregulars orbit far
+    // outside the parent's throttle well, where a still-moving ship covers
+    // the whole standoff in about a second.
+    this.player.moving = false;
+  }
+
+  private applyJumpDestination(
+    destination: { position: THREE.Vector3; lookTarget: THREE.Vector3 },
+    bodyName: string,
+    notify: boolean,
+  ) {
     this.player.posX = destination.position.x;
     this.player.posY = destination.position.y;
     this.player.posZ = destination.position.z;
@@ -3448,16 +3473,70 @@ export class PlanetariumMode {
     if (this.player.speedMultiplier < PlayerShip.SPEED_DEFAULT) {
       this.player.speedMultiplier = PlayerShip.SPEED_DEFAULT;
     }
-    // Cap system speed for safe planet approach
+    // Cap system speed for safe approach
     if (this.player.systemSpeedMultiplier > PlayerShip.SYSTEM_SPEED_DEFAULT) {
       this.player.systemSpeedMultiplier = PlayerShip.SYSTEM_SPEED_DEFAULT;
     }
     this.updateSpeedSlider();
 
-    if (options.notify !== false) {
-      this.notification.show(`Jumped to ${planet.name}`);
+    if (notify) {
+      this.notification.show(`Jumped to ${bodyName}`);
     }
     this.resetCruiseCamera();
+  }
+
+  /**
+   * Arrival pose for a moon-precise jump. The position derives live from the
+   * parent's world position plus the ephemeris offset — never from
+   * `moonWorldPositions`, which is only written for visible painted moons and
+   * silently falls back to the parent across the rest of the catalog. The
+   * rendered size comes from the catalog plus the 5%-of-parent mesh floor,
+   * not the live mesh (scale is still 1 in never-visited systems).
+   */
+  private getMoonJumpDestination(moon: MoonData) {
+    const parentBody = PLANETARIUM_BODIES.find((b) => b.name === moon.parentPlanet);
+    const parentPosRaw = this.planetWorldPositions.get(moon.parentPlanet);
+    if (!parentBody || !parentPosRaw) return null;
+    const parentPos = new THREE.Vector3(parentPosRaw.x, parentPosRaw.y, parentPosRaw.z);
+    const offset = this.getMoonWorldOffsetAU(moon, parentBody, new THREE.Vector3());
+    const orbitR = offset.length();
+    const moonPos = offset.clone().add(parentPos);
+
+    const renderedR = Math.max(moon.radiusAU, parentBody.radiusAU * PlanetariumMode.MOON_MIN_RENDER_RATIO);
+    // Eight radii frames the disc; the 5e-5 AU floor (~7,500 km) keeps the
+    // smallest arrivals from parking uncomfortably tight; the cap at 45% of
+    // the current separation keeps the parent from dominating the view — for
+    // the closest moons (Phobos, Cordelia) it is what actually binds.
+    const dist = Math.min(
+      Math.max(renderedR * 8, 5e-5, renderedR * 2.5),
+      orbitR * 0.45,
+    );
+
+    const parentCollision = this.getPlanetCollisionRadius(parentBody.radiusAU, this.planetScale);
+    const ring = RING_CONFIGS[parentBody.name];
+    // Rings render as a flat disc, but a spherical clearance is simpler and
+    // never lets an arrival pop in among the ring particles.
+    const parentClearance = Math.max(
+      parentCollision * 1.25,
+      ring ? parentBody.radiusAU * ring.outerFactor * 1.05 : 0,
+    );
+
+    // Sun side preferred, so the lit face greets you — unless that parks you
+    // inside the parent's clearance bubble or with the parent between you and
+    // the moon (an inner moon near superior conjunction). Fallback: outward
+    // along the parent→moon radial, which always clears the parent, its
+    // rings, and the line of sight.
+    const sunDir = moonPos.clone().multiplyScalar(-1).normalize();
+    let position = moonPos.clone().addScaledVector(sunDir, dist);
+    const occluded =
+      new THREE.Line3(position, moonPos)
+        .closestPointToPoint(parentPos, true, new THREE.Vector3())
+        .distanceTo(parentPos) < parentCollision;
+    if (position.distanceTo(parentPos) < parentClearance || occluded) {
+      const outward = orbitR > 1e-9 ? offset.clone().divideScalar(orbitR) : new THREE.Vector3(1, 0, 0);
+      position = moonPos.clone().addScaledVector(outward, dist);
+    }
+    return { position, lookTarget: moonPos };
   }
 
   /**
@@ -3574,16 +3653,35 @@ export class PlanetariumMode {
 
   /** Headless-screenshot diagnostics: read back camera/body geometry. */
   devProbe(name: string): unknown {
-    const pos = this.planetWorldPositions.get(name);
+    let pos = this.planetWorldPositions.get(name) ?? null;
     const mesh = this.solarSystem?.planets.find((p) => p.data.name === name);
+    let radiusAU = mesh?.data.radiusAU ?? null;
+    let parentAbs: { x: number; y: number; z: number } | null = null;
+    if (!pos) {
+      // Moons resolve live from the parent + the ephemeris seam — the same
+      // derivation the moon-precise jump uses, so its QA can read distances.
+      const moon = MOONS.find((m) => m.name === name);
+      const parentBody = moon ? PLANETARIUM_BODIES.find((b) => b.name === moon.parentPlanet) : null;
+      const parentPos = moon ? this.planetWorldPositions.get(moon.parentPlanet) : null;
+      if (moon && parentBody && parentPos) {
+        const offset = this.getMoonWorldOffsetAU(moon, parentBody, new THREE.Vector3());
+        pos = { x: parentPos.x + offset.x, y: parentPos.y + offset.y, z: parentPos.z + offset.z };
+        radiusAU = moon.radiusAU;
+        parentAbs = parentPos;
+      }
+    }
     const cam = this.camera as THREE.PerspectiveCamera;
     const playerAbs = { x: this.player.posX, y: this.player.posY, z: this.player.posZ };
     return {
       found: !!pos,
-      radiusAU: mesh?.data.radiusAU ?? null,
-      bodyAbs: pos ?? null,
+      radiusAU,
+      bodyAbs: pos,
+      parentAbs,
       playerAbs,
       distToBodyAU: pos ? Math.hypot(playerAbs.x - pos.x, playerAbs.y - pos.y, playerAbs.z - pos.z) : null,
+      distToParentAU: parentAbs
+        ? Math.hypot(playerAbs.x - parentAbs.x, playerAbs.y - parentAbs.y, playerAbs.z - parentAbs.z)
+        : null,
       camPos: { x: cam.position.x, y: cam.position.y, z: cam.position.z },
       camLen: Math.hypot(cam.position.x, cam.position.y, cam.position.z),
       fov: cam.fov,

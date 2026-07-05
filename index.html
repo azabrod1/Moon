@@ -1621,8 +1621,11 @@
     }
     .pk-search input::placeholder { color: var(--t3); }
 
-    /* Body list */
+    /* Body list. position: relative makes rows' offsetTop list-relative —
+       the reveal/highlight scroll math reads it that way; without it rows
+       measure from the card and every scroll lands ~a header too far. */
     .pk-list {
+      position: relative;
       overflow-y: auto; overscroll-behavior: contain; padding: 0 14px 12px; flex: 1;
       scrollbar-width: thin; scrollbar-color: rgba(255, 255, 255, 0.14) transparent;
     }

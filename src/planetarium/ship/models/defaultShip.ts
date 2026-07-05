@@ -36,6 +36,85 @@ function createGlowMaterial(r: number, g: number, b: number): THREE.MeshBasicMat
   return mat;
 }
 
+/**
+ * Procedural hull skin: a faint panel grid with per-panel tint variation,
+ * sparse vents, and a matching roughness map. Up close the bare lathe read
+ * as a blank white sheet; this gives it machine tooth. Every painted value
+ * is at or below the base tone, so the sunlit hull's bloom budget only
+ * improves. Seeded PRNG keeps the pattern identical across sessions.
+ */
+function createHullSkin(): { map: THREE.CanvasTexture; roughnessMap: THREE.CanvasTexture } {
+  let seed = 0x9e3779b9;
+  const rand = () => {
+    // mulberry32
+    seed |= 0; seed = (seed + 0x6d2b79f5) | 0;
+    let t = Math.imul(seed ^ (seed >>> 15), 1 | seed);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+
+  const SIZE = 512;
+  const albedo = document.createElement('canvas');
+  albedo.width = albedo.height = SIZE;
+  const a = albedo.getContext('2d')!;
+  const rough = document.createElement('canvas');
+  rough.width = rough.height = SIZE;
+  const r = rough.getContext('2d')!;
+
+  a.fillStyle = '#b9c0ca';
+  a.fillRect(0, 0, SIZE, SIZE);
+  r.fillStyle = '#999999'; // roughness 0.6 baseline
+  r.fillRect(0, 0, SIZE, SIZE);
+
+  // Panel grid: 8 columns around the hull, 12 rows along it. Tint each
+  // panel a hair darker (never lighter) and vary its roughness slightly.
+  const COLS = 8;
+  const ROWS = 12;
+  const cw = SIZE / COLS;
+  const ch = SIZE / ROWS;
+  for (let ix = 0; ix < COLS; ix++) {
+    for (let iy = 0; iy < ROWS; iy++) {
+      const dark = rand() * 0.05;
+      a.fillStyle = `rgba(20, 26, 34, ${dark.toFixed(3)})`;
+      a.fillRect(ix * cw, iy * ch, cw, ch);
+      const dr = (rand() - 0.5) * 36;
+      r.fillStyle = `rgb(${153 + dr}, ${153 + dr}, ${153 + dr})`;
+      r.fillRect(ix * cw, iy * ch, cw, ch);
+    }
+  }
+
+  // Seam lines between panels.
+  a.strokeStyle = 'rgba(10, 14, 20, 0.22)';
+  a.lineWidth = 1;
+  for (let ix = 0; ix <= COLS; ix++) {
+    a.beginPath(); a.moveTo(ix * cw + 0.5, 0); a.lineTo(ix * cw + 0.5, SIZE); a.stroke();
+  }
+  for (let iy = 0; iy <= ROWS; iy++) {
+    a.beginPath(); a.moveTo(0, iy * ch + 0.5); a.lineTo(SIZE, iy * ch + 0.5); a.stroke();
+  }
+
+  // Sparse hardware: small vents and hatches, always darker than base.
+  for (let i = 0; i < 26; i++) {
+    const x = rand() * SIZE;
+    const y = rand() * SIZE;
+    const w = 6 + rand() * 14;
+    const h = 3 + rand() * 6;
+    a.fillStyle = `rgba(14, 18, 26, ${(0.08 + rand() * 0.1).toFixed(3)})`;
+    a.fillRect(x, y, w, h);
+    r.fillStyle = 'rgb(120, 120, 120)'; // hardware slightly glossier
+    r.fillRect(x, y, w, h);
+  }
+
+  const map = new THREE.CanvasTexture(albedo);
+  map.colorSpace = THREE.SRGBColorSpace;
+  map.wrapS = THREE.RepeatWrapping;
+  map.anisotropy = 4;
+  const roughnessMap = new THREE.CanvasTexture(rough);
+  roughnessMap.wrapS = THREE.RepeatWrapping;
+  roughnessMap.anisotropy = 4;
+  return { map, roughnessMap };
+}
+
 export function createDefaultShip(referenceRadiusAU: number): DefaultShip {
   // The previous ship's built envelope was ~6 reference radii nose to bell;
   // this hull is authored 3.32 units long, so 1.8 keeps the chase-camera
@@ -46,8 +125,12 @@ export function createDefaultShip(referenceRadiusAU: number): DefaultShip {
   // gloss are capped so the sunlit hull stays under the composer's bloom
   // threshold even at the near-Sun spawn (~0.05 AU, ~2.4x the 1-AU light):
   // the ship must never halo on its own — only the full-burn plume may.
+  const hullSkin = createHullSkin();
+  // Base tone lives in the texture; the material color stays white so the
+  // map isn't darkened twice.
   const thermalWhite = new THREE.MeshStandardMaterial({
-    color: 0xb9c0ca, roughness: 0.6, metalness: 0.05,
+    color: 0xffffff, map: hullSkin.map, roughnessMap: hullSkin.roughnessMap,
+    roughness: 1.0, metalness: 0.05,
   });
   const graphite = new THREE.MeshStandardMaterial({
     color: 0x23272e, roughness: 0.6, metalness: 0.45,
@@ -230,8 +313,10 @@ export function createDefaultShip(referenceRadiusAU: number): DefaultShip {
   // additive disc-plus-cone overlap makes the nozzle the natural hot spot.
   // CircleGeometry faces +Z; rotate to face rearward. Parent x/z scale
   // breathes its radius, y-scale only squeezes its zero thickness.
+  // Small enough that from dead astern the idle engine reads as a bright
+  // dot inside a dark bell, not a filled porthole disc.
   const ember = new THREE.Mesh(
-    new THREE.CircleGeometry(0.27 * U, 24),
+    new THREE.CircleGeometry(0.18 * U, 24),
     exhaustCore.material as THREE.MeshBasicMaterial,
   );
   ember.rotation.x = Math.PI / 2;

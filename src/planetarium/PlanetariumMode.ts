@@ -121,7 +121,11 @@ import {
   canStartTour,
   isStepSettled,
   restorePlan,
+  totalitySettleUtcMs,
+  TOUR_ECLIPSE,
+  TOUR_ECLIPSE_APPROACH_RATE,
   TOUR_STEPS,
+  TOUR_TIMELAPSE_RATE,
   tourTransition,
   type TourPhase,
 } from './tourLogic';
@@ -2668,24 +2672,167 @@ export class PlanetariumMode {
     }
   }
 
+  /**
+   * Veil-gated arrival for the tour. arriveThen silently ignores a call while
+   * another arrival is mid-flight — a user teleport during the deck theater
+   * would otherwise strand the step in 'staging' forever — so retry on a
+   * short timer until the rival resolves, then commit: the user's arrival
+   * lands, and the tour re-stages a beat later. Generation-checked
+   * throughout, so it dies quietly after any skip/advance/stop.
+   */
+  private tourArriveWhenIdle(
+    generation: number,
+    target: NonNullable<LandedTarget>,
+    action: () => void,
+  ): void {
+    const tour = this.tour;
+    if (!tour || tour.generation !== generation) return;
+    if (this.arrivalInFlight) {
+      tour.timer = window.setTimeout(() => {
+        const live = this.tour;
+        if (!live || live.generation !== generation) return;
+        live.timer = null;
+        this.tourArriveWhenIdle(generation, target, action);
+      }, 120);
+      return;
+    }
+    this.arriveThen(target, () => {
+      const live = this.tour;
+      if (!live || live.generation !== generation) return;
+      action();
+    });
+  }
+
+  /** Accent pulse on the deck row the theater is about to press. Stale pulses
+   *  die with the rows — every deck open rebuilds the list. */
+  private pulseTourDeckRow(name: string): void {
+    const list = document.getElementById('deck-list');
+    if (!list) return;
+    for (const row of list.querySelectorAll('.pk-row.tour-pulse')) row.classList.remove('tour-pulse');
+    Array.from(list.querySelectorAll<HTMLElement>('.pk-row'))
+      .find((row) => row.dataset.name === name)
+      ?.classList.add('tour-pulse');
+  }
+
+  /** Ensure the tour stands on `target` (fresh landing or ceremony-free
+   *  re-land), then continue — the shared trunk of the landed stagings. */
+  private tourLandThen(
+    generation: number,
+    target: NonNullable<LandedTarget>,
+    then: () => void,
+  ): void {
+    this.tourArriveWhenIdle(generation, target, () => {
+      if (this.landedOn) {
+        // A live surface view would keep a stale cross-system target.
+        if (this.landedView === 'surface') this.exitSurfaceView(true);
+        this.applyLandedTarget(target);
+      } else {
+        this.enterLandedMode(target);
+      }
+      then();
+    });
+  }
+
+  /** Deck theater, Teleport tab: open on Saturn's row, pulse it, commit the
+   *  same jump the row's click would — the tour demonstrates the deck by
+   *  visibly using it. */
   private stageTourSaturn(generation: number): void {
     this.setTourClockRate(1);
-    this.markTourStaged(generation);
+    this.closeObservatoryPanel();
+    const saturn = PLANETARIUM_BODIES.find((b) => b.name === 'Saturn');
+    if (!saturn) {
+      this.markTourStaged(generation);
+      return;
+    }
+    this.openDeck('travel');
+    this.revealDeckRow('Saturn');
+    this.pulseTourDeckRow('Saturn');
+    const tour = this.tour;
+    if (!tour) return;
+    tour.timer = window.setTimeout(() => {
+      const live = this.tour;
+      if (!live || live.generation !== generation) return;
+      live.timer = null;
+      this.closeDeck();
+      this.tourArriveWhenIdle(generation, { type: 'planet', name: 'Saturn' }, () => {
+        if (this.landedOn) this.exitLandedMode();
+        this.jumpToPlanet(saturn, { notify: false });
+        this.markTourStaged(generation);
+      });
+    }, 900);
   }
 
+  /** Deck theater, Observatory tab: the one-tap-lands-you-there flow, ending
+   *  on the Moon with the sky panel open regardless of the arrival
+   *  preference — the card talks about what the panel shows. */
   private stageTourMoon(generation: number): void {
     this.setTourClockRate(1);
-    this.markTourStaged(generation);
+    this.openDeck('observe');
+    this.revealDeckRow('Moon');
+    this.pulseTourDeckRow('Moon');
+    const tour = this.tour;
+    if (!tour) return;
+    tour.timer = window.setTimeout(() => {
+      const live = this.tour;
+      if (!live || live.generation !== generation) return;
+      live.timer = null;
+      this.closeDeck();
+      this.tourLandThen(generation, { type: 'moon', name: 'Moon', parentPlanet: 'Earth' }, () => {
+        this.openObservatoryPanel();
+        this.markTourStaged(generation);
+      });
+    }, 600);
   }
 
+  /**
+   * Surface view on the Moon looking at Earth, clock at "1 hr/s": Earth
+   * hangs in place (tidal lock) and visibly spins while the sky wheels.
+   * The explicit parent target keeps this deterministic even if the user's
+   * clock happens to sit inside a live event (which would otherwise steer
+   * the no-arg entry at the event geometry).
+   */
   private stageTourTimelapse(generation: number): void {
-    this.setTourClockRate(1);
-    this.markTourStaged(generation);
+    const engage = () => {
+      if (this.landedView === 'surface') this.exitSurfaceView(true);
+      this.enterSurfaceView({ kind: 'parent' }, 'companion');
+      this.setTourClockRate(TOUR_TIMELAPSE_RATE);
+      this.markTourStaged(generation);
+    };
+    if (this.landedOn?.type === 'moon' && this.landedOn.name === 'Moon') {
+      engage();
+      return;
+    }
+    this.tourLandThen(generation, { type: 'moon', name: 'Moon', parentPlanet: 'Earth' }, engage);
   }
 
+  /**
+   * Land on Earth standing in the 2027-08-02 umbral path: the clock jumps to
+   * the eclipse's first contact and runs at "20 min/s", so the Moon bites
+   * into the Sun over a few seconds; updateTour drops to realtime just
+   * inside totality. The surface vantage rides the umbral spot per frame
+   * (updateSurfaceCamera), so totality then holds while the user lingers.
+   */
   private stageTourEclipse(generation: number): void {
-    this.setTourClockRate(1);
-    this.markTourStaged(generation);
+    this.tourLandThen(generation, { type: 'planet', name: 'Earth' }, () => {
+      const tour = this.tour;
+      if (!tour) return;
+      tour.eclipse ??= findShadowEvent(TOUR_ECLIPSE.spec, TOUR_ECLIPSE.searchFromUtcMs, 1);
+      const event = tour.eclipse;
+      if (event) {
+        // Stepper/narrative parity with a panel-driven jump to this event.
+        this.lastObservatoryEvent = event;
+        this.timeState = { ...this.timeState, rate: TOUR_ECLIPSE_APPROACH_RATE, paused: false };
+        this.setCurrentUtcMs(event.startUtcMs);
+        // The clock just moved a year ahead: realign the landed scene before
+        // the surface entry fits its FOV off the target geometry.
+        this.refreshLandedScene();
+        const landedInfo = this.surfaceLandedInfo();
+        if (landedInfo) this.enterSurfaceView(selectSurfaceTarget(landedInfo, event.spec), 'event');
+      }
+      // A null event (engine drift would be caught by the pin tests) still
+      // advances — the card then narrates a plain Earth landing.
+      this.markTourStaged(generation);
+    });
   }
 
   /** A staging's scene work has been applied — begin settling. Generation-
@@ -2713,20 +2860,37 @@ export class PlanetariumMode {
       }
       return;
     }
-    if (tour.phase !== 'settling') return;
     const step = TOUR_STEPS[tour.stepIndex];
-    const settled = isStepSettled(
-      {
-        arrivalInFlight: this.arrivalInFlight,
-        veilCovering:
-          document.getElementById('arrival-veil')?.classList.contains('covering') ?? false,
-        fovAnimating: this.surfaceFovAnim !== null,
-        sinceStagedMs: performance.now() - tour.stagedAtMs,
-      },
-      step.settle,
-    );
-    if (settled) {
-      tour.phase = tourTransition(tour.phase, 'settled');
+    if (tour.phase === 'settling') {
+      const settled = isStepSettled(
+        {
+          arrivalInFlight: this.arrivalInFlight,
+          veilCovering:
+            document.getElementById('arrival-veil')?.classList.contains('covering') ?? false,
+          fovAnimating: this.surfaceFovAnim !== null,
+          sinceStagedMs: performance.now() - tour.stagedAtMs,
+        },
+        step.settle,
+      );
+      if (settled) {
+        tour.phase = tourTransition(tour.phase, 'settled');
+        this.renderTourCard();
+      }
+    }
+    // Eclipse card: once the compressed approach carries the clock just
+    // inside totality, drop to realtime and swap the card body. One-shot —
+    // a user who scrubs the rate afterwards is left alone. Gated past
+    // 'staging' so a pre-stage clock already sitting in 2027+ can't trip it
+    // before the staging has even set the time.
+    if (
+      !tour.totalityReached &&
+      step.stage === 'eclipse' &&
+      tour.eclipse !== null &&
+      (tour.phase === 'settling' || tour.phase === 'ready') &&
+      this.timeState.currentUtcMs >= totalitySettleUtcMs(tour.eclipse.peakUtcMs)
+    ) {
+      tour.totalityReached = true;
+      this.setTourClockRate(1);
       this.renderTourCard();
     }
   }
@@ -5039,8 +5203,10 @@ export class PlanetariumMode {
     this.controls.enabled = false;
     this.surfaceLook.attach();
     this.setSurfaceLabelContainersHidden(true);
-    // One-time controls hint on first-ever surface entry.
-    if (!this.store.hasSeenSurfaceHint()) {
+    // One-time controls hint on first-ever surface entry. Tour entries skip
+    // it entirely: the banner is muted then anyway, and showing it would
+    // consume the seen-flag without the user ever reading the hint.
+    if (!this.tour && !this.store.hasSeenSurfaceHint()) {
       this.store.markSurfaceHintSeen();
       this.notification.show('Drag to look around · scroll or pinch to zoom');
     }

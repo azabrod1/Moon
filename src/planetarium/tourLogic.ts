@@ -70,7 +70,7 @@ export const TOUR_STEPS: readonly TourStep[] = [
   {
     id: 'moon',
     title: 'Standing on the Moon',
-    body: 'Same deck, Observatory tab: this one lands you on the body. That’s Earth up there. The panel shows its phase and what’s coming up in this sky.',
+    body: 'Same deck, Observatory tab: this one lands you on the body. The panel reads the sky from here, starting with Earth’s phase. You’ll look up at it next.',
     primaryLabel: 'Next: let time run',
     ghostLabel: 'Skip tour',
     stage: 'moon',

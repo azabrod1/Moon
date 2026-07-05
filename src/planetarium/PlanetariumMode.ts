@@ -2784,31 +2784,26 @@ export class PlanetariumMode {
   }
 
   /**
-   * Surface view on Io looking up at Jupiter, clock at "1 hr/s". Io is the
-   * motion showcase: Jupiter hangs in place (tidal lock) while spinning
-   * through a full day every ~10 s of wall clock, its phase turns as Io
-   * rounds its 42 h orbit, and the other Galileans drift past. The explicit
-   * parent target keeps this deterministic even if the user's clock happens
-   * to sit inside a live event (which would otherwise steer the no-arg
-   * entry at the event geometry).
+   * The Jupiter system at "1 hr/s", watched from the regular landed orbit
+   * camera — the motion showcase: the planet spins through a full day every
+   * ~10 s of wall clock while the Galilean moons wheel around it, crossing
+   * its face and slipping behind it (shadow-transit spots included, they're
+   * always on in the landed system). The camera pulls back past the default
+   * lit-side close-up so Io's whole orbit fits in frame — the point of this
+   * stop is the system moving, not the portrait.
    */
   private stageTutorialTimelapse(generation: number): void {
-    const engage = () => {
-      if (this.landedView === 'surface') this.exitSurfaceView(true);
-      // A cross-system landing leaves scene positions on the previous
-      // system's floating origin until the next frame — realign first, or
-      // the entry fits its FOV off Jupiter's apparent size from the OLD
-      // vantage (a pinhole 1.5° instead of a sky-filling disc).
-      this.refreshLandedScene();
-      this.enterSurfaceView({ kind: 'parent' }, 'companion');
+    this.tutorialLandThen(generation, { type: 'planet', name: 'Jupiter' }, () => {
+      // The Moon stop's panel has done its job; the ballet wants the frame.
+      this.closeObservatoryPanel();
+      const pullbackAU = this.getLandedBodyRenderedRadiusAU() * 8;
+      this.camera.position.setLength(
+        Math.min(Math.max(pullbackAU, this.controls.minDistance), this.controls.maxDistance),
+      );
+      this.camera.lookAt(0, 0, 0);
       this.setTutorialClockRate(TUTORIAL_TIMELAPSE_RATE);
       this.markTutorialStaged(generation);
-    };
-    if (this.landedOn?.type === 'moon' && this.landedOn.name === 'Io') {
-      engage();
-      return;
-    }
-    this.tutorialLandThen(generation, { type: 'moon', name: 'Io', parentPlanet: 'Jupiter' }, engage);
+    });
   }
 
   /**

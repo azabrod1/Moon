@@ -50,10 +50,9 @@ describe('TUTORIAL_STEPS', () => {
     }
   });
 
-  it('surface-view steps (timelapse, eclipse) also wait out the FOV glide', () => {
+  it('only the eclipse enters surface view, so only it waits out the FOV glide', () => {
     for (const step of TUTORIAL_STEPS) {
-      const surface = step.stage === 'timelapse' || step.stage === 'eclipse';
-      expect(step.settle.fov).toBe(surface);
+      expect(step.settle.fov).toBe(step.stage === 'eclipse');
     }
   });
 

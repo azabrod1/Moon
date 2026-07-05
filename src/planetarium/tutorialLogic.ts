@@ -51,7 +51,7 @@ export const TUTORIAL_STEPS: readonly TutorialStep[] = [
   {
     id: 'welcome',
     title: 'A quick look around',
-    body: 'Four stops: Saturn, the Moon, Io, and a total solar eclipse. The tutorial does the flying and points out the buttons; you can drag to look around at any stop.',
+    body: 'Four stops: Saturn, the Moon, Jupiter, and a total solar eclipse. The tutorial does the flying and points out the buttons; you can drag to look around at any stop.',
     primaryLabel: 'Start the tutorial',
     ghostLabel: 'Not now',
     stage: 'none',
@@ -78,11 +78,11 @@ export const TUTORIAL_STEPS: readonly TutorialStep[] = [
   {
     id: 'timelapse',
     title: 'Let time run',
-    body: 'This is Surface view, the panel’s look-up-from-the-ground button. You’re standing on Io: an hour passes every second, so Jupiter spins through a full day every ten seconds and the other moons drift by. The time controls below do this anytime.',
+    body: 'You’re over Jupiter now, with an hour passing every second: it spins through a full day every ten seconds while the four big moons wheel around it. The time controls below do this anytime.',
     primaryLabel: 'Next: a solar eclipse',
     ghostLabel: 'Skip tutorial',
     stage: 'timelapse',
-    settle: SURFACE_SETTLE,
+    settle: SCENE_SETTLE,
   },
   {
     id: 'eclipse',

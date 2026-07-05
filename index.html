@@ -1619,6 +1619,16 @@
       margin: 16px 0 0;
       color: var(--text-secondary);
     }
+    /* Modal action bar — a flex-footer sibling of the scrollable body, so the
+       tour recommendation is visible without scrolling the reference sections. */
+    .help-tour-row {
+      display: flex;
+      gap: 8px;
+      justify-content: flex-end;
+      flex: none;
+      padding: 12px 20px 14px;
+      border-top: 1px solid rgba(255, 255, 255, 0.05);
+    }
 
     /* ═══ The deck — one centered picker, three tabs (Observatory · Travel ·
        Autopilot), one-click rows. Stacking: the backdrop (26) dims the scene
@@ -2125,6 +2135,7 @@
       <!-- Menu dropdown (Help, journey actions, settings) -->
       <div id="planetarium-menu-panel">
         <button class="menu-action" id="planetarium-btn-help">Help</button>
+        <button class="menu-action" id="planetarium-btn-tour">Take the Tour</button>
         <button class="menu-action" id="planetarium-btn-save">Save</button>
         <button class="menu-action" id="planetarium-btn-new">New Journey</button>
         <button class="menu-action menu-action-parent" id="planetarium-btn-historic">
@@ -2347,6 +2358,10 @@
               <p>Click the date on the bottom bar. Speed time up and you can actually watch planets trace their orbits and moons circle their hosts. Pause, reverse, or jump to any UTC moment.</p>
             </section>
             <p class="help-signoff">Have fun out there.</p>
+          </div>
+          <div class="help-tour-row">
+            <button class="tour-btn tour-btn-ghost" id="help-explore">Explore on my own</button>
+            <button class="tour-btn tour-btn-primary" id="help-take-tour">Take the tour</button>
           </div>
         </div>
       </div>

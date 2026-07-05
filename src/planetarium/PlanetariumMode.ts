@@ -118,6 +118,14 @@ import { getMoonsByPlanet, MOONS, type MoonData } from './planets/moonData';
 import { RING_CONFIGS } from './planets/rings';
 import { filterDeckRows, groupDeckBodies, observeArrivalAction, type DeckRow } from './deckLogic';
 import {
+  canStartTour,
+  isStepSettled,
+  restorePlan,
+  TOUR_STEPS,
+  tourTransition,
+  type TourPhase,
+} from './tourLogic';
+import {
   HISTORIC_JOURNEYS,
   INTERSTELLAR_SCENE_POSITION,
   type HistoricJourney,
@@ -142,6 +150,7 @@ import {
 import { ObservatoryHUD, type SurfaceHudState } from './ui/ObservatoryHUD';
 import { SurfaceTargetMenu } from './ui/SurfaceTargetMenu';
 import { SunLabel } from './ui/SunLabel';
+import { TourCard, tourCardModel } from './ui/TourCard';
 
 type ScriptedTransfer = {
   elapsed: number;
@@ -156,6 +165,28 @@ type ScriptedTransfer = {
 };
 
 export const FIRST_PLANETARIUM_ACTIVATION_TOTAL_UNITS = CREATE_SOLAR_SYSTEM_TOTAL_UNITS + 1;
+
+/** Cruise pose stashed when the deck grabs the ship out of flight — see the
+ *  observatoryExcursion field. */
+type ObservatoryExcursion = {
+  posX: number; posY: number; posZ: number;
+  heading: number; pitch: number;
+  speedMultiplier: number; systemSpeedMultiplier: number;
+  inSystemMode: boolean; moving: boolean;
+};
+
+/** Everything stopTour needs to hand the pre-tour session back. `state` is
+ *  also what getState() serves while a tour runs, so every persistence path
+ *  (autosave, Save, pagehide, deactivate) keeps writing the pre-tour journey. */
+interface TourSnapshot {
+  state: PlanetariumState;
+  excursion: ObservatoryExcursion | null;
+  panelWasOpen: boolean;
+  lastObservatoryEvent: ShadowEvent | null;
+}
+
+/** Which end toast a tour stop owes the user (none for lifecycle aborts and Stay here). */
+type TourEndToast = 'skip' | 'return' | null;
 
 /** The deck's tabs — one per cluster button. */
 type DeckVerb = 'observe' | 'travel' | 'pilot';
@@ -211,6 +242,7 @@ export class PlanetariumMode {
     'planetarium-btn-travel',
     'planetarium-btn-observatory',
     'planetarium-btn-autopilot',
+    'planetarium-btn-tour',
     'planetarium-speed-up',
     'planetarium-speed-down',
   ] as const;
@@ -381,12 +413,7 @@ export class PlanetariumMode {
    * the takeoff vector. Survives vantage swaps and event jumps (re-lands via
    * applyLandedTarget); session-only by design — never persisted, and cleared
    * by New Journey, mission start, and deactivate. */
-  private observatoryExcursion: {
-    posX: number; posY: number; posZ: number;
-    heading: number; pitch: number;
-    speedMultiplier: number; systemSpeedMultiplier: number;
-    inSystemMode: boolean; moving: boolean;
-  } | null = null;
+  private observatoryExcursion: ObservatoryExcursion | null = null;
   private nearbyLandTarget: NonNullable<LandedTarget> | null = null;
 
   // The deck: one centered picker (Observatory · Travel · Autopilot tabs)
@@ -521,6 +548,12 @@ export class PlanetariumMode {
     // surface view and the labels setting, so this can't reveal stale labels.
     () => this.setWorldLabelsVisible(true),
   );
+  private tourCard = new TourCard(
+    () => this.advanceTour(),
+    () => this.stopTour({ restore: true, toast: 'skip' }),
+    () => this.stopTour({ restore: false }),
+    () => this.stopTour({ restore: true, toast: 'return' }),
+  );
   // The most recent event jump — gives "Look up" and the surface HUD their
   // narrative while the clock still sits inside the event's window.
   private lastObservatoryEvent: ShadowEvent | null = null;
@@ -571,6 +604,23 @@ export class PlanetariumMode {
   private resumeTimeAfterMenu = false;
   private resumeShipAfterHelp = false;
   private resumeTimeAfterHelp = false;
+  /** Live guided-tour state; null when idle. The generation token is the
+   *  defense against late callbacks: every tour timer and arrival closure
+   *  captures it and no-ops on mismatch after a skip/advance/stop. endRequest
+   *  parks a stop that arrived while an arrival was mid-flight (arriveThen
+   *  silently drops rival calls); updateTour executes it on the first idle
+   *  frame. */
+  private tour: {
+    stepIndex: number;
+    phase: TourPhase;
+    snapshot: TourSnapshot;
+    eclipse: ShadowEvent | null;
+    totalityReached: boolean;
+    stagedAtMs: number;
+    timer: number | null;
+    generation: number;
+    endRequest: { restore: boolean; toast: TourEndToast } | null;
+  } | null = null;
 
   private closeMenuPanel() {
     if (!this.menuPanel.isOpen()) return;
@@ -749,6 +799,7 @@ export class PlanetariumMode {
     this.observatoryPanel.bind();
     this.observatoryHud.bind();
     this.surfaceTargetMenu.bind();
+    this.tourCard.bind();
     this.speedValueEl = document.getElementById('planetarium-speed-value');
     this.speedLabelEl = document.getElementById('planetarium-speed-label');
     this.speedCenterEl = document.querySelector('.speed-center') as HTMLElement | null;
@@ -950,6 +1001,10 @@ export class PlanetariumMode {
   }
 
   deactivate(): void {
+    // A live tour hands the pre-tour state back first, synchronously — the
+    // teardown below (excursion drop, landed exit, save) then applies to the
+    // restored journey exactly as it would for a non-touring player.
+    if (this.tour) this.stopTour({ restore: true, sync: true });
     this.resumePrompt.cancel();
     this.bottomBar.closeStats();
 
@@ -1022,6 +1077,9 @@ export class PlanetariumMode {
     // inside whatever gesture first draws the map. Runs in every mode so
     // landed sessions warm up too.
     pumpTextureWarmQueue(PlanetariumMode.TEXTURE_WARM_BUDGET_MS);
+
+    // Runs in both branches below — a tour narrates landed and cruise scenes.
+    this.updateTour();
 
     // Landed mode: camera orbits body, skip flight controls
     if (this.landedOn) {
@@ -2119,6 +2177,10 @@ export class PlanetariumMode {
     // Escape always works — even while typing in the deck search
     if (e.key === 'Escape') {
       if (this.isHelpOpen()) { this.hideHelp(); return; }
+      // One Esc, one meaning while touring: end the tour. Above the deck rung
+      // on purpose — during the deck theater the open deck is tour-owned, and
+      // closing just it would leave the pending commit to teleport anyway.
+      if (this.tour) { this.stopTour({ restore: true, toast: 'skip' }); return; }
       if (this.isDeckOpen()) { this.closeDeck(); return; }
       if (this.bottomBar.isStatsOpen()) { this.bottomBar.closeStats(); return; }
       if (this.surfaceTargetMenu.isOpen()) { this.closeSurfaceTargetMenu(); return; }
@@ -2416,6 +2478,280 @@ export class PlanetariumMode {
     this.menuPanel.setVisible(previousMenuVisible);
   }
 
+  // ── Guided tour ──────────────────────────────────────────────────────────
+  // The Next-driven click-through of the app's showcase scenes. Pure logic
+  // (step table, phase machine, settle/restore rules) lives in tourLogic.ts,
+  // the card widget in ui/TourCard.ts; this block owns the scene work. Every
+  // step staging is absolute and idempotent: inputs stay live while a tour
+  // runs, so Next must put the scene where the step needs it no matter what
+  // the user did meanwhile — and if the user starts a rival arrival, the
+  // tour re-stages after it resolves (the tour wins, a beat later).
+
+  /** Entry: the help-modal footer and the ☰ menu item. */
+  startTour(): void {
+    if (
+      !canStartTour({
+        missionActive: this.isMissionActive(),
+        resumePromptVisible: this.resumePrompt.isVisible(),
+        alreadyActive: this.tour !== null,
+      })
+    ) {
+      return;
+    }
+    // Close the entry surfaces first: both auto-pause ship and clock, and the
+    // snapshot below must capture the resumed truth, not the modal freeze.
+    this.hideHelp();
+    this.closeMenuPanel();
+    // A pre-tour surface view can't be snapshotted (view sub-states are
+    // session-only; getState() carries none of them) — settle to orbit view
+    // now so the tour starts from a state the restore can reproduce.
+    if (this.landedView === 'surface') this.exitSurfaceView(true);
+    const snapshot: TourSnapshot = {
+      state: this.getState(), // before this.tour is set — the override must not see itself
+      excursion: this.observatoryExcursion,
+      panelWasOpen: this.observatoryPanel.isOpen(),
+      lastObservatoryEvent: this.lastObservatoryEvent,
+    };
+    this.tour = {
+      stepIndex: 0,
+      phase: 'staging',
+      snapshot,
+      eclipse: null,
+      totalityReached: false,
+      stagedAtMs: performance.now(),
+      timer: null,
+      generation: 0,
+      endRequest: null,
+    };
+    // The card narrates from here; stray banners would talk over it (on
+    // phones they share the same top strip).
+    this.notification.setMuted(true);
+    this.updateTourMenuItem();
+    this.tourCard.show();
+    this.stageTourStep(0);
+  }
+
+  private advanceTour(): void {
+    const tour = this.tour;
+    if (!tour || tour.phase !== 'ready') return;
+    if (tour.stepIndex + 1 >= TOUR_STEPS.length) return; // the wrap card's primary is Take me back
+    this.stageTourStep(tour.stepIndex + 1);
+  }
+
+  /**
+   * End the tour. restore=true puts the pre-tour snapshot back; restore=false
+   * keeps the staged scene as the journey ("Stay here", New Journey). sync
+   * marks a lifecycle abort (deactivate, mission start): the caller's own
+   * teardown continues immediately after, so the restore must apply
+   * synchronously — never through the veil-gated arrival, which is silently
+   * dropped while another arrival is mid-flight.
+   */
+  private stopTour(opts: { restore: boolean; sync?: boolean; toast?: 'skip' | 'return' }): void {
+    const tour = this.tour;
+    if (!tour) return;
+    tour.generation++; // strand every pending theater timer and arrival closure
+    if (tour.timer !== null) {
+      clearTimeout(tour.timer);
+      tour.timer = null;
+    }
+    tour.phase = tourTransition(tour.phase, opts.sync ? 'abort' : 'skip');
+    const toast = opts.toast ?? null;
+    if (!opts.sync && this.arrivalInFlight) {
+      // Mid-arrival: park the request; updateTour executes it on the first
+      // idle frame (the veil is up — nothing useful could happen sooner).
+      tour.endRequest = { restore: opts.restore, toast };
+      this.renderTourCard(); // 'ending' disables both buttons
+      return;
+    }
+    this.executeTourStop(opts.restore, opts.sync === true, toast);
+  }
+
+  private executeTourStop(restore: boolean, sync: boolean, toast: TourEndToast): void {
+    const tour = this.tour;
+    if (!tour) return;
+    const snap = tour.snapshot;
+    // The tour owns these while it runs — take them down with it. The card
+    // hides now; the scene may still restore behind the veil a beat later.
+    this.closeDeck();
+    this.closeSurfaceTargetMenu();
+    this.tourCard.hide();
+    const finish = () => {
+      // Tail runs only once the restore has actually applied: until here the
+      // getState() override keeps serving the snapshot, so a save racing the
+      // restore can never persist a half-torn-down showcase scene.
+      this.tour = null;
+      this.notification.setMuted(false);
+      this.updateTourMenuItem();
+      this.store.saveState(this.getState());
+      if (toast === 'skip') {
+        this.notification.show('Tour ended. It’s in the ☰ menu if you want it again.', { force: true });
+      } else if (toast === 'return') {
+        this.notification.show('Back where you started.', { force: true });
+      }
+    };
+    if (!restore) {
+      // "Stay here" / New Journey: the staged scene becomes the journey.
+      finish();
+      return;
+    }
+    const plan = restorePlan({
+      snapshotLandedOn: snap.state.landedOn?.name ?? null,
+      panelWasOpen: snap.panelWasOpen,
+      inSurfaceView: this.landedView === 'surface',
+      landedOn: this.landedOn?.name ?? null,
+      lifecycleAbort: sync,
+    });
+    const applyRestore = () => {
+      // A competing stop may have finished while a veiled restore waited out
+      // its cover frames — the loser must not restore twice.
+      if (this.tour !== tour) return;
+      if (plan.exitSurfaceView && this.landedView === 'surface') this.exitSurfaceView(true);
+      // Stagings exit/re-land, which consumes the session excursion pose —
+      // drop the live one and put the snapshot's copy back after restore.
+      this.observatoryExcursion = null;
+      if (plan.exitLandedFirst && this.landedOn) this.exitLandedMode();
+      this.restoreState(snap.state); // re-lands when the snapshot was landed
+      this.observatoryExcursion = snap.excursion;
+      this.lastObservatoryEvent = snap.lastObservatoryEvent;
+      if (plan.reopenPanel && this.landedOn) this.openObservatoryPanel();
+      finish();
+    };
+    if (plan.veilGate && snap.state.landedOn) {
+      this.arriveThen(snap.state.landedOn, applyRestore);
+    } else {
+      applyRestore();
+    }
+  }
+
+  /**
+   * Absolute staging for one step: close the transient overlays the tour is
+   * about to play through, normalize the clock (a paused clock would freeze
+   * the time-lapse and the eclipse approach), then run the step's scene work.
+   */
+  private stageTourStep(index: number): void {
+    const tour = this.tour;
+    if (!tour) return;
+    tour.stepIndex = index;
+    tour.phase = 'staging';
+    tour.totalityReached = false;
+    tour.generation++;
+    if (tour.timer !== null) {
+      clearTimeout(tour.timer);
+      tour.timer = null;
+    }
+    const generation = tour.generation;
+    // A user-opened deck may hold a search filter that would hide the
+    // theater's target row — closing resets it (openDeck clears the query on
+    // fresh opens only).
+    this.closeDeck();
+    this.closeSurfaceTargetMenu();
+    this.bottomBar.closeStats();
+    this.renderTourCard();
+    const step = TOUR_STEPS[index];
+    switch (step.stage) {
+      case 'none':
+        this.setTourClockRate(1);
+        this.markTourStaged(generation);
+        break;
+      case 'saturn':
+        this.stageTourSaturn(generation);
+        break;
+      case 'moon':
+        this.stageTourMoon(generation);
+        break;
+      case 'timelapse':
+        this.stageTourTimelapse(generation);
+        break;
+      case 'eclipse':
+        this.stageTourEclipse(generation);
+        break;
+    }
+  }
+
+  private stageTourSaturn(generation: number): void {
+    this.setTourClockRate(1);
+    this.markTourStaged(generation);
+  }
+
+  private stageTourMoon(generation: number): void {
+    this.setTourClockRate(1);
+    this.markTourStaged(generation);
+  }
+
+  private stageTourTimelapse(generation: number): void {
+    this.setTourClockRate(1);
+    this.markTourStaged(generation);
+  }
+
+  private stageTourEclipse(generation: number): void {
+    this.setTourClockRate(1);
+    this.markTourStaged(generation);
+  }
+
+  /** A staging's scene work has been applied — begin settling. Generation-
+   *  checked: a stale theater timer or arrival action must not mark a newer
+   *  step (or a stopped tour) as staged. */
+  private markTourStaged(generation: number): void {
+    const tour = this.tour;
+    if (!tour || tour.generation !== generation) return;
+    tour.phase = tourTransition(tour.phase, 'staged');
+    tour.stagedAtMs = performance.now();
+    this.renderTourCard();
+  }
+
+  /** Per-frame tour work (top of update()): promote 'settling' → 'ready' when
+   *  the step's busy signals clear, and run a stop that was parked while an
+   *  arrival was mid-flight. */
+  private updateTour(): void {
+    const tour = this.tour;
+    if (!tour) return;
+    if (tour.phase === 'ending') {
+      if (tour.endRequest && !this.arrivalInFlight) {
+        const request = tour.endRequest;
+        tour.endRequest = null;
+        this.executeTourStop(request.restore, false, request.toast);
+      }
+      return;
+    }
+    if (tour.phase !== 'settling') return;
+    const step = TOUR_STEPS[tour.stepIndex];
+    const settled = isStepSettled(
+      {
+        arrivalInFlight: this.arrivalInFlight,
+        veilCovering:
+          document.getElementById('arrival-veil')?.classList.contains('covering') ?? false,
+        fovAnimating: this.surfaceFovAnim !== null,
+        sinceStagedMs: performance.now() - tour.stagedAtMs,
+      },
+      step.settle,
+    );
+    if (settled) {
+      tour.phase = tourTransition(tour.phase, 'settled');
+      this.renderTourCard();
+    }
+  }
+
+  private renderTourCard(): void {
+    const tour = this.tour;
+    if (!tour) return;
+    const step = TOUR_STEPS[tour.stepIndex];
+    this.tourCard.render(
+      tourCardModel(step, tour.stepIndex, TOUR_STEPS.length, tour.phase, tour.totalityReached),
+    );
+  }
+
+  /** The tour drives the same clock the transport strip does. The unpause is
+   *  deliberate: a clock paused before the tour would freeze every staged sky. */
+  private setTourClockRate(rate: number): void {
+    this.timeState = { ...this.timeState, rate, paused: false };
+    this.updateTimeUI();
+  }
+
+  private updateTourMenuItem(): void {
+    const btn = document.getElementById('planetarium-btn-tour') as HTMLButtonElement | null;
+    if (btn) btn.disabled = this.tour !== null;
+  }
+
   private updateMissionControlState() {
     const missionActive = this.isMissionActive();
 
@@ -2510,12 +2846,16 @@ export class PlanetariumMode {
 
     document.getElementById('planetarium-btn-save')?.addEventListener('click', () => {
       this.store.saveState(this.getState());
-      this.notification.show('Game saved!');
+      // Forced: mid-tour the banner is muted (and the save then writes the
+      // pre-tour snapshot on purpose), but a pressed Save must answer.
+      this.notification.show('Game saved!', { force: true });
     });
 
     // New Journey button
     document.getElementById('planetarium-btn-new')?.addEventListener('click', () => {
-      // The reset throws the journey away — the excursion return pose with it.
+      // The reset throws the journey away — a live tour with it (no restore:
+      // the world resets underneath), and the excursion return pose too.
+      this.stopTour({ restore: false, sync: true });
       this.observatoryExcursion = null;
       if (this.landedOn) this.exitLandedMode();
       // Discard the pre-mission stash: restoring it would re-land a
@@ -2585,6 +2925,12 @@ export class PlanetariumMode {
       this.closeMenuPanel();
       this.showHelp();
     });
+    // Tour entries: the help-modal footer pair and the ☰ item. startTour
+    // closes both entry surfaces itself (their auto-pause must resolve
+    // before the snapshot is taken).
+    document.getElementById('planetarium-btn-tour')?.addEventListener('click', () => this.startTour());
+    document.getElementById('help-take-tour')?.addEventListener('click', () => this.startTour());
+    document.getElementById('help-explore')?.addEventListener('click', () => this.hideHelp());
     document.getElementById('planetarium-help-close')?.addEventListener('click', () => this.hideHelp());
     document.querySelector('#planetarium-help .planetarium-help-backdrop')?.addEventListener('click', () => this.hideHelp());
 
@@ -3065,15 +3411,8 @@ export class PlanetariumMode {
       companionless: target.type === 'planet' && getMoonsByPlanet(target.name).length === 0,
       fromPanel,
     });
-    const openPanel = () => {
-      this.bottomBar.closeStats();
-      this.observatoryPanel.show();
-      this.renderObservatoryPanel();
-      this.startObservatoryEventSearch();
-      this.updateClusterOnStates();
-    };
     if (action === 'reopen') {
-      if (!this.observatoryPanel.isOpen()) openPanel();
+      if (!this.observatoryPanel.isOpen()) this.openObservatoryPanel();
       return;
     }
     // Excursion entry: the deck grabs the ship out of cruise — remember the
@@ -3105,7 +3444,7 @@ export class PlanetariumMode {
         this.enterLandedMode(target);
       }
       if (action === 'land-open') {
-        openPanel();
+        this.openObservatoryPanel();
       } else {
         // Quiet arrival: the sky panel stays tucked into the telescope chip —
         // pulse the chip so the hand-off reads.
@@ -3116,6 +3455,10 @@ export class PlanetariumMode {
   }
 
   private async startHistoricJourney(missionId: HistoricMissionId) {
+    // A mission takes the session over: a live tour restores first,
+    // synchronously, so rememberPreMissionState below stashes the real
+    // pre-tour journey instead of a staged showcase scene.
+    if (this.tour) this.stopTour({ restore: true, sync: true });
     const journey = HISTORIC_JOURNEYS[missionId];
     await this.player.ensureProfileLoaded(journey.shipProfile);
     // Missions own the ship from here: drop the excursion return pose BEFORE
@@ -3813,6 +4156,17 @@ export class PlanetariumMode {
     this.updateClusterOnStates();
   }
 
+  /** The one panel-open sequence (idempotent): one instrument at a time —
+   *  the Stats card yields — then render, kick the upcoming-events search,
+   *  and light the cluster chip. */
+  private openObservatoryPanel() {
+    this.bottomBar.closeStats();
+    this.observatoryPanel.show();
+    this.renderObservatoryPanel();
+    this.startObservatoryEventSearch();
+    this.updateClusterOnStates();
+  }
+
   /** Brief pulse on the Observatory chip — the visible hand-off when the panel
    *  is tucked away (the Stats card taking the single instrument slot). */
   private pulseObservatoryChip() {
@@ -3827,11 +4181,7 @@ export class PlanetariumMode {
     if (this.observatoryPanel.isOpen()) {
       this.closeObservatoryPanel();
     } else {
-      this.bottomBar.closeStats();
-      this.observatoryPanel.show();
-      this.renderObservatoryPanel();
-      this.startObservatoryEventSearch();
-      this.updateClusterOnStates();
+      this.openObservatoryPanel();
     }
   }
 
@@ -5853,6 +6203,16 @@ export class PlanetariumMode {
   }
 
   private getState(): PlanetariumState {
+    // While a tour runs, every persistence caller gets the pre-tour snapshot
+    // (timestamp refreshed): the 30s autosave, the ☰ Save button, manualSave,
+    // and deactivate's final save all keep writing the journey the user left,
+    // never the staged showcase — so a reload mid-tour resumes the pre-tour
+    // state. Any reader that wants the LIVE scene (the way
+    // rememberPreMissionState stashes a mission return point) must run after
+    // the tour has stopped; the mission-start hook does exactly that.
+    if (this.tour) {
+      return { ...this.tour.snapshot.state, timestamp: Date.now() };
+    }
     return {
       positionAU: { x: this.player.posX, y: this.player.posY, z: this.player.posZ },
       headingRad: this.player.heading,

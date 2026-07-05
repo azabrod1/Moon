@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { sheetReleaseTarget } from './ObservatoryPanel';
+import { observatoryPhaseText, sheetReleaseTarget } from './ObservatoryPanel';
 
 // Pins for the bottom sheet's free-drag release decision (≤640px form).
 // dy is finger travel in px, down positive; target height = start − dy.
@@ -65,5 +65,22 @@ describe('sheetReleaseTarget', () => {
     expect(sheetReleaseTarget(495, -3, 500, 490)).toBe('peek'); // target 498: both
     expect(sheetReleaseTarget(495, 3, 500, 490)).toBe('peek'); // target 492: both
     expect(sheetReleaseTarget(495, -4, 500, 490)).toBe('full'); // target 499: full only
+  });
+});
+
+describe('observatoryPhaseText subject kinds', () => {
+  const T = Date.UTC(2026, 6, 4);
+
+  it('phase-less subjects have no phase line (their heroes render otherwise)', () => {
+    expect(observatoryPhaseText(T, { kind: 'events-only', parentName: 'Jupiter' })).toBeNull();
+    expect(
+      observatoryPhaseText(T, { kind: 'companionless', planetName: 'Mercury', tintCss: '#8c8c94' }),
+    ).toBeNull();
+  });
+
+  it('phase subjects do', () => {
+    expect(
+      observatoryPhaseText(T, { kind: 'earth', subject: 'Moon', angularDiameterDeg: 0.5, distanceKm: 384_400 }),
+    ).not.toBeNull();
   });
 });

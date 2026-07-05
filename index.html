@@ -635,6 +635,17 @@
     .obs-hero { display: flex; align-items: center; gap: 14px; margin: 16px 0 4px; padding: 0 2px; }
     .obs-glyph { width: 40px; height: 40px; flex: none; filter: drop-shadow(0 0 8px rgba(220, 230, 255, 0.14)); }
     .obs-glyph-disc { fill: #cfd6e4; }
+    .obs-glyph-quietdot { display: none; }
+    /* Companionless vantage (no moons in the system): the hero becomes the
+       Quiet-sky card — a ring glyph in the body's catalog tint — and the
+       events list and footer toggles have nothing to say, so they hide. */
+    #observatory-panel.quiet .obs-glyph-disc { fill: none; stroke: var(--obs-quiet-tint, var(--obs-t3)); stroke-width: 1.6; r: 15; }
+    #observatory-panel.quiet .obs-glyph-shadow { display: none; }
+    #observatory-panel.quiet .obs-glyph-quietdot { display: block; fill: var(--obs-quiet-tint, var(--obs-t3)); }
+    #observatory-panel.quiet .obs-sec,
+    #observatory-panel.quiet #observatory-events-list,
+    #observatory-panel.quiet #observatory-events-status,
+    #observatory-panel.quiet .obs-foot { display: none; }
     .obs-glyph-shadow { fill: #070a13; opacity: 0.92; }
     .obs-hero-text { min-width: 0; }
     .obs-hero-text h1 { font-size: 22px; font-weight: 300; letter-spacing: 0.005em; color: var(--obs-t1); line-height: 1.1; margin: 0; }
@@ -2249,6 +2260,7 @@
           <svg class="obs-glyph" viewBox="0 0 40 40" aria-hidden="true">
             <circle class="obs-glyph-disc" cx="20" cy="20" r="19"></circle>
             <path class="obs-glyph-shadow" id="observatory-glyph-shadow" d=""></path>
+            <circle class="obs-glyph-quietdot" cx="20" cy="20" r="2.2"></circle>
           </svg>
           <div class="obs-hero-text">
             <h1 id="observatory-phase-name">--</h1>

@@ -2818,16 +2818,10 @@ export class PlanetariumMode {
   }
 
   /** Telescope chip / O: landed with the deck closed it toggles this sky's
-   * panel; otherwise it's the deck's Observatory tab. Moonless grounds fall
-   * back to the deck until every planet is a subject — their panel would
-   * render hollow today. */
+   * panel; otherwise it's the deck's Observatory tab. */
   private observatoryAction() {
     if (!this.isDeckOpen() && this.landedOn) {
-      if (this.isObservatorySubject(this.landedOn)) {
-        this.toggleObservatoryPanel();
-      } else {
-        this.openDeck('observe');
-      }
+      this.toggleObservatoryPanel();
       return;
     }
     this.toggleDeck('observe');
@@ -2880,9 +2874,6 @@ export class PlanetariumMode {
     list.innerHTML = '';
     this.deckHl = -1;
     for (const group of groupDeckBodies(PLANETARIUM_BODIES, MOONS)) {
-      // Observatory tab: subjects only for now (bodies whose system has
-      // moons) — the guard drops when every planet grows a panel.
-      if (verb === 'observe' && group.moons.length === 0) continue;
       list.appendChild(this.makeDeckRow(
         { type: 'planet', name: group.planet.name },
         group.planet.color,
@@ -3791,13 +3782,6 @@ export class PlanetariumMode {
     };
   }
 
-  /** Any landed body whose system has catalog moons gets the Observatory panel. */
-  private isObservatorySubject(target: LandedTarget): boolean {
-    if (!target) return false;
-    const parentName = target.type === 'planet' ? target.name : target.parentPlanet;
-    return getMoonsByPlanet(parentName).length > 0;
-  }
-
   /** The landed system's parent planet name, or null when not landed. */
   private observatoryParentPlanetName(): string | null {
     if (!this.landedOn) return null;
@@ -3808,14 +3792,11 @@ export class PlanetariumMode {
     const button = document.getElementById('planetarium-btn-observatory');
     if (!button) return;
     const missionActive = this.isMissionActive();
-    const landedSubject = this.landedOn !== null && this.isObservatorySubject(this.landedOn);
-    // The button always reaches the deck's Observatory tab, so it shows
-    // everywhere outside missions — even landed on a moonless body
-    // (Mercury), where the deck is the way TO an observatory.
     button.style.display = missionActive ? 'none' : '';
-    // The panel is a landed-state surface: takeoff and moonless bodies close
-    // it. The deck is legal in any state but missions own the ship.
-    if (missionActive || !landedSubject) this.closeObservatoryPanel();
+    // The panel is a landed-state surface: takeoff closes it (every landed
+    // body is a subject — moonless ones get the Quiet-sky variant). The deck
+    // is legal in any state but missions own the ship.
+    if (missionActive || !this.landedOn) this.closeObservatoryPanel();
     if (missionActive) {
       this.closeDeck();
       this.closeSurfaceTargetMenu();
@@ -3995,6 +3976,14 @@ export class PlanetariumMode {
         waxing: this.isParentWaxing(parentName, this.landedOn.name),
         angularDiameterDeg: angularDiameterDeg(this.surfaceTargetRadiusAU({ kind: 'parent' }), distAU),
         distanceKm: distAU * KM_PER_AU,
+      };
+    }
+    if (getMoonsByPlanet(parentName).length === 0) {
+      const body = PLANETARIUM_BODIES.find((b) => b.name === parentName);
+      return {
+        kind: 'companionless',
+        planetName: parentName,
+        tintCss: body ? `#${body.color.toString(16).padStart(6, '0')}` : '#5b6377',
       };
     }
     return { kind: 'events-only', parentName };
@@ -4285,9 +4274,17 @@ export class PlanetariumMode {
     } else {
       this.observatoryEventResults.clear();
     }
+    const specs = listShadowEventSpecs(parentPlanet);
+    // A moonless system has no shadow events to search — publish the empty
+    // list instead of ticking a zero-spec search every frame.
+    if (specs.length === 0) {
+      this.observatoryEventSearch = null;
+      this.publishObservatoryEvents();
+      return;
+    }
     this.observatoryEventSearch = {
       parentPlanet,
-      specs: listShadowEventSpecs(parentPlanet),
+      specs,
       index: 0,
       resumeCursorUtcMs: null,
       fromUtcMs: this.timeState.currentUtcMs,
@@ -4497,7 +4494,8 @@ export class PlanetariumMode {
    * auto-rotate is stopped so the framed event doesn't drift.
    */
   private frameObservatoryEvent(spec?: ShadowEventSpec) {
-    if (!this.landedOn || !this.isObservatorySubject(this.landedOn)) return;
+    // Moonless systems bail on the moonMesh lookup below — no companion to frame.
+    if (!this.landedOn) return;
     const parentName = this.observatoryParentPlanetName()!;
     const parentBody = PLANETARIUM_BODIES.find(b => b.name === parentName);
     const moonName = spec?.moonName ?? 'Moon';

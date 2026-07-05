@@ -31,7 +31,9 @@ export type ObservatorySubjectInfo =
       angularDiameterDeg: number;
       distanceKm: number;
     }
-  | { kind: 'events-only'; parentName: string };
+  | { kind: 'events-only'; parentName: string }
+  /** Moonless system (Mercury, Venus): the hero becomes the "Quiet sky" card. */
+  | { kind: 'companionless'; planetName: string; tintCss: string };
 
 /** Panel state computed by the owner per render (vantage, clock, metas). */
 export interface ObservatoryRenderExtras {
@@ -179,7 +181,8 @@ function formatCountdown(nowUtcMs: number, event: ShadowEvent): string {
 
 /**
  * Phase headline/meta/glyph inputs for a subject — shared by the panel hero
- * and the surface HUD's no-event fallback. Null for events-only subjects.
+ * and the surface HUD's no-event fallback. Null for events-only and
+ * companionless subjects (the latter's hero is the static Quiet-sky card).
  */
 export function observatoryPhaseText(
   utcMs: number,
@@ -802,8 +805,13 @@ export class ObservatoryPanel {
     }
 
     const phase = observatoryPhaseText(utcMs, info);
+    const quiet = info.kind === 'companionless';
+    // Quiet variant restyles the glyph to the catalog-tinted ring and hides
+    // the events/guides sections (CSS on the class); everything live-text
+    // stays on the same nodes.
+    this.panelEl?.classList.toggle('quiet', quiet);
     if (this.heroEl) {
-      const show = phase ? '' : 'none';
+      const show = phase || quiet ? '' : 'none';
       if (this.heroEl.style.display !== show) {
         // Hero visibility changes the sheet's height (vantage swaps flip
         // subject kinds) — republish the inset.
@@ -811,7 +819,12 @@ export class ObservatoryPanel {
         this.updateSheetInset();
       }
     }
-    if (phase && info.kind !== 'events-only') {
+    if (quiet) {
+      this.panelEl?.style.setProperty('--obs-quiet-tint', info.tintCss);
+      setText('observatory-phase-name', 'Quiet sky');
+      setText('observatory-phase-meta', 'No moons in this system');
+      setText('observatory-phase-data', 'planets & bright stars only');
+    } else if (phase && info.kind !== 'events-only') {
       setText('observatory-phase-name', phase.headline);
       setText('observatory-phase-meta', phase.meta);
       setText('observatory-phase-data', formatDiscDataLine(info.angularDiameterDeg, info.distanceKm));

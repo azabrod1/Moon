@@ -14,10 +14,10 @@ export class PlanetariumNotification {
   }
 
   /**
-   * While muted (the guided tour: the card is the narrator, and on phones
+   * While muted (the guided tutorial: the card is the narrator, and on phones
    * the banner zone is where the card sits) non-forced banners drop
    * silently. Muting also clears any banner already up, so a toast fired
-   * just before the tour started cannot linger under the card.
+   * just before the tutorial started cannot linger under the card.
    */
   setMuted(muted: boolean): void {
     this.muted = muted;
@@ -25,7 +25,7 @@ export class PlanetariumNotification {
   }
 
   /** `force` bypasses the mute — for the manual-Save confirmation and the
-   *  tour's own end toasts, which must not be silent. */
+   *  tutorial's own end toasts, which must not be silent. */
   show(text: string, opts?: { force?: boolean }): void {
     if (!this.el) return;
     if (this.muted && !opts?.force) return;

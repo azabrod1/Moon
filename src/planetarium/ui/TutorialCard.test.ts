@@ -1,37 +1,36 @@
 import { describe, expect, it } from 'vitest';
-import { tourCardModel } from './TourCard';
-import { TOUR_STEPS } from '../tourLogic';
-import type { TourPhase, TourStep } from '../tourLogic';
+import { tutorialCardModel } from './TutorialCard';
+import { TUTORIAL_STEPS } from '../tutorialLogic';
+import type { TutorialPhase, TutorialStep } from '../tutorialLogic';
 
-const stepById = (id: TourStep['id']): TourStep => TOUR_STEPS.find((s) => s.id === id)!;
-const model = (id: TourStep['id'], phase: TourPhase, totalityReached = false) =>
-  tourCardModel(
+const stepById = (id: TutorialStep['id']): TutorialStep => TUTORIAL_STEPS.find((s) => s.id === id)!;
+const model = (id: TutorialStep['id'], phase: TutorialPhase, totalityReached = false) =>
+  tutorialCardModel(
     stepById(id),
-    TOUR_STEPS.findIndex((s) => s.id === id),
-    TOUR_STEPS.length,
+    TUTORIAL_STEPS.findIndex((s) => s.id === id),
+    TUTORIAL_STEPS.length,
     phase,
     totalityReached,
   );
 
-describe('tourCardModel', () => {
+describe('tutorialCardModel', () => {
   it('welcome card: start/not-now labels, counter 1 / 6', () => {
     const m = model('welcome', 'ready');
     expect(m.counter).toBe('1 / 6');
-    expect(m.primary).toEqual({ label: 'Start the tour', action: 'advance', disabled: false });
-    expect(m.ghost).toEqual({ label: 'Not now', action: 'skip', disabled: false });
-    expect(m.caption).toBe('');
+    expect(m.primary).toEqual({ label: 'Start the tutorial', action: 'advance', disabled: false });
+    expect(m.ghost).toEqual({ label: 'Not now', disabled: false });
   });
 
   it('primary waits for ready; ghost stays live until the restore runs', () => {
-    for (const phase of ['staging', 'settling'] as TourPhase[]) {
+    for (const phase of ['staging', 'settling'] as TutorialPhase[]) {
       const m = model('saturn', phase);
       expect(m.primary.disabled).toBe(true);
-      expect(m.ghost.disabled).toBe(false);
+      expect(m.ghost?.disabled).toBe(false);
     }
     expect(model('saturn', 'ready').primary.disabled).toBe(false);
     const ending = model('saturn', 'ending');
     expect(ending.primary.disabled).toBe(true);
-    expect(ending.ghost.disabled).toBe(true);
+    expect(ending.ghost?.disabled).toBe(true);
   });
 
   it('the eclipse card swaps its body at totality; other cards ignore the flag', () => {
@@ -41,24 +40,23 @@ describe('tourCardModel', () => {
     expect(model('moon', 'ready', true).body).toBe(stepById('moon').body);
   });
 
-  it('the wrap card repurposes the buttons as return/stay and carries the caption', () => {
+  it('the wrap card always takes you back: primary restores, no skip button', () => {
     const m = model('wrap', 'ready');
     expect(m.primary).toEqual({ label: 'Take me back', action: 'return', disabled: false });
-    expect(m.ghost).toEqual({ label: 'Stay here', action: 'stay', disabled: false });
-    expect(m.caption).not.toBe('');
+    expect(m.ghost).toBeNull();
   });
 
-  it('every non-wrap card advances and skips', () => {
-    for (const step of TOUR_STEPS.filter((s) => s.id !== 'wrap')) {
+  it('every non-wrap card advances and can skip', () => {
+    for (const step of TUTORIAL_STEPS.filter((s) => s.id !== 'wrap')) {
       const m = model(step.id, 'ready');
       expect(m.primary.action).toBe('advance');
-      expect(m.ghost.action).toBe('skip');
+      expect(m.ghost).not.toBeNull();
     }
   });
 
   it('counters run 1..6 in step order', () => {
-    TOUR_STEPS.forEach((step, i) => {
-      expect(model(step.id, 'ready').counter).toBe(`${i + 1} / ${TOUR_STEPS.length}`);
+    TUTORIAL_STEPS.forEach((step, i) => {
+      expect(model(step.id, 'ready').counter).toBe(`${i + 1} / ${TUTORIAL_STEPS.length}`);
     });
   });
 });

@@ -579,7 +579,7 @@
       padding: 8px;
       pointer-events: auto;
       min-width: 190px;
-      /* Above the observatory panel (21) and the tour card (30): the wrap card
+      /* Above the observatory panel (21) and the tutorial card (30): the wrap card
          points at this menu, so it must open over the card on phones too. */
       z-index: 34;
       box-shadow: 0 8px 32px rgba(0, 0, 0, 0.4), inset 0 1px 0 rgba(255, 255, 255, 0.04);
@@ -922,7 +922,7 @@
     /* Surface view active: cinema — the top-right chrome yields to HUD chips,
        the top bar fades and stops catching pointer events (it spans the full
        width and would block the HUD chips). The time pill stays, and so does
-       the tour card — its time-lapse and eclipse steps narrate from in here. */
+       the tutorial card — its time-lapse and eclipse steps narrate from in here. */
     body.surface-view-active #planetarium-actions { display: none; }
     body.surface-view-active #top-bar { opacity: 0.25; pointer-events: none; transition: opacity 0.3s; }
     /* Surface view owns one clock: the transport strip. Hide duplicate time
@@ -1113,16 +1113,16 @@
     #historic-reopen.visible { display: block; }
 
     /* ============================================= */
-    /* GUIDED TOUR CARD                              */
+    /* GUIDED TUTORIAL CARD                              */
     /* ============================================= */
 
-    /* The tour's narrator, in the historic-panel slot (a mission and a tour
+    /* The tutorial's narrator, in the historic-panel slot (a mission and a tutorial
        never coexist). z 30: above the deck (27) and the action cluster (28) —
        the deck theater plays underneath — below the ☰ menu (34), Look-at (60)
        and help (70); the body-level arrival veil (50) covers it during
        teleports on purpose. Deliberately NOT hidden by surface-view-active:
        the time-lapse and eclipse cards narrate from inside surface view. */
-    #tour-card {
+    #tutorial-card {
       position: absolute;
       top: 88px;
       left: 12px;
@@ -1135,16 +1135,14 @@
       pointer-events: none;
       transition: opacity 0.25s var(--ease), transform 0.25s var(--ease);
     }
-    #tour-card.visible { opacity: 1; transform: none; pointer-events: auto; }
-    .tour-eyebrow { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; }
-    .tour-eyebrow b { font-size: 10px; font-weight: 600; letter-spacing: 0.18em; text-transform: uppercase; color: var(--t3); }
-    .tour-count { font-family: var(--font-mono); font-size: 10px; color: var(--t3); font-variant-numeric: tabular-nums; }
-    .tour-title { font-size: 15px; font-weight: 600; color: var(--t1); margin: 0 0 6px; }
-    .tour-body { font-size: 12px; line-height: 1.55; color: var(--t2); margin: 0; }
-    .tour-caption { font-size: 11px; line-height: 1.5; color: var(--t3); margin: 8px 0 0; }
-    .tour-caption:empty { display: none; }
-    .tour-actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 14px; }
-    .tour-btn {
+    #tutorial-card.visible { opacity: 1; transform: none; pointer-events: auto; }
+    .tutorial-eyebrow { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; }
+    .tutorial-eyebrow b { font-size: 10px; font-weight: 600; letter-spacing: 0.18em; text-transform: uppercase; color: var(--t3); }
+    .tutorial-count { font-family: var(--font-mono); font-size: 10px; color: var(--t3); font-variant-numeric: tabular-nums; }
+    .tutorial-title { font-size: 15px; font-weight: 600; color: var(--t1); margin: 0 0 6px; }
+    .tutorial-body { font-size: 12px; line-height: 1.55; color: var(--t2); margin: 0; }
+    .tutorial-actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 14px; }
+    .tutorial-btn {
       padding: 7px 14px;
       border: 1px solid var(--panel-border);
       border-radius: 8px;
@@ -1153,20 +1151,20 @@
       cursor: pointer;
       transition: all 0.15s;
     }
-    .tour-btn:disabled { opacity: 0.45; cursor: default; }
-    .tour-btn-primary { background: rgba(var(--accent-rgb),0.18); color: var(--t1); border-color: rgba(var(--accent-rgb),0.25); }
-    .tour-btn-primary:hover:not(:disabled) { background: rgba(var(--accent-rgb),0.28); }
-    .tour-btn-ghost { background: transparent; color: var(--t2); }
-    .tour-btn-ghost:hover:not(:disabled) { background: rgba(255,255,255,0.06); color: var(--t1); }
-    /* Deck-theater row pulse: the tour pointing at the row it is about to press. */
-    @keyframes tour-pulse {
+    .tutorial-btn:disabled { opacity: 0.45; cursor: default; }
+    .tutorial-btn-primary { background: rgba(var(--accent-rgb),0.18); color: var(--t1); border-color: rgba(var(--accent-rgb),0.25); }
+    .tutorial-btn-primary:hover:not(:disabled) { background: rgba(var(--accent-rgb),0.28); }
+    .tutorial-btn-ghost { background: transparent; color: var(--t2); }
+    .tutorial-btn-ghost:hover:not(:disabled) { background: rgba(255,255,255,0.06); color: var(--t1); }
+    /* Deck-theater row pulse: the tutorial pointing at the row it is about to press. */
+    @keyframes tutorial-pulse {
       0%, 100% { background: rgba(var(--accent-rgb), 0.09); }
       50% { background: rgba(var(--accent-rgb), 0.22); }
     }
-    .pk-row.tour-pulse { animation: tour-pulse 1.1s ease-in-out infinite; }
+    .pk-row.tutorial-pulse { animation: tutorial-pulse 1.1s ease-in-out infinite; }
     @media (prefers-reduced-motion: reduce) {
-      #tour-card { transition: opacity 0.22s var(--ease); transform: none; }
-      .pk-row.tour-pulse { animation: none; background: rgba(var(--accent-rgb), 0.16); }
+      #tutorial-card { transition: opacity 0.22s var(--ease); transform: none; }
+      .pk-row.tutorial-pulse { animation: none; background: rgba(var(--accent-rgb), 0.16); }
     }
     .historic-header {
       display: flex;
@@ -1620,8 +1618,8 @@
       color: var(--text-secondary);
     }
     /* Modal action bar — a flex-footer sibling of the scrollable body, so the
-       tour recommendation is visible without scrolling the reference sections. */
-    .help-tour-row {
+       tutorial recommendation is visible without scrolling the reference sections. */
+    .help-tutorial-row {
       display: flex;
       gap: 8px;
       justify-content: flex-end;
@@ -1914,7 +1912,7 @@
         border-radius: 12px;
       }
       /* Top-docked, full width — the bottom band is the deck sheet's turf. */
-      #tour-card {
+      #tutorial-card {
         top: 60px;
         left: 8px;
         right: 8px;
@@ -2135,9 +2133,9 @@
       <!-- Menu dropdown (Help, journey actions, settings) -->
       <div id="planetarium-menu-panel">
         <button class="menu-action" id="planetarium-btn-help">Help</button>
-        <button class="menu-action" id="planetarium-btn-tour">Take the Tour</button>
         <button class="menu-action" id="planetarium-btn-save">Save</button>
         <button class="menu-action" id="planetarium-btn-new">New Journey</button>
+        <button class="menu-action" id="planetarium-btn-tutorial">Tutorial</button>
         <button class="menu-action menu-action-parent" id="planetarium-btn-historic">
           <span>Historic Journeys</span>
           <span class="menu-action-chevron">&#9654;</span>
@@ -2359,9 +2357,9 @@
             </section>
             <p class="help-signoff">Have fun out there.</p>
           </div>
-          <div class="help-tour-row">
-            <button class="tour-btn tour-btn-ghost" id="help-explore">Explore on my own</button>
-            <button class="tour-btn tour-btn-primary" id="help-take-tour">Take the tour</button>
+          <div class="help-tutorial-row">
+            <button class="tutorial-btn tutorial-btn-ghost" id="help-explore">Explore on my own</button>
+            <button class="tutorial-btn tutorial-btn-primary" id="help-take-tutorial">Take the tutorial</button>
           </div>
         </div>
       </div>
@@ -2440,18 +2438,17 @@
       </div>
       <button id="historic-reopen" aria-label="Show mission info">Mission info</button>
 
-      <!-- Guided-tour narrator card. Deliberate exception to one-modal-at-a-time:
-           the tour stages scenes through the other overlays (the deck theater
+      <!-- Guided-tutorial narrator card. Deliberate exception to one-modal-at-a-time:
+           the tutorial stages scenes through the other overlays (the deck theater
            opens and closes UNDER it), so no overlay's open() closes this card —
-           only its own buttons and the tour lifecycle do. -->
-      <div id="tour-card" class="pn pn-high">
-        <div class="tour-eyebrow"><b>Tour</b><span class="tour-count" id="tour-count"></span></div>
-        <h3 class="tour-title" id="tour-title"></h3>
-        <p class="tour-body" id="tour-body"></p>
-        <p class="tour-caption" id="tour-caption"></p>
-        <div class="tour-actions">
-          <button class="tour-btn tour-btn-ghost" id="tour-ghost"></button>
-          <button class="tour-btn tour-btn-primary" id="tour-primary"></button>
+           only its own buttons and the tutorial lifecycle do. -->
+      <div id="tutorial-card" class="pn pn-high">
+        <div class="tutorial-eyebrow"><b>Tutorial</b><span class="tutorial-count" id="tutorial-count"></span></div>
+        <h3 class="tutorial-title" id="tutorial-title"></h3>
+        <p class="tutorial-body" id="tutorial-body"></p>
+        <div class="tutorial-actions">
+          <button class="tutorial-btn tutorial-btn-ghost" id="tutorial-ghost"></button>
+          <button class="tutorial-btn tutorial-btn-primary" id="tutorial-primary"></button>
         </div>
       </div>
 

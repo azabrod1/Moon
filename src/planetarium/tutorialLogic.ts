@@ -1,5 +1,5 @@
 /**
- * Pure logic for the guided tour — the Next-driven click-through that stages
+ * Pure logic for the guided tutorial — the Next-driven click-through that stages
  * the app's showcase scenes (Saturn's rings, standing on the Moon, time-lapse,
  * a total solar eclipse). DOM-free so the step table, the phase machine, and
  * the restore/settle decisions stay unit-testable; PlanetariumMode owns the
@@ -7,10 +7,10 @@
  */
 import type { ShadowEventSpec } from '../astronomy/shadows';
 
-export type TourStepId = 'welcome' | 'saturn' | 'moon' | 'timelapse' | 'eclipse' | 'wrap';
+export type TutorialStepId = 'welcome' | 'saturn' | 'moon' | 'timelapse' | 'eclipse' | 'wrap';
 
 /** What the controller must stage when a step becomes current ('none' = card only). */
-export type TourStage = 'none' | 'saturn' | 'moon' | 'timelapse' | 'eclipse';
+export type TutorialStage = 'none' | 'saturn' | 'moon' | 'timelapse' | 'eclipse';
 
 /** Which busy signals gate a step's Next button (see isStepSettled). */
 export interface SettleNeeds {
@@ -22,38 +22,37 @@ export interface SettleNeeds {
   dwellMs: number;
 }
 
-export interface TourStep {
-  id: TourStepId;
-  /** Card headline (the eyebrow is always "Tour"). */
+export interface TutorialStep {
+  id: TutorialStepId;
+  /** Card headline (the eyebrow is always "Tutorial"). */
   title: string;
   body: string;
   /** Eclipse card swaps to this once the clock settles into totality. */
   totalityBody?: string;
-  /** Dimmer second paragraph (the wrap card's stay-or-return question). */
-  caption?: string;
-  /** Primary button. Advances the tour everywhere except the wrap card, where it restores. */
+  /** Primary button. Advances the tutorial everywhere except the wrap card, where it restores. */
   primaryLabel: string;
-  /** Ghost button. Skips (and restores) everywhere except the wrap card, where it stays put. */
-  ghostLabel: string;
-  stage: TourStage;
+  /** Ghost skip button; null on the wrap card — ending the tutorial always takes
+   *  you back to where and when you started. */
+  ghostLabel: string | null;
+  stage: TutorialStage;
   settle: SettleNeeds;
 }
 
 /** Next stays disabled this long after a scene staging lands, so it can't
  *  enable on the exact frame the veil clears while the scene is still
  *  visually snapping in. */
-export const TOUR_SETTLE_DWELL_MS = 350;
+export const TUTORIAL_SETTLE_DWELL_MS = 350;
 
-const SCENE_SETTLE: SettleNeeds = { arrival: true, fov: false, dwellMs: TOUR_SETTLE_DWELL_MS };
-const SURFACE_SETTLE: SettleNeeds = { arrival: true, fov: true, dwellMs: TOUR_SETTLE_DWELL_MS };
+const SCENE_SETTLE: SettleNeeds = { arrival: true, fov: false, dwellMs: TUTORIAL_SETTLE_DWELL_MS };
+const SURFACE_SETTLE: SettleNeeds = { arrival: true, fov: true, dwellMs: TUTORIAL_SETTLE_DWELL_MS };
 const CARD_ONLY_SETTLE: SettleNeeds = { arrival: false, fov: false, dwellMs: 0 };
 
-export const TOUR_STEPS: readonly TourStep[] = [
+export const TUTORIAL_STEPS: readonly TutorialStep[] = [
   {
     id: 'welcome',
     title: 'A quick look around',
-    body: 'Three stops: Saturn, the Moon, and a total solar eclipse. The tour does the flying; you can drag to look around at any stop.',
-    primaryLabel: 'Start the tour',
+    body: 'Four stops: Saturn, the Moon, Io, and a total solar eclipse. The tutorial does the flying and points out the buttons; you can drag to look around at any stop.',
+    primaryLabel: 'Start the tutorial',
     ghostLabel: 'Not now',
     stage: 'none',
     settle: CARD_ONLY_SETTLE,
@@ -63,25 +62,25 @@ export const TOUR_STEPS: readonly TourStep[] = [
     title: 'Saturn',
     body: 'That was the deck: the \u{1F680} button up top, or T. Every planet and moon is one tap away. Take a second with the rings.',
     primaryLabel: 'Next: the Moon',
-    ghostLabel: 'Skip tour',
+    ghostLabel: 'Skip tutorial',
     stage: 'saturn',
     settle: SCENE_SETTLE,
   },
   {
     id: 'moon',
     title: 'Standing on the Moon',
-    body: 'Same deck, Observatory tab: this one lands you on the body. The panel reads the sky from here, starting with Earth’s phase. You’ll look up at it next.',
+    body: 'Same deck, Observatory tab: the \u{1F52D} button, or O. This tab lands you on the body, and the panel reads its sky, starting with Earth’s phase.',
     primaryLabel: 'Next: let time run',
-    ghostLabel: 'Skip tour',
+    ghostLabel: 'Skip tutorial',
     stage: 'moon',
     settle: SCENE_SETTLE,
   },
   {
     id: 'timelapse',
     title: 'Let time run',
-    body: 'An hour passes every second now. Earth stays put in the Moon’s sky, spinning slowly. The time controls below do this anytime.',
+    body: 'This is Surface view, the panel’s look-up-from-the-ground button. You’re standing on Io: an hour passes every second, so Jupiter spins through a full day every ten seconds and the other moons drift by. The time controls below do this anytime.',
     primaryLabel: 'Next: a solar eclipse',
-    ghostLabel: 'Skip tour',
+    ghostLabel: 'Skip tutorial',
     stage: 'timelapse',
     settle: SURFACE_SETTLE,
   },
@@ -92,32 +91,31 @@ export const TOUR_STEPS: readonly TourStep[] = [
     totalityBody:
       'Totality. The Moon covers the whole Sun; only the glow at the rim gets past. Standing in one spot you’d get six minutes of this, the longest over land this century.',
     primaryLabel: 'Next: wrap up',
-    ghostLabel: 'Skip tour',
+    ghostLabel: 'Skip tutorial',
     stage: 'eclipse',
     settle: SURFACE_SETTLE,
   },
   {
     id: 'wrap',
-    title: 'That’s the tour',
-    body: 'Teleport drops you beside a body. Observatory lands you on one. Historic Journeys and this tour live in the ☰ menu.',
-    caption: 'Stay in 2027, or go back to where and when you started?',
+    title: 'That’s the tutorial',
+    body: 'Teleport drops you beside a body; Observatory lands you on one, and its panel jumps to eclipses like this. Historic Journeys and this tutorial live in the ☰ menu.',
     primaryLabel: 'Take me back',
-    ghostLabel: 'Stay here',
+    ghostLabel: null,
     stage: 'none',
     settle: CARD_ONLY_SETTLE,
   },
 ];
 
 /**
- * The tour's showcase eclipse: the total solar eclipse of 2027-08-02 —
+ * The tutorial's showcase eclipse: the total solar eclipse of 2027-08-02 —
  * 6m23s at greatest eclipse, the longest totality over land this century.
- * Searched forward from a fixed date so every tour finds the same event no
+ * Searched forward from a fixed date so every tutorial finds the same event no
  * matter where the sim clock sits; shadows.test.ts pins this exact search
  * (same spec, same from-date) to the EclipseWise peak within 20 minutes.
  * Always stage from the engine's returned event, never from the expected
  * values — they exist for the pin test and a degenerate-search guard.
  */
-export const TOUR_ECLIPSE = {
+export const TUTORIAL_ECLIPSE = {
   spec: { kind: 'shadow-transit', parentPlanet: 'Earth', moonName: 'Moon' } as ShadowEventSpec,
   searchFromUtcMs: Date.parse('2027-07-01T00:00:00Z'),
   expectedPeakUtcMs: Date.parse('2027-08-02T10:06:41Z'),
@@ -125,14 +123,14 @@ export const TOUR_ECLIPSE = {
 
 /** Time-lapse card rate — the transport strip's "1 hr/s" preset, fast enough
  *  that Earth visibly rotates (a turn every 24 s) while the sky wheels gently. */
-export const TOUR_TIMELAPSE_RATE = 3600;
+export const TUTORIAL_TIMELAPSE_RATE = 3600;
 
 /** Eclipse approach rate — the "20 min/s" preset: the ~2 h from first contact
  *  to peak plays as a few seconds of the Moon biting into the Sun. */
-export const TOUR_ECLIPSE_APPROACH_RATE = 1200;
+export const TUTORIAL_ECLIPSE_APPROACH_RATE = 1200;
 
 /**
- * How far before the eclipse peak the tour drops the rate back to 1×.
+ * How far before the eclipse peak the tutorial drops the rate back to 1×.
  * ShadowEvent carries only the outer penumbral contacts and the peak — no
  * second/third-contact times — so this lead comes from the published
  * circumstances of the one fixed event above: at the point of greatest
@@ -143,11 +141,11 @@ export const TOUR_ECLIPSE_APPROACH_RATE = 1200;
  * time — still deep inside totality. Validated visually in QA, not by the
  * pin test.
  */
-export const TOUR_TOTALITY_SETTLE_LEAD_MS = 190_000;
+export const TUTORIAL_TOTALITY_SETTLE_LEAD_MS = 190_000;
 
 /** The instant the eclipse step settles to realtime (single definition of the sign). */
 export function totalitySettleUtcMs(peakUtcMs: number): number {
-  return peakUtcMs - TOUR_TOTALITY_SETTLE_LEAD_MS;
+  return peakUtcMs - TUTORIAL_TOTALITY_SETTLE_LEAD_MS;
 }
 
 /**
@@ -156,13 +154,13 @@ export function totalitySettleUtcMs(peakUtcMs: number): number {
  * clear; 'ready' = Next enabled; 'ending' = a stop was requested while an
  * arrival was in flight and the restore runs on the first idle frame.
  */
-export type TourPhase = 'staging' | 'settling' | 'ready' | 'ending';
+export type TutorialPhase = 'staging' | 'settling' | 'ready' | 'ending';
 
-export type TourTransitionEvent = 'next' | 'staged' | 'settled' | 'skip' | 'abort';
+export type TutorialTransitionEvent = 'next' | 'staged' | 'settled' | 'skip' | 'abort';
 
 /** Guarded transitions; anything not listed is a no-op, so a stale event
  *  (a timer or arrival callback landing late) can never move the phase backwards. */
-export function tourTransition(phase: TourPhase, event: TourTransitionEvent): TourPhase {
+export function tutorialTransition(phase: TutorialPhase, event: TutorialTransitionEvent): TutorialPhase {
   switch (event) {
     case 'next':
       return phase === 'ready' ? 'staging' : phase;
@@ -176,7 +174,7 @@ export function tourTransition(phase: TourPhase, event: TourTransitionEvent): To
   }
 }
 
-/** Live busy signals sampled by the per-frame tour update. */
+/** Live busy signals sampled by the per-frame tutorial update. */
 export interface SettleSignals {
   arrivalInFlight: boolean;
   veilCovering: boolean;
@@ -192,9 +190,9 @@ export function isStepSettled(signals: SettleSignals, needs: SettleNeeds): boole
 }
 
 export interface RestoreContext {
-  /** The pre-tour snapshot was landed on this body (null = cruising). */
+  /** The pre-tutorial snapshot was landed on this body (null = cruising). */
   snapshotLandedOn: string | null;
-  /** The pre-tour snapshot had the observatory panel open. */
+  /** The pre-tutorial snapshot had the observatory panel open. */
   panelWasOpen: boolean;
   /** Currently in surface view. */
   inSurfaceView: boolean;
@@ -205,7 +203,7 @@ export interface RestoreContext {
   lifecycleAbort: boolean;
 }
 
-/** The sequencing decisions stopTour executes in order. */
+/** The sequencing decisions stopTutorial executes in order. */
 export interface RestorePlan {
   /** Leave surface view (instant) before any landed-state change. */
   exitSurfaceView: boolean;
@@ -230,8 +228,8 @@ export function restorePlan(ctx: RestoreContext): RestorePlan {
   };
 }
 
-/** The tour never starts over a mission, under the resume prompt, or twice. */
-export function canStartTour(ctx: {
+/** The tutorial never starts over a mission, under the resume prompt, or twice. */
+export function canStartTutorial(ctx: {
   missionActive: boolean;
   resumePromptVisible: boolean;
   alreadyActive: boolean;

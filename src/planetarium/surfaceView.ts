@@ -396,7 +396,7 @@ export interface SurfaceTargetChoice {
    *  zoom — the row dims but stays pickable (the reticle + honesty caption
    *  handle it in-view). */
   resolvable: boolean;
-  /** Row dot tint — the body's catalog color (the travel-menu dot idiom). */
+  /** Row dot tint — the body's catalog color (the deck-row dot idiom). */
   color: number;
 }
 

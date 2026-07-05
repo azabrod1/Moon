@@ -51,19 +51,29 @@ export class SurfaceTargetMenu {
       const row = document.createElement('button');
       const current = currentKey !== null && surfaceTargetKey(choice.target) === currentKey;
       row.className =
-        'travel-item stm-row' +
+        'pk-row stm-row' +
         (choice.resolvable ? '' : ' stm-dim') +
-        (current ? ' travel-item-current' : '');
+        (current ? ' stm-current' : '');
       const dot = document.createElement('span');
-      dot.className = 'travel-item-dot';
+      dot.className = 'pk-dot';
       dot.style.background = `#${choice.color.toString(16).padStart(6, '0')}`;
-      const name = document.createElement('span');
-      name.className = 'travel-item-name';
+      const info = document.createElement('span');
+      info.className = 'pk-info';
+      const name = document.createElement('b');
       name.textContent = choice.name;
+      info.appendChild(name);
+      row.append(dot, info);
+      if (current) {
+        const pill = document.createElement('span');
+        pill.className = 'pk-tag-here';
+        // The target you're looking AT, not where you stand — never "here".
+        pill.textContent = 'current';
+        row.appendChild(pill);
+      }
       const meta = document.createElement('span');
       meta.className = 'stm-meta';
       meta.textContent = `∅ ${formatDiscDeg(choice.discDeg)}°${choice.resolvable ? '' : ' · too small'}`;
-      row.append(dot, name, meta);
+      row.appendChild(meta);
       row.addEventListener('click', () => this.onPick(choice.target));
       this.listEl.appendChild(row);
     }

@@ -1731,196 +1731,46 @@
       flex-direction: column;
       overflow: hidden;
     }
-    .stm-row .travel-item-dot { width: 8px; height: 8px; }
+    .stm-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 14px 18px 8px;
+    }
+    .stm-head h3 {
+      font-family: var(--font);
+      font-size: 15px;
+      font-weight: 500;
+      color: var(--t1);
+      letter-spacing: 0.5px;
+      margin: 0;
+    }
+    .stm-sub {
+      padding: 0 18px 10px;
+      font-size: 11.5px;
+      line-height: 1.4;
+      color: var(--t3);
+      letter-spacing: 0.3px;
+    }
+    /* Rows are deck rows on <button>s — reset the UA button chrome. */
+    .stm-row { border: none; background: none; width: 100%; font-family: var(--font); text-align: left; }
+    .stm-row .pk-dot { width: 8px; height: 8px; }
     .stm-meta {
       font-family: var(--font-mono);
       font-size: 11px;
-      color: var(--text-dim);
+      color: var(--t3);
       white-space: nowrap;
       flex: none;
-      margin-left: auto;
     }
     /* Sub-resolution rows dim by text shade (the events-list speck idiom,
        not opacity) and stay pickable — the in-view reticle caption takes
        over the honesty from there. */
-    .stm-dim .travel-item-name { color: var(--text-dim); font-weight: 400; }
-    .stm-dim .travel-item-dot { opacity: 0.4; }
-    /* The shared current-row suffix says "you're here" — the right words for
-       a landing menu, the wrong ones for a sky target you're looking AT. */
-    #surface-target-menu .travel-item-current .travel-item-name::after { content: ' · current'; }
-
-    .travel-menu-header {
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      padding: 14px 18px 10px;
-    }
-    .travel-menu-header h3 {
-      font-family: var(--font);
-      font-size: 15px;
-      font-weight: 500;
-      color: var(--text-primary);
-      letter-spacing: 0.5px;
-      margin: 0;
-    }
-    .travel-menu-close {
-      background: none;
-      border: none;
-      color: var(--text-dim);
-      font-size: 20px;
-      cursor: pointer;
-      padding: 4px 8px;
-      border-radius: 4px;
-      transition: all 0.15s;
-    }
-    .travel-menu-close:hover {
-      color: var(--text-primary);
-      background: var(--accent-dim);
-    }
-
-    .travel-menu-sub {
-      padding: 0 18px 10px;
-      font-size: 11.5px;
-      line-height: 1.4;
-      color: var(--text-dim);
-      letter-spacing: 0.3px;
-    }
-
-    .travel-search-row {
-      padding: 0 18px 10px;
-    }
-    #travel-search,
-    #observatory-search {
-      width: 100%;
-      padding: 8px 12px;
-      background: rgba(255, 255, 255, 0.04);
-      border: 1px solid var(--panel-border);
-      border-radius: 6px;
-      color: var(--text-primary);
-      font-family: var(--font);
-      font-size: 13px;
-      outline: none;
-      transition: border-color 0.15s;
-      box-sizing: border-box;
-    }
-    #travel-search:focus,
-    #observatory-search:focus {
-      border-color: rgba(var(--accent-rgb), 0.3);
-    }
-    #travel-search::placeholder,
-    #observatory-search::placeholder {
-      color: var(--text-dim);
-    }
-
-    .travel-list {
-      flex: 1;
-      overflow-y: auto;
-      padding: 0 10px 12px;
-    }
-    .travel-list::-webkit-scrollbar { width: 3px; }
-    .travel-list::-webkit-scrollbar-track { background: transparent; }
-    .travel-list::-webkit-scrollbar-thumb { background: rgba(255, 255, 255, 0.08); border-radius: 2px; }
-
-    .travel-item {
-      display: flex;
-      align-items: center;
-      gap: 10px;
-      padding: 8px 10px;
-      border-radius: 6px;
-      cursor: pointer;
-      transition: all 0.12s;
-      border: none;
-      background: none;
-      width: 100%;
-      text-align: left;
-      font-family: var(--font);
-    }
-    .travel-item:hover {
-      background: rgba(255, 255, 255, 0.06);
-    }
-    .travel-item-dot {
-      width: 10px;
-      height: 10px;
-      border-radius: 50%;
-      flex-shrink: 0;
-    }
-    .travel-item-moon {
-      padding-left: 28px;
-    }
-    .travel-item-moon .travel-item-dot {
-      width: 7px;
-      height: 7px;
-    }
-    /* Observatory menu, opened while landed: the current vantage. */
-    .travel-item-current {
-      background: rgba(255, 255, 255, 0.05);
-    }
-    .travel-item-current .travel-item-name::after {
-      content: ' · you’re here';
-      color: var(--text-dim);
-      font-size: 11px;
-      font-weight: 400;
-    }
-    .travel-item-info {
-      flex: 1;
-      min-width: 0;
-    }
-    .travel-item-name {
-      font-size: 13px;
-      font-weight: 500;
-      color: var(--text-primary);
-    }
-    .travel-item-moon .travel-item-name {
-      font-size: 12px;
-    }
-    .travel-item-detail {
-      font-size: 10px;
-      color: var(--text-dim);
-    }
-
-    .travel-action-bar {
-      display: flex;
-      align-items: center;
-      gap: 6px;
-      padding: 10px 14px;
-      border-top: 1px solid var(--panel-border);
-      background: rgba(0, 0, 0, 0.2);
-      flex-wrap: wrap;
-    }
-    .travel-action-name {
-      flex: 1;
-      font-size: 13px;
-      font-weight: 500;
-      color: var(--text-primary);
-      font-family: var(--font);
-      white-space: nowrap;
-      overflow: hidden;
-      text-overflow: ellipsis;
-    }
-    .travel-action-btn {
-      padding: 6px 10px;
-      border: 1px solid rgba(var(--accent-rgb), 0.25);
-      border-radius: 6px;
-      background: rgba(var(--accent-rgb), 0.12);
-      color: var(--text-primary);
-      font-size: 12px;
-      font-family: var(--font);
-      cursor: pointer;
-      transition: all 0.12s;
-      white-space: nowrap;
-    }
-    .travel-action-btn:hover {
-      background: rgba(var(--accent-rgb), 0.20);
-      border-color: rgba(var(--accent-rgb), 0.35);
-    }
-    .travel-action-btn-dim {
-      background: none;
-      border-color: transparent;
-      color: var(--text-secondary);
-    }
-    .travel-action-btn-dim:hover {
-      background: rgba(255, 255, 255, 0.06);
-    }
+    .stm-dim .pk-info b { color: var(--t3); font-weight: 400; }
+    .stm-dim .pk-dot { opacity: 0.4; }
+    /* The pill says CURRENT, not HERE — this row is the sky target you're
+       looking AT, not where you stand. */
+    .stm-current { background: rgba(255, 255, 255, 0.05); }
+    .stm-current .pk-tag-here { color: var(--t2); }
 
     #planetarium-btn-land {
       position: fixed;
@@ -2464,12 +2314,14 @@
       <!-- Look-at menu: the surface view's sky-target picker. -->
       <div id="surface-target-menu">
         <div class="stm-card pn pn-high">
-          <div class="travel-menu-header">
+          <div class="stm-head">
             <h3>Look at</h3>
-            <button class="travel-menu-close" id="surface-target-menu-close">&times;</button>
+            <button class="pk-x" id="surface-target-menu-close" aria-label="Close">
+              <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5.5 5.5 L14.5 14.5 M14.5 5.5 L5.5 14.5"></path></svg>
+            </button>
           </div>
-          <div class="travel-menu-sub" id="surface-target-sub"></div>
-          <div class="travel-list" id="surface-target-list"></div>
+          <div class="stm-sub" id="surface-target-sub"></div>
+          <div class="pk-list" id="surface-target-list"></div>
         </div>
       </div>
 

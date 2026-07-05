@@ -4294,6 +4294,40 @@ export class PlanetariumMode {
     };
   }
 
+  devTutorialStart(): boolean {
+    this.startTutorial();
+    return this.tutorial !== null;
+  }
+
+  devTutorialNext(): void {
+    this.advanceTutorial();
+  }
+
+  devTutorialSkip(): void {
+    this.stopTutorial({ restore: true, toast: 'skip' });
+  }
+
+  /** One flat snapshot of everything the headless QA walk asserts per stop. */
+  devTutorialState(): unknown {
+    const tutorial = this.tutorial;
+    return {
+      active: tutorial !== null,
+      stepId: tutorial ? TUTORIAL_STEPS[tutorial.stepIndex].id : null,
+      stepIndex: tutorial?.stepIndex ?? -1,
+      phase: tutorial?.phase ?? null,
+      totalityReached: tutorial?.totalityReached ?? false,
+      arrivalInFlight: this.arrivalInFlight,
+      veilCovering:
+        document.getElementById('arrival-veil')?.classList.contains('covering') ?? false,
+      landedOn: this.landedOn?.name ?? null,
+      surface: this.landedView === 'surface',
+      panelOpen: this.observatoryPanel.isOpen(),
+      rate: this.timeState.rate,
+      paused: this.timeState.paused,
+      timeMs: this.timeState.currentUtcMs,
+    };
+  }
+
   /** The landed system's parent planet name, or null when not landed. */
   private observatoryParentPlanetName(): string | null {
     if (!this.landedOn) return null;

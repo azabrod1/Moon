@@ -483,6 +483,10 @@ export class PlanetariumMode {
       // chevron clamp's per-viewport rect cache must re-measure.
       this.panelRectCache = null;
     },
+    // "From ⟨body⟩ ▾": the vantage picker, with the panel kept open behind —
+    // the observe commit then opens the new sky's panel even on a quiet
+    // preference (companionless arrivals stay quiet).
+    () => this.openDeck('observe', { fromPanel: true }),
   );
   private observatoryHud = new ObservatoryHUD(
     () => this.exitSurfaceView(),
@@ -3937,7 +3941,7 @@ export class PlanetariumMode {
     const subject = this.buildObservatorySubject();
     if (!subject) return;
     const extras: ObservatoryRenderExtras = {
-      vantageName: `You're on ${bodyDisplayName(this.landedOn.name)}`,
+      vantageName: `From ${bodyDisplayName(this.landedOn.name)}`,
       vantageBody: this.landedOn.name,
       swapName: this.swapCompanionTarget()?.name ?? null,
       nowTag: this.observatoryNowTag(),

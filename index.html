@@ -624,7 +624,18 @@
     }
     .obs-close:hover { color: var(--obs-t1); }
     .obs-vantage { display: flex; justify-content: space-between; align-items: center; margin-top: 8px; }
-    .obs-vantage h2 { font-size: 15px; font-weight: 500; color: var(--obs-t1); letter-spacing: 0.01em; margin: 0; }
+    /* "From ⟨body⟩ ▾" — the vantage line is the change-vantage affordance:
+       it opens the deck's Observatory tab with the panel kept open behind. */
+    .obs-from {
+      display: inline-flex; align-items: center; gap: 5px; min-width: 0;
+      border: none; background: none; padding: 0; cursor: pointer; text-align: left;
+      font-family: var(--font); font-size: 15px; font-weight: 500;
+      color: var(--obs-t1); letter-spacing: 0.01em;
+      transition: color 0.14s var(--obs-slide);
+    }
+    .obs-from svg { width: 12px; height: 12px; flex: none; color: var(--obs-t3); transition: color 0.14s var(--obs-slide); }
+    .obs-from:hover { color: var(--accent); }
+    .obs-from:hover svg { color: var(--accent); }
     .obs-swap {
       display: flex; align-items: center; gap: 5px; font-size: 10.5px; color: var(--obs-t2);
       padding: 4px 10px; border-radius: 999px; background: rgba(255, 255, 255, 0.05);
@@ -2253,7 +2264,10 @@
           <button class="obs-close" id="observatory-close" aria-label="Close observatory panel">&times;</button>
         </div>
         <div class="obs-vantage">
-          <h2 id="observatory-vantage">--</h2>
+          <button class="obs-from" id="observatory-vantage-btn" title="Change vantage">
+            <span id="observatory-vantage">--</span>
+            <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5.5 8 L10 12.5 L14.5 8"></path></svg>
+          </button>
           <button class="obs-swap" id="observatory-swap" style="display:none"><i>&#x21C4;</i><span id="observatory-swap-name"></span></button>
         </div>
         <div class="obs-hero" id="observatory-hero">

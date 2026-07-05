@@ -1,7 +1,8 @@
 /**
  * Observatory panel for the Planetarium's landed mode — cool-glass instrument
- * styling (accent reserved for happening-now warmth). Vantage header
- * with swap chip, phase hero (SVG glyph + angular-diameter data line), live
+ * styling (accent reserved for happening-now warmth). "From ⟨body⟩ ▾" vantage
+ * header (click = change vantage) with swap chip, phase hero (SVG glyph +
+ * angular-diameter data line; Quiet-sky card on moonless grounds), live
  * now-bar, the surface-view entry, Earth's prev/next jump rows with next-date
  * metas, and the per-system upcoming-events list with classification badges.
  * Pure DOM + ephemeris reads; clock changes, camera work, and the chunked
@@ -37,9 +38,9 @@ export type ObservatorySubjectInfo =
 
 /** Panel state computed by the owner per render (vantage, clock, metas). */
 export interface ObservatoryRenderExtras {
-  /** "You're on Earth" */
+  /** "From Earth" — the vantage line doubles as the change-vantage button. */
   vantageName: string;
-  /** Bare landed-body name for copy ("Moon", not "You're on Moon"). */
+  /** Bare landed-body name for copy ("Moon", not "From Moon"). */
   vantageBody: string;
   /** Companion body name for the swap chip, or null to hide it. */
   swapName: string | null;
@@ -281,6 +282,8 @@ export class ObservatoryPanel {
     private onSwap: () => void,
     private onOrbitDetailsToggle: (on: boolean) => void,
     private onLayoutChange: () => void,
+    /** "From ⟨body⟩ ▾" clicked — the owner opens the vantage picker. */
+    private onVantageChangeRequest: () => void,
   ) {}
 
   bind(): void {
@@ -329,6 +332,7 @@ export class ObservatoryPanel {
     this.wireInfoNote(this.orbitInfoEl, this.orbitExplainEl);
     document.getElementById('observatory-lookup')?.addEventListener('click', () => this.onLookup());
     this.swapEl?.addEventListener('click', () => this.onSwap());
+    document.getElementById('observatory-vantage-btn')?.addEventListener('click', () => this.onVantageChangeRequest());
     this.wireJump('observatory-prev-full', 'full-moon', -1);
     this.wireJump('observatory-next-full', 'full-moon', 1);
     this.wireJump('observatory-prev-new', 'new-moon', -1);

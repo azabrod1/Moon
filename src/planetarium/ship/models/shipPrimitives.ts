@@ -4,26 +4,6 @@
  */
 import * as THREE from 'three';
 
-/** Build a smooth hull profile via LatheGeometry */
-export function createHullGeometry(radius: number, length: number): THREE.LatheGeometry {
-  // Profile points from nose tip (top) to engine base (bottom)
-  // x = radius at that point, y = height
-  const profilePoints: THREE.Vector2[] = [
-    new THREE.Vector2(0, length * 1.1),                    // nose tip
-    new THREE.Vector2(radius * 0.12, length * 1.05),       // nose start
-    new THREE.Vector2(radius * 0.4, length * 0.9),         // nose shoulder
-    new THREE.Vector2(radius * 0.75, length * 0.7),        // upper taper
-    new THREE.Vector2(radius * 0.92, length * 0.5),        // cockpit area
-    new THREE.Vector2(radius, length * 0.3),               // max width
-    new THREE.Vector2(radius, length * 0.0),               // mid body
-    new THREE.Vector2(radius * 0.97, -length * 0.2),       // slight waist
-    new THREE.Vector2(radius * 0.9, -length * 0.35),       // lower waist
-    new THREE.Vector2(radius * 0.85, -length * 0.45),      // pre-engine taper
-    new THREE.Vector2(radius * 0.75, -length * 0.5),       // engine mount
-  ];
-  return new THREE.LatheGeometry(profilePoints, 24);
-}
-
 /** Engine bell with proper nozzle curve */
 export function createEngineBell(radius: number, length: number): THREE.LatheGeometry {
   const profilePoints: THREE.Vector2[] = [
@@ -79,54 +59,4 @@ export function createRodBetween(
     rod.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), direction.divideScalar(length));
   }
   return rod;
-}
-
-export function createFin(radius: number, length: number): THREE.Mesh {
-  const shape = new THREE.Shape();
-  // Swept delta fin profile
-  shape.moveTo(0, length * 0.05);                  // leading edge root
-  shape.lineTo(radius * 0.15, -length * 0.1);           // along hull
-  shape.quadraticCurveTo(
-    radius * 1.6, -length * 0.35,                       // control point (sweep)
-    radius * 1.8, -length * 0.5,                        // tip trailing edge
-  );
-  shape.lineTo(radius * 1.4, -length * 0.45);           // tip leading edge
-  shape.quadraticCurveTo(
-    radius * 0.8, -length * 0.2,                        // control point back
-    0, -length * 0.05,                              // root trailing edge
-  );
-  shape.closePath();
-
-  const geo = new THREE.ExtrudeGeometry(shape, {
-    depth: radius * 0.04,
-    bevelEnabled: true,
-    bevelThickness: radius * 0.015,
-    bevelSize: radius * 0.015,
-    bevelSegments: 2,
-  });
-  const mat = new THREE.MeshStandardMaterial({
-    color: 0x8090a8,
-    emissive: 0x141c28,
-    emissiveIntensity: 0.25,
-    roughness: 0.3,
-    metalness: 0.7,
-    side: THREE.DoubleSide,
-  });
-  const fin = new THREE.Mesh(geo, mat);
-  fin.position.y = -length * 0.3;
-
-  // Red fin tip accent
-  const tipGeo = new THREE.SphereGeometry(radius * 0.06, 6, 6);
-  const tipMat = new THREE.MeshStandardMaterial({
-    color: 0xdd2200,
-    emissive: 0x661100,
-    emissiveIntensity: 0.4,
-    roughness: 0.3,
-    metalness: 0.5,
-  });
-  const tip = new THREE.Mesh(tipGeo, tipMat);
-  tip.position.set(radius * 1.7, -length * 0.18, radius * 0.02);
-  fin.add(tip);
-
-  return fin;
 }

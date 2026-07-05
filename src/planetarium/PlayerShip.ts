@@ -36,7 +36,6 @@ export class PlayerShip {
   private profile: ShipProfile = 'default';
   private exhaustCone: THREE.Mesh;
   private exhaustCore: THREE.Mesh;
-  private exhaustTime = 0;
 
   posX = 0.05;
   posY = 0;
@@ -182,7 +181,6 @@ export class PlayerShip {
     this.group.quaternion.setFromUnitVectors(FORWARD_VECTOR, direction);
 
     // Animate exhaust
-    this.exhaustTime += dt;
     const effectiveMultiplier = this.speedAUPerS / DEFAULT_SPEED_AU_S;
     const speedFrac = effectiveMultiplier / PlayerShip.SPEED_MAX;
     const exhaustOn = this.moving && effectiveMultiplier > 0.01;
@@ -192,23 +190,27 @@ export class PlayerShip {
     this.exhaustCore.visible = showExhaust;
 
     if (showExhaust) {
-      const pulse = 0.95 + 0.05 * Math.sin(this.exhaustTime * 10);
-      const intensity = 0.2 + speedFrac * 0.4;
+      // Steady torch, no flicker: the additive HDR plume sits near the
+      // composer's bloom threshold, so even a small opacity pulse gates the
+      // glow on and off and reads as throbbing. The top of the ramp is kept
+      // modest for the same reason — full burn should read as a bright
+      // lance, not flood the frame.
+      const intensity = 0.2 + speedFrac * 0.28;
 
       // Outer plume — subtle haze
-      (this.exhaustCone.material as THREE.MeshBasicMaterial).opacity = intensity * 0.1 * pulse;
+      (this.exhaustCone.material as THREE.MeshBasicMaterial).opacity = intensity * 0.1;
       this.exhaustCone.scale.set(
-        (0.5 + speedFrac * 0.4) * pulse,
-        0.4 + speedFrac * 0.8,
-        (0.5 + speedFrac * 0.4) * pulse,
+        0.5 + speedFrac * 0.35,
+        0.4 + speedFrac * 0.65,
+        0.5 + speedFrac * 0.35,
       );
 
       // Inner core — moderate glow
       (this.exhaustCore.material as THREE.MeshBasicMaterial).opacity = intensity * 0.35;
       this.exhaustCore.scale.set(
-        0.6 + speedFrac * 0.3,
-        0.3 + speedFrac * 1.0,
-        0.6 + speedFrac * 0.3,
+        0.6 + speedFrac * 0.25,
+        0.3 + speedFrac * 0.85,
+        0.6 + speedFrac * 0.25,
       );
 
     }

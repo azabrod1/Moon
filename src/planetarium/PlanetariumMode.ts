@@ -2784,9 +2784,9 @@ export class PlanetariumMode {
   }
 
   /**
-   * The Jupiter system at "1 hr/s", watched from the regular landed orbit
+   * The Jupiter system at "2 hr/s", watched from the regular landed orbit
    * camera — the motion showcase: the planet spins through a full day every
-   * ~10 s of wall clock while the Galilean moons wheel around it, crossing
+   * ~5 s of wall clock while the Galilean moons wheel around it, crossing
    * its face and slipping behind it (shadow-transit spots included, they're
    * always on in the landed system). The camera pulls back past the default
    * lit-side close-up so Io's whole orbit fits in frame — the point of this

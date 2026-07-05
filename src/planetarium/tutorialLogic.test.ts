@@ -13,6 +13,7 @@ import {
 } from './tutorialLogic';
 import type { RestoreContext, SettleSignals, TutorialPhase, TutorialTransitionEvent } from './tutorialLogic';
 import { findShadowEvent } from '../astronomy/shadows';
+import { formatTimeRateLabel } from '../astronomy/planetary';
 
 const MIN = 60_000;
 
@@ -230,11 +231,15 @@ describe('the showcase eclipse', () => {
     expect(settle).toBeLessThan(event!.peakUtcMs);
   });
 
-  it('the tutorial rates are transport-strip presets', () => {
-    // PlanetariumMode's TIME_RATE_PRESETS — the strip labels them "1 hr/s" and
-    // "20 min/s"; a non-preset rate would render an unlabeled notch.
+  it('the tutorial rates render as clean rate labels', () => {
+    // The eclipse approach rides the "20 min/s" preset; the time-lapse rate is
+    // deliberately off the preset ladder (see its comment), which the UI
+    // supports: every readout formats the live rate, and the −/+ stepper snaps
+    // off-ladder magnitudes back onto the ladder. Pin the labels so neither
+    // rate drifts somewhere the formatter renders raggedly.
+    expect(formatTimeRateLabel(TUTORIAL_TIMELAPSE_RATE, false)).toBe('2 hr/s');
+    expect(formatTimeRateLabel(TUTORIAL_ECLIPSE_APPROACH_RATE, false)).toBe('20 min/s');
     const presets = [1, 60, 1200, 3600, 21600, 86400, 604800, 2592000, 31557600];
-    expect(presets).toContain(TUTORIAL_TIMELAPSE_RATE);
     expect(presets).toContain(TUTORIAL_ECLIPSE_APPROACH_RATE);
   });
 });

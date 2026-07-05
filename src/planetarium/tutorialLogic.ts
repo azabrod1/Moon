@@ -78,7 +78,7 @@ export const TUTORIAL_STEPS: readonly TutorialStep[] = [
   {
     id: 'timelapse',
     title: 'Let time run',
-    body: 'You’re over Jupiter now, with an hour passing every second: it spins through a full day every ten seconds while the four big moons wheel around it. The time controls below do this anytime.',
+    body: 'You’re over Jupiter now, with two hours passing every second: it spins through a full day every five seconds while the four big moons wheel around it. The time controls below do this anytime.',
     primaryLabel: 'Next: a solar eclipse',
     ghostLabel: 'Skip tutorial',
     stage: 'timelapse',
@@ -121,9 +121,12 @@ export const TUTORIAL_ECLIPSE = {
   expectedPeakUtcMs: Date.parse('2027-08-02T10:06:41Z'),
 };
 
-/** Time-lapse card rate — the transport strip's "1 hr/s" preset, fast enough
- *  that Earth visibly rotates (a turn every 24 s) while the sky wheels gently. */
-export const TUTORIAL_TIMELAPSE_RATE = 3600;
+/** Time-lapse card rate — 2 hr/s over Jupiter: a full rotation every ~5 s with
+ *  the Galilean moons visibly wheeling (Io laps in ~21 s). Deliberately off the
+ *  −/+ stepper's preset ladder (1 hr/s felt slow, 6 hr/s frantic): every rate
+ *  readout formats the live value, and stepSimulationRate snaps off-ladder
+ *  magnitudes back onto the ladder. */
+export const TUTORIAL_TIMELAPSE_RATE = 7200;
 
 /** Eclipse approach rate — the "20 min/s" preset: the ~2 h from first contact
  *  to peak plays as a few seconds of the Moon biting into the Sun. */

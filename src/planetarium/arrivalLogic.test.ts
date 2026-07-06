@@ -1,12 +1,54 @@
 import { describe, expect, it } from 'vitest';
+import * as THREE from 'three';
 import {
   governedSpeedCap,
+  moonArrivalPose,
+  moonCollisionRadius,
   MOON_APPROACH_K_PER_S,
   MOON_APPROACH_V_MIN_AU_S,
+  MOON_ARRIVAL_APPARENT_DIAMETER_DEG,
+  MOON_ARRIVAL_MAX_OFFAXIS_DEG,
+  MOON_ARRIVAL_SEPARATION_CAP,
+  MOON_ARRIVAL_STANDOFF_FLOOR_AU,
+  type MoonArrivalInputs,
 } from './arrivalLogic';
+import { MOONS } from './planets/moonData';
+import { PLANETARIUM_BODIES } from './planets/planetData';
+import { KM_PER_AU } from '../astronomy/constants';
+import { DEG2RAD, RAD2DEG } from '../shared/math/angles';
 
 const K = MOON_APPROACH_K_PER_S;
 const VMIN = MOON_APPROACH_V_MIN_AU_S;
+
+// Mirrors the controller's constants: hull clearance and chase-camera trail.
+const SHIP_CLEARANCE_AU = (1_737.4 / KM_PER_AU) * 1.5;
+const CAM_DIST_AU = 0.000094;
+const MESH_FLOOR_RATIO = 0.05;
+
+/** Real-catalog inputs for one moon, posed at `angleRad` around its parent
+ *  (parent placed on the +X axis at its semi-major axis; Sun at origin —
+ *  the same world the controller feeds from live positions). */
+function catalogInputs(moonName: string, angleRad = 0.7): MoonArrivalInputs {
+  const moon = MOONS.find((m) => m.name === moonName)!;
+  const parent = PLANETARIUM_BODIES.find((b) => b.name === moon.parentPlanet)!;
+  const parentPos = new THREE.Vector3(parent.semiMajorAxisAU, 0, 0);
+  const offset = new THREE.Vector3(
+    Math.cos(angleRad) * moon.orbitalRadiusAU,
+    0,
+    Math.sin(angleRad) * moon.orbitalRadiusAU,
+  );
+  const parentCollision = parent.radiusAU + SHIP_CLEARANCE_AU;
+  return {
+    moonPos: offset.clone().add(parentPos),
+    parentPos,
+    orbitR: moon.orbitalRadiusAU,
+    renderedR: Math.max(moon.radiusAU, parent.radiusAU * MESH_FLOOR_RATIO),
+    parentCollision,
+    parentClearance: parentCollision * 1.25, // ring factor varies; the sweep uses the base
+    camDist: CAM_DIST_AU,
+    shipClearance: SHIP_CLEARANCE_AU,
+  };
+}
 
 describe('governedSpeedCap', () => {
   it('head-on approach is capped at K × surface distance', () => {
@@ -43,5 +85,133 @@ describe('governedSpeedCap', () => {
       expect(cap).toBeLessThan(prev);
       prev = cap;
     }
+  });
+});
+
+describe('moonArrivalPose — ladder fixtures', () => {
+  const standoff = (name: string) => {
+    const inp = catalogInputs(name);
+    const pose = moonArrivalPose(inp);
+    return { inp, pose, dist: pose.position.distanceTo(inp.moonPos) };
+  };
+
+  it('the Moon parks where its disc reads the target size from the camera', () => {
+    const { inp, dist } = standoff('Moon');
+    const raw =
+      inp.renderedR / Math.sin((MOON_ARRIVAL_APPARENT_DIAMETER_DEG / 2) * DEG2RAD) - CAM_DIST_AU;
+    expect(dist).toBeCloseTo(raw, 9);
+    // Roughly double the old 8-radii standoff — the "a bit further" ask.
+    expect(dist / inp.renderedR).toBeGreaterThan(12);
+    expect(dist / inp.renderedR).toBeLessThan(18);
+  });
+
+  it('Phobos still binds on the separation cap, Deimos on the legacy floor', () => {
+    const phobos = standoff('Phobos');
+    expect(phobos.dist).toBeCloseTo(phobos.inp.orbitR * MOON_ARRIVAL_SEPARATION_CAP, 9);
+    const deimos = standoff('Deimos');
+    expect(deimos.dist).toBeCloseTo(MOON_ARRIVAL_STANDOFF_FLOOR_AU, 9);
+  });
+
+  it('the aim is a flyby: off the center, above the collision bubble, under the swing ceiling', () => {
+    for (const name of ['Moon', 'Titan', 'Io', 'Phobos', 'Deimos', 'Charon', 'Phoebe', 'Miranda']) {
+      const { inp, pose, dist } = standoff(name);
+      const b = pose.aimPoint.distanceTo(inp.moonPos);
+      const collisionR = moonCollisionRadius(inp.renderedR, inp.shipClearance);
+      expect(b).toBeGreaterThanOrEqual(collisionR * 1.15 - 1e-12);
+      const offAxis =
+        pose.aimPoint.clone().sub(pose.position).angleTo(inp.moonPos.clone().sub(pose.position));
+      expect(offAxis * RAD2DEG).toBeLessThanOrEqual(MOON_ARRIVAL_MAX_OFFAXIS_DEG + 0.01);
+      expect(Math.atan2(b, dist) * RAD2DEG).toBeCloseTo(offAxis * RAD2DEG, 5);
+    }
+  });
+});
+
+describe('moonArrivalPose — catalog sweep (all moons, three orbit phases)', () => {
+  const angles = [0.7, 2.4, 4.1];
+
+  it('every arrival in the catalog satisfies the standoff and flyby invariants', () => {
+    for (const moon of MOONS) {
+      for (const angle of angles) {
+        const inp = catalogInputs(moon.name, angle);
+        const pose = moonArrivalPose(inp);
+        const dist = pose.position.distanceTo(inp.moonPos);
+        const collisionR = moonCollisionRadius(inp.renderedR, inp.shipClearance);
+
+        for (const v of [pose.position, pose.aimPoint]) {
+          expect(Number.isFinite(v.x + v.y + v.z), `${moon.name}: finite pose`).toBe(true);
+        }
+        // Standoff sits outside the moon's own bubble and inside the
+        // parent-separation cap.
+        expect(dist, `${moon.name}: standoff vs bubble`).toBeGreaterThan(collisionR * 1.5 - 1e-12);
+        expect(dist, `${moon.name}: separation cap`).toBeLessThanOrEqual(
+          inp.orbitR * MOON_ARRIVAL_SEPARATION_CAP + 1e-12,
+        );
+        // The arrival point clears the parent's clearance bubble.
+        expect(
+          pose.position.distanceTo(inp.parentPos),
+          `${moon.name}: parent clearance`,
+        ).toBeGreaterThan(inp.parentClearance - 1e-12);
+        // The flyby misses the moon: closest approach of the forward ray to
+        // the moon's center is the impact parameter, above the bubble.
+        const fwd = pose.aimPoint.clone().sub(pose.position).normalize();
+        const toMoon = inp.moonPos.clone().sub(pose.position);
+        const closest = toMoon
+          .clone()
+          .addScaledVector(fwd, -toMoon.dot(fwd))
+          .length();
+        expect(closest, `${moon.name}: flyby miss distance`).toBeGreaterThanOrEqual(
+          collisionR * 1.15 - 1e-12,
+        );
+      }
+    }
+  });
+
+  it('where the apparent-size term binds, the camera really sees the target size', () => {
+    const half = (MOON_ARRIVAL_APPARENT_DIAMETER_DEG / 2) * DEG2RAD;
+    let checked = 0;
+    for (const moon of MOONS) {
+      const inp = catalogInputs(moon.name);
+      const raw = inp.renderedR / Math.sin(half) - CAM_DIST_AU;
+      const pose = moonArrivalPose(inp);
+      const dist = pose.position.distanceTo(inp.moonPos);
+      if (Math.abs(dist - raw) > 1e-9) continue; // a floor or cap bound instead
+      // Compose the real chase-camera pose: camDist behind the ship along
+      // the heading, lifted 0.45·camDist (resetCruiseCamera's rig).
+      const fwd = pose.aimPoint.clone().sub(pose.position).normalize();
+      const camPos = pose.position
+        .clone()
+        .addScaledVector(fwd, -CAM_DIST_AU)
+        .add(new THREE.Vector3(0, CAM_DIST_AU * 0.45, 0));
+      const apparentDeg = 2 * Math.asin(inp.renderedR / camPos.distanceTo(inp.moonPos)) * RAD2DEG;
+      expect(apparentDeg).toBeGreaterThan(MOON_ARRIVAL_APPARENT_DIAMETER_DEG - 0.5);
+      expect(apparentDeg).toBeLessThan(MOON_ARRIVAL_APPARENT_DIAMETER_DEG + 0.5);
+      checked++;
+    }
+    // The big-moon half of the catalog binds on apparent size — make sure
+    // the assertion actually ran there.
+    expect(checked).toBeGreaterThan(20);
+  });
+
+  it('a parent-bubble arrival falls back to the outward radial', () => {
+    // Synthetic: force the bubble with an oversized clearance; the arrival
+    // must sit on the parent→moon radial, beyond the moon.
+    const parentPos = new THREE.Vector3(1, 0, 0);
+    const moonPos = parentPos.clone().add(new THREE.Vector3(3e-4, 0, 0));
+    const pose = moonArrivalPose({
+      moonPos,
+      parentPos,
+      orbitR: 3e-4,
+      renderedR: 1e-5,
+      parentCollision: 2e-4,
+      parentClearance: 1e-3, // bubble swallows every sunward option
+      camDist: CAM_DIST_AU,
+      shipClearance: SHIP_CLEARANCE_AU,
+    });
+    const radial = moonPos.clone().sub(parentPos).normalize();
+    const fromMoon = pose.position.clone().sub(moonPos).normalize();
+    expect(fromMoon.dot(radial)).toBeCloseTo(1, 6);
+    // Parent dead ahead past the moon: the aim still exists, is finite, and
+    // still misses the moon itself (the parent pushback owns what's beyond).
+    expect(pose.aimPoint.distanceTo(moonPos)).toBeGreaterThan(0);
   });
 });

@@ -117,7 +117,12 @@ import { Constellations } from './Constellations';
 import { getMoonsByPlanet, MOONS, type MoonData } from './planets/moonData';
 import { RING_CONFIGS } from './planets/rings';
 import { filterDeckRows, groupDeckBodies, observeArrivalAction, type DeckRow } from './deckLogic';
-import { governedSpeedCap, MOON_APPROACH_K_PER_S, MOON_APPROACH_V_MIN_AU_S } from './arrivalLogic';
+import {
+  governedSpeedCap,
+  moonArrivalPose,
+  MOON_APPROACH_K_PER_S,
+  MOON_APPROACH_V_MIN_AU_S,
+} from './arrivalLogic';
 import {
   canStartTutorial,
   isStepSettled,
@@ -221,6 +226,10 @@ export interface PlanetariumActivationProgress {
 export class PlanetariumMode {
   private static readonly TIME_RATE_PRESETS = [1, 60, 1200, 3600, 21600, 86400, 604800, 2592000, 31557600];
   private static readonly SHIP_CLEARANCE_AU = (1_737.4 / KM_PER_AU) * 1.5;
+  /** Chase-camera trail distance behind the ship (also the moon-arrival
+   *  standoff's camera correction — the apparent size the user sees is
+   *  measured from back here, not from the ship). */
+  private static readonly CRUISE_CAM_DIST_AU = 0.000094;
   // Conservative disc radius for ship occlusion. Default hull is ~3 moon-radii
   // long with 0.5x group scale applied → half-length ≈ 0.75 moon-radii.
   private static readonly SHIP_OCCLUDER_RADIUS_AU = (1_737.4 / KM_PER_AU) * 0.75;
@@ -3964,7 +3973,7 @@ export class PlanetariumMode {
   }
 
   private resetCruiseCamera() {
-    const camDist = 0.000094;
+    const camDist = PlanetariumMode.CRUISE_CAM_DIST_AU;
     const forward = this.player.getForwardDirection();
     this.camera.position.set(
       -forward.x * camDist,
@@ -4214,7 +4223,10 @@ export class PlanetariumMode {
    * `moonWorldPositions`, which is only written for visible painted moons and
    * silently falls back to the parent across the rest of the catalog. The
    * rendered size comes from the catalog plus the 5%-of-parent mesh floor,
-   * not the live mesh (scale is still 1 in never-visited systems).
+   * not the live mesh (scale is still 1 in never-visited systems). The pose
+   * math itself — apparent-size standoff, sun-side/outward placement, flyby
+   * aim — lives in arrivalLogic.moonArrivalPose (pure, catalog-swept in its
+   * tests); the lookTarget is the flyby aim point, not the moon's center.
    */
   private getMoonJumpDestination(moon: MoonData) {
     const parentBody = PLANETARIUM_BODIES.find((b) => b.name === moon.parentPlanet);
@@ -4222,44 +4234,24 @@ export class PlanetariumMode {
     if (!parentBody || !parentPosRaw) return null;
     const parentPos = new THREE.Vector3(parentPosRaw.x, parentPosRaw.y, parentPosRaw.z);
     const offset = this.getMoonWorldOffsetAU(moon, parentBody, new THREE.Vector3());
-    const orbitR = offset.length();
-    const moonPos = offset.clone().add(parentPos);
-
-    const renderedR = Math.max(moon.radiusAU, parentBody.radiusAU * PlanetariumMode.MOON_MIN_RENDER_RATIO);
-    // Eight radii frames the disc; the 5e-5 AU floor (~7,500 km) keeps the
-    // smallest arrivals from parking uncomfortably tight; the cap at 45% of
-    // the current separation keeps the parent from dominating the view — for
-    // the closest moons (Phobos, Cordelia) it is what actually binds.
-    const dist = Math.min(
-      Math.max(renderedR * 8, 5e-5, renderedR * 2.5),
-      orbitR * 0.45,
-    );
-
     const parentCollision = this.getPlanetCollisionRadius(parentBody.radiusAU, this.planetScale);
     const ring = RING_CONFIGS[parentBody.name];
-    // Rings render as a flat disc, but a spherical clearance is simpler and
-    // never lets an arrival pop in among the ring particles.
-    const parentClearance = Math.max(
-      parentCollision * 1.25,
-      ring ? parentBody.radiusAU * ring.outerFactor * 1.05 : 0,
-    );
-
-    // Sun side preferred, so the lit face greets you — unless that parks you
-    // inside the parent's clearance bubble or with the parent between you and
-    // the moon (an inner moon near superior conjunction). Fallback: outward
-    // along the parent→moon radial, which always clears the parent, its
-    // rings, and the line of sight.
-    const sunDir = moonPos.clone().multiplyScalar(-1).normalize();
-    let position = moonPos.clone().addScaledVector(sunDir, dist);
-    const occluded =
-      new THREE.Line3(position, moonPos)
-        .closestPointToPoint(parentPos, true, new THREE.Vector3())
-        .distanceTo(parentPos) < parentCollision;
-    if (position.distanceTo(parentPos) < parentClearance || occluded) {
-      const outward = orbitR > 1e-9 ? offset.clone().divideScalar(orbitR) : new THREE.Vector3(1, 0, 0);
-      position = moonPos.clone().addScaledVector(outward, dist);
-    }
-    return { position, lookTarget: moonPos };
+    const pose = moonArrivalPose({
+      moonPos: offset.clone().add(parentPos),
+      parentPos,
+      orbitR: offset.length(),
+      renderedR: Math.max(moon.radiusAU, parentBody.radiusAU * PlanetariumMode.MOON_MIN_RENDER_RATIO),
+      parentCollision,
+      // Rings render as a flat disc, but a spherical clearance is simpler and
+      // never lets an arrival pop in among the ring particles.
+      parentClearance: Math.max(
+        parentCollision * 1.25,
+        ring ? parentBody.radiusAU * ring.outerFactor * 1.05 : 0,
+      ),
+      camDist: PlanetariumMode.CRUISE_CAM_DIST_AU,
+      shipClearance: PlanetariumMode.SHIP_CLEARANCE_AU,
+    });
+    return { position: pose.position, lookTarget: pose.aimPoint };
   }
 
   /**

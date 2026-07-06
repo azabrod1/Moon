@@ -91,9 +91,9 @@ export const TUTORIAL_STEPS: readonly TutorialStep[] = [
   {
     id: 'eclipse',
     title: 'August 2, 2027',
-    body: 'You’re standing on Earth, right where the Moon’s shadow is about to sweep past. Watch the Sun: the Moon is closing on it. Wherever you land, the Observatory panel lists eclipses like this; Jump takes you there.',
+    body: 'You’re standing on Earth, right in the path of the Moon’s shadow. Watch the Sun as the Moon slides across it.',
     totalityBody:
-      'Totality. The Moon covers the whole Sun; only the glow at the rim gets past. Standing in one spot you’d get six minutes of this, the longest over land this century.',
+      'Totality. The Moon covers the whole Sun; only the rim glows through. Six minutes of it here, the longest over land this century. To find an eclipse yourself: from the Observatory, land on Earth, tap Surface view, then pick the next Solar Eclipse in the panel.',
     primaryLabel: 'Next: wrap up',
     ghostLabel: 'Skip tutorial',
     stage: 'eclipse',

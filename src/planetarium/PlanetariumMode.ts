@@ -2886,6 +2886,11 @@ export class PlanetariumMode {
         // is no totality to hold Next for.
         tutorial.totalityReached = true;
       }
+      // The card teaches the panel as the way to find an eclipse, so it must be
+      // on screen. Surface entry closed it; reopen it over the sky exactly as
+      // the HUD's Observatory chip does. On phones show() starts the sheet at
+      // peek, clear of the centered Sun, and the HUD chevron clamps to it.
+      this.openObservatoryPanel();
       this.markTutorialStaged(generation);
     });
   }

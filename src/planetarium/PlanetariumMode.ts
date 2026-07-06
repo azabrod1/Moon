@@ -2166,6 +2166,7 @@ export class PlanetariumMode {
     }
 
     if (throttle > 0) {
+      this.reviveParkedShip(); // accelerating a parked ship means "go"
       // Accelerate — route to whichever speed mode is active
       if (this.inSystemMode) {
         if (this.player.systemSpeedMultiplier < 0.001) {
@@ -2408,6 +2409,17 @@ export class PlanetariumMode {
     );
   }
 
+  /** Throttle-up un-parks the ship. Guarded: the ☰ menu/help parks run their
+   *  own capture-and-resume (and `keys` keeps accumulating while modals are
+   *  up), the tutorial's stagings are deliberate freeze-frames, and missions
+   *  script `moving` themselves — reviving under any of those fights them. */
+  private reviveParkedShip() {
+    if (this.player.moving) return;
+    if (this.menuPanel.isOpen() || this.isHelpOpen()) return;
+    if (this.tutorial || this.isMissionActive()) return;
+    this.player.moving = true;
+  }
+
   private formatSystemSpeed(speedMultiplier: number): string {
     const kmPerS = speedMultiplier * 299792.458;
     if (kmPerS < 1000) return Math.round(kmPerS) + ' km/s';
@@ -2440,15 +2452,15 @@ export class PlanetariumMode {
       this.speedCenterEl.classList.toggle('throttle-override', this.throttleOverride);
     }
     if (this.speedValueEl) {
-      if (this.inSystemMode) {
-        this.speedValueEl.textContent = this.player.systemSpeedMultiplier < 0.0005
-          ? '0 km/s'
-          : this.formatSystemSpeed(this.player.systemSpeedMultiplier);
-      } else {
-        this.speedValueEl.textContent = this.player.speedMultiplier < 0.01
-          ? '0c'
-          : `${this.player.speedC.toFixed(1)}c`;
-      }
+      // The pill reads the speed the ship is actually doing (parked → 0,
+      // proximity-capped → the cap), not the throttle setting — the setting
+      // kept "25k km/s" on screen over a parked ship. Slow deep-space speeds
+      // drop to km/s so a governed crawl never reads "0.0c".
+      const actualC = this.player.speedC;
+      this.speedValueEl.textContent =
+        this.inSystemMode || actualC < 0.05
+          ? (actualC < 0.0005 ? '0 km/s' : this.formatSystemSpeed(actualC))
+          : `${actualC.toFixed(1)}c`;
     }
   }
 
@@ -2804,6 +2816,10 @@ export class PlanetariumMode {
       this.tutorialArriveWhenIdle(generation, { type: 'planet', name: 'Saturn' }, () => {
         if (this.landedOn) this.exitLandedMode();
         this.jumpToPlanet(saturn, { notify: false });
+        // Freeze-frame: the card narrates over a parked ship. Left under way
+        // (the arrival default), it would glide from the standoff to Saturn's
+        // collision shell in ~20 s, right under the copy.
+        this.player.moving = false;
         this.markTutorialStaged(generation);
       });
     }, 900);
@@ -3036,6 +3052,7 @@ export class PlanetariumMode {
 
     document.getElementById('planetarium-speed-up')?.addEventListener('click', () => {
       if (this.isMissionActive()) return;
+      this.reviveParkedShip(); // stepping the throttle up means "go"
       if (this.inSystemMode) {
         if (this.player.systemSpeedMultiplier < 0.001) {
           this.player.systemSpeedMultiplier = 0.001;
@@ -4040,6 +4057,11 @@ export class PlanetariumMode {
     this.player.posY = destination.position.y;
     this.player.posZ = destination.position.z;
     this.player.headToward(destination.lookTarget.x, destination.lookTarget.z, destination.lookTarget.y);
+
+    // A teleport always arrives under way. Parking is a caller decision (dev
+    // framing, tutorial freeze-frames), never the arrival default — a park
+    // left set here outlives the jump and freezes every later arrival too.
+    this.player.moving = true;
 
     // Don't touch cruise speedMultiplier — the system throttle automatically
     // slows the player near the planet. Just ensure cruise is at least 1c

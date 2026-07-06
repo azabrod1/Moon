@@ -120,8 +120,10 @@ import { filterDeckRows, groupDeckBodies, observeArrivalAction, type DeckRow } f
 import {
   governedSpeedCap,
   moonArrivalPose,
+  rampedSpeedCap,
   MOON_APPROACH_K_PER_S,
   MOON_APPROACH_V_MIN_AU_S,
+  MOON_CAP_RELEASE_EFOLD_S,
 } from './arrivalLogic';
 import {
   canStartTutorial,
@@ -389,6 +391,8 @@ export class PlanetariumMode {
    *  visibility-keyed set can't see it there). Drops once the mesh shows;
    *  a stale seed is neutralized by distance on its own. */
   private governedMoonSeed: { name: string; parentPlanet: string } | null = null;
+  /** Last applied moon speed cap — the ramp's memory across frames. */
+  private moonCapEased = Infinity;
   /** Player position at the top of the frame — the collision sweep needs the
    *  whole segment, not the endpoint (one 100 ms frame at the in-system
    *  default steps ~2,500 km, clean through a small moon's bubble). */
@@ -1148,8 +1152,12 @@ export class PlanetariumMode {
       // than a system, so near a moon it still allows the in-system setting —
       // several moon standoffs per second. Cap the closing speed at
       // K × surface distance instead (same escape hatch as the throttle).
-      this.player.speedCapAUPerS =
+      // Tightening applies instantly; release ramps so a flyby ends with a
+      // pull-away, not a one-frame snap back to thousands of km/s.
+      const geomCap =
         this.throttleOverride || !this.systemSlowdown ? Infinity : this.computeMoonSpeedCap();
+      this.moonCapEased = rampedSpeedCap(geomCap, this.moonCapEased, dt, MOON_CAP_RELEASE_EFOLD_S);
+      this.player.speedCapAUPerS = this.moonCapEased;
 
       this.prevPlayerPos.set(this.player.posX, this.player.posY, this.player.posZ);
       this.player.update(dt);
@@ -4198,6 +4206,10 @@ export class PlanetariumMode {
     // framing, tutorial freeze-frames), never the arrival default — a park
     // left set here outlives the jump and freezes every later arrival too.
     this.player.moving = true;
+
+    // A teleport is a discontinuity: a tight cap eased down at the previous
+    // moon must not ramp-limit the arrival scene's first seconds.
+    this.moonCapEased = Infinity;
 
     // Don't touch cruise speedMultiplier — the system throttle automatically
     // slows the player near the planet. Just ensure cruise is at least 1c

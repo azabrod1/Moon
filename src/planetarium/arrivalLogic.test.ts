@@ -4,7 +4,9 @@ import {
   governedSpeedCap,
   moonArrivalPose,
   moonCollisionRadius,
+  rampedSpeedCap,
   MOON_APPROACH_K_PER_S,
+  MOON_CAP_RELEASE_EFOLD_S,
   MOON_APPROACH_V_MIN_AU_S,
   MOON_ARRIVAL_APPARENT_DIAMETER_DEG,
   MOON_ARRIVAL_MAX_OFFAXIS_DEG,
@@ -85,6 +87,44 @@ describe('governedSpeedCap', () => {
       expect(cap).toBeLessThan(prev);
       prev = cap;
     }
+  });
+});
+
+describe('rampedSpeedCap', () => {
+  const E = MOON_CAP_RELEASE_EFOLD_S;
+
+  it('tightening applies instantly, including first contact from Infinity', () => {
+    expect(rampedSpeedCap(1e-6, Infinity, 1 / 60, E)).toBe(1e-6);
+    expect(rampedSpeedCap(1e-7, 1e-6, 1 / 60, E)).toBe(1e-7);
+  });
+
+  it('a steady cap passes through unchanged', () => {
+    expect(rampedSpeedCap(1e-6, 1e-6, 1 / 60, E)).toBe(1e-6);
+    expect(rampedSpeedCap(Infinity, Infinity, 1 / 60, E)).toBe(Infinity);
+  });
+
+  it('release grows by e per e-fold, never past the geometric cap', () => {
+    expect(rampedSpeedCap(Infinity, 1e-6, E, E)).toBeCloseTo(1e-6 * Math.E, 12);
+    expect(rampedSpeedCap(2e-6, 1e-6, 10 * E, E)).toBe(2e-6);
+  });
+
+  it('a full release promotes to Infinity instead of lingering finite', () => {
+    // From a deep-flyby cap, enough elapsed time crosses the release ceiling.
+    expect(rampedSpeedCap(Infinity, 2e-6, 15 * E, E)).toBe(Infinity);
+  });
+
+  it('the ramp reaches in-system speed in a few seconds, not instantly', () => {
+    // ~300 km/s flyby cap back to the ~25,000 km/s in-system band.
+    const flyby = 300 / KM_PER_AU;
+    const inSystem = 25_000 / KM_PER_AU;
+    let cap = flyby;
+    let t = 0;
+    while (cap < inSystem && t < 60) {
+      cap = rampedSpeedCap(Infinity, cap, 1 / 60, E);
+      t += 1 / 60;
+    }
+    expect(t).toBeGreaterThan(2);
+    expect(t).toBeLessThan(8);
   });
 });
 

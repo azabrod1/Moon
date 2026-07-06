@@ -12,9 +12,9 @@ import { DEG2RAD } from '../shared/math/angles';
 
 /** Approach dynamics: distance to the moon's surface e-folds every 1/K
  *  seconds, so every moon from Ganymede to Deimos gets the same subjective
- *  ease-in regardless of scale. 8 s reads as a deliberate glide without
- *  feeling parked. */
-export const MOON_APPROACH_K_PER_S = 1 / 8;
+ *  ease-in regardless of scale. 4 s reads as a brisk glide — the collision
+ *  sweep, not this cap, is what prevents impact. */
+export const MOON_APPROACH_K_PER_S = 1 / 4;
 
 /** The governor never caps below ~2 km/s — you can always creep closer; the
  *  collision bubble, not the governor, is what holds you off the mesh. */
@@ -40,6 +40,35 @@ export function governedSpeedCap(
   if (g <= 0) return Infinity;
   const base = Math.max(surfaceDistAU * kPerS, vMinAUPerS);
   return base / g;
+}
+
+/** After a flyby the applied cap relaxes by e per this many seconds, so
+ *  leaving reads as a pull-away — full in-system speed returns over ~4–5 s
+ *  from a deep flyby — instead of a one-frame snap to thousands of km/s. */
+export const MOON_CAP_RELEASE_EFOLD_S = 1;
+
+/** Above this the ramp stops mattering against any real speed setting
+ *  (~25c); promote to Infinity so no stale finite cap lingers as state. */
+const CAP_FULLY_RELEASED_AU_S = 0.05;
+
+/**
+ * Time-eased speed cap: `geomCap` is the instantaneous geometric cap from
+ * `governedSpeedCap`, `prevCap` the cap applied last frame. Tightening (and
+ * first contact) applies instantly — decelerating late is the safety half.
+ * Loosening grows exponentially from the previous cap, so however the
+ * geometric cap releases (nose past the limb, receding, distance opening),
+ * speed returns as a ramp, never a step.
+ */
+export function rampedSpeedCap(
+  geomCap: number,
+  prevCap: number,
+  dtS: number,
+  efoldS: number,
+): number {
+  if (geomCap <= prevCap) return geomCap;
+  const grown = prevCap * Math.exp(dtS / efoldS);
+  if (!Number.isFinite(geomCap) && grown >= CAP_FULLY_RELEASED_AU_S) return Infinity;
+  return Math.min(geomCap, grown);
 }
 
 /** Arrival standoff targets this apparent disc diameter from the CAMERA

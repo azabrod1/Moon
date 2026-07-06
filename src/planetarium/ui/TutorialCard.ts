@@ -24,6 +24,27 @@ export interface TutorialCardModel {
   back: { label: string; disabled: boolean } | null;
 }
 
+/** A run of body text, or one of the action-cluster button glyphs inline. */
+export type TutorialBodySegment =
+  | { kind: 'text'; text: string }
+  | { kind: 'icon'; icon: 'teleport' | 'observatory' };
+
+/**
+ * Split a card body on its {teleport}/{observatory} tokens. The card renders
+ * icon segments as clones of the live action-button SVGs, so the glyph the
+ * copy points at is exactly the glyph on screen.
+ */
+export function tutorialBodySegments(body: string): TutorialBodySegment[] {
+  return body
+    .split(/(\{teleport\}|\{observatory\})/)
+    .filter((part) => part.length > 0)
+    .map((part) =>
+      part === '{teleport}' || part === '{observatory}'
+        ? { kind: 'icon' as const, icon: part.slice(1, -1) as 'teleport' | 'observatory' }
+        : { kind: 'text' as const, text: part },
+    );
+}
+
 /**
  * Card content for one step. The wrap card's primary restores the
  * pre-tutorial state instead of advancing, and it has no skip. Next and Back
@@ -57,9 +78,15 @@ export function tutorialCardModel(
 
 export class TutorialCard {
   private rootEl: HTMLElement | null = null;
+  private bodyEl: HTMLElement | null = null;
   private primaryEl: HTMLButtonElement | null = null;
   private ghostEl: HTMLButtonElement | null = null;
   private backEl: HTMLButtonElement | null = null;
+  /** The action-cluster button SVGs, cloned into the body per icon token. */
+  private icons: Record<'teleport' | 'observatory', Element | null> = {
+    teleport: null,
+    observatory: null,
+  };
   private model: TutorialCardModel | null = null;
   private wired = false;
 
@@ -72,9 +99,12 @@ export class TutorialCard {
 
   bind(): void {
     this.rootEl = document.getElementById('tutorial-card');
+    this.bodyEl = document.getElementById('tutorial-body');
     this.primaryEl = document.getElementById('tutorial-primary') as HTMLButtonElement | null;
     this.ghostEl = document.getElementById('tutorial-ghost') as HTMLButtonElement | null;
     this.backEl = document.getElementById('tutorial-back') as HTMLButtonElement | null;
+    this.icons.teleport = document.querySelector('#planetarium-btn-travel svg');
+    this.icons.observatory = document.querySelector('#planetarium-btn-observatory svg');
     if (this.wired) return;
     this.wired = true;
     this.primaryEl?.addEventListener('click', () => {
@@ -96,7 +126,7 @@ export class TutorialCard {
     this.model = model;
     setText('tutorial-count', model.counter);
     setText('tutorial-title', model.title);
-    setText('tutorial-body', model.body);
+    this.renderBody(model.body);
     if (this.primaryEl) {
       this.primaryEl.textContent = model.primary.label;
       this.primaryEl.disabled = model.primary.disabled;
@@ -114,6 +144,25 @@ export class TutorialCard {
         this.backEl.textContent = model.back.label;
         this.backEl.disabled = model.back.disabled;
       }
+    }
+  }
+
+  /** Body text with each icon token replaced by a clone of the real button SVG
+   *  (a missing source just drops the glyph — the button name beside it still
+   *  carries the meaning). */
+  private renderBody(body: string): void {
+    if (!this.bodyEl) return;
+    this.bodyEl.textContent = '';
+    for (const seg of tutorialBodySegments(body)) {
+      if (seg.kind === 'text') {
+        this.bodyEl.appendChild(document.createTextNode(seg.text));
+        continue;
+      }
+      const src = this.icons[seg.icon];
+      if (!src) continue;
+      const svg = src.cloneNode(true) as Element;
+      svg.setAttribute('class', 'tutorial-inline-icon');
+      this.bodyEl.appendChild(svg);
     }
   }
 

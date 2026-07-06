@@ -29,6 +29,9 @@ export interface TutorialStep {
   id: TutorialStepId;
   /** Card headline (the eyebrow is always "Tutorial"). */
   title: string;
+  /** May contain {teleport}/{observatory} tokens — the card renders them as
+   *  clones of the live action-button SVGs, so the glyph the copy points at is
+   *  the glyph on screen (see tutorialBodySegments in TutorialCard). */
   body: string;
   /** Primary button. Advances the tutorial everywhere except the wrap card, where it restores. */
   primaryLabel: string;
@@ -53,7 +56,7 @@ export const TUTORIAL_STEPS: readonly TutorialStep[] = [
   {
     id: 'welcome',
     title: 'A quick look around',
-    body: 'Four stops: Saturn, the Moon, Jupiter with time sped up, and a total solar eclipse. The tutorial does the flying and shows you the button behind each move; you can always drag to look around.',
+    body: 'We’ll take four stops to show you how the app works: Saturn, the Moon, Jupiter with time sped up, and a total solar eclipse. The tutorial does the flying and shows you the button behind each move; you can always drag to look around.',
     primaryLabel: 'Start the tutorial',
     ghostLabel: 'Not now',
     stage: 'none',
@@ -61,8 +64,8 @@ export const TUTORIAL_STEPS: readonly TutorialStep[] = [
   },
   {
     id: 'saturn',
-    title: 'Saturn',
-    body: 'That was the \u{1F680} button at the top right, or T: every planet and moon, one tap each. Take a second with the rings.',
+    title: 'Teleport',
+    body: 'The {teleport} Teleport button at the top right, or T, instantly sends you to any planet or moon in the solar system.',
     primaryLabel: 'Next: the Moon',
     ghostLabel: 'Skip tutorial',
     stage: 'saturn',
@@ -71,7 +74,7 @@ export const TUTORIAL_STEPS: readonly TutorialStep[] = [
   {
     id: 'moon',
     title: 'Landed on the Moon',
-    body: 'This time it was the \u{1F52D} Observatory button, or O: it lands you on the world instead of stopping beside it. That’s Earth overhead, and the panel follows this sky. Leave, top right, lifts you off.',
+    body: 'The {observatory} Observatory button, or O, lands you on a world so you can follow it through space and time, observe its nearby neighbours, read its stats, or see the upcoming celestial events in its sky. That’s Earth overhead, and the panel follows this sky. Leave, top right, lifts you off.',
     primaryLabel: 'Next: Jupiter',
     ghostLabel: 'Skip tutorial',
     stage: 'moon',
@@ -80,7 +83,7 @@ export const TUTORIAL_STEPS: readonly TutorialStep[] = [
   {
     id: 'timelapse',
     title: 'Jupiter in fast-forward',
-    body: 'Two hours pass every second here: Jupiter spins through a full day in five, and Io laps it in about twenty. The clock at the bottom of the screen does this; tap it to set the speed or jump to a date. The Observatory panel keeps up alongside.',
+    body: 'The clock at the bottom of the screen controls time: tap it to set the speed or jump to a date. It’s running at two hours per second now, so Jupiter spins through a full day in five seconds and Io laps it in about twenty. The Observatory panel keeps up alongside.',
     primaryLabel: 'Next: the eclipse',
     ghostLabel: 'Skip tutorial',
     stage: 'timelapse',
@@ -89,7 +92,7 @@ export const TUTORIAL_STEPS: readonly TutorialStep[] = [
   {
     id: 'eclipse',
     title: 'August 2, 2027',
-    body: 'You’re in the path of the Moon’s shadow — watch the Sun as the Moon crosses it. You got here from the Observatory: land on Earth, tap Surface view, then pick the next Solar Eclipse in the panel.',
+    body: 'You got here through the Observatory: land on Earth, tap Surface view, then pick the next Solar Eclipse in the panel. You’re standing in the path of the Moon’s shadow — watch the Sun as the Moon crosses it.',
     primaryLabel: 'Next: wrap up',
     ghostLabel: 'Skip tutorial',
     stage: 'eclipse',
@@ -98,7 +101,7 @@ export const TUTORIAL_STEPS: readonly TutorialStep[] = [
   {
     id: 'wrap',
     title: 'That’s the tutorial',
-    body: '\u{1F680} Teleport (T) parks you beside any planet or moon; \u{1F52D} Observatory (O) lands you on one and reads its sky; the clock at the bottom sets the speed and the date. Help, Historic Journeys, and this tutorial live in the ☰ menu.',
+    body: '{teleport} Teleport (T) parks you beside any planet or moon; {observatory} Observatory (O) lands you on one and reads its sky; the clock at the bottom sets the speed and the date. Help, Historic Journeys, and this tutorial live in the ☰ menu.',
     primaryLabel: 'End tutorial',
     ghostLabel: null,
     stage: 'none',

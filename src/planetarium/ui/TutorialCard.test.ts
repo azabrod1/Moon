@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { tutorialCardModel } from './TutorialCard';
+import { tutorialBodySegments, tutorialCardModel } from './TutorialCard';
 import { TUTORIAL_STEPS } from '../tutorialLogic';
 import type { TutorialPhase, TutorialStep } from '../tutorialLogic';
 
@@ -65,5 +65,39 @@ describe('tutorialCardModel', () => {
     TUTORIAL_STEPS.forEach((step, i) => {
       expect(model(step.id, 'ready').counter).toBe(`${i + 1} / ${TUTORIAL_STEPS.length}`);
     });
+  });
+});
+
+describe('tutorialBodySegments', () => {
+  it('token-free copy is a single untouched text run', () => {
+    expect(tutorialBodySegments('Watch the Sun.')).toEqual([{ kind: 'text', text: 'Watch the Sun.' }]);
+  });
+
+  it('tokens become icon segments between the text runs', () => {
+    expect(tutorialBodySegments('The {teleport} button and {observatory} too.')).toEqual([
+      { kind: 'text', text: 'The ' },
+      { kind: 'icon', icon: 'teleport' },
+      { kind: 'text', text: ' button and ' },
+      { kind: 'icon', icon: 'observatory' },
+      { kind: 'text', text: ' too.' },
+    ]);
+  });
+
+  it('the button cards quote their glyphs: Teleport, then Observatory, then both on the wrap', () => {
+    const icons = (id: TutorialStep['id']) =>
+      tutorialBodySegments(stepById(id).body)
+        .filter((s) => s.kind === 'icon')
+        .map((s) => (s.kind === 'icon' ? s.icon : ''));
+    expect(icons('saturn')).toEqual(['teleport']);
+    expect(icons('moon')).toEqual(['observatory']);
+    expect(icons('wrap')).toEqual(['teleport', 'observatory']);
+  });
+
+  it('no braces survive in any card text (a typo’d token would render literally)', () => {
+    for (const step of TUTORIAL_STEPS) {
+      for (const seg of tutorialBodySegments(step.body)) {
+        if (seg.kind === 'text') expect(seg.text).not.toMatch(/[{}]/);
+      }
+    }
   });
 });

@@ -42,7 +42,7 @@ describe('tutorialCardModel', () => {
 
   it('the wrap card always takes you back: primary restores, no skip button', () => {
     const m = model('wrap', 'ready');
-    expect(m.primary).toEqual({ label: 'Take me back', action: 'return', disabled: false });
+    expect(m.primary).toEqual({ label: 'End tutorial', action: 'return', disabled: false });
     expect(m.ghost).toBeNull();
   });
 
@@ -51,6 +51,15 @@ describe('tutorialCardModel', () => {
       const m = model(step.id, 'ready');
       expect(m.primary.action).toBe('advance');
       expect(m.ghost).not.toBeNull();
+    }
+  });
+
+  it('Back appears from the Moon card on and waits for ready like Next', () => {
+    expect(model('welcome', 'ready').back).toBeNull();
+    expect(model('saturn', 'ready').back).toBeNull();
+    for (const id of ['moon', 'timelapse', 'eclipse', 'wrap'] as const) {
+      expect(model(id, 'ready').back).toEqual({ label: '‹ Back', disabled: false });
+      expect(model(id, 'settling').back?.disabled).toBe(true);
     }
   });
 

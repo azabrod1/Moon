@@ -317,6 +317,7 @@ function installDevHooks() {
     probeLanded: () => planetariumMode?.devProbeLanded() ?? null,
     tutorialStart: () => planetariumMode?.devTutorialStart() ?? false,
     tutorialNext: () => planetariumMode?.devTutorialNext(),
+    tutorialBack: () => planetariumMode?.devTutorialBack(),
     tutorialSkip: () => planetariumMode?.devTutorialSkip(),
     tutorialState: () => planetariumMode?.devTutorialState() ?? null,
     setChrome: (visible: boolean) => planetariumMode?.devSetChrome(visible),

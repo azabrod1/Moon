@@ -1126,7 +1126,7 @@
       position: absolute;
       top: 88px;
       left: 12px;
-      width: 320px;
+      width: 336px; /* fits ‹ Back + Skip + the longest Next label on one row */
       max-width: calc(100vw - 24px);
       padding: 14px 16px;
       z-index: 30;
@@ -1141,13 +1141,18 @@
     .tutorial-count { font-family: var(--font-mono); font-size: 10px; color: var(--t3); font-variant-numeric: tabular-nums; }
     .tutorial-title { font-size: 15px; font-weight: 600; color: var(--t1); margin: 0 0 6px; }
     .tutorial-body { font-size: 12px; line-height: 1.55; color: var(--t2); margin: 0; }
-    .tutorial-actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 14px; }
+    /* Buttons never break their own label; on a narrow card the row wraps
+       instead (Back holds the left edge, the forward pair the right). */
+    .tutorial-actions { display: flex; flex-wrap: wrap; gap: 8px; justify-content: flex-end; margin-top: 14px; }
+    /* Back sits apart on the left — the forward cluster keeps the right edge. */
+    #tutorial-back { margin-right: auto; padding-left: 10px; padding-right: 10px; }
     .tutorial-btn {
       padding: 7px 14px;
       border: 1px solid var(--panel-border);
       border-radius: 8px;
       font-family: var(--font);
       font-size: 12px;
+      white-space: nowrap;
       cursor: pointer;
       transition: all 0.15s;
     }
@@ -2447,6 +2452,7 @@
         <h3 class="tutorial-title" id="tutorial-title"></h3>
         <p class="tutorial-body" id="tutorial-body" aria-live="polite"></p>
         <div class="tutorial-actions">
+          <button class="tutorial-btn tutorial-btn-ghost" id="tutorial-back"></button>
           <button class="tutorial-btn tutorial-btn-ghost" id="tutorial-ghost"></button>
           <button class="tutorial-btn tutorial-btn-primary" id="tutorial-primary"></button>
         </div>

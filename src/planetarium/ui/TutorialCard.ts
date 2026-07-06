@@ -18,14 +18,18 @@ export interface TutorialCardModel {
   primary: { label: string; action: 'advance' | 'return'; disabled: boolean };
   /** null hides the ghost button (the wrap card: ending always takes you back). */
   ghost: { label: string; disabled: boolean } | null;
+  /** Re-stages the previous stop. null hides it: on the welcome card there is
+   *  nowhere to go, and on Saturn the previous card stages no scene — Back
+   *  there would strand the welcome copy over the Saturn parking spot. */
+  back: { label: string; disabled: boolean } | null;
 }
 
 /**
  * Card content for one step. The wrap card's primary restores the
- * pre-tutorial state instead of advancing, and it has no skip. Next waits
- * for the step to settle; skip stays live mid-flight (stopTutorial absorbs
- * an in-flight arrival), and only the restore actually running ('ending')
- * disables everything.
+ * pre-tutorial state instead of advancing, and it has no skip. Next and Back
+ * wait for the step to settle; skip stays live mid-flight (stopTutorial
+ * absorbs an in-flight arrival), and only the restore actually running
+ * ('ending') disables everything.
  */
 export function tutorialCardModel(
   step: TutorialStep,
@@ -48,6 +52,7 @@ export function tutorialCardModel(
       step.ghostLabel === null
         ? null
         : { label: step.ghostLabel, disabled: phase === 'ending' },
+    back: index >= 2 ? { label: '‹ Back', disabled: phase !== 'ready' } : null,
   };
 }
 
@@ -55,11 +60,13 @@ export class TutorialCard {
   private rootEl: HTMLElement | null = null;
   private primaryEl: HTMLButtonElement | null = null;
   private ghostEl: HTMLButtonElement | null = null;
+  private backEl: HTMLButtonElement | null = null;
   private model: TutorialCardModel | null = null;
   private wired = false;
 
   constructor(
     private onAdvance: () => void,
+    private onBack: () => void,
     private onSkip: () => void,
     private onReturn: () => void,
   ) {}
@@ -68,6 +75,7 @@ export class TutorialCard {
     this.rootEl = document.getElementById('tutorial-card');
     this.primaryEl = document.getElementById('tutorial-primary') as HTMLButtonElement | null;
     this.ghostEl = document.getElementById('tutorial-ghost') as HTMLButtonElement | null;
+    this.backEl = document.getElementById('tutorial-back') as HTMLButtonElement | null;
     if (this.wired) return;
     this.wired = true;
     this.primaryEl?.addEventListener('click', () => {
@@ -77,6 +85,10 @@ export class TutorialCard {
     this.ghostEl?.addEventListener('click', () => {
       if (!this.model?.ghost || this.model.ghost.disabled) return;
       this.onSkip();
+    });
+    this.backEl?.addEventListener('click', () => {
+      if (!this.model?.back || this.model.back.disabled) return;
+      this.onBack();
     });
   }
 
@@ -95,6 +107,13 @@ export class TutorialCard {
       if (model.ghost) {
         this.ghostEl.textContent = model.ghost.label;
         this.ghostEl.disabled = model.ghost.disabled;
+      }
+    }
+    if (this.backEl) {
+      this.backEl.style.display = model.back ? '' : 'none';
+      if (model.back) {
+        this.backEl.textContent = model.back.label;
+        this.backEl.disabled = model.back.disabled;
       }
     }
   }

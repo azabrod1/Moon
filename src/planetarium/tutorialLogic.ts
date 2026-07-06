@@ -55,7 +55,7 @@ export const TUTORIAL_STEPS: readonly TutorialStep[] = [
   {
     id: 'welcome',
     title: 'A quick look around',
-    body: 'Four stops: Saturn, the Moon, Jupiter, and a total solar eclipse. The tutorial does the flying and points out the buttons; you can drag to look around at any stop.',
+    body: 'Four stops: Saturn, the Moon, Jupiter with time sped up, and a total solar eclipse. The tutorial does the flying and shows you the button behind each move; you can always drag to look around.',
     primaryLabel: 'Start the tutorial',
     ghostLabel: 'Not now',
     stage: 'none',
@@ -64,7 +64,7 @@ export const TUTORIAL_STEPS: readonly TutorialStep[] = [
   {
     id: 'saturn',
     title: 'Saturn',
-    body: 'That’s the deck: the \u{1F680} button up top, or T. Every planet and moon is one tap away. Take a second with the rings.',
+    body: 'That was the \u{1F680} button at the top right, or T: every planet and moon, one tap each. Take a second with the rings.',
     primaryLabel: 'Next: the Moon',
     ghostLabel: 'Skip tutorial',
     stage: 'saturn',
@@ -73,17 +73,17 @@ export const TUTORIAL_STEPS: readonly TutorialStep[] = [
   {
     id: 'moon',
     title: 'Landed on the Moon',
-    body: 'Same deck, Observatory tab: the \u{1F52D} button, or O. This tab lands you on the body, and the panel reads its sky, starting with Earth’s phase.',
-    primaryLabel: 'Next: let time run',
+    body: 'This time it was the \u{1F52D} Observatory button, or O: it lands you on the world instead of stopping beside it. That’s Earth overhead, and the panel follows this sky. Leave, top right, lifts you off.',
+    primaryLabel: 'Next: Jupiter',
     ghostLabel: 'Skip tutorial',
     stage: 'moon',
     settle: SCENE_SETTLE,
   },
   {
     id: 'timelapse',
-    title: 'Let time run',
-    body: 'You’re over Jupiter now, with two hours passing every second: it spins through a full day every five seconds, and Io laps it in about twenty. The time controls below do this anytime.',
-    primaryLabel: 'Next: a solar eclipse',
+    title: 'Jupiter in fast-forward',
+    body: 'Two hours pass every second here: Jupiter spins through a full day in five, and Io laps it in about twenty. The clock at the bottom of the screen does this; tap it to set the speed or jump to a date. The Observatory panel keeps up alongside.',
+    primaryLabel: 'Next: the eclipse',
     ghostLabel: 'Skip tutorial',
     stage: 'timelapse',
     settle: SCENE_SETTLE,
@@ -91,7 +91,7 @@ export const TUTORIAL_STEPS: readonly TutorialStep[] = [
   {
     id: 'eclipse',
     title: 'August 2, 2027',
-    body: 'You’re on Earth now, standing right in the path of the Moon’s shadow. Watch the Sun.',
+    body: 'You’re standing on Earth, right where the Moon’s shadow is about to sweep past. Watch the Sun: the Moon is closing on it. Wherever you land, the Observatory panel lists eclipses like this; Jump takes you there.',
     totalityBody:
       'Totality. The Moon covers the whole Sun; only the glow at the rim gets past. Standing in one spot you’d get six minutes of this, the longest over land this century.',
     primaryLabel: 'Next: wrap up',
@@ -102,8 +102,8 @@ export const TUTORIAL_STEPS: readonly TutorialStep[] = [
   {
     id: 'wrap',
     title: 'That’s the tutorial',
-    body: 'Teleport drops you beside a body; Observatory lands you on one, and its panel’s Jump buttons lead to eclipses like this. Historic Journeys and this tutorial live in the ☰ menu.',
-    primaryLabel: 'Take me back',
+    body: '\u{1F680} Teleport (T) parks you beside any planet or moon; \u{1F52D} Observatory (O) lands you on one and reads its sky; the clock at the bottom sets the speed and the date. Help, Historic Journeys, and this tutorial live in the ☰ menu.',
+    primaryLabel: 'End tutorial',
     ghostLabel: null,
     stage: 'none',
     settle: CARD_ONLY_SETTLE,
@@ -163,13 +163,14 @@ export function totalitySettleUtcMs(peakUtcMs: number): number {
  */
 export type TutorialPhase = 'staging' | 'settling' | 'ready' | 'ending';
 
-export type TutorialTransitionEvent = 'next' | 'staged' | 'settled' | 'skip' | 'abort';
+export type TutorialTransitionEvent = 'next' | 'back' | 'staged' | 'settled' | 'skip' | 'abort';
 
 /** Guarded transitions; anything not listed is a no-op, so a stale event
  *  (a timer or arrival callback landing late) can never move the phase backwards. */
 export function tutorialTransition(phase: TutorialPhase, event: TutorialTransitionEvent): TutorialPhase {
   switch (event) {
     case 'next':
+    case 'back': // both directions re-stage; stagings are absolute, so which step is the driver's index math
       return phase === 'ready' ? 'staging' : phase;
     case 'staged':
       return phase === 'staging' ? 'settling' : phase;

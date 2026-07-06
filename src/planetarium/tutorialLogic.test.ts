@@ -86,10 +86,12 @@ describe('TUTORIAL_STEPS', () => {
 describe('tutorialTransition', () => {
   const PHASES: TutorialPhase[] = ['staging', 'settling', 'ready', 'ending'];
 
-  it('next stages only from ready', () => {
-    expect(tutorialTransition('ready', 'next')).toBe('staging');
-    for (const phase of PHASES.filter((p) => p !== 'ready')) {
-      expect(tutorialTransition(phase, 'next')).toBe(phase);
+  it('next and back stage only from ready', () => {
+    for (const event of ['next', 'back'] as TutorialTransitionEvent[]) {
+      expect(tutorialTransition('ready', event)).toBe('staging');
+      for (const phase of PHASES.filter((p) => p !== 'ready')) {
+        expect(tutorialTransition(phase, event)).toBe(phase);
+      }
     }
   });
 

@@ -560,6 +560,7 @@ export class PlanetariumMode {
   );
   private tutorialCard = new TutorialCard(
     () => this.advanceTutorial(),
+    () => this.backTutorial(),
     () => this.stopTutorial({ restore: true, toast: 'skip' }),
     () => this.stopTutorial({ restore: true, toast: 'return' }),
   );
@@ -649,6 +650,15 @@ export class PlanetariumMode {
 
   private showHelp() {
     if (this.helpModal.isOpen()) return;
+    // The action bar recommends the tutorial only on the first-run showing
+    // (hasSeenHelp flips when this modal first closes). A Help revisit gets a
+    // plain button, and no "Explore on my own" choice — the visitor already is.
+    const firstRun = !this.store.hasSeenHelp();
+    const takeTutorial = document.getElementById('help-take-tutorial');
+    takeTutorial?.classList.toggle('tutorial-btn-primary', firstRun);
+    takeTutorial?.classList.toggle('tutorial-btn-ghost', !firstRun);
+    const explore = document.getElementById('help-explore');
+    if (explore) explore.style.display = firstRun ? '' : 'none';
     this.resumeShipAfterHelp = this.player.moving;
     this.resumeTimeAfterHelp = !this.timeState.paused;
     this.player.moving = false;
@@ -2548,8 +2558,18 @@ export class PlanetariumMode {
   private advanceTutorial(): void {
     const tutorial = this.tutorial;
     if (!tutorial || tutorial.phase !== 'ready') return;
-    if (tutorial.stepIndex + 1 >= TUTORIAL_STEPS.length) return; // the wrap card's primary is Take me back
+    if (tutorial.stepIndex + 1 >= TUTORIAL_STEPS.length) return; // the wrap card's primary ends instead
     this.stageTutorialStep(tutorial.stepIndex + 1);
+  }
+
+  /** Back re-stages the previous stop (stagings are absolute, so this is just
+   *  the index math). The card hides Back below index 2 — see tutorialCardModel
+   *  — but guard here too: a stale click must not stage the welcome card's
+   *  nothing over a live scene. */
+  private backTutorial(): void {
+    const tutorial = this.tutorial;
+    if (!tutorial || tutorial.phase !== 'ready' || tutorial.stepIndex < 2) return;
+    this.stageTutorialStep(tutorial.stepIndex - 1);
   }
 
   /**
@@ -2822,8 +2842,11 @@ export class PlanetariumMode {
    */
   private stageTutorialTimelapse(generation: number): void {
     this.tutorialLandThen(generation, { type: 'planet', name: 'Jupiter' }, () => {
-      // The Moon stop's panel has done its job; the ballet wants the frame.
-      this.closeObservatoryPanel();
+      // The panel stays up on purpose: at 2 hr/s its now-bar, phase glyph and
+      // distances visibly run, which is half of what this card teaches. The
+      // open is explicit (not inherited from the Moon stop) so the staging
+      // holds even if the user closed the panel there.
+      this.openObservatoryPanel();
       const pullbackAU = this.getLandedBodyRenderedRadiusAU() * 8;
       this.camera.position.setLength(
         Math.min(Math.max(pullbackAU, this.controls.minDistance), this.controls.maxDistance),
@@ -4344,6 +4367,10 @@ export class PlanetariumMode {
 
   devTutorialNext(): void {
     this.advanceTutorial();
+  }
+
+  devTutorialBack(): void {
+    this.backTutorial();
   }
 
   devTutorialSkip(): void {

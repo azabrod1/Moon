@@ -45,6 +45,7 @@ export class PlayerShip {
   speedMultiplier = 1.0;
   systemSpeedMultiplier = 0.083; // ~25k km/s default system speed
   systemSpeedFactor = 1.0;      // 1 = open space, 0 = deep in system (set by PlanetariumMode)
+  speedCapAUPerS = Infinity;    // per-frame moon-proximity cap (set by PlanetariumMode)
   moving = true;
   yawInput = 0;
   pitchInput = 0;
@@ -169,7 +170,7 @@ export class PlayerShip {
     if (!this.moving) return 0;
     const cruise = DEFAULT_SPEED_AU_S * this.speedMultiplier;
     const system = DEFAULT_SPEED_AU_S * Math.min(this.systemSpeedMultiplier, this.speedMultiplier);
-    return system + (cruise - system) * this.systemSpeedFactor;
+    return Math.min(system + (cruise - system) * this.systemSpeedFactor, this.speedCapAUPerS);
   }
 
   get speedC(): number {

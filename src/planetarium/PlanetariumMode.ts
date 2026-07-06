@@ -117,6 +117,7 @@ import { Constellations } from './Constellations';
 import { getMoonsByPlanet, MOONS, type MoonData } from './planets/moonData';
 import { RING_CONFIGS } from './planets/rings';
 import { filterDeckRows, groupDeckBodies, observeArrivalAction, type DeckRow } from './deckLogic';
+import { governedSpeedCap, MOON_APPROACH_K_PER_S, MOON_APPROACH_V_MIN_AU_S } from './arrivalLogic';
 import {
   canStartTutorial,
   isStepSettled,
@@ -374,6 +375,15 @@ export class PlanetariumMode {
 
   // Moon world positions in AU (true positions, not offset)
   private moonWorldPositions = new Map<string, { x: number; y: number; z: number }>();
+  /** The latest moon-jump target, governed and collision-checked by name
+   *  while its mesh may still be unpainted behind the arrival veil (the
+   *  visibility-keyed set can't see it there). Drops once the mesh shows;
+   *  a stale seed is neutralized by distance on its own. */
+  private governedMoonSeed: { name: string; parentPlanet: string } | null = null;
+  /** Player position at the top of the frame — the collision sweep needs the
+   *  whole segment, not the endpoint (one 100 ms frame at the in-system
+   *  default steps ~2,500 km, clean through a small moon's bubble). */
+  private prevPlayerPos = new THREE.Vector3();
 
   private layoutMode: PlanetariumLayout = 'realistic';
 
@@ -1125,6 +1135,14 @@ export class PlanetariumMode {
       this.nearestSystemPlanet = throttleResult.planet;
       this.player.systemSpeedFactor = (this.throttleOverride || !this.systemSlowdown) ? 1.0 : this.systemSpeedFactor;
 
+      // Moon-proximity governor: the planet throttle knows nothing smaller
+      // than a system, so near a moon it still allows the in-system setting —
+      // several moon standoffs per second. Cap the closing speed at
+      // K × surface distance instead (same escape hatch as the throttle).
+      this.player.speedCapAUPerS =
+        this.throttleOverride || !this.systemSlowdown ? Infinity : this.computeMoonSpeedCap();
+
+      this.prevPlayerPos.set(this.player.posX, this.player.posY, this.player.posZ);
       this.player.update(dt);
     }
     this.timeState = advancePlanetariumTime(this.timeState, dt);
@@ -1154,7 +1172,10 @@ export class PlanetariumMode {
 
     this.updatePlanetScaling();
     this.player.group.scale.setScalar(0.5);
-    if (!this.devFreeCamera) this.resolvePlanetCollisions();
+    if (!this.devFreeCamera) {
+      this.resolvePlanetCollisions();
+      this.resolveMoonCollisions();
+    }
 
     // Check orbit crossings and visits after scale/collision are applied so the
     // reachable interaction shell matches the visual shell.
@@ -3982,6 +4003,112 @@ export class PlanetariumMode {
     };
   }
 
+  /** The governor/collision body set: every visible painted moon (world
+   *  positions refresh each frame in updateMoonPositions; entries read here
+   *  are ≤1 frame stale — irrelevant at km scale) plus the jump seed, whose
+   *  position resolves live from the parent + ephemeris offset while its
+   *  mesh is still veiled. Rendered radii come from the live mesh scale
+   *  (the 5%-of-parent floor), i.e. the sphere you actually see. */
+  private forEachGovernedMoon(cb: (x: number, y: number, z: number, renderedRAU: number) => void) {
+    for (const moons of this.planetMoons.values()) {
+      for (const m of moons) {
+        if (!m.painted || !m.mesh.visible) continue;
+        if (this.governedMoonSeed && m.data.name === this.governedMoonSeed.name) {
+          this.governedMoonSeed = null; // the visible mesh covers it from here
+        }
+        const wp = this.moonWorldPositions.get(m.data.name);
+        if (!wp) continue;
+        cb(wp.x, wp.y, wp.z, m.data.radiusAU * m.mesh.scale.x);
+      }
+    }
+    const seed = this.governedMoonSeed;
+    if (!seed) return;
+    const moon = MOONS.find((mn) => mn.name === seed.name);
+    const parent = PLANETARIUM_BODIES.find((b) => b.name === seed.parentPlanet);
+    const parentPos = this.planetWorldPositions.get(seed.parentPlanet);
+    if (!moon || !parent || !parentPos) return;
+    const offset = this.getMoonWorldOffsetAU(moon, parent, this.tmpMoonOffset);
+    cb(
+      parentPos.x + offset.x,
+      parentPos.y + offset.y,
+      parentPos.z + offset.z,
+      Math.max(moon.radiusAU, parent.radiusAU * PlanetariumMode.MOON_MIN_RENDER_RATIO),
+    );
+  }
+
+  private computeMoonSpeedCap(): number {
+    const f = this.player.getForwardDirection();
+    let cap = Infinity;
+    this.forEachGovernedMoon((x, y, z, renderedR) => {
+      const dx = x - this.player.posX;
+      const dy = y - this.player.posY;
+      const dz = z - this.player.posZ;
+      const dist = Math.sqrt(dx * dx + dy * dy + dz * dz);
+      if (dist < 1e-12) return;
+      const cos = (dx * f.x + dy * f.y + dz * f.z) / dist;
+      const c = governedSpeedCap(
+        Math.max(dist - renderedR, 0),
+        cos,
+        MOON_APPROACH_K_PER_S,
+        MOON_APPROACH_V_MIN_AU_S,
+      );
+      if (c < cap) cap = c;
+    });
+    return cap;
+  }
+
+  /** Moon counterpart of resolvePlanetCollisions, with one difference: it
+   *  sweeps the whole frame segment (prevPlayerPos → current) instead of
+   *  checking the endpoint — endpoint checks tunnel exactly at moon scale. */
+  private resolveMoonCollisions() {
+    const p0 = this.prevPlayerPos;
+    const forward = this.player.getForwardDirection();
+    this.forEachGovernedMoon((x, y, z, renderedR) => {
+      // Full lunar-scale clearance would exceed a tiny moon's own standoff,
+      // so it saturates at one rendered radius.
+      const collisionR = renderedR + Math.min(PlanetariumMode.SHIP_CLEARANCE_AU, renderedR);
+      const dx = this.player.posX - p0.x;
+      const dy = this.player.posY - p0.y;
+      const dz = this.player.posZ - p0.z;
+      const cx = x - p0.x;
+      const cy = y - p0.y;
+      const cz = z - p0.z;
+      const segLenSq = dx * dx + dy * dy + dz * dz;
+      const t = segLenSq > 0 ? Math.min(1, Math.max(0, (cx * dx + cy * dy + cz * dz) / segLenSq)) : 0;
+      let ox = p0.x + dx * t - x;
+      let oy = p0.y + dy * t - y;
+      let oz = p0.z + dz * t - z;
+      let d = Math.sqrt(ox * ox + oy * oy + oz * oz);
+      if (d >= collisionR) return;
+      if (d < 1e-9) {
+        // Dead-center pass: push back along the incoming segment.
+        ox = -dx;
+        oy = -dy;
+        oz = -dz;
+        d = Math.sqrt(ox * ox + oy * oy + oz * oz);
+        if (d < 1e-9) {
+          ox = 1;
+          oy = 0;
+          oz = 0;
+          d = 1;
+        }
+      }
+      ox /= d;
+      oy /= d;
+      oz /= d;
+      this.player.posX = x + ox * collisionR;
+      this.player.posY = y + oy * collisionR;
+      this.player.posZ = z + oz * collisionR;
+      if (forward.x * ox + forward.y * oy + forward.z * oz < 0.15) {
+        this.player.headToward(
+          this.player.posX + ox * collisionR * 2,
+          this.player.posZ + oz * collisionR * 2,
+          this.player.posY + oy * collisionR * 2,
+        );
+      }
+    });
+  }
+
   private resolvePlanetCollisions() {
     if (!this.solarSystem) return;
 
@@ -4041,11 +4168,11 @@ export class PlanetariumMode {
     const destination = this.getMoonJumpDestination(moon);
     if (!destination) return;
     this.applyJumpDestination(destination, moon.name, options.notify !== false);
-    // Park on arrival. Planet jumps glide in under the system throttle, but a
-    // moon standoff is a few of ITS radii — and the irregulars orbit far
-    // outside the parent's throttle well, where a still-moving ship covers
-    // the whole standoff in about a second.
-    this.player.moving = false;
+    // Seed the governor before the first frame: in a cold system the mesh is
+    // still unpainted behind the arrival veil, invisible to the
+    // visibility-keyed governed set, and one ungoverned 100 ms frame at the
+    // in-system default would cross the whole standoff.
+    this.governedMoonSeed = { name: moon.name, parentPlanet: moon.parentPlanet };
   }
 
   private applyJumpDestination(

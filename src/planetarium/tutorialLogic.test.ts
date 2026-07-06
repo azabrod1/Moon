@@ -63,12 +63,6 @@ describe('TUTORIAL_STEPS', () => {
     }
   });
 
-  it('only the eclipse card swaps bodies at totality', () => {
-    for (const step of TUTORIAL_STEPS) {
-      expect(step.totalityBody !== undefined).toBe(step.id === 'eclipse');
-    }
-  });
-
   it('every card has complete copy; only the wrap card drops the skip (always taken back)', () => {
     for (const step of TUTORIAL_STEPS) {
       expect(step.title.length).toBeGreaterThan(0);

@@ -30,8 +30,6 @@ export interface TutorialStep {
   /** Card headline (the eyebrow is always "Tutorial"). */
   title: string;
   body: string;
-  /** Eclipse card swaps to this once the clock settles into totality. */
-  totalityBody?: string;
   /** Primary button. Advances the tutorial everywhere except the wrap card, where it restores. */
   primaryLabel: string;
   /** Ghost skip button; null on the wrap card — ending the tutorial always takes
@@ -91,9 +89,7 @@ export const TUTORIAL_STEPS: readonly TutorialStep[] = [
   {
     id: 'eclipse',
     title: 'August 2, 2027',
-    body: 'You’re standing on Earth, right in the path of the Moon’s shadow. Watch the Sun as the Moon slides across it.',
-    totalityBody:
-      'Totality. The Moon covers the whole Sun; only the rim glows through. Six minutes of it here, the longest over land this century. To find an eclipse yourself: from the Observatory, land on Earth, tap Surface view, then pick the next Solar Eclipse in the panel.',
+    body: 'You’re in the path of the Moon’s shadow — watch the Sun as the Moon crosses it. You got here from the Observatory: land on Earth, tap Surface view, then pick the next Solar Eclipse in the panel.',
     primaryLabel: 'Next: wrap up',
     ghostLabel: 'Skip tutorial',
     stage: 'eclipse',

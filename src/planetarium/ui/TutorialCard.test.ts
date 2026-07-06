@@ -4,13 +4,12 @@ import { TUTORIAL_STEPS } from '../tutorialLogic';
 import type { TutorialPhase, TutorialStep } from '../tutorialLogic';
 
 const stepById = (id: TutorialStep['id']): TutorialStep => TUTORIAL_STEPS.find((s) => s.id === id)!;
-const model = (id: TutorialStep['id'], phase: TutorialPhase, totalityReached = false) =>
+const model = (id: TutorialStep['id'], phase: TutorialPhase) =>
   tutorialCardModel(
     stepById(id),
     TUTORIAL_STEPS.findIndex((s) => s.id === id),
     TUTORIAL_STEPS.length,
     phase,
-    totalityReached,
   );
 
 describe('tutorialCardModel', () => {
@@ -33,11 +32,10 @@ describe('tutorialCardModel', () => {
     expect(ending.ghost?.disabled).toBe(true);
   });
 
-  it('the eclipse card swaps its body at totality; other cards ignore the flag', () => {
-    const eclipse = stepById('eclipse');
-    expect(model('eclipse', 'ready', false).body).toBe(eclipse.body);
-    expect(model('eclipse', 'ready', true).body).toBe(eclipse.totalityBody);
-    expect(model('moon', 'ready', true).body).toBe(stepById('moon').body);
+  it('each card shows its own single body', () => {
+    for (const step of TUTORIAL_STEPS) {
+      expect(model(step.id, 'ready').body).toBe(step.body);
+    }
   });
 
   it('the wrap card always takes you back: primary restores, no skip button', () => {

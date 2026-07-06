@@ -36,13 +36,12 @@ export function tutorialCardModel(
   index: number,
   count: number,
   phase: TutorialPhase,
-  totalityReached: boolean,
 ): TutorialCardModel {
   const wrap = step.id === 'wrap';
   return {
     counter: `${index + 1} / ${count}`,
     title: step.title,
-    body: totalityReached && step.totalityBody !== undefined ? step.totalityBody : step.body,
+    body: step.body,
     primary: {
       label: step.primaryLabel,
       action: wrap ? 'return' : 'advance',

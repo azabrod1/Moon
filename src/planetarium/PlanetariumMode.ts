@@ -2939,10 +2939,11 @@ export class PlanetariumMode {
       }
     }
     // Eclipse card: once the compressed approach carries the clock just
-    // inside totality, drop to realtime and swap the card body. One-shot —
-    // a user who scrubs the rate afterwards is left alone. Gated past
-    // 'staging' so a pre-stage clock already sitting in 2027+ can't trip it
-    // before the staging has even set the time.
+    // inside totality, drop to realtime and release the held Next (the
+    // settling→ready transition next frame reads totalityReached and re-renders
+    // the card). One-shot — a user who scrubs the rate afterwards is left
+    // alone. Gated past 'staging' so a pre-stage clock already sitting in 2027+
+    // can't trip it before the staging has even set the time.
     if (
       !tutorial.totalityReached &&
       step.stage === 'eclipse' &&
@@ -2952,7 +2953,6 @@ export class PlanetariumMode {
     ) {
       tutorial.totalityReached = true;
       this.setTutorialClockRate(1);
-      this.renderTutorialCard();
     }
   }
 
@@ -2961,7 +2961,7 @@ export class PlanetariumMode {
     if (!tutorial) return;
     const step = TUTORIAL_STEPS[tutorial.stepIndex];
     this.tutorialCard.render(
-      tutorialCardModel(step, tutorial.stepIndex, TUTORIAL_STEPS.length, tutorial.phase, tutorial.totalityReached),
+      tutorialCardModel(step, tutorial.stepIndex, TUTORIAL_STEPS.length, tutorial.phase),
     );
   }
 

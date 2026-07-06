@@ -74,7 +74,7 @@ export const TUTORIAL_STEPS: readonly TutorialStep[] = [
   {
     id: 'moon',
     title: 'Landed on the Moon',
-    body: 'The {observatory} Observatory button, or O, lands you on a world so you can follow it through space and time, observe its nearby neighbours, read its stats, or see the upcoming celestial events in its sky. That’s Earth overhead, and the panel follows this sky. Leave, top right, lifts you off.',
+    body: 'The {observatory} Observatory button, or O, lands you on a world so you can follow it through space and time, observe its neighbours, read its stats, or see the celestial events coming up. That’s Earth overhead, and the panel follows this sky.',
     primaryLabel: 'Next: Jupiter',
     ghostLabel: 'Skip tutorial',
     stage: 'moon',
@@ -83,7 +83,7 @@ export const TUTORIAL_STEPS: readonly TutorialStep[] = [
   {
     id: 'timelapse',
     title: 'Jupiter in fast-forward',
-    body: 'The clock at the bottom of the screen controls time: tap it to set the speed or jump to a date. It’s running at two hours per second now, so Jupiter spins through a full day in five seconds and Io laps it in about twenty. The Observatory panel keeps up alongside.',
+    body: 'The clock at the bottom of the screen controls time: tap it to set the speed or jump to a date. It’s running at two hours per second now, so Jupiter spins through a full day in five seconds and Io laps it in about twenty.',
     primaryLabel: 'Next: the eclipse',
     ghostLabel: 'Skip tutorial',
     stage: 'timelapse',
@@ -101,7 +101,7 @@ export const TUTORIAL_STEPS: readonly TutorialStep[] = [
   {
     id: 'wrap',
     title: 'That’s the tutorial',
-    body: '{teleport} Teleport (T) parks you beside any planet or moon; {observatory} Observatory (O) lands you on one and reads its sky; the clock at the bottom sets the speed and the date. Help, Historic Journeys, and this tutorial live in the ☰ menu.',
+    body: '{teleport} Teleport (T) sends you to any planet or moon; {observatory} Observatory (O) lands you on one and reads its sky; the clock at the bottom sets the speed and the date. Help, Historic Journeys, and this tutorial live in the ☰ menu.',
     primaryLabel: 'End tutorial',
     ghostLabel: null,
     stage: 'none',

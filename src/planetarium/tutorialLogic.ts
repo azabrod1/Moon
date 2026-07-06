@@ -18,6 +18,9 @@ export interface SettleNeeds {
   arrival: boolean;
   /** Wait out the surface-view entry FOV glide. */
   fov: boolean;
+  /** Hold Next until the eclipse clock reaches the totality settle instant —
+   *  an eager click must not skip the climax (the ghost skip stays live). */
+  totality: boolean;
   /** Minimum time since staging completed before Next enables. */
   dwellMs: number;
 }
@@ -43,9 +46,10 @@ export interface TutorialStep {
  *  visually snapping in. */
 export const TUTORIAL_SETTLE_DWELL_MS = 350;
 
-const SCENE_SETTLE: SettleNeeds = { arrival: true, fov: false, dwellMs: TUTORIAL_SETTLE_DWELL_MS };
-const SURFACE_SETTLE: SettleNeeds = { arrival: true, fov: true, dwellMs: TUTORIAL_SETTLE_DWELL_MS };
-const CARD_ONLY_SETTLE: SettleNeeds = { arrival: false, fov: false, dwellMs: 0 };
+const SCENE_SETTLE: SettleNeeds = { arrival: true, fov: false, totality: false, dwellMs: TUTORIAL_SETTLE_DWELL_MS };
+// Surface settle is the eclipse card's: it also holds Next for the totality moment.
+const SURFACE_SETTLE: SettleNeeds = { arrival: true, fov: true, totality: true, dwellMs: TUTORIAL_SETTLE_DWELL_MS };
+const CARD_ONLY_SETTLE: SettleNeeds = { arrival: false, fov: false, totality: false, dwellMs: 0 };
 
 export const TUTORIAL_STEPS: readonly TutorialStep[] = [
   {
@@ -60,7 +64,7 @@ export const TUTORIAL_STEPS: readonly TutorialStep[] = [
   {
     id: 'saturn',
     title: 'Saturn',
-    body: 'That was the deck: the \u{1F680} button up top, or T. Every planet and moon is one tap away. Take a second with the rings.',
+    body: 'That’s the deck: the \u{1F680} button up top, or T. Every planet and moon is one tap away. Take a second with the rings.',
     primaryLabel: 'Next: the Moon',
     ghostLabel: 'Skip tutorial',
     stage: 'saturn',
@@ -68,7 +72,7 @@ export const TUTORIAL_STEPS: readonly TutorialStep[] = [
   },
   {
     id: 'moon',
-    title: 'Standing on the Moon',
+    title: 'Landed on the Moon',
     body: 'Same deck, Observatory tab: the \u{1F52D} button, or O. This tab lands you on the body, and the panel reads its sky, starting with Earth’s phase.',
     primaryLabel: 'Next: let time run',
     ghostLabel: 'Skip tutorial',
@@ -78,7 +82,7 @@ export const TUTORIAL_STEPS: readonly TutorialStep[] = [
   {
     id: 'timelapse',
     title: 'Let time run',
-    body: 'You’re over Jupiter now, with two hours passing every second: it spins through a full day every five seconds while the four big moons wheel around it. The time controls below do this anytime.',
+    body: 'You’re over Jupiter now, with two hours passing every second: it spins through a full day every five seconds, and Io laps it in about twenty. The time controls below do this anytime.',
     primaryLabel: 'Next: a solar eclipse',
     ghostLabel: 'Skip tutorial',
     stage: 'timelapse',
@@ -98,7 +102,7 @@ export const TUTORIAL_STEPS: readonly TutorialStep[] = [
   {
     id: 'wrap',
     title: 'That’s the tutorial',
-    body: 'Teleport drops you beside a body; Observatory lands you on one, and its panel jumps to eclipses like this. Historic Journeys and this tutorial live in the ☰ menu.',
+    body: 'Teleport drops you beside a body; Observatory lands you on one, and its panel’s Jump buttons lead to eclipses like this. Historic Journeys and this tutorial live in the ☰ menu.',
     primaryLabel: 'Take me back',
     ghostLabel: null,
     stage: 'none',
@@ -182,6 +186,7 @@ export interface SettleSignals {
   arrivalInFlight: boolean;
   veilCovering: boolean;
   fovAnimating: boolean;
+  totalityReached: boolean;
   sinceStagedMs: number;
 }
 
@@ -189,6 +194,7 @@ export interface SettleSignals {
 export function isStepSettled(signals: SettleSignals, needs: SettleNeeds): boolean {
   if (needs.arrival && (signals.arrivalInFlight || signals.veilCovering)) return false;
   if (needs.fov && signals.fovAnimating) return false;
+  if (needs.totality && !signals.totalityReached) return false;
   return signals.sinceStagedMs >= needs.dwellMs;
 }
 

@@ -2442,10 +2442,10 @@
            the tutorial stages scenes through the other overlays (the deck theater
            opens and closes UNDER it), so no overlay's open() closes this card —
            only its own buttons and the tutorial lifecycle do. -->
-      <div id="tutorial-card" class="pn pn-high">
+      <div id="tutorial-card" class="pn pn-high" role="dialog" aria-label="Tutorial">
         <div class="tutorial-eyebrow"><b>Tutorial</b><span class="tutorial-count" id="tutorial-count"></span></div>
         <h3 class="tutorial-title" id="tutorial-title"></h3>
-        <p class="tutorial-body" id="tutorial-body"></p>
+        <p class="tutorial-body" id="tutorial-body" aria-live="polite"></p>
         <div class="tutorial-actions">
           <button class="tutorial-btn tutorial-btn-ghost" id="tutorial-ghost"></button>
           <button class="tutorial-btn tutorial-btn-primary" id="tutorial-primary"></button>

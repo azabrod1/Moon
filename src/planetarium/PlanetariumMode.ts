@@ -189,7 +189,7 @@ interface TutorialSnapshot {
   lastObservatoryEvent: ShadowEvent | null;
 }
 
-/** Which end toast a tutorial stop owes the user (none for lifecycle aborts and Stay here). */
+/** Which end toast a tutorial stop owes the user (none for lifecycle aborts and New Journey). */
 type TutorialEndToast = 'skip' | 'return' | null;
 
 /** The deck's tabs — one per cluster button. */
@@ -302,6 +302,12 @@ export class PlanetariumMode {
   private static readonly TEXTURE_WARM_BUDGET_MS = 6;
   // Arrival veil re-entrancy guard (rapid picks, or a pick while one is running).
   private arrivalInFlight = false;
+  /** Monotonic veil-cover token: each veiled arrival claims the veil, so a
+   *  previous arrival's lift timer can't uncover a newer arrival mid-flight.
+   *  Reachable whenever a new veiled arrival starts inside the last one's
+   *  reveal dwell — e.g. a parked tutorial stop restoring the moment the
+   *  in-flight flag clears, or two quick deck picks. */
+  private arrivalCoverGen = 0;
   private static readonly ARRIVAL_MIN_DWELL_MS = 150;
   // Longest the arrival cover waits (from cover start) for the landed pair's
   // in-flight 4K fetch+decode before revealing anyway — a stalled fetch must
@@ -619,6 +625,9 @@ export class PlanetariumMode {
     snapshot: TutorialSnapshot;
     eclipse: ShadowEvent | null;
     totalityReached: boolean;
+    /** A scene step actually staged. False while only card-only steps ran —
+     *  ending then has nothing to put back (see executeTutorialStop). */
+    everStaged: boolean;
     stagedAtMs: number;
     timer: number | null;
     generation: number;
@@ -2492,6 +2501,11 @@ export class PlanetariumMode {
 
   /** Entry: the help-modal footer and the ☰ menu item. */
   startTutorial(): void {
+    // Close the entry surfaces before the guard — a refused click must not
+    // leave a dead modal up. Both auto-pause ship and clock, and the snapshot
+    // below must capture the resumed truth, not the modal freeze.
+    this.hideHelp();
+    this.closeMenuPanel();
     if (
       !canStartTutorial({
         missionActive: this.isMissionActive(),
@@ -2501,10 +2515,6 @@ export class PlanetariumMode {
     ) {
       return;
     }
-    // Close the entry surfaces first: both auto-pause ship and clock, and the
-    // snapshot below must capture the resumed truth, not the modal freeze.
-    this.hideHelp();
-    this.closeMenuPanel();
     // A pre-tutorial surface view can't be snapshotted (view sub-states are
     // session-only; getState() carries none of them) — settle to orbit view
     // now so the tutorial starts from a state the restore can reproduce.
@@ -2521,6 +2531,7 @@ export class PlanetariumMode {
       snapshot,
       eclipse: null,
       totalityReached: false,
+      everStaged: false,
       stagedAtMs: performance.now(),
       timer: null,
       generation: 0,
@@ -2543,7 +2554,7 @@ export class PlanetariumMode {
 
   /**
    * End the tutorial. restore=true puts the pre-tutorial snapshot back; restore=false
-   * keeps the staged scene as the journey ("Stay here", New Journey). sync
+   * keeps the staged scene as the journey (New Journey). sync
    * marks a lifecycle abort (deactivate, mission start): the caller's own
    * teardown continues immediately after, so the restore must apply
    * synchronously — never through the veil-gated arrival, which is silently
@@ -2575,8 +2586,11 @@ export class PlanetariumMode {
     const snap = tutorial.snapshot;
     // The tutorial owns these while it runs — take them down with it. The card
     // hides now; the scene may still restore behind the veil a beat later.
+    // The ☰ menu closes too: Esc can end the tutorial with it open (the Esc
+    // cascade has no menu rung), and it must not float over the restore.
     this.closeDeck();
     this.closeSurfaceTargetMenu();
+    this.closeMenuPanel();
     this.tutorialCard.hide();
     const finish = () => {
       // Tail runs only once the restore has actually applied: until here the
@@ -2593,7 +2607,15 @@ export class PlanetariumMode {
       }
     };
     if (!restore) {
-      // "Stay here" / New Journey: the staged scene becomes the journey.
+      // New Journey: the staged scene becomes the journey.
+      finish();
+      return;
+    }
+    if (!tutorial.everStaged) {
+      // "Not now" / Esc on the welcome card: no scene ever staged, so there is
+      // nothing to put back — a restore here would only jump-cut a landed
+      // user's own camera framing to the default. Whatever they did under the
+      // card is theirs to keep.
       finish();
       return;
     }
@@ -2609,6 +2631,11 @@ export class PlanetariumMode {
       // its cover frames — the loser must not restore twice.
       if (this.tutorial !== tutorial) return;
       if (plan.exitSurfaceView && this.landedView === 'surface') this.exitSurfaceView(true);
+      // The Moon staging opens the panel, and a landed→landed restore re-lands
+      // through the ceremony-free path that deliberately preserves an open
+      // panel — close it unconditionally and let reopenPanel put back exactly
+      // what the snapshot had.
+      this.closeObservatoryPanel();
       // Stagings exit/re-land, which consumes the session excursion pose —
       // drop the live one and put the snapshot's copy back after restore.
       this.observatoryExcursion = null;
@@ -2628,8 +2655,9 @@ export class PlanetariumMode {
 
   /**
    * Absolute staging for one step: close the transient overlays the tutorial is
-   * about to play through, normalize the clock (a paused clock would freeze
-   * the time-lapse and the eclipse approach), then run the step's scene work.
+   * about to play through, then run the step's scene work. The scene stagings
+   * normalize the clock themselves (a paused clock would freeze the time-lapse
+   * and the eclipse approach); card-only steps leave the user's clock alone.
    */
   private stageTutorialStep(index: number): void {
     const tutorial = this.tutorial;
@@ -2651,9 +2679,11 @@ export class PlanetariumMode {
     this.bottomBar.closeStats();
     this.renderTutorialCard();
     const step = TUTORIAL_STEPS[index];
+    if (step.stage !== 'none') tutorial.everStaged = true;
     switch (step.stage) {
       case 'none':
-        this.setTutorialClockRate(1);
+        // Card-only: welcome narrates over the user's own scene (clock
+        // included), wrap over the eclipse the previous step set up.
         this.markTutorialStaged(generation);
         break;
       case 'saturn':
@@ -2708,9 +2738,7 @@ export class PlanetariumMode {
     const list = document.getElementById('deck-list');
     if (!list) return;
     for (const row of list.querySelectorAll('.pk-row.tutorial-pulse')) row.classList.remove('tutorial-pulse');
-    Array.from(list.querySelectorAll<HTMLElement>('.pk-row'))
-      .find((row) => row.dataset.name === name)
-      ?.classList.add('tutorial-pulse');
+    this.findDeckRow(name)?.classList.add('tutorial-pulse');
   }
 
   /** Ensure the tutorial stands on `target` (fresh landing or ceremony-free
@@ -2829,9 +2857,12 @@ export class PlanetariumMode {
         this.refreshLandedScene();
         const landedInfo = this.surfaceLandedInfo();
         if (landedInfo) this.enterSurfaceView(selectSurfaceTarget(landedInfo, event.spec), 'event');
+      } else {
+        // A null event (engine drift would be caught by the pin tests) still
+        // advances — the card then narrates a plain Earth landing, and there
+        // is no totality to hold Next for.
+        tutorial.totalityReached = true;
       }
-      // A null event (engine drift would be caught by the pin tests) still
-      // advances — the card then narrates a plain Earth landing.
       this.markTutorialStaged(generation);
     });
   }
@@ -2869,6 +2900,7 @@ export class PlanetariumMode {
           veilCovering:
             document.getElementById('arrival-veil')?.classList.contains('covering') ?? false,
           fovAnimating: this.surfaceFovAnim !== null,
+          totalityReached: tutorial.totalityReached,
           sinceStagedMs: performance.now() - tutorial.stagedAtMs,
         },
         step.settle,
@@ -3492,14 +3524,21 @@ export class PlanetariumMode {
     );
   }
 
+  private findDeckRow(name: string): HTMLElement | null {
+    const list = document.getElementById('deck-list');
+    if (!list) return null;
+    return (
+      Array.from(list.querySelectorAll<HTMLElement>('.pk-row')).find(
+        (r) => r.dataset.name === name,
+      ) ?? null
+    );
+  }
+
   private revealDeckRow(name: string) {
     const list = document.getElementById('deck-list');
-    if (!list) return;
-    const row = Array.from(list.querySelectorAll<HTMLElement>('.pk-row')).find(
-      (r) => r.dataset.name === name,
-    );
+    const row = this.findDeckRow(name);
     // 64px clears the sticky system header pinned above the row.
-    if (row) list.scrollTop = Math.max(0, row.offsetTop - 64);
+    if (list && row) list.scrollTop = Math.max(0, row.offsetTop - 64);
   }
 
   /** Every deck commit closes the deck; the tab decides the ride. */
@@ -3626,6 +3665,10 @@ export class PlanetariumMode {
     if (this.tutorial) this.stopTutorial({ restore: true, sync: true });
     const journey = HISTORIC_JOURNEYS[missionId];
     await this.player.ensureProfileLoaded(journey.shipProfile);
+    // The await yields, and the stop above re-enabled the ☰ Tutorial item —
+    // a tutorial can have started during the profile fetch. Stop that one too
+    // before the mission stashes state.
+    if (this.tutorial) this.stopTutorial({ restore: true, sync: true });
     // Missions own the ship from here: drop the excursion return pose BEFORE
     // exiting landed mode, so the pre-mission stash captures the classic
     // takeoff state rather than a mid-air teleport back to cruise.
@@ -5636,6 +5679,7 @@ export class PlanetariumMode {
     const veil = document.getElementById('arrival-veil');
     const coverStart = performance.now();
     veil?.classList.add('covering'); // snaps fully opaque (no fade-in) — see CSS
+    const coverGen = ++this.arrivalCoverGen;
     // Two frames so the opaque veil is actually composited before we block the
     // main thread painting; otherwise the paint freezes a half-covered veil and
     // the unpainted scene shows through it.
@@ -5667,6 +5711,7 @@ export class PlanetariumMode {
           // veil), drain once more, then reveal.
           const holdDeadline = coverStart + PlanetariumMode.ARRIVAL_UPGRADE_HOLD_MAX_MS;
           const tryLift = () => {
+            if (coverGen !== this.arrivalCoverGen) return; // a newer arrival owns the veil now
             if (
               this.active &&
               performance.now() < holdDeadline &&
@@ -5682,7 +5727,9 @@ export class PlanetariumMode {
             // reads it as an intentional beat rather than a flicker. Removing
             // the class fades it back out.
             const wait = Math.max(48, PlanetariumMode.ARRIVAL_MIN_DWELL_MS - (performance.now() - coverStart));
-            window.setTimeout(() => veil?.classList.remove('covering'), wait);
+            window.setTimeout(() => {
+              if (coverGen === this.arrivalCoverGen) veil?.classList.remove('covering');
+            }, wait);
           };
           tryLift();
         }

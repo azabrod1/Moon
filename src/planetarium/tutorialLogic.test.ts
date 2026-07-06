@@ -43,7 +43,7 @@ describe('TUTORIAL_STEPS', () => {
   it('card-only steps settle instantly; staged steps wait out arrivals and dwell', () => {
     for (const step of TUTORIAL_STEPS) {
       if (step.stage === 'none') {
-        expect(step.settle).toEqual({ arrival: false, fov: false, dwellMs: 0 });
+        expect(step.settle).toEqual({ arrival: false, fov: false, totality: false, dwellMs: 0 });
       } else {
         expect(step.settle.arrival).toBe(true);
         expect(step.settle.dwellMs).toBe(TUTORIAL_SETTLE_DWELL_MS);
@@ -54,6 +54,12 @@ describe('TUTORIAL_STEPS', () => {
   it('only the eclipse enters surface view, so only it waits out the FOV glide', () => {
     for (const step of TUTORIAL_STEPS) {
       expect(step.settle.fov).toBe(step.stage === 'eclipse');
+    }
+  });
+
+  it('only the eclipse holds Next for the totality moment', () => {
+    for (const step of TUTORIAL_STEPS) {
+      expect(step.settle.totality).toBe(step.stage === 'eclipse');
     }
   });
 
@@ -115,9 +121,10 @@ describe('isStepSettled', () => {
     arrivalInFlight: false,
     veilCovering: false,
     fovAnimating: false,
+    totalityReached: true,
     sinceStagedMs: TUTORIAL_SETTLE_DWELL_MS,
   };
-  const FULL = { arrival: true, fov: true, dwellMs: TUTORIAL_SETTLE_DWELL_MS };
+  const FULL = { arrival: true, fov: true, totality: true, dwellMs: TUTORIAL_SETTLE_DWELL_MS };
 
   it('settles when every required signal is idle and the dwell has passed', () => {
     expect(isStepSettled(IDLE, FULL)).toBe(true);
@@ -138,14 +145,20 @@ describe('isStepSettled', () => {
     expect(isStepSettled({ ...IDLE, fovAnimating: true }, { ...FULL, fov: false })).toBe(true);
   });
 
+  it('an unreached totality blocks only when required', () => {
+    expect(isStepSettled({ ...IDLE, totalityReached: false }, FULL)).toBe(false);
+    expect(isStepSettled({ ...IDLE, totalityReached: false }, { ...FULL, totality: false })).toBe(true);
+  });
+
   it('signals not required are ignored (card-only steps settle immediately)', () => {
     const busy: SettleSignals = {
       arrivalInFlight: true,
       veilCovering: true,
       fovAnimating: true,
+      totalityReached: false,
       sinceStagedMs: 0,
     };
-    expect(isStepSettled(busy, { arrival: false, fov: false, dwellMs: 0 })).toBe(true);
+    expect(isStepSettled(busy, { arrival: false, fov: false, totality: false, dwellMs: 0 })).toBe(true);
   });
 });
 

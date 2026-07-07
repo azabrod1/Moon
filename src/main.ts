@@ -124,8 +124,16 @@ function applyRenderResolution() {
 }
 
 function buildComposer(cam: THREE.Camera) {
-  if (composer) composer.dispose();
-  if (!useBloom) { composer = null; return; }
+  if (composer) {
+    // EffectComposer.dispose() frees only its own ping-pong targets and copy
+    // pass — never the added passes. Dispose them here so the bloom pass's mip
+    // targets and the output pass's material don't leak on every rebuild (each
+    // camera switch). Pass.dispose() is a safe no-op for passes without state.
+    for (const pass of composer.passes) pass.dispose();
+    composer.dispose();
+    composer = null;
+  }
+  if (!useBloom) return;
 
   composer = new EffectComposer(renderer);
   composer.setPixelRatio(getTargetPixelRatio());

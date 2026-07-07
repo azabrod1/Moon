@@ -393,6 +393,11 @@ export class PlanetariumMode {
   private governedMoonSeed: { name: string; parentPlanet: string } | null = null;
   /** Last applied moon speed cap — the ramp's memory across frames. */
   private moonCapEased = Infinity;
+  /** Whether a moon would cap the ship this frame (closing on a governed moon),
+   *  independent of whether an override is currently bypassing it. Lets the
+   *  override auto-clear tell that a moon is still being escaped — outer moons
+   *  sit well beyond the parent's system-throttle radius. */
+  private moonCapEngaged = false;
   /** Player position at the top of the frame — the collision sweep needs the
    *  whole segment, not the endpoint (one 100 ms frame at the in-system
    *  default steps ~2,500 km, clean through a small moon's bubble). */
@@ -1153,10 +1158,18 @@ export class PlanetariumMode {
       // several moon standoffs per second. Cap the closing speed at
       // K × surface distance instead (same escape hatch as the throttle).
       // Tightening applies instantly; release ramps so a flyby ends with a
-      // pull-away, not a one-frame snap back to thousands of km/s.
-      const geomCap =
-        this.throttleOverride || !this.systemSlowdown ? Infinity : this.computeMoonSpeedCap();
-      this.moonCapEased = rampedSpeedCap(geomCap, this.moonCapEased, dt, MOON_CAP_RELEASE_EFOLD_S);
+      // pull-away, not a one-frame snap back to thousands of km/s. The throttle
+      // override (and systemSlowdown off) is a deliberate escape hatch, so it
+      // bypasses the ramp — the cap releases the same frame, no lingering crawl.
+      // geomCap is computed even while bypassing: moonCapEngaged tells the
+      // override auto-clear a moon is still being escaped (a moon can govern
+      // well outside the parent's system-throttle radius).
+      const geomCap = this.computeMoonSpeedCap();
+      this.moonCapEngaged = Number.isFinite(geomCap);
+      const capBypass = this.throttleOverride || !this.systemSlowdown;
+      this.moonCapEased = capBypass
+        ? Infinity
+        : rampedSpeedCap(geomCap, this.moonCapEased, dt, MOON_CAP_RELEASE_EFOLD_S);
       this.player.speedCapAUPerS = this.moonCapEased;
 
       this.prevPlayerPos.set(this.player.posX, this.player.posY, this.player.posZ);
@@ -2474,8 +2487,11 @@ export class PlanetariumMode {
       this.inSystemMode = false;
     }
 
-    // Auto-disable override when leaving all planet systems
-    if (this.throttleOverride && this.systemSpeedFactor >= 1.0) {
+    // Auto-disable override once clear of both the planet throttle and any moon
+    // limiter. systemSpeedFactor alone reflects only the parent-system throttle,
+    // so without the moon check the override would clear itself the instant you
+    // stepped outside a planet's radius — even while an outer moon still caps.
+    if (this.throttleOverride && this.systemSpeedFactor >= 1.0 && !this.moonCapEngaged) {
       this.throttleOverride = false;
     }
 
@@ -6403,6 +6419,11 @@ export class PlanetariumMode {
 
   exitLandedMode() {
     if (!this.landedOn) return;
+    // The governor is frozen while landed, so a cap tightened on the approach
+    // must not ramp-limit the departure. Reset it here — the single takeoff
+    // chokepoint (also the excursion Leave and deactivate paths) — so flight
+    // resumes from an unconstrained cap, mirroring the teleport reset.
+    this.moonCapEased = Infinity;
     // Back to cruise: no landed system means no moons owed a warm upload.
     setWarmEligibleMoonParents(new Set());
     // Leave sits in the cluster above the deck's backdrop, so takeoff can
@@ -6688,6 +6709,10 @@ export class PlanetariumMode {
     this.player.pitch = saved.pitchRad ?? 0;
     this.player.speedMultiplier = saved.speed;
     this.player.moving = saved.landedOn ? false : (saved.moving ?? saved.speed > 0);
+    // A restore is a position discontinuity; drop any ramped moon cap so a
+    // flight resumed on the same mode instance (deactivate→reactivate) isn't
+    // throttled by a value left over from wherever the ship last was.
+    this.moonCapEased = Infinity;
     this.player.distanceTraveled = saved.distanceTraveled;
     this.player.timeElapsed = saved.timeElapsed;
     this.player.visitedPlanets = new Set(saved.visitedPlanets);

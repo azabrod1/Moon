@@ -11,7 +11,7 @@
     "gen:maps": "node gen-maps.mjs",
     "build": "tsc && vite build",
     "preview": "vite preview",
-    "test": "vitest run"
+    "test": "vitest run src"
   },
   "dependencies": {
     "@types/three": "^0.183.1",

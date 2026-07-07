@@ -118,6 +118,26 @@ import { getMoonsByPlanet, MOONS, type MoonData } from './planets/moonData';
 import { RING_CONFIGS } from './planets/rings';
 import { filterDeckRows, groupDeckBodies, observeArrivalAction, type DeckRow } from './deckLogic';
 import {
+  governedSpeedCap,
+  moonArrivalPose,
+  rampedSpeedCap,
+  MOON_APPROACH_K_PER_S,
+  MOON_APPROACH_V_MIN_AU_S,
+  MOON_CAP_RELEASE_EFOLD_S,
+} from './arrivalLogic';
+import {
+  canStartTutorial,
+  isStepSettled,
+  restorePlan,
+  totalitySettleUtcMs,
+  TUTORIAL_ECLIPSE,
+  TUTORIAL_ECLIPSE_APPROACH_RATE,
+  TUTORIAL_STEPS,
+  TUTORIAL_TIMELAPSE_RATE,
+  tutorialTransition,
+  type TutorialPhase,
+} from './tutorialLogic';
+import {
   HISTORIC_JOURNEYS,
   INTERSTELLAR_SCENE_POSITION,
   type HistoricJourney,
@@ -142,6 +162,7 @@ import {
 import { ObservatoryHUD, type SurfaceHudState } from './ui/ObservatoryHUD';
 import { SurfaceTargetMenu } from './ui/SurfaceTargetMenu';
 import { SunLabel } from './ui/SunLabel';
+import { TutorialCard, tutorialCardModel } from './ui/TutorialCard';
 
 type ScriptedTransfer = {
   elapsed: number;
@@ -156,6 +177,28 @@ type ScriptedTransfer = {
 };
 
 export const FIRST_PLANETARIUM_ACTIVATION_TOTAL_UNITS = CREATE_SOLAR_SYSTEM_TOTAL_UNITS + 1;
+
+/** Cruise pose stashed when the deck grabs the ship out of flight — see the
+ *  observatoryExcursion field. */
+type ObservatoryExcursion = {
+  posX: number; posY: number; posZ: number;
+  heading: number; pitch: number;
+  speedMultiplier: number; systemSpeedMultiplier: number;
+  inSystemMode: boolean; moving: boolean;
+};
+
+/** Everything stopTutorial needs to hand the pre-tutorial session back. `state` is
+ *  also what getState() serves while a tutorial runs, so every persistence path
+ *  (autosave, Save, pagehide, deactivate) keeps writing the pre-tutorial journey. */
+interface TutorialSnapshot {
+  state: PlanetariumState;
+  excursion: ObservatoryExcursion | null;
+  panelWasOpen: boolean;
+  lastObservatoryEvent: ShadowEvent | null;
+}
+
+/** Which end toast a tutorial stop owes the user (none for lifecycle aborts and New Journey). */
+type TutorialEndToast = 'skip' | 'return' | null;
 
 /** The deck's tabs — one per cluster button. */
 type DeckVerb = 'observe' | 'travel' | 'pilot';
@@ -185,6 +228,10 @@ export interface PlanetariumActivationProgress {
 export class PlanetariumMode {
   private static readonly TIME_RATE_PRESETS = [1, 60, 1200, 3600, 21600, 86400, 604800, 2592000, 31557600];
   private static readonly SHIP_CLEARANCE_AU = (1_737.4 / KM_PER_AU) * 1.5;
+  /** Chase-camera trail distance behind the ship (also the moon-arrival
+   *  standoff's camera correction — the apparent size the user sees is
+   *  measured from back here, not from the ship). */
+  private static readonly CRUISE_CAM_DIST_AU = 0.000094;
   // Conservative disc radius for ship occlusion. Default hull is ~3 moon-radii
   // long with 0.5x group scale applied → half-length ≈ 0.75 moon-radii.
   private static readonly SHIP_OCCLUDER_RADIUS_AU = (1_737.4 / KM_PER_AU) * 0.75;
@@ -211,6 +258,7 @@ export class PlanetariumMode {
     'planetarium-btn-travel',
     'planetarium-btn-observatory',
     'planetarium-btn-autopilot',
+    'planetarium-btn-tutorial',
     'planetarium-speed-up',
     'planetarium-speed-down',
   ] as const;
@@ -266,6 +314,12 @@ export class PlanetariumMode {
   private static readonly TEXTURE_WARM_BUDGET_MS = 6;
   // Arrival veil re-entrancy guard (rapid picks, or a pick while one is running).
   private arrivalInFlight = false;
+  /** Monotonic veil-cover token: each veiled arrival claims the veil, so a
+   *  previous arrival's lift timer can't uncover a newer arrival mid-flight.
+   *  Reachable whenever a new veiled arrival starts inside the last one's
+   *  reveal dwell — e.g. a parked tutorial stop restoring the moment the
+   *  in-flight flag clears, or two quick deck picks. */
+  private arrivalCoverGen = 0;
   private static readonly ARRIVAL_MIN_DWELL_MS = 150;
   // Longest the arrival cover waits (from cover start) for the landed pair's
   // in-flight 4K fetch+decode before revealing anyway — a stalled fetch must
@@ -332,6 +386,22 @@ export class PlanetariumMode {
 
   // Moon world positions in AU (true positions, not offset)
   private moonWorldPositions = new Map<string, { x: number; y: number; z: number }>();
+  /** The latest moon-jump target, governed and collision-checked by name
+   *  while its mesh may still be unpainted behind the arrival veil (the
+   *  visibility-keyed set can't see it there). Drops once the mesh shows;
+   *  a stale seed is neutralized by distance on its own. */
+  private governedMoonSeed: { name: string; parentPlanet: string } | null = null;
+  /** Last applied moon speed cap — the ramp's memory across frames. */
+  private moonCapEased = Infinity;
+  /** Whether a moon would cap the ship this frame (closing on a governed moon),
+   *  independent of whether an override is currently bypassing it. Lets the
+   *  override auto-clear tell that a moon is still being escaped — outer moons
+   *  sit well beyond the parent's system-throttle radius. */
+  private moonCapEngaged = false;
+  /** Player position at the top of the frame — the collision sweep needs the
+   *  whole segment, not the endpoint (one 100 ms frame at the in-system
+   *  default steps ~2,500 km, clean through a small moon's bubble). */
+  private prevPlayerPos = new THREE.Vector3();
 
   private layoutMode: PlanetariumLayout = 'realistic';
 
@@ -381,12 +451,7 @@ export class PlanetariumMode {
    * the takeoff vector. Survives vantage swaps and event jumps (re-lands via
    * applyLandedTarget); session-only by design — never persisted, and cleared
    * by New Journey, mission start, and deactivate. */
-  private observatoryExcursion: {
-    posX: number; posY: number; posZ: number;
-    heading: number; pitch: number;
-    speedMultiplier: number; systemSpeedMultiplier: number;
-    inSystemMode: boolean; moving: boolean;
-  } | null = null;
+  private observatoryExcursion: ObservatoryExcursion | null = null;
   private nearbyLandTarget: NonNullable<LandedTarget> | null = null;
 
   // The deck: one centered picker (Observatory · Travel · Autopilot tabs)
@@ -521,6 +586,12 @@ export class PlanetariumMode {
     // surface view and the labels setting, so this can't reveal stale labels.
     () => this.setWorldLabelsVisible(true),
   );
+  private tutorialCard = new TutorialCard(
+    () => this.advanceTutorial(),
+    () => this.backTutorial(),
+    () => this.stopTutorial({ restore: true, toast: 'skip' }),
+    () => this.stopTutorial({ restore: true, toast: 'return' }),
+  );
   // The most recent event jump — gives "Look up" and the surface HUD their
   // narrative while the clock still sits inside the event's window.
   private lastObservatoryEvent: ShadowEvent | null = null;
@@ -571,6 +642,26 @@ export class PlanetariumMode {
   private resumeTimeAfterMenu = false;
   private resumeShipAfterHelp = false;
   private resumeTimeAfterHelp = false;
+  /** Live guided-tutorial state; null when idle. The generation token is the
+   *  defense against late callbacks: every tutorial timer and arrival closure
+   *  captures it and no-ops on mismatch after a skip/advance/stop. endRequest
+   *  parks a stop that arrived while an arrival was mid-flight (arriveThen
+   *  silently drops rival calls); updateTutorial executes it on the first idle
+   *  frame. */
+  private tutorial: {
+    stepIndex: number;
+    phase: TutorialPhase;
+    snapshot: TutorialSnapshot;
+    eclipse: ShadowEvent | null;
+    totalityReached: boolean;
+    /** A scene step actually staged. False while only card-only steps ran —
+     *  ending then has nothing to put back (see executeTutorialStop). */
+    everStaged: boolean;
+    stagedAtMs: number;
+    timer: number | null;
+    generation: number;
+    endRequest: { restore: boolean; toast: TutorialEndToast } | null;
+  } | null = null;
 
   private closeMenuPanel() {
     if (!this.menuPanel.isOpen()) return;
@@ -587,6 +678,15 @@ export class PlanetariumMode {
 
   private showHelp() {
     if (this.helpModal.isOpen()) return;
+    // The action bar recommends the tutorial only on the first-run showing
+    // (hasSeenHelp flips when this modal first closes). A Help revisit gets a
+    // plain button, and no "Explore on my own" choice — the visitor already is.
+    const firstRun = !this.store.hasSeenHelp();
+    const takeTutorial = document.getElementById('help-take-tutorial');
+    takeTutorial?.classList.toggle('tutorial-btn-primary', firstRun);
+    takeTutorial?.classList.toggle('tutorial-btn-ghost', !firstRun);
+    const explore = document.getElementById('help-explore');
+    if (explore) explore.style.display = firstRun ? '' : 'none';
     this.resumeShipAfterHelp = this.player.moving;
     this.resumeTimeAfterHelp = !this.timeState.paused;
     this.player.moving = false;
@@ -749,6 +849,7 @@ export class PlanetariumMode {
     this.observatoryPanel.bind();
     this.observatoryHud.bind();
     this.surfaceTargetMenu.bind();
+    this.tutorialCard.bind();
     this.speedValueEl = document.getElementById('planetarium-speed-value');
     this.speedLabelEl = document.getElementById('planetarium-speed-label');
     this.speedCenterEl = document.querySelector('.speed-center') as HTMLElement | null;
@@ -950,6 +1051,10 @@ export class PlanetariumMode {
   }
 
   deactivate(): void {
+    // A live tutorial hands the pre-tutorial state back first, synchronously — the
+    // teardown below (excursion drop, landed exit, save) then applies to the
+    // restored journey exactly as it would for a non-tutorialing player.
+    if (this.tutorial) this.stopTutorial({ restore: true, sync: true });
     this.resumePrompt.cancel();
     this.bottomBar.closeStats();
 
@@ -1023,6 +1128,9 @@ export class PlanetariumMode {
     // landed sessions warm up too.
     pumpTextureWarmQueue(PlanetariumMode.TEXTURE_WARM_BUDGET_MS);
 
+    // Runs in both branches below — a tutorial narrates landed and cruise scenes.
+    this.updateTutorial();
+
     // Landed mode: camera orbits body, skip flight controls
     if (this.landedOn) {
       this.updateLanded(dt);
@@ -1045,6 +1153,26 @@ export class PlanetariumMode {
       this.nearestSystemPlanet = throttleResult.planet;
       this.player.systemSpeedFactor = (this.throttleOverride || !this.systemSlowdown) ? 1.0 : this.systemSpeedFactor;
 
+      // Moon-proximity governor: the planet throttle knows nothing smaller
+      // than a system, so near a moon it still allows the in-system setting —
+      // several moon standoffs per second. Cap the closing speed at
+      // K × surface distance instead (same escape hatch as the throttle).
+      // Tightening applies instantly; release ramps so a flyby ends with a
+      // pull-away, not a one-frame snap back to thousands of km/s. The throttle
+      // override (and systemSlowdown off) is a deliberate escape hatch, so it
+      // bypasses the ramp — the cap releases the same frame, no lingering crawl.
+      // geomCap is computed even while bypassing: moonCapEngaged tells the
+      // override auto-clear a moon is still being escaped (a moon can govern
+      // well outside the parent's system-throttle radius).
+      const geomCap = this.computeMoonSpeedCap();
+      this.moonCapEngaged = Number.isFinite(geomCap);
+      const capBypass = this.throttleOverride || !this.systemSlowdown;
+      this.moonCapEased = capBypass
+        ? Infinity
+        : rampedSpeedCap(geomCap, this.moonCapEased, dt, MOON_CAP_RELEASE_EFOLD_S);
+      this.player.speedCapAUPerS = this.moonCapEased;
+
+      this.prevPlayerPos.set(this.player.posX, this.player.posY, this.player.posZ);
       this.player.update(dt);
     }
     this.timeState = advancePlanetariumTime(this.timeState, dt);
@@ -1074,7 +1202,10 @@ export class PlanetariumMode {
 
     this.updatePlanetScaling();
     this.player.group.scale.setScalar(0.5);
-    if (!this.devFreeCamera) this.resolvePlanetCollisions();
+    if (!this.devFreeCamera) {
+      this.resolvePlanetCollisions();
+      this.resolveMoonCollisions();
+    }
 
     // Check orbit crossings and visits after scale/collision are applied so the
     // reachable interaction shell matches the visual shell.
@@ -2086,6 +2217,7 @@ export class PlanetariumMode {
     }
 
     if (throttle > 0) {
+      this.reviveParkedShip(); // accelerating a parked ship means "go"
       // Accelerate — route to whichever speed mode is active
       if (this.inSystemMode) {
         if (this.player.systemSpeedMultiplier < 0.001) {
@@ -2119,6 +2251,10 @@ export class PlanetariumMode {
     // Escape always works — even while typing in the deck search
     if (e.key === 'Escape') {
       if (this.isHelpOpen()) { this.hideHelp(); return; }
+      // One Esc, one meaning while tutorialing: end the tutorial. Above the deck rung
+      // on purpose — during the deck theater the open deck is tutorial-owned, and
+      // closing just it would leave the pending commit to teleport anyway.
+      if (this.tutorial) { this.stopTutorial({ restore: true, toast: 'skip' }); return; }
       if (this.isDeckOpen()) { this.closeDeck(); return; }
       if (this.bottomBar.isStatsOpen()) { this.bottomBar.closeStats(); return; }
       if (this.surfaceTargetMenu.isOpen()) { this.closeSurfaceTargetMenu(); return; }
@@ -2324,6 +2460,17 @@ export class PlanetariumMode {
     );
   }
 
+  /** Throttle-up un-parks the ship. Guarded: the ☰ menu/help parks run their
+   *  own capture-and-resume (and `keys` keeps accumulating while modals are
+   *  up), the tutorial's stagings are deliberate freeze-frames, and missions
+   *  script `moving` themselves — reviving under any of those fights them. */
+  private reviveParkedShip() {
+    if (this.player.moving) return;
+    if (this.menuPanel.isOpen() || this.isHelpOpen()) return;
+    if (this.tutorial || this.isMissionActive()) return;
+    this.player.moving = true;
+  }
+
   private formatSystemSpeed(speedMultiplier: number): string {
     const kmPerS = speedMultiplier * 299792.458;
     if (kmPerS < 1000) return Math.round(kmPerS) + ' km/s';
@@ -2340,8 +2487,11 @@ export class PlanetariumMode {
       this.inSystemMode = false;
     }
 
-    // Auto-disable override when leaving all planet systems
-    if (this.throttleOverride && this.systemSpeedFactor >= 1.0) {
+    // Auto-disable override once clear of both the planet throttle and any moon
+    // limiter. systemSpeedFactor alone reflects only the parent-system throttle,
+    // so without the moon check the override would clear itself the instant you
+    // stepped outside a planet's radius — even while an outer moon still caps.
+    if (this.throttleOverride && this.systemSpeedFactor >= 1.0 && !this.moonCapEngaged) {
       this.throttleOverride = false;
     }
 
@@ -2356,15 +2506,15 @@ export class PlanetariumMode {
       this.speedCenterEl.classList.toggle('throttle-override', this.throttleOverride);
     }
     if (this.speedValueEl) {
-      if (this.inSystemMode) {
-        this.speedValueEl.textContent = this.player.systemSpeedMultiplier < 0.0005
-          ? '0 km/s'
-          : this.formatSystemSpeed(this.player.systemSpeedMultiplier);
-      } else {
-        this.speedValueEl.textContent = this.player.speedMultiplier < 0.01
-          ? '0c'
-          : `${this.player.speedC.toFixed(1)}c`;
-      }
+      // The pill reads the speed the ship is actually doing (parked → 0,
+      // proximity-capped → the cap), not the throttle setting — the setting
+      // kept "25k km/s" on screen over a parked ship. Slow deep-space speeds
+      // drop to km/s so a governed crawl never reads "0.0c".
+      const actualC = this.player.speedC;
+      this.speedValueEl.textContent =
+        this.inSystemMode || actualC < 0.05
+          ? (actualC < 0.0005 ? '0 km/s' : this.formatSystemSpeed(actualC))
+          : `${actualC.toFixed(1)}c`;
     }
   }
 
@@ -2414,6 +2564,487 @@ export class PlanetariumMode {
 
     this.restoreState(previousState);
     this.menuPanel.setVisible(previousMenuVisible);
+  }
+
+  // ── Guided tutorial ──────────────────────────────────────────────────────────
+  // The Next-driven click-through of the app's showcase scenes. Pure logic
+  // (step table, phase machine, settle/restore rules) lives in tutorialLogic.ts,
+  // the card widget in ui/TutorialCard.ts; this block owns the scene work. Every
+  // step staging is absolute and idempotent: inputs stay live while a tutorial
+  // runs, so Next must put the scene where the step needs it no matter what
+  // the user did meanwhile — and if the user starts a rival arrival, the
+  // tutorial re-stages after it resolves (the tutorial wins, a beat later).
+
+  /** Entry: the help-modal footer and the ☰ menu item. */
+  startTutorial(): void {
+    // Close the entry surfaces before the guard — a refused click must not
+    // leave a dead modal up. Both auto-pause ship and clock, and the snapshot
+    // below must capture the resumed truth, not the modal freeze.
+    this.hideHelp();
+    this.closeMenuPanel();
+    if (
+      !canStartTutorial({
+        missionActive: this.isMissionActive(),
+        resumePromptVisible: this.resumePrompt.isVisible(),
+        alreadyActive: this.tutorial !== null,
+      })
+    ) {
+      return;
+    }
+    // A pre-tutorial surface view can't be snapshotted (view sub-states are
+    // session-only; getState() carries none of them) — settle to orbit view
+    // now so the tutorial starts from a state the restore can reproduce.
+    if (this.landedView === 'surface') this.exitSurfaceView(true);
+    const snapshot: TutorialSnapshot = {
+      state: this.getState(), // before this.tutorial is set — the override must not see itself
+      excursion: this.observatoryExcursion,
+      panelWasOpen: this.observatoryPanel.isOpen(),
+      lastObservatoryEvent: this.lastObservatoryEvent,
+    };
+    this.tutorial = {
+      stepIndex: 0,
+      phase: 'staging',
+      snapshot,
+      eclipse: null,
+      totalityReached: false,
+      everStaged: false,
+      stagedAtMs: performance.now(),
+      timer: null,
+      generation: 0,
+      endRequest: null,
+    };
+    // The card narrates from here; stray banners would talk over it (on
+    // phones they share the same top strip).
+    this.notification.setMuted(true);
+    this.updateTutorialMenuItem();
+    this.tutorialCard.show();
+    this.stageTutorialStep(0);
+  }
+
+  private advanceTutorial(): void {
+    const tutorial = this.tutorial;
+    if (!tutorial || tutorial.phase !== 'ready') return;
+    if (tutorial.stepIndex + 1 >= TUTORIAL_STEPS.length) return; // the wrap card's primary ends instead
+    this.stageTutorialStep(tutorial.stepIndex + 1);
+  }
+
+  /** Back re-stages the previous stop (stagings are absolute, so this is just
+   *  the index math). The card hides Back below index 2 — see tutorialCardModel
+   *  — but guard here too: a stale click must not stage the welcome card's
+   *  nothing over a live scene. */
+  private backTutorial(): void {
+    const tutorial = this.tutorial;
+    if (!tutorial || tutorial.phase !== 'ready' || tutorial.stepIndex < 2) return;
+    this.stageTutorialStep(tutorial.stepIndex - 1);
+  }
+
+  /**
+   * End the tutorial. restore=true puts the pre-tutorial snapshot back; restore=false
+   * keeps the staged scene as the journey (New Journey). sync
+   * marks a lifecycle abort (deactivate, mission start): the caller's own
+   * teardown continues immediately after, so the restore must apply
+   * synchronously — never through the veil-gated arrival, which is silently
+   * dropped while another arrival is mid-flight.
+   */
+  private stopTutorial(opts: { restore: boolean; sync?: boolean; toast?: 'skip' | 'return' }): void {
+    const tutorial = this.tutorial;
+    if (!tutorial) return;
+    tutorial.generation++; // strand every pending theater timer and arrival closure
+    if (tutorial.timer !== null) {
+      clearTimeout(tutorial.timer);
+      tutorial.timer = null;
+    }
+    tutorial.phase = tutorialTransition(tutorial.phase, opts.sync ? 'abort' : 'skip');
+    const toast = opts.toast ?? null;
+    if (!opts.sync && this.arrivalInFlight) {
+      // Mid-arrival: park the request; updateTutorial executes it on the first
+      // idle frame (the veil is up — nothing useful could happen sooner).
+      tutorial.endRequest = { restore: opts.restore, toast };
+      this.renderTutorialCard(); // 'ending' disables both buttons
+      return;
+    }
+    this.executeTutorialStop(opts.restore, opts.sync === true, toast);
+  }
+
+  private executeTutorialStop(restore: boolean, sync: boolean, toast: TutorialEndToast): void {
+    const tutorial = this.tutorial;
+    if (!tutorial) return;
+    const snap = tutorial.snapshot;
+    // The tutorial owns these while it runs — take them down with it. The card
+    // hides now; the scene may still restore behind the veil a beat later.
+    // The ☰ menu closes too: Esc can end the tutorial with it open (the Esc
+    // cascade has no menu rung), and it must not float over the restore.
+    this.closeDeck();
+    this.closeSurfaceTargetMenu();
+    this.closeMenuPanel();
+    this.tutorialCard.hide();
+    const finish = () => {
+      // Tail runs only once the restore has actually applied: until here the
+      // getState() override keeps serving the snapshot, so a save racing the
+      // restore can never persist a half-torn-down showcase scene.
+      this.tutorial = null;
+      this.notification.setMuted(false);
+      this.updateTutorialMenuItem();
+      this.store.saveState(this.getState());
+      if (toast === 'skip') {
+        this.notification.show('Tutorial ended. It’s in the ☰ menu if you want it again.', { force: true });
+      } else if (toast === 'return') {
+        this.notification.show('Back where you started.', { force: true });
+      }
+    };
+    if (!restore) {
+      // New Journey: the staged scene becomes the journey.
+      finish();
+      return;
+    }
+    if (!tutorial.everStaged) {
+      // "Not now" / Esc on the welcome card: no scene ever staged, so there is
+      // nothing to put back — a restore here would only jump-cut a landed
+      // user's own camera framing to the default. Whatever they did under the
+      // card is theirs to keep.
+      finish();
+      return;
+    }
+    const plan = restorePlan({
+      snapshotLandedOn: snap.state.landedOn?.name ?? null,
+      panelWasOpen: snap.panelWasOpen,
+      inSurfaceView: this.landedView === 'surface',
+      landedOn: this.landedOn?.name ?? null,
+      lifecycleAbort: sync,
+    });
+    const applyRestore = () => {
+      // A competing stop may have finished while a veiled restore waited out
+      // its cover frames — the loser must not restore twice.
+      if (this.tutorial !== tutorial) return;
+      if (plan.exitSurfaceView && this.landedView === 'surface') this.exitSurfaceView(true);
+      // The Moon staging opens the panel, and a landed→landed restore re-lands
+      // through the ceremony-free path that deliberately preserves an open
+      // panel — close it unconditionally and let reopenPanel put back exactly
+      // what the snapshot had.
+      this.closeObservatoryPanel();
+      // Stagings exit/re-land, which consumes the session excursion pose —
+      // drop the live one and put the snapshot's copy back after restore.
+      this.observatoryExcursion = null;
+      if (plan.exitLandedFirst && this.landedOn) this.exitLandedMode();
+      this.restoreState(snap.state); // re-lands when the snapshot was landed
+      this.observatoryExcursion = snap.excursion;
+      this.lastObservatoryEvent = snap.lastObservatoryEvent;
+      if (plan.reopenPanel && this.landedOn) this.openObservatoryPanel();
+      finish();
+    };
+    if (plan.veilGate && snap.state.landedOn) {
+      this.arriveThen(snap.state.landedOn, applyRestore);
+    } else {
+      applyRestore();
+    }
+  }
+
+  /**
+   * Absolute staging for one step: close the transient overlays the tutorial is
+   * about to play through, then run the step's scene work. The scene stagings
+   * normalize the clock themselves (a paused clock would freeze the time-lapse
+   * and the eclipse approach); card-only steps leave the user's clock alone.
+   */
+  private stageTutorialStep(index: number): void {
+    const tutorial = this.tutorial;
+    if (!tutorial) return;
+    tutorial.stepIndex = index;
+    tutorial.phase = 'staging';
+    tutorial.totalityReached = false;
+    tutorial.generation++;
+    if (tutorial.timer !== null) {
+      clearTimeout(tutorial.timer);
+      tutorial.timer = null;
+    }
+    const generation = tutorial.generation;
+    // A user-opened deck may hold a search filter that would hide the
+    // theater's target row — closing resets it (openDeck clears the query on
+    // fresh opens only).
+    this.closeDeck();
+    this.closeSurfaceTargetMenu();
+    this.bottomBar.closeStats();
+    this.renderTutorialCard();
+    const step = TUTORIAL_STEPS[index];
+    if (step.stage !== 'none') tutorial.everStaged = true;
+    switch (step.stage) {
+      case 'none':
+        // Card-only: welcome narrates over the user's own scene (clock
+        // included), wrap over the eclipse the previous step set up.
+        this.markTutorialStaged(generation);
+        break;
+      case 'saturn':
+        this.stageTutorialSaturn(generation);
+        break;
+      case 'moon':
+        this.stageTutorialMoon(generation);
+        break;
+      case 'timelapse':
+        this.stageTutorialTimelapse(generation);
+        break;
+      case 'eclipse':
+        this.stageTutorialEclipse(generation);
+        break;
+    }
+  }
+
+  /**
+   * Veil-gated arrival for the tutorial. arriveThen silently ignores a call while
+   * another arrival is mid-flight — a user teleport during the deck theater
+   * would otherwise strand the step in 'staging' forever — so retry on a
+   * short timer until the rival resolves, then commit: the user's arrival
+   * lands, and the tutorial re-stages a beat later. Generation-checked
+   * throughout, so it dies quietly after any skip/advance/stop.
+   */
+  private tutorialArriveWhenIdle(
+    generation: number,
+    target: NonNullable<LandedTarget>,
+    action: () => void,
+  ): void {
+    const tutorial = this.tutorial;
+    if (!tutorial || tutorial.generation !== generation) return;
+    if (this.arrivalInFlight) {
+      tutorial.timer = window.setTimeout(() => {
+        const live = this.tutorial;
+        if (!live || live.generation !== generation) return;
+        live.timer = null;
+        this.tutorialArriveWhenIdle(generation, target, action);
+      }, 120);
+      return;
+    }
+    this.arriveThen(target, () => {
+      const live = this.tutorial;
+      if (!live || live.generation !== generation) return;
+      action();
+    });
+  }
+
+  /** Accent pulse on the deck row the theater is about to press. Stale pulses
+   *  die with the rows — every deck open rebuilds the list. */
+  private pulseTutorialDeckRow(name: string): void {
+    const list = document.getElementById('deck-list');
+    if (!list) return;
+    for (const row of list.querySelectorAll('.pk-row.tutorial-pulse')) row.classList.remove('tutorial-pulse');
+    this.findDeckRow(name)?.classList.add('tutorial-pulse');
+  }
+
+  /** Ensure the tutorial stands on `target` (fresh landing or ceremony-free
+   *  re-land), then continue — the shared trunk of the landed stagings. */
+  private tutorialLandThen(
+    generation: number,
+    target: NonNullable<LandedTarget>,
+    then: () => void,
+  ): void {
+    this.tutorialArriveWhenIdle(generation, target, () => {
+      if (this.landedOn) {
+        // A live surface view would keep a stale cross-system target.
+        if (this.landedView === 'surface') this.exitSurfaceView(true);
+        this.applyLandedTarget(target);
+      } else {
+        this.enterLandedMode(target);
+      }
+      then();
+    });
+  }
+
+  /** Deck theater, Teleport tab: open on Saturn's row, pulse it, commit the
+   *  same jump the row's click would — the tutorial demonstrates the deck by
+   *  visibly using it. */
+  private stageTutorialSaturn(generation: number): void {
+    this.setTutorialClockRate(1);
+    this.closeObservatoryPanel();
+    const saturn = PLANETARIUM_BODIES.find((b) => b.name === 'Saturn');
+    if (!saturn) {
+      this.markTutorialStaged(generation);
+      return;
+    }
+    this.openDeck('travel');
+    this.revealDeckRow('Saturn');
+    this.pulseTutorialDeckRow('Saturn');
+    const tutorial = this.tutorial;
+    if (!tutorial) return;
+    tutorial.timer = window.setTimeout(() => {
+      const live = this.tutorial;
+      if (!live || live.generation !== generation) return;
+      live.timer = null;
+      this.closeDeck();
+      this.tutorialArriveWhenIdle(generation, { type: 'planet', name: 'Saturn' }, () => {
+        if (this.landedOn) this.exitLandedMode();
+        this.jumpToPlanet(saturn, { notify: false });
+        // Freeze-frame: the card narrates over a parked ship. Left under way
+        // (the arrival default), it would glide from the standoff to Saturn's
+        // collision shell in ~20 s, right under the copy.
+        this.player.moving = false;
+        this.markTutorialStaged(generation);
+      });
+    }, 900);
+  }
+
+  /** Deck theater, Observatory tab: the one-tap-lands-you-there flow, ending
+   *  on the Moon with the sky panel open regardless of the arrival
+   *  preference — the card talks about what the panel shows. */
+  private stageTutorialMoon(generation: number): void {
+    this.setTutorialClockRate(1);
+    this.openDeck('observe');
+    this.revealDeckRow('Moon');
+    this.pulseTutorialDeckRow('Moon');
+    const tutorial = this.tutorial;
+    if (!tutorial) return;
+    tutorial.timer = window.setTimeout(() => {
+      const live = this.tutorial;
+      if (!live || live.generation !== generation) return;
+      live.timer = null;
+      this.closeDeck();
+      this.tutorialLandThen(generation, { type: 'moon', name: 'Moon', parentPlanet: 'Earth' }, () => {
+        this.openObservatoryPanel();
+        this.markTutorialStaged(generation);
+      });
+    }, 600);
+  }
+
+  /**
+   * The Jupiter system at "2 hr/s", watched from the regular landed orbit
+   * camera — the motion showcase: the planet spins through a full day every
+   * ~5 s of wall clock while the Galilean moons wheel around it, crossing
+   * its face and slipping behind it (shadow-transit spots included, they're
+   * always on in the landed system). The camera pulls back past the default
+   * lit-side close-up so Io's whole orbit fits in frame — the point of this
+   * stop is the system moving, not the portrait.
+   */
+  private stageTutorialTimelapse(generation: number): void {
+    this.tutorialLandThen(generation, { type: 'planet', name: 'Jupiter' }, () => {
+      // The panel stays up on purpose: at 2 hr/s its now-bar, phase glyph and
+      // distances visibly run, which is half of what this card teaches. The
+      // open is explicit (not inherited from the Moon stop) so the staging
+      // holds even if the user closed the panel there.
+      this.openObservatoryPanel();
+      const pullbackAU = this.getLandedBodyRenderedRadiusAU() * 8;
+      this.camera.position.setLength(
+        Math.min(Math.max(pullbackAU, this.controls.minDistance), this.controls.maxDistance),
+      );
+      this.camera.lookAt(0, 0, 0);
+      this.setTutorialClockRate(TUTORIAL_TIMELAPSE_RATE);
+      this.markTutorialStaged(generation);
+    });
+  }
+
+  /**
+   * Land on Earth standing in the 2027-08-02 umbral path: the clock jumps to
+   * the eclipse's first contact and runs at "20 min/s", so the Moon bites
+   * into the Sun over a few seconds; updateTutorial drops to realtime just
+   * inside totality. The surface vantage rides the umbral spot per frame
+   * (updateSurfaceCamera), so totality then holds while the user lingers.
+   */
+  private stageTutorialEclipse(generation: number): void {
+    this.tutorialLandThen(generation, { type: 'planet', name: 'Earth' }, () => {
+      const tutorial = this.tutorial;
+      if (!tutorial) return;
+      tutorial.eclipse ??= findShadowEvent(TUTORIAL_ECLIPSE.spec, TUTORIAL_ECLIPSE.searchFromUtcMs, 1);
+      const event = tutorial.eclipse;
+      if (event) {
+        // Stepper/narrative parity with a panel-driven jump to this event.
+        this.lastObservatoryEvent = event;
+        this.timeState = { ...this.timeState, rate: TUTORIAL_ECLIPSE_APPROACH_RATE, paused: false };
+        this.setCurrentUtcMs(event.startUtcMs);
+        // The clock just moved a year ahead: realign the landed scene before
+        // the surface entry fits its FOV off the target geometry.
+        this.refreshLandedScene();
+        const landedInfo = this.surfaceLandedInfo();
+        if (landedInfo) this.enterSurfaceView(selectSurfaceTarget(landedInfo, event.spec), 'event');
+      } else {
+        // A null event (engine drift would be caught by the pin tests) still
+        // advances — the card then narrates a plain Earth landing, and there
+        // is no totality to hold Next for.
+        tutorial.totalityReached = true;
+      }
+      // The card teaches the panel as the way to find an eclipse, so it must be
+      // on screen. Surface entry closed it; reopen it over the sky exactly as
+      // the HUD's Observatory chip does. On phones show() starts the sheet at
+      // peek, clear of the centered Sun, and the HUD chevron clamps to it.
+      this.openObservatoryPanel();
+      this.markTutorialStaged(generation);
+    });
+  }
+
+  /** A staging's scene work has been applied — begin settling. Generation-
+   *  checked: a stale theater timer or arrival action must not mark a newer
+   *  step (or a stopped tutorial) as staged. */
+  private markTutorialStaged(generation: number): void {
+    const tutorial = this.tutorial;
+    if (!tutorial || tutorial.generation !== generation) return;
+    tutorial.phase = tutorialTransition(tutorial.phase, 'staged');
+    tutorial.stagedAtMs = performance.now();
+    this.renderTutorialCard();
+  }
+
+  /** Per-frame tutorial work (top of update()): promote 'settling' → 'ready' when
+   *  the step's busy signals clear, and run a stop that was parked while an
+   *  arrival was mid-flight. */
+  private updateTutorial(): void {
+    const tutorial = this.tutorial;
+    if (!tutorial) return;
+    if (tutorial.phase === 'ending') {
+      if (tutorial.endRequest && !this.arrivalInFlight) {
+        const request = tutorial.endRequest;
+        tutorial.endRequest = null;
+        this.executeTutorialStop(request.restore, false, request.toast);
+      }
+      return;
+    }
+    const step = TUTORIAL_STEPS[tutorial.stepIndex];
+    if (tutorial.phase === 'settling') {
+      const settled = isStepSettled(
+        {
+          arrivalInFlight: this.arrivalInFlight,
+          veilCovering:
+            document.getElementById('arrival-veil')?.classList.contains('covering') ?? false,
+          fovAnimating: this.surfaceFovAnim !== null,
+          totalityReached: tutorial.totalityReached,
+          sinceStagedMs: performance.now() - tutorial.stagedAtMs,
+        },
+        step.settle,
+      );
+      if (settled) {
+        tutorial.phase = tutorialTransition(tutorial.phase, 'settled');
+        this.renderTutorialCard();
+      }
+    }
+    // Eclipse card: once the compressed approach carries the clock just
+    // inside totality, drop to realtime and release the held Next (the
+    // settling→ready transition next frame reads totalityReached and re-renders
+    // the card). One-shot — a user who scrubs the rate afterwards is left
+    // alone. Gated past 'staging' so a pre-stage clock already sitting in 2027+
+    // can't trip it before the staging has even set the time.
+    if (
+      !tutorial.totalityReached &&
+      step.stage === 'eclipse' &&
+      tutorial.eclipse !== null &&
+      (tutorial.phase === 'settling' || tutorial.phase === 'ready') &&
+      this.timeState.currentUtcMs >= totalitySettleUtcMs(tutorial.eclipse.peakUtcMs)
+    ) {
+      tutorial.totalityReached = true;
+      this.setTutorialClockRate(1);
+    }
+  }
+
+  private renderTutorialCard(): void {
+    const tutorial = this.tutorial;
+    if (!tutorial) return;
+    const step = TUTORIAL_STEPS[tutorial.stepIndex];
+    this.tutorialCard.render(
+      tutorialCardModel(step, tutorial.stepIndex, TUTORIAL_STEPS.length, tutorial.phase),
+    );
+  }
+
+  /** The tutorial drives the same clock the transport strip does. The unpause is
+   *  deliberate: a clock paused before the tutorial would freeze every staged sky. */
+  private setTutorialClockRate(rate: number): void {
+    this.timeState = { ...this.timeState, rate, paused: false };
+    this.updateTimeUI();
+  }
+
+  private updateTutorialMenuItem(): void {
+    const btn = document.getElementById('planetarium-btn-tutorial') as HTMLButtonElement | null;
+    if (btn) btn.disabled = this.tutorial !== null;
   }
 
   private updateMissionControlState() {
@@ -2475,6 +3106,7 @@ export class PlanetariumMode {
 
     document.getElementById('planetarium-speed-up')?.addEventListener('click', () => {
       if (this.isMissionActive()) return;
+      this.reviveParkedShip(); // stepping the throttle up means "go"
       if (this.inSystemMode) {
         if (this.player.systemSpeedMultiplier < 0.001) {
           this.player.systemSpeedMultiplier = 0.001;
@@ -2510,12 +3142,16 @@ export class PlanetariumMode {
 
     document.getElementById('planetarium-btn-save')?.addEventListener('click', () => {
       this.store.saveState(this.getState());
-      this.notification.show('Game saved!');
+      // Forced: mid-tutorial the banner is muted (and the save then writes the
+      // pre-tutorial snapshot on purpose), but a pressed Save must answer.
+      this.notification.show('Game saved!', { force: true });
     });
 
     // New Journey button
     document.getElementById('planetarium-btn-new')?.addEventListener('click', () => {
-      // The reset throws the journey away — the excursion return pose with it.
+      // The reset throws the journey away — a live tutorial with it (no restore:
+      // the world resets underneath), and the excursion return pose too.
+      this.stopTutorial({ restore: false, sync: true });
       this.observatoryExcursion = null;
       if (this.landedOn) this.exitLandedMode();
       // Discard the pre-mission stash: restoring it would re-land a
@@ -2585,6 +3221,12 @@ export class PlanetariumMode {
       this.closeMenuPanel();
       this.showHelp();
     });
+    // Tutorial entries: the help-modal footer pair and the ☰ item. startTutorial
+    // closes both entry surfaces itself (their auto-pause must resolve
+    // before the snapshot is taken).
+    document.getElementById('planetarium-btn-tutorial')?.addEventListener('click', () => this.startTutorial());
+    document.getElementById('help-take-tutorial')?.addEventListener('click', () => this.startTutorial());
+    document.getElementById('help-explore')?.addEventListener('click', () => this.hideHelp());
     document.getElementById('planetarium-help-close')?.addEventListener('click', () => this.hideHelp());
     document.querySelector('#planetarium-help .planetarium-help-backdrop')?.addEventListener('click', () => this.hideHelp());
 
@@ -2981,14 +3623,21 @@ export class PlanetariumMode {
     );
   }
 
+  private findDeckRow(name: string): HTMLElement | null {
+    const list = document.getElementById('deck-list');
+    if (!list) return null;
+    return (
+      Array.from(list.querySelectorAll<HTMLElement>('.pk-row')).find(
+        (r) => r.dataset.name === name,
+      ) ?? null
+    );
+  }
+
   private revealDeckRow(name: string) {
     const list = document.getElementById('deck-list');
-    if (!list) return;
-    const row = Array.from(list.querySelectorAll<HTMLElement>('.pk-row')).find(
-      (r) => r.dataset.name === name,
-    );
+    const row = this.findDeckRow(name);
     // 64px clears the sticky system header pinned above the row.
-    if (row) list.scrollTop = Math.max(0, row.offsetTop - 64);
+    if (list && row) list.scrollTop = Math.max(0, row.offsetTop - 64);
   }
 
   /** Every deck commit closes the deck; the tab decides the ride. */
@@ -3065,15 +3714,8 @@ export class PlanetariumMode {
       companionless: target.type === 'planet' && getMoonsByPlanet(target.name).length === 0,
       fromPanel,
     });
-    const openPanel = () => {
-      this.bottomBar.closeStats();
-      this.observatoryPanel.show();
-      this.renderObservatoryPanel();
-      this.startObservatoryEventSearch();
-      this.updateClusterOnStates();
-    };
     if (action === 'reopen') {
-      if (!this.observatoryPanel.isOpen()) openPanel();
+      if (!this.observatoryPanel.isOpen()) this.openObservatoryPanel();
       return;
     }
     // Excursion entry: the deck grabs the ship out of cruise — remember the
@@ -3105,7 +3747,7 @@ export class PlanetariumMode {
         this.enterLandedMode(target);
       }
       if (action === 'land-open') {
-        openPanel();
+        this.openObservatoryPanel();
       } else {
         // Quiet arrival: the sky panel stays tucked into the telescope chip —
         // pulse the chip so the hand-off reads.
@@ -3116,8 +3758,16 @@ export class PlanetariumMode {
   }
 
   private async startHistoricJourney(missionId: HistoricMissionId) {
+    // A mission takes the session over: a live tutorial restores first,
+    // synchronously, so rememberPreMissionState below stashes the real
+    // pre-tutorial journey instead of a staged showcase scene.
+    if (this.tutorial) this.stopTutorial({ restore: true, sync: true });
     const journey = HISTORIC_JOURNEYS[missionId];
     await this.player.ensureProfileLoaded(journey.shipProfile);
+    // The await yields, and the stop above re-enabled the ☰ Tutorial item —
+    // a tutorial can have started during the profile fetch. Stop that one too
+    // before the mission stashes state.
+    if (this.tutorial) this.stopTutorial({ restore: true, sync: true });
     // Missions own the ship from here: drop the excursion return pose BEFORE
     // exiting landed mode, so the pre-mission stash captures the classic
     // takeoff state rather than a mid-air teleport back to cruise.
@@ -3347,7 +3997,7 @@ export class PlanetariumMode {
   }
 
   private resetCruiseCamera() {
-    const camDist = 0.000094;
+    const camDist = PlanetariumMode.CRUISE_CAM_DIST_AU;
     const forward = this.player.getForwardDirection();
     this.camera.position.set(
       -forward.x * camDist,
@@ -3384,6 +4034,112 @@ export class PlanetariumMode {
       ),
       lookTarget: new THREE.Vector3(pos.x, pos.y, pos.z),
     };
+  }
+
+  /** The governor/collision body set: every visible painted moon (world
+   *  positions refresh each frame in updateMoonPositions; entries read here
+   *  are ≤1 frame stale — irrelevant at km scale) plus the jump seed, whose
+   *  position resolves live from the parent + ephemeris offset while its
+   *  mesh is still veiled. Rendered radii come from the live mesh scale
+   *  (the 5%-of-parent floor), i.e. the sphere you actually see. */
+  private forEachGovernedMoon(cb: (x: number, y: number, z: number, renderedRAU: number) => void) {
+    for (const moons of this.planetMoons.values()) {
+      for (const m of moons) {
+        if (!m.painted || !m.mesh.visible) continue;
+        if (this.governedMoonSeed && m.data.name === this.governedMoonSeed.name) {
+          this.governedMoonSeed = null; // the visible mesh covers it from here
+        }
+        const wp = this.moonWorldPositions.get(m.data.name);
+        if (!wp) continue;
+        cb(wp.x, wp.y, wp.z, m.data.radiusAU * m.mesh.scale.x);
+      }
+    }
+    const seed = this.governedMoonSeed;
+    if (!seed) return;
+    const moon = MOONS.find((mn) => mn.name === seed.name);
+    const parent = PLANETARIUM_BODIES.find((b) => b.name === seed.parentPlanet);
+    const parentPos = this.planetWorldPositions.get(seed.parentPlanet);
+    if (!moon || !parent || !parentPos) return;
+    const offset = this.getMoonWorldOffsetAU(moon, parent, this.tmpMoonOffset);
+    cb(
+      parentPos.x + offset.x,
+      parentPos.y + offset.y,
+      parentPos.z + offset.z,
+      Math.max(moon.radiusAU, parent.radiusAU * PlanetariumMode.MOON_MIN_RENDER_RATIO),
+    );
+  }
+
+  private computeMoonSpeedCap(): number {
+    const f = this.player.getForwardDirection();
+    let cap = Infinity;
+    this.forEachGovernedMoon((x, y, z, renderedR) => {
+      const dx = x - this.player.posX;
+      const dy = y - this.player.posY;
+      const dz = z - this.player.posZ;
+      const dist = Math.sqrt(dx * dx + dy * dy + dz * dz);
+      if (dist < 1e-12) return;
+      const cos = (dx * f.x + dy * f.y + dz * f.z) / dist;
+      const c = governedSpeedCap(
+        Math.max(dist - renderedR, 0),
+        cos,
+        MOON_APPROACH_K_PER_S,
+        MOON_APPROACH_V_MIN_AU_S,
+      );
+      if (c < cap) cap = c;
+    });
+    return cap;
+  }
+
+  /** Moon counterpart of resolvePlanetCollisions, with one difference: it
+   *  sweeps the whole frame segment (prevPlayerPos → current) instead of
+   *  checking the endpoint — endpoint checks tunnel exactly at moon scale. */
+  private resolveMoonCollisions() {
+    const p0 = this.prevPlayerPos;
+    const forward = this.player.getForwardDirection();
+    this.forEachGovernedMoon((x, y, z, renderedR) => {
+      // Full lunar-scale clearance would exceed a tiny moon's own standoff,
+      // so it saturates at one rendered radius.
+      const collisionR = renderedR + Math.min(PlanetariumMode.SHIP_CLEARANCE_AU, renderedR);
+      const dx = this.player.posX - p0.x;
+      const dy = this.player.posY - p0.y;
+      const dz = this.player.posZ - p0.z;
+      const cx = x - p0.x;
+      const cy = y - p0.y;
+      const cz = z - p0.z;
+      const segLenSq = dx * dx + dy * dy + dz * dz;
+      const t = segLenSq > 0 ? Math.min(1, Math.max(0, (cx * dx + cy * dy + cz * dz) / segLenSq)) : 0;
+      let ox = p0.x + dx * t - x;
+      let oy = p0.y + dy * t - y;
+      let oz = p0.z + dz * t - z;
+      let d = Math.sqrt(ox * ox + oy * oy + oz * oz);
+      if (d >= collisionR) return;
+      if (d < 1e-9) {
+        // Dead-center pass: push back along the incoming segment.
+        ox = -dx;
+        oy = -dy;
+        oz = -dz;
+        d = Math.sqrt(ox * ox + oy * oy + oz * oz);
+        if (d < 1e-9) {
+          ox = 1;
+          oy = 0;
+          oz = 0;
+          d = 1;
+        }
+      }
+      ox /= d;
+      oy /= d;
+      oz /= d;
+      this.player.posX = x + ox * collisionR;
+      this.player.posY = y + oy * collisionR;
+      this.player.posZ = z + oz * collisionR;
+      if (forward.x * ox + forward.y * oy + forward.z * oz < 0.15) {
+        this.player.headToward(
+          this.player.posX + ox * collisionR * 2,
+          this.player.posZ + oz * collisionR * 2,
+          this.player.posY + oy * collisionR * 2,
+        );
+      }
+    });
   }
 
   private resolvePlanetCollisions() {
@@ -3445,11 +4201,11 @@ export class PlanetariumMode {
     const destination = this.getMoonJumpDestination(moon);
     if (!destination) return;
     this.applyJumpDestination(destination, moon.name, options.notify !== false);
-    // Park on arrival. Planet jumps glide in under the system throttle, but a
-    // moon standoff is a few of ITS radii — and the irregulars orbit far
-    // outside the parent's throttle well, where a still-moving ship covers
-    // the whole standoff in about a second.
-    this.player.moving = false;
+    // Seed the governor before the first frame: in a cold system the mesh is
+    // still unpainted behind the arrival veil, invisible to the
+    // visibility-keyed governed set, and one ungoverned 100 ms frame at the
+    // in-system default would cross the whole standoff.
+    this.governedMoonSeed = { name: moon.name, parentPlanet: moon.parentPlanet };
   }
 
   private applyJumpDestination(
@@ -3461,6 +4217,15 @@ export class PlanetariumMode {
     this.player.posY = destination.position.y;
     this.player.posZ = destination.position.z;
     this.player.headToward(destination.lookTarget.x, destination.lookTarget.z, destination.lookTarget.y);
+
+    // A teleport always arrives under way. Parking is a caller decision (dev
+    // framing, tutorial freeze-frames), never the arrival default — a park
+    // left set here outlives the jump and freezes every later arrival too.
+    this.player.moving = true;
+
+    // A teleport is a discontinuity: a tight cap eased down at the previous
+    // moon must not ramp-limit the arrival scene's first seconds.
+    this.moonCapEased = Infinity;
 
     // Don't touch cruise speedMultiplier — the system throttle automatically
     // slows the player near the planet. Just ensure cruise is at least 1c
@@ -3486,7 +4251,10 @@ export class PlanetariumMode {
    * `moonWorldPositions`, which is only written for visible painted moons and
    * silently falls back to the parent across the rest of the catalog. The
    * rendered size comes from the catalog plus the 5%-of-parent mesh floor,
-   * not the live mesh (scale is still 1 in never-visited systems).
+   * not the live mesh (scale is still 1 in never-visited systems). The pose
+   * math itself — apparent-size standoff, sun-side/outward placement, flyby
+   * aim — lives in arrivalLogic.moonArrivalPose (pure, catalog-swept in its
+   * tests); the lookTarget is the flyby aim point, not the moon's center.
    */
   private getMoonJumpDestination(moon: MoonData) {
     const parentBody = PLANETARIUM_BODIES.find((b) => b.name === moon.parentPlanet);
@@ -3494,44 +4262,24 @@ export class PlanetariumMode {
     if (!parentBody || !parentPosRaw) return null;
     const parentPos = new THREE.Vector3(parentPosRaw.x, parentPosRaw.y, parentPosRaw.z);
     const offset = this.getMoonWorldOffsetAU(moon, parentBody, new THREE.Vector3());
-    const orbitR = offset.length();
-    const moonPos = offset.clone().add(parentPos);
-
-    const renderedR = Math.max(moon.radiusAU, parentBody.radiusAU * PlanetariumMode.MOON_MIN_RENDER_RATIO);
-    // Eight radii frames the disc; the 5e-5 AU floor (~7,500 km) keeps the
-    // smallest arrivals from parking uncomfortably tight; the cap at 45% of
-    // the current separation keeps the parent from dominating the view — for
-    // the closest moons (Phobos, Cordelia) it is what actually binds.
-    const dist = Math.min(
-      Math.max(renderedR * 8, 5e-5, renderedR * 2.5),
-      orbitR * 0.45,
-    );
-
     const parentCollision = this.getPlanetCollisionRadius(parentBody.radiusAU, this.planetScale);
     const ring = RING_CONFIGS[parentBody.name];
-    // Rings render as a flat disc, but a spherical clearance is simpler and
-    // never lets an arrival pop in among the ring particles.
-    const parentClearance = Math.max(
-      parentCollision * 1.25,
-      ring ? parentBody.radiusAU * ring.outerFactor * 1.05 : 0,
-    );
-
-    // Sun side preferred, so the lit face greets you — unless that parks you
-    // inside the parent's clearance bubble or with the parent between you and
-    // the moon (an inner moon near superior conjunction). Fallback: outward
-    // along the parent→moon radial, which always clears the parent, its
-    // rings, and the line of sight.
-    const sunDir = moonPos.clone().multiplyScalar(-1).normalize();
-    let position = moonPos.clone().addScaledVector(sunDir, dist);
-    const occluded =
-      new THREE.Line3(position, moonPos)
-        .closestPointToPoint(parentPos, true, new THREE.Vector3())
-        .distanceTo(parentPos) < parentCollision;
-    if (position.distanceTo(parentPos) < parentClearance || occluded) {
-      const outward = orbitR > 1e-9 ? offset.clone().divideScalar(orbitR) : new THREE.Vector3(1, 0, 0);
-      position = moonPos.clone().addScaledVector(outward, dist);
-    }
-    return { position, lookTarget: moonPos };
+    const pose = moonArrivalPose({
+      moonPos: offset.clone().add(parentPos),
+      parentPos,
+      orbitR: offset.length(),
+      renderedR: Math.max(moon.radiusAU, parentBody.radiusAU * PlanetariumMode.MOON_MIN_RENDER_RATIO),
+      parentCollision,
+      // Rings render as a flat disc, but a spherical clearance is simpler and
+      // never lets an arrival pop in among the ring particles.
+      parentClearance: Math.max(
+        parentCollision * 1.25,
+        ring ? parentBody.radiusAU * ring.outerFactor * 1.05 : 0,
+      ),
+      camDist: PlanetariumMode.CRUISE_CAM_DIST_AU,
+      shipClearance: PlanetariumMode.SHIP_CLEARANCE_AU,
+    });
+    return { position: pose.position, lookTarget: pose.aimPoint };
   }
 
   /**
@@ -3786,6 +4534,44 @@ export class PlanetariumMode {
     };
   }
 
+  devTutorialStart(): boolean {
+    this.startTutorial();
+    return this.tutorial !== null;
+  }
+
+  devTutorialNext(): void {
+    this.advanceTutorial();
+  }
+
+  devTutorialBack(): void {
+    this.backTutorial();
+  }
+
+  devTutorialSkip(): void {
+    this.stopTutorial({ restore: true, toast: 'skip' });
+  }
+
+  /** One flat snapshot of everything the headless QA walk asserts per stop. */
+  devTutorialState(): unknown {
+    const tutorial = this.tutorial;
+    return {
+      active: tutorial !== null,
+      stepId: tutorial ? TUTORIAL_STEPS[tutorial.stepIndex].id : null,
+      stepIndex: tutorial?.stepIndex ?? -1,
+      phase: tutorial?.phase ?? null,
+      totalityReached: tutorial?.totalityReached ?? false,
+      arrivalInFlight: this.arrivalInFlight,
+      veilCovering:
+        document.getElementById('arrival-veil')?.classList.contains('covering') ?? false,
+      landedOn: this.landedOn?.name ?? null,
+      surface: this.landedView === 'surface',
+      panelOpen: this.observatoryPanel.isOpen(),
+      rate: this.timeState.rate,
+      paused: this.timeState.paused,
+      timeMs: this.timeState.currentUtcMs,
+    };
+  }
+
   /** The landed system's parent planet name, or null when not landed. */
   private observatoryParentPlanetName(): string | null {
     if (!this.landedOn) return null;
@@ -3813,6 +4599,17 @@ export class PlanetariumMode {
     this.updateClusterOnStates();
   }
 
+  /** The one panel-open sequence (idempotent): one instrument at a time —
+   *  the Stats card yields — then render, kick the upcoming-events search,
+   *  and light the cluster chip. */
+  private openObservatoryPanel() {
+    this.bottomBar.closeStats();
+    this.observatoryPanel.show();
+    this.renderObservatoryPanel();
+    this.startObservatoryEventSearch();
+    this.updateClusterOnStates();
+  }
+
   /** Brief pulse on the Observatory chip — the visible hand-off when the panel
    *  is tucked away (the Stats card taking the single instrument slot). */
   private pulseObservatoryChip() {
@@ -3827,11 +4624,7 @@ export class PlanetariumMode {
     if (this.observatoryPanel.isOpen()) {
       this.closeObservatoryPanel();
     } else {
-      this.bottomBar.closeStats();
-      this.observatoryPanel.show();
-      this.renderObservatoryPanel();
-      this.startObservatoryEventSearch();
-      this.updateClusterOnStates();
+      this.openObservatoryPanel();
     }
   }
 
@@ -4689,8 +5482,10 @@ export class PlanetariumMode {
     this.controls.enabled = false;
     this.surfaceLook.attach();
     this.setSurfaceLabelContainersHidden(true);
-    // One-time controls hint on first-ever surface entry.
-    if (!this.store.hasSeenSurfaceHint()) {
+    // One-time controls hint on first-ever surface entry. Tutorial entries skip
+    // it entirely: the banner is muted then anyway, and showing it would
+    // consume the seen-flag without the user ever reading the hint.
+    if (!this.tutorial && !this.store.hasSeenSurfaceHint()) {
       this.store.markSurfaceHintSeen();
       this.notification.show('Drag to look around · scroll or pinch to zoom');
     }
@@ -5085,6 +5880,7 @@ export class PlanetariumMode {
     const veil = document.getElementById('arrival-veil');
     const coverStart = performance.now();
     veil?.classList.add('covering'); // snaps fully opaque (no fade-in) — see CSS
+    const coverGen = ++this.arrivalCoverGen;
     // Two frames so the opaque veil is actually composited before we block the
     // main thread painting; otherwise the paint freezes a half-covered veil and
     // the unpainted scene shows through it.
@@ -5116,6 +5912,7 @@ export class PlanetariumMode {
           // veil), drain once more, then reveal.
           const holdDeadline = coverStart + PlanetariumMode.ARRIVAL_UPGRADE_HOLD_MAX_MS;
           const tryLift = () => {
+            if (coverGen !== this.arrivalCoverGen) return; // a newer arrival owns the veil now
             if (
               this.active &&
               performance.now() < holdDeadline &&
@@ -5131,7 +5928,9 @@ export class PlanetariumMode {
             // reads it as an intentional beat rather than a flicker. Removing
             // the class fades it back out.
             const wait = Math.max(48, PlanetariumMode.ARRIVAL_MIN_DWELL_MS - (performance.now() - coverStart));
-            window.setTimeout(() => veil?.classList.remove('covering'), wait);
+            window.setTimeout(() => {
+              if (coverGen === this.arrivalCoverGen) veil?.classList.remove('covering');
+            }, wait);
           };
           tryLift();
         }
@@ -5620,6 +6419,11 @@ export class PlanetariumMode {
 
   exitLandedMode() {
     if (!this.landedOn) return;
+    // The governor is frozen while landed, so a cap tightened on the approach
+    // must not ramp-limit the departure. Reset it here — the single takeoff
+    // chokepoint (also the excursion Leave and deactivate paths) — so flight
+    // resumes from an unconstrained cap, mirroring the teleport reset.
+    this.moonCapEased = Infinity;
     // Back to cruise: no landed system means no moons owed a warm upload.
     setWarmEligibleMoonParents(new Set());
     // Leave sits in the cluster above the deck's backdrop, so takeoff can
@@ -5853,6 +6657,16 @@ export class PlanetariumMode {
   }
 
   private getState(): PlanetariumState {
+    // While a tutorial runs, every persistence caller gets the pre-tutorial snapshot
+    // (timestamp refreshed): the 30s autosave, the ☰ Save button, manualSave,
+    // and deactivate's final save all keep writing the journey the user left,
+    // never the staged showcase — so a reload mid-tutorial resumes the pre-tutorial
+    // state. Any reader that wants the LIVE scene (the way
+    // rememberPreMissionState stashes a mission return point) must run after
+    // the tutorial has stopped; the mission-start hook does exactly that.
+    if (this.tutorial) {
+      return { ...this.tutorial.snapshot.state, timestamp: Date.now() };
+    }
     return {
       positionAU: { x: this.player.posX, y: this.player.posY, z: this.player.posZ },
       headingRad: this.player.heading,
@@ -5895,6 +6709,10 @@ export class PlanetariumMode {
     this.player.pitch = saved.pitchRad ?? 0;
     this.player.speedMultiplier = saved.speed;
     this.player.moving = saved.landedOn ? false : (saved.moving ?? saved.speed > 0);
+    // A restore is a position discontinuity; drop any ramped moon cap so a
+    // flight resumed on the same mode instance (deactivate→reactivate) isn't
+    // throttled by a value left over from wherever the ship last was.
+    this.moonCapEased = Infinity;
     this.player.distanceTraveled = saved.distanceTraveled;
     this.player.timeElapsed = saved.timeElapsed;
     this.player.visitedPlanets = new Set(saved.visitedPlanets);

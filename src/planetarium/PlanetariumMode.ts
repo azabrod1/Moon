@@ -58,6 +58,7 @@ import {
   shouldCloseLoop,
 } from './orbitDetails';
 import { OrbitDetailsVisuals } from './world/OrbitDetailsVisuals';
+import { TIME_RATE_PRESETS } from './timeRates';
 import {
   computeMoonShading,
   findShadowEvent,
@@ -226,7 +227,6 @@ export interface PlanetariumActivationProgress {
 }
 
 export class PlanetariumMode {
-  private static readonly TIME_RATE_PRESETS = [1, 60, 1200, 3600, 21600, 86400, 604800, 2592000, 31557600];
   private static readonly SHIP_CLEARANCE_AU = (1_737.4 / KM_PER_AU) * 1.5;
   /** Chase-camera trail distance behind the ship (also the moon-arrival
    *  standoff's camera correction — the apparent size the user sees is
@@ -531,7 +531,12 @@ export class PlanetariumMode {
   private menuPanel = new PlanetariumMenuPanel();
   private bottomBar = new PlanetariumBottomBar();
   private statsPanel = new PlanetariumStatsPanel();
-  private timePanel = new PlanetariumTimePanel();
+  private timePanel = new PlanetariumTimePanel(TIME_RATE_PRESETS, {
+    onRateIndex: (index) => this.setRailRateIndex(index),
+    onStep: (direction) => this.stepTimeRate(direction),
+    onPauseToggle: () => this.timeTogglePause(),
+    onNow: () => this.timeJumpToNow(),
+  });
   private observatoryPanel = new ObservatoryPanel(
     (type, direction) => this.handleObservatoryJump(type, direction),
     (event) => this.jumpToShadowEvent(event),
@@ -809,11 +814,12 @@ export class PlanetariumMode {
     this.updateTimeUI();
   }
 
-  // Shared clock handlers — the time popover and the surface transport
-  // strip drive the same state through these (one clock, one idiom).
+  // Shared clock handlers — the time rail, its panel, the keyboard, and the
+  // surface transport strip drive the same state through these (one clock,
+  // one idiom).
   private timeTogglePause() {
     this.timeState.paused = !this.timeState.paused;
-    this.updateTimeUI();
+    this.updateTimeUI({ flash: true });
   }
 
   private timeJumpToNow() {
@@ -822,6 +828,27 @@ export class PlanetariumMode {
     this.updateTimeUI();
     // Clock jump invalidates the Observatory panel's upcoming-events list.
     this.startObservatoryEventSearch();
+  }
+
+  /** Rail/panel-trail/detent-label commits: snap to the preset magnitude,
+   *  keep the clock's direction (reverse scrubs stay reverse), unpause. */
+  private setRailRateIndex(index: number) {
+    const clamped = Math.max(0, Math.min(TIME_RATE_PRESETS.length - 1, index));
+    const sign = this.timeState.rate < 0 ? -1 : 1;
+    this.timeState = { ...this.timeState, rate: sign * TIME_RATE_PRESETS[clamped], paused: false };
+    this.updateTimeUI({ flash: true });
+  }
+
+  /** Dev bridge: stage a clock rate (headless QA of the rail states). */
+  setTimeRate(rate: number) {
+    this.timeState = { ...this.timeState, rate };
+    this.updateTimeUI();
+  }
+
+  /** Dev bridge: stage the paused state. */
+  setTimePaused(paused: boolean) {
+    this.timeState = { ...this.timeState, paused };
+    this.updateTimeUI();
   }
 
   async activate(onProgress?: (progress: PlanetariumActivationProgress) => void): Promise<void> {
@@ -1057,6 +1084,7 @@ export class PlanetariumMode {
     if (this.tutorial) this.stopTutorial({ restore: true, sync: true });
     this.resumePrompt.cancel();
     this.bottomBar.closeStats();
+    this.bottomBar.closeTime();
 
     // Exit landed mode cleanly before deactivation. The excursion pose is
     // session-only — drop it first so the exit (and the save below) keep
@@ -2247,6 +2275,9 @@ export class PlanetariumMode {
 
   private handleKeyDown(e: KeyboardEvent) {
     if (!this.active) return;
+    // The rail/clock widgets preventDefault the keys they handle — a handled
+    // key must not also steer the ship or toggle thrust here.
+    if (e.defaultPrevented) return;
 
     // Escape always works — even while typing in the deck search
     if (e.key === 'Escape') {
@@ -2256,6 +2287,7 @@ export class PlanetariumMode {
       // closing just it would leave the pending commit to teleport anyway.
       if (this.tutorial) { this.stopTutorial({ restore: true, toast: 'skip' }); return; }
       if (this.isDeckOpen()) { this.closeDeck(); return; }
+      if (this.bottomBar.isTimeOpen()) { this.bottomBar.closeTime(); return; }
       if (this.bottomBar.isStatsOpen()) { this.bottomBar.closeStats(); return; }
       if (this.surfaceTargetMenu.isOpen()) { this.closeSurfaceTargetMenu(); return; }
       if (this.landedView === 'surface') { this.exitSurfaceView(); return; }
@@ -2298,8 +2330,31 @@ export class PlanetariumMode {
       return;
     }
 
-    // Suppress flight keys while landed
-    if (this.landedOn) return;
+    // Time throttle keys ride beside the deck verbs, same guards: , . step
+    // the rate, N jumps the clock to now — landed and surface view included.
+    if ((key === ',' || key === '.' || key === 'n') && !e.metaKey && !e.ctrlKey && !e.altKey) {
+      if (this.isMissionActive() || this.isHelpOpen()) return;
+      if (key === ',') this.stepTimeRate(-1);
+      else if (key === '.') this.stepTimeRate(1);
+      else this.timeJumpToNow();
+      // The surface strip's Pause/Resume label re-renders on its own 8 Hz
+      // pass — refresh now so a keyboard action never shows a stale label.
+      if (this.landedView === 'surface') this.renderSurfaceHud();
+      e.preventDefault();
+      return;
+    }
+
+    // Suppress flight keys while landed — except Space, which pauses the
+    // clock there (the time rail is the one live throttle on the ground;
+    // in cruise Space keeps its ship-thrust meaning below).
+    if (this.landedOn) {
+      if (e.key === ' ' && !this.isMissionActive() && !this.isHelpOpen()) {
+        e.preventDefault();
+        this.timeTogglePause();
+        if (this.landedView === 'surface') this.renderSurfaceHud();
+      }
+      return;
+    }
     if (this.isMissionActive()) return;
 
     this.keys.add(e.key.toLowerCase());
@@ -2763,6 +2818,7 @@ export class PlanetariumMode {
     this.closeDeck();
     this.closeSurfaceTargetMenu();
     this.bottomBar.closeStats();
+    this.bottomBar.closeTime();
     this.renderTutorialCard();
     const step = TUTORIAL_STEPS[index];
     if (step.stage !== 'none') tutorial.everStaged = true;
@@ -3039,7 +3095,9 @@ export class PlanetariumMode {
    *  deliberate: a clock paused before the tutorial would freeze every staged sky. */
   private setTutorialClockRate(rate: number): void {
     this.timeState = { ...this.timeState, rate, paused: false };
-    this.updateTimeUI();
+    // Flash the unit over the clock — the staged rate change is exactly the
+    // feedback the time-lapse stops narrate.
+    this.updateTimeUI({ flash: true });
   }
 
   private updateTutorialMenuItem(): void {
@@ -3060,8 +3118,12 @@ export class PlanetariumMode {
       bottomBar.style.opacity = missionActive ? '0.45' : '';
       bottomBar.style.display = missionActive ? 'none' : '';
     }
-    // The Stats card lives outside the bar now — close it when a mission takes over.
-    if (missionActive) this.bottomBar.closeStats();
+    // The bar instruments live outside the bar's display toggle — close both
+    // when a mission takes over.
+    if (missionActive) {
+      this.bottomBar.closeStats();
+      this.bottomBar.closeTime();
+    }
 
     const speedStatRow = document.getElementById('stat-speed-row');
     if (speedStatRow) speedStatRow.style.display = missionActive ? 'none' : '';
@@ -3249,25 +3311,21 @@ export class PlanetariumMode {
 
     this.sunLabel.attach();
 
-    // Astronomy time controls
+    // Astronomy time controls. The transport, Now, and date input keep their
+    // id-based handlers here — the rail widget's callbacks only cover the
+    // gestures these buttons don't (drag/tap/keys on the rails).
     document.getElementById('planetarium-time-pause')?.addEventListener('click', () => {
       this.timeTogglePause();
     });
     document.getElementById('planetarium-time-play')?.addEventListener('click', () => {
       this.timeState.paused = false;
       if (this.timeState.rate < 0) this.timeState.rate *= -1;
-      this.updateTimeUI();
+      this.updateTimeUI({ flash: true });
     });
     document.getElementById('planetarium-time-reverse')?.addEventListener('click', () => {
       this.timeState.paused = false;
       this.timeState.rate = -Math.abs(this.timeState.rate);
-      this.updateTimeUI();
-    });
-    document.getElementById('planetarium-time-slower')?.addEventListener('click', () => {
-      this.stepTimeRate(-1);
-    });
-    document.getElementById('planetarium-time-faster')?.addEventListener('click', () => {
-      this.stepTimeRate(1);
+      this.updateTimeUI({ flash: true });
     });
     document.getElementById('planetarium-time-now')?.addEventListener('click', () => {
       this.timeJumpToNow();
@@ -5423,6 +5481,9 @@ export class PlanetariumMode {
     // open picker; this also makes the pick handler self-closing.
     this.closeSurfaceTargetMenu();
     this.bottomBar.closeStats();
+    // Surface view hides the whole bottom bar — an open Time panel would
+    // otherwise reappear stale on exit.
+    this.bottomBar.closeTime();
     // Manual entry right after an event jump points at the event's
     // observer-level target — "Look up" during an eclipse shows the eclipse.
     const liveEvent = this.relevantObservatoryEvent();
@@ -6063,10 +6124,10 @@ export class PlanetariumMode {
     this.camera.lookAt(0, 0, 0);
 
     // UI: hide flight controls, show leave button
-    // Close any open popovers before hiding
+    // Close any open popovers before hiding — the rail itself stays live
+    // (time is the one throttle always available on the ground).
     this.bottomBar.closeStats();
-    document.getElementById('time-popover')?.classList.remove('visible');
-    document.getElementById('time-chevron')?.classList.remove('expanded');
+    this.bottomBar.closeTime();
     // Parked: dim the speed group inert (kept laid out so the bar doesn't
     // reflow). Pilot stays visible — its tab lifts off and flies from here.
     const speedGroup = document.querySelector('.bar-speed-main .speed-group') as HTMLElement | null;
@@ -6939,12 +7000,12 @@ export class PlanetariumMode {
   }
 
   private stepTimeRate(direction: -1 | 1) {
-    this.timeState = stepSimulationRate(this.timeState, direction, PlanetariumMode.TIME_RATE_PRESETS);
-    this.updateTimeUI();
+    this.timeState = stepSimulationRate(this.timeState, direction, TIME_RATE_PRESETS);
+    this.updateTimeUI({ flash: true });
   }
 
-  private updateTimeUI() {
-    this.timePanel.render(this.timeState);
+  private updateTimeUI(opts?: { flash?: boolean }) {
+    this.timePanel.render(this.timeState, opts);
     const gyroLabel = document.getElementById('settings-gyro-label');
     if (gyroLabel) gyroLabel.textContent = this.gyro.statusLabel();
     const gyroToggle = document.getElementById('settings-gyro-toggle');

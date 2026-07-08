@@ -332,6 +332,8 @@ function installDevHooks() {
     setFov: (deg: number) => planetariumMode?.devSetFov(deg),
     setTimeMs: (utcMs: number) => planetariumMode?.setCurrentUtcMs(utcMs),
     getTimeMs: () => planetariumMode?.getCurrentUtcMs() ?? 0,
+    setTimeRate: (rate: number) => planetariumMode?.setTimeRate(rate),
+    setTimePaused: (paused: boolean) => planetariumMode?.setTimePaused(paused),
   };
   debugLog('Dev hooks installed (window.__moon)');
 }

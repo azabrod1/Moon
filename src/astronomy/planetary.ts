@@ -347,6 +347,12 @@ export function parseUtcInputValue(value: string): number | null {
   return Number.isFinite(utcMs) ? utcMs : null;
 }
 
+/** Whole counts print bare ("1 wk/s"), fractional ones with one decimal
+ *  ("1.4 wk/s") — a rounded-to-integer label would lie about off-ladder rates. */
+function formatRateCount(value: number): string {
+  return Number.isInteger(value) ? String(value) : value.toFixed(1);
+}
+
 export function formatTimeRateLabel(rate: number, paused: boolean): string {
   if (paused) return 'Paused';
   const direction = rate < 0 ? 'Reverse ' : '';
@@ -355,6 +361,29 @@ export function formatTimeRateLabel(rate: number, paused: boolean): string {
   if (magnitude < 60) return `${direction}${magnitude.toFixed(0)} sec/s`;
   if (magnitude < 3600) return `${direction}${(magnitude / 60).toFixed(0)} min/s`;
   if (magnitude < 86400) return `${direction}${(magnitude / 3600).toFixed(0)} hr/s`;
-  if (magnitude < 86400 * 365) return `${direction}${(magnitude / 86400).toFixed(0)} day/s`;
+  if (magnitude < 604800) return `${direction}${(magnitude / 86400).toFixed(0)} day/s`;
+  if (magnitude < 2592000) return `${direction}${formatRateCount(magnitude / 604800)} wk/s`;
+  if (magnitude < 86400 * 365) return `${direction}${formatRateCount(magnitude / 2592000)} mo/s`;
   return `${direction}${(magnitude / (86400 * 365)).toFixed(1)} yr/s`;
+}
+
+/**
+ * The bar clock's adaptive readout: a unit is shown only while it ticks slowly
+ * enough to read, so the string coarsens as the rate climbs — minutes up to
+ * 1 min/s, whole hours up to 6 hr/s, the date up to 1 wk/s, then month + year
+ * (the rolling month is the motion cue at the top of the ladder). The day is
+ * zero-padded so a ticking clock never changes width mid-month.
+ */
+export function formatAdaptiveClock(
+  utcMs: number,
+  rateMagnitude: number,
+): { date: string; time: string } {
+  const d = new Date(utcMs);
+  if (rateMagnitude > 604800) {
+    return { date: `${MONTH_SHORT[d.getUTCMonth()]} ${d.getUTCFullYear()}`, time: '' };
+  }
+  const date = `${MONTH_SHORT[d.getUTCMonth()]} ${formatUtcPart(d.getUTCDate())} ${d.getUTCFullYear()}`;
+  if (rateMagnitude > 21600) return { date, time: '' };
+  if (rateMagnitude > 60) return { date, time: `${formatUtcPart(d.getUTCHours())}h` };
+  return { date, time: `${formatUtcPart(d.getUTCHours())}:${formatUtcPart(d.getUTCMinutes())}` };
 }

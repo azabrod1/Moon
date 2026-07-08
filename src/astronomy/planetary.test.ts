@@ -19,6 +19,7 @@ import {
   computeMoonGeocentricEquatorialAU,
   computeKeplerPositionEcliptic,
   eclipticToEquatorial,
+  formatAdaptiveClock,
   formatTimeRateLabel,
   formatUtcInputValue,
   parseUtcInputValue,
@@ -260,6 +261,31 @@ describe('time helpers', () => {
     expect(formatTimeRateLabel(120, false)).toBe('2 min/s');
     expect(formatTimeRateLabel(-3600, false)).toBe('Reverse 1 hr/s');
     expect(formatTimeRateLabel(86400 * 365, false)).toBe('1.0 yr/s');
+    // Tier boundaries at the top of the ladder: day → week → month → year.
+    expect(formatTimeRateLabel(86400, false)).toBe('1 day/s');
+    expect(formatTimeRateLabel(604800, false)).toBe('1 wk/s');
+    expect(formatTimeRateLabel(2592000, false)).toBe('1 mo/s');
+    expect(formatTimeRateLabel(31557600, false)).toBe('1.0 yr/s');
+    // Off-ladder magnitudes keep a decimal instead of rounding to a lie.
+    expect(formatTimeRateLabel(864000, false)).toBe('1.4 wk/s');
+    expect(formatTimeRateLabel(7776000, false)).toBe('3 mo/s');
+    expect(formatTimeRateLabel(-2592000, false)).toBe('Reverse 1 mo/s');
+  });
+
+  it('coarsens the adaptive clock readout as the rate climbs', () => {
+    const ms = Date.UTC(2026, 6, 8, 20, 3, 44);
+    expect(formatAdaptiveClock(ms, 1)).toEqual({ date: 'Jul 08 2026', time: '20:03' });
+    expect(formatAdaptiveClock(ms, 60)).toEqual({ date: 'Jul 08 2026', time: '20:03' });
+    expect(formatAdaptiveClock(ms, 1200)).toEqual({ date: 'Jul 08 2026', time: '20h' });
+    expect(formatAdaptiveClock(ms, 21600)).toEqual({ date: 'Jul 08 2026', time: '20h' });
+    expect(formatAdaptiveClock(ms, 86400)).toEqual({ date: 'Jul 08 2026', time: '' });
+    expect(formatAdaptiveClock(ms, 604800)).toEqual({ date: 'Jul 08 2026', time: '' });
+    expect(formatAdaptiveClock(ms, 2592000)).toEqual({ date: 'Jul 2026', time: '' });
+    expect(formatAdaptiveClock(ms, 31557600)).toEqual({ date: 'Jul 2026', time: '' });
+    // Off-ladder rates (the tutorial's 2 hr/s) land in the right tier too.
+    expect(formatAdaptiveClock(ms, 7200)).toEqual({ date: 'Jul 08 2026', time: '20h' });
+    // The zero-padded day keeps the readout width stable all month.
+    expect(formatAdaptiveClock(Date.UTC(2026, 0, 5), 1).date).toBe('Jan 05 2026');
   });
 
   it('steps the rate ladder, unpauses, preserves reverse, clamps the ends', () => {

@@ -166,48 +166,105 @@
       padding: 0 8px;
     }
 
-    /* Date/time — positioned above bar on desktop, inline on mobile */
-    .bar-date-row {
-      position: absolute;
-      bottom: calc(100% + 2px);
-      left: 50%;
-      transform: translateX(-50%);
-      width: max-content;
+    /* ── Time control: the rate rail riding on the adaptive clock ────────
+       First bar segment. The rail is the primary rate control (drag/tap to a
+       detent, tap in place to pause); the clock beneath it is the panel
+       toggle. Ember = running live at now, accent = warped, grey = paused. */
+    .bar-time { padding: 2px 8px 0; border-right: 1px solid var(--line-dim); }
+    .time-rail-wrap {
       display: flex;
-      align-items: center;
-      justify-content: center;
-      gap: 6px;
-      padding: 4px 8px;
+      flex-direction: column;
+      align-items: stretch;
+      gap: 1px;
+      min-width: 136px;
+    }
+    .time-rail {
+      position: relative;
+      height: 13px;
       cursor: pointer;
+      border-radius: 4px;
+      touch-action: none;
+      user-select: none;
+      -webkit-user-select: none;
+    }
+    .time-rail:focus-visible { outline: 2px solid rgba(var(--accent-rgb), 0.75); outline-offset: 3px; }
+    .tr-track {
+      position: absolute; left: 0; right: 0; top: 50%; height: 2px;
+      transform: translateY(-50%); border-radius: 1px;
+      background: rgba(255, 255, 255, 0.13);
+      transition: height 0.15s ease;
+    }
+    .time-rail:hover .tr-track, .time-rail.dragging .tr-track { height: 4px; }
+    /* Detent ticks revealed on hover/drag — the interval comes from the
+       preset count (--rail-step, written by the widget at bind). */
+    .tr-dets {
+      position: absolute; left: 0; right: 0; top: 50%; height: 5px;
+      transform: translateY(-50%); opacity: 0; pointer-events: none;
+      transition: opacity 0.15s ease;
+      background: repeating-linear-gradient(90deg, rgba(255, 255, 255, 0.28) 0 1px, transparent 1px var(--rail-step, 12.5%));
+    }
+    .time-rail:hover .tr-dets, .time-rail.dragging .tr-dets { opacity: 0.55; }
+    /* The fill grows left→right as the rate climbs — a throttle, not a scrubber. */
+    .tr-fill {
+      position: absolute; left: 0; top: 50%; height: 2px; transform: translateY(-50%);
+      border-radius: 1px;
+      background: linear-gradient(90deg, rgba(var(--accent-rgb), 0.3), rgba(var(--accent-rgb), 0.9));
+      box-shadow: 0 0 7px rgba(var(--accent-rgb), 0.35);
+      transition: height 0.15s ease;
+    }
+    .time-rail:hover .tr-fill, .time-rail.dragging .tr-fill { height: 4px; }
+    .tr-thumb {
+      position: absolute; top: 50%; width: 9px; height: 9px; border-radius: 50%;
+      transform: translate(-50%, -50%); background: #dbe5ff;
+      border: 1.5px solid rgba(var(--accent-rgb), 0.95);
+      box-shadow: 0 0 10px rgba(var(--accent-rgb), 0.55);
+      transition: left 0.1s ease;
+    }
+    .time-rail.dragging .tr-thumb { transition: none; }
+    .time-rail.live .tr-fill {
+      background: linear-gradient(90deg, rgba(var(--ember-rgb), 0.3), rgba(var(--ember-rgb), 0.9));
+      box-shadow: 0 0 7px rgba(var(--ember-rgb), 0.4);
+    }
+    .time-rail.live .tr-thumb {
+      border-color: rgba(var(--ember-rgb), 0.95);
+      box-shadow: 0 0 10px rgba(var(--ember-rgb), 0.55);
+    }
+    .time-rail.paused .tr-thumb { background: transparent; box-shadow: none; border-color: rgba(255, 255, 255, 0.4); }
+    .time-rail.paused .tr-fill { background: rgba(255, 255, 255, 0.18); box-shadow: none; }
+    /* Magnifying tooltip while hovering/dragging the rail. */
+    .tr-tip {
+      position: absolute; bottom: calc(100% + 10px); transform: translateX(-50%);
+      font-family: var(--font-mono); font-size: 10px; color: var(--t1);
+      padding: 3px 8px; border-radius: 6px; white-space: nowrap;
+      pointer-events: none; opacity: 0; transition: opacity 0.12s ease; z-index: 5;
+    }
+    .tr-tip.show { opacity: 1; }
+    /* The clock readout under the rail — doubles as the panel toggle. */
+    .tr-clock {
+      position: relative; display: flex; align-items: baseline; justify-content: center;
+      gap: 6px; padding: 1px 4px 2px; border-radius: 6px; cursor: pointer; white-space: nowrap;
       -webkit-tap-highlight-color: transparent;
+      transition: background var(--dur) var(--ease);
     }
-    .bar-date {
-      font-size: 11px;
-      font-weight: 500;
-      color: var(--text-primary);
-      font-variant-numeric: tabular-nums;
-      white-space: nowrap;
+    .tr-clock:hover { background: rgba(255, 255, 255, 0.05); }
+    .tr-clock:focus-visible { outline: 2px solid rgba(var(--accent-rgb), 0.75); outline-offset: 1px; }
+    .tr-clock .d { font-family: var(--font-mono); font-size: 11.5px; color: var(--t1); font-variant-numeric: tabular-nums; }
+    .tr-clock .t { font-family: var(--font-mono); font-size: 10.5px; color: var(--t3); font-variant-numeric: tabular-nums; }
+    .tr-clock.live .t { color: var(--ember); }
+    .tr-clock .t.hidden { display: none; }
+    /* Transient unit flash over the clock on rate/direction/pause changes. */
+    .tr-clock .swap {
+      position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
+      font-family: var(--font-mono); font-size: 10.5px; color: var(--accent);
+      letter-spacing: 0.04em; opacity: 0; pointer-events: none; transition: opacity 0.18s ease;
     }
-    .bar-rate-sep {
-      font-size: 10px;
-      color: var(--text-dim);
-      opacity: 0.5;
-    }
-    .bar-rate {
-      font-size: 11px;
-      color: var(--text-secondary);
-      white-space: nowrap;
-    }
-    .bar-chevron {
-      font-size: 8px;
-      color: var(--accent);
-      opacity: 0.7;
-      transition: transform 0.2s;
-      flex-shrink: 0;
-    }
-    .bar-chevron.expanded {
-      transform: rotate(180deg);
-      opacity: 1;
+    .tr-clock.flash .swap { opacity: 1; }
+    .tr-clock .d, .tr-clock .t { transition: opacity 0.18s ease; }
+    .tr-clock.flash .d, .tr-clock.flash .t { opacity: 0; }
+    @media (prefers-reduced-motion: reduce) {
+      .tr-track, .tr-dets, .tr-fill, .tr-thumb, .tr-tip, .tr-clock,
+      .tr-clock .d, .tr-clock .t, .tr-clock .swap,
+      .tp-trail .thumb, .tp-now { transition: none; }
     }
 
     /* Speed controls */
@@ -249,33 +306,6 @@
       font-size: 11px;
       font-weight: 500;
       letter-spacing: 0.2px;
-    }
-
-    /* Popovers that expand upward */
-    .bar-popover {
-      display: none;
-      position: absolute;
-      bottom: 100%;
-      margin-bottom: 6px;
-      border-radius: var(--r-l);
-      padding: 10px 14px;
-      min-width: 180px;
-    }
-    .bar-popover.visible { display: block; }
-    .bar-popover-left { left: 0; right: 0; }
-    /* The time instrument needs more width than the slim cruise bar offers
-       (transport + rate stepper are ~260px), so it floats at its own width,
-       centered over the bar, instead of inheriting the bar's edges. On
-       desktop it also clears the ~24px floating date row so the toggle that
-       opened it stays visible in the gap (reset where the date row goes
-       inline into the bar on mobile). */
-    #time-popover {
-      left: 50%;
-      right: auto;
-      transform: translateX(-50%);
-      width: min(316px, calc(100vw - 16px));
-      margin-bottom: 32px;
-      padding: 12px 14px;
     }
 
     /* Stats — a right-edge instrument card pinned bottom-right (the same zone as
@@ -321,83 +351,176 @@
     .stat-label { color: var(--text-secondary); font-size: 10px; }
     .stat-value { color: var(--text-primary); font-weight: 500; font-variant-numeric: tabular-nums; font-size: 11px; }
 
-    .time-transport {
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      gap: 10px;
-      /* Narrow bars drop the rate cluster onto its own line instead of
-         overflowing the popover. */
-      flex-wrap: wrap;
+    /* ── The expanded Time panel (opens above the bar off the clock) ─────
+       Owns reverse (the rail is magnitude-only), the full labeled rail, and
+       the exact UTC date. Anchors to .bar-row, centered over the bar. */
+    .time-panel {
+      display: none;
+      position: absolute;
+      bottom: calc(100% + 9px);
+      left: 50%;
+      transform: translateX(-50%);
+      width: min(316px, calc(100vw - 16px));
+      padding: 12px 14px;
+      border-radius: var(--r-l);
+      z-index: 6;
     }
-    .time-seg {
+    .time-panel.visible { display: block; }
+    .tp-row { display: flex; align-items: center; gap: 9px; }
+    .tp-seg {
       display: flex;
       align-items: stretch;
       border: 1px solid var(--line-dim);
       border-radius: var(--r-s);
       background: rgba(255, 255, 255, 0.04);
       overflow: hidden;
+      flex: none;
     }
-    .time-seg-btn {
-      width: 36px;
-      height: 28px;
+    .tp-seg button {
+      width: 38px;
+      height: 30px;
       display: flex;
       align-items: center;
       justify-content: center;
       border: none;
       background: none;
-      color: var(--text-secondary);
+      color: var(--t2);
       cursor: pointer;
       transition: background 0.15s, color 0.15s;
     }
-    .time-seg-btn + .time-seg-btn { border-left: 1px solid var(--line-dim); }
-    .time-seg-btn:hover { background: rgba(255, 255, 255, 0.07); color: var(--text-primary); }
-    .time-seg-btn.on { background: rgba(var(--accent-rgb), 0.16); color: var(--accent); }
+    .tp-seg button + button { border-left: 1px solid var(--line-dim); }
+    .tp-seg button:hover { background: rgba(255, 255, 255, 0.07); color: var(--t1); }
+    .tp-seg button.on { background: rgba(var(--accent-rgb), 0.16); color: var(--accent); }
     /* While paused, resuming keeps the clock's old direction (the rate keeps
        its sign) — that segment stays faintly tinted so "resume goes backward"
        is visible while the pause segment is the lit one. Never combined
        with .on. */
-    .time-seg-btn.armed { color: var(--text-primary); background: rgba(var(--accent-rgb), 0.06); }
-    .time-rate { display: flex; align-items: center; gap: 4px; }
-    .time-rate-value {
-      /* Fixed width: the label between the − / + steppers must never resize,
-         or repeat-clicking a stepper walks it out from under the pointer. */
-      min-width: 76px;
-      text-align: center;
+    .tp-seg button.armed { color: var(--t1); background: rgba(var(--accent-rgb), 0.06); }
+    .tp-rate {
+      margin-left: auto;
       font-family: var(--font-mono);
+      font-size: 11.5px;
+      color: var(--t1);
       font-variant-numeric: tabular-nums;
-      font-size: 11px;
-      color: var(--text-primary);
+      white-space: nowrap;
     }
-    /* Paused: the readout is inert (it's what resume returns to) but the
-       steppers stay live — stepping deliberately unpauses. */
-    .time-rate-value.is-dim { color: var(--t3); }
-    .time-input-row {
+    .tp-rate.live { color: var(--ember); }
+    /* Paused: the readout dims (it's what resume returns to) but every rate
+       control stays live — committing a rate deliberately unpauses. */
+    .tp-rate.dim { color: var(--t3); }
+    .tp-trailwrap { margin: 14px 2px 2px; }
+    .tp-trail {
+      position: relative;
+      height: 30px;
+      cursor: pointer;
+      touch-action: none;
+      user-select: none;
+      -webkit-user-select: none;
+    }
+    .tp-trail:focus-visible { outline: 2px solid rgba(var(--accent-rgb), 0.75); outline-offset: 3px; border-radius: 6px; }
+    .tp-trail .track {
+      position: absolute; left: 0; right: 0; top: 50%; height: 3px; transform: translateY(-50%);
+      border-radius: 2px; background: rgba(255, 255, 255, 0.09);
+    }
+    .tp-trail .fill {
+      position: absolute; left: 0; top: 50%; height: 3px; transform: translateY(-50%);
+      border-radius: 2px;
+      background: linear-gradient(90deg, rgba(var(--accent-rgb), 0.25), rgba(var(--accent-rgb), 0.85));
+    }
+    .tp-trail.live .fill { background: linear-gradient(90deg, rgba(var(--ember-rgb), 0.3), rgba(var(--ember-rgb), 0.85)); }
+    .tp-trail .thumb {
+      position: absolute; top: 50%; width: 15px; height: 15px; border-radius: 50%;
+      transform: translate(-50%, -50%); background: #dbe5ff;
+      border: 1.5px solid rgba(var(--accent-rgb), 0.9);
+      box-shadow: 0 0 14px rgba(var(--accent-rgb), 0.55), 0 2px 6px rgba(0, 0, 0, 0.5);
+      transition: left 0.12s var(--ease);
+    }
+    .tp-trail.live .thumb {
+      border-color: rgba(var(--ember-rgb), 0.9);
+      box-shadow: 0 0 14px rgba(var(--ember-rgb), 0.5), 0 2px 6px rgba(0, 0, 0, 0.5);
+    }
+    .tp-trail.dragging .thumb { transition: none; }
+    .tp-labels { position: relative; height: 13px; margin-top: 2px; }
+    .tp-labels button {
+      position: absolute;
+      transform: translateX(-50%);
+      font-family: var(--font-mono);
+      font-size: 8.5px;
+      color: var(--t3);
+      white-space: nowrap;
+      cursor: pointer;
+      padding: 2px 3px;
+      border: none;
+      background: none;
+      transition: color 0.15s;
+    }
+    .tp-labels button:hover { color: var(--t2); }
+    .tp-labels button.on { color: var(--accent); }
+    .tp-labels button:first-child { transform: translateX(-4px); }
+    .tp-labels button:last-child { transform: translateX(calc(-100% + 4px)); }
+    .tp-div { height: 1px; background: var(--line-dim); margin: 12px 0; }
+    .tp-date {
+      flex: 1;
+      min-width: 0;
+      height: 30px;
       display: flex;
       align-items: center;
-      gap: 8px;
-      margin-top: 10px;
+      gap: 9px;
+      padding: 0 10px;
+      border: 1px solid var(--line-dim);
+      border-radius: var(--r-s);
+      background: rgba(255, 255, 255, 0.04);
     }
-    .time-utc-label {
-      flex-shrink: 0;
-      font-size: 10px;
+    .tp-date i {
+      font-style: normal;
+      font-size: 9px;
       font-weight: 600;
       letter-spacing: 0.14em;
       color: var(--t3);
+      flex: none;
     }
+    /* The exact-date field is a real input (typing a date must keep working);
+       the row carries the chrome, so the input itself goes naked. */
     #planetarium-time-input {
       flex: 1;
       min-width: 0;
-      height: 28px;
-      padding: 0 8px;
+      height: 100%;
+      padding: 0;
+      border: none;
+      background: none;
       font-family: var(--font-mono);
-      font-size: 11px;
-      color: var(--text-primary);
-      background: rgba(255, 255, 255, 0.04);
-      border: 1px solid var(--line-dim);
-      border-radius: var(--r-s);
+      font-size: 11.5px;
+      color: var(--t1);
+      font-variant-numeric: tabular-nums;
       color-scheme: dark;
     }
+    #planetarium-time-input:focus { outline: none; }
+    .tp-now {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      border-radius: var(--r-s);
+      border: 1px solid var(--line-dim);
+      background: rgba(255, 255, 255, 0.04);
+      color: var(--t2);
+      font-size: 11px;
+      font-weight: 500;
+      cursor: pointer;
+      padding: 5px 10px;
+      white-space: nowrap;
+      transition: background var(--dur) var(--ease), color var(--dur) var(--ease), border-color var(--dur) var(--ease);
+    }
+    .tp-now:hover { background: rgba(var(--accent-rgb), 0.12); color: var(--t1); border-color: rgba(var(--accent-rgb), 0.3); }
+    /* Ember dot: the clock has drifted off "now" — Now has something to do. */
+    .tp-now .live-dot {
+      width: 5px;
+      height: 5px;
+      border-radius: 50%;
+      background: var(--ember);
+      box-shadow: 0 0 7px rgba(var(--ember-rgb), 0.8);
+      display: none;
+    }
+    .tp-now.off .live-dot { display: block; }
 
     .speed-label-sm { font-size: 10px; color: var(--text-secondary); letter-spacing: 0.1px; white-space: nowrap; }
 
@@ -1880,20 +2003,17 @@
          kissing its border — keep the chip's own inset. */
       .bar-stats { padding: 0 9px; }
       .bar-speed-main { padding: 0 6px; gap: 6px; }
-      .bar-date-row {
-        position: static;
-        transform: none;
-        width: auto;
-        flex-direction: column;
-        gap: 0;
-        padding: 2px 8px;
-        border-right: 1px solid rgba(255, 255, 255, 0.04);
-      }
-      /* Date row is inline in the bar here — no floating strip to clear. */
-      #time-popover { margin-bottom: 6px; }
-      .bar-rate-sep { display: none; }
-      .bar-date { font-size: 10px; }
-      .bar-rate { font-size: 10px; }
+      /* The rail + clock rows grow into a ≈44px touch strip; the panel's
+         targets widen to finger size. Drag-first — the tooltip magnifies. */
+      .bar-time { padding: 2px 6px 0; }
+      .time-rail-wrap { min-width: 112px; }
+      .time-rail { height: 22px; }
+      .tr-clock .d { font-size: 10.5px; }
+      .time-panel { width: calc(100vw - 20px); }
+      .tp-seg button { width: 52px; height: 40px; }
+      .tp-trail { height: 40px; }
+      .tp-trail .thumb { width: 19px; height: 19px; }
+      .tp-date { height: 38px; }
       .stat-row { padding: 2px 0; }
       .stat-label { font-size: 10px; }
       .stat-value { font-size: 10px; }
@@ -2468,49 +2588,64 @@
 
       <!-- Unified bottom bar -->
       <div id="planetarium-bottom-bar">
-        <!-- Time popover (expands upward) -->
-        <div id="time-popover" class="bar-popover bar-popover-left pn pn-high">
-          <div class="time-transport">
-            <!-- Transport tri-state: exactly one segment is the clock's state
-                 (paused / forward / backward), so radio semantics, not three
-                 toggles. Filled glyphs on purpose — a 1.6-stroke triangle at
-                 13px reads as a chevron, not "play". -->
-            <div class="time-seg" role="radiogroup" aria-label="Time playback">
-              <button class="time-seg-btn" id="planetarium-time-reverse" role="radio" aria-checked="false" aria-label="Play backward">
-                <svg class="bar-glyph" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M11.5 3.5v9L4.8 8l6.7-4.5Z"/></svg>
-              </button>
-              <button class="time-seg-btn" id="planetarium-time-pause" role="radio" aria-checked="false" aria-label="Pause">
-                <svg class="bar-glyph" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><rect x="4.6" y="3.8" width="2.2" height="8.4" rx="0.8"/><rect x="9.2" y="3.8" width="2.2" height="8.4" rx="0.8"/></svg>
-              </button>
-              <button class="time-seg-btn" id="planetarium-time-play" role="radio" aria-checked="true" aria-label="Play forward">
-                <svg class="bar-glyph" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M4.5 3.5v9L11.2 8 4.5 3.5Z"/></svg>
-              </button>
-            </div>
-            <div class="time-rate">
-              <button class="planetarium-icon-btn" id="planetarium-time-slower" aria-label="Slower">
-                <svg class="bar-glyph" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" aria-hidden="true"><path d="M3.5 8h9"/></svg>
-              </button>
-              <span class="time-rate-value" id="planetarium-time-rate-value">Realtime</span>
-              <button class="planetarium-icon-btn" id="planetarium-time-faster" aria-label="Faster">
-                <svg class="bar-glyph" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" aria-hidden="true"><path d="M3.5 8h9M8 3.5v9"/></svg>
-              </button>
-            </div>
-          </div>
-          <div class="time-input-row">
-            <span class="time-utc-label">UTC</span>
-            <input type="datetime-local" id="planetarium-time-input" class="settings-date" step="60" />
-            <button class="planetarium-icon-btn" id="planetarium-time-now">Now</button>
-          </div>
-        </div>
-
         <!-- Main bar row -->
         <div class="bar-row pn">
-          <!-- Date/time (floats above bar on desktop, inline on mobile) -->
-          <div class="bar-date-row" id="bar-time-toggle">
-            <span class="bar-date" id="planetarium-time-value">--</span>
-            <span class="bar-rate-sep">&middot;</span>
-            <span class="bar-rate" id="planetarium-time-rate">1x</span>
-            <span class="bar-chevron" id="time-chevron">&#x25BC;</span>
+          <!-- Time control: the rate rail riding on the adaptive clock; the
+               clock opens the expanded panel (transport, full rail, exact
+               UTC date). Reverse lives only in the panel — the rail itself
+               is magnitude-only, and pausing is a tap on the rail in place. -->
+          <div class="bar-section bar-time" id="time-control">
+            <div class="time-panel pn pn-high" id="time-panel" role="dialog" aria-label="Time controls">
+              <div class="tp-row">
+                <!-- Transport tri-state: exactly one segment is the clock's state
+                     (paused / forward / backward), so radio semantics, not three
+                     toggles. Filled glyphs on purpose — a 1.6-stroke triangle at
+                     13px reads as a chevron, not "play". -->
+                <div class="tp-seg" role="radiogroup" aria-label="Time playback">
+                  <button id="planetarium-time-reverse" role="radio" aria-checked="false" aria-label="Play backward">
+                    <svg class="bar-glyph" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M11.5 3.5v9L4.8 8l6.7-4.5Z"/></svg>
+                  </button>
+                  <button id="planetarium-time-pause" role="radio" aria-checked="false" aria-label="Pause">
+                    <svg class="bar-glyph" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><rect x="4.6" y="3.8" width="2.2" height="8.4" rx="0.8"/><rect x="9.2" y="3.8" width="2.2" height="8.4" rx="0.8"/></svg>
+                  </button>
+                  <button id="planetarium-time-play" role="radio" aria-checked="true" aria-label="Play forward">
+                    <svg class="bar-glyph" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M4.5 3.5v9L11.2 8 4.5 3.5Z"/></svg>
+                  </button>
+                </div>
+                <span class="tp-rate" id="planetarium-time-rate-value">Realtime</span>
+              </div>
+              <div class="tp-trailwrap">
+                <div class="tp-trail" id="planetarium-time-trail" tabindex="0" role="slider" aria-label="Time rate">
+                  <div class="track"></div>
+                  <div class="fill"></div>
+                  <div class="thumb"></div>
+                </div>
+                <!-- Detent-label buttons are built from the preset ladder at bind time. -->
+                <div class="tp-labels" id="planetarium-time-labels"></div>
+              </div>
+              <div class="tp-div"></div>
+              <div class="tp-row">
+                <div class="tp-date">
+                  <i>UTC</i>
+                  <input type="datetime-local" id="planetarium-time-input" step="60" />
+                </div>
+                <button class="tp-now" id="planetarium-time-now"><span class="live-dot"></span>Now</button>
+              </div>
+            </div>
+            <div class="time-rail-wrap">
+              <div class="time-rail" id="planetarium-time-rail" tabindex="0" role="slider" aria-label="Time rate" title="Drag right to run time faster &middot; tap in place to pause">
+                <div class="tr-track"></div>
+                <div class="tr-dets"></div>
+                <div class="tr-fill"></div>
+                <div class="tr-thumb"></div>
+                <div class="tr-tip pn pn-high">Realtime</div>
+              </div>
+              <div class="tr-clock" id="time-clock" role="button" tabindex="0" aria-expanded="false" aria-haspopup="dialog" title="Open time panel">
+                <span class="d">--</span>
+                <span class="t hidden"></span>
+                <span class="swap"></span>
+              </div>
+            </div>
           </div>
 
           <!-- Speed controls (Pilot moved to the top cluster) -->
@@ -2553,7 +2688,7 @@
       </div>
 
       <div id="planetarium-keys-hint">
-        <kbd>A</kbd><kbd>D</kbd> yaw &nbsp; <kbd>↑</kbd><kbd>↓</kbd> pitch &nbsp; <kbd>W</kbd><kbd>S</kbd> thrust &nbsp; <kbd>O</kbd> observatory &nbsp; <kbd>T</kbd> teleport &nbsp; <kbd>P</kbd> autopilot
+        <kbd>A</kbd><kbd>D</kbd> yaw &nbsp; <kbd>↑</kbd><kbd>↓</kbd> pitch &nbsp; <kbd>W</kbd><kbd>S</kbd> thrust &nbsp; <kbd>O</kbd> observatory &nbsp; <kbd>T</kbd> teleport &nbsp; <kbd>P</kbd> autopilot &nbsp; <kbd>,</kbd><kbd>.</kbd> time &nbsp; <kbd>N</kbd> now
       </div>
 
       <!-- Touch flight zone (mobile only) -->

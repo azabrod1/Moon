@@ -1,16 +1,18 @@
 /**
- * Bottom-bar instrument toggles. The Time popover expands up from the bar; the
- * Stats card docks bottom-right (relocated out of the bar). Opening one closes
- * the other; a click outside both the bar and the card closes both. The Stats
- * card is a single owned surface here — PlanetariumMode arbitrates one-instrument-
- * at-a-time (vs the Observatory panel) through `onStatsToggle` + the public
- * `closeStats()` / `isStatsOpen()` API.
+ * Bottom-bar instrument toggles. The Time panel expands up from the bar off
+ * the clock readout; the Stats card docks bottom-right (relocated out of the
+ * bar). Opening one closes the other; a click outside both the bar and the
+ * card closes both. The Stats card is a single owned surface here —
+ * PlanetariumMode arbitrates one-instrument-at-a-time (vs the Observatory
+ * panel) through `onStatsToggle` + the public `closeStats()` / `isStatsOpen()`
+ * API; `closeTime()` / `isTimeOpen()` give the mode's lifecycle paths
+ * (landing, missions, deactivate, Esc) the same handle on the Time panel.
  */
 export class PlanetariumBottomBar {
   private statsPopover = document.getElementById('stats-popover');
-  private timePopover = document.getElementById('time-popover');
+  private timePanel = document.getElementById('time-panel');
+  private timeClock = document.getElementById('time-clock');
   private statsToggle = document.getElementById('bar-stats-toggle');
-  private timeChevron = document.getElementById('time-chevron');
 
   /** Notified when the Stats card opens (true) or closes (false), so the mode
    *  can enforce one instrument at a time (tuck the Observatory panel). */
@@ -22,14 +24,17 @@ export class PlanetariumBottomBar {
       if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); this.setStats(!this.isStatsOpen()); }
     });
 
-    document.getElementById('bar-time-toggle')?.addEventListener('click', () => {
-      const opening = !this.timePopover?.classList.contains('visible');
-      this.timePopover?.classList.toggle('visible');
-      this.timeChevron?.classList.toggle('expanded');
-      if (opening) this.closeStats();
+    this.timeClock?.addEventListener('click', () => this.setTime(!this.isTimeOpen()));
+    this.timeClock?.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' || e.key === ' ') {
+        // Stop here or the window-level handler sees Space too (ship thrust).
+        e.preventDefault();
+        e.stopPropagation();
+        this.setTime(!this.isTimeOpen());
+      }
     });
 
-    this.timePopover?.addEventListener('click', (e) => e.stopPropagation());
+    this.timePanel?.addEventListener('click', (e) => e.stopPropagation());
     this.statsPopover?.addEventListener('click', (e) => e.stopPropagation());
 
     document.addEventListener('click', (e) => {
@@ -47,9 +52,18 @@ export class PlanetariumBottomBar {
     return !!this.statsPopover?.classList.contains('visible');
   }
 
+  isTimeOpen(): boolean {
+    return !!this.timePanel?.classList.contains('visible');
+  }
+
   /** Close the Stats card (idempotent). Clears the lit toggle + notifies the mode. */
   closeStats(): void {
     this.setStats(false);
+  }
+
+  /** Close the Time panel (idempotent). */
+  closeTime(): void {
+    this.setTime(false);
   }
 
   /** Open/close the card, light the toggle, and announce the change. */
@@ -62,8 +76,10 @@ export class PlanetariumBottomBar {
     this.onStatsToggle?.(open);
   }
 
-  private closeTime(): void {
-    this.timePopover?.classList.remove('visible');
-    this.timeChevron?.classList.remove('expanded');
+  private setTime(open: boolean): void {
+    if (open === this.isTimeOpen()) return;
+    this.timePanel?.classList.toggle('visible', open);
+    this.timeClock?.setAttribute('aria-expanded', open ? 'true' : 'false');
+    if (open) this.closeStats();
   }
 }

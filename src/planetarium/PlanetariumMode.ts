@@ -531,11 +531,13 @@ export class PlanetariumMode {
   private menuPanel = new PlanetariumMenuPanel();
   private bottomBar = new PlanetariumBottomBar();
   private statsPanel = new PlanetariumStatsPanel();
+  // Rail gestures land here directly (not through the window key handler),
+  // so they carry their own menu/help lock — see timeControlsLocked.
   private timePanel = new PlanetariumTimePanel(TIME_RATE_PRESETS, {
-    onRateIndex: (index) => this.setRailRateIndex(index),
-    onStep: (direction) => this.stepTimeRate(direction),
-    onPauseToggle: () => this.timeTogglePause(),
-    onNow: () => this.timeJumpToNow(),
+    onRateIndex: (index) => { if (!this.timeControlsLocked()) this.setRailRateIndex(index); },
+    onStep: (direction) => { if (!this.timeControlsLocked()) this.stepTimeRate(direction); },
+    onPauseToggle: () => { if (!this.timeControlsLocked()) this.timeTogglePause(); },
+    onNow: () => { if (!this.timeControlsLocked()) this.timeJumpToNow(); },
   });
   private observatoryPanel = new ObservatoryPanel(
     (type, direction) => this.handleObservatoryJump(type, direction),
@@ -828,6 +830,14 @@ export class PlanetariumMode {
     this.updateTimeUI();
     // Clock jump invalidates the Observatory panel's upcoming-events list.
     this.startObservatoryEventSearch();
+  }
+
+  /** The ☰ menu auto-pauses the clock and restores it on close, and the help
+   *  modal freezes the scene — a rail gesture mid-menu would clobber the
+   *  pause state the menu puts back. The window-level , . N shortcuts carry
+   *  the same guard inline. */
+  private timeControlsLocked(): boolean {
+    return this.menuPanel.isOpen() || this.isHelpOpen();
   }
 
   /** Rail/panel-trail/detent-label commits: snap to the preset magnitude,

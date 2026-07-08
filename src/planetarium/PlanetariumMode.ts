@@ -2330,10 +2330,12 @@ export class PlanetariumMode {
       return;
     }
 
-    // Time throttle keys ride beside the deck verbs, same guards: , . step
-    // the rate, N jumps the clock to now — landed and surface view included.
+    // Time throttle keys ride beside the deck verbs: , . step the rate, N
+    // jumps the clock to now — landed and surface view included. The ☰ menu
+    // joins the guard set: it auto-pauses the clock while open, and stepping
+    // deliberately unpauses, which would clobber the state it must restore.
     if ((key === ',' || key === '.' || key === 'n') && !e.metaKey && !e.ctrlKey && !e.altKey) {
-      if (this.isMissionActive() || this.isHelpOpen()) return;
+      if (this.isMissionActive() || this.isHelpOpen() || this.menuPanel.isOpen()) return;
       if (key === ',') this.stepTimeRate(-1);
       else if (key === '.') this.stepTimeRate(1);
       else this.timeJumpToNow();
@@ -2344,11 +2346,17 @@ export class PlanetariumMode {
       return;
     }
 
+    // Space activates a focused button natively — pressing it on the panel's
+    // transport (or any bar chip) must not also drive the global Space verbs.
+    const spaceOnControl =
+      e.key === ' ' && !!(e.target as HTMLElement).closest?.('button, [role="button"]');
+
     // Suppress flight keys while landed — except Space, which pauses the
     // clock there (the time rail is the one live throttle on the ground;
     // in cruise Space keeps its ship-thrust meaning below).
     if (this.landedOn) {
-      if (e.key === ' ' && !this.isMissionActive() && !this.isHelpOpen()) {
+      if (e.key === ' ' && !spaceOnControl && !this.isMissionActive() && !this.isHelpOpen()
+        && !this.menuPanel.isOpen()) {
         e.preventDefault();
         this.timeTogglePause();
         if (this.landedView === 'surface') this.renderSurfaceHud();
@@ -2360,7 +2368,7 @@ export class PlanetariumMode {
     this.keys.add(e.key.toLowerCase());
 
     // Space toggles pause
-    if (e.key === ' ') {
+    if (e.key === ' ' && !spaceOnControl) {
       e.preventDefault();
       this.player.moving = !this.player.moving;
     }

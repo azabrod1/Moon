@@ -43,6 +43,11 @@ export class PlanetariumBottomBar {
       // The Stats card now lives outside the bar, so exclude it explicitly.
       if (bar && !bar.contains(t) && !this.statsPopover?.contains(t)) {
         this.closeStats();
+      }
+      // The Time panel closes on any click outside its own segment — the
+      // neighbouring Space controls count as outside (per the handoff).
+      const timeControl = document.getElementById('time-control');
+      if (timeControl && !timeControl.contains(t)) {
         this.closeTime();
       }
     });

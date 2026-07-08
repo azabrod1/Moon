@@ -319,10 +319,17 @@ export class PlanetariumTimePanel {
         this.showTip(this.indexFromX(el, e.clientX));
       }
     });
-    el.addEventListener('pointerup', () => {
+    el.addEventListener('pointerup', (e) => {
       const wasTap = drag.active && !drag.moved;
       drag.active = false;
       el.classList.remove('dragging');
+      try {
+        el.releasePointerCapture(e.pointerId);
+      } catch {
+        // Capture may already be gone (synthetic pointers, cancelled drags).
+      }
+      // Touch gets no pointerleave — hide the tooltip on release or it lingers.
+      if (e.pointerType !== 'mouse') this.hideTip();
       if (wasTap && opts.tapToPause) this.callbacks.onPauseToggle();
     });
     el.addEventListener('pointercancel', endDrag);

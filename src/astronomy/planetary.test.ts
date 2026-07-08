@@ -265,7 +265,8 @@ describe('time helpers', () => {
     expect(formatTimeRateLabel(86400, false)).toBe('1 day/s');
     expect(formatTimeRateLabel(604800, false)).toBe('1 wk/s');
     expect(formatTimeRateLabel(2592000, false)).toBe('1 mo/s');
-    expect(formatTimeRateLabel(31557600, false)).toBe('1.0 yr/s');
+    // The Julian-year preset reads exactly like its detent label.
+    expect(formatTimeRateLabel(31557600, false)).toBe('1 yr/s');
     // Off-ladder magnitudes keep a decimal instead of rounding to a lie.
     expect(formatTimeRateLabel(864000, false)).toBe('1.4 wk/s');
     expect(formatTimeRateLabel(7776000, false)).toBe('3 mo/s');

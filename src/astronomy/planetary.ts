@@ -364,7 +364,9 @@ export function formatTimeRateLabel(rate: number, paused: boolean): string {
   if (magnitude < 604800) return `${direction}${(magnitude / 86400).toFixed(0)} day/s`;
   if (magnitude < 2592000) return `${direction}${formatRateCount(magnitude / 604800)} wk/s`;
   if (magnitude < 86400 * 365) return `${direction}${formatRateCount(magnitude / 2592000)} mo/s`;
-  return `${direction}${(magnitude / (86400 * 365)).toFixed(1)} yr/s`;
+  // Julian-year divisor: the ladder's top preset must read "1 yr/s" exactly,
+  // matching its detent label.
+  return `${direction}${formatRateCount(magnitude / 31557600)} yr/s`;
 }
 
 /**

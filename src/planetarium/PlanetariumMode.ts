@@ -415,6 +415,9 @@ export class PlanetariumMode {
   private cameraShellPool: CameraBodyShell[] = [];
   private cameraShellCount = 0;
   private tmpRingLocal = new THREE.Vector3();
+  /** The player position applyFloatingOrigin subtracted THIS frame — i.e.
+   *  the frame the scene actually renders in. See applyFloatingOrigin. */
+  private renderOriginAU = { x: 0, y: 0, z: 0 };
   /** Player position at the top of the frame — the collision sweep needs the
    *  whole segment, not the endpoint (one 100 ms frame at the in-system
    *  default steps ~2,500 km, clean through a small moon's bubble). */
@@ -1131,6 +1134,11 @@ export class PlanetariumMode {
       this.camera.near = LANDED_NEAR_AU;
       this.camera.updateProjectionMatrix();
     }
+    // Same for the governor: activation flips `active` before the restore
+    // resolves, so the reactivation window must not run on this journey's
+    // leftover cap or clear-hold.
+    this.bodyCap = initialBodyCapState();
+    this.player.speedCapAUPerS = Infinity;
 
     this.store.saveState(this.getState());
     this.store.stopAutoSave();
@@ -1360,6 +1368,15 @@ export class PlanetariumMode {
     const px = this.player.posX;
     const py = this.player.posY;
     const pz = this.player.posZ;
+
+    // The origin this frame RENDERS at. Collision pushback mutates
+    // player.pos* after this pass, so anything measuring against rendered
+    // geometry later in the frame (the camera-safety pass) must subtract
+    // THIS offset, not the live player position — after a fast override
+    // impact the two differ by the whole pushback distance.
+    this.renderOriginAU.x = px;
+    this.renderOriginAU.y = py;
+    this.renderOriginAU.z = pz;
 
     this.solarSystem.sun.position.set(-px, -py, -pz);
 
@@ -2650,6 +2667,12 @@ export class PlanetariumMode {
     if (this.throttleOverride && this.systemSpeedFactor >= 1.0
         && this.bodyCap.unboundS >= BODY_CAP_CLEAR_HOLD_S) {
       this.throttleOverride = false;
+      // The hold proves the GEOMETRY has been open for the full interval; the
+      // eased candidate may still carry wall-level ramp memory, and handing
+      // that to the applied cap would brake a full-speed ship to a crawl the
+      // frame the bypass ends. The escape is complete — start clean, exactly
+      // like every other flight discontinuity.
+      this.bodyCap = initialBodyCapState();
     }
 
     if (this.speedLabelEl) {
@@ -4238,11 +4261,15 @@ export class PlanetariumMode {
   }
 
   /** The governor/collision body set: every visible painted moon (world
-   *  positions refresh each frame in updateMoonPositions; entries read here
-   *  are ≤1 frame stale — irrelevant at km scale) plus the jump seed, whose
-   *  position resolves live from the parent + ephemeris offset while its
-   *  mesh is still veiled. Rendered radii come from the live mesh scale
-   *  (the 5%-of-parent floor), i.e. the sphere you actually see. */
+   *  positions refresh each frame in updateMoonPositions) plus the jump
+   *  seed, whose position resolves live from the parent + ephemeris offset
+   *  while its mesh is still veiled. Rendered radii come from the live mesh
+   *  scale (the 5%-of-parent floor), i.e. the sphere you actually see.
+   *  Staleness: ship collision and the governor read this BEFORE the frame's
+   *  refresh — one frame behind, fine at real cruise speeds but a different
+   *  orbital epoch at the top time rates (1 yr/s moves a moon 36 simulated
+   *  days per capped frame). Pre-existing, main-parity; the camera-safety
+   *  pass runs AFTER the refresh and is immune. */
   private forEachGovernedMoon(cb: (x: number, y: number, z: number, renderedRAU: number) => void) {
     for (const moons of this.planetMoons.values()) {
       for (const m of moons) {
@@ -4336,9 +4363,13 @@ export class PlanetariumMode {
     // frame()/shoot.mjs pose the camera (and its near plane) deliberately.
     if (this.devFreeCamera) return;
 
-    const px = this.player.posX;
-    const py = this.player.posY;
-    const pz = this.player.posZ;
+    // Measure in the frame the scene RENDERS in: collision pushback may have
+    // moved the player after the floating origin was applied, and shells
+    // derived from the live position would sit the whole pushback away from
+    // the meshes on screen.
+    const px = this.renderOriginAU.x;
+    const py = this.renderOriginAU.y;
+    const pz = this.renderOriginAU.z;
     this.cameraShellCount = 0;
     this.forEachGovernedMoon((x, y, z, renderedR) =>
       this.pushCameraShell(x - px, y - py, z - pz, renderedR));
@@ -4387,9 +4418,11 @@ export class PlanetariumMode {
    *  ring skim from clipping a hole through the geometry. */
   private nearestRingDistanceAU(camScene: THREE.Vector3): number {
     if (!this.solarSystem) return Infinity;
-    const px = this.player.posX;
-    const py = this.player.posY;
-    const pz = this.player.posZ;
+    // Render frame, same as the shell pass (worldToLocal already reads the
+    // rendered matrices; the gate must agree with them).
+    const px = this.renderOriginAU.x;
+    const py = this.renderOriginAU.y;
+    const pz = this.renderOriginAU.z;
     let min = Infinity;
     for (const planet of this.solarSystem.planets) {
       const rings = planet.rings;

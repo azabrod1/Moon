@@ -185,6 +185,20 @@ describe('advanceBodyCap — the governor latch', () => {
     expect(s.applied).toBeCloseTo(geomCap, 12); // tight at once — no Infinity restart
   });
 
+  it('the auto-clear hand-off starts clean: no wall ramp survives the bypass edge', () => {
+    // Controller contract: when the sustained hold auto-clears the override
+    // it resets to initialBodyCapState. Without that, the candidate's
+    // wall-level ramp memory (only ~2x grown over the hold) would become the
+    // applied cap on the bypass true→false edge and brake a full-speed ship
+    // to a crawl for several seconds.
+    let s = initialBodyCapState();
+    s = advanceBodyCap(s, COMMANDED / 1000, COMMANDED, true, DT); // deep at a wall, bypassed
+    expect(s.candidate).toBeLessThan(COMMANDED); // the memory the reset discards
+    s = initialBodyCapState(); // the controller's reset at auto-clear
+    s = advanceBodyCap(s, Infinity, COMMANDED, false, DT); // first un-bypassed frame
+    expect(s.applied).toBe(Infinity);
+  });
+
   it('a planet approach at the in-system default engages ~100,000 km out', () => {
     const engageDistAU = COMMANDED / PLANET_APPROACH_K_PER_S; // cap == speed here
     expect(governedSpeedCap(engageDistAU, 1, PLANET_APPROACH_K_PER_S, VMIN)).toBeCloseTo(COMMANDED, 12);

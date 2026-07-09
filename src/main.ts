@@ -13,6 +13,7 @@ import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js'
 import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
 
 import { PlanetariumMode, FIRST_PLANETARIUM_ACTIVATION_TOTAL_UNITS } from './planetarium/PlanetariumMode';
+import { LANDED_NEAR_AU } from './planetarium/landedView';
 import type { MoonFlightMode } from './moonFlight/MoonFlightMode';
 import { canGPUDoBloom } from './app/gpuCapability';
 import { debugError, debugLog, debugWarn } from './shared/debug';
@@ -93,7 +94,8 @@ const scene = new THREE.Scene();
 scene.background = new THREE.Color(0x000000);
 
 // --- Planetarium camera ---
-const planetariumCamera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.000001, 200);
+// Near starts at the landed value; cruise swaps in its dynamic near per frame.
+const planetariumCamera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, LANDED_NEAR_AU, 200);
 planetariumCamera.position.set(-0.0002, 0.0001, 0.0001);
 
 // --- Moon flight camera (own camera so near/far are independent of other modes) ---

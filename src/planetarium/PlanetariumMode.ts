@@ -109,13 +109,19 @@ import {
   type SurfaceTargetChoice,
 } from './surfaceView';
 import { DEG2RAD } from '../shared/math/angles';
-import { landedFrameCamDistAU, landedMinDistanceAU } from './landedView';
+import { landedFrameCamDistAU, landedMinDistanceAU, LANDED_NEAR_AU } from './landedView';
 import {
   SHIP_CLEARANCE_AU,
   CRUISE_CAM_DIST_AU,
   SHIP_OCCLUDER_RADIUS_AU,
   CRUISE_CONTROLS_MIN_DISTANCE_AU,
+  CAMERA_BODY_MARGIN_AU,
   planetEnvelopeRadiusAU,
+  cruiseCameraNearAU,
+  escapeCameraPenetrations,
+  nearestShellSurfaceDistanceAU,
+  ringAnnulusDistanceAU,
+  type CameraBodyShell,
 } from './cruiseView';
 import { KM_CONSTANTS } from '../shared/constants/physicalData';
 import { smoothstepUnclamped } from '../shared/math/smoothstep';
@@ -403,6 +409,11 @@ export class PlanetariumMode {
    *  Reset to initialBodyCapState() on every flight discontinuity — jump,
    *  takeoff, restore — so no ramp or partial clear-hold survives one. */
   private bodyCap: BodyCapState = initialBodyCapState();
+  /** Pooled shell list for the per-frame camera-safety pass (grown once,
+   *  fields overwritten each frame — no steady-state allocation). */
+  private cameraShellPool: CameraBodyShell[] = [];
+  private cameraShellCount = 0;
+  private tmpRingLocal = new THREE.Vector3();
   /** Player position at the top of the frame — the collision sweep needs the
    *  whole segment, not the endpoint (one 100 ms frame at the in-system
    *  default steps ~2,500 km, clean through a small moon's bubble). */
@@ -1112,6 +1123,14 @@ export class PlanetariumMode {
 
     this.active = false;
 
+    // Hand the camera back on the fixed near plane — another mode (or a
+    // reactivation's first landed frame) must never inherit cruise's
+    // dynamic near, which can sit as small as 3 km after a close pass.
+    if (this.camera.near !== LANDED_NEAR_AU) {
+      this.camera.near = LANDED_NEAR_AU;
+      this.camera.updateProjectionMatrix();
+    }
+
     this.store.saveState(this.getState());
     this.store.stopAutoSave();
 
@@ -1274,6 +1293,12 @@ export class PlanetariumMode {
     // trigger may only measure same-frame geometry — frame-one and teleport
     // frames otherwise read stale offsets, and one mis-read fires a 4K fetch.
     this.updateTextureLOD();
+
+    // Camera safety + dynamic near. Deliberately AFTER updateMoonPositions —
+    // at the top time rates a capped 100 ms frame moves a moon 36 simulated
+    // days, so "last frame's positions" can be a different sky — and BEFORE
+    // the label pass, which projects through the final camera.
+    this.updateCruiseCameraSafety();
 
     // Occlusion pipeline: planet discs → moon + ship discs → labels + markers.
     // Runs when either the HTML labels or the marker sprites are on. The
@@ -4273,6 +4298,112 @@ export class PlanetariumMode {
     return cap;
   }
 
+  private pushCameraShell(sceneX: number, sceneY: number, sceneZ: number, surfaceRadiusAU: number) {
+    let s = this.cameraShellPool[this.cameraShellCount];
+    if (!s) {
+      s = { x: 0, y: 0, z: 0, surfaceRadiusAU: 0 };
+      this.cameraShellPool.push(s);
+    }
+    s.x = sceneX;
+    s.y = sceneY;
+    s.z = sceneZ;
+    s.surfaceRadiusAU = surfaceRadiusAU;
+    this.cameraShellCount++;
+  }
+
+  /** Camera safety + dynamic near plane, cruise only. Collisions move only
+   *  the PLAYER; at the shrunken chase trail the camera itself can dip
+   *  inside a mesh — a bounce turnaround lerps it toward the body, a drag
+   *  orbit at max approach sweeps it under the surface, and a high-rate
+   *  time step can drop a moon onto it. Escape any padded-shell penetration
+   *  in one deterministic step (see cruiseView.escapeCameraPenetrations),
+   *  re-aim at the ship, then set the near plane from live distances.
+   *  Everything works in scene space (bodies at world − player). */
+  private updateCruiseCameraSafety() {
+    // frame()/shoot.mjs pose the camera (and its near plane) deliberately.
+    if (this.devFreeCamera) return;
+
+    const px = this.player.posX;
+    const py = this.player.posY;
+    const pz = this.player.posZ;
+    this.cameraShellCount = 0;
+    this.forEachGovernedMoon((x, y, z, renderedR) =>
+      this.pushCameraShell(x - px, y - py, z - pz, renderedR));
+    if (this.solarSystem) {
+      for (const planet of this.solarSystem.planets) {
+        const wp = planet.group.userData.worldPosAU as { x: number; y: number; z: number } | undefined;
+        if (!wp) continue;
+        this.pushCameraShell(
+          wp.x - px, wp.y - py, wp.z - pz,
+          planetEnvelopeRadiusAU(planet.data.radiusAU, planet.group.scale.x, ATMOSPHERE_SHELL_SCALES[planet.data.name]),
+        );
+      }
+      // The Sun sits at the heliocentric origin; its governed surface floats
+      // above the photosphere (no collision shell exists to back this up).
+      this.pushCameraShell(-px, -py, -pz, (KM_CONSTANTS.SUN_RADIUS / KM_PER_AU) * SUN_APPROACH_SURFACE_RADII);
+    }
+
+    const camPos = this.camera.position;
+    const escaped = escapeCameraPenetrations(camPos, this.cameraShellPool, this.cameraShellCount, CAMERA_BODY_MARGIN_AU);
+    if (escaped) {
+      camPos.set(escaped.x, escaped.y, escaped.z);
+      // OrbitControls oriented the camera from its pre-escape position; leave
+      // the quaternion stale and the frame renders down the old ray with the
+      // ship flung off-centre.
+      this.camera.lookAt(this.controls.target);
+    }
+
+    // Near plane from the FINAL camera position: nearest body surface,
+    // camera-to-hull gap, nearest ring annulus.
+    const near = cruiseCameraNearAU(
+      nearestShellSurfaceDistanceAU(camPos, this.cameraShellPool, this.cameraShellCount),
+      camPos.length(),
+      this.nearestRingDistanceAU(camPos),
+    );
+    // Assign behind a small relative deadband — near sweeps smoothly, no
+    // reason to rebuild the projection matrix on sub-1% jitter.
+    if (Math.abs(near - this.camera.near) > this.camera.near * 0.01) {
+      this.camera.near = near;
+      this.camera.updateProjectionMatrix();
+    }
+  }
+
+  /** Distance from the camera to the nearest ring annulus (Infinity when no
+   *  ringed planet is within 4× its outer ring radius). Rings have no
+   *  collision — pass-through is deliberate — so only the near plane keeps a
+   *  ring skim from clipping a hole through the geometry. */
+  private nearestRingDistanceAU(camScene: THREE.Vector3): number {
+    if (!this.solarSystem) return Infinity;
+    const px = this.player.posX;
+    const py = this.player.posY;
+    const pz = this.player.posZ;
+    let min = Infinity;
+    for (const planet of this.solarSystem.planets) {
+      const rings = planet.rings;
+      const config = RING_CONFIGS[planet.data.name];
+      if (!rings || !config) continue;
+      const wp = planet.group.userData.worldPosAU as { x: number; y: number; z: number } | undefined;
+      if (!wp) continue;
+      const outerR = planet.data.radiusAU * config.outerFactor;
+      const dx = camScene.x - (wp.x - px);
+      const dy = camScene.y - (wp.y - py);
+      const dz = camScene.z - (wp.z - pz);
+      if (dx * dx + dy * dy + dz * dz > outerR * outerR * 16) continue; // beyond 4× the annulus
+      // Ring geometry is baked into the mesh's local XZ plane; worldToLocal
+      // refreshes ancestor world matrices itself.
+      this.tmpRingLocal.copy(camScene);
+      rings.worldToLocal(this.tmpRingLocal);
+      const d = ringAnnulusDistanceAU(
+        Math.hypot(this.tmpRingLocal.x, this.tmpRingLocal.z),
+        this.tmpRingLocal.y,
+        planet.data.radiusAU * config.innerFactor,
+        outerR,
+      );
+      if (d < min) min = d;
+    }
+    return min;
+  }
+
   /** Moon counterpart of resolvePlanetCollisions, with one difference: it
    *  sweeps the whole frame segment (prevPlayerPos → current) instead of
    *  checking the endpoint — endpoint checks tunnel exactly at moon scale. */
@@ -6231,6 +6362,14 @@ export class PlanetariumMode {
       this.player.posX = pos.x;
       this.player.posY = pos.y;
       this.player.posZ = pos.z;
+    }
+
+    // Landed runs on the fixed near plane — restore it BEFORE the two framing
+    // consumers below read camera.near (cruise leaves a dynamic value here,
+    // as small as 3 km after a close pass).
+    if (this.camera.near !== LANDED_NEAR_AU) {
+      this.camera.near = LANDED_NEAR_AU;
+      this.camera.updateProjectionMatrix();
     }
 
     // Configure OrbitControls to orbit the body. The player is parked at the

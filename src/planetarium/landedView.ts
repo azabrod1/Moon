@@ -12,6 +12,13 @@
  * drift (e.g. a too-large floor quietly pinning the smallest moons far away).
  */
 
+/** Landed/observatory camera near plane, and the app's startup default
+ *  (~150 km). Surface view RELIES on it culling the ground under the
+ *  camera, and the framing helpers below are calibrated against it. Cruise
+ *  swaps in its own dynamic near (cruiseView) every frame and restores this
+ *  on every landing and on mode deactivation. */
+export const LANDED_NEAR_AU = 0.000001;
+
 /** Camera-distance multiple of the rendered radius; see the module note for the ⅓-view derivation. */
 export const LANDED_FRAME_RADII = 4;
 

@@ -128,27 +128,105 @@ export function ringAnnulusDistanceAU(
   return Math.hypot(radialExcess, Math.abs(height));
 }
 
+/** One governed body as the camera-safety pass sees it: center position (in
+ *  the camera's own frame) and the body's outermost rendered surface radius
+ *  (envelope for planets, rendered mesh for moons) — margin NOT included. */
+export interface CameraBodyShell {
+  x: number;
+  y: number;
+  z: number;
+  surfaceRadiusAU: number;
+}
+
 /**
- * Push a camera position radially out of a body's padded shell. Returns the
- * corrected position, or null when the camera is already clear (the common
- * case — callers skip all work on null). A camera exactly at the body
- * center pushes out along +X: any fixed direction beats NaN, and the caller
- * re-aims at its target afterward.
+ * Escape every padded body shell in ONE deterministic step. Returns null
+ * when the camera is clear of all of them (the common case). Otherwise:
+ * take the ray from the deepest-penetrating body's center through the
+ * camera (+X at dead center) and walk out to the FARTHEST ray–sphere exit
+ * over every shell the ray passes through — a point at the last exit is
+ * outside each of them. Sequential per-body pushes have no such guarantee:
+ * co-orbital moons rendered at the 5%-of-parent floor genuinely overlap
+ * (Pan–Atlas–Prometheus conjunct for real), and alternating pushes between
+ * overlapping spheres can oscillate.
+ *
+ * `count` bounds the scan so callers can reuse a pooled array.
  */
-export function resolveCameraPenetration(
+export function escapeCameraPenetrations(
   cam: { x: number; y: number; z: number },
-  center: { x: number; y: number; z: number },
-  shellRadiusAU: number,
+  shells: readonly CameraBodyShell[],
+  count: number,
+  marginAU: number,
 ): { x: number; y: number; z: number } | null {
-  const minDist = shellRadiusAU + CAMERA_BODY_MARGIN_AU;
-  const dx = cam.x - center.x;
-  const dy = cam.y - center.y;
-  const dz = cam.z - center.z;
-  const dist = Math.sqrt(dx * dx + dy * dy + dz * dz);
-  if (dist >= minDist) return null;
-  if (dist < 1e-12) {
-    return { x: center.x + minDist, y: center.y, z: center.z };
+  // Deepest penetration decides the escape direction.
+  let deepest = 0;
+  let originX = 0;
+  let originY = 0;
+  let originZ = 0;
+  for (let i = 0; i < count; i++) {
+    const s = shells[i];
+    const dx = cam.x - s.x;
+    const dy = cam.y - s.y;
+    const dz = cam.z - s.z;
+    const pen = s.surfaceRadiusAU + marginAU - Math.sqrt(dx * dx + dy * dy + dz * dz);
+    if (pen > deepest) {
+      deepest = pen;
+      originX = s.x;
+      originY = s.y;
+      originZ = s.z;
+    }
   }
-  const s = minDist / dist;
-  return { x: center.x + dx * s, y: center.y + dy * s, z: center.z + dz * s };
+  if (deepest <= 0) return null;
+
+  let rx = cam.x - originX;
+  let ry = cam.y - originY;
+  let rz = cam.z - originZ;
+  const rLen = Math.sqrt(rx * rx + ry * ry + rz * rz);
+  if (rLen < 1e-12) {
+    rx = 1;
+    ry = 0;
+    rz = 0;
+  } else {
+    rx /= rLen;
+    ry /= rLen;
+    rz /= rLen;
+  }
+
+  // Farthest exit along the ray across ALL shells it passes through. Shells
+  // entirely behind the camera yield a negative exit and drop out; shells
+  // containing the camera always yield a positive one.
+  let tExit = 0;
+  for (let i = 0; i < count; i++) {
+    const s = shells[i];
+    const cx = s.x - cam.x;
+    const cy = s.y - cam.y;
+    const cz = s.z - cam.z;
+    const along = cx * rx + cy * ry + cz * rz;
+    const missSq = cx * cx + cy * cy + cz * cz - along * along;
+    const shellR = s.surfaceRadiusAU + marginAU;
+    const rSq = shellR * shellR;
+    if (missSq >= rSq) continue;
+    const t = along + Math.sqrt(rSq - missSq);
+    if (t > tExit) tExit = t;
+  }
+  if (tExit <= 0) return null;
+  return { x: cam.x + rx * tExit, y: cam.y + ry * tExit, z: cam.z + rz * tExit };
+}
+
+/** Distance from the camera to the nearest body SURFACE (no margin) over the
+ *  pooled shell set — the live quantity the dynamic near plane rides on. */
+export function nearestShellSurfaceDistanceAU(
+  cam: { x: number; y: number; z: number },
+  shells: readonly CameraBodyShell[],
+  count: number,
+): number {
+  let min = Infinity;
+  for (let i = 0; i < count; i++) {
+    const s = shells[i];
+    const dx = cam.x - s.x;
+    const dy = cam.y - s.y;
+    const dz = cam.z - s.z;
+    const d = Math.sqrt(dx * dx + dy * dy + dz * dz) - s.surfaceRadiusAU;
+    if (d < min) min = d;
+  }
+  return min;
 }

@@ -14,7 +14,8 @@ import {
   planetEnvelopeRadiusAU,
   cruiseCameraNearAU,
   ringAnnulusDistanceAU,
-  resolveCameraPenetration,
+  escapeCameraPenetrations,
+  nearestShellSurfaceDistanceAU,
 } from './cruiseView';
 
 const KM_PER_AU = 149_597_870.7;
@@ -154,57 +155,80 @@ describe('ringAnnulusDistanceAU', () => {
   });
 });
 
-describe('resolveCameraPenetration', () => {
-  const MOON_SHELL = 1_737.4 * KM + SHIP_CLEARANCE_AU;
+describe('escapeCameraPenetrations', () => {
+  const MARGIN = CAMERA_BODY_MARGIN_AU;
+  const MOON_SURFACE = 1_737.4 * KM;
+  const shell = (x: number, y: number, z: number, surfaceRadiusAU: number) =>
+    ({ x, y, z, surfaceRadiusAU });
+  const clearOf = (cam: { x: number; y: number; z: number }, s: ReturnType<typeof shell>) =>
+    Math.hypot(cam.x - s.x, cam.y - s.y, cam.z - s.z) >= s.surfaceRadiusAU + MARGIN - 1e-15;
 
   it('leaves a clear camera untouched', () => {
-    const cam = { x: MOON_SHELL + CAMERA_BODY_MARGIN_AU * 2, y: 0, z: 0 };
-    expect(resolveCameraPenetration(cam, { x: 0, y: 0, z: 0 }, MOON_SHELL)).toBeNull();
+    const shells = [shell(0, 0, 0, MOON_SURFACE)];
+    const cam = { x: MOON_SURFACE + MARGIN * 2, y: 0, z: 0 };
+    expect(escapeCameraPenetrations(cam, shells, 1, MARGIN)).toBeNull();
   });
 
-  it('pushes a penetrating camera radially to the padded shell', () => {
-    const cam = { x: MOON_SHELL * 0.5, y: 0, z: 0 };
-    const out = resolveCameraPenetration(cam, { x: 0, y: 0, z: 0 }, MOON_SHELL);
-    expect(out).not.toBeNull();
-    expect(out!.x).toBeCloseTo(MOON_SHELL + CAMERA_BODY_MARGIN_AU, 12);
-    expect(out!.y).toBe(0);
-    expect(out!.z).toBe(0);
-  });
-
-  it('preserves the radial direction of the push', () => {
-    const center = { x: 1, y: 2, z: 3 };
-    const cam = { x: 1 + MOON_SHELL * 0.3, y: 2 + MOON_SHELL * 0.4, z: 3 };
-    const out = resolveCameraPenetration(cam, center, MOON_SHELL)!;
-    const dx = out.x - center.x;
-    const dy = out.y - center.y;
-    const dz = out.z - center.z;
-    expect(Math.hypot(dx, dy, dz)).toBeCloseTo(MOON_SHELL + CAMERA_BODY_MARGIN_AU, 12);
-    expect(dy / dx).toBeCloseTo(0.4 / 0.3, 6);
-    expect(dz).toBeCloseTo(0, 12);
+  it('pushes a single-body penetration radially to the padded shell', () => {
+    const shells = [shell(0, 0, 0, MOON_SURFACE)];
+    const cam = { x: MOON_SURFACE * 0.3, y: MOON_SURFACE * 0.4, z: 0 };
+    const out = escapeCameraPenetrations(cam, shells, 1, MARGIN)!;
+    expect(Math.hypot(out.x, out.y, out.z)).toBeCloseTo(MOON_SURFACE + MARGIN, 12);
+    expect(out.y / out.x).toBeCloseTo(0.4 / 0.3, 6); // same radial, just farther out
+    expect(out.z).toBeCloseTo(0, 12);
   });
 
   it('escapes a dead-center camera along +X instead of dividing by zero', () => {
-    const out = resolveCameraPenetration({ x: 0, y: 0, z: 0 }, { x: 0, y: 0, z: 0 }, MOON_SHELL)!;
-    expect(out.x).toBeCloseTo(MOON_SHELL + CAMERA_BODY_MARGIN_AU, 12);
+    const out = escapeCameraPenetrations({ x: 0, y: 0, z: 0 }, [shell(0, 0, 0, MOON_SURFACE)], 1, MARGIN)!;
+    expect(out.x).toBeCloseTo(MOON_SURFACE + MARGIN, 12);
   });
 
-  it('settles a co-orbital shell overlap in two alternating passes', () => {
-    // Pan/Atlas geometry: both floored to 5% of Saturn (3,013 km) while
-    // orbiting 4,086 km apart — the padded shells genuinely overlap at
-    // conjunction, so a one-body push can land inside the neighbour.
-    const shell = 3_013.4 * KM + SHIP_CLEARANCE_AU;
-    const pan = { x: 0, y: 0, z: 0 };
-    const atlas = { x: 4_086 * KM, y: 0, z: 0 };
-    let cam = { x: 2_000 * KM, y: 100 * KM, z: 0 };
-    for (let pass = 0; pass < 2; pass++) {
-      for (const body of [pan, atlas]) {
-        const pushed = resolveCameraPenetration(cam, body, shell);
-        if (pushed) cam = pushed;
-      }
-    }
-    const clear = (c: { x: number; y: number; z: number }) =>
-      Math.hypot(cam.x - c.x, cam.y - c.y, cam.z - c.z) >= shell + CAMERA_BODY_MARGIN_AU - 1e-15;
-    expect(clear(pan)).toBe(true);
-    expect(clear(atlas)).toBe(true);
+  it('clears an overlapping co-orbital pair in the one step', () => {
+    // Pan/Atlas: both floored to 5% of Saturn (3,013 km) while orbiting
+    // 4,086 km apart — the padded shells genuinely overlap at conjunction.
+    const R = 3_013.4 * KM;
+    const shells = [shell(0, 0, 0, R), shell(4_086 * KM, 0, 0, R)];
+    const cam = { x: 2_000 * KM, y: 100 * KM, z: 0 };
+    const out = escapeCameraPenetrations(cam, shells, 2, MARGIN)!;
+    expect(clearOf(out, shells[0])).toBe(true);
+    expect(clearOf(out, shells[1])).toBe(true);
+  });
+
+  it('clears a triple conjunction in the one step (sequential pushes cannot promise this)', () => {
+    // Pan–Atlas–Prometheus really do conjunct (SAT415, 1993-10-06) with
+    // center separations of a few thousand km while all three render at
+    // Saturn's floor — three mutually overlapping ~3,150 km shells.
+    const R = 3_013.4 * KM;
+    const shells = [
+      shell(0, 0, 0, R),
+      shell(4_086 * KM, 900 * KM, 0, R),
+      shell(2_100 * KM, -2_300 * KM, 800 * KM, R),
+    ];
+    const cam = { x: 1_900 * KM, y: -400 * KM, z: 300 * KM }; // inside all three
+    for (const s of shells) expect(clearOf(cam, s)).toBe(false);
+    const out = escapeCameraPenetrations(cam, shells, 3, MARGIN)!;
+    for (const s of shells) expect(clearOf(out, s)).toBe(true);
+  });
+
+  it('ignores shells beyond the pooled count', () => {
+    const shells = [shell(0, 0, 0, MOON_SURFACE), shell(0, 0, 0, MOON_SURFACE * 10)];
+    const cam = { x: MOON_SURFACE * 2, y: 0, z: 0 };
+    expect(escapeCameraPenetrations(cam, shells, 1, MARGIN)).toBeNull();
+  });
+});
+
+describe('nearestShellSurfaceDistanceAU', () => {
+  it('reports the tightest surface distance across the set', () => {
+    const shells = [
+      { x: 0, y: 0, z: 0, surfaceRadiusAU: 1_737.4 * KM },
+      { x: 10_000 * KM, y: 0, z: 0, surfaceRadiusAU: 3_000 * KM },
+    ];
+    const cam = { x: 2_257 * KM, y: 0, z: 0 };
+    // 519.6 km above the first body's surface; ~4,743 km from the second's.
+    expect(nearestShellSurfaceDistanceAU(cam, shells, 2)).toBeCloseTo(519.6 * KM, 9);
+  });
+
+  it('is Infinity with no bodies in range', () => {
+    expect(nearestShellSurfaceDistanceAU({ x: 0, y: 0, z: 0 }, [], 0)).toBe(Infinity);
   });
 });

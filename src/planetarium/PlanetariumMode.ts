@@ -20,10 +20,10 @@ import {
   type PlanetariumLayout,
 } from './SolarSystem';
 import { PlayerShip } from './PlayerShip';
-import { PlanetLabels } from './PlanetLabels';
+import { PlanetLabels, discRadiusPx } from './PlanetLabels';
 import { PlanetariumStore, createDefaultPlanetariumState, type PlanetariumState, type LandedTarget } from './PlanetariumStore';
 import { computeStats } from './stats';
-import { PLANETARIUM_BODIES, type PlanetData } from './planets/planetData';
+import { PLANETARIUM_BODIES, SUN_DATA, type PlanetData } from './planets/planetData';
 import { createMoonMeshes, createShaderWarmupProbes, setWarmEligibleMoonParents, upgradeTextureOnApproach, type MoonMesh, type TextureUpgrade } from './PlanetFactory';
 import { bindTextureWarmer, pumpTextureWarmQueue, queueTextureWarm, resetTextureWarmer } from './world/textureWarmer';
 import {
@@ -277,6 +277,7 @@ export class PlanetariumMode {
   private constellations: Constellations | null = null;
   private showConstellations = false;
   private showBodyLabels = true;
+  private showBodyMarkers = true;
   private showOrbitLines = false;
 
   // Planet world positions in AU (true positions, not offset)
@@ -1262,9 +1263,11 @@ export class PlanetariumMode {
     // frames otherwise read stale offsets, and one mis-read fires a 4K fetch.
     this.updateTextureLOD();
 
-    // Occlusion pipeline: planet discs → moon + ship discs → render labels.
-    // The labels setting gates the whole pipeline — it only feeds labels.
-    if (this.planetLabels && this.showBodyLabels) {
+    // Occlusion pipeline: planet discs → moon + ship discs → labels + markers.
+    // Runs when either the HTML labels or the marker sprites are on. The
+    // occluder passes only feed label culling, so markers-only (labels off)
+    // skips them — the sprites depth-test on the GPU.
+    if (this.planetLabels && (this.showBodyLabels || this.showBodyMarkers)) {
       const scenePositions = new Map<string, { x: number; y: number; z: number }>();
       for (const planet of this.solarSystem.planets) {
         scenePositions.set(planet.data.name, {
@@ -1273,10 +1276,15 @@ export class PlanetariumMode {
           z: planet.group.position.z,
         });
       }
-      this.planetLabels.collectForegroundDiscs(scenePositions, this.renderer);
-      this.collectDynamicOccluders();
+      if (this.showBodyLabels) {
+        this.planetLabels.collectForegroundDiscs(scenePositions, this.renderer);
+        this.collectDynamicOccluders();
+      }
       // Main (flight) path: landedOn is null here — narrowed by early return above.
-      this.planetLabels.renderLabels(scenePositions, { x: 0, y: 0, z: 0 }, this.renderer);
+      this.planetLabels.renderLabels(scenePositions, { x: 0, y: 0, z: 0 }, this.renderer, {
+        showMarkers: this.showBodyMarkers,
+        showLabels: this.showBodyLabels,
+      });
     }
 
     // Update constellation labels
@@ -2057,7 +2065,7 @@ export class PlanetariumMode {
         if (proj.ndcZ >= 1) continue;
         const screenX = proj.x;
         const screenY = proj.y;
-        const radiusPx = (effectiveRadiusAU * 1.1 / (Math.max(distFromCamera, effectiveRadiusAU) * halfFovTan)) * (canvasH / 2);
+        const radiusPx = discRadiusPx(effectiveRadiusAU, distFromCamera, halfFovTan, canvasH) * 1.1;
         this.planetLabels.addForegroundDisc({ screenX, screenY, radiusPx, distFromCamera, name: `moon:${m.data.name}` });
       }
     }
@@ -2075,7 +2083,7 @@ export class PlanetariumMode {
           if (proj.ndcZ < 1) {
             const screenX = proj.x;
             const screenY = proj.y;
-            const radiusPx = (shipSceneRadiusAU / (Math.max(distFromCamera, shipSceneRadiusAU) * halfFovTan)) * (canvasH / 2);
+            const radiusPx = discRadiusPx(shipSceneRadiusAU, distFromCamera, halfFovTan, canvasH);
             this.planetLabels.addForegroundDisc({ screenX, screenY, radiusPx, distFromCamera, name: 'ship' });
           }
         }
@@ -2091,6 +2099,7 @@ export class PlanetariumMode {
     if (!this.solarSystem || this.moonLabelContainer === null) return;
     const canvasW = this.renderer.domElement.clientWidth;
     const canvasH = this.renderer.domElement.clientHeight;
+    const halfFovTan = Math.tan((this.camera.fov * Math.PI) / 360);
     const tempV = new THREE.Vector3();
 
     // Two passes: gather placeable labels, then place big-to-small with
@@ -2122,13 +2131,39 @@ export class PlanetariumMode {
           continue;
         }
 
+        // Rendered disc radius: small moons scale up to the mesh floor, padded
+        // so the anchor clears the limb instead of riding on the moon's face.
+        const effRadiusAU = Math.max(
+          m.data.radiusAU,
+          this.moonRenderFloorRatio(planet.data.name) * planet.data.radiusAU,
+        );
+        const radiusPx = discRadiusPx(effRadiusAU, moonCamDist, halfFovTan, canvasH) * 1.1;
+
+        // Lift the anchor above the limb BEFORE the on-screen test, so a
+        // screen-filling moon pins its label to the top margin (dimmed via the
+        // .edge class) rather than holding it at full opacity on the disc.
+        const syLifted = proj.y - radiusPx;
         let sx = proj.x;
-        let sy = proj.y;
+        let sy = syLifted;
         const margin = 30;
         const onScreen = sx >= margin && sx <= canvasW - margin &&
                          sy >= margin && sy <= canvasH - margin;
         sx = Math.max(margin, Math.min(canvasW - margin, sx));
         sy = Math.max(margin, Math.min(canvasH - margin, sy));
+        // The clamp can shove the anchor back onto the disc when the limb has
+        // left the screen — there's no "just above" to show there, so drop the
+        // label (the self-excluded occlusion probe below never catches this).
+        // Only a clamped anchor can be inside: unclamped it sits exactly on
+        // the limb, where this distance test would be at the mercy of float
+        // rounding.
+        if (sx !== proj.x || sy !== syLifted) {
+          const ddx = sx - proj.x;
+          const ddy = sy - proj.y;
+          if (ddx * ddx + ddy * ddy < radiusPx * radiusPx) {
+            label.style.display = 'none';
+            continue;
+          }
+        }
         // Label sits above the moon (translate(-50%, -100%) + -6px margin).
         // Exclude this moon's own disc so it doesn't cull itself.
         const labelOccluded = this.planetLabels?.isScreenPointOccluded(sx, sy - 10, moonCamDist, `moon:${m.data.name}`) ?? false;
@@ -2145,7 +2180,7 @@ export class PlanetariumMode {
         c.sx = sx;
         c.sy = sy;
         c.onScreen = onScreen;
-        c.priorityPx = m.data.radiusAU / Math.max(moonCamDist, 1e-12);
+        c.priorityPx = effRadiusAU / Math.max(moonCamDist, 1e-12);
         c.halfW = (m.data.name.length * 6.5 + 12) / 2;
         candidateCount++;
       }
@@ -2525,11 +2560,18 @@ export class PlanetariumMode {
 
   private updateSunLabel() {
     if (!this.solarSystem) return;
+    const sunPos = this.solarSystem.sun.position;
+    const halfFovTan = Math.tan((this.camera.fov * Math.PI) / 360);
+    const distFromCamera = this.camera.position.distanceTo(sunPos);
+    const sunRadiusPx = discRadiusPx(
+      SUN_DATA.radiusAU, distFromCamera, halfFovTan, this.renderer.domElement.clientHeight,
+    );
     this.sunLabel.update(
-      this.solarSystem.sun.position,
+      sunPos,
       this.camera,
       this.renderer.domElement,
       this.player.getDistanceFromSun(),
+      sunRadiusPx,
       (x, y, depth) => this.planetLabels?.isScreenPointOccluded(x, y, depth) ?? false,
     );
   }
@@ -3405,6 +3447,13 @@ export class PlanetariumMode {
       if (label) label.textContent = this.showBodyLabels ? 'On' : 'Off';
     });
 
+    document.getElementById('settings-markers-toggle')?.addEventListener('click', () => {
+      this.showBodyMarkers = !this.showBodyMarkers;
+      this.applyBodyLabelVisibility();
+      const label = document.getElementById('settings-markers-label');
+      if (label) label.textContent = this.showBodyMarkers ? 'On' : 'Off';
+    });
+
     document.getElementById('settings-orbits-toggle')?.addEventListener('click', () => {
       // Per-frame updateOrbitLineVisibility applies the flag.
       this.showOrbitLines = !this.showOrbitLines;
@@ -3777,16 +3826,18 @@ export class PlanetariumMode {
     if (moonLabelsEl) moonLabelsEl.style.display = visible ? '' : 'none';
   }
 
-  /** Apply the "Planet labels" setting: drop the HTML label layers and the
-   *  in-scene marker sprites (the per-frame pipeline is gated off, so nothing
-   *  re-shows them); re-showing defers to surface view, which owns its own
-   *  label hiding. */
+  /** Apply the two independent visibility flags. The HTML label layers follow
+   *  `showBodyLabels`; the marker sprites follow `showBodyMarkers`. When both
+   *  are off the per-frame pipeline stops running, so clear the sprites here;
+   *  when only the markers are off, clear them too (the pipeline keeps running
+   *  for labels but won't re-show a sprite it's told to keep hidden). Re-showing
+   *  the labels defers to surface view, which owns its own label hiding. */
   private applyBodyLabelVisibility() {
-    if (this.showBodyLabels) {
-      this.setWorldLabelsVisible(true);
-    } else {
-      this.setWorldLabelsVisible(false);
+    this.setWorldLabelsVisible(this.showBodyLabels);
+    if (!this.showBodyLabels && !this.showBodyMarkers) {
       this.planetLabels?.hideAll();
+    } else if (!this.showBodyMarkers) {
+      this.planetLabels?.hideMarkers();
     }
   }
 
@@ -4399,11 +4450,14 @@ export class PlanetariumMode {
     this.showShip = visible;
     this.showOrbitLines = visible;
     this.showBodyLabels = visible;
+    this.showBodyMarkers = visible;
     this.player.group.visible = visible;
     if (this.solarSystem) {
       for (const o of this.solarSystem.orbitLines) o.visible = visible;
     }
-    if (!visible) this.planetLabels?.hideAll();
+    // Toggle both label layers and the sprites together, and hide the moon-label
+    // divs the raw sprite clear would leave frozen on screen.
+    this.applyBodyLabelVisibility();
     // HTML overlays that sit outside the per-frame visibility loop: the HUD,
     // the wordmark header, and the Sun/distance label container.
     for (const id of ['planetarium-ui', 'top-bar', 'planet-labels']) {
@@ -5655,9 +5709,11 @@ export class PlanetariumMode {
     const planetLabelsEl = document.getElementById('planet-labels');
     if (planetLabelsEl) planetLabelsEl.style.display = show ? '' : 'none';
     if (this.moonLabelContainer) this.moonLabelContainer.style.display = show ? '' : 'none';
-    // The marker sprites are Three.js objects owned by the renderLabels loop —
-    // which surface view (and the setting) skips — so hide them explicitly.
-    if (!show) this.planetLabels?.hideAll();
+    // The marker sprites are Three.js objects owned by the renderLabels loop,
+    // which surface view skips — clear them only when nothing should paint them
+    // (entering surface view, or both the label and marker flags off). Exiting
+    // with labels off but markers on leaves them for the pipeline to revive.
+    if (hidden || (!this.showBodyLabels && !this.showBodyMarkers)) this.planetLabels?.hideAll();
   }
 
   /** Drag look-around: content follows the finger; any drag breaks tracking. */
@@ -6691,11 +6747,11 @@ export class PlanetariumMode {
     if (shouldRefreshUi) this.updateOrbitDetails();
     this.pumpObservatoryEventSearch();
 
-    // Occlusion pipeline while landed: planets → moons + ship → labels.
-    // Surface view and the labels setting: the label containers are hidden
-    // and these per-frame renders would re-show them — the pipeline only
-    // feeds labels, skip it.
-    if (this.planetLabels && this.landedView !== 'surface' && this.showBodyLabels) {
+    // Occlusion pipeline while landed: planets → moons + ship → labels + markers.
+    // Runs when either the HTML labels or the marker sprites are on; surface
+    // view hides everything. The occluder passes only feed label culling, so
+    // markers-only (labels off) skips them — the sprites depth-test on the GPU.
+    if (this.planetLabels && this.landedView !== 'surface' && (this.showBodyLabels || this.showBodyMarkers)) {
       const scenePositions = new Map<string, { x: number; y: number; z: number }>();
       for (const planet of this.solarSystem.planets) {
         scenePositions.set(planet.data.name, {
@@ -6704,10 +6760,16 @@ export class PlanetariumMode {
           z: planet.group.position.z,
         });
       }
-      this.planetLabels.collectForegroundDiscs(scenePositions, this.renderer);
-      this.collectDynamicOccluders();
       const landedPlanetName = this.landedOn?.type === 'planet' ? this.landedOn.name : undefined;
-      this.planetLabels.renderLabels(scenePositions, { x: 0, y: 0, z: 0 }, this.renderer, landedPlanetName);
+      if (this.showBodyLabels) {
+        this.planetLabels.collectForegroundDiscs(scenePositions, this.renderer);
+        this.collectDynamicOccluders();
+      }
+      this.planetLabels.renderLabels(scenePositions, { x: 0, y: 0, z: 0 }, this.renderer, {
+        showMarkers: this.showBodyMarkers,
+        showLabels: this.showBodyLabels,
+        excludeName: landedPlanetName,
+      });
     }
 
     // Update constellation labels while landed
@@ -6780,6 +6842,7 @@ export class PlanetariumMode {
       showShip: this.showShip,
       showConstellations: this.showConstellations,
       showBodyLabels: this.showBodyLabels,
+      showBodyMarkers: this.showBodyMarkers,
       showOrbitLines: this.showOrbitLines,
       landedOn: this.landedOn,
       systemSpeed: this.player.systemSpeedMultiplier,
@@ -6832,9 +6895,12 @@ export class PlanetariumMode {
     const constLabel = document.getElementById('settings-constellations-label');
     if (constLabel) constLabel.textContent = this.showConstellations ? 'On' : 'Off';
     this.showBodyLabels = saved.showBodyLabels ?? true;
+    this.showBodyMarkers = saved.showBodyMarkers ?? true;
     this.applyBodyLabelVisibility();
     const labelsLabel = document.getElementById('settings-labels-label');
     if (labelsLabel) labelsLabel.textContent = this.showBodyLabels ? 'On' : 'Off';
+    const markersLabel = document.getElementById('settings-markers-label');
+    if (markersLabel) markersLabel.textContent = this.showBodyMarkers ? 'On' : 'Off';
     this.showOrbitLines = saved.showOrbitLines ?? false;
     const orbitsLabel = document.getElementById('settings-orbits-label');
     if (orbitsLabel) orbitsLabel.textContent = this.showOrbitLines ? 'On' : 'Off';

@@ -60,6 +60,22 @@ describe('autopilot provenance migration (autopilotUserEngaged)', () => {
   });
 });
 
+describe('showBodyMarkers is a plain boolean (default true)', () => {
+  it('defaults to true when the field is absent from the save', () => {
+    expect(sanitizePlanetariumState(rawSave({}))?.showBodyMarkers).toBe(true);
+    expect(createDefaultPlanetariumState().showBodyMarkers).toBe(true);
+  });
+
+  it('round-trips an explicit false', () => {
+    expect(sanitizePlanetariumState(rawSave({ showBodyMarkers: false }))?.showBodyMarkers).toBe(false);
+  });
+
+  it('non-boolean garbage falls back to the default', () => {
+    expect(sanitizePlanetariumState(rawSave({ showBodyMarkers: 'no' }))?.showBodyMarkers).toBe(true);
+    expect(sanitizePlanetariumState(rawSave({ showBodyMarkers: 1 }))?.showBodyMarkers).toBe(true);
+  });
+});
+
 describe('skyPref stays tri-state (absent until the user flips the toggle)', () => {
   it('round-trips an explicit flip', () => {
     expect(sanitizePlanetariumState(rawSave({ skyPref: false }))?.skyPref).toBe(false);

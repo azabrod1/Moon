@@ -28,6 +28,22 @@ export interface ForegroundDisc {
   name: string;
 }
 
+/**
+ * Pixel radius of a body's rendered disc, given its scene radius (AU), the
+ * camera distance, `tan(fov/2)`, and the canvas height. The `max(dist,
+ * radius)` clamp keeps the disc finite when the camera sits inside the body.
+ * Callers that pad (to clear atmosphere glow, or to lift a label off the limb)
+ * scale the RESULT — padding the radius argument would shift that clamp.
+ */
+export function discRadiusPx(
+  radiusAU: number,
+  distFromCamera: number,
+  halfFovTan: number,
+  canvasHeight: number,
+): number {
+  return (radiusAU / (Math.max(distFromCamera, radiusAU) * halfFovTan)) * (canvasHeight / 2);
+}
+
 export class PlanetLabels {
   labels: PlanetLabel[] = [];
   foregroundDiscs: ForegroundDisc[] = [];
@@ -141,7 +157,7 @@ export class PlanetLabels {
       const screenX = proj.x;
       const screenY = proj.y;
       // Project disc radius to pixels. Pad by 1.1x to cover atmosphere glow.
-      const radiusPx = (entry.planet.radiusAU * 1.1 / (Math.max(distFromCamera, entry.planet.radiusAU) * halfFovTan)) * (canvasHeight / 2);
+      const radiusPx = discRadiusPx(entry.planet.radiusAU, distFromCamera, halfFovTan, canvasHeight) * 1.1;
       this.foregroundDiscs.push({ screenX, screenY, radiusPx, distFromCamera, name: entry.planet.name });
     }
   }
@@ -176,10 +192,12 @@ export class PlanetLabels {
     planetPositions: Map<string, { x: number; y: number; z: number }>,
     playerPos: { x: number; y: number; z: number },
     renderer: THREE.WebGLRenderer,
-    excludeName?: string,
+    options: { showMarkers?: boolean; showLabels?: boolean; excludeName?: string } = {},
   ) {
+    const { showMarkers = true, showLabels = true, excludeName } = options;
     const canvasWidth = renderer.domElement.clientWidth;
     const canvasHeight = renderer.domElement.clientHeight;
+    const halfFovTan = Math.tan((this.camera.fov * Math.PI) / 360);
     const camX = this.camera.position.x;
     const camY = this.camera.position.y;
     const camZ = this.camera.position.z;
@@ -227,17 +245,33 @@ export class PlanetLabels {
         continue;
       }
 
-      entry.sprite.visible = true;
+      entry.sprite.visible = showMarkers;
+
+      // Markers are GPU billboards; only the HTML label needs projection and
+      // occlusion work, so skip the rest when labels are off.
+      if (!showLabels) {
+        if (entry.labelVisible) {
+          entry.label.style.display = 'none';
+          entry.labelVisible = false;
+        }
+        continue;
+      }
 
       const proj = projectToScreen(pos, this.camera, canvasWidth, canvasHeight, this.projScratch);
       const screenX = proj.x;
       const screenY = proj.y;
 
+      // Offset the label below the body center by at least 16 px, and by more
+      // once the disc grows so the text never lands on the planet's face. A
+      // no-op at the mesh-hide threshold above (disc only a few px there) —
+      // it's the guard for the never-on-the-disc rule if that threshold moves.
+      const labelOffsetY = Math.max(16, discRadiusPx(entry.planet.radiusAU, distFromCamera, halfFovTan, canvasHeight) * 1.1 + 6);
+
       // Occluded by a nearer foreground body? Test the LABEL's position
       // (below the marker), not the marker itself — the user wants the label
       // to hide only when it actually sits over a foreground planet, even if
       // the sprite above it is in clear sky.
-      const labelY = screenY + 24;
+      const labelY = screenY + labelOffsetY + 8;
       let occluded = false;
       for (const disc of foregroundDiscs) {
         if (disc.name === entry.planet.name) continue;
@@ -257,7 +291,7 @@ export class PlanetLabels {
           entry.label.style.display = 'block';
           entry.labelVisible = true;
         }
-        const transform = `translate(${screenX}px, ${screenY + 16}px)`;
+        const transform = `translate(${screenX}px, ${screenY + labelOffsetY}px)`;
         if (transform !== entry.lastTransform) {
           entry.label.style.transform = transform;
           entry.lastTransform = transform;
@@ -278,18 +312,15 @@ export class PlanetLabels {
   }
 
   /**
-   * Convenience: collect foreground discs for planets, then place labels in a
-   * single call. Callers that want to contribute additional occluders
-   * (moons, ship) should invoke `collectForegroundDiscs` →
-   * `addForegroundDisc` → `renderLabels` directly.
+   * Hide only the marker sprites, leaving the HTML labels alone. Used when the
+   * markers are toggled off but labels stay on: sprites are constructed
+   * visible, and with the per-frame pass told to keep them hidden this is what
+   * actually clears the ones already drawn.
    */
-  update(
-    planetPositions: Map<string, { x: number; y: number; z: number }>,
-    playerPos: { x: number; y: number; z: number },
-    renderer: THREE.WebGLRenderer,
-  ) {
-    this.collectForegroundDiscs(planetPositions, renderer);
-    this.renderLabels(planetPositions, playerPos, renderer);
+  hideMarkers(): void {
+    for (const entry of this.labels) {
+      entry.sprite.visible = false;
+    }
   }
 
   /**

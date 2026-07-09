@@ -11,7 +11,6 @@ import { projectToScreen } from '../../shared/three/projectToScreen';
 
 const LABEL_MARGIN_PX = 50;
 const LABEL_OFFSET_PX = 16;
-const OCCLUSION_TEST_OFFSET_PX = 24;
 
 export class SunLabel {
   private el: HTMLDivElement | null = null;
@@ -34,6 +33,7 @@ export class SunLabel {
     camera: THREE.Camera,
     canvas: HTMLCanvasElement,
     distanceFromSunAU: number,
+    sunRadiusPx: number,
     isOccluded: (screenX: number, screenY: number, depth: number) => boolean,
   ): void {
     if (!this.el) return;
@@ -42,8 +42,15 @@ export class SunLabel {
     const screenX = projected.x;
     const screenY = projected.y;
 
+    // Drop the label below the disc once the Sun grows on screen. Clearing the
+    // whole outer glow would exile the label, so lift just past the bright
+    // inner shell (~3.5x the mesh radius) — enough to sit off the burning face.
+    const labelOffsetY = Math.max(LABEL_OFFSET_PX, sunRadiusPx * 3.5 + 6);
+
     const depth = camera.position.distanceTo(sunWorldPos);
-    const occluded = isOccluded(screenX, screenY + OCCLUSION_TEST_OFFSET_PX, depth);
+    // Probe 8px into the label body (not its top edge) so a foreground disc
+    // grazing the anchor line still hides the text it would actually cover.
+    const occluded = isOccluded(screenX, screenY + labelOffsetY + 8, depth);
 
     const onScreen = projected.ndcZ < 1
       && screenX > -LABEL_MARGIN_PX && screenX < canvas.clientWidth + LABEL_MARGIN_PX
@@ -54,7 +61,7 @@ export class SunLabel {
         this.el.style.display = 'block';
         this.visible = true;
       }
-      const transform = `translate(${screenX}px, ${screenY + LABEL_OFFSET_PX}px)`;
+      const transform = `translate(${screenX}px, ${screenY + labelOffsetY}px)`;
       if (transform !== this.lastTransform) {
         this.el.style.transform = transform;
         this.lastTransform = transform;

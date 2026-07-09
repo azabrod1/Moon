@@ -295,13 +295,16 @@
       border: 1px solid var(--line-dim);
       border-radius: var(--r-s);
       background: rgba(255, 255, 255, 0.04);
-      color: var(--text-secondary);
+      /* Label reads as a value (white) like the speed value and the date
+         beside it; the glyph stays a quiet grey so the chip still has a
+         quiet→prominent hierarchy rather than two full-white marks. */
+      color: var(--text-primary);
       cursor: pointer;
       -webkit-tap-highlight-color: transparent;
       transition: all 0.15s;
     }
-    .bar-stats:hover { background: rgba(255, 255, 255, 0.08); color: var(--text-primary); }
-    .bar-stats-glyph { width: 13px; height: 13px; flex: none; display: block; }
+    .bar-stats:hover { background: rgba(255, 255, 255, 0.08); }
+    .bar-stats-glyph { width: 13px; height: 13px; flex: none; display: block; color: var(--text-secondary); }
     .bar-stats-label {
       font-size: 11px;
       font-weight: 500;

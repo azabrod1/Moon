@@ -9,7 +9,7 @@
  * case-A matrix (MATRIX) — those stay full-length; the other pours are trimmed.
  */
 import { describe, it, expect } from 'vitest';
-import { SpherePhysics, defaultPhysicsParams, PACK_CEILING, type PhysicsParams } from './spherePhysics';
+import { SpherePhysics, defaultPhysicsParams, mouthGeometry, PACK_CEILING, type PhysicsParams } from './spherePhysics';
 import { mulberry32 } from './rng';
 
 const A = 0.0911; // case A: Earths -> Jupiter
@@ -429,5 +429,20 @@ describe('removal out-param contract', () => {
     const seen3 = new Set<number>();
     for (let c = 0; c < r3; c++) seen3.add(out3[c]);
     expect(seen3.size).toBe(r3);
+  });
+});
+
+describe('mouthGeometry (shared by solver and glass discard)', () => {
+  it('15. auto-sizes to the ball, clamps both ends, sits on the shell', () => {
+    // In-band: 4 balls across the opening, plane height from the shell circle.
+    const mid = mouthGeometry(0.05, 1);
+    expect(mid.mouthRadius).toBeCloseTo(0.2, 12);
+    expect(mid.mouthPlaneY).toBeCloseTo(Math.sqrt(1 - 0.2 * 0.2), 12);
+    // Tiny balls: the floor keeps the pour from pinholing.
+    expect(mouthGeometry(0.001, 1).mouthRadius).toBe(0.14);
+    // Huge balls: the ceiling keeps the sphere capped.
+    expect(mouthGeometry(0.3, 1).mouthRadius).toBe(0.5);
+    // The scale knob widens the hole before the clamp.
+    expect(mouthGeometry(0.05, 1, 1.5).mouthRadius).toBeCloseTo(0.3, 12);
   });
 });

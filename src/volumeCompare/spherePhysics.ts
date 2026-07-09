@@ -131,6 +131,24 @@ const WAKE_SPEED = 0.35;
 // ~6 points) that feeds the pour at dozens/s — what the marquee full pour needs
 // to finish in ~20-30 s.
 const MOUTH_K = 4.0;
+
+/**
+ * The mouth opening for a given ball size: the radius auto-sizes to MOUTH_K
+ * balls across, clamped to a sane band (tiny balls must not pinhole the pour;
+ * huge ones must not uncap the whole sphere), and the plane height follows
+ * from where that circle sits on the container shell. Exported so the glass
+ * shader's discard cone and the solver always cut the same hole.
+ */
+export function mouthGeometry(
+  ballRadius: number,
+  containerR: number,
+  mouthRadiusScale = 1,
+): { mouthRadius: number; mouthPlaneY: number } {
+  const mouthRadius = Math.min(Math.max(MOUTH_K * ballRadius * mouthRadiusScale, 0.14), 0.5);
+  const mouthPlaneY = Math.sqrt(Math.max(0, containerR * containerR - mouthRadius * mouthRadius));
+  return { mouthRadius, mouthPlaneY };
+}
+
 // Sleep pressure gate, as a fraction of the ball radius: a ball may not SLEEP
 // while its residual contact overlap — the deepest raw overlap seen in the
 // FINAL solver iteration of the substep — exceeds this. Sleepers are immovable
@@ -302,9 +320,9 @@ export class SpherePhysics {
 
   private rebuildGrid(): void {
     const { radius, containerR, mouthRadiusScale } = this.params;
-    // Mouth opening: a few balls wide, clamped to a sane band.
-    this.mouthRadius = Math.min(Math.max(MOUTH_K * radius * mouthRadiusScale, 0.14), 0.5);
-    this.mouthPlaneY = Math.sqrt(Math.max(0, containerR * containerR - this.mouthRadius * this.mouthRadius));
+    const mouth = mouthGeometry(radius, containerR, mouthRadiusScale);
+    this.mouthRadius = mouth.mouthRadius;
+    this.mouthPlaneY = mouth.mouthPlaneY;
 
     this.cell = 2 * radius; // one diameter
     const margin = this.cell;

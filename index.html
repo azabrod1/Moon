@@ -2009,9 +2009,13 @@
          specificity, later in source) and leave the bordered chip's label
          kissing its border — keep the chip's own inset. */
       /* Icon-only Stats chip — the label costs ~34px the narrow bar can't
-         spare (the chip keeps its aria-label). Slightly wider inset so the
-         lone glyph doesn't kiss the border. */
-      .bar-stats { padding: 0 10px; }
+         spare (the chip keeps its aria-label). Without the label the glyph
+         sits alone against a visible border, so give it roughly even air on
+         all four sides: the ~13px glyph in a near-square box, sized to match
+         the +/- buttons beside it. The extra height over 28px keeps the
+         glyph off the top/bottom rules without growing the bar (the time
+         section is the tallest thing in the row). */
+      .bar-stats { padding: 0 8px; height: 30px; }
       .bar-stats-label { display: none; }
       .bar-speed-main { padding: 0 6px; gap: 6px; }
       /* The rail + clock rows form a fat touch strip; the panel's targets

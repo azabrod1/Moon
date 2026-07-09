@@ -154,6 +154,15 @@ const ATMOSPHERES: Record<string, AtmosphereConfig> = {
   // gas-giant limb darkening on the body itself carries the soft edge.
 };
 
+/** Atmosphere shell scale by planet, for consumers that must treat the shell
+ *  as the planet's outermost surface: the shells render BackSide at full
+ *  alpha on close approach, so a ship or camera parked against the SOLID
+ *  radius would sit inside the glow (Jupiter's shell alone is ~1,072 km
+ *  thick). Derived from the one ATMOSPHERES config — never restate a scale. */
+export const ATMOSPHERE_SHELL_SCALES: Readonly<Record<string, number>> = Object.fromEntries(
+  Object.entries(ATMOSPHERES).map(([name, config]) => [name, config.scale]),
+);
+
 function loadTexture(key: string, tier: TextureTier = '2k', kind: MapKind = 'color', timeoutMs = 8000): Promise<THREE.Texture> {
   const file = PLANET_TEXTURE_FILES[key];
   if (!file) return Promise.resolve(createFallbackTexture(key, kind));

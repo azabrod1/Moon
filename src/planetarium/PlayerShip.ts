@@ -168,11 +168,20 @@ export class PlayerShip {
     if (this.junoModel) this.junoModel.visible = visible;
   }
 
-  get speedAUPerS(): number {
-    if (!this.moving) return 0;
+  /** The speed the dialed throttle WOULD fly this frame: the cruise/system
+   *  blend with no proximity cap and no parked gate. The governor's engaged
+   *  latch compares its cap against this — the applied speed is circular
+   *  (it already contains the cap) and reads 0 parked, which would clear
+   *  the latch the moment the ship stops beside a body. */
+  get commandedSpeedAUPerS(): number {
     const cruise = DEFAULT_SPEED_AU_S * this.speedMultiplier;
     const system = DEFAULT_SPEED_AU_S * Math.min(this.systemSpeedMultiplier, this.speedMultiplier);
-    return Math.min(system + (cruise - system) * this.systemSpeedFactor, this.speedCapAUPerS);
+    return system + (cruise - system) * this.systemSpeedFactor;
+  }
+
+  get speedAUPerS(): number {
+    if (!this.moving) return 0;
+    return Math.min(this.commandedSpeedAUPerS, this.speedCapAUPerS);
   }
 
   get speedC(): number {

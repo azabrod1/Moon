@@ -24,7 +24,7 @@ import { PlanetLabels, discRadiusPx } from './PlanetLabels';
 import { PlanetariumStore, createDefaultPlanetariumState, type PlanetariumState, type LandedTarget } from './PlanetariumStore';
 import { computeStats } from './stats';
 import { PLANETARIUM_BODIES, SUN_DATA, type PlanetData } from './planets/planetData';
-import { createMoonMeshes, createShaderWarmupProbes, setWarmEligibleMoonParents, upgradeTextureOnApproach, type MoonMesh, type TextureUpgrade } from './PlanetFactory';
+import { createMoonMeshes, createShaderWarmupProbes, setWarmEligibleMoonParents, upgradeTextureOnApproach, ATMOSPHERE_SHELL_SCALES, type MoonMesh, type TextureUpgrade } from './PlanetFactory';
 import { bindTextureWarmer, pumpTextureWarmQueue, queueTextureWarm, resetTextureWarmer } from './world/textureWarmer';
 import {
   advancePlanetariumTime,
@@ -115,6 +115,7 @@ import {
   CRUISE_CAM_DIST_AU,
   SHIP_OCCLUDER_RADIUS_AU,
   CRUISE_CONTROLS_MIN_DISTANCE_AU,
+  planetEnvelopeRadiusAU,
 } from './cruiseView';
 import { KM_CONSTANTS } from '../shared/constants/physicalData';
 import { smoothstepUnclamped } from '../shared/math/smoothstep';
@@ -125,13 +126,17 @@ import { getMoonsByPlanet, MOONS, type MoonData } from './planets/moonData';
 import { RING_CONFIGS } from './planets/rings';
 import { filterDeckRows, groupDeckBodies, observeArrivalAction, type DeckRow } from './deckLogic';
 import {
+  advanceBodyCap,
   governedSpeedCap,
+  initialBodyCapState,
   moonArrivalPose,
   moonCollisionRadius,
-  rampedSpeedCap,
+  BODY_APPROACH_V_MIN_AU_S,
+  BODY_CAP_CLEAR_HOLD_S,
   MOON_APPROACH_K_PER_S,
-  MOON_APPROACH_V_MIN_AU_S,
-  MOON_CAP_RELEASE_EFOLD_S,
+  PLANET_APPROACH_K_PER_S,
+  SUN_APPROACH_SURFACE_RADII,
+  type BodyCapState,
 } from './arrivalLogic';
 import {
   canStartTutorial,
@@ -393,13 +398,11 @@ export class PlanetariumMode {
    *  visibility-keyed set can't see it there). Drops once the mesh shows;
    *  a stale seed is neutralized by distance on its own. */
   private governedMoonSeed: { name: string; parentPlanet: string } | null = null;
-  /** Last applied moon speed cap — the ramp's memory across frames. */
-  private moonCapEased = Infinity;
-  /** Whether a moon would cap the ship this frame (closing on a governed moon),
-   *  independent of whether an override is currently bypassing it. Lets the
-   *  override auto-clear tell that a moon is still being escaped — outer moons
-   *  sit well beyond the parent's system-throttle radius. */
-  private moonCapEngaged = false;
+  /** Body-proximity governor state: the eased candidate/applied cap plus the
+   *  engaged latch and its clear-hold (see arrivalLogic.advanceBodyCap).
+   *  Reset to initialBodyCapState() on every flight discontinuity — jump,
+   *  takeoff, restore — so no ramp or partial clear-hold survives one. */
+  private bodyCap: BodyCapState = initialBodyCapState();
   /** Player position at the top of the frame — the collision sweep needs the
    *  whole segment, not the endpoint (one 100 ms frame at the in-system
    *  default steps ~2,500 km, clean through a small moon's bubble). */
@@ -1194,25 +1197,33 @@ export class PlanetariumMode {
       this.nearestSystemPlanet = throttleResult.planet;
       this.player.systemSpeedFactor = (this.throttleOverride || !this.systemSlowdown) ? 1.0 : this.systemSpeedFactor;
 
-      // Moon-proximity governor: the planet throttle knows nothing smaller
-      // than a system, so near a moon it still allows the in-system setting —
-      // several moon standoffs per second. Cap the closing speed at
-      // K × surface distance instead (same escape hatch as the throttle).
-      // Tightening applies instantly; release ramps so a flyby ends with a
-      // pull-away, not a one-frame snap back to thousands of km/s. The throttle
-      // override (and systemSlowdown off) is a deliberate escape hatch, so it
-      // bypasses the ramp — the cap releases the same frame, no lingering crawl.
-      // geomCap is computed even while bypassing: moonCapEngaged tells the
-      // override auto-clear a moon is still being escaped (a moon can govern
-      // well outside the parent's system-throttle radius).
-      const geomCap = this.computeMoonSpeedCap();
-      this.moonCapEngaged = Number.isFinite(geomCap);
-      const capBypass = this.throttleOverride || !this.systemSlowdown;
-      this.moonCapEased = capBypass
-        ? Infinity
-        : rampedSpeedCap(geomCap, this.moonCapEased, dt, MOON_CAP_RELEASE_EFOLD_S);
-      this.player.speedCapAUPerS = this.moonCapEased;
+    }
 
+    // Body-proximity governor (moons + planets + the Sun): the planet
+    // throttle knows nothing smaller than a system, so near a body it still
+    // allows the in-system setting — several standoffs per second. Cap the
+    // closing speed at K × surface distance instead (same escape hatch as
+    // the throttle). Tightening applies instantly; release ramps so a flyby
+    // ends with a pull-away, not a one-frame snap back to thousands of km/s.
+    // The throttle override (and systemSlowdown off) bypasses the applied
+    // cap the same frame — no lingering crawl — while the candidate keeps
+    // integrating and the engaged latch keeps telling the override
+    // auto-clear that a body is still being escaped (a moon can govern well
+    // outside the parent's system-throttle radius). Runs during scripted
+    // transfers too: the applied cap is unused there (player.update is
+    // skipped) but the state stays current, so a transfer never ends on a
+    // stale-tight ramp.
+    const geomCap = this.computeBodySpeedCap();
+    this.bodyCap = advanceBodyCap(
+      this.bodyCap,
+      geomCap,
+      this.player.commandedSpeedAUPerS,
+      this.throttleOverride || !this.systemSlowdown,
+      dt,
+    );
+    this.player.speedCapAUPerS = this.bodyCap.applied;
+
+    if (!isScriptedTransfer) {
       this.prevPlayerPos.set(this.player.posX, this.player.posY, this.player.posZ);
       this.player.update(dt);
     }
@@ -2466,7 +2477,7 @@ export class PlanetariumMode {
 
       const visitDist = Math.max(
         planet.data.radiusAU * 10,
-        this.getPlanetCollisionRadius(planet.data.radiusAU, planet.group.scale.x) * 1.02,
+        this.getPlanetCollisionRadius(planet.data.name, planet.data.radiusAU, planet.group.scale.x) * 1.02,
       );
 
       // Mark a visit once inside the 10x-radius or collision interaction shell.
@@ -2494,7 +2505,7 @@ export class PlanetariumMode {
       const dy = this.player.posY - wp.y;
       const dz = this.player.posZ - wp.z;
       const dist = Math.sqrt(dx * dx + dy * dy + dz * dz);
-      const threshold = this.getPlanetCollisionRadius(planet.data.radiusAU, planet.group.scale.x) * 2;
+      const threshold = this.getPlanetCollisionRadius(planet.data.name, planet.data.radiusAU, planet.group.scale.x) * 2;
       if (dist < threshold && dist < closestDist) {
         closestDist = dist;
         closest = { type: 'planet', name: planet.data.name };
@@ -2604,11 +2615,14 @@ export class PlanetariumMode {
       this.inSystemMode = false;
     }
 
-    // Auto-disable override once clear of both the planet throttle and any moon
-    // limiter. systemSpeedFactor alone reflects only the parent-system throttle,
-    // so without the moon check the override would clear itself the instant you
+    // Auto-disable override once genuinely clear: outside the planet
+    // throttle AND the body cap has read unbound for the full hold — one
+    // grazing frame at the engage boundary can't clear a latched override.
+    // systemSpeedFactor alone reflects only the parent-system throttle, so
+    // without the body check the override would clear itself the instant you
     // stepped outside a planet's radius — even while an outer moon still caps.
-    if (this.throttleOverride && this.systemSpeedFactor >= 1.0 && !this.moonCapEngaged) {
+    if (this.throttleOverride && this.systemSpeedFactor >= 1.0
+        && this.bodyCap.unboundS >= BODY_CAP_CLEAR_HOLD_S) {
       this.throttleOverride = false;
     }
 
@@ -3237,6 +3251,9 @@ export class PlanetariumMode {
       if (this.isMissionActive()) return;
       if (!this.systemSlowdown) return; // already disabled globally
       this.throttleOverride = !this.throttleOverride;
+      // Arming starts a fresh clear-hold — a stale unbound interval from
+      // before the tap must not auto-clear the override moments later.
+      if (this.throttleOverride) this.bodyCap = { ...this.bodyCap, unboundS: 0 };
       this.updateSpeedSlider();
     });
 
@@ -4148,8 +4165,13 @@ export class PlanetariumMode {
     this.controls.target.set(0, 0, 0);
   }
 
-  private getPlanetCollisionRadius(radiusAU: number, renderedScale: number): number {
-    return radiusAU * Math.max(renderedScale, 1) + SHIP_CLEARANCE_AU;
+  /** Hard standoff shell around a planet: the rendered ENVELOPE — atmosphere
+   *  shell included, since it's the outermost surface you see (Jupiter's is
+   *  ~1,072 km thick and runs at full alpha up close; parking against the
+   *  solid radius would sit ship and camera inside the glow) — plus the hull
+   *  clearance pad. */
+  private getPlanetCollisionRadius(name: string, radiusAU: number, renderedScale: number): number {
+    return planetEnvelopeRadiusAU(radiusAU, renderedScale, ATMOSPHERE_SHELL_SCALES[name]) + SHIP_CLEARANCE_AU;
   }
 
   private getJumpDestination(planet: PlanetData, distanceMultiplier = 1) {
@@ -4158,7 +4180,7 @@ export class PlanetariumMode {
 
     const viewDist = Math.max(
       planet.radiusAU * 8,
-      this.getPlanetCollisionRadius(planet.radiusAU, this.planetScale) + planet.radiusAU * 2,
+      this.getPlanetCollisionRadius(planet.name, planet.radiusAU, this.planetScale) + planet.radiusAU * 2,
       0.001,
     ) * distanceMultiplier;
     const offsetDir = new THREE.Vector3(-pos.x, -pos.y, -pos.z);
@@ -4210,10 +4232,15 @@ export class PlanetariumMode {
     );
   }
 
-  private computeMoonSpeedCap(): number {
+  /** Min proximity cap over every governed body: visible painted moons (plus
+   *  the jump seed) at rendered radii, all planets at their envelope radii,
+   *  and the Sun at SUN_APPROACH_SURFACE_RADII × its photosphere — the Sun
+   *  has no collision shell, and the system throttle's inner edge sits
+   *  INSIDE the photosphere, so this glide is the only brake. */
+  private computeBodySpeedCap(): number {
     const f = this.player.getForwardDirection();
     let cap = Infinity;
-    this.forEachGovernedMoon((x, y, z, renderedR) => {
+    const consider = (x: number, y: number, z: number, surfaceR: number, kPerS: number) => {
       const dx = x - this.player.posX;
       const dy = y - this.player.posY;
       const dz = z - this.player.posZ;
@@ -4221,13 +4248,28 @@ export class PlanetariumMode {
       if (dist < 1e-12) return;
       const cos = (dx * f.x + dy * f.y + dz * f.z) / dist;
       const c = governedSpeedCap(
-        Math.max(dist - renderedR, 0),
+        Math.max(dist - surfaceR, 0),
         cos,
-        MOON_APPROACH_K_PER_S,
-        MOON_APPROACH_V_MIN_AU_S,
+        kPerS,
+        BODY_APPROACH_V_MIN_AU_S,
       );
       if (c < cap) cap = c;
-    });
+    };
+    this.forEachGovernedMoon((x, y, z, renderedR) =>
+      consider(x, y, z, renderedR, MOON_APPROACH_K_PER_S));
+    if (this.solarSystem) {
+      for (const planet of this.solarSystem.planets) {
+        const wp = planet.group.userData.worldPosAU as { x: number; y: number; z: number } | undefined;
+        if (!wp) continue;
+        consider(
+          wp.x, wp.y, wp.z,
+          planetEnvelopeRadiusAU(planet.data.radiusAU, planet.group.scale.x, ATMOSPHERE_SHELL_SCALES[planet.data.name]),
+          PLANET_APPROACH_K_PER_S,
+        );
+      }
+      // The Sun sits at the heliocentric origin.
+      consider(0, 0, 0, (KM_CONSTANTS.SUN_RADIUS / KM_PER_AU) * SUN_APPROACH_SURFACE_RADII, PLANET_APPROACH_K_PER_S);
+    }
     return cap;
   }
 
@@ -4301,7 +4343,7 @@ export class PlanetariumMode {
       );
 
       let distance = offset.length();
-      const collisionRadius = this.getPlanetCollisionRadius(planet.data.radiusAU, planet.group.scale.x);
+      const collisionRadius = this.getPlanetCollisionRadius(planet.data.name, planet.data.radiusAU, planet.group.scale.x);
       if (distance >= collisionRadius) continue;
 
       if (distance < 1e-8) {
@@ -4365,8 +4407,9 @@ export class PlanetariumMode {
     this.player.moving = true;
 
     // A teleport is a discontinuity: a tight cap eased down at the previous
-    // moon must not ramp-limit the arrival scene's first seconds.
-    this.moonCapEased = Infinity;
+    // body must not ramp-limit the arrival scene's first seconds, and no
+    // partial clear-hold survives either.
+    this.bodyCap = initialBodyCapState();
 
     // Don't touch cruise speedMultiplier — the system throttle automatically
     // slows the player near the planet. Just ensure cruise is at least 1c
@@ -4403,7 +4446,7 @@ export class PlanetariumMode {
     if (!parentBody || !parentPosRaw) return null;
     const parentPos = new THREE.Vector3(parentPosRaw.x, parentPosRaw.y, parentPosRaw.z);
     const offset = this.getMoonWorldOffsetAU(moon, parentBody, new THREE.Vector3());
-    const parentCollision = this.getPlanetCollisionRadius(parentBody.radiusAU, this.planetScale);
+    const parentCollision = this.getPlanetCollisionRadius(parentBody.name, parentBody.radiusAU, this.planetScale);
     const ring = RING_CONFIGS[parentBody.name];
     const pose = moonArrivalPose({
       moonPos: offset.clone().add(parentPos),
@@ -6569,10 +6612,10 @@ export class PlanetariumMode {
   exitLandedMode() {
     if (!this.landedOn) return;
     // The governor is frozen while landed, so a cap tightened on the approach
-    // must not ramp-limit the departure. Reset it here — the single takeoff
-    // chokepoint (also the excursion Leave and deactivate paths) — so flight
-    // resumes from an unconstrained cap, mirroring the teleport reset.
-    this.moonCapEased = Infinity;
+    // must not ramp-limit the departure — and no partial clear-hold may
+    // survive into it. Reset here — the single takeoff chokepoint (also the
+    // excursion Leave and deactivate paths) — mirroring the teleport reset.
+    this.bodyCap = initialBodyCapState();
     // Back to cruise: no landed system means no moons owed a warm upload.
     setWarmEligibleMoonParents(new Set());
     // Leave sits in the cluster above the deck's backdrop, so takeoff can
@@ -6613,7 +6656,7 @@ export class PlanetariumMode {
         let safeDist: number;
         if (this.landedOn.type === 'planet') {
           // Camera must clear collision radius
-          const collisionR = this.getPlanetCollisionRadius(radiusAU, this.planetScale);
+          const collisionR = this.getPlanetCollisionRadius(this.landedOn.name, radiusAU, this.planetScale);
           safeDist = camDist + collisionR * 1.5;
         } else {
           // Same shape as the planet branch: the camera (camDist toward the
@@ -6868,10 +6911,11 @@ export class PlanetariumMode {
     this.player.pitch = saved.pitchRad ?? 0;
     this.player.speedMultiplier = saved.speed;
     this.player.moving = saved.landedOn ? false : (saved.moving ?? saved.speed > 0);
-    // A restore is a position discontinuity; drop any ramped moon cap so a
-    // flight resumed on the same mode instance (deactivate→reactivate) isn't
-    // throttled by a value left over from wherever the ship last was.
-    this.moonCapEased = Infinity;
+    // A restore is a position discontinuity; drop the whole governor state
+    // (ramped cap, latch, clear-hold) so a flight resumed on the same mode
+    // instance (deactivate→reactivate) isn't throttled — or auto-cleared —
+    // by values left over from wherever the ship last was.
+    this.bodyCap = initialBodyCapState();
     this.player.distanceTraveled = saved.distanceTraveled;
     this.player.timeElapsed = saved.timeElapsed;
     this.player.visitedPlanets = new Set(saved.visitedPlanets);

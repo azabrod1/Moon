@@ -1,4 +1,5 @@
 import { describe, it, expect } from 'vitest';
+import { ATMOSPHERE_SHELL_SCALES } from './PlanetFactory';
 import {
   SHIP_RIG_SCALE,
   SHIP_REFERENCE_RADIUS_AU,
@@ -72,6 +73,16 @@ describe('planetEnvelopeRadiusAU', () => {
 
   it('never shrinks below the catalog radius', () => {
     expect(planetEnvelopeRadiusAU(JUPITER, 0.5)).toBe(JUPITER);
+  });
+
+  it('pins Venus: the thickest shell grows the collision shell ~4.4%', () => {
+    // At the shrunken clearance the growth is scale-dominated — the plan's
+    // early "≤1.5%" claim was Jupiter-specific and wrong for Venus.
+    const VENUS = 6_052 * KM;
+    const solid = VENUS + SHIP_CLEARANCE_AU;
+    const envelope = planetEnvelopeRadiusAU(VENUS, 1, ATMOSPHERE_SHELL_SCALES.Venus) + SHIP_CLEARANCE_AU;
+    expect(envelope / solid - 1).toBeGreaterThan(0.04);
+    expect(envelope / solid - 1).toBeLessThan(0.05);
   });
 });
 

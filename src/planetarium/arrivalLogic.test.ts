@@ -1,13 +1,17 @@
 import { describe, expect, it } from 'vitest';
 import * as THREE from 'three';
 import {
+  advanceBodyCap,
   governedSpeedCap,
+  initialBodyCapState,
   moonArrivalPose,
   moonCollisionRadius,
   rampedSpeedCap,
+  BODY_APPROACH_V_MIN_AU_S,
+  BODY_CAP_CLEAR_HOLD_S,
+  BODY_CAP_RELEASE_EFOLD_S,
   MOON_APPROACH_K_PER_S,
-  MOON_CAP_RELEASE_EFOLD_S,
-  MOON_APPROACH_V_MIN_AU_S,
+  PLANET_APPROACH_K_PER_S,
   MOON_ARRIVAL_APPARENT_DIAMETER_DEG,
   MOON_ARRIVAL_MAX_OFFAXIS_DEG,
   MOON_ARRIVAL_SEPARATION_CAP,
@@ -23,7 +27,7 @@ import { DEG2RAD, RAD2DEG } from '../shared/math/angles';
 import { SHIP_CLEARANCE_AU, CRUISE_CAM_DIST_AU as CAM_DIST_AU } from './cruiseView';
 
 const K = MOON_APPROACH_K_PER_S;
-const VMIN = MOON_APPROACH_V_MIN_AU_S;
+const VMIN = BODY_APPROACH_V_MIN_AU_S;
 
 const MESH_FLOOR_RATIO = 0.05;
 
@@ -91,7 +95,7 @@ describe('governedSpeedCap', () => {
 });
 
 describe('rampedSpeedCap', () => {
-  const E = MOON_CAP_RELEASE_EFOLD_S;
+  const E = BODY_CAP_RELEASE_EFOLD_S;
 
   it('tightening applies instantly, including first contact from Infinity', () => {
     expect(rampedSpeedCap(1e-6, Infinity, 1 / 60, E)).toBe(1e-6);
@@ -125,6 +129,66 @@ describe('rampedSpeedCap', () => {
     }
     expect(t).toBeGreaterThan(2);
     expect(t).toBeLessThan(8);
+  });
+});
+
+describe('advanceBodyCap — the governor latch', () => {
+  const COMMANDED = 25_000 / KM_PER_AU; // the in-system default
+  const DT = 1 / 60;
+
+  it('stays latched (clear timer pinned at zero) while a body binds', () => {
+    let s = initialBodyCapState();
+    const geomCap = COMMANDED / 10;
+    for (let t = 0; t < 3; t += DT) s = advanceBodyCap(s, geomCap, COMMANDED, true, DT);
+    expect(s.engaged).toBe(true);
+    expect(s.unboundS).toBe(0);
+    expect(s.applied).toBe(Infinity); // bypassed…
+    expect(s.candidate).toBeCloseTo(geomCap, 12); // …but the ramp memory stays live
+  });
+
+  it('completes the clear-hold only after a sustained unbound stretch', () => {
+    let s = initialBodyCapState();
+    s = advanceBodyCap(s, COMMANDED / 10, COMMANDED, true, DT); // bound once
+    let held = 0;
+    while (s.unboundS < BODY_CAP_CLEAR_HOLD_S) {
+      s = advanceBodyCap(s, Infinity, COMMANDED, true, DT); // flying away
+      held += DT;
+      expect(held).toBeLessThan(BODY_CAP_CLEAR_HOLD_S + 1); // and it can't wedge
+    }
+    expect(s.unboundS).toBeGreaterThanOrEqual(BODY_CAP_CLEAR_HOLD_S);
+  });
+
+  it('a one-frame grazing re-bind resets the hold instead of clearing through it', () => {
+    let s = initialBodyCapState();
+    for (let t = 0; t < BODY_CAP_CLEAR_HOLD_S * 0.9; t += DT) {
+      s = advanceBodyCap(s, Infinity, COMMANDED, true, DT);
+    }
+    expect(s.unboundS).toBeGreaterThan(0);
+    s = advanceBodyCap(s, COMMANDED / 10, COMMANDED, true, DT); // graze
+    expect(s.unboundS).toBe(0);
+  });
+
+  it('a parked ship beside a body stays latched on its DIALED speed', () => {
+    // The commanded speed ignores the parked state; the latch must too, or
+    // parking beside a moon would start clearing the override immediately.
+    const geomCap = governedSpeedCap(2 * SHIP_CLEARANCE_AU, 1, K, VMIN);
+    const s = advanceBodyCap(initialBodyCapState(), geomCap, COMMANDED, true, DT);
+    expect(s.engaged).toBe(true);
+  });
+
+  it('the ramp memory survives a bypass and re-applies the moment it ends', () => {
+    let s = initialBodyCapState();
+    const geomCap = COMMANDED / 100;
+    s = advanceBodyCap(s, geomCap, COMMANDED, true, DT);
+    expect(s.applied).toBe(Infinity);
+    s = advanceBodyCap(s, geomCap, COMMANDED, false, DT); // hatch closes
+    expect(s.applied).toBeCloseTo(geomCap, 12); // tight at once — no Infinity restart
+  });
+
+  it('a planet approach at the in-system default engages ~100,000 km out', () => {
+    const engageDistAU = COMMANDED / PLANET_APPROACH_K_PER_S; // cap == speed here
+    expect(governedSpeedCap(engageDistAU, 1, PLANET_APPROACH_K_PER_S, VMIN)).toBeCloseTo(COMMANDED, 12);
+    expect(engageDistAU * KM_PER_AU).toBeCloseTo(100_000, -3);
   });
 });
 

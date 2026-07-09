@@ -18,13 +18,13 @@ import { MOONS } from './planets/moonData';
 import { PLANETARIUM_BODIES } from './planets/planetData';
 import { KM_PER_AU } from '../astronomy/constants';
 import { DEG2RAD, RAD2DEG } from '../shared/math/angles';
+// The REAL rig constants — this sweep must see exactly the rig the app
+// flies (mirrored copies here once meant a rig change couldn't fail a test).
+import { SHIP_CLEARANCE_AU, CRUISE_CAM_DIST_AU as CAM_DIST_AU } from './cruiseView';
 
 const K = MOON_APPROACH_K_PER_S;
 const VMIN = MOON_APPROACH_V_MIN_AU_S;
 
-// Mirrors the controller's constants: hull clearance and chase-camera trail.
-const SHIP_CLEARANCE_AU = (1_737.4 / KM_PER_AU) * 1.5;
-const CAM_DIST_AU = 0.000094;
 const MESH_FLOOR_RATIO = 0.05;
 
 /** Real-catalog inputs for one moon, posed at `angleRad` around its parent
@@ -137,12 +137,15 @@ describe('moonArrivalPose — ladder fixtures', () => {
 
   it('the Moon parks where its disc reads the target size from the camera', () => {
     const { inp, dist } = standoff('Moon');
-    const raw =
-      inp.renderedR / Math.sin((MOON_ARRIVAL_APPARENT_DIAMETER_DEG / 2) * DEG2RAD) - CAM_DIST_AU;
+    const half = (MOON_ARRIVAL_APPARENT_DIAMETER_DEG / 2) * DEG2RAD;
+    const raw = inp.renderedR / Math.sin(half) - CAM_DIST_AU;
     expect(dist).toBeCloseTo(raw, 9);
-    // Roughly double the old 8-radii standoff — the "a bit further" ask.
-    expect(dist / inp.renderedR).toBeGreaterThan(12);
-    expect(dist / inp.renderedR).toBeLessThan(18);
+    // The SHIP parks just inside the zero-trail target-size distance and the
+    // camera trail closes the remainder, so the ship-to-moon ratio rides the
+    // rig (a shorter trail parks the ship farther out while the VIEW stays
+    // identical). Bound it by the invariant, not by any one rig's split.
+    expect(dist / inp.renderedR).toBeLessThan(1 / Math.sin(half));
+    expect(dist / inp.renderedR).toBeGreaterThan(1 / Math.sin(half) - 1);
   });
 
   it('Phobos still binds on the separation cap, Deimos on the legacy floor', () => {

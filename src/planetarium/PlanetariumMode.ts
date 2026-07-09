@@ -110,6 +110,12 @@ import {
 } from './surfaceView';
 import { DEG2RAD } from '../shared/math/angles';
 import { landedFrameCamDistAU, landedMinDistanceAU } from './landedView';
+import {
+  SHIP_CLEARANCE_AU,
+  CRUISE_CAM_DIST_AU,
+  SHIP_OCCLUDER_RADIUS_AU,
+  CRUISE_CONTROLS_MIN_DISTANCE_AU,
+} from './cruiseView';
 import { KM_CONSTANTS } from '../shared/constants/physicalData';
 import { smoothstepUnclamped } from '../shared/math/smoothstep';
 import { projectToScreen, type ScreenProjection } from '../shared/three/projectToScreen';
@@ -121,6 +127,7 @@ import { filterDeckRows, groupDeckBodies, observeArrivalAction, type DeckRow } f
 import {
   governedSpeedCap,
   moonArrivalPose,
+  moonCollisionRadius,
   rampedSpeedCap,
   MOON_APPROACH_K_PER_S,
   MOON_APPROACH_V_MIN_AU_S,
@@ -227,14 +234,8 @@ export interface PlanetariumActivationProgress {
 }
 
 export class PlanetariumMode {
-  private static readonly SHIP_CLEARANCE_AU = (1_737.4 / KM_PER_AU) * 1.5;
-  /** Chase-camera trail distance behind the ship (also the moon-arrival
-   *  standoff's camera correction — the apparent size the user sees is
-   *  measured from back here, not from the ship). */
-  private static readonly CRUISE_CAM_DIST_AU = 0.000094;
-  // Conservative disc radius for ship occlusion. Default hull is ~3 moon-radii
-  // long with 0.5x group scale applied → half-length ≈ 0.75 moon-radii.
-  private static readonly SHIP_OCCLUDER_RADIUS_AU = (1_737.4 / KM_PER_AU) * 0.75;
+  // The cruise rig (clearance pads, chase distance, occluder disc, zoom
+  // floor) lives in cruiseView.ts as one derived chain.
   private static readonly UI_REFRESH_INTERVAL_S = 1 / 8;
   private static readonly SCENE_NORTH = new THREE.Vector3(0, 1, 0);
   /** A moon's mesh never renders below this fraction of its parent's radius, so
@@ -754,7 +755,7 @@ export class PlanetariumMode {
     this.controls.enableDamping = true;
     this.controls.dampingFactor = 0.05;
     this.controls.enabled = false;
-    this.controls.minDistance = 0.00001;
+    this.controls.minDistance = CRUISE_CONTROLS_MIN_DISTANCE_AU;
     this.controls.maxDistance = 5;
 
     // Yield the chase cam only on an actual orbit drag, never on a plain
@@ -1399,7 +1400,7 @@ export class PlanetariumMode {
     // Chase camera: smoothly lerp behind the ship unless user is orbiting
     if (this.userOrbiting) return;
 
-    const camDist = 0.000094;
+    const camDist = CRUISE_CAM_DIST_AU;
     const forward = this.player.getForwardDirection();
     const idealPos = new THREE.Vector3(
       -forward.x * camDist,
@@ -2075,7 +2076,7 @@ export class PlanetariumMode {
     if (this.player.group.visible && !this.landedOn) {
       const distFromCamera = this.camera.position.length();
       if (distFromCamera > 0) {
-        const shipSceneRadiusAU = PlanetariumMode.SHIP_OCCLUDER_RADIUS_AU;
+        const shipSceneRadiusAU = SHIP_OCCLUDER_RADIUS_AU;
         const angularSize = (shipSceneRadiusAU * 2) / distFromCamera;
         if (angularSize > 0.005) {
           const canvasW = this.renderer.domElement.clientWidth;
@@ -4137,7 +4138,7 @@ export class PlanetariumMode {
   }
 
   private resetCruiseCamera() {
-    const camDist = PlanetariumMode.CRUISE_CAM_DIST_AU;
+    const camDist = CRUISE_CAM_DIST_AU;
     const forward = this.player.getForwardDirection();
     this.camera.position.set(
       -forward.x * camDist,
@@ -4148,7 +4149,7 @@ export class PlanetariumMode {
   }
 
   private getPlanetCollisionRadius(radiusAU: number, renderedScale: number): number {
-    return radiusAU * Math.max(renderedScale, 1) + PlanetariumMode.SHIP_CLEARANCE_AU;
+    return radiusAU * Math.max(renderedScale, 1) + SHIP_CLEARANCE_AU;
   }
 
   private getJumpDestination(planet: PlanetData, distanceMultiplier = 1) {
@@ -4239,7 +4240,7 @@ export class PlanetariumMode {
     this.forEachGovernedMoon((x, y, z, renderedR) => {
       // Full lunar-scale clearance would exceed a tiny moon's own standoff,
       // so it saturates at one rendered radius.
-      const collisionR = renderedR + Math.min(PlanetariumMode.SHIP_CLEARANCE_AU, renderedR);
+      const collisionR = renderedR + Math.min(SHIP_CLEARANCE_AU, renderedR);
       const dx = this.player.posX - p0.x;
       const dy = this.player.posY - p0.y;
       const dz = this.player.posZ - p0.z;
@@ -4416,8 +4417,8 @@ export class PlanetariumMode {
         parentCollision * 1.25,
         ring ? parentBody.radiusAU * ring.outerFactor * 1.05 : 0,
       ),
-      camDist: PlanetariumMode.CRUISE_CAM_DIST_AU,
-      shipClearance: PlanetariumMode.SHIP_CLEARANCE_AU,
+      camDist: CRUISE_CAM_DIST_AU,
+      shipClearance: SHIP_CLEARANCE_AU,
     });
     return { position: pose.position, lookTarget: pose.aimPoint };
   }
@@ -6608,15 +6609,18 @@ export class PlanetariumMode {
         // The cruise camera sits camDist behind the player. By facing AWAY
         // from the body, the camera ends up between the player and the body,
         // giving a close-up view of the body as you depart.
-        const camDist = 0.000094; // must match resetCruiseCamera
+        const camDist = CRUISE_CAM_DIST_AU; // must match resetCruiseCamera
         let safeDist: number;
         if (this.landedOn.type === 'planet') {
           // Camera must clear collision radius
           const collisionR = this.getPlanetCollisionRadius(radiusAU, this.planetScale);
           safeDist = camDist + collisionR * 1.5;
         } else {
-          // Moons: no collision handler, place so camera is close
-          safeDist = camDist * 1.5;
+          // Same shape as the planet branch: the camera (camDist toward the
+          // body) must clear the moon's collision shell on the depart view.
+          // Rendered radius, not catalog — the shell wraps the inflated mesh.
+          const renderedR = this.getLandedBodyRenderedRadiusAU();
+          safeDist = camDist + moonCollisionRadius(renderedR, SHIP_CLEARANCE_AU) * 1.5;
         }
 
         // Direction away from Sun (outward from body)
@@ -6648,7 +6652,7 @@ export class PlanetariumMode {
     // Reset OrbitControls — disable on touch devices during flight
     this.controls.enabled = !this.isTouchDevice;
     this.controls.autoRotate = false;
-    this.controls.minDistance = 0.00001;
+    this.controls.minDistance = CRUISE_CONTROLS_MIN_DISTANCE_AU;
     this.controls.maxDistance = 5;
     this.resetCruiseCamera();
 

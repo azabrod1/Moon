@@ -6,7 +6,7 @@
  * procedural fallback). All procedural geometry lives in ship/models/.
  */
 import * as THREE from 'three';
-import { KM_PER_AU } from '../astronomy/constants';
+import { SHIP_REFERENCE_RADIUS_AU } from './cruiseView';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { LIGHT_SPEED_AU_PER_S } from './planets/planetData';
 import { createDefaultShip } from './ship/models/defaultShip';
@@ -56,10 +56,12 @@ export class PlayerShip {
   constructor() {
     this.group = new THREE.Group();
 
-    const moonRadiusAU = 1737.4 / KM_PER_AU;
-    this.spacecraftReferenceRadiusAU = moonRadiusAU;
+    // The rig-scaled reference radius: the hull and every chase-view pad
+    // derive from the same base (see cruiseView.ts), so the ship's on-screen
+    // size survives any rig rescale.
+    this.spacecraftReferenceRadiusAU = SHIP_REFERENCE_RADIUS_AU;
 
-    const ship = createDefaultShip(moonRadiusAU);
+    const ship = createDefaultShip(SHIP_REFERENCE_RADIUS_AU);
     this.defaultModel = ship.model;
     this.mesh = ship.mesh;
     this.exhaustCone = ship.exhaustCone;

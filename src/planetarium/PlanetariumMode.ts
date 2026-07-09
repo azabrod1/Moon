@@ -635,6 +635,7 @@ export class PlanetariumMode {
 
   // UI elements
   private speedValueEl: HTMLElement | null = null;
+  private lastSpeedText = '';
   private speedLabelEl: HTMLElement | null = null;
   private speedCenterEl: HTMLElement | null = null;
   private uiRefreshAccumulator = PlanetariumMode.UI_REFRESH_INTERVAL_S;
@@ -2584,10 +2585,22 @@ export class PlanetariumMode {
       // kept "25k km/s" on screen over a parked ship. Slow deep-space speeds
       // drop to km/s so a governed crawl never reads "0.0c".
       const actualC = this.player.speedC;
-      this.speedValueEl.textContent =
+      const speedText =
         this.inSystemMode || actualC < 0.05
           ? (actualC < 0.0005 ? '0 km/s' : this.formatSystemSpeed(actualC))
           : `${actualC.toFixed(1)}c`;
+      if (speedText !== this.lastSpeedText) {
+        this.lastSpeedText = speedText;
+        this.speedValueEl.textContent = speedText;
+        // The readout box is fixed-width; a string that overflows it drops
+        // the font a step (and returns) rather than resizing the bar. Always
+        // measured unsqueezed — measuring at the small size would clear the
+        // class and oscillate.
+        this.speedValueEl.classList.remove('squeeze');
+        if (this.speedValueEl.scrollWidth > this.speedValueEl.clientWidth) {
+          this.speedValueEl.classList.add('squeeze');
+        }
+      }
     }
   }
 

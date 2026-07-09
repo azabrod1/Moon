@@ -156,7 +156,7 @@
       align-items: center;
       gap: 0;
       border-radius: var(--r-l);
-      padding: 5px;
+      padding: 4px 5px;
     }
 
     .bar-section {
@@ -242,7 +242,7 @@
     /* The clock readout under the rail — doubles as the panel toggle. */
     .tr-clock {
       position: relative; display: flex; align-items: baseline; justify-content: center;
-      gap: 6px; padding: 1px 4px 2px; border-radius: 6px; cursor: pointer; white-space: nowrap;
+      gap: 6px; padding: 0 4px 1px; border-radius: 6px; cursor: pointer; white-space: nowrap;
       -webkit-tap-highlight-color: transparent;
       transition: background var(--dur) var(--ease);
     }
@@ -525,7 +525,7 @@
     }
     .tp-now.off .live-dot { display: block; }
 
-    .speed-label-sm { font-size: 10px; color: var(--text-secondary); letter-spacing: 0.1px; white-space: nowrap; }
+    .speed-label-sm { font-size: 10px; line-height: 1.2; color: var(--text-secondary); letter-spacing: 0.1px; white-space: nowrap; }
 
     .speed-center {
       display: flex;
@@ -546,9 +546,13 @@
     }
 
     #planetarium-speed-value {
-      font-size: 13px; font-weight: 600; color: var(--text-primary);
-      min-width: 64px; text-align: center; font-variant-numeric: tabular-nums;
+      /* Fixed box + px line-height: the readout swings between "1.0c" and
+         "120k km/s", and the bar must not resize with it — a long string
+         steps the font down (.squeeze) instead of wrapping taller. */
+      font-size: 13px; line-height: 15px; font-weight: 600; color: var(--text-primary);
+      width: 64px; white-space: nowrap; text-align: center; font-variant-numeric: tabular-nums;
     }
+    #planetarium-speed-value.squeeze { font-size: 10.5px; letter-spacing: -0.1px; }
 
     .planetarium-icon-btn {
       min-width: 28px; height: 28px;
@@ -2004,13 +2008,17 @@
       /* .bar-section's tightened padding would beat .bar-stats here (same
          specificity, later in source) and leave the bordered chip's label
          kissing its border — keep the chip's own inset. */
-      .bar-stats { padding: 0 9px; }
+      /* Icon-only Stats chip — the label costs ~34px the narrow bar can't
+         spare (the chip keeps its aria-label). Slightly wider inset so the
+         lone glyph doesn't kiss the border. */
+      .bar-stats { padding: 0 10px; }
+      .bar-stats-label { display: none; }
       .bar-speed-main { padding: 0 6px; gap: 6px; }
-      /* The rail + clock rows grow into a ≈44px touch strip; the panel's
-         targets widen to finger size. Drag-first — the tooltip magnifies. */
-      .bar-time { padding: 2px 6px 0; }
+      /* The rail + clock rows form a fat touch strip; the panel's targets
+         widen to finger size. Drag-first — the tooltip magnifies. */
+      .bar-time { padding: 1px 6px 0; }
       .time-rail-wrap { min-width: 112px; }
-      .time-rail { height: 22px; }
+      .time-rail { height: 20px; }
       .tr-clock .d { font-size: 10.5px; }
       .time-panel { width: calc(100vw - 20px); }
       .tp-seg button { width: 52px; height: 40px; }
@@ -2664,7 +2672,7 @@
           </div>
 
           <!-- Right: stats toggle (lights when the docked card is open) -->
-          <div class="bar-section bar-stats" id="bar-stats-toggle" role="button" tabindex="0" aria-expanded="false" aria-controls="stats-popover">
+          <div class="bar-section bar-stats" id="bar-stats-toggle" role="button" tabindex="0" aria-label="Stats" aria-expanded="false" aria-controls="stats-popover">
             <svg class="bar-stats-glyph" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" aria-hidden="true"><path d="M3.5 13 V9.5"></path><path d="M8 13 V4.5"></path><path d="M12.5 13 V7"></path></svg>
             <span class="bar-stats-label">Stats</span>
           </div>

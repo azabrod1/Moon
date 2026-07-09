@@ -141,6 +141,7 @@ import {
   BODY_CAP_CLEAR_HOLD_S,
   MOON_APPROACH_K_PER_S,
   PLANET_APPROACH_K_PER_S,
+  PLANET_ARRIVAL_STANDOFF_FLOOR_AU,
   SUN_APPROACH_SURFACE_RADII,
   type BodyCapState,
 } from './arrivalLogic';
@@ -4109,7 +4110,10 @@ export class PlanetariumMode {
     const body = PLANETARIUM_BODIES.find((planet) => planet.name === milestone.target);
     if (!body) return null;
 
-    const destination = this.getJumpDestination(body, milestone.viewDistanceMultiplier ?? 1);
+    // Historic scenes were framed against the old 0.001 AU floor — keep
+    // passing it so every authored milestone parks the ship where it always
+    // has (the ~2° Earth postcards are the look those scenes were built on).
+    const destination = this.getJumpDestination(body, milestone.viewDistanceMultiplier ?? 1, 0.001);
     if (!destination) return null;
 
     return {
@@ -4199,14 +4203,23 @@ export class PlanetariumMode {
     return planetEnvelopeRadiusAU(radiusAU, renderedScale, ATMOSPHERE_SHELL_SCALES[name]) + SHIP_CLEARANCE_AU;
   }
 
-  private getJumpDestination(planet: PlanetData, distanceMultiplier = 1) {
+  /** Standoff for a planet teleport: 8 radii (a ~14° disc from the chase
+   *  camera) or the collision shell + 2 radii, whichever is farther. The
+   *  floor sits INSIDE the max, before the multiplier — historic journeys
+   *  pass the legacy 0.001 AU here so their authored milestone framings
+   *  keep binding exactly where they always did. */
+  private getJumpDestination(
+    planet: PlanetData,
+    distanceMultiplier = 1,
+    floorAU = PLANET_ARRIVAL_STANDOFF_FLOOR_AU,
+  ) {
     const pos = this.planetWorldPositions.get(planet.name);
     if (!pos) return null;
 
     const viewDist = Math.max(
       planet.radiusAU * 8,
       this.getPlanetCollisionRadius(planet.name, planet.radiusAU, this.planetScale) + planet.radiusAU * 2,
-      0.001,
+      floorAU,
     ) * distanceMultiplier;
     const offsetDir = new THREE.Vector3(-pos.x, -pos.y, -pos.z);
     if (offsetDir.lengthSq() < 1e-8) {

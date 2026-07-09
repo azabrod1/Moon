@@ -161,6 +161,14 @@ export const MOON_ARRIVAL_MAX_OFFAXIS_DEG = 12;
  *  uncomfortably tight; unchanged from the original standoff. */
 export const MOON_ARRIVAL_STANDOFF_FLOOR_AU = 5e-5;
 
+/** Planet-jump standoff floor (~3,000 km). Inert for the current catalog —
+ *  every planet's 8-radii arm exceeds it (Pluto's is 6.4e-5 AU) — it only
+ *  guards a degenerate zero-radius body. The old 0.001 AU floor bound for
+ *  ALL terrestrials and Pluto, parking Mercury at a ~2° postcard; historic
+ *  journeys still pass that legacy value so authored milestone scenes keep
+ *  their ship positions. */
+export const PLANET_ARRIVAL_STANDOFF_FLOOR_AU = 2e-5;
+
 /** Standoff never exceeds this fraction of the live moon–parent separation,
  *  so the parent can't dominate the view; for the closest moons (Phobos,
  *  Cordelia) this is what actually binds. Unchanged from the original. */

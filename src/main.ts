@@ -14,19 +14,21 @@ import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
 
 import { PlanetariumMode, FIRST_PLANETARIUM_ACTIVATION_TOTAL_UNITS } from './planetarium/PlanetariumMode';
 import type { MoonFlightMode } from './moonFlight/MoonFlightMode';
+import type { VolumeCompareMode } from './volumeCompare/VolumeCompareMode';
 import { canGPUDoBloom } from './app/gpuCapability';
 import { debugError, debugLog, debugWarn } from './shared/debug';
 
 // ================================================================
 // Top-level mode
 // ================================================================
-type AppMode = 'planetarium' | 'moonFlight';
+type AppMode = 'planetarium' | 'moonFlight' | 'volumeCompare';
 let appMode: AppMode = 'planetarium';
 // switchAppMode early-returns on a same-mode call only after the first
 // activation has actually run (init() enters the planetarium through it).
 let appModeInitialized = false;
 let planetariumMode: PlanetariumMode | null = null;
 let moonFlightMode: MoonFlightMode | null = null;
+let volumeCompareMode: VolumeCompareMode | null = null;
 let modeSwitchInFlight = false;
 
 // ================================================================
@@ -99,6 +101,10 @@ planetariumCamera.position.set(-0.0002, 0.0001, 0.0001);
 // --- Moon flight camera (own camera so near/far are independent of other modes) ---
 const flightCamera = new THREE.PerspectiveCamera(55, window.innerWidth / window.innerHeight, 0.01, 2000);
 
+// --- Volume-compare camera (studio scale: container radius = 1 unit; near/far
+// bracket the [1.7, 8] orbit distance with room for the dimmed starfield shell) ---
+const vcCamera = new THREE.PerspectiveCamera(40, window.innerWidth / window.innerHeight, 0.01, 300);
+
 let camera: THREE.PerspectiveCamera = planetariumCamera;
 
 // ================================================================
@@ -123,7 +129,12 @@ function applyRenderResolution() {
   }
 }
 
-function buildComposer(cam: THREE.Camera) {
+// Bloom radius is shared across modes; strength + threshold are authored per
+// mode at each call site. Volume-compare deliberately matches the Planetarium's
+// 0.8 / 0.92 identity so its glass HDR glint blooms against the same threshold.
+const BLOOM_RADIUS = 0.4;
+
+function buildComposer(cam: THREE.Camera, bloom: { strength: number; threshold: number }) {
   if (composer) {
     // EffectComposer.dispose() frees only its own ping-pong targets and copy
     // pass — never the added passes. Dispose them here so the bloom pass's mip
@@ -139,18 +150,18 @@ function buildComposer(cam: THREE.Camera) {
   composer.setPixelRatio(getTargetPixelRatio());
   composer.setSize(window.innerWidth, window.innerHeight);
   composer.addPass(new RenderPass(scene, cam));
-  const bloom = new UnrealBloomPass(
+  const bloomPass = new UnrealBloomPass(
     new THREE.Vector2(window.innerWidth, window.innerHeight),
-    cam === planetariumCamera ? 0.8 : 1.2,
-    0.4,
-    cam === planetariumCamera ? 0.92 : 0.85,
+    bloom.strength,
+    BLOOM_RADIUS,
+    bloom.threshold,
   );
-  composer.addPass(bloom);
+  composer.addPass(bloomPass);
   composer.addPass(new OutputPass());
 }
 
 applyRenderResolution();
-buildComposer(planetariumCamera);
+buildComposer(planetariumCamera, { strength: 0.8, threshold: 0.92 });
 
 // Armed after first Planetarium activation: that render compiles the scene's
 // shaders and uploads textures, so its duration is a startup phase of its own.
@@ -216,22 +227,31 @@ async function switchAppMode(newMode: AppMode) {
 
   try {
     modeTransition.classList.add('active');
-    transitionMsg.textContent = newMode === 'planetarium' ? 'Entering Planets...' : 'Entering Flight...';
+    transitionMsg.textContent =
+      newMode === 'planetarium' ? 'Entering Planets...'
+        : newMode === 'moonFlight' ? 'Entering Flight...'
+          : 'Gathering planets...';
     await sleep(400);
 
     if (newMode === 'planetarium') {
       // --- Switch to Planetarium ---
       appMode = 'planetarium';
       if (moonFlightMode) moonFlightMode.deactivate();
+      if (volumeCompareMode) volumeCompareMode.deactivate();
       scene.background = new THREE.Color(0x000000);
 
       camera = planetariumCamera;
       applyRenderResolution();
-      buildComposer(planetariumCamera);
+      buildComposer(planetariumCamera, { strength: 0.8, threshold: 0.92 });
 
       if (!planetariumMode) {
         debugLog('Creating Planetarium mode');
         planetariumMode = new PlanetariumMode(scene, planetariumCamera, renderer, useBloom);
+        // The ☰ "How many fit?" item and the help-modal row arrive here: the
+        // mode closes its own entry surfaces, then this callback owns the switch.
+        planetariumMode.onVolumeCompareRequest(() => {
+          void switchAppMode('volumeCompare');
+        });
       }
       debugLog('Activating Planetarium mode');
       if (!planetariumMode.hasLoadedSolarSystem()) {
@@ -246,16 +266,17 @@ async function switchAppMode(newMode: AppMode) {
       }
       debugLog('Planetarium mode active');
 
-    } else {
+    } else if (newMode === 'moonFlight') {
       // --- Switch to Moon Flight ---
       appMode = 'moonFlight';
       if (planetariumMode) planetariumMode.deactivate();
+      if (volumeCompareMode) volumeCompareMode.deactivate();
       planetariumUI.style.display = 'none';
       scene.background = new THREE.Color(0x000000);
 
       camera = flightCamera;
       applyRenderResolution();
-      buildComposer(flightCamera);
+      buildComposer(flightCamera, { strength: 1.2, threshold: 0.85 });
 
       // Dynamic import: flight code + future assets stay out of the initial bundle
       // until the user actually enters this mode.
@@ -279,13 +300,46 @@ async function switchAppMode(newMode: AppMode) {
         await moonFlightMode.activate(entryDate);
       }
       debugLog('Moon flight mode active');
+
+    } else {
+      // --- Switch to Volume Compare ("How many fit?") ---
+      appMode = 'volumeCompare';
+      if (planetariumMode) planetariumMode.deactivate();
+      if (moonFlightMode) moonFlightMode.deactivate();
+      // PlanetariumMode.deactivate already hides this; the explicit line keeps
+      // parity with the flight branch and covers a switch from moon flight.
+      planetariumUI.style.display = 'none';
+      scene.background = new THREE.Color(0x000000);
+
+      camera = vcCamera;
+      applyRenderResolution();
+      buildComposer(vcCamera, { strength: 0.8, threshold: 0.92 });
+
+      // Dynamic import: the compare mode + its scene stay out of the initial
+      // bundle until the user actually enters it (MoonFlight code-split parity).
+      if (!volumeCompareMode) {
+        debugLog('Loading volume compare module');
+        const mod = await import('./volumeCompare/VolumeCompareMode');
+        volumeCompareMode = new mod.VolumeCompareMode(scene, vcCamera, renderer, useBloom);
+        volumeCompareMode.onExit(() => {
+          void switchAppMode('planetarium');
+        });
+      }
+      debugLog('Activating volume compare mode');
+      // Session-only: every entry starts a fresh session at the default pair.
+      // activate() resolves only once the default pair's textures are applied —
+      // the #mode-transition veil covers the load, so nothing half-loaded shows.
+      await volumeCompareMode.activate();
+      debugLog('Volume compare mode active');
     }
 
     appModeInitialized = true;
 
     await sleep(100);
-    modeTransition.classList.remove('active');
   } finally {
+    // The veil must never strand: if a mode activation throws, the app is
+    // degraded but the user can still see the scene and click their way out.
+    modeTransition.classList.remove('active');
     modeSwitchInFlight = false;
   }
 }
@@ -294,12 +348,13 @@ function sleep(ms: number): Promise<void> {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
 
-function isAutoBootParam(): boolean {
+function getAutoMode(): 'planetarium' | 'volumeCompare' {
   const params = new URLSearchParams(window.location.search);
   const auto = params.get('auto');
-  // 'moonView' stays accepted so old links keep booting the app — the mode
-  // itself retired; everything lands in the Planetarium.
-  return auto === 'planetarium' || auto === 'moonView';
+  // 'volumeCompare' routes into the compare mode after the Planetarium boots.
+  // Everything else — 'planetarium', the retired-but-still-accepted 'moonView',
+  // and absence — lands in the Planetarium.
+  return auto === 'volumeCompare' ? 'volumeCompare' : 'planetarium';
 }
 
 // Dev-only bridge for the headless screenshot harness: pose the camera and set
@@ -334,6 +389,25 @@ function installDevHooks() {
     getTimeMs: () => planetariumMode?.getCurrentUtcMs() ?? 0,
     setTimeRate: (rate: number) => planetariumMode?.setTimeRate(rate),
     setTimePaused: (paused: boolean) => planetariumMode?.setTimePaused(paused),
+    // Volume-compare bridge. compareOpen switches directly (the mode instance is
+    // null before first entry); the rest delegate to the live instance.
+    compareOpen: () => { void switchAppMode('volumeCompare'); },
+    compareExit: () => volumeCompareMode?.devExit(),
+    comparePick: (container: string, filler: string) =>
+      volumeCompareMode?.devPick(container, filler) ?? false,
+    compareState: () => volumeCompareMode?.devState() ?? null,
+    compareScatter: (n: number) => volumeCompareMode?.devScatter(n) ?? false,
+    compareOrbit: (azimuthDeg: number, elevationDeg?: number) =>
+      volumeCompareMode?.devOrbit(azimuthDeg, elevationDeg) ?? false,
+    // Honest stubs — the pour/melt land in P3 (the methods return false today).
+    compareSlider: (f: number) => volumeCompareMode?.devSlider(f) ?? false,
+    compareMelt: () => volumeCompareMode?.devMelt() ?? false,
+    // Mode-agnostic leak probe for the enter/exit heap check.
+    rendererInfo: () => ({
+      geometries: renderer.info.memory.geometries,
+      textures: renderer.info.memory.textures,
+      programs: renderer.info.programs?.length ?? 0,
+    }),
   };
   debugLog('Dev hooks installed (window.__moon)');
 }
@@ -357,6 +431,8 @@ async function init() {
       planetariumMode.update(dt);
     } else if (appMode === 'moonFlight' && moonFlightMode) {
       moonFlightMode.update(dt);
+    } else if (appMode === 'volumeCompare' && volumeCompareMode) {
+      volumeCompareMode.update(dt);
     }
 
     renderScene(camera);
@@ -365,13 +441,18 @@ async function init() {
   animate();
   debugLog('Animation loop started');
 
-  debugLog('Boot mode', { autoBoot: isAutoBootParam() });
+  const autoMode = getAutoMode();
+  debugLog('Boot mode', { autoMode });
+  // The Planetarium always boots first — it owns the saves, the catalog, and
+  // the veil semantics — then ?auto=volumeCompare routes on into the compare mode.
   await switchAppMode('planetarium');
   if (import.meta.env.DEV) installDevHooks();
   logStartupTimings();
 
   document.getElementById('loading-screen')?.classList.add('hidden');
   await planetariumMode?.showDeferredResumePromptIfNeeded();
+
+  if (autoMode === 'volumeCompare') await switchAppMode('volumeCompare');
 }
 
 // ================================================================
@@ -384,7 +465,10 @@ window.addEventListener('resize', () => {
   planetariumCamera.updateProjectionMatrix();
   flightCamera.aspect = w / h;
   flightCamera.updateProjectionMatrix();
+  vcCamera.aspect = w / h;
+  vcCamera.updateProjectionMatrix();
   moonFlightMode?.onResize(w / h);
+  volumeCompareMode?.onResize(w / h);
   applyRenderResolution();
   debugLog('Resize', { width: w, height: h });
 });

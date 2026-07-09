@@ -259,6 +259,7 @@ export class PlanetariumMode {
     'planetarium-btn-observatory',
     'planetarium-btn-autopilot',
     'planetarium-btn-tutorial',
+    'planetarium-btn-volume-compare',
     'planetarium-speed-up',
     'planetarium-speed-down',
   ] as const;
@@ -711,6 +712,14 @@ export class PlanetariumMode {
     this.resumeShipAfterHelp = false;
     this.resumeTimeAfterHelp = false;
     this.store.markHelpSeen();
+  }
+
+  // Mode switching lives in main.ts, not here; the "How many fit?" menu/help
+  // entries call this stored callback so main.ts can drive switchAppMode
+  // (MoonFlight's onExit idiom).
+  private volumeCompareRequestCb: (() => void) | null = null;
+  onVolumeCompareRequest(cb: () => void): void {
+    this.volumeCompareRequestCb = cb;
   }
 
   active = false;
@@ -2744,7 +2753,7 @@ export class PlanetariumMode {
     // The card narrates from here; stray banners would talk over it (on
     // phones they share the same top strip).
     this.notification.setMuted(true);
-    this.updateTutorialMenuItem();
+    this.updateSceneStealingMenuItems();
     this.tutorialCard.show();
     this.stageTutorialStep(0);
   }
@@ -2812,7 +2821,7 @@ export class PlanetariumMode {
       // restore can never persist a half-torn-down showcase scene.
       this.tutorial = null;
       this.notification.setMuted(false);
-      this.updateTutorialMenuItem();
+      this.updateSceneStealingMenuItems();
       this.store.saveState(this.getState());
       if (toast === 'skip') {
         this.notification.show('Tutorial ended. It’s in the ☰ menu if you want it again.', { force: true });
@@ -3173,9 +3182,16 @@ export class PlanetariumMode {
     this.updateTimeUI({ flash: true });
   }
 
-  private updateTutorialMenuItem(): void {
-    const btn = document.getElementById('planetarium-btn-tutorial') as HTMLButtonElement | null;
-    if (btn) btn.disabled = this.tutorial !== null;
+  // Both the Tutorial and "How many fit?" menu items steal the whole scene, so
+  // both are disabled while a tutorial runs — it owns the scene and holds a live
+  // pre-tutorial snapshot that a mode switch would strand. Called on tutorial
+  // start and end.
+  private updateSceneStealingMenuItems(): void {
+    const running = this.tutorial !== null;
+    for (const id of ['planetarium-btn-tutorial', 'planetarium-btn-volume-compare']) {
+      const btn = document.getElementById(id) as HTMLButtonElement | null;
+      if (btn) btn.disabled = running;
+    }
   }
 
   private updateMissionControlState() {
@@ -3364,6 +3380,18 @@ export class PlanetariumMode {
     document.getElementById('help-explore')?.addEventListener('click', () => this.hideHelp());
     document.getElementById('planetarium-help-close')?.addEventListener('click', () => this.hideHelp());
     document.querySelector('#planetarium-help .planetarium-help-backdrop')?.addEventListener('click', () => this.hideHelp());
+
+    // "How many fit?" entries: the ☰ item and the help-modal row. Close both
+    // entry surfaces first — the ☰ menu auto-pauses ship + clock and restores
+    // on close, so leave with that resolved (startTutorial does the same).
+    const requestVolumeCompare = () => {
+      if (this.tutorial !== null) return; // staging owns the scene + a snapshot is live
+      this.closeMenuPanel();
+      this.hideHelp();
+      this.volumeCompareRequestCb?.();
+    };
+    document.getElementById('planetarium-btn-volume-compare')?.addEventListener('click', requestVolumeCompare);
+    document.getElementById('help-volume-compare')?.addEventListener('click', requestVolumeCompare);
 
     document.getElementById('planetarium-btn-historic')?.addEventListener('click', () => {
       const submenu = document.getElementById('planetarium-historic-submenu');

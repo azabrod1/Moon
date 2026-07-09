@@ -111,7 +111,7 @@ const FALLBACK_COLORS: Record<string, string> = {
 // scales the glow that spills past the limb into space: ~1 for a thin atmosphere
 // over a surface (Earth/Venus/Mars), low for all-atmosphere giants whose limb
 // would otherwise ring against black.
-interface AtmosphereConfig {
+export interface AtmosphereConfig {
   dayColor: [number, number, number];
   sunsetColor: [number, number, number];
   mieColor: [number, number, number];
@@ -127,7 +127,9 @@ interface AtmosphereConfig {
 // Sun's physical radius in AU — for solar angular radius (penumbra width) at a planet.
 const SUN_RADIUS_AU = 695_700 / 149_597_870.7;
 
-const ATMOSPHERES: Record<string, AtmosphereConfig> = {
+// Exported so the volume-compare mode's ghost shell reads the same tuning —
+// a hand-kept copy would drift the moment these numbers get touched.
+export const ATMOSPHERES: Record<string, AtmosphereConfig> = {
   Venus: {
     dayColor: [0.95, 0.85, 0.55], sunsetColor: [1.0, 0.7, 0.4], mieColor: [1.0, 0.93, 0.78],
     rayleighStrength: 0.9, mieStrength: 1.1, mieG: 0.7, power: 2.5, intensity: 1.5, haloStrength: 1.0, scale: 1.045,
@@ -154,7 +156,14 @@ const ATMOSPHERES: Record<string, AtmosphereConfig> = {
   // gas-giant limb darkening on the body itself carries the soft edge.
 };
 
-function loadTexture(key: string, tier: TextureTier = '2k', kind: MapKind = 'color', timeoutMs = 8000): Promise<THREE.Texture> {
+/**
+ * Load one planet-level texture by key, resolving a grey procedural fallback on
+ * timeout or error so a caller never blocks on a missing file. Returns a FRESH
+ * texture on every call — the caller owns it and must dispose it itself (the
+ * volume-compare mode loads container/filler maps this way and disposes them on
+ * each pair change).
+ */
+export function loadTexture(key: string, tier: TextureTier = '2k', kind: MapKind = 'color', timeoutMs = 8000): Promise<THREE.Texture> {
   const file = PLANET_TEXTURE_FILES[key];
   if (!file) return Promise.resolve(createFallbackTexture(key, kind));
   const url = resolveTextureUrl(file, tier);
@@ -447,14 +456,16 @@ const ICY_MOONS = new Set([
   'Oberon', 'Triton', 'Charon',
 ]);
 
-function planetArchetype(planet: PlanetData): SurfaceArchetype {
+// planetArchetype/moonArchetype are exported for the volume-compare fillers,
+// so a body's night-fill + limb character match everywhere it renders.
+export function planetArchetype(planet: PlanetData): SurfaceArchetype {
   if (planet.name === 'Earth') return 'earth';
   if (planet.isGasGiant) return 'gas';
   if (planet.name === 'Mercury' || planet.name === 'Pluto') return 'airless';
   return 'rocky'; // Venus, Mars
 }
 
-function moonArchetype(moon: MoonData): SurfaceArchetype {
+export function moonArchetype(moon: MoonData): SurfaceArchetype {
   return ICY_MOONS.has(moon.name) ? 'icy' : 'airless';
 }
 
@@ -721,7 +732,15 @@ export interface MoonMesh {
   textureUpgrade?: TextureUpgrade; // 4K colour map streamed in on close approach
 }
 
-function createMoonTextures(
+/**
+ * Generate a moon's procedural colour + bump textures synchronously, without
+ * building any mesh or material — the exact classifier/noise/crater pipeline
+ * the lazy painter uses. Exported so the volume-compare mode can grab a
+ * procedural moon's colour map directly; constructing a moon mesh for its
+ * material instead would race ~60 async photo loads against disposed materials.
+ * The caller owns both returned textures and disposes them itself.
+ */
+export function createMoonTextures(
   color: number,
   name: string,
   radiusKm: number,

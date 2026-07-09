@@ -1294,6 +1294,9 @@
     .tutorial-btn-primary:hover:not(:disabled) { background: rgba(var(--accent-rgb),0.28); }
     .tutorial-btn-ghost { background: transparent; color: var(--t2); }
     .tutorial-btn-ghost:hover:not(:disabled) { background: rgba(255,255,255,0.06); color: var(--t1); }
+    /* Help-modal in-body entry button (e.g. "How many fit?") sits under its
+       teaching paragraph, so it needs a little air above it. */
+    .help-entry-btn { margin-top: 10px; }
     /* Deck-theater row pulse: the tutorial pointing at the row it is about to press. */
     @keyframes tutorial-pulse {
       0%, 100% { background: rgba(var(--accent-rgb), 0.09); }
@@ -1616,6 +1619,92 @@
       transform: translate(-50%, -50%);
       font-family: var(--font); font-size: 14px;
       color: var(--text-dim); letter-spacing: 2px;
+    }
+
+    /* ============================================= */
+    /* VOLUME COMPARE MODE ("How many fit?")         */
+    /* ============================================= */
+    /* Children anchor to #ui-overlay (the nearest positioned ancestor) exactly
+       like #planetarium-ui's, and opt back into pointer events one by one — the
+       scene fills the rest so the container itself stays click-through. */
+    #volume-compare-ui { display: none; }
+
+    /* Leave sits top-left (the mode hides the shared "MOON" wordmark while it
+       runs, so the corner is clear); it reuses the Planetarium's Leave chip. */
+    #compare-leave {
+      position: absolute;
+      top: 14px;
+      left: 14px;
+      z-index: 20;
+      pointer-events: auto;
+    }
+
+    /* Right-side readout: the sentence and the honest count. Deliberately narrow
+       and unobtrusive — the glass scene is the product. */
+    #compare-panel {
+      position: absolute;
+      top: 16px;
+      right: 16px;
+      z-index: 18;
+      width: min(272px, calc(100vw - 32px));
+      padding: 16px 18px;
+      pointer-events: auto;
+    }
+    .compare-sentence {
+      font-family: var(--font-ui);
+      font-size: 13px;
+      font-weight: 500;
+      letter-spacing: 0.2px;
+      color: var(--t2);
+      line-height: 1.4;
+    }
+    .compare-count {
+      margin-top: 10px;
+      font-family: var(--font-ui);
+      font-size: 13px;
+      color: var(--t2);
+      line-height: 1.3;
+      font-variant-numeric: tabular-nums;
+    }
+    .compare-count b {
+      font-size: 30px;
+      font-weight: 600;
+      color: var(--t1);
+      letter-spacing: 0.3px;
+    }
+    /* Sub-unity ("less than one fits") has no big number — a plain italic line. */
+    .compare-count.compare-count-sub {
+      font-size: 15px;
+      font-style: italic;
+      color: var(--t1);
+    }
+    /* In-scene loading chip during an in-mode pair swap (mode entry uses the
+       #mode-transition veil instead). Hidden until the mode shows it. */
+    .compare-loading {
+      display: none;
+      margin-top: 12px;
+      padding: 4px 10px;
+      width: fit-content;
+      border-radius: 999px;
+      background: rgba(var(--accent-rgb), 0.14);
+      border: 1px solid rgba(var(--accent-rgb), 0.3);
+      font-family: var(--font-mono);
+      font-size: 10px;
+      letter-spacing: 0.14em;
+      text-transform: uppercase;
+      color: var(--accent);
+    }
+    #compare-panel.compare-swapping .compare-loading { display: block; }
+
+    @media (max-width: 640px) {
+      /* Narrow band: the panel opposite Leave across the top. Keep it slim so
+         "Fill Jupiter with Earths" wraps rather than crowding the scene. */
+      #compare-panel {
+        top: 14px;
+        width: min(216px, calc(100vw - 128px));
+        padding: 12px 14px;
+      }
+      .compare-count b { font-size: 26px; }
     }
     /* Arrival veil: covers the scene while a quick-travel destination's moon
        textures paint, so they never pop in. .covering snaps fully opaque (no
@@ -2279,6 +2368,7 @@
         <button class="menu-action" id="planetarium-btn-save">Save</button>
         <button class="menu-action" id="planetarium-btn-new">New Journey</button>
         <button class="menu-action" id="planetarium-btn-tutorial">Tutorial</button>
+        <button class="menu-action" id="planetarium-btn-volume-compare">How many fit?</button>
         <button class="menu-action menu-action-parent" id="planetarium-btn-historic">
           <span>Historic Journeys</span>
           <span class="menu-action-chevron">&#9654;</span>
@@ -2503,6 +2593,11 @@
             <section class="help-section">
               <h4>Watch the orbits run</h4>
               <p>Click the date on the bottom bar. Speed time up and you can actually watch planets trace their orbits and moons circle their hosts. Pause, reverse, or jump to any UTC moment.</p>
+            </section>
+            <section class="help-section">
+              <h4>How many fit?</h4>
+              <p>How many Earths would fill Jupiter? Pour real planets into a glass one and find out. It's in the ☰ menu.</p>
+              <button class="tutorial-btn tutorial-btn-ghost help-entry-btn" id="help-volume-compare">How many fit?</button>
             </section>
             <p class="help-signoff">Have fun out there.</p>
           </div>
@@ -2729,6 +2824,21 @@
 
       <div id="planetarium-notification"></div>
       <div id="planetarium-loading-msg" style="position:absolute;bottom:50%;left:50%;transform:translate(-50%,50%);font-size:13px;color:var(--text-dim);letter-spacing:2px;display:none;"></div>
+    </div>
+
+    <!-- ======= VOLUME COMPARE MODE ("How many fit?") ======= -->
+    <!-- Minimal P2 shell: Leave (top-left) + a right-side readout panel. The
+         picker, slider, presets, and odometer arrive in P3. -->
+    <div id="volume-compare-ui">
+      <button class="act-btn act-leave" id="compare-leave" aria-label="Leave">
+        <svg class="act-glyph" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M11.5 5 L6.5 10 L11.5 15"></path><path d="M6.5 10 H15"></path></svg>
+        <span class="act-lbl">Leave</span>
+      </button>
+      <div id="compare-panel" class="pn pn-high">
+        <div id="compare-sentence" class="compare-sentence"></div>
+        <div id="compare-count" class="compare-count"></div>
+        <div id="compare-loading" class="compare-loading">Gathering planets…</div>
+      </div>
     </div>
   </div>
 

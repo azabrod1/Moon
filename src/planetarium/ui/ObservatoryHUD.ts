@@ -130,11 +130,17 @@ export class ObservatoryHUD {
     // Fractional coords, positioned via transform (left/top pixel-snap at
     // paint): a slow sky crawl must render sub-pixel-smooth, not twitch.
     // The dedup key quantizes to 0.1 px so steady frames still skip writes.
+    // The band-clamp Y joins the key (rounded, so it can't jitter it): the
+    // three anchored modes clamp the cluster against clusterMaxY, which
+    // render() re-measures at 8 Hz. When the sheet slides under a still target
+    // the band moves but mode/x/y/size don't, so without this the cluster
+    // would keep its stale clamp and settle onto the panel bands.
     const x = placement.xPx ?? 0;
     const y = placement.yPx ?? 0;
     const size = placement.sizePx ?? 0;
     const angle = placement.angleDeg ?? 0;
-    const css = `${placement.mode}|${x.toFixed(1)}|${y.toFixed(1)}|${size.toFixed(1)}|${angle.toFixed(1)}`;
+    const clamp = Math.round(this.clusterMaxY);
+    const css = `${placement.mode}|${x.toFixed(1)}|${y.toFixed(1)}|${size.toFixed(1)}|${angle.toFixed(1)}|${clamp}`;
     if (css === this.lastMarkerCss) return;
     this.lastMarkerCss = css;
 

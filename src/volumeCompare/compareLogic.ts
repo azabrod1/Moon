@@ -123,7 +123,8 @@ export const COMPARE_TUNABLES = {
   boulderMaxAcross: 3.1,
   /** Above this many balls across, the fill is sand (particle stream). */
   sandMinAcross: 16,
-  /** Hard cap on total rigid balls ever poured in a marble session. */
+  /** Hard cap on LIVE rigid balls in a marble session (rain melts arrivals, so the
+   *  live pile is bounded here while the poured odometer runs on toward N). */
   marbleTotalCap: 4000,
   /** Cap on simultaneously-awake rigid balls (the physics work window). */
   awakeCap: 2000,
@@ -137,6 +138,22 @@ export const COMPARE_TUNABLES = {
   autoMeltDelayS: 4,
   /** Seconds after the overflow spill starts before the end card appears. */
   endCardDelayS: 2,
+  /** Balls melted per second while the melt beat runs (the slump pace). */
+  meltPerSec: 90,
+  /** Max liquid-touching balls consumed per frame in rain mode (paces the splash tick). */
+  rainConsumePerFrame: 6,
+  /** Time constant, seconds, for the rendered liquid level easing toward its computed height. */
+  liquidEaseTau: 0.35,
+  /** Seconds spawn refusals must persist (while the pile is quiescent) before the brim beat fires. */
+  brimQuietS: 1.0,
+  /** Seconds a boulder takes to descend from the spawn height to its rest on the glass top. */
+  boulderDescentS: 1.0,
+  /** Fastest boulder melt window, seconds (used at the crowded end of the boulder band). */
+  boulderMeltMinS: 1.4,
+  /** Slowest boulder melt window, seconds (used when only one or two boulders drop — savoured). */
+  boulderMeltMaxS: 2.8,
+  /** Fraction of the current boulder's melt that must complete before the next boulder drops. */
+  boulderOverlapAt: 0.6,
 } as const;
 
 /** Balls across the container's diameter — the scale-free chunkiness measure, N^(1/3). */
@@ -198,8 +215,12 @@ function twoSigFiguresBelowOne(n: number): string {
  *   10..100      one decimal               "49.3"
  *   100..100k    integer, grouped          "1,321"
  *   100k..1M     nearest thousand, grouped 203,663 → "≈204,000"
- *   >= 1M        two-decimal millions      1,305,678 → "≈1.31 million"
- * Digit grouping matches the repo's toLocaleString('en-US') idiom.
+ *   1M..1B       two-decimal millions      1,305,678 → "≈1.31 million"
+ *   1B..1T       two-decimal billions      28,083,000,000 → "≈28.08 billion"
+ *   1T..1Q       two-decimal trillions
+ *   >= 1Q        two-decimal quadrillions
+ * The magnitude is named past a million (never "≈28083.62 million"). Digit
+ * grouping matches the repo's toLocaleString('en-US') idiom.
  */
 export function formatCount(n: number): string {
   if (n < 1) return twoSigFiguresBelowOne(n);
@@ -207,7 +228,31 @@ export function formatCount(n: number): string {
   if (n < 100) return n.toFixed(1);
   if (n < 100_000) return Math.round(n).toLocaleString('en-US');
   if (n < 1_000_000) return `≈${(Math.round(n / 1000) * 1000).toLocaleString('en-US')}`;
-  return `≈${(n / 1_000_000).toFixed(2)} million`;
+  if (n < 1e9) return `≈${(n / 1e6).toFixed(2)} million`;
+  if (n < 1e12) return `≈${(n / 1e9).toFixed(2)} billion`;
+  if (n < 1e15) return `≈${(n / 1e12).toFixed(2)} trillion`;
+  return `≈${(n / 1e15).toFixed(2)} quadrillion`;
+}
+
+/**
+ * The "⟨n⟩ across" scale-preview number: whole from 3 up ("11 across", never
+ * "11.0"), one decimal below 3 where the fraction reads ("1.2 across", "2.5
+ * across"). formatCount renders 10.97 as "11.0" — the trailing ".0" is wrong
+ * voice for this one line, so this is its own small formatter.
+ */
+export function formatAcross(across: number): string {
+  if (across >= 3) return String(Math.round(across));
+  return across.toFixed(1);
+}
+
+/**
+ * A whole-ball counter for the odometer + the packed-count stats: the value
+ * rounded to an integer with thousands separators ("8", "131", "1,321"). The
+ * ratio formatter (formatCount) is wrong here — its 1–10 band shows two
+ * decimals, but a count of eight poured balls is "8", never "8.00".
+ */
+export function formatOdometer(n: number): string {
+  return Math.round(n).toLocaleString('en-US');
 }
 
 // ---------------------------------------------------------------------------
@@ -223,6 +268,18 @@ export function sliderTargetCount(n: number, s: number): number {
   const clampedS = Math.min(1, Math.max(0, s));
   const target = n * Math.pow(clampedS, COMPARE_TUNABLES.sliderGamma);
   return Math.min(n, Math.max(0, target));
+}
+
+/**
+ * The exact inverse of sliderTargetCount: the slider fraction that lands on a
+ * given target count, clamped to [0, 1]. `s = (target / N)^(1/gamma)`. Presets
+ * use this so "fill it" and the boulders' "1" sit on the perceptual curve at
+ * exactly N and exactly 1 rather than a nearby approximation. N ≤ 0 → 0.
+ */
+export function sliderForTarget(n: number, target: number): number {
+  if (n <= 0) return 0;
+  const frac = Math.min(1, Math.max(0, target / n));
+  return Math.pow(frac, 1 / COMPARE_TUNABLES.sliderGamma);
 }
 
 export interface PourBudget {
@@ -253,18 +310,22 @@ export interface SpawnCaps {
 
 /**
  * How many more balls may spawn this step, respecting the slider target, the
- * total-poured cap, and the awake-window cap — never negative, always a whole
+ * live-pile cap, and the awake-window cap — never negative, always a whole
  * count. Mobile callers pre-scale the caps by mobileCapScale before passing
- * them in.
+ * them in. `poured` is the odometer (bounded by the target); `live` is the
+ * count of live rigid balls, which the total cap guards — they diverge in rain
+ * mode where arrivals melt away so the odometer runs past the live pile. `live`
+ * defaults to `poured`, preserving the pre-rain single-count behavior.
  */
 export function spawnAllowance(
   target: number,
   poured: number,
   awake: number,
   caps: SpawnCaps,
+  live: number = poured,
 ): number {
   const byTarget = target - poured;
-  const byTotal = caps.total - poured;
+  const byTotal = caps.total - live;
   const byAwake = caps.awake - awake;
   return Math.max(0, Math.floor(Math.min(byTarget, byTotal, byAwake)));
 }
@@ -276,6 +337,25 @@ export function spawnAllowance(
  */
 export function drainTarget(sliderCount: number, meltedCount: number): number {
   return Math.max(sliderCount, meltedCount);
+}
+
+/** The boulders' fractional target lands within float error of the melted
+ *  volume; a real slider nudge always exceeds this, so it can't strand a pour. */
+const BOULDER_TARGET_EPS = 1e-3;
+
+/**
+ * Whether the poured amount has reached the slider target for this regime — the
+ * settling phase pours again while this is false, and the ghost target ring
+ * retires once it is true. Marbles pour WHOLE balls, so the goal is the integer
+ * floor(target): a fractional target (287.6) is satisfied at 287, and comparing
+ * against the floor (never target − 0.5) is what stops the settling⇄pouring
+ * ping-pong. Boulders melt a FRACTIONAL volume, so the goal is the fractional
+ * target within an epsilon — "half" of a 1.73-boulder pair (0.865) must pour and
+ * hold mid-slump, and a mid-band increase (0.3 → 0.7) must pour the delta.
+ */
+export function targetReached(target: number, poured: number, regime: FillRegime): boolean {
+  if (regime === 'boulders') return poured >= target - BOULDER_TARGET_EPS;
+  return poured >= Math.floor(target);
 }
 
 // ---------------------------------------------------------------------------
@@ -344,12 +424,21 @@ export type CompareEvent =
  * (a pair change or ⇄ swap resets the session, and is the generation bump);
  * every other jump not drawn here is illegal. `pickerOpen` is an overlay flag,
  * not a phase — the pour keeps running under the picker.
+ *
+ * Boulders and sand never pack, so they never hit the brim/melt/rain arc: the
+ * last body settling at target = N completes the fill straight from `pouring`
+ * (the `pouring → fill-complete → complete` edge), skipping the marble reconcile.
  */
 const PHASE_TABLE: Readonly<Record<ComparePhase, Partial<Record<CompareEvent, ComparePhase>>>> = {
   idle: { commit: 'loading' },
   loading: { commit: 'loading', ready: 'settling' },
   settling: { commit: 'loading', pour: 'pouring' },
-  pouring: { commit: 'loading', 'target-met': 'settling', 'brim-hit': 'brim' },
+  pouring: {
+    commit: 'loading',
+    'target-met': 'settling',
+    'brim-hit': 'brim',
+    'fill-complete': 'complete',
+  },
   brim: { commit: 'loading', 'melt-start': 'melting' },
   melting: { commit: 'loading', 'melt-open': 'raining' },
   raining: { commit: 'loading', 'fill-complete': 'complete' },
@@ -466,3 +555,77 @@ export const TRY_NEXT: ReadonlyArray<TryNextPair> = [
   { container: 'Jupiter', filler: 'Saturn' },
   { container: 'Earth', filler: 'Jupiter' },
 ];
+
+// ---------------------------------------------------------------------------
+// Prose helpers + end-card model
+// ---------------------------------------------------------------------------
+
+/**
+ * Prose name with Earth's Moon's article ("the Moon" — "poured into the Moon");
+ * every proper-named body stays bare. Restated here rather than imported from
+ * surfaceView so this module stays three-free (surfaceView pulls in three.js).
+ */
+export function bodyDisplayName(name: string): string {
+  return name === 'Moon' ? 'the Moon' : name;
+}
+
+/** English plural of a body name: +es after a sibilant ending, else +s. */
+export function pluralizeBody(name: string): string {
+  return /(?:s|x|z|ch|sh)$/i.test(name) ? `${name}es` : `${name}s`;
+}
+
+export interface EndCardTryRow {
+  container: string;
+  filler: string;
+  /** "49 Moons in Earth" — live count + the pour phrasing. */
+  text: string;
+}
+
+export interface EndCardModel {
+  /** "1,321 Earths fit inside Jupiter". */
+  headline: string;
+  /** The spheres-vs-volume dual stat, or null for boulders (they never pack). */
+  dualStat: string | null;
+  /** The density kicker, or null unless both bodies have a listed mass. */
+  kicker: string | null;
+  /** The curated Try-next rows with live counts. */
+  tryNext: EndCardTryRow[];
+}
+
+/**
+ * The end-card copy for a finished fill: the headline count, the packed-vs-melted
+ * dual stat (from the BrimStats captured when the brim beat fired — null for
+ * boulders/sand, which never pack), the density kicker when both masses are
+ * known, and the six Try-next rows with counts computed live. Pure string/number
+ * work; the panel renders it.
+ */
+export function endCardModel(
+  container: string,
+  filler: string,
+  comparison: Comparison,
+  brim: BrimStats | null,
+): EndCardModel {
+  const fillers = pluralizeBody(filler);
+  const headline = `${formatCount(comparison.n)} ${fillers} fit inside ${bodyDisplayName(container)}`;
+
+  const dualStat = brim
+    ? `As solid spheres: ${formatOdometer(brim.packedCount)} fit (${brim.packedPct}%) — melted, all ${brim.ratioText} do.`
+    : null;
+
+  const mass = massRatioText(container, filler);
+  const kicker = mass
+    ? `${bodyDisplayName(container)} holds the volume of ${formatCount(comparison.n)} ${fillers} — but only the mass of ${mass}.`
+    : null;
+
+  // Never offer the pair the player just poured (exact container+filler match);
+  // the swapped direction may still appear (it's a different comparison).
+  const tryNext = TRY_NEXT.filter(
+    (pair) => !(pair.container === container && pair.filler === filler),
+  ).map((pair) => ({
+    container: pair.container,
+    filler: pair.filler,
+    text: `${formatCount(buildComparison(pair.container, pair.filler).n)} ${pluralizeBody(pair.filler)} in ${bodyDisplayName(pair.container)}`,
+  }));
+
+  return { headline, dualStat, kicker, tryNext };
+}

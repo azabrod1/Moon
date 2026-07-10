@@ -1695,16 +1695,154 @@
       color: var(--accent);
     }
     #compare-panel.compare-swapping .compare-loading { display: block; }
+    /* Reset is inert while a pair load is in flight (the mode ignores it too). */
+    #compare-panel.compare-swapping .compare-reset { opacity: 0.4; pointer-events: none; }
+
+    /* Sentence body chips — tappable body names that open the picker. */
+    .compare-chip {
+      display: inline; font: inherit; color: var(--t1); font-weight: 600;
+      background: none; border: none; border-bottom: 1px dashed rgba(255,255,255,0.28);
+      padding: 0 1px; cursor: pointer; -webkit-tap-highlight-color: transparent;
+    }
+    .compare-chip:hover { color: #fff; border-bottom-color: var(--accent); }
+    .compare-swap {
+      display: inline-flex; align-items: center; justify-content: center;
+      width: 22px; height: 20px; margin-left: 4px; vertical-align: -4px;
+      background: none; border: 1px solid var(--line); border-radius: var(--r-s);
+      color: var(--t2); font-size: 12px; cursor: pointer; line-height: 1;
+      -webkit-tap-highlight-color: transparent; transition: color 0.14s var(--ease), border-color 0.14s var(--ease);
+    }
+    .compare-swap:hover { color: var(--t1); border-color: var(--accent); }
+    /* Sub-unity teaser line ("the other way round: 1,321 fit — tap ⇄"). */
+    .compare-teaser {
+      display: none; margin-top: 10px; font-size: 12px; line-height: 1.4;
+      color: var(--t2); cursor: pointer;
+    }
+    .compare-teaser.on { display: block; }
+    .compare-teaser b { color: var(--t1); }
+    /* Sand-regime note (the pour-by-one is a later pass) — keeps the panel alive
+       so a sand pair is never a dead end; swap/picker stay on the sentence. */
+    .compare-note { display: none; margin-top: 10px; font-size: 12px; line-height: 1.45; color: var(--t3); }
+    .compare-note.on { display: block; }
+
+    /* Pour controls — hidden for sub-unity / non-pourable regimes. */
+    .compare-pour { display: block; margin-top: 14px; }
+    .compare-pour.off { display: none; }
+    .compare-odo {
+      display: flex; align-items: baseline; gap: 8px; min-height: 20px;
+      font-variant-numeric: tabular-nums;
+    }
+    .compare-odo b { font-size: 15px; font-weight: 600; color: var(--t1); }
+    .compare-status { font-size: 11px; color: var(--t3); letter-spacing: 0.2px; }
+    .compare-slider-row { display: flex; align-items: center; gap: 10px; margin-top: 8px; }
+    .compare-slider {
+      -webkit-appearance: none; appearance: none; flex: 1; height: 6px; border-radius: 999px;
+      background: rgba(255,255,255,0.10); outline: none; cursor: pointer;
+    }
+    .compare-slider::-webkit-slider-thumb {
+      -webkit-appearance: none; appearance: none; width: 15px; height: 15px; border-radius: 50%;
+      background: #fff; border: 2px solid rgba(0,0,0,0.35); box-shadow: 0 0 6px rgba(0,0,0,0.5); cursor: pointer;
+    }
+    .compare-slider::-moz-range-thumb {
+      width: 15px; height: 15px; border-radius: 50%; background: #fff; border: 2px solid rgba(0,0,0,0.35); cursor: pointer;
+    }
+    .compare-reset {
+      flex: none; background: none; border: none; color: var(--t3); font-size: 11px;
+      cursor: pointer; padding: 2px 4px; -webkit-tap-highlight-color: transparent;
+    }
+    .compare-reset:hover { color: var(--t1); }
+    .compare-presets { display: flex; gap: 6px; margin-top: 9px; }
+    .compare-preset {
+      flex: 1; padding: 5px 4px; border-radius: var(--r-s); border: 1px solid var(--line);
+      background: rgba(255,255,255,0.02); color: var(--t2); font-family: var(--font-ui);
+      font-size: 11px; cursor: pointer; -webkit-tap-highlight-color: transparent;
+      transition: background 0.14s var(--ease), color 0.14s var(--ease);
+    }
+    .compare-preset:hover { background: rgba(255,255,255,0.06); color: var(--t1); }
+    /* Melt affordance — appears + pulses at the brim (telescope-chip idiom). */
+    .compare-melt {
+      display: none; width: 100%; margin-top: 11px; padding: 8px; border-radius: var(--r-m);
+      border: 1px solid rgba(var(--ember-rgb), 0.5); background: rgba(var(--ember-rgb), 0.14);
+      color: var(--ember); font-family: var(--font-ui); font-size: 13px; font-weight: 600;
+      letter-spacing: 0.3px; cursor: pointer; -webkit-tap-highlight-color: transparent;
+    }
+    .compare-melt.on { display: block; }
+    .compare-melt.pulse { animation: obs-pulse 1.6s ease-in-out infinite; }
+    .compare-foot { margin-top: 12px; }
+
+    /* Body picker modal (deck-row family; full-screen click-catcher) */
+    #compare-picker { display: none; position: fixed; inset: 0; z-index: 40; align-items: center; justify-content: center; pointer-events: auto; }
+    #compare-picker.visible { display: flex; }
+    .compare-picker-card {
+      width: min(340px, calc(100vw - 32px)); max-height: min(70vh, 560px);
+      display: flex; flex-direction: column; overflow: hidden;
+    }
+    .compare-picker-head { display: flex; align-items: center; justify-content: space-between; padding: 14px 16px 6px; }
+    .compare-picker-title { font-size: 13px; color: var(--t2); line-height: 1.4; }
+    .compare-picker-title b { color: var(--accent); font-weight: 600; }
+    .compare-picker-card .pk-x { background: none; border: none; color: var(--t3); cursor: pointer; padding: 2px; }
+    .compare-picker-card .pk-x:hover { color: var(--t1); }
+    .compare-picker-card .pk-x svg { width: 15px; height: 15px; }
+    /* Picker rows are <button>s: strip the UA button chrome, or every non-header
+       row renders as a light ButtonFace pill — a white-on-white Sun row and
+       moons that scan as disabled. :where() keeps this at one-class specificity
+       so the pk-planet sticky background and the pk-row hover states (later in
+       the sheet) still win. */
+    .compare-picker-card :where(.pk-row) {
+      border: none; background: none; width: 100%;
+      font-family: var(--font-ui); text-align: left;
+    }
+    /* Role pill on the already-committed body (never "here" — it's not a place). */
+    .pk-tag-role {
+      flex: none; font-family: var(--font-mono); font-size: 8px; letter-spacing: 0.14em;
+      color: var(--t3); text-transform: uppercase; padding: 2px 6px;
+      border: 1px solid var(--line); border-radius: 999px;
+    }
+
+    /* End card — a LEFT-DOCKED plaque, not a centered modal, so it never covers
+       the filled vessel (the payoff). The backdrop is pointer-events:none so the
+       vessel behind it stays orbitable while the card is up; dismiss is ✕ / Esc. */
+    #compare-endcard { display: none; position: fixed; inset: 0; z-index: 42; align-items: center; justify-content: flex-start; pointer-events: none; }
+    #compare-endcard.visible { display: flex; }
+    .compare-endcard-card {
+      position: relative; margin-left: 24px; width: min(380px, calc(100vw - 48px)); max-height: min(84vh, 640px);
+      overflow-y: auto; padding: 24px 26px; text-align: left; pointer-events: auto;
+    }
+    .compare-endcard-close { position: absolute; top: 12px; right: 12px; background: none; border: none; color: var(--t3); cursor: pointer; padding: 2px; }
+    .compare-endcard-close:hover { color: var(--t1); }
+    .compare-endcard-close svg { width: 16px; height: 16px; }
+    .compare-endcard-headline { font-family: var(--font-ui); font-size: 22px; font-weight: 600; color: var(--t1); line-height: 1.25; margin: 0 30px 12px 0; letter-spacing: 0.2px; }
+    .compare-endcard-dual { font-size: 13px; line-height: 1.5; color: var(--t2); margin-bottom: 8px; }
+    .compare-endcard-kicker { font-size: 12.5px; line-height: 1.5; color: var(--t3); margin-bottom: 16px; }
+    .compare-endcard-trylabel { font-size: 10px; letter-spacing: 0.16em; text-transform: uppercase; color: var(--t3); margin-bottom: 6px; }
+    .compare-endcard-rows { display: flex; flex-direction: column; gap: 2px; margin-bottom: 14px; }
+    .compare-endcard-rows .pk-row { border: none; background: none; width: 100%; font-family: var(--font-ui); text-align: left; }
+    .compare-endcard-rows .pk-row .pk-info small { color: var(--t2); font-variant-numeric: tabular-nums; }
+    .compare-endcard-again {
+      width: 100%; padding: 9px; border-radius: var(--r-m); border: 1px solid var(--line);
+      background: rgba(255,255,255,0.03); color: var(--t1); font-family: var(--font-ui);
+      font-size: 13px; cursor: pointer; -webkit-tap-highlight-color: transparent;
+    }
+    .compare-endcard-again:hover { background: rgba(255,255,255,0.07); }
 
     @media (max-width: 640px) {
       /* Narrow band: the panel opposite Leave across the top. Keep it slim so
          "Fill Jupiter with Earths" wraps rather than crowding the scene. */
       #compare-panel {
         top: 14px;
-        width: min(216px, calc(100vw - 128px));
+        width: min(248px, calc(100vw - 108px));
         padding: 12px 14px;
+        max-height: calc(100vh - 28px);
+        overflow-y: auto;
       }
       .compare-count b { font-size: 26px; }
+      /* End card becomes a bottom sheet — vessel visible in the band above. */
+      #compare-endcard { align-items: flex-end; justify-content: center; }
+      .compare-endcard-card {
+        margin-left: 0; width: 100%; max-width: 100%; max-height: 55vh;
+        padding: 20px; border-radius: var(--r-l) var(--r-l) 0 0;
+      }
+      .compare-endcard-headline { font-size: 19px; }
     }
     /* Arrival veil: covers the scene while a quick-travel destination's moon
        textures paint, so they never pop in. .covering snaps fully opaque (no
@@ -2827,17 +2965,73 @@
     </div>
 
     <!-- ======= VOLUME COMPARE MODE ("How many fit?") ======= -->
-    <!-- Minimal P2 shell: Leave (top-left) + a right-side readout panel. The
-         picker, slider, presets, and odometer arrive in P3. -->
+    <!-- Leave (top-left) + a right-side control panel (sentence with body chips,
+         honest count, slider + presets + odometer, brim/melt affordance, auto-melt
+         toggle), plus a body picker modal and the end card. -->
     <div id="volume-compare-ui">
       <button class="act-btn act-leave" id="compare-leave" aria-label="Leave">
         <svg class="act-glyph" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M11.5 5 L6.5 10 L11.5 15"></path><path d="M6.5 10 H15"></path></svg>
         <span class="act-lbl">Leave</span>
       </button>
       <div id="compare-panel" class="pn pn-high">
-        <div id="compare-sentence" class="compare-sentence"></div>
+        <div id="compare-sentence" class="compare-sentence">
+          <span>Fill </span><button type="button" class="compare-chip" id="compare-chip-container"></button><span> with </span><button type="button" class="compare-chip" id="compare-chip-filler"></button>
+          <button type="button" class="compare-swap" id="compare-swap" title="Swap the two bodies" aria-label="Swap">&#x21C4;</button>
+        </div>
         <div id="compare-count" class="compare-count"></div>
+        <div id="compare-teaser" class="compare-teaser"></div>
+        <div id="compare-note" class="compare-note"></div>
+        <div id="compare-pour" class="compare-pour">
+          <div class="compare-odo"><b id="compare-odometer">0</b><span id="compare-status" class="compare-status"></span></div>
+          <div class="compare-slider-row">
+            <input type="range" id="compare-slider" class="compare-slider" min="0" max="1" step="0.001" value="0" aria-label="How much to pour">
+            <button type="button" class="compare-reset" id="compare-reset">Reset</button>
+          </div>
+          <div id="compare-presets" class="compare-presets"></div>
+          <button type="button" class="compare-melt" id="compare-melt">Melt</button>
+          <!-- Input-first labelable (see the Observatory footer): the checkbox
+               precedes the ⓘ so a row/pill tap flips the toggle, not the info. -->
+          <label class="obs-foot compare-foot" id="compare-automelt-row">
+            <input type="checkbox" id="compare-automelt-toggle" checked>
+            <span class="obs-footlbl">Auto-melt<button type="button" class="obs-info" id="compare-automelt-info" aria-expanded="false" aria-controls="compare-automelt-explain" aria-label="What is auto-melt?">i</button></span>
+            <span class="obs-tgl" aria-hidden="true"></span>
+          </label>
+          <div class="obs-explain" id="compare-automelt-explain" style="display:none">Solid spheres always leave gaps &mdash; around 40% of the space between them. Melting the spheres lets the true volume fit, so the count can reach the honest number.</div>
+        </div>
         <div id="compare-loading" class="compare-loading">Gathering planets…</div>
+      </div>
+
+      <!-- Body picker (full-screen click-catcher; one-modal-at-a-time) -->
+      <div id="compare-picker">
+        <div class="compare-picker-card pn pn-high">
+          <div class="compare-picker-head">
+            <div class="compare-picker-title" id="compare-picker-title"></div>
+            <button class="pk-x" id="compare-picker-close" aria-label="Close">
+              <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5.5 5.5 L14.5 14.5 M14.5 5.5 L5.5 14.5"></path></svg>
+            </button>
+          </div>
+          <div class="pk-search">
+            <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><circle cx="9" cy="9" r="5.5"></circle><path d="M13.5 13.5 L17 17" stroke-linecap="round"></path></svg>
+            <input id="compare-picker-search" type="text" placeholder="Search bodies" autocomplete="off" spellcheck="false">
+          </div>
+          <div class="pk-list" id="compare-picker-list"></div>
+          <div class="pk-empty" id="compare-picker-empty">No bodies match.</div>
+        </div>
+      </div>
+
+      <!-- End card -->
+      <div id="compare-endcard">
+        <div class="compare-endcard-card pn pn-high">
+          <button class="pk-x compare-endcard-close" id="compare-endcard-close" aria-label="Close">
+            <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5.5 5.5 L14.5 14.5 M14.5 5.5 L5.5 14.5"></path></svg>
+          </button>
+          <h2 class="compare-endcard-headline" id="compare-endcard-headline"></h2>
+          <div class="compare-endcard-dual" id="compare-endcard-dual"></div>
+          <div class="compare-endcard-kicker" id="compare-endcard-kicker"></div>
+          <div class="compare-endcard-trylabel">Try next</div>
+          <div class="compare-endcard-rows" id="compare-endcard-rows"></div>
+          <button type="button" class="compare-endcard-again" id="compare-endcard-again">Pour again</button>
+        </div>
       </div>
     </div>
   </div>

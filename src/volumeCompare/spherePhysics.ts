@@ -325,16 +325,33 @@ export class SpherePhysics {
     this.mouthPlaneY = mouth.mouthPlaneY;
 
     this.cell = 2 * radius; // one diameter
-    const margin = this.cell;
-    this.minX = -(containerR + margin);
-    this.minY = -(containerR + margin);
-    this.minZ = -(containerR + margin);
-    const maxX = containerR + margin;
-    const maxY = SPAWN_Y + margin;
-    const maxZ = containerR + margin;
-    this.nx = Math.max(1, Math.ceil((maxX - this.minX) / this.cell));
-    this.ny = Math.max(1, Math.ceil((maxY - this.minY) / this.cell));
-    this.nz = Math.max(1, Math.ceil((maxZ - this.minZ) / this.cell));
+    // Defensive cap on the uniform grid: a pathologically small radius (the
+    // extreme-ratio sand pairs never reach the solver, but guard the allocation
+    // regardless) would size the grid to billions of cells and throw on the
+    // Int32Array. Coarsen the cell until the count is bounded; every real ball
+    // radius yields a few thousand cells and never trips the cap, so the normal
+    // grid is unchanged.
+    const MAX_CELLS = 4_000_000;
+    let nx = 1;
+    let ny = 1;
+    let nz = 1;
+    for (let guard = 0; guard < 64; guard++) {
+      const margin = this.cell;
+      this.minX = -(containerR + margin);
+      this.minY = -(containerR + margin);
+      this.minZ = -(containerR + margin);
+      const maxX = containerR + margin;
+      const maxY = SPAWN_Y + margin;
+      const maxZ = containerR + margin;
+      nx = Math.max(1, Math.ceil((maxX - this.minX) / this.cell));
+      ny = Math.max(1, Math.ceil((maxY - this.minY) / this.cell));
+      nz = Math.max(1, Math.ceil((maxZ - this.minZ) / this.cell));
+      if (nx * ny * nz <= MAX_CELLS) break;
+      this.cell *= Math.cbrt((nx * ny * nz) / MAX_CELLS) * 1.05; // coarsen + a hair
+    }
+    this.nx = nx;
+    this.ny = ny;
+    this.nz = nz;
     const nCells = this.nx * this.ny * this.nz;
     this.cellStart = new Int32Array(nCells + 1);
     this.cellCount = new Int32Array(nCells);

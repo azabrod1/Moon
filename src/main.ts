@@ -399,9 +399,14 @@ function installDevHooks() {
     compareScatter: (n: number) => volumeCompareMode?.devScatter(n) ?? false,
     compareOrbit: (azimuthDeg: number, elevationDeg?: number) =>
       volumeCompareMode?.devOrbit(azimuthDeg, elevationDeg) ?? false,
-    // Honest stubs — the pour/melt land in P3 (the methods return false today).
+    // The pour (P3): slider, presets, melt, auto-melt, reset, Esc cascade, end card.
     compareSlider: (f: number) => volumeCompareMode?.devSlider(f) ?? false,
     compareMelt: () => volumeCompareMode?.devMelt() ?? false,
+    compareAutoMelt: (on: boolean) => volumeCompareMode?.devAutoMelt(on) ?? false,
+    comparePreset: (key: string) => volumeCompareMode?.devPreset(key) ?? false,
+    compareReset: () => volumeCompareMode?.devReset() ?? false,
+    compareEsc: () => volumeCompareMode?.devEsc(),
+    compareEndCard: () => volumeCompareMode?.devEndCard() ?? null,
     // Mode-agnostic leak probe for the enter/exit heap check.
     rendererInfo: () => ({
       geometries: renderer.info.memory.geometries,

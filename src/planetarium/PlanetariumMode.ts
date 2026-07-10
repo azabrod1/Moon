@@ -3363,6 +3363,17 @@ export class PlanetariumMode {
     this.closeSurfaceTargetMenu();
     this.buildToolsMenu();
     menu.classList.add('visible');
+    // Anchor the card under the Tools button. Measured after .visible (a
+    // display:none card has no width) and clamped to the viewport — on narrow
+    // phones the button sits further left than the card can follow.
+    const card = menu.querySelector<HTMLElement>('.tools-card');
+    const btn = document.getElementById('planetarium-btn-tools');
+    if (card && btn) {
+      const rect = btn.getBoundingClientRect();
+      const left = Math.min(Math.max(rect.left, 14), window.innerWidth - card.offsetWidth - 14);
+      card.style.left = `${left}px`;
+      card.style.right = 'auto';
+    }
   }
 
   private closeToolsMenu() {

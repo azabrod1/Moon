@@ -38,7 +38,27 @@ const FAINT_FADE_RANGE_MAG = 1.6; // fade-ramp width (mags up to the faint limit
 const FAINT_MIN_ALPHA = 0.45; // opacity of the faintest stars (never 0 — keep a hint)
 const FAINT_MIN_SIZE_SCALE = 0.8; // faintest stars shrink to this × base size (then clamped >= 1px)
 
-export function createPlanetariumStarfield(): THREE.Points {
+/**
+ * gl_PointSize is in framebuffer pixels, so a star that should read as N CSS px
+ * must be sized N × the renderer's pixel ratio — the ratio the canvas is
+ * actually drawn at, NOT window.devicePixelRatio (which the desktop renderer
+ * clamps up to 1.5 and down to 2.5, so a DPR-1 desktop draws at 1.5× while
+ * naive DPR sizing left the whole tuned hierarchy ~33% small). The ≤2 cap keeps
+ * the point-size tuning: the sizes above were dialled against a ratio of 2.
+ */
+function starPixelRatio(rendererPixelRatio: number): number {
+  return Math.min(rendererPixelRatio, 2);
+}
+
+/** Retune the star point size when the renderer's pixel ratio changes (DPR /
+ *  monitor change, or a resize that reclamps it). */
+export function setStarfieldPixelRatio(starfield: THREE.Points, rendererPixelRatio: number): void {
+  const mat = starfield.material as THREE.ShaderMaterial;
+  const uniform = mat.uniforms?.pixelRatio;
+  if (uniform) uniform.value = starPixelRatio(rendererPixelRatio);
+}
+
+export function createPlanetariumStarfield(rendererPixelRatio: number): THREE.Points {
   // Filter out Sol (rendered as 3D mesh)
   const catalog = BRIGHT_STAR_CATALOG.filter((s) => s.magnitude > -10);
   const starCount = catalog.length;
@@ -94,7 +114,7 @@ export function createPlanetariumStarfield(): THREE.Points {
   // Custom shader for per-vertex star size + opacity
   const mat = new THREE.ShaderMaterial({
     uniforms: {
-      pixelRatio: { value: Math.min(window.devicePixelRatio, 2) },
+      pixelRatio: { value: starPixelRatio(rendererPixelRatio) },
     },
     vertexShader: `
         attribute float size;

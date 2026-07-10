@@ -72,7 +72,7 @@ import { ShadowVisuals, type GuideSlotInput } from './world/ShadowVisuals';
 import { OBSERVATORY_JUMP_LEAD_MS, stepperSearchFromUtcMs } from './observatoryTime';
 import { findEvent, type EventType } from '../astronomy/ephemeris';
 import { KM_PER_AU } from '../astronomy/constants';
-import { createPlanetariumStarfield } from './world/starfield';
+import { createPlanetariumStarfield, setStarfieldPixelRatio } from './world/starfield';
 import { MoonPainter } from './world/MoonPainter';
 import { ProceduralMoonTexturer } from './world/ProceduralMoonTexturer';
 import { captureDeviceTextureCaps } from './world/texturePolicy';
@@ -1008,7 +1008,7 @@ export class PlanetariumMode {
     // Create the Planetarium starfield.
     if (!this.starfield) {
       performance.mark('plm:starfield:start');
-      this.starfield = createPlanetariumStarfield();
+      this.starfield = createPlanetariumStarfield(this.renderer.getPixelRatio());
       this.scene.add(this.starfield);
       performance.measure('plm:starfield', 'plm:starfield:start');
     }
@@ -1200,6 +1200,13 @@ export class PlanetariumMode {
     this.player.group.visible = visible && this.showShip;
     if (this.starfield) this.starfield.visible = visible;
     if (this.constellations) this.constellations.setVisible(visible && this.showConstellations);
+  }
+
+  /** Called by main.ts after it reapplies the render resolution on a window
+   *  resize (which may reclamp the renderer's pixel ratio). Star point sizes
+   *  track the renderer's ratio, so retune them to the new value. */
+  onResize(): void {
+    if (this.starfield) setStarfieldPixelRatio(this.starfield, this.renderer.getPixelRatio());
   }
 
   update(dt: number): void {

@@ -391,6 +391,9 @@ window.addEventListener('resize', () => {
   flightCamera.updateProjectionMatrix();
   moonFlightMode?.onResize(w / h);
   applyRenderResolution();
+  // After the renderer's pixel ratio is (re)applied: retune star point sizes,
+  // which are scaled by the renderer's ratio.
+  planetariumMode?.onResize();
   debugLog('Resize', { width: w, height: h });
 });
 

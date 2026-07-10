@@ -110,7 +110,7 @@ export interface MoonPosition {
 /**
  * Simplified Moon position (Meeus Ch. 47, reduced terms).
  * Uses the main periodic terms for longitude, latitude, and distance.
- * Measured at the Meeus 47.a worked example: +0.0009° lon, +0.0105° lat,
+ * Measured at the Meeus 47.a worked example: +0.0009° lon, +0.00008° lat,
  * −5 km (see ephemeris.test.ts).
  */
 export function moonPosition(jd: number): MoonPosition {
@@ -197,9 +197,9 @@ export function moonPosition(jd: number): MoonPosition {
   sumB += 17198 * Math.sin(2 * Mpr + Fr);                  // 2M' + F
   sumB += 9266 * Math.sin(2 * Dr + Mpr - Fr);              // 2D + M' - F
   sumB += 8822 * Math.sin(2 * Mpr - Fr);                   // 2M' - F
-  sumB += -8143 * Math.sin(2 * Dr - Mr - Fr);              // 2D - M - F
-  sumB += 4120 * Math.sin(2 * Dr - Mr + Fr) * -1;          // −4120·sin(2D − M + F)
-  sumB += -3958 * Math.sin(Mr + Fr) * -1;
+  sumB += 8216 * Math.sin(2 * Dr - Mr - Fr);               // 2D - M - F (E simplified)
+  sumB += 4324 * Math.sin(2 * Dr - 2 * Mpr - Fr);          // 2D - 2M' - F
+  sumB += 4200 * Math.sin(2 * Dr + Mpr + Fr);              // 2D + M' + F
 
   // Distance terms (main from Meeus Table 47.A)
   let sumR = 0;

@@ -354,6 +354,7 @@ async function init() {
 
   function animate() {
     requestAnimationFrame(animate);
+    syncViewportIfDrifted();
     const now = performance.now();
     const dt = Math.min((now - lastTime) / 1000, 0.1); // cap at 100ms to avoid huge jumps
     lastTime = now;
@@ -380,11 +381,20 @@ async function init() {
 }
 
 // ================================================================
-// Resize handler
+// Viewport sync
 // ================================================================
-window.addEventListener('resize', () => {
+// The dimensions the cameras/renderer were last synced to. The per-frame
+// drift check below compares live viewport values against these, so viewport
+// changes that never deliver a resize event still get applied.
+let appliedViewportW = window.innerWidth;
+let appliedViewportH = window.innerHeight;
+
+function syncViewport() {
   const w = window.innerWidth;
   const h = window.innerHeight;
+  if (w === 0 || h === 0) return; // hidden/backgrounded states can report zeros
+  appliedViewportW = w;
+  appliedViewportH = h;
   planetariumCamera.aspect = w / h;
   planetariumCamera.updateProjectionMatrix();
   flightCamera.aspect = w / h;
@@ -395,7 +405,25 @@ window.addEventListener('resize', () => {
   // which are scaled by the renderer's ratio.
   planetariumMode?.onResize();
   debugLog('Resize', { width: w, height: h });
-});
+}
+
+window.addEventListener('resize', syncViewport);
+
+// iOS Safari changes the viewport without a resize event this app can count
+// on (URL-bar collapse on a non-scrolling page, keyboard dismissal, the
+// post-rotation settle), and a camera left on a stale aspect draws every
+// disc as an ellipse. Called from the animation loop: plain property reads,
+// no layout, and the aspect term re-arms the sync even if some other path
+// ever clobbers a camera.
+function syncViewportIfDrifted() {
+  if (
+    window.innerWidth !== appliedViewportW ||
+    window.innerHeight !== appliedViewportH ||
+    camera.aspect !== appliedViewportW / appliedViewportH
+  ) {
+    syncViewport();
+  }
+}
 
 // ================================================================
 // Start

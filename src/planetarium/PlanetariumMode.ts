@@ -7506,7 +7506,13 @@ export class PlanetariumMode {
         .copy(state.sunDirection)
         .applyQuaternion(this.tmpInvGroupQuat.copy(planet.group.quaternion).invert());
       if (planet.nightMaterial) {
-        planet.nightMaterial.uniforms.sunDirection.value.copy(localSunDir);
+        // The night-lights shader turns sunDirection into view space with the
+        // viewMatrix alone, then compares it against a world-space surface
+        // normal (normalMatrix * normal) — so it needs the WORLD sun direction,
+        // not the object-space localSunDir the ring/surface uniforms take.
+        // Feeding it localSunDir double-rotates the mask, drifting city lights
+        // onto the daylit hemisphere as Earth spins.
+        planet.nightMaterial.uniforms.sunDirection.value.copy(state.sunDirection);
       }
       if (planet.fx) {
         planet.fx.uSunDirWorld.value.copy(state.sunDirection);

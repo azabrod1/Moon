@@ -1376,6 +1376,8 @@ export class PlanetariumMode {
       this.updateTimeUI();
       this.updateSpeedSlider();
     }
+
+    if (import.meta.env.DEV && this.devTraceMesh) this.devTraceRecord();
   }
 
   private applyFloatingOrigin() {
@@ -4837,6 +4839,84 @@ export class PlanetariumMode {
       devFree: this.devFreeCamera,
       userOrbiting: this.userOrbiting,
     };
+  }
+
+  // --- Dev motion trace: one render-truth sample per cruise frame, for motion
+  // forensics (stutter hunting). The buffer is preallocated and the recorder
+  // never allocates mid-flight — a GC pause is one of the suspects it exists
+  // to catch, so it must not cause any itself.
+  private devTraceBuf: Float64Array | null = null;
+  private devTraceCount = 0;
+  private devTraceMax = 0;
+  private devTraceMesh: THREE.Mesh | null = null;
+  private static readonly DEV_TRACE_FIELDS = [
+    't', 'simMs', 'scrX', 'scrY', 'ndcZ',
+    'camX', 'camY', 'camZ', 'moonX', 'moonY', 'moonZ',
+    'speedAUPerS', 'capAUPerS',
+  ] as const;
+  private devTraceWorld = new THREE.Vector3();
+  private devTraceProj: ScreenProjection = { x: 0, y: 0, ndcX: 0, ndcY: 0, ndcZ: 0 };
+
+  /** Start recording per-frame samples of a moon's rendered state. */
+  devTraceStart(name: string, maxFrames = 3600): boolean {
+    let mesh: THREE.Mesh | null = null;
+    for (const moons of this.planetMoons.values()) {
+      const m = moons.find((mm) => mm.data.name === name);
+      if (m) { mesh = m.mesh; break; }
+    }
+    if (!mesh) return false;
+    this.devTraceMesh = mesh;
+    this.devTraceMax = maxFrames;
+    this.devTraceCount = 0;
+    const n = PlanetariumMode.DEV_TRACE_FIELDS.length;
+    if (!this.devTraceBuf || this.devTraceBuf.length < maxFrames * n) {
+      this.devTraceBuf = new Float64Array(maxFrames * n);
+    }
+    return true;
+  }
+
+  /** Stop and return the recorded rows (layout = DEV_TRACE_FIELDS). */
+  devTraceStop(): { fields: readonly string[]; rows: number[][] } | null {
+    const buf = this.devTraceBuf;
+    if (!buf) return null;
+    const n = PlanetariumMode.DEV_TRACE_FIELDS.length;
+    const rows: number[][] = [];
+    for (let i = 0; i < this.devTraceCount; i++) {
+      rows.push(Array.from(buf.subarray(i * n, (i + 1) * n)));
+    }
+    this.devTraceMesh = null;
+    this.devTraceBuf = null;
+    return { fields: PlanetariumMode.DEV_TRACE_FIELDS, rows };
+  }
+
+  private devTraceRecord() {
+    const mesh = this.devTraceMesh;
+    const buf = this.devTraceBuf;
+    if (!mesh || !buf || this.devTraceCount >= this.devTraceMax) return;
+    // Sample what the GPU will draw this frame: refresh the world matrices of
+    // just this mesh + the camera, then project through the live projection.
+    mesh.updateWorldMatrix(true, false);
+    this.devTraceWorld.setFromMatrixPosition(mesh.matrixWorld);
+    this.camera.updateMatrixWorld();
+    const el = this.renderer.domElement;
+    const proj = projectToScreen(
+      this.devTraceWorld, this.camera, el.clientWidth, el.clientHeight, this.devTraceProj);
+    const n = PlanetariumMode.DEV_TRACE_FIELDS.length;
+    let k = this.devTraceCount * n;
+    buf[k++] = performance.now();
+    buf[k++] = this.getCurrentUtcMs();
+    buf[k++] = proj.x;
+    buf[k++] = proj.y;
+    buf[k++] = proj.ndcZ;
+    buf[k++] = this.camera.position.x;
+    buf[k++] = this.camera.position.y;
+    buf[k++] = this.camera.position.z;
+    buf[k++] = this.devTraceWorld.x;
+    buf[k++] = this.devTraceWorld.y;
+    buf[k++] = this.devTraceWorld.z;
+    buf[k++] = this.player.speedAUPerS;
+    buf[k] = this.player.speedCapAUPerS;
+    this.devTraceCount++;
   }
 
   /**

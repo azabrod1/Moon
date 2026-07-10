@@ -325,6 +325,9 @@ function installDevHooks() {
     jumpEvent: (type: string, direction?: 1 | -1) =>
       planetariumMode?.devJumpEvent(type as never, direction ?? 1) ?? false,
     probeLanded: () => planetariumMode?.devProbeLanded() ?? null,
+    traceStart: (name: string, maxFrames?: number) =>
+      planetariumMode?.devTraceStart(name, maxFrames) ?? false,
+    traceStop: () => planetariumMode?.devTraceStop() ?? null,
     tutorialStart: () => planetariumMode?.devTutorialStart() ?? false,
     tutorialNext: () => planetariumMode?.devTutorialNext(),
     tutorialBack: () => planetariumMode?.devTutorialBack(),

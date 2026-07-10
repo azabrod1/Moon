@@ -2659,7 +2659,7 @@ export class PlanetariumMode {
     const btn = document.getElementById('planetarium-btn-land');
     const nameEl = document.getElementById('land-body-name');
     if (btn) btn.style.display = target ? '' : 'none';
-    if (nameEl) nameEl.textContent = target?.name ?? '';
+    if (nameEl) nameEl.textContent = target ? bodyDisplayName(target.name) : '';
   }
 
   private showIntroText() {
@@ -4020,7 +4020,7 @@ export class PlanetariumMode {
         // keep a stale cross-system target — tear it down first.
         if (this.landedView === 'surface') this.exitSurfaceView(true);
         this.applyLandedTarget(target);
-        this.notification.show(`Standing on ${target.name}`);
+        this.notification.show(`Standing on ${bodyDisplayName(target.name)}`);
       } else {
         this.observatoryExcursion = excursionStash;
         this.enterLandedMode(target);
@@ -4710,7 +4710,7 @@ export class PlanetariumMode {
     this.updateSpeedSlider();
 
     if (notify) {
-      this.notification.show(`Jumped to ${bodyName}`);
+      this.notification.show(`Jumped to ${bodyDisplayName(bodyName)}`);
     }
     this.resetCruiseCamera();
   }
@@ -6515,7 +6515,7 @@ export class PlanetariumMode {
     this.preLandSpeed = this.player.speedMultiplier;
     this.preLandAutopilot = this.autopilot;
     this.applyLandedTarget(target);
-    this.notification.show(`Landed on ${target.name}`);
+    this.notification.show(`Landed on ${bodyDisplayName(target.name)}`);
   }
 
   /**
@@ -6762,7 +6762,7 @@ export class PlanetariumMode {
         true, // snap the FOV — the subject changed, an ease would flash/lag
       );
     }
-    this.notification.show(`Standing on ${companion.name}`);
+    this.notification.show(`Standing on ${bodyDisplayName(companion.name)}`);
     this.renderObservatoryPanel();
     // Row hints/∅ badges are observer-conditioned and baked at publish time —
     // republish from the cached results so they describe the NEW vantage (the
@@ -7130,7 +7130,7 @@ export class PlanetariumMode {
     // word, so the reticle must drop here, not wait for a pass that won't come.
     this.hideFootprintReticle();
     this.updateObservatoryButtonVisibility();
-    this.notification.show(`Departing ${bodyName}`);
+    this.notification.show(`Departing ${bodyDisplayName(bodyName)}`);
   }
 
   private updateLanded(dt: number) {
@@ -7394,7 +7394,7 @@ export class PlanetariumMode {
     }
     this.updateSpeedSlider();
     this.updateAutopilotButton();
-    this.notification.show(`Autopilot: heading to ${target.name}`);
+    this.notification.show(`Autopilot: heading to ${bodyDisplayName(target.name)}`);
   }
 
   private disengageAutopilot() {
@@ -7462,7 +7462,7 @@ export class PlanetariumMode {
     if (dist < threshold) {
       const name = this.autopilotTarget.name;
       this.disengageAutopilot();
-      this.notification.show(`Arrived at ${name}`);
+      this.notification.show(`Arrived at ${bodyDisplayName(name)}`);
     }
   }
 

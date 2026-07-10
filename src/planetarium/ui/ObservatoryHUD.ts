@@ -96,6 +96,13 @@ export class ObservatoryHUD {
     this.timebarEl = document.getElementById('surface-timebar');
     if (this.wired) return;
     this.wired = true;
+    // Touch devices pinch to zoom; pointer devices scroll. Set once — the input
+    // capability doesn't change within a session.
+    const hint = this.rootEl?.querySelector('.shud-hint');
+    if (hint) {
+      const touch = (window.matchMedia?.('(pointer: coarse)').matches ?? false) || 'ontouchstart' in window;
+      hint.textContent = touch ? 'pinch to zoom · drag to look' : 'scroll to zoom · drag to look';
+    }
     document.getElementById('surface-exit')?.addEventListener('click', () => this.onExit());
     document.getElementById('surface-observatory')?.addEventListener('click', () => this.onObservatory());
     this.lookatEl?.addEventListener('click', () => this.onTargetMenu());

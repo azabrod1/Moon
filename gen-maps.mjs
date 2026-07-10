@@ -11,7 +11,6 @@
 //   earth-roughness  earth-day.jpg  -> earth-roughness.png  (ocean glossy, land matte)
 //   moon-normal      moon-height.*  -> moon-normal.png      (tangent-space normal)
 //   mars-normal      mars-height.*  -> mars-normal.png
-//   mercury-normal   mercury-height.* -> mercury-normal.png
 //
 // height->normal jobs need an elevation source dropped in first (USGS/MOLA/etc.);
 // they no-op with a notice if the source file is absent.
@@ -184,6 +183,15 @@ async function runJob(page, name) {
 
 const requested = process.argv.slice(2).filter((a) => !a.startsWith('--'));
 const jobs = requested.length ? requested : Object.keys(JOBS);
+
+// A named job that doesn't exist is a mistake, not a no-op — fail loudly before
+// spinning up Chromium (a known job whose source is absent still skips cleanly).
+const unknown = requested.filter((j) => !(j in JOBS));
+if (unknown.length) {
+  console.error(`[gen-maps] unknown job(s): ${unknown.join(', ')}`);
+  console.error(`[gen-maps] known jobs: ${Object.keys(JOBS).join(', ')}`);
+  process.exit(1);
+}
 
 const browser = await chromium.launch({ headless: true });
 try {

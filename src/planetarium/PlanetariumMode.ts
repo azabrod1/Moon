@@ -1328,6 +1328,13 @@ export class PlanetariumMode {
     // the label pass, which projects through the final camera.
     this.updateCruiseCameraSafety();
 
+    // The HTML label/marker projections below read camera.matrixWorldInverse,
+    // which the renderer refreshes only at render time — after this update().
+    // Refresh it now, past this frame's final cruise camera pose (the camera
+    // follow + controls.update above, and the safety escape just applied), or
+    // every label trails the camera by a frame during orbit drags and fast pans.
+    this.camera.updateMatrixWorld();
+
     // Occlusion pipeline: planet discs → moon + ship discs → labels + markers.
     // Runs when either the HTML labels or the marker sprites are on. The
     // occluder passes only feed label culling, so markers-only (labels off)
@@ -6232,6 +6239,13 @@ export class PlanetariumMode {
       this.camera.lookAt(targetPos);
     }
 
+    // The surface camera is now fully posed for this frame. Refresh its world
+    // matrix so the marker projection below — and the guide-reticle/orbit-focus
+    // passes that run downstream this frame — read this pose; the renderer won't
+    // refresh matrixWorldInverse until render time, so a projection off the raw
+    // lookAt/position would lag a frame while tracking or dragging the look.
+    this.camera.updateMatrixWorld();
+
     // Marker over the tracked target (per-frame screen projection): brackets
     // for a resolvable disc, the hairline reticle for sub-pixel specks (the
     // 70px bracket floor around empty sky read as "something visible here"),
@@ -7111,6 +7125,10 @@ export class PlanetariumMode {
     if (this.landedView !== 'surface') {
       this.controls.target.set(0, 0, 0);
       this.controls.update();
+      // Label/marker projections later this frame read camera.matrixWorldInverse,
+      // which the renderer refreshes only at render time. Refresh it here, past
+      // the orbit camera's final pose, so they track this frame — not last.
+      this.camera.updateMatrixWorld();
     }
 
     this.fpsFrames++;

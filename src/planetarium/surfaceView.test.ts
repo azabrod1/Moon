@@ -17,6 +17,8 @@ import {
   GUIDE_RESOLVABLE_ON_PX,
   isBelowResolutionAtMaxZoom,
   MARKER_BRACKETS_MIN_PX,
+  MARKER_PILL_MIN_DISC_FRAC,
+  MARKER_PILL_EXIT_DISC_FRAC,
   MARKER_RETICLE_MAX_PX,
   projectedDiscPx,
   resolveGuideVisibility,
@@ -500,12 +502,28 @@ describe('surface FOV', () => {
   });
 
   it('marker kind swaps with hysteresis on the projected disc size', () => {
-    expect(resolveMarkerKind(MARKER_BRACKETS_MIN_PX + 1, 'reticle')).toBe('brackets');
-    expect(resolveMarkerKind(MARKER_RETICLE_MAX_PX - 1, 'brackets')).toBe('reticle');
+    const h = 1000;
+    expect(resolveMarkerKind(MARKER_BRACKETS_MIN_PX + 1, 'reticle', h)).toBe('brackets');
+    expect(resolveMarkerKind(MARKER_RETICLE_MAX_PX - 1, 'brackets', h)).toBe('reticle');
     // Between the bounds: sticky.
     const between = (MARKER_RETICLE_MAX_PX + MARKER_BRACKETS_MIN_PX) / 2;
-    expect(resolveMarkerKind(between, 'brackets')).toBe('brackets');
-    expect(resolveMarkerKind(between, 'reticle')).toBe('reticle');
+    expect(resolveMarkerKind(between, 'brackets', h)).toBe('brackets');
+    expect(resolveMarkerKind(between, 'reticle', h)).toBe('reticle');
+  });
+
+  it('brackets hand off to the pill when the disc dominates the frame', () => {
+    const h = 1000;
+    // Past the ceiling: pill, regardless of prior kind.
+    expect(resolveMarkerKind(MARKER_PILL_MIN_DISC_FRAC * h + 1, 'brackets', h)).toBe('pill');
+    // Hysteresis band: pill holds, brackets hold.
+    const mid = ((MARKER_PILL_MIN_DISC_FRAC + MARKER_PILL_EXIT_DISC_FRAC) / 2) * h;
+    expect(resolveMarkerKind(mid, 'pill', h)).toBe('pill');
+    expect(resolveMarkerKind(mid, 'brackets', h)).toBe('brackets');
+    // Below the exit bound: back to brackets.
+    expect(resolveMarkerKind(MARKER_PILL_EXIT_DISC_FRAC * h - 1, 'pill', h)).toBe('brackets');
+    // Alex's scene: Earth (2°) from the Moon at min FOV 1.5° on a 1000px
+    // viewport → a 1338px disc must not draw a floating locator box.
+    expect(resolveMarkerKind((2.007 / 1.5) * h, 'brackets', h)).toBe('pill');
   });
 
   it('shadow-guide visibility gates with hysteresis below the marker scale', () => {

@@ -44,20 +44,23 @@ export const CRUISE_CAM_DIST_AU = 0.000094 * SHIP_RIG_SCALE;
  *  half-length ≈ 0.75 reference radii. */
 export const SHIP_OCCLUDER_RADIUS_AU = SHIP_REFERENCE_RADIUS_AU * 0.75;
 
-/** OrbitControls wheel-zoom floor in cruise. Scales with the rig so full
- *  wheel-in frames the ship the same as it always has (including the
- *  longstanding quirk that the floor sits inside the hull's aft extent —
- *  preserved, not fixed: the floor/hull ratio is identical by construction). */
-export const CRUISE_CONTROLS_MIN_DISTANCE_AU = 0.00001 * SHIP_RIG_SCALE;
-
 /** Farthest solid point of any ship profile from the group origin. The
  *  default hull's nozzle exit sits at 1.82 authored units × 1.8 units per
  *  reference radius × 0.5 group scale = 1.638 reference radii; 2.2 leaves
  *  ~34% headroom for the probe-profile hulls (own geometry, root scale
- *  1.18). Used as the near-plane ceiling on the camera-to-ship term and as
- *  the floor under CAMERA_BODY_MARGIN_AU — solid geometry must never cross
- *  the near plane. */
+ *  1.18). Used as the near-plane ceiling on the camera-to-ship term, as the
+ *  floor under CAMERA_BODY_MARGIN_AU, and as the base of the wheel-zoom
+ *  floor — solid geometry must never cross the near plane or the camera. */
 export const SHIP_HULL_MAX_EXTENT_AU = SHIP_REFERENCE_RADIUS_AU * 2.2;
+
+/** OrbitControls wheel-zoom floor in cruise. The legacy floor sat inside the
+ *  hull's aft extent (a quirk this rig initially preserved by ratio), but at
+ *  close-approach scale that is user-visible: full wheel-in put the camera
+ *  through the fin envelope — plates filled the frame as bare squares, then
+ *  the whole ship vanished to backfaces. Floor at 1.5× the hull extent
+ *  instead: the ship still fills ~35° of frame, and solid geometry stays in
+ *  front of the camera. */
+export const CRUISE_CONTROLS_MIN_DISTANCE_AU = SHIP_HULL_MAX_EXTENT_AU * 1.5;
 
 /** Pad between a body's shell and the closest the CAMERA may sit. Must
  *  exceed SHIP_HULL_MAX_EXTENT_AU: during a bounce the ship parks at

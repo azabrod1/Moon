@@ -6109,13 +6109,17 @@ export class PlanetariumMode {
     const canvas = this.renderer.domElement;
     const w = canvas.clientWidth;
     const h = canvas.clientHeight;
+    // The tracking lookAt above only dirtied the local matrix; project through
+    // THIS frame's pose, not last render's, or the marker trails the disc by a
+    // frame during re-points and drag-look.
+    this.camera.updateMatrixWorld();
     const proj = projectToScreen(targetPos, this.camera, w, h);
     const discDeg = angularDiameterDeg(
       this.surfaceTargetRadiusAU(this.surfaceTarget),
       targetPos.distanceTo(this.camera.position),
     );
     const discPx = projectedDiscPx(discDeg, this.camera.fov, h);
-    this.surfaceMarkerKind = resolveMarkerKind(discPx, this.surfaceMarkerKind);
+    this.surfaceMarkerKind = resolveMarkerKind(discPx, this.surfaceMarkerKind, h);
     // On-frame test inflated by the disc radius: a big disc (Jupiter fills
     // ~60% of the frame) must not flip to "off frame" the moment its CENTER
     // leaves the viewport while half of it is plainly visible.
@@ -6125,11 +6129,16 @@ export class PlanetariumMode {
       proj.x >= -discR && proj.x <= w + discR &&
       proj.y >= -discR && proj.y <= h + discR;
     if (onFrame) {
-      const sizePx = THREE.MathUtils.clamp(
-        (discDeg / this.camera.fov) * h * 1.3,
-        70,
-        h * 0.85,
-      );
+      // Pill mode passes the true disc size — the cluster anchors under the
+      // limb (clamped above the bottom bands); the capped box only sizes the
+      // bracket drawing itself.
+      const sizePx = this.surfaceMarkerKind === 'pill'
+        ? discPx
+        : THREE.MathUtils.clamp(
+            (discDeg / this.camera.fov) * h * 1.3,
+            70,
+            h * 0.85,
+          );
       this.observatoryHud.updateMarker({
         mode: this.surfaceMarkerKind,
         xPx: proj.x,

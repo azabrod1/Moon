@@ -224,12 +224,29 @@ export function createDefaultShip(referenceRadiusAU: number): DefaultShip {
     model.add(rcs);
   }
 
-  // ── Fins: three slim swept plates rooted in the aft hull. Tip lights are
-  //    children of their fin so they track any sweep or clocking change.
+  // ── Fins: three swept tapered plates rooted in the aft hull. Tip lights
+  //    are children of their fin so they track any sweep or clocking change.
   //    Clocked so one fin is dorsal and the laterals carry the aviation
   //    convention: red port, green starboard, white up — from astern the
   //    trio doubles as a roll indicator. ──
+  // Sculpt from a box: anchor the chord at the aft edge and taper it toward
+  //    the outboard tip (38% tip chord) while thinning the plate. A straight
+  //    rectangle reads fine at chase distance but face-on at close zoom it is
+  //    literally a bare square; the taper gives an honest planform from every
+  //    angle the close rig can reach.
   const finGeo = new THREE.BoxGeometry(0.44 * U, 0.62 * U, 0.022 * U);
+  {
+    const finPos = finGeo.attributes.position;
+    const halfChordX = 0.22 * U; // local +x = outboard
+    const aftEdgeY = -0.31 * U; // local −y = aft (nose is +y)
+    for (let i = 0; i < finPos.count; i++) {
+      const tipT = (finPos.getX(i) + halfChordX) / (2 * halfChordX); // 0 root → 1 tip
+      const chord = 1 - 0.62 * tipT;
+      finPos.setY(i, aftEdgeY + (finPos.getY(i) - aftEdgeY) * chord);
+      finPos.setZ(i, finPos.getZ(i) * (1 - 0.45 * tipT));
+    }
+    finGeo.computeVertexNormals();
+  }
   const finSpecs: { clock: number; light: THREE.MeshBasicMaterial; lightR: number }[] = [
     // Nose is +Y here and the final -90° z-rotation makes build -X the world
     // "up", so the dorsal fin pivots to PI; +Z stays starboard.
@@ -242,7 +259,7 @@ export function createDefaultShip(referenceRadiusAU: number): DefaultShip {
     fin.position.set(0.5 * U, -1.0 * U, 0);
     fin.rotation.z = -0.3; // sweep back
     const light = new THREE.Mesh(new THREE.SphereGeometry(spec.lightR * U, 8, 8), spec.light);
-    light.position.set(0.2 * U, -0.26 * U, 0); // outboard-aft corner of the fin
+    light.position.set(0.2 * U, -0.29 * U, 0); // outboard-aft corner of the tapered fin
     fin.add(light);
     const pivot = new THREE.Group();
     pivot.rotation.y = spec.clock;

@@ -40,7 +40,7 @@ export interface SurfaceHudState {
 export type SurfaceTimeAction = 'toggle-pause' | 'slower' | 'faster' | 'now';
 
 /** Which marker the HUD draws over the tracked target this frame. */
-export type SurfaceMarkerMode = 'hidden' | 'brackets' | 'reticle' | 'chevron';
+export type SurfaceMarkerMode = 'hidden' | 'brackets' | 'reticle' | 'chevron' | 'pill';
 
 export interface SurfaceMarkerPlacement {
   mode: SurfaceMarkerMode;
@@ -141,7 +141,8 @@ export class ObservatoryHUD {
     this.bracketsEl.style.display = placement.mode === 'brackets' ? '' : 'none';
     this.reticleEl.style.display = placement.mode === 'reticle' ? '' : 'none';
     this.chevronEl.style.display = placement.mode === 'chevron' ? '' : 'none';
-    const anchored = placement.mode === 'brackets' || placement.mode === 'reticle';
+    const anchored =
+      placement.mode === 'brackets' || placement.mode === 'reticle' || placement.mode === 'pill';
     this.discNoteEl.style.display = anchored ? '' : 'none';
     this.trackPillEl.style.display = anchored ? '' : 'none';
 
@@ -151,6 +152,11 @@ export class ObservatoryHUD {
       this.bracketsEl.style.width = `${size}px`;
       this.bracketsEl.style.height = `${size}px`;
       this.anchorCluster(x, top + size);
+    } else if (placement.mode === 'pill') {
+      // Disc dominates the frame: no locator box, just the cluster under the
+      // limb (size here is the TRUE disc height; the band clamp pulls the
+      // cluster on-screen when the limb runs below the fold).
+      this.anchorCluster(x, y + size / 2);
     } else if (placement.mode === 'reticle') {
       this.reticleEl.style.transform = `translate(${x - 6}px, ${y - 6}px)`;
       this.anchorCluster(x, y + 8);

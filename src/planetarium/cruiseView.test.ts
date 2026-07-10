@@ -35,7 +35,14 @@ describe('cruise rig derivation chain', () => {
 
   it('keeps the legacy literals riding the same scale (on-screen ship size unchanged)', () => {
     expect(CRUISE_CAM_DIST_AU).toBe(0.000094 * SHIP_RIG_SCALE);
-    expect(CRUISE_CONTROLS_MIN_DISTANCE_AU).toBe(0.00001 * SHIP_RIG_SCALE);
+  });
+
+  it('keeps the wheel-zoom floor outside the hull (full wheel-in may never enter the fins)', () => {
+    expect(CRUISE_CONTROLS_MIN_DISTANCE_AU).toBe(SHIP_HULL_MAX_EXTENT_AU * 1.5);
+    expect(CRUISE_CONTROLS_MIN_DISTANCE_AU).toBeGreaterThan(SHIP_HULL_MAX_EXTENT_AU);
+    // And it still sits well inside the chase distance — wheel-in remains a
+    // real close-up, not a no-op.
+    expect(CRUISE_CONTROLS_MIN_DISTANCE_AU).toBeLessThan(CRUISE_CAM_DIST_AU * 0.5);
   });
 
   it('keeps the camera margin outside the hull extent (a clamped camera can stack on the ship radial)', () => {

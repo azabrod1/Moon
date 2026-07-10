@@ -1720,14 +1720,12 @@
     }
     .compare-teaser.on { display: block; }
     .compare-teaser b { color: var(--t1); }
-    /* Sand-regime note (the pour-by-one is a later pass) — keeps the panel alive
-       so a sand pair is never a dead end; swap/picker stay on the sentence. */
-    .compare-note { display: none; margin-top: 10px; font-size: 12px; line-height: 1.45; color: var(--t3); }
-    .compare-note.on { display: block; }
 
-    /* Pour controls — hidden for sub-unity / non-pourable regimes. */
+    /* Pour controls — hidden for the sub-unity teaser only. */
     .compare-pour { display: block; margin-top: 14px; }
     .compare-pour.off { display: none; }
+    /* Melt controls hide for sand (a liquid-like fill never packs). */
+    .melt-hidden { display: none !important; }
     .compare-odo {
       display: flex; align-items: baseline; gap: 8px; min-height: 20px;
       font-variant-numeric: tabular-nums;
@@ -1826,16 +1824,50 @@
     .compare-endcard-again:hover { background: rgba(255,255,255,0.07); }
 
     @media (max-width: 640px) {
-      /* Narrow band: the panel opposite Leave across the top. Keep it slim so
-         "Fill Jupiter with Earths" wraps rather than crowding the scene. */
+      /* Slim bottom BAR (not a top-right card): the scene owns the band above it,
+         measured framing keeps the vessel clear. A 2-column grid puts the sentence
+         and a compact count chip on row 1, the pour controls span both below. */
       #compare-panel {
-        top: 14px;
-        width: min(248px, calc(100vw - 108px));
-        padding: 12px 14px;
-        max-height: calc(100vh - 28px);
-        overflow-y: auto;
+        top: auto; bottom: 0; left: 0; right: 0;
+        width: 100%; max-width: 100%;
+        border-radius: var(--r-l) var(--r-l) 0 0;
+        padding: 10px 14px calc(10px + env(safe-area-inset-bottom, 0px));
+        display: grid;
+        grid-template-columns: 1fr auto;
+        column-gap: 10px; row-gap: 6px;
+        align-items: center;
+        max-height: 46vh; overflow: visible;
       }
-      .compare-count b { font-size: 26px; }
+      /* When the end-card bottom sheet is up, the bar's controls are inert (Pour
+         again lives on the card) — hide it so the sheet is the only occluder. */
+      #compare-panel.bar-hidden { display: none; }
+      #compare-sentence { grid-column: 1; grid-row: 1; font-size: 12.5px; }
+      /* Compact count chip, right-aligned (the big desktop headline number hides). */
+      #compare-count { grid-column: 2; grid-row: 1; margin: 0; justify-self: end; text-align: right; font-size: 11px; }
+      #compare-count b { font-size: 15px; }
+      #compare-count.compare-count-sub { font-size: 12px; }
+      #compare-teaser { grid-column: 1 / -1; grid-row: 2; margin-top: 0; }
+      #compare-pour { grid-column: 1 / -1; grid-row: 3; margin-top: 2px; display: flex; flex-direction: column; gap: 7px; }
+      /* Sub-unity teaser hides the pour controls: this ID+class rule must beat the
+         bare-ID display:flex above (the desktop .compare-pour.off loses on specificity). */
+      #compare-pour.off { display: none; }
+      /* Row order inside the bar: slider+reset, presets, odometer, then the
+         conditional melt row-4. (Melt controls hidden unless .melt-live — brim.) */
+      /* The ⓘ explainer opens ABOVE the bar rows (order 0, first in the column) so
+         it expands up into the scene band instead of below the fold; its own
+         max-height + scroll keeps it contained inside the 46vh bar cap. */
+      #compare-pour #compare-automelt-explain { order: 0; margin: 0 0 3px; max-height: 40vh; overflow-y: auto; }
+      #compare-pour .compare-slider-row { order: 1; margin-top: 0; }
+      #compare-pour #compare-presets { order: 2; margin-top: 0; }
+      #compare-pour .compare-odo { order: 3; }
+      #compare-pour .compare-melt { order: 4; margin-top: 0; }
+      #compare-pour #compare-automelt-row { order: 5; display: none; }
+      #compare-panel.melt-live #compare-automelt-row { display: flex; } /* row 4 at the brim + melting */
+      /* Reset becomes an icon-button (icon-only Stats-mobile precedent). */
+      #compare-reset { font-size: 0; padding: 2px 6px; }
+      #compare-reset::before { content: '\21BA'; font-size: 16px; line-height: 1; }
+      /* The loading chip is a scene overlay, not a bar row. */
+      #compare-loading { position: fixed; top: 12px; left: 50%; transform: translateX(-50%); margin: 0; }
       /* End card becomes a bottom sheet — vessel visible in the band above. */
       #compare-endcard { align-items: flex-end; justify-content: center; }
       .compare-endcard-card {
@@ -2980,7 +3012,6 @@
         </div>
         <div id="compare-count" class="compare-count"></div>
         <div id="compare-teaser" class="compare-teaser"></div>
-        <div id="compare-note" class="compare-note"></div>
         <div id="compare-pour" class="compare-pour">
           <div class="compare-odo"><b id="compare-odometer">0</b><span id="compare-status" class="compare-status"></span></div>
           <div class="compare-slider-row">

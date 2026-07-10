@@ -138,6 +138,12 @@ export const COMPARE_TUNABLES = {
   autoMeltDelayS: 4,
   /** Seconds after the overflow spill starts before the end card appears. */
   endCardDelayS: 2,
+  /** Seconds a full sand fill takes at the constant fractional rate (a partial
+   *  fill to fraction f scales to sandFillS·f, floored at 4 s). */
+  sandFillS: 24,
+  /** The visual rim-contact epsilon for liquidAtRim, as a fraction of the
+   *  container radius (~0.5% of R) — the top-out trigger fires this close. */
+  liquidRimEpsFrac: 0.005,
   /** Balls melted per second while the melt beat runs (the slump pace). */
   meltPerSec: 90,
   /** Max liquid-touching balls consumed per frame in rain mode (paces the splash tick). */
@@ -282,6 +288,20 @@ export function sliderForTarget(n: number, target: number): number {
   return Math.pow(frac, 1 / COMPARE_TUNABLES.sliderGamma);
 }
 
+/**
+ * Whether a slider fraction is an EXACT full fill — the target equals N, not a
+ * near-max approximation. sliderTargetCount clamps to N, so this is true only at
+ * s = 1 (the "fill it" preset lands there exactly, and dragging to the slider's
+ * max reaches it). A raw drag to 0.995–0.999 targets only ~98.9%–99.8% of N via
+ * the s^gamma curve, so it is a PARTIAL fill: it must settle quietly with no
+ * brim/card, exactly like any other partial. Keyed to the exact target, never a
+ * threshold — a threshold classifies near-max sliders as full and either hangs
+ * sand in `pouring` (its top-out never fires) or shows a card on a partial fill.
+ */
+export function sliderFillsExactly(n: number, s: number): boolean {
+  return sliderTargetCount(n, s) === n;
+}
+
 export interface PourBudget {
   /** Whole balls to spawn this step. */
   spawns: number;
@@ -358,6 +378,32 @@ export function targetReached(target: number, poured: number, regime: FillRegime
   return poured >= Math.floor(target);
 }
 
+/**
+ * The sand fill's ramp progress in [0, 1] over an elapsed/duration window — a
+ * smoothstep: monotone, soft start (derivative 0 at the open), and a SOFT
+ * LANDING (derivative → 0 as it lands) so the odometer decelerates into its
+ * final number rather than snapping. Lands EXACTLY on 1 at elapsed ≥ duration
+ * (the clamp), and reads 0 at elapsed ≤ 0. A non-positive duration is already
+ * complete. The scene maps this progress across [startFraction, targetFraction]
+ * and multiplies by N to drive `melted`.
+ */
+export function sandFillFraction(elapsed: number, duration: number): number {
+  if (duration <= 0) return 1;
+  const t = Math.min(1, Math.max(0, elapsed / duration));
+  return t * t * (3 - 2 * t);
+}
+
+/**
+ * The live sand-grain pool budget for a device tier — two tiers, one boolean:
+ * the weak tier (no-bloom GPU OR a ≤640px mobile viewport) gets half the grains
+ * so the signals never stack down to a quarter. Full tier 3000, weak tier 1500.
+ * The spill count is flat across tiers (a fixed garnish), sized by the scene.
+ */
+export function sandGrainBudget(useBloom: boolean, isMobile: boolean): number {
+  const weakTier = !useBloom || isMobile;
+  return weakTier ? 1500 : 3000;
+}
+
 // ---------------------------------------------------------------------------
 // Spherical-cap liquid math (container inner radius R, height h from the bottom pole)
 // ---------------------------------------------------------------------------
@@ -404,6 +450,7 @@ export type ComparePhase =
   | 'brim'
   | 'melting'
   | 'raining'
+  | 'spilling'
   | 'complete';
 
 export type CompareEvent =
@@ -414,20 +461,29 @@ export type CompareEvent =
   | 'brim-hit'
   | 'melt-start'
   | 'melt-open'
+  | 'top-out'
   | 'fill-complete'
   | 'reset';
 
 /**
  * The arc: idle →commit→ loading →ready→ settling ⇄(pour / target-met)⇄
- * pouring →brim-hit→ brim →melt-start→ melting →melt-open→ raining
- * →fill-complete→ complete →reset→ loading. `commit` is legal from EVERY phase
- * (a pair change or ⇄ swap resets the session, and is the generation bump);
- * every other jump not drawn here is illegal. `pickerOpen` is an overlay flag,
- * not a phase — the pour keeps running under the picker.
+ * pouring →brim-hit→ brim →melt-start→ melting →melt-open→ raining →top-out→
+ * spilling →fill-complete→ complete →reset→ loading. `commit` is legal from
+ * EVERY phase (a pair change or ⇄ swap resets the session, and is the generation
+ * bump); every other jump not drawn here is illegal. `pickerOpen` is an overlay
+ * flag, not a phase — the pour keeps running under the picker.
  *
- * Boulders and sand never pack, so they never hit the brim/melt/rain arc: the
- * last body settling at target = N completes the fill straight from `pouring`
- * (the `pouring → fill-complete → complete` edge), skipping the marble reconcile.
+ * `top-out` fires on VISUAL rim contact (liquidAtRim on the eased render level),
+ * never the logical amount, so the overflow spill can't fire while the surface
+ * is still easing toward the rim (liquidEaseTau 0.35 s). `spilling` runs the
+ * overflow-grain garnish, then completes.
+ *
+ * Marbles and sand both overflow: raining/pouring reach the rim → `spilling` →
+ * complete. BOULDERS never pack and never spill — the last body settling at
+ * target = N completes straight from `pouring` (the `pouring → fill-complete →
+ * complete` edge, no mouth, no spill), skipping the marble reconcile and the
+ * garnish. Sand's full fill leaves `pouring` via `top-out` (a partial sand
+ * target settles back via `target-met`, exactly like marbles).
  */
 const PHASE_TABLE: Readonly<Record<ComparePhase, Partial<Record<CompareEvent, ComparePhase>>>> = {
   idle: { commit: 'loading' },
@@ -437,17 +493,31 @@ const PHASE_TABLE: Readonly<Record<ComparePhase, Partial<Record<CompareEvent, Co
     commit: 'loading',
     'target-met': 'settling',
     'brim-hit': 'brim',
+    'top-out': 'spilling',
     'fill-complete': 'complete',
   },
   brim: { commit: 'loading', 'melt-start': 'melting' },
   melting: { commit: 'loading', 'melt-open': 'raining' },
-  raining: { commit: 'loading', 'fill-complete': 'complete' },
+  raining: { commit: 'loading', 'top-out': 'spilling' },
+  spilling: { commit: 'loading', 'fill-complete': 'complete' },
   complete: { commit: 'loading', reset: 'loading' },
 };
 
 /** The phase an event moves to, or null when the jump is illegal (caller ignores it). */
 export function nextPhase(phase: ComparePhase, event: CompareEvent): ComparePhase | null {
   return PHASE_TABLE[phase][event] ?? null;
+}
+
+/**
+ * Whether the RENDERED liquid surface has reached the vessel rim — the visual
+ * `top-out` trigger for the overflow spill. `levelY` is the eased render level
+ * (height above the bottom pole), `rimY` the full-fill height (2·R_liq), and the
+ * epsilon is a small fraction of the container radius. Keyed to the eased level,
+ * never the logical fill: the 0.35 s level ease trails the count, so a spill
+ * keyed to the logical top-off would fire before the surface visibly arrives.
+ */
+export function liquidAtRim(levelY: number, rimY: number, containerR: number): boolean {
+  return levelY >= rimY - COMPARE_TUNABLES.liquidRimEpsFrac * containerR;
 }
 
 export interface CompareSession {
@@ -484,17 +554,21 @@ export interface EscContext {
   phase: ComparePhase;
 }
 
-export type EscIntent = 'close-picker' | 'dismiss-card' | 'pause-pour' | 'leave';
+export type EscIntent = 'close-picker' | 'dismiss-card' | 'pause-pour' | 'skip-spill' | 'leave';
 
 /**
  * What Esc does, in strict priority: close the picker, else dismiss the end
- * card, else pause an active pour (only while pouring / melting / raining),
- * else leave the mode.
+ * card, else pause an active pour (only while pouring / melting / raining), else
+ * skip the overflow garnish straight to the card (while spilling — the fill is
+ * logically done, so Esc mirrors the tap-to-skip rather than leaving), else
+ * leave the mode. From the card that skip surfaces, the next Esc dismisses it
+ * and the cascade continues as normal.
  */
 export function escIntent({ pickerOpen, endCardShown, phase }: EscContext): EscIntent {
   if (pickerOpen) return 'close-picker';
   if (endCardShown) return 'dismiss-card';
   if (phase === 'pouring' || phase === 'melting' || phase === 'raining') return 'pause-pour';
+  if (phase === 'spilling') return 'skip-spill';
   return 'leave';
 }
 

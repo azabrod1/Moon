@@ -405,6 +405,7 @@ function installDevHooks() {
     compareAutoMelt: (on: boolean) => volumeCompareMode?.devAutoMelt(on) ?? false,
     comparePreset: (key: string) => volumeCompareMode?.devPreset(key) ?? false,
     compareReset: () => volumeCompareMode?.devReset() ?? false,
+    compareSkip: () => volumeCompareMode?.devSkip() ?? false,
     compareEsc: () => volumeCompareMode?.devEsc(),
     compareEndCard: () => volumeCompareMode?.devEndCard() ?? null,
     // Mode-agnostic leak probe for the enter/exit heap check.

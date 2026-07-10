@@ -14,10 +14,14 @@ import {
   formatOdometer,
   sliderTargetCount,
   sliderForTarget,
+  sliderFillsExactly,
   pourBudget,
   spawnAllowance,
   drainTarget,
   targetReached,
+  sandFillFraction,
+  sandGrainBudget,
+  liquidAtRim,
   sphericalCapVolume,
   capHeightForVolume,
   nextPhase,
@@ -118,8 +122,66 @@ describe('targetReached — regime-aware pour/ghost satisfaction', () => {
     expect(targetReached(0.7, 0.3, 'boulders')).toBe(false);
     expect(targetReached(0.7, 0.7, 'boulders')).toBe(true);
   });
-  it('sand stays on the whole-ball rule (never pours in P3; target 0 is reached)', () => {
+  it('sand pours on the whole-ball rule (P4: the stream fills toward floor(target))', () => {
+    // P4 REWRITE (was "sand never pours in P3"): sand is pourable now — the
+    // stream drives floor(melted) toward the target, so a partial sand target
+    // (e.g. 204000.6) is reached at its floor, one whole grain below is not.
+    expect(targetReached(204_000.6, 204_000, 'sand')).toBe(true);
+    expect(targetReached(204_000.6, 203_999, 'sand')).toBe(false);
     expect(targetReached(0, 0, 'sand')).toBe(true);
+  });
+});
+
+describe('sandFillFraction — the sand ramp (P4)', () => {
+  it('endpoints: 0 at/before the open, exactly 1 at/after the close', () => {
+    expect(sandFillFraction(0, 24)).toBe(0);
+    expect(sandFillFraction(-2, 24)).toBe(0);
+    expect(sandFillFraction(24, 24)).toBe(1); // EXACT landing — the odometer reads N
+    expect(sandFillFraction(30, 24)).toBe(1);
+    expect(sandFillFraction(5, 0)).toBe(1); // a zero window is already complete
+  });
+  it('monotone non-decreasing across the window', () => {
+    let prev = -1;
+    for (let i = 0; i <= 200; i++) {
+      const v = sandFillFraction((24 * i) / 200, 24);
+      expect(v).toBeGreaterThanOrEqual(prev);
+      prev = v;
+    }
+    expect(prev).toBe(1);
+  });
+  it('soft landing: the derivative vanishes into the close (decelerates, never snaps)', () => {
+    // Numeric slope over the last 1% of the window is far below the mid slope —
+    // the count eases into its final number.
+    const d = 24 / 1000;
+    const slopeEnd = (sandFillFraction(24, 24) - sandFillFraction(24 - d, 24)) / d;
+    const slopeMid = (sandFillFraction(12 + d, 24) - sandFillFraction(12 - d, 24)) / (2 * d);
+    expect(slopeEnd).toBeLessThan(0.02 * slopeMid);
+  });
+  it('soft start: the derivative vanishes out of the open', () => {
+    const d = 24 / 1000;
+    const slopeStart = (sandFillFraction(d, 24) - sandFillFraction(0, 24)) / d;
+    const slopeMid = (sandFillFraction(12 + d, 24) - sandFillFraction(12 - d, 24)) / (2 * d);
+    expect(slopeStart).toBeLessThan(0.05 * slopeMid);
+  });
+});
+
+describe('sandGrainBudget — two tiers, one boolean (P4)', () => {
+  it('full tier (bloom + desktop) = 3000, weak tier = 1500', () => {
+    expect(sandGrainBudget(true, false)).toBe(3000); // full
+    expect(sandGrainBudget(false, false)).toBe(1500); // no bloom → weak
+    expect(sandGrainBudget(true, true)).toBe(1500); // mobile → weak
+    expect(sandGrainBudget(false, true)).toBe(1500); // both signals never quarter
+  });
+});
+
+describe('liquidAtRim — the visual top-out trigger (P4)', () => {
+  const R = 1;
+  const rimY = 2 * 0.995; // 2·R_liq, the full-fill render height
+  it('true only once the eased level is within ~0.5% of R of the rim', () => {
+    expect(liquidAtRim(rimY, rimY, R)).toBe(true); // exactly at the rim
+    expect(liquidAtRim(rimY - 0.004, rimY, R)).toBe(true); // inside the 0.005·R epsilon
+    expect(liquidAtRim(rimY - 0.02, rimY, R)).toBe(false); // still easing up — no spill yet
+    expect(liquidAtRim(0, rimY, R)).toBe(false); // empty
   });
 });
 
@@ -157,7 +219,8 @@ describe('regime picking', () => {
   });
   it('marble / sand boundary straddles 16 balls across (N = 16^3 = 4096)', () => {
     expect(pickRegime(4095)).toBe('marbles');
-    expect(pickRegime(4097)).toBe('sand');
+    expect(pickRegime(4096)).toBe('marbles'); // exactly on the boundary → middle regime
+    expect(pickRegime(4097)).toBe('sand'); // one past → sand pours (P4)
   });
   it('exactly on a boundary counts as the middle regime', () => {
     expect(pickRegime(Math.pow(COMPARE_TUNABLES.boulderMaxAcross, 3))).toBe('marbles');
@@ -265,6 +328,31 @@ describe('sliderForTarget — exact inverse of sliderTargetCount', () => {
   });
 });
 
+describe('sliderFillsExactly — full ⇔ target === N (never a near-max threshold)', () => {
+  it('the exact-1 "fill it" preset is full on a sand and a boulder N', () => {
+    for (const N of [1.7304, 1_305_693, 2.81e10]) {
+      // The 'fill it' preset sets slider = 1 exactly; dragging to the max reaches it too.
+      expect(sliderFillsExactly(N, 1)).toBe(true);
+      // And the round-trip preset for target N lands slider = 1, hence full.
+      expect(sliderFillsExactly(N, sliderForTarget(N, N))).toBe(true);
+    }
+  });
+  it('a raw near-max slider (0.995–0.999) is PARTIAL on sand and boulders', () => {
+    for (const N of [1.7304, 1_305_693, 2.81e10]) {
+      for (const s of [0.995, 0.997, 0.999]) {
+        expect(sliderFillsExactly(N, s)).toBe(false);
+        // It really is below N — the partial branch has room to run.
+        expect(sliderTargetCount(N, s)).toBeLessThan(N);
+      }
+    }
+  });
+  it('the count-1 and half presets are never mistaken for full', () => {
+    const N = 1321.3;
+    expect(sliderFillsExactly(N, sliderForTarget(N, 1))).toBe(false);
+    expect(sliderFillsExactly(N, Math.pow(0.5, 1 / COMPARE_TUNABLES.sliderGamma))).toBe(false);
+  });
+});
+
 describe('pour schedule + caps', () => {
   it('carry conserves: one summed second at rate 110 yields 110 (spawns + carry)', () => {
     let carry = 0;
@@ -345,31 +433,46 @@ describe('phase machine', () => {
     'brim',
     'melting',
     'raining',
+    'spilling',
     'complete',
   ];
 
-  it('traverses the full §1.4 arc', () => {
+  it('traverses the full marble arc through the overflow spill', () => {
     expect(nextPhase('idle', 'commit')).toBe('loading');
     expect(nextPhase('loading', 'ready')).toBe('settling');
     expect(nextPhase('settling', 'pour')).toBe('pouring');
     expect(nextPhase('pouring', 'brim-hit')).toBe('brim');
     expect(nextPhase('brim', 'melt-start')).toBe('melting');
     expect(nextPhase('melting', 'melt-open')).toBe('raining');
-    expect(nextPhase('raining', 'fill-complete')).toBe('complete');
+    expect(nextPhase('raining', 'top-out')).toBe('spilling'); // P4: raining spills now
+    expect(nextPhase('spilling', 'fill-complete')).toBe('complete');
     expect(nextPhase('complete', 'reset')).toBe('loading');
   });
-  it('pouring ⇄ settling loop', () => {
+  it('pouring ⇄ settling loop (partial targets, marbles + sand)', () => {
     expect(nextPhase('pouring', 'target-met')).toBe('settling');
     expect(nextPhase('settling', 'pour')).toBe('pouring');
   });
-  it('boulders/sand path: pouring → fill-complete → complete', () => {
+  it('sand full fill: pouring → top-out → spilling → complete', () => {
+    expect(nextPhase('pouring', 'top-out')).toBe('spilling');
+    expect(nextPhase('spilling', 'fill-complete')).toBe('complete');
+  });
+  it('boulders keep the direct pouring → fill-complete → complete edge (no spill)', () => {
+    // Boulders have no mouth and never spill: the last body completes straight
+    // from pouring. The edge exists ONLY from pouring + spilling — every other
+    // phase rejects fill-complete.
     expect(nextPhase('pouring', 'fill-complete')).toBe('complete');
-    // the edge exists ONLY from pouring — every other phase rejects fill-complete
-    // except raining (the marble path), which keeps its own edge.
     expect(nextPhase('settling', 'fill-complete')).toBeNull();
     expect(nextPhase('brim', 'fill-complete')).toBeNull();
     expect(nextPhase('melting', 'fill-complete')).toBeNull();
-    expect(nextPhase('raining', 'fill-complete')).toBe('complete');
+    expect(nextPhase('raining', 'fill-complete')).toBeNull(); // P4: raining exits via top-out
+    expect(nextPhase('spilling', 'fill-complete')).toBe('complete');
+  });
+  it('top-out is legal only from pouring (sand) and raining (marbles)', () => {
+    expect(nextPhase('pouring', 'top-out')).toBe('spilling');
+    expect(nextPhase('raining', 'top-out')).toBe('spilling');
+    expect(nextPhase('settling', 'top-out')).toBeNull();
+    expect(nextPhase('brim', 'top-out')).toBeNull();
+    expect(nextPhase('spilling', 'top-out')).toBeNull();
   });
   it('commit is legal from EVERY phase and lands in loading', () => {
     for (const phase of ALL_PHASES) expect(nextPhase(phase, 'commit')).toBe('loading');
@@ -413,6 +516,13 @@ describe('Esc cascade', () => {
     const active: ComparePhase[] = ['pouring', 'melting', 'raining'];
     for (const phase of active)
       expect(escIntent({ pickerOpen: false, endCardShown: false, phase })).toBe('pause-pour');
+  });
+  it('spilling skips straight to the card (Esc mirrors the tap-to-skip)', () => {
+    // The fill is logically done during the overflow garnish, so Esc jumps to the
+    // card (fires fill-complete) rather than leaving — matching a canvas tap.
+    expect(escIntent({ pickerOpen: false, endCardShown: false, phase: 'spilling' })).toBe(
+      'skip-spill',
+    );
   });
   it('otherwise leave the mode', () => {
     const idlePhases: ComparePhase[] = ['idle', 'loading', 'settling', 'brim', 'complete'];

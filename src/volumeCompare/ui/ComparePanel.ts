@@ -42,8 +42,11 @@ export interface ComparePanelState {
   container: string;
   filler: string;
   comparison: Comparison;
-  /** Whether the pour controls show (marbles/boulders) or hide (sub-unity/sand). */
+  /** Whether the pour controls show (marbles/boulders/sand) or hide (sub-unity). */
   pourable: boolean;
+  /** Whether the melt controls (Melt affordance + Auto-melt toggle) show. Sand
+   *  hides them — a liquid-like fill never packs, so there is nothing to melt. */
+  showMeltControls: boolean;
   /** Preset buttons for this regime: labelled keys in display order. */
   presets: { key: PresetKey; label: string }[];
 }
@@ -125,8 +128,14 @@ export class ComparePanel {
       }
     }
 
-    // Pour controls: hidden for sub-unity + non-pourable regimes.
+    // Pour controls: hidden for the sub-unity teaser only.
     this.get('compare-pour')?.classList.toggle('off', !state.pourable);
+    // Melt controls (the brim Melt affordance + the Auto-melt toggle/ⓘ) hide for
+    // sand — its fill is liquid-like and never packs.
+    this.get('compare-melt')?.classList.toggle('melt-hidden', !state.showMeltControls);
+    this.get('compare-automelt-row')?.classList.toggle('melt-hidden', !state.showMeltControls);
+    const explain = this.get('compare-automelt-explain');
+    if (explain && !state.showMeltControls) explain.style.display = 'none';
 
     // Presets rebuilt per regime (boulders read "1 · half · fill it").
     const presets = this.get('compare-presets');
@@ -170,24 +179,23 @@ export class ComparePanel {
     this.setText('compare-status', show ? text : '');
   }
 
-  /** The brim Melt affordance: shown + pulsing while the pile waits to be reconciled. */
-  showMelt(show: boolean): void {
+  /** The brim Melt affordance: shown + pulsing while the pile waits to be reconciled.
+   *  On the mobile bar this also reveals the conditional row 4 (Melt + Auto-melt),
+   *  keeping the protected brim→Melt moment first-class without growing the bar
+   *  the rest of the time. */
+  showMelt(show: boolean, rowLive: boolean = show): void {
     const melt = this.get('compare-melt');
     melt?.classList.toggle('on', show);
     melt?.classList.toggle('pulse', show);
+    // The mobile row-4 (Melt + Auto-melt, one conditional unit) stays live from brim
+    // THROUGH melting and only drops at raining, so it never vanishes mid-melt; the
+    // Melt button itself still hides the moment melting starts (show=false).
+    this.get('compare-panel')?.classList.toggle('melt-live', rowLive);
   }
 
   setAutoMelt(on: boolean): void {
     const auto = this.get('compare-automelt-toggle') as HTMLInputElement | null;
     if (auto) auto.checked = on;
-  }
-
-  /** A plain note under the count (the sand-regime "coming later" line). null hides. */
-  setNote(text: string | null): void {
-    const note = this.get('compare-note');
-    if (!note) return;
-    note.classList.toggle('on', text !== null);
-    note.textContent = text ?? '';
   }
 
   /** The sub-unity teaser sub-line ("the other way round: 1,321 fit — tap ⇄"). */
@@ -206,12 +214,15 @@ export class ComparePanel {
     }
   }
 
-  /** Fill + show the end card (null hides it). */
+  /** Fill + show the end card (null hides it). On the mobile bar the card is a
+   *  bottom sheet — hide the bar under it (its controls are inert at complete;
+   *  Pour again lives on the card), so the sheet is the only bottom occluder. */
   showEndCard(model: EndCardModel | null): void {
     const card = this.get('compare-endcard');
     if (!card) return;
     if (!model) {
       card.classList.remove('visible');
+      this.get('compare-panel')?.classList.remove('bar-hidden');
       return;
     }
     this.setText('compare-endcard-headline', model.headline);
@@ -247,6 +258,7 @@ export class ComparePanel {
       });
     }
     card.classList.add('visible');
+    this.get('compare-panel')?.classList.add('bar-hidden');
   }
 
   isEndCardShown(): boolean {

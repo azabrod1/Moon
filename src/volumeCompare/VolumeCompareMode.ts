@@ -17,6 +17,8 @@ import { DEG2RAD } from '../shared/math/angles';
 import {
   CompareScene,
   VC_FRAMING,
+  CONTAINER_R,
+  LIQUID_RIM_Y,
   defaultOrbitDistance,
   tallSceneDistance,
   SUB_UNITY_LOOM_RF,
@@ -34,7 +36,10 @@ import {
   escIntent,
   sliderTargetCount,
   sliderForTarget,
+  sliderFillsExactly,
   targetReached,
+  liquidAtRim,
+  sandGrainBudget,
   brimStats,
   endCardModel,
   formatCount,
@@ -60,12 +65,6 @@ const SUB_UNITY_MAX_DISTANCE = 30; // controls.maxDistance while a sub-unity pos
 // in the right two-thirds (negative → vessel shifts right). Desktop only; applied
 // as a pan (target + camera together) so the distance-keyed resize is indifferent.
 const CARD_PAN_X = -0.55;
-// On a ≤640px phone the top panel covers the mouth and the molten pool during
-// the active arc: pan the view up (target + camera together, same trick as the
-// card pan) so the mouth + liquid surface ride in the lower ~55% of the
-// viewport. Released on complete — the end-card bottom sheet wants the vessel
-// back in the upper band.
-const POUR_PAN_Y = 0.55;
 
 export interface CompareDevState {
   pair: [string, string] | null;
@@ -92,6 +91,15 @@ export interface CompareDevState {
   boulderMeshes: number;
   /** Mouth iris (0 sealed closed sphere → 1 open) — seals at idle/brim/complete. */
   mouthOpen: number;
+  /** Live sand grains (stream + spill) this frame — 0 when the pool is cleared. */
+  grainsLive: number;
+  /** The eased liquid render level (height above the bottom pole) — QA rim clearance. */
+  liquidLevelY: number;
+  /** Measured band bottom (px from viewport top): the occluder's top edge, or 0
+   *  on desktop. QA asserts the vessel box clears this. */
+  bandTopPx: number;
+  /** The vessel's projected screen box (px) — QA asserts bottom < bandTopPx. */
+  vesselBox: { top: number; bottom: number; left: number; right: number };
 }
 
 export class VolumeCompareMode {
@@ -124,10 +132,13 @@ export class VolumeCompareMode {
   private brimAtHit: BrimStats | null = null;
   private brimPileSize = 0;
   private cardPresented = false; // the end card auto-shows once; a dismiss must stick
+  private spilled = false; // the overflow spill ran (its endCardDelayS already spent)
   private cardPanX = 0; // eased horizontal pan while the plaque is up
   private appliedPanX = 0; // pan already applied to target + camera (a delta each frame)
-  private pourPanY = 0; // eased vertical pan during a phone pour (POUR_PAN_Y)
+  private pourPanY = 0; // eased vertical pan centring the vessel in the measured band
   private appliedPanY = 0; // vertical pan already applied (a delta each frame)
+  private measuredBandTopPx = 0; // top edge of the bottom occluder (bar/sheet); 0 = desktop
+  private vesselCenterScratch = new THREE.Vector3();
   private panelClock = 0;
   // The live-pile cap the brim check reads — marbleTotalCap scaled once at
   // activate (mobileCapScale on ≤640px phones, matching the scene's spawn caps).
@@ -140,7 +151,6 @@ export class VolumeCompareMode {
   };
 
   private fpsSamples: number[] = [];
-  private cameraWorldPos = new THREE.Vector3();
   private lastDefaultDistance: number = VC_FRAMING.distance;
 
   private topBarPrevDisplay: string | null = null;
@@ -150,13 +160,44 @@ export class VolumeCompareMode {
     if (e.key === 'Escape') this.escCascade();
   };
 
+  // Tap-to-skip: a quick tap on the scene during the overflow spill jumps
+  // straight to the end card (the particles finish falling under it). A drag
+  // (orbit) is excluded by the small movement threshold.
+  private domElement: HTMLElement;
+  private tapStart: { x: number; y: number; t: number } | null = null;
+  private dragging = false; // a canvas drag (orbit) is in progress — freeze the measured pan
+  private handlePointerDown = (e: PointerEvent) => {
+    if (!this.active) return;
+    this.tapStart = { x: e.clientX, y: e.clientY, t: performance.now() };
+    this.dragging = true;
+  };
+  // Shared drag-end: clears the framing freeze + tap state. Wired to pointercancel,
+  // lostpointercapture, and window blur (pointerup runs it too, after its tap check)
+  // so an interrupted gesture can never leave the measured mobile framing frozen.
+  private clearDrag = () => {
+    this.dragging = false;
+    this.tapStart = null;
+  };
+  private handlePointerUp = (e: PointerEvent) => {
+    const tap = this.tapStart;
+    this.clearDrag();
+    if (!this.active || !tap) return;
+    const moved = Math.hypot(e.clientX - tap.x, e.clientY - tap.y);
+    const dt = performance.now() - tap.t;
+    if (moved < 8 && dt < 400 && this.session.phase === 'spilling') this.fire('fill-complete');
+  };
+
+  private useBloom: boolean;
+
   constructor(
     scene: THREE.Scene,
     camera: THREE.PerspectiveCamera,
     renderer: THREE.WebGLRenderer,
-    _useBloom: boolean,
+    useBloom: boolean,
   ) {
     this.camera = camera;
+    this.useBloom = useBloom;
+    this.domElement = renderer.domElement;
     this.compareScene = new CompareScene(scene, renderer);
     this.panel = new ComparePanel({
       onLeave: () => this.requestExit(),
@@ -221,15 +262,22 @@ export class VolumeCompareMode {
     this.compareScene.setVisible(true);
     this.controls.enabled = true;
     window.addEventListener('keydown', this.handleKeyDown);
+    this.domElement.addEventListener('pointerdown', this.handlePointerDown);
+    this.domElement.addEventListener('pointerup', this.handlePointerUp);
+    this.domElement.addEventListener('pointercancel', this.clearDrag);
+    this.domElement.addEventListener('lostpointercapture', this.clearDrag);
+    window.addEventListener('blur', this.clearDrag);
     this.fpsSamples.length = 0;
 
     // Phones get lighter physics caps — captured once per activation (a mid-pour
     // desktop resize keeps its caps; re-entering the mode re-reads the width).
-    const capScale = window.matchMedia('(max-width: 640px)').matches
-      ? COMPARE_TUNABLES.mobileCapScale
-      : 1;
+    const isMobile = window.matchMedia('(max-width: 640px)').matches;
+    const capScale = isMobile ? COMPARE_TUNABLES.mobileCapScale : 1;
     this.compareScene.setCapScale(capScale);
     this.liveCapTotal = COMPARE_TUNABLES.marbleTotalCap * capScale;
+    // Two sand-grain tiers, one boolean: weak (no-bloom OR mobile) halves the
+    // pool so the signals never stack down to a quarter. Activation-captured.
+    this.compareScene.setGrainBudget(sandGrainBudget(this.useBloom, isMobile));
 
     this.slider = 0;
     this.paused = false;
@@ -246,6 +294,14 @@ export class VolumeCompareMode {
     if (ui) ui.style.display = 'none';
     this.controls.enabled = false;
     window.removeEventListener('keydown', this.handleKeyDown);
+    this.domElement.removeEventListener('pointerdown', this.handlePointerDown);
+    this.domElement.removeEventListener('pointerup', this.handlePointerUp);
+    this.domElement.removeEventListener('pointercancel', this.clearDrag);
+    this.domElement.removeEventListener('lostpointercapture', this.clearDrag);
+    window.removeEventListener('blur', this.clearDrag);
+    this.clearDrag(); // clear the framing freeze + tap state explicitly on exit
+    // Synchronously clear any live grains/spill so nothing lingers into the next entry.
+    this.compareScene.cancelTransients();
 
     const topBar = document.getElementById('top-bar');
     if (topBar) topBar.style.display = this.topBarPrevDisplay ?? '';
@@ -270,10 +326,9 @@ export class VolumeCompareMode {
   update(dt: number): void {
     if (!this.active) return;
     this.applyCardPan(dt);
-    this.applyPourPan(dt);
+    this.applyMeasuredFraming(dt);
     this.controls.update();
-    this.camera.getWorldPosition(this.cameraWorldPos);
-    this.compareScene.update(this.cameraWorldPos);
+    this.compareScene.update(this.camera);
 
     if (this.texturesReady && !this.comparison.subUnity) {
       const ctl = this.pourControl();
@@ -312,31 +367,85 @@ export class VolumeCompareMode {
   }
 
   /**
-   * On a ≤640px phone the top panel covers the mouth and the molten pool — the
-   * money shot. While anything is in the vessel (an active pour, the brim wait,
-   * the melt, the rain, or a settled pile), pan the view up so the mouth and the
-   * liquid surface ride in the lower ~55% of the viewport; released on
-   * complete/reset/commit (the end-card bottom sheet wants the vessel back in
-   * the upper band). Same equal-translation trick as the card pan, so zoom and
-   * the distance-keyed resize are indifferent.
+   * MEASURED framing (replaces the old fixed applyPourPan): on a ≤640px phone the
+   * pour panel is a bottom bar (and the end card a bottom sheet), so the visible
+   * band runs from the viewport top down to the top edge of whichever bottom
+   * occluder is up — the end-card sheet if shown, else the bar. Pan the vessel UP
+   * so it centres in that band and never sits behind the bar. The magnitude is
+   * measured from the occluder's top edge and the current distance (the vertical
+   * projection factor P11 = projectionMatrix[1][1]) rather than a fixed guess, so
+   * it re-tracks the row-4 grow, the card open/close, and resize. Same
+   * equal-translation trick as the card pan (target + camera together), so zoom
+   * and the distance-keyed resize stay indifferent. Desktop keeps the top-right
+   * panel + horizontal applyCardPan and gets no vertical pan.
    */
-  private applyPourPan(dt: number): void {
-    const phone = window.innerWidth <= 640;
-    const phase = this.session.phase;
-    const activeArc =
-      phase === 'pouring' ||
-      phase === 'brim' ||
-      phase === 'melting' ||
-      phase === 'raining' ||
-      (phase === 'settling' && (this.lastStatus?.poured ?? 0) > 0);
-    const want = phone && !this.comparison.subUnity && activeArc ? POUR_PAN_Y : 0;
-    this.pourPanY += (want - this.pourPanY) * (1 - Math.exp(-dt / 0.25)); // ~0.7 s ease
+  private applyMeasuredFraming(dt: number): void {
+    this.remeasureBand();
+    let wantPanY = this.pourPanY; // hold by default (desktop, sub-unity, or mid-drag)
+    // Freeze while the user is orbiting so the centring never fights a vertical
+    // drag; resume centring the moment they let go.
+    if (window.innerWidth <= 640 && !this.comparison.subUnity && !this.dragging) {
+      const vh = window.innerHeight || 1;
+      const barTop = this.measuredBandTopPx > 0 ? this.measuredBandTopPx : vh;
+      const desiredCentrePx = barTop / 2; // centre of the band [0, barTop]
+      // Measure the ACTUAL projected vessel centre (includes the pan applied so
+      // far) and drive it to the band centre — a feedback loop, so it is exact
+      // regardless of the elevation/target baseline the analytic pan mis-estimated.
+      const box = this.vesselScreenBox();
+      const errPx = (box.top + box.bottom) / 2 - desiredCentrePx; // + → vessel too low
+      const p11 = this.camera.projectionMatrix.elements[5] || 2.7;
+      const worldPerPx = this.lastDefaultDistance / (p11 * vh * 0.5);
+      wantPanY = this.pourPanY - errPx * worldPerPx; // pan up (−) to lift a low vessel
+    } else if (window.innerWidth > 640 || this.comparison.subUnity) {
+      wantPanY = 0; // desktop / sub-unity: no vertical pan (applyCardPan owns the card)
+    }
+    this.pourPanY += (wantPanY - this.pourPanY) * (1 - Math.exp(-dt / 0.25)); // ~0.7 s ease
     const delta = this.pourPanY - this.appliedPanY;
     if (Math.abs(delta) > 1e-6) {
       this.controls.target.y += delta;
       this.camera.position.y += delta;
       this.appliedPanY = this.pourPanY;
     }
+  }
+
+  /**
+   * Measure the top edge (px from the viewport top) of the bottom occluder — the
+   * end-card sheet if it is up (the bar hides under it), else the pour bar. 0 on
+   * desktop (no bottom occluder, no vertical pan). One layout read per frame; the
+   * DOM is otherwise stable so it stays cheap (ObservatoryHUD measure precedent).
+   */
+  private remeasureBand(): void {
+    if (window.innerWidth > 640) {
+      this.measuredBandTopPx = 0;
+      return;
+    }
+    const vh = window.innerHeight || 1;
+    if (this.panel.isEndCardShown()) {
+      const card = document.querySelector('.compare-endcard-card') as HTMLElement | null;
+      if (card) {
+        this.measuredBandTopPx = card.getBoundingClientRect().top;
+        return;
+      }
+    }
+    const bar = document.getElementById('compare-panel');
+    this.measuredBandTopPx = bar ? bar.getBoundingClientRect().top : vh;
+  }
+
+  /** The vessel's projected screen box (px) — QA asserts it clears the bar. */
+  private vesselScreenBox(): { top: number; bottom: number; left: number; right: number } {
+    const vw = window.innerWidth || 1;
+    const vh = window.innerHeight || 1;
+    // Refresh the camera matrices so the projection reflects THIS frame's pose
+    // (updateMatrixWorld sets matrixWorld; project reads matrixWorldInverse).
+    this.camera.updateMatrixWorld();
+    this.camera.matrixWorldInverse.copy(this.camera.matrixWorld).invert();
+    this.vesselCenterScratch.set(0, 0, 0).project(this.camera);
+    const cx = (this.vesselCenterScratch.x * 0.5 + 0.5) * vw;
+    const cy = (1 - (this.vesselCenterScratch.y * 0.5 + 0.5)) * vh;
+    const dist = Math.max(0.001, this.camera.position.length()); // camera → vessel (origin)
+    const p11 = this.camera.projectionMatrix.elements[5] || 2.7;
+    const rPx = (p11 * 1) / dist * (vh / 2); // studio R = 1
+    return { top: cy - rPx, bottom: cy + rPx, left: cx - rPx, right: cx + rPx };
   }
 
   /** Phase + slider + pause → the scene's per-frame commands. */
@@ -383,17 +492,28 @@ export class VolumeCompareMode {
     switch (this.session.phase) {
       case 'settling':
         // Pour whenever the target is unmet, judged per regime (targetReached):
-        // marbles floor the target to whole balls (the same floor as target-met,
-        // or the two ping-pong); boulders compare the fractional melt volume, so
-        // "half" of a 1.73 pair (0.865) pours and a 0.3 → 0.7 raise pours the
-        // delta. Sand never pours here — the honest note owns that pair.
-        if (this.comparison.regime !== 'sand' && !targetReached(target, s.poured, this.comparison.regime)) {
+        // marbles + sand floor the target to whole balls (the same floor as
+        // target-met, or the two ping-pong); boulders compare the fractional melt
+        // volume, so "half" of a 1.73 pair (0.865) pours and a 0.3 → 0.7 raise
+        // pours the delta. Sand pours the stream now (P4 — the note is gone).
+        if (!targetReached(target, s.poured, this.comparison.regime)) {
           this.fire('pour');
         }
         break;
       case 'pouring':
         if (this.comparison.regime === 'boulders') {
           if (s.bouldersDone) this.fire(this.sliderAtFillIt() ? 'fill-complete' : 'target-met');
+        } else if (this.comparison.regime === 'sand') {
+          // Sand: a full fill leaves via the VISUAL rim (top-out → spilling); a
+          // partial target settles back (no card), exactly like a marble partial.
+          if (this.sliderAtFillIt()) {
+            if (s.fillFraction >= 1 - 1e-3 && liquidAtRim(s.liquidLevelY, LIQUID_RIM_Y, CONTAINER_R)) {
+              this.compareScene.topOffSand();
+              this.fire('top-out');
+            }
+          } else if (targetReached(target, s.poured, 'sand')) {
+            this.fire('target-met');
+          }
         } else if (targetReached(target, s.poured, this.comparison.regime)) {
           // Marbles reach floor(target) — poured is a whole-ball count, and a
           // fractional target (e.g. 287.6) would otherwise strand the pour at 287
@@ -429,22 +549,30 @@ export class VolumeCompareMode {
       case 'raining': {
         // Whole marbles fill only floor(N)/N (no fractional ball), so completion
         // is "every whole ball poured and melted, the pile empty" — then top the
-        // last fractional ball-volume off so the liquid reads exactly full.
+        // last fractional ball-volume off so the liquid reads exactly full. The
+        // overflow spill waits for the VISUAL rim (the 0.35 s level ease trails
+        // the count), so it can't fire before the surface arrives.
         const nFloor = Math.floor(n + 1e-9);
         if (s.poured >= nFloor - 0.5 && s.live === 0 && s.melted >= nFloor - 0.5) {
           this.compareScene.topOffLiquid();
-          this.fire('fill-complete');
+          if (liquidAtRim(s.liquidLevelY, LIQUID_RIM_Y, CONTAINER_R)) this.fire('top-out');
         }
         break;
       }
-      case 'complete':
+      case 'spilling':
+        // The overflow garnish runs; the end-card delay is spent here (so the
+        // card presents right at complete). A tap skips straight to the card.
         this.endCardTimer += dt;
-        // Auto-present once; a dismiss (Esc / ✕) must stick — never re-raise it.
-        // Defers while the picker is open (one modal at a time) and presents the
-        // moment it closes.
+        if (this.endCardTimer >= COMPARE_TUNABLES.endCardDelayS) this.fire('fill-complete');
+        break;
+      case 'complete':
+        // Boulders arrive here with no spill beat, so they still wait the delay;
+        // marbles/sand already spent it in `spilling` (this.spilled). Auto-present
+        // once; a dismiss (Esc / ✕) must stick. Defers while the picker is open.
+        this.endCardTimer += dt;
         if (
           !this.cardPresented &&
-          this.endCardTimer >= COMPARE_TUNABLES.endCardDelayS &&
+          this.endCardTimer >= (this.spilled ? 0 : COMPARE_TUNABLES.endCardDelayS) &&
           !this.picker.isOpen()
         ) {
           this.cardPresented = true;
@@ -468,6 +596,18 @@ export class VolumeCompareMode {
         this.panel.showMelt(true);
         break;
       case 'melting':
+        // Hide the Melt button (melt started) but KEEP the row-4 unit live through
+        // melting — the brief keeps Melt/Auto-melt present across brim AND melting.
+        this.panel.showMelt(false, true);
+        break;
+      case 'raining':
+        this.panel.showMelt(false, false); // reconcile underway — drop the row-4 unit
+        break;
+      case 'spilling':
+        // The overflow garnish (marbles AND sand); the end-card delay runs here.
+        this.spilled = true;
+        this.endCardTimer = 0;
+        this.compareScene.beginSpill();
         this.panel.showMelt(false);
         break;
       case 'complete':
@@ -478,7 +618,11 @@ export class VolumeCompareMode {
   }
 
   private sliderAtFillIt(): boolean {
-    return this.slider >= 0.995;
+    // Full ONLY when the target is exactly N (the "fill it" preset lands slider = 1,
+    // and dragging to the max reaches it). A raw near-max drag (0.995–0.999) targets
+    // ~98.9%–99.8% of N, so it settles quietly as a partial — no brim/card, and sand
+    // never hangs in `pouring` waiting for a top-out its sub-N target can't reach.
+    return sliderFillsExactly(this.comparison.n, this.slider);
   }
 
   // ---- panel refresh (~10 Hz) ---------------------------------------------
@@ -491,9 +635,10 @@ export class VolumeCompareMode {
   }
 
   private odometerText(s: PourStatus): string {
-    // Boulders report a fractional melted volume (matches the ratio voice);
-    // marbles/sand count whole balls.
-    return this.comparison.regime === 'boulders' ? formatCount(s.poured) : formatOdometer(s.poured);
+    // Marbles count whole balls (formatOdometer). Boulders + sand run the tiered
+    // ratio voice (formatCount): the sand odometer decelerates into its landing
+    // and its final string equals the headline (both formatCount(N)).
+    return this.comparison.regime === 'marbles' ? formatOdometer(s.poured) : formatCount(s.poured);
   }
 
   /** The ghost ring previews the target level and hides once it is satisfied. */
@@ -536,6 +681,9 @@ export class VolumeCompareMode {
         return 'melting…';
       case 'raining':
         return 'still pouring — new arrivals melt in';
+      case 'spilling':
+      case 'complete':
+        return 'full to the brim';
       default:
         return '';
     }
@@ -615,6 +763,11 @@ export class VolumeCompareMode {
       case 'pause-pour':
         this.setPaused(true);
         break;
+      case 'skip-spill':
+        // The overflow garnish is cosmetic — jump straight to the card, exactly
+        // like a canvas tap during spilling (the grains finish falling under it).
+        this.fire('fill-complete');
+        break;
       case 'leave':
         this.requestExit();
         break;
@@ -684,6 +837,10 @@ export class VolumeCompareMode {
     const gen = this.session.generation;
     this.texturesReady = false;
     this.resetPourState();
+    // Synchronously kill any live grains/spill BEFORE the async texture load — the
+    // update loop stops driving the pool while texturesReady is false, so without
+    // this the old pair's grains would freeze visibly through the load window.
+    this.compareScene.cancelTransients();
 
     this.panel.render(this.panelState());
     this.panel.showEndCard(null);
@@ -714,6 +871,7 @@ export class VolumeCompareMode {
     this.brimAtHit = null;
     this.brimPileSize = 0;
     this.cardPresented = false;
+    this.spilled = false;
     this.lastStatus = null;
     this.panel.setSliderValue(0);
     this.panel.showMelt(false);
@@ -731,14 +889,6 @@ export class VolumeCompareMode {
       this.panel.setTeaser(null);
       this.controls.maxDistance = VC_FRAMING.maxDistance;
     }
-    // Sand pairs are not pourable in P3 (P4 owns the stream). Keep the panel
-    // alive with an honest note so the pair is never a dead end — swap + picker
-    // stay on the sentence.
-    this.panel.setNote(
-      !this.comparison.subUnity && this.comparison.regime === 'sand'
-        ? 'Too many to pour one by one — the sand pour is coming.'
-        : null,
-    );
     this.compareScene.setGhostTarget(0, this.fillerColor());
     this.frameForComparison();
   }
@@ -750,7 +900,11 @@ export class VolumeCompareMode {
   }
 
   private panelState() {
-    const pourable = !this.comparison.subUnity && this.comparison.regime !== 'sand';
+    // Sand is pourable now (the stream). Only the sub-unity teaser hides the pour
+    // controls. Sand HIDES the melt controls (Melt affordance + Auto-melt toggle):
+    // a liquid-like fill never packs, so the pack-then-melt story doesn't apply.
+    const pourable = !this.comparison.subUnity;
+    const showMeltControls = this.comparison.regime !== 'sand';
     const presets: { key: PresetKey; label: string }[] =
       this.comparison.regime === 'boulders'
         ? [
@@ -763,7 +917,14 @@ export class VolumeCompareMode {
             { key: 'half', label: 'half' },
             { key: 'fill', label: 'fill it' },
           ];
-    return { container: this.container, filler: this.filler, comparison: this.comparison, pourable, presets };
+    return {
+      container: this.container,
+      filler: this.filler,
+      comparison: this.comparison,
+      pourable,
+      showMeltControls,
+      presets,
+    };
   }
 
   /** D15 Reset — same pair, cheap: re-zero the sim + liquid + UI, one generation bump. */
@@ -834,7 +995,10 @@ export class VolumeCompareMode {
       // contact (it must visibly TOUCH); a side azimuth catches the key-lit belly.
       const target = new THREE.Vector3(0, 0.55, 0);
       this.controls.target.copy(target);
-      const az = -20;
+      // Azimuth biased toward the loom key (key az ≈ −37°): more of the lit,
+      // less-UV-stretched (face-on) surface fronts the camera, rotating the
+      // limb's over-minified smear off-centre.
+      const az = -33;
       const el = 2; // near-level so the wedge contact silhouettes (isn't occluded by the vessel top)
       let dist = defaultOrbitDistance(aspect) * 1.55;
       // Guard: keep the camera OUTSIDE the giant filler (a fixed pull sits inside
@@ -912,6 +1076,12 @@ export class VolumeCompareMode {
     return true;
   }
 
+  /** Tap-to-skip the overflow spill (QA parity with a scene tap). */
+  devSkip(): boolean {
+    if (this.session.phase === 'spilling') this.fire('fill-complete');
+    return this.session.phase === 'complete';
+  }
+
   devEsc(): void {
     this.escCascade();
   }
@@ -945,6 +1115,10 @@ export class VolumeCompareMode {
       endCardShown: this.panel.isEndCardShown(),
       boulderMeshes: this.compareScene.visibleBoulderMeshes(),
       mouthOpen: this.compareScene.mouthOpenAmount(),
+      grainsLive: this.compareScene.grainsLive(),
+      liquidLevelY: s?.liquidLevelY ?? 0,
+      bandTopPx: this.measuredBandTopPx,
+      vesselBox: this.vesselScreenBox(),
     };
   }
 

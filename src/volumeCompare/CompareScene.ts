@@ -40,6 +40,7 @@ import {
   capHeightForVolume,
   pourBudget,
   spawnAllowance,
+  sandFillFraction,
   type Comparison,
   type FillRegime,
   type SpawnCaps,
@@ -47,7 +48,7 @@ import {
 
 // --- studio scale + framing ------------------------------------------------
 // The container's inner radius is 1 unit; the glass shells sit exactly there.
-const CONTAINER_R = 1.0;
+export const CONTAINER_R = 1.0;
 // Camera framing (the mode applies these to the camera + its OrbitControls).
 export const VC_FRAMING = {
   /** Start orbit: gentle 20° elevation. `distance` is the wide-screen default —
@@ -167,6 +168,9 @@ const ATMOSPHERE_GHOST_ALPHA = 0.3;
 // ring reads against the shell rather than z-fighting it. Cap-volume math uses
 // this radius, never the container R (standing ruling).
 const R_LIQ = 0.995;
+// The rendered liquid height (above the bottom pole) at a full fill — the rim the
+// visual top-out trigger (liquidAtRim) watches for. A full sphere cap is 2·R_liq.
+export const LIQUID_RIM_Y = 2 * R_LIQ;
 // The rendered liquid volume is the logical fillFraction (= melted / N) scaled
 // by this R_liq sphere volume, so the liquid tops the vessel exactly when
 // melted = N. Feeding raw ball volumes (V_container / N each) here instead
@@ -216,6 +220,43 @@ const DRAIN_MAX_PER_FRAME = 40;
 const RIPPLE_POOL = 24;
 const RIPPLE_LIFE = 0.5;
 const RIPPLE_MAX_R = 0.09; // studio units at full expansion (a small splash flash)
+
+// --- sand grains (the pour stream + the overflow spill) --------------------
+// One THREE.Points pool of lit sphere-impostors, allocated at the FULL-tier
+// capacity and disposed once. The tier budget (sandGrainBudget) bounds how many
+// are ever live; unused slots sit dead (aAge ≥ aLife → 0 px). Both the stream
+// and the spill draw from this one pool.
+const GRAIN_CAPACITY = 3000;
+// Grains never render at the true single-body radius (a sub-pixel sliver at this
+// scale) — they read as sand at a small studio size, jittered, with the ≥1px·dpr
+// floor carrying them at distance (the starfield idiom). Sized so the tight core
+// reads as a solid ribbon at the showroom camera distance.
+const GRAIN_SIZE_MIN = 0.014;
+const GRAIN_SIZE_MAX = 0.028;
+// The spill grains read a touch larger so the garnish is legible at the rim.
+const SPILL_SIZE_MIN = 0.02;
+const SPILL_SIZE_MAX = 0.034;
+// Studio gravity for the falling column + the spill arc (units/s²) — tuned so a
+// full-height pour reads as a quick sand fall, not a slow drift.
+const GRAIN_GRAVITY = 6.5;
+// The stream spawns across a gaussian disc this fraction of the mouth radius —
+// a TIGHT dense core (most grains on the axis, a few strays) so the column reads
+// as a continuous ribbon, not drifting dust (display-only cross-section).
+const STREAM_DISC_FRAC = 0.32;
+// Stream throughput (grains/sec) while pouring — high enough that the tight core
+// reads as a solid ribbon; the round-robin cap bounds the live count so a short
+// fall never overflows the pool.
+const STREAM_RATE = 1900;
+// Impact plume: grains/sec kicked up + out from the contact while the stream is
+// live (a persistent splash marking where the column meets the pool). Short
+// lives keep only a few dozen alive at once.
+const PLUME_RATE = 130;
+// A slot band reserved for the spill + plume so a dense stream can't starve them.
+const SPILL_RESERVE = 220;
+// The overflow spill: a restrained garnish, ~40 grains over ~1.5 s at the rim.
+const SPILL_COUNT = 40;
+const SPILL_EMIT_S = 1.5;
+const SPILL_GRAIN_LIFE = 1.5;
 
 // --- instanced fillers -----------------------------------------------------
 const INSTANCE_CAPACITY = 4000;
@@ -379,6 +420,9 @@ uniform vec3 uPalette2;
 uniform vec3 uPalette3;
 uniform vec3 uCam;        // camera world position — the disc's wet specular lobe
 uniform vec3 uSunDir;     // key direction for the sheen
+uniform vec3 uContainerTint0; // container palette stops — the at-rest melt-identity bands
+uniform vec3 uContainerTint1;
+uniform float uContainerMix;  // 0 when the container has no map (the Sun skip)
 float lqHash(vec2 p){ return fract(sin(dot(p, vec2(127.1,311.7)))*43758.5453); }
 float lqNoise(vec2 p){
   vec2 i=floor(p), f=fract(p); f=f*f*(3.0-2.0*f);
@@ -427,6 +471,11 @@ void main(){
   vec3 warm = vec3(0.85, 0.4, 0.12);
   float glow = depth * depth * uHeat; // concentrated low, gone by the surface
   vec3 col = mix(crust, warm, glow * 0.75);
+  // Melt-identity whisper on the wall too (latitude bands along object y) — the
+  // same at-rest-only gate as the disc, so the molten look never changes.
+  float restId = (1.0 - smoothstep(0.16, 0.3, uHeat)) * uContainerMix;
+  float cBand = smoothstep(0.35, 0.65, lqNoise(vec2(vObjPos.y * 4.0, 2.3)));
+  col = mix(col, mix(uContainerTint0, uContainerTint1, cBand), restId * 0.09);
   // Wet specular sheen on the wall so the at-rest pool reads as molten liquid,
   // not matte clay (below the bloom threshold).
   vec3 N = normalize(vWorldNormal + vec3((detail - 0.5) * 0.25, 0.0, (m - 0.5) * 0.25));
@@ -467,6 +516,13 @@ void main(){
   // whole surface). ~1.2–1.8 at full heat, near-off at rest.
   vec3 crackGlow = vec3(1.0, 0.55, 0.2) * veins * (0.25 + 1.45 * uHeat);
   vec3 col = crust + crackGlow;
+  // Melt-identity whisper (at rest only): a low-alpha band tint of the CONTAINER's
+  // palette across the pool, so the resting surface still says which vessel it
+  // fills. Gated hard off while molten (uHeat → 1 kills it, so the melt look is
+  // untouched) and for containers with no map (uContainerMix 0).
+  float restId = (1.0 - smoothstep(0.16, 0.3, uHeat)) * uContainerMix;
+  float cBand = smoothstep(0.35, 0.65, lqNoise(vec2(vXz.y * 3.0, 1.7)));
+  col = mix(col, mix(uContainerTint0, uContainerTint1, cBand), restId * 0.09);
   // Wet specular sheen — reads as molten LIQUID, not matte paint. The surface
   // normal is +Y perturbed by the convection, reflecting the key into the eye.
   vec3 N = normalize(vec3((detail - 0.5) * 0.55, 1.0, (cell - 0.5) * 0.55));
@@ -492,6 +548,9 @@ interface LiquidUniforms {
   uPalette3: { value: THREE.Color };
   uCam: { value: THREE.Vector3 };
   uSunDir: { value: THREE.Vector3 };
+  uContainerTint0: { value: THREE.Color };
+  uContainerTint1: { value: THREE.Color };
+  uContainerMix: { value: number };
 }
 
 // --- ripple shader (pooled additive splash quads) --------------------------
@@ -526,6 +585,86 @@ void main(){
 }
 `;
 
+// --- sand-grain shader (lit sphere-impostors on one Points object) ---------
+// Each grain is a camera-facing point sprite lit as a tiny sphere: the normal is
+// reconstructed from gl_PointCoord, lambert against the studio key with a small
+// ambient floor, per-grain colour sampled from the filler palette. Perspective
+// size attenuation with a ≥1px·dpr floor (starfield idiom); a velocity streak by
+// squashing the impostor ACROSS its screen-space motion axis (point sprites can't
+// elongate the quad, so the lit disc is compressed across the motion to read as a
+// stroke ALONG it); age fade in/out. Output stays below the 0.92 bloom threshold.
+const GRAIN_VERTEX = /* glsl */ `
+uniform float uPixelRatio;  // devicePixelRatio (the ≥1px floor is this many device px)
+uniform float uViewportH;   // drawing-buffer height, px
+uniform float uStretchK;    // velocity → streak gain
+attribute vec3 aVel;        // studio-units/s (drives the streak axis + amount)
+attribute vec3 aColor;      // per-grain palette colour
+attribute float aAge;       // seconds since spawn
+attribute float aLife;      // total lifetime (dead when aAge >= aLife)
+attribute float aSize;      // base studio radius
+varying vec3 vColor;
+varying float vFade;
+varying vec2 vStretchDir;   // screen-space motion axis (unit)
+varying float vStretch;     // 0 round → up, streaked
+void main() {
+  vColor = aColor;
+  float lifeT = aLife > 0.0 ? clamp(aAge / aLife, 0.0, 1.0) : 1.0;
+  float fadeIn = smoothstep(0.0, 0.06, lifeT);
+  float fadeOut = 1.0 - smoothstep(0.72, 1.0, lifeT);
+  vFade = fadeIn * fadeOut;
+  vec4 mvPosition = modelViewMatrix * vec4(position, 1.0);
+  gl_Position = projectionMatrix * mvPosition;
+  float dist = max(-mvPosition.z, 0.001);
+  // world diameter → framebuffer px (P[1][1] = 1/tan(fovY/2)); floor at 1 device px.
+  float px = projectionMatrix[1][1] * aSize * uViewportH / dist;
+  float dead = aAge >= aLife ? 0.0 : 1.0;
+  gl_PointSize = max(uPixelRatio, px) * dead;
+  // Screen-space motion axis: project a small step along the velocity and take
+  // the NDC delta from the grain's own NDC position.
+  vec4 aheadClip = projectionMatrix * modelViewMatrix * vec4(position + aVel * 0.01, 1.0);
+  vec2 pNdc = gl_Position.xy / max(gl_Position.w, 1e-4);
+  vec2 aNdc = aheadClip.xy / max(aheadClip.w, 1e-4);
+  vec2 mo = aNdc - pNdc;
+  float mlen = length(mo);
+  vStretchDir = mlen > 1e-5 ? mo / mlen : vec2(0.0, 1.0);
+  vStretch = clamp(mlen * uStretchK, 0.0, 0.6);
+}
+`;
+
+const GRAIN_FRAGMENT = /* glsl */ `
+uniform vec3 uKeyDirView;   // key light direction in VIEW space (impostor normals are view-space)
+uniform float uAmbient;     // night-floor fraction so a grain is never a black speck
+varying vec3 vColor;
+varying float vFade;
+varying vec2 vStretchDir;
+varying float vStretch;
+void main() {
+  if (vFade <= 0.001) discard;
+  vec2 c = gl_PointCoord * 2.0 - 1.0; // [-1,1] across the sprite
+  // Squash ACROSS the motion axis so the lit disc reads as a streak along it.
+  float along = dot(c, vStretchDir);
+  vec2 perp = c - along * vStretchDir;
+  vec2 cs = along * vStretchDir + perp * (1.0 + vStretch * 5.0);
+  float r2 = dot(cs, cs);
+  if (r2 > 1.0) discard;
+  vec3 N = vec3(cs, sqrt(max(0.0, 1.0 - r2))); // sphere-impostor normal (view space)
+  // Half-lambert wrap: a 2 px dot is mostly grazing normals, so a straight N·L
+  // lands nearly all-dark — wrapping lifts the terminator so the grain reads as a
+  // lit little body (the spill grains sit outside the glass in full key light).
+  float wrap = dot(N, uKeyDirView) * 0.5 + 0.5;
+  vec3 lit = vColor * (uAmbient + (1.0 - uAmbient) * wrap * wrap);
+  gl_FragColor = vec4(lit, vFade); // NormalBlending, toneMapped — stays sub-bloom
+}
+`;
+
+interface GrainUniforms {
+  uPixelRatio: { value: number };
+  uViewportH: { value: number };
+  uStretchK: { value: number };
+  uKeyDirView: { value: THREE.Vector3 };
+  uAmbient: { value: number };
+}
+
 // --- boulder shader (a slumping molten planet on the glass top) ------------
 // The boulder reads as the filler planet — its colour map, key-lit with a night
 // floor — with a molten front that climbs from the bottom pole as it melts: the
@@ -549,6 +688,8 @@ uniform vec3 uMoltenLo;   // liquid palette low stop (the cooled crust below the
 uniform vec3 uMoltenHi;   // liquid palette high stop
 uniform float uMeltFront; // object-y of the molten front: -1.3 (off) climbing to +1 (all melted)
 uniform float uEmber;     // 1 for the Sun boulder (emissive, no map lighting)
+uniform float uLodBias;   // mip bias: 0 normally; negative on the sub-unity loom, where limb
+                          // UV foreshortening over-minifies (a tiny map patch stretched huge)
 uniform float uTime;
 varying vec2 vUv;
 varying vec3 vNormalW;
@@ -558,7 +699,7 @@ float bNoise(vec2 p){ vec2 i=floor(p),f=fract(p); f=f*f*(3.0-2.0*f);
   return mix(mix(bHash(i),bHash(i+vec2(1,0)),f.x), mix(bHash(i+vec2(0,1)),bHash(i+vec2(1,1)),f.x), f.y); }
 float bFbm(vec2 p){ float v=0.0,a=0.5; for(int i=0;i<4;i++){ v+=a*bNoise(p); p*=2.0; a*=0.5; } return v; }
 void main(){
-  vec3 base = texture2D(uMap, vUv).rgb;
+  vec3 base = texture2D(uMap, vUv, uLodBias).rgb;
   float ndl = max(dot(normalize(vNormalW), uSunDir), 0.0);
   // Saturn's real texture, key-lit with a dim starlight night floor.
   vec3 lit = base * (0.08 + 0.92 * ndl);
@@ -586,6 +727,7 @@ interface BoulderUniforms {
   uMoltenHi: { value: THREE.Color };
   uMeltFront: { value: number };
   uEmber: { value: number };
+  uLodBias: { value: number };
   uTime: { value: number };
 }
 
@@ -612,6 +754,9 @@ interface GhostLoad {
   tex: THREE.Texture;
   gain: number;
   meanLum: number;
+  /** The container map's 4-stop palette — two mid stops become the at-rest
+   *  melt-identity bands (sampled in the same readback as the gain). */
+  palette: THREE.Color[];
 }
 
 interface GlassUniforms {
@@ -649,7 +794,8 @@ export interface PourControl {
 
 /** What the scene reports back so the mode can run the phase machine + panel. */
 export interface PourStatus {
-  /** Odometer: balls poured so far (poured = live + melted). */
+  /** Odometer: balls poured so far. marbles/boulders: poured = live + melted.
+   *  sand: poured = floor(melted), live = 0 — a display odometer, no rigid bodies. */
   poured: number;
   /** Balls melted into the liquid so far (drives the level). */
   melted: number;
@@ -713,11 +859,12 @@ export class CompareScene {
   private scratchPos = new THREE.Vector3();
   private scratchQuat = new THREE.Quaternion();
   private scratchScale = new THREE.Vector3();
+  private scratchVec2 = new THREE.Vector2();
 
   // --- the pour (solver + sim counters) ---
   private solver: SpherePhysics;
   private rng: () => number = mulberry32(SCATTER_SEED);
-  private poured = 0; // odometer: live + melted
+  private poured = 0; // odometer. marbles/boulders: live + melted. sand: floor(melted), live = 0 (display odometer, no rigid bodies)
   private melted = 0; // balls turned to liquid
   private simN = 1; // the live comparison's ratio (fillFraction denominator)
   private across = 1; // balls-across (pour rate + in-flight cap scale with it)
@@ -771,6 +918,54 @@ export class CompareScene {
   private ripples: THREE.Mesh;
   private rippleMat: THREE.ShaderMaterial;
   private rippleCursor = 0;
+
+  // --- sand grains (the pour stream + the overflow spill; one Points pool) ---
+  private grains: THREE.Points;
+  private grainGeo: THREE.BufferGeometry;
+  private grainMat: THREE.ShaderMaterial;
+  private grainUniforms: GrainUniforms;
+  // Attribute-array views (mutated in place, needsUpdate each frame): position,
+  // velocity, colour, age, life, size. A grain is dead when aAge >= aLife.
+  private gPos!: Float32Array;
+  private gVel!: Float32Array;
+  private gColor!: Float32Array;
+  private gAge!: Float32Array;
+  private gLife!: Float32Array;
+  private gSize!: Float32Array;
+  // 0 = stream (falls, dies at the surface); 1 = spill (OUTSIDE — arcs over the
+  // shoulder); 2 = plume (INSIDE — the impact splash at the pool contact). Stream +
+  // plume are "inside the vessel" and hold the mouth iris open; spill never does.
+  private gKind!: Uint8Array;
+  // Native-saturation fleck colours from the filler map — each grain takes one
+  // whole (un-averaged) so the stream reads speckled, not milky.
+  private grainFlecks: THREE.Color[] = defaultPalette();
+  private grainColorScratch = new THREE.Color();
+  // A dedicated RNG so grain jitter never perturbs the solver's seeded stream
+  // (marble QA layouts stay reproducible).
+  private grainRng: () => number = mulberry32(0x5a4d);
+  private grainCursor = 0; // round-robin allocation into the stream slot range
+  private grainBudget = GRAIN_CAPACITY; // live cap for this device tier (sandGrainBudget)
+  private grainLiveCount = 0; // grains alive this frame (grainsLive() QA + pool visibility)
+  private insideGrainLiveCount = 0; // live INSIDE grains (stream + plume) — the iris hold; excludes the outside spill
+  private streamCarry = 0; // fractional stream-spawn carry across frames
+  private plumeCarry = 0; // fractional impact-plume-spawn carry
+  private plumeRippleT = 0; // countdown to the next throttled contact-flash ripple
+  private mouthRadiusStudio = 0.14; // the current pair's glass opening radius (stream spread)
+  // Spill emission: a bounded garnish at top-out — SPILL_COUNT grains over
+  // SPILL_EMIT_S, generation-guarded so a reset/commit mid-spill cancels it.
+  private spillActive = false;
+  private spillElapsed = 0;
+  private spillEmitted = 0;
+  private spillCarry = 0;
+  private spillCursor = 0; // round-robin allocation into the spill/plume slot range
+  // Sand fill ramp (never the solver): melted = simN·(start + (target−start)·p),
+  // p = sandFillFraction(elapsed, duration). Re-anchored on each fresh pour so a
+  // raised target keeps the same fractional rate.
+  private sandStartFrac = 0;
+  private sandTargetFrac = 0;
+  private sandElapsed = 0;
+  private sandDuration = 0;
+  private sandFillActive = false;
 
   // --- boulders (scripted, never the solver) + drain shrink-out ---
   private boulderGeo!: THREE.SphereGeometry;
@@ -872,6 +1067,9 @@ export class CompareScene {
       uPalette3: { value: new THREE.Color(0xf2f4f0) },
       uCam: { value: new THREE.Vector3() },
       uSunDir: { value: KEY_LIGHT_DIR.clone() },
+      uContainerTint0: { value: new THREE.Color(0x888888) },
+      uContainerTint1: { value: new THREE.Color(0xbbbbbb) },
+      uContainerMix: { value: 0 },
     };
     this.liquidGeo = new THREE.SphereGeometry(R_LIQ, 48, 32);
     this.liquidBody = new THREE.Mesh(this.liquidGeo, this.makeLiquidBodyMaterial());
@@ -910,6 +1108,45 @@ export class CompareScene {
     this.ripples.renderOrder = 4; // over the front shell, additive splash
     this.group.add(this.ripples);
 
+    // Sand-grain pool — one Points object, allocated once at full capacity and
+    // disposed once (ripple-pool precedent). Dead by default (aAge ≥ aLife → 0 px).
+    this.grainUniforms = {
+      uPixelRatio: { value: 1 },
+      uViewportH: { value: 1080 },
+      uStretchK: { value: 44 },
+      uKeyDirView: { value: new THREE.Vector3(0, 0, 1) },
+      uAmbient: { value: 0.46 }, // night-floor so grains stay legible over the dark pool
+    };
+    this.grainGeo = new THREE.BufferGeometry();
+    this.gPos = new Float32Array(GRAIN_CAPACITY * 3);
+    this.gVel = new Float32Array(GRAIN_CAPACITY * 3);
+    this.gColor = new Float32Array(GRAIN_CAPACITY * 3);
+    this.gAge = new Float32Array(GRAIN_CAPACITY).fill(1);
+    this.gLife = new Float32Array(GRAIN_CAPACITY).fill(1); // aAge==aLife → dead
+    this.gSize = new Float32Array(GRAIN_CAPACITY).fill(GRAIN_SIZE_MIN);
+    this.gKind = new Uint8Array(GRAIN_CAPACITY);
+    const dyn = THREE.DynamicDrawUsage;
+    this.grainGeo.setAttribute('position', new THREE.BufferAttribute(this.gPos, 3).setUsage(dyn));
+    this.grainGeo.setAttribute('aVel', new THREE.BufferAttribute(this.gVel, 3).setUsage(dyn));
+    this.grainGeo.setAttribute('aColor', new THREE.BufferAttribute(this.gColor, 3).setUsage(dyn));
+    this.grainGeo.setAttribute('aAge', new THREE.BufferAttribute(this.gAge, 1).setUsage(dyn));
+    this.grainGeo.setAttribute('aLife', new THREE.BufferAttribute(this.gLife, 1).setUsage(dyn));
+    this.grainGeo.setAttribute('aSize', new THREE.BufferAttribute(this.gSize, 1).setUsage(dyn));
+    this.grainMat = new THREE.ShaderMaterial({
+      uniforms: this.grainUniforms as unknown as Record<string, THREE.IUniform>,
+      vertexShader: GRAIN_VERTEX,
+      fragmentShader: GRAIN_FRAGMENT,
+      transparent: true,
+      depthWrite: false,
+      depthTest: true,
+      blending: THREE.NormalBlending,
+    });
+    this.grains = new THREE.Points(this.grainGeo, this.grainMat);
+    this.grains.frustumCulled = false;
+    this.grains.renderOrder = 0; // before the glass shells (1/3): the glass tints over the contents
+    this.grains.visible = false;
+    this.group.add(this.grains);
+
     // Boulder pool — up to 2 full-res slumping meshes (≤2 visible at once).
     this.boulderGeo = new THREE.SphereGeometry(1, 48, 32);
     for (let i = 0; i < 2; i++) {
@@ -920,6 +1157,7 @@ export class CompareScene {
         uMoltenHi: { value: new THREE.Color(0xf2f4f0) },
         uMeltFront: { value: -1.3 },
         uEmber: { value: 0 },
+        uLodBias: { value: 0 },
         uTime: { value: 0 },
       };
       const bmat = new THREE.ShaderMaterial({
@@ -1022,13 +1260,14 @@ export class CompareScene {
   private async loadGhost(name: string): Promise<GhostLoad | null> {
     const tex = await this.loadBodyColor(name);
     if (!tex) return null;
-    const meanLum = sampleMapStats(tex.image as CanvasImageSource | null).meanLum;
+    const stats = sampleMapStats(tex.image as CanvasImageSource | null);
+    const meanLum = stats.meanLum;
     const gain = THREE.MathUtils.clamp(
       GHOST_TARGET_LUM / Math.max(meanLum, 0.05),
       GHOST_GAIN_MIN,
       GHOST_GAIN_MAX,
     );
-    return { tex, gain, meanLum };
+    return { tex, gain, meanLum, palette: stats.palette };
   }
 
   /** Measured mean luminance of the current ghost map (0 = no ghost); for the log. */
@@ -1076,18 +1315,20 @@ export class CompareScene {
     this.fillerIsSun = filler === 'Sun';
     this.sandRegime = comparison.regime === 'sand';
     this.solverMouthPlaneY = mouthGeometry(this.ballRadius, SOLVER_R).mouthPlaneY;
-    // Sand never pours in P3 (P4 owns the particle stream), and its ball radius is
-    // a thousandths-of-a-unit sliver: pushing that into the solver would size the
-    // spatial grid to billions of cells and throw. Skip the radius reconfigure for
-    // sand entirely — just reset to clear any pile from the previous pair, which
-    // rebuilds the grid at the previous (safe) radius.
+    // Sand runs NO rigid bodies — the stream is a particle garnish and its status
+    // is a display odometer (updateSand builds it from the ramp, reading nothing
+    // off the solver). Its ball radius is a thousandths-of-a-unit sliver that would
+    // size the solver's spatial grid to billions of cells and throw, so skip BOTH
+    // setParams AND reset for sand: nothing reads the solver in sand mode, and
+    // fillerMesh.count stays 0 below so any leftover pile is invisible — the next
+    // non-sand configurePour resets it. Marbles/boulders reconfigure + reset here.
     if (!this.sandRegime) {
       this.solver.setParams({
         radius: this.ballRadius,
         sleepFrames: comparison.across < COMPARE_TUNABLES.boulderMaxAcross + 1 ? 40 : 34,
       });
+      this.solver.reset();
     }
-    this.solver.reset();
     this.poured = 0;
     this.melted = 0;
     this.spoutFlow = 0;
@@ -1103,6 +1344,12 @@ export class CompareScene {
     this.boulders.length = 0;
     this.boulderCommitted = 0;
     this.drainShrink.length = 0;
+    this.cancelTransients(); // grains + spill + plume carries/ripple (one clear)
+    this.sandFillActive = false;
+    this.sandStartFrac = 0;
+    this.sandTargetFrac = 0;
+    this.sandElapsed = 0;
+    this.sandDuration = 0;
     // Sun as filler has no map to sample; its molten pool is a constant ember ramp
     // and stays emissive throughout (uHeat pinned in updateSim).
     this.liquidUniforms.uHeat.value = 0.15;
@@ -1137,12 +1384,19 @@ export class CompareScene {
         Math.pow(Math.min(GHOST_KNEE_X_MEAN * ghost.meanLum, 1), 2.2);
       this.ghostTex = ghost.tex;
       this.lastGhostMeanLum = ghost.meanLum;
+      // Melt-identity bands: two mid container-palette stops read through the
+      // AT-REST pool (the shader's uHeat gate keeps the molten look untouched).
+      this.liquidUniforms.uContainerTint0.value.copy(ghost.palette[1]);
+      this.liquidUniforms.uContainerTint1.value.copy(ghost.palette[2]);
+      this.liquidUniforms.uContainerMix.value = 1;
     } else {
-      // Sun (or a body with no map): warm-tinted glass, no ghost.
+      // Sun (or a body with no map): warm-tinted glass, no ghost — and no
+      // melt-identity tint (the molten pool stays pure).
       this.glassUniforms.uGhostMap.value = this.emptyTex;
       this.glassUniforms.uHasGhost.value = 0;
       this.ghostTex = null;
       this.lastGhostMeanLum = 0;
+      this.liquidUniforms.uContainerMix.value = 0;
     }
     this.glassUniforms.uCatalogTint.value.setHex(bodyColor(container));
     if (prev) prev.dispose();
@@ -1159,12 +1413,17 @@ export class CompareScene {
     this.previewMesh.material = mat; // the preview shares the live filler material
     // A pair change resets the pour — clear any scattered fillers.
     this.fillerMesh.count = 0;
-    // Marbling palette: the molten liquid is the filler's own colours. Sun has no
-    // map — its liquid keeps the constructor's ember ramp (set below).
-    const palette =
-      filler === 'Sun'
-        ? [new THREE.Color(0x2a0a02), new THREE.Color(0xb03408), new THREE.Color(0xff8a2a), new THREE.Color(0xfff0c0)]
-        : sampleMapStats(fillerTex?.image as CanvasImageSource | null).palette;
+    // Marbling palette + grain flecks: the liquid and the sand stream are the
+    // filler's own colours. Sun has no map — an ember ramp; grains flecked in fire.
+    let palette: THREE.Color[];
+    if (filler === 'Sun') {
+      palette = [new THREE.Color(0x2a0a02), new THREE.Color(0xb03408), new THREE.Color(0xff8a2a), new THREE.Color(0xfff0c0)];
+      this.grainFlecks = [new THREE.Color(0x8a2a08), new THREE.Color(0xd05010), new THREE.Color(0xff8a2a), new THREE.Color(0xffd070)];
+    } else {
+      const stats = sampleMapStats(fillerTex?.image as CanvasImageSource | null);
+      palette = stats.palette;
+      this.grainFlecks = stats.flecks;
+    }
     this.liquidUniforms.uPalette0.value.copy(palette[0]);
     this.liquidUniforms.uPalette1.value.copy(palette[1]);
     this.liquidUniforms.uPalette2.value.copy(palette[2]);
@@ -1185,7 +1444,9 @@ export class CompareScene {
     } else if (comparison.regime === 'boulders') {
       this.mouthPlaneY = 2; // no mouth — boulders melt on the closed vessel's top
     } else {
-      this.mouthPlaneY = mouthGeometry(this.ballRadius, CONTAINER_R).mouthPlaneY;
+      const mouth = mouthGeometry(this.ballRadius, CONTAINER_R);
+      this.mouthPlaneY = mouth.mouthPlaneY;
+      this.mouthRadiusStudio = mouth.mouthRadius; // the sand stream spawns across this opening
     }
     this.glassUniforms.uMouthPlaneY.value = this.mouthPlaneY;
     // Sub-unity holds the mouth open; every other pair starts closed and irises
@@ -1243,10 +1504,22 @@ export class CompareScene {
     this.fillerMesh.instanceMatrix.needsUpdate = true;
   }
 
-  /** Per-frame: feed the camera position into the glass shells + liquid sheen. */
-  update(cameraWorldPos: THREE.Vector3): void {
-    this.glassUniforms.uCam.value.copy(cameraWorldPos);
-    this.liquidUniforms.uCam.value.copy(cameraWorldPos);
+  /**
+   * Per-frame: feed the camera into the glass shells + liquid sheen (world pos)
+   * and the sand grains (view-space key dir + framebuffer size for the ≥1px
+   * point-size floor). The grain impostor normals are view-space, so the key
+   * light is transformed through the camera's inverse world matrix each frame.
+   */
+  update(camera: THREE.PerspectiveCamera): void {
+    camera.getWorldPosition(this.scratchPos);
+    this.glassUniforms.uCam.value.copy(this.scratchPos);
+    this.liquidUniforms.uCam.value.copy(this.scratchPos);
+    camera.updateMatrixWorld();
+    this.scratchMatrix.copy(camera.matrixWorld).invert();
+    this.grainUniforms.uKeyDirView.value.copy(KEY_LIGHT_DIR).transformDirection(this.scratchMatrix);
+    this.grainUniforms.uPixelRatio.value = this.renderer.getPixelRatio();
+    this.renderer.getDrawingBufferSize(this.scratchVec2);
+    this.grainUniforms.uViewportH.value = Math.max(1, this.scratchVec2.y);
   }
 
   /**
@@ -1261,6 +1534,7 @@ export class CompareScene {
     this.updateRipples(dtc);
     this.easePreview(dtc);
     this.updateGhostLine(dtc);
+    if (ctl.regime === 'sand') return this.updateSand(dtc, ctl);
     if (ctl.regime === 'boulders') return this.updateBoulders(dtc, ctl);
     return this.updateMarbles(dtc, ctl);
   }
@@ -1309,6 +1583,9 @@ export class CompareScene {
     u.uMap.value = this.fillerMap ?? this.emptyTex;
     u.uEmber.value = this.fillerIsSun ? 1 : 0;
     u.uMeltFront.value = -1.3; // no molten bleed — a whole planet in a glass
+    // The loom giant's limb over-minifies (tiny map patch stretched huge → the
+    // sampler falls to blurry high mips): bias toward a sharper mip here only.
+    u.uLodBias.value = -0.75;
     mesh.scale.setScalar(rf);
     // Wedged in the vessel's mouth like an egg in a cup: tangent to the mouth-rim
     // circle (radius SUBUNITY_MOUTH_R at the mouth plane), so the filler sits IN
@@ -1398,7 +1675,14 @@ export class CompareScene {
       solver.update(dt);
     }
 
-    this.updateMouthIris(dt, ctl);
+    // Animate the overflow spill (marbles spill too — the grains ride the same
+    // pool), then iris on pour/airborne/spill activity.
+    this.updateGrains(dt);
+    const airborne = this.solver.count - this.solver.enteredCount;
+    // Inside grains only (stream/plume): the outside spill garnish never holds the
+    // mouth — marbles carry no stream/plume, so their spill can't strand the iris.
+    const irisActive = (ctl.spawnEnabled && !ctl.paused) || airborne > 0 || this.insideGrainLiveCount > 0;
+    this.updateMouthIris(dt, irisActive);
     const molten = ctl.meltRate > 0 || ctl.rainEnabled;
     this.updateLiquid(dt, molten);
     this.syncInstances(dt);
@@ -1411,9 +1695,7 @@ export class CompareScene {
    * active arc (a 1 s debounce) so pour→settle→pour within a session never
    * strobes, and eased ~0.4 s so it never snaps.
    */
-  private updateMouthIris(dt: number, ctl: PourControl): void {
-    const airborne = this.solver.count - this.solver.enteredCount;
-    const active = (ctl.spawnEnabled && !ctl.paused) || airborne > 0;
+  private updateMouthIris(dt: number, active: boolean): void {
     if (active) this.mouthOpenHold = 1.0;
     else this.mouthOpenHold = Math.max(0, this.mouthOpenHold - dt);
     const target = this.mouthOpenHold > 0 ? 1 : 0;
@@ -1647,6 +1929,340 @@ export class CompareScene {
     ageAttr.needsUpdate = true;
   }
 
+  // ---- sand (a lit particle stream + the overflow spill, never the solver) -
+
+  /** Set the live sand-grain budget for the device tier (sandGrainBudget). */
+  setGrainBudget(budget: number): void {
+    this.grainBudget = Math.min(GRAIN_CAPACITY, Math.max(SPILL_RESERVE + 1, Math.floor(budget)));
+  }
+
+  /** Kill every grain (aAge = aLife → 0 px) and hide the pool. */
+  private clearGrains(): void {
+    this.gAge.set(this.gLife); // every slot dead
+    (this.grainGeo.getAttribute('aAge') as THREE.BufferAttribute).needsUpdate = true;
+    this.grainLiveCount = 0;
+    this.insideGrainLiveCount = 0;
+    this.grainCursor = 0;
+    this.spillCursor = 0;
+    this.grains.visible = false;
+  }
+
+  /**
+   * Synchronously cancel every transient garnish — the whole grain pool (stream,
+   * plume, spill), its fractional carries + ripple timer, and the spill emission.
+   * Called at the TOP of a pair commit (BEFORE the async texture load) and on
+   * deactivate, so old grains never freeze on stage during the load window; also
+   * the single clear that configurePour runs when a load lands. Touches no solver
+   * pile and no liquid — the next configurePour resets those.
+   */
+  cancelTransients(): void {
+    this.clearGrains();
+    this.streamCarry = 0;
+    this.plumeCarry = 0;
+    this.plumeRippleT = 0;
+    this.spillActive = false;
+    this.spillElapsed = 0;
+    this.spillEmitted = 0;
+    this.spillCarry = 0;
+  }
+
+  /** How many grains are alive this frame (iris hold + QA cleared-check). */
+  grainsLive(): number {
+    return this.grainLiveCount;
+  }
+
+  /**
+   * The sand fill: a lit particle stream pours while the liquid level rises to
+   * the true volume — never the solver (no spawn/step/reset, no packing stats,
+   * no drain logic). The ramp (sandFillFraction) drives `melted`; `poured =
+   * floor(melted)`, `live = 0`. The stream + the overflow spill share one Points
+   * pool. Structural, not situational: the sandRegime flag routes here.
+   */
+  private updateSand(dt: number, ctl: PourControl): PourStatus {
+    if (!ctl.paused) this.advanceSandFill(dt, ctl);
+    const streaming = ctl.spawnEnabled && !ctl.paused && this.sandFillActive;
+    // Sand never melts — the pool is "that many bodies' worth of stuff", so it
+    // keeps the AT-REST liquid look (uHeat low) with the filler palette reading
+    // through (an Earth fill leans ocean-blue, not lava). Only a Sun FILLER stays
+    // hot (updateLiquid pins uHeat via fillerIsSun). The marble melt look is
+    // untouched — this molten=false only applies on the sand path.
+    this.updateLiquid(dt, false);
+    if (streaming) {
+      this.emitStream(dt);
+      this.emitPlume(dt);
+    } else {
+      this.streamCarry = 0;
+    }
+    this.updateGrains(dt);
+    // The iris opens on stream/plume (inside-vessel) activity and seals ~1 s after
+    // it quiets — the outside spill garnish never holds it open (item 5).
+    this.updateMouthIris(dt, streaming || this.insideGrainLiveCount > 0);
+    return this.buildSandStatus();
+  }
+
+  /**
+   * Sand's status WITHOUT any solver read — the guarantee that sand never touches
+   * the rigid-body solver. Sand runs no bodies, so live/awake/packing are fixed 0
+   * (poured/melted/fillFraction/level come from the ramp fields). buildStatus (the
+   * marble/boulder path) reads solver.count/awakeCount/packingFraction + particle
+   * arrays; this must not.
+   */
+  private buildSandStatus(): PourStatus {
+    const s = this.statusScratch;
+    s.poured = this.poured;
+    s.melted = this.melted;
+    s.live = 0;
+    s.awake = 0;
+    s.asleepFrac = 1;
+    s.packingFraction = 0;
+    s.atPackCeiling = false;
+    s.pileAtMouth = false;
+    s.fillFraction = Math.min(1, this.melted / Math.max(this.simN, 1e-9));
+    s.liquidLevelY = this.liquidLevelRendered;
+    s.bouldersDone = false;
+    return s;
+  }
+
+  /**
+   * Advance the sand ramp toward the target fraction. Re-anchored on each fresh
+   * pour (and when the target moves up) from the CURRENT fill, with a duration
+   * scaled by the remaining fraction — so a raised target keeps the same
+   * fractional rate (1/sandFillS). A decrease is already clamped at the melted
+   * floor by the mode's drain-clamped target, so the fill only ever holds or
+   * rises (you cannot un-pour sand, the melted-floor idiom).
+   */
+  private advanceSandFill(dt: number, ctl: PourControl): void {
+    const n = Math.max(this.simN, 1e-9);
+    const targetFrac = Math.min(1, Math.max(0, ctl.targetCount / n));
+    const currentFrac = this.melted / n;
+    if (!ctl.spawnEnabled || targetFrac <= currentFrac) {
+      this.sandFillActive = false; // settling, or the target is met — hold the level
+      return;
+    }
+    // Sub-grain increase (the target rose by less than ONE whole grain): SNAP to
+    // the exact count rather than run a stream for a change no odometer tick can
+    // show. Count-scaled — a FIXED fraction-space deadband (1e-5) is thousands of
+    // grains on a 28-billion pair and would skip the mandated stream, while on a
+    // big N it also stranded melted a few grains short (poured = floor(melted) sat
+    // below floor(target), so the whole-ball target-met never fired and the pour
+    // hung in `pouring`). deltaFrac·N < 1 snaps ONLY genuine sub-grain nudges; a
+    // real first slider step (thousands of grains) falls through to the ramp.
+    if ((targetFrac - currentFrac) * n < 1) {
+      this.melted = Math.min(this.simN, ctl.targetCount);
+      this.poured = Math.floor(this.melted);
+      this.sandFillActive = false;
+      return;
+    }
+    if (!this.sandFillActive || Math.abs(targetFrac - this.sandTargetFrac) > 1e-4) {
+      this.sandStartFrac = currentFrac;
+      this.sandTargetFrac = targetFrac;
+      this.sandElapsed = 0;
+      this.sandDuration = Math.max(4, COMPARE_TUNABLES.sandFillS * (targetFrac - this.sandStartFrac));
+      this.sandFillActive = true;
+    }
+    this.sandElapsed += dt;
+    const p = sandFillFraction(this.sandElapsed, this.sandDuration);
+    if (p >= 1) {
+      // Snap to the EXACT target count, not simN·(target/simN): that round-trip
+      // through the division lands melted a hair under the target, so
+      // poured = floor(melted) sits one grain below floor(target) and the
+      // whole-ball target-met check never fires (the pour would stall in
+      // `pouring`). The exact snap keeps poured === floor(target).
+      this.melted = Math.min(this.simN, ctl.targetCount);
+      this.poured = Math.floor(this.melted);
+      this.sandFillActive = false;
+    } else {
+      const frac = this.sandStartFrac + (this.sandTargetFrac - this.sandStartFrac) * p;
+      this.melted = this.simN * frac;
+      this.poured = Math.floor(this.melted);
+    }
+  }
+
+  /** Snap the sand fill to exactly full at top-out — melted AND poured read N, so
+   *  the final odometer string equals the headline (formatCount(N)). */
+  topOffSand(): void {
+    this.melted = this.simN;
+    this.poured = this.simN;
+    this.sandFillActive = false;
+  }
+
+  /** Begin the overflow spill: ~SPILL_COUNT grains over SPILL_EMIT_S at the rim. */
+  beginSpill(): void {
+    this.spillActive = true;
+    this.spillElapsed = 0;
+    this.spillEmitted = 0;
+    this.spillCarry = 0;
+  }
+
+  /** Spawn stream grains at the mouth this frame, across a gaussian disc ~half
+   *  the mouth radius (dense core, sparse edge — display-only cross-section). */
+  private emitStream(dt: number): void {
+    const surfaceY = -R_LIQ + this.liquidLevelRendered;
+    const yTop = this.mouthPlaneY;
+    if (yTop <= surfaceY + 0.02) return; // the pool already reached the mouth — nothing to pour
+    const budget = pourBudget(dt, STREAM_RATE, this.streamCarry);
+    this.streamCarry = budget.carry;
+    const spread = this.mouthRadiusStudio * STREAM_DISC_FRAC;
+    for (let k = 0; k < budget.spawns; k++) {
+      const g = this.grainRng() + this.grainRng() + this.grainRng() - 1.5; // ~gaussian, dense core
+      const rad = Math.min(spread * 1.5, Math.abs(g) * spread);
+      const a = this.grainRng() * Math.PI * 2;
+      const x = Math.cos(a) * rad;
+      const z = Math.sin(a) * rad;
+      const vx = (this.grainRng() - 0.5) * 0.18;
+      const vz = (this.grainRng() - 0.5) * 0.18;
+      const vy = -0.5 - this.grainRng() * 0.4;
+      const size = GRAIN_SIZE_MIN + this.grainRng() * (GRAIN_SIZE_MAX - GRAIN_SIZE_MIN);
+      this.grainColor(this.grainColorScratch, 1);
+      this.writeGrain(this.nextStreamSlot(), x, yTop, z, vx, vy, vz, size, 3.0, 0, this.grainColorScratch);
+    }
+  }
+
+  /** Emit the overflow-spill garnish at the mouth rim (outward + up, over the
+   *  glass shoulder), paced so SPILL_COUNT grains leave over SPILL_EMIT_S. */
+  private emitSpill(dt: number): void {
+    this.spillElapsed += dt;
+    const budget = pourBudget(dt, SPILL_COUNT / SPILL_EMIT_S, this.spillCarry);
+    this.spillCarry = budget.carry;
+    const remaining = Math.max(0, SPILL_COUNT - this.spillEmitted);
+    const n = Math.min(budget.spawns, remaining);
+    const rimR = this.mouthRadiusStudio;
+    const yTop = this.mouthPlaneY;
+    for (let k = 0; k < n; k++) {
+      const a = this.grainRng() * Math.PI * 2;
+      const x = Math.cos(a) * rimR;
+      const z = Math.sin(a) * rimR;
+      const outward = 0.65 + this.grainRng() * 0.55; // clear the shoulder, don't rocket off-frame
+      const vx = Math.cos(a) * outward;
+      const vz = Math.sin(a) * outward;
+      const vy = 1.0 + this.grainRng() * 0.7; // up and over before it falls past the base
+      const size = SPILL_SIZE_MIN + this.grainRng() * (SPILL_SIZE_MAX - SPILL_SIZE_MIN);
+      this.grainColor(this.grainColorScratch, 1.3); // lit little bodies in full key light
+      this.writeGrain(this.nextSpillSlot(), x, yTop, z, vx, vy, vz, size, SPILL_GRAIN_LIFE, 1, this.grainColorScratch);
+      this.spillEmitted++;
+    }
+    if (this.spillElapsed >= SPILL_EMIT_S || this.spillEmitted >= SPILL_COUNT) this.spillActive = false;
+  }
+
+  /** Integrate every live grain (gravity), recycle stream grains that reach the
+   *  pool surface (with a throttled impact plume + splash), age out spill grains,
+   *  and push the mutated attributes. Emits the spill garnish while active. Called
+   *  from both the sand path (stream + spill) and the marble path (spill only). */
+  private updateGrains(dt: number): void {
+    if (this.spillActive) this.emitSpill(dt);
+    const surfaceY = -R_LIQ + this.liquidLevelRendered;
+    const budget = this.grainBudget;
+    let live = 0;
+    let inside = 0;
+    for (let i = 0; i < budget; i++) {
+      if (this.gAge[i] >= this.gLife[i]) continue;
+      const i3 = i * 3;
+      this.gVel[i3 + 1] -= GRAIN_GRAVITY * dt;
+      this.gPos[i3] += this.gVel[i3] * dt;
+      this.gPos[i3 + 1] += this.gVel[i3 + 1] * dt;
+      this.gPos[i3 + 2] += this.gVel[i3 + 2] * dt;
+      this.gAge[i] += dt;
+      // Stream grains vanish INTO the pool (the opaque liquid would occlude them
+      // below the surface anyway); the persistent impact plume marks the contact.
+      if (this.gKind[i] === 0 && this.gPos[i3 + 1] <= surfaceY) {
+        this.gAge[i] = this.gLife[i];
+        continue;
+      }
+      live++;
+      // Stream (0) + plume (2) are inside the vessel and hold the iris; spill (1)
+      // arcs over the shoulder and must not (else the mouth stays open past complete).
+      if (this.gKind[i] !== 1) inside++;
+    }
+    this.grainLiveCount = live;
+    this.insideGrainLiveCount = inside;
+    this.grains.visible = live > 0;
+    const g = this.grainGeo;
+    (g.getAttribute('position') as THREE.BufferAttribute).needsUpdate = true;
+    (g.getAttribute('aVel') as THREE.BufferAttribute).needsUpdate = true;
+    (g.getAttribute('aColor') as THREE.BufferAttribute).needsUpdate = true;
+    (g.getAttribute('aAge') as THREE.BufferAttribute).needsUpdate = true;
+    (g.getAttribute('aLife') as THREE.BufferAttribute).needsUpdate = true;
+    (g.getAttribute('aSize') as THREE.BufferAttribute).needsUpdate = true;
+  }
+
+  /** The persistent impact plume where the column meets the pool: a splash of
+   *  short-lived grains thrown up + out from the contact, with a brighter core
+   *  (within the whiteout budget), plus a throttled surface-flash ripple. The
+   *  stream is axial, so the contact sits at the centre of the current surface. */
+  private emitPlume(dt: number): void {
+    const surfaceY = -R_LIQ + this.liquidLevelRendered;
+    if (this.mouthPlaneY <= surfaceY + 0.02) return; // pool at the mouth — no fall, no plume
+    const budget = pourBudget(dt, PLUME_RATE, this.plumeCarry);
+    this.plumeCarry = budget.carry;
+    const spread = this.mouthRadiusStudio * STREAM_DISC_FRAC;
+    for (let k = 0; k < budget.spawns; k++) {
+      const a = this.grainRng() * Math.PI * 2;
+      const rad = this.grainRng() * spread * 0.7;
+      const x = Math.cos(a) * rad;
+      const z = Math.sin(a) * rad;
+      const outward = 0.5 + this.grainRng() * 0.9; // kicked outward from the contact
+      const vx = Math.cos(a) * outward;
+      const vz = Math.sin(a) * outward;
+      const vy = 1.1 + this.grainRng() * 1.1; // a real splash up out of the pool
+      const size = SPILL_SIZE_MIN + this.grainRng() * (SPILL_SIZE_MAX - SPILL_SIZE_MIN);
+      this.grainColor(this.grainColorScratch, 1.35); // a thin brighter core, still sub-bloom
+      // Kind 2 (plume): inside the vessel at the pool contact — holds the iris like
+      // the stream. It shares the spill slot range but never the spill's iris waiver.
+      this.writeGrain(this.nextSpillSlot(), x, surfaceY + 0.01, z, vx, vy, vz, size, 0.34, 2, this.grainColorScratch);
+    }
+    // A throttled surface flash so the contact reads even at a glance.
+    this.plumeRippleT -= dt;
+    if (this.plumeRippleT <= 0) {
+      this.plumeRippleT = 0.12;
+      this.removedPos[0] = 0;
+      this.removedPos[2] = 0;
+      this.spawnRipple(0); // reuse the surface-splash flash (sand + marbles never run together)
+    }
+  }
+
+  /** Next round-robin slot in the stream range [0, budget − SPILL_RESERVE). */
+  private nextStreamSlot(): number {
+    const cap = Math.max(1, this.grainBudget - SPILL_RESERVE);
+    const i = this.grainCursor % cap;
+    this.grainCursor = (this.grainCursor + 1) % cap;
+    return i;
+  }
+
+  /** Next round-robin slot in the spill/plume range [budget − SPILL_RESERVE, budget). */
+  private nextSpillSlot(): number {
+    const base = Math.max(1, this.grainBudget - SPILL_RESERVE);
+    const span = Math.max(1, this.grainBudget - base);
+    const i = base + (this.spillCursor % span);
+    this.spillCursor++;
+    return i;
+  }
+
+  /** Write one grain into slot i. */
+  private writeGrain(
+    i: number, x: number, y: number, z: number,
+    vx: number, vy: number, vz: number,
+    size: number, life: number, kind: number, color: THREE.Color,
+  ): void {
+    const i3 = i * 3;
+    this.gPos[i3] = x; this.gPos[i3 + 1] = y; this.gPos[i3 + 2] = z;
+    this.gVel[i3] = vx; this.gVel[i3 + 1] = vy; this.gVel[i3 + 2] = vz;
+    this.gColor[i3] = color.r; this.gColor[i3 + 1] = color.g; this.gColor[i3 + 2] = color.b;
+    this.gAge[i] = 0;
+    this.gLife[i] = life;
+    this.gSize[i] = size;
+    this.gKind[i] = kind;
+  }
+
+  /** A per-grain colour: ONE whole native-saturation fleck from the filler map
+   *  (never an average of stops), so a stream of Earths reads speckled —
+   *  ocean-blue, land-brown, cloud-white — not milky. `gain` brightens the impact
+   *  plume's core; a small brightness jitter keeps the column from banding. */
+  private grainColor(out: THREE.Color, gain: number): void {
+    const flecks = this.grainFlecks;
+    const idx = Math.min(flecks.length - 1, (this.grainRng() * flecks.length) | 0);
+    out.copy(flecks[idx]).multiplyScalar((0.9 + this.grainRng() * 0.22) * gain);
+  }
+
   // ---- boulders (scripted drop → slump, never the solver) ------------------
 
   private updateBoulders(dt: number, ctl: PourControl): PourStatus {
@@ -1727,6 +2343,7 @@ export class CompareScene {
     u.uMoltenLo.value.copy(this.liquidUniforms.uPalette1.value);
     u.uMoltenHi.value.copy(this.liquidUniforms.uPalette3.value);
     u.uMeltFront.value = -1.3;
+    u.uLodBias.value = 0; // the loom's sharper-mip bias is sub-unity-only
     this.boulderPool[slot].visible = true;
     this.boulders.push({
       slot,
@@ -1798,6 +2415,8 @@ export class CompareScene {
     this.ghostLineMat.dispose();
     this.ripples.geometry.dispose();
     this.rippleMat.dispose();
+    this.grainGeo.dispose();
+    this.grainMat.dispose();
     this.boulderGeo.dispose();
     for (const b of this.boulderPool) (b.material as THREE.Material).dispose();
 
@@ -1843,7 +2462,13 @@ interface MapStats {
   meanLum: number;
   /** Four colours at the 10/40/70/95th luminance percentiles — the marbling ramp. */
   palette: THREE.Color[];
+  /** A spread of NATIVE-saturation texels for the sand grains — each grain takes
+   *  one whole (nearest-sample, un-averaged) so the stream reads speckled: an
+   *  Earth stream is ocean-blue + land-brown + cloud-white flecks, not milky. */
+  flecks: THREE.Color[];
 }
+
+const GRAIN_FLECK_COUNT = 16;
 
 /** A fallback ramp when a body has no readable map (Sun, tainted canvas). */
 function defaultPalette(): THREE.Color[] {
@@ -1856,19 +2481,20 @@ function defaultPalette(): THREE.Color[] {
 }
 
 /**
- * One 32×32 readback of a body's colour map, returning both its mean luminance
- * (for the ghost gain) and a 4-stop marbling ramp (the 10/40/70/95th luminance
- * percentiles) — a single pass so the ghost and the molten-liquid palette never
- * read the same canvas twice. Unreadable image → mean 0 + the default ramp.
+ * One 32×32 readback of a body's colour map, returning its mean luminance (for
+ * the ghost gain), a 4-stop marbling ramp (the 10/40/70/95th luminance
+ * percentiles), and a spread of native-saturation fleck colours for the sand
+ * grains — a single pass so the ghost, the molten-liquid palette, and the grain
+ * flecks never read the same canvas twice. Unreadable image → mean 0 + defaults.
  */
 function sampleMapStats(image: CanvasImageSource | null): MapStats {
-  if (!image) return { meanLum: 0, palette: defaultPalette() };
+  if (!image) return { meanLum: 0, palette: defaultPalette(), flecks: defaultPalette() };
   const size = 32;
   const c = document.createElement('canvas');
   c.width = size;
   c.height = size;
   const ctx = c.getContext('2d', { willReadFrequently: true });
-  if (!ctx) return { meanLum: 0, palette: defaultPalette() };
+  if (!ctx) return { meanLum: 0, palette: defaultPalette(), flecks: defaultPalette() };
   try {
     ctx.drawImage(image, 0, 0, size, size);
     const data = ctx.getImageData(0, 0, size, size).data;
@@ -1885,13 +2511,20 @@ function sampleMapStats(image: CanvasImageSource | null): MapStats {
       samples[p] = { luma, r, g, b };
     }
     samples.sort((a, b) => a.luma - b.luma);
-    const pick = (frac: number): THREE.Color => {
-      const s = samples[Math.min(n - 1, Math.floor(frac * n))];
+    const at = (idx: number): THREE.Color => {
+      const s = samples[Math.min(n - 1, Math.max(0, idx))];
       return new THREE.Color().setRGB(s.r / 255, s.g / 255, s.b / 255, THREE.SRGBColorSpace);
     };
-    return { meanLum: sum / n, palette: [pick(0.1), pick(0.4), pick(0.7), pick(0.95)] };
+    const pick = (frac: number): THREE.Color => at(Math.floor(frac * n));
+    // Flecks: an even spread across the luminance-sorted texels (dark ocean →
+    // bright cloud), each kept whole so its native saturation survives.
+    const flecks: THREE.Color[] = [];
+    for (let k = 0; k < GRAIN_FLECK_COUNT; k++) {
+      flecks.push(at(Math.floor(((k + 0.5) / GRAIN_FLECK_COUNT) * n)));
+    }
+    return { meanLum: sum / n, palette: [pick(0.1), pick(0.4), pick(0.7), pick(0.95)], flecks };
   } catch {
-    return { meanLum: 0, palette: defaultPalette() }; // tainted canvas (shouldn't happen)
+    return { meanLum: 0, palette: defaultPalette(), flecks: defaultPalette() }; // tainted canvas
   }
 }
 

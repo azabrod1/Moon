@@ -4593,6 +4593,13 @@ export class PlanetariumMode {
     bodyName: string,
     notify: boolean,
   ) {
+    // A jump supersedes the pilot. Autopilot re-aims at its own target every
+    // frame, so an engaged pilot surviving the teleport snaps the heading back
+    // to the OLD destination one frame after the pose below — you arrive at a
+    // moon facing wherever the pilot was going. Silent: the "Jumped to" toast
+    // is the story here, not a manual-flight banner.
+    this.disengageAutopilot();
+
     this.player.posX = destination.position.x;
     this.player.posY = destination.position.y;
     this.player.posZ = destination.position.z;

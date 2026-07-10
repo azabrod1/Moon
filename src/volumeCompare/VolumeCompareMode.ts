@@ -1045,6 +1045,7 @@ export class VolumeCompareMode {
   onResize(aspect: number): void {
     this.camera.aspect = aspect;
     this.camera.updateProjectionMatrix();
+    this.compareScene.onResize();
     // Re-fit only while the camera still sits at the default (a user zoom sticks).
     const current = this.camera.position.distanceTo(this.controls.target);
     if (Math.abs(current - this.lastDefaultDistance) < 0.05) {

@@ -460,6 +460,21 @@ describe('physics pins', () => {
     expect(year).toBeGreaterThanOrEqual(2040);
     expect(year).toBeLessThanOrEqual(2058);
   });
+
+  it("reaches Pluto's next Charon eclipse from a perihelion-era start", () => {
+    // The search horizon is 0.55 of the parent's orbital period. Sizing that
+    // period from the instantaneous heliocentric distance instead of the
+    // semi-major axis collapses it near perihelion — Pluto at 29.8 AU in 1995
+    // gives a fictitious ~163-yr "orbit" and a ~90-yr horizon that drops the
+    // next Charon eclipse (~107 yr out, 2102-01-20), though it sits inside the
+    // intended 0.55·248 ≈ 136-yr window. From the catalog semi-major axis the
+    // horizon spans the true orbit and reaches it.
+    const spec: ShadowEventSpec = { kind: 'eclipse', parentPlanet: 'Pluto', moonName: 'Charon' };
+    const event = findShadowEvent(spec, Date.parse('1995-01-01T00:00:00Z'), 1);
+    expect(event).not.toBeNull();
+    expect(event!.peakUtcMs).toBeGreaterThan(Date.parse('2102-01-17T00:00:00Z'));
+    expect(event!.peakUtcMs).toBeLessThan(Date.parse('2102-01-23T00:00:00Z'));
+  });
 });
 
 describe('search mechanics', () => {

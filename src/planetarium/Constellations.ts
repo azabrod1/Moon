@@ -92,9 +92,12 @@ export class Constellations {
     document.body.appendChild(this.labelContainer);
 
     for (const constellation of CONSTELLATIONS) {
-      // Build line geometry and compute centroid
-      let centroidRa = 0;
-      let centroidDec = 0;
+      // Build line geometry and compute the label anchor as the mean DIRECTION
+      // of the figure's endpoints. Averaging RA numerically breaks on figures
+      // that span the 0h wrap (Pisces straddles the vernal equinox: averaging
+      // RA 350° and 10° lands at 180° — the opposite sky); summing unit
+      // vectors and normalizing is wrap-free by construction.
+      const centroidSum = new THREE.Vector3();
       let nPoints = 0;
       const pointSet = new Set<string>();
 
@@ -116,30 +119,27 @@ export class Constellations {
         const k2 = `${sra2},${sdec2}`;
         if (!pointSet.has(k1)) {
           pointSet.add(k1);
-          centroidRa += sra1;
-          centroidDec += sdec1;
+          centroidSum.add(celestialToVec3(sra1, sdec1, vectorScratch));
           nPoints++;
         }
         if (!pointSet.has(k2)) {
           pointSet.add(k2);
-          centroidRa += sra2;
-          centroidDec += sdec2;
+          centroidSum.add(celestialToVec3(sra2, sdec2, vectorScratch));
           nPoints++;
         }
       }
 
-      if (nPoints > 0) {
-        centroidRa /= nPoints;
-        centroidDec /= nPoints;
-
+      // A near-zero sum (endpoints spread antipodally) has no meaningful mean
+      // direction — no real figure does this, but a label at a garbage anchor
+      // is worse than none.
+      if (nPoints > 0 && centroidSum.lengthSq() > 1e-6) {
         const labelEl = document.createElement('div');
         labelEl.className = 'constellation-label';
         labelEl.textContent = constellation.name;
         labelEl.style.display = 'none';
         this.labelContainer.appendChild(labelEl);
 
-        const pos = new THREE.Vector3();
-        celestialToVec3(centroidRa, centroidDec, pos);
+        const pos = centroidSum.clone().normalize().multiplyScalar(STAR_SPHERE_RADIUS);
 
         this.labels.push({
           el: labelEl,

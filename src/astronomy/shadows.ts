@@ -559,7 +559,17 @@ function buildSearchPlan(resolved: ResolvedSpec, kind: ShadowEventKind, fromUtcM
 
   const parentDistAU = computeBodyPositionAU(parent, fromUtcMs).length();
   const parentDistKm = parentDistAU * KM_PER_AU;
-  const parentPeriodDays = 365.25 * Math.pow(parentDistAU, 1.5);
+  // Local period from the instantaneous distance — a conservative bound on the
+  // Sun's apparent angular speed for the season stride (fastest near perihelion,
+  // where the distance dips below the semi-major axis).
+  const parentLocalPeriodDays = 365.25 * Math.pow(parentDistAU, 1.5);
+  // True orbital period from the catalog semi-major axis. The horizon is a
+  // fixed fraction of one full orbit, so it must come from `a`, never the
+  // current distance: near Pluto's perihelion the distance-based period
+  // collapses to ~163 yr and its horizon drops events that lie inside the real
+  // 248-yr orbit. Being distance-independent, it also stays fixed as a paused
+  // search resumes from a later cursor.
+  const parentOrbitalPeriodDays = 365.25 * Math.pow(parent.semiMajorAxisAU, 1.5);
   const sunRadiusKm = KM_CONSTANTS.SUN_RADIUS;
 
   // Outer contact radius, sized at apoapsis so the prefilter can never skip a
@@ -580,11 +590,11 @@ function buildSearchPlan(resolved: ResolvedSpec, kind: ShadowEventKind, fromUtcM
   const halfWindowDays = contactAngleDeg / omegaMaxDegPerDay;
   const fineStepDays = Math.min(meta.periodDays / 8, Math.max(halfWindowDays / 3, 1e-5));
 
-  const parentPeriodYears = parentPeriodDays / 365.25;
-  const horizonDays = Math.max(25, 0.55 * parentPeriodYears) * 365.25;
+  const parentOrbitalPeriodYears = parentOrbitalPeriodDays / 365.25;
+  const horizonDays = Math.max(25, 0.55 * parentOrbitalPeriodYears) * 365.25;
 
   const driftRateRadPerDay =
-    (2 * Math.PI) / parentPeriodDays + meta.nodeRateDegPerDay * DEG * Math.sin(meta.inclinationDeg * DEG);
+    (2 * Math.PI) / parentLocalPeriodDays + meta.nodeRateDegPerDay * DEG * Math.sin(meta.inclinationDeg * DEG);
 
   return {
     resolved,
@@ -594,7 +604,7 @@ function buildSearchPlan(resolved: ResolvedSpec, kind: ShadowEventKind, fromUtcM
     skipThresholdKm,
     periapsisKm,
     driftRateRadPerDay,
-    maxStrideDays: parentPeriodDays / 40,
+    maxStrideDays: parentLocalPeriodDays / 40,
   };
 }
 

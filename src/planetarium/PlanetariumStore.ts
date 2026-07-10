@@ -214,18 +214,28 @@ export class PlanetariumStore {
     if (!raw) raw = await this.readIndexedDb(STORAGE_KEY);
 
     // Legacy key migration: pre-rename the key was 'orbital-sim-explore-state'.
-    // Read once, then delete so we don't keep two copies diverging.
+    // Migration must COMMIT before it deletes: the first regular write of the
+    // current key doesn't happen until autosave starts, seconds of async
+    // startup later — deleting the legacy copies on read would make that
+    // window (a crash, a closed tab) lose the only save. So: parse, write the
+    // current key, and only then remove the legacy copies.
     if (!raw) {
-      raw =
+      const legacyRaw =
         this.readWebStorage('local', LEGACY_STORAGE_KEY) ??
         this.readWebStorage('session', LEGACY_STORAGE_KEY) ??
         (await this.readIndexedDb(LEGACY_STORAGE_KEY));
-      if (raw) {
+      if (!legacyRaw) return null;
+      const migrated = parseSavedState(legacyRaw);
+      if (migrated) {
+        void this.saveState(migrated);
         this.removeLegacyState();
+        return migrated;
       }
+      // Unreadable legacy save: nothing to protect, drop it as before.
+      debugWarn('Legacy planetarium state failed validation');
+      this.removeLegacyState();
+      return null;
     }
-
-    if (!raw) return null;
 
     const sanitized = parseSavedState(raw);
     if (sanitized) {
@@ -237,12 +247,20 @@ export class PlanetariumStore {
     return null;
   }
 
-  saveState(state: PlanetariumState): void {
+  /**
+   * Resolves true when at least one backend durably holds the save. The web
+   * storage writes happen synchronously before this returns (pagehide-safe);
+   * only the IndexedDB confirmation is awaited, and the promise never
+   * rejects — fire-and-forget callers (autosave, unload) can ignore it.
+   */
+  saveState(state: PlanetariumState): Promise<boolean> {
     state.timestamp = Date.now();
     const raw = JSON.stringify(state);
-    this.writeWebStorage('local', raw);
-    this.writeWebStorage('session', raw);
-    void this.writeIndexedDb(raw);
+    const local = this.writeWebStorage('local', raw);
+    const session = this.writeWebStorage('session', raw);
+    const idb = this.writeIndexedDb(raw);
+    if (local || session) return Promise.resolve(true);
+    return idb;
   }
 
   startAutoSave(getState: () => PlanetariumState): void {
@@ -341,13 +359,15 @@ export class PlanetariumStore {
     }
   }
 
-  private writeWebStorage(kind: 'local' | 'session', raw: string): void {
+  private writeWebStorage(kind: 'local' | 'session', raw: string): boolean {
     const storage = this.getWebStorage(kind);
-    if (!storage) return;
+    if (!storage) return false;
     try {
       storage.setItem(STORAGE_KEY, raw);
+      return true;
     } catch (err) {
       debugWarn(`${kind}Storage setItem failed in saveState`, err);
+      return false;
     }
   }
 
@@ -413,22 +433,22 @@ export class PlanetariumStore {
     });
   }
 
-  private async writeIndexedDb(raw: string): Promise<void> {
+  private async writeIndexedDb(raw: string): Promise<boolean> {
     const db = await this.getDb();
-    if (!db) return;
+    if (!db) return false;
 
-    await new Promise<void>((resolve) => {
+    return new Promise<boolean>((resolve) => {
       try {
         const tx = db.transaction(FALLBACK_STORE_NAME, 'readwrite');
         tx.objectStore(FALLBACK_STORE_NAME).put(raw, STORAGE_KEY);
-        tx.oncomplete = () => resolve();
+        tx.oncomplete = () => resolve(true);
         tx.onerror = () => {
           debugWarn('indexedDB put failed', tx.error);
-          resolve();
+          resolve(false);
         };
       } catch (err) {
         debugWarn('indexedDB put threw', err);
-        resolve();
+        resolve(false);
       }
     });
   }

@@ -2031,8 +2031,8 @@
       border-top: 1px solid rgba(255, 255, 255, 0.05);
     }
 
-    /* ═══ The deck — one centered picker, three tabs (Observatory · Travel ·
-       Autopilot), one-click rows. Stacking: the backdrop (26) dims the scene
+    /* ═══ The deck — one centered picker, three tabs (Autopilot · Teleport ·
+       Observatory), one-click rows. Stacking: the backdrop (26) dims the scene
        and the Land button (25); the deck (27) rides above it; the action
        cluster (28) stays clickable on top so Leave and switching tabs by
        cluster click keep working while the deck is open. ═══ */
@@ -2303,19 +2303,20 @@
 
       #planetarium-bottom-bar { bottom: 8px; max-width: calc(100vw - 12px); }
       #planetarium-btn-land { bottom: 100px; }
-      .bar-row { padding: 5px 2px; }
+      /* Horizontal inset so the end sections (the rail on the left, the Stats
+         chip on the right) clear the bar's rounded wall — 2px left the chip
+         all but touching the border. */
+      .bar-row { padding: 5px 7px; }
       .bar-section { padding: 0 5px; }
       /* .bar-section's tightened padding would beat .bar-stats here (same
          specificity, later in source) and leave the bordered chip's label
          kissing its border — keep the chip's own inset. */
       /* Icon-only Stats chip — the label costs ~34px the narrow bar can't
-         spare (the chip keeps its aria-label). Without the label the glyph
-         sits alone against a visible border, so give it roughly even air on
-         all four sides: the ~13px glyph in a near-square box, sized to match
-         the +/- buttons beside it. The extra height over 28px keeps the
-         glyph off the top/bottom rules without growing the bar (the time
-         section is the tallest thing in the row). */
-      .bar-stats { padding: 0 8px; height: 30px; }
+         spare (the chip keeps its aria-label). Sized to match the +/- speed
+         buttons exactly: same 28x28 box, glyph centred. A uniform button
+         cluster reads as intentional; a taller/wider chip beside them looked
+         oversized. */
+      .bar-stats { width: 28px; min-width: 28px; padding: 0; height: 28px; justify-content: center; }
       .bar-stats-label { display: none; }
       .bar-speed-main { padding: 0 6px; gap: 6px; }
       /* The rail + clock rows form a fat touch strip; the panel's targets
@@ -2415,6 +2416,22 @@
       .act-leave .act-lbl { max-width: 31vw; overflow: hidden; text-overflow: ellipsis; }
       /* Lift the Stats card clear of the taller mobile bar. */
       #stats-popover { bottom: 104px; right: 10px; }
+    }
+
+    @media (max-width: 330px) {
+      /* Real phones land here: Safari's per-site page zoom shrinks the CSS
+         viewport (a 430pt screen at ~135% lays out at ~315px), and 320px
+         devices exist. The bar's row is fixed-width and overflows through
+         the bar's own border unless the giveable widths give. Pure visual
+         air goes first — section insets, the speed value's surround, the
+         clock's inner inset, a notch off the clock font — so the Stats
+         chip keeps its breathing room and no readout loses a character. */
+      .bar-time { padding: 1px 4px 0; }
+      .bar-speed-main { padding: 0 4px; }
+      .speed-center { padding: 0 3px; }
+      .tr-clock { padding-left: 2px; padding-right: 2px; }
+      .tr-clock .d { font-size: 10px; }
+      .time-rail-wrap { min-width: 100px; }
     }
 
     /* ===== Observatory mobile chrome ===== */
@@ -2554,9 +2571,10 @@
           <svg class="act-glyph" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 15.4 Q10 12.6 17 15.4"></path><path d="M10 12.6 V3.4"></path><path d="M6.4 7 L10 3.4 L13.6 7"></path></svg>
           <span class="act-lbl">Leave <span id="leave-body-name"></span></span>
         </button>
-        <button class="act-btn act-icon" id="planetarium-btn-observatory" style="display:none" aria-label="Observatory">
-          <svg class="act-glyph" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4.15 8.11 L12.68 3.17 L14.12 6.03 L5.05 9.89 Z"></path><path d="M11.9 3.75 L13.15 6.35"></path><path d="M4.5 9.05 L3.1 9.75"></path><path d="M9.4 8.2 L9.0 15.6 M9.0 15.6 L6.7 17.8 M9.0 15.6 L11.3 17.8"></path></svg>
-          <span class="act-tip">Observatory <kbd>O</kbd></span>
+        <button class="act-btn act-icon" id="planetarium-btn-autopilot" aria-label="Pilot">
+          <svg class="act-glyph" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="10" cy="10" r="7.4"></circle><path fill="currentColor" stroke="none" d="M10 5.2 L12.9 13 L10 11.15 L7.1 13 Z"></path></svg>
+          <span class="act-lbl autopilot-lbl"></span>
+          <span class="act-tip">Pilot <kbd>P</kbd></span>
         </button>
         <button class="act-btn act-icon" id="planetarium-btn-tools" aria-label="Tools">
           <svg class="act-glyph" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3.4" y="3.4" width="5.4" height="5.4" rx="1.5"></rect><rect x="11.2" y="3.4" width="5.4" height="5.4" rx="1.5"></rect><rect x="3.4" y="11.2" width="5.4" height="5.4" rx="1.5"></rect><rect x="11.2" y="11.2" width="5.4" height="5.4" rx="1.5"></rect></svg>
@@ -2566,10 +2584,9 @@
           <svg class="act-glyph" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><g transform="rotate(42 10 10)"><path fill-rule="evenodd" fill="currentColor" stroke="none" d="M10 1.4 C 8.1 3.4 7.1 6.3 7.1 9.5 L 7.1 14.2 C 7.1 14.75 7.5 15.1 8.05 15.1 L 11.95 15.1 C 12.5 15.1 12.9 14.75 12.9 14.2 L 12.9 9.5 C 12.9 6.3 11.9 3.4 10 1.4 Z M10 5.45 a1.65 1.65 0 1 1 0 3.3 a1.65 1.65 0 0 1 0 -3.3 Z M10 6.25 a0.85 0.85 0 1 1 0 1.7 a0.85 0.85 0 0 1 0 -1.7 Z"></path><path fill="currentColor" stroke="none" d="M7.1 10.6 C 5.6 11.5 4.6 13.1 4.3 15.0 C 4.25 15.4 4.6 15.7 5.0 15.55 L 7.1 14.7 Z"></path><path fill="currentColor" stroke="none" d="M12.9 10.6 C 14.4 11.5 15.4 13.1 15.7 15.0 C 15.75 15.4 15.4 15.7 15.0 15.55 L 12.9 14.7 Z"></path><path fill="currentColor" stroke="none" d="M10 19.2 C 9.0 18.0 8.55 17.0 8.75 16.0 L 11.25 16.0 C 11.45 17.0 11.0 18.0 10 19.2 Z"></path></g></svg>
           <span class="act-tip">Teleport <kbd>T</kbd></span>
         </button>
-        <button class="act-btn act-icon" id="planetarium-btn-autopilot" aria-label="Pilot">
-          <svg class="act-glyph" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="10" cy="10" r="7.4"></circle><path fill="currentColor" stroke="none" d="M10 5.2 L12.9 13 L10 11.15 L7.1 13 Z"></path></svg>
-          <span class="act-lbl autopilot-lbl"></span>
-          <span class="act-tip">Pilot <kbd>P</kbd></span>
+        <button class="act-btn act-icon" id="planetarium-btn-observatory" style="display:none" aria-label="Observatory">
+          <svg class="act-glyph" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4.15 8.11 L12.68 3.17 L14.12 6.03 L5.05 9.89 Z"></path><path d="M11.9 3.75 L13.15 6.35"></path><path d="M4.5 9.05 L3.1 9.75"></path><path d="M9.4 8.2 L9.0 15.6 M9.0 15.6 L6.7 17.8 M9.0 15.6 L11.3 17.8"></path></svg>
+          <span class="act-tip">Observatory <kbd>O</kbd></span>
         </button>
         <button class="act-btn act-icon" id="planetarium-btn-menu" aria-label="Menu">
           <svg class="act-glyph" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 5.5 H16 M4 10 H16 M4 14.5 H16"></path></svg>
@@ -2823,20 +2840,20 @@
         </div>
       </div>
 
-      <!-- The deck: one centered picker, three tabs (Observatory · Travel ·
-           Autopilot), one-click rows. The backdrop dims the scene; the action
+      <!-- The deck: one centered picker, three tabs (Autopilot · Teleport ·
+           Observatory), one-click rows. The backdrop dims the scene; the action
            cluster stays clickable above it. -->
       <div id="deck-backdrop"></div>
       <div id="deck" class="pn pn-high">
         <div class="pk-tabs">
-          <button id="deck-tab-observe">
-            <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4.15 8.11 L12.68 3.17 L14.12 6.03 L5.05 9.89 Z"></path><path d="M11.9 3.75 L13.15 6.35"></path><path d="M4.5 9.05 L3.1 9.75"></path><path d="M9.4 8.2 L9.0 15.6 M9.0 15.6 L6.7 17.8 M9.0 15.6 L11.3 17.8"></path></svg>Observatory
+          <button id="deck-tab-pilot">
+            <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="10" cy="10" r="7.4"></circle><path fill="currentColor" stroke="none" d="M10 5.2 L12.9 13 L10 11.15 L7.1 13 Z"></path></svg>Autopilot
           </button>
           <button id="deck-tab-travel">
             <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><g transform="rotate(42 10 10)"><path fill-rule="evenodd" fill="currentColor" stroke="none" d="M10 1.4 C 8.1 3.4 7.1 6.3 7.1 9.5 L 7.1 14.2 C 7.1 14.75 7.5 15.1 8.05 15.1 L 11.95 15.1 C 12.5 15.1 12.9 14.75 12.9 14.2 L 12.9 9.5 C 12.9 6.3 11.9 3.4 10 1.4 Z M10 5.45 a1.65 1.65 0 1 1 0 3.3 a1.65 1.65 0 0 1 0 -3.3 Z M10 6.25 a0.85 0.85 0 1 1 0 1.7 a0.85 0.85 0 0 1 0 -1.7 Z"></path><path fill="currentColor" stroke="none" d="M7.1 10.6 C 5.6 11.5 4.6 13.1 4.3 15.0 C 4.25 15.4 4.6 15.7 5.0 15.55 L 7.1 14.7 Z"></path><path fill="currentColor" stroke="none" d="M12.9 10.6 C 14.4 11.5 15.4 13.1 15.7 15.0 C 15.75 15.4 15.4 15.7 15.0 15.55 L 12.9 14.7 Z"></path><path fill="currentColor" stroke="none" d="M10 19.2 C 9.0 18.0 8.55 17.0 8.75 16.0 L 11.25 16.0 C 11.45 17.0 11.0 18.0 10 19.2 Z"></path></g></svg>Teleport
           </button>
-          <button id="deck-tab-pilot">
-            <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="10" cy="10" r="7.4"></circle><path fill="currentColor" stroke="none" d="M10 5.2 L12.9 13 L10 11.15 L7.1 13 Z"></path></svg>Autopilot
+          <button id="deck-tab-observe">
+            <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4.15 8.11 L12.68 3.17 L14.12 6.03 L5.05 9.89 Z"></path><path d="M11.9 3.75 L13.15 6.35"></path><path d="M4.5 9.05 L3.1 9.75"></path><path d="M9.4 8.2 L9.0 15.6 M9.0 15.6 L6.7 17.8 M9.0 15.6 L11.3 17.8"></path></svg>Observatory
           </button>
           <button class="pk-x" id="deck-close" aria-label="Close">
             <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5.5 5.5 L14.5 14.5 M14.5 5.5 L5.5 14.5"></path></svg>

@@ -13,6 +13,7 @@ import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js'
 import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
 
 import { PlanetariumMode, FIRST_PLANETARIUM_ACTIVATION_TOTAL_UNITS } from './planetarium/PlanetariumMode';
+import { LANDED_NEAR_AU } from './planetarium/landedView';
 import type { MoonFlightMode } from './moonFlight/MoonFlightMode';
 import type { VolumeCompareMode } from './volumeCompare/VolumeCompareMode';
 import { canGPUDoBloom } from './app/gpuCapability';
@@ -95,7 +96,8 @@ const scene = new THREE.Scene();
 scene.background = new THREE.Color(0x000000);
 
 // --- Planetarium camera ---
-const planetariumCamera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.000001, 200);
+// Near starts at the landed value; cruise swaps in its dynamic near per frame.
+const planetariumCamera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, LANDED_NEAR_AU, 200);
 planetariumCamera.position.set(-0.0002, 0.0001, 0.0001);
 
 // --- Moon flight camera (own camera so near/far are independent of other modes) ---
@@ -378,6 +380,9 @@ function installDevHooks() {
     jumpEvent: (type: string, direction?: 1 | -1) =>
       planetariumMode?.devJumpEvent(type as never, direction ?? 1) ?? false,
     probeLanded: () => planetariumMode?.devProbeLanded() ?? null,
+    traceStart: (name: string, maxFrames?: number) =>
+      planetariumMode?.devTraceStart(name, maxFrames) ?? false,
+    traceStop: () => planetariumMode?.devTraceStop() ?? null,
     tutorialStart: () => planetariumMode?.devTutorialStart() ?? false,
     tutorialNext: () => planetariumMode?.devTutorialNext(),
     tutorialBack: () => planetariumMode?.devTutorialBack(),
@@ -429,6 +434,7 @@ async function init() {
 
   function animate() {
     requestAnimationFrame(animate);
+    syncViewportIfDrifted();
     const now = performance.now();
     const dt = Math.min((now - lastTime) / 1000, 0.1); // cap at 100ms to avoid huge jumps
     lastTime = now;
@@ -462,11 +468,20 @@ async function init() {
 }
 
 // ================================================================
-// Resize handler
+// Viewport sync
 // ================================================================
-window.addEventListener('resize', () => {
+// The dimensions the cameras/renderer were last synced to. The per-frame
+// drift check below compares live viewport values against these, so viewport
+// changes that never deliver a resize event still get applied.
+let appliedViewportW = window.innerWidth;
+let appliedViewportH = window.innerHeight;
+
+function syncViewport() {
   const w = window.innerWidth;
   const h = window.innerHeight;
+  if (w === 0 || h === 0) return; // hidden/backgrounded states can report zeros
+  appliedViewportW = w;
+  appliedViewportH = h;
   planetariumCamera.aspect = w / h;
   planetariumCamera.updateProjectionMatrix();
   flightCamera.aspect = w / h;
@@ -476,8 +491,29 @@ window.addEventListener('resize', () => {
   moonFlightMode?.onResize(w / h);
   volumeCompareMode?.onResize(w / h);
   applyRenderResolution();
+  // After the renderer's pixel ratio is (re)applied: retune star point sizes,
+  // which are scaled by the renderer's ratio.
+  planetariumMode?.onResize();
   debugLog('Resize', { width: w, height: h });
-});
+}
+
+window.addEventListener('resize', syncViewport);
+
+// iOS Safari changes the viewport without a resize event this app can count
+// on (URL-bar collapse on a non-scrolling page, keyboard dismissal, the
+// post-rotation settle), and a camera left on a stale aspect draws every
+// disc as an ellipse. Called from the animation loop: plain property reads,
+// no layout, and the aspect term re-arms the sync even if some other path
+// ever clobbers a camera.
+function syncViewportIfDrifted() {
+  if (
+    window.innerWidth !== appliedViewportW ||
+    window.innerHeight !== appliedViewportH ||
+    camera.aspect !== appliedViewportW / appliedViewportH
+  ) {
+    syncViewport();
+  }
+}
 
 // ================================================================
 // Start

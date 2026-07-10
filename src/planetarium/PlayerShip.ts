@@ -6,7 +6,7 @@
  * procedural fallback). All procedural geometry lives in ship/models/.
  */
 import * as THREE from 'three';
-import { KM_PER_AU } from '../astronomy/constants';
+import { SHIP_REFERENCE_RADIUS_AU } from './cruiseView';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { LIGHT_SPEED_AU_PER_S } from './planets/planetData';
 import { createDefaultShip } from './ship/models/defaultShip';
@@ -56,10 +56,12 @@ export class PlayerShip {
   constructor() {
     this.group = new THREE.Group();
 
-    const moonRadiusAU = 1737.4 / KM_PER_AU;
-    this.spacecraftReferenceRadiusAU = moonRadiusAU;
+    // The rig-scaled reference radius: the hull and every chase-view pad
+    // derive from the same base (see cruiseView.ts), so the ship's on-screen
+    // size survives any rig rescale.
+    this.spacecraftReferenceRadiusAU = SHIP_REFERENCE_RADIUS_AU;
 
-    const ship = createDefaultShip(moonRadiusAU);
+    const ship = createDefaultShip(SHIP_REFERENCE_RADIUS_AU);
     this.defaultModel = ship.model;
     this.mesh = ship.mesh;
     this.exhaustCone = ship.exhaustCone;
@@ -166,20 +168,37 @@ export class PlayerShip {
     if (this.junoModel) this.junoModel.visible = visible;
   }
 
-  get speedAUPerS(): number {
-    if (!this.moving) return 0;
+  /** The speed the dialed throttle WOULD fly this frame: the cruise/system
+   *  blend with no proximity cap and no parked gate. The governor's engaged
+   *  latch compares its cap against this — the applied speed is circular
+   *  (it already contains the cap) and reads 0 parked, which would clear
+   *  the latch the moment the ship stops beside a body. */
+  get commandedSpeedAUPerS(): number {
     const cruise = DEFAULT_SPEED_AU_S * this.speedMultiplier;
     const system = DEFAULT_SPEED_AU_S * Math.min(this.systemSpeedMultiplier, this.speedMultiplier);
-    return Math.min(system + (cruise - system) * this.systemSpeedFactor, this.speedCapAUPerS);
+    return system + (cruise - system) * this.systemSpeedFactor;
+  }
+
+  get speedAUPerS(): number {
+    if (!this.moving) return 0;
+    return Math.min(this.commandedSpeedAUPerS, this.speedCapAUPerS);
   }
 
   get speedC(): number {
     return this.speedAUPerS / LIGHT_SPEED_AU_PER_S;
   }
 
+  /**
+   * Sync the visible model to the current heading/pitch without integrating
+   * motion. Scripted mission transfers drive the pose fields directly and
+   * skip update(), the only other writer of the model quaternion.
+   */
+  syncModelOrientation() {
+    this.group.quaternion.setFromUnitVectors(FORWARD_VECTOR, this.getForwardDirection());
+  }
+
   update(dt: number) {
-    const direction = this.getForwardDirection();
-    this.group.quaternion.setFromUnitVectors(FORWARD_VECTOR, direction);
+    this.syncModelOrientation();
 
     // Animate exhaust
     const effectiveMultiplier = this.speedAUPerS / DEFAULT_SPEED_AU_S;

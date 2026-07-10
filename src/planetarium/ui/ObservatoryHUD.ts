@@ -40,7 +40,7 @@ export interface SurfaceHudState {
 export type SurfaceTimeAction = 'toggle-pause' | 'slower' | 'faster' | 'now';
 
 /** Which marker the HUD draws over the tracked target this frame. */
-export type SurfaceMarkerMode = 'hidden' | 'brackets' | 'reticle' | 'chevron';
+export type SurfaceMarkerMode = 'hidden' | 'brackets' | 'reticle' | 'chevron' | 'pill';
 
 export interface SurfaceMarkerPlacement {
   mode: SurfaceMarkerMode;
@@ -96,6 +96,13 @@ export class ObservatoryHUD {
     this.timebarEl = document.getElementById('surface-timebar');
     if (this.wired) return;
     this.wired = true;
+    // Touch devices pinch to zoom; pointer devices scroll. Set once — the input
+    // capability doesn't change within a session.
+    const hint = this.rootEl?.querySelector('.shud-hint');
+    if (hint) {
+      const touch = (window.matchMedia?.('(pointer: coarse)').matches ?? false) || 'ontouchstart' in window;
+      hint.textContent = touch ? 'pinch to zoom · drag to look' : 'scroll to zoom · drag to look';
+    }
     document.getElementById('surface-exit')?.addEventListener('click', () => this.onExit());
     document.getElementById('surface-observatory')?.addEventListener('click', () => this.onObservatory());
     this.lookatEl?.addEventListener('click', () => this.onTargetMenu());
@@ -130,18 +137,25 @@ export class ObservatoryHUD {
     // Fractional coords, positioned via transform (left/top pixel-snap at
     // paint): a slow sky crawl must render sub-pixel-smooth, not twitch.
     // The dedup key quantizes to 0.1 px so steady frames still skip writes.
+    // The band-clamp Y joins the key (rounded, so it can't jitter it): the
+    // three anchored modes clamp the cluster against clusterMaxY, which
+    // render() re-measures at 8 Hz. When the sheet slides under a still target
+    // the band moves but mode/x/y/size don't, so without this the cluster
+    // would keep its stale clamp and settle onto the panel bands.
     const x = placement.xPx ?? 0;
     const y = placement.yPx ?? 0;
     const size = placement.sizePx ?? 0;
     const angle = placement.angleDeg ?? 0;
-    const css = `${placement.mode}|${x.toFixed(1)}|${y.toFixed(1)}|${size.toFixed(1)}|${angle.toFixed(1)}`;
+    const clamp = Math.round(this.clusterMaxY);
+    const css = `${placement.mode}|${x.toFixed(1)}|${y.toFixed(1)}|${size.toFixed(1)}|${angle.toFixed(1)}|${clamp}`;
     if (css === this.lastMarkerCss) return;
     this.lastMarkerCss = css;
 
     this.bracketsEl.style.display = placement.mode === 'brackets' ? '' : 'none';
     this.reticleEl.style.display = placement.mode === 'reticle' ? '' : 'none';
     this.chevronEl.style.display = placement.mode === 'chevron' ? '' : 'none';
-    const anchored = placement.mode === 'brackets' || placement.mode === 'reticle';
+    const anchored =
+      placement.mode === 'brackets' || placement.mode === 'reticle' || placement.mode === 'pill';
     this.discNoteEl.style.display = anchored ? '' : 'none';
     this.trackPillEl.style.display = anchored ? '' : 'none';
 
@@ -151,6 +165,11 @@ export class ObservatoryHUD {
       this.bracketsEl.style.width = `${size}px`;
       this.bracketsEl.style.height = `${size}px`;
       this.anchorCluster(x, top + size);
+    } else if (placement.mode === 'pill') {
+      // Disc dominates the frame: no locator box, just the cluster under the
+      // limb (size here is the TRUE disc height; the band clamp pulls the
+      // cluster on-screen when the limb runs below the fold).
+      this.anchorCluster(x, y + size / 2);
     } else if (placement.mode === 'reticle') {
       this.reticleEl.style.transform = `translate(${x - 6}px, ${y - 6}px)`;
       this.anchorCluster(x, y + 8);

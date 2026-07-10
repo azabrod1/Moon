@@ -27,7 +27,7 @@ import {
   type AtmosphereConfig,
 } from '../planetarium/PlanetFactory';
 import { augmentSurfaceMaterial, type SurfaceArchetype } from '../planetarium/world/surfaceShading';
-import { createPlanetariumStarfield } from '../planetarium/world/starfield';
+import { createPlanetariumStarfield, setStarfieldPixelRatio } from '../planetarium/world/starfield';
 import { captureDeviceTextureCaps } from '../planetarium/world/texturePolicy';
 import { atmosphereVertexShader, atmosphereFragmentShader } from '../shared/shaders/atmosphere';
 import { PLANETARIUM_BODIES, SUN_DATA, type PlanetData } from '../planetarium/planets/planetData';
@@ -1136,7 +1136,7 @@ export class CompareScene {
 
     // Dimmed starfield backdrop (VC owns this instance; scaling the colour buffer
     // dims it without touching the shared factory).
-    this.starfield = createPlanetariumStarfield();
+    this.starfield = createPlanetariumStarfield(this.renderer.getPixelRatio());
     dimStarfield(this.starfield, STARFIELD_DIM);
     this.group.add(this.starfield);
 
@@ -2760,6 +2760,13 @@ export class CompareScene {
 
   setVisible(v: boolean): void {
     this.group.visible = v;
+  }
+
+  /** Called after main.ts reapplies the render resolution on a window resize
+   *  (which may reclamp the renderer's pixel ratio). Star point sizes track
+   *  the renderer's ratio, so retune them to the new value. */
+  onResize(): void {
+    setStarfieldPixelRatio(this.starfield, this.renderer.getPixelRatio());
   }
 
   /** Dim the whole scene during an in-mode pair swap (key light + glass). */

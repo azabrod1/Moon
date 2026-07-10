@@ -330,18 +330,30 @@ export function projectedDiscPx(discDeg: number, fovDeg: number, viewportHeightP
 export const MARKER_RETICLE_MAX_PX = 10;
 export const MARKER_BRACKETS_MIN_PX = 14;
 
-export type SurfaceMarkerKind = 'brackets' | 'reticle';
+/** Bracket ceiling (disc height as a fraction of the viewport, with
+ * hysteresis): past it the disc dominates the frame and a locator box stops
+ * locating — the bracket size cap pins the box smaller than the disc, so its
+ * corners float in empty sky far off the limb and read as detached. The
+ * anchored cluster (disc note + tracking pill) carries on alone. */
+export const MARKER_PILL_MIN_DISC_FRAC = 0.66;
+export const MARKER_PILL_EXIT_DISC_FRAC = 0.58;
+
+export type SurfaceMarkerKind = 'brackets' | 'reticle' | 'pill';
 
 /**
  * Which target marker the HUD draws — the shared resolvability decision
  * (one helper so the panel, HUD, and scene never disagree about "too
- * small"). Hysteresis keeps the swap from flickering as the disc breathes
- * around the threshold.
+ * small"). Hysteresis keeps the swaps from flickering as the disc breathes
+ * around either threshold.
  */
 export function resolveMarkerKind(
   discPx: number,
   current: SurfaceMarkerKind,
+  viewportHeightPx: number,
 ): SurfaceMarkerKind {
+  const frac = discPx / viewportHeightPx;
+  if (frac >= MARKER_PILL_MIN_DISC_FRAC) return 'pill';
+  if (current === 'pill' && frac > MARKER_PILL_EXIT_DISC_FRAC) return 'pill';
   if (discPx >= MARKER_BRACKETS_MIN_PX) return 'brackets';
   if (discPx <= MARKER_RETICLE_MAX_PX) return 'reticle';
   return current;

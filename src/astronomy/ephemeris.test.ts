@@ -40,6 +40,17 @@ describe('dateToJD', () => {
   it('handles January dates (the month-shift branch)', () => {
     expect(dateToJD(utc('1987-01-27T00:00:00Z'))).toBeCloseTo(2446822.5, 6);
   });
+
+  it('advances smoothly within a second (no whole-second quantization)', () => {
+    // Positions render from this JD every frame; truncating milliseconds
+    // freezes each body within a UTC second and snaps it at the boundary —
+    // a visible once-per-second stutter on any close approach.
+    // Tolerance sits above float64 ULP at JD magnitude (~5e-10 days) and four
+    // orders below the quantization failure it guards against (5.8e-6 days).
+    const base = Date.UTC(2026, 6, 10, 12, 0, 0, 0);
+    const half = dateToJD(new Date(base + 500)) - dateToJD(new Date(base));
+    expect(half).toBeCloseTo(0.5 / 86400, 8);
+  });
 });
 
 describe('sunPosition', () => {
@@ -56,12 +67,15 @@ describe('moonPosition', () => {
   // Meeus example 47.a — 1992 Apr 12.0 TD (JDE 2448724.5). Full-series truth:
   // λ = 133.162655°, β = −3.229126°, Δ = 368 409.7 km, mean node Ω = 274.4005°.
   // This module's series is truncated; measured deltas at this date are
-  // +0.0009° lon, +0.0105° lat, −5.0 km — bounds are set just above that so
-  // any term change trips deliberately.
+  // +0.0009° lon, +0.00008° lat, −5.0 km — bounds are set just above that so
+  // any term change trips deliberately. (The latitude bound sat at 0.02° for
+  // a long time because three mistranscribed 47.B rows displaced the Moon by
+  // up to ~0.033° ≈ 219 km and the bound was measured from that output; the
+  // tight bound is the regression pin for the corrected rows.)
   it('matches Meeus example 47.a within truncation error', () => {
     const moon = moonPosition(2448724.5);
     expect(Math.abs(moon.longitude - 133.162655)).toBeLessThan(0.005);
-    expect(Math.abs(moon.latitude - -3.229126)).toBeLessThan(0.02);
+    expect(Math.abs(moon.latitude - -3.229126)).toBeLessThan(0.0005);
     expect(Math.abs(moon.distance - 368409.7)).toBeLessThan(25);
     expect(moon.ascendingNodeLongitude).toBeCloseTo(274.4005, 1);
   });

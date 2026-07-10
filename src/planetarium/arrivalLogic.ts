@@ -1,10 +1,11 @@
 /**
- * Pure math for cruise arrivals near moons. The planet throttle knows
- * nothing smaller than a system — deep inside one it still allows the
- * in-system speed setting (~25,000 km/s by default), which crosses a moon
- * standoff in about a second. These functions give moons their own approach
- * dynamics and arrival pose; PlanetariumMode feeds live positions and
- * applies the results.
+ * Pure math for cruise approaches and arrivals near bodies — moons, planets,
+ * and the Sun. The planet throttle knows nothing smaller than a system —
+ * deep inside one it still allows the in-system speed setting (~25,000 km/s
+ * by default), which crosses a body standoff in about a second. These
+ * functions give every body its own approach dynamics (and moons their
+ * arrival pose); PlanetariumMode feeds live positions and applies the
+ * results.
  */
 import * as THREE from 'three';
 import { KM_PER_AU } from '../astronomy/constants';
@@ -16,14 +17,24 @@ import { DEG2RAD } from '../shared/math/angles';
  *  sweep, not this cap, is what prevents impact. */
 export const MOON_APPROACH_K_PER_S = 1 / 4;
 
+/** Planets (and the Sun) launch at the moons' proven glide. A separate dial
+ *  so a gentler planet feel is a one-line change if flying QA asks for it —
+ *  a planet approach spans minutes where a moon's spans seconds. */
+export const PLANET_APPROACH_K_PER_S = MOON_APPROACH_K_PER_S;
+
+/** The Sun has no collision shell, so the governed glide is the only brake
+ *  before the corona; govern against an effective surface above the
+ *  photosphere so the glide asymptotes short of it. */
+export const SUN_APPROACH_SURFACE_RADII = 1.2;
+
 /** The governor never caps below ~2 km/s — you can always creep closer; the
  *  collision bubble, not the governor, is what holds you off the mesh. */
-export const MOON_APPROACH_V_MIN_AU_S = 2 / KM_PER_AU;
+export const BODY_APPROACH_V_MIN_AU_S = 2 / KM_PER_AU;
 
 /**
- * Proximity speed cap near one moon: closing speed is limited to
- * K × (distance to the mesh surface), floored at vMin. The cap applies only
- * while the heading closes on the moon — `cap = base / g`, with g a
+ * Proximity speed cap near one body: closing speed is limited to
+ * K × (distance to the rendered surface), floored at vMin. The cap applies
+ * only while the heading closes on the body — `cap = base / g`, with g a
  * smoothstep of the approach cosine over [0, 0.3] — so it fades out
  * continuously as the nose swings past the limb: a flyby ends by sailing
  * on, never by wading out of molasses. Receding or grazing flight is free.
@@ -42,10 +53,16 @@ export function governedSpeedCap(
   return base / g;
 }
 
-/** After a flyby the applied cap relaxes by e per this many seconds, so
+/** After a moon flyby the applied cap relaxes by e per this many seconds, so
  *  leaving reads as a pull-away — full in-system speed returns over ~4–5 s
  *  from a deep flyby — instead of a one-frame snap to thousands of km/s. */
 export const MOON_CAP_RELEASE_EFOLD_S = 1;
+
+/** Planets (and the Sun) release slower: passing one at the moons' 1 s
+ *  e-fold puts the ship at thousands of km/s before a turnaround completes —
+ *  a planet is a minutes-scale scene, and the pull-away should leave time to
+ *  swing back for another look (~13 s to full speed instead of ~5). */
+export const PLANET_CAP_RELEASE_EFOLD_S = 2.5;
 
 /** Above this the ramp stops mattering against any real speed setting
  *  (~25c); promote to Infinity so no stale finite cap lingers as state. */
@@ -71,6 +88,83 @@ export function rampedSpeedCap(
   return Math.min(geomCap, grown);
 }
 
+/** The override auto-clears only after the cap has read unbound continuously
+ *  this long with an escape hatch active — one grazing frame at the engage
+ *  boundary (gyro jitter, the cos-0.3 band) can't clear a latched override. */
+export const BODY_CAP_CLEAR_HOLD_S = 0.75;
+
+/** Engaged means the geometric cap sits meaningfully below the commanded
+ *  speed — a hair under, not equal, so cap≈commanded float noise at the
+ *  engage boundary doesn't flap the latch. */
+const CAP_BIND_FRACTION = 0.999;
+
+/**
+ * Per-frame governor state. `candidate` is the eased cap the governor would
+ * apply — integrated EVERY frame, bypassed or not, so easing state never
+ * resets to Infinity mid-escape and a bypass that ends mid-flyby resumes the
+ * ramp where it truly is. `applied` is what the ship actually gets (Infinity
+ * while a bypass hatch is open). `engaged` is the latch: the INSTANTANEOUS
+ * geometric cap binds against the commanded (uncapped, throttle-dialed)
+ * speed — never the applied speed, which already contains the cap and reads
+ * 0 parked. `unboundS` is how long the latch has read unbound while a bypass
+ * was active — the override auto-clear waits out BODY_CAP_CLEAR_HOLD_S on it.
+ * `releaseEfoldS` is the ramp pace of the LAST body that actually governed —
+ * adopted while binding, kept through the release, so a planet flyby keeps
+ * releasing at the planet pace even though the planet no longer binds.
+ */
+export interface BodyCapState {
+  candidate: number;
+  applied: number;
+  engaged: boolean;
+  unboundS: number;
+  releaseEfoldS: number;
+}
+
+/** Fresh state for flight discontinuities (jump, takeoff, restore,
+ *  activation): no cap, no latch, no partial clear-hold carried across. */
+export function initialBodyCapState(): BodyCapState {
+  return {
+    candidate: Infinity,
+    applied: Infinity,
+    engaged: false,
+    unboundS: 0,
+    releaseEfoldS: MOON_CAP_RELEASE_EFOLD_S,
+  };
+}
+
+/**
+ * Advance the governor state one frame. `geomCap` is this frame's
+ * instantaneous cap (min over all governed bodies) and `geomReleaseEfoldS`
+ * the release pace of the body that set it; `commandedAUPerS` is the speed
+ * the dialed throttle would fly uncapped, `bypass` whether an escape hatch
+ * (throttle override, system slowdown off) is open.
+ */
+export function advanceBodyCap(
+  prev: BodyCapState,
+  geomCap: number,
+  geomReleaseEfoldS: number,
+  commandedAUPerS: number,
+  bypass: boolean,
+  dtS: number,
+): BodyCapState {
+  // While the geometric cap actually governs (at or under the ramp), the
+  // binding body's release pace is adopted; once it lets go the latched pace
+  // carries the whole release.
+  const releaseEfoldS = geomCap <= prev.candidate ? geomReleaseEfoldS : prev.releaseEfoldS;
+  const candidate = rampedSpeedCap(geomCap, prev.candidate, dtS, releaseEfoldS);
+  const engaged = geomCap < commandedAUPerS * CAP_BIND_FRACTION;
+  return {
+    candidate,
+    applied: bypass ? Infinity : candidate,
+    engaged,
+    // The hold only means something while a hatch is open and the cap is
+    // unbound; any other frame resets it, so a partial hold can't survive
+    // re-engagement or complete long after the hatch opened.
+    unboundS: bypass && !engaged ? prev.unboundS + dtS : 0,
+    releaseEfoldS,
+  };
+}
+
 /** Arrival standoff targets this apparent disc diameter from the CAMERA
  *  (which trails the ship): a clear disc with sky around it, then the
  *  governed drift-in grows it toward closest approach — the approach is
@@ -89,6 +183,14 @@ export const MOON_ARRIVAL_MAX_OFFAXIS_DEG = 12;
 /** Legacy floor (~7,500 km) so the smallest arrivals never park
  *  uncomfortably tight; unchanged from the original standoff. */
 export const MOON_ARRIVAL_STANDOFF_FLOOR_AU = 5e-5;
+
+/** Planet-jump standoff floor (~3,000 km). Inert for the current catalog —
+ *  every planet's 8-radii arm exceeds it (Pluto's is 6.4e-5 AU) — it only
+ *  guards a degenerate zero-radius body. The old 0.001 AU floor bound for
+ *  ALL terrestrials and Pluto, parking Mercury at a ~2° postcard; historic
+ *  journeys still pass that legacy value so authored milestone scenes keep
+ *  their ship positions. */
+export const PLANET_ARRIVAL_STANDOFF_FLOOR_AU = 2e-5;
 
 /** Standoff never exceeds this fraction of the live moon–parent separation,
  *  so the parent can't dominate the view; for the closest moons (Phobos,

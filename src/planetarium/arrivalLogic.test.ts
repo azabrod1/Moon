@@ -1,13 +1,18 @@
 import { describe, expect, it } from 'vitest';
 import * as THREE from 'three';
 import {
+  advanceBodyCap,
   governedSpeedCap,
+  initialBodyCapState,
   moonArrivalPose,
   moonCollisionRadius,
   rampedSpeedCap,
-  MOON_APPROACH_K_PER_S,
+  BODY_APPROACH_V_MIN_AU_S,
+  BODY_CAP_CLEAR_HOLD_S,
   MOON_CAP_RELEASE_EFOLD_S,
-  MOON_APPROACH_V_MIN_AU_S,
+  PLANET_CAP_RELEASE_EFOLD_S,
+  MOON_APPROACH_K_PER_S,
+  PLANET_APPROACH_K_PER_S,
   MOON_ARRIVAL_APPARENT_DIAMETER_DEG,
   MOON_ARRIVAL_MAX_OFFAXIS_DEG,
   MOON_ARRIVAL_SEPARATION_CAP,
@@ -18,13 +23,13 @@ import { MOONS } from './planets/moonData';
 import { PLANETARIUM_BODIES } from './planets/planetData';
 import { KM_PER_AU } from '../astronomy/constants';
 import { DEG2RAD, RAD2DEG } from '../shared/math/angles';
+// The REAL rig constants — this sweep must see exactly the rig the app
+// flies (mirrored copies here once meant a rig change couldn't fail a test).
+import { SHIP_CLEARANCE_AU, CRUISE_CAM_DIST_AU as CAM_DIST_AU } from './cruiseView';
 
 const K = MOON_APPROACH_K_PER_S;
-const VMIN = MOON_APPROACH_V_MIN_AU_S;
+const VMIN = BODY_APPROACH_V_MIN_AU_S;
 
-// Mirrors the controller's constants: hull clearance and chase-camera trail.
-const SHIP_CLEARANCE_AU = (1_737.4 / KM_PER_AU) * 1.5;
-const CAM_DIST_AU = 0.000094;
 const MESH_FLOOR_RATIO = 0.05;
 
 /** Real-catalog inputs for one moon, posed at `angleRad` around its parent
@@ -128,6 +133,101 @@ describe('rampedSpeedCap', () => {
   });
 });
 
+describe('advanceBodyCap — the governor latch', () => {
+  const COMMANDED = 25_000 / KM_PER_AU; // the in-system default
+  const DT = 1 / 60;
+
+  it('stays latched (clear timer pinned at zero) while a body binds', () => {
+    let s = initialBodyCapState();
+    const geomCap = COMMANDED / 10;
+    for (let t = 0; t < 3; t += DT) s = advanceBodyCap(s, geomCap, MOON_CAP_RELEASE_EFOLD_S, COMMANDED, true, DT);
+    expect(s.engaged).toBe(true);
+    expect(s.unboundS).toBe(0);
+    expect(s.applied).toBe(Infinity); // bypassed…
+    expect(s.candidate).toBeCloseTo(geomCap, 12); // …but the ramp memory stays live
+  });
+
+  it('completes the clear-hold only after a sustained unbound stretch', () => {
+    let s = initialBodyCapState();
+    s = advanceBodyCap(s, COMMANDED / 10, MOON_CAP_RELEASE_EFOLD_S, COMMANDED, true, DT); // bound once
+    let held = 0;
+    while (s.unboundS < BODY_CAP_CLEAR_HOLD_S) {
+      s = advanceBodyCap(s, Infinity, MOON_CAP_RELEASE_EFOLD_S, COMMANDED, true, DT); // flying away
+      held += DT;
+      expect(held).toBeLessThan(BODY_CAP_CLEAR_HOLD_S + 1); // and it can't wedge
+    }
+    expect(s.unboundS).toBeGreaterThanOrEqual(BODY_CAP_CLEAR_HOLD_S);
+  });
+
+  it('a one-frame grazing re-bind resets the hold instead of clearing through it', () => {
+    let s = initialBodyCapState();
+    for (let t = 0; t < BODY_CAP_CLEAR_HOLD_S * 0.9; t += DT) {
+      s = advanceBodyCap(s, Infinity, MOON_CAP_RELEASE_EFOLD_S, COMMANDED, true, DT);
+    }
+    expect(s.unboundS).toBeGreaterThan(0);
+    s = advanceBodyCap(s, COMMANDED / 10, MOON_CAP_RELEASE_EFOLD_S, COMMANDED, true, DT); // graze
+    expect(s.unboundS).toBe(0);
+  });
+
+  it('a parked ship beside a body stays latched on its DIALED speed', () => {
+    // The commanded speed ignores the parked state; the latch must too, or
+    // parking beside a moon would start clearing the override immediately.
+    const geomCap = governedSpeedCap(2 * SHIP_CLEARANCE_AU, 1, K, VMIN);
+    const s = advanceBodyCap(initialBodyCapState(), geomCap, MOON_CAP_RELEASE_EFOLD_S, COMMANDED, true, DT);
+    expect(s.engaged).toBe(true);
+  });
+
+  it('the ramp memory survives a bypass and re-applies the moment it ends', () => {
+    let s = initialBodyCapState();
+    const geomCap = COMMANDED / 100;
+    s = advanceBodyCap(s, geomCap, MOON_CAP_RELEASE_EFOLD_S, COMMANDED, true, DT);
+    expect(s.applied).toBe(Infinity);
+    s = advanceBodyCap(s, geomCap, MOON_CAP_RELEASE_EFOLD_S, COMMANDED, false, DT); // hatch closes
+    expect(s.applied).toBeCloseTo(geomCap, 12); // tight at once — no Infinity restart
+  });
+
+  it('the auto-clear hand-off starts clean: no wall ramp survives the bypass edge', () => {
+    // Controller contract: when the sustained hold auto-clears the override
+    // it resets to initialBodyCapState. Without that, the candidate's
+    // wall-level ramp memory (only ~2x grown over the hold) would become the
+    // applied cap on the bypass true→false edge and brake a full-speed ship
+    // to a crawl for several seconds.
+    let s = initialBodyCapState();
+    s = advanceBodyCap(s, COMMANDED / 1000, MOON_CAP_RELEASE_EFOLD_S, COMMANDED, true, DT); // deep at a wall, bypassed
+    expect(s.candidate).toBeLessThan(COMMANDED); // the memory the reset discards
+    s = initialBodyCapState(); // the controller's reset at auto-clear
+    s = advanceBodyCap(s, Infinity, MOON_CAP_RELEASE_EFOLD_S, COMMANDED, false, DT); // first un-bypassed frame
+    expect(s.applied).toBe(Infinity);
+  });
+
+  it('a planet flyby releases at the planet pace, latched through the whole ramp', () => {
+    // Passing a planet at the moons' 1 s e-fold puts the ship at thousands
+    // of km/s before a turnaround completes — planets release slower, and
+    // the pace must persist after the planet stops binding.
+    let s = initialBodyCapState();
+    const wallCap = COMMANDED / 100;
+    s = advanceBodyCap(s, wallCap, PLANET_CAP_RELEASE_EFOLD_S, COMMANDED, false, DT); // planet binds
+    expect(s.releaseEfoldS).toBe(PLANET_CAP_RELEASE_EFOLD_S);
+    s = advanceBodyCap(s, Infinity, MOON_CAP_RELEASE_EFOLD_S, COMMANDED, false, DT); // nose past the limb
+    expect(s.releaseEfoldS).toBe(PLANET_CAP_RELEASE_EFOLD_S); // pace latched, not the frame's default
+    expect(s.candidate).toBeCloseTo(wallCap * Math.exp(DT / PLANET_CAP_RELEASE_EFOLD_S), 12);
+  });
+
+  it('a moon re-binding mid-release takes the ramp back to the moon pace', () => {
+    let s = initialBodyCapState();
+    s = advanceBodyCap(s, COMMANDED / 100, PLANET_CAP_RELEASE_EFOLD_S, COMMANDED, false, DT);
+    s = advanceBodyCap(s, Infinity, MOON_CAP_RELEASE_EFOLD_S, COMMANDED, false, DT); // planet releasing
+    s = advanceBodyCap(s, COMMANDED / 200, MOON_CAP_RELEASE_EFOLD_S, COMMANDED, false, DT); // a moon binds
+    expect(s.releaseEfoldS).toBe(MOON_CAP_RELEASE_EFOLD_S);
+  });
+
+  it('a planet approach at the in-system default engages ~100,000 km out', () => {
+    const engageDistAU = COMMANDED / PLANET_APPROACH_K_PER_S; // cap == speed here
+    expect(governedSpeedCap(engageDistAU, 1, PLANET_APPROACH_K_PER_S, VMIN)).toBeCloseTo(COMMANDED, 12);
+    expect(engageDistAU * KM_PER_AU).toBeCloseTo(100_000, -3);
+  });
+});
+
 describe('moonArrivalPose — ladder fixtures', () => {
   const standoff = (name: string) => {
     const inp = catalogInputs(name);
@@ -137,12 +237,15 @@ describe('moonArrivalPose — ladder fixtures', () => {
 
   it('the Moon parks where its disc reads the target size from the camera', () => {
     const { inp, dist } = standoff('Moon');
-    const raw =
-      inp.renderedR / Math.sin((MOON_ARRIVAL_APPARENT_DIAMETER_DEG / 2) * DEG2RAD) - CAM_DIST_AU;
+    const half = (MOON_ARRIVAL_APPARENT_DIAMETER_DEG / 2) * DEG2RAD;
+    const raw = inp.renderedR / Math.sin(half) - CAM_DIST_AU;
     expect(dist).toBeCloseTo(raw, 9);
-    // Roughly double the old 8-radii standoff — the "a bit further" ask.
-    expect(dist / inp.renderedR).toBeGreaterThan(12);
-    expect(dist / inp.renderedR).toBeLessThan(18);
+    // The SHIP parks just inside the zero-trail target-size distance and the
+    // camera trail closes the remainder, so the ship-to-moon ratio rides the
+    // rig (a shorter trail parks the ship farther out while the VIEW stays
+    // identical). Bound it by the invariant, not by any one rig's split.
+    expect(dist / inp.renderedR).toBeLessThan(1 / Math.sin(half));
+    expect(dist / inp.renderedR).toBeGreaterThan(1 / Math.sin(half) - 1);
   });
 
   it('Phobos still binds on the separation cap, Deimos on the legacy floor', () => {

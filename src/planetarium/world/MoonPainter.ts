@@ -1,4 +1,5 @@
 import type { MoonMesh } from '../PlanetFactory';
+import { debugWarn } from '../../shared/debug';
 
 /**
  * Lazy, budgeted painter for moon surface textures. Moons are created with a
@@ -14,6 +15,13 @@ import type { MoonMesh } from '../PlanetFactory';
  */
 export class MoonPainter {
   private pending = new Map<string, MoonMesh[]>();
+  /** Consecutive paint failures per moon (keyed by moon name), so a moon whose
+   *  paint throws is retried a few times before being abandoned. See pump(). */
+  private failures = new Map<string, number>();
+
+  /** A moon that has thrown this many times is dropped rather than retried
+   *  forever — a permanently-failing painter must not spin the queue. */
+  private static readonly MAX_ATTEMPTS = 3;
 
   constructor(private readonly paint: (moon: MoonMesh) => void) {}
 
@@ -52,6 +60,13 @@ export class MoonPainter {
    * otherwise drain every pending system in one frame — a render-target /
    * mipmap burst. The count cap bounds that. Defaults to unbounded (the CPU
    * path, where the time budget already limits work).
+   *
+   * A moon is only removed from the queue once its paint RETURNS. A thrown
+   * paint (transient canvas/GPU failure, or a CPU-fallback throw) rotates the
+   * moon to the back of its queue for a later retry instead of unqueueing it —
+   * otherwise the never-show-unpainted gate would hide that moon for the whole
+   * session. After MAX_ATTEMPTS failures the moon is dropped (and named) so a
+   * broken painter can't spin, and its siblings are never blocked either way.
    */
   pump(budgetMs: number, preferred: string | null, maxMoons = Infinity): void {
     if (this.pending.size === 0) return;
@@ -69,8 +84,31 @@ export class MoonPainter {
       const moons = this.pending.get(parentName);
       if (!moons) continue;
       while (moons.length > 0) {
-        this.paint(moons.shift()!);
+        const moon = moons[0];
+        try {
+          this.paint(moon);
+        } catch (err) {
+          // Keep the queue correct across the throw: remove this attempt, then
+          // requeue for a retry — or drop after too many failures.
+          moons.shift();
+          const attempts = (this.failures.get(moon.data.name) ?? 0) + 1;
+          if (attempts >= MoonPainter.MAX_ATTEMPTS) {
+            this.failures.delete(moon.data.name);
+            debugWarn(
+              `MoonPainter: dropping ${moon.data.name} after ${attempts} failed paint attempts`,
+              err,
+            );
+          } else {
+            this.failures.set(moon.data.name, attempts);
+            moons.push(moon);
+          }
+          if (moons.length === 0) this.pending.delete(parentName);
+          if (performance.now() - start >= budgetMs) return;
+          continue;
+        }
+        moons.shift();
         painted++;
+        if (this.failures.size > 0) this.failures.delete(moon.data.name);
         if (moons.length === 0) this.pending.delete(parentName);
         if (painted >= maxMoons || performance.now() - start >= budgetMs) return;
       }

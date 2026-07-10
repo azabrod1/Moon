@@ -116,6 +116,10 @@ import {
   SHIP_OCCLUDER_RADIUS_AU,
   CRUISE_CONTROLS_MIN_DISTANCE_AU,
   CAMERA_BODY_MARGIN_AU,
+  CAM_FOLLOW_TAU_IDLE_S,
+  CAM_FOLLOW_TAU_TURN_S,
+  CAM_FOLLOW_TURN_BLEND_S,
+  cameraFollowGain,
   planetEnvelopeRadiusAU,
   cruiseCameraNearAU,
   escapeCameraPenetrations,
@@ -459,6 +463,8 @@ export class PlanetariumMode {
 
   // Chase camera state
   private userOrbiting = false;
+  // 0 idle → 1 turning, eased — the chase-follow τ rides on it.
+  private camFollowTurnBlend = 0;
   private userOrbitTimeout: number | null = null;
   private orbitDragging = false;
   private orbitPointerStartX = 0;
@@ -1025,7 +1031,7 @@ export class PlanetariumMode {
     // to prevent accidental camera rotation from touches near the bottom bar
     this.controls.enabled = !!this.landedOn || !this.isTouchDevice;
     if (!this.landedOn) {
-      this.updateCameraFollow();
+      this.updateCameraFollow(1 / 60); // one nominal-frame seat; the loop takes over
     }
 
     this.store.startAutoSave(() => this.getState());
@@ -1278,7 +1284,7 @@ export class PlanetariumMode {
     // Apply floating origin: offset everything by player position
     this.applyFloatingOrigin();
 
-    this.updateCameraFollow();
+    this.updateCameraFollow(dt);
     if (!this.devFreeCamera) this.controls.update();
 
     // FPS tracking (wall-clock, independent of dt capping)
@@ -1456,7 +1462,7 @@ export class PlanetariumMode {
     }
   }
 
-  private updateCameraFollow() {
+  private updateCameraFollow(dt: number) {
     if (this.devFreeCamera) return; // headless framing drives the camera directly
     // Player is always at scene origin due to floating origin
     this.controls.target.set(0, 0, 0);
@@ -1472,10 +1478,18 @@ export class PlanetariumMode {
       -forward.z * camDist,
     );
 
-    // Smooth follow — faster when actively turning
-    const turning = Math.abs(this.player.yawInput) + Math.abs(this.player.pitchInput);
-    const lerpSpeed = turning > 0 ? 0.06 : 0.025;
-    this.camera.position.lerp(idealPos, lerpSpeed);
+    // Smooth follow — tighter pursuit while actively steering, but the τ
+    // eases between the two so a tap bends the curve instead of stepping it,
+    // and the gain derives from dt so 60 Hz and 120 Hz converge alike.
+    const turning = Math.abs(this.player.yawInput) + Math.abs(this.player.pitchInput) > 0 ? 1 : 0;
+    this.camFollowTurnBlend +=
+      (turning - this.camFollowTurnBlend) * cameraFollowGain(dt, CAM_FOLLOW_TURN_BLEND_S);
+    const tau = THREE.MathUtils.lerp(
+      CAM_FOLLOW_TAU_IDLE_S,
+      CAM_FOLLOW_TAU_TURN_S,
+      this.camFollowTurnBlend,
+    );
+    this.camera.position.lerp(idealPos, cameraFollowGain(dt, tau));
   }
 
   /**

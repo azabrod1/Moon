@@ -215,6 +215,25 @@ export function escapeCameraPenetrations(
   return { x: cam.x + rx * tExit, y: cam.y + ry * tExit, z: cam.z + rz * tExit };
 }
 
+/** Chase-camera pursuit time constants. The follow gain must derive from dt
+ *  (k = 1 − e^(−dt/τ)): a fixed per-frame factor converges twice as slowly at
+ *  60 Hz as at 120 Hz, and the old idle↔turning factor STEP (0.025 → 0.06 on
+ *  the first steering frame) landed a visible camera hitch on every tap — at
+ *  close range the near-full-screen disc reads it as jitter. The τ values
+ *  reproduce the previous per-frame factors at 120 Hz, the rate the rig's
+ *  feel was tuned at, so the approved feel is unchanged there. */
+export const CAM_FOLLOW_TAU_IDLE_S = 0.33;
+export const CAM_FOLLOW_TAU_TURN_S = 0.14;
+/** The τ itself eases between idle and turning over this time, so a steering
+ *  tap bends the pursuit curve instead of stepping it. */
+export const CAM_FOLLOW_TURN_BLEND_S = 0.12;
+
+/** Frame-rate-invariant smoothing gain: applying it per frame converges at
+ *  e^(−t/τ) in wall time regardless of the frame cadence. */
+export function cameraFollowGain(dtS: number, tauS: number): number {
+  return 1 - Math.exp(-dtS / Math.max(tauS, 1e-4));
+}
+
 /** Distance from the camera to the nearest body SURFACE (no margin) over the
  *  pooled shell set — the live quantity the dynamic near plane rides on. */
 export function nearestShellSurfaceDistanceAU(

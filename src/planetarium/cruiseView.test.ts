@@ -16,6 +16,10 @@ import {
   ringAnnulusDistanceAU,
   escapeCameraPenetrations,
   nearestShellSurfaceDistanceAU,
+  CAM_FOLLOW_TAU_IDLE_S,
+  CAM_FOLLOW_TAU_TURN_S,
+  CAM_FOLLOW_TURN_BLEND_S,
+  cameraFollowGain,
 } from './cruiseView';
 
 const KM_PER_AU = 149_597_870.7;
@@ -237,5 +241,31 @@ describe('nearestShellSurfaceDistanceAU', () => {
 
   it('is Infinity with no bodies in range', () => {
     expect(nearestShellSurfaceDistanceAU({ x: 0, y: 0, z: 0 }, [], 0)).toBe(Infinity);
+  });
+});
+
+describe('cameraFollowGain', () => {
+  it('reproduces the tuned per-frame factors at 120 Hz (the approved feel)', () => {
+    // The old hardcoded lerp factors were 0.025 idle / 0.06 turning, tuned on
+    // a 120 Hz display. The τ constants must keep that exact behavior there.
+    expect(cameraFollowGain(1 / 120, CAM_FOLLOW_TAU_IDLE_S)).toBeCloseTo(0.025, 3);
+    expect(cameraFollowGain(1 / 120, CAM_FOLLOW_TAU_TURN_S)).toBeCloseTo(0.058, 3);
+  });
+
+  it('converges at the same wall-clock rate regardless of frame cadence', () => {
+    // Residual after 1 s of frames must equal e^(−1/τ) at any Hz — the whole
+    // point of deriving the gain from dt.
+    for (const hz of [30, 60, 120]) {
+      const g = cameraFollowGain(1 / hz, CAM_FOLLOW_TAU_IDLE_S);
+      const residualAfter1s = Math.pow(1 - g, hz);
+      expect(residualAfter1s).toBeCloseTo(Math.exp(-1 / CAM_FOLLOW_TAU_IDLE_S), 6);
+    }
+  });
+
+  it('stays a sane gain at the 100 ms dt cap and never reaches 1', () => {
+    const g = cameraFollowGain(0.1, CAM_FOLLOW_TAU_TURN_S);
+    expect(g).toBeGreaterThan(0.4);
+    expect(g).toBeLessThan(1);
+    expect(cameraFollowGain(0.008, CAM_FOLLOW_TURN_BLEND_S)).toBeGreaterThan(0);
   });
 });

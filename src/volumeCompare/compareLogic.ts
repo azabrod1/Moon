@@ -404,6 +404,21 @@ export function sandGrainBudget(useBloom: boolean, isMobile: boolean): number {
   return weakTier ? 1500 : 3000;
 }
 
+/**
+ * The sand mound's height at object-space radius `rr` (0 centre → 1 rim) for a
+ * given `peak` (world-space studio units): a flat top under rr=0.12 tapering to
+ * 0 by rr=0.55, `peak · (1 − smoothstep(0.12, 0.55, rr))`. This is the single
+ * source of the mound profile — the disc shader duplicates the GLSL with a
+ * cross-reference, and the CPU reads it for the sand stream's kill plane
+ * (surfaceY + moundHeightAt(grainRr, peak)). The stream is axial (grainRr ≈ 0),
+ * so it kills at the mound crest, but callers use the formula, never a shortcut.
+ */
+export function moundHeightAt(rr: number, peak: number): number {
+  const t = Math.min(1, Math.max(0, (rr - 0.12) / (0.55 - 0.12)));
+  const s = t * t * (3 - 2 * t); // GLSL smoothstep
+  return peak * (1 - s);
+}
+
 // ---------------------------------------------------------------------------
 // Spherical-cap liquid math (container inner radius R, height h from the bottom pole)
 // ---------------------------------------------------------------------------
@@ -635,17 +650,27 @@ export const TRY_NEXT: ReadonlyArray<TryNextPair> = [
 // ---------------------------------------------------------------------------
 
 /**
- * Prose name with Earth's Moon's article ("the Moon" — "poured into the Moon");
- * every proper-named body stays bare. Restated here rather than imported from
- * surfaceView so this module stays three-free (surfaceView pulls in three.js).
+ * Prose name with the article for the two common nouns — "the Moon", "the Sun"
+ * ("…fit inside the Sun", "988 Jupiters in the Sun"); every proper-named body
+ * stays bare. Restated here rather than imported from surfaceView so this module
+ * stays three-free (surfaceView pulls in three.js). Deck rows deliberately show
+ * raw catalog names (a different code path) and are unaffected.
  */
 export function bodyDisplayName(name: string): string {
-  return name === 'Moon' ? 'the Moon' : name;
+  if (name === 'Moon') return 'the Moon';
+  if (name === 'Sun') return 'the Sun';
+  return name;
 }
 
 /** English plural of a body name: +es after a sibilant ending, else +s. */
 export function pluralizeBody(name: string): string {
   return /(?:s|x|z|ch|sh)$/i.test(name) ? `${name}es` : `${name}s`;
+}
+
+/** Capitalize the first character of a sentence (leaves the rest untouched) — the
+ *  end-card kicker starts with a display name, so "the Sun/Moon" must read "The". */
+export function capitalizeSentence(s: string): string {
+  return s.length === 0 ? s : s.charAt(0).toUpperCase() + s.slice(1);
 }
 
 export interface EndCardTryRow {
@@ -687,19 +712,30 @@ export function endCardModel(
     : null;
 
   const mass = massRatioText(container, filler);
+  // Sentence-initial: the display name "the Sun"/"the Moon" must capitalize at the
+  // start of the kicker ("The Sun holds…"), while the headline + try-next rows keep
+  // the lowercase article mid-sentence ("…inside the Sun"). Capitalizing the first
+  // rendered character is safe for every name ("Earth holds…" is unchanged).
   const kicker = mass
-    ? `${bodyDisplayName(container)} holds the volume of ${formatCount(comparison.n)} ${fillers} — but only the mass of ${mass}.`
+    ? capitalizeSentence(
+        `${bodyDisplayName(container)} holds the volume of ${formatCount(comparison.n)} ${fillers} — but only the mass of ${mass}.`,
+      )
     : null;
 
   // Never offer the pair the player just poured (exact container+filler match);
   // the swapped direction may still appear (it's a different comparison).
   const tryNext = TRY_NEXT.filter(
     (pair) => !(pair.container === container && pair.filler === filler),
-  ).map((pair) => ({
-    container: pair.container,
-    filler: pair.filler,
-    text: `${formatCount(buildComparison(pair.container, pair.filler).n)} ${pluralizeBody(pair.filler)} in ${bodyDisplayName(pair.container)}`,
-  }));
+  ).map((pair) => {
+    const rn = buildComparison(pair.container, pair.filler).n;
+    // Sub-unity rows read "0.00076 of a Jupiter in Earth" (singular, "of a") —
+    // "0.00076 Jupiters" would misread as a plural count.
+    const text =
+      rn < 1
+        ? `${formatCount(rn)} of a ${pair.filler} in ${bodyDisplayName(pair.container)}`
+        : `${formatCount(rn)} ${pluralizeBody(pair.filler)} in ${bodyDisplayName(pair.container)}`;
+    return { container: pair.container, filler: pair.filler, text };
+  });
 
   return { headline, dualStat, kicker, tryNext };
 }

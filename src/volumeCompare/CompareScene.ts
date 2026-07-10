@@ -41,6 +41,7 @@ import {
   pourBudget,
   spawnAllowance,
   sandFillFraction,
+  moundHeightAt,
   type Comparison,
   type FillRegime,
   type SpawnCaps,
@@ -197,10 +198,10 @@ const CHUNKY_ACROSS = 6;
 // deflects chunky balls over the rim onto the dome. Chunky pours cap tighter.
 const IN_FLIGHT_CAP_CHUNKY = 4;
 const IN_FLIGHT_CAP = 12;
-// The sub-unity filler's render radius is capped here so its loom pose stays
-// framable — a genuinely enormous filler (Moon-in-Sun) would otherwise put the
-// camera inside it. Well past every real Try-next pair (Earth-in-Jupiter 10.97).
-const SUB_UNITY_MAX_RF = 12;
+// The sub-unity filler renders at its TRUE radius ratio (Alex's ruling: "keep
+// Jupiter whole screen and make Moon smaller so scale is real") — no clamp. The
+// framing (frameSubUnity) keeps the giant owning the frame and shrinks the vessel
+// to its size floor, so the smallness is the honest story.
 // Above this filler radius the sub-unity pose keeps fitting both (filler wedged
 // in the mouth, poking well out) vs framing the loom (glass in the lower third,
 // giant overflowing). Tunable.
@@ -220,6 +221,9 @@ const DRAIN_MAX_PER_FRAME = 40;
 const RIPPLE_POOL = 24;
 const RIPPLE_LIFE = 0.5;
 const RIPPLE_MAX_R = 0.09; // studio units at full expansion (a small splash flash)
+// Faller/stream splash droplets warm a touch toward this so the burst reads as a
+// splash, not stray filler flecks (kept sub-bloom by the ≤1.35 gain in grainColor).
+const SPLASH_WARM = new THREE.Color(1.0, 0.72, 0.38);
 
 // --- sand grains (the pour stream + the overflow spill) --------------------
 // One THREE.Points pool of lit sphere-impostors, allocated at the FULL-tier
@@ -239,6 +243,10 @@ const SPILL_SIZE_MAX = 0.034;
 // Studio gravity for the falling column + the spill arc (units/s²) — tuned so a
 // full-height pour reads as a quick sand fall, not a slow drift.
 const GRAIN_GRAVITY = 6.5;
+// Terminal velocity for the falling column (kind-0 stream + kind-2 plume/droplets)
+// so it reaches the bed without thinning under unchecked acceleration. The kind-1
+// spill stays ballistic (its arc is tuned).
+const GRAIN_VT = 2.2;
 // The stream spawns across a gaussian disc this fraction of the mouth radius —
 // a TIGHT dense core (most grains on the axis, a few strays) so the column reads
 // as a continuous ribbon, not drifting dust (display-only cross-section).
@@ -248,9 +256,12 @@ const STREAM_DISC_FRAC = 0.32;
 // fall never overflows the pool.
 const STREAM_RATE = 1900;
 // Impact plume: grains/sec kicked up + out from the contact while the stream is
-// live (a persistent splash marking where the column meets the pool). Short
-// lives keep only a few dozen alive at once.
-const PLUME_RATE = 130;
+// live (a persistent splash marking where the column meets the pool). Bumped
+// ~2.3× over P4 so the contact is unmissable at default framing.
+const PLUME_RATE = 300;
+// Splash/plume chips size to the FALLING grain, capped ≤1.5× (F-3) — a grain
+// kicked up, never a chip bigger than the thing that splashed.
+const PLUME_CHIP_K = 1.2;
 // A slot band reserved for the spill + plume so a dense stream can't starve them.
 const SPILL_RESERVE = 220;
 // The overflow spill: a restrained garnish, ~40 grains over ~1.5 s at the rim.
@@ -258,8 +269,29 @@ const SPILL_COUNT = 40;
 const SPILL_EMIT_S = 1.5;
 const SPILL_GRAIN_LIFE = 1.5;
 
+// --- marble rain fallers (display-owned; the solver keeps only the residual pile) -
+// During `raining`, each arrival is a display faller that falls from the spout,
+// contacts the pool/pile, splashes, and sinks — never a solver ball (the mouth-melt
+// bug ate arrivals mid-descent). 1:1 with poured; the solver drains its own pile.
+const FALLER_CAP = 128; // ≥ rate × airborne life (≈ 88/s × 0.95 s ≈ 84) with margin
+const FALLER_GRAVITY = 5.5; // studio units/s² (own constant; GRAIN_GRAVITY is grains-only)
+const FALLER_VT = 3.6; // terminal velocity → a ~0.6-0.8 s full-height fall (reads as a pour)
+const FALLER_SINK_S = 0.2; // scale/translate below the contact plane over this long
+const FALLER_SPAWN_Y = 1.3; // spout height the arrivals fall from (above the vessel top)
+// The shared impact-churn spot: an animated surface roil at each active site
+// (sand stream slot 0, marble splashes slots 1-3), rendered in the disc shader.
+const CHURN_R = 0.17; // world-space radius of a churn spot's falloff
+const CHURN_LIFE = 0.6; // seconds a churn spot rolls before it ages out
+// On completion the airborne spill/plume/droplet garnish is retired over this
+// window — a graceful fade (NOT the instant cancelTransients pop) so the end card
+// settles over a clean scene. Under the ≤0.6 s budget (F-2).
+const RETIRE_FADE_S = 0.5;
+
 // --- instanced fillers -----------------------------------------------------
-const INSTANCE_CAPACITY = 4000;
+// Capacity = the marble cap (4000) + FALLER_CAP so the faller tail always has
+// slots: accounting never depends on a render guard (a dropped mesh write drops
+// only the DRAW, never a faller or its melted++).
+const INSTANCE_CAPACITY = 4000 + FALLER_CAP;
 const FILLER_SEGMENTS_W = 16;
 const FILLER_SEGMENTS_H = 10;
 // devScatter keeps every ball this far inside the shell (|p| + r ≤ this) so no
@@ -304,7 +336,6 @@ void main() {
 
 const GLASS_FRAGMENT = /* glsl */ `
 uniform vec3 uCam;
-uniform vec3 uSunDir;
 uniform vec3 uWarmTint;
 uniform vec3 uCatalogTint;
 uniform sampler2D uGhostMap;
@@ -316,10 +347,18 @@ uniform float uGhostKnee;   // ghost texel ceiling (linear) — flattens bright 
 uniform float uBackShell;   // 1 for the far shell (lit ghost), 0 for the near shell
 uniform float uDim;         // 1 normally, < 1 while an in-mode pair swap loads
 uniform float uFill;        // 0..1 liquid fill — warms the rim as the glass fills
+uniform float uLoomLit;     // 1 in the sub-unity honest loom (light the vessel from the giant above)
 varying vec3 vWorldPos;
 varying vec3 vWorldNormal;
 varying vec3 vObjPos;
 varying vec2 vUv;
+
+// Sub-unity loom vessel lighting (applied in the back-shell ghost branch below):
+// the giant looms straight overhead and lights the tiny vessel from above. Tunable.
+const vec3 LOOM_KEY = vec3(-0.301, 0.905, 0.301); // strongly overhead, camera-left (unit)
+const float LOOM_AMBIENT = 0.12;    // belly night floor (never a pure-black pebble)
+const float LOOM_GAIN = 1.25;       // lit-ghost strength over the faint hologram
+const float LOOM_BODY_ALPHA = 0.74; // body alpha floor so the lit world survives the glass blend
 
 void main() {
   // The mouth irises open only during a pour: the discard threshold eases from
@@ -336,8 +375,9 @@ void main() {
   float fres = 1.0 - ndv;
 
   // A thin bright glass-cut rim on the opening — a crisp lip LINE (triangular
-  // falloff ~0.028 wide), tinted like the glint, not a fat collar. Only its
-  // centre crosses the bloom threshold, so the halo stays about the line's width.
+  // falloff ~0.028 wide), warm-tinted toward the key colour, not a fat collar.
+  // Only its centre crosses the bloom threshold, so the halo stays about the
+  // line's width.
   float rimD = dir.y - (plane - 0.028);
   float cutRim = max(0.0, 1.0 - abs(rimD) / 0.014) * uMouthOpen;
 
@@ -360,17 +400,9 @@ void main() {
   float shoulder = pow(fres, 2.6);
   col += vec3(0.75, 1.0, 0.92) * shoulder * 0.14;
 
-  // One sharp HDR specular glint from the key — a tight ping (bloom supplies the
-  // halo), deliberately over the 0.92 threshold so the blooming hotspot IS the
-  // "reflective surface" cue. Front shell only. The glint also lifts alpha at
-  // its core so the bright colour actually shows through the transparent shell
-  // (a low-alpha fragment would mute it to a smudge).
-  if (uBackShell < 0.5) {
-    vec3 R = reflect(-uSunDir, N);
-    float glint = pow(max(dot(R, V), 0.0), 380.0);
-    col += uWarmTint * glint * 3.0;
-    alpha = max(alpha, glint);
-  }
+  // No front-shell specular glint: a tight HDR ping over the bloom threshold
+  // read as a bright blob floating mid-vessel and added nothing — the fresnel
+  // rim + the glass-cut lip carry the "reflective surface" cue on their own.
 
   // Ghosted back wall: the far shell shows the container's surface faintly.
   // The key modulates the shell so orbiting reveals a light DIRECTION (lit
@@ -386,8 +418,18 @@ void main() {
     // low-contrast maps still band. Fresnel-shaped: bands at the limb, melting
     // to a clear centre (~0.34 rim → ~0.07 centre). Native saturation kept.
     float ghostAlpha = mix(0.07, 0.34, pow(fres, 1.3));
-    vec3 ghost = min(texture2D(uGhostMap, vUv).rgb, vec3(uGhostKnee));
-    col += ghost * uGhostGain * ghostAlpha;
+    vec3 ghostTex = min(texture2D(uGhostMap, vUv).rgb, vec3(uGhostKnee));
+    col += ghostTex * uGhostGain * ghostAlpha;
+    // Sub-unity honest loom: the giant is wedged in the mouth on +Y and looms
+    // straight overhead. It lights the tiny vessel from above — planetshine for a
+    // Jupiter-class giant, literal sunlight for a Sun giant. Paint the container's
+    // own surface onto the far wall, top-lit toward the giant with a camera-side
+    // fill so the continents/maria read, and lift the body alpha so the lit world
+    // survives the glass blend instead of reading as a black pebble. Loom-gated:
+    // uLoomLit 0 leaves every normal-framing vessel byte-identical.
+    float loomShade = LOOM_AMBIENT + (1.0 - LOOM_AMBIENT) * max(dot(N, LOOM_KEY), 0.0);
+    col += ghostTex * uGhostGain * loomShade * LOOM_GAIN * uLoomLit;
+    alpha = mix(alpha, max(alpha, LOOM_BODY_ALPHA), uLoomLit);
   } else if (uBackShell > 0.5) {
     // A ghost-less container (the Sun) would otherwise be a void behind glass:
     // give the vessel an ember interior instead — its own colour pulled toward
@@ -423,6 +465,13 @@ uniform vec3 uSunDir;     // key direction for the sheen
 uniform vec3 uContainerTint0; // container palette stops — the at-rest melt-identity bands
 uniform vec3 uContainerTint1;
 uniform float uContainerMix;  // 0 when the container has no map (the Sun skip)
+uniform float uSandSurface;   // 1 on the sand bed (material read), 0 for marbles/boulders
+uniform float uSurfDiscR;     // the surface disc's world radius (churn sites are world xz)
+uniform float uMoundPeak;     // sand mound height, world units (0 off — see moundHeightAt mirror)
+// Impact-churn sites: vec4(worldX, worldZ, age01, amp) — an animated surface roil
+// where the stream/fallers meet the pool. age01>=1 is dead. Shared: sand stream
+// (slot 0, pinned centre) + marble splashes (rotating 1-3). Strictly a roil.
+uniform vec4 uChurn[4];
 float lqHash(vec2 p){ return fract(sin(dot(p, vec2(127.1,311.7)))*43758.5453); }
 float lqNoise(vec2 p){
   vec2 i=floor(p), f=fract(p); f=f*f*(3.0-2.0*f);
@@ -462,36 +511,51 @@ void main(){
   // Depth below the surface, 0 at the meniscus → 1 at the bottom pole.
   float depth = clamp((uSurfaceY - vObjPos.y) / (uSurfaceY + ${R_LIQ.toFixed(3)} + 0.001), 0.0, 1.0);
   // Cooled marbling from the filler palette — a dark body, not a hot volume — with
-  // a finer octave so the wall isn't a smear.
+  // a finer octave so the wall isn't a smear. The sand BED biases the coord toward
+  // the lower/mid stops (pow 1.6) + gains up so the wall reads as deep material.
   float m = lqFbm(vObjPos.xz * 4.5 + vec2(0.0, uTime * 0.05));
   float detail = lqFbm(vObjPos.xy * 13.0 + vec2(0.0, uTime * 0.04));
-  vec3 crust = lqPalette(clamp(m, 0.0, 1.0)) * 0.44 * (0.9 + 0.2 * detail);
+  float mCoord = mix(clamp(m, 0.0, 1.0), pow(clamp(m, 0.0, 1.0), 1.6), uSandSurface);
+  vec3 crust = lqPalette(mCoord) * mix(0.44, 0.60, uSandSurface) * (0.9 + 0.2 * detail);
+  // Fine granular speckle on the bed wall (off for marbles/boulders).
+  crust *= 1.0 + (lqNoise(vObjPos.xy * 130.0) - 0.5) * 0.5 * uSandSurface;
   // A deep warm glow rises only from the bottom while molten, staying BELOW the
-  // 0.92 bloom threshold (max channel 0.85) — the body itself never blooms.
+  // 0.92 bloom threshold (max channel 0.85). OFF on the sand bed (cool material).
   vec3 warm = vec3(0.85, 0.4, 0.12);
   float glow = depth * depth * uHeat; // concentrated low, gone by the surface
-  vec3 col = mix(crust, warm, glow * 0.75);
+  vec3 col = mix(crust, warm, glow * 0.75 * (1.0 - uSandSurface));
   // Melt-identity whisper on the wall too (latitude bands along object y) — the
-  // same at-rest-only gate as the disc, so the molten look never changes.
-  float restId = (1.0 - smoothstep(0.16, 0.3, uHeat)) * uContainerMix;
+  // same at-rest-only gate as the disc, plus OFF on the sand bed (the bed IS the
+  // filler's material; the container identity lives on the glass ghost).
+  float restId = (1.0 - smoothstep(0.16, 0.3, uHeat)) * uContainerMix * (1.0 - uSandSurface);
   float cBand = smoothstep(0.35, 0.65, lqNoise(vec2(vObjPos.y * 4.0, 2.3)));
   col = mix(col, mix(uContainerTint0, uContainerTint1, cBand), restId * 0.09);
-  // Wet specular sheen on the wall so the at-rest pool reads as molten liquid,
-  // not matte clay (below the bloom threshold).
+  // Wet specular SHEEN on the wall so the at-rest pool reads as molten liquid,
+  // not matte clay — a broad low-exponent lobe. Near-MATTE on the sand bed.
   vec3 N = normalize(vWorldNormal + vec3((detail - 0.5) * 0.25, 0.0, (m - 0.5) * 0.25));
   vec3 V = normalize(uCam - vWorldPos);
-  float spec = pow(max(dot(reflect(-uSunDir, N), V), 0.0), 36.0);
-  col += vec3(1.0, 0.86, 0.62) * spec * 0.5;
+  float spec = pow(max(dot(reflect(-uSunDir, N), V), 0.0), 10.0);
+  col += vec3(1.0, 0.86, 0.62) * spec * mix(0.30, 0.05, uSandSurface);
   gl_FragColor = vec4(col, 1.0);
 }
 `;
 
 const LIQUID_DISC_VERTEX = /* glsl */ `
+uniform float uMoundPeak;    // world-space sand mound height (studio units; 0 = flat)
+uniform float uSandSurface;  // 1 on the sand bed (mound on), 0 marbles/boulders (flat)
 varying vec2 vXz;      // object-space xz (unit circle → radius 1)
 varying vec3 vWorldPos;
+// Mirror of moundHeightAt(rr, peak) in compareLogic — the CPU kill plane and this
+// displacement share the one profile. Keep the two in lockstep.
+float moundHeightAt(float rr, float peak){
+  return peak * (1.0 - smoothstep(0.12, 0.55, rr));
+}
 void main(){
-  vXz = position.xy; // CircleGeometry lies in the xy plane before the flat-rotate
-  vec4 wp = modelMatrix * vec4(position, 1.0);
+  vXz = position.xy; // the radial-ring disc lies in the xy plane before the flat-rotate
+  // Radial falloff rides in object rr (scales with the pool); the HEIGHT is
+  // world-space (local z, scale.z stays 1) so the mound sits in studio units.
+  float h = moundHeightAt(length(position.xy), uMoundPeak) * uSandSurface;
+  vec4 wp = modelMatrix * vec4(position.xy, position.z + h, 1.0);
   vWorldPos = wp.xyz;
   gl_Position = projectionMatrix * viewMatrix * wp;
 }
@@ -510,29 +574,59 @@ void main(){
   float detail = lqFbm(vXz * 16.0 + drift * 0.6);
   // Thin glowing veins — a high band of a finer fbm, ~15% coverage.
   float veins = smoothstep(0.60, 0.72, lqFbm(vXz * 11.0 - drift * 1.3));
-  vec3 crust = lqPalette(clamp(cell * 0.85 + detail * 0.15, 0.0, 1.0)) * 0.38;
+  // Marbling coordinate. The sand BED biases it toward the lower/mid palette
+  // stops (pow 1.6 — a ramp-weight remap, never a hue injection: the Moon's grey
+  // stops stay grey, Earth reads ocean-and-land not cloud-cream). Flag 0 = raw.
+  float mBase = clamp(cell * 0.85 + detail * 0.15, 0.0, 1.0);
+  float mCoord = mix(mBase, pow(mBase, 1.6), uSandSurface);
+  // Bed reads as MATERIAL: gain up from ×0.38 so it's deep + saturated, not dishwater.
+  vec3 crust = lqPalette(mCoord) * mix(0.38, 0.62, uSandSurface);
   crust *= 0.85 + 0.3 * detail; // subtle luminance breakup
+  // Fine granular SPECKLE on the bed (high-frequency, replaces the cell-scale
+  // smear read) — a subtle sparkle under the key. Off for marbles/boulders.
+  crust *= 1.0 + (lqNoise(vXz * 130.0) - 0.5) * 0.5 * uSandSurface;
+  // Impact churn: an animated ROIL where the stream/fallers meet the pool — a
+  // noise-modulated brighten/darken MULTIPLY on the matte crust only (never the
+  // HDR cracks), hard-capped strictly sub-bloom so the deleted glint blob can't
+  // return through this door. Sites are world xz (vXz·discR); the brightness of
+  // the contact lives in the plume/ripples, this is texture + motion.
+  float roil = 0.0;
+  for (int i = 0; i < 4; i++) {
+    if (uChurn[i].z >= 1.0) continue;
+    float dch = distance(vXz * uSurfDiscR, uChurn[i].xy);
+    float fall = 1.0 - smoothstep(0.0, ${CHURN_R.toFixed(3)}, dch);
+    float nz = lqFbm(vXz * uSurfDiscR * 22.0 + uTime * 1.4) - 0.5;
+    roil += nz * fall * (1.0 - uChurn[i].z) * uChurn[i].w;
+  }
+  crust *= 1.0 + clamp(roil, -0.4, 0.18);
+  crust = min(crust, vec3(0.85)); // hard sub-bloom cap on the roiled matte crust
   // Cracks: thin, warm, HDR only while molten (uHeat scales the CRACKS, not the
-  // whole surface). ~1.2–1.8 at full heat, near-off at rest.
-  vec3 crackGlow = vec3(1.0, 0.55, 0.2) * veins * (0.25 + 1.45 * uHeat);
+  // whole surface). ~1.2–1.8 at full heat, near-off at rest. OFF on the sand bed
+  // (sand never melts — no molten idioms on the material).
+  vec3 crackGlow = vec3(1.0, 0.55, 0.2) * veins * (0.25 + 1.45 * uHeat) * (1.0 - uSandSurface);
   vec3 col = crust + crackGlow;
   // Melt-identity whisper (at rest only): a low-alpha band tint of the CONTAINER's
   // palette across the pool, so the resting surface still says which vessel it
   // fills. Gated hard off while molten (uHeat → 1 kills it, so the melt look is
-  // untouched) and for containers with no map (uContainerMix 0).
-  float restId = (1.0 - smoothstep(0.16, 0.3, uHeat)) * uContainerMix;
+  // untouched), for containers with no map (uContainerMix 0), AND on the sand bed
+  // (uSandSurface 1 — the bed IS the filler's material; the container's identity
+  // already lives on the glass ghost).
+  float restId = (1.0 - smoothstep(0.16, 0.3, uHeat)) * uContainerMix * (1.0 - uSandSurface);
   float cBand = smoothstep(0.35, 0.65, lqNoise(vec2(vXz.y * 3.0, 1.7)));
   col = mix(col, mix(uContainerTint0, uContainerTint1, cBand), restId * 0.09);
-  // Wet specular sheen — reads as molten LIQUID, not matte paint. The surface
-  // normal is +Y perturbed by the convection, reflecting the key into the eye.
+  // Wet specular SHEEN — reads as molten LIQUID, not matte paint, but a broad
+  // low-exponent lobe: the old pow-48 ×0.7 ping was the second tight blob on the
+  // pool. Near-MATTE on the sand bed (a granular material, not liquid).
   vec3 N = normalize(vec3((detail - 0.5) * 0.55, 1.0, (cell - 0.5) * 0.55));
   vec3 V = normalize(uCam - vWorldPos);
-  float spec = pow(max(dot(reflect(-uSunDir, N), V), 0.0), 48.0);
-  col += vec3(1.0, 0.86, 0.62) * spec * 0.7; // below the bloom threshold
-  // A THIN blooming meniscus at the glass wall — visible at rest too (authored
-  // over the 0.92 threshold, intensity ~2).
+  float spec = pow(max(dot(reflect(-uSunDir, N), V), 0.0), 10.0);
+  col += vec3(1.0, 0.86, 0.62) * spec * mix(0.38, 0.05, uSandSurface); // sheen; near-matte on sand
+  // A THIN meniscus at the glass wall — heat-gated: near-off at rest (a subtle
+  // warm line, sub-bloom) and igniting over ~2 s to the molten target 2.0 as the
+  // pool heats. fillerIsSun pins uHeat=1 so a Sun fill keeps the hot rim; sand
+  // rests at uHeat 0.15 so its ring stays a quiet warm line.
   float meniscus = smoothstep(0.93, 0.985, rr) * (1.0 - smoothstep(0.985, 1.02, rr));
-  col += vec3(1.0, 0.72, 0.32) * meniscus * 2.0;
+  col += vec3(1.0, 0.72, 0.32) * meniscus * mix(0.35, 2.0, smoothstep(0.15, 1.0, uHeat));
   gl_FragColor = vec4(col, 0.97);
 }
 `;
@@ -551,6 +645,10 @@ interface LiquidUniforms {
   uContainerTint0: { value: THREE.Color };
   uContainerTint1: { value: THREE.Color };
   uContainerMix: { value: number };
+  uSandSurface: { value: number };
+  uSurfDiscR: { value: number };
+  uMoundPeak: { value: number };
+  uChurn: { value: THREE.Vector4[] };
 }
 
 // --- ripple shader (pooled additive splash quads) --------------------------
@@ -701,9 +799,21 @@ float bFbm(vec2 p){ float v=0.0,a=0.5; for(int i=0;i<4;i++){ v+=a*bNoise(p); p*=
 void main(){
   vec3 base = texture2D(uMap, vUv, uLodBias).rgb;
   float ndl = max(dot(normalize(vNormalW), uSunDir), 0.0);
+  // Sun as filler (no map): a genuinely EMISSIVE body — warm, corona-adjacent,
+  // fbm-granulated so it reads as the Sun, HDR toward bloom so it GLOWS instead of
+  // the old flat ×1.4 (which rendered the map-less Sun black). uEmber doubles as
+  // the per-context intensity: a small melt boulder blooms brighter (1.6) than the
+  // enormous sub-unity giant (0.95), which must not white out the frame.
+  if (uEmber > 0.5) {
+    float g1 = bFbm(vUv * 6.0 + vec2(uTime * 0.05, -uTime * 0.04));
+    float g2 = bFbm(vUv * 18.0 - uTime * 0.06);
+    vec3 warm = mix(vec3(0.80, 0.26, 0.05), vec3(1.0, 0.74, 0.32), g1);
+    warm += vec3(0.18, 0.06, 0.0) * g2; // brighter granulation flecks
+    gl_FragColor = vec4(warm * uEmber, 1.0);
+    return;
+  }
   // Saturn's real texture, key-lit with a dim starlight night floor.
   vec3 lit = base * (0.08 + 0.92 * ndl);
-  if (uEmber > 0.5) lit = base * 1.4; // Sun: emissive body, no map to light
   // The melt is a BAND at the front, not a plasma wash. Above the front the
   // texture stays readable (warmed near the band); in the band, glowing cracks;
   // below, the ball is consumed to a dark cooled crust.
@@ -750,6 +860,20 @@ interface Boulder {
   restY: number;
 }
 
+/** A display-owned marble-rain arrival: falls from the spout, contacts the
+ *  pool/pile, splashes, then sinks. Never a solver body (accounting is 1:1 with
+ *  poured; melted++ fires at contact). */
+interface Faller {
+  x: number; y: number; z: number;
+  vx: number; vy: number; vz: number;
+  qx: number; qy: number; qz: number; qw: number; // orientation (tumble)
+  wx: number; wy: number; wz: number; // angular velocity
+  r: number; // studio radius (the pair's ball radius at spawn)
+  sinking: boolean;
+  sinkAge: number;
+  contactY: number; // the plane it landed on (pool surface or axial pile top)
+}
+
 interface GhostLoad {
   tex: THREE.Texture;
   gain: number;
@@ -761,7 +885,6 @@ interface GhostLoad {
 
 interface GlassUniforms {
   uCam: { value: THREE.Vector3 };
-  uSunDir: { value: THREE.Vector3 };
   uWarmTint: { value: THREE.Color };
   uCatalogTint: { value: THREE.Color };
   uGhostMap: { value: THREE.Texture | null };
@@ -774,6 +897,8 @@ interface GlassUniforms {
   uDim: { value: number };
   /** 0..1 fill level — warms the rim tint as the liquid rises (glass reacts to contents). */
   uFill: { value: number };
+  /** 1 in the sub-unity honest loom — lights the small vessel from the giant overhead. */
+  uLoomLit: { value: number };
 }
 
 /** Per-frame commands the mode hands the scene's sim (phase-derived). */
@@ -901,7 +1026,7 @@ export class CompareScene {
   private liquidBody: THREE.Mesh;
   private liquidDisc: THREE.Mesh;
   private liquidGeo: THREE.SphereGeometry;
-  private liquidDiscGeo: THREE.CircleGeometry;
+  private liquidDiscGeo: THREE.BufferGeometry;
   private liquidTime = 0;
 
   // --- ghost fill line + scale preview ---
@@ -966,6 +1091,10 @@ export class CompareScene {
   private sandElapsed = 0;
   private sandDuration = 0;
   private sandFillActive = false;
+  // The sand mound: eased height (world units) that breathes up with the stream
+  // and flattens after it stops. 0 for marbles/boulders (uSandSurface gates it off
+  // in the shader; the CPU kill plane reads moundHeightAt(rr, 0) = 0).
+  private moundPeak = 0;
 
   // --- boulders (scripted, never the solver) + drain shrink-out ---
   private boulderGeo!: THREE.SphereGeometry;
@@ -977,6 +1106,12 @@ export class CompareScene {
   // Popped-ball scale-outs: rendered as instanced slots ABOVE the live count so
   // no extra mesh is needed; each shrinks 1→0 over DRAIN_SHRINK_S then drops.
   private drainShrink: { x: number; y: number; z: number; r: number; age: number }[] = [];
+
+  // --- marble rain fallers (display-owned) + impact churn ---
+  // During `raining` each arrival is a Faller (falls, splashes, sinks) — never a
+  // solver body. Rendered into fillerMesh after the solver balls + drain tail.
+  private fallers: Faller[] = [];
+  private churnCursor = 1; // rotating marble-splash churn slots (1-3); slot 0 = sand stream
 
   constructor(scene: THREE.Scene, renderer: THREE.WebGLRenderer) {
     this.scene = scene;
@@ -1011,7 +1146,6 @@ export class CompareScene {
     // Glass shells — shared uniform block; only uBackShell differs per material.
     this.glassUniforms = {
       uCam: { value: new THREE.Vector3() },
-      uSunDir: { value: KEY_LIGHT_DIR.clone() },
       uWarmTint: { value: WARM_TINT.clone() },
       uCatalogTint: { value: new THREE.Color(0xffffff) },
       uGhostMap: { value: this.emptyTex },
@@ -1022,6 +1156,7 @@ export class CompareScene {
       uMouthOpen: { value: 0 },
       uDim: { value: 1 },
       uFill: { value: 0 },
+      uLoomLit: { value: 0 },
     };
     this.glassGeo = new THREE.SphereGeometry(CONTAINER_R, 64, 32);
     this.backMat = this.makeGlassMaterial(THREE.BackSide, 1);
@@ -1070,12 +1205,19 @@ export class CompareScene {
       uContainerTint0: { value: new THREE.Color(0x888888) },
       uContainerTint1: { value: new THREE.Color(0xbbbbbb) },
       uContainerMix: { value: 0 },
+      uSandSurface: { value: 0 },
+      uSurfDiscR: { value: R_LIQ },
+      uMoundPeak: { value: 0 },
+      uChurn: { value: [new THREE.Vector4(0, 0, 1, 0), new THREE.Vector4(0, 0, 1, 0), new THREE.Vector4(0, 0, 1, 0), new THREE.Vector4(0, 0, 1, 0)] },
     };
     this.liquidGeo = new THREE.SphereGeometry(R_LIQ, 48, 32);
     this.liquidBody = new THREE.Mesh(this.liquidGeo, this.makeLiquidBodyMaterial());
     this.liquidBody.renderOrder = 0; // opaque queue anyway; explicit for clarity
     this.liquidBody.visible = false;
-    this.liquidDiscGeo = new THREE.CircleGeometry(1, 48); // scaled to the cap radius per frame
+    // Radially re-tessellated unit disc (concentric rings, NOT a fan) so the sand
+    // mound displaces as a smooth cap in the vertex shader instead of a full-width
+    // cone. vXz stays object-space unit xy; scaled to the cap radius per frame.
+    this.liquidDiscGeo = makeRadialDiscGeometry(14, 48);
     this.liquidDisc = new THREE.Mesh(this.liquidDiscGeo, this.makeLiquidDiscMaterial());
     this.liquidDisc.rotation.x = -Math.PI / 2; // lie flat (xz plane)
     this.liquidDisc.renderOrder = 2; // between the back (1) and front (3) shells
@@ -1167,6 +1309,10 @@ export class CompareScene {
       });
       const bmesh = new THREE.Mesh(this.boulderGeo, bmat);
       bmesh.visible = false;
+      // Never frustum-cull: the sub-unity giant fills the frame at a true 40-400×
+      // radius with its centre far off-screen; its auto bounding sphere can trip
+      // the far-plane cull even while its underside would fill the view.
+      bmesh.frustumCulled = false;
       this.boulderPool.push(bmesh);
       this.boulderUniforms.push(u);
       this.group.add(bmesh);
@@ -1344,12 +1490,20 @@ export class CompareScene {
     this.boulders.length = 0;
     this.boulderCommitted = 0;
     this.drainShrink.length = 0;
-    this.cancelTransients(); // grains + spill + plume carries/ripple (one clear)
+    this.cancelTransients(); // grains + spill + plume carries/ripple + fallers + churn
     this.sandFillActive = false;
     this.sandStartFrac = 0;
     this.sandTargetFrac = 0;
     this.sandElapsed = 0;
     this.sandDuration = 0;
+    // Sand bed material + mound: flag on only for the sand regime (marble/boulder
+    // output stays byte-identical at uSandSurface 0).
+    this.liquidUniforms.uSandSurface.value = this.sandRegime ? 1 : 0;
+    // Normal framing lights the vessel with the shared key only; showSubUnity flips
+    // this on for the honest loom (the giant lights the tiny vessel from overhead).
+    this.glassUniforms.uLoomLit.value = 0;
+    this.moundPeak = 0;
+    this.liquidUniforms.uMoundPeak.value = 0;
     // Sun as filler has no map to sample; its molten pool is a constant ember ramp
     // and stays emissive throughout (uHeat pinned in updateSim).
     this.liquidUniforms.uHeat.value = 0.15;
@@ -1573,15 +1727,18 @@ export class CompareScene {
    * stays whole (the mouth is regime-gated away). Never routed through the solver.
    */
   showSubUnity(comparison: Comparison): void {
-    // The true relative scale can be astronomically large (Moon-in-Sun r_f ≈ 400);
-    // cap the RENDER so the loom stays framable while the count line keeps the
-    // honest number. Anything past the cap still reads as "impossibly bigger".
-    const rf = Math.min(Math.pow(Math.max(comparison.n, 1e-9), -1 / 3), SUB_UNITY_MAX_RF);
+    // The TRUE relative scale — Moon-in-Jupiter r_f ≈ 40, Earth-in-Sun ≈ 109,
+    // Moon-in-Sun ≈ 400. No clamp: the giant is genuinely that big, the vessel
+    // genuinely that small (Alex's honest-scale ruling). frameSubUnity keeps the
+    // camera outside the giant and the vessel at/above its readable size floor.
+    const rf = Math.pow(Math.max(comparison.n, 1e-9), -1 / 3);
     this.subUnityRf = rf;
     const mesh = this.boulderPool[0];
     const u = this.boulderUniforms[0];
     u.uMap.value = this.fillerMap ?? this.emptyTex;
-    u.uEmber.value = this.fillerIsSun ? 1 : 0;
+    // Giant emissive intensity: tamer than a melt boulder so the frame-filling
+    // sub-unity Sun glows without whiting out (whiteout budget applies).
+    u.uEmber.value = this.fillerIsSun ? 0.95 : 0;
     u.uMeltFront.value = -1.3; // no molten bleed — a whole planet in a glass
     // The loom giant's limb over-minifies (tiny map patch stretched huge → the
     // sampler falls to blurry high mips): bias toward a sharper mip here only.
@@ -1595,6 +1752,9 @@ export class CompareScene {
     this.subUnityFillerY = SUBUNITY_MOUTH_PLANE_Y + Math.sqrt(Math.max(0, rf * rf - SUBUNITY_MOUTH_R * SUBUNITY_MOUTH_R));
     mesh.position.set(0, this.subUnityFillerY, 0);
     u.uSunDir.value.copy(SUB_UNITY_LOOM_KEY);
+    // Light the tiny vessel from the giant overhead (the glass shader's loom branch);
+    // configurePour cleared this to 0, so it is set on for the loom pose only.
+    this.glassUniforms.uLoomLit.value = 1;
     mesh.visible = true;
     // Everything else off: this is a single static teaching image.
     this.boulderPool[1].visible = false;
@@ -1665,23 +1825,31 @@ export class CompareScene {
 
     if (!ctl.paused) {
       const target = ctl.targetCount;
-      if (this.poured > target + 0.5) {
+      if (ctl.rainEnabled) {
+        // Raining: arrivals become display fallers (the mouth-melt no longer eats
+        // them mid-descent). The solver only drains its residual pile below.
+        this.spawnFallersToward(dt, target);
+      } else if (this.poured > target + 0.5) {
         this.drainToTarget(Math.floor(target)); // slider dropped: pop newest
       } else {
         this.spawnToward(dt, target); // rate is 0 when the spout is closed
       }
       if (ctl.meltRate > 0) this.meltStep(dt, ctl.meltRate);
       if (ctl.rainEnabled) this.rainStep();
+      // Integrate + land fallers: raining spawns them, spilling lets airborne
+      // stragglers finish. Inside the !paused block so pause freezes the fall.
+      this.updateFallers(dt);
       solver.update(dt);
     }
 
     // Animate the overflow spill (marbles spill too — the grains ride the same
-    // pool), then iris on pour/airborne/spill activity.
+    // pool), then iris on pour/airborne/spill/faller activity.
     this.updateGrains(dt);
     const airborne = this.solver.count - this.solver.enteredCount;
-    // Inside grains only (stream/plume): the outside spill garnish never holds the
-    // mouth — marbles carry no stream/plume, so their spill can't strand the iris.
-    const irisActive = (ctl.spawnEnabled && !ctl.paused) || airborne > 0 || this.insideGrainLiveCount > 0;
+    // Inside grains only (stream/plume) + fallers hold the mouth; the outside
+    // spill garnish never does (else the iris stays open past complete).
+    const irisActive = (ctl.spawnEnabled && !ctl.paused) || airborne > 0 ||
+      this.insideGrainLiveCount > 0 || this.fallers.length > 0;
     this.updateMouthIris(dt, irisActive);
     const molten = ctl.meltRate > 0 || ctl.rainEnabled;
     this.updateLiquid(dt, molten);
@@ -1701,6 +1869,143 @@ export class CompareScene {
     const target = this.mouthOpenHold > 0 ? 1 : 0;
     this.mouthOpen += (target - this.mouthOpen) * (1 - Math.exp(-dt / 0.14)); // ~0.4 s ease
     this.glassUniforms.uMouthOpen.value = this.mouthOpen;
+  }
+
+  // ---- marble rain fallers (display-owned; never the solver) --------------
+
+  /**
+   * Spawn display fallers toward the target during `raining` — 1:1 with poured
+   * (each poured++ is exactly one faller). Rate is the pourBudget's mouth-scaled
+   * throughput alone (no solver-entry throttle for arrivals). If the list is at
+   * FALLER_CAP the spawn does NOT fire and the budget carries, so a faller can
+   * never be dropped after spawning and poured/faller stay 1:1 by construction.
+   */
+  private spawnFallersToward(dt: number, targetCount: number): void {
+    const rate = Math.min(COMPARE_TUNABLES.pourMaxPerSec, POUR_RATE_K * this.across) * this.spoutFlow;
+    const budget = pourBudget(dt, rate, this.pourCarry);
+    this.pourCarry = budget.carry;
+    let toSpawn = Math.min(budget.spawns, Math.max(0, Math.floor(targetCount - this.poured)));
+    while (toSpawn > 0) {
+      if (this.fallers.length >= FALLER_CAP) { this.pourCarry += toSpawn; break; } // full → carry, never drop
+      this.spawnFaller();
+      this.poured++;
+      toSpawn--;
+    }
+  }
+
+  /** One faller at the spout: existing entry velocity + small radial scatter
+   *  inside the mouth disc (falls through the iris) + a random tumble. */
+  private spawnFaller(): void {
+    const a = this.grainRng() * Math.PI * 2;
+    const rad = Math.sqrt(this.grainRng()) * this.mouthRadiusStudio * 0.55;
+    randomQuat(this.scratchQuat, this.grainRng);
+    this.fallers.push({
+      x: Math.cos(a) * rad, y: FALLER_SPAWN_Y, z: Math.sin(a) * rad,
+      vx: (this.grainRng() - 0.5) * 0.12, vy: -1.2 - this.grainRng() * 0.5, vz: (this.grainRng() - 0.5) * 0.12,
+      qx: this.scratchQuat.x, qy: this.scratchQuat.y, qz: this.scratchQuat.z, qw: this.scratchQuat.w,
+      wx: (this.grainRng() - 0.5) * 2.0, wy: (this.grainRng() - 0.5) * 2.0, wz: (this.grainRng() - 0.5) * 2.0,
+      r: this.ballRadius, sinking: false, sinkAge: 0, contactY: 0,
+    });
+  }
+
+  /**
+   * Integrate every faller (terminal-velocity-capped fall + tumble), land those
+   * that reach the contact plane (max of the pool surface and the axial pile top,
+   * so they land ON the exposed pile during the melt/rain overlap instead of
+   * ghosting through it), splash, then sink. Runs in `raining` (spawns) AND
+   * `spilling` (airborne stragglers finish). Called inside the solver's
+   * !ctl.paused block, so pause freezes the fall (solver parity). Also advances
+   * the impact churn each frame.
+   */
+  private updateFallers(dt: number): void {
+    if (this.fallers.length === 0) { this.advanceChurn(dt); return; }
+    const surfaceY = -R_LIQ + this.liquidLevelRendered;
+    const pileTop = this.solver.pileTopNearAxis(this.mouthRadiusStudio); // -Infinity if none
+    const contactPlane = Math.max(surfaceY, pileTop);
+    const contactIsLiquid = surfaceY >= pileTop; // pileTop -Inf → always the pool
+    this.plumeRippleT -= dt; // ~12/s ripple throttle (one per frame max)
+    let rippleReady = this.plumeRippleT <= 0;
+    for (let k = this.fallers.length - 1; k >= 0; k--) {
+      const f = this.fallers[k];
+      if (f.sinking) {
+        f.sinkAge += dt;
+        if (f.sinkAge >= FALLER_SINK_S) { this.fallers.splice(k, 1); continue; }
+        f.y = f.contactY - (f.sinkAge / FALLER_SINK_S) * f.r * 1.2; // sink below the plane
+        continue;
+      }
+      f.vy -= FALLER_GRAVITY * dt;
+      if (f.vy < -FALLER_VT) f.vy = -FALLER_VT; // terminal velocity
+      f.x += f.vx * dt; f.y += f.vy * dt; f.z += f.vz * dt;
+      this.integrateFallerSpin(f, dt);
+      if (f.y - f.r <= contactPlane) {
+        // (a) ripple — only when the contact is the liquid, throttled to ~12/s.
+        if (contactIsLiquid && rippleReady) {
+          this.removedPos[0] = f.x; this.removedPos[2] = f.z;
+          this.spawnRipple(0);
+          rippleReady = false;
+          this.plumeRippleT = 1 / 12;
+        }
+        // (b) droplet burst from the grain pool — always. (c) churn spot — always.
+        this.splashDroplets(f.x, f.z, contactPlane);
+        this.bumpChurn(this.nextChurnSlot(), f.x, f.z, 0.85);
+        f.sinking = true; f.sinkAge = 0; f.contactY = contactPlane;
+        this.melted = Math.min(this.simN, this.melted + 1); // clamped to simN
+      }
+    }
+    this.advanceChurn(dt);
+  }
+
+  /** Integrate one faller's tumble quaternion (semi-implicit, renormalized). */
+  private integrateFallerSpin(f: Faller, dt: number): void {
+    const h = 0.5 * dt;
+    const nx = f.qx + h * (f.wx * f.qw + f.wy * f.qz - f.wz * f.qy);
+    const ny = f.qy + h * (-f.wx * f.qz + f.wy * f.qw + f.wz * f.qx);
+    const nz = f.qz + h * (f.wx * f.qy - f.wy * f.qx + f.wz * f.qw);
+    const nw = f.qw + h * (-f.wx * f.qx - f.wy * f.qy - f.wz * f.qz);
+    const inv = 1 / Math.sqrt(nx * nx + ny * ny + nz * nz + nw * nw);
+    f.qx = nx * inv; f.qy = ny * inv; f.qz = nz * inv; f.qw = nw * inv;
+  }
+
+  /** A small amber-warmed droplet burst from the grain pool at a splash contact
+   *  (kind 2 — inside the vessel; gain ≤1.35, sub-bloom). */
+  private splashDroplets(x: number, z: number, y: number): void {
+    const count = 2 + ((this.grainRng() * 3) | 0); // 2-4
+    for (let i = 0; i < count; i++) {
+      const a = this.grainRng() * Math.PI * 2;
+      const outward = 0.3 + this.grainRng() * 0.6;
+      const vy = 0.7 + this.grainRng() * 0.8;
+      const size = SPILL_SIZE_MIN + this.grainRng() * (SPILL_SIZE_MAX - SPILL_SIZE_MIN);
+      // Dimmer than P5 (1.1, still ≤1.35 cap) + amber-warmed toward the molten pool
+      // so the crown reads as glowing displaced matter, never whiter than the pool (F-4).
+      this.grainColor(this.grainColorScratch, 1.1);
+      this.grainColorScratch.lerp(SPLASH_WARM, 0.25);
+      this.writeGrain(this.nextSpillSlot(), x, y + 0.01, z, Math.cos(a) * outward, vy, Math.sin(a) * outward, size, 0.34, 2, this.grainColorScratch);
+    }
+  }
+
+  /** Seat/refresh an impact-churn site (worldX, worldZ, age01=0, amp). */
+  private bumpChurn(slot: number, x: number, z: number, amp: number): void {
+    this.liquidUniforms.uChurn.value[slot].set(x, z, 0, amp);
+  }
+
+  /** Rotate through the marble-splash churn slots (1-3); slot 0 is the sand stream. */
+  private nextChurnSlot(): number {
+    const s = this.churnCursor;
+    this.churnCursor = this.churnCursor >= 3 ? 1 : this.churnCursor + 1;
+    return s;
+  }
+
+  /** Age every churn site toward death (age01 → 1). */
+  private advanceChurn(dt: number): void {
+    const step = dt / CHURN_LIFE;
+    for (const v of this.liquidUniforms.uChurn.value) {
+      if (v.z < 1) v.z = Math.min(1, v.z + step);
+    }
+  }
+
+  /** Live faller count — QA telemetry + the mouth-iris hold. */
+  fallersLive(): number {
+    return this.fallers.length;
   }
 
   /** Spawn balls toward the poured target, capped by the live/awake caps, the
@@ -1803,6 +2108,7 @@ export class CompareScene {
     const discR = Math.sqrt(Math.max(0, R_LIQ * R_LIQ - surfaceY * surfaceY));
     this.liquidDisc.position.set(0, surfaceY + 0.004, 0);
     this.liquidDisc.scale.set(discR, discR, 1);
+    this.liquidUniforms.uSurfDiscR.value = discR; // churn sites compare in world xz
     // The glass rim warms with the fill.
     this.glassUniforms.uFill.value = Math.min(1, this.melted / Math.max(this.simN, 1e-9));
   }
@@ -1832,6 +2138,18 @@ export class CompareScene {
       this.scratchPos.set(s.x, s.y, s.z);
       this.scratchQuat.identity();
       this.scratchScale.setScalar(s.r * (1 - t));
+      this.scratchMatrix.compose(this.scratchPos, this.scratchQuat, this.scratchScale);
+      this.fillerMesh.setMatrixAt(slot++, this.scratchMatrix);
+    }
+    // Display fallers (marble rain) occupy slots above the drain tail — capacity
+    // has FALLER_CAP of headroom, so a mesh write dropped by the cap drops only
+    // the DRAW, never the faller or its melted++.
+    for (let k = 0; k < this.fallers.length && slot < INSTANCE_CAPACITY; k++) {
+      const f = this.fallers[k];
+      this.scratchPos.set(f.x, f.y, f.z);
+      this.scratchQuat.set(f.qx, f.qy, f.qz, f.qw);
+      const sc = f.sinking ? f.r * Math.max(0, 1 - f.sinkAge / FALLER_SINK_S) : f.r;
+      this.scratchScale.setScalar(sc);
       this.scratchMatrix.compose(this.scratchPos, this.scratchQuat, this.scratchScale);
       this.fillerMesh.setMatrixAt(slot++, this.scratchMatrix);
     }
@@ -1964,6 +2282,33 @@ export class CompareScene {
     this.spillElapsed = 0;
     this.spillEmitted = 0;
     this.spillCarry = 0;
+    // Marble-rain fallers + the impact-churn sites (pair-swap / reset / deactivate).
+    this.fallers.length = 0;
+    this.churnCursor = 1;
+    for (const v of this.liquidUniforms.uChurn.value) v.set(0, 0, 1, 0);
+  }
+
+  /**
+   * Gracefully retire every live splash / plume / droplet grain over
+   * RETIRE_FADE_S so the end card settles over a clean scene — a fast FADE, not
+   * the instant pop `cancelTransients` does for swaps / reset / deactivate.
+   * Rewrites each live grain to the fade-out threshold now (lifeT 0.72, full
+   * opacity), dying RETIRE_FADE_S later — uniform, no pop, positions keep
+   * integrating so the strays drift out as they fade. Also stops the overflow
+   * spill from emitting more garnish (the already-emitted grains fade with the
+   * rest). Fallers are out of scope — they land + sink on their own within the
+   * settle window. Called on entering `complete` (F-2).
+   */
+  retireTransients(): void {
+    const life = RETIRE_FADE_S / 0.28; // fadeOut spans lifeT 0.72 → 1.0
+    for (let i = 0; i < this.grainBudget; i++) {
+      if (this.gAge[i] >= this.gLife[i]) continue; // already dead — leave it
+      this.gLife[i] = life;
+      this.gAge[i] = 0.72 * life; // at the fade-out threshold → dies RETIRE_FADE_S out
+    }
+    this.spillActive = false;
+    (this.grainGeo.getAttribute('aAge') as THREE.BufferAttribute).needsUpdate = true;
+    (this.grainGeo.getAttribute('aLife') as THREE.BufferAttribute).needsUpdate = true;
   }
 
   /** How many grains are alive this frame (iris hold + QA cleared-check). */
@@ -1987,11 +2332,21 @@ export class CompareScene {
     // hot (updateLiquid pins uHeat via fillerIsSun). The marble melt look is
     // untouched — this molten=false only applies on the sand path.
     this.updateLiquid(dt, false);
-    if (streaming) {
-      this.emitStream(dt);
-      this.emitPlume(dt);
-    } else {
-      this.streamCarry = 0;
+    if (!ctl.paused) {
+      // The mound breathes with the stream: eases up to ~0.075·R while streaming,
+      // flat after, clamped against the mouth clearance so it never nears the mouth.
+      const surfaceY = -R_LIQ + this.liquidLevelRendered;
+      const clearance = Math.max(0, this.mouthPlaneY - surfaceY - 0.12);
+      const moundTarget = streaming ? Math.min(0.075 * CONTAINER_R, clearance * 0.5) : 0;
+      this.moundPeak += (moundTarget - this.moundPeak) * (1 - Math.exp(-dt / 0.5));
+      this.liquidUniforms.uMoundPeak.value = this.moundPeak;
+      if (streaming) {
+        this.emitStream(dt);
+        this.emitPlume(dt);
+      } else {
+        this.streamCarry = 0;
+      }
+      this.advanceChurn(dt); // age churn sites (slot 0 re-bumped by emitPlume while streaming)
     }
     this.updateGrains(dt);
     // The iris opens on stream/plume (inside-vessel) activity and seals ~1 s after
@@ -2151,6 +2506,7 @@ export class CompareScene {
   private updateGrains(dt: number): void {
     if (this.spillActive) this.emitSpill(dt);
     const surfaceY = -R_LIQ + this.liquidLevelRendered;
+    const discR = Math.max(1e-4, Math.sqrt(Math.max(0, R_LIQ * R_LIQ - surfaceY * surfaceY)));
     const budget = this.grainBudget;
     let live = 0;
     let inside = 0;
@@ -2158,15 +2514,22 @@ export class CompareScene {
       if (this.gAge[i] >= this.gLife[i]) continue;
       const i3 = i * 3;
       this.gVel[i3 + 1] -= GRAIN_GRAVITY * dt;
+      // Terminal-velocity cap for the falling column (kind 0 stream + kind 2
+      // plume/droplets) so it reaches the bed without thinning; kind 1 spill stays
+      // ballistic (its arc is tuned).
+      if (this.gKind[i] !== 1 && this.gVel[i3 + 1] < -GRAIN_VT) this.gVel[i3 + 1] = -GRAIN_VT;
       this.gPos[i3] += this.gVel[i3] * dt;
       this.gPos[i3 + 1] += this.gVel[i3 + 1] * dt;
       this.gPos[i3 + 2] += this.gVel[i3 + 2] * dt;
       this.gAge[i] += dt;
-      // Stream grains vanish INTO the pool (the opaque liquid would occlude them
-      // below the surface anyway); the persistent impact plume marks the contact.
-      if (this.gKind[i] === 0 && this.gPos[i3 + 1] <= surfaceY) {
-        this.gAge[i] = this.gLife[i];
-        continue;
+      // Stream grains vanish INTO the bed — the surface PLUS the mound crest at the
+      // grain's radius (moundHeightAt; 0 when moundPeak is 0, i.e. marbles/idle).
+      if (this.gKind[i] === 0) {
+        const rr = Math.min(1, Math.hypot(this.gPos[i3], this.gPos[i3 + 2]) / discR);
+        if (this.gPos[i3 + 1] <= surfaceY + moundHeightAt(rr, this.moundPeak)) {
+          this.gAge[i] = this.gLife[i];
+          continue;
+        }
       }
       live++;
       // Stream (0) + plume (2) are inside the vessel and hold the iris; spill (1)
@@ -2192,6 +2555,8 @@ export class CompareScene {
   private emitPlume(dt: number): void {
     const surfaceY = -R_LIQ + this.liquidLevelRendered;
     if (this.mouthPlaneY <= surfaceY + 0.02) return; // pool at the mouth — no fall, no plume
+    // The column lands on the mound crest (axial → moundHeightAt(0, peak) = peak).
+    const contactY = surfaceY + this.moundPeak;
     const budget = pourBudget(dt, PLUME_RATE, this.plumeCarry);
     this.plumeCarry = budget.carry;
     const spread = this.mouthRadiusStudio * STREAM_DISC_FRAC;
@@ -2204,16 +2569,25 @@ export class CompareScene {
       const vx = Math.cos(a) * outward;
       const vz = Math.sin(a) * outward;
       const vy = 1.1 + this.grainRng() * 1.1; // a real splash up out of the pool
-      const size = SPILL_SIZE_MIN + this.grainRng() * (SPILL_SIZE_MAX - SPILL_SIZE_MIN);
-      this.grainColor(this.grainColorScratch, 1.35); // a thin brighter core, still sub-bloom
+      // Size to the stream grain (F-3): an isolated grain kicked up reads at-or-
+      // below the falling column, not a chip ~3× its size. Capped ≤1.5× by K.
+      const size = (GRAIN_SIZE_MIN + this.grainRng() * (GRAIN_SIZE_MAX - GRAIN_SIZE_MIN)) * PLUME_CHIP_K;
+      // Grain-coloured, native brightness (gain 1.0) — the kicked-up dust reads as
+      // the bed's own material, not pale confetti whiter than the pool (F-4). Never
+      // brighter than the stream grain (which also spawns at gain 1.0).
+      this.grainColor(this.grainColorScratch, 1.0);
       // Kind 2 (plume): inside the vessel at the pool contact — holds the iris like
       // the stream. It shares the spill slot range but never the spill's iris waiver.
-      this.writeGrain(this.nextSpillSlot(), x, surfaceY + 0.01, z, vx, vy, vz, size, 0.34, 2, this.grainColorScratch);
+      this.writeGrain(this.nextSpillSlot(), x, contactY + 0.01, z, vx, vy, vz, size, 0.34, 2, this.grainColorScratch);
     }
-    // A throttled surface flash so the contact reads even at a glance.
+    // The stream-churn spot: slot 0 pinned at the contact centre, kept fresh each
+    // frame while the stream is live (amp is the stream's activity).
+    this.bumpChurn(0, 0, 0, 0.9);
+    // A throttled surface flash so the contact reads even at a glance — tightened
+    // to ~0.06 s so the contact is unmissable.
     this.plumeRippleT -= dt;
     if (this.plumeRippleT <= 0) {
-      this.plumeRippleT = 0.12;
+      this.plumeRippleT = 0.06;
       this.removedPos[0] = 0;
       this.removedPos[2] = 0;
       this.spawnRipple(0); // reuse the surface-splash flash (sand + marbles never run together)
@@ -2339,7 +2713,11 @@ export class CompareScene {
     this.boulderCommitted += volumeFrac;
     const u = this.boulderUniforms[slot];
     u.uMap.value = this.fillerMap ?? this.emptyTex;
-    u.uEmber.value = this.fillerIsSun ? 1 : 0;
+    // Melt-boulder emissive intensity: brighter than the sub-unity giant (0.95) —
+    // a small Sun boulder genuinely blooms while keeping its granulation readable
+    // and the frame inside the whiteout budget (measured: 1.6 washed the core).
+    // (Sun/Sun, n=1, is the one Sun-boulder pair.)
+    u.uEmber.value = this.fillerIsSun ? 1.3 : 0;
     u.uMoltenLo.value.copy(this.liquidUniforms.uPalette1.value);
     u.uMoltenHi.value.copy(this.liquidUniforms.uPalette3.value);
     u.uMeltFront.value = -1.3;
@@ -2526,6 +2904,45 @@ function sampleMapStats(image: CanvasImageSource | null): MapStats {
   } catch {
     return { meanLum: 0, palette: defaultPalette(), flecks: defaultPalette() }; // tainted canvas
   }
+}
+
+/**
+ * A unit-radius disc in the xy plane, radially re-tessellated into `rings`
+ * concentric bands × `segments` azimuthal (a centre vertex + rings, triangulated)
+ * — NOT CircleGeometry's zero-interior fan, whose only interior vertex is the
+ * centre (a vertex mound on it is a full-width cone). The mound's radial falloff
+ * lives in the vertex shader (object rr), so the interior rings carry the smooth
+ * cap. position.xy is the unit disc (the disc shader reads it as vXz).
+ */
+function makeRadialDiscGeometry(rings: number, segments: number): THREE.BufferGeometry {
+  const positions: number[] = [0, 0, 0]; // centre
+  const uvs: number[] = [0.5, 0.5];
+  for (let ri = 1; ri <= rings; ri++) {
+    const r = ri / rings;
+    for (let s = 0; s < segments; s++) {
+      const a = (2 * Math.PI * s) / segments;
+      positions.push(Math.cos(a) * r, Math.sin(a) * r, 0);
+      uvs.push(Math.cos(a) * r * 0.5 + 0.5, Math.sin(a) * r * 0.5 + 0.5);
+    }
+  }
+  const indices: number[] = [];
+  for (let s = 0; s < segments; s++) {
+    indices.push(0, 1 + s, 1 + ((s + 1) % segments)); // inner fan (centre → ring 1)
+  }
+  for (let ri = 1; ri < rings; ri++) {
+    const b0 = 1 + (ri - 1) * segments;
+    const b1 = 1 + ri * segments;
+    for (let s = 0; s < segments; s++) {
+      const s1 = (s + 1) % segments;
+      indices.push(b0 + s, b1 + s, b1 + s1);
+      indices.push(b0 + s, b1 + s1, b0 + s1);
+    }
+  }
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+  geo.setAttribute('uv', new THREE.Float32BufferAttribute(uvs, 2));
+  geo.setIndex(indices);
+  return geo;
 }
 
 /** A unit-radius ring (LineLoop) of `n` segments in the xz plane, scaled per frame. */

@@ -1135,6 +1135,7 @@ export class PlanetariumMode {
     this.closeObservatoryPanel();
     this.closeDeck();
     this.closeSurfaceTargetMenu();
+    this.closeToolsMenu();
 
     this.setObjectsVisible(false);
 
@@ -2341,6 +2342,9 @@ export class PlanetariumMode {
       // on purpose — during the deck theater the open deck is tutorial-owned, and
       // closing just it would leave the pending commit to teleport anyway.
       if (this.tutorial) { this.stopTutorial({ restore: true, toast: 'skip' }); return; }
+      // Tools is a transient popover — above the deck rung (the ☰ menu is
+      // deliberately NOT in the cascade; Tools is).
+      if (this.isToolsMenuOpen()) { this.closeToolsMenu(); return; }
       if (this.isDeckOpen()) { this.closeDeck(); return; }
       if (this.bottomBar.isTimeOpen()) { this.bottomBar.closeTime(); return; }
       if (this.bottomBar.isStatsOpen()) { this.bottomBar.closeStats(); return; }
@@ -3194,6 +3198,70 @@ export class PlanetariumMode {
     }
   }
 
+  // ── Tools front door ─────────────────────────────────────
+  // The cluster button (right of Observe) opens an anchored popover launching
+  // the "How many fit?" tool. Visible in cruise AND landed (missions hide it via
+  // updateObservatoryButtonVisibility); transient popover in the Esc cascade and
+  // the one-modal-at-a-time set, but NOT a new keyboard key.
+
+  /** Enter the "How many fit?" tool. A no-op while the tutorial owns the scene;
+   *  closes every entry surface first (the ☰ menu auto-pauses ship + clock and
+   *  restores on close, so leave with that resolved, as startTutorial does). */
+  private requestVolumeCompare() {
+    if (this.tutorial !== null) return;
+    this.closeMenuPanel();
+    this.hideHelp();
+    this.closeToolsMenu();
+    this.volumeCompareRequestCb?.();
+  }
+
+  private isToolsMenuOpen(): boolean {
+    return document.getElementById('tools-menu')?.classList.contains('visible') ?? false;
+  }
+
+  private toggleToolsMenu() {
+    if (this.isToolsMenuOpen()) this.closeToolsMenu();
+    else this.openToolsMenu();
+  }
+
+  private openToolsMenu() {
+    const menu = document.getElementById('tools-menu');
+    if (!menu) return;
+    // One modal at a time — Tools joins the deck / ☰ / Look-at trio.
+    this.closeMenuPanel();
+    this.closeDeck();
+    this.closeSurfaceTargetMenu();
+    this.buildToolsMenu();
+    menu.classList.add('visible');
+  }
+
+  private closeToolsMenu() {
+    document.getElementById('tools-menu')?.classList.remove('visible');
+  }
+
+  /** Rebuild the popover rows (built dynamically so the tutorial-disabled state
+   *  is read live). One row today: the volume-compare tool. */
+  private buildToolsMenu() {
+    const list = document.getElementById('tools-menu-list');
+    if (!list) return;
+    list.textContent = '';
+    const running = this.tutorial !== null;
+    const row = document.createElement('button');
+    row.className = 'pk-row tools-row' + (running ? ' tools-dim' : '');
+    row.disabled = running;
+    const info = document.createElement('span');
+    info.className = 'pk-info';
+    const name = document.createElement('b');
+    name.textContent = 'How many fit?';
+    const sub = document.createElement('span');
+    sub.className = 'tools-sub';
+    sub.textContent = 'Pour one world into another.';
+    info.append(name, sub);
+    row.append(info);
+    row.addEventListener('click', () => this.requestVolumeCompare());
+    list.appendChild(row);
+  }
+
   private updateMissionControlState() {
     const missionActive = this.isMissionActive();
 
@@ -3361,6 +3429,7 @@ export class PlanetariumMode {
         // One modal at a time (the deck closes ☰ on open, symmetric).
         this.closeDeck();
         this.closeSurfaceTargetMenu();
+        this.closeToolsMenu();
         this.resumeShipAfterMenu = this.player.moving;
         this.resumeTimeAfterMenu = !this.timeState.paused;
         this.player.moving = false;
@@ -3381,17 +3450,23 @@ export class PlanetariumMode {
     document.getElementById('planetarium-help-close')?.addEventListener('click', () => this.hideHelp());
     document.querySelector('#planetarium-help .planetarium-help-backdrop')?.addEventListener('click', () => this.hideHelp());
 
-    // "How many fit?" entries: the ☰ item and the help-modal row. Close both
-    // entry surfaces first — the ☰ menu auto-pauses ship + clock and restores
-    // on close, so leave with that resolved (startTutorial does the same).
-    const requestVolumeCompare = () => {
-      if (this.tutorial !== null) return; // staging owns the scene + a snapshot is live
-      this.closeMenuPanel();
-      this.hideHelp();
-      this.volumeCompareRequestCb?.();
-    };
-    document.getElementById('planetarium-btn-volume-compare')?.addEventListener('click', requestVolumeCompare);
-    document.getElementById('help-volume-compare')?.addEventListener('click', requestVolumeCompare);
+    // "How many fit?" entries: the ☰ item, the help-modal row, and the Tools
+    // popover row all commit through requestVolumeCompare (a no-op during the
+    // tutorial; it closes every entry surface first).
+    document.getElementById('planetarium-btn-volume-compare')?.addEventListener('click', () => this.requestVolumeCompare());
+    document.getElementById('help-volume-compare')?.addEventListener('click', () => this.requestVolumeCompare());
+
+    // Tools front door: the cluster button toggles the anchored popover. The
+    // full-screen catcher (Look-at idiom) closes on an outside click; because it
+    // sits above the cluster, a second button click lands on the catcher and
+    // closes rather than re-opening.
+    document.getElementById('planetarium-btn-tools')?.addEventListener('click', () => {
+      if (this.isMissionActive()) return;
+      this.toggleToolsMenu();
+    });
+    document.getElementById('tools-menu')?.addEventListener('click', (e) => {
+      if (e.target === document.getElementById('tools-menu')) this.closeToolsMenu();
+    });
 
     document.getElementById('planetarium-btn-historic')?.addEventListener('click', () => {
       const submenu = document.getElementById('planetarium-historic-submenu');
@@ -3589,6 +3664,7 @@ export class PlanetariumMode {
       // view / the labels setting).
       this.closeMenuPanel();
       this.closeSurfaceTargetMenu();
+      this.closeToolsMenu();
       this.setWorldLabelsVisible(false);
       if (search) search.value = '';
     }
@@ -4754,6 +4830,10 @@ export class PlanetariumMode {
     if (!button) return;
     const missionActive = this.isMissionActive();
     button.style.display = missionActive ? 'none' : '';
+    // Tools mirrors the Observatory button's mission-hide (visible in cruise AND
+    // landed; only a mission takes it away). Set both here.
+    const tools = document.getElementById('planetarium-btn-tools');
+    if (tools) tools.style.display = missionActive ? 'none' : '';
     // The panel is a landed-state surface: takeoff closes it (every landed
     // body is a subject — moonless ones get the Quiet-sky variant). The deck
     // is legal in any state but missions own the ship.
@@ -4761,6 +4841,7 @@ export class PlanetariumMode {
     if (missionActive) {
       this.closeDeck();
       this.closeSurfaceTargetMenu();
+      this.closeToolsMenu();
     }
   }
 
@@ -4878,6 +4959,7 @@ export class PlanetariumMode {
     // One modal at a time, extended to the picker.
     this.closeMenuPanel();
     this.closeDeck();
+    this.closeToolsMenu();
     const inView = this.landedView === 'surface';
     this.setWorldLabelsVisible(false);
     this.surfaceTargetMenu.open(
@@ -6140,6 +6222,7 @@ export class PlanetariumMode {
     // deck whose rows and HERE pill would go stale the instant the ground
     // changes. Defensive close (no-op on deck-initiated landings).
     this.closeDeck();
+    this.closeToolsMenu();
     // New ground, new sky: the picker's rows and the remembered Look-at
     // target both describe the vantage being left behind.
     this.closeSurfaceTargetMenu();
@@ -6607,6 +6690,7 @@ export class PlanetariumMode {
     // (HERE pill, reveal target) closes with it.
     this.closeDeck();
     this.closeSurfaceTargetMenu();
+    this.closeToolsMenu();
     this.surfacePickedTarget = null;
     // Teardown path: restore FOV/controls/labels instantly — the code below
     // reconfigures the controls and camera for flight anyway.

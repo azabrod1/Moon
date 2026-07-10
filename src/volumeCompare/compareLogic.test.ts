@@ -21,6 +21,7 @@ import {
   targetReached,
   sandFillFraction,
   sandGrainBudget,
+  moundHeightAt,
   liquidAtRim,
   sphericalCapVolume,
   capHeightForVolume,
@@ -33,6 +34,7 @@ import {
   endCardModel,
   bodyDisplayName,
   pluralizeBody,
+  capitalizeSentence,
 } from './compareLogic';
 import type { ComparePhase } from './compareLogic';
 import { PLANETARIUM_BODIES } from '../planetarium/planets/planetData';
@@ -171,6 +173,28 @@ describe('sandGrainBudget — two tiers, one boolean (P4)', () => {
     expect(sandGrainBudget(false, false)).toBe(1500); // no bloom → weak
     expect(sandGrainBudget(true, true)).toBe(1500); // mobile → weak
     expect(sandGrainBudget(false, true)).toBe(1500); // both signals never quarter
+  });
+});
+
+describe('moundHeightAt — the sand mound profile (P5, CPU/GPU mirror)', () => {
+  it('flat top under rr=0.12, tapers to 0 by rr=0.55, off beyond', () => {
+    const peak = 0.08;
+    expect(moundHeightAt(0, peak)).toBeCloseTo(peak, 10); // crest is the full peak
+    expect(moundHeightAt(0.12, peak)).toBeCloseTo(peak, 10); // still flat at the shoulder
+    expect(moundHeightAt(0.55, peak)).toBeCloseTo(0, 10); // down to the pool by 0.55
+    expect(moundHeightAt(0.8, peak)).toBeCloseTo(0, 10); // and stays there to the rim
+  });
+  it('monotone non-increasing across the taper', () => {
+    let prev = Infinity;
+    for (let i = 0; i <= 40; i++) {
+      const h = moundHeightAt(i / 40, 0.08);
+      expect(h).toBeLessThanOrEqual(prev + 1e-9);
+      prev = h;
+    }
+  });
+  it('scales linearly with peak; peak 0 is a flat pool', () => {
+    expect(moundHeightAt(0.2, 0.1)).toBeCloseTo(2 * moundHeightAt(0.2, 0.05), 10);
+    for (const rr of [0, 0.1, 0.3, 0.5, 0.9]) expect(moundHeightAt(rr, 0)).toBe(0);
   });
 });
 
@@ -601,8 +625,9 @@ describe('brim stats + density kicker', () => {
 });
 
 describe('prose helpers', () => {
-  it('bodyDisplayName gives Earth&apos;s Moon its article, others bare', () => {
+  it('bodyDisplayName gives the two common nouns their article, others bare', () => {
     expect(bodyDisplayName('Moon')).toBe('the Moon');
+    expect(bodyDisplayName('Sun')).toBe('the Sun');
     expect(bodyDisplayName('Jupiter')).toBe('Jupiter');
     expect(bodyDisplayName('Io')).toBe('Io');
   });
@@ -611,6 +636,17 @@ describe('prose helpers', () => {
     expect(pluralizeBody('Moon')).toBe('Moons');
     expect(pluralizeBody('Phobos')).toBe('Phoboses');
     expect(pluralizeBody('Titan')).toBe('Titans');
+  });
+  it('capitalizeSentence: sentence-initial display names read "The", proper names unchanged', () => {
+    // Every rendered sentence that BEGINS with bodyDisplayName routes through this
+    // (the kicker, the boulder melt note, the settling label); mid-sentence
+    // "the Sun"/"the Moon" everywhere else stays lowercase.
+    expect(capitalizeSentence(`${bodyDisplayName('Sun')} can't fit through any opening`)).toBe(
+      "The Sun can't fit through any opening",
+    );
+    expect(capitalizeSentence(`${bodyDisplayName('Moon')} — 11 across`)).toBe('The Moon — 11 across');
+    expect(capitalizeSentence('Earth holds the volume')).toBe('Earth holds the volume');
+    expect(capitalizeSentence('')).toBe('');
   });
 });
 
@@ -643,6 +679,32 @@ describe('endCardModel — golden strings (Jupiter/Earth)', () => {
     const hero = endCardModel('Jupiter', 'Earth', buildComparison('Jupiter', 'Earth'), null);
     expect(hero.tryNext).toHaveLength(6);
   });
+  it('sub-unity Try-next rows read "N of a Filler in Container" (n<1 branch)', () => {
+    // Any end card offers the Earth←Jupiter sub-unity teaser (n ≈ 0.00076).
+    const model = endCardModel('Jupiter', 'Earth', buildComparison('Jupiter', 'Earth'), null);
+    const subRow = model.tryNext.find((r) => r.container === 'Earth' && r.filler === 'Jupiter');
+    expect(subRow?.text).toBe('0.00076 of a Jupiter in Earth'); // singular "of a", never "0.00076 Jupiters"
+    // A super-unity row keeps the mechanical plural count.
+    const em = model.tryNext.find((r) => r.container === 'Earth' && r.filler === 'Moon');
+    expect(em?.text).toBe('49.3 Moons in Earth');
+  });
+  it('the Sun takes its article across headline, kicker, and rows', () => {
+    const model = endCardModel('Sun', 'Earth', buildComparison('Sun', 'Earth'), brimStats(1.306e6, 100));
+    expect(model.headline).toBe('≈1.31 million Earths fit inside the Sun');
+    // Sentence-initial in the kicker capitalizes ("The Sun holds…"); the headline
+    // above keeps lowercase "the Sun" mid-sentence.
+    expect(model.kicker).toContain('The Sun holds the volume');
+    // Sun-container rows in the Try-next list keep lowercase "in the Sun".
+    const sunRow = model.tryNext.find((r) => r.container === 'Sun');
+    expect(sunRow?.text).toContain('in the Sun');
+  });
+  it('kicker capitalizes the sentence-initial display name (the Moon/Sun → The)', () => {
+    const moon = endCardModel('Moon', 'Pluto', buildComparison('Moon', 'Pluto'), null);
+    expect(moon.kicker?.startsWith('The Moon holds the volume')).toBe(true);
+    // A proper name is unaffected — it was already capitalized.
+    const jup = endCardModel('Jupiter', 'Earth', buildComparison('Jupiter', 'Earth'), null);
+    expect(jup.kicker?.startsWith('Jupiter holds the volume')).toBe(true);
+  });
   it('boulders skip the dual stat (brim = null)', () => {
     const boulders = buildComparison('Jupiter', 'Saturn'); // 1.73, boulders
     const model = endCardModel('Jupiter', 'Saturn', boulders, null);
@@ -653,8 +715,8 @@ describe('endCardModel — golden strings (Jupiter/Earth)', () => {
     const cmpMoon = buildComparison('Moon', 'Pluto'); // 3.13; Pluto has a mass, Moon does too
     const model = endCardModel('Moon', 'Pluto', cmpMoon, null);
     expect(model.headline).toBe('3.13 Plutos fit inside the Moon');
-    // both masses known → kicker present, container gets its article
-    expect(model.kicker).toContain('the Moon holds the volume');
+    // both masses known → kicker present; sentence-initial article capitalizes
+    expect(model.kicker).toContain('The Moon holds the volume');
     const titanContainer = endCardModel('Titan', 'Earth', buildComparison('Titan', 'Earth'), null);
     expect(titanContainer.kicker).toBeNull(); // Titan has no listed mass
   });

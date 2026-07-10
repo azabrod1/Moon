@@ -1082,6 +1082,26 @@ export class SpherePhysics {
     return this.mouthRadius;
   }
 
+  /**
+   * Read-only: the highest point (`posY + radius`) of any ENTERED ball whose
+   * centre lies within `radius` of the vertical axis (x²+z² < radius²), or
+   * -Infinity when none qualify. The scene reads this as the axial pile top so
+   * display fallers land ON the exposed pile during the ~1-2 s melt/rain overlap
+   * instead of ghosting through it. Pure scan — mutates nothing.
+   */
+  pileTopNearAxis(radius: number): number {
+    const r = this.params.radius;
+    const rr2 = radius * radius;
+    let top = -Infinity;
+    for (let i = 0; i < this.count; i++) {
+      if (!this.entered[i]) continue;
+      if (this.posX[i] * this.posX[i] + this.posZ[i] * this.posZ[i] >= rr2) continue;
+      const t = this.posY[i] + r;
+      if (t > top) top = t;
+    }
+    return top;
+  }
+
   /** True if any live ball holds a non-finite coordinate (blow-up guard). */
   hasNaN(): boolean {
     for (let i = 0; i < this.count; i++) {

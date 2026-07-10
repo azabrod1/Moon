@@ -46,6 +46,7 @@ import {
   formatOdometer,
   formatAcross,
   bodyDisplayName,
+  capitalizeSentence,
   COMPARE_TUNABLES,
   type Comparison,
   type CompareSession,
@@ -93,6 +94,8 @@ export interface CompareDevState {
   mouthOpen: number;
   /** Live sand grains (stream + spill) this frame — 0 when the pool is cleared. */
   grainsLive: number;
+  /** Live marble-rain fallers this frame — >0 during raining, 0 at complete. */
+  fallersLive: number;
   /** The eased liquid render level (height above the bottom pole) — QA rim clearance. */
   liquidLevelY: number;
   /** Measured band bottom (px from viewport top): the occluder's top edge, or 0
@@ -613,6 +616,9 @@ export class VolumeCompareMode {
       case 'complete':
         this.endCardTimer = 0;
         this.panel.showMelt(false);
+        // Cull the airborne spill/plume/droplet strays over ~0.5 s so the end card
+        // settles over a clean scene (a graceful fade, not the instant swap clear).
+        this.compareScene.retireTransients();
         break;
     }
   }
@@ -663,14 +669,20 @@ export class VolumeCompareMode {
     switch (this.session.phase) {
       case 'settling':
         if (s.poured < 0.5 && this.comparison.regime !== 'sand') {
-          return `${bodyDisplayName(this.filler)} — ${formatAcross(this.comparison.across)} across`;
+          // Sentence-initial display name capitalizes ("The Moon — 11 across").
+          return capitalizeSentence(
+            `${bodyDisplayName(this.filler)} — ${formatAcross(this.comparison.across)} across`,
+          );
         }
         // Clear the label once the pile is actually at rest (don't read "settling…"
         // for seconds after it visibly stopped).
         return s.asleepFrac < 0.92 ? 'settling…' : '';
       case 'pouring':
         if (this.comparison.regime === 'boulders') {
-          return `${bodyDisplayName(this.filler)} can't fit through any opening — it melts on the glass.`;
+          // Sentence-initial too: "The Sun can't fit…", never "the Sun can't fit…".
+          return capitalizeSentence(
+            `${bodyDisplayName(this.filler)} can't fit through any opening — it melts on the glass.`,
+          );
         }
         return '';
       case 'brim':
@@ -990,26 +1002,31 @@ export class VolumeCompareMode {
       this.lastDefaultDistance = dist;
       this.camera.position.copy(orbitPose(VC_FRAMING.azimuthDeg, VC_FRAMING.elevationDeg, dist, this.controls.target));
     } else {
-      // Loom: glass whole in the lower third, the giant's belly overflowing the
-      // top and curving out of frame. A low elevation silhouettes the wedge
-      // contact (it must visibly TOUCH); a side azimuth catches the key-lit belly.
-      const target = new THREE.Vector3(0, 0.55, 0);
+      // Honest loom: the GIANT owns the frame at its TRUE radius (Moon/Jupiter 40×),
+      // the VESSEL shrinks to its readable/tappable floor — the smallness is the
+      // story. Distance is keyed to the vessel's on-screen size (a hair above the
+      // ≥90 px desktop / ≥56 px phone floor), not the giant's size.
+      const target = new THREE.Vector3(0, 0.35, 0);
       this.controls.target.copy(target);
-      // Azimuth biased toward the loom key (key az ≈ −37°): more of the lit,
-      // less-UV-stretched (face-on) surface fronts the camera, rotating the
-      // limb's over-minified smear off-centre.
-      const az = -33;
-      const el = 2; // near-level so the wedge contact silhouettes (isn't occluded by the vessel top)
-      let dist = defaultOrbitDistance(aspect) * 1.55;
-      // Guard: keep the camera OUTSIDE the giant filler (a fixed pull sits inside
-      // it and renders an empty sky), pushing the distance out along the view ray.
+      const az = -33; // side azimuth catches the key-lit belly (X9 loom key)
+      const vhPx = Math.max(1, window.innerHeight);
+      const floorPx = window.innerWidth <= 640 ? 60 : 96; // a hair above the 56/90 contract
+      const p11 = 1 / Math.tan(vHalf); // vertical projection factor (screenR = p11·R·vh/2 / dist)
+      const dist = Math.min(this.controls.maxDistance, (p11 * R * vhPx * 0.5) / floorPx);
+      // Keep the camera OUTSIDE the giant: start near-level (shows the wedge
+      // contact for moderate ratios) and DIP the elevation for the enormous ones
+      // (a positive elevation sits the camera near a huge giant's bottom and can't
+      // escape it; dipping under keeps the vessel at its floor size while clearing
+      // the giant). Real pairs need only a few degrees (Moon/Jupiter exits at 5°,
+      // Moon/Sun at 1°); the −24° floor is a guaranteed-outside fallback for
+      // ratios beyond the catalog, never approached in practice.
       const fillerCenter = new THREE.Vector3(0, cy, 0);
-      for (let i = 0; i < 40; i++) {
-        const cam = orbitPose(az, el, dist, target);
-        if (cam.distanceTo(fillerCenter) >= rf + 0.5 || dist >= this.controls.maxDistance) break;
-        dist += 0.5;
+      let el = 5;
+      for (let i = 0; i < 60; i++) {
+        if (orbitPose(az, el, dist, target).distanceTo(fillerCenter) >= rf + 0.4) break;
+        el -= 1;
+        if (el <= -24) { el = -24; break; }
       }
-      dist = Math.min(dist, this.controls.maxDistance);
       this.lastDefaultDistance = dist;
       this.camera.position.copy(orbitPose(az, el, dist, target));
     }
@@ -1116,6 +1133,7 @@ export class VolumeCompareMode {
       boulderMeshes: this.compareScene.visibleBoulderMeshes(),
       mouthOpen: this.compareScene.mouthOpenAmount(),
       grainsLive: this.compareScene.grainsLive(),
+      fallersLive: this.compareScene.fallersLive(),
       liquidLevelY: s?.liquidLevelY ?? 0,
       bandTopPx: this.measuredBandTopPx,
       vesselBox: this.vesselScreenBox(),

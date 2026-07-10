@@ -188,9 +188,17 @@ export class PlayerShip {
     return this.speedAUPerS / LIGHT_SPEED_AU_PER_S;
   }
 
+  /**
+   * Sync the visible model to the current heading/pitch without integrating
+   * motion. Scripted mission transfers drive the pose fields directly and
+   * skip update(), the only other writer of the model quaternion.
+   */
+  syncModelOrientation() {
+    this.group.quaternion.setFromUnitVectors(FORWARD_VECTOR, this.getForwardDirection());
+  }
+
   update(dt: number) {
-    const direction = this.getForwardDirection();
-    this.group.quaternion.setFromUnitVectors(FORWARD_VECTOR, direction);
+    this.syncModelOrientation();
 
     // Animate exhaust
     const effectiveMultiplier = this.speedAUPerS / DEFAULT_SPEED_AU_S;

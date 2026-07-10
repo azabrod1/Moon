@@ -668,6 +668,9 @@ export class PlanetariumMode {
   private speedCenterEl: HTMLElement | null = null;
   private uiRefreshAccumulator = PlanetariumMode.UI_REFRESH_INTERVAL_S;
   private activeHistoricJourney: HistoricJourney | null = null;
+  // Bumped on every mission start/stop: a start awaiting its profile fetch
+  // re-checks it after the await and yields to whatever superseded it.
+  private missionRequestGen = 0;
   private historicMilestoneIndex = 0;
   private historicPanelDismissed = false;
   private scriptedTransfer: ScriptedTransfer | null = null;
@@ -4002,7 +4005,13 @@ export class PlanetariumMode {
     // pre-tutorial journey instead of a staged showcase scene.
     if (this.tutorial) this.stopTutorial({ restore: true, sync: true });
     const journey = HISTORIC_JOURNEYS[missionId];
+    // The profile fetch below yields (Cassini loads a GLB). Anything the user
+    // does meanwhile — picking another mission, New Journey, leaving the mode —
+    // must win over this stale continuation, or a slow load resurrects a
+    // mission the user already abandoned.
+    const requestGen = ++this.missionRequestGen;
     await this.player.ensureProfileLoaded(journey.shipProfile);
+    if (requestGen !== this.missionRequestGen || !this.active) return;
     // The await yields, and the stop above re-enabled the ☰ Tutorial item —
     // a tutorial can have started during the profile fetch. Stop that one too
     // before the mission stashes state.
@@ -4013,6 +4022,12 @@ export class PlanetariumMode {
     this.observatoryExcursion = null;
     this.rememberPreMissionState();
     if (this.landedOn) this.exitLandedMode();
+    // The stash above keeps the user's pilot for the post-mission restore, but
+    // the mission itself must fly clean: a live autopilot re-aims the ship at
+    // its own target every frame, turning the parked probe (and the camera)
+    // away from each milestone the moment its transfer ends. Runs after
+    // exitLandedMode, which re-engages a pre-landing pilot on takeoff.
+    this.disengageAutopilot();
     this.activeHistoricJourney = journey;
     this.historicPanelDismissed = false;
     this.showShip = true;
@@ -4028,6 +4043,9 @@ export class PlanetariumMode {
   }
 
   private stopHistoricJourney(restorePreviousState = true) {
+    // Ending a mission (or New Journey's reset) also invalidates any mission
+    // start still awaiting its profile fetch.
+    this.missionRequestGen++;
     this.activeHistoricJourney = null;
     this.historicMilestoneIndex = 0;
     this.historicPanelDismissed = false;
@@ -4221,6 +4239,11 @@ export class PlanetariumMode {
     this.player.posZ = THREE.MathUtils.lerp(transfer.startPos.z, transfer.endPos.z, ease);
     this.player.heading = THREE.MathUtils.lerp(transfer.startHeading, transfer.endHeading, ease);
     this.player.pitch = THREE.MathUtils.lerp(transfer.startPitch, transfer.endPitch, ease);
+    // player.update() is skipped during a scripted transfer, and it is the
+    // only other writer of the model quaternion — without this the visible
+    // probe holds its old orientation through the whole transfer arc and
+    // snaps to the destination heading on the first post-transfer frame.
+    this.player.syncModelOrientation();
 
     if (t >= 1) {
       this.player.moving = transfer.endMoving;

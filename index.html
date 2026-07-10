@@ -2003,7 +2003,10 @@
 
       #planetarium-bottom-bar { bottom: 8px; max-width: calc(100vw - 12px); }
       #planetarium-btn-land { bottom: 100px; }
-      .bar-row { padding: 5px 2px; }
+      /* Horizontal inset so the end sections (the rail on the left, the Stats
+         chip on the right) clear the bar's rounded wall — 2px left the chip
+         all but touching the border. */
+      .bar-row { padding: 5px 7px; }
       .bar-section { padding: 0 5px; }
       /* .bar-section's tightened padding would beat .bar-stats here (same
          specificity, later in source) and leave the bordered chip's label

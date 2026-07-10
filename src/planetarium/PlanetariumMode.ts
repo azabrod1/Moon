@@ -140,8 +140,10 @@ import {
   BODY_APPROACH_V_MIN_AU_S,
   BODY_CAP_CLEAR_HOLD_S,
   MOON_APPROACH_K_PER_S,
+  MOON_CAP_RELEASE_EFOLD_S,
   PLANET_APPROACH_K_PER_S,
   PLANET_ARRIVAL_STANDOFF_FLOOR_AU,
+  PLANET_CAP_RELEASE_EFOLD_S,
   SUN_APPROACH_SURFACE_RADII,
   type BodyCapState,
 } from './arrivalLogic';
@@ -1241,10 +1243,11 @@ export class PlanetariumMode {
     // transfers too: the applied cap is unused there (player.update is
     // skipped) but the state stays current, so a transfer never ends on a
     // stale-tight ramp.
-    const geomCap = this.computeBodySpeedCap();
+    const geom = this.computeBodySpeedCap();
     this.bodyCap = advanceBodyCap(
       this.bodyCap,
-      geomCap,
+      geom.capAUPerS,
+      geom.releaseEfoldS,
       this.player.commandedSpeedAUPerS,
       this.throttleOverride || !this.systemSlowdown,
       dt,
@@ -1257,6 +1260,20 @@ export class PlanetariumMode {
     }
     this.timeState = advancePlanetariumTime(this.timeState, dt);
     this.rebuildPlanetPositions(dt);
+
+    this.updatePlanetScaling();
+    this.player.group.scale.setScalar(0.5);
+    // Resolve collisions BEFORE the floating origin so the frame renders the
+    // RESOLVED state. Rendering first and resolving after leaves a one-frame
+    // lag, and under sustained shell contact with a moving body (a parked
+    // ship being overtaken by Mercury at 47 km/s, a moon sweeping past at
+    // time warp) the rendered gap alternates by the per-frame pushback —
+    // invisible at the old 17,000 km chase distance, a visible shimmy of the
+    // near-full-screen disc at 3,000 km.
+    if (!this.devFreeCamera) {
+      this.resolvePlanetCollisions();
+      this.resolveMoonCollisions();
+    }
 
     // Apply floating origin: offset everything by player position
     this.applyFloatingOrigin();
@@ -1278,13 +1295,6 @@ export class PlanetariumMode {
     const shouldRefreshUi = this.uiRefreshAccumulator >= PlanetariumMode.UI_REFRESH_INTERVAL_S;
     if (shouldRefreshUi) {
       this.uiRefreshAccumulator %= PlanetariumMode.UI_REFRESH_INTERVAL_S;
-    }
-
-    this.updatePlanetScaling();
-    this.player.group.scale.setScalar(0.5);
-    if (!this.devFreeCamera) {
-      this.resolvePlanetCollisions();
-      this.resolveMoonCollisions();
     }
 
     // Check orbit crossings and visits after scale/collision are applied so the
@@ -4302,10 +4312,11 @@ export class PlanetariumMode {
    *  and the Sun at SUN_APPROACH_SURFACE_RADII × its photosphere — the Sun
    *  has no collision shell, and the system throttle's inner edge sits
    *  INSIDE the photosphere, so this glide is the only brake. */
-  private computeBodySpeedCap(): number {
+  private computeBodySpeedCap(): { capAUPerS: number; releaseEfoldS: number } {
     const f = this.player.getForwardDirection();
     let cap = Infinity;
-    const consider = (x: number, y: number, z: number, surfaceR: number, kPerS: number) => {
+    let releaseEfoldS = MOON_CAP_RELEASE_EFOLD_S;
+    const consider = (x: number, y: number, z: number, surfaceR: number, kPerS: number, efoldS: number) => {
       const dx = x - this.player.posX;
       const dy = y - this.player.posY;
       const dz = z - this.player.posZ;
@@ -4318,10 +4329,13 @@ export class PlanetariumMode {
         kPerS,
         BODY_APPROACH_V_MIN_AU_S,
       );
-      if (c < cap) cap = c;
+      if (c < cap) {
+        cap = c;
+        releaseEfoldS = efoldS;
+      }
     };
     this.forEachGovernedMoon((x, y, z, renderedR) =>
-      consider(x, y, z, renderedR, MOON_APPROACH_K_PER_S));
+      consider(x, y, z, renderedR, MOON_APPROACH_K_PER_S, MOON_CAP_RELEASE_EFOLD_S));
     if (this.solarSystem) {
       for (const planet of this.solarSystem.planets) {
         const wp = planet.group.userData.worldPosAU as { x: number; y: number; z: number } | undefined;
@@ -4330,12 +4344,18 @@ export class PlanetariumMode {
           wp.x, wp.y, wp.z,
           planetEnvelopeRadiusAU(planet.data.radiusAU, planet.group.scale.x, ATMOSPHERE_SHELL_SCALES[planet.data.name]),
           PLANET_APPROACH_K_PER_S,
+          PLANET_CAP_RELEASE_EFOLD_S,
         );
       }
       // The Sun sits at the heliocentric origin.
-      consider(0, 0, 0, (KM_CONSTANTS.SUN_RADIUS / KM_PER_AU) * SUN_APPROACH_SURFACE_RADII, PLANET_APPROACH_K_PER_S);
+      consider(
+        0, 0, 0,
+        (KM_CONSTANTS.SUN_RADIUS / KM_PER_AU) * SUN_APPROACH_SURFACE_RADII,
+        PLANET_APPROACH_K_PER_S,
+        PLANET_CAP_RELEASE_EFOLD_S,
+      );
     }
-    return cap;
+    return { capAUPerS: cap, releaseEfoldS };
   }
 
   private pushCameraShell(sceneX: number, sceneY: number, sceneZ: number, surfaceRadiusAU: number) {

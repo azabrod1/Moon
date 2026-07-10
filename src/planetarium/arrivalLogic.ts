@@ -53,10 +53,16 @@ export function governedSpeedCap(
   return base / g;
 }
 
-/** After a flyby the applied cap relaxes by e per this many seconds, so
+/** After a moon flyby the applied cap relaxes by e per this many seconds, so
  *  leaving reads as a pull-away — full in-system speed returns over ~4–5 s
  *  from a deep flyby — instead of a one-frame snap to thousands of km/s. */
-export const BODY_CAP_RELEASE_EFOLD_S = 1;
+export const MOON_CAP_RELEASE_EFOLD_S = 1;
+
+/** Planets (and the Sun) release slower: passing one at the moons' 1 s
+ *  e-fold puts the ship at thousands of km/s before a turnaround completes —
+ *  a planet is a minutes-scale scene, and the pull-away should leave time to
+ *  swing back for another look (~13 s to full speed instead of ~5). */
+export const PLANET_CAP_RELEASE_EFOLD_S = 2.5;
 
 /** Above this the ramp stops mattering against any real speed setting
  *  (~25c); promote to Infinity so no stale finite cap lingers as state. */
@@ -102,34 +108,50 @@ const CAP_BIND_FRACTION = 0.999;
  * speed — never the applied speed, which already contains the cap and reads
  * 0 parked. `unboundS` is how long the latch has read unbound while a bypass
  * was active — the override auto-clear waits out BODY_CAP_CLEAR_HOLD_S on it.
+ * `releaseEfoldS` is the ramp pace of the LAST body that actually governed —
+ * adopted while binding, kept through the release, so a planet flyby keeps
+ * releasing at the planet pace even though the planet no longer binds.
  */
 export interface BodyCapState {
   candidate: number;
   applied: number;
   engaged: boolean;
   unboundS: number;
+  releaseEfoldS: number;
 }
 
 /** Fresh state for flight discontinuities (jump, takeoff, restore,
  *  activation): no cap, no latch, no partial clear-hold carried across. */
 export function initialBodyCapState(): BodyCapState {
-  return { candidate: Infinity, applied: Infinity, engaged: false, unboundS: 0 };
+  return {
+    candidate: Infinity,
+    applied: Infinity,
+    engaged: false,
+    unboundS: 0,
+    releaseEfoldS: MOON_CAP_RELEASE_EFOLD_S,
+  };
 }
 
 /**
  * Advance the governor state one frame. `geomCap` is this frame's
- * instantaneous cap (min over all governed bodies), `commandedAUPerS` the
- * speed the dialed throttle would fly uncapped, `bypass` whether an escape
- * hatch (throttle override, system slowdown off) is open.
+ * instantaneous cap (min over all governed bodies) and `geomReleaseEfoldS`
+ * the release pace of the body that set it; `commandedAUPerS` is the speed
+ * the dialed throttle would fly uncapped, `bypass` whether an escape hatch
+ * (throttle override, system slowdown off) is open.
  */
 export function advanceBodyCap(
   prev: BodyCapState,
   geomCap: number,
+  geomReleaseEfoldS: number,
   commandedAUPerS: number,
   bypass: boolean,
   dtS: number,
 ): BodyCapState {
-  const candidate = rampedSpeedCap(geomCap, prev.candidate, dtS, BODY_CAP_RELEASE_EFOLD_S);
+  // While the geometric cap actually governs (at or under the ramp), the
+  // binding body's release pace is adopted; once it lets go the latched pace
+  // carries the whole release.
+  const releaseEfoldS = geomCap <= prev.candidate ? geomReleaseEfoldS : prev.releaseEfoldS;
+  const candidate = rampedSpeedCap(geomCap, prev.candidate, dtS, releaseEfoldS);
   const engaged = geomCap < commandedAUPerS * CAP_BIND_FRACTION;
   return {
     candidate,
@@ -139,6 +161,7 @@ export function advanceBodyCap(
     // unbound; any other frame resets it, so a partial hold can't survive
     // re-engagement or complete long after the hatch opened.
     unboundS: bypass && !engaged ? prev.unboundS + dtS : 0,
+    releaseEfoldS,
   };
 }
 

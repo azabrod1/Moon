@@ -9,7 +9,8 @@ import {
   rampedSpeedCap,
   BODY_APPROACH_V_MIN_AU_S,
   BODY_CAP_CLEAR_HOLD_S,
-  BODY_CAP_RELEASE_EFOLD_S,
+  MOON_CAP_RELEASE_EFOLD_S,
+  PLANET_CAP_RELEASE_EFOLD_S,
   MOON_APPROACH_K_PER_S,
   PLANET_APPROACH_K_PER_S,
   MOON_ARRIVAL_APPARENT_DIAMETER_DEG,
@@ -95,7 +96,7 @@ describe('governedSpeedCap', () => {
 });
 
 describe('rampedSpeedCap', () => {
-  const E = BODY_CAP_RELEASE_EFOLD_S;
+  const E = MOON_CAP_RELEASE_EFOLD_S;
 
   it('tightening applies instantly, including first contact from Infinity', () => {
     expect(rampedSpeedCap(1e-6, Infinity, 1 / 60, E)).toBe(1e-6);
@@ -139,7 +140,7 @@ describe('advanceBodyCap — the governor latch', () => {
   it('stays latched (clear timer pinned at zero) while a body binds', () => {
     let s = initialBodyCapState();
     const geomCap = COMMANDED / 10;
-    for (let t = 0; t < 3; t += DT) s = advanceBodyCap(s, geomCap, COMMANDED, true, DT);
+    for (let t = 0; t < 3; t += DT) s = advanceBodyCap(s, geomCap, MOON_CAP_RELEASE_EFOLD_S, COMMANDED, true, DT);
     expect(s.engaged).toBe(true);
     expect(s.unboundS).toBe(0);
     expect(s.applied).toBe(Infinity); // bypassed…
@@ -148,10 +149,10 @@ describe('advanceBodyCap — the governor latch', () => {
 
   it('completes the clear-hold only after a sustained unbound stretch', () => {
     let s = initialBodyCapState();
-    s = advanceBodyCap(s, COMMANDED / 10, COMMANDED, true, DT); // bound once
+    s = advanceBodyCap(s, COMMANDED / 10, MOON_CAP_RELEASE_EFOLD_S, COMMANDED, true, DT); // bound once
     let held = 0;
     while (s.unboundS < BODY_CAP_CLEAR_HOLD_S) {
-      s = advanceBodyCap(s, Infinity, COMMANDED, true, DT); // flying away
+      s = advanceBodyCap(s, Infinity, MOON_CAP_RELEASE_EFOLD_S, COMMANDED, true, DT); // flying away
       held += DT;
       expect(held).toBeLessThan(BODY_CAP_CLEAR_HOLD_S + 1); // and it can't wedge
     }
@@ -161,10 +162,10 @@ describe('advanceBodyCap — the governor latch', () => {
   it('a one-frame grazing re-bind resets the hold instead of clearing through it', () => {
     let s = initialBodyCapState();
     for (let t = 0; t < BODY_CAP_CLEAR_HOLD_S * 0.9; t += DT) {
-      s = advanceBodyCap(s, Infinity, COMMANDED, true, DT);
+      s = advanceBodyCap(s, Infinity, MOON_CAP_RELEASE_EFOLD_S, COMMANDED, true, DT);
     }
     expect(s.unboundS).toBeGreaterThan(0);
-    s = advanceBodyCap(s, COMMANDED / 10, COMMANDED, true, DT); // graze
+    s = advanceBodyCap(s, COMMANDED / 10, MOON_CAP_RELEASE_EFOLD_S, COMMANDED, true, DT); // graze
     expect(s.unboundS).toBe(0);
   });
 
@@ -172,16 +173,16 @@ describe('advanceBodyCap — the governor latch', () => {
     // The commanded speed ignores the parked state; the latch must too, or
     // parking beside a moon would start clearing the override immediately.
     const geomCap = governedSpeedCap(2 * SHIP_CLEARANCE_AU, 1, K, VMIN);
-    const s = advanceBodyCap(initialBodyCapState(), geomCap, COMMANDED, true, DT);
+    const s = advanceBodyCap(initialBodyCapState(), geomCap, MOON_CAP_RELEASE_EFOLD_S, COMMANDED, true, DT);
     expect(s.engaged).toBe(true);
   });
 
   it('the ramp memory survives a bypass and re-applies the moment it ends', () => {
     let s = initialBodyCapState();
     const geomCap = COMMANDED / 100;
-    s = advanceBodyCap(s, geomCap, COMMANDED, true, DT);
+    s = advanceBodyCap(s, geomCap, MOON_CAP_RELEASE_EFOLD_S, COMMANDED, true, DT);
     expect(s.applied).toBe(Infinity);
-    s = advanceBodyCap(s, geomCap, COMMANDED, false, DT); // hatch closes
+    s = advanceBodyCap(s, geomCap, MOON_CAP_RELEASE_EFOLD_S, COMMANDED, false, DT); // hatch closes
     expect(s.applied).toBeCloseTo(geomCap, 12); // tight at once — no Infinity restart
   });
 
@@ -192,11 +193,32 @@ describe('advanceBodyCap — the governor latch', () => {
     // applied cap on the bypass true→false edge and brake a full-speed ship
     // to a crawl for several seconds.
     let s = initialBodyCapState();
-    s = advanceBodyCap(s, COMMANDED / 1000, COMMANDED, true, DT); // deep at a wall, bypassed
+    s = advanceBodyCap(s, COMMANDED / 1000, MOON_CAP_RELEASE_EFOLD_S, COMMANDED, true, DT); // deep at a wall, bypassed
     expect(s.candidate).toBeLessThan(COMMANDED); // the memory the reset discards
     s = initialBodyCapState(); // the controller's reset at auto-clear
-    s = advanceBodyCap(s, Infinity, COMMANDED, false, DT); // first un-bypassed frame
+    s = advanceBodyCap(s, Infinity, MOON_CAP_RELEASE_EFOLD_S, COMMANDED, false, DT); // first un-bypassed frame
     expect(s.applied).toBe(Infinity);
+  });
+
+  it('a planet flyby releases at the planet pace, latched through the whole ramp', () => {
+    // Passing a planet at the moons' 1 s e-fold puts the ship at thousands
+    // of km/s before a turnaround completes — planets release slower, and
+    // the pace must persist after the planet stops binding.
+    let s = initialBodyCapState();
+    const wallCap = COMMANDED / 100;
+    s = advanceBodyCap(s, wallCap, PLANET_CAP_RELEASE_EFOLD_S, COMMANDED, false, DT); // planet binds
+    expect(s.releaseEfoldS).toBe(PLANET_CAP_RELEASE_EFOLD_S);
+    s = advanceBodyCap(s, Infinity, MOON_CAP_RELEASE_EFOLD_S, COMMANDED, false, DT); // nose past the limb
+    expect(s.releaseEfoldS).toBe(PLANET_CAP_RELEASE_EFOLD_S); // pace latched, not the frame's default
+    expect(s.candidate).toBeCloseTo(wallCap * Math.exp(DT / PLANET_CAP_RELEASE_EFOLD_S), 12);
+  });
+
+  it('a moon re-binding mid-release takes the ramp back to the moon pace', () => {
+    let s = initialBodyCapState();
+    s = advanceBodyCap(s, COMMANDED / 100, PLANET_CAP_RELEASE_EFOLD_S, COMMANDED, false, DT);
+    s = advanceBodyCap(s, Infinity, MOON_CAP_RELEASE_EFOLD_S, COMMANDED, false, DT); // planet releasing
+    s = advanceBodyCap(s, COMMANDED / 200, MOON_CAP_RELEASE_EFOLD_S, COMMANDED, false, DT); // a moon binds
+    expect(s.releaseEfoldS).toBe(MOON_CAP_RELEASE_EFOLD_S);
   });
 
   it('a planet approach at the in-system default engages ~100,000 km out', () => {

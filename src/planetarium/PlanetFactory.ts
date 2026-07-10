@@ -108,9 +108,10 @@ const FALLBACK_COLORS: Record<string, string> = {
 // day-limb tint that warms toward `sunsetColor` at the terminator, plus a Mie
 // forward-scatter halo (`mieColor`, asymmetry `mieG`). `intensity` is overall
 // brightness, `scale` the shell radius relative to the planet. `haloStrength`
-// scales the glow that spills past the limb into space: ~1 for a thin atmosphere
-// over a surface (Earth/Venus/Mars), low for all-atmosphere giants whose limb
-// would otherwise ring against black.
+// scales the fringe where it shows past the limb over black space: thin-shell
+// worlds over a surface keep it higher so the fringe reads at all (Earth 0.75,
+// Mars 0.5), while cloud-deck Venus and the all-atmosphere giants keep it low so
+// their limb can't ring against black.
 interface AtmosphereConfig {
   dayColor: [number, number, number];
   sunsetColor: [number, number, number];
@@ -128,25 +129,29 @@ interface AtmosphereConfig {
 const SUN_RADIUS_AU = 695_700 / 149_597_870.7;
 
 const ATMOSPHERES: Record<string, AtmosphereConfig> = {
+  // Venus reads as a cloud deck, not a surface under thin air: front-lit it
+  // shows limb darkening and a crisp edge (no ring in flyby photos); its one
+  // dramatic geometry is the back-lit ring of light, carried here by the Mie
+  // term. Shell kept near the real haze height (~1.5% of the radius).
   Venus: {
     dayColor: [0.95, 0.85, 0.55], sunsetColor: [1.0, 0.7, 0.4], mieColor: [1.0, 0.93, 0.78],
-    rayleighStrength: 0.9, mieStrength: 1.1, mieG: 0.7, power: 2.5, intensity: 1.5, haloStrength: 1.0, scale: 1.045,
+    rayleighStrength: 0.3, mieStrength: 2.2, mieG: 0.78, power: 1.2, intensity: 0.5, haloStrength: 0.3, scale: 1.025,
   },
   Earth: {
-    dayColor: [0.25, 0.5, 1.0], sunsetColor: [1.0, 0.45, 0.22], mieColor: [1.0, 0.96, 0.9],
-    rayleighStrength: 0.85, mieStrength: 0.5, mieG: 0.76, power: 3.0, intensity: 0.72, haloStrength: 0.38, scale: 1.03,
+    dayColor: [0.3, 0.55, 1.0], sunsetColor: [1.0, 0.45, 0.22], mieColor: [1.0, 0.96, 0.9],
+    rayleighStrength: 1.1, mieStrength: 0.5, mieG: 0.83, power: 1.15, intensity: 0.6, haloStrength: 0.75, scale: 1.02,
   },
   Mars: {
     dayColor: [0.78, 0.6, 0.5], sunsetColor: [0.6, 0.55, 0.65], mieColor: [0.85, 0.72, 0.6],
-    rayleighStrength: 0.35, mieStrength: 0.4, mieG: 0.6, power: 4.0, intensity: 0.55, haloStrength: 1.0, scale: 1.02,
+    rayleighStrength: 0.3, mieStrength: 0.5, mieG: 0.7, power: 1.5, intensity: 0.4, haloStrength: 0.5, scale: 1.014,
   },
   Jupiter: {
     dayColor: [0.8, 0.7, 0.52], sunsetColor: [0.85, 0.6, 0.4], mieColor: [0.9, 0.83, 0.68],
-    rayleighStrength: 0.55, mieStrength: 0.5, mieG: 0.65, power: 3.5, intensity: 0.4, haloStrength: 0.18, scale: 1.015,
+    rayleighStrength: 0.55, mieStrength: 0.5, mieG: 0.65, power: 1.6, intensity: 0.3, haloStrength: 0.12, scale: 1.015,
   },
   Saturn: {
     dayColor: [0.82, 0.74, 0.54], sunsetColor: [0.85, 0.62, 0.42], mieColor: [0.92, 0.85, 0.68],
-    rayleighStrength: 0.5, mieStrength: 0.45, mieG: 0.65, power: 3.5, intensity: 0.36, haloStrength: 0.18, scale: 1.015,
+    rayleighStrength: 0.5, mieStrength: 0.45, mieG: 0.65, power: 1.6, intensity: 0.28, haloStrength: 0.12, scale: 1.015,
   },
   // Uranus and Neptune intentionally have no atmosphere shell. They are all
   // atmosphere — no surface for a thin scattering layer to sit above — and at
@@ -460,7 +465,10 @@ function planetArchetype(planet: PlanetData): SurfaceArchetype {
   if (planet.name === 'Earth') return 'earth';
   if (planet.isGasGiant) return 'gas';
   if (planet.name === 'Mercury' || planet.name === 'Pluto') return 'airless';
-  return 'rocky'; // Venus, Mars
+  // Venus's visible "surface" is an optically thick cloud deck — it limb-
+  // darkens like a giant, not like bare rock.
+  if (planet.name === 'Venus') return 'gas';
+  return 'rocky'; // Mars
 }
 
 function moonArchetype(moon: MoonData): SurfaceArchetype {

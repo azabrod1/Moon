@@ -820,7 +820,14 @@ export class PlanetariumMode {
     };
     orbitDom.addEventListener('pointerup', endOrbitDrag);
     orbitDom.addEventListener('pointercancel', endOrbitDrag);
-    window.addEventListener('blur', endOrbitDrag); // failsafe if focus is lost mid-drag
+    window.addEventListener('blur', () => {
+      endOrbitDrag(); // failsafe if focus is lost mid-drag
+      // Focus loss (e.g. Cmd-Tab) means the keyups won't arrive, so a held key
+      // would linger — with W held the ship accelerates unattended. Drop every
+      // held key; yaw/pitch/throttle recompute from this set each frame
+      // (processInput), so clearing it is enough.
+      this.keys.clear();
+    });
 
     this.handleKeyDown = this.handleKeyDown.bind(this);
     this.handleKeyUp = this.handleKeyUp.bind(this);
@@ -2417,11 +2424,24 @@ export class PlanetariumMode {
     }
   }
 
+  /** True when a Space keypress landed on a focused button / role=button, which
+   *  the browser activates natively — global Space verbs must yield to it. */
+  private isSpaceOnControl(e: KeyboardEvent): boolean {
+    return e.key === ' ' && !!(e.target as HTMLElement).closest?.('button, [role="button"]');
+  }
+
   private handleKeyDown(e: KeyboardEvent) {
     if (!this.active) return;
     // The rail/clock widgets preventDefault the keys they handle — a handled
     // key must not also steer the ship or toggle thrust here.
     if (e.defaultPrevented) return;
+
+    // The saved-journey resume prompt is a full-screen modal that owns the
+    // keyboard while it's up: no shortcut — not the Esc cascade, not T/O/P, the
+    // time keys, or Space — may act on the scene behind it (T otherwise opens
+    // the deck under the prompt and Enter commits a real teleport). It resolves
+    // only through its own on-screen buttons.
+    if (this.resumePrompt.isVisible()) return;
 
     // Escape always works — even while typing in the deck search
     if (e.key === 'Escape') {
@@ -2453,6 +2473,10 @@ export class PlanetariumMode {
         this.commitDeckHighlight();
         return;
       }
+      // Space on a focused deck control (tab, close, preference switch) must
+      // activate it natively — the printable-key branch below would otherwise
+      // count Space as text and yank focus to the search box instead.
+      if (this.isSpaceOnControl(e)) return;
       if (e.key.length === 1 && /[\w ]/.test(e.key)) {
         (document.getElementById('deck-search') as HTMLInputElement | null)?.focus();
         return;
@@ -2492,8 +2516,7 @@ export class PlanetariumMode {
 
     // Space activates a focused button natively — pressing it on the panel's
     // transport (or any bar chip) must not also drive the global Space verbs.
-    const spaceOnControl =
-      e.key === ' ' && !!(e.target as HTMLElement).closest?.('button, [role="button"]');
+    const spaceOnControl = this.isSpaceOnControl(e);
 
     // Suppress flight keys while landed — except Space, which pauses the
     // clock there (the time rail is the one live throttle on the ground;

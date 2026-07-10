@@ -21,7 +21,8 @@ import {
   targetReached,
   sandFillFraction,
   sandGrainBudget,
-  moundHeightAt,
+  heapHeightAt,
+  heapSplit,
   liquidAtRim,
   sphericalCapVolume,
   capHeightForVolume,
@@ -176,25 +177,166 @@ describe('sandGrainBudget — two tiers, one boolean (P4)', () => {
   });
 });
 
-describe('moundHeightAt — the sand mound profile (P5, CPU/GPU mirror)', () => {
-  it('flat top under rr=0.12, tapers to 0 by rr=0.55, off beyond', () => {
-    const peak = 0.08;
-    expect(moundHeightAt(0, peak)).toBeCloseTo(peak, 10); // crest is the full peak
-    expect(moundHeightAt(0.12, peak)).toBeCloseTo(peak, 10); // still flat at the shoulder
-    expect(moundHeightAt(0.55, peak)).toBeCloseTo(0, 10); // down to the pool by 0.55
-    expect(moundHeightAt(0.8, peak)).toBeCloseTo(0, 10); // and stays there to the rim
+describe('heapHeightAt — the sand cone profile (CPU/GPU mirror)', () => {
+  it('crest at the axis, zero at the wall, linear flank between', () => {
+    const peakH = 0.08;
+    expect(heapHeightAt(0, peakH)).toBeCloseTo(peakH, 10); // crest is the full peak
+    expect(heapHeightAt(1, peakH)).toBeCloseTo(0, 10); // meets the glass wall at 0
+    expect(heapHeightAt(0.5, peakH)).toBeCloseTo(peakH * 0.5, 10); // straight flank
+    expect(heapHeightAt(0.25, peakH)).toBeCloseTo(peakH * 0.75, 10);
   });
-  it('monotone non-increasing across the taper', () => {
+  it('no flat annulus — strictly decreasing crest→wall', () => {
     let prev = Infinity;
     for (let i = 0; i <= 40; i++) {
-      const h = moundHeightAt(i / 40, 0.08);
-      expect(h).toBeLessThanOrEqual(prev + 1e-9);
+      const h = heapHeightAt(i / 40, 0.08);
+      expect(h).toBeLessThan(prev + 1e-12);
       prev = h;
     }
   });
-  it('scales linearly with peak; peak 0 is a flat pool', () => {
-    expect(moundHeightAt(0.2, 0.1)).toBeCloseTo(2 * moundHeightAt(0.2, 0.05), 10);
-    for (const rr of [0, 0.1, 0.3, 0.5, 0.9]) expect(moundHeightAt(rr, 0)).toBe(0);
+  it('clamps to 0 past the wall, scales linearly with peak, peak 0 is flat', () => {
+    expect(heapHeightAt(1.3, 0.08)).toBe(0); // a grain drifted past the wall
+    expect(heapHeightAt(0.2, 0.1)).toBeCloseTo(2 * heapHeightAt(0.2, 0.05), 10);
+    for (const rr of [0, 0.25, 0.5, 0.75, 1, 1.5]) expect(heapHeightAt(rr, 0)).toBe(0);
+  });
+});
+
+describe('heapSplit — the pure frame-independent bulk/cone solve', () => {
+  const R = 0.995; // R_LIQ (studio units)
+  const V_FULL = (4 / 3) * Math.PI * R * R * R;
+  const SLOPE = 0.6;
+  const K = 0.55;
+  const MOUTH_Y = 0.9901; // the tightest sand mouth (mouthRadius floor 0.14, containerR 1)
+
+  // Reconstruct the total volume the split represents — cap of the bulk plus the
+  // full-width cone of the returned crest — the round-trip check against V.
+  function heapVolume(bulkH: number, peakH: number): number {
+    const y = bulkH - R;
+    const discR2 = Math.max(0, R * R - y * y);
+    return sphericalCapVolume(bulkH, R) + (Math.PI / 3) * discR2 * peakH;
+  }
+
+  it('round-trips F(heapSplit(V)) = V to ≤1e-6·V_full across the fill range', () => {
+    for (let i = 1; i < 200; i++) {
+      const V = (i / 200) * V_FULL;
+      const { bulkH, peakH } = heapSplit(V, R, MOUTH_Y, SLOPE, K);
+      expect(Math.abs(heapVolume(bulkH, peakH) - V)).toBeLessThan(1e-6 * V_FULL);
+    }
+  });
+
+  it('exact endpoints: V=0 ⇒ (0,0); V=V_full ⇒ (2R, 0) flat at the brim', () => {
+    expect(heapSplit(0, R, MOUTH_Y, SLOPE, K)).toEqual({ bulkH: 0, peakH: 0 });
+    const full = heapSplit(V_FULL, R, MOUTH_Y, SLOPE, K);
+    expect(full.bulkH).toBeCloseTo(2 * R, 10);
+    expect(full.peakH).toBe(0);
+    // Over-full and negative clamp to the endpoints (defensive).
+    expect(heapSplit(V_FULL * 1.5, R, MOUTH_Y, SLOPE, K)).toEqual({ bulkH: 2 * R, peakH: 0 });
+    expect(heapSplit(-1, R, MOUTH_Y, SLOPE, K)).toEqual({ bulkH: 0, peakH: 0 });
+  });
+
+  it('F(h) is strictly increasing over a dense h grid for every slope/mouth pair', () => {
+    // Mirror of the solve's F so the bisection precondition is pinned directly.
+    const peakCap = (h: number, slope: number, mouthY: number): number => {
+      const y = h - R;
+      const discR = Math.sqrt(Math.max(0, R * R - y * y));
+      return Math.max(0, Math.min(slope * discR, K * (mouthY - y)));
+    };
+    const F = (h: number, slope: number, mouthY: number): number => {
+      const y = h - R;
+      const discR2 = Math.max(0, R * R - y * y);
+      return sphericalCapVolume(h, R) + (Math.PI / 3) * discR2 * peakCap(h, slope, mouthY);
+    };
+    for (const slope of [0.5, 0.6, 0.8]) {
+      for (const mouthY of [0.955, 0.9901]) {
+        let prev = -Infinity;
+        for (let i = 0; i <= 4000; i++) {
+          const h = (i / 4000) * 2 * R;
+          const v = F(h, slope, mouthY);
+          expect(v).toBeGreaterThan(prev); // strictly monotone → bisection is valid
+          prev = v;
+        }
+      }
+    }
+  });
+
+  it('reads as a heap at partial fills and flattens toward the brim', () => {
+    // A real cone exists through the body of the fill (the "growing heap" read).
+    for (const frac of [0.1, 0.25, 0.5, 0.7]) {
+      const { bulkH, peakH } = heapSplit(frac * V_FULL, R, MOUTH_Y, SLOPE, K);
+      expect(peakH).toBeGreaterThan(0);
+      expect(bulkH).toBeLessThan(2 * R);
+    }
+    // Through the bottom half the slope cap binds: the flank sits at exact repose.
+    const lowMid = heapSplit(0.3 * V_FULL, R, MOUTH_Y, SLOPE, K);
+    const discRLow = Math.sqrt(Math.max(0, R * R - (lowMid.bulkH - R) ** 2));
+    expect(lowMid.peakH).toBeCloseTo(SLOPE * discRLow, 6); // repose, not headroom
+    // Near the brim the headroom cap wins and the crest relaxes toward flat.
+    const near = heapSplit(0.97 * V_FULL, R, MOUTH_Y, SLOPE, K);
+    expect(near.peakH).toBeLessThan(lowMid.peakH);
+    expect(near.bulkH).toBeLessThan(2 * R); // a near-max partial is NOT full
+  });
+
+  it('peakH is continuous under the real sand ramp — no pops where the heap reads', () => {
+    // Couple to the actual pour ramp (sandFillFraction over sandFillS at 60 fps), not
+    // a flat ΔV: near V=0 the ramp eases in (smoothstep derivative → 0), so its max
+    // per-frame step lands at MID fill where peakH is gentle. Simulate both the full
+    // fill (24 s) and the fast-partial floor (4 s) frame by frame.
+    for (const dur of [COMPARE_TUNABLES.sandFillS, 4]) {
+      const frames = Math.round(dur * 60);
+      let prev = heapSplit(0, R, MOUTH_Y, SLOPE, K).peakH;
+      let maxReadable = 0; // fill ≥ 0.05: the visible heap range
+      let maxBirth = 0; // fill < 0.05: the repose cone forming at the pole
+      for (let f = 1; f <= frames; f++) {
+        const fill = sandFillFraction(f / frames, 1);
+        const peakH = heapSplit(fill * V_FULL, R, MOUTH_Y, SLOPE, K).peakH;
+        const jump = Math.abs(peakH - prev);
+        if (fill >= 0.05) maxReadable = Math.max(maxReadable, jump);
+        else maxBirth = Math.max(maxBirth, jump);
+        prev = peakH;
+      }
+      // Where the heap reads, consecutive frames never pop.
+      expect(maxReadable).toBeLessThan(0.008);
+      // The pour-start transient is the repose cone being born (peakH ~ V^(1/3), the
+      // signature sand cue vs liquid's slow rise) — continuous and bounded, never a
+      // discontinuous jump.
+      expect(maxBirth).toBeLessThan(0.05);
+    }
+  });
+
+  it('is a pure function of V — dt-independent (coarse vs fine ramp land identical)', () => {
+    // Same total volume reached by two different accumulation histories ⇒ identical
+    // state, because heapSplit reads nothing but its arguments (the reuse-rider
+    // contract: no grain/scene state, no call-order dependence).
+    const target = 0.63 * V_FULL;
+    let coarse = 0;
+    for (let i = 0; i < 3; i++) coarse += target / 3;
+    let fine = 0;
+    for (let i = 0; i < 137; i++) fine += target / 137;
+    const a = heapSplit(coarse, R, MOUTH_Y, SLOPE, K);
+    const b = heapSplit(fine, R, MOUTH_Y, SLOPE, K);
+    expect(a.bulkH).toBeCloseTo(b.bulkH, 9);
+    expect(a.peakH).toBeCloseTo(b.peakH, 9);
+    // Repeated calls are byte-identical (deterministic, no hidden state).
+    expect(heapSplit(target, R, MOUTH_Y, SLOPE, K)).toEqual(
+      heapSplit(target, R, MOUTH_Y, SLOPE, K),
+    );
+  });
+
+  it('bulkH is monotone increasing in V (the observable of F monotonicity)', () => {
+    let prev = -Infinity;
+    for (let i = 0; i <= 300; i++) {
+      const { bulkH } = heapSplit((i / 300) * V_FULL, R, MOUTH_Y, SLOPE, K);
+      expect(bulkH).toBeGreaterThanOrEqual(prev - 1e-12);
+      prev = bulkH;
+    }
+  });
+
+  it('NaN-free at the degenerate zeros (discR = 0, peakH = 0)', () => {
+    for (const V of [0, 1e-12 * V_FULL, V_FULL, V_FULL - 1e-9]) {
+      const { bulkH, peakH } = heapSplit(V, R, MOUTH_Y, SLOPE, K);
+      expect(Number.isFinite(bulkH)).toBe(true);
+      expect(Number.isFinite(peakH)).toBe(true);
+      expect(peakH).toBeGreaterThanOrEqual(0);
+    }
   });
 });
 

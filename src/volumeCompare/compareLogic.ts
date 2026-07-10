@@ -405,18 +405,19 @@ export function sandGrainBudget(useBloom: boolean, isMobile: boolean): number {
 }
 
 /**
- * The sand mound's height at object-space radius `rr` (0 centre → 1 rim) for a
- * given `peak` (world-space studio units): a flat top under rr=0.12 tapering to
- * 0 by rr=0.55, `peak · (1 − smoothstep(0.12, 0.55, rr))`. This is the single
- * source of the mound profile — the disc shader duplicates the GLSL with a
- * cross-reference, and the CPU reads it for the sand stream's kill plane
- * (surfaceY + moundHeightAt(grainRr, peak)). The stream is axial (grainRr ≈ 0),
- * so it kills at the mound crest, but callers use the formula, never a shortcut.
+ * The sand heap's crest-relative height at normalized radius `rr` (0 centre → 1
+ * wall) for a given crest height `peakH` (world-space studio units): a full-width
+ * cone, `peakH · max(0, 1 − rr)`. Crest at the axis, meeting the glass wall at 0 —
+ * no flat annulus, so the flank runs crest→wall monotonically (sand piles against
+ * the glass, it doesn't leave a moat). This is the single source of the heap
+ * profile: the disc shader mirrors the GLSL, and the CPU reads it for the sand
+ * stream's kill plane and the plume contact (bulkSurfaceY + heapHeightAt(rr,
+ * peakH)). The `max(0, ·)` guards a grain drifting past the wall (rr > 1). The
+ * bulk fill height that carries the settled volume comes from heapSplit; this is
+ * only the cone riding on top of it.
  */
-export function moundHeightAt(rr: number, peak: number): number {
-  const t = Math.min(1, Math.max(0, (rr - 0.12) / (0.55 - 0.12)));
-  const s = t * t * (3 - 2 * t); // GLSL smoothstep
-  return peak * (1 - s);
+export function heapHeightAt(rr: number, peakH: number): number {
+  return peakH * Math.max(0, 1 - rr);
 }
 
 // ---------------------------------------------------------------------------
@@ -451,6 +452,68 @@ export function capHeightForVolume(v: number, R: number): number {
     else hi = mid;
   }
   return (lo + hi) / 2;
+}
+
+export interface HeapSplit {
+  /** Settled-bulk fill height from the bottom pole (spherical-cap volume). */
+  bulkH: number;
+  /** Crest height of the cone above the bulk surface, at the axis. */
+  peakH: number;
+}
+
+/**
+ * Split a total poured volume V into the settled bulk and the heaped cone that
+ * rides on it — a pure, frame-independent solve, so the rendered surface is a
+ * function of V alone (no incremental state, no deflation, no stream coupling).
+ * Units are world/studio: glass radius 1, liquid radius `R`, shared origin at the
+ * sphere centre; `mouthPlaneY` is the vessel's mouth plane (same centre origin).
+ *
+ * The surface is a full-width cone `heapHeightAt(rr, peakH)` on a spherical-cap
+ * bulk of height h. With `y = h − R` the bulk surface height above centre and
+ * `discR = sqrt(R² − y²)` its radius, the crest height is capped two ways:
+ *   peakCap(h) = max(0, min(slope · discR, headroomK · (mouthPlaneY − y)))
+ * The slope cap holds the flank at the angle of repose (the hourglass read);
+ * through the bottom half of the fill it binds, so the flank sits at exact repose.
+ * The headroom cap eases the whole surface toward flat as the fill nears the brim,
+ * and the `max(0, ·)` is mandatory: the mouth plane sits below R on every real
+ * vessel, so the headroom term goes negative over the last stretch of a full fill.
+ *
+ * Total volume F(h) = capVolume(h) + π/3 · discR² · peakCap(h) is monotone in h,
+ * so bisection (the capHeightForVolume idiom) inverts F(h) = V. Exact endpoints:
+ * V ≤ 0 ⇒ (0, 0); V ≥ V_full ⇒ (2R, 0), where discR → 0 and headroom → 0 kill the
+ * cone term so the full pour lands flat at the brim with no trapped volume. NaN-free
+ * at every input (guarded denominators; the cone term vanishes cleanly at discR = 0).
+ */
+export function heapSplit(
+  V: number,
+  R: number,
+  mouthPlaneY: number,
+  slope: number,
+  headroomK: number,
+): HeapSplit {
+  const full = (4 / 3) * Math.PI * R * R * R;
+  const clampedV = Math.min(full, Math.max(0, V));
+  const peakCapAt = (h: number): number => {
+    const y = h - R;
+    const discR = Math.sqrt(Math.max(0, R * R - y * y));
+    return Math.max(0, Math.min(slope * discR, headroomK * (mouthPlaneY - y)));
+  };
+  if (clampedV <= 0) return { bulkH: 0, peakH: 0 };
+  if (clampedV >= full) return { bulkH: 2 * R, peakH: 0 };
+  const F = (h: number): number => {
+    const y = h - R;
+    const discR2 = Math.max(0, R * R - y * y);
+    return sphericalCapVolume(h, R) + (Math.PI / 3) * discR2 * peakCapAt(h);
+  };
+  let lo = 0;
+  let hi = 2 * R;
+  for (let i = 0; i < 80; i++) {
+    const mid = (lo + hi) / 2;
+    if (F(mid) < clampedV) lo = mid;
+    else hi = mid;
+  }
+  const bulkH = (lo + hi) / 2;
+  return { bulkH, peakH: peakCapAt(bulkH) };
 }
 
 // ---------------------------------------------------------------------------

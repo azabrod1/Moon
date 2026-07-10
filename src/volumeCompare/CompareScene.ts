@@ -41,7 +41,8 @@ import {
   pourBudget,
   spawnAllowance,
   sandFillFraction,
-  moundHeightAt,
+  heapHeightAt,
+  heapSplit,
   type Comparison,
   type FillRegime,
   type SpawnCaps,
@@ -262,6 +263,30 @@ const PLUME_RATE = 300;
 // Splash/plume chips size to the FALLING grain, capped ≤1.5× (F-3) — a grain
 // kicked up, never a chip bigger than the thing that splashed.
 const PLUME_CHIP_K = 1.2;
+
+// --- sand heap (the settled bulk + the repose cone that rides on it) -------
+// The sand surface is a full-width cone on a spherical-cap bulk, a PURE function
+// of poured volume (heapSplit): crest at the axis, meeting the glass wall at 0.
+// REPOSE_SLOPE is the flank angle tan (0.6 ≈ 31°, a sand pile); it binds through
+// the bottom half of the fill so the flank sits at exact repose — the signature
+// realism cue. HEADROOM_K eases the whole surface flat as the fill nears the brim
+// (the crest stays below the mouth). AZ_AMP is a frozen per-pour azimuthal wobble
+// of the crest height (≤6%, GLSL-only, imperceptible at grain size — the CPU kill
+// plane stays on the nominal profile). SAND_N_ROUGH is the fragment micro-noise
+// blended around the analytic flank normal so the flank is grainy, not glassy.
+const REPOSE_SLOPE = 0.6;
+const HEADROOM_K = 0.55;
+const AZ_AMP = 0.03;
+const SAND_N_ROUGH = 0.22;
+// Contact rollers: the strongest "alive heap" cue. At crest contact a fraction of
+// stream-grain deaths convert to short-lived grains that RIDE the flank down to the
+// foot instead of vanishing — budget-neutral (they reuse the dying grain's slot).
+const ROLLER_FRACTION = 0.12; // ≤12% of crest contacts
+const ROLLER_SPEED_MIN = 0.35; // initial outward speed down the flank, studio units/s
+const ROLLER_SPEED_MAX = 0.7;
+const ROLLER_ACCEL = 1.6; // down-slope acceleration (per-second speed growth factor)
+const ROLLER_LIFE_MIN = 0.4;
+const ROLLER_LIFE_MAX = 0.7; // dies at the flank foot or this life, whichever first
 // A slot band reserved for the spill + plume so a dense stream can't starve them.
 const SPILL_RESERVE = 220;
 // The overflow spill: a restrained garnish, ~40 grains over ~1.5 s at the rim.
@@ -348,6 +373,8 @@ uniform float uBackShell;   // 1 for the far shell (lit ghost), 0 for the near s
 uniform float uDim;         // 1 normally, < 1 while an in-mode pair swap loads
 uniform float uFill;        // 0..1 liquid fill — warms the rim as the glass fills
 uniform float uLoomLit;     // 1 in the sub-unity honest loom (light the vessel from the giant above)
+uniform float uContainerIsSun; // 1 when the container is the Sun (granulate the ember dome; 0 = byte-identical)
+uniform float uTime;           // seconds — drifts the ember granulation at solar-convection pace
 varying vec3 vWorldPos;
 varying vec3 vWorldNormal;
 varying vec3 vObjPos;
@@ -359,6 +386,13 @@ const vec3 LOOM_KEY = vec3(-0.301, 0.905, 0.301); // strongly overhead, camera-l
 const float LOOM_AMBIENT = 0.12;    // belly night floor (never a pure-black pebble)
 const float LOOM_GAIN = 1.25;       // lit-ghost strength over the faint hologram
 const float LOOM_BODY_ALPHA = 0.74; // body alpha floor so the lit world survives the glass blend
+
+// Ember granulation (the Sun dome): the S-7 emissive-boulder fbm, reused to break the
+// featureless brown gradient into soft solar cells. NaN-free at all-zero uniforms.
+float gHash(vec2 p){ return fract(sin(dot(p, vec2(127.1,311.7)))*43758.5453); }
+float gNoise(vec2 p){ vec2 i=floor(p),f=fract(p); f=f*f*(3.0-2.0*f);
+  return mix(mix(gHash(i),gHash(i+vec2(1,0)),f.x), mix(gHash(i+vec2(0,1)),gHash(i+vec2(1,1)),f.x), f.y); }
+float gFbm(vec2 p){ float v=0.0,a=0.5; for(int i=0;i<4;i++){ v+=a*gNoise(p); p*=2.0; a*=0.5; } return v; }
 
 void main() {
   // The mouth irises open only during a pour: the discard threshold eases from
@@ -435,6 +469,21 @@ void main() {
     // give the vessel an ember interior instead — its own colour pulled toward
     // deep fire, amplitude sized against the low face-on alpha it blends under.
     vec3 emberTint = mix(uCatalogTint, vec3(1.0, 0.45, 0.15), 0.6);
+    // Granulate the ember so the close dome plainly reads as the Sun's surface, not a
+    // flat brown gradient. Two fbm octaves DRIFTING at a slow solar-convection pace (so
+    // the idle dome is clearly alive at a glance, never busy), SHARPENED into crisp cells
+    // at CONSTANT mean: the modulation is symmetric about 0.5 (cells=0.5 ⇒ ×1), so the
+    // dome's average luminance + whiteout hold, while the cell cores carry real local
+    // contrast. It is multiplicative on the ember, so the contrast rides the brighter
+    // shoulder + limb (where there is luminance) and fades in the dark zenith. The ±14%
+    // peak keeps the limb's brightest cells sub-bloom. The two octaves crawl on slightly
+    // different vectors so the field morphs (cells swell/fade) instead of rigidly
+    // scrolling. Gated by uContainerIsSun so a ghost-less non-Sun (there is none today)
+    // is byte-identical — the drift lives entirely behind mix(1, ·, uContainerIsSun).
+    float g1 = gFbm(vObjPos.xy * 6.5 + vec2(uTime * 0.028, uTime * 0.020));
+    float g2 = gFbm(vObjPos.xy * 18.0 + vec2(-uTime * 0.017, uTime * 0.025));
+    float cells = clamp(0.5 + (g1 * 0.68 + g2 * 0.32 - 0.5) * 3.2, 0.0, 1.0);
+    emberTint *= mix(1.0, mix(0.86, 1.14, cells), uContainerIsSun);
     col += emberTint * (0.3 + 0.5 * (1.0 - ndv));
   }
 
@@ -467,7 +516,8 @@ uniform vec3 uContainerTint1;
 uniform float uContainerMix;  // 0 when the container has no map (the Sun skip)
 uniform float uSandSurface;   // 1 on the sand bed (material read), 0 for marbles/boulders
 uniform float uSurfDiscR;     // the surface disc's world radius (churn sites are world xz)
-uniform float uMoundPeak;     // sand mound height, world units (0 off — see moundHeightAt mirror)
+uniform float uPeakH;         // sand heap crest height, world units (0 off — see heapHeightAt mirror)
+uniform float uStreamActive;  // eased 0..1, 1 while the sand stream pours (trickle life; 0 for marbles)
 // Impact-churn sites: vec4(worldX, worldZ, age01, amp) — an animated surface roil
 // where the stream/fallers meet the pool. age01>=1 is dead. Shared: sand stream
 // (slot 0, pinned centre) + marble splashes (rotating 1-3). Strictly a roil.
@@ -519,6 +569,10 @@ void main(){
   vec3 crust = lqPalette(mCoord) * mix(0.44, 0.60, uSandSurface) * (0.9 + 0.2 * detail);
   // Fine granular speckle on the bed wall (off for marbles/boulders).
   crust *= 1.0 + (lqNoise(vObjPos.xy * 130.0) - 0.5) * 0.5 * uSandSurface;
+  // Close-range fine grains on the settled bulk too, camera-faded — so the wall below
+  // the heap foot reads as the SAME granular sand as the flank, not a smoother wall.
+  float fineFadeB = 1.0 - smoothstep(1.7, 2.6, length(uCam - vWorldPos));
+  crust *= 1.0 + (0.5 * lqNoise(vObjPos.xz * 420.0) + 0.5 * lqNoise(vObjPos.zy * 420.0) - 0.5) * 0.3 * uSandSurface * fineFadeB;
   // A deep warm glow rises only from the bottom while molten, staying BELOW the
   // 0.92 bloom threshold (max channel 0.85). OFF on the sand bed (cool material).
   vec3 warm = vec3(0.85, 0.4, 0.12);
@@ -541,22 +595,47 @@ void main(){
 `;
 
 const LIQUID_DISC_VERTEX = /* glsl */ `
-uniform float uMoundPeak;    // world-space sand mound height (studio units; 0 = flat)
-uniform float uSandSurface;  // 1 on the sand bed (mound on), 0 marbles/boulders (flat)
+uniform float uPeakH;        // world-space sand heap crest height (studio units; 0 = flat)
+uniform float uSandSurface;  // 1 on the sand bed (heap on), 0 marbles/boulders (flat)
+uniform float uSurfDiscR;    // world radius of the bulk disc — the flank slope is peakH/discR
+uniform vec2  uHeapSeed;     // per-pour frozen phase for the azimuthal irregularity
 varying vec2 vXz;      // object-space xz (unit circle → radius 1)
 varying vec3 vWorldPos;
-// Mirror of moundHeightAt(rr, peak) in compareLogic — the CPU kill plane and this
+varying vec3 vFlankN;  // analytic cone-flank normal (world space), crest-softened
+// Mirror of heapHeightAt(rr, peakH) in compareLogic — the CPU kill plane and this
 // displacement share the one profile. Keep the two in lockstep.
-float moundHeightAt(float rr, float peak){
-  return peak * (1.0 - smoothstep(0.12, 0.55, rr));
+float heapHeightAt(float rr, float peakH){
+  return peakH * max(0.0, 1.0 - rr);
+}
+float vHash(vec2 p){ return fract(sin(dot(p, vec2(127.1,311.7)))*43758.5453); }
+float vNoise(vec2 p){
+  vec2 i=floor(p), f=fract(p); f=f*f*(3.0-2.0*f);
+  return mix(mix(vHash(i),vHash(i+vec2(1,0)),f.x),
+             mix(vHash(i+vec2(0,1)),vHash(i+vec2(1,1)),f.x), f.y);
 }
 void main(){
   vXz = position.xy; // the radial-ring disc lies in the xy plane before the flat-rotate
-  // Radial falloff rides in object rr (scales with the pool); the HEIGHT is
-  // world-space (local z, scale.z stays 1) so the mound sits in studio units.
-  float h = moundHeightAt(length(position.xy), uMoundPeak) * uSandSurface;
+  float rr = length(position.xy);
+  vec2 dir = rr > 1e-5 ? position.xy / rr : vec2(0.0);
+  // Azimuthal irregularity: a frozen, per-pour multiplicative wobble of the crest
+  // height that depends on AZIMUTH only (constant down each radial → ridge lines run
+  // straight down the flank, no wobble). Sampling smooth value-noise around the unit
+  // circle keeps it seamless (the sample point returns to its start at 2pi). Height
+  // is world-space (local z, scale.z stays 1) so the heap sits in studio units.
+  float az = 1.0 + ${AZ_AMP.toFixed(3)} * (vNoise(dir * 1.5 + uHeapSeed) - 0.5) * 2.0;
+  float h = heapHeightAt(rr, uPeakH) * az * uSandSurface;
   vec4 wp = modelMatrix * vec4(position.xy, position.z + h, 1.0);
   vWorldPos = wp.xyz;
+  // Analytic flank normal: the cone height H(rho) = peakH·(1 − rho/discR) has slope
+  // k = peakH/discR, so the outward normal is normalize(k·radial + up). The object
+  // xy direction maps through the disc's −90° x-rotation to the world radial
+  // (dir.x, 0, −dir.y). Soften toward +Y over the top ~10% of peakH (rr < 0.1) so the
+  // apex catches light softly instead of reading as a facet spike.
+  float k = uPeakH / max(uSurfDiscR, 1e-4);
+  vec3 radial = vec3(dir.x, 0.0, -dir.y);
+  vec3 flank = normalize(k * radial + vec3(0.0, 1.0, 0.0));
+  float crest = 1.0 - smoothstep(0.0, 0.1, rr);
+  vFlankN = normalize(mix(flank, vec3(0.0, 1.0, 0.0), crest));
   gl_Position = projectionMatrix * viewMatrix * wp;
 }
 `;
@@ -565,15 +644,57 @@ const LIQUID_DISC_FRAGMENT = /* glsl */ `
 ${LIQUID_COMMON}
 varying vec2 vXz;
 varying vec3 vWorldPos;
+varying vec3 vFlankN;
 void main(){
   float rr = length(vXz);        // 0 centre → 1 outer rim (the glass wall)
   // Convection CRUST: dark cooled cells; only the cracks between them glow.
   vec2 drift = vec2(uTime * 0.045, -uTime * 0.035);
+  // Baseline crust samples — the FLAT disc in object space. Marbles/boulders keep
+  // exactly this (byte-identical at uSandSurface 0); the sand branch below overwrites
+  // cell/detail with the 3D-cone reprojection.
   float cell = lqFbm(vXz * 4.5 + drift);
   // A finer octave breaks the crust up so it never reads as a low-res smear.
   float detail = lqFbm(vXz * 16.0 + drift * 0.6);
-  // Thin glowing veins — a high band of a finer fbm, ~15% coverage.
+  // Thin glowing veins — a high band of a finer fbm, ~15% coverage (shared).
   float veins = smoothstep(0.60, 0.72, lqFbm(vXz * 11.0 - drift * 1.3));
+  // Camera-distance fade for the close-range granularity (moiré guard): shared by the
+  // ×420 speckle and the micro-glint below — both sand-only.
+  float camDist = length(uCam - vWorldPos);
+  float fineFade = 1.0 - smoothstep(1.7, 2.6, camDist);
+  // Sand-only granular material, evaluated in ONE uniform branch so marbles/boulders
+  // never pay for the pseudo-3D FBM reprojection, the ×130/×420 speckle, the trickle,
+  // or the glint (weak-tier melt used to run the full sand ALU for pixels it multiplies
+  // by 0). Each augment stays 0 off-sand and sits at its ORIGINAL crust position, so
+  // both the marble baseline and the sand output are byte-identical to before.
+  float sp130Aug = 0.0;   // crust *= 1 + augment (0 ⇒ ×1 off-sand)
+  float sp420Aug = 0.0;
+  float trickleAug = 0.0;
+  float glint = 0.0;
+  if (uSandSurface > 0.5) {
+    // Reproject the crust onto the 3D cone surface (two orthogonal world-space
+    // projections → pseudo-3D) so its features follow the flank instead of
+    // foreshortening into horizontal bands at grazing angles.
+    vec3 wp3 = vWorldPos;
+    cell = 0.5 * lqFbm(wp3.xz * 4.5 + drift) + 0.5 * lqFbm(wp3.zy * 4.5 + drift.yx);
+    detail = 0.5 * lqFbm(wp3.xz * 16.0 + drift * 0.6) + 0.5 * lqFbm(wp3.zy * 16.0 + drift.yx * 0.6);
+    // Fine granular SPECKLE (×130) + a finer camera-faded octave (×420) that breaks the
+    // "wet concrete" read into grains as the camera nears.
+    float sp130 = 0.5 * lqNoise(wp3.xz * 130.0) + 0.5 * lqNoise(wp3.zy * 130.0);
+    float sp420 = 0.5 * lqNoise(wp3.xz * 420.0) + 0.5 * lqNoise(wp3.zy * 420.0);
+    sp130Aug = (sp130 - 0.5) * 0.5;
+    sp420Aug = (sp420 - 0.5) * 0.34 * fineFade;
+    // Trickle streaks: darker sand flowing DOWN the flank (radially outward), sampled
+    // in object space (no atan/uv seam). Slope-gated off at the crest tip and the foot,
+    // gated by the eased stream-active scalar (dead once the pour quiets).
+    vec2 radialDir = rr > 1e-4 ? vXz / rr : vec2(0.0);
+    float streaks = lqNoise(radialDir * 14.0);
+    float flow = lqFbm(vXz * 11.0 + radialDir * (rr * 2.0 + uTime * 2.2));
+    float trickleNz = streaks * 0.6 + flow * 0.4;
+    float trickleGate = smoothstep(0.04, 0.22, rr) * (1.0 - smoothstep(0.78, 1.0, rr));
+    trickleAug = smoothstep(0.56, 0.82, trickleNz) * -0.15 * trickleGate * uStreamActive;
+    // Micro-glint: sparse high-frequency sparkle where grains catch the key.
+    glint = pow(0.5 * lqNoise(wp3.xz * 380.0) + 0.5 * lqNoise(wp3.zy * 380.0 + vec2(uTime * 0.2, 0.0)), 24.0);
+  }
   // Marbling coordinate. The sand BED biases it toward the lower/mid palette
   // stops (pow 1.6 — a ramp-weight remap, never a hue injection: the Moon's grey
   // stops stay grey, Earth reads ocean-and-land not cloud-cream). Flag 0 = raw.
@@ -582,14 +703,13 @@ void main(){
   // Bed reads as MATERIAL: gain up from ×0.38 so it's deep + saturated, not dishwater.
   vec3 crust = lqPalette(mCoord) * mix(0.38, 0.62, uSandSurface);
   crust *= 0.85 + 0.3 * detail; // subtle luminance breakup
-  // Fine granular SPECKLE on the bed (high-frequency, replaces the cell-scale
-  // smear read) — a subtle sparkle under the key. Off for marbles/boulders.
-  crust *= 1.0 + (lqNoise(vXz * 130.0) - 0.5) * 0.5 * uSandSurface;
+  crust *= 1.0 + sp130Aug;      // fine granular speckle (×1 off-sand)
+  crust *= 1.0 + sp420Aug;      // close-range grains, camera-faded (×1 off-sand)
   // Impact churn: an animated ROIL where the stream/fallers meet the pool — a
   // noise-modulated brighten/darken MULTIPLY on the matte crust only (never the
   // HDR cracks), hard-capped strictly sub-bloom so the deleted glint blob can't
-  // return through this door. Sites are world xz (vXz·discR); the brightness of
-  // the contact lives in the plume/ripples, this is texture + motion.
+  // return through this door. Shared: sand stream (slot 0) + marble splashes (rotating
+  // 1-3), so it stays OUTSIDE the sand branch. Sites are world xz (vXz·discR).
   float roil = 0.0;
   for (int i = 0; i < 4; i++) {
     if (uChurn[i].z >= 1.0) continue;
@@ -599,6 +719,7 @@ void main(){
     roil += nz * fall * (1.0 - uChurn[i].z) * uChurn[i].w;
   }
   crust *= 1.0 + clamp(roil, -0.4, 0.18);
+  crust *= 1.0 + trickleAug;    // down-flank trickle, AFTER the roil (×1 off-sand)
   crust = min(crust, vec3(0.85)); // hard sub-bloom cap on the roiled matte crust
   // Cracks: thin, warm, HDR only while molten (uHeat scales the CRACKS, not the
   // whole surface). ~1.2–1.8 at full heat, near-off at rest. OFF on the sand bed
@@ -617,16 +738,26 @@ void main(){
   // Wet specular SHEEN — reads as molten LIQUID, not matte paint, but a broad
   // low-exponent lobe: the old pow-48 ×0.7 ping was the second tight blob on the
   // pool. Near-MATTE on the sand bed (a granular material, not liquid).
-  vec3 N = normalize(vec3((detail - 0.5) * 0.55, 1.0, (cell - 0.5) * 0.55));
+  vec3 Nfloor = normalize(vec3((detail - 0.5) * 0.55, 1.0, (cell - 0.5) * 0.55));
+  // On the sand flank, light the ANALYTIC cone normal (the near-vertical procedural
+  // normal above would light a 30° flank like a floor) with the micro-noise blended
+  // around it for grain. mix on uSandSurface keeps the marble/boulder disc byte-identical.
+  vec3 Nsand = normalize(vFlankN + vec3(detail - 0.5, 0.0, cell - 0.5) * ${SAND_N_ROUGH.toFixed(3)});
+  vec3 N = mix(Nfloor, Nsand, uSandSurface);
   vec3 V = normalize(uCam - vWorldPos);
   float spec = pow(max(dot(reflect(-uSunDir, N), V), 0.0), 10.0);
   col += vec3(1.0, 0.86, 0.62) * spec * mix(0.38, 0.05, uSandSurface); // sheen; near-matte on sand
+  // Micro-glint (precomputed in the sand branch above): sparse high-frequency sparkle
+  // where grains catch the key, camera-faded like the fine speckle and sub-bloom capped.
+  // 0 for marbles/boulders (the branch was skipped).
+  col += vec3(1.0, 0.95, 0.82) * glint * 0.16 * uSandSurface * fineFade;
   // A THIN meniscus at the glass wall — heat-gated: near-off at rest (a subtle
   // warm line, sub-bloom) and igniting over ~2 s to the molten target 2.0 as the
-  // pool heats. fillerIsSun pins uHeat=1 so a Sun fill keeps the hot rim; sand
-  // rests at uHeat 0.15 so its ring stays a quiet warm line.
+  // pool heats. fillerIsSun pins uHeat=1 so a Sun fill keeps the hot rim. GATED OFF
+  // on the sand bed — dry sand doesn't wick up the glass (× (1 − uSandSurface); the
+  // term is unchanged at flag 0).
   float meniscus = smoothstep(0.93, 0.985, rr) * (1.0 - smoothstep(0.985, 1.02, rr));
-  col += vec3(1.0, 0.72, 0.32) * meniscus * mix(0.35, 2.0, smoothstep(0.15, 1.0, uHeat));
+  col += vec3(1.0, 0.72, 0.32) * meniscus * mix(0.35, 2.0, smoothstep(0.15, 1.0, uHeat)) * (1.0 - uSandSurface);
   gl_FragColor = vec4(col, 0.97);
 }
 `;
@@ -647,7 +778,9 @@ interface LiquidUniforms {
   uContainerMix: { value: number };
   uSandSurface: { value: number };
   uSurfDiscR: { value: number };
-  uMoundPeak: { value: number };
+  uPeakH: { value: number };
+  uStreamActive: { value: number };
+  uHeapSeed: { value: THREE.Vector2 };
   uChurn: { value: THREE.Vector4[] };
 }
 
@@ -899,6 +1032,11 @@ interface GlassUniforms {
   uFill: { value: number };
   /** 1 in the sub-unity honest loom — lights the small vessel from the giant overhead. */
   uLoomLit: { value: number };
+  /** 1 when the container is the Sun — granulates the ember dome (0 = byte-identical glass). */
+  uContainerIsSun: { value: number };
+  /** Seconds — drifts the Sun-dome ember granulation so the idle dome reads alive.
+   *  Unused off the Sun-container ember branch, so it never touches other pairs. */
+  uTime: { value: number };
 }
 
 /** Per-frame commands the mode hands the scene's sim (phase-derived). */
@@ -1026,7 +1164,12 @@ export class CompareScene {
   private liquidBody: THREE.Mesh;
   private liquidDisc: THREE.Mesh;
   private liquidGeo: THREE.SphereGeometry;
-  private liquidDiscGeo: THREE.BufferGeometry;
+  // Two disc objects, swapped per regime in configurePour: marbles/boulders keep the
+  // exact coarse fan (flag-0 rasterization untouched by construction); sand gets a
+  // dense disc (rings biased toward the foot and tip) so the tall repose cone reads
+  // smooth, not faceted.
+  private marbleDiscGeo: THREE.BufferGeometry;
+  private sandDiscGeo: THREE.BufferGeometry;
   private liquidTime = 0;
 
   // --- ghost fill line + scale preview ---
@@ -1091,10 +1234,16 @@ export class CompareScene {
   private sandElapsed = 0;
   private sandDuration = 0;
   private sandFillActive = false;
-  // The sand mound: eased height (world units) that breathes up with the stream
-  // and flattens after it stops. 0 for marbles/boulders (uSandSurface gates it off
-  // in the shader; the CPU kill plane reads moundHeightAt(rr, 0) = 0).
-  private moundPeak = 0;
+  // The sand heap, a PURE function of poured volume (heapSplit): the settled-bulk
+  // fill height and the repose cone that rides on it. 0 for marbles/boulders
+  // (uSandSurface gates the cone off in the shader; the CPU kill plane reads
+  // heapHeightAt(rr, 0) = 0). No easing — the ramp is already smooth, so the heap
+  // holds bit-stable when V freezes (pause / slider-down).
+  private heapBulkH = 0;
+  private heapPeakH = 0;
+  // Eased 0..1 stream-active scalar (τ≈0.4 s): drives the down-flank trickle so it
+  // fades in/out with the pour rather than snapping. 0 for marbles/boulders.
+  private streamActive = 0;
 
   // --- boulders (scripted, never the solver) + drain shrink-out ---
   private boulderGeo!: THREE.SphereGeometry;
@@ -1157,6 +1306,8 @@ export class CompareScene {
       uDim: { value: 1 },
       uFill: { value: 0 },
       uLoomLit: { value: 0 },
+      uContainerIsSun: { value: 0 },
+      uTime: { value: 0 },
     };
     this.glassGeo = new THREE.SphereGeometry(CONTAINER_R, 64, 32);
     this.backMat = this.makeGlassMaterial(THREE.BackSide, 1);
@@ -1207,18 +1358,23 @@ export class CompareScene {
       uContainerMix: { value: 0 },
       uSandSurface: { value: 0 },
       uSurfDiscR: { value: R_LIQ },
-      uMoundPeak: { value: 0 },
+      uPeakH: { value: 0 },
+      uStreamActive: { value: 0 },
+      uHeapSeed: { value: new THREE.Vector2(0, 0) },
       uChurn: { value: [new THREE.Vector4(0, 0, 1, 0), new THREE.Vector4(0, 0, 1, 0), new THREE.Vector4(0, 0, 1, 0), new THREE.Vector4(0, 0, 1, 0)] },
     };
     this.liquidGeo = new THREE.SphereGeometry(R_LIQ, 48, 32);
     this.liquidBody = new THREE.Mesh(this.liquidGeo, this.makeLiquidBodyMaterial());
     this.liquidBody.renderOrder = 0; // opaque queue anyway; explicit for clarity
     this.liquidBody.visible = false;
-    // Radially re-tessellated unit disc (concentric rings, NOT a fan) so the sand
-    // mound displaces as a smooth cap in the vertex shader instead of a full-width
-    // cone. vXz stays object-space unit xy; scaled to the cap radius per frame.
-    this.liquidDiscGeo = makeRadialDiscGeometry(14, 48);
-    this.liquidDisc = new THREE.Mesh(this.liquidDiscGeo, this.makeLiquidDiscMaterial());
+    // Two radially re-tessellated unit discs (concentric rings, NOT a fan) so the
+    // surface displaces smoothly in the vertex shader. vXz stays object-space unit
+    // xy; scaled to the cap radius per frame. The coarse fan is the marble/boulder
+    // disc (kept byte-identical); the dense disc carries the sand repose cone. The
+    // mesh starts on the marble disc; configurePour swaps it for sand.
+    this.marbleDiscGeo = makeRadialDiscGeometry(14, 48);
+    this.sandDiscGeo = makeSandDiscGeometry(56, 120);
+    this.liquidDisc = new THREE.Mesh(this.marbleDiscGeo, this.makeLiquidDiscMaterial());
     this.liquidDisc.rotation.x = -Math.PI / 2; // lie flat (xz plane)
     this.liquidDisc.renderOrder = 2; // between the back (1) and front (3) shells
     this.liquidDisc.visible = false;
@@ -1496,14 +1652,28 @@ export class CompareScene {
     this.sandTargetFrac = 0;
     this.sandElapsed = 0;
     this.sandDuration = 0;
-    // Sand bed material + mound: flag on only for the sand regime (marble/boulder
-    // output stays byte-identical at uSandSurface 0).
+    // Sand bed material + heap: flag on only for the sand regime (marble/boulder
+    // output stays byte-identical at uSandSurface 0). The dense sand disc swaps in
+    // here; marbles/boulders keep the exact coarse fan object.
     this.liquidUniforms.uSandSurface.value = this.sandRegime ? 1 : 0;
+    this.liquidDisc.geometry = this.sandRegime ? this.sandDiscGeo : this.marbleDiscGeo;
+    // Frozen per-pour phase for the heap's azimuthal irregularity (so successive
+    // pours differ but never wobble within a pour). Only the sand disc reads it, so
+    // draw it ONLY for sand: a marble/boulder pair must not consume grainRng here or
+    // its faller spawns, tumbles, and splash droplets shift off the shared sequence.
+    // A stale seed left on a marble pair is harmless — nothing reads uHeapSeed unless
+    // uSandSurface is 1, and the next sand pour reseeds it.
+    if (this.sandRegime) {
+      this.liquidUniforms.uHeapSeed.value.set(this.grainRng() * 100, this.grainRng() * 100);
+    }
     // Normal framing lights the vessel with the shared key only; showSubUnity flips
     // this on for the honest loom (the giant lights the tiny vessel from overhead).
     this.glassUniforms.uLoomLit.value = 0;
-    this.moundPeak = 0;
-    this.liquidUniforms.uMoundPeak.value = 0;
+    this.heapBulkH = 0;
+    this.heapPeakH = 0;
+    this.streamActive = 0;
+    this.liquidUniforms.uPeakH.value = 0;
+    this.liquidUniforms.uStreamActive.value = 0;
     // Sun as filler has no map to sample; its molten pool is a constant ember ramp
     // and stays emissive throughout (uHeat pinned in updateSim).
     this.liquidUniforms.uHeat.value = 0.15;
@@ -1553,6 +1723,10 @@ export class CompareScene {
       this.liquidUniforms.uContainerMix.value = 0;
     }
     this.glassUniforms.uCatalogTint.value.setHex(bodyColor(container));
+    // Granulate the ember dome only when the Sun is the container (the one ghost-less
+    // vessel, in ANY regime). Set here with the container in hand; resetSession keeps
+    // the same pair's value. 0 everywhere else ⇒ the glass fragment is byte-identical.
+    this.glassUniforms.uContainerIsSun.value = container === 'Sun' ? 1 : 0;
     if (prev) prev.dispose();
   }
 
@@ -1685,6 +1859,9 @@ export class CompareScene {
   updateSim(dt: number, ctl: PourControl): PourStatus {
     const dtc = Math.min(dt, 0.05); // guard a huge hitch (tab refocus, breakpoint)
     this.liquidTime += dtc;
+    // The glass dome's ember granulation drifts off the same clock (idle-alive). Only
+    // the Sun-container back-shell ember branch reads it; every other pair is untouched.
+    this.glassUniforms.uTime.value = this.liquidTime;
     this.updateRipples(dtc);
     this.easePreview(dtc);
     this.updateGhostLine(dtc);
@@ -2228,8 +2405,12 @@ export class CompareScene {
     const cenAttr = geo.getAttribute('aCenter') as THREE.InstancedBufferAttribute;
     const i = this.rippleCursor;
     this.rippleCursor = (this.rippleCursor + 1) % RIPPLE_POOL;
-    const surfaceY = -R_LIQ + this.liquidLevelRendered;
-    const discR = Math.sqrt(Math.max(0, R_LIQ * R_LIQ - surfaceY * surfaceY)) * 0.9;
+    // Seat on the BULK surface for sand (its level is the volume-flat plane; the
+    // physical surface is the heap on bulkH), the eased pool otherwise.
+    const bulkLevel = this.sandRegime ? this.heapBulkH : this.liquidLevelRendered;
+    const surfaceY = -R_LIQ + bulkLevel;
+    const discRfull = Math.sqrt(Math.max(0, R_LIQ * R_LIQ - surfaceY * surfaceY));
+    const discR = discRfull * 0.9;
     let x = this.removedPos[c * 3];
     let z = this.removedPos[c * 3 + 2];
     const rad = Math.hypot(x, z);
@@ -2238,9 +2419,13 @@ export class CompareScene {
       x *= s;
       z *= s;
     }
+    // On sand, lift the ripple to the LOCAL heap height at its xz so a contact flash
+    // sits on the flank/crest, not mid-air on the flat level below the cone.
+    const seatRr = discRfull > 1e-4 ? Math.hypot(x, z) / discRfull : 0;
+    const seatY = this.sandRegime ? surfaceY + heapHeightAt(seatRr, this.heapPeakH) : surfaceY;
     const cen = cenAttr.array as Float32Array;
     cen[i * 3] = x;
-    cen[i * 3 + 1] = surfaceY + 0.002; // a hair above the disc, never below the meniscus
+    cen[i * 3 + 1] = seatY + 0.002; // a hair above the disc, never below the meniscus
     cen[i * 3 + 2] = z;
     (ageAttr.array as Float32Array)[i] = 0;
     cenAttr.needsUpdate = true;
@@ -2326,20 +2511,30 @@ export class CompareScene {
   private updateSand(dt: number, ctl: PourControl): PourStatus {
     if (!ctl.paused) this.advanceSandFill(dt, ctl);
     const streaming = ctl.spawnEnabled && !ctl.paused && this.sandFillActive;
-    // Sand never melts — the pool is "that many bodies' worth of stuff", so it
-    // keeps the AT-REST liquid look (uHeat low) with the filler palette reading
-    // through (an Earth fill leans ocean-blue, not lava). Only a Sun FILLER stays
-    // hot (updateLiquid pins uHeat via fillerIsSun). The marble melt look is
-    // untouched — this molten=false only applies on the sand path.
-    this.updateLiquid(dt, false);
+    // The sand surface is the heap, a PURE function of poured volume — no easing, no
+    // deflation, no stream coupling. Repose is stable, so a frozen V (pause /
+    // slider-down) holds the heap bit-stable. V is the ramp's melted count in R_liq
+    // sphere-volume units, the same measure the volume-flat level reads.
+    const fillFraction = Math.min(1, this.melted / Math.max(this.simN, 1e-9));
+    const V = fillFraction * LIQUID_SPHERE_VOLUME;
+    // Pose the heap from the total volume V (settled bulk + repose cone + volume-flat
+    // level + disc/body geometry uniforms). Extracted so topOffSand poses through the
+    // SAME path — heap = f(V) holds on the brim-landing frame, no stale-pose flash.
+    this.poseSandSurface(V);
+    // uHeat still eases (a Sun filler stays hot; every other sand rests cool). This is
+    // per-frame, not part of the pose, so it stays here. The geometry uniforms already
+    // sit at the BULK surface (poseSandSurface): the opaque body fills to bulkH and the
+    // cone rides on top in the disc's vertex stage, so the cone volume is never drawn twice.
+    const heatTarget = this.fillerIsSun ? 1 : 0.15;
+    this.liquidUniforms.uHeat.value +=
+      (heatTarget - this.liquidUniforms.uHeat.value) * (1 - Math.exp(-dt / 0.5));
+    // Ease the stream-active scalar (the trickle's life) toward the live pour state.
+    this.streamActive += ((streaming ? 1 : 0) - this.streamActive) * (1 - Math.exp(-dt / 0.4));
+    this.liquidUniforms.uStreamActive.value = this.streamActive;
+    const show = this.melted > 1e-4;
+    this.liquidBody.visible = show;
+    this.liquidDisc.visible = show;
     if (!ctl.paused) {
-      // The mound breathes with the stream: eases up to ~0.075·R while streaming,
-      // flat after, clamped against the mouth clearance so it never nears the mouth.
-      const surfaceY = -R_LIQ + this.liquidLevelRendered;
-      const clearance = Math.max(0, this.mouthPlaneY - surfaceY - 0.12);
-      const moundTarget = streaming ? Math.min(0.075 * CONTAINER_R, clearance * 0.5) : 0;
-      this.moundPeak += (moundTarget - this.moundPeak) * (1 - Math.exp(-dt / 0.5));
-      this.liquidUniforms.uMoundPeak.value = this.moundPeak;
       if (streaming) {
         this.emitStream(dt);
         this.emitPlume(dt);
@@ -2433,12 +2628,32 @@ export class CompareScene {
     }
   }
 
+  /** Pose the sand heap for a total poured volume V (studio sphere-volume units): the
+   *  settled bulk fills to bulkH, the full-width repose cone (peakH) rides on the disc,
+   *  and the volume-flat level feeds the top-out trigger + glass rim. Shared by the
+   *  per-frame sand update and the top-out snap so heap = f(V) holds on every frame —
+   *  including the brim-landing frame. Sand BYPASSES the 0.35 s geometry ease: the ramp
+   *  is already smooth, and a second ease would lag the exact-landing frame. */
+  private poseSandSurface(V: number): void {
+    const heap = heapSplit(V, R_LIQ, this.mouthPlaneY, REPOSE_SLOPE, HEADROOM_K);
+    this.heapBulkH = heap.bulkH;
+    this.heapPeakH = heap.peakH;
+    this.liquidUniforms.uPeakH.value = heap.peakH;
+    this.liquidLevelRendered = capHeightForVolume(V, R_LIQ);
+    this.updateLiquidUniforms(this.heapBulkH);
+  }
+
   /** Snap the sand fill to exactly full at top-out — melted AND poured read N, so
-   *  the final odometer string equals the headline (formatCount(N)). */
+   *  the final odometer string equals the headline (formatCount(N)). The mode fires
+   *  top-out this same frame, so re-pose to f(V_full) here — settled flat at the brim
+   *  (bulkH 2R, peakH 0) — or the landing frame renders the pre-snap pose: a one-frame
+   *  hole at the pole that closes next frame. Posing in this call keeps heap = f(V) on
+   *  the top-out frame itself. */
   topOffSand(): void {
     this.melted = this.simN;
     this.poured = this.simN;
     this.sandFillActive = false;
+    this.poseSandSurface(LIQUID_SPHERE_VOLUME);
   }
 
   /** Begin the overflow spill: ~SPILL_COUNT grains over SPILL_EMIT_S at the rim. */
@@ -2452,9 +2667,9 @@ export class CompareScene {
   /** Spawn stream grains at the mouth this frame, across a gaussian disc ~half
    *  the mouth radius (dense core, sparse edge — display-only cross-section). */
   private emitStream(dt: number): void {
-    const surfaceY = -R_LIQ + this.liquidLevelRendered;
+    const crestY = -R_LIQ + this.heapBulkH + this.heapPeakH;
     const yTop = this.mouthPlaneY;
-    if (yTop <= surfaceY + 0.02) return; // the pool already reached the mouth — nothing to pour
+    if (yTop <= crestY + 0.02) return; // the heap crest reached the mouth — no room to pour
     const budget = pourBudget(dt, STREAM_RATE, this.streamCarry);
     this.streamCarry = budget.carry;
     const spread = this.mouthRadiusStudio * STREAM_DISC_FRAC;
@@ -2505,7 +2720,11 @@ export class CompareScene {
    *  from both the sand path (stream + spill) and the marble path (spill only). */
   private updateGrains(dt: number): void {
     if (this.spillActive) this.emitSpill(dt);
-    const surfaceY = -R_LIQ + this.liquidLevelRendered;
+    // The stream kill plane rides the BULK surface + the heap cone (sand); the marble
+    // spill reads neither (it arcs over the shoulder). liquidLevelRendered is the
+    // volume-flat level for sand, so the bulk height comes from heapBulkH there.
+    const bulkLevel = this.sandRegime ? this.heapBulkH : this.liquidLevelRendered;
+    const surfaceY = -R_LIQ + bulkLevel;
     const discR = Math.max(1e-4, Math.sqrt(Math.max(0, R_LIQ * R_LIQ - surfaceY * surfaceY)));
     const budget = this.grainBudget;
     let live = 0;
@@ -2513,6 +2732,26 @@ export class CompareScene {
     for (let i = 0; i < budget; i++) {
       if (this.gAge[i] >= this.gLife[i]) continue;
       const i3 = i * 3;
+      // Rollers (kind 3) RIDE the flank: no free fall — accelerate down-slope, re-pin
+      // Y to the cone surface at their radius, die at the foot (rr≈1) or their short
+      // life. The one CPU cue that reads the heap as a live, cascading pile.
+      if (this.gKind[i] === 3) {
+        this.gAge[i] += dt;
+        const grow = 1 + ROLLER_ACCEL * dt;
+        this.gVel[i3] *= grow;
+        this.gVel[i3 + 2] *= grow;
+        this.gPos[i3] += this.gVel[i3] * dt;
+        this.gPos[i3 + 2] += this.gVel[i3 + 2] * dt;
+        const rr = Math.hypot(this.gPos[i3], this.gPos[i3 + 2]) / discR;
+        this.gPos[i3 + 1] = surfaceY + heapHeightAt(Math.min(1, rr), this.heapPeakH) + 0.004;
+        if (rr >= 0.97 || this.gAge[i] >= this.gLife[i]) {
+          this.gAge[i] = this.gLife[i];
+          continue;
+        }
+        live++;
+        inside++;
+        continue;
+      }
       this.gVel[i3 + 1] -= GRAIN_GRAVITY * dt;
       // Terminal-velocity cap for the falling column (kind 0 stream + kind 2
       // plume/droplets) so it reaches the bed without thinning; kind 1 spill stays
@@ -2522,11 +2761,28 @@ export class CompareScene {
       this.gPos[i3 + 1] += this.gVel[i3 + 1] * dt;
       this.gPos[i3 + 2] += this.gVel[i3 + 2] * dt;
       this.gAge[i] += dt;
-      // Stream grains vanish INTO the bed — the surface PLUS the mound crest at the
-      // grain's radius (moundHeightAt; 0 when moundPeak is 0, i.e. marbles/idle).
+      // Stream grains vanish INTO the bed — the bulk surface PLUS the heap cone at
+      // the grain's radius (heapHeightAt; 0 when peakH is 0, i.e. marbles/idle). A
+      // fraction of crest contacts become down-flank rollers instead of dying.
       if (this.gKind[i] === 0) {
         const rr = Math.min(1, Math.hypot(this.gPos[i3], this.gPos[i3 + 2]) / discR);
-        if (this.gPos[i3 + 1] <= surfaceY + moundHeightAt(rr, this.moundPeak)) {
+        if (this.gPos[i3 + 1] <= surfaceY + heapHeightAt(rr, this.heapPeakH)) {
+          if (this.heapPeakH > 0.02 && this.grainRng() < ROLLER_FRACTION) {
+            this.startRoller(i, i3, surfaceY, discR);
+          } else {
+            this.gAge[i] = this.gLife[i];
+          }
+          continue;
+        }
+      }
+      // Plume chips (kind 2) fall back onto the heap after the splash: on the
+      // DESCENDING leg they die where they meet the local profile, instead of aging
+      // out mid-air (which under a heap reads as passing through it). Sand only —
+      // marble splash droplets are also kind 2, and killing them at the pool level
+      // ends their protected age-out early, sealing the mouth iris sooner.
+      if (this.sandRegime && this.gKind[i] === 2 && this.gVel[i3 + 1] < 0) {
+        const rr = Math.min(1, Math.hypot(this.gPos[i3], this.gPos[i3 + 2]) / discR);
+        if (this.gPos[i3 + 1] <= surfaceY + heapHeightAt(rr, this.heapPeakH)) {
           this.gAge[i] = this.gLife[i];
           continue;
         }
@@ -2548,15 +2804,39 @@ export class CompareScene {
     (g.getAttribute('aSize') as THREE.BufferAttribute).needsUpdate = true;
   }
 
+  /** Convert a stream grain dying at the crest into a down-flank ROLLER (kind 3):
+   *  aimed outward along the local flank, pinned to the surface, short-lived. Reuses
+   *  the dying grain's slot (budget-neutral) and its colour/size. */
+  private startRoller(i: number, i3: number, surfaceY: number, discR: number): void {
+    const rad = Math.hypot(this.gPos[i3], this.gPos[i3 + 2]);
+    let dirX: number;
+    let dirZ: number;
+    if (rad > 1e-4) {
+      dirX = this.gPos[i3] / rad;
+      dirZ = this.gPos[i3 + 2] / rad;
+    } else {
+      const a = this.grainRng() * Math.PI * 2; // born at the apex → a random azimuth
+      dirX = Math.cos(a);
+      dirZ = Math.sin(a);
+    }
+    const speed = ROLLER_SPEED_MIN + this.grainRng() * (ROLLER_SPEED_MAX - ROLLER_SPEED_MIN);
+    this.gVel[i3] = dirX * speed;
+    this.gVel[i3 + 1] = 0;
+    this.gVel[i3 + 2] = dirZ * speed;
+    this.gKind[i] = 3;
+    this.gAge[i] = 0;
+    this.gLife[i] = ROLLER_LIFE_MIN + this.grainRng() * (ROLLER_LIFE_MAX - ROLLER_LIFE_MIN);
+    this.gPos[i3 + 1] = surfaceY + heapHeightAt(Math.min(1, rad / discR), this.heapPeakH) + 0.004;
+  }
+
   /** The persistent impact plume where the column meets the pool: a splash of
    *  short-lived grains thrown up + out from the contact, with a brighter core
    *  (within the whiteout budget), plus a throttled surface-flash ripple. The
    *  stream is axial, so the contact sits at the centre of the current surface. */
   private emitPlume(dt: number): void {
-    const surfaceY = -R_LIQ + this.liquidLevelRendered;
-    if (this.mouthPlaneY <= surfaceY + 0.02) return; // pool at the mouth — no fall, no plume
-    // The column lands on the mound crest (axial → moundHeightAt(0, peak) = peak).
-    const contactY = surfaceY + this.moundPeak;
+    // The column lands on the heap crest (axial → heapHeightAt(0, peakH) = peakH).
+    const contactY = -R_LIQ + this.heapBulkH + this.heapPeakH;
+    if (this.mouthPlaneY <= contactY + 0.02) return; // crest at the mouth — no fall, no plume
     const budget = pourBudget(dt, PLUME_RATE, this.plumeCarry);
     this.plumeCarry = budget.carry;
     const spread = this.mouthRadiusStudio * STREAM_DISC_FRAC;
@@ -2794,7 +3074,8 @@ export class CompareScene {
     // material + geometry, so it is not disposed here).
     this.liquidGeo.dispose();
     (this.liquidBody.material as THREE.Material).dispose();
-    this.liquidDiscGeo.dispose();
+    this.marbleDiscGeo.dispose();
+    this.sandDiscGeo.dispose();
     (this.liquidDisc.material as THREE.Material).dispose();
     this.ghostLine.geometry.dispose();
     this.ghostLineMat.dispose();
@@ -2921,11 +3202,15 @@ function sampleMapStats(image: CanvasImageSource | null): MapStats {
  * lives in the vertex shader (object rr), so the interior rings carry the smooth
  * cap. position.xy is the unit disc (the disc shader reads it as vXz).
  */
-function makeRadialDiscGeometry(rings: number, segments: number): THREE.BufferGeometry {
+function makeRadialDiscGeometry(
+  rings: number,
+  segments: number,
+  radiusAt: (t: number) => number = (t) => t,
+): THREE.BufferGeometry {
   const positions: number[] = [0, 0, 0]; // centre
   const uvs: number[] = [0.5, 0.5];
   for (let ri = 1; ri <= rings; ri++) {
-    const r = ri / rings;
+    const r = radiusAt(ri / rings);
     for (let s = 0; s < segments; s++) {
       const a = (2 * Math.PI * s) / segments;
       positions.push(Math.cos(a) * r, Math.sin(a) * r, 0);
@@ -2950,6 +3235,17 @@ function makeRadialDiscGeometry(rings: number, segments: number): THREE.BufferGe
   geo.setAttribute('uv', new THREE.Float32BufferAttribute(uvs, 2));
   geo.setIndex(indices);
   return geo;
+}
+
+/**
+ * A dense radial disc for the sand heap's repose cone, with ring spacing biased
+ * toward the foot (the glass wall) and the tip (the axis) via a cosine radius
+ * mapping — dense where the silhouette curves sharpest at both ends, sparse across
+ * the straight mid-flank — so a cone up to ~0.6 units tall reads smooth where the
+ * coarse marble fan would crease.
+ */
+function makeSandDiscGeometry(rings: number, segments: number): THREE.BufferGeometry {
+  return makeRadialDiscGeometry(rings, segments, (t) => 0.5 - 0.5 * Math.cos(Math.PI * t));
 }
 
 /** A unit-radius ring (LineLoop) of `n` segments in the xz plane, scaled per frame. */

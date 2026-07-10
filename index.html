@@ -2010,12 +2010,13 @@
          kissing its border — keep the chip's own inset. */
       /* Icon-only Stats chip — the label costs ~34px the narrow bar can't
          spare (the chip keeps its aria-label). Without the label the glyph
-         sits alone against a visible border, so give it roughly even air on
-         all four sides: the ~13px glyph in a near-square box, sized to match
-         the +/- buttons beside it. The extra height over 28px keeps the
-         glyph off the top/bottom rules without growing the bar (the time
-         section is the tallest thing in the row). */
-      .bar-stats { padding: 0 8px; height: 30px; }
+         sits alone against a visible border; mathematically even insets read
+         pinched side-to-side there (the bar glyph's ink hugs its box edges
+         horizontally), so the chip carries a couple px more side air than
+         top/bottom. The extra height over 28px keeps the glyph off the
+         top/bottom rules without growing the bar (the time section is the
+         tallest thing in the row). */
+      .bar-stats { padding: 0 11px; height: 30px; }
       .bar-stats-label { display: none; }
       .bar-speed-main { padding: 0 6px; gap: 6px; }
       /* The rail + clock rows form a fat touch strip; the panel's targets
@@ -2115,6 +2116,13 @@
       .act-leave .act-lbl { max-width: 31vw; overflow: hidden; text-overflow: ellipsis; }
       /* Lift the Stats card clear of the taller mobile bar. */
       #stats-popover { bottom: 104px; right: 10px; }
+    }
+
+    @media (max-width: 330px) {
+      /* The bottom bar's content is fixed-width and runs out of room just
+         under 330px; the Stats chip's roomy inset is the one giveable, so
+         the smallest screens fall back to the compact chip. */
+      .bar-stats { padding: 0 8px; }
     }
 
     /* ===== Observatory mobile chrome ===== */

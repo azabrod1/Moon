@@ -2119,10 +2119,19 @@
     }
 
     @media (max-width: 330px) {
-      /* The bottom bar's content is fixed-width and runs out of room just
-         under 330px; the Stats chip's roomy inset is the one giveable, so
-         the smallest screens fall back to the compact chip. */
-      .bar-stats { padding: 0 8px; }
+      /* Real phones land here: Safari's per-site page zoom shrinks the CSS
+         viewport (a 430pt screen at ~135% lays out at ~315px), and 320px
+         devices exist. The bar's row is fixed-width and overflows through
+         the bar's own border unless the giveable widths give. Pure visual
+         air goes first — section insets, the speed value's surround, the
+         clock's inner inset, a notch off the clock font — so the Stats
+         chip keeps its breathing room and no readout loses a character. */
+      .bar-time { padding: 1px 4px 0; }
+      .bar-speed-main { padding: 0 4px; }
+      .speed-center { padding: 0 3px; }
+      .tr-clock { padding-left: 2px; padding-right: 2px; }
+      .tr-clock .d { font-size: 10px; }
+      .time-rail-wrap { min-width: 100px; }
     }
 
     /* ===== Observatory mobile chrome ===== */

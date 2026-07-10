@@ -3369,10 +3369,16 @@ export class PlanetariumMode {
     });
 
     document.getElementById('planetarium-btn-save')?.addEventListener('click', () => {
-      this.store.saveState(this.getState());
       // Forced: mid-tutorial the banner is muted (and the save then writes the
-      // pre-tutorial snapshot on purpose), but a pressed Save must answer.
-      this.notification.show('Game saved!', { force: true });
+      // pre-tutorial snapshot on purpose), but a pressed Save must answer —
+      // honestly: with storage blocked or full, every backend can reject, and
+      // a false "saved" costs the user their journey.
+      void this.store.saveState(this.getState()).then((saved) => {
+        this.notification.show(
+          saved ? 'Game saved!' : "Couldn't save — storage is blocked or full",
+          { force: true },
+        );
+      });
     });
 
     // New Journey button

@@ -40,6 +40,17 @@ describe('dateToJD', () => {
   it('handles January dates (the month-shift branch)', () => {
     expect(dateToJD(utc('1987-01-27T00:00:00Z'))).toBeCloseTo(2446822.5, 6);
   });
+
+  it('advances smoothly within a second (no whole-second quantization)', () => {
+    // Positions render from this JD every frame; truncating milliseconds
+    // freezes each body within a UTC second and snaps it at the boundary —
+    // a visible once-per-second stutter on any close approach.
+    // Tolerance sits above float64 ULP at JD magnitude (~5e-10 days) and four
+    // orders below the quantization failure it guards against (5.8e-6 days).
+    const base = Date.UTC(2026, 6, 10, 12, 0, 0, 0);
+    const half = dateToJD(new Date(base + 500)) - dateToJD(new Date(base));
+    expect(half).toBeCloseTo(0.5 / 86400, 8);
+  });
 });
 
 describe('sunPosition', () => {

@@ -14,11 +14,17 @@ import { deltaTDaysAtDate } from './deltaT';
 export function dateToJD(date: Date): number {
   let y = date.getUTCFullYear();
   let m = date.getUTCMonth() + 1;
+  // The millisecond term matters: positions are recomputed from this JD every
+  // rendered frame, and truncating to whole seconds freezes every body for a
+  // second, then snaps it one second of real motion (~30 km for Earth+Moon) —
+  // a visible once-per-second lurch when a body fills the screen at close
+  // range. Sub-ms time never reaches this seam, so the chain is smooth.
   const d =
     date.getUTCDate() +
     date.getUTCHours() / 24 +
     date.getUTCMinutes() / 1440 +
-    date.getUTCSeconds() / 86400;
+    date.getUTCSeconds() / 86400 +
+    date.getUTCMilliseconds() / 86_400_000;
 
   if (m <= 2) {
     y -= 1;

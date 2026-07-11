@@ -1747,9 +1747,21 @@ export class CompareScene {
   private async loadBodyColor(name: string): Promise<THREE.Texture | null> {
     if (name === 'Sun') return null;
     const planet = PLANET_BY_NAME.get(name);
-    if (planet) return loadTexture(planet.textureKey);
     const moon = MOON_BY_NAME.get(name);
-    if (moon?.textureKey) return loadTexture(moon.textureKey);
+    const textureKey = planet?.textureKey ?? moon?.textureKey;
+    if (textureKey) {
+      const texture = await loadTexture(textureKey);
+      // TextureLoader's load event can precede a usable CPU decode on Safari.
+      // PlanetFactory deliberately starts image.decode() fire-and-forget for GPU
+      // warming, but VC immediately drawImage()s the same image to derive its
+      // palette. Await the decode here, behind the pair-loading veil, so that
+      // readback cannot silently return a zero-filled canvas on first entry.
+      const image = texture.image as { decode?: () => Promise<void> } | undefined;
+      if (image && typeof image.decode === 'function') {
+        try { await image.decode(); } catch { /* sampleMapStats has a tinted fallback */ }
+      }
+      return texture;
+    }
     if (moon) {
       const { colorTex, bumpTex } = createMoonTextures(moon.color, moon.name, moon.radiusKm);
       bumpTex.dispose(); // the glass ghost + filler map want colour only
@@ -1761,7 +1773,7 @@ export class CompareScene {
   private async loadGhost(name: string): Promise<GhostLoad | null> {
     const tex = await this.loadBodyColor(name);
     if (!tex) return null;
-    const stats = sampleMapStats(tex.image as CanvasImageSource | null);
+    const stats = sampleMapStats(tex.image as CanvasImageSource | null, bodyColor(name));
     const meanLum = stats.meanLum;
     const gain = THREE.MathUtils.clamp(
       GHOST_TARGET_LUM / Math.max(meanLum, 0.05),
@@ -1956,7 +1968,7 @@ export class CompareScene {
       palette = [new THREE.Color(0x2a0a02), new THREE.Color(0xb03408), new THREE.Color(0xff8a2a), new THREE.Color(0xfff0c0)];
       this.grainFlecks = [new THREE.Color(0x8a2a08), new THREE.Color(0xd05010), new THREE.Color(0xff8a2a), new THREE.Color(0xffd070)];
     } else {
-      const stats = sampleMapStats(fillerTex?.image as CanvasImageSource | null);
+      const stats = sampleMapStats(fillerTex?.image as CanvasImageSource | null, bodyColor(filler));
       palette = stats.palette;
       this.grainFlecks = stats.flecks;
     }
@@ -3495,6 +3507,24 @@ function defaultPalette(): THREE.Color[] {
   ];
 }
 
+/** Body-coloured fallback for a photo whose canvas readback is unavailable or
+ * silently zero-filled. The four stops preserve the body's identity while still
+ * spanning enough luminance for the sand marbling and per-grain flecks. */
+function tintedFallbackStats(tint: number): MapStats {
+  const base = new THREE.Color(tint);
+  const palette = [
+    base.clone().multiplyScalar(0.24),
+    base.clone().multiplyScalar(0.52),
+    base.clone().multiplyScalar(0.78),
+    base.clone().lerp(new THREE.Color(0xffffff), 0.38),
+  ];
+  const r = ((tint >> 16) & 0xff) / 255;
+  const g = ((tint >> 8) & 0xff) / 255;
+  const b = (tint & 0xff) / 255;
+  const meanLum = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+  return { meanLum, palette, flecks: palette.map((c) => c.clone()) };
+}
+
 /**
  * One 32×32 readback of a body's colour map, returning its mean luminance (for
  * the ghost gain), a 4-stop marbling ramp (the 10/40/70/95th luminance
@@ -3502,14 +3532,17 @@ function defaultPalette(): THREE.Color[] {
  * grains — a single pass so the ghost, the molten-liquid palette, and the grain
  * flecks never read the same canvas twice. Unreadable image → mean 0 + defaults.
  */
-function sampleMapStats(image: CanvasImageSource | null): MapStats {
-  if (!image) return { meanLum: 0, palette: defaultPalette(), flecks: defaultPalette() };
+function sampleMapStats(image: CanvasImageSource | null, fallbackTint?: number): MapStats {
+  const fallback = (): MapStats => fallbackTint === undefined
+    ? { meanLum: 0, palette: defaultPalette(), flecks: defaultPalette() }
+    : tintedFallbackStats(fallbackTint);
+  if (!image) return fallback();
   const size = 32;
   const c = document.createElement('canvas');
   c.width = size;
   c.height = size;
   const ctx = c.getContext('2d', { willReadFrequently: true });
-  if (!ctx) return { meanLum: 0, palette: defaultPalette(), flecks: defaultPalette() };
+  if (!ctx) return fallback();
   try {
     ctx.drawImage(image, 0, 0, size, size);
     const data = ctx.getImageData(0, 0, size, size).data;
@@ -3525,6 +3558,12 @@ function sampleMapStats(image: CanvasImageSource | null): MapStats {
       sum += luma;
       samples[p] = { luma, r, g, b };
     }
+    // Safari can successfully execute drawImage/getImageData before the decoded
+    // pixels are CPU-readable, yielding transparent/black zeros without throwing.
+    // No supported body colour map is genuinely all-black, so treating this as an
+    // unreadable image is both safe and prevents a finite-black palette from
+    // bypassing the shader's NaN guards and turning the whole sand mass black.
+    if (sum <= 0) return fallback();
     samples.sort((a, b) => a.luma - b.luma);
     const at = (idx: number): THREE.Color => {
       const s = samples[Math.min(n - 1, Math.max(0, idx))];
@@ -3539,7 +3578,7 @@ function sampleMapStats(image: CanvasImageSource | null): MapStats {
     }
     return { meanLum: sum / n, palette: [pick(0.1), pick(0.4), pick(0.7), pick(0.95)], flecks };
   } catch {
-    return { meanLum: 0, palette: defaultPalette(), flecks: defaultPalette() }; // tainted canvas
+    return fallback(); // tainted or otherwise unreadable canvas
   }
 }
 

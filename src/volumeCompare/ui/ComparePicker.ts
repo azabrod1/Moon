@@ -5,7 +5,8 @@
  * pk-row family (raw catalog names, catalog tints, sticky system headers,
  * search) via groupDeckBodies/filterDeckRows. The header restates the sentence
  * with the active slot highlighted; the already-committed other body carries a
- * role pill ("container"/"filler"), never HERE — this is not a place.
+ * role pill ("container"/"contents" — plain words a first-time reader maps to
+ * the sentence; "filler" read as jargon), never HERE — this is not a place.
  *
  * Sun is eligible on both sides (it is absent from the catalogs, so it is added
  * as its own top row). Same-body picks are legal (N = 1.00). Rebuilds on every
@@ -93,7 +94,7 @@ export class ComparePicker {
     let any = false;
     // The already-committed OTHER body wears the role pill.
     const otherName = this.slot === 'container' ? this.filler : this.container;
-    const otherRole = this.slot === 'container' ? 'filler' : 'container';
+    const otherRole = this.slot === 'container' ? 'contents' : 'container';
 
     if (seen.get('Sun')) {
       this.listEl.append(this.makeRow('Sun', SUN_DATA.color, false, otherName, otherRole));

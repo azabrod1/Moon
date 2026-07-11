@@ -30,10 +30,15 @@ export interface ForegroundDisc {
 
 /**
  * Pixel radius of a body's rendered disc, given its scene radius (AU), the
- * camera distance, `tan(fov/2)`, and the canvas height. The `max(dist,
- * radius)` clamp keeps the disc finite when the camera sits inside the body.
+ * camera distance, `tan(fov/2)`, and the canvas height. A sphere's silhouette
+ * subtends asin(R/d), which projects to R/√(d²−R²) — NOT the linear R/d: the
+ * two agree far away, but up close the linear form under-reads the disc (a
+ * camera 1.2R from the centre sees a silhouette ~50% wider), and an occlusion
+ * disc that small lets labels of moons hidden behind the planet leak onto its
+ * rendered face. At or inside the surface the silhouette is the whole view:
+ * the tangent floor keeps the result finite (and screen-covering).
  * Callers that pad (to clear atmosphere glow, or to lift a label off the limb)
- * scale the RESULT — padding the radius argument would shift that clamp.
+ * scale the RESULT — padding the radius argument would shift the floor.
  */
 export function discRadiusPx(
   radiusAU: number,
@@ -41,7 +46,9 @@ export function discRadiusPx(
   halfFovTan: number,
   canvasHeight: number,
 ): number {
-  return (radiusAU / (Math.max(distFromCamera, radiusAU) * halfFovTan)) * (canvasHeight / 2);
+  const tangentSq = distFromCamera * distFromCamera - radiusAU * radiusAU;
+  const tangent = Math.sqrt(Math.max(tangentSq, radiusAU * radiusAU * 1e-12));
+  return (radiusAU / (tangent * halfFovTan)) * (canvasHeight / 2);
 }
 
 export class PlanetLabels {

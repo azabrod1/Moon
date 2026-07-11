@@ -1244,6 +1244,10 @@ export class CompareScene {
   // shows a ghost-less or halo-less shell. 1 = fully presented (steady state).
   private revealEase = 1;
   private revealTarget = 1;
+  // The cold-open empty lift's temporal ease (target = the occupancy curve). A
+  // boulder commits its whole volume fraction at spawn, so without this the ghost
+  // dim would step in a single frame; starts at 1 = the empty cold-open state.
+  private emptyLiftEase = 1;
 
   // Scratch (no per-call allocation).
   private scratchMatrix = new THREE.Matrix4();
@@ -2009,13 +2013,6 @@ export class CompareScene {
     camera.getWorldPosition(this.scratchPos);
     this.glassUniforms.uCam.value.copy(this.scratchPos);
     this.liquidUniforms.uCam.value.copy(this.scratchPos);
-    // Cold-open empty lift: occupied volume fraction (whichever of the counters leads
-    // the fill), eased out over the first few percent so the empty vessel reads as a
-    // full subject and the lift is provably gone once the pour is under way. Off for
-    // the sub-unity loom (uLoomLit) — that vessel is full of the giant, not empty.
-    const occupied = Math.max(this.poured, this.melted, this.boulderCommitted) / Math.max(this.simN, 1e-9);
-    this.glassUniforms.uEmptyLift.value =
-      this.glassUniforms.uLoomLit.value > 0.5 ? 0 : 1 - THREE.MathUtils.smoothstep(occupied, 0, EMPTY_LIFT_FADE_END);
     camera.updateMatrixWorld();
     this.scratchMatrix.copy(camera.matrixWorld).invert();
     this.grainUniforms.uKeyDirView.value.copy(KEY_LIGHT_DIR).transformDirection(this.scratchMatrix);
@@ -2672,16 +2669,18 @@ export class CompareScene {
     const spillLife = SPILL_RETIRE_FADE_S / 0.28;
     for (let i = 0; i < this.grainBudget; i++) {
       if (this.gAge[i] >= this.gLife[i]) continue; // already dead — leave it
-      // Spill grains (kind 1) sit at the limb — clear them fast and stop their outward
-      // arc so none linger lit outside the vessel once the landing settles. The
-      // over-pool splash/plume (kinds 0/2) keep the graceful in-place fade.
+      // Spill grains (kind 1) sit at the limb — clear them fast and cancel their
+      // outward arc so none linger lit outside the vessel once the landing settles
+      // (gravity still settles them a hair through the short fade, which reads as a
+      // droplet dropping — the point is they stop travelling outward). The over-pool
+      // splash/plume (kinds 0/2) keep the graceful fade.
       const isSpill = this.gKind[i] === 1;
       const l = isSpill ? spillLife : life;
       this.gLife[i] = l;
       this.gAge[i] = 0.72 * l; // at the fade-out threshold → dies its window out
       if (isSpill) {
         const i3 = i * 3;
-        this.gVel[i3] = 0; this.gVel[i3 + 1] = 0; this.gVel[i3 + 2] = 0; // freeze the arc; fade in place
+        this.gVel[i3] = 0; this.gVel[i3 + 1] = 0; this.gVel[i3 + 2] = 0; // cancel the arc
       }
     }
     this.spillActive = false;
@@ -3198,7 +3197,10 @@ export class CompareScene {
     if (!ctl.paused) {
       let emitted = false;
       for (const b of this.boulders) {
-        if (emitted || b.state !== 'melt') continue;
+        // Only while the ball is actively transferring volume: a partial-target
+        // boulder HOLDS in the melt state at its share forever (the designed
+        // mid-slump rest), and a held ball must not drip an endless strand.
+        if (emitted || b.state !== 'melt' || b.meltedFrac >= b.volumeFrac - 1e-3) continue;
         const t = b.meltedFrac;
         const yy = THREE.MathUtils.lerp(restY, poolY - r * 0.4, t);
         const baseY = yy - r * (1 - 0.8 * t) * (1 - 0.3 * t); // bottom of the shrunk ball
@@ -3293,9 +3295,13 @@ export class CompareScene {
   }
 
   /** Hold the vessel hidden while a new pair loads: snap the reveal to 0 (the
-   *  outgoing map + halo vanish at once) and hide the current halo so no stale
-   *  identity shows through the load window. `revealPair` eases it back in once the
-   *  pair is fully applied. Idempotent; safe on entry (the mode veil covers it). */
+   *  outgoing map + halo vanish at once), hide the current halo, and hide the
+   *  outgoing pair's CONTENTS — the update loop stops driving the sim through the
+   *  load, so a stale melt ball / pile / preview would otherwise float naked over
+   *  the stars with the glass gone. configurePour rebuilds the new pair's staging
+   *  from zero and the per-frame drivers re-show what the new pair needs.
+   *  `revealPair` eases the vessel back in once the pair is fully applied.
+   *  Idempotent; safe on entry (the mode veil covers it). */
   beginPairLoad(): void {
     this.revealEase = 0;
     this.revealTarget = 0;
@@ -3303,6 +3309,15 @@ export class CompareScene {
     if (this.atmosphere) {
       (this.atmosphere.material as THREE.ShaderMaterial).uniforms.alphaScale.value = 0;
     }
+    this.fillerMesh.count = 0;
+    this.fillerMesh.instanceMatrix.needsUpdate = true;
+    for (const m of this.boulderPool) m.visible = false;
+    this.liquidBody.visible = false;
+    this.liquidDisc.visible = false;
+    this.previewMesh.visible = false;
+    this.previewOpacity = 0;
+    this.ghostLine.visible = false;
+    this.ghostLineOpacity = 0;
   }
 
   /** The pair is fully presented — ease the vessel in from the load hold. */
@@ -3310,9 +3325,10 @@ export class CompareScene {
     this.revealTarget = 1;
   }
 
-  /** Ease the reveal toward its target every frame (runs even while a pair loads,
-   *  so the hold holds and the ease-in plays). Drives the glass alpha + the halo's
-   *  presence; both are 1×/full at rest, so a presented frame is byte-identical. */
+  /** Ease the presentation toward its target every frame (runs even while a pair
+   *  loads, so the hold holds and the ease-in plays). Drives the glass alpha + the
+   *  halo's presence, and the cold-open empty lift — all at their rest values on a
+   *  settled presented frame, so that frame is byte-identical. */
   tickReveal(dt: number): void {
     this.revealEase += (this.revealTarget - this.revealEase) * (1 - Math.exp(-dt / 0.12));
     if (Math.abs(this.revealTarget - this.revealEase) < 0.001) this.revealEase = this.revealTarget;
@@ -3321,6 +3337,18 @@ export class CompareScene {
       (this.atmosphere.material as THREE.ShaderMaterial).uniforms.alphaScale.value =
         ATMOSPHERE_GHOST_ALPHA * this.revealEase;
     }
+    // Cold-open empty lift: occupied volume fraction (whichever counter leads the
+    // fill), gone over the first few percent so the empty vessel reads as a full
+    // subject and the lift is provably out once the pour is under way. Eased in
+    // TIME as well: a boulder commits its whole fraction the frame it spawns, so
+    // the raw occupancy step would pop the ghost dim — the house lights dim over a
+    // beat instead. Off for the sub-unity loom (that vessel is full of the giant).
+    const occupied = Math.max(this.poured, this.melted, this.boulderCommitted) / Math.max(this.simN, 1e-9);
+    const liftTarget =
+      this.glassUniforms.uLoomLit.value > 0.5 ? 0 : 1 - THREE.MathUtils.smoothstep(occupied, 0, EMPTY_LIFT_FADE_END);
+    this.emptyLiftEase += (liftTarget - this.emptyLiftEase) * (1 - Math.exp(-dt / 0.25));
+    if (Math.abs(liftTarget - this.emptyLiftEase) < 0.001) this.emptyLiftEase = liftTarget;
+    this.glassUniforms.uEmptyLift.value = this.emptyLiftEase;
   }
 
   dispose(): void {

@@ -1031,8 +1031,13 @@ export class VolumeCompareMode {
       const p11 = this.camera.projectionMatrix.elements[5] || 2.7;
       const projX = (x: number, y: number, z: number): number =>
         (scratch.set(x, y, z).project(this.camera).x * 0.5 + 0.5) * W;
-      const rPx = (r: number, x: number, y: number, z: number): number =>
-        (p11 * r) / Math.max(0.001, this.camera.position.distanceTo(scratch.set(x, y, z))) * (vh / 2);
+      // Projected radius divides by VIEW-SPACE DEPTH (the perspective divide), not
+      // the euclidean camera distance — distance ≥ depth, so distance would
+      // UNDERSTATE every off-axis sphere and the loop could accept a clipped pose.
+      const rPx = (r: number, x: number, y: number, z: number): number => {
+        const depth = -scratch.set(x, y, z).applyMatrix4(this.camera.matrixWorldInverse).z;
+        return ((p11 * r) / Math.max(0.001, depth)) * (vh / 2);
+      };
       const vCx = projX(0, 0, 0);
       const vR = rPx(1, 0, 0, 0);
       const pCx = projX(pb.x, pb.y, pb.z);

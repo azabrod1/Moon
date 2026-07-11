@@ -201,7 +201,7 @@ const LIQUID_SPHERE_VOLUME = (4 / 3) * Math.PI * R_LIQ * R_LIQ * R_LIQ;
 const MELT_IDENTITY_BLEND = 0.4;
 
 // --- pour feel -------------------------------------------------------------
-// The solver constrains balls to a bowl a hair inside the glass (P2's scatter
+// The solver constrains balls to a bowl a hair inside the glass (the scatter
 // inset) so a resting ball's surface never coincides with the shell at the limb.
 // The glass shell stays at CONTAINER_R (1) and the liquid at R_liq (0.995).
 const SOLVER_R = 0.97;
@@ -228,7 +228,7 @@ const IN_FLIGHT_CAP = 12;
 // in the mouth, poking well out) vs framing the loom (glass in the lower third,
 // giant overflowing). Tunable.
 export const SUB_UNITY_LOOM_RF = 2.5;
-// Sub-unity renders the vessel WITH a mouth (revising P2's whole-vessel gate):
+// Sub-unity renders the vessel WITH a mouth (not a sealed whole vessel):
 // the oversized filler wedges into this opening like an egg in a cup — it reads
 // as "went in as far as it fits", not balanced on a pole. Display-only radius.
 const SUBUNITY_MOUTH_R = 0.35;
@@ -279,9 +279,9 @@ const STREAM_DISC_FRAC = 0.32;
 const STREAM_RATE = 1900;
 // Impact plume: grains/sec kicked up + out from the contact while the stream is
 // live (a persistent splash marking where the column meets the pool). Bumped
-// ~2.3× over P4 so the contact is unmissable at default framing.
+// A high plume rate so the contact splash is unmissable at default framing.
 const PLUME_RATE = 300;
-// Splash/plume chips size to the FALLING grain, capped ≤1.5× (F-3) — a grain
+// Splash/plume chips size to the FALLING grain, capped ≤1.5× — a grain
 // kicked up, never a chip bigger than the thing that splashed.
 const PLUME_CHIP_K = 1.2;
 
@@ -369,7 +369,7 @@ const CHURN_R = 0.17; // world-space radius of a churn spot's falloff
 const CHURN_LIFE = 0.6; // seconds a churn spot rolls before it ages out
 // On completion the airborne splash/plume/droplet garnish is retired over this
 // window — a graceful fade (NOT the instant cancelTransients pop) so the end card
-// settles over a clean scene. Under the ≤0.6 s budget (F-2).
+// settles over a clean scene. Under the ≤0.6 s retire budget.
 const RETIRE_FADE_S = 0.5;
 // The overflow-spill grains arc over the shoulder and sit AT/OUTSIDE the vessel
 // limb — a lit droplet there reads as a stray after the landing settles, so they
@@ -453,7 +453,7 @@ const float LOOM_AMBIENT = 0.12;    // belly night floor (never a pure-black peb
 const float LOOM_GAIN = 1.25;       // lit-ghost strength over the faint hologram
 const float LOOM_BODY_ALPHA = 0.74; // body alpha floor so the lit world survives the glass blend
 
-// Ember granulation (the Sun dome): the S-7 emissive-boulder fbm, reused to break the
+// Ember granulation (the Sun dome): the emissive-boulder fbm, reused to break the
 // featureless brown gradient into soft solar cells. NaN-free at all-zero uniforms.
 float gHash(vec2 p){ return fract(sin(dot(p, vec2(127.1,311.7)))*43758.5453); }
 float gNoise(vec2 p){ vec2 i=floor(p),f=fract(p); f=f*f*(3.0-2.0*f);
@@ -578,7 +578,6 @@ const LIQUID_COMMON = /* glsl */ `
 uniform float uHeat;      // 0.15 at rest, eases to 1 while melting/raining
 uniform float uTime;
 uniform float uSurfaceY;  // world-space y of the liquid surface
-uniform vec3 uCatalogTint;// the filler's catalog colour (molten filler)
 uniform vec3 uPalette0;   // filler map luminance percentiles → marbling ramp
 uniform vec3 uPalette1;
 uniform vec3 uPalette2;
@@ -879,7 +878,6 @@ interface LiquidUniforms {
   uHeat: { value: number };
   uTime: { value: number };
   uSurfaceY: { value: number };
-  uCatalogTint: { value: THREE.Color };
   uPalette0: { value: THREE.Color };
   uPalette1: { value: THREE.Color };
   uPalette2: { value: THREE.Color };
@@ -1033,7 +1031,6 @@ const BOULDER_FRAGMENT = /* glsl */ `
 uniform sampler2D uMap;
 uniform vec3 uSunDir;
 uniform vec3 uMoltenLo;   // liquid palette low stop (the cooled crust below the front)
-uniform vec3 uMoltenHi;   // liquid palette high stop
 uniform float uMeltFront; // object-y of the molten front: -1.3 (off) climbing to +1 (all melted)
 uniform float uEmber;     // 1 for the Sun boulder (emissive, no map lighting)
 uniform float uLodBias;   // mip bias: 0 normally; negative on the sub-unity loom, where limb
@@ -1084,7 +1081,6 @@ interface BoulderUniforms {
   uMap: { value: THREE.Texture | null };
   uSunDir: { value: THREE.Vector3 };
   uMoltenLo: { value: THREE.Color };
-  uMoltenHi: { value: THREE.Color };
   uMeltFront: { value: number };
   uEmber: { value: number };
   uLodBias: { value: number };
@@ -1265,7 +1261,7 @@ export class CompareScene {
   private across = 1; // balls-across (pour rate + in-flight cap scale with it)
   private solverMouthPlaneY = 2; // the solver bowl's mouth plane (pile-at-mouth brim signal)
   private fillerIsSun = false; // Sun liquid is emissive throughout (uHeat pinned)
-  private sandRegime = false; // sand never pours in P3 — skip the solver reconfigure + preview
+  private sandRegime = false; // sand runs no rigid solver — skip its reconfigure + preview
   private fillerTint = 0x888888; // the filler's catalog colour (slider track + ghost line)
   // Spawn caps for the marble solver — the awake window bounds the physics work,
   // the live cap bounds the pile. Scaled down at ≤640px via setCapScale so phones
@@ -1482,7 +1478,6 @@ export class CompareScene {
       uHeat: { value: 0.15 },
       uTime: { value: 0 },
       uSurfaceY: { value: -R_LIQ },
-      uCatalogTint: { value: new THREE.Color(0xffffff) },
       uPalette0: { value: new THREE.Color(0x1a2740) },
       uPalette1: { value: new THREE.Color(0x3a5a86) },
       uPalette2: { value: new THREE.Color(0x9fb6c8) },
@@ -1592,7 +1587,6 @@ export class CompareScene {
         uMap: { value: this.emptyTex },
         uSunDir: { value: KEY_LIGHT_DIR.clone() },
         uMoltenLo: { value: new THREE.Color(0x3a5a86) },
-        uMoltenHi: { value: new THREE.Color(0xf2f4f0) },
         uMeltFront: { value: -1.3 },
         uEmber: { value: 0 },
         uLodBias: { value: 0 },
@@ -1655,7 +1649,7 @@ export class CompareScene {
   private makeFillerMaterial(filler: string): THREE.MeshStandardMaterial {
     if (filler === 'Sun') {
       // A textureless hot body — never the map-less standard material (which
-      // would render black). P4 does the Sun-as-filler properly.
+      // would render black); an emissive ember stands in for the Sun's map.
       return new THREE.MeshStandardMaterial({
         color: 0xff8a3a,
         emissive: new THREE.Color(0xff7a26),
@@ -1840,7 +1834,6 @@ export class CompareScene {
     // and stays emissive throughout (uHeat pinned in updateSim).
     this.liquidUniforms.uHeat.value = 0.15;
     this.fillerTint = bodyColor(filler);
-    this.liquidUniforms.uCatalogTint.value.setHex(this.fillerTint);
     this.updateLiquidUniforms(0);
   }
 
@@ -1970,7 +1963,7 @@ export class CompareScene {
 
   /**
    * Scatter `n` static fillers inside the glass — a deterministic settled pile
-   * for the transparency QA and the CP2 montage (P3's real pour replaces this).
+   * for the transparency QA and the montage capture (the real pour replaces it).
    * Every ball is strictly inside the shell and packed toward the lower
    * hemisphere. `n = 0` clears.
    */
@@ -2069,7 +2062,7 @@ export class CompareScene {
   }
 
   /**
-   * Sub-unity pose (D8): one filler at true relative scale r_f = n^(−1/3) (> 1),
+   * Sub-unity pose: one filler at true relative scale r_f = n^(−1/3) (> 1),
    * internally tangent at the container's bottom pole so it pokes out the top.
    * Reuses boulder mesh 0 as a plain lit planet (molten front off). The vessel
    * stays whole (the mouth is regime-gated away). Never routed through the solver.
@@ -2114,7 +2107,7 @@ export class CompareScene {
     this.fillerMesh.instanceMatrix.needsUpdate = true;
   }
 
-  /** The scene's top extent (studio units) for the tall-scene framing (D9). */
+  /** The scene's top extent (studio units) for the tall-scene framing. */
   topExtentForPour(comparison: Comparison): number {
     if (comparison.subUnity) return this.subUnityFillerY + this.subUnityRf; // wedged filler top
     if (comparison.regime === 'boulders') return CONTAINER_R + 2 * (1 / comparison.across);
@@ -2142,7 +2135,7 @@ export class CompareScene {
     return this.subUnityFillerY;
   }
 
-  /** Re-zero the sim + liquid for the same pair (D15 Reset — no texture reload). */
+  /** Re-zero the sim + liquid for the same pair (Reset — no texture reload). */
   resetSession(comparison: Comparison, filler: string): void {
     this.configurePour(comparison, filler);
     // Re-seal the mouth immediately: a reset must show a pristine closed vessel,
@@ -2159,10 +2152,13 @@ export class CompareScene {
    * Top the liquid off to exactly full at completion. Whole balls fill only
    * floor(N)/N of the container (you cannot pour a fractional ball), so the last
    * fractional ball-volume of liquid is added here — the container's volume IS
-   * exactly N ball-volumes, so a full fill reads N, not floor(N).
+   * exactly N ball-volumes, so a full fill reads N, not floor(N). `poured` lands
+   * on the exact ratio too (as topOffSand does), so the completion odometer and
+   * the slider track read the headline count, not the whole-ball floor.
    */
   topOffLiquid(): void {
     this.melted = this.simN;
+    this.poured = this.simN;
   }
 
   private updateMarbles(dt: number, ctl: PourControl): PourStatus {
@@ -2323,8 +2319,8 @@ export class CompareScene {
       const outward = 0.3 + this.grainRng() * 0.6;
       const vy = 0.7 + this.grainRng() * 0.8;
       const size = SPILL_SIZE_MIN + this.grainRng() * (SPILL_SIZE_MAX - SPILL_SIZE_MIN);
-      // Dimmer than P5 (1.1, still ≤1.35 cap) + amber-warmed toward the molten pool
-      // so the crown reads as glowing displaced matter, never whiter than the pool (F-4).
+      // Crown brightness 1.1 (≤1.35 cap) + amber-warmed toward the molten pool
+      // so it reads as glowing displaced matter, never whiter than the pool.
       this.grainColor(this.grainColorScratch, 1.1);
       this.grainColorScratch.lerp(SPLASH_WARM, 0.25);
       this.writeGrain(this.nextSpillSlot(), x, y + 0.01, z, Math.cos(a) * outward, vy, Math.sin(a) * outward, size, 0.34, 2, this.grainColorScratch);
@@ -2662,7 +2658,7 @@ export class CompareScene {
    * integrating so the strays drift out as they fade. Also stops the overflow
    * spill from emitting more garnish (the already-emitted grains fade with the
    * rest). Fallers are out of scope — they land + sink on their own within the
-   * settle window. Called on entering `complete` (F-2).
+   * settle window. Called on entering `complete`.
    */
   retireTransients(): void {
     const life = RETIRE_FADE_S / 0.28; // fadeOut spans lifeT 0.72 → 1.0
@@ -3041,11 +3037,11 @@ export class CompareScene {
       const vx = Math.cos(a) * outward;
       const vz = Math.sin(a) * outward;
       const vy = 1.1 + this.grainRng() * 1.1; // a real splash up out of the pool
-      // Size to the stream grain (F-3): an isolated grain kicked up reads at-or-
+      // Size to the stream grain: an isolated grain kicked up reads at-or-
       // below the falling column, not a chip ~3× its size. Capped ≤1.5× by K.
       const size = (GRAIN_SIZE_MIN + this.grainRng() * (GRAIN_SIZE_MAX - GRAIN_SIZE_MIN)) * PLUME_CHIP_K;
       // Grain-coloured, native brightness (gain 1.0) — the kicked-up dust reads as
-      // the bed's own material, not pale confetti whiter than the pool (F-4). Never
+      // the bed's own material, not pale confetti whiter than the pool. Never
       // brighter than the stream grain (which also spawns at gain 1.0).
       this.grainColor(this.grainColorScratch, 1.0);
       // Kind 2 (plume): inside the vessel at the pool contact — holds the iris like
@@ -3233,7 +3229,6 @@ export class CompareScene {
     // (Sun/Sun, n=1, is the one Sun-boulder pair.)
     u.uEmber.value = this.fillerIsSun ? 1.3 : 0;
     u.uMoltenLo.value.copy(this.liquidUniforms.uPalette1.value);
-    u.uMoltenHi.value.copy(this.liquidUniforms.uPalette3.value);
     u.uMeltFront.value = -1.3;
     u.uLodBias.value = 0; // the loom's sharper-mip bias is sub-unity-only
     this.boulderPool[slot].visible = true;
@@ -3285,6 +3280,12 @@ export class CompareScene {
    *  the renderer's ratio, so retune them to the new value. */
   onResize(): void {
     setStarfieldPixelRatio(this.starfield, this.renderer.getPixelRatio());
+  }
+
+  /** The starfield's applied point-size pixel ratio — QA reads this to assert
+   *  onResize retuned it AFTER the renderer's ratio was reapplied on a DPR change. */
+  getStarfieldPixelRatio(): number {
+    return (this.starfield.material as THREE.ShaderMaterial).uniforms?.pixelRatio?.value ?? 0;
   }
 
   /** Dim the whole scene during an in-mode pair swap (key light + glass). */

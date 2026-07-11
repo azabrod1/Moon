@@ -394,9 +394,11 @@ function installDevHooks() {
     getTimeMs: () => planetariumMode?.getCurrentUtcMs() ?? 0,
     setTimeRate: (rate: number) => planetariumMode?.setTimeRate(rate),
     setTimePaused: (paused: boolean) => planetariumMode?.setTimePaused(paused),
-    // Volume-compare bridge. compareOpen switches directly (the mode instance is
-    // null before first entry); the rest delegate to the live instance.
-    compareOpen: () => { void switchAppMode('volumeCompare'); },
+    // Volume-compare bridge. compareOpen routes through the Planetarium's real
+    // entry gate (snapshot capture + tutorial/mission refusal), so a test sees the
+    // same landed-state preservation a user does; the rest delegate to the live
+    // instance (null before first entry).
+    compareOpen: () => planetariumMode?.devEnterVolumeCompare(),
     compareExit: () => volumeCompareMode?.devExit(),
     comparePick: (container: string, filler: string) =>
       volumeCompareMode?.devPick(container, filler) ?? false,
@@ -465,7 +467,16 @@ async function init() {
   document.getElementById('loading-screen')?.classList.add('hidden');
   await planetariumMode?.showDeferredResumePromptIfNeeded();
 
-  if (autoMode === 'volumeCompare') await switchAppMode('volumeCompare');
+  if (autoMode === 'volumeCompare') {
+    // The fast path stays, but a boot that resumed into a tutorial must not switch
+    // away — the tutorial owns the scene and holds a live pre-tutorial snapshot
+    // that deactivating for the tool would strand. Ignore the param in that case.
+    if (planetariumMode?.isTutorialActive()) {
+      debugLog('?auto=volumeCompare ignored — a tutorial owns the scene');
+    } else {
+      await switchAppMode('volumeCompare');
+    }
+  }
 }
 
 // ================================================================
@@ -490,10 +501,11 @@ function syncViewport() {
   vcCamera.aspect = w / h;
   vcCamera.updateProjectionMatrix();
   moonFlightMode?.onResize(w / h);
-  volumeCompareMode?.onResize(w / h);
   applyRenderResolution();
   // After the renderer's pixel ratio is (re)applied: retune star point sizes,
-  // which are scaled by the renderer's ratio.
+  // which are scaled by the renderer's ratio — both the compare and planetarium
+  // starfields read renderer.getPixelRatio() in onResize, so they must run after.
+  volumeCompareMode?.onResize(w / h);
   planetariumMode?.onResize();
   debugLog('Resize', { width: w, height: h });
 }

@@ -676,6 +676,12 @@ export class PlanetariumMode {
   private scriptedTransfer: ScriptedTransfer | null = null;
   private preMissionState: PlanetariumState | null = null;
   private preMissionMenuVisible = false;
+  /** The pre-tool journey stashed when the volume-compare tool is entered. main.ts
+   *  deactivates this mode for the tool (which exits landed mode and saves the
+   *  taken-off state), so the snapshot is what restores the exact landing/camera/
+   *  clock on return — and what getState() serves meanwhile, so a tab-close inside
+   *  the tool reloads to the pre-tool landing. Same idiom as preMissionState. */
+  private preToolState: PlanetariumState | null = null;
   private deferredResumePromptState: PlanetariumState | null = null;
   private resumeShipAfterMenu = false;
   private resumeTimeAfterMenu = false;
@@ -726,6 +732,12 @@ export class PlanetariumMode {
     takeTutorial?.classList.toggle('tutorial-btn-ghost', !firstRun);
     const explore = document.getElementById('help-explore');
     if (explore) explore.style.display = firstRun ? '' : 'none';
+    // The "How many fit?" row steals the whole scene, so it is disabled while a
+    // mission or the tutorial owns it (requestVolumeCompare refuses too — this is
+    // the visible affordance). .tutorial-btn:disabled dims it, matching the Tools
+    // row's dim idiom.
+    const volumeCompareRow = document.getElementById('help-volume-compare') as HTMLButtonElement | null;
+    if (volumeCompareRow) volumeCompareRow.disabled = this.isMissionActive() || this.tutorial !== null;
     this.resumeShipAfterHelp = this.player.moving;
     this.resumeTimeAfterHelp = !this.timeState.paused;
     this.player.moving = false;
@@ -1028,7 +1040,16 @@ export class PlanetariumMode {
       performance.measure('plm:starfield', 'plm:starfield:start');
     }
 
-    if (savedState && shouldPromptForResume) {
+    if (this.preToolState) {
+      // Returning from the volume-compare tool — restore the exact pre-tool
+      // journey (landed body, camera, clock) captured on entry, not the store's
+      // copy. Cleared so a later fresh activation reads the store normally.
+      // Session-only landed sub-states (surface view, orbit details) drop, same
+      // as a reload; the deck/panel are already closed by that entry.
+      const pre = this.preToolState;
+      this.preToolState = null;
+      this.restoreState(pre);
+    } else if (savedState && shouldPromptForResume) {
       this.restoreState(savedState);
       this.deferredResumePromptState = savedState;
     } else if (savedState) {
@@ -2792,6 +2813,13 @@ export class PlanetariumMode {
     return this.activeHistoricJourney !== null;
   }
 
+  /** Whether a guided tutorial is running — it owns the scene and holds a live
+   *  pre-tutorial snapshot, so main.ts's ?auto=volumeCompare fast path must not
+   *  switch away and strand it. */
+  isTutorialActive(): boolean {
+    return this.tutorial !== null;
+  }
+
   private setHistoricPanelVisible(visible: boolean) {
     document.getElementById('historic-panel')?.classList.toggle('visible', visible);
     const reopenBtn = document.getElementById('historic-reopen');
@@ -3330,7 +3358,14 @@ export class PlanetariumMode {
    *  closes every entry surface first (the ☰ menu auto-pauses ship + clock and
    *  restores on close, so leave with that resolved, as startTutorial does). */
   private requestVolumeCompare() {
-    if (this.tutorial !== null) return;
+    if (this.tutorial !== null || this.isMissionActive()) return;
+    // Snapshot the pre-tool journey before main.ts deactivates this mode — that
+    // deactivate exits landed mode and saves the taken-off state, so without this
+    // the landing (and any Observatory excursion) is lost. getState() then serves
+    // this snapshot to every persistence path, and activate() restores it on
+    // return, so leaving the tool — or a tab-close inside it — resumes exactly
+    // here. Mirrors preMissionState + the tutorial's getState()-serves-snapshot.
+    this.preToolState = this.getState();
     this.closeMenuPanel();
     this.hideHelp();
     this.closeToolsMenu();
@@ -5118,6 +5153,13 @@ export class PlanetariumMode {
       }
     }
     return false;
+  }
+
+  /** Headless support: enter the volume-compare tool through the REAL gate, so a
+   *  test exercises the same snapshot capture + tutorial/mission refusal a user
+   *  gets (the raw switchAppMode path would bypass the pre-tool snapshot). */
+  devEnterVolumeCompare(): void {
+    this.requestVolumeCompare();
   }
 
   /** Headless support: enter the Observatory surface view ("Look up"). */
@@ -7382,6 +7424,14 @@ export class PlanetariumMode {
     // the tutorial has stopped; the mission-start hook does exactly that.
     if (this.tutorial) {
       return { ...this.tutorial.snapshot.state, timestamp: Date.now() };
+    }
+    // While the volume-compare tool holds the scene, every persistence caller gets
+    // the pre-tool snapshot (timestamp refreshed) — the same override the tutorial
+    // uses — so deactivate's save + any autosave keep writing the journey the user
+    // left, and a reload inside the tool resumes the pre-tool landing rather than
+    // the torn-down takeoff. Cleared in activate() on return.
+    if (this.preToolState) {
+      return { ...this.preToolState, timestamp: Date.now() };
     }
     return {
       positionAU: { x: this.player.posX, y: this.player.posY, z: this.player.posZ },

@@ -12,6 +12,7 @@ import {
   formatCount,
   formatAcross,
   formatOdometer,
+  odometerString,
   sliderTargetCount,
   sliderForTarget,
   sliderFillsExactly,
@@ -118,7 +119,7 @@ describe('targetReached — regime-aware pour/ghost satisfaction', () => {
   it('boulders: half of a 1.73 pair (0.865) pours then holds mid-slump', () => {
     // fresh: not reached → the settling phase pours the boulder.
     expect(targetReached(0.865, 0, 'boulders')).toBe(false);
-    // melted to its share: reached → no further pour (D7 partial hold), not a
+    // melted to its share: reached → no further pour (the partial hold), not a
     // full fill — the floor(0.865)=0 marble rule would have made this inert.
     expect(targetReached(0.865, 0.865, 'boulders')).toBe(true);
   });
@@ -127,8 +128,8 @@ describe('targetReached — regime-aware pour/ghost satisfaction', () => {
     expect(targetReached(0.7, 0.3, 'boulders')).toBe(false);
     expect(targetReached(0.7, 0.7, 'boulders')).toBe(true);
   });
-  it('sand pours on the whole-ball rule (P4: the stream fills toward floor(target))', () => {
-    // P4 REWRITE (was "sand never pours in P3"): sand is pourable now — the
+  it('sand pours on the whole-ball rule (the stream fills toward floor(target))', () => {
+    // Sand is pourable — the
     // stream drives floor(melted) toward the target, so a partial sand target
     // (e.g. 204000.6) is reached at its floor, one whole grain below is not.
     expect(targetReached(204_000.6, 204_000, 'sand')).toBe(true);
@@ -137,7 +138,7 @@ describe('targetReached — regime-aware pour/ghost satisfaction', () => {
   });
 });
 
-describe('sandFillFraction — the sand ramp (P4)', () => {
+describe('sandFillFraction — the sand ramp', () => {
   it('endpoints: 0 at/before the open, exactly 1 at/after the close', () => {
     expect(sandFillFraction(0, 24)).toBe(0);
     expect(sandFillFraction(-2, 24)).toBe(0);
@@ -170,7 +171,7 @@ describe('sandFillFraction — the sand ramp (P4)', () => {
   });
 });
 
-describe('sandGrainBudget — two tiers, one boolean (P4)', () => {
+describe('sandGrainBudget — two tiers, one boolean', () => {
   it('full tier (bloom + desktop) = 3000, weak tier = 1500', () => {
     expect(sandGrainBudget(true, false)).toBe(3000); // full
     expect(sandGrainBudget(false, false)).toBe(1500); // no bloom → weak
@@ -342,7 +343,7 @@ describe('heapSplit — the pure frame-independent bulk/cone solve', () => {
   });
 });
 
-describe('liquidAtRim — the visual top-out trigger (P4)', () => {
+describe('liquidAtRim — the visual top-out trigger', () => {
   const R = 1;
   const rimY = 2 * 0.995; // 2·R_liq, the full-fill render height
   it('true only once the eased level is within ~0.5% of R of the rim', () => {
@@ -378,6 +379,37 @@ describe('formatOdometer — the whole-ball counter', () => {
   });
 });
 
+describe('odometerString — the completion odometer lands on the headline count', () => {
+  const phase = (p: string) => p as ComparePhase;
+  it('a fractional-N marble finish reads the headline number, not the whole-ball floor', () => {
+    const cmp = buildComparison('Earth', 'Moon'); // ≈49.3, marbles
+    // At the finish `poured` is topped to the exact ratio (topOffLiquid); the two
+    // finished phases render it with formatCount → matches the "49.3 fit" headline.
+    const headlineNumber = formatCount(cmp.n); // "49.3"
+    expect(odometerString('marbles', phase('complete'), cmp.n)).toBe(headlineNumber);
+    expect(odometerString('marbles', phase('spilling'), cmp.n)).toBe(headlineNumber);
+    expect(odometerString('marbles', phase('complete'), cmp.n)).toBe('49.3');
+  });
+  it('mid-pour a marble odometer stays a whole ball', () => {
+    expect(odometerString('marbles', phase('pouring'), 42)).toBe('42');
+    expect(odometerString('marbles', phase('raining'), 48.9)).toBe('49'); // rounded whole ball
+    expect(odometerString('marbles', phase('brim'), 727)).toBe('727');
+  });
+  it('an integer-count marble finish is unchanged (both formatters agree)', () => {
+    // Jupiter←Earth ≈1,321: formatCount and formatOdometer both group to "1,321",
+    // so switching the formatter at the finish is visibly a no-op for large counts.
+    const cmp = buildComparison('Jupiter', 'Earth');
+    expect(odometerString('marbles', phase('complete'), cmp.n)).toBe('1,321');
+    expect(formatOdometer(cmp.n)).toBe('1,321');
+  });
+  it('boulders + sand always run the ratio voice', () => {
+    expect(odometerString('boulders', phase('pouring'), 3.3)).toBe('3.30');
+    expect(odometerString('boulders', phase('complete'), 6.64)).toBe('6.64');
+    expect(odometerString('sand', phase('pouring'), 5000)).toBe('5,000');
+    expect(odometerString('sand', phase('complete'), 4096)).toBe('4,096');
+  });
+});
+
 describe('regime picking', () => {
   it('boulder / marble boundary straddles 3.1 balls across (N = 3.1^3 ≈ 29.79)', () => {
     expect(pickRegime(29)).toBe('boulders');
@@ -388,7 +420,7 @@ describe('regime picking', () => {
   it('marble / sand boundary straddles 16 balls across (N = 16^3 = 4096)', () => {
     expect(pickRegime(4095)).toBe('marbles');
     expect(pickRegime(4096)).toBe('marbles'); // exactly on the boundary → middle regime
-    expect(pickRegime(4097)).toBe('sand'); // one past → sand pours (P4)
+    expect(pickRegime(4097)).toBe('sand'); // one past → sand pours
   });
   it('exactly on a boundary counts as the middle regime', () => {
     expect(pickRegime(Math.pow(COMPARE_TUNABLES.boulderMaxAcross, 3))).toBe('marbles');
@@ -612,7 +644,7 @@ describe('phase machine', () => {
     expect(nextPhase('pouring', 'brim-hit')).toBe('brim');
     expect(nextPhase('brim', 'melt-start')).toBe('melting');
     expect(nextPhase('melting', 'melt-open')).toBe('raining');
-    expect(nextPhase('raining', 'top-out')).toBe('spilling'); // P4: raining spills now
+    expect(nextPhase('raining', 'top-out')).toBe('spilling'); // raining spills now
     expect(nextPhase('spilling', 'fill-complete')).toBe('complete');
     expect(nextPhase('complete', 'reset')).toBe('loading');
   });
@@ -632,7 +664,7 @@ describe('phase machine', () => {
     expect(nextPhase('settling', 'fill-complete')).toBeNull();
     expect(nextPhase('brim', 'fill-complete')).toBeNull();
     expect(nextPhase('melting', 'fill-complete')).toBeNull();
-    expect(nextPhase('raining', 'fill-complete')).toBeNull(); // P4: raining exits via top-out
+    expect(nextPhase('raining', 'fill-complete')).toBeNull(); // raining exits via top-out
     expect(nextPhase('spilling', 'fill-complete')).toBe('complete');
   });
   it('top-out is legal only from pouring (sand) and raining (marbles)', () => {
@@ -893,5 +925,27 @@ describe('endCardModel — golden strings (Jupiter/Earth)', () => {
     expect(model.kicker).toContain('The Moon holds the volume');
     const titanContainer = endCardModel('Titan', 'Earth', buildComparison('Titan', 'Earth'), null);
     expect(titanContainer.kicker).toBeNull(); // Titan has no listed mass
+  });
+  it('same-body (exact ratio 1) reads a singular headline + kicker, not "1.00 Earths"', () => {
+    const earth = buildComparison('Earth', 'Earth'); // n === 1 exactly
+    expect(earth.n).toBe(1);
+    const model = endCardModel('Earth', 'Earth', earth, null);
+    expect(model.headline).toBe('Earth fits inside Earth exactly once');
+    expect(model.kicker).toBe('Earth holds one Earth — the very same volume and mass.');
+    expect(model.headline).not.toContain('1.00');
+    expect(model.kicker).not.toContain('1.00');
+  });
+  it('same-body takes the article on the Moon', () => {
+    const moon = endCardModel('Moon', 'Moon', buildComparison('Moon', 'Moon'), null);
+    expect(moon.headline).toBe('The Moon fits inside the Moon exactly once');
+    expect(moon.kicker).toBe('The Moon holds one Moon — the very same volume and mass.');
+  });
+  it('a genuinely near-1 CROSS-body pair keeps the numeric form', () => {
+    // Uranus←Neptune ≈ 1.09 (radii close, but not the same body) — never singular.
+    const cmp = buildComparison('Uranus', 'Neptune');
+    expect(cmp.n).toBeGreaterThan(1);
+    const model = endCardModel('Uranus', 'Neptune', cmp, null);
+    expect(model.headline).toBe('1.09 Neptunes fit inside Uranus');
+    expect(model.headline).not.toContain('exactly once');
   });
 });

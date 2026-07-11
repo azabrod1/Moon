@@ -261,6 +261,20 @@ export function formatOdometer(n: number): string {
   return Math.round(n).toLocaleString('en-US');
 }
 
+/**
+ * The odometer's display string for a regime + phase. Marbles count WHOLE balls
+ * through the pour (formatOdometer — "49"), but a full fill tops the liquid to the
+ * exact ratio at the finish and `poured` carries it, so the two finished phases
+ * (spilling / complete) render with the headline's own formatter — the odometer
+ * lands on the headline number ("49.3", not the whole-ball "49"). Boulders + sand
+ * always run the ratio voice; their poured already decelerates onto the exact ratio.
+ */
+export function odometerString(regime: FillRegime, phase: ComparePhase, poured: number): string {
+  if (regime !== 'marbles') return formatCount(poured);
+  const finished = phase === 'spilling' || phase === 'complete';
+  return finished ? formatCount(poured) : formatOdometer(poured);
+}
+
 // ---------------------------------------------------------------------------
 // Slider, pour schedule, drain
 // ---------------------------------------------------------------------------
@@ -788,7 +802,13 @@ export function endCardModel(
   brim: BrimStats | null,
 ): EndCardModel {
   const fillers = pluralizeBody(filler);
-  const headline = `${formatCount(comparison.n)} ${fillers} fit inside ${bodyDisplayName(container)}`;
+  // A same-body pair has an EXACT ratio of 1 (r/r cubed), never a coincidental
+  // cross-body ≈1, so this reads it as one singular sentence rather than the
+  // mechanical "1.00 Earths fit inside Earth".
+  const sameBody = Math.abs(comparison.n - 1) < 1e-9;
+  const headline = sameBody
+    ? capitalizeSentence(`${bodyDisplayName(container)} fits inside ${bodyDisplayName(container)} exactly once`)
+    : `${formatCount(comparison.n)} ${fillers} fit inside ${bodyDisplayName(container)}`;
 
   const dualStat = brim
     ? `As solid spheres: ${formatOdometer(brim.packedCount)} fit (${brim.packedPct}%) — melted, all ${brim.ratioText} do.`
@@ -801,7 +821,9 @@ export function endCardModel(
   // rendered character is safe for every name ("Earth holds…" is unchanged).
   const kicker = mass
     ? capitalizeSentence(
-        `${bodyDisplayName(container)} holds the volume of ${formatCount(comparison.n)} ${fillers} — but only the mass of ${mass}.`,
+        sameBody
+          ? `${bodyDisplayName(container)} holds one ${filler} — the very same volume and mass.`
+          : `${bodyDisplayName(container)} holds the volume of ${formatCount(comparison.n)} ${fillers} — but only the mass of ${mass}.`,
       )
     : null;
 

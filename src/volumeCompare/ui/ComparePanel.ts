@@ -6,9 +6,9 @@
  * caches elements and wires listeners once; render()/setters rewrite text on
  * state changes, and the odometer/status tick at ~10 Hz from the mode.
  *
- * Copy is plain and flagged for the P5 voice pass. Prose uses bodyDisplayName
- * for the article convention; the picker rows (ComparePicker) use raw catalog
- * names for search parity, matching the deck.
+ * Copy is plain and human. Prose uses bodyDisplayName for the article
+ * convention; the picker rows (ComparePicker) use raw catalog names for search
+ * parity, matching the deck.
  */
 import {
   formatCount,

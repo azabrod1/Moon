@@ -33,9 +33,25 @@ loader.crossOrigin = 'anonymous';
  */
 function decodeThenQueueWarm(tex: THREE.Texture): void {
   const img = tex.image as { decode?: () => Promise<void> } | undefined;
-  const queue = () => queueTextureWarm(tex);
-  if (img && typeof img.decode === 'function') img.decode().then(queue, queue);
-  else queue();
+  if (!(img && typeof img.decode === 'function')) {
+    queueTextureWarm(tex);
+    return;
+  }
+  // Cancellation-aware: if the texture is disposed while its decode is still
+  // pending (a rapid volume-compare pair swap disposes the texture it just
+  // loaded), the deferred enqueue must be dropped. queueTextureWarm registers
+  // its own dispose listener, but by then the dispose event has already fired,
+  // so the dead texture would sit in the warm pump and get uploaded to GPU
+  // storage that nothing ever frees. Track the disposal across the decode window
+  // and skip the enqueue; live textures queue exactly as before.
+  let disposed = false;
+  const onDispose = () => { disposed = true; };
+  tex.addEventListener('dispose', onDispose);
+  const finish = () => {
+    tex.removeEventListener('dispose', onDispose);
+    if (!disposed) queueTextureWarm(tex);
+  };
+  img.decode().then(finish, finish);
 }
 
 /**

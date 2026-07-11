@@ -43,7 +43,7 @@ import {
   brimStats,
   endCardModel,
   formatCount,
-  formatOdometer,
+  odometerString,
   formatAcross,
   bodyDisplayName,
   pluralizeBody,
@@ -111,6 +111,9 @@ export interface CompareDevState {
   frameDist: number;
   targetX: number;
   maxDist: number;
+  /** The starfield's applied point-size pixel ratio — QA reads it to assert the
+   *  resize retunes star sizes to a changed device pixel ratio. */
+  starfieldPixelRatio: number;
 }
 
 export class VolumeCompareMode {
@@ -510,7 +513,7 @@ export class VolumeCompareMode {
         // marbles + sand floor the target to whole balls (the same floor as
         // target-met, or the two ping-pong); boulders compare the fractional melt
         // volume, so "half" of a 1.73 pair (0.865) pours and a 0.3 → 0.7 raise
-        // pours the delta. Sand pours the stream now (P4 — the note is gone).
+        // pours the delta. Sand pours the stream now.
         if (!targetReached(target, s.poured, this.comparison.regime)) {
           this.fire('pour');
         }
@@ -653,10 +656,10 @@ export class VolumeCompareMode {
   }
 
   private odometerText(s: PourStatus): string {
-    // Marbles count whole balls (formatOdometer). Boulders + sand run the tiered
-    // ratio voice (formatCount): the sand odometer decelerates into its landing
-    // and its final string equals the headline (both formatCount(N)).
-    return this.comparison.regime === 'marbles' ? formatOdometer(s.poured) : formatCount(s.poured);
+    // Whole-ball count through the marble pour; at the finish it lands on the
+    // headline number (the liquid is topped to the exact ratio there). Boulders +
+    // sand always run the ratio voice. Pure rule in odometerString.
+    return odometerString(this.comparison.regime, this.session.phase, s.poured);
   }
 
   /** The ghost ring previews the target level and hides once it is satisfied. */
@@ -767,24 +770,28 @@ export class VolumeCompareMode {
   // ---- Esc cascade ---------------------------------------------------------
 
   private escCascade(): void {
-    // Pause is a mode flag, not a phase — Esc while paused leaves directly
-    // (escIntent would answer 'pause-pour' forever otherwise).
-    if (this.paused) {
-      this.requestExit();
-      return;
-    }
+    // Overlays close first, even while paused: an open picker or end card must
+    // dismiss before the "paused → leave" shortcut fires. Pause is a mode flag,
+    // not a phase, so escIntent answers 'pause-pour' forever — handle leave here
+    // once no overlay is open.
     const intent = escIntent({
       pickerOpen: this.picker.isOpen(),
       endCardShown: this.panel.isEndCardShown(),
       phase: this.session.phase,
     });
+    if (intent === 'close-picker') {
+      this.picker.close();
+      return;
+    }
+    if (intent === 'dismiss-card') {
+      this.dismissEndCard();
+      return;
+    }
+    if (this.paused) {
+      this.requestExit();
+      return;
+    }
     switch (intent) {
-      case 'close-picker':
-        this.picker.close();
-        break;
-      case 'dismiss-card':
-        this.dismissEndCard();
-        break;
       case 'pause-pour':
         this.setPaused(true);
         break;
@@ -933,10 +940,12 @@ export class VolumeCompareMode {
 
   private panelState() {
     // Sand is pourable now (the stream). Only the sub-unity teaser hides the pour
-    // controls. Sand HIDES the melt controls (Melt affordance + Auto-melt toggle):
-    // a liquid-like fill never packs, so the pack-then-melt story doesn't apply.
+    // controls. The melt controls (Melt affordance + Auto-melt toggle) show for
+    // MARBLES only — they alone pack solids at the brim and reconcile by melting.
+    // Sand fills liquid-like (never packs); boulders always melt automatically
+    // (no brim beat, no manual Melt), so the toggle would be inert for both.
     const pourable = !this.comparison.subUnity;
-    const showMeltControls = this.comparison.regime !== 'sand';
+    const showMeltControls = this.comparison.regime === 'marbles';
     const presets: { key: PresetKey; label: string }[] =
       this.comparison.regime === 'boulders'
         ? [
@@ -959,7 +968,7 @@ export class VolumeCompareMode {
     };
   }
 
-  /** D15 Reset — same pair, cheap: re-zero the sim + liquid + UI, one generation bump. */
+  /** Reset — same pair, cheap: re-zero the sim + liquid + UI, one generation bump. */
   private resetSession(): void {
     // Inert while a pair load is in flight: declaring "ready" here would flip a
     // half-loaded scene live (or strand the loading chip). The Reset control is
@@ -1087,7 +1096,7 @@ export class VolumeCompareMode {
       // ≥90 px desktop / ≥56 px phone floor), not the giant's size.
       const target = new THREE.Vector3(0, 0.35, 0);
       this.controls.target.copy(target);
-      const az = -33; // side azimuth catches the key-lit belly (X9 loom key)
+      const az = -33; // side azimuth catches the key-lit belly
       const vhPx = Math.max(1, window.innerHeight);
       const floorPx = window.innerWidth <= 640 ? 60 : 96; // a hair above the 56/90 contract
       const p11 = 1 / Math.tan(vHalf); // vertical projection factor (screenR = p11·R·vh/2 / dist)
@@ -1221,6 +1230,7 @@ export class VolumeCompareMode {
       frameDist: this.lastDefaultDistance,
       targetX: this.controls.target.x,
       maxDist: this.controls.maxDistance,
+      starfieldPixelRatio: this.compareScene.getStarfieldPixelRatio(),
     };
   }
 

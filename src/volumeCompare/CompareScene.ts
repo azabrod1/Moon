@@ -640,6 +640,20 @@ vec3 massFloorLift(vec3 c, vec3 N, vec3 keyDir, float floorLum){
   float deficit = max(0.0, target - curLum);
   return c + (c / max(curLum, 1e-4)) * deficit;
 }
+// GPU safety net for the procedural mass. On some drivers (seen on Apple Metal)
+// the sand/melt math evaluates a NaN for certain camera + fill states; the
+// framebuffer clamps NaN to zero and the whole mass reads as a black silhouette
+// next to the lit vessel. Replace any non-finite channel with a legible fallback
+// (finite by construction — a constant-input read of the filler's own mid-tone),
+// so the body is never a black hole. A NaN never equals itself, so x == x is the
+// finiteness test.
+vec3 sanitizeMass(vec3 col, vec3 fallback){
+  return vec3(
+    col.x == col.x ? col.x : fallback.x,
+    col.y == col.y ? col.y : fallback.y,
+    col.z == col.z ? col.z : fallback.z
+  );
+}
 `;
 
 const LIQUID_BODY_VERTEX = /* glsl */ `
@@ -697,6 +711,7 @@ void main(){
   vec3 V = normalize(uCam - vWorldPos);
   float spec = pow(max(dot(reflect(-uSunDir, N), V), 0.0), 10.0);
   col += vec3(1.0, 0.86, 0.62) * spec * mix(0.30, 0.05, uSandSurface);
+  col = sanitizeMass(col, massFloorLift(lqMeltPalette(0.5), N, uSunDir, ${MASS_FLOOR.toFixed(3)}));
   gl_FragColor = vec4(col, 1.0);
 }
 `;
@@ -870,6 +885,9 @@ void main(){
   // term is unchanged at flag 0).
   float meniscus = smoothstep(0.93, 0.985, rr) * (1.0 - smoothstep(0.985, 1.02, rr));
   col += vec3(1.0, 0.72, 0.32) * meniscus * mix(0.35, 2.0, smoothstep(0.15, 1.0, uHeat)) * (1.0 - uSandSurface);
+  // Never let the heap read as a black silhouette if the procedural math NaNs on a
+  // given GPU — fall back to a directionally-lit read of the filler's mid-tone.
+  col = sanitizeMass(col, massFloorLift(lqMeltPalette(0.5), N, uSunDir, ${MASS_FLOOR.toFixed(3)}));
   gl_FragColor = vec4(col, 0.97);
 }
 `;
@@ -999,6 +1017,10 @@ void main() {
   // lit little body (the spill grains sit outside the glass in full key light).
   float wrap = dot(N, uKeyDirView) * 0.5 + 0.5;
   vec3 lit = vColor * (uAmbient + (1.0 - uAmbient) * wrap * wrap);
+  // Never let a grain vanish to a NaN speck if the view-space key dir goes non-finite
+  // on a given GPU — fall back to the flat ambient-lit grain colour (a grain is always
+  // a lit little body, never a black hole).
+  if (!(lit.x == lit.x && lit.y == lit.y && lit.z == lit.z)) lit = vColor * uAmbient;
   gl_FragColor = vec4(lit, vFade); // NormalBlending, toneMapped — stays sub-bloom
 }
 `;

@@ -599,7 +599,15 @@ uniform float uStreamActive;  // eased 0..1, 1 while the sand stream pours (tric
 // where the stream/fallers meet the pool. age01>=1 is dead. Shared: sand stream
 // (slot 0, pinned centre) + marble splashes (rotating 1-3). Strictly a roil.
 uniform vec4 uChurn[4];
-float lqHash(vec2 p){ return fract(sin(dot(p, vec2(127.1,311.7)))*43758.5453); }
+float lqHash(vec2 p){
+  // Reduce the sine argument modulo 2*pi before sampling. Sine is 2*pi-periodic so
+  // this is mathematically identity, but it keeps the argument small: a fast-math
+  // sine that returns NaN for large arguments (observed on Apple Metal at the
+  // high-frequency grain samples, ~1e5) would otherwise poison the whole procedural
+  // mass and the framebuffer clamps NaN to black. Bounded argument -> always finite.
+  float a = mod(dot(p, vec2(127.1, 311.7)), 6.2831853071795864);
+  return fract(sin(a) * 43758.5453);
+}
 float lqNoise(vec2 p){
   vec2 i=floor(p), f=fract(p); f=f*f*(3.0-2.0*f);
   return mix(mix(lqHash(i),lqHash(i+vec2(1,0)),f.x),
@@ -711,7 +719,8 @@ void main(){
   vec3 V = normalize(uCam - vWorldPos);
   float spec = pow(max(dot(reflect(-uSunDir, N), V), 0.0), 10.0);
   col += vec3(1.0, 0.86, 0.62) * spec * mix(0.30, 0.05, uSandSurface);
-  col = sanitizeMass(col, massFloorLift(lqMeltPalette(0.5), N, uSunDir, ${MASS_FLOOR.toFixed(3)}));
+  // Fallback lights the ANALYTIC world normal (finite), not the noise-derived N.
+  col = sanitizeMass(col, massFloorLift(lqMeltPalette(0.5), vWorldNormal, uSunDir, ${MASS_FLOOR.toFixed(3)}));
   gl_FragColor = vec4(col, 1.0);
 }
 `;
@@ -886,8 +895,10 @@ void main(){
   float meniscus = smoothstep(0.93, 0.985, rr) * (1.0 - smoothstep(0.985, 1.02, rr));
   col += vec3(1.0, 0.72, 0.32) * meniscus * mix(0.35, 2.0, smoothstep(0.15, 1.0, uHeat)) * (1.0 - uSandSurface);
   // Never let the heap read as a black silhouette if the procedural math NaNs on a
-  // given GPU — fall back to a directionally-lit read of the filler's mid-tone.
-  col = sanitizeMass(col, massFloorLift(lqMeltPalette(0.5), N, uSunDir, ${MASS_FLOOR.toFixed(3)}));
+  // given GPU — fall back to a directionally-lit read of the filler's mid-tone. Light
+  // the ANALYTIC flank normal (finite by construction), not the noise-derived N which
+  // is itself NaN when the noise is the culprit.
+  col = sanitizeMass(col, massFloorLift(lqMeltPalette(0.5), vFlankN, uSunDir, ${MASS_FLOOR.toFixed(3)}));
   gl_FragColor = vec4(col, 0.97);
 }
 `;

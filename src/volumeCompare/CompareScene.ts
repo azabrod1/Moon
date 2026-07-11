@@ -255,10 +255,11 @@ const SPLASH_WARM = new THREE.Color(1.0, 0.72, 0.38);
 const GRAIN_CAPACITY = 3000;
 // Grains never render at the true single-body radius (a sub-pixel sliver at this
 // scale) — they read as sand at a small studio size, jittered, with the ≥1px·dpr
-// floor carrying them at distance (the starfield idiom). Sized so the tight core
-// reads as a solid ribbon at the showroom camera distance.
-const GRAIN_SIZE_MIN = 0.014;
-const GRAIN_SIZE_MAX = 0.028;
+// floor carrying them at distance (the starfield idiom). Small enough to stay
+// grain-like even zoomed in at the crest (larger sizes read as boulders there);
+// the stream RATE, not the grain size, carries the ribbon's body.
+const GRAIN_SIZE_MIN = 0.007;
+const GRAIN_SIZE_MAX = 0.014;
 // The spill grains read a touch larger so the garnish is legible at the rim.
 const SPILL_SIZE_MIN = 0.02;
 const SPILL_SIZE_MAX = 0.034;
@@ -274,16 +275,9 @@ const GRAIN_VT = 2.2;
 // as a continuous ribbon, not drifting dust (display-only cross-section).
 const STREAM_DISC_FRAC = 0.32;
 // Stream throughput (grains/sec) while pouring — high enough that the tight core
-// reads as a solid ribbon; the round-robin cap bounds the live count so a short
-// fall never overflows the pool.
-const STREAM_RATE = 1900;
-// Impact plume: grains/sec kicked up + out from the contact while the stream is
-// live (a persistent splash marking where the column meets the pool). Bumped
-// A high plume rate so the contact splash is unmissable at default framing.
-const PLUME_RATE = 300;
-// Splash/plume chips size to the FALLING grain, capped ≤1.5× — a grain
-// kicked up, never a chip bigger than the thing that splashed.
-const PLUME_CHIP_K = 1.2;
+// reads as a solid ribbon at the half-size grain; emitStream scales it to the
+// device tier's slot band so a tall early-pour fall never outruns the pool.
+const STREAM_RATE = 2600;
 
 // --- sand heap (the settled bulk + the repose cone that rides on it) -------
 // The sand surface is a full-width cone on a spherical-cap bulk, a PURE function
@@ -1398,7 +1392,6 @@ export class CompareScene {
   private grainLiveCount = 0; // grains alive this frame (grainsLive() QA + pool visibility)
   private insideGrainLiveCount = 0; // live INSIDE grains (stream + plume) — the iris hold; excludes the outside spill
   private streamCarry = 0; // fractional stream-spawn carry across frames
-  private plumeCarry = 0; // fractional impact-plume-spawn carry
   private runoffCarry = 0; // fractional boulder-melt-runoff-spawn carry
   private plumeRippleT = 0; // countdown to the next throttled contact-flash ripple
   private mouthRadiusStudio = 0.14; // the current pair's glass opening radius (stream spread)
@@ -2701,7 +2694,6 @@ export class CompareScene {
   cancelTransients(): void {
     this.clearGrains();
     this.streamCarry = 0;
-    this.plumeCarry = 0;
     this.runoffCarry = 0;
     this.plumeRippleT = 0;
     this.spillActive = false;
@@ -2790,11 +2782,11 @@ export class CompareScene {
     if (!ctl.paused) {
       if (streaming) {
         this.emitStream(dt);
-        this.emitPlume(dt);
+        this.updateStreamContact(dt);
       } else {
         this.streamCarry = 0;
       }
-      this.advanceChurn(dt); // age churn sites (slot 0 re-bumped by emitPlume while streaming)
+      this.advanceChurn(dt); // age churn sites (slot 0 re-bumped by updateStreamContact while streaming)
     }
     this.updateGrains(dt);
     // The iris opens on stream/plume (inside-vessel) activity and seals ~1 s after
@@ -2909,8 +2901,12 @@ export class CompareScene {
     this.poseSandSurface(LIQUID_SPHERE_VOLUME);
   }
 
-  /** Begin the overflow spill: ~SPILL_COUNT grains over SPILL_EMIT_S at the rim. */
+  /** Begin the overflow spill: ~SPILL_COUNT grains over SPILL_EMIT_S at the rim.
+   *  Marbles only — at sand top-out the rim burst read as confetti (the settled
+   *  heap and the brim-flat surface already tell the moment), so sand's spilling
+   *  beat runs with no airborne garnish. */
   beginSpill(): void {
+    if (this.sandRegime) return;
     this.spillActive = true;
     this.spillElapsed = 0;
     this.spillEmitted = 0;
@@ -2923,7 +2919,10 @@ export class CompareScene {
     const crestY = -R_LIQ + this.heapBulkH + this.heapPeakH;
     const yTop = this.mouthPlaneY;
     if (yTop <= crestY + 0.02) return; // the heap crest reached the mouth — no room to pour
-    const budget = pourBudget(dt, STREAM_RATE, this.streamCarry);
+    // Scale the rate to this tier's stream slot band: the full-tier rate on a
+    // reduced pool would round-robin live grains out mid-fall (visible pops).
+    const rate = STREAM_RATE * Math.min(1, (this.grainBudget - SPILL_RESERVE) / (GRAIN_CAPACITY - SPILL_RESERVE));
+    const budget = pourBudget(dt, rate, this.streamCarry);
     this.streamCarry = budget.carry;
     const spread = this.mouthRadiusStudio * STREAM_DISC_FRAC;
     for (let k = 0; k < budget.spawns; k++) {
@@ -3082,37 +3081,14 @@ export class CompareScene {
     this.gPos[i3 + 1] = surfaceY + heapHeightAt(Math.min(1, rad / discR), this.heapPeakH) + 0.004;
   }
 
-  /** The persistent impact plume where the column meets the pool: a splash of
-   *  short-lived grains thrown up + out from the contact, with a brighter core
-   *  (within the whiteout budget), plus a throttled surface-flash ripple. The
-   *  stream is axial, so the contact sits at the centre of the current surface. */
-  private emitPlume(dt: number): void {
+  /** The stream's contact cues where the column meets the pool: the churn-spot
+   *  surface roil plus a throttled flash ripple. Deliberately NO thrown grains —
+   *  a kicked-up chip cloud reads as confetti at close zoom, so the contact is
+   *  carried by the surface animation alone. */
+  private updateStreamContact(dt: number): void {
     // The column lands on the heap crest (axial → heapHeightAt(0, peakH) = peakH).
     const contactY = -R_LIQ + this.heapBulkH + this.heapPeakH;
-    if (this.mouthPlaneY <= contactY + 0.02) return; // crest at the mouth — no fall, no plume
-    const budget = pourBudget(dt, PLUME_RATE, this.plumeCarry);
-    this.plumeCarry = budget.carry;
-    const spread = this.mouthRadiusStudio * STREAM_DISC_FRAC;
-    for (let k = 0; k < budget.spawns; k++) {
-      const a = this.grainRng() * Math.PI * 2;
-      const rad = this.grainRng() * spread * 0.7;
-      const x = Math.cos(a) * rad;
-      const z = Math.sin(a) * rad;
-      const outward = 0.5 + this.grainRng() * 0.9; // kicked outward from the contact
-      const vx = Math.cos(a) * outward;
-      const vz = Math.sin(a) * outward;
-      const vy = 1.1 + this.grainRng() * 1.1; // a real splash up out of the pool
-      // Size to the stream grain: an isolated grain kicked up reads at-or-
-      // below the falling column, not a chip ~3× its size. Capped ≤1.5× by K.
-      const size = (GRAIN_SIZE_MIN + this.grainRng() * (GRAIN_SIZE_MAX - GRAIN_SIZE_MIN)) * PLUME_CHIP_K;
-      // Grain-coloured, native brightness (gain 1.0) — the kicked-up dust reads as
-      // the bed's own material, not pale confetti whiter than the pool. Never
-      // brighter than the stream grain (which also spawns at gain 1.0).
-      this.grainColor(this.grainColorScratch, 1.0);
-      // Kind 2 (plume): inside the vessel at the pool contact — holds the iris like
-      // the stream. It shares the spill slot range but never the spill's iris waiver.
-      this.writeGrain(this.nextSpillSlot(), x, contactY + 0.01, z, vx, vy, vz, size, 0.34, 2, this.grainColorScratch);
-    }
+    if (this.mouthPlaneY <= contactY + 0.02) return; // crest at the mouth — no fall, no contact
     // The stream-churn spot: slot 0 pinned at the contact centre, kept fresh each
     // frame while the stream is live (amp is the stream's activity).
     this.bumpChurn(0, 0, 0, 0.9);

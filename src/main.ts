@@ -402,6 +402,7 @@ function installDevHooks() {
       volumeCompareMode?.devPick(container, filler) ?? false,
     compareState: () => volumeCompareMode?.devState() ?? null,
     compareScatter: (n: number) => volumeCompareMode?.devScatter(n) ?? false,
+    compareFreezeTime: (on: boolean) => volumeCompareMode?.devFreezeTime(on) ?? false,
     compareOrbit: (azimuthDeg: number, elevationDeg?: number) =>
       volumeCompareMode?.devOrbit(azimuthDeg, elevationDeg) ?? false,
     // The pour (P3): slider, presets, melt, auto-melt, reset, Esc cascade, end card.

@@ -248,12 +248,16 @@ export class ComparePanel {
         // into the (filtered) curated list.
         btn.dataset.container = row.container;
         btn.dataset.filler = row.filler;
+        // Catalog-tinted dot for the filler the count names (ComparePicker.makeRow idiom).
+        const dot = document.createElement('span');
+        dot.className = 'pk-dot';
+        dot.style.background = `#${(row.color & 0xffffff).toString(16).padStart(6, '0')}`;
         const info = document.createElement('span');
         info.className = 'pk-info';
         const small = document.createElement('small');
         small.textContent = row.text;
         info.append(small);
-        btn.append(info);
+        btn.append(dot, info);
         rows.append(btn);
       });
     }

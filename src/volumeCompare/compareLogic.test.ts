@@ -36,9 +36,11 @@ import {
   bodyDisplayName,
   pluralizeBody,
   capitalizeSentence,
+  pausedStatus,
+  bodyTint,
 } from './compareLogic';
 import type { ComparePhase } from './compareLogic';
-import { PLANETARIUM_BODIES } from '../planetarium/planets/planetData';
+import { PLANETARIUM_BODIES, SUN_DATA } from '../planetarium/planets/planetData';
 import { MOONS } from '../planetarium/planets/moonData';
 
 /** Relative-tolerance check for the numeric goldens (independent of display). */
@@ -752,6 +754,36 @@ describe('Try-next list', () => {
   });
 });
 
+describe('pausedStatus — Esc hint only on a keyboard-ish device', () => {
+  it('fine pointer gets the Esc hint', () => {
+    expect(pausedStatus(true)).toBe('paused — Esc to leave');
+  });
+  it('coarse pointer (touch) just reads paused — no Esc mention', () => {
+    expect(pausedStatus(false)).toBe('paused');
+  });
+});
+
+describe('bodyTint — the try-row dot swatch (planet, Moon, Sun)', () => {
+  it('a planet reads its catalog colour', () => {
+    const mars = PLANETARIUM_BODIES.find((b) => b.name === 'Mars')!;
+    expect(bodyTint('Mars')).toBe(mars.color);
+  });
+  it('the Moon reads its catalog colour', () => {
+    const moon = MOONS.find((m) => m.name === 'Moon')!;
+    expect(bodyTint('Moon')).toBe(moon.color);
+  });
+  it('the Sun reads SUN_DATA.color (the one catalog exception)', () => {
+    expect(bodyTint('Sun')).toBe(SUN_DATA.color);
+  });
+  it('an unknown body falls back to neutral grey', () => {
+    expect(bodyTint('Nowhere')).toBe(0x888888);
+  });
+  it('every try-next row carries its filler tint', () => {
+    const model = endCardModel('Jupiter', 'Saturn', buildComparison('Jupiter', 'Saturn'), null);
+    for (const row of model.tryNext) expect(row.color).toBe(bodyTint(row.filler));
+  });
+});
+
 describe('brim stats + density kicker', () => {
   it('brimStats dual number (Earth holds 49.3 Moons, 28 fit = 57%)', () => {
     expect(brimStats(49.31, 28)).toEqual({ ratioText: '49.3', packedCount: 28, packedPct: 57 });
@@ -804,7 +836,7 @@ describe('endCardModel — golden strings (Jupiter/Earth)', () => {
     );
     expect(model.tryNext).toHaveLength(6);
     const earthMoon = model.tryNext[0];
-    expect(earthMoon).toEqual({ container: 'Earth', filler: 'Moon', text: '49.3 Moons in Earth' });
+    expect(earthMoon).toEqual({ container: 'Earth', filler: 'Moon', text: '49.3 Moons in Earth', color: bodyTint('Moon') });
   });
   it('dual stat renders the packed count as a whole ball (Earth/Moon, 28 fit)', () => {
     const cmp = buildComparison('Earth', 'Moon'); // ≈49.3

@@ -46,7 +46,9 @@ import {
   formatOdometer,
   formatAcross,
   bodyDisplayName,
+  pluralizeBody,
   capitalizeSentence,
+  pausedStatus,
   COMPARE_TUNABLES,
   type Comparison,
   type CompareSession,
@@ -103,6 +105,12 @@ export interface CompareDevState {
   bandTopPx: number;
   /** The vessel's projected screen box (px) — QA asserts bottom < bandTopPx. */
   vesselBox: { top: number; bottom: number; left: number; right: number };
+  /** Live cold-open empty-lift (1 empty → 0 early in the pour) — QA probe. */
+  emptyLift: number;
+  /** Framing QA: the applied orbit distance, target x, and the zoom-out cap. */
+  frameDist: number;
+  targetX: number;
+  maxDist: number;
 }
 
 export class VolumeCompareMode {
@@ -191,6 +199,9 @@ export class VolumeCompareMode {
   };
 
   private useBloom: boolean;
+  // A keyboard-ish device (matches PlanetariumMode's sky-pref signal): the "Esc to
+  // leave" pause hint only makes sense where there is an Esc key. Captured once.
+  private hasFinePointer = window.matchMedia('(hover: hover) and (pointer: fine)').matches;
 
   constructor(
     scene: THREE.Scene,
@@ -332,6 +343,7 @@ export class VolumeCompareMode {
     this.applyMeasuredFraming(dt);
     this.controls.update();
     this.compareScene.update(this.camera);
+    this.compareScene.tickReveal(dt); // ease the vessel in after a pair load (held hidden meanwhile)
 
     if (this.texturesReady && !this.comparison.subUnity) {
       const ctl = this.pourControl();
@@ -665,13 +677,14 @@ export class VolumeCompareMode {
   }
 
   private statusLine(s: PourStatus): string {
-    if (this.paused) return 'paused — Esc to leave';
+    if (this.paused) return pausedStatus(this.hasFinePointer);
     switch (this.session.phase) {
       case 'settling':
         if (s.poured < 0.5 && this.comparison.regime !== 'sand') {
-          // Sentence-initial display name capitalizes ("The Moon — 11 across").
+          // Plural: this zero-state meta counts how many fillers fit across the
+          // container ("Earths — 11 across"), so the name reads as a population.
           return capitalizeSentence(
-            `${bodyDisplayName(this.filler)} — ${formatAcross(this.comparison.across)} across`,
+            `${pluralizeBody(this.filler)} — ${formatAcross(this.comparison.across)} across`,
           );
         }
         // Clear the label once the pile is actually at rest (don't read "settling…"
@@ -858,6 +871,10 @@ export class VolumeCompareMode {
     this.panel.showEndCard(null);
     this.panel.setLoading(true);
     this.compareScene.setDimmed(true);
+    // Hold the vessel hidden until the new pair is fully applied — the reveal eases
+    // back in from afterPairReady, so the load window never shows the outgoing map
+    // or a ghost-less shell (mode entry stacks this behind the #mode-transition veil).
+    this.compareScene.beginPairLoad();
 
     await this.compareScene.applyPair(
       this.comparison,
@@ -891,6 +908,9 @@ export class VolumeCompareMode {
 
   /** Textures live: fire 'ready' (→ settling), set the sub-unity/normal staging, frame. */
   private afterPairReady(): void {
+    // The pair is fully presented (ghost, halo, filler, mouth all applied) — ease
+    // the held vessel in. resetSession lands here too with the reveal already at 1.
+    this.compareScene.revealPair();
     // commitSession left the phase in 'loading'; only 'ready' leaves it.
     this.fire('ready');
     if (this.comparison.subUnity) {
@@ -974,8 +994,62 @@ export class VolumeCompareMode {
       this.comparison.regime === 'boulders'
         ? tallSceneDistance(aspect, top, this.controls.maxDistance)
         : defaultOrbitDistance(aspect);
+    // On a narrow phone the scale preview parks to the RIGHT of the vessel and clips
+    // off-frame. Fit BOTH the vessel and the preview's bounding sphere horizontally.
+    // Desktop (>640px) keeps the EXACT default numbers — this branch is skipped.
+    if (window.innerWidth <= 640 && this.comparison.regime !== 'sand') {
+      this.fitPreviewMobile(this.compareScene.previewBounds(), dist);
+      return;
+    }
     this.lastDefaultDistance = dist;
     this.camera.position.copy(orbitPose(VC_FRAMING.azimuthDeg, VC_FRAMING.elevationDeg, dist, this.controls.target));
+    this.controls.update();
+  }
+
+  /**
+   * Fit the vessel (sphere R=1 at origin) AND the scale preview (its bounding sphere)
+   * inside [16, W−16] on a narrow phone: recenter on their SCREEN extents and pull back
+   * until both clear the margin. Iterative in screen space (a one-shot framing call),
+   * so it is exact under the orbit azimuth where world-x ≠ screen-x. Leaves the default
+   * pose untouched if it already fits (small previews on a wide-enough phone).
+   */
+  private fitPreviewMobile(pb: { x: number; y: number; z: number; r: number }, startDist: number): void {
+    const W = window.innerWidth || 1;
+    const vh = window.innerHeight || 1;
+    const az = VC_FRAMING.azimuthDeg;
+    const el = VC_FRAMING.elevationDeg;
+    const ty = VC_FRAMING.target.y;
+    const scratch = new THREE.Vector3();
+    const margin = 18; // a hair over the ≥16px requirement, so rounding never dips under
+    let dist = startDist;
+    let targetX = VC_FRAMING.target.x;
+    for (let iter = 0; iter < 24; iter++) {
+      this.controls.target.set(targetX, ty, 0);
+      this.camera.position.copy(orbitPose(az, el, dist, this.controls.target));
+      this.camera.updateMatrixWorld();
+      this.camera.matrixWorldInverse.copy(this.camera.matrixWorld).invert();
+      const p11 = this.camera.projectionMatrix.elements[5] || 2.7;
+      const projX = (x: number, y: number, z: number): number =>
+        (scratch.set(x, y, z).project(this.camera).x * 0.5 + 0.5) * W;
+      const rPx = (r: number, x: number, y: number, z: number): number =>
+        (p11 * r) / Math.max(0.001, this.camera.position.distanceTo(scratch.set(x, y, z))) * (vh / 2);
+      const vCx = projX(0, 0, 0);
+      const vR = rPx(1, 0, 0, 0);
+      const pCx = projX(pb.x, pb.y, pb.z);
+      const pR = rPx(pb.r, pb.x, pb.y, pb.z);
+      const left = Math.min(vCx - vR, pCx - pR);
+      const right = Math.max(vCx + vR, pCx + pR);
+      if (left >= margin && right <= W - margin) break;
+      // Recenter the content between the margins AND ease out a touch — both run so a
+      // centered-but-just-too-wide case (the 320px phone) still opens up the margin.
+      const center = (left + right) / 2;
+      targetX += (center - W / 2) / Math.max(vR, 1); // vR ≈ px per world unit at the vessel
+      dist *= 1.04;
+    }
+    this.lastDefaultDistance = dist;
+    this.controls.maxDistance = Math.max(this.controls.maxDistance, dist);
+    this.controls.target.set(targetX, ty, 0);
+    this.camera.position.copy(orbitPose(az, el, dist, this.controls.target));
     this.controls.update();
   }
 
@@ -1120,6 +1194,7 @@ export class VolumeCompareMode {
       texturesReady: this.texturesReady,
       fps: this.avgFps(),
       ghostMeanLum: this.compareScene.getGhostMeanLum(),
+      emptyLift: this.compareScene.getEmptyLift(),
       poured: s?.poured ?? 0,
       melted: s?.melted ?? 0,
       live: s?.live ?? 0,
@@ -1138,11 +1213,19 @@ export class VolumeCompareMode {
       liquidLevelY: s?.liquidLevelY ?? 0,
       bandTopPx: this.measuredBandTopPx,
       vesselBox: this.vesselScreenBox(),
+      frameDist: this.lastDefaultDistance,
+      targetX: this.controls.target.x,
+      maxDist: this.controls.maxDistance,
     };
   }
 
   devScatter(n: number): boolean {
     this.compareScene.scatter(n);
+    return true;
+  }
+
+  devFreezeTime(on: boolean): boolean {
+    this.compareScene.setTimeFrozen(on);
     return true;
   }
 

@@ -1066,31 +1066,6 @@
     body.surface-view-active #planetarium-bottom-bar { display: none; }
     body.surface-view-active #observatory-panel .obs-nowbar { display: none; }
 
-    .menu-submenu {
-      display: none;
-      margin: 2px 0 4px;
-      padding-left: 10px;
-    }
-    .menu-submenu.visible { display: block; }
-    .menu-action-parent {
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      gap: 8px;
-    }
-    .menu-action-chevron {
-      color: var(--text-dim);
-      font-size: 10px;
-      transition: transform 0.15s ease;
-    }
-    .menu-action-parent.expanded .menu-action-chevron {
-      transform: rotate(90deg);
-    }
-    .menu-action-subitem {
-      font-size: 11px;
-      color: var(--text-secondary);
-      padding-left: 12px;
-    }
     .menu-divider {
       height: 1px;
       background: var(--panel-border);
@@ -1636,13 +1611,24 @@
     #volume-compare-ui { display: none; }
 
     /* Leave sits top-left (the mode hides the shared "MOON" wordmark while it
-       runs, so the corner is clear); it reuses the Planetarium's Leave chip. */
+       runs, so the corner is clear); it reuses the Planetarium's Leave chip but
+       floors its contrast — the shared .act-btn's near-clear fill washes out over the
+       bright loom ceiling / full-bed close-ups, so give it a solid dark backing +
+       brighter border and text (blur, dimensions, and hover feedback kept). */
     #compare-leave {
       position: absolute;
       top: 14px;
       left: 14px;
       z-index: 20;
       pointer-events: auto;
+      background: rgba(6, 8, 12, 0.72);
+      border-color: rgba(255, 255, 255, 0.18);
+      color: var(--t1);
+    }
+    #compare-leave:hover {
+      background: rgba(20, 24, 32, 0.82);
+      border-color: rgba(255, 255, 255, 0.28);
+      color: var(--t1);
     }
 
     /* Right-side readout: the sentence and the honest count. Deliberately narrow
@@ -1678,10 +1664,9 @@
       color: var(--t1);
       letter-spacing: 0.3px;
     }
-    /* Sub-unity ("less than one fits") has no big number — a plain italic line. */
+    /* Sub-unity ("less than one fits") has no big number — a plain upright line. */
     .compare-count.compare-count-sub {
       font-size: 15px;
-      font-style: italic;
       color: var(--t1);
     }
     /* In-scene loading chip during an in-mode pair swap (mode entry uses the
@@ -2281,6 +2266,18 @@
     .tools-sub { font-size: 11px; color: var(--t3); letter-spacing: 0.2px; white-space: normal; }
     .tools-row.tools-dim { opacity: 0.4; cursor: default; }
     .tools-row.tools-dim:hover { background: none; }
+    /* Quiet section label above the historic-journey rows (moved in from the ☰). */
+    .tools-subhead {
+      padding: 9px 16px 4px;
+      margin-top: 4px;
+      border-top: 1px solid var(--line);
+      font-family: var(--font-ui);
+      font-size: 10.5px;
+      font-weight: 600;
+      letter-spacing: 0.6px;
+      text-transform: uppercase;
+      color: var(--t3);
+    }
 
     #planetarium-btn-land {
       position: fixed;
@@ -2602,18 +2599,6 @@
         <button class="menu-action" id="planetarium-btn-save">Save</button>
         <button class="menu-action" id="planetarium-btn-new">New Journey</button>
         <button class="menu-action" id="planetarium-btn-tutorial">Tutorial</button>
-        <button class="menu-action" id="planetarium-btn-volume-compare">How many fit?</button>
-        <button class="menu-action menu-action-parent" id="planetarium-btn-historic">
-          <span>Historic Journeys</span>
-          <span class="menu-action-chevron">&#9654;</span>
-        </button>
-        <div class="menu-submenu" id="planetarium-historic-submenu">
-          <button class="menu-action menu-action-subitem" id="planetarium-btn-historic-1">Voyager 1 (1977)</button>
-          <button class="menu-action menu-action-subitem" id="planetarium-btn-historic-2">Voyager 2 (1977)</button>
-          <button class="menu-action menu-action-subitem" id="planetarium-btn-cassini">Cassini-Huygens (1997)</button>
-          <button class="menu-action menu-action-subitem" id="planetarium-btn-new-horizons">New Horizons (2006)</button>
-          <button class="menu-action menu-action-subitem" id="planetarium-btn-juno">Juno (2011)</button>
-        </div>
         <div class="menu-divider"></div>
         <div class="settings-row">
           <span class="settings-label">Show ship</span>

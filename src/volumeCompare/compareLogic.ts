@@ -13,7 +13,7 @@
  */
 
 import { KM_CONSTANTS } from '../shared/constants/physicalData';
-import { PLANETARIUM_BODIES } from '../planetarium/planets/planetData';
+import { PLANETARIUM_BODIES, SUN_DATA } from '../planetarium/planets/planetData';
 import { MOONS } from '../planetarium/planets/moonData';
 
 // ---------------------------------------------------------------------------
@@ -730,10 +730,28 @@ export function pluralizeBody(name: string): string {
   return /(?:s|x|z|ch|sh)$/i.test(name) ? `${name}es` : `${name}s`;
 }
 
+/** A body's catalog tint (the shared idiom: planet/moon catalogs, Sun the one
+ *  exception since it is absent from them). Returned as a hex number so this module
+ *  stays three-free; the panel renders the swatch. */
+export function bodyTint(name: string): number {
+  if (name === 'Sun') return SUN_DATA.color;
+  return (
+    PLANETARIUM_BODIES.find((b) => b.name === name)?.color ??
+    MOONS.find((m) => m.name === name)?.color ??
+    0x888888
+  );
+}
+
 /** Capitalize the first character of a sentence (leaves the rest untouched) — the
  *  end-card kicker starts with a display name, so "the Sun/Moon" must read "The". */
 export function capitalizeSentence(s: string): string {
   return s.length === 0 ? s : s.charAt(0).toUpperCase() + s.slice(1);
+}
+
+/** The paused status line. The "Esc to leave" hint only makes sense on a
+ *  keyboard-ish device, so a coarse-pointer (touch) device just reads "paused". */
+export function pausedStatus(hasFinePointer: boolean): string {
+  return hasFinePointer ? 'paused — Esc to leave' : 'paused';
 }
 
 export interface EndCardTryRow {
@@ -741,6 +759,8 @@ export interface EndCardTryRow {
   filler: string;
   /** "49 Moons in Earth" — live count + the pour phrasing. */
   text: string;
+  /** The FILLER's catalog tint (the body the count names) — the row's dot swatch. */
+  color: number;
 }
 
 export interface EndCardModel {
@@ -797,7 +817,7 @@ export function endCardModel(
       rn < 1
         ? `${formatCount(rn)} of a ${pair.filler} in ${bodyDisplayName(pair.container)}`
         : `${formatCount(rn)} ${pluralizeBody(pair.filler)} in ${bodyDisplayName(pair.container)}`;
-    return { container: pair.container, filler: pair.filler, text };
+    return { container: pair.container, filler: pair.filler, text, color: bodyTint(pair.filler) };
   });
 
   return { headline, dualStat, kicker, tryNext };

@@ -278,7 +278,6 @@ export class PlanetariumMode {
     'planetarium-btn-observatory',
     'planetarium-btn-autopilot',
     'planetarium-btn-tutorial',
-    'planetarium-btn-volume-compare',
     'planetarium-speed-up',
     'planetarium-speed-down',
   ] as const;
@@ -2814,11 +2813,6 @@ export class PlanetariumMode {
     this.setHistoricPanelVisible(false);
   }
 
-  private collapseHistoricJourneyMenu() {
-    document.getElementById('planetarium-historic-submenu')?.classList.remove('visible');
-    document.getElementById('planetarium-btn-historic')?.classList.remove('expanded');
-  }
-
   private rememberPreMissionState() {
     if (this.activeHistoricJourney) return;
     this.preMissionState = this.getState();
@@ -3316,16 +3310,14 @@ export class PlanetariumMode {
     this.updateTimeUI({ flash: true });
   }
 
-  // Both the Tutorial and "How many fit?" menu items steal the whole scene, so
-  // both are disabled while a tutorial runs — it owns the scene and holds a live
-  // pre-tutorial snapshot that a mode switch would strand. Called on tutorial
-  // start and end.
+  // The ☰ Tutorial item steals the whole scene, so it is disabled while a tutorial
+  // runs — it owns the scene and holds a live pre-tutorial snapshot that a mode switch
+  // would strand. ("How many fit?" is now a Tools-menu row, disabled at build time by
+  // buildToolsMenu's `running` flag.) Called on tutorial start and end.
   private updateSceneStealingMenuItems(): void {
     const running = this.tutorial !== null;
-    for (const id of ['planetarium-btn-tutorial', 'planetarium-btn-volume-compare']) {
-      const btn = document.getElementById(id) as HTMLButtonElement | null;
-      if (btn) btn.disabled = running;
-    }
+    const btn = document.getElementById('planetarium-btn-tutorial') as HTMLButtonElement | null;
+    if (btn) btn.disabled = running;
   }
 
   // ── Tools front door ─────────────────────────────────────
@@ -3401,6 +3393,36 @@ export class PlanetariumMode {
     row.append(info);
     row.addEventListener('click', () => this.requestVolumeCompare());
     list.appendChild(row);
+
+    // Historic journeys (moved in from the ☰): a quiet subhead + name-only rows,
+    // reusing the mission start handler verbatim. Not disabled during the tutorial —
+    // startHistoricJourney restores it first, exactly as the old ☰ entries did.
+    const subhead = document.createElement('div');
+    subhead.className = 'tools-subhead';
+    subhead.textContent = 'Historic journeys';
+    list.appendChild(subhead);
+    const missions: { id: HistoricMissionId; label: string }[] = [
+      { id: 'voyager1', label: 'Voyager 1 (1977)' },
+      { id: 'voyager2', label: 'Voyager 2 (1977)' },
+      { id: 'cassini', label: 'Cassini-Huygens (1997)' },
+      { id: 'newHorizons', label: 'New Horizons (2006)' },
+      { id: 'juno', label: 'Juno (2011)' },
+    ];
+    for (const m of missions) {
+      const mrow = document.createElement('button');
+      mrow.className = 'pk-row tools-row';
+      const minfo = document.createElement('span');
+      minfo.className = 'pk-info';
+      const mname = document.createElement('b');
+      mname.textContent = m.label; // name-only — missions aren't catalog bodies (no pk-dot)
+      minfo.append(mname);
+      mrow.append(minfo);
+      mrow.addEventListener('click', () => {
+        this.closeToolsMenu(); // one modal at a time — the mission takes the scene
+        void this.startHistoricJourney(m.id);
+      });
+      list.appendChild(mrow);
+    }
   }
 
   private updateMissionControlState() {
@@ -3534,21 +3556,7 @@ export class PlanetariumMode {
       this.notification.show('New journey started!');
     });
 
-    document.getElementById('planetarium-btn-historic-1')?.addEventListener('click', () => {
-      void this.startHistoricJourney('voyager1');
-    });
-    document.getElementById('planetarium-btn-historic-2')?.addEventListener('click', () => {
-      void this.startHistoricJourney('voyager2');
-    });
-    document.getElementById('planetarium-btn-cassini')?.addEventListener('click', () => {
-      void this.startHistoricJourney('cassini');
-    });
-    document.getElementById('planetarium-btn-new-horizons')?.addEventListener('click', () => {
-      void this.startHistoricJourney('newHorizons');
-    });
-    document.getElementById('planetarium-btn-juno')?.addEventListener('click', () => {
-      void this.startHistoricJourney('juno');
-    });
+    // The five historic-journey starts now live as Tools-menu rows (buildToolsMenu).
     document.getElementById('historic-close')?.addEventListener('click', () => {
       this.dismissHistoricPanel();
     });
@@ -3600,10 +3608,9 @@ export class PlanetariumMode {
     document.getElementById('planetarium-help-close')?.addEventListener('click', () => this.hideHelp());
     document.querySelector('#planetarium-help .planetarium-help-backdrop')?.addEventListener('click', () => this.hideHelp());
 
-    // "How many fit?" entries: the ☰ item, the help-modal row, and the Tools
-    // popover row all commit through requestVolumeCompare (a no-op during the
-    // tutorial; it closes every entry surface first).
-    document.getElementById('planetarium-btn-volume-compare')?.addEventListener('click', () => this.requestVolumeCompare());
+    // "How many fit?" entries: the help-modal row and the Tools popover row commit
+    // through requestVolumeCompare (a no-op during the tutorial; it closes every
+    // entry surface first).
     document.getElementById('help-volume-compare')?.addEventListener('click', () => this.requestVolumeCompare());
 
     // Tools front door: the cluster button toggles the anchored popover. The
@@ -3616,13 +3623,6 @@ export class PlanetariumMode {
     });
     document.getElementById('tools-menu')?.addEventListener('click', (e) => {
       if (e.target === document.getElementById('tools-menu')) this.closeToolsMenu();
-    });
-
-    document.getElementById('planetarium-btn-historic')?.addEventListener('click', () => {
-      const submenu = document.getElementById('planetarium-historic-submenu');
-      const trigger = document.getElementById('planetarium-btn-historic');
-      const expanded = submenu?.classList.toggle('visible') ?? false;
-      trigger?.classList.toggle('expanded', expanded);
     });
 
     this.bottomBar.bind();
@@ -4188,7 +4188,7 @@ export class PlanetariumMode {
     const shipLabel = document.getElementById('settings-ship-label');
     if (shipLabel) shipLabel.textContent = 'On';
     this.closeMenuPanel();
-    this.collapseHistoricJourneyMenu();
+    this.closeToolsMenu(); // the mission started from the Tools popover — seal it shut
     this.updateMissionControlState();
     this.showHistoricMilestone(0);
     this.notification.show(journey.readyNotification);

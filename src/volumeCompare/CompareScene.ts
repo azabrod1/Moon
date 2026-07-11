@@ -455,7 +455,13 @@ const float LOOM_BODY_ALPHA = 0.74; // body alpha floor so the lit world survive
 
 // Ember granulation (the Sun dome): the emissive-boulder fbm, reused to break the
 // featureless brown gradient into soft solar cells. NaN-free at all-zero uniforms.
-float gHash(vec2 p){ return fract(sin(dot(p, vec2(127.1,311.7)))*43758.5453); }
+// mod 2*pi before the sine: identity (sine is 2*pi-periodic) but it bounds the
+// argument, so an Apple Metal fast-math sine can't return NaN for a large arg and
+// poison the granulation (framebuffer clamps NaN to black).
+float gHash(vec2 p){
+  float a = mod(dot(p, vec2(127.1, 311.7)), 6.2831853071795864);
+  return fract(sin(a) * 43758.5453);
+}
 float gNoise(vec2 p){ vec2 i=floor(p),f=fract(p); f=f*f*(3.0-2.0*f);
   return mix(mix(gHash(i),gHash(i+vec2(1,0)),f.x), mix(gHash(i+vec2(0,1)),gHash(i+vec2(1,1)),f.x), f.y); }
 float gFbm(vec2 p){ float v=0.0,a=0.5; for(int i=0;i<4;i++){ v+=a*gNoise(p); p*=2.0; a*=0.5; } return v; }
@@ -738,7 +744,15 @@ varying vec3 vFlankN;  // analytic cone-flank normal (world space), crest-soften
 float heapHeightAt(float rr, float peakH){
   return peakH * max(0.0, 1.0 - rr);
 }
-float vHash(vec2 p){ return fract(sin(dot(p, vec2(127.1,311.7)))*43758.5453); }
+// mod 2*pi before the sine: identity (sine is 2*pi-periodic) but it bounds the
+// argument. uHeapSeed pushes the dot to ~1e4-1e5 here, and an Apple Metal fast-math
+// sine returns NaN for a large arg — in this VERTEX stage that NaN flows through the
+// azimuthal wobble into the heap height and gl_Position, collapsing the cone geometry
+// itself (a corruption the fragment sanitize can't repair). Bounded arg -> always finite.
+float vHash(vec2 p){
+  float a = mod(dot(p, vec2(127.1, 311.7)), 6.2831853071795864);
+  return fract(sin(a) * 43758.5453);
+}
 float vNoise(vec2 p){
   vec2 i=floor(p), f=fract(p); f=f*f*(3.0-2.0*f);
   return mix(mix(vHash(i),vHash(i+vec2(1,0)),f.x),
@@ -1072,7 +1086,13 @@ uniform float uTime;
 varying vec2 vUv;
 varying vec3 vNormalW;
 varying float vObjY;
-float bHash(vec2 p){ return fract(sin(dot(p, vec2(127.1,311.7)))*43758.5453); }
+// mod 2*pi before the sine: identity (sine is 2*pi-periodic) but it bounds the
+// argument, so an Apple Metal fast-math sine can't return NaN for a large arg and
+// poison the granulation (framebuffer clamps NaN to black).
+float bHash(vec2 p){
+  float a = mod(dot(p, vec2(127.1, 311.7)), 6.2831853071795864);
+  return fract(sin(a) * 43758.5453);
+}
 float bNoise(vec2 p){ vec2 i=floor(p),f=fract(p); f=f*f*(3.0-2.0*f);
   return mix(mix(bHash(i),bHash(i+vec2(1,0)),f.x), mix(bHash(i+vec2(0,1)),bHash(i+vec2(1,1)),f.x), f.y); }
 float bFbm(vec2 p){ float v=0.0,a=0.5; for(int i=0;i<4;i++){ v+=a*bNoise(p); p*=2.0; a*=0.5; } return v; }

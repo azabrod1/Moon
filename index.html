@@ -2266,18 +2266,22 @@
     .tools-sub { font-size: 11px; color: var(--t3); letter-spacing: 0.2px; white-space: normal; }
     .tools-row.tools-dim { opacity: 0.4; cursor: default; }
     .tools-row.tools-dim:hover { background: none; }
-    /* Quiet section label above the historic-journey rows (moved in from the ☰). */
-    .tools-subhead {
-      padding: 9px 16px 4px;
-      margin-top: 4px;
-      border-top: 1px solid var(--line);
-      font-family: var(--font-ui);
-      font-size: 10.5px;
-      font-weight: 600;
-      letter-spacing: 0.6px;
-      text-transform: uppercase;
+    /* Historic journeys: one expandable group so the Tools popover stays compact —
+       the parent row toggles a submenu of the five missions. */
+    .tools-divider { height: 1px; background: var(--line); margin: 5px 12px; }
+    .tools-parent .pk-info { flex: 1 1 auto; }
+    .tools-chevron {
+      flex: 0 0 auto;
       color: var(--t3);
+      font-size: 11px;
+      line-height: 1;
+      transition: transform 0.15s var(--ease);
     }
+    .tools-parent.expanded .tools-chevron { transform: rotate(90deg); }
+    .tools-submenu { display: none; }
+    .tools-submenu.visible { display: block; }
+    .tools-row.tools-subitem { padding-left: 22px; min-height: 28px; }
+    .tools-row.tools-subitem .pk-info b { font-weight: 500; font-size: 13px; color: var(--t2); }
 
     #planetarium-btn-land {
       position: fixed;

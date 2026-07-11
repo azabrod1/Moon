@@ -3408,7 +3408,8 @@ export class PlanetariumMode {
   }
 
   /** Rebuild the popover rows (built dynamically so the tutorial-disabled state
-   *  is read live). One row today: the volume-compare tool. */
+   *  is read live): the volume-compare tool, then the expandable Historic
+   *  journeys group. */
   private buildToolsMenu() {
     const list = document.getElementById('tools-menu-list');
     if (!list) return;
@@ -3429,13 +3430,34 @@ export class PlanetariumMode {
     row.addEventListener('click', () => this.requestVolumeCompare());
     list.appendChild(row);
 
-    // Historic journeys (moved in from the ☰): a quiet subhead + name-only rows,
-    // reusing the mission start handler verbatim. Not disabled during the tutorial —
-    // startHistoricJourney restores it first, exactly as the old ☰ entries did.
-    const subhead = document.createElement('div');
-    subhead.className = 'tools-subhead';
-    subhead.textContent = 'Historic journeys';
-    list.appendChild(subhead);
+    // Historic journeys: one expandable group (parent row + a submenu of the five
+    // missions) so the popover stays compact and reads as a single item until the
+    // user opens it. Collapsed on every build — the menu opens tidy each time. Not
+    // disabled during the tutorial: startHistoricJourney restores it first, exactly
+    // as the old ☰ entries did.
+    const divider = document.createElement('div');
+    divider.className = 'tools-divider';
+    list.appendChild(divider);
+
+    const parent = document.createElement('button');
+    parent.className = 'pk-row tools-row tools-parent';
+    parent.setAttribute('aria-expanded', 'false');
+    const parentInfo = document.createElement('span');
+    parentInfo.className = 'pk-info';
+    const parentName = document.createElement('b');
+    parentName.textContent = 'Historic journeys';
+    const parentSub = document.createElement('span');
+    parentSub.className = 'tools-sub';
+    parentSub.textContent = 'Retrace a historic mission.';
+    parentInfo.append(parentName, parentSub);
+    const chevron = document.createElement('span');
+    chevron.className = 'tools-chevron';
+    chevron.textContent = '▸'; // ▸ — rotates to ▾ when expanded
+    parent.append(parentInfo, chevron);
+    list.appendChild(parent);
+
+    const submenu = document.createElement('div');
+    submenu.className = 'tools-submenu';
     const missions: { id: HistoricMissionId; label: string }[] = [
       { id: 'voyager1', label: 'Voyager 1 (1977)' },
       { id: 'voyager2', label: 'Voyager 2 (1977)' },
@@ -3445,7 +3467,7 @@ export class PlanetariumMode {
     ];
     for (const m of missions) {
       const mrow = document.createElement('button');
-      mrow.className = 'pk-row tools-row';
+      mrow.className = 'pk-row tools-row tools-subitem';
       const minfo = document.createElement('span');
       minfo.className = 'pk-info';
       const mname = document.createElement('b');
@@ -3456,8 +3478,16 @@ export class PlanetariumMode {
         this.closeToolsMenu(); // one modal at a time — the mission takes the scene
         void this.startHistoricJourney(m.id);
       });
-      list.appendChild(mrow);
+      submenu.appendChild(mrow);
     }
+    list.appendChild(submenu);
+
+    // Toggle the group open/closed in place — the parent never leaves the menu.
+    parent.addEventListener('click', () => {
+      const expanded = submenu.classList.toggle('visible');
+      parent.classList.toggle('expanded', expanded);
+      parent.setAttribute('aria-expanded', String(expanded));
+    });
   }
 
   private updateMissionControlState() {

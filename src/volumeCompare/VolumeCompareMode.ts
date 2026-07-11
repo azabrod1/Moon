@@ -222,6 +222,7 @@ export class VolumeCompareMode {
       onPreset: (k) => this.onPreset(k),
       onMelt: () => this.onMelt(),
       onReset: () => this.resetSession(),
+      onPauseToggle: () => this.setPaused(!this.paused),
       onAutoMelt: (on) => this.onAutoMelt(on),
       onChip: (slot) => this.openPicker(slot),
       onSwap: () => this.swapPair(),
@@ -298,6 +299,7 @@ export class VolumeCompareMode {
 
     this.slider = 0;
     this.paused = false;
+    this.panel.setPaused(false);
     this.autoMelt = true;
     this.panel.setAutoMelt(true);
     this.frameInitial();
@@ -764,6 +766,7 @@ export class VolumeCompareMode {
 
   private setPaused(paused: boolean): void {
     this.paused = paused;
+    this.panel.setPaused(paused);
     if (this.lastStatus) this.tickPanel(this.lastStatus);
   }
 

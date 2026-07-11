@@ -1740,6 +1740,20 @@
       cursor: pointer; padding: 2px 4px; -webkit-tap-highlight-color: transparent;
     }
     .compare-reset:hover { color: var(--t1); }
+    /* Pause/resume transport chip — the swap chip's idiom, sized for touch.
+       SVG glyphs, not ⏸/▶ text: iOS renders those codepoints as emoji. */
+    .compare-pause {
+      display: inline-flex; align-items: center; justify-content: center;
+      width: 26px; height: 22px; flex: none;
+      background: none; border: 1px solid var(--line); border-radius: var(--r-s);
+      color: var(--t2); cursor: pointer; -webkit-tap-highlight-color: transparent;
+      transition: color 0.14s var(--ease), border-color 0.14s var(--ease);
+    }
+    .compare-pause:hover { color: var(--t1); border-color: var(--accent); }
+    .compare-pause .cpause-play { display: none; }
+    .compare-pause.paused .cpause-bars { display: none; }
+    .compare-pause.paused .cpause-play { display: block; }
+    #compare-panel.compare-swapping .compare-pause { opacity: 0.4; pointer-events: none; }
     .compare-presets { display: flex; gap: 6px; margin-top: 9px; }
     .compare-preset {
       flex: 1; padding: 5px 4px; border-radius: var(--r-s); border: 1px solid var(--line);
@@ -3076,6 +3090,10 @@
         <div id="compare-pour" class="compare-pour">
           <div class="compare-odo"><b id="compare-odometer">0</b><span id="compare-status" class="compare-status"></span></div>
           <div class="compare-slider-row">
+            <button type="button" class="compare-pause" id="compare-pause" aria-label="Pause the pour" aria-pressed="false">
+              <svg class="cpause-bars" viewBox="0 0 12 12" width="10" height="10" aria-hidden="true"><rect x="2.2" y="1.8" width="2.7" height="8.4" rx="0.9" fill="currentColor"/><rect x="7.1" y="1.8" width="2.7" height="8.4" rx="0.9" fill="currentColor"/></svg>
+              <svg class="cpause-play" viewBox="0 0 12 12" width="10" height="10" aria-hidden="true"><path d="M3.6 1.9 L10.3 6 L3.6 10.1 Z" fill="currentColor"/></svg>
+            </button>
             <input type="range" id="compare-slider" class="compare-slider" min="0" max="1" step="0.001" value="0" aria-label="How much to pour">
             <button type="button" class="compare-reset" id="compare-reset">Reset</button>
           </div>

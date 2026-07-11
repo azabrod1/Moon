@@ -27,6 +27,7 @@ export interface ComparePanelHandlers {
   onPreset: (key: PresetKey) => void;
   onMelt: () => void;
   onReset: () => void;
+  onPauseToggle: () => void;
   onAutoMelt: (on: boolean) => void;
   onChip: (slot: ChipSlot) => void;
   onSwap: () => void;
@@ -71,6 +72,7 @@ export class ComparePanel {
     this.get('compare-swap')?.addEventListener('click', () => this.h.onSwap());
     this.get('compare-teaser')?.addEventListener('click', () => this.h.onTeaserSwap());
     this.get('compare-reset')?.addEventListener('click', () => this.h.onReset());
+    this.get('compare-pause')?.addEventListener('click', () => this.h.onPauseToggle());
     this.get('compare-melt')?.addEventListener('click', () => this.h.onMelt());
     const slider = this.get('compare-slider') as HTMLInputElement | null;
     slider?.addEventListener('input', () => this.h.onSlider(parseFloat(slider.value)));
@@ -92,6 +94,15 @@ export class ComparePanel {
         this.h.onEndTry(row.dataset.container, row.dataset.filler);
       }
     });
+  }
+
+  /** Reflect the pour's paused state on the transport chip (glyph + a11y). */
+  setPaused(paused: boolean): void {
+    const b = this.get('compare-pause');
+    if (!b) return;
+    b.classList.toggle('paused', paused);
+    b.setAttribute('aria-pressed', String(paused));
+    b.setAttribute('aria-label', paused ? 'Resume the pour' : 'Pause the pour');
   }
 
   /** The ⓘ note idiom: the info button toggles the explain block. */

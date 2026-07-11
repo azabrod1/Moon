@@ -11,10 +11,10 @@
  * parity, matching the deck.
  */
 import {
-  formatCount,
   bodyDisplayName,
   pluralizeBody,
   type Comparison,
+  type CompareIntroModel,
   type EndCardModel,
 } from '../compareLogic';
 
@@ -50,6 +50,14 @@ export interface ComparePanelState {
   showMeltControls: boolean;
   /** Preset buttons for this regime: labelled keys in display order. */
   presets: { key: PresetKey; label: string }[];
+  /** Null only for the non-pourable sub-unity comparison. */
+  intro: CompareIntroModel | null;
+}
+
+export interface PreviewLabelPlacement {
+  x: number;
+  top: number;
+  diameter: number;
 }
 
 export class ComparePanel {
@@ -121,7 +129,7 @@ export class ComparePanel {
 
   /** Rewrite the sentence, count/teaser, and pour-control shell for a new pair. */
   render(state: ComparePanelState): void {
-    const { container, filler, comparison } = state;
+    const { container, filler, comparison, intro } = state;
     this.setText('compare-chip-container', bodyDisplayName(container));
     this.setText('compare-chip-filler', pluralizeBody(filler));
 
@@ -134,10 +142,17 @@ export class ComparePanel {
       } else {
         count.classList.remove('compare-count-sub');
         const num = document.createElement('b');
-        num.textContent = formatCount(comparison.n);
-        count.append(num, document.createTextNode(' fit'));
+        num.textContent = intro?.volumeCount ?? '';
+        count.append(num, document.createTextNode(' by volume'));
       }
     }
+
+    const teaching = this.get('compare-teaching');
+    teaching?.classList.toggle('on', intro !== null);
+    this.setText('compare-volume-note', intro?.caveat ?? '');
+    this.setText('compare-across-headline', intro?.acrossHeadline ?? '');
+    this.setText('compare-cube-equation', intro?.cubeEquation ?? '');
+    this.setText('compare-preview-name', intro?.previewLabel ?? '');
 
     // Pour controls: hidden for the sub-unity teaser only.
     this.get('compare-pour')?.classList.toggle('off', !state.pourable);
@@ -155,7 +170,7 @@ export class ComparePanel {
       for (const p of state.presets) {
         const b = document.createElement('button');
         b.type = 'button';
-        b.className = 'compare-preset';
+        b.className = 'compare-preset' + (p.key === 'fill' ? ' compare-preset-primary' : '');
         b.dataset.preset = p.key;
         b.textContent = p.label;
         presets.appendChild(b);
@@ -167,6 +182,17 @@ export class ComparePanel {
   setReadout(odometer: string, status: string): void {
     this.setText('compare-odometer', odometer);
     this.setText('compare-status', status);
+  }
+
+  /** Place the mobile-only HTML label over the real 3D scale preview. */
+  placePreviewLabel(placement: PreviewLabelPlacement | null): void {
+    const label = this.get('compare-preview-label');
+    if (!label) return;
+    label.classList.toggle('on', placement !== null);
+    if (!placement) return;
+    label.style.left = `${placement.x}px`;
+    label.style.top = `${placement.top}px`;
+    label.style.setProperty('--preview-diameter', `${placement.diameter}px`);
   }
 
   /** Two-tone slider track: poured in the filler tint, poured→target dimmed, rest neutral. */

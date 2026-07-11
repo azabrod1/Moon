@@ -2601,6 +2601,11 @@ export class CompareScene {
     return { x: CONTAINER_R + Math.max(2.5 * r, 0.18), y: -CONTAINER_R + r, z: 0, r };
   }
 
+  /** Read-only presence for the HTML label that follows the rendered preview. */
+  previewPresence(): number {
+    return this.previewOpacity;
+  }
+
   private easePreview(dt: number): void {
     // Sand's filler is a sub-pixel sliver at this scale — the honest note carries
     // the "too many to pour" story, so the preview stays hidden for sand.

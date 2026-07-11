@@ -44,9 +44,8 @@ import {
   endCardModel,
   formatCount,
   odometerString,
-  formatAcross,
+  compareIntroModel,
   bodyDisplayName,
-  pluralizeBody,
   capitalizeSentence,
   pausedStatus,
   COMPARE_TUNABLES,
@@ -153,6 +152,7 @@ export class VolumeCompareMode {
   private appliedPanY = 0; // vertical pan already applied (a delta each frame)
   private measuredBandTopPx = 0; // top edge of the bottom occluder (bar/sheet); 0 = desktop
   private vesselCenterScratch = new THREE.Vector3();
+  private previewLabelScratch = new THREE.Vector3();
   private panelClock = 0;
   // The live-pile cap the brim check reads — marbleTotalCap scaled once at
   // activate (mobileCapScale on ≤640px phones, matching the scene's spawn caps).
@@ -328,6 +328,7 @@ export class VolumeCompareMode {
 
     this.picker.close();
     this.panel.showEndCard(null);
+    this.panel.placePreviewLabel(null);
     // Cancel any in-flight texture load by bumping the generation.
     this.session = commitSession(this.session.generation);
     this.panel.setLoading(false);
@@ -361,6 +362,7 @@ export class VolumeCompareMode {
         this.panelClock = 0;
       }
     }
+    this.updateMobilePreviewLabel();
 
     if (dt > 0) {
       this.fpsSamples.push(1 / dt);
@@ -685,13 +687,6 @@ export class VolumeCompareMode {
     if (this.paused) return pausedStatus(this.hasFinePointer);
     switch (this.session.phase) {
       case 'settling':
-        if (s.poured < 0.5 && this.comparison.regime !== 'sand') {
-          // Plural: this zero-state meta counts how many fillers fit across the
-          // container ("Earths — 11 across"), so the name reads as a population.
-          return capitalizeSentence(
-            `${pluralizeBody(this.filler)} — ${formatAcross(this.comparison.across)} across`,
-          );
-        }
         // Clear the label once the pile is actually at rest (don't read "settling…"
         // for seconds after it visibly stopped).
         return s.asleepFrac < 0.92 ? 'settling…' : '';
@@ -949,17 +944,18 @@ export class VolumeCompareMode {
     // (no brim beat, no manual Melt), so the toggle would be inert for both.
     const pourable = !this.comparison.subUnity;
     const showMeltControls = this.comparison.regime === 'marbles';
+    const intro = compareIntroModel(this.container, this.filler, this.comparison);
     const presets: { key: PresetKey; label: string }[] =
       this.comparison.regime === 'boulders'
         ? [
             { key: 'one', label: '1' },
             { key: 'half', label: 'half' },
-            { key: 'fill', label: 'fill it' },
+            { key: 'fill', label: intro?.fillAction ?? 'fill it' },
           ]
         : [
             { key: '10', label: '10%' },
             { key: 'half', label: 'half' },
-            { key: 'fill', label: 'fill it' },
+            { key: 'fill', label: intro?.fillAction ?? 'fill it' },
           ];
     return {
       container: this.container,
@@ -968,7 +964,47 @@ export class VolumeCompareMode {
       pourable,
       showMeltControls,
       presets,
+      intro,
     };
+  }
+
+  /** Follow the true-scale filler preview on phones without adding a 3D sprite. */
+  private updateMobilePreviewLabel(): void {
+    const presence = this.compareScene.previewPresence();
+    if (
+      window.innerWidth > 640 ||
+      !this.texturesReady ||
+      this.comparison.subUnity ||
+      this.comparison.regime === 'sand' ||
+      presence <= 0.12
+    ) {
+      this.panel.placePreviewLabel(null);
+      return;
+    }
+
+    const width = this.domElement.clientWidth || window.innerWidth || 1;
+    const height = this.domElement.clientHeight || window.innerHeight || 1;
+    const b = this.compareScene.previewBounds();
+    this.camera.updateMatrixWorld();
+    this.camera.matrixWorldInverse.copy(this.camera.matrixWorld).invert();
+    const projected = this.previewLabelScratch.set(b.x, b.y, b.z).project(this.camera);
+    const x = (projected.x * 0.5 + 0.5) * width;
+    const y = (1 - (projected.y * 0.5 + 0.5)) * height;
+    const depth = -this.previewLabelScratch.set(b.x, b.y, b.z)
+      .applyMatrix4(this.camera.matrixWorldInverse).z;
+    const p11 = this.camera.projectionMatrix.elements[5] || 2.7;
+    const radiusPx = ((p11 * b.r) / Math.max(0.001, depth)) * (height / 2) * presence;
+    const top = y - radiusPx - 7;
+    const barTop = this.measuredBandTopPx > 0 ? this.measuredBandTopPx : height;
+    if (top < 38 || top > barTop - 12 || x < 12 || x > width - 12) {
+      this.panel.placePreviewLabel(null);
+      return;
+    }
+    this.panel.placePreviewLabel({
+      x: Math.min(width - 46, Math.max(46, x)),
+      top,
+      diameter: Math.max(12, radiusPx * 2),
+    });
   }
 
   /** Reset — same pair, cheap: re-zero the sim + liquid + UI, one generation bump. */

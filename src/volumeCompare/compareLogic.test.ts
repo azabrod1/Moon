@@ -11,6 +11,7 @@ import {
   buildComparison,
   formatCount,
   formatAcross,
+  compareIntroModel,
   formatOdometer,
   odometerString,
   sliderTargetCount,
@@ -365,6 +366,53 @@ describe('formatAcross — the "n across" preview line', () => {
     expect(formatAcross(1.2)).toBe('1.2');
     expect(formatAcross(2.5)).toBe('2.5');
     expect(formatAcross(2.99)).toBe('3.0');
+  });
+});
+
+describe('compareIntroModel — volume-first teaching copy', () => {
+  it('makes Jupiter/Earth explicit and keeps the memorable 11-cubed model', () => {
+    const model = compareIntroModel('Jupiter', 'Earth', buildComparison('Jupiter', 'Earth'));
+    expect(model).toEqual({
+      volumeCount: '1,321',
+      caveat: 'Solid worlds leave gaps—pour to discover how many fit intact.',
+      acrossHeadline: 'About 11 Earths across Jupiter',
+      cubeEquation: '11 × 11 × 11 ≈ 1,321',
+      fillAction: 'Pour 1,321 Earths',
+      previewLabel: '1 Earth · to scale',
+    });
+  });
+
+  it('keeps a decimal factor when whole-number cubing would exaggerate the ratio', () => {
+    const model = compareIntroModel('Earth', 'Moon', buildComparison('Earth', 'Moon'));
+    expect(model?.acrossHeadline).toBe('About 3.7 Moons across Earth');
+    expect(model?.cubeEquation).toBe('3.7 × 3.7 × 3.7 ≈ 49.3');
+  });
+
+  it('uses singular CTA grammar for an exact same-body comparison', () => {
+    const model = compareIntroModel('Earth', 'Earth', buildComparison('Earth', 'Earth'));
+    expect(model?.volumeCount).toBe('1');
+    expect(model?.fillAction).toBe('Pour 1 Earth');
+    expect(model?.acrossHeadline).toBe('About 1 Earth across Earth');
+    expect(model?.cubeEquation).toBe('1 × 1 × 1 ≈ 1');
+  });
+
+  it('uses regime-aware boulder and sand explanations', () => {
+    const boulder = compareIntroModel('Moon', 'Pluto', buildComparison('Moon', 'Pluto'));
+    expect(boulder?.caveat).toBe(
+      'These worlds are too large to stack intact—pour to compare their volume.',
+    );
+    expect(boulder?.fillAction).toBe('Pour 3.13 Plutos');
+
+    const sand = compareIntroModel('Sun', 'Earth', buildComparison('Sun', 'Earth'));
+    expect(sand?.volumeCount).toBe('≈1.31 million');
+    expect(sand?.caveat).toBe(
+      'Individual worlds are too small to show here—the stream represents their volume.',
+    );
+    expect(sand?.fillAction).toBe('Pour ≈1.31 million Earths');
+  });
+
+  it('returns no teaching model for a non-pourable sub-unity pair', () => {
+    expect(compareIntroModel('Earth', 'Jupiter', buildComparison('Earth', 'Jupiter'))).toBeNull();
   });
 });
 

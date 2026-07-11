@@ -1669,6 +1669,20 @@
       font-size: 15px;
       color: var(--t1);
     }
+    .compare-teaching { display: none; margin-top: 10px; }
+    .compare-teaching.on { display: block; }
+    .compare-volume-note {
+      color: var(--t2); font-size: 11.5px; line-height: 1.45;
+    }
+    .compare-across-model {
+      margin-top: 9px; padding: 9px 10px; border: 1px solid var(--line);
+      border-radius: var(--r-m); background: rgba(255,255,255,0.025);
+    }
+    .compare-across-headline { color: var(--t1); font-size: 12px; font-weight: 600; line-height: 1.35; }
+    .compare-cube-equation {
+      margin-top: 3px; color: var(--accent); font-family: var(--font-mono);
+      font-size: 10.5px; font-variant-numeric: tabular-nums;
+    }
     /* In-scene loading chip during an in-mode pair swap (mode entry uses the
        #mode-transition veil instead). Hidden until the mode shows it. */
     .compare-loading {
@@ -1754,14 +1768,32 @@
     .compare-pause.paused .cpause-bars { display: none; }
     .compare-pause.paused .cpause-play { display: block; }
     #compare-panel.compare-swapping .compare-pause { opacity: 0.4; pointer-events: none; }
-    .compare-presets { display: flex; gap: 6px; margin-top: 9px; }
+    .compare-presets { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; margin-top: 9px; }
     .compare-preset {
-      flex: 1; padding: 5px 4px; border-radius: var(--r-s); border: 1px solid var(--line);
+      min-width: 0; padding: 6px 4px; border-radius: var(--r-s); border: 1px solid var(--line);
       background: rgba(255,255,255,0.02); color: var(--t2); font-family: var(--font-ui);
       font-size: 11px; cursor: pointer; -webkit-tap-highlight-color: transparent;
       transition: background 0.14s var(--ease), color 0.14s var(--ease);
     }
     .compare-preset:hover { background: rgba(255,255,255,0.06); color: var(--t1); }
+    .compare-preset-primary {
+      grid-column: 1 / -1; min-height: 38px; padding: 8px 10px;
+      border-color: rgba(var(--accent-rgb),0.42); background: rgba(var(--accent-rgb),0.16);
+      color: var(--t1); font-size: 12px; font-weight: 600;
+    }
+    .compare-preset-primary:hover { background: rgba(var(--accent-rgb),0.24); }
+    .compare-preview-label {
+      --preview-diameter: 16px; display: none; position: absolute; z-index: 14;
+      transform: translate(-50%, -100%); pointer-events: none; text-align: center;
+      color: var(--t1); font-family: var(--font-ui); font-size: 9.5px;
+      line-height: 1.2; white-space: nowrap; text-shadow: 0 1px 4px #000, 0 0 8px #000;
+    }
+    .compare-preview-name { display: block; margin-bottom: 4px; }
+    .compare-preview-brace {
+      display: block; width: var(--preview-diameter); min-width: 12px; height: 5px;
+      margin: 0 auto; border-top: 1px solid rgba(255,255,255,0.72);
+      border-left: 1px solid rgba(255,255,255,0.72); border-right: 1px solid rgba(255,255,255,0.72);
+    }
     /* Melt affordance — appears + pulses at the brim (telescope-chip idiom). */
     .compare-melt {
       display: none; width: 100%; margin-top: 11px; padding: 8px; border-radius: var(--r-m);
@@ -1851,6 +1883,11 @@
       #compare-count { grid-column: 2; grid-row: 1; margin: 0; justify-self: end; text-align: right; font-size: 11px; }
       #compare-count b { font-size: 15px; }
       #compare-count.compare-count-sub { font-size: 12px; }
+      #compare-teaching { grid-column: 1 / -1; grid-row: 2; margin-top: 0; }
+      .compare-volume-note { font-size: 10.5px; }
+      .compare-across-model { margin-top: 6px; padding: 7px 9px; }
+      .compare-across-headline { font-size: 11.5px; }
+      .compare-cube-equation { font-size: 10px; }
       #compare-teaser { grid-column: 1 / -1; grid-row: 2; margin-top: 0; }
       #compare-pour { grid-column: 1 / -1; grid-row: 3; margin-top: 2px; display: flex; flex-direction: column; gap: 7px; }
       /* Sub-unity teaser hides the pour controls: this ID+class rule must beat the
@@ -1880,6 +1917,26 @@
         padding: 20px; border-radius: var(--r-l) var(--r-l) 0 0;
       }
       .compare-endcard-headline { font-size: 19px; }
+      .compare-preview-label.on { display: block; }
+    }
+    @media (max-width: 640px) and (max-height: 480px) {
+      /* Short landscape: preserve the scene band and every control. The explicit
+         "by volume" headline + diameter model stay visible; the longer caveat is
+         the one teaching line sacrificed when vertical space is genuinely scarce. */
+      #compare-panel { padding-top: 7px; padding-bottom: calc(7px + env(safe-area-inset-bottom, 0px)); row-gap: 3px; }
+      .compare-volume-note { display: none; }
+      .compare-across-model {
+        display: flex; align-items: baseline; justify-content: space-between; gap: 12px;
+        margin-top: 0; padding: 5px 8px;
+      }
+      .compare-across-headline, .compare-cube-equation { white-space: nowrap; }
+      .compare-cube-equation { margin-top: 0; }
+      #compare-pour { gap: 4px; }
+      .compare-slider-row { min-height: 20px; }
+      .compare-presets { grid-template-columns: 0.7fr 0.7fr 1.8fr; gap: 5px; }
+      .compare-preset { padding: 5px 4px; }
+      .compare-preset-primary { grid-column: auto; min-height: 30px; padding: 5px 7px; font-size: 11px; }
+      .compare-odo { min-height: 15px; }
     }
     /* Arrival veil: covers the scene while a quick-travel destination's moon
        textures paint, so they never pop in. .covering snaps fully opaque (no
@@ -3086,6 +3143,13 @@
           <button type="button" class="compare-swap" id="compare-swap" title="Swap the two bodies" aria-label="Swap">&#x21C4;</button>
         </div>
         <div id="compare-count" class="compare-count"></div>
+        <div id="compare-teaching" class="compare-teaching">
+          <div id="compare-volume-note" class="compare-volume-note"></div>
+          <div class="compare-across-model">
+            <div id="compare-across-headline" class="compare-across-headline"></div>
+            <div id="compare-cube-equation" class="compare-cube-equation"></div>
+          </div>
+        </div>
         <div id="compare-teaser" class="compare-teaser"></div>
         <div id="compare-pour" class="compare-pour">
           <div class="compare-odo"><b id="compare-odometer">0</b><span id="compare-status" class="compare-status"></span></div>
@@ -3109,6 +3173,10 @@
           <div class="obs-explain" id="compare-automelt-explain" style="display:none">Solid spheres always leave gaps &mdash; around 40% of the space between them. Melting the spheres lets the true volume fit, so the count can reach the honest number.</div>
         </div>
         <div id="compare-loading" class="compare-loading">Gathering planets…</div>
+      </div>
+      <div id="compare-preview-label" class="compare-preview-label" aria-hidden="true">
+        <span id="compare-preview-name" class="compare-preview-name"></span>
+        <span class="compare-preview-brace"></span>
       </div>
 
       <!-- Body picker (full-screen click-catcher; one-modal-at-a-time) -->

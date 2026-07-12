@@ -251,6 +251,64 @@ export function formatAcross(across: number): string {
   return across.toFixed(1);
 }
 
+export interface CompareIntroModel {
+  /** The number used by the headline: explicit equivalent volume, not packing. */
+  volumeCount: string;
+  /** Regime-aware explanation of what the ensuing pour can demonstrate. */
+  caveat: string;
+  /** Diameter-ratio mental model ("About 11 Earths across Jupiter"). */
+  acrossHeadline: string;
+  /** The same factor cubed back into the displayed volume ratio. */
+  cubeEquation: string;
+  /** Primary preset copy; the preset key and mechanics remain unchanged. */
+  fillAction: string;
+  /** Label for the one-body scale preview beside the vessel. */
+  previewLabel: string;
+}
+
+/**
+ * Choose a factor whose cube still tells the truth. The general `formatAcross`
+ * rounds every value >=3 to a whole number because that reads well in a small
+ * status line, but cubing can magnify that rounding badly (3.67 -> 4 -> 64,
+ * versus the real 49.3). Use the integer only when its cube stays within 5%;
+ * otherwise retain one decimal. Jupiter/Earth remains the memorable 11^3.
+ */
+function formatAcrossForCube(comparison: Comparison): string {
+  const { across, n } = comparison;
+  if (Math.abs(across - 1) < 1e-9) return '1';
+  const whole = Math.round(across);
+  const wholeCubeError = Math.abs(whole * whole * whole - n) / Math.max(n, 1e-9);
+  return across >= 3 && wholeCubeError <= 0.05 ? String(whole) : across.toFixed(1);
+}
+
+/** Pair-level teaching copy, kept pure so every regime and number band is pinned. */
+export function compareIntroModel(
+  container: string,
+  filler: string,
+  comparison: Comparison,
+): CompareIntroModel | null {
+  if (comparison.subUnity) return null;
+
+  const volumeCount = Math.abs(comparison.n - 1) < 1e-9 ? '1' : formatCount(comparison.n);
+  const fillNoun = Math.abs(comparison.n - 1) < 1e-9 ? filler : pluralizeBody(filler);
+  const across = formatAcrossForCube(comparison);
+  const acrossNoun = Number(across) === 1 ? filler : pluralizeBody(filler);
+  const caveat: Record<FillRegime, string> = {
+    marbles: 'Solid worlds leave gaps—pour to discover how many fit intact.',
+    boulders: 'These worlds are too large to stack intact—pour to compare their volume.',
+    sand: 'Individual worlds are too small to show here—the stream represents their volume.',
+  };
+
+  return {
+    volumeCount,
+    caveat: caveat[comparison.regime],
+    acrossHeadline: `About ${across} ${acrossNoun} across ${bodyDisplayName(container)}`,
+    cubeEquation: `${across} × ${across} × ${across} ≈ ${volumeCount}`,
+    fillAction: `Pour ${volumeCount} ${fillNoun}`,
+    previewLabel: `1 ${filler} · to scale`,
+  };
+}
+
 /**
  * A whole-ball counter for the odometer + the packed-count stats: the value
  * rounded to an integer with thousands separators ("8", "131", "1,321"). The

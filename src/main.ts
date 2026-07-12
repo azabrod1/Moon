@@ -17,6 +17,8 @@ import { LANDED_NEAR_AU } from './planetarium/landedView';
 import type { MoonFlightMode } from './moonFlight/MoonFlightMode';
 import type { VolumeCompareMode } from './volumeCompare/VolumeCompareMode';
 import { canGPUDoBloom } from './app/gpuCapability';
+import { BLOOM_RADIUS, BLOOM_THRESHOLD } from './app/bloomConfig';
+import { stepExposure } from './planetarium/solarExposure';
 import { debugError, debugLog, debugWarn } from './shared/debug';
 
 // ================================================================
@@ -131,12 +133,32 @@ function applyRenderResolution() {
   }
 }
 
-// Bloom radius is shared across modes; strength + threshold are authored per
-// mode at each call site. Volume-compare deliberately matches the Planetarium's
-// 0.8 / 0.92 identity so its glass HDR glint blooms against the same threshold.
-const BLOOM_RADIUS = 0.4;
+// Bloom radius (shared across modes) and the planetarium threshold live in
+// app/bloomConfig so the star-luminance invariant test shares the cutoff.
+// Strength + threshold are authored per mode at each call site: the planetarium
+// diverges to BLOOM_THRESHOLD (1.0) so sub-1.0-luminance stars stay out of bloom
+// near the Sun, while Moon Flight (0.85) and Volume Compare (0.92 — for its glass
+// HDR glint) keep their own lower cutoffs.
 
-function buildComposer(cam: THREE.Camera, bloom: { strength: number; threshold: number }) {
+// Runtime bloom enable, ANDed with the immutable hardware capability. Dev-only
+// (setBloom), defaults on, session-sticky across mode switches.
+let bloomRuntimeEnabled = true;
+function planetariumBloomEnabled(): boolean {
+  return useBloom && bloomRuntimeEnabled;
+}
+
+// Near-Sun auto-exposure. exposureCurrent glides toward the planetarium's
+// per-frame target (renderer.toneMappingExposure, re-read by OutputPass every
+// frame); every other mode renders at 1, and the dev auto lock (setAutoExposure)
+// pins it to 1 too.
+let exposureCurrent = 1;
+let autoExposure = true;
+
+function buildComposer(
+  cam: THREE.Camera,
+  bloom: { strength: number; threshold: number },
+  enabled = useBloom,
+) {
   if (composer) {
     // EffectComposer.dispose() frees only its own ping-pong targets and copy
     // pass — never the added passes. Dispose them here so the bloom pass's mip
@@ -146,7 +168,7 @@ function buildComposer(cam: THREE.Camera, bloom: { strength: number; threshold: 
     composer.dispose();
     composer = null;
   }
-  if (!useBloom) return;
+  if (!enabled) return;
 
   composer = new EffectComposer(renderer);
   composer.setPixelRatio(getTargetPixelRatio());
@@ -162,8 +184,23 @@ function buildComposer(cam: THREE.Camera, bloom: { strength: number; threshold: 
   composer.addPass(new OutputPass());
 }
 
+// Dev bloom toggle: flip the runtime flag, rebuild the planetarium composer
+// through the same enabled/null path, and swap the Sun halo tier so a toggled
+// state matches the real hardware build. A no-op on GPUs that can't bloom.
+function setPlanetariumBloom(on: boolean) {
+  bloomRuntimeEnabled = on;
+  const effective = planetariumBloomEnabled();
+  // The shared composer is built for the live mode; rebuild it only while the
+  // planetarium is showing. The flag is session-sticky, so the planetarium's
+  // own rebuild picks it up on the next switch back; other modes ignore it.
+  if (appMode === 'planetarium') {
+    buildComposer(planetariumCamera, { strength: 0.8, threshold: BLOOM_THRESHOLD }, effective);
+  }
+  planetariumMode?.devApplySunGlowTier(effective);
+}
+
 applyRenderResolution();
-buildComposer(planetariumCamera, { strength: 0.8, threshold: 0.92 });
+buildComposer(planetariumCamera, { strength: 0.8, threshold: BLOOM_THRESHOLD }, planetariumBloomEnabled());
 
 // Armed after first Planetarium activation: that render compiles the scene's
 // shaders and uploads textures, so its duration is a startup phase of its own.
@@ -244,7 +281,7 @@ async function switchAppMode(newMode: AppMode) {
 
       camera = planetariumCamera;
       applyRenderResolution();
-      buildComposer(planetariumCamera, { strength: 0.8, threshold: 0.92 });
+      buildComposer(planetariumCamera, { strength: 0.8, threshold: BLOOM_THRESHOLD }, planetariumBloomEnabled());
 
       if (!planetariumMode) {
         debugLog('Creating Planetarium mode');
@@ -368,8 +405,22 @@ function installDevHooks() {
     bodies: () => planetariumMode?.devListBodies() ?? [],
     jumpTo: (name: string, distanceMultiplier?: number) =>
       planetariumMode?.devJumpToBody(name, distanceMultiplier) ?? false,
-    frame: (name: string, fillFraction?: number, phaseAngleDeg?: number) =>
-      planetariumMode?.devFrameBody(name, fillFraction, phaseAngleDeg) ?? false,
+    frame: (name: string, fillFraction?: number, phaseAngleDeg?: number, distMul?: number) =>
+      planetariumMode?.devFrameBody(name, fillFraction, phaseAngleDeg, distMul) ?? false,
+    // Near-Sun auto-exposure inspection + locks (peek the mode's target/coverage,
+    // never the consuming getter). setBloom rebuilds the composer + halo tier.
+    exposure: () => {
+      const peek = planetariumMode?.devExposurePeek();
+      return {
+        current: exposureCurrent,
+        target: peek?.target ?? 1,
+        coverage: peek?.coverage ?? 0,
+        auto: autoExposure,
+      };
+    },
+    setAutoExposure: (on: boolean) => { autoExposure = on; },
+    setBloom: (on: boolean) => setPlanetariumBloom(on),
+    bloomActive: () => planetariumBloomEnabled(),
     probe: (name: string) => planetariumMode?.devProbe(name) ?? null,
     land: (name: string) => planetariumMode?.devLand(name) ?? false,
     lookUp: () => planetariumMode?.devLookUp() ?? false,
@@ -439,17 +490,30 @@ async function init() {
     requestAnimationFrame(animate);
     syncViewportIfDrifted();
     const now = performance.now();
-    const dt = Math.min((now - lastTime) / 1000, 0.1); // cap at 100ms to avoid huge jumps
+    const rawDt = (now - lastTime) / 1000;
+    const dt = Math.min(rawDt, 0.1); // cap at 100ms to avoid huge jumps
+    // Exposure adaptation glides on the raw wall delta, not the sim-capped dt:
+    // the eye should adapt by a frame's real duration even through a hitch.
+    const wallDt = rawDt;
     lastTime = now;
 
     if (appMode === 'planetarium' && planetariumMode) {
       planetariumMode.update(dt);
+      if (autoExposure) {
+        const { value, snap } = planetariumMode.takeExposureTarget();
+        exposureCurrent = snap ? value : stepExposure(exposureCurrent, value, wallDt);
+      } else {
+        exposureCurrent = 1;
+      }
     } else if (appMode === 'moonFlight' && moonFlightMode) {
       moonFlightMode.update(dt);
+      exposureCurrent = 1; // other modes render neutral; the veil covers the reset
     } else if (appMode === 'volumeCompare' && volumeCompareMode) {
       volumeCompareMode.update(dt);
+      exposureCurrent = 1;
     }
 
+    renderer.toneMappingExposure = exposureCurrent;
     renderScene(camera);
   }
 

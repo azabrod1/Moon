@@ -397,24 +397,74 @@ function createFallbackTexture(key: string, kind: MapKind = 'color'): THREE.Text
   return tex;
 }
 
-function createRadialGlowTexture(stops: Array<{ stop: number; color: string }>, size = 256): THREE.Texture {
-  const canvas = document.createElement('canvas');
-  canvas.width = size;
-  canvas.height = size;
-  const ctx = canvas.getContext('2d')!;
-  const center = size / 2;
+/** Parse an `rgb()/rgba()` string into normalized sRGB channels + straight alpha. */
+function parseGlowStop(color: string): { r: number; g: number; b: number; a: number } {
+  const inner = color.slice(color.indexOf('(') + 1, color.indexOf(')'));
+  const p = inner.split(',').map((s) => parseFloat(s.trim()));
+  return { r: p[0] / 255, g: p[1] / 255, b: p[2] / 255, a: p[3] ?? 1 };
+}
 
-  const gradient = ctx.createRadialGradient(center, center, 0, center, center, center);
-  for (const { stop, color } of stops) {
-    gradient.addColorStop(stop, color);
+/**
+ * Radial glow ramp for a Sun halo sprite. Evaluated in float and stored as a
+ * half-float DataTexture rather than an 8-bit canvas: magnified under additive
+ * blending + tonemapping, an 8-bit warm ramp bands into visible speckle, and the
+ * float ramp removes the quantization at the source. The stops are authored in
+ * sRGB and interpolated there (the ramp shape a canvas gradient produces), then
+ * converted to linear for storage — float textures have no hardware sRGB decode
+ * (only UNSIGNED_BYTE maps to SRGB8_ALPHA8), so the texture must hold
+ * working-space values itself. Linear filtering is WebGL2-core for half-float.
+ */
+function createRadialGlowTexture(stops: Array<{ stop: number; color: string }>, size = 256): THREE.Texture {
+  const parsed = stops
+    .map((s) => ({ stop: s.stop, ...parseGlowStop(s.color) }))
+    .sort((a, b) => a.stop - b.stop);
+
+  const data = new Uint16Array(size * size * 4);
+  const center = size / 2;
+  const H = THREE.DataUtils.toHalfFloat;
+  const linear = new THREE.Color();
+
+  for (let y = 0; y < size; y++) {
+    for (let x = 0; x < size; x++) {
+      // Distance from centre, normalized so the disc edge (radius = center) is 1;
+      // corners clamp to the outermost stop, matching the canvas gradient.
+      const dx = x + 0.5 - center;
+      const dy = y + 0.5 - center;
+      const t = Math.min(1, Math.hypot(dx, dy) / center);
+
+      // Piecewise-linear interpolation between the bracketing stops.
+      let r = parsed[0].r, g = parsed[0].g, b = parsed[0].b, a = parsed[0].a;
+      if (t >= parsed[parsed.length - 1].stop) {
+        const last = parsed[parsed.length - 1];
+        r = last.r; g = last.g; b = last.b; a = last.a;
+      } else {
+        for (let i = 0; i < parsed.length - 1; i++) {
+          const lo = parsed[i], hi = parsed[i + 1];
+          if (t >= lo.stop && t <= hi.stop) {
+            const f = hi.stop > lo.stop ? (t - lo.stop) / (hi.stop - lo.stop) : 0;
+            r = lo.r + (hi.r - lo.r) * f;
+            g = lo.g + (hi.g - lo.g) * f;
+            b = lo.b + (hi.b - lo.b) * f;
+            a = lo.a + (hi.a - lo.a) * f;
+            break;
+          }
+        }
+      }
+
+      linear.setRGB(r, g, b).convertSRGBToLinear();
+      const i = (y * size + x) * 4;
+      data[i] = H(linear.r);
+      data[i + 1] = H(linear.g);
+      data[i + 2] = H(linear.b);
+      data[i + 3] = H(a); // alpha is coverage, not colour — no transfer curve
+    }
   }
 
-  ctx.clearRect(0, 0, size, size);
-  ctx.fillStyle = gradient;
-  ctx.fillRect(0, 0, size, size);
-
-  const texture = new THREE.CanvasTexture(canvas);
-  texture.colorSpace = THREE.SRGBColorSpace;
+  const texture = new THREE.DataTexture(data, size, size, THREE.RGBAFormat, THREE.HalfFloatType);
+  texture.colorSpace = THREE.LinearSRGBColorSpace;
+  texture.minFilter = THREE.LinearFilter;
+  texture.magFilter = THREE.LinearFilter;
+  texture.needsUpdate = true;
   return texture;
 }
 
@@ -666,6 +716,12 @@ export function createPlanetariumSun(useBloom = true): THREE.Group {
       varying vec3 vPosition;
       varying vec2 vUv;
 
+      // HDR headroom for the disc: it must sit far above the bloom high-pass and
+      // every star peak so near-Sun glare comes from bloom + exposure, not the
+      // halo sprites. Exposure 1 (planet distances) whitens it — a photographed
+      // sun is white; the warmth carries in the halo and the bloom tint.
+      const float CORONA_HDR_BOOST = 8.0;
+
       float hash(vec2 p) {
         return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453);
       }
@@ -696,8 +752,13 @@ export function createPlanetariumSun(useBloom = true): THREE.Group {
         vec3 edgeColor = vec3(1.0, 0.3, 0.05);
         vec3 surfaceColor = mix(coreColor, midColor, rimDot * 0.7 + n * 0.3);
         surfaceColor = mix(surfaceColor, edgeColor, pow(rimDot, 2.0));
-        float intensity = 3.1 - rimDot * 1.2 + n * 0.3;
+        float intensity = (3.1 - rimDot * 1.2 + n * 0.3) * CORONA_HDR_BOOST;
         gl_FragColor = vec4(surfaceColor * intensity, 1.0);
+        // Exposure + ACES + sRGB on the no-bloom (direct-to-screen) path so the
+        // near-Sun exposure crush governs the disc there too; a no-op in the
+        // composer's linear render target, so the desktop path is unchanged.
+        #include <tonemapping_fragment>
+        #include <colorspace_fragment>
       }
     `,
   });
@@ -720,26 +781,49 @@ export function createPlanetariumSun(useBloom = true): THREE.Group {
     { stop: 1.0, color: 'rgba(255,130,36,0.0)' },
   ]);
 
-  const innerGlow = createSunGlowSprite(
-    SUN_DATA.radiusAU,
-    useBloom ? 4.6 : 5.4,
-    innerGlowTexture,
-    useBloom ? 1.0 : 1.0,
-  );
-  const outerGlow = createSunGlowSprite(
-    SUN_DATA.radiusAU,
-    useBloom ? 7.5 : 9.0,
-    outerGlowTexture,
-    useBloom ? 0.50 : 0.58,
-  );
+  // Scale/opacity are the tier's job (applySunGlowTier); these placeholders are
+  // overwritten below so the two tiers live in exactly one place.
+  const innerGlow = createSunGlowSprite(SUN_DATA.radiusAU, 1, innerGlowTexture, 1);
+  const outerGlow = createSunGlowSprite(SUN_DATA.radiusAU, 1, outerGlowTexture, 1);
   group.add(outerGlow);
   group.add(innerGlow);
+  group.userData.sunGlowInner = innerGlow;
+  group.userData.sunGlowOuter = outerGlow;
+  applySunGlowTier(group, useBloom);
 
   const light = new THREE.PointLight(0xfff5e0, 3, 0, 0.3);
   group.add(light);
 
   group.userData.sunMaterial = sunMat;
   return group;
+}
+
+// Sun halo tiers: per-sprite scale (× photosphere radius) and opacity. With
+// bloom the pass supplies the near-Sun spread, so the sprites stay tight and
+// lean; without it they hold more of the glow themselves. The tier is baked
+// from the hardware bloom capability at construction and re-applied when a dev
+// bloom toggle flips at runtime, so a toggled state matches the real build.
+const SUN_GLOW_TIERS = {
+  bloom: { innerScale: 2.6, innerOpacity: 0.7, outerScale: 4.5, outerOpacity: 0.30 },
+  noBloom: { innerScale: 3.8, innerOpacity: 0.8, outerScale: 6.5, outerOpacity: 0.42 },
+} as const;
+
+/**
+ * Apply a Sun halo tier to a group built by createPlanetariumSun, using the
+ * inner/outer glow sprite refs stashed in its userData.
+ */
+export function applySunGlowTier(sunGroup: THREE.Group, useBloom: boolean): void {
+  const inner = sunGroup.userData.sunGlowInner as THREE.Sprite | undefined;
+  const outer = sunGroup.userData.sunGlowOuter as THREE.Sprite | undefined;
+  const tier = useBloom ? SUN_GLOW_TIERS.bloom : SUN_GLOW_TIERS.noBloom;
+  if (inner) {
+    inner.scale.setScalar(SUN_DATA.radiusAU * tier.innerScale * 2);
+    (inner.material as THREE.SpriteMaterial).opacity = tier.innerOpacity;
+  }
+  if (outer) {
+    outer.scale.setScalar(SUN_DATA.radiusAU * tier.outerScale * 2);
+    (outer.material as THREE.SpriteMaterial).opacity = tier.outerOpacity;
+  }
 }
 
 // ---- Moon meshes ----

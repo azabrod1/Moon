@@ -22,9 +22,10 @@ import {
 import { PlayerShip } from './PlayerShip';
 import { PlanetLabels, discRadiusPx } from './PlanetLabels';
 import { PlanetariumStore, createDefaultPlanetariumState, type PlanetariumState, type LandedTarget } from './PlanetariumStore';
+import { solarExposureTarget, solarViewportCoverage } from './solarExposure';
 import { computeStats } from './stats';
 import { PLANETARIUM_BODIES, SUN_DATA, type PlanetData } from './planets/planetData';
-import { createMoonMeshes, createShaderWarmupProbes, setWarmEligibleMoonParents, upgradeTextureOnApproach, ATMOSPHERE_SHELL_SCALES, type MoonMesh, type TextureUpgrade } from './PlanetFactory';
+import { applySunGlowTier, createMoonMeshes, createShaderWarmupProbes, setWarmEligibleMoonParents, upgradeTextureOnApproach, ATMOSPHERE_SHELL_SCALES, type MoonMesh, type TextureUpgrade } from './PlanetFactory';
 import { bindTextureWarmer, pumpTextureWarmQueue, queueTextureWarm, resetTextureWarmer } from './world/textureWarmer';
 import {
   advancePlanetariumTime,
@@ -453,6 +454,17 @@ export class PlanetariumMode {
   // skipped so the camera can sit a few radii from a body without being pushed
   // back out past its moon system.
   private devFreeCamera = false;
+
+  // Near-Sun auto-exposure. The cruise pass computes how much of the frame the
+  // solar disc covers and the exposure that coverage commands; main.ts glides
+  // renderer.toneMappingExposure toward it and pins it to 1 everywhere else.
+  // Target is 1 (neutral) whenever landed. The snap flag fires a hard set on
+  // discontinuous jumps — a cut should arrive already exposed, not pump toward
+  // it — and starts armed so the first frame lands correct.
+  private exposureTarget = 1;
+  private exposureCoverage = 0;
+  private exposureSnapPending = true;
+  private tmpSunView = new THREE.Vector3();
 
   // Touch and gyro flight state
   private touchYaw = 0;
@@ -1260,6 +1272,10 @@ export class PlanetariumMode {
 
     // Landed mode: camera orbits body, skip flight controls
     if (this.landedOn) {
+      // Neutral exposure while landed — the Observatory/surface sky is a
+      // deliberate composition, and landings arrive un-veiled, so main.ts
+      // recovers smoothly toward 1 rather than latching a crushed cruise value.
+      this.exposureTarget = 1;
       this.updateLanded(dt);
       return;
     }
@@ -1378,6 +1394,20 @@ export class PlanetariumMode {
     // follow + controls.update above, and the safety escape just applied), or
     // every label trails the camera by a frame during orbit drags and fast pans.
     this.camera.updateMatrixWorld();
+
+    // Auto-exposure target: how much of the frame the solar disc covers, read
+    // from this frame's final camera pose. The coverage math is scene-space —
+    // the Sun group's scene position transformed into camera space — and reads
+    // the live FOV/aspect, never a cached copy (headless framing rewrites both).
+    this.solarSystem.sun.getWorldPosition(this.tmpSunView);
+    this.tmpSunView.applyMatrix4(this.camera.matrixWorldInverse);
+    this.exposureCoverage = solarViewportCoverage(
+      this.tmpSunView.x, this.tmpSunView.y, this.tmpSunView.z,
+      SUN_DATA.radiusAU,
+      this.camera.fov * DEG2RAD,
+      this.camera.aspect,
+    );
+    this.exposureTarget = solarExposureTarget(this.exposureCoverage);
 
     // Occlusion pipeline: planet discs → moon + ship discs → labels + markers.
     // Runs when either the HTML labels or the marker sprites are on. The
@@ -2365,6 +2395,18 @@ export class PlanetariumMode {
     if (sunMat) {
       sunMat.uniforms.time.value += dt;
     }
+  }
+
+  /**
+   * The current auto-exposure target and whether this frame should snap to it
+   * (a hard cut) rather than glide. `snap` is consume-on-read — hence `take`,
+   * not `get` — and main.ts is the sole caller, once per frame. The dev probe
+   * peeks the fields directly instead of consuming here.
+   */
+  takeExposureTarget(): { value: number; snap: boolean } {
+    const snap = this.exposureSnapPending;
+    this.exposureSnapPending = false;
+    return { value: this.exposureTarget, snap };
   }
 
   private updateOrbitLineVisibility() {
@@ -4876,6 +4918,9 @@ export class PlanetariumMode {
     // body must not ramp-limit the arrival scene's first seconds, and no
     // partial clear-hold survives either.
     this.bodyCap = initialBodyCapState();
+    // A hard cut should arrive already exposed — adapting after an instant scene
+    // change reads as pumping — so snap the exposure on the first frame there.
+    this.exposureSnapPending = true;
 
     // Don't touch cruise speedMultiplier — the system throttle automatically
     // slows the player near the planet. Just ensure cruise is at least 1c
@@ -4989,16 +5034,24 @@ export class PlanetariumMode {
    * collision so the close vantage holds. `phaseAngleDeg` is the Sun–planet–camera
    * angle: 0 sits sunward (full-phase lit); swing toward 180 for the night side,
    * the only view where the back-lit crescent (warm terminator + Mie forward
-   * scatter) shows. Dev bridge only.
+   * scatter) shows. `distMul` sets the standoff in body radii (default 5); the
+   * Sun QA sweeps it (5/15/114 radii) to reproduce the baseline flyby distances.
+   * Dev bridge only.
    */
-  devFrameBody(name: string, fillFraction = 0.6, phaseAngleDeg = 0): boolean {
+  devFrameBody(name: string, fillFraction = 0.6, phaseAngleDeg = 0, distMul = 5): boolean {
     if (!this.solarSystem) return false;
-    // Resolve a top-level planet or, failing that, a moon (parent world position
-    // plus the same offset the renderer uses) so the harness can frame either.
+    // Resolve the Sun, a top-level planet, or a moon (parent world position plus
+    // the same offset the renderer uses) so the harness can frame any of them.
     let pos: { x: number; y: number; z: number } | undefined;
     let r = 0;
     const planet = this.solarSystem.planets.find((p) => p.data.name === name);
-    if (planet) {
+    if (name === 'Sun') {
+      // The Sun sits at the heliocentric origin — the frame is posed in absolute
+      // coords, where that is exactly (0,0,0), NOT sun.getWorldPosition (a scene
+      // offset). The degenerate zero direction is seeded by the toSun guard below.
+      pos = { x: 0, y: 0, z: 0 };
+      r = SUN_DATA.radiusAU;
+    } else if (planet) {
       pos = this.planetWorldPositions.get(name);
       r = planet.data.radiusAU; // planets render at true scale (group scale 1)
     } else {
@@ -5016,7 +5069,7 @@ export class PlanetariumMode {
     }
     if (!pos || r === 0) return false;
     this.devFreeCamera = true;
-    const dist = r * 5;
+    const dist = r * distMul;
     // Camera direction from the planet, rotated off the sun line by the phase
     // angle. The rotation axis is any vector perpendicular to the sun line.
     const toSun = new THREE.Vector3(-pos.x, -pos.y, -pos.z);
@@ -5044,7 +5097,21 @@ export class PlanetariumMode {
     cam.updateProjectionMatrix();
     cam.lookAt(sceneOffset);
     this.controls.target.copy(sceneOffset);
+    // A framing is a hard cut — land the exposure on this pose immediately.
+    this.exposureSnapPending = true;
     return true;
+  }
+
+  /** Peek the live auto-exposure target/coverage for the dev bridge — never
+   *  the consuming getter. */
+  devExposurePeek(): { target: number; coverage: number } {
+    return { target: this.exposureTarget, coverage: this.exposureCoverage };
+  }
+
+  /** Swap the Sun's glow tier to match a runtime bloom toggle (the construction
+   *  tier is baked from the hardware capability). Dev bridge only. */
+  devApplySunGlowTier(useBloom: boolean): void {
+    if (this.solarSystem) applySunGlowTier(this.solarSystem.sun, useBloom);
   }
 
   /** Headless-screenshot diagnostics: read back camera/body geometry. */
@@ -7227,6 +7294,9 @@ export class PlanetariumMode {
       this.player.systemSpeedMultiplier = excursion.systemSpeedMultiplier;
       this.inSystemMode = excursion.inSystemMode;
       this.player.moving = excursion.moving;
+      // The Observatory grabbed the ship out of cruise; returning it snaps back
+      // to that pose — possibly a close solar flyby — so snap the exposure too.
+      this.exposureSnapPending = true;
     } else {
       const bodyPos = this.getLandedBodyWorldPosition();
       const radiusAU = this.getLandedBodyRadiusAU();
@@ -7567,6 +7637,12 @@ export class PlanetariumMode {
       this.enterLandedMode(saved.landedOn);
     } else {
       this.resetCruiseCamera();
+      // A restore drops the ship at a fresh pose (reload, the pre-tool return,
+      // and the deferred-resume decline all route here) — snap the exposure so
+      // the arrival scene is exposed on its first frame, not adapting into it.
+      // This runs after activation, past where an activation-entry arm would
+      // already have been consumed by the render loop.
+      this.exposureSnapPending = true;
     }
   }
 

@@ -24,6 +24,22 @@ export function getStarColor(colorIndex: number): THREE.Color {
 }
 
 /**
+ * Per-star brightness multiplier from apparent magnitude — brighter stars ride
+ * higher, with a floor so the faint field keeps a visible tint. Per-channel
+ * results can exceed 1.0, but the catalog's peak Rec.709 luminance stays under
+ * the bloom high-pass cutoff so no star survives as a bloom glint near the Sun
+ * (pinned in the test alongside this file).
+ */
+export function starBrightness(magnitude: number): number {
+  return THREE.MathUtils.clamp(1.2 - (magnitude + 1.44) / 8, 0.25, 1.2);
+}
+
+/** Final RGB a star's vertex receives: tint × brightness, per channel. */
+export function starRenderColor(colorIndex: number, magnitude: number): THREE.Color {
+  return getStarColor(colorIndex).multiplyScalar(starBrightness(magnitude));
+}
+
+/**
  * Faint-end shaping. Dimmer stars get lower opacity and smaller points, so the
  * dense faint layer recedes into fine texture and stops reading as a flat wall
  * of identical specks. The fade ramps over the FAINT_FADE_RANGE_MAG magnitudes
@@ -74,8 +90,7 @@ export function createPlanetariumStarfield(rendererPixelRatio: number): THREE.Po
 
   for (let i = 0; i < starCount; i++) {
     const star = catalog[i];
-    const color = getStarColor(star.colorIndex);
-    const brightness = THREE.MathUtils.clamp(1.2 - (star.magnitude + 1.44) / 8, 0.25, 1.2);
+    const color = starRenderColor(star.colorIndex, star.magnitude);
 
     // 0 for the bright/mid field, ramping to 1 at the catalog's faint limit.
     const faint = THREE.MathUtils.clamp(
@@ -91,9 +106,9 @@ export function createPlanetariumStarfield(rendererPixelRatio: number): THREE.Po
     positions[i * 3 + 1] = position.y;
     positions[i * 3 + 2] = position.z;
 
-    colors[i * 3] = color.r * brightness;
-    colors[i * 3 + 1] = color.g * brightness;
-    colors[i * 3 + 2] = color.b * brightness;
+    colors[i * 3] = color.r;
+    colors[i * 3 + 1] = color.g;
+    colors[i * 3 + 2] = color.b;
 
     // Spread so constellation stars (mag 1-3) stand out from dim ones; the
     // faintest taper down but stay >= 1px to avoid sub-pixel shimmer.
@@ -138,6 +153,12 @@ export function createPlanetariumStarfield(rendererPixelRatio: number): THREE.Po
           if (d > 0.5) discard;
           float falloff = 1.0 - smoothstep(0.2, 0.5, d);
           gl_FragColor = vec4(vColor, falloff * vAlpha);
+          // Exposure + ACES + sRGB when this material draws straight to screen
+          // (the no-bloom path): the exposure that crushes the Sun's neighbours
+          // must reach the stars too. Compiles to a no-op in the composer's
+          // linear render target, so the bloom path is byte-identical.
+          #include <tonemapping_fragment>
+          #include <colorspace_fragment>
         }
       `,
     transparent: true,

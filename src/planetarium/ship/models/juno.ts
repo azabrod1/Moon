@@ -2,7 +2,7 @@
  * Juno spacecraft model — procedural THREE.Group geometry.
  */
 import * as THREE from 'three';
-import { createVoyagerDishGeometry, createRodBetween } from './shipPrimitives';
+import { createParabolicDishGeometry, createRodBetween } from './shipPrimitives';
 
 export function createJunoModel(referenceRadiusAU: number): THREE.Group {
   const model = new THREE.Group();
@@ -54,7 +54,7 @@ export function createJunoModel(referenceRadiusAU: number): THREE.Group {
 
   const dishRadius = referenceRadiusAU * 0.78;
   const dish = new THREE.Mesh(
-    createVoyagerDishGeometry(dishRadius, referenceRadiusAU * 0.18),
+    createParabolicDishGeometry(dishRadius, referenceRadiusAU * 0.18),
     new THREE.MeshStandardMaterial({
       color: 0xf2f5f8,
       roughness: 0.28,

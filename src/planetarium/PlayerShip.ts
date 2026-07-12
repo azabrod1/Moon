@@ -6,6 +6,7 @@
  * procedural fallback). All procedural geometry lives in ship/models/.
  */
 import * as THREE from 'three';
+import { SHIP_REFERENCE_RADIUS_AU } from './cruiseView';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { LIGHT_SPEED_AU_PER_S } from './planets/planetData';
 import { createDefaultShip } from './ship/models/defaultShip';
@@ -35,7 +36,6 @@ export class PlayerShip {
   private profile: ShipProfile = 'default';
   private exhaustCone: THREE.Mesh;
   private exhaustCore: THREE.Mesh;
-  private exhaustTime = 0;
 
   posX = 0.05;
   posY = 0;
@@ -45,6 +45,7 @@ export class PlayerShip {
   speedMultiplier = 1.0;
   systemSpeedMultiplier = 0.083; // ~25k km/s default system speed
   systemSpeedFactor = 1.0;      // 1 = open space, 0 = deep in system (set by PlanetariumMode)
+  speedCapAUPerS = Infinity;    // per-frame moon-proximity cap (set by PlanetariumMode)
   moving = true;
   yawInput = 0;
   pitchInput = 0;
@@ -55,10 +56,12 @@ export class PlayerShip {
   constructor() {
     this.group = new THREE.Group();
 
-    const moonRadiusAU = 1737.4 / 149_597_870.7;
-    this.spacecraftReferenceRadiusAU = moonRadiusAU;
+    // The rig-scaled reference radius: the hull and every chase-view pad
+    // derive from the same base (see cruiseView.ts), so the ship's on-screen
+    // size survives any rig rescale.
+    this.spacecraftReferenceRadiusAU = SHIP_REFERENCE_RADIUS_AU;
 
-    const ship = createDefaultShip(moonRadiusAU);
+    const ship = createDefaultShip(SHIP_REFERENCE_RADIUS_AU);
     this.defaultModel = ship.model;
     this.mesh = ship.mesh;
     this.exhaustCone = ship.exhaustCone;
@@ -165,23 +168,39 @@ export class PlayerShip {
     if (this.junoModel) this.junoModel.visible = visible;
   }
 
-  get speedAUPerS(): number {
-    if (!this.moving) return 0;
+  /** The speed the dialed throttle WOULD fly this frame: the cruise/system
+   *  blend with no proximity cap and no parked gate. The governor's engaged
+   *  latch compares its cap against this — the applied speed is circular
+   *  (it already contains the cap) and reads 0 parked, which would clear
+   *  the latch the moment the ship stops beside a body. */
+  get commandedSpeedAUPerS(): number {
     const cruise = DEFAULT_SPEED_AU_S * this.speedMultiplier;
     const system = DEFAULT_SPEED_AU_S * Math.min(this.systemSpeedMultiplier, this.speedMultiplier);
     return system + (cruise - system) * this.systemSpeedFactor;
+  }
+
+  get speedAUPerS(): number {
+    if (!this.moving) return 0;
+    return Math.min(this.commandedSpeedAUPerS, this.speedCapAUPerS);
   }
 
   get speedC(): number {
     return this.speedAUPerS / LIGHT_SPEED_AU_PER_S;
   }
 
+  /**
+   * Sync the visible model to the current heading/pitch without integrating
+   * motion. Scripted mission transfers drive the pose fields directly and
+   * skip update(), the only other writer of the model quaternion.
+   */
+  syncModelOrientation() {
+    this.group.quaternion.setFromUnitVectors(FORWARD_VECTOR, this.getForwardDirection());
+  }
+
   update(dt: number) {
-    const direction = this.getForwardDirection();
-    this.group.quaternion.setFromUnitVectors(FORWARD_VECTOR, direction);
+    this.syncModelOrientation();
 
     // Animate exhaust
-    this.exhaustTime += dt;
     const effectiveMultiplier = this.speedAUPerS / DEFAULT_SPEED_AU_S;
     const speedFrac = effectiveMultiplier / PlayerShip.SPEED_MAX;
     const exhaustOn = this.moving && effectiveMultiplier > 0.01;
@@ -191,23 +210,27 @@ export class PlayerShip {
     this.exhaustCore.visible = showExhaust;
 
     if (showExhaust) {
-      const pulse = 0.95 + 0.05 * Math.sin(this.exhaustTime * 10);
-      const intensity = 0.2 + speedFrac * 0.4;
+      // Steady torch, no flicker: the additive HDR plume sits near the
+      // composer's bloom threshold, so even a small opacity pulse gates the
+      // glow on and off and reads as throbbing. The top of the ramp is kept
+      // modest for the same reason — full burn should read as a bright
+      // lance, not flood the frame.
+      const intensity = 0.2 + speedFrac * 0.28;
 
       // Outer plume — subtle haze
-      (this.exhaustCone.material as THREE.MeshBasicMaterial).opacity = intensity * 0.1 * pulse;
+      (this.exhaustCone.material as THREE.MeshBasicMaterial).opacity = intensity * 0.1;
       this.exhaustCone.scale.set(
-        (0.5 + speedFrac * 0.4) * pulse,
-        0.4 + speedFrac * 0.8,
-        (0.5 + speedFrac * 0.4) * pulse,
+        0.5 + speedFrac * 0.35,
+        0.4 + speedFrac * 0.65,
+        0.5 + speedFrac * 0.35,
       );
 
       // Inner core — moderate glow
       (this.exhaustCore.material as THREE.MeshBasicMaterial).opacity = intensity * 0.35;
       this.exhaustCore.scale.set(
-        0.6 + speedFrac * 0.3,
-        0.3 + speedFrac * 1.0,
-        0.6 + speedFrac * 0.3,
+        0.6 + speedFrac * 0.25,
+        0.3 + speedFrac * 0.85,
+        0.6 + speedFrac * 0.25,
       );
 
     }

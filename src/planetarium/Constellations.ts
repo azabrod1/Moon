@@ -7,24 +7,18 @@ import * as THREE from 'three';
 import { CONSTELLATIONS } from './data/constellations';
 import { BRIGHT_STAR_CATALOG } from './data/brightStars';
 import { projectToScreen } from '../shared/three/projectToScreen';
+import { raDecToVector } from '../astronomy/planetary';
+import { STAR_SPHERE_RADIUS } from './world/starfield';
 import { DEG2RAD, RAD2DEG } from '../shared/math/angles';
 
-const STAR_SPHERE_RADIUS = 85;
 const SNAP_RADIUS_DEG = 3; // max degrees to snap a constellation vertex to a catalog star
 const LINE_COLOR = 0x6688bb;
 const LINE_OPACITY = 0.28;
 
-/** Convert RA/Dec (degrees) to a 3D point on the star sphere. */
+/** Convert RA/Dec (degrees) to a 3D point on the star sphere — a thin
+ *  out-param wrapper over raDecToVector, the single chirality definition site. */
 function celestialToVec3(raDeg: number, decDeg: number, out: THREE.Vector3): THREE.Vector3 {
-  const ra = THREE.MathUtils.degToRad(raDeg);
-  const dec = THREE.MathUtils.degToRad(decDeg);
-  const cosDec = Math.cos(dec);
-  out.set(
-    STAR_SPHERE_RADIUS * cosDec * Math.cos(ra),
-    STAR_SPHERE_RADIUS * Math.sin(dec),
-    STAR_SPHERE_RADIUS * cosDec * Math.sin(ra),
-  );
-  return out;
+  return out.copy(raDecToVector(raDeg, decDeg, STAR_SPHERE_RADIUS));
 }
 
 /**
@@ -84,71 +78,68 @@ export class Constellations {
       return result;
     };
 
-    // Count total line segments
     let totalSegments = 0;
-    for (const c of CONSTELLATIONS) totalSegments += c.lines.length;
+    for (const constellation of CONSTELLATIONS) totalSegments += constellation.lines.length;
 
     const positions = new Float32Array(totalSegments * 6); // 2 vertices × 3 components
     let idx = 0;
-    const v = new THREE.Vector3();
+    const vectorScratch = new THREE.Vector3();
 
-    // Label container
     this.labelContainer = document.createElement('div');
     this.labelContainer.id = 'constellation-labels';
     this.labelContainer.style.cssText =
       'position:fixed;top:0;left:0;width:100%;height:100%;pointer-events:none;z-index:14;overflow:hidden;';
     document.body.appendChild(this.labelContainer);
 
-    for (const c of CONSTELLATIONS) {
-      // Build line geometry and compute centroid
-      let centroidRa = 0;
-      let centroidDec = 0;
+    for (const constellation of CONSTELLATIONS) {
+      // Build line geometry and compute the label anchor as the mean DIRECTION
+      // of the figure's endpoints. Averaging RA numerically breaks on figures
+      // that span the 0h wrap (Pisces straddles the vernal equinox: averaging
+      // RA 350° and 10° lands at 180° — the opposite sky); summing unit
+      // vectors and normalizing is wrap-free by construction.
+      const centroidSum = new THREE.Vector3();
       let nPoints = 0;
       const pointSet = new Set<string>();
 
-      for (const [ra1, dec1, ra2, dec2] of c.lines) {
+      for (const [ra1, dec1, ra2, dec2] of constellation.lines) {
         const [sra1, sdec1] = snap(ra1, dec1);
         const [sra2, sdec2] = snap(ra2, dec2);
 
-        celestialToVec3(sra1, sdec1, v);
-        positions[idx++] = v.x;
-        positions[idx++] = v.y;
-        positions[idx++] = v.z;
+        celestialToVec3(sra1, sdec1, vectorScratch);
+        positions[idx++] = vectorScratch.x;
+        positions[idx++] = vectorScratch.y;
+        positions[idx++] = vectorScratch.z;
 
-        celestialToVec3(sra2, sdec2, v);
-        positions[idx++] = v.x;
-        positions[idx++] = v.y;
-        positions[idx++] = v.z;
+        celestialToVec3(sra2, sdec2, vectorScratch);
+        positions[idx++] = vectorScratch.x;
+        positions[idx++] = vectorScratch.y;
+        positions[idx++] = vectorScratch.z;
 
         const k1 = `${sra1},${sdec1}`;
         const k2 = `${sra2},${sdec2}`;
         if (!pointSet.has(k1)) {
           pointSet.add(k1);
-          centroidRa += sra1;
-          centroidDec += sdec1;
+          centroidSum.add(celestialToVec3(sra1, sdec1, vectorScratch));
           nPoints++;
         }
         if (!pointSet.has(k2)) {
           pointSet.add(k2);
-          centroidRa += sra2;
-          centroidDec += sdec2;
+          centroidSum.add(celestialToVec3(sra2, sdec2, vectorScratch));
           nPoints++;
         }
       }
 
-      // Create label at centroid
-      if (nPoints > 0) {
-        centroidRa /= nPoints;
-        centroidDec /= nPoints;
-
+      // A near-zero sum (endpoints spread antipodally) has no meaningful mean
+      // direction — no real figure does this, but a label at a garbage anchor
+      // is worse than none.
+      if (nPoints > 0 && centroidSum.lengthSq() > 1e-6) {
         const labelEl = document.createElement('div');
         labelEl.className = 'constellation-label';
-        labelEl.textContent = c.name;
+        labelEl.textContent = constellation.name;
         labelEl.style.display = 'none';
         this.labelContainer.appendChild(labelEl);
 
-        const pos = new THREE.Vector3();
-        celestialToVec3(centroidRa, centroidDec, pos);
+        const pos = centroidSum.clone().normalize().multiplyScalar(STAR_SPHERE_RADIUS);
 
         this.labels.push({
           el: labelEl,
@@ -159,7 +150,6 @@ export class Constellations {
       }
     }
 
-    // Build geometry
     const geo = new THREE.BufferGeometry();
     geo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
 

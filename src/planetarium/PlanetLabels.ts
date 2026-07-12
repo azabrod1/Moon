@@ -28,6 +28,29 @@ export interface ForegroundDisc {
   name: string;
 }
 
+/**
+ * Pixel radius of a body's rendered disc, given its scene radius (AU), the
+ * camera distance, `tan(fov/2)`, and the canvas height. A sphere's silhouette
+ * subtends asin(R/d), which projects to R/√(d²−R²) — NOT the linear R/d: the
+ * two agree far away, but up close the linear form under-reads the disc (a
+ * camera 1.2R from the centre sees a silhouette ~50% wider), and an occlusion
+ * disc that small lets labels of moons hidden behind the planet leak onto its
+ * rendered face. At or inside the surface the silhouette is the whole view:
+ * the tangent floor keeps the result finite (and screen-covering).
+ * Callers that pad (to clear atmosphere glow, or to lift a label off the limb)
+ * scale the RESULT — padding the radius argument would shift the floor.
+ */
+export function discRadiusPx(
+  radiusAU: number,
+  distFromCamera: number,
+  halfFovTan: number,
+  canvasHeight: number,
+): number {
+  const tangentSq = distFromCamera * distFromCamera - radiusAU * radiusAU;
+  const tangent = Math.sqrt(Math.max(tangentSq, radiusAU * radiusAU * 1e-12));
+  return (radiusAU / (tangent * halfFovTan)) * (canvasHeight / 2);
+}
+
 export class PlanetLabels {
   labels: PlanetLabel[] = [];
   foregroundDiscs: ForegroundDisc[] = [];
@@ -38,7 +61,6 @@ export class PlanetLabels {
   constructor(scene: THREE.Scene, camera: THREE.PerspectiveCamera) {
     this.camera = camera;
 
-    // Create label container
     this.labelContainer = document.createElement('div');
     this.labelContainer.id = 'planet-labels';
     this.labelContainer.style.cssText = `
@@ -48,13 +70,11 @@ export class PlanetLabels {
     document.body.appendChild(this.labelContainer);
 
     for (const body of PLANETARIUM_BODIES) {
-      // Create sprite
       const canvas = document.createElement('canvas');
       canvas.width = 64;
       canvas.height = 64;
       const ctx = canvas.getContext('2d')!;
 
-      // Draw a glowing circle
       const color = new THREE.Color(body.color);
       const r = Math.floor(color.r * 255);
       const g = Math.floor(color.g * 255);
@@ -91,7 +111,6 @@ export class PlanetLabels {
       sprite.scale.setScalar(0.03);
       scene.add(sprite);
 
-      // Create HTML label
       const label = document.createElement('div');
       label.className = 'planet-label';
       label.innerHTML = `
@@ -145,7 +164,7 @@ export class PlanetLabels {
       const screenX = proj.x;
       const screenY = proj.y;
       // Project disc radius to pixels. Pad by 1.1x to cover atmosphere glow.
-      const radiusPx = (entry.planet.radiusAU * 1.1 / (Math.max(distFromCamera, entry.planet.radiusAU) * halfFovTan)) * (canvasHeight / 2);
+      const radiusPx = discRadiusPx(entry.planet.radiusAU, distFromCamera, halfFovTan, canvasHeight) * 1.1;
       this.foregroundDiscs.push({ screenX, screenY, radiusPx, distFromCamera, name: entry.planet.name });
     }
   }
@@ -153,6 +172,22 @@ export class PlanetLabels {
   /** Append an external foreground disc (e.g. a visible moon or the ship). */
   addForegroundDisc(disc: ForegroundDisc): void {
     this.foregroundDiscs.push(disc);
+  }
+
+  /**
+   * Hide every marker sprite + HTML label at once. The surface view skips the
+   * label pipeline entirely, so without this, sprites already visible when it
+   * opens would stay frozen in the sky (the renderLabels loop is what owns
+   * `sprite.visible`).
+   */
+  hideAll(): void {
+    for (const entry of this.labels) {
+      entry.sprite.visible = false;
+      if (entry.labelVisible) {
+        entry.label.style.display = 'none';
+        entry.labelVisible = false;
+      }
+    }
   }
 
   /**
@@ -164,10 +199,12 @@ export class PlanetLabels {
     planetPositions: Map<string, { x: number; y: number; z: number }>,
     playerPos: { x: number; y: number; z: number },
     renderer: THREE.WebGLRenderer,
-    excludeName?: string,
+    options: { showMarkers?: boolean; showLabels?: boolean; excludeName?: string } = {},
   ) {
+    const { showMarkers = true, showLabels = true, excludeName } = options;
     const canvasWidth = renderer.domElement.clientWidth;
     const canvasHeight = renderer.domElement.clientHeight;
+    const halfFovTan = Math.tan((this.camera.fov * Math.PI) / 360);
     const camX = this.camera.position.x;
     const camY = this.camera.position.y;
     const camZ = this.camera.position.z;
@@ -203,15 +240,10 @@ export class PlanetLabels {
       const cdz = pos.z - camZ;
       const distFromCamera = Math.sqrt(cdx * cdx + cdy * cdy + cdz * cdz);
 
-      // Scale marker: larger when farther, minimum size
-      // But switch to planet mesh when close enough
+      // Hide marker once the planet subtends enough pixels to be visible as a mesh.
       const planetVisualSize = entry.planet.radiusAU * 2;
-
-      // Hide marker when the planet itself is big enough to see
-      // (when planet subtends > ~2 pixels)
       const angularSize = planetVisualSize / Math.max(distFromPlayer, 0.0001);
       if (angularSize > 0.01) {
-        // Planet is visible on its own
         entry.sprite.visible = false;
         if (entry.labelVisible) {
           entry.label.style.display = 'none';
@@ -220,18 +252,33 @@ export class PlanetLabels {
         continue;
       }
 
-      entry.sprite.visible = true;
+      entry.sprite.visible = showMarkers;
 
-      // Project to screen for label positioning
+      // Markers are GPU billboards; only the HTML label needs projection and
+      // occlusion work, so skip the rest when labels are off.
+      if (!showLabels) {
+        if (entry.labelVisible) {
+          entry.label.style.display = 'none';
+          entry.labelVisible = false;
+        }
+        continue;
+      }
+
       const proj = projectToScreen(pos, this.camera, canvasWidth, canvasHeight, this.projScratch);
       const screenX = proj.x;
       const screenY = proj.y;
+
+      // Offset the label below the body center by at least 16 px, and by more
+      // once the disc grows so the text never lands on the planet's face. A
+      // no-op at the mesh-hide threshold above (disc only a few px there) —
+      // it's the guard for the never-on-the-disc rule if that threshold moves.
+      const labelOffsetY = Math.max(16, discRadiusPx(entry.planet.radiusAU, distFromCamera, halfFovTan, canvasHeight) * 1.1 + 6);
 
       // Occluded by a nearer foreground body? Test the LABEL's position
       // (below the marker), not the marker itself — the user wants the label
       // to hide only when it actually sits over a foreground planet, even if
       // the sprite above it is in clear sky.
-      const labelY = screenY + 24;
+      const labelY = screenY + labelOffsetY + 8;
       let occluded = false;
       for (const disc of foregroundDiscs) {
         if (disc.name === entry.planet.name) continue;
@@ -251,13 +298,12 @@ export class PlanetLabels {
           entry.label.style.display = 'block';
           entry.labelVisible = true;
         }
-        const transform = `translate(${screenX}px, ${screenY + 16}px)`;
+        const transform = `translate(${screenX}px, ${screenY + labelOffsetY}px)`;
         if (transform !== entry.lastTransform) {
           entry.label.style.transform = transform;
           entry.lastTransform = transform;
         }
 
-        // Update distance text
         const distanceText = distFromPlayer < 0.01
           ? `${(distFromPlayer * 149597870.7).toFixed(0)} km`
           : `${distFromPlayer.toFixed(2)} AU`;
@@ -273,18 +319,15 @@ export class PlanetLabels {
   }
 
   /**
-   * Convenience: collect foreground discs for planets, then place labels in a
-   * single call. Callers that want to contribute additional occluders
-   * (moons, ship) should invoke `collectForegroundDiscs` →
-   * `addForegroundDisc` → `renderLabels` directly.
+   * Hide only the marker sprites, leaving the HTML labels alone. Used when the
+   * markers are toggled off but labels stay on: sprites are constructed
+   * visible, and with the per-frame pass told to keep them hidden this is what
+   * actually clears the ones already drawn.
    */
-  update(
-    planetPositions: Map<string, { x: number; y: number; z: number }>,
-    playerPos: { x: number; y: number; z: number },
-    renderer: THREE.WebGLRenderer,
-  ) {
-    this.collectForegroundDiscs(planetPositions, renderer);
-    this.renderLabels(planetPositions, playerPos, renderer);
+  hideMarkers(): void {
+    for (const entry of this.labels) {
+      entry.sprite.visible = false;
+    }
   }
 
   /**

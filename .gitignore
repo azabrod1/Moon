@@ -2,7 +2,8 @@ node_modules/
 dist/
 .vite/
 *.local
-.claude/
+.claude/*
+!.claude/skills/
 .chrome-*/
 .edge-headless-profile/
 browser-*.png
@@ -11,3 +12,6 @@ orbit-details-browser-check.png
 preview-*.log
 vite-*.log
 http-test*.log
+.moon-data-cache/
+# internal planning docs / mockups / QA scratch — local-only
+planning/

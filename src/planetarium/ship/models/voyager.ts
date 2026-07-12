@@ -2,7 +2,7 @@
  * Voyager spacecraft model — procedural THREE.Group geometry.
  */
 import * as THREE from 'three';
-import { createVoyagerDishGeometry, createRodBetween } from './shipPrimitives';
+import { createParabolicDishGeometry, createRodBetween } from './shipPrimitives';
 
 export function createVoyagerModel(referenceRadiusAU: number): THREE.Group {
   const model = new THREE.Group();
@@ -119,7 +119,7 @@ export function createVoyagerModel(referenceRadiusAU: number): THREE.Group {
   model.add(scanPlatform);
 
   const dish = new THREE.Mesh(
-    createVoyagerDishGeometry(dishRadius, dishDepth),
+    createParabolicDishGeometry(dishRadius, dishDepth),
     new THREE.MeshStandardMaterial({
       color: 0xf0f3f7,
       emissive: 0x0f1420,

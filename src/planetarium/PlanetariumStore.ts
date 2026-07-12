@@ -13,6 +13,7 @@ import { debugWarn } from '../shared/debug';
 const STORAGE_KEY = 'orbital-sim-planetarium-state';
 const LEGACY_STORAGE_KEY = 'orbital-sim-explore-state';
 const HELP_SEEN_KEY = 'planetarium-help-seen';
+const SURFACE_HINT_SEEN_KEY = 'planetarium-surface-hint-seen';
 // Pre-rename key, read-only compat: a user who dismissed help in the old
 // "explore" build shouldn't be shown it again after upgrading.
 const LEGACY_HELP_SEEN_KEY = 'explore-help-seen';
@@ -43,10 +44,22 @@ export interface PlanetariumState {
   planetScale: number;       // visual scale multiplier for planets
   showShip: boolean;         // show player ship mesh
   showConstellations?: boolean; // show constellation lines overlay
+  showBodyLabels?: boolean;  // show planet/moon/Sun name labels
+  showBodyMarkers?: boolean; // show planet glow-dot marker sprites
+  showOrbitLines?: boolean;  // show planet orbit lines
   landedOn?: LandedTarget;   // planet/moon the player is currently landed on
   systemSpeed?: number;      // system speed multiplier (fraction of c)
   systemSlowdown?: boolean;  // whether system slowdown is enabled
   autopilotTarget?: LandedTarget; // destination for fly-to autopilot
+  /** True only when the user picked the autopilot target themselves — a
+   * non-user target (old saves once auto-cruised to Mercury) must not render
+   * a destination chip or survive a landing. Saves predating the flag migrate
+   * by heuristic: only user picks ever produce a non-Mercury target. */
+  autopilotUserEngaged?: boolean;
+  /** Sky-panel-on-arrival preference. Stays absent until the user flips the
+   * toggle: the default is device-dependent (on for fine pointers) and is
+   * resolved at read time, never persisted. */
+  skyPref?: boolean;
 }
 
 function isFiniteNumber(value: unknown): value is number {
@@ -55,17 +68,18 @@ function isFiniteNumber(value: unknown): value is number {
 
 function sanitizeLandedOn(raw: unknown): LandedTarget {
   if (!raw || typeof raw !== 'object') return null;
-  const lo = raw as Record<string, unknown>;
-  if (lo.type === 'planet' && typeof lo.name === 'string') {
-    return { type: 'planet', name: lo.name };
+  const landedRecord = raw as Record<string, unknown>;
+  if (landedRecord.type === 'planet' && typeof landedRecord.name === 'string') {
+    return { type: 'planet', name: landedRecord.name };
   }
-  if (lo.type === 'moon' && typeof lo.name === 'string' && typeof lo.parentPlanet === 'string') {
-    return { type: 'moon', name: lo.name, parentPlanet: lo.parentPlanet };
+  if (landedRecord.type === 'moon' && typeof landedRecord.name === 'string' && typeof landedRecord.parentPlanet === 'string') {
+    return { type: 'moon', name: landedRecord.name, parentPlanet: landedRecord.parentPlanet };
   }
   return null;
 }
 
-function sanitizePlanetariumState(raw: unknown): PlanetariumState | null {
+/** Exported for tests — load-path sanitation incl. legacy-save migrations. */
+export function sanitizePlanetariumState(raw: unknown): PlanetariumState | null {
   if (!raw || typeof raw !== 'object') return null;
 
   const record = raw as Record<string, unknown>;
@@ -111,13 +125,35 @@ function sanitizePlanetariumState(raw: unknown): PlanetariumState | null {
       : defaults.planetScale,
     showShip: typeof record.showShip === 'boolean' ? record.showShip : defaults.showShip,
     showConstellations: typeof record.showConstellations === 'boolean' ? record.showConstellations : defaults.showConstellations,
+    showBodyLabels: typeof record.showBodyLabels === 'boolean' ? record.showBodyLabels : defaults.showBodyLabels,
+    showBodyMarkers: typeof record.showBodyMarkers === 'boolean' ? record.showBodyMarkers : defaults.showBodyMarkers,
+    showOrbitLines: typeof record.showOrbitLines === 'boolean' ? record.showOrbitLines : defaults.showOrbitLines,
     landedOn: sanitizeLandedOn(record.landedOn),
     systemSpeed: isFiniteNumber(record.systemSpeed)
       ? Math.max(0, Math.min(0.4, record.systemSpeed))
       : defaults.systemSpeed,
     systemSlowdown: typeof record.systemSlowdown === 'boolean' ? record.systemSlowdown : defaults.systemSlowdown,
     autopilotTarget: sanitizeLandedOn(record.autopilotTarget),
+    autopilotUserEngaged:
+      typeof record.autopilotUserEngaged === 'boolean'
+        ? record.autopilotUserEngaged
+        : legacyAutopilotEngagement(sanitizeLandedOn(record.autopilotTarget)),
+    // Unlike every field above, no default: skyPref must survive as undefined
+    // so the 30 s auto-save (JSON.stringify drops it) can't bake one device's
+    // hover/pointer default into a save that may be opened on another.
+    skyPref: typeof record.skyPref === 'boolean' ? record.skyPref : undefined,
   };
+}
+
+/**
+ * Provenance for saves predating `autopilotUserEngaged`: back then only the
+ * onboarding auto-cruise ever pointed at Mercury without a user pick, so a
+ * non-Mercury target must be user-engaged (keeps real journeys' chips); a
+ * Mercury target is ambiguous and migrates un-engaged (the stale-chip bug case).
+ */
+function legacyAutopilotEngagement(target: LandedTarget): boolean {
+  if (!target) return false;
+  return !(target.type === 'planet' && target.name === 'Mercury');
 }
 
 function parseSavedState(raw: string): PlanetariumState | null {
@@ -132,7 +168,7 @@ function parseSavedState(raw: string): PlanetariumState | null {
 export function createDefaultPlanetariumState(): PlanetariumState {
   return {
     // Start inside Mercury's orbit, but far enough from the Sun to avoid a blown-out first view.
-    positionAU: { x: 0.28, y: 0.015, z: -0.04 },
+    positionAU: { x: 0.28, y: 0.015, z: 0.04 },
     headingRad: 0,
     speed: 1.0,
     moving: true,
@@ -140,7 +176,7 @@ export function createDefaultPlanetariumState(): PlanetariumState {
     distanceTraveled: 0,
     timeElapsed: 0,
     timestamp: Date.now(),
-    autopilot: true,
+    autopilot: false,
     layoutMode: 'realistic',
     astroTimeUtcMs: Date.now(),
     astroTimeRate: 1,
@@ -148,9 +184,13 @@ export function createDefaultPlanetariumState(): PlanetariumState {
     planetScale: 1,
     showShip: true,
     showConstellations: false,
+    showBodyLabels: true,
+    showBodyMarkers: true,
+    showOrbitLines: false,
     landedOn: null,
     systemSpeed: 0.083,
     systemSlowdown: true,
+    autopilotUserEngaged: false,
   };
 }
 
@@ -174,18 +214,28 @@ export class PlanetariumStore {
     if (!raw) raw = await this.readIndexedDb(STORAGE_KEY);
 
     // Legacy key migration: pre-rename the key was 'orbital-sim-explore-state'.
-    // Read once, then delete so we don't keep two copies diverging.
+    // Migration must COMMIT before it deletes: the first regular write of the
+    // current key doesn't happen until autosave starts, seconds of async
+    // startup later — deleting the legacy copies on read would make that
+    // window (a crash, a closed tab) lose the only save. So: parse, write the
+    // current key, and only then remove the legacy copies.
     if (!raw) {
-      raw =
+      const legacyRaw =
         this.readWebStorage('local', LEGACY_STORAGE_KEY) ??
         this.readWebStorage('session', LEGACY_STORAGE_KEY) ??
         (await this.readIndexedDb(LEGACY_STORAGE_KEY));
-      if (raw) {
+      if (!legacyRaw) return null;
+      const migrated = parseSavedState(legacyRaw);
+      if (migrated) {
+        void this.saveState(migrated);
         this.removeLegacyState();
+        return migrated;
       }
+      // Unreadable legacy save: nothing to protect, drop it as before.
+      debugWarn('Legacy planetarium state failed validation');
+      this.removeLegacyState();
+      return null;
     }
-
-    if (!raw) return null;
 
     const sanitized = parseSavedState(raw);
     if (sanitized) {
@@ -197,12 +247,20 @@ export class PlanetariumStore {
     return null;
   }
 
-  saveState(state: PlanetariumState): void {
+  /**
+   * Resolves true when at least one backend durably holds the save. The web
+   * storage writes happen synchronously before this returns (pagehide-safe);
+   * only the IndexedDB confirmation is awaited, and the promise never
+   * rejects — fire-and-forget callers (autosave, unload) can ignore it.
+   */
+  saveState(state: PlanetariumState): Promise<boolean> {
     state.timestamp = Date.now();
     const raw = JSON.stringify(state);
-    this.writeWebStorage('local', raw);
-    this.writeWebStorage('session', raw);
-    void this.writeIndexedDb(raw);
+    const local = this.writeWebStorage('local', raw);
+    const session = this.writeWebStorage('session', raw);
+    const idb = this.writeIndexedDb(raw);
+    if (local || session) return Promise.resolve(true);
+    return idb;
   }
 
   startAutoSave(getState: () => PlanetariumState): void {
@@ -250,10 +308,26 @@ export class PlanetariumStore {
     }
   }
 
-  /** Record that the intro help has been dismissed. */
   markHelpSeen(): void {
     try {
       localStorage.setItem(HELP_SEEN_KEY, '1');
+    } catch {
+      /* ignore: private browsing */
+    }
+  }
+
+  /** True if the surface view's one-time controls hint has been shown. */
+  hasSeenSurfaceHint(): boolean {
+    try {
+      return Boolean(localStorage.getItem(SURFACE_HINT_SEEN_KEY));
+    } catch {
+      return false;
+    }
+  }
+
+  markSurfaceHintSeen(): void {
+    try {
+      localStorage.setItem(SURFACE_HINT_SEEN_KEY, '1');
     } catch {
       /* ignore: private browsing */
     }
@@ -285,13 +359,15 @@ export class PlanetariumStore {
     }
   }
 
-  private writeWebStorage(kind: 'local' | 'session', raw: string): void {
+  private writeWebStorage(kind: 'local' | 'session', raw: string): boolean {
     const storage = this.getWebStorage(kind);
-    if (!storage) return;
+    if (!storage) return false;
     try {
       storage.setItem(STORAGE_KEY, raw);
+      return true;
     } catch (err) {
       debugWarn(`${kind}Storage setItem failed in saveState`, err);
+      return false;
     }
   }
 
@@ -357,22 +433,22 @@ export class PlanetariumStore {
     });
   }
 
-  private async writeIndexedDb(raw: string): Promise<void> {
+  private async writeIndexedDb(raw: string): Promise<boolean> {
     const db = await this.getDb();
-    if (!db) return;
+    if (!db) return false;
 
-    await new Promise<void>((resolve) => {
+    return new Promise<boolean>((resolve) => {
       try {
         const tx = db.transaction(FALLBACK_STORE_NAME, 'readwrite');
         tx.objectStore(FALLBACK_STORE_NAME).put(raw, STORAGE_KEY);
-        tx.oncomplete = () => resolve();
+        tx.oncomplete = () => resolve(true);
         tx.onerror = () => {
           debugWarn('indexedDB put failed', tx.error);
-          resolve();
+          resolve(false);
         };
       } catch (err) {
         debugWarn('indexedDB put threw', err);
-        resolve();
+        resolve(false);
       }
     });
   }

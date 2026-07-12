@@ -1,7 +1,7 @@
 /**
- * Real astronomical values in kilometers and degrees. Used for scaling UI readouts
- * and deriving scene-unit proportions (see `sceneUnits.ts`). Never use these for
- * rendering directly — rendering consumes SCENE_UNITS.
+ * Real astronomical values in kilometers and degrees: the physical constants
+ * behind astronomy/shadow geometry, Moon Flight, and km readout conversions.
+ * The Planetarium renders in AU — convert at the call site.
  */
 export const KM_CONSTANTS = {
   EARTH_RADIUS: 6_371,

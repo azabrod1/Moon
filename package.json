@@ -1,14 +1,17 @@
 {
   "name": "moon",
   "version": "1.0.0",
-  "description": "Earth-Moon-Sun orbital simulator",
+  "description": "Flyable solar-system planetarium: real ephemerides, eclipses, and surface observatories",
   "type": "module",
   "scripts": {
     "dev": "vite",
     "gen:stars": "node gen-stars.mjs",
+    "gen:moons": "node gen-moons.mjs",
     "gen:constellations": "node gen-constellations.mjs",
+    "gen:maps": "node gen-maps.mjs",
     "build": "tsc && vite build",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "test": "vitest run src"
   },
   "dependencies": {
     "@types/three": "^0.183.1",
@@ -17,6 +20,8 @@
     "vite": "^8.0.3"
   },
   "devDependencies": {
-    "@types/node": "^25.5.2"
+    "@types/node": "^25.5.2",
+    "playwright": "^1.60.0",
+    "vitest": "^4.1.8"
   }
 }

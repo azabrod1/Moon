@@ -12,3 +12,6 @@ export const J2000 = 2451545.0;
 
 /** Mean obliquity of the ecliptic at J2000.0 (degrees). */
 export const OBLIQUITY_DEG = 23.4392911;
+
+/** Kilometres per astronomical unit (IAU 2012 definition). */
+export const KM_PER_AU = 149_597_870.7;

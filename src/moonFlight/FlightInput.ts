@@ -50,15 +50,15 @@ export class KeyboardMouseInput implements FlightInput {
   }
 
   poll(): FlightInputState {
-    const k = this.keys;
+    const keys = this.keys;
     const state: FlightInputState = {
-      thrustForward: (k.has('w') ? 1 : 0) - (k.has('s') ? 1 : 0),
-      thrustRight: (k.has('d') ? 1 : 0) - (k.has('a') ? 1 : 0),
-      thrustRadial: (k.has('r') ? 1 : 0) - (k.has('f') ? 1 : 0),
+      thrustForward: (keys.has('w') ? 1 : 0) - (keys.has('s') ? 1 : 0),
+      thrustRight: (keys.has('d') ? 1 : 0) - (keys.has('a') ? 1 : 0),
+      thrustRadial: (keys.has('r') ? 1 : 0) - (keys.has('f') ? 1 : 0),
       lookYaw: this.mouseDX * MOUSE_LOOK_SENSITIVITY,
       lookPitch: -this.mouseDY * MOUSE_LOOK_SENSITIVITY,
-      boost: k.has('shift'),
-      brake: k.has(' '),
+      boost: keys.has('shift'),
+      brake: keys.has(' '),
     };
     this.mouseDX = 0;
     this.mouseDY = 0;
@@ -143,16 +143,16 @@ export class TouchInput implements FlightInput {
   }
 
   poll(): FlightInputState {
-    const ly = this.leftStick ? this.leftStick.dy / TOUCH_STICK_RADIUS : 0;
-    const lx = this.leftStick ? this.leftStick.dx / TOUCH_STICK_RADIUS : 0;
-    const rx = this.rightStick ? this.rightStick.dx / TOUCH_STICK_RADIUS : 0;
-    const ry = this.rightStick ? this.rightStick.dy / TOUCH_STICK_RADIUS : 0;
+    const leftY = this.leftStick ? this.leftStick.dy / TOUCH_STICK_RADIUS : 0;
+    const leftX = this.leftStick ? this.leftStick.dx / TOUCH_STICK_RADIUS : 0;
+    const rightX = this.rightStick ? this.rightStick.dx / TOUCH_STICK_RADIUS : 0;
+    const rightY = this.rightStick ? this.rightStick.dy / TOUCH_STICK_RADIUS : 0;
     return {
-      thrustForward: clamp(-ly, -1, 1),
-      thrustRight: clamp(lx, -1, 1),
+      thrustForward: clamp(-leftY, -1, 1),
+      thrustRight: clamp(leftX, -1, 1),
       thrustRadial: (this.radialUp ? 1 : 0) - (this.radialDown ? 1 : 0),
-      lookYaw: clamp(rx, -1, 1) * TOUCH_LOOK_SENSITIVITY,
-      lookPitch: clamp(-ry, -1, 1) * TOUCH_LOOK_SENSITIVITY,
+      lookYaw: clamp(rightX, -1, 1) * TOUCH_LOOK_SENSITIVITY,
+      lookPitch: clamp(-rightY, -1, 1) * TOUCH_LOOK_SENSITIVITY,
       boost: this.boostHeld,
       brake: this.brakeHeld,
     };
@@ -255,25 +255,25 @@ export class TouchInput implements FlightInput {
     return { identifier: t.identifier, originX: t.clientX, originY: t.clientY, dx: 0, dy: 0, base, knob };
   }
 
-  private updateStick(t: Touch, s: TouchStick | null): void {
-    if (!s || t.identifier !== s.identifier) return;
-    let dx = t.clientX - s.originX;
-    let dy = t.clientY - s.originY;
+  private updateStick(t: Touch, stick: TouchStick | null): void {
+    if (!stick || t.identifier !== stick.identifier) return;
+    let dx = t.clientX - stick.originX;
+    let dy = t.clientY - stick.originY;
     const mag = Math.hypot(dx, dy);
     if (mag > TOUCH_STICK_RADIUS) {
       dx *= TOUCH_STICK_RADIUS / mag;
       dy *= TOUCH_STICK_RADIUS / mag;
     }
-    s.dx = dx;
-    s.dy = dy;
-    s.knob.style.transform = `translate(calc(-50% + ${dx}px), calc(-50% + ${dy}px))`;
+    stick.dx = dx;
+    stick.dy = dy;
+    stick.knob.style.transform = `translate(calc(-50% + ${dx}px), calc(-50% + ${dy}px))`;
   }
 
-  private endStick(s: TouchStick): void {
-    s.base.style.opacity = '0.5';
-    s.knob.style.transform = 'translate(-50%, -50%)';
-    s.dx = 0;
-    s.dy = 0;
+  private endStick(stick: TouchStick): void {
+    stick.base.style.opacity = '0.5';
+    stick.knob.style.transform = 'translate(-50%, -50%)';
+    stick.dx = 0;
+    stick.dy = 0;
   }
 }
 

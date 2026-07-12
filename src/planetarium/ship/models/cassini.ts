@@ -2,7 +2,7 @@
  * Cassini (procedural fallback) spacecraft model — procedural THREE.Group geometry.
  */
 import * as THREE from 'three';
-import { createEngineBell, createVoyagerDishGeometry, createRodBetween } from './shipPrimitives';
+import { createEngineBell, createParabolicDishGeometry, createRodBetween } from './shipPrimitives';
 
 export function createCassiniModel(referenceRadiusAU: number): THREE.Group {
   const model = new THREE.Group();
@@ -36,7 +36,7 @@ export function createCassiniModel(referenceRadiusAU: number): THREE.Group {
   });
 
   const dish = new THREE.Mesh(
-    createVoyagerDishGeometry(dishRadius, dishDepth),
+    createParabolicDishGeometry(dishRadius, dishDepth),
     new THREE.MeshStandardMaterial({
       color: 0xf2f5f8,
       roughness: 0.28,

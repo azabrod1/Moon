@@ -1,21 +1,30 @@
 /**
  * Simplified astronomical ephemeris based on Jean Meeus's "Astronomical Algorithms".
- * Computes Sun and Moon ecliptic longitude, latitude, and distance for any date.
- * Accuracy: ~1° for Moon longitude, ~0.5° for Sun longitude — sufficient for
- * phase/eclipse visualization.
+ * Computes Sun and Moon ecliptic-of-date longitude, latitude, and distance for
+ * any date. Measured accuracy (ephemeris.test.ts / standish.test.ts goldens):
+ * Sun ~0.01°; Moon ~0.01° lon / ~0.01° lat / ~25 km — the truncated series
+ * far outperform their original ~1° header claim. The planetarium consumes
+ * these through planetary.ts, which precesses longitudes to J2000.
  */
 
 import { DEG, J2000 } from './constants';
+import { deltaTDaysAtDate } from './deltaT';
 
 /** Julian Day Number from a Date object (UTC). */
 export function dateToJD(date: Date): number {
   let y = date.getUTCFullYear();
   let m = date.getUTCMonth() + 1;
+  // The millisecond term matters: positions are recomputed from this JD every
+  // rendered frame, and truncating to whole seconds freezes every body for a
+  // second, then snaps it one second of real motion (~30 km for Earth+Moon) —
+  // a visible once-per-second lurch when a body fills the screen at close
+  // range. Sub-ms time never reaches this seam, so the chain is smooth.
   const d =
     date.getUTCDate() +
     date.getUTCHours() / 24 +
     date.getUTCMinutes() / 1440 +
-    date.getUTCSeconds() / 86400;
+    date.getUTCSeconds() / 86400 +
+    date.getUTCMilliseconds() / 86_400_000;
 
   if (m <= 2) {
     y -= 1;
@@ -95,13 +104,14 @@ export interface MoonPosition {
   longitude: number;   // ecliptic longitude (degrees)
   latitude: number;    // ecliptic latitude (degrees)
   distance: number;    // km
-  ascending_node: number;  // longitude of ascending node (degrees)
+  ascendingNodeLongitude: number;  // longitude of ascending node (degrees)
 }
 
 /**
  * Simplified Moon position (Meeus Ch. 47, reduced terms).
  * Uses the main periodic terms for longitude, latitude, and distance.
- * Accuracy: ~1° longitude, ~0.5° latitude.
+ * Measured at the Meeus 47.a worked example: +0.0009° lon, +0.00008° lat,
+ * −5 km (see ephemeris.test.ts).
  */
 export function moonPosition(jd: number): MoonPosition {
   const t = T(jd);
@@ -143,7 +153,6 @@ export function moonPosition(jd: number): MoonPosition {
     0.0021 * t * t + t * t * t / 467441 - t * t * t * t / 60616000
   );
 
-  // Convert to radians for trig
   const Dr = D * DEG;
   const Mr = M * DEG;
   const Mpr = Mp * DEG;
@@ -188,9 +197,9 @@ export function moonPosition(jd: number): MoonPosition {
   sumB += 17198 * Math.sin(2 * Mpr + Fr);                  // 2M' + F
   sumB += 9266 * Math.sin(2 * Dr + Mpr - Fr);              // 2D + M' - F
   sumB += 8822 * Math.sin(2 * Mpr - Fr);                   // 2M' - F
-  sumB += -8143 * Math.sin(2 * Dr - Mr - Fr);              // 2D - M - F
-  sumB += 4120 * Math.sin(2 * Dr - Mr + Fr) * -1;          // sign correction
-  sumB += -3958 * Math.sin(Mr + Fr) * -1;
+  sumB += 8216 * Math.sin(2 * Dr - Mr - Fr);               // 2D - M - F (E simplified)
+  sumB += 4324 * Math.sin(2 * Dr - 2 * Mpr - Fr);          // 2D - 2M' - F
+  sumB += 4200 * Math.sin(2 * Dr + Mpr + Fr);              // 2D + M' + F
 
   // Distance terms (main from Meeus Table 47.A)
   let sumR = 0;
@@ -226,14 +235,11 @@ export function moonPosition(jd: number): MoonPosition {
   return {
     longitude,
     latitude,
-    ascending_node: norm360(omega),
+    ascendingNodeLongitude: norm360(omega),
     distance,
   };
 }
 
-/**
- * Compute all relevant orbital info for a given date.
- */
 export interface OrbitalState {
   sunLongitude: number;    // degrees
   moonLongitude: number;   // degrees
@@ -249,7 +255,8 @@ export interface OrbitalState {
 }
 
 export function computeOrbitalState(date: Date): OrbitalState {
-  const jd = dateToJD(date);
+  // Theories run on Terrestrial Time; the date is civil UTC.
+  const jd = dateToJD(date) + deltaTDaysAtDate(date);
   const sun = sunPosition(jd);
   const moon = moonPosition(jd);
 
@@ -262,7 +269,6 @@ export function computeOrbitalState(date: Date): OrbitalState {
   const phaseAngle = absElong;
   const illumination = (1 - Math.cos(phaseAngle * DEG)) / 2;
 
-  // Phase name
   let phaseName: string;
   if (absElong < 10) phaseName = 'New Moon';
   else if (absElong < 80) phaseName = elongation > 0 ? 'Waxing Crescent' : 'Waning Crescent';
@@ -292,7 +298,7 @@ export function computeOrbitalState(date: Date): OrbitalState {
     sunLongitude: sun.longitude,
     moonLongitude: moon.longitude,
     moonLatitude: moon.latitude,
-    moonNodeLongitude: moon.ascending_node,
+    moonNodeLongitude: moon.ascendingNodeLongitude,
     phaseAngle,
     illumination,
     phaseName,
@@ -313,7 +319,7 @@ export type EventType = 'full-moon' | 'new-moon' | 'lunar-eclipse' | 'solar-ecli
  * Get the Sun-Moon elongation for a given date (signed, -180..180).
  */
 function elongationAt(date: Date): number {
-  const jd = dateToJD(date);
+  const jd = dateToJD(date) + deltaTDaysAtDate(date);
   const sun = sunPosition(jd);
   const moon = moonPosition(jd);
   return norm180(moon.longitude - sun.longitude);
@@ -341,7 +347,6 @@ function findElongationCrossing(
 
     // Detect sign change (crossing through 0), but ignore wraps through ±180
     if (prevElong * curElong < 0 && Math.abs(prevElong - curElong) < 90) {
-      // Bisect to find precise crossing
       let lo = prevTime;
       let hi = curTime;
       for (let j = 0; j < 20; j++) {
@@ -391,7 +396,6 @@ export function findLunarEclipse(from: Date, direction: 1 | -1): Date | null {
     if (Math.abs(state.moonLatitude) < 1.5) {
       return fm;
     }
-    // Skip ahead past this full moon
     cursor = new Date(fm.getTime() + direction * MS_PER_DAY * 2);
   }
   return null;
@@ -415,9 +419,6 @@ export function findSolarEclipse(from: Date, direction: 1 | -1): Date | null {
   return null;
 }
 
-/**
- * Unified search function.
- */
 export function findEvent(type: EventType, from: Date, direction: 1 | -1): Date | null {
   switch (type) {
     case 'full-moon': return findFullMoon(from, direction);

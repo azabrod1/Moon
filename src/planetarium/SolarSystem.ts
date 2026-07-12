@@ -6,7 +6,13 @@
 import * as THREE from 'three';
 import { PLANETARIUM_BODIES, ASTEROID_BELT, type PlanetData } from './planets/planetData';
 import { createPlanetMesh, createPlanetariumSun, type PlanetMesh } from './PlanetFactory';
-import { computePlanetPositionEquatorial, sampleOrbitLinePoints, utcMsToJD } from '../astronomy/planetary';
+import {
+  computeBodyPositionAU,
+  sampleOrbitLinePoints,
+  sampleTrajectoryLinePoints,
+} from '../astronomy/planetary';
+import { KM_PER_AU } from '../astronomy/constants';
+import type { KeplerElements } from '../astronomy/standish';
 
 export type PlanetariumLayout = 'aligned' | 'realistic';
 export const CREATE_SOLAR_SYSTEM_TOTAL_UNITS =
@@ -21,11 +27,14 @@ export interface SolarSystemObjects {
   sun: THREE.Group;
   planets: PlanetMesh[];
   orbitLines: THREE.Line[];
+  /** Sim epoch the orbit lines were last sampled at (lazy drift rebuild). */
+  orbitLinesEpochUtcMs: number;
   asteroidBelt: THREE.Points;
   sunLight: THREE.PointLight;
-  ambientLight: THREE.AmbientLight;
 }
 
+// Decorative scene-space spread (aligned overview mode), not frame-bound —
+// the ± wobble is symmetric, so the z sign carries no chirality meaning.
 function createAlignedPlanetPosition(planet: PlanetData, seed: number): { x: number; y: number; z: number } {
   const radius = planet.semiMajorAxisAU;
   const spread = ((seed * 7.13) % 1 - 0.5) * (Math.PI / 6);
@@ -42,8 +51,77 @@ export function getPlanetOrbitalPosition(
     return createAlignedPlanetPosition(planet, seed);
   }
 
-  const position = computePlanetPositionEquatorial(planet, utcMsToJD((date ?? new Date()).getTime()));
+  const position = computeBodyPositionAU(planet, (date ?? new Date()).getTime());
   return { x: position.x, y: position.y, z: position.z };
+}
+
+/** Aligned-mode ring: an epoch-free ecliptic circle at the catalog radius. */
+function alignedCircleElements(planet: PlanetData): KeplerElements {
+  return {
+    semiMajorAxisAU: planet.semiMajorAxisAU,
+    eccentricity: 0,
+    inclinationDeg: 0,
+    lonPerihelionDeg: 0,
+    ascendingNodeDeg: 0,
+    meanAnomalyDeg: 0,
+  };
+}
+
+/** Aligned-mode circle segment count (planets sit exactly on the circles). */
+export const ORBIT_LINE_SEGMENTS = 256;
+
+/**
+ * Realistic-mode segment count, sized so the polyline's chord sagitta stays
+ * under ~a quarter of the body's own radius — the planet has to sit ON its
+ * line even at landed zoom: N ≈ 2π·√(a / (8·R/4)), rounded up to a multiple
+ * of 256. The old global 256 left every planet 1–13 body radii off its line
+ * mid-chord (Pluto: ~200 — tiny body, enormous orbit; it clamps at 8192 for
+ * ~0.37 R there).
+ */
+export function orbitLineSegmentCount(planet: PlanetData): number {
+  const aKm = planet.semiMajorAxisAU * KM_PER_AU;
+  const ideal = Math.ceil(2 * Math.PI * Math.sqrt(aKm / (2 * planet.radiusKm)));
+  return Math.min(8192, Math.max(1024, Math.ceil(ideal / 256) * 256));
+}
+
+/**
+ * One body's orbit-line vertices at a sim epoch. Realistic mode samples the
+ * body's actual rendered trajectory (computeBodyPositionAU — see
+ * sampleTrajectoryLinePoints for why elements aren't enough); aligned mode
+ * draws epoch-free circles at the catalog radius.
+ */
+function sampleLinePoints(
+  planet: PlanetData,
+  layoutMode: PlanetariumLayout,
+  utcMs: number,
+): THREE.Vector3[] {
+  if (layoutMode === 'aligned') {
+    return sampleOrbitLinePoints(alignedCircleElements(planet), ORBIT_LINE_SEGMENTS);
+  }
+  return sampleTrajectoryLinePoints(planet, utcMs, orbitLineSegmentCount(planet));
+}
+
+/**
+ * Re-sample every orbit line's geometry at the given sim epoch and re-stamp
+ * orbitLinesEpochUtcMs. Mutates the existing geometry in place — replacing
+ * the Line objects would break the orbitLines[i] ↔ PLANETARIUM_BODIES[i]
+ * coupling and orphan GPU buffers — and recomputes each bounding sphere
+ * (setFromPoints updates attributes but never invalidates the cached sphere,
+ * which would leave frustum culling stale). The staleness *policy* (when to
+ * call this) lives with the caller, PlanetariumMode.rebuildOrbitLinesIfStale.
+ */
+export function resampleOrbitLines(
+  objects: Pick<SolarSystemObjects, 'orbitLines' | 'orbitLinesEpochUtcMs'>,
+  layoutMode: PlanetariumLayout,
+  utcMs: number,
+): void {
+  for (let i = 0; i < objects.orbitLines.length; i++) {
+    const points = sampleLinePoints(PLANETARIUM_BODIES[i], layoutMode, utcMs);
+    const geometry = objects.orbitLines[i].geometry;
+    geometry.setFromPoints(points);
+    geometry.computeBoundingSphere();
+  }
+  objects.orbitLinesEpochUtcMs = utcMs;
 }
 
 function createOrbitLine(points: THREE.Vector3[], color: number, opacity: number): THREE.Line {
@@ -62,6 +140,8 @@ function createAsteroidBelt(): THREE.Points {
   const positions = new Float32Array(count * 3);
   const colors = new Float32Array(count * 3);
 
+  // Decorative scene-space ring (random circularly-symmetric scatter), not
+  // frame-bound — the z=+sin convention here carries no chirality meaning.
   for (let i = 0; i < count; i++) {
     const radius = ASTEROID_BELT.innerAU + Math.random() * (ASTEROID_BELT.outerAU - ASTEROID_BELT.innerAU);
     const angle = Math.random() * Math.PI * 2;
@@ -106,7 +186,6 @@ export async function createSolarSystem(
   reportProgress();
   const sun = createPlanetariumSun(useBloom);
   const sunLight = sun.children.find(child => child instanceof THREE.PointLight) as THREE.PointLight;
-  const ambientLight = new THREE.AmbientLight(0x334466, 0.22);
   completedUnits += 1;
   reportProgress();
 
@@ -119,22 +198,12 @@ export async function createSolarSystem(
     return planetMesh;
   }));
 
+  // Lines, planets, and the restored clock share one epoch at startup.
+  const orbitLinesEpochUtcMs = (date ?? new Date()).getTime();
   const orbitLines: THREE.Line[] = [];
   for (let i = 0; i < PLANETARIUM_BODIES.length; i++) {
     const body = PLANETARIUM_BODIES[i];
-    const orbitPoints =
-      layoutMode === 'aligned'
-        ? sampleOrbitLinePoints(
-            {
-              ...body,
-              eccentricity: 0,
-              inclinationDeg: 0,
-              ascendingNodeDeg: 0,
-              lonPerihelionDeg: 0,
-            },
-            256,
-          )
-        : sampleOrbitLinePoints(body, 256);
+    const orbitPoints = sampleLinePoints(body, layoutMode, orbitLinesEpochUtcMs);
     const line = createOrbitLine(orbitPoints, body.color, 0.2);
     line.name = `orbit-${body.name}`;
     orbitLines.push(line);
@@ -150,19 +219,8 @@ export async function createSolarSystem(
     sun,
     planets,
     orbitLines,
+    orbitLinesEpochUtcMs,
     asteroidBelt,
     sunLight,
-    ambientLight,
   };
-}
-
-export function getPlanetWorldPositions(planets: PlanetMesh[]): Map<string, { x: number; y: number; z: number }> {
-  const map = new Map<string, { x: number; y: number; z: number }>();
-  for (const planet of planets) {
-    const position = planet.group.userData.worldPosAU as { x: number; y: number; z: number } | undefined;
-    if (position) {
-      map.set(planet.data.name, position);
-    }
-  }
-  return map;
 }

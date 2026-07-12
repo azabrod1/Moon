@@ -1,24 +1,15 @@
 # Moon
 
-Moon is a browser-based space experience that combines a lunar phase and eclipse simulator with a flyable solar-system explorer in one WebGL app.
+Moon is a browser-based, flyable solar-system planetarium: real ephemerides for the planets and 65 moons, real eclipses and shadow transits, and surface observatories to watch them from.
 
 Built with `Three.js`, `TypeScript`, `Vite`, and WebGL.
 
 ## Features
 
-### Moon mode
-
-- Explore the Earth-Moon-Sun system with manual orbital controls.
-- Switch to UTC date mode to inspect real positions over time.
-- Jump directly to full moons, new moons, solar eclipses, and lunar eclipses.
-- Toggle orbit details to inspect the ellipse, foci, and daily swept-area visualization.
-- Swap between overview, top-down, Earth, and side camera presets.
-
-### Planets mode
-
 - Start in a flyable solar-system view with planets, moons, and distances presented at scale.
 - Travel with keyboard controls or use the built-in travel menu and autopilot.
 - Land on nearby planets and moons, then orbit them from a local camera view.
+- Open the Observatory while landed: live phase data, upcoming eclipses and shadow transits with one-tap time jumps, narrow-FOV surface views ("Look up" — watch a solar eclipse from inside the umbra), true-scale shadow guides, and per-moon orbit details (real sampled ellipse, foci, apsides, equal-area sweep).
 - Adjust astronomical time, reverse it, pause it, or jump back to the present.
 - Open live stats for distance, light time, speed, temperature, and flight progress.
 - Toggle constellation overlays and gyro steering on supported mobile devices.
@@ -43,21 +34,12 @@ npm run preview
 
 ## Controls
 
-### Planets mode
-
 - `W` / `S`: thrust
 - `A` / `D`: yaw
 - `Arrow Up` / `Arrow Down`: pitch
 - `P`: toggle autopilot
 - `T`: open or close the travel menu
 - UI controls handle time, landing, mission playback, travel targets, and settings.
-
-### Moon mode
-
-- Use the on-screen sliders for Moon position, Sun direction, and lunar node.
-- Use the time controls to play, pause, reverse, or accelerate the simulation.
-- Use event jump buttons to move to major lunar phases and eclipse events.
-- Use the camera buttons to switch viewpoints.
 
 ## Project Notes
 
@@ -66,8 +48,8 @@ npm run preview
 - Astronomy datasets are generated locally from the HYG Database and Stellarium source data.
 - GitHub Pages deployment is configured in [`.github/workflows/deploy.yml`](./.github/workflows/deploy.yml) and builds with a `/Moon/` base path.
 - Supported startup URL params:
-  - `?auto=planetarium` — boot directly into the Planetarium (solar-system flight)
-  - `?auto=moonView` — boot directly into the Moon view (Earth–Moon–Sun simulator)
+  - `?auto=planetarium` — boot directly into the Planetarium (the default)
+  - `?auto=moonView` — legacy value, still accepted; the retired Moon view's links land in the Planetarium
 
 ## Data and Scripts
 
@@ -81,7 +63,7 @@ Available scripts and generators:
 
 ## Developer Notes
 
-- There is no configured test framework in this repo.
+- Tests are vitest, colocated `*.test.ts` next to their modules (`npm test`): Meeus worked examples, published event catalogs, and JPL Horizons vector goldens.
 - There is no configured linter in this repo.
 - The current app UI is plain HTML/CSS plus TypeScript-driven Three.js scene logic rather than a frontend framework.
 - This README intentionally avoids unverified screenshots, GIFs, badges, and live-demo links.

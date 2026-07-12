@@ -17,7 +17,6 @@ varying vec3 vNormal;
 varying vec3 vPosition;
 varying vec2 vUv;
 
-// Simple noise
 float hash(vec2 p) {
   return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453);
 }
@@ -53,7 +52,6 @@ void main() {
   float n = fbm(uv + time * 0.15);
   float n2 = fbm(uv * 1.5 - time * 0.1);
 
-  // Core color
   vec3 coreColor = vec3(1.0, 0.95, 0.8);
   vec3 midColor = vec3(1.0, 0.7, 0.2);
   vec3 edgeColor = vec3(1.0, 0.3, 0.05);
@@ -61,7 +59,6 @@ void main() {
   vec3 surfaceColor = mix(coreColor, midColor, rimDot * 0.7 + n * 0.3);
   surfaceColor = mix(surfaceColor, edgeColor, pow(rimDot, 2.0));
 
-  // Intensity with surface detail
   float intensity = 2.5 - rimDot * 1.2 + n2 * 0.3;
 
   gl_FragColor = vec4(surfaceColor * intensity, 1.0);

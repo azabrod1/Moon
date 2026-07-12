@@ -6,7 +6,7 @@
 import * as THREE from 'three';
 import { BRIGHT_STAR_CATALOG } from '../data/brightStars';
 import { raDecToVector } from '../../astronomy/planetary';
-import { starPointVisual } from './starPointMapping';
+import { starPointBrightness, starPointVisual } from './starPointMapping';
 
 /** Celestial-sphere radius (AU) shared by the stars and the constellation
  *  overlay (Constellations.ts) — the lines must land on the stars. */
@@ -33,6 +33,17 @@ export function getStarColor(colorIndex: number): THREE.Color {
   return t < 0.5
     ? cool.clone().lerp(neutral, t * 2)
     : neutral.clone().lerp(warm, (t - 0.5) * 2);
+}
+
+/**
+ * The RGB a star's vertex actually receives: catalog tint × its magnitude
+ * brightness (via the shared point mapping, so this equals the render path
+ * below). Per-channel values can exceed 1, but the catalog's peak Rec.709
+ * luminance stays under the bloom high-pass cutoff, so no star survives as a
+ * bloom glint near the Sun (pinned by the invariant test alongside this file).
+ */
+export function starRenderColor(colorIndex: number, magnitude: number): THREE.Color {
+  return getStarColor(colorIndex).multiplyScalar(starPointBrightness(magnitude));
 }
 
 /**
@@ -124,6 +135,12 @@ export function createPlanetariumStarfield(rendererPixelRatio: number): THREE.Po
           if (d > 0.5) discard;
           float falloff = 1.0 - smoothstep(0.2, 0.5, d);
           gl_FragColor = vec4(vColor, falloff * vAlpha);
+          // Exposure + ACES + sRGB when this material draws straight to screen
+          // (the no-bloom path): the exposure that crushes the Sun's neighbours
+          // must reach the stars too. Compiles to a no-op in the composer's
+          // linear render target, so the bloom path is byte-identical.
+          #include <tonemapping_fragment>
+          #include <colorspace_fragment>
         }
       `,
     transparent: true,

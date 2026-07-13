@@ -93,8 +93,11 @@ ceiling; it is not a defect.
 | `04-postexit-planetarium.png` | Planetarium renders correctly after a full spike round-trip (regression proof: exposure/autoClear restored, composer rebuilt) |
 
 Frames are software-rendered (this box has no working headless GPU — SwiftShader, ~250 ms/frame);
-they are correct, only slow. The full capture set + numeric report live in `planning/spike-s1/`
-(gitignored); the driver is `planning/spike-s1/capture.mjs`.
+they are correct, only slow. The full capture set + numeric report land in `planning/spike-s1/`
+(gitignored); the driver is committed at **`tools/descent/spike-s1-capture.mjs`** — it defaults
+to the real GPU, so re-running it on real hardware (`node tools/descent/spike-s1-capture.mjs
+spike` against `npm run dev -- --port 5174 --strictPort`) is how the deferred pass-cost AC gets
+its number.
 
 ## Carry-forward into P1
 

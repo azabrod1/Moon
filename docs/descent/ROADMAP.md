@@ -20,12 +20,16 @@ with **measured** output bytes vs TECH §5.2 targets; one NAC site cone blended 
 border without visible seam in a viewer; pack format frozen before P1.
 
 ## S1 + S2 + S3 — Spikes *(throwaway code, timeboxed, before feature work)*
-- **S1 Depth/composer spike** *(scope widened by review)*: gray sphere at real scale,
+- **S1 Depth/composer spike** ✅ *(done — [S1-FINDINGS.md](spikes/S1-FINDINGS.md); R1 retired)* *(scope widened by review)*: gray sphere at real scale,
   camera-relative transforms, sky/world two-pass through a **refactored composer** (per-mode
   pass list) **and the no-bloom fallback path**, fly 450 km → 2 m.
   **AC:** no z-fighting/jitter at either extreme; **terrain never blooms at any exposure**
   (exposure applied pre-bloom); world scene background null verified; both render paths
   correct; `toneMappingExposure` restored on exit; extra pass cost < 0.5 ms.
+  *Result: all met except pass-cost (deferred — no headless GPU on the CI box; mechanism proven,
+  number owed by real-hardware QA). "Never blooms" holds through the operational exposure range;
+  the +4 EV over-crank bounds the auto-exposure clamp for P1. Shell refactor (`src/app/renderPipeline.ts`)
+  is the surviving artifact; AA resolved to MSAA 4×, pending the §9 VRAM re-check.*
 - **S2 KTX2-on-Pages spike:** one KTX2 + transcoder wasm from a Pages deploy.
   **AC:** Chrome/Firefox/Safari + one Android; MIME/caching documented; WebP fallback decision
   made here.

@@ -16,13 +16,15 @@ import { PlanetariumMode, FIRST_PLANETARIUM_ACTIVATION_TOTAL_UNITS } from './pla
 import { LANDED_NEAR_AU } from './planetarium/landedView';
 import type { MoonFlightMode } from './moonFlight/MoonFlightMode';
 import type { VolumeCompareMode } from './volumeCompare/VolumeCompareMode';
+import type { SpikeS1Mode } from './descent/spikes/s1/SpikeS1Mode';
+import { assembleScenePasses, renderPassesDirect, type ScenePassSpec } from './app/renderPipeline';
 import { canGPUDoBloom } from './app/gpuCapability';
 import { debugError, debugLog, debugWarn } from './shared/debug';
 
 // ================================================================
 // Top-level mode
 // ================================================================
-type AppMode = 'planetarium' | 'moonFlight' | 'volumeCompare';
+type AppMode = 'planetarium' | 'moonFlight' | 'volumeCompare' | 'descentSpike';
 let appMode: AppMode = 'planetarium';
 // switchAppMode early-returns on a same-mode call only after the first
 // activation has actually run (init() enters the planetarium through it).
@@ -30,6 +32,7 @@ let appModeInitialized = false;
 let planetariumMode: PlanetariumMode | null = null;
 let moonFlightMode: MoonFlightMode | null = null;
 let volumeCompareMode: VolumeCompareMode | null = null;
+let descentSpikeMode: SpikeS1Mode | null = null;
 let modeSwitchInFlight = false;
 
 // ================================================================
@@ -76,8 +79,10 @@ renderer.domElement.addEventListener('webglcontextrestored', () => {
   debugLog('WebGL context restored');
 });
 
-// Enable bloom on any device whose GPU supports float framebuffers
-const useBloom = canGPUDoBloom(renderer);
+// Enable bloom on any device whose GPU supports float framebuffers. ?nobloom=1
+// forces the no-bloom fallback path (testable on any hardware — S1 exercises it).
+const noBloomParam = new URLSearchParams(window.location.search).get('nobloom') === '1';
+const useBloom = canGPUDoBloom(renderer) && !noBloomParam;
 
 try {
   const gl = renderer.getContext();
@@ -117,6 +122,9 @@ debugLog('Post-processing config', { useBloom });
 let composer: EffectComposer | null = null;
 
 function getTargetPixelRatio(): number {
+  // Descent's own policy (TECH §9): cap ≤ 1.5 desktop / ≤ 1.25 mobile — the
+  // two-scene composer's float targets are the VRAM cost this bounds.
+  if (appMode === 'descentSpike') return Math.min(window.devicePixelRatio, isMobile ? 1.25 : 1.5);
   if (isMobile) return Math.min(window.devicePixelRatio, 2);
   return Math.min(Math.max(window.devicePixelRatio, 1.5), 2.5);
 }
@@ -136,7 +144,26 @@ function applyRenderResolution() {
 // 0.8 / 0.92 identity so its glass HDR glint blooms against the same threshold.
 const BLOOM_RADIUS = 0.4;
 
-function buildComposer(cam: THREE.Camera, bloom: { strength: number; threshold: number }) {
+// Spike S1 bloom: threshold 1.0 so ONLY the deliberately-HDR sky elements (sun
+// glare, stars) bloom. The invariant the mode must hold: terrain's max
+// pre-tonemap luminance across the exposure range stays below this threshold —
+// that IS the "terrain never blooms" mechanism (exposure is applied pre-bloom by
+// scaling the sun light, since tone mapping runs in OutputPass AFTER bloom; TECH §6).
+const SPIKE_BLOOM = { strength: 0.6, threshold: 1.0 };
+
+// The pass specs the composer / no-bloom fallback currently render, plus refs to
+// the built passes for the spike dev hooks (sky-pass and bloom toggles).
+let currentPasses: ScenePassSpec[] = [{ scene }];
+let currentRenderPasses: RenderPass[] = [];
+let currentBloomPass: UnrealBloomPass | null = null;
+
+function buildComposer(
+  cam: THREE.Camera,
+  bloom: { strength: number; threshold: number },
+  passes: ScenePassSpec[] = [{ scene }],
+  opts?: { samples?: number },
+) {
+  currentPasses = passes; // drives the no-bloom fallback path too
   if (composer) {
     // EffectComposer.dispose() frees only its own ping-pong targets and copy
     // pass — never the added passes. Dispose them here so the bloom pass's mip
@@ -146,12 +173,15 @@ function buildComposer(cam: THREE.Camera, bloom: { strength: number; threshold: 
     composer.dispose();
     composer = null;
   }
+  currentRenderPasses = [];
+  currentBloomPass = null;
   if (!useBloom) return;
 
   composer = new EffectComposer(renderer);
   composer.setPixelRatio(getTargetPixelRatio());
   composer.setSize(window.innerWidth, window.innerHeight);
-  composer.addPass(new RenderPass(scene, cam));
+  currentRenderPasses = assembleScenePasses(passes, cam);
+  for (const pass of currentRenderPasses) composer.addPass(pass);
   const bloomPass = new UnrealBloomPass(
     new THREE.Vector2(window.innerWidth, window.innerHeight),
     bloom.strength,
@@ -159,7 +189,15 @@ function buildComposer(cam: THREE.Camera, bloom: { strength: number; threshold: 
     bloom.threshold,
   );
   composer.addPass(bloomPass);
+  currentBloomPass = bloomPass;
   composer.addPass(new OutputPass());
+  if (opts?.samples) {
+    // EffectComposer's default targets are HalfFloatType with samples 0; set them
+    // on the fresh targets before first render so the multisampled FBO is built
+    // multisampled (the AA decision — S1). Both ping-pong targets must match.
+    composer.renderTarget1.samples = opts.samples;
+    composer.renderTarget2.samples = opts.samples;
+  }
 }
 
 applyRenderResolution();
@@ -178,7 +216,7 @@ function renderScene(cam: THREE.Camera) {
   if (composer) {
     composer.render();
   } else {
-    renderer.render(scene, cam);
+    renderPassesDirect(renderer, currentPasses, cam);
   }
   if (measuring) performance.measure('plm:first-frame', 'plm:first-frame:start');
 }
@@ -232,7 +270,8 @@ async function switchAppMode(newMode: AppMode) {
     transitionMsg.textContent =
       newMode === 'planetarium' ? 'Entering Planets...'
         : newMode === 'moonFlight' ? 'Entering Flight...'
-          : 'Gathering planets...';
+          : newMode === 'descentSpike' ? 'Entering Descent...'
+            : 'Gathering planets...';
     await sleep(400);
 
     if (newMode === 'planetarium') {
@@ -240,6 +279,7 @@ async function switchAppMode(newMode: AppMode) {
       appMode = 'planetarium';
       if (moonFlightMode) moonFlightMode.deactivate();
       if (volumeCompareMode) volumeCompareMode.deactivate();
+      if (descentSpikeMode) descentSpikeMode.deactivate();
       scene.background = new THREE.Color(0x000000);
 
       camera = planetariumCamera;
@@ -273,6 +313,7 @@ async function switchAppMode(newMode: AppMode) {
       appMode = 'moonFlight';
       if (planetariumMode) planetariumMode.deactivate();
       if (volumeCompareMode) volumeCompareMode.deactivate();
+      if (descentSpikeMode) descentSpikeMode.deactivate();
       planetariumUI.style.display = 'none';
       scene.background = new THREE.Color(0x000000);
 
@@ -303,11 +344,12 @@ async function switchAppMode(newMode: AppMode) {
       }
       debugLog('Moon flight mode active');
 
-    } else {
+    } else if (newMode === 'volumeCompare') {
       // --- Switch to Volume Compare ("How many fit?") ---
       appMode = 'volumeCompare';
       if (planetariumMode) planetariumMode.deactivate();
       if (moonFlightMode) moonFlightMode.deactivate();
+      if (descentSpikeMode) descentSpikeMode.deactivate();
       // PlanetariumMode.deactivate already hides this; the explicit line keeps
       // parity with the flight branch and covers a switch from moon flight.
       planetariumUI.style.display = 'none';
@@ -333,6 +375,33 @@ async function switchAppMode(newMode: AppMode) {
       // the #mode-transition veil covers the load, so nothing half-loaded shows.
       await volumeCompareMode.activate();
       debugLog('Volume compare mode active');
+
+    } else {
+      // --- Switch to Descent Spike S1 (QA-only entry, ?spike=s1) ---
+      appMode = 'descentSpike';
+      if (planetariumMode) planetariumMode.deactivate();
+      if (moonFlightMode) moonFlightMode.deactivate();
+      if (volumeCompareMode) volumeCompareMode.deactivate();
+      planetariumUI.style.display = 'none';
+      scene.background = new THREE.Color(0x000000);
+
+      // Dynamic import (MoonFlight/volumeCompare code-split parity): the spike +
+      // its scenes stay out of the initial bundle until entered.
+      if (!descentSpikeMode) {
+        debugLog('Loading descent spike module');
+        const mod = await import('./descent/spikes/s1/SpikeS1Mode');
+        descentSpikeMode = new mod.SpikeS1Mode(renderer);
+        descentSpikeMode.onExit(() => {
+          void switchAppMode('planetarium');
+        });
+      }
+      camera = descentSpikeMode.camera;
+      applyRenderResolution();
+      // The mode's per-mode pass list: sky pass, then world pass with clearDepth.
+      buildComposer(descentSpikeMode.camera, SPIKE_BLOOM, descentSpikeMode.scenePasses());
+      debugLog('Activating descent spike mode');
+      await descentSpikeMode.activate();
+      debugLog('Descent spike mode active');
     }
 
     appModeInitialized = true;
@@ -422,6 +491,28 @@ function installDevHooks() {
       textures: renderer.info.memory.textures,
       programs: renderer.info.programs?.length ?? 0,
     }),
+    // Descent spike S1 bridge (QA-only). Enter/exit route through switchAppMode so
+    // the shared-renderer restore (exposure/autoClear) runs exactly as on a real exit.
+    spikeEnter: () => { void switchAppMode('descentSpike'); },
+    spikeExit: () => { void switchAppMode('planetarium'); },
+    spikeState: () => descentSpikeMode?.devState() ?? null,
+    spikeSetAlt: (m: number) => descentSpikeMode?.setAlt(m),
+    spikeSetLook: (yawDeg: number, pitchDeg: number) => descentSpikeMode?.setLook(yawDeg, pitchDeg),
+    spikeSetExposureEV: (ev: number) => descentSpikeMode?.setExposureEV(ev),
+    spikeSetPaused: (p: boolean) => descentSpikeMode?.setPaused(p),
+    spikeSetNaive: (on: boolean) => descentSpikeMode?.setNaive(on),
+    spikeSetBloomEnabled: (on: boolean) => { if (currentBloomPass) currentBloomPass.enabled = on; },
+    spikeSetSkyPassEnabled: (on: boolean) => { if (currentRenderPasses[0]) currentRenderPasses[0].enabled = on; },
+    spikeRebuildComposer: (samples?: number) => {
+      if (!descentSpikeMode) return false;
+      buildComposer(descentSpikeMode.camera, SPIKE_BLOOM, descentSpikeMode.scenePasses(), samples ? { samples } : undefined);
+      return true;
+    },
+    // Shared-renderer state readback for the exposure-restore AC.
+    rendererState: () => ({
+      toneMappingExposure: renderer.toneMappingExposure,
+      autoClear: renderer.autoClear,
+    }),
   };
   debugLog('Dev hooks installed (window.__moon)');
 }
@@ -448,6 +539,8 @@ async function init() {
       moonFlightMode.update(dt);
     } else if (appMode === 'volumeCompare' && volumeCompareMode) {
       volumeCompareMode.update(dt);
+    } else if (appMode === 'descentSpike' && descentSpikeMode) {
+      descentSpikeMode.update(dt);
     }
 
     renderScene(camera);
@@ -477,6 +570,15 @@ async function init() {
       await switchAppMode('volumeCompare');
     }
   }
+
+  // QA-only Descent spike entry (no UI button). Same tutorial guard as above.
+  if (new URLSearchParams(window.location.search).get('spike') === 's1') {
+    if (planetariumMode?.isTutorialActive()) {
+      debugLog('?spike=s1 ignored — a tutorial owns the scene');
+    } else {
+      await switchAppMode('descentSpike');
+    }
+  }
 }
 
 // ================================================================
@@ -501,6 +603,7 @@ function syncViewport() {
   vcCamera.aspect = w / h;
   vcCamera.updateProjectionMatrix();
   moonFlightMode?.onResize(w / h);
+  descentSpikeMode?.onResize(w / h);
   applyRenderResolution();
   // After the renderer's pixel ratio is (re)applied: retune star point sizes,
   // which are scaled by the renderer's ratio — both the compare and planetarium

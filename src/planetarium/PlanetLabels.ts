@@ -330,6 +330,12 @@ export class PlanetLabels {
     }
   }
 
+  /** Toggle the distance line for every planet label and the Sun label, which
+   * shares this container. The master labels setting still hides both lines. */
+  setDistancesVisible(visible: boolean): void {
+    this.labelContainer.classList.toggle('hide-distances', !visible);
+  }
+
   /**
    * True if a screen-space point sits inside the disc of a closer foreground
    * body computed during the current frame. `distFromCamera` should be the

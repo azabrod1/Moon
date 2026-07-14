@@ -1080,7 +1080,7 @@
       padding: 4px 0;
     }
     .settings-label {
-      color: var(--text-dim);
+      color: var(--text-primary);
       font-size: 11px;
       letter-spacing: 0.1px;
     }
@@ -1275,9 +1275,6 @@
     .tutorial-btn-primary:hover:not(:disabled) { background: rgba(var(--accent-rgb),0.28); }
     .tutorial-btn-ghost { background: transparent; color: var(--t2); }
     .tutorial-btn-ghost:hover:not(:disabled) { background: rgba(255,255,255,0.06); color: var(--t1); }
-    /* Help-modal in-body entry button (e.g. "How many fit?") sits under its
-       teaching paragraph, so it needs a little air above it. */
-    .help-entry-btn { margin-top: 10px; }
     /* Deck-theater row pulse: the tutorial pointing at the row it is about to press. */
     @keyframes tutorial-pulse {
       0%, 100% { background: rgba(var(--accent-rgb), 0.09); }
@@ -1433,6 +1430,7 @@
     }
     .planet-label-name { display: block; font-size: 10px; font-weight: 500; color: var(--text-primary); text-shadow: 0 0 6px rgba(0,0,0,0.9); }
     .planet-label-dist { display: block; font-size: 10px; color: var(--text-dim); margin-top: 1px; }
+    #planet-labels.hide-distances .planet-label-dist { display: none; }
 
     /* Constellation labels */
     .constellation-label {
@@ -2700,6 +2698,13 @@
           </button>
         </div>
         <div class="settings-row">
+          <span class="settings-label">Label distances</span>
+          <button class="settings-toggle" id="settings-label-distances-toggle"
+                  aria-label="Label distances" aria-pressed="true">
+            <span id="settings-label-distances-label">On</span>
+          </button>
+        </div>
+        <div class="settings-row">
           <span class="settings-label">Planet glow</span>
           <button class="settings-toggle" id="settings-markers-toggle">
             <span id="settings-markers-label">On</span>
@@ -2887,11 +2892,6 @@
             <section class="help-section">
               <h4>Watch the orbits run</h4>
               <p>Click the date on the bottom bar. Speed time up and you can actually watch planets trace their orbits and moons circle their hosts. Pause, reverse, or jump to any UTC moment.</p>
-            </section>
-            <section class="help-section">
-              <h4>How many fit?</h4>
-              <p>How many Earths would fill Jupiter? Pour real planets into a glass one and find out. It's in the Tools menu.</p>
-              <button class="tutorial-btn tutorial-btn-ghost help-entry-btn" id="help-volume-compare">How many fit?</button>
             </section>
             <p class="help-signoff">Have fun out there.</p>
           </div>

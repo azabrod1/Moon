@@ -45,6 +45,7 @@ export interface PlanetariumState {
   showShip: boolean;         // show player ship mesh
   showConstellations?: boolean; // show constellation lines overlay
   showBodyLabels?: boolean;  // show planet/moon/Sun name labels
+  showBodyLabelDistances?: boolean; // show distances beneath planet/Sun labels
   showBodyMarkers?: boolean; // show planet glow-dot marker sprites
   showOrbitLines?: boolean;  // show planet orbit lines
   landedOn?: LandedTarget;   // planet/moon the player is currently landed on
@@ -126,6 +127,9 @@ export function sanitizePlanetariumState(raw: unknown): PlanetariumState | null 
     showShip: typeof record.showShip === 'boolean' ? record.showShip : defaults.showShip,
     showConstellations: typeof record.showConstellations === 'boolean' ? record.showConstellations : defaults.showConstellations,
     showBodyLabels: typeof record.showBodyLabels === 'boolean' ? record.showBodyLabels : defaults.showBodyLabels,
+    showBodyLabelDistances: typeof record.showBodyLabelDistances === 'boolean'
+      ? record.showBodyLabelDistances
+      : defaults.showBodyLabelDistances,
     showBodyMarkers: typeof record.showBodyMarkers === 'boolean' ? record.showBodyMarkers : defaults.showBodyMarkers,
     showOrbitLines: typeof record.showOrbitLines === 'boolean' ? record.showOrbitLines : defaults.showOrbitLines,
     landedOn: sanitizeLandedOn(record.landedOn),
@@ -185,6 +189,7 @@ export function createDefaultPlanetariumState(): PlanetariumState {
     showShip: true,
     showConstellations: false,
     showBodyLabels: true,
+    showBodyLabelDistances: true,
     showBodyMarkers: true,
     showOrbitLines: false,
     landedOn: null,

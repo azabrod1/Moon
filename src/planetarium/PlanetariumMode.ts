@@ -296,6 +296,7 @@ export class PlanetariumMode {
   private constellations: Constellations | null = null;
   private showConstellations = false;
   private showBodyLabels = true;
+  private showBodyLabelDistances = true;
   private showBodyMarkers = true;
   private showOrbitLines = false;
 
@@ -732,12 +733,6 @@ export class PlanetariumMode {
     takeTutorial?.classList.toggle('tutorial-btn-ghost', !firstRun);
     const explore = document.getElementById('help-explore');
     if (explore) explore.style.display = firstRun ? '' : 'none';
-    // The "How many fit?" row steals the whole scene, so it is disabled while a
-    // mission or the tutorial owns it (requestVolumeCompare refuses too — this is
-    // the visible affordance). .tutorial-btn:disabled dims it, matching the Tools
-    // row's dim idiom.
-    const volumeCompareRow = document.getElementById('help-volume-compare') as HTMLButtonElement | null;
-    if (volumeCompareRow) volumeCompareRow.disabled = this.isMissionActive() || this.tutorial !== null;
     this.resumeShipAfterHelp = this.player.moving;
     this.resumeTimeAfterHelp = !this.timeState.paused;
     this.player.moving = false;
@@ -755,8 +750,8 @@ export class PlanetariumMode {
     this.store.markHelpSeen();
   }
 
-  // Mode switching lives in main.ts, not here; the "How many fit?" menu/help
-  // entries call this stored callback so main.ts can drive switchAppMode
+  // Mode switching lives in main.ts, not here; the "How many fit?" Tools entry
+  // calls this stored callback so main.ts can drive switchAppMode
   // (MoonFlight's onExit idiom).
   private volumeCompareRequestCb: (() => void) | null = null;
   onVolumeCompareRequest(cb: () => void): void {
@@ -3673,11 +3668,6 @@ export class PlanetariumMode {
     document.getElementById('planetarium-help-close')?.addEventListener('click', () => this.hideHelp());
     document.querySelector('#planetarium-help .planetarium-help-backdrop')?.addEventListener('click', () => this.hideHelp());
 
-    // "How many fit?" entries: the help-modal row and the Tools popover row commit
-    // through requestVolumeCompare (a no-op during the tutorial; it closes every
-    // entry surface first).
-    document.getElementById('help-volume-compare')?.addEventListener('click', () => this.requestVolumeCompare());
-
     // Tools front door: the cluster button toggles the anchored popover. The
     // full-screen catcher (Look-at idiom) closes on an outside click; because it
     // sits above the cluster, a second button click lands on the catcher and
@@ -3763,6 +3753,15 @@ export class PlanetariumMode {
       this.applyBodyLabelVisibility();
       const label = document.getElementById('settings-labels-label');
       if (label) label.textContent = this.showBodyLabels ? 'On' : 'Off';
+    });
+
+    const labelDistancesToggle = document.getElementById('settings-label-distances-toggle');
+    labelDistancesToggle?.addEventListener('click', () => {
+      this.showBodyLabelDistances = !this.showBodyLabelDistances;
+      this.applyBodyLabelVisibility();
+      const label = document.getElementById('settings-label-distances-label');
+      if (label) label.textContent = this.showBodyLabelDistances ? 'On' : 'Off';
+      labelDistancesToggle.setAttribute('aria-pressed', String(this.showBodyLabelDistances));
     });
 
     document.getElementById('settings-markers-toggle')?.addEventListener('click', () => {
@@ -4153,6 +4152,7 @@ export class PlanetariumMode {
    *  the labels defers to surface view, which owns its own label hiding. */
   private applyBodyLabelVisibility() {
     this.setWorldLabelsVisible(this.showBodyLabels);
+    this.planetLabels?.setDistancesVisible(this.showBodyLabelDistances);
     if (!this.showBodyLabels && !this.showBodyMarkers) {
       this.planetLabels?.hideAll();
     } else if (!this.showBodyMarkers) {
@@ -7484,6 +7484,7 @@ export class PlanetariumMode {
       showShip: this.showShip,
       showConstellations: this.showConstellations,
       showBodyLabels: this.showBodyLabels,
+      showBodyLabelDistances: this.showBodyLabelDistances,
       showBodyMarkers: this.showBodyMarkers,
       showOrbitLines: this.showOrbitLines,
       landedOn: this.landedOn,
@@ -7538,10 +7539,15 @@ export class PlanetariumMode {
     const constLabel = document.getElementById('settings-constellations-label');
     if (constLabel) constLabel.textContent = this.showConstellations ? 'On' : 'Off';
     this.showBodyLabels = saved.showBodyLabels ?? true;
+    this.showBodyLabelDistances = saved.showBodyLabelDistances ?? true;
     this.showBodyMarkers = saved.showBodyMarkers ?? true;
     this.applyBodyLabelVisibility();
     const labelsLabel = document.getElementById('settings-labels-label');
     if (labelsLabel) labelsLabel.textContent = this.showBodyLabels ? 'On' : 'Off';
+    const labelDistancesLabel = document.getElementById('settings-label-distances-label');
+    if (labelDistancesLabel) labelDistancesLabel.textContent = this.showBodyLabelDistances ? 'On' : 'Off';
+    document.getElementById('settings-label-distances-toggle')
+      ?.setAttribute('aria-pressed', String(this.showBodyLabelDistances));
     const markersLabel = document.getElementById('settings-markers-label');
     if (markersLabel) markersLabel.textContent = this.showBodyMarkers ? 'On' : 'Off';
     this.showOrbitLines = saved.showOrbitLines ?? false;

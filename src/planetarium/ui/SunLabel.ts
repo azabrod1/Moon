@@ -11,6 +11,13 @@ import { projectToScreen } from '../../shared/three/projectToScreen';
 
 const LABEL_MARGIN_PX = 50;
 const LABEL_OFFSET_PX = 16;
+// Mars reaches about 1.67 AU at aphelion. Inside its full orbit the Sun is
+// visually unmistakable, so the label only becomes useful beyond this edge.
+export const SUN_LABEL_MIN_DISTANCE_AU = 1.67;
+
+export function shouldShowSunLabel(distanceFromSunAU: number): boolean {
+  return distanceFromSunAU > SUN_LABEL_MIN_DISTANCE_AU;
+}
 
 export class SunLabel {
   private el: HTMLDivElement | null = null;
@@ -37,6 +44,10 @@ export class SunLabel {
     isOccluded: (screenX: number, screenY: number, depth: number) => boolean,
   ): void {
     if (!this.el) return;
+    if (!shouldShowSunLabel(distanceFromSunAU)) {
+      this.hide();
+      return;
+    }
 
     const projected = projectToScreen(sunWorldPos, camera, canvas.clientWidth, canvas.clientHeight);
     const screenX = projected.x;
@@ -74,10 +85,15 @@ export class SunLabel {
         if (distEl) distEl.textContent = distText;
         this.lastDistText = distText;
       }
-    } else if (this.visible) {
-      this.el.style.display = 'none';
-      this.visible = false;
+    } else {
+      this.hide();
     }
+  }
+
+  private hide(): void {
+    if (!this.el || !this.visible) return;
+    this.el.style.display = 'none';
+    this.visible = false;
   }
 
   dispose(): void {

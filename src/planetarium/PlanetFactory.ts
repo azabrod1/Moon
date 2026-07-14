@@ -763,6 +763,13 @@ export interface MoonMesh {
   painted: boolean;
   fx?: SurfaceShadingFx;
   textureUpgrade?: TextureUpgrade; // 4K colour map streamed in on close approach
+  /** Per-frame moon-dot cache (updateMoonPositions → updateMoonDotsForCamera):
+   *  the sun-visible fraction from this frame's eclipse shading, and the dot's
+   *  final screen alpha / size that the label pass reads for its sub-pixel
+   *  gating and offset. Transient — meaningful only for a shown moon. */
+  dotSunVisibleFraction?: number;
+  dotScreenAlpha?: number;
+  dotScreenSizePx?: number;
 }
 
 /**

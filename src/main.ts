@@ -384,6 +384,8 @@ function installDevHooks() {
       planetariumMode?.devTraceStart(name, maxFrames) ?? false,
     traceStop: () => planetariumMode?.devTraceStop() ?? null,
     setMoonSizeGamma: (gamma: number | null) => planetariumMode?.devSetMoonSizeGamma(gamma),
+    setMoonDotParams: (partial: Record<string, unknown> | null) =>
+      planetariumMode?.devSetMoonDotParams(partial as never),
     tutorialStart: () => planetariumMode?.devTutorialStart() ?? false,
     tutorialNext: () => planetariumMode?.devTutorialNext(),
     tutorialBack: () => planetariumMode?.devTutorialBack(),

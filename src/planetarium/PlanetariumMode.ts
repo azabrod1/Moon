@@ -72,7 +72,17 @@ import { ShadowVisuals, type GuideSlotInput } from './world/ShadowVisuals';
 import { OBSERVATORY_JUMP_LEAD_MS, stepperSearchFromUtcMs } from './observatoryTime';
 import { findEvent, type EventType } from '../astronomy/ephemeris';
 import { KM_PER_AU } from '../astronomy/constants';
-import { createPlanetariumStarfield, setStarfieldPixelRatio } from './world/starfield';
+import { createPlanetariumStarfield, setStarfieldPixelRatio, starfieldFaintLimitMag } from './world/starfield';
+import { MoonDots } from './world/MoonDots';
+import {
+  MOON_DOT_PARAMS,
+  albedoProxyFromColor,
+  chromaticityRGB,
+  discDiameterPx,
+  moonDotVisual,
+  systemEdgeFade,
+  type MoonDotParams,
+} from './moonDots';
 import { MoonPainter } from './world/MoonPainter';
 import { ProceduralMoonTexturer } from './world/ProceduralMoonTexturer';
 import { captureDeviceTextureCaps } from './world/texturePolicy';
@@ -408,6 +418,18 @@ export class PlanetariumMode {
 
   // Moon world positions in AU (true positions, not offset)
   private moonWorldPositions = new Map<string, { x: number; y: number; z: number }>();
+  /** Photometric sub-pixel moon dots (world/MoonDots) + their live knobs. The
+   *  buffers fill in updateMoonDotsForCamera after the final camera pose. */
+  private moonDots: MoonDots | null = null;
+  private moonDotParams: MoonDotParams = { ...MOON_DOT_PARAMS };
+  /** Catalog faint-limit magnitude the dots' faint-end handoff lines up to
+   *  (the starfield's dimmest star); computed once. */
+  private starFaintLimitMag = 6.5;
+  /** Per-system inward fade [0,1], cached in updateMoonPositions where the
+   *  player distance / visibility threshold are in hand. */
+  private moonSystemEdgeFade = new Map<string, number>();
+  private tmpDotMoonPos = new THREE.Vector3();
+  private tmpDotChroma = { r: 1, g: 1, b: 1 };
   /** The latest moon-jump target, governed and collision-checked by name
    *  while its mesh may still be unpainted behind the arrival veil (the
    *  visibility-keyed set can't see it there). Drops once the mesh shows;
@@ -803,6 +825,9 @@ export class PlanetariumMode {
     const glCanvas = renderer.domElement;
     glCanvas.addEventListener('webglcontextlost', () => {
       this.invalidateRtPaintedMoons(this.moonTexturer.onContextLost());
+      // Dots gate on painted moons — blank them with the same invalidation so a
+      // stale dot can't outlive the mesh it belonged to.
+      this.moonDots?.clear();
     });
     glCanvas.addEventListener('webglcontextrestored', () => {
       this.moonTexturer.onContextRestored();
@@ -1053,6 +1078,19 @@ export class PlanetariumMode {
       performance.measure('plm:starfield', 'plm:starfield:start');
     }
 
+    // Create the photometric moon-dot layer — one point per catalog moon, in
+    // the fixed planet→moon iteration order the per-frame fill reuses. Recreated
+    // on each activation (disposed on deactivate) like the planet labels.
+    if (!this.moonDots) {
+      this.starFaintLimitMag = starfieldFaintLimitMag();
+      let dotCount = 0;
+      for (const planet of this.solarSystem.planets) {
+        dotCount += this.planetMoons.get(planet.data.name)?.length ?? 0;
+      }
+      this.moonDots = new MoonDots(dotCount, this.renderer.getPixelRatio());
+      this.scene.add(this.moonDots.points);
+    }
+
     if (this.preToolState) {
       // Returning from the volume-compare tool — restore the exact pre-tool
       // journey (landed body, camera, clock) captured on entry, not the store's
@@ -1235,6 +1273,13 @@ export class PlanetariumMode {
       this.planetLabels = null;
     }
 
+    // Dispose the moon-dot layer (geometry + material); recreated on activate.
+    if (this.moonDots) {
+      this.scene.remove(this.moonDots.points);
+      this.moonDots.dispose();
+      this.moonDots = null;
+    }
+
     if (this.moonLabelContainer) {
       this.moonLabelContainer.style.display = 'none';
     }
@@ -1250,6 +1295,7 @@ export class PlanetariumMode {
     }
     this.player.group.visible = visible && this.showShip;
     if (this.starfield) this.starfield.visible = visible;
+    if (this.moonDots) this.moonDots.setVisible(visible);
     if (this.constellations) this.constellations.setVisible(visible && this.showConstellations);
   }
 
@@ -1258,6 +1304,7 @@ export class PlanetariumMode {
    *  track the renderer's ratio, so retune them to the new value. */
   onResize(): void {
     if (this.starfield) setStarfieldPixelRatio(this.starfield, this.renderer.getPixelRatio());
+    if (this.moonDots) this.moonDots.setPixelRatio(this.renderer.getPixelRatio());
   }
 
   update(dt: number): void {
@@ -1393,6 +1440,11 @@ export class PlanetariumMode {
     // follow + controls.update above, and the safety escape just applied), or
     // every label trails the camera by a frame during orbit drags and fast pans.
     this.camera.updateMatrixWorld();
+
+    // Photometric moon dots: fill the buffers now the cruise camera is settled
+    // (safety escape + arrival look applied), before the label pass reads each
+    // dot's screen contribution for its sub-pixel gating.
+    this.updateMoonDotsForCamera();
 
     // Occlusion pipeline: planet discs → moon + ship discs → labels + markers.
     // Runs when either the HTML labels or the marker sprites are on. The
@@ -1606,6 +1658,121 @@ export class PlanetariumMode {
     this.camera.lookAt(this.tmpMoonArrivalLook);
   }
 
+  /** The moon whose dot never fully fades: the just-jumped moon the camera is
+   *  tracking, or an actively engaged moon autopilot — never a stored-but-idle
+   *  autopilot target (a jump clears that in applyJumpDestination). */
+  private currentDotTargetMoon(): string | null {
+    if (this.moonArrivalCameraLook) return this.moonArrivalCameraLook.name;
+    if (
+      this.autopilot &&
+      this.autopilotUserEngaged &&
+      this.autopilotTarget?.type === 'moon'
+    ) {
+      return this.autopilotTarget.name;
+    }
+    return null;
+  }
+
+  /**
+   * Fill the moon-dot buffers for this frame's FINAL camera pose. Runs after the
+   * camera is settled (cruise safety + arrival look; the landed/surface re-pin),
+   * reading the scene positions, rendered sizes, and eclipse shading cached in
+   * updateMoonPositions. A sub-pixel lit moon becomes a star-scale point at its
+   * apparent magnitude; the point crossfades out as the real disc resolves.
+   * Hidden or landed-on moons write alpha 0. Zero steady-state allocation.
+   */
+  private updateMoonDotsForCamera(): void {
+    if (!this.moonDots || !this.solarSystem) return;
+    const canvasH = this.renderer.domElement.clientHeight;
+    const fovDeg = this.camera.fov;
+    const params = this.moonDotParams;
+    const sun = this.solarSystem.sun.position;
+    const cam = this.camera.position;
+    const targetMoon = this.currentDotTargetMoon();
+    const landedMoonName = this.landedOn?.type === 'moon' ? this.landedOn.name : null;
+
+    let idx = 0;
+    for (const planet of this.solarSystem.planets) {
+      const moons = this.planetMoons.get(planet.data.name);
+      if (!moons) continue;
+      const edgeFade = this.moonSystemEdgeFade.get(planet.data.name) ?? 0;
+      for (const m of moons) {
+        const i = idx++;
+        // Same gate as the mesh: only a shown (visible & painted) moon dots, and
+        // never the body you're standing on — its disc fills the sky, so the
+        // crossfade would kill the dot anyway; skip the math.
+        if (!m.mesh.visible || m.data.name === landedMoonName) {
+          this.moonDots.hide(i);
+          m.dotScreenAlpha = 0;
+          continue;
+        }
+
+        m.mesh.getWorldPosition(this.tmpDotMoonPos);
+        const dx = this.tmpDotMoonPos.x - cam.x;
+        const dy = this.tmpDotMoonPos.y - cam.y;
+        const dz = this.tmpDotMoonPos.z - cam.z;
+        const distAU = Math.sqrt(dx * dx + dy * dy + dz * dz);
+        // moon→sun (scene) = sun − moon; its length is the moon's heliocentric
+        // distance (the Sun sits at the world origin).
+        const sdx = sun.x - this.tmpDotMoonPos.x;
+        const sdy = sun.y - this.tmpDotMoonPos.y;
+        const sdz = sun.z - this.tmpDotMoonPos.z;
+        const sunDistAU = Math.sqrt(sdx * sdx + sdy * sdy + sdz * sdz) || 1e-9;
+        // phaseCos = cos(sun–moon–observer): moon→cam = −(dx,dy,dz).
+        const phaseCos =
+          distAU > 0 ? -(sdx * dx + sdy * dy + sdz * dz) / (sunDistAU * distAU) : 1;
+
+        const renderedR = m.data.radiusAU * m.mesh.scale.x;
+        const discPx = discDiameterPx(renderedR, distAU, fovDeg, canvasH);
+        const albedo = albedoProxyFromColor(m.data.color, params);
+        const shade = m.dotSunVisibleFraction ?? 1;
+
+        const v = moonDotVisual(
+          renderedR,
+          distAU,
+          sunDistAU,
+          phaseCos,
+          albedo,
+          shade,
+          discPx,
+          targetMoon === m.data.name,
+          edgeFade,
+          this.starFaintLimitMag,
+          params,
+        );
+        m.dotScreenAlpha = v.alpha;
+        m.dotScreenSizePx = v.sizePx;
+
+        if (v.alpha <= 0) {
+          this.moonDots.hide(i);
+          continue;
+        }
+
+        // Place the point at the moon's camera-facing surface + a small epsilon,
+        // so the opaque mesh's front fragments can't depth-kill the dot mid
+        // crossfade; depthTest stays on, so planets and nearer moons still
+        // occlude it. toCam = −(dx,dy,dz)/dist.
+        const surf = (renderedR * 1.05) / Math.max(distAU, 1e-12);
+        const px = this.tmpDotMoonPos.x - dx * surf;
+        const py = this.tmpDotMoonPos.y - dy * surf;
+        const pz = this.tmpDotMoonPos.z - dz * surf;
+        const chroma = chromaticityRGB(m.data.color, this.tmpDotChroma);
+        this.moonDots.setDot(
+          i,
+          px,
+          py,
+          pz,
+          chroma.r * v.brightness,
+          chroma.g * v.brightness,
+          chroma.b * v.brightness,
+          v.sizePx,
+          v.alpha,
+        );
+      }
+    }
+    this.moonDots.flush();
+  }
+
   /**
    * Major moons are tidally locked: keep the near side (texture longitude 0,
    * which SphereGeometry puts on the mesh's +X axis) facing the parent. The
@@ -1777,6 +1944,15 @@ export class PlanetariumMode {
 
   devSetMoonSizeGamma(gamma: number | null): void {
     this.devMoonGamma = gamma;
+  }
+
+  /** Dev-bridge live tuning of the moon-dot knobs (photometry, crossfade window,
+   *  target floor, edge fade, and the texture-upgrade disc threshold). A partial
+   *  merges into the running copy; null resets to the shipped defaults. */
+  devSetMoonDotParams(partial: Partial<MoonDotParams> | null): void {
+    this.moonDotParams = partial === null
+      ? { ...MOON_DOT_PARAMS }
+      : { ...this.moonDotParams, ...partial };
   }
 
   /**
@@ -1957,6 +2133,14 @@ export class PlanetariumMode {
       const visible = distToPlayer < threshold;
       const parentR = planet.data.radiusAU;
 
+      // Cache the system-edge fade for the dot pass: dots ramp in over the last
+      // slice of the visibility threshold so a system never appears as a
+      // one-frame constellation. Zeroed when the system is out of range.
+      this.moonSystemEdgeFade.set(
+        planet.data.name,
+        visible ? systemEdgeFade(distToPlayer, threshold, this.moonDotParams) : 0,
+      );
+
       // Moon-shadow casters fed to the parent surface shader (Io on Jupiter,
       // etc.): reset per frame, accumulate in the loop below. Pick the largest
       // moons by radius (catalog order isn't size order — Titan must outrank
@@ -2022,6 +2206,9 @@ export class PlanetariumMode {
           this.moonShading,
         );
         this.applyMoonShading(m, this.moonShading);
+        // Cache this frame's sun-visible fraction so the dot pass reuses it for
+        // eclipse dimming instead of recomputing the shading geometry.
+        m.dotSunVisibleFraction = this.moonShading.sunVisibleFraction;
 
         if (m.fx) {
           m.fx.uSunDirWorld.value
@@ -2314,6 +2501,12 @@ export class PlanetariumMode {
     // Candidate objects are pooled — steady-state frames allocate nothing.
     const candidates = this.moonLabelCandidates;
     let candidateCount = 0;
+    const targetMoon = this.currentDotTargetMoon();
+    // A moon earns a label when its disc reads as more than a point, OR its dot
+    // is at least faintly visible, OR it's the explicit nav target. A sub-pixel
+    // moon too dim to dot gets no label pointing at empty sky.
+    const LABEL_READABLE_RADIUS_PX = 1.0;
+    const LABEL_DOT_MIN_ALPHA = 0.03;
 
     for (const planet of this.solarSystem.planets) {
       const moons = this.planetMoons.get(planet.data.name);
@@ -2343,7 +2536,19 @@ export class PlanetariumMode {
           planet.data.radiusAU,
           this.moonRenderAnchorRatio(planet.data.name),
         );
-        const radiusPx = discRadiusPx(effRadiusAU, moonCamDist, halfFovTan, canvasH) * 1.1;
+        const discRadiusPadPx = discRadiusPx(effRadiusAU, moonCamDist, halfFovTan, canvasH) * 1.1;
+
+        // Sub-pixel gating: a moon whose disc doesn't read and whose dot is too
+        // faint to see keeps no label — unless it's the nav target.
+        const dotAlpha = m.dotScreenAlpha ?? 0;
+        const readable = discRadiusPadPx >= LABEL_READABLE_RADIUS_PX;
+        if (!readable && dotAlpha < LABEL_DOT_MIN_ALPHA && targetMoon !== m.data.name) {
+          if (label.style.display !== 'none') label.style.display = 'none';
+          continue;
+        }
+        // Lift the anchor clear of whichever is larger — the disc limb or the
+        // dot glyph (for a sub-pixel moon the dot is the only thing on screen).
+        const radiusPx = Math.max(discRadiusPadPx, (m.dotScreenSizePx ?? 0) / 2);
 
         // Lift the anchor above the limb BEFORE the on-screen test, so a
         // screen-filling moon pins its label to the top margin (dimmed via the
@@ -2386,7 +2591,13 @@ export class PlanetariumMode {
         c.sx = sx;
         c.sy = sy;
         c.onScreen = onScreen;
-        c.priorityPx = effRadiusAU / Math.max(moonCamDist, 1e-12);
+        // Collision priority is apparent footprint: a readable disc by its px
+        // radius, a sub-pixel moon by its dot's weighted glyph size, so among
+        // piled-up dots the brighter one keeps its label.
+        c.priorityPx = Math.max(
+          discRadiusPadPx,
+          dotAlpha * (m.dotScreenSizePx ?? 0),
+        );
         c.halfW = (m.data.name.length * 6.5 + 12) / 2;
         candidateCount++;
       }
@@ -7484,6 +7695,12 @@ export class PlanetariumMode {
     if (shouldRefreshUi) this.updateOrbitDetails();
     this.pumpObservatoryEventSearch();
 
+    // Moon dots for the orbit camera (settled at the top of updateLanded, before
+    // this frame's positions refreshed — but nothing re-poses it after), so the
+    // label pass below reads fresh dot contributions. Surface view fills its own
+    // dots after the surface camera re-pins (labels are hidden there anyway).
+    if (this.landedView !== 'surface') this.updateMoonDotsForCamera();
+
     // Occlusion pipeline while landed: planets → moons + ship → labels + markers.
     // Runs when either the HTML labels or the marker sprites are on; surface
     // view hides everything. The occluder passes only feed label culling, so
@@ -7530,6 +7747,10 @@ export class PlanetariumMode {
     // controls block above runs before those refreshes).
     if (this.landedView === 'surface') {
       this.updateSurfaceCamera(dt);
+      // Dots after the surface camera re-pins: from a moon's surface the sibling
+      // moons are real angular points (anchorRatio 0 → true sizes), so the
+      // photometry is honest naked-eye sky.
+      this.updateMoonDotsForCamera();
     }
     this.updateShadowGuideCamera();
     this.updateOrbitFocusLabels();

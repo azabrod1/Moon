@@ -180,6 +180,29 @@ export const MOON_ARRIVAL_IMPACT_RADII = 2.5;
  *  under their separation caps would otherwise push the disc out of frame. */
 export const MOON_ARRIVAL_MAX_OFFAXIS_DEG = 12;
 
+/**
+ * How strongly a moon teleport's camera should keep looking at the moon.
+ * The flyby path still aims past the limb; only the camera is decoupled from
+ * that heading so a close, off-axis sphere does not anamorphically stretch.
+ * Track fully through closest approach, then ease back to the ship between
+ * one and two arrival-camera distances on the receding leg.
+ */
+export function moonArrivalCameraLookWeight(
+  cameraDistanceAU: number,
+  arrivalCameraDistanceAU: number,
+  receding: boolean,
+): number {
+  if (!receding) return 1;
+  if (!(arrivalCameraDistanceAU > 0)) return 0;
+  const t = THREE.MathUtils.clamp(
+    (cameraDistanceAU - arrivalCameraDistanceAU) / arrivalCameraDistanceAU,
+    0,
+    1,
+  );
+  const eased = t * t * (3 - 2 * t);
+  return 1 - eased;
+}
+
 /** Legacy floor (~7,500 km) so the smallest arrivals never park
  *  uncomfortably tight; unchanged from the original standoff. */
 export const MOON_ARRIVAL_STANDOFF_FLOOR_AU = 5e-5;

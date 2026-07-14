@@ -4,6 +4,7 @@ import {
   advanceBodyCap,
   governedSpeedCap,
   initialBodyCapState,
+  moonArrivalCameraLookWeight,
   moonArrivalPose,
   moonCollisionRadius,
   rampedSpeedCap,
@@ -266,6 +267,81 @@ describe('moonArrivalPose — ladder fixtures', () => {
       expect(offAxis * RAD2DEG).toBeLessThanOrEqual(MOON_ARRIVAL_MAX_OFFAXIS_DEG + 0.01);
       expect(Math.atan2(b, dist) * RAD2DEG).toBeCloseTo(offAxis * RAD2DEG, 5);
     }
+  });
+});
+
+describe('moon teleport camera tracking', () => {
+  /** Axis ratio of a sphere's conic silhouette under a rectilinear perspective
+   *  projection. A centred sphere is 1; a large off-axis sphere is > 1. */
+  const projectedAxisRatio = (
+    cameraPos: THREE.Vector3,
+    cameraForward: THREE.Vector3,
+    sphereCenter: THREE.Vector3,
+    radius: number,
+  ) => {
+    const toSphere = sphereCenter.clone().sub(cameraPos);
+    const depth = toSphere.dot(cameraForward.clone().normalize());
+    return Math.sqrt(
+      (toSphere.lengthSq() - radius * radius) /
+      (depth * depth - radius * radius),
+    );
+  };
+
+  it('reproduces the oval on the ship-centred chase ray and removes it when tracking the Moon', () => {
+    const inp = catalogInputs('Moon');
+    const pose = moonArrivalPose(inp);
+    const flightForward = pose.aimPoint.clone().sub(pose.position).normalize();
+    const startToMoon = inp.moonPos.clone().sub(pose.position);
+    const startAlong = startToMoon.dot(flightForward);
+
+    // A deterministic point on the real flyby line: close enough that the
+    // Moon is large, still four rendered radii ahead, and visibly stretched
+    // when the optical axis remains pinned to the ship.
+    const shipPos = pose.position
+      .clone()
+      .addScaledVector(flightForward, startAlong - inp.renderedR * 4);
+    const cameraPos = shipPos
+      .clone()
+      .addScaledVector(flightForward, -CAM_DIST_AU)
+      .add(new THREE.Vector3(0, CAM_DIST_AU * 0.35, 0));
+    const shipCentredForward = shipPos.clone().sub(cameraPos).normalize();
+    const ovalRatio = projectedAxisRatio(
+      cameraPos,
+      shipCentredForward,
+      inp.moonPos,
+      inp.renderedR,
+    );
+    expect(ovalRatio).toBeGreaterThan(1.1);
+
+    const cameraDistance = cameraPos.distanceTo(inp.moonPos);
+    const arrivalCameraDistance = pose.position
+      .clone()
+      .addScaledVector(flightForward, -CAM_DIST_AU)
+      .add(new THREE.Vector3(0, CAM_DIST_AU * 0.45, 0))
+      .distanceTo(inp.moonPos);
+    const weight = moonArrivalCameraLookWeight(
+      cameraDistance,
+      arrivalCameraDistance,
+      false,
+    );
+    const trackedTarget = shipPos.clone().lerp(inp.moonPos, weight);
+    const trackedForward = trackedTarget.sub(cameraPos).normalize();
+    expect(projectedAxisRatio(
+      cameraPos,
+      trackedForward,
+      inp.moonPos,
+      inp.renderedR,
+    )).toBeCloseTo(1, 10);
+  });
+
+  it('holds through approach, then smoothly releases over one arrival distance', () => {
+    const d = 10;
+    expect(moonArrivalCameraLookWeight(d * 0.2, d, false)).toBe(1);
+    expect(moonArrivalCameraLookWeight(d * 0.2, d, true)).toBe(1);
+    expect(moonArrivalCameraLookWeight(d, d, true)).toBe(1);
+    expect(moonArrivalCameraLookWeight(d * 1.5, d, true)).toBeCloseTo(0.5, 10);
+    expect(moonArrivalCameraLookWeight(d * 2, d, true)).toBe(0);
+    expect(moonArrivalCameraLookWeight(d * 3, d, true)).toBe(0);
   });
 });
 

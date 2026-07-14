@@ -370,6 +370,8 @@ function installDevHooks() {
       planetariumMode?.devJumpToBody(name, distanceMultiplier) ?? false,
     frame: (name: string, fillFraction?: number, phaseAngleDeg?: number) =>
       planetariumMode?.devFrameBody(name, fillFraction, phaseAngleDeg) ?? false,
+    frameSun: (distanceAU?: number, fovDeg?: number, offNdcX?: number, offNdcY?: number) =>
+      planetariumMode?.devFrameSun(distanceAU, fovDeg, offNdcX, offNdcY) ?? false,
     probe: (name: string) => planetariumMode?.devProbe(name) ?? null,
     land: (name: string) => planetariumMode?.devLand(name) ?? false,
     lookUp: () => planetariumMode?.devLookUp() ?? false,

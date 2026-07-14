@@ -5253,6 +5253,36 @@ export class PlanetariumMode {
     return true;
   }
 
+  /** Headless-QA pose: camera `distanceAU` from the Sun, looking at it.
+   *  Optional NDC offsets slide the Sun off screen-centre (exercises the
+   *  centre-weighted exposure metering); values ≳1 push it just off-screen. */
+  devFrameSun(distanceAU = 1, fovDeg = 60, offNdcX = 0, offNdcY = 0): boolean {
+    if (!this.solarSystem) return false;
+    this.devFreeCamera = true;
+    // A fixed off-ecliptic direction keeps the pose reproducible and stops the
+    // asteroid-belt band from slicing through the halo.
+    const dir = new THREE.Vector3(0.62, 0.18, 0.76).normalize();
+    this.player.posX = dir.x * distanceAU;
+    this.player.posY = dir.y * distanceAU;
+    this.player.posZ = dir.z * distanceAU;
+    this.player.moving = false;
+    this.player.headToward(0, 0, 0);
+    const cam = this.camera as THREE.PerspectiveCamera;
+    cam.position.set(0, 0, 0);
+    cam.fov = fovDeg;
+    cam.updateProjectionMatrix();
+    // Floating origin: the Sun sits at scene position −player.
+    const sunScene = new THREE.Vector3(-this.player.posX, -this.player.posY, -this.player.posZ);
+    cam.lookAt(sunScene);
+    if (offNdcX !== 0 || offNdcY !== 0) {
+      const halfV = Math.tan(THREE.MathUtils.degToRad(cam.fov / 2));
+      cam.rotateY(Math.atan(halfV * cam.aspect * offNdcX));
+      cam.rotateX(Math.atan(halfV * offNdcY));
+    }
+    this.controls.target.copy(sunScene);
+    return true;
+  }
+
   /** Headless-screenshot diagnostics: read back camera/body geometry. */
   devProbe(name: string): unknown {
     let pos = this.planetWorldPositions.get(name) ?? null;

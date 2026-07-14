@@ -62,13 +62,13 @@ float fbm3(vec3 p) {
   return value;
 }
 
+// Sinless Hoskins hash: the Voronoi loop below runs it 27× per fragment, so
+// the classic fract(sin(dot))·43758 form would cost three transcendentals a
+// call (and carries this app's documented Metal precision baggage).
 vec3 hash33(vec3 p) {
-  p = vec3(
-    dot(p, vec3(127.1, 311.7, 74.7)),
-    dot(p, vec3(269.5, 183.3, 246.1)),
-    dot(p, vec3(113.5, 271.9, 124.6))
-  );
-  return fract(sin(p) * 43758.5453);
+  p = fract(p * vec3(0.1031, 0.1030, 0.0973));
+  p += dot(p, p.yxz + 33.33);
+  return fract((p.xxy + p.yxx) * p.zyx);
 }
 
 float cellular3(vec3 p, float t) {
@@ -80,10 +80,11 @@ float cellular3(vec3 p, float t) {
       for (int x = -1; x <= 1; x++) {
         vec3 neighbour = vec3(float(x), float(y), float(z));
         vec3 seed = hash33(cell + neighbour);
-        // Each convection centre breathes around its own anchor. The topology
+        // Each convection centre breathes around its own anchor (one scalar
+        // sin per neighbour — the loop's only transcendental). The topology
         // evolves without a texture sheet visibly translating over the sphere.
-        seed += sin(seed * 6.28318 + t * vec3(0.17, 0.13, 0.19)) * 0.065;
-        vec3 delta = neighbour + seed - local;
+        float breathe = sin((seed.x + seed.y + seed.z) * 6.28318 + t * 0.16) * 0.065;
+        vec3 delta = neighbour + seed + breathe - local;
         minDistance2 = min(minDistance2, dot(delta, delta));
       }
     }
@@ -134,18 +135,27 @@ void main() {
   vec3 whiteHot = vec3(1.0, 0.985, 0.94);
   vec3 laneColor = vec3(1.0, 0.62, 0.20);
   vec3 warmLimb = vec3(1.0, 0.73, 0.36);
-  float limbWarmth = pow(1.0 - mu, 5.0) * 0.34;
+  float limbWarmth = pow(1.0 - mu, 3.5) * 0.5;
   vec3 color = mix(laneColor, whiteHot, smoothstep(0.12, 0.82, lanes));
   color = mix(color, warmLimb, limbWarmth);
 
-  float limbDarkening = 0.48 + 0.52 * pow(mu, 0.58);
+  float limbDarkening = 0.40 + 0.60 * pow(mu, 0.62);
   float radiance = 3.8 * limbDarkening * detail;
   radiance *= 1.0 - spotPenumbra * 0.42 - spotCore * 0.38;
   radiance *= 1.0 + faculae;
 
   gl_FragColor = vec4(color * radiance, 1.0);
+  // No-ops into the composer's render target (the OutputPass grades there);
+  // on the direct-to-canvas fallback they keep the photosphere inside the
+  // same exposure/tonemap/colour response as every built-in material.
+  #include <tonemapping_fragment>
+  #include <colorspace_fragment>
 }
 `;
+
+/** Glare plane extent in photosphere radii — geometry size, uExtent uniform,
+ *  and the controller's screen-coverage gate all derive from this one value. */
+export const SUN_GLARE_EXTENT_SOLAR_RADII = 8;
 
 /** Camera-facing glare plane. Its radius is `uExtent` photosphere radii. */
 export const sunGlareVertexShader = /* glsl */ `
@@ -175,6 +185,9 @@ uniform float uVisibleFraction;
 uniform float uGlareStrength;
 uniform float uPointLike;
 uniform float uCameraFx;
+uniform float uEclipseLike;
+uniform float uOccluderRadii;
+uniform float uExposureScale;
 varying vec2 vUv;
 
 float hash21(vec2 p) {
@@ -208,6 +221,13 @@ float fbm2(vec2 p) {
 void main() {
   vec2 p = (vUv - 0.5) * 2.0;
   float planeRadius = length(p);
+  // All derivatives are taken before the discard: fwidth after a neighbouring
+  // lane discards is formally undefined.
+  float widthX = max(fwidth(p.y) * 1.35, 0.010);
+  float widthY = max(fwidth(p.x) * 1.35, 0.010);
+  float diagonalWidthA = max(fwidth(p.x - p.y) * 1.25, 0.014);
+  float diagonalWidthB = max(fwidth(p.x + p.y) * 1.25, 0.014);
+  float sensorWidth = max(fwidth(p.y) * 1.15, 0.007);
   if (planeRadius >= 1.0) discard;
 
   float solarRadii = planeRadius * uExtent;
@@ -217,32 +237,34 @@ void main() {
   // Optical point-spread profile: a tight hot core, medium aureole, and a
   // faint long tail. This keeps the glare white near the source and avoids the
   // giant orange Gaussian blob produced by the old canvas gradients.
-  float core = exp(-outside * 2.40);
-  float aureole = 0.012 / (1.0 + outside * outside * 1.30);
-  float tail = 0.001 / pow(max(solarRadii, 1.0), 1.55);
+  // Once the photosphere is sub-pixel the rasterizer can no longer deliver its
+  // HDR radiance, so the core term takes over that energy: the outer-system
+  // Sun stays a blinding point that still drives bloom, not a grey smudge.
+  float core = exp(-outside * 2.40) * mix(0.24, 4.5, uPointLike);
+  float aureole = 0.015 / (1.0 + outside * outside * 0.90);
+  float tail = 0.0016 / pow(max(solarRadii, 1.0), 1.50);
   float visibleEnergy = pow(clamp(uVisibleFraction, 0.0, 1.0), 0.38);
-  float glare = (core * 0.24 + aureole + tail) * visibleEnergy * uGlareStrength;
+  // The scene's exposure adaptation also tempers the lens glare (uExposureScale
+  // = sqrt(exposure)), so staring into the Sun tightens the halo the way a
+  // stopped-down camera would instead of gaining 1.5 stops on the scene.
+  float glare = (core + aureole + tail) * visibleEnergy * uGlareStrength * uExposureScale;
 
   // Once the solar disc becomes only a few pixels wide, a restrained optical
   // starburst keeps it distinct from the starfield. Derivative-scaled widths
   // stay stable from high-DPI desktop captures down to the mobile fallback.
-  float widthX = max(fwidth(p.y) * 1.35, 0.010);
-  float widthY = max(fwidth(p.x) * 1.35, 0.010);
-  float horizontal = exp(-abs(p.y) / widthX) * exp(-abs(p.x) * 2.25);
+  float horizontal = exp(-abs(p.y) / widthX) * exp(-abs(p.x) * 1.70);
   float vertical = exp(-abs(p.x) / widthY) * exp(-abs(p.y) * 2.75) * 0.52;
-  float diagonalWidthA = max(fwidth(p.x - p.y) * 1.25, 0.014);
-  float diagonalWidthB = max(fwidth(p.x + p.y) * 1.25, 0.014);
   float diagonal = (
     exp(-abs(p.x - p.y) / diagonalWidthA)
     + exp(-abs(p.x + p.y) / diagonalWidthB)
-  ) * exp(-planeRadius * 3.4) * 0.13;
-  float starburst = (horizontal + vertical + diagonal) * uPointLike * visibleEnergy * 0.20;
+  ) * exp(-planeRadius * 3.4) * 0.10;
+  float starburst = (horizontal + vertical + diagonal) * uPointLike * visibleEnergy * 0.30;
   glare += starburst;
 
   // A short, low-energy sensor streak bridges the scale range where the disc
   // is resolved but still overwhelmingly bright. It fades away for close-up
   // photosphere study and yields to the sharper starburst in the outer system.
-  float sensorLine = exp(-abs(p.y) / max(fwidth(p.y) * 1.15, 0.007))
+  float sensorLine = exp(-abs(p.y) / sensorWidth)
     * exp(-abs(p.x) * 1.55);
   float sensorStreak = sensorLine * uCameraFx * (1.0 - uPointLike * 0.72)
     * visibleEnergy * 0.055;
@@ -250,31 +272,51 @@ void main() {
 
   // Once the photosphere is covered, remove its glare and reveal a restrained
   // white corona. Broad bipolar lobes plus fine angular strands keep totality
-  // from reading as another perfectly circular radial gradient.
+  // from reading as another perfectly circular radial gradient. uEclipseLike
+  // (CPU-computed Sun/occluder angular-size ratio) keeps the corona to true
+  // eclipse geometry: a whole planet blotting out the sky reveals nothing.
+  // The block stays behind a real branch: its atan/normalize are undefined at
+  // the quad centre, and even multiplied by zero a NaN would poison the pixel.
   float coverage = 1.0 - clamp(uVisibleFraction, 0.0, 1.0);
-  float eclipse = smoothstep(0.97, 0.995, coverage);
-  float angle = atan(p.y, p.x);
-  float cloudWarp = fbm2(p * 2.7 + normalize(p + vec2(1e-4)) * solarRadii * 0.13);
-  float angleWarp = angle
-    + sin(angle * 3.0 + solarRadii * 0.18) * 0.025
-    + (cloudWarp - 0.5) * 0.07;
-  float broadStreamers = pow(abs(cos(angleWarp - 0.18)), 3.8);
-  float polarPlumes = pow(abs(sin(angleWarp + 0.08)), 7.0) * 0.32;
-  float fineStreamers = pow(0.5 + 0.5 * cos(angleWarp * 17.0 + cloudWarp * 0.6), 20.0);
-  float coronaTexture = mix(0.72, 1.16, cloudWarp);
-  float innerCorona = exp(-outside * 1.75) * 0.09;
-  float coronaShape = (
-    0.025 + broadStreamers * 1.28 + polarPlumes + fineStreamers * 0.14
-  ) * coronaTexture;
-  float coronaFalloff = exp(-outside * 0.44) / pow(max(solarRadii, 1.0), 0.58);
-  float corona = eclipse * (innerCorona + coronaShape * coronaFalloff * 0.62);
+  float eclipse = smoothstep(0.97, 0.995, coverage) * clamp(uEclipseLike, 0.0, 1.0);
+  float corona = 0.0;
+  float chromosphere = 0.0;
+  if (eclipse > 0.0 && planeRadius > 1e-4) {
+    float angle = atan(p.y, p.x);
+    float cloudWarp = fbm2(p * 2.7 + (p / planeRadius) * solarRadii * 0.13);
+    float angleWarp = angle
+      + sin(angle * 3.0 + solarRadii * 0.18) * 0.025
+      + (cloudWarp - 0.5) * 0.07;
+    // The glare plane is screen-space (no depth test), so the eclipsing body
+    // cannot z-mask it; carve its disc out analytically instead. The corona
+    // hugging that black limb — not a wash across it — is what makes totality
+    // read. uOccluderRadii is the occluder's angular size in solar radii.
+    float occluderEdge = max(uOccluderRadii, 1.0);
+    float occluderMask = smoothstep(occluderEdge - 0.05, occluderEdge + 0.03, solarRadii);
+    float pastLimb = max(solarRadii - occluderEdge, 0.0);
+    // Real coronas are lobed and ragged: two broad equatorial streamers, a
+    // few polar plumes, and cloudWarp-modulated fine rays with no readable
+    // periodicity, all falling off steeply away from the bright limb ring.
+    float broadStreamers = pow(abs(cos(angleWarp - 0.18)), 2.6);
+    float polarPlumes = pow(abs(sin(angleWarp + 0.08)), 7.0) * 0.32;
+    float fineStreamers = pow(0.5 + 0.5 * cos(angleWarp * 17.0 + cloudWarp * 0.6), 20.0)
+      * (0.4 + 1.2 * cloudWarp);
+    float coronaTexture = mix(0.72, 1.16, cloudWarp);
+    float innerCorona = exp(-pastLimb * 3.2) * 0.5;
+    float coronaShape = (
+      0.03 + broadStreamers + polarPlumes + fineStreamers * 0.10
+    ) * coronaTexture;
+    float coronaFalloff = exp(-pastLimb * 0.75) / pow(max(solarRadii, 1.0), 0.7);
+    corona = eclipse * occluderMask * (innerCorona + coronaShape * coronaFalloff * 0.75);
 
-  // The chromosphere is normally drowned by the photosphere. During totality
-  // it survives as a hairline warm rim beneath the much cooler white corona.
-  float chromosphereNoise = 0.72 + 0.28 * sin(angle * 19.0 + cloudWarp * 5.0);
-  float chromosphere = eclipse * exp(-outside * 13.0) * chromosphereNoise * 0.12;
+    // The chromosphere is normally drowned by the photosphere. Behind the
+    // occluder mask it survives only while the cover is barely larger than
+    // the disc — which is exactly the second/third-contact flash.
+    float chromosphereNoise = 0.72 + 0.28 * sin(angle * 19.0 + cloudWarp * 5.0);
+    chromosphere = eclipse * occluderMask * exp(-outside * 13.0) * chromosphereNoise * 0.35;
+  }
 
-  float warmth = smoothstep(1.15, 5.5, solarRadii) * 0.28;
+  float warmth = smoothstep(1.6, 7.0, solarRadii) * 0.30;
   vec3 glareColor = mix(vec3(1.0, 0.985, 0.94), vec3(1.0, 0.67, 0.30), warmth);
   vec3 coronaColor = vec3(0.90, 0.95, 1.0);
   vec3 chromosphereColor = vec3(1.0, 0.24, 0.10);
@@ -284,5 +326,9 @@ void main() {
   float alpha = clamp(glare + corona + chromosphere, 0.0, 1.0) * edgeFade;
 
   gl_FragColor = vec4(rgb, alpha);
+  // No-ops under the composer; keep the additive glare inside the same
+  // exposure/tonemap/colour response as the rest of the no-bloom frame.
+  #include <tonemapping_fragment>
+  #include <colorspace_fragment>
 }
 `;

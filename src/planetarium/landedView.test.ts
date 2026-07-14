@@ -1,40 +1,88 @@
 import { describe, it, expect } from 'vitest';
-import { LANDED_FRAME_RADII, landedFrameCamDistAU, landedMinDistanceAU } from './landedView';
+import {
+  LANDED_FRAME_RADII,
+  LANDED_NEAR_AU,
+  landedFrameCamDistAU,
+  landedMinDistanceAU,
+  landedNearAU,
+} from './landedView';
+import { MOONS } from './planets/moonData';
+import { PLANETARIUM_BODIES } from './planets/planetData';
+import { MOON_RENDER_ANCHOR_RATIO, renderedMoonRadiusAU } from './moonRenderSize';
 
 const RAD2DEG = 180 / Math.PI;
-const NEAR_AU = 0.000001; // planetariumCamera near plane (main.ts)
-const KM_PER_AU = 149_597_870.7;
 
 // Angular diameter (deg) the rendered body subtends from the landing camera,
 // which sits 1.5·camDist from the body (the (d, d/2, d) placement).
-function framedDiameterDeg(renderedRadiusAU: number): number {
-  const dist = landedFrameCamDistAU(renderedRadiusAU, NEAR_AU) * 1.5;
+function framedDiameterDeg(renderedRadiusAU: number, nearAU: number): number {
+  const dist = landedFrameCamDistAU(renderedRadiusAU, nearAU) * 1.5;
   return 2 * Math.atan(renderedRadiusAU / dist) * RAD2DEG;
 }
 
-// Rendered radii (AU): planets at true size; a Pluto small moon is floored to
-// 5% of Pluto — the smallest landable target, the case a too-large guard breaks.
-const EARTH = 6378 / KM_PER_AU;
-const JUPITER = 71_492 / KM_PER_AU;
-const PLUTO_SMALL_MOON = 0.05 * (1188 / KM_PER_AU);
+// Every landable body with the rendered size the landing actually frames:
+// planets at true size, moons through the production render curve — the
+// same derivation the controller uses, so a sizing change re-runs this sweep.
+const LANDABLE = [
+  ...PLANETARIUM_BODIES.map((p) => ({ name: p.name, trueR: p.radiusAU, renderedR: p.radiusAU })),
+  ...MOONS.map((m) => {
+    const parent = PLANETARIUM_BODIES.find((b) => b.name === m.parentPlanet)!;
+    return {
+      name: m.name,
+      trueR: m.radiusAU,
+      renderedR: renderedMoonRadiusAU(m.radiusAU, parent.radiusAU, MOON_RENDER_ANCHOR_RATIO),
+    };
+  }),
+];
 
 describe('landed framing', () => {
-  it('frames every body to ~⅓ of the 60° view (~18.9°), independent of size', () => {
-    for (const renderedRadiusAU of [EARTH, JUPITER, PLUTO_SMALL_MOON]) {
-      expect(framedDiameterDeg(renderedRadiusAU)).toBeCloseTo(18.92, 1);
+  it('frames every landable body to ~⅓ of the 60° view (~18.9°), independent of size', () => {
+    for (const body of LANDABLE) {
+      expect(
+        framedDiameterDeg(body.renderedR, landedNearAU(body.trueR)),
+        `${body.name}: framed diameter`,
+      ).toBeCloseTo(18.92, 1);
     }
   });
 
-  it('frames the smallest real body by its radius, not the guard', () => {
-    expect(landedFrameCamDistAU(PLUTO_SMALL_MOON, NEAR_AU)).toBe(PLUTO_SMALL_MOON * LANDED_FRAME_RADII);
+  it('the near-plane guard never decides a real body — the radius term does', () => {
+    for (const body of LANDABLE) {
+      expect(
+        landedFrameCamDistAU(body.renderedR, landedNearAU(body.trueR)),
+        `${body.name}: framing term`,
+      ).toBe(body.renderedR * LANDED_FRAME_RADII);
+    }
   });
 
   it('guards only a degenerate zero radius', () => {
-    expect(landedFrameCamDistAU(0, NEAR_AU)).toBe(NEAR_AU * 1.5);
+    expect(landedFrameCamDistAU(0, LANDED_NEAR_AU)).toBe(LANDED_NEAR_AU * 1.5);
   });
 
   it('keeps the surface in front of the near plane at max zoom-in', () => {
-    const surfaceClearance = landedMinDistanceAU(PLUTO_SMALL_MOON, NEAR_AU) - PLUTO_SMALL_MOON;
-    expect(surfaceClearance).toBeGreaterThanOrEqual(NEAR_AU);
+    for (const body of LANDABLE) {
+      const nearAU = landedNearAU(body.trueR);
+      const surfaceClearance = landedMinDistanceAU(body.renderedR, nearAU) - body.renderedR;
+      expect(surfaceClearance, `${body.name}: near clearance`).toBeGreaterThanOrEqual(nearAU);
+    }
+  });
+});
+
+describe('landedNearAU', () => {
+  it('keeps the stock plane for every body at least as large as it', () => {
+    for (const body of LANDABLE.filter((b) => b.trueR * 2.2 >= LANDED_NEAR_AU)) {
+      expect(landedNearAU(body.trueR), `${body.name}: stock near`).toBe(LANDED_NEAR_AU);
+    }
+  });
+
+  it('culls the whole ball on bodies smaller than the stock plane (surface-view ground cull)', () => {
+    const small = LANDABLE.filter((b) => b.trueR * 2.2 < LANDED_NEAR_AU);
+    expect(small.length).toBeGreaterThan(0); // the case exists in the catalog
+    for (const body of small) {
+      // Farthest ground point from a surface camera is one diameter away.
+      expect(landedNearAU(body.trueR), `${body.name}: ball cull`).toBeGreaterThan(body.trueR * 2);
+    }
+  });
+
+  it('floors at ~1.5 km only for a degenerate zero radius', () => {
+    expect(landedNearAU(0)).toBe(0.00000001);
   });
 });

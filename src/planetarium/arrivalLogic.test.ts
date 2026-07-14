@@ -250,11 +250,22 @@ describe('moonArrivalPose — ladder fixtures', () => {
     expect(dist / inp.renderedR).toBeGreaterThan(1 / Math.sin(half) - 1);
   });
 
-  it('Phobos still binds on the separation cap, Deimos on the legacy floor', () => {
-    const phobos = standoff('Phobos');
-    expect(phobos.dist).toBeCloseTo(phobos.inp.orbitR * MOON_ARRIVAL_SEPARATION_CAP, 9);
-    const deimos = standoff('Deimos');
-    expect(deimos.dist).toBeCloseTo(MOON_ARRIVAL_STANDOFF_FLOOR_AU, 9);
+  it('Charon still binds on the separation cap, Styx on the standoff floor', () => {
+    const charon = standoff('Charon');
+    expect(charon.dist).toBeCloseTo(charon.inp.orbitR * MOON_ARRIVAL_SEPARATION_CAP, 9);
+    const styx = standoff('Styx');
+    expect(styx.dist).toBeCloseTo(MOON_ARRIVAL_STANDOFF_FLOOR_AU, 9);
+  });
+
+  it('Phobos and Deimos escape the old dot-arrival floor: the apparent-size term binds', () => {
+    const half = (MOON_ARRIVAL_APPARENT_DIAMETER_DEG / 2) * DEG2RAD;
+    for (const name of ['Phobos', 'Deimos']) {
+      const { inp, dist } = standoff(name);
+      expect(dist, `${name}: apparent-size standoff`).toBeCloseTo(
+        inp.renderedR / Math.sin(half) - CAM_DIST_AU,
+        9,
+      );
+    }
   });
 
   it('the aim is a flyby: off the center, above the collision bubble, under the swing ceiling', () => {
@@ -263,9 +274,19 @@ describe('moonArrivalPose — ladder fixtures', () => {
       const b = pose.aimPoint.distanceTo(inp.moonPos);
       const collisionR = moonCollisionRadius(inp.renderedR, inp.shipClearance);
       expect(b).toBeGreaterThanOrEqual(collisionR * 1.15 - 1e-12);
+      // The swing ceiling holds except where the clearance floor outranks it
+      // (close parks on the smallest meshes); even there the swing stays
+      // shallow — a hand-width past the ceiling, not out of frame. The
+      // clearance aim is the exact perpendicular-miss form the pose uses.
+      const missM = collisionR * 1.15;
+      const clearanceDeg =
+        Math.atan2((missM * dist) / Math.sqrt(dist * dist - missM * missM), dist) * RAD2DEG;
       const offAxis =
         pose.aimPoint.clone().sub(pose.position).angleTo(inp.moonPos.clone().sub(pose.position));
-      expect(offAxis * RAD2DEG).toBeLessThanOrEqual(MOON_ARRIVAL_MAX_OFFAXIS_DEG + 0.01);
+      expect(offAxis * RAD2DEG).toBeLessThanOrEqual(
+        Math.max(MOON_ARRIVAL_MAX_OFFAXIS_DEG, clearanceDeg) + 0.01,
+      );
+      expect(offAxis * RAD2DEG).toBeLessThanOrEqual(15);
       expect(Math.atan2(b, dist) * RAD2DEG).toBeCloseTo(offAxis * RAD2DEG, 5);
     }
   });
@@ -383,6 +404,24 @@ describe('moonArrivalPose — catalog sweep (all moons, three orbit phases)', ()
           collisionR * 1.15 - 1e-12,
         );
       }
+    }
+  });
+
+  it('every arrival shows a real disc — never the old sub-degree dot', () => {
+    // The floor's whole contract after the render curve: the smallest meshes
+    // (Styx, ~20 km) still subtend ≥ ~2.5° from the chase camera. Cap-bound
+    // arrivals (Charon) legitimately exceed the 5° target; the ceiling is
+    // pinned by the binds-on-apparent-size test below.
+    for (const moon of MOONS) {
+      const inp = catalogInputs(moon.name);
+      const pose = moonArrivalPose(inp);
+      const fwd = pose.aimPoint.clone().sub(pose.position).normalize();
+      const camPos = pose.position
+        .clone()
+        .addScaledVector(fwd, -CAM_DIST_AU)
+        .add(new THREE.Vector3(0, CAM_DIST_AU * 0.45, 0));
+      const apparentDeg = 2 * Math.asin(inp.renderedR / camPos.distanceTo(inp.moonPos)) * RAD2DEG;
+      expect(apparentDeg, `${moon.name}: arrival disc`).toBeGreaterThan(2.4);
     }
   });
 

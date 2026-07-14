@@ -109,7 +109,7 @@ import {
   type SurfaceTargetChoice,
 } from './surfaceView';
 import { DEG2RAD } from '../shared/math/angles';
-import { landedFrameCamDistAU, landedMinDistanceAU, LANDED_NEAR_AU } from './landedView';
+import { landedFrameCamDistAU, landedMinDistanceAU, landedNearAU, LANDED_NEAR_AU } from './landedView';
 import {
   MOON_RENDER_ANCHOR_RATIO,
   MOON_RENDER_ANCHOR_RATIO_OBSERVING,
@@ -6907,18 +6907,21 @@ export class PlanetariumMode {
       this.player.posZ = pos.z;
     }
 
-    // Landed runs on the fixed near plane — restore it BEFORE the two framing
-    // consumers below read camera.near (cruise leaves a dynamic value here,
-    // as small as 3 km after a close pass).
-    if (this.camera.near !== LANDED_NEAR_AU) {
-      this.camera.near = LANDED_NEAR_AU;
+    // Landed runs on a fixed near plane per landing — the stock value, shrunk
+    // for bodies smaller than it (landedNearAU: surface view keeps culling
+    // the ground, tiny moons keep the full ~18.9° frame). Apply it BEFORE the
+    // two framing consumers below read camera.near (cruise leaves a dynamic
+    // value here, as small as 3 km after a close pass).
+    const trueRadiusAU = this.getLandedBodyRadiusAU();
+    const nearAU = landedNearAU(trueRadiusAU);
+    if (this.camera.near !== nearAU) {
+      this.camera.near = nearAU;
       this.camera.updateProjectionMatrix();
     }
 
     // Configure OrbitControls to orbit the body. The player is parked at the
     // body's world position, so the next floating-origin pass puts the body —
     // planet or moon — exactly at scene origin.
-    const trueRadiusAU = this.getLandedBodyRadiusAU();
     const renderedRadiusAU = this.getLandedBodyRenderedRadiusAU();
 
     this.controls.enabled = true;

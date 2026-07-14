@@ -5,8 +5,10 @@
  * A moon whose drawn disc is smaller than a couple of pixels is invisible as a
  * sphere, yet a real body that bright would still show as a naked-eye point. So a
  * sub-pixel moon renders as a star-scale point at its apparent magnitude, through
- * the same magnitude → brightness/size mapping the starfield uses, and crossfades
- * out as the real mesh disc grows past a few pixels.
+ * the same magnitude → brightness/size mapping the starfield uses — held at a
+ * bright-end scene ceiling (the planets are tonemapped, so the point scale must
+ * compress with them) — and hands off to the real mesh disc across a luminance-
+ * matched crossfade as the disc resolves.
  *
  * Render-proxy photometry: the flux uses the RENDERED radius the scene actually
  * draws — moons are inflated on a compressive curve so tiny ones stay findable —
@@ -39,12 +41,31 @@ export interface MoonDotParams {
   albedoMin: number;
   albedoMax: number;
   albedoGain: number;
+  /** Bright-end scene ceiling (apparent magnitude): a dot never renders brighter
+   *  than a star of this magnitude. The planet discs are tonemapped far below
+   *  their physical brightness, so an uncapped photometric point (a Galilean at
+   *  close range is genuinely Venus-class, mag −5) would out-render its own
+   *  parent planet — five beacons dwarfing a modest Jupiter. Clamping to
+   *  brightest-star class keeps the parent the visual anchor of its system. */
+  magCeiling: number;
+  /** Hard cap on the dot's point size (CSS px), below the star mapping's own
+   *  6.5 px top end — a moon dot should read as a bright star, never as a
+   *  Jupiter-scale orb once bloom widens it. */
+  sizeMaxPx: number;
   /** Disc-handoff crossfade window (rendered disc DIAMETER, screen px): the dot
    *  fades out as the disc grows from START to END. Wide so the disc is already
    *  larger than a bright point before the dot fully dies (no "blazing point
    *  shrinks into a small disc" deflation). The #1 tune-by-eye target. */
   fadeStartPx: number;
   fadeEndPx: number;
+  /** Luminance matching at the handoff: across the first ~60% of the crossfade
+   *  window the dot's brightness ramps from its star-scale value to
+   *  discMatchLum · albedo · illumination — an estimate of the tonemapped
+   *  luminance of the small disc it is handing off to. Without this the dot dies
+   *  at full star brightness while the disc is still a couple of dim pixels: a
+   *  bright point, then nothing, then a faint moon. With it the point visibly
+   *  resolves INTO the disc, like a telescope pulling focus. */
+  discMatchLum: number;
   /** Shrink a large point toward the disc size across the crossfade so point and
    *  disc converge; never grows a faint point toward a big disc. */
   shrinkToDisc: boolean;
@@ -70,13 +91,18 @@ export const MOON_DOT_PARAMS: MoonDotParams = {
   albedoMin: 0.15,
   albedoMax: 0.7,
   albedoGain: 1.0,
-  fadeStartPx: 2.5,
-  fadeEndPx: 6.0,
+  magCeiling: 0.2,
+  sizeMaxPx: 4.2,
+  fadeStartPx: 3.5,
+  fadeEndPx: 10.0,
+  discMatchLum: 0.6,
   shrinkToDisc: true,
   targetMinIntensity: 0.04,
   faintExtendMag: 1.6,
   systemEdgeFadeFrac: 0.15,
-  texUpgradeDiscPx: 96,
+  // Deck arrivals park a moon's disc at ~87 px (the 5° standoff), so the
+  // threshold sits below that: arriving at a procedural moon sharpens it.
+  texUpgradeDiscPx: 80,
 };
 
 /**
@@ -198,10 +224,12 @@ export function moonDotVisual(
   const magnitude = moonDotMagnitude(renderedRadiusAU, distAU, sunDistAU, illum, albedoProxy, params);
   const hasFlux = Number.isFinite(magnitude);
 
-  // Star-scale brightness + size + faint-end alpha — exactly what a star of this
-  // magnitude gets. The mapping's clamps cap the bright end, so a dot can never
-  // out-render the brightest star treatment (sky-first rule holds).
-  const star = starPointVisual(magnitude, starFaintLimitMag, starMapping);
+  // Star-scale brightness + size + faint-end alpha — what a star of this
+  // magnitude gets, with the bright end held at the scene ceiling: the planets
+  // are tonemapped, so the point scale must compress with them or a close
+  // Galilean (genuinely mag −5) out-renders its own parent.
+  const effectiveMag = Math.max(magnitude, params.magCeiling);
+  const star = starPointVisual(effectiveMag, starFaintLimitMag, starMapping);
 
   // Extend the faint-end alpha below the catalog limit toward zero. At the limit
   // the star floor is faintMinAlpha and this multiplier is 1, so the two meet
@@ -219,20 +247,26 @@ export function moonDotVisual(
     intensity = Math.max(intensity, params.targetMinIntensity);
   }
 
-  // Disc handoff: fade the point out as the real disc grows across the window.
-  const discFade = 1 - smoothstep(params.fadeStartPx, params.fadeEndPx, discPx);
-  const alpha = intensity * discFade * clamp(edgeFade, 0, 1);
+  // Disc handoff. `t` runs 0→1 as the disc grows across the window; alpha fades
+  // out over the whole window, while brightness ramps to the disc's estimated
+  // tonemapped luminance over the first ~60% — so by the time the point is
+  // dying it is no brighter than the disc it uncovers. Without the luminance
+  // ramp the point dies at full star brightness against a still-dim few-pixel
+  // disc: bright dot, then nothing, then a faint moon.
+  const t = smoothstep(params.fadeStartPx, params.fadeEndPx, discPx);
+  const alpha = intensity * (1 - t) * clamp(edgeFade, 0, 1);
+  const discLum = params.discMatchLum * Math.min(albedoProxy, 1) * illum;
+  const brightness = lerp(star.brightness, discLum, Math.min(1, t / 0.6));
 
-  // Shrink a large point toward the disc across the crossfade so the two
-  // converge in size; `min` guarantees a faint point is never grown toward a
-  // big disc.
-  let sizePx = star.sizePx;
+  // Cap the point size below the star mapping's top end, and shrink toward a
+  // smaller disc across the crossfade; `min` guarantees a faint point is never
+  // grown toward a big disc.
+  let sizePx = Math.min(star.sizePx, params.sizeMaxPx);
   if (params.shrinkToDisc) {
-    const blend = smoothstep(params.fadeStartPx, params.fadeEndPx, discPx);
-    sizePx = Math.min(sizePx, lerp(sizePx, discPx, blend));
+    sizePx = Math.min(sizePx, lerp(sizePx, discPx, t));
   }
 
-  return { intensity, alpha, sizePx, brightness: star.brightness, magnitude };
+  return { intensity, alpha, sizePx, brightness, magnitude };
 }
 
 /**

@@ -138,24 +138,59 @@ describe('moonDots — visual composition', () => {
     expect(visualAt(0.05, { discPx: P.fadeEndPx + 1 }).alpha).toBe(0); // disc resolved
   });
 
-  it('brightness/size match the shared star mapping for the dot magnitude', () => {
-    const v = visualAt(0.3, { discPx: 0.5 }); // sub-fadeStart disc → no shrink
-    const star = starPointVisual(v.magnitude, FAINT_LIMIT);
-    expect(v.brightness).toBeCloseTo(star.brightness, 12);
-    expect(v.sizePx).toBeCloseTo(star.sizePx, 12);
+  it('matches the shared star mapping in the mid range; the scene ceiling binds the bright end', () => {
+    // Mid-range magnitude (no caps bind): exact star parity.
+    const midMag = 3.0;
+    const mid = moonDotVisual(
+      EUROPA_RENDERED_AU, deltaForMag(midMag), R_SUN_JUP, 1, EUROPA_ALBEDO, 1, 0.5, false, 1, FAINT_LIMIT,
+    );
+    const midStar = starPointVisual(mid.magnitude, FAINT_LIMIT);
+    expect(mid.brightness).toBeCloseTo(midStar.brightness, 12);
+    expect(mid.sizePx).toBeCloseTo(midStar.sizePx, 12);
+    // Bright end: a mag −5-class dot renders as a mag-ceiling star, size-capped —
+    // never the star mapping's own 6.5px/1.2 top end (the planets are tonemapped;
+    // an uncapped point would out-render its parent).
+    const bright = visualAt(0.036, { discPx: 0.5 });
+    expect(bright.magnitude).toBeLessThan(-4);
+    const ceilingStar = starPointVisual(P.magCeiling, FAINT_LIMIT);
+    expect(bright.brightness).toBeCloseTo(ceilingStar.brightness, 12);
+    expect(bright.sizePx).toBeCloseTo(Math.min(ceilingStar.sizePx, P.sizeMaxPx), 12);
+    expect(bright.sizePx).toBeLessThanOrEqual(P.sizeMaxPx);
   });
 
-  it('shrink-to-disc only shrinks: a big point converges, a faint point never grows', () => {
-    // Bright point (natural size at the top of the star band) shrinks toward the disc.
-    const bright = visualAt(0.05, { discPx: P.fadeEndPx - 1e-6 });
-    const brightNoShrink = starPointVisual(visualAt(0.05, { discPx: 0.5 }).magnitude, FAINT_LIMIT).sizePx;
-    expect(bright.sizePx).toBeLessThan(brightNoShrink);
+  it('the handoff ramps brightness to the disc-matched luminance before the dot dies', () => {
+    // Deep in the window (t ≥ 0.6): brightness has fully reached the disc estimate.
+    const late = visualAt(0.05, { discPx: 8 });
+    expect(late.brightness).toBeCloseTo(P.discMatchLum * Math.min(EUROPA_ALBEDO, 1), 6);
+    expect(late.alpha).toBeGreaterThan(0); // the point is still there while it matches
+    // Below the window: untouched star brightness at the scene ceiling.
+    const before = visualAt(0.05, { discPx: 0.5 });
+    expect(before.brightness).toBeCloseTo(starPointVisual(P.magCeiling, FAINT_LIMIT).brightness, 12);
+    // Brightness is monotone non-increasing across the window for a bright dot.
+    let prev = Infinity;
+    for (const px of [0.5, P.fadeStartPx, 5, 6.5, 8, P.fadeEndPx]) {
+      const b = visualAt(0.05, { discPx: px }).brightness;
+      expect(b).toBeLessThanOrEqual(prev + 1e-9);
+      prev = b;
+    }
+    // A half-lit disc matches at half the luminance (phase enters the target).
+    const half = visualAt(0.05, { discPx: 8, phaseCos: 0 });
+    expect(half.brightness).toBeCloseTo(P.discMatchLum * Math.min(EUROPA_ALBEDO, 1) * 0.5, 6);
+  });
+
+  it('point size never exceeds the cap and never grows toward a big disc', () => {
+    for (const px of [0.5, P.fadeStartPx, 5, 8, P.fadeEndPx - 1e-6]) {
+      expect(visualAt(0.05, { discPx: px }).sizePx).toBeLessThanOrEqual(P.sizeMaxPx + 1e-9);
+    }
     // Faint point (mag near the limit → ~1.2px) never grows toward a 5px disc.
     const faintMag = FAINT_LIMIT - 0.2;
     const d = deltaForMag(faintMag);
     const faintNatural = starPointVisual(faintMag, FAINT_LIMIT).sizePx;
     const faint = moonDotVisual(EUROPA_RENDERED_AU, d, R_SUN_JUP, 1, EUROPA_ALBEDO, 1, 5.0, false, 1, FAINT_LIMIT);
     expect(faint.sizePx).toBeLessThanOrEqual(faintNatural + 1e-9);
+    // Shrink binds when the disc is smaller than the capped point inside the window.
+    const tiny = visualAt(0.05, { discPx: P.fadeStartPx + 0.2 });
+    expect(tiny.sizePx).toBeLessThanOrEqual(Math.min(P.sizeMaxPx, starPointVisual(P.magCeiling, FAINT_LIMIT).sizePx));
   });
 });
 
@@ -271,10 +306,14 @@ describe('moonDots — current tuning (defaults)', () => {
     expect(moonDotMagnitude(EUROPA_RENDERED_AU, 0.036, R_SUN_JUP, 1, EUROPA_ALBEDO)).toBeCloseTo(-5, 1);
   });
 
-  it('pins the crossfade window and the target floor', () => {
-    expect(P.fadeStartPx).toBe(2.5);
-    expect(P.fadeEndPx).toBe(6.0);
+  it('pins the crossfade window, scene ceiling, and the target floor', () => {
+    expect(P.fadeStartPx).toBe(3.5);
+    expect(P.fadeEndPx).toBe(10.0);
+    expect(P.magCeiling).toBe(0.2);
+    expect(P.sizeMaxPx).toBe(4.2);
+    expect(P.discMatchLum).toBe(0.6);
     expect(P.targetMinIntensity).toBe(0.04);
-    expect(P.texUpgradeDiscPx).toBe(96);
+    // Below the ~87px disc a deck arrival parks at, so arrivals sharpen.
+    expect(P.texUpgradeDiscPx).toBe(80);
   });
 });

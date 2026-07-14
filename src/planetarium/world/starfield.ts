@@ -6,10 +6,22 @@
 import * as THREE from 'three';
 import { BRIGHT_STAR_CATALOG } from '../data/brightStars';
 import { raDecToVector } from '../../astronomy/planetary';
+import { starPointVisual } from './starPointMapping';
 
 /** Celestial-sphere radius (AU) shared by the stars and the constellation
  *  overlay (Constellations.ts) — the lines must land on the stars. */
 export const STAR_SPHERE_RADIUS = 85;
+
+/** Magnitude of the catalog's dimmest rendered star — the anchor the faint-end
+ *  fade ramps up to (shared by the moon dots so their faint-limit handoff lines
+ *  up with the stars'). Sol (mag ≤ −10, drawn as a mesh) is excluded. */
+export function starfieldFaintLimitMag(): number {
+  let faintest = -Infinity;
+  for (const s of BRIGHT_STAR_CATALOG) {
+    if (s.magnitude > -10 && s.magnitude > faintest) faintest = s.magnitude;
+  }
+  return faintest;
+}
 
 /** Map a stellar colour index (B–V) to an approximate RGB tint. */
 export function getStarColor(colorIndex: number): THREE.Color {
@@ -22,21 +34,6 @@ export function getStarColor(colorIndex: number): THREE.Color {
     ? cool.clone().lerp(neutral, t * 2)
     : neutral.clone().lerp(warm, (t - 0.5) * 2);
 }
-
-/**
- * Faint-end shaping. Dimmer stars get lower opacity and smaller points, so the
- * dense faint layer recedes into fine texture and stops reading as a flat wall
- * of identical specks. The fade ramps over the FAINT_FADE_RANGE_MAG magnitudes
- * leading up to the catalog's faintest star, so a wide span pulls down the
- * dimmer part of the whole field, not only the near-limit stars; stars brighter
- * than that span keep full size and opacity. The window anchors to the actual
- * faintest star so it tracks the catalog if the limit changes. Opacity carries
- * the dimming; point size stays at or above 1px so stars read as crisp dots
- * even at the limit.
- */
-const FAINT_FADE_RANGE_MAG = 1.6; // fade-ramp width (mags up to the faint limit); larger dims more of the field
-const FAINT_MIN_ALPHA = 0.45; // opacity of the faintest stars (never 0 — keep a hint)
-const FAINT_MIN_SIZE_SCALE = 0.8; // faintest stars shrink to this × base size (then clamped >= 1px)
 
 /**
  * gl_PointSize is in framebuffer pixels, so a star that should read as N CSS px
@@ -68,21 +65,16 @@ export function createPlanetariumStarfield(rendererPixelRatio: number): THREE.Po
   const alphas = new Float32Array(starCount);
 
   // Anchor the faint-end fade to the dimmest star actually in the catalog.
-  let faintestMag = -Infinity;
-  for (const s of catalog) if (s.magnitude > faintestMag) faintestMag = s.magnitude;
-  const fadeStartMag = faintestMag - FAINT_FADE_RANGE_MAG;
+  const faintestMag = starfieldFaintLimitMag();
 
   for (let i = 0; i < starCount; i++) {
     const star = catalog[i];
     const color = getStarColor(star.colorIndex);
-    const brightness = THREE.MathUtils.clamp(1.2 - (star.magnitude + 1.44) / 8, 0.25, 1.2);
-
-    // 0 for the bright/mid field, ramping to 1 at the catalog's faint limit.
-    const faint = THREE.MathUtils.clamp(
-      (star.magnitude - fadeStartMag) / FAINT_FADE_RANGE_MAG,
-      0,
-      1,
-    );
+    // Magnitude → brightness/size/alpha through the shared point mapping (the
+    // same one the moon dots use, so a moon dot is as visible as an equally
+    // bright star). Spread lets constellation stars (mag 1-3) stand out; the
+    // faintest taper down but stay ≥ 1px to avoid sub-pixel shimmer.
+    const { brightness, sizePx, alpha } = starPointVisual(star.magnitude, faintestMag);
 
     // raDecToVector is the single chirality definition site — every sky
     // embedding routes through it (build-time allocation is fine here).
@@ -95,14 +87,8 @@ export function createPlanetariumStarfield(rendererPixelRatio: number): THREE.Po
     colors[i * 3 + 1] = color.g * brightness;
     colors[i * 3 + 2] = color.b * brightness;
 
-    // Spread so constellation stars (mag 1-3) stand out from dim ones; the
-    // faintest taper down but stay >= 1px to avoid sub-pixel shimmer.
-    const baseSize = THREE.MathUtils.clamp(6.0 - star.magnitude * 1.1, 1.2, 6.5);
-    sizes[i] = Math.max(1.0, THREE.MathUtils.lerp(baseSize, baseSize * FAINT_MIN_SIZE_SCALE, faint));
-
-    // Opacity is the main faint-end lever: the dense faint layer recedes
-    // instead of reading as white noise.
-    alphas[i] = THREE.MathUtils.lerp(1.0, FAINT_MIN_ALPHA, faint);
+    sizes[i] = sizePx;
+    alphas[i] = alpha;
   }
 
   const geo = new THREE.BufferGeometry();

@@ -1563,6 +1563,7 @@ export class PlanetariumMode {
     // texels start to soften, with lead time to fetch 4K before it grows.
     const UPGRADE_AT = 0.15;
     const cam = this.camera.position;
+    const canvasH = this.renderer.domElement.clientHeight;
     for (const planet of this.solarSystem.planets) {
       const up = planet.textureUpgrade;
       if (!up) continue;
@@ -1570,19 +1571,41 @@ export class PlanetariumMode {
       const dist = Math.max(this.texLODTmp.distanceTo(cam), 1e-6);
       if ((planet.data.radiusAU * 2) / dist / fovRad > UPGRADE_AT) upgradeTextureOnApproach(up);
     }
+    // Cruise re-renders a procedural moon's texture sharper on close approach;
+    // the landed/Observatory path already does this on observe, so gate it to
+    // cruise. Throttled to one successful upgrade per frame — GPU paint is
+    // sub-ms, but don't burst a whole system's worth in one frame.
+    const allowMoonTexUpgrade = !this.landedOn;
+    let moonTexUpgraded = false;
     for (const moons of this.planetMoons.values()) {
       for (const m of moons) {
-        const up = m.textureUpgrade;
-        if (!up) continue;
         // Hidden moons sit at their parent's center (updateMoonPositions skips
-        // them) — a fake position the trigger must never measure. An invisible
-        // moon can't legitimately span 15% of the viewport anyway.
+        // them) — a fake position the triggers must never measure. An invisible
+        // moon can't legitimately span the viewport anyway.
         if (!m.mesh.visible) continue;
         m.mesh.getWorldPosition(this.texLODTmp);
         const dist = Math.max(this.texLODTmp.distanceTo(cam), 1e-6);
         // Rendered size (mesh scale carries the render-curve inflation): the
-        // trigger must measure the disc actually on screen.
-        if ((m.data.radiusAU * m.mesh.scale.x * 2) / dist / fovRad > UPGRADE_AT) upgradeTextureOnApproach(up);
+        // triggers must measure the disc actually on screen.
+        const renderedR = m.data.radiusAU * m.mesh.scale.x;
+
+        // Most procedural moons carry no 4K TextureUpgrade handle, so the disc
+        // threshold sits above the photo-upgrade guard. `upgrade` returns false
+        // for a photo / already-sharp / CPU-painted moon, leaving the frame's
+        // slot for a real one (no starvation).
+        if (
+          allowMoonTexUpgrade &&
+          !moonTexUpgraded &&
+          discDiameterPx(renderedR, dist, this.camera.fov, canvasH) > this.moonDotParams.texUpgradeDiscPx
+        ) {
+          if (this.moonTexturer.upgrade(m, PlanetariumMode.OBSERVE_MOON_TEXTURE_WIDTH)) {
+            moonTexUpgraded = true;
+          }
+        }
+
+        const up = m.textureUpgrade;
+        if (!up) continue;
+        if ((renderedR * 2) / dist / fovRad > UPGRADE_AT) upgradeTextureOnApproach(up);
       }
     }
   }

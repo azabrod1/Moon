@@ -265,20 +265,27 @@ export class ProceduralMoonTexturer {
    * so no in-flight frame samples a freed texture and a failed render keeps the
    * old one. Only touches GPU-painted moons (proceduralWidth set) — never a
    * CPU-fallback CanvasTexture or a photo.
+   *
+   * Returns whether the texture was actually upgraded, so a per-frame throttle
+   * can spend its one slot on a real upgrade: an ineligible moon (CPU-painted,
+   * already sharp, or a fully photo-backed one) returns false without consuming
+   * the slot.
    */
-  upgrade(moon: MoonMesh, width: number): void {
-    if (!this.gpuUsable || this.gl.isContextLost()) return; // keep the baseline
+  upgrade(moon: MoonMesh, width: number): boolean {
+    if (!this.gpuUsable || this.gl.isContextLost()) return false; // keep the baseline
     const mat = moon.mesh.material as THREE.MeshStandardMaterial;
     const current = mat.userData.proceduralWidth as number | undefined;
-    if (current === undefined || current >= width) return; // CPU-painted, or already sharp enough
-    if (mat.userData.photoLoaded && mat.userData.hasRealNormal) return; // nothing procedural to sharpen
+    if (current === undefined || current >= width) return false; // CPU-painted, or already sharp enough
+    if (mat.userData.photoLoaded && mat.userData.hasRealNormal) return false; // nothing procedural to sharpen
     try {
       const start = performance.now();
       this.renderAndAssign(moon, mat, width, width / 2);
       this.gpuMs += performance.now() - start;
       this.publishStats();
+      return true;
     } catch (err) {
       debugWarn('GPU moon texture upgrade failed; keeping current', { name: moon.data.name, err: String(err) });
+      return false;
     }
   }
 

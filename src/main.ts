@@ -286,7 +286,7 @@ async function switchAppMode(newMode: AppMode) {
       if (!planetariumMode) {
         debugLog('Creating Planetarium mode');
         planetariumMode = new PlanetariumMode(scene, planetariumCamera, renderer, useBloom);
-        // The ☰ "How many fit?" item and the help-modal row arrive here: the
+        // The ☰ "How many fit?" item arrives here: the
         // mode closes its own entry surfaces, then this callback owns the switch.
         planetariumMode.onVolumeCompareRequest(() => {
           void switchAppMode('volumeCompare');

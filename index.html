@@ -1080,7 +1080,7 @@
       padding: 4px 0;
     }
     .settings-label {
-      color: var(--text-dim);
+      color: var(--text-primary);
       font-size: 11px;
       letter-spacing: 0.1px;
     }
@@ -1275,9 +1275,6 @@
     .tutorial-btn-primary:hover:not(:disabled) { background: rgba(var(--accent-rgb),0.28); }
     .tutorial-btn-ghost { background: transparent; color: var(--t2); }
     .tutorial-btn-ghost:hover:not(:disabled) { background: rgba(255,255,255,0.06); color: var(--t1); }
-    /* Help-modal in-body entry button (e.g. "How many fit?") sits under its
-       teaching paragraph, so it needs a little air above it. */
-    .help-entry-btn { margin-top: 10px; }
     /* Deck-theater row pulse: the tutorial pointing at the row it is about to press. */
     @keyframes tutorial-pulse {
       0%, 100% { background: rgba(var(--accent-rgb), 0.09); }
@@ -1433,6 +1430,7 @@
     }
     .planet-label-name { display: block; font-size: 10px; font-weight: 500; color: var(--text-primary); text-shadow: 0 0 6px rgba(0,0,0,0.9); }
     .planet-label-dist { display: block; font-size: 10px; color: var(--text-dim); margin-top: 1px; }
+    #planet-labels.hide-distances .planet-label-dist { display: none; }
 
     /* Constellation labels */
     .constellation-label {
@@ -2052,6 +2050,15 @@
     }
     .help-section p + p { margin-top: 6px; }
     .help-section em { color: var(--text-secondary); font-style: normal; }
+    /* Reuse the action cluster's real glyph artwork in help copy instead of
+       platform-dependent emoji, keeping the reference visually exact. */
+    .help-glyph {
+      width: 1.15em;
+      height: 1.15em;
+      display: inline-block;
+      vertical-align: -0.18em;
+      color: currentColor;
+    }
     .help-list {
       list-style: none;
       padding: 6px 0 0;
@@ -2700,6 +2707,13 @@
           </button>
         </div>
         <div class="settings-row">
+          <span class="settings-label">Label distances</span>
+          <button class="settings-toggle" id="settings-label-distances-toggle"
+                  aria-label="Label distances" aria-pressed="true">
+            <span id="settings-label-distances-label">On</span>
+          </button>
+        </div>
+        <div class="settings-row">
           <span class="settings-label">Planet glow</span>
           <button class="settings-toggle" id="settings-markers-toggle">
             <span id="settings-markers-label">On</span>
@@ -2873,25 +2887,20 @@
               <p>You can fly up to 20c between planets. The moment you enter a planet's system, the ship throttles way down so you don't blast straight through it. Want to stay fast? Flip <em>Slower near planets</em> off in the menu.</p>
             </section>
             <section class="help-section">
-              <h4>Go anywhere (🚀 Teleport)</h4>
-              <p>The 🚀 button up top opens the deck: every planet and moon, one tap each. The tab decides what the tap does &mdash; <strong>Teleport</strong> drops you right next to the body, <strong>Autopilot</strong> flies you there (grab the controls and it lets go), and <strong>Observatory</strong> lands you on it. Type to search instead of scrolling.</p>
+              <h4>Go anywhere (<svg class="help-glyph" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><g transform="rotate(42 10 10)"><path fill-rule="evenodd" fill="currentColor" stroke="none" d="M10 1.4 C 8.1 3.4 7.1 6.3 7.1 9.5 L 7.1 14.2 C 7.1 14.75 7.5 15.1 8.05 15.1 L 11.95 15.1 C 12.5 15.1 12.9 14.75 12.9 14.2 L 12.9 9.5 C 12.9 6.3 11.9 3.4 10 1.4 Z M10 5.45 a1.65 1.65 0 1 1 0 3.3 a1.65 1.65 0 0 1 0 -3.3 Z M10 6.25 a0.85 0.85 0 1 1 0 1.7 a0.85 0.85 0 0 1 0 -1.7 Z"></path><path fill="currentColor" stroke="none" d="M7.1 10.6 C 5.6 11.5 4.6 13.1 4.3 15.0 C 4.25 15.4 4.6 15.7 5.0 15.55 L 7.1 14.7 Z"></path><path fill="currentColor" stroke="none" d="M12.9 10.6 C 14.4 11.5 15.4 13.1 15.7 15.0 C 15.75 15.4 15.4 15.7 15.0 15.55 L 12.9 14.7 Z"></path><path fill="currentColor" stroke="none" d="M10 19.2 C 9.0 18.0 8.55 17.0 8.75 16.0 L 11.25 16.0 C 11.45 17.0 11.0 18.0 10 19.2 Z"></path></g></svg> Teleport)</h4>
+              <p>The <svg class="help-glyph" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><g transform="rotate(42 10 10)"><path fill-rule="evenodd" fill="currentColor" stroke="none" d="M10 1.4 C 8.1 3.4 7.1 6.3 7.1 9.5 L 7.1 14.2 C 7.1 14.75 7.5 15.1 8.05 15.1 L 11.95 15.1 C 12.5 15.1 12.9 14.75 12.9 14.2 L 12.9 9.5 C 12.9 6.3 11.9 3.4 10 1.4 Z M10 5.45 a1.65 1.65 0 1 1 0 3.3 a1.65 1.65 0 0 1 0 -3.3 Z M10 6.25 a0.85 0.85 0 1 1 0 1.7 a0.85 0.85 0 0 1 0 -1.7 Z"></path><path fill="currentColor" stroke="none" d="M7.1 10.6 C 5.6 11.5 4.6 13.1 4.3 15.0 C 4.25 15.4 4.6 15.7 5.0 15.55 L 7.1 14.7 Z"></path><path fill="currentColor" stroke="none" d="M12.9 10.6 C 14.4 11.5 15.4 13.1 15.7 15.0 C 15.75 15.4 15.4 15.7 15.0 15.55 L 12.9 14.7 Z"></path><path fill="currentColor" stroke="none" d="M10 19.2 C 9.0 18.0 8.55 17.0 8.75 16.0 L 11.25 16.0 C 11.45 17.0 11.0 18.0 10 19.2 Z"></path></g></svg> button up top opens the deck: every planet and moon, one tap each. The tab decides what the tap does &mdash; <strong>Teleport</strong> drops you right next to the body, <strong>Autopilot</strong> flies you there (grab the controls and it lets go), and <strong>Observatory</strong> lands you on it. Type to search instead of scrolling.</p>
             </section>
             <section class="help-section">
               <h4>Landing</h4>
               <p>Get close to a body and a <strong>Land on…</strong> button appears on its own. Drag to look around. <strong>Leave</strong> (or Esc) puts you back in the ship.</p>
             </section>
             <section class="help-section">
-              <h4>Stand on a world (🔭 Observatory)</h4>
-              <p>Tap 🔭 and pick any planet or moon &mdash; you'll land there. Its sky panel shows the current phase, distances, and the next eclipses and shadow crossings, all worked out from the orbits; a switch at the bottom of the picker decides whether the panel opens on arrival by itself. Tap an event to jump to it, then <strong>Surface view</strong> to watch from the ground.</p>
+              <h4>Stand on a world (<svg class="help-glyph" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4.15 8.11 L12.68 3.17 L14.12 6.03 L5.05 9.89 Z"></path><path d="M11.9 3.75 L13.15 6.35"></path><path d="M4.5 9.05 L3.1 9.75"></path><path d="M9.4 8.2 L9.0 15.6 M9.0 15.6 L6.7 17.8 M9.0 15.6 L11.3 17.8"></path></svg> Observatory)</h4>
+              <p>Tap <svg class="help-glyph" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4.15 8.11 L12.68 3.17 L14.12 6.03 L5.05 9.89 Z"></path><path d="M11.9 3.75 L13.15 6.35"></path><path d="M4.5 9.05 L3.1 9.75"></path><path d="M9.4 8.2 L9.0 15.6 M9.0 15.6 L6.7 17.8 M9.0 15.6 L11.3 17.8"></path></svg> and pick any planet or moon &mdash; you'll land there. Its sky panel shows the current phase, distances, and the next eclipses and shadow crossings, all worked out from the orbits; a switch at the bottom of the picker decides whether the panel opens on arrival by itself. Tap an event to jump to it, then <strong>Surface view</strong> to watch from the ground.</p>
             </section>
             <section class="help-section">
               <h4>Watch the orbits run</h4>
               <p>Click the date on the bottom bar. Speed time up and you can actually watch planets trace their orbits and moons circle their hosts. Pause, reverse, or jump to any UTC moment.</p>
-            </section>
-            <section class="help-section">
-              <h4>How many fit?</h4>
-              <p>How many Earths would fill Jupiter? Pour real planets into a glass one and find out. It's in the Tools menu.</p>
-              <button class="tutorial-btn tutorial-btn-ghost help-entry-btn" id="help-volume-compare">How many fit?</button>
             </section>
             <p class="help-signoff">Have fun out there.</p>
           </div>

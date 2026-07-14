@@ -80,6 +80,21 @@ describe('showBodyMarkers is a plain boolean (default true)', () => {
   });
 });
 
+describe('showBodyLabelDistances is a plain boolean (default true)', () => {
+  it('defaults to true when the field is absent from the save', () => {
+    expect(sanitizePlanetariumState(rawSave({}))?.showBodyLabelDistances).toBe(true);
+    expect(createDefaultPlanetariumState().showBodyLabelDistances).toBe(true);
+  });
+
+  it('round-trips an explicit false', () => {
+    expect(sanitizePlanetariumState(rawSave({ showBodyLabelDistances: false }))?.showBodyLabelDistances).toBe(false);
+  });
+
+  it('non-boolean garbage falls back to the default', () => {
+    expect(sanitizePlanetariumState(rawSave({ showBodyLabelDistances: 'no' }))?.showBodyLabelDistances).toBe(true);
+  });
+});
+
 describe('skyPref stays tri-state (absent until the user flips the toggle)', () => {
   it('round-trips an explicit flip', () => {
     expect(sanitizePlanetariumState(rawSave({ skyPref: false }))?.skyPref).toBe(false);

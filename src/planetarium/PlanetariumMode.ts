@@ -140,6 +140,7 @@ import {
   advanceBodyCap,
   governedSpeedCap,
   initialBodyCapState,
+  moonArrivalCameraLookWeight,
   moonArrivalPose,
   moonCollisionRadius,
   BODY_APPROACH_V_MIN_AU_S,
@@ -297,6 +298,7 @@ export class PlanetariumMode {
   private constellations: Constellations | null = null;
   private showConstellations = false;
   private showBodyLabels = true;
+  private showBodyLabelDistances = true;
   private showBodyMarkers = true;
   private showOrbitLines = false;
 
@@ -412,6 +414,20 @@ export class PlanetariumMode {
    *  visibility-keyed set can't see it there). Drops once the mesh shows;
    *  a stale seed is neutralized by distance on its own. */
   private governedMoonSeed: { name: string; parentPlanet: string } | null = null;
+  /** A moon teleport keeps its collision-safe flyby heading, but the camera
+   *  tracks the moon through closest approach. Without that decoupling the
+   *  nearby disc rides far off the optical axis and perspective projects the
+   *  spherical mesh as an oval. Manual steering/orbiting cancels immediately;
+   *  the receding leg eases back to the ordinary ship-centred chase view. */
+  private moonArrivalCameraLook: {
+    name: string;
+    parentPlanet: string;
+    arrivalDistanceAU: number;
+    previousDistanceAU: number;
+    approached: boolean;
+    receding: boolean;
+  } | null = null;
+  private tmpMoonArrivalLook = new THREE.Vector3();
   /** Body-proximity governor state: the eased candidate/applied cap plus the
    *  engaged latch and its clear-hold (see arrivalLogic.advanceBodyCap).
    *  Reset to initialBodyCapState() on every flight discontinuity — jump,
@@ -744,12 +760,6 @@ export class PlanetariumMode {
     takeTutorial?.classList.toggle('tutorial-btn-ghost', !firstRun);
     const explore = document.getElementById('help-explore');
     if (explore) explore.style.display = firstRun ? '' : 'none';
-    // The "How many fit?" row steals the whole scene, so it is disabled while a
-    // mission or the tutorial owns it (requestVolumeCompare refuses too — this is
-    // the visible affordance). .tutorial-btn:disabled dims it, matching the Tools
-    // row's dim idiom.
-    const volumeCompareRow = document.getElementById('help-volume-compare') as HTMLButtonElement | null;
-    if (volumeCompareRow) volumeCompareRow.disabled = this.isMissionActive() || this.tutorial !== null;
     this.resumeShipAfterHelp = this.player.moving;
     this.resumeTimeAfterHelp = !this.timeState.paused;
     this.player.moving = false;
@@ -767,8 +777,8 @@ export class PlanetariumMode {
     this.store.markHelpSeen();
   }
 
-  // Mode switching lives in main.ts, not here; the "How many fit?" menu/help
-  // entries call this stored callback so main.ts can drive switchAppMode
+  // Mode switching lives in main.ts, not here; the "How many fit?" Tools entry
+  // calls this stored callback so main.ts can drive switchAppMode
   // (MoonFlight's onExit idiom).
   private volumeCompareRequestCb: (() => void) | null = null;
   onVolumeCompareRequest(cb: () => void): void {
@@ -840,7 +850,10 @@ export class PlanetariumMode {
       if (!this.orbitDragging || this.userOrbiting) return;
       const dx = e.clientX - this.orbitPointerStartX;
       const dy = e.clientY - this.orbitPointerStartY;
-      if (dx * dx + dy * dy > 16) this.userOrbiting = true; // moved > 4px = a drag
+      if (dx * dx + dy * dy > 16) {
+        this.userOrbiting = true; // moved > 4px = a drag
+        this.moonArrivalCameraLook = null;
+      }
     });
     const endOrbitDrag = () => {
       if (!this.orbitDragging) return;
@@ -1168,6 +1181,7 @@ export class PlanetariumMode {
   }
 
   deactivate(): void {
+    this.moonArrivalCameraLook = null;
     // A live tutorial hands the pre-tutorial state back first, synchronously — the
     // teardown below (excursion drop, landed exit, save) then applies to the
     // restored journey exactly as it would for a non-tutorialing player.
@@ -1387,6 +1401,7 @@ export class PlanetariumMode {
     // days, so "last frame's positions" can be a different sky — and BEFORE
     // the label pass, which projects through the final camera.
     this.updateCruiseCameraSafety();
+    this.updateMoonArrivalCameraLook();
 
     // The HTML label/marker projections below read camera.matrixWorldInverse,
     // which the renderer refreshes only at render time — after this update().
@@ -1576,6 +1591,47 @@ export class PlanetariumMode {
       this.camFollowTurnBlend,
     );
     this.camera.position.lerp(idealPos, cameraFollowGain(dt, tau));
+  }
+
+  /** Keep a just-teleported moon on the optical axis while the ship flies the
+   *  existing offset collision-safe course. A sphere centred on a perspective
+   *  camera has a circular silhouette; easing the target back toward the ship
+   *  only after the moon has receded to its small arrival size makes the handoff
+   *  unobtrusive. Runs after OrbitControls + camera safety, before projection. */
+  private updateMoonArrivalCameraLook(): void {
+    const look = this.moonArrivalCameraLook;
+    if (!look || this.landedOn || this.devFreeCamera || this.userOrbiting) return;
+
+    const moon = this.planetMoons
+      .get(look.parentPlanet)
+      ?.find((candidate) => candidate.data.name === look.name);
+    if (!moon?.mesh.visible) return;
+
+    moon.mesh.getWorldPosition(this.tmpMoonArrivalLook);
+    const distanceAU = this.tmpMoonArrivalLook.distanceTo(this.camera.position);
+    if (distanceAU < look.arrivalDistanceAU * 0.98) look.approached = true;
+    if (
+      look.approached &&
+      distanceAU > look.previousDistanceAU * 1.0001
+    ) {
+      look.receding = true;
+    }
+    look.previousDistanceAU = distanceAU;
+
+    const weight = moonArrivalCameraLookWeight(
+      distanceAU,
+      look.arrivalDistanceAU,
+      look.receding,
+    );
+    if (weight <= 0) {
+      this.moonArrivalCameraLook = null;
+      return;
+    }
+
+    // The ship is scene origin under floating-origin rendering. Interpolating
+    // moon→origin gives a smooth receding handoff without moving the chase rig.
+    this.tmpMoonArrivalLook.multiplyScalar(weight);
+    this.camera.lookAt(this.tmpMoonArrivalLook);
   }
 
   /**
@@ -2451,6 +2507,10 @@ export class PlanetariumMode {
     if (this.touchThrottle !== 0) throttle = this.touchThrottle;
 
     const hasManualInput = yaw !== 0 || pitch !== 0 || throttle !== 0;
+
+    // The arrival look is cinematic assistance, never a control lock. Any
+    // explicit flight input hands the camera straight back to the pilot.
+    if (hasManualInput) this.moonArrivalCameraLook = null;
 
     // Flying immediately resumes the chase camera — don't make the user wait out
     // the post-drag look-around grace period when they start steering/throttling.
@@ -3715,11 +3775,6 @@ export class PlanetariumMode {
     document.getElementById('planetarium-help-close')?.addEventListener('click', () => this.hideHelp());
     document.querySelector('#planetarium-help .planetarium-help-backdrop')?.addEventListener('click', () => this.hideHelp());
 
-    // "How many fit?" entries: the help-modal row and the Tools popover row commit
-    // through requestVolumeCompare (a no-op during the tutorial; it closes every
-    // entry surface first).
-    document.getElementById('help-volume-compare')?.addEventListener('click', () => this.requestVolumeCompare());
-
     // Tools front door: the cluster button toggles the anchored popover. The
     // full-screen catcher (Look-at idiom) closes on an outside click; because it
     // sits above the cluster, a second button click lands on the catcher and
@@ -3805,6 +3860,15 @@ export class PlanetariumMode {
       this.applyBodyLabelVisibility();
       const label = document.getElementById('settings-labels-label');
       if (label) label.textContent = this.showBodyLabels ? 'On' : 'Off';
+    });
+
+    const labelDistancesToggle = document.getElementById('settings-label-distances-toggle');
+    labelDistancesToggle?.addEventListener('click', () => {
+      this.showBodyLabelDistances = !this.showBodyLabelDistances;
+      this.applyBodyLabelVisibility();
+      const label = document.getElementById('settings-label-distances-label');
+      if (label) label.textContent = this.showBodyLabelDistances ? 'On' : 'Off';
+      labelDistancesToggle.setAttribute('aria-pressed', String(this.showBodyLabelDistances));
     });
 
     document.getElementById('settings-markers-toggle')?.addEventListener('click', () => {
@@ -4195,6 +4259,7 @@ export class PlanetariumMode {
    *  the labels defers to surface view, which owns its own label hiding. */
   private applyBodyLabelVisibility() {
     this.setWorldLabelsVisible(this.showBodyLabels);
+    this.planetLabels?.setDistancesVisible(this.showBodyLabelDistances);
     if (!this.showBodyLabels && !this.showBodyMarkers) {
       this.planetLabels?.hideAll();
     } else if (!this.showBodyMarkers) {
@@ -4885,6 +4950,18 @@ export class PlanetariumMode {
     const destination = this.getMoonJumpDestination(moon);
     if (!destination) return;
     this.applyJumpDestination(destination, moon.name, options.notify !== false);
+    this.tmpMoonArrivalLook
+      .copy(destination.bodyPosition)
+      .sub(destination.position);
+    const arrivalDistanceAU = this.tmpMoonArrivalLook.distanceTo(this.camera.position);
+    this.moonArrivalCameraLook = {
+      name: moon.name,
+      parentPlanet: moon.parentPlanet,
+      arrivalDistanceAU,
+      previousDistanceAU: arrivalDistanceAU,
+      approached: false,
+      receding: false,
+    };
     // Seed the governor before the first frame: in a cold system the mesh is
     // still unpainted behind the arrival veil, invisible to the
     // visibility-keyed governed set, and one ungoverned 100 ms frame at the
@@ -4897,6 +4974,7 @@ export class PlanetariumMode {
     bodyName: string,
     notify: boolean,
   ) {
+    this.moonArrivalCameraLook = null;
     // A jump supersedes the pilot. Autopilot re-aims at its own target every
     // frame, so an engaged pilot surviving the teleport snaps the heading back
     // to the OLD destination one frame after the pose below — you arrive at a
@@ -4959,8 +5037,9 @@ export class PlanetariumMode {
     const offset = this.getMoonWorldOffsetAU(moon, parentBody, new THREE.Vector3());
     const parentCollision = this.getPlanetCollisionRadius(parentBody.name, parentBody.radiusAU, this.planetScale);
     const ring = RING_CONFIGS[parentBody.name];
+    const bodyPosition = offset.clone().add(parentPos);
     const pose = moonArrivalPose({
-      moonPos: offset.clone().add(parentPos),
+      moonPos: bodyPosition,
       parentPos,
       orbitR: offset.length(),
       renderedR: Math.max(moon.radiusAU, parentBody.radiusAU * PlanetariumMode.MOON_MIN_RENDER_RATIO),
@@ -4974,7 +5053,7 @@ export class PlanetariumMode {
       camDist: CRUISE_CAM_DIST_AU,
       shipClearance: SHIP_CLEARANCE_AU,
     });
-    return { position: pose.position, lookTarget: pose.aimPoint };
+    return { position: pose.position, lookTarget: pose.aimPoint, bodyPosition };
   }
 
   /**
@@ -6785,6 +6864,7 @@ export class PlanetariumMode {
    * ceremony (no speed restore, no "Departing" toast, take-off state intact).
    */
   private applyLandedTarget(target: NonNullable<LandedTarget>, preserveOrbitPair = false) {
+    this.moonArrivalCameraLook = null;
     // Every landing path funnels through here (enterLandedMode, restoreState,
     // the Observatory menu's landed→landed re-land) — clearing the vantage
     // pair here, not per call site, is what keeps a stale pair from
@@ -7554,6 +7634,7 @@ export class PlanetariumMode {
       showShip: this.showShip,
       showConstellations: this.showConstellations,
       showBodyLabels: this.showBodyLabels,
+      showBodyLabelDistances: this.showBodyLabelDistances,
       showBodyMarkers: this.showBodyMarkers,
       showOrbitLines: this.showOrbitLines,
       landedOn: this.landedOn,
@@ -7569,6 +7650,7 @@ export class PlanetariumMode {
   }
 
   private restoreState(saved: PlanetariumState) {
+    this.moonArrivalCameraLook = null;
     this.player.posX = saved.positionAU.x;
     this.player.posY = saved.positionAU.y;
     this.player.posZ = saved.positionAU.z;
@@ -7608,10 +7690,15 @@ export class PlanetariumMode {
     const constLabel = document.getElementById('settings-constellations-label');
     if (constLabel) constLabel.textContent = this.showConstellations ? 'On' : 'Off';
     this.showBodyLabels = saved.showBodyLabels ?? true;
+    this.showBodyLabelDistances = saved.showBodyLabelDistances ?? true;
     this.showBodyMarkers = saved.showBodyMarkers ?? true;
     this.applyBodyLabelVisibility();
     const labelsLabel = document.getElementById('settings-labels-label');
     if (labelsLabel) labelsLabel.textContent = this.showBodyLabels ? 'On' : 'Off';
+    const labelDistancesLabel = document.getElementById('settings-label-distances-label');
+    if (labelDistancesLabel) labelDistancesLabel.textContent = this.showBodyLabelDistances ? 'On' : 'Off';
+    document.getElementById('settings-label-distances-toggle')
+      ?.setAttribute('aria-pressed', String(this.showBodyLabelDistances));
     const markersLabel = document.getElementById('settings-markers-label');
     if (markersLabel) markersLabel.textContent = this.showBodyMarkers ? 'On' : 'Off';
     this.showOrbitLines = saved.showOrbitLines ?? false;

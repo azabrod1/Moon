@@ -111,6 +111,12 @@ import {
 import { DEG2RAD } from '../shared/math/angles';
 import { landedFrameCamDistAU, landedMinDistanceAU, LANDED_NEAR_AU } from './landedView';
 import {
+  MOON_RENDER_ANCHOR_RATIO,
+  MOON_RENDER_ANCHOR_RATIO_OBSERVING,
+  MOON_RENDER_GAMMA,
+  renderedMoonRadiusAU,
+} from './moonRenderSize';
+import {
   SHIP_CLEARANCE_AU,
   CRUISE_CAM_DIST_AU,
   SHIP_OCCLUDER_RADIUS_AU,
@@ -257,16 +263,10 @@ export class PlanetariumMode {
   // floor) lives in cruiseView.ts as one derived chain.
   private static readonly UI_REFRESH_INTERVAL_S = 1 / 8;
   private static readonly SCENE_NORTH = new THREE.Vector3(0, 1, 0);
-  /** A moon's mesh never renders below this fraction of its parent's radius, so
-   *  tiny moons stay visible; the landed camera frames off the same inflated size.
-   *  This is the flythrough/default floor — see moonRenderFloorRatio for how it
-   *  lowers while observing a planet. */
-  private static readonly MOON_MIN_RENDER_RATIO = 0.05;
-  /** Lower floor used only while observing a planet: the moons shrink toward
-   *  their true relative sizes so the system reads honestly instead of every
-   *  moon pinning to one size. At ~2.5% the big moons (Galileans, Titan, the
-   *  Uranian majors) separate by true size while genuine specks stay visible. */
-  private static readonly OBSERVE_PLANET_MOON_FLOOR = 0.025;
+  // Moon rendered sizes (anchor ratios + γ curve) live in moonRenderSize.ts
+  // as the single sizing policy; the state-dependent anchor pick is
+  // moonRenderAnchorRatio, and every controller consumer resolves through
+  // renderedMoonSizeAU so the dev γ override reaches all of them.
   /** Ecliptic north in the scene's equatorial frame (tidal-lock roll reference for Earth's Moon). */
   private static readonly ECLIPTIC_NORTH = eclipticToEquatorial(new THREE.Vector3(0, 1, 0));
   private static readonly EARTH_DETAIL_MIN_DISTANCE_AU = 0.03;
@@ -1528,7 +1528,9 @@ export class PlanetariumMode {
         if (!m.mesh.visible) continue;
         m.mesh.getWorldPosition(this.texLODTmp);
         const dist = Math.max(this.texLODTmp.distanceTo(cam), 1e-6);
-        if ((m.data.radiusAU * 2) / dist / fovRad > UPGRADE_AT) upgradeTextureOnApproach(up);
+        // Rendered size (mesh scale carries the render-curve inflation): the
+        // trigger must measure the disc actually on screen.
+        if ((m.data.radiusAU * m.mesh.scale.x * 2) / dist / fovRad > UPGRADE_AT) upgradeTextureOnApproach(up);
       }
     }
   }
@@ -1719,10 +1721,12 @@ export class PlanetariumMode {
 
   /**
    * Rendered radius (AU) of the landed body as drawn in orbit view: planets at
-   * true size, small moons inflated to a floor fraction of their parent (the
-   * same scaling updateMoonPositions applies so they stay visible). The landed
-   * camera frames off this, so a tiny moon's inflated mesh fills the view like
-   * any other body and the camera never seats itself inside the mesh.
+   * true size, small moons inflated through the render curve (the same sizing
+   * updateMoonPositions applies, so they stay visible). The landed camera
+   * frames off this, so a small moon's inflated mesh fills the view like any
+   * other body and the camera never seats itself inside the mesh. Uses the
+   * flythrough anchor deliberately, not the state selector: the framing target
+   * must stay stable while surface view (anchor 0) is active.
    */
   private getLandedBodyRenderedRadiusAU(): number {
     const trueRadiusAU = this.getLandedBodyRadiusAU();
@@ -1730,36 +1734,49 @@ export class PlanetariumMode {
     const parentName = this.landedOn.parentPlanet;
     const parent = PLANETARIUM_BODIES.find(b => b.name === parentName);
     if (!parent) return trueRadiusAU;
-    return Math.max(trueRadiusAU, PlanetariumMode.MOON_MIN_RENDER_RATIO * parent.radiusAU);
+    return this.renderedMoonSizeAU(trueRadiusAU, parent.radiusAU, MOON_RENDER_ANCHOR_RATIO);
   }
 
   /**
-   * Rendered-size floor (fraction of the parent's radius) for a moon in
-   * `parentName`'s system, given the current landed/view state. The floor
-   * inflates moons too small to see — most are a sliver of their giant parent,
-   * so without it they'd be sub-pixel — but the level depends on what you're
-   * looking at:
-   *  - Flying, or any system you're not landed in: the full flythrough floor, so
-   *    every moon stays a findable speck as you pass.
-   *  - Observing the parent PLANET: a smaller floor, so the moons shrink toward
-   *    their true relative sizes (the big ones separate instead of all pinning
-   *    to one size) — you're focused on the planet and the system should read
-   *    honestly.
-   *  - Observing a MOON: the flythrough floor (unchanged), so the siblings stay
-   *    findable around the one being inspected.
-   *  - Surface view: no floor — true angular sizes, a moon crossing the Sun must
-   *    be its real size.
-   * The floor only ever changes across a landing/leave/swap/surface transition,
-   * each of which reframes the camera, so the resize is never seen in-place.
+   * Anchor ratio (fraction of the parent's radius) for rendered moon sizes in
+   * `parentName`'s system, given the current landed/view state. Moons below
+   * the anchor inflate toward it on the moonRenderSize curve — most are a
+   * sliver of their giant parent and would be sub-pixel at true scale — and
+   * the anchor depends on what you're looking at:
+   *  - Flying, or any system you're not landed in: the full flythrough anchor,
+   *    so every moon stays a findable speck as you pass.
+   *  - Observing the parent PLANET: a smaller anchor — you're focused on the
+   *    system, and it should read closer to honest relative sizes.
+   *  - Observing a MOON: the flythrough anchor (unchanged), so the siblings
+   *    stay findable around the one being inspected.
+   *  - Surface view: no inflation — true angular sizes, a moon crossing the
+   *    Sun must be its real size.
+   * The anchor only ever changes across a landing/leave/swap/surface
+   * transition, each of which reframes the camera in the same frame, so the
+   * resize always lands inside a hard cut.
    * Centralised so the drawn mesh and the label-occlusion discs stay in sync.
    */
-  private moonRenderFloorRatio(parentName: string): number {
+  private moonRenderAnchorRatio(parentName: string): number {
     if (parentName !== this.observatoryParentPlanetName()) {
-      return PlanetariumMode.MOON_MIN_RENDER_RATIO; // flythrough / other systems
+      return MOON_RENDER_ANCHOR_RATIO; // flythrough / other systems
     }
     if (this.landedView === 'surface') return 0; // true angular sizes
-    if (this.landedOn?.type === 'planet') return PlanetariumMode.OBSERVE_PLANET_MOON_FLOOR;
-    return PlanetariumMode.MOON_MIN_RENDER_RATIO; // observing a moon: unchanged
+    if (this.landedOn?.type === 'planet') return MOON_RENDER_ANCHOR_RATIO_OBSERVING;
+    return MOON_RENDER_ANCHOR_RATIO; // observing a moon: unchanged
+  }
+
+  /** Dev-bridge γ override for live curve tuning; null = the shipped constant. */
+  private devMoonGamma: number | null = null;
+
+  /** Every controller consumer of a rendered moon size resolves through here,
+   *  so the dev γ override reaches the mesh, labels, framing, and arrivals
+   *  alike (meshes re-scale on the next updateMoonPositions pass). */
+  private renderedMoonSizeAU(trueRadiusAU: number, parentRadiusAU: number, anchorRatio: number): number {
+    return renderedMoonRadiusAU(trueRadiusAU, parentRadiusAU, anchorRatio, this.devMoonGamma ?? MOON_RENDER_GAMMA);
+  }
+
+  devSetMoonSizeGamma(gamma: number | null): void {
+    this.devMoonGamma = gamma;
   }
 
   /**
@@ -2031,18 +2048,15 @@ export class PlanetariumMode {
           z: wp.z + offset.z,
         });
 
-        const realRatio = m.data.radiusAU / parentR;
-        // Inflate moons below the floor up to it; draw the rest true-size. The
-        // floor varies with what you're observing (see moonRenderFloorRatio):
-        // smaller when focused on the parent planet so the system reads honestly,
-        // none in surface view where angular sizes must be real (an Io silhouette
-        // on the Sun must be Io-sized).
-        const floor = this.moonRenderFloorRatio(planet.data.name);
-        if (realRatio < floor) {
-          m.mesh.scale.setScalar(floor / realRatio);
-        } else {
-          m.mesh.scale.setScalar(1);
-        }
+        // Rendered size: moons below the anchor inflate toward it on the
+        // compressive curve (size ordering survives — small moons no longer
+        // pin to one identical marble); the rest draw true-size. The anchor
+        // varies with what you're observing (see moonRenderAnchorRatio):
+        // smaller when focused on the parent planet, none in surface view
+        // where angular sizes must be real (an Io silhouette on the Sun must
+        // be Io-sized).
+        const anchor = this.moonRenderAnchorRatio(planet.data.name);
+        m.mesh.scale.setScalar(this.renderedMoonSizeAU(m.data.radiusAU, parentR, anchor) / m.data.radiusAU);
 
         // Feed this moon as a shadow caster on the parent: one of the largest
         // few, and only if its umbra actually reaches the surface (mr > along*tan).
@@ -2245,9 +2259,9 @@ export class PlanetariumMode {
         const dy = tempV.y - camY;
         const dz = tempV.z - camZ;
         const distFromCamera = Math.sqrt(dx * dx + dy * dy + dz * dz);
-        // Effective rendered radius: small moons are scaled up to the same floor
-        // the mesh uses, so the occlusion disc matches what's actually drawn.
-        const effectiveRadiusAU = Math.max(m.data.radiusAU, this.moonRenderFloorRatio(planet.data.name) * parentR);
+        // Effective rendered radius: the same curve the mesh uses, so the
+        // occlusion disc matches what's actually drawn.
+        const effectiveRadiusAU = this.renderedMoonSizeAU(m.data.radiusAU, parentR, this.moonRenderAnchorRatio(planet.data.name));
         const angularSize = (effectiveRadiusAU * 2) / Math.max(distFromCamera, 0.0001);
         if (angularSize <= 0.01) continue;
 
@@ -2322,11 +2336,12 @@ export class PlanetariumMode {
           continue;
         }
 
-        // Rendered disc radius: small moons scale up to the mesh floor, padded
-        // so the anchor clears the limb instead of riding on the moon's face.
-        const effRadiusAU = Math.max(
+        // Rendered disc radius: the same curve the mesh uses, padded so the
+        // label anchor clears the limb instead of riding on the moon's face.
+        const effRadiusAU = this.renderedMoonSizeAU(
           m.data.radiusAU,
-          this.moonRenderFloorRatio(planet.data.name) * planet.data.radiusAU,
+          planet.data.radiusAU,
+          this.moonRenderAnchorRatio(planet.data.name),
         );
         const radiusPx = discRadiusPx(effRadiusAU, moonCamDist, halfFovTan, canvasH) * 1.1;
 
@@ -4601,7 +4616,8 @@ export class PlanetariumMode {
    *  positions refresh each frame in updateMoonPositions) plus the jump
    *  seed, whose position resolves live from the parent + ephemeris offset
    *  while its mesh is still veiled. Rendered radii come from the live mesh
-   *  scale (the 5%-of-parent floor), i.e. the sphere you actually see.
+   *  scale (true size, or the render curve's size below the anchor), i.e.
+   *  the sphere you actually see.
    *  Staleness: ship collision and the governor read this BEFORE the frame's
    *  refresh — one frame behind, fine at real cruise speeds but a different
    *  orbital epoch at the top time rates (1 yr/s moves a moon 36 simulated
@@ -4630,7 +4646,9 @@ export class PlanetariumMode {
       parentPos.x + offset.x,
       parentPos.y + offset.y,
       parentPos.z + offset.z,
-      Math.max(moon.radiusAU, parent.radiusAU * PlanetariumMode.MOON_MIN_RENDER_RATIO),
+      // Flythrough anchor deliberately, not the state selector: jump seeds
+      // only exist in cruise, where the flythrough anchor is the live one.
+      this.renderedMoonSizeAU(moon.radiusAU, parent.radiusAU, MOON_RENDER_ANCHOR_RATIO),
     );
   }
 
@@ -4978,8 +4996,8 @@ export class PlanetariumMode {
    * parent's world position plus the ephemeris offset — never from
    * `moonWorldPositions`, which is only written for visible painted moons and
    * silently falls back to the parent across the rest of the catalog. The
-   * rendered size comes from the catalog plus the 5%-of-parent mesh floor,
-   * not the live mesh (scale is still 1 in never-visited systems). The pose
+   * rendered size comes from the catalog through the render curve, not the
+   * live mesh (scale is still 1 in never-visited systems). The pose
    * math itself — apparent-size standoff, sun-side/outward placement, flyby
    * aim — lives in arrivalLogic.moonArrivalPose (pure, catalog-swept in its
    * tests); the lookTarget is the flyby aim point, not the moon's center.
@@ -4997,7 +5015,9 @@ export class PlanetariumMode {
       moonPos: bodyPosition,
       parentPos,
       orbitR: offset.length(),
-      renderedR: Math.max(moon.radiusAU, parentBody.radiusAU * PlanetariumMode.MOON_MIN_RENDER_RATIO),
+      // Flythrough anchor deliberately: jumps commit from cruise, where the
+      // flythrough anchor is the size the arriving player will see.
+      renderedR: this.renderedMoonSizeAU(moon.radiusAU, parentBody.radiusAU, MOON_RENDER_ANCHOR_RATIO),
       parentCollision,
       // Rings render as a flat disc, but a spherical clearance is simpler and
       // never lets an arrival pop in among the ring particles.

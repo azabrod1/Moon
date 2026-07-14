@@ -383,6 +383,7 @@ function installDevHooks() {
     traceStart: (name: string, maxFrames?: number) =>
       planetariumMode?.devTraceStart(name, maxFrames) ?? false,
     traceStop: () => planetariumMode?.devTraceStop() ?? null,
+    setMoonSizeGamma: (gamma: number | null) => planetariumMode?.devSetMoonSizeGamma(gamma),
     tutorialStart: () => planetariumMode?.devTutorialStart() ?? false,
     tutorialNext: () => planetariumMode?.devTutorialNext(),
     tutorialBack: () => planetariumMode?.devTutorialBack(),

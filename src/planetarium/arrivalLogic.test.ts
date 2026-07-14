@@ -27,11 +27,12 @@ import { DEG2RAD, RAD2DEG } from '../shared/math/angles';
 // The REAL rig constants — this sweep must see exactly the rig the app
 // flies (mirrored copies here once meant a rig change couldn't fail a test).
 import { SHIP_CLEARANCE_AU, CRUISE_CAM_DIST_AU as CAM_DIST_AU } from './cruiseView';
+// Same rule for rendered sizes: the sweep derives them from the production
+// curve, so a sizing change re-exercises every pose invariant automatically.
+import { MOON_RENDER_ANCHOR_RATIO, renderedMoonRadiusAU } from './moonRenderSize';
 
 const K = MOON_APPROACH_K_PER_S;
 const VMIN = BODY_APPROACH_V_MIN_AU_S;
-
-const MESH_FLOOR_RATIO = 0.05;
 
 /** Real-catalog inputs for one moon, posed at `angleRad` around its parent
  *  (parent placed on the +X axis at its semi-major axis; Sun at origin —
@@ -50,7 +51,7 @@ function catalogInputs(moonName: string, angleRad = 0.7): MoonArrivalInputs {
     moonPos: offset.clone().add(parentPos),
     parentPos,
     orbitR: moon.orbitalRadiusAU,
-    renderedR: Math.max(moon.radiusAU, parent.radiusAU * MESH_FLOOR_RATIO),
+    renderedR: renderedMoonRadiusAU(moon.radiusAU, parent.radiusAU, MOON_RENDER_ANCHOR_RATIO),
     parentCollision,
     parentClearance: parentCollision * 1.25, // ring factor varies; the sweep uses the base
     camDist: CAM_DIST_AU,

@@ -225,7 +225,8 @@ export interface MoonArrivalInputs {
   moonPos: THREE.Vector3;
   parentPos: THREE.Vector3;
   orbitR: number;
-  /** Mesh radius: catalog radius under the 5%-of-parent render floor. */
+  /** Mesh radius as drawn: true radius, or the moonRenderSize curve's
+   *  inflated size for moons below the render anchor. */
   renderedR: number;
   /** Hard planet collision radius (no rings). */
   parentCollision: number;

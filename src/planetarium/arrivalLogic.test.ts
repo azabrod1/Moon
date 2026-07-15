@@ -2,10 +2,14 @@ import { describe, expect, it } from 'vitest';
 import * as THREE from 'three';
 import {
   advanceBodyCap,
+  autopilotAimBlend,
+  autopilotArrived,
+  autopilotGlideCap,
   governedSpeedCap,
   initialBodyCapState,
   moonArrivalCameraLookWeight,
   moonArrivalPose,
+  moonArrivalStandoffAU,
   moonCollisionRadius,
   rampedSpeedCap,
   BODY_APPROACH_V_MIN_AU_S,
@@ -472,5 +476,90 @@ describe('moonArrivalPose — catalog sweep (all moons, three orbit phases)', ()
     // Parent dead ahead past the moon: the aim still exists, is finite, and
     // still misses the moon itself (the parent pushback owns what's beyond).
     expect(pose.aimPoint.distanceTo(moonPos)).toBeGreaterThan(0);
+  });
+});
+
+describe('moonArrivalStandoffAU — the pose distance, extracted', () => {
+  it('equals |pose.position − moonPos| across the whole catalog and three phases', () => {
+    // By construction: the pose parks the ship exactly one standoff from the
+    // moon (sun-side or the outward-radial fallback, both unit offsets), so the
+    // extracted distance must reproduce the pose geometry moon-for-moon.
+    for (const moon of MOONS) {
+      for (const angle of [0.7, 2.4, 4.1]) {
+        const inp = catalogInputs(moon.name, angle);
+        const pose = moonArrivalPose(inp);
+        expect(moonArrivalStandoffAU(inp), `${moon.name} @ ${angle}`).toBeCloseTo(
+          pose.position.distanceTo(inp.moonPos),
+          12,
+        );
+      }
+    }
+  });
+});
+
+describe('autopilotGlideCap', () => {
+  const S = 1e-4;
+
+  it('is zero at the standoff and inside it — the cruise comes to rest there', () => {
+    expect(autopilotGlideCap(S, S)).toBe(0);
+    expect(autopilotGlideCap(S * 0.5, S)).toBe(0);
+    expect(autopilotGlideCap(0, S)).toBe(0);
+  });
+
+  it('is K × the distance past the standoff, not the surface', () => {
+    expect(autopilotGlideCap(3 * S, S)).toBeCloseTo(K * 2 * S, 15);
+  });
+
+  it('is continuous and monotonically slower closing in', () => {
+    let prev = Infinity;
+    for (const d of [10 * S, 4 * S, 2 * S, 1.2 * S, 1.01 * S]) {
+      const cap = autopilotGlideCap(d, S);
+      expect(cap).toBeLessThan(prev);
+      expect(cap).toBeGreaterThan(0);
+      prev = cap;
+    }
+  });
+});
+
+describe('autopilotAimBlend', () => {
+  const S = 1e-4;
+
+  it('holds the center outside three standoffs, aims past the limb at one', () => {
+    expect(autopilotAimBlend(3 * S, S)).toBe(0);
+    expect(autopilotAimBlend(4 * S, S)).toBe(0);
+    expect(autopilotAimBlend(S, S)).toBe(1);
+    expect(autopilotAimBlend(S * 0.5, S)).toBe(1);
+  });
+
+  it('ramps smoothly and monotonically as the ship closes', () => {
+    expect(autopilotAimBlend(2 * S, S)).toBeCloseTo(0.5, 12); // smoothstep midpoint
+    let prev = -1;
+    for (const d of [3 * S, 2.5 * S, 2 * S, 1.5 * S, 1.1 * S, S]) {
+      const blend = autopilotAimBlend(d, S);
+      expect(blend).toBeGreaterThanOrEqual(prev);
+      prev = blend;
+    }
+    expect(prev).toBe(1);
+  });
+
+  it('a degenerate zero standoff never divides by zero', () => {
+    expect(autopilotAimBlend(1, 0)).toBe(0);
+  });
+});
+
+describe('autopilotArrived', () => {
+  const S = 1e-4;
+
+  it('latches within the 5% margin, not before', () => {
+    expect(autopilotArrived(S, S)).toBe(true);
+    expect(autopilotArrived(1.05 * S, S)).toBe(true);
+    expect(autopilotArrived(1.06 * S, S)).toBe(false);
+    expect(autopilotArrived(2 * S, S)).toBe(false);
+  });
+
+  it('the glide cap is still positive at the arrival margin, so the ship reaches it', () => {
+    // A parked stop needs a nonzero closing speed at the trigger distance;
+    // exactly at the standoff the cap is zero, so arrival must trigger above it.
+    expect(autopilotGlideCap(1.05 * S, S)).toBeGreaterThan(0);
   });
 });

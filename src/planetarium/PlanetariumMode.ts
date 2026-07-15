@@ -155,10 +155,14 @@ import { RING_CONFIGS } from './planets/rings';
 import { filterDeckRows, groupDeckBodies, observeArrivalAction, type DeckRow } from './deckLogic';
 import {
   advanceBodyCap,
+  autopilotAimBlend,
+  autopilotArrived,
+  autopilotGlideCap,
   governedSpeedCap,
   initialBodyCapState,
   moonArrivalCameraLookWeight,
   moonArrivalPose,
+  moonArrivalStandoffAU,
   moonCollisionRadius,
   BODY_APPROACH_V_MIN_AU_S,
   BODY_CAP_CLEAR_HOLD_S,
@@ -169,6 +173,7 @@ import {
   PLANET_CAP_RELEASE_EFOLD_S,
   SUN_APPROACH_SURFACE_RADII,
   type BodyCapState,
+  type MoonArrivalInputs,
 } from './arrivalLogic';
 import {
   canStartTutorial,
@@ -451,6 +456,19 @@ export class PlanetariumMode {
     receding: boolean;
   } | null = null;
   private tmpMoonArrivalLook = new THREE.Vector3();
+  /** Reused arrival-pose inputs for the engaged moon autopilot: refilled from
+   *  live positions/scale each frame (resolveAutopilotMoonInputs) so the glide
+   *  cap, aim blend, and arrival test allocate nothing in steady flight. */
+  private tmpAutopilotInputs: MoonArrivalInputs = {
+    moonPos: new THREE.Vector3(),
+    parentPos: new THREE.Vector3(),
+    orbitR: 0,
+    renderedR: 0,
+    parentCollision: 0,
+    parentClearance: 0,
+    camDist: CRUISE_CAM_DIST_AU,
+    shipClearance: SHIP_CLEARANCE_AU,
+  };
   /** Body-proximity governor state: the eased candidate/applied cap plus the
    *  engaged latch and its clear-hold (see arrivalLogic.advanceBodyCap).
    *  Reset to initialBodyCapState() on every flight discontinuity — jump,
@@ -1369,6 +1387,23 @@ export class PlanetariumMode {
       dt,
     );
     this.player.speedCapAUPerS = this.bodyCap.applied;
+
+    // Autopilot glide: bring the cruise to rest at the arrival standoff, not
+    // the collision shell, by capping closing speed at K × distance-past-the-
+    // standoff. Applied AFTER the governor's own cap and OUTSIDE the override
+    // latch (a plain min on the effective speed) — the pilot's contract is that
+    // you leave the glide by disengaging, never by out-throttling it.
+    if (this.autopilot && this.autopilotTarget) {
+      const inp = this.resolveAutopilotMoonInputs(this.autopilotTarget);
+      if (inp) {
+        const dx = inp.moonPos.x - this.player.posX;
+        const dy = inp.moonPos.y - this.player.posY;
+        const dz = inp.moonPos.z - this.player.posZ;
+        const dist = Math.sqrt(dx * dx + dy * dy + dz * dz);
+        const glide = autopilotGlideCap(dist, moonArrivalStandoffAU(inp));
+        if (glide < this.player.speedCapAUPerS) this.player.speedCapAUPerS = glide;
+      }
+    }
 
     if (!isScriptedTransfer) {
       this.prevPlayerPos.set(this.player.posX, this.player.posY, this.player.posZ);
@@ -7972,10 +8007,77 @@ export class PlanetariumMode {
       ?? null;
   }
 
+  /**
+   * Refill `tmpAutopilotInputs` from the engaged autopilot moon's LIVE mesh
+   * position and rendered scale, returning it — or null when the moon is not
+   * independently resolvable this frame. "Resolvable" means its own world
+   * position is in `moonWorldPositions` (written only for a shown moon, and
+   * where `getTargetWorldPosition` would otherwise fall back to the parent) and
+   * its painted, visible mesh is present. The postcard standoff is meaningless
+   * against the parent fallback, so those frames keep the legacy behavior.
+   * Zero allocation: the temp and its vectors are reused.
+   */
+  private resolveAutopilotMoonInputs(
+    target: NonNullable<LandedTarget>,
+  ): MoonArrivalInputs | null {
+    if (target.type !== 'moon') return null;
+    const wp = this.moonWorldPositions.get(target.name);
+    if (!wp) return null;
+    const parentPos = this.planetWorldPositions.get(target.parentPlanet);
+    if (!parentPos) return null;
+    const parentBody = PLANETARIUM_BODIES.find((b) => b.name === target.parentPlanet);
+    if (!parentBody) return null;
+    const mesh = this.planetMoons.get(target.parentPlanet)?.find((m) => m.data.name === target.name);
+    if (!mesh || !mesh.painted || !mesh.mesh.visible) return null;
+
+    const inp = this.tmpAutopilotInputs;
+    inp.moonPos.set(wp.x, wp.y, wp.z);
+    inp.parentPos.set(parentPos.x, parentPos.y, parentPos.z);
+    inp.orbitR = inp.moonPos.distanceTo(inp.parentPos);
+    // Live rendered radius (true size, or the render curve's size below the
+    // anchor) — the sphere the arriving player actually sees, same as the
+    // governor uses in forEachGovernedMoon.
+    inp.renderedR = mesh.data.radiusAU * mesh.mesh.scale.x;
+    inp.parentCollision = this.getPlanetCollisionRadius(
+      parentBody.name,
+      parentBody.radiusAU,
+      this.planetScale,
+    );
+    const ring = RING_CONFIGS[parentBody.name];
+    inp.parentClearance = Math.max(
+      inp.parentCollision * 1.25,
+      ring ? parentBody.radiusAU * ring.outerFactor * 1.05 : 0,
+    );
+    // camDist / shipClearance are rig constants — set once at construction.
+    return inp;
+  }
+
   private applyAutopilot() {
     if (!this.autopilotTarget) return;
     const pos = this.getTargetWorldPosition(this.autopilotTarget);
     if (!pos) return;
+    // Near a resolvable moon, ease the heading from its center toward the flyby
+    // aim so the ship parks pre-aimed past the limb — the pose a Travel jump
+    // arrives in. The pose alloc is confined to the blend zone; outside it (or
+    // on the parent fallback) fly straight at the target.
+    const inp = this.resolveAutopilotMoonInputs(this.autopilotTarget);
+    if (inp) {
+      const standoff = moonArrivalStandoffAU(inp);
+      const dx = inp.moonPos.x - this.player.posX;
+      const dy = inp.moonPos.y - this.player.posY;
+      const dz = inp.moonPos.z - this.player.posZ;
+      const dist = Math.sqrt(dx * dx + dy * dy + dz * dz);
+      if (dist < 3 * standoff) {
+        const blend = autopilotAimBlend(dist, standoff);
+        const aim = moonArrivalPose(inp).aimPoint;
+        this.player.headToward(
+          inp.moonPos.x + (aim.x - inp.moonPos.x) * blend,
+          inp.moonPos.z + (aim.z - inp.moonPos.z) * blend,
+          inp.moonPos.y + (aim.y - inp.moonPos.y) * blend,
+        );
+        return;
+      }
+    }
     this.player.headToward(pos.x, pos.z, pos.y);
   }
 
@@ -8044,19 +8146,31 @@ export class PlanetariumMode {
     const dz = this.player.posZ - pos.z;
     const dist = Math.sqrt(dx * dx + dy * dy + dz * dz);
 
-    let threshold: number;
+    let arrived: boolean;
     if (this.autopilotTarget.type === 'planet') {
       const body = PLANETARIUM_BODIES.find(b => b.name === this.autopilotTarget!.name);
-      threshold = body ? body.systemRadiusAU * 0.3 : 0.003;
+      arrived = dist < (body ? body.systemRadiusAU * 0.3 : 0.003);
     } else {
-      const moons = this.planetMoons.get(this.autopilotTarget.parentPlanet);
-      const moonMesh = moons?.find(m => m.data.name === this.autopilotTarget!.name);
-      threshold = moonMesh ? Math.max(moonMesh.data.radiusAU * 10, 0.0003) : 0.0003;
+      // Resolvable moon: the glide has eased the ship to rest at the postcard
+      // standoff (`pos` is the moon's own world position here, so `dist` is to
+      // its center). Otherwise fall back to the legacy surface-proximity
+      // threshold — the parent-fallback position has no meaningful standoff.
+      const inp = this.resolveAutopilotMoonInputs(this.autopilotTarget);
+      if (inp) {
+        arrived = autopilotArrived(dist, moonArrivalStandoffAU(inp));
+      } else {
+        const moons = this.planetMoons.get(this.autopilotTarget.parentPlanet);
+        const moonMesh = moons?.find(m => m.data.name === this.autopilotTarget!.name);
+        arrived = dist < (moonMesh ? Math.max(moonMesh.data.radiusAU * 10, 0.0003) : 0.0003);
+      }
     }
 
-    if (dist < threshold) {
+    if (arrived) {
       const name = this.autopilotTarget.name;
       this.disengageAutopilot();
+      // Park at the standoff so the ship rests on the postcard instead of
+      // drifting on into the surface; throttle-up (reviveParkedShip) resumes.
+      this.player.moving = false;
       this.notification.show(`Arrived at ${bodyDisplayName(name)}`);
     }
   }

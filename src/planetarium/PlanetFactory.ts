@@ -19,6 +19,7 @@ import {
   sunGlareVertexShader,
   sunPhotosphereFragmentShader,
   sunPhotosphereVertexShader,
+  SUN_GLARE_EXTENT_SOLAR_RADII,
 } from '../shared/shaders/sun';
 import { debugWarn } from '../shared/debug';
 import { applyTextureDefaults, clampTier, resolveTextureUrl, type TextureTier, type MapKind } from './world/texturePolicy';
@@ -615,7 +616,9 @@ export function createPlanetariumSun(useBloom = true): THREE.Group {
   // HDR white-light photosphere. The shader's object-space granulation is
   // seamless at the poles and longitude wrap; exposure decides how much of
   // that detail survives when the camera points at the star.
-  const geo = new THREE.SphereGeometry(SUN_DATA.radiusAU, 64, 32);
+  // 128×64 segments: the cruise governor parks the camera at 1.2 photosphere
+  // radii, where a 64-segment silhouette shows visible polygon chords.
+  const geo = new THREE.SphereGeometry(SUN_DATA.radiusAU, 128, 64);
   const sunMat = new THREE.ShaderMaterial({
     uniforms: {
       time: { value: 0 },
@@ -630,7 +633,7 @@ export function createPlanetariumSun(useBloom = true): THREE.Group {
   // One analytic point-spread profile replaces two baked canvas gradients.
   // Its vertex shader billboards it; the controller supplies the visible
   // photosphere fraction so occultations affect glare and exposure together.
-  const glareExtent = 8;
+  const glareExtent = SUN_GLARE_EXTENT_SOLAR_RADII;
   const glareMat = new THREE.ShaderMaterial({
     uniforms: {
       uExtent: { value: glareExtent },
@@ -638,6 +641,9 @@ export function createPlanetariumSun(useBloom = true): THREE.Group {
       uGlareStrength: { value: useBloom ? 1.05 : 1.35 },
       uPointLike: { value: 0 },
       uCameraFx: { value: 0 },
+      uEclipseLike: { value: 0 },
+      uOccluderRadii: { value: 1 },
+      uExposureScale: { value: 1 },
       uMinHalfSizePx: { value: useBloom ? 18 : 22 },
       uViewportHeight: { value: Math.max(window.innerHeight, 1) },
     },
@@ -645,7 +651,10 @@ export function createPlanetariumSun(useBloom = true): THREE.Group {
     fragmentShader: sunGlareFragmentShader,
     transparent: true,
     depthWrite: false,
-    depthTest: true,
+    // Screen-space camera glare, not a scene object: it must not be z-cut by
+    // an occluding limb. Occultation energy arrives through uVisibleFraction,
+    // which the controller derives from the same bodies the depth test saw.
+    depthTest: false,
     blending: THREE.AdditiveBlending,
     premultipliedAlpha: true,
     side: THREE.DoubleSide,
@@ -656,6 +665,10 @@ export function createPlanetariumSun(useBloom = true): THREE.Group {
   );
   glare.name = 'Sun glare';
   glare.renderOrder = 8;
+  // The vertex shader's minimum-pixel boost renders far outside the geometry
+  // bounds in the outer system; default culling would pop the glint at the
+  // viewport edge. Behind-camera vertices still clip.
+  glare.frustumCulled = false;
   group.add(glare);
 
   const light = new THREE.PointLight(0xfff5e0, 3, 0, 0.3);

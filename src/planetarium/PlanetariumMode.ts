@@ -109,6 +109,7 @@ import {
   type SurfaceTargetChoice,
 } from './surfaceView';
 import { DEG2RAD } from '../shared/math/angles';
+import { SUN_GLARE_EXTENT_SOLAR_RADII } from '../shared/shaders/sun';
 import { landedFrameCamDistAU, landedMinDistanceAU, LANDED_NEAR_AU } from './landedView';
 import { circleOcclusionFraction, targetSunExposure } from './sunAppearance';
 import {
@@ -134,7 +135,7 @@ import { projectToScreen, type ScreenProjection } from '../shared/three/projectT
 import { setText } from '../shared/dom';
 import { Constellations } from './Constellations';
 import { getMoonsByPlanet, MOONS, type MoonData } from './planets/moonData';
-import { RING_CONFIGS } from './planets/rings';
+import { RING_CONFIGS, type RingStyle } from './planets/rings';
 import { filterDeckRows, groupDeckBodies, observeArrivalAction, type DeckRow } from './deckLogic';
 import {
   advanceBodyCap,
@@ -248,6 +249,16 @@ const OBSERVATORY_EVENT_LABELS: Record<EventType, string> = {
   'solar-eclipse': 'Solar Eclipse',
 };
 
+// Average sunlight fraction surviving a crossing of each ring system, for the
+// Sun-glare sightline: dense Saturn rings dim hard, the faint dust systems
+// barely register. Band structure/gaps are deliberately averaged out.
+const RING_GLARE_TRANSMISSION: Record<RingStyle, number> = {
+  saturn: 0.45,
+  uranus: 0.8,
+  jupiter: 0.93,
+  neptune: 0.9,
+};
+
 export interface PlanetariumActivationProgress {
   completedUnits: number;
   totalUnits: number;
@@ -357,7 +368,13 @@ export class PlanetariumMode {
   private tmpInvGroupQuat = new THREE.Quaternion();
   private tmpShadingParentPos = new THREE.Vector3();
   private sunExposure = 1;
+  /** Set by computeVisibleSunFraction: angular radius of the strongest solar
+   *  occluder this frame (scratch for the corona's eclipse-likeness gate). */
+  private sunDominantOccluderAngularRadius = 0;
+  private lastSunOccluderAngularRadius = 0;
   private tmpSunDirection = new THREE.Vector3();
+  private tmpRingNormal = new THREE.Vector3();
+  private tmpRingHit = new THREE.Vector3();
   private tmpSunCameraForward = new THREE.Vector3();
   private tmpSunScreen = new THREE.Vector3();
   private tmpSunOccluderPosition = new THREE.Vector3();
@@ -2440,7 +2457,12 @@ export class PlanetariumMode {
       .sub(this.camera.position);
     const sunDistance = toSun.length();
     if (!(sunDistance > SUN_DATA.radiusAU)) {
+      // Dev poses can put the camera inside the photosphere; ease the
+      // exposure back to neutral rather than freezing it mid-adaptation.
       if (glareMat) glareMat.uniforms.uVisibleFraction.value = 1;
+      const insideBlend = 1 - Math.exp(-Math.max(dt, 0) / 0.9);
+      this.sunExposure = THREE.MathUtils.lerp(this.sunExposure, 1, insideBlend);
+      this.renderer.toneMappingExposure = this.sunExposure;
       return;
     }
 
@@ -2455,7 +2477,7 @@ export class PlanetariumMode {
       const centreDistanceNdc = Math.hypot(this.tmpSunScreen.x, this.tmpSunScreen.y);
       const projectedRadiusNdc = Math.tan(solarAngularRadius)
         / Math.tan(THREE.MathUtils.degToRad(this.camera.fov * 0.5));
-      const glareExtent = (glareMat?.uniforms.uExtent?.value as number | undefined) ?? 8;
+      const glareExtent = SUN_GLARE_EXTENT_SOLAR_RADII;
       const viewportHeight = Math.max(this.renderer.domElement.clientHeight, 1);
       const solarRadiusPx = projectedRadiusNdc * viewportHeight * 0.5;
       if (glareMat) {
@@ -2469,6 +2491,7 @@ export class PlanetariumMode {
       // washing the edge before the photosphere itself enters the shot.
       if (centreDistanceNdc < 1.5 + projectedRadiusNdc * glareExtent) {
         visibleFraction = this.computeVisibleSunFraction(toSun, sunDistance, solarAngularRadius);
+        visibleFraction *= this.sunTransmissionThroughRings(toSun, sunDistance);
         targetExposure = targetSunExposure({
           projectedRadiusNdc,
           centerDistanceNdc: centreDistanceNdc,
@@ -2477,7 +2500,20 @@ export class PlanetariumMode {
       }
     }
 
-    if (glareMat) glareMat.uniforms.uVisibleFraction.value = visibleFraction;
+    if (glareMat) {
+      glareMat.uniforms.uVisibleFraction.value = visibleFraction;
+      // Corona gate: 1 when the strongest occluder is Sun-sized (a true
+      // eclipse), 0 when a whole planet fills the sky in front of the Sun.
+      // The occluder's size in solar radii also positions the shader's
+      // carve-out of the eclipsing disc.
+      const occluderAngularRadius = this.sunDominantOccluderAngularRadius;
+      const sunAngularRadius = Math.asin(THREE.MathUtils.clamp(SUN_DATA.radiusAU / sunDistance, 0, 0.999999));
+      const likeness = occluderAngularRadius > 0 ? sunAngularRadius / occluderAngularRadius : 0;
+      glareMat.uniforms.uEclipseLike.value = THREE.MathUtils.smoothstep(likeness, 0.35, 0.7);
+      glareMat.uniforms.uOccluderRadii.value = occluderAngularRadius > 0
+        ? THREE.MathUtils.clamp(occluderAngularRadius / sunAngularRadius, 0.5, 3)
+        : 1;
+    }
 
     // Eyes/cameras clamp down quickly on a bright source and recover more
     // slowly into darkness. Exponential smoothing is frame-rate independent.
@@ -2485,37 +2521,89 @@ export class PlanetariumMode {
     const blend = 1 - Math.exp(-Math.max(dt, 0) / tau);
     this.sunExposure = THREE.MathUtils.lerp(this.sunExposure, targetExposure, blend);
     this.renderer.toneMappingExposure = this.sunExposure;
+    if (glareMat) glareMat.uniforms.uExposureScale.value = Math.sqrt(this.sunExposure);
   }
 
-  /** Render-truth solar visibility from the angular overlap of drawn bodies. */
+  /** Render-truth solar visibility from the angular overlap of drawn bodies.
+   *  Occluders multiply as if independent: two bodies overlapping each other
+   *  on the disc double-count their shared area (true union math costs far
+   *  more than this is worth). The corona additionally needs a Sun-sized
+   *  dominant occluder, which keeps that overstatement from faking totality.
+   *  Side effect: `sunDominantOccluderAngularRadius` holds the angular radius
+   *  of the strongest occluder (0 when nothing occludes) — the corona gate
+   *  uses it to tell an eclipsing moon from a planet blotting out the sky. */
   private computeVisibleSunFraction(
     sunDirection: THREE.Vector3,
     sunDistance: number,
     sunAngularRadius: number,
   ): number {
     let visible = 1;
+    let maxOcclusion = 0;
+    this.sunDominantOccluderAngularRadius = 0;
 
     for (const planet of this.solarSystem?.planets ?? []) {
-      visible *= 1 - this.sunOcclusionByMesh(
+      const occlusion = this.sunOcclusionByMesh(
         planet.mesh,
         sunDirection,
         sunDistance,
         sunAngularRadius,
       );
+      if (occlusion > maxOcclusion) {
+        maxOcclusion = occlusion;
+        this.sunDominantOccluderAngularRadius = this.lastSunOccluderAngularRadius;
+      }
+      visible *= 1 - occlusion;
       if (visible < 1e-4) return 0;
     }
     for (const moons of this.planetMoons.values()) {
       for (const moon of moons) {
-        visible *= 1 - this.sunOcclusionByMesh(
+        const occlusion = this.sunOcclusionByMesh(
           moon.mesh,
           sunDirection,
           sunDistance,
           sunAngularRadius,
         );
+        if (occlusion > maxOcclusion) {
+          maxOcclusion = occlusion;
+          this.sunDominantOccluderAngularRadius = this.lastSunOccluderAngularRadius;
+        }
+        visible *= 1 - occlusion;
         if (visible < 1e-4) return 0;
       }
     }
     return THREE.MathUtils.clamp(visible, 0, 1);
+  }
+
+  /** Fraction of sunlight that survives ring crossings on the camera→Sun
+   *  sightline (1 = clear). Rings have no collision or depth presence for the
+   *  screen-space glare, so this is what dims a Sun setting behind them. */
+  private sunTransmissionThroughRings(sunDirection: THREE.Vector3, sunDistance: number): number {
+    let transmission = 1;
+    for (const planet of this.solarSystem?.planets ?? []) {
+      const rings = planet.rings;
+      const cfg = RING_CONFIGS[planet.data.name];
+      if (!rings || !rings.visible || !cfg) continue;
+      rings.getWorldPosition(this.tmpSunOccluderPosition);
+      const e = rings.matrixWorld.elements;
+      // Ring geometry lies in its local XY plane; world normal = basis Z.
+      const normal = this.tmpRingNormal.set(e[8], e[9], e[10]).normalize();
+      const denom = normal.dot(sunDirection);
+      if (Math.abs(denom) < 1e-9) continue;
+      const t = normal.dot(this.tmpRingHit.copy(this.tmpSunOccluderPosition).sub(this.camera.position)) / denom;
+      if (!(t > 0) || t >= sunDistance) continue;
+      const hit = this.tmpRingHit.copy(sunDirection).multiplyScalar(t).add(this.camera.position);
+      const radial = hit.sub(this.tmpSunOccluderPosition).length();
+      const inner = planet.data.radiusAU * cfg.innerFactor;
+      const outer = planet.data.radiusAU * cfg.outerFactor;
+      // Penumbral softening: the Sun's disc projected onto the ring plane.
+      const band = Math.max((SUN_DATA.radiusAU * t) / Math.max(sunDistance - t, 1e-9), 1e-7);
+      const enter = THREE.MathUtils.smoothstep(radial, inner - band, inner + band);
+      const exit = 1 - THREE.MathUtils.smoothstep(radial, outer - band, outer + band);
+      const inside = enter * exit;
+      const styleTransmission = RING_GLARE_TRANSMISSION[cfg.style] ?? 0.85;
+      transmission *= 1 - inside * (1 - styleTransmission);
+    }
+    return transmission;
   }
 
   private sunOcclusionByMesh(
@@ -2547,6 +2635,7 @@ export class PlanetariumMode {
     bodyDirection.multiplyScalar(1 / bodyDistance);
     const separation = Math.acos(THREE.MathUtils.clamp(bodyDirection.dot(sunDirection), -1, 1));
     const angularRadius = Math.asin(THREE.MathUtils.clamp(renderedRadius / bodyDistance, 0, 0.999999));
+    this.lastSunOccluderAngularRadius = angularRadius;
     return circleOcclusionFraction(sunAngularRadius, angularRadius, separation);
   }
 
@@ -5253,6 +5342,36 @@ export class PlanetariumMode {
     return true;
   }
 
+  /** Headless-QA pose: camera `distanceAU` from the Sun, looking at it.
+   *  Optional NDC offsets slide the Sun off screen-centre (exercises the
+   *  centre-weighted exposure metering); values ≳1 push it just off-screen. */
+  devFrameSun(distanceAU = 1, fovDeg = 60, offNdcX = 0, offNdcY = 0): boolean {
+    if (!this.solarSystem) return false;
+    this.devFreeCamera = true;
+    // A fixed off-ecliptic direction keeps the pose reproducible and stops the
+    // asteroid-belt band from slicing through the halo.
+    const dir = new THREE.Vector3(0.62, 0.18, 0.76).normalize();
+    this.player.posX = dir.x * distanceAU;
+    this.player.posY = dir.y * distanceAU;
+    this.player.posZ = dir.z * distanceAU;
+    this.player.moving = false;
+    this.player.headToward(0, 0, 0);
+    const cam = this.camera as THREE.PerspectiveCamera;
+    cam.position.set(0, 0, 0);
+    cam.fov = fovDeg;
+    cam.updateProjectionMatrix();
+    // Floating origin: the Sun sits at scene position −player.
+    const sunScene = new THREE.Vector3(-this.player.posX, -this.player.posY, -this.player.posZ);
+    cam.lookAt(sunScene);
+    if (offNdcX !== 0 || offNdcY !== 0) {
+      const halfV = Math.tan(THREE.MathUtils.degToRad(cam.fov / 2));
+      cam.rotateY(Math.atan(halfV * cam.aspect * offNdcX));
+      cam.rotateX(Math.atan(halfV * offNdcY));
+    }
+    this.controls.target.copy(sunScene);
+    return true;
+  }
+
   /** Headless-screenshot diagnostics: read back camera/body geometry. */
   devProbe(name: string): unknown {
     let pos = this.planetWorldPositions.get(name) ?? null;
@@ -7626,7 +7745,6 @@ export class PlanetariumMode {
       this.renderMoonLabels();
       this.updateSunLabel();
     }
-    this.updateSunShader(dt);
     this.updateOrbitLineVisibility();
 
     // Surface camera last — after updateMoonPositions/updateShadowVisuals —
@@ -7635,6 +7753,12 @@ export class PlanetariumMode {
     if (this.landedView === 'surface') {
       this.updateSurfaceCamera(dt);
     }
+    // After the surface re-pin: the Sun metering (screen position, occlusion,
+    // corona gate) must read this frame's camera pose, not last frame's.
+    // Camera.updateMatrixWorld also refreshes matrixWorldInverse, which the
+    // NDC projection reads directly.
+    this.camera.updateMatrixWorld();
+    this.updateSunShader(dt);
     this.updateShadowGuideCamera();
     this.updateOrbitFocusLabels();
 

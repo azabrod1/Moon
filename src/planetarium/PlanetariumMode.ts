@@ -265,6 +265,10 @@ const RING_GLARE_TRANSMISSION: Record<RingStyle, number> = {
   neptune: 0.9,
 };
 
+// Sun's angular radius seen from 1 AU — the reference distance for the veiling
+// glare's falloff (the ISS reference stills that inspired it are at Earth).
+const SUN_ANG_RADIUS_AT_1AU = Math.asin(SUN_DATA.radiusAU);
+
 export interface PlanetariumActivationProgress {
   completedUnits: number;
   totalUnits: number;
@@ -2493,6 +2497,9 @@ export class PlanetariumMode {
         glareMat.uniforms.uVisibleFraction.value = 1;
         glareMat.uniforms.uAtmosphereMix.value = 0;
         glareMat.uniforms.uEmergenceFlash.value = this.sunEmergenceFlash;
+        // Inside the photosphere the veil has no meaning; collapse the billboard.
+        glareMat.uniforms.uVeilAmt.value = 0;
+        glareMat.uniforms.uVeilHalfPx.value = 0;
       }
       if (ghostMat) ghostMat.uniforms.uGhostStrength.value = 0;
       const insideBlend = 1 - Math.exp(-Math.max(dt, 0) / 0.9);
@@ -2512,6 +2519,10 @@ export class PlanetariumMode {
     let opticalFx = 0;
     let solarRadiusPx = 0;
     let appearanceEligible = false;
+    // Veiling-glare amount fed to the wide screen-space wash: occlusion x
+    // distance falloff x huge-disc cutoff, 0 unless the wash is actually visible.
+    let veilAmt = 0;
+    let veilHalfPx = 0;
 
     if (inFront) {
       this.tmpSunScreen.copy(this.solarSystem.sun.position).project(this.camera);
@@ -2527,10 +2538,28 @@ export class PlanetariumMode {
         glareMat.uniforms.uCameraFx.value = opticalFx;
       }
 
+      // Geometric reach of the veil, before occlusion: the ISS reference stills
+      // are at 1 AU, so 1 AU is full strength and it falls off outward
+      // (Jupiter clearly reduced, Pluto ~nothing). It also dies as the disc
+      // grows huge so a full-frame close-up never double-brightens. This upper
+      // bound (occlusion only shrinks it) both sizes the billboard and widens
+      // the eligibility gate so the wide wash is never stranded off-screen.
+      const distanceResponse = Math.pow(
+        THREE.MathUtils.clamp(solarAngularRadius / SUN_ANG_RADIUS_AT_1AU, 0, 1),
+        0.6,
+      );
+      const hugeFade = 1 - THREE.MathUtils.smoothstep(
+        solarRadiusPx, viewportHeight * 0.30, viewportHeight * 0.42,
+      );
+      const veilReachGeom = distanceResponse * hugeFade;
+
       // Work only near the viewport; farther away both the glare plane and the
-      // exposure response are invisible. The margin keeps an off-screen light
-      // washing the edge before the photosphere itself enters the shot.
-      if (centreDistanceNdc < 1.5 + projectedRadiusNdc * glareExtent) {
+      // exposure response are invisible. The base margin keeps an off-screen
+      // light washing the edge before the photosphere itself enters the shot;
+      // the veil term adds its own billboard half-extent (up to ~1.1 NDC) so its
+      // much wider quad stays admitted while the disc centre sits well off frame.
+      const veilHalfNdcMax = 0.55 * veilReachGeom * 2;
+      if (centreDistanceNdc < 1.5 + projectedRadiusNdc * glareExtent + veilHalfNdcMax) {
         appearanceEligible = true;
         visibleFraction = this.computeVisibleSunFraction(toSun, sunDistance, solarAngularRadius);
         visibleFraction *= this.sunTransmissionThroughRings(toSun, sunDistance);
@@ -2540,6 +2569,14 @@ export class PlanetariumMode {
           centerDistanceNdc: centreDistanceNdc,
           visibleFraction,
         });
+        // Fold in the same occlusion energy the physical glare uses, so the
+        // wash vanishes in totality and behind planets/rings. The billboard is
+        // sized to 0.55 viewport heights of that amount (the wash reaches ~half
+        // the frame at full strength); it stays >= the physical/min quad via the
+        // vertex max(), and 0 amount collapses it back to the physical footprint.
+        const visibleEnergy = Math.pow(THREE.MathUtils.clamp(visibleFraction, 0, 1), 0.38);
+        veilAmt = veilReachGeom * visibleEnergy;
+        veilHalfPx = 0.55 * viewportHeight * veilAmt;
       }
     }
 
@@ -2563,6 +2600,9 @@ export class PlanetariumMode {
       glareMat.uniforms.uEmergenceFlash.value = this.sunEmergenceFlash;
       glareMat.uniforms.uAtmosphereMix.value = this.sunAtmosphereMix;
       glareMat.uniforms.uAtmosphereColor.value.copy(this.sunAtmosphereColor);
+      // veilAmt/veilHalfPx are 0 unless the wash is on-screen and unoccluded.
+      glareMat.uniforms.uVeilAmt.value = veilAmt;
+      glareMat.uniforms.uVeilHalfPx.value = veilHalfPx;
       // Corona gate: 1 when the strongest occluder is Sun-sized (a true
       // eclipse), 0 when a whole planet fills the sky in front of the Sun.
       // The occluder's size in solar radii also positions the shader's
@@ -5494,6 +5534,16 @@ export class PlanetariumMode {
       cam.rotateX(Math.atan(halfV * offNdcY));
     }
     this.controls.target.copy(sunScene);
+    return true;
+  }
+
+  /** DEV-only: live-tune the veiling-glare knobs for the warmth A/B montage and
+   *  strength QA without rebuilding the Sun material. */
+  devSetVeil(opts: { warmth?: number; strength?: number }): boolean {
+    const glareMat = this.solarSystem?.sun.userData.sunGlareMaterial as THREE.ShaderMaterial | undefined;
+    if (!glareMat) return false;
+    if (typeof opts.warmth === 'number') glareMat.uniforms.uVeilWarmth.value = opts.warmth;
+    if (typeof opts.strength === 'number') glareMat.uniforms.uVeilStrength.value = opts.strength;
     return true;
   }
 

@@ -676,6 +676,17 @@ export function createPlanetariumSun(useBloom = true): THREE.Group {
       uAtmosphereColor: { value: new THREE.Color(1, 0.55, 0.24) },
       uMinHalfSizePx: { value: useBloom ? 18 : 22 },
       uViewportHeight: { value: Math.max(window.innerHeight, 1) },
+      // Wide veiling-glare wash. uVeilStrength is its peak HDR contribution at
+      // frame centre; uVeilWarmth mixes a whisper of warmth into the outer fade.
+      // uVeilAmt (occlusion x distance-falloff x huge-disc cutoff) and uVeilHalfPx
+      // (the billboard half-size in px the veil needs) are driven per frame.
+      uVeilStrength: { value: 1.4 },
+      uVeilWarmth: { value: 0.12 },
+      uVeilAmt: { value: 0 },
+      uVeilHalfPx: { value: 0 },
+      // Fraction of the fading starburst kept alive once the disc is resolved,
+      // so a mid-range Sun still throws modest diffraction spikes.
+      uSpikeSustain: { value: 0.45 },
     },
     vertexShader: sunGlareVertexShader,
     fragmentShader: sunGlareFragmentShader,

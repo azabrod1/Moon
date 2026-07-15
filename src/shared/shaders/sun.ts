@@ -236,21 +236,37 @@ void main() {
 /** Camera-facing glare plane. Its radius is `uExtent` photosphere radii. */
 export const sunGlareVertexShader = /* glsl */ `
 uniform float uMinHalfSizePx;
+uniform float uVeilHalfPx;
 uniform float uViewportHeight;
 varying vec2 vUv;
+varying float vExtentScale;
+varying float vHalfSizePx;
 
 void main() {
   vUv = uv;
   // Expand the plane in camera-view XY around the transformed Sun centre. It
   // remains a circular billboard without a per-frame CPU quaternion update.
-  // A minimum screen-space footprint preserves an optical glint in the outer
-  // system after the physical photosphere becomes sub-pixel.
   vec4 centreView = modelViewMatrix * vec4(0.0, 0.0, 0.0, 1.0);
   float halfSize = max(abs(position.x), abs(position.y));
   float physicalHalfNdc = projectionMatrix[1][1] * halfSize / max(-centreView.z, 1e-6);
-  float minimumHalfNdc = (uMinHalfSizePx * 2.0) / max(uViewportHeight, 1.0);
-  float sizeBoost = max(1.0, minimumHalfNdc / max(physicalHalfNdc, 1e-7));
+  // A minimum screen-space footprint preserves an optical glint in the outer
+  // system after the physical photosphere becomes sub-pixel.
+  float baseMinNdc = (uMinHalfSizePx * 2.0) / max(uViewportHeight, 1.0);
+  float baseHalfNdc = max(physicalHalfNdc, baseMinNdc);
+  // The wide screen-space veiling glare (fragment) needs a far larger billboard
+  // to paint its wash into. It only ever grows the quad; the physical/min
+  // footprint above is the floor it can never fall below.
+  float veilMinNdc = (uVeilHalfPx * 2.0) / max(uViewportHeight, 1.0);
+  float drawnHalfNdc = max(baseHalfNdc, veilMinNdc);
+  float sizeBoost = drawnHalfNdc / max(physicalHalfNdc, 1e-7);
   centreView.xy += position.xy * sizeBoost;
+  // Two channels the fragment needs. vExtentScale is how much the veil grew the
+  // quad past its physical/min size (1.0 when the veil is idle): the fragment
+  // rebases the physical PSF by it so growth can't stretch the core/starburst.
+  // vHalfSizePx is the quad's true on-screen half-size in device pixels, making
+  // the veil a pure screen-space function immune to that same growth.
+  vExtentScale = drawnHalfNdc / max(baseHalfNdc, 1e-7);
+  vHalfSizePx = drawnHalfNdc * uViewportHeight * 0.5;
   gl_Position = projectionMatrix * centreView;
 }
 `;
@@ -267,7 +283,14 @@ uniform float uExposureScale;
 uniform float uEmergenceFlash;
 uniform float uAtmosphereMix;
 uniform vec3 uAtmosphereColor;
+uniform float uVeilStrength;
+uniform float uVeilWarmth;
+uniform float uVeilAmt;
+uniform float uSpikeSustain;
+uniform float uViewportHeight;
 varying vec2 vUv;
+varying float vExtentScale;
+varying float vHalfSizePx;
 
 float hash21(vec2 p) {
   p = fract(p * vec2(123.34, 456.21));
@@ -300,16 +323,23 @@ float fbm2(vec2 p) {
 void main() {
   vec2 p = (vUv - 0.5) * 2.0;
   float planeRadius = length(p);
+  // The veiling glare below can enlarge this billboard far past the physical
+  // glare quad. Re-express every physical PSF term in the pre-veil ("base")
+  // quad frame so that growth can never stretch the core/aureole/starburst:
+  // vExtentScale is 1.0 whenever the veil is idle, so this is a no-op then.
+  vec2 pB = p * vExtentScale;
+  float baseRadius = planeRadius * vExtentScale;
   // All derivatives are taken before the discard: fwidth after a neighbouring
-  // lane discards is formally undefined.
-  float widthX = max(fwidth(p.y) * 1.35, 0.010);
-  float widthY = max(fwidth(p.x) * 1.35, 0.010);
-  float diagonalWidthA = max(fwidth(p.x - p.y) * 1.25, 0.014);
-  float diagonalWidthB = max(fwidth(p.x + p.y) * 1.25, 0.014);
-  float sensorWidth = max(fwidth(p.y) * 1.15, 0.007);
+  // lane discards is formally undefined. Reading the base frame keeps the spike
+  // widths a constant pixel size no matter how much the veil grew the quad.
+  float widthX = max(fwidth(pB.y) * 1.35, 0.010);
+  float widthY = max(fwidth(pB.x) * 1.35, 0.010);
+  float diagonalWidthA = max(fwidth(pB.x - pB.y) * 1.25, 0.014);
+  float diagonalWidthB = max(fwidth(pB.x + pB.y) * 1.25, 0.014);
+  float sensorWidth = max(fwidth(pB.y) * 1.15, 0.007);
   if (planeRadius >= 1.0) discard;
 
-  float solarRadii = planeRadius * uExtent;
+  float solarRadii = baseRadius * uExtent;
   float outside = max(solarRadii - 1.0, 0.0);
   float edgeFade = 1.0 - smoothstep(0.72, 0.94, planeRadius);
 
@@ -331,20 +361,24 @@ void main() {
   // Once the solar disc becomes only a few pixels wide, a restrained optical
   // starburst keeps it distinct from the starfield. Derivative-scaled widths
   // stay stable from high-DPI desktop captures down to the mobile fallback.
-  float horizontal = exp(-abs(p.y) / widthX) * exp(-abs(p.x) * 1.70);
-  float vertical = exp(-abs(p.x) / widthY) * exp(-abs(p.y) * 2.75) * 0.52;
+  float horizontal = exp(-abs(pB.y) / widthX) * exp(-abs(pB.x) * 1.70);
+  float vertical = exp(-abs(pB.x) / widthY) * exp(-abs(pB.y) * 2.75) * 0.52;
   float diagonal = (
-    exp(-abs(p.x - p.y) / diagonalWidthA)
-    + exp(-abs(p.x + p.y) / diagonalWidthB)
-  ) * exp(-planeRadius * 3.4) * 0.10;
-  float starburst = (horizontal + vertical + diagonal) * uPointLike * visibleEnergy * 0.30;
+    exp(-abs(pB.x - pB.y) / diagonalWidthA)
+    + exp(-abs(pB.x + pB.y) / diagonalWidthB)
+  ) * exp(-baseRadius * 3.4) * 0.10;
+  // uPointLike alone kills the spikes once the disc resolves past ~10 px, but
+  // the reference stills show long thin diffraction spikes WITH a visible disc.
+  // Carry a fraction of them through the mid-range on the camera-fx term.
+  float starburst = (horizontal + vertical + diagonal)
+    * max(uPointLike, uCameraFx * uSpikeSustain) * visibleEnergy * 0.30;
   glare += starburst;
 
   // A short, low-energy sensor streak bridges the scale range where the disc
   // is resolved but still overwhelmingly bright. It fades away for close-up
   // photosphere study and yields to the sharper starburst in the outer system.
-  float sensorLine = exp(-abs(p.y) / sensorWidth)
-    * exp(-abs(p.x) * 1.55);
+  float sensorLine = exp(-abs(pB.y) / sensorWidth)
+    * exp(-abs(pB.x) * 1.55);
   float sensorStreak = sensorLine * uCameraFx * (1.0 - uPointLike * 0.72)
     * visibleEnergy * 0.055;
   glare += sensorStreak;
@@ -355,6 +389,42 @@ void main() {
   float emergenceBloom = exp(-outside * 1.25) * uEmergenceFlash * visibleEnergy * 1.15;
   glare = (glare + emergenceBloom) * mix(1.0, 0.60, uAtmosphereMix);
 
+  // --- Wide screen-space veiling glare ---
+  // Real space-camera stills show the Sun's light washing across a big fraction
+  // of the frame even when the disc is only a few pixels wide. This term is a
+  // pure function of ON-SCREEN pixel distance (never solar radii), so the
+  // vertex min-size boost cannot warp its shape. uVeilAmt already carries the
+  // occlusion energy (0 in totality / behind a body or ring), the Mercury->Pluto
+  // distance falloff, and the huge-disc cutoff, so the billboard the controller
+  // sized and this intensity stay in lockstep. It is a broad wash, not a second
+  // core; edgeFade below carries it smoothly to zero before the quad's disc edge.
+  float pixelDist = planeRadius * vHalfSizePx;
+  float dHat = pixelDist / max(uViewportHeight, 1.0);
+  // Single power-law, deliberately plateau-free: any flat stretch or visible
+  // boundary makes the wash read as a grey fog disc instead of light. Bright
+  // near the core, then a continuous shallow fall the eye can't find an edge
+  // on — matching how real space-camera veiling glare behaves at 1 AU.
+  float dNorm = dHat / 0.045;
+  float veilShape = 1.0 / pow(1.0 + dNorm * dNorm, 1.12);
+  // Long thin diffraction arms, also in true pixels: the base-quad starburst
+  // can never exceed the physical footprint (~40 px at 1 AU), while reference
+  // stills show spikes spanning hundreds. Gaussian cross-section a couple of
+  // pixels wide; the horizontal pair reaches farther than the vertical, like
+  // an aperture's dominant axis.
+  vec2 pxOff = p * vHalfSizePx;
+  float armAcross = pxOff.y / 1.7;
+  float armAcrossV = pxOff.x / 1.7;
+  float armX = exp(-armAcross * armAcross) * exp(-abs(pxOff.x) / (0.15 * uViewportHeight));
+  float armY = exp(-armAcrossV * armAcrossV) * exp(-abs(pxOff.y) / (0.065 * uViewportHeight)) * 0.55;
+  vec2 pxDiag = vec2(pxOff.x - pxOff.y, pxOff.x + pxOff.y) * 0.7071;
+  float armDiag = (
+    exp(-pow(pxDiag.y / 1.5, 2.0)) * exp(-abs(pxDiag.x) / (0.055 * uViewportHeight))
+    + exp(-pow(pxDiag.x / 1.5, 2.0)) * exp(-abs(pxDiag.y) / (0.055 * uViewportHeight))
+  ) * 0.16;
+  float veilEnergy = uVeilStrength * uVeilAmt * uExposureScale
+    * (1.0 + 0.5 * uEmergenceFlash) * mix(1.0, 0.60, uAtmosphereMix);
+  float veil = (veilShape + (armX + armY + armDiag) * 0.45) * veilEnergy;
+
   // Once the photosphere is covered, remove its glare and reveal a restrained
   // white corona. Broad bipolar lobes plus fine angular strands keep totality
   // from reading as another perfectly circular radial gradient. uEclipseLike
@@ -362,13 +432,15 @@ void main() {
   // eclipse geometry: a whole planet blotting out the sky reveals nothing.
   // The block stays behind a real branch: its atan/normalize are undefined at
   // the quad centre, and even multiplied by zero a NaN would poison the pixel.
+  // It reads the base frame (pB/baseRadius) too, so a veil-enlarged quad during
+  // the partial phase leaves the solar-radii corona geometry untouched.
   float coverage = 1.0 - clamp(uVisibleFraction, 0.0, 1.0);
   float eclipse = smoothstep(0.97, 0.995, coverage) * clamp(uEclipseLike, 0.0, 1.0);
   float corona = 0.0;
   float chromosphere = 0.0;
-  if (eclipse > 0.0 && planeRadius > 1e-4) {
-    float angle = atan(p.y, p.x);
-    float cloudWarp = fbm2(p * 2.7 + (p / planeRadius) * solarRadii * 0.13);
+  if (eclipse > 0.0 && baseRadius > 1e-4) {
+    float angle = atan(pB.y, pB.x);
+    float cloudWarp = fbm2(pB * 2.7 + (pB / baseRadius) * solarRadii * 0.13);
     float angleWarp = angle
       + sin(angle * 3.0 + solarRadii * 0.18) * 0.025
       + (cloudWarp - 0.5) * 0.07;
@@ -404,12 +476,19 @@ void main() {
   float warmth = smoothstep(1.6, 7.0, solarRadii) * 0.30;
   vec3 glareColor = mix(vec3(1.0, 0.985, 0.94), vec3(1.0, 0.67, 0.30), warmth);
   glareColor = mix(glareColor, uAtmosphereColor, uAtmosphereMix * 0.88);
+  // The veil is broadband white; an optional whisper of warmth grows only in
+  // the outer fade behind the uVeilWarmth knob. It takes the same atmosphere
+  // tint the core glare does, so a grazed-atmosphere Sun warms both together.
+  vec3 veilColor = mix(vec3(1.0, 0.99, 0.965), vec3(1.0, 0.80, 0.52),
+    uVeilWarmth * smoothstep(0.25, 0.9, dHat));
+  veilColor = mix(veilColor, uAtmosphereColor, uAtmosphereMix * 0.88);
   vec3 coronaColor = vec3(0.90, 0.95, 1.0);
   vec3 chromosphereColor = vec3(1.0, 0.24, 0.10);
   vec3 rgb = (
-    glareColor * glare + coronaColor * corona + chromosphereColor * chromosphere
+    glareColor * glare + veilColor * veil
+      + coronaColor * corona + chromosphereColor * chromosphere
   ) * edgeFade;
-  float alpha = clamp(glare + corona + chromosphere, 0.0, 1.0) * edgeFade;
+  float alpha = clamp(glare + veil + corona + chromosphere, 0.0, 1.0) * edgeFade;
 
   gl_FragColor = vec4(rgb, alpha);
   // No-ops under the composer; keep the additive glare inside the same

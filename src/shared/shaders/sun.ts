@@ -21,6 +21,8 @@ void main() {
 
 export const sunPhotosphereFragmentShader = /* glsl */ `
 uniform float time;
+uniform float uAtmosphereMix;
+uniform vec3 uAtmosphereColor;
 varying vec3 vNormal;
 varying vec3 vPosition;
 varying vec3 vObjectDirection;
@@ -144,6 +146,12 @@ void main() {
   radiance *= 1.0 - spotPenumbra * 0.42 - spotCore * 0.38;
   radiance *= 1.0 + faculae;
 
+  // When the camera→Sun sightline skims a planet's atmosphere, extinguish the
+  // white source and pull it toward that atmosphere's sunset colour. This is
+  // driven by geometry in the controller, not by camera position alone.
+  color = mix(color, uAtmosphereColor, uAtmosphereMix * 0.82);
+  radiance *= mix(1.0, 0.62, uAtmosphereMix);
+
   gl_FragColor = vec4(color * radiance, 1.0);
   // No-ops into the composer's render target (the OutputPass grades there);
   // on the direct-to-canvas fallback they keep the photosphere inside the
@@ -156,6 +164,74 @@ void main() {
 /** Glare plane extent in photosphere radii — geometry size, uExtent uniform,
  *  and the controller's screen-coverage gate all derive from this one value. */
 export const SUN_GLARE_EXTENT_SOLAR_RADII = 8;
+
+/** Thin, broken chromosphere shell for close-approach limb detail. */
+export const sunProminenceVertexShader = /* glsl */ `
+varying vec3 vNormal;
+varying vec3 vPosition;
+varying vec3 vObjectDirection;
+
+void main() {
+  vNormal = normalize(normalMatrix * normal);
+  vPosition = (modelViewMatrix * vec4(position, 1.0)).xyz;
+  vObjectDirection = normalize(position);
+  gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+}
+`;
+
+export const sunProminenceFragmentShader = /* glsl */ `
+uniform float time;
+uniform float uCloseVisibility;
+varying vec3 vNormal;
+varying vec3 vPosition;
+varying vec3 vObjectDirection;
+
+float prominenceHash(vec3 p) {
+  p = fract(p * 0.1031);
+  p += dot(p, p.yzx + 33.33);
+  return fract((p.x + p.y) * p.z);
+}
+
+float prominenceNoise(vec3 p) {
+  vec3 i = floor(p);
+  vec3 f = fract(p);
+  f = f * f * (3.0 - 2.0 * f);
+  return mix(
+    mix(
+      mix(prominenceHash(i), prominenceHash(i + vec3(1.0, 0.0, 0.0)), f.x),
+      mix(prominenceHash(i + vec3(0.0, 1.0, 0.0)), prominenceHash(i + vec3(1.0, 1.0, 0.0)), f.x),
+      f.y
+    ),
+    mix(
+      mix(prominenceHash(i + vec3(0.0, 0.0, 1.0)), prominenceHash(i + vec3(1.0, 0.0, 1.0)), f.x),
+      mix(prominenceHash(i + vec3(0.0, 1.0, 1.0)), prominenceHash(i + vec3(1.0, 1.0, 1.0)), f.x),
+      f.y
+    ),
+    f.z
+  );
+}
+
+void main() {
+  vec3 viewDir = normalize(-vPosition);
+  float mu = abs(dot(viewDir, normalize(vNormal)));
+  float limb = pow(1.0 - clamp(mu, 0.0, 1.0), 4.5);
+  vec3 p = normalize(vObjectDirection);
+  float broad = prominenceNoise(p * 5.2 + vec3(time * 0.018, 0.0, -time * 0.011));
+  float fine = prominenceNoise(p * 17.0 + broad * 1.8);
+  float activeArc = smoothstep(0.60, 0.82, broad) * smoothstep(0.42, 0.78, fine);
+  float spicules = smoothstep(0.52, 0.88, prominenceNoise(p * 43.0 - time * 0.015));
+  float structure = activeArc * 0.82 + spicules * 0.18;
+  float alpha = limb * structure * uCloseVisibility * 0.72;
+  if (alpha < 0.004) discard;
+
+  vec3 hotPink = vec3(3.2, 0.18, 0.045);
+  vec3 orange = vec3(2.6, 0.58, 0.08);
+  vec3 color = mix(hotPink, orange, fine * 0.45);
+  gl_FragColor = vec4(color * alpha, alpha);
+  #include <tonemapping_fragment>
+  #include <colorspace_fragment>
+}
+`;
 
 /** Camera-facing glare plane. Its radius is `uExtent` photosphere radii. */
 export const sunGlareVertexShader = /* glsl */ `
@@ -188,6 +264,9 @@ uniform float uCameraFx;
 uniform float uEclipseLike;
 uniform float uOccluderRadii;
 uniform float uExposureScale;
+uniform float uEmergenceFlash;
+uniform float uAtmosphereMix;
+uniform vec3 uAtmosphereColor;
 varying vec2 vUv;
 
 float hash21(vec2 p) {
@@ -270,6 +349,12 @@ void main() {
     * visibleEnergy * 0.055;
   glare += sensorStreak;
 
+  // Limb crossings and third contact briefly overwhelm the virtual optics
+  // before exposure adaptation catches up. The controller supplies a
+  // derivative-triggered impulse with a short exponential decay.
+  float emergenceBloom = exp(-outside * 1.25) * uEmergenceFlash * visibleEnergy * 1.15;
+  glare = (glare + emergenceBloom) * mix(1.0, 0.60, uAtmosphereMix);
+
   // Once the photosphere is covered, remove its glare and reveal a restrained
   // white corona. Broad bipolar lobes plus fine angular strands keep totality
   // from reading as another perfectly circular radial gradient. uEclipseLike
@@ -318,6 +403,7 @@ void main() {
 
   float warmth = smoothstep(1.6, 7.0, solarRadii) * 0.30;
   vec3 glareColor = mix(vec3(1.0, 0.985, 0.94), vec3(1.0, 0.67, 0.30), warmth);
+  glareColor = mix(glareColor, uAtmosphereColor, uAtmosphereMix * 0.88);
   vec3 coronaColor = vec3(0.90, 0.95, 1.0);
   vec3 chromosphereColor = vec3(1.0, 0.24, 0.10);
   vec3 rgb = (
@@ -328,6 +414,68 @@ void main() {
   gl_FragColor = vec4(rgb, alpha);
   // No-ops under the composer; keep the additive glare inside the same
   // exposure/tonemap/colour response as the rest of the no-bloom frame.
+  #include <tonemapping_fragment>
+  #include <colorspace_fragment>
+}
+`;
+
+/**
+ * Three small clip-space quads form a restrained lens-ghost train. Unlike the
+ * Sun glare plane they sit on the optical axis between the source and screen
+ * centre, so they move correctly as the camera pans without a full-screen pass.
+ */
+export const sunLensGhostVertexShader = /* glsl */ `
+uniform vec2 uSunNdc;
+uniform vec2 uViewportPx;
+attribute float aGhostFactor;
+attribute float aGhostSizePx;
+attribute float aGhostTint;
+varying vec2 vGhostUv;
+varying float vGhostTint;
+
+void main() {
+  vGhostUv = position.xy * 0.5 + 0.5;
+  vGhostTint = aGhostTint;
+  vec2 centre = uSunNdc * aGhostFactor;
+  vec2 halfSizeNdc = vec2(
+    aGhostSizePx * 2.0 / max(uViewportPx.x, 1.0),
+    aGhostSizePx * 2.0 / max(uViewportPx.y, 1.0)
+  );
+  gl_Position = vec4(centre + position.xy * halfSizeNdc, 0.0, 1.0);
+}
+`;
+
+export const sunLensGhostFragmentShader = /* glsl */ `
+uniform float uGhostStrength;
+uniform float uExposureScale;
+uniform float uEmergenceFlash;
+uniform float uAtmosphereMix;
+uniform vec3 uAtmosphereColor;
+varying vec2 vGhostUv;
+varying float vGhostTint;
+
+void main() {
+  vec2 p = (vGhostUv - 0.5) * 2.0;
+  float r = length(p);
+  if (r >= 1.0) discard;
+
+  // Soft glass reflection plus a thin aperture rim. Three authored tint IDs
+  // avoid the rainbow stack associated with arcade lens-flare textures.
+  float body = exp(-r * r * 4.8) * 0.16;
+  float rim = exp(-abs(r - 0.62) * 22.0) * 0.075;
+  float aperture = 1.0 - smoothstep(0.78, 1.0, r);
+  vec3 cool = vec3(0.32, 0.52, 0.62);
+  vec3 warm = vec3(0.72, 0.43, 0.22);
+  vec3 neutral = vec3(0.54, 0.48, 0.38);
+  vec3 ghostColor = vGhostTint < 0.5
+    ? cool
+    : (vGhostTint < 1.5 ? warm : neutral);
+  ghostColor = mix(ghostColor, uAtmosphereColor, uAtmosphereMix * 0.45);
+
+  float flashBoost = 1.0 + uEmergenceFlash * 0.65;
+  float energy = (body + rim) * aperture * uGhostStrength * uExposureScale * flashBoost;
+  float alpha = clamp(energy, 0.0, 0.08);
+  gl_FragColor = vec4(ghostColor * energy, alpha);
   #include <tonemapping_fragment>
   #include <colorspace_fragment>
 }

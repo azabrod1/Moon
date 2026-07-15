@@ -24,7 +24,7 @@ import { PlanetLabels, discRadiusPx } from './PlanetLabels';
 import { PlanetariumStore, createDefaultPlanetariumState, type PlanetariumState, type LandedTarget } from './PlanetariumStore';
 import { computeStats } from './stats';
 import { PLANETARIUM_BODIES, SUN_DATA, type PlanetData } from './planets/planetData';
-import { createMoonMeshes, createShaderWarmupProbes, setWarmEligibleMoonParents, upgradeTextureOnApproach, ATMOSPHERE_SHELL_SCALES, type MoonMesh, type TextureUpgrade } from './PlanetFactory';
+import { createMoonMeshes, createShaderWarmupProbes, setWarmEligibleMoonParents, upgradeTextureOnApproach, ATMOSPHERES, ATMOSPHERE_SHELL_SCALES, type MoonMesh, type TextureUpgrade } from './PlanetFactory';
 import { bindTextureWarmer, pumpTextureWarmQueue, queueTextureWarm, resetTextureWarmer } from './world/textureWarmer';
 import {
   advancePlanetariumTime,
@@ -111,7 +111,13 @@ import {
 import { DEG2RAD } from '../shared/math/angles';
 import { SUN_GLARE_EXTENT_SOLAR_RADII } from '../shared/shaders/sun';
 import { landedFrameCamDistAU, landedMinDistanceAU, LANDED_NEAR_AU } from './landedView';
-import { circleOcclusionFraction, targetSunExposure } from './sunAppearance';
+import {
+  advanceSunEmergenceFlash,
+  circleOcclusionFraction,
+  eclipseOccluderLikeness,
+  projectedSourceRadiusAtPlane,
+  targetSunExposure,
+} from './sunAppearance';
 import {
   SHIP_CLEARANCE_AU,
   CRUISE_CAM_DIST_AU,
@@ -368,6 +374,10 @@ export class PlanetariumMode {
   private tmpInvGroupQuat = new THREE.Quaternion();
   private tmpShadingParentPos = new THREE.Vector3();
   private sunExposure = 1;
+  private lastSunVisibleFraction = 1;
+  private sunEmergenceFlash = 0;
+  private sunAtmosphereMix = 0;
+  private readonly sunAtmosphereColor = new THREE.Color(1, 0.55, 0.24);
   /** Set by computeVisibleSunFraction: angular radius of the strongest solar
    *  occluder this frame (scratch for the corona's eclipse-likeness gate). */
   private sunDominantOccluderAngularRadius = 0;
@@ -380,6 +390,7 @@ export class PlanetariumMode {
   private tmpSunOccluderPosition = new THREE.Vector3();
   private tmpSunOccluderDirection = new THREE.Vector3();
   private tmpSunOccluderScale = new THREE.Vector3();
+  private tmpSunAtmosphereOffset = new THREE.Vector3();
   private moonShading: MoonShadingState = { sunVisibleFraction: 1, inUmbra: false };
   // Landed-system shadow visuals: transit spots always on, guides behind the
   // Observatory panel toggle (session-only, deliberately not persisted).
@@ -961,6 +972,9 @@ export class PlanetariumMode {
   async activate(onProgress?: (progress: PlanetariumActivationProgress) => void): Promise<void> {
     this.active = true;
     this.sunExposure = 1;
+    this.lastSunVisibleFraction = 1;
+    this.sunEmergenceFlash = 0;
+    this.sunAtmosphereMix = 0;
     this.renderer.toneMappingExposure = 1;
     // Compile + validate the GPU texturer once, before the visibility gate can
     // run (the gate paints during update(), which only runs while active). The
@@ -1215,6 +1229,9 @@ export class PlanetariumMode {
 
     this.active = false;
     this.sunExposure = 1;
+    this.lastSunVisibleFraction = 1;
+    this.sunEmergenceFlash = 0;
+    this.sunAtmosphereMix = 0;
     this.renderer.toneMappingExposure = 1;
 
     // Hand the camera back on the fixed near plane — another mode (or a
@@ -2447,11 +2464,14 @@ export class PlanetariumMode {
   private updateSunShader(dt: number) {
     if (!this.solarSystem) return;
     const sunMat = this.solarSystem.sun.userData.sunMaterial as THREE.ShaderMaterial | undefined;
+    const prominenceMat = this.solarSystem.sun.userData.sunProminenceMaterial as THREE.ShaderMaterial | undefined;
+    const glareMat = this.solarSystem.sun.userData.sunGlareMaterial as THREE.ShaderMaterial | undefined;
+    const ghostMat = this.solarSystem.sun.userData.sunLensGhostMaterial as THREE.ShaderMaterial | undefined;
     if (sunMat) {
       sunMat.uniforms.time.value += dt;
     }
+    if (prominenceMat) prominenceMat.uniforms.time.value += dt;
 
-    const glareMat = this.solarSystem.sun.userData.sunGlareMaterial as THREE.ShaderMaterial | undefined;
     const toSun = this.tmpSunDirection
       .copy(this.solarSystem.sun.position)
       .sub(this.camera.position);
@@ -2459,7 +2479,22 @@ export class PlanetariumMode {
     if (!(sunDistance > SUN_DATA.radiusAU)) {
       // Dev poses can put the camera inside the photosphere; ease the
       // exposure back to neutral rather than freezing it mid-adaptation.
-      if (glareMat) glareMat.uniforms.uVisibleFraction.value = 1;
+      this.sunEmergenceFlash = advanceSunEmergenceFlash({
+        previousVisibleFraction: this.lastSunVisibleFraction,
+        visibleFraction: 1,
+        flash: this.sunEmergenceFlash,
+        dt,
+        eligible: false,
+      });
+      this.lastSunVisibleFraction = 1;
+      this.sunAtmosphereMix = 0;
+      if (sunMat) sunMat.uniforms.uAtmosphereMix.value = 0;
+      if (glareMat) {
+        glareMat.uniforms.uVisibleFraction.value = 1;
+        glareMat.uniforms.uAtmosphereMix.value = 0;
+        glareMat.uniforms.uEmergenceFlash.value = this.sunEmergenceFlash;
+      }
+      if (ghostMat) ghostMat.uniforms.uGhostStrength.value = 0;
       const insideBlend = 1 - Math.exp(-Math.max(dt, 0) / 0.9);
       this.sunExposure = THREE.MathUtils.lerp(this.sunExposure, 1, insideBlend);
       this.renderer.toneMappingExposure = this.sunExposure;
@@ -2468,30 +2503,38 @@ export class PlanetariumMode {
 
     toSun.multiplyScalar(1 / sunDistance);
     const inFront = toSun.dot(this.camera.getWorldDirection(this.tmpSunCameraForward)) > 0;
+    const solarAngularRadius = Math.asin(THREE.MathUtils.clamp(SUN_DATA.radiusAU / sunDistance, 0, 0.999999));
+    const viewportWidth = Math.max(this.renderer.domElement.clientWidth, 1);
+    const viewportHeight = Math.max(this.renderer.domElement.clientHeight, 1);
     let targetExposure = 1;
     let visibleFraction = 1;
+    let centreDistanceNdc = Infinity;
+    let opticalFx = 0;
+    let solarRadiusPx = 0;
+    let appearanceEligible = false;
 
     if (inFront) {
-      const solarAngularRadius = Math.asin(THREE.MathUtils.clamp(SUN_DATA.radiusAU / sunDistance, 0, 0.999999));
       this.tmpSunScreen.copy(this.solarSystem.sun.position).project(this.camera);
-      const centreDistanceNdc = Math.hypot(this.tmpSunScreen.x, this.tmpSunScreen.y);
+      centreDistanceNdc = Math.hypot(this.tmpSunScreen.x, this.tmpSunScreen.y);
       const projectedRadiusNdc = Math.tan(solarAngularRadius)
         / Math.tan(THREE.MathUtils.degToRad(this.camera.fov * 0.5));
       const glareExtent = SUN_GLARE_EXTENT_SOLAR_RADII;
-      const viewportHeight = Math.max(this.renderer.domElement.clientHeight, 1);
-      const solarRadiusPx = projectedRadiusNdc * viewportHeight * 0.5;
+      solarRadiusPx = projectedRadiusNdc * viewportHeight * 0.5;
+      opticalFx = 1 - THREE.MathUtils.smoothstep(solarRadiusPx, 22, 82);
       if (glareMat) {
         glareMat.uniforms.uViewportHeight.value = viewportHeight;
         glareMat.uniforms.uPointLike.value = 1 - THREE.MathUtils.smoothstep(solarRadiusPx, 2, 10);
-        glareMat.uniforms.uCameraFx.value = 1 - THREE.MathUtils.smoothstep(solarRadiusPx, 22, 82);
+        glareMat.uniforms.uCameraFx.value = opticalFx;
       }
 
       // Work only near the viewport; farther away both the glare plane and the
       // exposure response are invisible. The margin keeps an off-screen light
       // washing the edge before the photosphere itself enters the shot.
       if (centreDistanceNdc < 1.5 + projectedRadiusNdc * glareExtent) {
+        appearanceEligible = true;
         visibleFraction = this.computeVisibleSunFraction(toSun, sunDistance, solarAngularRadius);
         visibleFraction *= this.sunTransmissionThroughRings(toSun, sunDistance);
+        this.updateSunAtmosphereGrazing(toSun, sunDistance);
         targetExposure = targetSunExposure({
           projectedRadiusNdc,
           centerDistanceNdc: centreDistanceNdc,
@@ -2500,18 +2543,37 @@ export class PlanetariumMode {
       }
     }
 
+    if (!appearanceEligible) this.sunAtmosphereMix = 0;
+    if (prominenceMat) {
+      prominenceMat.uniforms.uCloseVisibility.value = inFront
+        ? THREE.MathUtils.smoothstep(solarRadiusPx, 55, 160)
+        : 0;
+    }
+    this.sunEmergenceFlash = advanceSunEmergenceFlash({
+      previousVisibleFraction: this.lastSunVisibleFraction,
+      visibleFraction,
+      flash: this.sunEmergenceFlash,
+      dt,
+      eligible: appearanceEligible,
+    });
+    this.lastSunVisibleFraction = appearanceEligible ? visibleFraction : 1;
+
     if (glareMat) {
       glareMat.uniforms.uVisibleFraction.value = visibleFraction;
+      glareMat.uniforms.uEmergenceFlash.value = this.sunEmergenceFlash;
+      glareMat.uniforms.uAtmosphereMix.value = this.sunAtmosphereMix;
+      glareMat.uniforms.uAtmosphereColor.value.copy(this.sunAtmosphereColor);
       // Corona gate: 1 when the strongest occluder is Sun-sized (a true
       // eclipse), 0 when a whole planet fills the sky in front of the Sun.
       // The occluder's size in solar radii also positions the shader's
       // carve-out of the eclipsing disc.
       const occluderAngularRadius = this.sunDominantOccluderAngularRadius;
-      const sunAngularRadius = Math.asin(THREE.MathUtils.clamp(SUN_DATA.radiusAU / sunDistance, 0, 0.999999));
-      const likeness = occluderAngularRadius > 0 ? sunAngularRadius / occluderAngularRadius : 0;
-      glareMat.uniforms.uEclipseLike.value = THREE.MathUtils.smoothstep(likeness, 0.35, 0.7);
+      const occluderToSunRatio = occluderAngularRadius > 0
+        ? occluderAngularRadius / solarAngularRadius
+        : 0;
+      glareMat.uniforms.uEclipseLike.value = eclipseOccluderLikeness(occluderToSunRatio);
       glareMat.uniforms.uOccluderRadii.value = occluderAngularRadius > 0
-        ? THREE.MathUtils.clamp(occluderAngularRadius / sunAngularRadius, 0.5, 3)
+        ? THREE.MathUtils.clamp(occluderToSunRatio, 0.5, 3)
         : 1;
     }
 
@@ -2521,7 +2583,67 @@ export class PlanetariumMode {
     const blend = 1 - Math.exp(-Math.max(dt, 0) / tau);
     this.sunExposure = THREE.MathUtils.lerp(this.sunExposure, targetExposure, blend);
     this.renderer.toneMappingExposure = this.sunExposure;
-    if (glareMat) glareMat.uniforms.uExposureScale.value = Math.sqrt(this.sunExposure);
+    const exposureScale = Math.sqrt(this.sunExposure);
+    if (sunMat) {
+      sunMat.uniforms.uAtmosphereMix.value = this.sunAtmosphereMix;
+      sunMat.uniforms.uAtmosphereColor.value.copy(this.sunAtmosphereColor);
+    }
+    if (glareMat) glareMat.uniforms.uExposureScale.value = exposureScale;
+    if (ghostMat) {
+      const offAxis = THREE.MathUtils.smoothstep(centreDistanceNdc, 0.12, 0.55);
+      const edgeFade = 1 - THREE.MathUtils.smoothstep(centreDistanceNdc, 1.02, 1.45);
+      const visibleEnergy = Math.pow(THREE.MathUtils.clamp(visibleFraction, 0, 1), 0.5);
+      ghostMat.uniforms.uSunNdc.value.set(this.tmpSunScreen.x, this.tmpSunScreen.y);
+      ghostMat.uniforms.uViewportPx.value.set(viewportWidth, viewportHeight);
+      ghostMat.uniforms.uGhostStrength.value = appearanceEligible
+        ? opticalFx * offAxis * edgeFade * visibleEnergy * 0.05
+        : 0;
+      ghostMat.uniforms.uExposureScale.value = exposureScale;
+      ghostMat.uniforms.uEmergenceFlash.value = this.sunEmergenceFlash;
+      ghostMat.uniforms.uAtmosphereMix.value = this.sunAtmosphereMix;
+      ghostMat.uniforms.uAtmosphereColor.value.copy(this.sunAtmosphereColor);
+    }
+  }
+
+  /** Warm and attenuate sunlight whose camera ray grazes a rendered atmosphere. */
+  private updateSunAtmosphereGrazing(sunDirection: THREE.Vector3, sunDistance: number): void {
+    this.sunAtmosphereMix = 0;
+    for (const planet of this.solarSystem?.planets ?? []) {
+      const config = ATMOSPHERES[planet.data.name];
+      if (!config || !planet.mesh.visible) continue;
+
+      planet.mesh.getWorldPosition(this.tmpSunOccluderPosition);
+      const offset = this.tmpSunAtmosphereOffset
+        .copy(this.tmpSunOccluderPosition)
+        .sub(this.camera.position);
+      const planeDistance = offset.dot(sunDirection);
+      if (!(planeDistance > 0) || planeDistance >= sunDistance) continue;
+
+      const closestDistance = Math.sqrt(Math.max(0, offset.lengthSq() - planeDistance * planeDistance));
+      planet.mesh.getWorldScale(this.tmpSunOccluderScale);
+      const solidRadius = planet.data.radiusAU * Math.max(
+        Math.abs(this.tmpSunOccluderScale.x),
+        Math.abs(this.tmpSunOccluderScale.y),
+        Math.abs(this.tmpSunOccluderScale.z),
+      );
+      const shellRadius = solidRadius * config.scale;
+      const solarBand = projectedSourceRadiusAtPlane(
+        SUN_DATA.radiusAU,
+        sunDistance,
+        planeDistance,
+      );
+      const inner = Math.max(0, solidRadius - solarBand);
+      const outer = shellRadius + solarBand;
+      if (closestDistance <= inner || closestDistance >= outer) continue;
+
+      const geometricStrength = closestDistance < solidRadius
+        ? THREE.MathUtils.smoothstep(closestDistance, inner, solidRadius)
+        : 1 - THREE.MathUtils.smoothstep(closestDistance, solidRadius, outer);
+      const strength = geometricStrength * THREE.MathUtils.clamp(0.62 + config.intensity * 0.55, 0, 1);
+      if (strength <= this.sunAtmosphereMix) continue;
+      this.sunAtmosphereMix = strength;
+      this.sunAtmosphereColor.setRGB(...config.sunsetColor);
+    }
   }
 
   /** Render-truth solar visibility from the angular overlap of drawn bodies.
@@ -2596,7 +2718,10 @@ export class PlanetariumMode {
       const inner = planet.data.radiusAU * cfg.innerFactor;
       const outer = planet.data.radiusAU * cfg.outerFactor;
       // Penumbral softening: the Sun's disc projected onto the ring plane.
-      const band = Math.max((SUN_DATA.radiusAU * t) / Math.max(sunDistance - t, 1e-9), 1e-7);
+      const band = Math.max(
+        projectedSourceRadiusAtPlane(SUN_DATA.radiusAU, sunDistance, t),
+        1e-7,
+      );
       const enter = THREE.MathUtils.smoothstep(radial, inner - band, inner + band);
       const exit = 1 - THREE.MathUtils.smoothstep(radial, outer - band, outer + band);
       const inside = enter * exit;
@@ -5370,6 +5495,17 @@ export class PlanetariumMode {
     }
     this.controls.target.copy(sunScene);
     return true;
+  }
+
+  /** Headless-QA readback for transient Sun optics and atmospheric grazing. */
+  devSunAppearance(): unknown {
+    return {
+      exposure: this.sunExposure,
+      visibleFraction: this.lastSunVisibleFraction,
+      emergenceFlash: this.sunEmergenceFlash,
+      atmosphereMix: this.sunAtmosphereMix,
+      atmosphereColor: `#${this.sunAtmosphereColor.getHexString()}`,
+    };
   }
 
   /** Headless-screenshot diagnostics: read back camera/body geometry. */

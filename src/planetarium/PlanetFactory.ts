@@ -17,8 +17,12 @@ import {
 import {
   sunGlareFragmentShader,
   sunGlareVertexShader,
+  sunLensGhostFragmentShader,
+  sunLensGhostVertexShader,
   sunPhotosphereFragmentShader,
   sunPhotosphereVertexShader,
+  sunProminenceFragmentShader,
+  sunProminenceVertexShader,
   SUN_GLARE_EXTENT_SOLAR_RADII,
 } from '../shared/shaders/sun';
 import { debugWarn } from '../shared/debug';
@@ -622,6 +626,8 @@ export function createPlanetariumSun(useBloom = true): THREE.Group {
   const sunMat = new THREE.ShaderMaterial({
     uniforms: {
       time: { value: 0 },
+      uAtmosphereMix: { value: 0 },
+      uAtmosphereColor: { value: new THREE.Color(1, 0.55, 0.24) },
     },
     vertexShader: sunPhotosphereVertexShader,
     fragmentShader: sunPhotosphereFragmentShader,
@@ -629,6 +635,27 @@ export function createPlanetariumSun(useBloom = true): THREE.Group {
 
   const mesh = new THREE.Mesh(geo, sunMat);
   group.add(mesh);
+
+  const prominenceMat = new THREE.ShaderMaterial({
+    uniforms: {
+      time: { value: 0 },
+      uCloseVisibility: { value: 0 },
+    },
+    vertexShader: sunProminenceVertexShader,
+    fragmentShader: sunProminenceFragmentShader,
+    transparent: true,
+    depthWrite: false,
+    depthTest: true,
+    blending: THREE.AdditiveBlending,
+    side: THREE.DoubleSide,
+  });
+  const prominences = new THREE.Mesh(
+    new THREE.SphereGeometry(SUN_DATA.radiusAU * 1.065, 96, 48),
+    prominenceMat,
+  );
+  prominences.name = 'Sun chromosphere';
+  prominences.renderOrder = 7;
+  group.add(prominences);
 
   // One analytic point-spread profile replaces two baked canvas gradients.
   // Its vertex shader billboards it; the controller supplies the visible
@@ -644,6 +671,9 @@ export function createPlanetariumSun(useBloom = true): THREE.Group {
       uEclipseLike: { value: 0 },
       uOccluderRadii: { value: 1 },
       uExposureScale: { value: 1 },
+      uEmergenceFlash: { value: 0 },
+      uAtmosphereMix: { value: 0 },
+      uAtmosphereColor: { value: new THREE.Color(1, 0.55, 0.24) },
       uMinHalfSizePx: { value: useBloom ? 18 : 22 },
       uViewportHeight: { value: Math.max(window.innerHeight, 1) },
     },
@@ -671,11 +701,66 @@ export function createPlanetariumSun(useBloom = true): THREE.Group {
   glare.frustumCulled = false;
   group.add(glare);
 
+  // Three tiny clip-space quads make one restrained optical ghost train. They
+  // share a draw call and never touch a full-screen buffer; the controller
+  // supplies the Sun's NDC position and fades them outside camera-like scales.
+  const ghostPositions: number[] = [];
+  const ghostFactors: number[] = [];
+  const ghostSizes: number[] = [];
+  const ghostTints: number[] = [];
+  const corners = [
+    -1, -1, 1, -1, 1, 1,
+    -1, -1, 1, 1, -1, 1,
+  ];
+  const ghosts = [
+    { factor: -0.28, sizePx: 24, tint: 0 },
+    { factor: -0.62, sizePx: 16, tint: 1 },
+    { factor: 0.22, sizePx: 11, tint: 2 },
+  ];
+  for (const ghost of ghosts) {
+    for (let i = 0; i < corners.length; i += 2) {
+      ghostPositions.push(corners[i], corners[i + 1], 0);
+      ghostFactors.push(ghost.factor);
+      ghostSizes.push(ghost.sizePx);
+      ghostTints.push(ghost.tint);
+    }
+  }
+  const ghostGeo = new THREE.BufferGeometry();
+  ghostGeo.setAttribute('position', new THREE.Float32BufferAttribute(ghostPositions, 3));
+  ghostGeo.setAttribute('aGhostFactor', new THREE.Float32BufferAttribute(ghostFactors, 1));
+  ghostGeo.setAttribute('aGhostSizePx', new THREE.Float32BufferAttribute(ghostSizes, 1));
+  ghostGeo.setAttribute('aGhostTint', new THREE.Float32BufferAttribute(ghostTints, 1));
+  const ghostMat = new THREE.ShaderMaterial({
+    uniforms: {
+      uSunNdc: { value: new THREE.Vector2() },
+      uViewportPx: { value: new THREE.Vector2(Math.max(window.innerWidth, 1), Math.max(window.innerHeight, 1)) },
+      uGhostStrength: { value: 0 },
+      uExposureScale: { value: 1 },
+      uEmergenceFlash: { value: 0 },
+      uAtmosphereMix: { value: 0 },
+      uAtmosphereColor: { value: new THREE.Color(1, 0.55, 0.24) },
+    },
+    vertexShader: sunLensGhostVertexShader,
+    fragmentShader: sunLensGhostFragmentShader,
+    transparent: true,
+    depthWrite: false,
+    depthTest: false,
+    blending: THREE.AdditiveBlending,
+    premultipliedAlpha: true,
+  });
+  const lensGhosts = new THREE.Mesh(ghostGeo, ghostMat);
+  lensGhosts.name = 'Sun lens ghosts';
+  lensGhosts.renderOrder = 9;
+  lensGhosts.frustumCulled = false;
+  group.add(lensGhosts);
+
   const light = new THREE.PointLight(0xfff5e0, 3, 0, 0.3);
   group.add(light);
 
   group.userData.sunMaterial = sunMat;
+  group.userData.sunProminenceMaterial = prominenceMat;
   group.userData.sunGlareMaterial = glareMat;
+  group.userData.sunLensGhostMaterial = ghostMat;
   return group;
 }
 

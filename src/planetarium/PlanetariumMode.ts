@@ -380,6 +380,12 @@ export class PlanetariumMode {
   private sunExposure = 1;
   private lastSunVisibleFraction = 1;
   private sunEmergenceFlash = 0;
+  // When set, the next Sun-shader frame reseeds the emergence-flash baseline so a
+  // one-frame jump in the Sun's visible fraction — teleport, landing, takeoff,
+  // restore, time set, event jump, surface-view entry — is never mistaken for a
+  // real limb clearing. Starts true so the first frame after construction seeds
+  // cleanly. See noteSunViewDiscontinuity().
+  private sunFlashResetPending = true;
   private sunAtmosphereMix = 0;
   private readonly sunAtmosphereColor = new THREE.Color(1, 0.55, 0.24);
   /** Set by computeVisibleSunFraction: angular radius of the strongest solar
@@ -940,6 +946,9 @@ export class PlanetariumMode {
     this.timeState.currentUtcMs = Date.now();
     this.rebuildPlanetPositions();
     this.updateTimeUI();
+    // A clock jump moves every body at once — the Sun's exposed fraction can
+    // step hard, so reseed the flash baseline instead of reading it as a rise.
+    this.noteSunViewDiscontinuity();
     // Clock jump invalidates the Observatory panel's upcoming-events list.
     this.startObservatoryEventSearch();
   }
@@ -2465,6 +2474,17 @@ export class PlanetariumMode {
     }
   }
 
+  /** Mark that the camera or scene just jumped, so the next Sun-shader frame
+   *  reseeds the emergence-flash baseline with that frame's own visible fraction
+   *  instead of reading the jump as a rise. Call from every discontinuity where
+   *  the Sun's exposed fraction can step in a single frame — teleport, landing,
+   *  takeoff, restore, time set, event jump, surface-view entry — otherwise the
+   *  glare burst meant for a limb clearing fires on the jump and reads as a
+   *  glitch. The stored flash keeps decaying on its own. */
+  private noteSunViewDiscontinuity(): void {
+    this.sunFlashResetPending = true;
+  }
+
   private updateSunShader(dt: number) {
     if (!this.solarSystem) return;
     const sunMat = this.solarSystem.sun.userData.sunMaterial as THREE.ShaderMaterial | undefined;
@@ -2491,6 +2511,9 @@ export class PlanetariumMode {
         eligible: false,
       });
       this.lastSunVisibleFraction = 1;
+      // This path already pins the baseline and runs ineligible (no flash can
+      // fire), so any queued discontinuity reseed is moot — consume it.
+      this.sunFlashResetPending = false;
       this.sunAtmosphereMix = 0;
       if (sunMat) sunMat.uniforms.uAtmosphereMix.value = 0;
       if (glareMat) {
@@ -2502,6 +2525,9 @@ export class PlanetariumMode {
         glareMat.uniforms.uVeilHalfPx.value = 0;
       }
       if (ghostMat) ghostMat.uniforms.uGhostStrength.value = 0;
+      // No limb sits in front of a camera buried in the photosphere; kill the
+      // prominence shell's close-up ring so it can't hang as a stale halo.
+      if (prominenceMat) prominenceMat.uniforms.uCloseVisibility.value = 0;
       const insideBlend = 1 - Math.exp(-Math.max(dt, 0) / 0.9);
       this.sunExposure = THREE.MathUtils.lerp(this.sunExposure, 1, insideBlend);
       this.renderer.toneMappingExposure = this.sunExposure;
@@ -2515,6 +2541,9 @@ export class PlanetariumMode {
     const viewportHeight = Math.max(this.renderer.domElement.clientHeight, 1);
     let targetExposure = 1;
     let visibleFraction = 1;
+    // Body-only exposed fraction (no ring transmission) — the emergence flash
+    // reads this so a soft ring-gap crossing can't strobe it.
+    let bodyVisibleFraction = 1;
     let centreDistanceNdc = Infinity;
     let opticalFx = 0;
     let solarRadiusPx = 0;
@@ -2561,9 +2590,15 @@ export class PlanetariumMode {
       const veilHalfNdcMax = 0.55 * veilReachGeom * 2;
       if (centreDistanceNdc < 1.5 + projectedRadiusNdc * glareExtent + veilHalfNdcMax) {
         appearanceEligible = true;
-        visibleFraction = this.computeVisibleSunFraction(toSun, sunDistance, solarAngularRadius);
-        visibleFraction *= this.sunTransmissionThroughRings(toSun, sunDistance);
-        this.updateSunAtmosphereGrazing(toSun, sunDistance);
+        bodyVisibleFraction = this.computeVisibleSunFraction(toSun, sunDistance, solarAngularRadius);
+        // Rings are translucent dimmers, not a solid limb. Their transmission
+        // dims the disc's brightness (exposure, glare, veil, ghost all read the
+        // ring-multiplied fraction below) but is kept out of the emergence flash:
+        // a ring edge is spatially near-hard, so a cruise past a gap would step
+        // the fraction and strobe a false "clearing" pulse. The flash reads
+        // bodyVisibleFraction only.
+        visibleFraction = bodyVisibleFraction * this.sunTransmissionThroughRings(toSun, sunDistance);
+        this.updateSunAtmosphereGrazing(toSun, sunDistance, solarAngularRadius);
         targetExposure = targetSunExposure({
           projectedRadiusNdc,
           centerDistanceNdc: centreDistanceNdc,
@@ -2586,14 +2621,23 @@ export class PlanetariumMode {
         ? THREE.MathUtils.smoothstep(solarRadiusPx, 55, 160)
         : 0;
     }
+    // A queued view discontinuity reseeds the baseline with THIS frame's
+    // body-only fraction, so the advance below sees previous === current and no
+    // artificial rise survives the jump. The stored flash keeps decaying.
+    if (this.sunFlashResetPending) {
+      this.lastSunVisibleFraction = appearanceEligible ? bodyVisibleFraction : 1;
+      this.sunFlashResetPending = false;
+    }
     this.sunEmergenceFlash = advanceSunEmergenceFlash({
       previousVisibleFraction: this.lastSunVisibleFraction,
-      visibleFraction,
+      // Body-only: a flash marks a solid limb clearing, not the soft step of
+      // crossing a ring gap (rings live in visibleFraction, for brightness only).
+      visibleFraction: bodyVisibleFraction,
       flash: this.sunEmergenceFlash,
       dt,
       eligible: appearanceEligible,
     });
-    this.lastSunVisibleFraction = appearanceEligible ? visibleFraction : 1;
+    this.lastSunVisibleFraction = appearanceEligible ? bodyVisibleFraction : 1;
 
     if (glareMat) {
       glareMat.uniforms.uVisibleFraction.value = visibleFraction;
@@ -2645,8 +2689,15 @@ export class PlanetariumMode {
     }
   }
 
-  /** Warm and attenuate sunlight whose camera ray grazes a rendered atmosphere. */
-  private updateSunAtmosphereGrazing(sunDirection: THREE.Vector3, sunDistance: number): void {
+  /** Warm and attenuate sunlight whose camera ray grazes a rendered atmosphere.
+   *  `solarAngularRadius` bounds the tint by the occluder's apparent size — a
+   *  distant planet whose limb the sightline threads can only colour the sliver
+   *  of the Sun its disc actually spans. */
+  private updateSunAtmosphereGrazing(
+    sunDirection: THREE.Vector3,
+    sunDistance: number,
+    solarAngularRadius: number,
+  ): void {
     this.sunAtmosphereMix = 0;
     for (const planet of this.solarSystem?.planets ?? []) {
       const config = ATMOSPHERES[planet.data.name];
@@ -2679,7 +2730,16 @@ export class PlanetariumMode {
       const geometricStrength = closestDistance < solidRadius
         ? THREE.MathUtils.smoothstep(closestDistance, inner, solidRadius)
         : 1 - THREE.MathUtils.smoothstep(closestDistance, solidRadius, outer);
-      const strength = geometricStrength * THREE.MathUtils.clamp(0.62 + config.intensity * 0.55, 0, 1);
+      // How much of the solar disc this occluder can actually cover: a speck of a
+      // planet transiting from far away spans a hair of the Sun and barely warms
+      // it, while a looming planet spans the whole disc and floods it at full
+      // strength. offset.length() is the camera→planet-centre distance already in
+      // hand (no new allocation).
+      const occluderAngularRadius = Math.asin(THREE.MathUtils.clamp(shellRadius / offset.length(), 0, 1));
+      const angularCoverage = THREE.MathUtils.clamp(occluderAngularRadius / solarAngularRadius, 0, 1);
+      const strength = geometricStrength
+        * THREE.MathUtils.clamp(0.62 + config.intensity * 0.55, 0, 1)
+        * angularCoverage;
       if (strength <= this.sunAtmosphereMix) continue;
       this.sunAtmosphereMix = strength;
       this.sunAtmosphereColor.setRGB(...config.sunsetColor);
@@ -4166,6 +4226,9 @@ export class PlanetariumMode {
           this.timeState.currentUtcMs = utcMs;
           this.rebuildPlanetPositions();
           this.updateTimeUI();
+          // A typed date can leap the bodies far in one step — reseed the flash
+          // baseline so the new geometry doesn't read as a Sun emergence.
+          this.noteSunViewDiscontinuity();
           this.startObservatoryEventSearch();
         }
       });
@@ -5335,6 +5398,9 @@ export class PlanetariumMode {
     // body must not ramp-limit the arrival scene's first seconds, and no
     // partial clear-hold survives either.
     this.bodyCap = initialBodyCapState();
+    // The Sun can swing from hidden-behind-the-old-body to fully exposed in one
+    // frame; reseed the flash baseline so the arrival doesn't glare.
+    this.noteSunViewDiscontinuity();
 
     // Don't touch cruise speedMultiplier — the system throttle automatically
     // slows the player near the planet. Just ensure cruise is at least 1c
@@ -5531,7 +5597,9 @@ export class PlanetariumMode {
     if (offNdcX !== 0 || offNdcY !== 0) {
       const halfV = Math.tan(THREE.MathUtils.degToRad(cam.fov / 2));
       cam.rotateY(Math.atan(halfV * cam.aspect * offNdcX));
-      cam.rotateX(Math.atan(halfV * offNdcY));
+      // Pitching the camera up (+rotateX) drops the target lower on screen, so a
+      // positive screen-NDC y offset (Sun above centre) needs a downward pitch.
+      cam.rotateX(-Math.atan(halfV * offNdcY));
     }
     this.controls.target.copy(sunScene);
     return true;
@@ -6448,6 +6516,9 @@ export class PlanetariumMode {
   private jumpToShadowEvent(event: ShadowEvent) {
     // A jump moves the clock — every ∅ the open picker baked is now wrong.
     this.closeSurfaceTargetMenu();
+    // The clock leaps to the event and reframes; reseed the flash baseline so
+    // the jump's one-frame visibility step doesn't fire a Sun emergence.
+    this.noteSunViewDiscontinuity();
     this.lastObservatoryEvent = event;
     // Park shortly before the peak with the clock running at 1× real time —
     // the user watches the event happen instead of landing on a frozen peak.
@@ -6481,6 +6552,9 @@ export class PlanetariumMode {
   private handleObservatoryJump(type: EventType, direction: 1 | -1) {
     // Same clock-move staleness as the shadow jumps (which close it again).
     this.closeSurfaceTargetMenu();
+    // Same clock-leap-and-reframe as the shadow jumps: reseed the flash baseline
+    // (the eclipse branch also routes through jumpToShadowEvent, which reseeds).
+    this.noteSunViewDiscontinuity();
     if (type === 'lunar-eclipse' || type === 'solar-eclipse') {
       // Eclipse jumps run on the shadow engine: it lands on the true peak
       // (not the syzygy instant) and knows the classification for the toast.
@@ -6674,6 +6748,12 @@ export class PlanetariumMode {
   enterSurfaceView(target?: SurfaceTarget, entryContext?: SurfaceEntryContext, immediate = false) {
     const landedInfo = this.surfaceLandedInfo();
     if (!landedInfo) return;
+    // Entering surface view drops the landed system's 5%-of-parent mesh-scale
+    // floor, so a moon shrinks to its true silhouette in one frame — its Sun
+    // occlusion can fall and the exposed fraction rise. Re-pointing/event jumps
+    // also move the clock. Reseed the flash baseline so neither reads as a real
+    // limb clearing (the ongoing per-frame emergence is untouched).
+    this.noteSunViewDiscontinuity();
     // Entering (or re-pointing — event jumps route here too) supersedes any
     // open picker; this also makes the pick handler self-closing.
     this.closeSurfaceTargetMenu();
@@ -7230,6 +7310,9 @@ export class PlanetariumMode {
    */
   private applyLandedTarget(target: NonNullable<LandedTarget>, preserveOrbitPair = false) {
     this.moonArrivalCameraLook = null;
+    // Landing (and the landed→landed vantage swap) can flip the Sun's exposed
+    // fraction in one frame; reseed the flash baseline so it doesn't glare.
+    this.noteSunViewDiscontinuity();
     // Every landing path funnels through here (enterLandedMode, restoreState,
     // the Observatory menu's landed→landed re-land) — clearing the vantage
     // pair here, not per call site, is what keeps a stale pair from
@@ -7710,6 +7793,9 @@ export class PlanetariumMode {
     // survive into it. Reset here — the single takeoff chokepoint (also the
     // excursion Leave and deactivate paths) — mirroring the teleport reset.
     this.bodyCap = initialBodyCapState();
+    // Takeoff re-exposes the sky the ground was blocking; reseed the flash
+    // baseline so the departure frame doesn't glare.
+    this.noteSunViewDiscontinuity();
     // Back to cruise: no landed system means no moons owed a warm upload.
     setWarmEligibleMoonParents(new Set());
     // Leave sits in the cluster above the deck's backdrop, so takeoff can
@@ -8030,6 +8116,9 @@ export class PlanetariumMode {
     // instance (deactivate→reactivate) isn't throttled — or auto-cleared —
     // by values left over from wherever the ship last was.
     this.bodyCap = initialBodyCapState();
+    // The ship can reappear anywhere relative to the Sun; reseed the flash
+    // baseline so the resumed view doesn't glare on its first frame.
+    this.noteSunViewDiscontinuity();
     this.player.distanceTraveled = saved.distanceTraveled;
     this.player.timeElapsed = saved.timeElapsed;
     this.player.visitedPlanets = new Set(saved.visitedPlanets);

@@ -55,6 +55,12 @@ export interface SunExposureInput {
  * treatment; their occultations keep the ordinary glare response instead.
  */
 export function eclipseOccluderLikeness(occluderToSunRadiusRatio: number): number {
+  // Ratio 1 is a deliberate binary boundary: an occluder smaller than the Sun
+  // (annular geometry) leaves a photosphere ring all the way around, which must
+  // stay blinding — so it gets no corona at all rather than a faded one. Real
+  // second contact is abrupt too. The cost is a one-frame corona pop if an
+  // occluder's angular size grows through exactly Sun-sized mid-flight; that
+  // rare case is accepted rather than softened into a physically wrong reveal.
   if (!(occluderToSunRadiusRatio >= 1)) return 0;
   const sunToOccluderRatio = 1 / occluderToSunRadiusRatio;
   return THREE.MathUtils.smoothstep(sunToOccluderRatio, 0.35, 0.7);

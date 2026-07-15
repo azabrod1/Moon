@@ -10,6 +10,7 @@ import {
   discDiameterPx,
   moonDotMagnitude,
   moonDotVisual,
+  parentDominanceFade,
   phaseIllumination,
   pickMoonTextureUpgrade,
   systemEdgeFade,
@@ -263,6 +264,33 @@ describe('moonDots — system-edge fade', () => {
   });
 });
 
+describe('moonDots — parent-dominance gate', () => {
+  it('is 0 while the parent is dot-scale and 1 once it anchors the scene', () => {
+    expect(parentDominanceFade(0)).toBe(0);
+    expect(parentDominanceFade(P.parentGateStartPx)).toBe(0);
+    expect(parentDominanceFade(P.parentGateFullPx)).toBe(1);
+    expect(parentDominanceFade(500)).toBe(1);
+  });
+
+  it('is monotone across the ramp', () => {
+    let prev = -1;
+    for (let px = 0; px <= P.parentGateFullPx + 5; px += 1) {
+      const f = parentDominanceFade(px);
+      expect(f).toBeGreaterThanOrEqual(prev - 1e-9);
+      prev = f;
+    }
+  });
+
+  it('multiplies into the same fade slot as the system edge (composition)', () => {
+    // A mid-ramp parent scales the dot alpha proportionally, exactly like edgeFade.
+    const mid = parentDominanceFade((P.parentGateStartPx + P.parentGateFullPx) / 2);
+    expect(mid).toBeCloseTo(0.5, 6); // smoothstep midpoint
+    const full = visualAt(0.1, { discPx: 0.5, edgeFade: 1 }).alpha;
+    const gated = visualAt(0.1, { discPx: 0.5, edgeFade: mid }).alpha;
+    expect(gated).toBeCloseTo(full * mid, 6);
+  });
+});
+
 describe('moonDots — texture upgrade pick (threshold + throttle + non-starvation)', () => {
   it('returns none below the threshold', () => {
     expect(
@@ -312,6 +340,8 @@ describe('moonDots — current tuning (defaults)', () => {
     expect(P.magCeiling).toBe(0.2);
     expect(P.sizeMaxPx).toBe(4.2);
     expect(P.discMatchLum).toBe(0.6);
+    expect(P.parentGateStartPx).toBe(8);
+    expect(P.parentGateFullPx).toBe(22);
     expect(P.targetMinIntensity).toBe(0.04);
     // Below the ~87px disc a deck arrival parks at, so arrivals sharpen.
     expect(P.texUpgradeDiscPx).toBe(80);

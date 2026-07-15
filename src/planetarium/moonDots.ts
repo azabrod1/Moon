@@ -81,6 +81,14 @@ export interface MoonDotParams {
    *  visibility threshold distance, so a system's dots never appear as a
    *  one-frame constellation. */
   systemEdgeFadeFrac: number;
+  /** Parent-dominance gate (parent planet's disc DIAMETER, screen px): dots ramp
+   *  from nothing at START to full at FULL as the parent's own disc resolves.
+   *  From far away the planet itself is dot-scale — physically it outshines its
+   *  moons a thousandfold, but the tonemapped disc can't say so, and bright-star
+   *  points beside a planet-sized blob read as equals. So the moons hold back
+   *  until the planet visually dominates. */
+  parentGateStartPx: number;
+  parentGateFullPx: number;
   /** Texture upgrade-on-approach (feature B): re-render a procedural moon sharper
    *  once its disc diameter passes this many screen px. */
   texUpgradeDiscPx: number;
@@ -100,6 +108,8 @@ export const MOON_DOT_PARAMS: MoonDotParams = {
   targetMinIntensity: 0.04,
   faintExtendMag: 1.6,
   systemEdgeFadeFrac: 0.15,
+  parentGateStartPx: 8,
+  parentGateFullPx: 22,
   // Deck arrivals park a moon's disc at ~87 px (the 5° standoff), so the
   // threshold sits below that: arriving at a procedural moon sharpens it.
   texUpgradeDiscPx: 80,
@@ -283,6 +293,20 @@ export function systemEdgeFade(
 ): number {
   if (params.systemEdgeFadeFrac <= 0 || thresholdAU <= 0) return 1;
   return clamp((thresholdAU - distToPlayerAU) / (thresholdAU * params.systemEdgeFadeFrac), 0, 1);
+}
+
+/**
+ * Parent-dominance fade: 0 while the parent planet's own disc is at or below
+ * parentGateStartPx (the system is dot-scale — no moon dots beside a dot-sized
+ * planet), ramping to 1 at parentGateFullPx where the planet unambiguously
+ * anchors the scene. Multiplies into the same per-system fade slot as the
+ * system-edge fade.
+ */
+export function parentDominanceFade(
+  parentDiscPx: number,
+  params: MoonDotParams = MOON_DOT_PARAMS,
+): number {
+  return smoothstep(params.parentGateStartPx, params.parentGateFullPx, parentDiscPx);
 }
 
 /**

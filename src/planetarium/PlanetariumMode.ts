@@ -80,6 +80,7 @@ import {
   chromaticityRGB,
   discDiameterPx,
   moonDotVisual,
+  parentDominanceFade,
   systemEdgeFade,
   type MoonDotParams,
 } from './moonDots';
@@ -1718,7 +1719,17 @@ export class PlanetariumMode {
     for (const planet of this.solarSystem.planets) {
       const moons = this.planetMoons.get(planet.data.name);
       if (!moons) continue;
-      const edgeFade = this.moonSystemEdgeFade.get(planet.data.name) ?? 0;
+      // Fade = system-edge (no one-frame constellations at the visibility
+      // threshold) × parent dominance (no bright-star points beside a planet
+      // that is itself only a few pixels — the moons wait for the planet to
+      // anchor the scene).
+      let edgeFade = this.moonSystemEdgeFade.get(planet.data.name) ?? 0;
+      if (edgeFade > 0) {
+        planet.group.getWorldPosition(this.tmpDotMoonPos);
+        const pDist = this.tmpDotMoonPos.distanceTo(cam);
+        const parentDiscPx = discDiameterPx(planet.data.radiusAU, pDist, fovDeg, canvasH);
+        edgeFade *= parentDominanceFade(parentDiscPx, params);
+      }
       for (const m of moons) {
         const i = idx++;
         // Same gate as the mesh: only a shown (visible & painted) moon dots, and

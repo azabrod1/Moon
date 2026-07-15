@@ -88,6 +88,7 @@ import { MoonPainter } from './world/MoonPainter';
 import { ProceduralMoonTexturer } from './world/ProceduralMoonTexturer';
 import { captureDeviceTextureCaps } from './world/texturePolicy';
 import { planetshineIntensity } from './world/planetshine';
+import { smoothShadeFraction } from './world/shadeSmoothing';
 import { debugError } from '../shared/debug';
 import { GyroSteering } from './input/GyroSteering';
 import { SurfaceLook } from './input/SurfaceLook';
@@ -2149,6 +2150,7 @@ export class PlanetariumMode {
     if (!this.solarSystem) return;
     const PLANETSHINE_GAIN = 500; // lift faint physical planetshine to a visible night-side glow
     const PLANETSHINE_MAX = 0.12; // cap well below daylight; large/near parents (Jupiter) sit at the cap
+    const shadeNowMs = performance.now(); // wall clock for the applied-shading limiter
     // Nearest system with textures still queued — the background drain paints it
     // first (you're likeliest to reach it next). Tracked across the planet loop.
     let nearestPending: string | null = null;
@@ -2239,10 +2241,27 @@ export class PlanetariumMode {
           m.data.radiusKm,
           this.moonShading,
         );
+        // Wall-clock limiter on the APPLIED fraction: at warp an immersion
+        // compresses below one frame and the raw value strobes bright↔black;
+        // the shown tint ramps instead. The blood-moon branch stays held while
+        // the smoothed value is under its red floor — the branches only meet
+        // continuously above it.
+        const smoothedShade = smoothShadeFraction(
+          this.moonShading.sunVisibleFraction,
+          m.shadeSmoothed,
+          shadeNowMs - (m.shadeStampMs ?? 0),
+        );
+        m.shadeSmoothed = smoothedShade;
+        m.shadeStampMs = shadeNowMs;
+        m.shadeUmbraSticky =
+          this.moonShading.inUmbra ||
+          (m.shadeUmbraSticky === true && smoothedShade < PlanetariumMode.BLOOD_MOON_FLOOR_R);
+        this.moonShading.sunVisibleFraction = smoothedShade;
+        this.moonShading.inUmbra = m.shadeUmbraSticky;
         this.applyMoonShading(m, this.moonShading);
         // Cache this frame's sun-visible fraction so the dot pass reuses it for
         // eclipse dimming instead of recomputing the shading geometry.
-        m.dotSunVisibleFraction = this.moonShading.sunVisibleFraction;
+        m.dotSunVisibleFraction = smoothedShade;
 
         if (m.fx) {
           m.fx.uSunDirWorld.value
@@ -2321,12 +2340,21 @@ export class PlanetariumMode {
    * atmosphere we model. The branches meet continuously: at first umbral
    * contact the sun-visible fraction is still above every red-floor channel.
    */
+  /** Red channel of the blood-moon floor: above this the red and gray branches
+   *  agree, so it is also the release level for the smoothed-shading umbra
+   *  hold. */
+  private static readonly BLOOD_MOON_FLOOR_R = 0.3;
+
   private applyMoonShading(m: MoonMesh, shading: MoonShadingState) {
     const material = m.mesh.material as THREE.MeshStandardMaterial;
     const fraction = shading.sunVisibleFraction;
     const isEarthMoon = m.data.name === 'Moon' && m.data.parentPlanet === 'Earth';
     if (isEarthMoon && shading.inUmbra) {
-      material.color.setRGB(Math.max(fraction, 0.3), Math.max(fraction, 0.07), Math.max(fraction, 0.05));
+      material.color.setRGB(
+        Math.max(fraction, PlanetariumMode.BLOOD_MOON_FLOOR_R),
+        Math.max(fraction, 0.07),
+        Math.max(fraction, 0.05),
+      );
     } else {
       material.color.setScalar(Math.max(fraction, 0.03));
     }

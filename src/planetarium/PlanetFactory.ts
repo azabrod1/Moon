@@ -770,6 +770,13 @@ export interface MoonMesh {
   dotSunVisibleFraction?: number;
   dotScreenAlpha?: number;
   dotScreenSizePx?: number;
+  /** Applied-shading limiter state (world/shadeSmoothing): the smoothed
+   *  sun-visible fraction actually shown, its wall-clock stamp, and whether the
+   *  blood-moon tint is held while the smoothed value is still under the red
+   *  floor. Transient presentation state — the astronomy stays raw. */
+  shadeSmoothed?: number;
+  shadeStampMs?: number;
+  shadeUmbraSticky?: boolean;
 }
 
 /**

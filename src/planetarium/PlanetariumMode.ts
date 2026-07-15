@@ -5067,9 +5067,8 @@ export class PlanetariumMode {
     const p0 = this.prevPlayerPos;
     const forward = this.player.getForwardDirection();
     this.forEachGovernedMoon((x, y, z, renderedR) => {
-      // Full lunar-scale clearance would exceed a tiny moon's own standoff,
-      // so it saturates at one rendered radius.
-      const collisionR = renderedR + Math.min(SHIP_CLEARANCE_AU, renderedR);
+      // Same clearance bubble as the arrival standoff and camera safety.
+      const collisionR = moonCollisionRadius(renderedR, SHIP_CLEARANCE_AU);
       const dx = this.player.posX - p0.x;
       const dy = this.player.posY - p0.y;
       const dz = this.player.posZ - p0.z;

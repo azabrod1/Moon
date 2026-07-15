@@ -421,6 +421,7 @@ function installDevHooks() {
       geometries: renderer.info.memory.geometries,
       textures: renderer.info.memory.textures,
       programs: renderer.info.programs?.length ?? 0,
+      exposure: renderer.toneMappingExposure,
     }),
   };
   debugLog('Dev hooks installed (window.__moon)');

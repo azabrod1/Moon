@@ -110,6 +110,7 @@ import {
 } from './surfaceView';
 import { DEG2RAD } from '../shared/math/angles';
 import { landedFrameCamDistAU, landedMinDistanceAU, LANDED_NEAR_AU } from './landedView';
+import { circleOcclusionFraction, targetSunExposure } from './sunAppearance';
 import {
   SHIP_CLEARANCE_AU,
   CRUISE_CAM_DIST_AU,
@@ -355,6 +356,13 @@ export class PlanetariumMode {
   private tmpLocalSunDir = new THREE.Vector3();
   private tmpInvGroupQuat = new THREE.Quaternion();
   private tmpShadingParentPos = new THREE.Vector3();
+  private sunExposure = 1;
+  private tmpSunDirection = new THREE.Vector3();
+  private tmpSunCameraForward = new THREE.Vector3();
+  private tmpSunScreen = new THREE.Vector3();
+  private tmpSunOccluderPosition = new THREE.Vector3();
+  private tmpSunOccluderDirection = new THREE.Vector3();
+  private tmpSunOccluderScale = new THREE.Vector3();
   private moonShading: MoonShadingState = { sunVisibleFraction: 1, inUmbra: false };
   // Landed-system shadow visuals: transit spots always on, guides behind the
   // Observatory panel toggle (session-only, deliberately not persisted).
@@ -935,6 +943,8 @@ export class PlanetariumMode {
 
   async activate(onProgress?: (progress: PlanetariumActivationProgress) => void): Promise<void> {
     this.active = true;
+    this.sunExposure = 1;
+    this.renderer.toneMappingExposure = 1;
     // Compile + validate the GPU texturer once, before the visibility gate can
     // run (the gate paints during update(), which only runs while active). The
     // validation makes the GPU path fail closed to CPU; idempotent across calls.
@@ -1187,6 +1197,8 @@ export class PlanetariumMode {
     }
 
     this.active = false;
+    this.sunExposure = 1;
+    this.renderer.toneMappingExposure = 1;
 
     // Hand the camera back on the fixed near plane — another mode (or a
     // reactivation's first landed frame) must never inherit cruise's
@@ -2421,6 +2433,121 @@ export class PlanetariumMode {
     if (sunMat) {
       sunMat.uniforms.time.value += dt;
     }
+
+    const glareMat = this.solarSystem.sun.userData.sunGlareMaterial as THREE.ShaderMaterial | undefined;
+    const toSun = this.tmpSunDirection
+      .copy(this.solarSystem.sun.position)
+      .sub(this.camera.position);
+    const sunDistance = toSun.length();
+    if (!(sunDistance > SUN_DATA.radiusAU)) {
+      if (glareMat) glareMat.uniforms.uVisibleFraction.value = 1;
+      return;
+    }
+
+    toSun.multiplyScalar(1 / sunDistance);
+    const inFront = toSun.dot(this.camera.getWorldDirection(this.tmpSunCameraForward)) > 0;
+    let targetExposure = 1;
+    let visibleFraction = 1;
+
+    if (inFront) {
+      const solarAngularRadius = Math.asin(THREE.MathUtils.clamp(SUN_DATA.radiusAU / sunDistance, 0, 0.999999));
+      this.tmpSunScreen.copy(this.solarSystem.sun.position).project(this.camera);
+      const centreDistanceNdc = Math.hypot(this.tmpSunScreen.x, this.tmpSunScreen.y);
+      const projectedRadiusNdc = Math.tan(solarAngularRadius)
+        / Math.tan(THREE.MathUtils.degToRad(this.camera.fov * 0.5));
+      const glareExtent = (glareMat?.uniforms.uExtent?.value as number | undefined) ?? 8;
+      const viewportHeight = Math.max(this.renderer.domElement.clientHeight, 1);
+      const solarRadiusPx = projectedRadiusNdc * viewportHeight * 0.5;
+      if (glareMat) {
+        glareMat.uniforms.uViewportHeight.value = viewportHeight;
+        glareMat.uniforms.uPointLike.value = 1 - THREE.MathUtils.smoothstep(solarRadiusPx, 2, 10);
+        glareMat.uniforms.uCameraFx.value = 1 - THREE.MathUtils.smoothstep(solarRadiusPx, 22, 82);
+      }
+
+      // Work only near the viewport; farther away both the glare plane and the
+      // exposure response are invisible. The margin keeps an off-screen light
+      // washing the edge before the photosphere itself enters the shot.
+      if (centreDistanceNdc < 1.5 + projectedRadiusNdc * glareExtent) {
+        visibleFraction = this.computeVisibleSunFraction(toSun, sunDistance, solarAngularRadius);
+        targetExposure = targetSunExposure({
+          projectedRadiusNdc,
+          centerDistanceNdc: centreDistanceNdc,
+          visibleFraction,
+        });
+      }
+    }
+
+    if (glareMat) glareMat.uniforms.uVisibleFraction.value = visibleFraction;
+
+    // Eyes/cameras clamp down quickly on a bright source and recover more
+    // slowly into darkness. Exponential smoothing is frame-rate independent.
+    const tau = targetExposure < this.sunExposure ? 0.12 : 0.9;
+    const blend = 1 - Math.exp(-Math.max(dt, 0) / tau);
+    this.sunExposure = THREE.MathUtils.lerp(this.sunExposure, targetExposure, blend);
+    this.renderer.toneMappingExposure = this.sunExposure;
+  }
+
+  /** Render-truth solar visibility from the angular overlap of drawn bodies. */
+  private computeVisibleSunFraction(
+    sunDirection: THREE.Vector3,
+    sunDistance: number,
+    sunAngularRadius: number,
+  ): number {
+    let visible = 1;
+
+    for (const planet of this.solarSystem?.planets ?? []) {
+      visible *= 1 - this.sunOcclusionByMesh(
+        planet.mesh,
+        sunDirection,
+        sunDistance,
+        sunAngularRadius,
+      );
+      if (visible < 1e-4) return 0;
+    }
+    for (const moons of this.planetMoons.values()) {
+      for (const moon of moons) {
+        visible *= 1 - this.sunOcclusionByMesh(
+          moon.mesh,
+          sunDirection,
+          sunDistance,
+          sunAngularRadius,
+        );
+        if (visible < 1e-4) return 0;
+      }
+    }
+    return THREE.MathUtils.clamp(visible, 0, 1);
+  }
+
+  private sunOcclusionByMesh(
+    mesh: THREE.Mesh,
+    sunDirection: THREE.Vector3,
+    sunDistance: number,
+    sunAngularRadius: number,
+  ): number {
+    if (!mesh.visible) return 0;
+
+    mesh.getWorldPosition(this.tmpSunOccluderPosition);
+    const bodyDirection = this.tmpSunOccluderDirection
+      .copy(this.tmpSunOccluderPosition)
+      .sub(this.camera.position);
+    const bodyDistance = bodyDirection.length();
+    if (!(bodyDistance > 0) || bodyDistance >= sunDistance) return 0;
+
+    const geometry = mesh.geometry;
+    if (!geometry.boundingSphere) geometry.computeBoundingSphere();
+    const localRadius = geometry.boundingSphere?.radius ?? 0;
+    mesh.getWorldScale(this.tmpSunOccluderScale);
+    const renderedRadius = localRadius * Math.max(
+      Math.abs(this.tmpSunOccluderScale.x),
+      Math.abs(this.tmpSunOccluderScale.y),
+      Math.abs(this.tmpSunOccluderScale.z),
+    );
+    if (!(renderedRadius > 0)) return 0;
+
+    bodyDirection.multiplyScalar(1 / bodyDistance);
+    const separation = Math.acos(THREE.MathUtils.clamp(bodyDirection.dot(sunDirection), -1, 1));
+    const angularRadius = Math.asin(THREE.MathUtils.clamp(renderedRadius / bodyDistance, 0, 0.999999));
+    return circleOcclusionFraction(sunAngularRadius, angularRadius, separation);
   }
 
   private updateOrbitLineVisibility() {

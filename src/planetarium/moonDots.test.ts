@@ -495,7 +495,7 @@ describe('moonDots — current tuning (defaults)', () => {
   it('pins the crossfade window, scene ceiling, and the target floor', () => {
     expect(P.fadeStartPx).toBe(3.5);
     expect(P.fadeEndPx).toBe(10.0);
-    expect(P.magCeiling).toBe(0.2);
+    expect(P.magCeiling).toBe(1.0);
     expect(P.sizeMaxPx).toBe(4.2);
     expect(P.discMatchLum).toBe(0.6);
     expect(P.parentGateStartPx).toBe(8);

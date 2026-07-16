@@ -45,8 +45,11 @@ export interface MoonDotParams {
    *  than a star of this magnitude. The planet discs are tonemapped far below
    *  their physical brightness, so an uncapped photometric point (a Galilean at
    *  close range is genuinely Venus-class, mag −5) would out-render its own
-   *  parent planet — five beacons dwarfing a modest Jupiter. Clamping to
-   *  brightest-star class keeps the parent the visual anchor of its system. */
+   *  parent planet — five beacons dwarfing a modest Jupiter. The ceiling sits at
+   *  first-magnitude class (1.0, was 0.2): the saturated bright end is what
+   *  bloom inflates into a fat halo (measured 12px → 4px beside a 45px Jupiter),
+   *  and clamping dimmer keeps the parent the visual anchor while leaving
+   *  every fainter-than-ceiling dot's photometric differences untouched. */
   magCeiling: number;
   /** Hard cap on the dot's point size (CSS px), below the star mapping's own
    *  6.5 px top end — a moon dot should read as a bright star, never as a
@@ -119,7 +122,7 @@ export const MOON_DOT_PARAMS: MoonDotParams = {
   albedoMin: 0.15,
   albedoMax: 0.7,
   albedoGain: 1.0,
-  magCeiling: 0.2,
+  magCeiling: 1.0,
   sizeMaxPx: 4.2,
   fadeStartPx: 3.5,
   fadeEndPx: 10.0,

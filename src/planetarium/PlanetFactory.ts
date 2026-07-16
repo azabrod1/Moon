@@ -578,6 +578,7 @@ export async function createPlanetMesh(planet: PlanetData): Promise<PlanetMesh> 
   const atmosConfig = ATMOSPHERES[planet.name];
   if (atmosConfig) {
     atmosphere = createAtmosphereGlow(planet.radiusAU, atmosConfig);
+    atmosphere.name = `${planet.name}Atmosphere`;
     group.add(atmosphere);
   }
 
@@ -703,6 +704,7 @@ export function createPlanetariumSun(useBloom = true): THREE.Group {
   });
 
   const mesh = new THREE.Mesh(geo, sunMat);
+  mesh.name = 'SunCore';
   group.add(mesh);
 
   // Use billboarded radial glow sprites so the solar halo stays circular on screen.
@@ -732,6 +734,8 @@ export function createPlanetariumSun(useBloom = true): THREE.Group {
     outerGlowTexture,
     useBloom ? 0.50 : 0.58,
   );
+  innerGlow.name = 'SunGlowInner';
+  outerGlow.name = 'SunGlowOuter';
   group.add(outerGlow);
   group.add(innerGlow);
 

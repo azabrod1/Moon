@@ -419,6 +419,10 @@ function installDevHooks() {
     compareSkip: () => volumeCompareMode?.devSkip() ?? false,
     compareEsc: () => volumeCompareMode?.devEsc(),
     compareEndCard: () => volumeCompareMode?.devEndCard() ?? null,
+    // Raw scene handle for render forensics (visibility bisects: hide one
+    // element at a time to isolate what's flashing/leaking light). DEV-only
+    // like the rest of the bridge.
+    scene: () => scene,
     // Mode-agnostic leak probe for the enter/exit heap check.
     rendererInfo: () => ({
       geometries: renderer.info.memory.geometries,

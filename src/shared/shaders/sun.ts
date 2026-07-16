@@ -288,6 +288,9 @@ uniform float uVeilWarmth;
 uniform float uVeilAmt;
 uniform float uSpikeSustain;
 uniform float uViewportHeight;
+uniform float uArmDecayPx;
+uniform float uArmDecayYPx;
+uniform float uArmCoeff;
 varying vec2 vUv;
 varying float vExtentScale;
 varying float vHalfSizePx;
@@ -341,6 +344,12 @@ void main() {
 
   float solarRadii = baseRadius * uExtent;
   float outside = max(solarRadii - 1.0, 0.0);
+  // The veil can grow the quad far past the physical glare's disc. Fade the
+  // physical PSF and corona in their own base frame so their edge stays put no
+  // matter how much the veil enlarged the billboard; when the veil is idle
+  // baseRadius === planeRadius and this equals edgeFade byte-for-byte. The wide
+  // veil keeps fading by the drawn-quad edgeFade below as its own safety net.
+  float baseEdgeFade = 1.0 - smoothstep(0.72, 0.94, baseRadius);
   float edgeFade = 1.0 - smoothstep(0.72, 0.94, planeRadius);
 
   // Optical point-spread profile: a tight hot core, medium aureole, and a
@@ -403,27 +412,31 @@ void main() {
   // Single power-law, deliberately plateau-free: any flat stretch or visible
   // boundary makes the wash read as a grey fog disc instead of light. Bright
   // near the core, then a continuous shallow fall the eye can't find an edge
-  // on — matching how real space-camera veiling glare behaves at 1 AU.
-  float dNorm = dHat / 0.045;
+  // on. The 0.022-viewport-height scale keeps the perceptible halo compact —
+  // the Sun reads dangerously bright through saturation and exposure, never by
+  // painting a wide grey footprint — and computeSunVeilSupport inverts this
+  // exact profile to size the quad, so the two must move in lockstep.
+  float dNorm = dHat / 0.022;
   float veilShape = 1.0 / pow(1.0 + dNorm * dNorm, 1.12);
   // Long thin diffraction arms, also in true pixels: the base-quad starburst
   // can never exceed the physical footprint (~40 px at 1 AU), while reference
   // stills show spikes spanning hundreds. Gaussian cross-section a couple of
   // pixels wide; the horizontal pair reaches farther than the vertical, like
-  // an aperture's dominant axis.
+  // an aperture's dominant axis. The decay lengths and coefficient arrive from
+  // the controller already scaled by the veil's reach and faded as the disc
+  // resolves, so the arms collapse with distance in step with the quad the
+  // controller sized: long at 1 AU, a short stub in the outer system. The
+  // diagonal pair the veil used to carry is gone — the base-quad starburst
+  // already draws the small diagonals that are the camera's signature at point
+  // scale.
   vec2 pxOff = p * vHalfSizePx;
   float armAcross = pxOff.y / 1.7;
   float armAcrossV = pxOff.x / 1.7;
-  float armX = exp(-armAcross * armAcross) * exp(-abs(pxOff.x) / (0.15 * uViewportHeight));
-  float armY = exp(-armAcrossV * armAcrossV) * exp(-abs(pxOff.y) / (0.065 * uViewportHeight)) * 0.55;
-  vec2 pxDiag = vec2(pxOff.x - pxOff.y, pxOff.x + pxOff.y) * 0.7071;
-  float armDiag = (
-    exp(-pow(pxDiag.y / 1.5, 2.0)) * exp(-abs(pxDiag.x) / (0.055 * uViewportHeight))
-    + exp(-pow(pxDiag.x / 1.5, 2.0)) * exp(-abs(pxDiag.y) / (0.055 * uViewportHeight))
-  ) * 0.16;
+  float armX = exp(-armAcross * armAcross) * exp(-abs(pxOff.x) / max(uArmDecayPx, 1.0));
+  float armY = exp(-armAcrossV * armAcrossV) * exp(-abs(pxOff.y) / max(uArmDecayYPx, 1.0)) * 0.25;
   float veilEnergy = uVeilStrength * uVeilAmt * uExposureScale
     * (1.0 + 0.5 * uEmergenceFlash) * mix(1.0, 0.60, uAtmosphereMix);
-  float veil = (veilShape + (armX + armY + armDiag) * 0.45) * veilEnergy;
+  float veil = (veilShape + (armX + armY) * uArmCoeff) * veilEnergy;
 
   // Once the photosphere is covered, remove its glare and reveal a restrained
   // white corona. Broad bipolar lobes plus fine angular strands keep totality
@@ -484,11 +497,11 @@ void main() {
   veilColor = mix(veilColor, uAtmosphereColor, uAtmosphereMix * 0.88);
   vec3 coronaColor = vec3(0.90, 0.95, 1.0);
   vec3 chromosphereColor = vec3(1.0, 0.24, 0.10);
-  vec3 rgb = (
-    glareColor * glare + veilColor * veil
-      + coronaColor * corona + chromosphereColor * chromosphere
-  ) * edgeFade;
-  float alpha = clamp(glare + veil + corona + chromosphere, 0.0, 1.0) * edgeFade;
+  vec3 rgb = (glareColor * glare + coronaColor * corona + chromosphereColor * chromosphere) * baseEdgeFade
+    + veilColor * veil * edgeFade;
+  float alpha = clamp(
+    (glare + corona + chromosphere) * baseEdgeFade + veil * edgeFade, 0.0, 1.0
+  );
 
   gl_FragColor = vec4(rgb, alpha);
   // No-ops under the composer; keep the additive glare inside the same

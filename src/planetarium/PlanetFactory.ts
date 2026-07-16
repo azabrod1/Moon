@@ -687,6 +687,12 @@ export function createPlanetariumSun(useBloom = true): THREE.Group {
       // Fraction of the fading starburst kept alive once the disc is resolved,
       // so a mid-range Sun still throws modest diffraction spikes.
       uSpikeSustain: { value: 0.45 },
+      // Veil diffraction-arm decay lengths (device px) and coefficient, driven
+      // per frame so the arms shrink with the veil's reach and fade as the disc
+      // resolves. The controller sizes the billboard to the same decay lengths.
+      uArmDecayPx: { value: 0 },
+      uArmDecayYPx: { value: 0 },
+      uArmCoeff: { value: 0 },
     },
     vertexShader: sunGlareVertexShader,
     fragmentShader: sunGlareFragmentShader,

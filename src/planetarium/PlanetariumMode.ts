@@ -269,6 +269,12 @@ const RING_GLARE_TRANSMISSION: Record<RingStyle, number> = {
 // glare's falloff (the ISS reference stills that inspired it are at Earth).
 const SUN_ANG_RADIUS_AT_1AU = Math.asin(SUN_DATA.radiusAU);
 
+// Visibility floor the veil billboard is sized to: the pixel radius where the
+// wash and arms fall below this HDR value is the quad's support, so the quad
+// tracks the light instead of an authored amount. Small enough that the
+// drawn-quad edge fade lands well inside where the wash is already invisible.
+const SUN_VEIL_EPSILON = 0.0015;
+
 export interface PlanetariumActivationProgress {
   completedUnits: number;
   totalUnits: number;
@@ -2485,6 +2491,47 @@ export class PlanetariumMode {
     this.sunFlashResetPending = true;
   }
 
+  // Scratch for the veil support pass, reused across the gate's upper-bound and
+  // the final per-frame call so neither allocates.
+  private sunVeilSupport = { halfPx: 0, armDecayPx: 0, armDecayYPx: 0 };
+
+  /** Screen-space support the veiling glare needs, in device pixels: the radius
+   *  where the Moffat wash and the diffraction arms fall below the visibility
+   *  floor. The billboard is grown to this so it tracks how far the light
+   *  actually carries rather than an authored size, and the arm decay lengths it
+   *  hands back are the same ones the shader draws with (one source of truth, so
+   *  the quad always contains the arms it renders). Writes into shared scratch. */
+  private computeSunVeilSupport(
+    veilAmt: number,
+    veilStrength: number,
+    exposureScale: number,
+    viewportHeight: number,
+    armCoeff: number,
+  ): void {
+    const h = viewportHeight;
+    // The shader multiplies the veil by up to 1.5 during a limb-clearing flash;
+    // sizing to that peak keeps a flash from clipping at the quad edge.
+    const peak = veilStrength * veilAmt * exposureScale * 1.5;
+    // Invert the wash's Moffat 1/(1 + (dHat/0.022)^2)^1.12 for the dHat where it
+    // reaches the floor, then convert that normalized distance back to pixels.
+    // The 0.022 scale is the shader's own — the two must move in lockstep.
+    const washRatio = Math.pow(peak / SUN_VEIL_EPSILON, 1 / 1.12);
+    const washHalfPx = 0.022 * h * Math.sqrt(Math.max(washRatio, 1) - 1);
+    // The arms reach as far as the wash carries: full length at 1 AU (the wash
+    // spans the frame), collapsing together in the outer system. Driving the
+    // reach off the wash support keeps this non-circular — the arm term folds
+    // into the combined support below without feeding back into its own length.
+    const reachScale = THREE.MathUtils.clamp(washHalfPx / (0.55 * h), 0, 1);
+    const armDecayPx = 0.045 * h * reachScale;
+    const armDecayYPx = 0.018 * h * reachScale;
+    // The horizontal arm decays as exp(-x / armDecayPx); solve for the x where it
+    // hits the floor. Its longer reach bounds the vertical pair too.
+    const armHalfPx = armDecayPx * Math.log(Math.max((peak * armCoeff) / SUN_VEIL_EPSILON, 1));
+    this.sunVeilSupport.halfPx = Math.min(Math.max(washHalfPx, armHalfPx), 0.62 * h);
+    this.sunVeilSupport.armDecayPx = armDecayPx;
+    this.sunVeilSupport.armDecayYPx = armDecayYPx;
+  }
+
   private updateSunShader(dt: number) {
     if (!this.solarSystem) return;
     const sunMat = this.solarSystem.sun.userData.sunMaterial as THREE.ShaderMaterial | undefined;
@@ -2551,7 +2598,10 @@ export class PlanetariumMode {
     // Veiling-glare amount fed to the wide screen-space wash: occlusion x
     // distance falloff x huge-disc cutoff, 0 unless the wash is actually visible.
     let veilAmt = 0;
-    let veilHalfPx = 0;
+    // The wide veil's arm coefficient (0.28 faded out as the disc resolves),
+    // held at function scope so the after-exposure support pass and the shader
+    // uniform draw with exactly the same value.
+    let veilArmCoeff = 0;
 
     if (inFront) {
       this.tmpSunScreen.copy(this.solarSystem.sun.position).project(this.camera);
@@ -2567,27 +2617,34 @@ export class PlanetariumMode {
         glareMat.uniforms.uCameraFx.value = opticalFx;
       }
 
-      // Geometric reach of the veil, before occlusion: the ISS reference stills
-      // are at 1 AU, so 1 AU is full strength and it falls off outward
-      // (Jupiter clearly reduced, Pluto ~nothing). It also dies as the disc
-      // grows huge so a full-frame close-up never double-brightens. This upper
-      // bound (occlusion only shrinks it) both sizes the billboard and widens
-      // the eligibility gate so the wide wash is never stranded off-screen.
-      const distanceResponse = Math.pow(
-        THREE.MathUtils.clamp(solarAngularRadius / SUN_ANG_RADIUS_AT_1AU, 0, 1),
-        0.6,
-      );
+      // One amplitude driver for the wide veil. The ISS reference stills are at
+      // 1 AU, so 1 AU is full strength; a^1.8 makes it fall roughly with the
+      // Sun's irradiance, so Jupiter is a compact steep glow and Pluto is back
+      // to the bare point-glint rather than a bounded grey fog dome. hugeFade
+      // also kills it as the disc grows huge so a full-frame close-up never
+      // double-brightens.
+      const a = THREE.MathUtils.clamp(solarAngularRadius / SUN_ANG_RADIUS_AT_1AU, 0, 1);
+      const veilAmplitudeResponse = Math.pow(a, 1.8);
       const hugeFade = 1 - THREE.MathUtils.smoothstep(
         solarRadiusPx, viewportHeight * 0.30, viewportHeight * 0.42,
       );
-      const veilReachGeom = distanceResponse * hugeFade;
+      const veilReachGeom = veilAmplitudeResponse * hugeFade;
+      const veilStrength = glareMat ? glareMat.uniforms.uVeilStrength.value : 1.4;
+      // The diffraction arms are a point-source camera artifact, so they fade as
+      // the photosphere resolves into a disc — about half strength at Earth's
+      // ~4 px solar radius, gone by Mercury's ~10 px — rather than growing with
+      // brightness. This stops them reading as ruler-straight exaggerated lines
+      // exactly where the Sun is closest and brightest.
+      const armGate = 1 - THREE.MathUtils.smoothstep(solarRadiusPx, 2, 8);
+      veilArmCoeff = 0.28 * armGate;
 
-      // Work only near the viewport; farther away both the glare plane and the
-      // exposure response are invisible. The base margin keeps an off-screen
-      // light washing the edge before the photosphere itself enters the shot;
-      // the veil term adds its own billboard half-extent (up to ~1.1 NDC) so its
-      // much wider quad stays admitted while the disc centre sits well off frame.
-      const veilHalfNdcMax = 0.55 * veilReachGeom * 2;
+      // Size the billboard from where the wash and arms fall below the visibility
+      // floor rather than from an authored amount. This upper bound (full Sun,
+      // full exposure — occlusion and dimming only shrink it) both widens the
+      // eligibility gate so the wide wash is never stranded off-screen and,
+      // recomputed with the real occlusion after exposure below, sizes the quad.
+      this.computeSunVeilSupport(veilReachGeom, veilStrength, 1, viewportHeight, veilArmCoeff);
+      const veilHalfNdcMax = (this.sunVeilSupport.halfPx * 2) / viewportHeight;
       if (centreDistanceNdc < 1.5 + projectedRadiusNdc * glareExtent + veilHalfNdcMax) {
         appearanceEligible = true;
         bodyVisibleFraction = this.computeVisibleSunFraction(toSun, sunDistance, solarAngularRadius);
@@ -2604,14 +2661,10 @@ export class PlanetariumMode {
           centerDistanceNdc: centreDistanceNdc,
           visibleFraction,
         });
-        // Fold in the same occlusion energy the physical glare uses, so the
-        // wash vanishes in totality and behind planets/rings. The billboard is
-        // sized to 0.55 viewport heights of that amount (the wash reaches ~half
-        // the frame at full strength); it stays >= the physical/min quad via the
-        // vertex max(), and 0 amount collapses it back to the physical footprint.
-        const visibleEnergy = Math.pow(THREE.MathUtils.clamp(visibleFraction, 0, 1), 0.38);
-        veilAmt = veilReachGeom * visibleEnergy;
-        veilHalfPx = 0.55 * viewportHeight * veilAmt;
+        // Linear occlusion, deliberately harder than the physical PSF's ^0.38
+        // energy: the veil dims in step with the exposed fraction and dies hard
+        // in a partial eclipse. 0 fraction collapses the billboard entirely.
+        veilAmt = veilReachGeom * THREE.MathUtils.clamp(visibleFraction, 0, 1);
       }
     }
 
@@ -2644,9 +2697,9 @@ export class PlanetariumMode {
       glareMat.uniforms.uEmergenceFlash.value = this.sunEmergenceFlash;
       glareMat.uniforms.uAtmosphereMix.value = this.sunAtmosphereMix;
       glareMat.uniforms.uAtmosphereColor.value.copy(this.sunAtmosphereColor);
-      // veilAmt/veilHalfPx are 0 unless the wash is on-screen and unoccluded.
+      // veilAmt is 0 unless the wash is on-screen and unoccluded; the billboard
+      // size and arm uniforms are set after exposure below (they need it).
       glareMat.uniforms.uVeilAmt.value = veilAmt;
-      glareMat.uniforms.uVeilHalfPx.value = veilHalfPx;
       // Corona gate: 1 when the strongest occluder is Sun-sized (a true
       // eclipse), 0 when a whole planet fills the sky in front of the Sun.
       // The occluder's size in solar radii also positions the shader's
@@ -2672,7 +2725,27 @@ export class PlanetariumMode {
       sunMat.uniforms.uAtmosphereMix.value = this.sunAtmosphereMix;
       sunMat.uniforms.uAtmosphereColor.value.copy(this.sunAtmosphereColor);
     }
-    if (glareMat) glareMat.uniforms.uExposureScale.value = exposureScale;
+    if (glareMat) {
+      glareMat.uniforms.uExposureScale.value = exposureScale;
+      // Now that occlusion and exposure are both known, size the billboard to
+      // where the wash and arms actually fade out and hand the shader the exact
+      // arm decay lengths used to size it — the quad always contains the arms it
+      // draws. 0 amount (off-screen, occluded, in totality) collapses it all.
+      if (appearanceEligible && veilAmt > 0) {
+        this.computeSunVeilSupport(
+          veilAmt, glareMat.uniforms.uVeilStrength.value, exposureScale, viewportHeight, veilArmCoeff,
+        );
+        glareMat.uniforms.uVeilHalfPx.value = this.sunVeilSupport.halfPx;
+        glareMat.uniforms.uArmDecayPx.value = this.sunVeilSupport.armDecayPx;
+        glareMat.uniforms.uArmDecayYPx.value = this.sunVeilSupport.armDecayYPx;
+        glareMat.uniforms.uArmCoeff.value = veilArmCoeff;
+      } else {
+        glareMat.uniforms.uVeilHalfPx.value = 0;
+        glareMat.uniforms.uArmDecayPx.value = 0;
+        glareMat.uniforms.uArmDecayYPx.value = 0;
+        glareMat.uniforms.uArmCoeff.value = 0;
+      }
+    }
     if (ghostMat) {
       const offAxis = THREE.MathUtils.smoothstep(centreDistanceNdc, 0.12, 0.55);
       const edgeFade = 1 - THREE.MathUtils.smoothstep(centreDistanceNdc, 1.02, 1.45);

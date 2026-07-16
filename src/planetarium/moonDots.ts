@@ -89,6 +89,26 @@ export interface MoonDotParams {
    *  until the planet visually dominates. */
   parentGateStartPx: number;
   parentGateFullPx: number;
+  /** Proximity release of the parent-dominance gate: a moon whose camera
+   *  distance is within `relFullRatio` of its own orbital radius (distToMoon /
+   *  |moonPos − parentPos|) releases the gate fully — you are inside its
+   *  neighborhood, so it shows on its photometric merits however small the
+   *  parent's disc has shrunk behind you. Beyond `relZeroRatio` the gate holds
+   *  (a moon viewed from outside its orbit shell stays gated). This is what
+   *  keeps an outbound irregular (Ananke/Elara) from a long dead zone: the
+   *  parent's disc closes the gate long before the tiny moon's disc resolves.
+   *  Tuned against the two sweeps in moonDots.test.ts PLUS a temporal
+   *  constraint no sweep measures: the ramp must be wide enough (≥ 0.1 of the
+   *  orbit radius) that a moon crossing the boundary — or a ship flying past
+   *  it — FADES over dozens of frames instead of blinking at warp. A narrower
+   *  window scores a better dead-zone trough (0.59/0.60 reaches ≈ 0.29 vs
+   *  0.50/0.60's ≈ 0.22, Ananke H900 tightest) but is a step in disguise.
+   *  relZeroRatio is pinned at 0.60 by the static sweep (release ≤ 0.05 from
+   *  every vantage outside 1.6× a moon's orbit radius, i.e. ratio ≥ 0.6);
+   *  raising it leaks dots into far views, lowering relFullRatio further
+   *  erodes the trough. */
+  relFullRatio: number;
+  relZeroRatio: number;
   /** Texture upgrade-on-approach (feature B): re-render a procedural moon sharper
    *  once its disc diameter passes this many screen px. */
   texUpgradeDiscPx: number;
@@ -110,6 +130,8 @@ export const MOON_DOT_PARAMS: MoonDotParams = {
   systemEdgeFadeFrac: 0.15,
   parentGateStartPx: 8,
   parentGateFullPx: 22,
+  relFullRatio: 0.5,
+  relZeroRatio: 0.6,
   // Deck arrivals park a moon's disc at ~87 px (the 5° standoff), so the
   // threshold sits below that: arriving at a procedural moon sharpens it.
   texUpgradeDiscPx: 80,
@@ -196,10 +218,16 @@ export function moonDotMagnitude(
 }
 
 export interface MoonDotVisual {
-  /** Star-visible contribution before the disc/edge crossfades, after the
-   *  nav-target floor. The floor and the fades compose in this order. */
+  /** Star-visible contribution before the crossfades, with the nav-target floor
+   *  applied. Diagnostic only: the parent-dominance gate (`parentFade`) is kept
+   *  OUT of this field — the gate, the disc crossfade, and the system-edge fade
+   *  all compose in `alpha`, not here. */
   intensity: number;
-  /** Final per-vertex GPU alpha = intensity · disc crossfade · system-edge fade. */
+  /** Final per-vertex GPU alpha. Non-target: intensityStar · parentFade ·
+   *  (1 − crossfade) · systemFade. Nav target: max(intensityStar · parentFade,
+   *  targetMinIntensity) · (1 − crossfade) · systemFade — the floor survives the
+   *  parent gate closing (the outbound dead-zone fix) but still fades with the
+   *  disc handoff and the system edge. */
   alpha: number;
   /** Point size (CSS px), already shrunk toward the disc if enabled. */
   sizePx: number;
@@ -225,7 +253,8 @@ export function moonDotVisual(
   shadeFraction: number,
   discPx: number,
   isTarget: boolean,
-  edgeFade: number,
+  systemFade: number,
+  parentFade: number,
   starFaintLimitMag: number,
   params: MoonDotParams = MOON_DOT_PARAMS,
   starMapping: StarPointMapping = STAR_POINT_MAPPING,
@@ -248,11 +277,13 @@ export function moonDotVisual(
     magnitude <= starFaintLimitMag
       ? 1
       : clamp(1 - (magnitude - starFaintLimitMag) / params.faintExtendMag, 0, 1);
-  let intensity = hasFlux ? star.alpha * extend : 0;
+  const intensityStar = hasFlux ? star.alpha * extend : 0;
 
-  // Nav-target floor: only where there is real flux to floor (never conjures a
-  // dot on the unlit side), and before the crossfades below — so a resolved or
-  // edge-of-system target still fades out honestly.
+  // Diagnostic `intensity`: the floored star contribution. The nav-target floor
+  // is applied here (only where there is real flux to floor — never conjures a
+  // dot on the unlit side), but the parent gate and the crossfades stay OUT —
+  // they compose in `alpha` below.
+  let intensity = intensityStar;
   if (isTarget && hasFlux && illum > 0) {
     intensity = Math.max(intensity, params.targetMinIntensity);
   }
@@ -264,7 +295,17 @@ export function moonDotVisual(
   // ramp the point dies at full star brightness against a still-dim few-pixel
   // disc: bright dot, then nothing, then a faint moon.
   const t = smoothstep(params.fadeStartPx, params.fadeEndPx, discPx);
-  const alpha = intensity * (1 - t) * clamp(edgeFade, 0, 1);
+  // The parent-dominance gate multiplies the star term but NOT the nav-target
+  // floor: the moon you are flying at keeps its floor even as the parent's disc
+  // shrinks behind you (outbound irregulars — the dead-zone fix). The disc
+  // crossfade and the system-edge fade still apply to both branches, so a
+  // resolved or edge-of-system target still fades out honestly.
+  const gatedStar = intensityStar * parentFade;
+  const floored =
+    isTarget && hasFlux && illum > 0
+      ? Math.max(gatedStar, params.targetMinIntensity)
+      : gatedStar;
+  const alpha = floored * (1 - t) * clamp(systemFade, 0, 1);
   const discLum = params.discMatchLum * Math.min(albedoProxy, 1) * illum;
   const brightness = lerp(star.brightness, discLum, Math.min(1, t / 0.6));
 
@@ -296,17 +337,33 @@ export function systemEdgeFade(
 }
 
 /**
- * Parent-dominance fade: 0 while the parent planet's own disc is at or below
- * parentGateStartPx (the system is dot-scale — no moon dots beside a dot-sized
- * planet), ramping to 1 at parentGateFullPx where the planet unambiguously
- * anchors the scene. Multiplies into the same per-system fade slot as the
- * system-edge fade.
+ * Parent-dominance fade with proximity release: the greater of two terms.
+ *
+ * Gate: 0 while the parent planet's own disc is at or below parentGateStartPx
+ * (the system is dot-scale — no moon dots beside a dot-sized planet), ramping to
+ * 1 at parentGateFullPx where the planet unambiguously anchors the scene.
+ *
+ * Release: 1 when the camera is within relFullRatio of the moon's own orbital
+ * radius (`proximityRatio = distToMoon / moonOrbitR`), ramping to 0 by
+ * relZeroRatio. A moon you are inside the neighborhood of shows on its
+ * photometric merits regardless of how small the parent has become; a moon
+ * viewed from outside its orbit shell stays gated. Without this an outbound
+ * irregular sits in a dead zone — the parent's disc closes the gate long before
+ * the tiny moon's own disc resolves.
+ *
+ * `max` of the two so either condition alone lights the dot. proximityRatio
+ * defaults to Infinity (release 0 → shipped gate-only behavior); any non-finite
+ * or negative ratio is treated as Infinity too, so NaN never reaches the `max`.
  */
 export function parentDominanceFade(
   parentDiscPx: number,
+  proximityRatio = Infinity,
   params: MoonDotParams = MOON_DOT_PARAMS,
 ): number {
-  return smoothstep(params.parentGateStartPx, params.parentGateFullPx, parentDiscPx);
+  const gate = smoothstep(params.parentGateStartPx, params.parentGateFullPx, parentDiscPx);
+  const ratio = proximityRatio >= 0 ? proximityRatio : Infinity;
+  const release = 1 - smoothstep(params.relFullRatio, params.relZeroRatio, ratio);
+  return Math.max(gate, release);
 }
 
 /**

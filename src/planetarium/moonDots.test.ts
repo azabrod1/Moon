@@ -28,8 +28,12 @@ const EUROPA_RENDERED_AU = renderedMoonRadiusAU(europa.radiusAU, jupiter.radiusA
 const EUROPA_ALBEDO = albedoProxyFromColor(europa.color);
 const R_SUN_JUP = 5.2;
 
-/** Sample the full visual for a moon at Δ = distAU, full phase, unshaded. */
-const visualAt = (distAU: number, opts: Partial<{ discPx: number; isTarget: boolean; edgeFade: number; phaseCos: number; shade: number }> = {}) =>
+/** Sample the full visual for a moon at Δ = distAU, full phase, unshaded. The
+ *  two fade slots default to 1 (fully inside the system, parent anchoring). */
+const visualAt = (
+  distAU: number,
+  opts: Partial<{ discPx: number; isTarget: boolean; systemFade: number; parentFade: number; phaseCos: number; shade: number }> = {},
+) =>
   moonDotVisual(
     EUROPA_RENDERED_AU,
     distAU,
@@ -39,7 +43,8 @@ const visualAt = (distAU: number, opts: Partial<{ discPx: number; isTarget: bool
     opts.shade ?? 1,
     opts.discPx ?? 0.5,
     opts.isTarget ?? false,
-    opts.edgeFade ?? 1,
+    opts.systemFade ?? 1,
+    opts.parentFade ?? 1,
     FAINT_LIMIT,
   );
 
@@ -143,7 +148,7 @@ describe('moonDots — visual composition', () => {
     // Mid-range magnitude (no caps bind): exact star parity.
     const midMag = 3.0;
     const mid = moonDotVisual(
-      EUROPA_RENDERED_AU, deltaForMag(midMag), R_SUN_JUP, 1, EUROPA_ALBEDO, 1, 0.5, false, 1, FAINT_LIMIT,
+      EUROPA_RENDERED_AU, deltaForMag(midMag), R_SUN_JUP, 1, EUROPA_ALBEDO, 1, 0.5, false, 1, 1, FAINT_LIMIT,
     );
     const midStar = starPointVisual(mid.magnitude, FAINT_LIMIT);
     expect(mid.brightness).toBeCloseTo(midStar.brightness, 12);
@@ -187,7 +192,7 @@ describe('moonDots — visual composition', () => {
     const faintMag = FAINT_LIMIT - 0.2;
     const d = deltaForMag(faintMag);
     const faintNatural = starPointVisual(faintMag, FAINT_LIMIT).sizePx;
-    const faint = moonDotVisual(EUROPA_RENDERED_AU, d, R_SUN_JUP, 1, EUROPA_ALBEDO, 1, 5.0, false, 1, FAINT_LIMIT);
+    const faint = moonDotVisual(EUROPA_RENDERED_AU, d, R_SUN_JUP, 1, EUROPA_ALBEDO, 1, 5.0, false, 1, 1, FAINT_LIMIT);
     expect(faint.sizePx).toBeLessThanOrEqual(faintNatural + 1e-9);
     // Shrink binds when the disc is smaller than the capped point inside the window.
     const tiny = visualAt(0.05, { discPx: P.fadeStartPx + 0.2 });
@@ -198,7 +203,7 @@ describe('moonDots — visual composition', () => {
 describe('moonDots — faint-end extension continuity', () => {
   it('meets the star floor at the limit and ramps to 0 over faintExtendMag', () => {
     const at = (mag: number) =>
-      moonDotVisual(EUROPA_RENDERED_AU, deltaForMag(mag), R_SUN_JUP, 1, EUROPA_ALBEDO, 1, 0.5, false, 1, FAINT_LIMIT).intensity;
+      moonDotVisual(EUROPA_RENDERED_AU, deltaForMag(mag), R_SUN_JUP, 1, EUROPA_ALBEDO, 1, 0.5, false, 1, 1, FAINT_LIMIT).intensity;
     // At the limit the extension multiplier is 1, so intensity == the star floor.
     expect(at(FAINT_LIMIT)).toBeCloseTo(0.45, 2);
     // Halfway down the extension.
@@ -227,9 +232,9 @@ describe('moonDots — nav-target floor ordering', () => {
     // Target but disc resolved → still 0.
     expect(visualAt(veryDim, { discPx: 100, isTarget: true }).alpha).toBe(0);
     // Target but at the very system edge → still 0.
-    expect(visualAt(veryDim, { discPx: 0.5, isTarget: true, edgeFade: 0 }).alpha).toBe(0);
+    expect(visualAt(veryDim, { discPx: 0.5, isTarget: true, systemFade: 0 }).alpha).toBe(0);
     // Target inside the system with a sub-pixel disc → the floor shows through.
-    expect(visualAt(veryDim, { discPx: 0.5, isTarget: true, edgeFade: 1 }).alpha).toBeCloseTo(P.targetMinIntensity, 6);
+    expect(visualAt(veryDim, { discPx: 0.5, isTarget: true, systemFade: 1 }).alpha).toBeCloseTo(P.targetMinIntensity, 6);
   });
 
   it('never floors an unlit target (no flux → no dot)', () => {
@@ -257,10 +262,10 @@ describe('moonDots — system-edge fade', () => {
   });
 
   it('multiplies the dot alpha (a system fading in never over-brightens)', () => {
-    const full = visualAt(0.1, { discPx: 0.5, edgeFade: 1 }).alpha;
-    const half = visualAt(0.1, { discPx: 0.5, edgeFade: 0.5 }).alpha;
+    const full = visualAt(0.1, { discPx: 0.5, systemFade: 1 }).alpha;
+    const half = visualAt(0.1, { discPx: 0.5, systemFade: 0.5 }).alpha;
     expect(half).toBeCloseTo(full * 0.5, 6);
-    expect(visualAt(0.1, { discPx: 0.5, edgeFade: 0 }).alpha).toBe(0);
+    expect(visualAt(0.1, { discPx: 0.5, systemFade: 0 }).alpha).toBe(0);
   });
 });
 
@@ -281,13 +286,166 @@ describe('moonDots — parent-dominance gate', () => {
     }
   });
 
-  it('multiplies into the same fade slot as the system edge (composition)', () => {
-    // A mid-ramp parent scales the dot alpha proportionally, exactly like edgeFade.
+  it('multiplies into the dot alpha through the parentFade slot (composition)', () => {
+    // A mid-ramp parent (no proximity release) scales a non-target dot's alpha
+    // proportionally, exactly like the system-edge fade.
     const mid = parentDominanceFade((P.parentGateStartPx + P.parentGateFullPx) / 2);
     expect(mid).toBeCloseTo(0.5, 6); // smoothstep midpoint
-    const full = visualAt(0.1, { discPx: 0.5, edgeFade: 1 }).alpha;
-    const gated = visualAt(0.1, { discPx: 0.5, edgeFade: mid }).alpha;
+    const full = visualAt(0.1, { discPx: 0.5, parentFade: 1 }).alpha;
+    const gated = visualAt(0.1, { discPx: 0.5, parentFade: mid }).alpha;
     expect(gated).toBeCloseTo(full * mid, 6);
+  });
+});
+
+describe('moonDots — parent-gate proximity release', () => {
+  // parentDominanceFade(0, ratio) forces the gate term to 0 (disc ≪ start), so
+  // the result equals the proximity-release term alone — the clean way to pin it.
+  const releaseAt = (ratio: number) => parentDominanceFade(0, ratio);
+
+  it('is 1 inside relFullRatio, 0 outside relZeroRatio, and monotone in ratio', () => {
+    expect(releaseAt(0)).toBe(1);
+    expect(releaseAt(P.relFullRatio)).toBeCloseTo(1, 12);
+    expect(releaseAt(P.relFullRatio - 0.05)).toBeCloseTo(1, 12);
+    expect(releaseAt(P.relZeroRatio)).toBeCloseTo(0, 12);
+    expect(releaseAt(P.relZeroRatio + 0.5)).toBe(0);
+    let prev = Infinity;
+    for (let r = 0; r <= 1.0; r += 0.02) {
+      const v = releaseAt(r);
+      expect(v).toBeLessThanOrEqual(prev + 1e-9);
+      prev = v;
+    }
+  });
+
+  it('a non-finite or negative ratio releases 0; ratio 0 releases 1 (degenerates)', () => {
+    expect(parentDominanceFade(0, Number.NaN)).toBe(0);
+    expect(parentDominanceFade(0, -1)).toBe(0);
+    expect(parentDominanceFade(0, Infinity)).toBe(0);
+    expect(parentDominanceFade(0, 0)).toBe(1);
+    // Default (no ratio) is the shipped gate-only behavior: release 0.
+    expect(parentDominanceFade(0)).toBe(0);
+  });
+
+  it('returns the max of gate and release, incl. the crossover point', () => {
+    // gate dominates: parent fully anchoring, far outside the orbit shell.
+    expect(parentDominanceFade(P.parentGateFullPx, 2.0)).toBe(1);
+    // release dominates: parent dot-scale, deep inside the shell.
+    expect(parentDominanceFade(2, 0.1)).toBeCloseTo(1, 12);
+    // disc 15 gives gate 0.5 exactly (midpoint of 8..22); ratio 0.55 gives
+    // release 0.5 (midpoint of relFull..relZero) → max is 0.5 by both branches.
+    expect(parentDominanceFade(15, 0.55)).toBeCloseTo(0.5, 12);
+    // gate 0.5 > release 0.104 (ratio 0.58) → gate wins.
+    expect(parentDominanceFade(15, 0.58)).toBeCloseTo(0.5, 6);
+    // release 0.896 > gate ≈ 0.198 (disc 12, ratio 0.52) → release wins.
+    expect(parentDominanceFade(12, 0.52)).toBeCloseTo(0.896, 3);
+  });
+});
+
+describe('moonDots — nav-target floor survives the parent gate (design A)', () => {
+  const veryDim = deltaForMag(FAINT_LIMIT + 5); // no photometric contribution of its own
+
+  it('floors a lit target through parentFade 0, still composing crossfade + system-edge', () => {
+    // discPx 6.75 = the crossfade midpoint (linear 3.5..10) → smoothstep t = 0.5.
+    const v = visualAt(veryDim, { isTarget: true, discPx: 6.75, systemFade: 0.7, parentFade: 0 });
+    expect(v.alpha).toBeCloseTo(P.targetMinIntensity * (1 - 0.5) * 0.7, 12);
+    // The floor still dies at the system edge and once the disc resolves.
+    expect(visualAt(veryDim, { isTarget: true, discPx: 6.75, systemFade: 0, parentFade: 0 }).alpha).toBe(0);
+    expect(visualAt(veryDim, { isTarget: true, discPx: P.fadeEndPx, systemFade: 1, parentFade: 0 }).alpha).toBe(0);
+  });
+
+  it('uses the photometric branch when the gated star exceeds the floor', () => {
+    const opts = { discPx: 0.5, systemFade: 1, parentFade: 0.5 } as const;
+    const idle = visualAt(0.05, opts); // bright non-target
+    const target = visualAt(0.05, { ...opts, isTarget: true });
+    // gatedStar = intensityStar·0.5 ≫ floor → target === non-target exactly.
+    expect(target.alpha).toBeCloseTo(idle.alpha, 12);
+    expect(target.alpha).toBeGreaterThan(P.targetMinIntensity);
+  });
+
+  it('a non-target with the gate closed and no proximity release draws nothing', () => {
+    const parentFade = parentDominanceFade(P.parentGateStartPx, Infinity); // gate 0, release 0
+    expect(parentFade).toBe(0);
+    expect(visualAt(0.05, { discPx: 0.5, parentFade }).alpha).toBe(0);
+  });
+
+  it('does not pop when the nav-target flag drops while the release is full', () => {
+    // Deep inside the neighborhood (ratio 0.2 → release 1 → parentFade 1); a dot
+    // bright enough that its photometric alpha already clears the floor is
+    // identical target vs idle, so disengaging autopilot never flickers it.
+    const parentFade = parentDominanceFade(2, 0.2);
+    expect(parentFade).toBeCloseTo(1, 12);
+    const asTarget = visualAt(0.1, { discPx: 0.5, parentFade, isTarget: true });
+    const asIdle = visualAt(0.1, { discPx: 0.5, parentFade, isTarget: false });
+    expect(asTarget.alpha).toBeCloseTo(asIdle.alpha, 12);
+    expect(asTarget.alpha).toBeGreaterThan(P.targetMinIntensity);
+  });
+
+  it('an Ananke-like non-target inside its neighborhood draws a visible dot', () => {
+    const ananke = MOONS.find((m) => m.name === 'Ananke')!;
+    const parentFade = parentDominanceFade(4, 0.35); // gate 0 (4<8), release 1 (0.35<relFull)
+    expect(parentFade).toBeCloseTo(1, 12);
+    const v = moonDotVisual(
+      2.7e-6, 0.05, 5.2, 1, albedoProxyFromColor(ananke.color), 1, 0.5, false, 1, parentFade, FAINT_LIMIT,
+    );
+    expect(v.alpha).toBeGreaterThan(0.1);
+  });
+
+  it('keeps the floor above the label and QA visibility bars (retune guard)', () => {
+    // renderMoonLabels gates a sub-pixel label at dotAlpha ≥ 0.03; the outbound
+    // continuity QA bar is 0.02. The floor must clear both, or a retune could
+    // silently kill the nav-target label while the dot still (barely) shows.
+    const LABEL_DOT_MIN_ALPHA = 0.03;
+    const QA_DOT_MIN_ALPHA = 0.02;
+    expect(P.targetMinIntensity).toBeGreaterThan(LABEL_DOT_MIN_ALPHA);
+    expect(P.targetMinIntensity).toBeGreaterThan(QA_DOT_MIN_ALPHA);
+  });
+});
+
+describe('moonDots — outbound dead-zone sweep (the bug pin)', () => {
+  const R_JUP = 4.779e-4; // Jupiter radius, AU
+  // Collinear outbound path Jupiter → moon: player from 0.02 AU-from-Jupiter to
+  // arrival, the moon dead ahead at its orbit radius. The tuned release ratios
+  // must keep the combined parent fade ≥ 0.2 at every sampled position, or the
+  // dot dead-zones out where the parent's disc has shrunk below the gate but the
+  // moon's own disc hasn't resolved yet. The bar is 0.2 rather than the
+  // achievable ~0.29 because the ramp width buys temporal smoothness instead —
+  // a boundary crossing must fade, not blink (see the params comment).
+  const minCombined = (orbitR: number, H: number) => {
+    let min = Infinity;
+    for (let p = 0.02; p <= orbitR - 5e-5; p += 0.0002) {
+      const ratio = (orbitR - p) / orbitR;
+      const combined = parentDominanceFade(discDiameterPx(R_JUP, p, 60, H), ratio);
+      if (combined < min) min = combined;
+    }
+    return min;
+  };
+
+  for (const [name, orbitR] of [['Ananke', 0.1422], ['Elara', 0.0785]] as const) {
+    for (const H of [900, 1200]) {
+      it(`combined parent fade stays ≥ 0.2 outbound to ${name} (canvas H ${H})`, () => {
+        expect(minCombined(orbitR, H)).toBeGreaterThanOrEqual(0.2);
+      });
+    }
+  }
+});
+
+describe('moonDots — static no-release sweep', () => {
+  it('releases ≤ 0.05 from every vantage outside 1.6× a catalog irregular orbit radius', () => {
+    // Catalog irregulars: the outer, widely-orbiting moons (orbit radius well
+    // beyond a Galilean's). Worst case for the release is the moon collinear on
+    // the near side, so distToMoon = (mult − 1)·orbitR and proximityRatio =
+    // mult − 1 ≥ 0.6 for mult ≥ 1.6. The gate is forced to 0 here so the fade
+    // equals the release term alone.
+    const irregulars = MOONS.filter((m) => m.orbitalRadiusAU > 0.04);
+    expect(irregulars.length).toBeGreaterThan(4); // sanity: the set is non-trivial
+    let maxRelease = 0;
+    for (const m of irregulars) {
+      for (const mult of [1.6, 2.0, 2.5, 3.0]) {
+        const ratio = ((mult - 1) * m.orbitalRadiusAU) / m.orbitalRadiusAU;
+        const release = parentDominanceFade(0, ratio);
+        if (release > maxRelease) maxRelease = release;
+      }
+    }
+    expect(maxRelease).toBeLessThanOrEqual(0.05);
   });
 });
 
@@ -342,6 +500,11 @@ describe('moonDots — current tuning (defaults)', () => {
     expect(P.discMatchLum).toBe(0.6);
     expect(P.parentGateStartPx).toBe(8);
     expect(P.parentGateFullPx).toBe(22);
+    // Proximity-release ratios: relZero pinned by the static sweep, the 0.1-wide
+    // ramp trades a little dead-zone trough (≈ 0.22 vs the achievable 0.29) for
+    // a fade instead of a blink at the boundary (see the params comment).
+    expect(P.relFullRatio).toBe(0.5);
+    expect(P.relZeroRatio).toBe(0.6);
     expect(P.targetMinIntensity).toBe(0.04);
     // Below the ~87px disc a deck arrival parks at, so arrivals sharpen.
     expect(P.texUpgradeDiscPx).toBe(80);

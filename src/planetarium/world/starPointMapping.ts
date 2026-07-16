@@ -71,16 +71,18 @@ export interface StarPointVisual {
  * The full per-point visual for a star (or star-scale point) of the given
  * apparent magnitude, faded toward the faint limit. The clamps cap the bright
  * end, so a point this maps can never out-render the brightest star treatment.
+ * Pass `out` to reuse a result object (per-frame callers — no allocation).
  */
 export function starPointVisual(
   mag: number,
   faintLimitMag: number,
   p: StarPointMapping = STAR_POINT_MAPPING,
+  out: StarPointVisual = { brightness: 0, sizePx: 0, alpha: 0 },
 ): StarPointVisual {
-  const brightness = starPointBrightness(mag, p);
   const faint = starFaintFraction(mag, faintLimitMag, p);
   const baseSize = starPointBaseSize(mag, p);
-  const sizePx = Math.max(p.sizeFloorPx, lerp(baseSize, baseSize * p.faintMinSizeScale, faint));
-  const alpha = lerp(1.0, p.faintMinAlpha, faint);
-  return { brightness, sizePx, alpha };
+  out.brightness = starPointBrightness(mag, p);
+  out.sizePx = Math.max(p.sizeFloorPx, lerp(baseSize, baseSize * p.faintMinSizeScale, faint));
+  out.alpha = lerp(1.0, p.faintMinAlpha, faint);
+  return out;
 }

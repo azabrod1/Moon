@@ -21,7 +21,7 @@
  */
 
 import { DEG2RAD } from '../shared/math/angles';
-import { STAR_POINT_MAPPING, starPointVisual, type StarPointMapping } from './world/starPointMapping';
+import { STAR_POINT_MAPPING, starPointVisual, type StarPointMapping, type StarPointVisual } from './world/starPointMapping';
 
 const clamp = (v: number, min: number, max: number) => Math.max(min, Math.min(max, v));
 const lerp = (x: number, y: number, t: number) => (1 - t) * x + t * y;
@@ -240,12 +240,17 @@ export interface MoonDotVisual {
   magnitude: number;
 }
 
+// Scratch for the internal star-mapping call — moonDotVisual consumes the
+// result before returning, so one module-level object serves every call.
+const starVisualScratch: StarPointVisual = { brightness: 0, sizePx: 0, alpha: 0 };
+
 /**
  * Full per-frame visual for one moon dot. Composition order is deliberate and
  * test-pinned: star-scale brightness/size/alpha from the shared mapping → extend
  * the faint-end alpha below the catalog limit toward zero → floor the nav
  * target's contribution only where there is real flux → multiply the disc-handoff
  * crossfade and the system-edge fade.
+ * Pass `out` to reuse a result object (per-frame callers — no allocation).
  */
 export function moonDotVisual(
   renderedRadiusAU: number,
@@ -261,6 +266,7 @@ export function moonDotVisual(
   starFaintLimitMag: number,
   params: MoonDotParams = MOON_DOT_PARAMS,
   starMapping: StarPointMapping = STAR_POINT_MAPPING,
+  out: MoonDotVisual = { intensity: 0, alpha: 0, sizePx: 0, brightness: 0, magnitude: 0 },
 ): MoonDotVisual {
   const illum = phaseIllumination(phaseCos) * Math.max(0, shadeFraction);
   const magnitude = moonDotMagnitude(renderedRadiusAU, distAU, sunDistAU, illum, albedoProxy, params);
@@ -271,7 +277,7 @@ export function moonDotVisual(
   // are tonemapped, so the point scale must compress with them or a close
   // Galilean (genuinely mag −5) out-renders its own parent.
   const effectiveMag = Math.max(magnitude, params.magCeiling);
-  const star = starPointVisual(effectiveMag, starFaintLimitMag, starMapping);
+  const star = starPointVisual(effectiveMag, starFaintLimitMag, starMapping, starVisualScratch);
 
   // Extend the faint-end alpha below the catalog limit toward zero. At the limit
   // the star floor is faintMinAlpha and this multiplier is 1, so the two meet
@@ -320,7 +326,12 @@ export function moonDotVisual(
     sizePx = Math.min(sizePx, lerp(sizePx, discPx, t));
   }
 
-  return { intensity, alpha, sizePx, brightness, magnitude };
+  out.intensity = intensity;
+  out.alpha = alpha;
+  out.sizePx = sizePx;
+  out.brightness = brightness;
+  out.magnitude = magnitude;
+  return out;
 }
 
 /**

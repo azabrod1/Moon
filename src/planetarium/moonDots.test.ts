@@ -510,3 +510,16 @@ describe('moonDots — current tuning (defaults)', () => {
     expect(P.texUpgradeDiscPx).toBe(80);
   });
 });
+
+describe('moonDots — zero-alloc out param', () => {
+  it('fills and returns the caller scratch, matching the allocating path', () => {
+    const fresh = visualAt(0.005, { discPx: 2, isTarget: true, parentFade: 0.3 });
+    const scratch = { intensity: -1, alpha: -1, sizePx: -1, brightness: -1, magnitude: -1 };
+    const reused = moonDotVisual(
+      EUROPA_RENDERED_AU, 0.005, R_SUN_JUP, 1, EUROPA_ALBEDO, 1, 2, true, 1, 0.3,
+      FAINT_LIMIT, undefined, undefined, scratch,
+    );
+    expect(reused).toBe(scratch);
+    expect(reused).toEqual(fresh);
+  });
+});

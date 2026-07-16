@@ -83,6 +83,7 @@ import {
   parentDominanceFade,
   systemEdgeFade,
   type MoonDotParams,
+  type MoonDotVisual,
 } from './moonDots';
 import { MoonPainter } from './world/MoonPainter';
 import { ProceduralMoonTexturer } from './world/ProceduralMoonTexturer';
@@ -422,6 +423,13 @@ export class PlanetariumMode {
   // Provenance: did the user pick the target, or is it a legacy-save leftover?
   // Only user-engaged targets render the "→ name" chip or survive a landing.
   private autopilotUserEngaged = false;
+  /** Cached flyby aim for the autopilot blend zone. `moonArrivalPose` builds a
+   *  dozen vectors per call, and the pose depends only on the moon/parent
+   *  state — so recompute when the moon has moved a couple percent of the
+   *  standoff (every frame under warp, almost never at 1×), not per frame. */
+  private autopilotAim = new THREE.Vector3();
+  private autopilotAimMoonPos = new THREE.Vector3();
+  private autopilotAimFor: string | null = null;
 
   // Moon world positions in AU (true positions, not offset)
   private moonWorldPositions = new Map<string, { x: number; y: number; z: number }>();
@@ -440,6 +448,7 @@ export class PlanetariumMode {
    *  the per-moon proximity release reads it without clobbering tmpDotMoonPos. */
   private tmpDotParentPos = new THREE.Vector3();
   private tmpDotChroma = { r: 1, g: 1, b: 1 };
+  private tmpDotVisual: MoonDotVisual = { intensity: 0, alpha: 0, sizePx: 0, brightness: 0, magnitude: 0 };
   /** The moon a nav lock is aimed at, kept alive past autopilot disengage /
    *  arrival-look drop so its dot floor and label exemption survive manual
    *  flight to the moon. Session-only, never persisted; cleared on a jump/engage
@@ -1494,10 +1503,10 @@ export class PlanetariumMode {
     // dot's screen contribution for its sub-pixel gating.
     this.updateMoonDotsForCamera();
 
-    // Occlusion pipeline: planet discs → moon + ship discs → labels + markers.
-    // Runs when either the HTML labels or the marker sprites are on. The
-    // occluder passes only feed label culling, so markers-only (labels off)
-    // skips them — the sprites depth-test on the GPU.
+    // Occlusion pipeline: planet discs → Sun + moon + ship discs → labels +
+    // markers. The occluder passes run whenever either consumer is on: marker
+    // sprites render without a depth test (see the material comment in
+    // PlanetLabels), so this analytic disc set is their only occlusion.
     if (this.planetLabels && (this.showBodyLabels || this.showBodyMarkers)) {
       const scenePositions = new Map<string, { x: number; y: number; z: number }>();
       for (const planet of this.solarSystem.planets) {
@@ -1507,10 +1516,8 @@ export class PlanetariumMode {
           z: planet.group.position.z,
         });
       }
-      if (this.showBodyLabels) {
-        this.planetLabels.collectForegroundDiscs(scenePositions, this.renderer);
-        this.collectDynamicOccluders();
-      }
+      this.planetLabels.collectForegroundDiscs(scenePositions, this.renderer);
+      this.collectDynamicOccluders();
       // Main (flight) path: landedOn is null here — narrowed by early return above.
       this.planetLabels.renderLabels(scenePositions, { x: 0, y: 0, z: 0 }, this.renderer, {
         showMarkers: this.showBodyMarkers,
@@ -1837,6 +1844,8 @@ export class PlanetariumMode {
           parentFade,
           this.starFaintLimitMag,
           params,
+          undefined,
+          this.tmpDotVisual,
         );
         m.dotScreenAlpha = v.alpha;
         m.dotScreenSizePx = v.sizePx;
@@ -2551,11 +2560,12 @@ export class PlanetariumMode {
   }
 
   /**
-   * Second pass: contribute foreground discs for visible moons and the
-   * player ship to `planetLabels`, so any label rendered afterwards (planet,
-   * moon, sun) is occluded when it would sit on top of one of them. Must
-   * run AFTER `planetLabels.collectForegroundDiscs()` and BEFORE any label
-   * rendering (`renderLabels`, `renderMoonLabels`, `updateSunLabel`).
+   * Second pass: contribute foreground discs for the Sun, visible moons and
+   * the player ship to `planetLabels`, so any label or marker rendered
+   * afterwards (planet, moon, sun) is occluded when it would sit on top of
+   * one of them. Must run AFTER `planetLabels.collectForegroundDiscs()` and
+   * BEFORE any label rendering (`renderLabels`, `renderMoonLabels`,
+   * `updateSunLabel`).
    */
   private collectDynamicOccluders() {
     if (!this.planetLabels || !this.solarSystem) return;
@@ -2565,6 +2575,23 @@ export class PlanetariumMode {
     const camY = this.camera.position.y;
     const camZ = this.camera.position.z;
     const tempV = new THREE.Vector3();
+
+    // The Sun. No angular-size gate: markers no longer depth-test, so this
+    // disc is the only thing keeping a far planet's marker (and label) from
+    // drawing over the solar disc — however few pixels it covers. The Sun
+    // label itself is safe: equal camera distance short-circuits the test.
+    {
+      const sunPos = this.solarSystem.sun.position;
+      const distFromCamera = this.camera.position.distanceTo(sunPos);
+      const canvasW = this.renderer.domElement.clientWidth;
+      const proj = projectToScreen(sunPos, this.camera, canvasW, canvasH);
+      if (proj.ndcZ < 1 && distFromCamera > 0) {
+        const radiusPx = discRadiusPx(SUN_DATA.radiusAU, distFromCamera, halfFovTan, canvasH) * 1.1;
+        this.planetLabels.addForegroundDisc({
+          screenX: proj.x, screenY: proj.y, radiusPx, distFromCamera, name: 'Sun',
+        });
+      }
+    }
 
     // Visible moons
     for (const planet of this.solarSystem.planets) {
@@ -7882,10 +7909,11 @@ export class PlanetariumMode {
     // dots after the surface camera re-pins (labels are hidden there anyway).
     if (this.landedView !== 'surface') this.updateMoonDotsForCamera();
 
-    // Occlusion pipeline while landed: planets → moons + ship → labels + markers.
-    // Runs when either the HTML labels or the marker sprites are on; surface
-    // view hides everything. The occluder passes only feed label culling, so
-    // markers-only (labels off) skips them — the sprites depth-test on the GPU.
+    // Occlusion pipeline while landed: planets → Sun + moons + ship → labels +
+    // markers; surface view hides everything. The occluder passes run whenever
+    // either consumer is on: marker sprites render without a depth test (see
+    // the material comment in PlanetLabels), so this analytic disc set is
+    // their only occlusion.
     if (this.planetLabels && this.landedView !== 'surface' && (this.showBodyLabels || this.showBodyMarkers)) {
       const scenePositions = new Map<string, { x: number; y: number; z: number }>();
       for (const planet of this.solarSystem.planets) {
@@ -7896,10 +7924,8 @@ export class PlanetariumMode {
         });
       }
       const landedPlanetName = this.landedOn?.type === 'planet' ? this.landedOn.name : undefined;
-      if (this.showBodyLabels) {
-        this.planetLabels.collectForegroundDiscs(scenePositions, this.renderer);
-        this.collectDynamicOccluders();
-      }
+      this.planetLabels.collectForegroundDiscs(scenePositions, this.renderer);
+      this.collectDynamicOccluders();
       this.planetLabels.renderLabels(scenePositions, { x: 0, y: 0, z: 0 }, this.renderer, {
         showMarkers: this.showBodyMarkers,
         showLabels: this.showBodyLabels,
@@ -8143,8 +8169,9 @@ export class PlanetariumMode {
     if (!pos) return;
     // Near a resolvable moon, ease the heading from its center toward the flyby
     // aim so the ship parks pre-aimed past the limb — the pose a Travel jump
-    // arrives in. The pose alloc is confined to the blend zone; outside it (or
-    // on the parent fallback) fly straight at the target.
+    // arrives in. The pose is served from the cache (see `autopilotAim`);
+    // outside the blend zone (or on the parent fallback) fly straight at the
+    // target.
     const inp = this.resolveAutopilotMoonInputs(this.autopilotTarget);
     if (inp) {
       const standoff = moonArrivalStandoffAU(inp);
@@ -8154,7 +8181,16 @@ export class PlanetariumMode {
       const dist = Math.sqrt(dx * dx + dy * dy + dz * dz);
       if (dist < 3 * standoff) {
         const blend = autopilotAimBlend(dist, standoff);
-        const aim = moonArrivalPose(inp).aimPoint;
+        const staleSq = (0.02 * standoff) ** 2;
+        if (
+          this.autopilotAimFor !== this.autopilotTarget.name ||
+          this.autopilotAimMoonPos.distanceToSquared(inp.moonPos) > staleSq
+        ) {
+          this.autopilotAim.copy(moonArrivalPose(inp).aimPoint);
+          this.autopilotAimMoonPos.copy(inp.moonPos);
+          this.autopilotAimFor = this.autopilotTarget.name;
+        }
+        const aim = this.autopilotAim;
         this.player.headToward(
           inp.moonPos.x + (aim.x - inp.moonPos.x) * blend,
           inp.moonPos.z + (aim.z - inp.moonPos.z) * blend,

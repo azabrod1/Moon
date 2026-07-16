@@ -42,4 +42,11 @@ describe('starPointMapping — formulas', () => {
     // baseSize at mag 6.5 clamps to 1.2, then × 0.8 = 0.96, floored to 1.0.
     expect(v.sizePx).toBe(1.0);
   });
+
+  it('visual: an out scratch is filled and returned (zero-alloc path)', () => {
+    const scratch = { brightness: -1, sizePx: -1, alpha: -1 };
+    const v = starPointVisual(2, 6.5, STAR_POINT_MAPPING, scratch);
+    expect(v).toBe(scratch);
+    expect(v).toEqual(starPointVisual(2, 6.5));
+  });
 });

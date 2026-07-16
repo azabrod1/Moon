@@ -8,6 +8,7 @@ import { PLANETARIUM_BODIES, ASTEROID_BELT, type PlanetData } from './planets/pl
 import { createPlanetMesh, createPlanetariumSun, type PlanetMesh } from './PlanetFactory';
 import {
   computeBodyPositionAU,
+  eclipticToEquatorial,
   sampleOrbitLinePoints,
   sampleTrajectoryLinePoints,
 } from '../astronomy/planetary';
@@ -33,12 +34,15 @@ export interface SolarSystemObjects {
   sunLight: THREE.PointLight;
 }
 
-// Decorative scene-space spread (aligned overview mode), not frame-bound —
-// the ± wobble is symmetric, so the z sign carries no chirality meaning.
+// Decorative spread in the ecliptic plane, baked into the scene's J2000
+// equatorial frame so aligned planets sit on their transformed orbit circles.
 function createAlignedPlanetPosition(planet: PlanetData, seed: number): { x: number; y: number; z: number } {
   const radius = planet.semiMajorAxisAU;
   const spread = ((seed * 7.13) % 1 - 0.5) * (Math.PI / 6);
-  return { x: radius * Math.cos(spread), y: 0, z: radius * Math.sin(spread) };
+  const position = eclipticToEquatorial(
+    new THREE.Vector3(radius * Math.cos(spread), 0, -radius * Math.sin(spread)),
+  );
+  return { x: position.x, y: position.y, z: position.z };
 }
 
 export function getPlanetOrbitalPosition(
@@ -135,23 +139,41 @@ function createOrbitLine(points: THREE.Vector3[], color: number, opacity: number
   return new THREE.Line(geometry, material);
 }
 
-function createAsteroidBelt(): THREE.Points {
+const ASTEROID_BELT_SEED = 0x41535452;
+
+/** Deterministic decorative scatter so captures and regression tests are stable. */
+function asteroidBeltRng(): () => number {
+  let state = ASTEROID_BELT_SEED;
+  return () => {
+    state |= 0;
+    state = (state + 0x6d2b79f5) | 0;
+    let value = Math.imul(state ^ (state >>> 15), 1 | state);
+    value = (value + Math.imul(value ^ (value >>> 7), 61 | value)) ^ value;
+    return ((value ^ (value >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+export function createAsteroidBelt(): THREE.Points {
   const count = 3000;
   const positions = new Float32Array(count * 3);
   const colors = new Float32Array(count * 3);
+  const random = asteroidBeltRng();
 
-  // Decorative scene-space ring (random circularly-symmetric scatter), not
-  // frame-bound — the z=+sin convention here carries no chirality meaning.
+  // Generate in the intermediate ecliptic frame, then bake into the scene's
+  // J2000 equatorial frame. Height is ecliptic north, not scene-world +Y.
   for (let i = 0; i < count; i++) {
-    const radius = ASTEROID_BELT.innerAU + Math.random() * (ASTEROID_BELT.outerAU - ASTEROID_BELT.innerAU);
-    const angle = Math.random() * Math.PI * 2;
-    const y = (Math.random() - 0.5) * 0.05;
+    const radius = ASTEROID_BELT.innerAU + random() * (ASTEROID_BELT.outerAU - ASTEROID_BELT.innerAU);
+    const angle = random() * Math.PI * 2;
+    const height = (random() - 0.5) * 0.05;
+    const position = eclipticToEquatorial(
+      new THREE.Vector3(radius * Math.cos(angle), height, -radius * Math.sin(angle)),
+    );
 
-    positions[i * 3] = radius * Math.cos(angle);
-    positions[i * 3 + 1] = y;
-    positions[i * 3 + 2] = radius * Math.sin(angle);
+    positions[i * 3] = position.x;
+    positions[i * 3 + 1] = position.y;
+    positions[i * 3 + 2] = position.z;
 
-    const brightness = 0.4 + Math.random() * 0.3;
+    const brightness = 0.4 + random() * 0.3;
     colors[i * 3] = brightness;
     colors[i * 3 + 1] = brightness * 0.9;
     colors[i * 3 + 2] = brightness * 0.7;

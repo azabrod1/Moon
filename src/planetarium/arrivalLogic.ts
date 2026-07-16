@@ -337,3 +337,27 @@ export function moonArrivalPose(inp: MoonArrivalInputs): MoonArrivalPose {
   }
   return { position, aimPoint };
 }
+
+/** Standoff for a Sun teleport, in photosphere radii: 8 puts a ~14° disc in
+ *  front of the chase camera — the visual weight a planet jump's 8-radii
+ *  standoff gives — while sitting far outside the 1.2-radius governor shell,
+ *  so the arrival glides instead of binding. */
+export const SUN_ARRIVAL_RADII = 8;
+
+/**
+ * Pose for a Sun teleport: park on the player's OWN radial at the standoff,
+ * looking at the heliocenter (the Sun is the world frame's origin). Keeping
+ * the radial means the jump never swings the player around the Sun — the sky
+ * they left stays behind them. A player exactly at the origin (unreachable in
+ * practice) falls back to a fixed direction instead of normalizing zero.
+ */
+export function sunArrivalPose(
+  playerPos: THREE.Vector3,
+  sunRadiusAU: number,
+): { position: THREE.Vector3; lookTarget: THREE.Vector3 } {
+  const dist = sunRadiusAU * SUN_ARRIVAL_RADII;
+  const dir = playerPos.lengthSq() > 1e-12
+    ? playerPos.clone().normalize()
+    : new THREE.Vector3(-1, 0.25, 0).normalize();
+  return { position: dir.multiplyScalar(dist), lookTarget: new THREE.Vector3(0, 0, 0) };
+}

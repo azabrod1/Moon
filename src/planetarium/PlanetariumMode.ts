@@ -150,6 +150,7 @@ import {
   moonArrivalCameraLookWeight,
   moonArrivalPose,
   moonCollisionRadius,
+  sunArrivalPose,
   BODY_APPROACH_V_MIN_AU_S,
   BODY_CAP_CLEAR_HOLD_S,
   MOON_APPROACH_K_PER_S,
@@ -158,6 +159,7 @@ import {
   PLANET_ARRIVAL_STANDOFF_FLOOR_AU,
   PLANET_CAP_RELEASE_EFOLD_S,
   SUN_APPROACH_SURFACE_RADII,
+  SUN_ARRIVAL_RADII,
   type BodyCapState,
 } from './arrivalLogic';
 import {
@@ -274,6 +276,10 @@ const SUN_ANG_RADIUS_AT_1AU = Math.asin(SUN_DATA.radiusAU);
 // tracks the light instead of an authored amount. Small enough that the
 // drawn-quad edge fade lands well inside where the wash is already invisible.
 const SUN_VEIL_EPSILON = 0.0015;
+
+// The Sun sits at the world frame's origin by construction; navigation code
+// that resolves target positions returns this shared literal for it.
+const SUN_WORLD_POSITION = { x: 0, y: 0, z: 0 };
 
 export interface PlanetariumActivationProgress {
   completedUnits: number;
@@ -4560,6 +4566,11 @@ export class PlanetariumMode {
     if (!list || !verb) return;
     list.innerHTML = '';
     this.deckHl = -1;
+    if (verb !== 'observe') {
+      // The Sun has no surface to host an observatory, so its row rides only
+      // the Travel and Autopilot tabs, above the planet groups.
+      list.appendChild(this.makeDeckRow({ type: 'planet', name: 'Sun' }, SUN_DATA.color, 'Our star'));
+    }
     for (const group of groupDeckBodies(PLANETARIUM_BODIES, MOONS)) {
       list.appendChild(this.makeDeckRow(
         { type: 'planet', name: group.planet.name },
@@ -4704,6 +4715,8 @@ export class PlanetariumMode {
         if (target.type === 'moon') {
           const moon = MOONS.find((m) => m.name === target.name);
           if (moon) this.jumpToMoon(moon);
+        } else if (target.name === 'Sun') {
+          this.jumpToSun();
         } else {
           const body = PLANETARIUM_BODIES.find((b) => b.name === target.name);
           if (body) this.jumpToPlanet(body);
@@ -5423,6 +5436,15 @@ export class PlanetariumMode {
     this.applyJumpDestination(destination, planet.name, options.notify !== false);
   }
 
+  jumpToSun(options: { notify?: boolean } = {}) {
+    if (this.isMissionActive()) return;
+    const destination = sunArrivalPose(
+      new THREE.Vector3(this.player.posX, this.player.posY, this.player.posZ),
+      SUN_DATA.radiusAU,
+    );
+    this.applyJumpDestination(destination, 'Sun', options.notify !== false);
+  }
+
   jumpToMoon(moon: MoonData, options: { notify?: boolean } = {}) {
     if (this.isMissionActive()) return;
     const destination = this.getMoonJumpDestination(moon);
@@ -5541,6 +5563,11 @@ export class PlanetariumMode {
    */
   devJumpToBody(name: string, distanceMultiplier = 1): boolean {
     if (!this.solarSystem) return false;
+    if (name === 'Sun') {
+      this.jumpToSun({ notify: false });
+      this.player.moving = false; // hold position so the body stays centered for capture
+      return true;
+    }
     const mesh = this.solarSystem.planets.find((p) => p.data.name === name);
     if (!mesh) return false;
     this.jumpToPlanet(mesh.data, { notify: false, distanceMultiplier });
@@ -8261,6 +8288,10 @@ export class PlanetariumMode {
 
   private getTargetWorldPosition(target: NonNullable<LandedTarget>): { x: number; y: number; z: number } | null {
     if (target.type === 'planet') {
+      // The Sun is the world frame's origin (the floating origin subtracts the
+      // player elsewhere), so it never appears in planetWorldPositions. One
+      // shared literal keeps this per-frame autopilot path allocation-free.
+      if (target.name === 'Sun') return SUN_WORLD_POSITION;
       return this.planetWorldPositions.get(target.name) ?? null;
     }
     // For moons, use precise position when available; fall back to parent planet
@@ -8343,8 +8374,16 @@ export class PlanetariumMode {
 
     let threshold: number;
     if (this.autopilotTarget.type === 'planet') {
-      const body = PLANETARIUM_BODIES.find(b => b.name === this.autopilotTarget!.name);
-      threshold = body ? body.systemRadiusAU * 0.3 : 0.003;
+      if (this.autopilotTarget.name === 'Sun') {
+        // The Sun governor glides asymptotically toward its 1.2-photosphere
+        // shell, so a tight threshold would never be crossed. 1.5x the
+        // teleport standoff lets the pilot ring the bell while the final
+        // glide is still visibly under way.
+        threshold = SUN_DATA.radiusAU * SUN_ARRIVAL_RADII * 1.5;
+      } else {
+        const body = PLANETARIUM_BODIES.find(b => b.name === this.autopilotTarget!.name);
+        threshold = body ? body.systemRadiusAU * 0.3 : 0.003;
+      }
     } else {
       const moons = this.planetMoons.get(this.autopilotTarget.parentPlanet);
       const moonMesh = moons?.find(m => m.data.name === this.autopilotTarget!.name);

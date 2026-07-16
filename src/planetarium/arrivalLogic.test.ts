@@ -8,6 +8,7 @@ import {
   moonArrivalPose,
   moonCollisionRadius,
   rampedSpeedCap,
+  sunArrivalPose,
   BODY_APPROACH_V_MIN_AU_S,
   BODY_CAP_CLEAR_HOLD_S,
   MOON_CAP_RELEASE_EFOLD_S,
@@ -18,10 +19,12 @@ import {
   MOON_ARRIVAL_MAX_OFFAXIS_DEG,
   MOON_ARRIVAL_SEPARATION_CAP,
   MOON_ARRIVAL_STANDOFF_FLOOR_AU,
+  SUN_APPROACH_SURFACE_RADII,
+  SUN_ARRIVAL_RADII,
   type MoonArrivalInputs,
 } from './arrivalLogic';
 import { MOONS } from './planets/moonData';
-import { PLANETARIUM_BODIES } from './planets/planetData';
+import { PLANETARIUM_BODIES, SUN_DATA } from './planets/planetData';
 import { KM_PER_AU } from '../astronomy/constants';
 import { DEG2RAD, RAD2DEG } from '../shared/math/angles';
 // The REAL rig constants — this sweep must see exactly the rig the app
@@ -432,5 +435,31 @@ describe('moonArrivalPose — catalog sweep (all moons, three orbit phases)', ()
     // Parent dead ahead past the moon: the aim still exists, is finite, and
     // still misses the moon itself (the parent pushback owns what's beyond).
     expect(pose.aimPoint.distanceTo(moonPos)).toBeGreaterThan(0);
+  });
+});
+
+describe('sunArrivalPose', () => {
+  const R = SUN_DATA.radiusAU;
+
+  it('parks at the standoff on the player radial, looking at the heliocenter', () => {
+    const player = new THREE.Vector3(0.9, 0.1, -0.4);
+    const pose = sunArrivalPose(player, R);
+    expect(pose.position.length()).toBeCloseTo(R * SUN_ARRIVAL_RADII, 12);
+    expect(pose.position.clone().normalize().dot(player.clone().normalize())).toBeCloseTo(1, 12);
+    expect(pose.lookTarget.length()).toBe(0);
+  });
+
+  it('shows a mid-teens-degree disc from well outside the governor shell', () => {
+    const dist = sunArrivalPose(new THREE.Vector3(1, 0, 0), R).position.length();
+    const discDeg = 2 * Math.asin(R / dist) * RAD2DEG;
+    expect(discDeg).toBeGreaterThan(10);
+    expect(discDeg).toBeLessThan(20);
+    expect(dist).toBeGreaterThan(R * SUN_APPROACH_SURFACE_RADII * 3);
+  });
+
+  it('a player at the exact origin still gets a finite pose', () => {
+    const pose = sunArrivalPose(new THREE.Vector3(0, 0, 0), R);
+    expect(pose.position.length()).toBeCloseTo(R * SUN_ARRIVAL_RADII, 12);
+    expect(Number.isFinite(pose.position.x)).toBe(true);
   });
 });

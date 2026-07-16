@@ -96,10 +96,13 @@ export function surfaceEventNarrative(landed: SurfaceLandedInfo, spec: SurfaceEv
 
 /**
  * Display name with the article convention: Earth's Moon reads "the Moon"
- * in prose ("look up from the Moon"), every proper-named moon stays bare.
+ * in prose ("look up from the Moon") and the Sun reads "the Sun"; every
+ * proper-named body stays bare.
  */
 export function bodyDisplayName(name: string): string {
-  return name === 'Moon' ? 'the Moon' : name;
+  if (name === 'Moon') return 'the Moon';
+  if (name === 'Sun') return 'the Sun';
+  return name;
 }
 
 /**

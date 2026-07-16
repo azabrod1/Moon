@@ -8,6 +8,7 @@ import { describe, expect, it } from 'vitest';
 import * as THREE from 'three';
 import {
   angularDiameterDeg,
+  bodyDisplayName,
   clampSurfaceFovDeg,
   computeShadowSpotVantage,
   computeSubTargetVantage,
@@ -617,5 +618,14 @@ describe('Look-at menu choices', () => {
       surfaceTargetKey({ kind: 'moon', moonName: 'Europa' }),
     );
     expect(surfaceTargetKey({ kind: 'parent' })).toBe('parent');
+  });
+});
+
+describe('bodyDisplayName', () => {
+  it('gives the Moon and the Sun their articles, leaves proper names bare', () => {
+    expect(bodyDisplayName('Moon')).toBe('the Moon');
+    expect(bodyDisplayName('Sun')).toBe('the Sun');
+    expect(bodyDisplayName('Io')).toBe('Io');
+    expect(bodyDisplayName('Jupiter')).toBe('Jupiter');
   });
 });

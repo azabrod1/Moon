@@ -109,7 +109,7 @@ import {
   type SurfaceTargetChoice,
 } from './surfaceView';
 import { DEG2RAD } from '../shared/math/angles';
-import { SUN_GLARE_EXTENT_SOLAR_RADII } from '../shared/shaders/sun';
+import { SUN_GLARE_EXTENT_SOLAR_RADII, SUN_VEIL_BETA, SUN_VEIL_SCALE_H } from '../shared/shaders/sun';
 import { landedFrameCamDistAU, landedMinDistanceAU, LANDED_NEAR_AU } from './landedView';
 import {
   advanceSunEmergenceFlash,
@@ -2495,7 +2495,7 @@ export class PlanetariumMode {
   // the final per-frame call so neither allocates.
   private sunVeilSupport = { halfPx: 0, armDecayPx: 0, armDecayYPx: 0 };
 
-  /** Screen-space support the veiling glare needs, in device pixels: the radius
+  /** Screen-space support the veiling glare needs, in CSS pixels: the radius
    *  where the Moffat wash and the diffraction arms fall below the visibility
    *  floor. The billboard is grown to this so it tracks how far the light
    *  actually carries rather than an authored size, and the arm decay lengths it
@@ -2512,18 +2512,21 @@ export class PlanetariumMode {
     // The shader multiplies the veil by up to 1.5 during a limb-clearing flash;
     // sizing to that peak keeps a flash from clipping at the quad edge.
     const peak = veilStrength * veilAmt * exposureScale * 1.5;
-    // Invert the wash's Moffat 1/(1 + (dHat/0.022)^2)^1.12 for the dHat where it
-    // reaches the floor, then convert that normalized distance back to pixels.
-    // The 0.022 scale is the shader's own — the two must move in lockstep.
-    const washRatio = Math.pow(peak / SUN_VEIL_EPSILON, 1 / 1.12);
-    const washHalfPx = 0.022 * h * Math.sqrt(Math.max(washRatio, 1) - 1);
+    // Invert the wash's Moffat profile for the dHat where it reaches the
+    // floor, then convert that normalized distance back to pixels. Scale and
+    // exponent come from the shader's own exported constants.
+    const washRatio = Math.pow(peak / SUN_VEIL_EPSILON, 1 / SUN_VEIL_BETA);
+    const washHalfPx = SUN_VEIL_SCALE_H * h * Math.sqrt(Math.max(washRatio, 1) - 1);
     // The arms reach as far as the wash carries: full length at 1 AU (the wash
     // spans the frame), collapsing together in the outer system. Driving the
     // reach off the wash support keeps this non-circular — the arm term folds
     // into the combined support below without feeding back into its own length.
     const reachScale = THREE.MathUtils.clamp(washHalfPx / (0.55 * h), 0, 1);
-    const armDecayPx = 0.045 * h * reachScale;
-    const armDecayYPx = 0.018 * h * reachScale;
+    // e-folds capped in CSS px so a tall viewport can't stretch the arms: the
+    // visible arm runs to roughly 80 px at Earth and collapses outward in
+    // step with the wash reach.
+    const armDecayPx = Math.min(0.032 * h, 32) * reachScale;
+    const armDecayYPx = Math.min(0.012 * h, 12) * reachScale;
     // The horizontal arm decays as exp(-x / armDecayPx); solve for the x where it
     // hits the floor. Its longer reach bounds the vertical pair too.
     const armHalfPx = armDecayPx * Math.log(Math.max((peak * armCoeff) / SUN_VEIL_EPSILON, 1));
@@ -2631,10 +2634,10 @@ export class PlanetariumMode {
       const veilReachGeom = veilAmplitudeResponse * hugeFade;
       const veilStrength = glareMat ? glareMat.uniforms.uVeilStrength.value : 1.4;
       // The diffraction arms are a point-source camera artifact, so they fade as
-      // the photosphere resolves into a disc — about half strength at Earth's
-      // ~4 px solar radius, gone by Mercury's ~10 px — rather than growing with
-      // brightness. This stops them reading as ruler-straight exaggerated lines
-      // exactly where the Sun is closest and brightest.
+      // the photosphere resolves into a disc — about three-quarters strength at
+      // Earth's ~3.8 px solar radius, gone past ~8 px (Mercury sits near 10) —
+      // rather than growing with brightness. This stops them reading as
+      // ruler-straight exaggerated lines exactly where the Sun is closest.
       const armGate = 1 - THREE.MathUtils.smoothstep(solarRadiusPx, 2, 8);
       veilArmCoeff = 0.28 * armGate;
 

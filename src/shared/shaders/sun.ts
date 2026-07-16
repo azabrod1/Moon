@@ -263,13 +263,22 @@ void main() {
   // Two channels the fragment needs. vExtentScale is how much the veil grew the
   // quad past its physical/min size (1.0 when the veil is idle): the fragment
   // rebases the physical PSF by it so growth can't stretch the core/starburst.
-  // vHalfSizePx is the quad's true on-screen half-size in device pixels, making
-  // the veil a pure screen-space function immune to that same growth.
+  // vHalfSizePx is the quad's true on-screen half-size in CSS pixels (the
+  // same unit as uViewportHeight), making the veil a pure screen-space
+  // function immune to that same growth.
   vExtentScale = drawnHalfNdc / max(baseHalfNdc, 1e-7);
   vHalfSizePx = drawnHalfNdc * uViewportHeight * 0.5;
   gl_Position = projectionMatrix * centreView;
 }
 `;
+
+/** The veiling-glare wash profile: a screen-space Moffat with this scale (as a
+ *  fraction of viewport height) and outer exponent. Interpolated into the
+ *  fragment shader below AND inverted by the controller's support solver
+ *  (computeSunVeilSupport) to size the billboard — one definition site, so the
+ *  drawn profile and the derived support can never drift apart. */
+export const SUN_VEIL_SCALE_H = 0.022;
+export const SUN_VEIL_BETA = 1.12;
 
 export const sunGlareFragmentShader = /* glsl */ `
 uniform float uExtent;
@@ -412,12 +421,12 @@ void main() {
   // Single power-law, deliberately plateau-free: any flat stretch or visible
   // boundary makes the wash read as a grey fog disc instead of light. Bright
   // near the core, then a continuous shallow fall the eye can't find an edge
-  // on. The 0.022-viewport-height scale keeps the perceptible halo compact —
-  // the Sun reads dangerously bright through saturation and exposure, never by
-  // painting a wide grey footprint — and computeSunVeilSupport inverts this
-  // exact profile to size the quad, so the two must move in lockstep.
-  float dNorm = dHat / 0.022;
-  float veilShape = 1.0 / pow(1.0 + dNorm * dNorm, 1.12);
+  // on. The compact scale keeps the perceptible halo modest — the Sun reads
+  // dangerously bright through saturation and exposure, never by painting a
+  // wide grey footprint. Scale and exponent interpolate from the shared
+  // constants the controller's support solver inverts.
+  float dNorm = dHat / ${SUN_VEIL_SCALE_H};
+  float veilShape = 1.0 / pow(1.0 + dNorm * dNorm, ${SUN_VEIL_BETA});
   // Long thin diffraction arms, also in true pixels: the base-quad starburst
   // can never exceed the physical footprint (~40 px at 1 AU), while reference
   // stills show spikes spanning hundreds. Gaussian cross-section a couple of

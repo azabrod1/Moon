@@ -4,6 +4,8 @@ import {
   circleOcclusionFraction,
   eclipseOccluderLikeness,
   projectedSourceRadiusAtPlane,
+  sunInteriorWhiteout,
+  sunWhiteoutFraction,
   targetSunExposure,
 } from './sunAppearance';
 
@@ -83,5 +85,42 @@ describe('advanceSunEmergenceFlash', () => {
       dt: 1 / 60,
       eligible: false,
     })).toBe(0);
+  });
+});
+
+describe('sunWhiteoutFraction', () => {
+  it('leaves the granulation study range untouched and saturates the final approach', () => {
+    expect(sunWhiteoutFraction(30)).toBe(0);
+    expect(sunWhiteoutFraction(2.6)).toBe(0);
+    expect(sunWhiteoutFraction(2.0)).toBeGreaterThan(0.2);
+    expect(sunWhiteoutFraction(2.0)).toBeLessThan(0.55);
+    // The 1.2-radii governor hover sits in near-total overwhelm...
+    expect(sunWhiteoutFraction(1.2)).toBeGreaterThan(0.98);
+    expect(sunWhiteoutFraction(1.2)).toBeLessThan(1);
+    // ...and contact is pinned full white, continuous with the interior side.
+    expect(sunWhiteoutFraction(1.12)).toBe(1);
+    expect(sunWhiteoutFraction(1.0)).toBe(1);
+    expect(sunWhiteoutFraction(0)).toBe(1);
+    expect(sunWhiteoutFraction(-1)).toBe(1);
+  });
+
+  it('is monotonic across the bleach band', () => {
+    let previous = sunWhiteoutFraction(2.8);
+    for (let radii = 2.7; radii >= 1.05; radii -= 0.05) {
+      const next = sunWhiteoutFraction(radii);
+      expect(next).toBeGreaterThanOrEqual(previous);
+      previous = next;
+    }
+  });
+});
+
+describe('sunInteriorWhiteout', () => {
+  it('holds the crossing white and hands off to the ember dive with depth', () => {
+    expect(sunInteriorWhiteout(1)).toBe(sunWhiteoutFraction(1)); // seamless crossing
+    expect(sunInteriorWhiteout(0.95)).toBe(1);
+    expect(sunInteriorWhiteout(0.7)).toBeGreaterThan(0.2);
+    expect(sunInteriorWhiteout(0.7)).toBeLessThan(0.6);
+    expect(sunInteriorWhiteout(0.55)).toBe(0);
+    expect(sunInteriorWhiteout(0.2)).toBe(0);
   });
 });

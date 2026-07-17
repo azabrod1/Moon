@@ -632,6 +632,9 @@ export function createPlanetariumSun(useBloom = true): THREE.Group {
       // Submersion fade for the interior fog (1 outside; the controller drives
       // it from depth below the photosphere).
       uInteriorFade: { value: 1 },
+      // Proximity whiteout (0 far, 1 = full-frame saturated white); the
+      // controller drives it from distance outside and submersion inside.
+      uWhiteout: { value: 0 },
     },
     vertexShader: sunPhotosphereVertexShader,
     fragmentShader: sunPhotosphereFragmentShader,

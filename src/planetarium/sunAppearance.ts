@@ -103,6 +103,30 @@ export function advanceSunEmergenceFlash(input: {
 }
 
 /**
+ * Proximity whiteout — the approach's final act. Surface brightness does not
+ * fall with distance, so once the photosphere fills the frame no camera or eye
+ * holds detail: adaptation loses and the view bleaches to a full white screen.
+ * 0 beyond 2.6 solar radii (the granulation study tier lives there), climbing
+ * to ~0.99 at the 1.2-radii governor hover, pinned 1 just before contact so the
+ * crossing meets the interior side already saturated.
+ */
+export function sunWhiteoutFraction(distanceSolarRadii: number): number {
+  if (!(distanceSolarRadii > 0)) return 1;
+  return 1 - THREE.MathUtils.smoothstep(distanceSolarRadii, 1.12, 2.6);
+}
+
+/**
+ * Whiteout handoff below the photosphere, driven by submersion (centre
+ * distance / radius, 1 at the surface). The crossing itself stays saturated
+ * white — continuous with sunWhiteoutFraction at contact — and the molten
+ * interior current only emerges as depth pulls this back down; past
+ * half-submersion the ember dive owns the view.
+ */
+export function sunInteriorWhiteout(submersion: number): number {
+  return THREE.MathUtils.smoothstep(submersion, 0.55, 0.92);
+}
+
+/**
  * Artist-bounded analytic metering for the one known extreme light source.
  * Small distant Suns still make the camera react, while a close/zoomed disc
  * can pull exposure down by at most ~1.51 stops in normal framing and ~2 stops

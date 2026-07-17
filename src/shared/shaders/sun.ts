@@ -24,6 +24,7 @@ uniform float time;
 uniform float uAtmosphereMix;
 uniform vec3 uAtmosphereColor;
 uniform float uInteriorFade;
+uniform float uWhiteout;
 varying vec3 vNormal;
 varying vec3 vPosition;
 varying vec3 vObjectDirection;
@@ -114,7 +115,15 @@ void main() {
     float current = fbm3(fogDir * 9.0 + vec3(time * 0.01, -time * 0.007, time * 0.005));
     vec3 fog = mix(vec3(1.0, 0.62, 0.20), vec3(1.0, 0.985, 0.94), 0.72);
     fog *= mix(0.88, 1.14, current);
-    gl_FragColor = vec4(fog * 2.8 * uInteriorFade, 1.0);
+    // Whiteout continuity: just below the photosphere the view is still the
+    // saturated white wall of the crossing (the controller drives uWhiteout
+    // from submersion here, mirroring the exterior proximity bleach); the
+    // molten current only emerges as depth pulls it back down. The slam gate
+    // matches the exterior's: the white target is so hot that an ungated mix
+    // would pin the frame at even a third of the whiteout band.
+    float interiorSlam = smoothstep(0.85, 1.0, uWhiteout);
+    vec3 interiorGlow = mix(fog * 2.8 * uInteriorFade, vec3(26.0, 25.6, 24.4), interiorSlam);
+    gl_FragColor = vec4(interiorGlow, 1.0);
     #include <tonemapping_fragment>
     #include <colorspace_fragment>
     return;
@@ -137,6 +146,11 @@ void main() {
   float lanes = smoothstep(0.08, 0.90, granules);
   float convection = mix(0.92, 1.08, broad);
   float detail = mix(0.16, 1.30, pow(lanes, 0.72)) * convection;
+  // Proximity whiteout: granulation contrast is the first casualty of the
+  // final approach — lanes, cells, spots, and the limb all lift toward one
+  // blinding level long before the energy slam at the end pins the frame.
+  detail = mix(detail, 1.05, uWhiteout);
+  float structureKeep = 1.0 - uWhiteout;
 
   // One sparse bipolar active-region pair establishes the Sun's enormous
   // scale. Antipodal placement guarantees a restrained group on whichever
@@ -162,16 +176,23 @@ void main() {
   vec3 color = mix(laneColor, whiteHot, smoothstep(0.12, 0.82, lanes));
   color = mix(color, warmLimb, limbWarmth);
 
-  float limbDarkening = 0.40 + 0.60 * pow(mu, 0.62);
+  float limbDarkening = mix(0.40 + 0.60 * pow(mu, 0.62), 1.0, uWhiteout);
   float radiance = 3.8 * limbDarkening * detail;
-  radiance *= 1.0 - spotPenumbra * 0.42 - spotCore * 0.38;
-  radiance *= 1.0 + faculae;
+  radiance *= 1.0 - (spotPenumbra * 0.42 + spotCore * 0.38) * structureKeep;
+  radiance *= 1.0 + faculae * structureKeep;
 
   // When the camera→Sun sightline skims a planet's atmosphere, extinguish the
   // white source and pull it toward that atmosphere's sunset colour. This is
   // driven by geometry in the controller, not by camera position alone.
   color = mix(color, uAtmosphereColor, uAtmosphereMix * 0.82);
   radiance *= mix(1.0, 0.62, uAtmosphereMix);
+
+  // The whiteout bleaches by ENERGY, never by painting display white: colour
+  // lifts to the broadband white-hot and the last stretch slams the HDR
+  // radiance so the tonemapper itself saturates every channel — the overwhelm
+  // stays inside the same exposure/tonemap response as the rest of the star.
+  color = mix(color, whiteHot, uWhiteout);
+  radiance = mix(radiance, 26.0, smoothstep(0.85, 1.0, uWhiteout));
 
   gl_FragColor = vec4(color * radiance, 1.0);
   // No-ops into the composer's render target (the OutputPass grades there);

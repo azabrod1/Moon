@@ -141,6 +141,8 @@ import {
   circleOcclusionFraction,
   eclipseOccluderLikeness,
   projectedSourceRadiusAtPlane,
+  sunInteriorWhiteout,
+  sunWhiteoutFraction,
   targetSunExposure,
 } from './sunAppearance';
 import {
@@ -3045,10 +3047,12 @@ export class PlanetariumMode {
       // floor keeps the deep interior an ember glow rather than a dead screen.
       const submersion = THREE.MathUtils.clamp(sunDistance / SUN_DATA.radiusAU, 0, 1);
       const interiorFade = 0.006 + 0.994 * THREE.MathUtils.smoothstep(submersion, 0.25, 0.95);
+      const whiteout = sunInteriorWhiteout(submersion);
       if (interiorMesh) interiorMesh.visible = true;
       if (sunMat) {
         sunMat.uniforms.uAtmosphereMix.value = 0;
         sunMat.uniforms.uInteriorFade.value = interiorFade;
+        sunMat.uniforms.uWhiteout.value = whiteout;
       }
       if (glareMat) {
         const baseStrength = (glareMat.userData.baseGlareStrength ??=
@@ -3066,10 +3070,13 @@ export class PlanetariumMode {
       // prominence shell's close-up ring so it can't hang as a stale halo.
       if (prominenceMat) prominenceMat.uniforms.uCloseVisibility.value = 0;
       const insideBlend = 1 - Math.exp(-Math.max(dt, 0) / 0.9);
-      // At the surface this matches the close-up exposure tier (0.25), so
-      // crossing the photosphere never steps the scene brightness; the target
-      // relaxes toward neutral only as the fog itself darkens.
-      const insideTarget = THREE.MathUtils.lerp(1, 0.25, interiorFade);
+      // At the surface both sides of the crossing are whiteout-pinned to full
+      // exposure, so entering the photosphere never steps the scene
+      // brightness; the target relaxes toward the ember tier only as the
+      // whiteout hands off and the fog itself darkens.
+      const insideTarget = THREE.MathUtils.lerp(
+        THREE.MathUtils.lerp(1, 0.25, interiorFade), 1, whiteout,
+      );
       this.sunExposure = THREE.MathUtils.lerp(this.sunExposure, insideTarget, insideBlend);
       // No glare to obscure anything from inside the photosphere.
       this.deactivateSunGlareMask();
@@ -3079,6 +3086,12 @@ export class PlanetariumMode {
     toSun.multiplyScalar(1 / sunDistance);
     if (interiorMesh) interiorMesh.visible = false;
     if (sunMat) sunMat.uniforms.uInteriorFade.value = 1;
+    // Proximity whiteout: stateless, so teleports land on the correct bleach
+    // instantly and only the exposure below glides. View-independent on
+    // purpose — at a couple of radii the photosphere floor fills the frame in
+    // every direction that isn't open space.
+    const whiteout = sunWhiteoutFraction(sunDistance / SUN_DATA.radiusAU);
+    if (sunMat) sunMat.uniforms.uWhiteout.value = whiteout;
     const inFront = toSun.dot(this.camera.getWorldDirection(this.tmpSunCameraForward)) > 0;
     const solarAngularRadius = Math.asin(THREE.MathUtils.clamp(SUN_DATA.radiusAU / sunDistance, 0, 0.999999));
     const viewportWidth = Math.max(this.renderer.domElement.clientWidth, 1);
@@ -3179,6 +3192,10 @@ export class PlanetariumMode {
           centerDistanceNdc: centreDistanceNdc,
           visibleFraction,
         });
+        // The whiteout overrides the close-up study tier: past ~2.6 radii the
+        // metering stops winning — adaptation gives up and exposure rides back
+        // to full so the slammed photosphere reads as a truly blinding screen.
+        targetExposure = THREE.MathUtils.lerp(targetExposure, 1, whiteout);
         // Linear occlusion, deliberately harder than the physical PSF's ^0.38
         // energy: the veil dims in step with the exposed fraction and dies hard
         // in a partial eclipse. 0 fraction collapses the billboard entirely.
@@ -6292,8 +6309,10 @@ export class PlanetariumMode {
 
   /** Headless-QA readback for transient Sun optics and atmospheric grazing. */
   devSunAppearance(): unknown {
+    const sunMat = this.solarSystem?.sun.userData.sunMaterial as THREE.ShaderMaterial | undefined;
     return {
       exposure: this.sunExposure,
+      whiteout: sunMat ? (sunMat.uniforms.uWhiteout.value as number) : 0,
       visibleFraction: this.lastSunVisibleFraction,
       emergenceFlash: this.sunEmergenceFlash,
       atmosphereMix: this.sunAtmosphereMix,

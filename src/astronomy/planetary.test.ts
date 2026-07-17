@@ -289,22 +289,31 @@ describe('time helpers', () => {
     expect(formatAdaptiveClock(Date.UTC(2026, 0, 5), 1).date).toBe('Jan 05 2026');
   });
 
-  it('steps the rate ladder, unpauses, preserves reverse, clamps the ends', () => {
+  it('walks a signed ladder: down through 1× pauses, again crosses into reverse', () => {
     const presets = [1, 60, 1200] as const;
     const at = (rate: number, paused = false) => ({ currentUtcMs: 0, rate, paused });
-    // Walk up and down the ladder.
+    // Forward magnitude walk.
     expect(stepSimulationRate(at(1), 1, presets).rate).toBe(60);
     expect(stepSimulationRate(at(60), -1, presets).rate).toBe(1);
-    // Stepping always unpauses (the strip's −/+ resume a paused clock —
-    // deliberate, same as the popover).
-    expect(stepSimulationRate(at(60, true), 1, presets).paused).toBe(false);
-    // Reverse stays reverse: only the magnitude walks the ladder.
-    expect(stepSimulationRate(at(-60), 1, presets).rate).toBe(-1200);
+    // Down from 1× rests at the pause detent, poised forward for a plain resume.
+    expect(stepSimulationRate(at(1), -1, presets)).toMatchObject({ rate: 1, paused: true });
+    // Down again from pause crosses into reverse realtime.
+    expect(stepSimulationRate(at(1, true), -1, presets)).toMatchObject({ rate: -1, paused: false });
+    // Further − steps deepen the past; + walks back toward the future.
+    expect(stepSimulationRate(at(-1), -1, presets).rate).toBe(-60);
+    expect(stepSimulationRate(at(-60), 1, presets).rate).toBe(-1);
+    expect(stepSimulationRate(at(-1), 1, presets)).toMatchObject({ rate: -1, paused: true });
+    expect(stepSimulationRate(at(-1, true), 1, presets)).toMatchObject({ rate: 1, paused: false });
+    // From pause the walk resumes at 1× in the pressed direction — the pause
+    // detent's neighbours don't depend on what rate the pause stored.
+    expect(stepSimulationRate(at(60, true), 1, presets)).toMatchObject({ rate: 1, paused: false });
+    expect(stepSimulationRate(at(60, true), -1, presets)).toMatchObject({ rate: -1, paused: false });
     // Off-ladder magnitudes snap to the next larger preset before stepping.
     expect(stepSimulationRate(at(30), 1, presets).rate).toBe(1200);
     expect(stepSimulationRate(at(30), -1, presets).rate).toBe(1);
-    // Clamped at both ends.
-    expect(stepSimulationRate(at(1), -1, presets).rate).toBe(1);
+    expect(stepSimulationRate(at(-30), -1, presets).rate).toBe(-1200);
+    // Clamped at the fast end on both sides.
     expect(stepSimulationRate(at(1200), 1, presets).rate).toBe(1200);
+    expect(stepSimulationRate(at(-1200), -1, presets).rate).toBe(-1200);
   });
 });

@@ -286,26 +286,44 @@ export function advancePlanetariumTime(state: SimulationTime, dtSeconds: number)
 }
 
 /**
- * Step the simulation rate along a preset magnitude ladder, preserving the
- * sign (reverse stays reverse) and unpausing — the shared core behind the
- * time popover's Slower/Faster and the surface transport strip's −/+. An
- * off-ladder magnitude snaps to the next larger preset before stepping.
+ * Step the simulation rate along a signed ladder with a pause detent at zero:
+ *
+ *   −presets[last] … −presets[0] · paused · +presets[0] … +presets[last]
+ *
+ * `+1` always walks toward the future and `−1` toward the past — the bar's
+ * −/+ and the ,/. keys are time-direction arrows, not magnitude knobs. So
+ * stepping down through 1× rests at pause, and stepping down again starts
+ * reverse; from pause the walk resumes at 1× in the pressed direction
+ * whatever rate the pause stored. The shared core behind the time popover's
+ * Slower/Faster and the surface transport strip's −/+. An off-ladder
+ * magnitude snaps to the next larger preset before stepping.
  */
 export function stepSimulationRate(
   state: SimulationTime,
   direction: -1 | 1,
   presets: readonly number[],
 ): SimulationTime {
+  if (state.paused) {
+    return { ...state, rate: direction * presets[0], paused: false };
+  }
+  const sign = state.rate < 0 ? -1 : 1;
   const currentMagnitude = Math.abs(state.rate);
   let index = presets.findIndex(rate => Math.abs(rate - currentMagnitude) < 1e-6);
   if (index === -1) {
     index = presets.findIndex(rate => rate > currentMagnitude);
     if (index === -1) index = presets.length - 1;
   }
-  index = Math.min(presets.length - 1, Math.max(0, index + direction));
+  // On the reverse side the ladder runs mirrored: toward-the-past deepens the
+  // magnitude, toward-the-future shrinks it.
+  const next = index + (sign > 0 ? direction : -direction);
+  if (next < 0) {
+    // Walked down through 1×: rest at the pause detent, poised at 1× in the
+    // direction just left so a plain resume continues it.
+    return { ...state, rate: sign * presets[0], paused: true };
+  }
   return {
     ...state,
-    rate: presets[index] * (state.rate < 0 ? -1 : 1),
+    rate: sign * presets[Math.min(presets.length - 1, next)],
     paused: false,
   };
 }

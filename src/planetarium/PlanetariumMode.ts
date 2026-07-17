@@ -141,6 +141,7 @@ import {
   circleOcclusionFraction,
   eclipseOccluderLikeness,
   projectedSourceRadiusAtPlane,
+  sunGlareFloodOpacity,
   sunInteriorWhiteout,
   sunWhiteoutFraction,
   targetSunExposure,
@@ -418,6 +419,10 @@ export class PlanetariumMode {
   private sunExposure = 1;
   private lastSunVisibleFraction = 1;
   private sunEmergenceFlash = 0;
+  // DOM chrome flood at the whiteout wall; last written opacity string keeps
+  // the per-frame style write to actual changes only.
+  private sunGlareFloodEl: HTMLElement | null = null;
+  private sunGlareFloodLast = '';
   // When set, the next Sun-shader frame reseeds the emergence-flash baseline so a
   // one-frame jump in the Sun's visible fraction — teleport, landing, takeoff,
   // restore, time set, event jump, surface-view entry — is never mistaken for a
@@ -1352,6 +1357,7 @@ export class PlanetariumMode {
     this.lastSunVisibleFraction = 1;
     this.sunEmergenceFlash = 0;
     this.sunAtmosphereMix = 0;
+    this.applySunGlareFlood(0);
     this.renderer.toneMappingExposure = 1;
 
     // Hand the camera back on the fixed near plane — another mode (or a
@@ -3008,6 +3014,20 @@ export class PlanetariumMode {
     this.sunVeilSupport.armDecayYPx = armDecayYPx;
   }
 
+  /** Drive the DOM chrome flood from this frame's whiteout. The element sits
+   *  over the everyday HUD (never over the tutorial card, ☰ menu, veils, or
+   *  help) and never takes pointer events, so the washed-out cockpit stays
+   *  operable inside the blaze. */
+  private applySunGlareFlood(whiteout: number) {
+    const el = (this.sunGlareFloodEl ??= document.getElementById('sun-glare-flood'));
+    if (!el) return;
+    const value = sunGlareFloodOpacity(whiteout).toFixed(3);
+    if (value !== this.sunGlareFloodLast) {
+      this.sunGlareFloodLast = value;
+      el.style.opacity = value;
+    }
+  }
+
   private updateSunShader(dt: number) {
     if (!this.solarSystem) return;
     const sunMat = this.solarSystem.sun.userData.sunMaterial as THREE.ShaderMaterial | undefined;
@@ -3048,6 +3068,7 @@ export class PlanetariumMode {
       const submersion = THREE.MathUtils.clamp(sunDistance / SUN_DATA.radiusAU, 0, 1);
       const interiorFade = 0.006 + 0.994 * THREE.MathUtils.smoothstep(submersion, 0.25, 0.95);
       const whiteout = sunInteriorWhiteout(submersion);
+      this.applySunGlareFlood(whiteout);
       if (interiorMesh) interiorMesh.visible = true;
       if (sunMat) {
         sunMat.uniforms.uAtmosphereMix.value = 0;
@@ -3092,6 +3113,7 @@ export class PlanetariumMode {
     // every direction that isn't open space.
     const whiteout = sunWhiteoutFraction(sunDistance / SUN_DATA.radiusAU);
     if (sunMat) sunMat.uniforms.uWhiteout.value = whiteout;
+    this.applySunGlareFlood(whiteout);
     const inFront = toSun.dot(this.camera.getWorldDirection(this.tmpSunCameraForward)) > 0;
     const solarAngularRadius = Math.asin(THREE.MathUtils.clamp(SUN_DATA.radiusAU / sunDistance, 0, 0.999999));
     const viewportWidth = Math.max(this.renderer.domElement.clientWidth, 1);

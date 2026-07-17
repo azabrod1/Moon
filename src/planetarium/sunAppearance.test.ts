@@ -4,6 +4,7 @@ import {
   circleOcclusionFraction,
   eclipseOccluderLikeness,
   projectedSourceRadiusAtPlane,
+  sunGlareFloodOpacity,
   sunInteriorWhiteout,
   sunWhiteoutFraction,
   targetSunExposure,
@@ -122,5 +123,18 @@ describe('sunInteriorWhiteout', () => {
     expect(sunInteriorWhiteout(0.7)).toBeLessThan(0.6);
     expect(sunInteriorWhiteout(0.55)).toBe(0);
     expect(sunInteriorWhiteout(0.2)).toBe(0);
+  });
+});
+
+describe('sunGlareFloodOpacity', () => {
+  it('floods the chrome only at the whiteout wall and stays capped', () => {
+    expect(sunGlareFloodOpacity(0)).toBe(0);
+    expect(sunGlareFloodOpacity(0.85)).toBe(0);
+    expect(sunGlareFloodOpacity(0.92)).toBeGreaterThan(0.05);
+    expect(sunGlareFloodOpacity(0.92)).toBeLessThan(0.5);
+    expect(sunGlareFloodOpacity(1)).toBeCloseTo(0.65, 12);
+    // The 1.2-radii hover floods most of the way but never fully blinds.
+    expect(sunGlareFloodOpacity(sunWhiteoutFraction(1.2))).toBeGreaterThan(0.55);
+    expect(sunGlareFloodOpacity(sunWhiteoutFraction(1.2))).toBeLessThan(0.65);
   });
 });

@@ -1,5 +1,7 @@
 import * as THREE from 'three';
 
+import { SUN_WHITEOUT_SLAM_EDGE } from '../shared/shaders/sun';
+
 /** Fraction of a circular luminous source covered by one circular occluder. */
 export function circleOcclusionFraction(
   sourceRadius: number,
@@ -113,6 +115,18 @@ export function advanceSunEmergenceFlash(input: {
 export function sunWhiteoutFraction(distanceSolarRadii: number): number {
   if (!(distanceSolarRadii > 0)) return 1;
   return 1 - THREE.MathUtils.smoothstep(distanceSolarRadii, 1.12, 2.6);
+}
+
+/**
+ * Opacity of the DOM chrome flood — the blaze spilling over the HUD itself.
+ * Gated on the same slam edge as the shader's radiance, so the menus stay
+ * crisp through the whole approach and only wash out in the final act, in
+ * step with the scene going full white. Capped well below 1: the cockpit
+ * must stay findable (and clickable — the flood never takes pointer events)
+ * inside the blaze.
+ */
+export function sunGlareFloodOpacity(whiteout: number): number {
+  return 0.65 * THREE.MathUtils.smoothstep(whiteout, SUN_WHITEOUT_SLAM_EDGE, 1);
 }
 
 /**

@@ -1956,6 +1956,21 @@
       transition: none;
     }
 
+    /* Sun glare flood: at the whiteout wall the blaze spills over the cockpit
+       chrome itself — the HUD washes toward white while staying clickable
+       underneath (pointer-events pass through). Above the everyday chrome
+       (deck 27, action cluster 28) but below the tutorial card (30), the ☰
+       menu (34), the veils (50), and help (70): deliberate reading surfaces
+       never drown. Opacity is driven per frame by the mode controller. */
+    #sun-glare-flood {
+      position: fixed;
+      inset: 0;
+      background: #fff;
+      z-index: 29;
+      opacity: 0;
+      pointer-events: none;
+    }
+
     /* ============================================= */
     /* TRAVEL MENU & LEAVE BUTTON                    */
     /* ============================================= */
@@ -2645,6 +2660,8 @@
 
     <!-- ======= PLANETARIUM MODE ======= -->
     <div id="planetarium-ui">
+      <!-- Sun glare flood: the whiteout spilling over the cockpit chrome. -->
+      <div id="sun-glare-flood"></div>
       <!-- Top right: Leave keeps its text (it names the body); the rest are
            icon-only squares with hover tooltips. Ids are read by the TS. -->
       <div id="planetarium-actions">

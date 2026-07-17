@@ -6,6 +6,13 @@
  * authored as a flat display-white disc. Object-space noise keeps the sphere
  * seamless at the longitude wrap and poles.
  */
+
+/** Where the whiteout's final act begins, as a fraction of the whiteout
+ *  itself: below this the bleach is contrast-lift only; above it the radiance
+ *  slam (both photosphere shader branches) and the DOM chrome flood ramp to
+ *  full together. One definition site — the GLSL interpolates it. */
+export const SUN_WHITEOUT_SLAM_EDGE = 0.85;
+
 export const sunPhotosphereVertexShader = /* glsl */ `
 varying vec3 vNormal;
 varying vec3 vPosition;
@@ -121,7 +128,7 @@ void main() {
     // molten current only emerges as depth pulls it back down. The slam gate
     // matches the exterior's: the white target is so hot that an ungated mix
     // would pin the frame at even a third of the whiteout band.
-    float interiorSlam = smoothstep(0.85, 1.0, uWhiteout);
+    float interiorSlam = smoothstep(${SUN_WHITEOUT_SLAM_EDGE}, 1.0, uWhiteout);
     vec3 interiorGlow = mix(fog * 2.8 * uInteriorFade, vec3(26.0, 25.6, 24.4), interiorSlam);
     gl_FragColor = vec4(interiorGlow, 1.0);
     #include <tonemapping_fragment>
@@ -192,7 +199,7 @@ void main() {
   // radiance so the tonemapper itself saturates every channel — the overwhelm
   // stays inside the same exposure/tonemap response as the rest of the star.
   color = mix(color, whiteHot, uWhiteout);
-  radiance = mix(radiance, 26.0, smoothstep(0.85, 1.0, uWhiteout));
+  radiance = mix(radiance, 26.0, smoothstep(${SUN_WHITEOUT_SLAM_EDGE}, 1.0, uWhiteout));
 
   gl_FragColor = vec4(color * radiance, 1.0);
   // No-ops into the composer's render target (the OutputPass grades there);

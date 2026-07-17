@@ -7,12 +7,21 @@
 import * as THREE from 'three';
 import { type PlanetData, PLANETARIUM_BODIES } from './planets/planetData';
 import { projectToScreen, type ScreenProjection } from '../shared/three/projectToScreen';
+import {
+  markerAlbedoProxy,
+  markerMagnitude,
+  markerVisual,
+  PLANET_MARKER_PARAMS,
+  type PlanetMarkerVisual,
+} from './planetMarkers';
 
 export interface PlanetLabel {
   sprite: THREE.Sprite;
   label: HTMLDivElement;
   distEl: HTMLSpanElement;
   planet: PlanetData;
+  /** Cached albedo proxy of the marker tint (constant per body). */
+  markerAlbedo: number;
   labelVisible: boolean;
   lastTransform: string;
   lastDistanceText: string;
@@ -57,6 +66,7 @@ export class PlanetLabels {
   private labelContainer: HTMLDivElement;
   private camera: THREE.PerspectiveCamera;
   private projScratch: ScreenProjection = { x: 0, y: 0, ndcX: 0, ndcY: 0, ndcZ: 0 };
+  private markerScratch: PlanetMarkerVisual = { sizeScale: 0, brightness: 0 };
 
   constructor(scene: THREE.Scene, camera: THREE.PerspectiveCamera) {
     this.camera = camera;
@@ -75,24 +85,31 @@ export class PlanetLabels {
       canvas.height = 64;
       const ctx = canvas.getContext('2d')!;
 
-      const color = new THREE.Color(body.color);
-      const r = Math.floor(color.r * 255);
-      const g = Math.floor(color.g * 255);
-      const b = Math.floor(color.b * 255);
+      // Beacon texture: a white-saturated core carrying the tint only in a
+      // tight halo. Real bright planets read as warm-tinted white points — so
+      // the hue lives in the aura around the core, and the old wide skirt
+      // (alpha 0.15 out to 70% radius) drops to a whisper. The tint itself is
+      // the catalog's photo-informed markerColor, not the UI tint: additive
+      // blending renders a saturated tint as neon.
+      const tint = new THREE.Color(body.markerColor);
+      const mixToWhite = (c: THREE.Color, w: number) =>
+        `${Math.round(THREE.MathUtils.lerp(c.r, 1, w) * 255)}, ` +
+        `${Math.round(THREE.MathUtils.lerp(c.g, 1, w) * 255)}, ` +
+        `${Math.round(THREE.MathUtils.lerp(c.b, 1, w) * 255)}`;
 
-      // Outer glow
-      const gradient = ctx.createRadialGradient(32, 32, 4, 32, 32, 32);
-      gradient.addColorStop(0, `rgba(${r}, ${g}, ${b}, 1.0)`);
-      gradient.addColorStop(0.3, `rgba(${r}, ${g}, ${b}, 0.6)`);
-      gradient.addColorStop(0.7, `rgba(${r}, ${g}, ${b}, 0.15)`);
-      gradient.addColorStop(1, `rgba(${r}, ${g}, ${b}, 0)`);
+      const gradient = ctx.createRadialGradient(32, 32, 2, 32, 32, 32);
+      gradient.addColorStop(0, `rgba(${mixToWhite(tint, 0.85)}, 1.0)`);
+      gradient.addColorStop(0.14, `rgba(${mixToWhite(tint, 0.4)}, 0.8)`);
+      gradient.addColorStop(0.35, `rgba(${mixToWhite(tint, 0)}, 0.3)`);
+      gradient.addColorStop(0.65, `rgba(${mixToWhite(tint, 0)}, 0.06)`);
+      gradient.addColorStop(1, `rgba(${mixToWhite(tint, 0)}, 0)`);
       ctx.fillStyle = gradient;
       ctx.fillRect(0, 0, 64, 64);
 
-      // Inner bright core
+      // Crisp near-white center so the beacon stays a point, not a smudge.
       ctx.beginPath();
-      ctx.arc(32, 32, 6, 0, Math.PI * 2);
-      ctx.fillStyle = `rgba(${Math.min(255, r + 80)}, ${Math.min(255, g + 80)}, ${Math.min(255, b + 80)}, 1.0)`;
+      ctx.arc(32, 32, 4.5, 0, Math.PI * 2);
+      ctx.fillStyle = `rgba(${mixToWhite(tint, 0.8)}, 1.0)`;
       ctx.fill();
 
       const spriteTex = new THREE.CanvasTexture(canvas);
@@ -114,7 +131,9 @@ export class PlanetLabels {
       const sprite = new THREE.Sprite(spriteMat);
       sprite.name = `marker-${body.name}`;
       sprite.renderOrder = 10;
-      sprite.scale.setScalar(0.03);
+      // Initial scale only — renderLabels re-scales every frame from the
+      // beacon policy (planetMarkers.ts).
+      sprite.scale.setScalar(PLANET_MARKER_PARAMS.baseScale);
       scene.add(sprite);
 
       const label = document.createElement('div');
@@ -131,6 +150,7 @@ export class PlanetLabels {
         label,
         distEl,
         planet: body,
+        markerAlbedo: markerAlbedoProxy(body.markerColor),
         labelVisible: false,
         lastTransform: '',
         lastDistanceText: '',
@@ -205,9 +225,17 @@ export class PlanetLabels {
     planetPositions: Map<string, { x: number; y: number; z: number }>,
     playerPos: { x: number; y: number; z: number },
     renderer: THREE.WebGLRenderer,
-    options: { showMarkers?: boolean; showLabels?: boolean; excludeName?: string } = {},
+    options: {
+      showMarkers?: boolean;
+      showLabels?: boolean;
+      excludeName?: string;
+      /** Sun position in the same space as `planetPositions` — feeds the
+       *  beacon policy's heliocentric-distance term. Falls back to the
+       *  catalog semi-major axis when absent. */
+      sunPos?: { x: number; y: number; z: number };
+    } = {},
   ) {
-    const { showMarkers = true, showLabels = true, excludeName } = options;
+    const { showMarkers = true, showLabels = true, excludeName, sunPos } = options;
     const canvasWidth = renderer.domElement.clientWidth;
     const canvasHeight = renderer.domElement.clientHeight;
     const halfFovTan = Math.tan((this.camera.fov * Math.PI) / 360);
@@ -280,6 +308,20 @@ export class PlanetLabels {
         }
       }
       entry.sprite.visible = showMarkers && !markerOccluded;
+
+      // Beacon policy: size and brightness track apparent brightness — Earth
+      // seen from Neptune shrinks to a pale point, Venus stays prominent from
+      // anywhere, nothing vanishes (planetMarkers.ts owns the curve). Camera
+      // distance, not player distance: the marker is what the camera sees.
+      if (entry.sprite.visible) {
+        const rSun = sunPos
+          ? Math.hypot(pos.x - sunPos.x, pos.y - sunPos.y, pos.z - sunPos.z)
+          : entry.planet.semiMajorAxisAU;
+        const mag = markerMagnitude(entry.planet.radiusAU, distFromCamera, rSun, entry.markerAlbedo);
+        const vis = markerVisual(mag, PLANET_MARKER_PARAMS, this.markerScratch);
+        entry.sprite.scale.setScalar(vis.sizeScale);
+        entry.sprite.material.color.setScalar(vis.brightness);
+      }
 
       // Only the HTML label needs the offset/occlusion work below; skip it
       // when labels are off.

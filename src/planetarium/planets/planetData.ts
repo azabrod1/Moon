@@ -14,7 +14,12 @@ export interface PlanetData {
   radiusKm: number;
   axialTiltDeg: number;
   orbitalVelocityKmS: number;
-  color: number;           // hex color for markers
+  color: number;           // hex UI tint (deck rows, labels, orbit lines)
+  markerColor: number;     // far-marker beacon tint: the planet's real visual
+                           // hue (Mars butterscotch, Earth pale blue), kept
+                           // separate from the UI tint — the additive marker
+                           // sprite renders saturated colors as neon, so its
+                           // palette is pale and photo-informed
   textureKey: string;      // key into texture map
   isGasGiant: boolean;     // Jupiter/Saturn/Uranus/Neptune — drives gas-giant-only shading
   surfaceGravityG: number; // relative to Earth
@@ -45,6 +50,7 @@ export const PLANETS: PlanetData[] = [
   {
     name: 'Mercury',
     symbol: '\u263F',
+    markerColor: 0xb0a596,  // dusty warm grey
     semiMajorAxisAU: 0.387,
     radiusAU: kmToAU(2_440),
     radiusKm: 2_440,
@@ -66,6 +72,7 @@ export const PLANETS: PlanetData[] = [
   {
     name: 'Venus',
     symbol: '\u2640',
+    markerColor: 0xf1e3c2,  // brilliant warm cream
     semiMajorAxisAU: 0.723,
     radiusAU: kmToAU(6_052),
     radiusKm: 6_052,
@@ -87,6 +94,7 @@ export const PLANETS: PlanetData[] = [
   {
     name: 'Earth',
     symbol: '\u2295',
+    markerColor: 0x9fc2e8,  // the pale blue dot
     semiMajorAxisAU: 1.000,
     radiusAU: kmToAU(6_378),
     radiusKm: 6_378,
@@ -108,6 +116,7 @@ export const PLANETS: PlanetData[] = [
   {
     name: 'Mars',
     symbol: '\u2642',
+    markerColor: 0xd9976a,  // butterscotch, the hue Mars actually shows
     semiMajorAxisAU: 1.524,
     radiusAU: kmToAU(3_396),
     radiusKm: 3_396,
@@ -129,6 +138,7 @@ export const PLANETS: PlanetData[] = [
   {
     name: 'Jupiter',
     symbol: '\u2643',
+    markerColor: 0xd9c19b,  // banded cream-tan
     semiMajorAxisAU: 5.203,
     radiusAU: kmToAU(71_492),
     radiusKm: 71_492,
@@ -150,6 +160,7 @@ export const PLANETS: PlanetData[] = [
   {
     name: 'Saturn',
     symbol: '\u2644',
+    markerColor: 0xe3d3a4,  // pale gold
     semiMajorAxisAU: 9.588,
     radiusAU: kmToAU(60_268),
     radiusKm: 60_268,
@@ -171,6 +182,7 @@ export const PLANETS: PlanetData[] = [
   {
     name: 'Uranus',
     symbol: '\u26E2',
+    markerColor: 0xaedce2,  // pale cyan
     semiMajorAxisAU: 19.191,
     radiusAU: kmToAU(25_559),
     radiusKm: 25_559,
@@ -192,6 +204,7 @@ export const PLANETS: PlanetData[] = [
   {
     name: 'Neptune',
     symbol: '\u2646',
+    markerColor: 0x8fb0e0,  // pale azure, bluer than Uranus for identity
     semiMajorAxisAU: 30.061,
     radiusAU: kmToAU(24_764),
     radiusKm: 24_764,
@@ -215,6 +228,7 @@ export const PLANETS: PlanetData[] = [
 export const PLUTO: PlanetData = {
   name: 'Pluto',
   symbol: '\u2647',
+  markerColor: 0xc9baa5,  // pale warm rock
   semiMajorAxisAU: 39.48,
   radiusAU: kmToAU(1_188),
   radiusKm: 1_188,

@@ -1,0 +1,101 @@
+import { describe, expect, it } from 'vitest';
+import {
+  markerAlbedoProxy,
+  markerMagnitude,
+  markerVisual,
+  PLANET_MARKER_PARAMS,
+  type PlanetMarkerVisual,
+} from './planetMarkers';
+import { PLANETARIUM_BODIES } from './planets/planetData';
+
+const byName = (name: string) => {
+  const p = PLANETARIUM_BODIES.find((b) => b.name === name);
+  if (!p) throw new Error(`no catalog body ${name}`);
+  return p;
+};
+
+const visualFor = (name: string, distAU: number, sunDistAU: number): PlanetMarkerVisual => {
+  const p = byName(name);
+  const mag = markerMagnitude(p.radiusAU, distAU, sunDistAU, markerAlbedoProxy(p.markerColor));
+  return markerVisual(mag);
+};
+
+describe('planetMarkers — catalog palette', () => {
+  it('every body has a marker tint whose albedo proxy stays in band', () => {
+    for (const body of PLANETARIUM_BODIES) {
+      expect(body.markerColor, body.name).toBeTypeOf('number');
+      const a = markerAlbedoProxy(body.markerColor);
+      expect(a, body.name).toBeGreaterThanOrEqual(PLANET_MARKER_PARAMS.albedoMin);
+      expect(a, body.name).toBeLessThanOrEqual(PLANET_MARKER_PARAMS.albedoMax);
+    }
+  });
+});
+
+describe('planetMarkers — magnitude proxy', () => {
+  it('lands near real apparent magnitudes at real geometries', () => {
+    // Neptune from Earth: real ≈ +7.8. The proxy has no phase/opposition
+    // effects, so a loose band is the honest pin.
+    const neptune = byName('Neptune');
+    const m = markerMagnitude(neptune.radiusAU, 29.1, 30.1, markerAlbedoProxy(neptune.markerColor));
+    expect(m).toBeGreaterThan(6);
+    expect(m).toBeLessThan(10);
+    // Venus from Earth near greatest brilliancy distance: real ≈ −4.5.
+    const venus = byName('Venus');
+    const mv = markerMagnitude(venus.radiusAU, 0.7, 0.72, markerAlbedoProxy(venus.markerColor));
+    expect(mv).toBeGreaterThan(-6.5);
+    expect(mv).toBeLessThan(-3);
+  });
+
+  it('returns +Infinity on degenerate geometry', () => {
+    expect(markerMagnitude(0, 1, 1, 0.5)).toBe(Infinity);
+    expect(markerMagnitude(1e-4, 0, 1, 0.5)).toBe(Infinity);
+    expect(markerMagnitude(1e-4, 1, 0, 0.5)).toBe(Infinity);
+    expect(markerMagnitude(1e-4, 1, 1, 0)).toBe(Infinity);
+  });
+});
+
+describe('planetMarkers — visual ramp', () => {
+  it('shrinks and dims monotonically with distance', () => {
+    let prev = visualFor('Earth', 0.3, 1);
+    for (const d of [0.7, 2, 5, 10, 20, 29]) {
+      const v = visualFor('Earth', d, 1);
+      expect(v.sizeScale, `d=${d}`).toBeLessThanOrEqual(prev.sizeScale + 1e-12);
+      expect(v.brightness, `d=${d}`).toBeLessThanOrEqual(prev.brightness + 1e-12);
+      prev = { ...v };
+    }
+  });
+
+  it('Earth seen from Neptune reads clearly smaller and dimmer than from Mars', () => {
+    const fromMars = visualFor('Earth', 0.6, 1);
+    const fromNeptune = visualFor('Earth', 29.1, 1);
+    expect(fromNeptune.sizeScale).toBeLessThan(fromMars.sizeScale * 0.75);
+    expect(fromNeptune.brightness).toBeLessThan(fromMars.brightness * 0.85);
+  });
+
+  it('Venus stays at full scale from Earth — brightness drives, not distance', () => {
+    const v = visualFor('Venus', 0.7, 0.72);
+    expect(v.sizeScale).toBeCloseTo(PLANET_MARKER_PARAMS.baseScale, 10);
+    expect(v.brightness).toBeCloseTo(1, 10);
+  });
+
+  it('the faint end sits exactly on the findability floor, never below', () => {
+    // Neptune from the inner system — the faintest real case.
+    const v = visualFor('Neptune', 29, 30);
+    expect(v.sizeScale).toBeCloseTo(
+      PLANET_MARKER_PARAMS.baseScale * PLANET_MARKER_PARAMS.sizeMinScale,
+      10,
+    );
+    expect(v.brightness).toBeCloseTo(PLANET_MARKER_PARAMS.brightnessMin, 10);
+    // Degenerate geometry (unresolvable flux) also lands on the floor.
+    const dead = markerVisual(Infinity);
+    expect(dead.sizeScale).toBeCloseTo(v.sizeScale, 10);
+    expect(dead.brightness).toBeCloseTo(v.brightness, 10);
+  });
+
+  it('fills a caller-supplied out object without allocating', () => {
+    const scratch: PlanetMarkerVisual = { sizeScale: -1, brightness: -1 };
+    const returned = markerVisual(3, PLANET_MARKER_PARAMS, scratch);
+    expect(returned).toBe(scratch);
+    expect(returned).toEqual(markerVisual(3));
+  });
+});

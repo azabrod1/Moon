@@ -1552,6 +1552,7 @@ export class PlanetariumMode {
       this.planetLabels.renderLabels(scenePositions, { x: 0, y: 0, z: 0 }, this.renderer, {
         showMarkers: this.showBodyMarkers,
         showLabels: this.showBodyLabels,
+        sunPos: this.solarSystem.sun.position,
       });
     }
 
@@ -5581,6 +5582,60 @@ export class PlanetariumMode {
     return true;
   }
 
+  /**
+   * Headless-screenshot support: stand at one body and look toward another —
+   * the far-marker taste view (how Earth's beacon reads from Neptune). Poses
+   * the player a few radii out from `fromName` along the sightline so the
+   * vantage body sits behind the camera, aims the camera straight at `toName`,
+   * and hides the ship hull + HUD (the pose bypasses the chase rig, which
+   * would otherwise park the hull across the frame). Markers and labels stay
+   * on — they are the subject. Dev bridge only.
+   */
+  devViewFrom(fromName: string, toName: string, fovDeg = 45): boolean {
+    if (!this.solarSystem) return false;
+    const resolve = (name: string): { x: number; y: number; z: number } | undefined => {
+      // The Sun sits at the heliocentric origin in the absolute coords this
+      // pose works in (same convention as devFrameBody).
+      if (name === 'Sun') return { x: 0, y: 0, z: 0 };
+      return this.planetWorldPositions.get(name);
+    };
+    const from = resolve(fromName);
+    const to = resolve(toName);
+    if (!from || !to) return false;
+    const fromR =
+      this.solarSystem.planets.find((p) => p.data.name === fromName)?.data.radiusAU ??
+      SUN_DATA.radiusAU;
+    const dir = new THREE.Vector3(to.x - from.x, to.y - from.y, to.z - from.z);
+    if (dir.lengthSq() < 1e-12) return false;
+    dir.normalize();
+    this.devFreeCamera = true;
+    // A few radii out along the sightline: clear of the vantage body's own disc.
+    this.player.posX = from.x + dir.x * fromR * 8;
+    this.player.posY = from.y + dir.y * fromR * 8;
+    this.player.posZ = from.z + dir.z * fromR * 8;
+    this.player.headToward(to.x, to.z, to.y);
+    this.player.moving = false;
+    const sceneOffset = new THREE.Vector3(
+      to.x - this.player.posX,
+      to.y - this.player.posY,
+      to.z - this.player.posZ,
+    );
+    const cam = this.camera as THREE.PerspectiveCamera;
+    cam.position.set(0, 0, 0);
+    cam.fov = fovDeg;
+    cam.updateProjectionMatrix();
+    cam.lookAt(sceneOffset);
+    this.controls.target.copy(sceneOffset);
+    this.showShip = false;
+    this.player.group.visible = false;
+    for (const id of ['planetarium-ui', 'top-bar']) {
+      const el = document.getElementById(id);
+      if (el) el.style.display = 'none';
+    }
+    this.exposureSnapPending = true;
+    return true;
+  }
+
   /** Peek the live auto-exposure target/coverage for the dev bridge — never
    *  the consuming getter. */
   devExposurePeek(): { target: number; coverage: number } {
@@ -8000,6 +8055,7 @@ export class PlanetariumMode {
         showMarkers: this.showBodyMarkers,
         showLabels: this.showBodyLabels,
         excludeName: landedPlanetName,
+        sunPos: this.solarSystem.sun.position,
       });
     }
 

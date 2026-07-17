@@ -133,6 +133,8 @@ export class PlanetLabels {
       const sprite = new THREE.Sprite(spriteMat);
       sprite.name = `marker-${body.name}`;
       sprite.renderOrder = 10;
+      // Placeholder until the first renderLabels pass sets the screen-pinned
+      // scale (see the marker sizing block there).
       sprite.scale.setScalar(0.03);
       scene.add(sprite);
 
@@ -239,6 +241,16 @@ export class PlanetLabels {
     const canvasWidth = renderer.domElement.clientWidth;
     const canvasHeight = renderer.domElement.clientHeight;
     const halfFovTan = Math.tan((this.camera.fov * Math.PI) / 360);
+
+    // Marker sprites render at a fixed clip-space size (`sizeAttenuation:
+    // false`), so their on-screen footprint grows as 1/tan(fov/2): zooming in
+    // ballooned each beacon into a planet-sized translucent ball squatting
+    // over the asteroid belt. Pin the quad to a constant on-screen size
+    // instead — a fraction of the smaller viewport axis, clamped so phones
+    // get a compact dot and desktops keep the stock look — like the HTML
+    // labels beside them, which never grew with zoom.
+    const markerQuadPx = THREE.MathUtils.clamp(0.032 * Math.min(canvasWidth, canvasHeight), 18, 30);
+    const markerScale = (markerQuadPx * 2 * halfFovTan) / Math.max(canvasHeight, 1);
     const camX = this.camera.position.x;
     const camY = this.camera.position.y;
     const camZ = this.camera.position.z;
@@ -273,6 +285,7 @@ export class PlanetLabels {
 
       // Scene position (already offset by floating origin).
       entry.sprite.position.set(pos.x, pos.y, pos.z);
+      if (entry.sprite.scale.x !== markerScale) entry.sprite.scale.setScalar(markerScale);
 
       // Hide marker once the planet subtends enough pixels to be visible as a mesh.
       const planetVisualSize = entry.planet.radiusAU * 2;

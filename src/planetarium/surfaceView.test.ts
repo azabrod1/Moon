@@ -10,7 +10,9 @@ import {
   angularDiameterDeg,
   bodyDisplayName,
   clampSurfaceFovDeg,
+  computeAnchoredSpotVantage,
   computeShadowSpotVantage,
+  computeSpotAnchorLocal,
   computeSubTargetVantage,
   entryFovDeg,
   formatDiscDeg,
@@ -400,6 +402,39 @@ describe('surface vantage geometry', () => {
       const offset = new THREE.Vector3(0, 0, -2);
       const axis = new THREE.Vector3(0, 0, -1);
       expect(shadowAxisSphereHitAU(offset, axis, R)).toBeNull();
+    });
+  });
+
+  describe('stand-still eclipse anchor (rotating-frame pin)', () => {
+    const R = 1;
+    const offset = new THREE.Vector3(0.5, 0, 2);
+    const axis = new THREE.Vector3(0, 0, -1);
+
+    it('round-trips to the live spot vantage at the pin orientation', () => {
+      const q = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), 0.83);
+      const anchor = computeSpotAnchorLocal(offset, axis, R, q, new THREE.Vector3());
+      const vantage = computeAnchoredSpotVantage(R, anchor, q, new THREE.Vector3());
+      const live = computeShadowSpotVantage(R, offset, axis, new THREE.Vector3());
+      expect(vantage.distanceTo(live)).toBeLessThan(1e-12);
+    });
+
+    it('co-rotates with the body: spinning the frame carries the point with the ground', () => {
+      const q0 = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), 0.4);
+      const spin = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), 1.1);
+      const q1 = spin.clone().multiply(q0);
+      const anchor = computeSpotAnchorLocal(offset, axis, R, q0, new THREE.Vector3());
+      const v0 = computeAnchoredSpotVantage(R, anchor, q0, new THREE.Vector3());
+      const v1 = computeAnchoredSpotVantage(R, anchor, q1, new THREE.Vector3());
+      expect(v1.distanceTo(v0.clone().applyQuaternion(spin))).toBeLessThan(1e-12);
+      // The point moved with the spin — it is not re-derived from the shadow.
+      expect(v1.distanceTo(v0)).toBeGreaterThan(0.5);
+    });
+
+    it('keeps the observer altitude of the live vantage', () => {
+      const q = new THREE.Quaternion();
+      const anchor = computeSpotAnchorLocal(offset, axis, R, q, new THREE.Vector3());
+      const vantage = computeAnchoredSpotVantage(R, anchor, q, new THREE.Vector3());
+      expect(vantage.length()).toBeCloseTo(R + surfaceAltitudeAU(R), 12);
     });
   });
 });

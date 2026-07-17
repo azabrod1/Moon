@@ -261,6 +261,42 @@ export function computeShadowSpotVantage(
   return out.normalize().multiplyScalar(bodyRadiusAU + surfaceAltitudeAU(bodyRadiusAU));
 }
 
+const tmpInvOrientation = new THREE.Quaternion();
+
+/**
+ * Stand-still eclipse observer: the shadow-spot direction at one chosen
+ * instant (the event's peak), expressed in the body's rotating frame so the
+ * point stays on real ground as the body spins. Re-deriving the standing
+ * point from the live shadow geometry every frame made the observer chase
+ * the point of maximum cover: the occluder raced onto the Sun, backed off,
+ * covered it again at the true peak, and re-aligned once more on the way
+ * out — three alignments where a fixed observer sees one clean pass.
+ */
+export function computeSpotAnchorLocal(
+  occluderOffsetAU: THREE.Vector3,
+  shadowAxis: THREE.Vector3,
+  bodyRadiusAU: number,
+  bodyOrientation: THREE.Quaternion,
+  out: THREE.Vector3,
+): THREE.Vector3 {
+  shadowAxisSurfacePoint(occluderOffsetAU, shadowAxis, bodyRadiusAU, out);
+  return out.normalize().applyQuaternion(tmpInvOrientation.copy(bodyOrientation).invert());
+}
+
+/** World vantage for a stored rotating-frame anchor at the body's current orientation. */
+export function computeAnchoredSpotVantage(
+  bodyRadiusAU: number,
+  anchorLocal: THREE.Vector3,
+  bodyOrientation: THREE.Quaternion,
+  out: THREE.Vector3,
+): THREE.Vector3 {
+  return out
+    .copy(anchorLocal)
+    .applyQuaternion(bodyOrientation)
+    .normalize()
+    .multiplyScalar(bodyRadiusAU + surfaceAltitudeAU(bodyRadiusAU));
+}
+
 /**
  * Up vector for the tracking camera, parallel-transported frame to frame.
  * Both vantages above put the target at the observer's local zenith, so a

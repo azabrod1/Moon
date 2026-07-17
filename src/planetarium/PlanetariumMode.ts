@@ -104,7 +104,9 @@ import {
   angularDiameterDeg,
   bodyDisplayName,
   clampSurfaceFovDeg,
+  computeAnchoredSpotVantage,
   computeShadowSpotVantage,
+  computeSpotAnchorLocal,
   computeSubTargetVantage,
   entryFovDeg,
   formatDiscDeg,
@@ -702,6 +704,11 @@ export class PlanetariumMode {
   // same reference the tidal lock rolls on).
   private surfacePoleAxis = new THREE.Vector3(0, 1, 0);
   private tmpSurfacePoleOffset = new THREE.Vector3();
+  // Solar-eclipse standing point, pinned at the event's peak in the landed
+  // planet's rotating frame (computeSpotAnchorLocal) so the observer stays on
+  // real ground while the eclipse sweeps over. Pinned lazily on the first
+  // spot frame, cleared on every surface entry/re-point/exit.
+  private surfaceSpotAnchor: THREE.Vector3 | null = null;
   // Marker over the tracked target — sticky across the hysteresis band.
   private surfaceMarkerKind: SurfaceMarkerKind = 'brackets';
   // Observatory-panel rect, cached per viewport size for the chevron clamp
@@ -7607,6 +7614,9 @@ export class PlanetariumMode {
     // observer-level target — "Look up" during an eclipse shows the eclipse.
     const liveEvent = this.relevantObservatoryEvent();
     this.surfaceTarget = target ?? selectSurfaceTarget(landedInfo, liveEvent?.spec ?? null);
+    // Fresh standing point per entry/re-point: an event jump routes here, so
+    // the next spot frame re-pins from the (possibly new) event's peak.
+    this.surfaceSpotAnchor = null;
     // No explicit context: entries derived while an event is live frame the
     // event; plain "Look up" frames the companion subject.
     const context = entryContext ?? (target === undefined && liveEvent ? 'event' : 'companion');
@@ -7713,6 +7723,7 @@ export class PlanetariumMode {
   private finalizeSurfaceExit() {
     this.landedView = 'orbit';
     this.surfaceFovAnim = null;
+    this.surfaceSpotAnchor = null;
     this.surfaceLook.detach();
     this.camera.up.set(0, 1, 0); // OrbitControls assumes world-up
     this.camera.fov = 60;
@@ -7791,6 +7802,45 @@ export class PlanetariumMode {
   }
 
   /**
+   * Lazily pin the stand-still eclipse anchor from the relevant event's peak
+   * geometry, through the same astronomy seams the shadow engine and the
+   * renderer share (allocations are pin-time only). Null when no matching
+   * shadow-transit event is in reach — the caller then rides the live axis
+   * point as a defensive fallback.
+   */
+  private ensureSurfaceSpotAnchor(occluderMoonName: string): THREE.Vector3 | null {
+    if (this.surfaceSpotAnchor) return this.surfaceSpotAnchor;
+    const landed = this.landedOn;
+    if (landed?.type !== 'planet') return null;
+    const event = this.relevantObservatoryEvent();
+    if (
+      !event ||
+      event.spec.kind !== 'shadow-transit' ||
+      event.spec.parentPlanet !== landed.name ||
+      event.spec.moonName !== occluderMoonName
+    ) {
+      return null;
+    }
+    const body = PLANETARIUM_BODIES.find(b => b.name === landed.name);
+    if (!body) return null;
+    const offset = computeMoonOffsetEquatorialAU(
+      occluderMoonName,
+      landed.name,
+      event.peakUtcMs,
+      new THREE.Vector3(),
+    );
+    const axis = computeBodyPositionAU(body, event.peakUtcMs).add(offset).normalize();
+    this.surfaceSpotAnchor = computeSpotAnchorLocal(
+      offset,
+      axis,
+      body.radiusAU,
+      computeBodyState(body, event.peakUtcMs).orientationQuaternion,
+      new THREE.Vector3(),
+    );
+    return this.surfaceSpotAnchor;
+  }
+
+  /**
    * Per-frame surface camera: re-pin the vantage (sub-target point, or the
    * shadow-spot point for solar-eclipse views), advance the FOV ease, and
    * track the target while tracking is on. Runs at the end of updateLanded
@@ -7814,16 +7864,26 @@ export class PlanetariumMode {
         .get(parentName)
         ?.find(m => m.data.name === (this.surfaceTarget as { occluderMoonName: string }).occluderMoonName);
       if (parentPos && occluder) {
-        // Occluder offset from the landed parent = the mesh's parent-relative
-        // position (the parent sits at scene origin); shadow axis = the
-        // moon's anti-sunward heliocentric direction. Same helper chain as
-        // the rendered transit spot, so observer and spot agree.
-        const axis = this.tmpSurfaceAxis
-          .set(parentPos.x, parentPos.y, parentPos.z)
-          .add(occluder.mesh.position)
-          .normalize();
-        computeShadowSpotVantage(radiusAU, occluder.mesh.position, axis, vantage);
-        spotPosed = true;
+        // Stand still and let the eclipse come to you: the vantage is the
+        // peak's shadow-spot point carried in the planet's rotating frame.
+        // Re-deriving the point from the live shadow geometry every frame
+        // chased maximum cover instead — three Sun-occluder alignments per
+        // event where a real observer sees one clean pass.
+        const anchor = this.ensureSurfaceSpotAnchor(occluder.data.name);
+        const parentPlanet = this.solarSystem?.planets.find(p => p.data.name === parentName);
+        if (anchor && parentPlanet) {
+          computeAnchoredSpotVantage(radiusAU, anchor, parentPlanet.group.quaternion, vantage);
+          spotPosed = true;
+        } else {
+          // No pinnable event (defensive) — the live axis point still beats
+          // the sub-target default for a shadow view.
+          const axis = this.tmpSurfaceAxis
+            .set(parentPos.x, parentPos.y, parentPos.z)
+            .add(occluder.mesh.position)
+            .normalize();
+          computeShadowSpotVantage(radiusAU, occluder.mesh.position, axis, vantage);
+          spotPosed = true;
+        }
       }
     }
     if (!spotPosed) {

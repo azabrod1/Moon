@@ -2544,6 +2544,7 @@ export class PlanetariumMode {
   private updateSunShader(dt: number) {
     if (!this.solarSystem) return;
     const sunMat = this.solarSystem.sun.userData.sunMaterial as THREE.ShaderMaterial | undefined;
+    const interiorMesh = this.solarSystem.sun.userData.sunInteriorMesh as THREE.Mesh | undefined;
     const prominenceMat = this.solarSystem.sun.userData.sunProminenceMaterial as THREE.ShaderMaterial | undefined;
     const glareMat = this.solarSystem.sun.userData.sunGlareMaterial as THREE.ShaderMaterial | undefined;
     const ghostMat = this.solarSystem.sun.userData.sunLensGhostMaterial as THREE.ShaderMaterial | undefined;
@@ -2571,8 +2572,23 @@ export class PlanetariumMode {
       // fire), so any queued discontinuity reseed is moot — consume it.
       this.sunFlashResetPending = false;
       this.sunAtmosphereMix = 0;
-      if (sunMat) sunMat.uniforms.uAtmosphereMix.value = 0;
+      // One submersion fade drives everything a buried camera can still see:
+      // the shell's interior fog, the glare quad's wash (which would otherwise
+      // hold a flat grey until the billboard plane snaps behind the camera at
+      // the exact centre), and the exposure floor. Full brightness at the
+      // surface keeps the crossing continuous with the close-up view; a small
+      // floor keeps the deep interior an ember glow rather than a dead screen.
+      const submersion = THREE.MathUtils.clamp(sunDistance / SUN_DATA.radiusAU, 0, 1);
+      const interiorFade = 0.006 + 0.994 * THREE.MathUtils.smoothstep(submersion, 0.25, 0.95);
+      if (interiorMesh) interiorMesh.visible = true;
+      if (sunMat) {
+        sunMat.uniforms.uAtmosphereMix.value = 0;
+        sunMat.uniforms.uInteriorFade.value = interiorFade;
+      }
       if (glareMat) {
+        const baseStrength = (glareMat.userData.baseGlareStrength ??=
+          glareMat.uniforms.uGlareStrength.value);
+        glareMat.uniforms.uGlareStrength.value = baseStrength * interiorFade;
         glareMat.uniforms.uVisibleFraction.value = 1;
         glareMat.uniforms.uAtmosphereMix.value = 0;
         glareMat.uniforms.uEmergenceFlash.value = this.sunEmergenceFlash;
@@ -2585,12 +2601,18 @@ export class PlanetariumMode {
       // prominence shell's close-up ring so it can't hang as a stale halo.
       if (prominenceMat) prominenceMat.uniforms.uCloseVisibility.value = 0;
       const insideBlend = 1 - Math.exp(-Math.max(dt, 0) / 0.9);
-      this.sunExposure = THREE.MathUtils.lerp(this.sunExposure, 1, insideBlend);
+      // At the surface this matches the close-up exposure tier (0.25), so
+      // crossing the photosphere never steps the scene brightness; the target
+      // relaxes toward neutral only as the fog itself darkens.
+      const insideTarget = THREE.MathUtils.lerp(1, 0.25, interiorFade);
+      this.sunExposure = THREE.MathUtils.lerp(this.sunExposure, insideTarget, insideBlend);
       this.renderer.toneMappingExposure = this.sunExposure;
       return;
     }
 
     toSun.multiplyScalar(1 / sunDistance);
+    if (interiorMesh) interiorMesh.visible = false;
+    if (sunMat) sunMat.uniforms.uInteriorFade.value = 1;
     const inFront = toSun.dot(this.camera.getWorldDirection(this.tmpSunCameraForward)) > 0;
     const solarAngularRadius = Math.asin(THREE.MathUtils.clamp(SUN_DATA.radiusAU / sunDistance, 0, 0.999999));
     const viewportWidth = Math.max(this.renderer.domElement.clientWidth, 1);
@@ -2634,6 +2656,27 @@ export class PlanetariumMode {
       // double-brightens.
       const a = THREE.MathUtils.clamp(solarAngularRadius / SUN_ANG_RADIUS_AT_1AU, 0, 1);
       const veilAmplitudeResponse = Math.pow(a, 1.8);
+      // The physical PSF has no distance term of its own: its quad tracks the
+      // disc until the minimum-pixel glint floor engages (~1 AU out), after
+      // which footprint and energy would stay frozen from Saturn to Pluto.
+      // Compress both with the same angular-size ratio the veil falls by, so
+      // the outer-system Sun shrinks toward a brilliant star-point instead of
+      // holding an Earth-sized blob. Both curves are 1 inside ~5 AU: the
+      // Earth/Jupiter looks and every eclipse view keep their exact values.
+      if (glareMat) {
+        const baseMinHalfPx = (glareMat.userData.baseMinHalfPx ??=
+          glareMat.uniforms.uMinHalfSizePx.value);
+        const baseStrength = (glareMat.userData.baseGlareStrength ??=
+          glareMat.uniforms.uGlareStrength.value);
+        const glintFloorScale = THREE.MathUtils.lerp(
+          0.46, 1, THREE.MathUtils.smoothstep(a, 0.03, 0.22),
+        );
+        glareMat.uniforms.uMinHalfSizePx.value = baseMinHalfPx * glintFloorScale;
+        const glintEnergyTrim = THREE.MathUtils.lerp(
+          0.5, 1, THREE.MathUtils.smoothstep(a, 0.02, 0.15),
+        );
+        glareMat.uniforms.uGlareStrength.value = baseStrength * glintEnergyTrim;
+      }
       const hugeFade = 1 - THREE.MathUtils.smoothstep(
         solarRadiusPx, viewportHeight * 0.30, viewportHeight * 0.42,
       );

@@ -628,6 +628,9 @@ export function createPlanetariumSun(useBloom = true): THREE.Group {
       time: { value: 0 },
       uAtmosphereMix: { value: 0 },
       uAtmosphereColor: { value: new THREE.Color(1, 0.55, 0.24) },
+      // Submersion fade for the interior fog (1 outside; the controller drives
+      // it from depth below the photosphere).
+      uInteriorFade: { value: 1 },
     },
     vertexShader: sunPhotosphereVertexShader,
     fragmentShader: sunPhotosphereFragmentShader,
@@ -635,6 +638,26 @@ export function createPlanetariumSun(useBloom = true): THREE.Group {
 
   const mesh = new THREE.Mesh(geo, sunMat);
   group.add(mesh);
+
+  // Interior fog shell: the same sphere drawn back-face-only, visible only
+  // while the camera is below the photosphere (the controller toggles it).
+  // A separate mesh — not DoubleSide on the main material — because at 1 AU
+  // the whole Sun spans less than one depth-buffer step, so exterior back
+  // fragments could patchily win over the granulation; this shell simply never
+  // rasterizes outside. Sharing the uniforms object keeps its time/fade in
+  // sync with the main material for free. Its depth write is what keeps the
+  // starfield from showing through a star's core.
+  const interiorMat = new THREE.ShaderMaterial({
+    uniforms: sunMat.uniforms,
+    defines: { SUN_INTERIOR: 1 },
+    vertexShader: sunPhotosphereVertexShader,
+    fragmentShader: sunPhotosphereFragmentShader,
+    side: THREE.BackSide,
+  });
+  const interior = new THREE.Mesh(geo, interiorMat);
+  interior.name = 'Sun interior';
+  interior.visible = false;
+  group.add(interior);
 
   const prominenceMat = new THREE.ShaderMaterial({
     uniforms: {
@@ -775,6 +798,7 @@ export function createPlanetariumSun(useBloom = true): THREE.Group {
   group.add(light);
 
   group.userData.sunMaterial = sunMat;
+  group.userData.sunInteriorMesh = interior;
   group.userData.sunProminenceMaterial = prominenceMat;
   group.userData.sunGlareMaterial = glareMat;
   group.userData.sunLensGhostMaterial = ghostMat;

@@ -23,6 +23,7 @@ export const sunPhotosphereFragmentShader = /* glsl */ `
 uniform float time;
 uniform float uAtmosphereMix;
 uniform vec3 uAtmosphereColor;
+uniform float uInteriorFade;
 varying vec3 vNormal;
 varying vec3 vPosition;
 varying vec3 vObjectDirection;
@@ -99,6 +100,26 @@ float spotDisc(vec3 p, vec3 direction, float innerRadius, float outerRadius) {
 }
 
 void main() {
+  // The interior fog shell compiles this same source with SUN_INTERIOR
+  // defined (a compile-time switch, not gl_FrontFacing: three flips the GL
+  // front-face state for BackSide materials, so a facing test would read true
+  // on the very fragments the cull keeps). It renders a flat molten fog
+  // scaled by submersion depth (uInteriorFade: 1 at the surface, ember-dark
+  // past mid-depth) instead of a telescope view of the far wall: diving in
+  // reads as sinking into glowing plasma that closes over you.
+  #ifdef SUN_INTERIOR
+    vec3 fogDir = normalize(vObjectDirection);
+    // A slow broad current keeps the fog from reading as a dead flat card
+    // while staying far below granulation contrast.
+    float current = fbm3(fogDir * 9.0 + vec3(time * 0.01, -time * 0.007, time * 0.005));
+    vec3 fog = mix(vec3(1.0, 0.62, 0.20), vec3(1.0, 0.985, 0.94), 0.72);
+    fog *= mix(0.88, 1.14, current);
+    gl_FragColor = vec4(fog * 2.8 * uInteriorFade, 1.0);
+    #include <tonemapping_fragment>
+    #include <colorspace_fragment>
+    return;
+  #endif
+
   vec3 viewDir = normalize(-vPosition);
   float mu = clamp(dot(viewDir, normalize(vNormal)), 0.0, 1.0);
   vec3 p = normalize(vObjectDirection);

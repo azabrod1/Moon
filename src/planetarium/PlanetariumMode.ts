@@ -73,6 +73,11 @@ import { OBSERVATORY_JUMP_LEAD_MS, stepperSearchFromUtcMs } from './observatoryT
 import { findEvent, type EventType } from '../astronomy/ephemeris';
 import { KM_PER_AU } from '../astronomy/constants';
 import { createPlanetariumStarfield, setStarfieldPixelRatio } from './world/starfield';
+import {
+  applySunGlareMaskParams,
+  type SunGlareMaskParams,
+  type SunGlareMaskUniforms,
+} from './world/sunGlareMask';
 import { MoonPainter } from './world/MoonPainter';
 import { ProceduralMoonTexturer } from './world/ProceduralMoonTexturer';
 import { captureDeviceTextureCaps } from './world/texturePolicy';
@@ -1486,6 +1491,7 @@ export class PlanetariumMode {
       this.planetLabels.renderLabels(scenePositions, { x: 0, y: 0, z: 0 }, this.renderer, {
         showMarkers: this.showBodyMarkers,
         showLabels: this.showBodyLabels,
+        sunMask: this.sunGlareMaskParams,
       });
     }
 
@@ -2501,6 +2507,46 @@ export class PlanetariumMode {
   // the final per-frame call so neither allocates.
   private sunVeilSupport = { halfPx: 0, armDecayPx: 0, armDecayYPx: 0 };
 
+  // One persistent glare-mask parameter set, filled at the end of every
+  // updateSunShader and read by the star/belt point materials and the label
+  // overlays so nothing shows *through* the Sun's glare. Inactive by default:
+  // consumers render byte-identically until the Sun is genuinely eligible.
+  private sunGlareMaskParams: SunGlareMaskParams = {
+    active: false,
+    sunXPx: 0,
+    sunYPx: 0,
+    peak: 0,
+    armCoeff: 0,
+    armDecayPx: 0,
+    armDecayYPx: 0,
+    coreOuterPx: 0,
+    viewportHeight: 1,
+  };
+
+  /** Push the current mask params into the GPU point consumers. The CPU
+   *  consumers (labels, Sun label) read `sunGlareMaskParams` directly. */
+  private applySunGlareMaskToPoints(viewportWidth: number): void {
+    const params = this.sunGlareMaskParams;
+    if (this.starfield) {
+      applySunGlareMaskParams(
+        (this.starfield.material as THREE.ShaderMaterial).uniforms as unknown as SunGlareMaskUniforms,
+        params,
+        viewportWidth,
+      );
+    }
+    const beltUniforms = this.solarSystem?.asteroidBelt.userData.sunGlareMaskUniforms as
+      | SunGlareMaskUniforms
+      | undefined;
+    if (beltUniforms) applySunGlareMaskParams(beltUniforms, params, viewportWidth);
+  }
+
+  /** Collapse the mask to an inactive no-op and push it (used on the buried-
+   *  camera path, where there is no glare to obscure anything). */
+  private deactivateSunGlareMask(): void {
+    this.sunGlareMaskParams.active = false;
+    this.applySunGlareMaskToPoints(Math.max(this.renderer.domElement.clientWidth, 1));
+  }
+
   /** Screen-space support the veiling glare needs, in CSS pixels: the radius
    *  where the Moffat wash and the diffraction arms fall below the visibility
    *  floor. The billboard is grown to this so it tracks how far the light
@@ -2607,6 +2653,8 @@ export class PlanetariumMode {
       const insideTarget = THREE.MathUtils.lerp(1, 0.25, interiorFade);
       this.sunExposure = THREE.MathUtils.lerp(this.sunExposure, insideTarget, insideBlend);
       this.renderer.toneMappingExposure = this.sunExposure;
+      // No glare to obscure anything from inside the photosphere.
+      this.deactivateSunGlareMask();
       return;
     }
 
@@ -2777,6 +2825,11 @@ export class PlanetariumMode {
       sunMat.uniforms.uAtmosphereMix.value = this.sunAtmosphereMix;
       sunMat.uniforms.uAtmosphereColor.value.copy(this.sunAtmosphereColor);
     }
+    // The arm terms the glare draws with this frame; mirrored into the mask so
+    // the fade uses exactly the profile on screen. 0 whenever the wash is off.
+    let maskArmCoeff = 0;
+    let maskArmDecayPx = 0;
+    let maskArmDecayYPx = 0;
     if (glareMat) {
       glareMat.uniforms.uExposureScale.value = exposureScale;
       // Now that occlusion and exposure are both known, size the billboard to
@@ -2791,6 +2844,9 @@ export class PlanetariumMode {
         glareMat.uniforms.uArmDecayPx.value = this.sunVeilSupport.armDecayPx;
         glareMat.uniforms.uArmDecayYPx.value = this.sunVeilSupport.armDecayYPx;
         glareMat.uniforms.uArmCoeff.value = veilArmCoeff;
+        maskArmCoeff = veilArmCoeff;
+        maskArmDecayPx = this.sunVeilSupport.armDecayPx;
+        maskArmDecayYPx = this.sunVeilSupport.armDecayYPx;
       } else {
         glareMat.uniforms.uVeilHalfPx.value = 0;
         glareMat.uniforms.uArmDecayPx.value = 0;
@@ -2812,6 +2868,25 @@ export class PlanetariumMode {
       ghostMat.uniforms.uAtmosphereMix.value = this.sunAtmosphereMix;
       ghostMat.uniforms.uAtmosphereColor.value.copy(this.sunAtmosphereColor);
     }
+
+    // Fill the persistent glare-mask params from this frame's finalised
+    // exposure/occlusion, then push them into the point consumers (stars, belt).
+    // The label overlays run earlier in the frame, so they read this object one
+    // frame late — imperceptible for a fade. peak is the shader's veilEnergy
+    // without the flash/atmosphere terms; it is 0 whenever the wash is idle or
+    // occluded, leaving only the geometric core to obscure the bare glint.
+    const maskParams = this.sunGlareMaskParams;
+    maskParams.active = inFront && appearanceEligible;
+    maskParams.sunXPx = (this.tmpSunScreen.x * 0.5 + 0.5) * viewportWidth;
+    maskParams.sunYPx = (-this.tmpSunScreen.y * 0.5 + 0.5) * viewportHeight;
+    const veilStrengthNow = glareMat ? glareMat.uniforms.uVeilStrength.value : 1.4;
+    maskParams.peak = veilStrengthNow * veilAmt * exposureScale;
+    maskParams.armCoeff = maskArmCoeff;
+    maskParams.armDecayPx = maskArmDecayPx;
+    maskParams.armDecayYPx = maskArmDecayYPx;
+    maskParams.coreOuterPx = Math.max(this.useBloom ? 30 : 22, 2.5 * solarRadiusPx);
+    maskParams.viewportHeight = viewportHeight;
+    this.applySunGlareMaskToPoints(viewportWidth);
   }
 
   /** Warm and attenuate sunlight whose camera ray grazes a rendered atmosphere.
@@ -3353,6 +3428,7 @@ export class PlanetariumMode {
       this.player.getDistanceFromSun(),
       sunRadiusPx,
       (x, y, depth) => this.planetLabels?.isScreenPointOccluded(x, y, depth) ?? false,
+      this.sunGlareMaskParams,
     );
   }
 
@@ -5761,6 +5837,12 @@ export class PlanetariumMode {
     return true;
   }
 
+  /** Headless-QA readback for the glare-obscuration mask fed to stars, the belt,
+   *  and the label overlays (a snapshot of the persistent per-frame params). */
+  devSunGlareMask(): unknown {
+    return { ...this.sunGlareMaskParams };
+  }
+
   /** Headless-QA readback for transient Sun optics and atmospheric grazing. */
   devSunAppearance(): unknown {
     return {
@@ -8147,6 +8229,7 @@ export class PlanetariumMode {
         showMarkers: this.showBodyMarkers,
         showLabels: this.showBodyLabels,
         excludeName: landedPlanetName,
+        sunMask: this.sunGlareMaskParams,
       });
     }
 

@@ -13,6 +13,7 @@ import {
 } from '../astronomy/planetary';
 import { KM_PER_AU } from '../astronomy/constants';
 import type { KeplerElements } from '../astronomy/standish';
+import { augmentPointsMaterialWithSunGlareMask } from './world/sunGlareMask';
 
 export type PlanetariumLayout = 'aligned' | 'realistic';
 export const CREATE_SOLAR_SYSTEM_TOTAL_UNITS =
@@ -170,7 +171,11 @@ function createAsteroidBelt(): THREE.Points {
     depthWrite: false,
   });
 
-  return new THREE.Points(geometry, material);
+  const belt = new THREE.Points(geometry, material);
+  // Fade belt dots that sit behind the Sun's glare. The uniform refs are driven
+  // per frame by the controller; inactive until then, so the belt is unchanged.
+  belt.userData.sunGlareMaskUniforms = augmentPointsMaterialWithSunGlareMask(material);
+  return belt;
 }
 
 export async function createSolarSystem(

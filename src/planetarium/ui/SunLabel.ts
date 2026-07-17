@@ -8,6 +8,7 @@
 import * as THREE from 'three';
 import { KM_PER_AU } from '../../astronomy/constants';
 import { projectToScreen } from '../../shared/three/projectToScreen';
+import { sunLabelClearRadiusPx, type SunGlareMaskParams } from '../world/sunGlareMask';
 
 const LABEL_MARGIN_PX = 50;
 const LABEL_OFFSET_PX = 16;
@@ -42,6 +43,7 @@ export class SunLabel {
     distanceFromSunAU: number,
     sunRadiusPx: number,
     isOccluded: (screenX: number, screenY: number, depth: number) => boolean,
+    sunMask?: SunGlareMaskParams,
   ): void {
     if (!this.el) return;
     if (!shouldShowSunLabel(distanceFromSunAU)) {
@@ -56,7 +58,10 @@ export class SunLabel {
     // Drop the label below the disc once the Sun grows on screen. Clearing the
     // whole outer glow would exile the label, so lift just past the bright
     // inner shell (~3.5x the mesh radius) — enough to sit off the burning face.
-    const labelOffsetY = Math.max(LABEL_OFFSET_PX, sunRadiusPx * 3.5 + 6);
+    // The Sun's label never fades; instead, when the glare wash is active push
+    // it out past the L = 0.02 isophote so it never sits in its own blaze.
+    const glareClearPx = sunMask ? sunLabelClearRadiusPx(sunMask) : 0;
+    const labelOffsetY = Math.max(LABEL_OFFSET_PX, sunRadiusPx * 3.5 + 6, glareClearPx);
 
     const depth = camera.position.distanceTo(sunWorldPos);
     // Probe 8px into the label body (not its top edge) so a foreground disc

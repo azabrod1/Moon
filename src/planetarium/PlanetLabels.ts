@@ -7,6 +7,11 @@
 import * as THREE from 'three';
 import { type PlanetData, PLANETARIUM_BODIES } from './planets/planetData';
 import { projectToScreen, type ScreenProjection } from '../shared/three/projectToScreen';
+import {
+  sunGlareMaskAt,
+  sunGlareMaskForRect,
+  type SunGlareMaskParams,
+} from './world/sunGlareMask';
 
 export interface PlanetLabel {
   sprite: THREE.Sprite;
@@ -16,7 +21,21 @@ export interface PlanetLabel {
   labelVisible: boolean;
   lastTransform: string;
   lastDistanceText: string;
+  // Last measured label box (CSS px), used to fade against the Sun's glare by
+  // the label rectangle rather than by its anchor point. Nominal until first
+  // measured while visible.
+  labelW: number;
+  labelH: number;
+  lastOpacity: string;
 }
+
+// Nominal label box before the DOM has been measured (roughly two 10px lines).
+const NOMINAL_LABEL_W = 64;
+const NOMINAL_LABEL_H = 24;
+// The glare-fade band for HTML labels: full opacity below, fully hidden above.
+// A monotone ramp — translucent text sitting in the glare is worse than none.
+const LABEL_FADE_MASK_LO = 0.25;
+const LABEL_FADE_MASK_HI = 0.65;
 
 export interface ForegroundDisc {
   screenX: number;
@@ -128,6 +147,9 @@ export class PlanetLabels {
         labelVisible: false,
         lastTransform: '',
         lastDistanceText: '',
+        labelW: NOMINAL_LABEL_W,
+        labelH: NOMINAL_LABEL_H,
+        lastOpacity: '',
       });
     }
   }
@@ -199,9 +221,15 @@ export class PlanetLabels {
     planetPositions: Map<string, { x: number; y: number; z: number }>,
     playerPos: { x: number; y: number; z: number },
     renderer: THREE.WebGLRenderer,
-    options: { showMarkers?: boolean; showLabels?: boolean; excludeName?: string } = {},
+    options: {
+      showMarkers?: boolean;
+      showLabels?: boolean;
+      excludeName?: string;
+      sunMask?: SunGlareMaskParams;
+    } = {},
   ) {
-    const { showMarkers = true, showLabels = true, excludeName } = options;
+    const { showMarkers = true, showLabels = true, excludeName, sunMask } = options;
+    const maskActive = !!sunMask && sunMask.active;
     const canvasWidth = renderer.domElement.clientWidth;
     const canvasHeight = renderer.domElement.clientHeight;
     const halfFovTan = Math.tan((this.camera.fov * Math.PI) / 360);
@@ -254,9 +282,25 @@ export class PlanetLabels {
 
       entry.sprite.visible = showMarkers;
 
+      // One projection, reused by the marker fade and the label placement. Only
+      // needed when the label shows or when the glare mask must fade a marker.
+      const proj = showLabels || (maskActive && showMarkers)
+        ? projectToScreen(pos, this.camera, canvasWidth, canvasHeight, this.projScratch)
+        : null;
+
+      // Marker sprites fade inside the Sun's glare like the other point
+      // consumers. Materials are per-body, so per-sprite opacity is safe; a mask
+      // of 0 restores full opacity (byte-identical to an un-masked build).
+      if (showMarkers) {
+        const spriteMat = entry.sprite.material as THREE.SpriteMaterial;
+        const markerMask = maskActive && proj ? sunGlareMaskAt(sunMask, proj.x, proj.y) : 0;
+        const spriteOpacity = 1 - 0.98 * markerMask;
+        if (spriteMat.opacity !== spriteOpacity) spriteMat.opacity = spriteOpacity;
+      }
+
       // Markers are GPU billboards; only the HTML label needs projection and
       // occlusion work, so skip the rest when labels are off.
-      if (!showLabels) {
+      if (!showLabels || !proj) {
         if (entry.labelVisible) {
           entry.label.style.display = 'none';
           entry.labelVisible = false;
@@ -264,7 +308,6 @@ export class PlanetLabels {
         continue;
       }
 
-      const proj = projectToScreen(pos, this.camera, canvasWidth, canvasHeight, this.projScratch);
       const screenX = proj.x;
       const screenY = proj.y;
 
@@ -273,6 +316,18 @@ export class PlanetLabels {
       // no-op at the mesh-hide threshold above (disc only a few px there) —
       // it's the guard for the never-on-the-disc rule if that threshold moves.
       const labelOffsetY = Math.max(16, discRadiusPx(entry.planet.radiusAU, distFromCamera, halfFovTan, canvasHeight) * 1.1 + 6);
+
+      // Fade, then hide, a label whose box enters the Sun's glare. Measured from
+      // the label rectangle (its box top-left sits at the transform anchor), not
+      // the anchor point, so text hides only when it actually sits in the blaze.
+      const labelTop = screenY + labelOffsetY;
+      const glareMask = maskActive
+        ? sunGlareMaskForRect(
+            sunMask, screenX, labelTop, screenX + entry.labelW, labelTop + entry.labelH,
+          )
+        : 0;
+      const labelFade = 1 - THREE.MathUtils.smoothstep(glareMask, LABEL_FADE_MASK_LO, LABEL_FADE_MASK_HI);
+      const glareHidden = labelFade <= 0;
 
       // Occluded by a nearer foreground body? Test the LABEL's position
       // (below the marker), not the marker itself — the user wants the label
@@ -291,9 +346,10 @@ export class PlanetLabels {
         }
       }
 
-      // Only show if in front of camera and not occluded
-      if (!occluded && proj.ndcZ < 1 && screenX > -50 && screenX < canvasWidth + 50 &&
+      // Only show if in front of camera, not occluded, and not buried in glare
+      if (!occluded && !glareHidden && proj.ndcZ < 1 && screenX > -50 && screenX < canvasWidth + 50 &&
           screenY > -50 && screenY < canvasHeight + 50) {
+        const justRevealed = !entry.labelVisible;
         if (!entry.labelVisible) {
           entry.label.style.display = 'block';
           entry.labelVisible = true;
@@ -310,6 +366,21 @@ export class PlanetLabels {
         if (distanceText !== entry.lastDistanceText) {
           entry.distEl.textContent = distanceText;
           entry.lastDistanceText = distanceText;
+        }
+
+        // Partial glare fade. Empty string clears the inline opacity, so a label
+        // outside the glare is byte-identical to an un-masked build.
+        const opacityStr = labelFade >= 1 ? '' : labelFade.toFixed(3);
+        if (opacityStr !== entry.lastOpacity) {
+          entry.label.style.opacity = opacityStr;
+          entry.lastOpacity = opacityStr;
+        }
+
+        // Cache the real box the frame it is first laid out, for next frame's
+        // rectangle test (one layout read on reveal, not every frame).
+        if (justRevealed && entry.label.offsetWidth > 0) {
+          entry.labelW = entry.label.offsetWidth;
+          entry.labelH = entry.label.offsetHeight;
         }
       } else if (entry.labelVisible) {
         entry.label.style.display = 'none';

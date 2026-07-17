@@ -6,6 +6,7 @@
 import * as THREE from 'three';
 import { BRIGHT_STAR_CATALOG } from '../data/brightStars';
 import { raDecToVector } from '../../astronomy/planetary';
+import { createSunGlareMaskUniforms, sunGlareMaskGLSL } from './sunGlareMask';
 
 /** Celestial-sphere radius (AU) shared by the stars and the constellation
  *  overlay (Constellations.ts) — the lines must land on the stars. */
@@ -115,6 +116,10 @@ export function createPlanetariumStarfield(rendererPixelRatio: number): THREE.Po
   const mat = new THREE.ShaderMaterial({
     uniforms: {
       pixelRatio: { value: starPixelRatio(rendererPixelRatio) },
+      // The Sun's veiling glare fades stars sitting behind it. Inactive by
+      // default (mask 0 -> alpha scale exactly 1), so stars render unchanged
+      // until the controller drives these each frame.
+      ...createSunGlareMaskUniforms(),
     },
     vertexShader: `
         attribute float size;
@@ -122,12 +127,13 @@ export function createPlanetariumStarfield(rendererPixelRatio: number): THREE.Po
         varying vec3 vColor;
         varying float vAlpha;
         uniform float pixelRatio;
+        ${sunGlareMaskGLSL()}
         void main() {
           vColor = color;
-          vAlpha = alpha;
           vec4 mvPosition = modelViewMatrix * vec4(position, 1.0);
           gl_Position = projectionMatrix * mvPosition;
           gl_PointSize = size * pixelRatio;
+          vAlpha = alpha * (1.0 - 0.98 * sunGlareMask(gl_Position));
         }
       `,
     fragmentShader: `

@@ -28,9 +28,12 @@ describe('augmentSurfaceMaterial', () => {
 
     // The object the mode updates each frame must be the one bound into the shader.
     expect(shader.uniforms.uSunDirWorld).toBe(fx.uSunDirWorld);
+    expect(shader.uniforms.uSilhouette).toBe(fx.uSilhouette);
+    expect(fx.uSilhouette.value).toBe(0);
     expect(shader.vertexShader).toContain('vSunViewDir = normalize');
     // Additive radiance must land at a real chunk, not silently no-op.
     expect(shader.fragmentShader).toContain('outgoingLight +=');
+    expect(shader.fragmentShader).toContain('uSilhouette');
     expect(shader.fragmentShader).toContain('#include <opaque_fragment>');
   });
 });

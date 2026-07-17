@@ -39,6 +39,11 @@ export interface SurfaceShadingFx {
   uPlanetshineColor: { value: THREE.Color };    // parent's reflected-light tint (moons only)
   uPlanetshineDir: { value: THREE.Vector3 };    // world direction from the moon to its parent
   uPlanetshineIntensity: { value: number };     // night-side parent glow; 0 for planets / no parent
+  /** 0..1: fades the night-side lifts (starlight fill, planetshine) while the
+   *  body silhouettes the Sun. A disc backlit by the photosphere reads void
+   *  black in any real exposure — the camera belongs to the ring or corona
+   *  behind it, and the visibility lifts would read as fog on the silhouette. */
+  uSilhouette: { value: number };
 }
 
 interface NightFill {
@@ -121,6 +126,7 @@ uniform vec4 uMoonShadow[${MAX_MOON_SHADOWS}];
 uniform int uMoonShadowCount;
 uniform vec3 uPlanetshineColor;
 uniform float uPlanetshineIntensity;
+uniform float uSilhouette;
 uniform float uIcyRim;
 uniform float uLimbDarkening;
 varying vec3 vSunViewDir;
@@ -133,12 +139,16 @@ ${RING_SHADOW_OPACITY_GLSL}`;
 // read the perturbed view-space `normal`.
 const SURFACE_FRAGMENT_BODY = /* glsl */ `{
   float dayFactor = smoothstep(-uTermWidth, uTermWidth, dot(normalize(normal), normalize(vSunViewDir)));
-  outgoingLight += diffuseColor.rgb * uNightColor * (uNightStrength * (1.0 - dayFactor));
+  // The night lifts fade while this body silhouettes the Sun: a disc backlit
+  // by the photosphere is void black in any real exposure, and the starlight
+  // fill or earthshine would read as fog painted on the silhouette.
+  float nightKeep = 1.0 - uSilhouette;
+  outgoingLight += diffuseColor.rgb * uNightColor * (uNightStrength * (1.0 - dayFactor) * nightKeep);
   // Planetshine: parent-lit glow on the night side. Albedo-multiplicative,
   // so the eclipse color-dim carries through it automatically.
   if (uPlanetshineIntensity > 0.0) {
     float pl = max(dot(normalize(normal), normalize(vPlanetshineViewDir)), 0.0);
-    outgoingLight += diffuseColor.rgb * uPlanetshineColor * (uPlanetshineIntensity * pl * (1.0 - dayFactor));
+    outgoingLight += diffuseColor.rgb * uPlanetshineColor * (uPlanetshineIntensity * pl * (1.0 - dayFactor) * nightKeep);
   }
   // Icy moons: a cool Fresnel rim on the back-lit limb (ice scatters light).
   // Scaled by the (eclipse-dimmed) albedo brightness so it fades when the
@@ -202,6 +212,7 @@ export function augmentSurfaceMaterial(
     uPlanetshineColor: { value: new THREE.Color(0x6688aa) },
     uPlanetshineDir: { value: new THREE.Vector3(1, 0, 0) },
     uPlanetshineIntensity: { value: 0 },
+    uSilhouette: { value: 0 },
   };
   const uNightColor = { value: new THREE.Color(night.color) };
   const uNightStrength = { value: night.strength };
@@ -226,6 +237,7 @@ export function augmentSurfaceMaterial(
     shader.uniforms.uPlanetshineColor = fx.uPlanetshineColor;
     shader.uniforms.uPlanetshineDir = fx.uPlanetshineDir;
     shader.uniforms.uPlanetshineIntensity = fx.uPlanetshineIntensity;
+    shader.uniforms.uSilhouette = fx.uSilhouette;
     shader.uniforms.uIcyRim = uIcyRim;
     shader.uniforms.uLimbDarkening = uLimbDarkening;
 

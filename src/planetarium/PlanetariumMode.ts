@@ -26,6 +26,7 @@ import { solarExposureTarget, solarViewportCoverage } from './solarExposure';
 import { computeStats } from './stats';
 import { PLANETARIUM_BODIES, SUN_DATA, type PlanetData } from './planets/planetData';
 import { applySunGlowTier, createMoonMeshes, createShaderWarmupProbes, setWarmEligibleMoonParents, upgradeTextureOnApproach, ATMOSPHERES, ATMOSPHERE_SHELL_SCALES, type MoonMesh, type TextureUpgrade } from './PlanetFactory';
+import type { SurfaceShadingFx } from './world/surfaceShading';
 import { bindTextureWarmer, pumpTextureWarmQueue, queueTextureWarm, resetTextureWarmer } from './world/textureWarmer';
 import {
   advancePlanetariumTime,
@@ -439,6 +440,11 @@ export class PlanetariumMode {
    *  shader's silhouette carve at the body's true screen offset. */
   private sunDominantOccluderDirection = new THREE.Vector3();
   private tmpSunOccluderDelta = new THREE.Vector3();
+  /** Surface-shading uniforms of the strongest occluder, and the body whose
+   *  uSilhouette this mode last raised (so it can be lowered again the frame
+   *  the body stops silhouetting the Sun). */
+  private sunDominantOccluderFx: SurfaceShadingFx | null = null;
+  private sunSilhouetteFx: SurfaceShadingFx | null = null;
   private lastSunOccluderAngularRadius = 0;
   private tmpSunDirection = new THREE.Vector3();
   private tmpRingNormal = new THREE.Vector3();
@@ -1363,6 +1369,7 @@ export class PlanetariumMode {
     this.sunEmergenceFlash = 0;
     this.sunAtmosphereMix = 0;
     this.applySunGlareFlood(0);
+    this.applySunSilhouette(null, 0);
     this.renderer.toneMappingExposure = 1;
 
     // Hand the camera back on the fixed near plane — another mode (or a
@@ -3019,6 +3026,17 @@ export class PlanetariumMode {
     this.sunVeilSupport.armDecayYPx = armDecayYPx;
   }
 
+  /** Raise uSilhouette on the body currently silhouetting the Sun and lower
+   *  it on whichever body held it last — exactly one body carries the dim at
+   *  a time, and losing dominance (or the eclipse ending) restores it. */
+  private applySunSilhouette(fx: SurfaceShadingFx | null, shade: number) {
+    if (this.sunSilhouetteFx && this.sunSilhouetteFx !== fx) {
+      this.sunSilhouetteFx.uSilhouette.value = 0;
+    }
+    this.sunSilhouetteFx = fx;
+    if (fx) fx.uSilhouette.value = shade;
+  }
+
   /** Drive the DOM chrome flood from this frame's whiteout. The element sits
    *  over the everyday HUD (never over the tutorial card, ☰ menu, veils, or
    *  help) and never takes pointer events, so the washed-out cockpit stays
@@ -3092,6 +3110,7 @@ export class PlanetariumMode {
         glareMat.uniforms.uVeilHalfPx.value = 0;
         glareMat.uniforms.uOccluderShade.value = 0;
       }
+      this.applySunSilhouette(null, 0);
       if (ghostMat) ghostMat.uniforms.uGhostStrength.value = 0;
       // No limb sits in front of a camera buried in the photosphere; kill the
       // prominence shell's close-up ring so it can't hang as a stale halo.
@@ -3215,10 +3234,21 @@ export class PlanetariumMode {
         // bodyVisibleFraction only.
         visibleFraction = bodyVisibleFraction * this.sunTransmissionThroughRings(toSun, sunDistance);
         this.updateSunAtmosphereGrazing(toSun, sunDistance, solarAngularRadius);
+        // Partial-phase metering: any exposed sliver of photosphere still has
+        // full solar surface brightness (eclipse photography keeps the same
+        // filter on until totality), so the meter reads it like the whole
+        // disc instead of opening up as the cover deepens — this is what
+        // darkens a deep partial/annular scene and keeps the ring's bloom
+        // from flooding the silhouette. Only the last fraction of a percent
+        // releases toward the totality corona exposure.
+        const meterVis = Math.max(
+          visibleFraction,
+          THREE.MathUtils.smoothstep(visibleFraction, 0, 0.012),
+        );
         targetExposure = targetSunExposure({
           projectedRadiusNdc,
           centerDistanceNdc: centreDistanceNdc,
-          visibleFraction,
+          visibleFraction: meterVis,
         });
         // The whiteout overrides the close-up study tier: past ~2.6 radii the
         // metering stops winning — adaptation gives up and exposure rides back
@@ -3287,6 +3317,10 @@ export class PlanetariumMode {
         ? THREE.MathUtils.smoothstep(coverage, 0.45, 0.85)
         : 0;
       glareMat.uniforms.uOccluderShade.value = occluderShade;
+      // The silhouetted body itself also drops its night-side lifts (starlight
+      // fill, planetshine): backlit by the photosphere it reads void black —
+      // the exposure belongs to the ring or corona behind it.
+      this.applySunSilhouette(occluderShade > 0 ? this.sunDominantOccluderFx : null, occluderShade);
       if (occluderShade > 0) {
         // The glare quad billboards in camera-view XY and its fragment
         // measures in solar radii, so the offset is the angular separation
@@ -3451,6 +3485,7 @@ export class PlanetariumMode {
     let visible = 1;
     let maxOcclusion = 0;
     this.sunDominantOccluderAngularRadius = 0;
+    this.sunDominantOccluderFx = null;
 
     for (const planet of this.solarSystem?.planets ?? []) {
       const occlusion = this.sunOcclusionByMesh(
@@ -3464,6 +3499,7 @@ export class PlanetariumMode {
         this.sunDominantOccluderAngularRadius = this.lastSunOccluderAngularRadius;
         // sunOcclusionByMesh leaves this mesh's unit direction in the tmp.
         this.sunDominantOccluderDirection.copy(this.tmpSunOccluderDirection);
+        this.sunDominantOccluderFx = planet.fx ?? null;
       }
       visible *= 1 - occlusion;
       if (visible < 1e-4) return 0;
@@ -3480,6 +3516,7 @@ export class PlanetariumMode {
           maxOcclusion = occlusion;
           this.sunDominantOccluderAngularRadius = this.lastSunOccluderAngularRadius;
           this.sunDominantOccluderDirection.copy(this.tmpSunOccluderDirection);
+          this.sunDominantOccluderFx = moon.fx ?? null;
         }
         visible *= 1 - occlusion;
         if (visible < 1e-4) return 0;
@@ -6368,6 +6405,8 @@ export class PlanetariumMode {
   /** Headless-QA readback for transient Sun optics and atmospheric grazing. */
   devSunAppearance(): unknown {
     const sunMat = this.solarSystem?.sun.userData.sunMaterial as THREE.ShaderMaterial | undefined;
+    const glareMat = this.solarSystem?.sun.userData.sunGlareMaterial as THREE.ShaderMaterial | undefined;
+    const offset = glareMat?.uniforms.uOccluderOffsetSr.value as THREE.Vector2 | undefined;
     return {
       exposure: this.sunExposure,
       whiteout: sunMat ? (sunMat.uniforms.uWhiteout.value as number) : 0,
@@ -6375,6 +6414,10 @@ export class PlanetariumMode {
       emergenceFlash: this.sunEmergenceFlash,
       atmosphereMix: this.sunAtmosphereMix,
       atmosphereColor: `#${this.sunAtmosphereColor.getHexString()}`,
+      occluderShade: glareMat ? (glareMat.uniforms.uOccluderShade.value as number) : 0,
+      occluderRadii: glareMat ? (glareMat.uniforms.uOccluderRadii.value as number) : 0,
+      occluderOffsetSr: offset ? [offset.x, offset.y] : [0, 0],
+      silhouetteDim: this.sunSilhouetteFx ? (this.sunSilhouetteFx.uSilhouette.value as number) : 0,
     };
   }
 

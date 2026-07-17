@@ -8,12 +8,14 @@ import { describe, expect, it } from 'vitest';
 import * as THREE from 'three';
 import {
   ORBIT_LINE_SEGMENTS,
+  createAsteroidBelt,
+  getPlanetOrbitalPosition,
   orbitLineSegmentCount,
   resampleOrbitLines,
   type SolarSystemObjects,
 } from './SolarSystem';
 import { computeBodyPositionAU, eclipticToEquatorial } from '../astronomy/planetary';
-import { PLANETARIUM_BODIES } from './planets/planetData';
+import { ASTEROID_BELT, PLANETARIUM_BODIES } from './planets/planetData';
 
 const J2000_UTC_MS = Date.UTC(2000, 0, 1, 12, 0, 0);
 
@@ -45,6 +47,63 @@ function minDistToPolyline(p: THREE.Vector3, position: THREE.BufferAttribute): n
   }
   return best;
 }
+
+describe('asteroid belt', () => {
+  it('builds the same position and colour buffers on every load', () => {
+    const first = createAsteroidBelt();
+    const second = createAsteroidBelt();
+
+    expect(Array.from(first.geometry.getAttribute('position').array)).toEqual(
+      Array.from(second.geometry.getAttribute('position').array),
+    );
+    expect(Array.from(first.geometry.getAttribute('color').array)).toEqual(
+      Array.from(second.geometry.getAttribute('color').array),
+    );
+  });
+
+  it('stays inside the configured ecliptic annulus and spans both sides of its plane', () => {
+    const belt = createAsteroidBelt();
+    const positions = belt.geometry.getAttribute('position') as THREE.BufferAttribute;
+    const eclipticNorth = eclipticToEquatorial(new THREE.Vector3(0, 1, 0)).normalize();
+    const point = new THREE.Vector3();
+    let minHeight = Infinity;
+    let maxHeight = -Infinity;
+    let minRadius = Infinity;
+    let maxRadius = -Infinity;
+
+    for (let i = 0; i < positions.count; i++) {
+      point.fromBufferAttribute(positions, i);
+      const height = point.dot(eclipticNorth);
+      const radius = point.addScaledVector(eclipticNorth, -height).length();
+      minHeight = Math.min(minHeight, height);
+      maxHeight = Math.max(maxHeight, height);
+      minRadius = Math.min(minRadius, radius);
+      maxRadius = Math.max(maxRadius, radius);
+    }
+
+    const FLOAT32_TOLERANCE_AU = 1e-6;
+    expect(positions.count).toBe(3000);
+    expect(minHeight).toBeGreaterThanOrEqual(-0.025 - FLOAT32_TOLERANCE_AU);
+    expect(maxHeight).toBeLessThanOrEqual(0.025 + FLOAT32_TOLERANCE_AU);
+    expect(minHeight).toBeLessThan(0);
+    expect(maxHeight).toBeGreaterThan(0);
+    expect(minRadius).toBeGreaterThanOrEqual(ASTEROID_BELT.innerAU - FLOAT32_TOLERANCE_AU);
+    expect(maxRadius).toBeLessThanOrEqual(ASTEROID_BELT.outerAU + FLOAT32_TOLERANCE_AU);
+  });
+});
+
+describe('aligned layout positions', () => {
+  it('puts every planet on its catalog-radius circle in the transformed ecliptic plane', () => {
+    const eclipticNorth = eclipticToEquatorial(new THREE.Vector3(0, 1, 0)).normalize();
+    for (let i = 0; i < PLANETARIUM_BODIES.length; i++) {
+      const body = PLANETARIUM_BODIES[i];
+      const position = getPlanetOrbitalPosition(body, i + 1, 'aligned');
+      const point = new THREE.Vector3(position.x, position.y, position.z);
+      expect(Math.abs(point.dot(eclipticNorth)), body.name).toBeLessThan(1e-12);
+      expect(Math.abs(point.length() - body.semiMajorAxisAU), body.name).toBeLessThan(1e-12);
+    }
+  });
+});
 
 describe('resampleOrbitLines', () => {
   it('fills every line with a closed orbit and stamps the epoch', () => {

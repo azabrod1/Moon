@@ -552,6 +552,7 @@ export async function createPlanetMesh(planet: PlanetData): Promise<PlanetMesh> 
   const atmosConfig = ATMOSPHERES[planet.name];
   if (atmosConfig) {
     atmosphere = createAtmosphereGlow(planet.radiusAU, atmosConfig);
+    atmosphere.name = `${planet.name}Atmosphere`;
     group.add(atmosphere);
   }
 
@@ -637,6 +638,7 @@ export function createPlanetariumSun(useBloom = true): THREE.Group {
   });
 
   const mesh = new THREE.Mesh(geo, sunMat);
+  mesh.name = 'SunCore';
   group.add(mesh);
 
   // Interior fog shell: the same sphere drawn back-face-only, visible only
@@ -805,6 +807,34 @@ export function createPlanetariumSun(useBloom = true): THREE.Group {
   return group;
 }
 
+// Sun halo tiers: per-sprite scale (× photosphere radius) and opacity. With
+// bloom the pass supplies the near-Sun spread, so the sprites stay tight and
+// lean; without it they hold more of the glow themselves. The tier is baked
+// from the hardware bloom capability at construction and re-applied when a dev
+// bloom toggle flips at runtime, so a toggled state matches the real build.
+const SUN_GLOW_TIERS = {
+  bloom: { innerScale: 2.6, innerOpacity: 0.7, outerScale: 4.5, outerOpacity: 0.30 },
+  noBloom: { innerScale: 3.8, innerOpacity: 0.8, outerScale: 6.5, outerOpacity: 0.42 },
+} as const;
+
+/**
+ * Apply a Sun halo tier to a group built by createPlanetariumSun, using the
+ * inner/outer glow sprite refs stashed in its userData.
+ */
+export function applySunGlowTier(sunGroup: THREE.Group, useBloom: boolean): void {
+  const inner = sunGroup.userData.sunGlowInner as THREE.Sprite | undefined;
+  const outer = sunGroup.userData.sunGlowOuter as THREE.Sprite | undefined;
+  const tier = useBloom ? SUN_GLOW_TIERS.bloom : SUN_GLOW_TIERS.noBloom;
+  if (inner) {
+    inner.scale.setScalar(SUN_DATA.radiusAU * tier.innerScale * 2);
+    (inner.material as THREE.SpriteMaterial).opacity = tier.innerOpacity;
+  }
+  if (outer) {
+    outer.scale.setScalar(SUN_DATA.radiusAU * tier.outerScale * 2);
+    (outer.material as THREE.SpriteMaterial).opacity = tier.outerOpacity;
+  }
+}
+
 // ---- Moon meshes ----
 
 import { type MoonData, getMoonsByPlanet } from './planets/moonData';
@@ -826,6 +856,20 @@ export interface MoonMesh {
   painted: boolean;
   fx?: SurfaceShadingFx;
   textureUpgrade?: TextureUpgrade; // 4K colour map streamed in on close approach
+  /** Per-frame moon-dot cache (updateMoonPositions → updateMoonDotsForCamera):
+   *  the sun-visible fraction from this frame's eclipse shading, and the dot's
+   *  final screen alpha / size that the label pass reads for its sub-pixel
+   *  gating and offset. Transient — meaningful only for a shown moon. */
+  dotSunVisibleFraction?: number;
+  dotScreenAlpha?: number;
+  dotScreenSizePx?: number;
+  /** Applied-shading limiter state (world/shadeSmoothing): the smoothed
+   *  sun-visible fraction actually shown, its wall-clock stamp, and whether the
+   *  blood-moon tint is held while the smoothed value is still under the red
+   *  floor. Transient presentation state — the astronomy stays raw. */
+  shadeSmoothed?: number;
+  shadeStampMs?: number;
+  shadeUmbraSticky?: boolean;
 }
 
 /**

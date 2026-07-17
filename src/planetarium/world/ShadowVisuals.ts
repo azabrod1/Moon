@@ -34,12 +34,13 @@
  * origin, AU units), so the floating origin is free; lines are shared unit
  * geometry re-posed per frame by transform with zero allocations.
  *
- * Caveat: small moons render at an inflated minimum mesh scale in orbit view
- * (a few percent of the parent's radius — smaller when observing the parent
- * planet, larger in flythrough), so a tiny moon's drawn ball can dwarf its own
- * true-scale guides — Phobos' drawn ball swallows its real ∅59 km footprint
- * rings. The rings and spot are real; the ball isn't. Surface view drops the
- * floor to true size, and there the meshes and guides agree.
+ * Caveat: small moons render inflated in orbit view (the moonRenderSize
+ * curve lifts them toward an anchor fraction of the parent's radius — less
+ * while observing the parent planet, more in flythrough), so a tiny moon's
+ * drawn ball can still dwarf its own true-scale guides — Phobos' drawn ball
+ * swallows its real ∅59 km footprint rings. The rings and spot are real; the
+ * ball isn't. Surface view renders true sizes, and there the meshes and
+ * guides agree.
  */
 import * as THREE from 'three';
 import { Line2 } from 'three/addons/lines/Line2.js';

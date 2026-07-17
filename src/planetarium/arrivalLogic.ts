@@ -203,9 +203,13 @@ export function moonArrivalCameraLookWeight(
   return 1 - eased;
 }
 
-/** Legacy floor (~7,500 km) so the smallest arrivals never park
- *  uncomfortably tight; unchanged from the original standoff. */
-export const MOON_ARRIVAL_STANDOFF_FLOOR_AU = 5e-5;
+/** Standoff floor (~500 km) so the smallest arrivals never park
+ *  uncomfortably tight. The old ~7,500 km value was tuned when the smallest
+ *  rendered moon was a ~3,000 km marble; against curve-rendered specks it
+ *  parked every jump staring at a sub-degree dot. 500 km keeps ≥ ~2.5° of
+ *  disc on the smallest meshes (~20 km) and goes inert above ~40 km
+ *  rendered, where the apparent-size term takes over. */
+export const MOON_ARRIVAL_STANDOFF_FLOOR_AU = 3.3e-6;
 
 /** Planet-jump standoff floor (~3,000 km). Inert for the current catalog —
  *  every planet's 8-radii arm exceeds it (Pluto's is 6.4e-5 AU) — it only
@@ -225,7 +229,8 @@ export interface MoonArrivalInputs {
   moonPos: THREE.Vector3;
   parentPos: THREE.Vector3;
   orbitR: number;
-  /** Mesh radius: catalog radius under the 5%-of-parent render floor. */
+  /** Mesh radius as drawn: true radius, or the moonRenderSize curve's
+   *  inflated size for moons below the render anchor. */
   renderedR: number;
   /** Hard planet collision radius (no rings). */
   parentCollision: number;
@@ -244,10 +249,15 @@ export interface MoonArrivalPose {
   aimPoint: THREE.Vector3;
 }
 
-/** Collision bubble around a moon mesh: hull clearance saturates at one
- *  rendered radius so tiny-moon standoffs stay outside their own bubbles. */
+/** Collision bubble around a moon mesh: rendered radius plus the full hull
+ *  clearance pad. The pad is deliberately NOT reduced for small meshes — the
+ *  curve renders the smallest moons well under the hull's own extent, and a
+ *  shrunken pad would let the hull visibly enter the mesh before pushback.
+ *  Standoffs stay outside the bubble by construction: the pose floors the
+ *  distance at 1.5× this radius, and the tightest catalog separation cap is
+ *  far larger (pinned by the catalog sweep). */
 export function moonCollisionRadius(renderedR: number, shipClearance: number): number {
-  return renderedR + Math.min(shipClearance, renderedR);
+  return renderedR + shipClearance;
 }
 
 /** True when the forward ray from `origin` through `through` passes within
@@ -266,20 +276,66 @@ function rayPassesNear(
 }
 
 /**
+ * Standoff distance from the moon's center: the mesh subtends
+ * MOON_ARRIVAL_APPARENT_DIAMETER_DEG from the camera (camDist behind the
+ * ship), floored by the legacy standoff and the collision bubble (×1.5) and
+ * capped at a fraction of the moon–parent separation. `moonArrivalPose` places
+ * the ship exactly this far out, so |pose.position − moonPos| == this value by
+ * construction; the autopilot glide rests the cruise here too.
+ */
+export function moonArrivalStandoffAU(inp: MoonArrivalInputs): number {
+  const collisionR = moonCollisionRadius(inp.renderedR, inp.shipClearance);
+  const half = (MOON_ARRIVAL_APPARENT_DIAMETER_DEG / 2) * DEG2RAD;
+  return Math.min(
+    Math.max(
+      inp.renderedR / Math.sin(half) - inp.camDist,
+      MOON_ARRIVAL_STANDOFF_FLOOR_AU,
+      collisionR * 1.5,
+    ),
+    inp.orbitR * MOON_ARRIVAL_SEPARATION_CAP,
+  );
+}
+
+/** Autopilot closing-speed cap: the same K×distance glide the governor uses,
+ *  but measured PAST the arrival standoff instead of the surface, so the
+ *  cruise eases to rest at the postcard distance rather than grinding into the
+ *  collision shell. Continuous, and exactly zero at or inside the standoff. */
+export function autopilotGlideCap(distToMoonCenterAU: number, standoffAU: number): number {
+  return MOON_APPROACH_K_PER_S * Math.max(distToMoonCenterAU - standoffAU, 0);
+}
+
+/** How strongly the autopilot heading swings from the moon's center toward the
+ *  flyby aim point as the ship closes: 0 while more than three standoffs out (a
+ *  straight run in), ramping smoothly to 1 at the standoff so the parked
+ *  heading is pre-aimed past the limb. Monotone in closing distance. */
+export function autopilotAimBlend(distToMoonCenterAU: number, standoffAU: number): number {
+  if (!(standoffAU > 0)) return 0;
+  return 1 - THREE.MathUtils.smoothstep(distToMoonCenterAU, standoffAU, 3 * standoffAU);
+}
+
+/** Arrival test for an autopilot moon glide: the ship has eased to rest at the
+ *  standoff. The small margin latches despite the K×distance ease-in never
+ *  quite reaching zero closing distance. */
+export function autopilotArrived(distToMoonCenterAU: number, standoffAU: number): boolean {
+  return distToMoonCenterAU <= 1.05 * standoffAU;
+}
+
+/**
  * Arrival pose for a moon-precise jump: where the ship appears, and where
  * it points.
  *
- * Standoff: the mesh subtends MOON_ARRIVAL_APPARENT_DIAMETER_DEG from the
- * camera (camDist behind the ship), clamped by the legacy floor, the
- * collision bubble, and the separation cap. Position: sun side preferred so
+ * Standoff (moonArrivalStandoffAU): the mesh subtends
+ * MOON_ARRIVAL_APPARENT_DIAMETER_DEG from the camera (camDist behind the
+ * ship), clamped by the legacy floor, the collision bubble, and the separation
+ * cap. Position: sun side preferred so
  * the lit face greets you — unless that parks inside the parent's clearance
  * bubble or with the parent occluding the sightline (an inner moon near
  * superior conjunction); fallback is outward along the parent→moon radial,
  * which always clears the parent, its rings, and the line of sight.
  *
  * Aim: offset by an impact parameter so full thrust sweeps past the limb.
- * The clearance floor outranks composition — without it the floored small
- * moons are left ~11 km of miss margin. Side selection selects the perp
+ * The clearance floor outranks composition — without it the smallest
+ * curve-rendered moons keep almost no miss margin. Side selection selects the perp
  * toward the parent so the moon slides to the opposite third and the two
  * flank the frame; the forward ray is checked against the parent's HARD
  * collision sphere only (ring moons orbit entirely inside the ring-aware
@@ -293,16 +349,7 @@ function rayPassesNear(
 export function moonArrivalPose(inp: MoonArrivalInputs): MoonArrivalPose {
   const { moonPos, parentPos, orbitR, renderedR } = inp;
   const collisionR = moonCollisionRadius(renderedR, inp.shipClearance);
-
-  const half = (MOON_ARRIVAL_APPARENT_DIAMETER_DEG / 2) * DEG2RAD;
-  const dist = Math.min(
-    Math.max(
-      renderedR / Math.sin(half) - inp.camDist,
-      MOON_ARRIVAL_STANDOFF_FLOOR_AU,
-      collisionR * 1.5,
-    ),
-    orbitR * MOON_ARRIVAL_SEPARATION_CAP,
-  );
+  const dist = moonArrivalStandoffAU(inp);
 
   const sunDir = moonPos.clone().multiplyScalar(-1).normalize();
   let position = moonPos.clone().addScaledVector(sunDir, dist);
@@ -318,9 +365,23 @@ export function moonArrivalPose(inp: MoonArrivalInputs): MoonArrivalPose {
     position = moonPos.clone().addScaledVector(outward, dist);
   }
 
-  const b = Math.min(
-    Math.max(renderedR * MOON_ARRIVAL_IMPACT_RADII, collisionR * 1.15),
-    dist * Math.sin(MOON_ARRIVAL_MAX_OFFAXIS_DEG * DEG2RAD),
+  // Required perpendicular miss, converted to an aim offset: a ray aimed b
+  // off-center passes the center at b·cos(offAxis), so hitting an exact miss
+  // of m needs b = m·d/√(d²−m²). Always real: the standoff keeps d well
+  // above m (d ≥ 1.5·collisionR ≥ 1.3·m).
+  const missM = collisionR * 1.15;
+  const clearB = (missM * dist) / Math.sqrt(dist * dist - missM * missM);
+  // Clearance outranks BOTH composition terms: at close parks (the standoff
+  // floor on the smallest meshes) the swing ceiling can fall under the
+  // required miss, and safety wins — the aim may swing a few degrees past
+  // MOON_ARRIVAL_MAX_OFFAXIS_DEG there (≤ ~14° in the catalog, pinned by
+  // the ladder test).
+  const b = Math.max(
+    Math.min(
+      renderedR * MOON_ARRIVAL_IMPACT_RADII,
+      dist * Math.sin(MOON_ARRIVAL_MAX_OFFAXIS_DEG * DEG2RAD),
+    ),
+    clearB,
   );
 
   const viewDir = moonPos.clone().sub(position).normalize();

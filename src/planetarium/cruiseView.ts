@@ -148,9 +148,12 @@ export interface CameraBodyShell {
  * camera (+X at dead center) and walk out to the FARTHEST ray–sphere exit
  * over every shell the ray passes through — a point at the last exit is
  * outside each of them. Sequential per-body pushes have no such guarantee:
- * co-orbital moons rendered at the 5%-of-parent floor genuinely overlap
- * (Pan–Atlas–Prometheus conjunct for real), and alternating pushes between
- * overlapping spheres can oscillate.
+ * padded shells of co-orbital moons can still overlap when the moons conjunct
+ * (the render-curve inflation plus the camera margin exceeds a close
+ * Pan–Atlas-style separation), and alternating pushes between overlapping
+ * spheres can oscillate. Note the fixed camera margin exceeds the smallest
+ * curve-rendered moons themselves — the close-approach frame fill on those
+ * is capped by the margin, not the mesh.
  *
  * `count` bounds the scan so callers can reuse a pooled array.
  */

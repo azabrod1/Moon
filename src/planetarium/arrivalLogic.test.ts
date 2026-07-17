@@ -2,10 +2,14 @@ import { describe, expect, it } from 'vitest';
 import * as THREE from 'three';
 import {
   advanceBodyCap,
+  autopilotAimBlend,
+  autopilotArrived,
+  autopilotGlideCap,
   governedSpeedCap,
   initialBodyCapState,
   moonArrivalCameraLookWeight,
   moonArrivalPose,
+  moonArrivalStandoffAU,
   moonCollisionRadius,
   rampedSpeedCap,
   sunArrivalPose,
@@ -30,11 +34,12 @@ import { DEG2RAD, RAD2DEG } from '../shared/math/angles';
 // The REAL rig constants — this sweep must see exactly the rig the app
 // flies (mirrored copies here once meant a rig change couldn't fail a test).
 import { SHIP_CLEARANCE_AU, CRUISE_CAM_DIST_AU as CAM_DIST_AU } from './cruiseView';
+// Same rule for rendered sizes: the sweep derives them from the production
+// curve, so a sizing change re-exercises every pose invariant automatically.
+import { MOON_RENDER_ANCHOR_RATIO, renderedMoonRadiusAU } from './moonRenderSize';
 
 const K = MOON_APPROACH_K_PER_S;
 const VMIN = BODY_APPROACH_V_MIN_AU_S;
-
-const MESH_FLOOR_RATIO = 0.05;
 
 /** Real-catalog inputs for one moon, posed at `angleRad` around its parent
  *  (parent placed on the +X axis at its semi-major axis; Sun at origin —
@@ -53,7 +58,7 @@ function catalogInputs(moonName: string, angleRad = 0.7): MoonArrivalInputs {
     moonPos: offset.clone().add(parentPos),
     parentPos,
     orbitR: moon.orbitalRadiusAU,
-    renderedR: Math.max(moon.radiusAU, parent.radiusAU * MESH_FLOOR_RATIO),
+    renderedR: renderedMoonRadiusAU(moon.radiusAU, parent.radiusAU, MOON_RENDER_ANCHOR_RATIO),
     parentCollision,
     parentClearance: parentCollision * 1.25, // ring factor varies; the sweep uses the base
     camDist: CAM_DIST_AU,
@@ -252,11 +257,22 @@ describe('moonArrivalPose — ladder fixtures', () => {
     expect(dist / inp.renderedR).toBeGreaterThan(1 / Math.sin(half) - 1);
   });
 
-  it('Phobos still binds on the separation cap, Deimos on the legacy floor', () => {
-    const phobos = standoff('Phobos');
-    expect(phobos.dist).toBeCloseTo(phobos.inp.orbitR * MOON_ARRIVAL_SEPARATION_CAP, 9);
-    const deimos = standoff('Deimos');
-    expect(deimos.dist).toBeCloseTo(MOON_ARRIVAL_STANDOFF_FLOOR_AU, 9);
+  it('Charon still binds on the separation cap, Styx on the standoff floor', () => {
+    const charon = standoff('Charon');
+    expect(charon.dist).toBeCloseTo(charon.inp.orbitR * MOON_ARRIVAL_SEPARATION_CAP, 9);
+    const styx = standoff('Styx');
+    expect(styx.dist).toBeCloseTo(MOON_ARRIVAL_STANDOFF_FLOOR_AU, 9);
+  });
+
+  it('Phobos and Deimos escape the old dot-arrival floor: the apparent-size term binds', () => {
+    const half = (MOON_ARRIVAL_APPARENT_DIAMETER_DEG / 2) * DEG2RAD;
+    for (const name of ['Phobos', 'Deimos']) {
+      const { inp, dist } = standoff(name);
+      expect(dist, `${name}: apparent-size standoff`).toBeCloseTo(
+        inp.renderedR / Math.sin(half) - CAM_DIST_AU,
+        9,
+      );
+    }
   });
 
   it('the aim is a flyby: off the center, above the collision bubble, under the swing ceiling', () => {
@@ -265,9 +281,19 @@ describe('moonArrivalPose — ladder fixtures', () => {
       const b = pose.aimPoint.distanceTo(inp.moonPos);
       const collisionR = moonCollisionRadius(inp.renderedR, inp.shipClearance);
       expect(b).toBeGreaterThanOrEqual(collisionR * 1.15 - 1e-12);
+      // The swing ceiling holds except where the clearance floor outranks it
+      // (close parks on the smallest meshes); even there the swing stays
+      // shallow — a hand-width past the ceiling, not out of frame. The
+      // clearance aim is the exact perpendicular-miss form the pose uses.
+      const missM = collisionR * 1.15;
+      const clearanceDeg =
+        Math.atan2((missM * dist) / Math.sqrt(dist * dist - missM * missM), dist) * RAD2DEG;
       const offAxis =
         pose.aimPoint.clone().sub(pose.position).angleTo(inp.moonPos.clone().sub(pose.position));
-      expect(offAxis * RAD2DEG).toBeLessThanOrEqual(MOON_ARRIVAL_MAX_OFFAXIS_DEG + 0.01);
+      expect(offAxis * RAD2DEG).toBeLessThanOrEqual(
+        Math.max(MOON_ARRIVAL_MAX_OFFAXIS_DEG, clearanceDeg) + 0.01,
+      );
+      expect(offAxis * RAD2DEG).toBeLessThanOrEqual(15);
       expect(Math.atan2(b, dist) * RAD2DEG).toBeCloseTo(offAxis * RAD2DEG, 5);
     }
   });
@@ -388,6 +414,24 @@ describe('moonArrivalPose — catalog sweep (all moons, three orbit phases)', ()
     }
   });
 
+  it('every arrival shows a real disc — never the old sub-degree dot', () => {
+    // The floor's whole contract after the render curve: the smallest meshes
+    // (Styx, ~20 km) still subtend ≥ ~2.5° from the chase camera. Cap-bound
+    // arrivals (Charon) legitimately exceed the 5° target; the ceiling is
+    // pinned by the binds-on-apparent-size test below.
+    for (const moon of MOONS) {
+      const inp = catalogInputs(moon.name);
+      const pose = moonArrivalPose(inp);
+      const fwd = pose.aimPoint.clone().sub(pose.position).normalize();
+      const camPos = pose.position
+        .clone()
+        .addScaledVector(fwd, -CAM_DIST_AU)
+        .add(new THREE.Vector3(0, CAM_DIST_AU * 0.45, 0));
+      const apparentDeg = 2 * Math.asin(inp.renderedR / camPos.distanceTo(inp.moonPos)) * RAD2DEG;
+      expect(apparentDeg, `${moon.name}: arrival disc`).toBeGreaterThan(2.4);
+    }
+  });
+
   it('where the apparent-size term binds, the camera really sees the target size', () => {
     const half = (MOON_ARRIVAL_APPARENT_DIAMETER_DEG / 2) * DEG2RAD;
     let checked = 0;
@@ -461,5 +505,90 @@ describe('sunArrivalPose', () => {
     const pose = sunArrivalPose(new THREE.Vector3(0, 0, 0), R);
     expect(pose.position.length()).toBeCloseTo(R * SUN_ARRIVAL_RADII, 12);
     expect(Number.isFinite(pose.position.x)).toBe(true);
+  });
+});
+
+describe('moonArrivalStandoffAU — the pose distance, extracted', () => {
+  it('equals |pose.position − moonPos| across the whole catalog and three phases', () => {
+    // By construction: the pose parks the ship exactly one standoff from the
+    // moon (sun-side or the outward-radial fallback, both unit offsets), so the
+    // extracted distance must reproduce the pose geometry moon-for-moon.
+    for (const moon of MOONS) {
+      for (const angle of [0.7, 2.4, 4.1]) {
+        const inp = catalogInputs(moon.name, angle);
+        const pose = moonArrivalPose(inp);
+        expect(moonArrivalStandoffAU(inp), `${moon.name} @ ${angle}`).toBeCloseTo(
+          pose.position.distanceTo(inp.moonPos),
+          12,
+        );
+      }
+    }
+  });
+});
+
+describe('autopilotGlideCap', () => {
+  const S = 1e-4;
+
+  it('is zero at the standoff and inside it — the cruise comes to rest there', () => {
+    expect(autopilotGlideCap(S, S)).toBe(0);
+    expect(autopilotGlideCap(S * 0.5, S)).toBe(0);
+    expect(autopilotGlideCap(0, S)).toBe(0);
+  });
+
+  it('is K × the distance past the standoff, not the surface', () => {
+    expect(autopilotGlideCap(3 * S, S)).toBeCloseTo(K * 2 * S, 15);
+  });
+
+  it('is continuous and monotonically slower closing in', () => {
+    let prev = Infinity;
+    for (const d of [10 * S, 4 * S, 2 * S, 1.2 * S, 1.01 * S]) {
+      const cap = autopilotGlideCap(d, S);
+      expect(cap).toBeLessThan(prev);
+      expect(cap).toBeGreaterThan(0);
+      prev = cap;
+    }
+  });
+});
+
+describe('autopilotAimBlend', () => {
+  const S = 1e-4;
+
+  it('holds the center outside three standoffs, aims past the limb at one', () => {
+    expect(autopilotAimBlend(3 * S, S)).toBe(0);
+    expect(autopilotAimBlend(4 * S, S)).toBe(0);
+    expect(autopilotAimBlend(S, S)).toBe(1);
+    expect(autopilotAimBlend(S * 0.5, S)).toBe(1);
+  });
+
+  it('ramps smoothly and monotonically as the ship closes', () => {
+    expect(autopilotAimBlend(2 * S, S)).toBeCloseTo(0.5, 12); // smoothstep midpoint
+    let prev = -1;
+    for (const d of [3 * S, 2.5 * S, 2 * S, 1.5 * S, 1.1 * S, S]) {
+      const blend = autopilotAimBlend(d, S);
+      expect(blend).toBeGreaterThanOrEqual(prev);
+      prev = blend;
+    }
+    expect(prev).toBe(1);
+  });
+
+  it('a degenerate zero standoff never divides by zero', () => {
+    expect(autopilotAimBlend(1, 0)).toBe(0);
+  });
+});
+
+describe('autopilotArrived', () => {
+  const S = 1e-4;
+
+  it('latches within the 5% margin, not before', () => {
+    expect(autopilotArrived(S, S)).toBe(true);
+    expect(autopilotArrived(1.05 * S, S)).toBe(true);
+    expect(autopilotArrived(1.06 * S, S)).toBe(false);
+    expect(autopilotArrived(2 * S, S)).toBe(false);
+  });
+
+  it('the glide cap is still positive at the arrival margin, so the ship reaches it', () => {
+    // A parked stop needs a nonzero closing speed at the trigger distance;
+    // exactly at the standoff the cap is zero, so arrival must trigger above it.
+    expect(autopilotGlideCap(1.05 * S, S)).toBeGreaterThan(0);
   });
 });

@@ -22,9 +22,10 @@ import {
 import { PlayerShip } from './PlayerShip';
 import { PlanetLabels, discRadiusPx } from './PlanetLabels';
 import { PlanetariumStore, createDefaultPlanetariumState, type PlanetariumState, type LandedTarget } from './PlanetariumStore';
+import { solarExposureTarget, solarViewportCoverage } from './solarExposure';
 import { computeStats } from './stats';
 import { PLANETARIUM_BODIES, SUN_DATA, type PlanetData } from './planets/planetData';
-import { createMoonMeshes, createShaderWarmupProbes, setWarmEligibleMoonParents, upgradeTextureOnApproach, ATMOSPHERES, ATMOSPHERE_SHELL_SCALES, type MoonMesh, type TextureUpgrade } from './PlanetFactory';
+import { applySunGlowTier, createMoonMeshes, createShaderWarmupProbes, setWarmEligibleMoonParents, upgradeTextureOnApproach, ATMOSPHERES, ATMOSPHERE_SHELL_SCALES, type MoonMesh, type TextureUpgrade } from './PlanetFactory';
 import { bindTextureWarmer, pumpTextureWarmQueue, queueTextureWarm, resetTextureWarmer } from './world/textureWarmer';
 import {
   advancePlanetariumTime,
@@ -72,7 +73,19 @@ import { ShadowVisuals, type GuideSlotInput } from './world/ShadowVisuals';
 import { OBSERVATORY_JUMP_LEAD_MS, stepperSearchFromUtcMs } from './observatoryTime';
 import { findEvent, type EventType } from '../astronomy/ephemeris';
 import { KM_PER_AU } from '../astronomy/constants';
-import { createPlanetariumStarfield, setStarfieldPixelRatio } from './world/starfield';
+import { createPlanetariumStarfield, setStarfieldPixelRatio, starfieldFaintLimitMag } from './world/starfield';
+import { MoonDots } from './world/MoonDots';
+import {
+  MOON_DOT_PARAMS,
+  albedoProxyFromColor,
+  chromaticityRGB,
+  discDiameterPx,
+  moonDotVisual,
+  parentDominanceFade,
+  systemEdgeFade,
+  type MoonDotParams,
+  type MoonDotVisual,
+} from './moonDots';
 import {
   applySunGlareMaskParams,
   type SunGlareMaskParams,
@@ -82,6 +95,7 @@ import { MoonPainter } from './world/MoonPainter';
 import { ProceduralMoonTexturer } from './world/ProceduralMoonTexturer';
 import { captureDeviceTextureCaps } from './world/texturePolicy';
 import { planetshineIntensity } from './world/planetshine';
+import { smoothShadeFraction } from './world/shadeSmoothing';
 import { debugError } from '../shared/debug';
 import { GyroSteering } from './input/GyroSteering';
 import { SurfaceLook } from './input/SurfaceLook';
@@ -115,7 +129,13 @@ import {
 } from './surfaceView';
 import { DEG2RAD } from '../shared/math/angles';
 import { SUN_GLARE_EXTENT_SOLAR_RADII, SUN_VEIL_BETA, SUN_VEIL_SCALE_H } from '../shared/shaders/sun';
-import { landedFrameCamDistAU, landedMinDistanceAU, LANDED_NEAR_AU } from './landedView';
+import { landedFrameCamDistAU, landedMinDistanceAU, landedNearAU, LANDED_NEAR_AU } from './landedView';
+import {
+  MOON_RENDER_ANCHOR_RATIO,
+  MOON_RENDER_ANCHOR_RATIO_OBSERVING,
+  MOON_RENDER_GAMMA,
+  renderedMoonRadiusAU,
+} from './moonRenderSize';
 import {
   advanceSunEmergenceFlash,
   circleOcclusionFraction,
@@ -150,10 +170,14 @@ import { RING_CONFIGS, type RingStyle } from './planets/rings';
 import { filterDeckRows, groupDeckBodies, observeArrivalAction, type DeckRow } from './deckLogic';
 import {
   advanceBodyCap,
+  autopilotAimBlend,
+  autopilotArrived,
+  autopilotGlideCap,
   governedSpeedCap,
   initialBodyCapState,
   moonArrivalCameraLookWeight,
   moonArrivalPose,
+  moonArrivalStandoffAU,
   moonCollisionRadius,
   sunArrivalPose,
   BODY_APPROACH_V_MIN_AU_S,
@@ -166,6 +190,7 @@ import {
   SUN_APPROACH_SURFACE_RADII,
   SUN_ARRIVAL_RADII,
   type BodyCapState,
+  type MoonArrivalInputs,
 } from './arrivalLogic';
 import {
   canStartTutorial,
@@ -296,16 +321,10 @@ export class PlanetariumMode {
   // floor) lives in cruiseView.ts as one derived chain.
   private static readonly UI_REFRESH_INTERVAL_S = 1 / 8;
   private static readonly SCENE_NORTH = new THREE.Vector3(0, 1, 0);
-  /** A moon's mesh never renders below this fraction of its parent's radius, so
-   *  tiny moons stay visible; the landed camera frames off the same inflated size.
-   *  This is the flythrough/default floor — see moonRenderFloorRatio for how it
-   *  lowers while observing a planet. */
-  private static readonly MOON_MIN_RENDER_RATIO = 0.05;
-  /** Lower floor used only while observing a planet: the moons shrink toward
-   *  their true relative sizes so the system reads honestly instead of every
-   *  moon pinning to one size. At ~2.5% the big moons (Galileans, Titan, the
-   *  Uranian majors) separate by true size while genuine specks stay visible. */
-  private static readonly OBSERVE_PLANET_MOON_FLOOR = 0.025;
+  // Moon rendered sizes (anchor ratios + γ curve) live in moonRenderSize.ts
+  // as the single sizing policy; the state-dependent anchor pick is
+  // moonRenderAnchorRatio, and every controller consumer resolves through
+  // renderedMoonSizeAU so the dev γ override reaches all of them.
   /** Ecliptic north in the scene's equatorial frame (tidal-lock roll reference for Earth's Moon). */
   private static readonly ECLIPTIC_NORTH = eclipticToEquatorial(new THREE.Vector3(0, 1, 0));
   private static readonly EARTH_DETAIL_MIN_DISTANCE_AU = 0.03;
@@ -468,9 +487,38 @@ export class PlanetariumMode {
   // Provenance: did the user pick the target, or is it a legacy-save leftover?
   // Only user-engaged targets render the "→ name" chip or survive a landing.
   private autopilotUserEngaged = false;
+  /** Cached flyby aim for the autopilot blend zone. `moonArrivalPose` builds a
+   *  dozen vectors per call, and the pose depends only on the moon/parent
+   *  state — so recompute when the moon has moved a couple percent of the
+   *  standoff (every frame under warp, almost never at 1×), not per frame. */
+  private autopilotAim = new THREE.Vector3();
+  private autopilotAimMoonPos = new THREE.Vector3();
+  private autopilotAimFor: string | null = null;
 
   // Moon world positions in AU (true positions, not offset)
   private moonWorldPositions = new Map<string, { x: number; y: number; z: number }>();
+  /** Photometric sub-pixel moon dots (world/MoonDots) + their live knobs. The
+   *  buffers fill in updateMoonDotsForCamera after the final camera pose. */
+  private moonDots: MoonDots | null = null;
+  private moonDotParams: MoonDotParams = { ...MOON_DOT_PARAMS };
+  /** Catalog faint-limit magnitude the dots' faint-end handoff lines up to
+   *  (the starfield's dimmest star); computed once. */
+  private starFaintLimitMag = 6.5;
+  /** Per-system inward fade [0,1], cached in updateMoonPositions where the
+   *  player distance / visibility threshold are in hand. */
+  private moonSystemEdgeFade = new Map<string, number>();
+  private tmpDotMoonPos = new THREE.Vector3();
+  /** Parent planet's world position for the dot pass, seeded once per planet so
+   *  the per-moon proximity release reads it without clobbering tmpDotMoonPos. */
+  private tmpDotParentPos = new THREE.Vector3();
+  private tmpDotChroma = { r: 1, g: 1, b: 1 };
+  private tmpDotVisual: MoonDotVisual = { intensity: 0, alpha: 0, sizePx: 0, brightness: 0, magnitude: 0 };
+  /** The moon a nav lock is aimed at, kept alive past autopilot disengage /
+   *  arrival-look drop so its dot floor and label exemption survive manual
+   *  flight to the moon. Session-only, never persisted; cleared on a jump/engage
+   *  to a different body, landing, deactivate, and on leaving the parent's
+   *  system threshold (see updateMoonPositions / currentDotTargetMoon). */
+  private dotNavMoon: { name: string; parentPlanet: string } | null = null;
   /** The latest moon-jump target, governed and collision-checked by name
    *  while its mesh may still be unpainted behind the arrival veil (the
    *  visibility-keyed set can't see it there). Drops once the mesh shows;
@@ -490,6 +538,19 @@ export class PlanetariumMode {
     receding: boolean;
   } | null = null;
   private tmpMoonArrivalLook = new THREE.Vector3();
+  /** Reused arrival-pose inputs for the engaged moon autopilot: refilled from
+   *  live positions/scale each frame (resolveAutopilotMoonInputs) so the glide
+   *  cap, aim blend, and arrival test allocate nothing in steady flight. */
+  private tmpAutopilotInputs: MoonArrivalInputs = {
+    moonPos: new THREE.Vector3(),
+    parentPos: new THREE.Vector3(),
+    orbitR: 0,
+    renderedR: 0,
+    parentCollision: 0,
+    parentClearance: 0,
+    camDist: CRUISE_CAM_DIST_AU,
+    shipClearance: SHIP_CLEARANCE_AU,
+  };
   /** Body-proximity governor state: the eased candidate/applied cap plus the
    *  engaged latch and its clear-hold (see arrivalLogic.advanceBodyCap).
    *  Reset to initialBodyCapState() on every flight discontinuity — jump,
@@ -532,6 +593,15 @@ export class PlanetariumMode {
   // skipped so the camera can sit a few radii from a body without being pushed
   // back out past its moon system.
   private devFreeCamera = false;
+
+  // Near-Sun coverage meter — telemetry for the dev bridge only. The exposure
+  // that actually reaches the render is sunExposure: updateSunShader adapts it
+  // (asymmetric clamp/recover, interior-dive tier, eclipse fraction) and
+  // takeExposureTarget() hands the pre-smoothed value to main.ts, the sole
+  // renderer.toneMappingExposure writer, which pins 1 in every other mode.
+  private exposureTarget = 1;
+  private exposureCoverage = 0;
+  private tmpSunView = new THREE.Vector3();
 
   // Touch and gyro flight state
   private touchYaw = 0;
@@ -632,6 +702,7 @@ export class PlanetariumMode {
     onScreen: boolean;
     priorityPx: number;
     halfW: number;
+    isTarget: boolean;
   }> = [];
   private resumePrompt = new PlanetariumResumePrompt();
   private helpModal = new PlanetariumHelpModal();
@@ -866,6 +937,9 @@ export class PlanetariumMode {
     const glCanvas = renderer.domElement;
     glCanvas.addEventListener('webglcontextlost', () => {
       this.invalidateRtPaintedMoons(this.moonTexturer.onContextLost());
+      // Dots gate on painted moons — blank them with the same invalidation so a
+      // stale dot can't outlive the mesh it belonged to.
+      this.moonDots?.clear();
     });
     glCanvas.addEventListener('webglcontextrestored', () => {
       this.moonTexturer.onContextRestored();
@@ -1124,6 +1198,19 @@ export class PlanetariumMode {
       performance.measure('plm:starfield', 'plm:starfield:start');
     }
 
+    // Create the photometric moon-dot layer — one point per catalog moon, in
+    // the fixed planet→moon iteration order the per-frame fill reuses. Recreated
+    // on each activation (disposed on deactivate) like the planet labels.
+    if (!this.moonDots) {
+      this.starFaintLimitMag = starfieldFaintLimitMag();
+      let dotCount = 0;
+      for (const planet of this.solarSystem.planets) {
+        dotCount += this.planetMoons.get(planet.data.name)?.length ?? 0;
+      }
+      this.moonDots = new MoonDots(dotCount, this.renderer.getPixelRatio());
+      this.scene.add(this.moonDots.points);
+    }
+
     if (this.preToolState) {
       // Returning from the volume-compare tool — restore the exact pre-tool
       // journey (landed body, camera, clock) captured on entry, not the store's
@@ -1241,6 +1328,7 @@ export class PlanetariumMode {
 
   deactivate(): void {
     this.moonArrivalCameraLook = null;
+    this.dotNavMoon = null;
     // A live tutorial hands the pre-tutorial state back first, synchronously — the
     // teardown below (excursion drop, landed exit, save) then applies to the
     // restored journey exactly as it would for a non-tutorialing player.
@@ -1311,6 +1399,13 @@ export class PlanetariumMode {
       this.planetLabels = null;
     }
 
+    // Dispose the moon-dot layer (geometry + material); recreated on activate.
+    if (this.moonDots) {
+      this.scene.remove(this.moonDots.points);
+      this.moonDots.dispose();
+      this.moonDots = null;
+    }
+
     if (this.moonLabelContainer) {
       this.moonLabelContainer.style.display = 'none';
     }
@@ -1326,6 +1421,7 @@ export class PlanetariumMode {
     }
     this.player.group.visible = visible && this.showShip;
     if (this.starfield) this.starfield.visible = visible;
+    if (this.moonDots) this.moonDots.setVisible(visible);
     if (this.constellations) this.constellations.setVisible(visible && this.showConstellations);
   }
 
@@ -1334,6 +1430,7 @@ export class PlanetariumMode {
    *  track the renderer's ratio, so retune them to the new value. */
   onResize(): void {
     if (this.starfield) setStarfieldPixelRatio(this.starfield, this.renderer.getPixelRatio());
+    if (this.moonDots) this.moonDots.setPixelRatio(this.renderer.getPixelRatio());
   }
 
   update(dt: number): void {
@@ -1350,6 +1447,10 @@ export class PlanetariumMode {
 
     // Landed mode: camera orbits body, skip flight controls
     if (this.landedOn) {
+      // Coverage meter reads neutral while landed (telemetry only — the
+      // driving exposure keeps adapting in updateSunShader, which runs in the
+      // landed pipeline too so Observatory sun views stay protected).
+      this.exposureTarget = 1;
       this.updateLanded(dt);
       return;
     }
@@ -1396,6 +1497,23 @@ export class PlanetariumMode {
       dt,
     );
     this.player.speedCapAUPerS = this.bodyCap.applied;
+
+    // Autopilot glide: bring the cruise to rest at the arrival standoff, not
+    // the collision shell, by capping closing speed at K × distance-past-the-
+    // standoff. Applied AFTER the governor's own cap and OUTSIDE the override
+    // latch (a plain min on the effective speed) — the pilot's contract is that
+    // you leave the glide by disengaging, never by out-throttling it.
+    if (this.autopilot && this.autopilotTarget) {
+      const inp = this.resolveAutopilotMoonInputs(this.autopilotTarget);
+      if (inp) {
+        const dx = inp.moonPos.x - this.player.posX;
+        const dy = inp.moonPos.y - this.player.posY;
+        const dz = inp.moonPos.z - this.player.posZ;
+        const dist = Math.sqrt(dx * dx + dy * dy + dz * dz);
+        const glide = autopilotGlideCap(dist, moonArrivalStandoffAU(inp));
+        if (glide < this.player.speedCapAUPerS) this.player.speedCapAUPerS = glide;
+      }
+    }
 
     if (!isScriptedTransfer) {
       this.prevPlayerPos.set(this.player.posX, this.player.posY, this.player.posZ);
@@ -1470,10 +1588,30 @@ export class PlanetariumMode {
     // every label trails the camera by a frame during orbit drags and fast pans.
     this.camera.updateMatrixWorld();
 
-    // Occlusion pipeline: planet discs → moon + ship discs → labels + markers.
-    // Runs when either the HTML labels or the marker sprites are on. The
-    // occluder passes only feed label culling, so markers-only (labels off)
-    // skips them — the sprites depth-test on the GPU.
+    // Photometric moon dots: fill the buffers now the cruise camera is settled
+    // (safety escape + arrival look applied), before the label pass reads each
+    // dot's screen contribution for its sub-pixel gating.
+    this.updateMoonDotsForCamera();
+
+    // Coverage meter: how much of the frame the solar disc covers, read from
+    // this frame's final camera pose. Telemetry for devExposurePeek() only —
+    // the exposure that reaches the render is updateSunShader's adapted
+    // sunExposure. The math is scene-space and reads the live FOV/aspect,
+    // never a cached copy (headless framing rewrites both).
+    this.solarSystem.sun.getWorldPosition(this.tmpSunView);
+    this.tmpSunView.applyMatrix4(this.camera.matrixWorldInverse);
+    this.exposureCoverage = solarViewportCoverage(
+      this.tmpSunView.x, this.tmpSunView.y, this.tmpSunView.z,
+      SUN_DATA.radiusAU,
+      this.camera.fov * DEG2RAD,
+      this.camera.aspect,
+    );
+    this.exposureTarget = solarExposureTarget(this.exposureCoverage);
+
+    // Occlusion pipeline: planet discs → Sun + moon + ship discs → labels +
+    // markers. The occluder passes run whenever either consumer is on: marker
+    // sprites render without a depth test (see the material comment in
+    // PlanetLabels), so this analytic disc set is their only occlusion.
     if (this.planetLabels && (this.showBodyLabels || this.showBodyMarkers)) {
       const scenePositions = new Map<string, { x: number; y: number; z: number }>();
       for (const planet of this.solarSystem.planets) {
@@ -1483,10 +1621,8 @@ export class PlanetariumMode {
           z: planet.group.position.z,
         });
       }
-      if (this.showBodyLabels) {
-        this.planetLabels.collectForegroundDiscs(scenePositions, this.renderer);
-        this.collectDynamicOccluders();
-      }
+      this.planetLabels.collectForegroundDiscs(scenePositions, this.renderer);
+      this.collectDynamicOccluders();
       // Main (flight) path: landedOn is null here — narrowed by early return above.
       this.planetLabels.renderLabels(scenePositions, { x: 0, y: 0, z: 0 }, this.renderer, {
         showMarkers: this.showBodyMarkers,
@@ -1588,6 +1724,7 @@ export class PlanetariumMode {
     // texels start to soften, with lead time to fetch 4K before it grows.
     const UPGRADE_AT = 0.15;
     const cam = this.camera.position;
+    const canvasH = this.renderer.domElement.clientHeight;
     for (const planet of this.solarSystem.planets) {
       const up = planet.textureUpgrade;
       if (!up) continue;
@@ -1595,17 +1732,41 @@ export class PlanetariumMode {
       const dist = Math.max(this.texLODTmp.distanceTo(cam), 1e-6);
       if ((planet.data.radiusAU * 2) / dist / fovRad > UPGRADE_AT) upgradeTextureOnApproach(up);
     }
+    // Cruise re-renders a procedural moon's texture sharper on close approach;
+    // the landed/Observatory path already does this on observe, so gate it to
+    // cruise. Throttled to one successful upgrade per frame — GPU paint is
+    // sub-ms, but don't burst a whole system's worth in one frame.
+    const allowMoonTexUpgrade = !this.landedOn;
+    let moonTexUpgraded = false;
     for (const moons of this.planetMoons.values()) {
       for (const m of moons) {
-        const up = m.textureUpgrade;
-        if (!up) continue;
         // Hidden moons sit at their parent's center (updateMoonPositions skips
-        // them) — a fake position the trigger must never measure. An invisible
-        // moon can't legitimately span 15% of the viewport anyway.
+        // them) — a fake position the triggers must never measure. An invisible
+        // moon can't legitimately span the viewport anyway.
         if (!m.mesh.visible) continue;
         m.mesh.getWorldPosition(this.texLODTmp);
         const dist = Math.max(this.texLODTmp.distanceTo(cam), 1e-6);
-        if ((m.data.radiusAU * 2) / dist / fovRad > UPGRADE_AT) upgradeTextureOnApproach(up);
+        // Rendered size (mesh scale carries the render-curve inflation): the
+        // triggers must measure the disc actually on screen.
+        const renderedR = m.data.radiusAU * m.mesh.scale.x;
+
+        // Most procedural moons carry no 4K TextureUpgrade handle, so the disc
+        // threshold sits above the photo-upgrade guard. `upgrade` returns false
+        // for a photo / already-sharp / CPU-painted moon, leaving the frame's
+        // slot for a real one (no starvation).
+        if (
+          allowMoonTexUpgrade &&
+          !moonTexUpgraded &&
+          discDiameterPx(renderedR, dist, this.camera.fov, canvasH) > this.moonDotParams.texUpgradeDiscPx
+        ) {
+          if (this.moonTexturer.upgrade(m, PlanetariumMode.OBSERVE_MOON_TEXTURE_WIDTH)) {
+            moonTexUpgraded = true;
+          }
+        }
+
+        const up = m.textureUpgrade;
+        if (!up) continue;
+        if ((renderedR * 2) / dist / fovRad > UPGRADE_AT) upgradeTextureOnApproach(up);
       }
     }
   }
@@ -1679,6 +1840,150 @@ export class PlanetariumMode {
     // moon→origin gives a smooth receding handoff without moving the chase rig.
     this.tmpMoonArrivalLook.multiplyScalar(weight);
     this.camera.lookAt(this.tmpMoonArrivalLook);
+  }
+
+  /** The moon whose dot never fully fades and whose label wins de-overlap: the
+   *  just-jumped moon the camera is tracking, an actively engaged moon
+   *  autopilot, or — once those drop (manual input disengages the autopilot and
+   *  nulls the arrival look) — the retained nav moon, so the floor and label
+   *  survive a hand-flown final approach. `dotNavMoon` is cleared when you jump/
+   *  engage elsewhere, land, deactivate, or leave the parent's system. */
+  private currentDotTargetMoon(): string | null {
+    if (this.moonArrivalCameraLook) return this.moonArrivalCameraLook.name;
+    if (
+      this.autopilot &&
+      this.autopilotUserEngaged &&
+      this.autopilotTarget?.type === 'moon'
+    ) {
+      return this.autopilotTarget.name;
+    }
+    return this.dotNavMoon?.name ?? null;
+  }
+
+  /**
+   * Fill the moon-dot buffers for this frame's FINAL camera pose. Runs after the
+   * camera is settled (cruise safety + arrival look; the landed/surface re-pin),
+   * reading the scene positions, rendered sizes, and eclipse shading cached in
+   * updateMoonPositions. A sub-pixel lit moon becomes a star-scale point at its
+   * apparent magnitude; the point crossfades out as the real disc resolves.
+   * Hidden or landed-on moons write alpha 0. Zero steady-state allocation.
+   */
+  private updateMoonDotsForCamera(): void {
+    if (!this.moonDots || !this.solarSystem) return;
+    const canvasH = this.renderer.domElement.clientHeight;
+    const fovDeg = this.camera.fov;
+    const params = this.moonDotParams;
+    const sun = this.solarSystem.sun.position;
+    const cam = this.camera.position;
+    const targetMoon = this.currentDotTargetMoon();
+    const landedMoonName = this.landedOn?.type === 'moon' ? this.landedOn.name : null;
+
+    let idx = 0;
+    for (const planet of this.solarSystem.planets) {
+      const moons = this.planetMoons.get(planet.data.name);
+      if (!moons) continue;
+      // Two independent fade slots now (they can't be pre-multiplied per system,
+      // because the parent gate carries a per-moon proximity release):
+      //  · systemFade — no one-frame constellations at the visibility threshold.
+      //  · parentFade — no bright-star points beside a planet that is itself
+      //    only a few pixels, UNLESS you are inside a given moon's own orbit
+      //    neighborhood (then it shows on its photometric merits).
+      // Seed the parent's world position unconditionally (even at systemFade 0)
+      // so the per-moon proximity ratio never reads a stale parent.
+      const systemFade = this.moonSystemEdgeFade.get(planet.data.name) ?? 0;
+      planet.group.getWorldPosition(this.tmpDotParentPos);
+      const parentDiscPx = discDiameterPx(
+        planet.data.radiusAU,
+        this.tmpDotParentPos.distanceTo(cam),
+        fovDeg,
+        canvasH,
+      );
+      for (const m of moons) {
+        const i = idx++;
+        // Same gate as the mesh: only a shown (visible & painted) moon dots, and
+        // never the body you're standing on — its disc fills the sky, so the
+        // crossfade would kill the dot anyway; skip the math.
+        if (!m.mesh.visible || m.data.name === landedMoonName) {
+          this.moonDots.hide(i);
+          m.dotScreenAlpha = 0;
+          continue;
+        }
+
+        m.mesh.getWorldPosition(this.tmpDotMoonPos);
+        const dx = this.tmpDotMoonPos.x - cam.x;
+        const dy = this.tmpDotMoonPos.y - cam.y;
+        const dz = this.tmpDotMoonPos.z - cam.z;
+        const distAU = Math.sqrt(dx * dx + dy * dy + dz * dz);
+        // moon→sun (scene) = sun − moon; its length is the moon's heliocentric
+        // distance (the Sun sits at the world origin).
+        const sdx = sun.x - this.tmpDotMoonPos.x;
+        const sdy = sun.y - this.tmpDotMoonPos.y;
+        const sdz = sun.z - this.tmpDotMoonPos.z;
+        const sunDistAU = Math.sqrt(sdx * sdx + sdy * sdy + sdz * sdz) || 1e-9;
+        // phaseCos = cos(sun–moon–observer): moon→cam = −(dx,dy,dz).
+        const phaseCos =
+          distAU > 0 ? -(sdx * dx + sdy * dy + sdz * dz) / (sunDistAU * distAU) : 1;
+
+        const renderedR = m.data.radiusAU * m.mesh.scale.x;
+        const discPx = discDiameterPx(renderedR, distAU, fovDeg, canvasH);
+        const albedo = albedoProxyFromColor(m.data.color, params);
+        const shade = m.dotSunVisibleFraction ?? 1;
+
+        // Proximity release: camera→moon distance over the moon's own orbital
+        // radius (|moon − parent|). Inside its neighborhood the parent gate
+        // opens for this moon however small the parent's disc; outside its orbit
+        // shell the gate holds.
+        const moonOrbitR = this.tmpDotMoonPos.distanceTo(this.tmpDotParentPos);
+        const proximityRatio = moonOrbitR > 0 ? distAU / moonOrbitR : Infinity;
+        const parentFade = parentDominanceFade(parentDiscPx, proximityRatio, params);
+
+        const v = moonDotVisual(
+          renderedR,
+          distAU,
+          sunDistAU,
+          phaseCos,
+          albedo,
+          shade,
+          discPx,
+          targetMoon === m.data.name,
+          systemFade,
+          parentFade,
+          this.starFaintLimitMag,
+          params,
+          undefined,
+          this.tmpDotVisual,
+        );
+        m.dotScreenAlpha = v.alpha;
+        m.dotScreenSizePx = v.sizePx;
+
+        if (v.alpha <= 0) {
+          this.moonDots.hide(i);
+          continue;
+        }
+
+        // Place the point at the moon's camera-facing surface + a small epsilon,
+        // so the opaque mesh's front fragments can't depth-kill the dot mid
+        // crossfade; depthTest stays on, so planets and nearer moons still
+        // occlude it. toCam = −(dx,dy,dz)/dist.
+        const surf = (renderedR * 1.05) / Math.max(distAU, 1e-12);
+        const px = this.tmpDotMoonPos.x - dx * surf;
+        const py = this.tmpDotMoonPos.y - dy * surf;
+        const pz = this.tmpDotMoonPos.z - dz * surf;
+        const chroma = chromaticityRGB(m.data.color, this.tmpDotChroma);
+        this.moonDots.setDot(
+          i,
+          px,
+          py,
+          pz,
+          chroma.r * v.brightness,
+          chroma.g * v.brightness,
+          chroma.b * v.brightness,
+          v.sizePx,
+          v.alpha,
+        );
+      }
+    }
+    this.moonDots.flush();
   }
 
   /**
@@ -1796,10 +2101,12 @@ export class PlanetariumMode {
 
   /**
    * Rendered radius (AU) of the landed body as drawn in orbit view: planets at
-   * true size, small moons inflated to a floor fraction of their parent (the
-   * same scaling updateMoonPositions applies so they stay visible). The landed
-   * camera frames off this, so a tiny moon's inflated mesh fills the view like
-   * any other body and the camera never seats itself inside the mesh.
+   * true size, small moons inflated through the render curve (the same sizing
+   * updateMoonPositions applies, so they stay visible). The landed camera
+   * frames off this, so a small moon's inflated mesh fills the view like any
+   * other body and the camera never seats itself inside the mesh. Uses the
+   * flythrough anchor deliberately, not the state selector: the framing target
+   * must stay stable while surface view (anchor 0) is active.
    */
   private getLandedBodyRenderedRadiusAU(): number {
     const trueRadiusAU = this.getLandedBodyRadiusAU();
@@ -1807,36 +2114,58 @@ export class PlanetariumMode {
     const parentName = this.landedOn.parentPlanet;
     const parent = PLANETARIUM_BODIES.find(b => b.name === parentName);
     if (!parent) return trueRadiusAU;
-    return Math.max(trueRadiusAU, PlanetariumMode.MOON_MIN_RENDER_RATIO * parent.radiusAU);
+    return this.renderedMoonSizeAU(trueRadiusAU, parent.radiusAU, MOON_RENDER_ANCHOR_RATIO);
   }
 
   /**
-   * Rendered-size floor (fraction of the parent's radius) for a moon in
-   * `parentName`'s system, given the current landed/view state. The floor
-   * inflates moons too small to see — most are a sliver of their giant parent,
-   * so without it they'd be sub-pixel — but the level depends on what you're
-   * looking at:
-   *  - Flying, or any system you're not landed in: the full flythrough floor, so
-   *    every moon stays a findable speck as you pass.
-   *  - Observing the parent PLANET: a smaller floor, so the moons shrink toward
-   *    their true relative sizes (the big ones separate instead of all pinning
-   *    to one size) — you're focused on the planet and the system should read
-   *    honestly.
-   *  - Observing a MOON: the flythrough floor (unchanged), so the siblings stay
-   *    findable around the one being inspected.
-   *  - Surface view: no floor — true angular sizes, a moon crossing the Sun must
-   *    be its real size.
-   * The floor only ever changes across a landing/leave/swap/surface transition,
-   * each of which reframes the camera, so the resize is never seen in-place.
+   * Anchor ratio (fraction of the parent's radius) for rendered moon sizes in
+   * `parentName`'s system, given the current landed/view state. Moons below
+   * the anchor inflate toward it on the moonRenderSize curve — most are a
+   * sliver of their giant parent and would be sub-pixel at true scale — and
+   * the anchor depends on what you're looking at:
+   *  - Flying, or any system you're not landed in: the full flythrough anchor,
+   *    so every moon stays a findable speck as you pass.
+   *  - Observing the parent PLANET: a smaller anchor — you're focused on the
+   *    system, and it should read closer to honest relative sizes.
+   *  - Observing a MOON: the flythrough anchor (unchanged), so the siblings
+   *    stay findable around the one being inspected.
+   *  - Surface view: no inflation — true angular sizes, a moon crossing the
+   *    Sun must be its real size.
+   * The anchor only ever changes across a landing/leave/swap/surface
+   * transition, each of which reframes the camera in the same frame, so the
+   * resize always lands inside a hard cut.
    * Centralised so the drawn mesh and the label-occlusion discs stay in sync.
    */
-  private moonRenderFloorRatio(parentName: string): number {
+  private moonRenderAnchorRatio(parentName: string): number {
     if (parentName !== this.observatoryParentPlanetName()) {
-      return PlanetariumMode.MOON_MIN_RENDER_RATIO; // flythrough / other systems
+      return MOON_RENDER_ANCHOR_RATIO; // flythrough / other systems
     }
     if (this.landedView === 'surface') return 0; // true angular sizes
-    if (this.landedOn?.type === 'planet') return PlanetariumMode.OBSERVE_PLANET_MOON_FLOOR;
-    return PlanetariumMode.MOON_MIN_RENDER_RATIO; // observing a moon: unchanged
+    if (this.landedOn?.type === 'planet') return MOON_RENDER_ANCHOR_RATIO_OBSERVING;
+    return MOON_RENDER_ANCHOR_RATIO; // observing a moon: unchanged
+  }
+
+  /** Dev-bridge γ override for live curve tuning; null = the shipped constant. */
+  private devMoonGamma: number | null = null;
+
+  /** Every controller consumer of a rendered moon size resolves through here,
+   *  so the dev γ override reaches the mesh, labels, framing, and arrivals
+   *  alike (meshes re-scale on the next updateMoonPositions pass). */
+  private renderedMoonSizeAU(trueRadiusAU: number, parentRadiusAU: number, anchorRatio: number): number {
+    return renderedMoonRadiusAU(trueRadiusAU, parentRadiusAU, anchorRatio, this.devMoonGamma ?? MOON_RENDER_GAMMA);
+  }
+
+  devSetMoonSizeGamma(gamma: number | null): void {
+    this.devMoonGamma = gamma;
+  }
+
+  /** Dev-bridge live tuning of the moon-dot knobs (photometry, crossfade window,
+   *  target floor, edge fade, and the texture-upgrade disc threshold). A partial
+   *  merges into the running copy; null resets to the shipped defaults. */
+  devSetMoonDotParams(partial: Partial<MoonDotParams> | null): void {
+    this.moonDotParams = partial === null
+      ? { ...MOON_DOT_PARAMS }
+      : { ...this.moonDotParams, ...partial };
   }
 
   /**
@@ -1999,6 +2328,7 @@ export class PlanetariumMode {
     if (!this.solarSystem) return;
     const PLANETSHINE_GAIN = 500; // lift faint physical planetshine to a visible night-side glow
     const PLANETSHINE_MAX = 0.12; // cap well below daylight; large/near parents (Jupiter) sit at the cap
+    const shadeNowMs = performance.now(); // wall clock for the applied-shading limiter
     // Nearest system with textures still queued — the background drain paints it
     // first (you're likeliest to reach it next). Tracked across the planet loop.
     let nearestPending: string | null = null;
@@ -2016,6 +2346,21 @@ export class PlanetariumMode {
       const threshold = this.getMoonSystemThresholdAU(planet.data.radiusAU, moons);
       const visible = distToPlayer < threshold;
       const parentR = planet.data.radiusAU;
+
+      // Leaving the retained nav moon's parent system drops the retention: the
+      // dot floor / label exemption shouldn't outlive the system going out of
+      // range. Checked here where the threshold is already computed (no cost).
+      if (this.dotNavMoon?.parentPlanet === planet.data.name && !visible) {
+        this.dotNavMoon = null;
+      }
+
+      // Cache the system-edge fade for the dot pass: dots ramp in over the last
+      // slice of the visibility threshold so a system never appears as a
+      // one-frame constellation. Zeroed when the system is out of range.
+      this.moonSystemEdgeFade.set(
+        planet.data.name,
+        visible ? systemEdgeFade(distToPlayer, threshold, this.moonDotParams) : 0,
+      );
 
       // Moon-shadow casters fed to the parent surface shader (Io on Jupiter,
       // etc.): reset per frame, accumulate in the loop below. Pick the largest
@@ -2081,7 +2426,27 @@ export class PlanetariumMode {
           m.data.radiusKm,
           this.moonShading,
         );
+        // Wall-clock limiter on the APPLIED fraction: at warp an immersion
+        // compresses below one frame and the raw value strobes bright↔black;
+        // the shown tint ramps instead. The blood-moon branch stays held while
+        // the smoothed value is under its red floor — the branches only meet
+        // continuously above it.
+        const smoothedShade = smoothShadeFraction(
+          this.moonShading.sunVisibleFraction,
+          m.shadeSmoothed,
+          shadeNowMs - (m.shadeStampMs ?? 0),
+        );
+        m.shadeSmoothed = smoothedShade;
+        m.shadeStampMs = shadeNowMs;
+        m.shadeUmbraSticky =
+          this.moonShading.inUmbra ||
+          (m.shadeUmbraSticky === true && smoothedShade < PlanetariumMode.BLOOD_MOON_FLOOR_R);
+        this.moonShading.sunVisibleFraction = smoothedShade;
+        this.moonShading.inUmbra = m.shadeUmbraSticky;
         this.applyMoonShading(m, this.moonShading);
+        // Cache this frame's sun-visible fraction so the dot pass reuses it for
+        // eclipse dimming instead of recomputing the shading geometry.
+        m.dotSunVisibleFraction = smoothedShade;
 
         if (m.fx) {
           m.fx.uSunDirWorld.value
@@ -2108,18 +2473,15 @@ export class PlanetariumMode {
           z: wp.z + offset.z,
         });
 
-        const realRatio = m.data.radiusAU / parentR;
-        // Inflate moons below the floor up to it; draw the rest true-size. The
-        // floor varies with what you're observing (see moonRenderFloorRatio):
-        // smaller when focused on the parent planet so the system reads honestly,
-        // none in surface view where angular sizes must be real (an Io silhouette
-        // on the Sun must be Io-sized).
-        const floor = this.moonRenderFloorRatio(planet.data.name);
-        if (realRatio < floor) {
-          m.mesh.scale.setScalar(floor / realRatio);
-        } else {
-          m.mesh.scale.setScalar(1);
-        }
+        // Rendered size: moons below the anchor inflate toward it on the
+        // compressive curve (size ordering survives — small moons no longer
+        // pin to one identical marble); the rest draw true-size. The anchor
+        // varies with what you're observing (see moonRenderAnchorRatio):
+        // smaller when focused on the parent planet, none in surface view
+        // where angular sizes must be real (an Io silhouette on the Sun must
+        // be Io-sized).
+        const anchor = this.moonRenderAnchorRatio(planet.data.name);
+        m.mesh.scale.setScalar(this.renderedMoonSizeAU(m.data.radiusAU, parentR, anchor) / m.data.radiusAU);
 
         // Feed this moon as a shadow caster on the parent: one of the largest
         // few, and only if its umbra actually reaches the surface (mr > along*tan).
@@ -2163,12 +2525,21 @@ export class PlanetariumMode {
    * atmosphere we model. The branches meet continuously: at first umbral
    * contact the sun-visible fraction is still above every red-floor channel.
    */
+  /** Red channel of the blood-moon floor: above this the red and gray branches
+   *  agree, so it is also the release level for the smoothed-shading umbra
+   *  hold. */
+  private static readonly BLOOD_MOON_FLOOR_R = 0.3;
+
   private applyMoonShading(m: MoonMesh, shading: MoonShadingState) {
     const material = m.mesh.material as THREE.MeshStandardMaterial;
     const fraction = shading.sunVisibleFraction;
     const isEarthMoon = m.data.name === 'Moon' && m.data.parentPlanet === 'Earth';
     if (isEarthMoon && shading.inUmbra) {
-      material.color.setRGB(Math.max(fraction, 0.3), Math.max(fraction, 0.07), Math.max(fraction, 0.05));
+      material.color.setRGB(
+        Math.max(fraction, PlanetariumMode.BLOOD_MOON_FLOOR_R),
+        Math.max(fraction, 0.07),
+        Math.max(fraction, 0.05),
+      );
     } else {
       material.color.setScalar(Math.max(fraction, 0.03));
     }
@@ -2295,11 +2666,12 @@ export class PlanetariumMode {
   }
 
   /**
-   * Second pass: contribute foreground discs for visible moons and the
-   * player ship to `planetLabels`, so any label rendered afterwards (planet,
-   * moon, sun) is occluded when it would sit on top of one of them. Must
-   * run AFTER `planetLabels.collectForegroundDiscs()` and BEFORE any label
-   * rendering (`renderLabels`, `renderMoonLabels`, `updateSunLabel`).
+   * Second pass: contribute foreground discs for the Sun, visible moons and
+   * the player ship to `planetLabels`, so any label or marker rendered
+   * afterwards (planet, moon, sun) is occluded when it would sit on top of
+   * one of them. Must run AFTER `planetLabels.collectForegroundDiscs()` and
+   * BEFORE any label rendering (`renderLabels`, `renderMoonLabels`,
+   * `updateSunLabel`).
    */
   private collectDynamicOccluders() {
     if (!this.planetLabels || !this.solarSystem) return;
@@ -2309,6 +2681,23 @@ export class PlanetariumMode {
     const camY = this.camera.position.y;
     const camZ = this.camera.position.z;
     const tempV = new THREE.Vector3();
+
+    // The Sun. No angular-size gate: markers no longer depth-test, so this
+    // disc is the only thing keeping a far planet's marker (and label) from
+    // drawing over the solar disc — however few pixels it covers. The Sun
+    // label itself is safe: equal camera distance short-circuits the test.
+    {
+      const sunPos = this.solarSystem.sun.position;
+      const distFromCamera = this.camera.position.distanceTo(sunPos);
+      const canvasW = this.renderer.domElement.clientWidth;
+      const proj = projectToScreen(sunPos, this.camera, canvasW, canvasH);
+      if (proj.ndcZ < 1 && distFromCamera > 0) {
+        const radiusPx = discRadiusPx(SUN_DATA.radiusAU, distFromCamera, halfFovTan, canvasH) * 1.1;
+        this.planetLabels.addForegroundDisc({
+          screenX: proj.x, screenY: proj.y, radiusPx, distFromCamera, name: 'Sun',
+        });
+      }
+    }
 
     // Visible moons
     for (const planet of this.solarSystem.planets) {
@@ -2322,9 +2711,9 @@ export class PlanetariumMode {
         const dy = tempV.y - camY;
         const dz = tempV.z - camZ;
         const distFromCamera = Math.sqrt(dx * dx + dy * dy + dz * dz);
-        // Effective rendered radius: small moons are scaled up to the same floor
-        // the mesh uses, so the occlusion disc matches what's actually drawn.
-        const effectiveRadiusAU = Math.max(m.data.radiusAU, this.moonRenderFloorRatio(planet.data.name) * parentR);
+        // Effective rendered radius: the same curve the mesh uses, so the
+        // occlusion disc matches what's actually drawn.
+        const effectiveRadiusAU = this.renderedMoonSizeAU(m.data.radiusAU, parentR, this.moonRenderAnchorRatio(planet.data.name));
         const angularSize = (effectiveRadiusAU * 2) / Math.max(distFromCamera, 0.0001);
         if (angularSize <= 0.01) continue;
 
@@ -2377,6 +2766,12 @@ export class PlanetariumMode {
     // Candidate objects are pooled — steady-state frames allocate nothing.
     const candidates = this.moonLabelCandidates;
     let candidateCount = 0;
+    const targetMoon = this.currentDotTargetMoon();
+    // A moon earns a label when its disc reads as more than a point, OR its dot
+    // is at least faintly visible, OR it's the explicit nav target. A sub-pixel
+    // moon too dim to dot gets no label pointing at empty sky.
+    const LABEL_READABLE_RADIUS_PX = 1.0;
+    const LABEL_DOT_MIN_ALPHA = 0.03;
 
     for (const planet of this.solarSystem.planets) {
       const moons = this.planetMoons.get(planet.data.name);
@@ -2399,13 +2794,26 @@ export class PlanetariumMode {
           continue;
         }
 
-        // Rendered disc radius: small moons scale up to the mesh floor, padded
-        // so the anchor clears the limb instead of riding on the moon's face.
-        const effRadiusAU = Math.max(
+        // Rendered disc radius: the same curve the mesh uses, padded so the
+        // label anchor clears the limb instead of riding on the moon's face.
+        const effRadiusAU = this.renderedMoonSizeAU(
           m.data.radiusAU,
-          this.moonRenderFloorRatio(planet.data.name) * planet.data.radiusAU,
+          planet.data.radiusAU,
+          this.moonRenderAnchorRatio(planet.data.name),
         );
-        const radiusPx = discRadiusPx(effRadiusAU, moonCamDist, halfFovTan, canvasH) * 1.1;
+        const discRadiusPadPx = discRadiusPx(effRadiusAU, moonCamDist, halfFovTan, canvasH) * 1.1;
+
+        // Sub-pixel gating: a moon whose disc doesn't read and whose dot is too
+        // faint to see keeps no label — unless it's the nav target.
+        const dotAlpha = m.dotScreenAlpha ?? 0;
+        const readable = discRadiusPadPx >= LABEL_READABLE_RADIUS_PX;
+        if (!readable && dotAlpha < LABEL_DOT_MIN_ALPHA && targetMoon !== m.data.name) {
+          if (label.style.display !== 'none') label.style.display = 'none';
+          continue;
+        }
+        // Lift the anchor clear of whichever is larger — the disc limb or the
+        // dot glyph (for a sub-pixel moon the dot is the only thing on screen).
+        const radiusPx = Math.max(discRadiusPadPx, (m.dotScreenSizePx ?? 0) / 2);
 
         // Lift the anchor above the limb BEFORE the on-screen test, so a
         // screen-filling moon pins its label to the top margin (dimmed via the
@@ -2441,25 +2849,36 @@ export class PlanetariumMode {
         }
         let c = candidates[candidateCount];
         if (!c) {
-          c = { label, sx: 0, sy: 0, onScreen: false, priorityPx: 0, halfW: 0 };
+          c = { label, sx: 0, sy: 0, onScreen: false, priorityPx: 0, halfW: 0, isTarget: false };
           candidates.push(c);
         }
         c.label = label;
         c.sx = sx;
         c.sy = sy;
         c.onScreen = onScreen;
-        c.priorityPx = effRadiusAU / Math.max(moonCamDist, 1e-12);
+        c.isTarget = targetMoon === m.data.name;
+        // Collision priority is apparent footprint: a readable disc by its px
+        // radius, a sub-pixel moon by its dot's weighted glyph size, so among
+        // piled-up dots the brighter one keeps its label.
+        c.priorityPx = Math.max(
+          discRadiusPadPx,
+          dotAlpha * (m.dotScreenSizePx ?? 0),
+        );
         c.halfW = (m.data.name.length * 6.5 + 12) / 2;
         candidateCount++;
       }
     }
 
     candidates.length = candidateCount;
-    // Visible labels outrank edge-clamped ones (an off-screen moon pinned to
-    // the margin must not suppress a genuinely visible neighbor), then
-    // bigger apparent discs win.
+    // The nav target sorts first so a sibling's label can never suppress the
+    // moon you are flying at. Then visible labels outrank edge-clamped ones (an
+    // off-screen moon pinned to the margin must not suppress a genuinely visible
+    // neighbor), then bigger apparent discs win.
     candidates.sort(
-      (a, b) => Number(b.onScreen) - Number(a.onScreen) || b.priorityPx - a.priorityPx,
+      (a, b) =>
+        Number(b.isTarget) - Number(a.isTarget) ||
+        Number(b.onScreen) - Number(a.onScreen) ||
+        b.priorityPx - a.priorityPx,
     );
     const LABEL_H = 18;
     let placedCount = 0;
@@ -2652,7 +3071,6 @@ export class PlanetariumMode {
       // relaxes toward neutral only as the fog itself darkens.
       const insideTarget = THREE.MathUtils.lerp(1, 0.25, interiorFade);
       this.sunExposure = THREE.MathUtils.lerp(this.sunExposure, insideTarget, insideBlend);
-      this.renderer.toneMappingExposure = this.sunExposure;
       // No glare to obscure anything from inside the photosphere.
       this.deactivateSunGlareMask();
       return;
@@ -2819,7 +3237,6 @@ export class PlanetariumMode {
     const tau = targetExposure < this.sunExposure ? 0.12 : 0.9;
     const blend = 1 - Math.exp(-Math.max(dt, 0) / tau);
     this.sunExposure = THREE.MathUtils.lerp(this.sunExposure, targetExposure, blend);
-    this.renderer.toneMappingExposure = this.sunExposure;
     const exposureScale = Math.sqrt(this.sunExposure);
     if (sunMat) {
       sunMat.uniforms.uAtmosphereMix.value = this.sunAtmosphereMix;
@@ -3062,6 +3479,18 @@ export class PlanetariumMode {
     const angularRadius = Math.asin(THREE.MathUtils.clamp(renderedRadius / bodyDistance, 0, 0.999999));
     this.lastSunOccluderAngularRadius = angularRadius;
     return circleOcclusionFraction(sunAngularRadius, angularRadius, separation);
+  }
+
+  /**
+   * The exposure main.ts (the sole renderer.toneMappingExposure writer) should
+   * apply this frame. The value is sunExposure, already smoothed inside
+   * updateSunShader — the asymmetric clamp/recover glide, the interior-dive
+   * tier, and the discontinuity handling all live there, coherent with the
+   * glare/veil uniforms derived from the same number — so `snap` is always
+   * true: the loop must land on it verbatim, never re-glide it.
+   */
+  takeExposureTarget(): { value: number; snap: boolean } {
+    return { value: this.sunExposure, snap: true };
   }
 
   private updateOrbitLineVisibility() {
@@ -5253,7 +5682,8 @@ export class PlanetariumMode {
    *  positions refresh each frame in updateMoonPositions) plus the jump
    *  seed, whose position resolves live from the parent + ephemeris offset
    *  while its mesh is still veiled. Rendered radii come from the live mesh
-   *  scale (the 5%-of-parent floor), i.e. the sphere you actually see.
+   *  scale (true size, or the render curve's size below the anchor), i.e.
+   *  the sphere you actually see.
    *  Staleness: ship collision and the governor read this BEFORE the frame's
    *  refresh — one frame behind, fine at real cruise speeds but a different
    *  orbital epoch at the top time rates (1 yr/s moves a moon 36 simulated
@@ -5282,7 +5712,9 @@ export class PlanetariumMode {
       parentPos.x + offset.x,
       parentPos.y + offset.y,
       parentPos.z + offset.z,
-      Math.max(moon.radiusAU, parent.radiusAU * PlanetariumMode.MOON_MIN_RENDER_RATIO),
+      // Flythrough anchor deliberately, not the state selector: jump seeds
+      // only exist in cruise, where the flythrough anchor is the live one.
+      this.renderedMoonSizeAU(moon.radiusAU, parent.radiusAU, MOON_RENDER_ANCHOR_RATIO),
     );
   }
 
@@ -5456,9 +5888,8 @@ export class PlanetariumMode {
     const p0 = this.prevPlayerPos;
     const forward = this.player.getForwardDirection();
     this.forEachGovernedMoon((x, y, z, renderedR) => {
-      // Full lunar-scale clearance would exceed a tiny moon's own standoff,
-      // so it saturates at one rendered radius.
-      const collisionR = renderedR + Math.min(SHIP_CLEARANCE_AU, renderedR);
+      // Same clearance bubble as the arrival standoff and camera safety.
+      const collisionR = moonCollisionRadius(renderedR, SHIP_CLEARANCE_AU);
       const dx = this.player.posX - p0.x;
       const dy = this.player.posY - p0.y;
       const dz = this.player.posZ - p0.z;
@@ -5581,6 +6012,9 @@ export class PlanetariumMode {
       approached: false,
       receding: false,
     };
+    // Retain the nav moon (applyJumpDestination cleared it above): keeps the
+    // dot floor + label if the player takes manual control before arrival.
+    this.dotNavMoon = { name: moon.name, parentPlanet: moon.parentPlanet };
     // Seed the governor before the first frame: in a cold system the mesh is
     // still unpainted behind the arrival veil, invisible to the
     // visibility-keyed governed set, and one ungoverned 100 ms frame at the
@@ -5594,6 +6028,9 @@ export class PlanetariumMode {
     notify: boolean,
   ) {
     this.moonArrivalCameraLook = null;
+    // A jump to a different body drops the retained nav moon; a moon jump
+    // re-sets it right after (jumpToMoon), so a planet jump is the clearing case.
+    this.dotNavMoon = null;
     // A jump supersedes the pilot. Autopilot re-aims at its own target every
     // frame, so an engaged pilot surviving the teleport snaps the heading back
     // to the OLD destination one frame after the pose below — you arrive at a
@@ -5642,8 +6079,8 @@ export class PlanetariumMode {
    * parent's world position plus the ephemeris offset — never from
    * `moonWorldPositions`, which is only written for visible painted moons and
    * silently falls back to the parent across the rest of the catalog. The
-   * rendered size comes from the catalog plus the 5%-of-parent mesh floor,
-   * not the live mesh (scale is still 1 in never-visited systems). The pose
+   * rendered size comes from the catalog through the render curve, not the
+   * live mesh (scale is still 1 in never-visited systems). The pose
    * math itself — apparent-size standoff, sun-side/outward placement, flyby
    * aim — lives in arrivalLogic.moonArrivalPose (pure, catalog-swept in its
    * tests); the lookTarget is the flyby aim point, not the moon's center.
@@ -5661,7 +6098,9 @@ export class PlanetariumMode {
       moonPos: bodyPosition,
       parentPos,
       orbitR: offset.length(),
-      renderedR: Math.max(moon.radiusAU, parentBody.radiusAU * PlanetariumMode.MOON_MIN_RENDER_RATIO),
+      // Flythrough anchor deliberately: jumps commit from cruise, where the
+      // flythrough anchor is the size the arriving player will see.
+      renderedR: this.renderedMoonSizeAU(moon.radiusAU, parentBody.radiusAU, MOON_RENDER_ANCHOR_RATIO),
       parentCollision,
       // Rings render as a flat disc, but a spherical clearance is simpler and
       // never lets an arrival pop in among the ring particles.
@@ -5737,16 +6176,24 @@ export class PlanetariumMode {
    * collision so the close vantage holds. `phaseAngleDeg` is the Sun–planet–camera
    * angle: 0 sits sunward (full-phase lit); swing toward 180 for the night side,
    * the only view where the back-lit crescent (warm terminator + Mie forward
-   * scatter) shows. Dev bridge only.
+   * scatter) shows. `distMul` sets the standoff in body radii (default 5); the
+   * Sun QA sweeps it (5/15/114 radii) to reproduce the baseline flyby distances.
+   * Dev bridge only.
    */
-  devFrameBody(name: string, fillFraction = 0.6, phaseAngleDeg = 0): boolean {
+  devFrameBody(name: string, fillFraction = 0.6, phaseAngleDeg = 0, distMul = 5): boolean {
     if (!this.solarSystem) return false;
-    // Resolve a top-level planet or, failing that, a moon (parent world position
-    // plus the same offset the renderer uses) so the harness can frame either.
+    // Resolve the Sun, a top-level planet, or a moon (parent world position plus
+    // the same offset the renderer uses) so the harness can frame any of them.
     let pos: { x: number; y: number; z: number } | undefined;
     let r = 0;
     const planet = this.solarSystem.planets.find((p) => p.data.name === name);
-    if (planet) {
+    if (name === 'Sun') {
+      // The Sun sits at the heliocentric origin — the frame is posed in absolute
+      // coords, where that is exactly (0,0,0), NOT sun.getWorldPosition (a scene
+      // offset). The degenerate zero direction is seeded by the toSun guard below.
+      pos = { x: 0, y: 0, z: 0 };
+      r = SUN_DATA.radiusAU;
+    } else if (planet) {
       pos = this.planetWorldPositions.get(name);
       r = planet.data.radiusAU; // planets render at true scale (group scale 1)
     } else {
@@ -5764,7 +6211,7 @@ export class PlanetariumMode {
     }
     if (!pos || r === 0) return false;
     this.devFreeCamera = true;
-    const dist = r * 5;
+    const dist = r * distMul;
     // Camera direction from the planet, rotated off the sun line by the phase
     // angle. The rotation axis is any vector perpendicular to the sun line.
     const toSun = new THREE.Vector3(-pos.x, -pos.y, -pos.z);
@@ -5854,6 +6301,18 @@ export class PlanetariumMode {
     };
   }
 
+  /** Peek the coverage meter for the dev bridge — telemetry only (the adapted
+   *  Sun exposure in devSunAppearance() is what actually reaches the render). */
+  devExposurePeek(): { target: number; coverage: number } {
+    return { target: this.exposureTarget, coverage: this.exposureCoverage };
+  }
+
+  /** Swap the Sun's glow tier to match a runtime bloom toggle (the construction
+   *  tier is baked from the hardware capability). Dev bridge only. */
+  devApplySunGlowTier(useBloom: boolean): void {
+    if (this.solarSystem) applySunGlowTier(this.solarSystem.sun, useBloom);
+  }
+
   /** Headless-screenshot diagnostics: read back camera/body geometry. */
   devProbe(name: string): unknown {
     let pos = this.planetWorldPositions.get(name) ?? null;
@@ -5875,6 +6334,15 @@ export class PlanetariumMode {
     }
     const cam = this.camera as THREE.PerspectiveCamera;
     const playerAbs = { x: this.player.posX, y: this.player.posY, z: this.player.posZ };
+    // Dot + label render-truth (DEV QA): the moon's final screen alpha this
+    // frame and whether its label is shown. Null for a planet (no dot/label).
+    let dotScreenAlpha: number | null = null;
+    for (const moons of this.planetMoons.values()) {
+      const mm = moons.find((x) => x.data.name === name);
+      if (mm) { dotScreenAlpha = mm.dotScreenAlpha ?? 0; break; }
+    }
+    const lbl = this.moonLabels.get(name);
+    const labelVisible = lbl ? lbl.style.display !== 'none' : null;
     return {
       found: !!pos,
       radiusAU,
@@ -5891,6 +6359,8 @@ export class PlanetariumMode {
       moving: this.player.moving,
       devFree: this.devFreeCamera,
       userOrbiting: this.userOrbiting,
+      dotScreenAlpha,
+      labelVisible,
     };
   }
 
@@ -5902,10 +6372,13 @@ export class PlanetariumMode {
   private devTraceCount = 0;
   private devTraceMax = 0;
   private devTraceMesh: THREE.Mesh | null = null;
+  private devTraceMoon: MoonMesh | null = null;
   private static readonly DEV_TRACE_FIELDS = [
     't', 'simMs', 'scrX', 'scrY', 'ndcZ',
     'camX', 'camY', 'camZ', 'moonX', 'moonY', 'moonZ',
     'speedAUPerS', 'capAUPerS',
+    // Dot + label render-truth for the continuity invariant (DEV QA).
+    'dotAlpha', 'dotSizePx', 'discPx', 'labelVis',
   ] as const;
   private devTraceWorld = new THREE.Vector3();
   private devTraceProj: ScreenProjection = { x: 0, y: 0, ndcX: 0, ndcY: 0, ndcZ: 0 };
@@ -5913,12 +6386,14 @@ export class PlanetariumMode {
   /** Start recording per-frame samples of a moon's rendered state. */
   devTraceStart(name: string, maxFrames = 3600): boolean {
     let mesh: THREE.Mesh | null = null;
+    let moon: MoonMesh | null = null;
     for (const moons of this.planetMoons.values()) {
       const m = moons.find((mm) => mm.data.name === name);
-      if (m) { mesh = m.mesh; break; }
+      if (m) { mesh = m.mesh; moon = m; break; }
     }
     if (!mesh) return false;
     this.devTraceMesh = mesh;
+    this.devTraceMoon = moon;
     this.devTraceMax = maxFrames;
     this.devTraceCount = 0;
     const n = PlanetariumMode.DEV_TRACE_FIELDS.length;
@@ -5938,6 +6413,7 @@ export class PlanetariumMode {
       rows.push(Array.from(buf.subarray(i * n, (i + 1) * n)));
     }
     this.devTraceMesh = null;
+    this.devTraceMoon = null;
     this.devTraceBuf = null;
     return { fields: PlanetariumMode.DEV_TRACE_FIELDS, rows };
   }
@@ -5968,7 +6444,25 @@ export class PlanetariumMode {
     buf[k++] = this.devTraceWorld.y;
     buf[k++] = this.devTraceWorld.z;
     buf[k++] = this.player.speedAUPerS;
-    buf[k] = this.player.speedCapAUPerS;
+    buf[k++] = this.player.speedCapAUPerS;
+    // Dot + label render-truth: the moon's final screen alpha/size from the dot
+    // pass, the disc diameter it was measured against, and whether its label is
+    // shown this frame — the fields the outbound continuity invariant reads.
+    const moon = this.devTraceMoon;
+    let dotAlpha = 0, dotSizePx = 0, disc = 0, labelVis = 0;
+    if (moon) {
+      dotAlpha = moon.dotScreenAlpha ?? 0;
+      dotSizePx = moon.dotScreenSizePx ?? 0;
+      const renderedR = moon.data.radiusAU * moon.mesh.scale.x;
+      const dist = this.devTraceWorld.distanceTo(this.camera.position);
+      disc = discDiameterPx(renderedR, dist, this.camera.fov, el.clientHeight);
+      const lbl = this.moonLabels.get(moon.data.name);
+      labelVis = lbl && lbl.style.display !== 'none' ? 1 : 0;
+    }
+    buf[k++] = dotAlpha;
+    buf[k++] = dotSizePx;
+    buf[k++] = disc;
+    buf[k] = labelVis;
     this.devTraceCount++;
   }
 
@@ -7541,6 +8035,10 @@ export class PlanetariumMode {
     // Landing (and the landed→landed vantage swap) can flip the Sun's exposed
     // fraction in one frame; reseed the flash baseline so it doesn't glare.
     this.noteSunViewDiscontinuity();
+    // Landing ends the cruise nav: drop the retained nav moon (the dot pass is
+    // skipped in surface view anyway, but the orbit-view dot floor shouldn't
+    // keep flooring a moon you have just parked at).
+    this.dotNavMoon = null;
     // Every landing path funnels through here (enterLandedMode, restoreState,
     // the Observatory menu's landed→landed re-land) — clearing the vantage
     // pair here, not per call site, is what keeps a stale pair from
@@ -7630,18 +8128,21 @@ export class PlanetariumMode {
       this.player.posZ = pos.z;
     }
 
-    // Landed runs on the fixed near plane — restore it BEFORE the two framing
-    // consumers below read camera.near (cruise leaves a dynamic value here,
-    // as small as 3 km after a close pass).
-    if (this.camera.near !== LANDED_NEAR_AU) {
-      this.camera.near = LANDED_NEAR_AU;
+    // Landed runs on a fixed near plane per landing — the stock value, shrunk
+    // for bodies smaller than it (landedNearAU: surface view keeps culling
+    // the ground, tiny moons keep the full ~18.9° frame). Apply it BEFORE the
+    // two framing consumers below read camera.near (cruise leaves a dynamic
+    // value here, as small as 3 km after a close pass).
+    const trueRadiusAU = this.getLandedBodyRadiusAU();
+    const nearAU = landedNearAU(trueRadiusAU);
+    if (this.camera.near !== nearAU) {
+      this.camera.near = nearAU;
       this.camera.updateProjectionMatrix();
     }
 
     // Configure OrbitControls to orbit the body. The player is parked at the
     // body's world position, so the next floating-origin pass puts the body —
     // planet or moon — exactly at scene origin.
-    const trueRadiusAU = this.getLandedBodyRadiusAU();
     const renderedRadiusAU = this.getLandedBodyRenderedRadiusAU();
 
     this.controls.enabled = true;
@@ -8207,10 +8708,17 @@ export class PlanetariumMode {
     if (shouldRefreshUi) this.updateOrbitDetails();
     this.pumpObservatoryEventSearch();
 
-    // Occlusion pipeline while landed: planets → moons + ship → labels + markers.
-    // Runs when either the HTML labels or the marker sprites are on; surface
-    // view hides everything. The occluder passes only feed label culling, so
-    // markers-only (labels off) skips them — the sprites depth-test on the GPU.
+    // Moon dots for the orbit camera (settled at the top of updateLanded, before
+    // this frame's positions refreshed — but nothing re-poses it after), so the
+    // label pass below reads fresh dot contributions. Surface view fills its own
+    // dots after the surface camera re-pins (labels are hidden there anyway).
+    if (this.landedView !== 'surface') this.updateMoonDotsForCamera();
+
+    // Occlusion pipeline while landed: planets → Sun + moons + ship → labels +
+    // markers; surface view hides everything. The occluder passes run whenever
+    // either consumer is on: marker sprites render without a depth test (see
+    // the material comment in PlanetLabels), so this analytic disc set is
+    // their only occlusion.
     if (this.planetLabels && this.landedView !== 'surface' && (this.showBodyLabels || this.showBodyMarkers)) {
       const scenePositions = new Map<string, { x: number; y: number; z: number }>();
       for (const planet of this.solarSystem.planets) {
@@ -8221,10 +8729,8 @@ export class PlanetariumMode {
         });
       }
       const landedPlanetName = this.landedOn?.type === 'planet' ? this.landedOn.name : undefined;
-      if (this.showBodyLabels) {
-        this.planetLabels.collectForegroundDiscs(scenePositions, this.renderer);
-        this.collectDynamicOccluders();
-      }
+      this.planetLabels.collectForegroundDiscs(scenePositions, this.renderer);
+      this.collectDynamicOccluders();
       this.planetLabels.renderLabels(scenePositions, { x: 0, y: 0, z: 0 }, this.renderer, {
         showMarkers: this.showBodyMarkers,
         showLabels: this.showBodyLabels,
@@ -8253,6 +8759,10 @@ export class PlanetariumMode {
     // controls block above runs before those refreshes).
     if (this.landedView === 'surface') {
       this.updateSurfaceCamera(dt);
+      // Dots after the surface camera re-pins: from a moon's surface the sibling
+      // moons are real angular points (anchorRatio 0 → true sizes), so the
+      // photometry is honest naked-eye sky.
+      this.updateMoonDotsForCamera();
     }
     // After the surface re-pin: the Sun metering (screen position, occlusion,
     // corona gate) must read this frame's camera pose, not last frame's.
@@ -8426,14 +8936,98 @@ export class PlanetariumMode {
       ?? null;
   }
 
+  /**
+   * Refill `tmpAutopilotInputs` from the engaged autopilot moon's LIVE mesh
+   * position and rendered scale, returning it — or null when the moon is not
+   * independently resolvable this frame. "Resolvable" means its own world
+   * position is in `moonWorldPositions` (written only for a shown moon, and
+   * where `getTargetWorldPosition` would otherwise fall back to the parent) and
+   * its painted, visible mesh is present. The postcard standoff is meaningless
+   * against the parent fallback, so those frames keep the legacy behavior.
+   * Zero allocation: the temp and its vectors are reused.
+   */
+  private resolveAutopilotMoonInputs(
+    target: NonNullable<LandedTarget>,
+  ): MoonArrivalInputs | null {
+    if (target.type !== 'moon') return null;
+    const wp = this.moonWorldPositions.get(target.name);
+    if (!wp) return null;
+    const parentPos = this.planetWorldPositions.get(target.parentPlanet);
+    if (!parentPos) return null;
+    const parentBody = PLANETARIUM_BODIES.find((b) => b.name === target.parentPlanet);
+    if (!parentBody) return null;
+    const mesh = this.planetMoons.get(target.parentPlanet)?.find((m) => m.data.name === target.name);
+    if (!mesh || !mesh.painted || !mesh.mesh.visible) return null;
+
+    const inp = this.tmpAutopilotInputs;
+    inp.moonPos.set(wp.x, wp.y, wp.z);
+    inp.parentPos.set(parentPos.x, parentPos.y, parentPos.z);
+    inp.orbitR = inp.moonPos.distanceTo(inp.parentPos);
+    // Live rendered radius (true size, or the render curve's size below the
+    // anchor) — the sphere the arriving player actually sees, same as the
+    // governor uses in forEachGovernedMoon.
+    inp.renderedR = mesh.data.radiusAU * mesh.mesh.scale.x;
+    inp.parentCollision = this.getPlanetCollisionRadius(
+      parentBody.name,
+      parentBody.radiusAU,
+      this.planetScale,
+    );
+    const ring = RING_CONFIGS[parentBody.name];
+    inp.parentClearance = Math.max(
+      inp.parentCollision * 1.25,
+      ring ? parentBody.radiusAU * ring.outerFactor * 1.05 : 0,
+    );
+    // camDist / shipClearance are rig constants — set once at construction.
+    return inp;
+  }
+
   private applyAutopilot() {
     if (!this.autopilotTarget) return;
     const pos = this.getTargetWorldPosition(this.autopilotTarget);
     if (!pos) return;
+    // Near a resolvable moon, ease the heading from its center toward the flyby
+    // aim so the ship parks pre-aimed past the limb — the pose a Travel jump
+    // arrives in. The pose is served from the cache (see `autopilotAim`);
+    // outside the blend zone (or on the parent fallback) fly straight at the
+    // target.
+    const inp = this.resolveAutopilotMoonInputs(this.autopilotTarget);
+    if (inp) {
+      const standoff = moonArrivalStandoffAU(inp);
+      const dx = inp.moonPos.x - this.player.posX;
+      const dy = inp.moonPos.y - this.player.posY;
+      const dz = inp.moonPos.z - this.player.posZ;
+      const dist = Math.sqrt(dx * dx + dy * dy + dz * dz);
+      if (dist < 3 * standoff) {
+        const blend = autopilotAimBlend(dist, standoff);
+        const staleSq = (0.02 * standoff) ** 2;
+        if (
+          this.autopilotAimFor !== this.autopilotTarget.name ||
+          this.autopilotAimMoonPos.distanceToSquared(inp.moonPos) > staleSq
+        ) {
+          this.autopilotAim.copy(moonArrivalPose(inp).aimPoint);
+          this.autopilotAimMoonPos.copy(inp.moonPos);
+          this.autopilotAimFor = this.autopilotTarget.name;
+        }
+        const aim = this.autopilotAim;
+        this.player.headToward(
+          inp.moonPos.x + (aim.x - inp.moonPos.x) * blend,
+          inp.moonPos.z + (aim.z - inp.moonPos.z) * blend,
+          inp.moonPos.y + (aim.y - inp.moonPos.y) * blend,
+        );
+        return;
+      }
+    }
     this.player.headToward(pos.x, pos.z, pos.y);
   }
 
   private engageAutopilot(target: NonNullable<LandedTarget>) {
+    // Retain the nav moon so its dot floor + label survive a manual-input
+    // disengage on final approach; a planet engage clears it (nav moved off a
+    // moon). Kept through disengageAutopilot — that's the point.
+    this.dotNavMoon =
+      target.type === 'moon'
+        ? { name: target.name, parentPlanet: target.parentPlanet }
+        : null;
     this.autopilotTarget = target;
     this.autopilot = true;
     this.autopilotUserEngaged = true;
@@ -8498,27 +9092,44 @@ export class PlanetariumMode {
     const dz = this.player.posZ - pos.z;
     const dist = Math.sqrt(dx * dx + dy * dy + dz * dz);
 
-    let threshold: number;
+    let arrived: boolean;
     if (this.autopilotTarget.type === 'planet') {
       if (this.autopilotTarget.name === 'Sun') {
         // The Sun governor glides asymptotically toward its 1.2-photosphere
         // shell, so a tight threshold would never be crossed. 1.5x the
         // teleport standoff lets the pilot ring the bell while the final
         // glide is still visibly under way.
-        threshold = SUN_DATA.radiusAU * SUN_ARRIVAL_RADII * 1.5;
+        arrived = dist < SUN_DATA.radiusAU * SUN_ARRIVAL_RADII * 1.5;
       } else {
         const body = PLANETARIUM_BODIES.find(b => b.name === this.autopilotTarget!.name);
-        threshold = body ? body.systemRadiusAU * 0.3 : 0.003;
+        arrived = dist < (body ? body.systemRadiusAU * 0.3 : 0.003);
       }
     } else {
-      const moons = this.planetMoons.get(this.autopilotTarget.parentPlanet);
-      const moonMesh = moons?.find(m => m.data.name === this.autopilotTarget!.name);
-      threshold = moonMesh ? Math.max(moonMesh.data.radiusAU * 10, 0.0003) : 0.0003;
+      // Resolvable moon: the glide has eased the ship to rest at the postcard
+      // standoff (`pos` is the moon's own world position here, so `dist` is to
+      // its center). Otherwise fall back to the legacy surface-proximity
+      // threshold — the parent-fallback position has no meaningful standoff.
+      const inp = this.resolveAutopilotMoonInputs(this.autopilotTarget);
+      if (inp) {
+        arrived = autopilotArrived(dist, moonArrivalStandoffAU(inp));
+      } else {
+        const moons = this.planetMoons.get(this.autopilotTarget.parentPlanet);
+        const moonMesh = moons?.find(m => m.data.name === this.autopilotTarget!.name);
+        arrived = dist < (moonMesh ? Math.max(moonMesh.data.radiusAU * 10, 0.0003) : 0.0003);
+      }
     }
 
-    if (dist < threshold) {
+    if (arrived) {
       const name = this.autopilotTarget.name;
       this.disengageAutopilot();
+      if (name !== 'Sun') {
+        // Park at the standoff so the ship rests on the postcard instead of
+        // drifting on into the surface; throttle-up (reviveParkedShip) resumes.
+        // The Sun is the exception: its arrival bell rings mid-glide and the
+        // governor's asymptotic ease toward the photosphere shell IS the
+        // arrival — there is no surface to drift into, so let it run.
+        this.player.moving = false;
+      }
       this.notification.show(`Arrived at ${bodyDisplayName(name)}`);
     }
   }

@@ -698,6 +698,8 @@ export function createPlanetariumSun(useBloom = true): THREE.Group {
       uCameraFx: { value: 0 },
       uEclipseLike: { value: 0 },
       uOccluderRadii: { value: 1 },
+      uOccluderShade: { value: 0 },
+      uOccluderOffsetSr: { value: new THREE.Vector2() },
       uExposureScale: { value: 1 },
       uEmergenceFlash: { value: 0 },
       uAtmosphereMix: { value: 0 },

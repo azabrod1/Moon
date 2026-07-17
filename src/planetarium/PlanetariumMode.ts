@@ -434,6 +434,11 @@ export class PlanetariumMode {
   /** Set by computeVisibleSunFraction: angular radius of the strongest solar
    *  occluder this frame (scratch for the corona's eclipse-likeness gate). */
   private sunDominantOccluderAngularRadius = 0;
+  /** Unit camera→occluder direction of that same strongest occluder — valid
+   *  only while sunDominantOccluderAngularRadius > 0. Positions the glare
+   *  shader's silhouette carve at the body's true screen offset. */
+  private sunDominantOccluderDirection = new THREE.Vector3();
+  private tmpSunOccluderDelta = new THREE.Vector3();
   private lastSunOccluderAngularRadius = 0;
   private tmpSunDirection = new THREE.Vector3();
   private tmpRingNormal = new THREE.Vector3();
@@ -3085,6 +3090,7 @@ export class PlanetariumMode {
         // Inside the photosphere the veil has no meaning; collapse the billboard.
         glareMat.uniforms.uVeilAmt.value = 0;
         glareMat.uniforms.uVeilHalfPx.value = 0;
+        glareMat.uniforms.uOccluderShade.value = 0;
       }
       if (ghostMat) ghostMat.uniforms.uGhostStrength.value = 0;
       // No limb sits in front of a camera buried in the photosphere; kill the
@@ -3269,6 +3275,33 @@ export class PlanetariumMode {
       glareMat.uniforms.uOccluderRadii.value = occluderAngularRadius > 0
         ? THREE.MathUtils.clamp(occluderToSunRatio, 0.5, 3)
         : 1;
+      // Silhouette carve: a body deep into covering the Sun reads as a dark
+      // disc through the PSF/veil wash (the shader multiplies those terms
+      // down inside it). Driven by body-only coverage — ring dimming must not
+      // punch silhouettes — and positioned from the occluder's true direction
+      // so an off-centre partial carves where the body actually is. Shallow
+      // phases (< ~45% covered) keep the full wash: there the glare
+      // legitimately swallows the thin limb crossing.
+      const coverage = 1 - THREE.MathUtils.clamp(bodyVisibleFraction, 0, 1);
+      const occluderShade = occluderAngularRadius > 0 && appearanceEligible
+        ? THREE.MathUtils.smoothstep(coverage, 0.45, 0.85)
+        : 0;
+      glareMat.uniforms.uOccluderShade.value = occluderShade;
+      if (occluderShade > 0) {
+        // The glare quad billboards in camera-view XY and its fragment
+        // measures in solar radii, so the offset is the angular separation
+        // decomposed on the camera basis, divided by the Sun's angular radius.
+        const e = this.camera.matrixWorld.elements;
+        const d = this.tmpSunOccluderDelta
+          .copy(this.sunDominantOccluderDirection)
+          .sub(toSun);
+        glareMat.uniforms.uOccluderOffsetSr.value.set(
+          (d.x * e[0] + d.y * e[1] + d.z * e[2]) / solarAngularRadius,
+          (d.x * e[4] + d.y * e[5] + d.z * e[6]) / solarAngularRadius,
+        );
+      } else {
+        glareMat.uniforms.uOccluderOffsetSr.value.set(0, 0);
+      }
     }
 
     // Eyes/cameras clamp down quickly on a bright source and recover more
@@ -3429,6 +3462,8 @@ export class PlanetariumMode {
       if (occlusion > maxOcclusion) {
         maxOcclusion = occlusion;
         this.sunDominantOccluderAngularRadius = this.lastSunOccluderAngularRadius;
+        // sunOcclusionByMesh leaves this mesh's unit direction in the tmp.
+        this.sunDominantOccluderDirection.copy(this.tmpSunOccluderDirection);
       }
       visible *= 1 - occlusion;
       if (visible < 1e-4) return 0;
@@ -3444,6 +3479,7 @@ export class PlanetariumMode {
         if (occlusion > maxOcclusion) {
           maxOcclusion = occlusion;
           this.sunDominantOccluderAngularRadius = this.lastSunOccluderAngularRadius;
+          this.sunDominantOccluderDirection.copy(this.tmpSunOccluderDirection);
         }
         visible *= 1 - occlusion;
         if (visible < 1e-4) return 0;

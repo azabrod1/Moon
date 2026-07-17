@@ -337,6 +337,8 @@ uniform float uPointLike;
 uniform float uCameraFx;
 uniform float uEclipseLike;
 uniform float uOccluderRadii;
+uniform float uOccluderShade;
+uniform vec2 uOccluderOffsetSr;
 uniform float uExposureScale;
 uniform float uEmergenceFlash;
 uniform float uAtmosphereMix;
@@ -456,6 +458,18 @@ void main() {
   float emergenceBloom = exp(-outside * 1.25) * uEmergenceFlash * visibleEnergy * 1.15;
   glare = (glare + emergenceBloom) * mix(1.0, 0.60, uAtmosphereMix);
 
+  // A body deep into covering the Sun reads as a dark silhouette even through
+  // the lens wash: optics can only glare with the light that still passes,
+  // and none passes where the occluder stands. Carve its true disc — offset
+  // and radius arrive from the controller in solar radii — out of the PSF
+  // and the wide veil below; the floor leaves a breath of scattered haze so
+  // the disc sits in the glare rather than being punched out of it. Shallow
+  // partials arrive with uOccluderShade 0 and keep the full wash.
+  float occluderDistance = length(pB * uExtent - uOccluderOffsetSr);
+  float occluderCore = 1.0 - smoothstep(uOccluderRadii - 0.07, uOccluderRadii + 0.05, occluderDistance);
+  float silhouette = 1.0 - uOccluderShade * 0.88 * occluderCore;
+  glare *= silhouette;
+
   // --- Wide screen-space veiling glare ---
   // Real space-camera stills show the Sun's light washing across a big fraction
   // of the frame even when the disc is only a few pixels wide. This term is a
@@ -494,7 +508,7 @@ void main() {
   float armY = exp(-armAcrossV * armAcrossV) * exp(-abs(pxOff.y) / max(uArmDecayYPx, 1.0)) * 0.25;
   float veilEnergy = uVeilStrength * uVeilAmt * uExposureScale
     * (1.0 + 0.5 * uEmergenceFlash) * mix(1.0, 0.60, uAtmosphereMix);
-  float veil = (veilShape + (armX + armY) * uArmCoeff) * veilEnergy;
+  float veil = (veilShape + (armX + armY) * uArmCoeff) * veilEnergy * silhouette;
 
   // Once the photosphere is covered, remove its glare and reveal a restrained
   // white corona. Broad bipolar lobes plus fine angular strands keep totality

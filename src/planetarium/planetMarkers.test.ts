@@ -21,12 +21,22 @@ const visualFor = (name: string, distAU: number, sunDistAU: number): PlanetMarke
 };
 
 describe('planetMarkers — catalog palette', () => {
-  it('every body has a marker tint whose albedo proxy stays in band', () => {
+  it('every body has a pale marker tint (not a pasted UI color)', () => {
     for (const body of PLANETARIUM_BODIES) {
       expect(body.markerColor, body.name).toBeTypeOf('number');
-      const a = markerAlbedoProxy(body.markerColor);
-      expect(a, body.name).toBeGreaterThanOrEqual(PLANET_MARKER_PARAMS.albedoMin);
-      expect(a, body.name).toBeLessThanOrEqual(PLANET_MARKER_PARAMS.albedoMax);
+      // The beacon palette is pale by design — additive blending renders a
+      // saturated tint as neon. Raw (pre-clamp) luminance is the honest pin:
+      // every palette entry sits ≥ 0.5, while the saturated UI tints this
+      // palette replaced (Mars 0x9a4a2a lum ≈ 0.26, Neptune 0x2a4ab8 ≈ 0.19)
+      // fail it. The clamped proxy would pass anything, so don't test that.
+      const r = ((body.markerColor >> 16) & 0xff) / 255;
+      const g = ((body.markerColor >> 8) & 0xff) / 255;
+      const b = (body.markerColor & 0xff) / 255;
+      const rawLum = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+      expect(rawLum, body.name).toBeGreaterThanOrEqual(0.5);
+      expect(markerAlbedoProxy(body.markerColor), body.name).toBeLessThanOrEqual(
+        PLANET_MARKER_PARAMS.albedoMax,
+      );
     }
   });
 });

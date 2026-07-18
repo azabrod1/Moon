@@ -412,6 +412,7 @@ function installDevHooks() {
       planetariumMode?.devFrameSun(distanceAU, fovDeg, offNdcX, offNdcY) ?? false,
     sunAppearance: () => planetariumMode?.devSunAppearance() ?? null,
     sunGlareMask: () => planetariumMode?.devSunGlareMask() ?? null,
+    eclipseDebug: () => planetariumMode?.devEclipseDebug() ?? null,
     setVeil: (opts: { warmth?: number; strength?: number }) =>
       planetariumMode?.devSetVeil(opts ?? {}) ?? false,
     // Near-Sun auto-exposure inspection + locks (peek the mode's target/coverage,
@@ -498,6 +499,11 @@ function installDevHooks() {
 async function init() {
   (window as any).__initStarted = true;
   debugLog('Init started');
+  // Build identity in the menu footer: lets anyone confirm which deploy a
+  // device is actually running (cached phone tabs have repeatedly shown
+  // days-old bundles while looking current).
+  const buildEl = document.getElementById('menu-build');
+  if (buildEl) buildEl.textContent = `build ${__BUILD_TAG__}`;
 
   let lastTime = performance.now();
 

@@ -45,6 +45,7 @@ import { findShadowEvent, shadowAxisSphereHitAU, shadowAxisSurfacePoint } from '
 import { computeBodyPositionAU, computeBodyState } from '../astronomy/planetary';
 import { computeMoonOffsetEquatorialAU } from '../astronomy/satellites';
 import { PLANETARIUM_BODIES } from './planets/planetData';
+import { MOONS } from './planets/moonData';
 import { KM_PER_AU } from '../astronomy/constants';
 import { RAD2DEG, DEG2RAD } from '../shared/math/angles';
 
@@ -365,7 +366,7 @@ describe('surface vantage geometry', () => {
   describe('shadow-spot vantage degradation chain', () => {
     const R = 1;
 
-    it('central event: stands at the axis/sphere intersection', () => {
+    it('central event: stands ON the axis at the camera shell', () => {
       // Occluder off-axis at (0.5R, 0, 2R), shadow pointing -z: hit on the +z hemisphere.
       const offset = new THREE.Vector3(0.5, 0, 2);
       const axis = new THREE.Vector3(0, 0, -1);
@@ -375,9 +376,16 @@ describe('surface vantage geometry', () => {
       expect(surface.length()).toBeCloseTo(R, 12);
       expect(surface.x).toBeCloseTo(0.5, 12);
       expect(surface.z).toBeCloseTo(Math.sqrt(1 - 0.25), 12);
+      // The vantage sits at the camera's flying shell and ON the shadow axis
+      // (zero perpendicular distance to the axis line) — lifting the ground
+      // hit radially instead put the observer beside the umbral line and a
+      // slanted-axis eclipse never reached totality.
       const vantage = computeShadowSpotVantage(R, offset, axis, new THREE.Vector3());
       expect(vantage.length()).toBeCloseTo(R + surfaceAltitudeAU(R), 12);
-      expect(vantage.clone().normalize().dot(surface.clone().normalize())).toBeCloseTo(1, 12);
+      const fromOccluder = vantage.clone().sub(offset);
+      const axialDistToAxis = fromOccluder.clone().addScaledVector(axis, -fromOccluder.dot(axis));
+      expect(axialDistToAxis.length()).toBeCloseTo(0, 12);
+      expect(vantage.x).toBeCloseTo(0.5, 12);
     });
 
     it('partial event (axis misses the disc): stands at the deepest-cover point', () => {
@@ -668,67 +676,103 @@ describe('bodyDisplayName', () => {
   });
 });
 
-describe('anchored solar-eclipse pass — 2027-08-02 regression', () => {
+describe('anchored solar-eclipse pass — totality regressions', () => {
   // Integrated pin: from the stand-still anchor (derived exactly as the
   // mode's ensureSurfaceSpotAnchor derives it), the observed Sun–Moon
   // separation across the whole event must be a single V — one approach,
-  // one minimum at peak, one departure. The per-frame max-cover chase this
-  // guards against produced THREE dead-center alignments per eclipse.
-  it('a pinned observer sees one monotonic eclipse with its minimum at peak', () => {
-    const earth = PLANETARIUM_BODIES.find(b => b.name === 'Earth')!;
-    const event = findShadowEvent(
-      { kind: 'shadow-transit', parentPlanet: 'Earth', moonName: 'Moon' },
-      Date.parse('2027-07-15T00:00:00Z'),
-      1,
-    );
-    expect(event).not.toBeNull();
-    const peakMs = event!.peakUtcMs;
-    // 2027-08-02 total eclipse (EclipseWise greatest ~10:06:37 UT).
-    expect(Math.abs(peakMs - Date.parse('2027-08-02T10:06:41Z'))).toBeLessThan(10 * 60_000);
+  // one minimum at peak, one departure — AND for a total eclipse the
+  // minimum must drop below the totality margin (Moon minus Sun angular
+  // radius), not merely "get close". The 2026-08-12 pass bottomed out at
+  // ~0.05° when the vantage lifted the ground-level axis point radially:
+  // on that slanted axis (high gamma) the lift walked the observer
+  // hundreds of km off the umbral line and the Sun was never covered. The
+  // camera now stands on the axis at its flying shell; both the slanted
+  // and the near-vertical geometry must reach real totality. A loose
+  // minimum bound (< 0.05°) passed while users watched a permanent
+  // crescent — the margin comparison is the honest assert.
+  const SUN_RADIUS_AU = 695_700 / KM_PER_AU;
+  const MOON_RADIUS_AU = MOONS.find(m => m.name === 'Moon')!.radiusAU;
 
-    const peakOffset = computeMoonOffsetEquatorialAU('Moon', 'Earth', peakMs, new THREE.Vector3());
-    const axis = computeBodyPositionAU(earth, peakMs).add(peakOffset).normalize();
-    const anchor = computeSpotAnchorLocal(
-      peakOffset,
-      axis,
-      earth.radiusAU,
-      computeBodyState(earth, peakMs).orientationQuaternion,
-      new THREE.Vector3(),
-    );
+  const cases: Array<[searchFrom: string, greatest: string, label: string]> = [
+    ['2026-07-18T00:00:00Z', '2026-08-12T17:46:00Z', 'slanted axis (2026-08-12)'],
+    ['2027-07-15T00:00:00Z', '2027-08-02T10:06:41Z', 'near-central axis (2027-08-02)'],
+  ];
 
-    const separationDeg = (utcMs: number): number => {
-      const earthPos = computeBodyPositionAU(earth, utcMs);
-      const observer = computeAnchoredSpotVantage(
+  it.each(cases)(
+    'a pinned observer reaches totality in one monotonic pass — %s',
+    (searchFromUtc, greatestUtc) => {
+      const earth = PLANETARIUM_BODIES.find(b => b.name === 'Earth')!;
+      const event = findShadowEvent(
+        { kind: 'shadow-transit', parentPlanet: 'Earth', moonName: 'Moon' },
+        Date.parse(searchFromUtc),
+        1,
+      );
+      expect(event).not.toBeNull();
+      const peakMs = event!.peakUtcMs;
+      // Published greatest-eclipse instants (EclipseWise).
+      expect(Math.abs(peakMs - Date.parse(greatestUtc))).toBeLessThan(10 * 60_000);
+
+      const peakOffset = computeMoonOffsetEquatorialAU('Moon', 'Earth', peakMs, new THREE.Vector3());
+      const axis = computeBodyPositionAU(earth, peakMs).add(peakOffset).normalize();
+      const anchor = computeSpotAnchorLocal(
+        peakOffset,
+        axis,
         earth.radiusAU,
-        anchor,
-        computeBodyState(earth, utcMs).orientationQuaternion,
+        computeBodyState(earth, peakMs).orientationQuaternion,
         new THREE.Vector3(),
-      ).add(earthPos);
-      const sunDir = observer.clone().multiplyScalar(-1).normalize();
-      const moonDir = computeMoonOffsetEquatorialAU('Moon', 'Earth', utcMs, new THREE.Vector3())
-        .add(earthPos)
-        .sub(observer)
-        .normalize();
-      return Math.acos(THREE.MathUtils.clamp(sunDir.dot(moonDir), -1, 1)) * RAD2DEG;
-    };
+      );
 
-    const stepMs = 120_000;
-    const spanSteps = 75; // peak ± 150 min at 2-min samples
-    const seps: number[] = [];
-    for (let i = -spanSteps; i <= spanSteps; i++) seps.push(separationDeg(peakMs + i * stepMs));
+      const observerAt = (utcMs: number): THREE.Vector3 =>
+        computeAnchoredSpotVantage(
+          earth.radiusAU,
+          anchor,
+          computeBodyState(earth, utcMs).orientationQuaternion,
+          new THREE.Vector3(),
+        ).add(computeBodyPositionAU(earth, utcMs));
 
-    let minIdx = 0;
-    for (let i = 1; i < seps.length; i++) if (seps[i] < seps[minIdx]) minIdx = i;
+      const separationDeg = (utcMs: number): number => {
+        const observer = observerAt(utcMs);
+        const sunDir = observer.clone().multiplyScalar(-1).normalize();
+        const moonDir = computeMoonOffsetEquatorialAU('Moon', 'Earth', utcMs, new THREE.Vector3())
+          .add(computeBodyPositionAU(earth, utcMs))
+          .sub(observer)
+          .normalize();
+        return Math.acos(THREE.MathUtils.clamp(sunDir.dot(moonDir), -1, 1)) * RAD2DEG;
+      };
 
-    // Deep central alignment at (within a few minutes of) the pin instant.
-    expect(Math.abs(minIdx - spanSteps) * stepMs).toBeLessThanOrEqual(6 * 60_000);
-    expect(seps[minIdx]).toBeLessThan(0.05);
-    // One pass: falls into the minimum, rises out, never dips again.
-    const eps = 1e-4;
-    for (let i = 1; i <= minIdx; i++) expect(seps[i]).toBeLessThan(seps[i - 1] + eps);
-    for (let i = minIdx + 1; i < seps.length; i++) expect(seps[i]).toBeGreaterThan(seps[i - 1] - eps);
-    // Clean entry and exit: well separated at both window edges.
-    expect(seps[0]).toBeGreaterThan(0.5);
-    expect(seps[seps.length - 1]).toBeGreaterThan(0.5);
-  });
+      const stepMs = 120_000;
+      const spanSteps = 75; // peak ± 150 min at 2-min samples
+      const seps: number[] = [];
+      for (let i = -spanSteps; i <= spanSteps; i++) seps.push(separationDeg(peakMs + i * stepMs));
+
+      let minIdx = 0;
+      for (let i = 1; i < seps.length; i++) if (seps[i] < seps[minIdx]) minIdx = i;
+
+      // Deep central alignment at (within a few minutes of) the pin instant.
+      expect(Math.abs(minIdx - spanSteps) * stepMs).toBeLessThanOrEqual(6 * 60_000);
+
+      // Totality margin from the model's own geometry at peak: the Moon's
+      // angular radius must exceed the Sun's (total, not annular, in-model)
+      // and the observed minimum must sit decisively inside that margin —
+      // the Sun fully covered, not grazed.
+      const obs = observerAt(peakMs);
+      const sunDistAU = obs.length();
+      const moonDistAU = computeMoonOffsetEquatorialAU('Moon', 'Earth', peakMs, new THREE.Vector3())
+        .add(computeBodyPositionAU(earth, peakMs))
+        .sub(obs)
+        .length();
+      const marginDeg =
+        (Math.asin(MOON_RADIUS_AU / moonDistAU) - Math.asin(SUN_RADIUS_AU / sunDistAU)) * RAD2DEG;
+      expect(marginDeg).toBeGreaterThan(0);
+      expect(seps[minIdx]).toBeLessThan(marginDeg * 0.5);
+
+      // One pass: falls into the minimum, rises out, never dips again.
+      const eps = 1e-4;
+      for (let i = 1; i <= minIdx; i++) expect(seps[i]).toBeLessThan(seps[i - 1] + eps);
+      for (let i = minIdx + 1; i < seps.length; i++) expect(seps[i]).toBeGreaterThan(seps[i - 1] - eps);
+      // Clean entry and exit: well separated at both window edges.
+      expect(seps[0]).toBeGreaterThan(0.5);
+      expect(seps[seps.length - 1]).toBeGreaterThan(0.5);
+    },
+  );
 });

@@ -66,6 +66,7 @@ import {
   findShadowEvent,
   listShadowEventSpecs,
   searchShadowEvent,
+  shadowAxisSurfacePoint,
   type MoonShadingState,
   type ShadowEvent,
   type ShadowEventSpec,
@@ -6431,6 +6432,55 @@ export class PlanetariumMode {
       occluderRadii: glareMat ? (glareMat.uniforms.uOccluderRadii.value as number) : 0,
       occluderOffsetSr: offset ? [offset.x, offset.y] : [0, 0],
       silhouetteDim: this.sunSilhouetteFx ? (this.sunSilhouetteFx.uSilhouette.value as number) : 0,
+    };
+  }
+
+  /** Dev bridge: measure every link of the anchored solar-eclipse chain at the
+   *  current instant — anchor vs live axis point, camera vs anchor, rendered
+   *  moon vs ephemeris, and pin/render quaternion agreement. Diagnostic only;
+   *  allocations are fine here. */
+  devEclipseDebug(): unknown {
+    const landed = this.landedOn;
+    if (landed?.type !== 'planet' || this.surfaceTarget.kind !== 'sun-from-spot') return null;
+    const t = this.timeState.currentUtcMs;
+    const body = PLANETARIUM_BODIES.find((b) => b.name === landed.name);
+    const parentPlanet = this.solarSystem?.planets.find((p) => p.data.name === landed.name);
+    if (!body || !parentPlanet) return null;
+    const moonName = (this.surfaceTarget as { occluderMoonName: string }).occluderMoonName;
+    const KM = 149_597_870.7;
+    const offset = computeMoonOffsetEquatorialAU(moonName, landed.name, t, new THREE.Vector3());
+    const planetHelio = computeBodyPositionAU(body, t);
+    const axis = planetHelio.clone().add(offset).normalize();
+    const liveSpot = shadowAxisSurfacePoint(offset, axis, body.radiusAU, new THREE.Vector3());
+    const anchorWorld = this.surfaceSpotAnchor
+      ? this.surfaceSpotAnchor
+          .clone()
+          .applyQuaternion(parentPlanet.group.quaternion)
+          .normalize()
+          .multiplyScalar(body.radiusAU)
+      : null;
+    const stateQ = computeBodyState(body, t).orientationQuaternion;
+    const camDir = this.camera.position.clone().normalize();
+    const sunFromCam = planetHelio.clone().multiplyScalar(-1).sub(this.camera.position).normalize();
+    const moonMesh = this.planetMoons.get(landed.name)?.find((m) => m.data.name === moonName) ?? null;
+    const modelMoonFromCam = offset.clone().sub(this.camera.position).normalize();
+    const renderMoonFromCam = moonMesh
+      ? moonMesh.mesh.position.clone().sub(this.camera.position).normalize()
+      : null;
+    return {
+      utc: new Date(t).toISOString(),
+      hasAnchor: !!this.surfaceSpotAnchor,
+      quatDot: Math.abs(stateQ.dot(parentPlanet.group.quaternion)),
+      anchorVsLiveSpotKm: anchorWorld ? anchorWorld.distanceTo(liveSpot) * KM : null,
+      camVsAnchorDeg: anchorWorld
+        ? THREE.MathUtils.radToDeg(camDir.angleTo(anchorWorld.clone().normalize()))
+        : null,
+      camVsLiveSpotDeg: THREE.MathUtils.radToDeg(camDir.angleTo(liveSpot.clone().normalize())),
+      modelSepDeg: THREE.MathUtils.radToDeg(sunFromCam.angleTo(modelMoonFromCam)),
+      renderSepDeg: renderMoonFromCam
+        ? THREE.MathUtils.radToDeg(sunFromCam.angleTo(renderMoonFromCam))
+        : null,
+      renderVsModelMoonKm: moonMesh ? moonMesh.mesh.position.distanceTo(offset) * KM : null,
     };
   }
 

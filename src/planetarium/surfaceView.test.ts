@@ -41,7 +41,10 @@ import {
   type SurfaceLandedInfo,
   type SurfaceTargetChoice,
 } from './surfaceView';
-import { shadowAxisSphereHitAU, shadowAxisSurfacePoint } from '../astronomy/shadows';
+import { findShadowEvent, shadowAxisSphereHitAU, shadowAxisSurfacePoint } from '../astronomy/shadows';
+import { computeBodyPositionAU, computeBodyState } from '../astronomy/planetary';
+import { computeMoonOffsetEquatorialAU } from '../astronomy/satellites';
+import { PLANETARIUM_BODIES } from './planets/planetData';
 import { KM_PER_AU } from '../astronomy/constants';
 import { RAD2DEG, DEG2RAD } from '../shared/math/angles';
 
@@ -662,5 +665,70 @@ describe('bodyDisplayName', () => {
     expect(bodyDisplayName('Sun')).toBe('the Sun');
     expect(bodyDisplayName('Io')).toBe('Io');
     expect(bodyDisplayName('Jupiter')).toBe('Jupiter');
+  });
+});
+
+describe('anchored solar-eclipse pass — 2027-08-02 regression', () => {
+  // Integrated pin: from the stand-still anchor (derived exactly as the
+  // mode's ensureSurfaceSpotAnchor derives it), the observed Sun–Moon
+  // separation across the whole event must be a single V — one approach,
+  // one minimum at peak, one departure. The per-frame max-cover chase this
+  // guards against produced THREE dead-center alignments per eclipse.
+  it('a pinned observer sees one monotonic eclipse with its minimum at peak', () => {
+    const earth = PLANETARIUM_BODIES.find(b => b.name === 'Earth')!;
+    const event = findShadowEvent(
+      { kind: 'shadow-transit', parentPlanet: 'Earth', moonName: 'Moon' },
+      Date.parse('2027-07-15T00:00:00Z'),
+      1,
+    );
+    expect(event).not.toBeNull();
+    const peakMs = event!.peakUtcMs;
+    // 2027-08-02 total eclipse (EclipseWise greatest ~10:06:37 UT).
+    expect(Math.abs(peakMs - Date.parse('2027-08-02T10:06:41Z'))).toBeLessThan(10 * 60_000);
+
+    const peakOffset = computeMoonOffsetEquatorialAU('Moon', 'Earth', peakMs, new THREE.Vector3());
+    const axis = computeBodyPositionAU(earth, peakMs).add(peakOffset).normalize();
+    const anchor = computeSpotAnchorLocal(
+      peakOffset,
+      axis,
+      earth.radiusAU,
+      computeBodyState(earth, peakMs).orientationQuaternion,
+      new THREE.Vector3(),
+    );
+
+    const separationDeg = (utcMs: number): number => {
+      const earthPos = computeBodyPositionAU(earth, utcMs);
+      const observer = computeAnchoredSpotVantage(
+        earth.radiusAU,
+        anchor,
+        computeBodyState(earth, utcMs).orientationQuaternion,
+        new THREE.Vector3(),
+      ).add(earthPos);
+      const sunDir = observer.clone().multiplyScalar(-1).normalize();
+      const moonDir = computeMoonOffsetEquatorialAU('Moon', 'Earth', utcMs, new THREE.Vector3())
+        .add(earthPos)
+        .sub(observer)
+        .normalize();
+      return Math.acos(THREE.MathUtils.clamp(sunDir.dot(moonDir), -1, 1)) * RAD2DEG;
+    };
+
+    const stepMs = 120_000;
+    const spanSteps = 75; // peak ± 150 min at 2-min samples
+    const seps: number[] = [];
+    for (let i = -spanSteps; i <= spanSteps; i++) seps.push(separationDeg(peakMs + i * stepMs));
+
+    let minIdx = 0;
+    for (let i = 1; i < seps.length; i++) if (seps[i] < seps[minIdx]) minIdx = i;
+
+    // Deep central alignment at (within a few minutes of) the pin instant.
+    expect(Math.abs(minIdx - spanSteps) * stepMs).toBeLessThanOrEqual(6 * 60_000);
+    expect(seps[minIdx]).toBeLessThan(0.05);
+    // One pass: falls into the minimum, rises out, never dips again.
+    const eps = 1e-4;
+    for (let i = 1; i <= minIdx; i++) expect(seps[i]).toBeLessThan(seps[i - 1] + eps);
+    for (let i = minIdx + 1; i < seps.length; i++) expect(seps[i]).toBeGreaterThan(seps[i - 1] - eps);
+    // Clean entry and exit: well separated at both window edges.
+    expect(seps[0]).toBeGreaterThan(0.5);
+    expect(seps[seps.length - 1]).toBeGreaterThan(0.5);
   });
 });

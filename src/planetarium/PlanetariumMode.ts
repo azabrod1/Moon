@@ -3312,16 +3312,21 @@ export class PlanetariumMode {
       glareMat.uniforms.uOccluderRadii.value = occluderAngularRadius > 0
         ? THREE.MathUtils.clamp(occluderToSunRatio, 0.5, 3)
         : 1;
-      // Silhouette carve: a body deep into covering the Sun reads as a dark
-      // disc through the PSF/veil wash (the shader multiplies those terms
-      // down inside it). Driven by body-only coverage — ring dimming must not
+      // Silhouette carve: a body covering the Sun reads as a dark disc
+      // through the PSF/veil wash (the shader multiplies those terms down
+      // inside it). Driven by body-only coverage — ring dimming must not
       // punch silhouettes — and positioned from the occluder's true direction
-      // so an off-centre partial carves where the body actually is. Shallow
-      // phases (< ~45% covered) keep the full wash: there the glare
-      // legitimately swallows the thin limb crossing.
+      // so an off-centre partial carves where the body actually is. The gate
+      // is overlap-exists, not overlap-depth: a new moon biting the Sun is
+      // backlit and void-black from first contact, so the carve reaches full
+      // strength by ~15% cover — ramping it in over deep coverage instead
+      // left the glare painting across the dark disc all through the partial
+      // phases, a translucent Moon the light seemed to pass through. Only a
+      // grazing sliver keeps the full wash: that bite really is smaller than
+      // the saturated core.
       const coverage = 1 - THREE.MathUtils.clamp(bodyVisibleFraction, 0, 1);
       const occluderShade = occluderAngularRadius > 0 && appearanceEligible
-        ? THREE.MathUtils.smoothstep(coverage, 0.45, 0.85)
+        ? THREE.MathUtils.smoothstep(coverage, 0.03, 0.15)
         : 0;
       glareMat.uniforms.uOccluderShade.value = occluderShade;
       // The silhouetted body itself also drops its night-side lifts (starlight
@@ -4475,8 +4480,9 @@ export class PlanetariumMode {
    * Land on Earth standing in the 2027-08-02 umbral path: the clock jumps to
    * the eclipse's first contact and runs at "20 min/s", so the Moon bites
    * into the Sun over a few seconds; updateTutorial drops to realtime just
-   * inside totality. The surface vantage rides the umbral spot per frame
-   * (updateSurfaceCamera), so totality then holds while the user lingers.
+   * inside totality. The surface vantage is pinned once at the peak's umbral
+   * ground point (updateSurfaceCamera's stand-still anchor), so realtime
+   * totality plays out overhead while the user lingers.
    */
   private stageTutorialEclipse(generation: number): void {
     this.tutorialLandThen(generation, { type: 'planet', name: 'Earth' }, () => {
@@ -7869,14 +7875,31 @@ export class PlanetariumMode {
         // Re-deriving the point from the live shadow geometry every frame
         // chased maximum cover instead — three Sun-occluder alignments per
         // event where a real observer sees one clean pass.
-        const anchor = this.ensureSurfaceSpotAnchor(occluder.data.name);
         const parentPlanet = this.solarSystem?.planets.find(p => p.data.name === parentName);
+        let anchor = this.ensureSurfaceSpotAnchor(occluder.data.name);
+        if (!anchor && parentPlanet) {
+          // No pinnable event (defensive) — pin at the CURRENT live spot
+          // instead of riding it per frame: per-frame re-derivation is the
+          // max-cover chase (three Sun–occluder alignments per event) that
+          // stand-still anchoring exists to prevent.
+          const axis = this.tmpSurfaceAxis
+            .set(parentPos.x, parentPos.y, parentPos.z)
+            .add(occluder.mesh.position)
+            .normalize();
+          anchor = this.surfaceSpotAnchor = computeSpotAnchorLocal(
+            occluder.mesh.position,
+            axis,
+            radiusAU,
+            parentPlanet.group.quaternion,
+            new THREE.Vector3(),
+          );
+        }
         if (anchor && parentPlanet) {
           computeAnchoredSpotVantage(radiusAU, anchor, parentPlanet.group.quaternion, vantage);
           spotPosed = true;
         } else {
-          // No pinnable event (defensive) — the live axis point still beats
-          // the sub-target default for a shadow view.
+          // No planet entity to express the rotating frame (shouldn't happen)
+          // — the live axis point still beats the sub-target default.
           const axis = this.tmpSurfaceAxis
             .set(parentPos.x, parentPos.y, parentPos.z)
             .add(occluder.mesh.position)

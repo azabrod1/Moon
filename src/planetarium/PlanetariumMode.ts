@@ -5636,6 +5636,54 @@ export class PlanetariumMode {
     return true;
   }
 
+  /**
+   * Headless-screenshot support: park the camera close to a body and aim it
+   * exactly at the limb's tangent point, so the horizon arc crosses the frame
+   * center — the close-approach view where silhouette tessellation shows.
+   * Stands on the sunlit side so the limb is lit. Dev bridge only.
+   */
+  devLimbView(name: string, kRadii = 1.5, fovDeg = 50): boolean {
+    if (!this.solarSystem) return false;
+    const body = this.planetWorldPositions.get(name);
+    const r = this.solarSystem.planets.find((p) => p.data.name === name)?.data.radiusAU;
+    if (!body || !r || kRadii <= 1) return false;
+    const d = r * kRadii;
+    // Sunward side: the Sun sits at the heliocentric origin of these coords.
+    const sunward = new THREE.Vector3(-body.x, -body.y, -body.z).normalize();
+    this.devFreeCamera = true;
+    this.player.posX = body.x + sunward.x * d;
+    this.player.posY = body.y + sunward.y * d;
+    this.player.posZ = body.z + sunward.z * d;
+    this.player.moving = false;
+    // Tangent point T = B + R·n with n = −(R/d)·w + √(1−R²/d²)·v, where w is
+    // the camera→center axis and v a perpendicular: the exact point where the
+    // sight line grazes the sphere, putting the limb arc mid-frame.
+    const w = sunward.clone().negate();
+    const up = Math.abs(w.y) < 0.95 ? new THREE.Vector3(0, 1, 0) : new THREE.Vector3(1, 0, 0);
+    const v = new THREE.Vector3().crossVectors(w, up).normalize();
+    const rd = r / d;
+    const n = w.clone().multiplyScalar(-rd).addScaledVector(v, Math.sqrt(1 - rd * rd));
+    const tangentOffset = new THREE.Vector3(
+      body.x + r * n.x - this.player.posX,
+      body.y + r * n.y - this.player.posY,
+      body.z + r * n.z - this.player.posZ,
+    );
+    const cam = this.camera as THREE.PerspectiveCamera;
+    cam.position.set(0, 0, 0);
+    cam.fov = fovDeg;
+    cam.updateProjectionMatrix();
+    cam.lookAt(tangentOffset);
+    this.controls.target.copy(tangentOffset);
+    this.showShip = false;
+    this.player.group.visible = false;
+    for (const id of ['planetarium-ui', 'top-bar']) {
+      const el = document.getElementById(id);
+      if (el) el.style.display = 'none';
+    }
+    this.exposureSnapPending = true;
+    return true;
+  }
+
   /** Peek the live auto-exposure target/coverage for the dev bridge — never
    *  the consuming getter. */
   devExposurePeek(): { target: number; coverage: number } {

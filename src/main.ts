@@ -409,6 +409,8 @@ function installDevHooks() {
       planetariumMode?.devFrameBody(name, fillFraction, phaseAngleDeg, distMul) ?? false,
     viewFrom: (fromName: string, toName: string, fovDeg?: number) =>
       planetariumMode?.devViewFrom(fromName, toName, fovDeg) ?? false,
+    limbView: (name: string, kRadii?: number, fovDeg?: number) =>
+      planetariumMode?.devLimbView(name, kRadii, fovDeg) ?? false,
     // Near-Sun auto-exposure inspection + locks (peek the mode's target/coverage,
     // never the consuming getter). setBloom rebuilds the composer + halo tier.
     exposure: () => {

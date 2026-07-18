@@ -484,8 +484,11 @@ function createSunGlowSprite(radiusAU: number, scale: number, texture: THREE.Tex
   return sprite;
 }
 
-function createAtmosphereGlow(radiusAU: number, config: AtmosphereConfig): THREE.Mesh {
-  const geo = new THREE.SphereGeometry(radiusAU * config.scale, 64, 32);
+function createAtmosphereGlow(radiusAU: number, config: AtmosphereConfig, segments: number): THREE.Mesh {
+  // Same tessellation as the planet under it: the shell's soft rim is the
+  // brightest edge on an approach, so a coarser sphere here would put the
+  // polygonal limb right back on top of the smooth planet.
+  const geo = new THREE.SphereGeometry(radiusAU * config.scale, segments, segments / 2);
   const mat = new THREE.ShaderMaterial({
     vertexShader: atmosphereVertexShader,
     fragmentShader: atmosphereFragmentShader,
@@ -567,7 +570,12 @@ export async function createPlanetMesh(planet: PlanetData): Promise<PlanetMesh> 
     : null;
   const texture = await surfaceTexturePromise;
 
-  const segments = planet.radiusKm > 50000 ? 128 : planet.radiusKm > 5000 ? 96 : 64;
+  // Segment counts are sized for the close-approach silhouette, not the far
+  // view: the cruise rig parks every planet at a screen-filling distance, and
+  // a limb whose on-screen disc radius is ~3000px shows chord kinks of
+  // R·(1−cos(180°/segments)) — ~2px at 96 segments, a visibly polygonal
+  // horizon. These tiers keep the worst case under ~0.6px.
+  const segments = planet.radiusKm > 50000 ? 256 : planet.radiusKm > 5000 ? 192 : 160;
 
   const geo = new THREE.SphereGeometry(planet.radiusAU, segments, segments / 2);
 
@@ -627,7 +635,7 @@ export async function createPlanetMesh(planet: PlanetData): Promise<PlanetMesh> 
   let atmosphere: THREE.Mesh | undefined;
   const atmosConfig = ATMOSPHERES[planet.name];
   if (atmosConfig) {
-    atmosphere = createAtmosphereGlow(planet.radiusAU, atmosConfig);
+    atmosphere = createAtmosphereGlow(planet.radiusAU, atmosConfig, segments);
     atmosphere.name = `${planet.name}Atmosphere`;
     group.add(atmosphere);
   }
@@ -694,8 +702,10 @@ export function createPlanetariumSun(useBloom = true): THREE.Group {
   const group = new THREE.Group();
   group.name = 'Sun';
 
-  // Sun sphere with animated corona shader
-  const geo = new THREE.SphereGeometry(SUN_DATA.radiusAU, 64, 32);
+  // Sun sphere with animated corona shader. 192 segments: the speed governor
+  // lets an approach park at 1.2 photosphere radii, where the disc overfills
+  // the screen and a coarse silhouette shows kinks through the corona.
+  const geo = new THREE.SphereGeometry(SUN_DATA.radiusAU, 192, 96);
   const sunMat = new THREE.ShaderMaterial({
     uniforms: {
       time: { value: 0 },
@@ -1100,8 +1110,11 @@ export function createMoonMeshes(planetName: string): MoonMesh[] {
   for (const moonData of moons) {
     // Observatory frames every moon to a fixed screen fraction regardless of
     // size, so even tiny moons need a smooth limb up close — the old 16/24
-    // segment tiers faceted visibly. Floor at 48 (cheap: ~2k tris); big moons 64.
-    const segments = moonData.radiusKm > 1000 ? 64 : 48;
+    // segment tiers faceted visibly, and the 48/64 pass after them still
+    // showed ~1-2px chord kinks on a screen-filling landed disc (silhouette
+    // error falls as 1/segments²). 96/128 keeps it under ~0.5px; ×64 moons
+    // it's still only a few MB of static geometry.
+    const segments = moonData.radiusKm > 1000 ? 128 : 96;
     const geo = new THREE.SphereGeometry(moonData.radiusAU, segments, segments / 2);
 
     // Flat placeholder. A moon is never made visible before it's painted (the

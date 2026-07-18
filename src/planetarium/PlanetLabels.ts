@@ -85,12 +85,16 @@ export class PlanetLabels {
       canvas.height = 64;
       const ctx = canvas.getContext('2d')!;
 
-      // Beacon texture: a white-saturated core carrying the tint only in a
-      // tight halo. Real bright planets read as warm-tinted white points — so
-      // the hue lives in the aura around the core, and the old wide skirt
-      // (alpha 0.15 out to 70% radius) drops to a whisper. The tint itself is
-      // the catalog's photo-informed markerColor, not the UI tint: additive
-      // blending renders a saturated tint as neon.
+      // Beacon texture: a lightly-lifted hued core with the full tint in the
+      // surrounding halo. Only a modest white lift keeps the center from being
+      // a flat colour chip — enough that the point still reads as luminous, but
+      // the planet's hue survives all the way to the middle. That matters when
+      // the marker shrinks to a few pixels far away: a mostly-white core there
+      // washes to an anonymous white star, so a distant Neptune can't be told
+      // from the background. The tint is the catalog's photo-informed
+      // markerColor, not the UI tint: additive blending renders a saturated
+      // tint as neon, so the palette stays pale. Alphas/radii are unchanged —
+      // this adds colour, not size.
       const tint = new THREE.Color(body.markerColor);
       const mixToWhite = (c: THREE.Color, w: number) =>
         `${Math.round(THREE.MathUtils.lerp(c.r, 1, w) * 255)}, ` +
@@ -98,18 +102,19 @@ export class PlanetLabels {
         `${Math.round(THREE.MathUtils.lerp(c.b, 1, w) * 255)}`;
 
       const gradient = ctx.createRadialGradient(32, 32, 2, 32, 32, 32);
-      gradient.addColorStop(0, `rgba(${mixToWhite(tint, 0.85)}, 1.0)`);
-      gradient.addColorStop(0.14, `rgba(${mixToWhite(tint, 0.4)}, 0.8)`);
+      gradient.addColorStop(0, `rgba(${mixToWhite(tint, 0.5)}, 1.0)`);
+      gradient.addColorStop(0.14, `rgba(${mixToWhite(tint, 0.25)}, 0.8)`);
       gradient.addColorStop(0.35, `rgba(${mixToWhite(tint, 0)}, 0.3)`);
       gradient.addColorStop(0.65, `rgba(${mixToWhite(tint, 0)}, 0.06)`);
       gradient.addColorStop(1, `rgba(${mixToWhite(tint, 0)}, 0)`);
       ctx.fillStyle = gradient;
       ctx.fillRect(0, 0, 64, 64);
 
-      // Crisp near-white center so the beacon stays a point, not a smudge.
+      // Lightly-hued crisp center so the beacon stays a point, not a smudge,
+      // while still carrying its colour.
       ctx.beginPath();
       ctx.arc(32, 32, 4.5, 0, Math.PI * 2);
-      ctx.fillStyle = `rgba(${mixToWhite(tint, 0.8)}, 1.0)`;
+      ctx.fillStyle = `rgba(${mixToWhite(tint, 0.55)}, 1.0)`;
       ctx.fill();
 
       const spriteTex = new THREE.CanvasTexture(canvas);
@@ -298,6 +303,13 @@ export class PlanetLabels {
       if (!markerOccluded) {
         for (const disc of foregroundDiscs) {
           if (disc.name === entry.planet.name) continue;
+          // The ship hull never hides a marker. Its occlusion disc exists to
+          // keep labels off the hull, but a beacon is a find-me point: a planet
+          // dead ahead sits right above the ship, exactly where the hull disc
+          // covers, and culling it there makes an approaching world vanish. A
+          // far, faint marker overlapping the hull is a harmless additive dot.
+          // Labels below still respect the ship disc.
+          if (disc.name === 'ship') continue;
           if (distFromCamera <= disc.distFromCamera) continue;
           const mdx = screenX - disc.screenX;
           const mdy = screenY - disc.screenY;

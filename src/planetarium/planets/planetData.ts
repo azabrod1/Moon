@@ -94,7 +94,7 @@ export const PLANETS: PlanetData[] = [
   {
     name: 'Earth',
     symbol: '\u2295',
-    markerColor: 0x9fc2e8,  // the pale blue dot
+    markerColor: 0x549bdf,  // ocean blue — enough to read as Earth, not a star
     semiMajorAxisAU: 1.000,
     radiusAU: kmToAU(6_378),
     radiusKm: 6_378,
@@ -116,7 +116,7 @@ export const PLANETS: PlanetData[] = [
   {
     name: 'Mars',
     symbol: '\u2642',
-    markerColor: 0xd9976a,  // butterscotch, the hue Mars actually shows
+    markerColor: 0xd6825a,  // rust-butterscotch, the hue Mars actually shows
     semiMajorAxisAU: 1.524,
     radiusAU: kmToAU(3_396),
     radiusKm: 3_396,
@@ -182,7 +182,7 @@ export const PLANETS: PlanetData[] = [
   {
     name: 'Uranus',
     symbol: '\u26E2',
-    markerColor: 0xaedce2,  // pale cyan
+    markerColor: 0x8ccfd7,  // sea-green cyan, its own note between the blues
     semiMajorAxisAU: 19.191,
     radiusAU: kmToAU(25_559),
     radiusKm: 25_559,
@@ -204,7 +204,7 @@ export const PLANETS: PlanetData[] = [
   {
     name: 'Neptune',
     symbol: '\u2646',
-    markerColor: 0x8fb0e0,  // pale azure, bluer than Uranus for identity
+    markerColor: 0x5f8bda,  // deep azure, the bluest marker — unmistakably a world
     semiMajorAxisAU: 30.061,
     radiusAU: kmToAU(24_764),
     radiusKm: 24_764,

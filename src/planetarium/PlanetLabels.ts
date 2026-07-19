@@ -238,9 +238,17 @@ export class PlanetLabels {
        *  beacon policy's heliocentric-distance term. Falls back to the
        *  catalog semi-major axis when absent. */
       sunPos?: { x: number; y: number; z: number };
+      /** Precise hull test for marker-vs-ship occlusion. The ship's
+       *  foreground disc is a generous circle — right for keeping text off
+       *  the hull, but wrong in both directions for a beacon: culling by the
+       *  whole circle vanishes a planet visibly beside the hull, and
+       *  ignoring the ship draws the beacon on top of it. Inside the circle,
+       *  this callback raycasts the actual hull so the marker hides exactly
+       *  when covered. */
+      markerShipTest?: (markerWorldPos: THREE.Vector3) => boolean;
     } = {},
   ) {
-    const { showMarkers = true, showLabels = true, excludeName, sunPos } = options;
+    const { showMarkers = true, showLabels = true, excludeName, sunPos, markerShipTest } = options;
     const canvasWidth = renderer.domElement.clientWidth;
     const canvasHeight = renderer.domElement.clientHeight;
     const halfFovTan = Math.tan((this.camera.fov * Math.PI) / 360);
@@ -303,13 +311,28 @@ export class PlanetLabels {
       if (!markerOccluded) {
         for (const disc of foregroundDiscs) {
           if (disc.name === entry.planet.name) continue;
-          // The ship hull never hides a marker. Its occlusion disc exists to
-          // keep labels off the hull, but a beacon is a find-me point: a planet
-          // dead ahead sits right above the ship, exactly where the hull disc
-          // covers, and culling it there makes an approaching world vanish. A
-          // far, faint marker overlapping the hull is a harmless additive dot.
-          // Labels below still respect the ship disc.
-          if (disc.name === 'ship') continue;
+          // The ship's circle never hides a beacon on its own: a planet dead
+          // ahead sits right above the ship, inside the circle but beside the
+          // hull, and culling it there makes an approaching world vanish.
+          // Inside the circle the precise hull raycast decides instead, so
+          // the beacon hides exactly when hull pixels cover it and stays lit
+          // beside them. Labels below still use the plain circle.
+          if (disc.name === 'ship') {
+            if (!markerShipTest) continue;
+            // Gate at 3× the circle: the circle is a conservative half-length
+            // (0.75 hull reference radii) while the longest probe hull
+            // reaches ~2.2, and a gate that misses the nozzle tip would let
+            // the beacon draw across it. The raycast stays the decider.
+            const sdx = screenX - disc.screenX;
+            const sdy = screenY - disc.screenY;
+            const gate = disc.radiusPx * 3;
+            if (sdx * sdx + sdy * sdy >= gate * gate) continue;
+            if (markerShipTest(entry.sprite.position)) {
+              markerOccluded = true;
+              break;
+            }
+            continue;
+          }
           if (distFromCamera <= disc.distFromCamera) continue;
           const mdx = screenX - disc.screenX;
           const mdy = screenY - disc.screenY;

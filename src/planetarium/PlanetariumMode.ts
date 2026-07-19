@@ -1553,6 +1553,7 @@ export class PlanetariumMode {
         showMarkers: this.showBodyMarkers,
         showLabels: this.showBodyLabels,
         sunPos: this.solarSystem.sun.position,
+        markerShipTest: this.isMarkerBehindShip,
       });
     }
 
@@ -2672,6 +2673,36 @@ export class PlanetariumMode {
       }
     }
   }
+
+  // Marker-vs-hull raycast scratch (isMarkerBehindShip). Reused per call —
+  // the test runs only for markers whose screen position falls near the
+  // ship's occlusion circle, typically zero or one per frame.
+  private markerShipRaycaster = new THREE.Raycaster();
+  private markerShipRayDir = new THREE.Vector3();
+  private markerShipMeshes: THREE.Object3D[] = [];
+  private markerShipHits: THREE.Intersection[] = [];
+
+  /**
+   * True when the sight line from the camera to a far marker passes through
+   * the ship's solid hull. Solid meshes only, skipping invisible subtrees —
+   * the plume and glow sprites are light, not hull, and shouldn't eat a
+   * beacon. Any hull hit occludes: the marker's body is always AU away,
+   * far behind every part of the ship.
+   */
+  private isMarkerBehindShip = (markerWorldPos: THREE.Vector3): boolean => {
+    if (!this.player.group.visible || this.landedOn) return false;
+    this.markerShipMeshes.length = 0;
+    const collect = (o: THREE.Object3D) => {
+      if (!o.visible) return;
+      if ((o as THREE.Mesh).isMesh) this.markerShipMeshes.push(o);
+      for (const child of o.children) collect(child);
+    };
+    collect(this.player.group);
+    this.markerShipRayDir.copy(markerWorldPos).sub(this.camera.position).normalize();
+    this.markerShipRaycaster.set(this.camera.position, this.markerShipRayDir);
+    this.markerShipHits.length = 0;
+    return this.markerShipRaycaster.intersectObjects(this.markerShipMeshes, false, this.markerShipHits).length > 0;
+  };
 
   /**
    * Third pass: place HTML labels for visible moons. Uses the occluder set

@@ -255,7 +255,7 @@ export function loadTexture(key: string, tier: TextureTier = '2k', kind: MapKind
 export interface TextureUpgrade {
   key: string; // PLANET_TEXTURE_FILES key
   material: THREE.MeshStandardMaterial;
-  state: 'idle' | 'loading' | 'done' | 'failed';
+  state: 'idle' | 'loading' | 'done' | 'failed' | 'cancelled';
 }
 
 // Texture keys with a 4K colour variant under public/textures/4k/. A 4K variant
@@ -334,6 +334,10 @@ export function upgradeTextureOnApproach(up: TextureUpgrade): void {
   loader.load(
     url,
     (tex) => {
+      if (up.state === 'cancelled') {
+        tex.dispose();
+        return;
+      }
       applyTextureDefaults(tex, 'color');
       // Decode before the rank swap: the material keeps its current map until
       // the 4K is cheap to draw, so a mid-session upgrade never freezes the
@@ -342,6 +346,14 @@ export function upgradeTextureOnApproach(up: TextureUpgrade): void {
       // view, so warming here can't upload hidden bodies.
       const img = tex.image as { decode?: () => Promise<void> } | undefined;
       const applyUpgrade = () => {
+        // A covered landing gives the local fetch/decode a bounded window. If
+        // it missed that window, retain the already-drawable 2K map for this
+        // session instead of letting a late 32 MiB upload freeze an unrelated
+        // visible gesture (most painfully Safari's first Surface click).
+        if (up.state === 'cancelled') {
+          tex.dispose();
+          return;
+        }
         if (applyColorTierTexture(up.material, tex, 4)) queueTextureWarm(tex);
         up.material.userData.photoLoaded = true; // keep the lazy painter off it
         up.state = 'done';
@@ -351,6 +363,7 @@ export function upgradeTextureOnApproach(up: TextureUpgrade): void {
     },
     undefined,
     (err) => {
+      if (up.state === 'cancelled') return;
       up.state = 'failed';
       debugWarn('4K texture upgrade failed', {
         key: up.key,
@@ -358,6 +371,13 @@ export function upgradeTextureOnApproach(up: TextureUpgrade): void {
       });
     },
   );
+}
+
+/** Stop an in-flight optional 4K upgrade after its covered warm-up window.
+ * TextureLoader cannot abort the request, so the completion path disposes it
+ * without assigning or uploading it. The existing 2K material stays intact. */
+export function cancelTextureUpgrade(up: TextureUpgrade): void {
+  if (up.state === 'loading') up.state = 'cancelled';
 }
 
 function createFallbackTexture(key: string, kind: MapKind = 'color'): THREE.Texture {
@@ -1053,8 +1073,9 @@ const MOON_NORMAL_KEYS: Record<string, string> = {
  * post-arrival combinations; the augmentation is byte-identical GLSL across
  * bodies (uniforms only), so one compile per combination covers every moon.
  * Add to the scene before renderer.compileAsync, remove + dispose after it
- * settles. The group stays invisible — compile() traverses invisible objects,
- * and nothing here may ever be drawn.
+ * settles. The group starts invisible for ordinary frames; activation briefly
+ * makes it visible only for a one-pixel, load-veiled real draw on drivers where
+ * compileAsync cannot guarantee a completed link.
  */
 export function createShaderWarmupProbes(): { group: THREE.Group; dispose: () => void } {
   const makeTex = (kind: MapKind): THREE.Texture => {

@@ -37,7 +37,22 @@ export interface SurfaceHudState {
 }
 
 /** Transport-strip actions, routed to the owner's shared time handlers. */
-export type SurfaceTimeAction = 'toggle-pause' | 'slower' | 'faster' | 'now';
+export type SurfaceTimeAction = 'pause' | 'resume' | 'slower' | 'faster' | 'now';
+
+/**
+ * Safari can queue both activations of a double-click behind a long WebGL
+ * task. Comparing handler time makes that queued pair look far apart; the
+ * event timestamps retain when the user actually pressed the button.
+ */
+export function isRepeatedSurfacePauseActivation(
+  previousTimestampMs: number | null,
+  timestampMs: number,
+  repeatWindowMs = 350,
+): boolean {
+  if (previousTimestampMs === null) return false;
+  const delta = timestampMs - previousTimestampMs;
+  return delta >= 0 && delta <= repeatWindowMs;
+}
 
 /** Which marker the HUD draws over the tracked target this frame. */
 export type SurfaceMarkerMode = 'hidden' | 'brackets' | 'reticle' | 'chevron' | 'pill';
@@ -66,6 +81,10 @@ export class ObservatoryHUD {
   private blEl: HTMLElement | null = null;
   private brEl: HTMLElement | null = null;
   private timebarEl: HTMLElement | null = null;
+  /** Last rendered clock state. The button dispatches an explicit intent so a
+   * delayed Pause click can never turn into a resume when it is finally read. */
+  private paused = false;
+  private lastPauseActivationTimestampMs: number | null = null;
   // Lowest anchor Y the marker cluster may take (see render's band measure).
   private clusterMaxY = Infinity;
   private lastMarkerCss = '';
@@ -111,7 +130,20 @@ export class ObservatoryHUD {
     // The chevron is the way back when the target left the frame in free look.
     this.chevronEl?.addEventListener('click', () => this.onResumeTracking());
     // Transport strip — the surface view's only time controls.
-    document.getElementById('surface-tb-pause')?.addEventListener('click', () => this.onTimeAction('toggle-pause'));
+    document.getElementById('surface-tb-pause')?.addEventListener('click', (event) => {
+      // Dispatch the command the rendered label promised. The owner guards a
+      // just-paused clock too, but reject a repeated activation here using the
+      // physical event time. A long WebGL task can delay Safari's delivery of
+      // the second click beyond a handler-time guard. Do not inspect
+      // MouseEvent.detail: WebKit may carry a rapid click count across
+      // neighbouring controls, and Faster -> Pause must never lose Pause.
+      const timestampMs = Number.isFinite(event.timeStamp) && event.timeStamp > 0
+        ? event.timeStamp
+        : performance.now();
+      if (isRepeatedSurfacePauseActivation(this.lastPauseActivationTimestampMs, timestampMs)) return;
+      this.lastPauseActivationTimestampMs = timestampMs;
+      this.onTimeAction(this.paused ? 'resume' : 'pause');
+    });
     document.getElementById('surface-tb-slower')?.addEventListener('click', () => this.onTimeAction('slower'));
     document.getElementById('surface-tb-faster')?.addEventListener('click', () => this.onTimeAction('faster'));
     document.getElementById('surface-tb-now')?.addEventListener('click', () => this.onTimeAction('now'));
@@ -124,6 +156,15 @@ export class ObservatoryHUD {
   hide(): void {
     this.rootEl?.classList.remove('visible');
     this.lastMarkerCss = '';
+    this.lastPauseActivationTimestampMs = null;
+  }
+
+  /** Keep the transport's promised action synchronous with owner clock writes.
+   * This is intentionally cheaper than a full 8 Hz HUD render. */
+  syncPaused(paused: boolean): void {
+    this.paused = paused;
+    setText('surface-tb-pause', paused ? 'Resume' : 'Pause');
+    this.timebarEl?.classList.toggle('paused', paused);
   }
 
   /**
@@ -220,11 +261,10 @@ export class ObservatoryHUD {
     }
     setText('surface-when', state.whenText);
     setText('surface-when-tag', state.whenTag);
-    setText('surface-tb-pause', state.paused ? 'Resume' : 'Pause');
+    this.syncPaused(state.paused);
     // Stepping down can park the clock at the pause detent without a pause
     // click — hollow the strip's dot (the rail's paused idiom) so the frozen
     // clock is visible beyond the small button label flip.
-    this.timebarEl?.classList.toggle('paused', state.paused);
     setText(
       'surface-fov',
       `${state.fovDeg >= 10 ? Math.round(state.fovDeg) : state.fovDeg.toFixed(1)}°`,

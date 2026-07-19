@@ -1,0 +1,23 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="1200" viewBox="0 0 1200 1200">
+  <defs>
+    <linearGradient id="bg2" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#060912"/><stop offset="1" stop-color="#151124"/></linearGradient>
+    <linearGradient id="card2" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#211b31"/><stop offset="1" stop-color="#0e101a"/></linearGradient>
+    <filter id="glow2" x="-45%" y="-45%" width="190%" height="190%"><feGaussianBlur stdDeviation="3.6" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge></filter>
+    <style>
+      .eyebrow{font:600 14px ui-monospace,SFMono-Regular,monospace;letter-spacing:3px;fill:#ba8ee9}.title{font:700 34px -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;fill:#f5f0fa}.sub{font:400 15px -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;fill:#a094b1}.name{font:650 19px -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;fill:#f5f0fa}.note{font:500 11px ui-monospace,SFMono-Regular,monospace;letter-spacing:.8px;fill:#a48db5}.ship{fill:#c5a8e3;fill-opacity:.12;stroke:#e0c5ff;stroke-width:1.25;stroke-linecap:round;stroke-linejoin:round;filter:url(#glow2)}.card{fill:url(#card2);stroke:#49355e;stroke-width:1}
+    </style>
+  </defs>
+  <rect width="1200" height="1200" fill="url(#bg2)"/><circle cx="155" cy="1015" r="340" fill="#512b77" opacity=".12"/>
+  <text class="eyebrow" x="40" y="42">CHOOSE SHIP · SCIENCE-FICTION FLEET</text>
+  <text class="title" x="40" y="82">Iconic silhouettes from across the galaxy</text>
+  <text class="sub" x="40" y="108">Eight new and selectable craft, each backed by detailed procedural Three.js geometry.</text>
+
+  <g transform="translate(35 140)"><rect class="card" width="270" height="450" rx="14"/><g class="ship" transform="translate(48 92) scale(4.25)"><path d="M34 8 L24 11 A11 11 0 1 0 24 19 L34 22 L31 17 H19 V13 H31 Z"/><path d="M19 13 L15 6 M19 17 L15 24 M13 15 H5"/></g><text class="name" x="20" y="365">Millennium Falcon</text><text class="note" x="20" y="398">CORELLIAN FREIGHTER</text></g>
+  <g transform="translate(325 140)"><rect class="card" width="270" height="450" rx="14"/><g class="ship" transform="translate(48 92) scale(4.25)"><ellipse cx="28" cy="15" rx="8" ry="5"/><path d="M20 15 H12 L8 11 M12 15 L8 19 M9 10 H2 M9 20 H2 M6 10 V20"/></g><text class="name" x="20" y="365">USS Enterprise</text><text class="note" x="20" y="398">FEDERATION EXPLORER</text></g>
+  <g transform="translate(615 140)"><rect class="card" width="270" height="450" rx="14"/><g class="ship" transform="translate(48 92) scale(4.25)"><ellipse cx="20" cy="16" rx="16" ry="5"/><path d="M11 14 Q13 5 20 5 Q27 5 29 14 M9 19 Q20 25 31 19 M12 21 V24 M20 22 V26 M28 21 V24"/></g><text class="name" x="20" y="365">UFO</text><text class="note" x="20" y="398">UNKNOWN ORIGIN</text></g>
+  <g transform="translate(905 140)"><rect class="card" width="260" height="450" rx="14"/><g class="ship" transform="translate(43 92) scale(4.25)"><path d="M35 15 L25 12 H13 L7 15 L13 18 H25 Z"/><path d="M23 12 L12 4 H7 L16 12 M23 18 L12 26 H7 L16 18 M11 7 L4 3 M11 23 L4 27"/></g><text class="name" x="20" y="365">X-wing</text><text class="note" x="20" y="398">REBEL STARFIGHTER</text></g>
+  <g transform="translate(35 630)"><rect class="card" width="270" height="450" rx="14"/><g class="ship" transform="translate(48 92) scale(4.25)"><path d="M8 4 L4 8 V22 L8 26 H12 V4 Z M28 4 V26 H32 L36 22 V8 L32 4 Z"/><circle cx="20" cy="15" r="6"/><path d="M12 15 H14 M26 15 H28"/></g><text class="name" x="20" y="365">TIE Fighter</text><text class="note" x="20" y="398">IMPERIAL STARFIGHTER</text></g>
+  <g transform="translate(325 630)"><rect class="card" width="270" height="450" rx="14"/><g class="ship" transform="translate(48 92) scale(4.25)"><path d="M36 15 L5 4 L10 15 L5 26 Z"/><path d="M10 15 H31 M12 12 H22 V8 H17 M17 8 V5"/></g><text class="name" x="20" y="365">Star Destroyer</text><text class="note" x="20" y="398">IMPERIAL DESTROYER</text></g>
+  <g transform="translate(615 630)"><rect class="card" width="270" height="450" rx="14"/><g class="ship" transform="translate(48 92) scale(4.25)"><path d="M36 15 L23 11 H15 L8 15 L15 19 H23 Z"/><path d="M23 11 H12 L4 6 M23 19 H12 L4 24 M11 7 H5 V23 H11"/></g><text class="name" x="20" y="365">Naboo Starfighter</text><text class="note" x="20" y="398">ROYAL STARFIGHTER</text></g>
+  <g transform="translate(905 630)"><rect class="card" width="260" height="450" rx="14"/><g class="ship" transform="translate(43 92) scale(4.25)"><path d="M35 15 L28 10 H18 L13 15 L18 20 H28 Z"/><path d="M18 11 H5 V8 H2 M18 19 H5 V22 H2 M5 8 V22 M10 8 V22"/></g><text class="name" x="20" y="365">Y-wing</text><text class="note" x="20" y="398">REBEL BOMBER</text></g>
+</svg>

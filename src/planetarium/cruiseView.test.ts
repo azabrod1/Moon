@@ -1,5 +1,10 @@
 import { describe, it, expect } from 'vitest';
+import * as THREE from 'three';
 import { ATMOSPHERE_SHELL_SCALES } from './PlanetFactory';
+import { createVoyagerModel } from './ship/models/voyager';
+import { createCassiniModel } from './ship/models/cassini';
+import { createNewHorizonsModel } from './ship/models/newHorizons';
+import { createJunoModel } from './ship/models/juno';
 import {
   SHIP_RIG_SCALE,
   SHIP_REFERENCE_RADIUS_AU,
@@ -8,6 +13,7 @@ import {
   SHIP_OCCLUDER_RADIUS_AU,
   CRUISE_CONTROLS_MIN_DISTANCE_AU,
   SHIP_HULL_MAX_EXTENT_AU,
+  SHIP_ANY_HULL_EXTENT_AU,
   CAMERA_BODY_MARGIN_AU,
   CRUISE_NEAR_MIN_AU,
   CRUISE_NEAR_MAX_AU,
@@ -55,6 +61,45 @@ describe('cruise rig derivation chain', () => {
 
   it('covers the default hull: nozzle exit 1.82 units × 1.8 per radius × 0.5 group scale', () => {
     expect(SHIP_HULL_MAX_EXTENT_AU).toBeGreaterThan(SHIP_REFERENCE_RADIUS_AU * 1.82 * 1.8 * 0.5);
+  });
+
+  it('the any-hull sphere contains every built probe model (the marker-vs-hull pre-reject bound)', () => {
+    // Measured from the real geometry, not the authored numbers: build each
+    // procedural profile, take the farthest bounding-sphere edge from the
+    // group origin, apply the 0.5 PlayerShip group scale. Sphere.applyMatrix4
+    // over-estimates under non-uniform scale, which is the safe direction for
+    // an upper-bound pin. A future profile with a longer boom fails here
+    // instead of drawing beacons across its hull. (The default hull needs a
+    // DOM for its canvas panel skin — its 1.638-radius nozzle pin above
+    // covers it; the Cassini GLB is normalized to a target dimension on load,
+    // so the procedural fallback is the wider of the two.)
+    const extentAU = (model: THREE.Object3D): number => {
+      model.updateMatrixWorld(true);
+      let max = 0;
+      const sphere = new THREE.Sphere();
+      model.traverse((o) => {
+        const mesh = o as THREE.Mesh;
+        if (!mesh.isMesh) return;
+        if (!mesh.geometry.boundingSphere) mesh.geometry.computeBoundingSphere();
+        sphere.copy(mesh.geometry.boundingSphere!).applyMatrix4(mesh.matrixWorld);
+        max = Math.max(max, sphere.center.length() + sphere.radius);
+      });
+      return max * 0.5;
+    };
+    const models = {
+      voyager: createVoyagerModel(SHIP_REFERENCE_RADIUS_AU),
+      cassini: createCassiniModel(SHIP_REFERENCE_RADIUS_AU),
+      newHorizons: createNewHorizonsModel(SHIP_REFERENCE_RADIUS_AU),
+      juno: createJunoModel(SHIP_REFERENCE_RADIUS_AU),
+    };
+    for (const [name, model] of Object.entries(models)) {
+      expect(extentAU(model), name).toBeLessThan(SHIP_ANY_HULL_EXTENT_AU);
+    }
+    // Juno's magnetometer boom is why this constant exists apart from
+    // SHIP_HULL_MAX_EXTENT_AU: it genuinely outreaches the camera-safety
+    // extent (accepted there — see the constants' comments).
+    expect(extentAU(models.juno)).toBeGreaterThan(SHIP_HULL_MAX_EXTENT_AU);
+    expect(SHIP_ANY_HULL_EXTENT_AU).toBeGreaterThan(SHIP_HULL_MAX_EXTENT_AU);
   });
 
   it('keeps the near ceiling under the chase-distance camera-to-hull gap', () => {

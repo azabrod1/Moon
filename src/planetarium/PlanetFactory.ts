@@ -1112,8 +1112,11 @@ export function createMoonMeshes(planetName: string): MoonMesh[] {
     // size, so even tiny moons need a smooth limb up close — the old 16/24
     // segment tiers faceted visibly, and the 48/64 pass after them still
     // showed ~1-2px chord kinks on a screen-filling landed disc (silhouette
-    // error falls as 1/segments²). 96/128 keeps it under ~0.5px; ×64 moons
-    // it's still only a few MB of static geometry.
+    // error falls as 1/segments²). 96/128 keeps it under ~0.5px, at a real
+    // cost: ×64 moons ≈ 14 MB of static vertex data (CPU arrays + the GPU
+    // copies) built eagerly here. Accepted for now — if mobile memory
+    // pressure shows, the fix is lazy tier-up on approach like the texture
+    // path, not thinner spheres.
     const segments = moonData.radiusKm > 1000 ? 128 : 96;
     const geo = new THREE.SphereGeometry(moonData.radiusAU, segments, segments / 2);
 

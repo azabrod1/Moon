@@ -242,9 +242,11 @@ export class PlanetLabels {
        *  foreground disc is a generous circle — right for keeping text off
        *  the hull, but wrong in both directions for a beacon: culling by the
        *  whole circle vanishes a planet visibly beside the hull, and
-       *  ignoring the ship draws the beacon on top of it. Inside the circle,
-       *  this callback raycasts the actual hull so the marker hides exactly
-       *  when covered. */
+       *  ignoring the ship draws the beacon on top of it. While the ship
+       *  disc exists, this callback decides instead: it raycasts the actual
+       *  hull so the marker hides exactly when covered. With no ship disc
+       *  (ship under the angular floor, a few px) no test runs — hiding a
+       *  whole beacon glow behind a 3px ship would be the worse artifact. */
       markerShipTest?: (markerWorldPos: THREE.Vector3) => boolean;
     } = {},
   ) {
@@ -319,14 +321,11 @@ export class PlanetLabels {
           // beside them. Labels below still use the plain circle.
           if (disc.name === 'ship') {
             if (!markerShipTest) continue;
-            // Gate at 3× the circle: the circle is a conservative half-length
-            // (0.75 hull reference radii) while the longest probe hull
-            // reaches ~2.2, and a gate that misses the nozzle tip would let
-            // the beacon draw across it. The raycast stays the decider.
-            const sdx = screenX - disc.screenX;
-            const sdy = screenY - disc.screenY;
-            const gate = disc.radiusPx * 3;
-            if (sdx * sdx + sdy * sdy >= gate * gate) continue;
+            // No screen gate here: the circle is sized for label culling and
+            // no fixed multiple of it tracks every profile's true reach
+            // (Juno's magnetometer boom tip sits at ~4.9 circle radii). The
+            // callback does its own exact sight-line pre-reject against the
+            // widest-hull sphere, so calling it per marker stays cheap.
             if (markerShipTest(entry.sprite.position)) {
               markerOccluded = true;
               break;

@@ -73,7 +73,8 @@ export function markerAlbedoProxy(hexColor: number, p: PlanetMarkerParams = PLAN
  * Apparent magnitude of the flux proxy: albedo · (R/Δ)² / r_sun². No phase
  * term — markers are navigational beacons, and a Lambert phase would black out
  * Mercury/Venus seen from outside their orbits for half of every synodic
- * period. Returns +Infinity on degenerate geometry.
+ * period. Returns +Infinity on any degenerate or non-finite geometry (NaN,
+ * ±Infinity, non-positive) — the faint floor markerVisual maps it to.
  */
 export function markerMagnitude(
   radiusAU: number,
@@ -82,10 +83,15 @@ export function markerMagnitude(
   albedoProxy: number,
   p: PlanetMarkerParams = PLANET_MARKER_PARAMS,
 ): number {
-  if (radiusAU <= 0 || distAU <= 0 || sunDistAU <= 0 || albedoProxy <= 0) return Infinity;
+  // `!(x > 0)` (not `x <= 0`) so NaN inputs land on the floor too.
+  if (!(radiusAU > 0) || !(distAU > 0) || !(sunDistAU > 0) || !(albedoProxy > 0)) return Infinity;
   const rOverDelta = radiusAU / distAU;
   const flux = (albedoProxy * rOverDelta * rOverDelta) / (sunDistAU * sunDistAU);
-  return p.magZeroPoint - 2.5 * Math.log10(flux);
+  const mag = p.magZeroPoint - 2.5 * Math.log10(flux);
+  // Infinite inputs slip past the sign guard (Infinity > 0) and surface here
+  // as ±Infinity or NaN flux; an infinitely bright "beacon" is degenerate
+  // geometry all the same, so it floors rather than pinning the ramp.
+  return Number.isFinite(mag) ? mag : Infinity;
 }
 
 export interface PlanetMarkerVisual {

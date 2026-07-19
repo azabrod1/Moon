@@ -62,6 +62,24 @@ describe('planetMarkers — magnitude proxy', () => {
     expect(markerMagnitude(1e-4, 1, 0, 0.5)).toBe(Infinity);
     expect(markerMagnitude(1e-4, 1, 1, 0)).toBe(Infinity);
   });
+
+  it('returns +Infinity on non-finite geometry too — every degenerate input reaches the same floor', () => {
+    // NaN would otherwise slip a NaN magnitude through; an infinite radius
+    // would come out −Infinity, which markerVisual maps to the FAINT floor —
+    // the exact opposite of what "infinitely bright" would suggest. Total
+    // inputs → one documented answer.
+    expect(markerMagnitude(NaN, 1, 1, 0.5)).toBe(Infinity);
+    expect(markerMagnitude(1e-4, NaN, 1, 0.5)).toBe(Infinity);
+    expect(markerMagnitude(1e-4, 1, NaN, 0.5)).toBe(Infinity);
+    expect(markerMagnitude(1e-4, 1, 1, NaN)).toBe(Infinity);
+    expect(markerMagnitude(Infinity, 1, 1, 0.5)).toBe(Infinity);
+    expect(markerMagnitude(1e-4, Infinity, 1, 0.5)).toBe(Infinity);
+    expect(markerMagnitude(1e-4, 1, Infinity, 0.5)).toBe(Infinity);
+    // And the floor renders as the faint end, never an inflated sprite.
+    const v = markerVisual(Infinity);
+    expect(v.sizeScale).toBeCloseTo(PLANET_MARKER_PARAMS.baseScale * PLANET_MARKER_PARAMS.sizeMinScale, 12);
+    expect(v.brightness).toBeCloseTo(PLANET_MARKER_PARAMS.brightnessMin, 12);
+  });
 });
 
 describe('planetMarkers — visual ramp', () => {

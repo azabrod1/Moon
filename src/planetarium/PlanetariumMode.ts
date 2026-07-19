@@ -134,6 +134,7 @@ import {
   SHIP_CLEARANCE_AU,
   CRUISE_CAM_DIST_AU,
   SHIP_OCCLUDER_RADIUS_AU,
+  SHIP_ANY_HULL_EXTENT_AU,
   CRUISE_CONTROLS_MIN_DISTANCE_AU,
   CAMERA_BODY_MARGIN_AU,
   CAM_FOLLOW_TAU_IDLE_S,
@@ -2675,8 +2676,8 @@ export class PlanetariumMode {
   }
 
   // Marker-vs-hull raycast scratch (isMarkerBehindShip). Reused per call —
-  // the test runs only for markers whose screen position falls near the
-  // ship's occlusion circle, typically zero or one per frame.
+  // the sphere pre-reject means the traversal + raycast run only for
+  // markers whose sight line passes the hull, typically zero per frame.
   private markerShipRaycaster = new THREE.Raycaster();
   private markerShipRayDir = new THREE.Vector3();
   private markerShipMeshes: THREE.Object3D[] = [];
@@ -2684,22 +2685,47 @@ export class PlanetariumMode {
 
   /**
    * True when the sight line from the camera to a far marker passes through
-   * the ship's solid hull. Solid meshes only, skipping invisible subtrees —
-   * the plume and glow sprites are light, not hull, and shouldn't eat a
-   * beacon. Any hull hit occludes: the marker's body is always AU away,
-   * far behind every part of the ship.
+   * the ship's solid hull. Solid meshes only, skipping invisible subtrees
+   * and additive-blended meshes (the exhaust flame is light, not hull, and
+   * shouldn't eat a beacon; the glow sprites aren't meshes at all). Any
+   * hull hit occludes: the marker's body is always AU away, far behind
+   * every part of the ship.
    */
   private isMarkerBehindShip = (markerWorldPos: THREE.Vector3): boolean => {
     if (!this.player.group.visible || this.landedOn) return false;
+    // Exact pre-reject before any traversal: the ship rides the scene
+    // origin (floating origin), so the sight line clears every profile's
+    // hull when its closest approach to the origin exceeds the widest hull
+    // sphere — unless the camera itself sits inside that sphere (the
+    // wheel-zoom floor, 3.3 reference radii, is inside the 4.5 sphere).
+    const cam = this.camera.position;
+    const dir = this.markerShipRayDir.copy(markerWorldPos).sub(cam).normalize();
+    const camDistSq = cam.lengthSq();
+    const extentSq = SHIP_ANY_HULL_EXTENT_AU * SHIP_ANY_HULL_EXTENT_AU;
+    if (camDistSq > extentSq) {
+      const t = -cam.dot(dir); // ray parameter at closest approach to the origin
+      if (t <= 0 || camDistSq - t * t > extentSq) return false;
+    }
+    // The hull pose is a frame stale at label time: player.update() moved
+    // it earlier this frame but world matrices refresh at render — and a
+    // just-swapped profile has never been through a render at all. Refresh
+    // before the raycast reads them.
+    this.player.group.updateWorldMatrix(true, true);
     this.markerShipMeshes.length = 0;
     const collect = (o: THREE.Object3D) => {
       if (!o.visible) return;
-      if ((o as THREE.Mesh).isMesh) this.markerShipMeshes.push(o);
+      const mesh = o as THREE.Mesh;
+      if (mesh.isMesh) {
+        const m = mesh.material as THREE.Material | THREE.Material[];
+        const additive = Array.isArray(m)
+          ? m.every((x) => x.blending === THREE.AdditiveBlending)
+          : m.blending === THREE.AdditiveBlending;
+        if (!additive) this.markerShipMeshes.push(mesh);
+      }
       for (const child of o.children) collect(child);
     };
     collect(this.player.group);
-    this.markerShipRayDir.copy(markerWorldPos).sub(this.camera.position).normalize();
-    this.markerShipRaycaster.set(this.camera.position, this.markerShipRayDir);
+    this.markerShipRaycaster.set(cam, dir);
     this.markerShipHits.length = 0;
     return this.markerShipRaycaster.intersectObjects(this.markerShipMeshes, false, this.markerShipHits).length > 0;
   };

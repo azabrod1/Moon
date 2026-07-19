@@ -54,6 +54,57 @@ export function isRepeatedSurfacePauseActivation(
   return delta >= 0 && delta <= repeatWindowMs;
 }
 
+/**
+ * WebKit can deliver a complete primary pointer gesture to a button but omit
+ * its synthetic `click` when the surrounding Surface HUD changes rapidly.
+ * Act on pointerup, then consume that gesture's normal follow-up click. A
+ * keyboard/assistive click (`detail === 0`) still takes the click path.
+ */
+function bindReliableSurfacePress(
+  el: HTMLElement | null,
+  onPress: (event: Event) => void,
+): void {
+  if (!el) return;
+  let activePointerId: number | null = null;
+  let pointerClickPending = false;
+  el.addEventListener('pointerdown', (event) => {
+    if (!event.isPrimary || event.button !== 0) return;
+    // A previous gesture whose click was omitted must not suppress this one.
+    pointerClickPending = false;
+    activePointerId = event.pointerId;
+  });
+  el.addEventListener('pointercancel', (event) => {
+    if (event.pointerId === activePointerId) activePointerId = null;
+  });
+  // A press that wanders off the button releases somewhere else entirely, so
+  // the handler below never runs and the id would stay armed. A mouse reuses
+  // one pointer id for every gesture, so a later release that merely PASSES
+  // over the button would then match and fire it. Retire the id wherever the
+  // gesture actually ends; a release on the button clears it first, leaving
+  // this a no-op. (Drags off the WebGL canvas are already retargeted by
+  // SurfaceLook's pointer capture — this covers every other origin.)
+  const retireGesture = (event: PointerEvent) => {
+    if (event.pointerId === activePointerId) activePointerId = null;
+  };
+  document.addEventListener('pointerup', retireGesture);
+  document.addEventListener('pointercancel', retireGesture);
+  el.addEventListener('pointerup', (event) => {
+    if (!event.isPrimary || event.button !== 0 || event.pointerId !== activePointerId) return;
+    activePointerId = null;
+    pointerClickPending = true;
+    onPress(event);
+  });
+  el.addEventListener('click', (event) => {
+    if (pointerClickPending && event.detail > 0) {
+      pointerClickPending = false;
+      event.preventDefault();
+      return;
+    }
+    pointerClickPending = false;
+    onPress(event);
+  });
+}
+
 /** Which marker the HUD draws over the tracked target this frame. */
 export type SurfaceMarkerMode = 'hidden' | 'brackets' | 'reticle' | 'chevron' | 'pill';
 
@@ -125,12 +176,12 @@ export class ObservatoryHUD {
     document.getElementById('surface-exit')?.addEventListener('click', () => this.onExit());
     document.getElementById('surface-observatory')?.addEventListener('click', () => this.onObservatory());
     this.lookatEl?.addEventListener('click', () => this.onTargetMenu());
-    this.swapEl?.addEventListener('click', () => this.onSwap());
+    bindReliableSurfacePress(this.swapEl, () => this.onSwap());
     this.trackPillEl?.addEventListener('click', () => this.onResumeTracking());
     // The chevron is the way back when the target left the frame in free look.
     this.chevronEl?.addEventListener('click', () => this.onResumeTracking());
     // Transport strip — the surface view's only time controls.
-    document.getElementById('surface-tb-pause')?.addEventListener('click', (event) => {
+    bindReliableSurfacePress(document.getElementById('surface-tb-pause'), (event) => {
       // Dispatch the command the rendered label promised. The owner guards a
       // just-paused clock too, but reject a repeated activation here using the
       // physical event time. A long WebGL task can delay Safari's delivery of

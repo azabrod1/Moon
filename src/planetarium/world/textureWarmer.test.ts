@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import * as THREE from 'three';
 import {
   bindTextureWarmer,
+  invalidateTextureWarmCache,
   pumpTextureWarmQueue,
   queueTextureWarm,
   resetTextureWarmer,
@@ -81,6 +82,32 @@ describe('textureWarmer', () => {
     queueTextureWarm(t);
     pumpTextureWarmQueue(10);
     expect(uploaded).toEqual([t]);
+  });
+
+  it('does not re-upload a drained texture until it changes', () => {
+    bindTextureWarmer(upload);
+    const t = new THREE.Texture();
+    queueTextureWarm(t);
+    pumpTextureWarmQueue(10);
+    queueTextureWarm(t);
+    pumpTextureWarmQueue(10);
+    expect(uploaded).toEqual([t]);
+
+    t.needsUpdate = true; // increments Texture.version
+    queueTextureWarm(t);
+    pumpTextureWarmQueue(10);
+    expect(uploaded).toEqual([t, t]);
+  });
+
+  it('allows textures to warm again after WebGL context loss', () => {
+    bindTextureWarmer(upload);
+    const t = new THREE.Texture();
+    queueTextureWarm(t);
+    pumpTextureWarmQueue(10);
+    invalidateTextureWarmCache();
+    queueTextureWarm(t);
+    pumpTextureWarmQueue(10);
+    expect(uploaded).toEqual([t, t]);
   });
 
   it('treats dispose after a drain as inert', () => {

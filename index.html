@@ -1010,6 +1010,11 @@
     }
     .shud-chip:hover { color: var(--obs-t1); border-color: rgba(var(--accent-rgb), 0.35); }
     .shud-chip i { font-style: normal; color: var(--obs-accent); }
+    /* The Earth↔Moon action is intentionally a fixed hit target. Its label
+       alternates between "Stand on Earth" and the wider "Stand on the Moon";
+       if the pill follows the text width, a rapid second click can land just
+       outside the newly shrunken button before the pointer has moved. */
+    #surface-swap { min-width: 160px; justify-content: center; box-sizing: border-box; }
     /* Moon names run long (Epimetheus) — cap the chip label, never the row. */
     #surface-lookat span { max-width: 14ch; overflow: hidden; text-overflow: ellipsis; }
     .shud-bl { position: absolute; left: 24px; bottom: 86px; max-width: 46vw; }

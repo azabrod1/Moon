@@ -27,7 +27,7 @@ import { computeStats } from './stats';
 import { PLANETARIUM_BODIES, SUN_DATA, type PlanetData } from './planets/planetData';
 import { applySunGlowTier, cancelTextureUpgrade, createMoonMeshes, createShaderWarmupProbes, setWarmEligibleMoonParents, upgradeTextureOnApproach, ATMOSPHERES, ATMOSPHERE_SHELL_SCALES, type MoonMesh, type TextureUpgrade } from './PlanetFactory';
 import type { SurfaceShadingFx } from './world/surfaceShading';
-import { bindTextureWarmer, pumpTextureWarmQueue, queueTextureWarm, resetTextureWarmer } from './world/textureWarmer';
+import { bindTextureWarmer, invalidateTextureWarmCache, pumpTextureWarmQueue, queueTextureWarm, resetTextureWarmer } from './world/textureWarmer';
 import {
   advancePlanetariumTime,
   computeBodyPositionAU,
@@ -73,6 +73,7 @@ import {
 } from '../astronomy/shadows';
 import { ShadowVisuals, createShadowVisualsWarmupProbes, type GuideSlotInput } from './world/ShadowVisuals';
 import { OBSERVATORY_JUMP_LEAD_MS, stepperSearchFromUtcMs } from './observatoryTime';
+import { surfacePerfBeginSpan, surfacePerfEndSpan } from './surfacePerf';
 import { findEvent, type EventType } from '../astronomy/ephemeris';
 import { KM_PER_AU } from '../astronomy/constants';
 import { createPlanetariumStarfield, setStarfieldPixelRatio, starfieldFaintLimitMag } from './world/starfield';
@@ -971,6 +972,7 @@ export class PlanetariumMode {
     // and re-validate the GPU path on restore (else it stays on the CPU path).
     const glCanvas = renderer.domElement;
     glCanvas.addEventListener('webglcontextlost', () => {
+      invalidateTextureWarmCache();
       this.invalidateRtPaintedMoons(this.moonTexturer.onContextLost());
       // Dots gate on painted moons — blank them with the same invalidation so a
       // stale dot can't outlive the mesh it belonged to.
@@ -7794,6 +7796,24 @@ export class PlanetariumMode {
    * the subject changes (see the re-point branch).
    */
   enterSurfaceView(target?: SurfaceTarget, entryContext?: SurfaceEntryContext, immediate = false) {
+    const perfSpan = import.meta.env.DEV ? surfacePerfBeginSpan('enterSurfaceView') : null;
+    try {
+      this.enterSurfaceViewImpl(target, entryContext, immediate);
+    } finally {
+      if (import.meta.env.DEV) {
+        surfacePerfEndSpan(perfSpan, {
+          programs: this.renderer.info.programs?.length ?? 0,
+          textures: this.renderer.info.memory.textures,
+        });
+      }
+    }
+  }
+
+  private enterSurfaceViewImpl(
+    target?: SurfaceTarget,
+    entryContext?: SurfaceEntryContext,
+    immediate = false,
+  ) {
     const landedInfo = this.surfaceLandedInfo();
     if (!landedInfo) return;
     // Entering surface view drops the landed system's 5%-of-parent mesh-scale

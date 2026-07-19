@@ -597,10 +597,10 @@ export class PlanetariumMode {
     rate: 1,
     paused: false,
   };
-  // When the clock last flipped to paused (performance.now()). A pause toggle
-  // inside a short window after this re-asserts the pause instead of resuming
-  // — see timeTogglePause.
-  private pauseEngagedAtMs = -Infinity;
+  // Until when (performance.now()) a pause toggle re-asserts the pause
+  // instead of resuming — armed whenever the clock freezes, with a window
+  // sized by how knowingly it froze. See timeTogglePause.
+  private pauseGuardUntilMs = -Infinity;
 
   // Planet visual scale multiplier (real scale = 1)
   private planetScale = 1;
@@ -1061,16 +1061,19 @@ export class PlanetariumMode {
   // one idiom).
   private timeTogglePause() {
     // A toggle arriving moments after the clock froze is a pause-intent click,
-    // not a resume: stepping down parks at the pause detent silently, and
-    // impatient double-clicks land here too — both used to un-freeze a clock
-    // the user believed was running ("the pause button doesn't work").
-    // Deliberate resumes come later than this window, or through Play.
-    if (this.timeState.paused && performance.now() - this.pauseEngagedAtMs < 500) {
+    // not a resume — it used to un-freeze a clock the user believed was
+    // running ("the pause button doesn't work"). The window scales with how
+    // knowingly the pause happened: an explicit pause (button/Space/tap) is
+    // guarded just long enough to swallow an accidental double-click, while
+    // the SILENT park (stepping down through 1×) guards longer — the user
+    // mashing − then hitting Pause hasn't seen the label flip. Deliberate
+    // resumes come later, or through Play, which never guards.
+    if (this.timeState.paused && performance.now() < this.pauseGuardUntilMs) {
       this.updateTimeUI({ flash: true });
       return;
     }
     this.timeState.paused = !this.timeState.paused;
-    if (this.timeState.paused) this.pauseEngagedAtMs = performance.now();
+    if (this.timeState.paused) this.pauseGuardUntilMs = performance.now() + 350;
     this.updateTimeUI({ flash: true });
   }
 
@@ -1380,6 +1383,7 @@ export class PlanetariumMode {
       window.clearTimeout(this.landedCompileTimer);
       this.landedCompileTimer = null;
     }
+    this.warmSweepPending = false;
     // A live tutorial hands the pre-tutorial state back first, synchronously — the
     // teardown below (excursion drop, landed exit, save) then applies to the
     // restored journey exactly as it would for a non-tutorialing player.
@@ -1494,6 +1498,14 @@ export class PlanetariumMode {
     // inside whatever gesture first draws the map. Runs in every mode so
     // landed sessions warm up too.
     pumpTextureWarmQueue(PlanetariumMode.TEXTURE_WARM_BUDGET_MS);
+
+    // Program-link warm sweep queued by a landing — run inside the frame
+    // callback so its canvas-path renders are overdrawn by this frame's real
+    // render before anything presents; dropped when the landing is gone.
+    if (this.warmSweepPending) {
+      this.warmSweepPending = false;
+      if (this.landedOn) this.renderProgramWarmSweep();
+    }
 
     // Runs in both branches below — a tutorial narrates landed and cruise scenes.
     this.updateTutorial();
@@ -2982,9 +2994,11 @@ export class PlanetariumMode {
   // (1 inside ~5 AU, 0.46 in the outer system) — the glare-mask core floor
   // shrinks by the same factor so the dot cull tracks the drawn glint.
   private sunGlintFloorScale = 1;
-  // Pending settle-pass program warmup scheduled by applyLandedTarget, and
-  // the 1×1 offscreen target its sky sweep renders into.
+  // Pending settle-pass program warmup scheduled by applyLandedTarget: the
+  // timers only raise the flag, update() runs the sweep (frame-synchronous,
+  // landed-gated), and the 1×1 offscreen target serves the composer path.
   private landedCompileTimer: number | null = null;
+  private warmSweepPending = false;
   private warmSweepRT: THREE.WebGLRenderTarget | null = null;
 
   // One persistent glare-mask parameter set, filled at the end of every
@@ -8508,37 +8522,47 @@ export class PlanetariumMode {
     // (photos, night lights, clouds) resolve later gain NEW program keys,
     // and compileAsync prepares against a state that can differ from the
     // draw's — the only guaranteed link is a real draw. So render the full
-    // sky sphere from the landed spot into a 1-px offscreen target: six 90°
-    // frusta cover every direction, so whatever the surface view later faces
-    // (the companion, a ring rising) has already first-drawn here, under the
-    // arrival veil instead of freezing the first surface-entry frame on slow
-    // GPUs. Once now, once more after the pair's async assets settle.
-    this.renderProgramWarmSweep();
+    // sky sphere from the landed spot: six 90° frusta cover every direction,
+    // so whatever the surface view later faces (the companion, a ring
+    // rising) has already first-drawn here instead of freezing the first
+    // surface-entry frame on slow GPUs. Once now, twice more as the pair's
+    // async assets settle. The sweeps only raise a flag — update() runs them
+    // inside the frame callback (so the canvas-path warm renders never
+    // present) and only while still landed.
+    this.warmSweepPending = true;
     if (this.landedCompileTimer !== null) window.clearTimeout(this.landedCompileTimer);
     this.landedCompileTimer = window.setTimeout(() => {
-      this.renderProgramWarmSweep();
+      this.warmSweepPending = true;
       this.landedCompileTimer = window.setTimeout(() => {
         this.landedCompileTimer = null;
-        this.renderProgramWarmSweep();
+        this.warmSweepPending = true;
       }, 1500);
     }, 1000);
   }
 
   /** Render the scene in six 90° directions from the current camera position
-   *  into a 1×1 offscreen target — a program-link warmup, nothing is shown. */
+   *  — a program-link warmup, nothing user-visible. With the composer active
+   *  the live scene pass renders into a target, so a 1×1 offscreen target
+   *  yields identical program keys; the no-bloom fallback draws the scene
+   *  straight to the canvas, whose sRGB + tone-mapped keys only a canvas
+   *  render links — safe mid-frame, the real render overdraws before any
+   *  present. */
   private renderProgramWarmSweep() {
     if (!this.solarSystem) return;
-    this.warmSweepRT ??= new THREE.WebGLRenderTarget(1, 1);
+    let prevTarget: THREE.WebGLRenderTarget | null = null;
+    if (this.useBloom) {
+      this.warmSweepRT ??= new THREE.WebGLRenderTarget(1, 1);
+      prevTarget = this.renderer.getRenderTarget();
+      this.renderer.setRenderTarget(this.warmSweepRT);
+    }
     const cam = new THREE.PerspectiveCamera(90, 1, this.camera.near, this.camera.far);
     cam.position.copy(this.camera.position);
-    const prevTarget = this.renderer.getRenderTarget();
     for (const [x, y, z] of [[1, 0, 0], [-1, 0, 0], [0, 1, 0], [0, -1, 0], [0, 0, 1], [0, 0, -1]]) {
       cam.lookAt(cam.position.x + x, cam.position.y + y, cam.position.z + z);
       cam.updateMatrixWorld();
-      this.renderer.setRenderTarget(this.warmSweepRT);
       this.renderer.render(this.scene, cam);
     }
-    this.renderer.setRenderTarget(prevTarget);
+    if (this.useBloom) this.renderer.setRenderTarget(prevTarget);
   }
 
   /**
@@ -9559,10 +9583,10 @@ export class PlanetariumMode {
   private stepTimeRate(direction: -1 | 1) {
     const wasPaused = this.timeState.paused;
     this.timeState = stepSimulationRate(this.timeState, direction, TIME_RATE_PRESETS);
-    // Stepping down through 1× parks at the pause detent — arm the same
-    // fresh-pause window the pause button sets, so a pause click chasing the
-    // stepper re-asserts the freeze instead of resuming it.
-    if (this.timeState.paused && !wasPaused) this.pauseEngagedAtMs = performance.now();
+    // Stepping down through 1× parks at the pause detent silently — arm the
+    // long fresh-pause window so a Pause click chasing the stepper re-asserts
+    // the freeze instead of resuming a clock the user never saw stop.
+    if (this.timeState.paused && !wasPaused) this.pauseGuardUntilMs = performance.now() + 1500;
     this.updateTimeUI({ flash: true });
   }
 

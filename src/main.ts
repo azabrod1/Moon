@@ -597,6 +597,18 @@ function syncViewport() {
 
 window.addEventListener('resize', syncViewport);
 
+// A mouse click leaves the pressed button focused, and the browser then turns
+// the next Space press into a re-fire of that button — so "click Faster, hit
+// Space to pause" sped time up again instead of pausing (the window Space
+// handlers must ignore focused buttons or every Space would double-fire).
+// Pointer users get nothing from the retained focus; drop it after the click.
+// Keyboard activations report detail 0 and keep focus for tab navigation.
+document.addEventListener('click', (e) => {
+  if (e.detail === 0) return;
+  const button = (e.target as HTMLElement | null)?.closest?.('button');
+  if (button && button === document.activeElement) button.blur();
+});
+
 // iOS Safari changes the viewport without a resize event this app can count
 // on (URL-bar collapse on a non-scrolling page, keyboard dismissal, the
 // post-rotation settle), and a camera left on a stale aspect draws every

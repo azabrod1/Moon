@@ -20,6 +20,7 @@ import {
   type PlanetariumLayout,
 } from './SolarSystem';
 import { PlayerShip } from './PlayerShip';
+import { isPlayerShipProfile, playerShipLabel, type PlayerShipProfile } from './ship/shipProfiles';
 import { PlanetLabels, discRadiusPx } from './PlanetLabels';
 import { PlanetariumStore, createDefaultPlanetariumState, type PlanetariumState, type LandedTarget } from './PlanetariumStore';
 import { solarExposureTarget, solarViewportCoverage } from './solarExposure';
@@ -343,6 +344,7 @@ export class PlanetariumMode {
     'planetarium-btn-observatory',
     'planetarium-btn-autopilot',
     'planetarium-btn-tutorial',
+    'ship-picker-toggle',
     'planetarium-speed-up',
     'planetarium-speed-down',
   ] as const;
@@ -609,6 +611,7 @@ export class PlanetariumMode {
 
   // Show player ship mesh for size comparison
   private showShip = true;
+  private selectedShipProfile: PlayerShipProfile = 'default';
   // Headless screenshot framing: when set, the per-frame collision resolver is
   // skipped so the camera can sit a few radii from a body without being pushed
   // back out past its moon system.
@@ -890,6 +893,25 @@ export class PlanetariumMode {
     if (this.resumeTimeAfterMenu) this.timeState.paused = false;
     this.resumeShipAfterMenu = false;
     this.resumeTimeAfterMenu = false;
+  }
+
+  private updateShipPickerUI(): void {
+    const current = document.getElementById('ship-picker-current');
+    if (current) current.textContent = playerShipLabel(this.selectedShipProfile);
+    for (const button of document.querySelectorAll<HTMLButtonElement>('[data-ship-profile]')) {
+      const selected = button.dataset.shipProfile === this.selectedShipProfile;
+      button.classList.toggle('selected', selected);
+      button.setAttribute('aria-checked', String(selected));
+    }
+  }
+
+  private choosePlayerShip(profile: PlayerShipProfile): void {
+    if (this.isMissionActive()) return;
+    this.selectedShipProfile = profile;
+    this.player.setProfile(profile);
+    this.updateShipPickerUI();
+    this.closeMenuPanel();
+    this.notification.show(`${playerShipLabel(profile)} ready to fly.`);
   }
 
   private isHelpOpen(): boolean {
@@ -2304,11 +2326,11 @@ export class PlanetariumMode {
     }
 
     // Idempotent re-assert of the ship model that matches the active mission
-    // (or the default ship when none). Mission start/end already call
+    // (or the player's chosen ship when none). Mission start/end already call
     // setProfile explicitly; this per-frame reapply is a deliberate, cheap
     // safety net guaranteeing the displayed model tracks mission state through
     // every code path (incl. state restore) — do not "optimize" it away.
-    this.player.setProfile(this.activeHistoricJourney?.shipProfile ?? 'default');
+    this.player.setProfile(this.activeHistoricJourney?.shipProfile ?? this.selectedShipProfile);
   }
 
   /**
@@ -4910,6 +4932,18 @@ export class PlanetariumMode {
         this.menuPanel.show();
       }
     });
+    document.getElementById('ship-picker-toggle')?.addEventListener('click', () => {
+      if (this.isMissionActive()) return;
+      const submenu = document.getElementById('ship-submenu');
+      const toggle = document.getElementById('ship-picker-toggle');
+      const expanded = submenu?.classList.toggle('visible') ?? false;
+      toggle?.setAttribute('aria-expanded', String(expanded));
+    });
+    document.getElementById('ship-submenu')?.addEventListener('click', (event) => {
+      const button = (event.target as HTMLElement).closest<HTMLButtonElement>('[data-ship-profile]');
+      const profile = button?.dataset.shipProfile;
+      if (isPlayerShipProfile(profile)) this.choosePlayerShip(profile);
+    });
     document.getElementById('planetarium-btn-help')?.addEventListener('click', () => {
       this.closeMenuPanel();
       this.showHelp();
@@ -5532,7 +5566,7 @@ export class PlanetariumMode {
     this.historicMilestoneIndex = 0;
     this.historicPanelDismissed = false;
     this.scriptedTransfer = null;
-    this.player.setProfile('default');
+    this.player.setProfile(this.selectedShipProfile);
     this.setHistoricPanelVisible(false);
     if (restorePreviousState) this.restorePreMissionState();
     else {
@@ -9004,6 +9038,7 @@ export class PlanetariumMode {
       astroTimePaused: this.timeState.paused,
       planetScale: this.planetScale,
       showShip: this.showShip,
+      shipProfile: this.selectedShipProfile,
       showConstellations: this.showConstellations,
       showBodyLabels: this.showBodyLabels,
       showBodyLabelDistances: this.showBodyLabelDistances,
@@ -9056,6 +9091,9 @@ export class PlanetariumMode {
     if (throttleLabel) throttleLabel.textContent = this.systemSlowdown ? 'On' : 'Off';
     this.showShip = saved.showShip;
     this.player.group.visible = this.showShip;
+    this.selectedShipProfile = saved.shipProfile ?? 'default';
+    this.player.setProfile(this.selectedShipProfile);
+    this.updateShipPickerUI();
     this.showConstellations = saved.showConstellations ?? false;
     if (this.showConstellations) {
       this.ensureConstellationsReady();

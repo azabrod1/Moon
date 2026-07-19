@@ -597,9 +597,9 @@ export class PlanetariumMode {
     rate: 1,
     paused: false,
   };
-  // Until when (performance.now()) a pause toggle re-asserts the pause
-  // instead of resuming — armed whenever the clock freezes, with a window
-  // sized by how knowingly it froze. See timeTogglePause.
+  // Until when (performance.now()) a resume re-asserts the pause instead of
+  // starting the clock — armed whenever the clock freezes, with a window
+  // sized by how knowingly it froze. See setTimePausedFromControl.
   private pauseGuardUntilMs = -Infinity;
 
   // Planet visual scale multiplier (real scale = 1)
@@ -5092,9 +5092,13 @@ export class PlanetariumMode {
     // do: the ☰ menu auto-pauses the clock and restores it on close, so a
     // transport click while it's open would clobber the state the menu puts
     // back.
+    // Pause sits in a radio group beside Play and Reverse: it SELECTS the
+    // paused state rather than toggling, so a click delivered late (a busy
+    // frame can queue it) can never resume a clock the user asked to stop.
+    // Rail taps and Space stay toggles — those gestures carry no promise.
     document.getElementById('planetarium-time-pause')?.addEventListener('click', () => {
       if (this.timeControlsLocked()) return;
-      this.timeTogglePause();
+      this.setTimePausedFromControl(true);
     });
     document.getElementById('planetarium-time-play')?.addEventListener('click', () => {
       if (this.timeControlsLocked()) return;

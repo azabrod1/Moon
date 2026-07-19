@@ -221,6 +221,10 @@ export class ObservatoryHUD {
     setText('surface-when', state.whenText);
     setText('surface-when-tag', state.whenTag);
     setText('surface-tb-pause', state.paused ? 'Resume' : 'Pause');
+    // Stepping down can park the clock at the pause detent without a pause
+    // click — hollow the strip's dot (the rail's paused idiom) so the frozen
+    // clock is visible beyond the small button label flip.
+    this.timebarEl?.classList.toggle('paused', state.paused);
     setText(
       'surface-fov',
       `${state.fovDeg >= 10 ? Math.round(state.fovDeg) : state.fovDeg.toFixed(1)}°`,

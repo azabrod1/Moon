@@ -76,6 +76,27 @@ export function railTapAction(pointerX: number, thumbX: number, slopPx: number):
   return Math.abs(pointerX - thumbX) <= slopPx ? 'pause' : 'select';
 }
 
+/**
+ * The full press decision: `railTapAction`, plus a dead-tap rescue. A press
+ * outside the slop that would select the detent the rate already sits on
+ * EXACTLY (`onLadderIndex`) changes nothing — the visual thumb animates to
+ * its position over ~100 ms, so a quick tap chasing it lands near, misses the
+ * slop, rounds to the same detent, and used to die silently: no pause, no
+ * rate change. Nothing else that tap could mean — treat it as on-thumb.
+ * Off-ladder rates keep the select (snapping to the nearest detent is a real
+ * change there, the documented behavior).
+ */
+export function railPressAction(
+  pointerX: number,
+  thumbX: number,
+  slopPx: number,
+  pressIndex: number,
+  onLadderIndex: number,
+): 'pause' | 'select' {
+  if (railTapAction(pointerX, thumbX, slopPx) === 'pause') return 'pause';
+  return pressIndex === onLadderIndex ? 'pause' : 'select';
+}
+
 /** Compact detent label — "1min", never bare "1m" (minute would read as month
  *  two labels away from "1mo"). */
 export function railDetentLabel(presetSeconds: number): string {
@@ -122,6 +143,9 @@ export class PlanetariumTimePanel {
    *  from the last render so a tap can be measured against the thumb, not a
    *  detent index — an off-ladder rate sits between detents. */
   private thumbFraction = 0;
+  /** The detent the rate sits on EXACTLY, or -1 off-ladder — feeds the
+   *  dead-tap rescue in railPressAction. */
+  private onLadderIndex = 0;
   private lastPct = '';
   private lastLive: boolean | null = null;
   private lastPaused: boolean | null = null;
@@ -198,6 +222,7 @@ export class PlanetariumTimePanel {
     const live = !time.paused && time.rate > 0 && Math.abs(magnitude - 1) < 1e-9 && !offNow;
     const index = nearestPresetIndex(magnitude, this.presets);
     this.displayIndex = index;
+    this.onLadderIndex = Math.abs(magnitude - this.presets[index]) < 1e-9 ? index : -1;
     const fraction = railFraction(magnitude, this.presets);
     this.thumbFraction = fraction;
     const pct = `${(fraction * 100).toFixed(2)}%`;
@@ -317,12 +342,12 @@ export class PlanetariumTimePanel {
         // by detent-index equality. A press away from the thumb selects that
         // detent right away and counts as a move so release won't also pause —
         // even the detent nearest an off-ladder rate, whose index matches the
-        // thumb's. A press on the thumb defers to pointerup, which pauses if it
-        // stays in place (a rate exactly on a detent puts the thumb there, so
-        // tapping that detent still pauses).
+        // thumb's. A press on the thumb (or one whose select would be a no-op
+        // — see railPressAction's dead-tap rescue) defers to pointerup, which
+        // pauses if it stays in place.
         const rect = el.getBoundingClientRect();
         const thumbX = rect.left + this.thumbFraction * rect.width;
-        if (railTapAction(e.clientX, thumbX, TAP_SLOP_PX) === 'select') {
+        if (railPressAction(e.clientX, thumbX, TAP_SLOP_PX, idx, this.onLadderIndex) === 'select') {
           this.callbacks.onRateIndex(idx);
           drag.moved = true;
         }

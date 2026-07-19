@@ -32,6 +32,7 @@ import {
   advancePlanetariumTime,
   computeBodyPositionAU,
   computeBodyState,
+  computeSunOrientationQuaternion,
   eclipticToEquatorial,
   formatDateCompact,
   formatTimeRateLabel,
@@ -131,7 +132,14 @@ import {
   type SurfaceTargetChoice,
 } from './surfaceView';
 import { DEG2RAD } from '../shared/math/angles';
-import { SUN_GLARE_EXTENT_SOLAR_RADII, SUN_VEIL_BETA, SUN_VEIL_SCALE_H } from '../shared/shaders/sun';
+import {
+  SUN_ACTIVE_REGIONS,
+  SUN_GLARE_EXTENT_SOLAR_RADII,
+  SUN_STUDY_GLARE_KEEP,
+  SUN_STUDY_VEIL_KEEP,
+  SUN_VEIL_BETA,
+  SUN_VEIL_SCALE_H,
+} from '../shared/shaders/sun';
 import { landedFrameCamDistAU, landedMinDistanceAU, landedNearAU, LANDED_NEAR_AU } from './landedView';
 import {
   MOON_RENDER_ANCHOR_RATIO,
@@ -141,11 +149,17 @@ import {
 } from './moonRenderSize';
 import {
   advanceSunEmergenceFlash,
+  advanceSunRotationClock,
   circleOcclusionFraction,
   eclipseOccluderLikeness,
   projectedSourceRadiusAtPlane,
+  sunFlareEnvelope,
   sunGlareFloodOpacity,
   sunInteriorWhiteout,
+  sunProminenceEjecta,
+  sunProminenceEruption,
+  sunProminenceRain,
+  sunStudyFilterFraction,
   sunWhiteoutFraction,
   targetSunExposure,
 } from './sunAppearance';
@@ -434,6 +448,17 @@ export class PlanetariumMode {
   private sunFlashResetPending = true;
   private sunAtmosphereMix = 0;
   private readonly sunAtmosphereColor = new THREE.Color(1, 0.55, 0.24);
+  /** DEV capture hook: when set, pins every flare site's envelope to this
+   *  value instead of the schedule (null = scheduled). */
+  private devFlareOverride: number | null = null;
+  /** DEV capture hook: pins the prominence-eruption envelope (null = scheduled). */
+  private devEruptionOverride: number | null = null;
+  /** DEV capture hook: pins the coronal-rain envelope (null = scheduled). */
+  private devRainOverride: number | null = null;
+  /** DEV capture hook: pins the ejecta travel at full visibility (null = scheduled). */
+  private devEjectaOverride: number | null = null;
+  /** The Sun's rate-capped display-rotation clock (NaN = sync on first frame). */
+  private sunRotationUtcMs = Number.NaN;
   /** Set by computeVisibleSunFraction: angular radius of the strongest solar
    *  occluder this frame (scratch for the corona's eclipse-likeness gate). */
   private sunDominantOccluderAngularRadius = 0;
@@ -3060,6 +3085,11 @@ export class PlanetariumMode {
 
   private updateSunShader(dt: number) {
     if (!this.solarSystem) return;
+    // The display-rotation clock chases the sim clock at a capped rate so
+    // time warp never strobes the face (rebuildPlanetPositions reads it).
+    this.sunRotationUtcMs = advanceSunRotationClock(
+      this.sunRotationUtcMs, this.timeState.currentUtcMs, dt,
+    );
     const sunMat = this.solarSystem.sun.userData.sunMaterial as THREE.ShaderMaterial | undefined;
     const interiorMesh = this.solarSystem.sun.userData.sunInteriorMesh as THREE.Mesh | undefined;
     const prominenceMat = this.solarSystem.sun.userData.sunProminenceMaterial as THREE.ShaderMaterial | undefined;
@@ -3067,8 +3097,49 @@ export class PlanetariumMode {
     const ghostMat = this.solarSystem.sun.userData.sunLensGhostMaterial as THREE.ShaderMaterial | undefined;
     if (sunMat) {
       sunMat.uniforms.time.value += dt;
+      // Flare schedule: one envelope per flare-capable catalog site, packed
+      // into the vec3 the interpolated ribbon terms read. The dev override
+      // (devSunFlare) pins every site for deterministic captures.
+      const flares = sunMat.uniforms.uFlares.value as THREE.Vector3;
+      let site = 0;
+      for (const region of SUN_ACTIVE_REGIONS) {
+        if (!(region.flarePeriodSec > 0) || site >= 3) continue;
+        flares.setComponent(site, this.devFlareOverride
+          ?? sunFlareEnvelope(sunMat.uniforms.time.value, region.flarePeriodSec, region.flareSeed));
+        site++;
+      }
     }
-    if (prominenceMat) prominenceMat.uniforms.time.value += dt;
+    if (prominenceMat) {
+      prominenceMat.uniforms.time.value += dt;
+      const promTime = prominenceMat.uniforms.time.value as number;
+      prominenceMat.uniforms.uEruption.value = this.devEruptionOverride
+        ?? sunProminenceEruption(promTime);
+      prominenceMat.uniforms.uRain.value = this.devRainOverride
+        ?? sunProminenceRain(promTime);
+      // The loop tubes rise from their base pivots: feet planted, crown up.
+      const pivots = this.solarSystem.sun.userData.sunLoopPivots as THREE.Object3D[] | undefined;
+      if (pivots) {
+        const lift = 1 + 1.1 * (prominenceMat.uniforms.uEruption.value as number);
+        for (const pivot of pivots) pivot.scale.y = lift;
+      }
+      // The departing plasma mass: launched by the same cycle's release,
+      // receding and expanding along the erupting region's outward axis.
+      const ejecta = this.solarSystem.sun.userData.sunEjectaMesh as THREE.Mesh | undefined;
+      if (ejecta) {
+        const state = this.devEjectaOverride !== null
+          ? { travel: this.devEjectaOverride, visibility: 1 }
+          : sunProminenceEjecta(promTime);
+        prominenceMat.uniforms.uEjecta.value = state.visibility;
+        prominenceMat.uniforms.uEjectaTravel.value = state.travel;
+        ejecta.visible = state.visibility > 0.004;
+        if (ejecta.visible) {
+          const R = SUN_DATA.radiusAU;
+          ejecta.position.set(0, R * (1.12 + state.travel * 2.6), 0);
+          const size = 0.16 + 0.6 * state.travel;
+          ejecta.scale.set(size, size * 1.55, size);
+        }
+      }
+    }
 
     const toSun = this.tmpSunDirection
       .copy(this.solarSystem.sun.position)
@@ -3104,6 +3175,8 @@ export class PlanetariumMode {
         sunMat.uniforms.uAtmosphereMix.value = 0;
         sunMat.uniforms.uInteriorFade.value = interiorFade;
         sunMat.uniforms.uWhiteout.value = whiteout;
+        // No study filter below the photosphere — the crossing stays a blaze.
+        sunMat.uniforms.uStudyFilter.value = 0;
       }
       if (glareMat) {
         const baseStrength = (glareMat.userData.baseGlareStrength ??=
@@ -3116,6 +3189,7 @@ export class PlanetariumMode {
         glareMat.uniforms.uVeilAmt.value = 0;
         glareMat.uniforms.uVeilHalfPx.value = 0;
         glareMat.uniforms.uOccluderShade.value = 0;
+        glareMat.uniforms.uStudyFilter.value = 0;
       }
       this.applySunSilhouette(null, 0);
       if (ghostMat) ghostMat.uniforms.uGhostStrength.value = 0;
@@ -3145,6 +3219,7 @@ export class PlanetariumMode {
     // every direction that isn't open space.
     const whiteout = sunWhiteoutFraction(sunDistance / SUN_DATA.radiusAU);
     if (sunMat) sunMat.uniforms.uWhiteout.value = whiteout;
+    if (prominenceMat) prominenceMat.uniforms.uWhiteout.value = whiteout;
     this.applySunGlareFlood(whiteout);
     const inFront = toSun.dot(this.camera.getWorldDirection(this.tmpSunCameraForward)) > 0;
     const solarAngularRadius = Math.asin(THREE.MathUtils.clamp(SUN_DATA.radiusAU / sunDistance, 0, 0.999999));
@@ -3166,6 +3241,9 @@ export class PlanetariumMode {
     // held at function scope so the after-exposure support pass and the shader
     // uniform draw with exactly the same value.
     let veilArmCoeff = 0;
+    // Close-up study filter (0 = off): computed with the exposure metering so
+    // the filter and its exposure compensation always move together.
+    let studyFilter = 0;
 
     if (inFront) {
       this.tmpSunScreen.copy(this.solarSystem.sun.position).project(this.camera);
@@ -3257,6 +3335,16 @@ export class PlanetariumMode {
           centerDistanceNdc: centreDistanceNdc,
           visibleFraction: meterVis,
         });
+        // The study filter engages on the same metering input its exposure
+        // compensation reads, and the whiteout releases it — but only in its
+        // deep half, matching the shader's gated colour bleach: the orange
+        // filtergram holds most of the way down and hands off to the white
+        // wall in one quick stretch right before contact.
+        studyFilter = sunStudyFilterFraction({
+          projectedRadiusNdc,
+          centerDistanceNdc: centreDistanceNdc,
+          visibleFraction: meterVis,
+        }) * (1 - THREE.MathUtils.smoothstep(whiteout, 0.5, 0.9));
         // The whiteout overrides the close-up study tier: past ~2.6 radii the
         // metering stops winning — adaptation gives up and exposure rides back
         // to full so the slammed photosphere reads as a truly blinding screen.
@@ -3264,14 +3352,30 @@ export class PlanetariumMode {
         // Linear occlusion, deliberately harder than the physical PSF's ^0.38
         // energy: the veil dims in step with the exposed fraction and dies hard
         // in a partial eclipse. 0 fraction collapses the billboard entirely.
-        veilAmt = veilReachGeom * THREE.MathUtils.clamp(visibleFraction, 0, 1);
+        // The filter keeps a tinted remnant of the veil (the shader hues it
+        // by uStudyFilter) so the filtered disc holds a soft warm halo.
+        veilAmt = veilReachGeom * THREE.MathUtils.clamp(visibleFraction, 0, 1)
+          * THREE.MathUtils.lerp(1, SUN_STUDY_VEIL_KEEP, studyFilter);
       }
     }
 
     if (!appearanceEligible) this.sunAtmosphereMix = 0;
+    if (sunMat) sunMat.uniforms.uStudyFilter.value = studyFilter;
+    // The filter sits ahead of the whole optical stack: the lens PSF can only
+    // glare with the light the filter passes — and it is cut even harder than
+    // the photosphere, because its wash over the disc is what re-greys the
+    // sunspot umbrae. (uGlareStrength was rebuilt from its base value earlier
+    // this frame; this compounds onto that.)
+    if (glareMat) {
+      glareMat.uniforms.uStudyFilter.value = studyFilter;
+      if (studyFilter > 0) {
+        glareMat.uniforms.uGlareStrength.value *=
+          THREE.MathUtils.lerp(1, SUN_STUDY_GLARE_KEEP, studyFilter);
+      }
+    }
     if (prominenceMat) {
       prominenceMat.uniforms.uCloseVisibility.value = inFront
-        ? THREE.MathUtils.smoothstep(solarRadiusPx, 55, 160)
+        ? THREE.MathUtils.smoothstep(solarRadiusPx, 40, 120)
         : 0;
     }
     // A queued view discontinuity reseeds the baseline with THIS frame's
@@ -6393,6 +6497,42 @@ export class PlanetariumMode {
     return true;
   }
 
+  /** DEV-only: pin the solar-flare envelopes for deterministic captures
+   *  (pass null/undefined to hand back to the schedule). */
+  devSunFlare(strength?: number | null): boolean {
+    this.devFlareOverride = typeof strength === 'number'
+      ? THREE.MathUtils.clamp(strength, 0, 1)
+      : null;
+    return true;
+  }
+
+  /** DEV-only: pin the prominence-eruption envelope for deterministic
+   *  captures (pass null/undefined to hand back to the schedule). */
+  devSunEruption(strength?: number | null): boolean {
+    this.devEruptionOverride = typeof strength === 'number'
+      ? THREE.MathUtils.clamp(strength, 0, 1)
+      : null;
+    return true;
+  }
+
+  /** DEV-only: pin the coronal-rain envelope for deterministic captures
+   *  (pass null/undefined to hand back to the schedule). */
+  devSunRain(strength?: number | null): boolean {
+    this.devRainOverride = typeof strength === 'number'
+      ? THREE.MathUtils.clamp(strength, 0, 1)
+      : null;
+    return true;
+  }
+
+  /** DEV-only: pin the ejecta's travel progress (full visibility) for
+   *  deterministic captures (null/undefined = scheduled). */
+  devSunEjecta(travel?: number | null): boolean {
+    this.devEjectaOverride = typeof travel === 'number'
+      ? THREE.MathUtils.clamp(travel, 0, 1)
+      : null;
+    return true;
+  }
+
   /** DEV-only: live-tune the veiling-glare knobs for the warmth A/B montage and
    *  strength QA without rebuilding the Sun material. */
   devSetVeil(opts: { warmth?: number; strength?: number }): boolean {
@@ -9337,6 +9477,17 @@ export class PlanetariumMode {
   rebuildPlanetPositions(_dt = 0) {
     if (!this.solarSystem) return;
     this.rebuildOrbitLinesIfStale();
+    // Solar rotation, same IAU machinery as the planets below. Spots,
+    // filaments, and prominence anchors are all object-space, so this one
+    // quaternion carries the surface weather across the disc. It reads the
+    // rate-capped display clock, not sim time: planets owe their absolute
+    // phase to the sky (continents at a UTC instant), the Sun's face is
+    // unanchored — and at yr/s warp the true rate is a strobe. The
+    // glare/ghost billboards are rotation-immune (their quads expand in
+    // view/clip space around the transformed centre).
+    this.solarSystem.sun.quaternion.copy(computeSunOrientationQuaternion(
+      Number.isFinite(this.sunRotationUtcMs) ? this.sunRotationUtcMs : this.timeState.currentUtcMs,
+    ));
     for (let i = 0; i < this.solarSystem.planets.length; i++) {
       const planet = this.solarSystem.planets[i];
       const body = PLANETARIUM_BODIES[i];

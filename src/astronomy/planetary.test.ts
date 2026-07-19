@@ -16,6 +16,7 @@ import {
   computeBodyOrientationQuaternion,
   computeBodyPoleQuaternion,
   computeBodyState,
+  computeSunOrientationQuaternion,
   computeMoonGeocentricEquatorialAU,
   computeKeplerPositionEcliptic,
   eclipticToEquatorial,
@@ -154,6 +155,25 @@ describe('computeBodyPoleQuaternion (de-spin foundation)', () => {
       );
       expect(spinningAxis.angleTo(poleAxis) * RAD, `JD ${jd}`).toBeLessThan(1e-6);
     }
+  });
+});
+
+describe('computeSunOrientationQuaternion', () => {
+  it('maps local +Y to the IAU solar pole', () => {
+    const pole = new THREE.Vector3(0, 1, 0).applyQuaternion(
+      computeSunOrientationQuaternion(Date.UTC(2026, 6, 19)),
+    );
+    expect(pole.angleTo(raDecToVector(286.13, 63.87)) * RAD).toBeLessThan(1e-6);
+  });
+
+  it('spins at the Carrington rate about a fixed pole', () => {
+    const t0 = Date.UTC(2026, 6, 19);
+    const q0 = computeSunOrientationQuaternion(t0);
+    const q1 = computeSunOrientationQuaternion(t0 + 86_400_000);
+    expect(q0.angleTo(q1) * RAD).toBeCloseTo(14.1844, 4);
+    // A full Carrington rotation (360/14.1844 ≈ 25.38 d) returns to start.
+    const qFull = computeSunOrientationQuaternion(t0 + (360 / 14.1844) * 86_400_000);
+    expect(q0.angleTo(qFull) * RAD).toBeLessThan(1e-3);
   });
 });
 

@@ -39,6 +39,14 @@ export const SUN_DATA = {
   radiusAU: kmToAU(696_340),     // ~0.00465 AU
   radiusKm: 696_340,
   color: 0xfff5e0,
+  // IAU (WGCCRE) rotation model — the Carrington sidereal rotation,
+  // 360/14.1844 ≈ 25.38 days. Rigid: the real photosphere rotates
+  // differentially by latitude, but one Carrington rate is the standard
+  // compromise and what solar longitude systems are defined against.
+  poleRaDeg: 286.13,
+  poleDecDeg: 63.87,
+  primeMeridianDegAtJ2000: 84.176,
+  primeMeridianRateDegPerDay: 14.1844,
 };
 
 export const PLANETS: PlanetData[] = [

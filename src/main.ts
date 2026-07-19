@@ -18,6 +18,8 @@ import type { MoonFlightMode } from './moonFlight/MoonFlightMode';
 import type { VolumeCompareMode } from './volumeCompare/VolumeCompareMode';
 import { canGPUDoBloom } from './app/gpuCapability';
 import { BLOOM_RADIUS, BLOOM_THRESHOLD } from './app/bloomConfig';
+import { createLensPass, updateLensPass, type LensParams } from './app/LensPass';
+import { applyDesignFov, LENS_DEFAULT_STRENGTH } from './shared/math/lensProjection';
 import { stepExposure } from './planetarium/solarExposure';
 import { debugError, debugLog, debugWarn } from './shared/debug';
 
@@ -101,6 +103,20 @@ scene.background = new THREE.Color(0x000000);
 // Near starts at the landed value; cruise swaps in its dynamic near per frame.
 const planetariumCamera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, LANDED_NEAR_AU, 200);
 planetariumCamera.position.set(-0.0002, 0.0001, 0.0001);
+// Lens correction (rectilinear→stereographic blend): rectilinear projection
+// stretches off-axis spheres into ovals (~17% at 30° off-axis at this FOV);
+// the lens pass warps that out, the camera renders at an overscan FOV so the
+// warped frame's corners stay covered, and projectToScreen mirrors the warp
+// for DOM overlays. designFovDeg is what the frame displays; camera.fov holds
+// the overscan (applyDesignFov is the only legal fov writer). The strength
+// here is a *request* — buildComposer gates it on the bloom-capable pipeline
+// (the no-bloom fallback has no composer to warp in) and stores the effective
+// value read by every consumer.
+const planetariumLens: LensParams = { strength: LENS_DEFAULT_STRENGTH, designFovDeg: 60 };
+planetariumCamera.userData.lens = planetariumLens;
+// The requested strength survives bloom toggles; buildComposer writes the
+// effective value into planetariumLens.
+let lensRequestedStrength = LENS_DEFAULT_STRENGTH;
 
 // --- Moon flight camera (own camera so near/far are independent of other modes) ---
 const flightCamera = new THREE.PerspectiveCamera(55, window.innerWidth / window.innerHeight, 0.01, 2000);
@@ -117,6 +133,7 @@ let camera: THREE.PerspectiveCamera = planetariumCamera;
 debugLog('Post-processing config', { useBloom });
 
 let composer: EffectComposer | null = null;
+let lensPass: ReturnType<typeof createLensPass> | null = null;
 
 function getTargetPixelRatio(): number {
   if (isMobile) return Math.min(window.devicePixelRatio, 2);
@@ -169,7 +186,12 @@ function buildComposer(
     composer.dispose();
     composer = null;
   }
-  if (!enabled) return;
+  if (!enabled) {
+    lensPass = null;
+    planetariumLens.strength = 0;
+    applyDesignFov(planetariumCamera, planetariumLens.designFovDeg);
+    return;
+  }
 
   composer = new EffectComposer(renderer);
   composer.setPixelRatio(getTargetPixelRatio());
@@ -182,6 +204,18 @@ function buildComposer(
     bloom.threshold,
   );
   composer.addPass(bloomPass);
+  // Lens correction lives with the planetarium camera only, and only on the
+  // composer path — the no-bloom fallback renders straight to canvas with
+  // nothing to warp in, so it stays rectilinear (strength 0 keeps the fov
+  // overscan off too).
+  if (cam === planetariumCamera) {
+    planetariumLens.strength = lensRequestedStrength;
+    lensPass = createLensPass();
+    composer.addPass(lensPass);
+  } else {
+    lensPass = null;
+  }
+  applyDesignFov(planetariumCamera, planetariumLens.designFovDeg);
   composer.addPass(new OutputPass());
 }
 
@@ -214,6 +248,11 @@ function renderScene(cam: THREE.Camera) {
     performance.mark('plm:first-frame:start');
   }
   if (composer) {
+    // Uniform sync every frame: dev poses change the design FOV and resizes
+    // change the aspect, and a stale warp misplaces every pixel.
+    if (lensPass && cam === planetariumCamera) {
+      updateLensPass(lensPass, planetariumLens, planetariumCamera.fov, planetariumCamera.aspect);
+    }
     composer.render();
   } else {
     renderer.render(scene, cam);
@@ -406,8 +445,11 @@ function installDevHooks() {
     bodies: () => planetariumMode?.devListBodies() ?? [],
     jumpTo: (name: string, distanceMultiplier?: number) =>
       planetariumMode?.devJumpToBody(name, distanceMultiplier) ?? false,
-    frame: (name: string, fillFraction?: number, phaseAngleDeg?: number, distMul?: number) =>
-      planetariumMode?.devFrameBody(name, fillFraction, phaseAngleDeg, distMul) ?? false,
+    frame: (
+      name: string, fillFraction?: number, phaseAngleDeg?: number, distMul?: number,
+      offNdcX?: number, offNdcY?: number,
+    ) =>
+      planetariumMode?.devFrameBody(name, fillFraction, phaseAngleDeg, distMul, offNdcX, offNdcY) ?? false,
     frameSun: (distanceAU?: number, fovDeg?: number, offNdcX?: number, offNdcY?: number) =>
       planetariumMode?.devFrameSun(distanceAU, fovDeg, offNdcX, offNdcY) ?? false,
     sunAppearance: () => planetariumMode?.devSunAppearance() ?? null,
@@ -428,6 +470,17 @@ function installDevHooks() {
     setAutoExposure: (on: boolean) => { autoExposure = on; },
     setBloom: (on: boolean) => setPlanetariumBloom(on),
     bloomActive: () => planetariumBloomEnabled(),
+    // Lens-correction A/B: pass a strength (0 = rectilinear), no args restores
+    // the default. Returns the effective strength after the bloom gate.
+    setLens: (strength?: number | null) => {
+      lensRequestedStrength = typeof strength === 'number'
+        ? Math.min(Math.max(strength, 0), 1)
+        : LENS_DEFAULT_STRENGTH;
+      if (appMode === 'planetarium') {
+        buildComposer(planetariumCamera, { strength: 0.8, threshold: BLOOM_THRESHOLD }, planetariumBloomEnabled());
+      }
+      return planetariumLens.strength;
+    },
     probe: (name: string) => planetariumMode?.devProbe(name) ?? null,
     land: (name: string) => planetariumMode?.devLand(name) ?? false,
     lookUp: () => planetariumMode?.devLookUp() ?? false,
@@ -574,7 +627,9 @@ function syncViewport() {
   appliedViewportW = w;
   appliedViewportH = h;
   planetariumCamera.aspect = w / h;
-  planetariumCamera.updateProjectionMatrix();
+  // Re-derives the lens overscan for the new aspect (and calls
+  // updateProjectionMatrix); the corner coverage is aspect-dependent.
+  applyDesignFov(planetariumCamera, planetariumLens.designFovDeg);
   flightCamera.aspect = w / h;
   flightCamera.updateProjectionMatrix();
   vcCamera.aspect = w / h;

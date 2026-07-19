@@ -16,6 +16,8 @@
  */
 import * as THREE from 'three';
 
+import { lensWarpNdc } from '../math/lensProjection';
+
 export interface ScreenProjection {
   /** Pixel x (CSS px, top-left origin) against `width`. Not rounded. */
   x: number;
@@ -30,6 +32,7 @@ export interface ScreenProjection {
 }
 
 const scratch = new THREE.Vector3();
+const warpScratch = { x: 0, y: 0 };
 
 export function projectToScreen(
   pos: { x: number; y: number; z: number },
@@ -39,6 +42,23 @@ export function projectToScreen(
   out?: ScreenProjection,
 ): ScreenProjection {
   scratch.set(pos.x, pos.y, pos.z).project(camera);
+  // Under the planetarium's lens pass the drawn image is warped; overlays
+  // positioned from this seam must land on the warped pixels. Cameras
+  // without `userData.lens` (flight, volume-compare) stay rectilinear.
+  const lens = (camera.userData as {
+    lens?: { strength: number; designFovDeg: number; effectiveStrength?: number };
+  }).lens;
+  const lensStrength = lens ? (lens.effectiveStrength ?? lens.strength) : 0;
+  if (lens && lensStrength > 0 && scratch.z < 1) {
+    const perspective = camera as THREE.PerspectiveCamera;
+    lensWarpNdc(
+      scratch.x, scratch.y,
+      lens.designFovDeg, perspective.fov, perspective.aspect, lensStrength,
+      warpScratch,
+    );
+    scratch.x = warpScratch.x;
+    scratch.y = warpScratch.y;
+  }
   const result = out ?? { x: 0, y: 0, ndcX: 0, ndcY: 0, ndcZ: 0 };
   result.x = (scratch.x * 0.5 + 0.5) * width;
   result.y = (-scratch.y * 0.5 + 0.5) * height;

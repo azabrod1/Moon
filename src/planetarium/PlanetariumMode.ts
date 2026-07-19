@@ -131,6 +131,7 @@ import {
   type SurfaceTargetChoice,
 } from './surfaceView';
 import { DEG2RAD } from '../shared/math/angles';
+import { applyDesignFov, lensDisplayHalfTan } from '../shared/math/lensProjection';
 import { SUN_GLARE_EXTENT_SOLAR_RADII, SUN_VEIL_BETA, SUN_VEIL_SCALE_H } from '../shared/shaders/sun';
 import { landedFrameCamDistAU, landedMinDistanceAU, landedNearAU, LANDED_NEAR_AU } from './landedView';
 import {
@@ -3170,8 +3171,16 @@ export class PlanetariumMode {
     if (inFront) {
       this.tmpSunScreen.copy(this.solarSystem.sun.position).project(this.camera);
       centreDistanceNdc = Math.hypot(this.tmpSunScreen.x, this.tmpSunScreen.y);
-      const projectedRadiusNdc = Math.tan(solarAngularRadius)
-        / Math.tan(THREE.MathUtils.degToRad(this.camera.fov * 0.5));
+      // Displayed size, not render-frustum size: under the lens pass the
+      // camera fov is the overscan, and metering against it would gate the
+      // whole close-approach appearance ladder late.
+      const lens = this.camera.userData.lens as
+        | { designFovDeg: number; strength: number; effectiveStrength?: number }
+        | undefined;
+      const displayHalfTan = lens
+        ? lensDisplayHalfTan(lens.designFovDeg, lens.effectiveStrength ?? lens.strength)
+        : Math.tan(THREE.MathUtils.degToRad(this.camera.fov * 0.5));
+      const projectedRadiusNdc = Math.tan(solarAngularRadius) / displayHalfTan;
       const glareExtent = SUN_GLARE_EXTENT_SOLAR_RADII;
       solarRadiusPx = projectedRadiusNdc * viewportHeight * 0.5;
       opticalFx = 1 - THREE.MathUtils.smoothstep(solarRadiusPx, 22, 82);
@@ -6282,11 +6291,21 @@ export class PlanetariumMode {
     }
   }
 
+  /** The FOV the frame displays (under the lens pass, camera.fov holds the
+   *  wider overscan the warp samples from — never compare against it). */
+  private displayFovDeg(): number {
+    const lens = this.camera.userData.lens as { designFovDeg: number; strength: number } | undefined;
+    return lens ? lens.designFovDeg : this.camera.fov;
+  }
+
+  /** The one legal camera-FOV writer: routes through the lens overscan. */
+  private setDisplayFov(deg: number): void {
+    applyDesignFov(this.camera as THREE.PerspectiveCamera, deg);
+  }
+
   /** Headless-screenshot support: set the planetarium camera FOV (degrees) to zoom. */
   devSetFov(deg: number): void {
-    const cam = this.camera as THREE.PerspectiveCamera;
-    cam.fov = deg;
-    cam.updateProjectionMatrix();
+    this.setDisplayFov(deg);
   }
 
   /**
@@ -6299,7 +6318,14 @@ export class PlanetariumMode {
    * Sun QA sweeps it (5/15/114 radii) to reproduce the baseline flyby distances.
    * Dev bridge only.
    */
-  devFrameBody(name: string, fillFraction = 0.6, phaseAngleDeg = 0, distMul = 5): boolean {
+  devFrameBody(
+    name: string,
+    fillFraction = 0.6,
+    phaseAngleDeg = 0,
+    distMul = 5,
+    offNdcX = 0,
+    offNdcY = 0,
+  ): boolean {
     if (!this.solarSystem) return false;
     // Resolve the Sun, a top-level planet, or a moon (parent world position plus
     // the same offset the renderer uses) so the harness can frame any of them.
@@ -6354,9 +6380,15 @@ export class PlanetariumMode {
     );
     const cam = this.camera as THREE.PerspectiveCamera;
     cam.position.set(0, 0, 0);
-    cam.fov = THREE.MathUtils.radToDeg((2 * Math.atan(r / dist)) / fillFraction);
-    cam.updateProjectionMatrix();
+    this.setDisplayFov(THREE.MathUtils.radToDeg((2 * Math.atan(r / dist)) / fillFraction));
     cam.lookAt(sceneOffset);
+    // Optional off-centre slide (same convention as devFrameSun): lets the
+    // harness study off-axis projection on any body, not just the Sun.
+    if (offNdcX !== 0 || offNdcY !== 0) {
+      const halfV = Math.tan(THREE.MathUtils.degToRad(cam.fov / 2));
+      cam.rotateY(Math.atan(halfV * cam.aspect * offNdcX));
+      cam.rotateX(-Math.atan(halfV * offNdcY));
+    }
     this.controls.target.copy(sceneOffset);
     return true;
   }
@@ -6377,8 +6409,7 @@ export class PlanetariumMode {
     this.player.headToward(0, 0, 0);
     const cam = this.camera as THREE.PerspectiveCamera;
     cam.position.set(0, 0, 0);
-    cam.fov = fovDeg;
-    cam.updateProjectionMatrix();
+    this.setDisplayFov(fovDeg);
     // Floating origin: the Sun sits at scene position −player.
     const sunScene = new THREE.Vector3(-this.player.posX, -this.player.posY, -this.player.posZ);
     cam.lookAt(sunScene);
@@ -7641,15 +7672,14 @@ export class PlanetariumMode {
         // speck and "grows in"), which reads as the swap lagging or not firing.
         // Snap straight to the fitted framing; the vantage re-pins next frame.
         this.surfaceFovAnim = null;
-        this.camera.fov = entryFov;
-        this.camera.updateProjectionMatrix();
+        this.setDisplayFov(entryFov);
         return;
       }
       // Re-point (event jump): a short ease to the new target's fitted FOV
       // (predictable framing beats preserving a zoom tuned for the previous
       // subject).
       this.surfaceFovAnim = {
-        fromFov: this.camera.fov,
+        fromFov: this.displayFovDeg(),
         toFov: entryFov,
         fromPos: null,
         elapsed: 0,
@@ -7680,7 +7710,7 @@ export class PlanetariumMode {
       this.notification.show('Drag to look around · scroll or pinch to zoom');
     }
     this.surfaceFovAnim = {
-      fromFov: this.camera.fov,
+      fromFov: this.displayFovDeg(),
       toFov: entryFov,
       fromPos: this.preSurfaceCameraPos.clone(),
       elapsed: 0,
@@ -7711,7 +7741,7 @@ export class PlanetariumMode {
       return;
     }
     this.surfaceFovAnim = {
-      fromFov: this.camera.fov,
+      fromFov: this.displayFovDeg(),
       toFov: 60,
       fromPos: null,
       elapsed: 0,
@@ -7726,8 +7756,7 @@ export class PlanetariumMode {
     this.surfaceSpotAnchor = null;
     this.surfaceLook.detach();
     this.camera.up.set(0, 1, 0); // OrbitControls assumes world-up
-    this.camera.fov = 60;
-    this.camera.updateProjectionMatrix();
+    this.setDisplayFov(60);
     this.setSurfaceLabelContainersHidden(false);
     this.observatoryHud.hide();
     document.body.classList.remove('surface-view-active');
@@ -7796,8 +7825,7 @@ export class PlanetariumMode {
     if (this.surfaceFovAnim) {
       this.surfaceFovAnim.toFov = this.surfaceFovDeg;
     } else {
-      this.camera.fov = this.surfaceFovDeg;
-      this.camera.updateProjectionMatrix();
+      this.setDisplayFov(this.surfaceFovDeg);
     }
   }
 
@@ -7919,8 +7947,7 @@ export class PlanetariumMode {
     if (anim) {
       anim.elapsed = Math.min(anim.elapsed + dt, anim.duration);
       const t = smoothstepUnclamped(anim.elapsed / anim.duration);
-      this.camera.fov = THREE.MathUtils.lerp(anim.fromFov, anim.toFov, t);
-      this.camera.updateProjectionMatrix();
+      this.setDisplayFov(THREE.MathUtils.lerp(anim.fromFov, anim.toFov, t));
       if (anim.fromPos) {
         this.camera.position.lerpVectors(anim.fromPos, vantage, t);
       } else {
@@ -7936,9 +7963,8 @@ export class PlanetariumMode {
       }
     } else {
       this.camera.position.copy(vantage);
-      if (this.camera.fov !== this.surfaceFovDeg) {
-        this.camera.fov = this.surfaceFovDeg;
-        this.camera.updateProjectionMatrix();
+      if (this.displayFovDeg() !== this.surfaceFovDeg) {
+        this.setDisplayFov(this.surfaceFovDeg);
       }
     }
 

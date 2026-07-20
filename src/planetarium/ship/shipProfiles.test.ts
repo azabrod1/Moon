@@ -21,4 +21,8 @@ describe('player ship catalog', () => {
       expect(playerShipUsesHyperspace(ship.id)).toBe(starWars.includes(ship.id));
     }
   });
+
+  it('keeps the UFO origin classified', () => {
+    expect(PLAYER_SHIPS.find(({ id }) => id === 'saucer')?.note).toBe('Origin: classified');
+  });
 });

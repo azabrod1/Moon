@@ -623,6 +623,8 @@ export class PlanetariumMode {
   private showShip = true;
   private selectedShipProfile: PlayerShipProfile = 'default';
   private hyperspaceEffect: HyperspaceEffect | null = null;
+  private hyperspaceShipRenderer: THREE.WebGLRenderer | null = null;
+  private hyperspaceShipScene: THREE.Scene | null = null;
   // Headless screenshot framing: when set, the per-frame collision resolver is
   // skipped so the camera can sit a few radii from a body without being pushed
   // back out past its moon system.
@@ -914,10 +916,29 @@ export class PlanetariumMode {
       button.classList.toggle('selected', selected);
       button.setAttribute('aria-checked', String(selected));
     }
+    this.updateShipPickerAvailability();
+  }
+
+  private updateShipPickerAvailability(): void {
+    const toggle = document.getElementById('ship-picker-toggle') as HTMLButtonElement | null;
+    if (!toggle) return;
+    const missionActive = this.isMissionActive();
+    const disabled = !this.showShip || missionActive;
+    toggle.disabled = disabled;
+    toggle.setAttribute('aria-disabled', String(disabled));
+    toggle.title = !this.showShip
+      ? 'Turn on Show ship to choose a ship'
+      : missionActive
+        ? 'Unavailable during a historic journey'
+        : '';
+    if (disabled) {
+      document.getElementById('ship-submenu')?.classList.remove('visible');
+      toggle.setAttribute('aria-expanded', 'false');
+    }
   }
 
   private choosePlayerShip(profile: PlayerShipProfile): void {
-    if (this.isMissionActive()) return;
+    if (!this.showShip || this.isMissionActive()) return;
     this.selectedShipProfile = profile;
     this.player.setProfile(profile);
     this.updateShipPickerUI();
@@ -1407,6 +1428,7 @@ export class PlanetariumMode {
     this.arrivalInFlight = false;
     this.arrivalCoverGen++;
     this.hyperspaceEffect?.stop();
+    this.hideHyperspaceShip();
     document.getElementById('arrival-veil')?.classList.remove('covering', 'hyperspace');
     this.sunExposure = 1;
     this.lastSunVisibleFraction = 1;
@@ -4784,6 +4806,10 @@ export class PlanetariumMode {
       const button = document.getElementById(id) as HTMLButtonElement | null;
       if (button) button.disabled = missionActive;
     }
+    // Mission ownership and the user's Show ship preference both gate the
+    // picker; this second pass prevents the generic mission loop from
+    // accidentally re-enabling it while the ship remains hidden.
+    this.updateShipPickerAvailability();
 
     const bottomBar = document.getElementById('planetarium-bottom-bar');
     if (bottomBar) {
@@ -4948,7 +4974,7 @@ export class PlanetariumMode {
       }
     });
     document.getElementById('ship-picker-toggle')?.addEventListener('click', () => {
-      if (this.isMissionActive()) return;
+      if (!this.showShip || this.isMissionActive()) return;
       const submenu = document.getElementById('ship-submenu');
       const toggle = document.getElementById('ship-picker-toggle');
       const expanded = submenu?.classList.toggle('visible') ?? false;
@@ -5038,6 +5064,7 @@ export class PlanetariumMode {
       this.player.group.visible = this.showShip && !this.landedOn;
       const label = document.getElementById('settings-ship-label');
       if (label) label.textContent = this.showShip ? 'On' : 'Off';
+      this.updateShipPickerAvailability();
     });
 
     document.getElementById('settings-gyro-toggle')?.addEventListener('click', () => {
@@ -8161,6 +8188,99 @@ export class PlanetariumMode {
     return this.hyperspaceEffect;
   }
 
+  /** Render the selected ship once into a transparent WebGL layer above the
+   *  moving tunnel. This keeps the real procedural model visible even when
+   *  the arrival action parks/hides the main scene ship under the opaque veil. */
+  private showHyperspaceShip(origin: HyperspaceOrigin): void {
+    if (!this.showShip) {
+      this.hideHyperspaceShip();
+      return;
+    }
+    const canvas = document.getElementById('hyperspace-ship-canvas');
+    if (!(canvas instanceof HTMLCanvasElement)) return;
+    try {
+      if (!this.hyperspaceShipRenderer) {
+        this.hyperspaceShipRenderer = new THREE.WebGLRenderer({
+          canvas,
+          alpha: true,
+          antialias: true,
+          powerPreference: 'high-performance',
+        });
+        this.hyperspaceShipRenderer.setClearColor(0x000000, 0);
+      }
+    } catch {
+      // A second WebGL context can be denied on constrained devices. The
+      // moving tunnel still runs; fail closed without disrupting travel.
+      this.hyperspaceShipRenderer = null;
+      return;
+    }
+
+    const viewportWidth = Math.max(this.renderer.domElement.clientWidth, 1);
+    const viewportHeight = Math.max(this.renderer.domElement.clientHeight, 1);
+    const previewWidth = Math.round(THREE.MathUtils.clamp(
+      Math.min(viewportWidth, viewportHeight) * 0.32,
+      150,
+      280,
+    ));
+    const previewHeight = Math.round(previewWidth * 0.68);
+    const left = THREE.MathUtils.clamp(
+      origin.x * viewportWidth - previewWidth / 2,
+      0,
+      Math.max(0, viewportWidth - previewWidth),
+    );
+    const top = THREE.MathUtils.clamp(
+      origin.y * viewportHeight - previewHeight / 2,
+      0,
+      Math.max(0, viewportHeight - previewHeight),
+    );
+    canvas.style.inset = 'auto';
+    canvas.style.left = `${left}px`;
+    canvas.style.top = `${top}px`;
+    canvas.style.width = `${previewWidth}px`;
+    canvas.style.height = `${previewHeight}px`;
+
+    const renderer = this.hyperspaceShipRenderer;
+    renderer.setPixelRatio(Math.min(2, window.devicePixelRatio || 1));
+    renderer.setSize(previewWidth, previewHeight, false);
+    renderer.outputColorSpace = this.renderer.outputColorSpace;
+    renderer.toneMapping = this.renderer.toneMapping;
+    renderer.toneMappingExposure = Math.max(1, this.renderer.toneMappingExposure);
+
+    const scene = new THREE.Scene();
+    const ship = this.player.group.clone(true);
+    ship.visible = true;
+    ship.position.set(0, 0, 0);
+    ship.quaternion.identity();
+    ship.scale.set(1, 1, 1);
+    ship.updateMatrixWorld(true);
+    const bounds = new THREE.Box3().setFromObject(ship);
+    const center = bounds.getCenter(new THREE.Vector3());
+    const radius = Math.max(bounds.getBoundingSphere(new THREE.Sphere()).radius, 1e-12);
+    ship.position.sub(center);
+    scene.add(ship);
+
+    scene.add(new THREE.HemisphereLight(0xe8f4ff, 0x17213b, 1.7));
+    const key = new THREE.DirectionalLight(0xffffff, 2.6);
+    key.position.set(-1, 1.4, 1.2);
+    scene.add(key);
+
+    const camera = new THREE.PerspectiveCamera(42, previewWidth / previewHeight, radius / 100, radius * 20);
+    const distance = (radius / Math.sin(THREE.MathUtils.degToRad(camera.fov / 2))) * 1.16;
+    camera.position.set(-1.25, 0.72, 1.15).normalize().multiplyScalar(distance);
+    camera.lookAt(0, 0, 0);
+    camera.updateMatrixWorld(true);
+    renderer.clear();
+    renderer.render(scene, camera);
+    this.hyperspaceShipScene = scene;
+  }
+
+  private hideHyperspaceShip(): void {
+    this.hyperspaceShipScene?.clear();
+    this.hyperspaceShipScene = null;
+    this.hyperspaceShipRenderer?.clear();
+    document.getElementById('hyperspace-ship-canvas')?.removeAttribute('style');
+  }
+
   /** The player remains at scene origin under the floating-origin renderer.
    *  Project that actual location so every star trail radiates from the ship,
    *  even when the chase camera has placed it away from screen center. */
@@ -8224,8 +8344,14 @@ export class PlanetariumMode {
     const veil = document.getElementById('arrival-veil');
     const coverStart = performance.now();
     const hyperspaceEffect = hyperspace ? this.getHyperspaceEffect() : null;
-    if (hyperspace) hyperspaceEffect?.start(this.hyperspaceOrigin());
-    else this.hyperspaceEffect?.stop();
+    if (hyperspace) {
+      const origin = this.hyperspaceOrigin();
+      hyperspaceEffect?.start(origin);
+      this.showHyperspaceShip(origin);
+    } else {
+      this.hyperspaceEffect?.stop();
+      this.hideHyperspaceShip();
+    }
     veil?.classList.toggle('hyperspace', hyperspace);
     veil?.classList.add('covering'); // snaps fully opaque (no fade-in) — see CSS
     const coverGen = ++this.arrivalCoverGen;
@@ -8296,6 +8422,7 @@ export class PlanetariumMode {
                 window.setTimeout(() => {
                   if (coverGen !== this.arrivalCoverGen) return;
                   hyperspaceEffect?.stop();
+                  this.hideHyperspaceShip();
                   veil?.classList.remove('hyperspace');
                 }, 320);
               }, exitWait);

@@ -8,7 +8,7 @@ export const PLAYER_SHIPS = [
   { id: 'starliner', label: 'Boeing Starliner', note: 'Reusable crew capsule', group: 'modern' },
   { id: 'dreamChaser', label: 'Dream Chaser', note: 'Reusable spaceplane', group: 'modern' },
   { id: 'soyuz', label: 'Soyuz', note: 'Operational crew capsule', group: 'modern' },
-  { id: 'saucer', label: 'UFO', note: 'Unknown origin', group: 'modern' },
+  { id: 'saucer', label: 'UFO', note: 'Origin: classified', group: 'modern' },
   { id: 'apollo', label: 'Apollo', note: 'Lunar command ship', group: 'historic' },
   { id: 'shuttle', label: 'Space Shuttle', note: 'Orbital glider', group: 'historic' },
   { id: 'falcon', label: 'Millennium Falcon', note: 'Corellian freighter', group: 'starWars' },

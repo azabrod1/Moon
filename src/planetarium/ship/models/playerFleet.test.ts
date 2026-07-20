@@ -140,8 +140,8 @@ describe('player fleet models', () => {
     const coreMaterial = firstCore.material as THREE.MeshBasicMaterial;
 
     updateFleetPropulsion(model, 0, false, 0);
-    expect(lightMaterial.opacity).toBeCloseTo(0.24);
-    expect(coreMaterial.opacity).toBeCloseTo(0.36);
+    expect(lightMaterial.opacity).toBe(0);
+    expect(coreMaterial.opacity).toBe(0);
     updateFleetPropulsion(model, 0.25, true, 1);
     expect(lightMaterial.opacity).toBeGreaterThan(0.88);
     expect(coreMaterial.opacity).toBeCloseTo(0.98);
@@ -161,6 +161,13 @@ describe('player fleet models', () => {
     expect(housing).toBeInstanceOf(THREE.Mesh);
     expect(light).toBeInstanceOf(THREE.Mesh);
     expect(core).toBeInstanceOf(THREE.Mesh);
+    const lightMaterial = (light as THREE.Mesh).material as THREE.MeshBasicMaterial;
+    const coreMaterial = (core as THREE.Mesh).material as THREE.MeshBasicMaterial;
+    expect(lightMaterial.opacity).toBe(0);
+    expect(coreMaterial.opacity).toBe(0);
+    updateFleetPropulsion(falcon, 0.25, true, 1);
+    expect(lightMaterial.opacity).toBeGreaterThan(0.8);
+    expect(coreMaterial.opacity).toBeGreaterThan(0.8);
     const housingBox = new THREE.Box3().setFromObject(housing!);
     const lightBox = new THREE.Box3().setFromObject(light!);
     const coreBox = new THREE.Box3().setFromObject(core!);

@@ -50,7 +50,7 @@ describe('PlayerShip selectable profile routing', () => {
     expect(player.group.userData.activeShipProfile).toBe('enterprise');
   });
 
-  it('dims parked fleet engines and powers them up while moving', () => {
+  it('turns parked fleet engines fully off and powers them up while moving', () => {
     const player = new PlayerShip();
     player.setProfile('ussVoyager');
     const model = player.group.userData.shipModel as import('three').Group;
@@ -59,7 +59,7 @@ describe('PlayerShip selectable profile routing', () => {
 
     player.moving = false;
     player.update(0.1);
-    expect(material.opacity).toBeCloseTo(0.24);
+    expect(material.opacity).toBe(0);
     player.moving = true;
     player.update(0.1);
     expect(material.opacity).toBeGreaterThan(0.7);

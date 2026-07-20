@@ -100,6 +100,7 @@ function addWindows(
 
 function addEngineGlow(group: THREE.Group, x: number, y: number, z: number, radius: number, material: Mat): void {
   const engine = new THREE.Mesh(new THREE.CircleGeometry(radius, 24), material);
+  engine.userData.fleetPropulsionEmitter = true;
   engine.rotation.y = -Math.PI / 2;
   engine.position.set(x, y, z);
   engine.renderOrder = 1;
@@ -543,6 +544,7 @@ function createFalcon(referenceRadiusAU: number): THREE.Group {
     blue,
   );
   engineLight.name = 'falcon-engine-light';
+  engineLight.userData.fleetPropulsionEmitter = true;
   engineLight.position.set(-0.045 * U, -0.012 * U, 0);
   engineLight.scale.y = 0.65;
   engineLight.renderOrder = 3;
@@ -552,6 +554,7 @@ function createFalcon(referenceRadiusAU: number): THREE.Group {
     engineCore,
   );
   hotCore.name = 'falcon-engine-hot-core';
+  hotCore.userData.fleetPropulsionEmitter = true;
   hotCore.position.set(-0.052 * U, -0.014 * U, 0);
   hotCore.scale.y = 0.61;
   hotCore.renderOrder = 4;
@@ -623,10 +626,12 @@ function createEnterprise(referenceRadiusAU: number): THREE.Group {
     nacelle.position.set(-0.68 * U, 0.36 * U, zSign * 1.28 * U);
     group.add(nacelle);
     const cap = new THREE.Mesh(new THREE.SphereGeometry(0.245 * U, 24, 16), red);
+    cap.userData.fleetPropulsionEmitter = true;
     cap.scale.x = 0.42;
     cap.position.set(0.43 * U, 0.36 * U, zSign * 1.28 * U);
     group.add(cap);
     const grille = new THREE.Mesh(new THREE.BoxGeometry(1.3 * U, 0.08 * U, 0.12 * U), blue);
+    grille.userData.fleetPropulsionEmitter = true;
     grille.position.set(-0.72 * U, 0.51 * U, zSign * 1.28 * U);
     group.add(grille);
     for (const x of [-1.48, -1.1, -0.72, -0.34, 0.04]) {
@@ -788,6 +793,7 @@ function createFlyingSaucer(referenceRadiusAU: number): THREE.Group {
     group.add(vent);
   }
   const tractor = new THREE.Mesh(new THREE.CylinderGeometry(0.42 * U, 0.15 * U, 0.35 * U, 32, 1, true), cyan);
+  tractor.userData.fleetPropulsionEmitter = true;
   tractor.position.y = -0.31 * U;
   group.add(tractor);
   return group;

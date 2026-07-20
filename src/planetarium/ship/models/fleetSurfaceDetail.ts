@@ -29,6 +29,10 @@ interface FleetPropulsionState {
   coreMaterial: THREE.MeshBasicMaterial;
   haloMaterial: THREE.MeshBasicMaterial;
   halos: THREE.Mesh[];
+  primaryMaterials: Array<{
+    material: THREE.MeshBasicMaterial;
+    poweredOpacity: number;
+  }>;
 }
 
 function standard(color: number, roughness: number, metalness: number): THREE.MeshStandardMaterial {
@@ -820,7 +824,26 @@ function aftEnergyColors(profile: FleetProfile): [outer: number, core: number] {
   return [0x63bfff, 0xe7f8ff];
 }
 
-function addAftPropulsionDetail(profile: FleetProfile, root: THREE.Group, p: DetailPalette): FleetPropulsionState {
+function collectPrimaryPropulsionMaterials(model: THREE.Group): FleetPropulsionState['primaryMaterials'] {
+  const materials = new Map<THREE.MeshBasicMaterial, number>();
+  model.traverse((object) => {
+    if (!(object instanceof THREE.Mesh) || object.userData.fleetPropulsionEmitter !== true) return;
+    const meshMaterials = Array.isArray(object.material) ? object.material : [object.material];
+    for (const material of meshMaterials) {
+      if (material instanceof THREE.MeshBasicMaterial && !materials.has(material)) {
+        materials.set(material, material.opacity);
+      }
+    }
+  });
+  return [...materials].map(([material, poweredOpacity]) => ({ material, poweredOpacity }));
+}
+
+function addAftPropulsionDetail(
+  profile: FleetProfile,
+  root: THREE.Group,
+  p: DetailPalette,
+  primaryMaterials: FleetPropulsionState['primaryMaterials'],
+): FleetPropulsionState {
   const [outerColor, coreColor] = aftEnergyColors(profile);
   const outerMaterial = energyMaterial(outerColor, 0.82);
   const coreMaterial = energyMaterial(coreColor, 0.96);
@@ -871,12 +894,13 @@ function addAftPropulsionDetail(profile: FleetProfile, root: THREE.Group, p: Det
     core.renderOrder = 5;
     root.add(core);
   }
-  return { outerMaterial, coreMaterial, haloMaterial, halos };
+  return { outerMaterial, coreMaterial, haloMaterial, halos, primaryMaterials };
 }
 
 /** Drive the non-Default engine internals without moving or rescaling the
  * ship. Powered flight brightens the nested cores and gives the additive halo
- * a restrained high-frequency shimmer; parked craft retain a low pilot glow. */
+ * a restrained high-frequency shimmer; every propulsion emitter is fully dark
+ * while parked, matching the Default ship's zero-speed behavior. */
 export function updateFleetPropulsion(
   model: THREE.Group,
   elapsedSeconds: number,
@@ -887,9 +911,12 @@ export function updateFleetPropulsion(
   if (!state) return;
   const throttle = THREE.MathUtils.clamp(throttleFraction, 0, 1);
   const shimmer = powered ? Math.sin(elapsedSeconds * 17) * 0.025 : 0;
-  state.outerMaterial.opacity = powered ? 0.72 + throttle * 0.2 + shimmer : 0.24;
-  state.coreMaterial.opacity = powered ? 0.88 + throttle * 0.1 : 0.36;
-  state.haloMaterial.opacity = powered ? 0.09 + throttle * 0.13 + shimmer * 0.6 : 0.025;
+  state.outerMaterial.opacity = powered ? 0.72 + throttle * 0.2 + shimmer : 0;
+  state.coreMaterial.opacity = powered ? 0.88 + throttle * 0.1 : 0;
+  state.haloMaterial.opacity = powered ? 0.09 + throttle * 0.13 + shimmer * 0.6 : 0;
+  for (const { material, poweredOpacity } of state.primaryMaterials) {
+    material.opacity = powered ? poweredOpacity * (0.72 + throttle * 0.28) : 0;
+  }
   const haloScale = powered ? 1 + throttle * 0.08 + shimmer : 0.96;
   for (const halo of state.halos) halo.scale.setScalar(haloScale);
 }
@@ -897,6 +924,7 @@ export function updateFleetPropulsion(
 /** Add researched, profile-specific secondary geometry without changing the
  * primary model's scale, orientation, or the Default ship implementation. */
 export function addFleetSurfaceDetail(profile: FleetProfile, model: THREE.Group, referenceRadiusAU: number): THREE.Group {
+  const primaryPropulsionMaterials = collectPrimaryPropulsionMaterials(model);
   const root = new THREE.Group();
   root.name = `${profile}-high-detail`;
   root.scale.setScalar(referenceRadiusAU);
@@ -934,7 +962,8 @@ export function addFleetSurfaceDetail(profile: FleetProfile, model: THREE.Group,
   aftRoot.name = `${profile}-aft-detail`;
   aftRoot.userData.coverage = 'rear-propulsion';
   root.add(aftRoot);
-  model.userData.fleetPropulsion = addAftPropulsionDetail(profile, aftRoot, palette);
+  model.userData.fleetPropulsion = addAftPropulsionDetail(profile, aftRoot, palette, primaryPropulsionMaterials);
+  updateFleetPropulsion(model, 0, false, 0);
   model.userData.surfaceDetail = 'enhanced';
   model.userData.surfaceCoverage = 'all-sides';
   return applyFleetMicroSurface(profile, model);

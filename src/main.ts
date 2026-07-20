@@ -22,6 +22,16 @@ import { createLensPass, updateLensPass, type LensParams } from './app/LensPass'
 import { applyDesignFov, LENS_DEFAULT_STRENGTH } from './shared/math/lensProjection';
 import { stepExposure } from './planetarium/solarExposure';
 import { debugError, debugLog, debugWarn } from './shared/debug';
+import {
+  clearSurfacePerf,
+  installSurfacePerfInputTracing,
+  startSurfacePerf,
+  stopSurfacePerf,
+  surfacePerfBeginRender,
+  surfacePerfEndRender,
+  surfacePerfFrameStart,
+  surfacePerfSnapshot,
+} from './planetarium/surfacePerf';
 
 // ================================================================
 // Top-level mode
@@ -247,15 +257,28 @@ function renderScene(cam: THREE.Camera) {
     measureNextSceneFrame = false;
     performance.mark('plm:first-frame:start');
   }
-  if (composer) {
-    // Uniform sync every frame: dev poses change the design FOV and resizes
-    // change the aspect, and a stale warp misplaces every pixel.
-    if (lensPass && cam === planetariumCamera) {
-      updateLensPass(lensPass, planetariumLens, planetariumCamera.fov, planetariumCamera.aspect);
+  const perfRender = import.meta.env.DEV
+    ? surfacePerfBeginRender(renderer.info.programs?.length ?? 0, renderer.info.memory.textures)
+    : null;
+  try {
+    if (composer) {
+      // Uniform sync every frame: dev poses change the design FOV and resizes
+      // change the aspect, and a stale warp misplaces every pixel.
+      if (lensPass && cam === planetariumCamera) {
+        updateLensPass(lensPass, planetariumLens, planetariumCamera.fov, planetariumCamera.aspect);
+      }
+      composer.render();
+    } else {
+      renderer.render(scene, cam);
     }
-    composer.render();
-  } else {
-    renderer.render(scene, cam);
+  } finally {
+    if (import.meta.env.DEV) {
+      surfacePerfEndRender(
+        perfRender,
+        renderer.info.programs?.length ?? 0,
+        renderer.info.memory.textures,
+      );
+    }
   }
   if (measuring) performance.measure('plm:first-frame', 'plm:first-frame:start');
 }
@@ -440,6 +463,7 @@ function getAutoMode(): 'planetarium' | 'volumeCompare' {
 // the clock from out of process. The call site is guarded by a DEV check, so a
 // production build dead-code-eliminates this entirely.
 function installDevHooks() {
+  installSurfacePerfInputTracing();
   (window as any).__moon = {
     ready: () => !!planetariumMode?.hasLoadedSolarSystem(),
     bodies: () => planetariumMode?.devListBodies() ?? [],
@@ -454,6 +478,7 @@ function installDevHooks() {
       planetariumMode?.devFrameSun(distanceAU, fovDeg, offNdcX, offNdcY) ?? false,
     sunAppearance: () => planetariumMode?.devSunAppearance() ?? null,
     sunGlareMask: () => planetariumMode?.devSunGlareMask() ?? null,
+    eclipseDebug: () => planetariumMode?.devEclipseDebug() ?? null,
     setVeil: (opts: { warmth?: number; strength?: number }) =>
       planetariumMode?.devSetVeil(opts ?? {}) ?? false,
     // Near-Sun auto-exposure inspection + locks (peek the mode's target/coverage,
@@ -541,7 +566,36 @@ function installDevHooks() {
       programs: renderer.info.programs?.length ?? 0,
       exposure: renderer.toneMappingExposure,
     }),
+    // Low-overhead Surface timing ring buffer. Usage:
+    //   surfacePerf('start') → reproduce → surfacePerf() / surfacePerf('stop')
+    surfacePerf: (command: 'start' | 'stop' | 'clear' | 'snapshot' = 'snapshot') => {
+      if (command === 'clear') {
+        clearSurfacePerf();
+        return null;
+      }
+      if (command === 'stop') return stopSurfacePerf();
+      if (command === 'start') {
+        const drawingBuffer = renderer.getDrawingBufferSize(new THREE.Vector2());
+        return startSurfacePerf({
+          userAgent: navigator.userAgent,
+          visibilityState: document.visibilityState,
+          hasFocus: document.hasFocus(),
+          bloom: planetariumBloomEnabled(),
+          parallelShaderCompile: !!renderer.getContext().getExtension('KHR_parallel_shader_compile'),
+          viewport: `${window.innerWidth}x${window.innerHeight}`,
+          drawingBuffer: `${drawingBuffer.x}x${drawingBuffer.y}`,
+          pixelRatio: renderer.getPixelRatio(),
+          maxTextureSize: renderer.capabilities.maxTextureSize,
+          programs: renderer.info.programs?.length ?? 0,
+          textures: renderer.info.memory.textures,
+        });
+      }
+      return surfacePerfSnapshot();
+    },
   };
+  if (new URLSearchParams(window.location.search).get('surfacePerf') === '1') {
+    (window as any).__moon.surfacePerf('start');
+  }
   debugLog('Dev hooks installed (window.__moon)');
 }
 
@@ -551,11 +605,17 @@ function installDevHooks() {
 async function init() {
   (window as any).__initStarted = true;
   debugLog('Init started');
+  // Build identity in the menu footer: lets anyone confirm which deploy a
+  // device is actually running (cached phone tabs have repeatedly shown
+  // days-old bundles while looking current).
+  const buildEl = document.getElementById('menu-build');
+  if (buildEl) buildEl.textContent = `build ${__BUILD_TAG__}`;
 
   let lastTime = performance.now();
 
-  function animate() {
+  function animate(rafTimestamp = performance.now()) {
     requestAnimationFrame(animate);
+    if (import.meta.env.DEV) surfacePerfFrameStart(rafTimestamp);
     syncViewportIfDrifted();
     const now = performance.now();
     const rawDt = (now - lastTime) / 1000;
@@ -588,12 +648,16 @@ async function init() {
   animate();
   debugLog('Animation loop started');
 
+  // Install the diagnostic bridge before the async Planetarium load. This is
+  // deliberately early: an entry stall can overlap the last texture-loading
+  // unit, and the profiler must remain usable while `ready()` is still false.
+  if (import.meta.env.DEV) installDevHooks();
+
   const autoMode = getAutoMode();
   debugLog('Boot mode', { autoMode });
   // The Planetarium always boots first — it owns the saves, the catalog, and
   // the veil semantics — then ?auto=volumeCompare routes on into the compare mode.
   await switchAppMode('planetarium');
-  if (import.meta.env.DEV) installDevHooks();
   logStartupTimings();
 
   document.getElementById('loading-screen')?.classList.add('hidden');
@@ -645,6 +709,18 @@ function syncViewport() {
 }
 
 window.addEventListener('resize', syncViewport);
+
+// A mouse click leaves the pressed button focused, and the browser then turns
+// the next Space press into a re-fire of that button — so "click Faster, hit
+// Space to pause" sped time up again instead of pausing (the window Space
+// handlers must ignore focused buttons or every Space would double-fire).
+// Pointer users get nothing from the retained focus; drop it after the click.
+// Keyboard activations report detail 0 and keep focus for tab navigation.
+document.addEventListener('click', (e) => {
+  if (e.detail === 0) return;
+  const button = (e.target as HTMLElement | null)?.closest?.('button');
+  if (button && button === document.activeElement) button.blur();
+});
 
 // iOS Safari changes the viewport without a resize event this app can count
 // on (URL-bar collapse on a non-scrolling page, keyboard dismissal, the

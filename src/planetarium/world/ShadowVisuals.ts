@@ -192,6 +192,42 @@ function coneMaterial(color: number, opacity: number): THREE.MeshBasicMaterial {
   });
 }
 
+/**
+ * Probe objects for the boot-time shader warmup: one instance of every
+ * material family this module introduces (cone/spot fill, solid and dashed
+ * fat guide lines) on degenerate geometry. These programs otherwise link on
+ * the first frame that draws them — the first surface-view entry — freezing
+ * that frame long enough on slow GPUs that the entering click reads as dead.
+ */
+export function createShadowVisualsWarmupProbes(): { group: THREE.Group; dispose: () => void } {
+  const group = new THREE.Group();
+  group.visible = false;
+  const fill = coneMaterial(0xffffff, 0.1);
+  const cone = new THREE.CylinderGeometry(1e-9, 0, 1e-9, 3, 1, true);
+  group.add(new THREE.Mesh(cone, fill));
+  const segment = new LineGeometry();
+  segment.setPositions([0, 0, 0, 0, 1e-9, 0]);
+  const solid = new LineMaterial({ color: 0xffffff, linewidth: 1, opacity: 0.5, transparent: true, depthWrite: false });
+  const dashed = new LineMaterial({
+    color: 0xffffff, linewidth: 1, opacity: 0.5, transparent: true, depthWrite: false,
+    dashed: true, dashSize: 1, gapSize: 1,
+  });
+  const solidLine = new Line2(segment, solid);
+  const dashedLine = new Line2(segment, dashed);
+  solidLine.computeLineDistances();
+  group.add(solidLine, dashedLine);
+  return {
+    group,
+    dispose: () => {
+      fill.dispose();
+      solid.dispose();
+      dashed.dispose();
+      cone.dispose();
+      segment.dispose();
+    },
+  };
+}
+
 export class ShadowVisuals {
   private root = new THREE.Group();
   private guidesGroup = new THREE.Group();

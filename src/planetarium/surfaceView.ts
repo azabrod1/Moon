@@ -257,8 +257,18 @@ export function computeShadowSpotVantage(
   shadowAxis: THREE.Vector3,
   out: THREE.Vector3,
 ): THREE.Vector3 {
-  shadowAxisSurfacePoint(occluderOffsetAU, shadowAxis, bodyRadiusAU, out);
-  return out.normalize().multiplyScalar(bodyRadiusAU + surfaceAltitudeAU(bodyRadiusAU));
+  // Intersect at the camera's flying shell, not the ground: the surface camera
+  // hovers well above the terrain (hundreds of km on Earth), and lifting the
+  // ground-level axis point radially displaced it off the umbral line by
+  // altitude x sin(axis incidence) — on a slanted-axis eclipse that is
+  // hundreds of km, a Moon that never fully covers the Sun. The axis pierced
+  // at the shell IS the point the camera occupies, so peak alignment is exact.
+  return shadowAxisSurfacePoint(
+    occluderOffsetAU,
+    shadowAxis,
+    bodyRadiusAU + surfaceAltitudeAU(bodyRadiusAU),
+    out,
+  );
 }
 
 const tmpInvOrientation = new THREE.Quaternion();
@@ -279,7 +289,14 @@ export function computeSpotAnchorLocal(
   bodyOrientation: THREE.Quaternion,
   out: THREE.Vector3,
 ): THREE.Vector3 {
-  shadowAxisSurfacePoint(occluderOffsetAU, shadowAxis, bodyRadiusAU, out);
+  // Pin the axis hit at the camera's flying shell (see computeShadowSpotVantage)
+  // so the anchored observer stands on the umbral line, not beside it.
+  shadowAxisSurfacePoint(
+    occluderOffsetAU,
+    shadowAxis,
+    bodyRadiusAU + surfaceAltitudeAU(bodyRadiusAU),
+    out,
+  );
   return out.normalize().applyQuaternion(tmpInvOrientation.copy(bodyOrientation).invert());
 }
 

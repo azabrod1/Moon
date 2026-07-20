@@ -25,9 +25,9 @@ import { PlanetariumStore, createDefaultPlanetariumState, type PlanetariumState,
 import { solarExposureTarget, solarViewportCoverage } from './solarExposure';
 import { computeStats } from './stats';
 import { PLANETARIUM_BODIES, SUN_DATA, type PlanetData } from './planets/planetData';
-import { applySunGlowTier, createMoonMeshes, createShaderWarmupProbes, setWarmEligibleMoonParents, upgradeTextureOnApproach, ATMOSPHERES, ATMOSPHERE_SHELL_SCALES, type MoonMesh, type TextureUpgrade } from './PlanetFactory';
+import { applySunGlowTier, cancelTextureUpgrade, createMoonMeshes, createShaderWarmupProbes, setWarmEligibleMoonParents, upgradeTextureOnApproach, ATMOSPHERES, ATMOSPHERE_SHELL_SCALES, type MoonMesh, type TextureUpgrade } from './PlanetFactory';
 import type { SurfaceShadingFx } from './world/surfaceShading';
-import { bindTextureWarmer, pumpTextureWarmQueue, queueTextureWarm, resetTextureWarmer } from './world/textureWarmer';
+import { bindTextureWarmer, invalidateTextureWarmCache, pumpTextureWarmQueue, queueTextureWarm, resetTextureWarmer } from './world/textureWarmer';
 import {
   advancePlanetariumTime,
   computeBodyPositionAU,
@@ -66,12 +66,14 @@ import {
   findShadowEvent,
   listShadowEventSpecs,
   searchShadowEvent,
+  shadowAxisSurfacePoint,
   type MoonShadingState,
   type ShadowEvent,
   type ShadowEventSpec,
 } from '../astronomy/shadows';
-import { ShadowVisuals, type GuideSlotInput } from './world/ShadowVisuals';
+import { ShadowVisuals, createShadowVisualsWarmupProbes, type GuideSlotInput } from './world/ShadowVisuals';
 import { OBSERVATORY_JUMP_LEAD_MS, stepperSearchFromUtcMs } from './observatoryTime';
+import { surfacePerfBeginSpan, surfacePerfEndSpan } from './surfacePerf';
 import { findEvent, type EventType } from '../astronomy/ephemeris';
 import { KM_PER_AU } from '../astronomy/constants';
 import { createPlanetariumStarfield, setStarfieldPixelRatio, starfieldFaintLimitMag } from './world/starfield';
@@ -597,6 +599,10 @@ export class PlanetariumMode {
     rate: 1,
     paused: false,
   };
+  // Until when (performance.now()) a resume re-asserts the pause instead of
+  // starting the clock — armed whenever the clock freezes, with a window
+  // sized by how knowingly it froze. See setTimePausedFromControl.
+  private pauseGuardUntilMs = -Infinity;
 
   // Planet visual scale multiplier (real scale = 1)
   private planetScale = 1;
@@ -783,8 +789,10 @@ export class PlanetariumMode {
     },
     (action) => {
       // The strip and the bottom bar drive the same clock through the same
-      // handlers — one idiom, no duplicate state.
-      if (action === 'toggle-pause') this.timeTogglePause();
+      // handlers — one idiom, no duplicate state (including the menu lock).
+      if (this.timeControlsLocked()) return;
+      if (action === 'pause') this.setTimePausedFromControl(true);
+      else if (action === 'resume') this.setTimePausedFromControl(false);
       else if (action === 'slower') this.stepTimeRate(-1);
       else if (action === 'faster') this.stepTimeRate(1);
       else this.timeJumpToNow();
@@ -889,6 +897,7 @@ export class PlanetariumMode {
     this.menuPanel.hide();
     if (this.resumeShipAfterMenu) this.player.moving = true;
     if (this.resumeTimeAfterMenu) this.timeState.paused = false;
+    this.updateTimeUI();
     this.resumeShipAfterMenu = false;
     this.resumeTimeAfterMenu = false;
   }
@@ -912,6 +921,7 @@ export class PlanetariumMode {
     this.resumeTimeAfterHelp = !this.timeState.paused;
     this.player.moving = false;
     this.timeState.paused = true;
+    this.updateTimeUI();
     this.helpModal.show();
   }
 
@@ -920,6 +930,7 @@ export class PlanetariumMode {
     this.helpModal.hide();
     if (this.resumeShipAfterHelp) this.player.moving = true;
     if (this.resumeTimeAfterHelp) this.timeState.paused = false;
+    this.updateTimeUI();
     this.resumeShipAfterHelp = false;
     this.resumeTimeAfterHelp = false;
     this.store.markHelpSeen();
@@ -962,6 +973,7 @@ export class PlanetariumMode {
     // and re-validate the GPU path on restore (else it stays on the CPU path).
     const glCanvas = renderer.domElement;
     glCanvas.addEventListener('webglcontextlost', () => {
+      invalidateTextureWarmCache();
       this.invalidateRtPaintedMoons(this.moonTexturer.onContextLost());
       // Dots gate on painted moons — blank them with the same invalidation so a
       // stale dot can't outlive the mesh it belonged to.
@@ -1054,9 +1066,23 @@ export class PlanetariumMode {
   // Shared clock handlers — the time rail, its panel, the keyboard, and the
   // surface transport strip drive the same state through these (one clock,
   // one idiom).
-  private timeTogglePause() {
-    this.timeState.paused = !this.timeState.paused;
+  private setTimePausedFromControl(paused: boolean) {
+    // A resume arriving moments after the clock froze is usually the second
+    // half of a double-click, or a Pause-intent click chasing the silent
+    // step-down detent. Re-assert the freeze in that window. An explicit
+    // pause is idempotent: even if delivery was delayed by a busy frame, a
+    // control that said Pause can never accidentally resume the clock.
+    if (!paused && this.timeState.paused && performance.now() < this.pauseGuardUntilMs) {
+      this.updateTimeUI({ flash: true });
+      return;
+    }
+    this.timeState.paused = paused;
+    if (paused) this.pauseGuardUntilMs = performance.now() + 350;
     this.updateTimeUI({ flash: true });
+  }
+
+  private timeTogglePause() {
+    this.setTimePausedFromControl(!this.timeState.paused);
   }
 
   private timeJumpToNow() {
@@ -1307,19 +1333,44 @@ export class PlanetariumMode {
       // first-draw compilation remains the fallback.
       performance.mark('plm:precompile:start');
       const probes = createShaderWarmupProbes();
-      this.scene.add(probes.group);
-      const compiled = this.renderer
-        .compileAsync(this.scene, this.camera)
-        .catch(() => undefined)
-        .then(() => {
-          // Probe materials are disposed only once the poll has fully settled —
-          // disposing a material mid-poll throws inside a timer callback that
-          // no try/catch around the await could reach.
-          this.scene.remove(probes.group);
-          probes.dispose();
-        });
+      // The landed system's shadow visuals attach at landing, after this
+      // compile pass — probe their material families here too, or the first
+      // surface-view entry links those programs mid-gesture (a frozen frame
+      // that reads as a dead click on slow GPUs).
+      const shadowProbes = createShadowVisualsWarmupProbes();
+      this.scene.add(probes.group, shadowProbes.group);
+      const compiled = this.renderer.compileAsync(this.scene, this.camera).catch(() => undefined);
       await Promise.race([compiled, new Promise((resolve) => window.setTimeout(resolve, 3000))]);
+      // Safari commonly lacks KHR_parallel_shader_compile, where Three's
+      // compileAsync cannot prove that the driver has linked anything. Also,
+      // the live bloom scene renders to a linear target while compileAsync
+      // above prepares the sRGB canvas key. Two real, 1-pixel draws under the
+      // load veil cover both output variants without the old landed-time
+      // six-direction/full-canvas sweeps that blocked visible input.
+      try {
+        this.renderShaderWarmupDraw([probes.group, shadowProbes.group]);
+      } catch (err) {
+        // Warm-up is an optimization only; lazy first draw remains the
+        // fail-open path on a driver that rejects the probe render.
+        debugError('Shader warm-up draw failed', err);
+      }
+      // Probe materials are disposed only once compileAsync's poll has fully
+      // settled — disposing a material mid-poll throws inside a timer callback
+      // that no try/catch around the await could reach.
+      void compiled.then(() => {
+        this.scene.remove(probes.group, shadowProbes.group);
+        probes.dispose();
+        shadowProbes.dispose();
+      });
       performance.measure('plm:precompile', 'plm:precompile:start');
+    }
+
+    // A restored landed session bypasses arriveThen's arrival veil. The load
+    // screen is its cover: give the landed pair's optional 4K map the same
+    // bounded settle window, upload it here if ready, or cancel it so a late
+    // completion cannot hitch the first Safari Surface gesture.
+    if (buildingSolarSystem && this.landedOn) {
+      await this.settleRestoredLandedTextureUpgrades();
     }
 
     reportActivationProgress(FIRST_PLANETARIUM_ACTIVATION_TOTAL_UNITS);
@@ -1332,6 +1383,68 @@ export class PlanetariumMode {
       this.scene.add(this.constellations.lines);
     }
     this.constellations.setVisible(this.showConstellations);
+  }
+
+  /** Force the boot probe families through both render output program keys.
+   * Raster work is scissored to one pixel and runs only behind the load veil. */
+  private renderShaderWarmupDraw(groups: readonly THREE.Group[]): void {
+    const prevTarget = this.renderer.getRenderTarget();
+    const prevViewport = this.renderer.getViewport(new THREE.Vector4());
+    const prevScissor = this.renderer.getScissor(new THREE.Vector4());
+    const prevScissorTest = this.renderer.getScissorTest();
+    const target = new THREE.WebGLRenderTarget(1, 1);
+    const forward = new THREE.Vector3();
+    const forcedFrustumObjects: THREE.Object3D[] = [];
+    this.camera.updateMatrixWorld();
+    this.camera.getWorldDirection(forward);
+    const probeDistance = Math.max(this.camera.near * 4, 1e-6);
+    for (const group of groups) {
+      group.visible = true;
+      group.position.copy(this.camera.position).addScaledVector(forward, probeDistance);
+    }
+    // One view is enough when culling is disabled: every currently visible
+    // planet/atmosphere/cloud custom material is submitted even when its body
+    // sits behind the boot camera. The probe groups cover future moon/shadow
+    // variants whose real meshes are not visible yet.
+    this.scene.traverse((obj) => {
+      if (!obj.frustumCulled) return;
+      forcedFrustumObjects.push(obj);
+      obj.frustumCulled = false;
+    });
+
+    const drawOnePixel = (renderTarget: THREE.WebGLRenderTarget | null) => {
+      this.renderer.setRenderTarget(renderTarget);
+      this.renderer.setViewport(0, 0, 1, 1);
+      this.renderer.setScissor(0, 0, 1, 1);
+      this.renderer.setScissorTest(true);
+      this.renderer.render(this.scene, this.camera);
+    };
+
+    try {
+      drawOnePixel(target); // linear output key used by EffectComposer
+      drawOnePixel(null); // sRGB canvas key used by Safari's no-bloom path
+    } finally {
+      for (const group of groups) group.visible = false;
+      for (const obj of forcedFrustumObjects) obj.frustumCulled = true;
+      this.renderer.setRenderTarget(prevTarget);
+      this.renderer.setViewport(prevViewport);
+      this.renderer.setScissor(prevScissor);
+      this.renderer.setScissorTest(prevScissorTest);
+      target.dispose();
+    }
+  }
+
+  private async settleRestoredLandedTextureUpgrades(): Promise<void> {
+    const deadline = performance.now() + PlanetariumMode.ARRIVAL_UPGRADE_HOLD_MAX_MS;
+    while (
+      this.active &&
+      performance.now() < deadline &&
+      this.landedPairUpgrades().some((up) => up.state === 'loading')
+    ) {
+      await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+    }
+    for (const up of this.landedPairUpgrades()) cancelTextureUpgrade(up);
+    pumpTextureWarmQueue(Number.POSITIVE_INFINITY);
   }
 
   async showDeferredResumePromptIfNeeded(): Promise<void> {
@@ -2953,6 +3066,10 @@ export class PlanetariumMode {
   // Scratch for the veil support pass, reused across the gate's upper-bound and
   // the final per-frame call so neither allocates.
   private sunVeilSupport = { halfPx: 0, armDecayPx: 0, armDecayYPx: 0 };
+  // The glint minimum-footprint scale updateSunShader computed this frame
+  // (1 inside ~5 AU, 0.46 in the outer system) — the glare-mask core floor
+  // shrinks by the same factor so the dot cull tracks the drawn glint.
+  private sunGlintFloorScale = 1;
 
   // One persistent glare-mask parameter set, filled at the end of every
   // updateSunShader and read by the star/belt point materials and the label
@@ -3213,9 +3330,18 @@ export class PlanetariumMode {
         const glintFloorScale = THREE.MathUtils.lerp(
           0.46, 1, THREE.MathUtils.smoothstep(a, 0.03, 0.22),
         );
+        this.sunGlintFloorScale = glintFloorScale;
         glareMat.uniforms.uMinHalfSizePx.value = baseMinHalfPx * glintFloorScale;
+        // Two-stage energy trim. The first stage alone still left the glint's
+        // HDR core ~2.4 beyond Uranus; through bloom that painted a wide grey
+        // wash over the belt from a Pluto vantage. The second stage bites only
+        // past ~12 AU (1 at Saturn's a and inward) and floors the core near
+        // ~1.5 — still above the bloom threshold, so the outer-system Sun
+        // keeps a star-point blaze without the fog dome.
         const glintEnergyTrim = THREE.MathUtils.lerp(
           0.5, 1, THREE.MathUtils.smoothstep(a, 0.02, 0.15),
+        ) * THREE.MathUtils.lerp(
+          0.55, 1, THREE.MathUtils.smoothstep(a, 0.012, 0.08),
         );
         glareMat.uniforms.uGlareStrength.value = baseStrength * glintEnergyTrim;
       }
@@ -3321,16 +3447,21 @@ export class PlanetariumMode {
       glareMat.uniforms.uOccluderRadii.value = occluderAngularRadius > 0
         ? THREE.MathUtils.clamp(occluderToSunRatio, 0.5, 3)
         : 1;
-      // Silhouette carve: a body deep into covering the Sun reads as a dark
-      // disc through the PSF/veil wash (the shader multiplies those terms
-      // down inside it). Driven by body-only coverage — ring dimming must not
+      // Silhouette carve: a body covering the Sun reads as a dark disc
+      // through the PSF/veil wash (the shader multiplies those terms down
+      // inside it). Driven by body-only coverage — ring dimming must not
       // punch silhouettes — and positioned from the occluder's true direction
-      // so an off-centre partial carves where the body actually is. Shallow
-      // phases (< ~45% covered) keep the full wash: there the glare
-      // legitimately swallows the thin limb crossing.
+      // so an off-centre partial carves where the body actually is. The gate
+      // is overlap-exists, not overlap-depth: a new moon biting the Sun is
+      // backlit and void-black from first contact, so the carve reaches full
+      // strength by ~15% cover — ramping it in over deep coverage instead
+      // left the glare painting across the dark disc all through the partial
+      // phases, a translucent Moon the light seemed to pass through. Only a
+      // grazing sliver keeps the full wash: that bite really is smaller than
+      // the saturated core.
       const coverage = 1 - THREE.MathUtils.clamp(bodyVisibleFraction, 0, 1);
       const occluderShade = occluderAngularRadius > 0 && appearanceEligible
-        ? THREE.MathUtils.smoothstep(coverage, 0.45, 0.85)
+        ? THREE.MathUtils.smoothstep(coverage, 0.03, 0.15)
         : 0;
       glareMat.uniforms.uOccluderShade.value = occluderShade;
       // The silhouetted body itself also drops its night-side lifts (starlight
@@ -3423,7 +3554,14 @@ export class PlanetariumMode {
     maskParams.armCoeff = maskArmCoeff;
     maskParams.armDecayPx = maskArmDecayPx;
     maskParams.armDecayYPx = maskArmDecayYPx;
-    maskParams.coreOuterPx = Math.max(this.useBloom ? 30 : 22, 2.5 * solarRadiusPx);
+    // The core's floor tracks the glint's actual drawn footprint (the same
+    // scale that shrinks uMinHalfSizePx): a fixed 30 px floor culled belt
+    // dots out to ~4× the outer-system glint's radius — from Pluto, a dot-free
+    // circle far wider than the glow it protects.
+    maskParams.coreOuterPx = Math.max(
+      (this.useBloom ? 30 : 22) * this.sunGlintFloorScale,
+      2.5 * solarRadiusPx,
+    );
     maskParams.viewportHeight = viewportHeight;
     this.applySunGlareMaskToPoints(viewportWidth);
   }
@@ -4285,7 +4423,7 @@ export class PlanetariumMode {
       finish();
     };
     if (plan.veilGate && snap.state.landedOn) {
-      this.arriveThen(snap.state.landedOn, applyRestore);
+      this.arriveThen(snap.state.landedOn, applyRestore, true);
     } else {
       applyRestore();
     }
@@ -4368,7 +4506,7 @@ export class PlanetariumMode {
       const live = this.tutorial;
       if (!live || live.generation !== generation) return;
       action();
-    });
+    }, true);
   }
 
   /** Accent pulse on the deck row the theater is about to press. Stale pulses
@@ -4484,8 +4622,9 @@ export class PlanetariumMode {
    * Land on Earth standing in the 2027-08-02 umbral path: the clock jumps to
    * the eclipse's first contact and runs at "20 min/s", so the Moon bites
    * into the Sun over a few seconds; updateTutorial drops to realtime just
-   * inside totality. The surface vantage rides the umbral spot per frame
-   * (updateSurfaceCamera), so totality then holds while the user lingers.
+   * inside totality. The surface vantage is pinned once at the peak's umbral
+   * ground point (updateSurfaceCamera's stand-still anchor), so realtime
+   * totality plays out overhead while the user lingers.
    */
   private stageTutorialEclipse(generation: number): void {
     this.tutorialLandThen(generation, { type: 'planet', name: 'Earth' }, () => {
@@ -4916,6 +5055,7 @@ export class PlanetariumMode {
         this.resumeTimeAfterMenu = !this.timeState.paused;
         this.player.moving = false;
         this.timeState.paused = true;
+        this.updateTimeUI();
         this.menuPanel.show();
       }
     });
@@ -4959,20 +5099,32 @@ export class PlanetariumMode {
     // Astronomy time controls. The transport, Now, and date input keep their
     // id-based handlers here — the rail widget's callbacks only cover the
     // gestures these buttons don't (drag/tap/keys on the rails).
+    // All four transports carry the same lock the rail gestures and , . N keys
+    // do: the ☰ menu auto-pauses the clock and restores it on close, so a
+    // transport click while it's open would clobber the state the menu puts
+    // back.
+    // Pause sits in a radio group beside Play and Reverse: it SELECTS the
+    // paused state rather than toggling, so a click delivered late (a busy
+    // frame can queue it) can never resume a clock the user asked to stop.
+    // Rail taps and Space stay toggles — those gestures carry no promise.
     document.getElementById('planetarium-time-pause')?.addEventListener('click', () => {
-      this.timeTogglePause();
+      if (this.timeControlsLocked()) return;
+      this.setTimePausedFromControl(true);
     });
     document.getElementById('planetarium-time-play')?.addEventListener('click', () => {
+      if (this.timeControlsLocked()) return;
       this.timeState.paused = false;
       if (this.timeState.rate < 0) this.timeState.rate *= -1;
       this.updateTimeUI({ flash: true });
     });
     document.getElementById('planetarium-time-reverse')?.addEventListener('click', () => {
+      if (this.timeControlsLocked()) return;
       this.timeState.paused = false;
       this.timeState.rate = -Math.abs(this.timeState.rate);
       this.updateTimeUI({ flash: true });
     });
     document.getElementById('planetarium-time-now')?.addEventListener('click', () => {
+      if (this.timeControlsLocked()) return;
       this.timeJumpToNow();
     });
     const timeInputEl = this.timePanel.getInputEl();
@@ -5487,7 +5639,7 @@ export class PlanetariumMode {
         this.closeObservatoryPanel();
         this.pulseObservatoryChip();
       }
-    });
+    }, true);
   }
 
   private async startHistoricJourney(missionId: HistoricMissionId) {
@@ -6456,6 +6608,55 @@ export class PlanetariumMode {
       occluderRadii: glareMat ? (glareMat.uniforms.uOccluderRadii.value as number) : 0,
       occluderOffsetSr: offset ? [offset.x, offset.y] : [0, 0],
       silhouetteDim: this.sunSilhouetteFx ? (this.sunSilhouetteFx.uSilhouette.value as number) : 0,
+    };
+  }
+
+  /** Dev bridge: measure every link of the anchored solar-eclipse chain at the
+   *  current instant — anchor vs live axis point, camera vs anchor, rendered
+   *  moon vs ephemeris, and pin/render quaternion agreement. Diagnostic only;
+   *  allocations are fine here. */
+  devEclipseDebug(): unknown {
+    const landed = this.landedOn;
+    if (landed?.type !== 'planet' || this.surfaceTarget.kind !== 'sun-from-spot') return null;
+    const t = this.timeState.currentUtcMs;
+    const body = PLANETARIUM_BODIES.find((b) => b.name === landed.name);
+    const parentPlanet = this.solarSystem?.planets.find((p) => p.data.name === landed.name);
+    if (!body || !parentPlanet) return null;
+    const moonName = (this.surfaceTarget as { occluderMoonName: string }).occluderMoonName;
+    const KM = 149_597_870.7;
+    const offset = computeMoonOffsetEquatorialAU(moonName, landed.name, t, new THREE.Vector3());
+    const planetHelio = computeBodyPositionAU(body, t);
+    const axis = planetHelio.clone().add(offset).normalize();
+    const liveSpot = shadowAxisSurfacePoint(offset, axis, body.radiusAU, new THREE.Vector3());
+    const anchorWorld = this.surfaceSpotAnchor
+      ? this.surfaceSpotAnchor
+          .clone()
+          .applyQuaternion(parentPlanet.group.quaternion)
+          .normalize()
+          .multiplyScalar(body.radiusAU)
+      : null;
+    const stateQ = computeBodyState(body, t).orientationQuaternion;
+    const camDir = this.camera.position.clone().normalize();
+    const sunFromCam = planetHelio.clone().multiplyScalar(-1).sub(this.camera.position).normalize();
+    const moonMesh = this.planetMoons.get(landed.name)?.find((m) => m.data.name === moonName) ?? null;
+    const modelMoonFromCam = offset.clone().sub(this.camera.position).normalize();
+    const renderMoonFromCam = moonMesh
+      ? moonMesh.mesh.position.clone().sub(this.camera.position).normalize()
+      : null;
+    return {
+      utc: new Date(t).toISOString(),
+      hasAnchor: !!this.surfaceSpotAnchor,
+      quatDot: Math.abs(stateQ.dot(parentPlanet.group.quaternion)),
+      anchorVsLiveSpotKm: anchorWorld ? anchorWorld.distanceTo(liveSpot) * KM : null,
+      camVsAnchorDeg: anchorWorld
+        ? THREE.MathUtils.radToDeg(camDir.angleTo(anchorWorld.clone().normalize()))
+        : null,
+      camVsLiveSpotDeg: THREE.MathUtils.radToDeg(camDir.angleTo(liveSpot.clone().normalize())),
+      modelSepDeg: THREE.MathUtils.radToDeg(sunFromCam.angleTo(modelMoonFromCam)),
+      renderSepDeg: renderMoonFromCam
+        ? THREE.MathUtils.radToDeg(sunFromCam.angleTo(renderMoonFromCam))
+        : null,
+      renderVsModelMoonKm: moonMesh ? moonMesh.mesh.position.distanceTo(offset) * KM : null,
     };
   }
 
@@ -7626,6 +7827,24 @@ export class PlanetariumMode {
    * the subject changes (see the re-point branch).
    */
   enterSurfaceView(target?: SurfaceTarget, entryContext?: SurfaceEntryContext, immediate = false) {
+    const perfSpan = import.meta.env.DEV ? surfacePerfBeginSpan('enterSurfaceView') : null;
+    try {
+      this.enterSurfaceViewImpl(target, entryContext, immediate);
+    } finally {
+      if (import.meta.env.DEV) {
+        surfacePerfEndSpan(perfSpan, {
+          programs: this.renderer.info.programs?.length ?? 0,
+          textures: this.renderer.info.memory.textures,
+        });
+      }
+    }
+  }
+
+  private enterSurfaceViewImpl(
+    target?: SurfaceTarget,
+    entryContext?: SurfaceEntryContext,
+    immediate = false,
+  ) {
     const landedInfo = this.surfaceLandedInfo();
     if (!landedInfo) return;
     // Entering surface view drops the landed system's 5%-of-parent mesh-scale
@@ -7714,7 +7933,9 @@ export class PlanetariumMode {
       toFov: entryFov,
       fromPos: this.preSurfaceCameraPos.clone(),
       elapsed: 0,
-      duration: 0.9,
+      // Keep enough motion to explain the orbit→ground viewpoint change, but
+      // finish quickly enough that the first click never reads as input lag.
+      duration: 0.35,
       finalizeExit: false,
     };
     document.body.classList.add('surface-view-active');
@@ -7897,14 +8118,31 @@ export class PlanetariumMode {
         // Re-deriving the point from the live shadow geometry every frame
         // chased maximum cover instead — three Sun-occluder alignments per
         // event where a real observer sees one clean pass.
-        const anchor = this.ensureSurfaceSpotAnchor(occluder.data.name);
         const parentPlanet = this.solarSystem?.planets.find(p => p.data.name === parentName);
+        let anchor = this.ensureSurfaceSpotAnchor(occluder.data.name);
+        if (!anchor && parentPlanet) {
+          // No pinnable event (defensive) — pin at the CURRENT live spot
+          // instead of riding it per frame: per-frame re-derivation is the
+          // max-cover chase (three Sun–occluder alignments per event) that
+          // stand-still anchoring exists to prevent.
+          const axis = this.tmpSurfaceAxis
+            .set(parentPos.x, parentPos.y, parentPos.z)
+            .add(occluder.mesh.position)
+            .normalize();
+          anchor = this.surfaceSpotAnchor = computeSpotAnchorLocal(
+            occluder.mesh.position,
+            axis,
+            radiusAU,
+            parentPlanet.group.quaternion,
+            new THREE.Vector3(),
+          );
+        }
         if (anchor && parentPlanet) {
           computeAnchoredSpotVantage(radiusAU, anchor, parentPlanet.group.quaternion, vantage);
           spotPosed = true;
         } else {
-          // No pinnable event (defensive) — the live axis point still beats
-          // the sub-target default for a shadow view.
+          // No planet entity to express the rotating frame (shouldn't happen)
+          // — the live axis point still beats the sub-target default.
           const axis = this.tmpSurfaceAxis
             .set(parentPos.x, parentPos.y, parentPos.z)
             .add(occluder.mesh.position)
@@ -8111,20 +8349,33 @@ export class PlanetariumMode {
     }
   }
 
-  /** The one-shot 4K upgrade handles of the landed body and its vantage
-   * companion — the pair the Observatory magnifies regardless of distance. */
-  private landedPairUpgrades(): TextureUpgrade[] {
-    if (!this.landedOn) return [];
+  private textureUpgradeForTarget(body: NonNullable<LandedTarget>): TextureUpgrade | undefined {
+    return body.type === 'planet'
+      ? this.solarSystem?.planets.find((p) => p.data.name === body.name)?.textureUpgrade
+      : this.planetMoons.get(body.parentPlanet)?.find((m) => m.data.name === body.name)?.textureUpgrade;
+  }
+
+  /** The one-shot 4K upgrade handles of a landing body and the companion its
+   * Observatory can magnify. This pre-landing form lets arriveThen decide that
+   * the upgrade itself requires a cover, before applyLandedTarget runs. */
+  private landingPairUpgrades(target: NonNullable<LandedTarget>): TextureUpgrade[] {
+    const companion: NonNullable<LandedTarget> | null = target.type === 'moon'
+      ? { type: 'planet', name: target.parentPlanet }
+      : target.name === 'Earth'
+        ? { type: 'moon', name: 'Moon', parentPlanet: 'Earth' }
+        : null;
     const ups: TextureUpgrade[] = [];
-    for (const body of [this.landedOn, this.swapCompanionTarget()]) {
+    for (const body of [target, companion]) {
       if (!body) continue;
-      const up =
-        body.type === 'planet'
-          ? this.solarSystem?.planets.find((p) => p.data.name === body.name)?.textureUpgrade
-          : this.planetMoons.get(body.parentPlanet)?.find((m) => m.data.name === body.name)?.textureUpgrade;
-      if (up) ups.push(up);
+      const up = this.textureUpgradeForTarget(body);
+      if (up && !ups.includes(up)) ups.push(up);
     }
     return ups;
+  }
+
+  /** The current landed body's pair — used while its cover/load screen is live. */
+  private landedPairUpgrades(): TextureUpgrade[] {
+    return this.landedOn ? this.landingPairUpgrades(this.landedOn) : [];
   }
 
   /**
@@ -8140,7 +8391,11 @@ export class PlanetariumMode {
    * reveal. Warm systems act immediately, exactly as before. A second arrival
    * while one is mid-flight is ignored.
    */
-  private arriveThen(target: NonNullable<LandedTarget>, action: () => void): void {
+  private arriveThen(
+    target: NonNullable<LandedTarget>,
+    action: () => void,
+    protectLandedUpgrades = false,
+  ): void {
     if (this.arrivalInFlight) return;
     const parentName = this.parentSystemOf(target);
     const moons = this.planetMoons.get(parentName);
@@ -8156,7 +8411,9 @@ export class PlanetariumMode {
         const img = mat.map?.image as { width?: number } | undefined;
         return !!mat.userData.photoLoaded && (img?.width ?? 0) >= 4096;
       });
-    if (!moons || (!needsPaint && !needsUploadCover)) {
+    const needsUpgradeCover = protectLandedUpgrades && this.landingPairUpgrades(target)
+      .some((up) => up.state === 'idle' || up.state === 'loading');
+    if (!needsPaint && !needsUploadCover && !needsUpgradeCover) {
       action();
       return;
     }
@@ -8175,7 +8432,7 @@ export class PlanetariumMode {
           // don't paint or teleport into a deactivated mode (the finally still
           // clears the flag and lifts the veil).
           if (!this.active) return;
-          this.moonPainter.paintSystemNow(parentName, moons);
+          if (moons) this.moonPainter.paintSystemNow(parentName, moons);
           action();
           // Upload the system's arrived photo/normal maps while the cover is
           // opaque (a landing already queued them via applyLandedTarget; a
@@ -8197,14 +8454,15 @@ export class PlanetariumMode {
           const holdDeadline = coverStart + PlanetariumMode.ARRIVAL_UPGRADE_HOLD_MAX_MS;
           const tryLift = () => {
             if (coverGen !== this.arrivalCoverGen) return; // a newer arrival owns the veil now
-            if (
-              this.active &&
-              performance.now() < holdDeadline &&
-              this.landedPairUpgrades().some((up) => up.state === 'loading')
-            ) {
+            const loadingUpgrades = this.landedPairUpgrades().filter((up) => up.state === 'loading');
+            if (this.active && performance.now() < holdDeadline && loadingUpgrades.length > 0) {
               requestAnimationFrame(tryLift);
               return;
             }
+            // Optional 4K that missed the covered window keeps its 2K floor;
+            // its eventual completion is disposed instead of uploading during
+            // a later Surface/transport gesture.
+            for (const up of loadingUpgrades) cancelTextureUpgrade(up);
             pumpTextureWarmQueue(Number.POSITIVE_INFINITY);
             // Hold the cover until the painted, teleported scene has rendered
             // (the landed/jumped system first appears on the next
@@ -9417,12 +9675,22 @@ export class PlanetariumMode {
   }
 
   private stepTimeRate(direction: -1 | 1) {
+    const wasPaused = this.timeState.paused;
     this.timeState = stepSimulationRate(this.timeState, direction, TIME_RATE_PRESETS);
+    // Stepping down through 1× parks at the pause detent silently — arm the
+    // long fresh-pause window so a Pause click chasing the stepper re-asserts
+    // the freeze instead of resuming a clock the user never saw stop.
+    if (this.timeState.paused && !wasPaused) this.pauseGuardUntilMs = performance.now() + 1500;
     this.updateTimeUI({ flash: true });
   }
 
   private updateTimeUI(opts?: { flash?: boolean }) {
     this.timePanel.render(this.timeState, opts);
+    // The Surface Pause button dispatches the action its rendered label
+    // promised, rather than blindly toggling current state. Synchronize that
+    // promise on every clock write (event jumps and menu/help restores can
+    // otherwise leave it stale until the next 8 Hz HUD pass).
+    this.observatoryHud.syncPaused(this.timeState.paused);
     const gyroLabel = document.getElementById('settings-gyro-label');
     if (gyroLabel) gyroLabel.textContent = this.gyro.statusLabel();
     const gyroToggle = document.getElementById('settings-gyro-toggle');

@@ -328,6 +328,9 @@ function createFalcon(referenceRadiusAU: number): THREE.Group {
   const rust = standard(0x6f3a29, 0.75, 0.2);
   const glass = standard(0x08151c, 0.16, 0.32, 0x0c3345, 0.28);
   const blue = glow(0x78c8ff, 0.92);
+  const engineCore = glow(0xe5f8ff, 1);
+  blue.depthWrite = false;
+  engineCore.depthWrite = false;
 
   const saucer = discY(1.48 * U, 1.48 * U, 0.34 * U, hull, 64);
   saucer.position.x = -0.12 * U;
@@ -413,7 +416,11 @@ function createFalcon(referenceRadiusAU: number): THREE.Group {
 
   // The drive is a recessed ARC, not a straight bar with floating bulbs. Each
   // path point lies on the saucer's real aft circle, so even the outer ends
-  // remain seated inside the hull silhouette.
+  // remain seated inside the hull silhouette. The dark tube is offset slightly
+  // forward while the luminous faces sit aft of it: this creates a visible
+  // recessed blue bank with a dark border instead of hiding the light inside a
+  // closed solid tube (the old geometry passed containment tests but occluded
+  // the light from the chase camera).
   const engineArcPoints: THREE.Vector3[] = [];
   for (let i = 0; i <= 16; i++) {
     const z = THREE.MathUtils.lerp(-1.18, 1.18, i / 16);
@@ -426,17 +433,27 @@ function createFalcon(referenceRadiusAU: number): THREE.Group {
     dark,
   );
   engineHousing.name = 'falcon-engine-housing';
-  engineHousing.scale.y = 0.66;
+  engineHousing.position.x = 0.025 * U;
+  engineHousing.scale.y = 0.7;
   group.add(engineHousing);
   const engineLight = new THREE.Mesh(
-    new THREE.TubeGeometry(engineArc, 64, 0.085 * U, 10, false),
+    new THREE.TubeGeometry(engineArc, 64, 0.105 * U, 12, false),
     blue,
   );
   engineLight.name = 'falcon-engine-light';
-  engineLight.position.y = -0.015 * U;
-  engineLight.scale.y = 0.64;
-  engineLight.renderOrder = 1;
+  engineLight.position.set(-0.045 * U, -0.012 * U, 0);
+  engineLight.scale.y = 0.65;
+  engineLight.renderOrder = 3;
   group.add(engineLight);
+  const hotCore = new THREE.Mesh(
+    new THREE.TubeGeometry(engineArc, 64, 0.042 * U, 10, false),
+    engineCore,
+  );
+  hotCore.name = 'falcon-engine-hot-core';
+  hotCore.position.set(-0.052 * U, -0.014 * U, 0);
+  hotCore.scale.y = 0.61;
+  hotCore.renderOrder = 4;
+  group.add(hotCore);
   return group;
 }
 

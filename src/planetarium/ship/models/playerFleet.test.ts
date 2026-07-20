@@ -153,15 +153,23 @@ describe('player fleet models', () => {
     for (const anchor of anchors) expect(model.getObjectByName(anchor), anchor).toBeDefined();
   });
 
-  it('seats the Millennium Falcon engine light inside a matching aft housing', () => {
+  it('keeps the Millennium Falcon drive seated but visible aft of its housing', () => {
     const falcon = createPlayerFleetModel('falcon', 1);
     const housing = falcon.getObjectByName('falcon-engine-housing');
     const light = falcon.getObjectByName('falcon-engine-light');
+    const core = falcon.getObjectByName('falcon-engine-hot-core');
     expect(housing).toBeInstanceOf(THREE.Mesh);
     expect(light).toBeInstanceOf(THREE.Mesh);
+    expect(core).toBeInstanceOf(THREE.Mesh);
     const housingBox = new THREE.Box3().setFromObject(housing!);
     const lightBox = new THREE.Box3().setFromObject(light!);
-    expect(housingBox.containsBox(lightBox)).toBe(true);
+    const coreBox = new THREE.Box3().setFromObject(core!);
+    expect(housingBox.intersectsBox(lightBox)).toBe(true);
+    expect(lightBox.containsBox(coreBox)).toBe(true);
+    // +X is forward. Extending slightly farther in -X than the dark housing
+    // guarantees that the drive is depth-visible from the aft chase camera.
+    expect(lightBox.min.x).toBeLessThan(housingBox.min.x);
+    expect(Math.max(Math.abs(lightBox.min.z), Math.abs(lightBox.max.z))).toBeLessThan(1.5);
   });
 
   it('gives SpaceX Starship three sea-level and three vacuum engines', () => {

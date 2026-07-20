@@ -6,7 +6,7 @@
  * by the Planetarium world and nav controllers.
  */
 import * as THREE from 'three';
-import type { PlanetData } from '../planetarium/planets/planetData';
+import { SUN_DATA, type PlanetData } from '../planetarium/planets/planetData';
 import { dateToJD, moonPosition, sunPosition } from './ephemeris';
 import { deltaTDaysAtDate } from './deltaT';
 import { accumulatedPrecessionLonDeg } from './precession';
@@ -217,11 +217,18 @@ export function sampleTrajectoryLinePoints(
  * moon orbit frames. W is measured easterly from that node, which in this RH
  * frame is a +W rotation about the pole.
  */
-function getBasePrimeDirection(planet: PlanetData): THREE.Vector3 {
+/** The IAU pole + prime-meridian fields the orientation construction needs —
+ *  every planet has them, and SUN_DATA carries the same quartet. */
+export type BodyRotationModel = Pick<
+  PlanetData,
+  'poleRaDeg' | 'poleDecDeg' | 'primeMeridianDegAtJ2000' | 'primeMeridianRateDegPerDay'
+>;
+
+function getBasePrimeDirection(planet: BodyRotationModel): THREE.Vector3 {
   return raDecToVector(planet.poleRaDeg + 90, 0);
 }
 
-function buildPoleBasisQuaternion(planet: PlanetData, primeMeridianDeg: number): THREE.Quaternion {
+function buildPoleBasisQuaternion(planet: BodyRotationModel, primeMeridianDeg: number): THREE.Quaternion {
   const poleDirection = raDecToVector(planet.poleRaDeg, planet.poleDecDeg).normalize();
   const primeDirection = getBasePrimeDirection(planet)
     .applyAxisAngle(poleDirection, primeMeridianDeg * DEG)
@@ -235,11 +242,22 @@ function buildPoleBasisQuaternion(planet: PlanetData, primeMeridianDeg: number):
   return new THREE.Quaternion().setFromRotationMatrix(basis);
 }
 
-export function computeBodyOrientationQuaternion(planet: PlanetData, jd: number): THREE.Quaternion {
+export function computeBodyOrientationQuaternion(planet: BodyRotationModel, jd: number): THREE.Quaternion {
   const daysSinceJ2000 = getDaysSinceJ2000(jd);
   const primeMeridianDeg =
     planet.primeMeridianDegAtJ2000 + planet.primeMeridianRateDegPerDay * daysSinceJ2000;
   return buildPoleBasisQuaternion(planet, primeMeridianDeg);
+}
+
+/**
+ * Solar orientation from the same IAU pole + W construction as the planets
+ * (SUN_DATA carries the WGCCRE Carrington model). The photosphere shader's
+ * active regions, filaments, and prominence anchors all live in object
+ * space, so this one quaternion carries the whole surface weather across
+ * the disc — invisible at 1×, alive under time warp.
+ */
+export function computeSunOrientationQuaternion(utcMs: number): THREE.Quaternion {
+  return computeBodyOrientationQuaternion(SUN_DATA, ttJDFromUtcMs(utcMs));
 }
 
 /**

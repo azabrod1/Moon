@@ -13,6 +13,75 @@
  *  full together. One definition site — the GLSL interpolates it. */
 export const SUN_WHITEOUT_SLAM_EDGE = 0.85;
 
+/** Active-region catalog — one definition site shared by the photosphere GLSL
+ *  (spot groups, faculae, flare ribbons), the prominence shell (loop anchors),
+ *  and the controller's flare scheduler (sunFlareEnvelope reads the
+ *  period/seed pairs). Axes are object-space directions at activity latitudes,
+ *  spread in longitude so any approach hemisphere carries at least one group
+ *  without tiling spots over the star. At most three sites may carry a flare
+ *  period — the shader packs their envelopes into one vec3 uniform. */
+export const SUN_ACTIVE_REGIONS = [
+  { axis: [0.38, -0.37, 0.85], scale: 1.0, flarePeriodSec: 47, flareSeed: 0.0 },
+  { axis: [-0.85, 0.3, 0.43], scale: 0.75, flarePeriodSec: 61, flareSeed: 0.41 },
+  { axis: [-0.2, -0.25, -0.95], scale: 0.9, flarePeriodSec: 53, flareSeed: 0.73 },
+  { axis: [0.8, 0.33, -0.52], scale: 0.55, flarePeriodSec: 0, flareSeed: 0 },
+] as const;
+
+/** Prominence shell height: the shell mesh's geometry radius (PlanetFactory)
+ *  and the shader's height-above-limb normalization derive from this one
+ *  scale, in photosphere radii. */
+export const SUN_PROMINENCE_SHELL_SCALE = 1.16;
+
+/** Loop-prominence tube geometry, in photosphere radii. Each is a REAL torus
+ *  arc mesh (PlanetFactory) anchored on a SUN_ACTIVE_REGIONS entry — painted
+ *  shell ridges were tried first and contour into rings from any view that
+ *  isn't perfectly side-on; solid tubes read from every angle, including
+ *  head-on. footSpread is the half-angle to each foot along the east-west
+ *  line; height is the quiescent crown height; tubeRadius the tube's
+ *  cross-section radius. weight scales the emission. */
+export const SUN_LOOP_PROMINENCES = [
+  { regionIndex: 0, footSpread: 0.10, height: 0.105, tubeRadius: 0.030, weight: 1.0 },
+  { regionIndex: 2, footSpread: 0.075, height: 0.070, tubeRadius: 0.023, weight: 0.8 },
+] as const;
+
+/** What fraction of the photosphere's light the fully-engaged study filter
+ *  passes. One definition site: the photosphere GLSL dims its radiance by it,
+ *  and the controller dims the veil by the same factor — the filter sits
+ *  ahead of the whole optical stack, so PSF energy must fall with it or the
+ *  additive glare re-floods the disc the filter just tamed. 0.18 parks even
+ *  the brightest granule tops (detail 1.3 × convection 1.08 ≈ 5.3 HDR) under
+ *  the bloom threshold: UnrealBloom's high-pass is near-binary, so a pixel
+ *  a few percent over dumps its FULL color into the blur — there is no
+ *  "gentle" over-threshold sparkle, only flood. */
+export const SUN_STUDY_FILTER_FLOOR = 0.18;
+
+/** How much of the lens-glare core survives the engaged study filter. Cut
+ *  harder than the photosphere: the PSF wash is what re-greys the sunspot
+ *  umbrae, and a filtered solar photo shows essentially no veiling glare. */
+export const SUN_STUDY_GLARE_KEEP = 0.06;
+
+/** How much of the wide veil survives the filter — deliberately more than
+ *  the core: a soft tinted halo hugging the filtered disc keeps the close
+ *  approach continuous with the blaze instead of snapping to a stark disc
+ *  floating in black. The glare shader tints it to the filtergram hue by
+ *  uStudyFilter, so the remnant can't put a broadband floor under the
+ *  palette's near-zero blue. */
+export const SUN_STUDY_VEIL_KEEP = 0.16;
+
+const glslVec3 = (v: readonly [number, number, number]) =>
+  `vec3(${v.map((x) => x.toFixed(4)).join(', ')})`;
+
+/** GLSL: accumulate every catalog group's spot/faculae masks (into main()). */
+const activeRegionCallsGlsl = SUN_ACTIVE_REGIONS
+  .map((r) => `activeRegion(p, ${glslVec3(r.axis)}, ${r.scale.toFixed(3)}, umbra, penumbra, facRing);`)
+  .join('\n  ');
+
+/** GLSL: per-site flare ribbons weighted by the scheduled envelopes. */
+const flareRibbonTermsGlsl = SUN_ACTIVE_REGIONS
+  .filter((r) => r.flarePeriodSec > 0)
+  .map((r, i) => `flare += uFlares${['.x', '.y', '.z'][i]} * flareRibbon(p, ${glslVec3(r.axis)}, ${r.scale.toFixed(3)});`)
+  .join('\n  ');
+
 export const sunPhotosphereVertexShader = /* glsl */ `
 varying vec3 vNormal;
 varying vec3 vPosition;
@@ -32,6 +101,8 @@ uniform float uAtmosphereMix;
 uniform vec3 uAtmosphereColor;
 uniform float uInteriorFade;
 uniform float uWhiteout;
+uniform float uStudyFilter;
+uniform vec3 uFlares;
 varying vec3 vNormal;
 varying vec3 vPosition;
 varying vec3 vObjectDirection;
@@ -73,6 +144,21 @@ float fbm3(vec3 p) {
   return value;
 }
 
+// Byte-identical twin of the prominence shell's prominenceFbm (same lacunarity
+// and offsets): sampling it at the same anchor coordinates makes the dark
+// disc filaments and the limb prominences one structure — the same arcs read
+// in absorption on the disc and in emission past the limb, like real Hα.
+float anchorFbm(vec3 p) {
+  float value = 0.0;
+  float amplitude = 0.5;
+  for (int i = 0; i < 3; i++) {
+    value += amplitude * noise3(p);
+    p = p * 2.11 + vec3(9.2, 4.1, 6.6);
+    amplitude *= 0.5;
+  }
+  return value;
+}
+
 // Sinless Hoskins hash: the Voronoi loop below runs it 27× per fragment, so
 // the classic fract(sin(dot))·43758 form would cost three transcendentals a
 // call (and carries this app's documented Metal precision baggage).
@@ -105,6 +191,35 @@ float cellular3(vec3 p, float t) {
 
 float spotDisc(vec3 p, vec3 direction, float innerRadius, float outerRadius) {
   return smoothstep(cos(outerRadius), cos(innerRadius), dot(p, normalize(direction)));
+}
+
+// One bipolar active-region group from the shared catalog: a large leading
+// spot and a smaller ragged follower separated along the east-west line
+// (object +Y is the rotation axis), plus a plage ring for the limb faculae.
+// Sizes are calibrated against the stylized granulation, not the real Sun:
+// SDO/HMI groups span ~2% of the disc, but here a spot must clearly dominate
+// a granulation cell (~0.028 rad) or it reads as one more dark lane.
+void activeRegion(vec3 p, vec3 axis, float scale,
+                  inout float umbra, inout float penumbra, inout float facRing) {
+  vec3 a = normalize(axis);
+  vec3 east = normalize(cross(vec3(0.0, 1.0, 0.0), a));
+  vec3 lead = normalize(a + east * (0.095 * scale));
+  vec3 trail = normalize(a - east * (0.120 * scale) + vec3(0.0, 0.045 * scale, 0.0));
+  penumbra = max(penumbra, spotDisc(p, lead, 0.022 * scale, 0.090 * scale));
+  penumbra = max(penumbra, spotDisc(p, trail, 0.016 * scale, 0.065 * scale));
+  umbra = max(umbra, spotDisc(p, lead, 0.011 * scale, 0.042 * scale));
+  umbra = max(umbra, spotDisc(p, trail, 0.008 * scale, 0.028 * scale));
+  facRing = max(facRing, spotDisc(p, a, 0.10 * scale, 0.26 * scale));
+}
+
+// A flare's two-ribbon shape: a thin band along the group's neutral line
+// (between the bipolar pair), confined to the group's core.
+float flareRibbon(vec3 p, vec3 axis, float scale) {
+  vec3 a = normalize(axis);
+  vec3 east = normalize(cross(vec3(0.0, 1.0, 0.0), a));
+  vec3 northish = cross(a, east);
+  float band = 1.0 - smoothstep(0.006, 0.028 * scale, abs(dot(p, northish)));
+  return band * spotDisc(p, a, 0.05 * scale, 0.14 * scale);
 }
 
 void main() {
@@ -153,26 +268,33 @@ void main() {
   float lanes = smoothstep(0.08, 0.90, granules);
   float convection = mix(0.92, 1.08, broad);
   float detail = mix(0.16, 1.30, pow(lanes, 0.72)) * convection;
+  // The unfiltered range is authored for the blaze, where saturation eats
+  // most of it; seen through the study filter it reads as polka dots. SDO
+  // continuum granulation spans ~15% photometrically — compress to that.
+  detail = mix(detail, mix(0.84, 1.12, pow(lanes, 0.72)) * convection, uStudyFilter);
   // Proximity whiteout: granulation contrast is the first casualty of the
   // final approach — lanes, cells, spots, and the limb all lift toward one
   // blinding level long before the energy slam at the end pins the frame.
   detail = mix(detail, 1.05, uWhiteout);
   float structureKeep = 1.0 - uWhiteout;
 
-  // One sparse bipolar active-region pair establishes the Sun's enormous
-  // scale. Antipodal placement guarantees a restrained group on whichever
-  // hemisphere a traveller approaches, without tiling spots over the star.
-  vec3 spotAxis = normalize(vec3(0.38, -0.37, 0.85));
-  float spotPenumbra = max(
-    spotDisc(p, spotAxis, 0.020, 0.070),
-    spotDisc(p, -spotAxis, 0.020, 0.070)
-  );
-  vec3 spotCoreAxis = normalize(spotAxis + vec3(0.012, -0.010, 0.014));
-  float spotCore = max(
-    spotDisc(p, spotCoreAxis, 0.008, 0.034),
-    spotDisc(p, -spotCoreAxis, 0.008, 0.034)
-  );
-  float faculae = spotPenumbra * pow(1.0 - mu, 1.8) * 0.24;
+  // Sunspot groups from the shared active-region catalog, plus a few lone
+  // pores trailing them. Umbra/penumbra accumulate as separate masks so the
+  // two-tone (and the filament striation between them) composes below.
+  float umbra = 0.0;
+  float penumbra = 0.0;
+  float facRing = 0.0;
+  ${activeRegionCallsGlsl}
+  umbra = max(umbra, spotDisc(p, normalize(vec3(0.29, -0.30, 0.91)), 0.006, 0.018));
+  umbra = max(umbra, spotDisc(p, normalize(vec3(-0.78, 0.24, 0.55)), 0.005, 0.015));
+  umbra = max(umbra, spotDisc(p, normalize(vec3(-0.28, -0.16, -0.94)), 0.006, 0.016));
+
+  // Penumbral filaments: fine striation confined to the annulus between
+  // penumbra and umbra. Faculae ride the plage ring and, like the real
+  // thing, only brighten against the darkened limb.
+  float annulus = clamp(penumbra - umbra, 0.0, 1.0);
+  float filaments = (fbm3(p * 300.0) - 0.5) * 0.36;
+  float faculae = facRing * (0.4 + 0.6 * granules) * pow(1.0 - mu, 1.6);
 
   // Broadband sunlight from space is white. Warmth is restricted to the last
   // sliver of the limb/chromosphere rather than baked through the whole disc.
@@ -183,10 +305,57 @@ void main() {
   vec3 color = mix(laneColor, whiteHot, smoothstep(0.12, 0.82, lanes));
   color = mix(color, warmLimb, limbWarmth);
 
+  // Through the study filter the disc takes the filter's passband, not the
+  // Sun's broadband white — an SDO/HMI-style orange-gold filtergram
+  // (measured off the reference stills: red pinned near max across the
+  // disc, green carrying the limb darkening, blue nearly zero). The
+  // per-channel limb terms counteract the scalar limb darkening on red and
+  // deepen it on green so the limb goes deep orange instead of grey.
+  // Values are pre-compensated for ACES Filmic's desaturating channel
+  // crosstalk: authored more saturated and dimmer than the target so the
+  // tonemapped output lands on the reference palette.
+  vec3 filtergram = vec3(2.6, 0.48, 0.004);
+  filtergram.r *= mix(1.0, 2.1, pow(1.0 - mu, 1.1));
+  filtergram.g *= mix(1.0, 0.80, pow(1.0 - mu, 1.4));
+  color = mix(color, filtergram, uStudyFilter);
+
   float limbDarkening = mix(0.40 + 0.60 * pow(mu, 0.62), 1.0, uWhiteout);
   float radiance = 3.8 * limbDarkening * detail;
-  radiance *= 1.0 - (spotPenumbra * 0.42 + spotCore * 0.38) * structureKeep;
-  radiance *= 1.0 + faculae * structureKeep;
+  // Spot two-tone: penumbra ~60% photospheric intensity with filament
+  // texture, umbra a near-black ~8% — deep enough to survive the tonemapper
+  // at the close-study exposure tier.
+  float spotTone = mix(1.0, 0.60 + filaments, annulus);
+  spotTone = mix(spotTone, 0.08, umbra);
+  radiance *= mix(1.0, spotTone, structureKeep);
+  radiance *= 1.0 + faculae * 0.55 * structureKeep;
+
+  // Dark filaments (uStudyFilter-gated): prominences seen against the disc
+  // absorb instead of emit, so the SAME anchor field the shell reads (same
+  // fbm, same drift) is contoured into thin snaking dark threads here. Where
+  // a thread crosses the limb it hands off to the shell's pink flames.
+  float filamentAnchor = anchorFbm(p * 3.6 + vec3(time * 0.006, 0.0, -time * 0.0045));
+  float filament = smoothstep(0.60, 0.665, filamentAnchor)
+    * (1.0 - smoothstep(0.665, 0.73, filamentAnchor));
+  filament *= 0.55 + 0.45 * noise3(p * 40.0);
+  radiance *= 1.0 - 0.38 * filament * uStudyFilter * structureKeep;
+
+  // The study filter (sunStudyFilterFraction in the controller): dims the
+  // photosphere itself below the bloom knee for the close-up study view —
+  // scene exposure can't do it, the bloom pass reads this raw value. The
+  // floor parks the brightest granule tops (detail 1.3 × convection 1.08 ≈
+  // 5.3 HDR) just over the bloom threshold, so the disc keeps a breath of
+  // sparkle while lanes, spots, and prominences stay legible. Applied
+  // BEFORE the flare term so a flare pierces the filter and blooms the way
+  // real flares saturate filtered solar cameras.
+  radiance *= mix(1.0, ${SUN_STUDY_FILTER_FLOOR.toFixed(4)}, uStudyFilter);
+
+  // Flares: the controller schedules each site's envelope (sunFlareEnvelope
+  // in sunAppearance.ts) into uFlares; the two-ribbon shape slams HDR
+  // radiance so exposure and bloom sell the event, never a painted white
+  // patch outside the star's tonemap response.
+  float flare = 0.0;
+  ${flareRibbonTermsGlsl}
+  radiance += flare * 8.0 * structureKeep;
 
   // When the camera→Sun sightline skims a planet's atmosphere, extinguish the
   // white source and pull it toward that atmosphere's sunset colour. This is
@@ -198,7 +367,11 @@ void main() {
   // lifts to the broadband white-hot and the last stretch slams the HDR
   // radiance so the tonemapper itself saturates every channel — the overwhelm
   // stays inside the same exposure/tonemap response as the rest of the star.
-  color = mix(color, whiteHot, uWhiteout);
+  // The colour lift is gated deep into the whiteout so the approach stays
+  // one monotonic ramp — white star, warming gold, orange filtergram — and
+  // white returns exactly once, as the blinding wall at contact, instead of
+  // a puzzling white band between the orange disc and the blaze.
+  color = mix(color, whiteHot, smoothstep(0.55, 0.95, uWhiteout));
   radiance = mix(radiance, 26.0, smoothstep(${SUN_WHITEOUT_SLAM_EDGE}, 1.0, uWhiteout));
 
   gl_FragColor = vec4(color * radiance, 1.0);
@@ -214,16 +387,24 @@ void main() {
  *  and the controller's screen-coverage gate all derive from this one value. */
 export const SUN_GLARE_EXTENT_SOLAR_RADII = 8;
 
-/** Thin, broken chromosphere shell for close-approach limb detail. */
+/** Prominence / chromosphere shell for close-approach limb detail: a spicule
+ *  fringe hugging the limb, ragged flame prominences anchored to fixed surface
+ *  locations, and two explicit loop prominences arching off the limb at the
+ *  photosphere's active regions. The fragment computes true height above the
+ *  limb (perpendicular distance from the Sun's centre to the view ray), so
+ *  structure tapers with altitude instead of reading as a uniform glow ring. */
 export const sunProminenceVertexShader = /* glsl */ `
-varying vec3 vNormal;
 varying vec3 vPosition;
 varying vec3 vObjectDirection;
+varying vec3 vCentreView;
+varying float vPhotoRadiusView;
 
 void main() {
-  vNormal = normalize(normalMatrix * normal);
   vPosition = (modelViewMatrix * vec4(position, 1.0)).xyz;
   vObjectDirection = normalize(position);
+  vec4 centre = modelViewMatrix * vec4(0.0, 0.0, 0.0, 1.0);
+  vCentreView = centre.xyz;
+  vPhotoRadiusView = length(vPosition - centre.xyz) / ${SUN_PROMINENCE_SHELL_SCALE.toFixed(4)};
   gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
 }
 `;
@@ -231,9 +412,13 @@ void main() {
 export const sunProminenceFragmentShader = /* glsl */ `
 uniform float time;
 uniform float uCloseVisibility;
-varying vec3 vNormal;
+uniform float uWhiteout;
+uniform float uEruption;
+uniform float uRain;
 varying vec3 vPosition;
 varying vec3 vObjectDirection;
+varying vec3 vCentreView;
+varying float vPhotoRadiusView;
 
 float prominenceHash(vec3 p) {
   p = fract(p * 0.1031);
@@ -260,22 +445,364 @@ float prominenceNoise(vec3 p) {
   );
 }
 
-void main() {
-  vec3 viewDir = normalize(-vPosition);
-  float mu = abs(dot(viewDir, normalize(vNormal)));
-  float limb = pow(1.0 - clamp(mu, 0.0, 1.0), 4.5);
-  vec3 p = normalize(vObjectDirection);
-  float broad = prominenceNoise(p * 5.2 + vec3(time * 0.018, 0.0, -time * 0.011));
-  float fine = prominenceNoise(p * 17.0 + broad * 1.8);
-  float activeArc = smoothstep(0.60, 0.82, broad) * smoothstep(0.42, 0.78, fine);
-  float spicules = smoothstep(0.52, 0.88, prominenceNoise(p * 43.0 - time * 0.015));
-  float structure = activeArc * 0.82 + spicules * 0.18;
-  float alpha = limb * structure * uCloseVisibility * 0.72;
-  if (alpha < 0.004) discard;
+float prominenceFbm(vec3 p) {
+  float value = 0.0;
+  float amplitude = 0.5;
+  for (int i = 0; i < 3; i++) {
+    value += amplitude * prominenceNoise(p);
+    p = p * 2.11 + vec3(9.2, 4.1, 6.6);
+    amplitude *= 0.5;
+  }
+  return value;
+}
 
-  vec3 hotPink = vec3(3.2, 0.18, 0.045);
-  vec3 orange = vec3(2.6, 0.58, 0.08);
-  vec3 color = mix(hotPink, orange, fine * 0.45);
+void main() {
+  // Beyond close approach the whole shell is invisible; skip the noise work.
+  if (uCloseVisibility < 0.004) discard;
+
+  vec3 rayDir = normalize(vPosition);
+  float along = dot(vCentreView, rayDir);
+  float impact = length(vCentreView - rayDir * along);
+  // Apparent height above the photosphere limb, in photosphere radii.
+  float h = impact / max(vPhotoRadiusView, 1e-9) - 1.0;
+  vec3 p = vObjectDirection;
+
+  // Chromosphere fringe: a thin spiky rim hugging both sides of the limb.
+  float spic = prominenceNoise(p * 46.0 - vec3(0.0, time * 0.14, 0.0));
+  float fringe = exp(-abs(h + 0.004) * 160.0) * (0.35 + 0.65 * spic);
+
+  // Flame prominences: sparse arcs anchored in object space (fixed surface
+  // locations, not the screen limb), with ragged tops that taper toward the
+  // shell ceiling. The anchor field drifts on an hours-long scale.
+  // Anchors drift on an hours scale (they are surface structures); the flame
+  // bodies and fine detail churn visibly at 1x so the limb reads alive.
+  float anchor = prominenceFbm(p * 3.6 + vec3(time * 0.006, 0.0, -time * 0.0045));
+  float act = smoothstep(0.52, 0.74, anchor);
+  float flame = prominenceFbm(p * 16.0 + vec3(0.0, time * 0.2, 0.0));
+  float fine = prominenceNoise(p * 44.0 + vec3(time * 0.16, 0.0, 0.0));
+  float hn = clamp(h / ${(SUN_PROMINENCE_SHELL_SCALE - 1).toFixed(4)}, 0.0, 1.0);
+  // The eruption cycle (sunProminenceEruption in the controller) swells every
+  // flame's reach a little; the loop arches are real tube meshes
+  // (sunLoopFragmentShader) sharing this material's uniforms.
+  float reach = act * (0.25 + 0.75 * flame) * (1.0 + 0.35 * uEruption);
+  float flames = act * smoothstep(reach, reach * 0.3, hn) * (0.55 + 0.45 * fine);
+
+  // Off-limb structure only: over the disc the photosphere owns the view and
+  // prominences would read as smudges, so everything but the fringe fades
+  // out a breath inside the limb. The whiteout bleaches the shell with the
+  // rest of the star on final approach.
+  float aboveLimb = smoothstep(-0.015, 0.01, h);
+  float structure = fringe * 0.5 + flames * 0.65 * aboveLimb;
+  float alpha = structure * uCloseVisibility * (1.0 - uWhiteout);
+  if (alpha < 0.004) discard;
+  alpha = min(alpha, 1.0);
+
+  // Hα colour evolution with height: bright pink at the chromospheric
+  // footpoints, the classic pink-red through the body, cooling to a dim
+  // crimson at the ragged tops — and an erupting mass cools further as it
+  // lifts and thins.
+  vec3 footpoint = vec3(3.4, 0.44, 0.22);
+  vec3 body = vec3(2.6, 0.26, 0.10);
+  vec3 tops = vec3(1.15, 0.06, 0.04);
+  vec3 color = mix(footpoint, body, smoothstep(0.02, 0.35, hn));
+  color = mix(color, tops, smoothstep(0.40, 1.0, hn));
+  color = mix(color, tops, uEruption * smoothstep(0.30, 0.90, hn) * 0.7);
+  color *= 0.9 + 0.25 * fine;
+  gl_FragColor = vec4(color * alpha, alpha);
+  #include <tonemapping_fragment>
+  #include <colorspace_fragment>
+}
+`;
+
+/** Loop-prominence tube shaders. The mesh is a torus arc (foot → crown →
+ *  foot; uv.x runs along the arc, uv.y around the tube), so the arch is true
+ *  geometry and survives every viewing angle. The material shares the
+ *  prominence shell's uniforms object — time, close visibility, whiteout,
+ *  eruption, and rain arrive for free — and SUN_LOOP_WEIGHT is a per-mesh
+ *  define. */
+export const sunLoopVertexShader = /* glsl */ `
+uniform float time;
+varying vec2 vUv;
+varying vec3 vNormalView;
+varying vec3 vPositionView;
+
+float loopVHash(vec3 p) {
+  p = fract(p * 0.1031);
+  p += dot(p, p.yzx + 33.33);
+  return fract((p.x + p.y) * p.z);
+}
+
+float loopVNoise(vec3 p) {
+  vec3 i = floor(p);
+  vec3 f = fract(p);
+  f = f * f * (3.0 - 2.0 * f);
+  return mix(
+    mix(
+      mix(loopVHash(i), loopVHash(i + vec3(1.0, 0.0, 0.0)), f.x),
+      mix(loopVHash(i + vec3(0.0, 1.0, 0.0)), loopVHash(i + vec3(1.0, 1.0, 0.0)), f.x),
+      f.y
+    ),
+    mix(
+      mix(loopVHash(i + vec3(0.0, 0.0, 1.0)), loopVHash(i + vec3(1.0, 0.0, 1.0)), f.x),
+      mix(loopVHash(i + vec3(0.0, 1.0, 1.0)), loopVHash(i + vec3(1.0, 1.0, 1.0)), f.x),
+      f.y
+    ),
+    f.z
+  );
+}
+
+void main() {
+  vUv = uv;
+  // The arch is a plasma rope, not a bent pipe: a slow out-of-plane sway,
+  // an in-plane crown breath, and a faster small ripple, all growing toward
+  // the crown so the chromospheric feet stay anchored. Periods are tens of
+  // seconds — massive, not fluttery. Geometry space is the canonical torus
+  // (arc in XY around the origin), so local +Z is out-of-plane and the
+  // radial direction points along the arch's local "up".
+  float s = uv.x;
+  float hn = 4.0 * s * (1.0 - s);
+  vec3 pos = position;
+  float sway = loopVNoise(vec3(s * 2.6 + SUN_LOOP_SEED, time * 0.09, 3.7)) - 0.5;
+  float breathe = loopVNoise(vec3(s * 4.2 + SUN_LOOP_SEED, time * 0.06, 8.9)) - 0.5;
+  float ripple = loopVNoise(vec3(s * 9.0 + SUN_LOOP_SEED, time * 0.22, 5.1)) - 0.5;
+  // Mid-frequency kinks so the silhouette never reads as a clean bent pipe,
+  // plus per-vertex cross-section lumps so the tube profile is never a
+  // perfect circle anywhere along the arc.
+  float kink = loopVNoise(vec3(s * 14.0 + SUN_LOOP_SEED, time * 0.12, 2.2)) - 0.5;
+  float kinkZ = loopVNoise(vec3(s * 16.0 + SUN_LOOP_SEED, time * 0.11, 9.4)) - 0.5;
+  float lumpy = loopVNoise(vec3(s * 30.0 + SUN_LOOP_SEED, uv.y * 4.0, time * 0.16)) - 0.5;
+  vec3 radialDir = normalize(vec3(pos.x, pos.y, 0.0));
+  pos.z += hn * (sway * 5.0 + kinkZ * 2.4) * SUN_LOOP_TUBE;
+  pos += radialDir * hn * (breathe * 3.2 + ripple * 1.1 + kink * 2.2) * SUN_LOOP_TUBE;
+  pos += normal * lumpy * (0.5 + 0.4 * hn) * SUN_LOOP_TUBE;
+  // Normals are left undisplaced: the material is additive emission and the
+  // silhouette-brightening term only needs an approximate normal.
+  vNormalView = normalize(normalMatrix * normal);
+  vec4 mv = modelViewMatrix * vec4(pos, 1.0);
+  vPositionView = mv.xyz;
+  gl_Position = projectionMatrix * mv;
+}
+`;
+
+export const sunLoopFragmentShader = /* glsl */ `
+uniform float time;
+uniform float uCloseVisibility;
+uniform float uWhiteout;
+uniform float uEruption;
+uniform float uRain;
+varying vec2 vUv;
+varying vec3 vNormalView;
+varying vec3 vPositionView;
+
+float loopHash(vec3 p) {
+  p = fract(p * 0.1031);
+  p += dot(p, p.yzx + 33.33);
+  return fract((p.x + p.y) * p.z);
+}
+
+float loopNoise(vec3 p) {
+  vec3 i = floor(p);
+  vec3 f = fract(p);
+  f = f * f * (3.0 - 2.0 * f);
+  return mix(
+    mix(
+      mix(loopHash(i), loopHash(i + vec3(1.0, 0.0, 0.0)), f.x),
+      mix(loopHash(i + vec3(0.0, 1.0, 0.0)), loopHash(i + vec3(1.0, 1.0, 0.0)), f.x),
+      f.y
+    ),
+    mix(
+      mix(loopHash(i + vec3(0.0, 0.0, 1.0)), loopHash(i + vec3(1.0, 0.0, 1.0)), f.x),
+      mix(loopHash(i + vec3(0.0, 1.0, 1.0)), loopHash(i + vec3(1.0, 1.0, 1.0)), f.x),
+      f.y
+    ),
+    f.z
+  );
+}
+
+void main() {
+  if (uCloseVisibility < 0.004) discard;
+
+  // Arc coordinate: 0 at one foot, 1 at the other, crown at 0.5. The crown
+  // height fraction stands in for the shell shader's height-above-limb.
+  float s = vUv.x;
+  float hn = 4.0 * s * (1.0 - s);
+
+  // Fibre field (calibrated against SDO 304 close-ups: everything off-limb
+  // is translucent bundles of thin strands, never a solid surface). The
+  // threads wind helically around the tube and STREAM along it — the
+  // field-aligned flows real prominences show. Two scales: coarse ropes and
+  // fine threads, both elongated along the arc.
+  float w = vUv.y + s * 3.0;
+  // Fast enough that the streaming reads within a couple of seconds of
+  // watching — flow you have to wait a minute to notice is flow that
+  // doesn't exist.
+  float flow = time * 0.55;
+  float ropes = loopNoise(vec3(w * 4.0, s * 9.0 - flow, SUN_LOOP_SEED));
+  float threads = loopNoise(vec3(w * 9.0, s * 26.0 - flow * 2.0, SUN_LOOP_SEED + 4.2));
+  float fibre = ropes * 0.6 + threads * 0.4;
+  // Gaps between strands keep the bundle translucent — but over a base haze
+  // floor: the additive output is premultiplied, so contribution scales as
+  // alpha squared and an unfloored strand field fades the whole arch out.
+  float strands = 0.18 + 0.82 * smoothstep(0.32, 0.78, fibre);
+
+  // Volumetric density, not solid-body shading: slightly denser through the
+  // middle (longer path), and a FRAYED silhouette — the fibre noise gates
+  // the rim so the outline breaks into wisps instead of a clean curve.
+  float nv = abs(dot(normalize(vNormalView), normalize(-vPositionView)));
+  float chord = mix(0.5, 1.0, nv);
+  float rim = smoothstep(0.02, 0.32, nv + (fibre - 0.5) * 0.6);
+
+  // Coronal rain: condensed knots streaming from the crown down both legs
+  // (the pattern coordinate advances toward the feet with time).
+  float q = (0.5 - abs(s - 0.5)) * 30.0 - time * 2.2;
+  float beads = smoothstep(0.55, 0.9, loopNoise(vec3(q, vUv.y * 2.0, 3.3)));
+  float rain = uRain * beads * 0.9;
+
+  // Thin out toward peak lift-off; the feet anchor hotter than the crown.
+  // A slow presence drift keeps the quiescent arch from reading as a
+  // permanent fixture — it thickens and thins like the real thing
+  // reorganising.
+  float eruptionFade = 1.0 - 0.5 * smoothstep(0.65, 1.0, uEruption);
+  float presence = 0.72 + 0.28 * loopNoise(vec3(time * 0.05, SUN_LOOP_SEED, 1.7));
+  float alpha = strands * chord * rim * (1.0 + rain) * mix(1.2, 0.8, hn)
+    * eruptionFade * presence * float(SUN_LOOP_WEIGHT)
+    * uCloseVisibility * (1.0 - uWhiteout) * 1.5;
+  if (alpha < 0.004) discard;
+  alpha = min(alpha, 1.0);
+
+  // Same Hα ramp as the shell: pink feet, red body, crimson crown; an
+  // erupting mass cools further as it lifts.
+  vec3 footpoint = vec3(3.4, 0.44, 0.22);
+  vec3 body = vec3(2.6, 0.26, 0.10);
+  vec3 tops = vec3(1.15, 0.06, 0.04);
+  vec3 color = mix(footpoint, body, smoothstep(0.02, 0.35, hn));
+  color = mix(color, tops, smoothstep(0.40, 1.0, hn));
+  color = mix(color, tops, uEruption * smoothstep(0.30, 0.90, hn) * 0.7);
+  // Individual strands catch their own light.
+  color *= 0.75 + 0.5 * threads;
+  gl_FragColor = vec4(color * alpha, alpha);
+  #include <tonemapping_fragment>
+  #include <colorspace_fragment>
+}
+`;
+
+/** Ejecta shaders: the plasma mass that leaves during an eruption's release
+ *  (sunProminenceEjecta). A stretched sphere shell whose alpha is streaked
+ *  noise elongated along the travel axis — an expanding, cooling, fraying
+ *  cloud that detaches from the arch and recedes until it fades out. */
+export const sunEjectaVertexShader = /* glsl */ `
+uniform float time;
+uniform float uEjectaTravel;
+varying vec3 vDir;
+varying vec3 vNormalView;
+varying vec3 vPositionView;
+
+float ejectaVHash(vec3 p) {
+  p = fract(p * 0.1031);
+  p += dot(p, p.yzx + 33.33);
+  return fract((p.x + p.y) * p.z);
+}
+
+float ejectaVNoise(vec3 p) {
+  vec3 i = floor(p);
+  vec3 f = fract(p);
+  f = f * f * (3.0 - 2.0 * f);
+  return mix(
+    mix(
+      mix(ejectaVHash(i), ejectaVHash(i + vec3(1.0, 0.0, 0.0)), f.x),
+      mix(ejectaVHash(i + vec3(0.0, 1.0, 0.0)), ejectaVHash(i + vec3(1.0, 1.0, 0.0)), f.x),
+      f.y
+    ),
+    mix(
+      mix(ejectaVHash(i + vec3(0.0, 0.0, 1.0)), ejectaVHash(i + vec3(1.0, 0.0, 1.0)), f.x),
+      mix(ejectaVHash(i + vec3(0.0, 1.0, 1.0)), ejectaVHash(i + vec3(1.0, 1.0, 1.0)), f.x),
+      f.y
+    ),
+    f.z
+  );
+}
+
+void main() {
+  vDir = normalize(position);
+  // No perfect shapes: coarse lumps and finer bulges knead the sphere into
+  // an irregular cloud, roughening further as the mass expands. The
+  // silhouette must never read as an ellipse.
+  float lump = ejectaVNoise(vDir * 2.6 + vec3(0.0, -time * 0.09, 0.0)) - 0.5;
+  float bulge = ejectaVNoise(vDir * 6.5 + vec3(time * 0.07, 0.0, 0.0)) - 0.5;
+  float knead = 1.0 + (lump * 0.62 + bulge * 0.28) * (1.0 + 0.5 * uEjectaTravel);
+  vec3 pos = position * knead;
+  vNormalView = normalize(normalMatrix * normal);
+  vec4 mv = modelViewMatrix * vec4(pos, 1.0);
+  vPositionView = mv.xyz;
+  gl_Position = projectionMatrix * mv;
+}
+`;
+
+export const sunEjectaFragmentShader = /* glsl */ `
+uniform float time;
+uniform float uCloseVisibility;
+uniform float uWhiteout;
+uniform float uEjecta;
+uniform float uEjectaTravel;
+varying vec3 vDir;
+varying vec3 vNormalView;
+varying vec3 vPositionView;
+
+float ejectaHash(vec3 p) {
+  p = fract(p * 0.1031);
+  p += dot(p, p.yzx + 33.33);
+  return fract((p.x + p.y) * p.z);
+}
+
+float ejectaNoise(vec3 p) {
+  vec3 i = floor(p);
+  vec3 f = fract(p);
+  f = f * f * (3.0 - 2.0 * f);
+  return mix(
+    mix(
+      mix(ejectaHash(i), ejectaHash(i + vec3(1.0, 0.0, 0.0)), f.x),
+      mix(ejectaHash(i + vec3(0.0, 1.0, 0.0)), ejectaHash(i + vec3(1.0, 1.0, 0.0)), f.x),
+      f.y
+    ),
+    mix(
+      mix(ejectaHash(i + vec3(0.0, 0.0, 1.0)), ejectaHash(i + vec3(1.0, 0.0, 1.0)), f.x),
+      mix(ejectaHash(i + vec3(0.0, 1.0, 1.0)), ejectaHash(i + vec3(1.0, 1.0, 1.0)), f.x),
+      f.y
+    ),
+    f.z
+  );
+}
+
+void main() {
+  if (uEjecta < 0.004) discard;
+
+  // Streaked cloud: noise squashed along local +Y (the travel axis), so the
+  // mass reads as streamers trailing back toward the surface it left. The
+  // pattern loosens as the cloud expands (travel opens the gaps).
+  vec3 p = vDir;
+  float streak = ejectaNoise(vec3(p.x * 6.0, p.y * 1.8 - time * 0.55, p.z * 6.0));
+  float wisp = ejectaNoise(vec3(p.x * 13.0, p.y * 4.0 - time * 0.9, p.z * 13.0));
+  float cloud = streak * 0.62 + wisp * 0.38;
+  float gapOpen = mix(0.30, 0.50, uEjectaTravel);
+  float strands = smoothstep(gapOpen, 0.9, cloud);
+
+  // A translucent emission cloud: brightest through the middle (longest
+  // chord) and fading OUT at the silhouette — a floor there reads as a
+  // solid egg. Denser streamer tail on the sunward side (-Y).
+  float nv = abs(dot(normalize(vNormalView), normalize(-vPositionView)));
+  float shellSoft = pow(nv, 1.4);
+  float tail = 1.0 + 0.6 * smoothstep(0.2, -0.8, p.y);
+
+  float alpha = strands * shellSoft * tail * uEjecta
+    * uCloseVisibility * (1.0 - uWhiteout) * 0.34;
+  if (alpha < 0.004) discard;
+  alpha = min(alpha, 1.0);
+
+  // Cools from the arch's pink-red toward a dim crimson as it recedes.
+  vec3 hot = vec3(3.1, 0.32, 0.13);
+  vec3 cold = vec3(1.1, 0.06, 0.04);
+  vec3 color = mix(hot, cold, uEjectaTravel);
+  color *= 0.8 + 0.45 * wisp;
   gl_FragColor = vec4(color * alpha, alpha);
   #include <tonemapping_fragment>
   #include <colorspace_fragment>
@@ -346,6 +873,7 @@ uniform vec3 uAtmosphereColor;
 uniform float uVeilStrength;
 uniform float uVeilWarmth;
 uniform float uVeilAmt;
+uniform float uStudyFilter;
 uniform float uSpikeSustain;
 uniform float uViewportHeight;
 uniform float uArmDecayPx;
@@ -568,6 +1096,12 @@ void main() {
   vec3 veilColor = mix(vec3(1.0, 0.99, 0.965), vec3(1.0, 0.80, 0.52),
     uVeilWarmth * smoothstep(0.25, 0.9, dHat));
   veilColor = mix(veilColor, uAtmosphereColor, uAtmosphereMix * 0.88);
+  // Whatever glare survives the study filter passes through it: tint the
+  // remnant to the filtergram hue so the close-approach halo warms with the
+  // disc instead of laying a broadband-white floor under its palette.
+  vec3 filterHue = vec3(1.0, 0.42, 0.10);
+  glareColor = mix(glareColor, filterHue, uStudyFilter);
+  veilColor = mix(veilColor, filterHue, uStudyFilter);
   vec3 coronaColor = vec3(0.90, 0.95, 1.0);
   vec3 chromosphereColor = vec3(1.0, 0.24, 0.10);
   vec3 rgb = (glareColor * glare + coronaColor * corona + chromosphereColor * chromosphere) * baseEdgeFade

@@ -21,9 +21,16 @@ import {
   sunLensGhostVertexShader,
   sunPhotosphereFragmentShader,
   sunPhotosphereVertexShader,
+  sunEjectaFragmentShader,
+  sunEjectaVertexShader,
+  sunLoopFragmentShader,
+  sunLoopVertexShader,
   sunProminenceFragmentShader,
   sunProminenceVertexShader,
+  SUN_ACTIVE_REGIONS,
   SUN_GLARE_EXTENT_SOLAR_RADII,
+  SUN_LOOP_PROMINENCES,
+  SUN_PROMINENCE_SHELL_SCALE,
 } from '../shared/shaders/sun';
 import { debugWarn } from '../shared/debug';
 import { applyTextureDefaults, clampTier, resolveTextureUrl, type TextureTier, type MapKind } from './world/texturePolicy';
@@ -655,6 +662,10 @@ export function createPlanetariumSun(useBloom = true): THREE.Group {
       // Proximity whiteout (0 far, 1 = full-frame saturated white); the
       // controller drives it from distance outside and submersion inside.
       uWhiteout: { value: 0 },
+      // Close-up study filter (sunStudyFilterFraction), driven per frame.
+      uStudyFilter: { value: 0 },
+      // Per-site flare envelopes (sunFlareEnvelope), scheduled by the controller.
+      uFlares: { value: new THREE.Vector3() },
     },
     vertexShader: sunPhotosphereVertexShader,
     fragmentShader: sunPhotosphereFragmentShader,
@@ -688,6 +699,14 @@ export function createPlanetariumSun(useBloom = true): THREE.Group {
     uniforms: {
       time: { value: 0 },
       uCloseVisibility: { value: 0 },
+      uWhiteout: { value: 0 },
+      // Eruption-cycle envelope (sunProminenceEruption), driven per frame.
+      uEruption: { value: 0 },
+      // Coronal-rain envelope (sunProminenceRain), lagging the eruption.
+      uRain: { value: 0 },
+      // Ejecta visibility + travel progress (sunProminenceEjecta).
+      uEjecta: { value: 0 },
+      uEjectaTravel: { value: 0 },
     },
     vertexShader: sunProminenceVertexShader,
     fragmentShader: sunProminenceFragmentShader,
@@ -697,13 +716,104 @@ export function createPlanetariumSun(useBloom = true): THREE.Group {
     blending: THREE.AdditiveBlending,
     side: THREE.DoubleSide,
   });
+  // 192×96: the loop prominences are thin gaussian ridges of the fragment's
+  // height-above-limb, and at close-up zoom the piecewise-linear interpolation
+  // of a coarser shell contours them into visible polygon rings.
   const prominences = new THREE.Mesh(
-    new THREE.SphereGeometry(SUN_DATA.radiusAU * 1.065, 96, 48),
+    new THREE.SphereGeometry(SUN_DATA.radiusAU * SUN_PROMINENCE_SHELL_SCALE, 192, 96),
     prominenceMat,
   );
   prominences.name = 'Sun chromosphere';
   prominences.renderOrder = 7;
   group.add(prominences);
+
+  // Loop prominences as real torus-arc tubes (SUN_LOOP_PROMINENCES): a ridge
+  // painted on the shell contours into rings from any view that isn't
+  // side-on; geometry reads from every angle. Each tube hangs in a base
+  // pivot at its active region's surface point (local +Y = outward,
+  // +X = east); the controller drives pivot.scale.y with the eruption
+  // envelope, so the feet stay planted while the crown lifts. The circle
+  // through both feet and the crown fixes the torus radius and arc.
+  const loopPivots: THREE.Object3D[] = [];
+  for (let loopIndex = 0; loopIndex < SUN_LOOP_PROMINENCES.length; loopIndex++) {
+    const loop = SUN_LOOP_PROMINENCES[loopIndex];
+    const region = SUN_ACTIVE_REGIONS[loop.regionIndex];
+    const anchor = new THREE.Vector3(region.axis[0], region.axis[1], region.axis[2]).normalize();
+    const east = new THREE.Vector3(0, 1, 0).cross(anchor).normalize();
+    const halfChord = Math.sin(loop.footSpread);
+    const arcRadius = (halfChord * halfChord + loop.height * loop.height) / (2 * loop.height);
+    const halfAngle = Math.atan2(halfChord, arcRadius - loop.height);
+    const radiusAU = SUN_DATA.radiusAU;
+    const tube = new THREE.Mesh(
+      new THREE.TorusGeometry(arcRadius * radiusAU, loop.tubeRadius * radiusAU, 12, 64, 2 * halfAngle),
+      new THREE.ShaderMaterial({
+        // Shared object: time/visibility/whiteout/eruption/rain sync for free.
+        uniforms: prominenceMat.uniforms,
+        defines: {
+          SUN_LOOP_WEIGHT: loop.weight.toFixed(3),
+          // Tube cross-section radius in scene units (AU): the vertex writhe
+          // amplitudes scale from it. Seed de-phases the two arches.
+          SUN_LOOP_TUBE: (loop.tubeRadius * SUN_DATA.radiusAU).toExponential(4),
+          SUN_LOOP_SEED: (loopIndex * 7.31).toFixed(2),
+        },
+        vertexShader: sunLoopVertexShader,
+        fragmentShader: sunLoopFragmentShader,
+        transparent: true,
+        depthWrite: false,
+        depthTest: true,
+        blending: THREE.AdditiveBlending,
+        side: THREE.DoubleSide,
+      }),
+    );
+    tube.name = 'Sun loop prominence';
+    // Rotate the arc symmetric about local +Y, feet landing on the surface.
+    tube.rotation.z = Math.PI / 2 - halfAngle;
+    tube.position.y = (loop.height - arcRadius) * radiusAU;
+    tube.renderOrder = 7;
+    const pivot = new THREE.Group();
+    pivot.position.copy(anchor).multiplyScalar(radiusAU);
+    pivot.quaternion.setFromRotationMatrix(new THREE.Matrix4().makeBasis(
+      east, anchor, new THREE.Vector3().crossVectors(east, anchor),
+    ));
+    pivot.add(tube);
+    group.add(pivot);
+    loopPivots.push(pivot);
+  }
+  group.userData.sunLoopPivots = loopPivots;
+
+  // The ejecta cloud: a stretched sphere launched along the big region's
+  // outward axis during an eruption's release (sunProminenceEjecta drives
+  // position/scale/fade through userData refs). Its own pivot — the loop
+  // pivots' eruption lift must not stretch the departing mass.
+  {
+    const region = SUN_ACTIVE_REGIONS[SUN_LOOP_PROMINENCES[0].regionIndex];
+    const anchor = new THREE.Vector3(region.axis[0], region.axis[1], region.axis[2]).normalize();
+    const east = new THREE.Vector3(0, 1, 0).cross(anchor).normalize();
+    const ejectaMat = new THREE.ShaderMaterial({
+      uniforms: prominenceMat.uniforms,
+      vertexShader: sunEjectaVertexShader,
+      fragmentShader: sunEjectaFragmentShader,
+      transparent: true,
+      depthWrite: false,
+      depthTest: true,
+      blending: THREE.AdditiveBlending,
+      side: THREE.DoubleSide,
+    });
+    const ejecta = new THREE.Mesh(
+      new THREE.SphereGeometry(SUN_DATA.radiusAU, 48, 24),
+      ejectaMat,
+    );
+    ejecta.name = 'Sun ejecta';
+    ejecta.renderOrder = 7;
+    const ejectaPivot = new THREE.Group();
+    ejectaPivot.quaternion.setFromRotationMatrix(new THREE.Matrix4().makeBasis(
+      east, anchor, new THREE.Vector3().crossVectors(east, anchor),
+    ));
+    ejectaPivot.add(ejecta);
+    group.add(ejectaPivot);
+    ejecta.visible = false;
+    group.userData.sunEjectaMesh = ejecta;
+  }
 
   // One analytic point-spread profile replaces two baked canvas gradients.
   // Its vertex shader billboards it; the controller supplies the visible
@@ -734,6 +844,9 @@ export function createPlanetariumSun(useBloom = true): THREE.Group {
       uVeilWarmth: { value: 0.12 },
       uVeilAmt: { value: 0 },
       uVeilHalfPx: { value: 0 },
+      // Study-filter engagement (sunStudyFilterFraction): tints the surviving
+      // glare/veil remnant to the filtergram hue.
+      uStudyFilter: { value: 0 },
       // Fraction of the fading starburst kept alive once the disc is resolved,
       // so a mid-range Sun still throws modest diffraction spikes.
       uSpikeSustain: { value: 0.45 },

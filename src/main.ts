@@ -439,6 +439,10 @@ function installDevHooks() {
     eclipseDebug: () => planetariumMode?.devEclipseDebug() ?? null,
     setVeil: (opts: { warmth?: number; strength?: number }) =>
       planetariumMode?.devSetVeil(opts ?? {}) ?? false,
+    sunFlare: (strength?: number | null) => planetariumMode?.devSunFlare(strength) ?? false,
+    sunEruption: (strength?: number | null) => planetariumMode?.devSunEruption(strength) ?? false,
+    sunRain: (strength?: number | null) => planetariumMode?.devSunRain(strength) ?? false,
+    sunEjecta: (travel?: number | null) => planetariumMode?.devSunEjecta(travel) ?? false,
     // Near-Sun auto-exposure inspection + locks (peek the mode's target/coverage,
     // never the consuming getter). setBloom rebuilds the composer + halo tier.
     exposure: () => {

@@ -83,6 +83,25 @@ export function advanceStarTrekWarpPoint(
   return out;
 }
 
+/** Pick a visible coordinate on the upstream viewport edge. Keeping the
+ * perpendicular coordinate inside the viewport avoids permanently invisible
+ * respawns when the projected heading is almost perfectly vertical/horizontal. */
+export function upstreamWarpSpawn(
+  direction: StarTrekWarpDirection,
+  edgeChoice: number,
+  perpendicularPosition: number,
+  margin: number,
+): ScreenPoint {
+  const xWeight = Math.abs(direction.x);
+  const yWeight = Math.abs(direction.y);
+  const chooseXEdge = edgeChoice < xWeight / Math.max(xWeight + yWeight, 1e-6);
+  const coordinate = clamp01(perpendicularPosition);
+  const safeMargin = Math.max(0, margin);
+  return chooseXEdge
+    ? { x: direction.x >= 0 ? 1 + safeMargin : -safeMargin, y: coordinate }
+    : { x: coordinate, y: direction.y >= 0 ? 1 + safeMargin : -safeMargin };
+}
+
 interface WarpStar {
   x: number;
   y: number;
@@ -134,8 +153,7 @@ export class StarTrekWarpEffect {
     this.resize();
     this.randomState = 0x7f4a7c15;
     const mobile = this.cssWidth <= 640;
-    const reducedMotion = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches ?? false;
-    const starCount = reducedMotion ? 170 : (mobile ? 360 : 620);
+    const starCount = mobile ? 360 : 620;
     this.stars = Array.from({ length: starCount }, () => this.makeStar());
     this.startedAtMs = performance.now();
     this.previousFrameMs = this.startedAtMs;
@@ -177,7 +195,7 @@ export class StarTrekWarpEffect {
 
   private makeStar(): WarpStar {
     return {
-      x: mix(-0.12, 1.18, this.random()),
+      x: this.random(),
       y: this.random(),
       depth: mix(0.08, 1, this.random()),
       brightness: mix(0.42, 1, this.random()),
@@ -188,17 +206,13 @@ export class StarTrekWarpEffect {
 
   private resetStar(star: WarpStar): void {
     const replacement = this.makeStar();
-    const xWeight = Math.abs(this.direction.x);
-    const yWeight = Math.abs(this.direction.y);
     const margin = mix(0.02, 0.18, this.random());
     // Stars travel opposite the ship, so replenish them on the screen edge
     // toward which the ship is headed. Diagonal travel distributes new stars
     // between both upstream edges in proportion to the heading components.
-    if (this.random() < xWeight / Math.max(xWeight + yWeight, 1e-6)) {
-      replacement.x = this.direction.x >= 0 ? 1 + margin : -margin;
-    } else {
-      replacement.y = this.direction.y >= 0 ? 1 + margin : -margin;
-    }
+    const spawn = upstreamWarpSpawn(this.direction, this.random(), this.random(), margin);
+    replacement.x = spawn.x;
+    replacement.y = spawn.y;
     Object.assign(star, replacement);
   }
 

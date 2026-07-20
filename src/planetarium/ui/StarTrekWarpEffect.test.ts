@@ -5,6 +5,7 @@ import {
   advanceStarTrekWarpPoint,
   screenSpaceWarpDirection,
   starTrekWarpMotion,
+  upstreamWarpSpawn,
 } from './StarTrekWarpEffect';
 
 describe('Star Trek warp motion', () => {
@@ -37,6 +38,16 @@ describe('Star Trek warp motion', () => {
 
   it('uses screen-up when the ship points directly through the camera axis', () => {
     expect(screenSpaceWarpDirection({ x: 20, y: 30 }, { x: 20, y: 30 })).toEqual({ x: 0, y: -1 });
+  });
+
+  it('respawns vertical and horizontal fields on a visible upstream edge', () => {
+    expect(upstreamWarpSpawn({ x: 0, y: -1 }, 0.5, 0.35, 0.1)).toEqual({ x: 0.35, y: -0.1 });
+    expect(upstreamWarpSpawn({ x: 1, y: 0 }, 0.5, 0.65, 0.1)).toEqual({ x: 1.1, y: 0.65 });
+  });
+
+  it('distributes diagonal respawns according to the heading components', () => {
+    expect(upstreamWarpSpawn({ x: 0.75, y: -0.25 }, 0.2, 0.4, 0.08)).toEqual({ x: 1.08, y: 0.4 });
+    expect(upstreamWarpSpawn({ x: 0.75, y: -0.25 }, 0.95, 0.4, 0.08)).toEqual({ x: 0.4, y: -0.08 });
   });
 
   it('returns streaks to point stars during exit', () => {

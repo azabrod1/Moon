@@ -6,6 +6,12 @@ import { createPlayerFleetModel } from './playerFleet';
 const FLEET = PLAYER_SHIPS.filter((ship) => ship.id !== 'default');
 type AuditedProfile = Exclude<PlayerShipProfile, 'default' | 'saucer'>;
 
+function landmarkCenter(model: THREE.Group, name: string): THREE.Vector3 {
+  const landmark = model.getObjectByName(name);
+  expect(landmark, name).toBeDefined();
+  return new THREE.Box3().setFromObject(landmark!).getCenter(new THREE.Vector3());
+}
+
 /** Primary-reference silhouette landmarks. If a profile is accidentally
  * routed to a fallback (the regression that made Orion, Starliner, Dream
  * Chaser, and the Bird-of-Prey identical), these signatures fail loudly. */
@@ -90,5 +96,59 @@ describe('player fleet models', () => {
     });
     expect(names.filter((name) => name.includes('sea-level'))).toHaveLength(3);
     expect(names.filter((name) => name.includes('vacuum'))).toHaveLength(3);
+  });
+
+  it('keeps Orion and Starliner component layouts distinct', () => {
+    const orion = createPlayerFleetModel('orion', 1);
+    const orionCrew = landmarkCenter(orion, 'orion-crew-module');
+    const orionService = landmarkCenter(orion, 'orion-european-service-module');
+    expect(orionCrew.x).toBeGreaterThan(orionService.x);
+    expect(landmarkCenter(orion, 'orion-solar-panel-y--1-3').y).toBeLessThan(-1);
+    expect(landmarkCenter(orion, 'orion-solar-panel-y-1-3').y).toBeGreaterThan(1);
+    expect(landmarkCenter(orion, 'orion-solar-panel-z--1-3').z).toBeLessThan(-1);
+    expect(landmarkCenter(orion, 'orion-solar-panel-z-1-3').z).toBeGreaterThan(1);
+
+    const starliner = createPlayerFleetModel('starliner', 1);
+    const starlinerCrew = landmarkCenter(starliner, 'starliner-crew-capsule');
+    const starlinerService = landmarkCenter(starliner, 'starliner-service-module');
+    const aftCell = landmarkCenter(starliner, 'starliner-aft-solar-cell-1');
+    expect(starlinerCrew.x).toBeGreaterThan(starlinerService.x);
+    expect(aftCell.x).toBeLessThan(starlinerService.x);
+  });
+
+  it('keeps Enterprise and Voyager silhouettes structurally different', () => {
+    const enterprise = createPlayerFleetModel('enterprise', 1);
+    expect(landmarkCenter(enterprise, 'enterprise-primary-saucer').x).toBeGreaterThan(
+      landmarkCenter(enterprise, 'enterprise-secondary-hull').x,
+    );
+    expect(landmarkCenter(enterprise, 'enterprise-warp-nacelle-port').z).toBeLessThan(0);
+    expect(landmarkCenter(enterprise, 'enterprise-warp-nacelle-starboard').z).toBeGreaterThan(0);
+
+    const voyager = createPlayerFleetModel('ussVoyager', 1);
+    expect(landmarkCenter(voyager, 'voyager-primary-hull').x).toBeGreaterThan(
+      landmarkCenter(voyager, 'voyager-secondary-hull').x,
+    );
+    expect(landmarkCenter(voyager, 'voyager-variable-nacelle-port').z).toBeLessThan(0);
+    expect(landmarkCenter(voyager, 'voyager-variable-nacelle-starboard').z).toBeGreaterThan(0);
+    expect(landmarkCenter(voyager, 'voyager-navigational-deflector').y).toBeLessThan(0);
+  });
+
+  it('keeps Klingon and Romulan hull architecture recognizable', () => {
+    const klingon = createPlayerFleetModel('klingon', 1);
+    expect(landmarkCenter(klingon, 'klingon-command-head').x).toBeGreaterThan(
+      landmarkCenter(klingon, 'klingon-long-neck').x,
+    );
+    expect(landmarkCenter(klingon, 'klingon-wingtip-cannon-port').z).toBeLessThan(-1);
+    expect(landmarkCenter(klingon, 'klingon-wingtip-cannon-starboard').z).toBeGreaterThan(1);
+
+    const romulan = createPlayerFleetModel('romulan', 1);
+    expect(landmarkCenter(romulan, 'romulan-command-head').x).toBeGreaterThan(
+      landmarkCenter(romulan, 'romulan-outstretched-neck').x,
+    );
+    expect(landmarkCenter(romulan, 'romulan-dorsal-wing-port').y).toBeGreaterThan(
+      landmarkCenter(romulan, 'romulan-ventral-wing-port').y,
+    );
+    expect(landmarkCenter(romulan, 'romulan-warp-nacelle-port').z).toBeLessThan(-1);
+    expect(landmarkCenter(romulan, 'romulan-warp-nacelle-starboard').z).toBeGreaterThan(1);
   });
 });

@@ -28,4 +28,25 @@ describe('PlayerShip selectable profile routing', () => {
     expect(visibleModel.visible).toBe(true);
     expect(visibleModel.userData.playerShipProfile).toBe(id);
   });
+
+  it('does not rewrite model visibility when the requested profile is already active', () => {
+    const player = new PlayerShip();
+    player.setProfile('enterprise');
+    const visibleModel = player.group.userData.shipModel;
+    let visibilityWrites = 0;
+    let visible = visibleModel.visible;
+    Object.defineProperty(visibleModel, 'visible', {
+      configurable: true,
+      get: () => visible,
+      set: (next: boolean) => {
+        visibilityWrites += 1;
+        visible = next;
+      },
+    });
+
+    player.setProfile('enterprise');
+
+    expect(visibilityWrites).toBe(0);
+    expect(player.group.userData.activeShipProfile).toBe('enterprise');
+  });
 });

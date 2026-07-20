@@ -2879,7 +2879,7 @@
             <span class="ship-picker-current"><span id="ship-picker-current">Default</span><svg class="ship-picker-chevron" viewBox="0 0 10 10" fill="none" stroke="currentColor" stroke-width="1.3" aria-hidden="true"><path d="M2 3.5 L5 6.5 L8 3.5"></path></svg></span>
           </button>
           <div id="ship-submenu" role="menu" aria-label="Choose ship">
-            <div class="ship-group" role="group" aria-labelledby="ship-group-modern">
+            <div class="ship-group" data-ship-group="modern" role="group" aria-labelledby="ship-group-modern">
               <div class="ship-group-title" id="ship-group-modern">Modern spacecraft</div>
               <div class="ship-group-grid">
                 <button class="ship-choice selected" data-ship-profile="default" role="menuitemradio" aria-checked="true" title="Moon needle" aria-label="Default — Moon needle">
@@ -2916,7 +2916,7 @@
                 </button>
               </div>
             </div>
-            <div class="ship-group" role="group" aria-labelledby="ship-group-historic">
+            <div class="ship-group" data-ship-group="historic" role="group" aria-labelledby="ship-group-historic">
               <div class="ship-group-title" id="ship-group-historic">Historic spacecraft</div>
               <div class="ship-group-grid">
                 <button class="ship-choice" data-ship-profile="apollo" role="menuitemradio" aria-checked="false" title="Lunar command ship" aria-label="Apollo — Lunar command ship">
@@ -2929,7 +2929,7 @@
                 </button>
               </div>
             </div>
-            <div class="ship-group" role="group" aria-labelledby="ship-group-star-wars">
+            <div class="ship-group" data-ship-group="starWars" role="group" aria-labelledby="ship-group-star-wars">
               <div class="ship-group-title" id="ship-group-star-wars">Star Wars</div>
               <div class="ship-group-grid">
                 <button class="ship-choice" data-ship-profile="falcon" role="menuitemradio" aria-checked="false" title="Corellian freighter" aria-label="Millennium Falcon — Corellian freighter">
@@ -2958,7 +2958,7 @@
                 </button>
               </div>
             </div>
-            <div class="ship-group" role="group" aria-labelledby="ship-group-star-trek">
+            <div class="ship-group" data-ship-group="starTrek" role="group" aria-labelledby="ship-group-star-trek">
               <div class="ship-group-title" id="ship-group-star-trek">Star Trek</div>
               <div class="ship-group-grid">
                 <button class="ship-choice" data-ship-profile="enterprise" role="menuitemradio" aria-checked="false" title="Federation explorer" aria-label="USS Enterprise — Federation explorer">

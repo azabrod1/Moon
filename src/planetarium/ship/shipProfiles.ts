@@ -1,5 +1,21 @@
 /** Ship identities shared by the renderer, menu, persistence, and missions. */
 
+export const PLAYER_SHIP_GROUPS = [
+  { id: 'modern', label: 'Modern spacecraft', travelEffect: null },
+  { id: 'historic', label: 'Historic spacecraft', travelEffect: null },
+  { id: 'starWars', label: 'Star Wars', travelEffect: 'hyperspace' },
+  { id: 'starTrek', label: 'Star Trek', travelEffect: 'warp' },
+] as const;
+
+export type PlayerShipGroup = (typeof PLAYER_SHIP_GROUPS)[number]['id'];
+export type PlayerShipTravelEffect = (typeof PLAYER_SHIP_GROUPS)[number]['travelEffect'];
+export interface PlayerShipTravelPolicy {
+  /** Non-null when this craft still receives an intentional arrival cover. */
+  effect: PlayerShipTravelEffect;
+  /** False under reduced motion: teleport without moving stars or flashes. */
+  animate: boolean;
+}
+
 export const PLAYER_SHIPS = [
   { id: 'default', label: 'Default', note: 'Moon needle', group: 'modern' },
   { id: 'starship', label: 'SpaceX Starship', note: 'Reusable upper stage', group: 'modern' },
@@ -38,12 +54,16 @@ export function playerShipLabel(profile: PlayerShipProfile): string {
   return PLAYER_SHIPS.find((ship) => ship.id === profile)?.label ?? 'Default';
 }
 
-/** Star Wars craft use the franchise-specific hyperspace arrival treatment. */
-export function playerShipUsesHyperspace(profile: PlayerShipProfile): boolean {
-  return PLAYER_SHIPS.find((ship) => ship.id === profile)?.group === 'starWars';
+/** The category owns its franchise-specific teleport treatment. */
+export function playerShipTravelEffect(profile: PlayerShipProfile): PlayerShipTravelEffect {
+  const group = PLAYER_SHIPS.find((ship) => ship.id === profile)?.group;
+  return PLAYER_SHIP_GROUPS.find((candidate) => candidate.id === group)?.travelEffect ?? null;
 }
 
-/** Star Trek craft use classic streak-photography warp travel. */
-export function playerShipUsesWarp(profile: PlayerShipProfile): boolean {
-  return PLAYER_SHIPS.find((ship) => ship.id === profile)?.group === 'starTrek';
+export function playerShipTravelPolicy(
+  profile: PlayerShipProfile,
+  prefersReducedMotion: boolean,
+): PlayerShipTravelPolicy {
+  const effect = playerShipTravelEffect(profile);
+  return { effect, animate: effect !== null && !prefersReducedMotion };
 }

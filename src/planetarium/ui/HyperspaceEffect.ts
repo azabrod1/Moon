@@ -98,8 +98,7 @@ export class HyperspaceEffect {
     this.resize();
     this.randomState = 0x6d2b79f5;
     const mobile = this.cssWidth <= 640;
-    const reducedMotion = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches ?? false;
-    const starCount = reducedMotion ? 180 : (mobile ? 440 : 760);
+    const starCount = mobile ? 440 : 760;
     this.stars = Array.from({ length: starCount }, () => this.makeStar(0.08, 1.35));
     this.startedAtMs = performance.now();
     this.previousFrameMs = this.startedAtMs;

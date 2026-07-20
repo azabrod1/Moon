@@ -21,10 +21,11 @@ import {
 } from './SolarSystem';
 import { PlayerShip } from './PlayerShip';
 import {
+  PLAYER_SHIP_GROUPS,
+  PLAYER_SHIPS,
   isPlayerShipProfile,
   playerShipLabel,
-  playerShipUsesHyperspace,
-  playerShipUsesWarp,
+  playerShipTravelPolicy,
   type PlayerShipProfile,
 } from './ship/shipProfiles';
 import { PlanetLabels, discRadiusPx } from './PlanetLabels';
@@ -927,6 +928,22 @@ export class PlanetariumMode {
   private updateShipPickerUI(): void {
     const current = document.getElementById('ship-picker-current');
     if (current) current.textContent = playerShipLabel(this.selectedShipProfile);
+    for (const group of PLAYER_SHIP_GROUPS) {
+      const groupElement = document.querySelector<HTMLElement>(`[data-ship-group="${group.id}"]`);
+      const title = groupElement?.querySelector<HTMLElement>('.ship-group-title');
+      const grid = groupElement?.querySelector<HTMLElement>('.ship-group-grid');
+      if (title) title.textContent = group.label;
+      if (!grid) continue;
+      for (const ship of PLAYER_SHIPS.filter((candidate) => candidate.group === group.id)) {
+        const button = document.querySelector<HTMLButtonElement>(`[data-ship-profile="${ship.id}"]`);
+        if (!button) continue;
+        button.title = ship.note;
+        button.setAttribute('aria-label', `${ship.label} — ${ship.note}`);
+        const label = button.querySelector<HTMLElement>('.ship-choice-copy b');
+        if (label) label.textContent = ship.label;
+        grid.append(button);
+      }
+    }
     for (const button of document.querySelectorAll<HTMLButtonElement>('[data-ship-profile]')) {
       const selected = button.dataset.shipProfile === this.selectedShipProfile;
       button.classList.toggle('selected', selected);
@@ -8590,9 +8607,11 @@ export class PlanetariumMode {
     const parentName = this.parentSystemOf(target);
     const moons = this.planetMoons.get(parentName);
     const needsPaint = !!moons && moons.some((m) => !m.painted);
-    const hyperspace = playerShipUsesHyperspace(this.selectedShipProfile);
-    const warp = playerShipUsesWarp(this.selectedShipProfile);
-    const cinematicTravel = hyperspace || warp;
+    const reducedMotion = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches ?? false;
+    const travel = playerShipTravelPolicy(this.selectedShipProfile, reducedMotion);
+    const cinematicTravel = travel.effect !== null;
+    const hyperspace = travel.animate && travel.effect === 'hyperspace';
+    const warp = travel.animate && travel.effect === 'warp';
     // 4K-class photo maps still waiting for their first GPU upload get drained
     // under the veil below. Smaller maps (the Moon's 2K photo) upload within a
     // frame or two off-gesture via the warm pump — no veil beat for those.
@@ -8615,7 +8634,7 @@ export class PlanetariumMode {
     const coverStart = performance.now();
     const hyperspaceEffect = hyperspace ? this.getHyperspaceEffect() : null;
     const starTrekWarpEffect = warp ? this.getStarTrekWarpEffect() : null;
-    if (cinematicTravel) {
+    if (travel.animate) {
       const origin = this.hyperspaceOrigin();
       if (hyperspace) {
         this.starTrekWarpEffect?.stop();
@@ -8683,7 +8702,7 @@ export class PlanetariumMode {
             // update→render) and at least the min dwell, so a fast machine
             // reads it as an intentional beat rather than a flicker. Removing
             // the class fades it back out.
-            const minDwell = cinematicTravel
+            const minDwell = travel.animate
               ? PlanetariumMode.CINEMATIC_TRAVEL_MIN_MS
               : PlanetariumMode.ARRIVAL_MIN_DWELL_MS;
             const wait = Math.max(48, minDwell - (performance.now() - coverStart));
@@ -8699,7 +8718,7 @@ export class PlanetariumMode {
               window.setTimeout(() => {
                 if (coverGen !== this.arrivalCoverGen) return;
                 veil?.classList.remove('covering');
-                if (!cinematicTravel) return;
+                if (!travel.animate) return;
                 // Keep the moving layer alive through the 300 ms veil fade,
                 // then reset it so the next jump starts from stationary stars.
                 window.setTimeout(() => {

@@ -76,6 +76,7 @@ export class PlayerShip {
     this.exhaustCore = ship.exhaustCore;
     this.group.add(this.defaultModel);
     this.group.userData.shipModel = this.defaultModel;
+    this.group.userData.activeShipProfile = 'default';
   }
 
   private getOrCreateProbeModel(profile: HistoricShipProfile): THREE.Group {
@@ -165,12 +166,14 @@ export class PlayerShip {
       root.visible = false;
       this.group.add(root);
       this.cassiniModel = root;
+      if (this.profile === 'cassini') this.setProfile('cassini');
       return root;
     }).catch(() => {
       const fallback = createCassiniModel(this.spacecraftReferenceRadiusAU);
       fallback.visible = false;
       this.group.add(fallback);
       this.cassiniModel = fallback;
+      if (this.profile === 'cassini') this.setProfile('cassini');
       return fallback;
     }).finally(() => {
       this.cassiniModelPromise = null;
@@ -319,6 +322,7 @@ export class PlayerShip {
   static readonly DEFAULT_SPEED_AU_S = DEFAULT_SPEED_AU_S;
 
   setProfile(profile: ShipProfile) {
+    if (this.profile === profile && this.group.userData.activeShipProfile === profile) return;
     this.profile = profile;
     this.setProbeModelsVisible(false);
     this.setPlayerFleetModelsVisible(false);
@@ -327,6 +331,7 @@ export class PlayerShip {
       this.defaultModel.visible = false;
       playerModel.visible = true;
       this.group.userData.shipModel = playerModel;
+      this.group.userData.activeShipProfile = profile;
       return;
     }
     if (profile !== 'default') {
@@ -341,10 +346,12 @@ export class PlayerShip {
         this.defaultModel.visible = false;
         probeModel.visible = true;
         this.group.userData.shipModel = probeModel;
+        this.group.userData.activeShipProfile = profile;
         return;
       }
     }
     this.defaultModel.visible = true;
     this.group.userData.shipModel = this.defaultModel;
+    this.group.userData.activeShipProfile = 'default';
   }
 }

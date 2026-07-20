@@ -49,4 +49,19 @@ describe('PlayerShip selectable profile routing', () => {
     expect(visibilityWrites).toBe(0);
     expect(player.group.userData.activeShipProfile).toBe('enterprise');
   });
+
+  it('dims parked fleet engines and powers them up while moving', () => {
+    const player = new PlayerShip();
+    player.setProfile('ussVoyager');
+    const model = player.group.userData.shipModel as import('three').Group;
+    const light = model.getObjectByName('ussVoyager-aft-engine-light-1') as import('three').Mesh;
+    const material = light.material as import('three').MeshBasicMaterial;
+
+    player.moving = false;
+    player.update(0.1);
+    expect(material.opacity).toBeCloseTo(0.24);
+    player.moving = true;
+    player.update(0.1);
+    expect(material.opacity).toBeGreaterThan(0.7);
+  });
 });

@@ -15,6 +15,7 @@ import { createCassiniModel } from './ship/models/cassini';
 import { createNewHorizonsModel } from './ship/models/newHorizons';
 import { createJunoModel } from './ship/models/juno';
 import { createPlayerFleetModel } from './ship/models/playerFleet';
+import { updateFleetPropulsion } from './ship/models/fleetSurfaceDetail';
 import {
   isPlayerShipProfile,
   type HistoricShipProfile,
@@ -233,6 +234,15 @@ export class PlayerShip {
     const showExhaust = this.profile === 'default' && exhaustOn;
     this.exhaustCone.visible = showExhaust;
     this.exhaustCore.visible = showExhaust;
+
+    if (this.profile !== 'default' && isPlayerShipProfile(this.profile)) {
+      updateFleetPropulsion(
+        this.group.userData.shipModel as THREE.Group,
+        this.timeElapsed,
+        exhaustOn,
+        speedFrac,
+      );
+    }
 
     if (showExhaust) {
       // Steady torch, no flicker: the additive HDR plume sits near the

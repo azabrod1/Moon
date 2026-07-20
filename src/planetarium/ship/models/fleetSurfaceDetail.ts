@@ -9,6 +9,7 @@
  */
 import * as THREE from 'three';
 import type { PlayerShipProfile } from '../shipProfiles';
+import { applyFleetMicroSurface } from './fleetMicroSurface';
 import { createRodBetween } from './shipPrimitives';
 
 type FleetProfile = Exclude<PlayerShipProfile, 'default'>;
@@ -23,12 +24,32 @@ interface DetailPalette {
   light: THREE.MeshBasicMaterial;
 }
 
+interface FleetPropulsionState {
+  outerMaterial: THREE.MeshBasicMaterial;
+  coreMaterial: THREE.MeshBasicMaterial;
+  haloMaterial: THREE.MeshBasicMaterial;
+  halos: THREE.Mesh[];
+}
+
 function standard(color: number, roughness: number, metalness: number): THREE.MeshStandardMaterial {
   return new THREE.MeshStandardMaterial({ color, roughness, metalness });
 }
 
 function lit(color: number): THREE.MeshBasicMaterial {
   const material = new THREE.MeshBasicMaterial({ color, toneMapped: false });
+  return material;
+}
+
+function energyMaterial(color: number, opacity: number, additive = false): THREE.MeshBasicMaterial {
+  const material = new THREE.MeshBasicMaterial({
+    color,
+    transparent: true,
+    opacity,
+    depthWrite: false,
+    side: THREE.DoubleSide,
+    blending: additive ? THREE.AdditiveBlending : THREE.NormalBlending,
+    toneMapped: false,
+  });
   return material;
 }
 
@@ -797,12 +818,22 @@ function aftEnergyColors(profile: FleetProfile): [outer: number, core: number] {
   return [0x63bfff, 0xe7f8ff];
 }
 
-function addAftPropulsionDetail(profile: FleetProfile, root: THREE.Group, p: DetailPalette): void {
+function addAftPropulsionDetail(profile: FleetProfile, root: THREE.Group, p: DetailPalette): FleetPropulsionState {
   const [outerColor, coreColor] = aftEnergyColors(profile);
-  const outerMaterial = lit(outerColor);
-  const coreMaterial = lit(coreColor);
+  const outerMaterial = energyMaterial(outerColor, 0.82);
+  const coreMaterial = energyMaterial(coreColor, 0.96);
+  const haloMaterial = energyMaterial(outerColor, 0.16, true);
+  const halos: THREE.Mesh[] = [];
   for (const [index, [x, y, z, radius]] of aftPortsFor(profile).entries()) {
     addRingX(root, `${profile}-aft-engine-housing-${index + 1}`, x + 0.012, y, z, radius * 1.22, Math.max(0.01, radius * 0.16), p.seam);
+
+    const halo = new THREE.Mesh(new THREE.RingGeometry(radius * 0.92, radius * 1.72, 32), haloMaterial);
+    halo.name = `${profile}-aft-engine-halo-${index + 1}`;
+    halo.rotation.y = -Math.PI / 2;
+    halo.position.set(x + 0.006, y, z);
+    halo.renderOrder = 1;
+    root.add(halo);
+    halos.push(halo);
 
     const outer = new THREE.Mesh(new THREE.CircleGeometry(radius, 24), outerMaterial);
     outer.name = `${profile}-aft-engine-light-${index + 1}`;
@@ -811,13 +842,54 @@ function addAftPropulsionDetail(profile: FleetProfile, root: THREE.Group, p: Det
     outer.renderOrder = 2;
     root.add(outer);
 
+    const baffle = new THREE.Mesh(new THREE.RingGeometry(radius * 0.5, radius * 0.72, 24), p.seam);
+    baffle.name = `${profile}-aft-engine-baffle-${index + 1}`;
+    baffle.rotation.y = -Math.PI / 2;
+    baffle.position.set(x - 0.003, y, z);
+    baffle.renderOrder = 3;
+    root.add(baffle);
+
+    if (radius >= 0.085) {
+      for (let vane = 0; vane < 3; vane++) {
+        addBox(
+          root,
+          `${profile}-aft-engine-vane-${index + 1}-${vane + 1}`,
+          [0.012, radius * 1.55, Math.max(0.012, radius * 0.09)],
+          [x - 0.004, y, z],
+          p.pale,
+          [(vane / 3) * Math.PI, 0, 0],
+        ).renderOrder = 4;
+      }
+    }
+
     const core = new THREE.Mesh(new THREE.CircleGeometry(radius * 0.46, 20), coreMaterial);
     core.name = `${profile}-aft-engine-hot-core-${index + 1}`;
     core.rotation.y = -Math.PI / 2;
     core.position.set(x - 0.004, y, z);
-    core.renderOrder = 3;
+    core.renderOrder = 5;
     root.add(core);
   }
+  return { outerMaterial, coreMaterial, haloMaterial, halos };
+}
+
+/** Drive the non-Default engine internals without moving or rescaling the
+ * ship. Powered flight brightens the nested cores and gives the additive halo
+ * a restrained high-frequency shimmer; parked craft retain a low pilot glow. */
+export function updateFleetPropulsion(
+  model: THREE.Group,
+  elapsedSeconds: number,
+  powered: boolean,
+  throttleFraction: number,
+): void {
+  const state = model.userData.fleetPropulsion as FleetPropulsionState | undefined;
+  if (!state) return;
+  const throttle = THREE.MathUtils.clamp(throttleFraction, 0, 1);
+  const shimmer = powered ? Math.sin(elapsedSeconds * 17) * 0.025 : 0;
+  state.outerMaterial.opacity = powered ? 0.72 + throttle * 0.2 + shimmer : 0.24;
+  state.coreMaterial.opacity = powered ? 0.88 + throttle * 0.1 : 0.36;
+  state.haloMaterial.opacity = powered ? 0.09 + throttle * 0.13 + shimmer * 0.6 : 0.025;
+  const haloScale = powered ? 1 + throttle * 0.08 + shimmer : 0.96;
+  for (const halo of state.halos) halo.scale.setScalar(haloScale);
 }
 
 /** Add researched, profile-specific secondary geometry without changing the
@@ -860,8 +932,8 @@ export function addFleetSurfaceDetail(profile: FleetProfile, model: THREE.Group,
   aftRoot.name = `${profile}-aft-detail`;
   aftRoot.userData.coverage = 'rear-propulsion';
   root.add(aftRoot);
-  addAftPropulsionDetail(profile, aftRoot, palette);
+  model.userData.fleetPropulsion = addAftPropulsionDetail(profile, aftRoot, palette);
   model.userData.surfaceDetail = 'enhanced';
   model.userData.surfaceCoverage = 'all-sides';
-  return model;
+  return applyFleetMicroSurface(profile, model);
 }

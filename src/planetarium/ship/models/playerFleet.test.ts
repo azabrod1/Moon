@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import * as THREE from 'three';
 import { PLAYER_SHIPS, type PlayerShipProfile } from '../shipProfiles';
 import { createPlayerFleetModel } from './playerFleet';
+import { updateFleetPropulsion } from './fleetSurfaceDetail';
 
 const FLEET = PLAYER_SHIPS.filter((ship) => ship.id !== 'default');
 type AuditedProfile = Exclude<PlayerShipProfile, 'default' | 'saucer'>;
@@ -100,6 +101,50 @@ describe('player fleet models', () => {
     expect(detailMeshCount).toBeGreaterThanOrEqual(12);
     expect(ventralMeshCount).toBeGreaterThanOrEqual(8);
     expect(aftLightCount).toBeGreaterThanOrEqual(2);
+  });
+
+  it.each(FLEET)('$label has a profile-aware tertiary surface finish', ({ id }) => {
+    const model = createPlayerFleetModel(id, 1);
+    expect(model.userData.microSurface).toBe('procedural-tertiary-v1');
+    expect(model.userData.microSurfaceFamily).toBeTypeOf('string');
+    expect(model.userData.texturedMaterialCount).toBeGreaterThanOrEqual(2);
+
+    let mappedMaterials = 0;
+    const visited = new Set<THREE.Material>();
+    model.traverse((object) => {
+      if (!(object instanceof THREE.Mesh)) return;
+      const materials = Array.isArray(object.material) ? object.material : [object.material];
+      for (const material of materials) {
+        if (!(material instanceof THREE.MeshStandardMaterial) || visited.has(material)) continue;
+        visited.add(material);
+        if (!material.userData.microSurfaceFamily) continue;
+        expect(material.map).toBeInstanceOf(THREE.DataTexture);
+        expect(material.bumpMap).toBeInstanceOf(THREE.DataTexture);
+        expect(material.roughnessMap).toBeInstanceOf(THREE.DataTexture);
+        expect(material.emissiveMap).toBeInstanceOf(THREE.DataTexture);
+        mappedMaterials++;
+      }
+    });
+    expect(mappedMaterials).toBe(model.userData.texturedMaterialCount);
+  });
+
+  it.each(FLEET)('$label has layered, throttle-responsive engine internals', ({ id }) => {
+    const model = createPlayerFleetModel(id, 1);
+    const aftRoot = model.getObjectByName(`${id}-aft-detail`);
+    expect(aftRoot?.getObjectByName(`${id}-aft-engine-halo-1`)).toBeInstanceOf(THREE.Mesh);
+    expect(aftRoot?.getObjectByName(`${id}-aft-engine-baffle-1`)).toBeInstanceOf(THREE.Mesh);
+
+    const firstLight = aftRoot?.getObjectByName(`${id}-aft-engine-light-1`) as THREE.Mesh;
+    const firstCore = aftRoot?.getObjectByName(`${id}-aft-engine-hot-core-1`) as THREE.Mesh;
+    const lightMaterial = firstLight.material as THREE.MeshBasicMaterial;
+    const coreMaterial = firstCore.material as THREE.MeshBasicMaterial;
+
+    updateFleetPropulsion(model, 0, false, 0);
+    expect(lightMaterial.opacity).toBeCloseTo(0.24);
+    expect(coreMaterial.opacity).toBeCloseTo(0.36);
+    updateFleetPropulsion(model, 0.25, true, 1);
+    expect(lightMaterial.opacity).toBeGreaterThan(0.88);
+    expect(coreMaterial.opacity).toBeCloseTo(0.98);
   });
 
   it.each(Object.entries(AUTHENTICITY_SIGNATURES) as Array<[AuditedProfile, string[]]>)('%s keeps its researched silhouette landmarks', (profile, anchors) => {

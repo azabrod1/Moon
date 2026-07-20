@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { nearestPresetIndex, railDetentLabel, railFraction, railTapAction } from './PlanetariumTimePanel';
+import { nearestPresetIndex, railDetentLabel, railFraction, railPressAction, railTapAction } from './PlanetariumTimePanel';
 import { TIME_RATE_PRESETS } from '../timeRates';
 
 const PRESETS = TIME_RATE_PRESETS;
@@ -66,6 +66,32 @@ describe('railTapAction', () => {
     const thumbX = (4 / LAST) * RAIL_W;
     expect(detent4X).toBeCloseTo(thumbX, 10);
     expect(railTapAction(detent4X, thumbX, SLOP)).toBe('pause');
+  });
+});
+
+describe('railPressAction', () => {
+  it('keeps railTapAction behavior inside the slop', () => {
+    expect(railPressAction(100, 100, SLOP, 4, 4)).toBe('pause');
+    expect(railPressAction(96, 100, SLOP, 4, -1)).toBe('pause');
+  });
+
+  it('rescues the dead tap: a select of the exact current detent pauses', () => {
+    // The visual thumb animates for ~100 ms after a detent change; a quick
+    // tap chasing it lands past the slop but rounds to the same detent — a
+    // select there changes nothing, so it must pause instead of dying.
+    const thumbX = (8 / LAST) * RAIL_W; // top detent, target position
+    const tapX = thumbX - 18; // mid-transition thumb visual, past the slop
+    expect(railTapAction(tapX, thumbX, SLOP)).toBe('select');
+    expect(railPressAction(tapX, thumbX, SLOP, 8, 8)).toBe('pause');
+  });
+
+  it('selects a different detent and any detent from an off-ladder rate', () => {
+    const thumbX = (8 / LAST) * RAIL_W;
+    expect(railPressAction((6 / LAST) * RAIL_W, thumbX, SLOP, 6, 8)).toBe('select');
+    // Off-ladder (onLadderIndex −1): snapping to the nearest detent is a real
+    // change — the documented off-ladder select must survive the rescue.
+    const offThumbX = railFraction(7200, PRESETS) * RAIL_W;
+    expect(railPressAction((3 / LAST) * RAIL_W, offThumbX, SLOP, 3, -1)).toBe('select');
   });
 });
 

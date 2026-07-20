@@ -19,11 +19,17 @@
  */
 import * as THREE from 'three';
 import { debugWarn } from '../../shared/debug';
+import { surfacePerfBeginTextureUpload, surfacePerfEndTextureUpload } from '../surfacePerf';
 
 type WarmUpload = (tex: THREE.Texture) => void;
 
 let uploadFn: WarmUpload | null = null;
 const queue: THREE.Texture[] = [];
+// A drained texture stays resident until it is disposed, mutated (which bumps
+// Texture.version), or the WebGL context is lost. Remember the uploaded
+// version so repeated landed-vantage swaps do not call renderer.initTexture
+// again for the same Moon albedo/normal pair every frame.
+let warmedVersions = new WeakMap<THREE.Texture, number>();
 // One listener per queued texture, removed on drain or dispose, so long-lived
 // textures don't retain warm-up closures for their whole life.
 const disposeListeners = new Map<THREE.Texture, () => void>();
@@ -35,6 +41,7 @@ export function bindTextureWarmer(fn: WarmUpload): void {
 
 /** Queue a texture for warm upload. Idempotent per texture; safe before bind. */
 export function queueTextureWarm(tex: THREE.Texture): void {
+  if (warmedVersions.get(tex) === tex.version) return;
   if (disposeListeners.has(tex)) return;
   const onDispose = () => {
     // A disposed texture must never be warm-uploaded: initTexture would
@@ -64,14 +71,25 @@ export function pumpTextureWarmQueue(budgetMs: number): void {
       disposeListeners.delete(tex);
       tex.removeEventListener('dispose', onDispose);
     }
+    const perfUpload = import.meta.env.DEV ? surfacePerfBeginTextureUpload(tex) : null;
+    let uploaded = false;
     try {
       uploadFn(tex);
+      uploaded = true;
     } catch (err) {
       // Fail open: drop the entry; the texture uploads lazily on first draw.
       debugWarn('Texture warm upload failed', { err: String(err) });
+    } finally {
+      if (import.meta.env.DEV) surfacePerfEndTextureUpload(perfUpload);
     }
+    if (uploaded) warmedVersions.set(tex, tex.version);
     if (performance.now() - start >= budgetMs) return;
   }
+}
+
+/** A restored WebGL context has no copy of any previously warmed texture. */
+export function invalidateTextureWarmCache(): void {
+  warmedVersions = new WeakMap();
 }
 
 /** Full teardown (mode dispose) and test isolation seam. */
@@ -80,4 +98,5 @@ export function resetTextureWarmer(): void {
   disposeListeners.clear();
   queue.length = 0;
   uploadFn = null;
+  invalidateTextureWarmCache();
 }

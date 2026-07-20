@@ -48,6 +48,70 @@ export interface ForegroundDisc {
 }
 
 /**
+ * One aimable body this frame — a planet, the Sun, or a rendered moon that
+ * has something drawn on screen (dot, marker, label, or resolved disc). The
+ * hover/tap picker hit-tests against these; it is deliberately NOT the
+ * foreground-disc list, which drops every body under the mesh-size threshold —
+ * exactly the distant marker-dots the picker most needs to catch.
+ */
+export interface PickCandidate {
+  name: string;
+  screenX: number;
+  screenY: number;
+  /** Pointer catch radius in CSS px (drawn radius, floored so tiny dots stay hittable). */
+  pickRadiusPx: number;
+  distFromCamera: number;
+}
+
+/**
+ * Choose the body under a screen point, or null. A candidate qualifies only
+ * when the pointer sits inside its catch radius AND its centre is not covered
+ * by a nearer foreground disc (planets/moons/Sun/ship — the ship blocks but,
+ * being absent from `candidates`, is never itself returned). Among survivors
+ * the nearest pointer-to-centre distance wins; ties break to the nearer body.
+ * Pure: all geometry is passed in, so it unit-tests without a scene.
+ */
+export function pickBodyAtPointer(
+  candidates: PickCandidate[],
+  blockers: ForegroundDisc[],
+  x: number,
+  y: number,
+): string | null {
+  let best: string | null = null;
+  let bestDist2 = Infinity;
+  let bestDepth = Infinity;
+  for (const c of candidates) {
+    const ddx = x - c.screenX;
+    const ddy = y - c.screenY;
+    const dist2 = ddx * ddx + ddy * ddy;
+    if (dist2 > c.pickRadiusPx * c.pickRadiusPx) continue;
+
+    let occluded = false;
+    for (const b of blockers) {
+      // A moon's disc is named `moon:<name>`; strip it so a moon can't occlude
+      // its own pick, the same way the label loops exclude their own disc.
+      const bn = b.name.startsWith('moon:') ? b.name.slice(5) : b.name;
+      if (bn === c.name) continue;
+      if (b.distFromCamera >= c.distFromCamera) continue;
+      const bdx = c.screenX - b.screenX;
+      const bdy = c.screenY - b.screenY;
+      if (bdx * bdx + bdy * bdy < b.radiusPx * b.radiusPx) {
+        occluded = true;
+        break;
+      }
+    }
+    if (occluded) continue;
+
+    if (dist2 < bestDist2 || (dist2 === bestDist2 && c.distFromCamera < bestDepth)) {
+      best = c.name;
+      bestDist2 = dist2;
+      bestDepth = c.distFromCamera;
+    }
+  }
+  return best;
+}
+
+/**
  * Pixel radius of a body's rendered disc, given its scene radius (AU), the
  * camera distance, `tan(fov/2)`, and the canvas height. A sphere's silhouette
  * subtends asin(R/d), which projects to R/√(d²−R²) — NOT the linear R/d: the
@@ -233,10 +297,16 @@ export class PlanetLabels {
       showMarkers?: boolean;
       showLabels?: boolean;
       excludeName?: string;
+      // When set, this one body's label draws even with labels off, shows its
+      // distance line through `hide-distances`, and reads at full opacity —
+      // the hover/tap reveal. Only visibility policy is lifted; the physical
+      // gates (glare, occlusion, off-screen, the landed body's own exclusion)
+      // still apply.
+      revealedBody?: string;
       sunMask?: SunGlareMaskParams;
     } = {},
   ) {
-    const { showMarkers = true, showLabels = true, excludeName, sunMask } = options;
+    const { showMarkers = true, showLabels = true, excludeName, revealedBody, sunMask } = options;
     const maskActive = !!sunMask && sunMask.active;
     const canvasWidth = renderer.domElement.clientWidth;
     const canvasHeight = renderer.domElement.clientHeight;
@@ -335,8 +405,10 @@ export class PlanetLabels {
       }
 
       // Markers are GPU billboards; only the HTML label needs projection and
-      // occlusion work, so skip the rest when labels are off (or unprojected).
-      if (!showLabels || !proj) {
+      // occlusion work, so skip the rest when labels are off (or unprojected) —
+      // unless this body is the revealed one, which draws its label anyway.
+      const isRevealed = entry.planet.name === revealedBody;
+      if ((!showLabels && !isRevealed) || !proj) {
         if (entry.labelVisible) {
           entry.label.style.display = 'none';
           entry.labelVisible = false;
@@ -390,6 +462,8 @@ export class PlanetLabels {
           entry.label.style.display = 'block';
           entry.labelVisible = true;
         }
+        // Full-opacity + distance-line override rides on the `.revealed` class.
+        entry.label.classList.toggle('revealed', isRevealed);
         const transform = `translate(${screenX}px, ${screenY + labelOffsetY}px)`;
         if (transform !== entry.lastTransform) {
           entry.label.style.transform = transform;

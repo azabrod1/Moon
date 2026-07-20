@@ -20,8 +20,8 @@ import {
   type PlanetariumLayout,
 } from './SolarSystem';
 import { PlayerShip } from './PlayerShip';
-import { PlanetLabels, discRadiusPx } from './PlanetLabels';
-import { PlanetariumStore, createDefaultPlanetariumState, type PlanetariumState, type LandedTarget } from './PlanetariumStore';
+import { PlanetLabels, discRadiusPx, pickBodyAtPointer, type PickCandidate } from './PlanetLabels';
+import { PlanetariumStore, createDefaultPlanetariumState, type PlanetariumState, type LandedTarget, type LabelDistancesMode } from './PlanetariumStore';
 import { solarExposureTarget, solarViewportCoverage } from './solarExposure';
 import { computeStats } from './stats';
 import { PLANETARIUM_BODIES, SUN_DATA, type PlanetData } from './planets/planetData';
@@ -363,9 +363,114 @@ export class PlanetariumMode {
   private constellations: Constellations | null = null;
   private showConstellations = false;
   private showBodyLabels = true;
-  private showBodyLabelDistances = true;
+  private labelDistancesMode: LabelDistancesMode = 'hover';
   private showBodyMarkers = true;
   private showOrbitLines = false;
+
+  // Hover/tap body reveal. `revealedBody` is the one body (planet, moon, or
+  // 'Sun') whose label is drawn regardless of the label/marker settings and of
+  // hide-distances — resolved once per frame from the pointer against a live
+  // pick list. Touch reveal holds for a spell after a tap; mouse hover tracks
+  // the pointer live. `worldLabelsModalHidden` is the separate modal-hide.
+  private revealedBody: string | null = null;
+  private hoverClientX = 0;
+  private hoverClientY = 0;
+  private hoverEligible = false; // pointer is a mouse currently over canvas/touch-zone
+  private touchRevealBody: string | null = null;
+  private touchRevealUntil = 0;
+  // A recognized tap queues its point; the next pipeline frame builds a fresh
+  // pick list and resolves it (a flick can be faster than one render frame, so
+  // hit-testing right in the pointerup handler would read a stale/empty list).
+  private pendingTapX = 0;
+  private pendingTapY = 0;
+  private hasPendingTap = false;
+  private static readonly TOUCH_REVEAL_MS = 2500;
+  private static readonly TAP_SLOP_PX = 4;
+  private static readonly TAP_MAX_MS = 500;
+  // Tap gesture bookkeeping for the window-level tracker.
+  private gesturePointerId: number | null = null;
+  private gestureStartX = 0;
+  private gestureStartY = 0;
+  private gestureStartT = 0;
+  private gestureMoved = false;
+  private gestureMultiPointer = false;
+  private pointersDown = 0;
+  private worldLabelsModalHidden = false;
+  // Pooled pick list (references into `bodyPickPool`, exact length each frame)
+  // and its projection scratch — zero allocation in steady state.
+  private bodyPickPool: PickCandidate[] = [];
+  private bodyPickList: PickCandidate[] = [];
+  private pickProjScratch: ScreenProjection = { x: 0, y: 0, ndcX: 0, ndcY: 0, ndcZ: 0 };
+  private pickTempV = new THREE.Vector3();
+  private pickScenePositions: Map<string, { x: number; y: number; z: number }> | null = null;
+  private readonly labelPlayerOrigin = { x: 0, y: 0, z: 0 };
+  private planetLabelsContainerEl: HTMLElement | null = null;
+
+  // A gesture is only tracked when it BEGINS on the renderer canvas or a
+  // touch-flight-zone — never on UI/overlay chrome sitting above them.
+  private isCanvasOrZone(target: EventTarget | null): boolean {
+    if (!(target instanceof Element)) return false;
+    if (target === this.renderer.domElement) return true;
+    return target.classList.contains('touch-flight-zone');
+  }
+
+  // Window-level, capture-phase pointer tracker owned by the mode: the orbit
+  // canvas listener early-returns outside drags, and coarse-pointer cruise
+  // touches land on the touch-zones above the canvas, so neither sees the taps
+  // and hovers the reveal needs. It only OBSERVES — no preventDefault — so a
+  // body tap still steers exactly as before.
+  private onWindowPointerDown = (e: PointerEvent): void => {
+    if (!this.active) return;
+    const originOk = this.isCanvasOrZone(e.target);
+    this.hoverClientX = e.clientX;
+    this.hoverClientY = e.clientY;
+    this.hoverEligible = e.pointerType === 'mouse' && originOk;
+    this.pointersDown++;
+    if (this.gesturePointerId === null && this.pointersDown === 1 && originOk) {
+      this.gesturePointerId = e.pointerId;
+      this.gestureStartX = e.clientX;
+      this.gestureStartY = e.clientY;
+      this.gestureStartT = e.timeStamp;
+      this.gestureMoved = false;
+      this.gestureMultiPointer = false;
+    } else {
+      // A second finger (or a down that didn't start the gesture) disqualifies
+      // the current tap.
+      this.gestureMultiPointer = true;
+    }
+  };
+
+  private onWindowPointerMove = (e: PointerEvent): void => {
+    if (!this.active) return;
+    this.hoverClientX = e.clientX;
+    this.hoverClientY = e.clientY;
+    this.hoverEligible = e.pointerType === 'mouse' && this.isCanvasOrZone(e.target);
+    if (this.gesturePointerId === e.pointerId) {
+      const dx = e.clientX - this.gestureStartX;
+      const dy = e.clientY - this.gestureStartY;
+      const slop = PlanetariumMode.TAP_SLOP_PX;
+      if (dx * dx + dy * dy > slop * slop) this.gestureMoved = true;
+    }
+  };
+
+  private onWindowPointerUp = (e: PointerEvent): void => {
+    if (!this.active) return;
+    this.pointersDown = Math.max(0, this.pointersDown - 1);
+    if (this.gesturePointerId === e.pointerId) {
+      const heldMs = e.timeStamp - this.gestureStartT;
+      const isTap = !this.gestureMoved && !this.gestureMultiPointer && heldMs <= PlanetariumMode.TAP_MAX_MS;
+      // Mouse clicks rely on live hover, not the timed reveal, so only touch/pen
+      // taps arm the 2.5 s window.
+      if (isTap && e.pointerType !== 'mouse') this.handleBodyTap(e.clientX, e.clientY);
+      this.gesturePointerId = null;
+    }
+  };
+
+  private onWindowPointerCancel = (e: PointerEvent): void => {
+    this.pointersDown = Math.max(0, this.pointersDown - 1);
+    if (this.gesturePointerId === e.pointerId) this.gesturePointerId = null;
+    this.clearBodyReveal();
+  };
 
   // Planet world positions in AU (true positions, not offset)
   private planetWorldPositions = new Map<string, { x: number; y: number; z: number }>();
@@ -734,6 +839,7 @@ export class PlanetariumMode {
     priorityPx: number;
     halfW: number;
     isTarget: boolean;
+    isRevealed: boolean;
   }> = [];
   private resumePrompt = new PlanetariumResumePrompt();
   private helpModal = new PlanetariumHelpModal();
@@ -1034,7 +1140,15 @@ export class PlanetariumMode {
       // held key; yaw/pitch/throttle recompute from this set each frame
       // (processInput), so clearing it is enough.
       this.keys.clear();
+      this.clearBodyReveal();
     });
+
+    // Window-level capture tracker for the hover/tap body reveal (see the
+    // handler fields). Registered once; every handler gates on `this.active`.
+    window.addEventListener('pointerdown', this.onWindowPointerDown, true);
+    window.addEventListener('pointermove', this.onWindowPointerMove, true);
+    window.addEventListener('pointerup', this.onWindowPointerUp, true);
+    window.addEventListener('pointercancel', this.onWindowPointerCancel, true);
 
     this.handleKeyDown = this.handleKeyDown.bind(this);
     this.handleKeyUp = this.handleKeyUp.bind(this);
@@ -1240,6 +1354,9 @@ export class PlanetariumMode {
     if (!this.planetLabels) {
       this.planetLabels = new PlanetLabels(this.scene, this.camera);
     }
+    // Cache the label container the PlanetLabels constructor just appended, so
+    // the per-frame container-visibility sync doesn't query the DOM each frame.
+    this.planetLabelsContainerEl = document.getElementById('planet-labels');
 
     // Create the Planetarium starfield.
     if (!this.starfield) {
@@ -1467,6 +1584,7 @@ export class PlanetariumMode {
   deactivate(): void {
     this.moonArrivalCameraLook = null;
     this.dotNavMoon = null;
+    this.clearBodyReveal();
     // A live tutorial hands the pre-tutorial state back first, synchronously — the
     // teardown below (excursion drop, landed exit, save) then applies to the
     // restored journey exactly as it would for a non-tutorialing player.
@@ -1748,28 +1866,10 @@ export class PlanetariumMode {
     );
     this.exposureTarget = solarExposureTarget(this.exposureCoverage);
 
-    // Occlusion pipeline: planet discs → Sun + moon + ship discs → labels +
-    // markers. The occluder passes run whenever either consumer is on: marker
-    // sprites render without a depth test (see the material comment in
-    // PlanetLabels), so this analytic disc set is their only occlusion.
-    if (this.planetLabels && (this.showBodyLabels || this.showBodyMarkers)) {
-      const scenePositions = new Map<string, { x: number; y: number; z: number }>();
-      for (const planet of this.solarSystem.planets) {
-        scenePositions.set(planet.data.name, {
-          x: planet.group.position.x,
-          y: planet.group.position.y,
-          z: planet.group.position.z,
-        });
-      }
-      this.planetLabels.collectForegroundDiscs(scenePositions, this.renderer);
-      this.collectDynamicOccluders();
-      // Main (flight) path: landedOn is null here — narrowed by early return above.
-      this.planetLabels.renderLabels(scenePositions, { x: 0, y: 0, z: 0 }, this.renderer, {
-        showMarkers: this.showBodyMarkers,
-        showLabels: this.showBodyLabels,
-        sunMask: this.sunGlareMaskParams,
-      });
-    }
+    // Occlusion + label/marker + hover-reveal pipeline: planet discs → Sun +
+    // moon + ship discs → pick list → reveal → labels + markers.
+    // Main (flight) path: landedOn is null here — narrowed by early return above.
+    this.runBodyLabelPipeline();
 
     // Update constellation labels
     if (this.constellations && this.showConstellations) {
@@ -1778,11 +1878,6 @@ export class PlanetariumMode {
         this.renderer.domElement.clientWidth,
         this.renderer.domElement.clientHeight,
       );
-    }
-
-    if (this.showBodyLabels) {
-      this.renderMoonLabels();
-      this.updateSunLabel();
     }
 
     if (this.autopilotTarget) {
@@ -2805,6 +2900,259 @@ export class PlanetariumMode {
     if (this.footprintReticleEl) this.footprintReticleEl.style.display = 'none';
   }
 
+  /** Reveal is inert while any overlay owns the screen (or in surface view):
+   *  the pointer there aims at UI, not the sky behind it. */
+  private isRevealBlocked(): boolean {
+    return this.landedView === 'surface'
+      || this.isDeckOpen()
+      || this.menuPanel.isOpen()
+      || this.isHelpOpen()
+      || this.surfaceTargetMenu.isOpen()
+      || this.isMissionActive()
+      || this.tutorial !== null;
+  }
+
+  /** Drop every scrap of transient reveal + gesture state at once. */
+  private clearBodyReveal(): void {
+    this.revealedBody = null;
+    this.touchRevealBody = null;
+    this.touchRevealUntil = 0;
+    this.hoverEligible = false;
+    this.gesturePointerId = null;
+    this.hasPendingTap = false;
+  }
+
+  private pickListHas(name: string): boolean {
+    for (const c of this.bodyPickList) if (c.name === name) return true;
+    return false;
+  }
+
+  /** A recognized single-tap on the sky queues a timed reveal of whatever body
+   *  sits under it — resolved next frame against a fresh pick list. Additive, so
+   *  the tap still steers as usual. */
+  private handleBodyTap(clientX: number, clientY: number): void {
+    if (this.isRevealBlocked()) return;
+    this.pendingTapX = clientX;
+    this.pendingTapY = clientY;
+    this.hasPendingTap = true;
+  }
+
+  /**
+   * The one place the labels/markers/reveal pipeline runs each cruise or landed
+   * (non-surface) frame. Occluders and the pick list refresh first; the reveal
+   * resolves against them; then the label + marker passes draw, threaded with
+   * the revealed body. Kept ungated on the label/marker settings so a hover can
+   * be detected even with everything toggled off.
+   */
+  private runBodyLabelPipeline(excludeName?: string): void {
+    if (!this.planetLabels || !this.solarSystem) return;
+
+    const blocked = this.isRevealBlocked();
+    const touchActive = this.touchRevealBody !== null && performance.now() < this.touchRevealUntil;
+    const gestureActive = this.gesturePointerId !== null;
+    // The picker only needs to run while the user is actually pointing at the
+    // sky — a mouse over the canvas, a live touch gesture, a queued tap, or a
+    // touch reveal still counting down. Everything else keeps the steady-state
+    // cost at zero.
+    const pickerWanted = !blocked && (this.hoverEligible || touchActive || gestureActive || this.hasPendingTap);
+    const runOccluders = this.showBodyLabels || this.showBodyMarkers || this.revealedBody !== null || pickerWanted;
+
+    if (runOccluders) {
+      const scenePositions = this.ensurePickScenePositions();
+      for (const planet of this.solarSystem.planets) {
+        const p = planet.group.position;
+        const slot = scenePositions.get(planet.data.name)!;
+        slot.x = p.x; slot.y = p.y; slot.z = p.z;
+      }
+      this.planetLabels.collectForegroundDiscs(scenePositions, this.renderer);
+      this.collectDynamicOccluders();
+      if (pickerWanted) {
+        this.buildBodyPickList(scenePositions, excludeName);
+        // Resolve a just-recognized tap against this fresh pick list.
+        if (this.hasPendingTap) {
+          const hit = pickBodyAtPointer(this.bodyPickList, this.planetLabels.foregroundDiscs, this.pendingTapX, this.pendingTapY);
+          if (hit) {
+            this.touchRevealBody = hit;
+            this.touchRevealUntil = performance.now() + PlanetariumMode.TOUCH_REVEAL_MS;
+          }
+          this.hasPendingTap = false;
+        }
+      } else {
+        this.bodyPickList.length = 0;
+      }
+
+      this.resolveBodyReveal(pickerWanted);
+
+      if (this.showBodyLabels || this.showBodyMarkers || this.revealedBody !== null) {
+        this.planetLabels.renderLabels(scenePositions, this.labelPlayerOrigin, this.renderer, {
+          showMarkers: this.showBodyMarkers,
+          showLabels: this.showBodyLabels,
+          excludeName,
+          revealedBody: this.revealedBody ?? undefined,
+          sunMask: this.sunGlareMaskParams,
+        });
+      }
+      if (this.showBodyLabels || this.revealedBody !== null) {
+        this.renderMoonLabels();
+        this.updateSunLabel();
+      }
+    } else {
+      this.bodyPickList.length = 0;
+      this.resolveBodyReveal(false);
+    }
+
+    this.syncWorldLabelContainers();
+  }
+
+  private ensurePickScenePositions(): Map<string, { x: number; y: number; z: number }> {
+    if (!this.pickScenePositions) {
+      this.pickScenePositions = new Map();
+      if (this.solarSystem) {
+        for (const planet of this.solarSystem.planets) {
+          this.pickScenePositions.set(planet.data.name, { x: 0, y: 0, z: 0 });
+        }
+      }
+    }
+    return this.pickScenePositions;
+  }
+
+  /**
+   * Rebuild the per-frame pick list: every planet, the Sun and every visible
+   * moon that has something drawn on screen this frame. With both labels AND
+   * markers off, a marker-tier planet is invisible, so only resolved discs
+   * (visible meshes) stay aimable. Reuses a pooled candidate array + one
+   * projection scratch, so a steady-state frame allocates nothing.
+   */
+  private buildBodyPickList(
+    scenePositions: Map<string, { x: number; y: number; z: number }>,
+    excludeName?: string,
+  ): void {
+    this.bodyPickList.length = 0;
+    if (!this.planetLabels || !this.solarSystem) return;
+    const canvasW = this.renderer.domElement.clientWidth;
+    const canvasH = this.renderer.domElement.clientHeight;
+    const halfFovTan = Math.tan((this.camera.fov * Math.PI) / 360);
+    const markerPx = THREE.MathUtils.clamp(0.032 * Math.min(canvasW, canvasH), 18, 30);
+    const bothOff = !this.showBodyLabels && !this.showBodyMarkers;
+    const cam = this.camera.position;
+    const proj = this.pickProjScratch;
+    let n = 0;
+    const push = (name: string, x: number, y: number, radiusPx: number, dist: number): void => {
+      let c = this.bodyPickPool[n];
+      if (!c) {
+        c = { name: '', screenX: 0, screenY: 0, pickRadiusPx: 0, distFromCamera: 0 };
+        this.bodyPickPool[n] = c;
+      }
+      c.name = name;
+      c.screenX = x;
+      c.screenY = y;
+      c.pickRadiusPx = Math.max(radiusPx, 18);
+      c.distFromCamera = dist;
+      this.bodyPickList.push(c);
+      n++;
+    };
+    const onScreen = (): boolean =>
+      proj.ndcZ < 1 && proj.x > -50 && proj.x < canvasW + 50 && proj.y > -50 && proj.y < canvasH + 50;
+
+    // Planets.
+    for (const planet of this.solarSystem.planets) {
+      if (planet.data.name === excludeName) continue;
+      const pos = scenePositions.get(planet.data.name);
+      if (!pos) continue;
+      const dx = pos.x - cam.x;
+      const dy = pos.y - cam.y;
+      const dz = pos.z - cam.z;
+      const dist = Math.sqrt(dx * dx + dy * dy + dz * dz);
+      const isDisc = (planet.data.radiusAU * 2) / Math.max(dist, 0.0001) > 0.01;
+      if (bothOff && !isDisc) continue;
+      projectToScreen(pos, this.camera, canvasW, canvasH, proj);
+      if (!onScreen()) continue;
+      const drawnPx = isDisc ? discRadiusPx(planet.data.radiusAU, dist, halfFovTan, canvasH) : markerPx;
+      push(planet.data.name, proj.x, proj.y, drawnPx, dist);
+    }
+
+    // The Sun — always drawn; the reveal still gates it on the 1.67 AU rule.
+    {
+      const sunPos = this.solarSystem.sun.position;
+      const dist = cam.distanceTo(sunPos);
+      projectToScreen(sunPos, this.camera, canvasW, canvasH, proj);
+      if (onScreen()) {
+        push('Sun', proj.x, proj.y, discRadiusPx(SUN_DATA.radiusAU, dist, halfFovTan, canvasH), dist);
+      }
+    }
+
+    // Visible moons — but only those actually drawn as more than a point: the
+    // same readable-disc / faint-dot gate the moon-label renderer uses, so a
+    // pick can never land on a moon whose label the renderer would then refuse.
+    const tempV = this.pickTempV;
+    for (const planet of this.solarSystem.planets) {
+      const moons = this.planetMoons.get(planet.data.name);
+      if (!moons) continue;
+      const parentR = planet.data.radiusAU;
+      const anchor = this.moonRenderAnchorRatio(planet.data.name);
+      for (const m of moons) {
+        if (!m.mesh.visible) continue;
+        if (this.landedOn?.type === 'moon' && this.landedOn.name === m.data.name) continue;
+        m.mesh.getWorldPosition(tempV);
+        const dx = tempV.x - cam.x;
+        const dy = tempV.y - cam.y;
+        const dz = tempV.z - cam.z;
+        const dist = Math.sqrt(dx * dx + dy * dy + dz * dz);
+        projectToScreen(tempV, this.camera, canvasW, canvasH, proj);
+        if (!onScreen()) continue;
+        const effR = this.renderedMoonSizeAU(m.data.radiusAU, parentR, anchor);
+        const discPadPx = discRadiusPx(effR, dist, halfFovTan, canvasH) * 1.1;
+        const dotAlpha = m.dotScreenAlpha ?? 0;
+        if (discPadPx < 1.0 && dotAlpha < 0.03) continue;
+        const dotPx = (m.dotScreenSizePx ?? 0) / 2;
+        push(m.data.name, proj.x, proj.y, Math.max(discPadPx, dotPx), dist);
+      }
+    }
+  }
+
+  /** Resolve `revealedBody` from the pointer: touch reveal first (while its
+   *  window is open and the body is still drawn), then live mouse hover. */
+  private resolveBodyReveal(pickerWanted: boolean): void {
+    if (this.isRevealBlocked()) {
+      this.revealedBody = null;
+      this.touchRevealBody = null;
+      this.touchRevealUntil = 0;
+      this.hasPendingTap = false;
+      return;
+    }
+    if (this.touchRevealBody !== null) {
+      if (performance.now() >= this.touchRevealUntil || !this.pickListHas(this.touchRevealBody)) {
+        this.touchRevealBody = null;
+        this.touchRevealUntil = 0;
+      } else {
+        this.revealedBody = this.touchRevealBody;
+        return;
+      }
+    }
+    if (pickerWanted && this.hoverEligible && this.planetLabels) {
+      this.revealedBody = pickBodyAtPointer(
+        this.bodyPickList, this.planetLabels.foregroundDiscs, this.hoverClientX, this.hoverClientY,
+      );
+      return;
+    }
+    this.revealedBody = null;
+  }
+
+  /** Container-level visibility for the HTML label layers. They stay renderable
+   *  whenever labels are on OR a body is being revealed (per-child hiding does
+   *  the rest), fold away in surface view, and honour the modal hide. */
+  private syncWorldLabelContainers(): void {
+    const show = !this.worldLabelsModalHidden
+      && this.landedView !== 'surface'
+      && (this.showBodyLabels || this.revealedBody !== null);
+    const disp = show ? '' : 'none';
+    const planetEl = this.planetLabelsContainerEl;
+    if (planetEl && planetEl.style.display !== disp) planetEl.style.display = disp;
+    if (this.moonLabelContainer && this.moonLabelContainer.style.display !== disp) {
+      this.moonLabelContainer.style.display = disp;
+    }
+  }
+
   /**
    * Second pass: contribute foreground discs for the Sun, visible moons and
    * the player ship to `planetLabels`, so any label or marker rendered
@@ -2907,6 +3255,10 @@ export class PlanetariumMode {
     const candidates = this.moonLabelCandidates;
     let candidateCount = 0;
     const targetMoon = this.currentDotTargetMoon();
+    // With labels off the pass still runs to draw a single revealed moon; every
+    // other moon stays hidden.
+    const labelsOn = this.showBodyLabels;
+    const revealedMoon = this.revealedBody;
     // A moon earns a label when its disc reads as more than a point, OR its dot
     // is at least faintly visible, OR it's the explicit nav target. A sub-pixel
     // moon too dim to dot gets no label pointing at empty sky.
@@ -2921,6 +3273,11 @@ export class PlanetariumMode {
         if (!label) continue;
         // Suppress the landed moon's own label — no need to label what you're standing on.
         if (this.landedOn?.type === 'moon' && this.landedOn.name === m.data.name) {
+          if (label.style.display !== 'none') label.style.display = 'none';
+          continue;
+        }
+        // With labels off, only the revealed moon draws; everything else hides.
+        if (!labelsOn && m.data.name !== revealedMoon) {
           if (label.style.display !== 'none') label.style.display = 'none';
           continue;
         }
@@ -2989,7 +3346,7 @@ export class PlanetariumMode {
         }
         let c = candidates[candidateCount];
         if (!c) {
-          c = { label, sx: 0, sy: 0, onScreen: false, priorityPx: 0, halfW: 0, isTarget: false };
+          c = { label, sx: 0, sy: 0, onScreen: false, priorityPx: 0, halfW: 0, isTarget: false, isRevealed: false };
           candidates.push(c);
         }
         c.label = label;
@@ -2997,6 +3354,7 @@ export class PlanetariumMode {
         c.sy = sy;
         c.onScreen = onScreen;
         c.isTarget = targetMoon === m.data.name;
+        c.isRevealed = revealedMoon === m.data.name;
         // Collision priority is apparent footprint: a readable disc by its px
         // radius, a sub-pixel moon by its dot's weighted glyph size, so among
         // piled-up dots the brighter one keeps its label.
@@ -3010,12 +3368,14 @@ export class PlanetariumMode {
     }
 
     candidates.length = candidateCount;
-    // The nav target sorts first so a sibling's label can never suppress the
-    // moon you are flying at. Then visible labels outrank edge-clamped ones (an
-    // off-screen moon pinned to the margin must not suppress a genuinely visible
-    // neighbor), then bigger apparent discs win.
+    // The revealed moon sorts first so it always wins its de-overlap contest,
+    // then the nav target (a sibling's label can never suppress the moon you are
+    // flying at). Then visible labels outrank edge-clamped ones (an off-screen
+    // moon pinned to the margin must not suppress a genuinely visible neighbor),
+    // then bigger apparent discs win.
     candidates.sort(
       (a, b) =>
+        Number(b.isRevealed) - Number(a.isRevealed) ||
         Number(b.isTarget) - Number(a.isTarget) ||
         Number(b.onScreen) - Number(a.onScreen) ||
         b.priorityPx - a.priorityPx,
@@ -3048,6 +3408,7 @@ export class PlanetariumMode {
       c.label.style.left = `${c.sx}px`;
       c.label.style.top = `${c.sy}px`;
       c.label.classList.toggle('edge', !c.onScreen);
+      c.label.classList.toggle('revealed', c.isRevealed);
     }
   }
 
@@ -4114,6 +4475,8 @@ export class PlanetariumMode {
       this.player.getDistanceFromSun(),
       sunRadiusPx,
       (x, y, depth) => this.planetLabels?.isScreenPointOccluded(x, y, depth) ?? false,
+      this.showBodyLabels,
+      this.revealedBody === 'Sun',
       this.sunGlareMaskParams,
     );
   }
@@ -4272,6 +4635,7 @@ export class PlanetariumMode {
     ) {
       return;
     }
+    this.clearBodyReveal();
     // A pre-tutorial surface view can't be snapshotted (view sub-states are
     // session-only; getState() carries none of them) — settle to orbit view
     // now so the tutorial starts from a state the restore can reproduce.
@@ -5167,11 +5531,11 @@ export class PlanetariumMode {
 
     const labelDistancesToggle = document.getElementById('settings-label-distances-toggle');
     labelDistancesToggle?.addEventListener('click', () => {
-      this.showBodyLabelDistances = !this.showBodyLabelDistances;
+      this.labelDistancesMode = this.labelDistancesMode === 'always' ? 'hover' : 'always';
       this.applyBodyLabelVisibility();
       const label = document.getElementById('settings-label-distances-label');
-      if (label) label.textContent = this.showBodyLabelDistances ? 'On' : 'Off';
-      labelDistancesToggle.setAttribute('aria-pressed', String(this.showBodyLabelDistances));
+      if (label) label.textContent = this.labelDistancesMode === 'always' ? 'Always' : 'On hover';
+      labelDistancesToggle.setAttribute('aria-pressed', String(this.labelDistancesMode === 'always'));
     });
 
     document.getElementById('settings-markers-toggle')?.addEventListener('click', () => {
@@ -5548,28 +5912,25 @@ export class PlanetariumMode {
   }
 
   /**
-   * Hide/restore the planet+moon label layers around a modal. Restoring
-   * defers to the surface view and to the labels setting when one of them
-   * owns the hidden state (their skipped label pipeline would never re-hide
-   * stale labels a modal-close revealed).
+   * Hide/restore the planet+moon label layers around a modal. This is only the
+   * modal-hide flag; the resting container visibility (labels setting + active
+   * reveal + surface view) is `syncWorldLabelContainers`, which reads it.
    */
   private setWorldLabelsVisible(visible: boolean) {
-    if (visible && (this.landedView === 'surface' || !this.showBodyLabels)) return;
-    const planetLabelsEl = document.getElementById('planet-labels');
-    const moonLabelsEl = this.moonLabelContainer;
-    if (planetLabelsEl) planetLabelsEl.style.display = visible ? '' : 'none';
-    if (moonLabelsEl) moonLabelsEl.style.display = visible ? '' : 'none';
+    this.worldLabelsModalHidden = !visible;
+    this.syncWorldLabelContainers();
   }
 
   /** Apply the two independent visibility flags. The HTML label layers follow
-   *  `showBodyLabels`; the marker sprites follow `showBodyMarkers`. When both
-   *  are off the per-frame pipeline stops running, so clear the sprites here;
-   *  when only the markers are off, clear them too (the pipeline keeps running
-   *  for labels but won't re-show a sprite it's told to keep hidden). Re-showing
-   *  the labels defers to surface view, which owns its own label hiding. */
+   *  `showBodyLabels` (plus any live reveal); the marker sprites follow
+   *  `showBodyMarkers`. When both are off the sprites need clearing here; when
+   *  only the markers are off, clear them too (the pipeline keeps running for
+   *  labels but won't re-show a sprite it's told to keep hidden). The distance
+   *  line shows only in 'always' mode — 'hover' leaves the container in
+   *  `hide-distances`, where the per-label reveal class does the revealing. */
   private applyBodyLabelVisibility() {
-    this.setWorldLabelsVisible(this.showBodyLabels);
-    this.planetLabels?.setDistancesVisible(this.showBodyLabelDistances);
+    this.syncWorldLabelContainers();
+    this.planetLabels?.setDistancesVisible(this.labelDistancesMode === 'always');
     if (!this.showBodyLabels && !this.showBodyMarkers) {
       this.planetLabels?.hideAll();
     } else if (!this.showBodyMarkers) {
@@ -7816,6 +8177,7 @@ export class PlanetariumMode {
   ) {
     const landedInfo = this.surfaceLandedInfo();
     if (!landedInfo) return;
+    this.clearBodyReveal();
     // Entering surface view drops the landed system's 5%-of-parent mesh-scale
     // floor, so a moon shrinks to its true silhouette in one frame — its Sun
     // occlusion can fall and the exposed fraction rise. Re-pointing/event jumps
@@ -8456,6 +8818,7 @@ export class PlanetariumMode {
 
   enterLandedMode(target: NonNullable<LandedTarget>) {
     if (this.isMissionActive()) return;
+    this.clearBodyReveal();
     this.preLandSpeed = this.player.speedMultiplier;
     this.preLandAutopilot = this.autopilot;
     this.applyLandedTarget(target);
@@ -8955,6 +9318,7 @@ export class PlanetariumMode {
 
   exitLandedMode() {
     if (!this.landedOn) return;
+    this.clearBodyReveal();
     // The governor is frozen while landed, so a cap tightened on the approach
     // must not ramp-limit the departure — and no partial clear-hold may
     // survive into it. Reset here — the single takeoff chokepoint (also the
@@ -9152,29 +9516,11 @@ export class PlanetariumMode {
     // dots after the surface camera re-pins (labels are hidden there anyway).
     if (this.landedView !== 'surface') this.updateMoonDotsForCamera();
 
-    // Occlusion pipeline while landed: planets → Sun + moons + ship → labels +
-    // markers; surface view hides everything. The occluder passes run whenever
-    // either consumer is on: marker sprites render without a depth test (see
-    // the material comment in PlanetLabels), so this analytic disc set is
-    // their only occlusion.
-    if (this.planetLabels && this.landedView !== 'surface' && (this.showBodyLabels || this.showBodyMarkers)) {
-      const scenePositions = new Map<string, { x: number; y: number; z: number }>();
-      for (const planet of this.solarSystem.planets) {
-        scenePositions.set(planet.data.name, {
-          x: planet.group.position.x,
-          y: planet.group.position.y,
-          z: planet.group.position.z,
-        });
-      }
+    // Occlusion + label/marker + hover-reveal pipeline while landed; surface
+    // view runs its own hidden-label handling, so skip it there.
+    if (this.landedView !== 'surface') {
       const landedPlanetName = this.landedOn?.type === 'planet' ? this.landedOn.name : undefined;
-      this.planetLabels.collectForegroundDiscs(scenePositions, this.renderer);
-      this.collectDynamicOccluders();
-      this.planetLabels.renderLabels(scenePositions, { x: 0, y: 0, z: 0 }, this.renderer, {
-        showMarkers: this.showBodyMarkers,
-        showLabels: this.showBodyLabels,
-        excludeName: landedPlanetName,
-        sunMask: this.sunGlareMaskParams,
-      });
+      this.runBodyLabelPipeline(landedPlanetName);
     }
 
     // Update constellation labels while landed
@@ -9184,11 +9530,6 @@ export class PlanetariumMode {
         this.renderer.domElement.clientWidth,
         this.renderer.domElement.clientHeight,
       );
-    }
-
-    if (this.landedView !== 'surface' && this.showBodyLabels) {
-      this.renderMoonLabels();
-      this.updateSunLabel();
     }
     this.updateOrbitLineVisibility();
 
@@ -9264,7 +9605,7 @@ export class PlanetariumMode {
       showShip: this.showShip,
       showConstellations: this.showConstellations,
       showBodyLabels: this.showBodyLabels,
-      showBodyLabelDistances: this.showBodyLabelDistances,
+      labelDistancesMode: this.labelDistancesMode,
       showBodyMarkers: this.showBodyMarkers,
       showOrbitLines: this.showOrbitLines,
       landedOn: this.landedOn,
@@ -9323,15 +9664,15 @@ export class PlanetariumMode {
     const constLabel = document.getElementById('settings-constellations-label');
     if (constLabel) constLabel.textContent = this.showConstellations ? 'On' : 'Off';
     this.showBodyLabels = saved.showBodyLabels ?? true;
-    this.showBodyLabelDistances = saved.showBodyLabelDistances ?? true;
+    this.labelDistancesMode = saved.labelDistancesMode ?? 'hover';
     this.showBodyMarkers = saved.showBodyMarkers ?? true;
     this.applyBodyLabelVisibility();
     const labelsLabel = document.getElementById('settings-labels-label');
     if (labelsLabel) labelsLabel.textContent = this.showBodyLabels ? 'On' : 'Off';
     const labelDistancesLabel = document.getElementById('settings-label-distances-label');
-    if (labelDistancesLabel) labelDistancesLabel.textContent = this.showBodyLabelDistances ? 'On' : 'Off';
+    if (labelDistancesLabel) labelDistancesLabel.textContent = this.labelDistancesMode === 'always' ? 'Always' : 'On hover';
     document.getElementById('settings-label-distances-toggle')
-      ?.setAttribute('aria-pressed', String(this.showBodyLabelDistances));
+      ?.setAttribute('aria-pressed', String(this.labelDistancesMode === 'always'));
     const markersLabel = document.getElementById('settings-markers-label');
     if (markersLabel) markersLabel.textContent = this.showBodyMarkers ? 'On' : 'Off';
     this.showOrbitLines = saved.showOrbitLines ?? false;

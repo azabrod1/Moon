@@ -26,6 +26,10 @@ export type LandedTarget =
   | { type: 'moon'; name: string; parentPlanet: string }
   | null;
 
+/** How the distance line under body labels behaves: revealed only on
+ *  hover/tap, or always shown. */
+export type LabelDistancesMode = 'hover' | 'always';
+
 export interface PlanetariumState {
   positionAU: { x: number; y: number; z: number };
   headingRad: number;
@@ -45,7 +49,7 @@ export interface PlanetariumState {
   showShip: boolean;         // show player ship mesh
   showConstellations?: boolean; // show constellation lines overlay
   showBodyLabels?: boolean;  // show planet/moon/Sun name labels
-  showBodyLabelDistances?: boolean; // show distances beneath planet/Sun labels
+  labelDistancesMode?: LabelDistancesMode; // distance line: reveal on hover/tap, or always
   showBodyMarkers?: boolean; // show planet glow-dot marker sprites
   showOrbitLines?: boolean;  // show planet orbit lines
   landedOn?: LandedTarget;   // planet/moon the player is currently landed on
@@ -127,9 +131,12 @@ export function sanitizePlanetariumState(raw: unknown): PlanetariumState | null 
     showShip: typeof record.showShip === 'boolean' ? record.showShip : defaults.showShip,
     showConstellations: typeof record.showConstellations === 'boolean' ? record.showConstellations : defaults.showConstellations,
     showBodyLabels: typeof record.showBodyLabels === 'boolean' ? record.showBodyLabels : defaults.showBodyLabels,
-    showBodyLabelDistances: typeof record.showBodyLabelDistances === 'boolean'
-      ? record.showBodyLabelDistances
-      : defaults.showBodyLabelDistances,
+    // Only the two literals survive. A legacy boolean `showBodyLabelDistances`
+    // (either value) is deliberately dropped: both collapse to hover-reveal, so
+    // the resting screen is quiet regardless of the old opt-out.
+    labelDistancesMode: record.labelDistancesMode === 'always' || record.labelDistancesMode === 'hover'
+      ? record.labelDistancesMode
+      : defaults.labelDistancesMode,
     showBodyMarkers: typeof record.showBodyMarkers === 'boolean' ? record.showBodyMarkers : defaults.showBodyMarkers,
     showOrbitLines: typeof record.showOrbitLines === 'boolean' ? record.showOrbitLines : defaults.showOrbitLines,
     landedOn: sanitizeLandedOn(record.landedOn),
@@ -189,7 +196,7 @@ export function createDefaultPlanetariumState(): PlanetariumState {
     showShip: true,
     showConstellations: false,
     showBodyLabels: true,
-    showBodyLabelDistances: true,
+    labelDistancesMode: 'hover',
     showBodyMarkers: true,
     showOrbitLines: false,
     landedOn: null,

@@ -80,18 +80,28 @@ describe('showBodyMarkers is a plain boolean (default true)', () => {
   });
 });
 
-describe('showBodyLabelDistances is a plain boolean (default true)', () => {
-  it('defaults to true when the field is absent from the save', () => {
-    expect(sanitizePlanetariumState(rawSave({}))?.showBodyLabelDistances).toBe(true);
-    expect(createDefaultPlanetariumState().showBodyLabelDistances).toBe(true);
+describe('labelDistancesMode (default hover; legacy boolean dropped)', () => {
+  it('defaults to hover when the field is absent from the save', () => {
+    expect(sanitizePlanetariumState(rawSave({}))?.labelDistancesMode).toBe('hover');
+    expect(createDefaultPlanetariumState().labelDistancesMode).toBe('hover');
   });
 
-  it('round-trips an explicit false', () => {
-    expect(sanitizePlanetariumState(rawSave({ showBodyLabelDistances: false }))?.showBodyLabelDistances).toBe(false);
+  it('round-trips the two literals', () => {
+    expect(sanitizePlanetariumState(rawSave({ labelDistancesMode: 'always' }))?.labelDistancesMode).toBe('always');
+    expect(sanitizePlanetariumState(rawSave({ labelDistancesMode: 'hover' }))?.labelDistancesMode).toBe('hover');
   });
 
-  it('non-boolean garbage falls back to the default', () => {
-    expect(sanitizePlanetariumState(rawSave({ showBodyLabelDistances: 'no' }))?.showBodyLabelDistances).toBe(true);
+  it('drops the legacy showBodyLabelDistances boolean (both values → hover)', () => {
+    const optIn = sanitizePlanetariumState(rawSave({ showBodyLabelDistances: true }));
+    expect(optIn?.labelDistancesMode).toBe('hover');
+    expect('showBodyLabelDistances' in JSON.parse(JSON.stringify(optIn))).toBe(false);
+    const optOut = sanitizePlanetariumState(rawSave({ showBodyLabelDistances: false }));
+    expect(optOut?.labelDistancesMode).toBe('hover');
+  });
+
+  it('garbage (or an unknown literal) falls back to hover', () => {
+    expect(sanitizePlanetariumState(rawSave({ labelDistancesMode: 'sometimes' }))?.labelDistancesMode).toBe('hover');
+    expect(sanitizePlanetariumState(rawSave({ labelDistancesMode: 1 }))?.labelDistancesMode).toBe('hover');
   });
 });
 

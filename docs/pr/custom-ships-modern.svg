@@ -1,0 +1,28 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="1200" viewBox="0 0 1200 1200">
+  <defs>
+    <linearGradient id="bg" x2="1" y2="1"><stop stop-color="#070c13"/><stop offset="1" stop-color="#10202c"/></linearGradient>
+    <linearGradient id="card" y2="1"><stop stop-color="#172735"/><stop offset="1" stop-color="#0b141e"/></linearGradient>
+    <filter id="glow" x="-35%" y="-35%" width="170%" height="170%"><feGaussianBlur stdDeviation="3.5" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge></filter>
+    <style>
+      .eyebrow{font:600 14px ui-monospace,SFMono-Regular,monospace;letter-spacing:3px;fill:#77c7e8}.title{font:700 34px -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;fill:#f5f8fa}.sub{font:400 15px -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;fill:#92a8b7}.name{font:650 19px -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;fill:#f2f7fa}.note{font:500 11px ui-monospace,SFMono-Regular,monospace;letter-spacing:.8px;fill:#84a2b3}.card{fill:url(#card);stroke:#2b4252}.ship{fill:#b3d9e8;fill-opacity:.14;stroke:#c6efff;stroke-width:1.25;stroke-linecap:round;stroke-linejoin:round;filter:url(#glow)}
+    </style>
+    <symbol id="default" viewBox="0 0 40 30"><path d="M34 15 L25 10 L12 10 L5 15 L12 20 L25 20 Z"/><path d="M20 10 L15 4 M20 20 L15 26 M9 15 H3"/></symbol>
+    <symbol id="starship" viewBox="0 0 40 30"><path d="M36 15 Q33 11 28 11 H9 Q6 11 5 15 Q6 19 9 19 H28 Q33 19 36 15 Z"/><path d="M29 11 L25 6 H22 L25 12 M29 19 L25 24 H22 L25 18 M11 11 L6 4 H3 L6 13 M11 19 L6 26 H3 L6 17 M5 13 V17 M8 13 V17"/></symbol>
+    <symbol id="dragon" viewBox="0 0 40 30"><path d="M35 15 Q31 8 24 8 L19 11 V19 L24 22 Q31 22 35 15 Z M19 10 H7 V20 H19 Z"/><path d="M7 15 H3 M10 10 V20 M14 10 V20 M7 16 H19 M9 18 H17 M31 12 L34 12 M31 18 L34 18"/></symbol>
+    <symbol id="orion" viewBox="0 0 40 30"><path d="M36 15 L29 9 H24 L20 11 V19 L24 21 H29 Z M20 10 H12 V20 H20 Z"/><path d="M15 10 L10 3 H5 M15 20 L10 27 H5 M13 12 L5 8 H2 M13 18 L5 22 H2 M8 3 L11 7 M8 27 L11 23 M6 9 L9 11 M6 21 L9 19 M12 15 H5"/></symbol>
+    <symbol id="starliner" viewBox="0 0 40 30"><path d="M35 15 Q32 9 25 7 Q20 8 18 12 V18 Q20 22 25 23 Q32 21 35 15 Z M18 10 H10 Q7 15 10 20 H18 Z"/><path d="M10 12 H18 M9 15 H18 M10 18 H18 M13 10 V20 M16 10 V20 M10 15 H5"/></symbol>
+    <symbol id="dream" viewBox="0 0 40 30"><path d="M36 15 Q32 11 27 10 L14 5 L8 6 L12 13 L5 15 L12 17 L8 24 L14 25 L27 20 Q32 19 36 15 Z"/><path d="M14 7 L10 3 M14 23 L10 27 M13 13 H5 M13 17 H5 M27 10 L22 15 L27 20"/></symbol>
+    <symbol id="soyuz" viewBox="0 0 40 30"><circle cx="31" cy="15" r="5"/><path d="M26 13 L22 10 L18 12 V18 L22 20 L26 17 M18 10 H9 V20 H18 M9 13 L5 12 V18 L9 17 M36 15 H39"/><path d="M13 10 V3 M13 20 V27 M8 3 H18 M8 27 H18 M10 6 H16 M10 24 H16"/></symbol>
+    <symbol id="ufo" viewBox="0 0 40 30"><ellipse cx="20" cy="16" rx="16" ry="5"/><path d="M11 14 Q13 5 20 5 Q27 5 29 14 M9 19 Q20 25 31 19 M12 21 V24 M20 22 V26 M28 21 V24"/></symbol>
+  </defs>
+  <rect width="1200" height="1200" fill="url(#bg)"/><circle cx="1080" cy="40" r="230" fill="#226080" opacity=".11"/>
+  <text class="eyebrow" x="40" y="42">CHOOSE SHIP · MODERN</text><text class="title" x="40" y="82">Today’s spacecraft — and one classified visitor</text><text class="sub" x="40" y="108">Eight even-grid choices. The existing Default craft remains unchanged.</text>
+  <g transform="translate(35 140)"><rect class="card" width="270" height="450" rx="14"/><use class="ship" href="#default" x="55" y="85" width="160" height="145"/><text class="name" x="20" y="365">Default</text><text class="note" x="20" y="398">MOON NEEDLE · UNCHANGED</text></g>
+  <g transform="translate(325 140)"><rect class="card" width="270" height="450" rx="14"/><use class="ship" href="#starship" x="55" y="85" width="160" height="145"/><text class="name" x="20" y="365">SpaceX Starship</text><text class="note" x="20" y="398">REUSABLE UPPER STAGE</text></g>
+  <g transform="translate(615 140)"><rect class="card" width="270" height="450" rx="14"/><use class="ship" href="#dragon" x="55" y="85" width="160" height="145"/><text class="name" x="20" y="365">SpaceX Dragon</text><text class="note" x="20" y="398">CREW CAPSULE</text></g>
+  <g transform="translate(905 140)"><rect class="card" width="260" height="450" rx="14"/><use class="ship" href="#orion" x="50" y="85" width="160" height="145"/><text class="name" x="20" y="365">NASA Orion</text><text class="note" x="20" y="398">ARTEMIS CREW SPACECRAFT</text></g>
+  <g transform="translate(35 630)"><rect class="card" width="270" height="450" rx="14"/><use class="ship" href="#starliner" x="55" y="85" width="160" height="145"/><text class="name" x="20" y="365">Boeing Starliner</text><text class="note" x="20" y="398">REUSABLE CREW CAPSULE</text></g>
+  <g transform="translate(325 630)"><rect class="card" width="270" height="450" rx="14"/><use class="ship" href="#dream" x="55" y="85" width="160" height="145"/><text class="name" x="20" y="365">Dream Chaser</text><text class="note" x="20" y="398">REUSABLE SPACEPLANE</text></g>
+  <g transform="translate(615 630)"><rect class="card" width="270" height="450" rx="14"/><use class="ship" href="#soyuz" x="55" y="85" width="160" height="145"/><text class="name" x="20" y="365">Soyuz</text><text class="note" x="20" y="398">OPERATIONAL CREW CAPSULE</text></g>
+  <g transform="translate(905 630)"><rect class="card" width="260" height="450" rx="14"/><use class="ship" href="#ufo" x="50" y="85" width="160" height="145"/><text class="name" x="20" y="365">UFO</text><text class="note" x="20" y="398">ORIGIN: CLASSIFIED</text></g>
+</svg>

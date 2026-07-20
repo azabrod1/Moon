@@ -715,6 +715,16 @@
       box-shadow: 0 8px 32px rgba(0, 0, 0, 0.4), inset 0 1px 0 rgba(255, 255, 255, 0.04);
     }
     #planetarium-menu-panel.visible { display: block; }
+    .menu-build {
+      margin-top: 6px;
+      padding: 4px 10px 2px;
+      border-top: 1px solid var(--panel-border);
+      color: var(--text-secondary, #8a8f98);
+      font-size: 10px;
+      font-family: ui-monospace, "SF Mono", Menlo, monospace;
+      letter-spacing: 0.04em;
+      user-select: text;
+    }
     .menu-action {
       display: block;
       width: 100%;
@@ -1000,6 +1010,11 @@
     }
     .shud-chip:hover { color: var(--obs-t1); border-color: rgba(var(--accent-rgb), 0.35); }
     .shud-chip i { font-style: normal; color: var(--obs-accent); }
+    /* The Earth↔Moon action is intentionally a fixed hit target. Its label
+       alternates between "Stand on Earth" and the wider "Stand on the Moon";
+       if the pill follows the text width, a rapid second click can land just
+       outside the newly shrunken button before the pointer has moved. */
+    #surface-swap { min-width: 160px; justify-content: center; box-sizing: border-box; }
     /* Moon names run long (Epimetheus) — cap the chip label, never the row. */
     #surface-lookat span { max-width: 14ch; overflow: hidden; text-overflow: ellipsis; }
     .shud-bl { position: absolute; left: 24px; bottom: 86px; max-width: 46vw; }
@@ -1037,6 +1052,9 @@
     .shud-tb-btn:hover { border-color: rgba(var(--accent-rgb), 0.4); color: var(--obs-t1); }
     .shud-dot { width: 5px; height: 5px; border-radius: 50%; background: var(--obs-t3); flex: none; }
     .shud-when small { font-size: 10px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--obs-t3); }
+    /* Paused clock (incl. the silent park when stepping down through 1×):
+       hollow the dot, same idiom as the bottom bar's paused rail thumb. */
+    .shud-timebar.paused .shud-dot { background: transparent; box-shadow: inset 0 0 0 1px var(--obs-t3); }
     .shud-br { position: absolute; right: 24px; bottom: 86px; text-align: right; }
     .shud-fov { margin-top: 6px; font-size: 26px; font-weight: 200; color: var(--obs-t1); font-variant-numeric: tabular-nums; }
     .shud-fovscale { position: relative; width: 150px; height: 2px; margin: 12px 0 0 auto; background: rgba(255, 255, 255, 0.10); border-radius: 1px; }
@@ -2748,6 +2766,7 @@
             <span id="settings-throttle-label">On</span>
           </button>
         </div>
+        <div class="menu-build" id="menu-build"></div>
       </div>
 
       <!-- Observatory panel: vantage + phase hero + surface-view entry + event jumps -->

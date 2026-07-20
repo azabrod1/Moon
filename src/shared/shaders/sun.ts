@@ -991,8 +991,9 @@ void main() {
   // and none passes where the occluder stands. Carve its true disc — offset
   // and radius arrive from the controller in solar radii — out of the PSF
   // and the wide veil below; the floor leaves a breath of scattered haze so
-  // the disc sits in the glare rather than being punched out of it. Shallow
-  // partials arrive with uOccluderShade 0 and keep the full wash.
+  // the disc sits in the glare rather than being punched out of it. Only
+  // grazing first-contact slivers arrive with uOccluderShade 0 and keep the
+  // full wash — from a real bite onward the disc is carved at full strength.
   float occluderDistance = length(pB * uExtent - uOccluderOffsetSr);
   float occluderCore = 1.0 - smoothstep(uOccluderRadii - 0.07, uOccluderRadii + 0.05, occluderDistance);
   float silhouette = 1.0 - uOccluderShade * 0.88 * occluderCore;

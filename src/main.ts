@@ -90,8 +90,11 @@ renderer.domElement.addEventListener('webglcontextrestored', () => {
   debugLog('WebGL context restored');
 });
 
-// Enable bloom on any device whose GPU supports float framebuffers
-const useBloom = canGPUDoBloom(renderer);
+// Enable bloom on any device whose GPU supports float framebuffers. `?nofloat=1`
+// forces the no-float path on capable hardware so the lens correction's 8-bit
+// fallback composer (the one that gives low-end / some mobile GPUs round
+// planets) can be reproduced and QA'd on a dev machine.
+const useBloom = canGPUDoBloom(renderer) && !new URLSearchParams(location.search).has('nofloat');
 
 try {
   const gl = renderer.getContext();
@@ -119,9 +122,10 @@ planetariumCamera.position.set(-0.0002, 0.0001, 0.0001);
 // warped frame's corners stay covered, and projectToScreen mirrors the warp
 // for DOM overlays. designFovDeg is what the frame displays; camera.fov holds
 // the overscan (applyDesignFov is the only legal fov writer). The strength
-// here is a *request* — buildComposer gates it on the bloom-capable pipeline
-// (the no-bloom fallback has no composer to warp in) and stores the effective
-// value read by every consumer.
+// here is a *request*: buildComposer runs the lens on the planetarium whenever
+// it is asked for — on a float buffer alongside bloom, or, on GPUs that can't
+// bloom (some mobile / low-end), on a plain 8-bit composer built just for the
+// warp — and stores the effective value read by every consumer.
 const planetariumLens: LensParams = { strength: LENS_DEFAULT_STRENGTH, designFovDeg: 60 };
 planetariumCamera.userData.lens = planetariumLens;
 // The requested strength survives bloom toggles; buildComposer writes the
@@ -196,36 +200,57 @@ function buildComposer(
     composer.dispose();
     composer = null;
   }
-  if (!enabled) {
-    lensPass = null;
+  lensPass = null;
+
+  // The lens correction is planetarium-only, but — unlike bloom — it does not
+  // need an HDR buffer, so it must not be gated on bloom: that would leave
+  // off-axis planets egg-shaped on every GPU that can't float-render (some
+  // mobile / low-end). When bloom is unavailable we still build a composer
+  // for the warp, on a plain 8-bit target.
+  const wantsLens = cam === planetariumCamera && lensRequestedStrength > 0;
+
+  if (!enabled && !wantsLens) {
+    // Nothing to composite (a non-planetarium camera without bloom): straight
+    // to canvas, the cheapest path.
     planetariumLens.strength = 0;
     applyDesignFov(planetariumCamera, planetariumLens.designFovDeg);
     return;
   }
 
-  composer = new EffectComposer(renderer);
+  // Bloom needs a float/half-float buffer; the lens pass is happy on an 8-bit
+  // one. Fall back to 8-bit only when the GPU can't float at all (the sole way
+  // we reach here without bloom on the planetarium) — the mild HDR-highlight
+  // clip is a fair price for round planets on those devices.
+  composer = useBloom
+    ? new EffectComposer(renderer)
+    : new EffectComposer(
+        renderer,
+        new THREE.WebGLRenderTarget(window.innerWidth, window.innerHeight, {
+          type: THREE.UnsignedByteType,
+        }),
+      );
   composer.setPixelRatio(getTargetPixelRatio());
   composer.setSize(window.innerWidth, window.innerHeight);
   composer.addPass(new RenderPass(scene, cam));
-  const bloomPass = new UnrealBloomPass(
-    new THREE.Vector2(window.innerWidth, window.innerHeight),
-    bloom.strength,
-    BLOOM_RADIUS,
-    bloom.threshold,
-  );
-  composer.addPass(bloomPass);
-  // Lens correction lives with the planetarium camera only, and only on the
-  // composer path — the no-bloom fallback renders straight to canvas with
-  // nothing to warp in, so it stays rectilinear (strength 0 keeps the fov
-  // overscan off too).
-  if (cam === planetariumCamera) {
+
+  if (enabled) {
+    composer.addPass(new UnrealBloomPass(
+      new THREE.Vector2(window.innerWidth, window.innerHeight),
+      bloom.strength,
+      BLOOM_RADIUS,
+      bloom.threshold,
+    ));
+  }
+
+  if (wantsLens) {
     planetariumLens.strength = lensRequestedStrength;
     lensPass = createLensPass();
     composer.addPass(lensPass);
   } else {
-    lensPass = null;
+    planetariumLens.strength = 0;
   }
   applyDesignFov(planetariumCamera, planetariumLens.designFovDeg);
+
   composer.addPass(new OutputPass());
 }
 

@@ -8,7 +8,7 @@ export const PLAYER_SHIPS = [
   { id: 'falcon', label: 'Millennium Falcon', note: 'Corellian freighter' },
   { id: 'enterprise', label: 'USS Enterprise', note: 'Federation explorer' },
   { id: 'saucer', label: 'UFO', note: 'Unknown origin' },
-  { id: 'starship', label: 'Starship', note: 'Stainless giant' },
+  { id: 'starship', label: 'SpaceX Starship', note: 'Stainless giant' },
   { id: 'dragon', label: 'SpaceX Dragon', note: 'Crew capsule' },
   { id: 'xwing', label: 'X-wing', note: 'Rebel starfighter' },
   { id: 'tie', label: 'TIE Fighter', note: 'Imperial starfighter' },

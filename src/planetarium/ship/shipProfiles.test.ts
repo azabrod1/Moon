@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest';
-import { PLAYER_SHIPS, playerShipUsesHyperspace, type PlayerShipProfile } from './shipProfiles';
+import {
+  PLAYER_SHIPS,
+  playerShipUsesHyperspace,
+  playerShipUsesWarp,
+  type PlayerShipProfile,
+} from './shipProfiles';
 
 describe('player ship catalog', () => {
   it('orders the four requested categories and keeps each category even', () => {
@@ -7,11 +12,11 @@ describe('player ship catalog', () => {
       'default', 'starship', 'dragon', 'orion', 'starliner', 'dreamChaser', 'soyuz', 'saucer',
       'apollo', 'shuttle',
       'falcon', 'xwing', 'ywing', 'tie', 'starDestroyer', 'naboo',
-      'enterprise', 'klingon',
+      'enterprise', 'ussVoyager', 'klingon', 'romulan',
     ]);
     const counts = new Map<string, number>();
     for (const ship of PLAYER_SHIPS) counts.set(ship.group, (counts.get(ship.group) ?? 0) + 1);
-    expect(Object.fromEntries(counts)).toEqual({ modern: 8, historic: 2, starWars: 6, starTrek: 2 });
+    expect(Object.fromEntries(counts)).toEqual({ modern: 8, historic: 2, starWars: 6, starTrek: 4 });
     for (const count of counts.values()) expect(count % 2).toBe(0);
   });
 
@@ -19,6 +24,13 @@ describe('player ship catalog', () => {
     const starWars: PlayerShipProfile[] = ['falcon', 'xwing', 'ywing', 'tie', 'starDestroyer', 'naboo'];
     for (const ship of PLAYER_SHIPS) {
       expect(playerShipUsesHyperspace(ship.id)).toBe(starWars.includes(ship.id));
+    }
+  });
+
+  it('uses warp only for Star Trek craft', () => {
+    const starTrek: PlayerShipProfile[] = ['enterprise', 'ussVoyager', 'klingon', 'romulan'];
+    for (const ship of PLAYER_SHIPS) {
+      expect(playerShipUsesWarp(ship.id)).toBe(starTrek.includes(ship.id));
     }
   });
 

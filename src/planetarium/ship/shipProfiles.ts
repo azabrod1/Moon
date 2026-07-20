@@ -18,7 +18,9 @@ export const PLAYER_SHIPS = [
   { id: 'starDestroyer', label: 'Star Destroyer', note: 'Imperial destroyer', group: 'starWars' },
   { id: 'naboo', label: 'Naboo Starfighter', note: 'Royal starfighter', group: 'starWars' },
   { id: 'enterprise', label: 'USS Enterprise', note: 'Federation explorer', group: 'starTrek' },
+  { id: 'ussVoyager', label: 'USS Voyager', note: 'Intrepid-class explorer', group: 'starTrek' },
   { id: 'klingon', label: 'Klingon Bird-of-Prey', note: 'Klingon raider', group: 'starTrek' },
+  { id: 'romulan', label: 'Romulan Warbird', note: 'D’deridex-class warbird', group: 'starTrek' },
 ] as const;
 
 export type PlayerShipProfile = (typeof PLAYER_SHIPS)[number]['id'];
@@ -39,4 +41,9 @@ export function playerShipLabel(profile: PlayerShipProfile): string {
 /** Star Wars craft use the franchise-specific hyperspace arrival treatment. */
 export function playerShipUsesHyperspace(profile: PlayerShipProfile): boolean {
   return PLAYER_SHIPS.find((ship) => ship.id === profile)?.group === 'starWars';
+}
+
+/** Star Trek craft use classic streak-photography warp travel. */
+export function playerShipUsesWarp(profile: PlayerShipProfile): boolean {
+  return PLAYER_SHIPS.find((ship) => ship.id === profile)?.group === 'starTrek';
 }

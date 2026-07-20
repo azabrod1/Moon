@@ -25,12 +25,14 @@ const AUTHENTICITY_SIGNATURES = {
   starDestroyer: ['star-destroyer-dagger-wedge', 'star-destroyer-command-tower', 'star-destroyer-ventral-hangar'],
   naboo: ['naboo-pilot-canopy', 'naboo-astromech-dome', 'naboo-j-type-engine-port', 'naboo-center-tail-finial'],
   enterprise: ['enterprise-primary-saucer', 'enterprise-secondary-hull', 'enterprise-warp-nacelle-port'],
+  ussVoyager: ['voyager-primary-hull', 'voyager-secondary-hull', 'voyager-variable-nacelle-port', 'voyager-navigational-deflector'],
   klingon: ['klingon-command-head', 'klingon-long-neck', 'klingon-swept-wing-port', 'klingon-wingtip-cannon-starboard'],
+  romulan: ['romulan-command-head', 'romulan-outstretched-neck', 'romulan-dorsal-wing-port', 'romulan-ventral-wing-starboard', 'romulan-warp-nacelle-port', 'romulan-open-hollow-core'],
 } satisfies Record<AuditedProfile, string[]>;
 
 describe('player fleet models', () => {
   it('keeps an even-sized menu fleet', () => {
-    expect(PLAYER_SHIPS).toHaveLength(18);
+    expect(PLAYER_SHIPS).toHaveLength(20);
     expect(PLAYER_SHIPS.length % 2).toBe(0);
   });
 

@@ -1520,6 +1520,198 @@ function createYWing(referenceRadiusAU: number): THREE.Group {
   return group;
 }
 
+/** Intrepid-class USS Voyager NCC-74656. The low, arrow-lens primary hull,
+ * integrated secondary hull, and compact variable-geometry nacelles avoid the
+ * separated saucer/neck silhouette of the Constitution-class Enterprise. */
+function createUssVoyager(referenceRadiusAU: number): THREE.Group {
+  const U = referenceRadiusAU;
+  const group = new THREE.Group();
+  const pearl = new THREE.MeshPhysicalMaterial({
+    color: 0xbfc9cb, roughness: 0.5, metalness: 0.32, clearcoat: 0.28, clearcoatRoughness: 0.48,
+  });
+  const pale = standard(0xd4d9d8, 0.62, 0.2);
+  const dark = standard(0x46525a, 0.52, 0.5);
+  const charcoal = standard(0x222b31, 0.46, 0.58);
+  const window = glow(0xd9f4ff, 0.76);
+  const blue = glow(0x63c8ff, 0.9);
+  const red = glow(0xff6658, 0.76);
+
+  const primaryHull = plateXZ([
+    [1.86 * U, 0], [1.4 * U, -0.58 * U], [0.55 * U, -0.9 * U],
+    [-0.28 * U, -0.76 * U], [-0.86 * U, -0.35 * U], [-0.96 * U, 0],
+    [-0.86 * U, 0.35 * U], [-0.28 * U, 0.76 * U], [0.55 * U, 0.9 * U],
+    [1.4 * U, 0.58 * U],
+  ], 0.18 * U, pearl, 0.035 * U);
+  primaryHull.name = 'voyager-primary-hull';
+  primaryHull.position.y = 0.1 * U;
+  group.add(primaryHull);
+
+  const crown = new THREE.Mesh(new THREE.SphereGeometry(0.83 * U, 40, 18), pale);
+  crown.scale.set(1.5, 0.2, 0.82);
+  crown.position.set(0.65 * U, 0.27 * U, 0);
+  group.add(crown);
+  const bridge = new THREE.Mesh(new THREE.SphereGeometry(0.17 * U, 20, 12), pale);
+  bridge.scale.set(1.15, 0.32, 0.8);
+  bridge.position.set(0.83 * U, 0.44 * U, 0);
+  group.add(bridge);
+
+  const secondaryHull = new THREE.Mesh(new THREE.SphereGeometry(0.66 * U, 36, 20), pearl);
+  secondaryHull.name = 'voyager-secondary-hull';
+  secondaryHull.scale.set(1.85, 0.6, 0.68);
+  secondaryHull.position.set(-0.65 * U, -0.23 * U, 0);
+  group.add(secondaryHull);
+  const aftHull = cylinderX(0.28 * U, 0.4 * U, 0.92 * U, 28, dark);
+  aftHull.position.set(-1.42 * U, -0.18 * U, 0);
+  group.add(aftHull);
+
+  const deflector = discX(0.3 * U, 0.055 * U, blue, 32);
+  deflector.name = 'voyager-navigational-deflector';
+  deflector.position.set(0.13 * U, -0.35 * U, 0);
+  group.add(deflector);
+  const deflectorRim = new THREE.Mesh(new THREE.TorusGeometry(0.33 * U, 0.035 * U, 8, 32), dark);
+  deflectorRim.rotation.y = Math.PI / 2;
+  deflectorRim.position.copy(deflector.position);
+  group.add(deflectorRim);
+
+  for (const zSign of [-1, 1]) {
+    const pylon = plateXZ([
+      [-0.65 * U, zSign * 0.24 * U], [-0.95 * U, zSign * 0.92 * U],
+      [-1.35 * U, zSign * 1.02 * U], [-1.12 * U, zSign * 0.25 * U],
+    ], 0.11 * U, pearl, 0.015 * U);
+    pylon.position.y = -0.05 * U;
+    group.add(pylon);
+
+    const nacelle = cylinderX(0.17 * U, 0.23 * U, 1.62 * U, 28, pearl);
+    nacelle.name = `voyager-variable-nacelle-${zSign < 0 ? 'port' : 'starboard'}`;
+    nacelle.position.set(-1.1 * U, 0.16 * U, zSign * 1.08 * U);
+    group.add(nacelle);
+    const cap = new THREE.Mesh(new THREE.SphereGeometry(0.23 * U, 22, 14), red);
+    cap.scale.x = 0.5;
+    cap.position.set(-0.27 * U, 0.16 * U, zSign * 1.08 * U);
+    group.add(cap);
+    const grille = new THREE.Mesh(new THREE.BoxGeometry(1.08 * U, 0.06 * U, 0.11 * U), blue);
+    grille.position.set(-1.12 * U, 0.34 * U, zSign * 1.08 * U);
+    group.add(grille);
+    for (const x of [-1.72, -1.37, -1.02, -0.67]) {
+      const band = new THREE.Mesh(new THREE.TorusGeometry(0.225 * U, 0.014 * U, 6, 24), dark);
+      band.rotation.y = Math.PI / 2;
+      band.position.set(x * U, 0.16 * U, zSign * 1.08 * U);
+      group.add(band);
+    }
+    addEngineGlow(group, -1.93 * U, 0.16 * U, zSign * 1.08 * U, 0.13 * U, blue);
+    addEngineGlow(group, -1.73 * U, 0.03 * U, zSign * 0.3 * U, 0.1 * U, red);
+  }
+
+  for (const zSign of [-1, 1]) {
+    for (const x of [-0.1, 0.24, 0.58, 0.92, 1.25]) {
+      const pane = new THREE.Mesh(new THREE.SphereGeometry(0.035 * U, 8, 6), window);
+      pane.scale.set(1.55, 0.35, 0.7);
+      pane.position.set(x * U, 0.18 * U, zSign * (0.55 + (1.25 - x) * 0.17) * U);
+      group.add(pane);
+    }
+  }
+  const shuttleBay = new THREE.Mesh(new THREE.BoxGeometry(0.48 * U, 0.04 * U, 0.38 * U), charcoal);
+  shuttleBay.position.set(-1.52 * U, -0.4 * U, 0);
+  group.add(shuttleBay);
+  return group;
+}
+
+/** TNG-era D'deridex-class Romulan Warbird: command head on an extended neck,
+ * huge feathered wing halves, edge nacelles, and a genuinely open central
+ * volume between separated dorsal and ventral hulls. */
+function createRomulanWarbird(referenceRadiusAU: number): THREE.Group {
+  const U = referenceRadiusAU;
+  const group = new THREE.Group();
+  const green = standard(0x506f58, 0.62, 0.42, 0x102419, 0.16);
+  const paleGreen = standard(0x789178, 0.6, 0.34);
+  const darkGreen = standard(0x253d31, 0.68, 0.46);
+  const bronze = standard(0x766342, 0.58, 0.52, 0x211707, 0.12);
+  const emerald = glow(0x70ffc1, 0.86);
+  const amber = glow(0xffbd64, 0.7);
+
+  const command = new THREE.Mesh(new THREE.SphereGeometry(0.45 * U, 30, 18), green);
+  command.name = 'romulan-command-head';
+  command.scale.set(1.5, 0.42, 0.82);
+  command.position.set(1.67 * U, 0.02 * U, 0);
+  group.add(command);
+  const beak = new THREE.Mesh(new THREE.ConeGeometry(0.23 * U, 0.7 * U, 20), bronze);
+  beak.rotation.z = -Math.PI / 2;
+  beak.position.set(2.28 * U, -0.02 * U, 0);
+  group.add(beak);
+  const bridge = new THREE.Mesh(new THREE.SphereGeometry(0.16 * U, 18, 10), paleGreen);
+  bridge.scale.set(1.2, 0.4, 0.72);
+  bridge.position.set(1.58 * U, 0.28 * U, 0);
+  group.add(bridge);
+
+  const neck = cylinderX(0.17 * U, 0.28 * U, 1.72 * U, 18, darkGreen);
+  neck.name = 'romulan-outstretched-neck';
+  neck.position.set(0.56 * U, -0.04 * U, 0);
+  group.add(neck);
+  const neckRidge = new THREE.Mesh(new THREE.BoxGeometry(1.45 * U, 0.11 * U, 0.12 * U), bronze);
+  neckRidge.position.set(0.5 * U, 0.16 * U, 0);
+  group.add(neckRidge);
+
+  const hollow = new THREE.Group();
+  hollow.name = 'romulan-open-hollow-core';
+  group.add(hollow);
+
+  for (const zSign of [-1, 1]) {
+    const dorsalWing = plateXZ([
+      [0.18 * U, zSign * 0.2 * U], [-0.18 * U, zSign * 1.2 * U],
+      [-1.28 * U, zSign * 1.95 * U], [-1.78 * U, zSign * 1.7 * U],
+      [-1.42 * U, zSign * 0.52 * U], [-0.55 * U, zSign * 0.24 * U],
+    ], 0.16 * U, green, 0.025 * U);
+    dorsalWing.name = `romulan-dorsal-wing-${zSign < 0 ? 'port' : 'starboard'}`;
+    dorsalWing.position.y = 0.27 * U;
+    group.add(dorsalWing);
+
+    const ventralWing = plateXZ([
+      [-0.02 * U, zSign * 0.24 * U], [-0.48 * U, zSign * 1.02 * U],
+      [-1.42 * U, zSign * 1.68 * U], [-1.65 * U, zSign * 1.42 * U],
+      [-1.27 * U, zSign * 0.58 * U], [-0.52 * U, zSign * 0.28 * U],
+    ], 0.15 * U, darkGreen, 0.022 * U);
+    ventralWing.name = `romulan-ventral-wing-${zSign < 0 ? 'port' : 'starboard'}`;
+    ventralWing.position.y = -0.42 * U;
+    group.add(ventralWing);
+
+    const nacelle = cylinderX(0.16 * U, 0.22 * U, 1.5 * U, 24, paleGreen);
+    nacelle.name = `romulan-warp-nacelle-${zSign < 0 ? 'port' : 'starboard'}`;
+    nacelle.position.set(-0.85 * U, 0.08 * U, zSign * 1.82 * U);
+    group.add(nacelle);
+    const nacelleCore = new THREE.Mesh(new THREE.BoxGeometry(0.95 * U, 0.07 * U, 0.1 * U), emerald);
+    nacelleCore.position.set(-0.8 * U, 0.25 * U, zSign * 1.82 * U);
+    group.add(nacelleCore);
+    addEngineGlow(group, -1.62 * U, 0.08 * U, zSign * 1.82 * U, 0.12 * U, emerald);
+
+    for (let i = 0; i < 6; i++) {
+      const feather = new THREE.Mesh(
+        new THREE.BoxGeometry(0.5 * U, 0.045 * U, 0.12 * U),
+        i % 2 ? bronze : paleGreen,
+      );
+      feather.position.set((-0.28 - i * 0.23) * U, 0.46 * U, zSign * (0.62 + i * 0.2) * U);
+      feather.rotation.y = zSign * -0.42;
+      group.add(feather);
+    }
+    for (let i = 0; i < 4; i++) {
+      const lowerRib = new THREE.Mesh(new THREE.BoxGeometry(0.42 * U, 0.04 * U, 0.1 * U), bronze);
+      lowerRib.position.set((-0.55 - i * 0.24) * U, -0.54 * U, zSign * (0.62 + i * 0.21) * U);
+      lowerRib.rotation.y = zSign * -0.38;
+      group.add(lowerRib);
+    }
+  }
+
+  const dorsalAft = new THREE.Mesh(new THREE.BoxGeometry(0.48 * U, 0.18 * U, 2.15 * U), green);
+  dorsalAft.position.set(-1.5 * U, 0.31 * U, 0);
+  group.add(dorsalAft);
+  const ventralAft = new THREE.Mesh(new THREE.BoxGeometry(0.4 * U, 0.15 * U, 1.72 * U), darkGreen);
+  ventralAft.position.set(-1.4 * U, -0.43 * U, 0);
+  group.add(ventralAft);
+  for (const z of [-0.62, -0.3, 0, 0.3, 0.62]) {
+    addEngineGlow(group, -1.76 * U, 0.3 * U, z * U, 0.075 * U, amber);
+  }
+  return group;
+}
+
 export function createPlayerFleetModel(profile: Exclude<PlayerShipProfile, 'default'>, referenceRadiusAU: number): THREE.Group {
   const finish = (model: THREE.Group): THREE.Group => {
     const readable = boostDeepSpaceReadability(model);
@@ -1532,7 +1724,9 @@ export function createPlayerFleetModel(profile: Exclude<PlayerShipProfile, 'defa
     case 'soyuz': return finish(createSoyuz(referenceRadiusAU));
     case 'falcon': return finish(createFalcon(referenceRadiusAU));
     case 'enterprise': return finish(createEnterprise(referenceRadiusAU));
+    case 'ussVoyager': return finish(createUssVoyager(referenceRadiusAU));
     case 'klingon': return finish(createKlingonBirdOfPrey(referenceRadiusAU));
+    case 'romulan': return finish(createRomulanWarbird(referenceRadiusAU));
     case 'saucer': return finish(createFlyingSaucer(referenceRadiusAU));
     case 'starship': return finish(createStarship(referenceRadiusAU));
     case 'dragon': return finish(createDragon(referenceRadiusAU));

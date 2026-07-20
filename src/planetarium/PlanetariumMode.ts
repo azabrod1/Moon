@@ -24,6 +24,7 @@ import {
   isPlayerShipProfile,
   playerShipLabel,
   playerShipUsesHyperspace,
+  playerShipUsesWarp,
   type PlayerShipProfile,
 } from './ship/shipProfiles';
 import { PlanetLabels, discRadiusPx } from './PlanetLabels';
@@ -243,6 +244,7 @@ import { SurfaceTargetMenu } from './ui/SurfaceTargetMenu';
 import { SunLabel } from './ui/SunLabel';
 import { TutorialCard, tutorialCardModel } from './ui/TutorialCard';
 import { HyperspaceEffect, type HyperspaceOrigin } from './ui/HyperspaceEffect';
+import { StarTrekWarpEffect } from './ui/StarTrekWarpEffect';
 
 type ScriptedTransfer = {
   elapsed: number;
@@ -418,7 +420,7 @@ export class PlanetariumMode {
   // Long enough to show the complete Star Wars beat: point stars accelerate
   // into streaks, settle into a visibly flowing blue tunnel, then collapse
   // back to realspace. The exit animation adds its own duration after this.
-  private static readonly HYPERSPACE_CRUISE_MIN_MS = 1450;
+  private static readonly CINEMATIC_TRAVEL_MIN_MS = 1450;
   // Longest the arrival cover waits (from cover start) for the landed pair's
   // in-flight 4K fetch+decode before revealing anyway — a stalled fetch must
   // never pin the veil.
@@ -623,6 +625,7 @@ export class PlanetariumMode {
   private showShip = true;
   private selectedShipProfile: PlayerShipProfile = 'default';
   private hyperspaceEffect: HyperspaceEffect | null = null;
+  private starTrekWarpEffect: StarTrekWarpEffect | null = null;
   private hyperspaceShipRenderer: THREE.WebGLRenderer | null = null;
   private hyperspaceShipScene: THREE.Scene | null = null;
   // Headless screenshot framing: when set, the per-frame collision resolver is
@@ -1428,8 +1431,9 @@ export class PlanetariumMode {
     this.arrivalInFlight = false;
     this.arrivalCoverGen++;
     this.hyperspaceEffect?.stop();
+    this.starTrekWarpEffect?.stop();
     this.hideHyperspaceShip();
-    document.getElementById('arrival-veil')?.classList.remove('covering', 'hyperspace');
+    document.getElementById('arrival-veil')?.classList.remove('covering', 'hyperspace', 'warp');
     this.sunExposure = 1;
     this.lastSunVisibleFraction = 1;
     this.sunEmergenceFlash = 0;
@@ -8188,6 +8192,16 @@ export class PlanetariumMode {
     return this.hyperspaceEffect;
   }
 
+  /** Star Trek owns a separate canvas and renderer: its lateral pastel
+   *  slit-scan streaks must never inherit the Star Wars blue simu-tunnel. */
+  private getStarTrekWarpEffect(): StarTrekWarpEffect | null {
+    if (this.starTrekWarpEffect) return this.starTrekWarpEffect;
+    const canvas = document.getElementById('warp-canvas');
+    if (!(canvas instanceof HTMLCanvasElement)) return null;
+    this.starTrekWarpEffect = new StarTrekWarpEffect(canvas);
+    return this.starTrekWarpEffect;
+  }
+
   /** Freeze the selected ship's current scene pose into a transparent WebGL
    *  layer above the moving stars. The camera, ship transform, viewport, and
    *  solar lights are copied without reframing: warp changes only the stars,
@@ -8211,7 +8225,7 @@ export class PlanetariumMode {
       }
     } catch {
       // A second WebGL context can be denied on constrained devices. The
-      // moving tunnel still runs; fail closed without disrupting travel.
+      // moving star effect still runs; fail closed without disrupting travel.
       this.hyperspaceShipRenderer = null;
       return;
     }
@@ -8290,9 +8304,9 @@ export class PlanetariumMode {
    * per pump frame — four Galileans means four stalled frames in a row).
    * Landings also hold the cover (bounded) for the landed pair's pre-triggered
    * 4K fetch+decode, so those uploads drain under it instead of just after the
-   * reveal. Warm systems act immediately unless the selected Star Wars craft
-   * requests the deliberate hyperspace beat. A second arrival while one is
-   * mid-flight is ignored.
+   * reveal. Warm systems act immediately unless the selected Star Wars or Star
+   * Trek craft requests its franchise-specific travel beat. A second arrival
+   * while one is mid-flight is ignored.
    */
   private arriveThen(target: NonNullable<LandedTarget>, action: () => void): void {
     if (this.arrivalInFlight) return;
@@ -8300,6 +8314,8 @@ export class PlanetariumMode {
     const moons = this.planetMoons.get(parentName);
     const needsPaint = !!moons && moons.some((m) => !m.painted);
     const hyperspace = playerShipUsesHyperspace(this.selectedShipProfile);
+    const warp = playerShipUsesWarp(this.selectedShipProfile);
+    const cinematicTravel = hyperspace || warp;
     // 4K-class photo maps still waiting for their first GPU upload get drained
     // under the veil below. Smaller maps (the Moon's 2K photo) upload within a
     // frame or two off-gesture via the warm pump — no veil beat for those.
@@ -8311,7 +8327,7 @@ export class PlanetariumMode {
         const img = mat.map?.image as { width?: number } | undefined;
         return !!mat.userData.photoLoaded && (img?.width ?? 0) >= 4096;
       });
-    if (!hyperspace && (!moons || (!needsPaint && !needsUploadCover))) {
+    if (!cinematicTravel && (!moons || (!needsPaint && !needsUploadCover))) {
       action();
       return;
     }
@@ -8319,15 +8335,24 @@ export class PlanetariumMode {
     const veil = document.getElementById('arrival-veil');
     const coverStart = performance.now();
     const hyperspaceEffect = hyperspace ? this.getHyperspaceEffect() : null;
-    if (hyperspace) {
+    const starTrekWarpEffect = warp ? this.getStarTrekWarpEffect() : null;
+    if (cinematicTravel) {
       const origin = this.hyperspaceOrigin();
-      hyperspaceEffect?.start(origin);
+      if (hyperspace) {
+        this.starTrekWarpEffect?.stop();
+        hyperspaceEffect?.start(origin);
+      } else {
+        this.hyperspaceEffect?.stop();
+        starTrekWarpEffect?.start(origin);
+      }
       this.showHyperspaceShip();
     } else {
       this.hyperspaceEffect?.stop();
+      this.starTrekWarpEffect?.stop();
       this.hideHyperspaceShip();
     }
     veil?.classList.toggle('hyperspace', hyperspace);
+    veil?.classList.toggle('warp', warp);
     veil?.classList.add('covering'); // snaps fully opaque (no fade-in) — see CSS
     const coverGen = ++this.arrivalCoverGen;
     // Two frames so the opaque veil is actually composited before we block the
@@ -8378,27 +8403,31 @@ export class PlanetariumMode {
             // update→render) and at least the min dwell, so a fast machine
             // reads it as an intentional beat rather than a flicker. Removing
             // the class fades it back out.
-            const minDwell = hyperspace
-              ? PlanetariumMode.HYPERSPACE_CRUISE_MIN_MS
+            const minDwell = cinematicTravel
+              ? PlanetariumMode.CINEMATIC_TRAVEL_MIN_MS
               : PlanetariumMode.ARRIVAL_MIN_DWELL_MS;
             const wait = Math.max(48, minDwell - (performance.now() - coverStart));
             window.setTimeout(() => {
               if (coverGen !== this.arrivalCoverGen) return;
-              // Canonical hyperspace first decelerates the moving streaks back
-              // toward point stars; reveal the arrived scene only after that
-              // animated exit completes.
-              const exitWait = hyperspace ? (hyperspaceEffect?.beginExit() ?? 0) : 0;
+              // Both franchises decelerate their moving stars back to points,
+              // but each renderer retains its own visual language.
+              const exitWait = hyperspace
+                ? (hyperspaceEffect?.beginExit() ?? 0)
+                : warp
+                  ? (starTrekWarpEffect?.beginExit() ?? 0)
+                  : 0;
               window.setTimeout(() => {
                 if (coverGen !== this.arrivalCoverGen) return;
                 veil?.classList.remove('covering');
-                if (!hyperspace) return;
+                if (!cinematicTravel) return;
                 // Keep the moving layer alive through the 300 ms veil fade,
                 // then reset it so the next jump starts from stationary stars.
                 window.setTimeout(() => {
                   if (coverGen !== this.arrivalCoverGen) return;
                   hyperspaceEffect?.stop();
+                  starTrekWarpEffect?.stop();
                   this.hideHyperspaceShip();
-                  veil?.classList.remove('hyperspace');
+                  veil?.classList.remove('hyperspace', 'warp');
                 }, 320);
               }, exitWait);
             }, wait);

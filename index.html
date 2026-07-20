@@ -2071,13 +2071,18 @@
       pointer-events: auto;
       transition: none;
     }
-    /* Star Wars travel gets a perspective-projected canvas star tunnel. Its
-       vanishing point is supplied from the ship's live screen projection. */
+    /* Franchise travel layers share a fixed ship render but never a star
+       renderer: Star Wars owns the blue tunnel; Star Trek owns clean streaks. */
     #arrival-veil.hyperspace {
       overflow: hidden;
       background: #01020a;
     }
+    #arrival-veil.warp {
+      overflow: hidden;
+      background: #020407;
+    }
     #hyperspace-canvas,
+    #warp-canvas,
     #hyperspace-ship-canvas {
       position: absolute;
       inset: 0;
@@ -2088,10 +2093,12 @@
       pointer-events: none;
     }
     #arrival-veil.hyperspace #hyperspace-canvas { opacity: 1; }
+    #arrival-veil.warp #warp-canvas { opacity: 1; }
     #hyperspace-ship-canvas {
       z-index: 1;
     }
-    #arrival-veil.hyperspace #hyperspace-ship-canvas { opacity: 1; }
+    #arrival-veil.hyperspace #hyperspace-ship-canvas,
+    #arrival-veil.warp #hyperspace-ship-canvas { opacity: 1; }
 
     /* Sun glare flood: at the whiteout wall the blaze spills over the cockpit
        chrome itself — the HUD washes toward white while staying clickable
@@ -2789,6 +2796,7 @@
   </div>
   <div id="arrival-veil">
     <canvas id="hyperspace-canvas" aria-hidden="true"></canvas>
+    <canvas id="warp-canvas" aria-hidden="true"></canvas>
     <canvas id="hyperspace-ship-canvas" aria-hidden="true"></canvas>
   </div>
 
@@ -2859,27 +2867,27 @@
                   <span class="ship-choice-copy"><b>Default</b></span>
                 </button>
                 <button class="ship-choice" data-ship-profile="starship" role="menuitemradio" aria-checked="false" title="Reusable upper stage" aria-label="SpaceX Starship — Reusable upper stage">
-                  <svg viewBox="0 0 40 30" aria-hidden="true"><path d="M35 15 Q31 9 25 9 H9 V21 H25 Q31 21 35 15 Z"></path><path d="M14 9 L7 4 H3 L8 12 M14 21 L7 26 H3 L8 18 M29 11 L25 5 H22 L25 11 M29 19 L25 25 H22 L25 19 M9 12 V18"></path></svg>
+                  <svg viewBox="0 0 40 30" aria-hidden="true"><path d="M36 15 Q33 11 28 11 H9 Q6 11 5 15 Q6 19 9 19 H28 Q33 19 36 15 Z"></path><path d="M29 11 L25 6 H22 L25 12 M29 19 L25 24 H22 L25 18 M11 11 L6 4 H3 L6 13 M11 19 L6 26 H3 L6 17 M5 13 V17 M8 13 V17"></path></svg>
                   <span class="ship-choice-copy"><b>SpaceX Starship</b></span>
                 </button>
                 <button class="ship-choice" data-ship-profile="dragon" role="menuitemradio" aria-checked="false" title="Crew capsule" aria-label="SpaceX Dragon — Crew capsule">
-                  <svg viewBox="0 0 40 30" aria-hidden="true"><path d="M34 15 Q30 8 23 8 L18 11 V19 L23 22 Q30 22 34 15 Z M18 10 H7 V20 H18"></path><path d="M10 10 V20 M14 10 V20 M7 15 H3"></path></svg>
+                  <svg viewBox="0 0 40 30" aria-hidden="true"><path d="M35 15 Q31 8 24 8 L19 11 V19 L24 22 Q31 22 35 15 Z M19 10 H7 V20 H19 Z"></path><path d="M7 15 H3 M10 10 V20 M14 10 V20 M7 16 H19 M9 18 H17 M31 12 L34 12 M31 18 L34 18"></path></svg>
                   <span class="ship-choice-copy"><b>SpaceX Dragon</b></span>
                 </button>
                 <button class="ship-choice" data-ship-profile="orion" role="menuitemradio" aria-checked="false" title="Artemis crew spacecraft" aria-label="NASA Orion — Artemis crew spacecraft">
-                  <svg viewBox="0 0 40 30" aria-hidden="true"><path d="M35 15 L29 9 H24 L20 11 V19 L24 21 H29 Z M20 10 H11 V20 H20"></path><path d="M14 10 V3 M14 20 V27 M11 4 H17 M11 26 H17 M11 15 H5"></path></svg>
+                  <svg viewBox="0 0 40 30" aria-hidden="true"><path d="M36 15 L29 9 H24 L20 11 V19 L24 21 H29 Z M20 10 H12 V20 H20 Z"></path><path d="M15 10 L10 3 H5 M15 20 L10 27 H5 M13 12 L5 8 H2 M13 18 L5 22 H2 M8 3 L11 7 M8 27 L11 23 M6 9 L9 11 M6 21 L9 19 M12 15 H5"></path></svg>
                   <span class="ship-choice-copy"><b>NASA Orion</b></span>
                 </button>
                 <button class="ship-choice" data-ship-profile="starliner" role="menuitemradio" aria-checked="false" title="Reusable crew capsule" aria-label="Boeing Starliner — Reusable crew capsule">
-                  <svg viewBox="0 0 40 30" aria-hidden="true"><path d="M34 15 Q30 8 23 8 L18 11 V19 L23 22 Q30 22 34 15 Z M18 9 H8 V21 H18"></path><path d="M8 12 H4 M8 18 H4 M11 9 V21 M15 9 V21"></path></svg>
+                  <svg viewBox="0 0 40 30" aria-hidden="true"><path d="M35 15 Q32 9 25 7 Q20 8 18 12 V18 Q20 22 25 23 Q32 21 35 15 Z M18 10 H10 Q7 15 10 20 H18 Z"></path><path d="M10 12 H18 M9 15 H18 M10 18 H18 M13 10 V20 M16 10 V20 M10 15 H5"></path></svg>
                   <span class="ship-choice-copy"><b>Boeing Starliner</b></span>
                 </button>
                 <button class="ship-choice" data-ship-profile="dreamChaser" role="menuitemradio" aria-checked="false" title="Reusable spaceplane" aria-label="Dream Chaser — Reusable spaceplane">
-                  <svg viewBox="0 0 40 30" aria-hidden="true"><path d="M36 15 L27 10 L13 6 L6 8 L11 15 L6 22 L13 24 L27 20 Z"></path><path d="M16 8 L9 3 M16 22 L9 27 M12 15 H4 M27 10 L22 15 L27 20"></path></svg>
+                  <svg viewBox="0 0 40 30" aria-hidden="true"><path d="M36 15 Q32 11 27 10 L14 5 L8 6 L12 13 L5 15 L12 17 L8 24 L14 25 L27 20 Q32 19 36 15 Z"></path><path d="M14 7 L10 3 M14 23 L10 27 M13 13 H5 M13 17 H5 M27 10 L22 15 L27 20"></path></svg>
                   <span class="ship-choice-copy"><b>Dream Chaser</b></span>
                 </button>
                 <button class="ship-choice" data-ship-profile="soyuz" role="menuitemradio" aria-checked="false" title="Operational crew capsule" aria-label="Soyuz — Operational crew capsule">
-                  <svg viewBox="0 0 40 30" aria-hidden="true"><path d="M31 15 A5 5 0 1 1 21 15 A5 5 0 1 1 31 15 M21 11 L15 9 L10 11 L10 19 L15 21 L21 19 M10 15 H5"></path><path d="M15 9 V3 M15 21 V27 M12 3 H18 M12 27 H18"></path></svg>
+                  <svg viewBox="0 0 40 30" aria-hidden="true"><circle cx="31" cy="15" r="5"></circle><path d="M26 13 L22 10 L18 12 V18 L22 20 L26 17 M18 10 H9 V20 H18 M9 13 L5 12 V18 L9 17 M36 15 H39"></path><path d="M13 10 V3 M13 20 V27 M8 3 H18 M8 27 H18 M10 6 H16 M10 24 H16"></path></svg>
                   <span class="ship-choice-copy"><b>Soyuz</b></span>
                 </button>
                 <button class="ship-choice" data-ship-profile="saucer" role="menuitemradio" aria-checked="false" title="Origin: classified" aria-label="UFO — Origin: classified">
@@ -2892,11 +2900,11 @@
               <div class="ship-group-title" id="ship-group-historic">Historic spacecraft</div>
               <div class="ship-group-grid">
                 <button class="ship-choice" data-ship-profile="apollo" role="menuitemradio" aria-checked="false" title="Lunar command ship" aria-label="Apollo — Lunar command ship">
-                  <svg viewBox="0 0 40 30" aria-hidden="true"><path d="M34 15 L24 9 L20 9 L20 21 L24 21 Z M20 11 H8 V19 H20"></path><path d="M8 15 H3 M12 11 V19 M27 11 V19"></path></svg>
+                  <svg viewBox="0 0 40 30" aria-hidden="true"><path d="M36 15 L25 8 H21 V22 H25 Z M21 10 H8 V20 H21 Z M8 12 L3 15 L8 18"></path><path d="M12 10 V20 M17 10 V20 M25 10 V20 M29 11 V19 M36 15 H39"></path></svg>
                   <span class="ship-choice-copy"><b>Apollo</b></span>
                 </button>
                 <button class="ship-choice" data-ship-profile="shuttle" role="menuitemradio" aria-checked="false" title="Orbital glider" aria-label="Space Shuttle — Orbital glider">
-                  <svg viewBox="0 0 40 30" aria-hidden="true"><path d="M35 15 L27 10 L10 10 L5 15 L10 20 L27 20 Z"></path><path d="M24 10 L12 3 L9 4 L16 10 M24 20 L12 27 L9 26 L16 20 M9 10 L5 5 L3 6 L5 15"></path></svg>
+                  <svg viewBox="0 0 40 30" aria-hidden="true"><path d="M36 15 Q33 11 28 10 L23 10 L13 4 H9 L16 11 H9 L5 15 L9 19 H16 L9 26 H13 L23 20 H28 Q33 19 36 15 Z"></path><path d="M12 11 L8 6 H5 L7 15 L5 24 H8 L12 19 M24 11 V19 M31 13 V17"></path></svg>
                   <span class="ship-choice-copy"><b>Space Shuttle</b></span>
                 </button>
               </div>
@@ -2905,27 +2913,27 @@
               <div class="ship-group-title" id="ship-group-star-wars">Star Wars</div>
               <div class="ship-group-grid">
                 <button class="ship-choice" data-ship-profile="falcon" role="menuitemradio" aria-checked="false" title="Corellian freighter" aria-label="Millennium Falcon — Corellian freighter">
-                  <svg viewBox="0 0 40 30" aria-hidden="true"><path d="M34 8 L24 11 A11 11 0 1 0 24 19 L34 22 L31 17 H19 V13 H31 Z"></path><path d="M19 13 L15 6 M19 17 L15 24 M13 15 H5"></path></svg>
+                  <svg viewBox="0 0 40 30" aria-hidden="true"><path d="M35 8 L25 11 A11 11 0 1 0 25 19 L35 22 L31 17 H20 V13 H31 Z"></path><path d="M20 13 L15 6 M20 17 L15 24 M13 15 H5 M24 20 L28 25 H33 Q35 23 33 21 M12 10 A6 6 0 0 0 12 20 M17 9 L20 5"></path></svg>
                   <span class="ship-choice-copy"><b>Millennium Falcon</b></span>
                 </button>
                 <button class="ship-choice" data-ship-profile="xwing" role="menuitemradio" aria-checked="false" title="Rebel starfighter" aria-label="X-wing — Rebel starfighter">
-                  <svg viewBox="0 0 40 30" aria-hidden="true"><path d="M35 15 L25 12 H13 L7 15 L13 18 H25 Z"></path><path d="M23 12 L12 4 H7 L16 12 M23 18 L12 26 H7 L16 18 M11 7 L4 3 M11 23 L4 27"></path></svg>
+                  <svg viewBox="0 0 40 30" aria-hidden="true"><path d="M36 15 L25 12 H13 L6 15 L13 18 H25 Z"></path><path d="M24 12 L13 4 H8 L17 12 M24 18 L13 26 H8 L17 18 M21 12 L12 7 H7 M21 18 L12 23 H7 M12 4 L3 2 M12 7 L3 5 M12 26 L3 28 M12 23 L3 25"></path></svg>
                   <span class="ship-choice-copy"><b>X-wing</b></span>
                 </button>
                 <button class="ship-choice" data-ship-profile="ywing" role="menuitemradio" aria-checked="false" title="Rebel bomber" aria-label="Y-wing — Rebel bomber">
-                  <svg viewBox="0 0 40 30" aria-hidden="true"><path d="M35 15 L28 10 H18 L13 15 L18 20 H28 Z"></path><path d="M18 11 H5 V8 H2 M18 19 H5 V22 H2 M5 8 V22 M10 8 V22"></path></svg>
+                  <svg viewBox="0 0 40 30" aria-hidden="true"><path d="M36 15 L29 10 H20 L15 15 L20 20 H29 Z"></path><path d="M22 11 H7 Q4 8 7 6 H24 M22 19 H7 Q4 22 7 24 H24 M7 6 H3 M7 24 H3 M12 7 V11 M12 19 V23 M18 8 V12 M18 18 V22 M15 15 H8"></path></svg>
                   <span class="ship-choice-copy"><b>Y-wing</b></span>
                 </button>
                 <button class="ship-choice" data-ship-profile="tie" role="menuitemradio" aria-checked="false" title="Imperial starfighter" aria-label="TIE Fighter — Imperial starfighter">
-                  <svg viewBox="0 0 40 30" aria-hidden="true"><path d="M8 4 L4 8 V22 L8 26 H12 V4 Z M28 4 V26 H32 L36 22 V8 L32 4 Z"></path><circle cx="20" cy="15" r="6"></circle><path d="M12 15 H14 M26 15 H28"></path></svg>
+                  <svg viewBox="0 0 40 30" aria-hidden="true"><path d="M8 3 L4 8 V22 L8 27 H12 V3 Z M28 3 V27 H32 L36 22 V8 L32 3 Z"></path><circle cx="20" cy="15" r="6"></circle><path d="M12 15 H14 M26 15 H28 M20 9 V21 M15 12 L25 18 M25 12 L15 18 M8 3 V27 M32 3 V27"></path></svg>
                   <span class="ship-choice-copy"><b>TIE Fighter</b></span>
                 </button>
                 <button class="ship-choice" data-ship-profile="starDestroyer" role="menuitemradio" aria-checked="false" title="Imperial destroyer" aria-label="Star Destroyer — Imperial destroyer">
-                  <svg viewBox="0 0 40 30" aria-hidden="true"><path d="M36 15 L5 4 L10 15 L5 26 Z"></path><path d="M10 15 H31 M12 12 H22 V8 H17 M17 8 V5"></path></svg>
+                  <svg viewBox="0 0 40 30" aria-hidden="true"><path d="M37 15 L4 3 L9 15 L4 27 Z"></path><path d="M10 15 H33 M9 10 L28 15 L9 20 M12 12 H22 L19 9 H13 M12 18 H22 L19 21 H13 M14 13 V17 M18 13 V17"></path><circle cx="12" cy="12" r="1"></circle><circle cx="12" cy="18" r="1"></circle></svg>
                   <span class="ship-choice-copy"><b>Star Destroyer</b></span>
                 </button>
                 <button class="ship-choice" data-ship-profile="naboo" role="menuitemradio" aria-checked="false" title="Royal starfighter" aria-label="Naboo Starfighter — Royal starfighter">
-                  <svg viewBox="0 0 40 30" aria-hidden="true"><path d="M36 15 L23 11 H15 L8 15 L15 19 H23 Z"></path><path d="M23 11 H12 L4 6 M23 19 H12 L4 24 M11 7 H5 V23 H11"></path></svg>
+                  <svg viewBox="0 0 40 30" aria-hidden="true"><path d="M37 15 L24 11 H16 L10 15 L16 19 H24 Z"></path><path d="M25 11 H14 Q11 8 14 6 H27 Q30 8 27 10 M25 19 H14 Q11 22 14 24 H27 Q30 22 27 20 M14 6 H5 M14 24 H5 M10 15 H3 M8 6 H2 M8 24 H2"></path><circle cx="21" cy="15" r="2"></circle></svg>
                   <span class="ship-choice-copy"><b>Naboo Starfighter</b></span>
                 </button>
               </div>
@@ -2934,12 +2942,20 @@
               <div class="ship-group-title" id="ship-group-star-trek">Star Trek</div>
               <div class="ship-group-grid">
                 <button class="ship-choice" data-ship-profile="enterprise" role="menuitemradio" aria-checked="false" title="Federation explorer" aria-label="USS Enterprise — Federation explorer">
-                  <svg viewBox="0 0 40 30" aria-hidden="true"><ellipse cx="28" cy="15" rx="8" ry="5"></ellipse><path d="M20 15 H12 L8 11 M12 15 L8 19 M9 10 H2 M9 20 H2 M6 10 V20"></path></svg>
+                  <svg viewBox="0 0 40 30" aria-hidden="true"><ellipse cx="29" cy="15" rx="8" ry="6"></ellipse><path d="M21 15 H16 L12 11 V19 L16 15 M13 11 L9 7 M13 19 L9 23 M10 5 H2 V9 H10 Q12 7 10 5 Z M10 21 H2 V25 H10 Q12 23 10 21 Z M24 11 Q29 8 34 11 M24 19 Q29 22 34 19"></path></svg>
                   <span class="ship-choice-copy"><b>USS Enterprise</b></span>
                 </button>
+                <button class="ship-choice" data-ship-profile="ussVoyager" role="menuitemradio" aria-checked="false" title="Intrepid-class explorer" aria-label="USS Voyager — Intrepid-class explorer">
+                  <svg viewBox="0 0 40 30" aria-hidden="true"><path d="M37 15 Q33 9 25 7 Q17 7 11 11 L8 15 L11 19 Q17 23 25 23 Q33 21 37 15 Z"></path><path d="M12 11 L8 7 H2 V10 H9 M12 19 L8 23 H2 V20 H9 M13 15 H5 M17 10 L13 6 M17 20 L13 24 M25 9 Q30 10 33 13"></path></svg>
+                  <span class="ship-choice-copy"><b>USS Voyager</b></span>
+                </button>
                 <button class="ship-choice" data-ship-profile="klingon" role="menuitemradio" aria-checked="false" title="Klingon raider" aria-label="Klingon Bird-of-Prey — Klingon raider">
-                  <svg viewBox="0 0 40 30" aria-hidden="true"><path d="M35 15 L28 11 L20 13 L10 5 L4 6 L11 15 L4 24 L10 25 L20 17 L28 19 Z"></path><path d="M20 13 L14 15 L20 17 M10 5 L7 3 M10 25 L7 27"></path></svg>
+                  <svg viewBox="0 0 40 30" aria-hidden="true"><path d="M37 15 L31 11 L23 13 L12 5 L4 6 L12 15 L4 24 L12 25 L23 17 L31 19 Z"></path><path d="M23 13 L15 15 L23 17 M12 5 L8 2 M12 25 L8 28 M14 8 L9 15 L14 22 M29 12 V18"></path></svg>
                   <span class="ship-choice-copy"><b>Klingon Bird-of-Prey</b></span>
+                </button>
+                <button class="ship-choice" data-ship-profile="romulan" role="menuitemradio" aria-checked="false" title="D’deridex-class warbird" aria-label="Romulan Warbird — D’deridex-class warbird">
+                  <svg viewBox="0 0 40 30" aria-hidden="true"><path d="M37 15 L32 12 H25 L22 14 V16 H25 L32 18 Z M23 14 L18 7 L8 3 L3 6 L10 14 Z M23 16 L10 16 L3 24 L8 27 L18 23 Z"></path><path d="M24 12 L15 9 L9 6 M24 18 L15 21 L9 24 M22 14 H12 M22 16 H12 M18 8 L13 14 M18 22 L13 16"></path></svg>
+                  <span class="ship-choice-copy"><b>Romulan Warbird</b></span>
                 </button>
               </div>
             </div>

@@ -322,96 +322,198 @@ function createSoyuz(referenceRadiusAU: number): THREE.Group {
 function createFalcon(referenceRadiusAU: number): THREE.Group {
   const U = referenceRadiusAU;
   const group = new THREE.Group();
-  const hull = standard(0x8c8b83, 0.82, 0.22, 0x0c0d0d, 0.08);
-  const lightHull = standard(0xa9a69b, 0.76, 0.18);
-  const dark = standard(0x262827, 0.6, 0.44);
-  const rust = standard(0x6f3a29, 0.75, 0.2);
+  const hull = standard(0xb2afa5, 0.78, 0.2, 0x201e1a, 0.16);
+  const lightHull = standard(0xcfcbc0, 0.72, 0.16, 0x24221d, 0.12);
+  const dark = standard(0x343735, 0.62, 0.42);
+  const rust = standard(0x874a36, 0.72, 0.22);
   const glass = standard(0x08151c, 0.16, 0.32, 0x0c3345, 0.28);
   const blue = glow(0x78c8ff, 0.92);
   const engineCore = glow(0xe5f8ff, 1);
   blue.depthWrite = false;
   engineCore.depthWrite = false;
 
-  const saucer = discY(1.48 * U, 1.48 * U, 0.34 * U, hull, 64);
-  saucer.position.x = -0.12 * U;
-  group.add(saucer);
-  const upperDisc = discY(1.17 * U, 0.84 * U, 0.18 * U, lightHull, 64);
-  upperDisc.position.set(-0.18 * U, 0.2 * U, 0);
+  // A real open U-shaped planform replaces the old complete disc. Tracing the
+  // outer rim into both mandibles and back through the notch means black space
+  // is physically visible between them from above and below.
+  const outline: Array<[number, number]> = [
+    [-1.68 * U, 0], [-1.6 * U, -0.52 * U], [-1.36 * U, -0.96 * U],
+    [-0.82 * U, -1.3 * U], [-0.15 * U, -1.46 * U], [0.5 * U, -1.32 * U],
+    [0.86 * U, -1.08 * U], [1.9 * U, -0.92 * U], [2.02 * U, -0.52 * U],
+    [1.94 * U, -0.38 * U], [0.66 * U, -0.32 * U], [0.38 * U, -0.18 * U],
+    [0.38 * U, 0.18 * U], [0.66 * U, 0.32 * U], [1.94 * U, 0.38 * U],
+    [2.02 * U, 0.52 * U], [1.9 * U, 0.92 * U], [0.86 * U, 1.08 * U],
+    [0.5 * U, 1.32 * U], [-0.15 * U, 1.46 * U], [-0.82 * U, 1.3 * U],
+    [-1.36 * U, 0.96 * U], [-1.6 * U, 0.52 * U],
+  ];
+  const lowerHull = plateXZ(outline, 0.16 * U, dark, 0.018 * U);
+  lowerHull.name = 'falcon-lower-forked-hull';
+  lowerHull.position.y = -0.14 * U;
+  group.add(lowerHull);
+  const mainHull = plateXZ(outline, 0.18 * U, hull, 0.025 * U);
+  mainHull.name = 'falcon-forked-hull';
+  mainHull.position.y = -0.01 * U;
+  group.add(mainHull);
+
+  const upperOutline: Array<[number, number]> = [
+    [-1.46 * U, 0], [-1.34 * U, -0.48 * U], [-1.08 * U, -0.83 * U],
+    [-0.58 * U, -1.08 * U], [0.02 * U, -1.18 * U], [0.5 * U, -1.04 * U],
+    [0.75 * U, -0.82 * U], [1.75 * U, -0.73 * U], [1.79 * U, -0.48 * U],
+    [0.58 * U, -0.4 * U], [0.28 * U, -0.16 * U], [0.28 * U, 0.16 * U],
+    [0.58 * U, 0.4 * U], [1.79 * U, 0.48 * U], [1.75 * U, 0.73 * U],
+    [0.75 * U, 0.82 * U], [0.5 * U, 1.04 * U], [0.02 * U, 1.18 * U],
+    [-0.58 * U, 1.08 * U], [-1.08 * U, 0.83 * U], [-1.34 * U, 0.48 * U],
+  ];
+  const upperHull = plateXZ(upperOutline, 0.09 * U, lightHull, 0.018 * U);
+  upperHull.name = 'falcon-upper-forked-hull';
+  upperHull.position.y = 0.17 * U;
+  group.add(upperHull);
+
+  // Shallow center saucer and recessed circular machinery well. Neither
+  // reaches far enough forward to refill the physical notch.
+  const upperDisc = discY(0.88 * U, 0.96 * U, 0.12 * U, lightHull, 64);
+  upperDisc.position.set(-0.42 * U, 0.25 * U, 0);
   group.add(upperDisc);
-  const lowerDisc = discY(0.85 * U, 1.18 * U, 0.16 * U, dark, 64);
-  lowerDisc.position.set(-0.18 * U, -0.2 * U, 0);
-  group.add(lowerDisc);
+  const centerWell = discY(0.31 * U, 0.34 * U, 0.035 * U, dark, 40);
+  centerWell.position.set(-0.36 * U, 0.34 * U, 0);
+  group.add(centerWell);
+  const turretBase = discY(0.16 * U, 0.19 * U, 0.07 * U, hull, 28);
+  turretBase.position.set(-0.36 * U, 0.39 * U, 0);
+  group.add(turretBase);
 
-  // Forward mandibles and the recessed central notch create the unmistakable
-  // forked freighter planform even when the hull is only a few dozen pixels.
+  // Raised mandible armor, inset service trenches, and a dark notch bulkhead.
+  const portArmorOutline: Array<[number, number]> = [
+    [0.52 * U, -0.39 * U], [1.86 * U, -0.46 * U],
+    [1.78 * U, -0.79 * U], [0.76 * U, -0.86 * U],
+  ];
   for (const zSign of [-1, 1]) {
-    const mandible = new THREE.Mesh(new THREE.BoxGeometry(1.7 * U, 0.36 * U, 0.52 * U), hull);
-    mandible.position.set(1.17 * U, 0, zSign * 0.73 * U);
-    mandible.rotation.y = zSign * -0.055;
-    group.add(mandible);
-    const jaw = new THREE.Mesh(new THREE.BoxGeometry(1.08 * U, 0.17 * U, 0.29 * U), dark);
-    jaw.position.set(1.38 * U, 0.24 * U, zSign * 0.73 * U);
-    group.add(jaw);
-    for (const x of [0.75, 1.12, 1.49, 1.86]) {
-      const greeble = new THREE.Mesh(new THREE.BoxGeometry(0.17 * U, 0.1 * U, 0.23 * U), x === 1.49 ? rust : dark);
-      greeble.position.set(x * U, 0.3 * U, zSign * 0.73 * U);
-      group.add(greeble);
+    // Mirroring a polygon reverses its winding. Reverse the starboard points
+    // as well so ExtrudeGeometry gives both mandibles identical visible top,
+    // side, bevel, and thickness geometry.
+    const armorOutline: Array<[number, number]> = zSign < 0
+      ? portArmorOutline
+      : portArmorOutline.map(([x, z]) => [x, -z] as [number, number]).reverse();
+    const armor = plateXZ(armorOutline, 0.065 * U, hull, 0.01 * U);
+    armor.name = `falcon-mandible-armor-${zSign < 0 ? 'port' : 'starboard'}`;
+    armor.position.y = 0.25 * U;
+    group.add(armor);
+    const trench = new THREE.Mesh(new THREE.BoxGeometry(1.12 * U, 0.035 * U, 0.16 * U), dark);
+    trench.name = `falcon-mandible-trench-${zSign < 0 ? 'port' : 'starboard'}`;
+    trench.position.set(1.2 * U, 0.31 * U, zSign * 0.63 * U);
+    group.add(trench);
+    for (let i = 0; i < 7; i++) {
+      const x = 0.68 + i * 0.18;
+      const serviceBay = new THREE.Mesh(
+        new THREE.BoxGeometry(0.105 * U, 0.024 * U, 0.12 * U),
+        i === 2 || i === 6 ? rust : i % 2 ? dark : lightHull,
+      );
+      serviceBay.position.set(x * U, 0.345 * U, zSign * 0.63 * U);
+      group.add(serviceBay);
     }
   }
-  const notch = new THREE.Mesh(new THREE.BoxGeometry(1.02 * U, 0.2 * U, 0.57 * U), dark);
-  notch.position.set(1.4 * U, 0.03 * U, 0);
-  group.add(notch);
+  const notchBulkhead = new THREE.Mesh(new THREE.BoxGeometry(0.12 * U, 0.16 * U, 0.34 * U), dark);
+  notchBulkhead.name = 'falcon-forward-notch-bulkhead';
+  notchBulkhead.position.set(0.35 * U, 0.08 * U, 0);
+  group.add(notchBulkhead);
 
-  // Offset cockpit tube and multi-pane canopy.
-  const cockpitBoom = cylinderX(0.18 * U, 0.24 * U, 1.03 * U, 18, hull);
+  // Starboard-offset cockpit corridor and compact multi-pane canopy.
+  const cockpitBoom = cylinderX(0.145 * U, 0.19 * U, 1.08 * U, 24, hull);
   cockpitBoom.name = 'falcon-offset-cockpit-boom';
-  cockpitBoom.position.set(0.45 * U, 0.06 * U, -1.42 * U);
-  cockpitBoom.rotation.y = -0.12;
+  cockpitBoom.position.set(0.72 * U, 0.07 * U, -1.25 * U);
+  cockpitBoom.rotation.y = -0.1;
   group.add(cockpitBoom);
-  const cockpit = new THREE.Mesh(new THREE.SphereGeometry(0.31 * U, 24, 16), hull);
+  const cockpit = cylinderX(0.17 * U, 0.22 * U, 0.54 * U, 24, hull);
   cockpit.name = 'falcon-offset-cockpit';
-  cockpit.scale.x = 1.25;
-  cockpit.position.set(1.0 * U, 0.06 * U, -1.54 * U);
+  cockpit.position.set(1.38 * U, 0.07 * U, -1.38 * U);
+  cockpit.rotation.y = -0.1;
   group.add(cockpit);
-  for (const y of [-0.11, 0.08]) {
-    for (const z of [-1.72, -1.55, -1.38]) {
-      const pane = new THREE.Mesh(new THREE.BoxGeometry(0.035 * U, 0.13 * U, 0.12 * U), glass);
-      pane.position.set(1.27 * U, y * U, z * U);
-      group.add(pane);
-    }
+  const canopy = discX(0.175 * U, 0.025 * U, glass, 20);
+  canopy.position.set(1.66 * U, 0.07 * U, -1.41 * U);
+  canopy.rotation.y = -0.1;
+  group.add(canopy);
+  const canopyRim = new THREE.Mesh(new THREE.TorusGeometry(0.185 * U, 0.018 * U, 6, 20), lightHull);
+  canopyRim.rotation.y = Math.PI / 2 - 0.1;
+  canopyRim.position.copy(canopy.position);
+  group.add(canopyRim);
+  for (let i = 0; i < 6; i++) {
+    const angle = (i / 6) * Math.PI * 2;
+    group.add(createRodBetween(
+      new THREE.Vector3(1.675 * U, 0.07 * U, -1.41 * U),
+      new THREE.Vector3(1.675 * U, (0.07 + Math.cos(angle) * 0.16) * U, (-1.41 + Math.sin(angle) * 0.16) * U),
+      0.009 * U,
+      lightHull,
+      6,
+    ));
   }
 
-  const radar = new THREE.Mesh(createParabolicDishGeometry(0.31 * U, 0.11 * U), lightHull);
-  radar.position.set(-0.45 * U, 0.48 * U, 0.38 * U);
-  radar.rotation.z = -0.32;
+  // Dorsal sensor dish, docking collar, and exposed conduits are deliberately
+  // fine enough to read as machinery rather than oversized blocks.
+  const radar = new THREE.Mesh(createParabolicDishGeometry(0.27 * U, 0.095 * U), lightHull);
+  radar.name = 'falcon-dorsal-radar-dish';
+  radar.position.set(-0.56 * U, 0.47 * U, 0.4 * U);
+  radar.rotation.z = -0.38;
   group.add(radar);
   group.add(createRodBetween(
-    new THREE.Vector3(-0.45 * U, 0.23 * U, 0.38 * U),
-    new THREE.Vector3(-0.45 * U, 0.51 * U, 0.38 * U),
-    0.025 * U,
+    new THREE.Vector3(-0.56 * U, 0.31 * U, 0.4 * U),
+    new THREE.Vector3(-0.56 * U, 0.5 * U, 0.4 * U),
+    0.018 * U,
     dark,
     8,
   ));
+  const dockingCollar = new THREE.Mesh(new THREE.CylinderGeometry(0.22 * U, 0.22 * U, 0.16 * U, 28), hull);
+  dockingCollar.name = 'falcon-port-docking-collar';
+  dockingCollar.rotation.x = Math.PI / 2;
+  dockingCollar.position.set(-0.22 * U, 0.03 * U, 1.48 * U);
+  group.add(dockingCollar);
+  const dockingRim = new THREE.Mesh(new THREE.TorusGeometry(0.22 * U, 0.025 * U, 8, 28), dark);
+  dockingRim.position.set(-0.22 * U, 0.03 * U, 1.57 * U);
+  group.add(dockingRim);
 
-  // Concentric hull trenches and dense radial service boxes.
-  for (const radius of [0.48, 0.92, 1.27]) {
-    const ring = new THREE.Mesh(new THREE.TorusGeometry(radius * U, 0.035 * U, 8, 64), dark);
-    ring.rotation.x = Math.PI / 2;
-    ring.position.set(-0.32 * U, 0.37 * U, 0);
-    group.add(ring);
-  }
-  for (let i = 0; i < 20; i++) {
-    const angle = (i / 20) * Math.PI * 2;
-    const radius = (0.55 + (i % 3) * 0.25) * U;
-    const detail = new THREE.Mesh(
-      new THREE.BoxGeometry(0.2 * U, 0.08 * U, 0.11 * U),
-      i % 7 === 0 ? rust : dark,
+  // Partial rear arcs keep the surface layered without drawing full toy-like
+  // concentric hoops across the forward fork.
+  for (const [arcIndex, radius] of [0.52, 0.82, 1.12].entries()) {
+    const arcPoints: THREE.Vector3[] = [];
+    for (let i = 0; i <= 18; i++) {
+      const angle = THREE.MathUtils.lerp(Math.PI * 0.56, Math.PI * 1.44, i / 18);
+      arcPoints.push(new THREE.Vector3(
+        (-0.36 + Math.cos(angle) * radius) * U,
+        (0.345 + arcIndex * 0.008) * U,
+        Math.sin(angle) * radius * U,
+      ));
+    }
+    const trenchArc = new THREE.Mesh(
+      new THREE.TubeGeometry(new THREE.CatmullRomCurve3(arcPoints), 48, 0.014 * U, 6, false),
+      dark,
     );
-    detail.position.set(-0.32 * U, 0.42 * U, 0);
+    trenchArc.name = `falcon-dorsal-trench-arc-${arcIndex + 1}`;
+    group.add(trenchArc);
+  }
+  for (let i = 0; i < 32; i++) {
+    const angle = (i / 32) * Math.PI * 2;
+    const radius = (0.43 + (i % 4) * 0.16) * U;
+    const detail = new THREE.Mesh(
+      new THREE.BoxGeometry((i % 5 === 0 ? 0.14 : 0.095) * U, 0.022 * U, 0.055 * U),
+      i % 11 === 0 ? rust : i % 3 === 0 ? lightHull : dark,
+    );
+    detail.position.set(-0.36 * U, 0.36 * U, 0);
     detail.position.x += Math.cos(angle) * radius;
     detail.position.z += Math.sin(angle) * radius;
     detail.rotation.y = -angle;
     group.add(detail);
+  }
+  for (const [index, [sx, sz, ex, ez]] of [
+    [-1.05, -0.42, -0.46, -0.25], [-0.98, 0.48, -0.38, 0.26],
+    [-0.2, -0.76, 0.3, -0.58], [-0.12, 0.78, 0.38, 0.58],
+    [-0.7, -0.12, -0.12, -0.05], [-0.68, 0.16, -0.12, 0.07],
+  ].entries()) {
+    const conduit = createRodBetween(
+      new THREE.Vector3(sx * U, 0.38 * U, sz * U),
+      new THREE.Vector3(ex * U, 0.38 * U, ez * U),
+      0.011 * U,
+      index % 3 === 0 ? rust : dark,
+      6,
+    );
+    conduit.name = `falcon-dorsal-conduit-${index + 1}`;
+    group.add(conduit);
   }
 
   // The drive is a recessed ARC, not a straight bar with floating bulbs. Each
@@ -422,9 +524,9 @@ function createFalcon(referenceRadiusAU: number): THREE.Group {
   // closed solid tube (the old geometry passed containment tests but occluded
   // the light from the chase camera).
   const engineArcPoints: THREE.Vector3[] = [];
-  for (let i = 0; i <= 16; i++) {
-    const z = THREE.MathUtils.lerp(-1.18, 1.18, i / 16);
-    const aftX = -0.12 - Math.sqrt(1.48 * 1.48 - z * z);
+  for (let i = 0; i <= 20; i++) {
+    const z = THREE.MathUtils.lerp(-1.08, 1.08, i / 20);
+    const aftX = -0.12 - Math.sqrt(1.52 * 1.52 - z * z);
     engineArcPoints.push(new THREE.Vector3(aftX * U, 0, z * U));
   }
   const engineArc = new THREE.CatmullRomCurve3(engineArcPoints);

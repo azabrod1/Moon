@@ -25,7 +25,7 @@ const AUTHENTICITY_SIGNATURES = {
   soyuz: ['soyuz-orbital-module', 'soyuz-descent-module', 'soyuz-instrumentation-propulsion-module', 'soyuz-solar-wing-port'],
   apollo: ['apollo-command-module', 'apollo-service-module', 'apollo-service-propulsion-engine'],
   shuttle: ['shuttle-orbiter-fuselage', 'shuttle-delta-wing'],
-  falcon: ['falcon-offset-cockpit', 'falcon-engine-housing', 'falcon-engine-light'],
+  falcon: ['falcon-forked-hull', 'falcon-mandible-armor-port', 'falcon-mandible-armor-starboard', 'falcon-offset-cockpit', 'falcon-dorsal-radar-dish', 'falcon-engine-housing', 'falcon-engine-light'],
   xwing: ['x-wing-fuselage', 'x-wing-s-foil-upper-port', 'x-wing-s-foil-lower-starboard'],
   ywing: ['y-wing-cockpit', 'y-wing-astromech-dome', 'y-wing-engine-nacelle-port'],
   tie: ['tie-spherical-cockpit', 'tie-hexagonal-solar-wing-port', 'tie-hexagonal-solar-wing-starboard'],
@@ -170,6 +170,31 @@ describe('player fleet models', () => {
     // guarantees that the drive is depth-visible from the aft chase camera.
     expect(lightBox.min.x).toBeLessThan(housingBox.min.x);
     expect(Math.max(Math.abs(lightBox.min.z), Math.abs(lightBox.max.z))).toBeLessThan(1.5);
+  });
+
+  it('keeps the Millennium Falcon thin, forked, and structurally even across both mandibles', () => {
+    const falcon = createPlayerFleetModel('falcon', 1);
+    const hull = falcon.getObjectByName('falcon-forked-hull');
+    const port = falcon.getObjectByName('falcon-mandible-armor-port');
+    const starboard = falcon.getObjectByName('falcon-mandible-armor-starboard');
+    expect(hull).toBeInstanceOf(THREE.Mesh);
+    expect(port).toBeInstanceOf(THREE.Mesh);
+    expect(starboard).toBeInstanceOf(THREE.Mesh);
+
+    const hullSize = new THREE.Box3().setFromObject(hull!).getSize(new THREE.Vector3());
+    const portSize = new THREE.Box3().setFromObject(port!).getSize(new THREE.Vector3());
+    const starboardSize = new THREE.Box3().setFromObject(starboard!).getSize(new THREE.Vector3());
+    expect(hullSize.y).toBeLessThan(hullSize.z * 0.1);
+    expect(portSize.x).toBeCloseTo(starboardSize.x, 5);
+    expect(portSize.y).toBeCloseTo(starboardSize.y, 5);
+    expect(portSize.z).toBeCloseTo(starboardSize.z, 5);
+
+    falcon.updateMatrixWorld(true);
+    const notchRay = new THREE.Raycaster(
+      new THREE.Vector3(1.2, 2, 0),
+      new THREE.Vector3(0, -1, 0),
+    );
+    expect(notchRay.intersectObject(falcon, true)).toHaveLength(0);
   });
 
   it('gives SpaceX Starship three sea-level and three vacuum engines', () => {

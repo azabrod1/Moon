@@ -246,25 +246,27 @@ function addSoyuzDetail(root: THREE.Group, p: DetailPalette): void {
 }
 
 function addFalconDetail(root: THREE.Group, p: DetailPalette): void {
-  // Patchwork hull plates and irregular maintenance greebles are deliberate.
+  // Fine patchwork plates and flush maintenance greebles. These stay close to
+  // the rebuilt hull surface; oversized raised blocks make the freighter read
+  // as a toy at the chase-camera distance.
   for (let ring = 0; ring < 2; ring++) {
-    for (let i = 0; i < 12; i++) {
-      const angle = (i / 12) * Math.PI * 2 + ring * 0.12;
-      const radius = 0.62 + ring * 0.46;
-      addBox(root, `falcon-detail-hull-plate-${ring}-${i}`, [0.26, 0.025, 0.14], [
-        -0.2 + Math.cos(angle) * radius, 0.505 + ring * 0.015, Math.sin(angle) * radius,
+    for (let i = 0; i < 16; i++) {
+      const angle = (i / 16) * Math.PI * 2 + ring * 0.1;
+      const radius = 0.48 + ring * 0.38;
+      addBox(root, `falcon-detail-hull-plate-${ring}-${i}`, [0.14, 0.016, 0.075], [
+        -0.36 + Math.cos(angle) * radius, 0.372 + ring * 0.006, Math.sin(angle) * radius,
       ], i % 4 === 0 ? p.accent : p.panel, [0, -angle, 0]);
     }
   }
   for (const zSign of [-1, 1]) {
-    for (let i = 0; i < 5; i++) {
-      addBox(root, `falcon-detail-mandible-bay-${zSign}-${i}`, [0.2, 0.05, 0.26], [0.82 + i * 0.27, 0.37, zSign * 0.73], i % 3 === 0 ? p.accent : p.seam);
+    for (let i = 0; i < 7; i++) {
+      addBox(root, `falcon-detail-mandible-bay-${zSign}-${i}`, [0.1, 0.018, 0.11], [0.68 + i * 0.18, 0.376, zSign * 0.63], i % 3 === 0 ? p.accent : p.seam);
     }
-    addRod(root, `falcon-detail-mandible-pipe-${zSign}`, [0.65, 0.43, zSign * 0.52], [1.92, 0.43, zSign * 0.52], 0.015, p.pale);
+    addRod(root, `falcon-detail-mandible-pipe-${zSign}`, [0.58, 0.388, zSign * 0.48], [1.78, 0.388, zSign * 0.48], 0.009, p.pale);
   }
-  addRingX(root, 'falcon-detail-dorsal-turret-ring', -0.06, 0.52, 0, 0.2, 0.026, p.seam);
-  addBox(root, 'falcon-detail-dorsal-turret', [0.24, 0.16, 0.24], [-0.06, 0.59, 0], p.pale);
-  addWindowRow(root, 'falcon-detail-cockpit-frame', [[1.29, 0.12, -1.68], [1.29, 0.12, -1.54], [1.29, 0.12, -1.4]], [0.025, 0.17, 0.025], p.pale);
+  addRingX(root, 'falcon-detail-dorsal-turret-ring', -0.36, 0.405, 0, 0.17, 0.018, p.seam);
+  addBox(root, 'falcon-detail-dorsal-turret', [0.18, 0.065, 0.18], [-0.36, 0.43, 0], p.pale);
+  addWindowRow(root, 'falcon-detail-cockpit-frame', [[1.67, 0.07, -1.52], [1.67, 0.07, -1.41], [1.67, 0.07, -1.3]], [0.018, 0.12, 0.018], p.pale);
 }
 
 function addSaucerDetail(root: THREE.Group, p: DetailPalette): void {
@@ -787,8 +789,8 @@ function aftPortsFor(profile: FleetProfile): AftPort[] {
     case 'shuttle': return [[-1.925, -0.08, -0.29, 0.105], [-1.925, -0.08, 0, 0.105], [-1.925, -0.08, 0.29, 0.105], [-1.55, 0.28, -0.46, 0.075], [-1.55, 0.28, 0.46, 0.075]];
     case 'soyuz': return [[-1.54, -0.18, -0.25, 0.06], [-1.54, -0.18, 0, 0.07], [-1.54, -0.18, 0.25, 0.06]];
     case 'falcon': {
-      return [-1.08, -0.72, -0.36, 0, 0.36, 0.72, 1.08].map((z) => [
-        -0.12 - Math.sqrt(1.48 * 1.48 - z * z) - 0.03, 0, z, 0.075,
+      return [-0.96, -0.64, -0.32, 0, 0.32, 0.64, 0.96].map((z) => [
+        -0.12 - Math.sqrt(1.52 * 1.52 - z * z) - 0.07, 0, z, 0.065,
       ] as AftPort);
     }
     case 'saucer': return [-1.2, -0.8, -0.4, 0, 0.4, 0.8, 1.2].map((z) => [-Math.sqrt(1.65 * 1.65 - z * z), -0.08, z, 0.07]);

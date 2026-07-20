@@ -49,7 +49,7 @@ describe('player ship catalog', () => {
   });
 
   it('keeps the UFO origin classified', () => {
-    expect(PLAYER_SHIPS.find(({ id }) => id === 'saucer')?.note).toBe('Origin: classified');
+    expect(PLAYER_SHIPS.find(({ id }) => id === 'saucer')?.note).toBe('Classified origin');
   });
 
   it('styles the current ship like the other settings-column values', () => {

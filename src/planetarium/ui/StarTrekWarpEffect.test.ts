@@ -2,7 +2,8 @@ import { describe, expect, it } from 'vitest';
 import {
   STAR_TREK_WARP_ACCEL_MS,
   STAR_TREK_WARP_EXIT_MS,
-  advanceStarTrekWarpX,
+  advanceStarTrekWarpPoint,
+  screenSpaceWarpDirection,
   starTrekWarpMotion,
 } from './StarTrekWarpEffect';
 
@@ -15,11 +16,27 @@ describe('Star Trek warp motion', () => {
     expect(cruise.chroma).toBeGreaterThan(start.chroma);
   });
 
-  it('moves stars laterally with depth parallax instead of a radial tunnel', () => {
-    const near = advanceStarTrekWarpX(0.8, 1, 1, 1 / 60);
-    const far = advanceStarTrekWarpX(0.8, 1, 0.1, 1 / 60);
-    expect(near).toBeLessThan(far);
-    expect(far).toBeLessThan(0.8);
+  it('moves stars opposite an arbitrary projected ship heading', () => {
+    const direction = screenSpaceWarpDirection({ x: 10, y: 10 }, { x: 13, y: 14 });
+    const next = advanceStarTrekWarpPoint(80, 60, direction, 120, 1, 1 / 60);
+    expect(direction.x).toBeCloseTo(0.6);
+    expect(direction.y).toBeCloseTo(0.8);
+    expect(next.x).toBeLessThan(80);
+    expect(next.y).toBeLessThan(60);
+  });
+
+  it('keeps depth parallax along the projected heading', () => {
+    const direction = { x: 0, y: -1 };
+    const near = advanceStarTrekWarpPoint(80, 60, direction, 120, 1, 1 / 60);
+    const far = advanceStarTrekWarpPoint(80, 60, direction, 120, 0.1, 1 / 60);
+    expect(near.x).toBe(80);
+    expect(far.x).toBe(80);
+    expect(near.y).toBeGreaterThan(far.y);
+    expect(far.y).toBeGreaterThan(60);
+  });
+
+  it('uses screen-up when the ship points directly through the camera axis', () => {
+    expect(screenSpaceWarpDirection({ x: 20, y: 30 }, { x: 20, y: 30 })).toEqual({ x: 0, y: -1 });
   });
 
   it('returns streaks to point stars during exit', () => {

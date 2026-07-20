@@ -244,7 +244,11 @@ import { SurfaceTargetMenu } from './ui/SurfaceTargetMenu';
 import { SunLabel } from './ui/SunLabel';
 import { TutorialCard, tutorialCardModel } from './ui/TutorialCard';
 import { HyperspaceEffect, type HyperspaceOrigin } from './ui/HyperspaceEffect';
-import { StarTrekWarpEffect } from './ui/StarTrekWarpEffect';
+import {
+  screenSpaceWarpDirection,
+  StarTrekWarpEffect,
+  type StarTrekWarpDirection,
+} from './ui/StarTrekWarpEffect';
 
 type ScriptedTransfer = {
   elapsed: number;
@@ -8192,7 +8196,7 @@ export class PlanetariumMode {
     return this.hyperspaceEffect;
   }
 
-  /** Star Trek owns a separate canvas and renderer: its lateral pastel
+  /** Star Trek owns a separate canvas and renderer: its heading-aligned pastel
    *  slit-scan streaks must never inherit the Star Wars blue simu-tunnel. */
   private getStarTrekWarpEffect(): StarTrekWarpEffect | null {
     if (this.starTrekWarpEffect) return this.starTrekWarpEffect;
@@ -8294,6 +8298,20 @@ export class PlanetariumMode {
     return { x: 0.5, y: 0.5 };
   }
 
+  /** Project the ship model's +X nose axis through the live camera. The warp
+   *  stars travel opposite this vector while the copied ship render remains
+   *  completely fixed. */
+  private starTrekWarpDirection(): StarTrekWarpDirection {
+    const canvas = this.renderer.domElement;
+    const width = Math.max(canvas.clientWidth, 1);
+    const height = Math.max(canvas.clientHeight, 1);
+    this.camera.updateMatrixWorld();
+    const ship = projectToScreen({ x: 0, y: 0, z: 0 }, this.camera, width, height);
+    const noseWorld = this.player.getForwardDirection().multiplyScalar(CRUISE_CAM_DIST_AU);
+    const nose = projectToScreen(noseWorld, this.camera, width, height);
+    return screenSpaceWarpDirection(ship, nose);
+  }
+
   /**
    * Run an instant teleport (`action`), but if the destination system's moons
    * aren't painted yet — or carry 4K-class photo maps that haven't reached the
@@ -8343,7 +8361,7 @@ export class PlanetariumMode {
         hyperspaceEffect?.start(origin);
       } else {
         this.hyperspaceEffect?.stop();
-        starTrekWarpEffect?.start(origin);
+        starTrekWarpEffect?.start(origin, this.starTrekWarpDirection());
       }
       this.showHyperspaceShip();
     } else {

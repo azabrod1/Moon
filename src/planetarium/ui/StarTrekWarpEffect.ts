@@ -7,6 +7,18 @@ export interface StarTrekWarpMotion {
   flare: number;
 }
 
+export interface StarTrekWarpDirection {
+  /** Unit screen-space direction in which the ship's nose points. */
+  x: number;
+  /** Unit screen-space direction in which the ship's nose points. */
+  y: number;
+}
+
+interface ScreenPoint {
+  x: number;
+  y: number;
+}
+
 export const STAR_TREK_WARP_ACCEL_MS = 480;
 export const STAR_TREK_WARP_EXIT_MS = 380;
 
@@ -39,15 +51,36 @@ export function starTrekWarpMotion(elapsedMs: number, exitElapsedMs: number | nu
   };
 }
 
+/** Resolve the ship's projected nose direction. A near-zero projection means
+ * the camera is almost exactly on the travel axis; the chase rig's canonical
+ * screen-up direction is a stable fallback and avoids an arbitrary horizontal
+ * field. */
+export function screenSpaceWarpDirection(
+  ship: ScreenPoint,
+  nose: ScreenPoint,
+): StarTrekWarpDirection {
+  const x = nose.x - ship.x;
+  const y = nose.y - ship.y;
+  const length = Math.hypot(x, y);
+  if (!Number.isFinite(length) || length < 1e-4) return { x: 0, y: -1 };
+  return { x: x / length, y: y / length };
+}
+
 /** Deeper streaks cross the tracked exterior shot faster, preserving layered
- * parallax instead of collapsing into a single radial tunnel. */
-export function advanceStarTrekWarpX(
+ * parallax. Stars move opposite the ship's projected travel direction. */
+export function advanceStarTrekWarpPoint(
   x: number,
+  y: number,
+  direction: StarTrekWarpDirection,
   speed: number,
   depth: number,
   deltaSeconds: number,
-): number {
-  return x - speed * mix(0.22, 1, clamp01(depth)) * Math.max(0, deltaSeconds);
+  out: ScreenPoint = { x: 0, y: 0 },
+): ScreenPoint {
+  const distance = speed * mix(0.22, 1, clamp01(depth)) * Math.max(0, deltaSeconds);
+  out.x = x - direction.x * distance;
+  out.y = y - direction.y * distance;
+  return out;
 }
 
 interface WarpStar {
@@ -66,8 +99,8 @@ const TINTS = [
 ] as const;
 
 /** Exterior Star Trek warp field: short, layered pastel/white slit-scan star
- * streaks pass the tracked ship on black. There are deliberately no tunnel
- * rings, spiral motion, or blue simu-tunnel wash. */
+ * streaks pass opposite the tracked ship's projected heading. There are
+ * deliberately no tunnel rings, spiral motion, or blue simu-tunnel wash. */
 export class StarTrekWarpEffect {
   private readonly context: CanvasRenderingContext2D | null;
   private stars: WarpStar[] = [];
@@ -76,10 +109,12 @@ export class StarTrekWarpEffect {
   private previousFrameMs = 0;
   private exitStartedAtMs: number | null = null;
   private origin: HyperspaceOrigin = { x: 0.5, y: 0.5 };
+  private direction: StarTrekWarpDirection = { x: 0, y: -1 };
   private cssWidth = 1;
   private cssHeight = 1;
   private pixelRatio = 1;
   private randomState = 0x7f4a7c15;
+  private readonly advancedPoint: ScreenPoint = { x: 0, y: 0 };
 
   constructor(private readonly canvas: HTMLCanvasElement) {
     let context: CanvasRenderingContext2D | null = null;
@@ -91,10 +126,11 @@ export class StarTrekWarpEffect {
     this.context = context;
   }
 
-  start(origin: HyperspaceOrigin): void {
+  start(origin: HyperspaceOrigin, direction: StarTrekWarpDirection): void {
     this.stop();
     if (!this.context) return;
     this.origin = { x: clamp01(origin.x), y: clamp01(origin.y) };
+    this.direction = screenSpaceWarpDirection({ x: 0, y: 0 }, direction);
     this.resize();
     this.randomState = 0x7f4a7c15;
     const mobile = this.cssWidth <= 640;
@@ -152,7 +188,17 @@ export class StarTrekWarpEffect {
 
   private resetStar(star: WarpStar): void {
     const replacement = this.makeStar();
-    replacement.x = mix(1.02, 1.28, this.random());
+    const xWeight = Math.abs(this.direction.x);
+    const yWeight = Math.abs(this.direction.y);
+    const margin = mix(0.02, 0.18, this.random());
+    // Stars travel opposite the ship, so replenish them on the screen edge
+    // toward which the ship is headed. Diagonal travel distributes new stars
+    // between both upstream edges in proportion to the heading components.
+    if (this.random() < xWeight / Math.max(xWeight + yWeight, 1e-6)) {
+      replacement.x = this.direction.x >= 0 ? 1 + margin : -margin;
+    } else {
+      replacement.y = this.direction.y >= 0 ? 1 + margin : -margin;
+    }
     Object.assign(star, replacement);
   }
 
@@ -173,22 +219,54 @@ export class StarTrekWarpEffect {
     const originY = this.origin.y * this.cssHeight;
     const shipClearX = Math.min(this.cssWidth, this.cssHeight) * 0.15;
     const shipClearY = Math.min(this.cssWidth, this.cssHeight) * 0.095;
+    const screenSpan = Math.hypot(
+      this.direction.x * this.cssWidth,
+      this.direction.y * this.cssHeight,
+    );
+    const speedPx = motion.speed * screenSpan;
+    const trailPx = motion.trail * screenSpan;
+    const normalX = -this.direction.y;
+    const normalY = this.direction.x;
 
     for (const star of this.stars) {
-      star.x = advanceStarTrekWarpX(star.x, motion.speed, star.depth, dt);
-      const trail = motion.trail * mix(0.3, 1.05, star.depth);
-      if (star.x < -trail - 0.04) this.resetStar(star);
-      const headX = star.x * this.cssWidth;
-      const tailX = (star.x + trail) * this.cssWidth;
-      const y = star.y * this.cssHeight;
+      const advanced = advanceStarTrekWarpPoint(
+        star.x * this.cssWidth,
+        star.y * this.cssHeight,
+        this.direction,
+        speedPx,
+        star.depth,
+        dt,
+        this.advancedPoint,
+      );
+      star.x = advanced.x / this.cssWidth;
+      star.y = advanced.y / this.cssHeight;
+      const headX = advanced.x;
+      const headY = advanced.y;
+      const trail = trailPx * mix(0.3, 1.05, star.depth);
+      const tailX = headX + this.direction.x * trail;
+      const tailY = headY + this.direction.y * trail;
+      const margin = trail + 40;
+      if (
+        (headX < -margin || headX > this.cssWidth + margin || headY < -margin || headY > this.cssHeight + margin) &&
+        (tailX < -margin || tailX > this.cssWidth + margin || tailY < -margin || tailY > this.cssHeight + margin)
+      ) {
+        this.resetStar(star);
+        continue;
+      }
 
       // The frozen ship render owns this footprint. Streaks pass behind it
       // without painting across the hull, so its display remains unchanged.
-      if (
-        Math.abs(y - originY) < shipClearY &&
-        headX < originX + shipClearX &&
-        tailX > originX - shipClearX
-      ) continue;
+      const segmentX = tailX - headX;
+      const segmentY = tailY - headY;
+      const segmentLengthSq = segmentX * segmentX + segmentY * segmentY;
+      const closestT = segmentLengthSq > 0
+        ? clamp01(((originX - headX) * segmentX + (originY - headY) * segmentY) / segmentLengthSq)
+        : 0;
+      const closestX = headX + segmentX * closestT;
+      const closestY = headY + segmentY * closestT;
+      const clearDx = (closestX - originX) / shipClearX;
+      const clearDy = (closestY - originY) / shipClearY;
+      if (clearDx * clearDx + clearDy * clearDy < 1) continue;
 
       const alpha = star.brightness * mix(0.28, 0.9, star.depth) * (1 + motion.flare * 0.4);
       const tint = TINTS[star.tint];
@@ -197,20 +275,20 @@ export class StarTrekWarpEffect {
       context.strokeStyle = `rgba(${tint[0]}, ${tint[1]}, ${tint[2]}, ${alpha * 0.62})`;
       context.lineWidth = star.width * mix(1, 3.1, star.depth);
       context.beginPath();
-      context.moveTo(tailX, y + chromaOffset);
-      context.lineTo(headX, y + chromaOffset * 0.2);
+      context.moveTo(tailX + normalX * chromaOffset, tailY + normalY * chromaOffset);
+      context.lineTo(headX + normalX * chromaOffset * 0.2, headY + normalY * chromaOffset * 0.2);
       context.stroke();
 
       context.strokeStyle = `rgba(247, 252, 255, ${Math.min(1, alpha)})`;
       context.lineWidth = Math.max(0.55, star.width * mix(0.46, 1.08, star.depth));
       context.beginPath();
-      context.moveTo(tailX, y);
-      context.lineTo(headX, y);
+      context.moveTo(tailX, tailY);
+      context.lineTo(headX, headY);
       context.stroke();
 
       context.fillStyle = `rgba(255, 255, 255, ${Math.min(1, alpha * 1.1)})`;
       context.beginPath();
-      context.arc(headX, y, Math.max(0.65, context.lineWidth * 0.65), 0, Math.PI * 2);
+      context.arc(headX, headY, Math.max(0.65, context.lineWidth * 0.65), 0, Math.PI * 2);
       context.fill();
     }
     context.globalCompositeOperation = 'source-over';

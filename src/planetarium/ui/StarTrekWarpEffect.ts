@@ -217,8 +217,15 @@ export class StarTrekWarpEffect {
     context.lineCap = 'round';
     const originX = this.origin.x * this.cssWidth;
     const originY = this.origin.y * this.cssHeight;
-    const shipClearX = Math.min(this.cssWidth, this.cssHeight) * 0.15;
-    const shipClearY = Math.min(this.cssWidth, this.cssHeight) * 0.095;
+    if (motion.flare > 0.01) {
+      const flareRadius = Math.min(this.cssWidth, this.cssHeight) * 0.24;
+      const flare = context.createRadialGradient(originX, originY, 0, originX, originY, flareRadius);
+      flare.addColorStop(0, `rgba(255, 255, 255, ${motion.flare * 0.3})`);
+      flare.addColorStop(0.28, `rgba(174, 218, 255, ${motion.flare * 0.13})`);
+      flare.addColorStop(1, 'rgba(125, 156, 255, 0)');
+      context.fillStyle = flare;
+      context.fillRect(0, 0, this.cssWidth, this.cssHeight);
+    }
     const screenSpan = Math.hypot(
       this.direction.x * this.cssWidth,
       this.direction.y * this.cssHeight,
@@ -253,20 +260,6 @@ export class StarTrekWarpEffect {
         this.resetStar(star);
         continue;
       }
-
-      // The frozen ship render owns this footprint. Streaks pass behind it
-      // without painting across the hull, so its display remains unchanged.
-      const segmentX = tailX - headX;
-      const segmentY = tailY - headY;
-      const segmentLengthSq = segmentX * segmentX + segmentY * segmentY;
-      const closestT = segmentLengthSq > 0
-        ? clamp01(((originX - headX) * segmentX + (originY - headY) * segmentY) / segmentLengthSq)
-        : 0;
-      const closestX = headX + segmentX * closestT;
-      const closestY = headY + segmentY * closestT;
-      const clearDx = (closestX - originX) / shipClearX;
-      const clearDy = (closestY - originY) / shipClearY;
-      if (clearDx * clearDx + clearDy * clearDy < 1) continue;
 
       const alpha = star.brightness * mix(0.28, 0.9, star.depth) * (1 + motion.flare * 0.4);
       const tint = TINTS[star.tint];

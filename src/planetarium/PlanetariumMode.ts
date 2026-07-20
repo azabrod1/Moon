@@ -8207,9 +8207,11 @@ export class PlanetariumMode {
   }
 
   /** Freeze the selected ship's current scene pose into a transparent WebGL
-   *  layer above the moving stars. The camera, ship transform, viewport, and
-   *  solar lights are copied without reframing: warp changes only the stars,
-   *  never the ship's screen position, size, or orientation. */
+   *  layer above the moving stars. Transparency, rather than a hole cut into
+   *  either star effect, lets every trail continue naturally behind the hull.
+   *  The camera, ship transform, viewport, and solar lights are copied without
+   *  reframing: warp changes only the stars, never the ship's screen position,
+   *  size, or orientation. */
   private showHyperspaceShip(): void {
     if (!this.showShip) {
       this.hideHyperspaceShip();
@@ -8223,9 +8225,11 @@ export class PlanetariumMode {
           canvas,
           alpha: true,
           antialias: true,
+          premultipliedAlpha: true,
           powerPreference: 'high-performance',
         });
         this.hyperspaceShipRenderer.setClearColor(0x000000, 0);
+        this.hyperspaceShipRenderer.setClearAlpha(0);
       }
     } catch {
       // A second WebGL context can be denied on constrained devices. The

@@ -274,6 +274,16 @@ describe('player fleet models', () => {
       if (object instanceof THREE.Mesh) detailMeshCount++;
     });
     expect(detailMeshCount).toBeGreaterThanOrEqual(110);
+
+    const grille = voyager.getObjectByName('voyager-detail-nacelle-plasma-grille-1-1') as THREE.Mesh;
+    const window = voyager.getObjectByName('voyager-detail-rim-window-1-1') as THREE.Mesh;
+    const grilleMaterial = grille.material as THREE.MeshBasicMaterial;
+    const windowMaterial = window.material as THREE.MeshBasicMaterial;
+    expect(grilleMaterial.opacity).toBe(0);
+    expect(windowMaterial.opacity).toBe(1);
+    updateFleetPropulsion(voyager, 0.25, true, 1);
+    expect(grilleMaterial.opacity).toBeGreaterThan(0.7);
+    expect(windowMaterial.opacity).toBe(1);
   });
 
   it('keeps Klingon and Romulan hull architecture recognizable', () => {

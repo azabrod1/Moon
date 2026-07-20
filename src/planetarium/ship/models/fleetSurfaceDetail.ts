@@ -150,6 +150,11 @@ function addRod(
   return rod;
 }
 
+function markPropulsionEmitter<T extends THREE.Mesh>(mesh: T): T {
+  mesh.userData.fleetPropulsionEmitter = true;
+  return mesh;
+}
+
 function addRingX(
   root: THREE.Group,
   name: string,
@@ -448,6 +453,7 @@ function addYWingDetail(root: THREE.Group, p: DetailPalette): void {
 }
 
 function addEnterpriseDetail(root: THREE.Group, p: DetailPalette): void {
+  const nacelleEnergy = p.light.clone();
   // Concentric aztec-like panel bands and radial seams break up the saucer.
   for (const radius of [0.42, 0.72, 1.02]) {
     const ring = new THREE.Mesh(new THREE.TorusGeometry(radius, 0.014, 6, 64), radius === 0.72 ? p.accent : p.seam);
@@ -462,7 +468,9 @@ function addEnterpriseDetail(root: THREE.Group, p: DetailPalette): void {
   }
   for (const zSign of [-1, 1]) {
     addWindowRow(root, `enterprise-detail-rim-window-${zSign}`, [-0.05, 0.25, 0.55, 0.85, 1.15, 1.45].map((x) => [x, 0.11, zSign * Math.sqrt(Math.max(0.1, 1.55 - (x - 0.87) ** 2))] as [number, number, number]), [0.07, 0.035, 0.025], p.light);
-    for (const x of [-1.38, -1.03, -0.68, -0.33, 0.02]) addBox(root, `enterprise-detail-nacelle-grille-${zSign}-${x}`, [0.23, 0.035, 0.13], [x, 0.515, zSign * 1.28], p.light);
+    for (const x of [-1.38, -1.03, -0.68, -0.33, 0.02]) {
+      markPropulsionEmitter(addBox(root, `enterprise-detail-nacelle-grille-${zSign}-${x}`, [0.23, 0.035, 0.13], [x, 0.515, zSign * 1.28], nacelleEnergy));
+    }
     addRod(root, `enterprise-detail-pylon-conduit-${zSign}`, [-1.03, 0.12, zSign * 0.22], [-0.48, 0.25, zSign * 1.15], 0.015, p.seam);
   }
   addRingX(root, 'enterprise-detail-deflector-rib-outer', 0.39, -0.48, 0, 0.27, 0.018, p.pale);
@@ -471,6 +479,7 @@ function addEnterpriseDetail(root: THREE.Group, p: DetailPalette): void {
 }
 
 function addVoyagerDetail(root: THREE.Group, p: DetailPalette): void {
+  const nacelleEnergy = p.light.clone();
   // Broad dark dorsal insets and warm hull plates match the supplied studio
   // model reference and are the largest visual improvement over the old toy.
   addTopPlate(root, 'voyager-detail-dorsal-spine', [[-0.72, -0.16], [1.48, -0.12], [1.7, 0], [1.48, 0.12], [-0.72, 0.16]], 0.335, 0.035, p.seam);
@@ -497,7 +506,7 @@ function addVoyagerDetail(root: THREE.Group, p: DetailPalette): void {
     // Segmented plasma grilles, radiator ribs, and variable-pylon actuators.
     for (let i = 0; i < 7; i++) {
       const x = -1.72 + i * 0.22;
-      addBox(root, `voyager-detail-nacelle-plasma-grille-${zSign}-${i}`, [0.15, 0.035, 0.12], [x, 0.365, zSign * 1.08], p.light);
+      markPropulsionEmitter(addBox(root, `voyager-detail-nacelle-plasma-grille-${zSign}-${i}`, [0.15, 0.035, 0.12], [x, 0.365, zSign * 1.08], nacelleEnergy));
       addRingX(root, `voyager-detail-nacelle-frame-${zSign}-${i}`, x, 0.16, zSign * 1.08, 0.225, 0.009, p.seam);
     }
     addSphere(root, `voyager-detail-pylon-actuator-${zSign}`, 0.08, [-1.05, 0.04, zSign * 0.65], [1.8, 0.55, 1], p.accent);
@@ -531,6 +540,7 @@ function addKlingonDetail(root: THREE.Group, p: DetailPalette): void {
 }
 
 function addRomulanDetail(root: THREE.Group, p: DetailPalette): void {
+  const nacelleEnergy = p.light.clone();
   for (const zSign of [-1, 1]) {
     for (let i = 0; i < 9; i++) {
       const x = -0.16 - i * 0.17;
@@ -538,7 +548,7 @@ function addRomulanDetail(root: THREE.Group, p: DetailPalette): void {
       addBox(root, `romulan-detail-dorsal-feather-${zSign}-${i}`, [0.42, 0.032, 0.11], [x, 0.48, z], i % 3 === 0 ? p.accent : p.pale, [0, zSign * -0.42, 0]);
       if (i < 6) addBox(root, `romulan-detail-ventral-feather-${zSign}-${i}`, [0.34, 0.03, 0.1], [x - 0.3, -0.56, z - zSign * 0.06], p.accent, [0, zSign * -0.38, 0]);
     }
-    addRod(root, `romulan-detail-nacelle-conduit-${zSign}`, [-1.45, 0.28, zSign * 1.82], [-0.2, 0.28, zSign * 1.82], 0.018, p.light);
+    markPropulsionEmitter(addRod(root, `romulan-detail-nacelle-conduit-${zSign}`, [-1.45, 0.28, zSign * 1.82], [-0.2, 0.28, zSign * 1.82], 0.018, nacelleEnergy));
     addNavLights(root, `romulan-detail-wingtip-emitter-${zSign}`, [[-1.62, 0.16, zSign * 1.84]], p.light);
   }
   for (let i = 0; i < 8; i++) addBox(root, `romulan-detail-neck-segment-${i}`, [0.15, 0.035, 0.25], [-0.02 + i * 0.19, 0.18, 0], i % 2 ? p.seam : p.accent);
@@ -771,13 +781,14 @@ function addVentralDetail(profile: FleetProfile, root: THREE.Group, p: DetailPal
       break;
     }
     case 'romulan': {
+      const nacelleEnergy = p.light.clone();
       for (const zSign of [-1, 1]) {
         for (let i = 0; i < 9; i++) {
           const x = -0.16 - i * 0.17;
           const z = zSign * (0.52 + i * 0.16);
           addBox(root, `romulan-ventral-feather-panel-${zSign}-${i}`, [0.38, 0.03, 0.1], [x - 0.22, -0.515, z], i % 3 === 0 ? p.accent : p.panel, [0, zSign * -0.4, 0]);
         }
-        addRod(root, `romulan-ventral-nacelle-conduit-${zSign}`, [-1.45, -0.1, zSign * 1.82], [-0.2, -0.1, zSign * 1.82], 0.017, p.light);
+        markPropulsionEmitter(addRod(root, `romulan-ventral-nacelle-conduit-${zSign}`, [-1.45, -0.1, zSign * 1.82], [-0.2, -0.1, zSign * 1.82], 0.017, nacelleEnergy));
       }
       for (const z of [-0.5, -0.25, 0, 0.25, 0.5]) addBox(root, `romulan-ventral-aft-emitter-${z}`, [0.28, 0.028, 0.1], [-1.5, -0.53, z], p.accent);
       addSphere(root, 'romulan-ventral-cloaking-core', 0.12, [-1.25, -0.55, 0], [1.7, 0.4, 1], p.light);
@@ -924,7 +935,6 @@ export function updateFleetPropulsion(
 /** Add researched, profile-specific secondary geometry without changing the
  * primary model's scale, orientation, or the Default ship implementation. */
 export function addFleetSurfaceDetail(profile: FleetProfile, model: THREE.Group, referenceRadiusAU: number): THREE.Group {
-  const primaryPropulsionMaterials = collectPrimaryPropulsionMaterials(model);
   const root = new THREE.Group();
   root.name = `${profile}-high-detail`;
   root.scale.setScalar(referenceRadiusAU);
@@ -958,6 +968,7 @@ export function addFleetSurfaceDetail(profile: FleetProfile, model: THREE.Group,
   ventralRoot.userData.coverage = 'underside';
   root.add(ventralRoot);
   addVentralDetail(profile, ventralRoot, palette);
+  const primaryPropulsionMaterials = collectPrimaryPropulsionMaterials(model);
   const aftRoot = new THREE.Group();
   aftRoot.name = `${profile}-aft-detail`;
   aftRoot.userData.coverage = 'rear-propulsion';

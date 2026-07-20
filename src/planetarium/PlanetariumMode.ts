@@ -8188,10 +8188,11 @@ export class PlanetariumMode {
     return this.hyperspaceEffect;
   }
 
-  /** Render the selected ship once into a transparent WebGL layer above the
-   *  moving tunnel. This keeps the real procedural model visible even when
-   *  the arrival action parks/hides the main scene ship under the opaque veil. */
-  private showHyperspaceShip(origin: HyperspaceOrigin): void {
+  /** Freeze the selected ship's current scene pose into a transparent WebGL
+   *  layer above the moving stars. The camera, ship transform, viewport, and
+   *  solar lights are copied without reframing: warp changes only the stars,
+   *  never the ship's screen position, size, or orientation. */
+  private showHyperspaceShip(): void {
     if (!this.showShip) {
       this.hideHyperspaceShip();
       return;
@@ -8217,57 +8218,31 @@ export class PlanetariumMode {
 
     const viewportWidth = Math.max(this.renderer.domElement.clientWidth, 1);
     const viewportHeight = Math.max(this.renderer.domElement.clientHeight, 1);
-    const previewWidth = Math.round(THREE.MathUtils.clamp(
-      Math.min(viewportWidth, viewportHeight) * 0.32,
-      150,
-      280,
-    ));
-    const previewHeight = Math.round(previewWidth * 0.68);
-    const left = THREE.MathUtils.clamp(
-      origin.x * viewportWidth - previewWidth / 2,
-      0,
-      Math.max(0, viewportWidth - previewWidth),
-    );
-    const top = THREE.MathUtils.clamp(
-      origin.y * viewportHeight - previewHeight / 2,
-      0,
-      Math.max(0, viewportHeight - previewHeight),
-    );
-    canvas.style.inset = 'auto';
-    canvas.style.left = `${left}px`;
-    canvas.style.top = `${top}px`;
-    canvas.style.width = `${previewWidth}px`;
-    canvas.style.height = `${previewHeight}px`;
+    canvas.removeAttribute('style');
 
     const renderer = this.hyperspaceShipRenderer;
     renderer.setPixelRatio(Math.min(2, window.devicePixelRatio || 1));
-    renderer.setSize(previewWidth, previewHeight, false);
+    renderer.setSize(viewportWidth, viewportHeight, false);
     renderer.outputColorSpace = this.renderer.outputColorSpace;
     renderer.toneMapping = this.renderer.toneMapping;
-    renderer.toneMappingExposure = Math.max(1, this.renderer.toneMappingExposure);
+    renderer.toneMappingExposure = this.renderer.toneMappingExposure;
 
     const scene = new THREE.Scene();
     const ship = this.player.group.clone(true);
     ship.visible = true;
-    ship.position.set(0, 0, 0);
-    ship.quaternion.identity();
-    ship.scale.set(1, 1, 1);
-    ship.updateMatrixWorld(true);
-    const bounds = new THREE.Box3().setFromObject(ship);
-    const center = bounds.getCenter(new THREE.Vector3());
-    const radius = Math.max(bounds.getBoundingSphere(new THREE.Sphere()).radius, 1e-12);
-    ship.position.sub(center);
     scene.add(ship);
 
-    scene.add(new THREE.HemisphereLight(0xe8f4ff, 0x17213b, 1.7));
-    const key = new THREE.DirectionalLight(0xffffff, 2.6);
-    key.position.set(-1, 1.4, 1.2);
-    scene.add(key);
+    // Preserve the live solar illumination. Lights may sit below transformed
+    // parents, so copy their world pose rather than their local coordinates.
+    this.scene.traverse((object) => {
+      if (!(object instanceof THREE.Light)) return;
+      const light = object.clone();
+      object.getWorldPosition(light.position);
+      object.getWorldQuaternion(light.quaternion);
+      scene.add(light);
+    });
 
-    const camera = new THREE.PerspectiveCamera(42, previewWidth / previewHeight, radius / 100, radius * 20);
-    const distance = (radius / Math.sin(THREE.MathUtils.degToRad(camera.fov / 2))) * 1.16;
-    camera.position.set(-1.25, 0.72, 1.15).normalize().multiplyScalar(distance);
-    camera.lookAt(0, 0, 0);
+    const camera = this.camera.clone();
     camera.updateMatrixWorld(true);
     renderer.clear();
     renderer.render(scene, camera);
@@ -8347,7 +8322,7 @@ export class PlanetariumMode {
     if (hyperspace) {
       const origin = this.hyperspaceOrigin();
       hyperspaceEffect?.start(origin);
-      this.showHyperspaceShip(origin);
+      this.showHyperspaceShip();
     } else {
       this.hyperspaceEffect?.stop();
       this.hideHyperspaceShip();

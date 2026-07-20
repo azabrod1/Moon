@@ -2,14 +2,17 @@ import { describe, expect, it } from 'vitest';
 import { PLAYER_SHIPS, playerShipUsesHyperspace, type PlayerShipProfile } from './shipProfiles';
 
 describe('player ship catalog', () => {
-  it('orders modern, historic, Star Wars, Star Trek, then unknown craft', () => {
+  it('orders the four requested categories and keeps each category even', () => {
     expect(PLAYER_SHIPS.map(({ id }) => id)).toEqual([
-      'default', 'starship', 'dragon', 'soyuz',
+      'default', 'starship', 'dragon', 'orion', 'starliner', 'dreamChaser', 'soyuz', 'saucer',
       'apollo', 'shuttle',
       'falcon', 'xwing', 'ywing', 'tie', 'starDestroyer', 'naboo',
-      'enterprise',
-      'saucer',
+      'enterprise', 'klingon',
     ]);
+    const counts = new Map<string, number>();
+    for (const ship of PLAYER_SHIPS) counts.set(ship.group, (counts.get(ship.group) ?? 0) + 1);
+    expect(Object.fromEntries(counts)).toEqual({ modern: 8, historic: 2, starWars: 6, starTrek: 2 });
+    for (const count of counts.values()) expect(count % 2).toBe(0);
   });
 
   it('uses hyperspace only for Star Wars craft', () => {

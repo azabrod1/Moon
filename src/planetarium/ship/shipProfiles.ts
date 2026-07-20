@@ -4,7 +4,11 @@ export const PLAYER_SHIPS = [
   { id: 'default', label: 'Default', note: 'Moon needle', group: 'modern' },
   { id: 'starship', label: 'SpaceX Starship', note: 'Reusable upper stage', group: 'modern' },
   { id: 'dragon', label: 'SpaceX Dragon', note: 'Crew capsule', group: 'modern' },
+  { id: 'orion', label: 'NASA Orion', note: 'Artemis crew spacecraft', group: 'modern' },
+  { id: 'starliner', label: 'Boeing Starliner', note: 'Reusable crew capsule', group: 'modern' },
+  { id: 'dreamChaser', label: 'Dream Chaser', note: 'Reusable spaceplane', group: 'modern' },
   { id: 'soyuz', label: 'Soyuz', note: 'Operational crew capsule', group: 'modern' },
+  { id: 'saucer', label: 'UFO', note: 'Unknown origin', group: 'modern' },
   { id: 'apollo', label: 'Apollo', note: 'Lunar command ship', group: 'historic' },
   { id: 'shuttle', label: 'Space Shuttle', note: 'Orbital glider', group: 'historic' },
   { id: 'falcon', label: 'Millennium Falcon', note: 'Corellian freighter', group: 'starWars' },
@@ -14,7 +18,7 @@ export const PLAYER_SHIPS = [
   { id: 'starDestroyer', label: 'Star Destroyer', note: 'Imperial destroyer', group: 'starWars' },
   { id: 'naboo', label: 'Naboo Starfighter', note: 'Royal starfighter', group: 'starWars' },
   { id: 'enterprise', label: 'USS Enterprise', note: 'Federation explorer', group: 'starTrek' },
-  { id: 'saucer', label: 'UFO', note: 'Unknown origin', group: 'unknown' },
+  { id: 'klingon', label: 'Klingon Bird-of-Prey', note: 'Klingon raider', group: 'starTrek' },
 ] as const;
 
 export type PlayerShipProfile = (typeof PLAYER_SHIPS)[number]['id'];

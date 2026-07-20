@@ -15,7 +15,12 @@ import { createCassiniModel } from './ship/models/cassini';
 import { createNewHorizonsModel } from './ship/models/newHorizons';
 import { createJunoModel } from './ship/models/juno';
 import { createPlayerFleetModel } from './ship/models/playerFleet';
-import type { HistoricShipProfile, PlayerShipProfile, ShipProfile } from './ship/shipProfiles';
+import {
+  isPlayerShipProfile,
+  type HistoricShipProfile,
+  type PlayerShipProfile,
+  type ShipProfile,
+} from './ship/shipProfiles';
 
 export type { HistoricShipProfile, PlayerShipProfile, ShipProfile } from './ship/shipProfiles';
 
@@ -317,11 +322,7 @@ export class PlayerShip {
     this.profile = profile;
     this.setProbeModelsVisible(false);
     this.setPlayerFleetModelsVisible(false);
-    if (profile === 'shuttle' || profile === 'soyuz' || profile === 'falcon'
-      || profile === 'enterprise' || profile === 'saucer' || profile === 'starship'
-      || profile === 'dragon' || profile === 'xwing' || profile === 'tie'
-      || profile === 'starDestroyer' || profile === 'naboo' || profile === 'apollo'
-      || profile === 'ywing') {
+    if (profile !== 'default' && isPlayerShipProfile(profile)) {
       const playerModel = this.getOrCreatePlayerModel(profile);
       this.defaultModel.visible = false;
       playerModel.visible = true;

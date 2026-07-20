@@ -242,6 +242,7 @@ import { ObservatoryHUD, type SurfaceHudState } from './ui/ObservatoryHUD';
 import { SurfaceTargetMenu } from './ui/SurfaceTargetMenu';
 import { SunLabel } from './ui/SunLabel';
 import { TutorialCard, tutorialCardModel } from './ui/TutorialCard';
+import { HyperspaceEffect, type HyperspaceOrigin } from './ui/HyperspaceEffect';
 
 type ScriptedTransfer = {
   elapsed: number;
@@ -414,7 +415,10 @@ export class PlanetariumMode {
    *  in-flight flag clears, or two quick deck picks. */
   private arrivalCoverGen = 0;
   private static readonly ARRIVAL_MIN_DWELL_MS = 150;
-  private static readonly HYPERSPACE_MIN_DWELL_MS = 720;
+  // Long enough to show the complete Star Wars beat: point stars accelerate
+  // into streaks, settle into a visibly flowing blue tunnel, then collapse
+  // back to realspace. The exit animation adds its own duration after this.
+  private static readonly HYPERSPACE_CRUISE_MIN_MS = 1450;
   // Longest the arrival cover waits (from cover start) for the landed pair's
   // in-flight 4K fetch+decode before revealing anyway — a stalled fetch must
   // never pin the veil.
@@ -618,6 +622,7 @@ export class PlanetariumMode {
   // Show player ship mesh for size comparison
   private showShip = true;
   private selectedShipProfile: PlayerShipProfile = 'default';
+  private hyperspaceEffect: HyperspaceEffect | null = null;
   // Headless screenshot framing: when set, the per-frame collision resolver is
   // skipped so the camera can sit a few radii from a body without being pushed
   // back out past its moon system.
@@ -1401,6 +1406,7 @@ export class PlanetariumMode {
     this.active = false;
     this.arrivalInFlight = false;
     this.arrivalCoverGen++;
+    this.hyperspaceEffect?.stop();
     document.getElementById('arrival-veil')?.classList.remove('covering', 'hyperspace');
     this.sunExposure = 1;
     this.lastSunVisibleFraction = 1;
@@ -8144,6 +8150,41 @@ export class PlanetariumMode {
     return ups;
   }
 
+  /** Lazily bind the travel effect to its overlay canvas. Keeping this lazy
+   *  avoids touching Canvas 2D in headless tests or modes that never select a
+   *  Star Wars craft. */
+  private getHyperspaceEffect(): HyperspaceEffect | null {
+    if (this.hyperspaceEffect) return this.hyperspaceEffect;
+    const canvas = document.getElementById('hyperspace-canvas');
+    if (!(canvas instanceof HTMLCanvasElement)) return null;
+    this.hyperspaceEffect = new HyperspaceEffect(canvas);
+    return this.hyperspaceEffect;
+  }
+
+  /** The player remains at scene origin under the floating-origin renderer.
+   *  Project that actual location so every star trail radiates from the ship,
+   *  even when the chase camera has placed it away from screen center. */
+  private hyperspaceOrigin(): HyperspaceOrigin {
+    const canvas = this.renderer.domElement;
+    const width = Math.max(canvas.clientWidth, 1);
+    const height = Math.max(canvas.clientHeight, 1);
+    this.camera.updateMatrixWorld();
+    const projected = projectToScreen({ x: 0, y: 0, z: 0 }, this.camera, width, height);
+    if (
+      Number.isFinite(projected.x) &&
+      Number.isFinite(projected.y) &&
+      projected.ndcZ < 1 &&
+      Math.abs(projected.ndcX) <= 1.2 &&
+      Math.abs(projected.ndcY) <= 1.2
+    ) {
+      return {
+        x: THREE.MathUtils.clamp(projected.x / width, 0.04, 0.96),
+        y: THREE.MathUtils.clamp(projected.y / height, 0.04, 0.96),
+      };
+    }
+    return { x: 0.5, y: 0.5 };
+  }
+
   /**
    * Run an instant teleport (`action`), but if the destination system's moons
    * aren't painted yet — or carry 4K-class photo maps that haven't reached the
@@ -8182,6 +8223,9 @@ export class PlanetariumMode {
     this.arrivalInFlight = true;
     const veil = document.getElementById('arrival-veil');
     const coverStart = performance.now();
+    const hyperspaceEffect = hyperspace ? this.getHyperspaceEffect() : null;
+    if (hyperspace) hyperspaceEffect?.start(this.hyperspaceOrigin());
+    else this.hyperspaceEffect?.stop();
     veil?.classList.toggle('hyperspace', hyperspace);
     veil?.classList.add('covering'); // snaps fully opaque (no fade-in) — see CSS
     const coverGen = ++this.arrivalCoverGen;
@@ -8234,19 +8278,27 @@ export class PlanetariumMode {
             // reads it as an intentional beat rather than a flicker. Removing
             // the class fades it back out.
             const minDwell = hyperspace
-              ? PlanetariumMode.HYPERSPACE_MIN_DWELL_MS
+              ? PlanetariumMode.HYPERSPACE_CRUISE_MIN_MS
               : PlanetariumMode.ARRIVAL_MIN_DWELL_MS;
             const wait = Math.max(48, minDwell - (performance.now() - coverStart));
             window.setTimeout(() => {
               if (coverGen !== this.arrivalCoverGen) return;
-              veil?.classList.remove('covering');
-              if (hyperspace) {
-                // Keep the streak layer alive through the 300 ms veil fade,
-                // then reset it so the next hyperspace jump restarts cleanly.
+              // Canonical hyperspace first decelerates the moving streaks back
+              // toward point stars; reveal the arrived scene only after that
+              // animated exit completes.
+              const exitWait = hyperspace ? (hyperspaceEffect?.beginExit() ?? 0) : 0;
+              window.setTimeout(() => {
+                if (coverGen !== this.arrivalCoverGen) return;
+                veil?.classList.remove('covering');
+                if (!hyperspace) return;
+                // Keep the moving layer alive through the 300 ms veil fade,
+                // then reset it so the next jump starts from stationary stars.
                 window.setTimeout(() => {
-                  if (coverGen === this.arrivalCoverGen) veil?.classList.remove('hyperspace');
+                  if (coverGen !== this.arrivalCoverGen) return;
+                  hyperspaceEffect?.stop();
+                  veil?.classList.remove('hyperspace');
                 }, 320);
-              }
+              }, exitWait);
             }, wait);
           };
           tryLift();

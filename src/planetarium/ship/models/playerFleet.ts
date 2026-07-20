@@ -148,6 +148,7 @@ function createSpaceShuttle(referenceRadiusAU: number): THREE.Group {
   const engineGlow = glow(0x78baff, 0.86);
 
   const fuselage = cylinderX(0.47 * U, 0.51 * U, 2.8 * U, 40, white);
+  fuselage.name = 'shuttle-orbiter-fuselage';
   fuselage.position.x = -0.15 * U;
   group.add(fuselage);
   const nose = new THREE.Mesh(new THREE.SphereGeometry(0.51 * U, 40, 24), white);
@@ -166,6 +167,7 @@ function createSpaceShuttle(referenceRadiusAU: number): THREE.Group {
     [-0.98 * U, -0.42 * U], [-1.35 * U, 0.42 * U], [-0.78 * U, 1.72 * U],
     [0.72 * U, 0.42 * U],
   ], 0.12 * U, black, 0.015 * U);
+  wing.name = 'shuttle-delta-wing';
   wing.position.y = -0.05 * U;
   group.add(wing);
   const wingTop = plateXZ([
@@ -213,6 +215,7 @@ function createSpaceShuttle(referenceRadiusAU: number): THREE.Group {
 
   for (const z of [-0.29, 0, 0.29]) {
     const bell = new THREE.Mesh(createEngineBell(0.14 * U, 0.5 * U), darkSteel);
+    bell.name = `shuttle-main-engine-${z}`;
     bell.rotation.z = -Math.PI / 2;
     bell.position.set(-1.7 * U, -0.08 * U, z * U);
     group.add(bell);
@@ -241,6 +244,7 @@ function createSoyuz(referenceRadiusAU: number): THREE.Group {
   const antenna = standard(0xd9d4c4, 0.35, 0.48);
 
   const service = cylinderX(0.48 * U, 0.48 * U, 1.18 * U, 28, foil);
+  service.name = 'soyuz-instrumentation-propulsion-module';
   service.position.x = -0.77 * U;
   group.add(service);
   for (const x of [-1.28, -0.93, -0.58, -0.23]) {
@@ -251,6 +255,7 @@ function createSoyuz(referenceRadiusAU: number): THREE.Group {
   }
 
   const descent = cylinderX(0.34 * U, 0.59 * U, 0.76 * U, 32, pale);
+  descent.name = 'soyuz-descent-module';
   descent.position.x = 0.2 * U;
   group.add(descent);
   const heatShield = discX(0.59 * U, 0.08 * U, charcoal, 32);
@@ -258,6 +263,7 @@ function createSoyuz(referenceRadiusAU: number): THREE.Group {
   group.add(heatShield);
 
   const orbital = new THREE.Mesh(new THREE.SphereGeometry(0.56 * U, 36, 24), foil);
+  orbital.name = 'soyuz-orbital-module';
   orbital.scale.x = 1.14;
   orbital.position.x = 0.96 * U;
   group.add(orbital);
@@ -279,6 +285,7 @@ function createSoyuz(referenceRadiusAU: number): THREE.Group {
   // Four-section solar wings, with raised silver cell borders and hinges.
   for (const zSign of [-1, 1]) {
     const wing = new THREE.Group();
+    wing.name = `soyuz-solar-wing-${zSign < 0 ? 'port' : 'starboard'}`;
     wing.position.set(-0.72 * U, 0, zSign * 0.5 * U);
     for (let i = 0; i < 4; i++) {
       const panel = new THREE.Mesh(new THREE.BoxGeometry(0.63 * U, 0.055 * U, 0.48 * U), solar);
@@ -353,10 +360,12 @@ function createFalcon(referenceRadiusAU: number): THREE.Group {
 
   // Offset cockpit tube and multi-pane canopy.
   const cockpitBoom = cylinderX(0.18 * U, 0.24 * U, 1.03 * U, 18, hull);
+  cockpitBoom.name = 'falcon-offset-cockpit-boom';
   cockpitBoom.position.set(0.45 * U, 0.06 * U, -1.42 * U);
   cockpitBoom.rotation.y = -0.12;
   group.add(cockpitBoom);
   const cockpit = new THREE.Mesh(new THREE.SphereGeometry(0.31 * U, 24, 16), hull);
+  cockpit.name = 'falcon-offset-cockpit';
   cockpit.scale.x = 1.25;
   cockpit.position.set(1.0 * U, 0.06 * U, -1.54 * U);
   group.add(cockpit);
@@ -442,6 +451,7 @@ function createEnterprise(referenceRadiusAU: number): THREE.Group {
   const red = glow(0xff523f, 0.72);
 
   const saucer = discY(1.3 * U, 1.3 * U, 0.19 * U, pearl, 72);
+  saucer.name = 'enterprise-primary-saucer';
   saucer.position.x = 0.87 * U;
   group.add(saucer);
   const saucerCrown = new THREE.Mesh(new THREE.SphereGeometry(0.64 * U, 40, 18), pearl);
@@ -465,6 +475,7 @@ function createEnterprise(referenceRadiusAU: number): THREE.Group {
   neck.position.y = -0.18 * U;
   group.add(neck);
   const engineering = cylinderX(0.45 * U, 0.63 * U, 1.72 * U, 36, pearl);
+  engineering.name = 'enterprise-secondary-hull';
   engineering.position.set(-0.52 * U, -0.48 * U, 0);
   group.add(engineering);
   const tail = new THREE.Mesh(new THREE.SphereGeometry(0.52 * U, 30, 18), pearl);
@@ -488,6 +499,7 @@ function createEnterprise(referenceRadiusAU: number): THREE.Group {
     pylon.position.y = 0.03 * U;
     group.add(pylon);
     const nacelle = cylinderX(0.19 * U, 0.24 * U, 2.18 * U, 28, pearl);
+    nacelle.name = `enterprise-warp-nacelle-${zSign < 0 ? 'port' : 'starboard'}`;
     nacelle.position.set(-0.68 * U, 0.36 * U, zSign * 1.28 * U);
     group.add(nacelle);
     const cap = new THREE.Mesh(new THREE.SphereGeometry(0.245 * U, 24, 16), red);
@@ -511,6 +523,93 @@ function createEnterprise(referenceRadiusAU: number): THREE.Group {
   for (const x of [-1.2, -0.9, -0.6, -0.3]) {
     addWindows(group, [x * U], -0.25 * U, 0.43 * U, 0.035 * U, windowMat);
     addWindows(group, [x * U], -0.25 * U, -0.43 * U, 0.035 * U, windowMat);
+  }
+  return group;
+}
+
+function createKlingonBirdOfPrey(referenceRadiusAU: number): THREE.Group {
+  const U = referenceRadiusAU;
+  const group = new THREE.Group();
+  const green = standard(0x52694d, 0.64, 0.42, 0x122015, 0.14);
+  const darkGreen = standard(0x293a2b, 0.68, 0.48);
+  const bronze = standard(0x826b3f, 0.58, 0.54, 0x261705, 0.12);
+  const dark = standard(0x232928, 0.64, 0.5);
+  const red = glow(0xff563f, 0.82);
+  const amber = glow(0xffae43, 0.76);
+
+  const command = new THREE.Mesh(new THREE.SphereGeometry(0.48 * U, 30, 18), green);
+  command.name = 'klingon-command-head';
+  command.scale.set(1.35, 0.42, 0.78);
+  command.position.set(1.48 * U, 0.08 * U, 0);
+  group.add(command);
+  const beak = new THREE.Mesh(new THREE.ConeGeometry(0.28 * U, 0.72 * U, 20), bronze);
+  beak.name = 'klingon-forward-beak';
+  beak.rotation.z = -Math.PI / 2;
+  beak.position.set(2.12 * U, 0.02 * U, 0);
+  group.add(beak);
+  const bridge = new THREE.Mesh(new THREE.SphereGeometry(0.19 * U, 20, 12), darkGreen);
+  bridge.scale.set(1.1, 0.48, 0.72);
+  bridge.position.set(1.38 * U, 0.38 * U, 0);
+  group.add(bridge);
+  const neck = new THREE.Mesh(new THREE.BoxGeometry(1.25 * U, 0.22 * U, 0.34 * U), darkGreen);
+  neck.name = 'klingon-long-neck';
+  neck.position.set(0.48 * U, -0.03 * U, 0);
+  group.add(neck);
+  const body = new THREE.Mesh(new THREE.SphereGeometry(0.78 * U, 32, 18), green);
+  body.scale.set(1.15, 0.5, 0.9);
+  body.position.set(-0.52 * U, 0.02 * U, 0);
+  group.add(body);
+  const aftDeck = plateXZ([
+    [-0.1 * U, -0.62 * U], [-1.6 * U, -0.88 * U], [-1.92 * U, 0],
+    [-1.6 * U, 0.88 * U], [-0.1 * U, 0.62 * U],
+  ], 0.2 * U, darkGreen, 0.025 * U);
+  aftDeck.position.y = -0.1 * U;
+  group.add(aftDeck);
+
+  for (const zSign of [-1, 1]) {
+    const wingAssembly = new THREE.Group();
+    wingAssembly.name = `klingon-swept-wing-${zSign < 0 ? 'port' : 'starboard'}`;
+    // The K'vort/B'rel family can articulate its wings. A shallow attack-mode
+    // droop makes the bird silhouette unmistakable without hiding the dorsal
+    // feather plating from the chase camera.
+    wingAssembly.rotation.x = zSign * 0.14;
+    group.add(wingAssembly);
+    const wing = plateXZ([
+      [-0.2 * U, zSign * 0.36 * U], [-0.72 * U, zSign * 1.72 * U],
+      [-1.58 * U, zSign * 1.95 * U], [-1.32 * U, zSign * 0.58 * U],
+    ], 0.16 * U, green, 0.025 * U);
+    wing.position.y = -0.05 * U;
+    wingAssembly.add(wing);
+    const leadingEdge = createRodBetween(
+      new THREE.Vector3(-0.2 * U, 0.05 * U, zSign * 0.36 * U),
+      new THREE.Vector3(-0.72 * U, 0.05 * U, zSign * 1.72 * U),
+      0.055 * U,
+      bronze,
+      8,
+    );
+    wingAssembly.add(leadingEdge);
+    const wingtip = cylinderX(0.14 * U, 0.19 * U, 0.72 * U, 18, dark);
+    wingtip.position.set(-1.3 * U, 0, zSign * 1.86 * U);
+    wingAssembly.add(wingtip);
+    const disruptor = cylinderX(0.045 * U, 0.075 * U, 1.05 * U, 12, bronze);
+    disruptor.name = `klingon-wingtip-cannon-${zSign < 0 ? 'port' : 'starboard'}`;
+    disruptor.position.set(-0.5 * U, -0.04 * U, zSign * 1.84 * U);
+    wingAssembly.add(disruptor);
+    const muzzle = new THREE.Mesh(new THREE.SphereGeometry(0.075 * U, 12, 8), red);
+    muzzle.position.set(0.04 * U, -0.04 * U, zSign * 1.84 * U);
+    wingAssembly.add(muzzle);
+    for (let i = 0; i < 6; i++) {
+      const feather = new THREE.Mesh(new THREE.BoxGeometry(0.46 * U, 0.035 * U, 0.2 * U), i % 2 ? darkGreen : bronze);
+      feather.position.set((-0.5 - i * 0.14) * U, 0.07 * U, zSign * (0.62 + i * 0.19) * U);
+      feather.rotation.y = zSign * -0.38;
+      wingAssembly.add(feather);
+    }
+    addEngineGlow(wingAssembly, -1.92 * U, 0, zSign * 0.54 * U, 0.16 * U, amber);
+  }
+  for (const z of [-0.28, 0, 0.28]) {
+    const vent = new THREE.Mesh(new THREE.BoxGeometry(0.36 * U, 0.07 * U, 0.12 * U), dark);
+    vent.position.set(-1.28 * U, 0.3 * U, z * U);
+    group.add(vent);
   }
   return group;
 }
@@ -586,6 +685,7 @@ function createStarship(referenceRadiusAU: number): THREE.Group {
   const engineGlow = glow(0x9fdcff, 0.82);
 
   const hull = cylinderX(0.48 * U, 0.48 * U, 2.72 * U, 48, steel);
+  hull.name = 'starship-stainless-hull';
   hull.position.x = -0.28 * U;
   group.add(hull);
   const hullShield = new THREE.Mesh(
@@ -639,12 +739,14 @@ function createStarship(referenceRadiusAU: number): THREE.Group {
       [1.35 * U, zSign * 0.34 * U], [0.78 * U, zSign * 0.93 * U],
       [0.36 * U, zSign * 0.82 * U], [0.62 * U, zSign * 0.36 * U],
     ], 0.09 * U, heatShield, 0.012 * U);
+    forwardFlap.name = `starship-forward-flap-${zSign < 0 ? 'port' : 'starboard'}`;
     forwardFlap.position.y = -0.03 * U;
     group.add(forwardFlap);
     const aftFlap = plateXZ([
       [-1.35 * U, zSign * 0.36 * U], [-1.92 * U, zSign * 1.0 * U],
       [-2.13 * U, zSign * 0.83 * U], [-1.75 * U, zSign * 0.34 * U],
     ], 0.11 * U, heatShield, 0.015 * U);
+    aftFlap.name = `starship-aft-flap-${zSign < 0 ? 'port' : 'starboard'}`;
     aftFlap.position.y = -0.02 * U;
     group.add(aftFlap);
   }
@@ -689,6 +791,7 @@ function createDragon(referenceRadiusAU: number): THREE.Group {
   const engineGlow = glow(0xa9dcff, 0.82);
 
   const capsule = cylinderX(0.47 * U, 0.69 * U, 1.32 * U, 48, ceramic);
+  capsule.name = 'dragon-crew-capsule';
   capsule.position.x = 0.4 * U;
   group.add(capsule);
   const nose = new THREE.Mesh(new THREE.SphereGeometry(0.48 * U, 36, 20), ceramic);
@@ -720,13 +823,18 @@ function createDragon(referenceRadiusAU: number): THREE.Group {
 
   // Trunk with dark-blue solar-cell facets and a silver structural grid.
   const trunk = cylinderX(0.7 * U, 0.7 * U, 1.22 * U, 32, trunkMetal);
+  trunk.name = 'dragon-unpressurized-trunk';
   trunk.position.x = -0.96 * U;
   group.add(trunk);
-  for (let i = 0; i < 12; i++) {
-    const angle = (i / 12) * Math.PI * 2;
+  // The flight vehicle does not have deployable solar wings: cells cover one
+  // half of Dragon's trunk. Six flush facets keep that exact half-and-half
+  // treatment readable while leaving the opposite metallic side exposed.
+  for (let i = 0; i < 6; i++) {
+    const angle = -Math.PI / 2 + ((i + 0.5) / 6) * Math.PI;
     const panel = new THREE.Mesh(new THREE.BoxGeometry(0.8 * U, 0.38 * U, 0.025 * U), solar);
+    panel.name = `dragon-trunk-solar-facet-${i + 1}`;
     panel.position.set(-0.96 * U, Math.cos(angle) * 0.67 * U, Math.sin(angle) * 0.67 * U);
-    panel.rotation.x = angle;
+    panel.rotation.x = angle - Math.PI / 2;
     group.add(panel);
   }
   for (const x of [-1.45, -1.0, -0.51]) {
@@ -749,6 +857,213 @@ function createDragon(referenceRadiusAU: number): THREE.Group {
   return group;
 }
 
+function createOrion(referenceRadiusAU: number): THREE.Group {
+  const U = referenceRadiusAU;
+  const group = new THREE.Group();
+  const capsule = standard(0xd8dbd6, 0.7, 0.18, 0x252a29, 0.08);
+  const service = standard(0x8b9290, 0.56, 0.62);
+  const dark = standard(0x292d2e, 0.72, 0.34);
+  const solar = standard(0x173e62, 0.42, 0.36, 0x071a2a, 0.18);
+  const glass = standard(0x071820, 0.16, 0.24, 0x173d4d, 0.3);
+  const white = standard(0xe7e9e3, 0.68, 0.12);
+  const engineGlow = glow(0x9fd8ff, 0.74);
+
+  const crew = cylinderX(0.35 * U, 0.72 * U, 1.0 * U, 48, capsule);
+  crew.name = 'orion-crew-module';
+  crew.position.x = 0.85 * U;
+  group.add(crew);
+  const heatShield = discX(0.73 * U, 0.1 * U, dark, 48);
+  heatShield.position.x = 0.32 * U;
+  group.add(heatShield);
+  const dockingCollar = cylinderX(0.23 * U, 0.23 * U, 0.22 * U, 28, service);
+  dockingCollar.position.x = 1.46 * U;
+  group.add(dockingCollar);
+  const dockingRing = new THREE.Mesh(new THREE.TorusGeometry(0.24 * U, 0.035 * U, 8, 28), white);
+  dockingRing.rotation.y = Math.PI / 2;
+  dockingRing.position.x = 1.58 * U;
+  group.add(dockingRing);
+
+  for (const z of [-0.34, 0, 0.34]) {
+    const pane = new THREE.Mesh(new THREE.BoxGeometry(0.08 * U, 0.15 * U, 0.16 * U), glass);
+    pane.position.set(1.08 * U, 0.31 * U, z * U);
+    group.add(pane);
+  }
+
+  const serviceModule = cylinderX(0.68 * U, 0.68 * U, 1.18 * U, 36, service);
+  serviceModule.name = 'orion-european-service-module';
+  serviceModule.position.x = -0.34 * U;
+  group.add(serviceModule);
+  for (const x of [-0.7, -0.25, 0.12]) {
+    const band = new THREE.Mesh(new THREE.TorusGeometry(0.69 * U, 0.02 * U, 6, 36), dark);
+    band.rotation.y = Math.PI / 2;
+    band.position.x = x * U;
+    group.add(band);
+  }
+  const mainNozzle = cylinderX(0.13 * U, 0.25 * U, 0.42 * U, 24, dark);
+  mainNozzle.position.x = -1.13 * U;
+  group.add(mainNozzle);
+  addEngineGlow(group, -1.36 * U, 0, 0, 0.13 * U, engineGlow);
+
+  // Orion's four three-panel solar-array wings form the characteristic cross.
+  for (const axis of ['y', 'z'] as const) {
+    for (const sign of [-1, 1]) {
+      const strutEnd = new THREE.Vector3(-0.35 * U, 0, 0);
+      strutEnd[axis] = sign * 0.86 * U;
+      const boom = createRodBetween(new THREE.Vector3(-0.35 * U, 0, 0), strutEnd, 0.035 * U, service, 8);
+      boom.name = `orion-solar-boom-${axis}-${sign}`;
+      group.add(boom);
+      for (let panelIndex = 0; panelIndex < 3; panelIndex++) {
+        const panel = new THREE.Mesh(
+          new THREE.BoxGeometry(
+            0.05 * U,
+            axis === 'y' ? 0.43 * U : 0.34 * U,
+            axis === 'z' ? 0.43 * U : 0.34 * U,
+          ),
+          solar,
+        );
+        panel.name = `orion-solar-panel-${axis}-${sign}-${panelIndex + 1}`;
+        panel.position.x = -0.35 * U;
+        panel.position[axis] = sign * (0.88 + panelIndex * 0.46) * U;
+        group.add(panel);
+      }
+    }
+  }
+  return group;
+}
+
+function createStarliner(referenceRadiusAU: number): THREE.Group {
+  const U = referenceRadiusAU;
+  const group = new THREE.Group();
+  const white = standard(0xe1e2dd, 0.68, 0.16, 0x242726, 0.08);
+  const gray = standard(0x777e7d, 0.58, 0.5);
+  const black = standard(0x25292a, 0.8, 0.24);
+  const blue = standard(0x1a5f8c, 0.48, 0.28, 0x092033, 0.16);
+  const solar = standard(0x163954, 0.4, 0.42, 0x071725, 0.18);
+  const glass = standard(0x07171e, 0.14, 0.26, 0x164052, 0.3);
+  const engineGlow = glow(0x83caff, 0.72);
+
+  const crew = cylinderX(0.42 * U, 0.82 * U, 1.02 * U, 48, white);
+  crew.name = 'starliner-crew-capsule';
+  crew.position.x = 0.62 * U;
+  group.add(crew);
+  const forwardCap = new THREE.Mesh(new THREE.SphereGeometry(0.43 * U, 36, 18), white);
+  forwardCap.scale.set(0.38, 1, 1);
+  forwardCap.position.x = 1.2 * U;
+  group.add(forwardCap);
+  const dockingCollar = cylinderX(0.25 * U, 0.25 * U, 0.22 * U, 28, gray);
+  dockingCollar.position.x = 1.42 * U;
+  group.add(dockingCollar);
+  const dockingRing = new THREE.Mesh(new THREE.TorusGeometry(0.27 * U, 0.035 * U, 8, 28), white);
+  dockingRing.rotation.y = Math.PI / 2;
+  dockingRing.position.x = 1.54 * U;
+  group.add(dockingRing);
+  for (const [y, z] of [[0.34, -0.32], [0.34, 0.32], [0.13, -0.58], [0.13, 0.58]]) {
+    const pane = new THREE.Mesh(new THREE.BoxGeometry(0.12 * U, 0.14 * U, 0.14 * U), glass);
+    pane.position.set(0.93 * U, y * U, z * U);
+    group.add(pane);
+  }
+  for (const zSign of [-1, 1]) {
+    const stripe = new THREE.Mesh(new THREE.BoxGeometry(0.6 * U, 0.045 * U, 0.08 * U), blue);
+    stripe.position.set(0.55 * U, 0.65 * U, zSign * 0.28 * U);
+    group.add(stripe);
+  }
+
+  const serviceModule = cylinderX(0.84 * U, 0.84 * U, 0.66 * U, 40, gray);
+  serviceModule.name = 'starliner-service-module';
+  serviceModule.position.x = -0.22 * U;
+  group.add(serviceModule);
+  const solarDeck = discX(0.85 * U, 0.08 * U, black, 40);
+  solarDeck.position.x = -0.59 * U;
+  group.add(solarDeck);
+  // Starliner's cells sit on the service module's aft face rather than wings.
+  for (let i = 0; i < 12; i++) {
+    const angle = (i / 12) * Math.PI * 2;
+    const panel = new THREE.Mesh(new THREE.BoxGeometry(0.035 * U, 0.28 * U, 0.18 * U), solar);
+    panel.name = `starliner-aft-solar-cell-${i + 1}`;
+    panel.position.set(-0.64 * U, Math.cos(angle) * 0.57 * U, Math.sin(angle) * 0.57 * U);
+    panel.rotation.x = angle;
+    group.add(panel);
+  }
+  for (let i = 0; i < 8; i++) {
+    const angle = (i / 8) * Math.PI * 2;
+    const thruster = cylinderX(0.045 * U, 0.07 * U, 0.18 * U, 12, black);
+    thruster.position.set(-0.69 * U, Math.cos(angle) * 0.7 * U, Math.sin(angle) * 0.7 * U);
+    group.add(thruster);
+    addEngineGlow(group, -0.79 * U, Math.cos(angle) * 0.7 * U, Math.sin(angle) * 0.7 * U, 0.04 * U, engineGlow);
+  }
+  // Starliner is physically compact; a uniform display-scale adjustment keeps
+  // its researched proportions while matching the fleet's chase-view envelope.
+  group.scale.setScalar(1.12);
+  return group;
+}
+
+function createDreamChaser(referenceRadiusAU: number): THREE.Group {
+  const U = referenceRadiusAU;
+  const group = new THREE.Group();
+  const white = standard(0xd9dcda, 0.66, 0.18, 0x242827, 0.08);
+  const tile = standard(0x242829, 0.84, 0.18);
+  const dark = standard(0x465052, 0.58, 0.52);
+  const orange = standard(0xc25f20, 0.66, 0.24, 0x2d1205, 0.14);
+  const glass = standard(0x071820, 0.13, 0.28, 0x164357, 0.34);
+  const engineGlow = glow(0x86cfff, 0.78);
+
+  const planform: Array<[number, number]> = [
+    [2.05 * U, 0], [1.1 * U, -0.54 * U], [-0.55 * U, -1.25 * U],
+    [-1.36 * U, -1.08 * U], [-1.12 * U, -0.38 * U], [-1.52 * U, -0.28 * U],
+    [-1.52 * U, 0.28 * U], [-1.12 * U, 0.38 * U], [-1.36 * U, 1.08 * U],
+    [-0.55 * U, 1.25 * U], [1.1 * U, 0.54 * U],
+  ];
+  const lower = plateXZ(planform, 0.22 * U, tile, 0.025 * U);
+  lower.name = 'dream-chaser-lifting-body';
+  lower.position.y = -0.12 * U;
+  group.add(lower);
+  const upper = plateXZ(planform.map(([x, z]) => [x * 0.92, z * 0.86]), 0.24 * U, white, 0.035 * U);
+  upper.position.y = 0.04 * U;
+  group.add(upper);
+  const cockpit = new THREE.Mesh(new THREE.SphereGeometry(0.48 * U, 28, 16), glass);
+  cockpit.name = 'dream-chaser-cockpit';
+  cockpit.scale.set(1.45, 0.42, 0.7);
+  cockpit.position.set(1.02 * U, 0.33 * U, 0);
+  group.add(cockpit);
+  const noseCap = new THREE.Mesh(new THREE.SphereGeometry(0.35 * U, 24, 14), tile);
+  noseCap.scale.set(1.4, 0.35, 0.62);
+  noseCap.position.set(1.72 * U, -0.08 * U, 0);
+  group.add(noseCap);
+
+  for (const zSign of [-1, 1]) {
+    const tail = plateXZ([
+      [-1.24 * U, -0.04 * U], [-0.5 * U, -0.04 * U],
+      [-0.9 * U, 0.78 * U], [-1.38 * U, 0.48 * U],
+    ], 0.08 * U, white, 0.012 * U);
+    tail.name = `dream-chaser-tail-${zSign < 0 ? 'port' : 'starboard'}`;
+    tail.rotation.x = zSign * Math.PI / 2;
+    tail.position.set(0, 0.16 * U, zSign * 0.58 * U);
+    group.add(tail);
+    const edge = createRodBetween(
+      new THREE.Vector3(1.0 * U, 0.2 * U, zSign * 0.48 * U),
+      new THREE.Vector3(-1.18 * U, 0.18 * U, zSign * 1.02 * U),
+      0.035 * U,
+      orange,
+      8,
+    );
+    group.add(edge);
+    const engine = cylinderX(0.12 * U, 0.16 * U, 0.34 * U, 18, dark);
+    engine.position.set(-1.42 * U, 0.02 * U, zSign * 0.36 * U);
+    group.add(engine);
+    addEngineGlow(group, -1.61 * U, 0.02 * U, zSign * 0.36 * U, 0.1 * U, engineGlow);
+    for (let i = 0; i < 6; i++) {
+      const panel = new THREE.Mesh(new THREE.BoxGeometry(0.24 * U, 0.035 * U, 0.2 * U), i % 2 ? dark : tile);
+      panel.position.set((0.65 - i * 0.31) * U, 0.2 * U, zSign * (0.3 + i * 0.1) * U);
+      panel.rotation.y = zSign * 0.16;
+      group.add(panel);
+    }
+  }
+  const dorsalPanel = new THREE.Mesh(new THREE.BoxGeometry(1.3 * U, 0.04 * U, 0.32 * U), orange);
+  dorsalPanel.position.set(-0.1 * U, 0.28 * U, 0);
+  group.add(dorsalPanel);
+  return group;
+}
+
 function createXWing(referenceRadiusAU: number): THREE.Group {
   const U = referenceRadiusAU;
   const group = new THREE.Group();
@@ -761,6 +1076,7 @@ function createXWing(referenceRadiusAU: number): THREE.Group {
   const blueGlow = glow(0x8bd1ff, 0.78);
 
   const fuselage = cylinderX(0.3 * U, 0.42 * U, 2.05 * U, 24, ivory);
+  fuselage.name = 'x-wing-fuselage';
   fuselage.position.x = 0.2 * U;
   group.add(fuselage);
   const nose = new THREE.Mesh(new THREE.ConeGeometry(0.3 * U, 1.15 * U, 28), ivory);
@@ -783,6 +1099,7 @@ function createXWing(referenceRadiusAU: number): THREE.Group {
   for (const ySign of [-1, 1]) {
     for (const zSign of [-1, 1]) {
       const wing = new THREE.Mesh(new THREE.BoxGeometry(1.48 * U, 0.07 * U, 1.12 * U), panel);
+      wing.name = `x-wing-s-foil-${ySign < 0 ? 'lower' : 'upper'}-${zSign < 0 ? 'port' : 'starboard'}`;
       wing.position.set(-0.25 * U, ySign * 0.38 * U, zSign * 0.63 * U);
       wing.rotation.x = ySign * zSign * 0.19;
       group.add(wing);
@@ -818,6 +1135,7 @@ function createTieFighter(referenceRadiusAU: number): THREE.Group {
   const red = glow(0xff5e54, 0.74);
 
   const cockpit = new THREE.Mesh(new THREE.SphereGeometry(0.64 * U, 32, 22), frame);
+  cockpit.name = 'tie-spherical-cockpit';
   cockpit.scale.x = 1.08;
   group.add(cockpit);
   const frontWindow = cylinderX(0.36 * U, 0.42 * U, 0.08 * U, 12, glass);
@@ -854,6 +1172,7 @@ function createTieFighter(referenceRadiusAU: number): THREE.Group {
 
     // Six-sided solar wing, vertical in X/Y with a metallic perimeter.
     const wing = new THREE.Mesh(new THREE.CylinderGeometry(1.22 * U, 1.22 * U, 0.1 * U, 6), solar);
+    wing.name = `tie-hexagonal-solar-wing-${zSign < 0 ? 'port' : 'starboard'}`;
     wing.rotation.x = Math.PI / 2;
     wing.position.z = zSign * 1.42 * U;
     group.add(wing);
@@ -894,12 +1213,13 @@ function createStarDestroyer(referenceRadiusAU: number): THREE.Group {
   const engineGlow = glow(0x88c9ff, 0.9);
 
   const upperWedge = plateXZ([
-    [2.35 * U, 0], [-1.5 * U, -1.42 * U], [-1.15 * U, 0], [-1.5 * U, 1.42 * U],
+    [2.35 * U, 0], [-1.5 * U, -1.42 * U], [-1.5 * U, 1.42 * U],
   ], 0.24 * U, hull, 0.02 * U);
+  upperWedge.name = 'star-destroyer-dagger-wedge';
   upperWedge.position.y = 0.12 * U;
   group.add(upperWedge);
   const lowerWedge = plateXZ([
-    [2.15 * U, 0], [-1.48 * U, -1.24 * U], [-1.12 * U, 0], [-1.48 * U, 1.24 * U],
+    [2.15 * U, 0], [-1.48 * U, -1.24 * U], [-1.48 * U, 1.24 * U],
   ], 0.32 * U, trench, 0.015 * U);
   lowerWedge.position.y = -0.19 * U;
   group.add(lowerWedge);
@@ -915,6 +1235,7 @@ function createStarDestroyer(referenceRadiusAU: number): THREE.Group {
     group.add(block);
   }
   const tower = new THREE.Mesh(new THREE.BoxGeometry(0.38 * U, 0.72 * U, 0.48 * U), hull);
+  tower.name = 'star-destroyer-command-tower';
   tower.position.set(-0.83 * U, 0.9 * U, 0);
   group.add(tower);
   const bridge = new THREE.Mesh(new THREE.BoxGeometry(0.28 * U, 0.18 * U, 1.05 * U), lightHull);
@@ -942,12 +1263,27 @@ function createStarDestroyer(referenceRadiusAU: number): THREE.Group {
     }
   }
 
-  const enginePositions: Array<[number, number]> = [[0, 0], [0.34, 0], [-0.34, 0], [0.17, 0.28], [-0.17, 0.28], [0.17, -0.28], [-0.17, -0.28]];
-  for (const [y, z] of enginePositions) {
-    const bell = cylinderX(0.11 * U, 0.16 * U, 0.22 * U, 18, trench);
+  // The ventral launch bay is the most important underside landmark.
+  const hangar = new THREE.Mesh(new THREE.BoxGeometry(0.82 * U, 0.055 * U, 0.34 * U), trench);
+  hangar.name = 'star-destroyer-ventral-hangar';
+  hangar.position.set(-0.18 * U, -0.42 * U, 0);
+  group.add(hangar);
+
+  // Three large primary thrusters flanked by four smaller auxiliaries.
+  for (const [index, z] of [-0.36, 0, 0.36].entries()) {
+    const bell = cylinderX(0.14 * U, 0.205 * U, 0.28 * U, 20, trench);
+    bell.name = `star-destroyer-main-engine-${index + 1}`;
+    bell.position.set(-1.58 * U, -0.02 * U, z * U);
+    group.add(bell);
+    addEngineGlow(group, -1.73 * U, -0.02 * U, z * U, 0.135 * U, engineGlow);
+  }
+  const auxiliaryEngines: Array<[number, number]> = [[0.22, -0.2], [0.22, 0.2], [-0.22, -0.2], [-0.22, 0.2]];
+  for (const [index, [y, z]] of auxiliaryEngines.entries()) {
+    const bell = cylinderX(0.065 * U, 0.1 * U, 0.18 * U, 16, trench);
+    bell.name = `star-destroyer-aux-engine-${index + 1}`;
     bell.position.set(-1.54 * U, y * U, z * U);
     group.add(bell);
-    addEngineGlow(group, -1.66 * U, y * U, z * U, 0.1 * U, engineGlow);
+    addEngineGlow(group, -1.64 * U, y * U, z * U, 0.06 * U, engineGlow);
   }
   return group;
 }
@@ -966,6 +1302,7 @@ function createApollo(referenceRadiusAU: number): THREE.Group {
   const engineGlow = glow(0x9fd6ff, 0.78);
 
   const commandModule = new THREE.Mesh(new THREE.ConeGeometry(0.68 * U, 1.25 * U, 40), capsuleMetal);
+  commandModule.name = 'apollo-command-module';
   commandModule.rotation.z = -Math.PI / 2;
   commandModule.position.x = 0.68 * U;
   group.add(commandModule);
@@ -991,6 +1328,7 @@ function createApollo(referenceRadiusAU: number): THREE.Group {
   group.add(hatch);
 
   const serviceModule = cylinderX(0.67 * U, 0.67 * U, 1.5 * U, 32, serviceWhite);
+  serviceModule.name = 'apollo-service-module';
   serviceModule.position.x = -0.75 * U;
   group.add(serviceModule);
   for (let i = 0; i < 8; i++) {
@@ -1021,6 +1359,7 @@ function createApollo(referenceRadiusAU: number): THREE.Group {
     }
   }
   const bell = new THREE.Mesh(createEngineBell(0.38 * U, 0.82 * U), dark);
+  bell.name = 'apollo-service-propulsion-engine';
   bell.rotation.z = -Math.PI / 2;
   bell.position.x = -1.56 * U;
   group.add(bell);
@@ -1060,6 +1399,7 @@ function createNabooStarfighter(referenceRadiusAU: number): THREE.Group {
   nose.position.x = 2.02 * U;
   group.add(nose);
   const canopy = new THREE.Mesh(new THREE.SphereGeometry(0.36 * U, 28, 16), glass);
+  canopy.name = 'naboo-pilot-canopy';
   canopy.scale.set(1.25, 0.54, 0.85);
   canopy.position.set(0.28 * U, 0.34 * U, 0);
   group.add(canopy);
@@ -1070,6 +1410,16 @@ function createNabooStarfighter(referenceRadiusAU: number): THREE.Group {
   tailFin.position.y = 0.02 * U;
   group.add(tailFin);
 
+  const astromech = new THREE.Mesh(new THREE.SphereGeometry(0.17 * U, 20, 12), chrome);
+  astromech.name = 'naboo-astromech-dome';
+  astromech.scale.y = 0.72;
+  astromech.position.set(-0.32 * U, 0.37 * U, 0);
+  group.add(astromech);
+  const centerFinial = cylinderX(0.035 * U, 0.065 * U, 1.3 * U, 14, darkGold);
+  centerFinial.name = 'naboo-center-tail-finial';
+  centerFinial.position.set(-1.38 * U, 0, 0);
+  group.add(centerFinial);
+
   for (const zSign of [-1, 1]) {
     const wing = plateXZ([
       [0.62 * U, zSign * 0.25 * U], [-0.62 * U, zSign * 0.88 * U],
@@ -1077,6 +1427,7 @@ function createNabooStarfighter(referenceRadiusAU: number): THREE.Group {
     ], 0.07 * U, gold, 0.012 * U);
     group.add(wing);
     const engine = cylinderX(0.25 * U, 0.31 * U, 1.75 * U, 28, chrome);
+    engine.name = `naboo-j-type-engine-${zSign < 0 ? 'port' : 'starboard'}`;
     engine.position.set(-0.25 * U, 0, zSign * 1.03 * U);
     group.add(engine);
     const engineNose = new THREE.Mesh(new THREE.ConeGeometry(0.25 * U, 0.6 * U, 28), gold);
@@ -1085,6 +1436,7 @@ function createNabooStarfighter(referenceRadiusAU: number): THREE.Group {
     group.add(engineNose);
     addEngineGlow(group, -1.14 * U, 0, zSign * 1.03 * U, 0.19 * U, blue);
     const tailNeedle = cylinderX(0.045 * U, 0.065 * U, 1.2 * U, 14, darkGold);
+    tailNeedle.name = `naboo-engine-finial-${zSign < 0 ? 'port' : 'starboard'}`;
     tailNeedle.position.set(-1.65 * U, 0, zSign * 1.03 * U);
     group.add(tailNeedle);
     for (const x of [-0.72, -0.3, 0.12]) {
@@ -1118,6 +1470,7 @@ function createYWing(referenceRadiusAU: number): THREE.Group {
   nose.position.x = 1.08 * U;
   group.add(nose);
   const cockpit = new THREE.Mesh(new THREE.SphereGeometry(0.4 * U, 24, 14), glass);
+  cockpit.name = 'y-wing-cockpit';
   cockpit.scale.set(1.05, 0.45, 0.72);
   cockpit.position.set(0.72 * U, 0.38 * U, 0);
   group.add(cockpit);
@@ -1128,11 +1481,18 @@ function createYWing(referenceRadiusAU: number): THREE.Group {
   noseStripe.position.set(1.05 * U, 0.38 * U, 0);
   group.add(noseStripe);
 
+  const astromech = new THREE.Mesh(new THREE.SphereGeometry(0.17 * U, 18, 10), ivory);
+  astromech.name = 'y-wing-astromech-dome';
+  astromech.scale.y = 0.72;
+  astromech.position.set(0.05 * U, 0.34 * U, 0);
+  group.add(astromech);
+
   for (const zSign of [-1, 1]) {
     const arm = new THREE.Mesh(new THREE.BoxGeometry(1.55 * U, 0.18 * U, 0.22 * U), ivory);
     arm.position.set(-0.22 * U, 0, zSign * 0.72 * U);
     group.add(arm);
     const nacelle = cylinderX(0.29 * U, 0.34 * U, 2.25 * U, 24, dark);
+    nacelle.name = `y-wing-engine-nacelle-${zSign < 0 ? 'port' : 'starboard'}`;
     nacelle.position.set(-0.42 * U, 0, zSign * 0.95 * U);
     group.add(nacelle);
     const nacelleCap = cylinderX(0.3 * U, 0.3 * U, 0.42 * U, 24, yellow);
@@ -1161,19 +1521,29 @@ function createYWing(referenceRadiusAU: number): THREE.Group {
 }
 
 export function createPlayerFleetModel(profile: Exclude<PlayerShipProfile, 'default'>, referenceRadiusAU: number): THREE.Group {
+  const finish = (model: THREE.Group): THREE.Group => {
+    const readable = boostDeepSpaceReadability(model);
+    readable.name = `player-ship-${profile}`;
+    readable.userData.playerShipProfile = profile;
+    return readable;
+  };
   switch (profile) {
-    case 'shuttle': return boostDeepSpaceReadability(createSpaceShuttle(referenceRadiusAU));
-    case 'soyuz': return boostDeepSpaceReadability(createSoyuz(referenceRadiusAU));
-    case 'falcon': return boostDeepSpaceReadability(createFalcon(referenceRadiusAU));
-    case 'enterprise': return boostDeepSpaceReadability(createEnterprise(referenceRadiusAU));
-    case 'saucer': return boostDeepSpaceReadability(createFlyingSaucer(referenceRadiusAU));
-    case 'starship': return boostDeepSpaceReadability(createStarship(referenceRadiusAU));
-    case 'dragon': return boostDeepSpaceReadability(createDragon(referenceRadiusAU));
-    case 'xwing': return boostDeepSpaceReadability(createXWing(referenceRadiusAU));
-    case 'tie': return boostDeepSpaceReadability(createTieFighter(referenceRadiusAU));
-    case 'starDestroyer': return boostDeepSpaceReadability(createStarDestroyer(referenceRadiusAU));
-    case 'apollo': return boostDeepSpaceReadability(createApollo(referenceRadiusAU));
-    case 'naboo': return boostDeepSpaceReadability(createNabooStarfighter(referenceRadiusAU));
-    case 'ywing': return boostDeepSpaceReadability(createYWing(referenceRadiusAU));
+    case 'shuttle': return finish(createSpaceShuttle(referenceRadiusAU));
+    case 'soyuz': return finish(createSoyuz(referenceRadiusAU));
+    case 'falcon': return finish(createFalcon(referenceRadiusAU));
+    case 'enterprise': return finish(createEnterprise(referenceRadiusAU));
+    case 'klingon': return finish(createKlingonBirdOfPrey(referenceRadiusAU));
+    case 'saucer': return finish(createFlyingSaucer(referenceRadiusAU));
+    case 'starship': return finish(createStarship(referenceRadiusAU));
+    case 'dragon': return finish(createDragon(referenceRadiusAU));
+    case 'orion': return finish(createOrion(referenceRadiusAU));
+    case 'starliner': return finish(createStarliner(referenceRadiusAU));
+    case 'dreamChaser': return finish(createDreamChaser(referenceRadiusAU));
+    case 'xwing': return finish(createXWing(referenceRadiusAU));
+    case 'tie': return finish(createTieFighter(referenceRadiusAU));
+    case 'starDestroyer': return finish(createStarDestroyer(referenceRadiusAU));
+    case 'apollo': return finish(createApollo(referenceRadiusAU));
+    case 'naboo': return finish(createNabooStarfighter(referenceRadiusAU));
+    case 'ywing': return finish(createYWing(referenceRadiusAU));
   }
 }

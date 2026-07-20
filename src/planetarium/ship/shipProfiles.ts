@@ -1,20 +1,20 @@
 /** Ship identities shared by the renderer, menu, persistence, and missions. */
 
 export const PLAYER_SHIPS = [
-  { id: 'default', label: 'Default', note: 'Moon needle' },
-  { id: 'apollo', label: 'Apollo', note: 'Lunar command ship' },
-  { id: 'shuttle', label: 'Space Shuttle', note: 'Orbital glider' },
-  { id: 'soyuz', label: 'Soyuz', note: 'Classic capsule' },
-  { id: 'falcon', label: 'Millennium Falcon', note: 'Corellian freighter' },
-  { id: 'enterprise', label: 'USS Enterprise', note: 'Federation explorer' },
-  { id: 'saucer', label: 'UFO', note: 'Unknown origin' },
-  { id: 'starship', label: 'SpaceX Starship', note: 'Stainless giant' },
-  { id: 'dragon', label: 'SpaceX Dragon', note: 'Crew capsule' },
-  { id: 'xwing', label: 'X-wing', note: 'Rebel starfighter' },
-  { id: 'tie', label: 'TIE Fighter', note: 'Imperial starfighter' },
-  { id: 'starDestroyer', label: 'Star Destroyer', note: 'Imperial destroyer' },
-  { id: 'naboo', label: 'Naboo Starfighter', note: 'Royal starfighter' },
-  { id: 'ywing', label: 'Y-wing', note: 'Rebel bomber' },
+  { id: 'default', label: 'Default', note: 'Moon needle', group: 'modern' },
+  { id: 'starship', label: 'SpaceX Starship', note: 'Reusable upper stage', group: 'modern' },
+  { id: 'dragon', label: 'SpaceX Dragon', note: 'Crew capsule', group: 'modern' },
+  { id: 'soyuz', label: 'Soyuz', note: 'Operational crew capsule', group: 'modern' },
+  { id: 'apollo', label: 'Apollo', note: 'Lunar command ship', group: 'historic' },
+  { id: 'shuttle', label: 'Space Shuttle', note: 'Orbital glider', group: 'historic' },
+  { id: 'falcon', label: 'Millennium Falcon', note: 'Corellian freighter', group: 'starWars' },
+  { id: 'xwing', label: 'X-wing', note: 'Rebel starfighter', group: 'starWars' },
+  { id: 'ywing', label: 'Y-wing', note: 'Rebel bomber', group: 'starWars' },
+  { id: 'tie', label: 'TIE Fighter', note: 'Imperial starfighter', group: 'starWars' },
+  { id: 'starDestroyer', label: 'Star Destroyer', note: 'Imperial destroyer', group: 'starWars' },
+  { id: 'naboo', label: 'Naboo Starfighter', note: 'Royal starfighter', group: 'starWars' },
+  { id: 'enterprise', label: 'USS Enterprise', note: 'Federation explorer', group: 'starTrek' },
+  { id: 'saucer', label: 'UFO', note: 'Unknown origin', group: 'unknown' },
 ] as const;
 
 export type PlayerShipProfile = (typeof PLAYER_SHIPS)[number]['id'];
@@ -30,4 +30,9 @@ export function isPlayerShipProfile(value: unknown): value is PlayerShipProfile 
 
 export function playerShipLabel(profile: PlayerShipProfile): string {
   return PLAYER_SHIPS.find((ship) => ship.id === profile)?.label ?? 'Default';
+}
+
+/** Star Wars craft use the franchise-specific hyperspace arrival treatment. */
+export function playerShipUsesHyperspace(profile: PlayerShipProfile): boolean {
+  return PLAYER_SHIPS.find((ship) => ship.id === profile)?.group === 'starWars';
 }

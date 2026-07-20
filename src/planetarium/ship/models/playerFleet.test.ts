@@ -50,4 +50,14 @@ describe('player fleet models', () => {
     const lightBox = new THREE.Box3().setFromObject(light!);
     expect(housingBox.containsBox(lightBox)).toBe(true);
   });
+
+  it('gives SpaceX Starship three sea-level and three vacuum engines', () => {
+    const starship = createPlayerFleetModel('starship', 1);
+    const names: string[] = [];
+    starship.traverse((object) => {
+      if (object.name.startsWith('starship-') && object.name.includes('-engine-')) names.push(object.name);
+    });
+    expect(names.filter((name) => name.includes('sea-level'))).toHaveLength(3);
+    expect(names.filter((name) => name.includes('vacuum'))).toHaveLength(3);
+  });
 });

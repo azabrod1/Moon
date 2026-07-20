@@ -20,7 +20,12 @@ import {
   type PlanetariumLayout,
 } from './SolarSystem';
 import { PlayerShip } from './PlayerShip';
-import { isPlayerShipProfile, playerShipLabel, type PlayerShipProfile } from './ship/shipProfiles';
+import {
+  isPlayerShipProfile,
+  playerShipLabel,
+  playerShipUsesHyperspace,
+  type PlayerShipProfile,
+} from './ship/shipProfiles';
 import { PlanetLabels, discRadiusPx } from './PlanetLabels';
 import { PlanetariumStore, createDefaultPlanetariumState, type PlanetariumState, type LandedTarget } from './PlanetariumStore';
 import { solarExposureTarget, solarViewportCoverage } from './solarExposure';
@@ -409,6 +414,7 @@ export class PlanetariumMode {
    *  in-flight flag clears, or two quick deck picks. */
   private arrivalCoverGen = 0;
   private static readonly ARRIVAL_MIN_DWELL_MS = 150;
+  private static readonly HYPERSPACE_MIN_DWELL_MS = 720;
   // Longest the arrival cover waits (from cover start) for the landed pair's
   // in-flight 4K fetch+decode before revealing anyway — a stalled fetch must
   // never pin the veil.
@@ -1393,6 +1399,9 @@ export class PlanetariumMode {
     }
 
     this.active = false;
+    this.arrivalInFlight = false;
+    this.arrivalCoverGen++;
+    document.getElementById('arrival-veil')?.classList.remove('covering', 'hyperspace');
     this.sunExposure = 1;
     this.lastSunVisibleFraction = 1;
     this.sunEmergenceFlash = 0;
@@ -8145,14 +8154,16 @@ export class PlanetariumMode {
    * per pump frame — four Galileans means four stalled frames in a row).
    * Landings also hold the cover (bounded) for the landed pair's pre-triggered
    * 4K fetch+decode, so those uploads drain under it instead of just after the
-   * reveal. Warm systems act immediately, exactly as before. A second arrival
-   * while one is mid-flight is ignored.
+   * reveal. Warm systems act immediately unless the selected Star Wars craft
+   * requests the deliberate hyperspace beat. A second arrival while one is
+   * mid-flight is ignored.
    */
   private arriveThen(target: NonNullable<LandedTarget>, action: () => void): void {
     if (this.arrivalInFlight) return;
     const parentName = this.parentSystemOf(target);
     const moons = this.planetMoons.get(parentName);
     const needsPaint = !!moons && moons.some((m) => !m.painted);
+    const hyperspace = playerShipUsesHyperspace(this.selectedShipProfile);
     // 4K-class photo maps still waiting for their first GPU upload get drained
     // under the veil below. Smaller maps (the Moon's 2K photo) upload within a
     // frame or two off-gesture via the warm pump — no veil beat for those.
@@ -8164,13 +8175,14 @@ export class PlanetariumMode {
         const img = mat.map?.image as { width?: number } | undefined;
         return !!mat.userData.photoLoaded && (img?.width ?? 0) >= 4096;
       });
-    if (!moons || (!needsPaint && !needsUploadCover)) {
+    if (!hyperspace && (!moons || (!needsPaint && !needsUploadCover))) {
       action();
       return;
     }
     this.arrivalInFlight = true;
     const veil = document.getElementById('arrival-veil');
     const coverStart = performance.now();
+    veil?.classList.toggle('hyperspace', hyperspace);
     veil?.classList.add('covering'); // snaps fully opaque (no fade-in) — see CSS
     const coverGen = ++this.arrivalCoverGen;
     // Two frames so the opaque veil is actually composited before we block the
@@ -8183,15 +8195,17 @@ export class PlanetariumMode {
           // don't paint or teleport into a deactivated mode (the finally still
           // clears the flag and lifts the veil).
           if (!this.active) return;
-          this.moonPainter.paintSystemNow(parentName, moons);
+          if (moons && needsPaint) this.moonPainter.paintSystemNow(parentName, moons);
           action();
           // Upload the system's arrived photo/normal maps while the cover is
           // opaque (a landing already queued them via applyLandedTarget; a
           // cruise jump queues here), so the reveal frame draws a fully
           // resident system instead of stalling once per big map.
-          this.queueSystemMoonMapsForWarm(parentName);
-          pumpTextureWarmQueue(Number.POSITIVE_INFINITY);
-          this.warmedSystems.add(parentName);
+          if (moons) {
+            this.queueSystemMoonMapsForWarm(parentName);
+            pumpTextureWarmQueue(Number.POSITIVE_INFINITY);
+            this.warmedSystems.add(parentName);
+          }
         } catch (err) {
           debugError('Arrival failed', err);
         } finally {
@@ -8219,9 +8233,20 @@ export class PlanetariumMode {
             // update→render) and at least the min dwell, so a fast machine
             // reads it as an intentional beat rather than a flicker. Removing
             // the class fades it back out.
-            const wait = Math.max(48, PlanetariumMode.ARRIVAL_MIN_DWELL_MS - (performance.now() - coverStart));
+            const minDwell = hyperspace
+              ? PlanetariumMode.HYPERSPACE_MIN_DWELL_MS
+              : PlanetariumMode.ARRIVAL_MIN_DWELL_MS;
+            const wait = Math.max(48, minDwell - (performance.now() - coverStart));
             window.setTimeout(() => {
-              if (coverGen === this.arrivalCoverGen) veil?.classList.remove('covering');
+              if (coverGen !== this.arrivalCoverGen) return;
+              veil?.classList.remove('covering');
+              if (hyperspace) {
+                // Keep the streak layer alive through the 300 ms veil fade,
+                // then reset it so the next hyperspace jump restarts cleanly.
+                window.setTimeout(() => {
+                  if (coverGen === this.arrivalCoverGen) veil?.classList.remove('hyperspace');
+                }, 320);
+              }
             }, wait);
           };
           tryLift();

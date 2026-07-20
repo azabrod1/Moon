@@ -578,26 +578,48 @@ function createStarship(referenceRadiusAU: number): THREE.Group {
   const U = referenceRadiusAU;
   const group = new THREE.Group();
   const steel = new THREE.MeshPhysicalMaterial({
-    color: 0xe0d4bb, roughness: 0.46, metalness: 0.58, clearcoat: 0.24, clearcoatRoughness: 0.4,
-    emissive: 0x392712, emissiveIntensity: 0.18,
+    color: 0xcbd3d5, roughness: 0.42, metalness: 0.72, clearcoat: 0.22, clearcoatRoughness: 0.38,
+    emissive: 0x26343a, emissiveIntensity: 0.2,
   });
-  const heatShield = standard(0x984423, 0.82, 0.2, 0x2b1008, 0.16);
+  const heatShield = standard(0x242728, 0.86, 0.16, 0x281511, 0.18);
   const darkSteel = standard(0x444b4d, 0.48, 0.72);
-  const windowMat = standard(0x071318, 0.12, 0.28, 0x173b48, 0.28);
   const engineGlow = glow(0x9fdcff, 0.82);
 
   const hull = cylinderX(0.48 * U, 0.48 * U, 2.72 * U, 48, steel);
   hull.position.x = -0.28 * U;
   group.add(hull);
+  const hullShield = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.492 * U, 0.492 * U, 2.72 * U, 48, 1, true, 0, Math.PI),
+    heatShield,
+  );
+  hullShield.rotation.z = -Math.PI / 2;
+  hullShield.position.x = -0.28 * U;
+  group.add(hullShield);
   const nose = new THREE.Mesh(new THREE.ConeGeometry(0.48 * U, 1.3 * U, 48), steel);
   nose.rotation.z = -Math.PI / 2;
   nose.position.x = 1.73 * U;
   group.add(nose);
+  const noseShield = new THREE.Mesh(
+    new THREE.ConeGeometry(0.492 * U, 1.3 * U, 48, 1, true, 0, Math.PI),
+    heatShield,
+  );
+  noseShield.rotation.z = -Math.PI / 2;
+  noseShield.position.x = 1.73 * U;
+  group.add(noseShield);
   const aft = cylinderX(0.53 * U, 0.48 * U, 0.46 * U, 48, steel);
   aft.position.x = -1.85 * U;
   group.add(aft);
+  const aftShield = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.542 * U, 0.492 * U, 0.46 * U, 48, 1, true, 0, Math.PI),
+    heatShield,
+  );
+  aftShield.rotation.z = -Math.PI / 2;
+  aftShield.position.x = -1.85 * U;
+  group.add(aftShield);
 
-  // Belly heat-shield tiles, drawn as overlapping faceted strips.
+  // Belly heat-shield shell plus overlapping faceted strips: the shell keeps
+  // the windward half continuous through the nose while the strips break up
+  // the surface into readable tile bands at chase-camera scale.
   for (let i = 0; i < 13; i++) {
     const x = (-1.5 + i * 0.25) * U;
     const tile = new THREE.Mesh(new THREE.BoxGeometry(0.21 * U, 0.035 * U, 0.58 * U), heatShield);
@@ -627,19 +649,28 @@ function createStarship(referenceRadiusAU: number): THREE.Group {
     group.add(aftFlap);
   }
 
-  for (const z of [-0.18, 0, 0.18]) {
-    for (const y of [0.15, 0.31]) {
-      const pane = new THREE.Mesh(new THREE.BoxGeometry(0.06 * U, 0.12 * U, 0.12 * U), windowMat);
-      pane.position.set(1.29 * U, y * U, z * U);
-      group.add(pane);
-    }
-  }
-  const engines: Array<[number, number]> = [[0, 0], [-0.25, -0.2], [-0.25, 0.2], [0.25, -0.2], [0.25, 0.2], [0, -0.31], [0, 0.31]];
-  for (const [y, z] of engines) {
-    const bell = cylinderX(0.075 * U, 0.12 * U, 0.24 * U, 18, darkSteel);
-    bell.position.set(-2.18 * U, y * U, z * U);
+  // Six Raptors: three compact sea-level engines in the center and three
+  // larger vacuum bells around them. Keeping the two rings distinct is the
+  // characteristic Starship aft view (and avoids the old seven-engine cluster).
+  for (let i = 0; i < 3; i++) {
+    const angle = (i / 3) * Math.PI * 2 + Math.PI / 2;
+    const y = Math.cos(angle) * 0.16 * U;
+    const z = Math.sin(angle) * 0.16 * U;
+    const bell = cylinderX(0.07 * U, 0.105 * U, 0.25 * U, 18, darkSteel);
+    bell.name = `starship-sea-level-engine-${i + 1}`;
+    bell.position.set(-2.18 * U, y, z);
     group.add(bell);
-    addEngineGlow(group, -2.31 * U, y * U, z * U, 0.075 * U, engineGlow);
+    addEngineGlow(group, -2.315 * U, y, z, 0.066 * U, engineGlow);
+  }
+  for (let i = 0; i < 3; i++) {
+    const angle = (i / 3) * Math.PI * 2 - Math.PI / 2;
+    const y = Math.cos(angle) * 0.34 * U;
+    const z = Math.sin(angle) * 0.34 * U;
+    const bell = cylinderX(0.105 * U, 0.17 * U, 0.31 * U, 22, darkSteel);
+    bell.name = `starship-vacuum-engine-${i + 1}`;
+    bell.position.set(-2.2 * U, y, z);
+    group.add(bell);
+    addEngineGlow(group, -2.37 * U, y, z, 0.105 * U, engineGlow);
   }
   return group;
 }

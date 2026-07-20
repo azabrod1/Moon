@@ -71,6 +71,37 @@ describe('player fleet models', () => {
     }
   });
 
+  it.each(FLEET)('$label includes a dedicated secondary-detail pass', ({ id }) => {
+    const model = createPlayerFleetModel(id, 1);
+    const detailRoot = model.getObjectByName(`${id}-high-detail`);
+    const ventralRoot = model.getObjectByName(`${id}-ventral-detail`);
+    const aftRoot = model.getObjectByName(`${id}-aft-detail`);
+    expect(model.userData.surfaceDetail).toBe('enhanced');
+    expect(model.userData.surfaceCoverage).toBe('all-sides');
+    expect(detailRoot).toBeInstanceOf(THREE.Group);
+    expect(detailRoot?.userData.detailPass).toBe('secondary-geometry-v1');
+    expect(ventralRoot).toBeInstanceOf(THREE.Group);
+    expect(ventralRoot?.userData.coverage).toBe('underside');
+    expect(aftRoot).toBeInstanceOf(THREE.Group);
+    expect(aftRoot?.userData.coverage).toBe('rear-propulsion');
+
+    let detailMeshCount = 0;
+    let ventralMeshCount = 0;
+    let aftLightCount = 0;
+    detailRoot?.traverse((object) => {
+      if (object instanceof THREE.Mesh) detailMeshCount++;
+    });
+    ventralRoot?.traverse((object) => {
+      if (object instanceof THREE.Mesh) ventralMeshCount++;
+    });
+    aftRoot?.traverse((object) => {
+      if (object instanceof THREE.Mesh && object.material instanceof THREE.MeshBasicMaterial) aftLightCount++;
+    });
+    expect(detailMeshCount).toBeGreaterThanOrEqual(12);
+    expect(ventralMeshCount).toBeGreaterThanOrEqual(8);
+    expect(aftLightCount).toBeGreaterThanOrEqual(2);
+  });
+
   it.each(Object.entries(AUTHENTICITY_SIGNATURES) as Array<[AuditedProfile, string[]]>)('%s keeps its researched silhouette landmarks', (profile, anchors) => {
     const model = createPlayerFleetModel(profile, 1);
     expect(model.userData.playerShipProfile).toBe(profile);
@@ -131,6 +162,33 @@ describe('player fleet models', () => {
     expect(landmarkCenter(voyager, 'voyager-variable-nacelle-port').z).toBeLessThan(0);
     expect(landmarkCenter(voyager, 'voyager-variable-nacelle-starboard').z).toBeGreaterThan(0);
     expect(landmarkCenter(voyager, 'voyager-navigational-deflector').y).toBeLessThan(0);
+  });
+
+  it('gives Voyager layered hull, human-scale, and propulsion details', () => {
+    const voyager = createPlayerFleetModel('ussVoyager', 1);
+    const requiredDetails = [
+      'voyager-detail-dorsal-spine',
+      'voyager-detail-dark-dorsal-field--1',
+      'voyager-detail-dark-dorsal-field-1',
+      'voyager-detail-phaser-strip--1',
+      'voyager-detail-escape-pod--1-1',
+      'voyager-detail-rim-window-1-1',
+      'voyager-detail-nacelle-plasma-grille-1-1',
+      'voyager-detail-deflector-vane-outer',
+      'voyager-detail-bridge-sensor-dome',
+      'voyager-ventral-primary-field--1',
+      'voyager-ventral-phaser-strip-1',
+      'voyager-ventral-secondary-hull-panel-1',
+      'voyager-ventral-shuttle-bay-light-0',
+    ];
+    for (const name of requiredDetails) expect(voyager.getObjectByName(name), name).toBeDefined();
+
+    const detailRoot = voyager.getObjectByName('ussVoyager-high-detail');
+    let detailMeshCount = 0;
+    detailRoot?.traverse((object) => {
+      if (object instanceof THREE.Mesh) detailMeshCount++;
+    });
+    expect(detailMeshCount).toBeGreaterThanOrEqual(110);
   });
 
   it('keeps Klingon and Romulan hull architecture recognizable', () => {

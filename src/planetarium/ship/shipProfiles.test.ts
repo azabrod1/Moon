@@ -52,6 +52,10 @@ describe('player ship catalog', () => {
     expect(PLAYER_SHIPS.find(({ id }) => id === 'saucer')?.note).toBe('Origin: classified');
   });
 
+  it('styles the current ship like the other settings-column values', () => {
+    expect(indexHtml).toMatch(/\.ship-picker-current\s*\{[^}]*color:\s*var\(--text-secondary\)/s);
+  });
+
   it('keeps the static icon markup in one-to-one catalog order', () => {
     const groups = [...indexHtml.matchAll(/data-ship-group="([^"]+)"/g)].map((match) => match[1]);
     const buttons = [...indexHtml.matchAll(

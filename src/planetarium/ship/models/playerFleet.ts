@@ -9,6 +9,7 @@
  */
 import * as THREE from 'three';
 import type { PlayerShipProfile } from '../shipProfiles';
+import { addFleetSurfaceDetail } from './fleetSurfaceDetail';
 import { createEngineBell, createParabolicDishGeometry, createRodBetween } from './shipPrimitives';
 
 type Mat = THREE.MeshStandardMaterial | THREE.MeshPhysicalMaterial | THREE.MeshBasicMaterial;
@@ -1714,7 +1715,7 @@ function createRomulanWarbird(referenceRadiusAU: number): THREE.Group {
 
 export function createPlayerFleetModel(profile: Exclude<PlayerShipProfile, 'default'>, referenceRadiusAU: number): THREE.Group {
   const finish = (model: THREE.Group): THREE.Group => {
-    const readable = boostDeepSpaceReadability(model);
+    const readable = boostDeepSpaceReadability(addFleetSurfaceDetail(profile, model, referenceRadiusAU));
     readable.name = `player-ship-${profile}`;
     readable.userData.playerShipProfile = profile;
     return readable;

@@ -357,57 +357,69 @@ export class PlanetLabels {
       entry.sprite.position.set(pos.x, pos.y, pos.z);
       if (entry.sprite.scale.x !== markerScale) entry.sprite.scale.setScalar(markerScale);
 
-      // Hide marker once the planet subtends enough pixels to be visible as a mesh.
+      const isRevealed = entry.planet.name === revealedBody;
+
+      // Once the planet subtends enough pixels to read as a mesh, it drops its
+      // marker sprite; its NAME label goes too — UNLESS it is the revealed body,
+      // whose label (name + distance) must still draw over the resolved disc.
+      // The label suppression here is a visibility policy, so the reveal exempts
+      // it; the marker never returns (a mesh needs no beacon).
       const planetVisualSize = entry.planet.radiusAU * 2;
       const angularSize = planetVisualSize / Math.max(distFromPlayer, 0.0001);
-      if (angularSize > 0.01) {
+      const resolvedMesh = angularSize > 0.01;
+      if (resolvedMesh) {
         entry.sprite.visible = false;
-        if (entry.labelVisible) {
-          entry.label.style.display = 'none';
-          entry.labelVisible = false;
+        if (!isRevealed) {
+          if (entry.labelVisible) {
+            entry.label.style.display = 'none';
+            entry.labelVisible = false;
+          }
+          continue;
         }
-        continue;
       }
 
       // One projection, reused by the marker occlusion/fade and the label
-      // placement. Needed whenever a marker or a label could show.
-      const proj = showLabels || showMarkers
+      // placement. Needed whenever a marker or a label (incl. a reveal) could show.
+      const proj = showLabels || showMarkers || isRevealed
         ? projectToScreen(pos, this.camera, canvasWidth, canvasHeight, this.projScratch)
         : null;
 
-      // Marker occlusion is analytic (the sprite renders without a depth test —
-      // see the material comment): hidden when its center sits inside a nearer
-      // body's disc, or when the body is behind the camera. Runs even with
-      // labels off — the sprite has no other occlusion.
-      let markerOccluded = !proj || proj.ndcZ >= 1;
-      if (proj && !markerOccluded) {
-        for (const disc of foregroundDiscs) {
-          if (disc.name === entry.planet.name) continue;
-          if (distFromCamera <= disc.distFromCamera) continue;
-          const mdx = proj.x - disc.screenX;
-          const mdy = proj.y - disc.screenY;
-          if (mdx * mdx + mdy * mdy < disc.radiusPx * disc.radiusPx) {
-            markerOccluded = true;
-            break;
+      // Marker work only for the un-resolved (marker-tier) case — a resolved
+      // mesh keeps its sprite hidden regardless.
+      if (!resolvedMesh) {
+        // Marker occlusion is analytic (the sprite renders without a depth test —
+        // see the material comment): hidden when its center sits inside a nearer
+        // body's disc, or when the body is behind the camera. Runs even with
+        // labels off — the sprite has no other occlusion.
+        let markerOccluded = !proj || proj.ndcZ >= 1;
+        if (proj && !markerOccluded) {
+          for (const disc of foregroundDiscs) {
+            if (disc.name === entry.planet.name) continue;
+            if (distFromCamera <= disc.distFromCamera) continue;
+            const mdx = proj.x - disc.screenX;
+            const mdy = proj.y - disc.screenY;
+            if (mdx * mdx + mdy * mdy < disc.radiusPx * disc.radiusPx) {
+              markerOccluded = true;
+              break;
+            }
           }
         }
-      }
-      entry.sprite.visible = showMarkers && !markerOccluded;
+        entry.sprite.visible = showMarkers && !markerOccluded;
 
-      // Marker sprites also fade inside the Sun's glare like the other point
-      // consumers. Materials are per-body, so per-sprite opacity is safe; a mask
-      // of 0 restores full opacity (byte-identical to an un-masked build).
-      if (showMarkers) {
-        const spriteMat = entry.sprite.material as THREE.SpriteMaterial;
-        const markerMask = maskActive && proj ? sunGlareMaskAt(sunMask, proj.x, proj.y) : 0;
-        const spriteOpacity = 1 - 0.98 * markerMask;
-        if (spriteMat.opacity !== spriteOpacity) spriteMat.opacity = spriteOpacity;
+        // Marker sprites also fade inside the Sun's glare like the other point
+        // consumers. Materials are per-body, so per-sprite opacity is safe; a mask
+        // of 0 restores full opacity (byte-identical to an un-masked build).
+        if (showMarkers) {
+          const spriteMat = entry.sprite.material as THREE.SpriteMaterial;
+          const markerMask = maskActive && proj ? sunGlareMaskAt(sunMask, proj.x, proj.y) : 0;
+          const spriteOpacity = 1 - 0.98 * markerMask;
+          if (spriteMat.opacity !== spriteOpacity) spriteMat.opacity = spriteOpacity;
+        }
       }
 
       // Markers are GPU billboards; only the HTML label needs projection and
       // occlusion work, so skip the rest when labels are off (or unprojected) —
       // unless this body is the revealed one, which draws its label anyway.
-      const isRevealed = entry.planet.name === revealedBody;
       if ((!showLabels && !isRevealed) || !proj) {
         if (entry.labelVisible) {
           entry.label.style.display = 'none';

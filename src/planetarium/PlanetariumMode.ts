@@ -2907,6 +2907,7 @@ export class PlanetariumMode {
       || this.isDeckOpen()
       || this.menuPanel.isOpen()
       || this.isHelpOpen()
+      || this.isToolsMenuOpen()
       || this.surfaceTargetMenu.isOpen()
       || this.isMissionActive()
       || this.tutorial !== null;
@@ -2920,6 +2921,10 @@ export class PlanetariumMode {
     this.hoverEligible = false;
     this.gesturePointerId = null;
     this.hasPendingTap = false;
+    // A blur/deactivate mid-gesture never delivers the matching pointerup, so
+    // reset the down-count too — otherwise it strands above zero and the
+    // single-pointer guard rejects every future tap.
+    this.pointersDown = 0;
   }
 
   private pickListHas(name: string): boolean {
@@ -3032,27 +3037,13 @@ export class PlanetariumMode {
     const canvasW = this.renderer.domElement.clientWidth;
     const canvasH = this.renderer.domElement.clientHeight;
     const halfFovTan = Math.tan((this.camera.fov * Math.PI) / 360);
-    const markerPx = THREE.MathUtils.clamp(0.032 * Math.min(canvasW, canvasH), 18, 30);
+    // markerPx is the on-screen quad SIZE (diameter); the drawn radius is half of
+    // it — the 18 px floor in pushPickCandidate then sets the actual catch radius.
+    const markerRadiusPx = THREE.MathUtils.clamp(0.032 * Math.min(canvasW, canvasH), 18, 30) / 2;
     const bothOff = !this.showBodyLabels && !this.showBodyMarkers;
+    const targetMoon = this.currentDotTargetMoon();
     const cam = this.camera.position;
     const proj = this.pickProjScratch;
-    let n = 0;
-    const push = (name: string, x: number, y: number, radiusPx: number, dist: number): void => {
-      let c = this.bodyPickPool[n];
-      if (!c) {
-        c = { name: '', screenX: 0, screenY: 0, pickRadiusPx: 0, distFromCamera: 0 };
-        this.bodyPickPool[n] = c;
-      }
-      c.name = name;
-      c.screenX = x;
-      c.screenY = y;
-      c.pickRadiusPx = Math.max(radiusPx, 18);
-      c.distFromCamera = dist;
-      this.bodyPickList.push(c);
-      n++;
-    };
-    const onScreen = (): boolean =>
-      proj.ndcZ < 1 && proj.x > -50 && proj.x < canvasW + 50 && proj.y > -50 && proj.y < canvasH + 50;
 
     // Planets.
     for (const planet of this.solarSystem.planets) {
@@ -3066,9 +3057,9 @@ export class PlanetariumMode {
       const isDisc = (planet.data.radiusAU * 2) / Math.max(dist, 0.0001) > 0.01;
       if (bothOff && !isDisc) continue;
       projectToScreen(pos, this.camera, canvasW, canvasH, proj);
-      if (!onScreen()) continue;
-      const drawnPx = isDisc ? discRadiusPx(planet.data.radiusAU, dist, halfFovTan, canvasH) : markerPx;
-      push(planet.data.name, proj.x, proj.y, drawnPx, dist);
+      if (!this.pickProjOnScreen(canvasW, canvasH)) continue;
+      const drawnPx = isDisc ? discRadiusPx(planet.data.radiusAU, dist, halfFovTan, canvasH) : markerRadiusPx;
+      this.pushPickCandidate(planet.data.name, proj.x, proj.y, drawnPx, dist);
     }
 
     // The Sun — always drawn; the reveal still gates it on the 1.67 AU rule.
@@ -3076,14 +3067,14 @@ export class PlanetariumMode {
       const sunPos = this.solarSystem.sun.position;
       const dist = cam.distanceTo(sunPos);
       projectToScreen(sunPos, this.camera, canvasW, canvasH, proj);
-      if (onScreen()) {
-        push('Sun', proj.x, proj.y, discRadiusPx(SUN_DATA.radiusAU, dist, halfFovTan, canvasH), dist);
+      if (this.pickProjOnScreen(canvasW, canvasH)) {
+        this.pushPickCandidate('Sun', proj.x, proj.y, discRadiusPx(SUN_DATA.radiusAU, dist, halfFovTan, canvasH), dist);
       }
     }
 
     // Visible moons — but only those actually drawn as more than a point: the
-    // same readable-disc / faint-dot gate the moon-label renderer uses, so a
-    // pick can never land on a moon whose label the renderer would then refuse.
+    // same readable-disc / faint-dot gate the moon-label renderer uses (nav
+    // target exempt, exactly as there), so pick and render agree on every moon.
     const tempV = this.pickTempV;
     for (const planet of this.solarSystem.planets) {
       const moons = this.planetMoons.get(planet.data.name);
@@ -3099,15 +3090,39 @@ export class PlanetariumMode {
         const dz = tempV.z - cam.z;
         const dist = Math.sqrt(dx * dx + dy * dy + dz * dz);
         projectToScreen(tempV, this.camera, canvasW, canvasH, proj);
-        if (!onScreen()) continue;
+        if (!this.pickProjOnScreen(canvasW, canvasH)) continue;
         const effR = this.renderedMoonSizeAU(m.data.radiusAU, parentR, anchor);
         const discPadPx = discRadiusPx(effR, dist, halfFovTan, canvasH) * 1.1;
         const dotAlpha = m.dotScreenAlpha ?? 0;
-        if (discPadPx < 1.0 && dotAlpha < 0.03) continue;
+        if (discPadPx < 1.0 && dotAlpha < 0.03 && m.data.name !== targetMoon) continue;
         const dotPx = (m.dotScreenSizePx ?? 0) / 2;
-        push(m.data.name, proj.x, proj.y, Math.max(discPadPx, dotPx), dist);
+        this.pushPickCandidate(m.data.name, proj.x, proj.y, Math.max(discPadPx, dotPx), dist);
       }
     }
+  }
+
+  /** Append one pick candidate, reusing a pooled object (zero allocation in
+   *  steady state). pickRadiusPx floors at 18 so tiny dots stay hittable. */
+  private pushPickCandidate(name: string, x: number, y: number, radiusPx: number, dist: number): void {
+    const n = this.bodyPickList.length;
+    let c = this.bodyPickPool[n];
+    if (!c) {
+      c = { name: '', screenX: 0, screenY: 0, pickRadiusPx: 0, distFromCamera: 0 };
+      this.bodyPickPool[n] = c;
+    }
+    c.name = name;
+    c.screenX = x;
+    c.screenY = y;
+    c.pickRadiusPx = Math.max(radiusPx, 18);
+    c.distFromCamera = dist;
+    this.bodyPickList.push(c);
+  }
+
+  /** Whether the current `pickProjScratch` projection is in front of the camera
+   *  and within the label margin. */
+  private pickProjOnScreen(canvasW: number, canvasH: number): boolean {
+    const p = this.pickProjScratch;
+    return p.ndcZ < 1 && p.x > -50 && p.x < canvasW + 50 && p.y > -50 && p.y < canvasH + 50;
   }
 
   /** Resolve `revealedBody` from the pointer: touch reveal first (while its
@@ -3118,6 +3133,10 @@ export class PlanetariumMode {
       this.touchRevealBody = null;
       this.touchRevealUntil = 0;
       this.hasPendingTap = false;
+      // Drop hover eligibility too: an overlay can open over a still pointer, so
+      // without this the last hover would re-fire the instant the overlay closes,
+      // with no pointer movement.
+      this.hoverEligible = false;
       return;
     }
     if (this.touchRevealBody !== null) {
@@ -8818,7 +8837,6 @@ export class PlanetariumMode {
 
   enterLandedMode(target: NonNullable<LandedTarget>) {
     if (this.isMissionActive()) return;
-    this.clearBodyReveal();
     this.preLandSpeed = this.player.speedMultiplier;
     this.preLandAutopilot = this.autopilot;
     this.applyLandedTarget(target);
@@ -8832,6 +8850,10 @@ export class PlanetariumMode {
    * ceremony (no speed restore, no "Departing" toast, take-off state intact).
    */
   private applyLandedTarget(target: NonNullable<LandedTarget>, preserveOrbitPair = false) {
+    // Every landing/re-land funnels here (enterLandedMode, restore, the
+    // Observatory vantage swap) — clear any transient reveal at the one seam so
+    // a touch reveal can't survive a ground change or companion swap.
+    this.clearBodyReveal();
     this.moonArrivalCameraLook = null;
     // Landing (and the landed→landed vantage swap) can flip the Sun's exposed
     // fraction in one frame; reseed the flash baseline so it doesn't glare.

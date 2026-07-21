@@ -836,17 +836,26 @@ function aftEnergyColors(profile: FleetProfile): [outer: number, core: number] {
 }
 
 function collectPrimaryPropulsionMaterials(model: THREE.Group): FleetPropulsionState['primaryMaterials'] {
-  const materials = new Map<THREE.MeshBasicMaterial, number>();
+  // Marked emitter meshes must gate their OWN opacity without touching the
+  // materials that decorative geometry shares with them: Enterprise/Voyager
+  // reuse one `blue` for both the warp grille (emitter) and the navigational
+  // deflector, and the UFO shares `cyan` between its tractor emitter and 2/3
+  // of its perimeter running-lights. Give every emitter mesh a private clone
+  // so darkening it while parked can't blank those shared decorative parts.
+  const collected: FleetPropulsionState['primaryMaterials'] = [];
+  const privatize = (material: THREE.Material): THREE.Material => {
+    if (!(material instanceof THREE.MeshBasicMaterial)) return material;
+    const clone = material.clone();
+    collected.push({ material: clone, poweredOpacity: clone.opacity });
+    return clone;
+  };
   model.traverse((object) => {
     if (!(object instanceof THREE.Mesh) || object.userData.fleetPropulsionEmitter !== true) return;
-    const meshMaterials = Array.isArray(object.material) ? object.material : [object.material];
-    for (const material of meshMaterials) {
-      if (material instanceof THREE.MeshBasicMaterial && !materials.has(material)) {
-        materials.set(material, material.opacity);
-      }
-    }
+    object.material = Array.isArray(object.material)
+      ? object.material.map(privatize)
+      : privatize(object.material);
   });
-  return [...materials].map(([material, poweredOpacity]) => ({ material, poweredOpacity }));
+  return collected;
 }
 
 function addAftPropulsionDetail(

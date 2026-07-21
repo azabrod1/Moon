@@ -1,12 +1,42 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it } from 'vitest';
 import {
   STAR_TREK_WARP_ACCEL_MS,
   STAR_TREK_WARP_EXIT_MS,
+  StarTrekWarpEffect,
   advanceStarTrekWarpPoint,
   screenSpaceWarpDirection,
   starTrekWarpMotion,
   upstreamWarpSpawn,
 } from './StarTrekWarpEffect';
+
+/** Minimal canvas-2D + rAF harness so the class lifecycle runs in node. */
+function installCanvasHarness() {
+  const g = globalThis as unknown as Record<string, unknown>;
+  const saved = { raf: g.requestAnimationFrame, caf: g.cancelAnimationFrame, win: g.window };
+  const scheduled = new Map<number, FrameRequestCallback>();
+  let nextId = 1;
+  g.requestAnimationFrame = (cb: FrameRequestCallback) => { const id = nextId++; scheduled.set(id, cb); return id; };
+  g.cancelAnimationFrame = (id: number) => { scheduled.delete(id); };
+  g.window = { innerWidth: 1280, innerHeight: 720, devicePixelRatio: 1 };
+  const gradient = { addColorStop() {} };
+  const ctx = new Proxy({}, {
+    get: (_t, prop) => (prop === 'createRadialGradient' ? () => gradient : () => {}),
+    set: () => true,
+  });
+  const canvas = {
+    width: 0, height: 0,
+    getContext: () => ctx,
+    getBoundingClientRect: () => ({ width: 1280, height: 720 }),
+  } as unknown as HTMLCanvasElement;
+  const runFrame = (nowMs: number) => {
+    const entries = [...scheduled]; scheduled.clear();
+    for (const [, cb] of entries) cb(nowMs);
+  };
+  const restore = () => {
+    g.requestAnimationFrame = saved.raf; g.cancelAnimationFrame = saved.caf; g.window = saved.win;
+  };
+  return { canvas, scheduled, runFrame, restore };
+}
 
 describe('Star Trek warp motion', () => {
   it('accelerates points into clean slit-scan streaks', () => {
@@ -57,5 +87,32 @@ describe('Star Trek warp motion', () => {
     expect(end.speed).toBeLessThan(midpoint.speed);
     expect(end.trail).toBeLessThan(midpoint.trail);
     expect(end.flare).toBeCloseTo(0, 10);
+  });
+});
+
+describe('Star Trek warp effect lifecycle', () => {
+  let harness: ReturnType<typeof installCanvasHarness> | null = null;
+  afterEach(() => harness?.restore());
+
+  it('starts, drives, exits, and stops without leaking the frame loop', () => {
+    const h = installCanvasHarness();
+    harness = h;
+    const effect = new StarTrekWarpEffect(h.canvas);
+
+    expect(effect.beginExit()).toBe(0); // not started
+
+    effect.start({ x: 0.5, y: 0.5 }, { x: 0.42, y: -0.9 });
+    expect(h.scheduled.size).toBe(1);
+    expect(() => h.runFrame(16)).not.toThrow();
+    expect(h.scheduled.size).toBe(1); // re-scheduled
+
+    expect(effect.beginExit()).toBe(STAR_TREK_WARP_EXIT_MS);
+    expect(() => h.runFrame(500)).not.toThrow();
+
+    effect.stop();
+    expect(h.scheduled.size).toBe(0); // no orphan loop
+
+    expect(() => effect.stop()).not.toThrow();
+    expect(effect.beginExit()).toBe(0);
   });
 });

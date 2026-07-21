@@ -304,4 +304,57 @@ describe('player fleet models', () => {
     expect(landmarkCenter(romulan, 'romulan-warp-nacelle-port').z).toBeLessThan(-1);
     expect(landmarkCenter(romulan, 'romulan-warp-nacelle-starboard').z).toBeGreaterThan(1);
   });
+
+  // Collect the (gated) MeshBasicMaterials on the marked propulsion emitters.
+  function emitterBasics(model: THREE.Group): Set<THREE.MeshBasicMaterial> {
+    const set = new Set<THREE.MeshBasicMaterial>();
+    model.traverse((object) => {
+      if (!(object instanceof THREE.Mesh) || object.userData.fleetPropulsionEmitter !== true) return;
+      for (const material of Array.isArray(object.material) ? object.material : [object.material]) {
+        if (material instanceof THREE.MeshBasicMaterial) set.add(material);
+      }
+    });
+    return set;
+  }
+
+  it('gives every propulsion emitter a private material so parking never blanks shared lights', () => {
+    // Regression: emitters and decorative glows once shared a material
+    // instance (Enterprise/Voyager warp grille + navigational deflector; UFO
+    // tractor + running-lights), so gating the emitter dark blanked the
+    // decoration too. Every emitter must now own its material.
+    for (const ship of FLEET) {
+      const model = createPlayerFleetModel(ship.id, 1);
+      updateFleetPropulsion(model, 0, false, 0); // parked
+      const emitters = emitterBasics(model);
+      for (const material of emitters) {
+        expect(material.opacity, `${ship.id}: parked emitter is dark`).toBe(0);
+      }
+      model.traverse((object) => {
+        if (!(object instanceof THREE.Mesh) || object.userData.fleetPropulsionEmitter === true) return;
+        for (const material of Array.isArray(object.material) ? object.material : [object.material]) {
+          if (material instanceof THREE.MeshBasicMaterial) {
+            expect(emitters.has(material), `${ship.id}: decorative mesh shares a gated emitter material`).toBe(false);
+          }
+        }
+      });
+    }
+  });
+
+  it('keeps shared decorative glows lit while parked (deflectors, running lights)', () => {
+    for (const profile of ['enterprise', 'ussVoyager', 'saucer'] as const) {
+      const model = createPlayerFleetModel(profile, 1);
+      updateFleetPropulsion(model, 0, false, 0); // parked
+      const emitters = emitterBasics(model);
+      let litDecorative = 0;
+      model.traverse((object) => {
+        if (!(object instanceof THREE.Mesh) || object.userData.fleetPropulsionEmitter === true) return;
+        for (const material of Array.isArray(object.material) ? object.material : [object.material]) {
+          if (material instanceof THREE.MeshBasicMaterial && !emitters.has(material) && material.opacity > 0) {
+            litDecorative++;
+          }
+        }
+      });
+      expect(litDecorative, `${profile}: decorative glows stay lit while parked`).toBeGreaterThan(0);
+    }
+  });
 });

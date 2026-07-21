@@ -948,8 +948,61 @@ export class PlanetariumMode {
       const selected = button.dataset.shipProfile === this.selectedShipProfile;
       button.classList.toggle('selected', selected);
       button.setAttribute('aria-checked', String(selected));
+      // Roving tabindex: the checked item is the single tab entry point into
+      // the radio group (arrow keys move focus from there once it opens).
+      button.tabIndex = selected ? 0 : -1;
     }
     this.updateShipPickerAvailability();
+  }
+
+  private shipSubmenuButtons(): HTMLButtonElement[] {
+    return Array.from(document.querySelectorAll<HTMLButtonElement>('#ship-submenu [data-ship-profile]'));
+  }
+
+  private isShipSubmenuOpen(): boolean {
+    return document.getElementById('ship-submenu')?.classList.contains('visible') ?? false;
+  }
+
+  private openShipSubmenu(): void {
+    const submenu = document.getElementById('ship-submenu');
+    if (!submenu) return;
+    submenu.classList.add('visible');
+    document.getElementById('ship-picker-toggle')?.setAttribute('aria-expanded', 'true');
+    // Focus the checked item so the arrow keys have an anchor from the outset.
+    const buttons = this.shipSubmenuButtons();
+    const checked = buttons.find((b) => b.getAttribute('aria-checked') === 'true') ?? buttons[0] ?? null;
+    this.setShipSubmenuRoving(checked);
+    checked?.focus();
+  }
+
+  private closeShipSubmenu(focusToggle = false): void {
+    const submenu = document.getElementById('ship-submenu');
+    if (!submenu?.classList.contains('visible')) return;
+    submenu.classList.remove('visible');
+    const toggle = document.getElementById('ship-picker-toggle') as HTMLElement | null;
+    toggle?.setAttribute('aria-expanded', 'false');
+    if (focusToggle) toggle?.focus();
+  }
+
+  private setShipSubmenuRoving(active: HTMLButtonElement | null): void {
+    for (const button of this.shipSubmenuButtons()) button.tabIndex = button === active ? 0 : -1;
+  }
+
+  private moveShipSubmenuFocus(delta: number): void {
+    const buttons = this.shipSubmenuButtons();
+    if (!buttons.length) return;
+    const from = buttons.indexOf(document.activeElement as HTMLButtonElement);
+    const next = buttons[(((from < 0 ? 0 : from) + delta) % buttons.length + buttons.length) % buttons.length];
+    this.setShipSubmenuRoving(next);
+    next.focus();
+  }
+
+  private focusShipSubmenuEdge(edge: 'first' | 'last'): void {
+    const buttons = this.shipSubmenuButtons();
+    const next = edge === 'first' ? buttons[0] : buttons[buttons.length - 1];
+    if (!next) return;
+    this.setShipSubmenuRoving(next);
+    next.focus();
   }
 
   private updateShipPickerAvailability(): void {
@@ -1566,7 +1619,7 @@ export class PlanetariumMode {
     this.arrivalCoverGen++;
     this.hyperspaceEffect?.stop();
     this.starTrekWarpEffect?.stop();
-    this.hideHyperspaceShip();
+    this.disposeHyperspaceShipRenderer();
     document.getElementById('arrival-veil')?.classList.remove('covering', 'hyperspace', 'warp');
     this.sunExposure = 1;
     this.lastSunVisibleFraction = 1;
@@ -3954,6 +4007,9 @@ export class PlanetariumMode {
       // Tools is a transient popover — above the deck rung (the ☰ menu is
       // deliberately NOT in the cascade; Tools is).
       if (this.isToolsMenuOpen()) { this.closeToolsMenu(); return; }
+      // The ship submenu is a transient sub-popover of the ☰ menu; Esc closes
+      // just it (the ☰ menu itself stays deliberately out of the cascade).
+      if (this.isShipSubmenuOpen()) { this.closeShipSubmenu(true); return; }
       if (this.isDeckOpen()) { this.closeDeck(); return; }
       if (this.bottomBar.isTimeOpen()) { this.bottomBar.closeTime(); return; }
       if (this.bottomBar.isStatsOpen()) { this.bottomBar.closeStats(); return; }
@@ -5140,15 +5196,27 @@ export class PlanetariumMode {
     });
     document.getElementById('ship-picker-toggle')?.addEventListener('click', () => {
       if (!this.showShip || this.isMissionActive()) return;
-      const submenu = document.getElementById('ship-submenu');
-      const toggle = document.getElementById('ship-picker-toggle');
-      const expanded = submenu?.classList.toggle('visible') ?? false;
-      toggle?.setAttribute('aria-expanded', String(expanded));
+      if (this.isShipSubmenuOpen()) this.closeShipSubmenu();
+      else this.openShipSubmenu();
     });
-    document.getElementById('ship-submenu')?.addEventListener('click', (event) => {
+    const shipSubmenu = document.getElementById('ship-submenu');
+    shipSubmenu?.addEventListener('click', (event) => {
       const button = (event.target as HTMLElement).closest<HTMLButtonElement>('[data-ship-profile]');
       const profile = button?.dataset.shipProfile;
       if (isPlayerShipProfile(profile)) this.choosePlayerShip(profile);
+    });
+    // The submenu advertises menu / menuitemradio semantics, so honor the
+    // matching keyboard contract: roving focus with the arrows + Home/End,
+    // Escape closes and returns focus to the toggle. Enter/Space fall through
+    // to the native button (the click handler above selects).
+    shipSubmenu?.addEventListener('keydown', (event) => {
+      switch (event.key) {
+        case 'ArrowDown': case 'ArrowRight': event.preventDefault(); this.moveShipSubmenuFocus(1); break;
+        case 'ArrowUp': case 'ArrowLeft': event.preventDefault(); this.moveShipSubmenuFocus(-1); break;
+        case 'Home': event.preventDefault(); this.focusShipSubmenuEdge('first'); break;
+        case 'End': event.preventDefault(); this.focusShipSubmenuEdge('last'); break;
+        case 'Escape': event.preventDefault(); event.stopPropagation(); this.closeShipSubmenu(true); break;
+      }
     });
     document.getElementById('planetarium-btn-help')?.addEventListener('click', () => {
       this.closeMenuPanel();
@@ -5630,6 +5698,9 @@ export class PlanetariumMode {
       return;
     }
     if (verb === 'travel') {
+      // The Travel commit is the one arrival path that plays the franchise
+      // travel beat (allowTravelEffect); observe/tutorial/restore arrivals share
+      // arriveThen but stay silent.
       this.arriveThen(target, () => {
         if (this.landedOn) this.exitLandedMode();
         if (target.type === 'moon') {
@@ -5641,7 +5712,7 @@ export class PlanetariumMode {
           const body = PLANETARIUM_BODIES.find((b) => b.name === target.name);
           if (body) this.jumpToPlanet(body);
         }
-      });
+      }, false, true);
       return;
     }
     if (this.landedOn) this.exitLandedMode();
@@ -8546,6 +8617,21 @@ export class PlanetariumMode {
     document.getElementById('hyperspace-ship-canvas')?.removeAttribute('style');
   }
 
+  /** Free the auxiliary WebGL context at the mode boundary. hideHyperspaceShip
+   *  only clears the framebuffer between jumps (the renderer is reused);
+   *  `.clear()` never releases the context's cached geometry/materials/textures
+   *  or the context itself, so those would otherwise accumulate across every
+   *  ship tried and survive deactivation. Dispose + drop the context here; the
+   *  next franchise jump lazily rebuilds it. */
+  private disposeHyperspaceShipRenderer(): void {
+    this.hideHyperspaceShip();
+    if (this.hyperspaceShipRenderer) {
+      this.hyperspaceShipRenderer.dispose();
+      this.hyperspaceShipRenderer.forceContextLoss();
+      this.hyperspaceShipRenderer = null;
+    }
+  }
+
   /** The player remains at scene origin under the floating-origin renderer.
    *  Project that actual location so every star trail radiates from the ship,
    *  even when the chase camera has placed it away from screen center. */
@@ -8602,6 +8688,7 @@ export class PlanetariumMode {
     target: NonNullable<LandedTarget>,
     action: () => void,
     protectLandedUpgrades = false,
+    allowTravelEffect = false,
   ): void {
     if (this.arrivalInFlight) return;
     const parentName = this.parentSystemOf(target);
@@ -8609,9 +8696,14 @@ export class PlanetariumMode {
     const needsPaint = !!moons && moons.some((m) => !m.painted);
     const reducedMotion = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches ?? false;
     const travel = playerShipTravelPolicy(this.selectedShipProfile, reducedMotion);
-    const cinematicTravel = travel.effect !== null;
-    const hyperspace = travel.animate && travel.effect === 'hyperspace';
-    const warp = travel.animate && travel.effect === 'warp';
+    // The franchise travel beat belongs to the "Travel" (teleport) commit only.
+    // Observatory "observe" landings, tutorial staged arrivals, and mission/
+    // restore re-lands share this method but must NOT play hyperspace/warp —
+    // they only borrow the veil for painting/upload when needed.
+    const cinematicTravel = allowTravelEffect && travel.effect !== null;
+    const animateTravel = allowTravelEffect && travel.animate;
+    const hyperspace = animateTravel && travel.effect === 'hyperspace';
+    const warp = animateTravel && travel.effect === 'warp';
     // 4K-class photo maps still waiting for their first GPU upload get drained
     // under the veil below. Smaller maps (the Moon's 2K photo) upload within a
     // frame or two off-gesture via the warm pump — no veil beat for those.
@@ -8634,20 +8726,37 @@ export class PlanetariumMode {
     const coverStart = performance.now();
     const hyperspaceEffect = hyperspace ? this.getHyperspaceEffect() : null;
     const starTrekWarpEffect = warp ? this.getStarTrekWarpEffect() : null;
-    if (travel.animate) {
-      const origin = this.hyperspaceOrigin();
-      if (hyperspace) {
-        this.starTrekWarpEffect?.stop();
-        hyperspaceEffect?.start(origin);
+    try {
+      if (animateTravel) {
+        const origin = this.hyperspaceOrigin();
+        if (hyperspace) {
+          this.starTrekWarpEffect?.stop();
+          hyperspaceEffect?.start(origin);
+        } else {
+          this.hyperspaceEffect?.stop();
+          starTrekWarpEffect?.start(origin, this.starTrekWarpDirection());
+        }
+        this.showHyperspaceShip();
       } else {
         this.hyperspaceEffect?.stop();
-        starTrekWarpEffect?.start(origin, this.starTrekWarpDirection());
+        this.starTrekWarpEffect?.stop();
+        this.hideHyperspaceShip();
       }
-      this.showHyperspaceShip();
-    } else {
+    } catch (err) {
+      // The frozen-ship overlay renders through a second WebGL context; on a
+      // constrained device that render (or a context loss) can throw. If it
+      // does mid-prologue — before the try/finally in the scheduled rAF below —
+      // arrivalInFlight would stay stuck true and silently no-op every future
+      // teleport for the rest of the session. Tear down the half-built
+      // cinematic layer and complete a plain, immediate arrival instead.
+      debugError('Cinematic travel setup failed; arriving without it', err);
       this.hyperspaceEffect?.stop();
       this.starTrekWarpEffect?.stop();
       this.hideHyperspaceShip();
+      veil?.classList.remove('covering', 'hyperspace', 'warp');
+      this.arrivalInFlight = false;
+      action();
+      return;
     }
     veil?.classList.toggle('hyperspace', hyperspace);
     veil?.classList.toggle('warp', warp);
@@ -8702,7 +8811,7 @@ export class PlanetariumMode {
             // update→render) and at least the min dwell, so a fast machine
             // reads it as an intentional beat rather than a flicker. Removing
             // the class fades it back out.
-            const minDwell = travel.animate
+            const minDwell = animateTravel
               ? PlanetariumMode.CINEMATIC_TRAVEL_MIN_MS
               : PlanetariumMode.ARRIVAL_MIN_DWELL_MS;
             const wait = Math.max(48, minDwell - (performance.now() - coverStart));
@@ -8718,7 +8827,7 @@ export class PlanetariumMode {
               window.setTimeout(() => {
                 if (coverGen !== this.arrivalCoverGen) return;
                 veil?.classList.remove('covering');
-                if (!travel.animate) return;
+                if (!animateTravel) return;
                 // Keep the moving layer alive through the 300 ms veil fade,
                 // then reset it so the next jump starts from stationary stars.
                 window.setTimeout(() => {

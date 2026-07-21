@@ -90,10 +90,10 @@ renderer.domElement.addEventListener('webglcontextrestored', () => {
   debugLog('WebGL context restored');
 });
 
-// Enable bloom on any device whose GPU supports float framebuffers. The lens
-// correction rides the same HDR pipeline, so `?nofloat=1` forces the no-float
-// path on capable hardware to reproduce/QA how an incapable GPU renders
-// (bloom off, lens off, rectilinear).
+// Enable bloom on any device whose GPU supports float framebuffers. `?nofloat=1`
+// forces the no-float path on capable hardware so the lens correction's
+// tone-map-first backbuffer resample (the path incapable GPUs take) can be
+// reproduced and QA'd on a dev machine.
 const useBloom = canGPUDoBloom(renderer) && !new URLSearchParams(location.search).has('nofloat');
 
 try {
@@ -122,9 +122,10 @@ planetariumCamera.position.set(-0.0002, 0.0001, 0.0001);
 // warped frame's corners stay covered, and projectToScreen mirrors the warp
 // for DOM overlays. designFovDeg is what the frame displays; camera.fov holds
 // the overscan (applyDesignFov is the only legal fov writer). The strength
-// here is a *request*: buildComposer runs the lens on the planetarium only on
-// the float-capable (HDR) composer bloom uses — incapable GPUs render
-// rectilinear — and stores the effective value read by every consumer.
+// here is a *request*: buildComposer runs the lens on the planetarium whenever
+// it is asked for — inside the float/HDR composer ahead of bloom, or, on GPUs
+// that can't float-render, as a final LDR resample of the tone-mapped
+// backbuffer — and stores the effective value read by every consumer.
 const planetariumLens: LensParams = { strength: LENS_DEFAULT_STRENGTH, designFovDeg: 60 };
 planetariumCamera.userData.lens = planetariumLens;
 // The requested strength survives bloom toggles; buildComposer writes the
@@ -147,6 +148,29 @@ debugLog('Post-processing config', { useBloom });
 
 let composer: EffectComposer | null = null;
 let lensPass: ReturnType<typeof createLensPass> | null = null;
+let directLensTexture: THREE.FramebufferTexture | null = null;
+const directLensSize = new THREE.Vector2();
+
+function ensureDirectLensTexture(): THREE.FramebufferTexture {
+  renderer.getDrawingBufferSize(directLensSize);
+  const width = Math.max(Math.round(directLensSize.x), 1);
+  const height = Math.max(Math.round(directLensSize.y), 1);
+  if (
+    !directLensTexture ||
+    directLensTexture.image.width !== width ||
+    directLensTexture.image.height !== height
+  ) {
+    directLensTexture?.dispose();
+    directLensTexture = new THREE.FramebufferTexture(width, height);
+    directLensTexture.minFilter = THREE.LinearFilter;
+    directLensTexture.magFilter = THREE.LinearFilter;
+    // The default framebuffer has already been tone-mapped/encoded. Preserve
+    // those display-referred bytes through the final resample; the raw lens
+    // ShaderPass neither tone-maps nor adds an output-colour transform.
+    directLensTexture.colorSpace = THREE.NoColorSpace;
+  }
+  return directLensTexture;
+}
 
 function getTargetPixelRatio(): number {
   if (isMobile) return Math.min(window.devicePixelRatio, 2);
@@ -200,37 +224,40 @@ function buildComposer(
     composer = null;
   }
   lensPass = null;
+  directLensTexture?.dispose();
+  directLensTexture = null;
 
-  // The lens correction rides the HDR composer bloom already needs. On a GPU
-  // that can't float-render there is no HDR buffer to warp: an 8-bit
-  // intermediate clamps the scene's linear HDR before OutputPass can tone-map
-  // it, so the Sun's saturated core flattens (saturated pixels -> 0) instead of
-  // clipping to white. So the lens is gated on the float-capable pipeline;
-  // incapable GPUs render rectilinear (off-axis discs stay slightly oval there)
-  // rather than ship a flattened Sun. `?nofloat=1` forces that path for QA.
-  const wantsLens = cam === planetariumCamera && lensRequestedStrength > 0 && useBloom;
+  // The lens correction is planetarium-only and must not be gated on bloom:
+  // that would leave off-axis planets egg-shaped on GPUs without float FBOs.
+  const wantsLens = cam === planetariumCamera && lensRequestedStrength > 0;
 
   if (!enabled && !wantsLens) {
-    // Nothing to composite (a non-planetarium camera, or an incapable GPU):
-    // straight to canvas, the cheapest path.
+    // Nothing to composite (a non-planetarium camera without bloom): straight
+    // to canvas, the cheapest path.
     planetariumLens.strength = 0;
     applyDesignFov(planetariumCamera, planetariumLens.designFovDeg);
     return;
   }
 
+  // No float FBO: render straight to the default framebuffer first, where
+  // Three applies the normal HDR tone map, copy those display-referred bytes,
+  // then lens-resample them back to screen in renderScene(). This avoids the
+  // release-blocking HDR clamp caused by rendering linear light into RGBA8.
+  if (wantsLens && !useBloom) {
+    planetariumLens.strength = lensRequestedStrength;
+    lensPass = createLensPass();
+    lensPass.renderToScreen = true;
+    ensureDirectLensTexture();
+    applyDesignFov(planetariumCamera, planetariumLens.designFovDeg);
+    return;
+  }
+
+  // Every remaining composer path is float-capable, so linear HDR survives to
+  // OutputPass (with or without the runtime bloom pass enabled).
   composer = new EffectComposer(renderer);
   composer.setPixelRatio(getTargetPixelRatio());
   composer.setSize(window.innerWidth, window.innerHeight);
   composer.addPass(new RenderPass(scene, cam));
-
-  if (enabled) {
-    composer.addPass(new UnrealBloomPass(
-      new THREE.Vector2(window.innerWidth, window.innerHeight),
-      bloom.strength,
-      BLOOM_RADIUS,
-      bloom.threshold,
-    ));
-  }
 
   if (wantsLens) {
     planetariumLens.strength = lensRequestedStrength;
@@ -240,6 +267,19 @@ function buildComposer(
     planetariumLens.strength = 0;
   }
   applyDesignFov(planetariumCamera, planetariumLens.designFovDeg);
+
+  // Bloom is output-space: the lens first makes a round limb, then the blur
+  // builds an isotropic PSF around those final pixels. Screen-authored scene
+  // primitives pre-distort themselves into the source (lensShader.ts), so their
+  // sizes also remain invariant through this ordering.
+  if (enabled) {
+    composer.addPass(new UnrealBloomPass(
+      new THREE.Vector2(window.innerWidth, window.innerHeight),
+      bloom.strength,
+      BLOOM_RADIUS,
+      bloom.threshold,
+    ));
+  }
 
   composer.addPass(new OutputPass());
 }
@@ -283,6 +323,22 @@ function renderScene(cam: THREE.Camera) {
         updateLensPass(lensPass, planetariumLens, planetariumCamera.fov, planetariumCamera.aspect);
       }
       composer.render();
+    } else if (lensPass && directLensTexture && cam === planetariumCamera) {
+      // Tone map to the hardware backbuffer first, then copy and warp that LDR
+      // image. `ShaderPass.render` only reads the fake target's texture when its
+      // renderToScreen flag is set; the write target is intentionally unused.
+      renderer.setRenderTarget(null);
+      renderer.render(scene, cam);
+      const texture = ensureDirectLensTexture();
+      renderer.copyFramebufferToTexture(texture);
+      updateLensPass(lensPass, planetariumLens, planetariumCamera.fov, planetariumCamera.aspect);
+      lensPass.render(
+        renderer,
+        null as unknown as THREE.WebGLRenderTarget,
+        { texture } as unknown as THREE.WebGLRenderTarget,
+        0,
+        false,
+      );
     } else {
       renderer.render(scene, cam);
     }
@@ -491,6 +547,8 @@ function installDevHooks() {
       planetariumMode?.devFrameBody(name, fillFraction, phaseAngleDeg, distMul, offNdcX, offNdcY) ?? false,
     frameSun: (distanceAU?: number, fovDeg?: number, offNdcX?: number, offNdcY?: number) =>
       planetariumMode?.devFrameSun(distanceAU, fovDeg, offNdcX, offNdcY) ?? false,
+    diagnosticSphere: (offNdcX?: number, offNdcY?: number, fovDeg?: number, angularRadiusDeg?: number) =>
+      planetariumMode?.devFrameDiagnosticSphere(offNdcX, offNdcY, fovDeg, angularRadiusDeg) ?? false,
     sunAppearance: () => planetariumMode?.devSunAppearance() ?? null,
     sunGlareMask: () => planetariumMode?.devSunGlareMask() ?? null,
     eclipseDebug: () => planetariumMode?.devEclipseDebug() ?? null,

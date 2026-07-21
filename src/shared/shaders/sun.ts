@@ -6,6 +6,7 @@
  * authored as a flat display-white disc. Object-space noise keeps the sphere
  * seamless at the longitude wrap and poles.
  */
+import { lensShaderGLSL } from '../three/lensShader';
 
 /** Where the whiteout's final act begins, as a fraction of the whiteout
  *  itself: below this the bleach is contrast-lift only; above it the radiance
@@ -286,38 +287,41 @@ void main() {
 export const sunGlareVertexShader = /* glsl */ `
 uniform float uMinHalfSizePx;
 uniform float uVeilHalfPx;
+uniform float uPhysicalHalfSizePx;
 uniform float uViewportHeight;
 varying vec2 vUv;
 varying float vExtentScale;
 varying float vHalfSizePx;
+${lensShaderGLSL}
 
 void main() {
   vUv = uv;
-  // Expand the plane in camera-view XY around the transformed Sun centre. It
-  // remains a circular billboard without a per-frame CPU quaternion update.
+  // Author the glare quad in final-output pixels, then inverse-map each corner
+  // into the overscan source. The lens pass restores its exact screen-space
+  // size/shape instead of magnifying its glint floor and veil off axis.
   vec4 centreView = modelViewMatrix * vec4(0.0, 0.0, 0.0, 1.0);
-  float halfSize = max(abs(position.x), abs(position.y));
-  float physicalHalfNdc = projectionMatrix[1][1] * halfSize / max(-centreView.z, 1e-6);
-  // A minimum screen-space footprint preserves an optical glint in the outer
-  // system after the physical photosphere becomes sub-pixel.
-  float baseMinNdc = (uMinHalfSizePx * 2.0) / max(uViewportHeight, 1.0);
-  float baseHalfNdc = max(physicalHalfNdc, baseMinNdc);
-  // The wide screen-space veiling glare (fragment) needs a far larger billboard
-  // to paint its wash into. It only ever grows the quad; the physical/min
-  // footprint above is the floor it can never fall below.
-  float veilMinNdc = (uVeilHalfPx * 2.0) / max(uViewportHeight, 1.0);
-  float drawnHalfNdc = max(baseHalfNdc, veilMinNdc);
-  float sizeBoost = drawnHalfNdc / max(physicalHalfNdc, 1e-7);
-  centreView.xy += position.xy * sizeBoost;
+  vec4 centreClip = projectionMatrix * centreView;
+  vec2 sourceCentre = centreClip.xy / centreClip.w;
+  vec2 outputCentre = lensWarpSourceNdc(sourceCentre);
+  float baseHalfPx = max(uPhysicalHalfSizePx, uMinHalfSizePx);
+  float drawnHalfPx = max(baseHalfPx, uVeilHalfPx);
+  float geometryHalf = max(max(abs(position.x), abs(position.y)), 1e-9);
+  vec2 corner = position.xy / geometryHalf;
+  vec2 desiredOutput = outputCentre + corner * vec2(
+    drawnHalfPx * 2.0 / max(uLensViewportPx.x, 1.0),
+    drawnHalfPx * 2.0 / max(uLensViewportPx.y, 1.0)
+  );
+  vec2 predistortedSource = lensUnwarpOutputNdc(desiredOutput);
   // Two channels the fragment needs. vExtentScale is how much the veil grew the
   // quad past its physical/min size (1.0 when the veil is idle): the fragment
   // rebases the physical PSF by it so growth can't stretch the core/starburst.
   // vHalfSizePx is the quad's true on-screen half-size in CSS pixels (the
   // same unit as uViewportHeight), making the veil a pure screen-space
   // function immune to that same growth.
-  vExtentScale = drawnHalfNdc / max(baseHalfNdc, 1e-7);
-  vHalfSizePx = drawnHalfNdc * uViewportHeight * 0.5;
-  gl_Position = projectionMatrix * centreView;
+  vExtentScale = drawnHalfPx / max(baseHalfPx, 1e-7);
+  vHalfSizePx = drawnHalfPx;
+  gl_Position = centreClip;
+  gl_Position.xy = predistortedSource * gl_Position.w;
 }
 `;
 
@@ -597,6 +601,7 @@ attribute float aGhostSizePx;
 attribute float aGhostTint;
 varying vec2 vGhostUv;
 varying float vGhostTint;
+${lensShaderGLSL}
 
 void main() {
   vGhostUv = position.xy * 0.5 + 0.5;
@@ -606,7 +611,8 @@ void main() {
     aGhostSizePx * 2.0 / max(uViewportPx.x, 1.0),
     aGhostSizePx * 2.0 / max(uViewportPx.y, 1.0)
   );
-  gl_Position = vec4(centre + position.xy * halfSizeNdc, 0.0, 1.0);
+  vec2 desiredOutput = centre + position.xy * halfSizeNdc;
+  gl_Position = vec4(lensUnwarpOutputNdc(desiredOutput), 0.0, 1.0);
 }
 `;
 

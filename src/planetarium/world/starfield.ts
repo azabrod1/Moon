@@ -123,21 +123,48 @@ export function createPlanetariumStarfield(rendererPixelRatio: number): THREE.Po
         attribute float alpha;
         varying vec3 vColor;
         varying float vAlpha;
+        varying vec2 vLensOutputCentre;
+        varying float vLensTargetDiameterPx;
         uniform float pixelRatio;
         ${sunGlareMaskGLSL()}
         void main() {
           vColor = color;
           vec4 mvPosition = modelViewMatrix * vec4(position, 1.0);
           gl_Position = projectionMatrix * mvPosition;
-          gl_PointSize = size * pixelRatio;
+          vec2 sourceCentre = gl_Position.xy / gl_Position.w;
+          vLensOutputCentre = lensWarpSourceNdc(sourceCentre);
+          vLensTargetDiameterPx = size * pixelRatio;
+          vec2 halfOutputNdc = vec2(
+            vLensTargetDiameterPx / max(uLensFramebufferPx.x, 1.0),
+            vLensTargetDiameterPx / max(uLensFramebufferPx.y, 1.0)
+          );
+          vec2 sourceA = lensUnwarpOutputNdc(vLensOutputCentre + halfOutputNdc);
+          vec2 sourceB = lensUnwarpOutputNdc(vLensOutputCentre - halfOutputNdc);
+          vec2 sourceC = lensUnwarpOutputNdc(vLensOutputCentre + vec2(halfOutputNdc.x, -halfOutputNdc.y));
+          vec2 sourceD = lensUnwarpOutputNdc(vLensOutputCentre + vec2(-halfOutputNdc.x, halfOutputNdc.y));
+          vec2 halfA = abs(sourceA - sourceCentre) * uLensFramebufferPx * 0.5;
+          vec2 halfB = abs(sourceB - sourceCentre) * uLensFramebufferPx * 0.5;
+          vec2 halfC = abs(sourceC - sourceCentre) * uLensFramebufferPx * 0.5;
+          vec2 halfD = abs(sourceD - sourceCentre) * uLensFramebufferPx * 0.5;
+          float sourceHalfPx = max(
+            max(max(halfA.x, halfA.y), max(halfB.x, halfB.y)),
+            max(max(halfC.x, halfC.y), max(halfD.x, halfD.y))
+          );
+          gl_PointSize = max(1.0, 2.0 * sourceHalfPx);
           vAlpha = alpha * (1.0 - 0.98 * sunGlareMask(gl_Position));
         }
       `,
     fragmentShader: `
         varying vec3 vColor;
         varying float vAlpha;
+        varying vec2 vLensOutputCentre;
+        varying float vLensTargetDiameterPx;
+        ${sunGlareMaskGLSL()}
         void main() {
-          float d = length(gl_PointCoord - vec2(0.5));
+          vec2 sourceNdc = gl_FragCoord.xy / uLensFramebufferPx * 2.0 - 1.0;
+          vec2 outputNdc = lensWarpSourceNdc(sourceNdc);
+          vec2 outputOffsetPx = (outputNdc - vLensOutputCentre) * uLensFramebufferPx * 0.5;
+          float d = length(outputOffsetPx) / max(vLensTargetDiameterPx, 1e-6);
           if (d > 0.5) discard;
           float falloff = 1.0 - smoothstep(0.2, 0.5, d);
           gl_FragColor = vec4(vColor, falloff * vAlpha);

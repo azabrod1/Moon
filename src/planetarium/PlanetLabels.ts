@@ -6,7 +6,15 @@
  */
 import * as THREE from 'three';
 import { type PlanetData, PLANETARIUM_BODIES } from './planets/planetData';
-import { projectToScreen, type ScreenProjection } from '../shared/three/projectToScreen';
+import {
+  projectSphereToScreen,
+  type SphereScreenProjection,
+} from '../shared/three/projectToScreen';
+import {
+  applyLensShaderUniforms,
+  augmentFixedScreenSpriteForLens,
+  createLensShaderUniforms,
+} from '../shared/three/lensShader';
 import {
   sunGlareMaskAt,
   sunGlareMaskForRect,
@@ -75,7 +83,12 @@ export class PlanetLabels {
   foregroundDiscs: ForegroundDisc[] = [];
   private labelContainer: HTMLDivElement;
   private camera: THREE.PerspectiveCamera;
-  private projScratch: ScreenProjection = { x: 0, y: 0, ndcX: 0, ndcY: 0, ndcZ: 0 };
+  private lensUniforms = createLensShaderUniforms();
+  private sphereProjScratch: SphereScreenProjection = {
+    x: 0, y: 0, ndcX: 0, ndcY: 0, ndcZ: 0,
+    footprintX: 0, footprintY: 0, radiusPx: 0, diameterPx: 0,
+    minX: 0, maxX: 0, minY: 0, maxY: 0,
+  };
 
   constructor(scene: THREE.Scene, camera: THREE.PerspectiveCamera) {
     this.camera = camera;
@@ -129,6 +142,7 @@ export class PlanetLabels {
         blending: THREE.AdditiveBlending,
         sizeAttenuation: false,
       });
+      augmentFixedScreenSpriteForLens(spriteMat, this.lensUniforms);
 
       const sprite = new THREE.Sprite(spriteMat);
       sprite.name = `marker-${body.name}`;
@@ -174,8 +188,14 @@ export class PlanetLabels {
   ) {
     const canvasWidth = renderer.domElement.clientWidth;
     const canvasHeight = renderer.domElement.clientHeight;
+    applyLensShaderUniforms(
+      this.lensUniforms,
+      this.camera,
+      canvasWidth,
+      canvasHeight,
+      renderer.getPixelRatio(),
+    );
     this.foregroundDiscs.length = 0;
-    const halfFovTan = Math.tan((this.camera.fov * Math.PI) / 360);
     const camX = this.camera.position.x;
     const camY = this.camera.position.y;
     const camZ = this.camera.position.z;
@@ -189,12 +209,20 @@ export class PlanetLabels {
       const angularSize = (entry.planet.radiusAU * 2) / Math.max(distFromCamera, 0.0001);
       if (angularSize <= 0.01) continue;
 
-      const proj = projectToScreen(pos, this.camera, canvasWidth, canvasHeight, this.projScratch);
+      const proj = projectSphereToScreen(
+        pos,
+        entry.planet.radiusAU,
+        this.camera,
+        canvasWidth,
+        canvasHeight,
+        this.sphereProjScratch,
+      );
       if (proj.ndcZ >= 1) continue;
-      const screenX = proj.x;
-      const screenY = proj.y;
-      // Project disc radius to pixels. Pad by 1.1x to cover atmosphere glow.
-      const radiusPx = discRadiusPx(entry.planet.radiusAU, distFromCamera, halfFovTan, canvasHeight) * 1.1;
+      const screenX = proj.footprintX;
+      const screenY = proj.footprintY;
+      // The sampled output-space tangent limb stays correct at frame edges;
+      // pad the measured footprint by 1.1x to cover atmosphere glow.
+      const radiusPx = proj.radiusPx * 1.1;
       this.foregroundDiscs.push({ screenX, screenY, radiusPx, distFromCamera, name: entry.planet.name });
     }
   }
@@ -302,7 +330,14 @@ export class PlanetLabels {
       // One projection, reused by the marker occlusion/fade and the label
       // placement. Needed whenever a marker or a label could show.
       const proj = showLabels || showMarkers
-        ? projectToScreen(pos, this.camera, canvasWidth, canvasHeight, this.projScratch)
+        ? projectSphereToScreen(
+            pos,
+            entry.planet.radiusAU,
+            this.camera,
+            canvasWidth,
+            canvasHeight,
+            this.sphereProjScratch,
+          )
         : null;
 
       // Marker occlusion is analytic (the sprite renders without a depth test —
@@ -351,7 +386,7 @@ export class PlanetLabels {
       // once the disc grows so the text never lands on the planet's face. A
       // no-op at the mesh-hide threshold above (disc only a few px there) —
       // it's the guard for the never-on-the-disc rule if that threshold moves.
-      const labelOffsetY = Math.max(16, discRadiusPx(entry.planet.radiusAU, distFromCamera, halfFovTan, canvasHeight) * 1.1 + 6);
+      const labelOffsetY = Math.max(16, proj.radiusPx * 1.1 + 6);
 
       // Fade, then hide, a label whose box enters the Sun's glare. Measured from
       // the label rectangle (its box top-left sits at the transform anchor), not

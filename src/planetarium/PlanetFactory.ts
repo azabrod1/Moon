@@ -29,6 +29,7 @@ import { debugWarn } from '../shared/debug';
 import { applyTextureDefaults, clampTier, resolveTextureUrl, type TextureTier, type MapKind } from './world/texturePolicy';
 import { augmentSurfaceMaterial, type SurfaceArchetype, type SurfaceShadingFx } from './world/surfaceShading';
 import { queueTextureWarm } from './world/textureWarmer';
+import { createLensShaderUniforms } from '../shared/three/lensShader';
 
 const loader = new THREE.TextureLoader();
 loader.crossOrigin = 'anonymous';
@@ -725,7 +726,9 @@ export function createPlanetariumSun(useBloom = true): THREE.Group {
       uAtmosphereMix: { value: 0 },
       uAtmosphereColor: { value: new THREE.Color(1, 0.55, 0.24) },
       uMinHalfSizePx: { value: useBloom ? 18 : 22 },
+      uPhysicalHalfSizePx: { value: 0 },
       uViewportHeight: { value: Math.max(window.innerHeight, 1) },
+      ...createLensShaderUniforms(),
       // Wide veiling-glare wash. uVeilStrength is its peak HDR contribution at
       // frame centre; uVeilWarmth mixes a whisper of warmth into the outer fade.
       // uVeilAmt (occlusion x distance-falloff x huge-disc cutoff) and uVeilHalfPx
@@ -806,6 +809,7 @@ export function createPlanetariumSun(useBloom = true): THREE.Group {
       uEmergenceFlash: { value: 0 },
       uAtmosphereMix: { value: 0 },
       uAtmosphereColor: { value: new THREE.Color(1, 0.55, 0.24) },
+      ...createLensShaderUniforms(),
     },
     vertexShader: sunLensGhostVertexShader,
     fragmentShader: sunLensGhostFragmentShader,

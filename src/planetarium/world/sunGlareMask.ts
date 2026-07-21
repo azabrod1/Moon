@@ -21,6 +21,12 @@
  */
 import * as THREE from 'three';
 import { SUN_VEIL_BETA, SUN_VEIL_SCALE_H } from '../../shared/shaders/sun';
+import {
+  applyLensShaderUniforms,
+  createLensShaderUniforms,
+  lensShaderGLSL,
+  type LensShaderUniforms,
+} from '../../shared/three/lensShader';
 
 /**
  * One persistent parameter set per frame, filled by the controller after the
@@ -151,6 +157,7 @@ export function sunGlareMaskGLSL(): string {
   const scaleH = glslFloat(SUN_VEIL_SCALE_H);
   const beta = glslFloat(SUN_VEIL_BETA);
   return /* glsl */ `
+${lensShaderGLSL}
 uniform float uSunMaskActive;
 uniform vec2 uSunMaskScreenPx;
 uniform vec2 uSunMaskViewportPx;
@@ -162,7 +169,9 @@ uniform float uSunMaskCoreOuterPx;
 
 float sunGlareMask(vec4 clip) {
   if (uSunMaskActive < 0.5 || clip.w <= 0.0) return 0.0;
-  vec2 ndc = clip.xy / clip.w;
+  // GPU points are still in the overscan source at this stage. Compare them
+  // in the same final-output pixel space as the DOM labels and glare billboard.
+  vec2 ndc = lensWarpSourceNdc(clip.xy / clip.w);
   vec2 px = vec2(
     (ndc.x * 0.5 + 0.5) * uSunMaskViewportPx.x,
     (0.5 - ndc.y * 0.5) * uSunMaskViewportPx.y
@@ -187,7 +196,7 @@ float sunGlareMask(vec4 clip) {
 }
 
 /** The uniform block the GLSL above declares, as live THREE uniform refs. */
-export interface SunGlareMaskUniforms {
+export interface SunGlareMaskUniforms extends LensShaderUniforms {
   uSunMaskActive: { value: number };
   uSunMaskScreenPx: { value: THREE.Vector2 };
   uSunMaskViewportPx: { value: THREE.Vector2 };
@@ -201,6 +210,7 @@ export interface SunGlareMaskUniforms {
 /** Fresh, inactive uniform set — spread into a material's uniforms. */
 export function createSunGlareMaskUniforms(): SunGlareMaskUniforms {
   return {
+    ...createLensShaderUniforms(),
     uSunMaskActive: { value: 0 },
     uSunMaskScreenPx: { value: new THREE.Vector2() },
     uSunMaskViewportPx: { value: new THREE.Vector2(1, 1) },
@@ -217,7 +227,10 @@ export function applySunGlareMaskParams(
   u: SunGlareMaskUniforms,
   p: SunGlareMaskParams,
   viewportWidth: number,
+  camera: THREE.PerspectiveCamera,
+  pixelRatio = 1,
 ): void {
+  applyLensShaderUniforms(u, camera, viewportWidth, p.viewportHeight, pixelRatio);
   u.uSunMaskActive.value = p.active ? 1 : 0;
   u.uSunMaskScreenPx.value.set(p.sunXPx, p.sunYPx);
   u.uSunMaskViewportPx.value.set(viewportWidth, p.viewportHeight);

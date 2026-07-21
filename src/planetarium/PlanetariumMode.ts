@@ -20,9 +20,9 @@ import {
   type PlanetariumLayout,
 } from './SolarSystem';
 import { PlayerShip } from './PlayerShip';
-import { PlanetLabels, discRadiusPx } from './PlanetLabels';
+import { PlanetLabels } from './PlanetLabels';
 import { PlanetariumStore, createDefaultPlanetariumState, type PlanetariumState, type LandedTarget } from './PlanetariumStore';
-import { solarExposureTarget, solarViewportCoverage } from './solarExposure';
+import { solarExposureTarget } from './solarExposure';
 import { computeStats } from './stats';
 import { PLANETARIUM_BODIES, SUN_DATA, type PlanetData } from './planets/planetData';
 import { applySunGlowTier, cancelTextureUpgrade, createMoonMeshes, createShaderWarmupProbes, setWarmEligibleMoonParents, upgradeTextureOnApproach, ATMOSPHERES, ATMOSPHERE_SHELL_SCALES, type MoonMesh, type TextureUpgrade } from './PlanetFactory';
@@ -82,7 +82,6 @@ import {
   MOON_DOT_PARAMS,
   albedoProxyFromColor,
   chromaticityRGB,
-  discDiameterPx,
   moonDotVisual,
   parentDominanceFade,
   systemEdgeFade,
@@ -133,7 +132,7 @@ import {
   type SurfaceTargetChoice,
 } from './surfaceView';
 import { DEG2RAD } from '../shared/math/angles';
-import { applyDesignFov, lensDisplayHalfTan, lensUnwarpNdc } from '../shared/math/lensProjection';
+import { applyDesignFov } from '../shared/math/lensProjection';
 import { SUN_GLARE_EXTENT_SOLAR_RADII, SUN_VEIL_BETA, SUN_VEIL_SCALE_H } from '../shared/shaders/sun';
 import { landedFrameCamDistAU, landedMinDistanceAU, landedNearAU, LANDED_NEAR_AU } from './landedView';
 import {
@@ -171,7 +170,14 @@ import {
 } from './cruiseView';
 import { KM_CONSTANTS } from '../shared/constants/physicalData';
 import { smoothstepUnclamped } from '../shared/math/smoothstep';
-import { projectToScreen, type ScreenProjection } from '../shared/three/projectToScreen';
+import {
+  projectSphereToScreen,
+  projectToScreen,
+  screenPointToWorldRay,
+  type ScreenProjection,
+  type SphereScreenProjection,
+} from '../shared/three/projectToScreen';
+import { applyLensShaderUniforms, type LensShaderUniforms } from '../shared/three/lensShader';
 import { setText } from '../shared/dom';
 import { Constellations } from './Constellations';
 import { getMoonsByPlanet, MOONS, type MoonData } from './planets/moonData';
@@ -456,6 +462,16 @@ export class PlanetariumMode {
   private tmpRingHit = new THREE.Vector3();
   private tmpSunCameraForward = new THREE.Vector3();
   private tmpSunScreen = new THREE.Vector3();
+  private tmpScreenRay = new THREE.Vector3();
+  private readonly tmpScreenForward = new THREE.Vector3(0, 0, -1);
+  private tmpScreenOffsetQuat = new THREE.Quaternion();
+  private tmpScreenInverseQuat = new THREE.Quaternion();
+  private devDiagnosticSphere: THREE.Mesh | null = null;
+  private sphereScreenProjection: SphereScreenProjection = {
+    x: 0, y: 0, ndcX: 0, ndcY: 0, ndcZ: 0,
+    footprintX: 0, footprintY: 0, radiusPx: 0, diameterPx: 0,
+    minX: 0, maxX: 0, minY: 0, maxY: 0,
+  };
   private tmpSunOccluderPosition = new THREE.Vector3();
   private tmpSunOccluderDirection = new THREE.Vector3();
   private tmpSunOccluderScale = new THREE.Vector3();
@@ -1734,18 +1750,32 @@ export class PlanetariumMode {
     // dot's screen contribution for its sub-pixel gating.
     this.updateMoonDotsForCamera();
 
-    // Coverage meter: how much of the frame the solar disc covers, read from
-    // this frame's final camera pose. Telemetry for devExposurePeek() only —
-    // the exposure that reaches the render is updateSunShader's adapted
-    // sunExposure. The math is scene-space and reads the live FOV/aspect,
-    // never a cached copy (headless framing rewrites both).
+    // Coverage meter: output-space overlap of the displayed tangent footprint,
+    // not the overscan camera's rectilinear angular box. Telemetry for
+    // devExposurePeek() only; updateSunShader owns the adapted render exposure.
     this.solarSystem.sun.getWorldPosition(this.tmpSunView);
-    this.tmpSunView.applyMatrix4(this.camera.matrixWorldInverse);
-    this.exposureCoverage = solarViewportCoverage(
-      this.tmpSunView.x, this.tmpSunView.y, this.tmpSunView.z,
+    const exposureWidth = this.renderer.domElement.clientWidth;
+    const exposureHeight = this.renderer.domElement.clientHeight;
+    const exposureFootprint = projectSphereToScreen(
+      this.tmpSunView,
       SUN_DATA.radiusAU,
-      this.camera.fov * DEG2RAD,
-      this.camera.aspect,
+      this.camera,
+      exposureWidth,
+      exposureHeight,
+      this.sphereScreenProjection,
+    );
+    const overlapW = Math.max(
+      0,
+      Math.min(exposureFootprint.maxX, exposureWidth) - Math.max(exposureFootprint.minX, 0),
+    );
+    const overlapH = Math.max(
+      0,
+      Math.min(exposureFootprint.maxY, exposureHeight) - Math.max(exposureFootprint.minY, 0),
+    );
+    this.exposureCoverage = THREE.MathUtils.clamp(
+      (overlapW * overlapH) / Math.max(exposureWidth * exposureHeight, 1),
+      0,
+      1,
     );
     this.exposureTarget = solarExposureTarget(this.exposureCoverage);
 
@@ -1859,19 +1889,25 @@ export class PlanetariumMode {
    */
   private updateTextureLOD(): void {
     if (!this.solarSystem) return;
-    const fovRad = this.camera.fov * DEG2RAD;
-    if (fovRad <= 0) return;
     // Upgrade once a body spans ~15% of the viewport height: enough that 2K
     // texels start to soften, with lead time to fetch 4K before it grows.
     const UPGRADE_AT = 0.15;
-    const cam = this.camera.position;
+    const canvasW = this.renderer.domElement.clientWidth;
     const canvasH = this.renderer.domElement.clientHeight;
+    this.camera.updateMatrixWorld();
     for (const planet of this.solarSystem.planets) {
       const up = planet.textureUpgrade;
       if (!up) continue;
       planet.group.getWorldPosition(this.texLODTmp);
-      const dist = Math.max(this.texLODTmp.distanceTo(cam), 1e-6);
-      if ((planet.data.radiusAU * 2) / dist / fovRad > UPGRADE_AT) upgradeTextureOnApproach(up);
+      const footprint = projectSphereToScreen(
+        this.texLODTmp,
+        planet.data.radiusAU,
+        this.camera,
+        canvasW,
+        canvasH,
+        this.sphereScreenProjection,
+      );
+      if (footprint.diameterPx / Math.max(canvasH, 1) > UPGRADE_AT) upgradeTextureOnApproach(up);
     }
     // Cruise re-renders a procedural moon's texture sharper on close approach;
     // the landed/Observatory path already does this on observe, so gate it to
@@ -1886,7 +1922,6 @@ export class PlanetariumMode {
         // moon can't legitimately span the viewport anyway.
         if (!m.mesh.visible) continue;
         m.mesh.getWorldPosition(this.texLODTmp);
-        const dist = Math.max(this.texLODTmp.distanceTo(cam), 1e-6);
         // Rendered size (mesh scale carries the render-curve inflation): the
         // triggers must measure the disc actually on screen.
         const renderedR = m.data.radiusAU * m.mesh.scale.x;
@@ -1898,7 +1933,14 @@ export class PlanetariumMode {
         if (
           allowMoonTexUpgrade &&
           !moonTexUpgraded &&
-          discDiameterPx(renderedR, dist, this.camera.fov, canvasH) > this.moonDotParams.texUpgradeDiscPx
+          projectSphereToScreen(
+            this.texLODTmp,
+            renderedR,
+            this.camera,
+            canvasW,
+            canvasH,
+            this.sphereScreenProjection,
+          ).diameterPx > this.moonDotParams.texUpgradeDiscPx
         ) {
           if (this.moonTexturer.upgrade(m, PlanetariumMode.OBSERVE_MOON_TEXTURE_WIDTH)) {
             moonTexUpgraded = true;
@@ -1907,7 +1949,16 @@ export class PlanetariumMode {
 
         const up = m.textureUpgrade;
         if (!up) continue;
-        if ((renderedR * 2) / dist / fovRad > UPGRADE_AT) upgradeTextureOnApproach(up);
+        if (
+          projectSphereToScreen(
+            this.texLODTmp,
+            renderedR,
+            this.camera,
+            canvasW,
+            canvasH,
+            this.sphereScreenProjection,
+          ).diameterPx / Math.max(canvasH, 1) > UPGRADE_AT
+        ) upgradeTextureOnApproach(up);
       }
     }
   }
@@ -2011,8 +2062,14 @@ export class PlanetariumMode {
    */
   private updateMoonDotsForCamera(): void {
     if (!this.moonDots || !this.solarSystem) return;
+    const canvasW = this.renderer.domElement.clientWidth;
     const canvasH = this.renderer.domElement.clientHeight;
-    const fovDeg = this.camera.fov;
+    this.moonDots.setLens(
+      this.camera,
+      canvasW,
+      canvasH,
+      this.renderer.getPixelRatio(),
+    );
     const params = this.moonDotParams;
     const sun = this.solarSystem.sun.position;
     const cam = this.camera.position;
@@ -2033,12 +2090,14 @@ export class PlanetariumMode {
       // so the per-moon proximity ratio never reads a stale parent.
       const systemFade = this.moonSystemEdgeFade.get(planet.data.name) ?? 0;
       planet.group.getWorldPosition(this.tmpDotParentPos);
-      const parentDiscPx = discDiameterPx(
+      const parentDiscPx = projectSphereToScreen(
+        this.tmpDotParentPos,
         planet.data.radiusAU,
-        this.tmpDotParentPos.distanceTo(cam),
-        fovDeg,
+        this.camera,
+        canvasW,
         canvasH,
-      );
+        this.sphereScreenProjection,
+      ).diameterPx;
       for (const m of moons) {
         const i = idx++;
         // Same gate as the mesh: only a shown (visible & painted) moon dots, and
@@ -2066,7 +2125,14 @@ export class PlanetariumMode {
           distAU > 0 ? -(sdx * dx + sdy * dy + sdz * dz) / (sunDistAU * distAU) : 1;
 
         const renderedR = m.data.radiusAU * m.mesh.scale.x;
-        const discPx = discDiameterPx(renderedR, distAU, fovDeg, canvasH);
+        const discPx = projectSphereToScreen(
+          this.tmpDotMoonPos,
+          renderedR,
+          this.camera,
+          canvasW,
+          canvasH,
+          this.sphereScreenProjection,
+        ).diameterPx;
         const albedo = albedoProxyFromColor(m.data.color, params);
         const shade = m.dotSunVisibleFraction ?? 1;
 
@@ -2774,7 +2840,13 @@ export class PlanetariumMode {
     let reticleVisible = false;
     if (systemGroup) {
       this.tmpGuideCamLocal.copy(this.camera.position).sub(systemGroup.position);
-      this.shadowVisuals.updateCameraGuides(this.tmpGuideCamLocal, this.camera.fov, w, h);
+      this.shadowVisuals.updateCameraGuides(
+        this.tmpGuideCamLocal,
+        systemGroup.position,
+        this.camera,
+        w,
+        h,
+      );
       if (this.shadowVisuals.getFootprintReticleLocal(this.tmpGuideReticle)) {
         this.tmpGuideReticle.add(systemGroup.position);
         const proj = projectToScreen(this.tmpGuideReticle, this.camera, w, h, this.guideReticleProjection);
@@ -2816,8 +2888,8 @@ export class PlanetariumMode {
    */
   private collectDynamicOccluders() {
     if (!this.planetLabels || !this.solarSystem) return;
+    const canvasW = this.renderer.domElement.clientWidth;
     const canvasH = this.renderer.domElement.clientHeight;
-    const halfFovTan = Math.tan((this.camera.fov * Math.PI) / 360);
     const camX = this.camera.position.x;
     const camY = this.camera.position.y;
     const camZ = this.camera.position.z;
@@ -2830,12 +2902,18 @@ export class PlanetariumMode {
     {
       const sunPos = this.solarSystem.sun.position;
       const distFromCamera = this.camera.position.distanceTo(sunPos);
-      const canvasW = this.renderer.domElement.clientWidth;
-      const proj = projectToScreen(sunPos, this.camera, canvasW, canvasH);
+      const proj = projectSphereToScreen(
+        sunPos,
+        SUN_DATA.radiusAU,
+        this.camera,
+        canvasW,
+        canvasH,
+        this.sphereScreenProjection,
+      );
       if (proj.ndcZ < 1 && distFromCamera > 0) {
-        const radiusPx = discRadiusPx(SUN_DATA.radiusAU, distFromCamera, halfFovTan, canvasH) * 1.1;
+        const radiusPx = proj.radiusPx * 1.1;
         this.planetLabels.addForegroundDisc({
-          screenX: proj.x, screenY: proj.y, radiusPx, distFromCamera, name: 'Sun',
+          screenX: proj.footprintX, screenY: proj.footprintY, radiusPx, distFromCamera, name: 'Sun',
         });
       }
     }
@@ -2858,12 +2936,18 @@ export class PlanetariumMode {
         const angularSize = (effectiveRadiusAU * 2) / Math.max(distFromCamera, 0.0001);
         if (angularSize <= 0.01) continue;
 
-        const canvasW = this.renderer.domElement.clientWidth;
-        const proj = projectToScreen(tempV, this.camera, canvasW, canvasH);
+        const proj = projectSphereToScreen(
+          tempV,
+          effectiveRadiusAU,
+          this.camera,
+          canvasW,
+          canvasH,
+          this.sphereScreenProjection,
+        );
         if (proj.ndcZ >= 1) continue;
-        const screenX = proj.x;
-        const screenY = proj.y;
-        const radiusPx = discRadiusPx(effectiveRadiusAU, distFromCamera, halfFovTan, canvasH) * 1.1;
+        const screenX = proj.footprintX;
+        const screenY = proj.footprintY;
+        const radiusPx = proj.radiusPx * 1.1;
         this.planetLabels.addForegroundDisc({ screenX, screenY, radiusPx, distFromCamera, name: `moon:${m.data.name}` });
       }
     }
@@ -2876,12 +2960,18 @@ export class PlanetariumMode {
         const shipSceneRadiusAU = SHIP_OCCLUDER_RADIUS_AU;
         const angularSize = (shipSceneRadiusAU * 2) / distFromCamera;
         if (angularSize > 0.005) {
-          const canvasW = this.renderer.domElement.clientWidth;
-          const proj = projectToScreen(tempV.set(0, 0, 0), this.camera, canvasW, canvasH);
+          const proj = projectSphereToScreen(
+            tempV.set(0, 0, 0),
+            shipSceneRadiusAU,
+            this.camera,
+            canvasW,
+            canvasH,
+            this.sphereScreenProjection,
+          );
           if (proj.ndcZ < 1) {
-            const screenX = proj.x;
-            const screenY = proj.y;
-            const radiusPx = discRadiusPx(shipSceneRadiusAU, distFromCamera, halfFovTan, canvasH);
+            const screenX = proj.footprintX;
+            const screenY = proj.footprintY;
+            const radiusPx = proj.radiusPx;
             this.planetLabels.addForegroundDisc({ screenX, screenY, radiusPx, distFromCamera, name: 'ship' });
           }
         }
@@ -2897,7 +2987,6 @@ export class PlanetariumMode {
     if (!this.solarSystem || this.moonLabelContainer === null) return;
     const canvasW = this.renderer.domElement.clientWidth;
     const canvasH = this.renderer.domElement.clientHeight;
-    const halfFovTan = Math.tan((this.camera.fov * Math.PI) / 360);
     const tempV = new THREE.Vector3();
 
     // Two passes: gather placeable labels, then place big-to-small with
@@ -2929,7 +3018,14 @@ export class PlanetariumMode {
 
         m.mesh.getWorldPosition(tempV);
         const moonCamDist = tempV.distanceTo(this.camera.position);
-        const proj = projectToScreen(tempV, this.camera, canvasW, canvasH);
+        const proj = projectSphereToScreen(
+          tempV,
+          m.data.radiusAU * m.mesh.scale.x,
+          this.camera,
+          canvasW,
+          canvasH,
+          this.sphereScreenProjection,
+        );
         if (proj.ndcZ >= 1) {
           if (label.style.display !== 'none') label.style.display = 'none';
           continue;
@@ -2942,7 +3038,14 @@ export class PlanetariumMode {
           planet.data.radiusAU,
           this.moonRenderAnchorRatio(planet.data.name),
         );
-        const discRadiusPadPx = discRadiusPx(effRadiusAU, moonCamDist, halfFovTan, canvasH) * 1.1;
+        const discRadiusPadPx = projectSphereToScreen(
+          tempV,
+          effRadiusAU,
+          this.camera,
+          canvasW,
+          canvasH,
+          this.sphereScreenProjection,
+        ).radiusPx * 1.1;
 
         // Sub-pixel gating: a moon whose disc doesn't read and whose dot is too
         // faint to see keeps no label — unless it's the nav target.
@@ -3096,12 +3199,20 @@ export class PlanetariumMode {
         (this.starfield.material as THREE.ShaderMaterial).uniforms as unknown as SunGlareMaskUniforms,
         params,
         viewportWidth,
+        this.camera,
+        this.renderer.getPixelRatio(),
       );
     }
     const beltUniforms = this.solarSystem?.asteroidBelt.userData.sunGlareMaskUniforms as
       | SunGlareMaskUniforms
       | undefined;
-    if (beltUniforms) applySunGlareMaskParams(beltUniforms, params, viewportWidth);
+    if (beltUniforms) applySunGlareMaskParams(
+      beltUniforms,
+      params,
+      viewportWidth,
+      this.camera,
+      this.renderer.getPixelRatio(),
+    );
   }
 
   /** Collapse the mask to an inactive no-op and push it (used on the buried-
@@ -3268,6 +3379,20 @@ export class PlanetariumMode {
     const solarAngularRadius = Math.asin(THREE.MathUtils.clamp(SUN_DATA.radiusAU / sunDistance, 0, 0.999999));
     const viewportWidth = Math.max(this.renderer.domElement.clientWidth, 1);
     const viewportHeight = Math.max(this.renderer.domElement.clientHeight, 1);
+    if (glareMat) applyLensShaderUniforms(
+      glareMat.uniforms as unknown as LensShaderUniforms,
+      this.camera,
+      viewportWidth,
+      viewportHeight,
+      this.renderer.getPixelRatio(),
+    );
+    if (ghostMat) applyLensShaderUniforms(
+      ghostMat.uniforms as unknown as LensShaderUniforms,
+      this.camera,
+      viewportWidth,
+      viewportHeight,
+      this.renderer.getPixelRatio(),
+    );
     let targetExposure = 1;
     let visibleFraction = 1;
     // Body-only exposed fraction (no ring transmission) — the emergence flash
@@ -3286,23 +3411,23 @@ export class PlanetariumMode {
     let veilArmCoeff = 0;
 
     if (inFront) {
-      this.tmpSunScreen.copy(this.solarSystem.sun.position).project(this.camera);
+      const sunProjection = projectSphereToScreen(
+        this.solarSystem.sun.position,
+        SUN_DATA.radiusAU,
+        this.camera,
+        viewportWidth,
+        viewportHeight,
+        this.sphereScreenProjection,
+      );
+      this.tmpSunScreen.set(sunProjection.ndcX, sunProjection.ndcY, sunProjection.ndcZ);
       centreDistanceNdc = Math.hypot(this.tmpSunScreen.x, this.tmpSunScreen.y);
-      // Displayed size, not render-frustum size: under the lens pass the
-      // camera fov is the overscan, and metering against it would gate the
-      // whole close-approach appearance ladder late.
-      const lens = this.camera.userData.lens as
-        | { designFovDeg: number; strength: number; effectiveStrength?: number }
-        | undefined;
-      const displayHalfTan = lens
-        ? lensDisplayHalfTan(lens.designFovDeg, lens.effectiveStrength ?? lens.strength)
-        : Math.tan(THREE.MathUtils.degToRad(this.camera.fov * 0.5));
-      const projectedRadiusNdc = Math.tan(solarAngularRadius) / displayHalfTan;
       const glareExtent = SUN_GLARE_EXTENT_SOLAR_RADII;
-      solarRadiusPx = projectedRadiusNdc * viewportHeight * 0.5;
+      solarRadiusPx = sunProjection.radiusPx;
+      const projectedRadiusNdc = (solarRadiusPx * 2) / viewportHeight;
       opticalFx = 1 - THREE.MathUtils.smoothstep(solarRadiusPx, 22, 82);
       if (glareMat) {
         glareMat.uniforms.uViewportHeight.value = viewportHeight;
+        glareMat.uniforms.uPhysicalHalfSizePx.value = solarRadiusPx * glareExtent;
         glareMat.uniforms.uPointLike.value = 1 - THREE.MathUtils.smoothstep(solarRadiusPx, 2, 10);
         glareMat.uniforms.uCameraFx.value = opticalFx;
       }
@@ -4111,11 +4236,15 @@ export class PlanetariumMode {
   private updateSunLabel() {
     if (!this.solarSystem) return;
     const sunPos = this.solarSystem.sun.position;
-    const halfFovTan = Math.tan((this.camera.fov * Math.PI) / 360);
-    const distFromCamera = this.camera.position.distanceTo(sunPos);
-    const sunRadiusPx = discRadiusPx(
-      SUN_DATA.radiusAU, distFromCamera, halfFovTan, this.renderer.domElement.clientHeight,
-    );
+    const canvas = this.renderer.domElement;
+    const sunRadiusPx = projectSphereToScreen(
+      sunPos,
+      SUN_DATA.radiusAU,
+      this.camera,
+      canvas.clientWidth,
+      canvas.clientHeight,
+      this.sphereScreenProjection,
+    ).radiusPx;
     this.sunLabel.update(
       sunPos,
       this.camera,
@@ -6455,6 +6584,68 @@ export class PlanetariumMode {
     applyDesignFov(this.camera as THREE.PerspectiveCamera, deg);
   }
 
+  /** Rotate an already-centred camera so its current look target lands at the
+   * requested DISPLAY/output NDC. The inverse lens ray is the source of truth;
+   * using the overscan `camera.fov` directly overshoots every QA edge pose. */
+  private offsetCameraTargetToOutputNdc(
+    cam: THREE.PerspectiveCamera,
+    offNdcX: number,
+    offNdcY: number,
+  ): void {
+    if (offNdcX === 0 && offNdcY === 0) return;
+    cam.updateMatrixWorld(true);
+    screenPointToWorldRay(
+      (offNdcX * 0.5 + 0.5) * 2,
+      (-offNdcY * 0.5 + 0.5) * 2,
+      cam,
+      2,
+      2,
+      this.tmpScreenRay,
+    );
+    // Express the requested ray in the current camera's local frame, then
+    // rotate that ray onto local forward. Post-multiplication preserves the
+    // current world-space look direction while moving it to the requested pixel.
+    this.tmpScreenInverseQuat.copy(cam.quaternion).invert();
+    this.tmpScreenRay.applyQuaternion(this.tmpScreenInverseQuat);
+    this.tmpScreenOffsetQuat.setFromUnitVectors(this.tmpScreenRay, this.tmpScreenForward);
+    cam.quaternion.multiply(this.tmpScreenOffsetQuat).normalize();
+    cam.updateMatrixWorld(true);
+  }
+
+  /** Iteratively place a sphere's DISPLAYED limb centre at an output NDC. Under
+   * stereographic projection a finite small circle's Euclidean centre is a few
+   * pixels radially offset from the projected direction to its 3D centre. */
+  private frameSphereAtOutputNdc(
+    cam: THREE.PerspectiveCamera,
+    target: THREE.Vector3,
+    radius: number,
+    offNdcX: number,
+    offNdcY: number,
+  ): void {
+    const canvas = this.renderer.domElement;
+    let aimNdcX = offNdcX;
+    let aimNdcY = offNdcY;
+    for (let i = 0; i < 4; i++) {
+      cam.lookAt(target);
+      // lookAt only mutates the quaternion. Projection below reads
+      // matrixWorldInverse, so refresh even for the centred (zero-offset) case.
+      cam.updateMatrixWorld(true);
+      this.offsetCameraTargetToOutputNdc(cam, aimNdcX, aimNdcY);
+      const footprint = projectSphereToScreen(
+        target,
+        radius,
+        cam,
+        canvas.clientWidth,
+        canvas.clientHeight,
+        this.sphereScreenProjection,
+      );
+      const actualX = (footprint.footprintX / Math.max(canvas.clientWidth, 1)) * 2 - 1;
+      const actualY = 1 - (footprint.footprintY / Math.max(canvas.clientHeight, 1)) * 2;
+      aimNdcX += offNdcX - actualX;
+      aimNdcY += offNdcY - actualY;
+    }
+  }
+
   /** Headless-screenshot support: set the planetarium camera FOV (degrees) to zoom. */
   devSetFov(deg: number): void {
     this.setDisplayFov(deg);
@@ -6533,34 +6724,11 @@ export class PlanetariumMode {
     const cam = this.camera as THREE.PerspectiveCamera;
     cam.position.set(0, 0, 0);
     this.setDisplayFov(THREE.MathUtils.radToDeg((2 * Math.atan(r / dist)) / fillFraction));
-    cam.lookAt(sceneOffset);
     // Optional off-centre slide (same convention as devFrameSun): lets the
     // harness study off-axis projection on any body, not just the Sun.
-    this.slideCameraToOutputNdc(cam, offNdcX, offNdcY);
+    this.frameSphereAtOutputNdc(cam, sceneOffset, r, offNdcX, offNdcY);
     this.controls.target.copy(sceneOffset);
     return true;
-  }
-
-  /** Slide a body currently centred to a requested OUTPUT (post-lens) screen
-   *  NDC. Under the lens the on-screen position is the warped one, so unwarp the
-   *  request to the source render NDC before rotating — otherwise a QA offset
-   *  lands short of where it was asked for (e.g. requested 0.90 renders at
-   *  ~0.995), invalidating the probe's predicted angles. */
-  private slideCameraToOutputNdc(cam: THREE.PerspectiveCamera, offNdcX: number, offNdcY: number): void {
-    if (offNdcX === 0 && offNdcY === 0) return;
-    const lens = cam.userData.lens as
-      | { designFovDeg: number; strength: number; effectiveStrength?: number }
-      | undefined;
-    const strength = lens ? (lens.effectiveStrength ?? lens.strength) : 0;
-    const src = { x: offNdcX, y: offNdcY };
-    if (lens && strength > 0) {
-      lensUnwarpNdc(offNdcX, offNdcY, lens.designFovDeg, cam.fov, cam.aspect, strength, src);
-    }
-    const halfV = Math.tan(THREE.MathUtils.degToRad(cam.fov / 2));
-    cam.rotateY(Math.atan(halfV * cam.aspect * src.x));
-    // Pitching up (+rotateX) drops the target lower on screen, so a positive
-    // screen-NDC y (target above centre) needs a downward pitch.
-    cam.rotateX(-Math.atan(halfV * src.y));
   }
 
   /** Headless-QA pose: camera `distanceAU` from the Sun, looking at it.
@@ -6582,9 +6750,56 @@ export class PlanetariumMode {
     this.setDisplayFov(fovDeg);
     // Floating origin: the Sun sits at scene position −player.
     const sunScene = new THREE.Vector3(-this.player.posX, -this.player.posY, -this.player.posZ);
-    cam.lookAt(sunScene);
-    this.slideCameraToOutputNdc(cam, offNdcX, offNdcY);
+    this.frameSphereAtOutputNdc(cam, sunScene, SUN_DATA.radiusAU, offNdcX, offNdcY);
     this.controls.target.copy(sunScene);
+    return true;
+  }
+
+  /** Solid, non-HDR limb target for assertion-based lens QA. It deliberately
+   * bypasses the textured Sun/glare so thresholding measures one connected
+   * geometric silhouette rather than whichever saturated optical layer wins. */
+  devFrameDiagnosticSphere(
+    offNdcX = 0,
+    offNdcY = 0,
+    fovDeg = 60,
+    angularRadiusDeg = 6,
+  ): boolean {
+    this.devFreeCamera = true;
+    this.player.moving = false;
+    const cam = this.camera as THREE.PerspectiveCamera;
+    cam.position.set(0, 0, 0);
+    cam.quaternion.identity();
+    this.setDisplayFov(fovDeg);
+    cam.updateMatrixWorld(true);
+    const distance = 10;
+    const radius = distance * Math.sin(THREE.MathUtils.degToRad(angularRadiusDeg));
+    if (!this.devDiagnosticSphere) {
+      this.devDiagnosticSphere = new THREE.Mesh(
+        new THREE.SphereGeometry(radius, 192, 96),
+        new THREE.MeshBasicMaterial({ color: 0xb8b8b8, toneMapped: false }),
+      );
+      this.devDiagnosticSphere.name = 'Lens diagnostic sphere';
+      this.devDiagnosticSphere.frustumCulled = false;
+      this.devDiagnosticSphere.userData.baseRadius = radius;
+      this.scene.add(this.devDiagnosticSphere);
+    }
+    // The radius is fixed by the one-time geometry; every harness call uses the
+    // same default angular radius. Scale keeps the hook honest if QA overrides it.
+    const geometryRadius = this.devDiagnosticSphere.userData.baseRadius as number;
+    this.devDiagnosticSphere.scale.setScalar(radius / geometryRadius);
+    this.devDiagnosticSphere.position.set(0, 0, -distance);
+    for (const child of this.scene.children) {
+      child.traverse(object => { object.visible = false; });
+    }
+    this.devDiagnosticSphere.visible = true;
+    this.controls.target.copy(this.devDiagnosticSphere.position);
+    this.frameSphereAtOutputNdc(
+      cam,
+      this.devDiagnosticSphere.position,
+      radius,
+      offNdcX,
+      offNdcY,
+    );
     return true;
   }
 
@@ -6825,8 +7040,14 @@ export class PlanetariumMode {
       dotAlpha = moon.dotScreenAlpha ?? 0;
       dotSizePx = moon.dotScreenSizePx ?? 0;
       const renderedR = moon.data.radiusAU * moon.mesh.scale.x;
-      const dist = this.devTraceWorld.distanceTo(this.camera.position);
-      disc = discDiameterPx(renderedR, dist, this.camera.fov, el.clientHeight);
+      disc = projectSphereToScreen(
+        this.devTraceWorld,
+        renderedR,
+        this.camera,
+        el.clientWidth,
+        el.clientHeight,
+        this.sphereScreenProjection,
+      ).diameterPx;
       const lbl = this.moonLabels.get(moon.data.name);
       labelVis = lbl && lbl.style.display !== 'none' ? 1 : 0;
     }
@@ -7385,7 +7606,7 @@ export class PlanetariumMode {
       whenText: formatObservatoryClock(now),
       whenTag: this.observatoryNowTag(),
       paused: this.timeState.paused,
-      fovDeg: this.camera.fov,
+      fovDeg: this.displayFovDeg(),
       tracking: this.surfaceTracking,
       targetName: this.surfaceTargetDisplayName(this.surfaceTarget),
       showLookatChip: this.surfaceTargetChoiceCount() >= 2,
@@ -8029,7 +8250,7 @@ export class PlanetariumMode {
     this.surfaceTracking = false;
     // A full-viewport-height drag pans one FOV — "grab the sky".
     const radPerPx =
-      (this.camera.fov * DEG2RAD) / Math.max(this.renderer.domElement.clientHeight, 1);
+      (this.displayFovDeg() * DEG2RAD) / Math.max(this.renderer.domElement.clientHeight, 1);
     const zenith = this.tmpSurfaceZenith.copy(this.camera.position).normalize();
     // Yaw about the local zenith keeps panning level with the horizon.
     this.camera.quaternion.premultiply(
@@ -8249,12 +8470,16 @@ export class PlanetariumMode {
     // THIS frame's pose, not last render's, or the marker trails the disc by a
     // frame during re-points and drag-look.
     this.camera.updateMatrixWorld();
-    const proj = projectToScreen(targetPos, this.camera, w, h);
-    const discDeg = angularDiameterDeg(
-      this.surfaceTargetRadiusAU(this.surfaceTarget),
-      targetPos.distanceTo(this.camera.position),
+    const targetRadiusAU = this.surfaceTargetRadiusAU(this.surfaceTarget);
+    const proj = projectSphereToScreen(
+      targetPos,
+      targetRadiusAU,
+      this.camera,
+      w,
+      h,
+      this.sphereScreenProjection,
     );
-    const discPx = projectedDiscPx(discDeg, this.camera.fov, h);
+    const discPx = proj.diameterPx;
     this.surfaceMarkerKind = resolveMarkerKind(discPx, this.surfaceMarkerKind, h);
     // On-frame test inflated by the disc radius: a big disc (Jupiter fills
     // ~60% of the frame) must not flip to "off frame" the moment its CENTER
@@ -8271,7 +8496,7 @@ export class PlanetariumMode {
       const sizePx = this.surfaceMarkerKind === 'pill'
         ? discPx
         : THREE.MathUtils.clamp(
-            (discDeg / this.camera.fov) * h * 1.3,
+            discPx * 1.3,
             70,
             h * 0.85,
           );

@@ -150,6 +150,27 @@ describe('lensWarpNdc', () => {
   });
 });
 
+describe('lensUnwarpNdc', () => {
+  it('round-trips output points through the source frame', () => {
+    for (const aspect of [16 / 9, 390 / 844, 21 / 9]) {
+      for (const fov of [45, 60, 103, 110]) {
+        const strength = lensEffectiveStrength(fov, aspect, 1);
+        const renderFov = lensOverscanFovDeg(fov, aspect, strength);
+        for (const [x, y] of [[0, 0], [0.35, -0.2], [-0.8, 0.65], [0.95, -0.9]]) {
+          const source = lensUnwarpNdc(
+            x, y, fov, renderFov, aspect, strength, { x: 0, y: 0 },
+          );
+          const output = lensWarpNdc(
+            source.x, source.y, fov, renderFov, aspect, strength, { x: 0, y: 0 },
+          );
+          expect(output.x).toBeCloseTo(x, 9);
+          expect(output.y).toBeCloseTo(y, 9);
+        }
+      }
+    }
+  });
+});
+
 describe('applyDesignFov / lensDisplayHalfTan', () => {
   it('writes the overscan to the camera and keeps the design on userData', () => {
     const camera = {

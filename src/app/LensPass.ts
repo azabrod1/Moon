@@ -1,6 +1,7 @@
 /**
  * The lens-correction post pass (see lensProjection.ts for the math and the
- * why). Sits between bloom and the OutputPass in the planetarium composer;
+ * why). Runs before output-space bloom on HDR-capable devices; the no-float
+ * fallback tone-maps first and runs this as its final LDR resample.
  * per-frame uniform sync happens in main's render loop from the camera's
  * `userData.lens`, so dev FOV poses and resizes never leave the pass stale.
  */

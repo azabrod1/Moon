@@ -54,12 +54,14 @@ import {
   shadowAxisSphereHitAU,
   type ShadowConeProfile,
 } from '../../astronomy/shadows';
-import {
-  angularDiameterDeg,
-  projectedDiscPx,
-  resolveGuideVisibility,
-} from '../surfaceView';
+import { resolveGuideVisibility } from '../surfaceView';
 import type { MoonMesh } from '../PlanetFactory';
+import {
+  applyLensShaderUniforms,
+  augmentFixedScreenLineForLens,
+  type LensShaderUniforms,
+} from '../../shared/three/lensShader';
+import { projectSphereToScreen, type SphereScreenProjection } from '../../shared/three/projectToScreen';
 
 const UP = new THREE.Vector3(0, 1, 0);
 const FORWARD = new THREE.Vector3(0, 0, 1); // CircleGeometry's / unit ring's facing axis
@@ -240,6 +242,7 @@ export class ShadowVisuals {
   private unitSegment: LineGeometry;
 
   private lineMaterials: LineMaterial[] = [];
+  private lineLensUniforms: LensShaderUniforms[] = [];
   private styleUmbra: GuideStyle;
   private stylePenumbra: GuideStyle;
   private styleAxis: GuideStyle;
@@ -285,6 +288,12 @@ export class ShadowVisuals {
   private tmpEdgeDirA = new THREE.Vector3();
   private tmpEdgeDirB = new THREE.Vector3();
   private tmpEdgeEnd = new THREE.Vector3();
+  private tmpWorld = new THREE.Vector3();
+  private sphereProjection: SphereScreenProjection = {
+    x: 0, y: 0, ndcX: 0, ndcY: 0, ndcZ: 0,
+    footprintX: 0, footprintY: 0, radiusPx: 0, diameterPx: 0,
+    minX: 0, maxX: 0, minY: 0, maxY: 0,
+  };
 
   constructor() {
     const cone = new THREE.CylinderGeometry(1, 0, 1, 48, 1, true);
@@ -367,6 +376,7 @@ export class ShadowVisuals {
       dashSize: dashSize ?? 1,
       gapSize: gapSize ?? 0,
     });
+    this.lineLensUniforms.push(augmentFixedScreenLineForLens(material));
     this.lineMaterials.push(material);
     return material;
   }
@@ -753,32 +763,44 @@ export class ShadowVisuals {
    */
   updateCameraGuides(
     cameraLocalAU: THREE.Vector3,
-    fovYDeg: number,
+    systemWorldPosition: THREE.Vector3,
+    camera: THREE.PerspectiveCamera,
     viewportWidthPx: number,
     viewportHeightPx: number,
   ): void {
-    for (const material of this.lineMaterials) {
+    for (let i = 0; i < this.lineMaterials.length; i++) {
+      const material = this.lineMaterials[i];
       material.resolution.set(viewportWidthPx, viewportHeightPx);
+      applyLensShaderUniforms(
+        this.lineLensUniforms[i],
+        camera,
+        viewportWidthPx,
+        viewportHeightPx,
+      );
     }
     if (!this.guidesVisible) return;
 
-    const camDistAU = Math.max(cameraLocalAU.length(), 1e-12);
-    const parentPx = projectedDiscPx(
-      angularDiameterDeg(this.parentRadiusEffAU, camDistAU),
-      fovYDeg,
+    const parentPx = projectSphereToScreen(
+      systemWorldPosition,
+      this.parentRadiusEffAU,
+      camera,
+      viewportWidthPx,
       viewportHeightPx,
-    );
+      this.sphereProjection,
+    ).diameterPx;
     this.parentEdgesResolvable = resolveGuideVisibility(parentPx, this.parentEdgesResolvable);
     this.poseConeEdges(this.parentUmbraRec, this.parentEdgesResolvable, cameraLocalAU);
     this.poseConeEdges(this.parentPenumbraRec, this.parentEdgesResolvable, cameraLocalAU);
 
     if (this.moonUmbraRec.posed) {
-      const moonDistAU = Math.max(cameraLocalAU.distanceTo(this.landedMoonOffsetAU), 1e-12);
-      const moonPx = projectedDiscPx(
-        angularDiameterDeg(this.landedMoonRadiusAU, moonDistAU),
-        fovYDeg,
+      const moonPx = projectSphereToScreen(
+        this.tmpWorld.copy(systemWorldPosition).add(this.landedMoonOffsetAU),
+        this.landedMoonRadiusAU,
+        camera,
+        viewportWidthPx,
         viewportHeightPx,
-      );
+        this.sphereProjection,
+      ).diameterPx;
       this.moonEdgesResolvable = resolveGuideVisibility(moonPx, this.moonEdgesResolvable);
     }
     this.poseConeEdges(this.moonUmbraRec, this.moonEdgesResolvable, cameraLocalAU);
@@ -792,12 +814,14 @@ export class ShadowVisuals {
         slot.footprintRingsVisible = false;
         continue;
       }
-      const distAU = Math.max(cameraLocalAU.distanceTo(slot.hitPosAU), 1e-12);
-      const ringPx = projectedDiscPx(
-        angularDiameterDeg(slot.footprintRadiusAU, distAU),
-        fovYDeg,
+      const ringPx = projectSphereToScreen(
+        this.tmpWorld.copy(systemWorldPosition).add(slot.hitPosAU),
+        slot.footprintRadiusAU,
+        camera,
+        viewportWidthPx,
         viewportHeightPx,
-      );
+        this.sphereProjection,
+      ).diameterPx;
       slot.footprintRingsVisible = resolveGuideVisibility(ringPx, slot.footprintRingsVisible);
       if (!slot.footprintRingsVisible) {
         slot.footprintUmbra.hide();

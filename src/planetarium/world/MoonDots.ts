@@ -14,6 +14,12 @@
  * would cull wrongly (the count is tiny; culling buys nothing).
  */
 import * as THREE from 'three';
+import {
+  applyLensShaderUniforms,
+  createLensShaderUniforms,
+  lensShaderGLSL,
+  type LensShaderUniforms,
+} from '../../shared/three/lensShader';
 
 /** gl_PointSize is framebuffer pixels, so a point that should read as N CSS px
  *  must be N × the renderer's pixel ratio — capped at 2 to match the sizes the
@@ -46,26 +52,55 @@ export class MoonDots {
     this.mat = new THREE.ShaderMaterial({
       uniforms: {
         pixelRatio: { value: moonDotPixelRatio(rendererPixelRatio) },
+        ...createLensShaderUniforms(),
       },
       vertexShader: `
         attribute float size;
         attribute float alpha;
         varying vec3 vColor;
         varying float vAlpha;
+        varying vec2 vLensOutputCentre;
+        varying float vLensTargetDiameterPx;
         uniform float pixelRatio;
+        ${lensShaderGLSL}
         void main() {
           vColor = color;
           vAlpha = alpha;
           vec4 mvPosition = modelViewMatrix * vec4(position, 1.0);
           gl_Position = projectionMatrix * mvPosition;
-          gl_PointSize = size * pixelRatio;
+          vec2 sourceCentre = gl_Position.xy / gl_Position.w;
+          vLensOutputCentre = lensWarpSourceNdc(sourceCentre);
+          vLensTargetDiameterPx = size * pixelRatio;
+          vec2 halfOutputNdc = vec2(
+            vLensTargetDiameterPx / max(uLensFramebufferPx.x, 1.0),
+            vLensTargetDiameterPx / max(uLensFramebufferPx.y, 1.0)
+          );
+          vec2 sourceA = lensUnwarpOutputNdc(vLensOutputCentre + halfOutputNdc);
+          vec2 sourceB = lensUnwarpOutputNdc(vLensOutputCentre - halfOutputNdc);
+          vec2 sourceC = lensUnwarpOutputNdc(vLensOutputCentre + vec2(halfOutputNdc.x, -halfOutputNdc.y));
+          vec2 sourceD = lensUnwarpOutputNdc(vLensOutputCentre + vec2(-halfOutputNdc.x, halfOutputNdc.y));
+          vec2 halfA = abs(sourceA - sourceCentre) * uLensFramebufferPx * 0.5;
+          vec2 halfB = abs(sourceB - sourceCentre) * uLensFramebufferPx * 0.5;
+          vec2 halfC = abs(sourceC - sourceCentre) * uLensFramebufferPx * 0.5;
+          vec2 halfD = abs(sourceD - sourceCentre) * uLensFramebufferPx * 0.5;
+          float sourceHalfPx = max(
+            max(max(halfA.x, halfA.y), max(halfB.x, halfB.y)),
+            max(max(halfC.x, halfC.y), max(halfD.x, halfD.y))
+          );
+          gl_PointSize = max(1.0, 2.0 * sourceHalfPx);
         }
       `,
       fragmentShader: `
         varying vec3 vColor;
         varying float vAlpha;
+        varying vec2 vLensOutputCentre;
+        varying float vLensTargetDiameterPx;
+        ${lensShaderGLSL}
         void main() {
-          float d = length(gl_PointCoord - vec2(0.5));
+          vec2 sourceNdc = gl_FragCoord.xy / uLensFramebufferPx * 2.0 - 1.0;
+          vec2 outputNdc = lensWarpSourceNdc(sourceNdc);
+          vec2 outputOffsetPx = (outputNdc - vLensOutputCentre) * uLensFramebufferPx * 0.5;
+          float d = length(outputOffsetPx) / max(vLensTargetDiameterPx, 1e-6);
           if (d > 0.5) discard;
           float falloff = 1.0 - smoothstep(0.2, 0.5, d);
           gl_FragColor = vec4(vColor, falloff * vAlpha);
@@ -86,6 +121,22 @@ export class MoonDots {
   /** Retune point size when the renderer's pixel ratio changes (DPR / resize). */
   setPixelRatio(rendererPixelRatio: number): void {
     this.mat.uniforms.pixelRatio.value = moonDotPixelRatio(rendererPixelRatio);
+  }
+
+  /** Keep source-prewarp point footprints invariant in final framebuffer px. */
+  setLens(
+    camera: THREE.PerspectiveCamera,
+    viewportWidthPx: number,
+    viewportHeightPx: number,
+    rendererPixelRatio: number,
+  ): void {
+    applyLensShaderUniforms(
+      this.mat.uniforms as unknown as LensShaderUniforms,
+      camera,
+      viewportWidthPx,
+      viewportHeightPx,
+      rendererPixelRatio,
+    );
   }
 
   /** Write one moon's dot (absolute scene position, chromaticity × brightness,

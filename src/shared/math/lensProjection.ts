@@ -39,13 +39,19 @@ export function lensRadial(theta: number, strength: number): number {
  *  solve safely inside it. */
 const MAX_THETA = 88 * DEG;
 
+/** Newton iterations for the radial inverse. The CPU seam (lensRadialInverse)
+ *  and the GPU fragment (lensPassFragmentShader) MUST share this budget, or the
+ *  overlay projection and the rendered pixels drift at the wide-FOV strength cap
+ *  (a 4-iter shader vs 8-iter CPU disagreed by ~2° at a 110° design FOV). */
+export const LENS_INVERSE_ITERATIONS = 8;
+
 /** Inverse of lensRadial in theta, by Newton iteration (monotonic, smooth).
  *  Saturates at MAX_THETA for radii beyond the representable range. */
 export function lensRadialInverse(r: number, strength: number): number {
   if (r <= 0) return 0;
   if (r >= lensRadial(MAX_THETA, strength)) return MAX_THETA;
   let theta = Math.min(Math.atan(r), MAX_THETA);
-  for (let i = 0; i < 8; i++) {
+  for (let i = 0; i < LENS_INVERSE_ITERATIONS; i++) {
     const t = Math.tan(theta);
     const th = Math.tan(theta / 2);
     const f = (1 - strength) * t + strength * 2 * th - r;
@@ -143,6 +149,45 @@ export function lensWarpNdc(
 }
 
 /**
+ * Inverse map: output NDC (what the viewer sees after the lens pass) → the
+ * rectilinear NDC under the overscanned render camera that lands there. Exact
+ * inverse of `lensWarpNdc`; identity at strength 0. Use it to aim a camera ray
+ * at, or read a world position under, a chosen ON-SCREEN point (QA framing,
+ * pointer picking) — a raw rectilinear projection would miss by the local lens
+ * magnification.
+ */
+export function lensUnwarpNdc(
+  ndcX: number,
+  ndcY: number,
+  designFovDeg: number,
+  renderFovDeg: number,
+  aspect: number,
+  strength: number,
+  out: { x: number; y: number },
+): { x: number; y: number } {
+  if (strength <= 0) {
+    out.x = ndcX;
+    out.y = ndcY;
+    return out;
+  }
+  const dx = ndcX * aspect;
+  const dy = ndcY;
+  const mOut = Math.hypot(dx, dy);
+  if (mOut < 1e-9) {
+    out.x = 0;
+    out.y = 0;
+    return out;
+  }
+  const rEdge = lensRadial((designFovDeg / 2) * DEG, strength);
+  const theta = lensRadialInverse(mOut * rEdge, strength);
+  const tanHalfRender = Math.tan((renderFovDeg / 2) * DEG);
+  const k = Math.tan(theta) / (mOut * tanHalfRender);
+  out.x = (dx * k) / aspect;
+  out.y = dy * k;
+  return out;
+}
+
+/**
  * Half-tangent of the DISPLAYED frame in the vertical direction — the number
  * that converts a small central angular radius into an on-screen NDC radius
  * under the lens (reduces to tan(fov/2) at strength 0). Metering that used
@@ -204,9 +249,10 @@ void main() {
     gl_FragColor = texture2D(tDiffuse, vUv);
     return;
   }
-  // Invert R(theta) by Newton from the rectilinear estimate.
+  // Invert R(theta) by Newton from the rectilinear estimate. Same iteration
+  // budget as the CPU seam (LENS_INVERSE_ITERATIONS) so overlay and pixels agree.
   float theta = atan(rOut);
-  for (int i = 0; i < 4; i++) {
+  for (int i = 0; i < ${LENS_INVERSE_ITERATIONS}; i++) {
     float t = tan(theta);
     float th = tan(theta * 0.5);
     float f = (1.0 - uStrength) * t + uStrength * 2.0 * th - rOut;

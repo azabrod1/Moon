@@ -1,16 +1,34 @@
 import { describe, expect, it } from 'vitest';
 import {
+  LENS_INVERSE_ITERATIONS,
   applyDesignFov,
   lensCornerTheta,
   lensDisplayHalfTan,
   lensEffectiveStrength,
   lensOverscanFovDeg,
+  lensPassFragmentShader,
   lensRadial,
   lensRadialInverse,
+  lensUnwarpNdc,
   lensWarpNdc,
 } from './lensProjection';
 
 const DEG = Math.PI / 180;
+
+/** Replicate the GPU fragment's inverse exactly (same start, same fixed
+ *  iteration budget, no early-out) so its convergence can be checked against the
+ *  CPU seam without a real GL context. */
+function shaderRadialInverse(r: number, strength: number): number {
+  let theta = Math.atan(r);
+  for (let i = 0; i < LENS_INVERSE_ITERATIONS; i++) {
+    const t = Math.tan(theta);
+    const th = Math.tan(theta / 2);
+    const f = (1 - strength) * t + strength * 2 * th - r;
+    const df = (1 - strength) * (1 + t * t) + strength * (1 + th * th);
+    theta -= f / df;
+  }
+  return theta;
+}
 
 describe('lensRadial / lensRadialInverse', () => {
   it('reduces to rectilinear at strength 0 and stereographic at 1', () => {
@@ -157,5 +175,45 @@ describe('applyDesignFov / lensDisplayHalfTan', () => {
   it('display half-tangent reduces to tan(fov/2) at strength 0', () => {
     expect(lensDisplayHalfTan(60, 0)).toBeCloseTo(Math.tan(30 * DEG), 12);
     expect(lensDisplayHalfTan(60, 1)).toBeCloseTo(2 * Math.tan(15 * DEG), 12);
+  });
+});
+
+describe('CPU/GPU inverse convergence', () => {
+  it('the shader shares the CPU iteration budget', () => {
+    // The shader interpolates LENS_INVERSE_ITERATIONS into its loop bound.
+    expect(lensPassFragmentShader).toContain(`i < ${LENS_INVERSE_ITERATIONS};`);
+  });
+
+  it('shader and CPU inverse agree to <0.01° across the frame at the wide-FOV cap', () => {
+    // The reviewer measured 0.636° (103°) and 2.032° (110°) disagreement when
+    // the shader ran 4 Newton steps against the CPU's 8. With a shared budget
+    // they must converge to the same theta at every frame radius.
+    const aspect = 16 / 9;
+    for (const designFov of [60, 90, 103, 110, 150]) {
+      const strength = lensEffectiveStrength(designFov, aspect, 1);
+      if (strength <= 0) continue;
+      const rEdge = lensRadial((designFov / 2) * DEG, strength);
+      // centre -> edge -> corner radii of the output frame.
+      for (const frac of [0.05, 0.25, 0.5, 0.75, 1, Math.hypot(aspect, 1)]) {
+        const rOut = rEdge * frac;
+        const cpu = lensRadialInverse(rOut, strength);
+        const gpu = shaderRadialInverse(rOut, strength);
+        expect(Math.abs(cpu - gpu)).toBeLessThan(0.01 * DEG);
+      }
+    }
+  });
+
+  it('lensUnwarpNdc is the exact inverse of lensWarpNdc', () => {
+    const aspect = 16 / 9;
+    const strength = 1;
+    const renderFov = lensOverscanFovDeg(60, aspect, strength);
+    const out = { x: 0, y: 0 };
+    const back = { x: 0, y: 0 };
+    for (const [sx, sy] of [[0.2, 0.1], [0.6, -0.4], [-0.9, 0.5], [0, 0.8], [0.95, 0]]) {
+      lensWarpNdc(sx, sy, 60, renderFov, aspect, strength, out);
+      lensUnwarpNdc(out.x, out.y, 60, renderFov, aspect, strength, back);
+      expect(back.x).toBeCloseTo(sx, 9);
+      expect(back.y).toBeCloseTo(sy, 9);
+    }
   });
 });

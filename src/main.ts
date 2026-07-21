@@ -90,10 +90,10 @@ renderer.domElement.addEventListener('webglcontextrestored', () => {
   debugLog('WebGL context restored');
 });
 
-// Enable bloom on any device whose GPU supports float framebuffers. `?nofloat=1`
-// forces the no-float path on capable hardware so the lens correction's 8-bit
-// fallback composer (the one that gives low-end / some mobile GPUs round
-// planets) can be reproduced and QA'd on a dev machine.
+// Enable bloom on any device whose GPU supports float framebuffers. The lens
+// correction rides the same HDR pipeline, so `?nofloat=1` forces the no-float
+// path on capable hardware to reproduce/QA how an incapable GPU renders
+// (bloom off, lens off, rectilinear).
 const useBloom = canGPUDoBloom(renderer) && !new URLSearchParams(location.search).has('nofloat');
 
 try {
@@ -122,10 +122,9 @@ planetariumCamera.position.set(-0.0002, 0.0001, 0.0001);
 // warped frame's corners stay covered, and projectToScreen mirrors the warp
 // for DOM overlays. designFovDeg is what the frame displays; camera.fov holds
 // the overscan (applyDesignFov is the only legal fov writer). The strength
-// here is a *request*: buildComposer runs the lens on the planetarium whenever
-// it is asked for — on a float buffer alongside bloom, or, on GPUs that can't
-// bloom (some mobile / low-end), on a plain 8-bit composer built just for the
-// warp — and stores the effective value read by every consumer.
+// here is a *request*: buildComposer runs the lens on the planetarium only on
+// the float-capable (HDR) composer bloom uses — incapable GPUs render
+// rectilinear — and stores the effective value read by every consumer.
 const planetariumLens: LensParams = { strength: LENS_DEFAULT_STRENGTH, designFovDeg: 60 };
 planetariumCamera.userData.lens = planetariumLens;
 // The requested strength survives bloom toggles; buildComposer writes the
@@ -202,33 +201,24 @@ function buildComposer(
   }
   lensPass = null;
 
-  // The lens correction is planetarium-only, but — unlike bloom — it does not
-  // need an HDR buffer, so it must not be gated on bloom: that would leave
-  // off-axis planets egg-shaped on every GPU that can't float-render (some
-  // mobile / low-end). When bloom is unavailable we still build a composer
-  // for the warp, on a plain 8-bit target.
-  const wantsLens = cam === planetariumCamera && lensRequestedStrength > 0;
+  // The lens correction rides the HDR composer bloom already needs. On a GPU
+  // that can't float-render there is no HDR buffer to warp: an 8-bit
+  // intermediate clamps the scene's linear HDR before OutputPass can tone-map
+  // it, so the Sun's saturated core flattens (saturated pixels -> 0) instead of
+  // clipping to white. So the lens is gated on the float-capable pipeline;
+  // incapable GPUs render rectilinear (off-axis discs stay slightly oval there)
+  // rather than ship a flattened Sun. `?nofloat=1` forces that path for QA.
+  const wantsLens = cam === planetariumCamera && lensRequestedStrength > 0 && useBloom;
 
   if (!enabled && !wantsLens) {
-    // Nothing to composite (a non-planetarium camera without bloom): straight
-    // to canvas, the cheapest path.
+    // Nothing to composite (a non-planetarium camera, or an incapable GPU):
+    // straight to canvas, the cheapest path.
     planetariumLens.strength = 0;
     applyDesignFov(planetariumCamera, planetariumLens.designFovDeg);
     return;
   }
 
-  // Bloom needs a float/half-float buffer; the lens pass is happy on an 8-bit
-  // one. Fall back to 8-bit only when the GPU can't float at all (the sole way
-  // we reach here without bloom on the planetarium) — the mild HDR-highlight
-  // clip is a fair price for round planets on those devices.
-  composer = useBloom
-    ? new EffectComposer(renderer)
-    : new EffectComposer(
-        renderer,
-        new THREE.WebGLRenderTarget(window.innerWidth, window.innerHeight, {
-          type: THREE.UnsignedByteType,
-        }),
-      );
+  composer = new EffectComposer(renderer);
   composer.setPixelRatio(getTargetPixelRatio());
   composer.setSize(window.innerWidth, window.innerHeight);
   composer.addPass(new RenderPass(scene, cam));

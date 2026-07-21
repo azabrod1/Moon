@@ -133,7 +133,7 @@ import {
   type SurfaceTargetChoice,
 } from './surfaceView';
 import { DEG2RAD } from '../shared/math/angles';
-import { applyDesignFov, lensDisplayHalfTan } from '../shared/math/lensProjection';
+import { applyDesignFov, lensDisplayHalfTan, lensUnwarpNdc } from '../shared/math/lensProjection';
 import { SUN_GLARE_EXTENT_SOLAR_RADII, SUN_VEIL_BETA, SUN_VEIL_SCALE_H } from '../shared/shaders/sun';
 import { landedFrameCamDistAU, landedMinDistanceAU, landedNearAU, LANDED_NEAR_AU } from './landedView';
 import {
@@ -6536,13 +6536,31 @@ export class PlanetariumMode {
     cam.lookAt(sceneOffset);
     // Optional off-centre slide (same convention as devFrameSun): lets the
     // harness study off-axis projection on any body, not just the Sun.
-    if (offNdcX !== 0 || offNdcY !== 0) {
-      const halfV = Math.tan(THREE.MathUtils.degToRad(cam.fov / 2));
-      cam.rotateY(Math.atan(halfV * cam.aspect * offNdcX));
-      cam.rotateX(-Math.atan(halfV * offNdcY));
-    }
+    this.slideCameraToOutputNdc(cam, offNdcX, offNdcY);
     this.controls.target.copy(sceneOffset);
     return true;
+  }
+
+  /** Slide a body currently centred to a requested OUTPUT (post-lens) screen
+   *  NDC. Under the lens the on-screen position is the warped one, so unwarp the
+   *  request to the source render NDC before rotating — otherwise a QA offset
+   *  lands short of where it was asked for (e.g. requested 0.90 renders at
+   *  ~0.995), invalidating the probe's predicted angles. */
+  private slideCameraToOutputNdc(cam: THREE.PerspectiveCamera, offNdcX: number, offNdcY: number): void {
+    if (offNdcX === 0 && offNdcY === 0) return;
+    const lens = cam.userData.lens as
+      | { designFovDeg: number; strength: number; effectiveStrength?: number }
+      | undefined;
+    const strength = lens ? (lens.effectiveStrength ?? lens.strength) : 0;
+    const src = { x: offNdcX, y: offNdcY };
+    if (lens && strength > 0) {
+      lensUnwarpNdc(offNdcX, offNdcY, lens.designFovDeg, cam.fov, cam.aspect, strength, src);
+    }
+    const halfV = Math.tan(THREE.MathUtils.degToRad(cam.fov / 2));
+    cam.rotateY(Math.atan(halfV * cam.aspect * src.x));
+    // Pitching up (+rotateX) drops the target lower on screen, so a positive
+    // screen-NDC y (target above centre) needs a downward pitch.
+    cam.rotateX(-Math.atan(halfV * src.y));
   }
 
   /** Headless-QA pose: camera `distanceAU` from the Sun, looking at it.
@@ -6565,13 +6583,7 @@ export class PlanetariumMode {
     // Floating origin: the Sun sits at scene position −player.
     const sunScene = new THREE.Vector3(-this.player.posX, -this.player.posY, -this.player.posZ);
     cam.lookAt(sunScene);
-    if (offNdcX !== 0 || offNdcY !== 0) {
-      const halfV = Math.tan(THREE.MathUtils.degToRad(cam.fov / 2));
-      cam.rotateY(Math.atan(halfV * cam.aspect * offNdcX));
-      // Pitching the camera up (+rotateX) drops the target lower on screen, so a
-      // positive screen-NDC y offset (Sun above centre) needs a downward pitch.
-      cam.rotateX(-Math.atan(halfV * offNdcY));
-    }
+    this.slideCameraToOutputNdc(cam, offNdcX, offNdcY);
     this.controls.target.copy(sunScene);
     return true;
   }

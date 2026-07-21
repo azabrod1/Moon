@@ -1,7 +1,7 @@
 /**
  * Player ship for the Planetarium: position (AU), heading + pitch, speed as a
- * multiple of c, and per-mission ship profiles. Owns the ship state, the
- * per-frame kinematics + exhaust animation, and the lifecycle of the visible
+ * multiple of c, selectable player craft, and per-mission ship profiles. Owns
+ * the ship state, per-frame kinematics + exhaust animation, and the lifecycle of the visible
  * ship/probe models (built lazily; the Cassini profile loads a GLB with a
  * procedural fallback). All procedural geometry lives in ship/models/.
  */
@@ -14,12 +14,20 @@ import { createVoyagerModel } from './ship/models/voyager';
 import { createCassiniModel } from './ship/models/cassini';
 import { createNewHorizonsModel } from './ship/models/newHorizons';
 import { createJunoModel } from './ship/models/juno';
+import { createPlayerFleetModel } from './ship/models/playerFleet';
+import { updateFleetPropulsion } from './ship/models/fleetSurfaceDetail';
+import {
+  isPlayerShipProfile,
+  type HistoricShipProfile,
+  type PlayerShipProfile,
+  type ShipProfile,
+} from './ship/shipProfiles';
+
+export type { HistoricShipProfile, PlayerShipProfile, ShipProfile } from './ship/shipProfiles';
 
 // Default cruise speed: 1c
 const DEFAULT_SPEED_AU_S = LIGHT_SPEED_AU_PER_S;
 const FORWARD_VECTOR = new THREE.Vector3(1, 0, 0);
-
-export type ShipProfile = 'default' | 'voyager' | 'cassini' | 'newHorizons' | 'juno';
 
 export class PlayerShip {
   private static readonly gltfLoader = new GLTFLoader();
@@ -32,6 +40,7 @@ export class PlayerShip {
   private cassiniModelPromise: Promise<THREE.Group> | null = null;
   private newHorizonsModel: THREE.Group | null = null;
   private junoModel: THREE.Group | null = null;
+  private playerFleetModels = new Map<Exclude<PlayerShipProfile, 'default'>, THREE.Group>();
   private spacecraftReferenceRadiusAU: number;
   private profile: ShipProfile = 'default';
   private exhaustCone: THREE.Mesh;
@@ -68,9 +77,10 @@ export class PlayerShip {
     this.exhaustCore = ship.exhaustCore;
     this.group.add(this.defaultModel);
     this.group.userData.shipModel = this.defaultModel;
+    this.group.userData.activeShipProfile = 'default';
   }
 
-  private getOrCreateProbeModel(profile: Exclude<ShipProfile, 'default'>): THREE.Group {
+  private getOrCreateProbeModel(profile: HistoricShipProfile): THREE.Group {
     const existing = profile === 'voyager'
       ? this.voyagerModel
       : profile === 'cassini'
@@ -99,7 +109,17 @@ export class PlayerShip {
     return model;
   }
 
-  async ensureProfileLoaded(profile: Exclude<ShipProfile, 'default'>): Promise<void> {
+  private getOrCreatePlayerModel(profile: Exclude<PlayerShipProfile, 'default'>): THREE.Group {
+    const existing = this.playerFleetModels.get(profile);
+    if (existing) return existing;
+    const model = createPlayerFleetModel(profile, this.spacecraftReferenceRadiusAU);
+    model.visible = false;
+    this.group.add(model);
+    this.playerFleetModels.set(profile, model);
+    return model;
+  }
+
+  async ensureProfileLoaded(profile: HistoricShipProfile): Promise<void> {
     if (profile === 'cassini') {
       await this.getOrCreateCassiniAssetModel();
       return;
@@ -147,12 +167,14 @@ export class PlayerShip {
       root.visible = false;
       this.group.add(root);
       this.cassiniModel = root;
+      if (this.profile === 'cassini') this.setProfile('cassini');
       return root;
     }).catch(() => {
       const fallback = createCassiniModel(this.spacecraftReferenceRadiusAU);
       fallback.visible = false;
       this.group.add(fallback);
       this.cassiniModel = fallback;
+      if (this.profile === 'cassini') this.setProfile('cassini');
       return fallback;
     }).finally(() => {
       this.cassiniModelPromise = null;
@@ -166,6 +188,10 @@ export class PlayerShip {
     if (this.cassiniModel) this.cassiniModel.visible = visible;
     if (this.newHorizonsModel) this.newHorizonsModel.visible = visible;
     if (this.junoModel) this.junoModel.visible = visible;
+  }
+
+  private setPlayerFleetModelsVisible(visible: boolean) {
+    for (const model of this.playerFleetModels.values()) model.visible = visible;
   }
 
   /** The speed the dialed throttle WOULD fly this frame: the cruise/system
@@ -208,6 +234,15 @@ export class PlayerShip {
     const showExhaust = this.profile === 'default' && exhaustOn;
     this.exhaustCone.visible = showExhaust;
     this.exhaustCore.visible = showExhaust;
+
+    if (this.profile !== 'default' && isPlayerShipProfile(this.profile)) {
+      updateFleetPropulsion(
+        this.group.userData.shipModel as THREE.Group,
+        this.timeElapsed,
+        exhaustOn,
+        speedFrac,
+      );
+    }
 
     if (showExhaust) {
       // Steady torch, no flicker: the additive HDR plume sits near the
@@ -297,8 +332,18 @@ export class PlayerShip {
   static readonly DEFAULT_SPEED_AU_S = DEFAULT_SPEED_AU_S;
 
   setProfile(profile: ShipProfile) {
+    if (this.profile === profile && this.group.userData.activeShipProfile === profile) return;
     this.profile = profile;
     this.setProbeModelsVisible(false);
+    this.setPlayerFleetModelsVisible(false);
+    if (profile !== 'default' && isPlayerShipProfile(profile)) {
+      const playerModel = this.getOrCreatePlayerModel(profile);
+      this.defaultModel.visible = false;
+      playerModel.visible = true;
+      this.group.userData.shipModel = playerModel;
+      this.group.userData.activeShipProfile = profile;
+      return;
+    }
     if (profile !== 'default') {
       // Cassini's model loads asynchronously (GLB), so `cassiniModel` is null
       // until it resolves. Resolve the probe model BEFORE hiding the default
@@ -311,10 +356,12 @@ export class PlayerShip {
         this.defaultModel.visible = false;
         probeModel.visible = true;
         this.group.userData.shipModel = probeModel;
+        this.group.userData.activeShipProfile = profile;
         return;
       }
     }
     this.defaultModel.visible = true;
     this.group.userData.shipModel = this.defaultModel;
+    this.group.userData.activeShipProfile = 'default';
   }
 }

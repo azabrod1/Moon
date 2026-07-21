@@ -9,6 +9,7 @@
  * and delete the old one.
  */
 import { debugWarn } from '../shared/debug';
+import { isPlayerShipProfile, type PlayerShipProfile } from './ship/shipProfiles';
 
 const STORAGE_KEY = 'orbital-sim-planetarium-state';
 const LEGACY_STORAGE_KEY = 'orbital-sim-explore-state';
@@ -43,6 +44,7 @@ export interface PlanetariumState {
   astroTimePaused?: boolean;
   planetScale: number;       // visual scale multiplier for planets
   showShip: boolean;         // show player ship mesh
+  shipProfile?: PlayerShipProfile; // everyday ship; historic missions override it temporarily
   showConstellations?: boolean; // show constellation lines overlay
   showBodyLabels?: boolean;  // show planet/moon/Sun name labels
   showBodyLabelDistances?: boolean; // show distances beneath planet/Sun labels
@@ -125,6 +127,7 @@ export function sanitizePlanetariumState(raw: unknown): PlanetariumState | null 
       ? Math.min(128, Math.max(1, Math.round(record.planetScale)))
       : defaults.planetScale,
     showShip: typeof record.showShip === 'boolean' ? record.showShip : defaults.showShip,
+    shipProfile: isPlayerShipProfile(record.shipProfile) ? record.shipProfile : defaults.shipProfile,
     showConstellations: typeof record.showConstellations === 'boolean' ? record.showConstellations : defaults.showConstellations,
     showBodyLabels: typeof record.showBodyLabels === 'boolean' ? record.showBodyLabels : defaults.showBodyLabels,
     showBodyLabelDistances: typeof record.showBodyLabelDistances === 'boolean'
@@ -187,6 +190,7 @@ export function createDefaultPlanetariumState(): PlanetariumState {
     astroTimePaused: false,
     planetScale: 1,
     showShip: true,
+    shipProfile: 'default',
     showConstellations: false,
     showBodyLabels: true,
     showBodyLabelDistances: true,

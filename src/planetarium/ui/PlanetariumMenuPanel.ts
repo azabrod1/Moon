@@ -18,13 +18,20 @@ export class PlanetariumMenuPanel {
     const el = this.el();
     if (!el?.classList.contains('visible')) return;
     el.classList.remove('visible');
+    this.collapseShipPicker();
   }
 
   setVisible(visible: boolean): void {
     this.el()?.classList.toggle('visible', visible);
+    if (!visible) this.collapseShipPicker();
   }
 
   isOpen(): boolean {
     return this.el()?.classList.contains('visible') ?? false;
+  }
+
+  private collapseShipPicker(): void {
+    document.getElementById('ship-submenu')?.classList.remove('visible');
+    document.getElementById('ship-picker-toggle')?.setAttribute('aria-expanded', 'false');
   }
 }

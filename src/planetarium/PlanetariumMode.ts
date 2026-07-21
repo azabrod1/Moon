@@ -20,6 +20,14 @@ import {
   type PlanetariumLayout,
 } from './SolarSystem';
 import { PlayerShip } from './PlayerShip';
+import {
+  PLAYER_SHIP_GROUPS,
+  PLAYER_SHIPS,
+  isPlayerShipProfile,
+  playerShipLabel,
+  playerShipTravelPolicy,
+  type PlayerShipProfile,
+} from './ship/shipProfiles';
 import { PlanetLabels, discRadiusPx } from './PlanetLabels';
 import { PlanetariumStore, createDefaultPlanetariumState, type PlanetariumState, type LandedTarget } from './PlanetariumStore';
 import { solarExposureTarget, solarViewportCoverage } from './solarExposure';
@@ -238,6 +246,12 @@ import { ObservatoryHUD, type SurfaceHudState } from './ui/ObservatoryHUD';
 import { SurfaceTargetMenu } from './ui/SurfaceTargetMenu';
 import { SunLabel } from './ui/SunLabel';
 import { TutorialCard, tutorialCardModel } from './ui/TutorialCard';
+import { HyperspaceEffect, type HyperspaceOrigin } from './ui/HyperspaceEffect';
+import {
+  screenSpaceWarpDirection,
+  StarTrekWarpEffect,
+  type StarTrekWarpDirection,
+} from './ui/StarTrekWarpEffect';
 
 type ScriptedTransfer = {
   elapsed: number;
@@ -345,6 +359,7 @@ export class PlanetariumMode {
     'planetarium-btn-observatory',
     'planetarium-btn-autopilot',
     'planetarium-btn-tutorial',
+    'ship-picker-toggle',
     'planetarium-speed-up',
     'planetarium-speed-down',
   ] as const;
@@ -409,6 +424,10 @@ export class PlanetariumMode {
    *  in-flight flag clears, or two quick deck picks. */
   private arrivalCoverGen = 0;
   private static readonly ARRIVAL_MIN_DWELL_MS = 150;
+  // Long enough to show the complete Star Wars beat: point stars accelerate
+  // into streaks, settle into a visibly flowing blue tunnel, then collapse
+  // back to realspace. The exit animation adds its own duration after this.
+  private static readonly CINEMATIC_TRAVEL_MIN_MS = 1450;
   // Longest the arrival cover waits (from cover start) for the landed pair's
   // in-flight 4K fetch+decode before revealing anyway — a stalled fetch must
   // never pin the veil.
@@ -615,6 +634,11 @@ export class PlanetariumMode {
 
   // Show player ship mesh for size comparison
   private showShip = true;
+  private selectedShipProfile: PlayerShipProfile = 'default';
+  private hyperspaceEffect: HyperspaceEffect | null = null;
+  private starTrekWarpEffect: StarTrekWarpEffect | null = null;
+  private hyperspaceShipRenderer: THREE.WebGLRenderer | null = null;
+  private hyperspaceShipScene: THREE.Scene | null = null;
   // Headless screenshot framing: when set, the per-frame collision resolver is
   // skipped so the camera can sit a few radii from a body without being pushed
   // back out past its moon system.
@@ -899,6 +923,113 @@ export class PlanetariumMode {
     this.updateTimeUI();
     this.resumeShipAfterMenu = false;
     this.resumeTimeAfterMenu = false;
+  }
+
+  private updateShipPickerUI(): void {
+    const current = document.getElementById('ship-picker-current');
+    if (current) current.textContent = playerShipLabel(this.selectedShipProfile);
+    for (const group of PLAYER_SHIP_GROUPS) {
+      const groupElement = document.querySelector<HTMLElement>(`[data-ship-group="${group.id}"]`);
+      const title = groupElement?.querySelector<HTMLElement>('.ship-group-title');
+      const grid = groupElement?.querySelector<HTMLElement>('.ship-group-grid');
+      if (title) title.textContent = group.label;
+      if (!grid) continue;
+      for (const ship of PLAYER_SHIPS.filter((candidate) => candidate.group === group.id)) {
+        const button = document.querySelector<HTMLButtonElement>(`[data-ship-profile="${ship.id}"]`);
+        if (!button) continue;
+        button.title = ship.note;
+        button.setAttribute('aria-label', `${ship.label} — ${ship.note}`);
+        const label = button.querySelector<HTMLElement>('.ship-choice-copy b');
+        if (label) label.textContent = ship.label;
+        grid.append(button);
+      }
+    }
+    for (const button of document.querySelectorAll<HTMLButtonElement>('[data-ship-profile]')) {
+      const selected = button.dataset.shipProfile === this.selectedShipProfile;
+      button.classList.toggle('selected', selected);
+      button.setAttribute('aria-checked', String(selected));
+      // Roving tabindex: the checked item is the single tab entry point into
+      // the radio group (arrow keys move focus from there once it opens).
+      button.tabIndex = selected ? 0 : -1;
+    }
+    this.updateShipPickerAvailability();
+  }
+
+  private shipSubmenuButtons(): HTMLButtonElement[] {
+    return Array.from(document.querySelectorAll<HTMLButtonElement>('#ship-submenu [data-ship-profile]'));
+  }
+
+  private isShipSubmenuOpen(): boolean {
+    return document.getElementById('ship-submenu')?.classList.contains('visible') ?? false;
+  }
+
+  private openShipSubmenu(): void {
+    const submenu = document.getElementById('ship-submenu');
+    if (!submenu) return;
+    submenu.classList.add('visible');
+    document.getElementById('ship-picker-toggle')?.setAttribute('aria-expanded', 'true');
+    // Focus the checked item so the arrow keys have an anchor from the outset.
+    const buttons = this.shipSubmenuButtons();
+    const checked = buttons.find((b) => b.getAttribute('aria-checked') === 'true') ?? buttons[0] ?? null;
+    this.setShipSubmenuRoving(checked);
+    checked?.focus();
+  }
+
+  private closeShipSubmenu(focusToggle = false): void {
+    const submenu = document.getElementById('ship-submenu');
+    if (!submenu?.classList.contains('visible')) return;
+    submenu.classList.remove('visible');
+    const toggle = document.getElementById('ship-picker-toggle') as HTMLElement | null;
+    toggle?.setAttribute('aria-expanded', 'false');
+    if (focusToggle) toggle?.focus();
+  }
+
+  private setShipSubmenuRoving(active: HTMLButtonElement | null): void {
+    for (const button of this.shipSubmenuButtons()) button.tabIndex = button === active ? 0 : -1;
+  }
+
+  private moveShipSubmenuFocus(delta: number): void {
+    const buttons = this.shipSubmenuButtons();
+    if (!buttons.length) return;
+    const from = buttons.indexOf(document.activeElement as HTMLButtonElement);
+    const next = buttons[(((from < 0 ? 0 : from) + delta) % buttons.length + buttons.length) % buttons.length];
+    this.setShipSubmenuRoving(next);
+    next.focus();
+  }
+
+  private focusShipSubmenuEdge(edge: 'first' | 'last'): void {
+    const buttons = this.shipSubmenuButtons();
+    const next = edge === 'first' ? buttons[0] : buttons[buttons.length - 1];
+    if (!next) return;
+    this.setShipSubmenuRoving(next);
+    next.focus();
+  }
+
+  private updateShipPickerAvailability(): void {
+    const toggle = document.getElementById('ship-picker-toggle') as HTMLButtonElement | null;
+    if (!toggle) return;
+    const missionActive = this.isMissionActive();
+    const disabled = !this.showShip || missionActive;
+    toggle.disabled = disabled;
+    toggle.setAttribute('aria-disabled', String(disabled));
+    toggle.title = !this.showShip
+      ? 'Turn on Show ship to choose a ship'
+      : missionActive
+        ? 'Unavailable during a historic journey'
+        : '';
+    if (disabled) {
+      document.getElementById('ship-submenu')?.classList.remove('visible');
+      toggle.setAttribute('aria-expanded', 'false');
+    }
+  }
+
+  private choosePlayerShip(profile: PlayerShipProfile): void {
+    if (!this.showShip || this.isMissionActive()) return;
+    this.selectedShipProfile = profile;
+    this.player.setProfile(profile);
+    this.updateShipPickerUI();
+    this.closeMenuPanel();
+    this.notification.show(`${playerShipLabel(profile)} ready to fly.`);
   }
 
   private isHelpOpen(): boolean {
@@ -1484,6 +1615,12 @@ export class PlanetariumMode {
     }
 
     this.active = false;
+    this.arrivalInFlight = false;
+    this.arrivalCoverGen++;
+    this.hyperspaceEffect?.stop();
+    this.starTrekWarpEffect?.stop();
+    this.disposeHyperspaceShipRenderer();
+    document.getElementById('arrival-veil')?.classList.remove('covering', 'hyperspace', 'warp');
     this.sunExposure = 1;
     this.lastSunVisibleFraction = 1;
     this.sunEmergenceFlash = 0;
@@ -2417,11 +2554,11 @@ export class PlanetariumMode {
     }
 
     // Idempotent re-assert of the ship model that matches the active mission
-    // (or the default ship when none). Mission start/end already call
+    // (or the player's chosen ship when none). Mission start/end already call
     // setProfile explicitly; this per-frame reapply is a deliberate, cheap
     // safety net guaranteeing the displayed model tracks mission state through
     // every code path (incl. state restore) — do not "optimize" it away.
-    this.player.setProfile(this.activeHistoricJourney?.shipProfile ?? 'default');
+    this.player.setProfile(this.activeHistoricJourney?.shipProfile ?? this.selectedShipProfile);
   }
 
   /**
@@ -3870,6 +4007,9 @@ export class PlanetariumMode {
       // Tools is a transient popover — above the deck rung (the ☰ menu is
       // deliberately NOT in the cascade; Tools is).
       if (this.isToolsMenuOpen()) { this.closeToolsMenu(); return; }
+      // The ship submenu is a transient sub-popover of the ☰ menu; Esc closes
+      // just it (the ☰ menu itself stays deliberately out of the cascade).
+      if (this.isShipSubmenuOpen()) { this.closeShipSubmenu(true); return; }
       if (this.isDeckOpen()) { this.closeDeck(); return; }
       if (this.bottomBar.isTimeOpen()) { this.bottomBar.closeTime(); return; }
       if (this.bottomBar.isStatsOpen()) { this.bottomBar.closeStats(); return; }
@@ -4886,6 +5026,10 @@ export class PlanetariumMode {
       const button = document.getElementById(id) as HTMLButtonElement | null;
       if (button) button.disabled = missionActive;
     }
+    // Mission ownership and the user's Show ship preference both gate the
+    // picker; this second pass prevents the generic mission loop from
+    // accidentally re-enabling it while the ship remains hidden.
+    this.updateShipPickerAvailability();
 
     const bottomBar = document.getElementById('planetarium-bottom-bar');
     if (bottomBar) {
@@ -5050,6 +5194,30 @@ export class PlanetariumMode {
         this.menuPanel.show();
       }
     });
+    document.getElementById('ship-picker-toggle')?.addEventListener('click', () => {
+      if (!this.showShip || this.isMissionActive()) return;
+      if (this.isShipSubmenuOpen()) this.closeShipSubmenu();
+      else this.openShipSubmenu();
+    });
+    const shipSubmenu = document.getElementById('ship-submenu');
+    shipSubmenu?.addEventListener('click', (event) => {
+      const button = (event.target as HTMLElement).closest<HTMLButtonElement>('[data-ship-profile]');
+      const profile = button?.dataset.shipProfile;
+      if (isPlayerShipProfile(profile)) this.choosePlayerShip(profile);
+    });
+    // The submenu advertises menu / menuitemradio semantics, so honor the
+    // matching keyboard contract: roving focus with the arrows + Home/End,
+    // Escape closes and returns focus to the toggle. Enter/Space fall through
+    // to the native button (the click handler above selects).
+    shipSubmenu?.addEventListener('keydown', (event) => {
+      switch (event.key) {
+        case 'ArrowDown': case 'ArrowRight': event.preventDefault(); this.moveShipSubmenuFocus(1); break;
+        case 'ArrowUp': case 'ArrowLeft': event.preventDefault(); this.moveShipSubmenuFocus(-1); break;
+        case 'Home': event.preventDefault(); this.focusShipSubmenuEdge('first'); break;
+        case 'End': event.preventDefault(); this.focusShipSubmenuEdge('last'); break;
+        case 'Escape': event.preventDefault(); event.stopPropagation(); this.closeShipSubmenu(true); break;
+      }
+    });
     document.getElementById('planetarium-btn-help')?.addEventListener('click', () => {
       this.closeMenuPanel();
       this.showHelp();
@@ -5141,6 +5309,7 @@ export class PlanetariumMode {
       this.player.group.visible = this.showShip && !this.landedOn;
       const label = document.getElementById('settings-ship-label');
       if (label) label.textContent = this.showShip ? 'On' : 'Off';
+      this.updateShipPickerAvailability();
     });
 
     document.getElementById('settings-gyro-toggle')?.addEventListener('click', () => {
@@ -5529,6 +5698,9 @@ export class PlanetariumMode {
       return;
     }
     if (verb === 'travel') {
+      // The Travel commit is the one arrival path that plays the franchise
+      // travel beat (allowTravelEffect); observe/tutorial/restore arrivals share
+      // arriveThen but stay silent.
       this.arriveThen(target, () => {
         if (this.landedOn) this.exitLandedMode();
         if (target.type === 'moon') {
@@ -5540,7 +5712,7 @@ export class PlanetariumMode {
           const body = PLANETARIUM_BODIES.find((b) => b.name === target.name);
           if (body) this.jumpToPlanet(body);
         }
-      });
+      }, false, true);
       return;
     }
     if (this.landedOn) this.exitLandedMode();
@@ -5684,7 +5856,7 @@ export class PlanetariumMode {
     this.historicMilestoneIndex = 0;
     this.historicPanelDismissed = false;
     this.scriptedTransfer = null;
-    this.player.setProfile('default');
+    this.player.setProfile(this.selectedShipProfile);
     this.setHistoricPanelVisible(false);
     if (restorePreviousState) this.restorePreMissionState();
     else {
@@ -8352,6 +8524,152 @@ export class PlanetariumMode {
     return this.landedOn ? this.landingPairUpgrades(this.landedOn) : [];
   }
 
+  /** Lazily bind the travel effect to its overlay canvas. Keeping this lazy
+   *  avoids touching Canvas 2D in headless tests or modes that never select a
+   *  Star Wars craft. */
+  private getHyperspaceEffect(): HyperspaceEffect | null {
+    if (this.hyperspaceEffect) return this.hyperspaceEffect;
+    const canvas = document.getElementById('hyperspace-canvas');
+    if (!(canvas instanceof HTMLCanvasElement)) return null;
+    this.hyperspaceEffect = new HyperspaceEffect(canvas);
+    return this.hyperspaceEffect;
+  }
+
+  /** Star Trek owns a separate canvas and renderer: its heading-aligned pastel
+   *  slit-scan streaks must never inherit the Star Wars blue simu-tunnel. */
+  private getStarTrekWarpEffect(): StarTrekWarpEffect | null {
+    if (this.starTrekWarpEffect) return this.starTrekWarpEffect;
+    const canvas = document.getElementById('warp-canvas');
+    if (!(canvas instanceof HTMLCanvasElement)) return null;
+    this.starTrekWarpEffect = new StarTrekWarpEffect(canvas);
+    return this.starTrekWarpEffect;
+  }
+
+  /** Freeze the selected ship's current scene pose into a transparent WebGL
+   *  layer above the moving stars. Transparency, rather than a hole cut into
+   *  either star effect, lets every trail continue naturally behind the hull.
+   *  The camera, ship transform, viewport, and solar lights are copied without
+   *  reframing: warp changes only the stars, never the ship's screen position,
+   *  size, or orientation. */
+  private showHyperspaceShip(): void {
+    if (!this.showShip) {
+      this.hideHyperspaceShip();
+      return;
+    }
+    const canvas = document.getElementById('hyperspace-ship-canvas');
+    if (!(canvas instanceof HTMLCanvasElement)) return;
+    try {
+      if (!this.hyperspaceShipRenderer) {
+        this.hyperspaceShipRenderer = new THREE.WebGLRenderer({
+          canvas,
+          alpha: true,
+          antialias: true,
+          premultipliedAlpha: true,
+          powerPreference: 'high-performance',
+        });
+        this.hyperspaceShipRenderer.setClearColor(0x000000, 0);
+        this.hyperspaceShipRenderer.setClearAlpha(0);
+      }
+    } catch {
+      // A second WebGL context can be denied on constrained devices. The
+      // moving star effect still runs; fail closed without disrupting travel.
+      this.hyperspaceShipRenderer = null;
+      return;
+    }
+
+    const viewportWidth = Math.max(this.renderer.domElement.clientWidth, 1);
+    const viewportHeight = Math.max(this.renderer.domElement.clientHeight, 1);
+    canvas.removeAttribute('style');
+
+    const renderer = this.hyperspaceShipRenderer;
+    renderer.setPixelRatio(Math.min(2, window.devicePixelRatio || 1));
+    renderer.setSize(viewportWidth, viewportHeight, false);
+    renderer.outputColorSpace = this.renderer.outputColorSpace;
+    renderer.toneMapping = this.renderer.toneMapping;
+    renderer.toneMappingExposure = this.renderer.toneMappingExposure;
+
+    const scene = new THREE.Scene();
+    const ship = this.player.group.clone(true);
+    ship.visible = true;
+    scene.add(ship);
+
+    // Preserve the live solar illumination. Lights may sit below transformed
+    // parents, so copy their world pose rather than their local coordinates.
+    this.scene.traverse((object) => {
+      if (!(object instanceof THREE.Light)) return;
+      const light = object.clone();
+      object.getWorldPosition(light.position);
+      object.getWorldQuaternion(light.quaternion);
+      scene.add(light);
+    });
+
+    const camera = this.camera.clone();
+    camera.updateMatrixWorld(true);
+    renderer.clear();
+    renderer.render(scene, camera);
+    this.hyperspaceShipScene = scene;
+  }
+
+  private hideHyperspaceShip(): void {
+    this.hyperspaceShipScene?.clear();
+    this.hyperspaceShipScene = null;
+    this.hyperspaceShipRenderer?.clear();
+    document.getElementById('hyperspace-ship-canvas')?.removeAttribute('style');
+  }
+
+  /** Free the auxiliary WebGL context at the mode boundary. hideHyperspaceShip
+   *  only clears the framebuffer between jumps (the renderer is reused);
+   *  `.clear()` never releases the context's cached geometry/materials/textures
+   *  or the context itself, so those would otherwise accumulate across every
+   *  ship tried and survive deactivation. Dispose + drop the context here; the
+   *  next franchise jump lazily rebuilds it. */
+  private disposeHyperspaceShipRenderer(): void {
+    this.hideHyperspaceShip();
+    if (this.hyperspaceShipRenderer) {
+      this.hyperspaceShipRenderer.dispose();
+      this.hyperspaceShipRenderer.forceContextLoss();
+      this.hyperspaceShipRenderer = null;
+    }
+  }
+
+  /** The player remains at scene origin under the floating-origin renderer.
+   *  Project that actual location so every star trail radiates from the ship,
+   *  even when the chase camera has placed it away from screen center. */
+  private hyperspaceOrigin(): HyperspaceOrigin {
+    const canvas = this.renderer.domElement;
+    const width = Math.max(canvas.clientWidth, 1);
+    const height = Math.max(canvas.clientHeight, 1);
+    this.camera.updateMatrixWorld();
+    const projected = projectToScreen({ x: 0, y: 0, z: 0 }, this.camera, width, height);
+    if (
+      Number.isFinite(projected.x) &&
+      Number.isFinite(projected.y) &&
+      projected.ndcZ < 1 &&
+      Math.abs(projected.ndcX) <= 1.2 &&
+      Math.abs(projected.ndcY) <= 1.2
+    ) {
+      return {
+        x: THREE.MathUtils.clamp(projected.x / width, 0.04, 0.96),
+        y: THREE.MathUtils.clamp(projected.y / height, 0.04, 0.96),
+      };
+    }
+    return { x: 0.5, y: 0.5 };
+  }
+
+  /** Project the ship model's +X nose axis through the live camera. The warp
+   *  stars travel opposite this vector while the copied ship render remains
+   *  completely fixed. */
+  private starTrekWarpDirection(): StarTrekWarpDirection {
+    const canvas = this.renderer.domElement;
+    const width = Math.max(canvas.clientWidth, 1);
+    const height = Math.max(canvas.clientHeight, 1);
+    this.camera.updateMatrixWorld();
+    const ship = projectToScreen({ x: 0, y: 0, z: 0 }, this.camera, width, height);
+    const noseWorld = this.player.getForwardDirection().multiplyScalar(CRUISE_CAM_DIST_AU);
+    const nose = projectToScreen(noseWorld, this.camera, width, height);
+    return screenSpaceWarpDirection(ship, nose);
+  }
+
   /**
    * Run an instant teleport (`action`), but if the destination system's moons
    * aren't painted yet — or carry 4K-class photo maps that haven't reached the
@@ -8362,18 +8680,30 @@ export class PlanetariumMode {
    * per pump frame — four Galileans means four stalled frames in a row).
    * Landings also hold the cover (bounded) for the landed pair's pre-triggered
    * 4K fetch+decode, so those uploads drain under it instead of just after the
-   * reveal. Warm systems act immediately, exactly as before. A second arrival
+   * reveal. Warm systems act immediately unless the selected Star Wars or Star
+   * Trek craft requests its franchise-specific travel beat. A second arrival
    * while one is mid-flight is ignored.
    */
   private arriveThen(
     target: NonNullable<LandedTarget>,
     action: () => void,
     protectLandedUpgrades = false,
+    allowTravelEffect = false,
   ): void {
     if (this.arrivalInFlight) return;
     const parentName = this.parentSystemOf(target);
     const moons = this.planetMoons.get(parentName);
     const needsPaint = !!moons && moons.some((m) => !m.painted);
+    const reducedMotion = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches ?? false;
+    const travel = playerShipTravelPolicy(this.selectedShipProfile, reducedMotion);
+    // The franchise travel beat belongs to the "Travel" (teleport) commit only.
+    // Observatory "observe" landings, tutorial staged arrivals, and mission/
+    // restore re-lands share this method but must NOT play hyperspace/warp —
+    // they only borrow the veil for painting/upload when needed.
+    const cinematicTravel = allowTravelEffect && travel.effect !== null;
+    const animateTravel = allowTravelEffect && travel.animate;
+    const hyperspace = animateTravel && travel.effect === 'hyperspace';
+    const warp = animateTravel && travel.effect === 'warp';
     // 4K-class photo maps still waiting for their first GPU upload get drained
     // under the veil below. Smaller maps (the Moon's 2K photo) upload within a
     // frame or two off-gesture via the warm pump — no veil beat for those.
@@ -8387,13 +8717,49 @@ export class PlanetariumMode {
       });
     const needsUpgradeCover = protectLandedUpgrades && this.landingPairUpgrades(target)
       .some((up) => up.state === 'idle' || up.state === 'loading');
-    if (!needsPaint && !needsUploadCover && !needsUpgradeCover) {
+    if (!cinematicTravel && !needsPaint && !needsUploadCover && !needsUpgradeCover) {
       action();
       return;
     }
     this.arrivalInFlight = true;
     const veil = document.getElementById('arrival-veil');
     const coverStart = performance.now();
+    const hyperspaceEffect = hyperspace ? this.getHyperspaceEffect() : null;
+    const starTrekWarpEffect = warp ? this.getStarTrekWarpEffect() : null;
+    try {
+      if (animateTravel) {
+        const origin = this.hyperspaceOrigin();
+        if (hyperspace) {
+          this.starTrekWarpEffect?.stop();
+          hyperspaceEffect?.start(origin);
+        } else {
+          this.hyperspaceEffect?.stop();
+          starTrekWarpEffect?.start(origin, this.starTrekWarpDirection());
+        }
+        this.showHyperspaceShip();
+      } else {
+        this.hyperspaceEffect?.stop();
+        this.starTrekWarpEffect?.stop();
+        this.hideHyperspaceShip();
+      }
+    } catch (err) {
+      // The frozen-ship overlay renders through a second WebGL context; on a
+      // constrained device that render (or a context loss) can throw. If it
+      // does mid-prologue — before the try/finally in the scheduled rAF below —
+      // arrivalInFlight would stay stuck true and silently no-op every future
+      // teleport for the rest of the session. Tear down the half-built
+      // cinematic layer and complete a plain, immediate arrival instead.
+      debugError('Cinematic travel setup failed; arriving without it', err);
+      this.hyperspaceEffect?.stop();
+      this.starTrekWarpEffect?.stop();
+      this.hideHyperspaceShip();
+      veil?.classList.remove('covering', 'hyperspace', 'warp');
+      this.arrivalInFlight = false;
+      action();
+      return;
+    }
+    veil?.classList.toggle('hyperspace', hyperspace);
+    veil?.classList.toggle('warp', warp);
     veil?.classList.add('covering'); // snaps fully opaque (no fade-in) — see CSS
     const coverGen = ++this.arrivalCoverGen;
     // Two frames so the opaque veil is actually composited before we block the
@@ -8412,9 +8778,11 @@ export class PlanetariumMode {
           // opaque (a landing already queued them via applyLandedTarget; a
           // cruise jump queues here), so the reveal frame draws a fully
           // resident system instead of stalling once per big map.
-          this.queueSystemMoonMapsForWarm(parentName);
-          pumpTextureWarmQueue(Number.POSITIVE_INFINITY);
-          this.warmedSystems.add(parentName);
+          if (moons) {
+            this.queueSystemMoonMapsForWarm(parentName);
+            pumpTextureWarmQueue(Number.POSITIVE_INFINITY);
+            this.warmedSystems.add(parentName);
+          }
         } catch (err) {
           debugError('Arrival failed', err);
         } finally {
@@ -8443,9 +8811,33 @@ export class PlanetariumMode {
             // update→render) and at least the min dwell, so a fast machine
             // reads it as an intentional beat rather than a flicker. Removing
             // the class fades it back out.
-            const wait = Math.max(48, PlanetariumMode.ARRIVAL_MIN_DWELL_MS - (performance.now() - coverStart));
+            const minDwell = animateTravel
+              ? PlanetariumMode.CINEMATIC_TRAVEL_MIN_MS
+              : PlanetariumMode.ARRIVAL_MIN_DWELL_MS;
+            const wait = Math.max(48, minDwell - (performance.now() - coverStart));
             window.setTimeout(() => {
-              if (coverGen === this.arrivalCoverGen) veil?.classList.remove('covering');
+              if (coverGen !== this.arrivalCoverGen) return;
+              // Both franchises decelerate their moving stars back to points,
+              // but each renderer retains its own visual language.
+              const exitWait = hyperspace
+                ? (hyperspaceEffect?.beginExit() ?? 0)
+                : warp
+                  ? (starTrekWarpEffect?.beginExit() ?? 0)
+                  : 0;
+              window.setTimeout(() => {
+                if (coverGen !== this.arrivalCoverGen) return;
+                veil?.classList.remove('covering');
+                if (!animateTravel) return;
+                // Keep the moving layer alive through the 300 ms veil fade,
+                // then reset it so the next jump starts from stationary stars.
+                window.setTimeout(() => {
+                  if (coverGen !== this.arrivalCoverGen) return;
+                  hyperspaceEffect?.stop();
+                  starTrekWarpEffect?.stop();
+                  this.hideHyperspaceShip();
+                  veil?.classList.remove('hyperspace', 'warp');
+                }, 320);
+              }, exitWait);
             }, wait);
           };
           tryLift();
@@ -9262,6 +9654,7 @@ export class PlanetariumMode {
       astroTimePaused: this.timeState.paused,
       planetScale: this.planetScale,
       showShip: this.showShip,
+      shipProfile: this.selectedShipProfile,
       showConstellations: this.showConstellations,
       showBodyLabels: this.showBodyLabels,
       showBodyLabelDistances: this.showBodyLabelDistances,
@@ -9314,6 +9707,9 @@ export class PlanetariumMode {
     if (throttleLabel) throttleLabel.textContent = this.systemSlowdown ? 'On' : 'Off';
     this.showShip = saved.showShip;
     this.player.group.visible = this.showShip;
+    this.selectedShipProfile = saved.shipProfile ?? 'default';
+    this.player.setProfile(this.selectedShipProfile);
+    this.updateShipPickerUI();
     this.showConstellations = saved.showConstellations ?? false;
     if (this.showConstellations) {
       this.ensureConstellationsReady();

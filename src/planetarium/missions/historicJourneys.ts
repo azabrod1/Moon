@@ -3,7 +3,7 @@
  * Juno) driving the Planetarium's Historic Journeys feature: milestone
  * timelines, per-mission ship profiles, and playback metadata.
  */
-import type { ShipProfile } from '../PlayerShip';
+import type { HistoricShipProfile } from '../PlayerShip';
 
 export type HistoricTarget =
   | 'Earth'
@@ -50,7 +50,7 @@ export type HistoricJourney = {
   id: HistoricMissionId;
   label: string;
   readyNotification: string;
-  shipProfile: Exclude<ShipProfile, 'default'>;
+  shipProfile: HistoricShipProfile;
   milestones: HistoricMilestone[];
 };
 

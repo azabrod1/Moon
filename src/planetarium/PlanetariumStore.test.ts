@@ -4,6 +4,7 @@ import {
   sanitizePlanetariumState,
   PlanetariumStore,
 } from './PlanetariumStore';
+import { PLAYER_SHIPS } from './ship/shipProfiles';
 
 /** A minimal valid raw save; fields under test get spread over it. */
 function rawSave(overrides: Record<string, unknown>): Record<string, unknown> {
@@ -92,6 +93,19 @@ describe('showBodyLabelDistances is a plain boolean (default true)', () => {
 
   it('non-boolean garbage falls back to the default', () => {
     expect(sanitizePlanetariumState(rawSave({ showBodyLabelDistances: 'no' }))?.showBodyLabelDistances).toBe(true);
+  });
+});
+
+describe('player ship selection persistence', () => {
+  it('round-trips every selectable profile', () => {
+    for (const ship of PLAYER_SHIPS) {
+      expect(sanitizePlanetariumState(rawSave({ shipProfile: ship.id }))?.shipProfile).toBe(ship.id);
+    }
+  });
+
+  it('migrates old or malformed saves to the current ship', () => {
+    expect(sanitizePlanetariumState(rawSave({}))?.shipProfile).toBe('default');
+    expect(sanitizePlanetariumState(rawSave({ shipProfile: 'death-star' }))?.shipProfile).toBe('default');
   });
 });
 

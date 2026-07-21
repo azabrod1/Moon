@@ -467,6 +467,8 @@ export class PlanetariumMode {
   private tmpScreenOffsetQuat = new THREE.Quaternion();
   private tmpScreenInverseQuat = new THREE.Quaternion();
   private devDiagnosticSphere: THREE.Mesh | null = null;
+  private probeLimbMarker: THREE.Sprite | null = null;
+  private probeLimbDir = new THREE.Vector3();
   private sphereScreenProjection: SphereScreenProjection = {
     x: 0, y: 0, ndcX: 0, ndcY: 0, ndcZ: 0,
     footprintX: 0, footprintY: 0, radiusPx: 0, diameterPx: 0,
@@ -6801,6 +6803,60 @@ export class PlanetariumMode {
       offNdcY,
     );
     return true;
+  }
+
+  /** The live analytic foreground-occlusion disc a planet contributed this frame
+   *  (screen centre + radius px from `collectForegroundDiscs` under the lens), so
+   *  the harness can place a marker at its predicted limb. Needs the label pass
+   *  to have run (markers or labels on). */
+  devPlanetOccluderDisc(name: string): unknown {
+    const disc = this.planetLabels?.foregroundDiscs.find((d) => d.name === name);
+    if (!disc) return null;
+    return {
+      screenX: disc.screenX, screenY: disc.screenY, radiusPx: disc.radiusPx,
+      distFromCamera: disc.distFromCamera,
+      viewport: { w: this.renderer.domElement.clientWidth, h: this.renderer.domElement.clientHeight },
+    };
+  }
+
+  /** Dev-only: show/hide the player ship (the marker-limb case keeps markers on
+   *  for the occlusion pass but wants the ship out of frame). */
+  devSetShipVisible(visible: boolean): void {
+    this.player.group.visible = visible;
+  }
+
+  /**
+   * Place a bright-red marker SPRITE at a DISPLAYED screen pixel and cull it
+   * through the REAL analytic occlusion path (`isScreenPointOccluded` against the
+   * foreground occluder discs), exactly as a planet marker beacon is culled — so
+   * its DRAWN pixels reflect the analytic-disc decision, not GPU depth. `depthAU`
+   * is the marker's camera distance for the depth compare (put it behind the
+   * occluding planet). Returns the occlusion verdict. Dev only.
+   */
+  devProbeLimbMarker(screenX: number, screenY: number, depthAU: number): { occluded: boolean } | null {
+    if (!this.solarSystem || !this.planetLabels) return null;
+    const cam = this.camera as THREE.PerspectiveCamera;
+    const canvas = this.renderer.domElement;
+    cam.updateMatrixWorld(true);
+    screenPointToWorldRay(
+      screenX, screenY, cam, canvas.clientWidth, canvas.clientHeight, this.probeLimbDir,
+    );
+    if (!this.probeLimbMarker) {
+      // Same material family as the planet beacons: fixed screen size
+      // (sizeAttenuation off), no depth test — visibility is owned entirely by
+      // the analytic occlusion decision.
+      const mat = new THREE.SpriteMaterial({
+        color: new THREE.Color(1, 0, 0), sizeAttenuation: false, depthTest: false, depthWrite: false,
+      });
+      this.probeLimbMarker = new THREE.Sprite(mat);
+      this.probeLimbMarker.renderOrder = 12;
+      this.probeLimbMarker.scale.setScalar(0.02);
+      this.scene.add(this.probeLimbMarker);
+    }
+    this.probeLimbMarker.position.copy(cam.position).add(this.probeLimbDir.multiplyScalar(depthAU));
+    const occluded = this.planetLabels.isScreenPointOccluded(screenX, screenY, depthAU);
+    this.probeLimbMarker.visible = !occluded;
+    return { occluded };
   }
 
   /** DEV-only: live-tune the veiling-glare knobs for the warmth A/B montage and

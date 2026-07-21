@@ -307,6 +307,100 @@ try {
       await context.close();
     }
   }
+
+  // ---- marker-behind-limb integration case (REAL pipeline, strength 1) ------
+  // A REAL planet is framed off-axis; its analytic foreground-occlusion disc
+  // (collectForegroundDiscs, lens-projected) is read live, and a REAL marker
+  // sprite is placed at that disc's predicted limb ± margin and culled by the
+  // REAL analytic path (isScreenPointOccluded) exactly as a planet beacon is —
+  // so the DRAWN marker pixels gate on the analytic-disc sizing, not GPU depth.
+  // Runs with bloom off so the bright marker can't bloom a halo past the limb.
+  {
+    const context = await browser.newContext({
+      viewport: { width: 1280, height: 720 },
+      deviceScaleFactor: 1,
+    });
+    await context.addInitScript(() => {
+      try {
+        localStorage.clear();
+        sessionStorage.clear();
+        indexedDB.deleteDatabase('orbital-sim-storage');
+        localStorage.setItem('planetarium-help-seen', '1');
+        localStorage.setItem('planetarium-surface-hint-seen', '1');
+      } catch { /* storage can be unavailable in hardened contexts */ }
+    });
+    const page = await context.newPage();
+    const errors = [];
+    page.on('pageerror', error => errors.push(String(error)));
+    await page.goto(`${baseUrl}/?auto=planetarium`, { waitUntil: 'domcontentloaded' });
+    await page.waitForFunction(
+      () => !!(window.__moon && window.__moon.ready && window.__moon.ready()),
+      { timeout: 45000 },
+    );
+    await page.waitForFunction(() => {
+      const loading = document.getElementById('loading-screen');
+      return !loading || loading.classList.contains('hidden');
+    }, { timeout: 45000 });
+    await page.evaluate(() => {
+      window.__moon.setLens(1);
+      window.__moon.setBloom(false);
+      window.__moon.setAutoExposure(false);
+      window.__moon.setTimeMs(Date.parse('2026-07-20T00:00:00Z'));
+      // Markers ON so the label pass populates the foreground occluder discs.
+      window.__moon.setChrome(true);
+      window.__moon.frame('Jupiter', 0.42, 20, 6, 0.5, 0.2);
+    });
+    await page.waitForTimeout(1000);
+    await page.evaluate(() => window.__moon.setShipVisible(false));
+    await page.waitForTimeout(300);
+    const disc = await page.evaluate(() => window.__moon.planetOccluderDisc('Jupiter'));
+    const tag = 'marker-limb';
+    const countRedNear = (b64, cx, cy, r) => page.evaluate(async ([data, x0, y0, rad]) => {
+      const img = await new Promise((res) => { const i = new Image(); i.onload = () => res(i); i.src = `data:image/png;base64,${data}`; });
+      const cv = document.createElement('canvas');
+      cv.width = img.naturalWidth; cv.height = img.naturalHeight;
+      const g = cv.getContext('2d', { willReadFrequently: true });
+      g.drawImage(img, 0, 0);
+      const W = cv.width, H = cv.height, px = g.getImageData(0, 0, W, H).data;
+      let n = 0;
+      const x1 = Math.max(0, Math.floor(x0 - rad)), x2 = Math.min(W - 1, Math.ceil(x0 + rad));
+      const y1 = Math.max(0, Math.floor(y0 - rad)), y2 = Math.min(H - 1, Math.ceil(y0 + rad));
+      for (let y = y1; y <= y2; y++) for (let x = x1; x <= x2; x++) {
+        if ((x - x0) ** 2 + (y - y0) ** 2 > rad * rad) continue;
+        const i = (y * W + x) * 4;
+        if (px[i] > 120 && px[i + 1] < 70 && px[i + 2] < 70) n++;
+      }
+      return n;
+    }, [b64, cx, cy, r]);
+    if (!disc) {
+      failures.push(`${tag}: no analytic occluder disc for Jupiter (label pass / markers off?)`);
+    } else {
+      let ux = disc.screenX - disc.viewport.w / 2;
+      let uy = disc.screenY - disc.viewport.h / 2;
+      const un = Math.hypot(ux, uy) || 1;
+      ux /= un; uy /= un;
+      const margin = Math.max(0.04 * disc.radiusPx, 4);
+      const inside = { x: disc.screenX + ux * (disc.radiusPx - margin), y: disc.screenY + uy * (disc.radiusPx - margin) };
+      const outside = { x: disc.screenX + ux * (disc.radiusPx + margin), y: disc.screenY + uy * (disc.radiusPx + margin) };
+      const depthAU = disc.distFromCamera * 2;
+      const inRes = await page.evaluate((a) => window.__moon.probeLimbMarker(a.x, a.y, a.d), { x: inside.x, y: inside.y, d: depthAU });
+      await page.waitForTimeout(300);
+      const inRed = await countRedNear((await page.screenshot()).toString('base64'), inside.x, inside.y, 24);
+      const outRes = await page.evaluate((a) => window.__moon.probeLimbMarker(a.x, a.y, a.d), { x: outside.x, y: outside.y, d: depthAU });
+      await page.waitForTimeout(300);
+      const outRed = await countRedNear((await page.screenshot()).toString('base64'), outside.x, outside.y, 24);
+      await page.screenshot({ path: path.join(outDir, 'marker-limb.png') });
+      rows.push({ viewport: 'desktop', mode: 'no-bloom', pose: tag });
+      console.log(
+        `desktop no-bloom ${tag.padEnd(12)} disc R=${disc.radiusPx.toFixed(1)}px ` +
+        `inside occluded=${inRes?.occluded} redPx=${inRed} · outside occluded=${outRes?.occluded} redPx=${outRed}`,
+      );
+      if (!(inRes?.occluded === true && inRed <= 4)) failures.push(`${tag}: inside limb not culled (occluded=${inRes?.occluded} redPx=${inRed})`);
+      if (!(outRes?.occluded === false && outRed >= 20)) failures.push(`${tag}: outside limb not drawn (occluded=${outRes?.occluded} redPx=${outRed})`);
+    }
+    for (const error of errors) failures.push(`${tag}: browser error: ${error}`);
+    await context.close();
+  }
 } finally {
   await browser.close();
 }

@@ -549,6 +549,12 @@ function installDevHooks() {
       planetariumMode?.devFrameSun(distanceAU, fovDeg, offNdcX, offNdcY) ?? false,
     diagnosticSphere: (offNdcX?: number, offNdcY?: number, fovDeg?: number, angularRadiusDeg?: number) =>
       planetariumMode?.devFrameDiagnosticSphere(offNdcX, offNdcY, fovDeg, angularRadiusDeg) ?? false,
+    // Marker-limb integration: a planet's live analytic occluder disc, ship
+    // visibility, and a red marker sprite culled by the REAL analytic occlusion.
+    planetOccluderDisc: (name: string) => planetariumMode?.devPlanetOccluderDisc(name) ?? null,
+    setShipVisible: (visible: boolean) => planetariumMode?.devSetShipVisible(visible),
+    probeLimbMarker: (screenX: number, screenY: number, depthAU: number) =>
+      planetariumMode?.devProbeLimbMarker(screenX, screenY, depthAU) ?? null,
     sunAppearance: () => planetariumMode?.devSunAppearance() ?? null,
     sunGlareMask: () => planetariumMode?.devSunGlareMask() ?? null,
     eclipseDebug: () => planetariumMode?.devEclipseDebug() ?? null,

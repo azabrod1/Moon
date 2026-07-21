@@ -3429,7 +3429,6 @@ export class PlanetariumMode {
       opticalFx = 1 - THREE.MathUtils.smoothstep(solarRadiusPx, 22, 82);
       if (glareMat) {
         glareMat.uniforms.uViewportHeight.value = viewportHeight;
-        glareMat.uniforms.uPhysicalHalfSizePx.value = solarRadiusPx * glareExtent;
         glareMat.uniforms.uPointLike.value = 1 - THREE.MathUtils.smoothstep(solarRadiusPx, 2, 10);
         glareMat.uniforms.uCameraFx.value = opticalFx;
       }

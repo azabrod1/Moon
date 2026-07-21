@@ -726,7 +726,6 @@ export function createPlanetariumSun(useBloom = true): THREE.Group {
       uAtmosphereMix: { value: 0 },
       uAtmosphereColor: { value: new THREE.Color(1, 0.55, 0.24) },
       uMinHalfSizePx: { value: useBloom ? 18 : 22 },
-      uPhysicalHalfSizePx: { value: 0 },
       uViewportHeight: { value: Math.max(window.innerHeight, 1) },
       ...createLensShaderUniforms(),
       // Wide veiling-glare wash. uVeilStrength is its peak HDR contribution at

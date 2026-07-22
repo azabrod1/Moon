@@ -716,6 +716,10 @@
     }
     #planetarium-menu-panel.visible { display: block; }
     .menu-build {
+      /* Hidden unless ?debug=1 reveals it — the rule stays here (not only in
+         the script) so the empty element can't leave its divider and padding
+         behind in the menu. */
+      display: none;
       margin-top: 6px;
       padding: 4px 10px 2px;
       border-top: 1px solid var(--panel-border);

@@ -690,9 +690,14 @@ async function init() {
   debugLog('Init started');
   // Build identity in the menu footer: lets anyone confirm which deploy a
   // device is actually running (cached phone tabs have repeatedly shown
-  // days-old bundles while looking current).
+  // days-old bundles while looking current). It rides with the debug overlay
+  // rather than the normal menu — a build sha is diagnostic gear, not
+  // something to hand every visitor. Add ?debug=1 to bring it back.
   const buildEl = document.getElementById('menu-build');
-  if (buildEl) buildEl.textContent = `build ${__BUILD_TAG__}`;
+  if (buildEl && window.__dbgEnabled) {
+    buildEl.textContent = `build ${__BUILD_TAG__}`;
+    buildEl.style.display = 'block';
+  }
 
   let lastTime = performance.now();
 

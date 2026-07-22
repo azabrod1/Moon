@@ -44,14 +44,26 @@ export const CRUISE_CAM_DIST_AU = 0.000094 * SHIP_RIG_SCALE;
  *  half-length ≈ 0.75 reference radii. */
 export const SHIP_OCCLUDER_RADIUS_AU = SHIP_REFERENCE_RADIUS_AU * 0.75;
 
-/** Farthest solid point of any ship profile from the group origin. The
- *  default hull's nozzle exit sits at 1.82 authored units × 1.8 units per
- *  reference radius × 0.5 group scale = 1.638 reference radii; 2.2 leaves
- *  ~34% headroom for the probe-profile hulls (own geometry, root scale
- *  1.18). Used as the near-plane ceiling on the camera-to-ship term, as the
- *  floor under CAMERA_BODY_MARGIN_AU, and as the base of the wheel-zoom
- *  floor — solid geometry must never cross the near plane or the camera. */
+/** Hull extent for camera safety: the near-plane ceiling on the
+ *  camera-to-ship term, the floor under CAMERA_BODY_MARGIN_AU, and the base
+ *  of the wheel-zoom floor — solid geometry must never cross the near plane
+ *  or the camera. The default hull's nozzle exit sits at 1.82 authored
+ *  units × 1.8 units per reference radius × 0.5 group scale = 1.638
+ *  reference radii; 2.2 covers the probe-profile BODIES too, but not
+ *  Juno's magnetometer boom (a hairline rod out to ~3.7 radii — accepted:
+ *  at the 3.3-radius zoom floor a clipped 1px rod tip is invisible, and
+ *  widening the floor for it would push every close-up out by half).
+ *  Anything that must cover the boom uses SHIP_ANY_HULL_EXTENT_AU. */
 export const SHIP_HULL_MAX_EXTENT_AU = SHIP_REFERENCE_RADIUS_AU * 2.2;
+
+/** Farthest solid point of ANY profile's hull from the group origin — the
+ *  pre-reject sphere for the marker-vs-hull sight-line test. Governed by
+ *  Juno's magnetometer sensor: 5.55 authored units × 1.32 root scale × 0.5
+ *  group scale ≈ 3.66 reference radii; 4.5 leaves headroom for longer
+ *  booms. Pinned against the real built models in cruiseView.test.ts, so a
+ *  future profile that outgrows it fails the suite instead of drawing
+ *  beacons across its hull. */
+export const SHIP_ANY_HULL_EXTENT_AU = SHIP_REFERENCE_RADIUS_AU * 4.5;
 
 /** OrbitControls wheel-zoom floor in cruise. The legacy floor sat inside the
  *  hull's aft extent (a quirk this rig initially preserved by ratio), but at

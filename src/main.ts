@@ -545,6 +545,10 @@ function installDevHooks() {
       offNdcX?: number, offNdcY?: number,
     ) =>
       planetariumMode?.devFrameBody(name, fillFraction, phaseAngleDeg, distMul, offNdcX, offNdcY) ?? false,
+    viewFrom: (fromName: string, toName: string, fovDeg?: number) =>
+      planetariumMode?.devViewFrom(fromName, toName, fovDeg) ?? false,
+    limbView: (name: string, kRadii?: number, fovDeg?: number) =>
+      planetariumMode?.devLimbView(name, kRadii, fovDeg) ?? false,
     frameSun: (distanceAU?: number, fovDeg?: number, offNdcX?: number, offNdcY?: number) =>
       planetariumMode?.devFrameSun(distanceAU, fovDeg, offNdcX, offNdcY) ?? false,
     diagnosticSphere: (offNdcX?: number, offNdcY?: number, fovDeg?: number, angularRadiusDeg?: number) =>

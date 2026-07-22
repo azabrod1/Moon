@@ -155,6 +155,7 @@ import {
   SHIP_CLEARANCE_AU,
   CRUISE_CAM_DIST_AU,
   SHIP_OCCLUDER_RADIUS_AU,
+  SHIP_ANY_HULL_EXTENT_AU,
   CRUISE_CONTROLS_MIN_DISTANCE_AU,
   CAMERA_BODY_MARGIN_AU,
   CAM_FOLLOW_TAU_IDLE_S,
@@ -1801,6 +1802,8 @@ export class PlanetariumMode {
         showMarkers: this.showBodyMarkers,
         showLabels: this.showBodyLabels,
         sunMask: this.sunGlareMaskParams,
+        sunPos: this.solarSystem.sun.position,
+        markerShipTest: this.isMarkerBehindShip,
       });
     }
 
@@ -2980,6 +2983,61 @@ export class PlanetariumMode {
       }
     }
   }
+
+  // Marker-vs-hull raycast scratch (isMarkerBehindShip). Reused per call —
+  // the sphere pre-reject means the traversal + raycast run only for
+  // markers whose sight line passes the hull, typically zero per frame.
+  private markerShipRaycaster = new THREE.Raycaster();
+  private markerShipRayDir = new THREE.Vector3();
+  private markerShipMeshes: THREE.Object3D[] = [];
+  private markerShipHits: THREE.Intersection[] = [];
+
+  /**
+   * True when the sight line from the camera to a far marker passes through
+   * the ship's solid hull. Solid meshes only, skipping invisible subtrees
+   * and additive-blended meshes (the exhaust flame is light, not hull, and
+   * shouldn't eat a beacon; the glow sprites aren't meshes at all). Any
+   * hull hit occludes: the marker's body is always AU away, far behind
+   * every part of the ship.
+   */
+  private isMarkerBehindShip = (markerWorldPos: THREE.Vector3): boolean => {
+    if (!this.player.group.visible || this.landedOn) return false;
+    // Exact pre-reject before any traversal: the ship rides the scene
+    // origin (floating origin), so the sight line clears every profile's
+    // hull when its closest approach to the origin exceeds the widest hull
+    // sphere — unless the camera itself sits inside that sphere (the
+    // wheel-zoom floor, 3.3 reference radii, is inside the 4.5 sphere).
+    const cam = this.camera.position;
+    const dir = this.markerShipRayDir.copy(markerWorldPos).sub(cam).normalize();
+    const camDistSq = cam.lengthSq();
+    const extentSq = SHIP_ANY_HULL_EXTENT_AU * SHIP_ANY_HULL_EXTENT_AU;
+    if (camDistSq > extentSq) {
+      const t = -cam.dot(dir); // ray parameter at closest approach to the origin
+      if (t <= 0 || camDistSq - t * t > extentSq) return false;
+    }
+    // The hull pose is a frame stale at label time: player.update() moved
+    // it earlier this frame but world matrices refresh at render — and a
+    // just-swapped profile has never been through a render at all. Refresh
+    // before the raycast reads them.
+    this.player.group.updateWorldMatrix(true, true);
+    this.markerShipMeshes.length = 0;
+    const collect = (o: THREE.Object3D) => {
+      if (!o.visible) return;
+      const mesh = o as THREE.Mesh;
+      if (mesh.isMesh) {
+        const m = mesh.material as THREE.Material | THREE.Material[];
+        const additive = Array.isArray(m)
+          ? m.every((x) => x.blending === THREE.AdditiveBlending)
+          : m.blending === THREE.AdditiveBlending;
+        if (!additive) this.markerShipMeshes.push(mesh);
+      }
+      for (const child of o.children) collect(child);
+    };
+    collect(this.player.group);
+    this.markerShipRaycaster.set(cam, dir);
+    this.markerShipHits.length = 0;
+    return this.markerShipRaycaster.intersectObjects(this.markerShipMeshes, false, this.markerShipHits).length > 0;
+  };
 
   /**
    * Third pass: place HTML labels for visible moons. Uses the occluder set
@@ -6942,6 +7000,113 @@ export class PlanetariumMode {
     };
   }
 
+  /**
+   * Headless-screenshot support: stand at one body and look toward another —
+   * the far-marker taste view (how Earth's beacon reads from Neptune). Poses
+   * the player a few radii out from `fromName` along the sightline so the
+   * vantage body sits behind the camera, aims the camera straight at `toName`,
+   * and hides the ship hull + HUD (the pose bypasses the chase rig, which
+   * would otherwise park the hull across the frame). Markers and labels stay
+   * on — they are the subject. Dev bridge only.
+   */
+  devViewFrom(fromName: string, toName: string, fovDeg = 45): boolean {
+    if (!this.solarSystem) return false;
+    const resolve = (name: string): { x: number; y: number; z: number } | undefined => {
+      // The Sun sits at the heliocentric origin in the absolute coords this
+      // pose works in (same convention as devFrameBody).
+      if (name === 'Sun') return { x: 0, y: 0, z: 0 };
+      return this.planetWorldPositions.get(name);
+    };
+    const from = resolve(fromName);
+    const to = resolve(toName);
+    if (!from || !to) return false;
+    const fromR =
+      this.solarSystem.planets.find((p) => p.data.name === fromName)?.data.radiusAU ??
+      SUN_DATA.radiusAU;
+    const dir = new THREE.Vector3(to.x - from.x, to.y - from.y, to.z - from.z);
+    if (dir.lengthSq() < 1e-12) return false;
+    dir.normalize();
+    this.devFreeCamera = true;
+    // A few radii out along the sightline: clear of the vantage body's own disc.
+    this.player.posX = from.x + dir.x * fromR * 8;
+    this.player.posY = from.y + dir.y * fromR * 8;
+    this.player.posZ = from.z + dir.z * fromR * 8;
+    this.player.headToward(to.x, to.z, to.y);
+    this.player.moving = false;
+    const sceneOffset = new THREE.Vector3(
+      to.x - this.player.posX,
+      to.y - this.player.posY,
+      to.z - this.player.posZ,
+    );
+    const cam = this.camera as THREE.PerspectiveCamera;
+    cam.position.set(0, 0, 0);
+    // The lens owns overscan: applyDesignFov (via setDisplayFov) is the only
+    // legal camera.fov writer — a raw `cam.fov = fovDeg` would set the display
+    // FOV as the overscan and desync every lens seam.
+    this.setDisplayFov(fovDeg);
+    cam.lookAt(sceneOffset);
+    this.controls.target.copy(sceneOffset);
+    this.showShip = false;
+    this.player.group.visible = false;
+    for (const id of ['planetarium-ui', 'top-bar']) {
+      const el = document.getElementById(id);
+      if (el) el.style.display = 'none';
+    }
+    // Auto-exposure settles on its own from the smoothed target (same as the
+    // sibling dev pose helpers) — no manual snap flag exists on this path.
+    return true;
+  }
+
+  /**
+   * Headless-screenshot support: park the camera close to a body and aim it
+   * exactly at the limb's tangent point, so the horizon arc crosses the frame
+   * center — the close-approach view where silhouette tessellation shows.
+   * Stands on the sunlit side so the limb is lit. Dev bridge only.
+   */
+  devLimbView(name: string, kRadii = 1.5, fovDeg = 50): boolean {
+    if (!this.solarSystem) return false;
+    const body = this.planetWorldPositions.get(name);
+    const r = this.solarSystem.planets.find((p) => p.data.name === name)?.data.radiusAU;
+    if (!body || !r || kRadii <= 1) return false;
+    const d = r * kRadii;
+    // Sunward side: the Sun sits at the heliocentric origin of these coords.
+    const sunward = new THREE.Vector3(-body.x, -body.y, -body.z).normalize();
+    this.devFreeCamera = true;
+    this.player.posX = body.x + sunward.x * d;
+    this.player.posY = body.y + sunward.y * d;
+    this.player.posZ = body.z + sunward.z * d;
+    this.player.moving = false;
+    // Tangent point T = B + R·n with n = −(R/d)·w + √(1−R²/d²)·v, where w is
+    // the camera→center axis and v a perpendicular: the exact point where the
+    // sight line grazes the sphere, putting the limb arc mid-frame.
+    const w = sunward.clone().negate();
+    const up = Math.abs(w.y) < 0.95 ? new THREE.Vector3(0, 1, 0) : new THREE.Vector3(1, 0, 0);
+    const v = new THREE.Vector3().crossVectors(w, up).normalize();
+    const rd = r / d;
+    const n = w.clone().multiplyScalar(-rd).addScaledVector(v, Math.sqrt(1 - rd * rd));
+    const tangentOffset = new THREE.Vector3(
+      body.x + r * n.x - this.player.posX,
+      body.y + r * n.y - this.player.posY,
+      body.z + r * n.z - this.player.posZ,
+    );
+    const cam = this.camera as THREE.PerspectiveCamera;
+    cam.position.set(0, 0, 0);
+    // applyDesignFov (via setDisplayFov) is the only legal camera.fov writer
+    // under the lens contract; a raw `cam.fov = fovDeg` desyncs the overscan.
+    this.setDisplayFov(fovDeg);
+    cam.lookAt(tangentOffset);
+    this.controls.target.copy(tangentOffset);
+    this.showShip = false;
+    this.player.group.visible = false;
+    for (const id of ['planetarium-ui', 'top-bar']) {
+      const el = document.getElementById(id);
+      if (el) el.style.display = 'none';
+    }
+    // Auto-exposure settles on its own from the smoothed target (same as the
+    // sibling dev pose helpers) — no manual snap flag exists on this path.
+    return true;
+  }
+
   /** Peek the coverage meter for the dev bridge — telemetry only (the adapted
    *  Sun exposure in devSunAppearance() is what actually reaches the render). */
   devExposurePeek(): { target: number; coverage: number } {
@@ -9492,6 +9657,7 @@ export class PlanetariumMode {
         showLabels: this.showBodyLabels,
         excludeName: landedPlanetName,
         sunMask: this.sunGlareMaskParams,
+        sunPos: this.solarSystem.sun.position,
       });
     }
 

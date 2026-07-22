@@ -90,6 +90,8 @@ import {
 } from './moonDots';
 import {
   applySunGlareMaskParams,
+  sunGlareMaskActivation,
+  sunGlareMaskCoreOuterPx,
   type SunGlareMaskParams,
   type SunGlareMaskUniforms,
 } from './world/sunGlareMask';
@@ -3742,12 +3744,35 @@ export class PlanetariumMode {
     // The core's floor tracks the glint's actual drawn footprint (the same
     // scale that shrinks uMinHalfSizePx): a fixed 30 px floor culled belt
     // dots out to ~4× the outer-system glint's radius — from Pluto, a dot-free
-    // circle far wider than the glow it protects.
-    maskParams.coreOuterPx = Math.max(
-      (this.useBloom ? 30 : 22) * this.sunGlintFloorScale,
-      2.5 * solarRadiusPx,
-    );
+    // circle far wider than the glow it protects. The core scales with the
+    // body-only exposed fraction (ring transmission dims brightness but a
+    // ring-dimmed Sun still shows a blazing disc), so a covered Sun stops
+    // erasing the sky and stars appear beside the corona at totality.
+    const glintFloorPx = (this.useBloom ? 30 : 22) * this.sunGlintFloorScale;
+    // A 'covering' Sun footprint is hypot(w,h) — a conservative guess, not a
+    // measurement (a rim ray crossed the camera plane while the disc still
+    // intersected the frustum). Building a core from that giant radius is how the
+    // off-frame Sun erased the sky, so keep only the honest glint floor here; the
+    // activation gate below then also refuses to activate on a covering footprint.
+    const sunFootprintKind = inFront ? this.sphereScreenProjection.footprintKind : 'none';
+    maskParams.coreOuterPx = sunFootprintKind === 'covering'
+      ? glintFloorPx
+      : sunGlareMaskCoreOuterPx(solarRadiusPx, glintFloorPx, bodyVisibleFraction);
     maskParams.viewportHeight = viewportHeight;
+    // The mask can obscure nothing when its support disc sits wholly off-frame,
+    // and a covering footprint must never activate it (see above). sunVeilSupport
+    // holds the real wash reach only when the veil is live; it is stale scratch
+    // otherwise, so pass 0 in that case rather than a bogus reach.
+    const washSupportPx = veilAmt > 0 ? this.sunVeilSupport.halfPx : 0;
+    maskParams.active = maskParams.active && sunGlareMaskActivation({
+      sunFootprintKind,
+      sunXPx: maskParams.sunXPx,
+      sunYPx: maskParams.sunYPx,
+      coreOuterPx: maskParams.coreOuterPx,
+      washSupportPx,
+      viewportWidth,
+      viewportHeight,
+    });
     this.applySunGlareMaskToPoints(viewportWidth);
   }
 
@@ -6949,6 +6974,8 @@ export class PlanetariumMode {
       occluderRadii: glareMat ? (glareMat.uniforms.uOccluderRadii.value as number) : 0,
       occluderOffsetSr: offset ? [offset.x, offset.y] : [0, 0],
       silhouetteDim: this.sunSilhouetteFx ? (this.sunSilhouetteFx.uSilhouette.value as number) : 0,
+      maskActive: this.sunGlareMaskParams.active,
+      maskCoreOuterPx: this.sunGlareMaskParams.coreOuterPx,
     };
   }
 

@@ -27,6 +27,7 @@ import {
   lensShaderGLSL,
   type LensShaderUniforms,
 } from '../../shared/three/lensShader';
+import type { SphereFootprintKind } from '../../shared/three/projectToScreen';
 
 /**
  * One persistent parameter set per frame, filled by the controller after the
@@ -61,6 +62,70 @@ function smoothstep(edge0: number, edge1: number, x: number): number {
   if (edge0 === edge1) return x < edge0 ? 0 : 1;
   const t = Math.min(1, Math.max(0, (x - edge0) / (edge1 - edge0)));
   return t * t * (3 - 2 * t);
+}
+
+/** Clamp to [0, 1]. */
+function clamp01(x: number): number {
+  return Math.min(1, Math.max(0, x));
+}
+
+/**
+ * Outer radius of the geometric obscuration core, in CSS px. The core stands in
+ * for the saturated blaze around the *exposed* photosphere, floored at the bare
+ * outer-system glint so a distant point-Sun still obscures coincident dots.
+ *
+ * Two things govern it. While any sliver of photosphere still burns, the core
+ * covers the whole disc plus a margin — `1.2 ×` the disc radius at minimum,
+ * because the surviving sliver's bloom hugs the limb and stars must not pop
+ * against it. On top of that margin, the reach out to the full `2.5 ×` blaze
+ * decays with the visible energy (`^0.38`, the drawn glare's own convention), so
+ * a deep partial keeps a tight core and a full Sun keeps the wide one. Only the
+ * final 0.2% — the collapse into totality — releases the whole core to 0, which
+ * is what lets the corona and stars own the sky beside a void-black eclipsing
+ * disc (that disc's own opaque mesh depth-occludes whatever is behind it).
+ */
+export function sunGlareMaskCoreOuterPx(
+  solarRadiusPx: number,
+  glintFloorPx: number,
+  bodyVisibleFraction: number,
+): number {
+  const vis = clamp01(bodyVisibleFraction);
+  const reach = solarRadiusPx * (1.2 + 1.3 * Math.pow(vis, 0.38));
+  return Math.max(glintFloorPx, reach) * smoothstep(0, 0.002, vis);
+}
+
+/** Inputs the activation decision needs; a subset of the frame's mask params
+ *  plus the Sun's footprint classification and the live wash reach. */
+export interface SunGlareMaskActivationInput {
+  /** How the Sun's screen footprint was arrived at this frame. */
+  sunFootprintKind: SphereFootprintKind;
+  sunXPx: number;
+  sunYPx: number;
+  coreOuterPx: number;
+  /** Wash e-fold reach in px, or 0 when the veil is idle (stale otherwise). */
+  washSupportPx: number;
+  viewportWidth: number;
+  viewportHeight: number;
+}
+
+/**
+ * Whether the glare mask should be active this frame. A `'covering'` Sun
+ * footprint is a conservative viewport-filling guess, not a measurement — with
+ * the camera outside the photosphere (a buried camera never reaches this code)
+ * that guess must never erase the sky, so it can't activate the mask. Otherwise
+ * the mask is active only when its support disc — `max(coreOuterPx,
+ * washSupportPx)` around the Sun's (possibly off-frame) screen position —
+ * overlaps the viewport rect `[0, width] × [0, height]`; a support that sits
+ * wholly beyond the frame edge can obscure no drawn pixel.
+ */
+export function sunGlareMaskActivation(input: SunGlareMaskActivationInput): boolean {
+  if (input.sunFootprintKind === 'covering') return false;
+  const radius = Math.max(input.coreOuterPx, input.washSupportPx);
+  const nearestX = Math.min(Math.max(input.sunXPx, 0), input.viewportWidth);
+  const nearestY = Math.min(Math.max(input.sunYPx, 0), input.viewportHeight);
+  const dx = input.sunXPx - nearestX;
+  const dy = input.sunYPx - nearestY;
+  return dx * dx + dy * dy <= radius * radius;
 }
 
 /**

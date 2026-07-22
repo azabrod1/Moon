@@ -2,6 +2,8 @@ import { describe, it, expect } from 'vitest';
 import {
   sunGlareMaskAt,
   sunGlareMaskForRect,
+  sunGlareMaskCoreOuterPx,
+  sunGlareMaskActivation,
   sunLabelClearRadiusPx,
   sunGlareMaskGLSL,
   type SunGlareMaskParams,
@@ -185,5 +187,107 @@ describe('sunGlareMaskGLSL', () => {
     // Guards the degenerate cases the GPU path relies on.
     expect(src).toContain('uSunMaskActive < 0.5');
     expect(src).toContain('clip.w <= 0.0');
+  });
+});
+
+describe('sunGlareMaskCoreOuterPx', () => {
+  it('is exactly max(floor, 2.5·radius) at full exposure', () => {
+    expect(sunGlareMaskCoreOuterPx(100, 30, 1)).toBeCloseTo(250, 9);
+    expect(sunGlareMaskCoreOuterPx(100, 300, 1)).toBeCloseTo(300, 9);
+  });
+
+  it('collapses to 0 only in the final totality band', () => {
+    expect(sunGlareMaskCoreOuterPx(100, 30, 0)).toBe(0);
+    expect(sunGlareMaskCoreOuterPx(1000, 500, 0)).toBe(0);
+  });
+
+  it('still covers the whole disc plus a 1.2× margin through a deep partial', () => {
+    // A surviving sliver (10% exposed) keeps the core over the disc + margin so
+    // stars can't pop against the limb-hugging bloom.
+    expect(sunGlareMaskCoreOuterPx(100, 1, 0.1)).toBeGreaterThanOrEqual(120);
+  });
+
+  it('is monotone nondecreasing in the exposed fraction', () => {
+    let prev = -Infinity;
+    for (let f = 0; f <= 1.0001; f += 0.05) {
+      const v = sunGlareMaskCoreOuterPx(100, 30, f);
+      expect(v).toBeGreaterThanOrEqual(prev - 1e-9);
+      prev = v;
+    }
+  });
+
+  it('lets the glint floor win for a tiny disc', () => {
+    expect(sunGlareMaskCoreOuterPx(1, 30, 1)).toBeCloseTo(30, 9);
+  });
+
+  it('is continuous across the 0.002 totality-collapse band', () => {
+    const a = sunGlareMaskCoreOuterPx(100, 30, 0.001);
+    const b = sunGlareMaskCoreOuterPx(100, 30, 0.002);
+    const c = sunGlareMaskCoreOuterPx(100, 30, 0.003);
+    expect(a).toBeGreaterThan(0);
+    expect(a).toBeLessThan(b); // still ramping up through the band
+    expect(c).toBeGreaterThanOrEqual(b);
+    // No step: 0.001 sits near the half-way point of the smooth ramp.
+    expect(a).toBeGreaterThan(0.2 * b);
+  });
+});
+
+describe('sunGlareMaskActivation', () => {
+  const input = (overrides: Partial<Parameters<typeof sunGlareMaskActivation>[0]>) => ({
+    sunFootprintKind: 'none' as const,
+    sunXPx: 0,
+    sunYPx: 0,
+    coreOuterPx: 0,
+    washSupportPx: 0,
+    viewportWidth: 1280,
+    viewportHeight: 720,
+    ...overrides,
+  });
+
+  it('never activates on a covering footprint, however large the core', () => {
+    // The covering fallback is a guess, not a measurement — with the camera
+    // outside the photosphere it must not erase the sky.
+    expect(sunGlareMaskActivation(input({
+      sunFootprintKind: 'covering', sunXPx: 640, sunYPx: 360, coreOuterPx: 5000,
+    }))).toBe(false);
+  });
+
+  it('is false for a far off-frame centre with a small support disc', () => {
+    expect(sunGlareMaskActivation(input({ sunXPx: 2000, sunYPx: 360, coreOuterPx: 30 }))).toBe(false);
+  });
+
+  it('is true when an off-frame centre has a support disc reaching the edge', () => {
+    // Nearest viewport point (1280, 360) is 720 px away — inside a 750 px disc.
+    expect(sunGlareMaskActivation(input({
+      sunXPx: 2000, sunYPx: 360, coreOuterPx: 750,
+    }))).toBe(true);
+  });
+
+  it('honours the wash support radius when the core is small', () => {
+    expect(sunGlareMaskActivation(input({
+      sunXPx: 2000, sunYPx: 360, coreOuterPx: 10, washSupportPx: 800,
+    }))).toBe(true);
+    expect(sunGlareMaskActivation(input({
+      sunXPx: 2000, sunYPx: 360, coreOuterPx: 10, washSupportPx: 100,
+    }))).toBe(false);
+  });
+
+  it('is true for an on-frame centre with a sampled footprint', () => {
+    // Centre inside the viewport rect: the support disc always overlaps.
+    expect(sunGlareMaskActivation(input({
+      sunFootprintKind: 'sampled', sunXPx: 640, sunYPx: 360, coreOuterPx: 5,
+    }))).toBe(true);
+  });
+
+  it('regression: the recorded cruise-blackout telemetry does not activate', () => {
+    // The failing pose fed a covering footprint / 3671.5 px core centred at
+    // (1920, 360) on a 1280×720 frame. Either signal must leave the mask inert.
+    expect(sunGlareMaskActivation(input({
+      sunFootprintKind: 'covering', sunXPx: 1920, sunYPx: 360, coreOuterPx: 3671.5,
+    }))).toBe(false);
+    // Even reclassified 'none', the off-frame support can't reach the viewport.
+    expect(sunGlareMaskActivation(input({
+      sunFootprintKind: 'none', sunXPx: 1920, sunYPx: 360, coreOuterPx: 30, washSupportPx: 0,
+    }))).toBe(false);
   });
 });

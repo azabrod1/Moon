@@ -31,6 +31,15 @@ export interface ScreenProjection {
   ndcZ: number;
 }
 
+/** How `radiusPx`/bounds were arrived at. `'sampled'` = a real tangent-limb
+ * measurement (trust it). `'none'` = the sphere reaches no rendered pixel, so
+ * the footprint is a degenerate point at the projected centre. `'covering'` =
+ * a conservative viewport-filling guess (camera inside the sphere, or a rim
+ * tangent ray crossing the camera plane while the sphere still intersects the
+ * frustum) — not a measurement, so consumers that would erase the frame from it
+ * (the Sun glare core) should treat it as untrusted. */
+export type SphereFootprintKind = 'none' | 'sampled' | 'covering';
+
 /** Projected tangent footprint of a world-space sphere. `x`/`y` remain the
  * projected direction to its geometric centre (the right anchor for labels),
  * while `footprintX`/`footprintY` and `radiusPx` conservatively enclose the
@@ -44,6 +53,7 @@ export interface SphereScreenProjection extends ScreenProjection {
   maxX: number;
   minY: number;
   maxY: number;
+  footprintKind: SphereFootprintKind;
 }
 
 const scratch = new THREE.Vector3();
@@ -161,6 +171,44 @@ function projectCameraRayToOutputNdc(
   return true;
 }
 
+/** Zero-size footprint at the projected centre — the truthful answer for a
+ *  sphere that cannot reach any rendered pixel. The centre coordinates stay
+ *  valid for consumers that edge-clamp toward an off-frame body. */
+function setPointFootprint(result: SphereScreenProjection): SphereScreenProjection {
+  result.footprintX = result.x;
+  result.footprintY = result.y;
+  result.radiusPx = 0;
+  result.diameterPx = 0;
+  result.minX = result.x;
+  result.maxX = result.x;
+  result.minY = result.y;
+  result.maxY = result.y;
+  result.footprintKind = 'none';
+  return result;
+}
+
+/** Conservative viewport-covering footprint at the projected centre — the
+ *  fallback when the sphere's tangent geometry can't be sampled but it isn't
+ *  provably off-frame. A guess, flagged `'covering'` so consumers can tell it
+ *  from a real measurement. */
+function setCoveringFootprint(
+  result: SphereScreenProjection,
+  width: number,
+  height: number,
+): SphereScreenProjection {
+  const coveringRadius = Math.hypot(width, height);
+  result.footprintX = result.x;
+  result.footprintY = result.y;
+  result.radiusPx = coveringRadius;
+  result.diameterPx = coveringRadius * 2;
+  result.minX = result.x - coveringRadius;
+  result.maxX = result.x + coveringRadius;
+  result.minY = result.y - coveringRadius;
+  result.maxY = result.y + coveringRadius;
+  result.footprintKind = 'covering';
+  return result;
+}
+
 /**
  * Project the actual tangent limb of a sphere through the same output lens as
  * the renderer. Sampling the tangent cone is deliberate: replacing the
@@ -179,6 +227,7 @@ export function projectSphereToScreen(
     x: 0, y: 0, ndcX: 0, ndcY: 0, ndcZ: 0,
     footprintX: 0, footprintY: 0, radiusPx: 0, diameterPx: 0,
     minX: 0, maxX: 0, minY: 0, maxY: 0,
+    footprintKind: 'none' as SphereFootprintKind,
   };
   const centreProjection = projectToScreen(centre, camera, width, height, sphereCentreProjection);
   result.x = centreProjection.x;
@@ -194,15 +243,7 @@ export function projectSphereToScreen(
   // viewport-covering fallback here would make LOD/dot consumers treat a body
   // behind the ship as the largest thing on screen.
   if (sphereCentreView.z >= safeRadius) {
-    result.footprintX = result.x;
-    result.footprintY = result.y;
-    result.radiusPx = 0;
-    result.diameterPx = 0;
-    result.minX = result.x;
-    result.maxX = result.x;
-    result.minY = result.y;
-    result.maxY = result.y;
-    return result;
+    return setPointFootprint(result);
   }
   if (!(distance > safeRadius) || safeRadius === 0) {
     const coveringRadius = safeRadius === 0 ? 0 : Math.hypot(width, height);
@@ -214,6 +255,7 @@ export function projectSphereToScreen(
     result.maxX = result.x + coveringRadius;
     result.minY = result.y - coveringRadius;
     result.maxY = result.y + coveringRadius;
+    result.footprintKind = 'covering';
     return result;
   }
 
@@ -239,16 +281,30 @@ export function projectSphereToScreen(
       .addScaledVector(sphereBasisU, Math.cos(phase) * sinAlpha)
       .addScaledVector(sphereBasisV, Math.sin(phase) * sinAlpha);
     if (!projectCameraRayToOutputNdc(sphereRimDirection, camera, rimNdc)) {
-      const coveringRadius = Math.hypot(width, height);
-      result.footprintX = result.x;
-      result.footprintY = result.y;
-      result.radiusPx = coveringRadius;
-      result.diameterPx = coveringRadius * 2;
-      result.minX = result.x - coveringRadius;
-      result.maxX = result.x + coveringRadius;
-      result.minY = result.y - coveringRadius;
-      result.maxY = result.y + coveringRadius;
-      return result;
+      // A rim ray crossed the camera plane: the rectilinear projection is
+      // undefined, so we can't measure the limb. Before taking the conservative
+      // viewport-covering guess, rule out the sphere being wholly outside the
+      // source render frustum (the overscan frame the lens pass resamples) —
+      // none of such a sphere can reach an output pixel, yet an extreme off-axis
+      // rim ray still crosses the plane, and reporting it as viewport-filling is
+      // exactly the off-frame Sun that once erased the whole starfield (the
+      // cruise blackout). The plane tests run only on this rare failure path, so
+      // the common case pays nothing. A sphere that DOES project cleanly keeps
+      // its ordinary off-screen footprint — those real values keep the Sun's
+      // glare terms continuous as it crosses the frustum boundary, so they must
+      // not be zeroed here. Plane tests only, so a very close, very large sphere
+      // in a corner wedge can still fall through to the covering guess — that
+      // errs covering, never invisible. The far plane is untested: nothing
+      // rendered sits beyond it.
+      const tanHalfY = Math.tan(THREE.MathUtils.degToRad(camera.fov * 0.5));
+      const tanHalfX = tanHalfY * camera.aspect;
+      const whollyBeforeNear = sphereCentreView.z - safeRadius > -camera.near;
+      const outsideSideX = Math.abs(sphereCentreView.x) + sphereCentreView.z * tanHalfX
+        > safeRadius * Math.hypot(1, tanHalfX);
+      const outsideSideY = Math.abs(sphereCentreView.y) + sphereCentreView.z * tanHalfY
+        > safeRadius * Math.hypot(1, tanHalfY);
+      if (whollyBeforeNear || outsideSideX || outsideSideY) return setPointFootprint(result);
+      return setCoveringFootprint(result, width, height);
     }
     const x = (rimNdc.x * 0.5 + 0.5) * width;
     const y = (-rimNdc.y * 0.5 + 0.5) * height;
@@ -289,6 +345,7 @@ export function projectSphereToScreen(
   result.maxX = maxX;
   result.minY = minY;
   result.maxY = maxY;
+  result.footprintKind = 'sampled';
   return result;
 }
 

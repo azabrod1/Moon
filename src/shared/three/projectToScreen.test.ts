@@ -95,5 +95,119 @@ describe('projectSphereToScreen', () => {
     );
     expect(sphere.radiusPx).toBe(0);
     expect(sphere.diameterPx).toBe(0);
+    expect(sphere.footprintKind).toBe('none');
+  });
+
+  // A rim tangent ray crosses the camera plane (angular radius ~10° at 85° off
+  // axis puts the far rim past 90°), so this reaches the covering-fallback path
+  // — where the disjoint test must classify it 'none', not viewport-filling.
+  // This is the exact cruise-blackout geometry: an off-frame Sun.
+  for (const axis of ['+x', '-x', '+y'] as const) {
+    it(`returns no footprint for a tangent-crossing off-frustum sphere on the ${axis} side plane`, () => {
+      const width = 1280;
+      const height = 720;
+      const camera = lensCamera(width, height);
+      const rad85 = THREE.MathUtils.degToRad(85);
+      const off = Math.sin(rad85) * 10;
+      const depth = -Math.cos(rad85) * 10;
+      const centre = axis === '+x' ? new THREE.Vector3(off, 0, depth)
+        : axis === '-x' ? new THREE.Vector3(-off, 0, depth)
+          : new THREE.Vector3(0, off, depth);
+      const sphere = projectSphereToScreen(centre, 1.8, camera, width, height);
+      expect(sphere.footprintKind).toBe('none');
+      expect(sphere.radiusPx).toBe(0);
+      expect(sphere.radiusPx).not.toBe(Math.hypot(width, height));
+    });
+  }
+
+  it('returns no footprint for the tangent-crossing off-frustum sphere in portrait', () => {
+    const width = 390;
+    const height = 844;
+    const camera = lensCamera(width, height);
+    const rad85 = THREE.MathUtils.degToRad(85);
+    const sphere = projectSphereToScreen(
+      new THREE.Vector3(Math.sin(rad85) * 10, 0, -Math.cos(rad85) * 10),
+      1.8,
+      camera,
+      width,
+      height,
+    );
+    expect(sphere.footprintKind).toBe('none');
+    expect(sphere.radiusPx).toBe(0);
+  });
+
+  it('keeps the real off-screen footprint for an off-frustum sphere that projects cleanly', () => {
+    // 75° off axis with a tiny angular radius: no rim ray crosses the camera
+    // plane, so it never reaches the covering fallback. It IS outside the
+    // frustum, but zeroing it would pop the Sun's glare terms as it crosses the
+    // frustum boundary — the footprint stays a real (off-screen) measurement.
+    const width = 1280;
+    const height = 720;
+    const camera = lensCamera(width, height);
+    const rad75 = THREE.MathUtils.degToRad(75);
+    const sphere = projectSphereToScreen(
+      new THREE.Vector3(Math.sin(rad75) * 10, 0, -Math.cos(rad75) * 10),
+      0.1,
+      camera,
+      width,
+      height,
+    );
+    expect(sphere.footprintKind).toBe('sampled');
+    expect(sphere.radiusPx).toBeGreaterThan(0);
+    expect(sphere.minX).toBeGreaterThan(width); // bounds entirely right of the viewport
+  });
+
+  it('keeps a positive footprint for a sphere grazing just off the display edge', () => {
+    const width = 1280;
+    const height = 720;
+    const camera = lensCamera(width, height);
+    const ray = screenPointToWorldRay(
+      (1.05 * 0.5 + 0.5) * width,
+      0.5 * height,
+      camera,
+      width,
+      height,
+      new THREE.Vector3(),
+    );
+    const sphere = projectSphereToScreen(
+      ray.multiplyScalar(10),
+      1,
+      camera,
+      width,
+      height,
+    );
+    expect(sphere.radiusPx).toBeGreaterThan(0);
+    expect(sphere.footprintKind).toBe('sampled');
+    expect(sphere.minX).toBeLessThan(width);
+  });
+
+  it('classifies against a translated, rotated camera frustum', () => {
+    const width = 1280;
+    const height = 720;
+    const camera = lensCamera(width, height);
+    camera.position.set(5, 2, -3);
+    camera.lookAt(6, 2, -3); // forward along +x
+    camera.updateMatrixWorld(true);
+    const ahead = projectSphereToScreen(new THREE.Vector3(15, 2, -3), 1, camera, width, height);
+    expect(ahead.footprintKind).toBe('sampled');
+    expect(ahead.radiusPx).toBeGreaterThan(0);
+    const behind = projectSphereToScreen(new THREE.Vector3(-5, 2, -3), 1, camera, width, height);
+    expect(behind.footprintKind).toBe('none');
+    expect(behind.radiusPx).toBe(0);
+  });
+
+  it('still reports a covering footprint when the camera is inside the sphere', () => {
+    const width = 1280;
+    const height = 720;
+    const camera = lensCamera(width, height);
+    const sphere = projectSphereToScreen(
+      new THREE.Vector3(0, 0, -1),
+      5,
+      camera,
+      width,
+      height,
+    );
+    expect(sphere.footprintKind).toBe('covering');
+    expect(sphere.radiusPx).toBe(Math.hypot(width, height));
   });
 });

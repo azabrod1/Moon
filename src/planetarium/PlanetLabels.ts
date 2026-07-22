@@ -97,6 +97,7 @@ export class PlanetLabels {
     x: 0, y: 0, ndcX: 0, ndcY: 0, ndcZ: 0,
     footprintX: 0, footprintY: 0, radiusPx: 0, diameterPx: 0,
     minX: 0, maxX: 0, minY: 0, maxY: 0,
+    footprintKind: 'none',
   };
   private markerScratch: PlanetMarkerVisual = { sizeMul: 0, brightness: 0 };
 

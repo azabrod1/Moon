@@ -177,6 +177,7 @@ import {
   CAM_FOLLOW_TURN_BLEND_S,
   cameraFollowGain,
   chaseIdealOffset,
+  reacquireCameraStep,
   planetEnvelopeRadiusAU,
   cruiseCameraNearAU,
   escapeCameraPenetrations,
@@ -726,12 +727,15 @@ export class PlanetariumMode {
   private activeFlightTouchId: number | null = null;
   private gyro: GyroSteering;
 
-  // Chase camera state
-  private userOrbiting = false;
+  // Chase camera ownership. 'chase' follows the ship; 'orbit' hands the camera
+  // to a live user drag and its damping coast; 'reacquiring' walks the outside
+  // of the camera sphere back to the chase pose. A flight discontinuity or
+  // steering input is what leaves 'orbit' — there is no timed handback.
+  private camOwner: 'chase' | 'orbit' | 'reacquiring' = 'chase';
   // 0 idle → 1 turning, eased — the chase-follow τ rides on it.
   private camFollowTurnBlend = 0;
-  private userOrbitTimeout: number | null = null;
   private orbitDragging = false;
+  private orbitPointerId: number | null = null;
   private orbitPointerStartX = 0;
   private orbitPointerStartY = 0;
   private readonly tmpChaseIdeal = new THREE.Vector3();
@@ -1091,30 +1095,35 @@ export class PlanetariumMode {
       // Surface view owns the pointer (SurfaceLook): don't let its drags
       // pollute the orbit chase-cam bookkeeping.
       if (!this.active || this.landedView === 'surface') return;
+      // Only a primary-button drag on a device where cruise OrbitControls is
+      // live may claim the camera. A device that cannot orbit (touch, where a
+      // bottom-bar swipe would otherwise freeze the chase) or a pan/dolly
+      // button must never take ownership — there is no longer a timeout to
+      // hand it back.
+      if (!this.controls.enabled || e.button !== 0) return;
       this.orbitDragging = true;
+      this.orbitPointerId = e.pointerId;
       this.orbitPointerStartX = e.clientX;
       this.orbitPointerStartY = e.clientY;
-      if (this.userOrbitTimeout !== null) {
-        clearTimeout(this.userOrbitTimeout);
-        this.userOrbitTimeout = null;
-      }
     });
     orbitDom.addEventListener('pointermove', (e) => {
-      if (!this.orbitDragging || this.userOrbiting) return;
+      if (!this.orbitDragging || this.camOwner === 'orbit') return;
       const dx = e.clientX - this.orbitPointerStartX;
       const dy = e.clientY - this.orbitPointerStartY;
       if (dx * dx + dy * dy > 16) {
-        this.userOrbiting = true; // moved > 4px = a drag
+        // Moved > 4px = a drag: the user owns the camera. Legal from any
+        // owner — OrbitControls re-derives its spherical from the live camera.
+        this.camOwner = 'orbit';
         this.moonArrivalCameraLook = null;
       }
     });
     const endOrbitDrag = () => {
       if (!this.orbitDragging) return;
       this.orbitDragging = false;
-      // Resume the chase cam shortly after an actual orbit; a click never yielded it.
-      if (!this.userOrbiting) return;
-      if (this.userOrbitTimeout !== null) clearTimeout(this.userOrbitTimeout);
-      this.userOrbitTimeout = window.setTimeout(() => { this.userOrbiting = false; }, 600);
+      this.orbitPointerId = null;
+      // No timeout: release leaves the camera where it was placed. The damping
+      // coast finishes under 'orbit' ownership; steering or a flight
+      // discontinuity is what reacquires the chase.
     };
     orbitDom.addEventListener('pointerup', endOrbitDrag);
     orbitDom.addEventListener('pointercancel', endOrbitDrag);
@@ -1387,8 +1396,9 @@ export class PlanetariumMode {
     // Configure camera — disable OrbitControls on touch devices during flight
     // to prevent accidental camera rotation from touches near the bottom bar
     this.controls.enabled = !!this.landedOn || !this.isTouchDevice;
+    this.camOwner = 'chase';
     if (!this.landedOn) {
-      this.updateCameraFollow(1 / 60); // one nominal-frame seat; the loop takes over
+      this.updateCruiseCamera(1 / 60); // one nominal-frame seat; the loop takes over
     }
 
     this.store.startAutoSave(() => this.getState());
@@ -1612,6 +1622,13 @@ export class PlanetariumMode {
     this.touchThrottle = 0;
     this.uiRefreshAccumulator = PlanetariumMode.UI_REFRESH_INTERVAL_S;
 
+    // Camera ownership is session-transient: a reactivation reseats the chase.
+    // Drop any held-drag bookkeeping so a stale pointer id can't fire a
+    // synthetic cancel on the next reset.
+    this.camOwner = 'chase';
+    this.orbitDragging = false;
+    this.orbitPointerId = null;
+
     this.controls.enabled = false;
 
     const planetariumUI = document.getElementById('planetarium-ui');
@@ -1775,8 +1792,7 @@ export class PlanetariumMode {
     // Apply floating origin: offset everything by player position
     this.applyFloatingOrigin();
 
-    this.updateCameraFollow(dt);
-    if (!this.devFreeCamera) this.controls.update();
+    this.updateCruiseCamera(dt);
 
     // FPS tracking (wall-clock, independent of dt capping)
     this.fpsFrames++;
@@ -2044,28 +2060,59 @@ export class PlanetariumMode {
     }
   }
 
-  private updateCameraFollow(dt: number) {
+  /** The one per-frame cruise-camera writer, dispatched on ownership. Target
+   *  is pinned to origin in every branch (the ship is scene origin), and
+   *  exactly one writer runs: 'orbit' → OrbitControls; 'reacquiring' → the
+   *  spherical step; 'chase' → the follow + OrbitControls, byte-for-byte as
+   *  before. Skipped entirely under devFreeCamera (headless framing). */
+  private updateCruiseCamera(dt: number) {
     if (this.devFreeCamera) return; // headless framing drives the camera directly
-    // Player is always at scene origin due to floating origin
+    // Player is always at scene origin due to floating origin.
     this.controls.target.set(0, 0, 0);
 
-    // Chase camera: smoothly lerp behind the ship unless user is orbiting
-    if (this.userOrbiting) return;
+    if (this.camOwner === 'orbit') {
+      // The user owns the camera: OrbitControls is the sole writer and its
+      // damping coast finishes the gesture. Nothing follows or reverses it.
+      this.controls.update();
+      return;
+    }
 
-    const forward = this.player.getForwardDirection();
-    const idealPos = chaseIdealOffset(forward, this.tmpChaseIdeal);
+    if (this.camOwner === 'reacquiring') {
+      // Walk the outside of the camera sphere back to the chase pose: slerp the
+      // offset direction and spring the radius separately, so a rotation-only
+      // return never dollies inward. Derive the live offset from the camera
+      // every frame — the downstream safety pass may have moved it, so feeding
+      // that back keeps the step and the escape from fighting, and lets a
+      // re-grab promote straight to 'orbit'. OrbitControls stays idle here.
+      const tau = this.advanceChaseFollowTau(dt);
+      const ideal = chaseIdealOffset(this.player.getForwardDirection(), this.tmpChaseIdeal);
+      const settled = reacquireCameraStep(this.camera.position, this.camera.position, ideal, dt, tau);
+      this.camera.lookAt(0, 0, 0);
+      if (settled) this.camOwner = 'chase'; // state switch only — the step already posed the camera
+      return;
+    }
 
-    // Smooth follow — tighter pursuit while actively steering, but the τ
-    // eases between the two so a tap bends the curve instead of stepping it,
-    // and the gain derives from dt so 60 Hz and 120 Hz converge alike.
+    this.updateCameraFollow(dt);
+    this.controls.update();
+  }
+
+  /** Advance the idle↔turning blend and return the eased follow τ. Shared by
+   *  the steady chase and the reacquire step so the return hands off at the
+   *  same pursuit rate the chase runs, instead of the slower idle τ. */
+  private advanceChaseFollowTau(dt: number): number {
     const turning = Math.abs(this.player.yawInput) + Math.abs(this.player.pitchInput) > 0 ? 1 : 0;
     this.camFollowTurnBlend +=
       (turning - this.camFollowTurnBlend) * cameraFollowGain(dt, CAM_FOLLOW_TURN_BLEND_S);
-    const tau = THREE.MathUtils.lerp(
-      CAM_FOLLOW_TAU_IDLE_S,
-      CAM_FOLLOW_TAU_TURN_S,
-      this.camFollowTurnBlend,
-    );
+    return THREE.MathUtils.lerp(CAM_FOLLOW_TAU_IDLE_S, CAM_FOLLOW_TAU_TURN_S, this.camFollowTurnBlend);
+  }
+
+  private updateCameraFollow(dt: number) {
+    // Chase camera: smoothly lerp behind the ship. The τ eases between idle and
+    // steering so a tap bends the pursuit curve instead of stepping it, and the
+    // gain derives from dt so 60 Hz and 120 Hz converge alike.
+    const forward = this.player.getForwardDirection();
+    const idealPos = chaseIdealOffset(forward, this.tmpChaseIdeal);
+    const tau = this.advanceChaseFollowTau(dt);
     this.camera.position.lerp(idealPos, cameraFollowGain(dt, tau));
   }
 
@@ -2076,7 +2123,7 @@ export class PlanetariumMode {
    *  unobtrusive. Runs after OrbitControls + camera safety, before projection. */
   private updateMoonArrivalCameraLook(): void {
     const look = this.moonArrivalCameraLook;
-    if (!look || this.landedOn || this.devFreeCamera || this.userOrbiting) return;
+    if (!look || this.landedOn || this.devFreeCamera || this.camOwner !== 'chase') return;
 
     const moon = this.planetMoons
       .get(look.parentPlanet)
@@ -4298,14 +4345,13 @@ export class PlanetariumMode {
     // explicit flight input hands the camera straight back to the pilot.
     if (hasManualInput) this.moonArrivalCameraLook = null;
 
-    // Flying immediately resumes the chase camera — don't make the user wait out
-    // the post-drag look-around grace period when they start steering/throttling.
-    if (this.userOrbiting && hasManualInput) {
-      this.userOrbiting = false;
-      if (this.userOrbitTimeout !== null) {
-        clearTimeout(this.userOrbitTimeout);
-        this.userOrbitTimeout = null;
-      }
+    // Flying reacquires the chase camera — but an actively held drag outranks
+    // steering (a hand on the orbit and a finger on W: the drag wins until
+    // released), so this fires edge-triggered only when the user is not
+    // physically dragging.
+    if (this.camOwner === 'orbit' && hasManualInput && !this.orbitDragging) {
+      this.flushOrbitDamping();
+      this.camOwner = 'reacquiring';
     }
 
     // Any manual steering input disengages autopilot
@@ -6362,7 +6408,15 @@ export class PlanetariumMode {
       endMoving: options.movingAfter,
     };
     this.player.moving = true;
-    this.userOrbiting = false;
+    // A scripted transfer never poses the camera, so a user-owned camera must
+    // reacquire the chase rather than snap to it — snapping from a 90° offset
+    // replays the old chord-cut dolly. 'reacquiring' rides the transfer arc
+    // back onto the ship. (Not gated on an active drag: a transfer never
+    // starts mid-canvas-drag.)
+    if (this.camOwner !== 'chase') {
+      this.flushOrbitDamping();
+      this.camOwner = 'reacquiring';
+    }
   }
 
   private updateScriptedTransfer(dt: number): boolean {
@@ -6387,6 +6441,13 @@ export class PlanetariumMode {
     if (t >= 1) {
       this.player.moving = transfer.endMoving;
       this.scriptedTransfer = null;
+      // A drag grabbed mid-transfer would otherwise wedge the parked milestone
+      // postcard off-axis forever (no timeout hands it back). Reacquire once
+      // the pointer is released; an actively held drag still wins.
+      if (this.camOwner === 'orbit' && !this.orbitDragging) {
+        this.flushOrbitDamping();
+        this.camOwner = 'reacquiring';
+      }
     }
 
     return true;
@@ -6401,9 +6462,65 @@ export class PlanetariumMode {
   }
 
   private resetCruiseCamera() {
+    // A reset is an absolute repose to chase: end any held drag (and
+    // OrbitControls' own gesture with it), drop its damping residuals, then
+    // seat the camera at the chase pose.
+    this.cancelOrbitGesture();
+    this.flushOrbitDamping();
+    this.camOwner = 'chase';
     const forward = this.player.getForwardDirection();
     chaseIdealOffset(forward, this.camera.position);
     this.controls.target.set(0, 0, 0);
+  }
+
+  /** Zero OrbitControls' damping residuals so a reacquire or reset starts from
+   *  a settled controls state instead of fighting a live coast. The primary
+   *  path pokes fields private to three's OrbitControls (verified in
+   *  r0.183.2); a rename on a three upgrade falls through to a dampingFactor
+   *  pulse that consumes the residuals in one update(). */
+  private flushOrbitDamping() {
+    const c = this.controls as unknown as {
+      _sphericalDelta?: { set(theta: number, phi: number, radius: number): void };
+      _panOffset?: { set(x: number, y: number, z: number): void };
+      _scale?: number;
+    };
+    if (c._sphericalDelta && c._panOffset && typeof c._scale === 'number') {
+      c._sphericalDelta.set(0, 0, 0);
+      c._panOffset.set(0, 0, 0);
+      c._scale = 1;
+      return;
+    }
+    if (import.meta.env.DEV) {
+      console.warn('OrbitControls damping fields missing — three upgrade renamed them; using dampingFactor pulse');
+    }
+    // Pulse damping to full so one update() applies every residual (including
+    // the full pan onto controls.target and the _last*/change-event pokes),
+    // then restore the pre-pulse camera pose, target, and damping factor.
+    const savedPos = this.camera.position.clone();
+    const savedQuat = this.camera.quaternion.clone();
+    const savedTarget = this.controls.target.clone();
+    const savedDamping = this.controls.dampingFactor;
+    this.controls.dampingFactor = 1;
+    this.controls.update();
+    this.controls.dampingFactor = savedDamping;
+    this.camera.position.copy(savedPos);
+    this.camera.quaternion.copy(savedQuat);
+    this.controls.target.copy(savedTarget);
+  }
+
+  /** End a physically held orbit drag across a flight discontinuity: dispatch a
+   *  synthetic pointercancel for the tracked pointer so OrbitControls' own
+   *  gesture (pointer capture, internal state, document-level listeners) tears
+   *  down together with our bookkeeping — a teleport veil does not otherwise
+   *  stop those document listeners. A discontinuity thus ends the gesture
+   *  (re-press to orbit again). */
+  private cancelOrbitGesture() {
+    if (this.orbitPointerId === null) return;
+    this.renderer.domElement.dispatchEvent(
+      new PointerEvent('pointercancel', { pointerId: this.orbitPointerId }),
+    );
+    this.orbitDragging = false;
+    this.orbitPointerId = null;
   }
 
   /** Hard standoff shell around a planet: the rendered ENVELOPE — atmosphere
@@ -7476,7 +7593,8 @@ export class PlanetariumMode {
       fov: cam.fov,
       moving: this.player.moving,
       devFree: this.devFreeCamera,
-      userOrbiting: this.userOrbiting,
+      camOwner: this.camOwner,
+      userOrbiting: this.camOwner === 'orbit', // forensics back-compat
       dotScreenAlpha,
       labelVisible,
     };
@@ -9384,7 +9502,10 @@ export class PlanetariumMode {
     this.controls.maxDistance = this.landedMaxDistanceAU(trueRadiusAU);
     this.controls.autoRotate = true;
     this.controls.autoRotateSpeed = 0.5;
-    this.userOrbiting = false;
+    // The cruise pipeline is dead while landed, so this only matters for the
+    // takeoff reset that reads it — a landed drag may later set 'orbit'
+    // harmlessly.
+    this.camOwner = 'chase';
 
     // Frame the body to ~⅓ of the view (see landedView), opening on its lit
     // hemisphere. The camera ends up 1.5×camDist from the body at scene origin.
@@ -10255,6 +10376,14 @@ export class PlanetariumMode {
   }
 
   private engageAutopilot(target: NonNullable<LandedTarget>) {
+    // Autopilot steering is invisible to hasManualInput (the steering-reclaim
+    // seam), and manual steering would disengage it — so without this the
+    // camera would sit off-axis through the whole autopilot cruise. Reacquire
+    // the chase on engage.
+    if (this.camOwner !== 'chase') {
+      this.flushOrbitDamping();
+      this.camOwner = 'reacquiring';
+    }
     // Retain the nav moon so its dot floor + label survive a manual-input
     // disengage on final approach; a planet engage clears it (nav moved off a
     // moon). Kept through disengageAutopilot — that's the point.

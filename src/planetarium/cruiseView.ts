@@ -20,6 +20,7 @@
  * disc lands past even 4K's texel budget).
  */
 import { KM_PER_AU } from '../astronomy/constants';
+import { DEG2RAD } from '../shared/math/angles';
 
 export const SHIP_RIG_SCALE = 1 / 32;
 
@@ -268,6 +269,106 @@ export function chaseIdealOffset<T extends { x: number; y: number; z: number }>(
   out.y = -forward.y * CRUISE_CAM_DIST_AU + CRUISE_CAM_DIST_AU * CHASE_CAM_LIFT_FRAC;
   out.z = -forward.z * CRUISE_CAM_DIST_AU;
   return out;
+}
+
+/** Radius spring time constant for reacquisition — slower than the direction
+ *  slerp and independent of it, so a swept direction τ (the turn blend) can
+ *  never kick the radius. */
+export const CAM_REACQUIRE_RADIUS_TAU_S = 0.6;
+/** Reacquisition hands back to the steady chase once the pose sits within this
+ *  angle of, and this radius fraction of, the ideal offset. */
+export const CAM_REACQUIRE_SETTLE_ANGLE_DEG = 0.5;
+export const CAM_REACQUIRE_SETTLE_RADIUS_FRAC = 0.005;
+
+const COS_REACQUIRE_SETTLE_ANGLE = Math.cos(CAM_REACQUIRE_SETTLE_ANGLE_DEG * DEG2RAD);
+// Below this |dot| gap the slerp weights lose precision, so the two poles are
+// handled directly: near-aligned snaps to the target direction (a sub-settle
+// move), antipodal rotates along a stable perpendicular great circle.
+const SLERP_POLE_EPS = 1e-9;
+
+/**
+ * One frame of spherical chase reacquisition: slerp the camera offset's
+ * direction toward the ideal offset's direction with the dt-based gain at the
+ * caller's (turn-blended) tau, and spring the radius toward |ideal| on
+ * CAM_REACQUIRE_RADIUS_TAU_S. Inputs are raw offsets — the function normalizes
+ * internally, is antipodal-safe (stable perpendicular fallback), and reads all
+ * inputs before writing so `out` may alias `cam`. Writes `out`; returns true
+ * once the produced pose sits inside both settle thresholds.
+ */
+export function reacquireCameraStep(
+  out: { x: number; y: number; z: number },
+  cam: { x: number; y: number; z: number },
+  ideal: { x: number; y: number; z: number },
+  dtS: number,
+  dirTauS: number,
+): boolean {
+  // Read inputs first — out may alias cam.
+  const cx = cam.x, cy = cam.y, cz = cam.z;
+  const ix = ideal.x, iy = ideal.y, iz = ideal.z;
+
+  const rCam = Math.sqrt(cx * cx + cy * cy + cz * cz);
+  const rIdeal = Math.sqrt(ix * ix + iy * iy + iz * iz);
+
+  // Unit directions, with stable fallbacks for degenerate inputs.
+  let ax = 1, ay = 0, az = 0;
+  if (rCam >= 1e-12) { ax = cx / rCam; ay = cy / rCam; az = cz / rCam; }
+  let bx = 1, by = 0, bz = 0;
+  if (rIdeal >= 1e-12) { bx = ix / rIdeal; by = iy / rIdeal; bz = iz / rIdeal; }
+
+  const kDir = cameraFollowGain(dtS, dirTauS);
+  const dot = Math.max(-1, Math.min(1, ax * bx + ay * by + az * bz));
+
+  let nx: number, ny: number, nz: number;
+  if (dot > 1 - SLERP_POLE_EPS) {
+    // Essentially aligned: the remaining angle is far inside the settle
+    // threshold, so snap the direction to the target.
+    nx = bx; ny = by; nz = bz;
+  } else if (dot < -1 + SLERP_POLE_EPS) {
+    // Antipodal: no unique arc — rotate `a` toward a stable perpendicular by
+    // kDir·π so the return still converges without dividing by sin(π).
+    let refx = 0, refy = 0, refz = 0;
+    const absx = Math.abs(ax), absy = Math.abs(ay), absz = Math.abs(az);
+    if (absx <= absy && absx <= absz) refx = 1;
+    else if (absy <= absz) refy = 1;
+    else refz = 1;
+    let px = ay * refz - az * refy;
+    let py = az * refx - ax * refz;
+    let pz = ax * refy - ay * refx;
+    const pLen = Math.sqrt(px * px + py * py + pz * pz) || 1;
+    px /= pLen; py /= pLen; pz /= pLen;
+    const ang = kDir * Math.PI;
+    const ca = Math.cos(ang), sa = Math.sin(ang);
+    nx = ax * ca + px * sa;
+    ny = ay * ca + py * sa;
+    nz = az * ca + pz * sa;
+  } else {
+    const theta = Math.acos(dot);
+    const sinT = Math.sin(theta);
+    const w1 = Math.sin((1 - kDir) * theta) / sinT;
+    const w2 = Math.sin(kDir * theta) / sinT;
+    nx = w1 * ax + w2 * bx;
+    ny = w1 * ay + w2 * by;
+    nz = w1 * az + w2 * bz;
+  }
+  // Renormalize so the radius is set purely by the spring and the unit-length
+  // invariant holds every step.
+  const nLen = Math.sqrt(nx * nx + ny * ny + nz * nz) || 1;
+  nx /= nLen; ny /= nLen; nz /= nLen;
+
+  const kR = cameraFollowGain(dtS, CAM_REACQUIRE_RADIUS_TAU_S);
+  const rNew = rCam + (rIdeal - rCam) * kR;
+
+  out.x = nx * rNew;
+  out.y = ny * rNew;
+  out.z = nz * rNew;
+
+  // Settle on the pose just produced.
+  const cosOut = nx * bx + ny * by + nz * bz;
+  const radiusSettled =
+    rIdeal < 1e-12
+      ? Math.abs(rNew - rIdeal) < 1e-12
+      : Math.abs(rNew - rIdeal) <= CAM_REACQUIRE_SETTLE_RADIUS_FRAC * rIdeal;
+  return cosOut >= COS_REACQUIRE_SETTLE_ANGLE && radiusSettled;
 }
 
 /** Distance from the camera to the nearest body SURFACE (no margin) over the

@@ -249,6 +249,27 @@ export function cameraFollowGain(dtS: number, tauS: number): number {
   return 1 - Math.exp(-dtS / Math.max(tauS, 1e-4));
 }
 
+/** The chase camera's vertical lift above the ship, as a fraction of the chase
+ *  distance. Reset, steady follow, and reacquisition all resolve to this one
+ *  lift so the camera settles to a single pose (an earlier reset used a taller
+ *  lift and left a small unrelated post-reset drift). */
+export const CHASE_CAM_LIFT_FRAC = 0.35;
+
+/** The steady chase offset from the ship — the ship sits at scene origin under
+ *  floating origin, so this is the camera position too: CRUISE_CAM_DIST_AU
+ *  straight back along the ship's forward vector, lifted CHASE_CAM_LIFT_FRAC of
+ *  that distance in world-up. Writes and returns `out`. The single source for
+ *  the reset pose, the steady follow target, and the reacquire target. */
+export function chaseIdealOffset<T extends { x: number; y: number; z: number }>(
+  forward: { x: number; y: number; z: number },
+  out: T,
+): T {
+  out.x = -forward.x * CRUISE_CAM_DIST_AU;
+  out.y = -forward.y * CRUISE_CAM_DIST_AU + CRUISE_CAM_DIST_AU * CHASE_CAM_LIFT_FRAC;
+  out.z = -forward.z * CRUISE_CAM_DIST_AU;
+  return out;
+}
+
 /** Distance from the camera to the nearest body SURFACE (no margin) over the
  *  pooled shell set — the live quantity the dynamic near plane rides on. */
 export function nearestShellSurfaceDistanceAU(

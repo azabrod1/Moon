@@ -176,6 +176,7 @@ import {
   CAM_FOLLOW_TAU_TURN_S,
   CAM_FOLLOW_TURN_BLEND_S,
   cameraFollowGain,
+  chaseIdealOffset,
   planetEnvelopeRadiusAU,
   cruiseCameraNearAU,
   escapeCameraPenetrations,
@@ -733,6 +734,7 @@ export class PlanetariumMode {
   private orbitDragging = false;
   private orbitPointerStartX = 0;
   private orbitPointerStartY = 0;
+  private readonly tmpChaseIdeal = new THREE.Vector3();
 
   // Landed mode: camera orbits a planet/moon while ship is hidden
   private landedOn: LandedTarget = null;
@@ -2050,13 +2052,8 @@ export class PlanetariumMode {
     // Chase camera: smoothly lerp behind the ship unless user is orbiting
     if (this.userOrbiting) return;
 
-    const camDist = CRUISE_CAM_DIST_AU;
     const forward = this.player.getForwardDirection();
-    const idealPos = new THREE.Vector3(
-      -forward.x * camDist,
-      -forward.y * camDist + camDist * 0.35,
-      -forward.z * camDist,
-    );
+    const idealPos = chaseIdealOffset(forward, this.tmpChaseIdeal);
 
     // Smooth follow — tighter pursuit while actively steering, but the τ
     // eases between the two so a tap bends the curve instead of stepping it,
@@ -6404,13 +6401,8 @@ export class PlanetariumMode {
   }
 
   private resetCruiseCamera() {
-    const camDist = CRUISE_CAM_DIST_AU;
     const forward = this.player.getForwardDirection();
-    this.camera.position.set(
-      -forward.x * camDist,
-      -forward.y * camDist + camDist * 0.45,
-      -forward.z * camDist,
-    );
+    chaseIdealOffset(forward, this.camera.position);
     this.controls.target.set(0, 0, 0);
   }
 

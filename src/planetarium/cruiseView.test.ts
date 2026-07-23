@@ -26,6 +26,8 @@ import {
   CAM_FOLLOW_TAU_TURN_S,
   CAM_FOLLOW_TURN_BLEND_S,
   cameraFollowGain,
+  CHASE_CAM_LIFT_FRAC,
+  chaseIdealOffset,
 } from './cruiseView';
 
 const KM_PER_AU = 149_597_870.7;
@@ -287,6 +289,26 @@ describe('nearestShellSurfaceDistanceAU', () => {
 
   it('is Infinity with no bodies in range', () => {
     expect(nearestShellSurfaceDistanceAU({ x: 0, y: 0, z: 0 }, [], 0)).toBe(Infinity);
+  });
+});
+
+describe('chaseIdealOffset', () => {
+  it('reproduces the chase-branch pose formula at the unified lift', () => {
+    const forward = new THREE.Vector3(0.3, -0.5, 0.8).normalize();
+    const out = chaseIdealOffset(forward, new THREE.Vector3());
+    const camDist = CRUISE_CAM_DIST_AU;
+    // Byte-identical to the inline chase formula the reset and steady follow
+    // both used to spell out — a drift here is a rig split reappearing.
+    expect(out.x).toBe(-forward.x * camDist);
+    expect(out.y).toBe(-forward.y * camDist + camDist * CHASE_CAM_LIFT_FRAC);
+    expect(out.z).toBe(-forward.z * camDist);
+  });
+
+  it('lifts by 0.35 of the chase distance (reset and steady follow unified)', () => {
+    expect(CHASE_CAM_LIFT_FRAC).toBe(0.35);
+    const out = chaseIdealOffset({ x: 0, y: 0, z: 1 }, new THREE.Vector3());
+    expect(out.y).toBe(CRUISE_CAM_DIST_AU * 0.35);
+    expect(out.z).toBe(-CRUISE_CAM_DIST_AU);
   });
 });
 

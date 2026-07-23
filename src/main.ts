@@ -612,6 +612,7 @@ function installDevHooks() {
     tutorialState: () => planetariumMode?.devTutorialState() ?? null,
     setChrome: (visible: boolean) => planetariumMode?.devSetChrome(visible),
     setFov: (deg: number) => planetariumMode?.devSetFov(deg),
+    systemMapFocus: (name: string) => planetariumMode?.devSystemMapFocus(name) ?? false,
     setTimeMs: (utcMs: number) => planetariumMode?.setCurrentUtcMs(utcMs),
     getTimeMs: () => planetariumMode?.getCurrentUtcMs() ?? 0,
     setTimeRate: (rate: number) => planetariumMode?.setTimeRate(rate),

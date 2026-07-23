@@ -262,6 +262,7 @@ import { ObservatoryHUD, type SurfaceHudState } from './ui/ObservatoryHUD';
 import { SurfaceTargetMenu } from './ui/SurfaceTargetMenu';
 import { SunLabel } from './ui/SunLabel';
 import { TutorialCard, tutorialCardModel } from './ui/TutorialCard';
+import { SystemMap } from './SystemMap';
 
 type ScriptedTransfer = {
   elapsed: number;
@@ -276,6 +277,15 @@ type ScriptedTransfer = {
 };
 
 export const FIRST_PLANETARIUM_ACTIVATION_TOTAL_UNITS = CREATE_SOLAR_SYSTEM_TOTAL_UNITS + 1;
+
+// Orbit-line resample staleness + the epoch clamp keeping the trajectory
+// sampler inside the Standish validity (~3000 BC/AD, with margin for the
+// longest period) so orbits stay drawn at extreme dates. Constants, not
+// recomputed per staleness check.
+const ORBIT_LINE_STALE_MS = 60 * 86_400_000;
+const J2000_MS = Date.UTC(2000, 0, 1);
+const ORBIT_EPOCH_MIN_MS = J2000_MS - 4750 * 365.25 * 86_400_000;
+const ORBIT_EPOCH_MAX_MS = J2000_MS + 750 * 365.25 * 86_400_000;
 
 /** Cruise pose stashed when the deck grabs the ship out of flight — see the
  *  observatoryExcursion field. */
@@ -369,6 +379,7 @@ export class PlanetariumMode {
     'planetarium-btn-observatory',
     'planetarium-btn-autopilot',
     'planetarium-btn-tutorial',
+    'planetarium-btn-system-map',
     'planetarium-speed-up',
     'planetarium-speed-down',
   ] as const;
@@ -377,6 +388,7 @@ export class PlanetariumMode {
   private camera: THREE.PerspectiveCamera;
   private renderer: THREE.WebGLRenderer;
   private controls: OrbitControls;
+  private systemMap: SystemMap;
   private isTouchDevice = 'ontouchstart' in window;
 
   private solarSystem: SolarSystemObjects | null = null;
@@ -968,6 +980,11 @@ export class PlanetariumMode {
   private resumeTimeAfterMenu = false;
   private resumeShipAfterHelp = false;
   private resumeTimeAfterHelp = false;
+  private resumeShipAfterSystemMap = false;
+  private resumeMoonDotsVisible = false;
+  private resumeConstellationsVisible = false;
+  private resumeShadowVisualsVisible = false;
+  private resumeSunExposure = 1;
   /** Live guided-tutorial state; null when idle. The generation token is the
    *  defense against late callbacks: every tutorial timer and arrival closure
    *  captures it and no-ops on mismatch after a skip/advance/stop. endRequest
@@ -997,6 +1014,105 @@ export class PlanetariumMode {
     this.updateTimeUI();
     this.resumeShipAfterMenu = false;
     this.resumeTimeAfterMenu = false;
+  }
+
+  private enterSystemMap(): void {
+    if (!this.solarSystem || this.systemMap.isActive() || this.isMissionActive() || this.tutorial) return;
+    // Resolve the menu's temporary pause before taking the map snapshot. The
+    // map freezes only the ship; the astronomy clock remains live and keeps
+    // using the existing rail.
+    this.closeMenuPanel();
+    this.closeDeck();
+    this.closeSurfaceTargetMenu();
+    this.closeToolsMenu();
+    this.closeObservatoryPanel();
+    this.bottomBar.closeStats();
+    this.bottomBar.closeTime();
+    this.resumeShipAfterSystemMap = this.player.moving;
+    // The map pins sunExposure to 1 each frame; snapshot the adapted pre-map
+    // value so returning to a near-Sun camera doesn't flash bright then dim.
+    this.resumeSunExposure = this.sunExposure;
+    this.player.moving = false;
+    this.setWorldLabelsVisible(false);
+    this.planetLabels?.hideAll();
+    this.suspendMapGhostLayers();
+    // The map reuses the real ship model as the ship marker, so it stays visible
+    // (SystemMap repositions + rescales it and restores on exit). It also borrows
+    // the moon systems to reveal on zoom-in.
+    this.systemMap.enter(
+      this.solarSystem,
+      { groups: this.moonSystemGroups, moons: this.planetMoons, painter: this.moonPainter },
+      this.player.group,
+      { x: this.player.posX, y: this.player.posY, z: this.player.posZ },
+    );
+    this.renderSystemMapMenuState();
+  }
+
+  private exitSystemMap(): void {
+    if (!this.systemMap.isActive()) return;
+    // Resolve the ☰ menu's auto-pause first (centralized here so every exit
+    // path — card button, toolbar, Escape — behaves the same; otherwise flight
+    // can resume behind a still-open, still-pausing menu).
+    this.closeMenuPanel();
+    this.systemMap.exit();
+    this.player.moving = this.resumeShipAfterSystemMap;
+    this.resumeShipAfterSystemMap = false;
+    // Restore the adapted exposure captured on entry (map pinned it to 1).
+    this.sunExposure = this.resumeSunExposure;
+    this.player.group.visible = !this.landedOn && this.showShip;
+    this.restoreMapGhostLayers();
+    this.applyBodyLabelVisibility();
+    this.renderSystemMapMenuState();
+    this.uiRefreshAccumulator = PlanetariumMode.UI_REFRESH_INTERVAL_S;
+  }
+
+  /**
+   * The system map's per-frame branch early-returns before the normal pipeline,
+   * so scene layers it doesn't drive would ghost at stale floating-origin/screen
+   * coordinates. Suspend them on entry (snapshotting state) and restore on exit.
+   * Any future such layer should be toggled in this one pair of methods.
+   */
+  private suspendMapGhostLayers(): void {
+    if (this.moonDots) { this.resumeMoonDotsVisible = this.moonDots.points.visible; this.moonDots.setVisible(false); }
+    if (this.constellations) { this.resumeConstellationsVisible = this.constellations.lines.visible; this.constellations.setVisible(false); }
+    // Landed-mode overlays (orbit-details ellipse + F1/F2 HTML foci, shadow
+    // cones/guides) are attached to a moon-system group the map reuses, and the
+    // landed update loop that drives them doesn't run in the map — so freeze
+    // them explicitly or focusing that system re-reveals stale geometry.
+    this.resumeShadowVisualsVisible = this.shadowVisuals.isVisible();
+    this.shadowVisuals.setVisible(false);
+    this.orbitDetailsVisuals.setVisible(false);
+    this.hideOrbitFocusLabels();
+    // Clear the starfield's sun-glare mask, else a stale dark star-hole from the
+    // pre-map view lingers; the normal pipeline re-drives it after exit.
+    if (this.starfield) {
+      ((this.starfield.material as THREE.ShaderMaterial).uniforms as unknown as SunGlareMaskUniforms).uSunMaskActive.value = 0;
+    }
+  }
+
+  private restoreMapGhostLayers(): void {
+    this.moonDots?.setVisible(this.resumeMoonDotsVisible);
+    this.constellations?.setVisible(this.resumeConstellationsVisible);
+    this.shadowVisuals.setVisible(this.resumeShadowVisualsVisible);
+    // Orbit-details visibility is re-derived from live state (landed / toggle /
+    // subject); this restores it correctly whether we exit to landed or cruise.
+    this.syncOrbitDetailsVisibility();
+    // starfield glare mask is re-activated by the normal pipeline's per-frame pass.
+  }
+
+  private renderSystemMapMenuState(): void {
+    const button = document.getElementById('planetarium-btn-system-map');
+    if (!button) return;
+    const active = this.systemMap.isActive();
+    button.setAttribute('aria-pressed', active ? 'true' : 'false');
+    button.setAttribute('aria-label', active ? 'Exit system map' : 'System map');
+    const tip = button.querySelector('.act-tip');
+    if (tip) tip.textContent = active ? 'Exit map' : 'System map';
+  }
+
+  /** DEV: frame a planet in the system map to reveal its moons. */
+  devSystemMapFocus(name: string): boolean {
+    return this.systemMap.focusBody(name);
   }
 
   private isHelpOpen(): boolean {
@@ -1088,6 +1204,7 @@ export class PlanetariumMode {
     this.controls.enabled = false;
     this.controls.minDistance = CRUISE_CONTROLS_MIN_DISTANCE_AU;
     this.controls.maxDistance = 5;
+    this.systemMap = new SystemMap(scene, camera, renderer, this.controls);
 
     // Yield the chase cam only on an actual orbit drag, never on a plain
     // click. We track raw pointer pixels because the chase cam moves the
@@ -1097,7 +1214,9 @@ export class PlanetariumMode {
     orbitDom.addEventListener('pointerdown', (e) => {
       // Surface view owns the pointer (SurfaceLook): don't let its drags
       // pollute the orbit chase-cam bookkeeping.
-      if (!this.active || this.landedView === 'surface') return;
+      // The system map runs its own pointer handling; keep the cruise chase-cam
+      // bookkeeping out of it entirely.
+      if (!this.active || this.landedView === 'surface' || this.systemMap.isActive()) return;
       // Only a primary-button drag on a device where cruise OrbitControls is
       // live may claim the camera. A device that cannot orbit (touch, where a
       // bottom-bar swipe would otherwise freeze the chase) or a pan/dolly
@@ -1593,6 +1712,7 @@ export class PlanetariumMode {
   deactivate(): void {
     this.moonArrivalCameraLook = null;
     this.dotNavMoon = null;
+    if (this.systemMap.isActive()) this.exitSystemMap();
     // A live tutorial hands the pre-tutorial state back first, synchronously — the
     // teardown below (excursion drop, landed exit, save) then applies to the
     // restored journey exactly as it would for a non-tutorialing player.
@@ -1714,6 +1834,27 @@ export class PlanetariumMode {
     // inside whatever gesture first draws the map. Runs in every mode so
     // landed sessions warm up too.
     pumpTextureWarmQueue(PlanetariumMode.TEXTURE_WARM_BUDGET_MS);
+
+    if (this.systemMap.isActive()) {
+      // The map bypasses updateSunShader (the sole sunExposure adapter), so pin
+      // a neutral exposure — otherwise it inherits a stale near-Sun value and
+      // renders everything dim (main.ts reads sunExposure every frame).
+      this.sunExposure = 1;
+      this.timeState = advancePlanetariumTime(this.timeState, dt);
+      this.rebuildPlanetPositions(dt);
+      this.systemMap.update(
+        this.timeState.currentUtcMs,
+        this.planetWorldPositions,
+        { x: this.player.posX, y: this.player.posY, z: this.player.posZ },
+        dt,
+      );
+      this.uiRefreshAccumulator += dt;
+      if (this.uiRefreshAccumulator >= PlanetariumMode.UI_REFRESH_INTERVAL_S) {
+        this.uiRefreshAccumulator %= PlanetariumMode.UI_REFRESH_INTERVAL_S;
+        this.updateTimeUI();
+      }
+      return;
+    }
 
     // Runs in both branches below — a tutorial narrates landed and cruise scenes.
     this.updateTutorial();
@@ -4430,6 +4571,10 @@ export class PlanetariumMode {
     // Escape always works — even while typing in the deck search
     if (e.key === 'Escape') {
       if (this.isHelpOpen()) { this.hideHelp(); return; }
+      if (this.systemMap.isActive()) {
+        this.exitSystemMap(); // centralizes ☰ menu cleanup
+        return;
+      }
       // One Esc, one meaning while tutorialing: end the tutorial. Above the deck rung
       // on purpose — during the deck theater the open deck is tutorial-owned, and
       // closing just it would leave the pending commit to teleport anyway.
@@ -4448,6 +4593,20 @@ export class PlanetariumMode {
 
     // Don't capture other keys if typing in an input
     if ((e.target as HTMLElement).tagName === 'INPUT') return;
+
+    // The map owns camera gestures and suppresses travel/pilot/flight keys.
+    // Its live time rail remains useful for watching the ephemerides move.
+    if (this.systemMap.isActive()) {
+      const key = e.key.toLowerCase();
+      if ((key === ',' || key === '.' || key === 'n') && !e.metaKey && !e.ctrlKey && !e.altKey
+        && !this.menuPanel.isOpen() && !this.isHelpOpen()) {
+        if (key === ',') this.stepTimeRate(-1);
+        else if (key === '.') this.stepTimeRate(1);
+        else this.timeJumpToNow();
+        e.preventDefault();
+      }
+      return;
+    }
 
     // Deck open: list keys work without focusing the search box first, and
     // printable characters focus it — so keys can open the deck but not
@@ -4834,6 +4993,7 @@ export class PlanetariumMode {
     // below must capture the resumed truth, not the modal freeze.
     this.hideHelp();
     this.closeMenuPanel();
+    if (this.systemMap.isActive()) this.exitSystemMap();
     if (
       !canStartTutorial({
         missionActive: this.isMissionActive(),
@@ -5568,6 +5728,7 @@ export class PlanetariumMode {
       // The reset throws the journey away — a live tutorial with it (no restore:
       // the world resets underneath), and the excursion return pose too.
       this.stopTutorial({ restore: false, sync: true });
+      this.exitSystemMap();
       this.observatoryExcursion = null;
       if (this.landedOn) this.exitLandedMode();
       // Discard the pre-mission stash: restoring it would re-land a
@@ -5625,6 +5786,14 @@ export class PlanetariumMode {
       this.closeMenuPanel();
       this.showHelp();
     });
+    document.getElementById('planetarium-btn-system-map')?.addEventListener('click', () => {
+      if (this.systemMap.isActive()) {
+        this.exitSystemMap(); // exitSystemMap centralizes the ☰ menu cleanup
+      } else {
+        this.enterSystemMap();
+      }
+    });
+    document.getElementById('system-map-exit')?.addEventListener('click', () => this.exitSystemMap());
     // Tutorial entries: the help-modal footer pair and the ☰ item. startTutorial
     // closes both entry surfaces itself (their auto-pause must resolve
     // before the snapshot is taken).
@@ -10193,7 +10362,11 @@ export class PlanetariumMode {
       // When landed, speed/autopilot are zeroed — save the pre-land originals
       // so they restore correctly on load.
       speed: this.landedOn ? this.preLandSpeed : this.player.speedMultiplier,
-      moving: this.landedOn ? false : this.player.moving,
+      moving: this.landedOn
+        ? false
+        : this.systemMap.isActive()
+          ? this.resumeShipAfterSystemMap
+          : this.player.moving,
       visitedPlanets: Array.from(this.player.visitedPlanets),
       distanceTraveled: this.player.distanceTraveled,
       timeElapsed: this.player.timeElapsed,
@@ -10536,11 +10709,16 @@ export class PlanetariumMode {
    */
   private rebuildOrbitLinesIfStale() {
     if (!this.solarSystem || this.layoutMode !== 'realistic') return;
-    const SIXTY_DAYS_MS = 60 * 86_400_000;
-    if (Math.abs(this.timeState.currentUtcMs - this.solarSystem.orbitLinesEpochUtcMs) < SIXTY_DAYS_MS) {
+    // Orbit shapes are time-invariant, but the trajectory sampler evaluates
+    // positions around the epoch — past the Standish validity they all clamp to
+    // the boundary and the ellipse collapses to a point. Clamp the sampling
+    // epoch so orbits stay drawn at extreme dates; the clamped planets still sit
+    // on the clamped ellipse.
+    const epoch = Math.max(ORBIT_EPOCH_MIN_MS, Math.min(ORBIT_EPOCH_MAX_MS, this.timeState.currentUtcMs));
+    if (Math.abs(epoch - this.solarSystem.orbitLinesEpochUtcMs) < ORBIT_LINE_STALE_MS) {
       return;
     }
-    resampleOrbitLines(this.solarSystem, this.layoutMode, this.timeState.currentUtcMs);
+    resampleOrbitLines(this.solarSystem, this.layoutMode, epoch);
   }
 
   rebuildPlanetPositions(_dt = 0) {

@@ -4,6 +4,7 @@ import {
   circleOcclusionFraction,
   eclipseOccluderLikeness,
   projectedSourceRadiusAtPlane,
+  silhouetteSizeGate,
   sunGlareFloodOpacity,
   sunInteriorWhiteout,
   sunWhiteoutFraction,
@@ -47,6 +48,35 @@ describe('eclipseOccluderLikeness', () => {
     expect(eclipseOccluderLikeness(1)).toBe(1);
     expect(eclipseOccluderLikeness(1.05)).toBe(1);
     expect(eclipseOccluderLikeness(3)).toBe(0);
+  });
+});
+
+describe('silhouetteSizeGate', () => {
+  it('keeps the silhouette for eclipse-scale occluders, annular through total', () => {
+    expect(silhouetteSizeGate(0.9)).toBe(1);  // annular (sub-Sun) keeps its black disc
+    expect(silhouetteSizeGate(1.05)).toBe(1); // just past total
+    expect(silhouetteSizeGate(3)).toBe(1);    // still eclipse scale at the edge
+  });
+
+  it('drops the silhouette for a landscape-scale foreground body', () => {
+    expect(silhouetteSizeGate(8)).toBe(0);
+    expect(silhouetteSizeGate(20)).toBe(0);
+    expect(silhouetteSizeGate(100)).toBe(0);
+  });
+
+  it('is monotone nonincreasing across the 3x-8x handoff', () => {
+    let prev = Infinity;
+    for (let r = 0; r <= 12; r += 0.25) {
+      const g = silhouetteSizeGate(r);
+      expect(g).toBeLessThanOrEqual(prev + 1e-9);
+      expect(g).toBeGreaterThanOrEqual(0);
+      expect(g).toBeLessThanOrEqual(1);
+      prev = g;
+    }
+    // Midway through the handoff it is strictly between the two plateaus.
+    const mid = silhouetteSizeGate(5.5);
+    expect(mid).toBeGreaterThan(0);
+    expect(mid).toBeLessThan(1);
   });
 });
 

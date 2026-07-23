@@ -68,6 +68,23 @@ export function eclipseOccluderLikeness(occluderToSunRadiusRatio: number): numbe
   return THREE.MathUtils.smoothstep(sunToOccluderRatio, 0.35, 0.7);
 }
 
+/**
+ * Whether a solar occluder is an eclipse (keep the silhouette night-lift kill)
+ * or ordinary landscape (keep the night fills). A body a few solar diameters
+ * wide on the sky is a backlit silhouette — a total or annular eclipse from the
+ * first bite — so its own night side reads void black. A body tens of times
+ * wider is landscape: the Sun behind it is simply ordinary night, the eye is
+ * dark-adapted, and the starlight/planetshine fills must stay. Returns 1 up to
+ * ~3× the solar radius, fading to 0 by ~8×.
+ *
+ * Feed the RAW occluder/Sun angular-radius ratio, never the [0.5, 3]-clamped
+ * uOccluderRadii. NOT eclipseOccluderLikeness: that zeroes sub-Sun (annular)
+ * occluders, whose disc must keep its silhouette blackness.
+ */
+export function silhouetteSizeGate(occluderToSunRatio: number): number {
+  return 1 - THREE.MathUtils.smoothstep(occluderToSunRatio, 3, 8);
+}
+
 /** Radius of an angular source projected onto a plane along the sightline. */
 export function projectedSourceRadiusAtPlane(
   sourceRadius: number,

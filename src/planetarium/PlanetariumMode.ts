@@ -99,7 +99,12 @@ import { MoonPainter } from './world/MoonPainter';
 import { ProceduralMoonTexturer } from './world/ProceduralMoonTexturer';
 import { captureDeviceTextureCaps } from './world/texturePolicy';
 import { planetshineIntensity } from './world/planetshine';
-import { smoothShadeFraction } from './world/shadeSmoothing';
+import {
+  advanceSilhouetteOwners,
+  makeSilhouetteOwners,
+  smoothShadeFraction,
+  type SilhouetteOwners,
+} from './world/shadeSmoothing';
 import { debugError } from '../shared/debug';
 import { GyroSteering } from './input/GyroSteering';
 import { SurfaceLook } from './input/SurfaceLook';
@@ -148,6 +153,7 @@ import {
   circleOcclusionFraction,
   eclipseOccluderLikeness,
   projectedSourceRadiusAtPlane,
+  silhouetteSizeGate,
   sunGlareFloodOpacity,
   sunInteriorWhiteout,
   sunWhiteoutFraction,
@@ -454,11 +460,28 @@ export class PlanetariumMode {
    *  shader's silhouette carve at the body's true screen offset. */
   private sunDominantOccluderDirection = new THREE.Vector3();
   private tmpSunOccluderDelta = new THREE.Vector3();
-  /** Surface-shading uniforms of the strongest occluder, and the body whose
-   *  uSilhouette this mode last raised (so it can be lowered again the frame
-   *  the body stops silhouetting the Sun). */
+  /** Surface-shading uniforms of the strongest occluder this frame. */
   private sunDominantOccluderFx: SurfaceShadingFx | null = null;
-  private sunSilhouetteFx: SurfaceShadingFx | null = null;
+  /** Mesh identity of the incumbent dominant occluder, held across frames for
+   *  the ownership hysteresis in computeVisibleSunFraction — a conjunct pair
+   *  trading the lead frame to frame must not flip the carve/silhouette. */
+  private sunDominantOccluderMesh: THREE.Object3D | null = null;
+  /** Captured direction of the best challenger / the incumbent while the
+   *  hysteresis picks between them (alloc-free scratch). */
+  private tmpBestOccluderDirection = new THREE.Vector3();
+  private tmpIncumbentOccluderDirection = new THREE.Vector3();
+  /** Two-owner wall-time smoothing for the night-lift silhouette dim: the
+   *  current owner ramps toward its gated target, an ex-owner fades out. Keeps
+   *  a warp-compressed eclipse from strobing the night fills. */
+  private sunSilhouetteOwners: SilhouetteOwners<SurfaceShadingFx> =
+    makeSilhouetteOwners<SurfaceShadingFx>();
+  /** Set by noteSunViewDiscontinuity(), consumed in updateSunShader: the next
+   *  silhouette advance snaps both slots to target so a teleport never shows a
+   *  fading ghost of the previous scene's dark disc. */
+  private sunSilhouetteSnapPending = true;
+  /** The size gate applied to the current dominant occluder this frame (1 for
+   *  eclipse-scale, 0 for a horizon-filling body) — readback only. */
+  private sunSilhouetteGate = 1;
   private lastSunOccluderAngularRadius = 0;
   private tmpSunDirection = new THREE.Vector3();
   private tmpRingNormal = new THREE.Vector3();
@@ -1512,7 +1535,7 @@ export class PlanetariumMode {
     this.sunEmergenceFlash = 0;
     this.sunAtmosphereMix = 0;
     this.applySunGlareFlood(0);
-    this.applySunSilhouette(null, 0);
+    this.clearSunSilhouette();
     this.renderer.toneMappingExposure = 1;
 
     // Hand the camera back on the fixed near plane — another mode (or a
@@ -3227,6 +3250,7 @@ export class PlanetariumMode {
    *  glitch. The stored flash keeps decaying on its own. */
   private noteSunViewDiscontinuity(): void {
     this.sunFlashResetPending = true;
+    this.sunSilhouetteSnapPending = true;
   }
 
   // Scratch for the veil support pass, reused across the gate's upper-bound and
@@ -3325,15 +3349,52 @@ export class PlanetariumMode {
     this.sunVeilSupport.armDecayYPx = armDecayYPx;
   }
 
-  /** Raise uSilhouette on the body currently silhouetting the Sun and lower
-   *  it on whichever body held it last — exactly one body carries the dim at
-   *  a time, and losing dominance (or the eclipse ending) restores it. */
-  private applySunSilhouette(fx: SurfaceShadingFx | null, shade: number) {
-    if (this.sunSilhouetteFx && this.sunSilhouetteFx !== fx) {
-      this.sunSilhouetteFx.uSilhouette.value = 0;
+  /** Advance the two-owner silhouette dim one frame and write the smoothed
+   *  value onto each owner's night-lift uniform. `target` is the dominant
+   *  occluder's fx (null when nothing eclipse-scale silhouettes the Sun);
+   *  `shade` is its already-gated target (occluderShade × silhouetteSizeGate).
+   *  The ramp keeps a warp-compressed eclipse from strobing the night fills;
+   *  `snap` (a queued view discontinuity) lands both slots on target instantly
+   *  so a teleport shows no fading ghost of the previous scene's dark disc. */
+  private advanceSunSilhouette(
+    target: SurfaceShadingFx | null,
+    shade: number,
+    nowMs: number,
+    snap: boolean,
+  ) {
+    const state = this.sunSilhouetteOwners;
+    const prevCurrent = state.current.owner;
+    const prevEx = state.ex.owner;
+    advanceSilhouetteOwners(state, { owner: target, shade }, nowMs, { snap });
+    const curr = state.current;
+    const ex = state.ex;
+    if (curr.owner) curr.owner.uSilhouette.value = curr.applied;
+    if (ex.owner) ex.owner.uSilhouette.value = ex.applied;
+    // Zero any body that left both slots this frame — released after fading, or
+    // evicted when a brand-new owner reused its slot; the smoothing forgot it,
+    // so nobody else will lower its uniform.
+    if (prevCurrent && prevCurrent !== curr.owner && prevCurrent !== ex.owner) {
+      prevCurrent.uSilhouette.value = 0;
     }
-    this.sunSilhouetteFx = fx;
-    if (fx) fx.uSilhouette.value = shade;
+    if (prevEx && prevEx !== curr.owner && prevEx !== ex.owner) {
+      prevEx.uSilhouette.value = 0;
+    }
+  }
+
+  /** Clear the two-owner silhouette state: zero any body still carrying the
+   *  dim and empty both slots. Used by deactivation and the inside-photosphere
+   *  reset; the per-frame driver is advanceSunSilhouette(). */
+  private clearSunSilhouette() {
+    const state = this.sunSilhouetteOwners;
+    if (state.current.owner) state.current.owner.uSilhouette.value = 0;
+    if (state.ex.owner) state.ex.owner.uSilhouette.value = 0;
+    state.current.owner = null;
+    state.current.applied = 0;
+    state.current.stampMs = 0;
+    state.ex.owner = null;
+    state.ex.applied = 0;
+    state.ex.stampMs = 0;
+    this.sunDominantOccluderMesh = null;
   }
 
   /** Drive the DOM chrome flood from this frame's whiteout. The element sits
@@ -3378,8 +3439,10 @@ export class PlanetariumMode {
       });
       this.lastSunVisibleFraction = 1;
       // This path already pins the baseline and runs ineligible (no flash can
-      // fire), so any queued discontinuity reseed is moot — consume it.
+      // fire), so any queued discontinuity reseed is moot — consume it. The
+      // silhouette state was just cleared to zero, so its snap is moot too.
       this.sunFlashResetPending = false;
+      this.sunSilhouetteSnapPending = false;
       this.sunAtmosphereMix = 0;
       // One submersion fade drives everything a buried camera can still see:
       // the shell's interior fog, the glare quad's wash (which would otherwise
@@ -3409,7 +3472,7 @@ export class PlanetariumMode {
         glareMat.uniforms.uVeilHalfPx.value = 0;
         glareMat.uniforms.uOccluderShade.value = 0;
       }
-      this.applySunSilhouette(null, 0);
+      this.clearSunSilhouette();
       if (ghostMat) ghostMat.uniforms.uGhostStrength.value = 0;
       // No limb sits in front of a camera buried in the photosphere; kill the
       // prominence shell's close-up ring so it can't hang as a stale halo.
@@ -3653,8 +3716,25 @@ export class PlanetariumMode {
       glareMat.uniforms.uOccluderShade.value = occluderShade;
       // The silhouetted body itself also drops its night-side lifts (starlight
       // fill, planetshine): backlit by the photosphere it reads void black —
-      // the exposure belongs to the ring or corona behind it.
-      this.applySunSilhouette(occluderShade > 0 ? this.sunDominantOccluderFx : null, occluderShade);
+      // the exposure belongs to the ring or corona behind it. But only when the
+      // occluder is eclipse-scale: a body tens of solar diameters wide isn't a
+      // backlit silhouette, it's the near landscape at local night, and its
+      // night side must keep the fills the dark-adapted eye sees. Gate ONLY the
+      // night-lift kill by the RAW occluder/Sun ratio — the glare carve above
+      // keeps its ungated value, or the wash repaints across the dark disc (the
+      // translucent-Moon artifact). The value smooths through two owner slots so
+      // a warp-compressed eclipse never strobes the fills.
+      const silhouetteGate = silhouetteSizeGate(occluderToSunRatio);
+      this.sunSilhouetteGate = silhouetteGate;
+      const silhouetteShade = occluderShade * silhouetteGate;
+      const silhouetteSnap = this.sunSilhouetteSnapPending;
+      this.sunSilhouetteSnapPending = false;
+      this.advanceSunSilhouette(
+        silhouetteShade > 0 ? this.sunDominantOccluderFx : null,
+        silhouetteShade,
+        performance.now(),
+        silhouetteSnap,
+      );
       if (occluderShade > 0) {
         // The glare quad billboards in camera-view XY and its fragment
         // measures in solar radii, so the offset is the angular separation
@@ -3838,54 +3918,96 @@ export class PlanetariumMode {
    *  on the disc double-count their shared area (true union math costs far
    *  more than this is worth). The corona additionally needs a Sun-sized
    *  dominant occluder, which keeps that overstatement from faking totality.
-   *  Side effect: `sunDominantOccluderAngularRadius` holds the angular radius
-   *  of the strongest occluder (0 when nothing occludes) — the corona gate
-   *  uses it to tell an eclipsing moon from a planet blotting out the sky. */
+   *  Side effect: `sunDominantOccluderAngularRadius` / `Direction` / `Fx` /
+   *  `Mesh` hold the dominant occluder (0/null when nothing occludes), chosen
+   *  with cross-frame ownership hysteresis so a conjunct pair doesn't flicker —
+   *  the corona gate uses the radius to tell an eclipsing moon from a planet
+   *  blotting out the sky. */
   private computeVisibleSunFraction(
     sunDirection: THREE.Vector3,
     sunDistance: number,
     sunAngularRadius: number,
   ): number {
     let visible = 1;
-    let maxOcclusion = 0;
-    this.sunDominantOccluderAngularRadius = 0;
-    this.sunDominantOccluderFx = null;
+
+    // Ownership hysteresis: keep the incumbent dominant occluder unless a
+    // challenger clearly wins, so a conjunct pair trading the lead frame to
+    // frame doesn't flip the carve position and silhouette owner. Track the
+    // strongest challenger and the incumbent's current occlusion together —
+    // each with its angular radius / direction / fx — in one pass, then decide.
+    const incumbentMesh = this.sunDominantOccluderMesh;
+    let bestOcclusion = 0;
+    let bestMesh: THREE.Object3D | null = null;
+    let bestAngularRadius = 0;
+    let bestFx: SurfaceShadingFx | null = null;
+    let incumbentOcclusion = 0;
+    let incumbentAngularRadius = 0;
+    let incumbentFx: SurfaceShadingFx | null = null;
+
+    const consider = (mesh: THREE.Mesh, fx: SurfaceShadingFx | null): number => {
+      const occlusion = this.sunOcclusionByMesh(mesh, sunDirection, sunDistance, sunAngularRadius);
+      if (occlusion <= 0) return occlusion;
+      // sunOcclusionByMesh leaves this mesh's angular radius + unit direction in
+      // the scratch; snapshot both before the next call overwrites them.
+      if (occlusion > bestOcclusion) {
+        bestOcclusion = occlusion;
+        bestMesh = mesh;
+        bestAngularRadius = this.lastSunOccluderAngularRadius;
+        bestFx = fx;
+        this.tmpBestOccluderDirection.copy(this.tmpSunOccluderDirection);
+      }
+      if (mesh === incumbentMesh) {
+        incumbentOcclusion = occlusion;
+        incumbentAngularRadius = this.lastSunOccluderAngularRadius;
+        incumbentFx = fx;
+        this.tmpIncumbentOccluderDirection.copy(this.tmpSunOccluderDirection);
+      }
+      return occlusion;
+    };
+
+    const commitDominant = () => {
+      // Transfer dominance only when the challenger's coverage exceeds the
+      // incumbent's by more than 15%, or the incumbent has all but cleared the
+      // Sun (< 1% cover). Otherwise the incumbent holds — including through a
+      // frame where it briefly trails a near-equal neighbour.
+      const keepIncumbent =
+        incumbentMesh !== null &&
+        incumbentOcclusion >= 0.01 &&
+        bestOcclusion <= incumbentOcclusion * 1.15;
+      if (keepIncumbent) {
+        this.sunDominantOccluderMesh = incumbentMesh;
+        this.sunDominantOccluderAngularRadius = incumbentAngularRadius;
+        this.sunDominantOccluderFx = incumbentFx;
+        this.sunDominantOccluderDirection.copy(this.tmpIncumbentOccluderDirection);
+      } else if (bestMesh !== null) {
+        this.sunDominantOccluderMesh = bestMesh;
+        this.sunDominantOccluderAngularRadius = bestAngularRadius;
+        this.sunDominantOccluderFx = bestFx;
+        this.sunDominantOccluderDirection.copy(this.tmpBestOccluderDirection);
+      } else {
+        this.sunDominantOccluderMesh = null;
+        this.sunDominantOccluderAngularRadius = 0;
+        this.sunDominantOccluderFx = null;
+      }
+    };
 
     for (const planet of this.solarSystem?.planets ?? []) {
-      const occlusion = this.sunOcclusionByMesh(
-        planet.mesh,
-        sunDirection,
-        sunDistance,
-        sunAngularRadius,
-      );
-      if (occlusion > maxOcclusion) {
-        maxOcclusion = occlusion;
-        this.sunDominantOccluderAngularRadius = this.lastSunOccluderAngularRadius;
-        // sunOcclusionByMesh leaves this mesh's unit direction in the tmp.
-        this.sunDominantOccluderDirection.copy(this.tmpSunOccluderDirection);
-        this.sunDominantOccluderFx = planet.fx ?? null;
+      visible *= 1 - consider(planet.mesh, planet.fx ?? null);
+      if (visible < 1e-4) {
+        commitDominant();
+        return 0;
       }
-      visible *= 1 - occlusion;
-      if (visible < 1e-4) return 0;
     }
     for (const moons of this.planetMoons.values()) {
       for (const moon of moons) {
-        const occlusion = this.sunOcclusionByMesh(
-          moon.mesh,
-          sunDirection,
-          sunDistance,
-          sunAngularRadius,
-        );
-        if (occlusion > maxOcclusion) {
-          maxOcclusion = occlusion;
-          this.sunDominantOccluderAngularRadius = this.lastSunOccluderAngularRadius;
-          this.sunDominantOccluderDirection.copy(this.tmpSunOccluderDirection);
-          this.sunDominantOccluderFx = moon.fx ?? null;
+        visible *= 1 - consider(moon.mesh, moon.fx ?? null);
+        if (visible < 1e-4) {
+          commitDominant();
+          return 0;
         }
-        visible *= 1 - occlusion;
-        if (visible < 1e-4) return 0;
       }
     }
+    commitDominant();
     return THREE.MathUtils.clamp(visible, 0, 1);
   }
 
@@ -6973,7 +7095,10 @@ export class PlanetariumMode {
       occluderShade: glareMat ? (glareMat.uniforms.uOccluderShade.value as number) : 0,
       occluderRadii: glareMat ? (glareMat.uniforms.uOccluderRadii.value as number) : 0,
       occluderOffsetSr: offset ? [offset.x, offset.y] : [0, 0],
-      silhouetteDim: this.sunSilhouetteFx ? (this.sunSilhouetteFx.uSilhouette.value as number) : 0,
+      // Applied (smoothed) dim of the current silhouette owner, and the size
+      // gate that scaled its target this frame.
+      silhouetteDim: this.sunSilhouetteOwners.current.applied,
+      silhouetteGate: this.sunSilhouetteGate,
       maskActive: this.sunGlareMaskParams.active,
       maskCoreOuterPx: this.sunGlareMaskParams.coreOuterPx,
     };

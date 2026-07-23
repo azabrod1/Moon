@@ -75,8 +75,8 @@ export interface CrescentGeometry {
    *  emanates. 0 when the geometry is concentric, fully covered, or clear. */
   centroidSr: number;
   /** Along-axis width of the visible crescent, in solar radii. Telemetry only —
-   *  no shader gate reads it (v1's extent-drives-point-likeness rule is dead: it
-   *  faked a diamond ring at annularity). */
+   *  no shader gate reads it; driving point-likeness from the extent would fake a
+   *  diamond ring at annularity. */
   extentSr: number;
 }
 
@@ -151,8 +151,8 @@ export function visibleCrescentGeometry(
  * The rising edge `smoothstep(vis, 0, 0.0003)` holds it at 0 through totality and
  * the falling edge `1 - smoothstep(vis, 0.0005, 0.012)` kills it once a real
  * crescent returns. Oversized landscape occluders need no explicit cutoff here:
- * their coverage holds `vis` at 0 long before this narrow band, and the Part C
- * silhouette gate already keeps landscape-scale bodies out of eclipse treatment,
+ * their coverage holds `vis` at 0 long before this narrow band, and the
+ * silhouette size gate already keeps landscape-scale bodies out of eclipse treatment,
  * so likeness only ever has to reject the sub-Sun (annular) ratios.
  */
 export function diamondRingStrength(occluderLikeness: number, visibleFraction: number): number {

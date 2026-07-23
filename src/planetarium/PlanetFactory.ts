@@ -721,9 +721,9 @@ export function createPlanetariumSun(useBloom = true): THREE.Group {
       uOccluderRadii: { value: 1 },
       uOccluderShade: { value: 0 },
       uOccluderOffsetSr: { value: new THREE.Vector2() },
-      // Part D: exposed-crescent centroid (solar radii) and authored diamond-ring
+      // Exposed-crescent centroid (solar radii) and authored diamond-ring
       // strength; both 0 unless an occluder is on the disc, so an un-occluded Sun
-      // draws byte-identically to pre-D.
+      // draws with neither term.
       uGlareCentroidSr: { value: new THREE.Vector2() },
       uDiamondRing: { value: 0 },
       uExposureScale: { value: 1 },

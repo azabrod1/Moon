@@ -348,7 +348,7 @@ uniform float uEclipseLike;
 uniform float uOccluderRadii;
 uniform float uOccluderShade;
 uniform vec2 uOccluderOffsetSr;
-// Part D: the visible-crescent centroid, in the same solar-radii camera-basis
+// The visible-crescent centroid, in the same solar-radii camera-basis
 // frame as uOccluderOffsetSr. The physical PSF, starburst, veil and arms emanate
 // from here instead of the Sun's centre, so a partial eclipse reads as light
 // wrapping past the occluding limb. Signed AWAY from the occluder (the exposed
@@ -410,13 +410,14 @@ void main() {
   // vExtentScale is 1.0 whenever the veil is idle, so this is a no-op then.
   vec2 pB = p * vExtentScale;
   float baseRadius = planeRadius * vExtentScale;
-  // Part D — dual frames. pSun (p / pB above) keeps the corona and the occluder
-  // silhouette carve. pLight is pSun shifted to the exposed-crescent centroid;
-  // the physical PSF core, starburst, veil wash and diffraction arms are drawn
-  // from it, so their light hangs on the lit sliver instead of the Sun's centre.
-  // uGlareCentroidSr is in solar radii (pB * uExtent units), so divide by uExtent
-  // for the base frame and by uExtent * vExtentScale for the full-quad frame.
-  // When it is zero pLight === p and every term below is byte-identical to pre-D.
+  // Two coordinate frames. pSun (p / pB above) keeps the corona and the occluder
+  // silhouette carve anchored to the disc. pLight is pSun shifted to the
+  // exposed-crescent centroid; the physical PSF core, starburst, veil wash and
+  // diffraction arms are drawn from it, so their light hangs on the lit sliver
+  // instead of the Sun's centre. uGlareCentroidSr is in solar radii (pB * uExtent
+  // units), so divide by uExtent for the base frame and by uExtent * vExtentScale
+  // for the full-quad frame. When it is zero pLight === p and every term below is
+  // byte-identical to an un-occluded frame.
   vec2 centroidP = uGlareCentroidSr / max(uExtent * vExtentScale, 1e-6);
   vec2 pLight = p - centroidP;
   vec2 pLightB = pLight * vExtentScale;
@@ -490,7 +491,10 @@ void main() {
   // point). uDiamondRing is authored and topology-gated (0 for annular, exactly 0
   // at totality), so this never fakes a ring at annularity. The amplitude is
   // modest and rides uExposureScale: the exposure meter's totality release is
-  // what makes it blaze, not a second brightness ramp of its own.
+  // what makes it blaze, not a second brightness ramp of its own. It carries no
+  // visibleEnergy factor, so a covered or buried Sun cannot fade it by exposed
+  // fraction alone — the buried-camera path in updateSunShader zeroes uDiamondRing
+  // explicitly.
   float diamondCore = exp(-lightOutside * 3.1);
   float diamondArms = (horizontal + vertical) * 0.5;
   glare += uDiamondRing * (diamondCore + diamondArms) * uGlareStrength * uExposureScale;

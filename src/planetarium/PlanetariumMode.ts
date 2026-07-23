@@ -93,6 +93,7 @@ import {
   sunGlareMaskActivation,
   sunGlareMaskCoreOuterPx,
   type SunGlareMaskParams,
+  type SunGlareMaskActivationInput,
   type SunGlareMaskUniforms,
 } from './world/sunGlareMask';
 import { MoonPainter } from './world/MoonPainter';
@@ -104,6 +105,8 @@ import {
   makeSilhouetteOwners,
   smoothShadeFraction,
   type SilhouetteOwners,
+  type SilhouetteTarget,
+  type SilhouetteAdvanceOptions,
 } from './world/shadeSmoothing';
 import { debugError } from '../shared/debug';
 import { GyroSteering } from './input/GyroSteering';
@@ -473,11 +476,29 @@ export class PlanetariumMode {
    *  hysteresis picks between them (alloc-free scratch). */
   private tmpBestOccluderDirection = new THREE.Vector3();
   private tmpIncumbentOccluderDirection = new THREE.Vector3();
+  /** Per-pass scratch for computeVisibleSunFraction's occluder scan — held on
+   *  the instance so the scan runs alloc-free every frame. Reset at the start of
+   *  each call; the incumbent slot is seeded from sunDominantOccluderMesh so a
+   *  commit mid-scan can still overwrite it without losing the pass's incumbent. */
+  private sunOccBestOcclusion = 0;
+  private sunOccSecondOcclusion = 0;
+  private sunOccBestMesh: THREE.Object3D | null = null;
+  private sunOccBestAngularRadius = 0;
+  private sunOccBestFx: SurfaceShadingFx | null = null;
+  private sunOccIncumbentMesh: THREE.Object3D | null = null;
+  private sunOccIncumbentOcclusion = 0;
+  private sunOccIncumbentAngularRadius = 0;
+  private sunOccIncumbentFx: SurfaceShadingFx | null = null;
   /** Two-owner wall-time smoothing for the night-lift silhouette dim: the
    *  current owner ramps toward its gated target, an ex-owner fades out. Keeps
    *  a warp-compressed eclipse from strobing the night fills. */
   private sunSilhouetteOwners: SilhouetteOwners<SurfaceShadingFx> =
     makeSilhouetteOwners<SurfaceShadingFx>();
+  /** Persistent target + options passed to advanceSilhouetteOwners each frame:
+   *  fields are mutated in place so the per-frame silhouette advance allocates
+   *  nothing. */
+  private sunSilhouetteTarget: SilhouetteTarget<SurfaceShadingFx> = { owner: null, shade: 0 };
+  private sunSilhouetteAdvanceOptions: SilhouetteAdvanceOptions = { snap: false };
   /** Set by noteSunViewDiscontinuity(), consumed in updateSunShader: the next
    *  silhouette advance snaps both slots to target so a teleport never shows a
    *  fading ghost of the previous scene's dark disc. */
@@ -485,9 +506,9 @@ export class PlanetariumMode {
   /** The size gate applied to the current dominant occluder this frame (1 for
    *  eclipse-scale, 0 for a horizon-filling body) — readback only. */
   private sunSilhouetteGate = 1;
-  /** Part D: the visible-crescent decomposition of the dominant occluder this
-   *  frame — the light origin for the glare (centroidSr signed away from the
-   *  occluder). extentSr is telemetry only. */
+  /** The visible-crescent decomposition of the dominant occluder this frame —
+   *  the light origin for the glare (centroidSr signed away from the occluder).
+   *  extentSr is telemetry only. */
   private sunCrescent: CrescentGeometry = { centroidSr: 0, extentSr: 0 };
   /** Guarded signed centroid (solar radii) actually driving the glare/mask this
    *  frame; 0 with no occluder or when a second body muddies the single lens. */
@@ -497,7 +518,8 @@ export class PlanetariumMode {
   private sunCrescentDisplacementPx = 0;
   /** Set by computeVisibleSunFraction: the second-strongest single-body solar
    *  occlusion this frame. Above ~0.05 the single-lens centroid is a lie, so the
-   *  centroid shift and diamond ring are gated off (Part D multi-occluder guard). */
+   *  centroid shift and diamond ring are gated off — two bodies on the disc have
+   *  no one crescent to hang the light on. */
   private sunSecondOccluderFraction = 0;
   private tmpCrescentTangent = new THREE.Vector3();
   private tmpCrescentDir = new THREE.Vector3();
@@ -1127,6 +1149,11 @@ export class PlanetariumMode {
     this.timeState = { ...this.timeState, currentUtcMs: utcMs };
     this.rebuildPlanetPositions();
     this.updateTimeUI();
+    // Setting the clock rebuilds the whole sky at once — every body steps, so
+    // the Sun's exposed fraction can jump. Snap the Sun-optics state (flash
+    // baseline, silhouette dim, occluder incumbent) instead of reading the jump
+    // as a limb clearing or letting a stale scene's occluder linger.
+    this.noteSunViewDiscontinuity();
   }
 
   // Shared clock handlers — the time rail, its panel, the keyboard, and the
@@ -3272,6 +3299,11 @@ export class PlanetariumMode {
   private noteSunViewDiscontinuity(): void {
     this.sunFlashResetPending = true;
     this.sunSilhouetteSnapPending = true;
+    // Drop the cross-frame dominant-occluder incumbent: after a scene jump the
+    // previous frame's occluder is a different sky, so its ownership hysteresis
+    // must not out-vote the new scene's true dominant occluder through the 15%
+    // rule. The next computeVisibleSunFraction elects a fresh incumbent.
+    this.sunDominantOccluderMesh = null;
   }
 
   // Scratch for the veil support pass, reused across the gate's upper-bound and
@@ -3295,6 +3327,18 @@ export class PlanetariumMode {
     armDecayPx: 0,
     armDecayYPx: 0,
     coreOuterPx: 0,
+    viewportHeight: 1,
+  };
+
+  /** Persistent input to sunGlareMaskActivation, mutated in place each frame so
+   *  the per-frame mask pass allocates nothing. */
+  private sunGlareMaskActivationInput: SunGlareMaskActivationInput = {
+    sunFootprintKind: 'none',
+    sunXPx: 0,
+    sunYPx: 0,
+    coreOuterPx: 0,
+    washSupportPx: 0,
+    viewportWidth: 1,
     viewportHeight: 1,
   };
 
@@ -3386,7 +3430,10 @@ export class PlanetariumMode {
     const state = this.sunSilhouetteOwners;
     const prevCurrent = state.current.owner;
     const prevEx = state.ex.owner;
-    advanceSilhouetteOwners(state, { owner: target, shade }, nowMs, { snap });
+    this.sunSilhouetteTarget.owner = target;
+    this.sunSilhouetteTarget.shade = shade;
+    this.sunSilhouetteAdvanceOptions.snap = snap;
+    advanceSilhouetteOwners(state, this.sunSilhouetteTarget, nowMs, this.sunSilhouetteAdvanceOptions);
     const curr = state.current;
     const ex = state.ex;
     if (curr.owner) curr.owner.uSilhouette.value = curr.applied;
@@ -3492,6 +3539,16 @@ export class PlanetariumMode {
         glareMat.uniforms.uVeilAmt.value = 0;
         glareMat.uniforms.uVeilHalfPx.value = 0;
         glareMat.uniforms.uOccluderShade.value = 0;
+        // No occluder crescent from inside the photosphere: clear the light-shift
+        // and contact-blaze uniforms and undo the crescent's min-size growth, so a
+        // buried-camera frame entered straight from a second-contact pose can't
+        // leave a displaced glare centroid or a diamond ring live. uDiamondRing
+        // carries no visibleEnergy factor, so only an explicit reset zeroes it.
+        glareMat.uniforms.uGlareCentroidSr.value.set(0, 0);
+        glareMat.uniforms.uDiamondRing.value = 0;
+        const baseMinHalfPx = (glareMat.userData.baseMinHalfPx ??=
+          glareMat.uniforms.uMinHalfSizePx.value);
+        glareMat.uniforms.uMinHalfSizePx.value = baseMinHalfPx;
       }
       this.clearSunSilhouette();
       if (ghostMat) ghostMat.uniforms.uGhostStrength.value = 0;
@@ -3756,8 +3813,8 @@ export class PlanetariumMode {
         performance.now(),
         silhouetteSnap,
       );
-      // Part D defaults: no light shift and no diamond unless an occluder is on
-      // the disc this frame. Reset every frame so nothing goes stale.
+      // Default to no light shift and no diamond unless an occluder is on the
+      // disc this frame. Reset every frame so nothing goes stale.
       this.sunCrescentCentroidSr = 0;
       this.sunCrescentDisplacementPx = 0;
       if (occluderShade > 0) {
@@ -3836,8 +3893,8 @@ export class PlanetariumMode {
         this.computeSunVeilSupport(
           veilAmt, glareMat.uniforms.uVeilStrength.value, exposureScale, viewportHeight, veilArmCoeff,
         );
-        // Grow the veil billboard by the centroid displacement (Part D) so the
-        // wash shifted onto the exposed crescent never clips at the quad edge.
+        // Grow the veil billboard by the centroid displacement so the wash
+        // shifted onto the exposed crescent never clips at the quad edge.
         glareMat.uniforms.uVeilHalfPx.value = this.sunVeilSupport.halfPx + this.sunCrescentDisplacementPx;
         glareMat.uniforms.uArmDecayPx.value = this.sunVeilSupport.armDecayPx;
         glareMat.uniforms.uArmDecayYPx.value = this.sunVeilSupport.armDecayYPx;
@@ -3875,11 +3932,11 @@ export class PlanetariumMode {
     // occluded, leaving only the geometric core to obscure the bare glint.
     const maskParams = this.sunGlareMaskParams;
     maskParams.active = inFront && appearanceEligible;
-    // Part D: the wash mask must sit on the wash it fades against, so when the
-    // glare re-centres on the crescent the mask follows — through the lens seam,
-    // not by adding px in output space. Tilt toSun by the centroid angle toward
-    // the exposed side and project that point on the Sun's sphere; the geometric
-    // core keeps covering the disc (Part B) so this only moves the wash centre.
+    // The wash mask must sit on the wash it fades against, so when the glare
+    // re-centres on the crescent the mask follows — through the lens seam, not by
+    // adding px in output space. Tilt toSun by the centroid angle toward the
+    // exposed side and project that point on the Sun's sphere; the geometric core
+    // still covers the whole disc, so this only moves the wash centre.
     let maskCentred = false;
     if (this.sunCrescentCentroidSr !== 0 && appearanceEligible) {
       const dir = this.sunDominantOccluderDirection;
@@ -3931,15 +3988,15 @@ export class PlanetariumMode {
     // holds the real wash reach only when the veil is live; it is stale scratch
     // otherwise, so pass 0 in that case rather than a bogus reach.
     const washSupportPx = veilAmt > 0 ? this.sunVeilSupport.halfPx : 0;
-    maskParams.active = maskParams.active && sunGlareMaskActivation({
-      sunFootprintKind,
-      sunXPx: maskParams.sunXPx,
-      sunYPx: maskParams.sunYPx,
-      coreOuterPx: maskParams.coreOuterPx,
-      washSupportPx,
-      viewportWidth,
-      viewportHeight,
-    });
+    const activationInput = this.sunGlareMaskActivationInput;
+    activationInput.sunFootprintKind = sunFootprintKind;
+    activationInput.sunXPx = maskParams.sunXPx;
+    activationInput.sunYPx = maskParams.sunYPx;
+    activationInput.coreOuterPx = maskParams.coreOuterPx;
+    activationInput.washSupportPx = washSupportPx;
+    activationInput.viewportWidth = viewportWidth;
+    activationInput.viewportHeight = viewportHeight;
+    maskParams.active = maskParams.active && sunGlareMaskActivation(activationInput);
     this.applySunGlareMaskToPoints(viewportWidth);
   }
 
@@ -4019,91 +4076,102 @@ export class PlanetariumMode {
 
     // Ownership hysteresis: keep the incumbent dominant occluder unless a
     // challenger clearly wins, so a conjunct pair trading the lead frame to
-    // frame doesn't flip the carve position and silhouette owner. Track the
-    // strongest challenger and the incumbent's current occlusion together —
-    // each with its angular radius / direction / fx — in one pass, then decide.
-    const incumbentMesh = this.sunDominantOccluderMesh;
-    let bestOcclusion = 0;
-    // Second-strongest single-body occlusion, tracked in the same pass (Part D
-    // multi-occluder guard): two bodies on the disc make the single-lens crescent
-    // centroid a lie, so a strong runner-up gates the centroid shift off.
-    let secondOcclusion = 0;
-    let bestMesh: THREE.Object3D | null = null;
-    let bestAngularRadius = 0;
-    let bestFx: SurfaceShadingFx | null = null;
-    let incumbentOcclusion = 0;
-    let incumbentAngularRadius = 0;
-    let incumbentFx: SurfaceShadingFx | null = null;
-
-    const consider = (mesh: THREE.Mesh, fx: SurfaceShadingFx | null): number => {
-      const occlusion = this.sunOcclusionByMesh(mesh, sunDirection, sunDistance, sunAngularRadius);
-      if (occlusion <= 0) return occlusion;
-      // sunOcclusionByMesh leaves this mesh's angular radius + unit direction in
-      // the scratch; snapshot both before the next call overwrites them.
-      if (occlusion > bestOcclusion) {
-        secondOcclusion = bestOcclusion;
-        bestOcclusion = occlusion;
-        bestMesh = mesh;
-        bestAngularRadius = this.lastSunOccluderAngularRadius;
-        bestFx = fx;
-        this.tmpBestOccluderDirection.copy(this.tmpSunOccluderDirection);
-      } else if (occlusion > secondOcclusion) {
-        secondOcclusion = occlusion;
-      }
-      if (mesh === incumbentMesh) {
-        incumbentOcclusion = occlusion;
-        incumbentAngularRadius = this.lastSunOccluderAngularRadius;
-        incumbentFx = fx;
-        this.tmpIncumbentOccluderDirection.copy(this.tmpSunOccluderDirection);
-      }
-      return occlusion;
-    };
-
-    const commitDominant = () => {
-      this.sunSecondOccluderFraction = secondOcclusion;
-      // Transfer dominance only when the challenger's coverage exceeds the
-      // incumbent's by more than 15%, or the incumbent has all but cleared the
-      // Sun (< 1% cover). Otherwise the incumbent holds — including through a
-      // frame where it briefly trails a near-equal neighbour.
-      const keepIncumbent =
-        incumbentMesh !== null &&
-        incumbentOcclusion >= 0.01 &&
-        bestOcclusion <= incumbentOcclusion * 1.15;
-      if (keepIncumbent) {
-        this.sunDominantOccluderMesh = incumbentMesh;
-        this.sunDominantOccluderAngularRadius = incumbentAngularRadius;
-        this.sunDominantOccluderFx = incumbentFx;
-        this.sunDominantOccluderDirection.copy(this.tmpIncumbentOccluderDirection);
-      } else if (bestMesh !== null) {
-        this.sunDominantOccluderMesh = bestMesh;
-        this.sunDominantOccluderAngularRadius = bestAngularRadius;
-        this.sunDominantOccluderFx = bestFx;
-        this.sunDominantOccluderDirection.copy(this.tmpBestOccluderDirection);
-      } else {
-        this.sunDominantOccluderMesh = null;
-        this.sunDominantOccluderAngularRadius = 0;
-        this.sunDominantOccluderFx = null;
-      }
-    };
+    // frame doesn't flip the carve position and silhouette owner. considerSunOccluder
+    // tracks the strongest challenger, the second-strongest, and the incumbent's
+    // current occlusion together — each with its angular radius / direction / fx —
+    // in one pass, then commitDominantSunOccluder decides. The scan state lives in
+    // instance scratch so this hot per-frame path never allocates.
+    this.sunOccBestOcclusion = 0;
+    this.sunOccSecondOcclusion = 0;
+    this.sunOccBestMesh = null;
+    this.sunOccBestAngularRadius = 0;
+    this.sunOccBestFx = null;
+    this.sunOccIncumbentMesh = this.sunDominantOccluderMesh;
+    this.sunOccIncumbentOcclusion = 0;
+    this.sunOccIncumbentAngularRadius = 0;
+    this.sunOccIncumbentFx = null;
 
     for (const planet of this.solarSystem?.planets ?? []) {
-      visible *= 1 - consider(planet.mesh, planet.fx ?? null);
+      visible *= 1 - this.considerSunOccluder(planet.mesh, planet.fx ?? null, sunDirection, sunDistance, sunAngularRadius);
       if (visible < 1e-4) {
-        commitDominant();
+        this.commitDominantSunOccluder();
         return 0;
       }
     }
     for (const moons of this.planetMoons.values()) {
       for (const moon of moons) {
-        visible *= 1 - consider(moon.mesh, moon.fx ?? null);
+        visible *= 1 - this.considerSunOccluder(moon.mesh, moon.fx ?? null, sunDirection, sunDistance, sunAngularRadius);
         if (visible < 1e-4) {
-          commitDominant();
+          this.commitDominantSunOccluder();
           return 0;
         }
       }
     }
-    commitDominant();
+    this.commitDominantSunOccluder();
     return THREE.MathUtils.clamp(visible, 0, 1);
+  }
+
+  /** One occluder's contribution to computeVisibleSunFraction's scan. Returns its
+   *  occlusion of the Sun and folds it into the best / second / incumbent instance
+   *  scratch. sunOcclusionByMesh leaves this mesh's angular radius + unit direction
+   *  in the scratch; both are snapshotted before the next call overwrites them. */
+  private considerSunOccluder(
+    mesh: THREE.Mesh,
+    fx: SurfaceShadingFx | null,
+    sunDirection: THREE.Vector3,
+    sunDistance: number,
+    sunAngularRadius: number,
+  ): number {
+    const occlusion = this.sunOcclusionByMesh(mesh, sunDirection, sunDistance, sunAngularRadius);
+    if (occlusion <= 0) return occlusion;
+    if (occlusion > this.sunOccBestOcclusion) {
+      this.sunOccSecondOcclusion = this.sunOccBestOcclusion;
+      this.sunOccBestOcclusion = occlusion;
+      this.sunOccBestMesh = mesh;
+      this.sunOccBestAngularRadius = this.lastSunOccluderAngularRadius;
+      this.sunOccBestFx = fx;
+      this.tmpBestOccluderDirection.copy(this.tmpSunOccluderDirection);
+    } else if (occlusion > this.sunOccSecondOcclusion) {
+      this.sunOccSecondOcclusion = occlusion;
+    }
+    if (mesh === this.sunOccIncumbentMesh) {
+      this.sunOccIncumbentOcclusion = occlusion;
+      this.sunOccIncumbentAngularRadius = this.lastSunOccluderAngularRadius;
+      this.sunOccIncumbentFx = fx;
+      this.tmpIncumbentOccluderDirection.copy(this.tmpSunOccluderDirection);
+    }
+    return occlusion;
+  }
+
+  /** Resolve the scan's best / incumbent scratch into this frame's dominant
+   *  occluder. Transfer dominance only when the challenger's coverage exceeds the
+   *  incumbent's by more than 15%, or the incumbent has all but cleared the Sun
+   *  (< 1% cover). Otherwise the incumbent holds — including through a frame where
+   *  it briefly trails a near-equal neighbour. Also publishes the second-strongest
+   *  single-body occlusion: two bodies on the disc make the single-lens crescent
+   *  centroid a lie, so a strong runner-up gates the centroid shift off. */
+  private commitDominantSunOccluder(): void {
+    this.sunSecondOccluderFraction = this.sunOccSecondOcclusion;
+    const incumbentMesh = this.sunOccIncumbentMesh;
+    const keepIncumbent =
+      incumbentMesh !== null &&
+      this.sunOccIncumbentOcclusion >= 0.01 &&
+      this.sunOccBestOcclusion <= this.sunOccIncumbentOcclusion * 1.15;
+    if (keepIncumbent) {
+      this.sunDominantOccluderMesh = incumbentMesh;
+      this.sunDominantOccluderAngularRadius = this.sunOccIncumbentAngularRadius;
+      this.sunDominantOccluderFx = this.sunOccIncumbentFx;
+      this.sunDominantOccluderDirection.copy(this.tmpIncumbentOccluderDirection);
+    } else if (this.sunOccBestMesh !== null) {
+      this.sunDominantOccluderMesh = this.sunOccBestMesh;
+      this.sunDominantOccluderAngularRadius = this.sunOccBestAngularRadius;
+      this.sunDominantOccluderFx = this.sunOccBestFx;
+      this.sunDominantOccluderDirection.copy(this.tmpBestOccluderDirection);
+    } else {
+      this.sunDominantOccluderMesh = null;
+      this.sunDominantOccluderAngularRadius = 0;
+      this.sunDominantOccluderFx = null;
+    }
   }
 
   /** Fraction of sunlight that survives ring crossings on the camera→Sun

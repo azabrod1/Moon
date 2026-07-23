@@ -117,8 +117,37 @@ describe('projectSphereToScreen', () => {
       expect(sphere.footprintKind).toBe('none');
       expect(sphere.radiusPx).toBe(0);
       expect(sphere.radiusPx).not.toBe(Math.hypot(width, height));
+      // The centre projection is retained on a 'none' footprint (finite, off the
+      // frame) so a consumer edge-clamping toward the off-screen body still aims.
+      expect(Number.isFinite(sphere.x)).toBe(true);
+      expect(Number.isFinite(sphere.y)).toBe(true);
+      expect(sphere.footprintX).toBe(sphere.x);
+      expect(sphere.footprintY).toBe(sphere.y);
+      const onFrame = sphere.x >= 0 && sphere.x <= width && sphere.y >= 0 && sphere.y <= height;
+      expect(onFrame).toBe(false);
     });
   }
+
+  it('keeps the covering fallback when a rim ray crosses the plane but the sphere is in view', () => {
+    // Very large, very close, centred well off axis: the near rim sits ~2° off
+    // axis (squarely inside the frustum) while the far rim swings past 90° and
+    // crosses the camera plane, so a rim ray can't be projected. The sphere
+    // genuinely intersects the source frustum, so the disjoint plane tests must
+    // NOT fire — it falls through to the conservative viewport-covering guess.
+    const width = 1280;
+    const height = 720;
+    const camera = lensCamera(width, height, 60);
+    const off = 55; // degrees off axis
+    const distance = 2;
+    const centre = new THREE.Vector3(
+      Math.sin(THREE.MathUtils.degToRad(off)) * distance,
+      0,
+      -Math.cos(THREE.MathUtils.degToRad(off)) * distance,
+    );
+    const sphere = projectSphereToScreen(centre, 1.6, camera, width, height);
+    expect(sphere.footprintKind).toBe('covering');
+    expect(sphere.radiusPx).toBe(Math.hypot(width, height));
+  });
 
   it('returns no footprint for the tangent-crossing off-frustum sphere in portrait', () => {
     const width = 390;

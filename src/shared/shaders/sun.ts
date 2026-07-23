@@ -348,6 +348,15 @@ uniform float uEclipseLike;
 uniform float uOccluderRadii;
 uniform float uOccluderShade;
 uniform vec2 uOccluderOffsetSr;
+// Part D: the visible-crescent centroid, in the same solar-radii camera-basis
+// frame as uOccluderOffsetSr. The physical PSF, starburst, veil and arms emanate
+// from here instead of the Sun's centre, so a partial eclipse reads as light
+// wrapping past the occluding limb. Signed AWAY from the occluder (the exposed
+// side). Zero when un-occluded or concentric — then pLight === pSun byte-for-byte.
+uniform vec2 uGlareCentroidSr;
+// Authored second/third-contact diamond-ring strength (0 for annular, exactly 0
+// at totality). Drives a compact contact blaze plus a short diffraction cross.
+uniform float uDiamondRing;
 uniform float uExposureScale;
 uniform float uEmergenceFlash;
 uniform float uAtmosphereMix;
@@ -401,6 +410,20 @@ void main() {
   // vExtentScale is 1.0 whenever the veil is idle, so this is a no-op then.
   vec2 pB = p * vExtentScale;
   float baseRadius = planeRadius * vExtentScale;
+  // Part D — dual frames. pSun (p / pB above) keeps the corona and the occluder
+  // silhouette carve. pLight is pSun shifted to the exposed-crescent centroid;
+  // the physical PSF core, starburst, veil wash and diffraction arms are drawn
+  // from it, so their light hangs on the lit sliver instead of the Sun's centre.
+  // uGlareCentroidSr is in solar radii (pB * uExtent units), so divide by uExtent
+  // for the base frame and by uExtent * vExtentScale for the full-quad frame.
+  // When it is zero pLight === p and every term below is byte-identical to pre-D.
+  vec2 centroidP = uGlareCentroidSr / max(uExtent * vExtentScale, 1e-6);
+  vec2 pLight = p - centroidP;
+  vec2 pLightB = pLight * vExtentScale;
+  float lightPlaneRadius = length(pLight);
+  float lightBaseRadius = lightPlaneRadius * vExtentScale;
+  float lightSolarRadii = lightBaseRadius * uExtent;
+  float lightOutside = max(lightSolarRadii - 1.0, 0.0);
   // All derivatives are taken before the discard: fwidth after a neighbouring
   // lane discards is formally undefined. Reading the base frame keeps the spike
   // widths a constant pixel size no matter how much the veil grew the quad.
@@ -427,9 +450,9 @@ void main() {
   // Once the photosphere is sub-pixel the rasterizer can no longer deliver its
   // HDR radiance, so the core term takes over that energy: the outer-system
   // Sun stays a blinding point that still drives bloom, not a grey smudge.
-  float core = exp(-outside * 2.40) * mix(0.24, 4.5, uPointLike);
-  float aureole = 0.015 / (1.0 + outside * outside * 0.90);
-  float tail = 0.0016 / pow(max(solarRadii, 1.0), 1.50);
+  float core = exp(-lightOutside * 2.40) * mix(0.24, 4.5, uPointLike);
+  float aureole = 0.015 / (1.0 + lightOutside * lightOutside * 0.90);
+  float tail = 0.0016 / pow(max(lightSolarRadii, 1.0), 1.50);
   float visibleEnergy = pow(clamp(uVisibleFraction, 0.0, 1.0), 0.38);
   // The scene's exposure adaptation also tempers the lens glare (uExposureScale
   // = sqrt(exposure)), so staring into the Sun tightens the halo the way a
@@ -439,12 +462,12 @@ void main() {
   // Once the solar disc becomes only a few pixels wide, a restrained optical
   // starburst keeps it distinct from the starfield. Derivative-scaled widths
   // stay stable from high-DPI desktop captures down to the mobile fallback.
-  float horizontal = exp(-abs(pB.y) / widthX) * exp(-abs(pB.x) * 1.70);
-  float vertical = exp(-abs(pB.x) / widthY) * exp(-abs(pB.y) * 2.75) * 0.52;
+  float horizontal = exp(-abs(pLightB.y) / widthX) * exp(-abs(pLightB.x) * 1.70);
+  float vertical = exp(-abs(pLightB.x) / widthY) * exp(-abs(pLightB.y) * 2.75) * 0.52;
   float diagonal = (
-    exp(-abs(pB.x - pB.y) / diagonalWidthA)
-    + exp(-abs(pB.x + pB.y) / diagonalWidthB)
-  ) * exp(-baseRadius * 3.4) * 0.10;
+    exp(-abs(pLightB.x - pLightB.y) / diagonalWidthA)
+    + exp(-abs(pLightB.x + pLightB.y) / diagonalWidthB)
+  ) * exp(-lightBaseRadius * 3.4) * 0.10;
   // uPointLike alone kills the spikes once the disc resolves past ~10 px, but
   // the reference stills show long thin diffraction spikes WITH a visible disc.
   // Carry a fraction of them through the mid-range on the camera-fx term.
@@ -455,16 +478,27 @@ void main() {
   // A short, low-energy sensor streak bridges the scale range where the disc
   // is resolved but still overwhelmingly bright. It fades away for close-up
   // photosphere study and yields to the sharper starburst in the outer system.
-  float sensorLine = exp(-abs(pB.y) / sensorWidth)
-    * exp(-abs(pB.x) * 1.55);
+  float sensorLine = exp(-abs(pLightB.y) / sensorWidth)
+    * exp(-abs(pLightB.x) * 1.55);
   float sensorStreak = sensorLine * uCameraFx * (1.0 - uPointLike * 0.72)
     * visibleEnergy * 0.055;
   glare += sensorStreak;
 
+  // Diamond ring: at second/third contact the exposed sliver is optically a
+  // point again, so a compact blaze plus a short diffraction cross returns at the
+  // crescent centroid (pLight — at those coverages the centroid IS the contact
+  // point). uDiamondRing is authored and topology-gated (0 for annular, exactly 0
+  // at totality), so this never fakes a ring at annularity. The amplitude is
+  // modest and rides uExposureScale: the exposure meter's totality release is
+  // what makes it blaze, not a second brightness ramp of its own.
+  float diamondCore = exp(-lightOutside * 3.1);
+  float diamondArms = (horizontal + vertical) * 0.5;
+  glare += uDiamondRing * (diamondCore + diamondArms) * uGlareStrength * uExposureScale;
+
   // Limb crossings and third contact briefly overwhelm the virtual optics
   // before exposure adaptation catches up. The controller supplies a
   // derivative-triggered impulse with a short exponential decay.
-  float emergenceBloom = exp(-outside * 1.25) * uEmergenceFlash * visibleEnergy * 1.15;
+  float emergenceBloom = exp(-lightOutside * 1.25) * uEmergenceFlash * visibleEnergy * 1.15;
   glare = (glare + emergenceBloom) * mix(1.0, 0.60, uAtmosphereMix);
 
   // A body deep into covering the Sun reads as a dark silhouette even through
@@ -489,7 +523,7 @@ void main() {
   // distance falloff, and the huge-disc cutoff, so the billboard the controller
   // sized and this intensity stay in lockstep. It is a broad wash, not a second
   // core; edgeFade below carries it smoothly to zero before the quad's disc edge.
-  float pixelDist = planeRadius * vHalfSizePx;
+  float pixelDist = lightPlaneRadius * vHalfSizePx;
   float dHat = pixelDist / max(uViewportHeight, 1.0);
   // Single power-law, deliberately plateau-free: any flat stretch or visible
   // boundary makes the wash read as a grey fog disc instead of light. Bright
@@ -511,7 +545,7 @@ void main() {
   // diagonal pair the veil used to carry is gone — the base-quad starburst
   // already draws the small diagonals that are the camera's signature at point
   // scale.
-  vec2 pxOff = p * vHalfSizePx;
+  vec2 pxOff = pLight * vHalfSizePx;
   float armAcross = pxOff.y / 1.7;
   float armAcrossV = pxOff.x / 1.7;
   float armX = exp(-armAcross * armAcross) * exp(-abs(pxOff.x) / max(uArmDecayPx, 1.0));

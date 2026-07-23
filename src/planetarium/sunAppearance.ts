@@ -68,6 +68,102 @@ export function eclipseOccluderLikeness(occluderToSunRadiusRatio: number): numbe
   return THREE.MathUtils.smoothstep(sunToOccluderRatio, 0.35, 0.7);
 }
 
+export interface CrescentGeometry {
+  /** Along-axis, area-weighted centroid of the visible crescent (Sun disc minus
+   *  the occluder), in solar radii. Signed: negative points from the Sun's
+   *  centre AWAY from the occluder — onto the exposed limb where the light still
+   *  emanates. 0 when the geometry is concentric, fully covered, or clear. */
+  centroidSr: number;
+  /** Along-axis width of the visible crescent, in solar radii. Telemetry only —
+   *  no shader gate reads it (v1's extent-drives-point-likeness rule is dead: it
+   *  faked a diamond ring at annularity). */
+  extentSr: number;
+}
+
+/**
+ * Area-weighted centroid and along-axis width of the visible crescent — the Sun
+ * disc minus one circular occluder — with the Sun's radius as the unit. Feed the
+ * centre separation and the RAW occluder/Sun angular-radius ratio in that same
+ * solar-radius unit (never the [0.5, 3]-clamped uOccluderRadii).
+ *
+ * With the Sun disc centred at the origin (first moment 0) and the occluder along
+ * +x, the crescent's first moment is -M_overlap, so its centroid is
+ * -M_overlap / (areaSun - areaOverlap). The overlap's moment about the origin is
+ * d x A_occluderCap: splitting the lens at the radical line, the Sun cap and the
+ * occluder cap share the chord, so their own-centre moments (±2/3 (yc)^3) cancel
+ * and only the occluder cap's parallel-axis term d x A_occluderCap survives. For
+ * a sub-Sun occluder wholly inside the disc the overlap is the whole occluder,
+ * centred at d. Concentric geometry (separation 0) is centred by symmetry, so an
+ * annular eclipse gets no false off-centre shift.
+ */
+export function visibleCrescentGeometry(
+  separationSr: number,
+  occluderRadiiSr: number,
+  out: CrescentGeometry,
+): CrescentGeometry {
+  const R = 1;
+  const r = Math.max(occluderRadiiSr, 0);
+  const d = Math.max(separationSr, 0);
+
+  // Along-axis exposed width: the Sun's diameter minus the occluder's coverage
+  // of the centre line. One expression across every regime.
+  const coveredLo = Math.max(-R, d - r);
+  const coveredHi = Math.min(R, d + r);
+  const covered = Math.max(0, coveredHi - coveredLo);
+  out.extentSr = Math.max(0, 2 * R - covered);
+
+  const frac = circleOcclusionFraction(R, r, d);
+  const areaSun = Math.PI * R * R;
+  const areaOverlap = areaSun * frac;
+  // No overlap, the occluder engulfs the Sun, or nothing is left exposed: a
+  // centred (or absent) disc has no off-axis centroid.
+  if (d >= R + r || frac <= 0 || frac >= 1 || !(areaSun - areaOverlap > 1e-12)) {
+    out.centroidSr = 0;
+    return out;
+  }
+
+  let momentOverlap: number;
+  if (d + r <= R) {
+    // Occluder wholly inside the Sun (sub-Sun / annular): the overlap is the
+    // whole occluder disc, centred at d.
+    momentOverlap = d * areaOverlap;
+  } else {
+    // Partial crescent — the two boundaries cross. d > 0 here (a concentric
+    // sub-Sun occluder returns total coverage above), so the radical line is
+    // well defined.
+    const a = (d * d + R * R - r * r) / (2 * d);
+    const ac = THREE.MathUtils.clamp(a / R, -1, 1);
+    const sunCapArea = R * R * Math.acos(ac) - a * Math.sqrt(Math.max(R * R - a * a, 0));
+    const occluderCapArea = areaOverlap - sunCapArea;
+    momentOverlap = d * occluderCapArea;
+  }
+  // `+ 0` normalizes the concentric -0 to +0 so a downstream sign test is clean.
+  out.centroidSr = -momentOverlap / (areaSun - areaOverlap) + 0;
+  return out;
+}
+
+/**
+ * Authored second/third-contact diamond-ring strength. Peaks in the last sliver
+ * of coverage on each side of totality and is exactly 0 AT totality (the corona
+ * owns the frame there). Pass `eclipseOccluderLikeness(rawRatio)` as the first
+ * argument, so annular geometry (sub-Sun occluder) yields no diamond at all.
+ *
+ * The rising edge `smoothstep(vis, 0, 0.0003)` holds it at 0 through totality and
+ * the falling edge `1 - smoothstep(vis, 0.0005, 0.012)` kills it once a real
+ * crescent returns. Oversized landscape occluders need no explicit cutoff here:
+ * their coverage holds `vis` at 0 long before this narrow band, and the Part C
+ * silhouette gate already keeps landscape-scale bodies out of eclipse treatment,
+ * so likeness only ever has to reject the sub-Sun (annular) ratios.
+ */
+export function diamondRingStrength(occluderLikeness: number, visibleFraction: number): number {
+  const like = THREE.MathUtils.clamp(occluderLikeness, 0, 1);
+  if (like <= 0) return 0;
+  const vis = Math.max(visibleFraction, 0);
+  const fade = 1 - THREE.MathUtils.smoothstep(vis, 0.0005, 0.012);
+  const rise = THREE.MathUtils.smoothstep(vis, 0, 0.0003);
+  return like * fade * rise;
+}
+
 /**
  * Whether a solar occluder is an eclipse (keep the silhouette night-lift kill)
  * or ordinary landscape (keep the night fills). A body a few solar diameters

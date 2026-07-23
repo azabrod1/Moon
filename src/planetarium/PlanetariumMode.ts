@@ -151,6 +151,7 @@ import {
 import {
   advanceSunEmergenceFlash,
   circleOcclusionFraction,
+  diamondRingStrength,
   eclipseOccluderLikeness,
   projectedSourceRadiusAtPlane,
   silhouetteSizeGate,
@@ -158,6 +159,8 @@ import {
   sunInteriorWhiteout,
   sunWhiteoutFraction,
   targetSunExposure,
+  visibleCrescentGeometry,
+  type CrescentGeometry,
 } from './sunAppearance';
 import {
   SHIP_CLEARANCE_AU,
@@ -482,6 +485,24 @@ export class PlanetariumMode {
   /** The size gate applied to the current dominant occluder this frame (1 for
    *  eclipse-scale, 0 for a horizon-filling body) — readback only. */
   private sunSilhouetteGate = 1;
+  /** Part D: the visible-crescent decomposition of the dominant occluder this
+   *  frame — the light origin for the glare (centroidSr signed away from the
+   *  occluder). extentSr is telemetry only. */
+  private sunCrescent: CrescentGeometry = { centroidSr: 0, extentSr: 0 };
+  /** Guarded signed centroid (solar radii) actually driving the glare/mask this
+   *  frame; 0 with no occluder or when a second body muddies the single lens. */
+  private sunCrescentCentroidSr = 0;
+  /** The centroid displacement in CSS px (|centroidSr| x solarRadiusPx) the quad
+   *  grows by so the shifted wash never clips at the billboard edge. */
+  private sunCrescentDisplacementPx = 0;
+  /** Set by computeVisibleSunFraction: the second-strongest single-body solar
+   *  occlusion this frame. Above ~0.05 the single-lens centroid is a lie, so the
+   *  centroid shift and diamond ring are gated off (Part D multi-occluder guard). */
+  private sunSecondOccluderFraction = 0;
+  private tmpCrescentTangent = new THREE.Vector3();
+  private tmpCrescentDir = new THREE.Vector3();
+  private tmpCrescentPoint = new THREE.Vector3();
+  private tmpCrescentProj: ScreenProjection = { x: 0, y: 0, ndcX: 0, ndcY: 0, ndcZ: 0 };
   private lastSunOccluderAngularRadius = 0;
   private tmpSunDirection = new THREE.Vector3();
   private tmpRingNormal = new THREE.Vector3();
@@ -3735,6 +3756,10 @@ export class PlanetariumMode {
         performance.now(),
         silhouetteSnap,
       );
+      // Part D defaults: no light shift and no diamond unless an occluder is on
+      // the disc this frame. Reset every frame so nothing goes stale.
+      this.sunCrescentCentroidSr = 0;
+      this.sunCrescentDisplacementPx = 0;
       if (occluderShade > 0) {
         // The glare quad billboards in camera-view XY and its fragment
         // measures in solar radii, so the offset is the angular separation
@@ -3743,12 +3768,46 @@ export class PlanetariumMode {
         const d = this.tmpSunOccluderDelta
           .copy(this.sunDominantOccluderDirection)
           .sub(toSun);
-        glareMat.uniforms.uOccluderOffsetSr.value.set(
+        const offsetSr = glareMat.uniforms.uOccluderOffsetSr.value;
+        offsetSr.set(
           (d.x * e[0] + d.y * e[1] + d.z * e[2]) / solarAngularRadius,
           (d.x * e[4] + d.y * e[5] + d.z * e[6]) / solarAngularRadius,
         );
+        // Exposed-crescent centroid from the RAW occluder/Sun ratio and the true
+        // separation (never the clamped uOccluderRadii). It rides uOccluderOffsetSr's
+        // solar-radii camera-basis frame: unit(toward occluder) x centroidSr, and
+        // centroidSr is signed negative — away from the occluder, onto the lit
+        // limb — so the glare hangs on the exposed crescent, not over the bite.
+        const separationSr = Math.acos(THREE.MathUtils.clamp(
+          this.sunDominantOccluderDirection.dot(toSun), -1, 1,
+        )) / solarAngularRadius;
+        visibleCrescentGeometry(separationSr, occluderToSunRatio, this.sunCrescent);
+        // Two bodies on the disc make one lens centroid meaningless; fade the
+        // shift and the diamond off when a runner-up occluder is non-trivial.
+        const guard = 1 - THREE.MathUtils.smoothstep(this.sunSecondOccluderFraction, 0.05, 0.12);
+        const centroidSr = this.sunCrescent.centroidSr * guard;
+        this.sunCrescentCentroidSr = centroidSr;
+        const offsetLen = Math.hypot(offsetSr.x, offsetSr.y);
+        if (offsetLen > 1e-6) {
+          const scale = centroidSr / offsetLen;
+          glareMat.uniforms.uGlareCentroidSr.value.set(offsetSr.x * scale, offsetSr.y * scale);
+        } else {
+          glareMat.uniforms.uGlareCentroidSr.value.set(0, 0);
+        }
+        // The quad grows by the centroid displacement so the shifted wash and PSF
+        // never clip at the billboard edge.
+        this.sunCrescentDisplacementPx = Math.abs(centroidSr) * solarRadiusPx;
+        glareMat.uniforms.uMinHalfSizePx.value += this.sunCrescentDisplacementPx;
+        // Authored diamond ring: annular gets none, exactly 0 at totality, same
+        // guard as the shift. Body-only coverage (rings dim brightness, not the
+        // contact topology).
+        glareMat.uniforms.uDiamondRing.value = diamondRingStrength(
+          eclipseOccluderLikeness(occluderToSunRatio), bodyVisibleFraction,
+        ) * guard;
       } else {
         glareMat.uniforms.uOccluderOffsetSr.value.set(0, 0);
+        glareMat.uniforms.uGlareCentroidSr.value.set(0, 0);
+        glareMat.uniforms.uDiamondRing.value = 0;
       }
     }
 
@@ -3777,7 +3836,9 @@ export class PlanetariumMode {
         this.computeSunVeilSupport(
           veilAmt, glareMat.uniforms.uVeilStrength.value, exposureScale, viewportHeight, veilArmCoeff,
         );
-        glareMat.uniforms.uVeilHalfPx.value = this.sunVeilSupport.halfPx;
+        // Grow the veil billboard by the centroid displacement (Part D) so the
+        // wash shifted onto the exposed crescent never clips at the quad edge.
+        glareMat.uniforms.uVeilHalfPx.value = this.sunVeilSupport.halfPx + this.sunCrescentDisplacementPx;
         glareMat.uniforms.uArmDecayPx.value = this.sunVeilSupport.armDecayPx;
         glareMat.uniforms.uArmDecayYPx.value = this.sunVeilSupport.armDecayYPx;
         glareMat.uniforms.uArmCoeff.value = veilArmCoeff;
@@ -3814,8 +3875,34 @@ export class PlanetariumMode {
     // occluded, leaving only the geometric core to obscure the bare glint.
     const maskParams = this.sunGlareMaskParams;
     maskParams.active = inFront && appearanceEligible;
-    maskParams.sunXPx = (this.tmpSunScreen.x * 0.5 + 0.5) * viewportWidth;
-    maskParams.sunYPx = (-this.tmpSunScreen.y * 0.5 + 0.5) * viewportHeight;
+    // Part D: the wash mask must sit on the wash it fades against, so when the
+    // glare re-centres on the crescent the mask follows — through the lens seam,
+    // not by adding px in output space. Tilt toSun by the centroid angle toward
+    // the exposed side and project that point on the Sun's sphere; the geometric
+    // core keeps covering the disc (Part B) so this only moves the wash centre.
+    let maskCentred = false;
+    if (this.sunCrescentCentroidSr !== 0 && appearanceEligible) {
+      const dir = this.sunDominantOccluderDirection;
+      const along = dir.dot(toSun);
+      const tangent = this.tmpCrescentTangent.copy(dir).addScaledVector(toSun, -along);
+      const tangentLen = tangent.length();
+      if (tangentLen > 1e-6) {
+        tangent.multiplyScalar(1 / tangentLen);
+        const centroidDir = this.tmpCrescentDir.copy(toSun)
+          .addScaledVector(tangent, Math.tan(this.sunCrescentCentroidSr * solarAngularRadius))
+          .normalize();
+        const point = this.tmpCrescentPoint.copy(this.camera.position)
+          .addScaledVector(centroidDir, sunDistance);
+        const proj = projectToScreen(point, this.camera, viewportWidth, viewportHeight, this.tmpCrescentProj);
+        maskParams.sunXPx = proj.x;
+        maskParams.sunYPx = proj.y;
+        maskCentred = true;
+      }
+    }
+    if (!maskCentred) {
+      maskParams.sunXPx = (this.tmpSunScreen.x * 0.5 + 0.5) * viewportWidth;
+      maskParams.sunYPx = (-this.tmpSunScreen.y * 0.5 + 0.5) * viewportHeight;
+    }
     const veilStrengthNow = glareMat ? glareMat.uniforms.uVeilStrength.value : 1.4;
     maskParams.peak = veilStrengthNow * veilAmt * exposureScale;
     maskParams.armCoeff = maskArmCoeff;
@@ -3937,6 +4024,10 @@ export class PlanetariumMode {
     // each with its angular radius / direction / fx — in one pass, then decide.
     const incumbentMesh = this.sunDominantOccluderMesh;
     let bestOcclusion = 0;
+    // Second-strongest single-body occlusion, tracked in the same pass (Part D
+    // multi-occluder guard): two bodies on the disc make the single-lens crescent
+    // centroid a lie, so a strong runner-up gates the centroid shift off.
+    let secondOcclusion = 0;
     let bestMesh: THREE.Object3D | null = null;
     let bestAngularRadius = 0;
     let bestFx: SurfaceShadingFx | null = null;
@@ -3950,11 +4041,14 @@ export class PlanetariumMode {
       // sunOcclusionByMesh leaves this mesh's angular radius + unit direction in
       // the scratch; snapshot both before the next call overwrites them.
       if (occlusion > bestOcclusion) {
+        secondOcclusion = bestOcclusion;
         bestOcclusion = occlusion;
         bestMesh = mesh;
         bestAngularRadius = this.lastSunOccluderAngularRadius;
         bestFx = fx;
         this.tmpBestOccluderDirection.copy(this.tmpSunOccluderDirection);
+      } else if (occlusion > secondOcclusion) {
+        secondOcclusion = occlusion;
       }
       if (mesh === incumbentMesh) {
         incumbentOcclusion = occlusion;
@@ -3966,6 +4060,7 @@ export class PlanetariumMode {
     };
 
     const commitDominant = () => {
+      this.sunSecondOccluderFraction = secondOcclusion;
       // Transfer dominance only when the challenger's coverage exceeds the
       // incumbent's by more than 15%, or the incumbent has all but cleared the
       // Sun (< 1% cover). Otherwise the incumbent holds — including through a
@@ -7085,6 +7180,7 @@ export class PlanetariumMode {
     const sunMat = this.solarSystem?.sun.userData.sunMaterial as THREE.ShaderMaterial | undefined;
     const glareMat = this.solarSystem?.sun.userData.sunGlareMaterial as THREE.ShaderMaterial | undefined;
     const offset = glareMat?.uniforms.uOccluderOffsetSr.value as THREE.Vector2 | undefined;
+    const centroid = glareMat?.uniforms.uGlareCentroidSr.value as THREE.Vector2 | undefined;
     return {
       exposure: this.sunExposure,
       whiteout: sunMat ? (sunMat.uniforms.uWhiteout.value as number) : 0,
@@ -7095,6 +7191,9 @@ export class PlanetariumMode {
       occluderShade: glareMat ? (glareMat.uniforms.uOccluderShade.value as number) : 0,
       occluderRadii: glareMat ? (glareMat.uniforms.uOccluderRadii.value as number) : 0,
       occluderOffsetSr: offset ? [offset.x, offset.y] : [0, 0],
+      glareCentroidSr: centroid ? [centroid.x, centroid.y] : [0, 0],
+      diamondRing: glareMat ? (glareMat.uniforms.uDiamondRing.value as number) : 0,
+      secondOccluderFraction: this.sunSecondOccluderFraction,
       // Applied (smoothed) dim of the current silhouette owner, and the size
       // gate that scaled its target this frame.
       silhouetteDim: this.sunSilhouetteOwners.current.applied,

@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   advanceSunEmergenceFlash,
   circleOcclusionFraction,
+  diamondRingStrength,
   eclipseOccluderLikeness,
   projectedSourceRadiusAtPlane,
   silhouetteSizeGate,
@@ -9,6 +10,8 @@ import {
   sunInteriorWhiteout,
   sunWhiteoutFraction,
   targetSunExposure,
+  visibleCrescentGeometry,
+  type CrescentGeometry,
 } from './sunAppearance';
 
 describe('circleOcclusionFraction', () => {
@@ -48,6 +51,102 @@ describe('eclipseOccluderLikeness', () => {
     expect(eclipseOccluderLikeness(1)).toBe(1);
     expect(eclipseOccluderLikeness(1.05)).toBe(1);
     expect(eclipseOccluderLikeness(3)).toBe(0);
+  });
+});
+
+describe('visibleCrescentGeometry', () => {
+  // Independent brute-force centroid of (Sun disc − occluder disc): the Sun is
+  // the unit circle at the origin, the occluder radius r centred at (sep, 0).
+  function numericCentroid(sep: number, r: number): number {
+    const N = 1600;
+    const step = 2 / N;
+    let count = 0;
+    let sumX = 0;
+    for (let i = 0; i < N; i++) {
+      const x = -1 + (i + 0.5) * step;
+      for (let j = 0; j < N; j++) {
+        const y = -1 + (j + 0.5) * step;
+        if (x * x + y * y > 1) continue; // outside the Sun
+        const dx = x - sep;
+        if (dx * dx + y * y <= r * r) continue; // covered by the occluder
+        count += 1;
+        sumX += x;
+      }
+    }
+    return count > 0 ? sumX / count : 0;
+  }
+
+  const out: CrescentGeometry = { centroidSr: 0, extentSr: 0 };
+
+  it('matches a numerically integrated centroid across regimes, always exposed-side', () => {
+    for (const [sep, r] of [
+      [0.4, 0.6],
+      [0.5, 0.5], // occluder touching the limb from inside
+      [0.9, 0.4], // deep partial
+      [0.2, 0.9], // large occluder, near concentric
+      [1.05, 1.0], // total-onset partial (occluder Sun-sized)
+      [0.7, 0.7],
+    ] as const) {
+      visibleCrescentGeometry(sep, r, out);
+      const numeric = numericCentroid(sep, r);
+      expect(out.centroidSr).toBeCloseTo(numeric, 2);
+      // The exposed crescent is always on the far side from the occluder (+x).
+      expect(out.centroidSr).toBeLessThanOrEqual(0);
+    }
+  });
+
+  it('stays centred for concentric geometry (no false annular shift)', () => {
+    visibleCrescentGeometry(0, 0.5, out);
+    expect(out.centroidSr).toBe(0);
+    expect(out.extentSr).toBeCloseTo(1, 12); // ring width summed: 2(1 − r)
+  });
+
+  it('reports zero centroid when clear or fully covered', () => {
+    visibleCrescentGeometry(2.5, 0.5, out); // no overlap
+    expect(out.centroidSr).toBe(0);
+    expect(out.extentSr).toBeCloseTo(2, 12); // whole Sun exposed
+    visibleCrescentGeometry(0, 1.2, out); // engulfed
+    expect(out.centroidSr).toBe(0);
+    expect(out.extentSr).toBe(0);
+  });
+
+  it('measures the along-axis exposed width of a partial', () => {
+    visibleCrescentGeometry(0.9, 0.4, out); // 1 + d − r
+    expect(out.extentSr).toBeCloseTo(1.5, 12);
+  });
+});
+
+describe('diamondRingStrength', () => {
+  const like = eclipseOccluderLikeness;
+
+  it('gives an annular (sub-Sun) occluder no diamond at any coverage', () => {
+    for (let vis = 0; vis <= 0.02; vis += 0.001) {
+      expect(diamondRingStrength(like(0.97), vis)).toBe(0);
+    }
+  });
+
+  it('is exactly 0 at totality and above the sliver band for a total eclipse', () => {
+    const l = like(1.05); // 1
+    expect(diamondRingStrength(l, 0)).toBe(0);
+    expect(diamondRingStrength(l, 0.012)).toBe(0);
+    expect(diamondRingStrength(l, 0.02)).toBe(0);
+    expect(diamondRingStrength(l, 0.05)).toBe(0);
+  });
+
+  it('blazes through the second/third-contact sliver band, monotone each side', () => {
+    const l = like(1.05);
+    // rising edge out of totality is monotone nondecreasing
+    let prev = -1;
+    for (let vis = 0; vis <= 0.00031; vis += 0.00003) {
+      const v = diamondRingStrength(l, vis);
+      expect(v).toBeGreaterThanOrEqual(prev - 1e-12);
+      prev = v;
+    }
+    // there is a real burst inside the band
+    expect(diamondRingStrength(l, 0.002)).toBeGreaterThan(0.5);
+    expect(diamondRingStrength(l, 0.008)).toBeGreaterThan(0.1);
+    // and it decays monotonically across the band
+    expect(diamondRingStrength(l, 0.001)).toBeGreaterThan(diamondRingStrength(l, 0.008));
   });
 });
 

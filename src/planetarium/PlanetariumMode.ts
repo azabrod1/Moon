@@ -3824,9 +3824,21 @@ export class PlanetariumMode {
         silhouetteSnap,
       );
       // Default to no light shift and no diamond unless an occluder is on the
-      // disc this frame. Reset every frame so nothing goes stale.
-      this.sunCrescentCentroidSr = 0;
-      this.sunCrescentDisplacementPx = 0;
+      // disc this frame. Reset every frame so nothing goes stale — with one
+      // exception: while the diamond envelope is still releasing into totality,
+      // hold the last contact-point shift. The crescent centroid drops to 0 the
+      // frame coverage completes, and re-centring the residual bead would flash
+      // a symmetric halo behind the occulted disc; the dazzle must melt where
+      // the light died. Every discontinuity snaps the envelope to 0 first, so
+      // the latch can never carry a contact point across a jump.
+      const holdContactPoint = occluderShade > 0
+        && bodyVisibleFraction <= 0
+        && this.sunDiamondRing > 0.01
+        && !silhouetteSnap;
+      if (!holdContactPoint) {
+        this.sunCrescentCentroidSr = 0;
+        this.sunCrescentDisplacementPx = 0;
+      }
       let diamondTarget = 0;
       if (occluderShade > 0) {
         // The glare quad billboards in camera-view XY and its fragment
@@ -3841,37 +3853,45 @@ export class PlanetariumMode {
           (d.x * e[0] + d.y * e[1] + d.z * e[2]) / solarAngularRadius,
           (d.x * e[4] + d.y * e[5] + d.z * e[6]) / solarAngularRadius,
         );
-        // Exposed-crescent centroid from the RAW occluder/Sun ratio and the true
-        // separation (never the clamped uOccluderRadii). It rides uOccluderOffsetSr's
-        // solar-radii camera-basis frame: unit(toward occluder) x centroidSr, and
-        // centroidSr is signed negative — away from the occluder, onto the lit
-        // limb — so the glare hangs on the exposed crescent, not over the bite.
-        const separationSr = Math.acos(THREE.MathUtils.clamp(
-          this.sunDominantOccluderDirection.dot(toSun), -1, 1,
-        )) / solarAngularRadius;
-        visibleCrescentGeometry(separationSr, occluderToSunRatio, this.sunCrescent);
-        // Two bodies on the disc make one lens centroid meaningless; fade the
-        // shift and the diamond off when a runner-up occluder is non-trivial.
-        const guard = 1 - THREE.MathUtils.smoothstep(this.sunSecondOccluderFraction, 0.05, 0.12);
-        const centroidSr = this.sunCrescent.centroidSr * guard;
-        this.sunCrescentCentroidSr = centroidSr;
-        const offsetLen = Math.hypot(offsetSr.x, offsetSr.y);
-        if (offsetLen > 1e-6) {
-          const scale = centroidSr / offsetLen;
-          glareMat.uniforms.uGlareCentroidSr.value.set(offsetSr.x * scale, offsetSr.y * scale);
+        if (holdContactPoint) {
+          // uGlareCentroidSr keeps its last exposed-frame value; only the quad
+          // growth needs re-applying, because the base half-size is rewritten
+          // every frame. diamondTarget stays 0 — totality earns no bead, this
+          // is just the residual melting in place.
+          glareMat.uniforms.uMinHalfSizePx.value += this.sunCrescentDisplacementPx;
         } else {
-          glareMat.uniforms.uGlareCentroidSr.value.set(0, 0);
+          // Exposed-crescent centroid from the RAW occluder/Sun ratio and the true
+          // separation (never the clamped uOccluderRadii). It rides uOccluderOffsetSr's
+          // solar-radii camera-basis frame: unit(toward occluder) x centroidSr, and
+          // centroidSr is signed negative — away from the occluder, onto the lit
+          // limb — so the glare hangs on the exposed crescent, not over the bite.
+          const separationSr = Math.acos(THREE.MathUtils.clamp(
+            this.sunDominantOccluderDirection.dot(toSun), -1, 1,
+          )) / solarAngularRadius;
+          visibleCrescentGeometry(separationSr, occluderToSunRatio, this.sunCrescent);
+          // Two bodies on the disc make one lens centroid meaningless; fade the
+          // shift and the diamond off when a runner-up occluder is non-trivial.
+          const guard = 1 - THREE.MathUtils.smoothstep(this.sunSecondOccluderFraction, 0.05, 0.12);
+          const centroidSr = this.sunCrescent.centroidSr * guard;
+          this.sunCrescentCentroidSr = centroidSr;
+          const offsetLen = Math.hypot(offsetSr.x, offsetSr.y);
+          if (offsetLen > 1e-6) {
+            const scale = centroidSr / offsetLen;
+            glareMat.uniforms.uGlareCentroidSr.value.set(offsetSr.x * scale, offsetSr.y * scale);
+          } else {
+            glareMat.uniforms.uGlareCentroidSr.value.set(0, 0);
+          }
+          // The quad grows by the centroid displacement so the shifted wash and PSF
+          // never clip at the billboard edge.
+          this.sunCrescentDisplacementPx = Math.abs(centroidSr) * solarRadiusPx;
+          glareMat.uniforms.uMinHalfSizePx.value += this.sunCrescentDisplacementPx;
+          // Authored diamond ring: annular gets none, exactly 0 at totality, same
+          // guard as the shift. Body-only coverage (rings dim brightness, not the
+          // contact topology).
+          diamondTarget = diamondRingStrength(
+            eclipseOccluderLikeness(occluderToSunRatio), bodyVisibleFraction,
+          ) * guard;
         }
-        // The quad grows by the centroid displacement so the shifted wash and PSF
-        // never clip at the billboard edge.
-        this.sunCrescentDisplacementPx = Math.abs(centroidSr) * solarRadiusPx;
-        glareMat.uniforms.uMinHalfSizePx.value += this.sunCrescentDisplacementPx;
-        // Authored diamond ring: annular gets none, exactly 0 at totality, same
-        // guard as the shift. Body-only coverage (rings dim brightness, not the
-        // contact topology).
-        diamondTarget = diamondRingStrength(
-          eclipseOccluderLikeness(occluderToSunRatio), bodyVisibleFraction,
-        ) * guard;
       } else {
         glareMat.uniforms.uOccluderOffsetSr.value.set(0, 0);
         glareMat.uniforms.uGlareCentroidSr.value.set(0, 0);

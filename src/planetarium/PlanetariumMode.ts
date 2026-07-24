@@ -736,6 +736,9 @@ export class PlanetariumMode {
   private camFollowTurnBlend = 0;
   private orbitDragging = false;
   private orbitPointerId: number | null = null;
+  // A scripted transfer that completes under a still-held drag owes the chase
+  // a reclaim; the release handler consumes it.
+  private pendingChaseReclaim = false;
   private orbitPointerStartX = 0;
   private orbitPointerStartY = 0;
   private readonly tmpChaseIdeal = new THREE.Vector3();
@@ -1101,13 +1104,17 @@ export class PlanetariumMode {
       // button must never take ownership — there is no longer a timeout to
       // hand it back.
       if (!this.controls.enabled || e.button !== 0) return;
+      // One pointer owns the drag bookkeeping: a second touch/button joins
+      // OrbitControls' own gesture but never rebinds the tracked id (a rebind
+      // would leave the first pointer uncancellable at a discontinuity).
+      if (this.orbitDragging) return;
       this.orbitDragging = true;
       this.orbitPointerId = e.pointerId;
       this.orbitPointerStartX = e.clientX;
       this.orbitPointerStartY = e.clientY;
     });
     orbitDom.addEventListener('pointermove', (e) => {
-      if (!this.orbitDragging || this.camOwner === 'orbit') return;
+      if (!this.orbitDragging || e.pointerId !== this.orbitPointerId || this.camOwner === 'orbit') return;
       const dx = e.clientX - this.orbitPointerStartX;
       const dy = e.clientY - this.orbitPointerStartY;
       if (dx * dx + dy * dy > 16) {
@@ -1117,18 +1124,31 @@ export class PlanetariumMode {
         this.moonArrivalCameraLook = null;
       }
     });
-    const endOrbitDrag = () => {
+    const endOrbitDrag = (e?: PointerEvent) => {
       if (!this.orbitDragging) return;
+      if (e && e.pointerId !== this.orbitPointerId) return;
       this.orbitDragging = false;
       this.orbitPointerId = null;
       // No timeout: release leaves the camera where it was placed. The damping
       // coast finishes under 'orbit' ownership; steering or a flight
       // discontinuity is what reacquires the chase.
+      if (this.pendingChaseReclaim) {
+        // A transfer completed under this held drag; now that the pointer is
+        // up, hand the parked postcard framing back to the chase.
+        this.pendingChaseReclaim = false;
+        if (this.camOwner === 'orbit') {
+          this.flushOrbitDamping();
+          this.camOwner = 'reacquiring';
+        }
+      }
     };
     orbitDom.addEventListener('pointerup', endOrbitDrag);
     orbitDom.addEventListener('pointercancel', endOrbitDrag);
     window.addEventListener('blur', () => {
-      endOrbitDrag(); // failsafe if focus is lost mid-drag
+      // Focus loss mid-drag: the pointerup may never arrive, so cancel the
+      // gesture outright — OrbitControls' capture and document listeners tear
+      // down with our bookkeeping.
+      this.cancelOrbitGesture();
       // Focus loss (e.g. Cmd-Tab) means the keyups won't arrive, so a held key
       // would linger — with W held the ship accelerates unattended. Drop every
       // held key; yaw/pitch/throttle recompute from this set each frame
@@ -1623,11 +1643,11 @@ export class PlanetariumMode {
     this.uiRefreshAccumulator = PlanetariumMode.UI_REFRESH_INTERVAL_S;
 
     // Camera ownership is session-transient: a reactivation reseats the chase.
-    // Drop any held-drag bookkeeping so a stale pointer id can't fire a
-    // synthetic cancel on the next reset.
+    // Cancel any held drag first so OrbitControls' gesture (capture, document
+    // listeners) doesn't outlive the mode.
+    this.cancelOrbitGesture();
     this.camOwner = 'chase';
-    this.orbitDragging = false;
-    this.orbitPointerId = null;
+    this.pendingChaseReclaim = false;
 
     this.controls.enabled = false;
 
@@ -6442,11 +6462,16 @@ export class PlanetariumMode {
       this.player.moving = transfer.endMoving;
       this.scriptedTransfer = null;
       // A drag grabbed mid-transfer would otherwise wedge the parked milestone
-      // postcard off-axis forever (no timeout hands it back). Reacquire once
-      // the pointer is released; an actively held drag still wins.
-      if (this.camOwner === 'orbit' && !this.orbitDragging) {
-        this.flushOrbitDamping();
-        this.camOwner = 'reacquiring';
+      // postcard off-axis forever (no timeout hands it back). An actively held
+      // drag still wins — but only until release: latch the reclaim so the
+      // release handler completes it.
+      if (this.camOwner === 'orbit') {
+        if (!this.orbitDragging) {
+          this.flushOrbitDamping();
+          this.camOwner = 'reacquiring';
+        } else {
+          this.pendingChaseReclaim = true;
+        }
       }
     }
 
@@ -6466,6 +6491,7 @@ export class PlanetariumMode {
     // OrbitControls' own gesture with it), drop its damping residuals, then
     // seat the camera at the chase pose.
     this.cancelOrbitGesture();
+    this.pendingChaseReclaim = false;
     this.flushOrbitDamping();
     this.camOwner = 'chase';
     const forward = this.player.getForwardDirection();

@@ -276,9 +276,12 @@ export function chaseIdealOffset<T extends { x: number; y: number; z: number }>(
  *  never kick the radius. */
 export const CAM_REACQUIRE_RADIUS_TAU_S = 0.6;
 /** Reacquisition hands back to the steady chase once the pose sits within this
- *  angle of, and this radius fraction of, the ideal offset. */
+ *  angle of, and this radius fraction of, the ideal offset. The radius bound is
+ *  tight because the chase lerp closes any remaining radial error at the faster
+ *  direction τ — the permitted error must be small enough that the rate change
+ *  at handoff stays sub-visible. */
 export const CAM_REACQUIRE_SETTLE_ANGLE_DEG = 0.5;
-export const CAM_REACQUIRE_SETTLE_RADIUS_FRAC = 0.005;
+export const CAM_REACQUIRE_SETTLE_RADIUS_FRAC = 0.001;
 
 const COS_REACQUIRE_SETTLE_ANGLE = Math.cos(CAM_REACQUIRE_SETTLE_ANGLE_DEG * DEG2RAD);
 // Below this |dot| gap the slerp weights lose precision, so the two poles are

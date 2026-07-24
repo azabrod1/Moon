@@ -745,6 +745,219 @@
     }
     .menu-action:hover { background: rgba(255, 255, 255, 0.06); }
 
+    /* Whole-system orrery. The 3D bodies live in the scene; this layer supplies
+       the honest scale note, live date, map controls, and projected labels. */
+    #system-map-ui {
+      position: absolute;
+      inset: 0;
+      z-index: 16;
+      pointer-events: none;
+      display: none;
+    }
+    body.system-map-active #system-map-ui { display: block; }
+    body.system-map-active #sun-glare-flood,
+    body.system-map-active #touch-flight-zone,
+    body.system-map-active #planetarium-keys-hint,
+    body.system-map-active #planetarium-btn-land { display: none !important; }
+    /* Keep the map toggle (and ☰) in the action row so the map can be closed
+       from the same icon that opened it; the rest of the cluster hides. */
+    body.system-map-active #planetarium-actions > :not(#planetarium-btn-menu):not(#planetarium-btn-system-map) { display: none !important; }
+    #planetarium-btn-system-map[aria-pressed="true"] { color: #8fe3ff; background: rgba(143, 227, 255, 0.14); border-color: rgba(143, 227, 255, 0.4); }
+    body.system-map-active #planetarium-bottom-bar .bar-speed-main,
+    body.system-map-active #planetarium-bottom-bar .bar-stats { display: none; }
+    body.system-map-active #planetarium-bottom-bar .bar-time { border-right: none; }
+    body.system-map-active #stats-popover { display: none !important; }
+    .system-map-card {
+      position: absolute;
+      top: 68px;
+      left: 16px;
+      width: min(310px, calc(100vw - 32px));
+      padding: 15px 16px 14px;
+      pointer-events: auto;
+    }
+    .system-map-focus {
+      position: absolute;
+      top: 20px;
+      left: 50%;
+      transform: translateX(-50%);
+      display: none; /* JS toggles to inline-flex when a body is focused */
+      align-items: center;
+      gap: 6px;
+      padding: 7px 15px;
+      border: 1px solid rgba(143, 220, 255, 0.4);
+      border-radius: 999px;
+      background: rgba(5, 17, 25, 0.86);
+      color: #dff7ff;
+      font: 500 12px var(--font-sans, system-ui);
+      letter-spacing: 0.02em;
+      cursor: pointer;
+      pointer-events: auto;
+      backdrop-filter: blur(4px);
+    }
+    .system-map-focus:hover { background: rgba(20, 42, 58, 0.92); }
+    .system-map-head {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 14px;
+    }
+    .system-map-eyebrow {
+      color: var(--accent);
+      font-size: 9px;
+      font-weight: 600;
+      letter-spacing: 0.2em;
+      text-transform: uppercase;
+    }
+    .system-map-card h2 {
+      margin-top: 4px;
+      color: var(--t1);
+      font-size: 20px;
+      font-weight: 400;
+      letter-spacing: -0.02em;
+    }
+    .system-map-exit {
+      flex: none;
+      padding: 7px 11px;
+      border: 1px solid var(--line);
+      border-radius: var(--r-s);
+      background: rgba(255, 255, 255, 0.045);
+      color: var(--t1);
+      font: 500 11px var(--font-ui);
+      cursor: pointer;
+    }
+    .system-map-exit:hover { background: rgba(255, 255, 255, 0.09); }
+    .system-map-date {
+      margin-top: 11px;
+      color: var(--t2);
+      font: 10px var(--font-mono);
+      letter-spacing: 0.03em;
+    }
+    .system-map-note {
+      margin-top: 11px;
+      color: var(--t3);
+      font-size: 10.5px;
+      line-height: 1.45;
+    }
+    .system-map-note b { color: var(--t1); font-weight: 600; }
+    .system-map-controls {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      margin-top: 12px;
+      padding-top: 10px;
+      border-top: 1px solid var(--line-dim);
+    }
+    .system-map-controls span { color: var(--t2); font-size: 10px; }
+    #system-map-reset {
+      border: none;
+      background: none;
+      color: var(--accent);
+      font: 500 10px var(--font-ui);
+      cursor: pointer;
+      white-space: nowrap;
+    }
+    .system-map-jump {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      margin-top: 10px;
+    }
+    .system-map-jump > span { color: var(--t3); font-size: 9px; text-transform: uppercase; letter-spacing: 0.08em; margin-right: 2px; }
+    .system-map-jump button {
+      flex: none;
+      padding: 4px 10px;
+      border: 1px solid var(--line-dim);
+      border-radius: 999px;
+      background: rgba(255, 255, 255, 0.03);
+      color: var(--t1);
+      font: 500 10px var(--font-ui);
+      cursor: pointer;
+      white-space: nowrap;
+    }
+    .system-map-jump button:hover { background: rgba(143, 220, 255, 0.12); border-color: rgba(143, 220, 255, 0.4); }
+    #system-map-picker {
+      margin-top: 10px;
+      max-height: min(52vh, 420px);
+      overflow-y: auto;
+      border-top: 1px solid var(--line-dim);
+      padding-top: 8px;
+      display: flex;
+      flex-direction: column;
+      gap: 1px;
+      scrollbar-width: thin;
+    }
+    .smp-row {
+      text-align: left;
+      border: none;
+      background: none;
+      color: var(--t1);
+      cursor: pointer;
+      white-space: nowrap;
+      border-radius: 4px;
+      padding: 4px 8px;
+      font: 500 11px var(--font-ui);
+    }
+    .smp-row:hover { background: rgba(143, 220, 255, 0.12); }
+    .smp-sun { color: #ffd68a; }
+    .smp-planet { font-weight: 600; }
+    .smp-moon { padding-left: 22px; color: var(--t2); font-size: 10px; font-weight: 400; }
+    #system-map-labels { position: absolute; inset: 0; overflow: hidden; }
+    /* Dark backdrop chip so the label (name + AU) stays legible over any
+       background — bright planets and the Sun included. */
+    .sm-map-label {
+      position: absolute;
+      display: none;
+      flex-direction: column;
+      min-width: 68px;
+      padding: 4px 8px;
+      border-left: 2px solid var(--body-color);
+      border-radius: 4px;
+      background: rgba(6, 12, 20, 0.74);
+      box-shadow: 0 1px 7px rgba(0, 0, 0, 0.65);
+      pointer-events: none;
+    }
+    .sm-map-label strong {
+      color: #f4f8ff;
+      font-size: 10px;
+      font-weight: 500;
+      line-height: 1.15;
+      white-space: nowrap;
+      text-shadow: 0 1px 2px #000;
+    }
+    .sm-map-desc {
+      margin-top: 2px;
+      max-width: 190px;
+      color: rgba(196, 210, 228, 0.72);
+      font: 9px var(--font-ui);
+      line-height: 1.25;
+      text-shadow: 0 1px 2px #000;
+    }
+    .sm-map-desc:empty { display: none; }
+    .sm-map-rows {
+      display: flex;
+      flex-direction: column;
+      gap: 1px;
+      margin-top: 5px;
+    }
+    .sm-map-row {
+      display: flex;
+      justify-content: space-between;
+      gap: 16px;
+      white-space: nowrap;
+      text-shadow: 0 1px 2px #000;
+    }
+    .sm-map-k { color: rgba(168, 184, 202, 0.72); font: 9px var(--font-ui); }
+    .sm-map-v { color: rgba(228, 238, 250, 0.95); font: 9px var(--font-ui); }
+    /* Axial-tilt glyph: spin axis drawn at the real angle vs the orbital plane. */
+    .sm-map-tilt { display: block; overflow: visible; }
+    .sm-map-tilt-base { stroke: rgba(168, 184, 202, 0.4); stroke-width: 0.8; stroke-dasharray: 2 2; }
+    .sm-map-tilt-body { fill: rgba(228, 238, 250, 0.4); }
+    /* One consistent accent for every planet — it's a schematic tilt indicator,
+       not a per-body highlight, so it shouldn't take the catalog tint. */
+    .sm-map-tilt-axis { stroke: #8fe3ff; stroke-width: 1.5; stroke-linecap: round; }
+    .sm-map-tilt-pole { fill: #8fe3ff; }
+
     /* Observatory (landed-mode) tokens alias the Obsidian palette in :root above;
        warm (--obs-warm / --ember) stays reserved for "happening now". */
     #observatory-panel {
@@ -2591,6 +2804,16 @@
       /* One clock: the sheet's now-bar replaces the bottom time pill while
          the sheet is open. */
       body.observatory-sheet-open #planetarium-bottom-bar { display: none; }
+      .system-map-card {
+        top: 54px;
+        left: 8px;
+        width: min(280px, calc(100vw - 62px));
+        padding: 12px 13px;
+      }
+      .system-map-card h2 { font-size: 17px; }
+      .system-map-note { font-size: 9.5px; }
+      .system-map-controls span { max-width: 150px; }
+      body.system-map-active #top-bar h1 { opacity: 0.45; }
       /* The strip stacks on narrow screens (readout row + controls row) —
          inline it overflows 390px and clips the Now button. */
       .shud-timebar {
@@ -2684,6 +2907,31 @@
     <div id="planetarium-ui">
       <!-- Sun glare flood: the whiteout spilling over the cockpit chrome. -->
       <div id="sun-glare-flood"></div>
+      <div id="system-map-ui" aria-hidden="true">
+        <section class="system-map-card pn pn-high" aria-label="Solar system map">
+          <div class="system-map-head">
+            <div>
+              <div class="system-map-eyebrow">Live orrery</div>
+              <h2 id="system-map-title">Solar System</h2>
+            </div>
+            <button class="system-map-exit" id="system-map-exit">Exit</button>
+          </div>
+          <div class="system-map-date" id="system-map-date">--</div>
+          <p class="system-map-note">Click a body to fly to it and follow it.<br><b>Not to scale</b> — distances are compressed and planet, moon &amp; Sun sizes enlarged so everything stays visible.</p>
+          <div class="system-map-controls">
+            <span>Drag to rotate · Scroll to zoom · Hover to name</span>
+          </div>
+          <div class="system-map-jump">
+            <span>Go to</span>
+            <button id="system-map-bodies">Browse…</button>
+            <button id="system-map-jump-ship">Ship</button>
+            <button id="system-map-reset">Whole system</button>
+          </div>
+          <div id="system-map-picker" style="display:none"></div>
+        </section>
+        <button class="system-map-focus" id="system-map-focus" aria-label="Back to the whole Solar System">◂ Solar System</button>
+        <div id="system-map-labels" aria-hidden="true"></div>
+      </div>
       <!-- Top right: Leave keeps its text (it names the body); the rest are
            icon-only squares with hover tooltips. Ids are read by the TS. -->
       <div id="planetarium-actions">
@@ -2707,6 +2955,10 @@
         <button class="act-btn act-icon" id="planetarium-btn-observatory" style="display:none" aria-label="Observatory">
           <svg class="act-glyph" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4.15 8.11 L12.68 3.17 L14.12 6.03 L5.05 9.89 Z"></path><path d="M11.9 3.75 L13.15 6.35"></path><path d="M4.5 9.05 L3.1 9.75"></path><path d="M9.4 8.2 L9.0 15.6 M9.0 15.6 L6.7 17.8 M9.0 15.6 L11.3 17.8"></path></svg>
           <span class="act-tip">Observatory <kbd>O</kbd></span>
+        </button>
+        <button class="act-btn act-icon" id="planetarium-btn-system-map" aria-label="System map" aria-pressed="false">
+          <svg class="act-glyph" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><g transform="rotate(-20 10 10)"><ellipse cx="10" cy="10" rx="7.6" ry="3.3"></ellipse><circle cx="17.6" cy="10" r="1.05" fill="currentColor" stroke="none"></circle></g><circle cx="10" cy="10" r="1.9" fill="currentColor" stroke="none"></circle></svg>
+          <span class="act-tip">System map</span>
         </button>
         <button class="act-btn act-icon" id="planetarium-btn-menu" aria-label="Menu">
           <svg class="act-glyph" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 5.5 H16 M4 10 H16 M4 14.5 H16"></path></svg>

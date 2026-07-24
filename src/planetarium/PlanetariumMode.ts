@@ -4303,6 +4303,11 @@ export class PlanetariumMode {
     // line crossing the ecliptic would streak straight through the eclipse.
     // The "Orbit lines" setting hides the same furniture everywhere else.
     const hideAll = this.landedView === 'surface' || !this.showOrbitLines;
+    // The asteroid belt is scene furniture too: its particles aren't
+    // photometric (a real belt asteroid sits far below naked-eye), so on the
+    // eclipse-dimmed surface sky they were the only "stars" that survived the
+    // exposure — a false string of dots along the ecliptic.
+    this.solarSystem.asteroidBelt.visible = this.landedView !== 'surface';
     for (let i = 0; i < this.solarSystem.orbitLines.length; i++) {
       const orbit = this.solarSystem.orbitLines[i];
       orbit.visible = !hideAll;
@@ -5190,10 +5195,11 @@ export class PlanetariumMode {
         // is no totality to hold Next for.
         tutorial.totalityReached = true;
       }
-      // The card teaches the panel as the way to find an eclipse, so it must be
-      // on screen. Surface entry closed it; reopen it over the sky exactly as
-      // the HUD's Observatory chip does. On phones show() starts the sheet at
-      // peek, clear of the centered Sun, and the HUD chevron clamps to it.
+      // The card teaches the panel as the way to find an eclipse, so it must
+      // be on screen even when the tutorial's arrival was quiet and the panel
+      // never opened (surface entry only keeps a panel that was already open).
+      // On phones show() starts the sheet at peek, clear of the centered Sun,
+      // and the HUD chevron clamps to it.
       this.openObservatoryPanel();
       this.markTutorialStaged(generation);
     });
@@ -8724,11 +8730,12 @@ export class PlanetariumMode {
       return;
     }
     this.landedView = 'surface';
-    // The panel makes way for the sky: it covered the event on
-    // mobile and intercepted HUD clicks on desktop. The HUD's Observatory
-    // chip reopens it over the surface view as an explicit opt-in; exiting
-    // does not auto-reopen.
-    this.closeObservatoryPanel();
+    // An open panel survives the entry: its event rows and vantage button are
+    // how the sky was found, and losing them on "Look up" read as the panel
+    // vanishing. Re-showing parks the phone sheet at peek so the centred
+    // subject stays clear; the HUD's Observatory chip still toggles it both
+    // ways, and a closed panel stays closed — the bare sky is the default.
+    if (this.observatoryPanel.isOpen()) this.observatoryPanel.show();
     // The orbit-details overlay is an orbit-view instrument — the surface sky
     // must not carry ellipse axes/sectors across it.
     this.syncOrbitDetailsVisibility();

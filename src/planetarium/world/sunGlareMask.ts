@@ -70,19 +70,30 @@ function clamp01(x: number): number {
 }
 
 /**
+ * How much of a point consumer's alpha the mask may remove at saturation.
+ * Deliberately short of 1: veiling glare attenuates, it doesn't erase — a
+ * bright star still shows through the thin outer wash the way Venus shows
+ * through twilight glare. Where the drawn halo is genuinely bright, the
+ * surviving sliver of star alpha adds a few counts under a hundred-count
+ * blaze and stays invisible, so the halo still reads opaque.
+ */
+export const SUN_GLARE_MASK_MAX_KILL = 0.9;
+
+/**
  * Outer radius of the geometric obscuration core, in CSS px. The core stands in
  * for the saturated blaze around the *exposed* photosphere, floored at the bare
  * outer-system glint so a distant point-Sun still obscures coincident dots.
  *
  * Two things govern it. While any sliver of photosphere still burns, the core
- * covers the whole disc plus a margin — `1.2 ×` the disc radius at minimum,
- * because the surviving sliver's bloom hugs the limb and stars must not pop
- * against it. On top of that margin, the reach out to the full `2.5 ×` blaze
- * decays with the visible energy (`^0.38`, the drawn glare's own convention), so
- * a deep partial keeps a tight core and a full Sun keeps the wide one. Only the
- * final 0.2% — the collapse into totality — releases the whole core to 0, which
- * is what lets the corona and stars own the sky beside a void-black eclipsing
- * disc (that disc's own opaque mesh depth-occludes whatever is behind it).
+ * keeps a hair of margin past the limb (`1.05 ×` the disc radius) and grows
+ * toward the full `2.5 ×` blaze with the exposed fraction (`√vis` — tighter
+ * through the partials than the drawn glare's `^0.38` energy convention on
+ * purpose: during an eclipse the occluder's opaque mesh depth-occludes the
+ * covered side, and the crescent-centred wash mask carries the lit side's
+ * bloom, so a disc-wide core would only erase honest sky). Only the final
+ * 0.2% — the collapse into totality — releases the whole core to 0, which is
+ * what lets the corona and stars own the sky beside a void-black eclipsing
+ * disc.
  */
 export function sunGlareMaskCoreOuterPx(
   solarRadiusPx: number,
@@ -90,7 +101,7 @@ export function sunGlareMaskCoreOuterPx(
   bodyVisibleFraction: number,
 ): number {
   const vis = clamp01(bodyVisibleFraction);
-  const reach = solarRadiusPx * (1.2 + 1.3 * Math.pow(vis, 0.38));
+  const reach = solarRadiusPx * (1.05 + 1.45 * Math.sqrt(vis));
   return Math.max(glintFloorPx, reach) * smoothstep(0, 0.002, vis);
 }
 
@@ -324,7 +335,7 @@ export function augmentPointsMaterialWithSunGlareMask(mat: THREE.PointsMaterial)
       )
       .replace(
         '#include <project_vertex>',
-        '#include <project_vertex>\n\tvSunGlareMaskAlpha = 1.0 - 0.98 * sunGlareMask(gl_Position);',
+        `#include <project_vertex>\n\tvSunGlareMaskAlpha = 1.0 - ${SUN_GLARE_MASK_MAX_KILL.toFixed(2)} * sunGlareMask(gl_Position);`,
       );
     shader.fragmentShader = shader.fragmentShader
       .replace('#include <common>', '#include <common>\nvarying float vSunGlareMaskAlpha;')

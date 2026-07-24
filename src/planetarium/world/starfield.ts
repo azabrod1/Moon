@@ -6,7 +6,7 @@
 import * as THREE from 'three';
 import { BRIGHT_STAR_CATALOG } from '../data/brightStars';
 import { raDecToVector } from '../../astronomy/planetary';
-import { createSunGlareMaskUniforms, sunGlareMaskGLSL } from './sunGlareMask';
+import { SUN_GLARE_MASK_MAX_KILL, createSunGlareMaskUniforms, sunGlareMaskGLSL } from './sunGlareMask';
 import { starPointBrightness, starPointVisual } from './starPointMapping';
 
 /** Celestial-sphere radius (AU) shared by the stars and the constellation
@@ -151,7 +151,7 @@ export function createPlanetariumStarfield(rendererPixelRatio: number): THREE.Po
             max(max(halfC.x, halfC.y), max(halfD.x, halfD.y))
           );
           gl_PointSize = max(1.0, 2.0 * sourceHalfPx);
-          vAlpha = alpha * (1.0 - 0.98 * sunGlareMask(gl_Position));
+          vAlpha = alpha * (1.0 - ${SUN_GLARE_MASK_MAX_KILL.toFixed(2)} * sunGlareMask(gl_Position));
         }
       `,
     fragmentShader: `

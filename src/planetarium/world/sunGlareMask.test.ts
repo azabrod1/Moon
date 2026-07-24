@@ -201,10 +201,20 @@ describe('sunGlareMaskCoreOuterPx', () => {
     expect(sunGlareMaskCoreOuterPx(1000, 500, 0)).toBe(0);
   });
 
-  it('still covers the whole disc plus a 1.2× margin through a deep partial', () => {
-    // A surviving sliver (10% exposed) keeps the core over the disc + margin so
-    // stars can't pop against the limb-hugging bloom.
-    expect(sunGlareMaskCoreOuterPx(100, 1, 0.1)).toBeGreaterThanOrEqual(120);
+  it('still covers the whole disc plus a margin through a deep partial', () => {
+    // A surviving sliver (10% exposed) keeps the core past the limb so stars
+    // can't pop against the limb-hugging bloom.
+    expect(sunGlareMaskCoreOuterPx(100, 1, 0.1)).toBeGreaterThanOrEqual(110);
+  });
+
+  it('hugs the blaze through a partial instead of holding the full-sun reach', () => {
+    // During an eclipse the occluder's mesh depth-occludes the covered side and
+    // the crescent-centred wash mask carries the lit side, so the core must
+    // release sky as the Sun is eaten — a quarter-covered Sun keeps well under
+    // the 2.5× full-sun blaze.
+    expect(sunGlareMaskCoreOuterPx(100, 1, 0.23)).toBeLessThan(180);
+    expect(sunGlareMaskCoreOuterPx(100, 1, 0.23))
+      .toBeLessThan(sunGlareMaskCoreOuterPx(100, 1, 1));
   });
 
   it('is monotone nondecreasing in the exposed fraction', () => {

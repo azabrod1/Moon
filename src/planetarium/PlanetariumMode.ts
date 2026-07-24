@@ -15,6 +15,7 @@ import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import {
   CREATE_SOLAR_SYSTEM_TOTAL_UNITS,
   createSolarSystem,
+  ORBIT_LINE_RESAMPLE_MAX_AGE_MS,
   resampleOrbitLines,
   type SolarSystemObjects,
   type PlanetariumLayout,
@@ -262,6 +263,8 @@ import { ObservatoryHUD, type SurfaceHudState } from './ui/ObservatoryHUD';
 import { SurfaceTargetMenu } from './ui/SurfaceTargetMenu';
 import { SunLabel } from './ui/SunLabel';
 import { TutorialCard, tutorialCardModel } from './ui/TutorialCard';
+import { SystemMap } from './map/SystemMap';
+import { MapHUD } from './ui/MapHUD';
 
 type ScriptedTransfer = {
   elapsed: number;
@@ -369,6 +372,7 @@ export class PlanetariumMode {
     'planetarium-btn-observatory',
     'planetarium-btn-autopilot',
     'planetarium-btn-tutorial',
+    'planetarium-btn-map',
     'planetarium-speed-up',
     'planetarium-speed-down',
   ] as const;
@@ -683,6 +687,9 @@ export class PlanetariumMode {
   private prevPlayerPos = new THREE.Vector3();
 
   private layoutMode: PlanetariumLayout = 'realistic';
+  // The current frame's wall delta in ms — the system map's scale animation
+  // rides real time, not the sim-capped clock. Set at the top of update().
+  private lastFrameDtMs = 16;
 
   private timeState: SimulationTime = {
     currentUtcMs: Date.now(),
@@ -819,6 +826,22 @@ export class PlanetariumMode {
   // (the panel is CSS-fixed; it only moves on resize — desktop side panel
   // vs ≤640px bottom sheet).
   private panelRectCache: { w: number; h: number; left: number; top: number } | null = null;
+
+  // System map: a full-screen schematic of the whole solar system, a
+  // session-only sub-state (surface-view pattern). Built lazily on first open;
+  // never persisted. While open, the world simulation keeps running but its
+  // presentation is gated — see the mapOpen writer guards and the
+  // system-map-active body class.
+  private systemMap: SystemMap | null = null;
+  // Whether a plain close should reopen the Observatory panel / re-enter
+  // surface view (the snapshot-and-restore ethos). openMap sets these when it
+  // closes those states; a commit-side close clears them (reverse close).
+  private mapRestorePanel = false;
+  private mapRestoreSurface = false;
+  private mapHud = new MapHUD(
+    (trueScale) => this.setMapScale(trueScale),
+    () => this.closeMap(),
+  );
 
   // Moon labels
   private moonLabels = new Map<string, HTMLDivElement>();
@@ -1653,6 +1676,9 @@ export class PlanetariumMode {
 
     const planetariumUI = document.getElementById('planetarium-ui');
     if (planetariumUI) planetariumUI.style.display = 'none';
+    // The mode is tearing down — close the map without restoring its transient
+    // panel/surface state (there is nothing to return to).
+    this.closeMap({ restore: false });
     this.closeObservatoryPanel();
     this.closeDeck();
     this.closeSurfaceTargetMenu();
@@ -1704,10 +1730,13 @@ export class PlanetariumMode {
   onResize(): void {
     if (this.starfield) setStarfieldPixelRatio(this.starfield, this.renderer.getPixelRatio());
     if (this.moonDots) this.moonDots.setPixelRatio(this.renderer.getPixelRatio());
+    // Match the map camera aspect and its fat-line resolution to the canvas.
+    this.systemMap?.onResize();
   }
 
   update(dt: number): void {
     if (!this.active || !this.solarSystem) return;
+    this.lastFrameDtMs = dt * 1000;
 
     // Upload one budget's worth of freshly loaded textures while nothing is
     // being asked of the frame — otherwise the whole decode+upload bill lands
@@ -1725,6 +1754,8 @@ export class PlanetariumMode {
       // landed pipeline too so Observatory sun views stay protected).
       this.exposureTarget = 1;
       this.updateLanded(dt);
+      // End of the landed branch: positions are final, refresh the map if open.
+      this.updateMapView();
       return;
     }
 
@@ -1894,11 +1925,16 @@ export class PlanetariumMode {
     );
     this.exposureTarget = solarExposureTarget(this.exposureCoverage);
 
+    // World-presentation passes are gated while the map owns the frame — the
+    // system-map-active class force-hides their DOM, so this only saves the CPU
+    // of projecting/writing overlays that can't show.
+    const mapOpen = this.isMapOpen();
+
     // Occlusion pipeline: planet discs → Sun + moon + ship discs → labels +
     // markers. The occluder passes run whenever either consumer is on: marker
     // sprites render without a depth test (see the material comment in
     // PlanetLabels), so this analytic disc set is their only occlusion.
-    if (this.planetLabels && (this.showBodyLabels || this.showBodyMarkers)) {
+    if (this.planetLabels && !mapOpen && (this.showBodyLabels || this.showBodyMarkers)) {
       const scenePositions = new Map<string, { x: number; y: number; z: number }>();
       for (const planet of this.solarSystem.planets) {
         scenePositions.set(planet.data.name, {
@@ -1920,7 +1956,7 @@ export class PlanetariumMode {
     }
 
     // Update constellation labels
-    if (this.constellations && this.showConstellations) {
+    if (this.constellations && this.showConstellations && !mapOpen) {
       this.constellations.updateLabels(
         this.camera,
         this.renderer.domElement.clientWidth,
@@ -1928,7 +1964,7 @@ export class PlanetariumMode {
       );
     }
 
-    if (this.showBodyLabels) {
+    if (this.showBodyLabels && !mapOpen) {
       this.renderMoonLabels();
       this.updateSunLabel();
     }
@@ -1948,6 +1984,10 @@ export class PlanetariumMode {
     }
 
     if (import.meta.env.DEV && this.devTraceMesh) this.devTraceRecord();
+
+    // End of the cruise branch: ship position finalized after collisions,
+    // refresh the map if open.
+    this.updateMapView();
   }
 
   private applyFloatingOrigin() {
@@ -4338,6 +4378,13 @@ export class PlanetariumMode {
 
   private processInput() {
     if (this.landedOn) return;
+    // The map is a clock instrument, not a cockpit: while it owns the frame,
+    // no key/touch/gyro steers the coasting ship and the throttle is inert.
+    if (this.isMapOpen()) {
+      this.player.yawInput = 0;
+      this.player.pitchInput = 0;
+      return;
+    }
     // Flight controls
     const yawFromKeys =
       (this.keys.has('arrowright') || this.keys.has('d') ? 1 : 0) -
@@ -4440,6 +4487,9 @@ export class PlanetariumMode {
       if (this.isDeckOpen()) { this.closeDeck(); return; }
       if (this.bottomBar.isTimeOpen()) { this.bottomBar.closeTime(); return; }
       if (this.bottomBar.isStatsOpen()) { this.bottomBar.closeStats(); return; }
+      // The map rung sits above Look-at/surface view: Esc over the map drops
+      // back into the ship (Packet B adds the card's micro-rung above this).
+      if (this.isMapOpen()) { this.closeMap(); return; }
       if (this.surfaceTargetMenu.isOpen()) { this.closeSurfaceTargetMenu(); return; }
       if (this.landedView === 'surface') { this.exitSurfaceView(); return; }
       if (this.observatoryPanel.isOpen()) { this.closeObservatoryPanel(); return; }
@@ -4485,6 +4535,26 @@ export class PlanetariumMode {
       return;
     }
 
+    // M toggles the system map — everywhere outside a mission, the help modal,
+    // a running tutorial, the ☰ menu, or an in-flight arrival (a dropped
+    // commit would end the ceremony over the origin scene). M while the deck is
+    // open types into its search — the deck-open branch above already returned.
+    if (key === 'm' && !e.metaKey && !e.ctrlKey && !e.altKey) {
+      if (
+        this.isMissionActive() ||
+        this.isHelpOpen() ||
+        this.isTutorialActive() ||
+        this.menuPanel.isOpen() ||
+        this.arrivalInFlight
+      ) {
+        return;
+      }
+      e.preventDefault();
+      if (this.isMapOpen()) this.closeMap();
+      else this.openMap();
+      return;
+    }
+
     // Time throttle keys ride beside the deck verbs: , . step the rate, N
     // jumps the clock to now — landed and surface view included. The ☰ menu
     // joins the guard set: it auto-pauses the clock while open, and stepping
@@ -4524,7 +4594,10 @@ export class PlanetariumMode {
     // Space toggles pause
     if (e.key === ' ' && !spaceOnControl) {
       e.preventDefault();
-      this.player.moving = !this.player.moving;
+      // Over the map, Space pauses the clock (the map is a clock instrument);
+      // ordinary cruise keeps Space on ship thrust.
+      if (this.isMapOpen()) this.timeTogglePause();
+      else this.player.moving = !this.player.moving;
     }
   }
 
@@ -5345,6 +5418,7 @@ export class PlanetariumMode {
     const menu = document.getElementById('tools-menu');
     if (!menu) return;
     // One modal at a time — Tools joins the deck / ☰ / Look-at trio.
+    this.closeMap({ restore: false });
     this.closeMenuPanel();
     this.closeDeck();
     this.closeSurfaceTargetMenu();
@@ -5610,6 +5684,7 @@ export class PlanetariumMode {
         this.closeMenuPanel();
       } else {
         // One modal at a time (the deck closes ☰ on open, symmetric).
+        this.closeMap({ restore: false });
         this.closeDeck();
         this.closeSurfaceTargetMenu();
         this.closeToolsMenu();
@@ -5629,6 +5704,12 @@ export class PlanetariumMode {
     // closes both entry surfaces itself (their auto-pause must resolve
     // before the snapshot is taken).
     document.getElementById('planetarium-btn-tutorial')?.addEventListener('click', () => this.startTutorial());
+    // ☰ "System map": close the menu (restoring its auto-pause) then open the
+    // map. The M key is the other front door.
+    document.getElementById('planetarium-btn-map')?.addEventListener('click', () => {
+      this.closeMenuPanel();
+      this.openMap();
+    });
     document.getElementById('help-take-tutorial')?.addEventListener('click', () => this.startTutorial());
     document.getElementById('help-explore')?.addEventListener('click', () => this.hideHelp());
     document.getElementById('planetarium-help-close')?.addEventListener('click', () => this.hideHelp());
@@ -5647,6 +5728,7 @@ export class PlanetariumMode {
     });
 
     this.bottomBar.bind();
+    this.mapHud.bind();
     // One instrument at a time: opening the Stats card tucks the Observatory
     // panel back into its chip, with a brief pulse so the hop reads.
     this.bottomBar.onStatsToggle = (open) => {
@@ -5856,7 +5938,9 @@ export class PlanetariumMode {
     const search = document.getElementById('deck-search') as HTMLInputElement | null;
     if (!wasOpen) {
       // One modal at a time; labels restore on close (deferring to surface
-      // view / the labels setting).
+      // view / the labels setting). The map is mutually exclusive with the
+      // deck (same z-slot) — opening a tab supersedes it, no restore.
+      this.closeMap({ restore: false });
       this.closeMenuPanel();
       this.closeSurfaceTargetMenu();
       this.closeToolsMenu();
@@ -5903,11 +5987,193 @@ export class PlanetariumMode {
   /** Telescope chip / O: landed with the deck closed it toggles this sky's
    * panel; otherwise it's the deck's Observatory tab. */
   private observatoryAction() {
+    // O over the map closes it first, then opens the panel — this defines
+    // "reopens via O"; the reverse close skips the panel/surface restore.
+    this.closeMap({ restore: false });
     if (!this.isDeckOpen() && this.landedOn) {
       this.toggleObservatoryPanel();
       return;
     }
     this.toggleDeck('observe');
+  }
+
+  // ── System map ──────────────────────────────────────────────────────────
+
+  isMapOpen(): boolean {
+    return this.systemMap?.isOpen() ?? false;
+  }
+
+  /** main.ts renders this to the backbuffer instead of the composer while the
+   *  map owns the frame; the map owns its own renderer-state transaction. */
+  renderMapFrame(): void {
+    this.systemMap?.render();
+  }
+
+  /** Dev bridge: open/close/state/gamma, delegating to the same paths a real
+   *  tap uses (the M-key guards are the load-bearing ones). */
+  devOpenMap(): boolean {
+    this.openMap();
+    return this.isMapOpen();
+  }
+
+  devCloseMap(): boolean {
+    const was = this.isMapOpen();
+    this.closeMap();
+    return was;
+  }
+
+  devMapState(): { open: boolean; gamma: number; cameraDist: number } | null {
+    if (!this.systemMap) return null;
+    return {
+      open: this.systemMap.isOpen(),
+      gamma: this.systemMap.getGamma(),
+      cameraDist: this.systemMap.getCameraDistance(),
+    };
+  }
+
+  devSetMapGamma(gamma: number): void {
+    this.systemMap?.setGamma(gamma);
+  }
+
+  /** Open the full-screen system map. The single safe gate for every entry
+   *  (M key, ☰ item, dev bridge): refused during a mission, the help modal, a
+   *  running tutorial, or an in-flight arrival — a dropped commit would end the
+   *  arrival ceremony over the origin scene. */
+  private openMap() {
+    if (!this.active || !this.solarSystem || this.isMapOpen()) return;
+    if (this.isMissionActive() || this.isHelpOpen() || this.isTutorialActive() || this.arrivalInFlight) {
+      return;
+    }
+
+    // One modal at a time: fold every transient overlay away first.
+    this.closeMenuPanel();
+    this.closeDeck();
+    this.closeSurfaceTargetMenu();
+    this.closeToolsMenu();
+    this.bottomBar.closeStats();
+    this.bottomBar.closeTime();
+
+    // Restore-on-close: reopen the panel and re-enter surface view exactly as
+    // the user left them (the pick survives in surfacePickedTarget).
+    this.mapRestorePanel = this.observatoryPanel.isOpen();
+    if (this.mapRestorePanel) this.closeObservatoryPanel();
+    this.mapRestoreSurface = this.landedView === 'surface';
+    // The instant path — the default glide would leave SurfaceLook attached
+    // under the map's controls.
+    if (this.mapRestoreSurface) this.exitSurfaceView(true);
+
+    // Hand the pointer over cleanly (surface-view idiom, plus the cruise
+    // camera's reclaim/settle contract). End any held cruise orbit drag — its
+    // OrbitControls gesture and document listeners with it — drop the damping
+    // residuals, and put the chase back in charge so the invisible cruise
+    // camera keeps following the ship and closes to a proper chase pose.
+    this.cancelOrbitGesture();
+    this.flushOrbitDamping();
+    this.pendingChaseReclaim = false;
+    this.camOwner = 'chase';
+    this.controls.enabled = false;
+    // A held W must not resume as phantom thrust when the map closes.
+    this.keys.clear();
+    this.touchYaw = 0;
+    this.touchPitch = 0;
+    this.touchThrottle = 0;
+
+    // The full-screen touch flight zone would eat every map gesture AND steer
+    // the coasting ship — hide it and drop any pointer it has captured.
+    this.setTouchFlightZoneHidden(true);
+
+    document.body.classList.add('system-map-active');
+    // Nothing may re-show world labels over the map (the setWorldLabelsVisible
+    // defer term enforces it; the class force-hides the DOM regardless).
+    this.setWorldLabelsVisible(false);
+
+    this.systemMap ??= new SystemMap(this.renderer);
+    this.mapHud.bind();
+    this.systemMap.openMap(this.timeState.currentUtcMs);
+    this.mapHud.show();
+    this.mapHud.render(this.systemMap.isTrueScale());
+    this.updateMapView();
+  }
+
+  /**
+   * Close the map. Idempotent (a commit re-enters via applyLandedTarget /
+   * exitLandedMode). `restore` defaults on for the user gestures (M, Esc, the
+   * close chip) — those reopen the panel / re-enter surface view; a
+   * reverse-close from another front door passes `restore: false`.
+   */
+  private closeMap(opts: { restore?: boolean } = {}) {
+    if (!this.isMapOpen()) return;
+    const restore = opts.restore ?? true;
+    const restorePanel = this.mapRestorePanel;
+    const restoreSurface = this.mapRestoreSurface;
+    this.mapRestorePanel = false;
+    this.mapRestoreSurface = false;
+
+    this.systemMap?.close();
+    this.mapHud.hide();
+    document.body.classList.remove('system-map-active');
+    this.setTouchFlightZoneHidden(false);
+    // Give the canvas back to the world: the chase reseats itself, landed
+    // orbit controls resume (the activate() rule).
+    this.controls.enabled = !!this.landedOn || !this.isTouchDevice;
+    this.setWorldLabelsVisible(this.showBodyLabels);
+
+    // Surface view first (it closes the panel on entry), then the panel — so a
+    // sky watched with the panel open comes back exactly as it was left.
+    if (restore && restoreSurface) {
+      const pick = this.relevantObservatoryEvent() ? null : this.surfacePickedTarget;
+      if (pick) this.enterSurfaceView(pick, 'companion');
+      else this.enterSurfaceView();
+    }
+    if (restore && restorePanel) this.openObservatoryPanel();
+  }
+
+  private setMapScale(trueScale: boolean) {
+    if (!this.systemMap) return;
+    this.systemMap.setScale(trueScale);
+    this.mapHud.render(trueScale);
+  }
+
+  /** Per-frame map refresh — called at the end of both update branches once
+   *  positions are final. The map recomputes bodies from the clock; it never
+   *  reads mid-frame scene state. */
+  private updateMapView() {
+    if (!this.systemMap?.isOpen()) return;
+    this.systemMap.update(
+      this.timeState.currentUtcMs,
+      this.player.posX,
+      this.player.posY,
+      this.player.posZ,
+      this.player.heading,
+      this.player.pitch,
+      this.player.moving,
+      this.landedOn !== null,
+      this.lastFrameDtMs,
+    );
+  }
+
+  /** Show/hide the full-screen touch flight overlay and drop any captured
+   *  pointer. Landed mode hides it the same way; the map borrows the idiom. */
+  private setTouchFlightZoneHidden(hidden: boolean) {
+    const zone = document.getElementById('touch-flight-zone');
+    if (hidden) {
+      if (this.activeFlightTouchId !== null) {
+        // releasePointerCapture throws on a pointer it no longer holds.
+        try {
+          (zone as HTMLElement | null)?.releasePointerCapture?.(this.activeFlightTouchId);
+        } catch { /* pointer already released */ }
+        this.activeFlightTouchId = null;
+        this.touchYaw = 0;
+        this.touchPitch = 0;
+        this.touchThrottle = 0;
+      }
+      zone?.classList.remove('active');
+      if (zone) zone.style.display = 'none';
+      return;
+    }
+    // Restore to the world state: hidden while landed or on a keyboard device,
+    // visible on a touch device in cruise.
+    if (zone) zone.style.display = this.landedOn || !this.isTouchDevice ? 'none' : '';
   }
 
   /** Deck chrome + rows + filter, for the current verb. */
@@ -6125,7 +6391,7 @@ export class PlanetariumMode {
    * stale labels a modal-close revealed).
    */
   private setWorldLabelsVisible(visible: boolean) {
-    if (visible && (this.landedView === 'surface' || !this.showBodyLabels)) return;
+    if (visible && (this.landedView === 'surface' || this.isMapOpen() || !this.showBodyLabels)) return;
     const planetLabelsEl = document.getElementById('planet-labels');
     const moonLabelsEl = this.moonLabelContainer;
     if (planetLabelsEl) planetLabelsEl.style.display = visible ? '' : 'none';
@@ -9428,6 +9694,9 @@ export class PlanetariumMode {
     // changes. Defensive close (no-op on deck-initiated landings).
     this.closeDeck();
     this.closeToolsMenu();
+    // A commit re-enters here; the map must be gone before the new ground
+    // takes over (idempotent — no restore of the map's own transient state).
+    this.closeMap({ restore: false });
     // New ground, new sky: the picker's rows and the remembered Look-at
     // target both describe the vantage being left behind.
     this.closeSurfaceTargetMenu();
@@ -9913,6 +10182,8 @@ export class PlanetariumMode {
     this.closeDeck();
     this.closeSurfaceTargetMenu();
     this.closeToolsMenu();
+    // Takeoff supersedes the map (a commit re-enters here); no restore.
+    this.closeMap({ restore: false });
     this.surfacePickedTarget = null;
     // Teardown path: restore FOV/controls/labels instantly — the code below
     // reconfigures the controls and camera for flight anyway.
@@ -10094,12 +10365,15 @@ export class PlanetariumMode {
     // dots after the surface camera re-pins (labels are hidden there anyway).
     if (this.landedView !== 'surface') this.updateMoonDotsForCamera();
 
+    // World-presentation passes are gated while the map owns the frame.
+    const mapOpen = this.isMapOpen();
+
     // Occlusion pipeline while landed: planets → Sun + moons + ship → labels +
     // markers; surface view hides everything. The occluder passes run whenever
     // either consumer is on: marker sprites render without a depth test (see
     // the material comment in PlanetLabels), so this analytic disc set is
     // their only occlusion.
-    if (this.planetLabels && this.landedView !== 'surface' && (this.showBodyLabels || this.showBodyMarkers)) {
+    if (this.planetLabels && this.landedView !== 'surface' && !mapOpen && (this.showBodyLabels || this.showBodyMarkers)) {
       const scenePositions = new Map<string, { x: number; y: number; z: number }>();
       for (const planet of this.solarSystem.planets) {
         scenePositions.set(planet.data.name, {
@@ -10121,7 +10395,7 @@ export class PlanetariumMode {
     }
 
     // Update constellation labels while landed
-    if (this.constellations && this.showConstellations) {
+    if (this.constellations && this.showConstellations && !mapOpen) {
       this.constellations.updateLabels(
         this.camera,
         this.renderer.domElement.clientWidth,
@@ -10129,7 +10403,7 @@ export class PlanetariumMode {
       );
     }
 
-    if (this.landedView !== 'surface' && this.showBodyLabels) {
+    if (this.landedView !== 'surface' && this.showBodyLabels && !mapOpen) {
       this.renderMoonLabels();
       this.updateSunLabel();
     }
@@ -10151,8 +10425,12 @@ export class PlanetariumMode {
     // NDC projection reads directly.
     this.camera.updateMatrixWorld();
     this.updateSunShader(dt);
-    this.updateShadowGuideCamera();
-    this.updateOrbitFocusLabels();
+    if (!mapOpen) {
+      // Landed reticle + orbit-detail foci are world-anchored HTML; the map
+      // force-hides them and the passes that place them can rest.
+      this.updateShadowGuideCamera();
+      this.updateOrbitFocusLabels();
+    }
 
     if (shouldRefreshUi) {
       this.invalidateExpiredObservatoryEvents();
@@ -10527,17 +10805,16 @@ export class PlanetariumMode {
    * Re-sample the orbit lines when the sim clock has drifted from the epoch
    * they were sampled at. The realistic lines are the bodies' rendered
    * trajectories over one period centered on that epoch, so each planet sits
-   * on its own line by construction — but only near the epoch: past half a
-   * period (Mercury: 44 d) a body re-treads a loop that has precessed a
-   * little, and year-over-year perturbation wiggle (Earth: ~0.5 R⊕) creeps
-   * in. 60 days keeps every body within ~a third of its own radius of the
-   * drawn line (pinned in SolarSystem.test.ts) for a few-ms resample a
-   * handful of times per simulated year. Mechanics live in resampleOrbitLines.
+   * on its own line by construction — but only near the epoch (the drift and
+   * the chosen tolerance are in ORBIT_LINE_RESAMPLE_MAX_AGE_MS; the mechanics
+   * are in resampleOrbitLines, pinned in SolarSystem.test.ts).
    */
   private rebuildOrbitLinesIfStale() {
     if (!this.solarSystem || this.layoutMode !== 'realistic') return;
-    const SIXTY_DAYS_MS = 60 * 86_400_000;
-    if (Math.abs(this.timeState.currentUtcMs - this.solarSystem.orbitLinesEpochUtcMs) < SIXTY_DAYS_MS) {
+    if (
+      Math.abs(this.timeState.currentUtcMs - this.solarSystem.orbitLinesEpochUtcMs) <
+      ORBIT_LINE_RESAMPLE_MAX_AGE_MS
+    ) {
       return;
     }
     resampleOrbitLines(this.solarSystem, this.layoutMode, this.timeState.currentUtcMs);

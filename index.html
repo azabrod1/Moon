@@ -2398,6 +2398,100 @@
     .tools-row.tools-subitem { padding-left: 22px; min-height: 28px; }
     .tools-row.tools-subitem .pk-info b { font-weight: 500; font-size: 13px; color: var(--t2); }
 
+    /* ── System map ─────────────────────────────────────────────────────
+       Full-screen schematic overlay in the deck's z-slot. The layer lets
+       pointers through to the canvas (orbit/zoom on empty space); the HUD
+       children capture their own. */
+    #system-map-ui {
+      display: none;
+      position: fixed;
+      inset: 0;
+      z-index: 27;
+      pointer-events: none;
+    }
+    #system-map-ui > * { pointer-events: auto; }
+    #map-labels { position: absolute; inset: 0; pointer-events: none; }
+    .map-label {
+      position: absolute;
+      left: 0; top: 0;
+      font-family: var(--font-ui);
+      font-size: 11px;
+      font-weight: 500;
+      color: var(--t1);
+      letter-spacing: 0.2px;
+      text-shadow: 0 0 6px rgba(0, 0, 0, 0.9);
+      white-space: nowrap;
+      will-change: transform;
+    }
+    .map-close {
+      position: absolute;
+      top: 14px;
+      left: 14px;
+      width: 38px;
+      height: 38px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      border-radius: var(--r-m);
+      background: rgba(255, 255, 255, 0.045);
+      border: 1px solid var(--line);
+      -webkit-backdrop-filter: blur(12px);
+      backdrop-filter: blur(12px);
+      color: var(--t2);
+      cursor: pointer;
+      transition: background var(--dur) var(--ease), color var(--dur) var(--ease), border-color var(--dur) var(--ease);
+    }
+    .map-close:hover { background: rgba(255, 255, 255, 0.09); color: var(--t1); border-color: rgba(255, 255, 255, 0.14); }
+    .map-close svg { width: 18px; height: 18px; }
+    .map-scale {
+      position: absolute;
+      left: 50%;
+      bottom: 96px;
+      transform: translateX(-50%);
+      display: inline-flex;
+      padding: 3px;
+      border-radius: var(--r-m);
+      background: rgba(255, 255, 255, 0.045);
+      border: 1px solid var(--line);
+      -webkit-backdrop-filter: blur(12px);
+      backdrop-filter: blur(12px);
+    }
+    .map-scale-seg {
+      border: none;
+      background: none;
+      padding: 7px 15px;
+      border-radius: var(--r-s);
+      font-family: var(--font-ui);
+      font-size: 12px;
+      font-weight: 500;
+      letter-spacing: 0.2px;
+      color: var(--t3);
+      cursor: pointer;
+      transition: background 0.16s var(--ease), color 0.16s var(--ease);
+    }
+    .map-scale-seg:hover { color: var(--t1); }
+    .map-scale-seg.on { background: rgba(var(--accent-rgb), 0.16); color: var(--t1); }
+    @media (max-width: 640px) {
+      .map-scale { bottom: 84px; }
+      .map-scale-seg { padding: 8px 13px; }
+    }
+    /* World-anchored overlays are force-hidden behind the map. The class must
+       beat the per-frame inline display/opacity writers, so !important. */
+    body.system-map-active #planet-labels,
+    body.system-map-active #constellation-labels,
+    body.system-map-active #planetarium-btn-land,
+    body.system-map-active #planetarium-keys-hint,
+    body.system-map-active #sun-glare-flood,
+    body.system-map-active #shadow-footprint-reticle,
+    body.system-map-active #orbit-focus-f1,
+    body.system-map-active #orbit-focus-f2 { display: none !important; }
+    /* Clear the corner for the close chip (the landed idiom). */
+    body.system-map-active #top-bar h1 { display: none; }
+    /* The engaged-autopilot destination chip collapses to its icon over the map. */
+    body.system-map-active #planetarium-btn-autopilot.act-wide { width: 38px; padding: 0; }
+    body.system-map-active #planetarium-btn-autopilot.act-wide .act-glyph { width: 20px; height: 20px; }
+    body.system-map-active #planetarium-btn-autopilot .autopilot-lbl { display: none; }
+
     #planetarium-btn-land {
       position: fixed;
       left: 50%;
@@ -2720,6 +2814,7 @@
         <button class="menu-action" id="planetarium-btn-save">Save</button>
         <button class="menu-action" id="planetarium-btn-new">New Journey</button>
         <button class="menu-action" id="planetarium-btn-tutorial">Tutorial</button>
+        <button class="menu-action" id="planetarium-btn-map">System map</button>
         <div class="menu-divider"></div>
         <div class="settings-row">
           <span class="settings-label">Show ship</span>
@@ -2942,6 +3037,10 @@
               <h4>Watch the orbits run</h4>
               <p>Click the date on the bottom bar. Speed time up and you can actually watch planets trace their orbits and moons circle their hosts. Pause, reverse, or jump to any UTC moment.</p>
             </section>
+            <section class="help-section">
+              <h4>The whole system at once (<kbd>M</kbd>)</h4>
+              <p>Press <kbd>M</kbd> for a map of the solar system with your ship on it, running on the same clock &mdash; speed time up and everything wheels around the Sun. Drag to turn the view, scroll to zoom, and switch between a compressed layout and true distances. <kbd>M</kbd> or Esc drops you back into the ship.</p>
+            </section>
             <p class="help-signoff">Have fun out there.</p>
           </div>
           <div class="help-tutorial-row">
@@ -2986,6 +3085,21 @@
         <div class="tools-card pn pn-high">
           <div class="tools-head"><h3>Tools</h3></div>
           <div class="pk-list" id="tools-menu-list"></div>
+        </div>
+      </div>
+
+      <!-- System map: a full-screen schematic of the solar system (z 27, the
+           deck's slot). The layer passes pointers through to the canvas so
+           empty-space drags orbit/zoom the map; the HUD children capture their
+           own. Shown/hidden by the mode; the WebGL map draws on the canvas. -->
+      <div id="system-map-ui">
+        <div id="map-labels"></div>
+        <button id="map-close" class="map-close" aria-label="Close map">
+          <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5.5 5.5 L14.5 14.5 M14.5 5.5 L5.5 14.5"></path></svg>
+        </button>
+        <div id="map-scale" class="map-scale" role="radiogroup" aria-label="Map scale">
+          <button class="map-scale-seg on" id="map-scale-compressed" role="radio" aria-checked="true">Compressed</button>
+          <button class="map-scale-seg" id="map-scale-true" role="radio" aria-checked="false">True scale</button>
         </div>
       </div>
 
@@ -3155,7 +3269,7 @@
       </div>
 
       <div id="planetarium-keys-hint">
-        <kbd>A</kbd><kbd>D</kbd> yaw &nbsp; <kbd>↑</kbd><kbd>↓</kbd> pitch &nbsp; <kbd>W</kbd><kbd>S</kbd> thrust &nbsp; <kbd>O</kbd> observatory &nbsp; <kbd>T</kbd> teleport &nbsp; <kbd>P</kbd> autopilot &nbsp; <kbd>,</kbd><kbd>.</kbd> time &nbsp; <kbd>N</kbd> now
+        <kbd>A</kbd><kbd>D</kbd> yaw &nbsp; <kbd>↑</kbd><kbd>↓</kbd> pitch &nbsp; <kbd>W</kbd><kbd>S</kbd> thrust &nbsp; <kbd>O</kbd> observatory &nbsp; <kbd>T</kbd> teleport &nbsp; <kbd>P</kbd> autopilot &nbsp; <kbd>M</kbd> map &nbsp; <kbd>,</kbd><kbd>.</kbd> time &nbsp; <kbd>N</kbd> now
       </div>
 
       <!-- Touch flight zone (mobile only) -->

@@ -610,6 +610,10 @@ function installDevHooks() {
     tutorialBack: () => planetariumMode?.devTutorialBack(),
     tutorialSkip: () => planetariumMode?.devTutorialSkip(),
     tutorialState: () => planetariumMode?.devTutorialState() ?? null,
+    openMap: () => planetariumMode?.devOpenMap() ?? false,
+    closeMap: () => planetariumMode?.devCloseMap() ?? false,
+    mapState: () => planetariumMode?.devMapState() ?? null,
+    setMapGamma: (g: number) => planetariumMode?.devSetMapGamma(g),
     setChrome: (visible: boolean) => planetariumMode?.devSetChrome(visible),
     setFov: (deg: number) => planetariumMode?.devSetFov(deg),
     setTimeMs: (utcMs: number) => planetariumMode?.setCurrentUtcMs(utcMs),
@@ -730,7 +734,20 @@ async function init() {
     }
 
     renderer.toneMappingExposure = exposureCurrent;
-    renderScene(camera);
+    // The system map draws its own scene straight to the backbuffer (it owns a
+    // renderer-state transaction), bypassing the world composer while open. It
+    // rides the same render-timing bracket so the telemetry path stays intact.
+    if (appMode === 'planetarium' && planetariumMode?.isMapOpen()) {
+      const perfRender = import.meta.env.DEV
+        ? surfacePerfBeginRender(renderer.info.programs?.length ?? 0, renderer.info.memory.textures)
+        : null;
+      planetariumMode.renderMapFrame();
+      if (import.meta.env.DEV) {
+        surfacePerfEndRender(perfRender, renderer.info.programs?.length ?? 0, renderer.info.memory.textures);
+      }
+    } else {
+      renderScene(camera);
+    }
   }
 
   animate();

@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  advanceDiamondRing,
   advanceSunEmergenceFlash,
   circleOcclusionFraction,
   diamondRingStrength,
@@ -215,6 +216,39 @@ describe('advanceSunEmergenceFlash', () => {
       dt: 1 / 60,
       eligible: false,
     })).toBe(0);
+  });
+});
+
+describe('advanceDiamondRing', () => {
+  it('advances at the same rate whatever the frame cadence', () => {
+    const whole = advanceDiamondRing({ current: 0.2, target: 1, dt: 1 / 30, snap: false });
+    const half = advanceDiamondRing({ current: 0.2, target: 1, dt: 1 / 60, snap: false });
+    const halves = advanceDiamondRing({ current: half, target: 1, dt: 1 / 60, snap: false });
+    expect(halves).toBeCloseTo(whole, 6);
+  });
+
+  it('strikes faster than it releases', () => {
+    const struck = advanceDiamondRing({ current: 0, target: 1, dt: 0.1, snap: false });
+    const released = 1 - advanceDiamondRing({ current: 1, target: 0, dt: 0.1, snap: false });
+    expect(struck).toBeGreaterThan(released);
+  });
+
+  it('snaps to the target in both directions', () => {
+    expect(advanceDiamondRing({ current: 0, target: 0.7, dt: 1 / 60, snap: true })).toBe(0.7);
+    expect(advanceDiamondRing({ current: 1, target: 0, dt: 1 / 60, snap: true })).toBe(0);
+  });
+
+  it('holds still on a zero or negative frame delta', () => {
+    expect(advanceDiamondRing({ current: 0.4, target: 1, dt: 0, snap: false })).toBe(0.4);
+    expect(advanceDiamondRing({ current: 0.4, target: 1, dt: -0.5, snap: false })).toBe(0.4);
+  });
+
+  it('decays to nothing within a couple of seconds', () => {
+    let value = 1;
+    for (let i = 0; i < 120; i += 1) {
+      value = advanceDiamondRing({ current: value, target: 0, dt: 1 / 60, snap: false });
+    }
+    expect(value).toBeLessThan(1e-3);
   });
 });
 

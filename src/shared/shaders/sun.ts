@@ -486,18 +486,21 @@ void main() {
   glare += sensorStreak;
 
   // Diamond ring: at second/third contact the exposed sliver is optically a
-  // point again, so a compact blaze plus a short diffraction cross returns at the
-  // crescent centroid (pLight — at those coverages the centroid IS the contact
-  // point). uDiamondRing is authored and topology-gated (0 for annular, exactly 0
-  // at totality), so this never fakes a ring at annularity. The amplitude is
-  // modest and rides uExposureScale: the exposure meter's totality release is
-  // what makes it blaze, not a second brightness ramp of its own. It carries no
-  // visibleEnergy factor, so a covered or buried Sun cannot fade it by exposed
-  // fraction alone — the buried-camera path in updateSunShader zeroes uDiamondRing
-  // explicitly.
+  // point again, so a compact blaze returns at the crescent centroid (pLight —
+  // at those coverages the centroid IS the contact point). Both terms are
+  // radially symmetric on purpose: an eye standing on a surface has no aperture
+  // to diffract that point into a cross, so the honest look is a brilliant bead
+  // wrapped in a soft round dazzle, with the corona supplying the ring around
+  // it. The amplitude is modest and rides uExposureScale: the exposure meter's
+  // totality release is what makes it blaze, not a second brightness ramp of its
+  // own. uDiamondRing is authored and topology-gated (0 for annular, exactly 0 at
+  // totality), so this never fakes a ring at annularity, and it carries no
+  // visibleEnergy factor — a covered or buried Sun cannot fade it by exposed
+  // fraction alone, so the buried-camera path in updateSunShader zeroes
+  // uDiamondRing explicitly.
   float diamondCore = exp(-lightOutside * 3.1);
-  float diamondArms = (horizontal + vertical) * 0.5;
-  glare += uDiamondRing * (diamondCore + diamondArms) * uGlareStrength * uExposureScale;
+  float diamondDazzle = exp(-lightOutside * 0.9) * 0.30;
+  glare += uDiamondRing * (diamondCore + diamondDazzle) * uGlareStrength * uExposureScale;
 
   // Limb crossings and third contact briefly overwhelm the virtual optics
   // before exposure adaptation catches up. The controller supplies a

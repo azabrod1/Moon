@@ -152,6 +152,7 @@ import {
   renderedMoonRadiusAU,
 } from './moonRenderSize';
 import {
+  advanceDiamondRing,
   advanceSunEmergenceFlash,
   circleOcclusionFraction,
   diamondRingStrength,
@@ -446,6 +447,10 @@ export class PlanetariumMode {
   private sunExposure = 1;
   private lastSunVisibleFraction = 1;
   private sunEmergenceFlash = 0;
+  /** Wall-time envelope behind uDiamondRing. The authored strength is a pure
+   *  function of the exposed fraction, which a warped clock can cross in one
+   *  frame; this carries the blaze at human speed regardless of time rate. */
+  private sunDiamondRing = 0;
   // DOM chrome flood at the whiteout wall; last written opacity string keeps
   // the per-frame style write to actual changes only.
   private sunGlareFloodEl: HTMLElement | null = null;
@@ -1223,6 +1228,7 @@ export class PlanetariumMode {
     this.sunExposure = 1;
     this.lastSunVisibleFraction = 1;
     this.sunEmergenceFlash = 0;
+    this.sunDiamondRing = 0;
     this.sunAtmosphereMix = 0;
     this.renderer.toneMappingExposure = 1;
     // Compile + validate the GPU texturer once, before the visibility gate can
@@ -1581,6 +1587,7 @@ export class PlanetariumMode {
     this.sunExposure = 1;
     this.lastSunVisibleFraction = 1;
     this.sunEmergenceFlash = 0;
+    this.sunDiamondRing = 0;
     this.sunAtmosphereMix = 0;
     this.applySunGlareFlood(0);
     this.clearSunSilhouette();
@@ -3543,9 +3550,12 @@ export class PlanetariumMode {
         // and contact-blaze uniforms and undo the crescent's min-size growth, so a
         // buried-camera frame entered straight from a second-contact pose can't
         // leave a displaced glare centroid or a diamond ring live. uDiamondRing
-        // carries no visibleEnergy factor, so only an explicit reset zeroes it.
+        // carries no visibleEnergy factor, so only an explicit reset zeroes it —
+        // and its envelope state goes with it, or the frame that surfaces again
+        // would release from a stale blaze.
         glareMat.uniforms.uGlareCentroidSr.value.set(0, 0);
         glareMat.uniforms.uDiamondRing.value = 0;
+        this.sunDiamondRing = 0;
         const baseMinHalfPx = (glareMat.userData.baseMinHalfPx ??=
           glareMat.uniforms.uMinHalfSizePx.value);
         glareMat.uniforms.uMinHalfSizePx.value = baseMinHalfPx;
@@ -3817,6 +3827,7 @@ export class PlanetariumMode {
       // disc this frame. Reset every frame so nothing goes stale.
       this.sunCrescentCentroidSr = 0;
       this.sunCrescentDisplacementPx = 0;
+      let diamondTarget = 0;
       if (occluderShade > 0) {
         // The glare quad billboards in camera-view XY and its fragment
         // measures in solar radii, so the offset is the angular separation
@@ -3858,14 +3869,26 @@ export class PlanetariumMode {
         // Authored diamond ring: annular gets none, exactly 0 at totality, same
         // guard as the shift. Body-only coverage (rings dim brightness, not the
         // contact topology).
-        glareMat.uniforms.uDiamondRing.value = diamondRingStrength(
+        diamondTarget = diamondRingStrength(
           eclipseOccluderLikeness(occluderToSunRatio), bodyVisibleFraction,
         ) * guard;
       } else {
         glareMat.uniforms.uOccluderOffsetSr.value.set(0, 0);
         glareMat.uniforms.uGlareCentroidSr.value.set(0, 0);
-        glareMat.uniforms.uDiamondRing.value = 0;
       }
+      // The authored strength is a per-frame function of the exposed fraction,
+      // and its band is narrow enough that a warped clock steps across the whole
+      // of it between two frames. The uniform therefore follows on wall time:
+      // the rise and release always take the same real interval, so a fast clock
+      // costs the bead amplitude rather than turning it into a one-frame pop. A
+      // queued view discontinuity snaps it — a jump has no motion to smooth.
+      this.sunDiamondRing = advanceDiamondRing({
+        current: this.sunDiamondRing,
+        target: diamondTarget,
+        dt,
+        snap: silhouetteSnap,
+      });
+      glareMat.uniforms.uDiamondRing.value = this.sunDiamondRing;
     }
 
     // Eyes/cameras clamp down quickly on a bright source and recover more

@@ -218,6 +218,35 @@ export function advanceSunEmergenceFlash(input: {
 }
 
 /**
+ * One-frame envelope for the diamond-ring blaze, advanced in WALL time.
+ *
+ * `diamondRingStrength` is a pure function of the exposed fraction, and a warped
+ * clock crosses its whole band inside a single frame — driven straight from it
+ * the uniform would step 0 -> 1 -> 0 with nothing in between. Smoothing on real
+ * seconds instead means the bloom rises and releases at the speed an eye reads,
+ * whatever rate the sim clock runs at.
+ *
+ * The two time constants differ because the eye does: light floods in the moment
+ * the limb breaks, while the dazzle it leaves behind outlives its source. `snap`
+ * is for view discontinuities — a jump has no continuous motion to smooth, so
+ * the envelope lands on the new scene's value directly.
+ */
+export function advanceDiamondRing(input: {
+  current: number;
+  target: number;
+  dt: number;
+  snap: boolean;
+}): number {
+  const target = THREE.MathUtils.clamp(input.target, 0, 1);
+  if (input.snap) return target;
+  const current = THREE.MathUtils.clamp(input.current, 0, 1);
+  const dt = Math.max(input.dt, 0);
+  if (!(dt > 0)) return current;
+  const tau = target > current ? 0.12 : 0.25;
+  return current + (target - current) * (1 - Math.exp(-dt / tau));
+}
+
+/**
  * Proximity whiteout — the approach's final act. Surface brightness does not
  * fall with distance, so once the photosphere fills the frame no camera or eye
  * holds detail: adaptation loses and the view bleaches to a full white screen.

@@ -142,7 +142,7 @@ import {
   type SurfaceTargetChoice,
 } from './surfaceView';
 import { DEG2RAD } from '../shared/math/angles';
-import { applyDesignFov } from '../shared/math/lensProjection';
+import { applyDesignFov, displayFovDeg } from '../shared/math/lensProjection';
 import { SUN_GLARE_EXTENT_SOLAR_RADII, SUN_VEIL_BETA, SUN_VEIL_SCALE_H } from '../shared/shaders/sun';
 import { landedFrameCamDistAU, landedMinDistanceAU, landedNearAU, LANDED_NEAR_AU } from './landedView';
 import {
@@ -1018,6 +1018,11 @@ export class PlanetariumMode {
 
   private enterSystemMap(): void {
     if (!this.solarSystem || this.systemMap.isActive() || this.isMissionActive() || this.tutorial) return;
+    // Surface view owns the pointer (SurfaceLook stays bound to the same canvas
+    // until exitSurfaceView) and the camera FOV, so both would fight the map's
+    // OrbitControls every frame. CSS hides the action cluster there, but that
+    // is styling, not a guard — the dev bridge reaches this directly.
+    if (this.landedView === 'surface') return;
     // Resolve the menu's temporary pause before taking the map snapshot. The
     // map freezes only the ship; the astronomy clock remains live and keeps
     // using the existing rail.
@@ -1219,6 +1224,11 @@ export class PlanetariumMode {
     this.controls.minDistance = CRUISE_CONTROLS_MIN_DISTANCE_AU;
     this.controls.maxDistance = 5;
     this.systemMap = new SystemMap(scene, camera, renderer, this.controls);
+    // The map's body picker joins the one-modal-at-a-time set from both sides.
+    this.systemMap.onPickerOpen = () => {
+      this.closeMenuPanel();
+      this.closeToolsMenu();
+    };
 
     // Yield the chase cam only on an actual orbit drag, never on a plain
     // click. We track raw pointer pixels because the chase cam moves the
@@ -7271,10 +7281,10 @@ export class PlanetariumMode {
   }
 
   /** The FOV the frame displays (under the lens pass, camera.fov holds the
-   *  wider overscan the warp samples from — never compare against it). */
+   *  wider overscan the warp samples from — never compare against it).
+   *  Delegates to the shared definition beside the lens math. */
   private displayFovDeg(): number {
-    const lens = this.camera.userData.lens as { designFovDeg: number; strength: number } | undefined;
-    return lens ? lens.designFovDeg : this.camera.fov;
+    return displayFovDeg(this.camera);
   }
 
   /** The one legal camera-FOV writer: routes through the lens overscan. */

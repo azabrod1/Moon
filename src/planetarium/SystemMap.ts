@@ -29,6 +29,7 @@ import { computeMoonOffsetEquatorialAU, getMoonDisplayOrbit } from '../astronomy
 import type { MoonMesh } from './PlanetFactory';
 import type { MoonPainter } from './world/MoonPainter';
 import { projectSphereToScreen, type SphereScreenProjection } from '../shared/three/projectToScreen';
+import { displayFovDeg } from '../shared/math/lensProjection';
 import {
   applyLensShaderUniforms,
   augmentFixedScreenSpriteForLens,
@@ -365,6 +366,11 @@ export class SystemMap {
   private active = false;
   private frameExtent = OUTER_SCENE_RADIUS + 0.6;
   private lastDateText = '';
+  private lastDateDay = NaN;
+  // Measured width of the card currently shown, keyed by whose card it is: the
+  // width is a pure function of the content, so it only changes on hover-change.
+  private labelWidthFor: string | null = null;
+  private labelWidthPx = 0;
 
   private pointerX = -1;
   private pointerY = -1;
@@ -645,9 +651,11 @@ export class SystemMap {
     const canvas = this.renderer.domElement;
     canvas.addEventListener('pointerdown', this.onPointerDown);
     canvas.addEventListener('pointermove', this.onPointerMove);
-    canvas.addEventListener('pointerup', this.onPointerUp);
-    canvas.addEventListener('pointercancel', this.onPointerCancel);
     canvas.addEventListener('pointerleave', this.onPointerLeave);
+    // Release/cancel go on the window — see onPointerUp for why the canvas
+    // can't be trusted to see them.
+    window.addEventListener('pointerup', this.onPointerUp);
+    window.addEventListener('pointercancel', this.onPointerCancel);
     window.addEventListener('resize', this.onResize);
     window.addEventListener('blur', this.onBlur);
 
@@ -671,9 +679,9 @@ export class SystemMap {
     const canvas = this.renderer.domElement;
     canvas.removeEventListener('pointerdown', this.onPointerDown);
     canvas.removeEventListener('pointermove', this.onPointerMove);
-    canvas.removeEventListener('pointerup', this.onPointerUp);
-    canvas.removeEventListener('pointercancel', this.onPointerCancel);
     canvas.removeEventListener('pointerleave', this.onPointerLeave);
+    window.removeEventListener('pointerup', this.onPointerUp);
+    window.removeEventListener('pointercancel', this.onPointerCancel);
     window.removeEventListener('resize', this.onResize);
     window.removeEventListener('blur', this.onBlur);
     this.pointerInside = false;
@@ -912,14 +920,6 @@ export class SystemMap {
     }
   }
 
-  /** The FOV the frame DISPLAYS. Under the lens pass `camera.fov` holds the
-   *  wider overscan the warp samples from, so anything measured against output
-   *  pixels (marker sizes, apparent diameters) must read this instead. */
-  private displayFovDeg(): number {
-    const lens = this.camera.userData.lens as { designFovDeg: number } | undefined;
-    return lens ? lens.designFovDeg : this.camera.fov;
-  }
-
   /**
    * Convert an authored OUTPUT-pixel quad size into the sprite scale a
    * `sizeAttenuation: false` sprite needs. The quad's source-NDC half-size is
@@ -948,7 +948,7 @@ export class SystemMap {
     // The ship's TRUE apparent size drives the ping's framing term, so this one
     // is metered against the displayed frame, not the overscan source.
     const displayFocal = this.renderer.domElement.clientHeight
-      / (2 * Math.tan(THREE.MathUtils.degToRad(this.displayFovDeg()) / 2));
+      / (2 * Math.tan(THREE.MathUtils.degToRad(displayFovDeg(this.camera)) / 2));
     const shipPx = (SHIP_MAP_LENGTH / dist) * displayFocal;
     const t = (performance.now() % 1600) / 1600;
     this.shipDot.scale.setScalar(this.fixedScreenScale(SHIP_DOT_QUAD_PX));
@@ -1183,7 +1183,14 @@ export class SystemMap {
     const open = force ?? panel.style.display === 'none';
     panel.style.display = open ? 'flex' : 'none';
     document.getElementById('system-map-bodies')?.setAttribute('aria-expanded', open ? 'true' : 'false');
+    // One modal at a time, in BOTH directions: the ☰ menu closes the picker on
+    // open, so the picker must close the ☰ menu (and any sibling) on open too.
+    if (open) this.onPickerOpen?.();
   }
+
+  /** Set by the mode controller: closes the overlays the picker takes over from.
+   *  The picker doesn't know what else is on screen, and shouldn't. */
+  onPickerOpen: (() => void) | null = null;
 
   /** Close the body picker if it's open; reports whether it did. The map's rung
    *  in the Esc cascade and the one-modal-at-a-time close set both go through
@@ -1237,20 +1244,33 @@ export class SystemMap {
       if (atmo) rows.push(['Atmosphere', atmo]);
       this.setLabelRows(label, rows);
     }
-    // Show first, then clamp against the card's MEASURED width: these cards run
-    // past 200px (the description alone is capped at 190), so a fixed margin
-    // let the values slide under the viewport edge and get clipped by the
-    // container's overflow:hidden. One layout read, for the one visible label.
+    // Clamp against the card's MEASURED width: these cards run past 200px (the
+    // description alone is capped at 190), so a fixed margin let the values
+    // slide under the viewport edge and get clipped by the container's
+    // overflow:hidden. The width is a pure function of the card's content, so
+    // measure only when the hovered body changes — reading offsetWidth every
+    // frame forces a synchronous layout mid-frame for a value that never moved.
+    // (left is reset first: an absolutely positioned box shrink-to-fits against
+    // the space remaining to its right, so measuring in place under-reports it.)
     label.style.display = 'flex';
-    label.style.left = '0px';
-    const cardWidth = label.offsetWidth;
-    const x = THREE.MathUtils.clamp(hit.x + 14, 6, Math.max(6, width - cardWidth - 6));
+    if (this.labelWidthFor !== hit.name) {
+      label.style.left = '0px';
+      this.labelWidthPx = label.offsetWidth;
+      this.labelWidthFor = hit.name;
+    }
+    const x = THREE.MathUtils.clamp(hit.x + 14, 6, Math.max(6, width - this.labelWidthPx - 6));
     const y = THREE.MathUtils.clamp(hit.y - 10, 58, Math.max(58, height - 34));
     label.style.left = `${Math.round(x)}px`;
     label.style.top = `${Math.round(y)}px`;
   }
 
   private renderDate(utcMs: number): void {
+    // The readout is day-resolution, so gate on the UTC day BEFORE formatting:
+    // comparing the formatted string still paid for a Date allocation and a
+    // full Intl pass every frame to produce a string it then threw away.
+    const day = Math.floor(utcMs / 86_400_000);
+    if (day === this.lastDateDay) return;
+    this.lastDateDay = day;
     const text = MAP_DATE_FORMAT.format(new Date(utcMs));
     if (text === this.lastDateText) return;
     this.lastDateText = text;
@@ -1263,6 +1283,9 @@ export class SystemMap {
   // resize would leave the old distance and clip outer bodies. Only the overview
   // re-fits; a focused body keeps its follow framing.
   private readonly onResize = (): void => {
+    // Card widths are viewport-dependent (the ≤640px rules restyle them), so
+    // drop the measurement cache on every resize, not just re-framing ones.
+    this.labelWidthFor = null;
     if (!this.active || this.focusName || this.transition) return;
     this.frameAll();
   };
@@ -1289,13 +1312,26 @@ export class SystemMap {
     }
   };
 
+  /**
+   * Bound on the WINDOW, not the canvas: OrbitControls' pointer capture is what
+   * normally retargets an off-canvas release back to the canvas, and it returns
+   * early while `controls.enabled` is false — which is every 0.9 s fly-to. A
+   * release over the map card during a transition would otherwise never reach
+   * us, stranding `pointerId` and eating the next gesture.
+   *
+   * Only a release ON the canvas can commit a focus; a release over the card or
+   * outside the window just ends the gesture.
+   */
   private readonly onPointerUp = (e: PointerEvent): void => {
     if (e.pointerId !== this.pointerId) return;
     this.pointerId = null;
     if (this.pointerDragged) return; // a drag rotated/zoomed — not a click
+    if (e.target !== this.renderer.domElement) return; // released on the chrome
     const rect = this.renderer.domElement.getBoundingClientRect();
     const hit = this.pickNearest(e.clientX - rect.left, e.clientY - rect.top, CLICK_HIT_FLOOR_PX, CLICK_HIT_PAD_PX);
     if (!hit) return; // click empty space: keep the current view
+    // A pick is a scene commit — the picker is a transient overlay over it.
+    this.togglePicker(false);
     if (hit.moon) this.focusMoonTarget(hit.moon.name, hit.moon.parent);
     else this.focusOn(hit.name);
   };

@@ -119,3 +119,34 @@ describe('fitDistanceAU', () => {
     expect(fitDistanceAU(10, 50, 1)).toBeGreaterThan(fitDistanceAU(5, 50, 1));
   });
 });
+
+describe('eccentric-orbit extent', () => {
+  // The map's per-orbit reach is the largest projected sample radius (the
+  // aphelion), the way recompressOrbits tracks it — NOT the compressed
+  // semi-major axis, which an eccentric orbit drawn at true scale overflows.
+  it('follows the aphelion sample, not the semi-major axis', () => {
+    const a = AU.pluto; // 39.48 — the case that overflows a semi-major fit
+    const e = 0.25; // eccentric enough that the aphelion clears the mean radius
+    const gamma = MAP_GAMMA_DEFAULT;
+    const out = { x: 0, y: 0, z: 0 };
+    const N = 180;
+    let maxProjected = 0;
+    let maxSampleR = 0;
+    for (let i = 0; i < N; i++) {
+      const theta = (i / N) * Math.PI * 2;
+      // Kepler ellipse with the Sun at a focus: r peaks at aphelion (theta=pi).
+      const r = (a * (1 - e * e)) / (1 + e * Math.cos(theta));
+      projectMapPoint(r * Math.cos(theta), 0, r * Math.sin(theta), gamma, out);
+      const projR = Math.sqrt(out.x * out.x + out.y * out.y + out.z * out.z);
+      if (projR > maxProjected) maxProjected = projR;
+      if (r > maxSampleR) maxSampleR = r;
+    }
+    const aphelion = a * (1 + e);
+    expect(maxSampleR).toBeGreaterThan(a);
+    expect(maxSampleR).toBeCloseTo(aphelion, 6);
+    // The extent equals the aphelion sample compressed — and exceeds what a
+    // semi-major-axis extent would have drawn.
+    expect(maxProjected).toBeCloseTo(compressRadius(maxSampleR, gamma), 6);
+    expect(maxProjected).toBeGreaterThan(compressRadius(a, gamma));
+  });
+});

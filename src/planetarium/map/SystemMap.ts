@@ -22,14 +22,13 @@ import { LineGeometry } from 'three/addons/lines/LineGeometry.js';
 import { LineMaterial } from 'three/addons/lines/LineMaterial.js';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { PLANETARIUM_BODIES, SUN_DATA, type PlanetData } from '../planets/planetData';
-import { sampleTrajectoryLinePoints } from '../../astronomy/planetary';
+import { sampleTrajectoryLinePoints, computeBodyPositionAU } from '../../astronomy/planetary';
 import { bodyDisplayName } from '../surfaceView';
 import { ORBIT_LINE_RESAMPLE_MAX_AGE_MS } from '../SolarSystem';
 import { applyTextureDefaults } from '../world/texturePolicy';
 import { projectToScreen, type ScreenProjection } from '../../shared/three/projectToScreen';
 import { smoothstepUnclamped } from '../../shared/math/smoothstep';
 import {
-  compressRadius,
   fitDistanceAU,
   projectMapPoint,
   MAP_GAMMA_DEFAULT,
@@ -47,13 +46,18 @@ const PLANET_PX = 20;
 const SHIP_PX = 26;
 // Orbit line: full tint just ahead of the body fading to this floor behind it.
 const ORBIT_BRIGHT_FLOOR = 0.1;
+// A label whose anchor lands within this many screen px of an already-placed
+// one hides this frame — the true-scale inner four otherwise stack.
+const LABEL_MIN_SEP_PX = 26;
+// Un-docked ship chevron breathes over this period (ms).
+const SHIP_PULSE_MS = 2000;
 
 interface OrbitEntry {
   planet: PlanetData;
   periodMs: number;
   /** Raw heliocentric samples (scene AU), flattened xyz, length (N+1)*3. */
   raw: Float32Array;
-  /** Compressed map-space positions, reused as the Line2 geometry buffer. */
+  /** Compressed map-space positions, packed into the Line2 buffer each rebuild. */
   map: Float32Array;
   colors: Float32Array;
   geometry: LineGeometry;
@@ -62,6 +66,15 @@ interface OrbitEntry {
   dot: THREE.Sprite;
   /** Vertex index the body last sat at — colors rebuild only on a crossing. */
   lastVertex: number;
+  /** Largest projected |r| over the samples at the live gamma — the
+   *  eccentricity-correct extent this orbit contributes (aphelion, not the
+   *  semi-major axis, sets the drawn reach). Refreshed with recompressOrbits. */
+  maxMapRadius: number;
+  /** Catalog tint in the renderer's working (linear) colour space, so the fat
+   *  line matches the sprite material.color instead of rendering hot. */
+  colorR: number;
+  colorG: number;
+  colorB: number;
 }
 
 export class SystemMap {
@@ -97,6 +110,17 @@ export class SystemMap {
   private tmpProj2: ScreenProjection = { x: 0, y: 0, ndcX: 0, ndcY: 0, ndcZ: 0 };
   private tmpSize = new THREE.Vector2();
   private tmpViewport = new THREE.Vector4();
+  private tmpView = new THREE.Vector3();
+
+  // Un-docked ship pulse phase (wall ms).
+  private pulseMs = 0;
+
+  // Label anti-collision: screen positions already placed this frame (Sun +
+  // the planets), scanned in priority order so an inner planet yields to the
+  // Sun and outer planets yield to inner. Preallocated for Sun + 10 bodies.
+  private placedX = new Float32Array(PLANETARIUM_BODIES.length + 1);
+  private placedY = new Float32Array(PLANETARIUM_BODIES.length + 1);
+  private placedCount = 0;
 
   constructor(renderer: THREE.WebGLRenderer) {
     this.renderer = renderer;
@@ -221,6 +245,9 @@ export class SystemMap {
   ): void {
     if (!this.open) return;
 
+    // ── (1) Positions from the clock — place every body and the ship marker.
+    // No projection here: the camera matrices are still last frame's, so
+    // anything screen-space would drag a frame behind the controls move below.
     if (!this.sampled || Math.abs(utcMs - this.epochUtcMs) > ORBIT_LINE_RESAMPLE_MAX_AGE_MS) {
       this.resample(utcMs);
     }
@@ -238,9 +265,12 @@ export class SystemMap {
     }
 
     this.updateBodies(utcMs);
-    this.updateShip(shipX, shipY, shipZ, shipHeading, shipPitch, shipMoving, landed);
+    this.placeShip(shipX, shipY, shipZ, shipMoving, landed, dtMs);
 
-    // The bounds follow the live extent (compression animating, ship drifting).
+    // ── (2) Camera: fit or re-clamp to the live extent (compression animating,
+    // ship drifting), then flush the controls and matrices BEFORE any
+    // projection. The renderer refreshes matrices only at render time, which
+    // runs after this update, so a projection-dependent pass must force it.
     this.recomputeExtent();
     if (this.needsInitialFrame) {
       // First frame after open: bodies and ship are positioned, so the fit
@@ -251,10 +281,10 @@ export class SystemMap {
       this.applyBounds(this.getCameraDistance());
       this.controls.update();
     }
-    // Labels and marker scaling read camera matrices; the renderer only
-    // refreshes them at render time, which runs after this update.
     this.camera.updateMatrixWorld();
 
+    // ── (3) Projection-dependent work, on this frame's final camera pose.
+    this.orientShip(shipX, shipY, shipZ, shipHeading, shipPitch, shipMoving, landed);
     this.scaleMarkers();
     this.renderLabels();
   }
@@ -271,11 +301,16 @@ export class SystemMap {
     renderer.setScissorTest(false);
     renderer.setViewport(0, 0, this.tmpSize.x, this.tmpSize.y);
     renderer.autoClear = true;
-    renderer.render(this.scene, this.camera);
-    renderer.setRenderTarget(prevTarget);
-    renderer.setScissorTest(prevScissor);
-    renderer.setViewport(this.tmpViewport);
-    renderer.autoClear = prevAutoClear;
+    // Restore in finally so a throw inside render() never strands the world
+    // renderer on the map's target/viewport/autoClear state.
+    try {
+      renderer.render(this.scene, this.camera);
+    } finally {
+      renderer.setRenderTarget(prevTarget);
+      renderer.setScissorTest(prevScissor);
+      renderer.setViewport(this.tmpViewport);
+      renderer.autoClear = prevAutoClear;
+    }
   }
 
   /** Resize: match the camera aspect and every fat-line resolution to the canvas. */
@@ -308,6 +343,7 @@ export class SystemMap {
 
   private recompressOrbits(): void {
     for (const entry of this.orbits) {
+      let maxR = 0;
       for (let i = 0; i <= ORBIT_SEGMENTS; i++) {
         projectMapPoint(
           entry.raw[i * 3],
@@ -319,31 +355,82 @@ export class SystemMap {
         entry.map[i * 3] = this.tmpMap.x;
         entry.map[i * 3 + 1] = this.tmpMap.y;
         entry.map[i * 3 + 2] = this.tmpMap.z;
+        // Projected radius = |compressed point| = r^gamma; the aphelion sample
+        // sets this orbit's reach, so an eccentric orbit (Pluto) isn't clipped
+        // by a semi-major-axis extent.
+        const r = Math.hypot(this.tmpMap.x, this.tmpMap.y, this.tmpMap.z);
+        if (r > maxR) maxR = r;
       }
-      entry.geometry.setPositions(entry.map);
+      entry.maxMapRadius = maxR;
+      this.writePositions(entry);
     }
   }
 
-  /** Position each planet dot on its orbit (interpolated from the samples, so
-   *  the dot lands exactly on the drawn line) and refresh the direction fade
-   *  only when the body crosses a vertex. */
+  // Line2 layout: LineGeometry packs the (N+1)-point polyline into an
+  // interleaved instance buffer of N segments, each holding the pair
+  // [start.xyz, end.xyz] at stride 6 (see LineSegmentsGeometry.setPositions).
+  // setPositions/setColors reallocate that buffer and its attributes every
+  // call; on the gamma animation and per-frame colour rebuilds that churns, so
+  // after the one-time build we mutate the existing arrays in place.
+
+  /** Pack entry.map (contiguous xyz per point) into the interleaved segment
+   *  buffer: point k is the start of segment k and the end of segment k-1. */
+  private writePositions(entry: OrbitEntry): void {
+    const attr = entry.geometry.attributes.instanceStart as THREE.InterleavedBufferAttribute;
+    const arr = attr.data.array as Float32Array;
+    const map = entry.map;
+    for (let seg = 0; seg < ORBIT_SEGMENTS; seg++) {
+      const a = seg * 3;
+      const b = a + 3;
+      const o = seg * 6;
+      arr[o] = map[a];
+      arr[o + 1] = map[a + 1];
+      arr[o + 2] = map[a + 2];
+      arr[o + 3] = map[b];
+      arr[o + 4] = map[b + 1];
+      arr[o + 5] = map[b + 2];
+    }
+    // instanceStart and instanceEnd share this one interleaved buffer.
+    attr.data.needsUpdate = true;
+  }
+
+  /** Pack entry.colors (contiguous rgb per point) into the interleaved segment
+   *  colour buffer with the same start/end pairing as writePositions. */
+  private writeColors(entry: OrbitEntry): void {
+    const attr = entry.geometry.attributes.instanceColorStart as THREE.InterleavedBufferAttribute;
+    const arr = attr.data.array as Float32Array;
+    const colors = entry.colors;
+    for (let seg = 0; seg < ORBIT_SEGMENTS; seg++) {
+      const a = seg * 3;
+      const b = a + 3;
+      const o = seg * 6;
+      arr[o] = colors[a];
+      arr[o + 1] = colors[a + 1];
+      arr[o + 2] = colors[a + 2];
+      arr[o + 3] = colors[b];
+      arr[o + 4] = colors[b + 1];
+      arr[o + 5] = colors[b + 2];
+    }
+    attr.data.needsUpdate = true;
+  }
+
+  /** Position each planet dot on the exact ephemeris (never the sampled chord),
+   *  compressed through the live gamma, and refresh the direction fade only
+   *  when the body crosses a sampled vertex. */
   private updateBodies(utcMs: number): void {
     for (const entry of this.orbits) {
+      // The truth seam: the same heliocentric AU the world draws, projected
+      // through the map compression. computeBodyPositionAU returns a fresh
+      // vector (the astronomy layer's own allocation, as the world uses it);
+      // its components are copied straight into the map scratch, so the map
+      // adds no per-frame allocation of its own.
+      const helio = computeBodyPositionAU(entry.planet, utcMs);
+      projectMapPoint(helio.x, helio.y, helio.z, this.gamma, this.tmpMap);
+      entry.dot.position.set(this.tmpMap.x, this.tmpMap.y, this.tmpMap.z);
+      // The fade still keys off the sampled loop — cheap and only rebuilt on a
+      // vertex crossing.
       const frac = this.bodyFraction(entry, utcMs);
-      // frac ∈ [0,1) → f ∈ [0,N), so i0 ∈ [0,N-1] and i1 ∈ [1,N] index the
-      // (N+1)-point buffer directly (no wrap; the loop's seam is i=N ≈ i=0).
-      const f = frac * ORBIT_SEGMENTS;
-      const i0 = Math.floor(f);
-      const i1 = i0 + 1;
-      const w = f - i0;
-      const ax = entry.map[i0 * 3];
-      const ay = entry.map[i0 * 3 + 1];
-      const az = entry.map[i0 * 3 + 2];
-      entry.dot.position.set(
-        ax + (entry.map[i1 * 3] - ax) * w,
-        ay + (entry.map[i1 * 3 + 1] - ay) * w,
-        az + (entry.map[i1 * 3 + 2] - az) * w,
-      );
+      const i0 = Math.floor(frac * ORBIT_SEGMENTS);
       if (i0 !== entry.lastVertex) {
         entry.lastVertex = i0;
         this.rebuildOrbitColors(entry, frac);
@@ -361,9 +448,10 @@ export class SystemMap {
   }
 
   private rebuildOrbitColors(entry: OrbitEntry, bodyFrac: number): void {
-    const r = ((entry.planet.color >> 16) & 255) / 255;
-    const g = ((entry.planet.color >> 8) & 255) / 255;
-    const b = (entry.planet.color & 255) / 255;
+    // Working (linear) channels, cached at build — matches the sprite material.
+    const r = entry.colorR;
+    const g = entry.colorG;
+    const b = entry.colorB;
     for (let i = 0; i <= ORBIT_SEGMENTS; i++) {
       // Forward arc distance from the body to this vertex, [0,1): 0 = right
       // ahead of the body (full tint), ~1 = just behind (darkest).
@@ -374,17 +462,19 @@ export class SystemMap {
       entry.colors[i * 3 + 1] = g * bright;
       entry.colors[i * 3 + 2] = b * bright;
     }
-    entry.geometry.setColors(entry.colors);
+    this.writeColors(entry);
   }
 
-  private updateShip(
+  /** Phase (1): place the ship marker in map space, pick docked/moving texture,
+   *  and breathe the un-docked chevron. No projection — the camera hasn't been
+   *  flushed for this frame yet; the heading rotation waits for orientShip. */
+  private placeShip(
     x: number,
     y: number,
     z: number,
-    heading: number,
-    pitch: number,
     moving: boolean,
     landed: boolean,
+    dtMs: number,
   ): void {
     projectMapPoint(x, y, z, this.gamma, this.tmpMap);
     this.shipMarker.position.set(this.tmpMap.x, this.tmpMap.y, this.tmpMap.z);
@@ -395,13 +485,36 @@ export class SystemMap {
       mat.map = wantTex;
       mat.needsUpdate = true;
     }
+    // A subtle 2 s pulse marks the live ship while it coasts; the docked ring
+    // holds steady so a parked ship reads settled.
+    this.pulseMs += dtMs;
     if (docked) {
+      mat.opacity = 1;
+    } else {
+      const s = Math.sin((this.pulseMs / SHIP_PULSE_MS) * Math.PI * 2);
+      mat.opacity = 0.875 + 0.125 * s;
+    }
+  }
+
+  /** Phase (3): rotate the chevron to the ship's on-screen velocity. Reads the
+   *  camera, so it must run after the controls/matrix flush. Docked marker keeps
+   *  the neutral rotation placeShip left it with. */
+  private orientShip(
+    x: number,
+    y: number,
+    z: number,
+    heading: number,
+    pitch: number,
+    moving: boolean,
+    landed: boolean,
+  ): void {
+    const mat = this.shipMarker.material;
+    if (landed || !moving) {
       mat.rotation = 0;
       return;
     }
-    // Rotate the chevron to the ship's velocity as it reads on screen: project
-    // the ship and a point one step along its heading, both through the map
-    // compression, and take the screen-space delta.
+    // Project the ship and a point one step along its heading, both through the
+    // map compression, and take the screen-space delta.
     const cp = Math.cos(pitch);
     const step = Math.max(0.002, Math.hypot(x, y, z) * 0.04);
     projectMapPoint(
@@ -424,9 +537,11 @@ export class SystemMap {
 
   private recomputeExtent(): void {
     let max = 0;
+    // Each orbit's drawn reach is its aphelion sample, not its semi-major axis
+    // (maxMapRadius, refreshed with recompressOrbits), so an eccentric orbit
+    // drawn at true scale never overflows the fit.
     for (const entry of this.orbits) {
-      const c = compressRadius(entry.planet.semiMajorAxisAU, this.gamma);
-      if (c > max) max = c;
+      if (entry.maxMapRadius > max) max = entry.maxMapRadius;
     }
     // The ship is just another radius — a probe past Pluto widens the frame.
     const shipR = this.shipMarker.position.length();
@@ -453,15 +568,22 @@ export class SystemMap {
   }
 
   private applyMarkerScale(sprite: THREE.Sprite, px: number, worldPerPxAtUnit: number): void {
-    const dist = this.camera.position.distanceTo(sprite.position);
-    sprite.scale.setScalar(px * worldPerPxAtUnit * dist);
+    // Perspective screen size follows the camera-space depth (distance along the
+    // view axis), not the Euclidean distance — the latter runs an off-axis dot
+    // ~10% oversized. worldPerPxAtUnit is the world span of one px at unit depth.
+    this.tmpView.copy(sprite.position).applyMatrix4(this.camera.matrixWorldInverse);
+    const depth = Math.max(-this.tmpView.z, 1e-6);
+    sprite.scale.setScalar(px * worldPerPxAtUnit * depth);
   }
 
   private renderLabels(): void {
     if (!this.labelContainer) return;
     const w = this.renderer.domElement.clientWidth;
     const h = this.renderer.domElement.clientHeight;
-    // Labels: Sun (index 0) then the planets in catalog order.
+    // Priority order: Sun (index 0) first, then the planets inner→outer (catalog
+    // order). A label too close to one already placed this frame yields, so the
+    // Sun and the inner planets win over their crowded neighbours at true scale.
+    this.placedCount = 0;
     this.placeLabel(0, this.sun.position, w, h);
     for (let i = 0; i < this.orbits.length; i++) {
       this.placeLabel(i + 1, this.orbits[i].dot.position, w, h);
@@ -482,8 +604,23 @@ export class SystemMap {
       if (label.style.display !== 'none') label.style.display = 'none';
       return;
     }
+    // Proximity cull: hide if the anchor lands within LABEL_MIN_SEP_PX of an
+    // already-placed (higher-priority) label this frame.
+    const x = this.tmpProj.x;
+    const y = this.tmpProj.y;
+    for (let i = 0; i < this.placedCount; i++) {
+      const dx = x - this.placedX[i];
+      const dy = y - this.placedY[i];
+      if (dx * dx + dy * dy < LABEL_MIN_SEP_PX * LABEL_MIN_SEP_PX) {
+        if (label.style.display !== 'none') label.style.display = 'none';
+        return;
+      }
+    }
+    this.placedX[this.placedCount] = x;
+    this.placedY[this.placedCount] = y;
+    this.placedCount++;
     if (label.style.display === 'none') label.style.display = '';
-    label.style.transform = `translate(-50%, 0) translate(${this.tmpProj.x}px, ${this.tmpProj.y + 9}px)`;
+    label.style.transform = `translate(-50%, 0) translate(${x}px, ${y + 9}px)`;
   }
 
   private ensureLabelContainer(): void {
@@ -527,7 +664,26 @@ export class SystemMap {
     dot.renderOrder = 5;
     this.scene.add(dot);
     const periodMs = 365.25 * Math.pow(planet.semiMajorAxisAU, 1.5) * 86_400_000;
-    return { planet, periodMs, raw, map, colors, geometry, material, line, dot, lastVertex: -1 };
+    // Catalog hex is sRGB; THREE.Color(hex) converts it into the renderer's
+    // working (linear) space, so the vertex-coloured line matches the sprite's
+    // managed material.color instead of rendering hot.
+    const tint = new THREE.Color(planet.color);
+    return {
+      planet,
+      periodMs,
+      raw,
+      map,
+      colors,
+      geometry,
+      material,
+      line,
+      dot,
+      lastVertex: -1,
+      maxMapRadius: 0,
+      colorR: tint.r,
+      colorG: tint.g,
+      colorB: tint.b,
+    };
   }
 
   private makeGlowSprite(color: number, coreBoost: number): THREE.Sprite {

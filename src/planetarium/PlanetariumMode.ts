@@ -1875,7 +1875,9 @@ export class PlanetariumMode {
     // Sits after the floating-origin and moon passes: the screen-fraction
     // trigger may only measure same-frame geometry — frame-one and teleport
     // frames otherwise read stale offsets, and one mis-read fires a 4K fetch.
-    this.updateTextureLOD();
+    // Skipped while the map owns the frame: the world spheres aren't drawn, so
+    // a schematic-view zoom must not trigger a 4K fetch for an unseen surface.
+    if (!this.isMapOpen()) this.updateTextureLOD();
 
     // Camera safety + dynamic near. Deliberately AFTER updateMoonPositions —
     // at the top time rates a capped 100 ms frame moves a moon 36 simulated
@@ -3574,6 +3576,10 @@ export class PlanetariumMode {
    *  help) and never takes pointer events, so the washed-out cockpit stays
    *  operable inside the blaze. */
   private applySunGlareFlood(whiteout: number) {
+    // The map force-hides #sun-glare-flood via the body class; skip the opacity
+    // computation and DOM write while it owns the frame (updateSunShader still
+    // runs, so the exposure/solar state stays live for the return to the world).
+    if (this.isMapOpen()) return;
     const el = (this.sunGlareFloodEl ??= document.getElementById('sun-glare-flood'));
     if (!el) return;
     const value = sunGlareFloodOpacity(whiteout).toFixed(3);
@@ -4550,6 +4556,8 @@ export class PlanetariumMode {
         return;
       }
       e.preventDefault();
+      // A held M auto-repeats; without this it would flap the map open/closed.
+      if (e.repeat) return;
       if (this.isMapOpen()) this.closeMap();
       else this.openMap();
       return;
@@ -4589,13 +4597,18 @@ export class PlanetariumMode {
     }
     if (this.isMissionActive()) return;
 
-    this.keys.add(e.key.toLowerCase());
+    // The map is a clock instrument, not a cockpit: don't accumulate flight
+    // keys while it owns the frame, or a key still held at close resumes as
+    // phantom thrust the instant processInput reads the set again.
+    if (!this.isMapOpen()) this.keys.add(e.key.toLowerCase());
 
     // Space toggles pause
     if (e.key === ' ' && !spaceOnControl) {
       e.preventDefault();
       // Over the map, Space pauses the clock (the map is a clock instrument);
-      // ordinary cruise keeps Space on ship thrust.
+      // ordinary cruise keeps Space on ship thrust. Key auto-repeat must not
+      // re-fire either toggle while the key is held.
+      if (e.repeat) return;
       if (this.isMapOpen()) this.timeTogglePause();
       else this.player.moving = !this.player.moving;
     }
@@ -6112,10 +6125,17 @@ export class PlanetariumMode {
     this.systemMap?.close();
     this.mapHud.hide();
     document.body.classList.remove('system-map-active');
-    this.setTouchFlightZoneHidden(false);
-    // Give the canvas back to the world: the chase reseats itself, landed
-    // orbit controls resume (the activate() rule).
-    this.controls.enabled = !!this.landedOn || !this.isTouchDevice;
+    // A held key must not survive the map — closing with W down would otherwise
+    // resume phantom thrust the moment processInput reads the flight keys again.
+    this.keys.clear();
+    // Give the canvas back to the world only when the mode is live: a teardown
+    // close (deactivate) must leave the touch zone and controls inert, or it
+    // re-arms the very controls deactivate just retired.
+    if (this.active) {
+      this.setTouchFlightZoneHidden(false);
+      // The chase reseats itself, landed orbit controls resume (the activate() rule).
+      this.controls.enabled = !!this.landedOn || !this.isTouchDevice;
+    }
     this.setWorldLabelsVisible(this.showBodyLabels);
 
     // Surface view first (it closes the panel on entry), then the panel — so a
@@ -10353,8 +10373,9 @@ export class PlanetariumMode {
     this.updateMoonPositions();
     // Same same-frame-geometry rule as the cruise path — and the landed
     // Observatory telescope (narrow FOV) is exactly where 2K softness shows,
-    // so the 4K trigger keeps running while landed.
-    this.updateTextureLOD();
+    // so the 4K trigger keeps running while landed. Skipped while the map owns
+    // the frame: the ground isn't drawn, so nothing should fetch a 4K surface.
+    if (!this.isMapOpen()) this.updateTextureLOD();
     this.updateShadowVisuals();
     if (shouldRefreshUi) this.updateOrbitDetails();
     this.pumpObservatoryEventSearch();

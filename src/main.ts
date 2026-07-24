@@ -741,9 +741,14 @@ async function init() {
       const perfRender = import.meta.env.DEV
         ? surfacePerfBeginRender(renderer.info.programs?.length ?? 0, renderer.info.memory.textures)
         : null;
-      planetariumMode.renderMapFrame();
-      if (import.meta.env.DEV) {
-        surfacePerfEndRender(perfRender, renderer.info.programs?.length ?? 0, renderer.info.memory.textures);
+      // Close the telemetry span in finally so a throw inside the map render
+      // can't strand it open and skew every later frame's timing.
+      try {
+        planetariumMode.renderMapFrame();
+      } finally {
+        if (import.meta.env.DEV) {
+          surfacePerfEndRender(perfRender, renderer.info.programs?.length ?? 0, renderer.info.memory.textures);
+        }
       }
     } else {
       renderScene(camera);

@@ -16,7 +16,7 @@
  * practice) distance is compressed LOGARITHMICALLY with an asinh curve
  * (logarithmic far out, gracefully linear near the Sun). Eccentricity and
  * inclination survive; only how far out a body is drawn changes. Body radii use
- * a separate perceptual (cube-root) scale so size ordering survives without
+ * a separate perceptual power-law scale so size ordering survives without
  * Jupiter swallowing its neighbours. Rotation is not faked here — the live
  * orientation update spins every planet naturally as the clock advances.
  */
@@ -28,7 +28,13 @@ import { SHIP_REFERENCE_RADIUS_AU } from './cruiseView';
 import { computeMoonOffsetEquatorialAU, getMoonDisplayOrbit } from '../astronomy/satellites';
 import type { MoonMesh } from './PlanetFactory';
 import type { MoonPainter } from './world/MoonPainter';
-import { projectToScreen, type ScreenProjection } from '../shared/three/projectToScreen';
+import { projectSphereToScreen, type SphereScreenProjection } from '../shared/three/projectToScreen';
+import {
+  applyLensShaderUniforms,
+  augmentFixedScreenSpriteForLens,
+  createLensShaderUniforms,
+  type LensShaderUniforms,
+} from '../shared/three/lensShader';
 
 /** The live moon systems the map borrows and arranges around each planet. */
 export interface SystemMapMoonSystems {
@@ -59,9 +65,19 @@ const SUN_MAP_RADIUS = 0.55;
 
 // Ship model: measured at its true size on enter, then scaled to this length.
 const SHIP_MAP_LENGTH = 0.32;
+// Ship beacon dot: the sprite QUAD's edge in output pixels (the drawn disc is
+// ~44% of it — see makeDotSprite).
+const SHIP_DOT_QUAD_PX = 11;
 
-// Hover-label pickup radius in CSS pixels.
-const LABEL_HIT_RADIUS_PX = 42;
+// Pickup geometry, in OUTPUT (CSS) pixels. Hover and click share one pick
+// (pickNearest) and differ only in these numbers: each is the body's drawn disc
+// grown by a pad, floored so a distant marble stays catchable. Hover keeps the
+// larger floor — naming a body you can barely see is cheap, focusing one you
+// didn't mean to click is not.
+const LABEL_HIT_FLOOR_PX = 42;
+const LABEL_HIT_PAD_PX = 8;
+const CLICK_HIT_FLOOR_PX = 24;
+const CLICK_HIT_PAD_PX = 14;
 
 // Eyes-style focus: click a body to fly to it, then the camera follows it.
 const FOCUS_DISTANCE_RADII = 6;   // framing distance in the body's map-radii
@@ -87,8 +103,9 @@ export function systemMapOrbitRadius(distanceAU: number): number {
 
 /**
  * Perceptual rendered radius (scene units) for a body of the given true radius.
- * A cube-root law keeps the real small-to-large ordering while bounding every
- * planet into a legible range beside its vastly larger orbit.
+ * A compressive power law (BODY_SIZE_EXPONENT, just above the cube root) keeps
+ * the real small-to-large ordering while bounding every planet into a legible
+ * range beside its vastly larger orbit.
  */
 export function systemMapBodyRadius(radiusAU: number): number {
   const perceptual = BODY_BASE_RADIUS * Math.pow(Math.max(radiusAU, 0) / EARTH_RADIUS_AU, BODY_SIZE_EXPONENT);
@@ -102,6 +119,12 @@ export function systemMapFrameExtent(shipDistanceAU: number): number {
 
 // --- Physical-data label formatting ---
 const SUN_MASS_EARTHS = 332_946;
+
+// Built once: constructing an Intl formatter is expensive, and renderDate runs
+// every frame (its text cache saves the DOM write, not the formatter).
+const MAP_DATE_FORMAT = new Intl.DateTimeFormat('en-GB', {
+  day: '2-digit', month: 'short', year: 'numeric', timeZone: 'UTC',
+});
 
 /** Consistent 3 significant figures across every field (thousands grouped). */
 function sig3(value: number): string {
@@ -185,9 +208,15 @@ function tiltGlyph(deg: number): SVGElement {
 // Show a planet's moons once the camera is within this many of the planet's map
 // radii — i.e. once the planet is a big enough disc on screen to sit moons beside.
 const MOON_LOD_RADII = 11;
-// Rebuild moon orbit rings after this much sim-time drift so precession can't
+// Refill moon orbit rings after this much sim-time drift so precession can't
 // walk moons off their rings (~1.6° of the fastest node precession).
 const MOON_ORBIT_REBUILD_MS = 30 * 86_400_000;
+// ...but never more often than this in REAL time, and only one system per frame.
+// The sim-time threshold alone fires ~12x/s at 1 yr/s, and one Saturn refill is
+// 18 moons x 97 ephemeris samples — enough to blow the frame budget outright.
+// Rings drift a little further between refills at extreme warp; that is
+// invisible next to a 200 ms stall.
+const MOON_ORBIT_REFILL_MIN_REAL_MS = 400;
 
 export function systemMapMoonsVisible(cameraDistance: number, parentMapRadius: number): boolean {
   return cameraDistance < parentMapRadius * MOON_LOD_RADII;
@@ -238,6 +267,30 @@ function compressPosition(x: number, y: number, z: number, out: THREE.Vector3): 
   return out.set(x * k, y * k, z * k);
 }
 
+/** A moon drawn this frame: everything hover, pick and the data card need,
+ *  captured while updateMoons already has the parent in hand. */
+interface MoonHoverTarget {
+  name: string;
+  parent: string;
+  color: number;
+  radiusAU: number;
+  orbitalRadiusKm: number;
+  /** Rendered map radius (scene units) — the pick's disc size. */
+  mapRadius: number;
+  x: number;
+  y: number;
+  z: number;
+}
+
+/** Result of a screen pick: the body, its projected centre in output pixels,
+ *  and its moon record when the hit was a moon. */
+interface MapPick {
+  name: string;
+  x: number;
+  y: number;
+  moon: MoonHoverTarget | null;
+}
+
 interface CameraSnapshot {
   position: THREE.Vector3;
   quaternion: THREE.Quaternion;
@@ -284,10 +337,18 @@ export class SystemMap {
   private pickerBuilt = false;
   private hoveredMoonName: string | null = null; // caches the moon whose label text is set
   // Moons currently drawn (rebuilt each frame by updateMoons), used for hover.
-  private readonly moonHoverTargets: Array<{ name: string; parent: string; color: number; radiusAU: number; orbitalRadiusKm: number; x: number; y: number; z: number }> = [];
+  private readonly moonHoverTargets: MoonHoverTarget[] = [];
   private moonSystems: SystemMapMoonSystems | null = null;
-  private readonly projScratch: ScreenProjection = { x: 0, y: 0, ndcX: 0, ndcY: 0, ndcZ: 0 };
+  private readonly sphereScratch: SphereScreenProjection = {
+    x: 0, y: 0, ndcX: 0, ndcY: 0, ndcZ: 0,
+    footprintX: 0, footprintY: 0, radiusPx: 0, diameterPx: 0,
+    minX: 0, maxX: 0, minY: 0, maxY: 0, footprintKind: 'none',
+  };
+  private readonly pickScratch: MapPick = { name: '', x: 0, y: 0, moon: null };
   private readonly vecScratch = new THREE.Vector3();
+  // Screen-authored marker sprites (ship dot + ping) pre-distort themselves into
+  // the overscan source through these; refreshed once per frame.
+  private readonly markerLens: LensShaderUniforms = createLensShaderUniforms();
 
   private readonly cameraSnapshot: CameraSnapshot;
   private readonly controlsSnapshot: ControlsSnapshot;
@@ -308,7 +369,11 @@ export class SystemMap {
   private pointerX = -1;
   private pointerY = -1;
   private pointerInside = false;
-  private pointerIsDown = false;
+  // Click-vs-drag bookkeeping for ONE pointer, tracked by id end to end: a
+  // second finger (pinch-zoom) must not rebind the gesture or reset its drag
+  // distance, or releasing the pinch commits a focus the user never asked for.
+  // Same contract the cruise chase-cam drag uses.
+  private pointerId: number | null = null;
   private pointerDragged = false;
   private pointerDownX = 0;
   private pointerDownY = 0;
@@ -342,14 +407,13 @@ export class SystemMap {
     this.root.name = 'System map furniture';
     this.root.visible = false;
 
-    // Map Sun: a self-lit sphere plus a soft additive glow (a star genuinely
-    // glows). Deliberately NOT the live Sun mesh — its corona shader is tuned to
-    // real scale and the driving exposure, and blowing it up here would
-    // bloom-flood the frame.
     // Map Sun: a limb-darkened billboard disc (bright white core → warm limb,
     // so bloom lifts it into a glowing star) plus a soft additive corona. A
     // billboard reads as a star from any camera angle where a lit sphere would
-    // look flat.
+    // look flat. Deliberately NOT the live Sun mesh — its corona shader is tuned
+    // to real scale and the driving exposure, and blowing it up here would
+    // bloom-flood the frame. Both are WORLD-sized (they stand for the Sun's map
+    // extent), so they warp with the scene rather than pre-distorting.
     this.sunDisc = makeSunDiscSprite();
     this.sunDisc.name = 'System map Sun';
     this.sunDisc.scale.setScalar(SUN_MAP_RADIUS * 2);
@@ -373,11 +437,11 @@ export class SystemMap {
     // pulsing radar-ping ring that draws the eye. Both drawn on top (depthTest
     // off) so they stay readable over the Sun and findable at overview zoom. A
     // persistent HTML callout (renderLabels) names it.
-    this.shipDot = makeDotSprite(UI_MARKER_CSS);
+    this.shipDot = makeDotSprite(UI_MARKER_CSS, this.markerLens);
     this.shipDot.material.depthTest = false;
     this.shipDot.renderOrder = 32;
     this.root.add(this.shipDot);
-    this.shipPing = makeRingSprite(UI_MARKER_CSS);
+    this.shipPing = makeRingSprite(UI_MARKER_CSS, this.markerLens);
     this.shipPing.material.depthTest = false;
     this.shipPing.renderOrder = 31;
     this.root.add(this.shipPing);
@@ -582,8 +646,10 @@ export class SystemMap {
     canvas.addEventListener('pointerdown', this.onPointerDown);
     canvas.addEventListener('pointermove', this.onPointerMove);
     canvas.addEventListener('pointerup', this.onPointerUp);
+    canvas.addEventListener('pointercancel', this.onPointerCancel);
     canvas.addEventListener('pointerleave', this.onPointerLeave);
     window.addEventListener('resize', this.onResize);
+    window.addEventListener('blur', this.onBlur);
 
     this.focusName = null;
     this.focusMoonParent = null;
@@ -606,10 +672,12 @@ export class SystemMap {
     canvas.removeEventListener('pointerdown', this.onPointerDown);
     canvas.removeEventListener('pointermove', this.onPointerMove);
     canvas.removeEventListener('pointerup', this.onPointerUp);
+    canvas.removeEventListener('pointercancel', this.onPointerCancel);
     canvas.removeEventListener('pointerleave', this.onPointerLeave);
     window.removeEventListener('resize', this.onResize);
+    window.removeEventListener('blur', this.onBlur);
     this.pointerInside = false;
-    this.pointerIsDown = false;
+    this.pointerId = null;
     this.focusName = null;
     this.focusMoonParent = null;
     this.transition = null;
@@ -661,10 +729,10 @@ export class SystemMap {
     this.currentUtcMs = utcMs;
 
     // The live orbit lines resample when the sim clock drifts far (date jump /
-    // fast warp). Our compressed copies were taken at one epoch, so rebuild them
+    // fast warp). Our compressed copies were taken at one epoch, so refill them
     // when the source epoch changes — otherwise planets drift off their rings.
     if (this.objects.orbitLinesEpochUtcMs !== this.orbitLinesEpochMs) {
-      this.buildOrbitLines(this.objects.orbitLines);
+      this.refillOrbitLines(this.objects.orbitLines);
       this.orbitLinesEpochMs = this.objects.orbitLinesEpochUtcMs;
     }
 
@@ -688,6 +756,15 @@ export class SystemMap {
     // per-frame controls.update().
     this.updateCameraRig(dt);
     this.updateMoons(utcMs);
+    // Marker sprites author themselves in output pixels; refresh the lens
+    // uniforms they pre-distort through before sizing them.
+    applyLensShaderUniforms(
+      this.markerLens,
+      this.camera,
+      this.renderer.domElement.clientWidth,
+      this.renderer.domElement.clientHeight,
+      this.renderer.getPixelRatio(),
+    );
     this.sizeShipMarker();
 
     this.camera.updateMatrixWorld();
@@ -750,6 +827,8 @@ export class SystemMap {
     for (const rings of this.moonOrbitCache.values()) rings.visible = false;
     const sys = this.moonSystems;
     if (!sys || !this.objects) return;
+    const nowMs = performance.now();
+    let refilledThisFrame = false;
     for (const planet of this.objects.planets) {
       const group = sys.groups.get(planet.data.name);
       const moons = sys.moons.get(planet.data.name);
@@ -775,24 +854,37 @@ export class SystemMap {
       // Moon orbit rings: cached and just repositioned each frame. Once the
       // clock has drifted enough that orbital-plane precession would walk moons
       // off their rings (fast time warp), refill the ring buffers IN PLACE — no
-      // geometry alloc/dispose churn.
+      // geometry alloc/dispose churn. A refill is hundreds of ephemeris
+      // evaluations, so it is rate-limited in REAL time and at most one system
+      // refills per frame (see refilledThisFrame).
       let rings = this.moonOrbitCache.get(planet.data.name);
       if (!rings) {
         rings = buildMoonOrbits(planet.data.name, planet.data.radiusAU, moons, parentMapRadius, utcMs);
         rings.userData.epochMs = utcMs;
+        rings.userData.refilledAtMs = nowMs;
         this.moonOrbitCache.set(planet.data.name, rings);
         this.moonOrbits.add(rings);
-      } else if (Math.abs(utcMs - (rings.userData.epochMs as number)) > MOON_ORBIT_REBUILD_MS) {
+      } else if (!refilledThisFrame
+        && Math.abs(utcMs - (rings.userData.epochMs as number)) > MOON_ORBIT_REBUILD_MS
+        && nowMs - (rings.userData.refilledAtMs as number) > MOON_ORBIT_REFILL_MIN_REAL_MS) {
         refillMoonOrbits(rings, planet.data.name, planet.data.radiusAU, parentMapRadius, utcMs);
         rings.userData.epochMs = utcMs;
+        rings.userData.refilledAtMs = nowMs;
+        refilledThisFrame = true;
       }
       rings.position.copy(planet.group.position);
       rings.visible = true;
       for (const m of moons) {
+        // Same hard rule as the normal renderer: never flip a moon visible while
+        // it is unpainted. paintSystemNow above covers the queued case, but a
+        // moon MoonPainter abandoned after repeated failures leaves the queue
+        // unpainted — without this it would reach the screen flat-coloured.
+        if (!m.painted) { m.mesh.visible = false; continue; }
         const off = computeMoonOffsetEquatorialAU(m.data.name, planet.data.name, utcMs, this.tmpMoon, moonNormalScratch);
         if (compressMoonOffset(off, planet.data.radiusAU, parentMapRadius) === 0) { m.mesh.visible = false; continue; }
         m.mesh.position.copy(off);
-        m.mesh.scale.setScalar(systemMapMoonBodyRadius(m.data.radiusAU, parentMapRadius) / m.data.radiusAU);
+        const moonMapRadius = systemMapMoonBodyRadius(m.data.radiusAU, parentMapRadius);
+        m.mesh.scale.setScalar(moonMapRadius / m.data.radiusAU);
         // Tidally lock the moon so it keeps the same face toward its parent, same
         // as the normal renderer. Compression preserves the offset direction, so
         // the shown face is correct; re-running each frame turns it as it orbits
@@ -807,13 +899,43 @@ export class SystemMap {
           m.fx.uSunDirWorld.value.set(-wx / wl, -wy / wl, -wz / wl);
           m.fx.uPlanetshineIntensity.value = 0;
         }
-        this.moonHoverTargets.push({ name: m.data.name, parent: planet.data.name, color: m.data.color, radiusAU: m.data.radiusAU, orbitalRadiusKm: m.data.orbitalRadiusKm, x: wx, y: wy, z: wz });
+        this.moonHoverTargets.push({
+          name: m.data.name,
+          parent: planet.data.name,
+          color: m.data.color,
+          radiusAU: m.data.radiusAU,
+          orbitalRadiusKm: m.data.orbitalRadiusKm,
+          mapRadius: moonMapRadius,
+          x: wx, y: wy, z: wz,
+        });
       }
     }
   }
 
-  /** Keep the ship dot + ping a roughly constant on-screen size (crisp, never
-   *  magnifying their texture) that also frames the ship when zoomed in close. */
+  /** The FOV the frame DISPLAYS. Under the lens pass `camera.fov` holds the
+   *  wider overscan the warp samples from, so anything measured against output
+   *  pixels (marker sizes, apparent diameters) must read this instead. */
+  private displayFovDeg(): number {
+    const lens = this.camera.userData.lens as { designFovDeg: number } | undefined;
+    return lens ? lens.designFovDeg : this.camera.fov;
+  }
+
+  /**
+   * Convert an authored OUTPUT-pixel quad size into the sprite scale a
+   * `sizeAttenuation: false` sprite needs. The quad's source-NDC half-size is
+   * `scale / tan(renderFov/2)`, and `augmentFixedScreenSpriteForLens` makes
+   * that source offset land as the OUTPUT offset — so `camera.fov` is the
+   * correct (and only correct) fov here, exactly as in PlanetLabels' markers.
+   */
+  private fixedScreenScale(quadPx: number): number {
+    const height = Math.max(this.renderer.domElement.clientHeight, 1);
+    return (quadPx * 2 * Math.tan(THREE.MathUtils.degToRad(this.camera.fov) / 2)) / height;
+  }
+
+  /** Keep the ship dot + ping a constant on-screen size (crisp, never magnifying
+   *  their texture) that also frames the ship when zoomed in close. Both are
+   *  screen-authored primitives: sized in output pixels and pre-distorted into
+   *  the overscan source, so the lens can't stretch the beacon off-axis. */
   private sizeShipMarker(): void {
     // When the ship IS the focused body you're looking right at it — the beacon
     // would only sit on top of the model, so hide it.
@@ -823,11 +945,16 @@ export class SystemMap {
     const world = this.labelWorld.get('Ship');
     if (!world || onShip) return;
     const dist = Math.max(this.camera.position.distanceTo(world), 1e-5);
-    const focal = this.renderer.domElement.clientHeight / (2 * Math.tan(THREE.MathUtils.degToRad(this.camera.fov) / 2));
-    const perPx = dist / Math.max(focal, 1);
+    // The ship's TRUE apparent size drives the ping's framing term, so this one
+    // is metered against the displayed frame, not the overscan source.
+    const displayFocal = this.renderer.domElement.clientHeight
+      / (2 * Math.tan(THREE.MathUtils.degToRad(this.displayFovDeg()) / 2));
+    const shipPx = (SHIP_MAP_LENGTH / dist) * displayFocal;
     const t = (performance.now() % 1600) / 1600;
-    this.shipDot.scale.setScalar(11 * perPx);
-    this.shipPing.scale.setScalar(THREE.MathUtils.clamp((SHIP_MAP_LENGTH / dist) * focal * 1.45 + 22, 50, 360) * (1 + 0.28 * t) * perPx);
+    this.shipDot.scale.setScalar(this.fixedScreenScale(SHIP_DOT_QUAD_PX));
+    this.shipPing.scale.setScalar(
+      this.fixedScreenScale(THREE.MathUtils.clamp(shipPx * 1.45 + 22, 50, 360) * (1 + 0.28 * t)),
+    );
     this.shipPing.material.opacity = 0.7 * (1 - t);
   }
 
@@ -869,18 +996,14 @@ export class SystemMap {
     this.controls.update();
   }
 
-  /** Build compressed orbit rings from the live orbit-line vertices. */
+  /** Build the compressed orbit rings from the live orbit-line vertices. Called
+   *  once per map entry; the epoch-change path refills these buffers in place. */
   private buildOrbitLines(sourceLines: THREE.Line[]): void {
     this.clearOrbitLines();
-    const v = new THREE.Vector3();
     for (let i = 0; i < sourceLines.length; i++) {
       const src = sourceLines[i].geometry.getAttribute('position');
       if (!src) continue;
       const pts = new Float32Array(src.count * 3);
-      for (let j = 0; j < src.count; j++) {
-        compressPosition(src.getX(j), src.getY(j), src.getZ(j), v);
-        pts[j * 3] = v.x; pts[j * 3 + 1] = v.y; pts[j * 3 + 2] = v.z;
-      }
       const geom = new THREE.BufferGeometry();
       geom.setAttribute('position', new THREE.BufferAttribute(pts, 3));
       const line = new THREE.Line(geom, new THREE.LineBasicMaterial({
@@ -889,7 +1012,39 @@ export class SystemMap {
         opacity: 0.6,
         depthWrite: false,
       }));
+      line.userData.sourceIndex = i;
       this.orbitLines.add(line);
+    }
+    this.refillOrbitLines(sourceLines);
+  }
+
+  /**
+   * Re-compress every ring's vertices IN PLACE from the (just resampled) source
+   * lines. These carry 1024–8192 vertices each and the source resamples ~6x a
+   * second at 1 yr/s, so rebuilding the geometries would churn a quarter-megabyte
+   * of typed arrays plus 9 GPU buffers per rebuild — the same reason
+   * `resampleOrbitLines` mutates the source in place rather than replacing it.
+   * Falls back to a rebuild only if a source line changed vertex count (it
+   * can't today: the segment count is a pure function of the body).
+   */
+  private refillOrbitLines(sourceLines: THREE.Line[]): void {
+    const v = orbitLineScratch;
+    for (const child of this.orbitLines.children) {
+      const line = child as THREE.Line;
+      const src = sourceLines[line.userData.sourceIndex as number]?.geometry.getAttribute('position');
+      const dst = line.geometry.getAttribute('position') as THREE.BufferAttribute;
+      if (!src) continue;
+      if (src.count * 3 !== (dst.array as Float32Array).length) {
+        this.buildOrbitLines(sourceLines);
+        return;
+      }
+      const out = dst.array as Float32Array;
+      for (let j = 0; j < src.count; j++) {
+        compressPosition(src.getX(j), src.getY(j), src.getZ(j), v);
+        out[j * 3] = v.x; out[j * 3 + 1] = v.y; out[j * 3 + 2] = v.z;
+      }
+      dst.needsUpdate = true;
+      line.geometry.computeBoundingSphere();
     }
   }
 
@@ -897,13 +1052,19 @@ export class SystemMap {
     disposeGroup(this.orbitLines);
   }
 
-  /** Scale factor that renders the ship model at SHIP_MAP_LENGTH scene units. */
+  /** Scale factor that renders the ship model at SHIP_MAP_LENGTH scene units.
+   *  Measured with the model UPRIGHT: `setFromObject` builds a world-axis-aligned
+   *  box, so measuring it at the ship's live heading would size the marker by
+   *  whichever way the ship happened to be pointing when the map opened. */
   private measureShipScale(shipGroup: THREE.Object3D): number {
-    const prev = shipGroup.scale.clone();
+    const prevScale = shipGroup.scale.clone();
+    const prevQuat = shipGroup.quaternion.clone();
     shipGroup.scale.setScalar(1);
+    shipGroup.quaternion.identity();
     shipGroup.updateMatrixWorld(true);
     const size = new THREE.Box3().setFromObject(shipGroup).getSize(new THREE.Vector3());
-    shipGroup.scale.copy(prev);
+    shipGroup.scale.copy(prevScale);
+    shipGroup.quaternion.copy(prevQuat);
     const maxDim = Math.max(size.x, size.y, size.z) || SHIP_REFERENCE_RADIUS_AU * 4;
     return SHIP_MAP_LENGTH / maxDim;
   }
@@ -1021,6 +1182,17 @@ export class SystemMap {
     if (!panel) return;
     const open = force ?? panel.style.display === 'none';
     panel.style.display = open ? 'flex' : 'none';
+    document.getElementById('system-map-bodies')?.setAttribute('aria-expanded', open ? 'true' : 'false');
+  }
+
+  /** Close the body picker if it's open; reports whether it did. The map's rung
+   *  in the Esc cascade and the one-modal-at-a-time close set both go through
+   *  here — the picker is an overlay like any other, not map-private state. */
+  closePicker(): boolean {
+    const panel = document.getElementById('system-map-picker');
+    if (!this.active || !panel || panel.style.display === 'none') return false;
+    this.togglePicker(false);
+    return true;
   }
 
   /**
@@ -1036,62 +1208,50 @@ export class SystemMap {
     if (this.moonLabel) this.moonLabel.style.display = 'none';
     if (!this.pointerInside) { this.hoveredMoonName = null; return; }
 
-    let bestName: string | null = null;
-    let bestX = 0;
-    let bestY = 0;
-    let bestMoon: { color: number; radiusAU: number; orbitalRadiusKm: number; name: string; parent: string } | null = null;
-    let bestDist = LABEL_HIT_RADIUS_PX;
-    for (const [name, world] of this.labelWorld) {
-      if (name === 'Ship') continue; // beacon-marked, no text label
-      projectToScreen(world, this.camera, width, height, this.projScratch);
-      const p = this.projScratch;
-      if (!(p.ndcZ > -1 && p.ndcZ < 1 && Math.abs(p.ndcX) < 1 && Math.abs(p.ndcY) < 1)) continue;
-      const d = Math.hypot(p.x - this.pointerX, p.y - this.pointerY);
-      if (d < bestDist) { bestDist = d; bestName = name; bestX = p.x; bestY = p.y; bestMoon = null; }
-    }
-    for (const t of this.moonHoverTargets) {
-      projectToScreen(this.vecScratch.set(t.x, t.y, t.z), this.camera, width, height, this.projScratch);
-      const p = this.projScratch;
-      if (!(p.ndcZ > -1 && p.ndcZ < 1 && Math.abs(p.ndcX) < 1 && Math.abs(p.ndcY) < 1)) continue;
-      const d = Math.hypot(p.x - this.pointerX, p.y - this.pointerY);
-      if (d < bestDist) { bestDist = d; bestName = t.name; bestX = p.x; bestY = p.y; bestMoon = t; }
-    }
-    if (!bestName) { this.hoveredMoonName = null; return; }
+    // 'Ship' is beacon-marked and carries no text label — excluded here, but
+    // still clickable through the same pick in onPointerUp.
+    const hit = this.pickNearest(this.pointerX, this.pointerY, LABEL_HIT_FLOOR_PX, LABEL_HIT_PAD_PX, 'Ship');
+    if (!hit) { this.hoveredMoonName = null; return; }
+    const moon = hit.moon;
 
-    const label = bestMoon ? this.moonLabel : this.labels.get(bestName);
+    const label = moon ? this.moonLabel : this.labels.get(hit.name);
     if (!label) return;
-    if (!bestMoon) {
+    if (!moon) {
       this.hoveredMoonName = null;
-    } else if (bestName !== this.hoveredMoonName) {
+    } else if (hit.name !== this.hoveredMoonName) {
       // Only rebuild the label text when the hovered moon changes (not every
       // frame the pointer rests on it); getMoonDisplayOrbit isn't cheap.
-      this.hoveredMoonName = bestName;
-      label.style.setProperty('--body-color', `#${bestMoon.color.toString(16).padStart(6, '0')}`);
-      label.querySelector('strong')!.textContent = bestName;
-      (label.querySelector('.sm-map-desc') as HTMLElement).textContent = `${bestMoon.parent}'s moon`;
+      this.hoveredMoonName = hit.name;
+      label.style.setProperty('--body-color', `#${moon.color.toString(16).padStart(6, '0')}`);
+      label.querySelector('strong')!.textContent = hit.name;
+      (label.querySelector('.sm-map-desc') as HTMLElement).textContent = `${moon.parent}'s moon`;
       // Orbital period around the parent (moons are tidally locked, so day = orbit).
-      const period = getMoonDisplayOrbit(bestMoon.name, bestMoon.parent).periodDays;
+      const period = getMoonDisplayOrbit(moon.name, moon.parent).periodDays;
       const rows: Array<[string, string]> = [
-        ['Distance to planet', `${sig3(bestMoon.orbitalRadiusKm)} km`],
-        ['Radius', fmtEarthRadii(bestMoon.radiusAU)],
+        ['Distance to planet', `${sig3(moon.orbitalRadiusKm)} km`],
+        ['Radius', fmtEarthRadii(moon.radiusAU)],
         ['Orbit', fmtDays(period)],
       ];
       // Only the handful of moons with a real atmosphere get the row.
-      const atmo = BODY_ATMOSPHERE[bestMoon.name];
+      const atmo = BODY_ATMOSPHERE[moon.name];
       if (atmo) rows.push(['Atmosphere', atmo]);
       this.setLabelRows(label, rows);
     }
-    const x = THREE.MathUtils.clamp(bestX + 14, 6, Math.max(6, width - 120));
-    const y = THREE.MathUtils.clamp(bestY - 10, 58, Math.max(58, height - 34));
+    // Show first, then clamp against the card's MEASURED width: these cards run
+    // past 200px (the description alone is capped at 190), so a fixed margin
+    // let the values slide under the viewport edge and get clipped by the
+    // container's overflow:hidden. One layout read, for the one visible label.
     label.style.display = 'flex';
+    label.style.left = '0px';
+    const cardWidth = label.offsetWidth;
+    const x = THREE.MathUtils.clamp(hit.x + 14, 6, Math.max(6, width - cardWidth - 6));
+    const y = THREE.MathUtils.clamp(hit.y - 10, 58, Math.max(58, height - 34));
     label.style.left = `${Math.round(x)}px`;
     label.style.top = `${Math.round(y)}px`;
   }
 
   private renderDate(utcMs: number): void {
-    const text = new Intl.DateTimeFormat('en-GB', {
-      day: '2-digit', month: 'short', year: 'numeric', timeZone: 'UTC',
-    }).format(new Date(utcMs));
+    const text = MAP_DATE_FORMAT.format(new Date(utcMs));
     if (text === this.lastDateText) return;
     this.lastDateText = text;
     const dateEl = document.getElementById('system-map-date');
@@ -1107,11 +1267,14 @@ export class SystemMap {
     this.frameAll();
   };
 
+  /** Track exactly one gesture. A non-primary button (OrbitControls pans on
+   *  right-drag) never arms a click, and a second finger never rebinds the id. */
   private readonly onPointerDown = (e: PointerEvent): void => {
+    if (e.button !== 0 || this.pointerId !== null) return;
     const rect = this.renderer.domElement.getBoundingClientRect();
     this.pointerDownX = e.clientX - rect.left;
     this.pointerDownY = e.clientY - rect.top;
-    this.pointerIsDown = true;
+    this.pointerId = e.pointerId;
     this.pointerDragged = false;
   };
 
@@ -1120,62 +1283,94 @@ export class SystemMap {
     this.pointerX = e.clientX - rect.left;
     this.pointerY = e.clientY - rect.top;
     this.pointerInside = true;
-    if (this.pointerIsDown && Math.hypot(this.pointerX - this.pointerDownX, this.pointerY - this.pointerDownY) > CLICK_MOVE_TOLERANCE_PX) {
+    if (e.pointerId !== this.pointerId) return; // a second finger doesn't drag the first
+    if (Math.hypot(this.pointerX - this.pointerDownX, this.pointerY - this.pointerDownY) > CLICK_MOVE_TOLERANCE_PX) {
       this.pointerDragged = true;
     }
   };
 
   private readonly onPointerUp = (e: PointerEvent): void => {
-    const wasDown = this.pointerIsDown;
-    this.pointerIsDown = false;
-    if (!wasDown || this.pointerDragged) return; // a drag rotated/zoomed — not a click
+    if (e.pointerId !== this.pointerId) return;
+    this.pointerId = null;
+    if (this.pointerDragged) return; // a drag rotated/zoomed — not a click
     const rect = this.renderer.domElement.getBoundingClientRect();
-    const hit = this.pickBodyAt(e.clientX - rect.left, e.clientY - rect.top);
+    const hit = this.pickNearest(e.clientX - rect.left, e.clientY - rect.top, CLICK_HIT_FLOOR_PX, CLICK_HIT_PAD_PX);
     if (!hit) return; // click empty space: keep the current view
-    if (hit.parent) this.focusMoonTarget(hit.name, hit.parent);
+    if (hit.moon) this.focusMoonTarget(hit.moon.name, hit.moon.parent);
     else this.focusOn(hit.name);
+  };
+
+  /** A cancelled gesture (system scroll, palm rejection) drops the id without
+   *  committing — otherwise the map stays armed and the NEXT release clicks. */
+  private readonly onPointerCancel = (e: PointerEvent): void => {
+    if (e.pointerId === this.pointerId) this.pointerId = null;
   };
 
   private readonly onPointerLeave = (): void => {
     this.pointerInside = false;
   };
 
-  /** Nearest focusable body to a screen point, within its apparent disc + slop.
-   *  Considers the Sun/planets/ship AND any LOD-revealed moons, so clicking a
-   *  visible moon focuses it (returning its parent) rather than the planet. */
-  private pickBodyAt(px: number, py: number): { name: string; parent: string | null } | null {
+  private readonly onBlur = (): void => {
+    this.pointerId = null;
+    this.pointerInside = false;
+  };
+
+  /**
+   * Nearest focusable body to a screen point, in OUTPUT pixels — the single
+   * pick behind BOTH hover and click, so the two can never disagree about what
+   * a body's disc covers.
+   *
+   * The accepted radius comes from `projectSphereToScreen`, which samples the
+   * true tangent limb through the active lens: deriving it from `camera.fov`
+   * instead reads the OVERSCAN fov (71.5° for a 60° frame) and rejects the
+   * outer fifth of every zoomed-in disc while `projectToScreen` reports the
+   * warped centre — the two seams must agree. A 'covering' footprint is a
+   * guess, not a measurement, so it falls back to the floor rather than
+   * claiming the whole frame.
+   */
+  private pickNearest(
+    px: number,
+    py: number,
+    floorPx: number,
+    padPx: number,
+    exclude?: string,
+  ): MapPick | null {
     const width = this.renderer.domElement.clientWidth;
     const height = this.renderer.domElement.clientHeight;
-    const focal = height / (2 * Math.tan(THREE.MathUtils.degToRad(this.camera.fov) / 2));
-    let best: { name: string; parent: string | null } | null = null;
+    let best: MapPick | null = null;
     let bestDist = Infinity;
-    for (const [name, world] of this.labelWorld) {
-      projectToScreen(world, this.camera, width, height, this.projScratch);
-      const p = this.projScratch;
-      if (!(p.ndcZ > -1 && p.ndcZ < 1 && Math.abs(p.ndcX) < 1 && Math.abs(p.ndcY) < 1)) continue;
-      const camDist = this.camera.position.distanceTo(world);
-      const apparentR = camDist > 1e-6 ? (this.bodyMapRadius(name) / camDist) * focal : 0;
-      const hit = Math.max(24, apparentR + 14);
+    const consider = (
+      name: string,
+      world: THREE.Vector3,
+      mapRadius: number,
+      moon: MoonHoverTarget | null,
+    ): void => {
+      const p = projectSphereToScreen(world, mapRadius, this.camera, width, height, this.sphereScratch);
+      if (!(p.ndcZ > -1 && p.ndcZ < 1 && Math.abs(p.ndcX) < 1 && Math.abs(p.ndcY) < 1)) return;
+      const discPx = p.footprintKind === 'sampled' ? p.radiusPx : 0;
+      const hit = Math.max(floorPx, discPx + padPx);
       const d = Math.hypot(p.x - px, p.y - py);
-      if (d < hit && d < bestDist) { bestDist = d; best = { name, parent: null }; }
+      if (d >= hit || d >= bestDist) return;
+      bestDist = d;
+      this.pickScratch.name = name;
+      this.pickScratch.x = p.x;
+      this.pickScratch.y = p.y;
+      this.pickScratch.moon = moon;
+      best = this.pickScratch;
+    };
+    for (const [name, world] of this.labelWorld) {
+      if (name === exclude) continue;
+      consider(name, world, this.bodyMapRadius(name), null);
     }
     for (const t of this.moonHoverTargets) {
-      projectToScreen(this.vecScratch.set(t.x, t.y, t.z), this.camera, width, height, this.projScratch);
-      const p = this.projScratch;
-      if (!(p.ndcZ > -1 && p.ndcZ < 1 && Math.abs(p.ndcX) < 1 && Math.abs(p.ndcY) < 1)) continue;
-      const parent = this.objects?.planets.find((pl) => pl.data.name === t.parent);
-      const parentMapR = parent ? systemMapBodyRadius(parent.data.radiusAU) : 0.2;
-      const camDist = this.camera.position.distanceTo(this.vecScratch);
-      const apparentR = camDist > 1e-6 ? (systemMapMoonBodyRadius(t.radiusAU, parentMapR) / camDist) * focal : 0;
-      const hit = Math.max(20, apparentR + 12);
-      const d = Math.hypot(p.x - px, p.y - py);
-      if (d < hit && d < bestDist) { bestDist = d; best = { name: t.name, parent: t.parent }; }
+      consider(t.name, this.vecScratch.set(t.x, t.y, t.z), t.mapRadius, t);
     }
     return best;
   }
 }
 
 const moonNormalScratch = new THREE.Vector3();
+const orbitLineScratch = new THREE.Vector3();
 const tidalToParent = new THREE.Vector3();
 const tidalBasisZ = new THREE.Vector3();
 const tidalUp = new THREE.Vector3();
@@ -1296,16 +1491,34 @@ function restore(snap: TransformSnapshot): void {
   snap.object.quaternion.copy(snap.quaternion);
 }
 
-/** Build a billboard sprite from a square canvas painted by `draw`. */
-function canvasSprite(size: number, draw: (ctx: CanvasRenderingContext2D, s: number) => void, additive = false): THREE.Sprite {
+/**
+ * Build a billboard sprite from a square canvas painted by `draw`.
+ *
+ * `screenLens` makes it a SCREEN-authored primitive: fixed on-screen size
+ * (`sizeAttenuation: false`) pre-distorted into the overscan source, so the
+ * lens pass restores the authored pixel size and shape anywhere in frame.
+ * World-sized furniture (the map Sun) leaves it off and warps like geometry.
+ */
+function canvasSprite(
+  size: number,
+  draw: (ctx: CanvasRenderingContext2D, s: number) => void,
+  opts: { additive?: boolean; screenLens?: LensShaderUniforms } = {},
+): THREE.Sprite {
   const canvas = document.createElement('canvas');
   canvas.width = canvas.height = size;
   const ctx = canvas.getContext('2d');
   if (ctx) draw(ctx, size);
   const texture = new THREE.CanvasTexture(canvas);
   texture.colorSpace = THREE.SRGBColorSpace;
-  const material = new THREE.SpriteMaterial({ map: texture, transparent: true, depthWrite: false, toneMapped: false });
-  if (additive) material.blending = THREE.AdditiveBlending;
+  const material = new THREE.SpriteMaterial({
+    map: texture,
+    transparent: true,
+    depthWrite: false,
+    toneMapped: false,
+    sizeAttenuation: !opts.screenLens,
+  });
+  if (opts.additive) material.blending = THREE.AdditiveBlending;
+  if (opts.screenLens) augmentFixedScreenSpriteForLens(material, opts.screenLens);
   return new THREE.Sprite(material);
 }
 
@@ -1330,7 +1543,7 @@ function makeSunDiscSprite(): THREE.Sprite {
 }
 
 /** Crisp filled dot with a dark rim for contrast against space and the Sun. */
-function makeDotSprite(color: string): THREE.Sprite {
+function makeDotSprite(color: string, lens: LensShaderUniforms): THREE.Sprite {
   return canvasSprite(128, (ctx, s) => {
     ctx.fillStyle = 'rgba(4,10,20,0.9)';
     circle(ctx, s / 2, s / 2, s * 0.31);
@@ -1338,17 +1551,17 @@ function makeDotSprite(color: string): THREE.Sprite {
     ctx.fillStyle = color;
     circle(ctx, s / 2, s / 2, s * 0.22);
     ctx.fill();
-  });
+  }, { screenLens: lens });
 }
 
 /** Thin ring (radar ping) — hollow centre, so it reads as a marker not a glow. */
-function makeRingSprite(color: string): THREE.Sprite {
+function makeRingSprite(color: string, lens: LensShaderUniforms): THREE.Sprite {
   return canvasSprite(256, (ctx, s) => {
     ctx.strokeStyle = color;
     ctx.lineWidth = s * 0.045;
     circle(ctx, s / 2, s / 2, s * 0.44);
     ctx.stroke();
-  });
+  }, { screenLens: lens });
 }
 
 /** Soft radial-gradient billboard used for the Sun's glow. */
@@ -1362,7 +1575,7 @@ function makeGlowSprite(color: number): THREE.Sprite {
     g.addColorStop(1, 'rgba(0,0,0,0)');
     ctx.fillStyle = g;
     ctx.fillRect(0, 0, s, s);
-  }, true);
+  }, { additive: true });
   sprite.renderOrder = 12;
   return sprite;
 }

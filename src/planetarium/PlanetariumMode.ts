@@ -1110,6 +1110,20 @@ export class PlanetariumMode {
     if (tip) tip.textContent = active ? 'Exit map' : 'System map';
   }
 
+  /** DEV: open/close the system map. The real entry points, so headless QA
+   *  drives the map through the same guards a click goes through instead of
+   *  synthesizing DOM clicks on the action cluster. Returns whether the map is
+   *  active afterwards. */
+  devSystemMapOpen(): boolean {
+    this.enterSystemMap();
+    return this.systemMap.isActive();
+  }
+
+  devSystemMapExit(): boolean {
+    this.exitSystemMap();
+    return this.systemMap.isActive();
+  }
+
   /** DEV: frame a planet in the system map to reveal its moons. */
   devSystemMapFocus(name: string): boolean {
     return this.systemMap.focusBody(name);
@@ -4572,6 +4586,10 @@ export class PlanetariumMode {
     if (e.key === 'Escape') {
       if (this.isHelpOpen()) { this.hideHelp(); return; }
       if (this.systemMap.isActive()) {
+        // The map's own cascade: its body picker is an overlay, so it unwinds
+        // one rung before the map itself — Esc on an open picker must not throw
+        // away the whole view.
+        if (this.systemMap.closePicker()) return;
         this.exitSystemMap(); // centralizes ☰ menu cleanup
         return;
       }
@@ -5774,6 +5792,7 @@ export class PlanetariumMode {
         this.closeDeck();
         this.closeSurfaceTargetMenu();
         this.closeToolsMenu();
+        this.systemMap.closePicker();
         this.resumeShipAfterMenu = this.player.moving;
         this.resumeTimeAfterMenu = !this.timeState.paused;
         this.player.moving = false;
@@ -6390,6 +6409,11 @@ export class PlanetariumMode {
     // a tutorial can have started during the profile fetch. Stop that one too
     // before the mission stashes state.
     if (this.tutorial) this.stopTutorial({ restore: true, sync: true });
+    // A mission takes the scene, so it can't run behind the map's per-frame
+    // early return — same reason the tutorial, New Journey and deactivate all
+    // exit first. Before rememberPreMissionState, so the stash records the real
+    // cruise pose rather than the map's borrowed camera.
+    if (this.systemMap.isActive()) this.exitSystemMap();
     // Missions own the ship from here: drop the excursion return pose BEFORE
     // exiting landed mode, so the pre-mission stash captures the classic
     // takeoff state rather than a mid-air teleport back to cruise.

@@ -19,7 +19,10 @@ const lerp = (x: number, y: number, t: number) => (1 - t) * x + t * y;
  * Faint-end shaping: dimmer points get lower opacity and smaller size, so a dense
  * faint layer recedes into fine texture instead of a flat wall of identical
  * specks. The ramp spans `faintFadeRangeMag` magnitudes up to a faint limit
- * (the catalog's dimmest star). Opacity carries the dimming; size stays at or
+ * (the pinned anchor magnitude — deliberately NOT the catalog's dimmest star,
+ * so deepening the catalog never re-brightens the existing sky; entries past
+ * the anchor continue on the below-anchor taper). Opacity carries the
+ * dimming; size stays at or
  * above `sizeFloorPx` so points read as crisp dots even at the limit.
  */
 export const STAR_POINT_MAPPING = {

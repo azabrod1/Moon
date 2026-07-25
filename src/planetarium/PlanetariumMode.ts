@@ -645,8 +645,8 @@ export class PlanetariumMode {
    *  buffers fill in updateMoonDotsForCamera after the final camera pose. */
   private moonDots: MoonDots | null = null;
   private moonDotParams: MoonDotParams = { ...MOON_DOT_PARAMS };
-  /** Catalog faint-limit magnitude the dots' faint-end handoff lines up to
-   *  (the starfield's dimmest star); computed once. */
+  /** Faint-limit magnitude the dots' faint-end handoff lines up to — the
+   *  starfield's pinned anchor, not the catalog's dimmest entry. */
   private starFaintLimitMag = 6.5;
   /** Eased telescope light grasp behind the starfield's uStarGain. 1 outside
    *  the surface view, where it is a no-op on every star. */
@@ -2289,10 +2289,18 @@ export class PlanetariumMode {
           undefined,
           this.tmpDotVisual,
         );
-        m.dotScreenAlpha = v.alpha;
+        // The dots share the starfield's telescope light grasp, same soft knee:
+        // the mapping contract says a moon dot is as visible as an equally
+        // bright star, and the surface view is exactly where both are honest
+        // photometry — a gained sky over ungained dots would sink every dot
+        // below its star twin. Inactive (gain 1) everywhere else.
+        const dotAlpha = this.starGain > 1.001
+          ? 1 - Math.pow(1 - v.alpha, this.starGain)
+          : v.alpha;
+        m.dotScreenAlpha = dotAlpha;
         m.dotScreenSizePx = v.sizePx;
 
-        if (v.alpha <= 0) {
+        if (dotAlpha <= 0) {
           this.moonDots.hide(i);
           continue;
         }
@@ -2315,7 +2323,7 @@ export class PlanetariumMode {
           chroma.g * v.brightness,
           chroma.b * v.brightness,
           v.sizePx,
-          v.alpha,
+          dotAlpha,
         );
       }
     }

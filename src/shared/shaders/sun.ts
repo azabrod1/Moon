@@ -679,14 +679,16 @@ void main() {
       // contact region because the corona there is comparatively faint.
       float contactWindow = pow(max(dot(limbDir, antiDir), 0.0), 4.0) * uChromoAnti
         + pow(max(dot(limbDir, axisDir), 0.0), 4.0) * uChromoToward;
-      corona *= 1.0 - 0.60 * contactWindow * exp(-pastLimb * 1.6);
+      corona *= 1.0 - 0.60 * contactWindow * exp(-pastLimb * 3.5);
       // Three prominence points, 17-34 degrees around the contact, standing
       // clear of the limb in the darker gap the parted corona leaves — they
       // are what carries the colour at any framing; the limb arc itself is a
       // hairline at honest scale.
-      float promRadial = exp(-pow(
-        (occluderDistance - uOccluderRadii - 0.035) / 0.026, 2.0
-      ));
+      // Squared explicitly: pow() of a negative base is undefined in GLSL, and
+      // this base goes negative across the whole occluded disc — Metal happens
+      // to forgive it, other drivers return NaN and bloom smears it framewide.
+      float promT = (occluderDistance - uOccluderRadii - 0.035) / 0.026;
+      float promRadial = exp(-promT * promT);
       float prominences = (
         pow(max(dot(limbDir, spinDir(antiDir, -0.50)), 0.0), 160.0)
         + pow(max(dot(limbDir, spinDir(antiDir, 0.29)), 0.0), 160.0) * 0.8

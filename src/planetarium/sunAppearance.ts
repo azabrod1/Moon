@@ -186,8 +186,10 @@ export interface ChromosphereSideWeights {
    *  dies at second contact and the first returns at third. */
   anti: number;
   /** The limb TOWARD the occluder, covered first and uncovered last. Spent
-   *  before it can show for any total geometry; carried so the shader term
-   *  stays general rather than hard-coding which side can glow. */
+   *  before it can show for ordinary total geometry; a hybrid's near-tangent
+   *  pass (occluder barely larger than the disc) legitimately lights both
+   *  limbs, which is physically right — a barely-total eclipse flashes
+   *  chromosphere most of the way round. */
   toward: number;
 }
 
@@ -205,8 +207,8 @@ export interface ChromosphereSideWeights {
  *
  * Both depths fade through one authored scale height, and both sides stay shut
  * until the exposed fraction is a sliver: with any real photosphere on screen
- * the reds are drowned by it, and only the last thousandth of the disc lets
- * them through.
+ * the reds are drowned by it. Transmission begins once under 3% of the disc
+ * remains and completes through the last 0.2%.
  *
  * A sub-Sun occluder gets nothing at all. Annular geometry has no total
  * contact, so there is never a moment when the photosphere is gone and the

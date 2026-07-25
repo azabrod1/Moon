@@ -168,10 +168,16 @@ export function createPlanetariumStarfield(rendererPixelRatio: number): THREE.Po
             max(max(halfC.x, halfC.y), max(halfD.x, halfD.y))
           );
           gl_PointSize = max(1.0, 2.0 * sourceHalfPx);
-          // Gain lifts the faint end, then the clamp holds the ceiling: a bright
-          // star must not be pushed past the opacity the catalog gave it, or the
-          // field would climb over the bloom cutoff it is built to stay under.
-          vAlpha = min(alpha * uStarGain, 1.0)
+          // Gain lifts the faint end on a soft knee, 1-(1-a)^g: alpha 1 stays 1
+          // (no star climbs over the bloom cutoff the field is built to stay
+          // under), the map is strictly monotone in alpha, so the magnitude
+          // ordering survives every gain — a hard min() collapsed the whole
+          // catalog to opacity 1 below a ~13-degree field. Branched so an
+          // ungained frame is byte-identical, not merely pow-identical.
+          float gained = uStarGain > 1.001
+            ? 1.0 - pow(1.0 - alpha, uStarGain)
+            : alpha;
+          vAlpha = gained
             * (1.0 - ${SUN_GLARE_MASK_MAX_KILL.toFixed(2)} * sunGlareMask(gl_Position));
         }
       `,

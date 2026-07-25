@@ -346,7 +346,7 @@ describe('moon teleport camera tracking', () => {
     const arrivalCameraDistance = pose.position
       .clone()
       .addScaledVector(flightForward, -CAM_DIST_AU)
-      .add(new THREE.Vector3(0, CAM_DIST_AU * 0.45, 0))
+      .add(new THREE.Vector3(0, CAM_DIST_AU * 0.35, 0))
       .distanceTo(inp.moonPos);
     const weight = moonArrivalCameraLookWeight(
       cameraDistance,
@@ -426,7 +426,7 @@ describe('moonArrivalPose — catalog sweep (all moons, three orbit phases)', ()
       const camPos = pose.position
         .clone()
         .addScaledVector(fwd, -CAM_DIST_AU)
-        .add(new THREE.Vector3(0, CAM_DIST_AU * 0.45, 0));
+        .add(new THREE.Vector3(0, CAM_DIST_AU * 0.35, 0));
       const apparentDeg = 2 * Math.asin(inp.renderedR / camPos.distanceTo(inp.moonPos)) * RAD2DEG;
       expect(apparentDeg, `${moon.name}: arrival disc`).toBeGreaterThan(2.4);
     }
@@ -442,12 +442,12 @@ describe('moonArrivalPose — catalog sweep (all moons, three orbit phases)', ()
       const dist = pose.position.distanceTo(inp.moonPos);
       if (Math.abs(dist - raw) > 1e-9) continue; // a floor or cap bound instead
       // Compose the real chase-camera pose: camDist behind the ship along
-      // the heading, lifted 0.45·camDist (resetCruiseCamera's rig).
+      // the heading, lifted 0.35·camDist (the unified chase rig).
       const fwd = pose.aimPoint.clone().sub(pose.position).normalize();
       const camPos = pose.position
         .clone()
         .addScaledVector(fwd, -CAM_DIST_AU)
-        .add(new THREE.Vector3(0, CAM_DIST_AU * 0.45, 0));
+        .add(new THREE.Vector3(0, CAM_DIST_AU * 0.35, 0));
       const apparentDeg = 2 * Math.asin(inp.renderedR / camPos.distanceTo(inp.moonPos)) * RAD2DEG;
       expect(apparentDeg).toBeGreaterThan(MOON_ARRIVAL_APPARENT_DIAMETER_DEG - 0.5);
       expect(apparentDeg).toBeLessThan(MOON_ARRIVAL_APPARENT_DIAMETER_DEG + 0.5);

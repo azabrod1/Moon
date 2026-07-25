@@ -259,15 +259,20 @@ export const CHASE_CAM_LIFT_FRAC = 0.35;
 /** The steady chase offset from the ship — the ship sits at scene origin under
  *  floating origin, so this is the camera position too: CRUISE_CAM_DIST_AU
  *  straight back along the ship's forward vector, lifted CHASE_CAM_LIFT_FRAC of
- *  that distance in world-up. Writes and returns `out`. The single source for
- *  the reset pose, the steady follow target, and the reacquire target. */
+ *  that distance along the caller's `up`. The lift axis is passed in rather
+ *  than assumed to be world-up: cruise rides the flight horizon, so the rig
+ *  must tilt with it or the camera would sit off to one side of the ship at
+ *  half the headings. Writes and returns `out`. The single source for the
+ *  reset pose, the steady follow target, and the reacquire target. */
 export function chaseIdealOffset<T extends { x: number; y: number; z: number }>(
   forward: { x: number; y: number; z: number },
+  up: { x: number; y: number; z: number },
   out: T,
 ): T {
-  out.x = -forward.x * CRUISE_CAM_DIST_AU;
-  out.y = -forward.y * CRUISE_CAM_DIST_AU + CRUISE_CAM_DIST_AU * CHASE_CAM_LIFT_FRAC;
-  out.z = -forward.z * CRUISE_CAM_DIST_AU;
+  const lift = CRUISE_CAM_DIST_AU * CHASE_CAM_LIFT_FRAC;
+  out.x = -forward.x * CRUISE_CAM_DIST_AU + up.x * lift;
+  out.y = -forward.y * CRUISE_CAM_DIST_AU + up.y * lift;
+  out.z = -forward.z * CRUISE_CAM_DIST_AU + up.z * lift;
   return out;
 }
 

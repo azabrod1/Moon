@@ -38,7 +38,7 @@ import {
   advancePlanetariumTime,
   computeBodyPositionAU,
   computeBodyState,
-  eclipticToEquatorial,
+  ECLIPTIC_NORTH_EQUATORIAL,
   formatDateCompact,
   formatTimeRateLabel,
   formatUtcLabel,
@@ -200,6 +200,7 @@ import {
   ringAnnulusDistanceAU,
   type CameraBodyShell,
 } from './cruiseView';
+import { FLIGHT_UP_SCENE } from './flightFrame';
 import { KM_CONSTANTS } from '../shared/constants/physicalData';
 import { smoothstepUnclamped } from '../shared/math/smoothstep';
 import {
@@ -377,8 +378,6 @@ export class PlanetariumMode {
   // as the single sizing policy; the state-dependent anchor pick is
   // moonRenderAnchorRatio, and every controller consumer resolves through
   // renderedMoonSizeAU so the dev γ override reaches all of them.
-  /** Ecliptic north in the scene's equatorial frame (tidal-lock roll reference for Earth's Moon). */
-  private static readonly ECLIPTIC_NORTH = eclipticToEquatorial(new THREE.Vector3(0, 1, 0));
   private static readonly EARTH_DETAIL_MIN_DISTANCE_AU = 0.03;
   private static readonly EARTH_DETAIL_MIN_ANGULAR_DIAMETER_RAD = 0.003;
   /** Per-frame wall-clock slice for the Observatory panel's upcoming-events search. */
@@ -1679,6 +1678,10 @@ export class PlanetariumMode {
       this.camera.near = LANDED_NEAR_AU;
       this.camera.updateProjectionMatrix();
     }
+    // Same for the camera basis: cruise leaves the flight horizon on
+    // camera.up, and another mode (or a reactivation's first landed frame)
+    // must inherit plain world-up.
+    this.setCameraFrameUp(PlanetariumMode.SCENE_NORTH);
     // Same for the governor: activation flips `active` before the restore
     // resolves, so the reactivation window must not run on this journey's
     // leftover cap or clear-hold.
@@ -2162,7 +2165,11 @@ export class PlanetariumMode {
       // that back keeps the step and the escape from fighting, and lets a
       // re-grab promote straight to 'orbit'. OrbitControls stays idle here.
       const tau = this.advanceChaseFollowTau(dt);
-      const ideal = chaseIdealOffset(this.player.getForwardDirection(), this.tmpChaseIdeal);
+      const ideal = chaseIdealOffset(
+        this.player.getForwardDirection(),
+        FLIGHT_UP_SCENE,
+        this.tmpChaseIdeal,
+      );
       const settled = reacquireCameraStep(this.camera.position, this.camera.position, ideal, dt, tau);
       this.camera.lookAt(0, 0, 0);
       if (settled) this.camOwner = 'chase'; // state switch only — the step already posed the camera
@@ -2188,7 +2195,7 @@ export class PlanetariumMode {
     // steering so a tap bends the pursuit curve instead of stepping it, and the
     // gain derives from dt so 60 Hz and 120 Hz converge alike.
     const forward = this.player.getForwardDirection();
-    const idealPos = chaseIdealOffset(forward, this.tmpChaseIdeal);
+    const idealPos = chaseIdealOffset(forward, FLIGHT_UP_SCENE, this.tmpChaseIdeal);
     const tau = this.advanceChaseFollowTau(dt);
     this.camera.position.lerp(idealPos, cameraFollowGain(dt, tau));
   }
@@ -2455,7 +2462,7 @@ export class PlanetariumMode {
       // ecliptic north (Cassini state) vs 5.1° for the orbit normal, so the
       // tidal-lock roll stays on ecliptic north. The shadow engine and the
       // guide slots read the true normal straight from the seam.
-      outOrbitNormal.copy(PlanetariumMode.ECLIPTIC_NORTH);
+      outOrbitNormal.copy(ECLIPTIC_NORTH_EQUATORIAL);
     }
     return out;
   }
@@ -6689,12 +6696,49 @@ export class PlanetariumMode {
     // OrbitControls' own gesture with it), drop its damping residuals, then
     // seat the camera at the chase pose.
     this.cancelOrbitGesture();
+    // Cruise rides the flight horizon. Every cruise entry funnels through
+    // here — first pointing, Travel jumps, takeoff, a non-landed restore — so
+    // this is where the basis flips back after any landed excursion.
+    this.setCameraFrameUp(FLIGHT_UP_SCENE);
     this.pendingChaseReclaim = false;
     this.flushOrbitDamping();
     this.camOwner = 'chase';
     const forward = this.player.getForwardDirection();
-    chaseIdealOffset(forward, this.camera.position);
+    chaseIdealOffset(forward, FLIGHT_UP_SCENE, this.camera.position);
     this.controls.target.set(0, 0, 0);
+  }
+
+  /**
+   * The single writer of the camera's up axis outside surface view: cruise
+   * rides the flight horizon (so the system's plane renders level at every
+   * heading), landed framing rides world-up.
+   *
+   * OrbitControls caches its orbit axis from `object.up` at construction
+   * (`_quat`/`_quatInverse`, verified against three r0.183.2), so writing
+   * `camera.up` alone would leave drags — and landed autoRotate — precessing
+   * about the old axis. Refresh both; a rename on a three upgrade falls
+   * through to a DEV warning and the up write alone.
+   */
+  private setCameraFrameUp(up: THREE.Vector3) {
+    if (this.camera.up.equals(up)) return;
+    // Flipping the basis under a live gesture would swing the view in the
+    // user's hand: end the gesture (no-op when nothing is held) and drop the
+    // damping residuals so no coast replays in the old basis.
+    this.cancelOrbitGesture();
+    this.flushOrbitDamping();
+    this.camera.up.copy(up);
+    const c = this.controls as unknown as {
+      _quat?: THREE.Quaternion;
+      _quatInverse?: THREE.Quaternion;
+    };
+    if (c._quat && c._quatInverse) {
+      c._quat.setFromUnitVectors(this.camera.up, PlanetariumMode.SCENE_NORTH);
+      c._quatInverse.copy(c._quat).invert();
+      return;
+    }
+    if (import.meta.env.DEV) {
+      console.warn('OrbitControls orbit-axis fields missing — three upgrade renamed them; drags will orbit the stale axis');
+    }
   }
 
   /** Zero OrbitControls' damping residuals so a reacquire or reset starts from
@@ -7345,6 +7389,11 @@ export class PlanetariumMode {
     offNdcY: number,
   ): void {
     const canvas = this.renderer.domElement;
+    // Framing rigs are world-up, not flight-horizon: a stored screenshot
+    // baseline must not roll 23.4° the day cruise changed its horizon, or
+    // before/after comparisons stop comparing. (These poses bypass the cruise
+    // camera entirely — updateCruiseCamera is skipped under devFreeCamera.)
+    cam.up.set(0, 1, 0);
     let aimNdcX = offNdcX;
     let aimNdcY = offNdcY;
     for (let i = 0; i < 4; i++) {
@@ -7758,6 +7807,7 @@ export class PlanetariumMode {
     // legal camera.fov writer — a raw `cam.fov = fovDeg` would set the display
     // FOV as the overscan and desync every lens seam.
     this.setDisplayFov(fovDeg);
+    cam.up.set(0, 1, 0); // framing rig, not the cruise rig — world-up baseline
     cam.lookAt(sceneOffset);
     this.controls.target.copy(sceneOffset);
     this.showShip = false;
@@ -7808,6 +7858,7 @@ export class PlanetariumMode {
     // applyDesignFov (via setDisplayFov) is the only legal camera.fov writer
     // under the lens contract; a raw `cam.fov = fovDeg` desyncs the overscan.
     this.setDisplayFov(fovDeg);
+    cam.up.set(0, 1, 0); // framing rig, not the cruise rig — world-up baseline
     cam.lookAt(tangentOffset);
     this.controls.target.copy(tangentOffset);
     this.showShip = false;
@@ -7875,6 +7926,9 @@ export class PlanetariumMode {
         : null,
       camPos: { x: cam.position.x, y: cam.position.y, z: cam.position.z },
       camLen: Math.hypot(cam.position.x, cam.position.y, cam.position.z),
+      // Which frame the camera is riding: the flight horizon in cruise,
+      // world-up landed and under the dev framing rigs.
+      camUp: { x: cam.up.x, y: cam.up.y, z: cam.up.z },
       fov: cam.fov,
       moving: this.player.moving,
       devFree: this.devFreeCamera,
@@ -9151,7 +9205,10 @@ export class PlanetariumMode {
     this.surfaceFovAnim = null;
     this.surfaceSpotAnchor = null;
     this.surfaceLook.detach();
-    this.camera.up.set(0, 1, 0); // OrbitControls assumes world-up
+    // Back to the landed orbit view, which is world-up (OrbitControls' cached
+    // orbit axis is already world-up from the landing). The cruise basis is
+    // the flight horizon and gets reapplied by resetCruiseCamera on takeoff.
+    this.camera.up.set(0, 1, 0);
     this.setDisplayFov(60);
     this.setSurfaceLabelContainersHidden(false);
     this.observatoryHud.hide();
@@ -9798,6 +9855,10 @@ export class PlanetariumMode {
     // takeoff reset that reads it — a landed drag may later set 'orbit'
     // harmlessly.
     this.camOwner = 'chase';
+    // Landed framing is world-up: the orbit view, its autoRotate precession
+    // and the lit-side opening pose are all authored against celestial north.
+    // Must precede the framing lookAt below (it reads camera.up).
+    this.setCameraFrameUp(PlanetariumMode.SCENE_NORTH);
 
     // Frame the body to ~⅓ of the view (see landedView), opening on its lit
     // hemisphere. The camera ends up 1.5×camDist from the body at scene origin.

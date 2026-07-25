@@ -81,6 +81,17 @@ export function eclipticToEquatorial(vector: THREE.Vector3): THREE.Vector3 {
   return vector.clone().applyMatrix4(ECLIPTIC_TO_EQUATORIAL);
 }
 
+/**
+ * The north ecliptic pole expressed in the scene's J2000 equatorial frame —
+ * (0, cos ε, sin ε). THE single definition site: derived from the obliquity
+ * matrix above, never a re-inlined rotation, so every consumer (the cruise
+ * flight horizon, the Moon's tidal-lock roll reference) shares one vector and
+ * one sign convention. Treat as read-only; copy before mutating.
+ */
+export const ECLIPTIC_NORTH_EQUATORIAL: THREE.Vector3 = eclipticToEquatorial(
+  new THREE.Vector3(0, 1, 0),
+).normalize();
+
 /** TT Julian Day from civil UTC ms — what ephemeris/rotation theories expect. */
 export function ttJDFromUtcMs(utcMs: number): number {
   const date = new Date(utcMs);

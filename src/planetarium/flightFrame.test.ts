@@ -133,11 +133,27 @@ describe('flightAnglesFromSceneDirection', () => {
     expect(Math.abs(worldUp.pitchRad)).toBeLessThan(FLIGHT_PITCH_LIMIT_RAD);
   });
 
-  it('is scale-invariant — callers pass raw world deltas', () => {
-    const small = flightAnglesFromSceneDirection(0.3, -0.1, 0.9);
-    const large = flightAnglesFromSceneDirection(0.3e6, -0.1e6, 0.9e6);
-    expect(large.headingRad).toBeCloseTo(small.headingRad, 12);
-    expect(large.pitchRad).toBeCloseTo(small.pitchRad, 12);
+  it('is scale-invariant — callers pass raw world deltas of any magnitude', () => {
+    // Deltas span metres-to-a-moon (1e-12 AU is ~150 m) up to interstellar
+    // reach. Reading a direction from the raw components put the small end
+    // under the pole guard's floor and returned a near-level pitch for a
+    // steeply climbing aim.
+    const ref = flightAnglesFromSceneDirection(0.3, -0.1, 0.9);
+    for (const scale of [1e12, 1e6, 1e-6, 1e-12]) {
+      const scaled = flightAnglesFromSceneDirection(0.3 * scale, -0.1 * scale, 0.9 * scale);
+      expect(scaled.headingRad, `scale ${scale}`).toBeCloseTo(ref.headingRad, 10);
+      expect(scaled.pitchRad, `scale ${scale}`).toBeCloseTo(ref.pitchRad, 10);
+    }
+  });
+
+  it('returns level-ahead for a delta with no direction', () => {
+    for (const d of [[0, 0, 0], [NaN, 1, 0], [Infinity, 0, 0]]) {
+      const a = flightAnglesFromSceneDirection(d[0], d[1], d[2]);
+      expect(Number.isFinite(a.headingRad)).toBe(true);
+      expect(Number.isFinite(a.pitchRad)).toBe(true);
+      expect(a.headingRad).toBe(0);
+      expect(a.pitchRad).toBe(0);
+    }
   });
 });
 
@@ -160,6 +176,55 @@ describe('eclipticHeadingPitchFromEquatorial (legacy-save conversion)', () => {
   it('actually changes the angles — an identity conversion would be the bug', () => {
     const converted = eclipticHeadingPitchFromEquatorial(0.8, 0);
     expect(Math.abs(converted.pitchRad)).toBeGreaterThan(0.01);
+  });
+
+  it('gives up at most the clamp residual on a save aimed at the flight pole', () => {
+    // Documented, deliberate: a restored aim within (π/2 − limit) of ecliptic
+    // north or south comes back at the clamp, because the pitch bound is what
+    // keeps the chase camera's up axis off its own view direction.
+    const residualRad = Math.PI / 2 - FLIGHT_PITCH_LIMIT_RAD;
+    expect(THREE.MathUtils.radToDeg(residualRad)).toBeLessThan(1.9);
+
+    for (const sign of [1, -1]) {
+      // The old basis' angles for an aim straight at the ecliptic pole.
+      const poleDir = FLIGHT_UP_SCENE.clone().multiplyScalar(sign);
+      const legacyHeading = Math.atan2(poleDir.z, poleDir.x);
+      const legacyPitch = Math.atan2(poleDir.y, Math.hypot(poleDir.x, poleDir.z));
+
+      const converted = eclipticHeadingPitchFromEquatorial(legacyHeading, legacyPitch);
+      expect(converted.pitchRad).toBe(sign * FLIGHT_PITCH_LIMIT_RAD);
+      const restored = flightDirectionFromAngles(
+        converted.headingRad,
+        converted.pitchRad,
+        new THREE.Vector3(),
+      );
+      expect(restored.angleTo(poleDir)).toBeLessThanOrEqual(residualRad + 1e-9);
+      expect(Number.isFinite(converted.headingRad)).toBe(true);
+    }
+  });
+
+  it('loses only the clamp residual just outside the bound, and is deterministic there', () => {
+    // 1° off the pole: still inside the clamp, so the restored aim sits at the
+    // bound — the error is the geometry of the clamp, nothing else. Heading
+    // stays the real azimuth (not float residue) because the direction is not
+    // degenerate.
+    const oneDeg = 1 * Math.PI / 180;
+    const tilted = FLIGHT_UP_SCENE.clone()
+      .multiplyScalar(Math.cos(oneDeg))
+      .addScaledVector(flightDirectionFromAngles(0.7, 0, new THREE.Vector3()), Math.sin(oneDeg))
+      .normalize();
+    const legacyHeading = Math.atan2(tilted.z, tilted.x);
+    const legacyPitch = Math.atan2(tilted.y, Math.hypot(tilted.x, tilted.z));
+
+    const a = eclipticHeadingPitchFromEquatorial(legacyHeading, legacyPitch);
+    const b = eclipticHeadingPitchFromEquatorial(legacyHeading, legacyPitch);
+    expect(a.headingRad).toBe(b.headingRad); // deterministic, not residue-driven
+    expect(a.pitchRad).toBe(FLIGHT_PITCH_LIMIT_RAD);
+    expect(a.headingRad).toBeCloseTo(0.7, 6); // the real azimuth survives
+
+    const restored = flightDirectionFromAngles(a.headingRad, a.pitchRad, new THREE.Vector3());
+    const errorRad = restored.angleTo(tilted);
+    expect(errorRad).toBeLessThanOrEqual(Math.PI / 2 - FLIGHT_PITCH_LIMIT_RAD - oneDeg + 1e-9);
   });
 
   it('is not idempotent, which is why the flag decides (converting twice drifts)', () => {
@@ -208,6 +273,44 @@ describe('shipOrientationFromFlight', () => {
       // At level flight the hull's up IS the horizon — no roll at all.
       expect(y.angleTo(FLIGHT_UP_SCENE)).toBeLessThan(1e-7);
     }
+  });
+
+  it('climbing or diving, the hull\'s up is the horizon\'s — not celestial north', () => {
+    // Pitched flight is where a wrong roll reference hides: any twist-minimal
+    // basis is smooth and orthonormal too. What must hold is that the hull's
+    // up is the FLIGHT horizon projected perpendicular to the nose — so the
+    // ship banks with the system's plane, and never rolls past vertical.
+    let maxDivergenceDeg = 0;
+    for (const pitch of [30 * Math.PI / 180, -30 * Math.PI / 180, 1.2, -1.2]) {
+      for (const heading of HEADINGS) {
+        const q = shipOrientationFromFlight(heading, pitch, new THREE.Quaternion());
+        const forward = flightDirectionFromAngles(heading, pitch, new THREE.Vector3());
+        const y = localY.clone().applyQuaternion(q);
+
+        // Upright: never rolled onto its back.
+        expect(y.dot(FLIGHT_UP_SCENE), `heading ${heading} pitch ${pitch}`).toBeGreaterThan(0);
+
+        // And it IS the horizon, projected off the nose.
+        const horizonPerp = FLIGHT_UP_SCENE.clone()
+          .addScaledVector(forward, -FLIGHT_UP_SCENE.dot(forward))
+          .normalize();
+        expect(y.angleTo(horizonPerp), `heading ${heading} pitch ${pitch}`).toBeLessThan(1e-7);
+
+        // Track how far the same construction on celestial north would land.
+        // (It coincides wherever the nose lies in the plane the two poles
+        // share — hence the max over the sweep rather than a per-pose bound.)
+        const worldPerp = new THREE.Vector3(0, 1, 0)
+          .addScaledVector(forward, -forward.y)
+          .normalize();
+        maxDivergenceDeg = Math.max(
+          maxDivergenceDeg,
+          THREE.MathUtils.radToDeg(worldPerp.angleTo(horizonPerp)),
+        );
+      }
+    }
+    // A celestial-north roll reference would visibly disagree across the
+    // sweep — without this the assertions above could pass on either one.
+    expect(maxDivergenceDeg).toBeGreaterThan(10);
   });
 
   it('sweeps continuously at maximum steering pitch — no roll snap near the pole', () => {

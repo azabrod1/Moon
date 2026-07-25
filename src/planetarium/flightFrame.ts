@@ -76,10 +76,15 @@ export function flightDirectionFromAngles(
 
 /**
  * Scene direction → heading/pitch, the inverse of the above and the single
- * seam every "aim at that thing over there" caller goes through. Pitch is
- * clamped to the steering bound: a caller handing over a straight-up delta
- * (a vertical collision push, a polar departure) would otherwise land the
- * ship exactly on the basis pole, where heading is undefined and the next
+ * seam every "aim at that thing over there" caller goes through. The delta is
+ * normalized first, so the result depends only on the DIRECTION — callers
+ * pass raw world deltas, and a target a few metres away must read the same as
+ * one a hundred AU away. A zero-length or non-finite delta has no direction
+ * at all and returns level-ahead.
+ *
+ * Pitch is clamped to the steering bound: a caller handing over a straight-up
+ * delta (a vertical collision push, a polar departure) would otherwise land
+ * the ship exactly on the basis pole, where heading is undefined and the next
  * yaw input swings the nose through a right angle.
  */
 export function flightAnglesFromSceneDirection(
@@ -88,6 +93,11 @@ export function flightAnglesFromSceneDirection(
   dz: number,
 ): FlightAngles {
   const local = tmpAngleDir.set(dx, dy, dz).applyQuaternion(SCENE_TO_ECLIPTIC_QUAT);
+  const lengthSq = local.lengthSq();
+  if (!(lengthSq > 0) || !Number.isFinite(lengthSq)) return { headingRad: 0, pitchRad: 0 };
+  local.multiplyScalar(1 / Math.sqrt(lengthSq));
+  // On the unit vector the floor is purely the exact-pole guard (atan2(±1, 0)
+  // is ±π/2, which the clamp then pulls back inside the bound).
   const horizontal = Math.sqrt(local.x * local.x + local.z * local.z);
   const pitchRad = Math.atan2(local.y, Math.max(horizontal, 1e-8));
   return {
@@ -100,6 +110,15 @@ export function flightAnglesFromSceneDirection(
  * Convert angles saved in the pre-ecliptic (scene-equatorial) basis into this
  * one, preserving the world direction the ship was pointing. Rebuilds the old
  * basis' forward with the formula that produced it, then re-reads it here.
+ *
+ * Bounded loss near the flight poles, deliberately: a save aimed within
+ * (π/2 − FLIGHT_PITCH_LIMIT_RAD) ≈ 1.8° of ecliptic north or south restores
+ * pointing at the clamp instead, and at the exact pole its heading falls out
+ * of float residue. Restored state must respect the pitch bound like any
+ * other state — the bound is not just a steering nicety, it is what keeps the
+ * chase camera's up axis off the view direction, where lookAt has no defined
+ * roll. Trading up to 1.8° of a straight-up aim for a well-posed camera is
+ * the intended bargain.
  */
 export function eclipticHeadingPitchFromEquatorial(
   headingRad: number,

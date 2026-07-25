@@ -6724,17 +6724,22 @@ export class PlanetariumMode {
    * OrbitControls caches its orbit axis from `object.up` at construction
    * (`_quat`/`_quatInverse`, verified against three r0.183.2), so writing
    * `camera.up` alone would leave drags — and landed autoRotate — precessing
-   * about the old axis. Refresh both; a rename on a three upgrade falls
-   * through to a DEV warning and the up write alone.
+   * about the old axis. The cached axis is therefore resynced on EVERY call,
+   * even when the requested up is already in place: the dev framing rigs pose
+   * the camera themselves and write `camera.up` directly without touching the
+   * controls, so "already correct" up is no proof the cache agrees. Two
+   * quaternion ops, and this only runs at mode transitions. A rename on a
+   * three upgrade falls through to a DEV warning and the up write alone.
    */
   private setCameraFrameUp(up: THREE.Vector3) {
-    if (this.camera.up.equals(up)) return;
-    // Flipping the basis under a live gesture would swing the view in the
-    // user's hand: end the gesture (no-op when nothing is held) and drop the
-    // damping residuals so no coast replays in the old basis.
-    this.cancelOrbitGesture();
-    this.flushOrbitDamping();
-    this.camera.up.copy(up);
+    if (!this.camera.up.equals(up)) {
+      // Flipping the basis under a live gesture would swing the view in the
+      // user's hand: end the gesture (no-op when nothing is held) and drop the
+      // damping residuals so no coast replays in the old basis.
+      this.cancelOrbitGesture();
+      this.flushOrbitDamping();
+      this.camera.up.copy(up);
+    }
     const c = this.controls as unknown as {
       _quat?: THREE.Quaternion;
       _quatInverse?: THREE.Quaternion;

@@ -355,8 +355,20 @@ uniform vec2 uOccluderOffsetSr;
 // side). Zero when un-occluded or concentric — then pLight === pSun byte-for-byte.
 uniform vec2 uGlareCentroidSr;
 // Authored second/third-contact diamond-ring strength (0 for annular, exactly 0
-// at totality). Drives a compact contact blaze plus a short diffraction cross.
+// at totality). Drives the compact contact bead and its round dazzle.
 uniform float uDiamondRing;
+// The occluder's centre for the bead's silhouette cut, same frame as
+// uOccluderOffsetSr. Tracks it while a crescent burns, but FREEZES with the
+// centroid through the melting release: cut against the live limb, a warped
+// clock walks the limb across the frozen bead in a few frames and the fade
+// reads as a snap — frozen together, the bead and its black edge die as one
+// picture at any clock rate.
+uniform vec2 uDiamondOccluderSr;
+// The bead cut's kill fraction — depth x silhouette shade x eclipse likeness,
+// advanced on a wall-time envelope by the controller so an eligibility edge
+// (ratio leaving the eclipse-like range under a releasing bead) fades in real
+// time instead of un-carving the disc in one frame.
+uniform float uBeadCarveDepth;
 // Screen angle of the Sun's projected north pole, in the same camera-view XY
 // frame as uOccluderOffsetSr, and how much to trust it: 1 when the axis lies
 // across the frame, falling to 0 as it turns toward the camera and its
@@ -450,6 +462,10 @@ void main() {
   float diagonalWidthA = max(fwidth(pB.x - pB.y) * 1.25, 0.014);
   float diagonalWidthB = max(fwidth(pB.x + pB.y) * 1.25, 0.014);
   float sensorWidth = max(fwidth(pB.y) * 1.15, 0.007);
+  // Solar radii per output pixel, for terms that must stay resolvable on a
+  // tiny on-screen Sun. Taken here because derivatives after the discard
+  // below are undefined.
+  float srPerPx = max(fwidth(pB.x), fwidth(pB.y)) * uExtent;
   if (planeRadius >= 1.0) discard;
 
   float solarRadii = baseRadius * uExtent;
@@ -502,22 +518,52 @@ void main() {
     * visibleEnergy * 0.055;
   glare += sensorStreak;
 
+  // The occluder's own disc in the base frame: the bead cut just below and the
+  // silhouette wash carve further down both measure against it.
+  float occluderDistance = length(pB * uExtent - uOccluderOffsetSr);
+  float occluderCore = 1.0 - smoothstep(uOccluderRadii - 0.07, uOccluderRadii + 0.05, occluderDistance);
+
   // Diamond ring: at second/third contact the exposed sliver is optically a
   // point again, so a compact blaze returns at the crescent centroid (pLight —
-  // at those coverages the centroid IS the contact point). Both terms are
-  // radially symmetric on purpose: an eye standing on a surface has no aperture
-  // to diffract that point into a cross, so the honest look is a brilliant bead
-  // wrapped in a soft round dazzle, with the corona supplying the ring around
-  // it. The amplitude is modest and rides uExposureScale: the exposure meter's
-  // totality release is what makes it blaze, not a second brightness ramp of its
-  // own. uDiamondRing is authored and topology-gated (0 for annular, exactly 0 at
-  // totality), so this never fakes a ring at annularity, and it carries no
-  // visibleEnergy factor — a covered or buried Sun cannot fade it by exposed
-  // fraction alone, so the buried-camera path in updateSunShader zeroes
-  // uDiamondRing explicitly.
-  float diamondCore = exp(-lightOutside * 3.1);
-  float diamondDazzle = exp(-lightOutside * 0.9) * 0.30;
-  glare += uDiamondRing * (diamondCore + diamondDazzle) * uGlareStrength * uExposureScale;
+  // at those coverages the centroid IS the contact point). Measured from the
+  // centroid itself, NOT on lightOutside: that profile subtracts the
+  // photosphere radius because the mesh normally draws the disc, but at
+  // contact there is no disc — on it the "bead" is a Sun-sized flat plateau
+  // that hands bloom a huge source to smear across the silhouette. Both terms
+  // are radially symmetric on purpose: an eye standing on a surface has no
+  // aperture to diffract that point into a cross, so the honest look is a
+  // brilliant bead wrapped in a soft round dazzle, with the corona supplying
+  // the ring around it. The amplitude rides uExposureScale: the exposure
+  // meter's totality release is what makes it blaze, not a second brightness
+  // ramp of its own. uDiamondRing is authored and topology-gated (0 for
+  // annular, exactly 0 at totality), so this never fakes a ring at annularity,
+  // and it carries no visibleEnergy factor — a covered or buried Sun cannot
+  // fade it by exposed fraction alone, so the buried-camera path in
+  // updateSunShader zeroes uDiamondRing explicitly.
+  // Decay lengths floored in screen pixels: authored purely in solar radii,
+  // the jewel collapses below one pixel on a cruise-scale Sun and shimmers
+  // with pixel phase (or misses the bloom threshold entirely). The dazzle must
+  // stay compact and sub-saturating along the limb: hue cannot rise through a
+  // saturated channel, so a wide bright dazzle whites out the chromosphere
+  // arc beside the bead — the reds only read where the dazzle has died off.
+  float beadDist = lightSolarRadii;
+  float coreFold = max(1.0 / 12.0, srPerPx * 2.0);
+  float dazzleFold = max(1.0 / 3.0, srPerPx * 4.0);
+  float diamondCore = exp(-beadDist / coreFold) * 2.4;
+  float diamondDazzle = exp(-beadDist / dazzleFold) * 0.15;
+  // Because it has no visibleEnergy, the generic silhouette floor below still
+  // leaves the bead a mid-grey wash across the occluded disc; it takes its own
+  // near-total kill so the occulter stays a black ball inside the blaze.
+  // uBeadCarveDepth carries the whole kill (depth x shade x eclipse-likeness)
+  // through one wall-time envelope on the CPU, so an eligibility edge — the
+  // occluder ratio crossing out of the eclipse-like range under a releasing
+  // bead — fades over real time instead of un-carving in a frame. The cut
+  // measures the latched offset — see uDiamondOccluderSr.
+  float beadEdge = 1.0 - smoothstep(uOccluderRadii - 0.12, uOccluderRadii + 0.04,
+    length(pB * uExtent - uDiamondOccluderSr));
+  float beadCarve = 1.0 - uBeadCarveDepth * beadEdge;
+  glare += uDiamondRing * (diamondCore + diamondDazzle) * beadCarve
+    * uGlareStrength * uExposureScale;
 
   // Limb crossings and third contact briefly overwhelm the virtual optics
   // before exposure adaptation catches up. The controller supplies a
@@ -533,8 +579,6 @@ void main() {
   // the disc sits in the glare rather than being punched out of it. Only
   // grazing first-contact slivers arrive with uOccluderShade 0 and keep the
   // full wash — from a real bite onward the disc is carved at full strength.
-  float occluderDistance = length(pB * uExtent - uOccluderOffsetSr);
-  float occluderCore = 1.0 - smoothstep(uOccluderRadii - 0.07, uOccluderRadii + 0.05, occluderDistance);
   float silhouette = 1.0 - uOccluderShade * 0.88 * occluderCore;
   glare *= silhouette;
 
@@ -600,10 +644,24 @@ void main() {
     // The glare plane is screen-space (no depth test), so the eclipsing body
     // cannot z-mask it; carve its disc out analytically instead. The corona
     // hugging that black limb — not a wash across it — is what makes totality
-    // read. uOccluderRadii is the occluder's angular size in solar radii.
+    // read. Measured against the occluder's OWN disc: a circle about the Sun's
+    // centre misses the centre offset at the contacts, letting the corona lip
+    // over the toward-side limb — a bright rim INSIDE the black disc once the
+    // bead no longer washes it out. Near-concentric the two circles coincide,
+    // so mid-totality keeps its exact look.
     float occluderEdge = max(uOccluderRadii, 1.0);
-    float occluderMask = smoothstep(occluderEdge - 0.05, occluderEdge + 0.03, solarRadii);
-    float pastLimb = max(solarRadii - occluderEdge, 0.0);
+    // The feather reaches only about a pixel inside the limb: wider, and the
+    // corona's inner ring (plus its bloom) reads as a grey lift just inside
+    // the black disc instead of a hard-edged hug against it.
+    float occluderMask = smoothstep(occluderEdge - 0.02, occluderEdge + 0.03, occluderDistance);
+    // Height for the corona's falloff, measured from the same edge the mask
+    // carves — the black limb the eye sees. Measured from the Sun's centre it
+    // parts ways with the mask at contact geometry: a shelf of zero-height
+    // (maximum brightness) corona opens just past the anti-side limb, exactly
+    // where the contact reds live, and widens with the occluder ratio. At
+    // concentric geometry the two centres coincide, so mid-totality reads
+    // identically either way.
+    float pastLimb = max(occluderDistance - occluderEdge, 0.0);
     // Real coronas are lobed and ragged: two broad equatorial streamers, a
     // few polar plumes, and cloudWarp-modulated fine rays with no readable
     // periodicity, all falling off steeply away from the bright limb ring.
@@ -679,7 +737,7 @@ void main() {
       // contact region because the corona there is comparatively faint.
       float contactWindow = pow(max(dot(limbDir, antiDir), 0.0), 4.0) * uChromoAnti
         + pow(max(dot(limbDir, axisDir), 0.0), 4.0) * uChromoToward;
-      corona *= 1.0 - 0.60 * contactWindow * exp(-pastLimb * 3.5);
+      corona *= 1.0 - 0.75 * contactWindow * exp(-pastLimb * 2.5);
       // Three prominence points, 17-34 degrees around the contact, standing
       // clear of the limb in the darker gap the parted corona leaves — they
       // are what carries the colour at any framing; the limb arc itself is a
@@ -695,7 +753,7 @@ void main() {
         + pow(max(dot(limbDir, spinDir(antiDir, 0.59)), 0.0), 160.0) * 0.6
       ) * promRadial * contactMask * uChromoAnti;
       chromosphere += eclipse * (arc + prominences * 1.1)
-        * 0.85 * uGlareStrength * uExposureScale;
+        * 0.95 * uGlareStrength * uExposureScale;
     }
   }
 

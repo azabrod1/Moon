@@ -470,6 +470,13 @@ export class PlanetariumMode {
    *  function of the exposed fraction, which a warped clock can cross in one
    *  frame; this carries the blaze at human speed regardless of time rate. */
   private sunDiamondRing = 0;
+  /** Headless-QA scale on the uDiamondRing write (1 = normal). Lets a capture
+   *  decompose a contact frame into diamond-term vs everything-else shares. */
+  private devDiamondScale = 1;
+  /** Wall-time envelope behind uBeadCarveDepth — the bead's silhouette-cut
+   *  kill. Smoothed so eligibility edges (the occluder ratio crossing out of
+   *  the eclipse-like range while the bead still releases) fade, never pop. */
+  private sunBeadCarveDepth = 0;
   /** Last usable screen angle of the Sun's rotation axis. Held across the frames
    *  where the axis points too near the camera to project into a direction. */
   private sunPoleScreenAngle = 0;
@@ -3605,10 +3612,13 @@ export class PlanetariumMode {
         // reset zeroes them — and their envelope state goes with them, or the
         // frame that surfaces again would release from a stale blaze.
         glareMat.uniforms.uGlareCentroidSr.value.set(0, 0);
+        glareMat.uniforms.uDiamondOccluderSr.value.set(0, 0);
         glareMat.uniforms.uDiamondRing.value = 0;
+        glareMat.uniforms.uBeadCarveDepth.value = 0;
         glareMat.uniforms.uChromoAnti.value = 0;
         glareMat.uniforms.uChromoToward.value = 0;
         this.sunDiamondRing = 0;
+        this.sunBeadCarveDepth = 0;
         this.sunChromoAnti = 0;
         this.sunChromoToward = 0;
         const baseMinHalfPx = (glareMat.userData.baseMinHalfPx ??=
@@ -3969,6 +3979,11 @@ export class PlanetariumMode {
           // is just the residual melting in place.
           glareMat.uniforms.uMinHalfSizePx.value += this.sunCrescentDisplacementPx;
         } else {
+          // The bead's silhouette cut follows the live occluder only while a
+          // crescent burns; through the latch it keeps its last exposed-frame
+          // value, frozen with the centroid, so the melting bead and the black
+          // limb that cuts it fade as one picture at any clock rate.
+          (glareMat.uniforms.uDiamondOccluderSr.value as THREE.Vector2).copy(offsetSr);
           // Exposed-crescent centroid on uOccluderOffsetSr's solar-radii
           // camera-basis frame: unit(toward occluder) x centroidSr, and
           // centroidSr is signed negative — away from the occluder, onto the lit
@@ -3995,6 +4010,7 @@ export class PlanetariumMode {
       } else {
         glareMat.uniforms.uOccluderOffsetSr.value.set(0, 0);
         glareMat.uniforms.uGlareCentroidSr.value.set(0, 0);
+        glareMat.uniforms.uDiamondOccluderSr.value.set(0, 0);
       }
       // The authored strength is a per-frame function of the exposed fraction,
       // and its band is narrow enough that a warped clock steps across the whole
@@ -4008,7 +4024,19 @@ export class PlanetariumMode {
         dt,
         snap: silhouetteSnap,
       });
-      glareMat.uniforms.uDiamondRing.value = this.sunDiamondRing;
+      glareMat.uniforms.uDiamondRing.value = this.sunDiamondRing * this.devDiamondScale;
+      // The bead's silhouette-cut kill rides its own envelope: shade and
+      // likeness are continuous almost everywhere, but likeness has a hard
+      // edge at ratio 1 and a residual bead can still be releasing when the
+      // geometry crosses it.
+      this.sunBeadCarveDepth = advanceDiamondRing({
+        current: this.sunBeadCarveDepth,
+        target: 0.99 * occluderShade * occluderLikeness,
+        dt,
+        snap: silhouetteSnap,
+        releaseTau: 0.2,
+      });
+      glareMat.uniforms.uBeadCarveDepth.value = this.sunBeadCarveDepth;
       // The contact reds have the same problem and take the same treatment, on
       // their own slower constants: the arc lights as the limb breaks and holds
       // a beat after it closes.
@@ -7418,6 +7446,12 @@ export class PlanetariumMode {
 
   /** DEV-only: live-tune the veiling-glare knobs for the warmth A/B montage and
    *  strength QA without rebuilding the Sun material. */
+  devSetDiamondScale(k: number): boolean {
+    if (!Number.isFinite(k)) return false;
+    this.devDiamondScale = Math.max(k, 0);
+    return true;
+  }
+
   devSetVeil(opts: { warmth?: number; strength?: number }): boolean {
     const glareMat = this.solarSystem?.sun.userData.sunGlareMaterial as THREE.ShaderMaterial | undefined;
     if (!glareMat) return false;
@@ -7467,6 +7501,13 @@ export class PlanetariumMode {
       occluderOffsetSr: offset ? [offset.x, offset.y] : [0, 0],
       glareCentroidSr: centroid ? [centroid.x, centroid.y] : [0, 0],
       diamondRing: glareMat ? (glareMat.uniforms.uDiamondRing.value as number) : 0,
+      diamondOccluderSr: glareMat
+        ? [
+          (glareMat.uniforms.uDiamondOccluderSr.value as THREE.Vector2).x,
+          (glareMat.uniforms.uDiamondOccluderSr.value as THREE.Vector2).y,
+        ]
+        : [0, 0],
+      beadCarveDepth: glareMat ? (glareMat.uniforms.uBeadCarveDepth.value as number) : 0,
       poleScreenAngle: this.sunPoleScreenAngle,
       poleAnisotropy: glareMat ? (glareMat.uniforms.uSunPoleAnisotropy.value as number) : 0,
       chromoAnti: glareMat ? (glareMat.uniforms.uChromoAnti.value as number) : 0,

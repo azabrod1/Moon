@@ -725,6 +725,8 @@ export function createPlanetariumSun(useBloom = true): THREE.Group {
       // strength; both 0 unless an occluder is on the disc, so an un-occluded Sun
       // draws with neither term.
       uGlareCentroidSr: { value: new THREE.Vector2() },
+      uDiamondOccluderSr: { value: new THREE.Vector2() },
+      uBeadCarveDepth: { value: 0 },
       uDiamondRing: { value: 0 },
       // Screen angle of the Sun's rotation axis and how much the corona's
       // shape should lean on it; driven per frame from the IAU pole.

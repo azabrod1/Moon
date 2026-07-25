@@ -46,6 +46,14 @@ export const SUN_DATA = {
   color: 0xfff5e0,
 };
 
+/** IAU north pole of the Sun's rotation, J2000. The corona is not isotropic —
+ *  streamers lie along the equator and plumes over the poles — so the drawn
+ *  shape needs the star's real axis, not a fixed screen angle. Build the
+ *  direction through raDecToVector; it is the one place the frame's chirality
+ *  is defined. */
+export const SUN_POLE_RA_DEG = 286.13;
+export const SUN_POLE_DEC_DEG = 63.87;
+
 export const PLANETS: PlanetData[] = [
   {
     name: 'Mercury',

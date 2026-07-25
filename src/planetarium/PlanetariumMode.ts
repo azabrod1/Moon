@@ -24,7 +24,13 @@ import { PlanetLabels } from './PlanetLabels';
 import { PlanetariumStore, createDefaultPlanetariumState, type PlanetariumState, type LandedTarget } from './PlanetariumStore';
 import { solarExposureTarget } from './solarExposure';
 import { computeStats } from './stats';
-import { PLANETARIUM_BODIES, SUN_DATA, type PlanetData } from './planets/planetData';
+import {
+  PLANETARIUM_BODIES,
+  SUN_DATA,
+  SUN_POLE_DEC_DEG,
+  SUN_POLE_RA_DEG,
+  type PlanetData,
+} from './planets/planetData';
 import { applySunGlowTier, cancelTextureUpgrade, createMoonMeshes, createShaderWarmupProbes, setWarmEligibleMoonParents, upgradeTextureOnApproach, ATMOSPHERES, ATMOSPHERE_SHELL_SCALES, type MoonMesh, type TextureUpgrade } from './PlanetFactory';
 import type { SurfaceShadingFx } from './world/surfaceShading';
 import { bindTextureWarmer, invalidateTextureWarmCache, pumpTextureWarmQueue, queueTextureWarm, resetTextureWarmer } from './world/textureWarmer';
@@ -332,6 +338,11 @@ const RING_GLARE_TRANSMISSION: Record<RingStyle, number> = {
 // glare's falloff (the ISS reference stills that inspired it are at Earth).
 const SUN_ANG_RADIUS_AT_1AU = Math.asin(SUN_DATA.radiusAU);
 
+/** The Sun's rotation axis as a scene direction. Built once through the frame's
+ *  single chirality definition site, so the corona's lobes inherit the same
+ *  sky the stars and constellations are drawn in. */
+const SUN_POLE_DIRECTION = raDecToVector(SUN_POLE_RA_DEG, SUN_POLE_DEC_DEG).normalize();
+
 // Visibility floor the veil billboard is sized to: the pixel radius where the
 // wash and arms fall below this HDR value is the quad's support, so the quad
 // tracks the light instead of an authored amount. Small enough that the
@@ -451,6 +462,9 @@ export class PlanetariumMode {
    *  function of the exposed fraction, which a warped clock can cross in one
    *  frame; this carries the blaze at human speed regardless of time rate. */
   private sunDiamondRing = 0;
+  /** Last usable screen angle of the Sun's rotation axis. Held across the frames
+   *  where the axis points too near the camera to project into a direction. */
+  private sunPoleScreenAngle = 0;
   // DOM chrome flood at the whiteout wall; last written opacity string keeps
   // the per-frame style write to actual changes only.
   private sunGlareFloodEl: HTMLElement | null = null;
@@ -1229,6 +1243,7 @@ export class PlanetariumMode {
     this.lastSunVisibleFraction = 1;
     this.sunEmergenceFlash = 0;
     this.sunDiamondRing = 0;
+    this.sunPoleScreenAngle = 0;
     this.sunAtmosphereMix = 0;
     this.renderer.toneMappingExposure = 1;
     // Compile + validate the GPU texturer once, before the visibility gate can
@@ -1588,6 +1603,7 @@ export class PlanetariumMode {
     this.lastSunVisibleFraction = 1;
     this.sunEmergenceFlash = 0;
     this.sunDiamondRing = 0;
+    this.sunPoleScreenAngle = 0;
     this.sunAtmosphereMix = 0;
     this.applySunGlareFlood(0);
     this.clearSunSilhouette();
@@ -3773,6 +3789,25 @@ export class PlanetariumMode {
       // veilAmt is 0 unless the wash is on-screen and unoccluded; the billboard
       // size and arm uniforms are set after exposure below (they need it).
       glareMat.uniforms.uVeilAmt.value = veilAmt;
+      // Where the Sun's rotation axis lies across the frame. Decomposed on the
+      // camera basis exactly the way the occluder offset is, because the corona
+      // measures its angles in that same camera-view XY frame — output pixels
+      // would be the wrong space. As the axis turns toward the camera its
+      // projection shortens until it names no direction at all; short of that
+      // the last good angle is held and the shape relaxes toward isotropic,
+      // rather than letting a vanishing vector spin the streamers.
+      {
+        const e = this.camera.matrixWorld.elements;
+        const poleX = SUN_POLE_DIRECTION.x * e[0]
+          + SUN_POLE_DIRECTION.y * e[1] + SUN_POLE_DIRECTION.z * e[2];
+        const poleY = SUN_POLE_DIRECTION.x * e[4]
+          + SUN_POLE_DIRECTION.y * e[5] + SUN_POLE_DIRECTION.z * e[6];
+        const acrossFrame = Math.hypot(poleX, poleY);
+        if (acrossFrame > 0.05) this.sunPoleScreenAngle = Math.atan2(poleY, poleX);
+        glareMat.uniforms.uSunPoleScreenAngle.value = this.sunPoleScreenAngle;
+        glareMat.uniforms.uSunPoleAnisotropy.value =
+          THREE.MathUtils.smoothstep(acrossFrame, 0.05, 0.25);
+      }
       // Corona gate: 1 when the strongest occluder is Sun-sized (a true
       // eclipse), 0 when a whole planet fills the sky in front of the Sun.
       // The occluder's size in solar radii also positions the shader's
@@ -7310,6 +7345,8 @@ export class PlanetariumMode {
       occluderOffsetSr: offset ? [offset.x, offset.y] : [0, 0],
       glareCentroidSr: centroid ? [centroid.x, centroid.y] : [0, 0],
       diamondRing: glareMat ? (glareMat.uniforms.uDiamondRing.value as number) : 0,
+      poleScreenAngle: this.sunPoleScreenAngle,
+      poleAnisotropy: glareMat ? (glareMat.uniforms.uSunPoleAnisotropy.value as number) : 0,
       secondOccluderFraction: this.sunSecondOccluderFraction,
       // Applied (smoothed) dim of the current silhouette owner, and the size
       // gate that scaled its target this frame.

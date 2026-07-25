@@ -357,6 +357,12 @@ uniform vec2 uGlareCentroidSr;
 // Authored second/third-contact diamond-ring strength (0 for annular, exactly 0
 // at totality). Drives a compact contact blaze plus a short diffraction cross.
 uniform float uDiamondRing;
+// Screen angle of the Sun's projected north pole, in the same camera-view XY
+// frame as uOccluderOffsetSr, and how much to trust it: 1 when the axis lies
+// across the frame, falling to 0 as it turns toward the camera and its
+// projection stops naming a direction at all.
+uniform float uSunPoleScreenAngle;
+uniform float uSunPoleAnisotropy;
 uniform float uExposureScale;
 uniform float uEmergenceFlash;
 uniform float uAtmosphereMix;
@@ -590,16 +596,31 @@ void main() {
     // Real coronas are lobed and ragged: two broad equatorial streamers, a
     // few polar plumes, and cloudWarp-modulated fine rays with no readable
     // periodicity, all falling off steeply away from the bright limb ring.
-    float broadStreamers = pow(abs(cos(angleWarp - 0.18)), 2.6);
-    float polarPlumes = pow(abs(sin(angleWarp + 0.08)), 7.0) * 0.32;
+    // Every angle here is measured from the Sun's own axis — the projected
+    // pole, turned a quarter so zero lands on the equator — so the lobes stand
+    // where the star's rotation puts them instead of on a fixed screen angle.
+    // The small offsets keep the two lobe families from sharing one exact axis.
+    float coronaAngle = angleWarp - uSunPoleScreenAngle - 1.5707963;
+    float broadStreamers = pow(abs(cos(coronaAngle - 0.18)), 2.6);
+    float polarPlumes = pow(abs(sin(coronaAngle + 0.08)), 7.0) * 0.32;
     float fineStreamers = pow(0.5 + 0.5 * cos(angleWarp * 17.0 + cloudWarp * 0.6), 20.0)
       * (0.4 + 1.2 * cloudWarp);
     float coronaTexture = mix(0.72, 1.16, cloudWarp);
     float innerCorona = exp(-pastLimb * 3.2) * 0.5;
+    // Streamers read long in a photograph, so the anisotropy lives mostly in
+    // REACH: equatorial rays decay slowly and carry far past the limb, polar
+    // plumes die close to it, with only a slight amplitude lift on top. Pole-on,
+    // the projection names no equator to stretch toward, so both relax to one
+    // middling reach rather than snapping to whatever angle survived.
+    // The two reaches straddle the single rate this used to fall at, so the
+    // light the equator gains is roughly what the poles give up and totality
+    // keeps its overall brightness.
+    float equatorness = pow(abs(sin(angle - uSunPoleScreenAngle)), 1.5);
+    float coronaReach = mix(0.75, mix(1.7, 0.52, equatorness), uSunPoleAnisotropy);
     float coronaShape = (
       0.03 + broadStreamers + polarPlumes + fineStreamers * 0.10
     ) * coronaTexture;
-    float coronaFalloff = exp(-pastLimb * 0.75) / pow(max(solarRadii, 1.0), 0.7);
+    float coronaFalloff = exp(-pastLimb * coronaReach) / pow(max(solarRadii, 1.0), 0.7);
     corona = eclipse * occluderMask * (innerCorona + coronaShape * coronaFalloff * 0.75);
 
     // The chromosphere is normally drowned by the photosphere. Behind the

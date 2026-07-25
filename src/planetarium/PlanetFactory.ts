@@ -726,6 +726,10 @@ export function createPlanetariumSun(useBloom = true): THREE.Group {
       // draws with neither term.
       uGlareCentroidSr: { value: new THREE.Vector2() },
       uDiamondRing: { value: 0 },
+      // Screen angle of the Sun's rotation axis and how much the corona's
+      // shape should lean on it; driven per frame from the IAU pole.
+      uSunPoleScreenAngle: { value: 0 },
+      uSunPoleAnisotropy: { value: 0 },
       uExposureScale: { value: 1 },
       uEmergenceFlash: { value: 0 },
       uAtmosphereMix: { value: 0 },

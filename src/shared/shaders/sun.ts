@@ -363,6 +363,11 @@ uniform float uDiamondRing;
 // projection stops naming a direction at all.
 uniform float uSunPoleScreenAngle;
 uniform float uSunPoleAnisotropy;
+// How brightly the chromosphere reads on the limb AWAY from the occluder and on
+// the limb toward it, on the controller's wall-time envelopes. Both 0 unless a
+// total contact is live, so nothing below them draws otherwise.
+uniform float uChromoAnti;
+uniform float uChromoToward;
 uniform float uExposureScale;
 uniform float uEmergenceFlash;
 uniform float uAtmosphereMix;
@@ -405,6 +410,12 @@ float fbm2(vec2 p) {
     amplitude *= 0.5;
   }
   return value;
+}
+
+vec2 spinDir(vec2 direction, float radians) {
+  float c = cos(radians);
+  float s = sin(radians);
+  return vec2(direction.x * c - direction.y * s, direction.x * s + direction.y * c);
 }
 
 void main() {
@@ -625,9 +636,65 @@ void main() {
 
     // The chromosphere is normally drowned by the photosphere. Behind the
     // occluder mask it survives only while the cover is barely larger than
-    // the disc — which is exactly the second/third-contact flash.
+    // the disc — which is exactly the second/third-contact flash. A third of
+    // the weight this ring once carried alone: it is the faint all-around base
+    // now, and the contact arc below is what the eye actually reads.
     float chromosphereNoise = 0.72 + 0.28 * sin(angle * 19.0 + cloudWarp * 5.0);
-    chromosphere = eclipse * occluderMask * exp(-outside * 13.0) * chromosphereNoise * 0.35;
+    float chromoRadial = exp(-outside * 13.0);
+    chromosphere = eclipse * occluderMask * chromoRadial * chromosphereNoise * 0.117;
+
+    // Second and third contact do not photograph as an even red rim: the arc
+    // burns on the limb the occluder has NOT buried — the side the last sliver
+    // of photosphere was on — with a few prominences standing off it. The mask
+    // above is a circle about the SUN's centre, so it over-covers exactly that
+    // limb by the centre offset; these terms carve against the occluder's own
+    // disc instead, and the arc sits hard against the black edge where it
+    // belongs. normalize() of the offset is undefined near concentric geometry
+    // and a NaN would survive multiplication by zero, so the branch tests the
+    // offset itself and not only the strengths.
+    if ((uChromoAnti + uChromoToward) > 0.001
+      && dot(uOccluderOffsetSr, uOccluderOffsetSr) > 1e-8) {
+      vec2 axisDir = normalize(uOccluderOffsetSr);
+      vec2 antiDir = -axisDir;
+      vec2 limbDir = pB / baseRadius;
+      float contactMask = smoothstep(
+        uOccluderRadii - 0.02, uOccluderRadii + 0.02, occluderDistance
+      );
+      // The shell stands on the photosphere, and at contact the photosphere's
+      // edge IS the occluder's edge, so the profile decays outward from there.
+      // Measuring it from the Sun's centre instead puts most of the arc under
+      // the carve on this very limb, leaving a one-pixel hairline.
+      float contactRadial = exp(-max(occluderDistance - uOccluderRadii, 0.0) * 9.0)
+        * contactMask;
+      float arc = (
+        pow(max(dot(limbDir, antiDir), 0.0), 6.0) * uChromoAnti
+        + pow(max(dot(limbDir, axisDir), 0.0), 6.0) * uChromoToward
+      ) * contactRadial;
+      // The white inner corona saturates the tonemapper wherever it stands,
+      // and hue cannot rise through a saturated channel — additive pink under
+      // it only whitens further. Part the corona under the contact window
+      // instead: a feathered angular notch, deepest at the limb and fading
+      // with height, so the flash owns its spot while the streamers above
+      // keep their reach. Photographs do the same — the reds dominate the
+      // contact region because the corona there is comparatively faint.
+      float contactWindow = pow(max(dot(limbDir, antiDir), 0.0), 4.0) * uChromoAnti
+        + pow(max(dot(limbDir, axisDir), 0.0), 4.0) * uChromoToward;
+      corona *= 1.0 - 0.60 * contactWindow * exp(-pastLimb * 1.6);
+      // Three prominence points, 17-34 degrees around the contact, standing
+      // clear of the limb in the darker gap the parted corona leaves — they
+      // are what carries the colour at any framing; the limb arc itself is a
+      // hairline at honest scale.
+      float promRadial = exp(-pow(
+        (occluderDistance - uOccluderRadii - 0.035) / 0.026, 2.0
+      ));
+      float prominences = (
+        pow(max(dot(limbDir, spinDir(antiDir, -0.50)), 0.0), 160.0)
+        + pow(max(dot(limbDir, spinDir(antiDir, 0.29)), 0.0), 160.0) * 0.8
+        + pow(max(dot(limbDir, spinDir(antiDir, 0.59)), 0.0), 160.0) * 0.6
+      ) * promRadial * contactMask * uChromoAnti;
+      chromosphere += eclipse * (arc + prominences * 1.1)
+        * 0.85 * uGlareStrength * uExposureScale;
+    }
   }
 
   float warmth = smoothstep(1.6, 7.0, solarRadii) * 0.30;
@@ -640,7 +707,9 @@ void main() {
     uVeilWarmth * smoothstep(0.25, 0.9, dHat));
   veilColor = mix(veilColor, uAtmosphereColor, uAtmosphereMix * 0.88);
   vec3 coronaColor = vec3(0.90, 0.95, 1.0);
-  vec3 chromosphereColor = vec3(1.0, 0.24, 0.10);
+  // Hydrogen-alpha: the flash spectrum is pink-magenta, blue above green. An
+  // orange-red here reads as sunset light instead of chromosphere.
+  vec3 chromosphereColor = vec3(1.0, 0.29, 0.33);
   vec3 rgb = (glareColor * glare + coronaColor * corona + chromosphereColor * chromosphere) * baseEdgeFade
     + veilColor * veil * edgeFade;
   float alpha = clamp(

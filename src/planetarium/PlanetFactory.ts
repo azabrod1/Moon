@@ -730,6 +730,9 @@ export function createPlanetariumSun(useBloom = true): THREE.Group {
       // shape should lean on it; driven per frame from the IAU pole.
       uSunPoleScreenAngle: { value: 0 },
       uSunPoleAnisotropy: { value: 0 },
+      // Contact chromosphere on each limb, on their own wall-time envelopes.
+      uChromoAnti: { value: 0 },
+      uChromoToward: { value: 0 },
       uExposureScale: { value: 1 },
       uEmergenceFlash: { value: 0 },
       uAtmosphereMix: { value: 0 },

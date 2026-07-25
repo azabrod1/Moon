@@ -160,6 +160,9 @@ import {
 import {
   advanceDiamondRing,
   advanceSunEmergenceFlash,
+  chromosphereSideWeights,
+  CHROMOSPHERE_ATTACK_TAU_S,
+  CHROMOSPHERE_RELEASE_TAU_S,
   circleOcclusionFraction,
   diamondRingStrength,
   eclipseOccluderLikeness,
@@ -465,6 +468,12 @@ export class PlanetariumMode {
   /** Last usable screen angle of the Sun's rotation axis. Held across the frames
    *  where the axis points too near the camera to project into a direction. */
   private sunPoleScreenAngle = 0;
+  /** Wall-time envelopes behind uChromoAnti/uChromoToward — the contact
+   *  chromosphere on the limb away from the occluder and on the limb toward it.
+   *  Same reason as the blaze above: the geometry that lights them is a sliver
+   *  of the eclipse a warped clock steps straight over. */
+  private sunChromoAnti = 0;
+  private sunChromoToward = 0;
   // DOM chrome flood at the whiteout wall; last written opacity string keeps
   // the per-frame style write to actual changes only.
   private sunGlareFloodEl: HTMLElement | null = null;
@@ -1244,6 +1253,8 @@ export class PlanetariumMode {
     this.sunEmergenceFlash = 0;
     this.sunDiamondRing = 0;
     this.sunPoleScreenAngle = 0;
+    this.sunChromoAnti = 0;
+    this.sunChromoToward = 0;
     this.sunAtmosphereMix = 0;
     this.renderer.toneMappingExposure = 1;
     // Compile + validate the GPU texturer once, before the visibility gate can
@@ -1604,6 +1615,8 @@ export class PlanetariumMode {
     this.sunEmergenceFlash = 0;
     this.sunDiamondRing = 0;
     this.sunPoleScreenAngle = 0;
+    this.sunChromoAnti = 0;
+    this.sunChromoToward = 0;
     this.sunAtmosphereMix = 0;
     this.applySunGlareFlood(0);
     this.clearSunSilhouette();
@@ -3565,13 +3578,17 @@ export class PlanetariumMode {
         // No occluder crescent from inside the photosphere: clear the light-shift
         // and contact-blaze uniforms and undo the crescent's min-size growth, so a
         // buried-camera frame entered straight from a second-contact pose can't
-        // leave a displaced glare centroid or a diamond ring live. uDiamondRing
-        // carries no visibleEnergy factor, so only an explicit reset zeroes it —
-        // and its envelope state goes with it, or the frame that surfaces again
-        // would release from a stale blaze.
+        // leave a displaced glare centroid, a diamond ring, or a contact arc
+        // live. Those terms carry no visibleEnergy factor, so only an explicit
+        // reset zeroes them — and their envelope state goes with them, or the
+        // frame that surfaces again would release from a stale blaze.
         glareMat.uniforms.uGlareCentroidSr.value.set(0, 0);
         glareMat.uniforms.uDiamondRing.value = 0;
+        glareMat.uniforms.uChromoAnti.value = 0;
+        glareMat.uniforms.uChromoToward.value = 0;
         this.sunDiamondRing = 0;
+        this.sunChromoAnti = 0;
+        this.sunChromoToward = 0;
         const baseMinHalfPx = (glareMat.userData.baseMinHalfPx ??=
           glareMat.uniforms.uMinHalfSizePx.value);
         glareMat.uniforms.uMinHalfSizePx.value = baseMinHalfPx;
@@ -3758,9 +3775,39 @@ export class PlanetariumMode {
     }
 
     if (!appearanceEligible) this.sunAtmosphereMix = 0;
+    // This frame's occluder geometry, resolved once: the strongest occluder's
+    // angular size against the Sun's, whether that size reads as an eclipse at
+    // all, and how deeply the disc is covered. The chromosphere shell just
+    // below and every eclipse term on the glare plane are driven from these.
+    const occluderAngularRadius = this.sunDominantOccluderAngularRadius;
+    const occluderToSunRatio = occluderAngularRadius > 0
+      ? occluderAngularRadius / solarAngularRadius
+      : 0;
+    const occluderLikeness = eclipseOccluderLikeness(occluderToSunRatio);
+    // Silhouette carve: a body covering the Sun reads as a dark disc through
+    // the PSF/veil wash (the shader multiplies those terms down inside it).
+    // Driven by body-only coverage — ring dimming must not punch silhouettes.
+    // The gate is overlap-exists, not overlap-depth: a new moon biting the Sun
+    // is backlit and void-black from first contact, so the carve reaches full
+    // strength by ~15% cover — ramping it in over deep coverage instead left the
+    // glare painting across the dark disc all through the partial phases, a
+    // translucent Moon the light seemed to pass through. Only a grazing sliver
+    // keeps the full wash: that bite really is smaller than the saturated core.
+    const coverage = 1 - THREE.MathUtils.clamp(bodyVisibleFraction, 0, 1);
+    const occluderShade = occluderAngularRadius > 0 && appearanceEligible
+      ? THREE.MathUtils.smoothstep(coverage, 0.03, 0.15)
+      : 0;
     if (prominenceMat) {
+      // The 1.065-radii shell is limb detail for a close approach. An eclipse
+      // occluder is only a few percent wider than the photosphere, so at deep
+      // zoom the shell pokes out all the way around it — a full pink ring where
+      // the sky should be black. Hand the reds to the glare plane's contact
+      // chromosphere while such a body is on the disc. A sub-Sun (annular)
+      // occluder can never hide the shell, and likeness reads 0 there, so that
+      // geometry keeps it.
       prominenceMat.uniforms.uCloseVisibility.value = inFront
         ? THREE.MathUtils.smoothstep(solarRadiusPx, 55, 160)
+          * (1 - occluderShade * occluderLikeness)
         : 0;
     }
     // A queued view discontinuity reseeds the baseline with THIS frame's
@@ -3811,31 +3858,13 @@ export class PlanetariumMode {
       // Corona gate: 1 when the strongest occluder is Sun-sized (a true
       // eclipse), 0 when a whole planet fills the sky in front of the Sun.
       // The occluder's size in solar radii also positions the shader's
-      // carve-out of the eclipsing disc.
-      const occluderAngularRadius = this.sunDominantOccluderAngularRadius;
-      const occluderToSunRatio = occluderAngularRadius > 0
-        ? occluderAngularRadius / solarAngularRadius
-        : 0;
-      glareMat.uniforms.uEclipseLike.value = eclipseOccluderLikeness(occluderToSunRatio);
+      // carve-out of the eclipsing disc, which the silhouette shade above
+      // drives, positioned from the occluder's true direction so an off-centre
+      // partial carves where the body actually is.
+      glareMat.uniforms.uEclipseLike.value = occluderLikeness;
       glareMat.uniforms.uOccluderRadii.value = occluderAngularRadius > 0
         ? THREE.MathUtils.clamp(occluderToSunRatio, 0.5, 3)
         : 1;
-      // Silhouette carve: a body covering the Sun reads as a dark disc
-      // through the PSF/veil wash (the shader multiplies those terms down
-      // inside it). Driven by body-only coverage — ring dimming must not
-      // punch silhouettes — and positioned from the occluder's true direction
-      // so an off-centre partial carves where the body actually is. The gate
-      // is overlap-exists, not overlap-depth: a new moon biting the Sun is
-      // backlit and void-black from first contact, so the carve reaches full
-      // strength by ~15% cover — ramping it in over deep coverage instead
-      // left the glare painting across the dark disc all through the partial
-      // phases, a translucent Moon the light seemed to pass through. Only a
-      // grazing sliver keeps the full wash: that bite really is smaller than
-      // the saturated core.
-      const coverage = 1 - THREE.MathUtils.clamp(bodyVisibleFraction, 0, 1);
-      const occluderShade = occluderAngularRadius > 0 && appearanceEligible
-        ? THREE.MathUtils.smoothstep(coverage, 0.03, 0.15)
-        : 0;
       glareMat.uniforms.uOccluderShade.value = occluderShade;
       // The silhouetted body itself also drops its night-side lifts (starlight
       // fill, planetshine): backlit by the photosphere it reads void black —
@@ -3875,6 +3904,8 @@ export class PlanetariumMode {
         this.sunCrescentDisplacementPx = 0;
       }
       let diamondTarget = 0;
+      let chromoAntiTarget = 0;
+      let chromoTowardTarget = 0;
       if (occluderShade > 0) {
         // The glare quad billboards in camera-view XY and its fragment
         // measures in solar radii, so the offset is the angular separation
@@ -3888,6 +3919,27 @@ export class PlanetariumMode {
           (d.x * e[0] + d.y * e[1] + d.z * e[2]) / solarAngularRadius,
           (d.x * e[4] + d.y * e[5] + d.z * e[6]) / solarAngularRadius,
         );
+        // Centre separation in solar radii, from the true angular separation and
+        // the RAW occluder/Sun ratio (never the clamped uOccluderRadii). Every
+        // occluded frame needs it: the contact latch below freezes the crescent,
+        // but where the two limbs stand is what tells the chromosphere whether a
+        // contact is happening at all.
+        const separationSr = Math.acos(THREE.MathUtils.clamp(
+          this.sunDominantOccluderDirection.dot(toSun), -1, 1,
+        )) / solarAngularRadius;
+        // Two bodies on the disc make one lens centroid meaningless; fade the
+        // shift, the diamond, and the contact reds off when a runner-up
+        // occluder is non-trivial.
+        const guard = 1 - THREE.MathUtils.smoothstep(this.sunSecondOccluderFraction, 0.05, 0.12);
+        // Contact reds, one weight per limb. Body-only coverage again: rings
+        // dim brightness, they do not change which limb is buried.
+        const chromo = chromosphereSideWeights({
+          separationSr,
+          occluderRadiiSr: occluderToSunRatio,
+          visibleFraction: bodyVisibleFraction,
+        });
+        chromoAntiTarget = chromo.anti * occluderLikeness * guard;
+        chromoTowardTarget = chromo.toward * occluderLikeness * guard;
         if (holdContactPoint) {
           // uGlareCentroidSr keeps its last exposed-frame value; only the quad
           // growth needs re-applying, because the base half-size is rewritten
@@ -3895,18 +3947,11 @@ export class PlanetariumMode {
           // is just the residual melting in place.
           glareMat.uniforms.uMinHalfSizePx.value += this.sunCrescentDisplacementPx;
         } else {
-          // Exposed-crescent centroid from the RAW occluder/Sun ratio and the true
-          // separation (never the clamped uOccluderRadii). It rides uOccluderOffsetSr's
-          // solar-radii camera-basis frame: unit(toward occluder) x centroidSr, and
+          // Exposed-crescent centroid on uOccluderOffsetSr's solar-radii
+          // camera-basis frame: unit(toward occluder) x centroidSr, and
           // centroidSr is signed negative — away from the occluder, onto the lit
           // limb — so the glare hangs on the exposed crescent, not over the bite.
-          const separationSr = Math.acos(THREE.MathUtils.clamp(
-            this.sunDominantOccluderDirection.dot(toSun), -1, 1,
-          )) / solarAngularRadius;
           visibleCrescentGeometry(separationSr, occluderToSunRatio, this.sunCrescent);
-          // Two bodies on the disc make one lens centroid meaningless; fade the
-          // shift and the diamond off when a runner-up occluder is non-trivial.
-          const guard = 1 - THREE.MathUtils.smoothstep(this.sunSecondOccluderFraction, 0.05, 0.12);
           const centroidSr = this.sunCrescent.centroidSr * guard;
           this.sunCrescentCentroidSr = centroidSr;
           const offsetLen = Math.hypot(offsetSr.x, offsetSr.y);
@@ -3923,9 +3968,7 @@ export class PlanetariumMode {
           // Authored diamond ring: annular gets none, exactly 0 at totality, same
           // guard as the shift. Body-only coverage (rings dim brightness, not the
           // contact topology).
-          diamondTarget = diamondRingStrength(
-            eclipseOccluderLikeness(occluderToSunRatio), bodyVisibleFraction,
-          ) * guard;
+          diamondTarget = diamondRingStrength(occluderLikeness, bodyVisibleFraction) * guard;
         }
       } else {
         glareMat.uniforms.uOccluderOffsetSr.value.set(0, 0);
@@ -3944,6 +3987,27 @@ export class PlanetariumMode {
         snap: silhouetteSnap,
       });
       glareMat.uniforms.uDiamondRing.value = this.sunDiamondRing;
+      // The contact reds have the same problem and take the same treatment, on
+      // their own slower constants: the arc lights as the limb breaks and holds
+      // a beat after it closes.
+      this.sunChromoAnti = advanceDiamondRing({
+        current: this.sunChromoAnti,
+        target: chromoAntiTarget,
+        dt,
+        snap: silhouetteSnap,
+        attackTau: CHROMOSPHERE_ATTACK_TAU_S,
+        releaseTau: CHROMOSPHERE_RELEASE_TAU_S,
+      });
+      this.sunChromoToward = advanceDiamondRing({
+        current: this.sunChromoToward,
+        target: chromoTowardTarget,
+        dt,
+        snap: silhouetteSnap,
+        attackTau: CHROMOSPHERE_ATTACK_TAU_S,
+        releaseTau: CHROMOSPHERE_RELEASE_TAU_S,
+      });
+      glareMat.uniforms.uChromoAnti.value = this.sunChromoAnti;
+      glareMat.uniforms.uChromoToward.value = this.sunChromoToward;
     }
 
     // Eyes/cameras clamp down quickly on a bright source and recover more
@@ -7327,6 +7391,23 @@ export class PlanetariumMode {
     return { ...this.sunGlareMaskParams };
   }
 
+  /** The Sun's drawn screen position and radius in CSS pixels, through the same
+   *  lens-aware projection the shader path meters with. Readback only. */
+  private devSunScreenGeometry(): { sunXPx: number; sunYPx: number; sunRadiusPx: number } {
+    if (!this.solarSystem) return { sunXPx: 0, sunYPx: 0, sunRadiusPx: 0 };
+    const width = Math.max(this.renderer.domElement.clientWidth, 1);
+    const height = Math.max(this.renderer.domElement.clientHeight, 1);
+    const projection = projectSphereToScreen(
+      this.solarSystem.sun.position, SUN_DATA.radiusAU, this.camera, width, height,
+      this.sphereScreenProjection,
+    );
+    return {
+      sunXPx: (projection.ndcX * 0.5 + 0.5) * width,
+      sunYPx: (-projection.ndcY * 0.5 + 0.5) * height,
+      sunRadiusPx: projection.radiusPx,
+    };
+  }
+
   /** Headless-QA readback for transient Sun optics and atmospheric grazing. */
   devSunAppearance(): unknown {
     const sunMat = this.solarSystem?.sun.userData.sunMaterial as THREE.ShaderMaterial | undefined;
@@ -7347,6 +7428,16 @@ export class PlanetariumMode {
       diamondRing: glareMat ? (glareMat.uniforms.uDiamondRing.value as number) : 0,
       poleScreenAngle: this.sunPoleScreenAngle,
       poleAnisotropy: glareMat ? (glareMat.uniforms.uSunPoleAnisotropy.value as number) : 0,
+      chromoAnti: glareMat ? (glareMat.uniforms.uChromoAnti.value as number) : 0,
+      chromoToward: glareMat ? (glareMat.uniforms.uChromoToward.value as number) : 0,
+      closeProminences: this.solarSystem
+        ? ((this.solarSystem.sun.userData.sunProminenceMaterial as THREE.ShaderMaterial | undefined)
+          ?.uniforms.uCloseVisibility.value as number ?? 0)
+        : 0,
+      // Where the disc actually landed this frame, so a capture can put a
+      // measurement window on a named part of it (a limb, the bead) instead of
+      // guessing from the frame centre.
+      ...this.devSunScreenGeometry(),
       secondOccluderFraction: this.sunSecondOccluderFraction,
       // Applied (smoothed) dim of the current silhouette owner, and the size
       // gate that scaled its target this frame.

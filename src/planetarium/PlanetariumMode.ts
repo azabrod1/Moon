@@ -8407,7 +8407,9 @@ export class PlanetariumMode {
       paused: this.timeState.paused,
       fovDeg: this.displayFovDeg(),
       tracking: this.surfaceTracking,
-      targetName: this.surfaceTargetDisplayName(this.surfaceTarget),
+      // The chip shows the name standalone, so the prose article goes: "Sun",
+      // not "the Sun".
+      targetName: this.surfaceTargetDisplayName(this.surfaceTarget).replace(/^the /, ''),
       showLookatChip: this.surfaceTargetChoiceCount() >= 2,
       discNote,
       swapLabel: companion ? `Stand on ${bodyDisplayName(companion.name)}` : null,

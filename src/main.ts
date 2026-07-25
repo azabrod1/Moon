@@ -613,6 +613,8 @@ function installDevHooks() {
     openMap: () => planetariumMode?.devOpenMap() ?? false,
     closeMap: () => planetariumMode?.devCloseMap() ?? false,
     mapState: () => planetariumMode?.devMapState() ?? null,
+    mapPick: (name: string) => planetariumMode?.devMapPick(name) ?? false,
+    mapCommit: (verb: 'travel' | 'observe' | 'pilot') => planetariumMode?.devMapCommit(verb) ?? false,
     setMapGamma: (g: number) => planetariumMode?.devSetMapGamma(g),
     setChrome: (visible: boolean) => planetariumMode?.devSetChrome(visible),
     setFov: (deg: number) => planetariumMode?.devSetFov(deg),

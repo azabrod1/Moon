@@ -265,6 +265,9 @@ import { SunLabel } from './ui/SunLabel';
 import { TutorialCard, tutorialCardModel } from './ui/TutorialCard';
 import { SystemMap } from './map/SystemMap';
 import { MapHUD } from './ui/MapHUD';
+import { mapCardActions, commitBodyPickOutcome, type MapVerb } from './map/mapLogic';
+import { isTap } from './map/mapPicking';
+import { formatBodyDistance } from './bodyDistance';
 
 type ScriptedTransfer = {
   elapsed: number;
@@ -441,6 +444,14 @@ export class PlanetariumMode {
   // in-flight 4K fetch+decode before revealing anyway — a stalled fetch must
   // never pin the veil.
   private static readonly ARRIVAL_UPGRADE_HOLD_MAX_MS = 900;
+  // Map dive on a Teleport/Observatory commit: the camera eases in over
+  // DIVE_CAM_MS, then the fade blacks out over DIVE_FADE_MS — total under the
+  // 450 ms cap so it never reads as lag. Autopilot has no dive: just a short
+  // fade-close. A second tap/Enter skips the camera ease straight to the fade.
+  private static readonly DIVE_CAM_MS = 300;
+  private static readonly DIVE_FADE_MS = 120;
+  private static readonly DIVE_TOTAL_MS = 420;
+  private static readonly AUTOPILOT_CLOSE_MS = 150;
   private tmpMoonOffset = new THREE.Vector3();
   private tmpMoonOrbitNormal = new THREE.Vector3();
   private tmpMoonShadowLocal = new THREE.Vector3();
@@ -841,7 +852,28 @@ export class PlanetariumMode {
   private mapHud = new MapHUD(
     (trueScale) => this.setMapScale(trueScale),
     () => this.closeMap(),
+    (verb) => this.commitMapCard(verb),
   );
+  // The catalog name of the body the card is open on, or null. Also the map's
+  // "picked" bridge state.
+  private mapPicked: NonNullable<LandedTarget> | null = null;
+  // Pointer bookkeeping for tap-vs-drag picking on the map canvas.
+  private mapPickPointerId: number | null = null;
+  private mapPickDownX = 0;
+  private mapPickDownY = 0;
+  private mapPickPointerType = 'mouse';
+  // Dive / autopilot-close transition. The generation token is bumped by every
+  // closeMap and by a cancel, so a superseded transition never fires its
+  // commit. mapDiving gates picking/hover while a transition runs; mapCommitting
+  // tells closeMap to leave the dive fade black for the hand-off.
+  private mapDiving = false;
+  private mapDiveGen = 0;
+  private mapDiveActiveGen = -1;
+  private mapDiveVerb: MapVerb | null = null;
+  private mapDiveTarget: NonNullable<LandedTarget> | null = null;
+  private mapDiveIsCamera = false;
+  private mapTransitionMs = 0;
+  private mapCommitting = false;
 
   // Moon labels
   private moonLabels = new Map<string, HTMLDivElement>();
@@ -1167,6 +1199,14 @@ export class PlanetariumMode {
     };
     orbitDom.addEventListener('pointerup', endOrbitDrag);
     orbitDom.addEventListener('pointercancel', endOrbitDrag);
+
+    // System-map picking shares the canvas with the map's OrbitControls: a tap
+    // (small travel) picks a body / dismisses the card, a drag orbits. All the
+    // handlers no-op unless the map owns the frame.
+    orbitDom.addEventListener('pointerdown', (e) => this.mapPointerDown(e));
+    orbitDom.addEventListener('pointerup', (e) => this.mapPointerUp(e));
+    orbitDom.addEventListener('pointermove', (e) => this.mapPointerMove(e));
+
     window.addEventListener('blur', () => {
       // Focus loss mid-drag: the pointerup may never arrive, so cancel the
       // gesture outright — OrbitControls' capture and document listeners tear
@@ -1730,8 +1770,10 @@ export class PlanetariumMode {
   onResize(): void {
     if (this.starfield) setStarfieldPixelRatio(this.starfield, this.renderer.getPixelRatio());
     if (this.moonDots) this.moonDots.setPixelRatio(this.renderer.getPixelRatio());
-    // Match the map camera aspect and its fat-line resolution to the canvas.
+    // Match the map camera aspect and its fat-line resolution to the canvas,
+    // and re-dock the card above the (possibly moved) bottom bands.
     this.systemMap?.onResize();
+    this.mapHud.measureCard();
   }
 
   update(dt: number): void {
@@ -4493,13 +4535,24 @@ export class PlanetariumMode {
       if (this.isDeckOpen()) { this.closeDeck(); return; }
       if (this.bottomBar.isTimeOpen()) { this.bottomBar.closeTime(); return; }
       if (this.bottomBar.isStatsOpen()) { this.bottomBar.closeStats(); return; }
-      // The map rung sits above Look-at/surface view: Esc over the map drops
-      // back into the ship (Packet B adds the card's micro-rung above this).
+      // Map micro-rungs, above the map rung: Esc mid-dive cancels the dive
+      // (map stays open); then Esc dismisses the picked-body card; then Esc
+      // over the map drops back into the ship.
+      if (this.isMapOpen() && this.mapDiving) { this.cancelMapDive(); return; }
+      if (this.mapHud.isCardOpen()) { this.dismissMapCard(); return; }
       if (this.isMapOpen()) { this.closeMap(); return; }
       if (this.surfaceTargetMenu.isOpen()) { this.closeSurfaceTargetMenu(); return; }
       if (this.landedView === 'surface') { this.exitSurfaceView(); return; }
       if (this.observatoryPanel.isOpen()) { this.closeObservatoryPanel(); return; }
       if (this.landedOn) { this.exitLandedMode(); return; }
+    }
+
+    // A second Enter while the map camera dives skips the ease and blacks out.
+    if (this.isMapOpen() && this.mapDiving && e.key === 'Enter'
+      && !e.metaKey && !e.ctrlKey && !e.altKey) {
+      e.preventDefault();
+      this.skipMapDive();
+      return;
     }
 
     // Don't capture other keys if typing in an input
@@ -5749,6 +5802,12 @@ export class PlanetariumMode {
         this.closeObservatoryPanel();
         this.pulseObservatoryChip();
       }
+      // Same pairing with the map card: opening Stats dismisses it.
+      if (open) this.dismissMapCard();
+    };
+    // Opening the Time panel dismisses the map card (one instrument at a time).
+    this.bottomBar.onTimeToggle = (open) => {
+      if (open) this.dismissMapCard();
     };
 
     this.sunLabel.attach();
@@ -6035,17 +6094,41 @@ export class PlanetariumMode {
     return was;
   }
 
-  devMapState(): { open: boolean; gamma: number; cameraDist: number } | null {
+  devMapState(): {
+    open: boolean;
+    gamma: number;
+    cameraDist: number;
+    picked: string | null;
+    diving: boolean;
+  } | null {
     if (!this.systemMap) return null;
     return {
       open: this.systemMap.isOpen(),
       gamma: this.systemMap.getGamma(),
       cameraDist: this.systemMap.getCameraDistance(),
+      picked: this.mapPicked?.name ?? null,
+      diving: this.mapDiving,
     };
   }
 
   devSetMapGamma(gamma: number): void {
     this.systemMap?.setGamma(gamma);
+  }
+
+  /** Dev bridge: open the card on a named body (Sun or a planet), as a real
+   *  pick would. Returns whether the card opened. */
+  devMapPick(name: string): boolean {
+    if (!this.isMapOpen() || this.mapDiving) return false;
+    const known = name === 'Sun' || PLANETARIUM_BODIES.some((b) => b.name === name);
+    if (!known) return false;
+    this.openMapCard(name);
+    return this.mapHud.isCardOpen();
+  }
+
+  /** Dev bridge: press the card's verb button — the same disabled/ordering
+   *  rules a real tap follows (closeMap strictly before the commit). */
+  devMapCommit(verb: MapVerb): boolean {
+    return this.commitMapCard(verb);
   }
 
   /** Open the full-screen system map. The single safe gate for every entry
@@ -6122,8 +6205,20 @@ export class PlanetariumMode {
     this.mapRestorePanel = false;
     this.mapRestoreSurface = false;
 
+    // Kill any in-flight dive: bump the token so a pending commit never fires,
+    // drop the picked-body card. The one exception is the dive's OWN commit,
+    // which sets mapCommitting so the fade stays black for the hand-off.
+    this.mapDiveGen++;
+    this.mapDiving = false;
+    this.mapDiveVerb = null;
+    this.mapDiveTarget = null;
+    this.mapPicked = null;
+    if (!this.mapCommitting) this.clearDiveFade();
+
     this.systemMap?.close();
     this.mapHud.hide();
+    // Drop any hover cursor the map's pointer-move feedback left on the canvas.
+    this.renderer.domElement.style.cursor = '';
     document.body.classList.remove('system-map-active');
     // A held key must not survive the map — closing with W down would otherwise
     // resume phantom thrust the moment processInput reads the flight keys again.
@@ -6170,6 +6265,214 @@ export class PlanetariumMode {
       this.landedOn !== null,
       this.lastFrameDtMs,
     );
+    // Live distance on the open card (writes only on a change), and mirror the
+    // arrival-busy state onto the verb buttons.
+    if (this.mapPicked && this.mapHud.isCardOpen()) {
+      const distAU = this.systemMap.trueDistanceFromShip(
+        this.mapPicked.name,
+        this.player.posX,
+        this.player.posY,
+        this.player.posZ,
+      );
+      this.mapHud.setDistanceText(formatBodyDistance(distAU));
+      this.mapHud.setActionsDisabled(this.arrivalInFlight);
+    }
+    // Advance an in-flight dive / autopilot-close transition.
+    if (this.mapDiving) this.advanceMapTransition();
+  }
+
+  // ── System map: pick → card → commit, and the dive ──────────────────────
+
+  /** Canvas pointerdown while the map owns the frame — remember the down point
+   *  so pointerup can tell a tap (a pick) from a drag (an orbit gesture). */
+  private mapPointerDown(e: PointerEvent) {
+    if (!this.isMapOpen()) return;
+    // A second tap while the camera dives skips straight to the fade.
+    if (this.mapDiving) {
+      if (this.mapDiveIsCamera) this.skipMapDive();
+      return;
+    }
+    if (e.button !== 0) return;
+    this.mapPickPointerId = e.pointerId;
+    this.mapPickDownX = e.clientX;
+    this.mapPickDownY = e.clientY;
+    this.mapPickPointerType = e.pointerType || 'mouse';
+  }
+
+  /** Canvas pointerup while the map owns the frame: a small-travel gesture is a
+   *  pick. A body opens (or replaces) the card, the ship marker is inert, empty
+   *  space dismisses the card. */
+  private mapPointerUp(e: PointerEvent) {
+    if (!this.isMapOpen() || this.mapDiving) return;
+    if (this.mapPickPointerId !== e.pointerId) return;
+    this.mapPickPointerId = null;
+    if (!this.systemMap) return;
+    if (!isTap(this.mapPickDownX, this.mapPickDownY, e.clientX, e.clientY)) return;
+    const rect = this.renderer.domElement.getBoundingClientRect();
+    const x = e.clientX - rect.left;
+    const y = e.clientY - rect.top;
+    const hit = this.systemMap.pick(x, y, this.mapPickPointerType);
+    if (hit.kind === 'body') this.openMapCard(hit.name);
+    else if (hit.kind === 'empty') this.dismissMapCard();
+    // 'ship' is inert — swallow, dismiss nothing.
+  }
+
+  /** Fine-pointer hover: brighten the dot under the cursor and flag it pickable. */
+  private mapPointerMove(e: PointerEvent) {
+    if (!this.isMapOpen() || this.mapDiving || e.pointerType !== 'mouse') return;
+    if (!this.systemMap) return;
+    const rect = this.renderer.domElement.getBoundingClientRect();
+    const name = this.systemMap.hoverAt(e.clientX - rect.left, e.clientY - rect.top);
+    this.systemMap.setHover(name);
+    this.renderer.domElement.style.cursor = name ? 'pointer' : '';
+  }
+
+  /** Open (or replace in place) the picked-body card. Pairs with the time /
+   *  stats popovers one-instrument-at-a-time. */
+  private openMapCard(name: string) {
+    const target: NonNullable<LandedTarget> = { type: 'planet', name };
+    this.mapPicked = target;
+    // One instrument at a time — fold the bottom-bar popovers away.
+    this.bottomBar.closeTime();
+    this.bottomBar.closeStats();
+    const actions = mapCardActions(target, this.landedOn);
+    const color = this.bodyTintCss(name);
+    const distAU = this.systemMap?.trueDistanceFromShip(
+      name,
+      this.player.posX,
+      this.player.posY,
+      this.player.posZ,
+    ) ?? 0;
+    this.mapHud.showCard(
+      bodyDisplayName(name),
+      color,
+      formatBodyDistance(distAU),
+      actions,
+      this.arrivalInFlight,
+    );
+  }
+
+  private dismissMapCard() {
+    if (!this.mapHud.isCardOpen()) return;
+    this.mapHud.hideCard();
+    this.mapPicked = null;
+  }
+
+  /** The catalog tint of a body as a CSS colour (the Sun is outside the
+   *  catalogs — its one commented exception). */
+  private bodyTintCss(name: string): string {
+    const hex = name === 'Sun'
+      ? SUN_DATA.color
+      : PLANETARIUM_BODIES.find((b) => b.name === name)?.color ?? 0xffffff;
+    return `#${hex.toString(16).padStart(6, '0')}`;
+  }
+
+  /** A card verb was pressed (real tap or bridge). Teleport/Observatory dive;
+   *  Autopilot fade-closes. Refused while an arrival is in flight. */
+  private commitMapCard(verb: MapVerb): boolean {
+    if (!this.isMapOpen()) return false;
+    // A second press while the camera dives skips straight to the fade.
+    if (this.mapDiving) {
+      if (this.mapDiveIsCamera) this.skipMapDive();
+      return false;
+    }
+    if (!this.mapPicked || this.arrivalInFlight) return false;
+    const target = this.mapPicked;
+    this.mapDiveVerb = verb;
+    this.mapDiveTarget = target;
+    this.mapDiveIsCamera = verb !== 'pilot';
+    this.mapDiving = true;
+    this.mapTransitionMs = 0;
+    this.mapDiveActiveGen = ++this.mapDiveGen;
+    if (this.mapDiveIsCamera) this.systemMap?.beginDive(target.name);
+    return true;
+  }
+
+  /** Per-frame transition driver (called from updateMapView while mapDiving). */
+  private advanceMapTransition() {
+    if (this.mapDiveActiveGen !== this.mapDiveGen) return; // superseded
+    this.mapTransitionMs += this.lastFrameDtMs;
+    const e = this.mapTransitionMs;
+    if (this.mapDiveIsCamera) {
+      const camT = Math.min(1, e / PlanetariumMode.DIVE_CAM_MS);
+      this.systemMap?.setDivePose(camT * camT); // ease-in
+      const fade = Math.max(0, Math.min(1, (e - PlanetariumMode.DIVE_CAM_MS) / PlanetariumMode.DIVE_FADE_MS));
+      this.setDiveFadeOpacity(fade);
+      if (e >= PlanetariumMode.DIVE_TOTAL_MS) this.finishMapTransition();
+    } else {
+      // Autopilot: no camera dive, just a short fade-close.
+      this.setDiveFadeOpacity(Math.min(1, e / PlanetariumMode.AUTOPILOT_CLOSE_MS));
+      if (e >= PlanetariumMode.AUTOPILOT_CLOSE_MS) this.finishMapTransition();
+    }
+  }
+
+  /** A second tap / Enter on a diving card skips the camera ease and blacks out. */
+  private skipMapDive() {
+    if (!this.mapDiving || !this.mapDiveIsCamera) return;
+    this.mapTransitionMs = Math.max(this.mapTransitionMs, PlanetariumMode.DIVE_CAM_MS);
+    this.systemMap?.setDivePose(1);
+  }
+
+  /** The transition reached the black wall: close the map (strictly first —
+   *  the ordering invariant), then run the commit through the shared core. If
+   *  arriveThen raises the real veil it takes over invisibly; otherwise the
+   *  dive fade lifts on the destination. */
+  private finishMapTransition() {
+    if (this.mapDiveActiveGen !== this.mapDiveGen) return;
+    const verb = this.mapDiveVerb;
+    const target = this.mapDiveTarget;
+    this.systemMap?.endDive(true);
+    // closeMap tears the map down and normally clears the fade; mapCommitting
+    // keeps it black for the hand-off to the commit / arrival veil.
+    this.mapCommitting = true;
+    this.closeMap({ restore: false });
+    this.mapCommitting = false;
+    if (verb && target) this.commitBodyPick(verb, target, {});
+    this.liftDiveFade();
+  }
+
+  /** Esc mid-dive: cancel the transition, keep the map open, restore the
+   *  camera, lift the fade. The token bump stops any queued commit. */
+  private cancelMapDive() {
+    if (!this.mapDiving) return;
+    this.mapDiveGen++;
+    this.mapDiving = false;
+    this.mapDiveVerb = null;
+    this.mapDiveTarget = null;
+    this.systemMap?.endDive(false);
+    this.liftDiveFade();
+  }
+
+  private setDiveFadeOpacity(opacity: number) {
+    const el = document.getElementById('map-dive-fade');
+    if (!el) return;
+    el.classList.remove('lifting');
+    el.style.display = 'block';
+    el.style.opacity = String(opacity);
+  }
+
+  /** Fade the dive cover back out over ~200 ms, then hide it. If the arrival
+   *  veil raised meanwhile, this lifts under it (black under black). */
+  private liftDiveFade() {
+    const el = document.getElementById('map-dive-fade');
+    if (!el) return;
+    el.classList.add('lifting');
+    el.style.opacity = '0';
+    window.setTimeout(() => {
+      // Only hide if nothing re-raised it since.
+      if (el.style.opacity === '0') {
+        el.style.display = 'none';
+        el.classList.remove('lifting');
+      }
+    }, 220);
+  }
+
+  private clearDiveFade() {
+    const el = document.getElementById('map-dive-fade');
+    if (!el) return;
+    el.classList.remove('lifting');
+    el.style.opacity = '0';
+    el.style.display = 'none';
   }
 
   /** Show/hide the full-screen touch flight overlay and drop any captured
@@ -6368,22 +6671,49 @@ export class PlanetariumMode {
     if (list && row) list.scrollTop = Math.max(0, row.offsetTop - 64);
   }
 
-  /** Every deck commit closes the deck; the tab decides the ride. */
+  /** Deck wrapper: read the tab + from-panel flag, close the deck's own UI,
+   *  then hand the commit to the shared core. The core owns every arrival
+   *  semantic — the deck contributes only its state. */
   private commitDeckPick(target: NonNullable<LandedTarget>) {
+    // Keep the original guard order: a mission refuses before the deck closes,
+    // so a queued click during a mission-start never tears the deck down.
     if (this.isMissionActive()) return;
     const verb = this.deckVerb;
     if (!verb) return;
     const fromPanel = this.deckOpenedFromPanel;
     this.closeDeck();
+    this.commitBodyPick(verb, target, { fromPanel });
+  }
+
+  /**
+   * The semantic core of a body commit, shared by the deck, the map card, and
+   * the dev bridge. Reads and writes NO deck state (deckVerb, the deck DOM, the
+   * from-panel flag) — callers close their own UI first. Returns true when the
+   * commit is accepted, false when refused (a mission) or busy (a Teleport /
+   * Observatory commit that the in-flight arrival veil would silently drop).
+   */
+  private commitBodyPick(
+    verb: MapVerb,
+    target: NonNullable<LandedTarget>,
+    opts: { fromPanel?: boolean } = {},
+  ): boolean {
     const sameBody = this.landedOn?.type === target.type && this.landedOn.name === target.name;
+    const outcome = commitBodyPickOutcome({
+      missionActive: this.isMissionActive(),
+      arrivalInFlight: this.arrivalInFlight,
+      verb,
+      sameBody,
+    });
+    if (outcome !== 'accepted') return false;
+    const fromPanel = opts.fromPanel ?? false;
     if (verb === 'observe') {
       this.commitObservePick(target, sameBody, fromPanel);
-      return;
+      return true;
     }
     if (sameBody) {
       // Your own row on Travel/Autopilot: lift off and park nearby.
       this.exitLandedMode();
-      return;
+      return true;
     }
     if (verb === 'travel') {
       this.arriveThen(target, () => {
@@ -6398,10 +6728,11 @@ export class PlanetariumMode {
           if (body) this.jumpToPlanet(body);
         }
       });
-      return;
+      return true;
     }
     if (this.landedOn) this.exitLandedMode();
     this.engageAutopilot(target);
+    return true;
   }
 
   /**

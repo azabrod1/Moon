@@ -18,6 +18,10 @@ export class PlanetariumBottomBar {
    *  can enforce one instrument at a time (tuck the Observatory panel). */
   onStatsToggle: ((open: boolean) => void) | null = null;
 
+  /** Notified when the Time panel opens (true) or closes (false) — the mode
+   *  dismisses the system-map card on open (same one-instrument pairing). */
+  onTimeToggle: ((open: boolean) => void) | null = null;
+
   bind(): void {
     this.statsToggle?.addEventListener('click', () => this.setStats(!this.isStatsOpen()));
     this.statsToggle?.addEventListener('keydown', (e) => {
@@ -86,5 +90,6 @@ export class PlanetariumBottomBar {
     this.timePanel?.classList.toggle('visible', open);
     this.timeClock?.setAttribute('aria-expanded', open ? 'true' : 'false');
     if (open) this.closeStats();
+    this.onTimeToggle?.(open);
   }
 }

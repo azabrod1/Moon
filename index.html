@@ -1978,6 +1978,21 @@
       transition: none;
     }
 
+    /* Map dive fade: the schematic darkens to black as the camera dives into a
+       picked body, then either the arrival veil takes over invisibly (black
+       under black) or this lifts on the destination. Just under the veil (50)
+       so a commit that raises the veil hides this hand-off seamlessly. */
+    #map-dive-fade {
+      position: fixed;
+      top: 0; left: 0; right: 0; bottom: 0;
+      background: #04040a;
+      z-index: 49;
+      opacity: 0;
+      pointer-events: none;
+      display: none;
+    }
+    #map-dive-fade.lifting { transition: opacity 0.2s ease; }
+
     /* Sun glare flood: at the whiteout wall the blaze spills over the cockpit
        chrome itself — the HUD washes toward white while staying clickable
        underneath (pointer-events pass through). Above the everyday chrome
@@ -2467,6 +2482,7 @@
       letter-spacing: 0.2px;
       color: var(--t3);
       cursor: pointer;
+      white-space: nowrap;
       transition: background 0.16s var(--ease), color 0.16s var(--ease);
     }
     .map-scale-seg:hover { color: var(--t1); }
@@ -2474,6 +2490,65 @@
     @media (max-width: 640px) {
       .map-scale { bottom: 84px; }
       .map-scale-seg { padding: 8px 13px; }
+    }
+    /* Hover feedback on a fine pointer: the pointed-at label brightens. */
+    .map-label.hover { color: #fff; font-weight: 600; text-shadow: 0 0 8px rgba(0, 0, 0, 0.95); }
+    /* Picked-body card — docked bottom-left, above the bottom bands (measured). */
+    .map-card {
+      position: absolute;
+      left: 14px;
+      bottom: 96px;
+      width: 264px;
+      max-width: calc(100vw - 28px);
+      display: none;
+      flex-direction: column;
+      gap: 12px;
+      padding: 14px;
+      border-radius: var(--r-l);
+      background: rgba(12, 14, 20, 0.72);
+      border: 1px solid var(--line);
+      -webkit-backdrop-filter: blur(16px);
+      backdrop-filter: blur(16px);
+      box-shadow: 0 8px 30px rgba(0, 0, 0, 0.4);
+    }
+    .map-card.visible { display: flex; }
+    .map-card-head { display: flex; align-items: center; gap: 10px; }
+    .map-card-dot {
+      width: 14px; height: 14px; flex: none;
+      border-radius: 50%;
+      box-shadow: 0 0 8px rgba(255, 255, 255, 0.15);
+    }
+    .map-card-title { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+    .map-card-title b {
+      font-family: var(--font-ui);
+      font-size: 15px; font-weight: 600;
+      color: var(--t1);
+      letter-spacing: 0.2px;
+    }
+    .map-card-title small {
+      font-family: var(--font-mono);
+      font-size: 12px;
+      color: var(--t3);
+      font-variant-numeric: tabular-nums;
+    }
+    .map-card-actions { display: flex; gap: 8px; }
+    .map-card-btn {
+      flex: 1;
+      border: 1px solid var(--line);
+      background: rgba(255, 255, 255, 0.045);
+      color: var(--t1);
+      padding: 9px 6px;
+      border-radius: var(--r-m);
+      font-family: var(--font-ui);
+      font-size: 13px; font-weight: 500;
+      letter-spacing: 0.2px;
+      cursor: pointer;
+      transition: background var(--dur) var(--ease), color var(--dur) var(--ease), border-color var(--dur) var(--ease);
+    }
+    .map-card-btn:hover { background: rgba(var(--accent-rgb), 0.16); border-color: rgba(255, 255, 255, 0.14); }
+    .map-card-btn:disabled { opacity: 0.4; cursor: default; }
+    @media (max-width: 640px) {
+      .map-card { left: 12px; right: 12px; width: auto; max-width: none; }
     }
     /* World-anchored overlays are force-hidden behind the map. The class must
        beat the per-frame inline display/opacity writers, so !important. */
@@ -2768,6 +2843,7 @@
     <p id="transition-msg">Loading Solar System...</p>
   </div>
   <div id="arrival-veil"></div>
+  <div id="map-dive-fade"></div>
 
   <div id="ui-overlay">
     <!-- TOP BAR -->
@@ -3101,6 +3177,16 @@
         <div id="map-scale" class="map-scale" role="radiogroup" aria-label="Map scale">
           <button class="map-scale-seg on" id="map-scale-compressed" role="radio" aria-checked="true">Compressed</button>
           <button class="map-scale-seg" id="map-scale-true" role="radio" aria-checked="false">True scale</button>
+        </div>
+        <div id="map-card" class="map-card" role="dialog" aria-label="Body actions">
+          <div class="map-card-head">
+            <span class="map-card-dot" id="map-card-dot"></span>
+            <div class="map-card-title">
+              <b id="map-card-name"></b>
+              <small id="map-card-dist"></small>
+            </div>
+          </div>
+          <div class="map-card-actions" id="map-card-actions"></div>
         </div>
       </div>
 

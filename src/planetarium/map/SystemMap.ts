@@ -36,6 +36,7 @@ import {
   MAP_GAMMA_ANIM_MS,
   type MapVec3,
 } from './mapProjection';
+import { resolvePick, pickRadiusFor, type PickAnchor, type PickResult } from './mapPicking';
 
 const ORBIT_SEGMENTS = 180;
 const MAP_FOV_DEG = 50;
@@ -51,6 +52,12 @@ const ORBIT_BRIGHT_FLOOR = 0.1;
 const LABEL_MIN_SEP_PX = 26;
 // Un-docked ship chevron breathes over this period (ms).
 const SHIP_PULSE_MS = 2000;
+// Hover feedback: the pointed-at dot swells and lifts toward white.
+const HOVER_SCALE = 1.3;
+const HOVER_LIFT = 0.4;
+const WHITE = new THREE.Color(1, 1, 1);
+// The dive eases the camera in to this fraction of its start distance.
+const DIVE_END_DIST_FRAC = 0.14;
 
 interface OrbitEntry {
   planet: PlanetData;
@@ -75,6 +82,15 @@ interface OrbitEntry {
   colorR: number;
   colorG: number;
   colorB: number;
+  /** Raw heliocentric AU of the body this frame (pre-compression) — the truth
+   *  the card reports as a real distance from the ship, without a second
+   *  ephemeris call. */
+  helioX: number;
+  helioY: number;
+  helioZ: number;
+  /** The catalog tint as a Color, so hover can brighten toward white and
+   *  restore without re-parsing the hex. */
+  baseColor: THREE.Color;
 }
 
 export class SystemMap {
@@ -84,6 +100,7 @@ export class SystemMap {
   private controls: OrbitControls;
 
   private sun: THREE.Sprite;
+  private sunBaseColor = new THREE.Color(SUN_DATA.color);
   private orbits: OrbitEntry[] = [];
   private shipMarker: THREE.Sprite;
   private shipChevronTex: THREE.Texture;
@@ -102,6 +119,10 @@ export class SystemMap {
   private sampled = false;
   private extentAU = 1;
   private needsInitialFrame = false;
+  // The user's framing (camera distance / fit distance) captured when a scale
+  // toggle starts, so the whole animation re-fits to the new extent and the
+  // system keeps its apparent size instead of zooming as gamma slides.
+  private scaleZoomRatio = 1;
 
   // Scratch — no per-frame allocation in steady state.
   private tmpMap: MapVec3 = { x: 0, y: 0, z: 0 };
@@ -114,6 +135,22 @@ export class SystemMap {
 
   // Un-docked ship pulse phase (wall ms).
   private pulseMs = 0;
+
+  // Pick anchors, rebuilt on demand (event-driven, not per frame).
+  private pickAnchors: PickAnchor[] = [];
+  // The catalog name of the currently hovered dot (fine pointers), or null.
+  private hoveredName: string | null = null;
+
+  // Dive transition (camera pose only — the mode owns the clock, the fade, the
+  // token, and the commit). beginDive snapshots the start pose so a cancel can
+  // restore it exactly; setDivePose eases toward the focus.
+  private diving = false;
+  private diveFocus = new THREE.Vector3();
+  private diveStartPos = new THREE.Vector3();
+  private diveStartTarget = new THREE.Vector3();
+  private diveOffsetDir = new THREE.Vector3();
+  private diveStartDist = 1;
+  private tmpVec3 = new THREE.Vector3();
 
   // Label anti-collision: screen positions already placed this frame (Sun +
   // the planets), scanned in priority order so an inner planet yields to the
@@ -197,17 +234,32 @@ export class SystemMap {
     this.controls.update();
   }
 
+  /** Slide the camera along its current view ray to `dist` from the target. */
+  private dollyTo(dist: number): void {
+    this.tmpVec3.copy(this.camera.position).sub(this.controls.target);
+    const len = this.tmpVec3.length();
+    if (len < 1e-6) return;
+    this.tmpVec3.multiplyScalar(dist / len);
+    this.camera.position.copy(this.controls.target).add(this.tmpVec3);
+  }
+
   close(): void {
     if (!this.open) return;
     this.open = false;
+    this.diving = false;
+    this.setHover(null);
     this.controls.enabled = false;
     for (const label of this.labels) label.style.display = 'none';
   }
 
-  /** Segmented scale control: animate gamma toward compressed / true scale. */
+  /** Segmented scale control: animate gamma toward compressed / true scale.
+   *  Capture the user's current framing so the animation re-dollies to keep the
+   *  system the same apparent size as its extent changes. */
   setScale(trueScale: boolean): void {
     const target = trueScale ? MAP_GAMMA_TRUE : MAP_GAMMA_DEFAULT;
     if (Math.abs(target - this.gammaTo) < 1e-9 && !this.gammaAnimating) return;
+    const fit = fitDistanceAU(this.extentAU, MAP_FOV_DEG, this.camera.aspect);
+    this.scaleZoomRatio = this.getCameraDistance() / Math.max(fit, 1e-4);
     this.gammaFrom = this.gamma;
     this.gammaTo = target;
     this.gammaElapsedMs = 0;
@@ -271,15 +323,27 @@ export class SystemMap {
     // ship drifting), then flush the controls and matrices BEFORE any
     // projection. The renderer refreshes matrices only at render time, which
     // runs after this update, so a projection-dependent pass must force it.
-    this.recomputeExtent();
-    if (this.needsInitialFrame) {
-      // First frame after open: bodies and ship are positioned, so the fit
-      // includes a ship past Pluto.
-      this.needsInitialFrame = false;
-      this.frameToExtent();
-    } else {
-      this.applyBounds(this.getCameraDistance());
-      this.controls.update();
+    // A dive owns the camera outright (the mode drives setDivePose), so the fit
+    // and controls stand down for its duration.
+    if (!this.diving) {
+      this.recomputeExtent();
+      if (this.needsInitialFrame) {
+        // First frame after open: bodies and ship are positioned, so the fit
+        // includes a ship past Pluto.
+        this.needsInitialFrame = false;
+        this.frameToExtent();
+      } else if (this.gammaAnimating) {
+        // Re-dolly to preserve the framing captured at the toggle, so the
+        // system holds its apparent size while its extent slides with gamma.
+        const wantDist = this.scaleZoomRatio
+          * fitDistanceAU(this.extentAU, MAP_FOV_DEG, this.camera.aspect);
+        this.dollyTo(wantDist);
+        this.applyBounds(wantDist);
+        this.controls.update();
+      } else {
+        this.applyBounds(this.getCameraDistance());
+        this.controls.update();
+      }
     }
     this.camera.updateMatrixWorld();
 
@@ -321,6 +385,136 @@ export class SystemMap {
     this.camera.aspect = w / h;
     this.camera.updateProjectionMatrix();
     for (const o of this.orbits) o.material.resolution.set(w, h);
+  }
+
+  // ---- picking / hover / dive ------------------------------------------
+
+  /** Nearest actionable body (or the inert ship) under a screen tap. The
+   *  anchors rebuild here, on the event, so steady-state stays allocation-free. */
+  pick(x: number, y: number, pointerType: string): PickResult {
+    this.rebuildPickAnchors();
+    return resolvePick(x, y, this.pickAnchors, pickRadiusFor(pointerType));
+  }
+
+  /** The pickable body under the cursor, for fine-pointer hover feedback. */
+  hoverAt(x: number, y: number): string | null {
+    this.rebuildPickAnchors();
+    const hit = resolvePick(x, y, this.pickAnchors, pickRadiusFor('mouse'));
+    return hit.kind === 'body' ? hit.name : null;
+  }
+
+  /** Brighten the hovered dot and emphasize its label; restore the previous. */
+  setHover(name: string | null): void {
+    if (name === this.hoveredName) return;
+    this.applyDotEmphasis(this.hoveredName, false);
+    this.hoveredName = name;
+    this.applyDotEmphasis(name, true);
+  }
+
+  /** True (uncompressed) distance in AU from the ship to a body — what the card
+   *  reports. Reads the cached heliocentric position (no extra ephemeris call);
+   *  the Sun sits at the origin. */
+  trueDistanceFromShip(name: string, shipX: number, shipY: number, shipZ: number): number {
+    let bx = 0;
+    let by = 0;
+    let bz = 0;
+    if (name !== 'Sun') {
+      const entry = this.orbits.find((o) => o.planet.name === name);
+      if (!entry) return 0;
+      bx = entry.helioX;
+      by = entry.helioY;
+      bz = entry.helioZ;
+    }
+    return Math.hypot(bx - shipX, by - shipY, bz - shipZ);
+  }
+
+  isDiving(): boolean {
+    return this.diving;
+  }
+
+  /** Snapshot the camera and the target body's map position; from here the mode
+   *  drives setDivePose each frame. Returns false if the body isn't on the map. */
+  beginDive(name: string): boolean {
+    const focus = this.spriteForName(name);
+    if (!focus) return false;
+    this.diveFocus.copy(focus.position);
+    this.diveStartPos.copy(this.camera.position);
+    this.diveStartTarget.copy(this.controls.target);
+    this.diveOffsetDir.copy(this.diveStartPos).sub(this.diveStartTarget);
+    this.diveStartDist = Math.max(this.diveOffsetDir.length(), 1e-4);
+    this.diveOffsetDir.normalize();
+    this.controls.enabled = false;
+    this.diving = true;
+    this.setHover(null);
+    return true;
+  }
+
+  /** Ease the camera toward the focus. frac 0 = start pose, 1 = fully dived in. */
+  setDivePose(frac: number): void {
+    if (!this.diving) return;
+    const f = Math.max(0, Math.min(1, frac));
+    this.tmpVec3.copy(this.diveStartTarget).lerp(this.diveFocus, f);
+    this.controls.target.copy(this.tmpVec3);
+    const dist = this.diveStartDist * (1 - f * (1 - DIVE_END_DIST_FRAC));
+    this.camera.position.copy(this.tmpVec3).addScaledVector(this.diveOffsetDir, dist);
+    this.camera.lookAt(this.tmpVec3);
+    this.camera.updateMatrixWorld();
+  }
+
+  /** End the dive. On cancel, restore the pre-dive pose and hand controls back;
+   *  on commit, leave the pose (the map is about to close). */
+  endDive(commit: boolean): void {
+    if (!this.diving) return;
+    this.diving = false;
+    if (!commit) {
+      this.camera.position.copy(this.diveStartPos);
+      this.controls.target.copy(this.diveStartTarget);
+      this.camera.lookAt(this.diveStartTarget);
+      this.camera.updateMatrixWorld();
+      this.controls.enabled = true;
+    }
+  }
+
+  private rebuildPickAnchors(): void {
+    const w = this.renderer.domElement.clientWidth;
+    const h = this.renderer.domElement.clientHeight;
+    this.pickAnchors.length = 0;
+    this.pushAnchor('Sun', this.sun.position, true, w, h);
+    for (const entry of this.orbits) {
+      this.pushAnchor(entry.planet.name, entry.dot.position, true, w, h);
+    }
+    this.pushAnchor('__ship', this.shipMarker.position, false, w, h);
+  }
+
+  private pushAnchor(
+    name: string,
+    worldPos: THREE.Vector3,
+    pickable: boolean,
+    w: number,
+    h: number,
+  ): void {
+    projectToScreen(worldPos, this.camera, w, h, this.tmpProj);
+    if (this.tmpProj.ndcZ >= 1) return; // behind the camera — not on screen
+    this.pickAnchors.push({ name, x: this.tmpProj.x, y: this.tmpProj.y, pickable });
+  }
+
+  private spriteForName(name: string): THREE.Sprite | null {
+    if (name === 'Sun') return this.sun;
+    return this.orbits.find((o) => o.planet.name === name)?.dot ?? null;
+  }
+
+  private applyDotEmphasis(name: string | null, on: boolean): void {
+    if (!name) return;
+    const sprite = this.spriteForName(name);
+    const base = name === 'Sun' ? this.sunBaseColor : this.orbits.find((o) => o.planet.name === name)?.baseColor;
+    if (sprite && base) {
+      const mat = sprite.material as THREE.SpriteMaterial;
+      if (on) mat.color.copy(base).lerp(WHITE, HOVER_LIFT);
+      else mat.color.copy(base);
+    }
+    const idx = name === 'Sun' ? 0 : this.orbits.findIndex((o) => o.planet.name === name) + 1;
+    const label = this.labels[idx];
+    if (label) label.classList.toggle('hover', on);
   }
 
   // ---- internals -------------------------------------------------------
@@ -425,6 +619,9 @@ export class SystemMap {
       // its components are copied straight into the map scratch, so the map
       // adds no per-frame allocation of its own.
       const helio = computeBodyPositionAU(entry.planet, utcMs);
+      entry.helioX = helio.x;
+      entry.helioY = helio.y;
+      entry.helioZ = helio.z;
       projectMapPoint(helio.x, helio.y, helio.z, this.gamma, this.tmpMap);
       entry.dot.position.set(this.tmpMap.x, this.tmpMap.y, this.tmpMap.z);
       // The fade still keys off the sampled loop — cheap and only rebuilt on a
@@ -562,8 +759,12 @@ export class SystemMap {
   private scaleMarkers(): void {
     const h = Math.max(this.renderer.domElement.clientHeight, 1);
     const worldPerPxAtUnit = (2 * Math.tan((MAP_FOV_DEG * Math.PI) / 180 / 2)) / h;
-    this.applyMarkerScale(this.sun, SUN_PX, worldPerPxAtUnit);
-    for (const entry of this.orbits) this.applyMarkerScale(entry.dot, PLANET_PX, worldPerPxAtUnit);
+    const sunBoost = this.hoveredName === 'Sun' ? HOVER_SCALE : 1;
+    this.applyMarkerScale(this.sun, SUN_PX * sunBoost, worldPerPxAtUnit);
+    for (const entry of this.orbits) {
+      const boost = entry.planet.name === this.hoveredName ? HOVER_SCALE : 1;
+      this.applyMarkerScale(entry.dot, PLANET_PX * boost, worldPerPxAtUnit);
+    }
     this.applyMarkerScale(this.shipMarker, SHIP_PX, worldPerPxAtUnit);
   }
 
@@ -683,6 +884,10 @@ export class SystemMap {
       colorR: tint.r,
       colorG: tint.g,
       colorB: tint.b,
+      helioX: 0,
+      helioY: 0,
+      helioZ: 0,
+      baseColor: tint.clone(),
     };
   }
 

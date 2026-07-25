@@ -1,22 +1,32 @@
+import type { MapCardAction, MapVerb } from '../map/mapLogic';
+
 /**
- * MapHUD — the on-screen controls for the System map. Packet A carries the
- * segmented scale control (both states always visible, the active one marked)
- * and the close chip; the body card arrives with the commit core.
+ * MapHUD — the on-screen controls for the System map: the segmented scale
+ * control (both states always visible, the active one marked), the close chip,
+ * and the picked-body card (tint dot, name, live distance, verb buttons).
  *
  * DOM-thin: the markup lives in index.html, this caches the elements and wires
  * their listeners once (the bind()/wired idiom). It owns no map state — it
- * reports intent through the two callbacks and reflects the active scale
- * through render().
+ * reports intent through the callbacks and reflects state through its setters.
  */
 export class MapHUD {
   private root: HTMLElement | null = null;
   private segCompressed: HTMLButtonElement | null = null;
   private segTrue: HTMLButtonElement | null = null;
+
+  private card: HTMLElement | null = null;
+  private cardDot: HTMLElement | null = null;
+  private cardName: HTMLElement | null = null;
+  private cardDist: HTMLElement | null = null;
+  private cardActions: HTMLElement | null = null;
+  private lastDist = '';
+  private lastDisabled = false;
   private wired = false;
 
   constructor(
     private readonly onScale: (trueScale: boolean) => void,
     private readonly onClose: () => void,
+    private readonly onVerb: (verb: MapVerb) => void,
   ) {}
 
   /** Cache elements (every activation) and wire listeners once. */
@@ -24,11 +34,21 @@ export class MapHUD {
     this.root = document.getElementById('system-map-ui');
     this.segCompressed = document.getElementById('map-scale-compressed') as HTMLButtonElement | null;
     this.segTrue = document.getElementById('map-scale-true') as HTMLButtonElement | null;
+    this.card = document.getElementById('map-card');
+    this.cardDot = document.getElementById('map-card-dot');
+    this.cardName = document.getElementById('map-card-name');
+    this.cardDist = document.getElementById('map-card-dist');
+    this.cardActions = document.getElementById('map-card-actions');
     if (this.wired) return;
     this.wired = true;
     this.segCompressed?.addEventListener('click', () => this.onScale(false));
     this.segTrue?.addEventListener('click', () => this.onScale(true));
     document.getElementById('map-close')?.addEventListener('click', () => this.onClose());
+    // Delegated so the rebuilt-per-pick buttons need no per-button listeners.
+    this.cardActions?.addEventListener('click', (e) => {
+      const btn = (e.target as HTMLElement).closest('button[data-verb]') as HTMLButtonElement | null;
+      if (btn && !btn.disabled) this.onVerb(btn.dataset.verb as MapVerb);
+    });
   }
 
   show(): void {
@@ -39,12 +59,79 @@ export class MapHUD {
 
   hide(): void {
     if (this.root) this.root.style.display = 'none';
+    this.hideCard();
   }
 
   /** Reflect which scale is active on the segmented control. */
   render(trueScale: boolean): void {
     this.setActive(this.segCompressed, !trueScale);
     this.setActive(this.segTrue, trueScale);
+  }
+
+  isCardOpen(): boolean {
+    return !!this.card?.classList.contains('visible');
+  }
+
+  /** Show (or replace in place) the picked-body card. */
+  showCard(
+    displayName: string,
+    colorCss: string,
+    distText: string,
+    actions: MapCardAction[],
+    disabled: boolean,
+  ): void {
+    if (!this.card) return;
+    if (this.cardDot) this.cardDot.style.background = colorCss;
+    if (this.cardName) this.cardName.textContent = displayName;
+    this.lastDist = distText;
+    this.lastDisabled = disabled;
+    if (this.cardDist) this.cardDist.textContent = distText;
+    if (this.cardActions) {
+      this.cardActions.innerHTML = '';
+      for (const action of actions) {
+        const btn = document.createElement('button');
+        btn.className = 'map-card-btn';
+        btn.dataset.verb = action.verb;
+        btn.textContent = action.label;
+        btn.disabled = disabled;
+        this.cardActions.appendChild(btn);
+      }
+    }
+    this.card.classList.add('visible');
+    this.measureCard();
+  }
+
+  hideCard(): void {
+    this.card?.classList.remove('visible');
+  }
+
+  /** Live distance readout — writes only on a change. */
+  setDistanceText(text: string): void {
+    if (text === this.lastDist) return;
+    this.lastDist = text;
+    if (this.cardDist) this.cardDist.textContent = text;
+  }
+
+  /** Grey the verb buttons out while an arrival is in flight (writes on change). */
+  setActionsDisabled(disabled: boolean): void {
+    if (!this.cardActions || disabled === this.lastDisabled) return;
+    this.lastDisabled = disabled;
+    for (const btn of this.cardActions.querySelectorAll('button')) {
+      (btn as HTMLButtonElement).disabled = disabled;
+    }
+  }
+
+  /** Dock the card above the bottom bands (bar + scale control) — measured, so
+   *  a narrow phone's stacked controls never collide with it. */
+  measureCard(): void {
+    if (!this.card || !this.isCardOpen()) return;
+    const top = (id: string): number => {
+      const el = document.getElementById(id);
+      return el ? el.getBoundingClientRect().top : Infinity;
+    };
+    const bandsTop = Math.min(top('planetarium-bottom-bar'), top('map-scale'));
+    const bottom = Number.isFinite(bandsTop) ? window.innerHeight - bandsTop + 12 : 96;
+    this.card.style.bottom = `${Math.round(bottom)}px`;
   }
 
   private setActive(seg: HTMLButtonElement | null, active: boolean): void {

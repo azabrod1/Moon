@@ -27,6 +27,7 @@ import {
   PLANET_MARKER_PARAMS,
   type PlanetMarkerVisual,
 } from './planetMarkers';
+import { formatBodyDistance } from './bodyDistance';
 
 export interface PlanetLabel {
   sprite: THREE.Sprite;
@@ -509,9 +510,7 @@ export class PlanetLabels {
           entry.lastTransform = transform;
         }
 
-        const distanceText = distFromPlayer < 0.01
-          ? `${(distFromPlayer * 149597870.7).toFixed(0)} km`
-          : `${distFromPlayer.toFixed(2)} AU`;
+        const distanceText = formatBodyDistance(distFromPlayer);
         if (distanceText !== entry.lastDistanceText) {
           entry.distEl.textContent = distanceText;
           entry.lastDistanceText = distanceText;

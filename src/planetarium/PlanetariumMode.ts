@@ -200,7 +200,11 @@ import {
   ringAnnulusDistanceAU,
   type CameraBodyShell,
 } from './cruiseView';
-import { FLIGHT_UP_SCENE } from './flightFrame';
+import {
+  eclipticHeadingPitchFromEquatorial,
+  flightAnglesFromSceneDirection,
+  FLIGHT_UP_SCENE,
+} from './flightFrame';
 import { KM_CONSTANTS } from '../shared/constants/physicalData';
 import { smoothstepUnclamped } from '../shared/math/smoothstep';
 import {
@@ -6610,12 +6614,16 @@ export class PlanetariumMode {
     lookTarget: THREE.Vector3;
     movingAfter: boolean;
   }) {
-    const dx = options.lookTarget.x - options.targetPosition.x;
-    const dy = options.lookTarget.y - options.targetPosition.y;
-    const dz = options.lookTarget.z - options.targetPosition.z;
-    const horizontal = Math.sqrt(dx * dx + dz * dz);
+    // Through the flight-frame seam, not an inline atan2 pair: the pose
+    // fields this lerps into are ecliptic angles, and hand-framed milestone
+    // postcards would otherwise aim up to 23.4° off their look target.
+    const aim = flightAnglesFromSceneDirection(
+      options.lookTarget.x - options.targetPosition.x,
+      options.lookTarget.y - options.targetPosition.y,
+      options.lookTarget.z - options.targetPosition.z,
+    );
     const startHeading = this.player.heading;
-    let endHeading = Math.atan2(dz, dx);
+    let endHeading = aim.headingRad;
     // Shortest-path heading lerp: pick the equivalent endHeading within ±π of start
     // so we never sweep the long way around when crossing the ±π branch cut.
     const dh = endHeading - startHeading;
@@ -6629,7 +6637,7 @@ export class PlanetariumMode {
       startHeading,
       endHeading,
       startPitch: this.player.pitch,
-      endPitch: Math.atan2(dy, Math.max(horizontal, 1e-8)),
+      endPitch: aim.pitchRad,
       endMoving: options.movingAfter,
     };
     this.player.moving = true;
@@ -10546,6 +10554,11 @@ export class PlanetariumMode {
       // undefined, so an untouched preference never bakes a device default
       // into the save.
       skyPref: this.skyPrefStored ?? undefined,
+      // Stamped at the source, not in saveState: every session-internal
+      // snapshot (pre-mission, pre-tool, the tutorial's) round-trips through
+      // here and back into restoreState, and an unlabeled one would be read
+      // as legacy and re-rotate the ship on every tutorial exit or tool return.
+      headingBasis: 'ecliptic',
     };
   }
 
@@ -10554,8 +10567,20 @@ export class PlanetariumMode {
     this.player.posX = saved.positionAU.x;
     this.player.posY = saved.positionAU.y;
     this.player.posZ = saved.positionAU.z;
-    this.player.heading = saved.headingRad;
-    this.player.pitch = saved.pitchRad ?? 0;
+    // Saves written before the flight frame moved onto the ecliptic hold
+    // scene-equatorial angles; convert at APPLY so the ship still aims at the
+    // same world direction (unconverted, a saved close approach would miss
+    // its target by ~4.7 arrival-disc diameters). The stored copy stays
+    // unflagged with its legacy angles, so the conversion fires exactly once
+    // per load however many times the save is written back.
+    if (saved.headingBasis === 'ecliptic') {
+      this.player.heading = saved.headingRad;
+      this.player.pitch = saved.pitchRad ?? 0;
+    } else {
+      const converted = eclipticHeadingPitchFromEquatorial(saved.headingRad, saved.pitchRad ?? 0);
+      this.player.heading = converted.headingRad;
+      this.player.pitch = converted.pitchRad;
+    }
     this.player.speedMultiplier = saved.speed;
     this.player.moving = saved.landedOn ? false : (saved.moving ?? saved.speed > 0);
     // A restore is a position discontinuity; drop the whole governor state

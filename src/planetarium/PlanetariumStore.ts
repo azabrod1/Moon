@@ -61,6 +61,11 @@ export interface PlanetariumState {
    * toggle: the default is device-dependent (on for fine pointers) and is
    * resolved at read time, never persisted. */
   skyPref?: boolean;
+  /** Which basis `headingRad`/`pitchRad` are measured in. Absent means the
+   * old scene-equatorial basis: those saves are converted once, at apply, so
+   * a returning ship still points where it was left. Only the ANGLES change
+   * basis — `positionAU` is frame-independent. */
+  headingBasis?: 'ecliptic';
 }
 
 function isFiniteNumber(value: unknown): value is number {
@@ -146,6 +151,10 @@ export function sanitizePlanetariumState(raw: unknown): PlanetariumState | null 
     // so the 30 s auto-save (JSON.stringify drops it) can't bake one device's
     // hover/pointer default into a save that may be opened on another.
     skyPref: typeof record.skyPref === 'boolean' ? record.skyPref : undefined,
+    // Explicit passthrough, and no default: absence is the legacy signal the
+    // apply-time conversion reads. Dropping the field here would re-convert
+    // an already-converted save on every load and compound the rotation.
+    headingBasis: record.headingBasis === 'ecliptic' ? 'ecliptic' : undefined,
   };
 }
 
@@ -196,6 +205,7 @@ export function createDefaultPlanetariumState(): PlanetariumState {
     systemSpeed: 0.083,
     systemSlowdown: true,
     autopilotUserEngaged: false,
+    headingBasis: 'ecliptic',
   };
 }
 

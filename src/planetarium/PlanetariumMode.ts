@@ -82,7 +82,12 @@ import { OBSERVATORY_JUMP_LEAD_MS, stepperSearchFromUtcMs } from './observatoryT
 import { surfacePerfBeginSpan, surfacePerfEndSpan } from './surfacePerf';
 import { findEvent, type EventType } from '../astronomy/ephemeris';
 import { KM_PER_AU } from '../astronomy/constants';
-import { createPlanetariumStarfield, setStarfieldPixelRatio, starfieldFaintLimitMag } from './world/starfield';
+import {
+  createPlanetariumStarfield,
+  setStarfieldGain,
+  setStarfieldPixelRatio,
+  starfieldFaintLimitMag,
+} from './world/starfield';
 import { MoonDots } from './world/MoonDots';
 import {
   MOON_DOT_PARAMS,
@@ -643,6 +648,9 @@ export class PlanetariumMode {
   /** Catalog faint-limit magnitude the dots' faint-end handoff lines up to
    *  (the starfield's dimmest star); computed once. */
   private starFaintLimitMag = 6.5;
+  /** Eased telescope light grasp behind the starfield's uStarGain. 1 outside
+   *  the surface view, where it is a no-op on every star. */
+  private starGain = 1;
   /** Per-system inward fade [0,1], cached in updateMoonPositions where the
    *  player distance / visibility threshold are in hand. */
   private moonSystemEdgeFade = new Map<string, number>();
@@ -1256,6 +1264,7 @@ export class PlanetariumMode {
     this.sunChromoAnti = 0;
     this.sunChromoToward = 0;
     this.sunAtmosphereMix = 0;
+    this.starGain = 1;
     this.renderer.toneMappingExposure = 1;
     // Compile + validate the GPU texturer once, before the visibility gate can
     // run (the gate paints during update(), which only runs while active). The
@@ -1618,6 +1627,8 @@ export class PlanetariumMode {
     this.sunChromoAnti = 0;
     this.sunChromoToward = 0;
     this.sunAtmosphereMix = 0;
+    this.starGain = 1;
+    if (this.starfield) setStarfieldGain(this.starfield, 1);
     this.applySunGlareFlood(0);
     this.clearSunSilhouette();
     this.renderer.toneMappingExposure = 1;
@@ -1714,6 +1725,9 @@ export class PlanetariumMode {
 
     // Runs in both branches below — a tutorial narrates landed and cruise scenes.
     this.updateTutorial();
+    // Also both: the light grasp belongs to the surface view, which lives in the
+    // landed pipeline, and it still has to ease back to 1 out in cruise.
+    this.updateStarGain(dt);
 
     // Landed mode: camera orbits body, skip flight controls
     if (this.landedOn) {
@@ -7090,6 +7104,25 @@ export class PlanetariumMode {
     }
   }
 
+  /**
+   * Telescope light grasp. A narrow field on a dark sky is exactly what a
+   * telescope buys you — the same aperture spread over less sky, so faint stars
+   * climb out of the background — and the surface view is the only place the
+   * app offers one. Everywhere else the gain is exactly 1 and the field renders
+   * as built. It eases rather than steps so a zoom gesture doesn't strobe the
+   * faint end, and the shader clamps each star so the lift can only reach the
+   * stars that have opacity left to gain.
+   */
+  private updateStarGain(dt: number): void {
+    if (!this.starfield) return;
+    const target = this.landedView === 'surface'
+      ? THREE.MathUtils.clamp(Math.pow(60 / Math.max(this.displayFovDeg(), 1e-3), 0.6), 1, 3)
+      : 1;
+    const blend = 1 - Math.exp(-Math.max(dt, 0) / 0.3);
+    this.starGain += (target - this.starGain) * blend;
+    setStarfieldGain(this.starfield, this.starGain);
+  }
+
   /** The FOV the frame displays (under the lens pass, camera.fov holds the
    *  wider overscan the warp samples from — never compare against it). */
   private displayFovDeg(): number {
@@ -8924,6 +8957,10 @@ export class PlanetariumMode {
 
   private finalizeSurfaceExit() {
     this.landedView = 'orbit';
+    // The telescope's light grasp leaves with the telescope: no easing back on
+    // the way out, or the cruise sky would carry a lifted faint end for a beat.
+    this.starGain = 1;
+    if (this.starfield) setStarfieldGain(this.starfield, 1);
     this.surfaceFovAnim = null;
     this.surfaceSpotAnchor = null;
     this.surfaceLook.detach();

@@ -1,5 +1,10 @@
 import { describe, it, expect } from 'vitest';
-import { mapCardActions, commitBodyPickOutcome, type MapBodyRef } from './mapLogic';
+import {
+  mapCardActions,
+  mapCardOffersVerb,
+  commitBodyPickOutcome,
+  type MapBodyRef,
+} from './mapLogic';
 
 const planet = (name: string): MapBodyRef => ({ type: 'planet', name });
 const moon = (name: string): MapBodyRef => ({ type: 'moon', name });
@@ -33,6 +38,26 @@ describe('mapCardActions', () => {
   it('offers the full planet card when landed elsewhere', () => {
     const actions = mapCardActions(planet('Mars'), planet('Earth'));
     expect(actions.map((a) => a.verb)).toEqual(['travel', 'observe', 'pilot']);
+  });
+});
+
+describe('mapCardOffersVerb', () => {
+  it('lets a not-here planet offer all three verbs', () => {
+    for (const verb of ['travel', 'observe', 'pilot'] as const) {
+      expect(mapCardOffersVerb(planet('Mars'), null, verb)).toBe(true);
+    }
+  });
+
+  it('refuses Observatory on the Sun (the card never paints it)', () => {
+    expect(mapCardOffersVerb(planet('Sun'), null, 'travel')).toBe(true);
+    expect(mapCardOffersVerb(planet('Sun'), null, 'pilot')).toBe(true);
+    expect(mapCardOffersVerb(planet('Sun'), null, 'observe')).toBe(false);
+  });
+
+  it('refuses Autopilot on the current landed body', () => {
+    expect(mapCardOffersVerb(planet('Earth'), planet('Earth'), 'travel')).toBe(true);
+    expect(mapCardOffersVerb(planet('Earth'), planet('Earth'), 'observe')).toBe(true);
+    expect(mapCardOffersVerb(planet('Earth'), planet('Earth'), 'pilot')).toBe(false);
   });
 });
 

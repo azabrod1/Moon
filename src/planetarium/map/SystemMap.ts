@@ -136,16 +136,31 @@ export class SystemMap {
   // Un-docked ship pulse phase (wall ms).
   private pulseMs = 0;
 
-  // Pick anchors, rebuilt on demand (event-driven, not per frame).
+  // Pick anchors, rebuilt on demand (event-driven, not per frame). A fixed pool
+  // (Sun + every planet + the ship) is filled in place and `pickAnchors` holds
+  // references to the in-use slots, so hover/tap picking allocates nothing after
+  // warm-up.
+  private pickAnchorPool: PickAnchor[] = Array.from(
+    { length: PLANETARIUM_BODIES.length + 2 },
+    () => ({ name: '', x: 0, y: 0, pickable: false }),
+  );
   private pickAnchors: PickAnchor[] = [];
   // The catalog name of the currently hovered dot (fine pointers), or null.
   private hoveredName: string | null = null;
+  // Whether the ship reads docked (landed or parked) this frame — set in
+  // placeShip, read by the pick pass to drop the ship anchor that would
+  // otherwise sit on top of its parent's dot.
+  private shipDocked = false;
 
   // Dive transition (camera pose only — the mode owns the clock, the fade, the
   // token, and the commit). beginDive snapshots the start pose so a cancel can
   // restore it exactly; setDivePose eases toward the focus.
   private diving = false;
   private diveFocus = new THREE.Vector3();
+  // The body the dive is aimed at — the ease re-reads its live map position each
+  // frame (the clock keeps moving it), so a high time rate can't dive to where
+  // the dot merely was when the commit fired.
+  private diveFocusName: string | null = null;
   private diveStartPos = new THREE.Vector3();
   private diveStartTarget = new THREE.Vector3();
   private diveOffsetDir = new THREE.Vector3();
@@ -432,11 +447,23 @@ export class SystemMap {
     return this.diving;
   }
 
+  /** Dev forensics: distance (scene AU) between the dive camera's look target
+   *  and the live target dot. Once the ease lands (target == focus) this reads
+   *  ~0 only if the focus tracked the moving dot; a stale snapshot leaves a gap
+   *  the size of the dot's travel. null when no dive is running. */
+  diveTargetGapAU(): number | null {
+    if (!this.diving || !this.diveFocusName) return null;
+    const dot = this.spriteForName(this.diveFocusName);
+    if (!dot) return null;
+    return this.controls.target.distanceTo(dot.position);
+  }
+
   /** Snapshot the camera and the target body's map position; from here the mode
    *  drives setDivePose each frame. Returns false if the body isn't on the map. */
   beginDive(name: string): boolean {
     const focus = this.spriteForName(name);
     if (!focus) return false;
+    this.diveFocusName = name;
     this.diveFocus.copy(focus.position);
     this.diveStartPos.copy(this.camera.position);
     this.diveStartTarget.copy(this.controls.target);
@@ -449,9 +476,14 @@ export class SystemMap {
     return true;
   }
 
-  /** Ease the camera toward the focus. frac 0 = start pose, 1 = fully dived in. */
+  /** Ease the camera toward the focus. frac 0 = start pose, 1 = fully dived in.
+   *  The focus tracks the target's current map position (the dot drifts under
+   *  the clock while the ease runs), so the camera always lands on the live dot;
+   *  only the start pose stays snapshotted, for cancel-restore. */
   setDivePose(frac: number): void {
     if (!this.diving) return;
+    const focus = this.diveFocusName ? this.spriteForName(this.diveFocusName) : null;
+    if (focus) this.diveFocus.copy(focus.position);
     const f = Math.max(0, Math.min(1, frac));
     this.tmpVec3.copy(this.diveStartTarget).lerp(this.diveFocus, f);
     this.controls.target.copy(this.tmpVec3);
@@ -476,6 +508,10 @@ export class SystemMap {
   }
 
   private rebuildPickAnchors(): void {
+    // The renderer only refreshes the camera matrices at render time; a pick
+    // landing between a controls move and the next frame must project against
+    // the live pose, so flush the matrix here before projecting the anchors.
+    this.camera.updateMatrixWorld();
     const w = this.renderer.domElement.clientWidth;
     const h = this.renderer.domElement.clientHeight;
     this.pickAnchors.length = 0;
@@ -483,7 +519,12 @@ export class SystemMap {
     for (const entry of this.orbits) {
       this.pushAnchor(entry.planet.name, entry.dot.position, true, w, h);
     }
-    this.pushAnchor('__ship', this.shipMarker.position, false, w, h);
+    // Docked, the ship ring sits on top of its parent's dot — omit it so the tap
+    // lands on the body (its Leave / Observatory card). Undocked, the ship stays
+    // an inert anchor that swallows a tap without picking.
+    if (!this.shipDocked) {
+      this.pushAnchor('__ship', this.shipMarker.position, false, w, h);
+    }
   }
 
   private pushAnchor(
@@ -495,7 +536,17 @@ export class SystemMap {
   ): void {
     projectToScreen(worldPos, this.camera, w, h, this.tmpProj);
     if (this.tmpProj.ndcZ >= 1) return; // behind the camera — not on screen
-    this.pickAnchors.push({ name, x: this.tmpProj.x, y: this.tmpProj.y, pickable });
+    // A dot past the frame edge isn't pickable even if the tap radius reaches
+    // it — exclude anything projecting outside the viewport rect.
+    if (this.tmpProj.x < 0 || this.tmpProj.x > w || this.tmpProj.y < 0 || this.tmpProj.y > h) {
+      return;
+    }
+    const a = this.pickAnchorPool[this.pickAnchors.length];
+    a.name = name;
+    a.x = this.tmpProj.x;
+    a.y = this.tmpProj.y;
+    a.pickable = pickable;
+    this.pickAnchors.push(a);
   }
 
   private spriteForName(name: string): THREE.Sprite | null {
@@ -676,6 +727,7 @@ export class SystemMap {
     projectMapPoint(x, y, z, this.gamma, this.tmpMap);
     this.shipMarker.position.set(this.tmpMap.x, this.tmpMap.y, this.tmpMap.z);
     const docked = landed || !moving;
+    this.shipDocked = docked;
     const mat = this.shipMarker.material;
     const wantTex = docked ? this.shipRingTex : this.shipChevronTex;
     if (mat.map !== wantTex) {

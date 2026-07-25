@@ -47,11 +47,23 @@ export function isTap(
   return dx * dx + dy * dy <= slop * slop;
 }
 
+// Pooled results — resolvePick runs on pointer events (hover, tap), and returns
+// one of these without allocating. Every caller reads the result before the
+// next resolvePick call, so the single mutable body result is safe to reuse.
+const EMPTY_RESULT: PickResult = { kind: 'empty' };
+const SHIP_RESULT: PickResult = { kind: 'ship' };
+const BODY_RESULT: { kind: 'body'; name: string } = { kind: 'body', name: '' };
+
 /**
  * Nearest anchor to (x, y) within `radiusPx`. The ship counts as a candidate so
  * it wins when it is the nearest thing under the finger (users tap it first) and
  * swallows the tap; a pickable body under the finger returns a body pick; empty
  * space returns 'empty' so the caller can dismiss the card.
+ *
+ * A tie (equal distance) resolves to whichever anchor was supplied first — the
+ * caller lists bodies before the ship, so a docked ship ring sitting exactly on
+ * its parent's dot yields to the planet. The result is a pooled object; read it
+ * before calling resolvePick again.
  */
 export function resolvePick(
   x: number,
@@ -71,6 +83,8 @@ export function resolvePick(
       best = a;
     }
   }
-  if (!best) return { kind: 'empty' };
-  return best.pickable ? { kind: 'body', name: best.name } : { kind: 'ship' };
+  if (!best) return EMPTY_RESULT;
+  if (!best.pickable) return SHIP_RESULT;
+  BODY_RESULT.name = best.name;
+  return BODY_RESULT;
 }

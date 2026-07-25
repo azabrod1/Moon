@@ -64,6 +64,19 @@ describe('resolvePick', () => {
     expect(resolvePick(300, 300, stacked, PICK_RADIUS_COARSE)).toEqual({ kind: 'ship' });
   });
 
+  it('resolves a coincident planet+ship tie to the planet (bodies precede the ship)', () => {
+    // A docked ship ring lands exactly on its parent's dot; the planet is listed
+    // first and the tie-break is strict, so the tap picks the body, not the ship.
+    const coincident: PickAnchor[] = [body('Earth', 300, 300), ship(300, 300)];
+    expect(resolvePick(300, 300, coincident, PICK_RADIUS_FINE)).toEqual({ kind: 'body', name: 'Earth' });
+  });
+
+  it('picks the planet when the docked ship anchor is omitted from the set', () => {
+    // SystemMap drops the ship anchor while docked; only the planet remains.
+    const planetOnly: PickAnchor[] = [body('Earth', 300, 300)];
+    expect(resolvePick(300, 300, planetOnly, PICK_RADIUS_FINE)).toEqual({ kind: 'body', name: 'Earth' });
+  });
+
   it('respects the radius (a far body is empty space)', () => {
     expect(resolvePick(200, 200, [body('Pluto', 200, 240)], PICK_RADIUS_FINE)).toEqual({ kind: 'empty' });
     expect(resolvePick(200, 200, [body('Pluto', 200, 240)], PICK_RADIUS_COARSE)).toEqual({ kind: 'body', name: 'Pluto' });

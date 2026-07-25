@@ -265,9 +265,9 @@ import { SunLabel } from './ui/SunLabel';
 import { TutorialCard, tutorialCardModel } from './ui/TutorialCard';
 import { SystemMap } from './map/SystemMap';
 import { MapHUD } from './ui/MapHUD';
-import { mapCardActions, commitBodyPickOutcome, type MapVerb } from './map/mapLogic';
+import { mapCardActions, mapCardOffersVerb, commitBodyPickOutcome, type MapVerb } from './map/mapLogic';
 import { isTap } from './map/mapPicking';
-import { formatBodyDistance } from './bodyDistance';
+import { formatBodyDistance, bodyDistanceQuantum } from './bodyDistance';
 
 type ScriptedTransfer = {
   elapsed: number;
@@ -872,8 +872,18 @@ export class PlanetariumMode {
   private mapDiveVerb: MapVerb | null = null;
   private mapDiveTarget: NonNullable<LandedTarget> | null = null;
   private mapDiveIsCamera = false;
-  private mapTransitionMs = 0;
+  // Wall-clock stamp (performance.now) of when the current transition began. The
+  // input lock is timed off real elapsed time, not the sim dt (capped at 100 ms
+  // in main.ts) — a frame hitch must never stretch the dive past its cap.
+  private mapTransitionStartMs = 0;
   private mapCommitting = false;
+  // Last distance value formatted onto the open card, quantized to the shown
+  // precision, so the per-frame refresh reformats (and allocates a string) only
+  // when the readout actually changes.
+  private mapCardDistQ = NaN;
+  // Last dive-fade opacity written to the DOM, quantized to 2 decimals, so the
+  // per-frame fade skips redundant style writes.
+  private mapFadeOpacityQ = -1;
 
   // Moon labels
   private moonLabels = new Map<string, HTMLDivElement>();
@@ -6100,6 +6110,7 @@ export class PlanetariumMode {
     cameraDist: number;
     picked: string | null;
     diving: boolean;
+    diveGapAU: number | null;
   } | null {
     if (!this.systemMap) return null;
     return {
@@ -6108,6 +6119,9 @@ export class PlanetariumMode {
       cameraDist: this.systemMap.getCameraDistance(),
       picked: this.mapPicked?.name ?? null,
       diving: this.mapDiving,
+      // Camera-aim-vs-live-dot gap: ~0 once the ease lands proves the dive
+      // tracked the moving dot instead of a stale snapshot.
+      diveGapAU: this.systemMap.diveTargetGapAU(),
     };
   }
 
@@ -6244,7 +6258,10 @@ export class PlanetariumMode {
   }
 
   private setMapScale(trueScale: boolean) {
-    if (!this.systemMap) return;
+    // A dive owns the camera; a scale change mid-dive would capture a zoom ratio
+    // from the half-dived pose and corrupt the post-cancel restore. Only
+    // close/cancel/skip escape a dive — refuse and reflect nothing on the HUD.
+    if (!this.systemMap || this.mapDiving) return;
     this.systemMap.setScale(trueScale);
     this.mapHud.render(trueScale);
   }
@@ -6274,7 +6291,13 @@ export class PlanetariumMode {
         this.player.posY,
         this.player.posZ,
       );
-      this.mapHud.setDistanceText(formatBodyDistance(distAU));
+      // Reformat only when the shown value changes — the raw distance drifts
+      // every frame but the string does not.
+      const q = bodyDistanceQuantum(distAU);
+      if (q !== this.mapCardDistQ) {
+        this.mapCardDistQ = q;
+        this.mapHud.setDistanceText(formatBodyDistance(distAU));
+      }
       this.mapHud.setActionsDisabled(this.arrivalInFlight);
     }
     // Advance an in-flight dive / autopilot-close transition.
@@ -6343,6 +6366,7 @@ export class PlanetariumMode {
       this.player.posY,
       this.player.posZ,
     ) ?? 0;
+    this.mapCardDistQ = bodyDistanceQuantum(distAU);
     this.mapHud.showCard(
       bodyDisplayName(name),
       color,
@@ -6378,11 +6402,15 @@ export class PlanetariumMode {
     }
     if (!this.mapPicked || this.arrivalInFlight) return false;
     const target = this.mapPicked;
+    // Only a verb the card actually offers this pick may commit — guards the
+    // bridge and any UI race where the pick changed under the click (a bare
+    // mapCommit('observe') on the Sun must not try to land on it).
+    if (!mapCardOffersVerb(target, this.landedOn, verb)) return false;
     this.mapDiveVerb = verb;
     this.mapDiveTarget = target;
     this.mapDiveIsCamera = verb !== 'pilot';
     this.mapDiving = true;
-    this.mapTransitionMs = 0;
+    this.mapTransitionStartMs = performance.now();
     this.mapDiveActiveGen = ++this.mapDiveGen;
     if (this.mapDiveIsCamera) this.systemMap?.beginDive(target.name);
     return true;
@@ -6391,8 +6419,7 @@ export class PlanetariumMode {
   /** Per-frame transition driver (called from updateMapView while mapDiving). */
   private advanceMapTransition() {
     if (this.mapDiveActiveGen !== this.mapDiveGen) return; // superseded
-    this.mapTransitionMs += this.lastFrameDtMs;
-    const e = this.mapTransitionMs;
+    const e = performance.now() - this.mapTransitionStartMs;
     if (this.mapDiveIsCamera) {
       const camT = Math.min(1, e / PlanetariumMode.DIVE_CAM_MS);
       this.systemMap?.setDivePose(camT * camT); // ease-in
@@ -6409,7 +6436,13 @@ export class PlanetariumMode {
   /** A second tap / Enter on a diving card skips the camera ease and blacks out. */
   private skipMapDive() {
     if (!this.mapDiving || !this.mapDiveIsCamera) return;
-    this.mapTransitionMs = Math.max(this.mapTransitionMs, PlanetariumMode.DIVE_CAM_MS);
+    // Push the start stamp back so elapsed is at least the camera-ease duration
+    // (never forward — that would rewind an already-past-ease dive), and snap the
+    // pose home; the fade then starts on the next frame.
+    this.mapTransitionStartMs = Math.min(
+      this.mapTransitionStartMs,
+      performance.now() - PlanetariumMode.DIVE_CAM_MS,
+    );
     this.systemMap?.setDivePose(1);
   }
 
@@ -6448,7 +6481,12 @@ export class PlanetariumMode {
     if (!el) return;
     el.classList.remove('lifting');
     el.style.display = 'block';
-    el.style.opacity = String(opacity);
+    // Quantize to 2 decimals and write only on a change — the fade holds at 0
+    // through the camera ease and at 1 after, so most frames write nothing.
+    const q = Math.round(opacity * 100) / 100;
+    if (q === this.mapFadeOpacityQ) return;
+    this.mapFadeOpacityQ = q;
+    el.style.opacity = q.toFixed(2);
   }
 
   /** Fade the dive cover back out over ~200 ms, then hide it. If the arrival
@@ -6458,6 +6496,7 @@ export class PlanetariumMode {
     if (!el) return;
     el.classList.add('lifting');
     el.style.opacity = '0';
+    this.mapFadeOpacityQ = 0; // keep the quantized cache in step with the direct write
     window.setTimeout(() => {
       // Only hide if nothing re-raised it since.
       if (el.style.opacity === '0') {
@@ -6473,6 +6512,7 @@ export class PlanetariumMode {
     el.classList.remove('lifting');
     el.style.opacity = '0';
     el.style.display = 'none';
+    this.mapFadeOpacityQ = 0; // keep the quantized cache in step with the direct write
   }
 
   /** Show/hide the full-screen touch flight overlay and drop any captured

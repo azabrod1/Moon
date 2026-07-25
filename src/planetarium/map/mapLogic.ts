@@ -60,6 +60,20 @@ export function mapCardActions(
   ];
 }
 
+/**
+ * Whether the card for `target` (given the landed body) actually offers `verb`.
+ * Every commit path runs this so a verb the card never painted can't be
+ * committed — protecting the bridge (`mapCommit('observe')` on the Sun) and any
+ * UI race where the pick changed under an in-flight click.
+ */
+export function mapCardOffersVerb(
+  target: MapBodyRef,
+  landedOn: MapBodyRef | null,
+  verb: MapVerb,
+): boolean {
+  return mapCardActions(target, landedOn).some((a) => a.verb === verb);
+}
+
 export type CommitOutcome = 'accepted' | 'refused' | 'busy';
 
 /**

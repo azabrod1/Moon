@@ -447,6 +447,16 @@ export class ShadowVisuals {
     for (const slot of this.slots) slot.reticleActive = false;
   }
 
+  /** Toggle the whole shadow overlay — used to suspend it while a mode (the
+   *  system map) reuses the moon-system group this is attached to. */
+  setVisible(visible: boolean): void {
+    this.root.visible = visible;
+  }
+
+  isVisible(): boolean {
+    return this.root.visible;
+  }
+
   setGuidesVisible(visible: boolean): void {
     if (visible && !this.guidesVisible) {
       // The camera pass skips hidden guides, so band state from before the

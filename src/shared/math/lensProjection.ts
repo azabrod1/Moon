@@ -204,6 +204,21 @@ export function lensDisplayHalfTan(designFovDeg: number, strength: number): numb
  * FOV — writing `camera.fov` directly under an active lens would change the
  * displayed framing.
  */
+/**
+ * The FOV the frame DISPLAYS. Under the lens pass `camera.fov` holds the wider
+ * overscan the warp samples from, so anything metered against output pixels
+ * (marker sizes, apparent diameters, framing math) must read this instead —
+ * never `camera.fov`. The single definition site: the planetarium controller
+ * and the system map both route through here, so a change to the lens userData
+ * shape can't leave one of them reading a stale shape.
+ */
+export function displayFovDeg(camera: {
+  fov: number;
+  userData: { lens?: { designFovDeg: number } };
+}): number {
+  return camera.userData.lens?.designFovDeg ?? camera.fov;
+}
+
 export function applyDesignFov(
   camera: {
     fov: number;

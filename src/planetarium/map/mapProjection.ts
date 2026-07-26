@@ -92,3 +92,18 @@ export function fitDistanceAU(
   const target = Math.max(extentAU, 1e-6) * marginFrac;
   return target / Math.tan(half);
 }
+
+/**
+ * Whether the camera still sits at the whole-system overview fit, within a
+ * small tolerance for damping drift. A viewport change (device rotation)
+ * re-frames the overview only when this holds — a deliberate zoom must never
+ * be overridden by a rotation.
+ */
+export function isAtOverviewFit(
+  cameraDistAU: number,
+  fitDistAU: number,
+  tolFrac = 0.02,
+): boolean {
+  if (!(fitDistAU > 0) || !Number.isFinite(cameraDistAU)) return false;
+  return Math.abs(cameraDistAU - fitDistAU) <= fitDistAU * tolFrac;
+}

@@ -30,6 +30,7 @@ import { projectToScreen, type ScreenProjection } from '../../shared/three/proje
 import { smoothstepUnclamped } from '../../shared/math/smoothstep';
 import {
   fitDistanceAU,
+  isAtOverviewFit,
   projectMapPoint,
   MAP_GAMMA_DEFAULT,
   MAP_GAMMA_TRUE,
@@ -397,9 +398,28 @@ export class SystemMap {
     const el = this.renderer.domElement;
     const w = Math.max(el.clientWidth, 1);
     const h = Math.max(el.clientHeight, 1);
+    // Judge "still at the overview fit" against the OLD aspect before touching
+    // the camera — that fit is the frame the user was actually looking at.
+    const wasAtOverview = this.open && this.sampled && !this.diving && !this.gammaAnimating
+      && !this.needsInitialFrame
+      && isAtOverviewFit(
+        this.getCameraDistance(),
+        fitDistanceAU(this.extentAU, MAP_FOV_DEG, this.camera.aspect),
+      );
     this.camera.aspect = w / h;
     this.camera.updateProjectionMatrix();
     for (const o of this.orbits) o.material.resolution.set(w, h);
+    // A viewport change (device rotation, window resize) refits the overview:
+    // the vertical FOV is fixed, so portrait fits far less width and the old
+    // dolly distance would clip the outer system. Only the parked overview
+    // refits — a deliberate zoom keeps its distance, and the dive / scale
+    // animation / first-frame fit each own the camera already.
+    if (wasAtOverview) {
+      const want = fitDistanceAU(this.extentAU, MAP_FOV_DEG, this.camera.aspect);
+      this.dollyTo(want);
+      this.applyBounds(want);
+      this.controls.update();
+    }
   }
 
   // ---- picking / hover / dive ------------------------------------------

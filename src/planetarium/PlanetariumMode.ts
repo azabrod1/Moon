@@ -1215,6 +1215,7 @@ export class PlanetariumMode {
     // handlers no-op unless the map owns the frame.
     orbitDom.addEventListener('pointerdown', (e) => this.mapPointerDown(e));
     orbitDom.addEventListener('pointerup', (e) => this.mapPointerUp(e));
+    orbitDom.addEventListener('pointercancel', (e) => this.mapPointerCancel(e));
     orbitDom.addEventListener('pointermove', (e) => this.mapPointerMove(e));
 
     window.addEventListener('blur', () => {
@@ -1222,6 +1223,10 @@ export class PlanetariumMode {
       // gesture outright — OrbitControls' capture and document listeners tear
       // down with our bookkeeping.
       this.cancelOrbitGesture();
+      // The map's armed pick would strand the same way — and a mouse reuses
+      // one pointer id, so the NEXT click's release could then tap against
+      // this gesture's stale down point.
+      this.mapPickPointerId = null;
       // Focus loss (e.g. Cmd-Tab) means the keyups won't arrive, so a held key
       // would linger — with W held the ship accelerates unattended. Drop every
       // held key; yaw/pitch/throttle recompute from this set each frame
@@ -6237,6 +6242,9 @@ export class PlanetariumMode {
     // A held key must not survive the map — closing with W down would otherwise
     // resume phantom thrust the moment processInput reads the flight keys again.
     this.keys.clear();
+    // Nor an armed pick gesture: ids are recycled across gestures, so a
+    // stranded one could commit a later, unrelated tap.
+    this.mapPickPointerId = null;
     // Give the canvas back to the world only when the mode is live: a teardown
     // close (deactivate) must leave the touch zone and controls inert, or it
     // re-arms the very controls deactivate just retired.
@@ -6316,6 +6324,12 @@ export class PlanetariumMode {
       return;
     }
     if (e.button !== 0) return;
+    // One gesture end to end: a second finger (pinch zoom) must not rebind the
+    // armed tap or move its down point — releasing the pinch would then read
+    // as a tap wherever that finger landed. The id stays armed until ITS
+    // pointerup/cancel (or blur/close) releases it, the same contract as the
+    // cruise chase drag.
+    if (this.mapPickPointerId !== null) return;
     this.mapPickPointerId = e.pointerId;
     this.mapPickDownX = e.clientX;
     this.mapPickDownY = e.clientY;
@@ -6326,10 +6340,14 @@ export class PlanetariumMode {
    *  pick. A body opens (or replaces) the card, the ship marker is inert, empty
    *  space dismisses the card. */
   private mapPointerUp(e: PointerEvent) {
-    if (!this.isMapOpen() || this.mapDiving) return;
+    if (!this.isMapOpen()) return;
     if (this.mapPickPointerId !== e.pointerId) return;
+    // Disarm BEFORE the dive check: a release that arrives mid-dive must still
+    // end its gesture, or the stranded id would tap against this gesture's
+    // stale down point after the dive (pointer ids are recycled — a mouse
+    // reuses one id for every click).
     this.mapPickPointerId = null;
-    if (!this.systemMap) return;
+    if (this.mapDiving || !this.systemMap) return;
     if (!isTap(this.mapPickDownX, this.mapPickDownY, e.clientX, e.clientY)) return;
     const rect = this.renderer.domElement.getBoundingClientRect();
     const x = e.clientX - rect.left;
@@ -6338,6 +6356,12 @@ export class PlanetariumMode {
     if (hit.kind === 'body') this.openMapCard(hit.name);
     else if (hit.kind === 'empty') this.dismissMapCard();
     // 'ship' is inert — swallow, dismiss nothing.
+  }
+
+  /** A cancelled gesture (palm rejection, system gesture take-over) disarms
+   *  the pick without committing anything. */
+  private mapPointerCancel(e: PointerEvent) {
+    if (this.mapPickPointerId === e.pointerId) this.mapPickPointerId = null;
   }
 
   /** Fine-pointer hover: brighten the dot under the cursor and flag it pickable. */

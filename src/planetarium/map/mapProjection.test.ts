@@ -4,6 +4,7 @@ import {
   projectMapPoint,
   mapExtentAU,
   fitDistanceAU,
+  isAtOverviewFit,
   MAP_GAMMA_DEFAULT,
   MAP_GAMMA_TRUE,
 } from './mapProjection';
@@ -148,5 +149,22 @@ describe('eccentric-orbit extent', () => {
     // semi-major-axis extent would have drawn.
     expect(maxProjected).toBeCloseTo(compressRadius(maxSampleR, gamma), 6);
     expect(maxProjected).toBeGreaterThan(compressRadius(a, gamma));
+  });
+});
+
+describe('isAtOverviewFit', () => {
+  it('accepts the exact fit and small damping drift, rejects a deliberate zoom', () => {
+    expect(isAtOverviewFit(10, 10)).toBe(true);
+    expect(isAtOverviewFit(10.19, 10)).toBe(true); // 1.9% drift: still parked
+    expect(isAtOverviewFit(10.3, 10)).toBe(false); // 3%: the user zoomed
+    expect(isAtOverviewFit(4, 10)).toBe(false);
+    expect(isAtOverviewFit(25, 10)).toBe(false);
+  });
+
+  it('never refits from a degenerate or unset state', () => {
+    expect(isAtOverviewFit(10, 0)).toBe(false);
+    expect(isAtOverviewFit(10, NaN)).toBe(false);
+    expect(isAtOverviewFit(NaN, 10)).toBe(false);
+    expect(isAtOverviewFit(Infinity, 10)).toBe(false);
   });
 });

@@ -2,6 +2,13 @@ import { describe, expect, it } from 'vitest';
 import { MOONS } from './planets/moonData';
 import { PLANETARIUM_BODIES } from './planets/planetData';
 import {
+  resolveSystemMapHover,
+  SYSTEM_MAP_CLICK_HIT_FLOOR_PX,
+  SYSTEM_MAP_CLICK_HIT_PAD_PX,
+  SYSTEM_MAP_HOVER_HIT_FLOOR_PX,
+  SYSTEM_MAP_HOVER_HIT_PAD_PX,
+  SYSTEM_MAP_HOVER_RECLAIM_MOVE_PX,
+  SYSTEM_MAP_HOVER_RELEASE_MS,
   systemMapBodyRadius,
   systemMapFrameExtent,
   systemMapMoonBodyRadius,
@@ -52,6 +59,47 @@ describe('system map body sizing', () => {
     expect(systemMapBodyRadius(byName('Earth').radiusAU)).toBeGreaterThan(
       systemMapBodyRadius(byName('Pluto').radiusAU),
     );
+  });
+});
+
+describe('system map moving-body hover', () => {
+  const RESTING = 0; // pointer hasn't moved since the body was last under it
+
+  it('acquires whatever is under a pointer that holds nothing', () => {
+    expect(resolveSystemMapHover(null, 'Jupiter', 0, RESTING)).toBe('Jupiter');
+    expect(resolveSystemMapHover(null, null, 0, RESTING)).toBeNull();
+  });
+
+  it('holds a body a resting pointer just lost, through misses and rival fly-bys', () => {
+    const held = SYSTEM_MAP_HOVER_RELEASE_MS - 1;
+    expect(resolveSystemMapHover('Earth', null, held, RESTING)).toBe('Earth');
+    expect(resolveSystemMapHover('Earth', 'Mars', held, RESTING)).toBe('Earth');
+  });
+
+  it('releases or hands over once the grace window lapses', () => {
+    expect(resolveSystemMapHover('Earth', null, SYSTEM_MAP_HOVER_RELEASE_MS, RESTING)).toBeNull();
+    expect(resolveSystemMapHover('Earth', 'Mars', SYSTEM_MAP_HOVER_RELEASE_MS, RESTING)).toBe('Mars');
+  });
+
+  it('lets a deliberately aimed pointer retarget without waiting out the window', () => {
+    // Drift is measured from the last confirmed hit, so a slow crawl across the
+    // map accumulates past the threshold even though no single frame moves far.
+    const drifted = SYSTEM_MAP_HOVER_RECLAIM_MOVE_PX + 1;
+    expect(resolveSystemMapHover('Earth', 'Mars', 0, drifted)).toBe('Mars');
+    expect(resolveSystemMapHover('Earth', null, 0, drifted)).toBeNull();
+    // Hand jitter inside the threshold is not aiming: the hold survives it.
+    expect(resolveSystemMapHover('Earth', 'Mars', 0, SYSTEM_MAP_HOVER_RECLAIM_MOVE_PX)).toBe('Earth');
+  });
+
+  it('keeps refreshing the body still under the pointer, however long or far', () => {
+    expect(resolveSystemMapHover('Earth', 'Earth', 10_000, 400)).toBe('Earth');
+  });
+
+  it('keeps hover acquisition tighter than click, so packed inner lanes stay separable', () => {
+    expect(SYSTEM_MAP_HOVER_HIT_FLOOR_PX + SYSTEM_MAP_HOVER_HIT_PAD_PX)
+      .toBeLessThan(SYSTEM_MAP_CLICK_HIT_FLOOR_PX + SYSTEM_MAP_CLICK_HIT_PAD_PX);
+    // The hold, not an oversized circle, is what keeps a card from flickering.
+    expect(SYSTEM_MAP_HOVER_RELEASE_MS).toBeGreaterThan(300);
   });
 });
 

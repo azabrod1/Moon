@@ -70,15 +70,24 @@ const SHIP_MAP_LENGTH = 0.32;
 // ~44% of it — see makeDotSprite).
 const SHIP_DOT_QUAD_PX = 11;
 
-// Pickup geometry, in OUTPUT (CSS) pixels. Hover and click share one pick
-// (pickNearest) and differ only in these numbers: each is the body's drawn disc
-// grown by a pad, floored so a distant marble stays catchable. Hover keeps the
-// larger floor — naming a body you can barely see is cheap, focusing one you
-// didn't mean to click is not.
-const LABEL_HIT_FLOOR_PX = 42;
-const LABEL_HIT_PAD_PX = 8;
-const CLICK_HIT_FLOOR_PX = 24;
-const CLICK_HIT_PAD_PX = 14;
+// Pickup geometry, in OUTPUT (CSS) pixels. Hover is deliberately tight in the
+// compressed inner system: a broad radius around Earth overlaps the Venus and
+// Mars lanes. Click keeps a larger target because it is a deliberate action.
+// Once hover genuinely acquires a body, the release latch below supplies the
+// anti-flicker tolerance instead of a permanently oversized pickup circle.
+export const SYSTEM_MAP_HOVER_HIT_FLOOR_PX = 18;
+export const SYSTEM_MAP_HOVER_HIT_PAD_PX = 4;
+export const SYSTEM_MAP_CLICK_HIT_FLOOR_PX = 24;
+export const SYSTEM_MAP_CLICK_HIT_PAD_PX = 14;
+// A fast-warped planet can cross the stationary pointer between adjacent
+// frames. Hold its hover briefly through that miss instead of tearing the card
+// down/reacquiring it every frame. The hold is for a body that left a resting
+// pointer, so it also ends once the POINTER walks this far from where the body
+// was last confirmed under it — measured from that anchor, not between adjacent
+// pointermove events, or a slow drift accumulates unbounded distance without any
+// single delta clearing the latch.
+export const SYSTEM_MAP_HOVER_RELEASE_MS = 800;
+export const SYSTEM_MAP_HOVER_RECLAIM_MOVE_PX = 4;
 
 // Eyes-style focus: click a body to fly to it, then the camera follows it.
 const FOCUS_DISTANCE_RADII = 6;   // framing distance in the body's map-radii
@@ -116,6 +125,25 @@ export function systemMapBodyRadius(radiusAU: number): number {
 /** Scene extent the default frame must contain: the outer system plus the ship. */
 export function systemMapFrameExtent(shipDistanceAU: number): number {
   return Math.max(OUTER_SCENE_RADIUS + 0.6, systemMapOrbitRadius(shipDistanceAU) + 0.6);
+}
+
+/**
+ * Sticky hover selection for moving marks. A new/empty candidate only replaces
+ * the current target once the current one's hold has lapsed — either its last
+ * confirmed hit aged past the release window, or the pointer has moved away
+ * from where that hit happened (deliberate aiming beats the anti-flicker hold).
+ * The same candidate always refreshes the hold.
+ */
+export function resolveSystemMapHover(
+  currentKey: string | null,
+  candidateKey: string | null,
+  elapsedSinceCurrentHitMs: number,
+  pointerDriftSinceCurrentHitPx: number,
+): string | null {
+  if (currentKey === null || candidateKey === currentKey) return candidateKey;
+  const released = elapsedSinceCurrentHitMs >= SYSTEM_MAP_HOVER_RELEASE_MS
+    || pointerDriftSinceCurrentHitPx > SYSTEM_MAP_HOVER_RECLAIM_MOVE_PX;
+  return released ? candidateKey : currentKey;
 }
 
 // --- Physical-data label formatting ---
@@ -337,6 +365,14 @@ export class SystemMap {
   private moonLabel: HTMLElement | null = null;
   private pickerBuilt = false;
   private hoveredMoonName: string | null = null; // caches the moon whose label text is set
+  private hoveredKey: string | null = null;
+  private hoveredName: string | null = null;
+  private hoveredMoon: MoonHoverTarget | null = null;
+  private hoverLastHitMs = 0;
+  // Pointer position at the latched body's last confirmed hit — the anchor the
+  // reclaim distance is measured from.
+  private hoverAnchorX = 0;
+  private hoverAnchorY = 0;
   // Moons currently drawn (rebuilt each frame by updateMoons), used for hover.
   private readonly moonHoverTargets: MoonHoverTarget[] = [];
   private moonSystems: SystemMapMoonSystems | null = null;
@@ -662,6 +698,7 @@ export class SystemMap {
     this.focusName = null;
     this.focusMoonParent = null;
     this.transition = null;
+    this.clearHoverLatch();
     this.buildPicker();
     this.positionShip(playerPosition);
     this.frameExtent = systemMapFrameExtent(Math.hypot(playerPosition.x, playerPosition.y, playerPosition.z));
@@ -686,6 +723,7 @@ export class SystemMap {
     window.removeEventListener('blur', this.onBlur);
     this.pointerInside = false;
     this.pointerId = null;
+    this.clearHoverLatch();
     this.focusName = null;
     this.focusMoonParent = null;
     this.transition = null;
@@ -1213,24 +1251,56 @@ export class SystemMap {
     const height = this.renderer.domElement.clientHeight;
     for (const label of this.labels.values()) label.style.display = 'none';
     if (this.moonLabel) this.moonLabel.style.display = 'none';
-    if (!this.pointerInside) { this.hoveredMoonName = null; return; }
+    if (!this.pointerInside) { this.clearHoverLatch(); return; }
 
     // 'Ship' is beacon-marked and carries no text label — excluded here, but
     // still clickable through the same pick in onPointerUp.
-    const hit = this.pickNearest(this.pointerX, this.pointerY, LABEL_HIT_FLOOR_PX, LABEL_HIT_PAD_PX, 'Ship');
-    if (!hit) { this.hoveredMoonName = null; return; }
-    const moon = hit.moon;
+    const candidate = this.pickNearest(
+      this.pointerX,
+      this.pointerY,
+      SYSTEM_MAP_HOVER_HIT_FLOOR_PX,
+      SYSTEM_MAP_HOVER_HIT_PAD_PX,
+      'Ship',
+    );
+    const candidateKey = candidate
+      ? candidate.moon
+        ? `${candidate.moon.parent}\u0000${candidate.name}`
+        : candidate.name
+      : null;
+    const nowMs = performance.now();
+    const resolvedKey = resolveSystemMapHover(
+      this.hoveredKey,
+      candidateKey,
+      nowMs - this.hoverLastHitMs,
+      Math.hypot(this.pointerX - this.hoverAnchorX, this.pointerY - this.hoverAnchorY),
+    );
+    if (candidate && candidateKey === this.hoveredKey) {
+      // The latched body is still under the pointer: refresh the timer, the
+      // anchor, and the moon record (updateMoons rebuilds those lightweight
+      // records every frame, so the held one goes stale).
+      this.markHoverHit(candidate.moon, nowMs);
+    } else if (resolvedKey !== this.hoveredKey) {
+      if (resolvedKey === null || !candidate) {
+        this.clearHoverLatch();
+      } else {
+        this.hoveredKey = resolvedKey;
+        this.hoveredName = candidate.name;
+        this.markHoverHit(candidate.moon, nowMs);
+      }
+    }
+    if (!this.hoveredName) return;
+    const moon = this.hoveredMoon;
 
-    const label = moon ? this.moonLabel : this.labels.get(hit.name);
+    const label = moon ? this.moonLabel : this.labels.get(this.hoveredName);
     if (!label) return;
     if (!moon) {
       this.hoveredMoonName = null;
-    } else if (hit.name !== this.hoveredMoonName) {
+    } else if (this.hoveredName !== this.hoveredMoonName) {
       // Only rebuild the label text when the hovered moon changes (not every
       // frame the pointer rests on it); getMoonDisplayOrbit isn't cheap.
-      this.hoveredMoonName = hit.name;
+      this.hoveredMoonName = this.hoveredName;
       label.style.setProperty('--body-color', `#${moon.color.toString(16).padStart(6, '0')}`);
-      label.querySelector('strong')!.textContent = hit.name;
+      label.querySelector('strong')!.textContent = this.hoveredName;
       (label.querySelector('.sm-map-desc') as HTMLElement).textContent = `${moon.parent}'s moon`;
       // Orbital period around the parent (moons are tidally locked, so day = orbit).
       const period = getMoonDisplayOrbit(moon.name, moon.parent).periodDays;
@@ -1253,15 +1323,36 @@ export class SystemMap {
     // (left is reset first: an absolutely positioned box shrink-to-fits against
     // the space remaining to its right, so measuring in place under-reports it.)
     label.style.display = 'flex';
-    if (this.labelWidthFor !== hit.name) {
+    if (this.labelWidthFor !== this.hoveredName) {
       label.style.left = '0px';
       this.labelWidthPx = label.offsetWidth;
-      this.labelWidthFor = hit.name;
+      this.labelWidthFor = this.hoveredName;
     }
-    const x = THREE.MathUtils.clamp(hit.x + 14, 6, Math.max(6, width - this.labelWidthPx - 6));
-    const y = THREE.MathUtils.clamp(hit.y - 10, 58, Math.max(58, height - 34));
+    // Anchor the card to the pointer, not the moving body's centre. The body
+    // may cross half the viewport in one high-warp frame; the user's cursor is
+    // the stable interaction reference.
+    const x = THREE.MathUtils.clamp(this.pointerX + 14, 6, Math.max(6, width - this.labelWidthPx - 6));
+    const y = THREE.MathUtils.clamp(this.pointerY - 10, 58, Math.max(58, height - 34));
     label.style.left = `${Math.round(x)}px`;
     label.style.top = `${Math.round(y)}px`;
+  }
+
+  /** Record a confirmed hit on the latched body: refresh its hold and record. */
+  private markHoverHit(moon: MoonHoverTarget | null, nowMs: number): void {
+    this.hoveredMoon = moon;
+    this.hoverLastHitMs = nowMs;
+    this.hoverAnchorX = this.pointerX;
+    this.hoverAnchorY = this.pointerY;
+  }
+
+  private clearHoverLatch(): void {
+    this.hoveredKey = null;
+    this.hoveredName = null;
+    this.hoveredMoon = null;
+    this.hoveredMoonName = null;
+    this.hoverLastHitMs = 0;
+    this.hoverAnchorX = 0;
+    this.hoverAnchorY = 0;
   }
 
   private renderDate(utcMs: number): void {
@@ -1328,7 +1419,24 @@ export class SystemMap {
     if (this.pointerDragged) return; // a drag rotated/zoomed — not a click
     if (e.target !== this.renderer.domElement) return; // released on the chrome
     const rect = this.renderer.domElement.getBoundingClientRect();
-    const hit = this.pickNearest(e.clientX - rect.left, e.clientY - rect.top, CLICK_HIT_FLOOR_PX, CLICK_HIT_PAD_PX);
+    const px = e.clientX - rect.left;
+    const py = e.clientY - rect.top;
+    // A click commits the body the CARD names. While a hover hold is live, warp
+    // may have slid another body (or nothing) under a resting cursor, and the
+    // click's wider circle would happily focus that instead of what the user can
+    // read. Honour the hold only from where its last confirmed hit was, so a
+    // release that arrives before the next frame can release the latch still
+    // resolves against the pixel the user is actually on.
+    const heldName = this.hoveredName;
+    if (heldName
+      && Math.hypot(px - this.hoverAnchorX, py - this.hoverAnchorY) <= SYSTEM_MAP_HOVER_RECLAIM_MOVE_PX) {
+      const heldMoon = this.hoveredMoon;
+      this.togglePicker(false);
+      if (heldMoon) this.focusMoonTarget(heldMoon.name, heldMoon.parent);
+      else this.focusOn(heldName);
+      return;
+    }
+    const hit = this.pickNearest(px, py, SYSTEM_MAP_CLICK_HIT_FLOOR_PX, SYSTEM_MAP_CLICK_HIT_PAD_PX);
     if (!hit) return; // click empty space: keep the current view
     // A pick is a scene commit — the picker is a transient overlay over it.
     this.togglePicker(false);
@@ -1344,11 +1452,13 @@ export class SystemMap {
 
   private readonly onPointerLeave = (): void => {
     this.pointerInside = false;
+    this.clearHoverLatch();
   };
 
   private readonly onBlur = (): void => {
     this.pointerId = null;
     this.pointerInside = false;
+    this.clearHoverLatch();
   };
 
   /**

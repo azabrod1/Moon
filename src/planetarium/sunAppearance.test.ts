@@ -1,13 +1,19 @@
 import { describe, expect, it } from 'vitest';
 import {
+  advanceDiamondRing,
   advanceSunEmergenceFlash,
+  chromosphereSideWeights,
   circleOcclusionFraction,
+  diamondRingStrength,
   eclipseOccluderLikeness,
   projectedSourceRadiusAtPlane,
+  silhouetteSizeGate,
   sunGlareFloodOpacity,
   sunInteriorWhiteout,
   sunWhiteoutFraction,
   targetSunExposure,
+  visibleCrescentGeometry,
+  type CrescentGeometry,
 } from './sunAppearance';
 
 describe('circleOcclusionFraction', () => {
@@ -50,6 +56,191 @@ describe('eclipseOccluderLikeness', () => {
   });
 });
 
+describe('visibleCrescentGeometry', () => {
+  // Independent brute-force centroid of (Sun disc − occluder disc): the Sun is
+  // the unit circle at the origin, the occluder radius r centred at (sep, 0).
+  function numericCentroid(sep: number, r: number): number {
+    const N = 1600;
+    const step = 2 / N;
+    let count = 0;
+    let sumX = 0;
+    for (let i = 0; i < N; i++) {
+      const x = -1 + (i + 0.5) * step;
+      for (let j = 0; j < N; j++) {
+        const y = -1 + (j + 0.5) * step;
+        if (x * x + y * y > 1) continue; // outside the Sun
+        const dx = x - sep;
+        if (dx * dx + y * y <= r * r) continue; // covered by the occluder
+        count += 1;
+        sumX += x;
+      }
+    }
+    return count > 0 ? sumX / count : 0;
+  }
+
+  const out: CrescentGeometry = { centroidSr: 0, extentSr: 0 };
+
+  it('matches a numerically integrated centroid across regimes, always exposed-side', () => {
+    for (const [sep, r] of [
+      [0.4, 0.6],
+      [0.5, 0.5], // occluder touching the limb from inside
+      [0.9, 0.4], // deep partial
+      [0.2, 0.9], // large occluder, near concentric
+      [1.05, 1.0], // total-onset partial (occluder Sun-sized)
+      [0.7, 0.7],
+    ] as const) {
+      visibleCrescentGeometry(sep, r, out);
+      const numeric = numericCentroid(sep, r);
+      expect(out.centroidSr).toBeCloseTo(numeric, 2);
+      // The exposed crescent is always on the far side from the occluder (+x).
+      expect(out.centroidSr).toBeLessThanOrEqual(0);
+    }
+  });
+
+  it('stays centred for concentric geometry (no false annular shift)', () => {
+    visibleCrescentGeometry(0, 0.5, out);
+    expect(out.centroidSr).toBe(0);
+    expect(out.extentSr).toBeCloseTo(1, 12); // ring width summed: 2(1 − r)
+  });
+
+  it('reports zero centroid when clear or fully covered', () => {
+    visibleCrescentGeometry(2.5, 0.5, out); // no overlap
+    expect(out.centroidSr).toBe(0);
+    expect(out.extentSr).toBeCloseTo(2, 12); // whole Sun exposed
+    visibleCrescentGeometry(0, 1.2, out); // engulfed
+    expect(out.centroidSr).toBe(0);
+    expect(out.extentSr).toBe(0);
+  });
+
+  it('measures the along-axis exposed width of a partial', () => {
+    visibleCrescentGeometry(0.9, 0.4, out); // 1 + d − r
+    expect(out.extentSr).toBeCloseTo(1.5, 12);
+  });
+});
+
+describe('diamondRingStrength', () => {
+  const like = eclipseOccluderLikeness;
+
+  it('gives an annular (sub-Sun) occluder no diamond at any coverage', () => {
+    for (let vis = 0; vis <= 0.02; vis += 0.001) {
+      expect(diamondRingStrength(like(0.97), vis)).toBe(0);
+    }
+  });
+
+  it('is exactly 0 at totality and above the sliver band for a total eclipse', () => {
+    const l = like(1.05); // 1
+    expect(diamondRingStrength(l, 0)).toBe(0);
+    expect(diamondRingStrength(l, 0.012)).toBe(0);
+    expect(diamondRingStrength(l, 0.02)).toBe(0);
+    expect(diamondRingStrength(l, 0.05)).toBe(0);
+  });
+
+  it('blazes through the second/third-contact sliver band, monotone each side', () => {
+    const l = like(1.05);
+    // rising edge out of totality is monotone nondecreasing
+    let prev = -1;
+    for (let vis = 0; vis <= 0.00031; vis += 0.00003) {
+      const v = diamondRingStrength(l, vis);
+      expect(v).toBeGreaterThanOrEqual(prev - 1e-12);
+      prev = v;
+    }
+    // there is a real burst inside the band
+    expect(diamondRingStrength(l, 0.002)).toBeGreaterThan(0.5);
+    expect(diamondRingStrength(l, 0.008)).toBeGreaterThan(0.1);
+    // and it decays monotonically across the band
+    expect(diamondRingStrength(l, 0.001)).toBeGreaterThan(diamondRingStrength(l, 0.008));
+  });
+});
+
+describe('chromosphereSideWeights', () => {
+  // The 2026-08-12 total eclipse: the Moon's disc is 3.9% wider than the Sun's,
+  // so both contacts happen with the centres 0.039 solar radii apart and
+  // mid-totality is concentric.
+  const R = 1.039;
+  const CONTACT = R - 1;
+  const totalGeometry = (separationSr: number, visibleFraction = 0) =>
+    chromosphereSideWeights({ separationSr, occluderRadiiSr: R, visibleFraction });
+
+  it('burns on the away limb at both contacts', () => {
+    // Second and third contact are the same geometry — the occluder arrives at
+    // this separation and leaves through it — so one assertion covers both.
+    expect(totalGeometry(CONTACT).anti).toBeCloseTo(1, 6);
+    expect(totalGeometry(CONTACT - 0.003).anti).toBeGreaterThanOrEqual(0.5);
+    expect(totalGeometry(CONTACT + 0.003).anti).toBeGreaterThanOrEqual(0.5);
+  });
+
+  it('is spent by mid-totality, when the occluder has buried both limbs', () => {
+    expect(totalGeometry(0).anti).toBeLessThanOrEqual(0.05);
+  });
+
+  it('never lights the limb the occluder covers first', () => {
+    for (let d = 0; d <= 0.5; d += 0.005) {
+      expect(totalGeometry(d).toward).toBeLessThanOrEqual(0.05);
+    }
+  });
+
+  it('stays dark while any real photosphere is still exposed', () => {
+    const sliver = totalGeometry(CONTACT, 0.05);
+    expect(sliver.anti).toBe(0);
+    expect(sliver.toward).toBe(0);
+    // The gate closes across the band, not at one value.
+    expect(totalGeometry(CONTACT, 0.002).anti).toBeCloseTo(1, 6);
+    expect(totalGeometry(CONTACT, 0.03).anti).toBe(0);
+    expect(totalGeometry(CONTACT, 0.012).anti).toBeLessThan(1);
+  });
+
+  it('gives annular geometry no contact reds at all', () => {
+    for (let d = 0; d <= 0.3; d += 0.01) {
+      const w = chromosphereSideWeights({
+        separationSr: d, occluderRadiiSr: 0.9, visibleFraction: 0,
+      });
+      expect(w.anti).toBe(0);
+      expect(w.toward).toBe(0);
+    }
+    // Exactly Sun-sized is still no total contact.
+    expect(chromosphereSideWeights({
+      separationSr: 0, occluderRadiiSr: 1, visibleFraction: 0,
+    }).anti).toBe(0);
+  });
+
+  it('depends on nothing but its inputs, so the clock rate cannot reach it', () => {
+    const once = totalGeometry(0.02, 0.001);
+    totalGeometry(CONTACT, 0);
+    totalGeometry(0, 0.5);
+    const again = totalGeometry(0.02, 0.001);
+    expect(again).toEqual(once);
+  });
+});
+
+describe('silhouetteSizeGate', () => {
+  it('keeps the silhouette for eclipse-scale occluders, annular through total', () => {
+    expect(silhouetteSizeGate(0.9)).toBe(1);  // annular (sub-Sun) keeps its black disc
+    expect(silhouetteSizeGate(1.05)).toBe(1); // just past total
+    expect(silhouetteSizeGate(3)).toBe(1);    // still eclipse scale at the edge
+  });
+
+  it('drops the silhouette for a landscape-scale foreground body', () => {
+    expect(silhouetteSizeGate(8)).toBe(0);
+    expect(silhouetteSizeGate(20)).toBe(0);
+    expect(silhouetteSizeGate(100)).toBe(0);
+  });
+
+  it('is monotone nonincreasing across the 3x-8x handoff', () => {
+    let prev = Infinity;
+    for (let r = 0; r <= 12; r += 0.25) {
+      const g = silhouetteSizeGate(r);
+      expect(g).toBeLessThanOrEqual(prev + 1e-9);
+      expect(g).toBeGreaterThanOrEqual(0);
+      expect(g).toBeLessThanOrEqual(1);
+      prev = g;
+    }
+    // Midway through the handoff it is strictly between the two plateaus.
+    const mid = silhouetteSizeGate(5.5);
+    expect(mid).toBeGreaterThan(0);
+    expect(mid).toBeLessThan(1);
+  });
+});
+
 describe('projectedSourceRadiusAtPlane', () => {
   it('projects by camera-relative distance without diverging near the source', () => {
     expect(projectedSourceRadiusAtPlane(2, 10, 5)).toBe(1);
@@ -86,6 +277,66 @@ describe('advanceSunEmergenceFlash', () => {
       dt: 1 / 60,
       eligible: false,
     })).toBe(0);
+  });
+});
+
+describe('advanceDiamondRing', () => {
+  it('advances at the same rate whatever the frame cadence', () => {
+    const whole = advanceDiamondRing({ current: 0.2, target: 1, dt: 1 / 30, snap: false });
+    const half = advanceDiamondRing({ current: 0.2, target: 1, dt: 1 / 60, snap: false });
+    const halves = advanceDiamondRing({ current: half, target: 1, dt: 1 / 60, snap: false });
+    expect(halves).toBeCloseTo(whole, 6);
+  });
+
+  it('strikes faster than it releases', () => {
+    const struck = advanceDiamondRing({ current: 0, target: 1, dt: 0.1, snap: false });
+    const released = 1 - advanceDiamondRing({ current: 1, target: 0, dt: 0.1, snap: false });
+    expect(struck).toBeGreaterThan(released);
+  });
+
+  it('snaps to the target in both directions', () => {
+    expect(advanceDiamondRing({ current: 0, target: 0.7, dt: 1 / 60, snap: true })).toBe(0.7);
+    expect(advanceDiamondRing({ current: 1, target: 0, dt: 1 / 60, snap: true })).toBe(0);
+  });
+
+  it('leaves the blaze on its own constants when none are named', () => {
+    // The chromosphere arcs pass their own taus; omitting them has to reproduce
+    // the diamond's shipped 0.12 s strike / 0.25 s release exactly.
+    const strike = advanceDiamondRing({ current: 0.2, target: 1, dt: 0.05, snap: false });
+    expect(strike).toBeCloseTo(0.2 + 0.8 * (1 - Math.exp(-0.05 / 0.12)), 12);
+    const release = advanceDiamondRing({ current: 1, target: 0, dt: 0.05, snap: false });
+    expect(release).toBeCloseTo(1 - 1 * (1 - Math.exp(-0.05 / 0.25)), 12);
+  });
+
+  it('takes named constants on each edge independently', () => {
+    const slowStrike = advanceDiamondRing({
+      current: 0, target: 1, dt: 0.05, snap: false, attackTau: 0.15, releaseTau: 0.35,
+    });
+    expect(slowStrike).toBeCloseTo(1 - Math.exp(-0.05 / 0.15), 12);
+    const slowRelease = advanceDiamondRing({
+      current: 1, target: 0, dt: 0.05, snap: false, attackTau: 0.15, releaseTau: 0.35,
+    });
+    expect(slowRelease).toBeCloseTo(Math.exp(-0.05 / 0.35), 12);
+    // Slower constants mean less travel per frame on both edges.
+    expect(slowStrike).toBeLessThan(
+      advanceDiamondRing({ current: 0, target: 1, dt: 0.05, snap: false }),
+    );
+    expect(slowRelease).toBeGreaterThan(
+      advanceDiamondRing({ current: 1, target: 0, dt: 0.05, snap: false }),
+    );
+  });
+
+  it('holds still on a zero or negative frame delta', () => {
+    expect(advanceDiamondRing({ current: 0.4, target: 1, dt: 0, snap: false })).toBe(0.4);
+    expect(advanceDiamondRing({ current: 0.4, target: 1, dt: -0.5, snap: false })).toBe(0.4);
+  });
+
+  it('decays to nothing within a couple of seconds', () => {
+    let value = 1;
+    for (let i = 0; i < 120; i += 1) {
+      value = advanceDiamondRing({ current: value, target: 0, dt: 1 / 60, snap: false });
+    }
+    expect(value).toBeLessThan(1e-3);
   });
 });
 

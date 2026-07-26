@@ -14,7 +14,12 @@ export interface PlanetData {
   radiusKm: number;
   axialTiltDeg: number;
   orbitalVelocityKmS: number;
-  color: number;           // hex color for markers
+  color: number;           // hex UI tint (deck rows, labels, orbit lines)
+  markerColor: number;     // far-marker beacon tint: the planet's real visual
+                           // hue (Mars butterscotch, Earth pale blue), kept
+                           // separate from the UI tint — the additive marker
+                           // sprite renders saturated colors as neon, so its
+                           // palette is pale and photo-informed
   textureKey: string;      // key into texture map
   isGasGiant: boolean;     // Jupiter/Saturn/Uranus/Neptune — drives gas-giant-only shading
   surfaceGravityG: number; // relative to Earth
@@ -41,10 +46,19 @@ export const SUN_DATA = {
   color: 0xfff5e0,
 };
 
+/** IAU north pole of the Sun's rotation, J2000. The corona is not isotropic —
+ *  streamers lie along the equator and plumes over the poles — so the drawn
+ *  shape needs the star's real axis, not a fixed screen angle. Build the
+ *  direction through raDecToVector; it is the one place the frame's chirality
+ *  is defined. */
+export const SUN_POLE_RA_DEG = 286.13;
+export const SUN_POLE_DEC_DEG = 63.87;
+
 export const PLANETS: PlanetData[] = [
   {
     name: 'Mercury',
     symbol: '\u263F',
+    markerColor: 0xb0a596,  // dusty warm grey
     semiMajorAxisAU: 0.387,
     radiusAU: kmToAU(2_440),
     radiusKm: 2_440,
@@ -66,6 +80,7 @@ export const PLANETS: PlanetData[] = [
   {
     name: 'Venus',
     symbol: '\u2640',
+    markerColor: 0xf1e3c2,  // brilliant warm cream
     semiMajorAxisAU: 0.723,
     radiusAU: kmToAU(6_052),
     radiusKm: 6_052,
@@ -87,6 +102,7 @@ export const PLANETS: PlanetData[] = [
   {
     name: 'Earth',
     symbol: '\u2295',
+    markerColor: 0x549bdf,  // ocean blue — enough to read as Earth, not a star
     semiMajorAxisAU: 1.000,
     radiusAU: kmToAU(6_378),
     radiusKm: 6_378,
@@ -108,6 +124,7 @@ export const PLANETS: PlanetData[] = [
   {
     name: 'Mars',
     symbol: '\u2642',
+    markerColor: 0xd6825a,  // rust-butterscotch, the hue Mars actually shows
     semiMajorAxisAU: 1.524,
     radiusAU: kmToAU(3_396),
     radiusKm: 3_396,
@@ -129,6 +146,7 @@ export const PLANETS: PlanetData[] = [
   {
     name: 'Jupiter',
     symbol: '\u2643',
+    markerColor: 0xd9c19b,  // banded cream-tan
     semiMajorAxisAU: 5.203,
     radiusAU: kmToAU(71_492),
     radiusKm: 71_492,
@@ -150,6 +168,7 @@ export const PLANETS: PlanetData[] = [
   {
     name: 'Saturn',
     symbol: '\u2644',
+    markerColor: 0xe3d3a4,  // pale gold
     semiMajorAxisAU: 9.588,
     radiusAU: kmToAU(60_268),
     radiusKm: 60_268,
@@ -171,6 +190,7 @@ export const PLANETS: PlanetData[] = [
   {
     name: 'Uranus',
     symbol: '\u26E2',
+    markerColor: 0x8ccfd7,  // sea-green cyan, its own note between the blues
     semiMajorAxisAU: 19.191,
     radiusAU: kmToAU(25_559),
     radiusKm: 25_559,
@@ -192,6 +212,7 @@ export const PLANETS: PlanetData[] = [
   {
     name: 'Neptune',
     symbol: '\u2646',
+    markerColor: 0x5f8bda,  // deep azure, the bluest marker — unmistakably a world
     semiMajorAxisAU: 30.061,
     radiusAU: kmToAU(24_764),
     radiusKm: 24_764,
@@ -215,6 +236,7 @@ export const PLANETS: PlanetData[] = [
 export const PLUTO: PlanetData = {
   name: 'Pluto',
   symbol: '\u2647',
+  markerColor: 0xc9baa5,  // pale warm rock
   semiMajorAxisAU: 39.48,
   radiusAU: kmToAU(1_188),
   radiusKm: 1_188,

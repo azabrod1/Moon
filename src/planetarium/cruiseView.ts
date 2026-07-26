@@ -20,6 +20,7 @@
  * disc lands past even 4K's texel budget).
  */
 import { KM_PER_AU } from '../astronomy/constants';
+import { DEG2RAD } from '../shared/math/angles';
 
 export const SHIP_RIG_SCALE = 1 / 32;
 
@@ -44,14 +45,26 @@ export const CRUISE_CAM_DIST_AU = 0.000094 * SHIP_RIG_SCALE;
  *  half-length ≈ 0.75 reference radii. */
 export const SHIP_OCCLUDER_RADIUS_AU = SHIP_REFERENCE_RADIUS_AU * 0.75;
 
-/** Farthest solid point of any ship profile from the group origin. The
- *  default hull's nozzle exit sits at 1.82 authored units × 1.8 units per
- *  reference radius × 0.5 group scale = 1.638 reference radii; 2.2 leaves
- *  ~34% headroom for the probe-profile hulls (own geometry, root scale
- *  1.18). Used as the near-plane ceiling on the camera-to-ship term, as the
- *  floor under CAMERA_BODY_MARGIN_AU, and as the base of the wheel-zoom
- *  floor — solid geometry must never cross the near plane or the camera. */
+/** Hull extent for camera safety: the near-plane ceiling on the
+ *  camera-to-ship term, the floor under CAMERA_BODY_MARGIN_AU, and the base
+ *  of the wheel-zoom floor — solid geometry must never cross the near plane
+ *  or the camera. The default hull's nozzle exit sits at 1.82 authored
+ *  units × 1.8 units per reference radius × 0.5 group scale = 1.638
+ *  reference radii; 2.2 covers the probe-profile BODIES too, but not
+ *  Juno's magnetometer boom (a hairline rod out to ~3.7 radii — accepted:
+ *  at the 3.3-radius zoom floor a clipped 1px rod tip is invisible, and
+ *  widening the floor for it would push every close-up out by half).
+ *  Anything that must cover the boom uses SHIP_ANY_HULL_EXTENT_AU. */
 export const SHIP_HULL_MAX_EXTENT_AU = SHIP_REFERENCE_RADIUS_AU * 2.2;
+
+/** Farthest solid point of ANY profile's hull from the group origin — the
+ *  pre-reject sphere for the marker-vs-hull sight-line test. Governed by
+ *  Juno's magnetometer sensor: 5.55 authored units × 1.32 root scale × 0.5
+ *  group scale ≈ 3.66 reference radii; 4.5 leaves headroom for longer
+ *  booms. Pinned against the real built models in cruiseView.test.ts, so a
+ *  future profile that outgrows it fails the suite instead of drawing
+ *  beacons across its hull. */
+export const SHIP_ANY_HULL_EXTENT_AU = SHIP_REFERENCE_RADIUS_AU * 4.5;
 
 /** OrbitControls wheel-zoom floor in cruise. The legacy floor sat inside the
  *  hull's aft extent (a quirk this rig initially preserved by ratio), but at
@@ -235,6 +248,135 @@ export const CAM_FOLLOW_TURN_BLEND_S = 0.12;
  *  e^(−t/τ) in wall time regardless of the frame cadence. */
 export function cameraFollowGain(dtS: number, tauS: number): number {
   return 1 - Math.exp(-dtS / Math.max(tauS, 1e-4));
+}
+
+/** The chase camera's vertical lift above the ship, as a fraction of the chase
+ *  distance. Reset, steady follow, and reacquisition all resolve to this one
+ *  lift so the camera settles to a single pose (an earlier reset used a taller
+ *  lift and left a small unrelated post-reset drift). */
+export const CHASE_CAM_LIFT_FRAC = 0.35;
+
+/** The steady chase offset from the ship — the ship sits at scene origin under
+ *  floating origin, so this is the camera position too: CRUISE_CAM_DIST_AU
+ *  straight back along the ship's forward vector, lifted CHASE_CAM_LIFT_FRAC of
+ *  that distance along the caller's `up`. The lift axis is passed in rather
+ *  than assumed to be world-up: cruise rides the flight horizon, so the rig
+ *  must tilt with it or the camera would sit off to one side of the ship at
+ *  half the headings. Writes and returns `out`. The single source for the
+ *  reset pose, the steady follow target, and the reacquire target. */
+export function chaseIdealOffset<T extends { x: number; y: number; z: number }>(
+  forward: { x: number; y: number; z: number },
+  up: { x: number; y: number; z: number },
+  out: T,
+): T {
+  const lift = CRUISE_CAM_DIST_AU * CHASE_CAM_LIFT_FRAC;
+  out.x = -forward.x * CRUISE_CAM_DIST_AU + up.x * lift;
+  out.y = -forward.y * CRUISE_CAM_DIST_AU + up.y * lift;
+  out.z = -forward.z * CRUISE_CAM_DIST_AU + up.z * lift;
+  return out;
+}
+
+/** Radius spring time constant for reacquisition — slower than the direction
+ *  slerp and independent of it, so a swept direction τ (the turn blend) can
+ *  never kick the radius. */
+export const CAM_REACQUIRE_RADIUS_TAU_S = 0.6;
+/** Reacquisition hands back to the steady chase once the pose sits within this
+ *  angle of, and this radius fraction of, the ideal offset. The radius bound is
+ *  tight because the chase lerp closes any remaining radial error at the faster
+ *  direction τ — the permitted error must be small enough that the rate change
+ *  at handoff stays sub-visible. */
+export const CAM_REACQUIRE_SETTLE_ANGLE_DEG = 0.5;
+export const CAM_REACQUIRE_SETTLE_RADIUS_FRAC = 0.001;
+
+const COS_REACQUIRE_SETTLE_ANGLE = Math.cos(CAM_REACQUIRE_SETTLE_ANGLE_DEG * DEG2RAD);
+// Below this |dot| gap the slerp weights lose precision, so the two poles are
+// handled directly: near-aligned snaps to the target direction (a sub-settle
+// move), antipodal rotates along a stable perpendicular great circle.
+const SLERP_POLE_EPS = 1e-9;
+
+/**
+ * One frame of spherical chase reacquisition: slerp the camera offset's
+ * direction toward the ideal offset's direction with the dt-based gain at the
+ * caller's (turn-blended) tau, and spring the radius toward |ideal| on
+ * CAM_REACQUIRE_RADIUS_TAU_S. Inputs are raw offsets — the function normalizes
+ * internally, is antipodal-safe (stable perpendicular fallback), and reads all
+ * inputs before writing so `out` may alias `cam`. Writes `out`; returns true
+ * once the produced pose sits inside both settle thresholds.
+ */
+export function reacquireCameraStep(
+  out: { x: number; y: number; z: number },
+  cam: { x: number; y: number; z: number },
+  ideal: { x: number; y: number; z: number },
+  dtS: number,
+  dirTauS: number,
+): boolean {
+  // Read inputs first — out may alias cam.
+  const cx = cam.x, cy = cam.y, cz = cam.z;
+  const ix = ideal.x, iy = ideal.y, iz = ideal.z;
+
+  const rCam = Math.sqrt(cx * cx + cy * cy + cz * cz);
+  const rIdeal = Math.sqrt(ix * ix + iy * iy + iz * iz);
+
+  // Unit directions, with stable fallbacks for degenerate inputs.
+  let ax = 1, ay = 0, az = 0;
+  if (rCam >= 1e-12) { ax = cx / rCam; ay = cy / rCam; az = cz / rCam; }
+  let bx = 1, by = 0, bz = 0;
+  if (rIdeal >= 1e-12) { bx = ix / rIdeal; by = iy / rIdeal; bz = iz / rIdeal; }
+
+  const kDir = cameraFollowGain(dtS, dirTauS);
+  const dot = Math.max(-1, Math.min(1, ax * bx + ay * by + az * bz));
+
+  let nx: number, ny: number, nz: number;
+  if (dot > 1 - SLERP_POLE_EPS) {
+    // Essentially aligned: the remaining angle is far inside the settle
+    // threshold, so snap the direction to the target.
+    nx = bx; ny = by; nz = bz;
+  } else if (dot < -1 + SLERP_POLE_EPS) {
+    // Antipodal: no unique arc — rotate `a` toward a stable perpendicular by
+    // kDir·π so the return still converges without dividing by sin(π).
+    let refx = 0, refy = 0, refz = 0;
+    const absx = Math.abs(ax), absy = Math.abs(ay), absz = Math.abs(az);
+    if (absx <= absy && absx <= absz) refx = 1;
+    else if (absy <= absz) refy = 1;
+    else refz = 1;
+    let px = ay * refz - az * refy;
+    let py = az * refx - ax * refz;
+    let pz = ax * refy - ay * refx;
+    const pLen = Math.sqrt(px * px + py * py + pz * pz) || 1;
+    px /= pLen; py /= pLen; pz /= pLen;
+    const ang = kDir * Math.PI;
+    const ca = Math.cos(ang), sa = Math.sin(ang);
+    nx = ax * ca + px * sa;
+    ny = ay * ca + py * sa;
+    nz = az * ca + pz * sa;
+  } else {
+    const theta = Math.acos(dot);
+    const sinT = Math.sin(theta);
+    const w1 = Math.sin((1 - kDir) * theta) / sinT;
+    const w2 = Math.sin(kDir * theta) / sinT;
+    nx = w1 * ax + w2 * bx;
+    ny = w1 * ay + w2 * by;
+    nz = w1 * az + w2 * bz;
+  }
+  // Renormalize so the radius is set purely by the spring and the unit-length
+  // invariant holds every step.
+  const nLen = Math.sqrt(nx * nx + ny * ny + nz * nz) || 1;
+  nx /= nLen; ny /= nLen; nz /= nLen;
+
+  const kR = cameraFollowGain(dtS, CAM_REACQUIRE_RADIUS_TAU_S);
+  const rNew = rCam + (rIdeal - rCam) * kR;
+
+  out.x = nx * rNew;
+  out.y = ny * rNew;
+  out.z = nz * rNew;
+
+  // Settle on the pose just produced.
+  const cosOut = nx * bx + ny * by + nz * bz;
+  const radiusSettled =
+    rIdeal < 1e-12
+      ? Math.abs(rNew - rIdeal) < 1e-12
+      : Math.abs(rNew - rIdeal) <= CAM_REACQUIRE_SETTLE_RADIUS_FRAC * rIdeal;
+  return cosOut >= COS_REACQUIRE_SETTLE_ANGLE && radiusSettled;
 }
 
 /** Distance from the camera to the nearest body SURFACE (no margin) over the

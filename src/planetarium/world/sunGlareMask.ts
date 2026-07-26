@@ -21,6 +21,13 @@
  */
 import * as THREE from 'three';
 import { SUN_VEIL_BETA, SUN_VEIL_SCALE_H } from '../../shared/shaders/sun';
+import {
+  applyLensShaderUniforms,
+  createLensShaderUniforms,
+  lensShaderGLSL,
+  type LensShaderUniforms,
+} from '../../shared/three/lensShader';
+import type { SphereFootprintKind } from '../../shared/three/projectToScreen';
 
 /**
  * One persistent parameter set per frame, filled by the controller after the
@@ -55,6 +62,81 @@ function smoothstep(edge0: number, edge1: number, x: number): number {
   if (edge0 === edge1) return x < edge0 ? 0 : 1;
   const t = Math.min(1, Math.max(0, (x - edge0) / (edge1 - edge0)));
   return t * t * (3 - 2 * t);
+}
+
+/** Clamp to [0, 1]. */
+function clamp01(x: number): number {
+  return Math.min(1, Math.max(0, x));
+}
+
+/**
+ * How much of a point consumer's alpha the mask may remove at saturation.
+ * Deliberately short of 1: veiling glare attenuates, it doesn't erase — a
+ * bright star still shows through the thin outer wash the way Venus shows
+ * through twilight glare. Where the drawn halo is genuinely bright, the
+ * surviving sliver of star alpha adds a few counts under a hundred-count
+ * blaze and stays invisible, so the halo still reads opaque.
+ */
+export const SUN_GLARE_MASK_MAX_KILL = 0.9;
+
+/**
+ * Outer radius of the geometric obscuration core, in CSS px. The core stands in
+ * for the saturated blaze around the *exposed* photosphere, floored at the bare
+ * outer-system glint so a distant point-Sun still obscures coincident dots.
+ *
+ * Two things govern it. While any sliver of photosphere still burns, the core
+ * keeps a hair of margin past the limb (`1.05 ×` the disc radius) and grows
+ * toward the full `2.5 ×` blaze with the exposed fraction (`√vis` — tighter
+ * through the partials than the drawn glare's `^0.38` energy convention on
+ * purpose: during an eclipse the occluder's opaque mesh depth-occludes the
+ * covered side, and the crescent-centred wash mask carries the lit side's
+ * bloom, so a disc-wide core would only erase honest sky). Only the final
+ * 0.2% — the collapse into totality — releases the whole core to 0, which is
+ * what lets the corona and stars own the sky beside a void-black eclipsing
+ * disc.
+ */
+export function sunGlareMaskCoreOuterPx(
+  solarRadiusPx: number,
+  glintFloorPx: number,
+  bodyVisibleFraction: number,
+): number {
+  const vis = clamp01(bodyVisibleFraction);
+  const reach = solarRadiusPx * (1.05 + 1.45 * Math.sqrt(vis));
+  return Math.max(glintFloorPx, reach) * smoothstep(0, 0.002, vis);
+}
+
+/** Inputs the activation decision needs; a subset of the frame's mask params
+ *  plus the Sun's footprint classification and the live wash reach. */
+export interface SunGlareMaskActivationInput {
+  /** How the Sun's screen footprint was arrived at this frame. */
+  sunFootprintKind: SphereFootprintKind;
+  sunXPx: number;
+  sunYPx: number;
+  coreOuterPx: number;
+  /** Wash e-fold reach in px, or 0 when the veil is idle (stale otherwise). */
+  washSupportPx: number;
+  viewportWidth: number;
+  viewportHeight: number;
+}
+
+/**
+ * Whether the glare mask should be active this frame. A `'covering'` Sun
+ * footprint is a conservative viewport-filling guess, not a measurement — with
+ * the camera outside the photosphere (a buried camera never reaches this code)
+ * that guess must never erase the sky, so it can't activate the mask. Otherwise
+ * the mask is active only when its support disc — `max(coreOuterPx,
+ * washSupportPx)` around the Sun's (possibly off-frame) screen position —
+ * overlaps the viewport rect `[0, width] × [0, height]`; a support that sits
+ * wholly beyond the frame edge can obscure no drawn pixel.
+ */
+export function sunGlareMaskActivation(input: SunGlareMaskActivationInput): boolean {
+  if (input.sunFootprintKind === 'covering') return false;
+  const radius = Math.max(input.coreOuterPx, input.washSupportPx);
+  const nearestX = Math.min(Math.max(input.sunXPx, 0), input.viewportWidth);
+  const nearestY = Math.min(Math.max(input.sunYPx, 0), input.viewportHeight);
+  const dx = input.sunXPx - nearestX;
+  const dy = input.sunYPx - nearestY;
+  return dx * dx + dy * dy <= radius * radius;
 }
 
 /**
@@ -151,6 +233,7 @@ export function sunGlareMaskGLSL(): string {
   const scaleH = glslFloat(SUN_VEIL_SCALE_H);
   const beta = glslFloat(SUN_VEIL_BETA);
   return /* glsl */ `
+${lensShaderGLSL}
 uniform float uSunMaskActive;
 uniform vec2 uSunMaskScreenPx;
 uniform vec2 uSunMaskViewportPx;
@@ -162,7 +245,9 @@ uniform float uSunMaskCoreOuterPx;
 
 float sunGlareMask(vec4 clip) {
   if (uSunMaskActive < 0.5 || clip.w <= 0.0) return 0.0;
-  vec2 ndc = clip.xy / clip.w;
+  // GPU points are still in the overscan source at this stage. Compare them
+  // in the same final-output pixel space as the DOM labels and glare billboard.
+  vec2 ndc = lensWarpSourceNdc(clip.xy / clip.w);
   vec2 px = vec2(
     (ndc.x * 0.5 + 0.5) * uSunMaskViewportPx.x,
     (0.5 - ndc.y * 0.5) * uSunMaskViewportPx.y
@@ -187,7 +272,7 @@ float sunGlareMask(vec4 clip) {
 }
 
 /** The uniform block the GLSL above declares, as live THREE uniform refs. */
-export interface SunGlareMaskUniforms {
+export interface SunGlareMaskUniforms extends LensShaderUniforms {
   uSunMaskActive: { value: number };
   uSunMaskScreenPx: { value: THREE.Vector2 };
   uSunMaskViewportPx: { value: THREE.Vector2 };
@@ -201,6 +286,7 @@ export interface SunGlareMaskUniforms {
 /** Fresh, inactive uniform set — spread into a material's uniforms. */
 export function createSunGlareMaskUniforms(): SunGlareMaskUniforms {
   return {
+    ...createLensShaderUniforms(),
     uSunMaskActive: { value: 0 },
     uSunMaskScreenPx: { value: new THREE.Vector2() },
     uSunMaskViewportPx: { value: new THREE.Vector2(1, 1) },
@@ -217,7 +303,10 @@ export function applySunGlareMaskParams(
   u: SunGlareMaskUniforms,
   p: SunGlareMaskParams,
   viewportWidth: number,
+  camera: THREE.PerspectiveCamera,
+  pixelRatio = 1,
 ): void {
+  applyLensShaderUniforms(u, camera, viewportWidth, p.viewportHeight, pixelRatio);
   u.uSunMaskActive.value = p.active ? 1 : 0;
   u.uSunMaskScreenPx.value.set(p.sunXPx, p.sunYPx);
   u.uSunMaskViewportPx.value.set(viewportWidth, p.viewportHeight);
@@ -246,7 +335,7 @@ export function augmentPointsMaterialWithSunGlareMask(mat: THREE.PointsMaterial)
       )
       .replace(
         '#include <project_vertex>',
-        '#include <project_vertex>\n\tvSunGlareMaskAlpha = 1.0 - 0.98 * sunGlareMask(gl_Position);',
+        `#include <project_vertex>\n\tvSunGlareMaskAlpha = 1.0 - ${SUN_GLARE_MASK_MAX_KILL.toFixed(2)} * sunGlareMask(gl_Position);`,
       );
     shader.fragmentShader = shader.fragmentShader
       .replace('#include <common>', '#include <common>\nvarying float vSunGlareMaskAlpha;')

@@ -29,6 +29,7 @@ import { debugWarn } from '../shared/debug';
 import { applyTextureDefaults, clampTier, resolveTextureUrl, type TextureTier, type MapKind } from './world/texturePolicy';
 import { augmentSurfaceMaterial, type SurfaceArchetype, type SurfaceShadingFx } from './world/surfaceShading';
 import { queueTextureWarm } from './world/textureWarmer';
+import { createLensShaderUniforms } from '../shared/three/lensShader';
 
 const loader = new THREE.TextureLoader();
 loader.crossOrigin = 'anonymous';
@@ -720,12 +721,27 @@ export function createPlanetariumSun(useBloom = true): THREE.Group {
       uOccluderRadii: { value: 1 },
       uOccluderShade: { value: 0 },
       uOccluderOffsetSr: { value: new THREE.Vector2() },
+      // Exposed-crescent centroid (solar radii) and authored diamond-ring
+      // strength; both 0 unless an occluder is on the disc, so an un-occluded Sun
+      // draws with neither term.
+      uGlareCentroidSr: { value: new THREE.Vector2() },
+      uDiamondOccluderSr: { value: new THREE.Vector2() },
+      uBeadCarveDepth: { value: 0 },
+      uDiamondRing: { value: 0 },
+      // Screen angle of the Sun's rotation axis and how much the corona's
+      // shape should lean on it; driven per frame from the IAU pole.
+      uSunPoleScreenAngle: { value: 0 },
+      uSunPoleAnisotropy: { value: 0 },
+      // Contact chromosphere on each limb, on their own wall-time envelopes.
+      uChromoAnti: { value: 0 },
+      uChromoToward: { value: 0 },
       uExposureScale: { value: 1 },
       uEmergenceFlash: { value: 0 },
       uAtmosphereMix: { value: 0 },
       uAtmosphereColor: { value: new THREE.Color(1, 0.55, 0.24) },
       uMinHalfSizePx: { value: useBloom ? 18 : 22 },
       uViewportHeight: { value: Math.max(window.innerHeight, 1) },
+      ...createLensShaderUniforms(),
       // Wide veiling-glare wash. uVeilStrength is its peak HDR contribution at
       // frame centre; uVeilWarmth mixes a whisper of warmth into the outer fade.
       // uVeilAmt (occlusion x distance-falloff x huge-disc cutoff) and uVeilHalfPx
@@ -806,6 +822,7 @@ export function createPlanetariumSun(useBloom = true): THREE.Group {
       uEmergenceFlash: { value: 0 },
       uAtmosphereMix: { value: 0 },
       uAtmosphereColor: { value: new THREE.Color(1, 0.55, 0.24) },
+      ...createLensShaderUniforms(),
     },
     vertexShader: sunLensGhostVertexShader,
     fragmentShader: sunLensGhostFragmentShader,

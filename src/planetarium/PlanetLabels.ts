@@ -6,18 +6,35 @@
  */
 import * as THREE from 'three';
 import { type PlanetData, PLANETARIUM_BODIES } from './planets/planetData';
-import { projectToScreen, type ScreenProjection } from '../shared/three/projectToScreen';
+import {
+  projectSphereToScreen,
+  type SphereScreenProjection,
+} from '../shared/three/projectToScreen';
+import {
+  applyLensShaderUniforms,
+  augmentFixedScreenSpriteForLens,
+  createLensShaderUniforms,
+} from '../shared/three/lensShader';
 import {
   sunGlareMaskAt,
   sunGlareMaskForRect,
   type SunGlareMaskParams,
 } from './world/sunGlareMask';
+import {
+  markerAlbedoProxy,
+  markerMagnitude,
+  markerVisual,
+  PLANET_MARKER_PARAMS,
+  type PlanetMarkerVisual,
+} from './planetMarkers';
 
 export interface PlanetLabel {
   sprite: THREE.Sprite;
   label: HTMLDivElement;
   distEl: HTMLSpanElement;
   planet: PlanetData;
+  /** Cached albedo proxy of the marker tint (constant per body). */
+  markerAlbedo: number;
   labelVisible: boolean;
   lastTransform: string;
   lastDistanceText: string;
@@ -139,7 +156,14 @@ export class PlanetLabels {
   foregroundDiscs: ForegroundDisc[] = [];
   private labelContainer: HTMLDivElement;
   private camera: THREE.PerspectiveCamera;
-  private projScratch: ScreenProjection = { x: 0, y: 0, ndcX: 0, ndcY: 0, ndcZ: 0 };
+  private lensUniforms = createLensShaderUniforms();
+  private sphereProjScratch: SphereScreenProjection = {
+    x: 0, y: 0, ndcX: 0, ndcY: 0, ndcZ: 0,
+    footprintX: 0, footprintY: 0, radiusPx: 0, diameterPx: 0,
+    minX: 0, maxX: 0, minY: 0, maxY: 0,
+    footprintKind: 'none',
+  };
+  private markerScratch: PlanetMarkerVisual = { sizeMul: 0, brightness: 0 };
 
   constructor(scene: THREE.Scene, camera: THREE.PerspectiveCamera) {
     this.camera = camera;
@@ -158,24 +182,36 @@ export class PlanetLabels {
       canvas.height = 64;
       const ctx = canvas.getContext('2d')!;
 
-      const color = new THREE.Color(body.color);
-      const r = Math.floor(color.r * 255);
-      const g = Math.floor(color.g * 255);
-      const b = Math.floor(color.b * 255);
+      // Beacon texture: a lightly-lifted hued core with the full tint in the
+      // surrounding halo. Only a modest white lift keeps the center from being
+      // a flat colour chip — enough that the point still reads as luminous, but
+      // the planet's hue survives all the way to the middle. That matters when
+      // the marker shrinks to a few pixels far away: a mostly-white core there
+      // washes to an anonymous white star, so a distant Neptune can't be told
+      // from the background. The tint is the catalog's photo-informed
+      // markerColor, not the UI tint: additive blending renders a saturated
+      // tint as neon, so the palette stays pale. Alphas/radii are unchanged —
+      // this adds colour, not size.
+      const tint = new THREE.Color(body.markerColor);
+      const mixToWhite = (c: THREE.Color, w: number) =>
+        `${Math.round(THREE.MathUtils.lerp(c.r, 1, w) * 255)}, ` +
+        `${Math.round(THREE.MathUtils.lerp(c.g, 1, w) * 255)}, ` +
+        `${Math.round(THREE.MathUtils.lerp(c.b, 1, w) * 255)}`;
 
-      // Outer glow
-      const gradient = ctx.createRadialGradient(32, 32, 4, 32, 32, 32);
-      gradient.addColorStop(0, `rgba(${r}, ${g}, ${b}, 1.0)`);
-      gradient.addColorStop(0.3, `rgba(${r}, ${g}, ${b}, 0.6)`);
-      gradient.addColorStop(0.7, `rgba(${r}, ${g}, ${b}, 0.15)`);
-      gradient.addColorStop(1, `rgba(${r}, ${g}, ${b}, 0)`);
+      const gradient = ctx.createRadialGradient(32, 32, 2, 32, 32, 32);
+      gradient.addColorStop(0, `rgba(${mixToWhite(tint, 0.5)}, 1.0)`);
+      gradient.addColorStop(0.14, `rgba(${mixToWhite(tint, 0.25)}, 0.8)`);
+      gradient.addColorStop(0.35, `rgba(${mixToWhite(tint, 0)}, 0.3)`);
+      gradient.addColorStop(0.65, `rgba(${mixToWhite(tint, 0)}, 0.06)`);
+      gradient.addColorStop(1, `rgba(${mixToWhite(tint, 0)}, 0)`);
       ctx.fillStyle = gradient;
       ctx.fillRect(0, 0, 64, 64);
 
-      // Inner bright core
+      // Lightly-hued crisp center so the beacon stays a point, not a smudge,
+      // while still carrying its colour.
       ctx.beginPath();
-      ctx.arc(32, 32, 6, 0, Math.PI * 2);
-      ctx.fillStyle = `rgba(${Math.min(255, r + 80)}, ${Math.min(255, g + 80)}, ${Math.min(255, b + 80)}, 1.0)`;
+      ctx.arc(32, 32, 4.5, 0, Math.PI * 2);
+      ctx.fillStyle = `rgba(${mixToWhite(tint, 0.55)}, 1.0)`;
       ctx.fill();
 
       const spriteTex = new THREE.CanvasTexture(canvas);
@@ -193,6 +229,7 @@ export class PlanetLabels {
         blending: THREE.AdditiveBlending,
         sizeAttenuation: false,
       });
+      augmentFixedScreenSpriteForLens(spriteMat, this.lensUniforms);
 
       const sprite = new THREE.Sprite(spriteMat);
       sprite.name = `marker-${body.name}`;
@@ -216,6 +253,7 @@ export class PlanetLabels {
         label,
         distEl,
         planet: body,
+        markerAlbedo: markerAlbedoProxy(body.markerColor),
         labelVisible: false,
         lastTransform: '',
         lastDistanceText: '',
@@ -238,8 +276,14 @@ export class PlanetLabels {
   ) {
     const canvasWidth = renderer.domElement.clientWidth;
     const canvasHeight = renderer.domElement.clientHeight;
+    applyLensShaderUniforms(
+      this.lensUniforms,
+      this.camera,
+      canvasWidth,
+      canvasHeight,
+      renderer.getPixelRatio(),
+    );
     this.foregroundDiscs.length = 0;
-    const halfFovTan = Math.tan((this.camera.fov * Math.PI) / 360);
     const camX = this.camera.position.x;
     const camY = this.camera.position.y;
     const camZ = this.camera.position.z;
@@ -253,12 +297,20 @@ export class PlanetLabels {
       const angularSize = (entry.planet.radiusAU * 2) / Math.max(distFromCamera, 0.0001);
       if (angularSize <= 0.01) continue;
 
-      const proj = projectToScreen(pos, this.camera, canvasWidth, canvasHeight, this.projScratch);
+      const proj = projectSphereToScreen(
+        pos,
+        entry.planet.radiusAU,
+        this.camera,
+        canvasWidth,
+        canvasHeight,
+        this.sphereProjScratch,
+      );
       if (proj.ndcZ >= 1) continue;
-      const screenX = proj.x;
-      const screenY = proj.y;
-      // Project disc radius to pixels. Pad by 1.1x to cover atmosphere glow.
-      const radiusPx = discRadiusPx(entry.planet.radiusAU, distFromCamera, halfFovTan, canvasHeight) * 1.1;
+      const screenX = proj.footprintX;
+      const screenY = proj.footprintY;
+      // The sampled output-space tangent limb stays correct at frame edges;
+      // pad the measured footprint by 1.1x to cover atmosphere glow.
+      const radiusPx = proj.radiusPx * 1.1;
       this.foregroundDiscs.push({ screenX, screenY, radiusPx, distFromCamera, name: entry.planet.name });
     }
   }
@@ -304,9 +356,31 @@ export class PlanetLabels {
       // still apply.
       revealedBody?: string;
       sunMask?: SunGlareMaskParams;
+      /** Sun position in the same space as `planetPositions` — feeds the
+       *  beacon policy's heliocentric-distance term. Falls back to the
+       *  catalog semi-major axis when absent. */
+      sunPos?: { x: number; y: number; z: number };
+      /** Precise hull test for marker-vs-ship occlusion. The ship's
+       *  foreground disc is a generous circle — right for keeping text off
+       *  the hull, but wrong in both directions for a beacon: culling by the
+       *  whole circle vanishes a planet visibly beside the hull, and
+       *  ignoring the ship draws the beacon on top of it. While the ship
+       *  disc exists, this callback decides instead: it raycasts the actual
+       *  hull so the marker hides exactly when covered. With no ship disc
+       *  (ship under the angular floor, a few px) no test runs — hiding a
+       *  whole beacon glow behind a 3px ship would be the worse artifact. */
+      markerShipTest?: (markerWorldPos: THREE.Vector3) => boolean;
     } = {},
   ) {
-    const { showMarkers = true, showLabels = true, excludeName, revealedBody, sunMask } = options;
+    const {
+      showMarkers = true,
+      showLabels = true,
+      excludeName,
+      revealedBody,
+      sunMask,
+      sunPos,
+      markerShipTest,
+    } = options;
     const maskActive = !!sunMask && sunMask.active;
     const canvasWidth = renderer.domElement.clientWidth;
     const canvasHeight = renderer.domElement.clientHeight;
@@ -381,7 +455,14 @@ export class PlanetLabels {
       // One projection, reused by the marker occlusion/fade and the label
       // placement. Needed whenever a marker or a label (incl. a reveal) could show.
       const proj = showLabels || showMarkers || isRevealed
-        ? projectToScreen(pos, this.camera, canvasWidth, canvasHeight, this.projScratch)
+        ? projectSphereToScreen(
+            pos,
+            entry.planet.radiusAU,
+            this.camera,
+            canvasWidth,
+            canvasHeight,
+            this.sphereProjScratch,
+          )
         : null;
 
       // Marker work only for the un-resolved (marker-tier) case — a resolved
@@ -395,6 +476,25 @@ export class PlanetLabels {
         if (proj && !markerOccluded) {
           for (const disc of foregroundDiscs) {
             if (disc.name === entry.planet.name) continue;
+            // The ship's circle never hides a beacon on its own: a planet dead
+            // ahead sits right above the ship, inside the circle but beside the
+            // hull, and culling it there makes an approaching world vanish.
+            // Inside the circle the precise hull raycast decides instead, so
+            // the beacon hides exactly when hull pixels cover it and stays lit
+            // beside them. Labels below still use the plain circle.
+            if (disc.name === 'ship') {
+              if (!markerShipTest) continue;
+              // No screen gate here: the circle is sized for label culling and
+              // no fixed multiple of it tracks every profile's true reach
+              // (Juno's magnetometer boom tip sits at ~4.9 circle radii). The
+              // callback does its own exact sight-line pre-reject against the
+              // widest-hull sphere, so calling it per marker stays cheap.
+              if (markerShipTest(entry.sprite.position)) {
+                markerOccluded = true;
+                break;
+              }
+              continue;
+            }
             if (distFromCamera <= disc.distFromCamera) continue;
             const mdx = proj.x - disc.screenX;
             const mdy = proj.y - disc.screenY;
@@ -414,6 +514,27 @@ export class PlanetLabels {
           const markerMask = maskActive && proj ? sunGlareMaskAt(sunMask, proj.x, proj.y) : 0;
           const spriteOpacity = 1 - 0.98 * markerMask;
           if (spriteMat.opacity !== spriteOpacity) spriteMat.opacity = spriteOpacity;
+        }
+
+        // Beacon policy: size and brightness track apparent brightness — Earth
+        // seen from Neptune shrinks to a pale point, Venus stays prominent from
+        // anywhere, nothing vanishes (planetMarkers.ts owns the curve). Camera
+        // distance, not player distance: the marker is what the camera sees.
+        // Channel split: photometric brightness writes .color while the Sun-glare
+        // fade above owns .opacity, so the two compose (energy = brightness ×
+        // glare visibility) without either overwriting the other. sizeMul is a
+        // multiplier (≤1) on the viewport-pinned base scale (markerScale, above),
+        // the sole owner of absolute on-screen size — so photometry can shrink a
+        // fainter beacon but never balloon one past the pin.
+        if (entry.sprite.visible) {
+          const rSun = sunPos
+            ? Math.hypot(pos.x - sunPos.x, pos.y - sunPos.y, pos.z - sunPos.z)
+            : entry.planet.semiMajorAxisAU;
+          const mag = markerMagnitude(entry.planet.radiusAU, distFromCamera, rSun, entry.markerAlbedo);
+          const vis = markerVisual(mag, PLANET_MARKER_PARAMS, this.markerScratch);
+          const absoluteScale = markerScale * vis.sizeMul;
+          if (entry.sprite.scale.x !== absoluteScale) entry.sprite.scale.setScalar(absoluteScale);
+          entry.sprite.material.color.setScalar(vis.brightness);
         }
       }
 
@@ -435,7 +556,7 @@ export class PlanetLabels {
       // once the disc grows so the text never lands on the planet's face. A
       // no-op at the mesh-hide threshold above (disc only a few px there) —
       // it's the guard for the never-on-the-disc rule if that threshold moves.
-      const labelOffsetY = Math.max(16, discRadiusPx(entry.planet.radiusAU, distFromCamera, halfFovTan, canvasHeight) * 1.1 + 6);
+      const labelOffsetY = Math.max(16, proj.radiusPx * 1.1 + 6);
 
       // Fade, then hide, a label whose box enters the Sun's glare. Measured from
       // the label rectangle (its box top-left sits at the transform anchor), not

@@ -7,6 +7,12 @@
  */
 import * as THREE from 'three';
 import { SHIP_REFERENCE_RADIUS_AU } from './cruiseView';
+import {
+  FLIGHT_PITCH_LIMIT_RAD,
+  flightAnglesFromSceneDirection,
+  flightDirectionFromAngles,
+  shipOrientationFromFlight,
+} from './flightFrame';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { LIGHT_SPEED_AU_PER_S } from './planets/planetData';
 import { createDefaultShip } from './ship/models/defaultShip';
@@ -17,7 +23,6 @@ import { createJunoModel } from './ship/models/juno';
 
 // Default cruise speed: 1c
 const DEFAULT_SPEED_AU_S = LIGHT_SPEED_AU_PER_S;
-const FORWARD_VECTOR = new THREE.Vector3(1, 0, 0);
 
 export type ShipProfile = 'default' | 'voyager' | 'cassini' | 'newHorizons' | 'juno';
 
@@ -194,12 +199,10 @@ export class PlayerShip {
    * skip update(), the only other writer of the model quaternion.
    */
   syncModelOrientation() {
-    this.group.quaternion.setFromUnitVectors(FORWARD_VECTOR, this.getForwardDirection());
+    shipOrientationFromFlight(this.heading, this.pitch, this.group.quaternion);
   }
 
   update(dt: number) {
-    this.syncModelOrientation();
-
     // Animate exhaust
     const effectiveMultiplier = this.speedAUPerS / DEFAULT_SPEED_AU_S;
     const speedFrac = effectiveMultiplier / PlayerShip.SPEED_MAX;
@@ -235,19 +238,26 @@ export class PlayerShip {
 
     }
 
+    if (this.moving) {
+      if (this.yawInput !== 0) {
+        this.heading += this.yawInput * dt * 0.8;
+      }
+      if (this.pitchInput !== 0) {
+        this.pitch = Math.max(
+          -FLIGHT_PITCH_LIMIT_RAD,
+          Math.min(FLIGHT_PITCH_LIMIT_RAD, this.pitch + this.pitchInput * dt * 0.65),
+        );
+      }
+    }
+
+    // One orientation write per pass, after this frame's steering: the pose
+    // the renderer draws is the pose the ship is flying.
+    this.syncModelOrientation();
+
     if (!this.moving) return;
 
     const speed = this.speedAUPerS;
-
-    if (this.yawInput !== 0) {
-      this.heading += this.yawInput * dt * 0.8;
-    }
-    if (this.pitchInput !== 0) {
-      this.pitch = Math.max(-Math.PI * 0.49, Math.min(Math.PI * 0.49, this.pitch + this.pitchInput * dt * 0.65));
-    }
-
     const updatedDirection = this.getForwardDirection();
-    this.group.quaternion.setFromUnitVectors(FORWARD_VECTOR, updatedDirection);
 
     const dx = updatedDirection.x * speed * dt;
     const dy = updatedDirection.y * speed * dt;
@@ -268,25 +278,24 @@ export class PlayerShip {
   }
 
   headToward(targetX: number, targetZ: number, targetY = this.posY) {
-    const dx = targetX - this.posX;
-    const dy = targetY - this.posY;
-    const dz = targetZ - this.posZ;
-    const horizontal = Math.sqrt(dx * dx + dz * dz);
-    this.heading = Math.atan2(dz, dx);
-    this.pitch = Math.atan2(dy, Math.max(horizontal, 1e-8));
+    const aim = flightAnglesFromSceneDirection(
+      targetX - this.posX,
+      targetY - this.posY,
+      targetZ - this.posZ,
+    );
+    this.heading = aim.headingRad;
+    this.pitch = aim.pitchRad;
   }
 
   getDistanceFromSun(): number {
     return Math.sqrt(this.posX * this.posX + this.posY * this.posY + this.posZ * this.posZ);
   }
 
+  /** Heading/pitch are ecliptic angles (see flightFrame): pitch 0 is level
+   *  with the system, not with celestial north. Allocates — callers hold the
+   *  result for a frame. */
   getForwardDirection(): THREE.Vector3 {
-    const cosPitch = Math.cos(this.pitch);
-    return new THREE.Vector3(
-      Math.cos(this.heading) * cosPitch,
-      Math.sin(this.pitch),
-      Math.sin(this.heading) * cosPitch,
-    ).normalize();
+    return flightDirectionFromAngles(this.heading, this.pitch);
   }
 
   static readonly SPEED_MIN = 0;

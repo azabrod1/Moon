@@ -19,7 +19,10 @@ const lerp = (x: number, y: number, t: number) => (1 - t) * x + t * y;
  * Faint-end shaping: dimmer points get lower opacity and smaller size, so a dense
  * faint layer recedes into fine texture instead of a flat wall of identical
  * specks. The ramp spans `faintFadeRangeMag` magnitudes up to a faint limit
- * (the catalog's dimmest star). Opacity carries the dimming; size stays at or
+ * (the pinned anchor magnitude — deliberately NOT the catalog's dimmest star,
+ * so deepening the catalog never re-brightens the existing sky; entries past
+ * the anchor continue on the below-anchor taper). Opacity carries the
+ * dimming; size stays at or
  * above `sizeFloorPx` so points read as crisp dots even at the limit.
  */
 export const STAR_POINT_MAPPING = {
@@ -38,7 +41,38 @@ export const STAR_POINT_MAPPING = {
   faintFadeRangeMag: 1.6, // fade-ramp width (mags up to the faint limit); larger dims more of the field
   faintMinAlpha: 0.45, // opacity of the faintest points (never 0 for stars — keep a hint)
   faintMinSizeScale: 0.8, // faintest points shrink to this × base size (then clamped ≥ sizeFloorPx)
+  beyondAnchorRangeMag: 1.5, // mags past the anchor over which the taper below runs out
+  beyondAnchorAlphaScale: 0.6, // the taper's floor — deeper stars stay visible, just quieter
 } as const;
+
+/**
+ * The magnitude the faint-end ramp is anchored to.
+ *
+ * Deliberately a fixed number rather than whatever the catalog's dimmest star
+ * happens to be. The ramp fades the last stretch of magnitudes RELATIVE to this
+ * anchor, so deriving it from the catalog would mean every deepening of the
+ * catalog silently re-brightened every star already in the sky and slid the
+ * moon dots' faint handoff with it. Pinned here, a deeper catalog only adds
+ * stars below the anchor and leaves the existing field exactly as it was.
+ */
+export const STAR_FAINT_ANCHOR_MAG = 7.02;
+
+/**
+ * Opacity multiplier for stars past the anchor: 1 at the anchor, easing to
+ * `beyondAnchorAlphaScale` over `beyondAnchorRangeMag`. The same shape the moon
+ * dots use below their limit, but floored instead of run to zero — a catalog
+ * star is a real star and should still be on the sky, just fainter than
+ * anything the anchor covers.
+ */
+export function starBeyondAnchorScale(
+  mag: number,
+  anchorMag: number = STAR_FAINT_ANCHOR_MAG,
+  p: StarPointMapping = STAR_POINT_MAPPING,
+): number {
+  const beyond = mag - anchorMag;
+  if (!(beyond > 0)) return 1;
+  return lerp(1, p.beyondAnchorAlphaScale, clamp(beyond / p.beyondAnchorRangeMag, 0, 1));
+}
 
 export type StarPointMapping = typeof STAR_POINT_MAPPING;
 

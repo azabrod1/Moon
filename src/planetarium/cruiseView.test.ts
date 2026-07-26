@@ -1,5 +1,10 @@
 import { describe, it, expect } from 'vitest';
+import * as THREE from 'three';
 import { ATMOSPHERE_SHELL_SCALES } from './PlanetFactory';
+import { createVoyagerModel } from './ship/models/voyager';
+import { createCassiniModel } from './ship/models/cassini';
+import { createNewHorizonsModel } from './ship/models/newHorizons';
+import { createJunoModel } from './ship/models/juno';
 import {
   SHIP_RIG_SCALE,
   SHIP_REFERENCE_RADIUS_AU,
@@ -8,6 +13,7 @@ import {
   SHIP_OCCLUDER_RADIUS_AU,
   CRUISE_CONTROLS_MIN_DISTANCE_AU,
   SHIP_HULL_MAX_EXTENT_AU,
+  SHIP_ANY_HULL_EXTENT_AU,
   CAMERA_BODY_MARGIN_AU,
   CRUISE_NEAR_MIN_AU,
   CRUISE_NEAR_MAX_AU,
@@ -20,7 +26,17 @@ import {
   CAM_FOLLOW_TAU_TURN_S,
   CAM_FOLLOW_TURN_BLEND_S,
   cameraFollowGain,
+  CHASE_CAM_LIFT_FRAC,
+  chaseIdealOffset,
+  reacquireCameraStep,
+  CAM_REACQUIRE_RADIUS_TAU_S,
+  CAM_REACQUIRE_SETTLE_ANGLE_DEG,
+  CAM_REACQUIRE_SETTLE_RADIUS_FRAC,
 } from './cruiseView';
+// cruiseView itself stays dependency-free (the up axis is passed in); the
+// test pins it against the REAL flight horizon the mode hands it.
+import { FLIGHT_UP_SCENE, flightDirectionFromAngles } from './flightFrame';
+import { DEG2RAD } from '../shared/math/angles';
 
 const KM_PER_AU = 149_597_870.7;
 const KM = 1 / KM_PER_AU;
@@ -55,6 +71,45 @@ describe('cruise rig derivation chain', () => {
 
   it('covers the default hull: nozzle exit 1.82 units × 1.8 per radius × 0.5 group scale', () => {
     expect(SHIP_HULL_MAX_EXTENT_AU).toBeGreaterThan(SHIP_REFERENCE_RADIUS_AU * 1.82 * 1.8 * 0.5);
+  });
+
+  it('the any-hull sphere contains every built probe model (the marker-vs-hull pre-reject bound)', () => {
+    // Measured from the real geometry, not the authored numbers: build each
+    // procedural profile, take the farthest bounding-sphere edge from the
+    // group origin, apply the 0.5 PlayerShip group scale. Sphere.applyMatrix4
+    // over-estimates under non-uniform scale, which is the safe direction for
+    // an upper-bound pin. A future profile with a longer boom fails here
+    // instead of drawing beacons across its hull. (The default hull needs a
+    // DOM for its canvas panel skin — its 1.638-radius nozzle pin above
+    // covers it; the Cassini GLB is normalized to a target dimension on load,
+    // so the procedural fallback is the wider of the two.)
+    const extentAU = (model: THREE.Object3D): number => {
+      model.updateMatrixWorld(true);
+      let max = 0;
+      const sphere = new THREE.Sphere();
+      model.traverse((o) => {
+        const mesh = o as THREE.Mesh;
+        if (!mesh.isMesh) return;
+        if (!mesh.geometry.boundingSphere) mesh.geometry.computeBoundingSphere();
+        sphere.copy(mesh.geometry.boundingSphere!).applyMatrix4(mesh.matrixWorld);
+        max = Math.max(max, sphere.center.length() + sphere.radius);
+      });
+      return max * 0.5;
+    };
+    const models = {
+      voyager: createVoyagerModel(SHIP_REFERENCE_RADIUS_AU),
+      cassini: createCassiniModel(SHIP_REFERENCE_RADIUS_AU),
+      newHorizons: createNewHorizonsModel(SHIP_REFERENCE_RADIUS_AU),
+      juno: createJunoModel(SHIP_REFERENCE_RADIUS_AU),
+    };
+    for (const [name, model] of Object.entries(models)) {
+      expect(extentAU(model), name).toBeLessThan(SHIP_ANY_HULL_EXTENT_AU);
+    }
+    // Juno's magnetometer boom is why this constant exists apart from
+    // SHIP_HULL_MAX_EXTENT_AU: it genuinely outreaches the camera-safety
+    // extent (accepted there — see the constants' comments).
+    expect(extentAU(models.juno)).toBeGreaterThan(SHIP_HULL_MAX_EXTENT_AU);
+    expect(SHIP_ANY_HULL_EXTENT_AU).toBeGreaterThan(SHIP_HULL_MAX_EXTENT_AU);
   });
 
   it('keeps the near ceiling under the chase-distance camera-to-hull gap', () => {
@@ -245,6 +300,54 @@ describe('nearestShellSurfaceDistanceAU', () => {
   });
 });
 
+describe('chaseIdealOffset', () => {
+  it('reproduces the chase-branch pose formula at the unified lift', () => {
+    const forward = new THREE.Vector3(0.3, -0.5, 0.8).normalize();
+    const up = FLIGHT_UP_SCENE;
+    const out = chaseIdealOffset(forward, up, new THREE.Vector3());
+    const camDist = CRUISE_CAM_DIST_AU;
+    const lift = camDist * CHASE_CAM_LIFT_FRAC;
+    // Steady follow, reset, and the reacquire target must all resolve to this
+    // one formula — a drift here is the old 0.45/0.35 rig split reappearing.
+    expect(out.x).toBe(-forward.x * camDist + up.x * lift);
+    expect(out.y).toBe(-forward.y * camDist + up.y * lift);
+    expect(out.z).toBe(-forward.z * camDist + up.z * lift);
+  });
+
+  it('lifts by 0.35 of the chase distance (reset and steady follow unified)', () => {
+    expect(CHASE_CAM_LIFT_FRAC).toBe(0.35);
+    const out = chaseIdealOffset({ x: 0, y: 0, z: 1 }, { x: 0, y: 1, z: 0 }, new THREE.Vector3());
+    expect(out.y).toBe(CRUISE_CAM_DIST_AU * 0.35);
+    expect(out.z).toBe(-CRUISE_CAM_DIST_AU);
+  });
+
+  it('rides the passed-in up: the same rig at every heading around the flight horizon', () => {
+    // The rig must tilt WITH the horizon, not with world-Y. For a forward
+    // lying in the flight plane the offset decomposes exactly into
+    //   up-component  = +lift·dist        (the camera sits above the ship)
+    //   in-plane part = −dist·forward     (straight down the trail)
+    // Note the camera→ship RAY is the negation: its up-component is
+    // −lift·dist, so the ship is below the optical axis. That is the pose,
+    // not a "level" one.
+    const lift = CRUISE_CAM_DIST_AU * CHASE_CAM_LIFT_FRAC;
+    for (const headingDeg of [0, 37, 90, 143, 180, 231, 270, 314]) {
+      const forward = flightDirectionFromAngles(headingDeg * DEG2RAD, 0, new THREE.Vector3());
+      expect(Math.abs(forward.dot(FLIGHT_UP_SCENE))).toBeLessThan(1e-12);
+
+      const out = chaseIdealOffset(forward, FLIGHT_UP_SCENE, new THREE.Vector3());
+      const alongUp = out.dot(FLIGHT_UP_SCENE);
+      expect(alongUp).toBeCloseTo(lift, 14);
+
+      const inPlane = out.clone().addScaledVector(FLIGHT_UP_SCENE, -alongUp);
+      expect(inPlane.x).toBeCloseTo(-CRUISE_CAM_DIST_AU * forward.x, 14);
+      expect(inPlane.y).toBeCloseTo(-CRUISE_CAM_DIST_AU * forward.y, 14);
+      expect(inPlane.z).toBeCloseTo(-CRUISE_CAM_DIST_AU * forward.z, 14);
+      // Distance to the ship is heading-independent — the rig is rigid.
+      expect(out.length()).toBeCloseTo(CRUISE_CAM_DIST_AU * Math.hypot(1, CHASE_CAM_LIFT_FRAC), 14);
+    }
+  });
+});
+
 describe('cameraFollowGain', () => {
   it('reproduces the tuned per-frame factors at 120 Hz (the approved feel)', () => {
     // The old hardcoded lerp factors were 0.025 idle / 0.06 turning, tuned on
@@ -268,5 +371,210 @@ describe('cameraFollowGain', () => {
     expect(g).toBeGreaterThan(0.4);
     expect(g).toBeLessThan(1);
     expect(cameraFollowGain(0.008, CAM_FOLLOW_TURN_BLEND_S)).toBeGreaterThan(0);
+  });
+});
+
+describe('reacquireCameraStep', () => {
+  // The step is radius-scale-free (direction slerp and radius spring are both
+  // scale-invariant; the only absolute threshold is the settle angle), so a
+  // unit reference radius keeps the numbers readable.
+  const R = 1;
+  const angleDeg = (a: THREE.Vector3, b: THREE.Vector3) => a.angleTo(b) * (180 / Math.PI);
+
+  it('holds the radius bit-stable under pure rotation at the ideal radius', () => {
+    const ideal = new THREE.Vector3(0.2, 0.35, -1).setLength(R);
+    const out = ideal
+      .clone()
+      .applyAxisAngle(new THREE.Vector3(0.3, 1, 0.1).normalize(), Math.PI / 3)
+      .setLength(R); // same radius, only rotated — no zoom requested
+    let prev = out.length();
+    for (let i = 0; i < 400; i++) {
+      reacquireCameraStep(out, out, ideal, 1 / 120, CAM_FOLLOW_TAU_IDLE_S);
+      const len = out.length();
+      expect(Math.abs(len - prev) / R).toBeLessThan(1e-12);
+      prev = len;
+    }
+    expect(Math.abs(out.length() - R) / R).toBeLessThan(1e-9);
+  });
+
+  it('springs the radius monotonically toward |ideal| without overshoot', () => {
+    const ideal = new THREE.Vector3(0, 0.35, -1);
+    const rIdeal = ideal.length();
+    const out = ideal.clone().setLength(rIdeal * 2); // same direction, farther out
+    let prev = out.length();
+    for (let i = 0; i < 400; i++) {
+      reacquireCameraStep(out, out, ideal, 1 / 60, CAM_FOLLOW_TAU_IDLE_S);
+      const len = out.length();
+      expect(len).toBeLessThanOrEqual(prev + 1e-15);
+      expect(len).toBeGreaterThanOrEqual(rIdeal - 1e-12);
+      prev = len;
+    }
+    // The radius rides the deliberately slow CAM_REACQUIRE_RADIUS_TAU_S, so it
+    // is well converged (not bit-exact) after this many steps.
+    expect(out.length()).toBeCloseTo(rIdeal, 4);
+  });
+
+  it('turns the direction monotonically toward ideal with no reversal', () => {
+    const ideal = new THREE.Vector3(0, 0.2, -1).setLength(R);
+    const idealDir = ideal.clone().normalize();
+    const out = ideal
+      .clone()
+      .applyAxisAngle(new THREE.Vector3(0, 1, 0), (75 * Math.PI) / 180)
+      .setLength(R);
+    // The current direction's component along the initial perpendicular must
+    // decay to zero without crossing sign (that crossing is the old reversal).
+    const startDir = out.clone().normalize();
+    const perp = startDir
+      .clone()
+      .addScaledVector(idealDir, -startDir.dot(idealDir))
+      .normalize();
+    let prevAngle = angleDeg(out, ideal);
+    for (let i = 0; i < 400; i++) {
+      reacquireCameraStep(out, out, ideal, 1 / 90, CAM_FOLLOW_TAU_TURN_S);
+      const ang = angleDeg(out, ideal);
+      expect(ang).toBeLessThanOrEqual(prevAngle + 1e-9);
+      expect(out.clone().normalize().dot(perp)).toBeGreaterThan(-1e-9);
+      prevAngle = ang;
+    }
+    expect(prevAngle).toBeLessThan(0.01);
+  });
+
+  it('is frame-rate invariant: one 0.1 s step equals ten 0.01 s steps', () => {
+    const ideal = new THREE.Vector3(0, 0.35, -1);
+    const start = ideal
+      .clone()
+      .setLength(ideal.length() * 1.5)
+      .applyAxisAngle(new THREE.Vector3(0, 1, 0), Math.PI / 2);
+    const tau = CAM_FOLLOW_TAU_IDLE_S;
+    const big = start.clone();
+    reacquireCameraStep(big, big, ideal, 0.1, tau);
+    const small = start.clone();
+    for (let i = 0; i < 10; i++) reacquireCameraStep(small, small, ideal, 0.01, tau);
+    expect(angleDeg(big, small)).toBeLessThan(1e-3);
+    expect(Math.abs(big.length() - small.length()) / ideal.length()).toBeLessThan(1e-3);
+  });
+
+  it('converges from an exactly antipodal start with no NaN or unit drift', () => {
+    const ideal = new THREE.Vector3(0, 0.35, -1).setLength(R);
+    const out = ideal.clone().negate(); // 180° away, same radius
+    for (let i = 0; i < 600; i++) {
+      reacquireCameraStep(out, out, ideal, 1 / 120, CAM_FOLLOW_TAU_IDLE_S);
+      expect(Number.isFinite(out.x + out.y + out.z)).toBe(true);
+      expect(Math.abs(out.length() - R) / R).toBeLessThan(1e-9);
+    }
+    expect(angleDeg(out, ideal)).toBeLessThan(CAM_REACQUIRE_SETTLE_ANGLE_DEG);
+  });
+
+  it('reports settled inside the thresholds and stays settled', () => {
+    const ideal = new THREE.Vector3(0, 0.35, -1).setLength(R);
+    const out = ideal
+      .clone()
+      .applyAxisAngle(new THREE.Vector3(1, 0, 0), (0.3 * Math.PI) / 180)
+      .setLength(R * (1 + CAM_REACQUIRE_SETTLE_RADIUS_FRAC * 0.4));
+    expect(reacquireCameraStep(out, out, ideal, 1 / 120, CAM_FOLLOW_TAU_IDLE_S)).toBe(true);
+    for (let i = 0; i < 100; i++) {
+      expect(reacquireCameraStep(out, out, ideal, 1 / 120, CAM_FOLLOW_TAU_IDLE_S)).toBe(true);
+    }
+  });
+
+  it('reports unsettled outside either threshold', () => {
+    // A stuck-true predicate would hand the chase a near-full offset and
+    // replay the chord-cut zoom — pin false for each violated bound alone.
+    const ideal = new THREE.Vector3(0, 0.35, -1).setLength(R);
+    const dt = 1 / 120;
+    const angOut = ideal
+      .clone()
+      .applyAxisAngle(new THREE.Vector3(1, 0, 0), (2 * Math.PI) / 180); // angle out, radius exact
+    expect(reacquireCameraStep(angOut, angOut, ideal, dt, CAM_FOLLOW_TAU_IDLE_S)).toBe(false);
+    const radOut = ideal.clone().setLength(R * 1.01); // radius out, angle exact
+    expect(reacquireCameraStep(radOut, radOut, ideal, dt, CAM_FOLLOW_TAU_IDLE_S)).toBe(false);
+    const bothOut = ideal
+      .clone()
+      .applyAxisAngle(new THREE.Vector3(1, 0, 0), (5 * Math.PI) / 180)
+      .setLength(R * 1.05);
+    expect(reacquireCameraStep(bothOut, bothOut, ideal, dt, CAM_FOLLOW_TAU_IDLE_S)).toBe(false);
+  });
+
+  it('keeps the radius within 0.5% through a full 60° and 90° return', () => {
+    for (const deg of [60, 90]) {
+      const ideal = new THREE.Vector3(0, 0.35, -1).setLength(R);
+      const out = ideal
+        .clone()
+        .applyAxisAngle(new THREE.Vector3(0.2, 1, 0.1).normalize(), (deg * Math.PI) / 180)
+        .setLength(R);
+      for (let i = 0; i < 500; i++) {
+        reacquireCameraStep(out, out, ideal, 1 / 120, CAM_FOLLOW_TAU_IDLE_S);
+        expect(Math.abs(out.length() - R) / R).toBeLessThanOrEqual(CAM_REACQUIRE_SETTLE_RADIUS_FRAC);
+      }
+      expect(angleDeg(out, ideal)).toBeLessThan(CAM_REACQUIRE_SETTLE_ANGLE_DEG);
+    }
+  });
+
+  it('tracks a rotating ideal within bounds, then settles once it stops', () => {
+    const ideal = new THREE.Vector3(0, 0.35, -1).setLength(R);
+    const out = ideal.clone().setLength(R);
+    const axis = new THREE.Vector3(0, 1, 0);
+    const dt = 1 / 120;
+    const ratePerStep = ((40 * Math.PI) / 180) * dt; // 40°/s steering of the ideal
+    for (let i = 0; i < 240; i++) {
+      ideal.applyAxisAngle(axis, ratePerStep);
+      const settled = reacquireCameraStep(out, out, ideal, dt, CAM_FOLLOW_TAU_TURN_S);
+      expect(Math.abs(out.length() - R) / R).toBeLessThanOrEqual(CAM_REACQUIRE_SETTLE_RADIUS_FRAC);
+      expect(angleDeg(out, ideal)).toBeLessThan(15); // lag bounded, never diverges
+      // Once the steady-state lag builds (ω·τ ≈ 5.6°), the step must keep
+      // reporting unsettled — a premature true hands the lag to the chase.
+      if (i >= 60) expect(settled).toBe(false);
+    }
+    let settled = false;
+    for (let i = 0; i < 400 && !settled; i++) {
+      settled = reacquireCameraStep(out, out, ideal, dt, CAM_FOLLOW_TAU_TURN_S);
+    }
+    expect(settled).toBe(true);
+  });
+
+  it('sweeps the direction tau mid-return without perturbing the radius spring', () => {
+    const makeIdeal = () => new THREE.Vector3(0, 0.35, -1).setLength(R);
+    const makeStart = () =>
+      makeIdeal()
+        .applyAxisAngle(new THREE.Vector3(0, 1, 0), Math.PI / 2)
+        .setLength(R * 1.4); // radius spring genuinely active
+    const swept = makeStart();
+    const fixed = makeStart();
+    const idealSwept = makeIdeal();
+    const idealFixed = makeIdeal();
+    for (let i = 0; i < 300; i++) {
+      const blend = Math.min(1, i / 60);
+      const tau = CAM_FOLLOW_TAU_IDLE_S + (CAM_FOLLOW_TAU_TURN_S - CAM_FOLLOW_TAU_IDLE_S) * blend;
+      reacquireCameraStep(swept, swept, idealSwept, 1 / 120, tau);
+      reacquireCameraStep(fixed, fixed, idealFixed, 1 / 120, CAM_FOLLOW_TAU_IDLE_S);
+      // The radius rides CAM_REACQUIRE_RADIUS_TAU_S, not the swept direction
+      // tau, so both runs walk the identical radius sequence.
+      expect(swept.length()).toBeCloseTo(fixed.length(), 12);
+    }
+    // Converging toward R (slowly, on the radius tau) — the point is that the
+    // sweep left the radius sequence identical, asserted every step above.
+    expect(swept.length()).toBeLessThan(R * 1.01);
+    expect(swept.length()).toBeGreaterThan(R);
+    expect(CAM_REACQUIRE_RADIUS_TAU_S).toBeGreaterThan(CAM_FOLLOW_TAU_IDLE_S);
+  });
+
+  it('matches a chase Cartesian lerp at the settle boundary (seamless snap)', () => {
+    const idealDir = new THREE.Vector3(0, 0.35, -1).normalize();
+    const ideal = idealDir.clone().multiplyScalar(R);
+    // Just inside BOTH thresholds — the worst pose the settle can hand over —
+    // at both follow taus. The spherical step and the chase branch's Cartesian
+    // lerp toward the same offset must agree, or the state switch is a
+    // one-frame velocity step (the defect class this campaign kills).
+    for (const tau of [CAM_FOLLOW_TAU_IDLE_S, CAM_FOLLOW_TAU_TURN_S]) {
+      const cam = ideal
+        .clone()
+        .applyAxisAngle(new THREE.Vector3(1, 0, 0), (0.4 * Math.PI) / 180)
+        .setLength(R * (1 + CAM_REACQUIRE_SETTLE_RADIUS_FRAC * 0.9));
+      const dt = 1 / 120;
+      const spherical = new THREE.Vector3();
+      reacquireCameraStep(spherical, cam, ideal, dt, tau);
+      const lerp = cam.clone().lerp(ideal, cameraFollowGain(dt, tau));
+      expect(spherical.distanceTo(lerp) / R).toBeLessThan(1e-4);
+    }
   });
 });

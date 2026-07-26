@@ -64,6 +64,38 @@ describe('autopilot provenance migration (autopilotUserEngaged)', () => {
   });
 });
 
+describe('headingBasis — the flight-frame migration flag', () => {
+  // Absence is load-bearing: it is how a save written before heading/pitch
+  // became ecliptic angles is recognized, so it may never be defaulted in.
+  it('passes an explicit ecliptic flag through the sanitizer', () => {
+    expect(sanitizePlanetariumState(rawSave({ headingBasis: 'ecliptic' }))?.headingBasis)
+      .toBe('ecliptic');
+  });
+
+  it('stays absent for a legacy save (the signal to convert once, at apply)', () => {
+    expect(sanitizePlanetariumState(rawSave({}))?.headingBasis).toBeUndefined();
+  });
+
+  it('strips junk values rather than trusting them', () => {
+    for (const junk of ['equatorial', '', 1, true, {}, null]) {
+      expect(sanitizePlanetariumState(rawSave({ headingBasis: junk }))?.headingBasis)
+        .toBeUndefined();
+    }
+  });
+
+  it('is stamped on the default state — a new journey is never legacy', () => {
+    expect(createDefaultPlanetariumState().headingBasis).toBe('ecliptic');
+  });
+
+  it('survives a save→load round trip, so a converted save never re-converts', () => {
+    // The load path writes the parsed state back; a flag dropped anywhere in
+    // that loop would compound the rotation on every reload.
+    const once = sanitizePlanetariumState(rawSave({ headingBasis: 'ecliptic' }));
+    const twice = sanitizePlanetariumState(JSON.parse(JSON.stringify(once)));
+    expect(twice?.headingBasis).toBe('ecliptic');
+  });
+});
+
 describe('showBodyMarkers is a plain boolean (default true)', () => {
   it('defaults to true when the field is absent from the save', () => {
     expect(sanitizePlanetariumState(rawSave({}))?.showBodyMarkers).toBe(true);

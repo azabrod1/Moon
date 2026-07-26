@@ -18,6 +18,8 @@ import type { MoonFlightMode } from './moonFlight/MoonFlightMode';
 import type { VolumeCompareMode } from './volumeCompare/VolumeCompareMode';
 import { canGPUDoBloom } from './app/gpuCapability';
 import { BLOOM_RADIUS, BLOOM_THRESHOLD } from './app/bloomConfig';
+import { createLensPass, updateLensPass, type LensParams } from './app/LensPass';
+import { applyDesignFov, LENS_DEFAULT_STRENGTH } from './shared/math/lensProjection';
 import { stepExposure } from './planetarium/solarExposure';
 import { debugError, debugLog, debugWarn } from './shared/debug';
 import {
@@ -88,8 +90,11 @@ renderer.domElement.addEventListener('webglcontextrestored', () => {
   debugLog('WebGL context restored');
 });
 
-// Enable bloom on any device whose GPU supports float framebuffers
-const useBloom = canGPUDoBloom(renderer);
+// Enable bloom on any device whose GPU supports float framebuffers. `?nofloat=1`
+// forces the no-float path on capable hardware so the lens correction's
+// tone-map-first backbuffer resample (the path incapable GPUs take) can be
+// reproduced and QA'd on a dev machine.
+const useBloom = canGPUDoBloom(renderer) && !new URLSearchParams(location.search).has('nofloat');
 
 try {
   const gl = renderer.getContext();
@@ -111,6 +116,21 @@ scene.background = new THREE.Color(0x000000);
 // Near starts at the landed value; cruise swaps in its dynamic near per frame.
 const planetariumCamera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, LANDED_NEAR_AU, 200);
 planetariumCamera.position.set(-0.0002, 0.0001, 0.0001);
+// Lens correction (rectilinear→stereographic blend): rectilinear projection
+// stretches off-axis spheres into ovals (~17% at 30° off-axis at this FOV);
+// the lens pass warps that out, the camera renders at an overscan FOV so the
+// warped frame's corners stay covered, and projectToScreen mirrors the warp
+// for DOM overlays. designFovDeg is what the frame displays; camera.fov holds
+// the overscan (applyDesignFov is the only legal fov writer). The strength
+// here is a *request*: buildComposer runs the lens on the planetarium whenever
+// it is asked for — inside the float/HDR composer ahead of bloom, or, on GPUs
+// that can't float-render, as a final LDR resample of the tone-mapped
+// backbuffer — and stores the effective value read by every consumer.
+const planetariumLens: LensParams = { strength: LENS_DEFAULT_STRENGTH, designFovDeg: 60 };
+planetariumCamera.userData.lens = planetariumLens;
+// The requested strength survives bloom toggles; buildComposer writes the
+// effective value into planetariumLens.
+let lensRequestedStrength = LENS_DEFAULT_STRENGTH;
 
 // --- Moon flight camera (own camera so near/far are independent of other modes) ---
 const flightCamera = new THREE.PerspectiveCamera(55, window.innerWidth / window.innerHeight, 0.01, 2000);
@@ -127,6 +147,30 @@ let camera: THREE.PerspectiveCamera = planetariumCamera;
 debugLog('Post-processing config', { useBloom });
 
 let composer: EffectComposer | null = null;
+let lensPass: ReturnType<typeof createLensPass> | null = null;
+let directLensTexture: THREE.FramebufferTexture | null = null;
+const directLensSize = new THREE.Vector2();
+
+function ensureDirectLensTexture(): THREE.FramebufferTexture {
+  renderer.getDrawingBufferSize(directLensSize);
+  const width = Math.max(Math.round(directLensSize.x), 1);
+  const height = Math.max(Math.round(directLensSize.y), 1);
+  if (
+    !directLensTexture ||
+    directLensTexture.image.width !== width ||
+    directLensTexture.image.height !== height
+  ) {
+    directLensTexture?.dispose();
+    directLensTexture = new THREE.FramebufferTexture(width, height);
+    directLensTexture.minFilter = THREE.LinearFilter;
+    directLensTexture.magFilter = THREE.LinearFilter;
+    // The default framebuffer has already been tone-mapped/encoded. Preserve
+    // those display-referred bytes through the final resample; the raw lens
+    // ShaderPass neither tone-maps nor adds an output-colour transform.
+    directLensTexture.colorSpace = THREE.NoColorSpace;
+  }
+  return directLensTexture;
+}
 
 function getTargetPixelRatio(): number {
   if (isMobile) return Math.min(window.devicePixelRatio, 2);
@@ -179,19 +223,64 @@ function buildComposer(
     composer.dispose();
     composer = null;
   }
-  if (!enabled) return;
+  lensPass = null;
+  directLensTexture?.dispose();
+  directLensTexture = null;
 
+  // The lens correction is planetarium-only and must not be gated on bloom:
+  // that would leave off-axis planets egg-shaped on GPUs without float FBOs.
+  const wantsLens = cam === planetariumCamera && lensRequestedStrength > 0;
+
+  if (!enabled && !wantsLens) {
+    // Nothing to composite (a non-planetarium camera without bloom): straight
+    // to canvas, the cheapest path.
+    planetariumLens.strength = 0;
+    applyDesignFov(planetariumCamera, planetariumLens.designFovDeg);
+    return;
+  }
+
+  // No float FBO: render straight to the default framebuffer first, where
+  // Three applies the normal HDR tone map, copy those display-referred bytes,
+  // then lens-resample them back to screen in renderScene(). This avoids the
+  // release-blocking HDR clamp caused by rendering linear light into RGBA8.
+  if (wantsLens && !useBloom) {
+    planetariumLens.strength = lensRequestedStrength;
+    lensPass = createLensPass();
+    lensPass.renderToScreen = true;
+    ensureDirectLensTexture();
+    applyDesignFov(planetariumCamera, planetariumLens.designFovDeg);
+    return;
+  }
+
+  // Every remaining composer path is float-capable, so linear HDR survives to
+  // OutputPass (with or without the runtime bloom pass enabled).
   composer = new EffectComposer(renderer);
   composer.setPixelRatio(getTargetPixelRatio());
   composer.setSize(window.innerWidth, window.innerHeight);
   composer.addPass(new RenderPass(scene, cam));
-  const bloomPass = new UnrealBloomPass(
-    new THREE.Vector2(window.innerWidth, window.innerHeight),
-    bloom.strength,
-    BLOOM_RADIUS,
-    bloom.threshold,
-  );
-  composer.addPass(bloomPass);
+
+  if (wantsLens) {
+    planetariumLens.strength = lensRequestedStrength;
+    lensPass = createLensPass();
+    composer.addPass(lensPass);
+  } else {
+    planetariumLens.strength = 0;
+  }
+  applyDesignFov(planetariumCamera, planetariumLens.designFovDeg);
+
+  // Bloom is output-space: the lens first makes a round limb, then the blur
+  // builds an isotropic PSF around those final pixels. Screen-authored scene
+  // primitives pre-distort themselves into the source (lensShader.ts), so their
+  // sizes also remain invariant through this ordering.
+  if (enabled) {
+    composer.addPass(new UnrealBloomPass(
+      new THREE.Vector2(window.innerWidth, window.innerHeight),
+      bloom.strength,
+      BLOOM_RADIUS,
+      bloom.threshold,
+    ));
+  }
+
   composer.addPass(new OutputPass());
 }
 
@@ -228,7 +317,28 @@ function renderScene(cam: THREE.Camera) {
     : null;
   try {
     if (composer) {
+      // Uniform sync every frame: dev poses change the design FOV and resizes
+      // change the aspect, and a stale warp misplaces every pixel.
+      if (lensPass && cam === planetariumCamera) {
+        updateLensPass(lensPass, planetariumLens, planetariumCamera.fov, planetariumCamera.aspect);
+      }
       composer.render();
+    } else if (lensPass && directLensTexture && cam === planetariumCamera) {
+      // Tone map to the hardware backbuffer first, then copy and warp that LDR
+      // image. `ShaderPass.render` only reads the fake target's texture when its
+      // renderToScreen flag is set; the write target is intentionally unused.
+      renderer.setRenderTarget(null);
+      renderer.render(scene, cam);
+      const texture = ensureDirectLensTexture();
+      renderer.copyFramebufferToTexture(texture);
+      updateLensPass(lensPass, planetariumLens, planetariumCamera.fov, planetariumCamera.aspect);
+      lensPass.render(
+        renderer,
+        null as unknown as THREE.WebGLRenderTarget,
+        { texture } as unknown as THREE.WebGLRenderTarget,
+        0,
+        false,
+      );
     } else {
       renderer.render(scene, cam);
     }
@@ -430,15 +540,31 @@ function installDevHooks() {
     bodies: () => planetariumMode?.devListBodies() ?? [],
     jumpTo: (name: string, distanceMultiplier?: number) =>
       planetariumMode?.devJumpToBody(name, distanceMultiplier) ?? false,
-    frame: (name: string, fillFraction?: number, phaseAngleDeg?: number, distMul?: number) =>
-      planetariumMode?.devFrameBody(name, fillFraction, phaseAngleDeg, distMul) ?? false,
+    frame: (
+      name: string, fillFraction?: number, phaseAngleDeg?: number, distMul?: number,
+      offNdcX?: number, offNdcY?: number,
+    ) =>
+      planetariumMode?.devFrameBody(name, fillFraction, phaseAngleDeg, distMul, offNdcX, offNdcY) ?? false,
+    viewFrom: (fromName: string, toName: string, fovDeg?: number) =>
+      planetariumMode?.devViewFrom(fromName, toName, fovDeg) ?? false,
+    limbView: (name: string, kRadii?: number, fovDeg?: number) =>
+      planetariumMode?.devLimbView(name, kRadii, fovDeg) ?? false,
     frameSun: (distanceAU?: number, fovDeg?: number, offNdcX?: number, offNdcY?: number) =>
       planetariumMode?.devFrameSun(distanceAU, fovDeg, offNdcX, offNdcY) ?? false,
+    diagnosticSphere: (offNdcX?: number, offNdcY?: number, fovDeg?: number, angularRadiusDeg?: number) =>
+      planetariumMode?.devFrameDiagnosticSphere(offNdcX, offNdcY, fovDeg, angularRadiusDeg) ?? false,
+    // Marker-limb integration: a planet's live analytic occluder disc, ship
+    // visibility, and a red marker sprite culled by the REAL analytic occlusion.
+    planetOccluderDisc: (name: string) => planetariumMode?.devPlanetOccluderDisc(name) ?? null,
+    setShipVisible: (visible: boolean) => planetariumMode?.devSetShipVisible(visible),
+    probeLimbMarker: (screenX: number, screenY: number, depthAU: number) =>
+      planetariumMode?.devProbeLimbMarker(screenX, screenY, depthAU) ?? null,
     sunAppearance: () => planetariumMode?.devSunAppearance() ?? null,
     sunGlareMask: () => planetariumMode?.devSunGlareMask() ?? null,
     eclipseDebug: () => planetariumMode?.devEclipseDebug() ?? null,
     setVeil: (opts: { warmth?: number; strength?: number }) =>
       planetariumMode?.devSetVeil(opts ?? {}) ?? false,
+    setDiamondScale: (k: number) => planetariumMode?.devSetDiamondScale(k) ?? false,
     // Near-Sun auto-exposure inspection + locks (peek the mode's target/coverage,
     // never the consuming getter). setBloom rebuilds the composer + halo tier.
     exposure: () => {
@@ -453,6 +579,17 @@ function installDevHooks() {
     setAutoExposure: (on: boolean) => { autoExposure = on; },
     setBloom: (on: boolean) => setPlanetariumBloom(on),
     bloomActive: () => planetariumBloomEnabled(),
+    // Lens-correction A/B: pass a strength (0 = rectilinear), no args restores
+    // the default. Returns the effective strength after the bloom gate.
+    setLens: (strength?: number | null) => {
+      lensRequestedStrength = typeof strength === 'number'
+        ? Math.min(Math.max(strength, 0), 1)
+        : LENS_DEFAULT_STRENGTH;
+      if (appMode === 'planetarium') {
+        buildComposer(planetariumCamera, { strength: 0.8, threshold: BLOOM_THRESHOLD }, planetariumBloomEnabled());
+      }
+      return planetariumLens.strength;
+    },
     probe: (name: string) => planetariumMode?.devProbe(name) ?? null,
     land: (name: string) => planetariumMode?.devLand(name) ?? false,
     lookUp: () => planetariumMode?.devLookUp() ?? false,
@@ -554,9 +691,14 @@ async function init() {
   debugLog('Init started');
   // Build identity in the menu footer: lets anyone confirm which deploy a
   // device is actually running (cached phone tabs have repeatedly shown
-  // days-old bundles while looking current).
+  // days-old bundles while looking current). It rides with the debug overlay
+  // rather than the normal menu — a build sha is diagnostic gear, not
+  // something to hand every visitor. Add ?debug=1 to bring it back.
   const buildEl = document.getElementById('menu-build');
-  if (buildEl) buildEl.textContent = `build ${__BUILD_TAG__}`;
+  if (buildEl && window.__dbgEnabled) {
+    buildEl.textContent = `build ${__BUILD_TAG__}`;
+    buildEl.style.display = 'block';
+  }
 
   let lastTime = performance.now();
 
@@ -638,7 +780,9 @@ function syncViewport() {
   appliedViewportW = w;
   appliedViewportH = h;
   planetariumCamera.aspect = w / h;
-  planetariumCamera.updateProjectionMatrix();
+  // Re-derives the lens overscan for the new aspect (and calls
+  // updateProjectionMatrix); the corner coverage is aspect-dependent.
+  applyDesignFov(planetariumCamera, planetariumLens.designFovDeg);
   flightCamera.aspect = w / h;
   flightCamera.updateProjectionMatrix();
   vcCamera.aspect = w / h;

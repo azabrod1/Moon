@@ -33,7 +33,11 @@ import { KM_PER_AU } from '../astronomy/constants';
 import { DEG2RAD, RAD2DEG } from '../shared/math/angles';
 // The REAL rig constants — this sweep must see exactly the rig the app
 // flies (mirrored copies here once meant a rig change couldn't fail a test).
-import { SHIP_CLEARANCE_AU, CRUISE_CAM_DIST_AU as CAM_DIST_AU } from './cruiseView';
+import { SHIP_CLEARANCE_AU, CRUISE_CAM_DIST_AU as CAM_DIST_AU, chaseIdealOffset } from './cruiseView';
+// The chase rig lifts along the flight horizon, not world-Y: compose the
+// camera pose from the production function so a rig or frame change re-runs
+// every arrival invariant instead of quietly passing on a stale approximation.
+import { FLIGHT_UP_SCENE } from './flightFrame';
 // Same rule for rendered sizes: the sweep derives them from the production
 // curve, so a sizing change re-exercises every pose invariant automatically.
 import { MOON_RENDER_ANCHOR_RATIO, renderedMoonRadiusAU } from './moonRenderSize';
@@ -331,8 +335,7 @@ describe('moon teleport camera tracking', () => {
       .addScaledVector(flightForward, startAlong - inp.renderedR * 4);
     const cameraPos = shipPos
       .clone()
-      .addScaledVector(flightForward, -CAM_DIST_AU)
-      .add(new THREE.Vector3(0, CAM_DIST_AU * 0.35, 0));
+      .add(chaseIdealOffset(flightForward, FLIGHT_UP_SCENE, new THREE.Vector3()));
     const shipCentredForward = shipPos.clone().sub(cameraPos).normalize();
     const ovalRatio = projectedAxisRatio(
       cameraPos,
@@ -345,8 +348,7 @@ describe('moon teleport camera tracking', () => {
     const cameraDistance = cameraPos.distanceTo(inp.moonPos);
     const arrivalCameraDistance = pose.position
       .clone()
-      .addScaledVector(flightForward, -CAM_DIST_AU)
-      .add(new THREE.Vector3(0, CAM_DIST_AU * 0.45, 0))
+      .add(chaseIdealOffset(flightForward, FLIGHT_UP_SCENE, new THREE.Vector3()))
       .distanceTo(inp.moonPos);
     const weight = moonArrivalCameraLookWeight(
       cameraDistance,
@@ -425,8 +427,7 @@ describe('moonArrivalPose — catalog sweep (all moons, three orbit phases)', ()
       const fwd = pose.aimPoint.clone().sub(pose.position).normalize();
       const camPos = pose.position
         .clone()
-        .addScaledVector(fwd, -CAM_DIST_AU)
-        .add(new THREE.Vector3(0, CAM_DIST_AU * 0.45, 0));
+        .add(chaseIdealOffset(fwd, FLIGHT_UP_SCENE, new THREE.Vector3()));
       const apparentDeg = 2 * Math.asin(inp.renderedR / camPos.distanceTo(inp.moonPos)) * RAD2DEG;
       expect(apparentDeg, `${moon.name}: arrival disc`).toBeGreaterThan(2.4);
     }
@@ -442,12 +443,11 @@ describe('moonArrivalPose — catalog sweep (all moons, three orbit phases)', ()
       const dist = pose.position.distanceTo(inp.moonPos);
       if (Math.abs(dist - raw) > 1e-9) continue; // a floor or cap bound instead
       // Compose the real chase-camera pose: camDist behind the ship along
-      // the heading, lifted 0.45·camDist (resetCruiseCamera's rig).
+      // the heading, lifted 0.35·camDist (the unified chase rig).
       const fwd = pose.aimPoint.clone().sub(pose.position).normalize();
       const camPos = pose.position
         .clone()
-        .addScaledVector(fwd, -CAM_DIST_AU)
-        .add(new THREE.Vector3(0, CAM_DIST_AU * 0.45, 0));
+        .add(chaseIdealOffset(fwd, FLIGHT_UP_SCENE, new THREE.Vector3()));
       const apparentDeg = 2 * Math.asin(inp.renderedR / camPos.distanceTo(inp.moonPos)) * RAD2DEG;
       expect(apparentDeg).toBeGreaterThan(MOON_ARRIVAL_APPARENT_DIAMETER_DEG - 0.5);
       expect(apparentDeg).toBeLessThan(MOON_ARRIVAL_APPARENT_DIAMETER_DEG + 0.5);

@@ -1,16 +1,21 @@
 import { describe, it, expect } from 'vitest';
 import {
+  anchorOnScreen,
   resolvePick,
   isTap,
   pickRadiusFor,
+  pickRadiusForAnchor,
+  PICK_DISC_PAD,
   PICK_RADIUS_FINE,
   PICK_RADIUS_COARSE,
   PICK_MOVE_SLOP,
   type PickAnchor,
 } from './mapPicking';
 
-const body = (name: string, x: number, y: number): PickAnchor => ({ name, x, y, pickable: true });
-const ship = (x: number, y: number): PickAnchor => ({ name: 'ship', x, y, pickable: false });
+const body = (name: string, x: number, y: number, discRadiusPx = 0): PickAnchor =>
+  ({ name, x, y, pickable: true, discRadiusPx });
+const ship = (x: number, y: number): PickAnchor =>
+  ({ name: 'ship', x, y, pickable: false, discRadiusPx: 0 });
 
 describe('pickRadiusFor', () => {
   it('is the fine radius for a mouse, the coarse radius otherwise', () => {
@@ -18,6 +23,53 @@ describe('pickRadiusFor', () => {
     expect(pickRadiusFor('touch')).toBe(PICK_RADIUS_COARSE);
     expect(pickRadiusFor('pen')).toBe(PICK_RADIUS_COARSE);
     expect(pickRadiusFor('')).toBe(PICK_RADIUS_COARSE);
+  });
+});
+
+describe('pickRadiusForAnchor', () => {
+  it('leaves a footprint-less marker on exactly the pointer floor', () => {
+    expect(pickRadiusForAnchor(PICK_RADIUS_FINE, 0)).toBe(PICK_RADIUS_FINE);
+    expect(pickRadiusForAnchor(PICK_RADIUS_COARSE, 0)).toBe(PICK_RADIUS_COARSE);
+  });
+
+  it('keeps the floor while the drawn disc is smaller than it', () => {
+    // A marker-sized body: the pad must never pull a hit target below the floor.
+    expect(pickRadiusForAnchor(PICK_RADIUS_FINE, 6)).toBe(PICK_RADIUS_FINE);
+    expect(pickRadiusForAnchor(PICK_RADIUS_COARSE, 18)).toBe(PICK_RADIUS_COARSE);
+  });
+
+  it('follows the disc plus a pad once the body is drawn large', () => {
+    expect(pickRadiusForAnchor(PICK_RADIUS_FINE, 300)).toBe(300 + PICK_DISC_PAD);
+    expect(pickRadiusForAnchor(PICK_RADIUS_COARSE, 300)).toBe(300 + PICK_DISC_PAD);
+  });
+});
+
+describe('anchorOnScreen', () => {
+  const W = 1280;
+  const H = 800;
+
+  it('keeps a marker whose centre is inside the frame, to the pixel', () => {
+    expect(anchorOnScreen(0, 0, W, H)).toBe(true);
+    expect(anchorOnScreen(W, H, W, H)).toBe(true);
+    expect(anchorOnScreen(640, 400, W, H)).toBe(true);
+  });
+
+  it('drops a marker whose centre leaves the frame on any edge', () => {
+    expect(anchorOnScreen(-1, 400, W, H)).toBe(false);
+    expect(anchorOnScreen(W + 1, 400, W, H)).toBe(false);
+    expect(anchorOnScreen(640, -1, W, H)).toBe(false);
+    expect(anchorOnScreen(640, H + 1, W, H)).toBe(false);
+  });
+
+  it('keeps a body whose drawn disc is still showing past the edge', () => {
+    // A 150 px globe centred 100 px off the left edge: a third of it is on
+    // screen and clickable.
+    expect(anchorOnScreen(-100, 400, W, H, 150)).toBe(true);
+    expect(anchorOnScreen(W + 100, 400, W, H, 150)).toBe(true);
+    expect(anchorOnScreen(640, -150, W, H, 150)).toBe(true);
+    // Fully past the edge by more than its own radius: nothing left to click.
+    expect(anchorOnScreen(-151, 400, W, H, 150)).toBe(false);
+    expect(anchorOnScreen(640, H + 151, W, H, 150)).toBe(false);
   });
 });
 
@@ -80,5 +132,43 @@ describe('resolvePick', () => {
   it('respects the radius (a far body is empty space)', () => {
     expect(resolvePick(200, 200, [body('Pluto', 200, 240)], PICK_RADIUS_FINE)).toEqual({ kind: 'empty' });
     expect(resolvePick(200, 200, [body('Pluto', 200, 240)], PICK_RADIUS_COARSE)).toEqual({ kind: 'body', name: 'Pluto' });
+  });
+
+  it('resolves dots exactly on the pointer floors — footprints change nothing', () => {
+    // Regression: with no drawn disc the hit radii are the shipped 24/44 px,
+    // to the pixel, on both sides of each boundary.
+    const dot = [body('Mars', 200, 200)];
+    expect(resolvePick(200, 224, dot, PICK_RADIUS_FINE)).toEqual({ kind: 'body', name: 'Mars' });
+    expect(resolvePick(200, 225, dot, PICK_RADIUS_FINE)).toEqual({ kind: 'empty' });
+    expect(resolvePick(200, 244, dot, PICK_RADIUS_COARSE)).toEqual({ kind: 'body', name: 'Mars' });
+    expect(resolvePick(200, 245, dot, PICK_RADIUS_COARSE)).toEqual({ kind: 'empty' });
+  });
+});
+
+describe('resolvePick over drawn discs', () => {
+  it('picks a body clicked anywhere on its drawn disc, limb included', () => {
+    const globe = [body('Jupiter', 400, 400, 150)];
+    // Well outside the 24 px pointer floor, inside the disc.
+    expect(resolvePick(400, 280, globe, PICK_RADIUS_FINE)).toEqual({ kind: 'body', name: 'Jupiter' });
+    // The limb itself, plus the pad.
+    expect(resolvePick(400 + 150 + PICK_DISC_PAD, 400, globe, PICK_RADIUS_FINE))
+      .toEqual({ kind: 'body', name: 'Jupiter' });
+    // Just beyond it is empty space again.
+    expect(resolvePick(400 + 150 + PICK_DISC_PAD + 1, 400, globe, PICK_RADIUS_FINE))
+      .toEqual({ kind: 'empty' });
+  });
+
+  it('lets a marker in front of a big disc take the tap', () => {
+    // A small body sitting over a globe: nearest wins across mismatched radii.
+    const stacked: PickAnchor[] = [body('Jupiter', 400, 400, 150), body('Io', 430, 400)];
+    expect(resolvePick(432, 400, stacked, PICK_RADIUS_FINE)).toEqual({ kind: 'body', name: 'Io' });
+    // Away from the marker, the globe still owns its own face.
+    expect(resolvePick(340, 400, stacked, PICK_RADIUS_FINE)).toEqual({ kind: 'body', name: 'Jupiter' });
+  });
+
+  it('lets a drawn disc outrank a nearer marker only when the marker is out of range', () => {
+    const stacked: PickAnchor[] = [body('Jupiter', 400, 400, 150), body('Io', 300, 400)];
+    // 30 px from Io is outside Io's 24 px floor but inside Jupiter's disc.
+    expect(resolvePick(270, 400, stacked, PICK_RADIUS_FINE)).toEqual({ kind: 'body', name: 'Jupiter' });
   });
 });

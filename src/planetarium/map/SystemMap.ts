@@ -9,8 +9,9 @@
  * (the sim clock + the ship's heliocentric AU pose) and it recomputes every
  * body straight from the ephemeris seam (sampleTrajectoryLinePoints ->
  * computeBodyPositionAU), so the schematic cannot disagree with the world.
- * Radii compress toward the Sun (mapProjection) with a gamma the scale toggle
- * animates; every distance the map draws is derived, never stored on the save.
+ * Radii compress toward the Sun (mapProjection) along a blend the scale toggle
+ * animates between compressed and true; every distance the map draws is
+ * derived, never stored on the save.
  *
  * Packet A is the view only — orbits, dots, the ship marker, labels, the scale
  * animation, open/close, and the render transaction. Picking, the body card,
@@ -33,15 +34,26 @@ import { applyTextureDefaults } from '../world/texturePolicy';
 import { projectToScreen, type ScreenProjection } from '../../shared/three/projectToScreen';
 import { smoothstepUnclamped } from '../../shared/math/smoothstep';
 import {
+  defaultMapCurve,
+  diveRestoreDistanceAU,
   fitDistanceAU,
   isAtOverviewFit,
   projectMapPoint,
-  MAP_GAMMA_DEFAULT,
-  MAP_GAMMA_TRUE,
-  MAP_GAMMA_ANIM_MS,
+  sanitizeMapCurve,
+  MAP_BLEND_ANIM_MS,
+  MAP_BLEND_COMPRESSED,
+  MAP_BLEND_TRUE,
+  type MapCurve,
   type MapVec3,
 } from './mapProjection';
-import { resolvePick, pickRadiusFor, type PickAnchor, type PickResult } from './mapPicking';
+import { MAP_BODY_SIZE_DEFAULTS, type MapBodySizeParams } from './mapBodySize';
+import {
+  anchorOnScreen,
+  pickRadiusFor,
+  resolvePick,
+  type PickAnchor,
+  type PickResult,
+} from './mapPicking';
 
 const ORBIT_SEGMENTS = 180;
 const MAP_FOV_DEG = 50;
@@ -77,7 +89,7 @@ interface OrbitEntry {
   dot: THREE.Sprite;
   /** Vertex index the body last sat at — colors rebuild only on a crossing. */
   lastVertex: number;
-  /** Largest projected |r| over the samples at the live gamma — the
+  /** Largest projected |r| over the samples at the live blend — the
    *  eccentricity-correct extent this orbit contributes (aphelion, not the
    *  semi-major axis, sets the drawn reach). Refreshed with recompressOrbits. */
   maxMapRadius: number;
@@ -114,18 +126,22 @@ export class SystemMap {
   private labels: HTMLDivElement[] = [];
 
   private open = false;
-  private gamma = MAP_GAMMA_DEFAULT;
-  private gammaFrom = MAP_GAMMA_DEFAULT;
-  private gammaTo = MAP_GAMMA_DEFAULT;
-  private gammaElapsedMs = 0;
-  private gammaAnimating = false;
+  // Radial curve + how far it is blended toward true scale (0 compressed,
+  // 1 true). The curve is a dev-selectable A/B; the blend is the user's toggle.
+  private curve: MapCurve = defaultMapCurve();
+  private blend = MAP_BLEND_COMPRESSED;
+  private blendFrom = MAP_BLEND_COMPRESSED;
+  private blendTo = MAP_BLEND_COMPRESSED;
+  private blendElapsedMs = 0;
+  private blendAnimating = false;
+  private bodySizeParams: MapBodySizeParams = { ...MAP_BODY_SIZE_DEFAULTS };
   private epochUtcMs = 0;
   private sampled = false;
   private extentAU = 1;
   private needsInitialFrame = false;
   // The user's framing (camera distance / fit distance) captured when a scale
   // toggle starts, so the whole animation re-fits to the new extent and the
-  // system keeps its apparent size instead of zooming as gamma slides.
+  // system keeps its apparent size instead of zooming as the blend slides.
   private scaleZoomRatio = 1;
 
   // Scratch — no per-frame allocation in steady state.
@@ -140,13 +156,21 @@ export class SystemMap {
   // Un-docked ship pulse phase (wall ms).
   private pulseMs = 0;
 
+  // Last raw heliocentric ship pose the mode handed over, and whether one has
+  // arrived yet — the marker re-projects from these whenever the curve changes
+  // between frames.
+  private shipRawX = 0;
+  private shipRawY = 0;
+  private shipRawZ = 0;
+  private shipSnapshot = false;
+
   // Pick anchors, rebuilt on demand (event-driven, not per frame). A fixed pool
   // (Sun + every planet + the ship) is filled in place and `pickAnchors` holds
   // references to the in-use slots, so hover/tap picking allocates nothing after
   // warm-up.
   private pickAnchorPool: PickAnchor[] = Array.from(
     { length: PLANETARIUM_BODIES.length + 2 },
-    () => ({ name: '', x: 0, y: 0, pickable: false }),
+    () => ({ name: '', x: 0, y: 0, pickable: false, discRadiusPx: 0 }),
   );
   private pickAnchors: PickAnchor[] = [];
   // The catalog name of the currently hovered dot (fine pointers), or null.
@@ -161,6 +185,8 @@ export class SystemMap {
   // restore it exactly; setDivePose eases toward the focus.
   private diving = false;
   private diveWasAtOverview = false;
+  /** Camera distance as a fraction of the overview fit at dive start. */
+  private divePreFitRatio = 1;
   private diveFocus = new THREE.Vector3();
   // The body the dive is aimed at — the ease re-reads its live map position each
   // frame (the clock keeps moving it), so a high time rate can't dive to where
@@ -226,8 +252,17 @@ export class SystemMap {
     return this.open;
   }
 
-  getGamma(): number {
-    return this.gamma;
+  /** How far the map is blended toward true scale: 0 compressed, 1 true. */
+  getBlend(): number {
+    return this.blend;
+  }
+
+  getCurve(): MapCurve {
+    return this.curve;
+  }
+
+  getBodySizeParams(): MapBodySizeParams {
+    return this.bodySizeParams;
   }
 
   getCameraDistance(): number {
@@ -272,31 +307,53 @@ export class SystemMap {
     for (const label of this.labels) label.style.display = 'none';
   }
 
-  /** Segmented scale control: animate gamma toward compressed / true scale.
+  /** Segmented scale control: animate the blend toward compressed / true scale.
    *  Capture the user's current framing so the animation re-dollies to keep the
    *  system the same apparent size as its extent changes. */
   setScale(trueScale: boolean): void {
-    const target = trueScale ? MAP_GAMMA_TRUE : MAP_GAMMA_DEFAULT;
-    if (Math.abs(target - this.gammaTo) < 1e-9 && !this.gammaAnimating) return;
+    const target = trueScale ? MAP_BLEND_TRUE : MAP_BLEND_COMPRESSED;
+    if (Math.abs(target - this.blendTo) < 1e-9 && !this.blendAnimating) return;
     const fit = fitDistanceAU(this.extentAU, MAP_FOV_DEG, this.camera.aspect);
     this.scaleZoomRatio = this.getCameraDistance() / Math.max(fit, 1e-4);
-    this.gammaFrom = this.gamma;
-    this.gammaTo = target;
-    this.gammaElapsedMs = 0;
-    this.gammaAnimating = true;
+    this.blendFrom = this.blend;
+    this.blendTo = target;
+    this.blendElapsedMs = 0;
+    this.blendAnimating = true;
   }
 
   isTrueScale(): boolean {
-    return this.gammaTo >= MAP_GAMMA_TRUE - 1e-6;
+    return this.blendTo >= MAP_BLEND_TRUE - 1e-6;
   }
 
-  /** Dev bridge: snap gamma without animating. */
-  setGamma(g: number): void {
-    this.gammaAnimating = false;
-    this.gamma = g;
-    this.gammaFrom = g;
-    this.gammaTo = g;
+  /** Dev bridge: swap the radial curve, leaving the compressed/true blend
+   *  alone. A parameter the curve can't be evaluated with is ignored, leaving
+   *  the current curve standing. The framing (camera distance as a fraction of
+   *  the overview fit) is preserved across the swap, so the two curves are
+   *  compared at one apparent size instead of one jumping in the viewer's face. */
+  setCurve(curve: MapCurve): void {
+    const next = sanitizeMapCurve(curve);
+    if (!next) return;
+    const wasFit = fitDistanceAU(this.extentAU, MAP_FOV_DEG, this.camera.aspect);
+    const zoomRatio = this.getCameraDistance() / Math.max(wasFit, 1e-4);
+    this.curve = next;
     this.recompressOrbits();
+    if (!this.open) return;
+    // The ship is part of the extent, so its marker moves onto the new curve
+    // here — before the fit reads it — or the swap would frame the wrong disc.
+    if (this.shipSnapshot) this.positionShipMarker();
+    this.recomputeExtent();
+    const want = zoomRatio * fitDistanceAU(this.extentAU, MAP_FOV_DEG, this.camera.aspect);
+    this.dollyTo(want);
+    this.applyBounds(want);
+    this.controls.update();
+  }
+
+  /** Dev bridge: live tuning of the drawn-size policy. A partial merges into
+   *  the running copy; null restores the shipped defaults. */
+  setBodySizeParams(partial: Partial<MapBodySizeParams> | null): void {
+    this.bodySizeParams = partial === null
+      ? { ...MAP_BODY_SIZE_DEFAULTS }
+      : { ...this.bodySizeParams, ...partial };
   }
 
   /**
@@ -324,15 +381,21 @@ export class SystemMap {
       this.resample(utcMs);
     }
 
-    // Advance the scale animation; a live gamma re-projects the cached samples.
-    if (this.gammaAnimating) {
-      this.gammaElapsedMs = Math.min(this.gammaElapsedMs + dtMs, MAP_GAMMA_ANIM_MS);
-      const t = this.gammaElapsedMs / MAP_GAMMA_ANIM_MS;
-      this.gamma = this.gammaFrom + (this.gammaTo - this.gammaFrom) * smoothstepUnclamped(t);
+    // Advance the scale animation; a live blend re-projects the cached samples.
+    // The camera branch below keys off whether the blend moved THIS frame, not
+    // off the flag: the terminal frame clears it while carrying the animation's
+    // largest extent change, and that frame needs the same preserving dolly as
+    // every other, or the settled view is left misframed.
+    let blendMoved = false;
+    if (this.blendAnimating) {
+      blendMoved = true;
+      this.blendElapsedMs = Math.min(this.blendElapsedMs + dtMs, MAP_BLEND_ANIM_MS);
+      const t = this.blendElapsedMs / MAP_BLEND_ANIM_MS;
+      this.blend = this.blendFrom + (this.blendTo - this.blendFrom) * smoothstepUnclamped(t);
       this.recompressOrbits();
       if (t >= 1) {
-        this.gamma = this.gammaTo;
-        this.gammaAnimating = false;
+        this.blend = this.blendTo;
+        this.blendAnimating = false;
       }
     }
 
@@ -352,9 +415,9 @@ export class SystemMap {
         // includes a ship past Pluto.
         this.needsInitialFrame = false;
         this.frameToExtent();
-      } else if (this.gammaAnimating) {
+      } else if (blendMoved) {
         // Re-dolly to preserve the framing captured at the toggle, so the
-        // system holds its apparent size while its extent slides with gamma.
+        // system holds its apparent size while its extent slides with the blend.
         const wantDist = this.scaleZoomRatio
           * fitDistanceAU(this.extentAU, MAP_FOV_DEG, this.camera.aspect);
         this.dollyTo(wantDist);
@@ -404,7 +467,7 @@ export class SystemMap {
     const h = Math.max(el.clientHeight, 1);
     // Judge "still at the overview fit" against the OLD aspect before touching
     // the camera — that fit is the frame the user was actually looking at.
-    const wasAtOverview = this.open && this.sampled && !this.diving && !this.gammaAnimating
+    const wasAtOverview = this.open && this.sampled && !this.diving && !this.blendAnimating
       && !this.needsInitialFrame
       && isAtOverviewFit(
         this.getCameraDistance(),
@@ -489,13 +552,16 @@ export class SystemMap {
     if (!focus) return false;
     this.diveFocusName = name;
     this.diveFocus.copy(focus.position);
-    // Whether the dive left FROM the parked overview — a cancel restores the
-    // start pose, and if the viewport rotated during the dive that pose's
-    // distance belongs to the old aspect (onResize stands down while diving).
-    this.diveWasAtOverview = isAtOverviewFit(
-      this.getCameraDistance(),
-      fitDistanceAU(this.extentAU, MAP_FOV_DEG, this.camera.aspect),
-    );
+    // How the camera was framed at dive start, kept as a FRACTION of the fit
+    // rather than an absolute distance: a cancel has to rebuild the framing
+    // against whatever the extent has become by then, and only the fraction
+    // survives that. Whether it left from the parked overview is tracked
+    // separately, so a cancel can snap that case back to the exact fit — which
+    // is also what corrects the distance if the viewport rotated during the
+    // dive (onResize stands down while diving).
+    const startFit = fitDistanceAU(this.extentAU, MAP_FOV_DEG, this.camera.aspect);
+    this.divePreFitRatio = this.getCameraDistance() / Math.max(startFit, 1e-4);
+    this.diveWasAtOverview = isAtOverviewFit(this.getCameraDistance(), startFit);
     this.diveStartPos.copy(this.camera.position);
     this.diveStartTarget.copy(this.controls.target);
     this.diveOffsetDir.copy(this.diveStartPos).sub(this.diveStartTarget);
@@ -530,19 +596,26 @@ export class SystemMap {
     if (!this.diving) return;
     this.diving = false;
     if (!commit) {
+      // The extent goes stale during a dive — the camera section stands down,
+      // but the geometry underneath never stops (the scale animation runs to
+      // its end, bodies keep moving), so a toggle started just before the dive
+      // can leave the system many times larger than the frozen figure. Refresh
+      // it before anything frames against it.
+      this.recomputeExtent();
       this.camera.position.copy(this.diveStartPos);
       this.controls.target.copy(this.diveStartTarget);
       this.camera.lookAt(this.diveStartTarget);
-      // The restored pose was captured at dive start; if the viewport changed
-      // during the dive (onResize stands down while diving), a parked-overview
-      // start distance now belongs to the wrong aspect and would clip the
-      // outer system. Re-fit the restored overview to the CURRENT aspect —
-      // view direction kept, distance corrected; a no-op when nothing changed.
-      if (this.diveWasAtOverview) {
-        const fit = fitDistanceAU(this.extentAU, MAP_FOV_DEG, this.camera.aspect);
-        this.dollyTo(fit);
-        this.applyBounds(fit);
-      }
+      // View direction restored exactly; the distance is rebuilt against the
+      // current extent and aspect, so a scale change or a viewport rotation
+      // during the dive can't leave the restored frame clipped. A no-op when
+      // neither moved.
+      const want = diveRestoreDistanceAU(
+        this.diveWasAtOverview,
+        this.divePreFitRatio,
+        fitDistanceAU(this.extentAU, MAP_FOV_DEG, this.camera.aspect),
+      );
+      this.dollyTo(want);
+      this.applyBounds(want);
       this.camera.updateMatrixWorld();
       this.controls.enabled = true;
       this.controls.update();
@@ -569,25 +642,29 @@ export class SystemMap {
     }
   }
 
+  /** Project one body's MAP POSITION (never a mesh) into a pick anchor, so the
+   *  hit target stays put whatever the body draws as. `discRadiusPx` is that
+   *  drawing's own footprint — 0 for a marker, which leaves the pointer floor
+   *  governing. */
   private pushAnchor(
     name: string,
     worldPos: THREE.Vector3,
     pickable: boolean,
     w: number,
     h: number,
+    discRadiusPx = 0,
   ): void {
     projectToScreen(worldPos, this.camera, w, h, this.tmpProj);
     if (this.tmpProj.ndcZ >= 1) return; // behind the camera — not on screen
     // A dot past the frame edge isn't pickable even if the tap radius reaches
-    // it — exclude anything projecting outside the viewport rect.
-    if (this.tmpProj.x < 0 || this.tmpProj.x > w || this.tmpProj.y < 0 || this.tmpProj.y > h) {
-      return;
-    }
+    // it; a body with a drawn footprint stays pickable while any of it shows.
+    if (!anchorOnScreen(this.tmpProj.x, this.tmpProj.y, w, h, discRadiusPx)) return;
     const a = this.pickAnchorPool[this.pickAnchors.length];
     a.name = name;
     a.x = this.tmpProj.x;
     a.y = this.tmpProj.y;
     a.pickable = pickable;
+    a.discRadiusPx = discRadiusPx;
     this.pickAnchors.push(a);
   }
 
@@ -636,13 +713,14 @@ export class SystemMap {
           entry.raw[i * 3],
           entry.raw[i * 3 + 1],
           entry.raw[i * 3 + 2],
-          this.gamma,
+          this.blend,
+          this.curve,
           this.tmpMap,
         );
         entry.map[i * 3] = this.tmpMap.x;
         entry.map[i * 3 + 1] = this.tmpMap.y;
         entry.map[i * 3 + 2] = this.tmpMap.z;
-        // Projected radius = |compressed point| = r^gamma; the aphelion sample
+        // Projected radius = |compressed point|; the aphelion sample
         // sets this orbit's reach, so an eccentric orbit (Pluto) isn't clipped
         // by a semi-major-axis extent.
         const r = Math.hypot(this.tmpMap.x, this.tmpMap.y, this.tmpMap.z);
@@ -657,7 +735,7 @@ export class SystemMap {
   // interleaved instance buffer of N segments, each holding the pair
   // [start.xyz, end.xyz] at stride 6 (see LineSegmentsGeometry.setPositions).
   // setPositions/setColors reallocate that buffer and its attributes every
-  // call; on the gamma animation and per-frame colour rebuilds that churns, so
+  // call; on the scale animation and per-frame colour rebuilds that churns, so
   // after the one-time build we mutate the existing arrays in place.
 
   /** Pack entry.map (contiguous xyz per point) into the interleaved segment
@@ -702,7 +780,7 @@ export class SystemMap {
   }
 
   /** Position each planet dot on the exact ephemeris (never the sampled chord),
-   *  compressed through the live gamma, and refresh the direction fade only
+   *  compressed through the live blend, and refresh the direction fade only
    *  when the body crosses a sampled vertex. */
   private updateBodies(utcMs: number): void {
     for (const entry of this.orbits) {
@@ -715,7 +793,7 @@ export class SystemMap {
       entry.helioX = helio.x;
       entry.helioY = helio.y;
       entry.helioZ = helio.z;
-      projectMapPoint(helio.x, helio.y, helio.z, this.gamma, this.tmpMap);
+      projectMapPoint(helio.x, helio.y, helio.z, this.blend, this.curve, this.tmpMap);
       entry.dot.position.set(this.tmpMap.x, this.tmpMap.y, this.tmpMap.z);
       // The fade still keys off the sampled loop — cheap and only rebuilt on a
       // vertex crossing.
@@ -751,6 +829,15 @@ export class SystemMap {
     this.writeColors(entry);
   }
 
+  /** Project the last ship snapshot through the live curve and blend. Split out
+   *  so a curve change can re-place the marker in the same call that re-fits —
+   *  the ship is part of the extent, so a stale marker would fit the wrong
+   *  frame. */
+  private positionShipMarker(): void {
+    projectMapPoint(this.shipRawX, this.shipRawY, this.shipRawZ, this.blend, this.curve, this.tmpMap);
+    this.shipMarker.position.set(this.tmpMap.x, this.tmpMap.y, this.tmpMap.z);
+  }
+
   /** Phase (1): place the ship marker in map space, pick docked/moving texture,
    *  and breathe the un-docked chevron. No projection — the camera hasn't been
    *  flushed for this frame yet; the heading rotation waits for orientShip. */
@@ -762,8 +849,11 @@ export class SystemMap {
     landed: boolean,
     dtMs: number,
   ): void {
-    projectMapPoint(x, y, z, this.gamma, this.tmpMap);
-    this.shipMarker.position.set(this.tmpMap.x, this.tmpMap.y, this.tmpMap.z);
+    this.shipRawX = x;
+    this.shipRawY = y;
+    this.shipRawZ = z;
+    this.shipSnapshot = true;
+    this.positionShipMarker();
     const docked = landed || !moving;
     this.shipDocked = docked;
     const mat = this.shipMarker.material;
@@ -808,7 +898,8 @@ export class SystemMap {
       x + Math.cos(heading) * cp * step,
       y + Math.sin(pitch) * step,
       z + Math.sin(heading) * cp * step,
-      this.gamma,
+      this.blend,
+      this.curve,
       this.tmpMap2,
     );
     const w = this.renderer.domElement.clientWidth;

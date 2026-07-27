@@ -266,6 +266,7 @@ import { TutorialCard, tutorialCardModel } from './ui/TutorialCard';
 import { SystemMap } from './map/SystemMap';
 import { MapHUD } from './ui/MapHUD';
 import { mapCardActions, mapCardOffersVerb, commitBodyPickOutcome, type MapVerb } from './map/mapLogic';
+import { type MapBodySizeParams } from './map/mapBodySize';
 import { isTap } from './map/mapPicking';
 import { formatBodyDistance, bodyDistanceQuantum } from './bodyDistance';
 
@@ -6121,16 +6122,27 @@ export class PlanetariumMode {
 
   devMapState(): {
     open: boolean;
-    gamma: number;
+    blend: number;
+    trueScale: boolean;
+    curve: string;
+    curveParam: number;
+    bodySize: MapBodySizeParams;
     cameraDist: number;
     picked: string | null;
     diving: boolean;
     diveGapAU: number | null;
   } | null {
     if (!this.systemMap) return null;
+    const curve = this.systemMap.getCurve();
     return {
       open: this.systemMap.isOpen(),
-      gamma: this.systemMap.getGamma(),
+      // How far the map is blended toward true scale, plus which radial curve
+      // the compressed end is drawn with and its one parameter.
+      blend: this.systemMap.getBlend(),
+      trueScale: this.systemMap.isTrueScale(),
+      curve: curve.kind,
+      curveParam: curve.kind === 'power' ? curve.gamma : curve.s0,
+      bodySize: this.systemMap.getBodySizeParams(),
       cameraDist: this.systemMap.getCameraDistance(),
       picked: this.mapPicked?.name ?? null,
       diving: this.mapDiving,
@@ -6140,8 +6152,21 @@ export class PlanetariumMode {
     };
   }
 
+  /** Dev bridge: draw the map's compressed end with the power-law curve at this
+   *  exponent, for comparison against the shipped asinh curve. */
   devSetMapGamma(gamma: number): void {
-    this.systemMap?.setGamma(gamma);
+    this.systemMap?.setCurve({ kind: 'power', gamma });
+  }
+
+  /** Dev bridge: the asinh curve's softening scale in AU — smaller compresses
+   *  harder, larger keeps more of the system near true. */
+  devSetMapS(s0: number): void {
+    this.systemMap?.setCurve({ kind: 'asinh', s0 });
+  }
+
+  /** Dev bridge: live tuning of the map's drawn-size policy; null resets. */
+  devSetMapBodySize(partial: Partial<MapBodySizeParams> | null): void {
+    this.systemMap?.setBodySizeParams(partial);
   }
 
   /** Dev bridge: open the card on a named body (Sun or a planet), as a real

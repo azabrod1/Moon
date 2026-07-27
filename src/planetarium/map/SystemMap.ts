@@ -157,6 +157,7 @@ export class SystemMap {
   // token, and the commit). beginDive snapshots the start pose so a cancel can
   // restore it exactly; setDivePose eases toward the focus.
   private diving = false;
+  private diveWasAtOverview = false;
   private diveFocus = new THREE.Vector3();
   // The body the dive is aimed at — the ease re-reads its live map position each
   // frame (the clock keeps moving it), so a high time rate can't dive to where
@@ -485,6 +486,13 @@ export class SystemMap {
     if (!focus) return false;
     this.diveFocusName = name;
     this.diveFocus.copy(focus.position);
+    // Whether the dive left FROM the parked overview — a cancel restores the
+    // start pose, and if the viewport rotated during the dive that pose's
+    // distance belongs to the old aspect (onResize stands down while diving).
+    this.diveWasAtOverview = isAtOverviewFit(
+      this.getCameraDistance(),
+      fitDistanceAU(this.extentAU, MAP_FOV_DEG, this.camera.aspect),
+    );
     this.diveStartPos.copy(this.camera.position);
     this.diveStartTarget.copy(this.controls.target);
     this.diveOffsetDir.copy(this.diveStartPos).sub(this.diveStartTarget);
@@ -522,8 +530,19 @@ export class SystemMap {
       this.camera.position.copy(this.diveStartPos);
       this.controls.target.copy(this.diveStartTarget);
       this.camera.lookAt(this.diveStartTarget);
+      // The restored pose was captured at dive start; if the viewport changed
+      // during the dive (onResize stands down while diving), a parked-overview
+      // start distance now belongs to the wrong aspect and would clip the
+      // outer system. Re-fit the restored overview to the CURRENT aspect —
+      // view direction kept, distance corrected; a no-op when nothing changed.
+      if (this.diveWasAtOverview) {
+        const fit = fitDistanceAU(this.extentAU, MAP_FOV_DEG, this.camera.aspect);
+        this.dollyTo(fit);
+        this.applyBounds(fit);
+      }
       this.camera.updateMatrixWorld();
       this.controls.enabled = true;
+      this.controls.update();
     }
   }
 

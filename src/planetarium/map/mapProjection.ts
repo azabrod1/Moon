@@ -104,6 +104,8 @@ export function isAtOverviewFit(
   fitDistAU: number,
   tolFrac = 0.02,
 ): boolean {
-  if (!(fitDistAU > 0) || !Number.isFinite(cameraDistAU)) return false;
+  if (!Number.isFinite(fitDistAU) || !(fitDistAU > 0) || !Number.isFinite(cameraDistAU)) {
+    return false;
+  }
   return Math.abs(cameraDistAU - fitDistAU) <= fitDistAU * tolFrac;
 }

@@ -166,5 +166,9 @@ describe('isAtOverviewFit', () => {
     expect(isAtOverviewFit(10, NaN)).toBe(false);
     expect(isAtOverviewFit(NaN, 10)).toBe(false);
     expect(isAtOverviewFit(Infinity, 10)).toBe(false);
+    // An infinite fit would make the tolerance band infinite and accept
+    // everything — reject it outright.
+    expect(isAtOverviewFit(10, Infinity)).toBe(false);
+    expect(isAtOverviewFit(Infinity, Infinity)).toBe(false);
   });
 });

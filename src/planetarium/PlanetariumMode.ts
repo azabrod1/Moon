@@ -859,6 +859,9 @@ export class PlanetariumMode {
   private mapPicked: NonNullable<LandedTarget> | null = null;
   // Pointer bookkeeping for tap-vs-drag picking on the map canvas.
   private mapPickPointerId: number | null = null;
+  // Set when the armed gesture can no longer be a tap (a second concurrent
+  // pointer joined, or the pointer left the tap slop); cleared with the id.
+  private mapPickPoisoned = false;
   private mapPickDownX = 0;
   private mapPickDownY = 0;
   private mapPickPointerType = 'mouse';
@@ -1217,6 +1220,12 @@ export class PlanetariumMode {
     orbitDom.addEventListener('pointerup', (e) => this.mapPointerUp(e));
     orbitDom.addEventListener('pointercancel', (e) => this.mapPointerCancel(e));
     orbitDom.addEventListener('pointermove', (e) => this.mapPointerMove(e));
+    // A release the canvas never sees (drag ends over the HUD, capture lost
+    // without a canvas pointercancel) still ends the gesture: the window pair
+    // only ever DISARMS — commits stay canvas-only, and after an on-canvas
+    // release these run second and find the id already cleared.
+    window.addEventListener('pointerup', (e) => this.mapPointerCancel(e));
+    window.addEventListener('pointercancel', (e) => this.mapPointerCancel(e));
 
     window.addEventListener('blur', () => {
       // Focus loss mid-drag: the pointerup may never arrive, so cancel the
@@ -1227,6 +1236,7 @@ export class PlanetariumMode {
       // one pointer id, so the NEXT click's release could then tap against
       // this gesture's stale down point.
       this.mapPickPointerId = null;
+      this.mapPickPoisoned = false;
       // Focus loss (e.g. Cmd-Tab) means the keyups won't arrive, so a held key
       // would linger — with W held the ship accelerates unattended. Drop every
       // held key; yaw/pitch/throttle recompute from this set each frame
@@ -6245,6 +6255,7 @@ export class PlanetariumMode {
     // Nor an armed pick gesture: ids are recycled across gestures, so a
     // stranded one could commit a later, unrelated tap.
     this.mapPickPointerId = null;
+    this.mapPickPoisoned = false;
     // Give the canvas back to the world only when the mode is live: a teardown
     // close (deactivate) must leave the touch zone and controls inert, or it
     // re-arms the very controls deactivate just retired.
@@ -6328,8 +6339,14 @@ export class PlanetariumMode {
     // armed tap or move its down point — releasing the pinch would then read
     // as a tap wherever that finger landed. The id stays armed until ITS
     // pointerup/cancel (or blur/close) releases it, the same contract as the
-    // cruise chase drag.
-    if (this.mapPickPointerId !== null) return;
+    // cruise chase drag. The second finger also POISONS the armed tap: a pinch
+    // can zoom while the first finger holds perfectly still, and that first
+    // finger's release must not read as a tap either.
+    if (this.mapPickPointerId !== null) {
+      this.mapPickPoisoned = true;
+      return;
+    }
+    this.mapPickPoisoned = false;
     this.mapPickPointerId = e.pointerId;
     this.mapPickDownX = e.clientX;
     this.mapPickDownY = e.clientY;
@@ -6347,7 +6364,9 @@ export class PlanetariumMode {
     // stale down point after the dive (pointer ids are recycled — a mouse
     // reuses one id for every click).
     this.mapPickPointerId = null;
-    if (this.mapDiving || !this.systemMap) return;
+    const poisoned = this.mapPickPoisoned;
+    this.mapPickPoisoned = false;
+    if (poisoned || this.mapDiving || !this.systemMap) return;
     if (!isTap(this.mapPickDownX, this.mapPickDownY, e.clientX, e.clientY)) return;
     const rect = this.renderer.domElement.getBoundingClientRect();
     const x = e.clientX - rect.left;
@@ -6358,15 +6377,29 @@ export class PlanetariumMode {
     // 'ship' is inert — swallow, dismiss nothing.
   }
 
-  /** A cancelled gesture (palm rejection, system gesture take-over) disarms
-   *  the pick without committing anything. */
+  /** A cancelled or off-canvas-released gesture (palm rejection, system
+   *  gesture take-over, drag ending over the HUD or a lost capture) disarms
+   *  the pick without committing anything. Also bound at the window level —
+   *  after an on-canvas release the canvas handler has already disarmed, so
+   *  the window pass is a no-op there. */
   private mapPointerCancel(e: PointerEvent) {
-    if (this.mapPickPointerId === e.pointerId) this.mapPickPointerId = null;
+    if (this.mapPickPointerId === e.pointerId) {
+      this.mapPickPointerId = null;
+      this.mapPickPoisoned = false;
+    }
   }
 
   /** Fine-pointer hover: brighten the dot under the cursor and flag it pickable. */
   private mapPointerMove(e: PointerEvent) {
-    if (!this.isMapOpen() || this.mapDiving || e.pointerType !== 'mouse') return;
+    if (!this.isMapOpen()) return;
+    // Travel latch: once the armed pointer leaves the tap slop the gesture can
+    // never be a tap again, even if it wanders back — an endpoint-only test
+    // would read an out-and-back orbit drag as a tap on the down point.
+    if (e.pointerId === this.mapPickPointerId
+      && !isTap(this.mapPickDownX, this.mapPickDownY, e.clientX, e.clientY)) {
+      this.mapPickPoisoned = true;
+    }
+    if (this.mapDiving || e.pointerType !== 'mouse') return;
     if (!this.systemMap) return;
     const rect = this.renderer.domElement.getBoundingClientRect();
     const name = this.systemMap.hoverAt(e.clientX - rect.left, e.clientY - rect.top);

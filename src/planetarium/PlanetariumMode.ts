@@ -143,7 +143,7 @@ import {
   type SurfaceTargetChoice,
 } from './surfaceView';
 import { DEG2RAD } from '../shared/math/angles';
-import { applyDesignFov } from '../shared/math/lensProjection';
+import { applyDesignFov, displayFovDeg } from '../shared/math/lensProjection';
 import { SUN_GLARE_EXTENT_SOLAR_RADII, SUN_VEIL_BETA, SUN_VEIL_SCALE_H } from '../shared/shaders/sun';
 import { landedFrameCamDistAU, landedMinDistanceAU, landedNearAU, LANDED_NEAR_AU } from './landedView';
 import {
@@ -7791,13 +7791,6 @@ export class PlanetariumMode {
     }
   }
 
-  /** The FOV the frame displays (under the lens pass, camera.fov holds the
-   *  wider overscan the warp samples from — never compare against it). */
-  private displayFovDeg(): number {
-    const lens = this.camera.userData.lens as { designFovDeg: number; strength: number } | undefined;
-    return lens ? lens.designFovDeg : this.camera.fov;
-  }
-
   /** The one legal camera-FOV writer: routes through the lens overscan. */
   private setDisplayFov(deg: number): void {
     applyDesignFov(this.camera as THREE.PerspectiveCamera, deg);
@@ -8996,7 +8989,7 @@ export class PlanetariumMode {
       whenText: formatObservatoryClock(now),
       whenTag: this.observatoryNowTag(),
       paused: this.timeState.paused,
-      fovDeg: this.displayFovDeg(),
+      fovDeg: displayFovDeg(this.camera),
       tracking: this.surfaceTracking,
       targetName: this.surfaceTargetDisplayName(this.surfaceTarget),
       showLookatChip: this.surfaceTargetChoiceCount() >= 2,
@@ -9521,7 +9514,7 @@ export class PlanetariumMode {
       // (predictable framing beats preserving a zoom tuned for the previous
       // subject).
       this.surfaceFovAnim = {
-        fromFov: this.displayFovDeg(),
+        fromFov: displayFovDeg(this.camera),
         toFov: entryFov,
         fromPos: null,
         elapsed: 0,
@@ -9552,7 +9545,7 @@ export class PlanetariumMode {
       this.notification.show('Drag to look around · scroll or pinch to zoom');
     }
     this.surfaceFovAnim = {
-      fromFov: this.displayFovDeg(),
+      fromFov: displayFovDeg(this.camera),
       toFov: entryFov,
       fromPos: this.preSurfaceCameraPos.clone(),
       elapsed: 0,
@@ -9585,7 +9578,7 @@ export class PlanetariumMode {
       return;
     }
     this.surfaceFovAnim = {
-      fromFov: this.displayFovDeg(),
+      fromFov: displayFovDeg(this.camera),
       toFov: 60,
       fromPos: null,
       elapsed: 0,
@@ -9640,7 +9633,7 @@ export class PlanetariumMode {
     this.surfaceTracking = false;
     // A full-viewport-height drag pans one FOV — "grab the sky".
     const radPerPx =
-      (this.displayFovDeg() * DEG2RAD) / Math.max(this.renderer.domElement.clientHeight, 1);
+      (displayFovDeg(this.camera) * DEG2RAD) / Math.max(this.renderer.domElement.clientHeight, 1);
     const zenith = this.tmpSurfaceZenith.copy(this.camera.position).normalize();
     // Yaw about the local zenith keeps panning level with the horizon.
     this.camera.quaternion.premultiply(
@@ -9824,7 +9817,7 @@ export class PlanetariumMode {
       }
     } else {
       this.camera.position.copy(vantage);
-      if (this.displayFovDeg() !== this.surfaceFovDeg) {
+      if (displayFovDeg(this.camera) !== this.surfaceFovDeg) {
         this.setDisplayFov(this.surfaceFovDeg);
       }
     }

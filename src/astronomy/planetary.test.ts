@@ -15,6 +15,7 @@ import {
   stepSimulationRate,
   computeBodyOrientationQuaternion,
   computeBodyPoleQuaternion,
+  computeBodyPositionAU,
   computeBodyState,
   computeMoonGeocentricEquatorialAU,
   computeKeplerPositionEcliptic,
@@ -24,6 +25,8 @@ import {
   formatUtcInputValue,
   parseUtcInputValue,
   raDecToVector,
+  sampleTrajectoryLinePoints,
+  trajectoryLineBodyFraction,
   ttJDFromUtcMs,
 } from './planetary';
 import { dateToJD, findEvent, sunPosition } from './ephemeris';
@@ -315,5 +318,204 @@ describe('time helpers', () => {
     // Clamped at the fast end on both sides.
     expect(stepSimulationRate(at(1200), 1, presets).rate).toBe(1200);
     expect(stepSimulationRate(at(-1200), -1, presets).rate).toBe(-1200);
+  });
+});
+
+describe('orbit-line trajectory sampling', () => {
+  // Orbit lines sample the render position seam over one period. The Standish
+  // tables freeze outside their 3000 BC – 3000 AD fit, so every sample past
+  // the edge used to return the same frozen point and the line collapsed —
+  // period-dependent onset, just past 3000 AD for Mercury out to ~3124 for
+  // Pluto. Sampling now slides its center back far enough to hold a whole
+  // period inside the fit; Earth, drawn from the Meeus seam, is exempt.
+  const TODAY_MS = Date.parse('2026-07-27T00:00:00Z');
+  const PAST_TABLES_MS = Date.parse('3100-01-01T00:00:00Z');
+  const FAR_MS = Date.parse('5000-01-01T00:00:00Z');
+  const FARTHER_MS = Date.parse('9000-01-01T00:00:00Z');
+  // The clock reverses too, so the early edge of the fit gets the same test.
+  const DEEP_PAST_MS = Date.UTC(-4000, 0, 1);
+  const DEEPER_PAST_MS = Date.UTC(-6000, 0, 1);
+  const SEGMENTS = 256;
+
+  const standishBodies = PLANETARIUM_BODIES.filter((p) => p.name !== 'Earth');
+  const earth = PLANETS.find((p) => p.name === 'Earth')!;
+
+  function radialSpreadAU(points: THREE.Vector3[]): number {
+    const radii = points.map((p) => p.length());
+    return Math.max(...radii) - Math.min(...radii);
+  }
+
+  function nearestVertexAU(points: THREE.Vector3[], target: THREE.Vector3): number {
+    return Math.min(...points.map((p) => p.distanceTo(target)));
+  }
+
+  it('still draws an orbit past the element tables', () => {
+    for (const planet of standishBodies) {
+      // rmax − rmin of the same ellipse = 2·a·e; a and e drift by fractions of
+      // a percent over the millennia in play, so a line that is still an orbit
+      // keeps its spread and one that collapsed reads exactly zero.
+      const todaySpreadAU = radialSpreadAU(sampleTrajectoryLinePoints(planet, TODAY_MS, SEGMENTS));
+      for (const utcMs of [DEEPER_PAST_MS, DEEP_PAST_MS, PAST_TABLES_MS, FAR_MS, FARTHER_MS]) {
+        const points = sampleTrajectoryLinePoints(planet, utcMs, SEGMENTS);
+        const where = `${planet.name} at ${new Date(utcMs).toISOString()}`;
+        expect(points.every((p) => Number.isFinite(p.length())), where).toBe(true);
+        expect(radialSpreadAU(points), where).toBeGreaterThan(0.5 * todaySpreadAU);
+        expect(radialSpreadAU(points), where).toBeLessThan(2 * todaySpreadAU);
+      }
+    }
+  });
+
+  it('holds the outside line on the last orbit the tables cover', () => {
+    // Every epoch beyond an edge draws that edge's orbit — the line stops
+    // changing where the elements do, rather than degrading further out.
+    const groups = [
+      [FAR_MS, PAST_TABLES_MS, FARTHER_MS],
+      [DEEP_PAST_MS, DEEPER_PAST_MS],
+    ];
+    for (const planet of standishBodies) {
+      for (const [referenceMs, ...restMs] of groups) {
+        const reference = sampleTrajectoryLinePoints(planet, referenceMs, SEGMENTS);
+        for (const utcMs of restMs) {
+          const other = sampleTrajectoryLinePoints(planet, utcMs, SEGMENTS);
+          for (let i = 0; i < reference.length; i++) {
+            expect(reference[i].distanceTo(other[i]), `${planet.name} vertex ${i}`).toBeLessThan(1e-12);
+          }
+        }
+      }
+    }
+  });
+
+  it('keeps the drawn body on its own orbit line past the tables', () => {
+    // Positions freeze at the same edge the line is drawn from, so the body
+    // still sits on its line however far outside the fit the clock is.
+    for (const planet of standishBodies) {
+      for (const utcMs of [DEEP_PAST_MS, FAR_MS]) {
+        const points = sampleTrajectoryLinePoints(planet, utcMs, SEGMENTS);
+        const drawn = computeBodyPositionAU(planet, utcMs);
+        expect(nearestVertexAU(points, drawn), planet.name).toBeLessThan(1e-6);
+      }
+    }
+  });
+
+  it("leaves Earth's Meeus-sourced line running with the clock", () => {
+    for (const utcMs of [DEEP_PAST_MS, FAR_MS, FARTHER_MS]) {
+      const points = sampleTrajectoryLinePoints(earth, utcMs, SEGMENTS);
+      // Centered on the requested epoch, not pulled back to a table edge: the
+      // middle vertex is Earth exactly where it is drawn that day.
+      const drawn = computeBodyPositionAU(earth, utcMs);
+      expect(points[SEGMENTS / 2].distanceTo(drawn)).toBeLessThan(1e-9);
+      // And still a full ellipse (2·a·e ≈ 0.033 AU).
+      expect(radialSpreadAU(points)).toBeGreaterThan(0.02);
+    }
+  });
+
+  it('samples an unchanged trajectory inside the element tables', () => {
+    // Vertices captured from the implementation before the clamp existed, so
+    // dates in normal use can never shift.
+    const pinned: Record<string, [number, number, number][]> = {
+      Mercury: [
+        [-0.386162580868, -0.046510443847, 0.161982283037],
+        [0.213430738183, -0.196952516747, 0.327276918536],
+        [-0.386350184923, -0.046084476307, 0.161220675913],
+      ],
+      Earth: [
+        [-0.56514561749, 0.320652791149, -0.73959296003],
+        [-0.174965414608, -0.397835177137, 0.917615889787],
+        [-0.565072428897, 0.320672885432, -0.73963930795],
+      ],
+      Pluto: [
+        [8.281972048607, 11.368945327422, -44.43617176275],
+        [-14.640470670596, -3.625333859281, 25.752389737417],
+        [8.201920610862, 11.399950209489, -44.441357394118],
+      ],
+    };
+    const vertices = [0, 3, 8];
+    for (const [name, expected] of Object.entries(pinned)) {
+      const planet = PLANETARIUM_BODIES.find((p) => p.name === name)!;
+      const points = sampleTrajectoryLinePoints(planet, TODAY_MS, 8);
+      vertices.forEach((vertex, k) => {
+        const where = `${name} vertex ${vertex}`;
+        expect(points[vertex].x, where).toBeCloseTo(expected[k][0], 11);
+        expect(points[vertex].y, where).toBeCloseTo(expected[k][1], 11);
+        expect(points[vertex].z, where).toBeCloseTo(expected[k][2], 11);
+      });
+    }
+  });
+});
+
+describe('orbit-line body fraction', () => {
+  // Anything drawn against the body's place on its own line (the map's
+  // direction fade) needs the sample-index ↔ epoch correspondence, and the
+  // body is at the middle sample only while both epochs are inside the
+  // tables. Past an edge the line holds its last whole period while the body
+  // freezes on the edge — an END of the strip — so a fraction that kept
+  // counting from the requested epoch would circulate around a standing body.
+  const TODAY_MS = Date.parse('2026-07-27T00:00:00Z');
+  const FAR_MS = Date.parse('5000-01-01T00:00:00Z');
+  const FARTHER_MS = Date.parse('9000-01-01T00:00:00Z');
+  const DEEP_PAST_MS = Date.UTC(-4000, 0, 1);
+  const SEGMENTS = 256;
+
+  const standishBodies = PLANETARIUM_BODIES.filter((p) => p.name !== 'Earth');
+  const earth = PLANETS.find((p) => p.name === 'Earth')!;
+
+  /** Vertices 0 and N are the same place on a closed loop, so index distance
+   *  is measured the short way round. */
+  function loopIndexGap(a: number, b: number): number {
+    const raw = Math.abs(a - b);
+    return Math.min(raw, SEGMENTS - raw);
+  }
+
+  it('points at the vertex the body is actually drawn on', () => {
+    for (const planet of PLANETARIUM_BODIES) {
+      for (const utcMs of [TODAY_MS, FAR_MS, DEEP_PAST_MS]) {
+        const points = sampleTrajectoryLinePoints(planet, utcMs, SEGMENTS);
+        const drawn = computeBodyPositionAU(planet, utcMs);
+        let nearest = 0;
+        for (let i = 1; i <= SEGMENTS; i++) {
+          if (points[i].distanceTo(drawn) < points[nearest].distanceTo(drawn)) nearest = i;
+        }
+        const fraction = trajectoryLineBodyFraction(planet, utcMs, utcMs);
+        const where = `${planet.name} at ${new Date(utcMs).toISOString()}`;
+        expect(loopIndexGap(Math.round(fraction * SEGMENTS), nearest), where).toBeLessThanOrEqual(1);
+      }
+    }
+  });
+
+  it('puts the body at the middle sample inside the element tables', () => {
+    for (const planet of PLANETARIUM_BODIES) {
+      expect(trajectoryLineBodyFraction(planet, TODAY_MS, TODAY_MS), planet.name).toBe(0.5);
+    }
+    // And walks the loop with the clock: a quarter period on is three
+    // quarters along a strip that starts half a period back.
+    const quarterYearMs = (365.25 / 4) * 86_400_000;
+    expect(trajectoryLineBodyFraction(earth, TODAY_MS, TODAY_MS + quarterYearMs)).toBeCloseTo(0.75, 9);
+  });
+
+  it('pins the fraction to the strip end past the tables', () => {
+    for (const planet of standishBodies) {
+      for (const utcMs of [FAR_MS, DEEP_PAST_MS]) {
+        const fraction = trajectoryLineBodyFraction(planet, utcMs, utcMs);
+        const where = `${planet.name} at ${new Date(utcMs).toISOString()}`;
+        // Either end of the strip — they are the same place on the loop.
+        expect(Math.min(fraction, 1 - fraction), where).toBeLessThan(1 / SEGMENTS);
+      }
+    }
+  });
+
+  it('stops the fraction advancing once the body is frozen', () => {
+    // The map's line keeps the epoch it was last sampled at while the clock
+    // runs on: past the tables the drawn body stands still, so the fraction
+    // must stand still with it.
+    for (const planet of standishBodies) {
+      const atEdge = trajectoryLineBodyFraction(planet, FAR_MS, FAR_MS);
+      for (const bodyUtcMs of [FAR_MS + 86_400_000 * 365.25 * 100, FARTHER_MS]) {
+        expect(trajectoryLineBodyFraction(planet, FAR_MS, bodyUtcMs), planet.name).toBe(atEdge);
+      }
+    }
+    // Earth is not frozen, so its fraction keeps moving.
+    expect(trajectoryLineBodyFraction(earth, FAR_MS, FAR_MS + 91 * 86_400_000)).not.toBe(
+      trajectoryLineBodyFraction(earth, FAR_MS, FAR_MS),
+    );
   });
 });

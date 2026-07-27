@@ -225,6 +225,19 @@ export function applyDesignFov(
 }
 
 /**
+ * The FOV the frame actually displays — the read that pairs with
+ * applyDesignFov. Under an active lens `camera.fov` holds the wider overscan
+ * the warp samples from, so no caller should compare against it; without a
+ * lens the two are the same number.
+ */
+export function displayFovDeg(camera: {
+  fov: number;
+  userData: { lens?: { designFovDeg: number } };
+}): number {
+  return camera.userData.lens?.designFovDeg ?? camera.fov;
+}
+
+/**
  * GLSL for the lens pass fragment: inverse map per output pixel (Newton on
  * the same radial blend), sampling the rectilinear source. Interpolated into
  * LensPass so the CPU forward map above and the GPU inverse can't drift.

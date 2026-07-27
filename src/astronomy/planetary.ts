@@ -10,7 +10,12 @@ import type { PlanetData } from '../planetarium/planets/planetData';
 import { dateToJD, moonPosition, sunPosition } from './ephemeris';
 import { deltaTDaysAtDate } from './deltaT';
 import { accumulatedPrecessionLonDeg } from './precession';
-import { getStandishElements, type KeplerElements } from './standish';
+import {
+  STANDISH_MAX_JD,
+  STANDISH_MIN_JD,
+  getStandishElements,
+  type KeplerElements,
+} from './standish';
 import { DEG, J2000, KM_PER_AU, OBLIQUITY_DEG } from './constants';
 
 const REFERENCE_NORTH = new THREE.Vector3(0, 1, 0);
@@ -87,6 +92,23 @@ export function ttJDFromUtcMs(utcMs: number): number {
   return dateToJD(date) + deltaTDaysAtDate(date);
 }
 
+const UNIX_EPOCH_JD = 2440587.5;
+
+/**
+ * The civil UTC instant whose TT Julian Day is `jdTT` — the inverse of
+ * ttJDFromUtcMs, by fixed point. The day count itself is linear in the
+ * timestamp, so the only nonlinearity to converge through is ΔT, which drifts
+ * by seconds per year; the residual then floors at Date's whole-millisecond
+ * quantization, orders below anything a half-period clamp can feel.
+ */
+function utcMsAtTtJD(jdTT: number): number {
+  let utcMs = (jdTT - UNIX_EPOCH_JD) * 86_400_000;
+  for (let i = 0; i < 4; i++) {
+    utcMs += (jdTT - ttJDFromUtcMs(utcMs)) * 86_400_000;
+  }
+  return utcMs;
+}
+
 /**
  * THE chirality definition site: J2000 equatorial RA/Dec → scene vector via
  * the proper rotation (x, z, −y) — +X = vernal equinox (RA 0), +Y = celestial
@@ -149,8 +171,9 @@ export function computeMoonGeocentricEquatorialAU(jdTT: number, out: THREE.Vecto
  * from the same Meeus theory as the Moon and the sunlight direction keeps
  * Sun–Earth–Moon exactly coherent (full moons render full, eclipse
  * alignments align to the theory's own accuracy), which beats one-model
- * uniformity. The Standish EMB row still draws Earth's decorative orbit line
- * and cross-checks this function in planetary.test.ts.
+ * uniformity. Earth's orbit line samples this function too, so nothing about
+ * Earth rides the element tables or their epoch window; the Standish EMB row
+ * survives as the independent cross-check in planetary.test.ts.
  */
 export function computeEarthPositionEquatorial(jdTT: number): THREE.Vector3 {
   const sun = sunPosition(jdTT);
@@ -162,6 +185,16 @@ export function computeEarthPositionEquatorial(jdTT: number): THREE.Vector3 {
     sun.distance * Math.sin(lonRad),
   );
   return ecliptic.applyMatrix4(ECLIPTIC_TO_EQUATORIAL);
+}
+
+/**
+ * Which theory a body's rendered position comes from — the one place the
+ * split is decided, so the position path and everything that reasons about
+ * its validity can never disagree. Only Earth is Meeus; the rest propagate
+ * Standish elements and inherit that fit's epoch window.
+ */
+function isMeeusPositioned(planet: PlanetData): boolean {
+  return planet.name === 'Earth';
 }
 
 export function sampleOrbitLinePoints(el: KeplerElements, segments = 256): THREE.Vector3[] {
@@ -177,6 +210,45 @@ export function sampleOrbitLinePoints(el: KeplerElements, segments = 256): THREE
   return points;
 }
 
+const STANDISH_MIN_UTC_MS = utcMsAtTtJD(STANDISH_MIN_JD);
+const STANDISH_MAX_UTC_MS = utcMsAtTtJD(STANDISH_MAX_JD);
+
+/**
+ * The period that spans one sampled line and spaces its vertices. Kepler's
+ * third law from the catalog semi-major axis is plenty for placing a seam,
+ * and sharing it is what keeps the sampler and the index math in step.
+ */
+function trajectoryPeriodMs(planet: PlanetData): number {
+  return 365.25 * Math.pow(planet.semiMajorAxisAU, 1.5) * 86_400_000;
+}
+
+/**
+ * The epoch a body's drawn position corresponds to. Standish positions freeze
+ * where the tables stop, so past an edge the body stands at that edge's
+ * position however far the clock runs on.
+ */
+function bodyEpochUtcMs(planet: PlanetData, utcMs: number): number {
+  if (isMeeusPositioned(planet)) return utcMs;
+  return Math.min(STANDISH_MAX_UTC_MS, Math.max(STANDISH_MIN_UTC_MS, utcMs));
+}
+
+/**
+ * Keep a whole sampling period inside the epoch window the body's own theory
+ * answers for. Standish freezes at its window's edges, so a period sampled
+ * past one of them returns the same point over and over and the orbit line
+ * collapses; pulling the center in by half a period draws the last true orbit
+ * instead — and the body, frozen on that same edge, still sits on its line.
+ * Earth is exempt: the Meeus seam it renders from has no such window.
+ */
+function clampLineEpochUtcMs(planet: PlanetData, centerUtcMs: number, periodMs: number): number {
+  if (isMeeusPositioned(planet)) return centerUtcMs;
+  const halfPeriodMs = periodMs / 2;
+  return Math.min(
+    STANDISH_MAX_UTC_MS - halfPeriodMs,
+    Math.max(STANDISH_MIN_UTC_MS + halfPeriodMs, centerUtcMs),
+  );
+}
+
 /**
  * Sample a body's actual rendered trajectory over one orbital period centered
  * on `centerUtcMs`. Because every sample goes through computeBodyPositionAU —
@@ -187,19 +259,43 @@ export function sampleOrbitLinePoints(el: KeplerElements, segments = 256): THREE
  * ellipse ignores. The strip's two ends meet half a period away from the
  * body, where the element drift accumulated over one period leaves a gap far
  * too small to see. The period only places that seam, so Kepler's third law
- * from the catalog semi-major axis is plenty.
+ * from the catalog semi-major axis is plenty. Past the element tables the
+ * center slides back to the last epoch that holds a whole period (see
+ * clampLineEpochUtcMs), so the line stays an orbit however far the clock runs.
  */
 export function sampleTrajectoryLinePoints(
   planet: PlanetData,
   centerUtcMs: number,
   segments: number,
 ): THREE.Vector3[] {
-  const periodMs = 365.25 * Math.pow(planet.semiMajorAxisAU, 1.5) * 86_400_000;
+  const periodMs = trajectoryPeriodMs(planet);
+  const epochUtcMs = clampLineEpochUtcMs(planet, centerUtcMs, periodMs);
   const points: THREE.Vector3[] = [];
   for (let i = 0; i <= segments; i++) {
-    points.push(computeBodyPositionAU(planet, centerUtcMs + (i / segments - 0.5) * periodMs));
+    points.push(computeBodyPositionAU(planet, epochUtcMs + (i / segments - 0.5) * periodMs));
   }
   return points;
+}
+
+/**
+ * Where the body sits along its own sampled line, as a fraction of the loop
+ * in [0, 1) — sample i covers fraction i/segments. Anything body-anchored on
+ * the line (a direction fade, a marker) must ask for this rather than assume
+ * the body is at the middle sample: that only holds while the line's epoch
+ * AND the body's are both inside the element tables. Past an edge the line
+ * holds the last whole period it can sample while the body freezes on the
+ * edge itself, which is an END of the strip — so the fraction pins there and
+ * stops advancing, exactly as the drawn body does.
+ */
+export function trajectoryLineBodyFraction(
+  planet: PlanetData,
+  lineCenterUtcMs: number,
+  utcMs: number,
+): number {
+  const periodMs = trajectoryPeriodMs(planet);
+  const lineEpochUtcMs = clampLineEpochUtcMs(planet, lineCenterUtcMs, periodMs);
+  const fraction = 0.5 + (bodyEpochUtcMs(planet, utcMs) - lineEpochUtcMs) / periodMs;
+  return fraction - Math.floor(fraction);
 }
 
 /**
@@ -259,7 +355,7 @@ export function computeBodyPoleQuaternion(planet: PlanetData): THREE.Quaternion 
  */
 export function computeBodyPositionAU(planet: PlanetData, utcMs: number): THREE.Vector3 {
   const jd = ttJDFromUtcMs(utcMs);
-  return planet.name === 'Earth'
+  return isMeeusPositioned(planet)
     ? computeEarthPositionEquatorial(jd)
     : computeKeplerPositionEquatorial(getStandishElements(planet.name, jd));
 }

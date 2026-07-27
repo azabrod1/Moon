@@ -14,9 +14,9 @@
  * source files — never re-round them; standish.test.ts spot-checks oddball
  * digits and pins five epochs of JPL Horizons vectors against the
  * propagation. The "Earth"
- * rows are the Earth–Moon barycenter ("EM Bary"): consumed only for Earth's
- * decorative orbit line and cross-model tests — the rendered Earth stays
- * Meeus (see computeEarthPositionEquatorial).
+ * rows are the Earth–Moon barycenter ("EM Bary"): consumed only by the
+ * cross-model tests — the rendered Earth and its orbit line are both Meeus
+ * (see computeEarthPositionEquatorial).
  *
  * Source-format quirks an editor must not "fix": the e column of the txt
  * files is headed "rad, rad/Cy" but is dimensionless eccentricity; Mars and
@@ -95,6 +95,18 @@ const TABLE_1_MAX_T = 0.5; // 2050 AD
 const TABLE_2_MIN_T = -50; // 3000 BC
 const TABLE_2_MAX_T = 10; // 3000 AD
 
+const DAYS_PER_JULIAN_CENTURY = 36525;
+
+/**
+ * TT Julian Day span these tables answer for (Table 2's, the wider fit).
+ * Outside it the propagation clamps its own epoch, so the elements — and
+ * every position derived from them — freeze at the edge. Callers that sample
+ * a range of epochs must keep the whole range inside, or the samples past the
+ * edge all return the same point.
+ */
+export const STANDISH_MIN_JD = J2000 + TABLE_2_MIN_T * DAYS_PER_JULIAN_CENTURY;
+export const STANDISH_MAX_JD = J2000 + TABLE_2_MAX_T * DAYS_PER_JULIAN_CENTURY;
+
 function normalizeDeg180(deg: number): number {
   const wrapped = ((deg % 360) + 360) % 360;
   return wrapped > 180 ? wrapped - 360 : wrapped;
@@ -125,7 +137,7 @@ function propagate(row: StandishRow, extras: ExtraTerms | undefined, T: number):
  * clamped to Table 2's 3000 BC – 3000 AD validity.
  */
 export function getStandishElements(name: string, jdTT: number): KeplerElements {
-  const T = (jdTT - J2000) / 36525;
+  const T = (jdTT - J2000) / DAYS_PER_JULIAN_CENTURY;
   const table = T >= TABLE_1_MIN_T && T <= TABLE_1_MAX_T ? 1 : 2;
   return getElementsFromTable(table, name, jdTT);
 }
@@ -136,7 +148,7 @@ export function getElementsFromTable(table: 1 | 2, name: string, jdTT: number): 
   if (!row) {
     throw new Error(`No Standish elements for body "${name}"`);
   }
-  let T = (jdTT - J2000) / 36525;
+  let T = (jdTT - J2000) / DAYS_PER_JULIAN_CENTURY;
   if (table === 2) {
     T = Math.min(TABLE_2_MAX_T, Math.max(TABLE_2_MIN_T, T));
   }

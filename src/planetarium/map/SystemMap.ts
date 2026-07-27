@@ -22,7 +22,11 @@ import { LineGeometry } from 'three/addons/lines/LineGeometry.js';
 import { LineMaterial } from 'three/addons/lines/LineMaterial.js';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { PLANETARIUM_BODIES, SUN_DATA, type PlanetData } from '../planets/planetData';
-import { sampleTrajectoryLinePoints, computeBodyPositionAU } from '../../astronomy/planetary';
+import {
+  sampleTrajectoryLinePoints,
+  computeBodyPositionAU,
+  trajectoryLineBodyFraction,
+} from '../../astronomy/planetary';
 import { bodyDisplayName } from '../surfaceView';
 import { ORBIT_LINE_RESAMPLE_MAX_AGE_MS } from '../SolarSystem';
 import { applyTextureDefaults } from '../world/texturePolicy';
@@ -62,7 +66,6 @@ const DIVE_END_DIST_FRAC = 0.14;
 
 interface OrbitEntry {
   planet: PlanetData;
-  periodMs: number;
   /** Raw heliocentric samples (scene AU), flattened xyz, length (N+1)*3. */
   raw: Float32Array;
   /** Compressed map-space positions, packed into the Line2 buffer each rebuild. */
@@ -727,11 +730,7 @@ export class SystemMap {
 
   /** Fractional position [0,1) of the body along its sampled loop at `utcMs`. */
   private bodyFraction(entry: OrbitEntry, utcMs: number): number {
-    // Sample i is at epoch + (i/N - 0.5)*period, so the body sits at
-    // 0.5 + (utcMs - epoch)/period of the loop.
-    let frac = 0.5 + (utcMs - this.epochUtcMs) / entry.periodMs;
-    frac -= Math.floor(frac);
-    return frac;
+    return trajectoryLineBodyFraction(entry.planet, this.epochUtcMs, utcMs);
   }
 
   private rebuildOrbitColors(entry: OrbitEntry, bodyFrac: number): void {
@@ -955,14 +954,12 @@ export class SystemMap {
     const dot = this.makeGlowSprite(planet.color, 1);
     dot.renderOrder = 5;
     this.scene.add(dot);
-    const periodMs = 365.25 * Math.pow(planet.semiMajorAxisAU, 1.5) * 86_400_000;
     // Catalog hex is sRGB; THREE.Color(hex) converts it into the renderer's
     // working (linear) space, so the vertex-coloured line matches the sprite's
     // managed material.color instead of rendering hot.
     const tint = new THREE.Color(planet.color);
     return {
       planet,
-      periodMs,
       raw,
       map,
       colors,

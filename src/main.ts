@@ -614,6 +614,7 @@ function installDevHooks() {
     closeMap: () => planetariumMode?.devCloseMap() ?? false,
     mapState: () => planetariumMode?.devMapState() ?? null,
     mapPick: (name: string) => planetariumMode?.devMapPick(name) ?? false,
+    mapProbe: (name: string) => planetariumMode?.devMapProbe(name) ?? null,
     mapCommit: (verb: 'travel' | 'observe' | 'pilot') => planetariumMode?.devMapCommit(verb) ?? false,
     // Map curve A/B: setMapS picks the asinh curve with that softening scale
     // (AU), setMapGamma the power law with that exponent. Both leave the

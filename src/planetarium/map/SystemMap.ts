@@ -13,9 +13,10 @@
  * animates between compressed and true; every distance the map draws is
  * derived, never stored on the save.
  *
- * Packet A is the view only — orbits, dots, the ship marker, labels, the scale
- * animation, open/close, and the render transaction. Picking, the body card,
- * and the dive transition arrive with the commit core.
+ * Bodies draw as map-local textured globes — own meshes, own materials, own
+ * light — that BORROW the world's texture objects and own none of them (see
+ * mapGlobes for the two rules). A body with no texture yet, and the whole map
+ * at true scale, fall back to the schematic dot.
  */
 import * as THREE from 'three';
 import { Line2 } from 'three/addons/lines/Line2.js';
@@ -23,10 +24,13 @@ import { LineGeometry } from 'three/addons/lines/LineGeometry.js';
 import { LineMaterial } from 'three/addons/lines/LineMaterial.js';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { PLANETARIUM_BODIES, SUN_DATA, type PlanetData } from '../planets/planetData';
+import { RING_CONFIGS } from '../planets/rings';
 import {
   sampleTrajectoryLinePoints,
+  computeBodyOrientationQuaternion,
   computeBodyPositionAU,
   trajectoryLineBodyFraction,
+  ttJDFromUtcMs,
 } from '../../astronomy/planetary';
 import { bodyDisplayName } from '../surfaceView';
 import { ORBIT_LINE_RESAMPLE_MAX_AGE_MS } from '../SolarSystem';
@@ -46,7 +50,8 @@ import {
   type MapCurve,
   type MapVec3,
 } from './mapProjection';
-import { MAP_BODY_SIZE_DEFAULTS, type MapBodySizeParams } from './mapBodySize';
+import { mapBodyRadiusAU, MAP_BODY_SIZE_DEFAULTS, type MapBodySizeParams } from './mapBodySize';
+import { mapBodyDrawMode, shouldAdoptTexture } from './mapGlobes';
 import {
   anchorOnScreen,
   pickRadiusFor,
@@ -55,11 +60,24 @@ import {
   type PickResult,
 } from './mapPicking';
 
+/**
+ * Read-only access to the world's live surface textures. The map re-reads these
+ * every update and adopts by identity: the world DISPOSES the texture it
+ * replaces when it hot-swaps a sharper tier in, so a reference held across that
+ * swap would draw black. Never a long-lived handle, never a dispose.
+ */
+export interface MapTextureSource {
+  /** The colour map the world's material for `bodyName` carries right now, or
+   *  null while it is still loading. */
+  colorMap(bodyName: string): THREE.Texture | null;
+  /** Likewise for that body's ring texture, null when it has no rings. */
+  ringMap(bodyName: string): THREE.Texture | null;
+}
+
 const ORBIT_SEGMENTS = 180;
 const MAP_FOV_DEG = 50;
 const BG_COLOR = 0x05070d;
 // Screen sizes (px, full sprite extent) for the constant-size markers.
-const SUN_PX = 34;
 const PLANET_PX = 20;
 const SHIP_PX = 26;
 // Orbit line: full tint just ahead of the body fading to this floor behind it.
@@ -73,8 +91,37 @@ const SHIP_PULSE_MS = 2000;
 const HOVER_SCALE = 1.3;
 const HOVER_LIFT = 0.4;
 const WHITE = new THREE.Color(1, 1, 1);
+// A hovered globe lifts by its own tint instead of swelling: a growing sphere
+// would move its footprint, and the footprint is the click target.
+const GLOBE_HOVER_EMISSIVE = 0.22;
 // The dive eases the camera in to this fraction of its start distance.
 const DIVE_END_DIST_FRAC = 0.14;
+
+// Sunlight for the globes, with physical falloff switched OFF (decay 0). The
+// map's radii are compressed, so a distance-metered light would meter by a
+// drawn distance rather than a real one — and would change every body's
+// brightness when the scale toggle animates. One constant irradiance keeps the
+// terminator the only thing the light says. Intensity is PI because the Lambert
+// BRDF divides by it, so a face-on surface reflects its albedo exactly.
+const SUN_LIGHT_INTENSITY = Math.PI;
+const SUN_LIGHT_COLOR = 0xfff4e2;
+// Night floor, in the spirit of the world's directional starlight fill: a few
+// percent of the day side, cool, so the unlit hemisphere reads as unlit rather
+// than as a hole — and never the flat ambient wash that would erase the
+// terminator and turn every globe into a poster.
+const NIGHT_FILL_COLOR = 0x2a3a54;
+const NIGHT_FILL_INTENSITY = 2.2;
+// Halo radius as a multiple of the Sun's drawn disc. The map renders without
+// the composer, so nothing downstream will bloom the star: the falloff is baked
+// into the billboard.
+const SUN_HALO_RADII = 3.2;
+// Limb darkening of the solar disc, the u in I/I0 = 1 - u(1 - mu).
+const SUN_LIMB_DARKENING = 0.62;
+// Exposure the map draws at. The world's near-Sun auto-exposure keeps adapting
+// to a scene nobody is looking at while the map is open; tone-mapped globes
+// would ride that adaptation and flicker. The map renders at neutral and hands
+// the world's value straight back.
+const MAP_EXPOSURE = 1;
 
 interface OrbitEntry {
   planet: PlanetData;
@@ -107,6 +154,18 @@ interface OrbitEntry {
   /** The catalog tint as a Color, so hover can brighten toward white and
    *  restore without re-parsing the hex. */
   baseColor: THREE.Color;
+  /** Map-local globe. The group carries the body's IAU orientation and its
+   *  drawn radius as a scale, so the mesh (a shared unit sphere) and the ring
+   *  (built in planet radii) both follow one number. None of it is the world's
+   *  — only the texture on the material is borrowed. */
+  globe: THREE.Group;
+  globeMat: THREE.MeshStandardMaterial;
+  ringMat: THREE.MeshStandardMaterial | null;
+  /** Drawn radius in screen px this frame — the globe's footprint, which is
+   *  also its click target once it outgrows the pointer floor. */
+  drawnRadiusPx: number;
+  /** Whether the globe, rather than the dot, is what drew this frame. */
+  globeDrawn: boolean;
 }
 
 export class SystemMap {
@@ -115,12 +174,19 @@ export class SystemMap {
   private camera: THREE.PerspectiveCamera;
   private controls: OrbitControls;
 
+  private textures: MapTextureSource;
+
   private sun: THREE.Sprite;
+  private sunHalo: THREE.Sprite;
+  private sunRadiusPx = 0;
   private sunBaseColor = new THREE.Color(SUN_DATA.color);
   private orbits: OrbitEntry[] = [];
   private shipMarker: THREE.Sprite;
   private shipChevronTex: THREE.Texture;
   private shipRingTex: THREE.Texture;
+  /** One unit sphere behind every globe — each body varies only by material and
+   *  by the scale on its group. */
+  private globeGeo = new THREE.SphereGeometry(1, 64, 32);
 
   private labelContainer: HTMLElement | null = null;
   private labels: HTMLDivElement[] = [];
@@ -136,6 +202,9 @@ export class SystemMap {
   private blendAnimating = false;
   private bodySizeParams: MapBodySizeParams = { ...MAP_BODY_SIZE_DEFAULTS };
   private epochUtcMs = 0;
+  // Clock instant the globe orientations were last built for. NaN until the
+  // first pass, so the comparison that skips the rebuild can never skip it.
+  private orientedUtcMs = Number.NaN;
   private sampled = false;
   private extentAU = 1;
   private needsInitialFrame = false;
@@ -157,11 +226,13 @@ export class SystemMap {
   private pulseMs = 0;
 
   // Last raw heliocentric ship pose the mode handed over, and whether one has
-  // arrived yet — the marker re-projects from these whenever the curve changes
-  // between frames.
+  // arrived yet — the marker re-projects and re-orients from these whenever the
+  // curve or the camera changes between frames.
   private shipRawX = 0;
   private shipRawY = 0;
   private shipRawZ = 0;
+  private shipHeading = 0;
+  private shipPitch = 0;
   private shipSnapshot = false;
 
   // Pick anchors, rebuilt on demand (event-driven, not per frame). A fixed pool
@@ -205,8 +276,9 @@ export class SystemMap {
   private placedY = new Float32Array(PLANETARIUM_BODIES.length + 1);
   private placedCount = 0;
 
-  constructor(renderer: THREE.WebGLRenderer) {
+  constructor(renderer: THREE.WebGLRenderer, textures: MapTextureSource) {
     this.renderer = renderer;
+    this.textures = textures;
     this.scene.background = new THREE.Color(BG_COLOR);
 
     const el = renderer.domElement;
@@ -226,7 +298,15 @@ export class SystemMap {
     this.controls.minPolarAngle = 0.08;
     this.controls.maxPolarAngle = (78 * Math.PI) / 180;
 
-    this.sun = this.makeGlowSprite(SUN_DATA.color, 1.15);
+    // One star, lighting everything from the map's origin, plus the night floor.
+    const sunLight = new THREE.PointLight(SUN_LIGHT_COLOR, SUN_LIGHT_INTENSITY, 0, 0);
+    this.scene.add(sunLight);
+    this.scene.add(new THREE.AmbientLight(NIGHT_FILL_COLOR, NIGHT_FILL_INTENSITY));
+
+    // Halo first so the disc draws over it.
+    this.sunHalo = this.makeSunHaloSprite();
+    this.scene.add(this.sunHalo);
+    this.sun = this.makeSunDiscSprite();
     this.scene.add(this.sun);
 
     for (const planet of PLANETARIUM_BODIES) {
@@ -305,6 +385,21 @@ export class SystemMap {
     this.setHover(null);
     this.controls.enabled = false;
     for (const label of this.labels) label.style.display = 'none';
+    // Let every borrowed texture go. The world is free to dispose any of them
+    // while the map is shut, so the material stops naming one here. The drop is
+    // only as deep as the material: the renderer's per-material uniform cache
+    // still holds the old reference until that material draws again, and a
+    // closed map never draws. What that leaves is a bounded, temporary
+    // retention of at most one texture per body — never a sample of a freed
+    // one, because the update that re-adopts whatever the world holds runs
+    // before the reopened map's first frame.
+    for (const entry of this.orbits) {
+      this.adoptTexture(entry.globeMat, null);
+      if (entry.ringMat) this.adoptTexture(entry.ringMat, null);
+      entry.globe.visible = false;
+      entry.globeDrawn = false;
+      entry.dot.visible = true;
+    }
   }
 
   /** Segmented scale control: animate the blend toward compressed / true scale.
@@ -399,8 +494,12 @@ export class SystemMap {
       }
     }
 
+    // Re-read the world's textures before anything decides how to draw. This
+    // runs after the world's own update in the same frame, so a tier swap made
+    // this frame is adopted before the map renders it.
+    this.syncTextures();
     this.updateBodies(utcMs);
-    this.placeShip(shipX, shipY, shipZ, shipMoving, landed, dtMs);
+    this.placeShip(shipX, shipY, shipZ, shipHeading, shipPitch, shipMoving, landed, dtMs);
 
     // ── (2) Camera: fit or re-clamp to the live extent (compression animating,
     // ship drifting), then flush the controls and matrices BEFORE any
@@ -431,8 +530,8 @@ export class SystemMap {
     this.camera.updateMatrixWorld();
 
     // ── (3) Projection-dependent work, on this frame's final camera pose.
-    this.orientShip(shipX, shipY, shipZ, shipHeading, shipPitch, shipMoving, landed);
-    this.scaleMarkers();
+    this.orientShip();
+    this.updateDrawnSizes();
     this.renderLabels();
   }
 
@@ -442,14 +541,19 @@ export class SystemMap {
     const prevTarget = renderer.getRenderTarget();
     const prevScissor = renderer.getScissorTest();
     const prevAutoClear = renderer.autoClear;
+    const prevExposure = renderer.toneMappingExposure;
     renderer.getViewport(this.tmpViewport);
     renderer.getSize(this.tmpSize);
     renderer.setRenderTarget(null);
     renderer.setScissorTest(false);
     renderer.setViewport(0, 0, this.tmpSize.x, this.tmpSize.y);
     renderer.autoClear = true;
+    // The world's auto-exposure is still metering the scene behind the map and
+    // still writing this every frame; the map draws at neutral and gives the
+    // world's value back untouched, so neither view can drag the other.
+    renderer.toneMappingExposure = MAP_EXPOSURE;
     // Restore in finally so a throw inside render() never strands the world
-    // renderer on the map's target/viewport/autoClear state.
+    // renderer on the map's target/viewport/autoClear/exposure state.
     try {
       renderer.render(this.scene, this.camera);
     } finally {
@@ -457,6 +561,7 @@ export class SystemMap {
       renderer.setScissorTest(prevScissor);
       renderer.setViewport(this.tmpViewport);
       renderer.autoClear = prevAutoClear;
+      renderer.toneMappingExposure = prevExposure;
     }
   }
 
@@ -588,6 +693,20 @@ export class SystemMap {
     this.camera.position.copy(this.tmpVec3).addScaledVector(this.diveOffsetDir, dist);
     this.camera.lookAt(this.tmpVec3);
     this.camera.updateMatrixWorld();
+    // The dive is the only camera move that does not happen inside update(), so
+    // everything metered off the camera has to be rebuilt here, against the pose
+    // just set. Drawn sizes are the sharp case: a marker-floored body is sized
+    // in world units from its camera depth, so a size left on the previous
+    // frame's depth renders in the ratio of the two — and this ease collapses
+    // the distance to a seventh in a few hundred ms, so the body would swell
+    // through the dive and snap back at the end. Labels and the ship chevron
+    // are placed and rotated by projection and are on screen for the whole
+    // camera ease (the fade only starts after it), so they are rebuilt for the
+    // same reason — the whole projection-dependent phase runs here, not part
+    // of it, and in the order update() runs it.
+    this.orientShip();
+    this.updateDrawnSizes();
+    this.renderLabels();
   }
 
   /** End the dive. On cancel, restore the pre-dive pose and hand controls back;
@@ -630,9 +749,19 @@ export class SystemMap {
     const w = this.renderer.domElement.clientWidth;
     const h = this.renderer.domElement.clientHeight;
     this.pickAnchors.length = 0;
-    this.pushAnchor('Sun', this.sun.position, true, w, h);
+    this.pushAnchor('Sun', this.sun.position, true, w, h, this.sunRadiusPx);
     for (const entry of this.orbits) {
-      this.pushAnchor(entry.planet.name, entry.dot.position, true, w, h);
+      // A dot is a marker with no footprint of its own — the pointer floor
+      // governs it. A globe hands over its drawn radius, so a click on the limb
+      // of a body that fills the frame lands on the body.
+      this.pushAnchor(
+        entry.planet.name,
+        entry.dot.position,
+        true,
+        w,
+        h,
+        entry.globeDrawn ? entry.drawnRadiusPx : 0,
+      );
     }
     // Docked, the ship ring sits on top of its parent's dot — omit it so the tap
     // lands on the body (its Leave / Observatory card). Undocked, the ship stays
@@ -675,16 +804,94 @@ export class SystemMap {
 
   private applyDotEmphasis(name: string | null, on: boolean): void {
     if (!name) return;
+    const entry = name === 'Sun' ? undefined : this.orbits.find((o) => o.planet.name === name);
     const sprite = this.spriteForName(name);
-    const base = name === 'Sun' ? this.sunBaseColor : this.orbits.find((o) => o.planet.name === name)?.baseColor;
+    const base = name === 'Sun' ? this.sunBaseColor : entry?.baseColor;
     if (sprite && base) {
       const mat = sprite.material as THREE.SpriteMaterial;
       if (on) mat.color.copy(base).lerp(WHITE, HOVER_LIFT);
       else mat.color.copy(base);
     }
+    if (entry) {
+      // The globe answers with its own tint rather than the dot's swell.
+      if (on) entry.globeMat.emissive.copy(entry.baseColor).multiplyScalar(GLOBE_HOVER_EMISSIVE);
+      else entry.globeMat.emissive.setRGB(0, 0, 0);
+    }
     const idx = name === 'Sun' ? 0 : this.orbits.findIndex((o) => o.planet.name === name) + 1;
     const label = this.labels[idx];
     if (label) label.classList.toggle('hover', on);
+  }
+
+  /** Dev forensics: how one body is drawing right now, where its hit target
+   *  sits, which way its pole points, and whether the texture it adopted is
+   *  still the one the world holds — the check that a 2K→4K hot-swap under an
+   *  open map was picked up rather than left on a freed texture. Texture ids
+   *  are 0 when there is none; screen coordinates are -1 when off frame. */
+  probeBody(name: string): {
+    mode: 'globe' | 'dot' | 'sun';
+    radiusPx: number;
+    /** Render truth: the globe's world radius re-measured against the CURRENT
+     *  camera. Equal to radiusPx only while the pose that sized the body is the
+     *  pose it is being drawn from; any drift is the body rendering at the
+     *  wrong size. 0 when no globe is drawn. */
+    apparentRadiusPx: number;
+    screenX: number;
+    screenY: number;
+    /** Body north pole as a unit vector in the map's (J2000 equatorial) frame. */
+    pole: [number, number, number];
+    textureId: number;
+    worldTextureId: number;
+    ringTextureId: number;
+    worldRingTextureId: number;
+  } | null {
+    // Through the same projection the pick uses, so a probe reports the target
+    // a click would actually land on.
+    this.rebuildPickAnchors();
+    const anchor = this.pickAnchors.find((a) => a.name === name);
+    const screenX = anchor?.x ?? -1;
+    const screenY = anchor?.y ?? -1;
+    if (name === 'Sun') {
+      return {
+        mode: 'sun',
+        radiusPx: this.sunRadiusPx,
+        apparentRadiusPx: 0,
+        screenX,
+        screenY,
+        pole: [0, 1, 0],
+        textureId: 0,
+        worldTextureId: 0,
+        ringTextureId: 0,
+        worldRingTextureId: 0,
+      };
+    }
+    const entry = this.orbits.find((o) => o.planet.name === name);
+    if (!entry) return null;
+    const h = Math.max(this.renderer.domElement.clientHeight, 1);
+    const worldPerPx = ((2 * Math.tan((MAP_FOV_DEG * Math.PI) / 180 / 2)) / h)
+      * this.viewDepth(entry.globe.position);
+    this.tmpVec3.set(0, 1, 0).applyQuaternion(entry.globe.quaternion);
+    return {
+      mode: entry.globeDrawn ? 'globe' : 'dot',
+      radiusPx: entry.drawnRadiusPx,
+      apparentRadiusPx: entry.globeDrawn ? entry.globe.scale.x / Math.max(worldPerPx, 1e-30) : 0,
+      screenX,
+      screenY,
+      pole: [this.tmpVec3.x, this.tmpVec3.y, this.tmpVec3.z],
+      textureId: entry.globeMat.map?.id ?? 0,
+      worldTextureId: this.textures.colorMap(name)?.id ?? 0,
+      ringTextureId: entry.ringMat?.map?.id ?? 0,
+      worldRingTextureId: this.textures.ringMap(name)?.id ?? 0,
+    };
+  }
+
+  /** Dev forensics: the ship marker's screen rotation (radians, CCW, 0 while
+   *  docked) and which marker is drawn. The chevron is the one projection-fed
+   *  thing on the map that pixels can't isolate — it sits inside the same
+   *  sprite as the docked ring, so a photometric read of the marker measures
+   *  the art, not the angle. Reading it here is the only way to check the
+   *  rotation belongs to the camera pose the frame was drawn from. */
+  shipMarkerState(): { rotationRad: number; docked: boolean } {
+    return { rotationRad: this.shipMarker.material.rotation, docked: this.shipDocked };
   }
 
   // ---- internals -------------------------------------------------------
@@ -779,10 +986,37 @@ export class SystemMap {
     attr.data.needsUpdate = true;
   }
 
-  /** Position each planet dot on the exact ephemeris (never the sampled chord),
-   *  compressed through the live blend, and refresh the direction fade only
-   *  when the body crosses a sampled vertex. */
+  /** Adopt whatever colour map the world carries for each body right now. The
+   *  map borrows; it never disposes and never holds a reference across a swap. */
+  private syncTextures(): void {
+    for (const entry of this.orbits) {
+      this.adoptTexture(entry.globeMat, this.textures.colorMap(entry.planet.name));
+      if (entry.ringMat) {
+        this.adoptTexture(entry.ringMat, this.textures.ringMap(entry.planet.name));
+      }
+    }
+  }
+
+  private adoptTexture(mat: THREE.MeshStandardMaterial, world: THREE.Texture | null): void {
+    if (!shouldAdoptTexture(mat.map, world)) return;
+    mat.map = world;
+    // Gaining or losing a map changes the program, not just a uniform.
+    mat.needsUpdate = true;
+  }
+
+  /** Position each planet dot (and its globe) on the exact ephemeris — never
+   *  the sampled chord — compressed through the live blend, and refresh the
+   *  direction fade only when the body crosses a sampled vertex. */
   private updateBodies(utcMs: number): void {
+    // Spin the globes on the map's own clock through the seam the world turns
+    // on, so Uranus lies on its side and the right face of Earth is in daylight
+    // at a given UTC. Skipped where no globe can draw — and skipped again while
+    // the clock is not moving, which is the normal state for reading a chart:
+    // each group's own quaternion IS the cache, and it stays correct for as
+    // long as the instant it was built for stands.
+    const orienting = !this.isTrueScale();
+    const reorient = orienting && utcMs !== this.orientedUtcMs;
+    const jd = reorient ? ttJDFromUtcMs(utcMs) : 0;
     for (const entry of this.orbits) {
       // The truth seam: the same heliocentric AU the world draws, projected
       // through the map compression. computeBodyPositionAU returns a fresh
@@ -795,6 +1029,12 @@ export class SystemMap {
       entry.helioZ = helio.z;
       projectMapPoint(helio.x, helio.y, helio.z, this.blend, this.curve, this.tmpMap);
       entry.dot.position.set(this.tmpMap.x, this.tmpMap.y, this.tmpMap.z);
+      if (orienting) {
+        entry.globe.position.copy(entry.dot.position);
+        if (reorient) {
+          entry.globe.quaternion.copy(computeBodyOrientationQuaternion(entry.planet, jd));
+        }
+      }
       // The fade still keys off the sampled loop — cheap and only rebuilt on a
       // vertex crossing.
       const frac = this.bodyFraction(entry, utcMs);
@@ -804,6 +1044,7 @@ export class SystemMap {
         this.rebuildOrbitColors(entry, frac);
       }
     }
+    if (reorient) this.orientedUtcMs = utcMs;
   }
 
   /** Fractional position [0,1) of the body along its sampled loop at `utcMs`. */
@@ -845,6 +1086,8 @@ export class SystemMap {
     x: number,
     y: number,
     z: number,
+    heading: number,
+    pitch: number,
     moving: boolean,
     landed: boolean,
     dtMs: number,
@@ -852,6 +1095,8 @@ export class SystemMap {
     this.shipRawX = x;
     this.shipRawY = y;
     this.shipRawZ = z;
+    this.shipHeading = heading;
+    this.shipPitch = pitch;
     this.shipSnapshot = true;
     this.positionShipMarker();
     const docked = landed || !moving;
@@ -874,30 +1119,27 @@ export class SystemMap {
   }
 
   /** Phase (3): rotate the chevron to the ship's on-screen velocity. Reads the
-   *  camera, so it must run after the controls/matrix flush. Docked marker keeps
-   *  the neutral rotation placeShip left it with. */
-  private orientShip(
-    x: number,
-    y: number,
-    z: number,
-    heading: number,
-    pitch: number,
-    moving: boolean,
-    landed: boolean,
-  ): void {
+   *  camera, so it must run after the controls/matrix flush — and reads only the
+   *  snapshot placeShip stored, so a camera moved outside the update pass can
+   *  replay it. Docked marker keeps the neutral rotation placeShip left it
+   *  with. */
+  private orientShip(): void {
     const mat = this.shipMarker.material;
-    if (landed || !moving) {
+    if (this.shipDocked) {
       mat.rotation = 0;
       return;
     }
+    const x = this.shipRawX;
+    const y = this.shipRawY;
+    const z = this.shipRawZ;
     // Project the ship and a point one step along its heading, both through the
     // map compression, and take the screen-space delta.
-    const cp = Math.cos(pitch);
+    const cp = Math.cos(this.shipPitch);
     const step = Math.max(0.002, Math.hypot(x, y, z) * 0.04);
     projectMapPoint(
-      x + Math.cos(heading) * cp * step,
-      y + Math.sin(pitch) * step,
-      z + Math.sin(heading) * cp * step,
+      x + Math.cos(this.shipHeading) * cp * step,
+      y + Math.sin(this.shipPitch) * step,
+      z + Math.sin(this.shipHeading) * cp * step,
       this.blend,
       this.curve,
       this.tmpMap2,
@@ -935,27 +1177,64 @@ export class SystemMap {
     this.camera.updateProjectionMatrix();
   }
 
-  /** Constant screen-size sprites: world scale = px * (world-per-px at the
-   *  sprite's camera distance). One shared factor, then a distance per sprite. */
-  private scaleMarkers(): void {
+  /**
+   * How big everything draws, and — for a body — whether that drawing is a
+   * globe or a dot. Markers get `px * (world-per-px at the sprite's camera
+   * distance)`; a globe gets the size policy's radius, which is the legibility
+   * floor at the overview and the body's true size once the camera is close
+   * enough to resolve it. One shared camera factor drives both.
+   */
+  private updateDrawnSizes(): void {
     const h = Math.max(this.renderer.domElement.clientHeight, 1);
     const worldPerPxAtUnit = (2 * Math.tan((MAP_FOV_DEG * Math.PI) / 180 / 2)) / h;
+
+    // The Sun is always its billboard — a star has no terminator to draw. The
+    // policy answers in map AU; the px it works out to is the hit target.
+    const sunDepth = this.viewDepth(this.sun.position);
+    const sunAU = mapBodyRadiusAU(SUN_DATA.radiusAU, sunDepth, worldPerPxAtUnit, this.bodySizeParams);
+    this.sunRadiusPx = sunAU / Math.max(worldPerPxAtUnit * sunDepth, 1e-30);
     const sunBoost = this.hoveredName === 'Sun' ? HOVER_SCALE : 1;
-    this.applyMarkerScale(this.sun, SUN_PX * sunBoost, worldPerPxAtUnit);
+    this.sun.scale.setScalar(2 * sunAU * sunBoost);
+    this.sunHalo.scale.setScalar(2 * sunAU * SUN_HALO_RADII);
+
+    const trueScaleTarget = this.isTrueScale();
     for (const entry of this.orbits) {
-      const boost = entry.planet.name === this.hoveredName ? HOVER_SCALE : 1;
-      this.applyMarkerScale(entry.dot, PLANET_PX * boost, worldPerPxAtUnit);
+      const depth = this.viewDepth(entry.dot.position);
+      const drawnAU = mapBodyRadiusAU(
+        entry.planet.radiusAU,
+        depth,
+        worldPerPxAtUnit,
+        this.bodySizeParams,
+      );
+      entry.drawnRadiusPx = drawnAU / Math.max(worldPerPxAtUnit * depth, 1e-30);
+      const globe =
+        mapBodyDrawMode(entry.globeMat.map !== null, trueScaleTarget) === 'globe';
+      entry.globeDrawn = globe;
+      entry.globe.visible = globe;
+      entry.dot.visible = !globe;
+      if (globe) {
+        // One scale on the group carries the sphere and, where there is one,
+        // the ring — which is built in planet radii for exactly this reason.
+        entry.globe.scale.setScalar(drawnAU);
+      } else {
+        const boost = entry.planet.name === this.hoveredName ? HOVER_SCALE : 1;
+        this.applyMarkerScale(entry.dot, PLANET_PX * boost, worldPerPxAtUnit);
+      }
     }
     this.applyMarkerScale(this.shipMarker, SHIP_PX, worldPerPxAtUnit);
   }
 
+  /** Camera-space depth (distance along the view axis) of a map position.
+   *  Perspective screen size follows this, not the Euclidean distance — the
+   *  latter runs an off-axis marker ~10% oversized. */
+  private viewDepth(position: THREE.Vector3): number {
+    this.tmpView.copy(position).applyMatrix4(this.camera.matrixWorldInverse);
+    return Math.max(-this.tmpView.z, 1e-6);
+  }
+
   private applyMarkerScale(sprite: THREE.Sprite, px: number, worldPerPxAtUnit: number): void {
-    // Perspective screen size follows the camera-space depth (distance along the
-    // view axis), not the Euclidean distance — the latter runs an off-axis dot
-    // ~10% oversized. worldPerPxAtUnit is the world span of one px at unit depth.
-    this.tmpView.copy(sprite.position).applyMatrix4(this.camera.matrixWorldInverse);
-    const depth = Math.max(-this.tmpView.z, 1e-6);
-    sprite.scale.setScalar(px * worldPerPxAtUnit * depth);
+    // worldPerPxAtUnit is the world span of one px at unit depth.
+    sprite.scale.setScalar(px * worldPerPxAtUnit * this.viewDepth(sprite.position));
   }
 
   private renderLabels(): void {
@@ -1045,6 +1324,8 @@ export class SystemMap {
     const dot = this.makeGlowSprite(planet.color, 1);
     dot.renderOrder = 5;
     this.scene.add(dot);
+    const { globe, globeMat, ringMat } = this.makeGlobe(planet);
+    this.scene.add(globe);
     // Catalog hex is sRGB; THREE.Color(hex) converts it into the renderer's
     // working (linear) space, so the vertex-coloured line matches the sprite's
     // managed material.color instead of rendering hot.
@@ -1067,7 +1348,67 @@ export class SystemMap {
       helioY: 0,
       helioZ: 0,
       baseColor: tint.clone(),
+      globe,
+      globeMat,
+      ringMat,
+      drawnRadiusPx: 0,
+      globeDrawn: false,
     };
+  }
+
+  /**
+   * One body's map-local globe: a group holding the shared unit sphere, and for
+   * Saturn the ring annulus in planet radii. The group carries the IAU
+   * orientation, so the ring inherits the pole tilt the way the world's does —
+   * and one scale on the group sizes both. Materials start with no map; the
+   * pull-sync adopts the world's textures on the first update, and until then
+   * the body draws as its dot.
+   *
+   * Only Saturn gets rings here. The other three ring systems are faint and
+   * dark enough that at chart size they would be noise around the globe.
+   */
+  private makeGlobe(planet: PlanetData): {
+    globe: THREE.Group;
+    globeMat: THREE.MeshStandardMaterial;
+    ringMat: THREE.MeshStandardMaterial | null;
+  } {
+    const globe = new THREE.Group();
+    globe.visible = false;
+    const globeMat = new THREE.MeshStandardMaterial({ roughness: 0.9, metalness: 0.0 });
+    const mesh = new THREE.Mesh(this.globeGeo, globeMat);
+    mesh.renderOrder = 3;
+    globe.add(mesh);
+
+    let ringMat: THREE.MeshStandardMaterial | null = null;
+    const cfg = planet.name === 'Saturn' ? RING_CONFIGS[planet.name] : undefined;
+    if (cfg) {
+      const geo = new THREE.RingGeometry(cfg.innerFactor, cfg.outerFactor, 96, 1);
+      // RingGeometry's UVs are cartesian; the strip texture is radial, so remap
+      // u to run 0 at the inner edge and 1 at the outer.
+      const pos = geo.attributes.position;
+      const uv = geo.attributes.uv;
+      for (let i = 0; i < pos.count; i++) {
+        const r = Math.hypot(pos.getX(i), pos.getY(i));
+        uv.setXY(i, (r - cfg.innerFactor) / (cfg.outerFactor - cfg.innerFactor), uv.getY(i));
+      }
+      // Lay the annulus in the body's equatorial plane (local XZ, pole = +Y).
+      geo.rotateX(-Math.PI / 2);
+      ringMat = new THREE.MeshStandardMaterial({
+        transparent: true,
+        side: THREE.DoubleSide,
+        roughness: 0.8,
+        metalness: 0,
+        // A trace of self-glow, so the ring never disappears entirely in the
+        // seasons where the Sun grazes its plane.
+        emissive: new THREE.Color(0x1a1510),
+        depthWrite: false,
+      });
+      const ring = new THREE.Mesh(geo, ringMat);
+      // After the orbit lines, which draw depth-test-free at renderOrder 1.
+      ring.renderOrder = 2;
+      globe.add(ring);
+    }
+    return { globe, globeMat, ringMat };
   }
 
   private makeGlowSprite(color: number, coreBoost: number): THREE.Sprite {
@@ -1097,6 +1438,107 @@ export class SystemMap {
     g.addColorStop(1, 'rgba(255,255,255,0)');
     ctx.fillStyle = g;
     ctx.fillRect(0, 0, size, size);
+    const tex = new THREE.CanvasTexture(canvas);
+    applyTextureDefaults(tex, 'color');
+    return tex;
+  }
+
+  /** The solar disc: a limb-darkened billboard rather than a lit sphere, since
+   *  a star is its own light. */
+  private makeSunDiscSprite(): THREE.Sprite {
+    const mat = new THREE.SpriteMaterial({
+      map: this.makeSunDiscTexture(),
+      color: SUN_DATA.color,
+      transparent: true,
+      depthTest: false,
+      depthWrite: false,
+      toneMapped: false,
+    });
+    const sprite = new THREE.Sprite(mat);
+    sprite.renderOrder = 6;
+    return sprite;
+  }
+
+  /** The halo around it. Baked, not bloomed: the map draws straight to the
+   *  backbuffer with no composer, so nothing downstream would spread a bright
+   *  core into a glow. */
+  private makeSunHaloSprite(): THREE.Sprite {
+    const mat = new THREE.SpriteMaterial({
+      map: this.makeSunHaloTexture(),
+      color: SUN_DATA.color,
+      transparent: true,
+      blending: THREE.AdditiveBlending,
+      depthTest: false,
+      depthWrite: false,
+      toneMapped: false,
+    });
+    const sprite = new THREE.Sprite(mat);
+    sprite.renderOrder = 4;
+    return sprite;
+  }
+
+  private makeSunDiscTexture(): THREE.Texture {
+    const size = 128;
+    const canvas = document.createElement('canvas');
+    canvas.width = size;
+    canvas.height = size;
+    const ctx = canvas.getContext('2d')!;
+    const img = ctx.createImageData(size, size);
+    const data = img.data;
+    const c = (size - 1) / 2;
+    // Edge feather in texels — enough to antialias the limb at marker sizes
+    // without softening it into a blob.
+    const feather = 1.5 / c;
+    for (let y = 0; y < size; y++) {
+      for (let x = 0; x < size; x++) {
+        const t = Math.hypot(x - c, y - c) / c;
+        const i = (y * size + x) * 4;
+        if (t >= 1) {
+          data[i + 3] = 0;
+          continue;
+        }
+        // I/I0 = 1 - u(1 - mu), mu = cos of the emergent angle — the disc dims
+        // toward the limb the way the real photosphere does.
+        const mu = Math.sqrt(Math.max(0, 1 - t * t));
+        const k = 1 - SUN_LIMB_DARKENING * (1 - mu);
+        // Warmer toward the limb: the cooler light comes from higher up.
+        data[i] = Math.round(255 * k);
+        data[i + 1] = Math.round(255 * k * (0.99 - 0.17 * t));
+        data[i + 2] = Math.round(255 * k * (0.95 - 0.42 * t));
+        data[i + 3] = Math.round(255 * Math.min(1, (1 - t) / feather));
+      }
+    }
+    ctx.putImageData(img, 0, 0);
+    const tex = new THREE.CanvasTexture(canvas);
+    applyTextureDefaults(tex, 'color');
+    return tex;
+  }
+
+  private makeSunHaloTexture(): THREE.Texture {
+    const size = 256;
+    const canvas = document.createElement('canvas');
+    canvas.width = size;
+    canvas.height = size;
+    const ctx = canvas.getContext('2d')!;
+    const img = ctx.createImageData(size, size);
+    const data = img.data;
+    const c = (size - 1) / 2;
+    for (let y = 0; y < size; y++) {
+      for (let x = 0; x < size; x++) {
+        const t = Math.hypot(x - c, y - c) / c;
+        const i = (y * size + x) * 4;
+        // A tight bright skirt over a wide faint one, driven to nothing at the
+        // sprite's edge so the billboard has no visible square.
+        const a = t >= 1
+          ? 0
+          : (0.85 * Math.exp(-7 * t) + 0.3 * Math.exp(-2.2 * t)) * (1 - t * t);
+        data[i] = 255;
+        data[i + 1] = 240;
+        data[i + 2] = 214;
+        data[i + 3] = Math.round(255 * Math.min(1, a));
+      }
+    }
+    ctx.putImageData(img, 0, 0);
     const tex = new THREE.CanvasTexture(canvas);
     applyTextureDefaults(tex, 'color');
     return tex;

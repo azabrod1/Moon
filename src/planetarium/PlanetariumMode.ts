@@ -263,7 +263,7 @@ import { ObservatoryHUD, type SurfaceHudState } from './ui/ObservatoryHUD';
 import { SurfaceTargetMenu } from './ui/SurfaceTargetMenu';
 import { SunLabel } from './ui/SunLabel';
 import { TutorialCard, tutorialCardModel } from './ui/TutorialCard';
-import { SystemMap } from './map/SystemMap';
+import { SystemMap, type MapTextureSource } from './map/SystemMap';
 import { MapHUD } from './ui/MapHUD';
 import { mapCardActions, mapCardOffersVerb, commitBodyPickOutcome, type MapVerb } from './map/mapLogic';
 import { type MapBodySizeParams } from './map/mapBodySize';
@@ -6107,6 +6107,23 @@ export class PlanetariumMode {
     this.systemMap?.render();
   }
 
+  /**
+   * Live read-only view of the world's surface textures for the map's globes.
+   * Resolved on every call rather than cached: the world swaps a body's colour
+   * map when a sharper tier lands and disposes the one it replaces, so the only
+   * safe answer is the one the material carries at this instant.
+   */
+  private mapTextureSource(): MapTextureSource {
+    const planetOf = (name: string) =>
+      this.solarSystem?.planets.find((p) => p.data.name === name);
+    return {
+      colorMap: (name) =>
+        (planetOf(name)?.mesh.material as THREE.MeshStandardMaterial | undefined)?.map ?? null,
+      ringMap: (name) =>
+        (planetOf(name)?.rings?.material as THREE.MeshStandardMaterial | undefined)?.map ?? null,
+    };
+  }
+
   /** Dev bridge: open/close/state/gamma, delegating to the same paths a real
    *  tap uses (the M-key guards are the load-bearing ones). */
   devOpenMap(): boolean {
@@ -6131,6 +6148,7 @@ export class PlanetariumMode {
     picked: string | null;
     diving: boolean;
     diveGapAU: number | null;
+    ship: { rotationRad: number; docked: boolean };
   } | null {
     if (!this.systemMap) return null;
     const curve = this.systemMap.getCurve();
@@ -6149,6 +6167,9 @@ export class PlanetariumMode {
       // Camera-aim-vs-live-dot gap: ~0 once the ease lands proves the dive
       // tracked the moving dot instead of a stale snapshot.
       diveGapAU: this.systemMap.diveTargetGapAU(),
+      // The chevron's screen rotation, which is rebuilt from the camera like
+      // sizes and labels are — and, unlike them, cannot be read off the pixels.
+      ship: this.systemMap.shipMarkerState(),
     };
   }
 
@@ -6167,6 +6188,12 @@ export class PlanetariumMode {
   /** Dev bridge: live tuning of the map's drawn-size policy; null resets. */
   devSetMapBodySize(partial: Partial<MapBodySizeParams> | null): void {
     this.systemMap?.setBodySizeParams(partial);
+  }
+
+  /** Dev bridge: how one map body is drawing (globe or dot, footprint) and
+   *  whether the texture it borrowed is still the one the world holds. */
+  devMapProbe(name: string): ReturnType<SystemMap['probeBody']> {
+    return this.systemMap?.probeBody(name) ?? null;
   }
 
   /** Dev bridge: open the card on a named body (Sun or a planet), as a real
@@ -6237,7 +6264,7 @@ export class PlanetariumMode {
     // defer term enforces it; the class force-hides the DOM regardless).
     this.setWorldLabelsVisible(false);
 
-    this.systemMap ??= new SystemMap(this.renderer);
+    this.systemMap ??= new SystemMap(this.renderer, this.mapTextureSource());
     this.mapHud.bind();
     this.systemMap.openMap(this.timeState.currentUtcMs);
     this.mapHud.show();

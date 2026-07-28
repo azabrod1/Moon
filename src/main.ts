@@ -13,6 +13,7 @@ import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js'
 import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
 
 import { PlanetariumMode, FIRST_PLANETARIUM_ACTIVATION_TOTAL_UNITS } from './planetarium/PlanetariumMode';
+import type { ShipProfile } from './planetarium/PlayerShip';
 import { LANDED_NEAR_AU } from './planetarium/landedView';
 import type { MoonFlightMode } from './moonFlight/MoonFlightMode';
 import type { VolumeCompareMode } from './volumeCompare/VolumeCompareMode';
@@ -551,6 +552,13 @@ function installDevHooks() {
       planetariumMode?.devLimbView(name, kRadii, fovDeg) ?? false,
     frameSun: (distanceAU?: number, fovDeg?: number, offNdcX?: number, offNdcY?: number) =>
       planetariumMode?.devFrameSun(distanceAU, fovDeg, offNdcX, offNdcY) ?? false,
+    frameSunBehindShip: (
+      distanceAU?: number,
+      offNdcX?: number,
+      offNdcY?: number,
+      profile?: ShipProfile,
+    ) => planetariumMode?.devFrameSunBehindShip(distanceAU, offNdcX, offNdcY, profile)
+      ?? Promise.resolve(false),
     diagnosticSphere: (offNdcX?: number, offNdcY?: number, fovDeg?: number, angularRadiusDeg?: number) =>
       planetariumMode?.devFrameDiagnosticSphere(offNdcX, offNdcY, fovDeg, angularRadiusDeg) ?? false,
     // Marker-limb integration: a planet's live analytic occluder disc, ship
@@ -560,6 +568,8 @@ function installDevHooks() {
     probeLimbMarker: (screenX: number, screenY: number, depthAU: number) =>
       planetariumMode?.devProbeLimbMarker(screenX, screenY, depthAU) ?? null,
     sunAppearance: () => planetariumMode?.devSunAppearance() ?? null,
+    setShipSunOcclusion: (enabled: boolean) =>
+      planetariumMode?.devSetShipSunOcclusion(enabled) ?? false,
     sunGlareMask: () => planetariumMode?.devSunGlareMask() ?? null,
     eclipseDebug: () => planetariumMode?.devEclipseDebug() ?? null,
     setVeil: (opts: { warmth?: number; strength?: number }) =>

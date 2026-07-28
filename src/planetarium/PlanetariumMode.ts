@@ -19,7 +19,7 @@ import {
   type SolarSystemObjects,
   type PlanetariumLayout,
 } from './SolarSystem';
-import { PlayerShip } from './PlayerShip';
+import { PlayerShip, type ShipProfile } from './PlayerShip';
 import { PlanetLabels, discRadiusPx, pickBodyAtPointer, type PickCandidate } from './PlanetLabels';
 import { PlanetariumStore, createDefaultPlanetariumState, type PlanetariumState, type LandedTarget, type LabelDistancesMode } from './PlanetariumStore';
 import { solarExposureTarget } from './solarExposure';
@@ -200,6 +200,11 @@ import {
   ringAnnulusDistanceAU,
   type CameraBodyShell,
 } from './cruiseView';
+import {
+  SHIP_SUN_DISC_SAMPLES,
+  shipHullMayOverlapSource,
+  unblockedShipSunFraction,
+} from './shipSunOcclusion';
 import {
   eclipticHeadingPitchFromEquatorial,
   flightAnglesFromSceneDirection,
@@ -861,6 +866,10 @@ export class PlanetariumMode {
   // skipped so the camera can sit a few radii from a body without being pushed
   // back out past its moon system.
   private devFreeCamera = false;
+  // The profile-aware ship/Sun QA pose must survive updatePlanetScaling's
+  // deliberate per-frame mission-profile reassertion. Null in normal runtime;
+  // only the DEV bridge can set it.
+  private devShipProfileOverride: ShipProfile | null = null;
 
   // Near-Sun coverage meter — telemetry for the dev bridge only. The exposure
   // that actually reaches the render is sunExposure: updateSunShader adapts it
@@ -2802,7 +2811,11 @@ export class PlanetariumMode {
     // setProfile explicitly; this per-frame reapply is a deliberate, cheap
     // safety net guaranteeing the displayed model tracks mission state through
     // every code path (incl. state restore) — do not "optimize" it away.
-    this.player.setProfile(this.activeHistoricJourney?.shipProfile ?? 'default');
+    this.player.setProfile(
+      this.devShipProfileOverride
+        ?? this.activeHistoricJourney?.shipProfile
+        ?? 'default',
+    );
   }
 
   /**
@@ -3580,6 +3593,47 @@ export class PlanetariumMode {
   private markerShipRayDir = new THREE.Vector3();
   private markerShipMeshes: THREE.Object3D[] = [];
   private markerShipHits: THREE.Intersection[] = [];
+  private shipSunRight = new THREE.Vector3();
+  private shipSunUp = new THREE.Vector3();
+  private shipSunRayDir = new THREE.Vector3();
+  private shipSunToShip = new THREE.Vector3();
+  private shipSunVisibility = 1;
+  private shipSunRaycastCount = 0;
+  private devShipSunOcclusionEnabled = true;
+
+  /** Refresh the live solid-hull list. Profile swaps and Cassini's async GLB
+   *  resolution make a persistent cache unsafe without invalidation, while the
+   *  Sun overlap gate makes this rare traversal cheap in practice. */
+  private collectSolidShipMeshes(): void {
+    this.player.group.updateWorldMatrix(true, true);
+    this.markerShipMeshes.length = 0;
+    const collect = (object: THREE.Object3D): void => {
+      if (!object.visible) return;
+      const mesh = object as THREE.Mesh;
+      if (mesh.isMesh) {
+        const material = mesh.material as THREE.Material | THREE.Material[];
+        const additive = Array.isArray(material)
+          ? material.every((candidate) => candidate.blending === THREE.AdditiveBlending)
+          : material.blending === THREE.AdditiveBlending;
+        if (!additive) this.markerShipMeshes.push(mesh);
+      }
+      for (const child of object.children) collect(child);
+    };
+    collect(this.player.group);
+  }
+
+  /** Test one bounded camera ray against the hull list collected above. */
+  private rayHitsCollectedShip(direction: THREE.Vector3, far = Infinity): boolean {
+    this.markerShipRaycaster.set(this.camera.position, direction);
+    this.markerShipRaycaster.near = 0;
+    this.markerShipRaycaster.far = far;
+    this.markerShipHits.length = 0;
+    return this.markerShipRaycaster.intersectObjects(
+      this.markerShipMeshes,
+      false,
+      this.markerShipHits,
+    ).length > 0;
+  }
 
   /**
    * True when the sight line from the camera to a far marker passes through
@@ -3604,29 +3658,79 @@ export class PlanetariumMode {
       const t = -cam.dot(dir); // ray parameter at closest approach to the origin
       if (t <= 0 || camDistSq - t * t > extentSq) return false;
     }
-    // The hull pose is a frame stale at label time: player.update() moved
-    // it earlier this frame but world matrices refresh at render — and a
-    // just-swapped profile has never been through a render at all. Refresh
-    // before the raycast reads them.
-    this.player.group.updateWorldMatrix(true, true);
-    this.markerShipMeshes.length = 0;
-    const collect = (o: THREE.Object3D) => {
-      if (!o.visible) return;
-      const mesh = o as THREE.Mesh;
-      if (mesh.isMesh) {
-        const m = mesh.material as THREE.Material | THREE.Material[];
-        const additive = Array.isArray(m)
-          ? m.every((x) => x.blending === THREE.AdditiveBlending)
-          : m.blending === THREE.AdditiveBlending;
-        if (!additive) this.markerShipMeshes.push(mesh);
-      }
-      for (const child of o.children) collect(child);
-    };
-    collect(this.player.group);
-    this.markerShipRaycaster.set(cam, dir);
-    this.markerShipHits.length = 0;
-    return this.markerShipRaycaster.intersectObjects(this.markerShipMeshes, false, this.markerShipHits).length > 0;
+    // The hull pose is a frame stale at label time: player.update() moved it
+    // earlier this frame but world matrices refresh at render — and a
+    // just-swapped profile has never been through a render at all.
+    this.collectSolidShipMeshes();
+    return this.rayHitsCollectedShip(dir);
   };
+
+  /**
+   * Fraction of deterministic rays across the physical solar disc that reach
+   * the Sun without hitting the foreground ship. This is an independent
+   * camera-optics transmission signal: it must never enter celestial eclipse,
+   * exposure, corona, flash, or silhouette state.
+   */
+  private computeShipSunVisibility(
+    sunDirection: THREE.Vector3,
+    sunDistance: number,
+    sunAngularRadius: number,
+    eligible: boolean,
+  ): number {
+    this.shipSunRaycastCount = 0;
+    if (
+      !this.devShipSunOcclusionEnabled ||
+      !eligible ||
+      !this.player.group.visible ||
+      this.landedOn
+    ) return 1;
+
+    const cameraDistance = this.camera.position.length();
+    // The dev free-camera Sun rig may seat the camera at the floating origin,
+    // inside the visible ship. That is not a meaningful foreground hull pose.
+    if (!(cameraDistance > 1e-12)) return 1;
+
+    const toShip = this.shipSunToShip.copy(this.camera.position)
+      .multiplyScalar(-1 / cameraDistance);
+    const shipAlongRay = cameraDistance * toShip.dot(sunDirection);
+    if (
+      shipAlongRay + SHIP_ANY_HULL_EXTENT_AU <= 0 ||
+      shipAlongRay - SHIP_ANY_HULL_EXTENT_AU >= sunDistance
+    ) return 1;
+    if (!shipHullMayOverlapSource(
+      cameraDistance,
+      SHIP_ANY_HULL_EXTENT_AU,
+      toShip.dot(sunDirection),
+      sunAngularRadius,
+    )) return 1;
+
+    this.collectSolidShipMeshes();
+
+    // Form an exact tangent basis around the Sun direction from camera-right.
+    // Projecting first keeps the sample disc circular even when the Sun is
+    // off-axis. Fall back to camera-up only at the degenerate parallel case.
+    this.camera.updateMatrixWorld();
+    const elements = this.camera.matrixWorld.elements;
+    const right = this.shipSunRight.set(elements[0], elements[1], elements[2]);
+    right.addScaledVector(sunDirection, -right.dot(sunDirection));
+    if (right.lengthSq() < 1e-12) {
+      right.set(elements[4], elements[5], elements[6]);
+      right.addScaledVector(sunDirection, -right.dot(sunDirection));
+    }
+    right.normalize();
+    const up = this.shipSunUp.crossVectors(sunDirection, right).normalize();
+    const tangentRadius = Math.tan(sunAngularRadius);
+    let unblocked = 0;
+    for (const sample of SHIP_SUN_DISC_SAMPLES) {
+      const ray = this.shipSunRayDir.copy(sunDirection)
+        .addScaledVector(right, sample.x * tangentRadius)
+        .addScaledVector(up, sample.y * tangentRadius)
+        .normalize();
+      this.shipSunRaycastCount++;
+      if (!this.rayHitsCollectedShip(ray, sunDistance)) unblocked++;
+    }
+    return unblockedShipSunFraction(unblocked, SHIP_SUN_DISC_SAMPLES.length);
+  }
 
   /**
    * Third pass: place HTML labels for visible moons. Uses the occluder set
@@ -3851,6 +3955,7 @@ export class PlanetariumMode {
     sunXPx: 0,
     sunYPx: 0,
     peak: 0,
+    transmission: 1,
     armCoeff: 0,
     armDecayPx: 0,
     armDecayYPx: 0,
@@ -4061,6 +4166,7 @@ export class PlanetariumMode {
           glareMat.uniforms.uGlareStrength.value);
         glareMat.uniforms.uGlareStrength.value = baseStrength * interiorFade;
         glareMat.uniforms.uVisibleFraction.value = 1;
+        glareMat.uniforms.uShipSunVisibility.value = 1;
         glareMat.uniforms.uAtmosphereMix.value = 0;
         glareMat.uniforms.uEmergenceFlash.value = this.sunEmergenceFlash;
         // Inside the photosphere the veil has no meaning; collapse the billboard.
@@ -4088,6 +4194,8 @@ export class PlanetariumMode {
           glareMat.uniforms.uMinHalfSizePx.value);
         glareMat.uniforms.uMinHalfSizePx.value = baseMinHalfPx;
       }
+      this.shipSunVisibility = 1;
+      this.shipSunRaycastCount = 0;
       this.clearSunSilhouette();
       if (ghostMat) ghostMat.uniforms.uGhostStrength.value = 0;
       // No limb sits in front of a camera buried in the photosphere; kill the
@@ -4533,6 +4641,19 @@ export class PlanetariumMode {
       sunMat.uniforms.uAtmosphereMix.value = this.sunAtmosphereMix;
       sunMat.uniforms.uAtmosphereColor.value.copy(this.sunAtmosphereColor);
     }
+    // Sample after the camera-safety and chase passes have finalised the frame's
+    // pose. Keep this render-only source transmission entirely separate from
+    // the celestial visibility/exposure/flash state resolved above.
+    this.shipSunVisibility = this.computeShipSunVisibility(
+      toSun,
+      sunDistance,
+      solarAngularRadius,
+      inFront && appearanceEligible,
+    );
+    if (glareMat) {
+      glareMat.uniforms.uShipSunVisibility.value = this.shipSunVisibility;
+    }
+    const effectiveVeilAmt = veilAmt * this.shipSunVisibility;
     // The arm terms the glare draws with this frame; mirrored into the mask so
     // the fade uses exactly the profile on screen. 0 whenever the wash is off.
     let maskArmCoeff = 0;
@@ -4544,9 +4665,13 @@ export class PlanetariumMode {
       // where the wash and arms actually fade out and hand the shader the exact
       // arm decay lengths used to size it — the quad always contains the arms it
       // draws. 0 amount (off-screen, occluded, in totality) collapses it all.
-      if (appearanceEligible && veilAmt > 0) {
+      if (appearanceEligible && effectiveVeilAmt > 0) {
         this.computeSunVeilSupport(
-          veilAmt, glareMat.uniforms.uVeilStrength.value, exposureScale, viewportHeight, veilArmCoeff,
+          effectiveVeilAmt,
+          glareMat.uniforms.uVeilStrength.value,
+          exposureScale,
+          viewportHeight,
+          veilArmCoeff,
         );
         // Grow the veil billboard by the centroid displacement so the wash
         // shifted onto the exposed crescent never clips at the quad edge.
@@ -4568,10 +4693,11 @@ export class PlanetariumMode {
       const offAxis = THREE.MathUtils.smoothstep(centreDistanceNdc, 0.12, 0.55);
       const edgeFade = 1 - THREE.MathUtils.smoothstep(centreDistanceNdc, 1.02, 1.45);
       const visibleEnergy = Math.pow(THREE.MathUtils.clamp(visibleFraction, 0, 1), 0.5);
+      const shipEnergy = Math.pow(this.shipSunVisibility, 0.5);
       ghostMat.uniforms.uSunNdc.value.set(this.tmpSunScreen.x, this.tmpSunScreen.y);
       ghostMat.uniforms.uViewportPx.value.set(viewportWidth, viewportHeight);
       ghostMat.uniforms.uGhostStrength.value = appearanceEligible
-        ? opticalFx * offAxis * edgeFade * visibleEnergy * 0.05
+        ? opticalFx * offAxis * edgeFade * visibleEnergy * shipEnergy * 0.05
         : 0;
       ghostMat.uniforms.uExposureScale.value = exposureScale;
       ghostMat.uniforms.uEmergenceFlash.value = this.sunEmergenceFlash;
@@ -4617,6 +4743,7 @@ export class PlanetariumMode {
     }
     const veilStrengthNow = glareMat ? glareMat.uniforms.uVeilStrength.value : 1.4;
     maskParams.peak = veilStrengthNow * veilAmt * exposureScale;
+    maskParams.transmission = this.shipSunVisibility;
     maskParams.armCoeff = maskArmCoeff;
     maskParams.armDecayPx = maskArmDecayPx;
     maskParams.armDecayYPx = maskArmDecayYPx;
@@ -4642,7 +4769,7 @@ export class PlanetariumMode {
     // and a covering footprint must never activate it (see above). sunVeilSupport
     // holds the real wash reach only when the veil is live; it is stale scratch
     // otherwise, so pass 0 in that case rather than a bogus reach.
-    const washSupportPx = veilAmt > 0 ? this.sunVeilSupport.halfPx : 0;
+    const washSupportPx = effectiveVeilAmt > 0 ? this.sunVeilSupport.halfPx : 0;
     const activationInput = this.sunGlareMaskActivationInput;
     activationInput.sunFootprintKind = sunFootprintKind;
     activationInput.sunXPx = maskParams.sunXPx;
@@ -4651,7 +4778,9 @@ export class PlanetariumMode {
     activationInput.washSupportPx = washSupportPx;
     activationInput.viewportWidth = viewportWidth;
     activationInput.viewportHeight = viewportHeight;
-    maskParams.active = maskParams.active && sunGlareMaskActivation(activationInput);
+    maskParams.active = maskParams.active
+      && this.shipSunVisibility > 0
+      && sunGlareMaskActivation(activationInput);
     this.applySunGlareMaskToPoints(viewportWidth);
   }
 
@@ -7927,6 +8056,66 @@ export class PlanetariumMode {
     return true;
   }
 
+  /**
+   * Headless-QA pose for the reported regression: hold the ship at screen
+   * centre and put the Sun on a requested output-space ray behind it. The
+   * profile is loaded before the pose is returned so sparse probes and the
+   * async Cassini GLB can be swept deterministically.
+   */
+  async devFrameSunBehindShip(
+    distanceAU = 5,
+    offNdcX = 0,
+    offNdcY = 0,
+    profile: ShipProfile = 'default',
+  ): Promise<boolean> {
+    if (!this.solarSystem) return false;
+    if (profile !== 'default') await this.player.ensureProfileLoaded(profile);
+    this.devShipProfileOverride = profile;
+    this.player.setProfile(profile);
+    this.showShip = true;
+    this.player.group.visible = true;
+    this.player.moving = false;
+    this.devFreeCamera = true;
+
+    const forward = this.tmpSunView.set(1, 0, 0);
+    const aim = flightAnglesFromSceneDirection(forward.x, forward.y, forward.z);
+    this.player.heading = aim.headingRad;
+    this.player.pitch = aim.pitchRad;
+    this.player.syncModelOrientation();
+
+    const cam = this.camera as THREE.PerspectiveCamera;
+    this.setDisplayFov(60);
+    this.setCameraFrameUp(FLIGHT_UP_SCENE);
+    chaseIdealOffset(forward, FLIGHT_UP_SCENE, cam.position);
+    this.controls.target.set(0, 0, 0);
+    cam.lookAt(0, 0, 0);
+    cam.updateMatrixWorld(true);
+
+    const canvas = this.renderer.domElement;
+    screenPointToWorldRay(
+      (offNdcX * 0.5 + 0.5) * Math.max(canvas.clientWidth, 1),
+      (-offNdcY * 0.5 + 0.5) * Math.max(canvas.clientHeight, 1),
+      cam,
+      Math.max(canvas.clientWidth, 1),
+      Math.max(canvas.clientHeight, 1),
+      this.tmpScreenRay,
+    );
+    const sunScene = this.tmpSunDirection.copy(cam.position)
+      .addScaledVector(this.tmpScreenRay, Math.max(distanceAU, SUN_DATA.radiusAU * 2));
+    // Floating origin maps the heliocentric Sun (0,0,0) to -player.
+    this.player.posX = -sunScene.x;
+    this.player.posY = -sunScene.y;
+    this.player.posZ = -sunScene.z;
+    this.noteSunViewDiscontinuity();
+    return true;
+  }
+
+  /** DEV-only A/B gate; production always starts enabled. */
+  devSetShipSunOcclusion(enabled: boolean): boolean {
+    this.devShipSunOcclusionEnabled = enabled;
+    return this.devShipSunOcclusionEnabled;
+  }
+
   /** Solid, non-HDR limb target for assertion-based lens QA. It deliberately
    * bypasses the textured Sun/glare so thresholding measures one connected
    * geometric silhouette rather than whichever saturated optical layer wins. */
@@ -8078,6 +8267,8 @@ export class PlanetariumMode {
       exposure: this.sunExposure,
       whiteout: sunMat ? (sunMat.uniforms.uWhiteout.value as number) : 0,
       visibleFraction: this.lastSunVisibleFraction,
+      shipSunVisibility: this.shipSunVisibility,
+      shipSunRaycastCount: this.shipSunRaycastCount,
       emergenceFlash: this.sunEmergenceFlash,
       atmosphereMix: this.sunAtmosphereMix,
       atmosphereColor: `#${this.sunAtmosphereColor.getHexString()}`,

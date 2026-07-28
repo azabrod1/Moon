@@ -341,6 +341,7 @@ export const SUN_VEIL_BETA = 1.12;
 export const sunGlareFragmentShader = /* glsl */ `
 uniform float uExtent;
 uniform float uVisibleFraction;
+uniform float uShipSunVisibility;
 uniform float uGlareStrength;
 uniform float uPointLike;
 uniform float uCameraFx;
@@ -488,10 +489,18 @@ void main() {
   float aureole = 0.015 / (1.0 + lightOutside * lightOutside * 0.90);
   float tail = 0.0016 / pow(max(lightSolarRadii, 1.0), 1.50);
   float visibleEnergy = pow(clamp(uVisibleFraction, 0.0, 1.0), 0.38);
+  // The nearby player ship is a camera foreground, not a celestial eclipse
+  // owner. Shape its sampled source coverage like the compact celestial PSF
+  // without feeding it back into uVisibleFraction/corona state. The wide veil
+  // below intentionally uses the raw linear coverage, matching veilAmt's
+  // existing celestial convention.
+  float shipVisibility = clamp(uShipSunVisibility, 0.0, 1.0);
+  float shipDirectEnergy = pow(shipVisibility, 0.38);
   // The scene's exposure adaptation also tempers the lens glare (uExposureScale
   // = sqrt(exposure)), so staring into the Sun tightens the halo the way a
   // stopped-down camera would instead of gaining 1.5 stops on the scene.
-  float glare = (core + aureole + tail) * visibleEnergy * uGlareStrength * uExposureScale;
+  float glare = (core + aureole + tail) * visibleEnergy * shipDirectEnergy
+    * uGlareStrength * uExposureScale;
 
   // Once the solar disc becomes only a few pixels wide, a restrained optical
   // starburst keeps it distinct from the starfield. Derivative-scaled widths
@@ -506,7 +515,7 @@ void main() {
   // the reference stills show long thin diffraction spikes WITH a visible disc.
   // Carry a fraction of them through the mid-range on the camera-fx term.
   float starburst = (horizontal + vertical + diagonal)
-    * max(uPointLike, uCameraFx * uSpikeSustain) * visibleEnergy * 0.30;
+    * max(uPointLike, uCameraFx * uSpikeSustain) * visibleEnergy * shipDirectEnergy * 0.30;
   glare += starburst;
 
   // A short, low-energy sensor streak bridges the scale range where the disc
@@ -515,7 +524,7 @@ void main() {
   float sensorLine = exp(-abs(pLightB.y) / sensorWidth)
     * exp(-abs(pLightB.x) * 1.55);
   float sensorStreak = sensorLine * uCameraFx * (1.0 - uPointLike * 0.72)
-    * visibleEnergy * 0.055;
+    * visibleEnergy * shipDirectEnergy * 0.055;
   glare += sensorStreak;
 
   // The occluder's own disc in the base frame: the bead cut just below and the
@@ -563,12 +572,13 @@ void main() {
     length(pB * uExtent - uDiamondOccluderSr));
   float beadCarve = 1.0 - uBeadCarveDepth * beadEdge;
   glare += uDiamondRing * (diamondCore + diamondDazzle) * beadCarve
-    * uGlareStrength * uExposureScale;
+    * uGlareStrength * uExposureScale * shipDirectEnergy;
 
   // Limb crossings and third contact briefly overwhelm the virtual optics
   // before exposure adaptation catches up. The controller supplies a
   // derivative-triggered impulse with a short exponential decay.
-  float emergenceBloom = exp(-lightOutside * 1.25) * uEmergenceFlash * visibleEnergy * 1.15;
+  float emergenceBloom = exp(-lightOutside * 1.25) * uEmergenceFlash
+    * visibleEnergy * shipDirectEnergy * 1.15;
   glare = (glare + emergenceBloom) * mix(1.0, 0.60, uAtmosphereMix);
 
   // A body deep into covering the Sun reads as a dark silhouette even through
@@ -619,7 +629,8 @@ void main() {
   float armX = exp(-armAcross * armAcross) * exp(-abs(pxOff.x) / max(uArmDecayPx, 1.0));
   float armY = exp(-armAcrossV * armAcrossV) * exp(-abs(pxOff.y) / max(uArmDecayYPx, 1.0)) * 0.25;
   float veilEnergy = uVeilStrength * uVeilAmt * uExposureScale
-    * (1.0 + 0.5 * uEmergenceFlash) * mix(1.0, 0.60, uAtmosphereMix);
+    * shipVisibility * (1.0 + 0.5 * uEmergenceFlash)
+    * mix(1.0, 0.60, uAtmosphereMix);
   float veil = (veilShape + (armX + armY) * uArmCoeff) * veilEnergy * silhouette;
 
   // Once the photosphere is covered, remove its glare and reveal a restrained
@@ -770,10 +781,17 @@ void main() {
   // Hydrogen-alpha: the flash spectrum is pink-magenta, blue above green. An
   // orange-red here reads as sunset light instead of chromosphere.
   vec3 chromosphereColor = vec3(1.0, 0.29, 0.33);
-  vec3 rgb = (glareColor * glare + coronaColor * corona + chromosphereColor * chromosphere) * baseEdgeFade
+  // These totality terms share the screen-space glare plane and cannot depth
+  // test against the foreground ship. Apply the compact-source transmission at
+  // composition so they cannot leak across a hull that covers the solar disc.
+  vec3 eclipseRgb = (coronaColor * corona + chromosphereColor * chromosphere)
+    * shipDirectEnergy;
+  vec3 rgb = (glareColor * glare + eclipseRgb) * baseEdgeFade
     + veilColor * veil * edgeFade;
   float alpha = clamp(
-    (glare + corona + chromosphere) * baseEdgeFade + veil * edgeFade, 0.0, 1.0
+    (glare + (corona + chromosphere) * shipDirectEnergy) * baseEdgeFade
+      + veil * edgeFade,
+    0.0, 1.0
   );
 
   gl_FragColor = vec4(rgb, alpha);

@@ -714,6 +714,10 @@ export function createPlanetariumSun(useBloom = true): THREE.Group {
     uniforms: {
       uExtent: { value: glareExtent },
       uVisibleFraction: { value: 1 },
+      // Independent foreground transmission for the player ship. Celestial
+      // visibility keeps owning eclipse/corona state; this factor only removes
+      // direct camera-optics light whose source rays the nearby hull blocks.
+      uShipSunVisibility: { value: 1 },
       uGlareStrength: { value: useBloom ? 1.05 : 1.35 },
       uPointLike: { value: 0 },
       uCameraFx: { value: 0 },

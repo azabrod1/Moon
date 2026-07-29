@@ -1832,7 +1832,7 @@ export class PlanetariumMode {
       // Process keyboard input
       this.processInput();
 
-      // Autopilot: steer toward target if no manual input
+      // Autopilot: steer toward target if no manual steering input
       if (this.autopilot && this.autopilotTarget && this.player.yawInput === 0 && this.player.pitchInput === 0) {
         this.applyAutopilot();
       }
@@ -2289,8 +2289,9 @@ export class PlanetariumMode {
 
   /** The moon whose dot never fully fades and whose label wins de-overlap: the
    *  just-jumped moon the camera is tracking, an actively engaged moon
-   *  autopilot, or — once those drop (manual input disengages the autopilot and
-   *  nulls the arrival look) — the retained nav moon, so the floor and label
+   *  autopilot, or — once those drop (manual steering disengages the autopilot;
+   *  any manual input nulls the arrival look) — the retained nav moon, so the
+   *  floor and label
    *  survive a hand-flown final approach. `dotNavMoon` is cleared when you jump/
    *  engage elsewhere, land, deactivate, or leave the parent's system. */
   private currentDotTargetMoon(): string | null {
@@ -4495,8 +4496,14 @@ export class PlanetariumMode {
       this.camOwner = 'reacquiring';
     }
 
-    // Any manual steering input disengages autopilot
-    if (this.autopilot && hasManualInput) {
+    // Manual STEERING disengages autopilot — taking the stick means flying
+    // yourself. The throttle stays a free axis: cranking a slow cruise up (or
+    // braking one) is speed control on a flight the ship is still aiming, the
+    // same split the steering gate in update() makes when it lets autopilot
+    // steer only while yaw/pitch are idle. Disengaging on W was how a 20c
+    // hurry-up quietly went ballistic and sailed past its destination with
+    // nothing left to park the ship.
+    if (this.autopilot && (yaw !== 0 || pitch !== 0)) {
       this.disableAutopilot();
     }
 
@@ -11182,7 +11189,7 @@ export class PlanetariumMode {
       this.flushOrbitDamping();
       this.camOwner = 'reacquiring';
     }
-    // Retain the nav moon so its dot floor + label survive a manual-input
+    // Retain the nav moon so its dot floor + label survive a manual-steering
     // disengage on final approach; a planet engage clears it (nav moved off a
     // moon). Kept through disengageAutopilot — that's the point.
     this.dotNavMoon =

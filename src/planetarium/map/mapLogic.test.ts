@@ -9,35 +9,57 @@ import {
 const planet = (name: string): MapBodyRef => ({ type: 'planet', name });
 const moon = (name: string): MapBodyRef => ({ type: 'moon', name });
 
+/** The commit verbs a card paints, in order — Focus is not one of them. */
+const verbs = (actions: ReturnType<typeof mapCardActions>): string[] =>
+  actions.filter((a) => a.kind === 'commit').map((a) => a.verb);
+
 describe('mapCardActions', () => {
   it('offers all three verbs on a planet you are not on', () => {
     const actions = mapCardActions(planet('Mars'), null);
-    expect(actions.map((a) => a.verb)).toEqual(['travel', 'observe', 'pilot']);
-    expect(actions.map((a) => a.label)).toEqual(['Teleport', 'Observatory', 'Autopilot']);
+    expect(verbs(actions)).toEqual(['travel', 'observe', 'pilot']);
+    expect(actions.map((a) => a.label)).toEqual([
+      'Teleport', 'Observatory', 'Autopilot', 'Focus',
+    ]);
   });
 
   it('drops Observatory on the Sun (no surface)', () => {
     const actions = mapCardActions(planet('Sun'), null);
-    expect(actions.map((a) => a.verb)).toEqual(['travel', 'pilot']);
-    expect(actions.map((a) => a.label)).toEqual(['Teleport', 'Autopilot']);
+    expect(verbs(actions)).toEqual(['travel', 'pilot']);
+    expect(actions.map((a) => a.label)).toEqual(['Teleport', 'Autopilot', 'Focus']);
   });
 
   it('offers Leave + Observatory on the current landed body, never Autopilot', () => {
     const actions = mapCardActions(planet('Earth'), planet('Earth'));
-    expect(actions.map((a) => a.verb)).toEqual(['travel', 'observe']);
-    expect(actions.map((a) => a.label)).toEqual(['Leave', 'Observatory']);
-    expect(actions.some((a) => a.verb === 'pilot')).toBe(false);
+    expect(verbs(actions)).toEqual(['travel', 'observe']);
+    expect(actions.map((a) => a.label)).toEqual(['Leave', 'Observatory', 'Focus']);
+    expect(verbs(actions)).not.toContain('pilot');
   });
 
   it('treats a picked planet as not-here when you are landed on its moon', () => {
     // Standing on Io, picking Jupiter: Jupiter is not the landed body.
     const actions = mapCardActions(planet('Jupiter'), moon('Io'));
-    expect(actions.map((a) => a.verb)).toEqual(['travel', 'observe', 'pilot']);
+    expect(verbs(actions)).toEqual(['travel', 'observe', 'pilot']);
   });
 
   it('offers the full planet card when landed elsewhere', () => {
     const actions = mapCardActions(planet('Mars'), planet('Earth'));
-    expect(actions.map((a) => a.verb)).toEqual(['travel', 'observe', 'pilot']);
+    expect(verbs(actions)).toEqual(['travel', 'observe', 'pilot']);
+  });
+
+  it('puts Focus on every card, and never as a commit', () => {
+    for (const [target, landed] of [
+      [planet('Mars'), null],
+      [planet('Sun'), null],
+      [planet('Earth'), planet('Earth')],
+      [planet('Jupiter'), moon('Io')],
+    ] as const) {
+      const actions = mapCardActions(target, landed);
+      const focus = actions.filter((a) => a.kind === 'focus');
+      expect(focus).toHaveLength(1);
+      expect(focus[0].label).toBe('Focus');
+      // The commit path reads `verb`; a focus action simply does not carry one.
+      expect(actions[actions.length - 1].kind).toBe('focus');
+    }
   });
 });
 

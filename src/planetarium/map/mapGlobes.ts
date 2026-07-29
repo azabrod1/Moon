@@ -4,16 +4,25 @@
  * argument, no object result, nothing for the collector to sweep up.
  *
  * 1. Globe or dot. The map draws a body as a lit little world only when it has
- *    something honest to draw: a surface texture the world has already loaded,
- *    and a chart whose radii are compressed. Everything else falls back to the
- *    schematic dot — never an untextured sphere, which would be a body shown
- *    half-loaded, and never a globe at true scale, where the whole system is a
- *    field of sub-pixel points and the dot IS the visible object.
+ *    something honest to draw: a surface texture the world has already loaded.
+ *    Without one it falls back to the schematic dot — never an untextured
+ *    sphere, which would be a body shown half-loaded.
  *
- *    The swap keys off the scale control's committed target, not the animating
- *    blend, so it happens on the gesture that asked for it. Mid-animation the
- *    look is already settled and only the distances slide; a threshold part-way
- *    through would pop for no reason the viewer could name.
+ *    On the compressed chart the globe is the look throughout. At true scale
+ *    the whole system is a field of sub-pixel points and the dot IS the visible
+ *    object — until the camera closes on one body far enough that its real disc
+ *    overtakes the marker the chart would have drawn instead. That crossover,
+ *    not a flat pixel threshold, is the gate: it is the size policy's own
+ *    "marker and truth meet exactly where they cross" invariant, so the swap is
+ *    continuous by construction. Gating on a smaller number would hand the
+ *    globe over while the per-body marker floor still governs its drawn size,
+ *    and a "true-scale" globe would appear several times inflated.
+ *
+ *    The compressed/true decision keys off the scale control's committed
+ *    target, not the animating blend, so it happens on the gesture that asked
+ *    for it. Mid-animation the look is already settled and only the distances
+ *    slide; a threshold part-way through would pop for no reason the viewer
+ *    could name.
  *
  * 2. Texture adoption. The map borrows the world's texture objects and owns
  *    none of them: the world disposes the old texture the moment it hot-swaps a
@@ -31,11 +40,20 @@ export type MapBodyDraw = 'globe' | 'dot';
  * `textureReady` — the world's material for this body carries a colour map;
  * false while it is still loading. `trueScaleTarget` — the scale control's
  * committed target is true scale; the blend may still be animating toward it,
- * and the draw mode follows the target, not the blend.
+ * and the draw mode follows the target, not the blend. `trueProjectedPx` — the
+ * body's REAL disc radius on screen right now, and `markerRadiusPx` the chart
+ * marker it would draw at instead; at true scale the globe is what draws from
+ * the moment the first overtakes the second.
  */
-export function mapBodyDrawMode(textureReady: boolean, trueScaleTarget: boolean): MapBodyDraw {
-  if (trueScaleTarget) return 'dot';
-  return textureReady ? 'globe' : 'dot';
+export function mapBodyDrawMode(
+  textureReady: boolean,
+  trueScaleTarget: boolean,
+  trueProjectedPx: number,
+  markerRadiusPx: number,
+): MapBodyDraw {
+  if (!textureReady) return 'dot';
+  if (!trueScaleTarget) return 'globe';
+  return trueProjectedPx >= markerRadiusPx ? 'globe' : 'dot';
 }
 
 /**

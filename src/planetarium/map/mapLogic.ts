@@ -8,10 +8,15 @@
  *  user-facing verbs — Teleport / Observatory / Autopilot / Leave. */
 export type MapVerb = 'travel' | 'observe' | 'pilot';
 
-export interface MapCardAction {
-  verb: MapVerb;
-  label: string;
-}
+/**
+ * A card button. The two kinds are deliberately different types rather than one
+ * widened verb union: Focus moves the map camera and commits nothing, so it
+ * must be structurally impossible to route into the arrival path that
+ * Teleport / Observatory / Autopilot share.
+ */
+export type MapCardAction =
+  | { kind: 'commit'; verb: MapVerb; label: string }
+  | { kind: 'focus'; label: string };
 
 /** A body the map can act on. The map shows planets + the Sun; the landed body
  *  may be a moon (you can be standing on Io), which never matches a picked
@@ -22,41 +27,46 @@ export interface MapBodyRef {
 }
 
 /**
- * The verb buttons a picked body offers.
+ * The buttons a picked body offers.
  *
- * | Target                | Buttons                            |
- * |-----------------------|------------------------------------|
- * | Planet, not here      | Teleport · Observatory · Autopilot |
- * | Sun                   | Teleport · Autopilot (no surface)  |
- * | The current landed body | Leave · Observatory              |
+ * | Target                  | Buttons                                    |
+ * |-------------------------|--------------------------------------------|
+ * | Planet, not here        | Teleport · Observatory · Autopilot · Focus |
+ * | Sun                     | Teleport · Autopilot · Focus (no surface)  |
+ * | The current landed body | Leave · Observatory · Focus                |
  *
  * "Leave" is verb 'travel' whose sameBody path is a take-off; "Observatory" on
  * the landed body is verb 'observe' whose sameBody path reopens the panel.
  * Autopilot is withheld on the landed body — its sameBody branch would lift off
- * and park rather than engage.
+ * and park rather than engage. Focus is on every card: it flies the map camera
+ * and nothing else, so no target can refuse it.
  */
 export function mapCardActions(
   target: MapBodyRef,
   landedOn: MapBodyRef | null,
 ): MapCardAction[] {
+  const focus: MapCardAction = { kind: 'focus', label: 'Focus' };
   const sameBody =
     !!landedOn && landedOn.type === target.type && landedOn.name === target.name;
   if (sameBody) {
     return [
-      { verb: 'travel', label: 'Leave' },
-      { verb: 'observe', label: 'Observatory' },
+      { kind: 'commit', verb: 'travel', label: 'Leave' },
+      { kind: 'commit', verb: 'observe', label: 'Observatory' },
+      focus,
     ];
   }
   if (target.name === 'Sun') {
     return [
-      { verb: 'travel', label: 'Teleport' },
-      { verb: 'pilot', label: 'Autopilot' },
+      { kind: 'commit', verb: 'travel', label: 'Teleport' },
+      { kind: 'commit', verb: 'pilot', label: 'Autopilot' },
+      focus,
     ];
   }
   return [
-    { verb: 'travel', label: 'Teleport' },
-    { verb: 'observe', label: 'Observatory' },
-    { verb: 'pilot', label: 'Autopilot' },
+    { kind: 'commit', verb: 'travel', label: 'Teleport' },
+    { kind: 'commit', verb: 'observe', label: 'Observatory' },
+    { kind: 'commit', verb: 'pilot', label: 'Autopilot' },
+    focus,
   ];
 }
 
@@ -71,7 +81,8 @@ export function mapCardOffersVerb(
   landedOn: MapBodyRef | null,
   verb: MapVerb,
 ): boolean {
-  return mapCardActions(target, landedOn).some((a) => a.verb === verb);
+  return mapCardActions(target, landedOn)
+    .some((a) => a.kind === 'commit' && a.verb === verb);
 }
 
 export type CommitOutcome = 'accepted' | 'refused' | 'busy';

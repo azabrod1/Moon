@@ -267,7 +267,9 @@ import { SystemMap, type MapTextureSource } from './map/SystemMap';
 import { MapHUD } from './ui/MapHUD';
 import { mapCardActions, mapCardOffersVerb, commitBodyPickOutcome, type MapVerb } from './map/mapLogic';
 import { type MapBodySizeParams } from './map/mapBodySize';
+import { MAP_DOUBLE_TAP_MS, mapCameraOwnsPose, mapOverviewChipVisible } from './map/mapCamera';
 import { isTap } from './map/mapPicking';
+import { flushOrbitDamping } from './input/orbitDamping';
 import { formatBodyDistance, bodyDistanceQuantum } from './bodyDistance';
 
 type ScriptedTransfer = {
@@ -854,6 +856,8 @@ export class PlanetariumMode {
     (trueScale) => this.setMapScale(trueScale),
     () => this.closeMap(),
     (verb) => this.commitMapCard(verb),
+    () => this.focusMapCard(),
+    () => this.releaseMapFocus(),
   );
   // The catalog name of the body the card is open on, or null. Also the map's
   // "picked" bridge state.
@@ -866,6 +870,13 @@ export class PlanetariumMode {
   private mapPickDownX = 0;
   private mapPickDownY = 0;
   private mapPickPointerType = 'mouse';
+  // Double-tap candidate: the body a completed, unpoisoned pick landed on and
+  // when. A second pick of the SAME body inside the window focuses it. Set only
+  // by a real pick commit, and dropped by everything that ends the gesture or
+  // takes the camera away — a stale candidate would focus a body the user last
+  // touched minutes and one pinch ago.
+  private mapTapName: string | null = null;
+  private mapTapAtMs = 0;
   // Dive / autopilot-close transition. The generation token is bumped by every
   // closeMap and by a cancel, so a superseded transition never fires its
   // commit. mapDiving gates picking/hover while a transition runs; mapCommitting
@@ -1206,7 +1217,7 @@ export class PlanetariumMode {
         // up, hand the parked postcard framing back to the chase.
         this.pendingChaseReclaim = false;
         if (this.camOwner === 'orbit') {
-          this.flushOrbitDamping();
+          flushOrbitDamping(this.controls);
           this.camOwner = 'reacquiring';
         }
       }
@@ -1235,9 +1246,10 @@ export class PlanetariumMode {
       this.cancelOrbitGesture();
       // The map's armed pick would strand the same way — and a mouse reuses
       // one pointer id, so the NEXT click's release could then tap against
-      // this gesture's stale down point.
+      // this gesture's stale down point. A half-made double-tap goes with it.
       this.mapPickPointerId = null;
       this.mapPickPoisoned = false;
+      this.mapTapName = null;
       // Focus loss (e.g. Cmd-Tab) means the keyups won't arrive, so a held key
       // would linger — with W held the ship accelerates unattended. Drop every
       // held key; yaw/pitch/throttle recompute from this set each frame
@@ -4492,7 +4504,7 @@ export class PlanetariumMode {
     // released), so this fires edge-triggered only when the user is not
     // physically dragging.
     if (this.camOwner === 'orbit' && hasManualInput && !this.orbitDragging) {
-      this.flushOrbitDamping();
+      flushOrbitDamping(this.controls);
       this.camOwner = 'reacquiring';
     }
 
@@ -4557,6 +4569,13 @@ export class PlanetariumMode {
 
     // Escape always works — even while typing in the deck search
     if (e.key === 'Escape') {
+      // One physical press, one rung. A held Esc auto-repeats about thirty
+      // times a second while every rung below takes a beat to play out — the
+      // map's release flight alone runs most of a second — so repeats would
+      // machine-gun down the cascade, shutting the map and then walking out of
+      // surface view, the panel and the landing from a single press. No rung
+      // here wants a repeat: each one is a discrete dismissal.
+      if (e.repeat) return;
       if (this.isHelpOpen()) { this.hideHelp(); return; }
       // One Esc, one meaning while tutorialing: end the tutorial. Above the deck rung
       // on purpose — during the deck theater the open deck is tutorial-owned, and
@@ -4570,9 +4589,14 @@ export class PlanetariumMode {
       if (this.bottomBar.isStatsOpen()) { this.bottomBar.closeStats(); return; }
       // Map micro-rungs, above the map rung: Esc mid-dive cancels the dive
       // (map stays open); then Esc dismisses the picked-body card; then Esc
-      // over the map drops back into the ship.
+      // releases a focus back to the overview; then Esc over the map drops back
+      // into the ship. Each rung produces a visible change, in that order.
       if (this.isMapOpen() && this.mapDiving) { this.cancelMapDive(); return; }
       if (this.mapHud.isCardOpen()) { this.dismissMapCard(); return; }
+      if (this.isMapOpen() && this.mapFocusActive()) { this.releaseMapFocus(); return; }
+      // A release already flying IS the answer to Esc. Swallow the key rather
+      // than letting an impatient second press fall through and shut the map.
+      if (this.isMapOpen() && this.isMapReleasing()) return;
       if (this.isMapOpen()) { this.closeMap(); return; }
       if (this.surfaceTargetMenu.isOpen()) { this.closeSurfaceTargetMenu(); return; }
       if (this.landedView === 'surface') { this.exitSurfaceView(); return; }
@@ -6152,13 +6176,19 @@ export class PlanetariumMode {
     curveParam: number;
     bodySize: MapBodySizeParams;
     cameraDist: number;
+    near: number;
+    far: number;
     picked: string | null;
+    camState: string;
+    flyGoal: string | null;
+    focused: string | null;
     diving: boolean;
     diveGapAU: number | null;
     ship: { rotationRad: number; docked: boolean };
   } | null {
     if (!this.systemMap) return null;
     const curve = this.systemMap.getCurve();
+    const cam = this.systemMap.getCameraState();
     return {
       open: this.systemMap.isOpen(),
       // How far the map is blended toward true scale, plus which radial curve
@@ -6169,7 +6199,16 @@ export class PlanetariumMode {
       curveParam: curve.kind === 'power' ? curve.gamma : curve.s0,
       bodySize: this.systemMap.getBodySizeParams(),
       cameraDist: this.systemMap.getCameraDistance(),
+      // The clip planes this frame drew with — a body on screen at a healthy
+      // radius but rendering nothing is a near plane standing in front of it.
+      near: this.systemMap.getClipPlanes().near,
+      far: this.systemMap.getClipPlanes().far,
       picked: this.mapPicked?.name ?? null,
+      // Which of the four states owns the camera, where a flight is headed, and
+      // the body a focus rides (still named while a release flies away from it).
+      camState: cam.camState,
+      flyGoal: cam.flyGoal,
+      focused: cam.focusName,
       diving: this.mapDiving,
       // Camera-aim-vs-live-dot gap: ~0 once the ease lands proves the dive
       // tracked the moving dot instead of a stale snapshot.
@@ -6206,7 +6245,7 @@ export class PlanetariumMode {
   /** Dev bridge: open the card on a named body (Sun or a planet), as a real
    *  pick would. Returns whether the card opened. */
   devMapPick(name: string): boolean {
-    if (!this.isMapOpen() || this.mapDiving) return false;
+    if (!this.isMapOpen() || this.mapDiving || this.isMapCameraFlying()) return false;
     const known = name === 'Sun' || PLANETARIUM_BODIES.some((b) => b.name === name);
     if (!known) return false;
     this.openMapCard(name);
@@ -6217,6 +6256,12 @@ export class PlanetariumMode {
    *  rules a real tap follows (closeMap strictly before the commit). */
   devMapCommit(verb: MapVerb): boolean {
     return this.commitMapCard(verb);
+  }
+
+  /** Dev bridge: focus a body (the card's Focus button / a double-tap), or
+   *  release the focus with null (the ◂ Overview chip). */
+  devMapFocus(name: string | null): boolean {
+    return name === null ? this.releaseMapFocus() : this.focusMapBody(name);
   }
 
   /** Open the full-screen system map. The single safe gate for every entry
@@ -6252,7 +6297,7 @@ export class PlanetariumMode {
     // residuals, and put the chase back in charge so the invisible cruise
     // camera keeps following the ship and closes to a proper chase pose.
     this.cancelOrbitGesture();
-    this.flushOrbitDamping();
+    flushOrbitDamping(this.controls);
     this.pendingChaseReclaim = false;
     this.camOwner = 'chase';
     this.controls.enabled = false;
@@ -6312,9 +6357,11 @@ export class PlanetariumMode {
     // resume phantom thrust the moment processInput reads the flight keys again.
     this.keys.clear();
     // Nor an armed pick gesture: ids are recycled across gestures, so a
-    // stranded one could commit a later, unrelated tap.
+    // stranded one could commit a later, unrelated tap. Same for a half-made
+    // double-tap — the next open starts from nothing.
     this.mapPickPointerId = null;
     this.mapPickPoisoned = false;
+    this.mapTapName = null;
     // Give the canvas back to the world only when the mode is live: a teardown
     // close (deactivate) must leave the touch zone and controls inert, or it
     // re-arms the very controls deactivate just retired.
@@ -6378,6 +6425,10 @@ export class PlanetariumMode {
       }
       this.mapHud.setActionsDisabled(this.arrivalInFlight);
     }
+    // The ◂ Overview chip follows the camera state, and the map has no HUD
+    // reference of its own — so its visibility is owned here, every frame,
+    // rather than left to whichever transition remembered to set it.
+    this.mapHud.setOverviewChip(mapOverviewChipVisible(this.systemMap.getCameraState()));
     // Advance an in-flight dive / autopilot-close transition.
     if (this.mapDiving) this.advanceMapTransition();
   }
@@ -6391,6 +6442,13 @@ export class PlanetariumMode {
     // A second tap while the camera dives skips straight to the fade.
     if (this.mapDiving) {
       if (this.mapDiveIsCamera) this.skipMapDive();
+      return;
+    }
+    // A flight is under way: arm nothing. The release lands after the camera
+    // has, and a gesture armed here would pick whatever the flight brought
+    // under the pointer — a body the user never aimed at.
+    if (this.isMapCameraFlying()) {
+      this.poisonMapPick();
       return;
     }
     if (e.button !== 0) return;
@@ -6425,15 +6483,35 @@ export class PlanetariumMode {
     this.mapPickPointerId = null;
     const poisoned = this.mapPickPoisoned;
     this.mapPickPoisoned = false;
-    if (poisoned || this.mapDiving || !this.systemMap) return;
+    if (poisoned) {
+      // A pinched or dragged gesture is not a tap, so it cannot be half of a
+      // double-tap either.
+      this.mapTapName = null;
+      return;
+    }
+    // Taps stand down while the camera writes its own pose: the body under the
+    // pointer is not the body that will be there a frame later.
+    if (this.mapDiving || this.isMapCameraFlying() || !this.systemMap) return;
     if (!isTap(this.mapPickDownX, this.mapPickDownY, e.clientX, e.clientY)) return;
     const rect = this.renderer.domElement.getBoundingClientRect();
     const x = e.clientX - rect.left;
     const y = e.clientY - rect.top;
     const hit = this.systemMap.pick(x, y, this.mapPickPointerType);
-    if (hit.kind === 'body') this.openMapCard(hit.name);
-    else if (hit.kind === 'empty') this.dismissMapCard();
-    // 'ship' is inert — swallow, dismiss nothing.
+    if (hit.kind !== 'body') {
+      // Anything but a body ends the run: a tap elsewhere and back must not
+      // read as two taps on the same body.
+      this.mapTapName = null;
+      if (hit.kind === 'empty') this.dismissMapCard();
+      // 'ship' is inert — swallow, dismiss nothing.
+      return;
+    }
+    this.openMapCard(hit.name);
+    const now = performance.now();
+    const doubled = this.mapTapName === hit.name && now - this.mapTapAtMs <= MAP_DOUBLE_TAP_MS;
+    // Consume the candidate on a double, so a third tap starts a fresh run.
+    this.mapTapName = doubled ? null : hit.name;
+    this.mapTapAtMs = now;
+    if (doubled) this.focusMapBody(hit.name);
   }
 
   /** A cancelled or off-canvas-released gesture (palm rejection, system
@@ -6445,6 +6523,7 @@ export class PlanetariumMode {
     if (this.mapPickPointerId === e.pointerId) {
       this.mapPickPointerId = null;
       this.mapPickPoisoned = false;
+      this.mapTapName = null;
     }
   }
 
@@ -6457,8 +6536,9 @@ export class PlanetariumMode {
     if (e.pointerId === this.mapPickPointerId
       && !isTap(this.mapPickDownX, this.mapPickDownY, e.clientX, e.clientY)) {
       this.mapPickPoisoned = true;
+      this.mapTapName = null;
     }
-    if (this.mapDiving || e.pointerType !== 'mouse') return;
+    if (this.mapDiving || this.isMapCameraFlying() || e.pointerType !== 'mouse') return;
     if (!this.systemMap) return;
     const rect = this.renderer.domElement.getBoundingClientRect();
     const name = this.systemMap.hoverAt(e.clientX - rect.left, e.clientY - rect.top);
@@ -6498,6 +6578,56 @@ export class PlanetariumMode {
     this.mapPicked = null;
   }
 
+  /** Whether the map camera is writing its own pose — taps and hover stand down
+   *  for the duration, the way they already do under a dive. */
+  private isMapCameraFlying(): boolean {
+    const cam = this.systemMap?.getCameraState();
+    return !!cam && mapCameraOwnsPose(cam);
+  }
+
+  /** The card's Focus button: fly to the body the card names and follow it. The
+   *  card stays open — this moves the camera and commits nothing, so the verbs
+   *  are still one tap away on the body you are now looking at. */
+  private focusMapCard(): boolean {
+    return this.mapPicked ? this.focusMapBody(this.mapPicked.name) : false;
+  }
+
+  /** Focus entry shared by the card button, the double-tap, and the bridge. */
+  private focusMapBody(name: string): boolean {
+    if (!this.systemMap?.isOpen() || this.mapDiving) return false;
+    this.poisonMapPick();
+    return this.systemMap.focusBody(name);
+  }
+
+  /** The ◂ Overview chip and the Esc cascade's focus rung: fly back out. */
+  private releaseMapFocus(): boolean {
+    if (!this.systemMap?.isOpen() || this.mapDiving) return false;
+    this.poisonMapPick();
+    return this.systemMap.releaseFocus();
+  }
+
+  /** End any gesture in progress without committing it: a held pointer keeps
+   *  its id until its own release, so the way to void it is to poison it, the
+   *  way a second finger does. A flight starting voids one for the same reason
+   *  a pinch does — whatever it was aimed at is about to move. */
+  private poisonMapPick(): void {
+    if (this.mapPickPointerId !== null) this.mapPickPoisoned = true;
+    this.mapTapName = null;
+  }
+
+  /** Whether Esc has a focus to release before it closes the map — the same
+   *  states the ◂ Overview chip offers it in, because the chip IS that rung. */
+  private mapFocusActive(): boolean {
+    const cam = this.systemMap?.getCameraState();
+    return !!cam && mapOverviewChipVisible(cam);
+  }
+
+  /** Whether the camera is already on its way back to the overview. */
+  private isMapReleasing(): boolean {
+    const cam = this.systemMap?.getCameraState();
+    return !!cam && cam.camState === 'focusFly' && cam.flyGoal === 'overview';
+  }
+
   /** The catalog tint of a body as a CSS colour (the Sun is outside the
    *  catalogs — its one commented exception). */
   private bodyTintCss(name: string): string {
@@ -6522,6 +6652,8 @@ export class PlanetariumMode {
     // bridge and any UI race where the pick changed under the click (a bare
     // mapCommit('observe') on the Sun must not try to land on it).
     if (!mapCardOffersVerb(target, this.landedOn, verb)) return false;
+    // The transition takes over from here; nothing half-tapped survives it.
+    this.mapTapName = null;
     this.mapDiveVerb = verb;
     this.mapDiveTarget = target;
     this.mapDiveIsCamera = verb !== 'pilot';
@@ -7207,7 +7339,7 @@ export class PlanetariumMode {
     // back onto the ship. (Not gated on an active drag: a transfer never
     // starts mid-canvas-drag.)
     if (this.camOwner !== 'chase') {
-      this.flushOrbitDamping();
+      flushOrbitDamping(this.controls);
       this.camOwner = 'reacquiring';
     }
   }
@@ -7240,7 +7372,7 @@ export class PlanetariumMode {
       // release handler completes it.
       if (this.camOwner === 'orbit') {
         if (!this.orbitDragging) {
-          this.flushOrbitDamping();
+          flushOrbitDamping(this.controls);
           this.camOwner = 'reacquiring';
         } else {
           this.pendingChaseReclaim = true;
@@ -7265,46 +7397,11 @@ export class PlanetariumMode {
     // seat the camera at the chase pose.
     this.cancelOrbitGesture();
     this.pendingChaseReclaim = false;
-    this.flushOrbitDamping();
+    flushOrbitDamping(this.controls);
     this.camOwner = 'chase';
     const forward = this.player.getForwardDirection();
     chaseIdealOffset(forward, this.camera.position);
     this.controls.target.set(0, 0, 0);
-  }
-
-  /** Zero OrbitControls' damping residuals so a reacquire or reset starts from
-   *  a settled controls state instead of fighting a live coast. The primary
-   *  path pokes fields private to three's OrbitControls (verified in
-   *  r0.183.2); a rename on a three upgrade falls through to a dampingFactor
-   *  pulse that consumes the residuals in one update(). */
-  private flushOrbitDamping() {
-    const c = this.controls as unknown as {
-      _sphericalDelta?: { set(theta: number, phi: number, radius: number): void };
-      _panOffset?: { set(x: number, y: number, z: number): void };
-      _scale?: number;
-    };
-    if (c._sphericalDelta && c._panOffset && typeof c._scale === 'number') {
-      c._sphericalDelta.set(0, 0, 0);
-      c._panOffset.set(0, 0, 0);
-      c._scale = 1;
-      return;
-    }
-    if (import.meta.env.DEV) {
-      console.warn('OrbitControls damping fields missing — three upgrade renamed them; using dampingFactor pulse');
-    }
-    // Pulse damping to full so one update() applies every residual (including
-    // the full pan onto controls.target and the _last*/change-event pokes),
-    // then restore the pre-pulse camera pose, target, and damping factor.
-    const savedPos = this.camera.position.clone();
-    const savedQuat = this.camera.quaternion.clone();
-    const savedTarget = this.controls.target.clone();
-    const savedDamping = this.controls.dampingFactor;
-    this.controls.dampingFactor = 1;
-    this.controls.update();
-    this.controls.dampingFactor = savedDamping;
-    this.camera.position.copy(savedPos);
-    this.camera.quaternion.copy(savedQuat);
-    this.controls.target.copy(savedTarget);
   }
 
   /** End a physically held orbit drag across a flight discontinuity: dispatch a
@@ -11186,7 +11283,7 @@ export class PlanetariumMode {
     // camera would sit off-axis through the whole autopilot cruise. Reacquire
     // the chase on engage.
     if (this.camOwner !== 'chase') {
-      this.flushOrbitDamping();
+      flushOrbitDamping(this.controls);
       this.camOwner = 'reacquiring';
     }
     // Retain the nav moon so its dot floor + label survive a manual-steering

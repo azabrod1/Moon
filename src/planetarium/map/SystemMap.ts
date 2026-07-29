@@ -15,8 +15,13 @@
  *
  * Bodies draw as map-local textured globes — own meshes, own materials, own
  * light — that BORROW the world's texture objects and own none of them (see
- * mapGlobes for the two rules). A body with no texture yet, and the whole map
- * at true scale, fall back to the schematic dot.
+ * mapGlobes for the two rules). A body with no texture yet falls back to the
+ * schematic dot, and so does every body at true scale until the camera closes
+ * on it far enough that its real disc overtakes its chart marker.
+ *
+ * The camera is a state machine — overview, focusFly, following, dive — and
+ * exactly one of those owns the pose at a time. mapCamera holds the machine and
+ * the bounds policy as plain numbers; everything here is the THREE half of it.
  */
 import * as THREE from 'three';
 import { Line2 } from 'three/addons/lines/Line2.js';
@@ -50,8 +55,30 @@ import {
   type MapCurve,
   type MapVec3,
 } from './mapProjection';
-import { mapBodyRadiusAU, MAP_BODY_SIZE_DEFAULTS, type MapBodySizeParams } from './mapBodySize';
+import {
+  mapBodyRadiusAU,
+  mapMarkerRadiusPx,
+  MAP_BODY_SIZE_DEFAULTS,
+  type MapBodySizeParams,
+} from './mapBodySize';
 import { mapBodyDrawMode, shouldAdoptTexture } from './mapGlobes';
+import {
+  clampFollowDistanceAU,
+  followBounds,
+  mapCameraInitialState,
+  mapCameraReduce,
+  mapDiveEndFraction,
+  mapFlightFramingDistanceAU,
+  mapFocusEase,
+  mapWorldPerPxAtUnitDepth,
+  revealDistanceAU,
+  MAP_FOCUS_FLY_MS,
+  MAP_FOV_DEG,
+  MAP_OVERVIEW_NEAR_FRAC,
+  type MapCameraState,
+  type MapFollowBounds,
+} from './mapCamera';
+import { flushOrbitDamping } from '../input/orbitDamping';
 import {
   anchorOnScreen,
   pickRadiusFor,
@@ -75,7 +102,6 @@ export interface MapTextureSource {
 }
 
 const ORBIT_SEGMENTS = 180;
-const MAP_FOV_DEG = 50;
 const BG_COLOR = 0x05070d;
 // Screen sizes (px, full sprite extent) for the constant-size markers.
 const PLANET_PX = 20;
@@ -161,6 +187,9 @@ interface OrbitEntry {
   globe: THREE.Group;
   globeMat: THREE.MeshStandardMaterial;
   ringMat: THREE.MeshStandardMaterial | null;
+  /** Outer edge of the drawn ring in globe radii, 1 where there is no ring —
+   *  the body's full drawn reach, which is what a camera has to clear. */
+  ringOuterFactor: number;
   /** Drawn radius in screen px this frame — the globe's footprint, which is
    *  also its click target once it outgrows the pointer floor. */
   drawnRadiusPx: number;
@@ -250,6 +279,37 @@ export class SystemMap {
   // placeShip, read by the pick pass to drop the ship anchor that would
   // otherwise sit on top of its parent's dot.
   private shipDocked = false;
+
+  // Which of the four states owns the camera. mapCamera holds the machine; the
+  // members below are the poses and offsets it needs THREE for.
+  private cam: MapCameraState = mapCameraInitialState();
+  // The focused body's map position last frame — the follow delta is measured
+  // against it, so the camera rides the body instead of chasing it.
+  private followPos = new THREE.Vector3();
+  // The flight in progress: where it started, the framing offset it is aiming
+  // to arrive with, and the view direction it keeps (a focus preserves the
+  // direction the user was already looking from).
+  private flyFromPos = new THREE.Vector3();
+  private flyFromTarget = new THREE.Vector3();
+  private flyOffset = new THREE.Vector3();
+  private flyDir = new THREE.Vector3();
+  private flyGoalTarget = new THREE.Vector3();
+  private flyGoalPos = new THREE.Vector3();
+  private flyElapsedMs = 0;
+  /** Whether this move climbs out to frame the ground it covers. Only moves
+   *  that BEGIN at a body do: one starting from the overview is already out
+   *  there, and one heading back out is on its way there anyway. */
+  private flyArcs = false;
+  private diveArcs = false;
+  // How the camera sat around the focused body when a dive interrupted it —
+  // re-snapped onto the body's LIVE position by a cancel, since the body moved
+  // while the dive owned the camera and a follow delta cannot absorb a stale
+  // snapshot.
+  private diveOriginOffset = new THREE.Vector3();
+  private tmpBounds: MapFollowBounds = { minDist: 0, maxDist: 0, near: 0, far: 0 };
+  private tmpBodyPos = new THREE.Vector3();
+  private tmpBodyPos2 = new THREE.Vector3();
+  private tmpDelta = new THREE.Vector3();
 
   // Dive transition (camera pose only — the mode owns the clock, the fade, the
   // token, and the commit). beginDive snapshots the start pose so a cancel can
@@ -349,6 +409,13 @@ export class SystemMap {
     return this.camera.position.distanceTo(this.controls.target);
   }
 
+  /** Dev forensics: the clip planes the current frame was drawn with. A body
+   *  reported on screen at a healthy radius but rendering nothing is a near
+   *  plane sitting in front of it, and these are the only numbers that say so. */
+  getClipPlanes(): { near: number; far: number } {
+    return { near: this.camera.near, far: this.camera.far };
+  }
+
   /** Enter the map: (re)sample the orbits at the current clock. The first
    *  update() frames the whole system (ship included, positioned there). The
    *  caller owns the world's controls.enabled restore. */
@@ -358,6 +425,44 @@ export class SystemMap {
     this.resample(utcMs);
     this.controls.enabled = true;
     this.needsInitialFrame = true;
+    // Every open starts on the whole system, whatever the last one ended on.
+    this.cam = mapCameraInitialState();
+  }
+
+  /** Which state owns the camera, what a flight is aiming at, and the body a
+   *  focus is riding. Read by the mode each frame for the ◂ Overview chip and
+   *  the pointer gates. */
+  getCameraState(): Readonly<MapCameraState> {
+    return this.cam;
+  }
+
+  /**
+   * Focus a body: fly to it and follow it. Asking for the body already
+   * followed (or already being flown to) is a no-op that still reports success
+   * — the camera is where the caller wanted it. Returns false only for a body
+   * the map cannot draw, a closed map, or a running dive.
+   */
+  focusBody(name: string): boolean {
+    if (!this.open || this.cam.camState === 'dive') return false;
+    if (!this.spriteForName(name)) return false;
+    const next = mapCameraReduce(this.cam, { kind: 'focus', name });
+    if (next === this.cam) return true;
+    const fromFocus = this.cam.camState !== 'overview';
+    this.cam = next;
+    this.startFly(fromFocus);
+    return true;
+  }
+
+  /** Release the focus: fly back out to the whole-system fit. False when there
+   *  was nothing to release, or the release is already under way. */
+  releaseFocus(): boolean {
+    if (!this.open) return false;
+    const next = mapCameraReduce(this.cam, { kind: 'release' });
+    if (next === this.cam) return false;
+    const fromFocus = this.cam.camState !== 'overview';
+    this.cam = next;
+    this.startFly(fromFocus);
+    return true;
   }
 
   /** Seat the camera at a 3/4 overhead framing the live extent (ship included). */
@@ -382,6 +487,18 @@ export class SystemMap {
     if (!this.open) return;
     this.open = false;
     this.diving = false;
+    this.cam = mapCameraReduce(this.cam, { kind: 'close' });
+    this.flyElapsedMs = 0;
+    // Settle the scale animation and the framing it was preserving. A shut map
+    // has nothing to animate, and leaving either standing lets the next open
+    // frame the system correctly and then spring: the animation would resume on
+    // a fresh view and re-dolly it to a zoom ratio captured before whatever the
+    // last session did. The committed target is what the map reopens at.
+    this.blend = this.blendTo;
+    this.blendAnimating = false;
+    this.blendElapsedMs = 0;
+    this.blendFrom = this.blendTo;
+    this.scaleZoomRatio = 1;
     this.setHover(null);
     this.controls.enabled = false;
     for (const label of this.labels) label.style.display = 'none';
@@ -408,8 +525,14 @@ export class SystemMap {
   setScale(trueScale: boolean): void {
     const target = trueScale ? MAP_BLEND_TRUE : MAP_BLEND_COMPRESSED;
     if (Math.abs(target - this.blendTo) < 1e-9 && !this.blendAnimating) return;
-    const fit = fitDistanceAU(this.extentAU, MAP_FOV_DEG, this.camera.aspect);
-    this.scaleZoomRatio = this.getCameraDistance() / Math.max(fit, 1e-4);
+    // Only the overview re-dollies against this ratio, so only the overview may
+    // capture it: a focus framing is a ten-thousandth of the fit, and carrying
+    // that fraction back to the overview would slam the camera into the Sun.
+    // A toggle mid-focus just re-projects, and the follow delta rides it.
+    if (this.cam.camState === 'overview') {
+      const fit = fitDistanceAU(this.extentAU, MAP_FOV_DEG, this.camera.aspect);
+      this.scaleZoomRatio = this.getCameraDistance() / Math.max(fit, 1e-4);
+    }
     this.blendFrom = this.blend;
     this.blendTo = target;
     this.blendElapsedMs = 0;
@@ -437,6 +560,10 @@ export class SystemMap {
     // here — before the fit reads it — or the swap would frame the wrong disc.
     if (this.shipSnapshot) this.positionShipMarker();
     this.recomputeExtent();
+    // Only the overview re-frames: a focused camera stays on its body, whose
+    // map position jumped with the curve — the follow delta absorbs that jump
+    // on the next frame, which is exactly what it is for.
+    if (this.cam.camState !== 'overview') return;
     const want = zoomRatio * fitDistanceAU(this.extentAU, MAP_FOV_DEG, this.camera.aspect);
     this.dollyTo(want);
     this.applyBounds(want);
@@ -501,32 +628,47 @@ export class SystemMap {
     this.updateBodies(utcMs);
     this.placeShip(shipX, shipY, shipZ, shipHeading, shipPitch, shipMoving, landed, dtMs);
 
-    // ── (2) Camera: fit or re-clamp to the live extent (compression animating,
-    // ship drifting), then flush the controls and matrices BEFORE any
-    // projection. The renderer refreshes matrices only at render time, which
-    // runs after this update, so a projection-dependent pass must force it.
-    // A dive owns the camera outright (the mode drives setDivePose), so the fit
-    // and controls stand down for its duration.
-    if (!this.diving) {
-      this.recomputeExtent();
-      if (this.needsInitialFrame) {
-        // First frame after open: bodies and ship are positioned, so the fit
-        // includes a ship past Pluto.
-        this.needsInitialFrame = false;
-        this.frameToExtent();
-      } else if (blendMoved) {
-        // Re-dolly to preserve the framing captured at the toggle, so the
-        // system holds its apparent size while its extent slides with the blend.
-        const wantDist = this.scaleZoomRatio
-          * fitDistanceAU(this.extentAU, MAP_FOV_DEG, this.camera.aspect);
-        this.dollyTo(wantDist);
-        this.applyBounds(wantDist);
-        this.controls.update();
-      } else {
-        this.applyBounds(this.getCameraDistance());
-        this.controls.update();
-      }
+    // ── (2) Camera. The extent is refreshed unconditionally: the geometry
+    // underneath never stops (the scale animation runs to its end, bodies keep
+    // moving), so freezing it under a dive or a flight would leave whatever
+    // frames next against a stale figure. Only the CAMERA stands down.
+    this.recomputeExtent();
+    switch (this.cam.camState) {
+      case 'overview':
+        if (this.needsInitialFrame) {
+          // First frame after open: bodies and ship are positioned, so the fit
+          // includes a ship past Pluto.
+          this.needsInitialFrame = false;
+          this.frameToExtent();
+        } else if (blendMoved) {
+          // Re-dolly to preserve the framing captured at the toggle, so the
+          // system holds its apparent size while its extent slides with the
+          // blend.
+          const wantDist = this.scaleZoomRatio
+            * fitDistanceAU(this.extentAU, MAP_FOV_DEG, this.camera.aspect);
+          this.dollyTo(wantDist);
+          this.applyBounds(wantDist);
+          this.controls.update();
+        } else {
+          this.applyBounds(this.getCameraDistance());
+          this.controls.update();
+        }
+        break;
+      case 'focusFly':
+        // The ease advances here, inside the update pass, so the projection
+        // phase below replays against the pose it just wrote.
+        this.advanceFly(dtMs);
+        break;
+      case 'following':
+        this.updateFollow();
+        break;
+      case 'dive':
+        // The mode drives setDivePose; the camera section stands down.
+        break;
     }
+    // Flush the matrices BEFORE any projection. The renderer refreshes them
+    // only at render time, which runs after this update, so a
+    // projection-dependent pass must force it.
     this.camera.updateMatrixWorld();
 
     // ── (3) Projection-dependent work, on this frame's final camera pose.
@@ -571,8 +713,11 @@ export class SystemMap {
     const w = Math.max(el.clientWidth, 1);
     const h = Math.max(el.clientHeight, 1);
     // Judge "still at the overview fit" against the OLD aspect before touching
-    // the camera — that fit is the frame the user was actually looking at.
-    const wasAtOverview = this.open && this.sampled && !this.diving && !this.blendAnimating
+    // the camera — that fit is the frame the user was actually looking at. The
+    // test is only ever asked of the overview: an early flight frame still sits
+    // at the fit distance it started from, and dollying it would fight the ease.
+    const wasAtOverview = this.open && this.sampled && this.cam.camState === 'overview'
+      && !this.blendAnimating
       && !this.needsInitialFrame
       && isAtOverviewFit(
         this.getCameraDistance(),
@@ -591,7 +736,365 @@ export class SystemMap {
       this.dollyTo(want);
       this.applyBounds(want);
       this.controls.update();
+      return;
     }
+    // A focus meters its shell and its clip planes in screen px, so both move
+    // with the viewport. Rebuild them here rather than waiting for the next
+    // update, and replay the projection phase with them — the sizes and labels
+    // on screen right now were metered against the viewport that just went away.
+    if (this.cam.camState === 'following') {
+      this.applyFollowBounds();
+      this.controls.update();
+    } else if (this.cam.camState === 'focusFly' && this.cam.focusName) {
+      this.applyFocusClip(this.cam.focusName);
+    } else {
+      return;
+    }
+    this.camera.updateMatrixWorld();
+    this.orientShip();
+    this.updateDrawnSizes();
+    this.renderLabels();
+  }
+
+  // ---- focus & follow ---------------------------------------------------
+
+  /** Begin the flight the machine has just entered: freeze where it starts from
+   *  and what framing it is aiming to arrive with. */
+  private startFly(fromFocus: boolean): void {
+    // A focus asked for before the map's first frame has nothing to fly FROM,
+    // and would strand the pending fit to spring on a later return. Seat the
+    // overview first, so the flight starts from the frame the user would have
+    // been looking at.
+    if (this.needsInitialFrame) {
+      this.needsInitialFrame = false;
+      this.recomputeExtent();
+      this.frameToExtent();
+    }
+    // A released drag keeps coasting for a while; start from a settled controls
+    // state or the residual curves the flight away from where it is aimed.
+    flushOrbitDamping(this.controls);
+    this.controls.enabled = false;
+    this.flyElapsedMs = 0;
+    this.flyArcs = fromFocus && this.cam.flyGoal === 'follow';
+    this.flyFromPos.copy(this.camera.position);
+    this.flyFromTarget.copy(this.controls.target);
+    // Keep the direction the user is already looking from, so a focus changes
+    // what is centred and how close it is, never which way is up.
+    this.flyDir.copy(this.camera.position).sub(this.controls.target);
+    if (this.flyDir.lengthSq() < 1e-24) this.flyDir.set(0, 0.82, 0.57);
+    this.flyDir.normalize();
+    if (this.cam.flyGoal === 'follow' && this.cam.focusName) {
+      this.flyOffset.copy(this.flyDir).multiplyScalar(this.revealDistanceFor(this.cam.focusName));
+    } else {
+      // The way out re-derives its distance from the live extent each frame.
+      this.flyOffset.copy(this.flyDir);
+    }
+  }
+
+  /** Advance the flight one frame and land it when the ease runs out. */
+  private advanceFly(dtMs: number): void {
+    const name = this.cam.focusName;
+    const toFollow = this.cam.flyGoal === 'follow';
+    this.flyElapsedMs += dtMs;
+    const t = Math.min(1, this.flyElapsedMs / MAP_FOCUS_FLY_MS);
+    const k = mapFocusEase(t);
+    // Re-aim at the LIVE goal every frame. At a high time rate a body crosses a
+    // long way in 0.9 s, so a click-time endpoint would land on empty space; the
+    // way out re-reads the fit for the same reason (the extent is never frozen).
+    if (toFollow && name) {
+      this.bodyMapPosition(name, this.flyGoalTarget);
+      // The shell moves under the flight: a scale toggle changes the extent,
+      // and with it how close the near plane lets the camera come. Re-derive
+      // the landing distance every frame — a frozen one drives the flight to a
+      // distance the landing would have to clamp away, in a visible jump.
+      this.flyOffset.copy(this.flyDir).multiplyScalar(this.revealDistanceFor(name));
+    } else {
+      this.flyGoalTarget.set(0, 0, 0);
+      this.flyOffset.copy(this.flyDir)
+        .multiplyScalar(fitDistanceAU(this.extentAU, MAP_FOV_DEG, this.camera.aspect));
+    }
+    this.flyGoalPos.copy(this.flyGoalTarget).add(this.flyOffset);
+    this.controls.target.lerpVectors(this.flyFromTarget, this.flyGoalTarget, k);
+    this.camera.position.lerpVectors(this.flyFromPos, this.flyGoalPos, k);
+    // Body to body, the straight path spends its whole middle inside empty
+    // space between two things it is far too close to see. Lift it out to where
+    // the pair fits and let it fall back in: the trip reads as a trip.
+    // Re-derived every frame, not chosen at the start: the extent, the two
+    // bodies' positions and the viewport all move under a flight, and a frozen
+    // framing distance stops framing what it was picked for.
+    if (this.flyArcs) this.arcCameraOut(this.flyFromTarget, this.flyGoalTarget, name);
+    this.camera.lookAt(this.controls.target);
+    // The clip planes ride the flight: it starts under overview clipping and
+    // ends hugging a body, so they are derived at THIS pose, not at either end.
+    // The body being LEFT is passed too: the camera is still inside its shell
+    // for the first stretch, and metering only against the destination an AU
+    // away would put the near plane straight through it. Nothing clamps the
+    // distance here — controls.update() is not called during a flight, and the
+    // overview distance it starts from is outside the shell it is heading for.
+    if (name) this.applyFocusClip(name, this.nearestBodyName());
+    else this.applyBounds(this.getCameraDistance());
+    if (t < 1) return;
+
+    this.cam = mapCameraReduce(this.cam, { kind: 'flyLanded' });
+    if (this.cam.camState === 'following' && name) {
+      // Land on where the body IS, not where the ease was interpolating toward
+      // a frame ago, so the follow starts with a zero delta.
+      this.controls.target.copy(this.flyGoalTarget);
+      this.camera.position.copy(this.flyGoalPos);
+      this.camera.lookAt(this.controls.target);
+      this.followPos.copy(this.flyGoalTarget);
+      this.applyFollowBounds();
+    } else {
+      this.applyBounds(this.getCameraDistance());
+      this.rebaseScaleZoomRatio();
+    }
+    this.controls.enabled = true;
+    this.controls.update();
+  }
+
+  /** Re-read the framing the overview holds through a scale animation.
+   *  The ratio is captured only while the overview owns the camera, so one
+   *  captured before a focus would still be standing when the flight back
+   *  lands — and a scale animation outliving that flight would then re-dolly
+   *  the fresh fit to a zoom from before the trip. */
+  private rebaseScaleZoomRatio(): void {
+    const fit = fitDistanceAU(this.extentAU, MAP_FOV_DEG, this.camera.aspect);
+    this.scaleZoomRatio = this.getCameraDistance() / Math.max(fit, 1e-4);
+  }
+
+  /** Push the camera out along its own view ray far enough that the move has
+   *  something to show: the nearer end of the trip between `from` and `to`, and
+   *  whatever body is nearest the aim. Callers that pass no arc leave the pose
+   *  untouched, bit for bit — which is how a move beginning at the overview
+   *  keeps its straight path. */
+  private arcCameraOut(from: THREE.Vector3, to: THREE.Vector3, toName: string | null): void {
+    this.tmpDelta.copy(this.camera.position).sub(this.controls.target);
+    const baseDist = this.tmpDelta.length();
+    if (baseDist < 1e-12) return;
+    // Two things have to stay framed, so the move is held to whichever asks for
+    // more room: the nearer END of the trip, so you can always see where you
+    // came from or where you are going; and the cheapest whole BODY, because a
+    // move redirected mid-way starts from a point in empty space, and framing
+    // that would frame nothing at all. The far end is carried by the second
+    // term whenever it is the body nearest the aim, which is exactly when its
+    // own reach is large.
+    const toReach = toName ? this.drawnReachAU(toName) : 0;
+    const gap = Math.max(
+      Math.min(
+        this.controls.target.distanceTo(from),
+        this.controls.target.distanceTo(to) + toReach,
+      ),
+      this.aimFramingGapAU(),
+    );
+    const framed = mapFlightFramingDistanceAU(
+      baseDist,
+      gap,
+      this.extentAU,
+      MAP_FOV_DEG,
+      this.camera.aspect,
+    );
+    if (framed === baseDist) return;
+    this.camera.position.copy(this.controls.target)
+      .addScaledVector(this.tmpDelta, framed / baseDist);
+  }
+
+  /** The smallest disc about the aim that holds a whole body — centre offset
+   *  plus that body's own drawn reach, so the framing contains the ring or the
+   *  halo rather than cutting through it. Whichever body is cheapest to hold
+   *  wins, which is not always the nearest one: a close Saturn wearing rings
+   *  can cost more room than a bare planet slightly further off. Read live
+   *  every frame — the destination moves, the chart can change scale under the
+   *  move, and a redirect can hand the aim a wholly new path. */
+  private aimFramingGapAU(): number {
+    let best = this.controls.target.distanceTo(this.sun.position) + this.drawnReachAU('Sun');
+    for (const entry of this.orbits) {
+      const gap = this.controls.target.distanceTo(entry.dot.position)
+        + this.drawnReachAU(entry.planet.name);
+      if (gap < best) best = gap;
+    }
+    return best;
+  }
+
+  /** Ride the focused body: translate camera and target by its motion this
+   *  frame, so it stays centred while the user still orbits and zooms it. */
+  private updateFollow(): void {
+    const name = this.cam.focusName;
+    if (name) {
+      this.bodyMapPosition(name, this.tmpBodyPos);
+      this.tmpDelta.copy(this.tmpBodyPos).sub(this.followPos);
+      this.camera.position.add(this.tmpDelta);
+      this.controls.target.add(this.tmpDelta);
+      this.followPos.copy(this.tmpBodyPos);
+    }
+    this.applyFollowBounds();
+    this.controls.update();
+  }
+
+  /** Where a flight to `name` lands: the reveal framing, held inside the shell
+   *  the body can actually be orbited in. */
+  private revealDistanceFor(name: string): number {
+    const h = Math.max(this.renderer.domElement.clientHeight, 1);
+    const raw = revealDistanceAU(this.bodyTrueRadiusAU(name), h, MAP_FOV_DEG);
+    return clampFollowDistanceAU(raw, this.followBoundsFor(name));
+  }
+
+  /** The follow shell and clip planes for a body, at this frame's camera pose.
+   *  `alsoClear` names a second body the camera is still close to — the one a
+   *  transition is leaving. The distance shell belongs to `name`, but the near
+   *  plane belongs to whichever surface is NEAREST: a camera an AU from where
+   *  it is headed and a thousandth of one from where it started would otherwise
+   *  meter its near plane against the far body and cut the near one away. */
+  private followBoundsFor(name: string, alsoClear: string | null = null): MapFollowBounds {
+    const radius = this.bodyTrueRadiusAU(name);
+    this.bodyMapPosition(name, this.tmpBodyPos);
+    const camDist = this.camera.position.distanceTo(this.tmpBodyPos);
+    let surface = Math.max(camDist - radius, 1e-9);
+    if (alsoClear && alsoClear !== name) {
+      const otherRadius = this.bodyTrueRadiusAU(alsoClear);
+      this.bodyMapPosition(alsoClear, this.tmpBodyPos2);
+      const otherSurface = this.camera.position.distanceTo(this.tmpBodyPos2) - otherRadius;
+      // As the body being left recedes its surface distance grows past the
+      // destination's, and responsibility passes over on its own.
+      if (otherSurface < surface) surface = Math.max(otherSurface, 1e-9);
+    }
+    return followBounds(
+      radius,
+      surface,
+      this.camera.position.length(),
+      this.tmpBodyPos.length(),
+      this.extentAU,
+      Math.max(this.renderer.domElement.clientHeight, 1),
+      MAP_FOV_DEG,
+      this.bodySizeParams,
+      this.tmpBounds,
+    );
+  }
+
+  /** Hand the whole bounds transaction to the controls and the camera. */
+  private applyFollowBounds(): void {
+    const name = this.cam.focusName;
+    if (!name) {
+      this.applyBounds(this.getCameraDistance());
+      return;
+    }
+    const bounds = this.followBoundsFor(name);
+    this.controls.minDistance = bounds.minDist;
+    this.controls.maxDistance = bounds.maxDist;
+    this.camera.near = bounds.near;
+    this.camera.far = bounds.far;
+    this.camera.updateProjectionMatrix();
+  }
+
+  /** Clip planes only — for the moves that write the pose themselves and must
+   *  not touch the distance clamps (a flight, and a dive out of a focus).
+   *  `alsoClear` is the body the move is leaving, which the near plane has to
+   *  keep clear of for as long as the camera is still inside its shell. */
+  private applyFocusClip(name: string, alsoClear: string | null = null): void {
+    const bounds = this.followBoundsFor(name, alsoClear);
+    this.camera.near = bounds.near;
+    this.camera.far = bounds.far;
+    this.camera.updateProjectionMatrix();
+  }
+
+  /** The body whose SURFACE the camera is nearest right now, over the whole
+   *  chart. A transition writes its own pose across the system, and the near
+   *  plane belongs to whatever is closest at that moment — which after a
+   *  chained retarget is neither the body being aimed at nor the one the last
+   *  flight was aimed at, but the one the camera is still sitting inside. */
+  private nearestBodyName(): string | null {
+    let best: string | null = null;
+    let bestSurface = Infinity;
+    this.bodyMapPosition('Sun', this.tmpBodyPos2);
+    bestSurface = this.camera.position.distanceTo(this.tmpBodyPos2) - SUN_DATA.radiusAU;
+    best = 'Sun';
+    for (const entry of this.orbits) {
+      const surface = this.camera.position.distanceTo(entry.dot.position) - entry.planet.radiusAU;
+      if (surface < bestSurface) {
+        bestSurface = surface;
+        best = entry.planet.name;
+      }
+    }
+    return best;
+  }
+
+  /** A body's live map position. The Sun sits at the origin. */
+  private bodyMapPosition(name: string, out: THREE.Vector3): THREE.Vector3 {
+    const sprite = this.spriteForName(name);
+    return sprite ? out.copy(sprite.position) : out.set(0, 0, 0);
+  }
+
+  /** A body's TRUE radius in AU — what the framing and the clip planes meter
+   *  against, never the drawn radius the chart marker may have floored. */
+  private bodyTrueRadiusAU(name: string): number {
+    if (name === 'Sun') return SUN_DATA.radiusAU;
+    return this.orbits.find((o) => o.planet.name === name)?.planet.radiusAU ?? 0;
+  }
+
+  /** How much room a body takes up right now, in map AU: its true size once the
+   *  camera can resolve it and its chart marker while it cannot (the size policy
+   *  answers both from one call, so nothing here re-decides which branch
+   *  applies), widened past any ring it wears. The ring is drawn geometry — a
+   *  camera stopped clear of the globe but inside the annulus is still inside
+   *  the body as far as the frame is concerned. */
+  private drawnClearanceRadiusAU(name: string): number {
+    return this.drawnGlobeRadiusAU(name) * this.ringOuterFactorOf(name);
+  }
+
+  /** Everything a body PAINTS, in map AU — its ring, or in the Sun's case the
+   *  halo baked around the disc. This is the framing figure, and it is a wider
+   *  one than the clearance above: a camera has to stay outside a ring, but a
+   *  frame has to contain the glow as well.
+   *
+   *  It follows the look the body is actually WEARING. A dot is a fixed-size
+   *  sprite and owes the size policy nothing: the policy would budget Mercury
+   *  six pixels while its marker paints ten, and Jupiter sixteen while its
+   *  marker paints ten. Reading the drawn look instead keeps the figure honest
+   *  on both sides of the swap, so the framing follows the handoff rather than
+   *  stepping across it.
+   *
+   *  The look is last frame's — drawn sizes are settled in the projection pass,
+   *  after the moves that read this — which costs a frame at the swap and
+   *  corrects itself on the next. */
+  private drawnReachAU(name: string): number {
+    if (name === 'Sun') {
+      // The Sun is always its billboard, and the halo is baked around the disc.
+      return this.drawnGlobeRadiusAU(name) * SUN_HALO_RADII;
+    }
+    const entry = this.orbits.find((o) => o.planet.name === name);
+    if (!entry) return 0;
+    if (entry.globeDrawn) return this.drawnGlobeRadiusAU(name) * entry.ringOuterFactor;
+    const perPx = mapWorldPerPxAtUnitDepth(
+      Math.max(this.renderer.domElement.clientHeight, 1),
+      MAP_FOV_DEG,
+    );
+    // PLANET_PX is the sprite's full extent, so half of it is the reach; a
+    // hovered dot swells by the same factor its material does.
+    const hoverBoost = name === this.hoveredName ? HOVER_SCALE : 1;
+    return (PLANET_PX / 2) * hoverBoost * perPx * this.viewDepth(entry.dot.position);
+  }
+
+  /** The globe radius the size policy gives a body at the current pose: its
+   *  true size once the camera can resolve it, its chart marker while it
+   *  cannot. */
+  private drawnGlobeRadiusAU(name: string): number {
+    this.bodyMapPosition(name, this.tmpBodyPos);
+    const perPx = mapWorldPerPxAtUnitDepth(
+      Math.max(this.renderer.domElement.clientHeight, 1),
+      MAP_FOV_DEG,
+    );
+    return mapBodyRadiusAU(
+      this.bodyTrueRadiusAU(name),
+      this.viewDepth(this.tmpBodyPos),
+      perPx,
+      this.bodySizeParams,
+    );
+  }
+
+  /** The outer edge of a body's ring in globe radii, 1 where the map draws no
+   *  ring for it. Read from the built entry rather than the catalog, so this
+   *  tracks the geometry that actually exists in the scene. */
+  private ringOuterFactorOf(name: string): number {
+    return this.orbits.find((o) => o.planet.name === name)?.ringOuterFactor ?? 1;
   }
 
   // ---- picking / hover / dive ------------------------------------------
@@ -655,6 +1158,20 @@ export class SystemMap {
   beginDive(name: string): boolean {
     const focus = this.spriteForName(name);
     if (!focus) return false;
+    // Memo how the camera sat around a focused body BEFORE the machine forgets
+    // it. A follow is restored from where it actually was; an interrupted
+    // approach is restored from the framing it was heading for, so a cancel
+    // completes the flight instead of stranding the camera halfway.
+    if (this.cam.camState === 'following') {
+      this.diveOriginOffset.copy(this.camera.position).sub(this.controls.target);
+    } else if (this.cam.camState === 'focusFly') {
+      this.diveOriginOffset.copy(this.flyOffset);
+    }
+    // A dive out of a focus aimed at a DIFFERENT body is the journey a retarget
+    // is, and gets the same arc; one aimed at the body already followed is a
+    // plain approach and keeps its straight line, as an overview dive does.
+    this.diveArcs = this.cam.camState !== 'overview';
+    this.cam = mapCameraReduce(this.cam, { kind: 'diveStart', camera: true });
     this.diveFocusName = name;
     this.diveFocus.copy(focus.position);
     // How the camera was framed at dive start, kept as a FRACTION of the fit
@@ -689,9 +1206,46 @@ export class SystemMap {
     const f = Math.max(0, Math.min(1, frac));
     this.tmpVec3.copy(this.diveStartTarget).lerp(this.diveFocus, f);
     this.controls.target.copy(this.tmpVec3);
-    const dist = this.diveStartDist * (1 - f * (1 - DIVE_END_DIST_FRAC));
-    this.camera.position.copy(this.tmpVec3).addScaledVector(this.diveOffsetDir, dist);
+    // From the overview the ease ends a whole system away from the destination;
+    // from a focus it starts a few radii out, where the same fraction lands
+    // under the surface. The floor is the destination's own drawn size, so a
+    // dive out of a focus stops just clear of it.
+    const endFrac = mapDiveEndFraction(
+      this.diveStartDist,
+      this.diveFocusName ? this.drawnClearanceRadiusAU(this.diveFocusName) : 0,
+      DIVE_END_DIST_FRAC,
+    );
+    const dist = this.diveStartDist * (1 - f * (1 - endFrac));
+    // The same lift a retarget gets: a commit aimed across the system from a
+    // close follow is a journey, not a cut.
+    const arced = this.diveArcs
+      ? mapFlightFramingDistanceAU(
+        dist,
+        Math.max(
+          Math.min(
+            this.controls.target.distanceTo(this.diveStartTarget),
+            this.controls.target.distanceTo(this.diveFocus)
+              + (this.diveFocusName ? this.drawnReachAU(this.diveFocusName) : 0),
+          ),
+          this.aimFramingGapAU(),
+        ),
+        this.extentAU,
+        MAP_FOV_DEG,
+        this.camera.aspect,
+      )
+      : dist;
+    this.camera.position.copy(this.tmpVec3).addScaledVector(this.diveOffsetDir, arced);
     this.camera.lookAt(this.tmpVec3);
+    // A dive out of a focus inherits clip planes metered for a camera already
+    // hugging a body, and then closes the distance to a seventh of that — so
+    // the planes are re-derived here too, or the target passes through the near
+    // plane mid-dive. A dive from the overview keeps the overview's clipping.
+    if (this.cam.diveOrigin && this.cam.diveOrigin.camState !== 'overview' && this.diveFocusName) {
+      // The body the dive left is passed too: the camera starts inside its
+      // shell, and metering only against a destination an AU away would put the
+      // near plane through the body still filling the frame.
+      this.applyFocusClip(this.diveFocusName, this.nearestBodyName());
+    }
     this.camera.updateMatrixWorld();
     // The dive is the only camera move that does not happen inside update(), so
     // everything metered off the camera has to be rebuilt here, against the pose
@@ -714,31 +1268,65 @@ export class SystemMap {
   endDive(commit: boolean): void {
     if (!this.diving) return;
     this.diving = false;
-    if (!commit) {
-      // The extent goes stale during a dive — the camera section stands down,
-      // but the geometry underneath never stops (the scale animation runs to
-      // its end, bodies keep moving), so a toggle started just before the dive
-      // can leave the system many times larger than the frozen figure. Refresh
-      // it before anything frames against it.
-      this.recomputeExtent();
-      this.camera.position.copy(this.diveStartPos);
-      this.controls.target.copy(this.diveStartTarget);
-      this.camera.lookAt(this.diveStartTarget);
-      // View direction restored exactly; the distance is rebuilt against the
-      // current extent and aspect, so a scale change or a viewport rotation
-      // during the dive can't leave the restored frame clipped. A no-op when
-      // neither moved.
-      const want = diveRestoreDistanceAU(
-        this.diveWasAtOverview,
-        this.divePreFitRatio,
-        fitDistanceAU(this.extentAU, MAP_FOV_DEG, this.camera.aspect),
-      );
-      this.dollyTo(want);
-      this.applyBounds(want);
-      this.camera.updateMatrixWorld();
-      this.controls.enabled = true;
-      this.controls.update();
+    const origin = this.cam.diveOrigin;
+    this.cam = mapCameraReduce(this.cam, { kind: 'diveCancel' });
+    // A committed dive restores nothing: the map is about to close, and close()
+    // resets the machine.
+    if (commit) return;
+    // The extent is refreshed every frame, but the restore is framed against it
+    // and a cancel arrives between frames — re-derive so the pose can never be
+    // built on last frame's figure. The scale animation runs to its end under a
+    // dive, so that figure can be many times out.
+    this.recomputeExtent();
+    // Where the dive left from decides where a cancel puts you back.
+    if (origin && origin.camState !== 'overview') {
+      this.restoreFocusFromDive(origin.focusName, origin.flyGoal === 'overview');
+      return;
     }
+    this.camera.position.copy(this.diveStartPos);
+    this.controls.target.copy(this.diveStartTarget);
+    this.camera.lookAt(this.diveStartTarget);
+    // View direction restored exactly; the distance is rebuilt against the
+    // current extent and aspect, so a scale change or a viewport rotation
+    // during the dive can't leave the restored frame clipped. A no-op when
+    // neither moved.
+    const want = diveRestoreDistanceAU(
+      this.diveWasAtOverview,
+      this.divePreFitRatio,
+      fitDistanceAU(this.extentAU, MAP_FOV_DEG, this.camera.aspect),
+    );
+    this.dollyTo(want);
+    this.applyBounds(want);
+    this.camera.updateMatrixWorld();
+    this.controls.enabled = true;
+    this.controls.update();
+  }
+
+  /** Put a cancelled dive back where its focus was. `leaving` means the dive
+   *  interrupted a release — that flight completes to the overview rather than
+   *  reversing itself back onto the body the user had just let go of. */
+  private restoreFocusFromDive(focusName: string | null, leaving: boolean): void {
+    if (leaving || !focusName) {
+      const fit = fitDistanceAU(this.extentAU, MAP_FOV_DEG, this.camera.aspect);
+      this.controls.target.set(0, 0, 0);
+      this.camera.position.copy(this.flyDir).multiplyScalar(fit);
+      this.camera.lookAt(this.controls.target);
+      this.applyBounds(fit);
+      this.rebaseScaleZoomRatio();
+    } else {
+      // Onto the body's LIVE position: it moved while the dive owned the
+      // camera, and a follow delta measured from a stale snapshot would carry
+      // that error forever.
+      this.bodyMapPosition(focusName, this.tmpBodyPos);
+      this.controls.target.copy(this.tmpBodyPos);
+      this.camera.position.copy(this.tmpBodyPos).add(this.diveOriginOffset);
+      this.camera.lookAt(this.controls.target);
+      this.followPos.copy(this.tmpBodyPos);
+      this.applyFollowBounds();
+    }
+    this.camera.updateMatrixWorld();
+    this.controls.enabled = true;
+    this.controls.update();
   }
 
   private rebuildPickAnchors(): void {
@@ -1010,12 +1598,12 @@ export class SystemMap {
   private updateBodies(utcMs: number): void {
     // Spin the globes on the map's own clock through the seam the world turns
     // on, so Uranus lies on its side and the right face of Earth is in daylight
-    // at a given UTC. Skipped where no globe can draw — and skipped again while
-    // the clock is not moving, which is the normal state for reading a chart:
-    // each group's own quaternion IS the cache, and it stays correct for as
-    // long as the instant it was built for stands.
-    const orienting = !this.isTrueScale();
-    const reorient = orienting && utcMs !== this.orientedUtcMs;
+    // at a given UTC. Every body is kept posed at both scales — a focused
+    // camera resolves a true-scale globe too — and skipped only while the clock
+    // is not moving, which is the normal state for reading a chart: each
+    // group's own quaternion IS the cache, and it stays correct for as long as
+    // the instant it was built for stands.
+    const reorient = utcMs !== this.orientedUtcMs;
     const jd = reorient ? ttJDFromUtcMs(utcMs) : 0;
     for (const entry of this.orbits) {
       // The truth seam: the same heliocentric AU the world draws, projected
@@ -1029,11 +1617,9 @@ export class SystemMap {
       entry.helioZ = helio.z;
       projectMapPoint(helio.x, helio.y, helio.z, this.blend, this.curve, this.tmpMap);
       entry.dot.position.set(this.tmpMap.x, this.tmpMap.y, this.tmpMap.z);
-      if (orienting) {
-        entry.globe.position.copy(entry.dot.position);
-        if (reorient) {
-          entry.globe.quaternion.copy(computeBodyOrientationQuaternion(entry.planet, jd));
-        }
+      entry.globe.position.copy(entry.dot.position);
+      if (reorient) {
+        entry.globe.quaternion.copy(computeBodyOrientationQuaternion(entry.planet, jd));
       }
       // The fade still keys off the sampled loop — cheap and only rebuilt on a
       // vertex crossing.
@@ -1172,7 +1758,7 @@ export class SystemMap {
   private applyBounds(cameraDist: number): void {
     this.controls.minDistance = this.extentAU * 0.12;
     this.controls.maxDistance = fitDistanceAU(this.extentAU, MAP_FOV_DEG, this.camera.aspect) * 1.8;
-    this.camera.near = Math.max(this.extentAU * 1e-3, 1e-4);
+    this.camera.near = Math.max(this.extentAU * MAP_OVERVIEW_NEAR_FRAC, 1e-4);
     this.camera.far = cameraDist + this.extentAU * 2 + 10;
     this.camera.updateProjectionMatrix();
   }
@@ -1206,9 +1792,18 @@ export class SystemMap {
         worldPerPxAtUnit,
         this.bodySizeParams,
       );
-      entry.drawnRadiusPx = drawnAU / Math.max(worldPerPxAtUnit * depth, 1e-30);
-      const globe =
-        mapBodyDrawMode(entry.globeMat.map !== null, trueScaleTarget) === 'globe';
+      const worldPerPx = Math.max(worldPerPxAtUnit * depth, 1e-30);
+      entry.drawnRadiusPx = drawnAU / worldPerPx;
+      // At true scale the globe is what draws from the moment the body's REAL
+      // disc overtakes the marker the chart would have drawn instead — the same
+      // crossover the size policy already hands the drawn radius over at, so
+      // the swap costs nothing in size and nothing pops.
+      const globe = mapBodyDrawMode(
+        entry.globeMat.map !== null,
+        trueScaleTarget,
+        entry.planet.radiusAU / worldPerPx,
+        mapMarkerRadiusPx(entry.planet.radiusAU, this.bodySizeParams),
+      ) === 'globe';
       entry.globeDrawn = globe;
       entry.globe.visible = globe;
       entry.dot.visible = !globe;
@@ -1329,7 +1924,7 @@ export class SystemMap {
     const dot = this.makeGlowSprite(planet.color, 1);
     dot.renderOrder = 5;
     this.scene.add(dot);
-    const { globe, globeMat, ringMat } = this.makeGlobe(planet);
+    const { globe, globeMat, ringMat, ringOuterFactor } = this.makeGlobe(planet);
     this.scene.add(globe);
     // Catalog hex is sRGB; THREE.Color(hex) converts it into the renderer's
     // working (linear) space, so the vertex-coloured line matches the sprite's
@@ -1356,6 +1951,7 @@ export class SystemMap {
       globe,
       globeMat,
       ringMat,
+      ringOuterFactor,
       drawnRadiusPx: 0,
       globeDrawn: false,
     };
@@ -1376,6 +1972,7 @@ export class SystemMap {
     globe: THREE.Group;
     globeMat: THREE.MeshStandardMaterial;
     ringMat: THREE.MeshStandardMaterial | null;
+    ringOuterFactor: number;
   } {
     const globe = new THREE.Group();
     globe.visible = false;
@@ -1385,6 +1982,7 @@ export class SystemMap {
     globe.add(mesh);
 
     let ringMat: THREE.MeshStandardMaterial | null = null;
+    let ringOuterFactor = 1;
     const cfg = planet.name === 'Saturn' ? RING_CONFIGS[planet.name] : undefined;
     if (cfg) {
       const geo = new THREE.RingGeometry(cfg.innerFactor, cfg.outerFactor, 96, 1);
@@ -1413,8 +2011,9 @@ export class SystemMap {
       // depth-writing), so the ring blends over any line in its footprint.
       ring.renderOrder = 2;
       globe.add(ring);
+      ringOuterFactor = cfg.outerFactor;
     }
-    return { globe, globeMat, ringMat };
+    return { globe, globeMat, ringMat, ringOuterFactor };
   }
 
   private makeGlowSprite(color: number, coreBoost: number): THREE.Sprite {

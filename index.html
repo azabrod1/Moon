@@ -2458,6 +2458,34 @@
     }
     .map-close:hover { background: rgba(255, 255, 255, 0.09); color: var(--t1); border-color: rgba(255, 255, 255, 0.14); }
     .map-close svg { width: 18px; height: 18px; }
+    /* Back out of a focus. Sits beside the close chip and shows only while the
+       camera is on a body. */
+    .map-overview {
+      position: absolute;
+      top: 14px;
+      left: 62px;
+      height: 38px;
+      display: none;
+      align-items: center;
+      gap: 4px;
+      padding: 0 14px 0 8px;
+      border-radius: var(--r-m);
+      background: rgba(255, 255, 255, 0.045);
+      border: 1px solid var(--line);
+      -webkit-backdrop-filter: blur(12px);
+      backdrop-filter: blur(12px);
+      color: var(--t2);
+      font-family: var(--font-ui);
+      font-size: 12px;
+      font-weight: 500;
+      letter-spacing: 0.2px;
+      white-space: nowrap;
+      cursor: pointer;
+      transition: background var(--dur) var(--ease), color var(--dur) var(--ease), border-color var(--dur) var(--ease);
+    }
+    .map-overview.visible { display: inline-flex; }
+    .map-overview:hover { background: rgba(255, 255, 255, 0.09); color: var(--t1); border-color: rgba(255, 255, 255, 0.14); }
+    .map-overview svg { width: 16px; height: 16px; }
     .map-scale {
       position: absolute;
       left: 50%;
@@ -2531,9 +2559,12 @@
       color: var(--t3);
       font-variant-numeric: tabular-nums;
     }
-    .map-card-actions { display: flex; gap: 8px; }
+    /* Two per row: four actions in one row would squeeze "Observatory" onto two
+       lines at every card width that still fits a phone. An odd last button
+       takes the full width rather than leaving a hole. */
+    .map-card-actions { display: grid; grid-template-columns: repeat(2, 1fr); gap: 8px; }
+    .map-card-btn:last-child:nth-child(odd) { grid-column: 1 / -1; }
     .map-card-btn {
-      flex: 1;
       border: 1px solid var(--line);
       background: rgba(255, 255, 255, 0.045);
       color: var(--t1);
@@ -3173,6 +3204,10 @@
         <div id="map-labels"></div>
         <button id="map-close" class="map-close" aria-label="Close map">
           <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5.5 5.5 L14.5 14.5 M14.5 5.5 L5.5 14.5"></path></svg>
+        </button>
+        <button id="map-overview" class="map-overview">
+          <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 5 L7 10 L12 15"></path></svg>
+          Overview
         </button>
         <div id="map-scale" class="map-scale" role="radiogroup" aria-label="Map scale">
           <button class="map-scale-seg on" id="map-scale-compressed" role="radio" aria-checked="true">Compressed</button>

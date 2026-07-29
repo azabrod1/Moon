@@ -616,6 +616,8 @@ function installDevHooks() {
     mapPick: (name: string) => planetariumMode?.devMapPick(name) ?? false,
     mapProbe: (name: string) => planetariumMode?.devMapProbe(name) ?? null,
     mapCommit: (verb: 'travel' | 'observe' | 'pilot') => planetariumMode?.devMapCommit(verb) ?? false,
+    // Fly to a body and follow it; null flies back out to the overview.
+    mapFocus: (name: string | null) => planetariumMode?.devMapFocus(name) ?? false,
     // Map curve A/B: setMapS picks the asinh curve with that softening scale
     // (AU), setMapGamma the power law with that exponent. Both leave the
     // Compressed/True blend alone and hold the framing across the swap.

@@ -1308,11 +1308,16 @@ export class SystemMap {
     const geometry = new LineGeometry();
     geometry.setPositions(map);
     geometry.setColors(colors);
+    // depthTest ON: the lit globes are opaque depth-writing meshes drawn in
+    // the opaque pass, so a depth-free line (the dot-era default) would paint
+    // straight across every disc afterwards. Tested, the line dies at the limb
+    // and re-emerges past it — a body occludes its own orbit. No depth write:
+    // the lines must never occlude each other or the sprites.
     const material = new LineMaterial({
       linewidth: 1.5,
       vertexColors: true,
       transparent: true,
-      depthTest: false,
+      depthTest: true,
       depthWrite: false,
       toneMapped: false,
     });
@@ -1404,7 +1409,8 @@ export class SystemMap {
         depthWrite: false,
       });
       const ring = new THREE.Mesh(geo, ringMat);
-      // After the orbit lines, which draw depth-test-free at renderOrder 1.
+      // After the orbit lines (renderOrder 1, depth-tested but never
+      // depth-writing), so the ring blends over any line in its footprint.
       ring.renderOrder = 2;
       globe.add(ring);
     }

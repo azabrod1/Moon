@@ -266,6 +266,7 @@ import { TutorialCard, tutorialCardModel } from './ui/TutorialCard';
 import { SystemMap, type MapTextureSource } from './map/SystemMap';
 import { MapHUD } from './ui/MapHUD';
 import { mapCardActions, mapCardOffersVerb, commitBodyPickOutcome, type MapVerb } from './map/mapLogic';
+import { mapBody, mapBodyRefFor } from './map/mapBodies';
 import { type MapBodySizeParams } from './map/mapBodySize';
 import { MAP_DOUBLE_TAP_MS, mapCameraOwnsPose, mapOverviewChipVisible } from './map/mapCamera';
 import { isTap } from './map/mapPicking';
@@ -6242,12 +6243,11 @@ export class PlanetariumMode {
     return this.systemMap?.probeBody(name) ?? null;
   }
 
-  /** Dev bridge: open the card on a named body (Sun or a planet), as a real
-   *  pick would. Returns whether the card opened. */
+  /** Dev bridge: open the card on any body the chart can name (the Sun, a
+   *  planet, a moon), as a real pick would. Returns whether the card opened. */
   devMapPick(name: string): boolean {
     if (!this.isMapOpen() || this.mapDiving || this.isMapCameraFlying()) return false;
-    const known = name === 'Sun' || PLANETARIUM_BODIES.some((b) => b.name === name);
-    if (!known) return false;
+    if (!mapBodyRefFor(name)) return false;
     this.openMapCard(name);
     return this.mapHud.isCardOpen();
   }
@@ -6417,11 +6417,14 @@ export class PlanetariumMode {
         this.player.posZ,
       );
       // Reformat only when the shown value changes — the raw distance drifts
-      // every frame but the string does not.
-      const q = bodyDistanceQuantum(distAU);
-      if (q !== this.mapCardDistQ) {
-        this.mapCardDistQ = q;
-        this.mapHud.setDistanceText(formatBodyDistance(distAU));
+      // every frame but the string does not. A body the chart stops being able
+      // to measure keeps the last distance it reported rather than reading zero.
+      if (distAU !== null) {
+        const q = bodyDistanceQuantum(distAU);
+        if (q !== this.mapCardDistQ) {
+          this.mapCardDistQ = q;
+          this.mapHud.setDistanceText(formatBodyDistance(distAU));
+        }
       }
       this.mapHud.setActionsDisabled(this.arrivalInFlight);
     }
@@ -6549,13 +6552,18 @@ export class PlanetariumMode {
   /** Open (or replace in place) the picked-body card. Pairs with the time /
    *  stats popovers one-instrument-at-a-time. */
   private openMapCard(name: string) {
-    const target: NonNullable<LandedTarget> = { type: 'planet', name };
+    // The commit target comes from the roster, so a moon arrives at the card
+    // carrying its parent — the shape the landed body and every commit already
+    // speak in. A name the chart does not know opens nothing.
+    const target = mapBodyRefFor(name);
+    if (!target) return;
     this.mapPicked = target;
     // One instrument at a time — fold the bottom-bar popovers away.
     this.bottomBar.closeTime();
     this.bottomBar.closeStats();
     const actions = mapCardActions(target, this.landedOn);
     const color = this.bodyTintCss(name);
+    // Zero only while there is no map open to measure against.
     const distAU = this.systemMap?.trueDistanceFromShip(
       name,
       this.player.posX,
@@ -6628,12 +6636,11 @@ export class PlanetariumMode {
     return !!cam && cam.camState === 'focusFly' && cam.flyGoal === 'overview';
   }
 
-  /** The catalog tint of a body as a CSS colour (the Sun is outside the
-   *  catalogs — its one commented exception). */
+  /** The catalog tint of a map body as a CSS colour — planet, moon or the Sun,
+   *  through the chart's one roster. White for a name it does not know, which
+   *  no card path can produce. */
   private bodyTintCss(name: string): string {
-    const hex = name === 'Sun'
-      ? SUN_DATA.color
-      : PLANETARIUM_BODIES.find((b) => b.name === name)?.color ?? 0xffffff;
+    const hex = mapBody(name)?.color ?? 0xffffff;
     return `#${hex.toString(16).padStart(6, '0')}`;
   }
 
@@ -6656,11 +6663,14 @@ export class PlanetariumMode {
     this.mapTapName = null;
     this.mapDiveVerb = verb;
     this.mapDiveTarget = target;
-    this.mapDiveIsCamera = verb !== 'pilot';
+    // Autopilot never dives, and neither does a body the map camera may not
+    // visit: the transition falls back to the plain fade-close rather than
+    // running a camera ease the map has refused, which would hold the black
+    // wall for the length of a dive that never happened.
+    this.mapDiveIsCamera = verb !== 'pilot' && !!this.systemMap?.beginDive(target.name);
     this.mapDiving = true;
     this.mapTransitionStartMs = performance.now();
     this.mapDiveActiveGen = ++this.mapDiveGen;
-    if (this.mapDiveIsCamera) this.systemMap?.beginDive(target.name);
     return true;
   }
 

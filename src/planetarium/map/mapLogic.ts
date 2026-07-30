@@ -18,13 +18,14 @@ export type MapCardAction =
   | { kind: 'commit'; verb: MapVerb; label: string }
   | { kind: 'focus'; label: string };
 
-/** A body the map can act on. The map shows planets + the Sun; the landed body
- *  may be a moon (you can be standing on Io), which never matches a picked
- *  planet, so its full planet card shows. */
-export interface MapBodyRef {
-  type: 'planet' | 'moon';
-  name: string;
-}
+/** A body the map can act on — the same shape the landed body and every commit
+ *  target already speak in, so a picked body needs no translation on its way to
+ *  the arrival path. A moon carries its parent: two moons of different planets
+ *  never share a name today, but the arrival path is given a system, not a
+ *  guess. */
+export type MapBodyRef =
+  | { type: 'planet'; name: string }
+  | { type: 'moon'; name: string; parentPlanet: string };
 
 /**
  * The buttons a picked body offers.

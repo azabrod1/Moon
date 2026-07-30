@@ -20,6 +20,8 @@ import {
 } from './mapCamera';
 import { MAP_BODY_SIZE_DEFAULTS, mapMarkerRadiusPx } from './mapBodySize';
 import { fitDistanceAU } from './mapProjection';
+import { PLANETARIUM_BODIES } from '../planets/planetData';
+import { MOONS } from '../planets/moonData';
 
 const H = 900;
 const SIZE = MAP_BODY_SIZE_DEFAULTS;
@@ -596,5 +598,66 @@ describe('apparentDepthAU', () => {
   it('inverts the projection it is named for', () => {
     const d = apparentDepthAU(EARTH_R, 37, H, MAP_FOV_DEG);
     expect(discPx(EARTH_R, d)).toBeCloseTo(37, 9);
+  });
+});
+
+describe('a follow shell on a body that orbits another', () => {
+  // Why the camera goes only to bodies the chart draws with a shell of their
+  // own: the shell is ONE scalar distance about its subject, and a subject that
+  // orbits something else is carried around inside that distance. When the
+  // subject's orbit is comparable to the shell, the azimuth where the subject
+  // sits between the camera and its parent leaves the camera at
+  // |minDist - orbitRadius| from the PARENT's centre — inside the planet for an
+  // inner moon, reached within hours of simulated time at any warp.
+  //
+  // The map's compressed radial curve is 0.6·asinh(r/0.6), which is where each
+  // parent's map radius below comes from.
+  const mapRadiusOf = (semiMajorAxisAU: number) => 0.6 * Math.asinh(semiMajorAxisAU / 0.6);
+  const planet = (name: string) => PLANETARIUM_BODIES.find((p) => p.name === name)!;
+  const moon = (name: string) => MOONS.find((m) => m.name === name)!;
+
+  /** How close a scalar shell of `minDist` about a moon can bring the camera to
+   *  the centre of the planet it orbits, over the whole orbit. */
+  function closestApproachToParentAU(moonName: string): number {
+    const m = moon(moonName);
+    const p = planet(m.parentPlanet);
+    const bounds = followBounds(
+      m.radiusAU,
+      1e-3,
+      mapRadiusOf(p.semiMajorAxisAU),
+      mapRadiusOf(p.semiMajorAxisAU),
+      EXTENT_COMPRESSED,
+      H,
+      MAP_FOV_DEG,
+      SIZE,
+    );
+    return Math.abs(bounds.minDist - m.orbitalRadiusAU);
+  }
+
+  it('is carried inside its parent — Cordelia inside Uranus', () => {
+    const uranus = planet('Uranus');
+    const closest = closestApproachToParentAU('Cordelia');
+    expect(closest).toBeLessThan(uranus.radiusAU);
+    // Not marginally: the worst azimuth is a quarter of the way in.
+    expect(closest / uranus.radiusAU).toBeLessThan(0.5);
+  });
+
+  it('is not one unlucky body — a whole family of inner moons is carried in', () => {
+    const carried = MOONS.filter((m) => {
+      const p = PLANETARIUM_BODIES.find((x) => x.name === m.parentPlanet);
+      return !!p && closestApproachToParentAU(m.name) < p.radiusAU;
+    }).map((m) => m.name);
+    expect(carried).toContain('Cordelia');
+    expect(carried).toContain('Naiad');
+    expect(carried.length).toBeGreaterThanOrEqual(5);
+  });
+
+  it('leaves the planets themselves clear — the shell is honest about the Sun', () => {
+    // The same policy on a planet: its shell is a ten-thousandth of its own
+    // distance from the Sun, so nothing carries the camera into the star.
+    const bounds = followBounds(
+      JUPITER_R, 1e-3, JUPITER_MAP_R, JUPITER_MAP_R, EXTENT_COMPRESSED, H, MAP_FOV_DEG, SIZE,
+    );
+    expect(JUPITER_MAP_R - bounds.minDist).toBeGreaterThan(1);
   });
 });

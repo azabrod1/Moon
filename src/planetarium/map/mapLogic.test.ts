@@ -7,7 +7,8 @@ import {
 } from './mapLogic';
 
 const planet = (name: string): MapBodyRef => ({ type: 'planet', name });
-const moon = (name: string): MapBodyRef => ({ type: 'moon', name });
+const moon = (name: string, parentPlanet = 'Jupiter'): MapBodyRef =>
+  ({ type: 'moon', name, parentPlanet });
 
 /** The commit verbs a card paints, in order — Focus is not one of them. */
 const verbs = (actions: ReturnType<typeof mapCardActions>): string[] =>

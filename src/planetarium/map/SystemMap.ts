@@ -37,6 +37,7 @@ import {
   trajectoryLineBodyFraction,
   ttJDFromUtcMs,
 } from '../../astronomy/planetary';
+import { computeMoonOffsetEquatorialAU } from '../../astronomy/satellites';
 import { bodyDisplayName } from '../surfaceView';
 import { ORBIT_LINE_RESAMPLE_MAX_AGE_MS } from '../SolarSystem';
 import { applyTextureDefaults } from '../world/texturePolicy';
@@ -86,6 +87,16 @@ import {
   type PickAnchor,
   type PickResult,
 } from './mapPicking';
+import {
+  mapBody,
+  mapBodyAcceptsCamera,
+  MAP_BODIES,
+  MAP_LABEL_CAPACITY,
+  MAP_PICK_ANCHOR_CAPACITY,
+  type MapBodyKind,
+} from './mapBodies';
+import { MapLabelPlacer } from './mapLabels';
+import { debugWarn } from '../../shared/debug';
 
 /**
  * Read-only access to the world's live surface textures. The map re-reads these
@@ -108,9 +119,6 @@ const PLANET_PX = 20;
 const SHIP_PX = 26;
 // Orbit line: full tint just ahead of the body fading to this floor behind it.
 const ORBIT_BRIGHT_FLOOR = 0.1;
-// A label whose anchor lands within this many screen px of an already-placed
-// one hides this frame — the true-scale inner four otherwise stack.
-const LABEL_MIN_SEP_PX = 26;
 // Un-docked ship chevron breathes over this period (ms).
 const SHIP_PULSE_MS = 2000;
 // Hover feedback: the pointed-at dot swells and lifts toward white.
@@ -218,7 +226,10 @@ export class SystemMap {
   private globeGeo = new THREE.SphereGeometry(1, 64, 32);
 
   private labelContainer: HTMLElement | null = null;
-  private labels: HTMLDivElement[] = [];
+  /** Labels keyed by catalog name, never by catalog index: the chart's body set
+   *  is the Sun, the planets and the moons, and only a name is shared by the
+   *  pick, the card, the hover emphasis and the label. */
+  private labels = new Map<string, HTMLDivElement>();
 
   private open = false;
   // Radial curve + how far it is blended toward true scale (0 compressed,
@@ -231,6 +242,10 @@ export class SystemMap {
   private blendAnimating = false;
   private bodySizeParams: MapBodySizeParams = { ...MAP_BODY_SIZE_DEFAULTS };
   private epochUtcMs = 0;
+  /** The clock the current frame is drawn at. A planet's position comes from
+   *  its dot, which the position pass has already placed; a moon's has to be
+   *  computed from its parent, and this is the instant it is computed for. */
+  private clockUtcMs = 0;
   // Clock instant the globe orientations were last built for. NaN until the
   // first pass, so the comparison that skips the rebuild can never skip it.
   private orientedUtcMs = Number.NaN;
@@ -250,6 +265,9 @@ export class SystemMap {
   private tmpSize = new THREE.Vector2();
   private tmpViewport = new THREE.Vector4();
   private tmpView = new THREE.Vector3();
+  /** Planetocentric offset scratch — a moon's position is its parent's plus
+   *  this, and the ephemeris seam fills a caller's vector. */
+  private tmpMoonOffset = new THREE.Vector3();
 
   // Un-docked ship pulse phase (wall ms).
   private pulseMs = 0;
@@ -265,11 +283,13 @@ export class SystemMap {
   private shipSnapshot = false;
 
   // Pick anchors, rebuilt on demand (event-driven, not per frame). A fixed pool
-  // (Sun + every planet + the ship) is filled in place and `pickAnchors` holds
-  // references to the in-use slots, so hover/tap picking allocates nothing after
-  // warm-up.
+  // sized for the whole roster (every body the chart can name, plus the ship) is
+  // filled in place and `pickAnchors` holds references to the in-use slots, so
+  // hover/tap picking allocates nothing after warm-up. Sized from the catalogs,
+  // never from a literal: a pool short of the bodies offered would be written
+  // off its own end.
   private pickAnchorPool: PickAnchor[] = Array.from(
-    { length: PLANETARIUM_BODIES.length + 2 },
+    { length: MAP_PICK_ANCHOR_CAPACITY },
     () => ({ name: '', x: 0, y: 0, pickable: false, discRadiusPx: 0 }),
   );
   private pickAnchors: PickAnchor[] = [];
@@ -329,12 +349,10 @@ export class SystemMap {
   private diveStartDist = 1;
   private tmpVec3 = new THREE.Vector3();
 
-  // Label anti-collision: screen positions already placed this frame (Sun +
-  // the planets), scanned in priority order so an inner planet yields to the
-  // Sun and outer planets yield to inner. Preallocated for Sun + 10 bodies.
-  private placedX = new Float32Array(PLANETARIUM_BODIES.length + 1);
-  private placedY = new Float32Array(PLANETARIUM_BODIES.length + 1);
-  private placedCount = 0;
+  // Label anti-collision: labels are offered in priority order (the Sun, then
+  // the planets inner→outer) and one landing on an already-placed anchor
+  // yields. Sized for the whole roster, so the pool cannot bind.
+  private labelPlacer = new MapLabelPlacer(MAP_LABEL_CAPACITY);
 
   constructor(renderer: THREE.WebGLRenderer, textures: MapTextureSource) {
     this.renderer = renderer;
@@ -421,6 +439,7 @@ export class SystemMap {
    *  caller owns the world's controls.enabled restore. */
   openMap(utcMs: number): void {
     this.open = true;
+    this.clockUtcMs = utcMs;
     this.ensureLabelContainer();
     this.resample(utcMs);
     this.controls.enabled = true;
@@ -444,7 +463,7 @@ export class SystemMap {
    */
   focusBody(name: string): boolean {
     if (!this.open || this.cam.camState === 'dive') return false;
-    if (!this.spriteForName(name)) return false;
+    if (!this.cameraMayVisit(name)) return false;
     const next = mapCameraReduce(this.cam, { kind: 'focus', name });
     if (next === this.cam) return true;
     const fromFocus = this.cam.camState !== 'overview';
@@ -501,7 +520,7 @@ export class SystemMap {
     this.scaleZoomRatio = 1;
     this.setHover(null);
     this.controls.enabled = false;
-    for (const label of this.labels) label.style.display = 'none';
+    for (const label of this.labels.values()) label.style.display = 'none';
     // Let every borrowed texture go. The world is free to dispose any of them
     // while the map is shut, so the material stops naming one here. The drop is
     // only as deep as the material: the renderer's per-material uniform cache
@@ -599,6 +618,10 @@ export class SystemMap {
     // ── (1) Positions from the clock — place every body and the ship marker.
     // No projection here: the camera matrices are still last frame's, so
     // anything screen-space would drag a frame behind the controls move below.
+    // The instant is stored first: a body the chart derives rather than draws
+    // (a moon, from its parent) is computed on demand, and this is the clock it
+    // is computed at.
+    this.clockUtcMs = utcMs;
     if (!this.sampled || Math.abs(utcMs - this.epochUtcMs) > ORBIT_LINE_RESAMPLE_MAX_AGE_MS) {
       this.resample(utcMs);
     }
@@ -783,10 +806,15 @@ export class SystemMap {
     this.flyDir.copy(this.camera.position).sub(this.controls.target);
     if (this.flyDir.lengthSq() < 1e-24) this.flyDir.set(0, 0.82, 0.57);
     this.flyDir.normalize();
-    if (this.cam.flyGoal === 'follow' && this.cam.focusName) {
-      this.flyOffset.copy(this.flyDir).multiplyScalar(this.revealDistanceFor(this.cam.focusName));
+    const landingDist = this.cam.flyGoal === 'follow' && this.cam.focusName
+      ? this.revealDistanceFor(this.cam.focusName)
+      : null;
+    if (landingDist !== null) {
+      this.flyOffset.copy(this.flyDir).multiplyScalar(landingDist);
     } else {
-      // The way out re-derives its distance from the live extent each frame.
+      // The way out re-derives its distance from the live extent each frame,
+      // and so does a flight whose subject the chart could not place — every
+      // frame of the ease asks again.
       this.flyOffset.copy(this.flyDir);
     }
   }
@@ -802,12 +830,19 @@ export class SystemMap {
     // long way in 0.9 s, so a click-time endpoint would land on empty space; the
     // way out re-reads the fit for the same reason (the extent is never frozen).
     if (toFollow && name) {
-      this.bodyMapPosition(name, this.flyGoalTarget);
-      // The shell moves under the flight: a scale toggle changes the extent,
-      // and with it how close the near plane lets the camera come. Re-derive
-      // the landing distance every frame — a frozen one drives the flight to a
-      // distance the landing would have to clamp away, in a visible jump.
-      this.flyOffset.copy(this.flyDir).multiplyScalar(this.revealDistanceFor(name));
+      // A subject that stops resolving mid-flight keeps the goal and the
+      // framing offset the last resolving frame left, and the ease finishes on
+      // those: re-aiming at the origin would drive the camera into the Sun.
+      if (this.bodyMapPosition(name, this.flyGoalTarget)) {
+        // The shell moves under the flight: a scale toggle changes the extent,
+        // and with it how close the near plane lets the camera come. Re-derive
+        // the landing distance every frame — a frozen one drives the flight to
+        // a distance the landing would have to clamp away, in a visible jump.
+        const landingDist = this.revealDistanceFor(name);
+        if (landingDist !== null) {
+          this.flyOffset.copy(this.flyDir).multiplyScalar(landingDist);
+        }
+      }
     } else {
       this.flyGoalTarget.set(0, 0, 0);
       this.flyOffset.copy(this.flyDir)
@@ -878,7 +913,9 @@ export class SystemMap {
     // that would frame nothing at all. The far end is carried by the second
     // term whenever it is the body nearest the aim, which is exactly when its
     // own reach is large.
-    const toReach = toName ? this.drawnReachAU(toName) : 0;
+    // A destination the chart cannot size contributes no reach — the trip is
+    // still framed by its endpoints and by the cheapest whole body.
+    const toReach = (toName ? this.drawnReachAU(toName) : null) ?? 0;
     const gap = Math.max(
       Math.min(
         this.controls.target.distanceTo(from),
@@ -906,10 +943,13 @@ export class SystemMap {
    *  every frame — the destination moves, the chart can change scale under the
    *  move, and a redirect can hand the aim a wholly new path. */
   private aimFramingGapAU(): number {
-    let best = this.controls.target.distanceTo(this.sun.position) + this.drawnReachAU('Sun');
+    // Over the bodies the chart DRAWS — the Sun and the planets. A body with no
+    // drawn reach adds none; the distance to it still counts.
+    let best = this.controls.target.distanceTo(this.sun.position)
+      + (this.drawnReachAU(SUN_DATA.name) ?? 0);
     for (const entry of this.orbits) {
       const gap = this.controls.target.distanceTo(entry.dot.position)
-        + this.drawnReachAU(entry.planet.name);
+        + (this.drawnReachAU(entry.planet.name) ?? 0);
       if (gap < best) best = gap;
     }
     return best;
@@ -919,8 +959,11 @@ export class SystemMap {
    *  frame, so it stays centred while the user still orbits and zooms it. */
   private updateFollow(): void {
     const name = this.cam.focusName;
-    if (name) {
-      this.bodyMapPosition(name, this.tmpBodyPos);
+    // A subject that stops resolving parks the ride where it is: the delta is
+    // the body's motion, and there is no motion to apply for a body that isn't
+    // anywhere. The user keeps the frame they had instead of being thrown at
+    // the origin.
+    if (name && this.bodyMapPosition(name, this.tmpBodyPos)) {
       this.tmpDelta.copy(this.tmpBodyPos).sub(this.followPos);
       this.camera.position.add(this.tmpDelta);
       this.controls.target.add(this.tmpDelta);
@@ -931,11 +974,14 @@ export class SystemMap {
   }
 
   /** Where a flight to `name` lands: the reveal framing, held inside the shell
-   *  the body can actually be orbited in. */
-  private revealDistanceFor(name: string): number {
+   *  the body can actually be orbited in. Null for a body the chart cannot
+   *  place — there is no landing distance to a body that isn't anywhere. */
+  private revealDistanceFor(name: string): number | null {
+    const radius = this.bodyTrueRadiusAU(name);
+    const bounds = this.followBoundsFor(name);
+    if (radius === null || !bounds) return null;
     const h = Math.max(this.renderer.domElement.clientHeight, 1);
-    const raw = revealDistanceAU(this.bodyTrueRadiusAU(name), h, MAP_FOV_DEG);
-    return clampFollowDistanceAU(raw, this.followBoundsFor(name));
+    return clampFollowDistanceAU(revealDistanceAU(radius, h, MAP_FOV_DEG), bounds);
   }
 
   /** The follow shell and clip planes for a body, at this frame's camera pose.
@@ -944,18 +990,21 @@ export class SystemMap {
    *  plane belongs to whichever surface is NEAREST: a camera an AU from where
    *  it is headed and a thousandth of one from where it started would otherwise
    *  meter its near plane against the far body and cut the near one away. */
-  private followBoundsFor(name: string, alsoClear: string | null = null): MapFollowBounds {
+  private followBoundsFor(name: string, alsoClear: string | null = null): MapFollowBounds | null {
     const radius = this.bodyTrueRadiusAU(name);
-    this.bodyMapPosition(name, this.tmpBodyPos);
+    if (radius === null || !this.bodyMapPosition(name, this.tmpBodyPos)) return null;
     const camDist = this.camera.position.distanceTo(this.tmpBodyPos);
     let surface = Math.max(camDist - radius, 1e-9);
     if (alsoClear && alsoClear !== name) {
+      // A second body the near plane also has to clear. One the chart cannot
+      // place simply doesn't take part — the destination's own surface stands.
       const otherRadius = this.bodyTrueRadiusAU(alsoClear);
-      this.bodyMapPosition(alsoClear, this.tmpBodyPos2);
-      const otherSurface = this.camera.position.distanceTo(this.tmpBodyPos2) - otherRadius;
-      // As the body being left recedes its surface distance grows past the
-      // destination's, and responsibility passes over on its own.
-      if (otherSurface < surface) surface = Math.max(otherSurface, 1e-9);
+      if (otherRadius !== null && this.bodyMapPosition(alsoClear, this.tmpBodyPos2)) {
+        const otherSurface = this.camera.position.distanceTo(this.tmpBodyPos2) - otherRadius;
+        // As the body being left recedes its surface distance grows past the
+        // destination's, and responsibility passes over on its own.
+        if (otherSurface < surface) surface = Math.max(otherSurface, 1e-9);
+      }
     }
     return followBounds(
       radius,
@@ -973,11 +1022,13 @@ export class SystemMap {
   /** Hand the whole bounds transaction to the controls and the camera. */
   private applyFollowBounds(): void {
     const name = this.cam.focusName;
-    if (!name) {
+    // Nothing to ride, or a subject the chart cannot place: fall back to the
+    // whole-system bounds, which are safe from anywhere.
+    const bounds = name ? this.followBoundsFor(name) : null;
+    if (!bounds) {
       this.applyBounds(this.getCameraDistance());
       return;
     }
-    const bounds = this.followBoundsFor(name);
     this.controls.minDistance = bounds.minDist;
     this.controls.maxDistance = bounds.maxDist;
     this.camera.near = bounds.near;
@@ -991,6 +1042,11 @@ export class SystemMap {
    *  keep clear of for as long as the camera is still inside its shell. */
   private applyFocusClip(name: string, alsoClear: string | null = null): void {
     const bounds = this.followBoundsFor(name, alsoClear);
+    // A subject the chart cannot place leaves the planes exactly as they are:
+    // this is the path that must not touch the distance clamps, so there is
+    // nothing safe to fall back to, and the standing planes are the ones the
+    // frame before this drew with.
+    if (!bounds) return;
     this.camera.near = bounds.near;
     this.camera.far = bounds.far;
     this.camera.updateProjectionMatrix();
@@ -1002,11 +1058,14 @@ export class SystemMap {
    *  chained retarget is neither the body being aimed at nor the one the last
    *  flight was aimed at, but the one the camera is still sitting inside. */
   private nearestBodyName(): string | null {
+    // Over what the chart DRAWS: the Sun and the planets. Nothing else is on
+    // screen for a near plane to cut through.
     let best: string | null = null;
     let bestSurface = Infinity;
-    this.bodyMapPosition('Sun', this.tmpBodyPos2);
-    bestSurface = this.camera.position.distanceTo(this.tmpBodyPos2) - SUN_DATA.radiusAU;
-    best = 'Sun';
+    if (this.bodyMapPosition(SUN_DATA.name, this.tmpBodyPos2)) {
+      bestSurface = this.camera.position.distanceTo(this.tmpBodyPos2) - SUN_DATA.radiusAU;
+      best = SUN_DATA.name;
+    }
     for (const entry of this.orbits) {
       const surface = this.camera.position.distanceTo(entry.dot.position) - entry.planet.radiusAU;
       if (surface < bestSurface) {
@@ -1017,17 +1076,55 @@ export class SystemMap {
     return best;
   }
 
-  /** A body's live map position. The Sun sits at the origin. */
-  private bodyMapPosition(name: string, out: THREE.Vector3): THREE.Vector3 {
-    const sprite = this.spriteForName(name);
-    return sprite ? out.copy(sprite.position) : out.set(0, 0, 0);
+  /** The orbit entry that draws a planet, or null for anything that is not one
+   *  (the Sun, a moon, a name the chart does not know). The one place a body
+   *  name is searched for among the drawn planets. */
+  private entryFor(name: string): OrbitEntry | null {
+    return this.orbits.find((o) => o.planet.name === name) ?? null;
+  }
+
+  /** Whether the camera may be flown to, follow, or dive at this body: the
+   *  policy is mapBodyAcceptsCamera, and what this scene DRAWS is the Sun plus
+   *  the planets it built orbit entries for. Resolution stays open to every
+   *  body in the roster — position, radius, tint, the probe — and only the
+   *  camera is held to the narrower set. */
+  private cameraMayVisit(name: string): boolean {
+    return mapBodyAcceptsCamera(name, (n) => this.entryFor(n) !== null);
+  }
+
+  /**
+   * A body's live map position, or null when the chart has no such body — and
+   * `out` is left untouched in that case, so a caller riding a body can simply
+   * keep the last position it had.
+   *
+   * Null rather than the origin, on purpose: the origin is where the Sun is, so
+   * a camera handed it for a body that stopped resolving would fly into the
+   * star. Every caller decides for itself what to do with no position.
+   *
+   * A moon rides its parent. The chart compresses HELIOCENTRIC radii; a
+   * planetocentric offset is not on that curve, so the moon's true offset in AU
+   * is added to the parent's map position as it is.
+   */
+  private bodyMapPosition(name: string, out: THREE.Vector3): THREE.Vector3 | null {
+    const body = mapBody(name);
+    if (!body) return null;
+    if (body.kind === 'sun') return out.copy(this.sun.position);
+    if (body.kind === 'planet') {
+      const entry = this.entryFor(name);
+      return entry ? out.copy(entry.dot.position) : null;
+    }
+    const parent = body.parentPlanet ? this.entryFor(body.parentPlanet) : null;
+    if (!parent) return null;
+    computeMoonOffsetEquatorialAU(name, parent.planet.name, this.clockUtcMs, this.tmpMoonOffset);
+    return out.copy(parent.dot.position).add(this.tmpMoonOffset);
   }
 
   /** A body's TRUE radius in AU — what the framing and the clip planes meter
-   *  against, never the drawn radius the chart marker may have floored. */
-  private bodyTrueRadiusAU(name: string): number {
-    if (name === 'Sun') return SUN_DATA.radiusAU;
-    return this.orbits.find((o) => o.planet.name === name)?.planet.radiusAU ?? 0;
+   *  against, never the drawn radius the chart marker may have floored. Null
+   *  for a body the chart does not know: a zero radius would read as a real
+   *  answer and put the near plane on the camera's own eye. */
+  private bodyTrueRadiusAU(name: string): number | null {
+    return mapBody(name)?.radiusAU ?? null;
   }
 
   /** How much room a body takes up right now, in map AU: its true size once the
@@ -1035,9 +1132,10 @@ export class SystemMap {
    *  answers both from one call, so nothing here re-decides which branch
    *  applies), widened past any ring it wears. The ring is drawn geometry — a
    *  camera stopped clear of the globe but inside the annulus is still inside
-   *  the body as far as the frame is concerned. */
-  private drawnClearanceRadiusAU(name: string): number {
-    return this.drawnGlobeRadiusAU(name) * this.ringOuterFactorOf(name);
+   *  the body as far as the frame is concerned. Null for an unknown body. */
+  private drawnClearanceRadiusAU(name: string): number | null {
+    const globe = this.drawnGlobeRadiusAU(name);
+    return globe === null ? null : globe * this.ringOuterFactorOf(name);
   }
 
   /** Everything a body PAINTS, in map AU — its ring, or in the Sun's case the
@@ -1054,15 +1152,22 @@ export class SystemMap {
    *
    *  The look is last frame's — drawn sizes are settled in the projection pass,
    *  after the moves that read this — which costs a frame at the swap and
-   *  corrects itself on the next. */
-  private drawnReachAU(name: string): number {
-    if (name === 'Sun') {
+   *  corrects itself on the next.
+   *
+   *  Null for a body the chart does not know. */
+  private drawnReachAU(name: string): number | null {
+    const globe = this.drawnGlobeRadiusAU(name);
+    if (globe === null) return null;
+    const body = mapBody(name);
+    if (body?.kind === 'sun') {
       // The Sun is always its billboard, and the halo is baked around the disc.
-      return this.drawnGlobeRadiusAU(name) * SUN_HALO_RADII;
+      return globe * SUN_HALO_RADII;
     }
-    const entry = this.orbits.find((o) => o.planet.name === name);
-    if (!entry) return 0;
-    if (entry.globeDrawn) return this.drawnGlobeRadiusAU(name) * entry.ringOuterFactor;
+    const entry = this.entryFor(name);
+    // A body with no drawn geometry of its own — the size policy is the whole
+    // of the room it asks for.
+    if (!entry) return globe;
+    if (entry.globeDrawn) return globe * entry.ringOuterFactor;
     const perPx = mapWorldPerPxAtUnitDepth(
       Math.max(this.renderer.domElement.clientHeight, 1),
       MAP_FOV_DEG,
@@ -1075,15 +1180,17 @@ export class SystemMap {
 
   /** The globe radius the size policy gives a body at the current pose: its
    *  true size once the camera can resolve it, its chart marker while it
-   *  cannot. */
-  private drawnGlobeRadiusAU(name: string): number {
-    this.bodyMapPosition(name, this.tmpBodyPos);
+   *  cannot. Null for a body the chart cannot place or size. */
+  private drawnGlobeRadiusAU(name: string): number | null {
+    const radius = this.bodyTrueRadiusAU(name);
+    if (radius === null) return null;
+    if (!this.bodyMapPosition(name, this.tmpBodyPos)) return null;
     const perPx = mapWorldPerPxAtUnitDepth(
       Math.max(this.renderer.domElement.clientHeight, 1),
       MAP_FOV_DEG,
     );
     return mapBodyRadiusAU(
-      this.bodyTrueRadiusAU(name),
+      radius,
       this.viewDepth(this.tmpBodyPos),
       perPx,
       this.bodySizeParams,
@@ -1094,7 +1201,7 @@ export class SystemMap {
    *  ring for it. Read from the built entry rather than the catalog, so this
    *  tracks the geometry that actually exists in the scene. */
   private ringOuterFactorOf(name: string): number {
-    return this.orbits.find((o) => o.planet.name === name)?.ringOuterFactor ?? 1;
+    return this.entryFor(name)?.ringOuterFactor ?? 1;
   }
 
   // ---- picking / hover / dive ------------------------------------------
@@ -1122,18 +1229,34 @@ export class SystemMap {
   }
 
   /** True (uncompressed) distance in AU from the ship to a body — what the card
-   *  reports. Reads the cached heliocentric position (no extra ephemeris call);
-   *  the Sun sits at the origin. */
-  trueDistanceFromShip(name: string, shipX: number, shipY: number, shipZ: number): number {
+   *  reports. Reads each planet's cached heliocentric position (no extra
+   *  ephemeris call); the Sun sits at the origin, and a moon is its parent plus
+   *  its live planetocentric offset. Null for a body the chart does not know:
+   *  zero would read as the ship standing on it. */
+  trueDistanceFromShip(
+    name: string,
+    shipX: number,
+    shipY: number,
+    shipZ: number,
+  ): number | null {
+    const body = mapBody(name);
+    if (!body) return null;
     let bx = 0;
     let by = 0;
     let bz = 0;
-    if (name !== 'Sun') {
-      const entry = this.orbits.find((o) => o.planet.name === name);
-      if (!entry) return 0;
+    if (body.kind === 'planet') {
+      const entry = this.entryFor(name);
+      if (!entry) return null;
       bx = entry.helioX;
       by = entry.helioY;
       bz = entry.helioZ;
+    } else if (body.kind === 'moon') {
+      const parent = body.parentPlanet ? this.entryFor(body.parentPlanet) : null;
+      if (!parent) return null;
+      computeMoonOffsetEquatorialAU(name, parent.planet.name, this.clockUtcMs, this.tmpMoonOffset);
+      bx = parent.helioX + this.tmpMoonOffset.x;
+      by = parent.helioY + this.tmpMoonOffset.y;
+      bz = parent.helioZ + this.tmpMoonOffset.z;
     }
     return Math.hypot(bx - shipX, by - shipY, bz - shipZ);
   }
@@ -1148,16 +1271,19 @@ export class SystemMap {
    *  the size of the dot's travel. null when no dive is running. */
   diveTargetGapAU(): number | null {
     if (!this.diving || !this.diveFocusName) return null;
-    const dot = this.spriteForName(this.diveFocusName);
-    if (!dot) return null;
-    return this.controls.target.distanceTo(dot.position);
+    if (!this.bodyMapPosition(this.diveFocusName, this.tmpBodyPos)) return null;
+    return this.controls.target.distanceTo(this.tmpBodyPos);
   }
 
   /** Snapshot the camera and the target body's map position; from here the mode
    *  drives setDivePose each frame. Returns false if the body isn't on the map. */
   beginDive(name: string): boolean {
-    const focus = this.spriteForName(name);
-    if (!focus) return false;
+    // Only a body the camera may visit — the dive ends a few drawn radii off
+    // the destination, on the same shell a follow uses.
+    if (!this.cameraMayVisit(name)) return false;
+    // And refuse a body it cannot place: the ease runs toward a position, and
+    // the position it would otherwise be handed is the Sun's.
+    if (!this.bodyMapPosition(name, this.tmpBodyPos)) return false;
     // Memo how the camera sat around a focused body BEFORE the machine forgets
     // it. A follow is restored from where it actually was; an interrupted
     // approach is restored from the framing it was heading for, so a cancel
@@ -1173,7 +1299,7 @@ export class SystemMap {
     this.diveArcs = this.cam.camState !== 'overview';
     this.cam = mapCameraReduce(this.cam, { kind: 'diveStart', camera: true });
     this.diveFocusName = name;
-    this.diveFocus.copy(focus.position);
+    this.diveFocus.copy(this.tmpBodyPos);
     // How the camera was framed at dive start, kept as a FRACTION of the fit
     // rather than an absolute distance: a cancel has to rebuild the framing
     // against whatever the extent has become by then, and only the fraction
@@ -1201,8 +1327,10 @@ export class SystemMap {
    *  only the start pose stays snapshotted, for cancel-restore. */
   setDivePose(frac: number): void {
     if (!this.diving) return;
-    const focus = this.diveFocusName ? this.spriteForName(this.diveFocusName) : null;
-    if (focus) this.diveFocus.copy(focus.position);
+    // The target's live position, or the last one it had — bodyMapPosition
+    // leaves its output alone when it cannot answer, so a body that stops
+    // resolving mid-dive keeps the ease running to where it last was.
+    if (this.diveFocusName) this.bodyMapPosition(this.diveFocusName, this.diveFocus);
     const f = Math.max(0, Math.min(1, frac));
     this.tmpVec3.copy(this.diveStartTarget).lerp(this.diveFocus, f);
     this.controls.target.copy(this.tmpVec3);
@@ -1210,9 +1338,11 @@ export class SystemMap {
     // from a focus it starts a few radii out, where the same fraction lands
     // under the surface. The floor is the destination's own drawn size, so a
     // dive out of a focus stops just clear of it.
+    // A destination the chart cannot size gives the floor nothing to stand on,
+    // and the plain fraction is what remains.
     const endFrac = mapDiveEndFraction(
       this.diveStartDist,
-      this.diveFocusName ? this.drawnClearanceRadiusAU(this.diveFocusName) : 0,
+      (this.diveFocusName ? this.drawnClearanceRadiusAU(this.diveFocusName) : null) ?? 0,
       DIVE_END_DIST_FRAC,
     );
     const dist = this.diveStartDist * (1 - f * (1 - endFrac));
@@ -1225,7 +1355,7 @@ export class SystemMap {
           Math.min(
             this.controls.target.distanceTo(this.diveStartTarget),
             this.controls.target.distanceTo(this.diveFocus)
-              + (this.diveFocusName ? this.drawnReachAU(this.diveFocusName) : 0),
+              + ((this.diveFocusName ? this.drawnReachAU(this.diveFocusName) : null) ?? 0),
           ),
           this.aimFramingGapAU(),
         ),
@@ -1306,7 +1436,10 @@ export class SystemMap {
    *  interrupted a release — that flight completes to the overview rather than
    *  reversing itself back onto the body the user had just let go of. */
   private restoreFocusFromDive(focusName: string | null, leaving: boolean): void {
-    if (leaving || !focusName) {
+    // A focus the chart can no longer place is restored the way a release is:
+    // the overview is always somewhere the camera can legally sit.
+    const focusPos = focusName ? this.bodyMapPosition(focusName, this.tmpBodyPos) : null;
+    if (leaving || !focusPos) {
       const fit = fitDistanceAU(this.extentAU, MAP_FOV_DEG, this.camera.aspect);
       this.controls.target.set(0, 0, 0);
       this.camera.position.copy(this.flyDir).multiplyScalar(fit);
@@ -1317,11 +1450,10 @@ export class SystemMap {
       // Onto the body's LIVE position: it moved while the dive owned the
       // camera, and a follow delta measured from a stale snapshot would carry
       // that error forever.
-      this.bodyMapPosition(focusName, this.tmpBodyPos);
-      this.controls.target.copy(this.tmpBodyPos);
-      this.camera.position.copy(this.tmpBodyPos).add(this.diveOriginOffset);
+      this.controls.target.copy(focusPos);
+      this.camera.position.copy(focusPos).add(this.diveOriginOffset);
       this.camera.lookAt(this.controls.target);
-      this.followPos.copy(this.tmpBodyPos);
+      this.followPos.copy(focusPos);
       this.applyFollowBounds();
     }
     this.camera.updateMatrixWorld();
@@ -1376,7 +1508,21 @@ export class SystemMap {
     // A dot past the frame edge isn't pickable even if the tap radius reaches
     // it; a body with a drawn footprint stays pickable while any of it shows.
     if (!anchorOnScreen(this.tmpProj.x, this.tmpProj.y, w, h, discRadiusPx)) return;
-    const a = this.pickAnchorPool[this.pickAnchors.length];
+    let a = this.pickAnchorPool[this.pickAnchors.length];
+    if (!a) {
+      // The pool is sized for the whole roster plus the ship, so this cannot
+      // bind. If it ever does, the bodies offered have outgrown it: grow it
+      // once rather than write past the end of the array, and say so where a
+      // developer will see it — an overflow that quietly allocated would hide
+      // the regression behind a steady state that is no longer allocation-free.
+      if (import.meta.env.DEV) {
+        debugWarn(
+          `SystemMap pick-anchor pool exhausted at ${this.pickAnchorPool.length} slots`,
+        );
+      }
+      a = { name: '', x: 0, y: 0, pickable: false, discRadiusPx: 0 };
+      this.pickAnchorPool.push(a);
+    }
     a.name = name;
     a.x = this.tmpProj.x;
     a.y = this.tmpProj.y;
@@ -1385,16 +1531,26 @@ export class SystemMap {
     this.pickAnchors.push(a);
   }
 
-  private spriteForName(name: string): THREE.Sprite | null {
-    if (name === 'Sun') return this.sun;
-    return this.orbits.find((o) => o.planet.name === name)?.dot ?? null;
+  /** The marker sprite a body draws while it is not a globe: the Sun's disc, or
+   *  a planet's dot. Null for a body the chart draws no marker for. */
+  private markerSpriteFor(name: string): THREE.Sprite | null {
+    const body = mapBody(name);
+    if (!body) return null;
+    if (body.kind === 'sun') return this.sun;
+    return this.entryFor(name)?.dot ?? null;
   }
 
+  /** Hover feedback for one body: its marker lifts toward white, its globe (if
+   *  that is what it draws) answers with its own tint instead, and its label
+   *  emphasizes. A body with none of those — one the chart knows but does not
+   *  draw yet — simply has nothing to emphasize. */
   private applyDotEmphasis(name: string | null, on: boolean): void {
     if (!name) return;
-    const entry = name === 'Sun' ? undefined : this.orbits.find((o) => o.planet.name === name);
-    const sprite = this.spriteForName(name);
-    const base = name === 'Sun' ? this.sunBaseColor : entry?.baseColor;
+    const body = mapBody(name);
+    if (!body) return;
+    const entry = this.entryFor(name);
+    const sprite = this.markerSpriteFor(name);
+    const base = body.kind === 'sun' ? this.sunBaseColor : entry?.baseColor ?? null;
     if (sprite && base) {
       const mat = sprite.material as THREE.SpriteMaterial;
       if (on) mat.color.copy(base).lerp(WHITE, HOVER_LIFT);
@@ -1405,8 +1561,7 @@ export class SystemMap {
       if (on) entry.globeMat.emissive.copy(entry.baseColor).multiplyScalar(GLOBE_HOVER_EMISSIVE);
       else entry.globeMat.emissive.setRGB(0, 0, 0);
     }
-    const idx = name === 'Sun' ? 0 : this.orbits.findIndex((o) => o.planet.name === name) + 1;
-    const label = this.labels[idx];
+    const label = this.labels.get(name);
     if (label) label.classList.toggle('hover', on);
   }
 
@@ -1414,9 +1569,16 @@ export class SystemMap {
    *  sits, which way its pole points, and whether the texture it adopted is
    *  still the one the world holds — the check that a 2K→4K hot-swap under an
    *  open map was picked up rather than left on a freed texture. Texture ids
-   *  are 0 when there is none; screen coordinates are -1 when off frame. */
+   *  are 0 when there is none; screen coordinates are -1 when off frame. Null
+   *  for a name the chart does not know. */
   probeBody(name: string): {
     mode: 'globe' | 'dot' | 'sun';
+    /** Which catalog the body came from, and for a moon which planet it rides. */
+    kind: MapBodyKind;
+    parentPlanet: string | null;
+    /** Catalog figures, independent of how the body happens to be drawing. */
+    trueRadiusAU: number;
+    tint: number;
     radiusPx: number;
     /** Render truth: the globe's world radius re-measured against the CURRENT
      *  camera. Equal to radiusPx only while the pose that sized the body is the
@@ -1425,6 +1587,8 @@ export class SystemMap {
     apparentRadiusPx: number;
     screenX: number;
     screenY: number;
+    /** Map position (AU) the chart places the body at this frame. */
+    mapPos: [number, number, number];
     /** Body north pole as a unit vector in the map's (J2000 equatorial) frame. */
     pole: [number, number, number];
     textureId: number;
@@ -1432,19 +1596,28 @@ export class SystemMap {
     ringTextureId: number;
     worldRingTextureId: number;
   } | null {
+    const body = mapBody(name);
+    if (!body) return null;
     // Through the same projection the pick uses, so a probe reports the target
     // a click would actually land on.
     this.rebuildPickAnchors();
     const anchor = this.pickAnchors.find((a) => a.name === name);
     const screenX = anchor?.x ?? -1;
     const screenY = anchor?.y ?? -1;
-    if (name === 'Sun') {
+    const pos = this.bodyMapPosition(name, this.tmpBodyPos);
+    const mapPos: [number, number, number] = pos ? [pos.x, pos.y, pos.z] : [0, 0, 0];
+    if (body.kind === 'sun') {
       return {
         mode: 'sun',
+        kind: body.kind,
+        parentPlanet: null,
+        trueRadiusAU: body.radiusAU,
+        tint: body.color,
         radiusPx: this.sunRadiusPx,
         apparentRadiusPx: 0,
         screenX,
         screenY,
+        mapPos,
         pole: [0, 1, 0],
         textureId: 0,
         worldTextureId: 0,
@@ -1452,18 +1625,44 @@ export class SystemMap {
         worldRingTextureId: 0,
       };
     }
-    const entry = this.orbits.find((o) => o.planet.name === name);
-    if (!entry) return null;
+    const entry = this.entryFor(name);
+    if (!entry) {
+      // A body the chart knows but draws nothing for yet: the catalog figures
+      // and the position are real, and the marker the size policy would give it
+      // is the footprint it would claim.
+      return {
+        mode: 'dot',
+        kind: body.kind,
+        parentPlanet: body.parentPlanet,
+        trueRadiusAU: body.radiusAU,
+        tint: body.color,
+        radiusPx: mapMarkerRadiusPx(body.radiusAU, this.bodySizeParams),
+        apparentRadiusPx: 0,
+        screenX,
+        screenY,
+        mapPos,
+        pole: [0, 1, 0],
+        textureId: 0,
+        worldTextureId: this.textures.colorMap(name)?.id ?? 0,
+        ringTextureId: 0,
+        worldRingTextureId: 0,
+      };
+    }
     const h = Math.max(this.renderer.domElement.clientHeight, 1);
     const worldPerPx = ((2 * Math.tan((MAP_FOV_DEG * Math.PI) / 180 / 2)) / h)
       * this.viewDepth(entry.globe.position);
     this.tmpVec3.set(0, 1, 0).applyQuaternion(entry.globe.quaternion);
     return {
       mode: entry.globeDrawn ? 'globe' : 'dot',
+      kind: body.kind,
+      parentPlanet: body.parentPlanet,
+      trueRadiusAU: body.radiusAU,
+      tint: body.color,
       radiusPx: entry.drawnRadiusPx,
       apparentRadiusPx: entry.globeDrawn ? entry.globe.scale.x / Math.max(worldPerPx, 1e-30) : 0,
       screenX,
       screenY,
+      mapPos,
       pole: [this.tmpVec3.x, this.tmpVec3.y, this.tmpVec3.z],
       textureId: entry.globeMat.map?.id ?? 0,
       worldTextureId: this.textures.colorMap(name)?.id ?? 0,
@@ -1836,18 +2035,21 @@ export class SystemMap {
     if (!this.labelContainer) return;
     const w = this.renderer.domElement.clientWidth;
     const h = this.renderer.domElement.clientHeight;
-    // Priority order: Sun (index 0) first, then the planets inner→outer (catalog
+    // Priority order: the Sun first, then the planets inner→outer (catalog
     // order). A label too close to one already placed this frame yields, so the
     // Sun and the inner planets win over their crowded neighbours at true scale.
-    this.placedCount = 0;
-    this.placeLabel(0, this.sun.position, w, h);
-    for (let i = 0; i < this.orbits.length; i++) {
-      this.placeLabel(i + 1, this.orbits[i].dot.position, w, h);
+    this.labelPlacer.begin();
+    this.placeLabel(SUN_DATA.name, this.sun.position, w, h);
+    for (const entry of this.orbits) {
+      this.placeLabel(entry.planet.name, entry.dot.position, w, h);
     }
   }
 
-  private placeLabel(index: number, worldPos: THREE.Vector3, w: number, h: number): void {
-    const label = this.labels[index];
+  /** Place one body's label, keyed by its catalog name — never by an index into
+   *  a catalog, which is only ever right for as long as one catalog is the
+   *  whole of what the chart draws. A body with no label built is skipped. */
+  private placeLabel(name: string, worldPos: THREE.Vector3, w: number, h: number): void {
+    const label = this.labels.get(name);
     if (!label) return;
     projectToScreen(worldPos, this.camera, w, h, this.tmpProj);
     const onScreen =
@@ -1860,21 +2062,14 @@ export class SystemMap {
       if (label.style.display !== 'none') label.style.display = 'none';
       return;
     }
-    // Proximity cull: hide if the anchor lands within LABEL_MIN_SEP_PX of an
-    // already-placed (higher-priority) label this frame.
+    // Proximity cull: hide if the anchor lands too close to an already-placed
+    // (higher-priority) label this frame.
     const x = this.tmpProj.x;
     const y = this.tmpProj.y;
-    for (let i = 0; i < this.placedCount; i++) {
-      const dx = x - this.placedX[i];
-      const dy = y - this.placedY[i];
-      if (dx * dx + dy * dy < LABEL_MIN_SEP_PX * LABEL_MIN_SEP_PX) {
-        if (label.style.display !== 'none') label.style.display = 'none';
-        return;
-      }
+    if (!this.labelPlacer.place(x, y)) {
+      if (label.style.display !== 'none') label.style.display = 'none';
+      return;
     }
-    this.placedX[this.placedCount] = x;
-    this.placedY[this.placedCount] = y;
-    this.placedCount++;
     if (label.style.display === 'none') label.style.display = '';
     label.style.transform = `translate(-50%, 0) translate(${x}px, ${y + 9}px)`;
   }
@@ -1883,15 +2078,22 @@ export class SystemMap {
     if (this.labelContainer) return;
     this.labelContainer = document.getElementById('map-labels');
     if (!this.labelContainer) return;
-    const names = ['Sun', ...PLANETARIUM_BODIES.map((b) => b.name)];
-    for (const name of names) {
-      const div = document.createElement('div');
-      div.className = 'map-label';
-      div.textContent = name === 'Sun' ? 'Sun' : bodyDisplayName(name);
-      div.style.display = 'none';
-      this.labelContainer.appendChild(div);
-      this.labels.push(div);
+    // One label per body the chart DRAWS — the Sun and the planets. A label is
+    // a DOM node whether or not anything ever places it, so the set follows
+    // what is drawn rather than the whole roster the pools are sized for.
+    for (const body of MAP_BODIES) {
+      if (body.kind === 'moon') continue;
+      this.labels.set(body.name, this.makeLabel(body.name));
     }
+  }
+
+  private makeLabel(name: string): HTMLDivElement {
+    const div = document.createElement('div');
+    div.className = 'map-label';
+    div.textContent = name === SUN_DATA.name ? SUN_DATA.name : bodyDisplayName(name);
+    div.style.display = 'none';
+    this.labelContainer?.appendChild(div);
+    return div;
   }
 
   // ---- geometry / texture builders -------------------------------------

@@ -615,6 +615,9 @@ function installDevHooks() {
     mapState: () => planetariumMode?.devMapState() ?? null,
     mapPick: (name: string) => planetariumMode?.devMapPick(name) ?? false,
     mapProbe: (name: string) => planetariumMode?.devMapProbe(name) ?? null,
+    mapMoonStats: () => planetariumMode?.devMapMoonStats() ?? null,
+    setMapMoonOffset: (partial: Record<string, number> | null) =>
+      planetariumMode?.devSetMapMoonOffset(partial) ?? false,
     mapCommit: (verb: 'travel' | 'observe' | 'pilot') => planetariumMode?.devMapCommit(verb) ?? false,
     // Fly to a body and follow it; null flies back out to the overview.
     mapFocus: (name: string | null) => planetariumMode?.devMapFocus(name) ?? false,

@@ -33,7 +33,6 @@ import {
   advancePlanetariumTime,
   computeBodyPositionAU,
   computeBodyState,
-  eclipticToEquatorial,
   formatDateCompact,
   formatTimeRateLabel,
   formatUtcLabel,
@@ -267,7 +266,9 @@ import { SystemMap, type MapTextureSource } from './map/SystemMap';
 import { MapHUD } from './ui/MapHUD';
 import { mapCardActions, mapCardOffersVerb, commitBodyPickOutcome, type MapVerb } from './map/mapLogic';
 import { mapBody, mapBodyRefFor } from './map/mapBodies';
+import { tidalLockQuaternion, tidalRollNorth } from './world/tidalLock';
 import { type MapBodySizeParams } from './map/mapBodySize';
+import { type MapMoonOffsetParams } from './map/mapMoonOffset';
 import { MAP_DOUBLE_TAP_MS, mapCameraOwnsPose, mapOverviewChipVisible } from './map/mapCamera';
 import { isTap } from './map/mapPicking';
 import { flushOrbitDamping } from './input/orbitDamping';
@@ -368,7 +369,6 @@ export class PlanetariumMode {
   // moonRenderAnchorRatio, and every controller consumer resolves through
   // renderedMoonSizeAU so the dev γ override reaches all of them.
   /** Ecliptic north in the scene's equatorial frame (tidal-lock roll reference for Earth's Moon). */
-  private static readonly ECLIPTIC_NORTH = eclipticToEquatorial(new THREE.Vector3(0, 1, 0));
   private static readonly EARTH_DETAIL_MIN_DISTANCE_AU = 0.03;
   private static readonly EARTH_DETAIL_MIN_ANGULAR_DIAMETER_RAD = 0.003;
   /** Per-frame wall-clock slice for the Observatory panel's upcoming-events search. */
@@ -407,6 +407,8 @@ export class PlanetariumMode {
 
   // Planet moons: map from planet name to array of moon meshes
   private planetMoons = new Map<string, MoonMesh[]>();
+  /** The same meshes, keyed by moon name — the map's per-frame lookup. */
+  private moonMeshByName = new Map<string, MoonMesh>();
 
   // One scene-level group per planet-with-moons, translated to the planet each
   // frame. Moons parent here rather than in planet.group, whose quaternion
@@ -601,10 +603,6 @@ export class PlanetariumMode {
   private tmpGuideReticle = new THREE.Vector3();
   private guideReticleProjection: ScreenProjection = { x: 0, y: 0, ndcX: 0, ndcY: 0, ndcZ: 0 };
   private footprintReticleEl: HTMLElement | null = null;
-  private tmpLockToParent = new THREE.Vector3();
-  private tmpLockBasisZ = new THREE.Vector3();
-  private tmpLockUp = new THREE.Vector3();
-  private tmpLockBasis = new THREE.Matrix4();
 
   private keys = new Set<string>();
 
@@ -1429,6 +1427,7 @@ export class PlanetariumMode {
           const systemGroup = new THREE.Group();
           for (const m of moons) {
             systemGroup.add(m.mesh);
+            this.moonMeshByName.set(m.data.name, m);
           }
           this.moonSystemGroups.set(planet.data.name, systemGroup);
           this.scene.add(systemGroup);
@@ -2473,16 +2472,9 @@ export class PlanetariumMode {
     offsetFromParent: THREE.Vector3,
     rollNorth: THREE.Vector3,
   ) {
-    const toParent = this.tmpLockToParent.copy(offsetFromParent).multiplyScalar(-1).normalize();
-    // The basis Z column = toParent×up holds *texture* longitude 90°W, not
-    // geographic east (east is its negation, pole×prime — same naming note as
-    // buildPoleBasisQuaternion in planetary.ts). Only the RH-ness of the
-    // basis matters: X×Y=Z keeps det(+1), so textures are never mirrored.
-    const basisZ = this.tmpLockBasisZ.crossVectors(toParent, rollNorth);
-    if (basisZ.lengthSq() < 1e-10) return; // unreachable for valid orbit geometry; cheap safety
-    basisZ.normalize();
-    const up = this.tmpLockUp.crossVectors(basisZ, toParent);
-    mesh.quaternion.setFromRotationMatrix(this.tmpLockBasis.makeBasis(toParent, up, basisZ));
+    // Through the shared seam, so the same moon at the same instant faces the
+    // same way here and on the system map.
+    tidalLockQuaternion(offsetFromParent, rollNorth, mesh.quaternion);
   }
 
   /**
@@ -2510,11 +2502,10 @@ export class PlanetariumMode {
       isEarthMoon ? undefined : outOrbitNormal,
     );
     if (outOrbitNormal && isEarthMoon) {
-      // Roll reference, not orbit normal: the Moon's spin axis sits ~1.5° from
-      // ecliptic north (Cassini state) vs 5.1° for the orbit normal, so the
-      // tidal-lock roll stays on ecliptic north. The shadow engine and the
-      // guide slots read the true normal straight from the seam.
-      outOrbitNormal.copy(PlanetariumMode.ECLIPTIC_NORTH);
+      // Roll reference, not orbit normal — the choice lives in one place so the
+      // world and the map roll the same moon the same way. The shadow engine
+      // and the guide slots read the true normal straight from the seam.
+      tidalRollNorth(moon.name, parentPlanet.name, outOrbitNormal, outOrbitNormal);
     }
     return out;
   }
@@ -2981,8 +2972,16 @@ export class PlanetariumMode {
     if (!this.moonPainter.isEmpty()) {
       const target = this.autopilotTarget ?? this.landedOn;
       const targetSystem = target ? this.parentSystemOf(target) : null;
+      // Precedence: where the player is going, then the system the open map is
+      // showing, then whatever is nearest. An open map is a system somebody is
+      // looking at right now, and its moons ride tinted dots until paint lands.
+      const mapSystem = this.systemMap?.isOpen()
+        ? this.systemMap.preferredPaintSystem()
+        : null;
       const preferred =
-        targetSystem && this.moonPainter.hasPending(targetSystem) ? targetSystem : nearestPending;
+        targetSystem && this.moonPainter.hasPending(targetSystem) ? targetSystem
+          : mapSystem && this.moonPainter.hasPending(mapSystem) ? mapSystem
+            : nearestPending;
       this.moonPainter.pump(
         PlanetariumMode.MOON_PAINT_FRAME_BUDGET_MS,
         preferred,
@@ -6149,11 +6148,29 @@ export class PlanetariumMode {
     const planetOf = (name: string) =>
       this.solarSystem?.planets.find((p) => p.data.name === name);
     return {
-      colorMap: (name) =>
-        (planetOf(name)?.mesh.material as THREE.MeshStandardMaterial | undefined)?.map ?? null,
+      colorMap: (name) => {
+        const planet = planetOf(name);
+        if (planet) {
+          return (planet.mesh.material as THREE.MeshStandardMaterial).map ?? null;
+        }
+        // A moon: only once MoonPainter has actually finished it. The map falls
+        // back to its own tinted marker until then, which is a chart keeping the
+        // body present — never a half-painted surface.
+        const moon = this.moonMeshFor(name);
+        if (!moon?.painted) return null;
+        return (moon.mesh.material as THREE.MeshStandardMaterial).map ?? null;
+      },
       ringMap: (name) =>
         (planetOf(name)?.rings?.material as THREE.MeshStandardMaterial | undefined)?.map ?? null,
     };
+  }
+
+  /** The built mesh for a moon by name. Indexed rather than searched: the map
+   *  asks once per revealed moon per frame, and a nested scan over every
+   *  system's array would allocate a predicate each time for a lookup that
+   *  never changes. */
+  private moonMeshFor(name: string): MoonMesh | null {
+    return this.moonMeshByName.get(name) ?? null;
   }
 
   /** Dev bridge: open/close/state/gamma, delegating to the same paths a real
@@ -6235,6 +6252,20 @@ export class PlanetariumMode {
   /** Dev bridge: live tuning of the map's drawn-size policy; null resets. */
   devSetMapBodySize(partial: Partial<MapBodySizeParams> | null): void {
     this.systemMap?.setBodySizeParams(partial);
+  }
+
+  /** Dev bridge: live tuning of the moon-offset policy (gamma, x0, the Io
+   *  anchor, the cap, the clearance); null resets. Every drawn orbit
+   *  reprojects on the next frame. False when the merged knobs would not draw
+   *  a chart — the standing ones keep drawing. */
+  devSetMapMoonOffset(partial: Partial<MapMoonOffsetParams> | null): boolean {
+    return this.systemMap?.setMoonOffsetParams(partial) ?? false;
+  }
+
+  /** Dev bridge: the moon pipeline's counters — ring buffer writes, position
+   *  passes, which systems are revealed, how many moons are drawn. */
+  devMapMoonStats(): ReturnType<SystemMap['moonStats']> | null {
+    return this.systemMap?.moonStats() ?? null;
   }
 
   /** Dev bridge: how one map body is drawing (globe or dot, footprint) and

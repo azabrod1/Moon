@@ -1,5 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import {
+  mapMoonMarkerRadiusAU,
+  mapMoonRadiusAU,
   mapBodyRadiusAU,
   mapBodyRadiusPx,
   mapMarkerRadiusPx,
@@ -131,5 +133,51 @@ describe('mapBodyRadiusAU', () => {
   it('survives a degenerate camera', () => {
     expect(mapBodyRadiusAU(earth, 0, worldPerPxAtUnit)).toBeGreaterThan(0);
     expect(mapBodyRadiusAU(earth, 10, 0)).toBe(earth);
+  });
+});
+
+describe('the moon branch', () => {
+  const GANYMEDE = 1.761e-5;
+  const MIMAS = 1.325e-6;
+  const METIS = 1.437e-7;
+  // A parent drawn at its chart marker: Jupiter at the overview.
+  const PARENT = 1e-4;
+
+  it('puts the largest moon at the top of the band and holds the rest under it', () => {
+    expect(mapMoonMarkerRadiusAU(GANYMEDE, PARENT)).toBeCloseTo(PARENT * 0.34, 12);
+    for (const r of [GANYMEDE, MIMAS, METIS]) {
+      expect(mapMoonMarkerRadiusAU(r, PARENT)).toBeLessThanOrEqual(PARENT * 0.36);
+      expect(mapMoonMarkerRadiusAU(r, PARENT)).toBeGreaterThanOrEqual(PARENT * 0.03);
+    }
+  });
+
+  it('keeps the moons ordered by true size while any of them is above the floor', () => {
+    expect(mapMoonMarkerRadiusAU(GANYMEDE, PARENT))
+      .toBeGreaterThan(mapMoonMarkerRadiusAU(MIMAS, PARENT));
+    expect(mapMoonMarkerRadiusAU(MIMAS, PARENT))
+      .toBeGreaterThan(mapMoonMarkerRadiusAU(METIS, PARENT));
+  });
+
+  it('scales the whole system with its parent, so it reads the same at any zoom', () => {
+    const a = mapMoonMarkerRadiusAU(MIMAS, PARENT);
+    const b = mapMoonMarkerRadiusAU(MIMAS, PARENT * 7);
+    expect(b / a).toBeCloseTo(7, 9);
+  });
+
+  it('never draws a moon smaller than it really is', () => {
+    // A camera close enough that Ganymede's true size passes its marker.
+    const closeParent = GANYMEDE;
+    expect(mapMoonRadiusAU(GANYMEDE, closeParent)).toBe(GANYMEDE);
+    expect(mapMoonRadiusAU(GANYMEDE, PARENT)).toBeCloseTo(PARENT * 0.34, 12);
+  });
+
+  it('floors the smallest moons instead of losing them', () => {
+    // Metis is a hundredth of Ganymede by radius and would be invisible on a
+    // linear scale; the sqrt lands it just above the floor, and anything
+    // smaller sits on it.
+    expect(mapMoonMarkerRadiusAU(METIS, PARENT)).toBeGreaterThan(PARENT * 0.03);
+    expect(mapMoonMarkerRadiusAU(METIS, PARENT)).toBeLessThan(PARENT * 0.032);
+    expect(mapMoonMarkerRadiusAU(METIS / 100, PARENT)).toBeCloseTo(PARENT * 0.03, 12);
+    expect(mapMoonMarkerRadiusAU(0, PARENT)).toBeCloseTo(PARENT * 0.03, 12);
   });
 });

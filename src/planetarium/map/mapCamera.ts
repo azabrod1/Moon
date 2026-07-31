@@ -77,8 +77,9 @@ export const MAP_FOCUS_REVEAL_PX = 40;
 export const MAP_FOLLOW_MAX_CROSSOVER_MUL = 2;
 
 /** The follow shell is never thinner than this ratio, so a body the near floor
- *  pushes past its own crossover still leaves somewhere to orbit. */
-const MAP_FOLLOW_MIN_SPREAD = 1.5;
+ *  pushes past its own crossover — or a moon whose shell has been raised to
+ *  clear its parent — still leaves somewhere to orbit. */
+export const MAP_FOLLOW_MIN_SPREAD = 1.5;
 
 /** Near plane as a fraction of the distance to the subject's surface. */
 const MAP_NEAR_SURFACE_FRAC = 0.25;

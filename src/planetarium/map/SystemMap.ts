@@ -29,6 +29,7 @@ import { LineGeometry } from 'three/addons/lines/LineGeometry.js';
 import { LineMaterial } from 'three/addons/lines/LineMaterial.js';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { PLANETARIUM_BODIES, SUN_DATA, type PlanetData } from '../planets/planetData';
+import { getMoonsByPlanet, type MoonData } from '../planets/moonData';
 import { RING_CONFIGS } from '../planets/rings';
 import {
   sampleTrajectoryLinePoints,
@@ -37,7 +38,13 @@ import {
   trajectoryLineBodyFraction,
   ttJDFromUtcMs,
 } from '../../astronomy/planetary';
-import { computeMoonOffsetEquatorialAU } from '../../astronomy/satellites';
+import {
+  computeMoonOffsetEquatorialAU,
+  getMoonDisplayOrbit,
+  getSatelliteOrbitMeta,
+  EARTH_MOON_ORBIT_META,
+} from '../../astronomy/satellites';
+import { tidalLockQuaternion, tidalRollNorth } from '../world/tidalLock';
 import { bodyDisplayName } from '../surfaceView';
 import { ORBIT_LINE_RESAMPLE_MAX_AGE_MS } from '../SolarSystem';
 import { applyTextureDefaults } from '../world/texturePolicy';
@@ -59,9 +66,18 @@ import {
 import {
   mapBodyRadiusAU,
   mapMarkerRadiusPx,
+  mapMoonMarkerRadiusAU,
+  mapMoonRadiusAU,
   MAP_BODY_SIZE_DEFAULTS,
   type MapBodySizeParams,
 } from './mapBodySize';
+import {
+  mapMoonOffsetR,
+  moonOffsetPolicyFor,
+  setMapMoonOffsetParams,
+  type MapMoonOffsetParams,
+  type MoonOffsetPolicy,
+} from './mapMoonOffset';
 import { mapBodyDrawMode, shouldAdoptTexture } from './mapGlobes';
 import {
   clampFollowDistanceAU,
@@ -72,6 +88,7 @@ import {
   mapFlightFramingDistanceAU,
   mapFocusEase,
   mapWorldPerPxAtUnitDepth,
+  MAP_FOLLOW_MIN_SPREAD,
   revealDistanceAU,
   MAP_FOCUS_FLY_MS,
   MAP_FOV_DEG,
@@ -125,11 +142,99 @@ const SHIP_PULSE_MS = 2000;
 const HOVER_SCALE = 1.3;
 const HOVER_LIFT = 0.4;
 const WHITE = new THREE.Color(1, 1, 1);
+const maxChannel = (c: THREE.Color): number => Math.max(c.r, c.g, c.b);
 // A hovered globe lifts by its own tint instead of swelling: a growing sphere
 // would move its footprint, and the footprint is the click target.
 const GLOBE_HOVER_EMISSIVE = 0.22;
 // The dive eases the camera in to this fraction of its start distance.
 const DIVE_END_DIST_FRAC = 0.14;
+
+// ---- moon systems ------------------------------------------------------
+// Samples per drawn moon orbit. The ring is a closed loop of the moon's own
+// trajectory, so this is the smoothness of an ellipse, not of a circle.
+const MOON_RING_SEGMENTS = 96;
+// How far a drawn orbit may rotate under the sky before it is resampled. The
+// moon's motion ALONG the ring never stales it — the marker is computed exactly
+// every frame regardless, and the ring is the orbit's SHAPE. What stales the
+// shape is secular drift: the node and the apsides turning.
+const MOON_RING_DRIFT_LIMIT_DEG = 1;
+// Where a moon's elements carry no secular rates at all, a generous sim-time
+// bound stands in, so a ring still refreshes eventually.
+const MOON_RING_MAX_AGE_DAYS = 3650;
+// A system's moons appear inside this multiple of the distance a focus on the
+// parent lands at — derived from the same clamped landing the flight itself
+// uses, so focusing a planet always reveals its moons.
+const MOON_REVEAL_MARGIN = 1.3;
+// At true scale a moon whose screen separation from the parent's drawn limb is
+// under this is inside the limb pixel: drawing it there is noise, not honesty.
+const MOON_TRUE_SCALE_MIN_SEP_PX = 2;
+// Moon dot sprite extent per drawn radius, matched to the planets' dots so the
+// marker reads the same size as the globe that replaces it.
+const MOON_DOT_EXTENT_MUL = 2.6;
+// Drawn orbits sit quieter than the planets' heliocentric lines: they are
+// dense, and the bodies are the subject.
+const MOON_RING_OPACITY = 0.5;
+
+/** One moon on the chart: a marker, a globe, and its drawn orbit. */
+interface MoonEntry {
+  data: MoonData;
+  dot: THREE.Sprite;
+  globe: THREE.Mesh;
+  globeMat: THREE.MeshStandardMaterial;
+  baseColor: THREE.Color;
+  /** Live map position (absolute, like every other body's). */
+  pos: THREE.Vector3;
+  /** Unit direction from the parent, and the instantaneous distance in parent
+   *  TRUE radii — the policy's input. */
+  dir: THREE.Vector3;
+  x: number;
+  trueDistAU: number;
+  /** Where the policy charts it, in parent drawn radii. */
+  offsetR: number;
+  drawnRadiusAU: number;
+  drawnRadiusPx: number;
+  globeDrawn: boolean;
+  visible: boolean;
+  /** Clock instant this moon's orientation was built for. NaN until the first
+   *  pass — per entry, not per map, so a moon revealed while the clock is
+   *  paused is still oriented rather than drawn at identity. */
+  orientedUtcMs: number;
+  ring: Line2;
+  ringGeometry: LineGeometry;
+  ringMaterial: LineMaterial;
+  /** The sampled orbit, kept as unit directions plus true x per sample, so the
+   *  ring reprojects through the policy without touching the ephemeris again. */
+  ringDirs: Float32Array;
+  ringX: Float32Array;
+  ringFilled: boolean;
+  ringSampledUtcMs: number;
+  /** Blend the ring's vertices were written at; a moved blend rewrites them. */
+  ringBlend: number;
+  /** How fast this orbit's shape turns (node + apsides), deg/day. */
+  ringDriftDegPerDay: number;
+  ringPeriodMs: number;
+  label: HTMLDivElement | null;
+}
+
+/** A planet's moon system: the policy, the moons, and the group its drawn
+ *  orbits live in. */
+interface MoonSystem {
+  parent: OrbitEntry;
+  policy: MoonOffsetPolicy;
+  moons: MoonEntry[];
+  /** Rings live here in parent-radii units — position is the parent, and the
+   *  scale is the one number per frame that carries the camera. */
+  group: THREE.Group;
+  built: boolean;
+  revealed: boolean;
+  /** AU per parent drawn radius: max(true radius, marker-anchored drawn
+   *  radius). Computed once per frame in the position pass, from the PREVIOUS
+   *  frame's camera, so nothing here can close a loop with the camera. */
+  offsetScaleAU: number;
+  /** That scalar blended toward the parent's TRUE radius, which is what makes
+   *  true scale exact by construction rather than by arithmetic. */
+  scaleBlended: number;
+}
 
 // Sunlight for the globes, with physical falloff switched OFF (decay 0). The
 // map's radii are compressed, so a distance-metered light would meter by a
@@ -224,6 +329,39 @@ export class SystemMap {
   /** One unit sphere behind every globe — each body varies only by material and
    *  by the scale on its group. */
   private globeGeo = new THREE.SphereGeometry(1, 64, 32);
+  /** Moons never fill the frame the way a focused planet does, so they share a
+   *  cheaper sphere. */
+  private moonGeo = new THREE.SphereGeometry(1, 32, 16);
+  private moonSystems: MoonSystem[] = [];
+  private moonsByName = new Map<string, MoonEntry>();
+  private moonSystemsByParent = new Map<string, MoonSystem>();
+  /** Dev forensics: how many ring buffers have been written, and how many moon
+   *  position passes have run. A steady state that keeps writing rings, or that
+   *  keeps recomputing positions on a paused clock under a still camera, shows
+   *  up here as a climbing number and nowhere else. */
+  private moonRingWrites = 0;
+  private moonPasses = 0;
+  /** How many times the pick anchors have actually been projected — the number
+   *  that says whether hover is rebuilding them per pointer move. */
+  private anchorBuilds = 0;
+  /** Everything a body's drawn position depends on that is NOT the clock, the
+   *  blend or the camera pose: the radial curve, the size policy, the offset
+   *  policy, the viewport, what the camera is following. Bumping this is how a
+   *  change none of the three keys can see still invalidates them — without it
+   *  a curve swap while paused leaves a followed moon detached from a parent
+   *  that has moved out from under it. */
+  private projectionRevision = 0;
+  /** Bumped once per frame the map draws, plus by every camera move made
+   *  outside the update pass. Anchors cache against it. */
+  private frameRevision = 0;
+  /** The projection dirty key: the clock, the blend and the camera pose the
+   *  last moon pass ran against. */
+  private moonKeyUtcMs = Number.NaN;
+  private moonKeyRevision = -1;
+  private moonKeyBlend = Number.NaN;
+  private moonKeyCam = new THREE.Vector3(Number.NaN, Number.NaN, Number.NaN);
+  private tmpMoonNormal = new THREE.Vector3();
+  private tmpMoonQuat = new THREE.Quaternion();
 
   private labelContainer: HTMLElement | null = null;
   /** Labels keyed by catalog name, never by catalog index: the chart's body set
@@ -293,6 +431,16 @@ export class SystemMap {
     () => ({ name: '', x: 0, y: 0, pickable: false, discRadiusPx: 0 }),
   );
   private pickAnchors: PickAnchor[] = [];
+  /** What the anchors in the pool were projected against: the frame's
+   *  projection revision and the camera pose. Hover fires on every pointer
+   *  move and a probe re-asks inside the same frame — projecting 76 anchors
+   *  each time is work nothing asked for. */
+  private anchorKeyRevision = -1;
+  private anchorKeyProjection = -1;
+  private anchorKeyWidth = -1;
+  private anchorKeyHeight = -1;
+  private anchorKeyPos = new THREE.Vector3(Number.NaN, Number.NaN, Number.NaN);
+  private anchorKeyQuat = new THREE.Quaternion(0, 0, 0, Number.NaN);
   // The catalog name of the currently hovered dot (fine pointers), or null.
   private hoveredName: string | null = null;
   // Whether the ship reads docked (landed or parked) this frame — set in
@@ -390,6 +538,26 @@ export class SystemMap {
     for (const planet of PLANETARIUM_BODIES) {
       this.orbits.push(this.makeOrbit(planet, el));
     }
+    // One system per planet that has moons. The meshes are built on first
+    // reveal — a chart that never leaves the overview never pays for them.
+    for (const entry of this.orbits) {
+      if (getMoonsByPlanet(entry.planet.name).length === 0) continue;
+      const group = new THREE.Group();
+      group.visible = false;
+      this.scene.add(group);
+      const system: MoonSystem = {
+        parent: entry,
+        policy: moonOffsetPolicyFor(entry.planet.name),
+        moons: [],
+        group,
+        built: false,
+        revealed: false,
+        offsetScaleAU: entry.planet.radiusAU,
+        scaleBlended: entry.planet.radiusAU,
+      };
+      this.moonSystems.push(system);
+      this.moonSystemsByParent.set(entry.planet.name, system);
+    }
 
     this.shipChevronTex = this.makeChevronTexture();
     this.shipRingTex = this.makeRingTexture();
@@ -439,6 +607,7 @@ export class SystemMap {
    *  caller owns the world's controls.enabled restore. */
   openMap(utcMs: number): void {
     this.open = true;
+    this.projectionRevision++;
     this.clockUtcMs = utcMs;
     this.ensureLabelContainer();
     this.resample(utcMs);
@@ -468,6 +637,9 @@ export class SystemMap {
     if (next === this.cam) return true;
     const fromFocus = this.cam.camState !== 'overview';
     this.cam = next;
+    // What the camera follows decides which system is revealed, and nothing
+    // else about the frame need change for that to be true.
+    this.projectionRevision++;
     this.startFly(fromFocus);
     return true;
   }
@@ -480,6 +652,7 @@ export class SystemMap {
     if (next === this.cam) return false;
     const fromFocus = this.cam.camState !== 'overview';
     this.cam = next;
+    this.projectionRevision++;
     this.startFly(fromFocus);
     return true;
   }
@@ -536,6 +709,17 @@ export class SystemMap {
       entry.globeDrawn = false;
       entry.dot.visible = true;
     }
+    // The moons let their borrowed paint go the same way, and every system
+    // stands down: the next open re-decides what is revealed from scratch.
+    for (const system of this.moonSystems) {
+      system.revealed = false;
+      system.group.visible = false;
+      for (const moon of system.moons) {
+        this.adoptTexture(moon.globeMat, null);
+        this.hideMoon(moon);
+      }
+    }
+    this.projectionRevision++;
   }
 
   /** Segmented scale control: animate the blend toward compressed / true scale.
@@ -573,6 +757,7 @@ export class SystemMap {
     const wasFit = fitDistanceAU(this.extentAU, MAP_FOV_DEG, this.camera.aspect);
     const zoomRatio = this.getCameraDistance() / Math.max(wasFit, 1e-4);
     this.curve = next;
+    this.projectionRevision++;
     this.recompressOrbits();
     if (!this.open) return;
     // The ship is part of the extent, so its marker moves onto the new curve
@@ -595,6 +780,7 @@ export class SystemMap {
     this.bodySizeParams = partial === null
       ? { ...MAP_BODY_SIZE_DEFAULTS }
       : { ...this.bodySizeParams, ...partial };
+    this.projectionRevision++;
   }
 
   /**
@@ -649,6 +835,10 @@ export class SystemMap {
     // this frame is adopted before the map renders it.
     this.syncTextures();
     this.updateBodies(utcMs);
+    // Moons after their planets: every one of them is placed relative to a
+    // parent that has just been placed.
+    this.updateMoons(utcMs);
+    this.syncMoonTextures();
     this.placeShip(shipX, shipY, shipZ, shipHeading, shipPitch, shipMoving, landed, dtMs);
 
     // ── (2) Camera. The extent is refreshed unconditionally: the geometry
@@ -695,6 +885,7 @@ export class SystemMap {
     this.camera.updateMatrixWorld();
 
     // ── (3) Projection-dependent work, on this frame's final camera pose.
+    this.frameRevision++;
     this.orientShip();
     this.updateDrawnSizes();
     this.renderLabels();
@@ -749,6 +940,13 @@ export class SystemMap {
     this.camera.aspect = w / h;
     this.camera.updateProjectionMatrix();
     for (const o of this.orbits) o.material.resolution.set(w, h);
+    for (const system of this.moonSystems) {
+      for (const moon of system.moons) moon.ringMaterial.resolution.set(w, h);
+    }
+    // The reveal shell and every drawn size are metered in screen px, so a
+    // viewport change moves them: let the next frame re-decide rather than
+    // carrying the old decision.
+    this.projectionRevision++;
     // A viewport change (device rotation, window resize) refits the overview:
     // the vertical FOV is fixed, so portrait fits far less width and the old
     // dolly distance would clip the outer system. Only the parked overview
@@ -774,6 +972,7 @@ export class SystemMap {
       return;
     }
     this.camera.updateMatrixWorld();
+    this.frameRevision++;
     this.orientShip();
     this.updateDrawnSizes();
     this.renderLabels();
@@ -991,7 +1190,12 @@ export class SystemMap {
    *  it is headed and a thousandth of one from where it started would otherwise
    *  meter its near plane against the far body and cut the near one away. */
   private followBoundsFor(name: string, alsoClear: string | null = null): MapFollowBounds | null {
-    const radius = this.bodyTrueRadiusAU(name);
+    // The subject's DRAWN radius governs its own shell: the marker is what the
+    // camera can see and what the near plane has to clear, and on a moon the
+    // marker is many times the true size. (On a planet the two agree once the
+    // camera is close enough to have resolved it, which is the only regime a
+    // follow runs in.)
+    const radius = this.drawnGlobeRadiusAU(name) ?? this.bodyTrueRadiusAU(name);
     if (radius === null || !this.bodyMapPosition(name, this.tmpBodyPos)) return null;
     const camDist = this.camera.position.distanceTo(this.tmpBodyPos);
     let surface = Math.max(camDist - radius, 1e-9);
@@ -1006,7 +1210,7 @@ export class SystemMap {
         if (otherSurface < surface) surface = Math.max(otherSurface, 1e-9);
       }
     }
-    return followBounds(
+    const bounds = followBounds(
       radius,
       surface,
       this.camera.position.length(),
@@ -1017,6 +1221,40 @@ export class SystemMap {
       this.bodySizeParams,
       this.tmpBounds,
     );
+    return this.clearParentInShell(name, bounds);
+  }
+
+  /**
+   * Raise a moon's shell until it clears the planet the moon goes around.
+   *
+   * A shell is one scalar distance about its subject, and the subject is
+   * carried around the parent by its own orbit — so a shell that only clears
+   * the MOON puts the camera inside the planet at the azimuth where the moon
+   * sits between them. The triangle inequality gives the fix in one term: at
+   * `minDist ≥ (the moon's drawn offset) + (the parent's drawn reach)`,
+   * `|camera − parent| ≥ minDist − offset ≥ reach` for every azimuth at once,
+   * the anti-aligned pose included.
+   *
+   * The declared consequence: a chart follows its moons at chart distance. Io's
+   * closest legal pose puts its disc at a handful of px, and the small ones stay
+   * inflated markers. The close-up belongs to the world, and the truth to True
+   * scale.
+   */
+  private clearParentInShell(name: string, bounds: MapFollowBounds): MapFollowBounds {
+    const body = mapBody(name);
+    if (body?.kind !== 'moon' || !body.parentPlanet) return bounds;
+    const system = this.moonSystemsByParent.get(body.parentPlanet);
+    if (!system) return bounds;
+    const offset = this.tmpBodyPos.distanceTo(system.parent.dot.position);
+    const parentReach = this.drawnClearanceRadiusAU(body.parentPlanet) ?? 0;
+    const floor = offset + parentReach;
+    if (floor <= bounds.minDist) return bounds;
+    bounds.minDist = floor;
+    // A shell has to have room to move in, whatever the floor did to it.
+    if (bounds.maxDist < floor * MAP_FOLLOW_MIN_SPREAD) {
+      bounds.maxDist = floor * MAP_FOLLOW_MIN_SPREAD;
+    }
+    return bounds;
   }
 
   /** Hand the whole bounds transaction to the controls and the camera. */
@@ -1073,6 +1311,19 @@ export class SystemMap {
         best = entry.planet.name;
       }
     }
+    // Drawn moons count: inside a revealed system they are the nearest surfaces
+    // there are, and their drawn size is many times their true one.
+    for (const system of this.moonSystems) {
+      if (!system.revealed) continue;
+      for (const moon of system.moons) {
+        if (!moon.visible) continue;
+        const surface = this.camera.position.distanceTo(moon.pos) - moon.drawnRadiusAU;
+        if (surface < bestSurface) {
+          bestSurface = surface;
+          best = moon.data.name;
+        }
+      }
+    }
     return best;
   }
 
@@ -1089,7 +1340,15 @@ export class SystemMap {
    *  body in the roster — position, radius, tint, the probe — and only the
    *  camera is held to the narrower set. */
   private cameraMayVisit(name: string): boolean {
-    return mapBodyAcceptsCamera(name, (n) => this.entryFor(n) !== null);
+    return mapBodyAcceptsCamera(name, (n) => {
+      if (this.entryFor(n) !== null) return true;
+      // A moon of a system this map builds: it has a shell that clears its
+      // parent, and aiming at one reveals its system on the way, so it is drawn
+      // by the time the camera arrives.
+      const body = mapBody(n);
+      return body?.kind === 'moon' && !!body.parentPlanet
+        && this.moonSystemsByParent.has(body.parentPlanet);
+    });
   }
 
   /**
@@ -1113,10 +1372,42 @@ export class SystemMap {
       const entry = this.entryFor(name);
       return entry ? out.copy(entry.dot.position) : null;
     }
-    const parent = body.parentPlanet ? this.entryFor(body.parentPlanet) : null;
-    if (!parent) return null;
-    computeMoonOffsetEquatorialAU(name, parent.planet.name, this.clockUtcMs, this.tmpMoonOffset);
-    return out.copy(parent.dot.position).add(this.tmpMoonOffset);
+    const system = body.parentPlanet
+      ? this.moonSystemsByParent.get(body.parentPlanet) ?? null
+      : null;
+    if (!system) return null;
+    // A drawn moon is wherever the chart put it this frame.
+    const drawn = this.moonEntryFor(name);
+    if (drawn && system.revealed) return out.copy(drawn.pos);
+    // Otherwise chart it on the spot, by the same arithmetic — a focus has to
+    // be able to aim at a moon the frame before its system appears.
+    return this.chartMoonPosition(system, name, out);
+  }
+
+  /** Where the chart puts a moon right now: its parent, plus its direction at
+   *  the policy's charted distance, in the units the group carries. The one
+   *  place that arithmetic is written down, so an unrevealed system and a drawn
+   *  one can never disagree. */
+  private chartMoonPosition(
+    system: MoonSystem,
+    moonName: string,
+    out: THREE.Vector3,
+  ): THREE.Vector3 | null {
+    const trueR = system.parent.planet.radiusAU;
+    if (!(trueR > 0)) return null;
+    computeMoonOffsetEquatorialAU(
+      moonName, system.parent.planet.name, this.clockUtcMs, this.tmpMoonOffset,
+    );
+    const distAU = Math.max(this.tmpMoonOffset.length(), 1e-30);
+    const x = distAU / trueR;
+    const scaleAU = Math.max(trueR, this.planetDrawnGlobeRadiusAU(system.parent));
+    const scaleBlended = scaleAU + (trueR - scaleAU) * this.blend;
+    const charted = this.blend >= MAP_BLEND_TRUE
+      ? x
+      : mapMoonOffsetR(system.policy, x) * (1 - this.blend) + x * this.blend;
+    this.tmpMoonOffset.divideScalar(distAU);
+    return out.copy(system.parent.dot.position)
+      .addScaledVector(this.tmpMoonOffset, charted * scaleBlended);
   }
 
   /** A body's TRUE radius in AU — what the framing and the clip planes meter
@@ -1182,6 +1473,16 @@ export class SystemMap {
    *  true size once the camera can resolve it, its chart marker while it
    *  cannot. Null for a body the chart cannot place or size. */
   private drawnGlobeRadiusAU(name: string): number | null {
+    const body = mapBody(name);
+    if (body?.kind === 'moon') {
+      // A moon is sized against its parent, not against the chart, so its
+      // policy is its parent's drawn radius and its own true size.
+      const system = body.parentPlanet
+        ? this.moonSystemsByParent.get(body.parentPlanet) ?? null
+        : null;
+      if (!system) return null;
+      return mapMoonRadiusAU(body.radiusAU, this.parentDrawnRadiusAU(system));
+    }
     const radius = this.bodyTrueRadiusAU(name);
     if (radius === null) return null;
     if (!this.bodyMapPosition(name, this.tmpBodyPos)) return null;
@@ -1202,6 +1503,464 @@ export class SystemMap {
    *  tracks the geometry that actually exists in the scene. */
   private ringOuterFactorOf(name: string): number {
     return this.entryFor(name)?.ringOuterFactor ?? 1;
+  }
+
+  // ---- moon systems ------------------------------------------------------
+
+  /** The moon entry for a name, or null. Built systems only — an unrevealed
+   *  system has a policy but no meshes yet. */
+  private moonEntryFor(name: string): MoonEntry | null {
+    return this.moonsByName.get(name) ?? null;
+  }
+
+  /** The system a body belongs to: a moon's parent, or a planet's own name. */
+  private systemOwnerOf(name: string | null): string | null {
+    if (!name) return null;
+    const body = mapBody(name);
+    if (!body) return null;
+    return body.kind === 'moon' ? body.parentPlanet : body.name;
+  }
+
+  /** The parent's drawn globe radius — what a moon is sized and charted
+   *  against, and the one number the camera enters a moon system through. */
+  private parentDrawnRadiusAU(system: MoonSystem): number {
+    return this.planetDrawnGlobeRadiusAU(system.parent);
+  }
+
+  /** A planet's drawn globe radius from its built entry, without going through
+   *  a name. The moon pipeline asks for this per system per frame. */
+  private planetDrawnGlobeRadiusAU(entry: OrbitEntry): number {
+    return mapBodyRadiusAU(
+      entry.planet.radiusAU,
+      this.viewDepth(entry.dot.position),
+      mapWorldPerPxAtUnitDepth(Math.max(this.renderer.domElement.clientHeight, 1), MAP_FOV_DEG),
+      this.bodySizeParams,
+    );
+  }
+
+  /** How far the camera may be from a parent and still see its moons: the
+   *  CLAMPED distance a focus on it lands at, with margin. Deriving it from the
+   *  same clamp the flight uses makes "a focus always reveals the system" true
+   *  by construction — a raw reveal distance would leave the near-floor-bound
+   *  parents (Pluto, whose landing sits at more than twice its raw reveal) with
+   *  a system that never appears. */
+  private moonRevealDistanceAU(system: MoonSystem): number {
+    const h = Math.max(this.renderer.domElement.clientHeight, 1);
+    const raw = revealDistanceAU(system.parent.planet.radiusAU, h, MAP_FOV_DEG);
+    const bounds = this.followBoundsFor(system.parent.planet.name);
+    return Math.max(raw, bounds ? bounds.minDist : 0) * MOON_REVEAL_MARGIN;
+  }
+
+  /**
+   * Phase (1) for the moons: reveal, place, orient, and keep the drawn orbits
+   * fresh. Runs on the PREVIOUS frame's camera like every other position, which
+   * is what keeps the units scalar out of a feedback loop with the camera that
+   * follows a moon.
+   */
+  private updateMoons(utcMs: number): void {
+    if (this.moonSystems.length === 0) return;
+    // Nothing moved: not the clock, not the blend, not the camera. A chart
+    // being read is the normal state, and it should cost nothing.
+    const still = utcMs === this.moonKeyUtcMs
+      && this.blend === this.moonKeyBlend
+      && this.projectionRevision === this.moonKeyRevision
+      && this.camera.position.equals(this.moonKeyCam);
+    if (still) {
+      // Positions are settled; a ring that has never been filled is not. The
+      // fill budget is one per frame, so a reveal on a slow device can land the
+      // camera with orbits still missing — and they would then wait forever on
+      // a pass that has nothing left to do.
+      this.fillOneMoonRing(utcMs);
+      return;
+    }
+    const blendMoved = this.blend !== this.moonKeyBlend;
+    this.moonKeyUtcMs = utcMs;
+    this.moonKeyBlend = this.blend;
+    this.moonKeyRevision = this.projectionRevision;
+    this.moonKeyCam.copy(this.camera.position);
+    this.moonPasses++;
+
+    const trueScale = this.blend >= MAP_BLEND_TRUE;
+    const focusSystem = this.systemOwnerOf(this.cameraSubject());
+
+    for (const system of this.moonSystems) {
+      const parent = system.parent;
+      const parentPos = parent.dot.position;
+      const revealed = focusSystem === parent.planet.name
+        || this.camera.position.distanceTo(parentPos) < this.moonRevealDistanceAU(system);
+      if (revealed && !system.built) this.buildMoonSystem(system);
+      system.revealed = revealed;
+      system.group.visible = revealed;
+      if (!revealed) {
+        for (const moon of system.moons) {
+          // Let the borrowed texture go with the system. The world is free to
+          // dispose it while nobody is drawing it, and the map holds no
+          // reference it does not re-read — the same rule close() follows.
+          this.adoptTexture(moon.globeMat, null);
+          this.hideMoon(moon);
+        }
+        continue;
+      }
+
+      // The one camera-dependent number in the whole moon pipeline, and it is a
+      // scalar: AU per parent drawn radius. Everything the policy produces is
+      // in those units, so the offsets never re-decide anything as the camera
+      // moves — the group scale carries it.
+      const trueR = parent.planet.radiusAU;
+      system.offsetScaleAU = Math.max(trueR, this.parentDrawnRadiusAU(system));
+      system.scaleBlended = system.offsetScaleAU
+        + (trueR - system.offsetScaleAU) * this.blend;
+      system.group.position.copy(parentPos);
+      system.group.scale.setScalar(system.scaleBlended);
+
+      for (const moon of system.moons) {
+        computeMoonOffsetEquatorialAU(
+          moon.data.name, parent.planet.name, utcMs, this.tmpMoonOffset, this.tmpMoonNormal,
+        );
+        const distAU = this.tmpMoonOffset.length();
+        moon.trueDistAU = distAU;
+        moon.x = distAU / trueR;
+        moon.dir.copy(this.tmpMoonOffset).divideScalar(Math.max(distAU, 1e-30));
+        moon.offsetR = mapMoonOffsetR(system.policy, moon.x);
+        // True scale keys off the LIVE blend, not the committed target: the
+        // offsets slide with the animation rather than snapping when it starts.
+        // (The globe/dot look deliberately does the opposite — it settles on
+        // the gesture that asked for it.) At blend 1 this is x exactly, and the
+        // group's scale is the parent's TRUE radius exactly, so the product is
+        // the raw AU offset by construction rather than by arithmetic.
+        const rGroup = trueScale
+          ? moon.x
+          : moon.offsetR + (moon.x - moon.offsetR) * this.blend;
+        moon.pos.copy(parentPos).addScaledVector(moon.dir, rGroup * system.scaleBlended);
+        moon.dot.position.copy(moon.pos);
+        moon.globe.position.copy(moon.pos);
+        // Orientation per entry, so a moon revealed while the clock is paused
+        // is oriented on the spot instead of waiting for time to move.
+        if (moon.orientedUtcMs !== utcMs) {
+          // Through the shared roll selection, not the raw orbit normal: Earth's
+          // Moon is levelled on ecliptic north, and the chart has to agree with
+          // the window about which way a face is turned.
+          tidalRollNorth(
+            moon.data.name, parent.planet.name, this.tmpMoonNormal, this.tmpMoonNormal,
+          );
+          if (tidalLockQuaternion(this.tmpMoonOffset, this.tmpMoonNormal, this.tmpMoonQuat)) {
+            moon.globe.quaternion.copy(this.tmpMoonQuat);
+          }
+          moon.orientedUtcMs = utcMs;
+        }
+        // A blend frame rewrites the ring vertices in place — the one case that
+        // touches the buffers without going near the ephemeris.
+        if (moon.ringFilled && (blendMoved || moon.ringBlend !== this.blend)) {
+          this.writeMoonRing(system, moon);
+        }
+      }
+    }
+
+    this.fillOneMoonRing(utcMs);
+  }
+
+  /**
+   * At most one ring is filled or refilled per frame, first fills included: a
+   * just-revealed Saturn is eighteen orbits' worth of ephemeris, and doing them
+   * in one frame is the stall the budget exists to prevent. The moons
+   * themselves are placed immediately — positions are cheap — so the system
+   * appears at once and only its orbits stagger in.
+   *
+   * This runs every frame, not only on the frames the position pass does: an
+   * unfilled ring is work outstanding whatever the camera and the clock are
+   * doing, and the settled chart is exactly where a missing orbit would sit
+   * unfinished forever. Overdue by the widest margin goes first.
+   */
+  private fillOneMoonRing(utcMs: number): void {
+    let candidate: { system: MoonSystem; moon: MoonEntry } | null = null;
+    let worst = 1;
+    for (const system of this.moonSystems) {
+      if (!system.revealed) continue;
+      for (const moon of system.moons) {
+        if (!moon.ringFilled) {
+          if (!candidate) candidate = { system, moon };
+          continue;
+        }
+        const ageDays = Math.abs(utcMs - moon.ringSampledUtcMs) / 86_400_000;
+        const urgency = (ageDays * moon.ringDriftDegPerDay) / MOON_RING_DRIFT_LIMIT_DEG;
+        if (urgency > worst) {
+          worst = urgency;
+          if (!candidate || candidate.moon.ringFilled) candidate = { system, moon };
+        }
+      }
+    }
+    if (candidate) this.fillMoonRing(candidate.system, candidate.moon, utcMs);
+  }
+
+  /** Sample one moon's orbit through the shared ephemeris seam and hand the
+   *  samples to the ring. Kept as unit directions plus true x, so every later
+   *  reprojection — a scale blend, a retuned policy — is arithmetic. */
+  private fillMoonRing(system: MoonSystem, moon: MoonEntry, utcMs: number): void {
+    const parentName = system.parent.planet.name;
+    const trueR = system.parent.planet.radiusAU;
+    for (let i = 0; i <= MOON_RING_SEGMENTS; i++) {
+      const t = utcMs + (i / MOON_RING_SEGMENTS) * moon.ringPeriodMs;
+      computeMoonOffsetEquatorialAU(moon.data.name, parentName, t, this.tmpMoonOffset);
+      const d = Math.max(this.tmpMoonOffset.length(), 1e-30);
+      moon.ringDirs[i * 3] = this.tmpMoonOffset.x / d;
+      moon.ringDirs[i * 3 + 1] = this.tmpMoonOffset.y / d;
+      moon.ringDirs[i * 3 + 2] = this.tmpMoonOffset.z / d;
+      moon.ringX[i] = d / trueR;
+    }
+    moon.ringSampledUtcMs = utcMs;
+    moon.ringFilled = true;
+    this.writeMoonRing(system, moon);
+  }
+
+  /** Project the sampled orbit into the ring's buffer, in parent-radii units.
+   *  The group's position and scale do the rest, so this is the only place the
+   *  policy touches geometry. */
+  private writeMoonRing(system: MoonSystem, moon: MoonEntry): void {
+    const trueScale = this.blend >= MAP_BLEND_TRUE;
+    const attr = moon.ringGeometry.attributes.instanceStart as THREE.InterleavedBufferAttribute;
+    const arr = attr.data.array as Float32Array;
+    let prevX = 0;
+    let prevY = 0;
+    let prevZ = 0;
+    for (let i = 0; i <= MOON_RING_SEGMENTS; i++) {
+      const x = moon.ringX[i];
+      const charted = trueScale
+        ? x
+        : mapMoonOffsetR(system.policy, x) * (1 - this.blend) + x * this.blend;
+      const px = moon.ringDirs[i * 3] * charted;
+      const py = moon.ringDirs[i * 3 + 1] * charted;
+      const pz = moon.ringDirs[i * 3 + 2] * charted;
+      if (i > 0) {
+        const o = (i - 1) * 6;
+        arr[o] = prevX;
+        arr[o + 1] = prevY;
+        arr[o + 2] = prevZ;
+        arr[o + 3] = px;
+        arr[o + 4] = py;
+        arr[o + 5] = pz;
+      }
+      prevX = px;
+      prevY = py;
+      prevZ = pz;
+    }
+    attr.data.needsUpdate = true;
+    moon.ringBlend = this.blend;
+    this.moonRingWrites++;
+  }
+
+  private hideMoon(moon: MoonEntry): void {
+    moon.visible = false;
+    moon.globeDrawn = false;
+    if (moon.dot.visible) moon.dot.visible = false;
+    if (moon.globe.visible) moon.globe.visible = false;
+    if (moon.label && moon.label.style.display !== 'none') moon.label.style.display = 'none';
+  }
+
+  /** Build one system's meshes, the first time it is revealed. */
+  private buildMoonSystem(system: MoonSystem): void {
+    if (system.built) return;
+    system.built = true;
+    const el = this.renderer.domElement;
+    const parentName = system.parent.planet.name;
+    for (const data of getMoonsByPlanet(parentName)) {
+      const tint = new THREE.Color(data.color);
+      const dot = this.makeGlowSprite(data.color, 1);
+      dot.renderOrder = 5;
+      dot.visible = false;
+      this.scene.add(dot);
+      const globeMat = new THREE.MeshStandardMaterial({ roughness: 0.95, metalness: 0 });
+      const globe = new THREE.Mesh(this.moonGeo, globeMat);
+      globe.renderOrder = 3;
+      globe.visible = false;
+      this.scene.add(globe);
+
+      const ringGeometry = new LineGeometry();
+      ringGeometry.setPositions(new Float32Array((MOON_RING_SEGMENTS + 1) * 3));
+      const ringMaterial = new LineMaterial({
+        color: data.color,
+        linewidth: 1,
+        transparent: true,
+        opacity: MOON_RING_OPACITY,
+        depthTest: true,
+        depthWrite: false,
+        toneMapped: false,
+      });
+      ringMaterial.resolution.set(Math.max(el.clientWidth, 1), Math.max(el.clientHeight, 1));
+      const ring = new Line2(ringGeometry, ringMaterial);
+      ring.renderOrder = 1;
+      ring.frustumCulled = false;
+      system.group.add(ring);
+
+      const orbit = getMoonDisplayOrbit(data.name, parentName);
+      const meta = data.name === 'Moon' && parentName === 'Earth'
+        ? EARTH_MOON_ORBIT_META
+        : getSatelliteOrbitMeta(data.name);
+      const moon: MoonEntry = {
+        data,
+        dot,
+        globe,
+        globeMat,
+        baseColor: tint,
+        pos: new THREE.Vector3(),
+        dir: new THREE.Vector3(1, 0, 0),
+        x: 0,
+        trueDistAU: 0,
+        offsetR: 0,
+        drawnRadiusAU: 0,
+        drawnRadiusPx: 0,
+        globeDrawn: false,
+        visible: false,
+        orientedUtcMs: Number.NaN,
+        ring,
+        ringGeometry,
+        ringMaterial,
+        ringDirs: new Float32Array((MOON_RING_SEGMENTS + 1) * 3),
+        ringX: new Float32Array(MOON_RING_SEGMENTS + 1),
+        ringFilled: false,
+        ringSampledUtcMs: 0,
+        ringBlend: Number.NaN,
+        // Node plus apsides: how fast the drawn shape itself turns. A moon whose
+        // fit carries no secular rates falls back to a sim-time bound.
+        ringDriftDegPerDay: Math.max(
+          meta.nodeRateDegPerDay + meta.apsisRateDegPerDay,
+          MOON_RING_DRIFT_LIMIT_DEG / MOON_RING_MAX_AGE_DAYS,
+        ),
+        ringPeriodMs: Math.max(orbit.periodDays, 1e-3) * 86_400_000,
+        label: this.labelContainer ? this.makeLabel(data.name) : null,
+      };
+      if (moon.label) this.labels.set(data.name, moon.label);
+      system.moons.push(moon);
+      this.moonsByName.set(data.name, moon);
+    }
+  }
+
+  /** Phase (3) for the moons: how big each one draws, and whether it is a globe,
+   *  a marker, or — at true scale, inside its parent's limb — nothing at all. */
+  private updateMoonDrawnSizes(worldPerPxAtUnit: number, trueScaleTarget: boolean): void {
+    for (const system of this.moonSystems) {
+      if (!system.revealed) continue;
+      const parentDrawnAU = this.parentDrawnRadiusAU(system);
+      const parentPos = system.parent.dot.position;
+      for (const moon of system.moons) {
+        const depth = this.viewDepth(moon.pos);
+        const worldPerPx = Math.max(worldPerPxAtUnit * depth, 1e-30);
+        const drawnAU = mapMoonRadiusAU(moon.data.radiusAU, parentDrawnAU);
+        moon.drawnRadiusAU = drawnAU;
+        moon.drawnRadiusPx = drawnAU / worldPerPx;
+        // At true scale a system collapses toward its parent, and a moon closer
+        // to the limb than a couple of px is inside the limb's own pixel. The
+        // separation is metered in the moon's own depth, which is the same
+        // small-angle projection the sizes use.
+        let visible = true;
+        if (trueScaleTarget) {
+          const sepPx = (moon.pos.distanceTo(parentPos) - parentDrawnAU) / worldPerPx;
+          visible = sepPx > MOON_TRUE_SCALE_MIN_SEP_PX;
+        }
+        const globe = visible && mapBodyDrawMode(
+          moon.globeMat.map !== null,
+          trueScaleTarget,
+          moon.data.radiusAU / worldPerPx,
+          mapMoonMarkerRadiusAU(moon.data.radiusAU, parentDrawnAU) / worldPerPx,
+        ) === 'globe';
+        moon.visible = visible;
+        moon.globeDrawn = globe;
+        moon.globe.visible = globe;
+        moon.dot.visible = visible && !globe;
+        if (globe) moon.globe.scale.setScalar(drawnAU);
+        else moon.dot.scale.setScalar(drawnAU * MOON_DOT_EXTENT_MUL);
+      }
+    }
+  }
+
+  /** Adopt whatever the world has painted for each revealed moon. Same contract
+   *  as the planets': borrow by identity, dispose nothing. An unpainted moon
+   *  keeps its tinted marker — the never-show-unpainted gate governs painted
+   *  SURFACES, and a chart still owes you the body. */
+  private syncMoonTextures(): void {
+    for (const system of this.moonSystems) {
+      if (!system.revealed) continue;
+      for (const moon of system.moons) {
+        this.adoptTexture(moon.globeMat, this.textures.colorMap(moon.data.name));
+      }
+    }
+  }
+
+  /**
+   * The body the camera is aimed at: what a focus is riding, or what a dive is
+   * flying toward. The dive is the case worth naming — the state machine clears
+   * the focus when a dive starts, so a system asked for by nothing but a commit
+   * would go unrevealed and the whole transition would ease toward a body that
+   * is not drawn. It is the same rule either way: wherever the camera is going,
+   * that system is up.
+   */
+  private cameraSubject(): string | null {
+    return this.cam.focusName ?? (this.diving ? this.diveFocusName : null);
+  }
+
+  /** Which system the map most wants painted next: the one the camera is aimed
+   *  at, else the nearest revealed one. The painter's own queue and budget
+   *  decide the rest — this is a preference, not a demand. */
+  preferredPaintSystem(): string | null {
+    const focus = this.systemOwnerOf(this.cameraSubject());
+    if (focus && this.moonSystemsByParent.has(focus)) return focus;
+    let best: string | null = null;
+    let bestDist = Infinity;
+    for (const system of this.moonSystems) {
+      if (!system.revealed) continue;
+      const d = this.camera.position.distanceTo(system.parent.dot.position);
+      if (d < bestDist) {
+        bestDist = d;
+        best = system.parent.planet.name;
+      }
+    }
+    return best;
+  }
+
+  /** Dev bridge: retune the offset policy live. Every built ring is reprojected
+   *  on the next frame, since all of them are derived from these numbers. */
+  setMoonOffsetParams(partial: Partial<MapMoonOffsetParams> | null): boolean {
+    if (!setMapMoonOffsetParams(partial)) return false;
+    for (const system of this.moonSystems) {
+      system.policy = moonOffsetPolicyFor(system.parent.planet.name);
+      for (const moon of system.moons) moon.ringBlend = Number.NaN;
+    }
+    this.projectionRevision++;
+    return true;
+  }
+
+  /** How far a marker's tint has been lifted off its catalog base, 0 when it
+   *  is sitting at rest. */
+  private markerLiftOf(sprite: THREE.Sprite, base: THREE.Color): number {
+    const c = (sprite.material as THREE.SpriteMaterial).color;
+    return Math.max(
+      Math.abs(c.r - base.r), Math.abs(c.g - base.g), Math.abs(c.b - base.b),
+    );
+  }
+
+  /** Dev forensics: the moon pipeline's counters, for the perf gates. */
+  moonStats(): {
+    ringWrites: number;
+    passes: number;
+    revealed: string[];
+    drawn: number;
+    anchorBuilds: number;
+    anchors: number;
+  } {
+    const revealed: string[] = [];
+    let drawn = 0;
+    for (const system of this.moonSystems) {
+      if (!system.revealed) continue;
+      revealed.push(system.parent.planet.name);
+      for (const moon of system.moons) if (moon.visible) drawn++;
+    }
+    return {
+      ringWrites: this.moonRingWrites,
+      passes: this.moonPasses,
+      revealed,
+      drawn,
+      anchorBuilds: this.anchorBuilds,
+      anchors: this.pickAnchors.length,
+    };
   }
 
   // ---- picking / hover / dive ------------------------------------------
@@ -1317,6 +2076,9 @@ export class SystemMap {
     this.diveOffsetDir.normalize();
     this.controls.enabled = false;
     this.diving = true;
+    // What the camera is aimed at just changed, and nothing else about the
+    // frame need change for the destination's system to have to come up.
+    this.projectionRevision++;
     this.setHover(null);
     return true;
   }
@@ -1377,6 +2139,7 @@ export class SystemMap {
       this.applyFocusClip(this.diveFocusName, this.nearestBodyName());
     }
     this.camera.updateMatrixWorld();
+    this.frameRevision++;
     // The dive is the only camera move that does not happen inside update(), so
     // everything metered off the camera has to be rebuilt here, against the pose
     // just set. Drawn sizes are the sharp case: a marker-floored body is sized
@@ -1398,6 +2161,7 @@ export class SystemMap {
   endDive(commit: boolean): void {
     if (!this.diving) return;
     this.diving = false;
+    this.projectionRevision++;
     const origin = this.cam.diveOrigin;
     this.cam = mapCameraReduce(this.cam, { kind: 'diveCancel' });
     // A committed dive restores nothing: the map is about to close, and close()
@@ -1466,10 +2230,49 @@ export class SystemMap {
     // landing between a controls move and the next frame must project against
     // the live pose, so flush the matrix here before projecting the anchors.
     this.camera.updateMatrixWorld();
+    // Rebuild at most once per frame, and again whenever the camera has moved
+    // since — the two things every anchor's screen position depends on. The
+    // bodies themselves only move inside the update pass, which bumps the
+    // frame revision.
+    // The viewport and the projection revision belong in the key as much as the
+    // pose does: a resize that leaves a deliberately zoomed camera exactly
+    // where it was still re-projects every anchor, and a pick taken before the
+    // next frame would otherwise be answered in the old viewport's pixels.
     const w = this.renderer.domElement.clientWidth;
     const h = this.renderer.domElement.clientHeight;
+    if (this.anchorKeyRevision === this.frameRevision
+      && this.anchorKeyProjection === this.projectionRevision
+      && this.anchorKeyWidth === w
+      && this.anchorKeyHeight === h
+      && this.anchorKeyPos.equals(this.camera.position)
+      && this.anchorKeyQuat.equals(this.camera.quaternion)) {
+      return;
+    }
+    this.anchorKeyRevision = this.frameRevision;
+    this.anchorKeyProjection = this.projectionRevision;
+    this.anchorKeyWidth = w;
+    this.anchorKeyHeight = h;
+    this.anchorKeyPos.copy(this.camera.position);
+    this.anchorKeyQuat.copy(this.camera.quaternion);
+    this.anchorBuilds++;
     this.pickAnchors.length = 0;
-    this.pushAnchor('Sun', this.sun.position, true, w, h, this.sunRadiusPx);
+    this.pushAnchor(SUN_DATA.name, this.sun.position, true, w, h, this.sunRadiusPx);
+    // Moons before their planets: a moon in front of a planet's disc is the
+    // smaller, nearer target, and nearest-wins needs it in the running.
+    for (const system of this.moonSystems) {
+      if (!system.revealed) continue;
+      for (const moon of system.moons) {
+        if (!moon.visible) continue;
+        this.pushAnchor(
+          moon.data.name,
+          moon.pos,
+          true,
+          w,
+          h,
+          moon.globeDrawn ? moon.drawnRadiusPx : 0,
+        );
+      }
+    }
     for (const entry of this.orbits) {
       // A dot is a marker with no footprint of its own — the pointer floor
       // governs it. A globe hands over its drawn radius, so a click on the limb
@@ -1537,6 +2340,7 @@ export class SystemMap {
     const body = mapBody(name);
     if (!body) return null;
     if (body.kind === 'sun') return this.sun;
+    if (body.kind === 'moon') return this.moonEntryFor(name)?.dot ?? null;
     return this.entryFor(name)?.dot ?? null;
   }
 
@@ -1548,18 +2352,23 @@ export class SystemMap {
     if (!name) return;
     const body = mapBody(name);
     if (!body) return;
+    const moon = body.kind === 'moon' ? this.moonEntryFor(name) : null;
     const entry = this.entryFor(name);
     const sprite = this.markerSpriteFor(name);
-    const base = body.kind === 'sun' ? this.sunBaseColor : entry?.baseColor ?? null;
+    const base = body.kind === 'sun'
+      ? this.sunBaseColor
+      : moon?.baseColor ?? entry?.baseColor ?? null;
     if (sprite && base) {
       const mat = sprite.material as THREE.SpriteMaterial;
       if (on) mat.color.copy(base).lerp(WHITE, HOVER_LIFT);
       else mat.color.copy(base);
     }
-    if (entry) {
-      // The globe answers with its own tint rather than the dot's swell.
-      if (on) entry.globeMat.emissive.copy(entry.baseColor).multiplyScalar(GLOBE_HOVER_EMISSIVE);
-      else entry.globeMat.emissive.setRGB(0, 0, 0);
+    // The globe answers with its own tint rather than the dot's swell — a moon
+    // the same way a planet does.
+    const globeMat = moon?.globeMat ?? entry?.globeMat ?? null;
+    if (globeMat && base) {
+      if (on) globeMat.emissive.copy(base).multiplyScalar(GLOBE_HOVER_EMISSIVE);
+      else globeMat.emissive.setRGB(0, 0, 0);
     }
     const label = this.labels.get(name);
     if (label) label.classList.toggle('hover', on);
@@ -1589,6 +2398,18 @@ export class SystemMap {
     screenY: number;
     /** Map position (AU) the chart places the body at this frame. */
     mapPos: [number, number, number];
+    /** Whether the chart is drawing this body at all this frame. */
+    drawn: boolean;
+    /** Hover feedback, as the materials actually carry it: the marker's tint
+     *  against its catalog base, and the globe's emissive lift. */
+    hovered: boolean;
+    markerLift: number;
+    globeEmissive: number;
+    /** Moons only: where the offset policy charts it (parent drawn radii), and
+     *  the true distance that went in (parent true radii, and AU). */
+    offsetR: number;
+    parentRadiiX: number;
+    trueDistAU: number;
     /** Body north pole as a unit vector in the map's (J2000 equatorial) frame. */
     pole: [number, number, number];
     textureId: number;
@@ -1618,6 +2439,13 @@ export class SystemMap {
         screenX,
         screenY,
         mapPos,
+        drawn: true,
+        hovered: this.hoveredName === name,
+        markerLift: this.markerLiftOf(this.sun, this.sunBaseColor),
+        globeEmissive: 0,
+        offsetR: 0,
+        parentRadiiX: 0,
+        trueDistAU: 0,
         pole: [0, 1, 0],
         textureId: 0,
         worldTextureId: 0,
@@ -1627,25 +2455,58 @@ export class SystemMap {
     }
     const entry = this.entryFor(name);
     if (!entry) {
-      // A body the chart knows but draws nothing for yet: the catalog figures
-      // and the position are real, and the marker the size policy would give it
-      // is the footprint it would claim.
+      // A moon: everything about it comes from its own entry once its system is
+      // built, and from the catalog before that.
+      const moon = this.moonEntryFor(name);
+      const h = Math.max(this.renderer.domElement.clientHeight, 1);
+      const worldPerPx = mapWorldPerPxAtUnitDepth(h, MAP_FOV_DEG)
+        * (moon ? this.viewDepth(moon.pos) : 1);
+      // A moon whose system is not revealed has no entry to read, so the
+      // figures come straight off the ephemeris and the policy — the probe
+      // answers for every moon, drawn or not.
+      const system = body.parentPlanet
+        ? this.moonSystemsByParent.get(body.parentPlanet) ?? null
+        : null;
+      let trueDistAU = moon?.trueDistAU ?? 0;
+      let parentRadiiX = moon?.x ?? 0;
+      let offsetR = moon?.offsetR ?? 0;
+      if (!moon && system) {
+        computeMoonOffsetEquatorialAU(
+          name, system.parent.planet.name, this.clockUtcMs, this.tmpMoonOffset,
+        );
+        trueDistAU = this.tmpMoonOffset.length();
+        parentRadiiX = trueDistAU / system.parent.planet.radiusAU;
+        offsetR = mapMoonOffsetR(system.policy, parentRadiiX);
+      }
+      this.tmpVec3.set(0, 1, 0);
+      if (moon) this.tmpVec3.applyQuaternion(moon.globe.quaternion);
       return {
-        mode: 'dot',
+        mode: moon?.globeDrawn ? 'globe' : 'dot',
         kind: body.kind,
         parentPlanet: body.parentPlanet,
         trueRadiusAU: body.radiusAU,
         tint: body.color,
-        radiusPx: mapMarkerRadiusPx(body.radiusAU, this.bodySizeParams),
-        apparentRadiusPx: 0,
+        radiusPx: moon?.visible
+          ? moon.drawnRadiusPx
+          : mapMarkerRadiusPx(body.radiusAU, this.bodySizeParams),
+        apparentRadiusPx: moon?.globeDrawn
+          ? moon.globe.scale.x / Math.max(worldPerPx, 1e-30)
+          : 0,
         screenX,
         screenY,
         mapPos,
-        pole: [0, 1, 0],
-        textureId: 0,
+        pole: [this.tmpVec3.x, this.tmpVec3.y, this.tmpVec3.z],
+        textureId: moon?.globeMat.map?.id ?? 0,
         worldTextureId: this.textures.colorMap(name)?.id ?? 0,
         ringTextureId: 0,
         worldRingTextureId: 0,
+        drawn: !!moon?.visible,
+        hovered: this.hoveredName === name,
+        markerLift: moon ? this.markerLiftOf(moon.dot, moon.baseColor) : 0,
+        globeEmissive: moon ? maxChannel(moon.globeMat.emissive) : 0,
+        offsetR,
+        parentRadiiX,
+        trueDistAU,
       };
     }
     const h = Math.max(this.renderer.domElement.clientHeight, 1);
@@ -1663,6 +2524,13 @@ export class SystemMap {
       screenX,
       screenY,
       mapPos,
+      drawn: true,
+      hovered: this.hoveredName === name,
+      markerLift: this.markerLiftOf(entry.dot, entry.baseColor),
+      globeEmissive: maxChannel(entry.globeMat.emissive),
+      offsetR: 0,
+      parentRadiiX: 0,
+      trueDistAU: 0,
       pole: [this.tmpVec3.x, this.tmpVec3.y, this.tmpVec3.z],
       textureId: entry.globeMat.map?.id ?? 0,
       worldTextureId: this.textures.colorMap(name)?.id ?? 0,
@@ -2015,6 +2883,7 @@ export class SystemMap {
         this.applyMarkerScale(entry.dot, PLANET_PX * boost, worldPerPxAtUnit);
       }
     }
+    this.updateMoonDrawnSizes(worldPerPxAtUnit, trueScaleTarget);
     this.applyMarkerScale(this.shipMarker, SHIP_PX, worldPerPxAtUnit);
   }
 
@@ -2042,6 +2911,18 @@ export class SystemMap {
     this.placeLabel(SUN_DATA.name, this.sun.position, w, h);
     for (const entry of this.orbits) {
       this.placeLabel(entry.planet.name, entry.dot.position, w, h);
+    }
+    // Moons last: in a crowded system the planet's own name is the one that
+    // must survive the de-overlap.
+    for (const system of this.moonSystems) {
+      if (!system.revealed) continue;
+      for (const moon of system.moons) {
+        if (!moon.visible) {
+          if (moon.label && moon.label.style.display !== 'none') moon.label.style.display = 'none';
+          continue;
+        }
+        this.placeLabel(moon.data.name, moon.pos, w, h);
+      }
     }
   }
 

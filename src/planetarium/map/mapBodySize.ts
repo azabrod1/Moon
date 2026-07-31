@@ -89,6 +89,51 @@ export function mapBodyRadiusPx(
   return trueProjectedPx > marker ? trueProjectedPx : marker;
 }
 
+/** Ganymede, the largest moon, sets the top of the moon scale. */
+const LARGEST_MOON_RADIUS_AU = 1.761e-5;
+/** Where Ganymede draws, as a fraction of its parent's drawn radius, and the
+ *  band every other moon is held inside. A moon is drawn against its PARENT
+ *  rather than against the chart, so a system reads as a system at any zoom:
+ *  the same picture whether Jupiter is a marker or a globe. */
+const MOON_TOP_FRACTION = 0.34;
+const MOON_MIN_FRACTION = 0.03;
+const MOON_MAX_FRACTION = 0.36;
+
+/**
+ * A moon's chart marker in map AU: the SQRT of its true radius against the
+ * largest moon, scaled to its parent's drawn radius and clamped into a band —
+ * so Ganymede and Titan clearly dominate while Mimas and Phobos stay small but
+ * visible. Sqrt rather than the planets' gentler exponent because the moon
+ * spread is wider and the band is narrower; the shared philosophy is the same
+ * one the world's moon sizing uses, and the one thing that must survive is
+ * ordering.
+ */
+export function mapMoonMarkerRadiusAU(
+  moonRadiusAU: number,
+  parentDrawnRadiusAU: number,
+): number {
+  const rel = Math.sqrt(Math.max(moonRadiusAU, 0) / LARGEST_MOON_RADIUS_AU);
+  const wanted = parentDrawnRadiusAU * MOON_TOP_FRACTION * rel;
+  const lo = parentDrawnRadiusAU * MOON_MIN_FRACTION;
+  const hi = parentDrawnRadiusAU * MOON_MAX_FRACTION;
+  return Math.min(Math.max(wanted, lo), hi);
+}
+
+/**
+ * A moon's drawn radius in map AU: its chart marker, or its true projected size
+ * once that is larger — the same crossover the planets use, so closing in
+ * resolves a real globe and nothing is ever drawn smaller than it is.
+ */
+export function mapMoonRadiusAU(
+  moonRadiusAU: number,
+  parentDrawnRadiusAU: number,
+): number {
+  // Both sides are already map AU — the marker is a fraction of the parent's
+  // drawn radius, and the parent's drawn radius is where the camera enters —
+  // so the crossover needs no projection of its own.
+  return Math.max(mapMoonMarkerRadiusAU(moonRadiusAU, parentDrawnRadiusAU), moonRadiusAU);
+}
+
 /**
  * Drawn radius in map-space AU for a body sitting `depthAU` along the camera's
  * view axis. `worldPerPxAtUnitDepth` is the world span of one screen px at unit

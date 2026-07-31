@@ -9,19 +9,24 @@ import {
   mapDiveEndFraction,
   mapFlightFramingDistanceAU,
   mapFocusEase,
+  mapOverviewBounds,
   mapOverviewChipVisible,
+  mapOverviewPivotDistanceAU,
   mapWorldPerPxAtUnitDepth,
   revealDistanceAU,
   MAP_FOCUS_MIN_PX,
   MAP_FOCUS_REVEAL_PX,
   MAP_FOV_DEG,
+  MAP_OVERVIEW_MIN_DIST_AU,
+  MAP_OVERVIEW_MIN_DIST_FRAC,
   MAP_OVERVIEW_NEAR_FRAC,
   type MapCameraState,
 } from './mapCamera';
-import { MAP_BODY_SIZE_DEFAULTS, mapMarkerRadiusPx } from './mapBodySize';
+import { MAP_BODY_SIZE_DEFAULTS, mapBodyRadiusAU, mapMarkerRadiusPx } from './mapBodySize';
 import { fitDistanceAU } from './mapProjection';
-import { PLANETARIUM_BODIES } from '../planets/planetData';
-import { MOONS } from '../planets/moonData';
+import { PLANETARIUM_BODIES, SUN_DATA } from '../planets/planetData';
+import { MOONS, getMoonsByPlanet } from '../planets/moonData';
+import { RING_CONFIGS } from '../planets/rings';
 
 const H = 900;
 const SIZE = MAP_BODY_SIZE_DEFAULTS;
@@ -659,5 +664,276 @@ describe('a follow shell on a body that orbits another', () => {
       JUPITER_R, 1e-3, JUPITER_MAP_R, JUPITER_MAP_R, EXTENT_COMPRESSED, H, MAP_FOV_DEG, SIZE,
     );
     expect(JUPITER_MAP_R - bounds.minDist).toBeGreaterThan(1);
+  });
+});
+
+describe('mapOverviewBounds', () => {
+  const ASPECT = 16 / 9;
+  const FIT = fitDistanceAU(EXTENT_COMPRESSED, MAP_FOV_DEG, ASPECT);
+  // Parked on the opening fit, the only surface anywhere near the camera is the
+  // Sun's drawn disc at the far end of the view.
+  const SUN_DRAWN = mapBodyRadiusAU(
+    SUN_DATA.radiusAU, FIT, mapWorldPerPxAtUnitDepth(H, MAP_FOV_DEG), SIZE,
+  );
+  const PARKED_CLEARANCE = FIT - SUN_DRAWN;
+  const parked = (clearance = PARKED_CLEARANCE) =>
+    mapOverviewBounds(EXTENT_COMPRESSED, EXTENT_COMPRESSED, FIT, FIT, clearance);
+
+  it('leaves the parked overview\'s near plane and zoom-out limit exactly as they were', () => {
+    // The chart's own near plane and a little past the fit: the figures the map
+    // has always framed the parked overview with, unchanged to the last bit.
+    const b = parked();
+    expect(b.near).toBe(Math.max(EXTENT_COMPRESSED * MAP_OVERVIEW_NEAR_FRAC, 1e-4));
+    expect(b.maxDist).toBe(FIT * 1.8);
+  });
+
+  it('holds the whole drawn scene inside the far plane from wherever the camera is', () => {
+    for (const camOrigin of [0.01, 1, FIT, 40]) {
+      const b = mapOverviewBounds(
+        EXTENT_COMPRESSED, EXTENT_COMPRESSED, FIT, camOrigin, PARKED_CLEARANCE,
+      );
+      expect(b.far).toBeGreaterThan(camOrigin + EXTENT_COMPRESSED);
+    }
+  });
+
+  it('reaches past a revealed system\'s rings, not just its parent\'s orbit', () => {
+    // A moon system stands its drawn orbits off its parent, and the frame a
+    // release flight lands on still draws them.
+    const ringReach = 6e-3;
+    const camOrigin = JUPITER_MAP_R;
+    const b = mapOverviewBounds(
+      EXTENT_COMPRESSED, EXTENT_COMPRESSED + ringReach, FIT, camOrigin, 1e-3,
+    );
+    expect(b.far).toBeGreaterThan(camOrigin + EXTENT_COMPRESSED + ringReach);
+    // A rendered extent narrower than the chart cannot pull the far plane in
+    // behind the chart itself.
+    const narrowed = mapOverviewBounds(EXTENT_COMPRESSED, 0, FIT, camOrigin, 1e-3);
+    expect(narrowed.far).toBeGreaterThan(camOrigin + EXTENT_COMPRESSED);
+  });
+
+  it('tightens the near plane once the camera is genuinely close to something', () => {
+    const surface = 4e-3;
+    const b = mapOverviewBounds(
+      EXTENT_COMPRESSED, EXTENT_COMPRESSED, FIT, JUPITER_MAP_R, surface,
+    );
+    expect(b.near).toBe(surface * 0.25);
+    expect(b.near).toBeLessThan(parked().near);
+  });
+
+  it('never lets the near plane collapse: the ratio floor and an absolute one', () => {
+    // A chart small enough that a thousandth of it is nothing, seen from far
+    // out: the depth buffer's ratio is what holds the plane up.
+    const ratioBound = mapOverviewBounds(1e-3, 50, FIT, 50, 1e-9);
+    expect(ratioBound.near).toBeCloseTo(ratioBound.far / 3e4, 15);
+    // And the absolute floor underneath that.
+    const tiny = mapOverviewBounds(1e-3, 1e-3, FIT, 0, 1e-9);
+    expect(tiny.near).toBe(1e-4);
+  });
+
+  it('drops the near plane to its floors when the camera is inside a shell', () => {
+    // Threading past a body puts the nearest clearance at zero or below. The
+    // chart's own term is a thousandth of the whole system — from inside a
+    // shell that plane would cut the body away along with everything else near
+    // it, so only the floors are left standing.
+    for (const clearance of [0, -1e-3, -5, Number.NaN]) {
+      const b = parked(clearance);
+      expect(b.near).toBe(Math.max(b.far / 3e4, 1e-4));
+      expect(b.near).toBeGreaterThan(0);
+      expect(b.near).toBeLessThan(parked().near);
+    }
+  });
+
+  it('keeps a body drawable from inside its own drawn shell', () => {
+    // Saturn wears an annulus more than twice its radius, so a camera can be
+    // inside the drawn shell and still an appreciable distance off the globe.
+    // The near plane has to sit well in front of that surface or the frame goes
+    // empty exactly where the subject is.
+    const saturnGlobe = 3.893e-4;
+    const insideTheRing = 5e-4;                   // camera this far off the globe
+    const b = mapOverviewBounds(
+      EXTENT_COMPRESSED, EXTENT_COMPRESSED, FIT, 1.9, -4e-4,
+    );
+    expect(b.near).toBeLessThan(insideTheRing);
+    expect(b.near).toBeLessThan(saturnGlobe);
+  });
+
+  it('leaves the chart\'s own term standing when nothing can be metered', () => {
+    // Infinity is not "inside a shell", it is "no surface known" — a chart with
+    // nothing drawn to measure against keeps the parked plane.
+    expect(parked(Infinity).near).toBe(parked().near);
+  });
+
+  it('caps how close the camera may come in absolute AU, not only as a fraction', () => {
+    // On the compressed chart the fraction is thirty times the cap, and at true
+    // scale five hundred times: without the cap the small systems would sit
+    // permanently outside the zoom's reach.
+    for (const extent of [EXTENT_COMPRESSED, EXTENT_TRUE, 120]) {
+      const b = mapOverviewBounds(extent, extent, FIT, FIT, PARKED_CLEARANCE);
+      expect(b.minDist).toBe(MAP_OVERVIEW_MIN_DIST_AU);
+    }
+    // A chart small enough for the fraction to bind first still gets it.
+    const tiny = mapOverviewBounds(0.05, 0.05, FIT, FIT, PARKED_CLEARANCE);
+    expect(tiny.minDist).toBe(0.05 * MAP_OVERVIEW_MIN_DIST_FRAC);
+  });
+
+  it('moves each number in one direction only', () => {
+    let prevFar = 0;
+    for (const camOrigin of [0, 1, 5, 40]) {
+      const b = mapOverviewBounds(
+        EXTENT_COMPRESSED, EXTENT_COMPRESSED, FIT, camOrigin, PARKED_CLEARANCE,
+      );
+      expect(b.far).toBeGreaterThan(prevFar);
+      prevFar = b.far;
+    }
+    let prevNear = 0;
+    for (const surface of [1e-4, 1e-3, 1e-2, 1, 100]) {
+      const b = parked(surface);
+      expect(b.near).toBeGreaterThanOrEqual(prevNear);
+      prevNear = b.near;
+    }
+    let prevMax = 0;
+    for (const extent of [0.5, EXTENT_COMPRESSED, EXTENT_TRUE]) {
+      const fit = fitDistanceAU(extent, MAP_FOV_DEG, ASPECT);
+      const b = mapOverviewBounds(extent, extent, fit, fit, PARKED_CLEARANCE);
+      expect(b.maxDist).toBeGreaterThan(prevMax);
+      prevMax = b.maxDist;
+    }
+  });
+
+  it('fills a caller\'s object instead of allocating one', () => {
+    const out = { minDist: 0, maxDist: 0, near: 0, far: 0 };
+    expect(mapOverviewBounds(
+      EXTENT_COMPRESSED, EXTENT_COMPRESSED, FIT, FIT, PARKED_CLEARANCE, out,
+    )).toBe(out);
+    expect(out.far).toBeGreaterThan(0);
+  });
+});
+
+describe('mapOverviewPivotDistanceAU', () => {
+  const ASPECT = 16 / 9;
+  const FIT = fitDistanceAU(EXTENT_COMPRESSED, MAP_FOV_DEG, ASPECT);
+  const BOUNDS = mapOverviewBounds(EXTENT_COMPRESSED, EXTENT_COMPRESSED, FIT, FIT, FIT);
+  const pivot = (clearance: number) =>
+    mapOverviewPivotDistanceAU(clearance, BOUNDS.minDist, BOUNDS.maxDist);
+
+  it('takes over from the parked pose without moving the frame', () => {
+    // Parked, the nearest surface is the Sun's own drawn disc at the far end of
+    // the view, so the first re-seat lands the pivot within that disc of where
+    // the target already sat — a hair, not a jump.
+    const sunDrawn = mapBodyRadiusAU(
+      SUN_DATA.radiusAU, FIT, mapWorldPerPxAtUnitDepth(H, MAP_FOV_DEG), SIZE,
+    );
+    const moved = Math.abs(pivot(FIT - sunDrawn) - FIT);
+    expect(moved).toBeCloseTo(sunDrawn, 12);
+    expect(moved / FIT).toBeLessThan(0.03);
+  });
+
+  it('is held inside the shell the overview may orbit in', () => {
+    expect(pivot(1e-9)).toBe(BOUNDS.minDist);
+    expect(pivot(1e6)).toBe(BOUNDS.maxDist);
+    expect(pivot(0.5)).toBe(0.5);
+  });
+
+  it('floors a camera inside the nearest surface rather than inverting the pivot', () => {
+    for (const clearance of [0, -1e-3, -50, Number.NaN]) {
+      expect(pivot(clearance)).toBe(BOUNDS.minDist);
+    }
+  });
+
+  it('survives a shell handed over inside out', () => {
+    expect(mapOverviewPivotDistanceAU(1, 5, 2)).toBe(5);
+    expect(mapOverviewPivotDistanceAU(1, -3, -1)).toBe(0);
+  });
+});
+
+describe('the overview zoom against every moon system', () => {
+  // The compressed chart's radial curve, and the two viewports the map ships
+  // for: a desktop window and a phone held upright.
+  const mapRadiusOf = (semiMajorAxisAU: number) => 0.6 * Math.asinh(semiMajorAxisAU / 0.6);
+  const ASPECT = 16 / 9;
+  const parents = PLANETARIUM_BODIES.filter((p) => getMoonsByPlanet(p.name).length > 0);
+
+  /** How close the camera has to be for a parent's moons to appear, and how
+   *  much of that distance the parent's own drawn body (ring included) takes
+   *  up. Everything is evaluated AT the shell, which is the tightest the pair
+   *  ever gets: the reveal margin the map actually carries is above 1, and the
+   *  drawn body is larger the further out you measure it. */
+  function shellAndClearance(
+    name: string,
+    radiusAU: number,
+    subjectMapR: number,
+    viewportH: number,
+    extentAU: number,
+  ): { shell: number; clearance: number } {
+    const perPx = mapWorldPerPxAtUnitDepth(viewportH, MAP_FOV_DEG);
+    const reveal = revealDistanceAU(radiusAU, viewportH, MAP_FOV_DEG);
+    const drawn = mapBodyRadiusAU(radiusAU, reveal, perPx, SIZE);
+    const bounds = followBounds(
+      drawn, 1e-3, subjectMapR, subjectMapR, extentAU, viewportH, MAP_FOV_DEG, SIZE,
+    );
+    const shell = Math.max(reveal, bounds.minDist);
+    const clearance = mapBodyRadiusAU(radiusAU, shell, perPx, SIZE)
+      * (RING_CONFIGS[name]?.outerFactor ?? 1);
+    return { shell, clearance };
+  }
+
+  /** Every combination the shipped map can be in: both viewports, the
+   *  compressed chart, true scale, and a chart widened by a ship far past
+   *  Pluto. */
+  function sweep(visit: (p: {
+    name: string; shell: number; clearance: number; minDist: number; maxDist: number; label: string;
+  }) => void): void {
+    for (const planet of parents) {
+      for (const viewportH of [900, 844]) {
+        for (const [extent, mapR] of [
+          [EXTENT_COMPRESSED, mapRadiusOf(planet.semiMajorAxisAU)],
+          [EXTENT_TRUE, planet.semiMajorAxisAU],
+          [120, mapRadiusOf(planet.semiMajorAxisAU)],
+        ] as const) {
+          const { shell, clearance } = shellAndClearance(
+            planet.name, planet.radiusAU, mapR, viewportH, extent,
+          );
+          const fit = fitDistanceAU(extent, MAP_FOV_DEG, ASPECT);
+          const b = mapOverviewBounds(extent, extent, fit, mapR, shell - clearance);
+          visit({
+            name: planet.name,
+            shell,
+            clearance,
+            minDist: b.minDist,
+            maxDist: b.maxDist,
+            label: `${planet.name} h${viewportH} extent ${extent}`,
+          });
+        }
+      }
+    }
+  }
+
+  it('covers the systems the chart actually draws', () => {
+    expect(parents.map((p) => p.name)).toEqual([
+      'Earth', 'Mars', 'Jupiter', 'Saturn', 'Uranus', 'Neptune', 'Pluto',
+    ]);
+  });
+
+  it('can be clamped closer than every system\'s reveal shell', () => {
+    // The zoom stops at minDist from the nearest drawn surface, so the moons
+    // are reachable exactly when that stop is inside the shell — for every
+    // parent, on both viewports, at both scales, and on a widened chart.
+    sweep(({ shell, clearance, minDist, label }) => {
+      expect(minDist, label).toBeLessThan(shell - clearance);
+    });
+  });
+
+  it('still has somewhere to go at the shell, so no notch is a dead one', () => {
+    // The pivot at the shell sits strictly above the floor, so the next notch
+    // closes a fraction of a real gap rather than clamping onto itself.
+    sweep(({ shell, clearance, minDist, maxDist, label }) => {
+      const gap = shell - clearance;
+      const p = mapOverviewPivotDistanceAU(gap, minDist, maxDist);
+      expect(p, label).toBeGreaterThan(minDist);
+      // A 5% notch closes 5% of the gap: the travel budget refills instead of
+      // running out at the frame the zoom started from.
+      expect(p * 0.05, label).toBeGreaterThan(0);
+      expect(p, label).toBeCloseTo(gap, 12);
+    });
   });
 });

@@ -22,6 +22,23 @@
  * The camera is a state machine — overview, focusFly, following, dive — and
  * exactly one of those owns the pose at a time. mapCamera holds the machine and
  * the bounds policy as plain numbers; everything here is the THREE half of it.
+ *
+ * At the overview the zoom rides the cursor, and the pivot the controls measure
+ * that zoom against is re-seated by this class onto the nearest drawn surface
+ * ahead of the camera, immediately before and after every wheel notch and pinch
+ * move. A cursor dolly spends a fraction of its pivot radius per event, so a
+ * pivot left on the Sun would run out of budget at the opening frame's target
+ * plane and leave every outer system unreachable; re-seating it keeps the
+ * radius meaning "how far the stuff ahead of me is". Once it has moved, the
+ * target no longer sits on the origin, which has three declared consequences:
+ * the scale toggle preserves its framing ratio against that floating pivot and
+ * so re-frames oddly from a deep zoom (zooming out, the Overview chip or a
+ * focus all recover it); the resize refit and the dive's "was at the fit" test
+ * read a pivot-relative radius, so they simply decline to re-frame a camera
+ * that has zoomed away; and the closest approach the shell allows sits at the
+ * near plane's own floor, so the last notch of a full zoom-in clips the near
+ * limb of whatever it is closing on — the moon-reveal shells this zoom exists
+ * to reach are an order of magnitude further out than that.
  */
 import * as THREE from 'three';
 import { Line2 } from 'three/addons/lines/Line2.js';
@@ -73,6 +90,7 @@ import {
 } from './mapBodySize';
 import {
   mapMoonOffsetR,
+  moonOffsetEntries,
   moonOffsetPolicyFor,
   setMapMoonOffsetParams,
   type MapMoonOffsetParams,
@@ -87,12 +105,14 @@ import {
   mapDiveEndFraction,
   mapFlightFramingDistanceAU,
   mapFocusEase,
+  mapOverviewBounds,
+  mapOverviewPivotDistanceAU,
   mapWorldPerPxAtUnitDepth,
   MAP_FOLLOW_MIN_SPREAD,
   revealDistanceAU,
   MAP_FOCUS_FLY_MS,
   MAP_FOV_DEG,
-  MAP_OVERVIEW_NEAR_FRAC,
+  type MapCameraBounds,
   type MapCameraState,
   type MapFollowBounds,
 } from './mapCamera';
@@ -234,6 +254,10 @@ interface MoonSystem {
   /** That scalar blended toward the parent's TRUE radius, which is what makes
    *  true scale exact by construction rather than by arithmetic. */
   scaleBlended: number;
+  /** The widest apoapsis in the system, in parent TRUE radii — the catalog
+   *  figure the drawn orbits reach at true scale, where the policy's cap no
+   *  longer governs them. Fixed at build time: it comes from the catalog. */
+  maxApoX: number;
 }
 
 // Sunlight for the globes, with physical falloff switched OFF (decay 0). The
@@ -479,6 +503,43 @@ export class SystemMap {
   private tmpBodyPos2 = new THREE.Vector3();
   private tmpDelta = new THREE.Vector3();
 
+  // Free overview zoom. `zoomFree` says the pivot has left the origin: while it
+  // is clear the parked overview behaves exactly as it always did, and every
+  // path that puts the target back on the origin clears it again. The dive
+  // snapshot is what keeps a cancel coherent — a dive begun from a zoomed
+  // overview restores a floating target, and restoring it under a clear latch
+  // would be a target off the origin that nothing believes has moved.
+  private zoomFree = false;
+  private diveStartZoomFree = false;
+  /** Pointer ids down on the canvas right now, and each one's type. The wheel
+   *  stands down while any of them is live (the controls' own rule), and a
+   *  pinch is exactly two touches.
+   *
+   *  Kept for the life of the map object, never cleared by open or close: the
+   *  down/up/cancel listeners are unconditional, so the book is a true mirror
+   *  of what is held. Emptying it while a finger is still down is what would
+   *  make it lie — a map reopened mid-drag would stop suppressing the wheel
+   *  under a rotate nobody had released. The controls keep their own book the
+   *  same way: their pointer list survives being disabled and re-enabled
+   *  mid-gesture, and the document-level pointerup that empties it has no
+   *  enabled guard, so a gesture released while the map is shut still retires
+   *  cleanly on both sides.
+   *
+   *  What the mirror needs in return is to hear EVERY way a gesture ends,
+   *  including a drag over the world that a focus loss retires by hand rather
+   *  than by a real pointerup. An id left standing from one of those would
+   *  suppress the wheel over a map the user opens later, with nothing holding
+   *  it down. */
+  private zoomPointers = new Map<number, string>();
+  private overviewBounds: MapCameraBounds = { minDist: 0, maxDist: 0, near: 0, far: 0 };
+  private zoomViewDir = new THREE.Vector3();
+  /** The nearest drawn surface to the camera, refilled in place — the scan runs
+   *  every frame of every flight and on every zoom event. */
+  private nearestDrawn: { name: string | null; clearanceDist: number } = {
+    name: null,
+    clearanceDist: Infinity,
+  };
+
   // Dive transition (camera pose only — the mode owns the clock, the fade, the
   // token, and the commit). beginDive snapshots the start pose so a cancel can
   // restore it exactly; setDivePose eases toward the focus.
@@ -524,6 +585,47 @@ export class SystemMap {
     this.controls.minPolarAngle = 0.08;
     this.controls.maxPolarAngle = (78 * Math.PI) / 180;
 
+    // The free overview zoom brackets the controls' own wheel handling. The
+    // pivot is refreshed once BEFORE the dolly reads its radius — a rotate
+    // between two notches changes what is ahead of the camera while the pivot
+    // still describes where it used to be looking, and a notch spent on that
+    // stale radius can travel further than the fresh geometry leaves room for —
+    // and once after, arming the next event.
+    //
+    // The pre-refresh listens on the WINDOW, in the capture phase: an ancestor's
+    // capture listeners run before every listener on the event's target,
+    // whichever phase those registered for, so this is ordered ahead of the
+    // controls' own wheel handler by the plainest rule the DOM has. (A capture
+    // listener on the canvas itself would also land first — the target runs a
+    // capture pass before its bubble pass — but that ordering turns on a
+    // subtlety, and this one does not.) The target check is what keeps a wheel
+    // over the HUD, which the controls never see, from moving the pivot and
+    // latching a gesture that never happened.
+    //
+    // The post-refresh is a plain canvas listener; the controls registered
+    // theirs on the same element first, and same-phase listeners run in
+    // registration order, so it runs after the dolly.
+    window.addEventListener('wheel', this.onZoomWheelBeforeDolly, { capture: true, passive: true });
+    el.addEventListener('wheel', this.onZoomWheel, { passive: true });
+    el.addEventListener('pointerdown', this.onZoomPointerDown);
+    // A gesture whose terminal event never arrives is retired by a synthetic
+    // pointercancel aimed at the canvas, and a synthetic event carries only the
+    // flags it was built with — one that does not bubble reaches the canvas and
+    // stops there. So the canvas is where a cancel has to be heard: it is the
+    // one element every terminal event is guaranteed to reach, bubbling or not.
+    // Retiring an id twice (here and again from the window, for a real event
+    // that does bubble) costs nothing — the entry is simply gone.
+    el.addEventListener('pointercancel', this.onZoomPointerUp);
+    // A pinch dollies inside the controls' captured-pointer move listener,
+    // which they install on the document — so a listener on the canvas would
+    // run BEFORE the dolly rather than after it. The window is the one place
+    // guaranteed to run after a document listener, whatever order the two were
+    // registered in. Releases are tracked there too: a finger lifted over the
+    // HUD never reaches the canvas.
+    window.addEventListener('pointermove', this.onZoomPointerMove);
+    window.addEventListener('pointerup', this.onZoomPointerUp);
+    window.addEventListener('pointercancel', this.onZoomPointerUp);
+
     // One star, lighting everything from the map's origin, plus the night floor.
     const sunLight = new THREE.PointLight(SUN_LIGHT_COLOR, SUN_LIGHT_INTENSITY, 0, 0);
     this.scene.add(sunLight);
@@ -545,6 +647,10 @@ export class SystemMap {
       const group = new THREE.Group();
       group.visible = false;
       this.scene.add(group);
+      let maxApoX = 0;
+      for (const moon of moonOffsetEntries(entry.planet.name)) {
+        if (moon.apoX > maxApoX) maxApoX = moon.apoX;
+      }
       const system: MoonSystem = {
         parent: entry,
         policy: moonOffsetPolicyFor(entry.planet.name),
@@ -554,6 +660,7 @@ export class SystemMap {
         revealed: false,
         offsetScaleAU: entry.planet.radiusAU,
         scaleBlended: entry.planet.radiusAU,
+        maxApoX,
       };
       this.moonSystems.push(system);
       this.moonSystemsByParent.set(entry.planet.name, system);
@@ -591,8 +698,59 @@ export class SystemMap {
     return this.bodySizeParams;
   }
 
+  /** How far the camera sits from the point it orbits. That point is the origin
+   *  while the overview is parked — so this reads as a distance from the Sun —
+   *  but a focus rides its subject and a free zoom seats its pivot on whatever
+   *  is ahead, and then it is neither. Everything that frames against the fit
+   *  wants exactly this number; anything that wants a distance from the Sun has
+   *  to ask the camera's own position for it. */
   getCameraDistance(): number {
     return this.camera.position.distanceTo(this.controls.target);
+  }
+
+  /** Dev forensics: the free overview zoom's whole state — where the camera and
+   *  its pivot are, whether the cursor owns the zoom, whether the pivot has
+   *  left the origin, the shell it is held in, and the surface the pivot is
+   *  metered against. The pivot distance is the effective one: what a re-seat
+   *  arriving right now would use. */
+  zoomState(): {
+    cameraPos: [number, number, number];
+    targetPos: [number, number, number];
+    zoomToCursor: boolean;
+    zoomFree: boolean;
+    minDistance: number;
+    maxDistance: number;
+    extentAU: number;
+    nearestClearanceDistAU: number;
+    pivotDistanceAU: number;
+    /** Pointers this class believes are down on the canvas, and the same
+     *  question asked of the controls' own bookkeeping (with their gesture
+     *  state). A gesture that outlives a close/reopen shows up as a
+     *  disagreement between the two, and nowhere else. -1 where a three
+     *  upgrade has renamed the fields, rather than a confident wrong answer. */
+    activePointers: number;
+    controlsPointers: number;
+    controlsState: number;
+  } {
+    const clearance = this.nearestDrawnSurface().clearanceDist;
+    const bounds = this.overviewBoundsNow(clearance);
+    const p = this.camera.position;
+    const t = this.controls.target;
+    const gesture = this.controls as unknown as { _pointers?: unknown[]; state?: number };
+    return {
+      cameraPos: [p.x, p.y, p.z],
+      targetPos: [t.x, t.y, t.z],
+      zoomToCursor: this.controls.zoomToCursor,
+      zoomFree: this.zoomFree,
+      minDistance: this.controls.minDistance,
+      maxDistance: this.controls.maxDistance,
+      extentAU: this.extentAU,
+      nearestClearanceDistAU: clearance,
+      pivotDistanceAU: mapOverviewPivotDistanceAU(clearance, bounds.minDist, bounds.maxDist),
+      activePointers: this.zoomPointers.size,
+      controlsPointers: Array.isArray(gesture._pointers) ? gesture._pointers.length : -1,
+      controlsState: typeof gesture.state === 'number' ? gesture.state : -1,
+    };
   }
 
   /** Dev forensics: the clip planes the current frame was drawn with. A body
@@ -611,10 +769,17 @@ export class SystemMap {
     this.clockUtcMs = utcMs;
     this.ensureLabelContainer();
     this.resample(utcMs);
-    this.controls.enabled = true;
     this.needsInitialFrame = true;
-    // Every open starts on the whole system, whatever the last one ended on.
+    // Every open starts on the whole system, whatever the last one ended on —
+    // and the whole of that state is settled BEFORE the controls come back,
+    // pivot included. The first frame is what re-frames the camera, so between
+    // here and there a wheel would otherwise find the last session's target
+    // still standing while everything else said this one had just begun.
     this.cam = mapCameraInitialState();
+    this.controls.target.set(0, 0, 0);
+    this.zoomFree = false;
+    this.syncZoomToCursor();
+    this.controls.enabled = true;
   }
 
   /** Which state owns the camera, what a flight is aiming at, and the body a
@@ -661,8 +826,11 @@ export class SystemMap {
   private frameToExtent(): void {
     const dist = fitDistanceAU(this.extentAU, MAP_FOV_DEG, this.camera.aspect);
     this.camera.position.set(0, dist * 0.82, dist * 0.57).setLength(dist);
+    // The target is back on the origin, so the free zoom's pivot has not moved:
+    // whatever a previous zoom did, this frame is the parked chart again.
     this.controls.target.set(0, 0, 0);
-    this.applyBounds(dist);
+    this.zoomFree = false;
+    this.applyBounds();
     this.controls.update();
   }
 
@@ -693,6 +861,15 @@ export class SystemMap {
     this.scaleZoomRatio = 1;
     this.setHover(null);
     this.controls.enabled = false;
+    // The zoom's own state goes with the session — pivot and latch together, so
+    // the closed map is never left claiming an unmoved pivot that sits off the
+    // origin. Nothing renders after this, so moving the target is invisible.
+    // The POINTER book deliberately survives: it mirrors what is physically
+    // down on the canvas, and a finger still held while the map closes is still
+    // held when it reopens.
+    this.controls.target.set(0, 0, 0);
+    this.zoomFree = false;
+    this.syncZoomToCursor();
     for (const label of this.labels.values()) label.style.display = 'none';
     // Let every borrowed texture go. The world is free to dispose any of them
     // while the map is shut, so the material stops naming one here. The drop is
@@ -770,7 +947,7 @@ export class SystemMap {
     if (this.cam.camState !== 'overview') return;
     const want = zoomRatio * fitDistanceAU(this.extentAU, MAP_FOV_DEG, this.camera.aspect);
     this.dollyTo(want);
-    this.applyBounds(want);
+    this.applyBounds();
     this.controls.update();
   }
 
@@ -860,10 +1037,10 @@ export class SystemMap {
           const wantDist = this.scaleZoomRatio
             * fitDistanceAU(this.extentAU, MAP_FOV_DEG, this.camera.aspect);
           this.dollyTo(wantDist);
-          this.applyBounds(wantDist);
+          this.applyBounds();
           this.controls.update();
         } else {
-          this.applyBounds(this.getCameraDistance());
+          this.applyBounds();
           this.controls.update();
         }
         break;
@@ -955,7 +1132,7 @@ export class SystemMap {
     if (wasAtOverview) {
       const want = fitDistanceAU(this.extentAU, MAP_FOV_DEG, this.camera.aspect);
       this.dollyTo(want);
-      this.applyBounds(want);
+      this.applyBounds();
       this.controls.update();
       return;
     }
@@ -1066,7 +1243,7 @@ export class SystemMap {
     // distance here — controls.update() is not called during a flight, and the
     // overview distance it starts from is outside the shell it is heading for.
     if (name) this.applyFocusClip(name, this.nearestBodyName());
-    else this.applyBounds(this.getCameraDistance());
+    else this.applyBounds();
     if (t < 1) return;
 
     this.cam = mapCameraReduce(this.cam, { kind: 'flyLanded' });
@@ -1079,9 +1256,13 @@ export class SystemMap {
       this.followPos.copy(this.flyGoalTarget);
       this.applyFollowBounds();
     } else {
-      this.applyBounds(this.getCameraDistance());
+      // A release lands with the target lerped back onto the origin, so the
+      // free zoom's pivot is parked again along with it.
+      this.zoomFree = false;
+      this.applyBounds();
       this.rebaseScaleZoomRatio();
     }
+    this.syncZoomToCursor();
     this.controls.enabled = true;
     this.controls.update();
   }
@@ -1264,7 +1445,7 @@ export class SystemMap {
     // whole-system bounds, which are safe from anywhere.
     const bounds = name ? this.followBoundsFor(name) : null;
     if (!bounds) {
-      this.applyBounds(this.getCameraDistance());
+      this.applyBounds();
       return;
     }
     this.controls.minDistance = bounds.minDist;
@@ -1296,19 +1477,47 @@ export class SystemMap {
    *  chained retarget is neither the body being aimed at nor the one the last
    *  flight was aimed at, but the one the camera is still sitting inside. */
   private nearestBodyName(): string | null {
-    // Over what the chart DRAWS: the Sun and the planets. Nothing else is on
-    // screen for a near plane to cut through.
-    let best: string | null = null;
-    let bestSurface = Infinity;
-    if (this.bodyMapPosition(SUN_DATA.name, this.tmpBodyPos2)) {
-      bestSurface = this.camera.position.distanceTo(this.tmpBodyPos2) - SUN_DATA.radiusAU;
-      best = SUN_DATA.name;
+    return this.nearestDrawnSurface().name;
+  }
+
+  /**
+   * That same scan, with the distance it measured: the nearest DRAWN surface to
+   * the camera anywhere on the chart, and which body it belongs to.
+   *
+   * Drawn, not true: what the camera has to stay clear of is what is painted,
+   * and at the overview a planet's marker is many times its real disc — as is a
+   * moon's, and Saturn is drawn wearing an annulus twice its own radius that a
+   * true-radius scan would let the camera sit inside. `drawnClearanceRadiusAU`
+   * is the one place that figure is decided, so this asks it rather than
+   * re-deriving a second, quieter answer.
+   *
+   * A moon's drawn size and visibility settle in the projection pass, after the
+   * moves that read this, so the frame a system appears on is measured with the
+   * previous frame's values — the same one-frame lag the drawn reach carries,
+   * and at the range a system reveals at the parent dominates anyway. A moon's
+   * own orbit ring is protected by its parent's clearance at every depth that
+   * matters. The Sun's disc and halo are depth-tested-off billboards and are
+   * metered by their centre, so threading past the star can flash its sprite
+   * through the near plane.
+   *
+   * Refills a private scratch: the scan runs per frame on the flight and dive
+   * paths, and on every wheel notch.
+   */
+  private nearestDrawnSurface(): { name: string | null; clearanceDist: number } {
+    const out = this.nearestDrawn;
+    out.name = null;
+    out.clearanceDist = Infinity;
+    const sunClearance = this.drawnClearanceRadiusAU(SUN_DATA.name);
+    if (sunClearance !== null) {
+      out.clearanceDist = this.camera.position.distanceTo(this.sun.position) - sunClearance;
+      out.name = SUN_DATA.name;
     }
     for (const entry of this.orbits) {
-      const surface = this.camera.position.distanceTo(entry.dot.position) - entry.planet.radiusAU;
-      if (surface < bestSurface) {
-        bestSurface = surface;
-        best = entry.planet.name;
+      const clearance = this.drawnClearanceRadiusAU(entry.planet.name) ?? entry.planet.radiusAU;
+      const surface = this.camera.position.distanceTo(entry.dot.position) - clearance;
+      if (surface < out.clearanceDist) {
+        out.clearanceDist = surface;
+        out.name = entry.planet.name;
       }
     }
     // Drawn moons count: inside a revealed system they are the nearest surfaces
@@ -1318,13 +1527,100 @@ export class SystemMap {
       for (const moon of system.moons) {
         if (!moon.visible) continue;
         const surface = this.camera.position.distanceTo(moon.pos) - moon.drawnRadiusAU;
-        if (surface < bestSurface) {
-          bestSurface = surface;
-          best = moon.data.name;
+        if (surface < out.clearanceDist) {
+          out.clearanceDist = surface;
+          out.name = moon.data.name;
         }
       }
     }
-    return best;
+    return out;
+  }
+
+  // ---- the free overview zoom -------------------------------------------
+
+  /**
+   * Arm or disarm cursor-anchored zoom for the state the controls are being
+   * handed back into. Called at every seam that enables them, and after the
+   * state is final — a helper that reads the machine mid-change would arm the
+   * flag for the view the user just left.
+   *
+   * The overview is the only state that may have it: a follow rides its subject
+   * by translating camera and target together, and a target re-seated under the
+   * cursor would detach the ride outright.
+   */
+  private syncZoomToCursor(): void {
+    this.controls.zoomToCursor = this.cam.camState === 'overview';
+  }
+
+  /** Whether a zoom gesture arriving right now is the free overview's own. */
+  private zoomOwnsPivot(): boolean {
+    return this.open && this.controls.enabled && this.cam.camState === 'overview';
+  }
+
+  /** Exactly two touches down — the controls' pinch, and nothing else. */
+  private isPinchGesture(): boolean {
+    if (this.zoomPointers.size !== 2) return false;
+    for (const type of this.zoomPointers.values()) if (type !== 'touch') return false;
+    return true;
+  }
+
+  private onZoomWheel = (): void => {
+    if (!this.zoomOwnsPivot()) return;
+    // The controls themselves ignore a wheel while a gesture is running, and so
+    // does this: a pivot moved under a held drag is a re-seat nothing asked for.
+    if (this.zoomPointers.size > 0) return;
+    this.reseatZoomPivot();
+  };
+
+  /** The same refresh, from the window's capture phase — so it has to check
+   *  that the wheel is one the controls will actually dolly. A wheel over the
+   *  HUD reaches the window and nothing else, and moving the pivot for it would
+   *  leave the latch set on a gesture that never happened. */
+  private onZoomWheelBeforeDolly = (e: Event): void => {
+    if (e.target !== this.renderer.domElement) return;
+    this.onZoomWheel();
+  };
+
+  private onZoomPointerDown = (e: PointerEvent): void => {
+    this.zoomPointers.set(e.pointerId, e.pointerType);
+    // A second finger joining a one-finger rotate starts pinching on its very
+    // next move, and that move dollies before anything else could refresh the
+    // pivot the rotate left standing.
+    if (this.zoomOwnsPivot() && this.isPinchGesture()) this.reseatZoomPivot();
+  };
+
+  private onZoomPointerUp = (e: PointerEvent): void => {
+    this.zoomPointers.delete(e.pointerId);
+  };
+
+  private onZoomPointerMove = (): void => {
+    if (!this.zoomOwnsPivot() || !this.isPinchGesture()) return;
+    this.reseatZoomPivot();
+  };
+
+  /**
+   * Seat the zoom's pivot on the nearest drawn surface ahead of the camera.
+   *
+   * A cursor-anchored dolly moves the camera by a fraction of its pivot radius,
+   * so that radius is the entire travel budget: parked on the chart's origin it
+   * can only ever spend the distance to the Sun, and anything further off than
+   * the opening frame's target plane stays unreachable however small the
+   * minimum distance is. Re-seating each event replenishes the budget against
+   * the real gap, which is what turns a finite approach into an asymptotic one
+   * and stops the zoom passing through a body on the way.
+   *
+   * Along the VIEW AXIS, so nothing rotates: the target already sits dead ahead
+   * and only its distance changes, leaving the controls' own lookAt a no-op.
+   * The controls damp one step per update() call, so this never makes one — the
+   * next frame's update is where the move is spent.
+   */
+  private reseatZoomPivot(): void {
+    const clearance = this.nearestDrawnSurface().clearanceDist;
+    const bounds = this.overviewBoundsNow(clearance);
+    const dist = mapOverviewPivotDistanceAU(clearance, bounds.minDist, bounds.maxDist);
+    this.zoomViewDir.set(0, 0, -1).applyQuaternion(this.camera.quaternion);
+    this.controls.target.copy(this.camera.position).addScaledVector(this.zoomViewDir, dist);
+    this.zoomFree = true;
   }
 
   /** The orbit entry that draws a planet, or null for anything that is not one
@@ -1544,6 +1840,16 @@ export class SystemMap {
    *  by construction — a raw reveal distance would leave the near-floor-bound
    *  parents (Pluto, whose landing sits at more than twice its raw reveal) with
    *  a system that never appears. */
+  /** That same shell for the system a body owns — the parent of a moon, or a
+   *  planet's own — and 0 for a body with no system at all. What the probe
+   *  reports, so a test can assert an approach against the real figure instead
+   *  of rebuilding this policy alongside it. */
+  private moonRevealDistanceForOwner(name: string): number {
+    const owner = this.systemOwnerOf(name);
+    const system = owner ? this.moonSystemsByParent.get(owner) : null;
+    return system ? this.moonRevealDistanceAU(system) : 0;
+  }
+
   private moonRevealDistanceAU(system: MoonSystem): number {
     const h = Math.max(this.renderer.domElement.clientHeight, 1);
     const raw = revealDistanceAU(system.parent.planet.radiusAU, h, MAP_FOV_DEG);
@@ -1945,13 +2251,27 @@ export class SystemMap {
     drawn: number;
     anchorBuilds: number;
     anchors: number;
+    /** Every drawn moon by name, so a check can cover the whole system rather
+     *  than a chosen handful. */
+    drawnMoons: string[];
+    /** Per revealed system: how far its OUTERMOST drawn orbit reaches from its
+     *  parent, in map AU. The rings are the deepest thing a revealed system
+     *  puts on screen, and they are geometry no moon's centre stands in for. */
+    ringReachAU: Record<string, number>;
   } {
     const revealed: string[] = [];
+    const drawnMoons: string[] = [];
+    const ringReachAU: Record<string, number> = {};
     let drawn = 0;
     for (const system of this.moonSystems) {
       if (!system.revealed) continue;
       revealed.push(system.parent.planet.name);
-      for (const moon of system.moons) if (moon.visible) drawn++;
+      ringReachAU[system.parent.planet.name] = this.systemRingReachAU(system);
+      for (const moon of system.moons) {
+        if (!moon.visible) continue;
+        drawn++;
+        drawnMoons.push(moon.data.name);
+      }
     }
     return {
       ringWrites: this.moonRingWrites,
@@ -1960,6 +2280,8 @@ export class SystemMap {
       drawn,
       anchorBuilds: this.anchorBuilds,
       anchors: this.pickAnchors.length,
+      drawnMoons,
+      ringReachAU,
     };
   }
 
@@ -2071,6 +2393,11 @@ export class SystemMap {
     this.diveWasAtOverview = isAtOverviewFit(this.getCameraDistance(), startFit);
     this.diveStartPos.copy(this.camera.position);
     this.diveStartTarget.copy(this.controls.target);
+    // Whether that target was the origin or a pivot the free zoom had moved.
+    // A cancel restores the pose exactly, so it has to restore what the pose
+    // MEANT as well — a floating target under a latch that says nothing has
+    // moved is a state no path can get out of.
+    this.diveStartZoomFree = this.zoomFree;
     this.diveOffsetDir.copy(this.diveStartPos).sub(this.diveStartTarget);
     this.diveStartDist = Math.max(this.diveOffsetDir.length(), 1e-4);
     this.diveOffsetDir.normalize();
@@ -2179,6 +2506,9 @@ export class SystemMap {
     }
     this.camera.position.copy(this.diveStartPos);
     this.controls.target.copy(this.diveStartTarget);
+    // The target that comes back may be a pivot the free zoom had moved, so the
+    // latch comes back with it.
+    this.zoomFree = this.diveStartZoomFree;
     this.camera.lookAt(this.diveStartTarget);
     // View direction restored exactly; the distance is rebuilt against the
     // current extent and aspect, so a scale change or a viewport rotation
@@ -2190,8 +2520,9 @@ export class SystemMap {
       fitDistanceAU(this.extentAU, MAP_FOV_DEG, this.camera.aspect),
     );
     this.dollyTo(want);
-    this.applyBounds(want);
+    this.applyBounds();
     this.camera.updateMatrixWorld();
+    this.syncZoomToCursor();
     this.controls.enabled = true;
     this.controls.update();
   }
@@ -2205,10 +2536,14 @@ export class SystemMap {
     const focusPos = focusName ? this.bodyMapPosition(focusName, this.tmpBodyPos) : null;
     if (leaving || !focusPos) {
       const fit = fitDistanceAU(this.extentAU, MAP_FOV_DEG, this.camera.aspect);
+      // This path normalizes onto the origin rather than restoring what the
+      // dive interrupted, so the free zoom's pivot is parked here whatever the
+      // camera was doing before.
       this.controls.target.set(0, 0, 0);
+      this.zoomFree = false;
       this.camera.position.copy(this.flyDir).multiplyScalar(fit);
       this.camera.lookAt(this.controls.target);
-      this.applyBounds(fit);
+      this.applyBounds();
       this.rebaseScaleZoomRatio();
     } else {
       // Onto the body's LIVE position: it moved while the dive owned the
@@ -2221,6 +2556,7 @@ export class SystemMap {
       this.applyFollowBounds();
     }
     this.camera.updateMatrixWorld();
+    this.syncZoomToCursor();
     this.controls.enabled = true;
     this.controls.update();
   }
@@ -2416,9 +2752,15 @@ export class SystemMap {
     worldTextureId: number;
     ringTextureId: number;
     worldRingTextureId: number;
+    /** How close the camera has to be to this body's SYSTEM for its moons to
+     *  appear — the parent's shell for a moon, a planet's own, 0 for a body
+     *  with no moons at all. */
+    moonRevealDistanceAU: number;
   } | null {
     const body = mapBody(name);
     if (!body) return null;
+    // Measured before anything else claims the position scratch this walks.
+    const moonRevealDistanceAU = this.moonRevealDistanceForOwner(name);
     // Through the same projection the pick uses, so a probe reports the target
     // a click would actually land on.
     this.rebuildPickAnchors();
@@ -2451,6 +2793,7 @@ export class SystemMap {
         worldTextureId: 0,
         ringTextureId: 0,
         worldRingTextureId: 0,
+        moonRevealDistanceAU,
       };
     }
     const entry = this.entryFor(name);
@@ -2500,6 +2843,7 @@ export class SystemMap {
         worldTextureId: this.textures.colorMap(name)?.id ?? 0,
         ringTextureId: 0,
         worldRingTextureId: 0,
+        moonRevealDistanceAU,
         drawn: !!moon?.visible,
         hovered: this.hoveredName === name,
         markerLift: moon ? this.markerLiftOf(moon.dot, moon.baseColor) : 0,
@@ -2536,6 +2880,7 @@ export class SystemMap {
       worldTextureId: this.textures.colorMap(name)?.id ?? 0,
       ringTextureId: entry.ringMat?.map?.id ?? 0,
       worldRingTextureId: this.textures.ringMap(name)?.id ?? 0,
+      moonRevealDistanceAU,
     };
   }
 
@@ -2822,11 +3167,55 @@ export class SystemMap {
     this.extentAU = Math.max(max, 1e-3);
   }
 
-  private applyBounds(cameraDist: number): void {
-    this.controls.minDistance = this.extentAU * 0.12;
-    this.controls.maxDistance = fitDistanceAU(this.extentAU, MAP_FOV_DEG, this.camera.aspect) * 1.8;
-    this.camera.near = Math.max(this.extentAU * MAP_OVERVIEW_NEAR_FRAC, 1e-4);
-    this.camera.far = cameraDist + this.extentAU * 2 + 10;
+  /** How far the drawn scene reaches from the Sun: the chart, plus the widest
+   *  revealed moon system standing off its parent. The extent itself is built
+   *  from the orbit centrelines and the ship, and those stop at the planets —
+   *  but a revealed system's rings are drawn well past its parent, and on the
+   *  frame a release flight lands the departing system is still up. */
+  private renderedExtentAU(): number {
+    let reach = 0;
+    for (const system of this.moonSystems) {
+      if (!system.revealed) continue;
+      const r = this.systemRingReachAU(system);
+      if (r > reach) reach = r;
+    }
+    return this.extentAU + reach;
+  }
+
+  /** How far a system's outermost drawn orbit stands off its parent, in map AU.
+   *  The rings are written in parent-radii units, so the outermost vertex any of
+   *  them can carry is the policy's cap while the chart is compressed and the
+   *  system's own widest apoapsis once it is true — blended exactly the way the
+   *  vertices themselves are. */
+  private systemRingReachAU(system: MoonSystem): number {
+    const capR = system.policy.params.capR;
+    const outer = capR + (system.maxApoX - capR) * this.blend;
+    return Math.max(outer, 0) * system.scaleBlended;
+  }
+
+  /** The overview's bounds at this pose, given a nearest-surface distance the
+   *  caller has already measured (the scan is not cheap enough to run twice). */
+  private overviewBoundsNow(nearestClearanceDistAU: number): MapCameraBounds {
+    return mapOverviewBounds(
+      this.extentAU,
+      this.renderedExtentAU(),
+      fitDistanceAU(this.extentAU, MAP_FOV_DEG, this.camera.aspect),
+      this.camera.position.length(),
+      nearestClearanceDistAU,
+      this.overviewBounds,
+    );
+  }
+
+  /** Hand the whole-system bounds to the controls and the camera. Also the
+   *  fallback for a follow whose subject the chart cannot place: these are safe
+   *  from anywhere by construction — the shell is the widest the chart offers
+   *  and the far plane is measured from wherever the camera actually is. */
+  private applyBounds(): void {
+    const bounds = this.overviewBoundsNow(this.nearestDrawnSurface().clearanceDist);
+    this.controls.minDistance = bounds.minDist;
+    this.controls.maxDistance = bounds.maxDist;
+    this.camera.near = bounds.near;
+    this.camera.far = bounds.far;
     this.camera.updateProjectionMatrix();
   }
 

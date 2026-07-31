@@ -6203,10 +6203,23 @@ export class PlanetariumMode {
     diving: boolean;
     diveGapAU: number | null;
     ship: { rotationRad: number; docked: boolean };
+    cameraPos: [number, number, number];
+    targetPos: [number, number, number];
+    zoomToCursor: boolean;
+    zoomFree: boolean;
+    minDistance: number;
+    maxDistance: number;
+    extentAU: number;
+    nearestClearanceDistAU: number;
+    pivotDistanceAU: number;
+    activePointers: number;
+    controlsPointers: number;
+    controlsState: number;
   } | null {
     if (!this.systemMap) return null;
     const curve = this.systemMap.getCurve();
     const cam = this.systemMap.getCameraState();
+    const zoom = this.systemMap.zoomState();
     return {
       open: this.systemMap.isOpen(),
       // How far the map is blended toward true scale, plus which radial curve
@@ -6234,6 +6247,24 @@ export class PlanetariumMode {
       // The chevron's screen rotation, which is rebuilt from the camera like
       // sizes and labels are — and, unlike them, cannot be read off the pixels.
       ship: this.systemMap.shipMarkerState(),
+      // Where the camera and the point it orbits actually are, and the state of
+      // the overview's cursor zoom: whether it is armed, whether its pivot has
+      // left the origin, the shell it is clamped into, and the nearest drawn
+      // surface the pivot is metered against.
+      cameraPos: zoom.cameraPos,
+      targetPos: zoom.targetPos,
+      zoomToCursor: zoom.zoomToCursor,
+      zoomFree: zoom.zoomFree,
+      minDistance: zoom.minDistance,
+      maxDistance: zoom.maxDistance,
+      extentAU: zoom.extentAU,
+      nearestClearanceDistAU: zoom.nearestClearanceDistAU,
+      pivotDistanceAU: zoom.pivotDistanceAU,
+      // Pointer bookkeeping on both sides of the seam: a gesture that outlived
+      // a close/reopen is a disagreement between these two.
+      activePointers: zoom.activePointers,
+      controlsPointers: zoom.controlsPointers,
+      controlsState: zoom.controlsState,
     };
   }
 

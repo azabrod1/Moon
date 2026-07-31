@@ -48,6 +48,24 @@
  * background lines and globes fighting each other. Capping the ratio instead
  * caps how close follow may come — the floor is precisely what sets `minDist`,
  * and above `minDist` the quarter-of-the-surface-distance term governs.
+ *
+ * ## The overview's own bounds
+ *
+ * The same four numbers, decided differently, because the overview is not
+ * riding anything: the camera is free and what it is near changes as it moves.
+ *
+ *  - `minDist` — how close the free camera may come to whatever its pivot sits
+ *    on. Small in absolute AU, not merely a fraction of the chart: a fraction
+ *    of a wide chart is still further out than the shell a moon system appears
+ *    inside, so the small systems would stay permanently out of reach.
+ *  - `maxDist` — a little past the whole-system fit, so zooming out settles on
+ *    the chart rather than drifting off it.
+ *  - `far` — the far side of the drawn scene from wherever the camera sits.
+ *    The figure fed in is the RENDERED reach, not the orbit centrelines: a
+ *    revealed system's moon rings stand off its parent, and they are drawn on
+ *    the frame the camera leaves that system on.
+ *  - `near` — the overview's own plane, tightened only when the camera is
+ *    genuinely close to something, and never below the ratio floor.
  */
 
 import { mapMarkerRadiusPx, type MapBodySizeParams } from './mapBodySize';
@@ -88,6 +106,22 @@ const MAP_NEAR_SURFACE_FRAC = 0.25;
  *  that metering off it would clip the foreground. Same value the overview
  *  frames with, so a flight's clipping arrives continuous at both ends. */
 export const MAP_OVERVIEW_NEAR_FRAC = 1e-3;
+
+/** Closest the free overview camera may come to its pivot, as a fraction of the
+ *  chart's extent AND as an absolute distance — whichever is smaller. The
+ *  absolute cap is what makes every system reachable: a thousandth of the
+ *  compressed chart is four times further out than the shell Mars's moons
+ *  appear inside, and Earth's and Pluto's fail the same way, so the fraction
+ *  alone would leave the small systems permanently unzoomable. */
+export const MAP_OVERVIEW_MIN_DIST_FRAC = 1e-3;
+export const MAP_OVERVIEW_MIN_DIST_AU = 1e-4;
+
+/** Zoom-out limit as a multiple of the whole-system fit distance. */
+const MAP_OVERVIEW_MAX_DIST_MUL = 1.8;
+
+/** The overview's near plane never comes closer than this, whatever the chart
+ *  and the surfaces say. */
+const MAP_OVERVIEW_MIN_NEAR_AU = 1e-4;
 
 /** Largest far/near the map will ask a depth buffer for. */
 const MAP_NEAR_FAR_RATIO = 3e4;
@@ -349,6 +383,80 @@ export function followBounds(
   out.near = near;
   out.far = far;
   return out;
+}
+
+/** The same four numbers for a camera that is not riding anything. Same shape
+ *  as the follow shell's, under a name that doesn't claim a subject. */
+export type MapCameraBounds = MapFollowBounds;
+
+/**
+ * The whole bounds transaction for the free overview camera.
+ *
+ * `extentAU` is the chart — the ball the orbit centrelines and the ship sit
+ * inside — and it fixes how close the camera may come and how thin the near
+ * plane may be. `farExtentAU` is what is actually DRAWN out to, which is the
+ * chart plus whatever a revealed moon system stands off its parent; only the
+ * far plane needs it, and using the centreline extent there would clip the
+ * rings off the frame a departing system is still drawn on.
+ *
+ * `nearestClearanceDistAU` is the distance from the camera to the nearest drawn
+ * surface, and the two degenerate values mean opposite things. `Infinity` is a
+ * chart with no surface to meter against at all, so the chart's own term
+ * governs. Zero or negative is a camera already INSIDE a drawn shell, and that
+ * is the case that needs the thinnest plane there is: the chart's term is a
+ * thousandth of the whole system, which from inside a shell would cut away the
+ * body and everything else nearby. It falls to the floors instead.
+ */
+export function mapOverviewBounds(
+  extentAU: number,
+  farExtentAU: number,
+  fitDistAU: number,
+  cameraOriginDistAU: number,
+  nearestClearanceDistAU: number,
+  out: MapCameraBounds = { minDist: 0, maxDist: 0, near: 0, far: 0 },
+): MapCameraBounds {
+  const extent = Math.max(extentAU, 1e-6);
+  // Everything drawn sits inside a ball of this radius about the Sun, so the
+  // far plane only ever needs to reach its far side from here.
+  const far = Math.max(cameraOriginDistAU, 0) + Math.max(farExtentAU, extent) * MAP_FAR_EXTENT_MARGIN;
+  // Inside a shell (or handed a NaN) there is no room in front to spend, so the
+  // surface term collapses to nothing and the floors alone hold the plane up.
+  const surface = nearestClearanceDistAU > 0 ? nearestClearanceDistAU : 0;
+  out.minDist = Math.min(extent * MAP_OVERVIEW_MIN_DIST_FRAC, MAP_OVERVIEW_MIN_DIST_AU);
+  out.maxDist = fitDistAU * MAP_OVERVIEW_MAX_DIST_MUL;
+  out.near = Math.max(
+    Math.min(extent * MAP_OVERVIEW_NEAR_FRAC, surface * MAP_NEAR_SURFACE_FRAC),
+    far / MAP_NEAR_FAR_RATIO,
+    MAP_OVERVIEW_MIN_NEAR_AU,
+  );
+  out.far = far;
+  return out;
+}
+
+/**
+ * Where the free camera's pivot belongs: on the nearest drawn surface ahead of
+ * it, held inside the shell it is allowed to orbit in.
+ *
+ * A cursor-anchored dolly moves the camera by a fraction of its own pivot
+ * radius, so the radius is the whole travel budget — parked on the chart's
+ * origin it can only ever spend the distance to the Sun, and a body further
+ * off than that is unreachable at any minimum distance. Metering the pivot
+ * against what is actually ahead makes every notch close the same fraction of
+ * the REAL gap: the budget refills as the gap shrinks, and the approach becomes
+ * asymptotic instead of finite. The same rule stops the zoom passing THROUGH a
+ * body — the radius clamp is measured to its drawn surface, not to a point
+ * behind it.
+ */
+export function mapOverviewPivotDistanceAU(
+  nearestClearanceDistAU: number,
+  minDistAU: number,
+  maxDistAU: number,
+): number {
+  const lo = Math.max(minDistAU, 0);
+  const hi = Math.max(maxDistAU, lo);
+  // NaN and a camera inside the nearest surface both land on the floor.
+  if (!(nearestClearanceDistAU > lo)) return lo;
+  return Math.min(nearestClearanceDistAU, hi);
 }
 
 /**

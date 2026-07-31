@@ -2518,6 +2518,13 @@
     @media (max-width: 640px) {
       .map-scale { bottom: 84px; }
       .map-scale-seg { padding: 8px 13px; }
+      /* Second row, clear of the action cluster. The cluster is right-anchored
+         and grows leftward with the body name it carries — "Leave Ganymede" on
+         a phone reaches past the middle of the top row and sits ABOVE the map's
+         chrome by design, so it would swallow every tap meant for this chip and
+         take off instead. Dropping a row is the fix that keeps both reachable
+         and leaves the stack alone. */
+      .map-overview { top: 60px; left: 14px; }
     }
     /* Hover feedback on a fine pointer: the pointed-at label brightens. */
     .map-label.hover { color: #fff; font-weight: 600; text-shadow: 0 0 8px rgba(0, 0, 0, 0.95); }

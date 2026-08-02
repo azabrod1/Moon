@@ -270,6 +270,8 @@ import { tidalLockQuaternion, tidalRollNorth } from './world/tidalLock';
 import { type MapBodySizeParams } from './map/mapBodySize';
 import { type MapMoonOffsetParams } from './map/mapMoonOffset';
 import { MAP_DOUBLE_TAP_MS, mapCameraOwnsPose, mapOverviewChipVisible } from './map/mapCamera';
+import { HOVER_RECLAIM_MOVE_PX, resolveMapHover } from './map/mapHover';
+import { mapFactRows } from './map/mapFacts';
 import { isTap } from './map/mapPicking';
 import { flushOrbitDamping } from './input/orbitDamping';
 import { formatBodyDistance, bodyDistanceQuantum } from './bodyDistance';
@@ -876,6 +878,28 @@ export class PlanetariumMode {
   // touched minutes and one pinch ago.
   private mapTapName: string | null = null;
   private mapTapAtMs = 0;
+  // Hover latch (fine pointers only). The map's bodies move under a resting
+  // cursor at warp, so hover is resolved every frame from the last mouse
+  // position rather than only when the mouse moves — and held, so a body does
+  // not lose the emphasis the moment it slides off the pixel. `Valid` is
+  // whether that stored position still describes a mouse on the canvas; the
+  // anchor and the stamp are where and when the hold was last confirmed, which
+  // is what both release terms are measured against.
+  private mapHoverX = 0;
+  private mapHoverY = 0;
+  private mapHoverValid = false;
+  private mapHoverName: string | null = null;
+  private mapHoverAnchorX = 0;
+  private mapHoverAnchorY = 0;
+  private mapHoverHitMs = 0;
+  // The cursor the canvas is carrying, so the per-frame pass writes it only
+  // when it changes rather than on every frame a hover holds.
+  private mapHoverCursor = false;
+  // The held body a pointerdown landed on the hold's anchor — snapshotted at
+  // DOWN, because between down and up the tap slop (6 px) and the latch's
+  // reclaim radius (4 px) would otherwise disagree inside one gesture. Set
+  // means the release commits this body without re-picking.
+  private mapPickHeldName: string | null = null;
   // Dive / autopilot-close transition. The generation token is bumped by every
   // closeMap and by a cancel, so a superseded transition never fires its
   // commit. mapDiving gates picking/hover while a transition runs; mapCommitting
@@ -1231,6 +1255,7 @@ export class PlanetariumMode {
     orbitDom.addEventListener('pointerup', (e) => this.mapPointerUp(e));
     orbitDom.addEventListener('pointercancel', (e) => this.mapPointerCancel(e));
     orbitDom.addEventListener('pointermove', (e) => this.mapPointerMove(e));
+    orbitDom.addEventListener('pointerleave', () => this.mapPointerLeave());
     // A release the canvas never sees (drag ends over the HUD, capture lost
     // without a canvas pointercancel) still ends the gesture: the window pair
     // only ever DISARMS — commits stay canvas-only, and after an on-canvas
@@ -1249,6 +1274,10 @@ export class PlanetariumMode {
       this.mapPickPointerId = null;
       this.mapPickPoisoned = false;
       this.mapTapName = null;
+      // The map's hover latch strands the same way: no move arrives while the
+      // window is away, so the stored pointer would still claim a cursor that
+      // could be anywhere by the time focus comes back.
+      this.resetMapHover();
       // Focus loss (e.g. Cmd-Tab) means the keyups won't arrive, so a held key
       // would linger — with W held the ship accelerates unattended. Drop every
       // held key; yaw/pitch/throttle recompute from this set each frame
@@ -6412,8 +6441,9 @@ export class PlanetariumMode {
 
     this.systemMap?.close();
     this.mapHud.hide();
-    // Drop any hover cursor the map's pointer-move feedback left on the canvas.
-    this.renderer.domElement.style.cursor = '';
+    // Drop the hover latch whole — the held body, the stored pointer, and the
+    // cursor the map's own feedback left on the canvas.
+    this.resetMapHover();
     document.body.classList.remove('system-map-active');
     // A held key must not survive the map — closing with W down would otherwise
     // resume phantom thrust the moment processInput reads the flight keys again.
@@ -6469,6 +6499,9 @@ export class PlanetariumMode {
       this.landedOn !== null,
       this.lastFrameDtMs,
     );
+    // Hover after the bodies have moved and before anything reads the frame:
+    // the anchors this resolves against are the ones just written.
+    this.updateMapHover();
     // Live distance on the open card (writes only on a change), and mirror the
     // arrival-busy state onto the verb buttons.
     if (this.mapPicked && this.mapHud.isCardOpen()) {
@@ -6504,6 +6537,14 @@ export class PlanetariumMode {
    *  so pointerup can tell a tap (a pick) from a drag (an orbit gesture). */
   private mapPointerDown(e: PointerEvent) {
     if (!this.isMapOpen()) return;
+    const pointerType = e.pointerType || 'mouse';
+    // A finger or a pen takes over: the stored mouse position no longer says
+    // anything about where anyone is pointing. This runs before every gate
+    // below — a touch that arrives during a dive, during a camera flight, or
+    // as the second pointer of a gesture still ends the mouse's hover, and a
+    // reset left downstream of those would leave the emphasis and the stored
+    // position alive to be picked up again with no mouse in the room.
+    if (pointerType !== 'mouse') this.resetMapHover();
     // A second tap while the camera dives skips straight to the fade.
     if (this.mapDiving) {
       if (this.mapDiveIsCamera) this.skipMapDive();
@@ -6526,13 +6567,25 @@ export class PlanetariumMode {
     // finger's release must not read as a tap either.
     if (this.mapPickPointerId !== null) {
       this.mapPickPoisoned = true;
+      this.mapPickHeldName = null;
       return;
     }
     this.mapPickPoisoned = false;
     this.mapPickPointerId = e.pointerId;
     this.mapPickDownX = e.clientX;
     this.mapPickDownY = e.clientY;
-    this.mapPickPointerType = e.pointerType || 'mouse';
+    this.mapPickPointerType = pointerType;
+    this.mapPickHeldName = null;
+    if (pointerType !== 'mouse') return;
+    // A click commits the body the emphasis names. If the press lands on the
+    // live hold's anchor, that body is what this gesture is for — snapshotted
+    // here, at DOWN, so the release never re-picks a chart that has moved on.
+    if (this.mapHoverName && this.mapHoverValid) {
+      const rect = this.renderer.domElement.getBoundingClientRect();
+      const dx = e.clientX - rect.left - this.mapHoverAnchorX;
+      const dy = e.clientY - rect.top - this.mapHoverAnchorY;
+      if (Math.hypot(dx, dy) <= HOVER_RECLAIM_MOVE_PX) this.mapPickHeldName = this.mapHoverName;
+    }
   }
 
   /** Canvas pointerup while the map owns the frame: a small-travel gesture is a
@@ -6547,7 +6600,9 @@ export class PlanetariumMode {
     // reuses one id for every click).
     this.mapPickPointerId = null;
     const poisoned = this.mapPickPoisoned;
+    const held = this.mapPickHeldName;
     this.mapPickPoisoned = false;
+    this.mapPickHeldName = null;
     if (poisoned) {
       // A pinched or dragged gesture is not a tap, so it cannot be half of a
       // double-tap either.
@@ -6558,25 +6613,32 @@ export class PlanetariumMode {
     // pointer is not the body that will be there a frame later.
     if (this.mapDiving || this.isMapCameraFlying() || !this.systemMap) return;
     if (!isTap(this.mapPickDownX, this.mapPickDownY, e.clientX, e.clientY)) return;
-    const rect = this.renderer.domElement.getBoundingClientRect();
-    const x = e.clientX - rect.left;
-    const y = e.clientY - rect.top;
-    const hit = this.systemMap.pick(x, y, this.mapPickPointerType);
-    if (hit.kind !== 'body') {
-      // Anything but a body ends the run: a tap elsewhere and back must not
-      // read as two taps on the same body.
-      this.mapTapName = null;
-      if (hit.kind === 'empty') this.dismissMapCard();
-      // 'ship' is inert — swallow, dismiss nothing.
-      return;
+    // A press that landed on the emphasis commits what the emphasis named, with
+    // no second look at a chart that has moved since. The declared consequence:
+    // a press on apparently empty space that is in fact the hold's anchor opens
+    // the held body rather than dismissing the card — which is the rule working,
+    // since the body slid off that pixel between the frame and the finger.
+    let name = held;
+    if (!name) {
+      const rect = this.renderer.domElement.getBoundingClientRect();
+      const hit = this.systemMap.pick(e.clientX - rect.left, e.clientY - rect.top, this.mapPickPointerType);
+      if (hit.kind !== 'body') {
+        // Anything but a body ends the run: a tap elsewhere and back must not
+        // read as two taps on the same body.
+        this.mapTapName = null;
+        if (hit.kind === 'empty') this.dismissMapCard();
+        // 'ship' is inert — swallow, dismiss nothing.
+        return;
+      }
+      name = hit.name;
     }
-    this.openMapCard(hit.name);
+    this.openMapCard(name);
     const now = performance.now();
-    const doubled = this.mapTapName === hit.name && now - this.mapTapAtMs <= MAP_DOUBLE_TAP_MS;
+    const doubled = this.mapTapName === name && now - this.mapTapAtMs <= MAP_DOUBLE_TAP_MS;
     // Consume the candidate on a double, so a third tap starts a fresh run.
-    this.mapTapName = doubled ? null : hit.name;
+    this.mapTapName = doubled ? null : name;
     this.mapTapAtMs = now;
-    if (doubled) this.focusMapBody(hit.name);
+    if (doubled) this.focusMapBody(name);
   }
 
   /** A cancelled or off-canvas-released gesture (palm rejection, system
@@ -6589,10 +6651,13 @@ export class PlanetariumMode {
       this.mapPickPointerId = null;
       this.mapPickPoisoned = false;
       this.mapTapName = null;
+      this.mapPickHeldName = null;
     }
   }
 
-  /** Fine-pointer hover: brighten the dot under the cursor and flag it pickable. */
+  /** Fine-pointer hover: remember where the cursor is. What is under it is
+   *  decided per frame (updateMapHover) — a body crossing a cursor that has not
+   *  moved sends no event, and at a year a second that is most of them. */
   private mapPointerMove(e: PointerEvent) {
     if (!this.isMapOpen()) return;
     // Travel latch: once the armed pointer leaves the tap slop the gesture can
@@ -6602,13 +6667,80 @@ export class PlanetariumMode {
       && !isTap(this.mapPickDownX, this.mapPickDownY, e.clientX, e.clientY)) {
       this.mapPickPoisoned = true;
       this.mapTapName = null;
+      this.mapPickHeldName = null;
     }
-    if (this.mapDiving || this.isMapCameraFlying() || e.pointerType !== 'mouse') return;
-    if (!this.systemMap) return;
+    if (e.pointerType !== 'mouse') return;
     const rect = this.renderer.domElement.getBoundingClientRect();
-    const name = this.systemMap.hoverAt(e.clientX - rect.left, e.clientY - rect.top);
-    this.systemMap.setHover(name);
-    this.renderer.domElement.style.cursor = name ? 'pointer' : '';
+    this.mapHoverX = e.clientX - rect.left;
+    this.mapHoverY = e.clientY - rect.top;
+    this.mapHoverValid = true;
+  }
+
+  /** The cursor left the canvas — for the HUD, the card, or the window. Nothing
+   *  is under it any more, and without this the per-frame path would keep
+   *  acquiring bodies under a pointer parked on the card. */
+  private mapPointerLeave() {
+    if (!this.isMapOpen()) return;
+    this.resetMapHover();
+  }
+
+  /**
+   * Per-frame hover: what is under the resting cursor right now, held through
+   * the near misses and the fly-bys that a chart at warp produces, and released
+   * once the hold has lapsed or the pointer has aimed somewhere else.
+   *
+   * Runs on exactly the gates the pointer handlers already use — a dive is
+   * broader than the camera predicate (an Autopilot commit dives with the
+   * camera left alone) and hover must stay dead through that fade too.
+   */
+  private updateMapHover() {
+    const map = this.systemMap;
+    if (!map || !this.mapHoverValid) return;
+    if (this.mapDiving || this.isMapCameraFlying()) return;
+    // One anchor rebuild per frame, which is the point: the anchors ARE this
+    // frame's screen positions, and a cached set would answer with last
+    // frame's — the bug the latch exists to fix.
+    const candidate = map.hoverAt(this.mapHoverX, this.mapHoverY);
+    const now = performance.now();
+    const resolved = resolveMapHover(
+      this.mapHoverName,
+      candidate,
+      now - this.mapHoverHitMs,
+      Math.hypot(this.mapHoverX - this.mapHoverAnchorX, this.mapHoverY - this.mapHoverAnchorY),
+    );
+    // A confirmed hit — the candidate won, whether it was adopted or refreshed
+    // — restamps the hold. A hold surviving a miss keeps the anchor it was
+    // confirmed at, so a slow drift away from it still adds up to a release.
+    if (resolved !== null && resolved === candidate) {
+      this.mapHoverHitMs = now;
+      this.mapHoverAnchorX = this.mapHoverX;
+      this.mapHoverAnchorY = this.mapHoverY;
+    }
+    this.mapHoverName = resolved;
+    map.setHover(resolved);
+    this.setMapHoverCursor(resolved !== null);
+  }
+
+  /** The canvas cursor, written only when it changes. */
+  private setMapHoverCursor(pointer: boolean) {
+    if (pointer === this.mapHoverCursor) return;
+    this.mapHoverCursor = pointer;
+    this.renderer.domElement.style.cursor = pointer ? 'pointer' : '';
+  }
+
+  /** Drop the latch whole: the held body, its timer and anchor, the stored
+   *  pointer, the cursor and the emphasis on the chart. Every path that ends a
+   *  hover ends all of it — a half-cleared latch would re-acquire against a
+   *  stamp from the session before. */
+  private resetMapHover() {
+    this.mapHoverValid = false;
+    this.mapHoverName = null;
+    this.mapHoverHitMs = 0;
+    this.mapHoverAnchorX = 0;
+    this.mapHoverAnchorY = 0;
+    this.mapPickHeldName = null;
+    this.systemMap?.setHover(null);
+    this.setMapHoverCursor(false);
   }
 
   /** Open (or replace in place) the picked-body card. Pairs with the time /
@@ -6633,12 +6765,17 @@ export class PlanetariumMode {
       this.player.posZ,
     ) ?? 0;
     this.mapCardDistQ = bodyDistanceQuantum(distAU);
+    // The facts are resolved here and handed over finished — the HUD paints
+    // them and knows nothing about catalogs.
+    const facts = mapFactRows(name);
     this.mapHud.showCard(
       bodyDisplayName(name),
       color,
       formatBodyDistance(distAU),
       actions,
       this.arrivalInFlight,
+      facts.rows,
+      facts.oneLiner,
     );
   }
 
@@ -6683,6 +6820,7 @@ export class PlanetariumMode {
   private poisonMapPick(): void {
     if (this.mapPickPointerId !== null) this.mapPickPoisoned = true;
     this.mapTapName = null;
+    this.mapPickHeldName = null;
   }
 
   /** Whether Esc has a focus to release before it closes the map — the same
@@ -6731,6 +6869,9 @@ export class PlanetariumMode {
     // wall for the length of a dive that never happened.
     this.mapDiveIsCamera = verb !== 'pilot' && !!this.systemMap?.beginDive(target.name);
     this.mapDiving = true;
+    // The chart is about to be left behind; nothing on it is under the cursor
+    // any more, whichever kind of transition this is.
+    this.resetMapHover();
     this.mapTransitionStartMs = performance.now();
     this.mapDiveActiveGen = ++this.mapDiveGen;
     return true;

@@ -2528,13 +2528,16 @@
     }
     /* Hover feedback on a fine pointer: the pointed-at label brightens. */
     .map-label.hover { color: #fff; font-weight: 600; text-shadow: 0 0 8px rgba(0, 0, 0, 0.95); }
-    /* Picked-body card — docked bottom-left, above the bottom bands (measured). */
+    /* Picked-body card — docked bottom-left, above the bottom bands (measured).
+       The height cap is measured too (MapHUD.measureCard), so box-sizing has to
+       count the padding in it. */
     .map-card {
       position: absolute;
       left: 14px;
       bottom: 96px;
       width: 264px;
       max-width: calc(100vw - 28px);
+      box-sizing: border-box;
       display: none;
       flex-direction: column;
       gap: 12px;
@@ -2547,6 +2550,9 @@
       box-shadow: 0 8px 30px rgba(0, 0, 0, 0.4);
     }
     .map-card.visible { display: flex; }
+    /* Everything above the facts holds its size; the facts are what gives when
+       the measured cap squeezes the card. */
+    .map-card-head, .map-card-line, .map-card-actions { flex: none; }
     .map-card-head { display: flex; align-items: center; gap: 10px; }
     .map-card-dot {
       width: 14px; height: 14px; flex: none;
@@ -2585,8 +2591,62 @@
     }
     .map-card-btn:hover { background: rgba(var(--accent-rgb), 0.16); border-color: rgba(255, 255, 255, 0.14); }
     .map-card-btn:disabled { opacity: 0.4; cursor: default; }
+    /* The body's one-line description, under its name. */
+    .map-card-line {
+      font-family: var(--font-ui);
+      font-size: 12px;
+      line-height: 1.35;
+      color: var(--t3);
+    }
+    .map-card-line:empty { display: none; }
+    /* Facts: key muted, value bright, under a hairline. This is the one part of
+       the card that scrolls — min-height 0 is what lets a flex child shrink
+       below its content so the cap can reach it at all. */
+    .map-card-facts {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      padding-top: 10px;
+      border-top: 1px solid var(--line);
+      min-height: 0;
+      overflow-y: auto;
+      overscroll-behavior: contain;
+    }
+    .map-card-facts:empty { display: none; }
+    .map-card-fact { display: flex; align-items: center; justify-content: space-between; gap: 14px; }
+    .map-card-fact-k {
+      font-family: var(--font-ui);
+      font-size: 11px;
+      color: var(--t3);
+      white-space: nowrap;
+    }
+    .map-card-fact-v {
+      font-family: var(--font-mono);
+      font-size: 11px;
+      color: var(--t1);
+      font-variant-numeric: tabular-nums;
+      text-align: right;
+    }
+    /* The tilt glyph rides in a value slot, so it sits on the text baseline row
+       rather than stretching it. */
+    .map-tilt { display: block; flex: none; }
+    .map-tilt-base { stroke: rgba(168, 184, 202, 0.4); stroke-width: 0.8; stroke-dasharray: 2 2; }
+    .map-tilt-body { fill: rgba(228, 238, 250, 0.4); }
+    .map-tilt-axis { stroke-width: 1.5; stroke-linecap: round; }
     @media (max-width: 640px) {
       .map-card { left: 12px; right: 12px; width: auto; max-width: none; }
+    }
+    /* A short viewport (landscape phone) has barely more than the card's own
+       chrome to spare, so everything tightens to leave the facts a few rows.
+       Below what even this fits, measureCard drops the facts entirely. */
+    @media (max-height: 480px) {
+      .map-card { gap: 8px; padding: 10px 12px; }
+      .map-card-dot { width: 11px; height: 11px; }
+      .map-card-title b { font-size: 14px; }
+      .map-card-line { font-size: 11px; }
+      .map-card-actions { gap: 6px; }
+      .map-card-btn { padding: 7px 6px; font-size: 12px; }
+      .map-card-facts { gap: 4px; padding-top: 7px; }
     }
     /* World-anchored overlays are force-hidden behind the map. The class must
        beat the per-frame inline display/opacity writers, so !important. */
@@ -3228,7 +3288,11 @@
               <small id="map-card-dist"></small>
             </div>
           </div>
+          <div class="map-card-line" id="map-card-line"></div>
           <div class="map-card-actions" id="map-card-actions"></div>
+          <!-- Facts sit below the actions, under a hairline: the actions are
+               what the card is for, and they must never scroll away. -->
+          <div class="map-card-facts" id="map-card-facts"></div>
         </div>
       </div>
 

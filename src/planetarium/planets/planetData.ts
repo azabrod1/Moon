@@ -26,6 +26,10 @@ export interface PlanetData {
   rotationPeriodHours: number;
   moons: number;
   description: string;
+  atmosphere?: string;     // dominant constituents, as a card reads them out
+                           // ("N₂ / O₂", "CO₂ (thin)"). Optional because the
+                           // moons' catalog only names the three that have one;
+                           // every planet carries it, Mercury as 'None'.
   poleRaDeg: number;          // IAU north pole right ascension
   poleDecDeg: number;         // IAU north pole declination
   primeMeridianDegAtJ2000: number;   // IAU prime meridian angle at J2000.0
@@ -63,6 +67,7 @@ export const PLANETS: PlanetData[] = [
     rotationPeriodHours: 1407.6,
     moons: 0,
     description: 'Smallest planet, heavily cratered',
+    atmosphere: 'None',
     poleRaDeg: 281.0097,
     poleDecDeg: 61.4143,
     primeMeridianDegAtJ2000: 329.5469,
@@ -85,6 +90,7 @@ export const PLANETS: PlanetData[] = [
     rotationPeriodHours: 5832.5,
     moons: 0,
     description: 'Thick sulfuric acid clouds, hellish surface',
+    atmosphere: 'CO₂ (thick)',
     poleRaDeg: 272.76,
     poleDecDeg: 67.16,
     primeMeridianDegAtJ2000: 160.20,
@@ -107,6 +113,7 @@ export const PLANETS: PlanetData[] = [
     rotationPeriodHours: 23.93,
     moons: 1,
     description: 'Our home world',
+    atmosphere: 'N₂ / O₂',
     poleRaDeg: 0,
     poleDecDeg: 90,
     primeMeridianDegAtJ2000: 190.147,
@@ -129,6 +136,7 @@ export const PLANETS: PlanetData[] = [
     rotationPeriodHours: 24.62,
     moons: 2,
     description: 'The Red Planet, with polar ice caps',
+    atmosphere: 'CO₂ (thin)',
     poleRaDeg: 317.269202,
     poleDecDeg: 54.432516,
     primeMeridianDegAtJ2000: 176.049863,
@@ -151,6 +159,7 @@ export const PLANETS: PlanetData[] = [
     rotationPeriodHours: 9.93,
     moons: 95,
     description: 'Gas giant, Great Red Spot, cloud bands',
+    atmosphere: 'H₂ / He',
     poleRaDeg: 268.056595,
     poleDecDeg: 64.495303,
     primeMeridianDegAtJ2000: 284.95,
@@ -173,6 +182,7 @@ export const PLANETS: PlanetData[] = [
     rotationPeriodHours: 10.66,
     moons: 274,
     description: 'Iconic ring system, pale gold gas giant',
+    atmosphere: 'H₂ / He',
     poleRaDeg: 40.589,
     poleDecDeg: 83.537,
     primeMeridianDegAtJ2000: 38.90,
@@ -195,6 +205,7 @@ export const PLANETS: PlanetData[] = [
     rotationPeriodHours: 17.24,
     moons: 27,
     description: 'Ice giant tilted on its side, pale cyan',
+    atmosphere: 'H₂ / He / CH₄',
     poleRaDeg: 257.311,
     poleDecDeg: -15.175,
     primeMeridianDegAtJ2000: 203.81,
@@ -217,6 +228,7 @@ export const PLANETS: PlanetData[] = [
     rotationPeriodHours: 16.11,
     moons: 14,
     description: 'Deep blue ice giant, strongest winds',
+    atmosphere: 'H₂ / He / CH₄',
     poleRaDeg: 299.36,
     poleDecDeg: 43.46,
     primeMeridianDegAtJ2000: 249.978,
@@ -241,6 +253,7 @@ export const PLUTO: PlanetData = {
   rotationPeriodHours: 153.3,
   moons: 5,
   description: 'Dwarf planet at the edge, icy surface',
+  atmosphere: 'N₂ (thin)',
   // WGCCRE 2009 right-hand-rule convention (post-2006 dwarf-planet rules):
   // W = 302.695 + 56.3625225·d about this pole — the rate is POSITIVE by
   // construction (RHR derives the pole from the spin, so W can never run

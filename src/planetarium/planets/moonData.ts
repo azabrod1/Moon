@@ -17,10 +17,14 @@ export interface MoonData {
   orbitalRadiusAU: number;
   color: number; // Hex fallback color
   textureKey?: string; // Optional texture (only for famous moons)
+  atmosphere?: string; // Dominant constituents, for the three moons that have
+                       // an atmosphere worth naming. Absent everywhere else:
+                       // an airless moon says nothing rather than 'None'.
 }
 
 interface MoonOptions {
   textureKey?: string;
+  atmosphere?: string;
 }
 
 function moon(
@@ -31,7 +35,7 @@ function moon(
   color: number,
   options: MoonOptions = {},
 ): MoonData {
-  const { textureKey } = options;
+  const { textureKey, atmosphere } = options;
 
   return {
     name,
@@ -42,6 +46,7 @@ function moon(
     orbitalRadiusAU: orbitalRadiusKm / KM_PER_AU,
     color,
     textureKey,
+    atmosphere,
   };
 }
 
@@ -58,7 +63,7 @@ export const MOONS: MoonData[] = [
   moon('Metis', 'Jupiter', 21.5, 128_000, 0x8a7860),
   moon('Amalthea', 'Jupiter', 83.5, 181_366, 0x8b4513),
   moon('Thebe', 'Jupiter', 49.3, 221_889, 0x8a7860),
-  moon('Io', 'Jupiter', 1821.6, 421_700, 0xc8b040, { textureKey: 'io' }),
+  moon('Io', 'Jupiter', 1821.6, 421_700, 0xc8b040, { textureKey: 'io', atmosphere: 'SO₂ (thin)' }),
   moon('Europa', 'Jupiter', 1560.8, 671_100, 0xb0a890, { textureKey: 'europa' }),
   moon('Ganymede', 'Jupiter', 2634.1, 1_070_400, 0x8a8070, { textureKey: 'ganymede' }),
   moon('Callisto', 'Jupiter', 2410.3, 1_882_700, 0x605848, { textureKey: 'callisto' }),
@@ -85,7 +90,7 @@ export const MOONS: MoonData[] = [
   moon('Dione', 'Saturn', 561.4, 377_396, 0xb0b0b0),
   moon('Helene', 'Saturn', 17.6, 377_396, 0xb8b8b0),
   moon('Rhea', 'Saturn', 763.8, 527_108, 0xa8a8a0),
-  moon('Titan', 'Saturn', 2574.7, 1_221_870, 0xc89040),
+  moon('Titan', 'Saturn', 2574.7, 1_221_870, 0xc89040, { atmosphere: 'N₂ (thick)' }),
   moon('Hyperion', 'Saturn', 135, 1_481_009, 0xb0a080),
   moon('Iapetus', 'Saturn', 734.5, 3_560_820, 0x808060),
   moon('Phoebe', 'Saturn', 106.5, 12_944_300, 0x606060),
@@ -114,7 +119,7 @@ export const MOONS: MoonData[] = [
   moon('Galatea', 'Neptune', 88, 61_953, 0x808078),
   moon('Larissa', 'Neptune', 97, 73_548, 0x787878),
   moon('Proteus', 'Neptune', 210, 117_647, 0x808078),
-  moon('Triton', 'Neptune', 1353.4, 354_759, 0xb0a8a0, { textureKey: 'triton' }),
+  moon('Triton', 'Neptune', 1353.4, 354_759, 0xb0a8a0, { textureKey: 'triton', atmosphere: 'N₂ (thin)' }),
   moon('Nereid', 'Neptune', 170, 5_513_400, 0x909088),
   moon('Halimede', 'Neptune', 31, 16_611_000, 0x787878),
   moon('Neso', 'Neptune', 30, 49_285_000, 0x787870),

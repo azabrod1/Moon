@@ -101,6 +101,13 @@ import {
 } from './mapMoonOffset';
 import { mapBodyDrawMode, shouldAdoptTexture } from './mapGlobes';
 import {
+  advanceMapShade,
+  makeMapShadeState,
+  resetMapShade,
+  type MapShadeState,
+} from './mapShade';
+import { computeMoonShading, type MoonShadingState } from '../../astronomy/shadows';
+import {
   clampFollowDistanceAU,
   followBounds,
   mapCameraInitialState,
@@ -241,6 +248,10 @@ interface MoonEntry {
    *  pass — per entry, not per map, so a moon revealed while the clock is
    *  paused is still oriented rather than drawn at identity. */
   orientedUtcMs: number;
+  /** Eclipse shading, in two phases: the position pass caches the target (it
+   *  moves only with the geometry, so a settled chart may skip it), the size
+   *  pass advances what is applied every rendered frame. */
+  shade: MapShadeState;
   ring: Line2;
   ringGeometry: LineGeometry;
   ringMaterial: LineMaterial;
@@ -473,6 +484,12 @@ export class SystemMap {
   /** Planetocentric offset scratch — a moon's position is its parent's plus
    *  this, and the ephemeris seam fills a caller's vector. */
   private tmpMoonOffset = new THREE.Vector3();
+  /** Shading scratch, both caller-owned the way the shading seam expects: the
+   *  parent's heliocentric position as a vector (the chart keeps it as three
+   *  scalars) and the state the geometry writes into. Read straight onto the
+   *  moon's entry before the next call, so one of each serves every moon. */
+  private tmpParentHelio = new THREE.Vector3();
+  private tmpShading: MoonShadingState = { sunVisibleFraction: 1, inUmbra: false };
 
   // Un-docked ship pulse phase (wall ms).
   private pulseMs = 0;
@@ -2050,6 +2067,23 @@ export class SystemMap {
         moon.trueDistAU = distAU;
         moon.x = distAU / trueR;
         moon.dir.copy(this.tmpMoonOffset).divideScalar(Math.max(distAU, 1e-30));
+        // Eclipse shading TARGET, from the same two positions the offset above
+        // is built from — the parent's real heliocentric place and the moon's
+        // real offset from it, never the compressed ones a chart draws. Only
+        // the sky moves it, which is why the still-frame skip above is safe:
+        // what has to keep moving on a settled chart is the APPLIED value, and
+        // that is advanced in the drawn-size pass. The world caches its own
+        // shading for the moons it is drawing; those are the near system's
+        // only, so the chart computes its own for every system it charts.
+        computeMoonShading(
+          this.tmpParentHelio.set(parent.helioX, parent.helioY, parent.helioZ),
+          parent.planet.name,
+          parent.planet.radiusKm,
+          this.tmpMoonOffset,
+          moon.data.radiusKm,
+          this.tmpShading,
+        );
+        moon.shade.shadeTarget = this.tmpShading.sunVisibleFraction;
         moon.offsetR = mapMoonOffsetR(system.policy, moon.x);
         // True scale keys off the LIVE blend, not the committed target: the
         // offsets slide with the animation rather than snapping when it starts.
@@ -2180,6 +2214,10 @@ export class SystemMap {
   private hideMoon(moon: MoonEntry): void {
     moon.visible = false;
     moon.globeDrawn = false;
+    // A moon that stops being drawn forgets what it was shaded at, so the next
+    // time it appears it arrives at its true shading rather than ramping there
+    // from whatever the sky looked like when it left.
+    resetMapShade(moon.shade);
     if (moon.dot.visible) moon.dot.visible = false;
     if (moon.globe.visible) moon.globe.visible = false;
     if (moon.label && moon.label.style.display !== 'none') moon.label.style.display = 'none';
@@ -2240,6 +2278,7 @@ export class SystemMap {
         globeDrawn: false,
         visible: false,
         orientedUtcMs: Number.NaN,
+        shade: makeMapShadeState(),
         ring,
         ringGeometry,
         ringMaterial,
@@ -2263,9 +2302,13 @@ export class SystemMap {
     }
   }
 
-  /** Phase (3) for the moons: how big each one draws, and whether it is a globe,
-   *  a marker, or — at true scale, inside its parent's limb — nothing at all. */
+  /** Phase (3) for the moons: how big each one draws, whether it is a globe,
+   *  a marker, or — at true scale, inside its parent's limb — nothing at all,
+   *  and how deep in its parent's shadow it is drawn. */
   private updateMoonDrawnSizes(worldPerPxAtUnit: number, trueScaleTarget: boolean): void {
+    // One wall-clock reading for the whole pass: the shading limiter measures
+    // real time, and every moon on the chart is being drawn in the same frame.
+    const shadeNowMs = performance.now();
     for (const system of this.moonSystems) {
       if (!system.revealed) continue;
       const parentDrawnAU = this.parentDrawnRadiusAU(system);
@@ -2297,6 +2340,16 @@ export class SystemMap {
         moon.dot.visible = visible && !globe;
         if (globe) moon.globe.scale.setScalar(drawnAU);
         else moon.dot.scale.setScalar(drawnAU * DOT_EXTENT_MUL);
+        // Eclipse dim, advanced here because this pass runs on every rendered
+        // frame: the limiter is a wall-clock ramp, and one that only stepped
+        // when the sky moved would stall half-dark under a paused clock.
+        // Its own channel, written absolutely: the marker's opacity and the
+        // globe's albedo scalar belong to the shadow, while emphasis keeps the
+        // marker's tint and the globe's emissive. Nothing accumulates, so a
+        // still chart re-writing the same value every frame is a no-op.
+        const dim = advanceMapShade(moon.shade, shadeNowMs);
+        (moon.dot.material as THREE.SpriteMaterial).opacity = dim;
+        moon.globeMat.color.setScalar(dim);
       }
     }
   }
@@ -2937,6 +2990,12 @@ export class SystemMap {
     hovered: boolean;
     markerLift: number;
     globeEmissive: number;
+    /** Eclipse shading, as the materials actually carry it: the drawn
+     *  multiplier (1 = full sunlight, the floor deep in a parent's shadow) and
+     *  the raw sun-visible fraction the last geometry pass measured. 1 and 1
+     *  for a body the chart never shades. */
+    shadeDim: number;
+    shadeSunFraction: number;
     /** Moons only: where the offset policy charts it (parent drawn radii), and
      *  the true distance that went in (parent true radii, and AU). */
     offsetR: number;
@@ -2984,6 +3043,8 @@ export class SystemMap {
         hovered: this.hoveredName === name,
         markerLift: this.markerLiftOf(this.sun, this.sunBaseColor),
         globeEmissive: 0,
+        shadeDim: 1,
+        shadeSunFraction: 1,
         offsetR: 0,
         parentRadiiX: 0,
         trueDistAU: 0,
@@ -3050,6 +3111,8 @@ export class SystemMap {
         hovered: this.hoveredName === name,
         markerLift: moon ? this.markerLiftOf(moon.dot, moon.baseColor) : 0,
         globeEmissive: moon ? maxChannel(moon.globeMat.emissive) : 0,
+        shadeDim: moon ? (moon.dot.material as THREE.SpriteMaterial).opacity : 1,
+        shadeSunFraction: moon ? moon.shade.shadeTarget : 1,
         offsetR,
         parentRadiiX,
         trueDistAU,
@@ -3075,6 +3138,8 @@ export class SystemMap {
       hovered: this.hoveredName === name,
       markerLift: this.markerLiftOf(entry.dot, entry.baseColor),
       globeEmissive: maxChannel(entry.globeMat.emissive),
+      shadeDim: 1,
+      shadeSunFraction: 1,
       offsetR: 0,
       parentRadiiX: 0,
       trueDistAU: 0,

@@ -1,12 +1,14 @@
 import type { MapCardAction, MapVerb } from '../map/mapLogic';
 import type { FactRow } from '../map/mapFacts';
+import type { MapEventRowModel } from '../map/mapEvents';
 import { makeTiltGlyph } from './mapTiltGlyph';
 
 /**
  * MapHUD — the on-screen controls for the System map: the segmented scale
  * control (both states always visible, the active one marked), the close chip,
  * the ◂ Overview chip that releases a focus, and the picked-body card (tint dot,
- * name, live distance, one-line description, action buttons, facts).
+ * name, live distance, one-line description, action buttons, the system's next
+ * event, facts).
  *
  * DOM-thin: the markup lives in index.html, this caches the elements and wires
  * their listeners once (the bind()/wired idiom). It owns no map state — it
@@ -35,6 +37,13 @@ export class MapHUD {
   private cardLine: HTMLElement | null = null;
   private cardActions: HTMLElement | null = null;
   private cardFacts: HTMLElement | null = null;
+  private cardEvent: HTMLElement | null = null;
+  private cardEventLabel: HTMLElement | null = null;
+  private cardEventWhen: HTMLElement | null = null;
+  /** The event the row is painted with, or null when it carries none. Held
+   *  because measureCard re-shows the row to measure it, and only a row with
+   *  something to say may come back. */
+  private eventRow: MapEventRowModel | null = null;
   private hoverMeta: HTMLElement | null = null;
   private lastHoverMeta: string | null = null;
   private lastDist = '';
@@ -47,6 +56,7 @@ export class MapHUD {
     private readonly onVerb: (verb: MapVerb) => void,
     private readonly onFocus: () => void,
     private readonly onOverview: () => void,
+    private readonly onEvent: () => void,
   ) {}
 
   /** Cache elements (every activation) and wire listeners once. */
@@ -62,6 +72,9 @@ export class MapHUD {
     this.cardLine = document.getElementById('map-card-line');
     this.cardActions = document.getElementById('map-card-actions');
     this.cardFacts = document.getElementById('map-card-facts');
+    this.cardEvent = document.getElementById('map-card-event');
+    this.cardEventLabel = document.getElementById('map-card-event-label');
+    this.cardEventWhen = document.getElementById('map-card-event-when');
     this.hoverMeta = document.getElementById('map-hover-meta');
     if (this.wired) return;
     this.wired = true;
@@ -72,6 +85,8 @@ export class MapHUD {
     // Delegated so the rebuilt-per-pick buttons need no per-button listeners.
     // Focus and the commit verbs travel on different attributes, so a commit
     // handler can never be reached by a button that isn't one.
+    // The whole event row is one target — it says one thing and does one thing.
+    this.cardEvent?.addEventListener('click', () => this.onEvent());
     this.cardActions?.addEventListener('click', (e) => {
       const btn = (e.target as HTMLElement).closest('button[data-action]') as HTMLButtonElement | null;
       if (!btn || btn.disabled) return;
@@ -147,6 +162,10 @@ export class MapHUD {
     this.lastDisabled = disabled;
     if (this.cardDist) this.cardDist.textContent = distText;
     if (this.cardLine) this.cardLine.textContent = oneLiner;
+    // A new body is a new sky: whatever the last one's search found says
+    // nothing about this one, so the row starts empty and the owner refills it.
+    this.eventRow = null;
+    if (this.cardEvent) this.cardEvent.style.display = 'none';
     this.renderFacts(rows, colorCss);
     if (this.cardActions) {
       this.cardActions.innerHTML = '';
@@ -172,6 +191,29 @@ export class MapHUD {
 
   hideCard(): void {
     this.card?.classList.remove('visible');
+    this.eventRow = null;
+    if (this.cardEvent) this.cardEvent.style.display = 'none';
+  }
+
+  /**
+   * The system's next event, or null while the search has nothing to show —
+   * which covers "still scanning" as well as "nothing in range". The chart
+   * says nothing rather than narrating its own search: the row is news, and a
+   * card that reports its own housekeeping is noise.
+   */
+  setEventRow(model: MapEventRowModel | null): void {
+    if (!this.cardEvent) return;
+    const same = model !== null && this.eventRow !== null
+      && model.label === this.eventRow.label && model.when === this.eventRow.when;
+    if (same || (model === null && this.eventRow === null)) return;
+    this.eventRow = model;
+    if (model) {
+      if (this.cardEventLabel) this.cardEventLabel.textContent = model.label;
+      if (this.cardEventWhen) this.cardEventWhen.textContent = model.when;
+    }
+    // measureCard re-decides the display: on a short card the row is what
+    // gives, and it must not paint itself back in behind that decision.
+    this.measureCard();
   }
 
   /** Live distance readout — writes only on a change. */
@@ -256,11 +298,26 @@ export class MapHUD {
     // Measure the card at its natural height first: the facts' share is
     // whatever the cap leaves after the chrome that cannot shrink.
     const facts = this.cardFacts;
+    const eventRow = this.cardEvent;
     this.card.style.maxHeight = '';
     if (facts) facts.style.display = '';
-    const naturalH = this.card.getBoundingClientRect().height;
-    const factsH = facts ? facts.getBoundingClientRect().height : 0;
-    const factsRoom = available - (naturalH - factsH);
+    if (eventRow) eventRow.style.display = this.eventRow ? 'flex' : 'none';
+    const roomForFacts = (): number => {
+      const naturalH = this.card!.getBoundingClientRect().height;
+      const factsH = facts ? facts.getBoundingClientRect().height : 0;
+      return available - (naturalH - factsH);
+    };
+    let factsRoom = roomForFacts();
+    // The event row is the one thing that comes off before the facts do: the
+    // facts are what the card is for, and the row is news that will keep. It
+    // only goes if losing it actually buys the facts a viewport worth having —
+    // on a card too short for them either way, the news stays.
+    if (eventRow && this.eventRow && factsRoom < MIN_FACTS_PX) {
+      eventRow.style.display = 'none';
+      const roomWithoutRow = roomForFacts();
+      if (roomWithoutRow >= MIN_FACTS_PX) factsRoom = roomWithoutRow;
+      else eventRow.style.display = 'flex';
+    }
     if (facts && factsRoom < MIN_FACTS_PX) facts.style.display = 'none';
     this.card.style.maxHeight = `${Math.round(available)}px`;
 

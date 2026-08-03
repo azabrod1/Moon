@@ -2637,6 +2637,47 @@
     }
     .map-card-btn:hover { background: rgba(var(--accent-rgb), 0.16); border-color: rgba(255, 255, 255, 0.14); }
     .map-card-btn:disabled { opacity: 0.4; cursor: default; }
+    /* The system's next event: a fact row that happens to be a button. Sized
+       like the rest of the card's text, tinted just enough to read as
+       actionable. Hidden by default — the HUD shows it only when the search
+       has an event, and takes it off again when the card is too short to
+       carry both it and the facts. */
+    .map-card-event {
+      display: none;
+      flex: none;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      width: 100%;
+      box-sizing: border-box;
+      padding: 8px 10px;
+      border: 1px solid var(--line);
+      border-radius: var(--r-m);
+      background: rgba(var(--accent-rgb), 0.1);
+      color: var(--t1);
+      text-align: left;
+      cursor: pointer;
+      transition: background var(--dur) var(--ease), border-color var(--dur) var(--ease);
+    }
+    .map-card-event:hover { background: rgba(var(--accent-rgb), 0.18); border-color: rgba(255, 255, 255, 0.14); }
+    /* The title wraps rather than truncating: "Metis's shadow crosses Jupiter"
+       cut at the card's width would lose the half that says what happens. */
+    .map-card-event-k {
+      font-family: var(--font-ui);
+      font-size: 12px;
+      font-weight: 500;
+      line-height: 1.3;
+      min-width: 0;
+      overflow-wrap: break-word;
+    }
+    .map-card-event-v {
+      font-family: var(--font-mono);
+      font-size: 11px;
+      color: var(--t3);
+      font-variant-numeric: tabular-nums;
+      white-space: nowrap;
+      flex: none;
+    }
     /* The body's one-line description, under its name. */
     .map-card-line {
       font-family: var(--font-ui);
@@ -2700,6 +2741,7 @@
       .map-card-line { font-size: 11px; }
       .map-card-actions { gap: 6px; }
       .map-card-btn { padding: 7px 6px; font-size: 12px; }
+      .map-card-event { padding: 6px 8px; }
       .map-card-facts { gap: 4px; padding-top: 7px; }
       /* Rows are tighter here, so the fade is too — 12 px would swallow most of
          the last one. */
@@ -3354,6 +3396,13 @@
           </div>
           <div class="map-card-line" id="map-card-line"></div>
           <div class="map-card-actions" id="map-card-actions"></div>
+          <!-- The system's next event, when the chart's search has found one.
+               The whole row is the warp; hidden until there is something to
+               say, and dropped again on a card too short to hold it. -->
+          <button class="map-card-event" id="map-card-event" type="button">
+            <span class="map-card-event-k" id="map-card-event-label"></span>
+            <span class="map-card-event-v" id="map-card-event-when"></span>
+          </button>
           <!-- Facts sit below the actions, under a hairline: the actions are
                what the card is for, and they must never scroll away. -->
           <div class="map-card-facts" id="map-card-facts"></div>

@@ -143,7 +143,7 @@ function genericPhaseName(illumination: number): string {
  * "Jun 12 03:14" (or "Jun 12 2026 03:14" for far events) — compact enough for
  * a panel row to keep the magnitude and countdown un-truncated beside it.
  */
-function formatRowTime(utcMs: number, includeYear: boolean): string {
+export function formatEventRowTime(utcMs: number, includeYear: boolean): string {
   const d = new Date(utcMs);
   const hh = String(d.getUTCHours()).padStart(2, '0');
   const mm = String(d.getUTCMinutes()).padStart(2, '0');
@@ -756,8 +756,8 @@ export class ObservatoryPanel {
       const timeEl = document.createElement('span');
       timeEl.className = 'obs-ev-time';
       timeEl.textContent = row.magnitudeText
-        ? `${formatRowTime(row.event.peakUtcMs, includeYear)} · ${row.magnitudeText}`
-        : formatRowTime(row.event.peakUtcMs, includeYear);
+        ? `${formatEventRowTime(row.event.peakUtcMs, includeYear)} · ${row.magnitudeText}`
+        : formatEventRowTime(row.event.peakUtcMs, includeYear);
       const countdownEl = document.createElement('span');
       countdownEl.className = 'obs-cd';
       metaEl.append(badgeEl, timeEl, countdownEl);

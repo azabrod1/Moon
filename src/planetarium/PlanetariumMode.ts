@@ -64,8 +64,6 @@ import { TIME_RATE_PRESETS } from './timeRates';
 import {
   computeMoonShading,
   findShadowEvent,
-  listShadowEventSpecs,
-  searchShadowEvent,
   shadowAxisSurfacePoint,
   type MoonShadingState,
   type ShadowEvent,
@@ -252,6 +250,7 @@ import { PlanetariumStatsPanel } from './ui/PlanetariumStatsPanel';
 import { PlanetariumTimePanel } from './ui/PlanetariumTimePanel';
 import {
   formatObservatoryClock,
+  formatEventRowTime,
   ObservatoryPanel,
   observatoryPhaseText,
   type ObservatoryEventRow,
@@ -266,6 +265,20 @@ import { SystemMap, type MapTextureSource } from './map/SystemMap';
 import { MapHUD } from './ui/MapHUD';
 import { mapCardActions, mapCardOffersVerb, commitBodyPickOutcome, type MapVerb } from './map/mapLogic';
 import { mapBody, mapBodyRefFor } from './map/mapBodies';
+import {
+  guardMapEvent,
+  latchMapEventReverse,
+  makeMapEventReverseLatch,
+  mapEventReverseRunning,
+  mapEventSearchTarget,
+  resetMapEventReverseLatch,
+} from './map/mapEvents';
+import {
+  shadowEventSpecKey,
+  startShadowEventSearch,
+  stepShadowEventSearch,
+  type ShadowEventSearch,
+} from './shadowEventSearch';
 import { tidalLockQuaternion, tidalRollNorth } from './world/tidalLock';
 import { type MapBodySizeParams } from './map/mapBodySize';
 import { type MapMoonOffsetParams } from './map/mapMoonOffset';
@@ -864,6 +877,7 @@ export class PlanetariumMode {
     (verb) => this.commitMapCard(verb),
     () => this.focusMapCard(),
     () => this.mapOverviewChipPressed(),
+    () => this.warpToMapEvent(),
   );
   // The catalog name of the body the card is open on, or null. Also the map's
   // "picked" bridge state.
@@ -1030,17 +1044,33 @@ export class PlanetariumMode {
 
   // Chunked upcoming-events search for the Observatory panel: one spec at a time under
   // a per-frame time budget, restarted on open/jump/date-set, dropped on close.
-  private observatoryEventSearch: {
-    parentPlanet: string;
-    specs: ShadowEventSpec[];
-    index: number;
-    resumeCursorUtcMs: number | null;
-    fromUtcMs: number;
-  } | null = null;
+  private observatoryEventSearch: ShadowEventSearch | null = null;
   private observatoryEventResults = new Map<string, ShadowEvent>();
   // Earliest end among the *displayed* event rows — with the clock running,
   // crossing it means a row has completed and the search must refresh.
   private observatoryRowsMinEndUtcMs: number | null = null;
+  // What a sweep slice found this frame. One array, reused by both callers —
+  // they run in the same thread and read it before releasing the frame.
+  private eventSearchSlice: ShadowEvent[] = [];
+
+  // The same sweep for the map card's next-event row, over the picked body's
+  // system. Its own state end to end: the chart and the panel are never open
+  // together (opening the map stashes the panel), but neither owns the other's
+  // clock, results or restarts.
+  private mapEventSearch: ShadowEventSearch | null = null;
+  private mapEventResults = new Map<string, ShadowEvent>();
+  /** Instant the live (or last) map sweep searched from; NaN before the first. */
+  private mapEventFromUtcMs = Number.NaN;
+  /** The event the row is showing, and what a tap on it warps to. */
+  private mapEventRowEvent: ShadowEvent | null = null;
+  /** Set by any rendered frame that sees the clock running backwards, so a
+   *  reversal over between two guard looks still restarts the sweep. Only the
+   *  guard tick and the sweep's own restarts/cancels clear it. */
+  private mapEventReverseLatch = makeMapEventReverseLatch();
+  /** Wall clock of the last guard tick — the guard runs at the UI cadence, not
+   *  per frame, because its restarts are what a fast warp would otherwise
+   *  churn. */
+  private mapEventGuardAtMs = 0;
 
   // Sun label
   private sunLabel = new SunLabel();
@@ -1350,8 +1380,10 @@ export class PlanetariumMode {
     // A clock jump moves every body at once — the Sun's exposed fraction can
     // step hard, so reseed the flash baseline instead of reading it as a rise.
     this.noteSunViewDiscontinuity();
-    // Clock jump invalidates the Observatory panel's upcoming-events list.
+    // Clock jump invalidates the Observatory panel's upcoming-events list, and
+    // the chart card's next-event row with it.
     this.startObservatoryEventSearch();
+    this.startMapEventSearch();
   }
 
   /** The ☰ menu auto-pauses the clock and restores it on close, and the help
@@ -5947,6 +5979,9 @@ export class PlanetariumMode {
           // baseline so the new geometry doesn't read as a Sun emergence.
           this.noteSunViewDiscontinuity();
           this.startObservatoryEventSearch();
+          // Reachable over an open map: only the expanded panel closes with the
+          // map, the bottom bar's date field stays live.
+          this.startMapEventSearch();
         }
       });
     }
@@ -6444,6 +6479,7 @@ export class PlanetariumMode {
     this.mapDiveVerb = null;
     this.mapDiveTarget = null;
     this.mapPicked = null;
+    this.cancelMapEventSearch();
     if (!this.mapCommitting) this.clearDiveFade();
 
     this.systemMap?.close();
@@ -6530,6 +6566,11 @@ export class PlanetariumMode {
       }
       this.mapHud.setActionsDisabled(this.arrivalInFlight);
     }
+    // The card's next-event sweep: a slice per frame under the same budget the
+    // Observatory's list spends, plus its own staleness guard. Never doubled up
+    // with the panel's — opening the map closes the panel, which cancels that
+    // search.
+    this.updateMapEventSearch();
     // The ◂ Overview chip follows the camera state, and the map has no HUD
     // reference of its own — so its visibility is owned here, every frame,
     // rather than left to whichever transition remembered to set it.
@@ -6807,12 +6848,154 @@ export class PlanetariumMode {
       facts.rows,
       facts.oneLiner,
     );
+    // A new card is a new system to watch: the row starts empty (showCard
+    // cleared it) and fills in as the sweep finds something.
+    this.startMapEventSearch();
   }
 
   private dismissMapCard() {
     if (!this.mapHud.isCardOpen()) return;
     this.mapHud.hideCard();
     this.mapPicked = null;
+    this.cancelMapEventSearch();
+  }
+
+  // ── System map: the card's next-event row ───────────────────────────────
+
+  /**
+   * (Re)start the sweep behind the card's event row, over the system the
+   * picked body belongs to. A body whose sky has nothing to report (the Sun,
+   * a moonless planet) clears the row instead.
+   *
+   * `preserveValidResults` is the hand-over case: the shown event has ended,
+   * so drop the finished ones and keep the rest while the new sweep re-fills —
+   * the row moves to the next event instead of blanking and coming back.
+   */
+  private startMapEventSearch(opts?: { preserveValidResults?: boolean }) {
+    const picked = this.mapPicked;
+    const parentPlanet = picked && this.mapHud.isCardOpen()
+      ? mapEventSearchTarget(picked.name)
+      : null;
+    if (!parentPlanet) {
+      this.cancelMapEventSearch();
+      return;
+    }
+    if (opts?.preserveValidResults) {
+      const now = this.timeState.currentUtcMs;
+      for (const [key, event] of this.mapEventResults) {
+        if (event.endUtcMs <= now) this.mapEventResults.delete(key);
+      }
+    } else {
+      this.mapEventResults.clear();
+    }
+    this.mapEventFromUtcMs = this.timeState.currentUtcMs;
+    this.mapEventSearch = startShadowEventSearch(parentPlanet, this.mapEventFromUtcMs);
+    resetMapEventReverseLatch(this.mapEventReverseLatch);
+    this.publishMapEvent();
+  }
+
+  private cancelMapEventSearch() {
+    this.mapEventSearch = null;
+    this.mapEventResults.clear();
+    this.mapEventRowEvent = null;
+    this.mapEventFromUtcMs = Number.NaN;
+    resetMapEventReverseLatch(this.mapEventReverseLatch);
+    this.mapHud.setEventRow(null);
+  }
+
+  /**
+   * One frame of the card's sweep, plus the periodic guard that decides when
+   * the sweep's answer has gone stale. Called from the map's per-frame refresh,
+   * so it runs in both update branches and stops with the map.
+   */
+  private updateMapEventSearch() {
+    if (!this.mapHud.isCardOpen()) return;
+    const reverse = mapEventReverseRunning(this.timeState.rate, this.timeState.paused);
+    latchMapEventReverse(this.mapEventReverseLatch, this.timeState.rate, this.timeState.paused);
+    const nowMs = performance.now();
+    if (nowMs - this.mapEventGuardAtMs >= PlanetariumMode.UI_REFRESH_INTERVAL_S * 1000) {
+      this.mapEventGuardAtMs = nowMs;
+      const action = guardMapEvent(this.mapEventReverseLatch, {
+        nowUtcMs: this.timeState.currentUtcMs,
+        timeRate: this.timeState.rate,
+        paused: this.timeState.paused,
+        searching: this.mapEventSearch !== null,
+        fromUtcMs: this.mapEventFromUtcMs,
+        rowEndUtcMs: this.mapEventRowEvent?.endUtcMs ?? null,
+      });
+      if (action === 'restart') this.startMapEventSearch();
+      else if (action === 'restart-preserve') {
+        this.startMapEventSearch({ preserveValidResults: true });
+      }
+    }
+    if (reverse) {
+      // A "next event" measured against a clock running the other way is not a
+      // fact about anything. The row goes; the sweep waits for the clock.
+      this.mapEventRowEvent = null;
+      this.mapHud.setEventRow(null);
+      return;
+    }
+    const search = this.mapEventSearch;
+    if (!search) return;
+    const done = stepShadowEventSearch(
+      search,
+      PlanetariumMode.OBSERVATORY_SEARCH_FRAME_BUDGET_MS,
+      this.eventSearchSlice,
+    );
+    for (const event of this.eventSearchSlice) {
+      this.mapEventResults.set(shadowEventSpecKey(event.spec), event);
+    }
+    if (this.eventSearchSlice.length > 0 || done) this.publishMapEvent();
+    if (done) this.mapEventSearch = null;
+  }
+
+  /** Put the soonest event found so far on the card — the sky's next word about
+   *  this system. Nothing found yet says nothing: a chart narrating its own
+   *  search would be noise where the Observatory's list has room for a status. */
+  private publishMapEvent() {
+    let soonest: ShadowEvent | null = null;
+    for (const event of this.mapEventResults.values()) {
+      if (!soonest || event.peakUtcMs < soonest.peakUtcMs) soonest = event;
+    }
+    this.mapEventRowEvent = soonest;
+    if (!soonest) {
+      this.mapHud.setEventRow(null);
+      return;
+    }
+    // The panel's own words for the same event, so one sky reads one way.
+    const includeYear = Math.abs(soonest.peakUtcMs - this.timeState.currentUtcMs)
+      > 300 * 86_400_000;
+    this.mapHud.setEventRow({
+      label: PlanetariumMode.shadowEventLabel(soonest.spec),
+      when: formatEventRowTime(soonest.peakUtcMs, includeYear),
+    });
+  }
+
+  /**
+   * The row is the warp: park the clock just before the event at 1×, running,
+   * and leave the chart exactly where it is — the point is to watch the system
+   * do it on the diagram you are already reading.
+   */
+  private warpToMapEvent() {
+    const event = this.mapEventRowEvent;
+    if (!event || !this.isMapOpen()) return;
+    // Park shortly before the peak with the clock running at real time, the
+    // way an event jump from the panel does — the user watches it happen
+    // rather than landing on a frozen peak. setCurrentUtcMs rebuilds the world
+    // positions, the time readout and the Sun-optics baseline itself.
+    this.timeState = { ...this.timeState, rate: 1, paused: false };
+    this.setCurrentUtcMs(event.peakUtcMs - OBSERVATORY_JUMP_LEAD_MS);
+    // The landed scene is still standing behind the chart, and the clock just
+    // moved under it.
+    if (this.landedOn) this.refreshLandedScene();
+    // Cross-instrument and deliberate: "the most recent event jump" is what the
+    // Observatory's steppers dedupe against and what the surface HUD narrates,
+    // and this jump IS the most recent one. Session-only — it is absent from
+    // the saved state, so it never reaches disk.
+    this.lastObservatoryEvent = event;
+    // The clock has left the sweep's anchor far behind.
+    this.startMapEventSearch();
+    this.notification.show(this.describeShadowEvent(event));
   }
 
   /** Whether the map camera is writing its own pose — taps and hover stand down
@@ -9441,10 +9624,6 @@ export class PlanetariumMode {
     return (1 + cosTheta) / 2;
   }
 
-  private static shadowSpecKey(spec: ShadowEventSpec): string {
-    return `${spec.kind}|${spec.moonName}`;
-  }
-
   /** Event title — reads like an event, not engineer notation. */
   private static shadowEventLabel(spec: ShadowEventSpec): string {
     if (spec.parentPlanet === 'Earth' && spec.moonName === 'Moon') {
@@ -9513,21 +9692,13 @@ export class PlanetariumMode {
     } else {
       this.observatoryEventResults.clear();
     }
-    const specs = listShadowEventSpecs(parentPlanet);
-    // A moonless system has no shadow events to search — publish the empty
-    // list instead of ticking a zero-spec search every frame.
-    if (specs.length === 0) {
-      this.observatoryEventSearch = null;
-      this.publishObservatoryEvents();
-      return;
-    }
-    this.observatoryEventSearch = {
+    // A moonless system has no shadow events to search — the shared sweep
+    // refuses one, and the panel publishes the empty list instead of ticking a
+    // zero-spec search every frame.
+    this.observatoryEventSearch = startShadowEventSearch(
       parentPlanet,
-      specs,
-      index: 0,
-      resumeCursorUtcMs: null,
-      fromUtcMs: this.timeState.currentUtcMs,
-    };
+      this.timeState.currentUtcMs,
+    );
     this.publishObservatoryEvents();
   }
 
@@ -9561,35 +9732,21 @@ export class PlanetariumMode {
   private pumpObservatoryEventSearch() {
     const search = this.observatoryEventSearch;
     if (!search) return;
+    // Liveness stays with the caller: the shared sweep knows nothing about
+    // panels, and a closed one has nothing to fill.
     if (!this.observatoryPanel.isOpen()) {
       this.cancelObservatoryEventSearch();
       return;
     }
-    const deadlineMs = performance.now() + PlanetariumMode.OBSERVATORY_SEARCH_FRAME_BUDGET_MS;
-    let listChanged = false;
-    while (search.index < search.specs.length) {
-      const remainingMs = deadlineMs - performance.now();
-      if (remainingMs <= 0) break;
-      const spec = search.specs[search.index];
-      const result = searchShadowEvent(spec, search.resumeCursorUtcMs ?? search.fromUtcMs, 1, {
-        timeBudgetMs: remainingMs,
-        // Anchor the horizon at the original start so resumed slices can't
-        // slide the search window forward forever.
-        searchOriginUtcMs: search.fromUtcMs,
-      });
-      if (result.status === 'paused') {
-        search.resumeCursorUtcMs = result.cursorUtcMs;
-        break;
-      }
-      if (result.status === 'found') {
-        this.observatoryEventResults.set(PlanetariumMode.shadowSpecKey(spec), result.event);
-        listChanged = true;
-      }
-      search.index++;
-      search.resumeCursorUtcMs = null;
+    const done = stepShadowEventSearch(
+      search,
+      PlanetariumMode.OBSERVATORY_SEARCH_FRAME_BUDGET_MS,
+      this.eventSearchSlice,
+    );
+    for (const event of this.eventSearchSlice) {
+      this.observatoryEventResults.set(shadowEventSpecKey(event.spec), event);
     }
-    const done = search.index >= search.specs.length;
-    if (listChanged || done) this.publishObservatoryEvents();
+    if (this.eventSearchSlice.length > 0 || done) this.publishObservatoryEvents();
     if (done) this.observatoryEventSearch = null;
   }
 

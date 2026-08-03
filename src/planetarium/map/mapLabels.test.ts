@@ -5,6 +5,9 @@ import {
   LABEL_ANCHOR_OFFSET_PX,
   LABEL_CLEARANCE_PX,
   LABEL_MIN_SEP_PX,
+  LABEL_BOX_PAD_PX,
+  LABEL_LINE_HEIGHT_PX,
+  LABEL_NOMINAL_HALF_WIDTH_PX,
 } from './mapLabels';
 import { MAP_LABEL_CAPACITY } from './mapBodies';
 import { mapMarkerRadiusPx, MAP_BODY_SIZE_DEFAULTS } from './mapBodySize';
@@ -72,9 +75,11 @@ describe('MapLabelPlacer', () => {
   it('honours a separation the caller sets', () => {
     const p = new MapLabelPlacer(4);
     p.begin();
-    p.place(0, 0, 10);
-    expect(p.place(9, 0, 10)).toBe(false);
-    expect(p.place(11, 0, 10)).toBe(true);
+    // Positional: x, anchorY, box top, half-width, separation. Nothing has a
+    // width here, so only the anchor floor is in play.
+    p.place(0, 0, 0, 0, 10);
+    expect(p.place(9, 0, 0, 0, 10)).toBe(false);
+    expect(p.place(11, 0, 0, 0, 10)).toBe(true);
   });
 });
 
@@ -159,12 +164,98 @@ describe('mapLabelOffsetPx', () => {
     expect(p.place(anchorB.x, anchorB.y)).toBe(true);
   });
 
-  it('leaves the Sun on the flat offset — it is not a planet entry', () => {
-    // Stated, not fixed here: the Sun already sizes by policy, so this commit
-    // changes nothing about it. Its marker is wider than the flat offset, which
-    // is a pre-existing wart, not one this rule introduces.
-    expect(mapLabelOffsetPx(null)).toBe(LABEL_ANCHOR_OFFSET_PX);
-    expect(mapMarkerRadiusPx(SUN_DATA.radiusAU, MAP_BODY_SIZE_DEFAULTS))
-      .toBeGreaterThan(LABEL_ANCHOR_OFFSET_PX);
+  it('clears the Sun too — its disc is twice the flat offset', () => {
+    const sun = mapMarkerRadiusPx(SUN_DATA.radiusAU, MAP_BODY_SIZE_DEFAULTS);
+    expect(sun).toBeGreaterThan(LABEL_ANCHOR_OFFSET_PX);
+    expect(mapLabelOffsetPx(sun)).toBeGreaterThanOrEqual(sun + LABEL_CLEARANCE_PX);
+    // The policy's ceiling is what the Sun sits on, so this is the widest
+    // offset the chart ever asks for.
+    expect(sun).toBe(MAP_BODY_SIZE_DEFAULTS.maxPx);
+  });
+});
+
+describe('the label box test', () => {
+  /** Place a label the way SystemMap does: anchor, drawn top, half-width. */
+  const put = (p: MapLabelPlacer, anchorY: number, offset: number, half: number, x = 200) =>
+    p.place(x, anchorY, anchorY + offset, half);
+
+  it('rejects two names that would lie across each other (the O2 case)', () => {
+    // Anchors 35 px apart clear the 26 px anchor floor, so the old rule drew
+    // both — and their names, 44 px wide, lay straight across each other.
+    const p = new MapLabelPlacer(8);
+    p.begin();
+    expect(p.place(200, 100, 109, 22)).toBe(true);
+    expect(p.place(235, 100, 109, 22)).toBe(false);
+    // Far enough apart that the boxes clear, and it draws again.
+    expect(p.place(200 + 44 + LABEL_BOX_PAD_PX + 1, 100, 109, 22)).toBe(true);
+  });
+
+  it('still admits names that only crowd on one axis', () => {
+    const p = new MapLabelPlacer(8);
+    p.begin();
+    expect(put(p, 100, 9, 22)).toBe(true);
+    // Straight below, far enough that the two line boxes clear.
+    expect(put(p, 100 + LABEL_LINE_HEIGHT_PX + LABEL_BOX_PAD_PX + 30, 9, 22)).toBe(true);
+    p.begin();
+    expect(put(p, 100, 9, 22)).toBe(true);
+    // Side by side on the same line, clear of each other horizontally.
+    expect(put(p, 100, 9, 22, 200 + 44 + LABEL_BOX_PAD_PX + 2)).toBe(true);
+  });
+
+  it('judges the DRAWN boxes, not the anchors — the mixed-offset case', () => {
+    // Same two anchors both times. Saturn's marker is large, so its name is
+    // pushed well down; a moon beside it keeps the flat offset. Whether they
+    // collide depends entirely on those offsets, which is the whole point.
+    // Two anchors 32 px apart across the frame — clear of the 26 px floor, so
+    // the anchor rule admits both either way.
+    const collide = new MapLabelPlacer(8);
+    collide.begin();
+    expect(collide.place(200, 100, 100 + 9, 22)).toBe(true);
+    expect(collide.place(232, 100, 100 + 9, 22)).toBe(false);
+    const spread = new MapLabelPlacer(8);
+    spread.begin();
+    expect(spread.place(200, 100, 100 + 9, 22)).toBe(true);
+    // Same anchors. The second body's marker is big, so its name is pushed a
+    // whole line further down — and now the two boxes clear.
+    const bigOffset = 9 + LABEL_LINE_HEIGHT_PX + LABEL_BOX_PAD_PX + 1;
+    expect(spread.place(232, 100, 100 + bigOffset, 22)).toBe(true);
+  });
+
+  it('leaves the anchor floor in charge when nothing has a width', () => {
+    // Every old case, at half-width 0: the box test cannot fire, so the
+    // behaviour is the anchor rule exactly as it was.
+    const p = new MapLabelPlacer(8);
+    p.begin();
+    expect(p.place(100, 100, 100, 0)).toBe(true);
+    expect(p.place(100 + LABEL_MIN_SEP_PX - 1, 100, 100, 0)).toBe(false);
+    expect(p.place(100 + LABEL_MIN_SEP_PX, 100, 100, 0)).toBe(true);
+  });
+
+  it('defaults to the anchor-only behaviour for a two-argument caller', () => {
+    const p = new MapLabelPlacer(8);
+    p.begin();
+    expect(p.place(0, 0)).toBe(true);
+    expect(p.place(LABEL_MIN_SEP_PX - 1, 0)).toBe(false);
+    expect(p.place(LABEL_MIN_SEP_PX, 0)).toBe(true);
+  });
+
+  it('culls on the nominal width before anything has been measured', () => {
+    // The pre-measure frame still gets a box test, so a label does not flash
+    // across its neighbour for one frame and then behave.
+    const p = new MapLabelPlacer(8);
+    p.begin();
+    expect(put(p, 100, 9, LABEL_NOMINAL_HALF_WIDTH_PX)).toBe(true);
+    expect(put(p, 100, 9, LABEL_NOMINAL_HALF_WIDTH_PX, 232)).toBe(false);
+    expect(LABEL_NOMINAL_HALF_WIDTH_PX).toBeGreaterThan(0);
+  });
+
+  it('records the box it admitted, so the next label is judged against it', () => {
+    const p = new MapLabelPlacer(8);
+    p.begin();
+    expect(put(p, 100, 9, 40)).toBe(true);
+    expect(p.placed).toBe(1);
+    // 60 px to the side clears the anchor floor but not two 40 px half-widths.
+    expect(put(p, 100, 9, 40, 260)).toBe(false);
+    expect(put(p, 100, 9, 40, 200 + 80 + LABEL_BOX_PAD_PX + 2)).toBe(true);
   });
 });

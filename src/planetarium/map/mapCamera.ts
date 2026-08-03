@@ -266,10 +266,24 @@ export function mapCameraReduce(
   }
 }
 
-/** Whether the ◂ Overview chip shows: while a focus is being flown to, and
- *  while one is being followed. A release flight is already on its way out. */
-export function mapOverviewChipVisible(state: MapCameraState): boolean {
+/** Whether there is a focus to let go of: one is being flown to, or one is
+ *  being followed. A release flight is already on its way out. This is Esc's
+ *  rung — Esc gives a focus back and then closes the map. */
+export function mapFocusReleasable(state: MapCameraState): boolean {
   return state.camState === 'following' || flying(state, 'follow');
+}
+
+/**
+ * Whether the ◂ Overview chip shows. It offers two ways home, not one: giving
+ * up a focus, and re-fitting an overview that a free zoom has wandered off.
+ *
+ * Deliberately NOT the same predicate as Esc's. Esc at a wandered overview
+ * closes the map, exactly as it always has — the chip is an extra affordance
+ * there, not a new rung in the cascade, and one shared predicate with a flag
+ * would be one call site away from making Esc unable to close the map at all.
+ */
+export function mapOverviewChipVisible(state: MapCameraState, zoomFree: boolean): boolean {
+  return mapFocusReleasable(state) || (state.camState === 'overview' && zoomFree);
 }
 
 /** Whether taps and hover stand down: the camera is writing its own pose and a
@@ -532,4 +546,31 @@ export function mapDiveEndFraction(
   if (!(startDistAU > 0)) return baseFrac;
   const floorFrac = (destinationClearanceRadiusAU * MAP_DIVE_SURFACE_CLEARANCE) / startDistAU;
   return floorFrac > baseFrac ? floorFrac : baseFrac;
+}
+
+/** How long the arrival pulse runs, and how many times it swells inside that. */
+export const MAP_FOCUS_PULSE_MS = 1200;
+const MAP_FOCUS_PULSE_CYCLES = 2;
+/** How much of its predecessor each swell keeps — the second is a confirmation,
+ *  not a repeat. */
+const MAP_FOCUS_PULSE_DECAY = 0.45;
+
+/**
+ * The emphasis envelope for a focus flight LANDING, at `tMs` after it landed.
+ *
+ * Two swells over about a second, the second smaller, then nothing. It marks
+ * the moment the camera stops flying and starts riding — which is otherwise
+ * invisible on the small bodies, where the flight ends on a marker that never
+ * changed size. Named for the transition rather than for "arrival", which in
+ * this codebase is what a SHIP does.
+ *
+ * Exactly 0 outside [0, MAP_FOCUS_PULSE_MS), so a caller can drive it with a
+ * running clock and stop when it returns to nothing.
+ */
+export function mapFocusLandPulse(tMs: number): number {
+  if (!(tMs >= 0) || tMs >= MAP_FOCUS_PULSE_MS) return 0;
+  const cycleMs = MAP_FOCUS_PULSE_MS / MAP_FOCUS_PULSE_CYCLES;
+  const index = Math.floor(tMs / cycleMs);
+  const phase = (tMs - index * cycleMs) / cycleMs;
+  return Math.pow(MAP_FOCUS_PULSE_DECAY, index) * Math.sin(Math.PI * phase);
 }

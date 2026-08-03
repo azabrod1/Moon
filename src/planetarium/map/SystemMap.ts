@@ -93,6 +93,7 @@ import {
   moonOffsetEntries,
   moonOffsetPolicyFor,
   setMapMoonOffsetParams,
+  setMapRingOuterFactors,
   type MapMoonOffsetParams,
   type MoonOffsetPolicy,
 } from './mapMoonOffset';
@@ -105,12 +106,14 @@ import {
   mapDiveEndFraction,
   mapFlightFramingDistanceAU,
   mapFocusEase,
+  mapFocusLandPulse,
   mapOverviewBounds,
   mapOverviewPivotDistanceAU,
   mapWorldPerPxAtUnitDepth,
   MAP_FOLLOW_MIN_SPREAD,
   revealDistanceAU,
   MAP_FOCUS_FLY_MS,
+  MAP_FOCUS_PULSE_MS,
   MAP_FOV_DEG,
   type MapCameraBounds,
   type MapCameraState,
@@ -133,7 +136,11 @@ import {
   MAP_PICK_ANCHOR_CAPACITY,
   type MapBodyKind,
 } from './mapBodies';
-import { mapLabelOffsetPx, MapLabelPlacer } from './mapLabels';
+import {
+  mapLabelOffsetPx,
+  MapLabelPlacer,
+  LABEL_NOMINAL_HALF_WIDTH_PX,
+} from './mapLabels';
 import { debugWarn } from '../../shared/debug';
 
 /**
@@ -428,6 +435,10 @@ export class SystemMap {
    *  is the Sun, the planets and the moons, and only a name is shared by the
    *  pick, the card, the hover emphasis and the label. */
   private labels = new Map<string, HTMLDivElement>();
+  /** Each label's measured half-width in screen px, taken once the first time
+   *  it is revealed. Names do not change and the font does not either, so one
+   *  read per label per session is the whole cost of the box test. */
+  private labelHalfWidths = new Map<string, number>();
 
   private open = false;
   // Radial curve + how far it is blended toward true scale (0 compressed,
@@ -504,6 +515,10 @@ export class SystemMap {
   private anchorKeyQuat = new THREE.Quaternion(0, 0, 0, Number.NaN);
   // The catalog name of the currently hovered dot (fine pointers), or null.
   private hoveredName: string | null = null;
+  /** The body a focus flight has just landed on, and how long ago. The pulse
+   *  that marks the landing rides these; null between pulses. */
+  private pulseName: string | null = null;
+  private pulseElapsedMs = 0;
   // Whether the ship reads docked (landed or parked) this frame — set in
   // placeShip, read by the pick pass to drop the ship anchor that would
   // otherwise sit on top of its parent's dot.
@@ -677,6 +692,15 @@ export class SystemMap {
     for (const planet of PLANETARIUM_BODIES) {
       this.orbits.push(this.makeOrbit(planet, el));
     }
+    // Hand the offset policy the ring geometry this chart actually built,
+    // before any policy is built from it — the first one is built in the loop
+    // just below, and the factors have to be standing by then. Saturn is the
+    // only planet the map draws an annulus for, so it is the only one whose
+    // moons a ring-clearance knob can move.
+    const ringFactors: Record<string, number> = {};
+    for (const entry of this.orbits) ringFactors[entry.planet.name] = entry.ringOuterFactor;
+    setMapRingOuterFactors(ringFactors);
+
     // One system per planet that has moons. The meshes are built on first
     // reveal — a chart that never leaves the overview never pays for them.
     for (const entry of this.orbits) {
@@ -859,6 +883,8 @@ export class SystemMap {
     if (next === this.cam) return true;
     const fromFocus = this.cam.camState !== 'overview';
     this.cam = next;
+    // A new destination retires the last arrival's mark.
+    this.cancelFocusPulse();
     // What the camera follows decides which system is revealed, and nothing
     // else about the frame need change for that to be true.
     this.projectionRevision++;
@@ -874,8 +900,37 @@ export class SystemMap {
     if (next === this.cam) return false;
     const fromFocus = this.cam.camState !== 'overview';
     this.cam = next;
+    // Leaving is not an arrival: no pulse on the way out, and any still running
+    // ends here.
+    this.cancelFocusPulse();
     this.projectionRevision++;
     this.startFly(fromFocus);
+    return true;
+  }
+
+  /** Whether the overview's zoom has carried its pivot off the origin — the
+   *  chart is no longer at the parked fit. Read every frame for the ◂ chip, so
+   *  it allocates nothing and scans nothing (zoomState() does both). */
+  isZoomFree(): boolean {
+    return this.zoomFree;
+  }
+
+  /**
+   * Re-fit an overview a free zoom has wandered off. False when there is
+   * nothing to recover — a focus, a flight or a dive owns the camera, or the
+   * chart is already parked.
+   *
+   * The re-fit alone is not enough. A scale animation still running holds the
+   * framing ratio the user had when they toggled, and its next frame re-dollies
+   * to that ratio against the fresh fit — throwing the recenter away a frame
+   * after the tap. Rebasing the ratio against the pose just seated is what the
+   * two peer "back at the overview" paths (a release landing, a dive
+   * normalising) already do, and it lands the ratio at 1 by construction.
+   */
+  recenterOverview(): boolean {
+    if (!this.open || this.cam.camState !== 'overview' || !this.zoomFree) return false;
+    this.frameToExtent();
+    this.rebaseScaleZoomRatio();
     return true;
   }
 
@@ -917,6 +972,7 @@ export class SystemMap {
     this.blendFrom = this.blendTo;
     this.scaleZoomRatio = 1;
     this.setHover(null);
+    this.cancelFocusPulse();
     // A ping is an opening, so a session that ends mid-ping ends it too.
     this.pingSprite.visible = false;
     this.controls.enabled = false;
@@ -1115,6 +1171,9 @@ export class SystemMap {
         // The mode drives setDivePose; the camera section stands down.
         break;
     }
+    // After the camera phase, so a flight that landed this frame pulses from
+    // zero rather than from one frame in.
+    this.advanceFocusPulse(dtMs);
     // Flush the matrices BEFORE any projection. The renderer refreshes them
     // only at render time, which runs after this update, so a
     // projection-dependent pass must force it.
@@ -1307,6 +1366,10 @@ export class SystemMap {
 
     this.cam = mapCameraReduce(this.cam, { kind: 'flyLanded' });
     if (this.cam.camState === 'following' && name) {
+      // The camera has stopped flying and started riding. On the small bodies
+      // nothing else says so — the flight ends on a marker that never changed
+      // size — so the arrival announces itself.
+      this.startFocusPulse(name);
       // Land on where the body IS, not where the ease was interpolating toward
       // a frame ago, so the follow starts with a zero delta.
       this.controls.target.copy(this.flyGoalTarget);
@@ -2374,8 +2437,9 @@ export class SystemMap {
   /** Brighten the hovered dot and emphasize its label; restore the previous. */
   setHover(name: string | null): void {
     if (name === this.hoveredName) return;
-    this.applyDotEmphasis(this.hoveredName, false);
+    const previous = this.hoveredName;
     this.hoveredName = name;
+    this.applyDotEmphasis(previous, false);
     this.applyDotEmphasis(name, true);
   }
 
@@ -2477,6 +2541,7 @@ export class SystemMap {
     // frame need change for the destination's system to have to come up.
     this.projectionRevision++;
     this.setHover(null);
+    this.cancelFocusPulse();
     return true;
   }
 
@@ -2750,12 +2815,38 @@ export class SystemMap {
     return this.entryFor(name)?.dot ?? null;
   }
 
-  /** Hover feedback for one body: its marker lifts toward white, its globe (if
-   *  that is what it draws) answers with its own tint instead, and its label
-   *  emphasizes. A body with none of those — one the chart knows but does not
-   *  draw yet — simply has nothing to emphasize. */
+  /** Hover feedback for one body: the emphasis channel below, plus the label's
+   *  own class — which is a hard style step and so stays boolean-hover only. A
+   *  body with nothing drawn simply has nothing to emphasize. */
   private applyDotEmphasis(name: string | null, on: boolean): void {
     if (!name) return;
+    const label = this.labels.get(name);
+    if (label) label.classList.toggle('hover', on);
+    this.applyEmphasisLevel(name, this.emphasisLevelFor(name));
+  }
+
+  /**
+   * How emphasized a body should be right now, 0 to 1: full while it is
+   * hovered, the landing pulse's envelope while it is the body a focus just
+   * arrived at, and the greater of the two when it is both.
+   *
+   * Reading both live is what lets either one end without disturbing the other:
+   * restoring a finished pulse asks this question again and gets the hover
+   * answer, and clearing a hover from the body a pulse is running on leaves the
+   * pulse alone.
+   */
+  private emphasisLevelFor(name: string): number {
+    const hover = name === this.hoveredName ? 1 : 0;
+    const pulse = name === this.pulseName ? mapFocusLandPulse(this.pulseElapsedMs) : 0;
+    return hover > pulse ? hover : pulse;
+  }
+
+  /** The emphasis channel itself: the marker's tint lifted toward white and, for
+   *  a body drawing as a globe, its own tint as emissive. Scalar, so a pulse can
+   *  drive it. The ×1.3 marker swell is NOT here — it is keyed on boolean hover
+   *  in the size paths, and a pulse driving it would modulate the drawn reach and
+   *  with it the camera's own framing. */
+  private applyEmphasisLevel(name: string, level: number): void {
     const body = mapBody(name);
     if (!body) return;
     const moon = body.kind === 'moon' ? this.moonEntryFor(name) : null;
@@ -2766,18 +2857,46 @@ export class SystemMap {
       : moon?.baseColor ?? entry?.baseColor ?? null;
     if (sprite && base) {
       const mat = sprite.material as THREE.SpriteMaterial;
-      if (on) mat.color.copy(base).lerp(WHITE, HOVER_LIFT);
+      if (level > 0) mat.color.copy(base).lerp(WHITE, HOVER_LIFT * level);
       else mat.color.copy(base);
     }
-    // The globe answers with its own tint rather than the dot's swell — a moon
-    // the same way a planet does.
     const globeMat = moon?.globeMat ?? entry?.globeMat ?? null;
     if (globeMat && base) {
-      if (on) globeMat.emissive.copy(base).multiplyScalar(GLOBE_HOVER_EMISSIVE);
+      if (level > 0) globeMat.emissive.copy(base).multiplyScalar(GLOBE_HOVER_EMISSIVE * level);
       else globeMat.emissive.setRGB(0, 0, 0);
     }
-    const label = this.labels.get(name);
-    if (label) label.classList.toggle('hover', on);
+  }
+
+  /** Begin the landing pulse on a body, replacing any pulse already running. */
+  private startFocusPulse(name: string | null): void {
+    if (!name) return;
+    this.cancelFocusPulse();
+    this.pulseName = name;
+    this.pulseElapsedMs = 0;
+  }
+
+  /** End the pulse and hand its subject back to whatever the hover says — which
+   *  is how a finished pulse can never wipe a different body's live emphasis,
+   *  or its own body's. */
+  private cancelFocusPulse(): void {
+    const name = this.pulseName;
+    if (!name) return;
+    this.pulseName = null;
+    this.pulseElapsedMs = 0;
+    this.applyEmphasisLevel(name, this.emphasisLevelFor(name));
+  }
+
+  /** Advance the pulse. Its own entry point into the emphasis apply: setHover
+   *  early-returns on an unchanged name, so a per-frame write routed through it
+   *  would never land. */
+  private advanceFocusPulse(dtMs: number): void {
+    if (!this.pulseName) return;
+    this.pulseElapsedMs += dtMs;
+    if (this.pulseElapsedMs >= MAP_FOCUS_PULSE_MS) {
+      this.cancelFocusPulse();
+      return;
+    }
+    this.applyEmphasisLevel(this.pulseName, this.emphasisLevelFor(this.pulseName));
   }
 
   /** Dev forensics: how one body is drawing right now, where its hit target
@@ -3450,12 +3569,48 @@ export class SystemMap {
     // another label's position.
     const x = this.tmpProj.x;
     const y = this.tmpProj.y + this.labelOffsetPxFor(name);
-    if (!this.labelPlacer.place(x, y)) {
+    if (!this.labelPlacer.place(x, this.tmpProj.y, y, this.labelHalfWidthFor(name, label))) {
       if (label.style.display !== 'none') label.style.display = 'none';
       return;
     }
     if (label.style.display === 'none') label.style.display = '';
     label.style.transform = `translate(-50%, 0) translate(${x}px, ${y}px)`;
+  }
+
+  /**
+   * The label's own half-width, taken once and kept.
+   *
+   * It cannot be read where the label sits: a label is built `display: none`
+   * inside a container hidden until the map opens, and offsetWidth there answers
+   * 0 — which the box test would take for "no width", degrading to the anchor
+   * rule with every unit test still green. So an unmeasured label is revealed
+   * off screen for the read and put straight back, BEFORE the placer judges it.
+   *
+   * Measuring before rather than after the placement is what makes the nominal a
+   * guard instead of a working value. Reading it afterwards leaves two holes: a
+   * label's first frame is judged at a width nobody measured, and — worse — a
+   * label culled on that frame is never revealed, so it never gets measured and
+   * keeps the assumed width for the rest of the session.
+   *
+   * One forced layout per label per session, on the frame it first comes into
+   * view. Measured across a Saturn reveal, which builds eighteen of them at
+   * once: frame-time medians identical to before at 8.30 ms, worst frame 14.8 →
+   * 16.2 ms on a frame already building eighteen moons.
+   */
+  private labelHalfWidthFor(name: string, label: HTMLDivElement): number {
+    const cached = this.labelHalfWidths.get(name);
+    if (cached !== undefined) return cached;
+    const prevDisplay = label.style.display;
+    const prevTransform = label.style.transform;
+    // Off screen for the read, so it cannot flash at a position nothing chose.
+    label.style.transform = 'translate(-9999px, -9999px)';
+    label.style.display = '';
+    const w = label.offsetWidth;
+    label.style.display = prevDisplay;
+    label.style.transform = prevTransform;
+    if (!(w > 0)) return LABEL_NOMINAL_HALF_WIDTH_PX;
+    this.labelHalfWidths.set(name, w / 2);
+    return w / 2;
   }
 
   /** How far below a body's centre its label sits. The ONE definition — the
@@ -3464,6 +3619,10 @@ export class SystemMap {
    *  orbit entry and takes the flat floor: its marker is sized against its
    *  parent and sits well inside it. */
   private labelOffsetPxFor(name: string): number {
+    // The Sun draws no orbit entry but does draw a disc — up to the size
+    // policy's ceiling, which is twice the flat offset. Its name sat inside its
+    // own photosphere; the rule that fixed that for the planets fixes it here.
+    if (name === SUN_DATA.name) return mapLabelOffsetPx(this.sunRadiusPx);
     return mapLabelOffsetPx(this.entryFor(name)?.drawnRadiusPx ?? null);
   }
 

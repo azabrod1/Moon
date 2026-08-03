@@ -269,7 +269,12 @@ import { mapBody, mapBodyRefFor } from './map/mapBodies';
 import { tidalLockQuaternion, tidalRollNorth } from './world/tidalLock';
 import { type MapBodySizeParams } from './map/mapBodySize';
 import { type MapMoonOffsetParams } from './map/mapMoonOffset';
-import { MAP_DOUBLE_TAP_MS, mapCameraOwnsPose, mapOverviewChipVisible } from './map/mapCamera';
+import {
+  MAP_DOUBLE_TAP_MS,
+  mapCameraOwnsPose,
+  mapFocusReleasable,
+  mapOverviewChipVisible,
+} from './map/mapCamera';
 import { HOVER_RECLAIM_MOVE_PX, resolveMapHover } from './map/mapHover';
 import { mapFactRows } from './map/mapFacts';
 import { isTap } from './map/mapPicking';
@@ -858,7 +863,7 @@ export class PlanetariumMode {
     () => this.closeMap(),
     (verb) => this.commitMapCard(verb),
     () => this.focusMapCard(),
-    () => this.releaseMapFocus(),
+    () => this.mapOverviewChipPressed(),
   );
   // The catalog name of the body the card is open on, or null. Also the map's
   // "picked" bridge state.
@@ -5992,11 +5997,13 @@ export class PlanetariumMode {
       if (label) label.textContent = this.showBodyMarkers ? 'On' : 'Off';
     });
 
-    document.getElementById('settings-orbits-toggle')?.addEventListener('click', () => {
+    const orbitsToggle = document.getElementById('settings-orbits-toggle');
+    orbitsToggle?.addEventListener('click', () => {
       // Per-frame updateOrbitLineVisibility applies the flag.
       this.showOrbitLines = !this.showOrbitLines;
       const label = document.getElementById('settings-orbits-label');
       if (label) label.textContent = this.showOrbitLines ? 'On' : 'Off';
+      orbitsToggle.setAttribute('aria-pressed', String(this.showOrbitLines));
     });
 
     document.getElementById('settings-throttle-toggle')?.addEventListener('click', () => {
@@ -6526,7 +6533,10 @@ export class PlanetariumMode {
     // The ◂ Overview chip follows the camera state, and the map has no HUD
     // reference of its own — so its visibility is owned here, every frame,
     // rather than left to whichever transition remembered to set it.
-    this.mapHud.setOverviewChip(mapOverviewChipVisible(this.systemMap.getCameraState()));
+    this.mapHud.setOverviewChip(mapOverviewChipVisible(
+      this.systemMap.getCameraState(),
+      this.systemMap.isZoomFree(),
+    ));
     // Advance an in-flight dive / autopilot-close transition.
     if (this.mapDiving) this.advanceMapTransition();
   }
@@ -6823,11 +6833,25 @@ export class PlanetariumMode {
     this.mapPickHeldName = null;
   }
 
-  /** Whether Esc has a focus to release before it closes the map — the same
-   *  states the ◂ Overview chip offers it in, because the chip IS that rung. */
+  /** Whether Esc has a focus to release before it closes the map. Deliberately
+   *  narrower than what the ◂ chip offers: the chip also re-fits a drifted
+   *  overview, and Esc there closes the map, exactly as it always has. */
   private mapFocusActive(): boolean {
     const cam = this.systemMap?.getCameraState();
-    return !!cam && mapOverviewChipVisible(cam);
+    return !!cam && mapFocusReleasable(cam);
+  }
+
+  /** The ◂ Overview chip. Two journeys home behind one button: give a focus
+   *  back, or — at an overview a free zoom has wandered off — re-fit the chart.
+   *  Which one is on offer is what the chip's own visibility predicate says. */
+  private mapOverviewChipPressed(): boolean {
+    const map = this.systemMap;
+    const cam = map?.getCameraState();
+    if (!map?.isOpen() || !cam || this.mapDiving) return false;
+    if (mapFocusReleasable(cam)) return this.releaseMapFocus();
+    // A re-fit moves the camera under the pointer the same way a flight does.
+    this.poisonMapPick();
+    return map.recenterOverview();
   }
 
   /** Whether the camera is already on its way back to the overview. */
@@ -11369,6 +11393,8 @@ export class PlanetariumMode {
     this.showOrbitLines = saved.showOrbitLines ?? false;
     const orbitsLabel = document.getElementById('settings-orbits-label');
     if (orbitsLabel) orbitsLabel.textContent = this.showOrbitLines ? 'On' : 'Off';
+    document.getElementById('settings-orbits-toggle')
+      ?.setAttribute('aria-pressed', String(this.showOrbitLines));
 
     // Restore autopilot target (kept even when landed — resumes on exit).
     // Pre-provenance saves migrate by heuristic in the store sanitizer (only

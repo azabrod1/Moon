@@ -9,12 +9,15 @@ import {
   mapDiveEndFraction,
   mapFlightFramingDistanceAU,
   mapFocusEase,
+  mapFocusLandPulse,
   mapOverviewBounds,
+  mapFocusReleasable,
   mapOverviewChipVisible,
   mapOverviewPivotDistanceAU,
   mapWorldPerPxAtUnitDepth,
   revealDistanceAU,
   MAP_FOCUS_MIN_PX,
+  MAP_FOCUS_PULSE_MS,
   MAP_FOCUS_REVEAL_PX,
   MAP_FOV_DEG,
   MAP_OVERVIEW_MIN_DIST_AU,
@@ -241,23 +244,64 @@ describe('mapCameraReduce', () => {
   });
 });
 
+describe('mapFocusReleasable', () => {
+  const initial = mapCameraInitialState();
+  const inbound = mapCameraReduce(initial, { kind: 'focus', name: 'Saturn' });
+  const following = mapCameraReduce(inbound, { kind: 'flyLanded' });
+  const leaving = mapCameraReduce(following, { kind: 'release' });
+  const diving = mapCameraReduce(following, { kind: 'diveStart', camera: true });
+
+  it('is true while flying to a body and while following it', () => {
+    expect(mapFocusReleasable(inbound)).toBe(true);
+    expect(mapFocusReleasable(following)).toBe(true);
+  });
+
+  it('is false on the overview, on the way back out, and during a dive', () => {
+    expect(mapFocusReleasable(initial)).toBe(false);
+    expect(mapFocusReleasable(leaving)).toBe(false);
+    expect(mapFocusReleasable(diving)).toBe(false);
+  });
+
+  it('does not care whether the overview zoom has wandered', () => {
+    // This is Esc's rung. A drifted overview is not a focus, so Esc closes the
+    // map there — the whole reason this is a separate function from the chip's.
+    expect(mapFocusReleasable(initial)).toBe(false);
+  });
+});
+
 describe('mapOverviewChipVisible', () => {
   const initial = mapCameraInitialState();
   const inbound = mapCameraReduce(initial, { kind: 'focus', name: 'Saturn' });
   const following = mapCameraReduce(inbound, { kind: 'flyLanded' });
   const leaving = mapCameraReduce(following, { kind: 'release' });
+  const diving = mapCameraReduce(following, { kind: 'diveStart', camera: true });
 
-  it('shows while flying to a body and while following it', () => {
-    expect(mapOverviewChipVisible(inbound)).toBe(true);
-    expect(mapOverviewChipVisible(following)).toBe(true);
+  it('shows while flying to a body and while following it, zoomed or not', () => {
+    expect(mapOverviewChipVisible(inbound, false)).toBe(true);
+    expect(mapOverviewChipVisible(inbound, true)).toBe(true);
+    expect(mapOverviewChipVisible(following, false)).toBe(true);
+    expect(mapOverviewChipVisible(following, true)).toBe(true);
   });
 
-  it('hides on the overview, on the way back out, and during a dive', () => {
-    expect(mapOverviewChipVisible(initial)).toBe(false);
-    expect(mapOverviewChipVisible(leaving)).toBe(false);
-    expect(mapOverviewChipVisible(
-      mapCameraReduce(following, { kind: 'diveStart', camera: true }),
-    )).toBe(false);
+  it('shows at an overview whose zoom has wandered, and hides at a clean one', () => {
+    expect(mapOverviewChipVisible(initial, true)).toBe(true);
+    expect(mapOverviewChipVisible(initial, false)).toBe(false);
+  });
+
+  it('hides on the way back out and during a dive, however the zoom sits', () => {
+    for (const free of [false, true]) {
+      expect(mapOverviewChipVisible(leaving, free)).toBe(false);
+      expect(mapOverviewChipVisible(diving, free)).toBe(false);
+    }
+  });
+
+  it('offers everything the releasable predicate does, and one thing more', () => {
+    for (const state of [initial, inbound, following, leaving, diving]) {
+      if (mapFocusReleasable(state)) expect(mapOverviewChipVisible(state, false)).toBe(true);
+    }
+    // The one thing more, and the only one.
+    expect(mapFocusReleasable(initial)).toBe(false);
+    expect(mapOverviewChipVisible(initial, true)).toBe(true);
   });
 });
 
@@ -935,5 +979,47 @@ describe('the overview zoom against every moon system', () => {
       expect(p * 0.05, label).toBeGreaterThan(0);
       expect(p, label).toBeCloseTo(gap, 12);
     });
+  });
+});
+
+describe('mapFocusLandPulse', () => {
+  it('is nothing before it starts and nothing after it ends', () => {
+    expect(mapFocusLandPulse(-1)).toBe(0);
+    expect(mapFocusLandPulse(-0.0001)).toBe(0);
+    expect(mapFocusLandPulse(Number.NaN)).toBe(0);
+    expect(mapFocusLandPulse(MAP_FOCUS_PULSE_MS)).toBe(0);
+    expect(mapFocusLandPulse(MAP_FOCUS_PULSE_MS + 1)).toBe(0);
+    expect(mapFocusLandPulse(1e6)).toBe(0);
+  });
+
+  it('starts at nothing and reaches full on the first swell', () => {
+    expect(mapFocusLandPulse(0)).toBeCloseTo(0, 12);
+    expect(mapFocusLandPulse(MAP_FOCUS_PULSE_MS / 4)).toBeCloseTo(1, 12);
+  });
+
+  it('swells twice, the second time smaller', () => {
+    const first = mapFocusLandPulse(MAP_FOCUS_PULSE_MS / 4);
+    const second = mapFocusLandPulse((3 * MAP_FOCUS_PULSE_MS) / 4);
+    expect(first).toBeCloseTo(1, 12);
+    expect(second).toBeGreaterThan(0);
+    expect(second).toBeLessThan(first);
+    // And it touches nothing between them, which is what makes it two swells
+    // rather than one long one.
+    expect(mapFocusLandPulse(MAP_FOCUS_PULSE_MS / 2)).toBeCloseTo(0, 12);
+  });
+
+  it('never leaves [0, 1], and peaks only twice', () => {
+    let peaks = 0;
+    let prev = mapFocusLandPulse(-10);
+    let rising = false;
+    for (let t = 0; t <= MAP_FOCUS_PULSE_MS + 20; t += 1) {
+      const v = mapFocusLandPulse(t);
+      expect(v).toBeGreaterThanOrEqual(0);
+      expect(v).toBeLessThanOrEqual(1);
+      if (v > prev) rising = true;
+      else if (rising && v < prev) { peaks++; rising = false; }
+      prev = v;
+    }
+    expect(peaks).toBe(2);
   });
 });

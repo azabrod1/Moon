@@ -2425,13 +2425,22 @@
       pointer-events: none;
     }
     #system-map-ui > * { pointer-events: auto; }
-    #map-labels { position: absolute; inset: 0; pointer-events: none; }
+    /* Labels are chart furniture; controls win. They are siblings in one
+       stacking context, so DOM order alone decides — and that is too easy to
+       lose to a future reorder for something a body name drifting over the
+       scale control would look like a bug. */
+    #map-labels { position: absolute; inset: 0; pointer-events: none; z-index: 0; }
+    .map-close, .map-overview, .map-scale, .map-card { z-index: 1; }
     .map-label {
       position: absolute;
       left: 0; top: 0;
       font-family: var(--font-ui);
       font-size: 11px;
       font-weight: 500;
+      /* Pinned, not inherited: the de-overlap measures each label as a box one
+         line tall, and a line height left to the engine's default makes that
+         box a different size in each of them. */
+      line-height: 14px;
       color: var(--t1);
       letter-spacing: 0.2px;
       text-shadow: 0 0 6px rgba(0, 0, 0, 0.9);
@@ -3030,8 +3039,9 @@
         </div>
         <div class="settings-row">
           <span class="settings-label">Orbit lines</span>
-          <button class="settings-toggle" id="settings-orbits-toggle">
-            <span id="settings-orbits-label">On</span>
+          <button class="settings-toggle" id="settings-orbits-toggle"
+                  aria-label="Orbit lines" aria-pressed="false">
+            <span id="settings-orbits-label">Off</span>
           </button>
         </div>
         <div class="settings-row">

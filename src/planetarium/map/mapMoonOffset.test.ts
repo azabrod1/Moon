@@ -8,7 +8,7 @@
  * near-real adjacent steps among the regulars, and the interval-overlap
  * fidelity that separates a chart from an orrery.
  */
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, afterEach } from 'vitest';
 import {
   buildMoonOffsetPolicy,
   mapMoonCurveR,
@@ -16,9 +16,15 @@ import {
   moonOffsetEntries,
   moonOffsetPolicyFor,
   setMapMoonOffsetParams,
+  mapMoonOffsetParams,
+  setMapRingOuterFactors,
+  effectiveClearanceR,
+  mapRingOuterFactor,
+  sanitizeMoonOffsetParams,
   MAP_MOON_OFFSET_DEFAULTS,
   type MoonOffsetEntry,
 } from './mapMoonOffset';
+import goldens from './moonOffset.goldens.json';
 import { PLANETARIUM_BODIES } from '../planets/planetData';
 import { MOONS } from '../planets/moonData';
 import {
@@ -612,5 +618,224 @@ describe('the live knobs', () => {
     expect(dropped.r).toBeLessThan(MAP_MOON_OFFSET_DEFAULTS.clearanceR);
     expect(setMapMoonOffsetParams({ ioAnchorR: 2.5 })).toBe(false);
     setMapMoonOffsetParams(null);
+  });
+});
+
+/**
+ * The ring-clearance knob and the registry it reads.
+ *
+ * The registry is module state, so every test here seeds what it needs and
+ * hands it back — a leaked Saturn factor would move a later suite's radii.
+ */
+describe('the drawn-ring registry', () => {
+  /** What the chart actually builds: an annulus for Saturn, nothing else. */
+  const CHART_RINGS = { Saturn: 2.27 };
+  const PLANETS = ['Mars', 'Jupiter', 'Saturn', 'Uranus', 'Neptune', 'Pluto', 'Earth'];
+
+  afterEach(() => {
+    setMapRingOuterFactors({});
+    setMapMoonOffsetParams(null);
+  });
+
+  it('answers 1 for everything while it is unseeded', () => {
+    setMapRingOuterFactors({});
+    for (const planet of PLANETS) expect(mapRingOuterFactor(planet)).toBe(1);
+    // And a factor at or below the globe is no ring at all.
+    setMapRingOuterFactors({ Saturn: 1, Uranus: 0.5, Mars: Number.NaN });
+    expect(mapRingOuterFactor('Saturn')).toBe(1);
+    expect(mapRingOuterFactor('Uranus')).toBe(1);
+    expect(mapRingOuterFactor('Mars')).toBe(1);
+  });
+
+  it('carries the clearance out to the ring in a straight line', () => {
+    setMapRingOuterFactors(CHART_RINGS);
+    const base = MAP_MOON_OFFSET_DEFAULTS.clearanceR;
+    const at = (mul: number) =>
+      effectiveClearanceR('Saturn', { ...MAP_MOON_OFFSET_DEFAULTS, ringClearanceMul: mul });
+    expect(at(0)).toBeCloseTo(base, 12);
+    expect(at(1)).toBeCloseTo(2.27, 12);
+    expect(at(0.5)).toBeCloseTo(base + 0.5 * (2.27 - base), 12);
+    // Every step of the knob moves it — no dead zone waiting for a max to win.
+    expect(at(0.25)).toBeGreaterThan(at(0));
+    expect(at(0.75)).toBeGreaterThan(at(0.5));
+  });
+
+  it('leaves a ringless planet alone at every value of the knob', () => {
+    setMapRingOuterFactors(CHART_RINGS);
+    for (const mul of [0, 0.25, 0.5, 0.75, 1]) {
+      for (const planet of ['Jupiter', 'Uranus', 'Neptune', 'Mars', 'Pluto', 'Earth']) {
+        expect(
+          effectiveClearanceR(planet, { ...MAP_MOON_OFFSET_DEFAULTS, ringClearanceMul: mul }),
+          `${planet} at ${mul}`,
+        ).toBe(MAP_MOON_OFFSET_DEFAULTS.clearanceR);
+      }
+    }
+  });
+
+  it('drops every built policy when it is seeded, or the next one is stale', () => {
+    setMapRingOuterFactors({});
+    setMapMoonOffsetParams({ ringClearanceMul: 1 });
+    const before = moonOffsetPolicyFor('Saturn');
+    expect(before.boundRun.length).toBe(8);
+    // Seeding AFTER a policy was built has to change the rebuilt one.
+    setMapRingOuterFactors(CHART_RINGS);
+    const after = moonOffsetPolicyFor('Saturn');
+    expect(after).not.toBe(before);
+    expect(after.boundRun.length).toBe(13);
+  });
+});
+
+describe('the ring-clearance knob', () => {
+  const CHART_RINGS = { Saturn: 2.27 };
+  const PLANETS = ['Mars', 'Jupiter', 'Saturn', 'Uranus', 'Neptune', 'Pluto', 'Earth'];
+
+  const radiiOf = (planet: string, mul: number, rings: Record<string, number>): number[] => {
+    setMapRingOuterFactors(rings);
+    const entries = moonOffsetEntries(planet);
+    const policy = buildMoonOffsetPolicy(planet, entries, {
+      ...MAP_MOON_OFFSET_DEFAULTS, ringClearanceMul: mul,
+    });
+    const out: number[] = [];
+    for (const e of entries) {
+      out.push(
+        mapMoonOffsetR(policy, e.periX),
+        mapMoonOffsetR(policy, e.meanX),
+        mapMoonOffsetR(policy, e.apoX),
+      );
+    }
+    return out;
+  };
+
+  afterEach(() => {
+    setMapRingOuterFactors({});
+    setMapMoonOffsetParams(null);
+  });
+
+  it('draws exactly the chart it drew BEFORE the knob existed, at zero', () => {
+    // Pinned against radii captured from the commit before this one, not
+    // against this implementation run twice: the params grew a field, so
+    // comparing the new code with itself passes a regression common to both
+    // paths — and object identity would pass a knob that did nothing and one
+    // that did too much alike. Float precision, no tolerance: these are outputs
+    // of a pure function, so anything but equality is a change.
+    setMapRingOuterFactors(CHART_RINGS);
+    const params = { ...MAP_MOON_OFFSET_DEFAULTS, ringClearanceMul: 0 };
+    let checked = 0;
+    for (const [planet, rows] of Object.entries(goldens.systems)) {
+      const entries = moonOffsetEntries(planet);
+      const policy = buildMoonOffsetPolicy(planet, entries, params);
+      for (const [name, peri, mean, apo] of rows as [string, number, number, number][]) {
+        const e = entries.find((x) => x.name === name);
+        expect(e, `${planet}: the catalog no longer has ${name}`).toBeDefined();
+        expect(mapMoonOffsetR(policy, e!.periX), `${name} periapsis`).toBe(peri);
+        expect(mapMoonOffsetR(policy, e!.meanX), `${name} mean`).toBe(mean);
+        expect(mapMoonOffsetR(policy, e!.apoX), `${name} apoapsis`).toBe(apo);
+        checked += 3;
+      }
+    }
+    // Every moon in the catalog, at all three of its breakpoints.
+    expect(checked).toBe(195);
+  });
+
+  it('charts the same radii whether or not the rings are registered, at zero', () => {
+    // A property of its own, and not the pin above: at zero the ring factor is
+    // multiplied by nothing, so a seeded registry may not move a single moon.
+    for (const planet of PLANETS) {
+      const withRings = radiiOf(planet, 0, CHART_RINGS);
+      const without = radiiOf(planet, 0, {});
+      expect(withRings.length, planet).toBeGreaterThan(0);
+      for (let i = 0; i < withRings.length; i++) {
+        expect(withRings[i], `${planet}[${i}]`).toBe(without[i]);
+      }
+    }
+  });
+
+  it('pushes Saturn\'s whole bound run outside the rings at one', () => {
+    setMapRingOuterFactors(CHART_RINGS);
+    const params = { ...MAP_MOON_OFFSET_DEFAULTS, ringClearanceMul: 1 };
+    const entries = moonOffsetEntries('Saturn');
+    const policy = buildMoonOffsetPolicy('Saturn', entries, params);
+    for (const name of policy.boundRun) {
+      const e = entries.find((x) => x.name === name)!;
+      expect(mapMoonOffsetR(policy, e.periX), name).toBeGreaterThanOrEqual(2.27 - 1e-12);
+    }
+  });
+
+  it('grows the bound run from eight to thirteen, and says which moons', () => {
+    // The count is paired with the boundary it encodes, so a future gen:moons
+    // regeneration that moves a semi-major axis fails with a diagnosis rather
+    // than an off-by-one. Tethys and Dione join at full clearance and bring
+    // their Trojan co-orbitals with them; Rhea is the first still outside.
+    setMapRingOuterFactors(CHART_RINGS);
+    const entries = moonOffsetEntries('Saturn');
+    const off = buildMoonOffsetPolicy('Saturn', entries, MAP_MOON_OFFSET_DEFAULTS);
+    const on = buildMoonOffsetPolicy('Saturn', entries, {
+      ...MAP_MOON_OFFSET_DEFAULTS, ringClearanceMul: 1,
+    });
+    expect(off.boundRun.length).toBe(8);
+    expect(on.boundRun.length).toBe(13);
+    for (const name of ['Tethys', 'Calypso', 'Telesto', 'Dione', 'Helene']) {
+      expect(off.boundRun, `${name} off`).not.toContain(name);
+      expect(on.boundRun, `${name} on`).toContain(name);
+    }
+    expect(on.boundRun).toContain('Helene');
+    expect(on.boundRun).not.toContain('Rhea');
+  });
+
+  it('moves no other system, whatever the knob is set to', () => {
+    for (const planet of PLANETS) {
+      if (planet === 'Saturn') continue;
+      const base = radiiOf(planet, 0, CHART_RINGS);
+      for (const mul of [0.25, 0.5, 1]) {
+        const moved = radiiOf(planet, mul, CHART_RINGS);
+        for (let i = 0; i < base.length; i++) {
+          expect(moved[i], `${planet} at ${mul}[${i}]`).toBe(base[i]);
+        }
+      }
+    }
+  });
+
+  it('keeps every invariant at nothing, half and full', () => {
+    setMapRingOuterFactors(CHART_RINGS);
+    for (const mul of [0, 0.5, 1]) {
+      const candidate = { ...MAP_MOON_OFFSET_DEFAULTS, ringClearanceMul: mul };
+      expect(sanitizeMoonOffsetParams(candidate), `mul ${mul}`).not.toBeNull();
+      // And the charted radii themselves: strictly increasing in x, inside the
+      // cap, and never inside the clearance this system is charted against.
+      for (const planet of PLANETS) {
+        const entries = moonOffsetEntries(planet);
+        if (entries.length === 0) continue;
+        const policy = buildMoonOffsetPolicy(planet, entries, candidate);
+        const clearance = effectiveClearanceR(planet, candidate);
+        const xs = entries.flatMap((e) => [e.periX, e.meanX, e.apoX]).sort((a, b) => a - b);
+        let prevR = -Infinity;
+        let prevX = -Infinity;
+        for (const x of xs) {
+          const r = mapMoonOffsetR(policy, x);
+          expect(Number.isFinite(r), `${planet} ${x}`).toBe(true);
+          expect(r, `${planet} cap`).toBeLessThanOrEqual(candidate.capR + 1e-9);
+          expect(r, `${planet} clearance at mul ${mul}`).toBeGreaterThanOrEqual(clearance - 1e-9);
+          if (x > prevX) expect(r, `${planet} order`).toBeGreaterThan(prevR - 1e-12);
+          prevR = r;
+          prevX = x;
+        }
+      }
+    }
+  });
+
+  it('refuses a knob outside its window and keeps the standing chart', () => {
+    setMapRingOuterFactors(CHART_RINGS);
+    for (const bad of [-0.001, 1.001, Number.NaN, Number.POSITIVE_INFINITY]) {
+      expect(
+        sanitizeMoonOffsetParams({ ...MAP_MOON_OFFSET_DEFAULTS, ringClearanceMul: bad }),
+        String(bad),
+      ).toBeNull();
+      expect(setMapMoonOffsetParams({ ringClearanceMul: bad }), String(bad)).toBe(false);
+    }
+    // The refusals left the shipped value standing.
+    expect(mapMoonOffsetParams().ringClearanceMul).toBe(0);
+    // And the ends of the window are accepted.
+    expect(setMapMoonOffsetParams({ ringClearanceMul: 0 })).toBe(true);
+    expect(setMapMoonOffsetParams({ ringClearanceMul: 1 })).toBe(true);
   });
 });

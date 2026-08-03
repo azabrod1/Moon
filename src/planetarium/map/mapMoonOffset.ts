@@ -89,6 +89,14 @@ export interface MapMoonOffsetParams {
   /** Ceiling on the squeeze's anchor margin above clearance. Small, and
    *  halved-gap-limited, so S's slope stays positive however tight the gap. */
   marginMax: number;
+  /** How far the clearance is carried out to a parent's DRAWN ring, 0 to 1. A
+   *  dimensionless blend rather than a distance — unlike the `*R` knobs, which
+   *  are in parent drawn radii. At 0 the clearance is the globe's, and a moon
+   *  may chart over the rings; at 1 it is the ring's outer edge, and nothing is
+   *  charted inside the annulus. Everything between is the trade: ring
+   *  separation costs the packed inner family its own separation. Ringless
+   *  planets are unchanged at every value by construction. */
+  ringClearanceMul: number;
 }
 
 export const MAP_MOON_OFFSET_DEFAULTS: MapMoonOffsetParams = {
@@ -99,6 +107,9 @@ export const MAP_MOON_OFFSET_DEFAULTS: MapMoonOffsetParams = {
   clearanceR: 1.35,
   bandR: 0.5,
   marginMax: 0.02,
+  // Off: the chart as it stands, with Saturn's inner family charted across the
+  // rings the way Pan and Atlas really do orbit inside them.
+  ringClearanceMul: 0,
 };
 
 /** One moon's orbit, in parent true radii — the only facts the policy needs. */
@@ -194,8 +205,11 @@ export function buildMoonOffsetPolicy(
     params,
   };
   if (entries.length === 0) return identity;
+  // The clearance this system is charted against: its globe's, carried out
+  // toward whatever ring the chart draws for it by the knob.
+  const clearanceR = effectiveClearanceR(parentPlanet, params);
   const sorted = [...entries].sort((a, b) => a.meanX - b.meanX);
-  const bound = sorted.filter((e) => mapMoonCurveR(e.meanX, params) < params.clearanceR);
+  const bound = sorted.filter((e) => mapMoonCurveR(e.meanX, params) < clearanceR);
   if (bound.length === 0) return identity;
 
   // The run's own minimum instantaneous value — its innermost periapsis. The
@@ -207,8 +221,8 @@ export function buildMoonOffsetPolicy(
   const firstUnbound = sorted[bound.length];
   if (firstUnbound) {
     const vHi = mapMoonCurveR(firstUnbound.meanX, params);
-    const margin = Math.min(params.marginMax, (vHi - params.clearanceR) / 2);
-    const slope = (vHi - (params.clearanceR + margin)) / Math.max(vHi - vLo, 1e-12);
+    const margin = Math.min(params.marginMax, (vHi - clearanceR) / 2);
+    const slope = (vHi - (clearanceR + margin)) / Math.max(vHi - vLo, 1e-12);
     return {
       parentPlanet,
       fixedPoint: vHi,
@@ -226,12 +240,12 @@ export function buildMoonOffsetPolicy(
   let vMax = -Infinity;
   for (const e of bound) vMax = Math.max(vMax, mapMoonCurveR(e.apoX, params));
   const margin = Math.min(params.marginMax, params.bandR / 2);
-  const lo = params.clearanceR + margin;
-  const hi = params.clearanceR + params.bandR;
+  const lo = clearanceR + margin;
+  const hi = clearanceR + params.bandR;
   if (!(vMax > vLo)) {
     // A single circular moon: no span to open, so the band's middle on a
     // slope-1 line, which is still strictly increasing.
-    const mid = params.clearanceR + params.bandR / 2;
+    const mid = clearanceR + params.bandR / 2;
     return {
       parentPlanet,
       fixedPoint: Infinity,
@@ -269,6 +283,20 @@ export function mapMoonOffsetR(policy: MoonOffsetPolicy, x: number): number {
 // ---- the catalog side --------------------------------------------------
 
 let params: MapMoonOffsetParams = { ...MAP_MOON_OFFSET_DEFAULTS };
+/**
+ * How far each parent's DRAWN ring reaches, in globe radii — seeded by whoever
+ * builds the chart, from the geometry it actually built.
+ *
+ * Not read from the ring catalog, and that is the point: the catalog describes
+ * four ring systems and the chart draws one. Charting Uranus, Jupiter and
+ * Neptune around annuli that are never on screen would move three systems for
+ * a reason nobody could see. A registry also lets the knob's own sanitizer walk
+ * the catalog with no chart in scope at all, which is where it is reached from
+ * the dev bridge.
+ *
+ * Unset means no rings: factor 1 everywhere, and the knob does nothing.
+ */
+let ringOuterFactors: Readonly<Record<string, number>> = {};
 const policyCache = new Map<string, MoonOffsetPolicy>();
 const entryCache = new Map<string, MoonOffsetEntry[]>();
 let ioMeanXCache = 0;
@@ -277,6 +305,37 @@ let farthestApoXCache = 0;
 /** The live knobs. */
 export function mapMoonOffsetParams(): MapMoonOffsetParams {
   return params;
+}
+
+/**
+ * Seed the drawn-ring geometry the clearance knob blends toward. Every built
+ * policy is dropped, for the same reason a knob change drops them: the
+ * clearance they were built at came from these numbers.
+ */
+export function setMapRingOuterFactors(factors: Readonly<Record<string, number>>): void {
+  ringOuterFactors = { ...factors };
+  policyCache.clear();
+}
+
+/** A parent's drawn ring edge in globe radii, 1 for a body the chart draws no
+ *  ring for — including every body while the registry is unseeded. */
+export function mapRingOuterFactor(parentPlanet: string): number {
+  const factor = ringOuterFactors[parentPlanet];
+  return Number.isFinite(factor) && factor > 1 ? factor : 1;
+}
+
+/**
+ * The clearance a system is actually charted against: the globe's, carried out
+ * toward its drawn ring by the knob. A straight interpolation rather than a max
+ * of the two, so every value of the knob does something — a max would sit on
+ * the globe's clearance until the blend overtook it and then jump.
+ */
+export function effectiveClearanceR(
+  parentPlanet: string,
+  p: MapMoonOffsetParams = params,
+): number {
+  const factor = mapRingOuterFactor(parentPlanet);
+  return p.clearanceR + p.ringClearanceMul * Math.max(0, factor - p.clearanceR);
 }
 
 /**
@@ -303,6 +362,9 @@ export function sanitizeMoonOffsetParams(
   if (!(candidate.ioAnchorR > 0)) return null;
   if (!(candidate.clearanceR >= 1)) return null;
   if (!(candidate.bandR > 0) || !(candidate.marginMax >= 0)) return null;
+  // The blend is a fraction; the !(x >= MIN) form refuses NaN as well as a
+  // number outside the window.
+  if (!(candidate.ringClearanceMul >= 0) || !(candidate.ringClearanceMul <= 1)) return null;
   // Room for the squeeze's band inside the cap, and room for zone 2 past the
   // boundary — a cap at or under the curve's boundary value would flatten the
   // whole tail onto one ring.
@@ -322,6 +384,11 @@ export function sanitizeMoonOffsetParams(
     const policy = buildMoonOffsetPolicy(planet.name, entries, candidate);
     if (!Number.isFinite(policy.slope) || !(policy.slope > 0)) return null;
     if (!Number.isFinite(policy.intercept)) return null;
+    // Every invariant below is checked at the clearance this system is actually
+    // charted against, not at the knob's base value — a ringed parent's is
+    // carried out to its annulus, and the band has to fit inside the cap there.
+    const clearance = effectiveClearanceR(planet.name, candidate);
+    if (!(candidate.capR > clearance + candidate.bandR)) return null;
     // Every breakpoint an orbit reaches, in order. Two moons at the SAME x
     // share a radius — that is a co-orbit, and it is the honest rendering of
     // one. Two moons at different x sharing a radius is a pile-up: distinct
@@ -339,7 +406,7 @@ export function sanitizeMoonOffsetParams(
     const breakpoints: number[] = [];
     for (const e of entries) {
       breakpoints.push(e.periX, e.meanX, e.apoX);
-      if (mapMoonOffsetR(policy, e.periX) < candidate.clearanceR - 1e-12) return null;
+      if (mapMoonOffsetR(policy, e.periX) < clearance - 1e-12) return null;
     }
     const lo = Math.min(...breakpoints);
     const hi = Math.max(...breakpoints);

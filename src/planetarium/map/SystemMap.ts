@@ -133,7 +133,7 @@ import {
   MAP_PICK_ANCHOR_CAPACITY,
   type MapBodyKind,
 } from './mapBodies';
-import { MapLabelPlacer } from './mapLabels';
+import { mapLabelOffsetPx, MapLabelPlacer } from './mapLabels';
 import { debugWarn } from '../../shared/debug';
 
 /**
@@ -152,8 +152,8 @@ export interface MapTextureSource {
 
 const ORBIT_SEGMENTS = 180;
 const BG_COLOR = 0x05070d;
-// Screen sizes (px, full sprite extent) for the constant-size markers.
-const PLANET_PX = 20;
+// Screen size (px, full sprite extent) for the ship marker — the one marker on
+// the chart with no body behind it, so no size policy to follow.
 const SHIP_PX = 26;
 // The ship's ember. It is the one marker with no catalog row behind it, so the
 // tint lives here — once, for the marker and the ping that comes out of it.
@@ -204,9 +204,16 @@ const MOON_REVEAL_MARGIN = 1.3;
 // At true scale a moon whose screen separation from the parent's drawn limb is
 // under this is inside the limb pixel: drawing it there is noise, not honesty.
 const MOON_TRUE_SCALE_MIN_SEP_PX = 2;
-// Moon dot sprite extent per drawn radius, matched to the planets' dots so the
-// marker reads the same size as the globe that replaces it.
-const MOON_DOT_EXTENT_MUL = 2.6;
+// Dot sprite extent per drawn radius, for every body the chart marks with one.
+//
+// The dot is a radial gradient, not a disc: opaque to 0.55 of its half-extent,
+// down to alpha 0.18 at 0.7, gone at 1.0. So it PAINTS about seven tenths of the
+// quad it is given, and a quad sized at the drawn radius would read as a body
+// two thirds the size of the globe it stands in for. At 2.6 the painted edge
+// lands at 0.7 × 1.3 = 0.91 of the drawn radius — near enough that the swap
+// between marker and globe reads as one object changing detail rather than
+// size. The ~9% residual is the price of the gradient and is not worth chasing.
+const DOT_EXTENT_MUL = 2.6;
 // Drawn orbits sit quieter than the planets' heliocentric lines: they are
 // dense, and the bodies are the subject.
 const MOON_RING_OPACITY = 0.5;
@@ -343,8 +350,13 @@ interface OrbitEntry {
   /** Outer edge of the drawn ring in globe radii, 1 where there is no ring —
    *  the body's full drawn reach, which is what a camera has to clear. */
   ringOuterFactor: number;
-  /** Drawn radius in screen px this frame — the globe's footprint, which is
-   *  also its click target once it outgrows the pointer floor. */
+  /** Drawn radius in screen px this frame, from the size policy — the globe's
+   *  footprint, which is also its click target once it outgrows the pointer
+   *  floor, AND the figure the dot is sized from when the dot is what draws.
+   *  One number per body: the sprite, the framing reach and the label offset all
+   *  read it, so none of them can hold a different opinion about how big the
+   *  body is. Seeded at the marker size, since that is what a body would draw at
+   *  before any frame has measured one. */
   drawnRadiusPx: number;
   /** Whether the globe, rather than the dot, is what drew this frame. */
   globeDrawn: boolean;
@@ -1777,12 +1789,10 @@ export class SystemMap {
    *  one than the clearance above: a camera has to stay outside a ring, but a
    *  frame has to contain the glow as well.
    *
-   *  It follows the look the body is actually WEARING. A dot is a fixed-size
-   *  sprite and owes the size policy nothing: the policy would budget Mercury
-   *  six pixels while its marker paints ten, and Jupiter sixteen while its
-   *  marker paints ten. Reading the drawn look instead keeps the figure honest
-   *  on both sides of the swap, so the framing follows the handoff rather than
-   *  stepping across it.
+   *  Both looks now measure the same body. A dot is drawn from the size policy's
+   *  radius exactly as the globe is, so the figure is continuous across the swap
+   *  by construction rather than by two rules that happen to agree: a hovered
+   *  dot carries its swell, a globe carries its ring, and neither steps.
    *
    *  The look is last frame's — drawn sizes are settled in the projection pass,
    *  after the moves that read this — which costs a frame at the swap and
@@ -1806,10 +1816,13 @@ export class SystemMap {
       Math.max(this.renderer.domElement.clientHeight, 1),
       MAP_FOV_DEG,
     );
-    // PLANET_PX is the sprite's full extent, so half of it is the reach; a
-    // hovered dot swells by the same factor its material does.
+    // The stored drawn radius, in AU at the dot's own depth. Framing to the
+    // policy radius rather than to the sprite's full half-extent is deliberate:
+    // the quad's outer third is the gradient fading to nothing, and budgeting
+    // frame for an invisible halo would push every flight further out than the
+    // picture needs. A hovered dot swells by the factor its material does.
     const hoverBoost = name === this.hoveredName ? HOVER_SCALE : 1;
-    return (PLANET_PX / 2) * hoverBoost * perPx * this.viewDepth(entry.dot.position);
+    return entry.drawnRadiusPx * hoverBoost * perPx * this.viewDepth(entry.dot.position);
   }
 
   /** The globe radius the size policy gives a body at the current pose: its
@@ -2220,7 +2233,7 @@ export class SystemMap {
         moon.globe.visible = globe;
         moon.dot.visible = visible && !globe;
         if (globe) moon.globe.scale.setScalar(drawnAU);
-        else moon.dot.scale.setScalar(drawnAU * MOON_DOT_EXTENT_MUL);
+        else moon.dot.scale.setScalar(drawnAU * DOT_EXTENT_MUL);
       }
     }
   }
@@ -2787,6 +2800,13 @@ export class SystemMap {
      *  pose it is being drawn from; any drift is the body rendering at the
      *  wrong size. 0 when no globe is drawn. */
     apparentRadiusPx: number;
+    /** Render truth for the other look: the dot sprite's FULL extent, measured
+     *  in screen px against the current camera, 0 when no dot is drawn. The
+     *  sprite is a gradient, so what it paints is about 0.7 of its half-extent —
+     *  the only figure that compares like for like against a globe's radius, and
+     *  the reason a size check must read this rather than the size policy, which
+     *  would agree with itself whatever the sprite was actually given. */
+    markerExtentPx: number;
     screenX: number;
     screenY: number;
     /** Map position (AU) the chart places the body at this frame. */
@@ -2835,6 +2855,9 @@ export class SystemMap {
         tint: body.color,
         radiusPx: this.sunRadiusPx,
         apparentRadiusPx: 0,
+        // The Sun's disc IS its sprite, and it is a limb-darkened billboard
+        // rather than the planets' gradient — its extent is twice its radius.
+        markerExtentPx: 2 * this.sunRadiusPx,
         screenX,
         screenY,
         mapPos,
@@ -2892,6 +2915,9 @@ export class SystemMap {
         apparentRadiusPx: moon?.globeDrawn
           ? moon.globe.scale.x / Math.max(worldPerPx, 1e-30)
           : 0,
+        markerExtentPx: moon && moon.dot.visible
+          ? moon.dot.scale.x / Math.max(worldPerPx, 1e-30)
+          : 0,
         screenX,
         screenY,
         mapPos,
@@ -2922,6 +2948,7 @@ export class SystemMap {
       tint: body.color,
       radiusPx: entry.drawnRadiusPx,
       apparentRadiusPx: entry.globeDrawn ? entry.globe.scale.x / Math.max(worldPerPx, 1e-30) : 0,
+      markerExtentPx: entry.dot.visible ? entry.dot.scale.x / Math.max(worldPerPx, 1e-30) : 0,
       screenX,
       screenY,
       mapPos,
@@ -3342,8 +3369,15 @@ export class SystemMap {
         // the ring — which is built in planet radii for exactly this reason.
         entry.globe.scale.setScalar(drawnAU);
       } else {
+        // The dot stands in for the globe, so it is sized from the same policy
+        // radius the globe would draw at — through the gradient's extent rule,
+        // the way the moons' dots already are.
         const boost = entry.planet.name === this.hoveredName ? HOVER_SCALE : 1;
-        this.applyMarkerScale(entry.dot, PLANET_PX * boost, worldPerPxAtUnit);
+        this.applyMarkerScale(
+          entry.dot,
+          DOT_EXTENT_MUL * entry.drawnRadiusPx * boost,
+          worldPerPxAtUnit,
+        );
       }
     }
     this.updateMoonDrawnSizes(worldPerPxAtUnit, trueScaleTarget);
@@ -3409,16 +3443,28 @@ export class SystemMap {
       if (label.style.display !== 'none') label.style.display = 'none';
       return;
     }
-    // Proximity cull: hide if the anchor lands too close to an already-placed
-    // (higher-priority) label this frame.
+    // Proximity cull: hide if the label lands too close to an already-placed
+    // (higher-priority) label this frame. Tested where the label is DRAWN, not
+    // at the body's centre — once the offset varies by body, the two are
+    // different points and culling against the centre would judge one label by
+    // another label's position.
     const x = this.tmpProj.x;
-    const y = this.tmpProj.y;
+    const y = this.tmpProj.y + this.labelOffsetPxFor(name);
     if (!this.labelPlacer.place(x, y)) {
       if (label.style.display !== 'none') label.style.display = 'none';
       return;
     }
     if (label.style.display === 'none') label.style.display = '';
-    label.style.transform = `translate(-50%, 0) translate(${x}px, ${y + 9}px)`;
+    label.style.transform = `translate(-50%, 0) translate(${x}px, ${y}px)`;
+  }
+
+  /** How far below a body's centre its label sits. The ONE definition — the
+   *  cull above and the transform that draws the label both read it, so a label
+   *  can never be judged at one place and painted at another. A moon has no
+   *  orbit entry and takes the flat floor: its marker is sized against its
+   *  parent and sits well inside it. */
+  private labelOffsetPxFor(name: string): number {
+    return mapLabelOffsetPx(this.entryFor(name)?.drawnRadiusPx ?? null);
   }
 
   private ensureLabelContainer(): void {
@@ -3501,7 +3547,7 @@ export class SystemMap {
       globeMat,
       ringMat,
       ringOuterFactor,
-      drawnRadiusPx: 0,
+      drawnRadiusPx: mapMarkerRadiusPx(planet.radiusAU, this.bodySizeParams),
       globeDrawn: false,
     };
   }

@@ -18,6 +18,30 @@
  *  one hides this frame — the true-scale inner four otherwise stack. */
 export const LABEL_MIN_SEP_PX = 26;
 
+/** How far below a body's centre a label sits when the body's own marker is
+ *  small enough not to matter. The historical flat offset, and still the floor. */
+export const LABEL_ANCHOR_OFFSET_PX = 9;
+/** Air between the edge of a marker and the top of its label. */
+export const LABEL_CLEARANCE_PX = 2;
+
+/**
+ * Where a body's label sits below its centre, in screen px.
+ *
+ * A flat offset works only while every marker is the same size. Once a body's
+ * marker follows the size policy the largest of them are wider than the offset,
+ * and a flat rule starts the name inside the body it names — so the offset
+ * clears whatever the body paints, and never drops below the flat floor for the
+ * small ones.
+ *
+ * `drawnRadiusPx` is the body's painted radius under the size policy, or null
+ * for a body with no drawn radius of its own — a moon, whose marker is sized
+ * against its parent and already sits well inside the floor.
+ */
+export function mapLabelOffsetPx(drawnRadiusPx: number | null): number {
+  if (drawnRadiusPx === null || !(drawnRadiusPx > 0)) return LABEL_ANCHOR_OFFSET_PX;
+  return Math.max(LABEL_ANCHOR_OFFSET_PX, drawnRadiusPx + LABEL_CLEARANCE_PX);
+}
+
 export class MapLabelPlacer {
   private readonly x: Float32Array;
   private readonly y: Float32Array;

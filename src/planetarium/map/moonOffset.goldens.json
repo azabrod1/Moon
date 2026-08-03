@@ -2,7 +2,7 @@
  "provenance": {
   "capturedFrom": "a077a61 (Planet dots join the size policy) — the commit before the ring-clearance knob",
   "capturedAt": "2026-08-03",
-  "generator": "buildMoonOffsetPolicy + mapMoonOffsetR over moonOffsetEntries, at MAP_MOON_OFFSET_DEFAULTS",
+  "generator": "buildMoonOffsetPolicy + mapMoonOffsetR over moonOffsetEntries, at that commit's knobs — replayed as MAP_MOON_OFFSET_DEFAULTS with an explicit ringClearanceMul: 0",
   "note": "Charted radius in parent DRAWN radii for every catalog moon at its periapsis, mean and apoapsis — the whole chart as it was drawn before the knob existed. The knob at 0 must reproduce every one of these exactly; comparing the new implementation against itself would pass a regression common to both paths, which is what this file exists to prevent. Full float precision on purpose: these are outputs of a pure function, not measurements, so there is nothing to round to.",
   "units": "[moon, periapsis, mean, apoapsis] in parent drawn radii"
  },

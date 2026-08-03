@@ -711,6 +711,12 @@ describe('the ring-clearance knob', () => {
     setMapMoonOffsetParams(null);
   });
 
+  it('ships the clearance half way out to the ring', () => {
+    // The pick: Saturn's inner family lifted off the globe's limb and spread
+    // through the annulus, still charted over the rings the way it orbits.
+    expect(MAP_MOON_OFFSET_DEFAULTS.ringClearanceMul).toBe(0.5);
+  });
+
   it('draws exactly the chart it drew BEFORE the knob existed, at zero', () => {
     // Pinned against radii captured from the commit before this one, not
     // against this implementation run twice: the params grew a field, so
@@ -766,9 +772,13 @@ describe('the ring-clearance knob', () => {
     // regeneration that moves a semi-major axis fails with a diagnosis rather
     // than an off-by-one. Tethys and Dione join at full clearance and bring
     // their Trojan co-orbitals with them; Rhea is the first still outside.
+    // Both ends of the knob are set explicitly: this pins what the knob does,
+    // not wherever the shipped default happens to stand.
     setMapRingOuterFactors(CHART_RINGS);
     const entries = moonOffsetEntries('Saturn');
-    const off = buildMoonOffsetPolicy('Saturn', entries, MAP_MOON_OFFSET_DEFAULTS);
+    const off = buildMoonOffsetPolicy('Saturn', entries, {
+      ...MAP_MOON_OFFSET_DEFAULTS, ringClearanceMul: 0,
+    });
     const on = buildMoonOffsetPolicy('Saturn', entries, {
       ...MAP_MOON_OFFSET_DEFAULTS, ringClearanceMul: 1,
     });
@@ -823,6 +833,16 @@ describe('the ring-clearance knob', () => {
     }
   });
 
+  it('sanitizes the shipped defaults against the rings the chart draws', () => {
+    // Named through the constant rather than a literal, so it tracks whatever
+    // ships: the null reset installs MAP_MOON_OFFSET_DEFAULTS without running
+    // them through the sanitizer, so nothing else checks that the shipped set
+    // draws a chart. Seeded first — with no rings registered the clearance
+    // never leaves the globe and the knob is not under test at all.
+    setMapRingOuterFactors(CHART_RINGS);
+    expect(sanitizeMoonOffsetParams(MAP_MOON_OFFSET_DEFAULTS)).not.toBeNull();
+  });
+
   it('refuses a knob outside its window and keeps the standing chart', () => {
     setMapRingOuterFactors(CHART_RINGS);
     for (const bad of [-0.001, 1.001, Number.NaN, Number.POSITIVE_INFINITY]) {
@@ -832,8 +852,9 @@ describe('the ring-clearance knob', () => {
       ).toBeNull();
       expect(setMapMoonOffsetParams({ ringClearanceMul: bad }), String(bad)).toBe(false);
     }
-    // The refusals left the shipped value standing.
-    expect(mapMoonOffsetParams().ringClearanceMul).toBe(0);
+    // The refusals left the standing value alone.
+    expect(mapMoonOffsetParams().ringClearanceMul)
+      .toBe(MAP_MOON_OFFSET_DEFAULTS.ringClearanceMul);
     // And the ends of the window are accepted.
     expect(setMapMoonOffsetParams({ ringClearanceMul: 0 })).toBe(true);
     expect(setMapMoonOffsetParams({ ringClearanceMul: 1 })).toBe(true);

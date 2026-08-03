@@ -107,9 +107,13 @@ export const MAP_MOON_OFFSET_DEFAULTS: MapMoonOffsetParams = {
   clearanceR: 1.35,
   bandR: 0.5,
   marginMax: 0.02,
-  // Off: the chart as it stands, with Saturn's inner family charted across the
-  // rings the way Pan and Atlas really do orbit inside them.
-  ringClearanceMul: 0,
+  // Half way out to the ring edge, on the one planet the chart draws rings for.
+  // Saturn's inner moons come off the globe's limb and spread through the
+  // annulus rather than crowding the radius just outside it, and the family's
+  // whole band narrows to about half its width in return. They still chart over
+  // the rings, which is where Pan and Atlas really orbit; full clearance would
+  // empty the annulus outright and leave the band tighter again by far.
+  ringClearanceMul: 0.5,
 };
 
 /** One moon's orbit, in parent true radii — the only facts the policy needs. */

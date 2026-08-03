@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { mapFactRows, sig3, tiltAxisEndpoints, TILT_GLYPH } from './mapFacts';
+import { mapFactRows, mapHoverMeta, sig3, tiltAxisEndpoints, TILT_GLYPH } from './mapFacts';
 import { PLANETARIUM_BODIES, SUN_DATA } from '../planets/planetData';
 import { MOONS } from '../planets/moonData';
 
@@ -244,5 +244,51 @@ describe('tiltAxisEndpoints', () => {
         expect(y).toBeLessThanOrEqual(TILT_GLYPH.height);
       }
     }
+  });
+});
+
+describe('mapHoverMeta', () => {
+  it('names the moon, its parent, its orbit and its real distance', () => {
+    const io = mapHoverMeta('Io');
+    expect(io).toBe(`Io · Jupiter's moon · Orbit ${rowValue('Io', 'Orbit')} · ${rowValue('Io', 'Distance to planet')}`);
+    // The shape, spelled out once so a reordering is caught: name, parent,
+    // orbit, distance — the two figures the compressed chart cannot draw.
+    expect(io?.split(' · ')).toHaveLength(4);
+    expect(io).toMatch(/^Io · Jupiter's moon · Orbit [\d.]+ d⊕ · [\d,.]+ km$/);
+  });
+
+  it('agrees with the card about both figures', () => {
+    // One display seam, not two: the hovered line and the opened card must
+    // never quote a different orbit or a different distance for the same moon.
+    for (const name of ['Titan', 'Ganymede', 'Mimas', 'Phobos']) {
+      const meta = mapHoverMeta(name)!;
+      expect(meta, name).toContain(`Orbit ${rowValue(name, 'Orbit')}`);
+      expect(meta, name).toContain(String(rowValue(name, 'Distance to planet')));
+    }
+  });
+
+  it('uses the chart\'s own name for Earth\'s moon', () => {
+    expect(mapHoverMeta('Moon')).toBe(`the Moon · Earth's moon · Orbit ${rowValue('Moon', 'Orbit')} · ${rowValue('Moon', 'Distance to planet')}`);
+  });
+
+  it('answers for every moon the chart can draw', () => {
+    for (const moon of MOONS) {
+      const meta = mapHoverMeta(moon.name);
+      expect(meta, moon.name).toBeTruthy();
+      expect(meta, moon.name).toContain(`${moon.parentPlanet}'s moon`);
+      expect(meta, moon.name).not.toContain('NaN');
+      expect(meta, moon.name).not.toContain('undefined');
+    }
+  });
+
+  it('says nothing about a body whose drawn place is its real one', () => {
+    // Planets and the Sun are charted where they are (radially compressed, but
+    // that is the chart's whole subject and the card says so). Nothing is owed.
+    for (const planet of PLANETARIUM_BODIES) {
+      expect(mapHoverMeta(planet.name), planet.name).toBeNull();
+    }
+    expect(mapHoverMeta(SUN_DATA.name)).toBeNull();
+    expect(mapHoverMeta('Ship')).toBeNull();
+    expect(mapHoverMeta('nothing the chart knows')).toBeNull();
   });
 });

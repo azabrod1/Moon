@@ -1,13 +1,17 @@
 import { describe, it, expect } from 'vitest';
 import {
+  labelClearanceRadiusPx,
   mapMoonMarkerRadiusAU,
   mapMoonRadiusAU,
   mapBodyRadiusAU,
   mapBodyRadiusPx,
   mapMarkerRadiusPx,
+  DOT_EXTENT_MUL,
   MAP_BODY_SIZE_DEFAULTS,
   type MapBodySizeParams,
 } from './mapBodySize';
+import { mapLabelOffsetPx, LABEL_ANCHOR_OFFSET_PX, LABEL_CLEARANCE_PX } from './mapLabels';
+import { PLANETARIUM_BODIES } from '../planets/planetData';
 import { KM_PER_AU } from '../../astronomy/constants';
 
 const P = MAP_BODY_SIZE_DEFAULTS;
@@ -171,6 +175,31 @@ describe('the moon branch', () => {
     expect(mapMoonRadiusAU(GANYMEDE, PARENT)).toBeCloseTo(PARENT * 0.34, 12);
   });
 
+  it('pins Ganymede\'s label clearance at the default marker, by expression', () => {
+    // The case the draw-mode rule exists for. Jupiter at the chart's default
+    // marker; Ganymede is drawn against it, so its marker is a fraction of that
+    // — already past the crossover where the flat label floor stops clearing
+    // anything. Every figure here is computed from the modules' own constants:
+    // a transcribed decimal would drift the moment a knob moved.
+    const jupiter = PLANETARIUM_BODIES.find((p) => p.name === 'Jupiter')!;
+    const parentPx = mapMarkerRadiusPx(jupiter.radiusAU);
+    expect(parentPx).toBeCloseTo(16.5277, 3);
+    // The marker function is linear in the parent's drawn size, so feeding it px
+    // answers in px.
+    const drawnPx = mapMoonMarkerRadiusAU(GANYMEDE, parentPx);
+    expect(drawnPx).toBeCloseTo(parentPx * 0.34, 12);
+    expect(drawnPx).toBeCloseTo(5.6194, 3);
+
+    const clearance = labelClearanceRadiusPx(drawnPx, true);
+    expect(clearance).toBeCloseTo((drawnPx * DOT_EXTENT_MUL) / 2, 12);
+    expect(clearance).toBeCloseTo(7.3052, 3);
+    // Composed: the offset the chart actually draws the name at, clear of the
+    // sprite rather than inside it, and past the flat floor by construction.
+    expect(mapLabelOffsetPx(clearance)).toBeCloseTo(clearance + LABEL_CLEARANCE_PX, 12);
+    expect(mapLabelOffsetPx(clearance)).toBeCloseTo(9.3052, 3);
+    expect(mapLabelOffsetPx(clearance)).toBeGreaterThan(LABEL_ANCHOR_OFFSET_PX);
+  });
+
   it('floors the smallest moons instead of losing them', () => {
     // Metis is a hundredth of Ganymede by radius and would be invisible on a
     // linear scale; the sqrt lands it just above the floor, and anything
@@ -179,5 +208,63 @@ describe('the moon branch', () => {
     expect(mapMoonMarkerRadiusAU(METIS, PARENT)).toBeLessThan(PARENT * 0.032);
     expect(mapMoonMarkerRadiusAU(METIS / 100, PARENT)).toBeCloseTo(PARENT * 0.03, 12);
     expect(mapMoonMarkerRadiusAU(0, PARENT)).toBeCloseTo(PARENT * 0.03, 12);
+  });
+});
+
+describe('labelClearanceRadiusPx', () => {
+  it('gives a globe its disc and nothing more', () => {
+    for (const r of [0.5, 6, 16.53, 40]) {
+      expect(labelClearanceRadiusPx(r, false)).toBe(r);
+    }
+  });
+
+  it('gives a dot the half-extent its sprite actually paints', () => {
+    // Jupiter's marker: the sprite is 2.6 drawn radii across, so it reaches
+    // 1.3 of them from the centre — the figure the old disc rule ignored.
+    expect(labelClearanceRadiusPx(16.5277, true)).toBeCloseTo(21.4860, 4);
+    expect(labelClearanceRadiusPx(16.5277, true))
+      .toBeCloseTo((16.5277 * DOT_EXTENT_MUL) / 2, 12);
+    // One definition of the factor: no second literal anywhere.
+    expect(DOT_EXTENT_MUL).toBe(2.6);
+  });
+
+  it('is the larger of the two whenever a body draws at all', () => {
+    for (const r of [0.5, 6, 16.53, 40]) {
+      expect(labelClearanceRadiusPx(r, true)).toBeGreaterThan(labelClearanceRadiusPx(r, false));
+    }
+  });
+
+  it('answers zero for a body with no drawn radius', () => {
+    expect(labelClearanceRadiusPx(0, true)).toBe(0);
+    expect(labelClearanceRadiusPx(-3, true)).toBe(0);
+    expect(labelClearanceRadiusPx(Number.NaN, false)).toBe(0);
+  });
+
+  it('crosses the flat label floor where the dot rule says it should', () => {
+    // Composed with the label offset, the floor binds until the painted skirt
+    // plus its air overtakes it: 1.3r + 2 > 9 at r > 5.3846.
+    const crossover = (LABEL_ANCHOR_OFFSET_PX - LABEL_CLEARANCE_PX) / (DOT_EXTENT_MUL / 2);
+    expect(crossover).toBeCloseTo(5.3846, 4);
+    expect(mapLabelOffsetPx(labelClearanceRadiusPx(crossover - 0.01, true)))
+      .toBe(LABEL_ANCHOR_OFFSET_PX);
+    expect(mapLabelOffsetPx(labelClearanceRadiusPx(crossover + 0.01, true)))
+      .toBeGreaterThan(LABEL_ANCHOR_OFFSET_PX);
+    // A globe of the same size is still on the floor — the two rules part here.
+    expect(mapLabelOffsetPx(labelClearanceRadiusPx(crossover + 0.01, false)))
+      .toBe(LABEL_ANCHOR_OFFSET_PX);
+  });
+
+  it('clears every planet\'s dot sprite, which the disc rule did not', () => {
+    for (const planet of PLANETARIUM_BODIES) {
+      const marker = mapMarkerRadiusPx(planet.radiusAU, MAP_BODY_SIZE_DEFAULTS);
+      const offset = mapLabelOffsetPx(labelClearanceRadiusPx(marker, true));
+      expect(offset, planet.name).toBeGreaterThanOrEqual(marker * (DOT_EXTENT_MUL / 2));
+      // What the disc rule gave a body whose skirt outgrew the flat floor: a
+      // name inside its own sprite. Jupiter and Saturn are the two.
+      if (marker * (DOT_EXTENT_MUL / 2) > LABEL_ANCHOR_OFFSET_PX) {
+        expect(mapLabelOffsetPx(marker), planet.name)
+          .toBeLessThan(marker * (DOT_EXTENT_MUL / 2));
+      }
+    }
   });
 });

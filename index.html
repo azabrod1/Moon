@@ -2537,6 +2537,43 @@
     }
     /* Hover feedback on a fine pointer: the pointed-at label brightens. */
     .map-label.hover { color: #fff; font-weight: 600; text-shadow: 0 0 8px rgba(0, 0, 0, 0.95); }
+    /* The hovered moon's real orbit, top-centre under the top chrome (the card
+       owns the lower-left). Mouse-only by construction, so a phone never sees
+       it — but it is still sized to survive a narrow window.
+
+       The id-qualified selector is load-bearing, not decoration: the layer's
+       own `#system-map-ui > *` rule turns pointer events back ON for every
+       child, and a plain class rule cannot outrank it — the chip would then
+       swallow every hover and pick on the chart beneath it. The z-index puts it
+       over the labels, with the rest of the controls. */
+    #system-map-ui .map-hover-meta {
+      position: absolute;
+      top: 62px;
+      left: 50%;
+      transform: translateX(-50%);
+      display: none;
+      max-width: min(460px, calc(100vw - 32px));
+      padding: 6px 12px;
+      border-radius: var(--r-m);
+      background: rgba(12, 14, 20, 0.72);
+      border: 1px solid var(--line);
+      -webkit-backdrop-filter: blur(12px);
+      backdrop-filter: blur(12px);
+      font-family: var(--font-ui);
+      font-size: 12px;
+      letter-spacing: 0.2px;
+      color: var(--t2);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      pointer-events: none;
+      z-index: 1;
+    }
+    #system-map-ui .map-hover-meta.visible { display: block; }
+    @media (max-width: 640px) {
+      /* Below the ◂ Overview chip's own row. */
+      #system-map-ui .map-hover-meta { top: 106px; }
+    }
     /* Picked-body card — docked bottom-left, above the bottom bands (measured).
        The height cap is measured too (MapHUD.measureCard), so box-sizing has to
        count the padding in it. */
@@ -2622,6 +2659,14 @@
       overscroll-behavior: contain;
     }
     .map-card-facts:empty { display: none; }
+    /* Only when the list really is taller than the room left for it (MapHUD
+       measures and sets .scrolls): the bottom row fades out instead of being
+       cut off mid-height, which is what says "there is more below". A card
+       whose facts fit carries no fade at all. */
+    .map-card-facts.scrolls {
+      -webkit-mask-image: linear-gradient(to bottom, #000 calc(100% - 12px), transparent);
+      mask-image: linear-gradient(to bottom, #000 calc(100% - 12px), transparent);
+    }
     .map-card-fact { display: flex; align-items: center; justify-content: space-between; gap: 14px; }
     .map-card-fact-k {
       font-family: var(--font-ui);
@@ -2656,6 +2701,12 @@
       .map-card-actions { gap: 6px; }
       .map-card-btn { padding: 7px 6px; font-size: 12px; }
       .map-card-facts { gap: 4px; padding-top: 7px; }
+      /* Rows are tighter here, so the fade is too — 12 px would swallow most of
+         the last one. */
+      .map-card-facts.scrolls {
+        -webkit-mask-image: linear-gradient(to bottom, #000 calc(100% - 8px), transparent);
+        mask-image: linear-gradient(to bottom, #000 calc(100% - 8px), transparent);
+      }
     }
     /* World-anchored overlays are force-hidden behind the map. The class must
        beat the per-frame inline display/opacity writers, so !important. */
@@ -3279,6 +3330,9 @@
            own. Shown/hidden by the mode; the WebGL map draws on the canvas. -->
       <div id="system-map-ui">
         <div id="map-labels"></div>
+        <!-- What the cursor is resting on, for the one kind of body the chart
+             cannot draw in the right place. Mouse only; hidden by default. -->
+        <div id="map-hover-meta" class="map-hover-meta"></div>
         <button id="map-close" class="map-close" aria-label="Close map">
           <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5.5 5.5 L14.5 14.5 M14.5 5.5 L5.5 14.5"></path></svg>
         </button>

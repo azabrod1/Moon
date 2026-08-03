@@ -120,10 +120,12 @@ describe('mapLabelOffsetPx', () => {
       const marker = mapMarkerRadiusPx(planet.radiusAU, MAP_BODY_SIZE_DEFAULTS);
       const offset = mapLabelOffsetPx(marker);
       expect(offset, planet.name).toBeGreaterThanOrEqual(marker + LABEL_CLEARANCE_PX);
-      // And outside the dot's painted edge, which sits inside the policy radius
-      // (the gradient's 0.18-alpha contour at 0.7 of a 1.3-radius half-extent).
-      expect(offset, planet.name).toBeGreaterThan(marker * 0.91);
     }
+    // This function is handed a CLEARANCE radius, not a drawn one: how much a
+    // body paints around itself is the size policy's business, and
+    // labelClearanceRadiusPx is where the two looks are told apart. Feeding it
+    // the drawn radius directly is the globe case, above; the dot case is
+    // pinned beside that helper in mapBodySize.test.ts.
   });
 
   it('separates the biggest and smallest planets, which a flat rule could not', () => {

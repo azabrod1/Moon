@@ -276,7 +276,7 @@ import {
   mapOverviewChipVisible,
 } from './map/mapCamera';
 import { HOVER_RECLAIM_MOVE_PX, resolveMapHover } from './map/mapHover';
-import { mapFactRows } from './map/mapFacts';
+import { mapFactRows, mapHoverMeta } from './map/mapFacts';
 import { isTap } from './map/mapPicking';
 import { flushOrbitDamping } from './input/orbitDamping';
 import { formatBodyDistance, bodyDistanceQuantum } from './bodyDistance';
@@ -6726,6 +6726,11 @@ export class PlanetariumMode {
       this.mapHoverAnchorX = this.mapHoverX;
       this.mapHoverAnchorY = this.mapHoverY;
     }
+    // On the transition only: the chip's text is a catalog lookup, and the
+    // hover resolves every frame.
+    if (resolved !== this.mapHoverName) {
+      this.mapHud.setHoverMeta(resolved === null ? null : mapHoverMeta(resolved));
+    }
     this.mapHoverName = resolved;
     map.setHover(resolved);
     this.setMapHoverCursor(resolved !== null);
@@ -6738,19 +6743,34 @@ export class PlanetariumMode {
     this.renderer.domElement.style.cursor = pointer ? 'pointer' : '';
   }
 
-  /** Drop the latch whole: the held body, its timer and anchor, the stored
-   *  pointer, the cursor and the emphasis on the chart. Every path that ends a
-   *  hover ends all of it — a half-cleared latch would re-acquire against a
-   *  stamp from the session before. */
-  private resetMapHover() {
-    this.mapHoverValid = false;
+  /** Drop the latch and everything it shows: the held body, its timer and
+   *  anchor, the cursor, the emphasis on the chart and the chip that named
+   *  what was under it — but KEEP the stored pointer valid. With the name
+   *  null and the stamps zeroed, the next per-frame pass acquires fresh (the
+   *  latch's elapsed/distance arguments only gate an EXISTING hover), so this
+   *  is safe for a gesture that merely suspends hovering: a focus or release
+   *  flight ends with the cursor still parked over the chart, and hover comes
+   *  back on its own. The chip is the piece a per-frame writer cannot retract
+   *  itself — the frame pass stands down the moment a flight or dive starts,
+   *  so the clear has to come from the gesture that started it. */
+  private retractMapHover() {
     this.mapHoverName = null;
     this.mapHoverHitMs = 0;
     this.mapHoverAnchorX = 0;
     this.mapHoverAnchorY = 0;
     this.mapPickHeldName = null;
     this.systemMap?.setHover(null);
+    this.mapHud.setHoverMeta(null);
     this.setMapHoverCursor(false);
+  }
+
+  /** Retract AND invalidate the stored pointer: for paths where the pointer
+   *  itself is gone or about to be lied about — close, dive, pointerleave,
+   *  blur, a non-mouse takeover. After this, hover stays down until a real
+   *  pointermove restores a position worth resolving. */
+  private resetMapHover() {
+    this.retractMapHover();
+    this.mapHoverValid = false;
   }
 
   /** Open (or replace in place) the picked-body card. Pairs with the time /
@@ -6813,14 +6833,23 @@ export class PlanetariumMode {
   private focusMapBody(name: string): boolean {
     if (!this.systemMap?.isOpen() || this.mapDiving) return false;
     this.poisonMapPick();
-    return this.systemMap.focusBody(name);
+    const flying = this.systemMap.focusBody(name);
+    // The hover pass stands down while the camera owns the pose, so the gesture
+    // that starts the flight retracts the hover itself — or the chip and
+    // emphasis ride the whole flight pointing at where a body used to be. The
+    // pointer stays valid: it is still parked over the chart, and hover
+    // re-acquires on its own when the flight ends.
+    if (flying) this.retractMapHover();
+    return flying;
   }
 
   /** The ◂ Overview chip and the Esc cascade's focus rung: fly back out. */
   private releaseMapFocus(): boolean {
     if (!this.systemMap?.isOpen() || this.mapDiving) return false;
     this.poisonMapPick();
-    return this.systemMap.releaseFocus();
+    const flying = this.systemMap.releaseFocus();
+    if (flying) this.retractMapHover();
+    return flying;
   }
 
   /** End any gesture in progress without committing it: a held pointer keeps

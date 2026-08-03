@@ -89,6 +89,38 @@ export function mapBodyRadiusPx(
   return trueProjectedPx > marker ? trueProjectedPx : marker;
 }
 
+/**
+ * Dot sprite extent per drawn radius, for every body the chart marks with one.
+ *
+ * The dot is a radial gradient, not a disc: opaque to 0.55 of its half-extent,
+ * down to alpha 0.18 at 0.7, gone at 1.0. So it PAINTS about seven tenths of the
+ * quad it is given, and a quad sized at the drawn radius would read as a body
+ * two thirds the size of the globe it stands in for. At 2.6 the painted edge
+ * lands at 0.7 × 1.3 = 0.91 of the drawn radius — near enough that the swap
+ * between marker and globe reads as one object changing detail rather than
+ * size. The ~9% residual is the price of the gradient and is not worth chasing.
+ *
+ * It lives here, with the rest of the drawn-size policy, because two things
+ * need it: the sprite the scene builds, and anything that has to stay clear of
+ * what that sprite paints.
+ */
+export const DOT_EXTENT_MUL = 2.6;
+
+/**
+ * The radius anything placed beside a body has to clear, in screen px.
+ *
+ * A globe paints its disc and nothing else, so its drawn radius is the whole
+ * of it. A dot paints a quad half again as wide — the gradient's skirt fades
+ * out at the half-extent, not at the drawn radius — so a rule written for the
+ * globe puts a label a third of the way inside the sprite of the same body.
+ * Which look is drawing is a per-frame fact the scene already holds; this is
+ * the one place that fact turns into a distance.
+ */
+export function labelClearanceRadiusPx(drawnRadiusPx: number, drawnAsDot: boolean): number {
+  if (!(drawnRadiusPx > 0)) return 0;
+  return drawnAsDot ? (drawnRadiusPx * DOT_EXTENT_MUL) / 2 : drawnRadiusPx;
+}
+
 /** Ganymede, the largest moon, sets the top of the moon scale. */
 const LARGEST_MOON_RADIUS_AU = 1.761e-5;
 /** Where Ganymede draws, as a fraction of its parent's drawn radius, and the

@@ -2,9 +2,9 @@
  * The facts a map card reads out about the body it names, and the axial-tilt
  * glyph's geometry.
  *
- * Pure: a catalog name in, plain rows out. No THREE, no DOM — the card's DOM
- * layer is handed these rows as data and owns nothing but their painting, so
- * the numbers can be pinned by tests rather than by a screenshot.
+ * Pure: a catalog name in, plain rows out. No DOM and no scene state — the
+ * card's DOM layer is handed these rows as data and owns nothing but their
+ * painting, so the numbers can be pinned by tests rather than by a screenshot.
  *
  * Two figures are DERIVED rather than stored, because the catalogs never held
  * them: mass from surface gravity and radius (g = GM/R², rearranged against
@@ -19,6 +19,7 @@
 import { PLANETARIUM_BODIES, SUN_DATA } from '../planets/planetData';
 import { MOONS } from '../planets/moonData';
 import { getMoonDisplayOrbit } from '../../astronomy/satellites';
+import { bodyDisplayName } from '../surfaceView';
 import { mapBody } from './mapBodies';
 
 /**
@@ -133,6 +134,33 @@ export function mapFactRows(name: string): MapFacts {
     ],
     oneLiner: planet.description,
   };
+}
+
+/**
+ * The line the chart shows while the cursor rests on a MOON, finished the same
+ * way the fact rows are — one string, ready to paint.
+ *
+ * Moons only, and null for everything else, because a moon is the one body
+ * whose drawn position is not its true one: the chart compresses moon distances
+ * so a system stays a picture instead of a dot beside a dot. So the moment the
+ * cursor picks one out is the moment to say where it really is and how long it
+ * really takes — the two figures the drawing cannot carry. A planet's chart
+ * position IS its position, and nothing is owed.
+ */
+export function mapHoverMeta(name: string): string | null {
+  const body = mapBody(name);
+  if (body?.kind !== 'moon') return null;
+  const moon = MOON_BY_NAME.get(name);
+  if (!moon) return null;
+  // The display seam again, never 360/|Ṁ| — the card and this line have to
+  // agree, and only one of the two figures is right.
+  const periodDays = getMoonDisplayOrbit(moon.name, moon.parentPlanet).periodDays;
+  return [
+    bodyDisplayName(name),
+    `${moon.parentPlanet}'s moon`,
+    `Orbit ${fmtDays(periodDays)}`,
+    `${sig3(moon.orbitalRadiusKm)} km`,
+  ].join(' · ');
 }
 
 /**

@@ -81,10 +81,12 @@ import {
   type MapVec3,
 } from './mapProjection';
 import {
+  labelClearanceRadiusPx,
   mapBodyRadiusAU,
   mapMarkerRadiusPx,
   mapMoonMarkerRadiusAU,
   mapMoonRadiusAU,
+  DOT_EXTENT_MUL,
   MAP_BODY_SIZE_DEFAULTS,
   type MapBodySizeParams,
 } from './mapBodySize';
@@ -211,16 +213,6 @@ const MOON_REVEAL_MARGIN = 1.3;
 // At true scale a moon whose screen separation from the parent's drawn limb is
 // under this is inside the limb pixel: drawing it there is noise, not honesty.
 const MOON_TRUE_SCALE_MIN_SEP_PX = 2;
-// Dot sprite extent per drawn radius, for every body the chart marks with one.
-//
-// The dot is a radial gradient, not a disc: opaque to 0.55 of its half-extent,
-// down to alpha 0.18 at 0.7, gone at 1.0. So it PAINTS about seven tenths of the
-// quad it is given, and a quad sized at the drawn radius would read as a body
-// two thirds the size of the globe it stands in for. At 2.6 the painted edge
-// lands at 0.7 × 1.3 = 0.91 of the drawn radius — near enough that the swap
-// between marker and globe reads as one object changing detail rather than
-// size. The ~9% residual is the price of the gradient and is not worth chasing.
-const DOT_EXTENT_MUL = 2.6;
 // Drawn orbits sit quieter than the planets' heliocentric lines: they are
 // dense, and the bodies are the subject.
 const MOON_RING_OPACITY = 0.5;
@@ -362,8 +354,12 @@ interface OrbitEntry {
    *  floor, AND the figure the dot is sized from when the dot is what draws.
    *  One number per body: the sprite, the framing reach and the label offset all
    *  read it, so none of them can hold a different opinion about how big the
-   *  body is. Seeded at the marker size, since that is what a body would draw at
-   *  before any frame has measured one. */
+   *  body is. What each of them does with it differs, and deliberately: the
+   *  label buys air for the glyphs against whatever is painted, so it takes the
+   *  dot's full half-extent when a dot is drawing; the framing buys frame for
+   *  the visible picture and correctly ignores the gradient's skirt. Seeded at
+   *  the marker size, since that is what a body would draw at before any frame
+   *  has measured one. */
   drawnRadiusPx: number;
   /** Whether the globe, rather than the dot, is what drew this frame. */
   globeDrawn: boolean;
@@ -1883,7 +1879,11 @@ export class SystemMap {
     // policy radius rather than to the sprite's full half-extent is deliberate:
     // the quad's outer third is the gradient fading to nothing, and budgeting
     // frame for an invisible halo would push every flight further out than the
-    // picture needs. A hovered dot swells by the factor its material does.
+    // picture needs. The label offset reads the same stored radius and takes
+    // the half-extent instead — not a disagreement about size, a different
+    // question: legible glyphs need air from anything painted, a frame needs
+    // room for what is visible. A hovered dot swells by the factor its material
+    // does.
     const hoverBoost = name === this.hoveredName ? HOVER_SCALE : 1;
     return entry.drawnRadiusPx * hoverBoost * perPx * this.viewDepth(entry.dot.position);
   }
@@ -3613,17 +3613,36 @@ export class SystemMap {
     return w / 2;
   }
 
-  /** How far below a body's centre its label sits. The ONE definition — the
-   *  cull above and the transform that draws the label both read it, so a label
-   *  can never be judged at one place and painted at another. A moon has no
-   *  orbit entry and takes the flat floor: its marker is sized against its
-   *  parent and sits well inside it. */
+  /**
+   * How far below a body's centre its label sits. The ONE definition — the cull
+   * above and the transform that draws the label both read it, so a label can
+   * never be judged at one place and painted at another.
+   *
+   * What it has to clear depends on which look drew this frame: a globe paints
+   * its disc, a dot paints a quad half again as wide. Moons are the case that
+   * bites hardest — they went through here with no entry of their own and took
+   * the flat floor, which puts a name like Ganymede's inside its own marker at
+   * every focused view of Jupiter.
+   *
+   * The clearance is always the UNHOVERED one. A hovered body swells, and a
+   * label that moved with it would jitter as the cursor crossed; the residual
+   * overlap under the cursor is deliberate and small.
+   */
   private labelOffsetPxFor(name: string): number {
     // The Sun draws no orbit entry but does draw a disc — up to the size
-    // policy's ceiling, which is twice the flat offset. Its name sat inside its
-    // own photosphere; the rule that fixed that for the planets fixes it here.
+    // policy's ceiling, which is twice the flat offset. Its billboard is a
+    // limb-darkened disc rather than the planets' gradient, so the disc rule is
+    // the right one for it, and it is the rule it already had.
     if (name === SUN_DATA.name) return mapLabelOffsetPx(this.sunRadiusPx);
-    return mapLabelOffsetPx(this.entryFor(name)?.drawnRadiusPx ?? null);
+    const entry = this.entryFor(name);
+    if (entry) {
+      return mapLabelOffsetPx(labelClearanceRadiusPx(entry.drawnRadiusPx, entry.dot.visible));
+    }
+    const moon = this.moonEntryFor(name);
+    if (moon) {
+      return mapLabelOffsetPx(labelClearanceRadiusPx(moon.drawnRadiusPx, !moon.globeDrawn));
+    }
+    return mapLabelOffsetPx(null);
   }
 
   private ensureLabelContainer(): void {

@@ -35,6 +35,8 @@ export class MapHUD {
   private cardLine: HTMLElement | null = null;
   private cardActions: HTMLElement | null = null;
   private cardFacts: HTMLElement | null = null;
+  private hoverMeta: HTMLElement | null = null;
+  private lastHoverMeta: string | null = null;
   private lastDist = '';
   private lastDisabled = false;
   private wired = false;
@@ -60,6 +62,7 @@ export class MapHUD {
     this.cardLine = document.getElementById('map-card-line');
     this.cardActions = document.getElementById('map-card-actions');
     this.cardFacts = document.getElementById('map-card-facts');
+    this.hoverMeta = document.getElementById('map-hover-meta');
     if (this.wired) return;
     this.wired = true;
     this.segCompressed?.addEventListener('click', () => this.onScale(false));
@@ -99,7 +102,21 @@ export class MapHUD {
   hide(): void {
     if (this.root) this.root.style.display = 'none';
     this.hideCard();
+    this.setHoverMeta(null);
     this.setOverviewChip(false);
+  }
+
+  /** The line about the body under the cursor, or null for nothing hovered.
+   *  Arrives finished, like the card's facts; writes only on a change, because
+   *  the caller resolves the hover every frame. */
+  setHoverMeta(text: string | null): void {
+    // Element first: a call before bind() (a lifecycle reset with the map never
+    // opened) must not bank a value the DOM never received, or the next
+    // identical call would be skipped as a no-op.
+    if (!this.hoverMeta || text === this.lastHoverMeta) return;
+    this.lastHoverMeta = text;
+    this.hoverMeta.textContent = text ?? '';
+    this.hoverMeta.classList.toggle('visible', text !== null);
   }
 
   /** Reflect which scale is active on the segmented control. */
@@ -246,6 +263,16 @@ export class MapHUD {
     const factsRoom = available - (naturalH - factsH);
     if (facts && factsRoom < MIN_FACTS_PX) facts.style.display = 'none';
     this.card.style.maxHeight = `${Math.round(available)}px`;
+
+    // The cap has just been applied, so the facts' two heights finally disagree
+    // when the list is longer than the room left for it — and a clipped last row
+    // is what the fade exists to explain. Read AFTER the write: the measurement
+    // above deliberately cleared the cap, so asking there would answer "fits"
+    // every time and the fade would never appear anywhere. A card that does not
+    // scroll gets no fade.
+    if (facts) {
+      facts.classList.toggle('scrolls', facts.scrollHeight > facts.clientHeight + 1);
+    }
   }
 
   private setActive(seg: HTMLButtonElement | null, active: boolean): void {

@@ -291,6 +291,15 @@ import {
 import { HOVER_RECLAIM_MOVE_PX, resolveMapHover } from './map/mapHover';
 import { mapFactRows, mapHoverMeta } from './map/mapFacts';
 import { isTap } from './map/mapPicking';
+import {
+  miniChartRect,
+  miniChartVisible,
+  miniDrawRect,
+  miniRectStale,
+  type MiniChartRect,
+  type MiniChartVisibility,
+  type MiniDrawRect,
+} from './map/miniChart';
 import { flushOrbitDamping } from './input/orbitDamping';
 import { formatBodyDistance, bodyDistanceQuantum } from './bodyDistance';
 
@@ -470,6 +479,20 @@ export class PlanetariumMode {
   // in-flight 4K fetch+decode before revealing anyway — a stalled fetch must
   // never pin the veil.
   private static readonly ARRIVAL_UPGRADE_HOLD_MAX_MS = 900;
+  /** How long the veil takes to fade back out once its class comes off — the
+   *  0.3 s CSS transition on `#arrival-veil`, plus a frame of slack because the
+   *  transition starts at the next style recalc, not at the class removal.
+   *  Anything gated on "the veil is gone" has to wait out the fade too: through
+   *  it the element is still painted, just no longer taking pointers, so a
+   *  layer that appeared under it would both show through and be clickable. */
+  private static readonly ARRIVAL_VEIL_FADE_MS = 360;
+  /**
+   * When the arrival veil will have finished fading, in `performance.now()` ms.
+   * Infinity while it is up. `arrivalInFlight` is NOT the same question: it
+   * clears in the arrival's `finally`, while the veil stays opaque through the
+   * upgrade hold and the minimum dwell and then fades for its transition.
+   */
+  private arrivalVeilClearAtMs = 0;
   // Map dive on a Teleport/Observatory commit: the camera eases in over
   // DIVE_CAM_MS, then the fade blacks out over DIVE_FADE_MS — total under the
   // 450 ms cap so it never reads as lag. Autopilot has no dive: just a short
@@ -866,6 +889,49 @@ export class PlanetariumMode {
   // presentation is gated — see the mapOpen writer guards and the
   // system-map-active body class.
   private systemMap: SystemMap | null = null;
+  // The corner chart: the same schematic, drawn small in the top-left while
+  // cruising, so the chart flies with you. The user's ☰ preference (persisted;
+  // an old save with no opinion gets it on), the DOM surface that frames the
+  // WebGL rectangle and takes the tap, and the rect both of those are written
+  // from — one definition, so the frame and the pixels cannot drift apart.
+  private showMiniChart = true;
+  private miniChartEl: HTMLElement | null = null;
+  private miniRect: MiniChartRect = { left: 0, top: 0, width: 0, height: 0 };
+  /** The same rectangle snapped inward to whole device pixels — what is
+   *  actually drawn, and what the chart's camera is metered against. */
+  private miniDraw: MiniDrawRect = {
+    left: 0, bottom: 0, width: 0, height: 0,
+    leftDevicePx: 0, bottomDevicePx: 0, widthDevicePx: 0, heightDevicePx: 0,
+  };
+  /** The canvas and pixel ratio the cached rects were built for. Both are pure
+   *  functions of those, so a frame that finds them unchanged reuses the
+   *  objects — and the ratio matters as much as the size, since the snap is
+   *  what turns a CSS rectangle into device rows. */
+  private miniRectCanvasW = -1;
+  private miniRectCanvasH = -1;
+  private miniRectPixelRatio = -1;
+  /** Scratch for getDrawingBufferSize — read only on rect rebuilds. */
+  private miniBufferSize = new THREE.Vector2();
+  /** The visibility question, asked every frame and answered in place — a fresh
+   *  literal per frame is a per-frame allocation in the steady state. */
+  private miniVisibility: MiniChartVisibility = {
+    enabled: true,
+    ready: false,
+    landed: false,
+    mapOpen: false,
+    deckOpen: false,
+    missionActive: false,
+    tutorialActive: false,
+    helpOpen: false,
+    arrivalVeilUp: false,
+  };
+  /** What building the chart cost, wall ms (DEV forensics). It is built on the
+   *  first frame it is wanted, which is a cruise frame. */
+  private miniConstructMs = -1;
+  /** Dev forensics: how many times the chart's rectangle has been built. It is
+   *  a pure function of the canvas size, so this climbing on a still window is
+   *  a per-frame allocation and shows up here and nowhere else. */
+  private miniRectBuilds = 0;
   // Whether a plain close should reopen the Observatory panel / re-enter
   // surface view (the snapshot-and-restore ethos). openMap sets these when it
   // closes those states; a commit-side close clears them (reverse close).
@@ -1821,8 +1887,11 @@ export class PlanetariumMode {
     const planetariumUI = document.getElementById('planetarium-ui');
     if (planetariumUI) planetariumUI.style.display = 'none';
     // The mode is tearing down — close the map without restoring its transient
-    // panel/surface state (there is nothing to return to).
+    // panel/surface state (there is nothing to return to). The corner chart
+    // stands down here rather than at its own per-frame rule: the update pass
+    // that owns that rule stops running the moment `active` goes false.
     this.closeMap({ restore: false });
+    this.hideMiniChart();
     this.closeObservatoryPanel();
     this.closeDeck();
     this.closeSurfaceTargetMenu();
@@ -1902,6 +1971,9 @@ export class PlanetariumMode {
       this.updateLanded(dt);
       // End of the landed branch: positions are final, refresh the map if open.
       this.updateMapView();
+      // Runs here too, so the ground is one of the states that stands the
+      // corner chart down rather than a state it is simply never told about.
+      this.updateMiniChart();
       return;
     }
 
@@ -2136,6 +2208,7 @@ export class PlanetariumMode {
     // End of the cruise branch: ship position finalized after collisions,
     // refresh the map if open.
     this.updateMapView();
+    this.updateMiniChart();
   }
 
   private applyFloatingOrigin() {
@@ -6041,6 +6114,10 @@ export class PlanetariumMode {
       orbitsToggle.setAttribute('aria-pressed', String(this.showOrbitLines));
     });
 
+    document.getElementById('settings-mini-toggle')?.addEventListener('click', () => {
+      this.setMiniChartEnabled(!this.showMiniChart);
+    });
+
     document.getElementById('settings-throttle-toggle')?.addEventListener('click', () => {
       this.systemSlowdown = !this.systemSlowdown;
       const label = document.getElementById('settings-throttle-label');
@@ -6207,6 +6284,208 @@ export class PlanetariumMode {
    *  map owns the frame; the map owns its own renderer-state transaction. */
   renderMapFrame(): void {
     this.systemMap?.render();
+  }
+
+  // ── The corner chart ────────────────────────────────────────────────────
+
+  /**
+   * Per-frame corner chart, called at the end of both update branches. It owns
+   * its own lifecycle: the visibility rule decides whether the chart exists
+   * this frame, and the two edges of that decision are what start and stop it.
+   * The chart is built on the first frame it is actually wanted — a journey
+   * spent entirely landed never pays for it.
+   */
+  private updateMiniChart(): void {
+    const q = this.miniVisibility;
+    q.enabled = this.showMiniChart;
+    q.ready = this.active && !!this.solarSystem;
+    q.landed = this.landedOn !== null;
+    q.mapOpen = this.isMapOpen();
+    q.deckOpen = this.isDeckOpen();
+    q.missionActive = this.isMissionActive();
+    q.tutorialActive = this.isTutorialActive();
+    q.helpOpen = this.isHelpOpen();
+    q.arrivalVeilUp = this.arrivalVeilUp();
+    if (!miniChartVisible(q)) {
+      this.hideMiniChart();
+      return;
+    }
+    if (!this.systemMap) {
+      const t0 = import.meta.env.DEV ? performance.now() : 0;
+      this.systemMap = new SystemMap(this.renderer, this.mapTextureSource());
+      if (import.meta.env.DEV) this.miniConstructMs = performance.now() - t0;
+    }
+    if (!this.systemMap.isMiniOpen()) this.systemMap.openMini(this.timeState.currentUtcMs);
+
+    const el = this.renderer.domElement;
+    const canvasW = Math.max(el.clientWidth, 1);
+    const canvasH = Math.max(el.clientHeight, 1);
+    const pixelRatio = this.renderer.getPixelRatio();
+    if (miniRectStale(this.miniRectCanvasW, this.miniRectCanvasH, canvasW, canvasH)
+      || this.miniRectPixelRatio !== pixelRatio) {
+      this.miniRectCanvasW = canvasW;
+      this.miniRectCanvasH = canvasH;
+      this.miniRectPixelRatio = pixelRatio;
+      this.miniRect = miniChartRect(canvasW, canvasH);
+      // The REAL buffer dims, not css·ratio: the renderer floors that product
+      // on both axes, and the snap's whole job is agreeing with the driver.
+      this.renderer.getDrawingBufferSize(this.miniBufferSize);
+      this.miniDraw = miniDrawRect(
+        this.miniRect,
+        canvasW,
+        canvasH,
+        this.miniBufferSize.x,
+        this.miniBufferSize.y,
+        pixelRatio,
+      );
+      this.miniRectBuilds++;
+      this.applyMiniChartSurface();
+    }
+    const draw = this.miniDraw;
+    this.setMiniChartSurfaceShown(true);
+
+    this.systemMap.updateMini(
+      this.timeState.currentUtcMs,
+      this.player.posX,
+      this.player.posY,
+      this.player.posZ,
+      this.player.heading,
+      this.player.pitch,
+      this.player.moving,
+      // Never landed: the ground is one of the states that stands the chart
+      // down, so a live corner chart is always a flying one.
+      false,
+      this.lastFrameDtMs,
+      // The DRAWN size, not the one that was asked for: the camera aspect and
+      // every screen-metered marker have to describe the rectangle the driver
+      // is given, which the device snap may have shaved by a fraction of a px.
+      draw.width,
+      draw.height,
+    );
+  }
+
+  /**
+   * Whether the arrival veil is on screen. `arrivalInFlight` clears in the
+   * arrival's own `finally`, but the veil then holds for the texture-upgrade
+   * wait and the minimum dwell and fades out over its CSS transition — and
+   * through the fade it is still painted while no longer taking pointers, so
+   * anything that appeared under it would show through AND be clickable. The
+   * stamp is written where the class is actually removed; reading it is a
+   * number compare, never a style read.
+   */
+  private arrivalVeilUp(): boolean {
+    return this.arrivalInFlight || performance.now() < this.arrivalVeilClearAtMs;
+  }
+
+  /** main.ts draws this over the world frame, after the composer has finished
+   *  with it. Nothing happens unless the chart is live. */
+  renderMiniChartFrame(): void {
+    if (!this.systemMap?.isMiniOpen()) return;
+    this.systemMap.renderMini(this.miniDraw);
+  }
+
+  private hideMiniChart(): void {
+    if (this.systemMap?.isMiniOpen()) this.systemMap.closeMini();
+    this.setMiniChartSurfaceShown(false);
+  }
+
+  /** The stylesheet hides the surface by default, so shown/hidden is an inline
+   *  display either way — an empty string would hand it back to the rule that
+   *  hides it. Written only on a change; the property is read every frame. */
+  private setMiniChartSurfaceShown(shown: boolean): void {
+    const el = this.miniChartSurface();
+    if (!el) return;
+    const want = shown ? 'block' : 'none';
+    if (el.style.display !== want) el.style.display = want;
+  }
+
+  private applyMiniChartSurface(): void {
+    const el = this.miniChartSurface();
+    if (!el) return;
+    el.style.left = `${this.miniRect.left}px`;
+    el.style.top = `${this.miniRect.top}px`;
+    el.style.width = `${this.miniRect.width}px`;
+    el.style.height = `${this.miniRect.height}px`;
+  }
+
+  /**
+   * The chart's tap target, wired once. It has to be a real DOM surface: on
+   * coarse pointers the flight zone is a transparent full-width layer above
+   * the canvas, so a canvas hit-test never fires under it, and a pointerdown
+   * check could never intercept a wheel in any case. It sits ABOVE that zone
+   * and covers the whole rectangle, and the zone stays live everywhere else —
+   * unlike the full map, the corner chart does not take steering away.
+   */
+  private miniChartSurface(): HTMLElement | null {
+    if (this.miniChartEl) return this.miniChartEl;
+    const el = document.getElementById('mini-chart');
+    if (!el) return null;
+    this.miniChartEl = el;
+    el.addEventListener('pointerdown', (e) => {
+      const pe = e as PointerEvent;
+      if (pe.button !== 0) return;
+      e.preventDefault();
+      e.stopPropagation();
+      this.openMap();
+    });
+    // Swallow the scroll over the chart: the world is not what a wheel here
+    // means, and the corner chart has no zoom of its own.
+    el.addEventListener('wheel', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+    }, { passive: false });
+    el.addEventListener('keydown', (e) => {
+      const ke = e as KeyboardEvent;
+      if (ke.key !== 'Enter' && ke.key !== ' ') return;
+      e.preventDefault();
+      e.stopPropagation();
+      this.openMap();
+    });
+    this.applyMiniChartSurface();
+    return el;
+  }
+
+  /** The ☰ toggle, and the dev bridge behind it. */
+  private setMiniChartEnabled(enabled: boolean): void {
+    this.showMiniChart = enabled;
+    const label = document.getElementById('settings-mini-label');
+    if (label) label.textContent = enabled ? 'On' : 'Off';
+    document.getElementById('settings-mini-toggle')
+      ?.setAttribute('aria-pressed', String(enabled));
+    if (!enabled) this.hideMiniChart();
+  }
+
+  /** Dev bridge: flip the corner chart without opening the menu. */
+  devSetMiniChart(enabled: boolean): void {
+    this.setMiniChartEnabled(enabled);
+  }
+
+  /** Dev bridge: draw the corner chart over the world frame instead of on its
+   *  own field, so both looks can be captured. */
+  devSetMiniOpaque(opaque: boolean): void {
+    this.systemMap?.setMiniOpaque(opaque);
+  }
+
+  /** Dev forensics: the corner chart's pose, its blend bookkeeping and what it
+   *  costs per frame, plus the rectangle it is drawing into. */
+  devMiniState(): (ReturnType<SystemMap['miniStats']> & {
+    rect: MiniChartRect;
+    draw: MiniDrawRect;
+    pixelRatio: number;
+    constructMs: number;
+    rectBuilds: number;
+    veilUp: boolean;
+  }) | null {
+    if (!this.systemMap) return null;
+    return {
+      ...this.systemMap.miniStats(),
+      rect: this.miniRect,
+      draw: this.miniDraw,
+      pixelRatio: this.miniRectPixelRatio,
+      constructMs: this.miniConstructMs,
+      rectBuilds: this.miniRectBuilds,
+      veilUp: this.arrivalVeilUp(),
+    };
   }
 
   /**
@@ -6407,7 +6686,10 @@ export class PlanetariumMode {
       return;
     }
 
-    // One modal at a time: fold every transient overlay away first.
+    // One modal at a time: fold every transient overlay away first. The corner
+    // chart goes with them — its own per-frame rule would only catch up next
+    // frame, leaving its tap surface live over the map for one.
+    this.hideMiniChart();
     this.closeMenuPanel();
     this.closeDeck();
     this.closeSurfaceTargetMenu();
@@ -8381,6 +8663,10 @@ export class PlanetariumMode {
     this.showOrbitLines = visible;
     this.showBodyLabels = visible;
     this.showBodyMarkers = visible;
+    // The corner chart draws in WebGL, so hiding the HTML overlay below would
+    // leave it painting into a "clean" capture. It goes with the chrome, and
+    // setMiniChart(true) brings it back for the captures that want it.
+    this.setMiniChartEnabled(visible);
     this.player.group.visible = visible;
     if (this.solarSystem) {
       for (const o of this.solarSystem.orbitLines) o.visible = visible;
@@ -10620,6 +10906,8 @@ export class PlanetariumMode {
     const veil = document.getElementById('arrival-veil');
     const coverStart = performance.now();
     veil?.classList.add('covering'); // snaps fully opaque (no fade-in) — see CSS
+    // The veil owns the screen from here until its fade-out finishes.
+    this.arrivalVeilClearAtMs = Number.POSITIVE_INFINITY;
     const coverGen = ++this.arrivalCoverGen;
     // Two frames so the opaque veil is actually composited before we block the
     // main thread painting; otherwise the paint freezes a half-covered veil and
@@ -10670,7 +10958,9 @@ export class PlanetariumMode {
             // the class fades it back out.
             const wait = Math.max(48, PlanetariumMode.ARRIVAL_MIN_DWELL_MS - (performance.now() - coverStart));
             window.setTimeout(() => {
-              if (coverGen === this.arrivalCoverGen) veil?.classList.remove('covering');
+              if (coverGen !== this.arrivalCoverGen) return;
+              veil?.classList.remove('covering');
+              this.arrivalVeilClearAtMs = performance.now() + PlanetariumMode.ARRIVAL_VEIL_FADE_MS;
             }, wait);
           };
           tryLift();
@@ -11509,6 +11799,7 @@ export class PlanetariumMode {
       showBodyLabelDistances: this.showBodyLabelDistances,
       showBodyMarkers: this.showBodyMarkers,
       showOrbitLines: this.showOrbitLines,
+      showMiniChart: this.showMiniChart,
       landedOn: this.landedOn,
       systemSpeed: this.player.systemSpeedMultiplier,
       systemSlowdown: this.systemSlowdown,
@@ -11581,6 +11872,9 @@ export class PlanetariumMode {
     if (orbitsLabel) orbitsLabel.textContent = this.showOrbitLines ? 'On' : 'Off';
     document.getElementById('settings-orbits-toggle')
       ?.setAttribute('aria-pressed', String(this.showOrbitLines));
+    // A save from before the corner chart existed has no opinion about it, and
+    // the chart is on by default — so an absent key reads as on.
+    this.setMiniChartEnabled(saved.showMiniChart ?? true);
 
     // Restore autopilot target (kept even when landed — resumes on exit).
     // Pre-provenance saves migrate by heuristic in the store sanitizer (only

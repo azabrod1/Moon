@@ -66,7 +66,6 @@ import { bodyDisplayName } from '../surfaceView';
 import { ORBIT_LINE_RESAMPLE_MAX_AGE_MS } from '../SolarSystem';
 import { applyTextureDefaults } from '../world/texturePolicy';
 import { projectToScreen, type ScreenProjection } from '../../shared/three/projectToScreen';
-import { smoothstepUnclamped } from '../../shared/math/smoothstep';
 import {
   defaultMapCurve,
   diveRestoreDistanceAU,
@@ -74,12 +73,32 @@ import {
   isAtOverviewFit,
   projectMapPoint,
   sanitizeMapCurve,
-  MAP_BLEND_ANIM_MS,
-  MAP_BLEND_COMPRESSED,
   MAP_BLEND_TRUE,
   type MapCurve,
   type MapVec3,
 } from './mapProjection';
+import {
+  blendAdvance,
+  blendIsTrueScale,
+  blendParkCompressed,
+  blendReconcile,
+  blendRequestScale,
+  blendSettle,
+  blendUnpark,
+  makeMapBlendState,
+} from './mapBlend';
+import { shipHeadingRotationRad } from './mapShipHeading';
+import {
+  makeMiniBodyKey,
+  miniBodiesStale,
+  miniNeedsReseat,
+  stampMiniBodyKey,
+  MINI_BODY_SIZE_PARAMS,
+  MINI_SHIP_PX,
+  MINI_SUN_HALO_RADII,
+  type MiniBodyKey,
+  type MiniDrawRect,
+} from './miniChart';
 import {
   labelClearanceRadiusPx,
   mapBodyRadiusAU,
@@ -376,11 +395,36 @@ interface OrbitEntry {
   globeDrawn: boolean;
 }
 
+/**
+ * Everything a drawing pass needs to know about the frame it is drawing into.
+ * The chart has two of them — the full-screen view and the corner chart — and
+ * they share one scene, so nothing metered in screen px may reach for the
+ * canvas: it comes from here.
+ */
+interface MapDrawView {
+  camera: THREE.PerspectiveCamera;
+  widthPx: number;
+  heightPx: number;
+  /** Whether the scale control's committed target is true scale. The corner
+   *  chart is always compressed, whatever the full chart's control says. */
+  trueScaleTarget: boolean;
+  /** Whether this pass draws moons at all. */
+  withMoons: boolean;
+  /** Ship marker extent, screen px. */
+  shipPx: number;
+  /** The Sun's halo, in multiples of its drawn disc. */
+  sunHaloRadii: number;
+  sizeParams: MapBodySizeParams;
+}
+
 export class SystemMap {
   private renderer: THREE.WebGLRenderer;
   private scene = new THREE.Scene();
   private camera: THREE.PerspectiveCamera;
   private controls: OrbitControls;
+  /** The corner chart's own camera: a fixed 3/4 overview seated to its own
+   *  aspect, never touched by the controls or the camera state machine. */
+  private miniCamera: THREE.PerspectiveCamera;
 
   private textures: MapTextureSource;
 
@@ -448,14 +492,41 @@ export class SystemMap {
   private labelHalfWidths = new Map<string, number>();
 
   private open = false;
+  /**
+   * The corner chart's lifecycle, deliberately separate from `open`. That flag
+   * conflates three things — owns the frame, owns the pointer, should tick —
+   * and the corner chart is only the third. The two are mutually exclusive: a
+   * full open stands the corner chart down, so exactly one pass a frame writes
+   * the shared drawn sizes, extent and marker scales.
+   */
+  private miniOpen = false;
+  /** The extent and aspect the corner chart's fixed pose was fitted for. The
+   *  extent includes the ship, which moves every frame; re-fitting on every one
+   *  of those would make the chart breathe. */
+  private miniSeatedExtentAU = 0;
+  private miniSeatedAspect = 0;
+  /** What the corner chart's last planet pass was computed against. */
+  private miniBodyKey: MiniBodyKey = makeMiniBodyKey();
+  /** Dev forensics: how many planet passes the corner chart has actually run.
+   *  A settled chart under a paused clock climbing this is the regression the
+   *  key exists to prevent, and it shows up here and nowhere else. */
+  private miniBodyPasses = 0;
+  /** Whether the corner chart clears its rectangle to the chart's own field
+   *  (the shipped look) or draws over the world frame. Dev A/B. */
+  private miniOpaque = true;
+  private miniBounds: MapCameraBounds = { minDist: 0, maxDist: 0, near: 0, far: 0 };
+  /** Cost forensics for the corner chart (DEV only): the tick and the draw,
+   *  wall ms, most recent first-in-first-out. The construction and first tick
+   *  are kept apart — they are a one-off, and averaging them into the steady
+   *  state would hide both. */
+  private miniTickMs: number[] = [];
+  private miniRenderMs: number[] = [];
+  private miniFirstTickMs = -1;
+  private miniFirstRenderMs = -1;
   // Radial curve + how far it is blended toward true scale (0 compressed,
   // 1 true). The curve is a dev-selectable A/B; the blend is the user's toggle.
   private curve: MapCurve = defaultMapCurve();
-  private blend = MAP_BLEND_COMPRESSED;
-  private blendFrom = MAP_BLEND_COMPRESSED;
-  private blendTo = MAP_BLEND_COMPRESSED;
-  private blendElapsedMs = 0;
-  private blendAnimating = false;
+  private blendState = makeMapBlendState();
   private bodySizeParams: MapBodySizeParams = { ...MAP_BODY_SIZE_DEFAULTS };
   private epochUtcMs = 0;
   /** The clock the current frame is drawn at. A planet's position comes from
@@ -480,7 +551,31 @@ export class SystemMap {
   private tmpProj2: ScreenProjection = { x: 0, y: 0, ndcX: 0, ndcY: 0, ndcZ: 0 };
   private tmpSize = new THREE.Vector2();
   private tmpViewport = new THREE.Vector4();
+  private tmpScissor = new THREE.Vector4();
+  /** The renderer's own clear colour, saved across the corner chart's pass. */
+  private tmpClearColor = new THREE.Color();
   private tmpView = new THREE.Vector3();
+  /** The two drawing passes' views, filled in place each frame. */
+  private fullView: MapDrawView = {
+    camera: null as unknown as THREE.PerspectiveCamera,
+    widthPx: 1,
+    heightPx: 1,
+    trueScaleTarget: false,
+    withMoons: true,
+    shipPx: SHIP_PX,
+    sunHaloRadii: SUN_HALO_RADII,
+    sizeParams: MAP_BODY_SIZE_DEFAULTS,
+  };
+  private miniView: MapDrawView = {
+    camera: null as unknown as THREE.PerspectiveCamera,
+    widthPx: 1,
+    heightPx: 1,
+    trueScaleTarget: false,
+    withMoons: false,
+    shipPx: MINI_SHIP_PX,
+    sunHaloRadii: MINI_SUN_HALO_RADII,
+    sizeParams: MINI_BODY_SIZE_PARAMS,
+  };
   /** Planetocentric offset scratch — a moon's position is its parent's plus
    *  this, and the ephemeris seam fills a caller's vector. */
   private tmpMoonOffset = new THREE.Vector3();
@@ -490,6 +585,12 @@ export class SystemMap {
    *  moon's entry before the next call, so one of each serves every moon. */
   private tmpParentHelio = new THREE.Vector3();
   private tmpShading: MoonShadingState = { sunVisibleFraction: 1, inUmbra: false };
+
+  /** What the geometry is projected at right now. The ledger owns every write;
+   *  the whole class reads the blend through here. */
+  private get blend(): number {
+    return this.blendState.blend;
+  }
 
   // Un-docked ship pulse phase (wall ms).
   private pulseMs = 0;
@@ -640,6 +741,13 @@ export class SystemMap {
       1e-4,
       1000,
     );
+
+    // The corner chart's camera never orbits and never follows; its pose is
+    // seated once per fit and left alone. Aspect and clip planes are written
+    // when it is seated, so the placeholders here only have to be valid.
+    this.miniCamera = new THREE.PerspectiveCamera(MAP_FOV_DEG, 1, 1e-4, 1000);
+    this.fullView.camera = this.camera;
+    this.miniView.camera = this.miniCamera;
 
     this.controls = new OrbitControls(this.camera, el);
     this.controls.enableDamping = true;
@@ -854,9 +962,20 @@ export class SystemMap {
    *  caller owns the world's controls.enabled restore. */
   openMap(utcMs: number): void {
     this.open = true;
+    // The two lifecycles are mutually exclusive, and the full chart wins: it
+    // owns the whole frame. Standing the corner chart down here rather than
+    // waiting for its own visibility rule keeps exactly one pass a frame
+    // writing the drawn sizes both of them share.
+    this.miniOpen = false;
     this.projectionRevision++;
     this.clockUtcMs = utcMs;
     this.ensureLabelContainer();
+    // The chart draws at the scale its own control claims, whatever displaced
+    // the blend while it was shut — a corner chart always draws compressed, and
+    // one that failed to hand the blend back would otherwise leave this open
+    // drawing compressed under a control reading True scale, with the control
+    // refusing the press that would fix it. The resample below reprojects.
+    blendReconcile(this.blendState);
     this.resample(utcMs);
     this.needsInitialFrame = true;
     // Every open starts on the whole system, whatever the last one ended on —
@@ -979,10 +1098,7 @@ export class SystemMap {
     // frame the system correctly and then spring: the animation would resume on
     // a fresh view and re-dolly it to a zoom ratio captured before whatever the
     // last session did. The committed target is what the map reopens at.
-    this.blend = this.blendTo;
-    this.blendAnimating = false;
-    this.blendElapsedMs = 0;
-    this.blendFrom = this.blendTo;
+    blendSettle(this.blendState);
     this.scaleZoomRatio = 1;
     this.setHover(null);
     this.cancelFocusPulse();
@@ -1031,24 +1147,23 @@ export class SystemMap {
    *  Capture the user's current framing so the animation re-dollies to keep the
    *  system the same apparent size as its extent changes. */
   setScale(trueScale: boolean): void {
-    const target = trueScale ? MAP_BLEND_TRUE : MAP_BLEND_COMPRESSED;
-    if (Math.abs(target - this.blendTo) < 1e-9 && !this.blendAnimating) return;
     // Only the overview re-dollies against this ratio, so only the overview may
     // capture it: a focus framing is a ten-thousandth of the fit, and carrying
     // that fraction back to the overview would slam the camera into the Sun.
-    // A toggle mid-focus just re-projects, and the follow delta rides it.
-    if (this.cam.camState === 'overview') {
-      const fit = fitDistanceAU(this.extentAU, MAP_FOV_DEG, this.camera.aspect);
-      this.scaleZoomRatio = this.getCameraDistance() / Math.max(fit, 1e-4);
-    }
-    this.blendFrom = this.blend;
-    this.blendTo = target;
-    this.blendElapsedMs = 0;
-    this.blendAnimating = true;
+    // A toggle mid-focus just re-projects, and the follow delta rides it. It is
+    // captured against the framing the press found, so it is read before the
+    // ledger moves the target.
+    const wasOverview = this.cam.camState === 'overview';
+    const fit = wasOverview
+      ? fitDistanceAU(this.extentAU, MAP_FOV_DEG, this.camera.aspect)
+      : 0;
+    const ratio = wasOverview ? this.getCameraDistance() / Math.max(fit, 1e-4) : 0;
+    if (!blendRequestScale(this.blendState, trueScale)) return;
+    if (wasOverview) this.scaleZoomRatio = ratio;
   }
 
   isTrueScale(): boolean {
-    return this.blendTo >= MAP_BLEND_TRUE - 1e-6;
+    return blendIsTrueScale(this.blendState);
   }
 
   /** Dev bridge: swap the radial curve, leaving the compressed/true blend
@@ -1122,18 +1237,8 @@ export class SystemMap {
     // off the flag: the terminal frame clears it while carrying the animation's
     // largest extent change, and that frame needs the same preserving dolly as
     // every other, or the settled view is left misframed.
-    let blendMoved = false;
-    if (this.blendAnimating) {
-      blendMoved = true;
-      this.blendElapsedMs = Math.min(this.blendElapsedMs + dtMs, MAP_BLEND_ANIM_MS);
-      const t = this.blendElapsedMs / MAP_BLEND_ANIM_MS;
-      this.blend = this.blendFrom + (this.blendTo - this.blendFrom) * smoothstepUnclamped(t);
-      this.recompressOrbits();
-      if (t >= 1) {
-        this.blend = this.blendTo;
-        this.blendAnimating = false;
-      }
-    }
+    const blendMoved = blendAdvance(this.blendState, dtMs);
+    if (blendMoved) this.recompressOrbits();
 
     // Re-read the world's textures before anything decides how to draw. This
     // runs after the world's own update in the same frame, so a tier swap made
@@ -1193,9 +1298,26 @@ export class SystemMap {
     this.camera.updateMatrixWorld();
 
     // ── (3) Projection-dependent work, on this frame's final camera pose.
+    this.projectFullView();
+  }
+
+  /**
+   * The full chart's whole projection-dependent phase, against the pose
+   * standing right now. Kept as one call because the three places that need it
+   * — the frame, a resize, a dive step — all need the WHOLE of it, in order: a
+   * marker-floored body is sized from its camera depth, and a label is placed
+   * from the same projection, so a pose refreshed without them draws last
+   * pose's sizes at this pose's distances.
+   */
+  private projectFullView(): void {
     this.frameRevision++;
-    this.orientShip();
-    this.updateDrawnSizes();
+    const el = this.renderer.domElement;
+    this.fullView.widthPx = Math.max(el.clientWidth, 1);
+    this.fullView.heightPx = Math.max(el.clientHeight, 1);
+    this.fullView.trueScaleTarget = this.isTrueScale();
+    this.fullView.sizeParams = this.bodySizeParams;
+    this.orientShip(this.fullView);
+    this.updateDrawnSizes(this.fullView);
     this.renderLabels();
   }
 
@@ -1229,6 +1351,261 @@ export class SystemMap {
     }
   }
 
+  // ── The corner chart ────────────────────────────────────────────────────
+  //
+  // A second lifecycle over the same scene, not a second flag on the first
+  // one. It ticks and draws; it never owns the pointer, never runs the camera
+  // state machine, never reveals a moon system, and never adopts a texture.
+  // What it draws is the chart at its fixed 3/4 overview: the Sun, the nine
+  // orbit lines, the planets as dots, and the ship.
+  //
+  // Its scale is always the compressed one, whatever the full chart's control
+  // is set to — at true scale the inner system is a single pixel, which is not
+  // a chart. That means it displaces the shared blend, and the ledger is what
+  // makes the displacement safe (see mapBlend).
+
+  isMiniOpen(): boolean {
+    return this.miniOpen;
+  }
+
+  /** Start the corner chart. Refused while the full chart owns the frame. */
+  openMini(utcMs: number): void {
+    if (this.miniOpen || this.open) return;
+    this.miniOpen = true;
+    this.clockUtcMs = utcMs;
+    if (blendParkCompressed(this.blendState) && this.sampled) this.recompressOrbits();
+    // Nothing is seated yet: the first tick fits the pose to a live extent, and
+    // places every body — the park above may have just moved the blend, and the
+    // dots follow the body pass, not the orbit reprojection.
+    this.miniSeatedExtentAU = 0;
+    this.miniSeatedAspect = 0;
+    this.miniBodyKey = makeMiniBodyKey();
+    this.miniFirstTickMs = -1;
+    this.miniFirstRenderMs = -1;
+  }
+
+  /** Stand the corner chart down and hand the blend back to the full chart. */
+  closeMini(): void {
+    if (!this.miniOpen) return;
+    this.miniOpen = false;
+    if (blendUnpark(this.blendState) && this.sampled) {
+      this.recompressOrbits();
+      this.recomputeExtent();
+    }
+  }
+
+  /**
+   * Per-frame refresh of the corner chart, into a viewport of `widthPx ×
+   * heightPx`. Same truth seam as the full chart — every body straight from
+   * the clock — with the moon, label, pick, hover, ring and texture passes all
+   * skipped: none of them can show at this size, and the moons in particular
+   * must stay exactly as the last full-chart close left them (hidden, and
+   * holding no borrowed paint).
+   */
+  updateMini(
+    utcMs: number,
+    shipX: number,
+    shipY: number,
+    shipZ: number,
+    shipHeading: number,
+    shipPitch: number,
+    shipMoving: boolean,
+    landed: boolean,
+    dtMs: number,
+    widthPx: number,
+    heightPx: number,
+  ): void {
+    if (!this.miniOpen || this.open) return;
+    const t0 = import.meta.env.DEV ? performance.now() : 0;
+
+    this.clockUtcMs = utcMs;
+    // The orbit lines are the chart. A map never opened has none, and the
+    // fade along each line reads time against the epoch its samples were taken
+    // at, so a stale epoch mis-fades even when the shapes still hold.
+    if (!this.sampled || Math.abs(utcMs - this.epochUtcMs) > ORBIT_LINE_RESAMPLE_MAX_AGE_MS) {
+      this.resample(utcMs);
+    }
+    // The planet pass is the chart's only expensive step and its only
+    // allocating one (the ephemeris seam hands back a fresh vector per body),
+    // and nothing in it moves unless the clock, the blend or the projection
+    // does. The ship is not part of that: it flies under a paused clock, so its
+    // placement, its heading and every drawn size run every frame regardless.
+    if (miniBodiesStale(this.miniBodyKey, utcMs, this.blend, this.projectionRevision)) {
+      stampMiniBodyKey(this.miniBodyKey, utcMs, this.blend, this.projectionRevision);
+      this.miniBodyPasses++;
+      this.updateBodies(utcMs);
+    }
+    this.placeShip(shipX, shipY, shipZ, shipHeading, shipPitch, shipMoving, landed, dtMs);
+    this.recomputeExtent();
+
+    const aspect = Math.max(widthPx, 1) / Math.max(heightPx, 1);
+    if (aspect !== this.miniSeatedAspect
+      || miniNeedsReseat(this.extentAU, this.miniSeatedExtentAU)) {
+      this.seatMiniCamera(aspect);
+    }
+    // Flush before anything projects: the renderer refreshes the matrices only
+    // at render time, and the drawn sizes read matrixWorldInverse.
+    this.miniCamera.updateMatrixWorld();
+
+    this.miniView.widthPx = Math.max(widthPx, 1);
+    this.miniView.heightPx = Math.max(heightPx, 1);
+    this.orientShip(this.miniView);
+    this.updateDrawnSizes(this.miniView);
+
+    if (import.meta.env.DEV) {
+      const ms = performance.now() - t0;
+      if (this.miniFirstTickMs < 0) this.miniFirstTickMs = ms;
+      else this.pushPerfSample(this.miniTickMs, ms);
+    }
+  }
+
+  /** Seat the corner chart's fixed 3/4 overview pose on the live extent. */
+  private seatMiniCamera(aspect: number): void {
+    this.miniSeatedAspect = aspect;
+    this.miniSeatedExtentAU = this.extentAU;
+    const dist = fitDistanceAU(this.extentAU, MAP_FOV_DEG, aspect);
+    this.miniCamera.aspect = aspect;
+    this.miniCamera.position.set(0, dist * 0.82, dist * 0.57).setLength(dist);
+    this.miniCamera.lookAt(0, 0, 0);
+    // No moon system is ever revealed here, so the drawn reach is the chart's
+    // own; the surface term has nothing to meter against and stands down.
+    const bounds = mapOverviewBounds(
+      this.extentAU,
+      this.renderedExtentAU(),
+      dist,
+      dist,
+      Infinity,
+      this.miniBounds,
+    );
+    this.miniCamera.near = bounds.near;
+    this.miniCamera.far = bounds.far;
+    this.miniCamera.updateProjectionMatrix();
+  }
+
+  /**
+   * Draw the corner chart into `draw` — the GL-origin rectangle already snapped
+   * to whole device pixels (see miniDrawRect) — over the world frame the
+   * composer has already put on the backbuffer.
+   *
+   * The transaction is the whole of the safety here. Every piece of renderer
+   * state the pass touches is saved and given back in `finally`, the rects go
+   * in CSS px (three multiplies by the pixel ratio itself, and the snap is what
+   * keeps that multiplication exact), and the depth buffer is cleared INSIDE
+   * the scissor — the orbit lines are depth-tested, and the world's depth
+   * buffer would otherwise occlude the whole chart.
+   */
+  renderMini(draw: MiniDrawRect): void {
+    if (!this.miniOpen || this.open) return;
+    if (draw.widthDevicePx < 1 || draw.heightDevicePx < 1) return;
+    const t0 = import.meta.env.DEV ? performance.now() : 0;
+    const renderer = this.renderer;
+
+    const prevTarget = renderer.getRenderTarget();
+    const prevScissorTest = renderer.getScissorTest();
+    renderer.getScissor(this.tmpScissor);
+    renderer.getViewport(this.tmpViewport);
+    const prevAutoClear = renderer.autoClear;
+    const prevExposure = renderer.toneMappingExposure;
+    const prevBackground = this.scene.background;
+    // The opaque variant leans on three's colour-background force-clear, and
+    // that path writes the GL clear state from the chart's field colour without
+    // touching the renderer's own stored clear colour. Re-applying the stored
+    // pair afterwards is what puts the two back in agreement — otherwise the
+    // next caller to clear() gets the chart's field instead of its own.
+    renderer.getClearColor(this.tmpClearColor);
+    const prevClearAlpha = renderer.getClearAlpha();
+    try {
+      renderer.setRenderTarget(null);
+      // The world frame outside the rectangle has to survive untouched, so the
+      // pass clears nothing on its own account.
+      renderer.autoClear = false;
+      // The world's near-Sun auto-exposure is live; the chart draws at neutral
+      // and hands the world's value straight back.
+      renderer.toneMappingExposure = MAP_EXPOSURE;
+      renderer.setViewport(draw.left, draw.bottom, draw.width, draw.height);
+      renderer.setScissor(draw.left, draw.bottom, draw.width, draw.height);
+      renderer.setScissorTest(true);
+      if (!this.miniOpaque) this.scene.background = null;
+      // A masked-off depth buffer would swallow the clear silently.
+      renderer.state.buffers.depth.setMask(true);
+      renderer.clearDepth();
+      // Line2 converts its px linewidth through this resolution, so a chart
+      // drawn at the canvas's would come out a fifth of a pixel wide.
+      for (const o of this.orbits) o.material.resolution.set(draw.width, draw.height);
+      renderer.render(this.scene, this.miniCamera);
+    } finally {
+      const el = renderer.domElement;
+      for (const o of this.orbits) {
+        o.material.resolution.set(Math.max(el.clientWidth, 1), Math.max(el.clientHeight, 1));
+      }
+      this.scene.background = prevBackground;
+      // Rebind the prior target BEFORE handing the clear colour back: the
+      // renderer encodes clear values for whatever target is bound when they
+      // are set, and the saved colour belongs to the saved target.
+      renderer.setRenderTarget(prevTarget);
+      renderer.setClearColor(this.tmpClearColor, prevClearAlpha);
+      renderer.setViewport(this.tmpViewport);
+      renderer.setScissor(this.tmpScissor);
+      renderer.setScissorTest(prevScissorTest);
+      renderer.autoClear = prevAutoClear;
+      renderer.toneMappingExposure = prevExposure;
+    }
+    if (import.meta.env.DEV) {
+      const ms = performance.now() - t0;
+      if (this.miniFirstRenderMs < 0) this.miniFirstRenderMs = ms;
+      else this.pushPerfSample(this.miniRenderMs, ms);
+    }
+  }
+
+  /** Dev A/B: draw the corner chart over the world frame instead of clearing
+   *  its rectangle to the chart's own field. */
+  setMiniOpaque(opaque: boolean): void {
+    this.miniOpaque = opaque;
+  }
+
+  /** Dev forensics: what the corner chart costs and what pose it is holding.
+   *  Samples are wall ms; the first tick and first draw are reported apart from
+   *  the steady state because they carry the sampling of nine trajectories. */
+  miniStats(): {
+    open: boolean;
+    blend: number;
+    parkedBlend: number | null;
+    seatedExtentAU: number;
+    seatedAspect: number;
+    near: number;
+    far: number;
+    opaque: boolean;
+    firstTickMs: number;
+    firstRenderMs: number;
+    bodyPasses: number;
+    tickMs: number[];
+    renderMs: number[];
+  } {
+    return {
+      open: this.miniOpen,
+      blend: this.blendState.blend,
+      parkedBlend: this.blendState.parked,
+      seatedExtentAU: this.miniSeatedExtentAU,
+      seatedAspect: this.miniSeatedAspect,
+      near: this.miniCamera.near,
+      far: this.miniCamera.far,
+      opaque: this.miniOpaque,
+      firstTickMs: this.miniFirstTickMs,
+      firstRenderMs: this.miniFirstRenderMs,
+      bodyPasses: this.miniBodyPasses,
+      tickMs: this.miniTickMs.slice(),
+      renderMs: this.miniRenderMs.slice(),
+    };
+  }
+
+  private pushPerfSample(buffer: number[], ms: number): void {
+    buffer.push(ms);
+    if (buffer.length > SystemMap.PERF_SAMPLE_CAPACITY) buffer.shift();
+  }
+
+  /** How many frames of corner-chart cost the forensics keep. */
+  private static readonly PERF_SAMPLE_CAPACITY = 600;
+
   /** Resize: match the camera aspect and every fat-line resolution to the canvas. */
   onResize(): void {
     const el = this.renderer.domElement;
@@ -1239,7 +1616,7 @@ export class SystemMap {
     // test is only ever asked of the overview: an early flight frame still sits
     // at the fit distance it started from, and dollying it would fight the ease.
     const wasAtOverview = this.open && this.sampled && this.cam.camState === 'overview'
-      && !this.blendAnimating
+      && !this.blendState.animating
       && !this.needsInitialFrame
       && isAtOverviewFit(
         this.getCameraDistance(),
@@ -1280,10 +1657,7 @@ export class SystemMap {
       return;
     }
     this.camera.updateMatrixWorld();
-    this.frameRevision++;
-    this.orientShip();
-    this.updateDrawnSizes();
-    this.renderLabels();
+    this.projectFullView();
   }
 
   // ---- focus & follow ---------------------------------------------------
@@ -2654,21 +3028,14 @@ export class SystemMap {
       this.applyFocusClip(this.diveFocusName, this.nearestBodyName());
     }
     this.camera.updateMatrixWorld();
-    this.frameRevision++;
     // The dive is the only camera move that does not happen inside update(), so
     // everything metered off the camera has to be rebuilt here, against the pose
     // just set. Drawn sizes are the sharp case: a marker-floored body is sized
     // in world units from its camera depth, so a size left on the previous
     // frame's depth renders in the ratio of the two — and this ease collapses
     // the distance to a seventh in a few hundred ms, so the body would swell
-    // through the dive and snap back at the end. Labels and the ship chevron
-    // are placed and rotated by projection and are on screen for the whole
-    // camera ease (the fade only starts after it), so they are rebuilt for the
-    // same reason — the whole projection-dependent phase runs here, not part
-    // of it, and in the order update() runs it.
-    this.orientShip();
-    this.updateDrawnSizes();
-    this.renderLabels();
+    // through the dive and snap back at the end.
+    this.projectFullView();
   }
 
   /** End the dive. On cancel, restore the pre-dive pose and hand controls back;
@@ -3406,7 +3773,7 @@ export class SystemMap {
    *  snapshot placeShip stored, so a camera moved outside the update pass can
    *  replay it. Docked marker keeps the neutral rotation placeShip left it
    *  with. */
-  private orientShip(): void {
+  private orientShip(view: MapDrawView): void {
     const mat = this.shipMarker.material;
     if (this.shipDocked) {
       mat.rotation = 0;
@@ -3427,15 +3794,19 @@ export class SystemMap {
       this.curve,
       this.tmpMap2,
     );
-    const w = this.renderer.domElement.clientWidth;
-    const h = this.renderer.domElement.clientHeight;
-    projectToScreen(this.shipMarker.position, this.camera, w, h, this.tmpProj);
-    projectToScreen(this.tmpMap2, this.camera, w, h, this.tmpProj2);
-    const dx = this.tmpProj2.x - this.tmpProj.x;
-    const dy = this.tmpProj2.y - this.tmpProj.y;
-    // Chevron texture points up; screen y is down. Angle from screen-up,
-    // negated for the sprite's CCW rotation.
-    mat.rotation = -Math.atan2(dx, -dy);
+    const w = view.widthPx;
+    const h = view.heightPx;
+    projectToScreen(this.shipMarker.position, view.camera, w, h, this.tmpProj);
+    projectToScreen(this.tmpMap2, view.camera, w, h, this.tmpProj2);
+    // Clip space is square and the viewport is not, so the angle a viewer sees
+    // is the NDC delta stretched by THIS viewport — the corner chart's aspect
+    // is not the canvas's, and reading the canvas here would skew its chevron.
+    mat.rotation = shipHeadingRotationRad(
+      this.tmpProj2.ndcX - this.tmpProj.ndcX,
+      this.tmpProj2.ndcY - this.tmpProj.ndcY,
+      w,
+      h,
+    );
   }
 
   private recomputeExtent(): void {
@@ -3511,27 +3882,29 @@ export class SystemMap {
    * floor at the overview and the body's true size once the camera is close
    * enough to resolve it. One shared camera factor drives both.
    */
-  private updateDrawnSizes(): void {
-    const h = Math.max(this.renderer.domElement.clientHeight, 1);
+  private updateDrawnSizes(view: MapDrawView): void {
+    const camera = view.camera;
+    const params = view.sizeParams;
+    const h = Math.max(view.heightPx, 1);
     const worldPerPxAtUnit = (2 * Math.tan((MAP_FOV_DEG * Math.PI) / 180 / 2)) / h;
 
     // The Sun is always its billboard — a star has no terminator to draw. The
     // policy answers in map AU; the px it works out to is the hit target.
-    const sunDepth = this.viewDepth(this.sun.position);
-    const sunAU = mapBodyRadiusAU(SUN_DATA.radiusAU, sunDepth, worldPerPxAtUnit, this.bodySizeParams);
+    const sunDepth = this.viewDepth(this.sun.position, camera);
+    const sunAU = mapBodyRadiusAU(SUN_DATA.radiusAU, sunDepth, worldPerPxAtUnit, params);
     this.sunRadiusPx = sunAU / Math.max(worldPerPxAtUnit * sunDepth, 1e-30);
     const sunBoost = this.hoveredName === 'Sun' ? HOVER_SCALE : 1;
     this.sun.scale.setScalar(2 * sunAU * sunBoost);
-    this.sunHalo.scale.setScalar(2 * sunAU * SUN_HALO_RADII);
+    this.sunHalo.scale.setScalar(2 * sunAU * view.sunHaloRadii);
 
-    const trueScaleTarget = this.isTrueScale();
+    const trueScaleTarget = view.trueScaleTarget;
     for (const entry of this.orbits) {
-      const depth = this.viewDepth(entry.dot.position);
+      const depth = this.viewDepth(entry.dot.position, camera);
       const drawnAU = mapBodyRadiusAU(
         entry.planet.radiusAU,
         depth,
         worldPerPxAtUnit,
-        this.bodySizeParams,
+        params,
       );
       const worldPerPx = Math.max(worldPerPxAtUnit * depth, 1e-30);
       entry.drawnRadiusPx = drawnAU / worldPerPx;
@@ -3543,7 +3916,7 @@ export class SystemMap {
         entry.globeMat.map !== null,
         trueScaleTarget,
         entry.planet.radiusAU / worldPerPx,
-        mapMarkerRadiusPx(entry.planet.radiusAU, this.bodySizeParams),
+        mapMarkerRadiusPx(entry.planet.radiusAU, params),
       ) === 'globe';
       entry.globeDrawn = globe;
       entry.globe.visible = globe;
@@ -3561,27 +3934,36 @@ export class SystemMap {
           entry.dot,
           DOT_EXTENT_MUL * entry.drawnRadiusPx * boost,
           worldPerPxAtUnit,
+          camera,
         );
       }
     }
-    this.updateMoonDrawnSizes(worldPerPxAtUnit, trueScaleTarget);
-    this.applyMarkerScale(this.shipMarker, SHIP_PX, worldPerPxAtUnit);
+    if (view.withMoons) this.updateMoonDrawnSizes(worldPerPxAtUnit, trueScaleTarget);
+    this.applyMarkerScale(this.shipMarker, view.shipPx, worldPerPxAtUnit, camera);
     if (this.pingSprite.visible) {
-      this.applyMarkerScale(this.pingSprite, this.pingDiameterPx, worldPerPxAtUnit);
+      this.applyMarkerScale(this.pingSprite, this.pingDiameterPx, worldPerPxAtUnit, camera);
     }
   }
 
   /** Camera-space depth (distance along the view axis) of a map position.
    *  Perspective screen size follows this, not the Euclidean distance — the
    *  latter runs an off-axis marker ~10% oversized. */
-  private viewDepth(position: THREE.Vector3): number {
-    this.tmpView.copy(position).applyMatrix4(this.camera.matrixWorldInverse);
+  private viewDepth(
+    position: THREE.Vector3,
+    camera: THREE.PerspectiveCamera = this.camera,
+  ): number {
+    this.tmpView.copy(position).applyMatrix4(camera.matrixWorldInverse);
     return Math.max(-this.tmpView.z, 1e-6);
   }
 
-  private applyMarkerScale(sprite: THREE.Sprite, px: number, worldPerPxAtUnit: number): void {
+  private applyMarkerScale(
+    sprite: THREE.Sprite,
+    px: number,
+    worldPerPxAtUnit: number,
+    camera: THREE.PerspectiveCamera = this.camera,
+  ): void {
     // worldPerPxAtUnit is the world span of one px at unit depth.
-    sprite.scale.setScalar(px * worldPerPxAtUnit * this.viewDepth(sprite.position));
+    sprite.scale.setScalar(px * worldPerPxAtUnit * this.viewDepth(sprite.position, camera));
   }
 
   private renderLabels(): void {

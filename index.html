@@ -1513,6 +1513,39 @@
       #planetarium-keys-hint { display: none; }
     }
 
+    /* Corner chart — the frame around the WebGL rectangle, and the surface that
+       takes the tap. It sits ABOVE the touch flight zone (12): on coarse
+       pointers that zone is a transparent full-width layer that captures every
+       pointerdown, so a hit test on the canvas underneath would never fire. It
+       covers the chart and nothing else, and steering stays live everywhere
+       else — unlike the full map, the corner chart does not take the sky away.
+       Left of the bottom bar (18) and the action cluster (28) in the stack, so
+       neither is ever blocked by it. Geometry (left/top/width/height) is
+       written by the TS from the same rect the scissor uses. */
+    #mini-chart {
+      display: none;
+      position: absolute;
+      padding: 0;
+      background: transparent;
+      border: 1px solid var(--line);
+      border-radius: 3px;
+      box-shadow: 0 6px 20px rgba(0, 0, 0, 0.45);
+      pointer-events: auto;
+      cursor: pointer;
+      z-index: 14;
+      touch-action: none;
+      -webkit-tap-highlight-color: transparent;
+      transition: border-color var(--dur) var(--ease);
+    }
+    #mini-chart:hover { border-color: rgba(255, 255, 255, 0.22); }
+    #mini-chart:focus-visible {
+      outline: 2px solid rgba(var(--accent-rgb), 0.75);
+      outline-offset: 2px;
+    }
+    @media (prefers-reduced-motion: reduce) {
+      #mini-chart { transition: none; }
+    }
+
     /* Resume prompt */
     #planetarium-resume-prompt {
       display: none;
@@ -3138,6 +3171,13 @@
           </button>
         </div>
         <div class="settings-row">
+          <span class="settings-label">Mini chart</span>
+          <button class="settings-toggle" id="settings-mini-toggle"
+                  aria-label="Mini chart" aria-pressed="true">
+            <span id="settings-mini-label">On</span>
+          </button>
+        </div>
+        <div class="settings-row">
           <span class="settings-label">Slower near planets</span>
           <button class="settings-toggle" id="settings-throttle-toggle">
             <span id="settings-throttle-label">On</span>
@@ -3592,6 +3632,11 @@
           </div>
         </div>
       </div>
+
+      <!-- Corner chart: the WebGL draws inside this rectangle, and the element
+           is its frame and its tap target. Position and size are written by the
+           TS from the same rect the scissor uses. -->
+      <button id="mini-chart" aria-label="Open system map"></button>
 
       <div id="planetarium-notification"></div>
       <div id="planetarium-loading-msg" style="position:absolute;bottom:50%;left:50%;transform:translate(-50%,50%);font-size:13px;color:var(--text-dim);letter-spacing:2px;display:none;"></div>

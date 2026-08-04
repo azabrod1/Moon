@@ -619,6 +619,11 @@ function installDevHooks() {
     setMapMoonOffset: (partial: Record<string, number> | null) =>
       planetariumMode?.devSetMapMoonOffset(partial) ?? false,
     mapCommit: (verb: 'travel' | 'observe' | 'pilot') => planetariumMode?.devMapCommit(verb) ?? false,
+    // The corner chart: the ☰ toggle, the opaque/over-the-world A/B, and what
+    // it costs per frame.
+    setMiniChart: (on: boolean) => planetariumMode?.devSetMiniChart(on),
+    setMiniOpaque: (opaque: boolean) => planetariumMode?.devSetMiniOpaque(opaque),
+    miniState: () => planetariumMode?.devMiniState() ?? null,
     // Fly to a body and follow it; null flies back out to the overview.
     mapFocus: (name: string | null) => planetariumMode?.devMapFocus(name) ?? false,
     // Map curve A/B: setMapS picks the asinh curve with that softening scale
@@ -766,6 +771,11 @@ async function init() {
       }
     } else {
       renderScene(camera);
+      // The corner chart draws over the finished world frame, inside its own
+      // scissor rectangle and its own renderer-state transaction — so the
+      // composer's targets and every pixel outside that rectangle are exactly
+      // what renderScene left.
+      if (appMode === 'planetarium') planetariumMode?.renderMiniChartFrame();
     }
   }
 

@@ -92,3 +92,74 @@ export function nextStaleOrbit(
   }
   return -1;
 }
+
+export type ResamplePlan =
+  | { kind: 'cold' }
+  | { kind: 'one'; index: number }
+  | { kind: 'none' };
+
+/**
+ * The sweep's whole memory: where the lap has got to, and the clock reading
+ * the last decision was taken against. One object, owned by the chart and
+ * shared by BOTH passes for the map's whole life. The fields are runtime
+ * private and only plan() moves them: a close() that reset the cursor —
+ * restarting the lap the full-to-corner handover depends on — cannot be
+ * written against this class. (Replacing the whole object stays expressible
+ * anywhere, as with any owned state; the chart holds its sweep in a
+ * `readonly` field so the compiler refuses that too.)
+ */
+export class ResampleSweep {
+  #cursor = 0;
+  #prevClockUtcMs = Number.NaN;
+
+  /**
+   * One frame's whole refresh decision, taken against — and advancing — the
+   * sweep's memory: cold when the chart is unseeded or the clock has jumped,
+   * otherwise at most one stale entry from the cursor onward. The state is
+   * stamped and stepped HERE so a caller cannot take the decision without
+   * paying the bookkeeping that makes the next one right.
+   */
+  plan(
+    sampled: boolean,
+    entries: readonly OrbitEpoch[],
+    utcMs: number,
+    maxAgeMs: number,
+  ): ResamplePlan {
+    const prev = this.#prevClockUtcMs;
+    this.#prevClockUtcMs = utcMs;
+    if (needsColdSeed(sampled, prev, utcMs, maxAgeMs)) return { kind: 'cold' };
+    this.#cursor = advanceOrbitCursor(this.#cursor, entries.length);
+    const due = nextStaleOrbit(entries, this.#cursor, utcMs, maxAgeMs);
+    if (due < 0) return { kind: 'none' };
+    this.#cursor = due;
+    return { kind: 'one', index: due };
+  }
+
+  /**
+   * The chart seeded every line at `utcMs` OUTSIDE a plan — an open does,
+   * before its first frame. Stamp the clock so the next plan measures a
+   * running clock against this instant, not against whatever was current
+   * before the chart closed. The cursor is deliberately untouched: even a
+   * full reseed hands the lap over rather than restarting it.
+   */
+  seeded(utcMs: number): void {
+    this.#prevClockUtcMs = utcMs;
+  }
+}
+
+/**
+ * Whether a moon ring may refill now. An unfilled ring always may — a missing
+ * orbit is not a stale one, and gating a first fill would leave a newly
+ * revealed system ringless. A filled ring waits out the cadence floor, so a
+ * warped clock that stales every ring per frame cannot turn the one-ring
+ * budget into a fixed per-frame cost by the back door.
+ */
+export function ringRefillDue(
+  filled: boolean,
+  nowMs: number,
+  filledAtMs: number,
+  minRefillMs: number,
+): boolean {
+  if (!filled) return true;
+  return nowMs - filledAtMs >= minRefillMs;
+}

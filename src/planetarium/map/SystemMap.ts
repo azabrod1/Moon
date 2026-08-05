@@ -64,11 +64,7 @@ import {
 import { tidalLockQuaternion, tidalRollNorth } from '../world/tidalLock';
 import { bodyDisplayName } from '../surfaceView';
 import { ORBIT_LINE_RESAMPLE_MAX_AGE_MS } from '../SolarSystem';
-import {
-  advanceOrbitCursor,
-  needsColdSeed,
-  nextStaleOrbit,
-} from './mapResample';
+import { ResampleSweep, ringRefillDue } from './mapResample';
 import { applyTextureDefaults } from '../world/texturePolicy';
 import { projectToScreen, type ScreenProjection } from '../../shared/three/projectToScreen';
 import {
@@ -590,14 +586,12 @@ export class SystemMap {
   private curve: MapCurve = defaultMapCurve();
   private blendState = makeMapBlendState();
   private bodySizeParams: MapBodySizeParams = { ...MAP_BODY_SIZE_DEFAULTS };
-  /** The clock the last refresh decision was taken against — the frame before
-   *  this one, whichever pass drew it. What separates a running clock from a
-   *  jump (see mapResample). NaN before the first decision. */
-  private resampleClockUtcMs = Number.NaN;
-  /** Where the drift sweep has got to. Shared by both passes and deliberately
-   *  NOT reset by close(): a full chart closing to the corner chart hands the
-   *  lap over rather than restarting it. */
-  private orbitCursor = 0;
+  /** The sweep's memory — cursor and previous clock in one object (see
+   *  mapResample.ResampleState). Deliberately untouched by close(), and the
+   *  module exports no reset: the lap survives every open/close by shape. */
+  // `readonly` on purpose: the sweep's memory survives every close and open by
+  // construction — nothing can hand this field a fresh sweep mid-life.
+  private readonly resampleSweep = new ResampleSweep();
   /** One reusable point buffer for the orbit sampler. The samples are copied
    *  straight into the entry's own Float32Array and nothing here outlives the
    *  call, so all nine orbits share it — 181 fresh vectors per line is what put
@@ -2617,6 +2611,11 @@ export class SystemMap {
     for (const sys of this.moonSystems) {
       if (!sys.revealed) continue;
       for (const entry of sys.moons) {
+        // One policy call for BOTH classes — the first-fill exemption and the
+        // cadence floor live in ringRefillDue, not in this loop's shape.
+        if (!ringRefillDue(entry.ringFilled, nowMs, entry.ringFilledAtMs, MOON_RING_MIN_REFILL_MS)) {
+          continue;
+        }
         if (!entry.ringFilled) {
           if (!system) {
             system = sys;
@@ -2625,7 +2624,6 @@ export class SystemMap {
           }
           continue;
         }
-        if (nowMs - entry.ringFilledAtMs < MOON_RING_MIN_REFILL_MS) continue;
         const ageDays = Math.abs(utcMs - entry.ringSampledUtcMs) / 86_400_000;
         const urgency = (ageDays * entry.ringDriftDegPerDay) / MOON_RING_DRIFT_LIMIT_DEG;
         if (urgency > worst) {
@@ -3783,28 +3781,18 @@ export class SystemMap {
    * starting a fresh one.
    */
   private stepResample(utcMs: number): void {
-    const prevClockUtcMs = this.resampleClockUtcMs;
-    this.resampleClockUtcMs = utcMs;
-    if (needsColdSeed(this.sampled, prevClockUtcMs, utcMs, ORBIT_LINE_RESAMPLE_MAX_AGE_MS)) {
-      this.resample(utcMs);
-      return;
-    }
-    // One step a frame, whatever it finds — the sweep is what keeps the nine
-    // lines taking turns instead of one of them holding the budget.
-    this.orbitCursor = advanceOrbitCursor(this.orbitCursor, this.orbits.length);
-    const due = nextStaleOrbit(
-      this.orbits, this.orbitCursor, utcMs, ORBIT_LINE_RESAMPLE_MAX_AGE_MS,
+    const plan = this.resampleSweep.plan(
+      this.sampled, this.orbits, utcMs, ORBIT_LINE_RESAMPLE_MAX_AGE_MS,
     );
-    if (due < 0) return;
-    this.orbitCursor = due;
-    this.refreshOrbit(this.orbits[due], utcMs);
+    if (plan.kind === 'cold') this.resample(utcMs);
+    else if (plan.kind === 'one') this.refreshOrbit(this.orbits[plan.index], utcMs);
   }
 
   /** Seed every line at one instant: the cold path, and the only one allowed
    *  to leave the chart part-refreshed for no frames at all. */
   private resample(utcMs: number): void {
     this.sampled = true;
-    this.resampleClockUtcMs = utcMs;
+    this.resampleSweep.seeded(utcMs);
     for (const entry of this.orbits) this.refreshOrbit(entry, utcMs);
   }
 

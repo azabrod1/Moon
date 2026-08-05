@@ -4,6 +4,8 @@ import {
   needsColdSeed,
   nextStaleOrbit,
   orbitEpochStale,
+  ResampleSweep,
+  ringRefillDue,
   type OrbitEpoch,
 } from './mapResample';
 import { trajectoryLineBodyFraction } from '../../astronomy/planetary';
@@ -170,5 +172,119 @@ describe('the fade reads its own line epoch', () => {
     // 55 days of an Earth year is ~15% of the loop — a brightness phase that
     // far off the body is the artifact a chart-wide epoch would draw.
     expect(Math.abs(stale - own)).toBeGreaterThan(0.1);
+  });
+});
+
+describe('ResampleSweep', () => {
+  const AGE = 60 * 86_400_000;
+  const entry = (epochUtcMs: number) => ({ epochUtcMs });
+
+  it('goes cold when nothing is seeded, and stamps the clock it decided at', () => {
+    const sweep = new ResampleSweep();
+    const entries = [entry(Number.NaN)];
+    expect(sweep.plan(false, entries, 1_000, AGE)).toEqual({ kind: 'cold' });
+    // The stamp is observable only through the next decision: one small step
+    // on from the instant just decided at must ride the drift path, not
+    // re-cold against whatever clock came before.
+    entries[0] = entry(1_000);
+    expect(sweep.plan(true, entries, 1_001, AGE).kind).not.toBe('cold');
+  });
+
+  it('goes cold on a step no running clock could take, then resumes the sweep', () => {
+    const sweep = new ResampleSweep();
+    const entries = [entry(0), entry(0), entry(0)];
+    sweep.plan(false, entries, 0, AGE); // seed
+    const jumped = sweep.plan(true, entries, AGE * 10, AGE);
+    expect(jumped).toEqual({ kind: 'cold' });
+    // The frame after the jump measures against the jumped clock, not the old one.
+    const after = sweep.plan(true, entries, AGE * 10 + 1, AGE);
+    expect(after.kind).not.toBe('cold');
+  });
+
+  it('a seed outside a plan stamps the clock too — an open does not double-cold', () => {
+    const sweep = new ResampleSweep();
+    // The open path seeds every line directly, then tells the sweep it did.
+    const entries = [entry(5_000)];
+    sweep.seeded(5_000);
+    expect(sweep.plan(true, entries, 5_001, AGE).kind).not.toBe('cold');
+  });
+
+  it('refreshes at most one entry per call, in turn', () => {
+    const sweep = new ResampleSweep();
+    const entries = [entry(0), entry(0), entry(0)];
+    const utc = AGE + 2; // entries sampled at 0 are all stale by now
+    sweep.plan(false, entries, utc - 1, AGE); // seed stamps the clock
+    const first = sweep.plan(true, entries, utc, AGE);
+    expect(first.kind).toBe('one');
+    // The caller refreshes what the plan names; mirror that.
+    if (first.kind === 'one') entries[first.index] = entry(utc);
+    const second = sweep.plan(true, entries, utc + 1, AGE);
+    expect(second.kind).toBe('one');
+    if (second.kind === 'one' && first.kind === 'one') {
+      expect(second.index).not.toBe(first.index);
+    }
+  });
+
+  it('carries one lap across two alternating passes — the close-to-corner handover', () => {
+    // The full chart and the corner chart call with the SAME sweep object;
+    // whichever pass runs continues the sweep where the other left it. The
+    // sweep's memory is private and the class exports no reset, so a close
+    // cannot restart the lap.
+    const sweep = new ResampleSweep();
+    const entries = [entry(0), entry(0), entry(0), entry(0)];
+    const utc = AGE + 2; // entries sampled at 0 are all stale by now
+    sweep.plan(false, entries, utc - 1, AGE); // seed stamps the clock
+    const seen: number[] = [];
+    for (let frame = 0; frame < 4; frame++) {
+      // Alternate "passes" (update vs updateMini) — same sweep, same rule.
+      const plan = sweep.plan(true, entries, utc + frame, AGE);
+      if (plan.kind === 'one') {
+        seen.push(plan.index);
+        entries[plan.index] = entry(utc + frame);
+      }
+    }
+    expect(new Set(seen).size).toBe(seen.length); // no entry revisited mid-lap
+    expect(seen.length).toBe(4); // the lap completes across the handovers
+  });
+
+  it('reports none while every line is fresh, and idle frames cost the lap nothing', () => {
+    const sweep = new ResampleSweep();
+    const entries = [entry(0), entry(0), entry(0)];
+    const utc = AGE + 2;
+    sweep.plan(false, entries, utc - 1, AGE); // seed stamps the clock
+    for (let i = 0; i < entries.length; i++) entries[i] = entry(utc);
+    expect(sweep.plan(true, entries, utc, AGE)).toEqual({ kind: 'none' });
+    expect(sweep.plan(true, entries, utc + 1, AGE)).toEqual({ kind: 'none' });
+    // Now age the whole chart under a RUNNING clock: one stride of exactly the
+    // drift limit is the largest step that is not a jump, and it carries the
+    // clock past every entry's age at once. The sweep must come out of its
+    // idle frames still able to cover all three exactly once.
+    const seen: number[] = [];
+    for (let frame = 0; frame < 3; frame++) {
+      const clock = utc + AGE + 1 + frame;
+      const plan = sweep.plan(true, entries, clock, AGE);
+      expect(plan.kind).toBe('one');
+      if (plan.kind === 'one') {
+        seen.push(plan.index);
+        entries[plan.index] = entry(clock);
+      }
+    }
+    expect([...seen].sort((a, b) => a - b)).toEqual([0, 1, 2]);
+  });
+});
+
+describe('ringRefillDue', () => {
+  it('always lets a first fill through — a missing orbit is not a stale one', () => {
+    expect(ringRefillDue(false, 1_000, 999, 1_000)).toBe(true);
+    expect(ringRefillDue(false, 0, Number.NEGATIVE_INFINITY, 1_000)).toBe(true);
+  });
+
+  it('holds a filled ring inside the cadence floor', () => {
+    expect(ringRefillDue(true, 1_500, 1_000, 1_000)).toBe(false);
+  });
+
+  it('releases at the floor and beyond', () => {
+    expect(ringRefillDue(true, 2_000, 1_000, 1_000)).toBe(true);
+    expect(ringRefillDue(true, 9_000, 1_000, 1_000)).toBe(true);
   });
 });

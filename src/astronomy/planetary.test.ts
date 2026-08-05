@@ -30,6 +30,7 @@ import {
   ttJDFromUtcMs,
 } from './planetary';
 import { dateToJD, findEvent, sunPosition } from './ephemeris';
+import { deltaTDaysAtDate } from './deltaT';
 import { accumulatedPrecessionLonDeg } from './precession';
 import { getStandishElements, type KeplerElements } from './standish';
 import { DEG, J2000, OBLIQUITY_DEG, RAD } from './constants';
@@ -562,5 +563,39 @@ describe('the zero-allocation out params', () => {
     expect(sampleTrajectoryLinePoints(planet, dates[1], 8, short)).toHaveLength(9);
     const long = Array.from({ length: 30 }, () => new THREE.Vector3());
     expect(sampleTrajectoryLinePoints(planet, dates[1], 8, long)).toHaveLength(9);
+  });
+
+  it('computes ttJDFromUtcMs through its scratch Date bit-for-bit with a fresh one', () => {
+    // The scratch is loaded by setTime, which sets the same [[DateValue]] a
+    // fresh construction would carry — so every calendar component read, and
+    // therefore the JD and ΔT, must be IDENTICAL, not close. Swept across the
+    // golden eras, the ΔT theory's piecewise segment boundaries, calendar
+    // edges (leap day, year end, pre-1970 negative timestamps), and repeats
+    // out of order so a stale scratch from any earlier call would show.
+    const epochs = [
+      Date.UTC(1800, 0, 1), Date.UTC(1860, 5, 15), Date.UTC(1900, 0, 1),
+      Date.UTC(1920, 11, 31, 23, 59, 59, 999), Date.UTC(1941, 8, 1),
+      Date.UTC(1961, 0, 1), Date.UTC(1986, 1, 28), Date.UTC(2005, 0, 1),
+      Date.UTC(2024, 1, 29, 12, 30, 45, 123), Date.UTC(2026, 7, 5),
+      Date.UTC(2050, 0, 1), Date.UTC(2150, 6, 1), Date.UTC(2500, 3, 10),
+      Date.UTC(1969, 11, 31, 23, 59, 59, 999), Date.UTC(1600, 0, 1),
+    ];
+    const sweep = [...epochs, ...epochs.slice().reverse()];
+    for (const utcMs of sweep) {
+      const fresh = new Date(utcMs);
+      expect(ttJDFromUtcMs(utcMs)).toBe(dateToJD(fresh) + deltaTDaysAtDate(fresh));
+    }
+  });
+
+  it('writes sunPosition into `out` bit-for-bit and returns the record', () => {
+    for (const utcMs of dates) {
+      const jd = ttJDFromUtcMs(utcMs);
+      const fresh = sunPosition(jd);
+      const out = { longitude: 999, distance: 999 };
+      const returned = sunPosition(jd, out);
+      expect(returned).toBe(out);
+      expect(out.longitude).toBe(fresh.longitude);
+      expect(out.distance).toBe(fresh.distance);
+    }
   });
 });

@@ -7,7 +7,7 @@
  */
 import * as THREE from 'three';
 import type { PlanetData } from '../planetarium/planets/planetData';
-import { dateToJD, moonPosition, sunPosition } from './ephemeris';
+import { dateToJD, moonPosition, sunPosition, type SunPosition } from './ephemeris';
 import { deltaTDaysAtDate } from './deltaT';
 import { accumulatedPrecessionLonDeg } from './precession';
 import {
@@ -95,10 +95,20 @@ export function eclipticToEquatorial(vector: THREE.Vector3): THREE.Vector3 {
   return vector.clone().applyMatrix4(ECLIPTIC_TO_EQUATORIAL);
 }
 
+/**
+ * Scratch for ttJDFromUtcMs. The JD and ΔT conventions are calendar math —
+ * dateToJD and deltaTDaysAtDate read civil UTC components — and that stays:
+ * setTime loads the same [[DateValue]] a fresh construction would carry, so
+ * every component read is bit-identical, without the hot samplers (hundreds
+ * of calls a frame) allocating a Date per sample. Consumed before return,
+ * never handed out; nothing this calls retains the Date.
+ */
+const ttScratchDate = new Date(0);
+
 /** TT Julian Day from civil UTC ms — what ephemeris/rotation theories expect. */
 export function ttJDFromUtcMs(utcMs: number): number {
-  const date = new Date(utcMs);
-  return dateToJD(date) + deltaTDaysAtDate(date);
+  ttScratchDate.setTime(utcMs);
+  return dateToJD(ttScratchDate) + deltaTDaysAtDate(ttScratchDate);
 }
 
 const UNIX_EPOCH_JD = 2440587.5;
@@ -186,6 +196,10 @@ export function computeMoonGeocentricEquatorialAU(jdTT: number, out: THREE.Vecto
   return out.applyMatrix4(ECLIPTIC_TO_EQUATORIAL);
 }
 
+/** Module scratch for the Meeus Sun record — consumed within the call below,
+ *  never handed out, so the orbit sampler's Earth line allocates nothing. */
+const sunScratch: SunPosition = { longitude: 0, distance: 0 };
+
 /**
  * Heliocentric Earth in the scene's equatorial frame (AU): the Meeus
  * geocentric Sun mirrored through the origin — same distance, longitude
@@ -202,7 +216,7 @@ export function computeEarthPositionEquatorial(
   jdTT: number,
   out?: THREE.Vector3,
 ): THREE.Vector3 {
-  const sun = sunPosition(jdTT);
+  const sun = sunPosition(jdTT, sunScratch);
   const lonRad = (sun.longitude - accumulatedPrecessionLonDeg(jdTT)) * DEG;
   // Negated Sun vector in the λ→−Z ecliptic frame: −(d cos λ, 0, −d sin λ).
   const ecliptic = (out ?? new THREE.Vector3()).set(
@@ -397,6 +411,12 @@ export function computeBodyPoleQuaternion(planet: PlanetData): THREE.Quaternion 
  * the callers that ask for a position every frame or hundreds of times inside
  * one. Nothing about the math changes with it.
  */
+// One record the hot path re-propagates into on every call. Never handed out:
+// computeKeplerPositionEquatorial consumes it before this function returns,
+// and callers that want to HOLD elements go through getStandishElements
+// themselves and receive a fresh record.
+const elementsScratch = {} as import('./standish').KeplerElements;
+
 export function computeBodyPositionAU(
   planet: PlanetData,
   utcMs: number,
@@ -405,7 +425,7 @@ export function computeBodyPositionAU(
   const jd = ttJDFromUtcMs(utcMs);
   return isMeeusPositioned(planet)
     ? computeEarthPositionEquatorial(jd, out)
-    : computeKeplerPositionEquatorial(getStandishElements(planet.name, jd), out);
+    : computeKeplerPositionEquatorial(getStandishElements(planet.name, jd, elementsScratch), out);
 }
 
 export function computeBodyState(planet: PlanetData, utcMs: number): BodyState {

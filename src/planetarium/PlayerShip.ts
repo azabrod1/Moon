@@ -281,8 +281,19 @@ export class PlayerShip {
   }
 
   getForwardDirection(): THREE.Vector3 {
+    return this.writeForwardDirection(new THREE.Vector3());
+  }
+
+  /**
+   * The same unit heading, written into a caller's vector — the allocation-free
+   * form for per-frame readers. It is deliberately the ONLY place the pose
+   * fields become a direction: anything that re-derives one from heading and
+   * pitch is a second opinion about which way the ship points, and it would
+   * silently disagree the first time the flight frame's own convention moves.
+   */
+  writeForwardDirection(out: THREE.Vector3): THREE.Vector3 {
     const cosPitch = Math.cos(this.pitch);
-    return new THREE.Vector3(
+    return out.set(
       Math.cos(this.heading) * cosPitch,
       Math.sin(this.pitch),
       Math.sin(this.heading) * cosPitch,

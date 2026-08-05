@@ -71,6 +71,7 @@ import {
   diveRestoreDistanceAU,
   fitDistanceAU,
   isAtOverviewFit,
+  mapRadius,
   projectMapPoint,
   sanitizeMapCurve,
   MAP_BLEND_TRUE,
@@ -88,6 +89,16 @@ import {
   makeMapBlendState,
 } from './mapBlend';
 import { shipHeadingRotationRad } from './mapShipHeading';
+import {
+  chartShipPoint,
+  shipAnchorWeight,
+  shipEnvelopeWeight,
+  shipHeadingProbeStepAU,
+  shipViewWeight,
+  type ShipAnchorFrame,
+  type ShipAnchorSystem,
+} from './mapShipAnchor';
+import type { LandedTarget } from '../PlanetariumStore';
 import {
   makeMiniBodyKey,
   miniBodiesStale,
@@ -581,13 +592,38 @@ export class SystemMap {
 
   // Last raw heliocentric ship pose the mode handed over, and whether one has
   // arrived yet — the marker re-projects and re-orients from these whenever the
-  // curve or the camera changes between frames.
+  // curve or the camera changes between frames. The course is a unit VECTOR,
+  // taken from the ship's own forward math: the chart must never re-derive a
+  // heading from angles, or it holds a second opinion about which way the ship
+  // is pointing and the two drift apart the first time the flight frame changes.
   private shipRawX = 0;
   private shipRawY = 0;
   private shipRawZ = 0;
-  private shipHeading = 0;
-  private shipPitch = 0;
+  private shipFwdX = 1;
+  private shipFwdY = 0;
+  private shipFwdZ = 0;
   private shipSnapshot = false;
+  /** The ship's PLAIN charted radius — the chart's own compression and nothing
+   *  else. The marker itself may be drawn in a moon system's amplified space,
+   *  and the fit must not be widened by an amplification: what the frame has to
+   *  contain is where the ship really is on the chart. */
+  private shipPlainR = 0;
+  /** The ship's chart transform for this frame: the plain compression plus,
+   *  where one applies, the moon system whose space the marker joins. The
+   *  marker and the heading probe are both charted through this one object, so
+   *  they cannot end up in different spaces. */
+  private shipAnchorFrame: ShipAnchorFrame = {
+    blend: 0,
+    curve: defaultMapCurve(),
+    system: null,
+  };
+  /** The system half of that frame, filled in place once a ship has actually
+   *  been inside one — a per-frame object would allocate on every frame the
+   *  chart draws a ship among moons. */
+  private shipAnchorSystem: ShipAnchorSystem | null = null;
+  /** Which system the marker is being charted inside, for the dev probe: the
+   *  one thing about the ship's placement that pixels cannot report. */
+  private shipAnchorName: string | null = null;
 
   // Pick anchors, rebuilt at most once per frame and only when something asks:
   // a tap, a probe, or the hover pass while a mouse rests here. A fixed pool
@@ -1176,10 +1212,11 @@ export class SystemMap {
     shipX: number,
     shipY: number,
     shipZ: number,
-    shipHeading: number,
-    shipPitch: number,
+    shipFwdX: number,
+    shipFwdY: number,
+    shipFwdZ: number,
     shipMoving: boolean,
-    landed: boolean,
+    landed: LandedTarget,
     dtMs: number,
   ): void {
     if (!this.open) return;
@@ -1212,7 +1249,9 @@ export class SystemMap {
     // parent that has just been placed.
     this.updateMoons(utcMs);
     this.syncMoonTextures();
-    this.placeShip(shipX, shipY, shipZ, shipHeading, shipPitch, shipMoving, landed, dtMs);
+    // The ship after the moons: the space its marker is charted in is the one
+    // the moons were just placed in, scale and all.
+    this.placeShip(shipX, shipY, shipZ, shipFwdX, shipFwdY, shipFwdZ, shipMoving, landed, dtMs);
 
     // ── (2) Camera. The extent is refreshed unconditionally: the geometry
     // underneath never stops (the scale animation runs to its end, bodies keep
@@ -1370,10 +1409,11 @@ export class SystemMap {
     shipX: number,
     shipY: number,
     shipZ: number,
-    shipHeading: number,
-    shipPitch: number,
+    shipFwdX: number,
+    shipFwdY: number,
+    shipFwdZ: number,
     shipMoving: boolean,
-    landed: boolean,
+    landed: LandedTarget,
     dtMs: number,
     widthPx: number,
     heightPx: number,
@@ -1398,7 +1438,7 @@ export class SystemMap {
       this.miniBodyPasses++;
       this.updateBodies(utcMs);
     }
-    this.placeShip(shipX, shipY, shipZ, shipHeading, shipPitch, shipMoving, landed, dtMs);
+    this.placeShip(shipX, shipY, shipZ, shipFwdX, shipFwdY, shipFwdZ, shipMoving, landed, dtMs);
     this.recomputeExtent();
 
     const aspect = Math.max(widthPx, 1) / Math.max(heightPx, 1);
@@ -3483,13 +3523,44 @@ export class SystemMap {
   }
 
   /** Dev forensics: the ship marker's screen rotation (radians, CCW, 0 while
-   *  docked) and which marker is drawn. The chevron is the one projection-fed
-   *  thing on the map that pixels can't isolate — it sits inside the same
-   *  sprite as the docked ring, so a photometric read of the marker measures
-   *  the art, not the angle. Reading it here is the only way to check the
-   *  rotation belongs to the camera pose the frame was drawn from. */
-  shipMarkerState(): { rotationRad: number; docked: boolean } {
-    return { rotationRad: this.shipMarker.material.rotation, docked: this.shipDocked };
+   *  docked), which marker is drawn, where it drew, and which space it was
+   *  charted in. The chevron is the one projection-fed thing on the map that
+   *  pixels can't isolate — it sits inside the same sprite as the docked ring,
+   *  so a photometric read of the marker measures the art, not the angle. The
+   *  placement is the other: the marker may be drawn in a moon system's own
+   *  amplified space, which nothing outside this class can reproduce, so the
+   *  point it drew at and the weight that put it there are reported here. */
+  shipMarkerState(): {
+    rotationRad: number;
+    docked: boolean;
+    screenX: number;
+    screenY: number;
+    mapPos: [number, number, number];
+    anchorSystem: string | null;
+    anchorWeight: number;
+  } {
+    const el = this.renderer.domElement;
+    const w = Math.max(el.clientWidth, 1);
+    const h = Math.max(el.clientHeight, 1);
+    projectToScreen(this.shipMarker.position, this.camera, w, h, this.tmpProj);
+    const system = this.shipAnchorFrame.system;
+    return {
+      rotationRad: this.shipMarker.material.rotation,
+      docked: this.shipDocked,
+      // Where the marker actually draws. The chart puts the ship in a moon
+      // system's own amplified space while it is flying among them, so
+      // "where is it" cannot be answered by re-running the plain compression
+      // outside — only by reading the point the frame was drawn from.
+      screenX: this.tmpProj.ndcZ >= 1 ? -1 : this.tmpProj.x,
+      screenY: this.tmpProj.ndcZ >= 1 ? -1 : this.tmpProj.y,
+      mapPos: [
+        this.shipMarker.position.x,
+        this.shipMarker.position.y,
+        this.shipMarker.position.z,
+      ],
+      anchorSystem: this.shipAnchorName,
+      anchorWeight: system ? shipAnchorWeight(system, this.shipPlanetocentricX(system)) : 0,
+    };
   }
 
   // ---- internals -------------------------------------------------------
@@ -3666,13 +3737,128 @@ export class SystemMap {
     this.writeColors(entry);
   }
 
-  /** Project the last ship snapshot through the live curve and blend. Split out
-   *  so a curve change can re-place the marker in the same call that re-fits —
-   *  the ship is part of the extent, so a stale marker would fit the wrong
-   *  frame. */
+  /** Chart the last ship snapshot through the live transform. Split out so a
+   *  curve change can re-place the marker in the same call that re-fits — the
+   *  ship is part of the extent, so a stale marker would fit the wrong frame.
+   *
+   *  The curve and blend are re-read here rather than carried: a curve swap
+   *  re-places the marker outside the update pass, and the transform it is
+   *  charted through has to be the one the rest of the chart just moved onto. */
   private positionShipMarker(): void {
-    projectMapPoint(this.shipRawX, this.shipRawY, this.shipRawZ, this.blend, this.curve, this.tmpMap);
+    this.shipAnchorFrame.blend = this.blend;
+    this.shipAnchorFrame.curve = this.curve;
+    chartShipPoint(this.shipRawX, this.shipRawY, this.shipRawZ, this.shipAnchorFrame, this.tmpMap);
     this.shipMarker.position.set(this.tmpMap.x, this.tmpMap.y, this.tmpMap.z);
+    // The plain radius, kept for the fit. Direction is held exactly by the
+    // compression, so the drawn radius of a plain-charted point is the curve
+    // evaluated at its true one — no second projection to get it.
+    this.shipPlainR = mapRadius(
+      Math.hypot(this.shipRawX, this.shipRawY, this.shipRawZ),
+      this.blend,
+      this.curve,
+    );
+  }
+
+  /**
+   * Which moon system's space the ship's marker is drawn in, or null for the
+   * plain chart.
+   *
+   * The ground answers first and answers exactly: standing on a moon, the ship
+   * belongs in that moon's system whatever the geometry says, and standing on a
+   * PLANET it belongs at the planet's own charted point — the parent of a
+   * system is not inside it. Flying, the question is geometric: whichever
+   * revealed system's moon envelope the ship is actually inside, nearest
+   * envelope first. Only a revealed system can ever be the answer, which is
+   * also what keeps the scale this reads from being a frame stale — an
+   * unrevealed system's is not refreshed.
+   */
+  private shipAnchorSystemFor(landed: LandedTarget): MoonSystem | null {
+    // The corner chart draws no moons at all, so it has no second space to
+    // join: it keeps the chart's own truth, which is what it measures correct.
+    if (!this.open) return null;
+    if (landed?.type === 'planet') return null;
+    if (landed?.type === 'moon') {
+      const system = this.moonSystemsByParent.get(landed.parentPlanet) ?? null;
+      return system?.revealed ? system : null;
+    }
+    let best: MoonSystem | null = null;
+    let bestRatio = Infinity;
+    for (const system of this.moonSystems) {
+      if (!system.revealed) continue;
+      const parent = system.parent;
+      const radius = parent.planet.radiusAU;
+      if (!(radius > 0) || !(system.maxApoX > 0)) continue;
+      const x = Math.hypot(
+        this.shipRawX - parent.helioX,
+        this.shipRawY - parent.helioY,
+        this.shipRawZ - parent.helioZ,
+      ) / radius;
+      if (!(shipEnvelopeWeight(x, system.maxApoX) > 0)) continue;
+      const ratio = x / system.maxApoX;
+      if (ratio < bestRatio) {
+        bestRatio = ratio;
+        best = system;
+      }
+    }
+    return best;
+  }
+
+  /** Refresh the ship's chart transform for this frame: the system it is drawn
+   *  inside, that system's live units, and how far the view has carried the
+   *  marker into them. */
+  private updateShipAnchorFrame(landed: LandedTarget): void {
+    const frame = this.shipAnchorFrame;
+    const system = this.shipAnchorSystemFor(landed);
+    if (!system) {
+      frame.system = null;
+      this.shipAnchorName = null;
+      return;
+    }
+    const parent = system.parent;
+    const anchor = this.shipAnchorSystem ??= {
+      policy: system.policy,
+      parentRadiusAU: 0,
+      parentHelioX: 0,
+      parentHelioY: 0,
+      parentHelioZ: 0,
+      parentMapX: 0,
+      parentMapY: 0,
+      parentMapZ: 0,
+      scaleBlendedAU: 0,
+      maxApoX: 0,
+      viewWeight: 0,
+    };
+    anchor.policy = system.policy;
+    anchor.parentRadiusAU = parent.planet.radiusAU;
+    anchor.parentHelioX = parent.helioX;
+    anchor.parentHelioY = parent.helioY;
+    anchor.parentHelioZ = parent.helioZ;
+    anchor.parentMapX = parent.dot.position.x;
+    anchor.parentMapY = parent.dot.position.y;
+    anchor.parentMapZ = parent.dot.position.z;
+    anchor.scaleBlendedAU = system.scaleBlended;
+    anchor.maxApoX = system.maxApoX;
+    // The same camera the moons were placed against — this runs in the position
+    // phase, before the camera moves — so the marker and the rings agree about
+    // which frame they are in.
+    anchor.viewWeight = shipViewWeight(
+      this.camera.position.distanceTo(parent.dot.position),
+      this.revealDistanceFor(parent.planet.name) ?? 0,
+      this.moonRevealDistanceAU(system),
+    );
+    frame.system = anchor;
+    this.shipAnchorName = parent.planet.name;
+  }
+
+  /** How far the ship stands from its anchor system's parent, in parent TRUE
+   *  radii — the policy's own input, and what both weights are measured on. */
+  private shipPlanetocentricX(system: ShipAnchorSystem): number {
+    if (!(system.parentRadiusAU > 0)) return 0;
+    return Math.hypot(
+      this.shipRawX - system.parentHelioX,
+      this.shipRawY - system.parentHelioY,
+      this.shipRawZ - system.parentHelioZ,
+    ) / system.parentRadiusAU;
   }
 
   /** Phase (1): place the ship marker in map space, pick docked/moving texture,
@@ -3682,20 +3868,23 @@ export class SystemMap {
     x: number,
     y: number,
     z: number,
-    heading: number,
-    pitch: number,
+    fwdX: number,
+    fwdY: number,
+    fwdZ: number,
     moving: boolean,
-    landed: boolean,
+    landed: LandedTarget,
     dtMs: number,
   ): void {
     this.shipRawX = x;
     this.shipRawY = y;
     this.shipRawZ = z;
-    this.shipHeading = heading;
-    this.shipPitch = pitch;
+    this.shipFwdX = fwdX;
+    this.shipFwdY = fwdY;
+    this.shipFwdZ = fwdZ;
     this.shipSnapshot = true;
+    this.updateShipAnchorFrame(landed);
     this.positionShipMarker();
-    const docked = landed || !moving;
+    const docked = landed !== null || !moving;
     this.shipDocked = docked;
     const mat = this.shipMarker.material;
     const wantTex = docked ? this.shipRingTex : this.shipChevronTex;
@@ -3728,16 +3917,21 @@ export class SystemMap {
     const x = this.shipRawX;
     const y = this.shipRawY;
     const z = this.shipRawZ;
-    // Project the ship and a point one step along its heading, both through the
-    // map compression, and take the screen-space delta.
-    const cp = Math.cos(this.shipPitch);
-    const step = Math.max(0.002, Math.hypot(x, y, z) * 0.04);
-    projectMapPoint(
-      x + Math.cos(this.shipHeading) * cp * step,
-      y + Math.sin(this.shipPitch) * step,
-      z + Math.sin(this.shipHeading) * cp * step,
-      this.blend,
-      this.curve,
+    // A point one step along the ship's own course, charted through exactly the
+    // transform the marker was charted through — never a second projection of
+    // its own. The course comes in as a vector and is used as one: re-deriving
+    // it from angles here would be a second opinion about which way the ship
+    // points, and the chart would disagree with the window the moment the
+    // flight frame's own convention moved.
+    const step = shipHeadingProbeStepAU(
+      Math.hypot(x, y, z),
+      this.shipAnchorFrame.system?.parentRadiusAU ?? null,
+    );
+    chartShipPoint(
+      x + this.shipFwdX * step,
+      y + this.shipFwdY * step,
+      z + this.shipFwdZ * step,
+      this.shipAnchorFrame,
       this.tmpMap2,
     );
     const w = view.widthPx;
@@ -3764,7 +3958,10 @@ export class SystemMap {
       if (entry.maxMapRadius > max) max = entry.maxMapRadius;
     }
     // The ship is just another radius — a probe past Pluto widens the frame.
-    const shipR = this.shipMarker.position.length();
+    // Its PLAIN radius, not the marker's: inside a revealed moon system the
+    // marker is drawn in that system's amplified space, and letting an
+    // amplification into the fit would re-frame the whole chart around it.
+    const shipR = this.shipPlainR;
     if (shipR > max) max = shipR;
     this.extentAU = Math.max(max, 1e-3);
   }

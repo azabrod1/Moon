@@ -912,6 +912,10 @@ export class PlanetariumMode {
   private miniRectPixelRatio = -1;
   /** Scratch for getDrawingBufferSize — read only on rect rebuilds. */
   private miniBufferSize = new THREE.Vector2();
+  /** Scratch the ship's course is written into for the chart, both charts. The
+   *  chart is handed the vector the ship itself flies along, never the pose
+   *  angles behind it, and reading it must not allocate on a cruise frame. */
+  private mapShipForward = new THREE.Vector3();
   /** The visibility question, asked every frame and answered in place — a fresh
    *  literal per frame is a per-frame allocation in the steady state. */
   private miniVisibility: MiniChartVisibility = {
@@ -6370,17 +6374,19 @@ export class PlanetariumMode {
     const draw = this.miniDraw;
     this.setMiniChartSurfaceShown(true);
 
+    const fwd = this.player.writeForwardDirection(this.mapShipForward);
     this.systemMap.updateMini(
       this.timeState.currentUtcMs,
       this.player.posX,
       this.player.posY,
       this.player.posZ,
-      this.player.heading,
-      this.player.pitch,
+      fwd.x,
+      fwd.y,
+      fwd.z,
       this.player.moving,
       // Never landed: the ground is one of the states that stands the chart
       // down, so a live corner chart is always a flying one.
-      false,
+      null,
       this.lastFrameDtMs,
       // The DRAWN size, not the one that was asked for: the camera aspect and
       // every screen-metered marker have to describe the rectangle the driver
@@ -6843,15 +6849,21 @@ export class PlanetariumMode {
    *  reads mid-frame scene state. */
   private updateMapView() {
     if (!this.systemMap?.isOpen()) return;
+    // The course as a VECTOR, from the ship's own forward math — the chart
+    // charts a point one step along it and never re-derives a heading of its
+    // own. Landing goes over whole: the chart places the marker differently on
+    // a moon (inside its system's drawn space) than on a planet.
+    const fwd = this.player.writeForwardDirection(this.mapShipForward);
     this.systemMap.update(
       this.timeState.currentUtcMs,
       this.player.posX,
       this.player.posY,
       this.player.posZ,
-      this.player.heading,
-      this.player.pitch,
+      fwd.x,
+      fwd.y,
+      fwd.z,
       this.player.moving,
-      this.landedOn !== null,
+      this.landedOn,
       this.lastFrameDtMs,
     );
     // Hover after the bodies have moved and before anything reads the frame:

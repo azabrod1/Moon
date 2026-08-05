@@ -2025,6 +2025,12 @@
       display: none;
     }
     #map-dive-fade.lifting { transition: opacity 0.2s ease; }
+    /* While the cover shows ink it must also catch pointers — the chrome
+       underneath stays mounted, and a tap through the black would operate it
+       (the arrival veil's .covering makes the same promise). The class rides
+       drawn opacity, not display: the camera-ease phase holds opacity 0 and
+       taps there legitimately skip the ease. */
+    #map-dive-fade.covering { pointer-events: auto; }
 
     /* Sun glare flood: at the whiteout wall the blaze spills over the cockpit
        chrome itself — the HUD washes toward white while staying clickable

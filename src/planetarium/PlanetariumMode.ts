@@ -939,7 +939,10 @@ export class PlanetariumMode {
   private mapRestoreSurface = false;
   private mapHud = new MapHUD(
     (trueScale) => this.setMapScale(trueScale),
-    () => this.closeMap(),
+    // The X during a committed dive cancels like Esc — the map stays open and
+    // the camera restores — rather than closing over the commit and dropping
+    // it with nothing on screen to say so.
+    () => (this.mapDiving ? this.cancelMapDive() : this.closeMap()),
     (verb) => this.commitMapCard(verb),
     () => this.focusMapCard(),
     () => this.mapOverviewChipPressed(),
@@ -992,6 +995,12 @@ export class PlanetariumMode {
   private mapDiving = false;
   private mapDiveGen = 0;
   private mapDiveActiveGen = -1;
+  // Bumped by every user journey change — the map card's commit gesture, the
+  // shared commit core's accepted commits (deck paths included), landings,
+  // and takeoffs — so an async continuation (a mission's profile fetch) can
+  // detect that a newer journey superseded it, whether that journey's dive
+  // is still running or its arrival has already landed.
+  private journeyCommitGen = 0;
   private mapDiveVerb: MapVerb | null = null;
   private mapDiveTarget: NonNullable<LandedTarget> | null = null;
   private mapDiveIsCamera = false;
@@ -4800,7 +4809,10 @@ export class PlanetariumMode {
         this.isHelpOpen() ||
         this.isTutorialActive() ||
         this.menuPanel.isOpen() ||
-        this.arrivalInFlight
+        this.arrivalInFlight ||
+        // A committed dive is running: closing the map now would silently drop
+        // the queued journey. Esc is the deliberate cancel.
+        this.mapDiving
       ) {
         return;
       }
@@ -5679,6 +5691,8 @@ export class PlanetariumMode {
   private openToolsMenu() {
     const menu = document.getElementById('tools-menu');
     if (!menu) return;
+    // A committed dive owns the map; superseding it would drop the commit.
+    if (this.mapDiving) return;
     // One modal at a time — Tools joins the deck / ☰ / Look-at trio.
     this.closeMap({ restore: false });
     this.closeMenuPanel();
@@ -5945,6 +5959,8 @@ export class PlanetariumMode {
       if (this.menuPanel.isOpen()) {
         this.closeMenuPanel();
       } else {
+        // A committed dive owns the map; superseding it would drop the commit.
+        if (this.mapDiving) return;
         // One modal at a time (the deck closes ☰ on open, symmetric).
         this.closeMap({ restore: false });
         this.closeDeck();
@@ -6164,9 +6180,12 @@ export class PlanetariumMode {
       this.observatoryAction();
     });
     document.getElementById('planetarium-btn-leave')?.addEventListener('click', () => {
+      // A committed dive owns the map; takeoff would close it over the commit.
+      if (this.mapDiving) return;
       this.exitLandedMode();
     });
     document.getElementById('planetarium-btn-land')?.addEventListener('click', () => {
+      if (this.mapDiving) return;
       if (this.nearbyLandTarget) {
         this.enterLandedMode(this.nearbyLandTarget);
       }
@@ -6209,6 +6228,10 @@ export class PlanetariumMode {
 
   private openDeck(verb: DeckVerb, opts: { fromPanel?: boolean } = {}) {
     if (this.isMissionActive()) return;
+    // A committed dive owns the map: the deck opening would close it and
+    // silently drop the queued journey. The cluster looks live through the
+    // whole 420 ms window, so this refusal is what keeps a hurry-tap harmless.
+    if (this.mapDiving) return;
     const wasOpen = this.isDeckOpen();
     this.deckVerb = verb;
     this.deckOpenedFromPanel = opts.fromPanel ?? false;
@@ -6264,6 +6287,9 @@ export class PlanetariumMode {
   /** Telescope chip / O: landed with the deck closed it toggles this sky's
    * panel; otherwise it's the deck's Observatory tab. */
   private observatoryAction() {
+    // A committed dive owns the map: superseding it here would drop the
+    // queued journey with no feedback. Esc is the deliberate cancel.
+    if (this.mapDiving) return;
     // O over the map closes it first, then opens the panel — this defines
     // "reopens via O"; the reverse close skips the panel/surface restore.
     this.closeMap({ restore: false });
@@ -6532,7 +6558,10 @@ export class PlanetariumMode {
 
   devCloseMap(): boolean {
     const was = this.isMapOpen();
-    this.closeMap();
+    // Same rule as the X: a committed dive cancels (map stays open) rather
+    // than closing over the commit and silently dropping it.
+    if (this.mapDiving) this.cancelMapDive();
+    else this.closeMap();
     return was;
   }
 
@@ -6678,11 +6707,12 @@ export class PlanetariumMode {
 
   /** Open the full-screen system map. The single safe gate for every entry
    *  (M key, ☰ item, dev bridge): refused during a mission, the help modal, a
-   *  running tutorial, or an in-flight arrival — a dropped commit would end the
-   *  arrival ceremony over the origin scene. */
+   *  running tutorial, or while the arrival veil is up — the whole ceremony
+   *  including its dwell-and-fade tail, not just the in-flight leg: the veil's
+   *  contract is that nothing appears (clickable) underneath it. */
   private openMap() {
     if (!this.active || !this.solarSystem || this.isMapOpen()) return;
-    if (this.isMissionActive() || this.isHelpOpen() || this.isTutorialActive() || this.arrivalInFlight) {
+    if (this.isMissionActive() || this.isHelpOpen() || this.isTutorialActive() || this.arrivalVeilUp()) {
       return;
     }
 
@@ -7392,6 +7422,7 @@ export class PlanetariumMode {
     this.resetMapHover();
     this.mapTransitionStartMs = performance.now();
     this.mapDiveActiveGen = ++this.mapDiveGen;
+    this.journeyCommitGen++;
     return true;
   }
 
@@ -7463,6 +7494,11 @@ export class PlanetariumMode {
     // Quantize to 2 decimals and write only on a change — the fade holds at 0
     // through the camera ease and at 1 after, so most frames write nothing.
     const q = Math.round(opacity * 100) / 100;
+    // Pointer-catching rides the DRAWN opacity — the quantized value, not the
+    // raw one: below the quantum the cover paints 0.00 and must not catch
+    // (through the camera ease a tap must still reach the canvas to skip).
+    // Kept outside the write-on-change return so the class can't go stale.
+    el.classList.toggle('covering', q > 0);
     if (q === this.mapFadeOpacityQ) return;
     this.mapFadeOpacityQ = q;
     el.style.opacity = q.toFixed(2);
@@ -7473,6 +7509,9 @@ export class PlanetariumMode {
   private liftDiveFade() {
     const el = document.getElementById('map-dive-fade');
     if (!el) return;
+    // The lift fades out over the destination scene, which must be live
+    // immediately — the cover stops catching pointers the moment it lets go.
+    el.classList.remove('covering');
     el.classList.add('lifting');
     el.style.opacity = '0';
     this.mapFadeOpacityQ = 0; // keep the quantized cache in step with the direct write
@@ -7488,6 +7527,7 @@ export class PlanetariumMode {
   private clearDiveFade() {
     const el = document.getElementById('map-dive-fade');
     if (!el) return;
+    el.classList.remove('covering');
     el.classList.remove('lifting');
     el.style.opacity = '0';
     el.style.display = 'none';
@@ -7724,6 +7764,7 @@ export class PlanetariumMode {
       sameBody,
     });
     if (outcome !== 'accepted') return false;
+    this.journeyCommitGen++;
     const fromPanel = opts.fromPanel ?? false;
     if (verb === 'observe') {
       this.commitObservePick(target, sameBody, fromPanel);
@@ -7851,8 +7892,14 @@ export class PlanetariumMode {
     // must win over this stale continuation, or a slow load resurrects a
     // mission the user already abandoned.
     const requestGen = ++this.missionRequestGen;
+    const journeyGen = this.journeyCommitGen;
     await this.player.ensureProfileLoaded(journey.shipProfile);
     if (requestGen !== this.missionRequestGen || !this.active) return;
+    // A journey committed during the fetch (map card or deck) is the newer
+    // action — this stale mission continuation yields to it, same as the
+    // request-gen rule, whether that journey's dive is still running or its
+    // arrival already landed.
+    if (this.journeyCommitGen !== journeyGen) return;
     // The await yields, and the stop above re-enabled the ☰ Tutorial item —
     // a tutorial can have started during the profile fetch. Stop that one too
     // before the mission stashes state.
@@ -10971,6 +11018,9 @@ export class PlanetariumMode {
 
   enterLandedMode(target: NonNullable<LandedTarget>) {
     if (this.isMissionActive()) return;
+    // Landing is a journey change: a mission continuation awaiting its ship
+    // profile must yield to it, like any committed journey.
+    this.journeyCommitGen++;
     this.preLandSpeed = this.player.speedMultiplier;
     this.preLandAutopilot = this.autopilot;
     this.applyLandedTarget(target);
@@ -11476,6 +11526,10 @@ export class PlanetariumMode {
 
   exitLandedMode() {
     if (!this.landedOn) return;
+    // Takeoff is a journey change: a mission continuation awaiting its ship
+    // profile must yield to it. (Mission startup's own exitLandedMode call
+    // runs after its generation check has already passed — no self-abort.)
+    this.journeyCommitGen++;
     // The governor is frozen while landed, so a cap tightened on the approach
     // must not ramp-limit the departure — and no partial clear-hold may
     // survive into it. Reset here — the single takeoff chokepoint (also the

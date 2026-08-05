@@ -305,22 +305,31 @@ describe('fitDistanceAU', () => {
   });
 
   // The phone framing is a decision, not an accident: on portrait the WIDTH
-  // binds, so height taken by chrome cannot buy a closer fit and the chart's
-  // vertical air is the price of a round system in a tall frame. Pinned so the
-  // reasoning in fitDistanceAU's own comment cannot go quietly stale — a change
-  // to the FOV or the margin that made the height bind on a phone lands here.
-  it('portrait fits the width, with height to spare no chrome band can reach', () => {
+  // binds, so a bottom band trimmed off the height cannot buy a closer fit.
+  // What this pins is the full-frame property that decision rests on — the
+  // fit resolving the WIDTH constraint at phone aspect — not the measured
+  // safe-rect arithmetic, which lives with the browser measurements
+  // (planning fit sweeps) and in fitDistanceAU's own comment. A margin or
+  // FOV change that flipped the binding axis on a phone lands here.
+  it('portrait fits the width — the branch the framing decision rests on', () => {
     const extent = 3.06; // the live compressed chart's extent, measured
     const fov = 50; // MAP_FOV_DEG
     const aspect = 390 / 844; // the phone the chart is tuned against
     const dist = fitDistanceAU(extent, fov, aspect);
     const halfHeightAU = dist * Math.tan((fov * Math.PI) / 180 / 2);
     const halfWidthAU = halfHeightAU * aspect;
-    // The width is what the fit filled: the disc plus its margin, exactly.
+    // The width is what the fit filled: the disc plus its margin, exactly —
+    // and the height constraint alone would have parked the camera nearer, so
+    // the width branch is the one that decided.
     expect(halfWidthAU).toBeCloseTo(extent * 1.18, 6);
-    // The height it left is more than twice what the disc needs, so trimming a
-    // chrome band off the bottom leaves the width binding either way.
-    expect(halfHeightAU / (extent * 1.18)).toBeGreaterThan(2);
+    expect(dist).toBeGreaterThan(fitDistanceAU(extent, fov, 1));
+    // Where the flip lives, derived: the width-fit disc spans the full frame
+    // width, so a bottom band flips the binding axis only once the height
+    // left above it drops under the width — 844 − 390 = 454 CSS px of chrome
+    // on the tuned phone, ~3.5× the measured band. The full-width CARD does
+    // cross that line, and the answer there is the slim card and the label
+    // band ducking under it, never a tighter fit.
+    expect(844 - 390).toBeGreaterThan(3 * 130);
   });
 });
 

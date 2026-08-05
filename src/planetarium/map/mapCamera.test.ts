@@ -16,6 +16,10 @@ import {
   mapOverviewChipVisible,
   mapOverviewPivotDistanceAU,
   mapWorldPerPxAtUnitDepth,
+  mapZoomAvailability,
+  mapZoomNotchAvailable,
+  mapZoomNotchDistanceAU,
+  MAP_ZOOM_NOTCH_FACTOR,
   revealDistanceAU,
   moonRevealThresholdAU,
   MOON_REVEAL_PX,
@@ -920,6 +924,156 @@ describe('mapOverviewPivotDistanceAU', () => {
   it('survives a shell handed over inside out', () => {
     expect(mapOverviewPivotDistanceAU(1, 5, 2)).toBe(5);
     expect(mapOverviewPivotDistanceAU(1, -3, -1)).toBe(0);
+  });
+});
+
+describe('the zoom buttons', () => {
+  // The shells a press is actually clamped into: the free overview's, and the
+  // ones a follow gets on a planet and on a moon. Catalog figures throughout —
+  // a notch is a fraction, so the only way to know a press does something
+  // visible is to spend it inside a real shell.
+  const ASPECT = 16 / 9;
+  const FIT = fitDistanceAU(EXTENT_COMPRESSED, MAP_FOV_DEG, ASPECT);
+  const OVERVIEW = mapOverviewBounds(EXTENT_COMPRESSED, EXTENT_COMPRESSED, FIT, FIT, FIT);
+  // Following Jupiter from the reveal landing, with the ε-12 ceiling in place:
+  // the shell is bounded by the marker crossover, capped at the overview fit.
+  const JUPITER_FOLLOW = boundsAt(
+    JUPITER_R, JUPITER_MAP_R, revealDistanceAU(JUPITER_R, H, MAP_FOV_DEG),
+    EXTENT_COMPRESSED, JUPITER_R, FIT,
+  );
+  const io = MOONS.find((m) => m.name === 'Io')!;
+  // A moon rides its parent's map position, and its own shell is metered on a
+  // body two orders of magnitude smaller — the regime the same predicate has to
+  // hold in at the other end of the chart.
+  const IO_FOLLOW = boundsAt(
+    io.radiusAU, JUPITER_MAP_R, io.radiusAU * 200, EXTENT_COMPRESSED, io.radiusAU, FIT,
+  );
+
+  const availAt = (dist: number, b: { minDist: number; maxDist: number }) =>
+    mapZoomAvailability(dist, b.minDist, b.maxDist);
+
+  it('spends one factor per notch, in the direction asked for', () => {
+    const d = 1;
+    expect(mapZoomNotchDistanceAU(d, 1, 0, 1e9)).toBeCloseTo(d / MAP_ZOOM_NOTCH_FACTOR, 12);
+    expect(mapZoomNotchDistanceAU(d, -1, 0, 1e9)).toBeCloseTo(d * MAP_ZOOM_NOTCH_FACTOR, 12);
+  });
+
+  it('compounds, so a held repeat is the same arithmetic run several times', () => {
+    let stepped = 1;
+    for (let i = 0; i < 7; i++) stepped = mapZoomNotchDistanceAU(stepped, 1, 0, 1e9);
+    expect(mapZoomNotchDistanceAU(1, 7, 0, 1e9)).toBeCloseTo(stepped, 12);
+  });
+
+  it('is a step worth pressing for and not a jump — a quarter of the way', () => {
+    // The whole point of the pair: one press has to be visible. A twentieth
+    // (the wheel's own notch) would read as a dead button.
+    const moved = 1 - 1 / MAP_ZOOM_NOTCH_FACTOR;
+    expect(moved).toBeGreaterThan(0.1);
+    expect(moved).toBeLessThan(0.35);
+  });
+
+  it('never leaves the shell it was handed', () => {
+    expect(mapZoomNotchDistanceAU(0.5, 40, 0.2, 3)).toBe(0.2);
+    expect(mapZoomNotchDistanceAU(0.5, -40, 0.2, 3)).toBe(3);
+    // A shell handed over inside out still answers with a distance inside it.
+    expect(mapZoomNotchDistanceAU(1, 1, 5, 2)).toBe(5);
+  });
+
+  it('answers a distance that is not one with the floor, not a NaN', () => {
+    for (const d of [0, -1, Number.NaN, Number.POSITIVE_INFINITY]) {
+      const out = mapZoomNotchDistanceAU(d, 1, 0.2, 3);
+      expect(Number.isFinite(out)).toBe(true);
+    }
+    expect(mapZoomNotchDistanceAU(0, 1, 0.2, 3)).toBe(0.2);
+  });
+
+  it('offers both ways at the parked overview fit', () => {
+    const a = availAt(FIT, OVERVIEW);
+    expect(a.zoomIn).toBe(true);
+    expect(a.zoomOut).toBe(true);
+    // Non-vacuous: the fit really is inside the overview shell.
+    expect(FIT).toBeGreaterThan(OVERVIEW.minDist);
+    expect(FIT).toBeLessThan(OVERVIEW.maxDist);
+  });
+
+  it('stops zooming out at the overview ceiling, and in at its floor', () => {
+    const out = availAt(OVERVIEW.maxDist, OVERVIEW);
+    expect(out.zoomOut).toBe(false);
+    expect(out.zoomIn).toBe(true);
+    const inn = availAt(OVERVIEW.minDist, OVERVIEW);
+    expect(inn.zoomIn).toBe(false);
+    expect(inn.zoomOut).toBe(true);
+  });
+
+  it('reaches the overview floor from the fit in a countable run of presses', () => {
+    // What a held button actually does. It has to terminate, and it has to
+    // terminate at the floor rather than short of it.
+    let dist = FIT;
+    let presses = 0;
+    while (mapZoomNotchAvailable(dist, 1, OVERVIEW.minDist, OVERVIEW.maxDist)) {
+      dist = mapZoomNotchDistanceAU(dist, 1, OVERVIEW.minDist, OVERVIEW.maxDist);
+      presses++;
+      expect(presses).toBeLessThan(500);
+    }
+    expect(dist).toBe(OVERVIEW.minDist);
+    // Five decades of chart in a run a held button covers in a few seconds.
+    expect(presses).toBeGreaterThan(20);
+    expect(presses).toBeLessThan(80);
+  });
+
+  it('holds a planet follow inside the ε-12 ceiling', () => {
+    const landed = revealDistanceAU(JUPITER_R, H, MAP_FOV_DEG);
+    const a = availAt(landed, JUPITER_FOLLOW);
+    expect(a.zoomIn).toBe(true);
+    expect(a.zoomOut).toBe(true);
+    // At the ceiling the way out is shut — the stress probe's 2,275 AU ride
+    // was exactly this predicate having nothing to bind against.
+    expect(availAt(JUPITER_FOLLOW.maxDist, JUPITER_FOLLOW).zoomOut).toBe(false);
+    expect(availAt(JUPITER_FOLLOW.minDist, JUPITER_FOLLOW).zoomIn).toBe(false);
+    expect(JUPITER_FOLLOW.maxDist).toBeLessThanOrEqual(FIT);
+  });
+
+  it('holds a moon follow inside its own, much smaller shell', () => {
+    // A different scale of shell entirely — a hundredth of the whole chart's.
+    expect(IO_FOLLOW.maxDist).toBeLessThan(FIT / 50);
+    expect(availAt(IO_FOLLOW.maxDist, IO_FOLLOW).zoomOut).toBe(false);
+    expect(availAt(IO_FOLLOW.minDist, IO_FOLLOW).zoomIn).toBe(false);
+    const mid = Math.sqrt(IO_FOLLOW.minDist * IO_FOLLOW.maxDist);
+    const a = availAt(mid, IO_FOLLOW);
+    expect(a.zoomIn).toBe(true);
+    expect(a.zoomOut).toBe(true);
+  });
+
+  it('sends a camera outside its shell back IN, and refuses to call that a way out', () => {
+    // The shell can move under a parked camera (the chart's extent changes with
+    // the scale blend). Asking to go further must not be answered by a step
+    // that goes closer.
+    const stranded = JUPITER_FOLLOW.maxDist * 4;
+    const a = availAt(stranded, JUPITER_FOLLOW);
+    expect(a.zoomOut).toBe(false);
+    expect(a.zoomIn).toBe(true);
+    expect(mapZoomNotchDistanceAU(stranded, 1, JUPITER_FOLLOW.minDist, JUPITER_FOLLOW.maxDist))
+      .toBe(JUPITER_FOLLOW.maxDist);
+  });
+
+  it('treats no notch at all as no movement', () => {
+    for (const n of [0, Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY]) {
+      expect(mapZoomNotchAvailable(FIT, n, OVERVIEW.minDist, OVERVIEW.maxDist)).toBe(false);
+    }
+  });
+
+  it('refuses to move a camera that is nowhere', () => {
+    for (const d of [0, -1, Number.NaN]) {
+      expect(mapZoomNotchAvailable(d, 1, OVERVIEW.minDist, OVERVIEW.maxDist)).toBe(false);
+      expect(mapZoomNotchAvailable(d, -1, OVERVIEW.minDist, OVERVIEW.maxDist)).toBe(false);
+    }
+  });
+
+  it('fills a caller scratch rather than allocating one per frame', () => {
+    const scratch = { zoomIn: false, zoomOut: false };
+    const returned = mapZoomAvailability(FIT, OVERVIEW.minDist, OVERVIEW.maxDist, scratch);
+    expect(returned).toBe(scratch);
+    expect(scratch.zoomIn).toBe(true);
   });
 });
 

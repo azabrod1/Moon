@@ -507,6 +507,93 @@ export function mapOverviewPivotDistanceAU(
 }
 
 /**
+ * How much closer one press of a zoom button leaves the camera — the step the
+ * buttons spend, in place of a wheel notch's.
+ *
+ * Deliberately coarser than a wheel notch (~5%): a wheel is a continuous
+ * gesture that spends dozens of notches without thinking, while a press is one
+ * discrete decision and has to be worth making. A quarter closer per press
+ * crosses the whole chart — the overview fit down to the closest a small moon
+ * system can be approached, some five decades — in about fifty presses, which
+ * a held repeat covers in a few seconds.
+ */
+export const MAP_ZOOM_NOTCH_FACTOR = 1.25;
+
+/** How much of a step counts as a step. Relative, because the distances this
+ *  is asked about span five decades, and an absolute epsilon that means
+ *  anything at the overview is larger than the whole shell of a moon system. */
+const MAP_ZOOM_STEP_EPS = 1e-6;
+
+/**
+ * The camera distance `notches` of the zoom buttons ask for, held inside the
+ * shell the current state allows. Positive notches move CLOSER.
+ *
+ * Multiplicative, so one press covers the same fraction of the way in at every
+ * scale — the chart spans five decades, and a fixed AU step would be a whole
+ * system out at Pluto and imperceptible inside a moon system.
+ */
+export function mapZoomNotchDistanceAU(
+  distAU: number,
+  notches: number,
+  minDistAU: number,
+  maxDistAU: number,
+): number {
+  const lo = Math.max(minDistAU, 0);
+  const hi = Math.max(maxDistAU, lo);
+  if (!(distAU > 0)) return lo;
+  const want = distAU * Math.pow(MAP_ZOOM_NOTCH_FACTOR, -notches);
+  return Math.min(Math.max(want, lo), hi);
+}
+
+/**
+ * Whether a press in this direction has anywhere left to go.
+ *
+ * This is the ONE question behind both the buttons' enabled state and the
+ * hold-repeat's stop condition, and it is asked of the bounds themselves — not
+ * of the controls' `minDistance`/`maxDistance`, which are rewritten from these
+ * every frame and would chatter a disabled button on and off as the chart
+ * breathes underneath it.
+ *
+ * The direction is part of the question. A camera sitting OUTSIDE its shell
+ * (the bounds moved under it) still has a way in, and asking only whether the
+ * clamped target differs would report the way out as open too — and then send
+ * the camera inward for a press that asked for the opposite.
+ */
+export function mapZoomNotchAvailable(
+  distAU: number,
+  notches: number,
+  minDistAU: number,
+  maxDistAU: number,
+): boolean {
+  if (!(distAU > 0) || !Number.isFinite(notches) || notches === 0) return false;
+  const target = mapZoomNotchDistanceAU(distAU, notches, minDistAU, maxDistAU);
+  return notches > 0
+    ? target < distAU * (1 - MAP_ZOOM_STEP_EPS)
+    : target > distAU * (1 + MAP_ZOOM_STEP_EPS);
+}
+
+/** Which way the zoom buttons may still go. Filled into a caller's scratch —
+ *  the answer is read every frame to paint the buttons. */
+export interface MapZoomAvailability {
+  zoomIn: boolean;
+  zoomOut: boolean;
+}
+
+/** Both directions at once, from one set of bounds. `false` for both is the
+ *  honest answer whenever nothing may move the camera at all — a shut map, a
+ *  running dive, a focus flight writing its own pose. */
+export function mapZoomAvailability(
+  distAU: number,
+  minDistAU: number,
+  maxDistAU: number,
+  out: MapZoomAvailability = { zoomIn: false, zoomOut: false },
+): MapZoomAvailability {
+  out.zoomIn = mapZoomNotchAvailable(distAU, 1, minDistAU, maxDistAU);
+  out.zoomOut = mapZoomNotchAvailable(distAU, -1, minDistAU, maxDistAU);
+  return out;
+}
+
+/**
  * The camera distance a transition needs, given the straight path's own
  * distance and how far the AIM currently sits from the nearest body.
  *

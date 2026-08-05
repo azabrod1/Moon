@@ -2469,7 +2469,7 @@
        lose to a future reorder for something a body name drifting over the
        scale control would look like a bug. */
     #map-labels { position: absolute; inset: 0; pointer-events: none; z-index: 0; }
-    .map-close, .map-overview, .map-scale, .map-card { z-index: 1; }
+    .map-close, .map-overview, .map-zoom, .map-scale, .map-card { z-index: 1; }
     .map-label {
       position: absolute;
       left: 0; top: 0;
@@ -2534,6 +2534,91 @@
     .map-overview.visible { display: inline-flex; }
     .map-overview:hover { background: rgba(255, 255, 255, 0.09); color: var(--t1); border-color: rgba(255, 255, 255, 0.14); }
     .map-overview svg { width: 16px; height: 16px; }
+    /* Zoom −/+ — the chart's only VISIBLE way in and out; wheel and pinch are
+       the invisible ones.
+
+       The left end of the scale control's own row, and that row is the one
+       place on the chart the picked-body card provably cannot reach: the card
+       docks its bottom edge 12 px above whichever comes first of the world bar
+       and the scale control, so anything sharing the scale's top edge is clear
+       of it by construction, at every width and however tall the card grows
+       (measured: 451 px on Jupiter, which on a short phone stretches from the
+       close chip to the scale and swallows both side edges and the second row
+       of top chrome). Every other candidate loses to that card, to the
+       right-anchored action cluster, or to the ◂ Overview chip's phone row.
+
+       Which is why the pair's height must stay equal to the scale segments' —
+       the card's clearance is measured from the SCALE, and a taller pair would
+       stand up into it. */
+    .map-zoom {
+      position: absolute;
+      left: 14px;
+      bottom: 96px;
+      display: flex;
+      gap: 7px;
+    }
+    .map-zoom-btn {
+      width: 38px;
+      height: 38px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      border-radius: var(--r-m);
+      background: rgba(255, 255, 255, 0.045);
+      border: 1px solid var(--line);
+      -webkit-backdrop-filter: blur(12px);
+      backdrop-filter: blur(12px);
+      color: var(--t2);
+      cursor: pointer;
+      /* A held button repeats, and a hold that starts a text selection would
+         drag a highlight across the chrome instead of zooming. */
+      -webkit-user-select: none;
+      user-select: none;
+      touch-action: manipulation;
+      transition: background var(--dur) var(--ease), color var(--dur) var(--ease), border-color var(--dur) var(--ease);
+    }
+    .map-zoom-btn:hover:not(:disabled) { background: rgba(255, 255, 255, 0.09); color: var(--t1); border-color: rgba(255, 255, 255, 0.14); }
+    .map-zoom-btn:disabled { opacity: 0.4; cursor: default; }
+    .map-zoom-btn svg { width: 18px; height: 18px; }
+    @media (max-width: 640px) {
+      /* Level with the taller phone segments, and a finger's worth of button. */
+      .map-zoom { left: 12px; bottom: 84px; }
+      .map-zoom-btn { width: 40px; height: 40px; }
+    }
+    /* The gestures the buttons cannot show, on one line under the scale control
+       for the first map of a session.
+
+       The id-qualified pointer-events is load-bearing, not decoration: the
+       layer's own `#system-map-ui > *` rule turns pointer events back ON for
+       every child, and a plain class rule cannot outrank it — this line would
+       then swallow every drag and pick along the bottom of the chart. */
+    #system-map-ui .map-zoom-hint {
+      position: absolute;
+      left: 50%;
+      bottom: 68px;
+      transform: translateX(-50%);
+      max-width: calc(100vw - 24px);
+      font-family: var(--font-ui);
+      font-size: 11px;
+      letter-spacing: 0.2px;
+      color: var(--t3);
+      text-align: center;
+      text-shadow: 0 0 6px rgba(0, 0, 0, 0.9);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      pointer-events: none;
+      opacity: 0;
+      visibility: hidden;
+      transition: opacity 0.45s var(--ease), visibility 0.45s var(--ease);
+      z-index: 1;
+    }
+    #system-map-ui .map-zoom-hint.visible { opacity: 1; visibility: visible; }
+    @media (max-width: 640px) {
+      /* The band between the bar and the scale control is 27 px on a phone
+         against 42 on a desktop, and the line has to sit clear of both. */
+      #system-map-ui .map-zoom-hint { bottom: 64px; font-size: 10px; }
+    }
     .map-scale {
       position: absolute;
       left: 50%;
@@ -2564,7 +2649,10 @@
     .map-scale-seg:hover { color: var(--t1); }
     .map-scale-seg.on { background: rgba(var(--accent-rgb), 0.16); color: var(--t1); }
     @media (max-width: 640px) {
-      .map-scale { bottom: 84px; }
+      /* Right end of the row, not the middle: the zoom pair takes the left end,
+         and a centred control 192 px wide meets it on anything narrower than
+         about 390 px. Two ends and a gap is also what the top row does. */
+      .map-scale { bottom: 84px; left: auto; right: 12px; transform: none; }
       .map-scale-seg { padding: 8px 13px; }
       /* Second row, clear of the action cluster. The cluster is right-anchored
          and grows leftward with the body name it carries — "Leave Ganymede" on
@@ -3428,6 +3516,20 @@
           <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 5 L7 10 L12 15"></path></svg>
           Overview
         </button>
+        <!-- Zoom, made visible. The chart zoomed by wheel and pinch only, and
+             the gesture is the one thing a first-time user cannot see. -->
+        <div id="map-zoom" class="map-zoom">
+          <button id="map-zoom-out" class="map-zoom-btn" type="button" aria-label="Zoom out">
+            <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" aria-hidden="true"><path d="M5.5 10 H14.5"></path></svg>
+          </button>
+          <button id="map-zoom-in" class="map-zoom-btn" type="button" aria-label="Zoom in">
+            <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" aria-hidden="true"><path d="M10 5.5 V14.5 M5.5 10 H14.5"></path></svg>
+          </button>
+        </div>
+        <!-- One line, once a session, under the scale control: the gestures the
+             buttons do not carry. Fades on its own or the first time one of
+             them is used. -->
+        <div id="map-zoom-hint" class="map-zoom-hint">Scroll or pinch to zoom · double-tap a body to focus</div>
         <div id="map-scale" class="map-scale" role="radiogroup" aria-label="Map scale">
           <button class="map-scale-seg on" id="map-scale-compressed" role="radio" aria-checked="true">Compressed</button>
           <button class="map-scale-seg" id="map-scale-true" role="radio" aria-checked="false">True scale</button>

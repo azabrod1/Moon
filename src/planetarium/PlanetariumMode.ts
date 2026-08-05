@@ -287,6 +287,7 @@ import {
   mapCameraOwnsPose,
   mapFocusReleasable,
   mapOverviewChipVisible,
+  type MapZoomAvailability,
 } from './map/mapCamera';
 import { HOVER_RECLAIM_MOVE_PX, resolveMapHover } from './map/mapHover';
 import { mapFactRows, mapHoverMeta } from './map/mapFacts';
@@ -501,6 +502,21 @@ export class PlanetariumMode {
   private static readonly DIVE_FADE_MS = 120;
   private static readonly DIVE_TOTAL_MS = 420;
   private static readonly AUTOPILOT_CLOSE_MS = 150;
+  // The map's zoom buttons. A press is one notch; the delay is what keeps a
+  // deliberate single press from turning into a run, and past it the button
+  // repeats every REPEAT_MS — fast enough to read as a glide rather than a
+  // stutter.
+  private static readonly MAP_ZOOM_HOLD_DELAY_MS = 320;
+  private static readonly MAP_ZOOM_HOLD_REPEAT_MS = 110;
+  // And it accelerates, because the chart spans five decades: at one notch a
+  // repeat the far end is six seconds of holding. Every REPEAT_RAMP repeats the
+  // press spends one more notch, up to REPEAT_MAX — which crosses the whole
+  // range in about three seconds while the first second still steps gently
+  // enough to stop where you meant to.
+  private static readonly MAP_ZOOM_REPEAT_RAMP = 10;
+  private static readonly MAP_ZOOM_REPEAT_MAX = 3;
+  /** How long the "scroll or pinch" line stays up when nothing dismisses it. */
+  private static readonly MAP_ZOOM_HINT_MS = 6000;
   private tmpMoonOffset = new THREE.Vector3();
   private tmpMoonOrbitNormal = new THREE.Vector3();
   private tmpMoonShadowLocal = new THREE.Vector3();
@@ -1025,6 +1041,22 @@ export class PlanetariumMode {
   // Last dive-fade opacity written to the DOM, quantized to 2 decimals, so the
   // per-frame fade skips redundant style writes.
   private mapFadeOpacityQ = -1;
+  // The zoom buttons: which way each may still go (refilled in place every
+  // frame), the last state painted onto the DOM, and the held-press repeat —
+  // its pointer id, its direction, and the timer that spends the next notch.
+  private mapZoomAvail: MapZoomAvailability = { zoomIn: false, zoomOut: false };
+  private mapZoomInEnabled = true;
+  private mapZoomOutEnabled = true;
+  private mapZoomHoldPointerId: number | null = null;
+  private mapZoomHoldDir = 0;
+  private mapZoomHoldTimer = 0;
+  private mapZoomHoldRepeats = 0;
+  // The "scroll or pinch" line. Session-scoped by design: shown for the first
+  // map of a page session and never again, and deliberately not persisted, so
+  // a later session gets the reminder back.
+  private mapZoomHintSeen = false;
+  private mapZoomHintShown = false;
+  private mapZoomHintTimer = 0;
 
   // Moon labels
   private moonLabels = new Map<string, HTMLDivElement>();
@@ -1393,6 +1425,9 @@ export class PlanetariumMode {
       this.mapPickPointerId = null;
       this.mapPickPoisoned = false;
       this.mapTapName = null;
+      // A held zoom button strands the same way — its pointerup goes to
+      // whatever took the focus, and the repeat would run on unwatched.
+      this.stopMapZoomHold();
       // The map's hover latch strands the same way: no move arrives while the
       // window is away, so the stored pointer would still claim a cursor that
       // could be anywhere by the time focus comes back.
@@ -5997,6 +6032,11 @@ export class PlanetariumMode {
       this.closeMenuPanel();
       this.openMap();
     });
+    // The map's zoom pair. Wired on pointerdown rather than click: the press
+    // has to spend its first notch immediately and then keep spending while the
+    // button is held, and a click only ever arrives once, at the end.
+    this.bindMapZoomButton('map-zoom-in', 1);
+    this.bindMapZoomButton('map-zoom-out', -1);
     document.getElementById('help-take-tutorial')?.addEventListener('click', () => this.startTutorial());
     document.getElementById('help-explore')?.addEventListener('click', () => this.hideHelp());
     document.getElementById('planetarium-help-close')?.addEventListener('click', () => this.hideHelp());
@@ -6780,6 +6820,8 @@ export class PlanetariumMode {
     this.systemMap.openMap(this.timeState.currentUtcMs);
     this.mapHud.show();
     this.mapHud.render(this.systemMap.isTrueScale());
+    // The gestures the buttons cannot show, for the first map of the session.
+    this.showMapZoomHint();
     this.updateMapView();
   }
 
@@ -6810,6 +6852,10 @@ export class PlanetariumMode {
 
     this.systemMap?.close();
     this.mapHud.hide();
+    // The zoom pair goes down with the layer, so a held run has nothing left to
+    // press against; the hint goes with it whether or not its own clock ran out.
+    this.stopMapZoomHold();
+    this.hideMapZoomHint();
     // Drop the hover latch whole — the held body, the stored pointer, and the
     // cursor the map's own feedback left on the canvas.
     this.resetMapHover();
@@ -6841,6 +6887,139 @@ export class PlanetariumMode {
       else this.enterSurfaceView();
     }
     if (restore && restorePanel) this.openObservatoryPanel();
+  }
+
+  // ── System map: the zoom pair and the gesture hint ──────────────────────
+
+  /**
+   * Wire one zoom button. `dir` is +1 for closer, −1 for further.
+   *
+   * The press spends its first notch on pointerdown and then keeps spending
+   * while the button is held. Every way a hold can end is covered: the button's
+   * own release and cancel, the capture it took being lost to something else,
+   * the window losing focus (wired with the other stranded-gesture cleanups),
+   * the map closing, and the camera reaching the clamp — that last one is the
+   * one a timer cannot see, so the notch itself reports it.
+   */
+  private bindMapZoomButton(id: string, dir: number): void {
+    const btn = document.getElementById(id);
+    if (!btn) return;
+    btn.addEventListener('pointerdown', (e) => {
+      const ev = e as PointerEvent;
+      // Left button / touch / pen only: a right-click must not start a run
+      // that its own release never ends.
+      if (ev.button !== 0) return;
+      ev.preventDefault();
+      this.stopMapZoomHold();
+      if (!this.mapZoomBy(dir)) return;
+      // Capture so a finger that slides off the button still delivers its
+      // release here; the lost-capture handler is the backstop for the times
+      // the browser takes it away instead.
+      try { btn.setPointerCapture(ev.pointerId); } catch { /* no capture available */ }
+      this.mapZoomHoldPointerId = ev.pointerId;
+      this.mapZoomHoldDir = dir;
+      this.mapZoomHoldRepeats = 0;
+      this.scheduleMapZoomRepeat(PlanetariumMode.MAP_ZOOM_HOLD_DELAY_MS);
+    });
+    const release = (e: Event): void => {
+      const pid = (e as PointerEvent).pointerId;
+      if (this.mapZoomHoldPointerId !== null && pid !== this.mapZoomHoldPointerId) return;
+      this.stopMapZoomHold();
+    };
+    btn.addEventListener('pointerup', release);
+    btn.addEventListener('pointercancel', release);
+    btn.addEventListener('lostpointercapture', release);
+    // Keyboard activation arrives as a click with no pointer behind it (detail
+    // 0) and never touches the pointer path above, so it is the whole press.
+    btn.addEventListener('click', (e) => {
+      if ((e as MouseEvent).detail !== 0) return;
+      this.mapZoomBy(dir);
+    });
+  }
+
+  /** One notch, through the same guards a scale-segment press meets: a running
+   *  dive owns the camera whether or not it is the kind that moves it, so the
+   *  mode's own flag is checked as well as the map's camera state. */
+  private mapZoomBy(dir: number): boolean {
+    if (!this.systemMap?.isOpen() || this.mapDiving) return false;
+    return this.systemMap.zoomNotches(dir);
+  }
+
+  private scheduleMapZoomRepeat(delayMs: number): void {
+    this.mapZoomHoldTimer = window.setTimeout(() => {
+      this.mapZoomHoldTimer = 0;
+      if (this.mapZoomHoldPointerId === null) return;
+      const step = Math.min(
+        PlanetariumMode.MAP_ZOOM_REPEAT_MAX,
+        1 + Math.floor(this.mapZoomHoldRepeats / PlanetariumMode.MAP_ZOOM_REPEAT_RAMP),
+      );
+      this.mapZoomHoldRepeats++;
+      // The clamp is the stop: a notch that cannot move the camera ends the
+      // run rather than repeating against a shell it has already reached.
+      if (!this.mapZoomBy(this.mapZoomHoldDir * step)) {
+        this.stopMapZoomHold();
+        return;
+      }
+      this.scheduleMapZoomRepeat(PlanetariumMode.MAP_ZOOM_HOLD_REPEAT_MS);
+    }, delayMs);
+  }
+
+  private stopMapZoomHold(): void {
+    if (this.mapZoomHoldTimer) {
+      window.clearTimeout(this.mapZoomHoldTimer);
+      this.mapZoomHoldTimer = 0;
+    }
+    this.mapZoomHoldPointerId = null;
+    this.mapZoomHoldDir = 0;
+    this.mapZoomHoldRepeats = 0;
+  }
+
+  /** Paint the pair's enabled state from the map's own predicate — never from
+   *  the controls' distance clamps, which are rewritten every frame. Writes
+   *  only on a change. */
+  private refreshMapZoomButtons(map: SystemMap): void {
+    const avail = map.zoomAvailability(this.mapZoomAvail);
+    // A running dive owns the camera even when it is the fade-only kind the
+    // map's camera state knows nothing about.
+    const live = !this.mapDiving;
+    this.setMapZoomButtonEnabled('map-zoom-in', live && avail.zoomIn, true);
+    this.setMapZoomButtonEnabled('map-zoom-out', live && avail.zoomOut, false);
+  }
+
+  private setMapZoomButtonEnabled(id: string, enabled: boolean, isIn: boolean): void {
+    if (enabled === (isIn ? this.mapZoomInEnabled : this.mapZoomOutEnabled)) return;
+    if (isIn) this.mapZoomInEnabled = enabled;
+    else this.mapZoomOutEnabled = enabled;
+    const btn = document.getElementById(id) as HTMLButtonElement | null;
+    if (btn) btn.disabled = !enabled;
+    // A button that goes dead under a held finger takes its run with it.
+    if (!enabled && this.mapZoomHoldDir === (isIn ? 1 : -1)) this.stopMapZoomHold();
+  }
+
+  /** The one-line gesture hint, for the first map of the session. */
+  private showMapZoomHint(): void {
+    if (this.mapZoomHintSeen) return;
+    const el = document.getElementById('map-zoom-hint');
+    if (!el) return;
+    // Shown once, marked once: closing the map before the line has faded still
+    // counts, or every open would re-teach the same thing.
+    this.mapZoomHintSeen = true;
+    this.mapZoomHintShown = true;
+    el.classList.add('visible');
+    this.mapZoomHintTimer = window.setTimeout(
+      () => this.hideMapZoomHint(),
+      PlanetariumMode.MAP_ZOOM_HINT_MS,
+    );
+  }
+
+  private hideMapZoomHint(): void {
+    if (this.mapZoomHintTimer) {
+      window.clearTimeout(this.mapZoomHintTimer);
+      this.mapZoomHintTimer = 0;
+    }
+    if (!this.mapZoomHintShown) return;
+    this.mapZoomHintShown = false;
+    document.getElementById('map-zoom-hint')?.classList.remove('visible');
   }
 
   private setMapScale(trueScale: boolean) {
@@ -6910,6 +7089,10 @@ export class PlanetariumMode {
       this.systemMap.getCameraState(),
       this.systemMap.isZoomFree(),
     ));
+    // The zoom pair follows the same rule, from the map's own predicate.
+    this.refreshMapZoomButtons(this.systemMap);
+    // The hint has said its piece once the chart has been zoomed by hand.
+    if (this.mapZoomHintShown && this.systemMap.sawZoomGesture()) this.hideMapZoomHint();
     // Advance an in-flight dive / autopilot-close transition.
     if (this.mapDiving) this.advanceMapTransition();
   }

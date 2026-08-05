@@ -150,6 +150,9 @@ import {
   mapOverviewBounds,
   mapOverviewPivotDistanceAU,
   mapWorldPerPxAtUnitDepth,
+  mapZoomAvailability,
+  mapZoomNotchAvailable,
+  mapZoomNotchDistanceAU,
   MAP_FOLLOW_MIN_SPREAD,
   revealDistanceAU,
   moonRevealThresholdAU,
@@ -159,6 +162,7 @@ import {
   type MapCameraBounds,
   type MapCameraState,
   type MapFollowBounds,
+  type MapZoomAvailability,
 } from './mapCamera';
 import { flushOrbitDamping } from '../input/orbitDamping';
 import {
@@ -493,6 +497,10 @@ export class SystemMap {
   private sunDiscPx = 0;
   private sunBaseColor = new THREE.Color(SUN_DATA.color);
   private orbits: OrbitEntry[] = [];
+  /** The same entries by planet name. `entryFor` sits under per-frame paths
+   *  (the availability refresh scans every planet each frame), so the lookup
+   *  has to be a read, not a search. */
+  private orbitsByName = new Map<string, OrbitEntry>();
   private shipMarker: THREE.Sprite;
   private shipChevronTex: THREE.Texture;
   private shipRingTex: THREE.Texture;
@@ -793,6 +801,12 @@ export class SystemMap {
    *  suppress the wheel over a map the user opens later, with nothing holding
    *  it down. */
   private zoomPointers = new Map<number, string>();
+  /** Whether a wheel or a pinch has arrived over the chart since this map
+   *  opened. The one thing that reads it is the hint that says the gestures
+   *  exist, which has no business staying up once they have been used. Set
+   *  before the state gates, because a gesture the camera state refuses is
+   *  still a user who knows how to zoom. */
+  private zoomGestureSeen = false;
   private overviewBounds: MapCameraBounds = { minDist: 0, maxDist: 0, near: 0, far: 0 };
   private zoomViewDir = new THREE.Vector3();
   /** The nearest drawn surface to the camera, refilled in place — the scan runs
@@ -907,7 +921,9 @@ export class SystemMap {
     this.scene.add(this.sun);
 
     for (const planet of PLANETARIUM_BODIES) {
-      this.orbits.push(this.makeOrbit(planet, el));
+      const entry = this.makeOrbit(planet, el);
+      this.orbits.push(entry);
+      this.orbitsByName.set(planet.name, entry);
     }
     // Hand the offset policy the ring geometry this chart actually built,
     // before any policy is built from it — the first one is built in the loop
@@ -1068,6 +1084,8 @@ export class SystemMap {
     this.cam = mapCameraInitialState();
     this.controls.target.set(0, 0, 0);
     this.zoomFree = false;
+    // A fresh session has been shown no gestures yet, whatever the last one saw.
+    this.zoomGestureSeen = false;
     this.syncZoomToCursor();
     this.controls.enabled = true;
   }
@@ -2168,6 +2186,9 @@ export class SystemMap {
   }
 
   private onZoomWheel = (): void => {
+    // Before the gates: the wheel arrived over the chart, and that is the whole
+    // question the hint asks.
+    this.zoomGestureSeen = true;
     if (!this.zoomOwnsPivot()) return;
     // The controls themselves ignore a wheel while a gesture is running, and so
     // does this: a pivot moved under a held drag is a re-seat nothing asked for.
@@ -2197,9 +2218,16 @@ export class SystemMap {
   };
 
   private onZoomPointerMove = (): void => {
-    if (!this.zoomOwnsPivot() || !this.isPinchGesture()) return;
+    if (!this.isPinchGesture()) return;
+    this.zoomGestureSeen = true;
+    if (!this.zoomOwnsPivot()) return;
     this.reseatZoomPivot();
   };
+
+  /** Whether the user has zoomed the chart by wheel or pinch since it opened. */
+  sawZoomGesture(): boolean {
+    return this.zoomGestureSeen;
+  }
 
   /**
    * Seat the zoom's pivot on the nearest drawn surface ahead of the camera.
@@ -2216,21 +2244,121 @@ export class SystemMap {
    * and only its distance changes, leaving the controls' own lookAt a no-op.
    * The controls damp one step per update() call, so this never makes one — the
    * next frame's update is where the move is spent.
+   *
+   * Hands back the shell it measured, because the button path needs exactly
+   * that and the scan behind it is not cheap enough to run twice. The figure is
+   * the shared overview scratch, so a caller has to spend it before anything
+   * else asks for the bounds again.
    */
-  private reseatZoomPivot(): void {
+  private reseatZoomPivot(): MapCameraBounds {
     const clearance = this.nearestDrawnSurface().clearanceDist;
     const bounds = this.overviewBoundsNow(clearance);
     const dist = mapOverviewPivotDistanceAU(clearance, bounds.minDist, bounds.maxDist);
     this.zoomViewDir.set(0, 0, -1).applyQuaternion(this.camera.quaternion);
     this.controls.target.copy(this.camera.position).addScaledVector(this.zoomViewDir, dist);
     this.zoomFree = true;
+    return bounds;
+  }
+
+  /**
+   * Zoom by button notches: positive moves CLOSER, negative further out; the
+   * signed count is what lets a held button spend several at once. Returns
+   * whether the camera actually moved, which is the hold-repeat's own stop
+   * condition — a press that arrives at the clamp reports false and the repeat
+   * ends there rather than hammering a shell it cannot leave.
+   *
+   * Explicitly NOT the wheel's path. The wheel is cursor-anchored, and a button
+   * has no cursor to anchor to: routing a press through it would lurch the
+   * chart toward wherever the pointer happened to have been left. This dollies
+   * along the VIEW AXIS about the point the camera already orbits, so whatever
+   * is in the middle of the frame stays in the middle of the frame.
+   *
+   * At the overview the pivot is re-seated first, exactly as a wheel notch
+   * re-seats it: a cursor-anchored or view-axis dolly alike spends a fraction
+   * of the pivot radius, so without the re-seat the whole travel budget is the
+   * distance to wherever the pivot was last left and the approach stops short
+   * of anything further off. While following, the pivot IS the subject and must
+   * not move — re-seating it there would detach the ride.
+   *
+   * Refused outright while a flight or a dive owns the pose: those write the
+   * camera every frame, and a press would be overwritten before it drew.
+   */
+  zoomNotches(notches: number): boolean {
+    if (!this.open || !this.controls.enabled) return false;
+    if (!Number.isFinite(notches) || notches === 0) return false;
+    if (this.cam.camState === 'overview') {
+      const bounds = this.reseatZoomPivot();
+      const moved = this.dollyNotch(notches, bounds.minDist, bounds.maxDist, false);
+      // A live scale animation re-dollies every frame to the ratio captured
+      // at the toggle, so a distance this press just chose would be restored
+      // on the very next frame — the press would visibly snap back. Rebase to
+      // the pressed framing and the animation preserves it like any other.
+      // After a refused notch too: the re-seat above moved the pivot the
+      // distance is measured against, and the old ratio against the new pivot
+      // would step the camera for a press that did nothing.
+      this.rebaseScaleZoomRatio();
+      return moved;
+    }
+    if (this.cam.camState === 'following') {
+      const name = this.cam.focusName;
+      const bounds = name ? this.followBoundsFor(name) : null;
+      if (!bounds) return false;
+      return this.dollyNotch(notches, bounds.minDist, bounds.maxDist, true);
+    }
+    return false;
+  }
+
+  /** One notch against a shell already measured. The bounds arrive as plain
+   *  numbers because both callers hand over a shared scratch that the re-apply
+   *  below is about to refill. */
+  private dollyNotch(
+    notches: number,
+    minDist: number,
+    maxDist: number,
+    following: boolean,
+  ): boolean {
+    const dist = this.getCameraDistance();
+    if (!mapZoomNotchAvailable(dist, notches, minDist, maxDist)) return false;
+    this.dollyTo(mapZoomNotchDistanceAU(dist, notches, minDist, maxDist));
+    if (following) this.applyFollowBounds();
+    else this.applyBounds();
+    this.controls.update();
+    return true;
+  }
+
+  /**
+   * Which way the zoom buttons may still go, filled into the caller's scratch.
+   *
+   * Answered from the bounds themselves, never from the controls' own
+   * `minDistance`/`maxDistance`: those are rewritten from these every frame and
+   * lag by one, so a button painted from them would flicker as the chart
+   * breathes under a moving camera. Both false while a flight or a dive owns
+   * the pose — nothing a press did would survive the next frame.
+   */
+  zoomAvailability(out: MapZoomAvailability): MapZoomAvailability {
+    out.zoomIn = false;
+    out.zoomOut = false;
+    if (!this.open || !this.controls.enabled) return out;
+    if (this.cam.camState === 'overview') {
+      const bounds = this.overviewBoundsNow(this.nearestDrawnSurface().clearanceDist);
+      return mapZoomAvailability(this.getCameraDistance(), bounds.minDist, bounds.maxDist, out);
+    }
+    if (this.cam.camState === 'following') {
+      const name = this.cam.focusName;
+      const bounds = name ? this.followBoundsFor(name) : null;
+      if (!bounds) return out;
+      return mapZoomAvailability(this.getCameraDistance(), bounds.minDist, bounds.maxDist, out);
+    }
+    return out;
   }
 
   /** The orbit entry that draws a planet, or null for anything that is not one
    *  (the Sun, a moon, a name the chart does not know). The one place a body
-   *  name is searched for among the drawn planets. */
+   *  name is resolved among the drawn planets — a map read, because the zoom
+   *  buttons' availability refresh routes the whole roster through here every
+   *  frame and a search would allocate its predicate each call. */
   private entryFor(name: string): OrbitEntry | null {
-    return this.orbits.find((o) => o.planet.name === name) ?? null;
+    return this.orbitsByName.get(name) ?? null;
   }
 
   /** Whether the camera may be flown to, follow, or dive at this body: the

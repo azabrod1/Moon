@@ -650,6 +650,40 @@ export function connectLateDetailMap(
   }));
 }
 
+/** The Earth-specific slot set, one per detail map. */
+export interface EarthLateSlots {
+  night: LateTextureSlot;
+  clouds: LateTextureSlot;
+  bump: LateTextureSlot;
+  roughness: LateTextureSlot;
+}
+
+/**
+ * Wire all four Earth detail slots onto their materials. One function so the
+ * complete set is pinnable as a unit — a slot left unconnected would hold its
+ * late arrival forever, leaving Earth on flat city lights, a blank cloud deck,
+ * or a noise-free ocean for the session while leaking the real texture.
+ */
+export function wireEarthLateDetail(
+  slots: EarthLateSlots,
+  nightMat: THREE.ShaderMaterial,
+  cloudMat: THREE.MeshStandardMaterial,
+  earthMat: THREE.MeshStandardMaterial,
+): void {
+  connectLateDetailMap(
+    slots.night, nightMat,
+    () => nightMat.uniforms.nightTexture.value as THREE.Texture | null,
+    (tex) => { nightMat.uniforms.nightTexture.value = tex; },
+  );
+  connectLateDetailMap(slots.clouds, cloudMat, () => cloudMat.map, (tex) => { cloudMat.map = tex; });
+  connectLateDetailMap(slots.bump, earthMat, () => earthMat.bumpMap, (tex) => { earthMat.bumpMap = tex; });
+  connectLateDetailMap(
+    slots.roughness, earthMat,
+    () => earthMat.roughnessMap,
+    (tex) => { earthMat.roughnessMap = tex; },
+  );
+}
+
 export async function createPlanetMesh(planet: PlanetData): Promise<PlanetMesh> {
   const group = new THREE.Group();
   group.name = planet.name;
@@ -807,18 +841,7 @@ export async function createPlanetMesh(planet: PlanetData): Promise<PlanetMesh> 
     // Detail maps that missed their timeout replace the fallback in place —
     // otherwise Earth keeps flat grey city lights, a blank cloud deck, or a
     // noise-free ocean for the session.
-    connectLateDetailMap(
-      earthLate.night, nightMat,
-      () => nightMat.uniforms.nightTexture.value as THREE.Texture | null,
-      (tex) => { nightMat.uniforms.nightTexture.value = tex; },
-    );
-    connectLateDetailMap(earthLate.clouds, cloudMat, () => cloudMat.map, (tex) => { cloudMat.map = tex; });
-    connectLateDetailMap(earthLate.bump, earthMat, () => earthMat.bumpMap, (tex) => { earthMat.bumpMap = tex; });
-    connectLateDetailMap(
-      earthLate.roughness, earthMat,
-      () => earthMat.roughnessMap,
-      (tex) => { earthMat.roughnessMap = tex; },
-    );
+    wireEarthLateDetail(earthLate, nightMat, cloudMat, earthMat);
   }
 
   let rings: THREE.Mesh | undefined;

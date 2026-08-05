@@ -10,6 +10,7 @@ import {
   loadTexture,
   shouldApplyColorTier,
   TEXTURE_LOAD_ATTEMPTS,
+  wireEarthLateDetail,
   type TextureUpgrade,
 } from './PlanetFactory';
 
@@ -359,5 +360,56 @@ describe('connectLateDetailMap', () => {
     slot.deliver(real);
     expect(shader.uniforms.nightTexture.value).toBe(real);
     expect(spy.disposed).toBe(true);
+  });
+});
+
+describe('wireEarthLateDetail', () => {
+  function slots() {
+    return {
+      night: createLateTextureSlot(),
+      clouds: createLateTextureSlot(),
+      bump: createLateTextureSlot(),
+      roughness: createLateTextureSlot(),
+    };
+  }
+
+  it('connects all four detail slots to their own channels', () => {
+    const s = slots();
+    const nightPrev = fallbackTexture();
+    const nightMat = new THREE.ShaderMaterial({ uniforms: { nightTexture: { value: nightPrev } } });
+    const cloudMat = new THREE.MeshStandardMaterial({ map: fallbackTexture() });
+    const earthMat = new THREE.MeshStandardMaterial();
+    earthMat.bumpMap = fallbackTexture();
+    earthMat.roughnessMap = fallbackTexture();
+    wireEarthLateDetail(s, nightMat, cloudMat, earthMat);
+    const night = fakeTexture('night');
+    const clouds = fakeTexture('clouds');
+    const bump = fakeTexture('bump');
+    const rough = fakeTexture('rough');
+    s.night.deliver(night);
+    s.clouds.deliver(clouds);
+    s.bump.deliver(bump);
+    s.roughness.deliver(rough);
+    expect(nightMat.uniforms.nightTexture.value).toBe(night);
+    expect(cloudMat.map).toBe(clouds);
+    expect(earthMat.bumpMap).toBe(bump);
+    expect(earthMat.roughnessMap).toBe(rough);
+  });
+
+  it('frees each fallback its arrival replaces — an unconnected slot would hold and leak instead', () => {
+    const s = slots();
+    const prevs = [fallbackTexture(), fallbackTexture(), fallbackTexture(), fallbackTexture()];
+    const spies = prevs.map(disposeSpy);
+    const nightMat = new THREE.ShaderMaterial({ uniforms: { nightTexture: { value: prevs[0] } } });
+    const cloudMat = new THREE.MeshStandardMaterial({ map: prevs[1] });
+    const earthMat = new THREE.MeshStandardMaterial();
+    earthMat.bumpMap = prevs[2];
+    earthMat.roughnessMap = prevs[3];
+    wireEarthLateDetail(s, nightMat, cloudMat, earthMat);
+    s.night.deliver(fakeTexture('n'));
+    s.clouds.deliver(fakeTexture('c'));
+    s.bump.deliver(fakeTexture('b'));
+    s.roughness.deliver(fakeTexture('r'));
+    expect(spies.map((f) => f.disposed)).toEqual([true, true, true, true]);
   });
 });

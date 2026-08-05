@@ -303,6 +303,25 @@ describe('fitDistanceAU', () => {
   it('grows with the extent', () => {
     expect(fitDistanceAU(10, 50, 1)).toBeGreaterThan(fitDistanceAU(5, 50, 1));
   });
+
+  // The phone framing is a decision, not an accident: on portrait the WIDTH
+  // binds, so height taken by chrome cannot buy a closer fit and the chart's
+  // vertical air is the price of a round system in a tall frame. Pinned so the
+  // reasoning in fitDistanceAU's own comment cannot go quietly stale — a change
+  // to the FOV or the margin that made the height bind on a phone lands here.
+  it('portrait fits the width, with height to spare no chrome band can reach', () => {
+    const extent = 3.06; // the live compressed chart's extent, measured
+    const fov = 50; // MAP_FOV_DEG
+    const aspect = 390 / 844; // the phone the chart is tuned against
+    const dist = fitDistanceAU(extent, fov, aspect);
+    const halfHeightAU = dist * Math.tan((fov * Math.PI) / 180 / 2);
+    const halfWidthAU = halfHeightAU * aspect;
+    // The width is what the fit filled: the disc plus its margin, exactly.
+    expect(halfWidthAU).toBeCloseTo(extent * 1.18, 6);
+    // The height it left is more than twice what the disc needs, so trimming a
+    // chrome band off the bottom leaves the width binding either way.
+    expect(halfHeightAU / (extent * 1.18)).toBeGreaterThan(2);
+  });
 });
 
 describe('eccentric-orbit extent', () => {

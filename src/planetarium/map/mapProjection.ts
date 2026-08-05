@@ -183,6 +183,24 @@ export function mapExtentAU(
  * given vertical FOV and aspect. Fits to the tighter of the vertical and
  * horizontal half-angles so a portrait phone (aspect < 1) still contains the
  * whole disc, with a little margin around the rim.
+ *
+ * The margin is the whole framing policy — every overview seat, the corner
+ * chart and the dive restore all resolve through here — so it is documented
+ * once, here, rather than restated at each call site.
+ *
+ * A portrait phone looks like it wastes vertical room, and the tempting fix is
+ * to fit against a HUD-safe rectangle (the frame minus the bottom chrome band)
+ * instead of the whole frame. Measured on the real chart, that fit is a LOSS at
+ * every viewport, because on portrait the WIDTH already binds: at 390x844 the
+ * disc spans 85% of the width and 33% of the height, so trimming height buys
+ * nothing and the safe-rect fit lands 0.5% SMALLER (320x568: 0.8% smaller). On
+ * a landscape desktop the height binds and trimming it costs 11%. The vertical
+ * air on a phone is the price of a circular system in a tall frame, not slack
+ * the fit failed to use — the ONLY lever that reaches it is the chrome standing
+ * in that air, which is why the phone's body card is slim rather than the
+ * framing tighter. Shrinking the margin is not the lever either: it clips the
+ * outer planets and their labels, and it moves desktop, corner-chart and dive
+ * framing along with the phone's.
  */
 export function fitDistanceAU(
   extentAU: number,

@@ -435,9 +435,30 @@ describe('ringClearedLabelShiftPx', () => {
     expect(out.x).toBeGreaterThan(0);
   });
 
-  it('takes straight down from the parent centre, clear of the whole annulus', () => {
+  it('takes screen-down from the parent centre, clear of the whole annulus', () => {
     expect(ringClearedLabelShiftPx(0, 0, 100, 0.5, 0, 1, 11, 0, 0, out)).toBe(true);
     expect(out.x).toBe(0);
-    expect(out.y).toBeCloseTo(100 * 0.5 + LABEL_EDGE_PAD_PX, 6);
+    // Down the minor axis: the exit walks the normalized ray like every other
+    // case, so the pad rides that ray and scales back by the ratio.
+    expect(out.y).toBeCloseTo((100 + LABEL_EDGE_PAD_PX) * 0.5, 6);
+  });
+
+  it('centre exit respects a ROTATED ellipse — screen-down through the real frame', () => {
+    // Minor axis HORIZONTAL (pole projects along +x), ratio 0.3: screen-down
+    // runs along the MAJOR axis, so the annulus extends the full outer radius
+    // that way — a fallback that read "down = minor extent" placed the label
+    // 34 px out, deep inside the ring. The real walk exits at outer + pad.
+    const outer = 100;
+    const ratio = 0.3;
+    const hw = 30;
+    const lh = LABEL_LINE_HEIGHT_PX;
+    expect(ringClearedLabelShiftPx(0, 0, outer, ratio, 1, 0, 0, hw, lh, out)).toBe(true);
+    expect(out.x).toBeCloseTo(0, 6);
+    expect(out.y).toBeCloseTo(outer + LABEL_EDGE_PAD_PX, 6);
+    // Every corner of the box sits outside the rotated annulus.
+    const norm = (x: number, y: number) => Math.hypot(y, x / ratio);
+    for (const [cx, cy] of [[-hw, 0], [hw, 0], [-hw, lh], [hw, lh]]) {
+      expect(norm(out.x + cx, out.y + cy)).toBeGreaterThanOrEqual(outer - 1e-6);
+    }
   });
 });

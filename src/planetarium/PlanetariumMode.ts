@@ -7036,6 +7036,13 @@ export class PlanetariumMode {
    *  reads mid-frame scene state. */
   private updateMapView() {
     if (!this.systemMap?.isOpen()) return;
+    // The card's next-event sweep runs BEFORE the chart's update on purpose:
+    // its first result adds the event row and grows the phone's bottom sheet,
+    // and the label pass inside the update measures the card to duck labels
+    // under it — a row landing after that pass would leave one frame of names
+    // painted beneath the taller card. The sweep reads only the clock and its
+    // own cursors, so nothing here needs the update to have run.
+    this.updateMapEventSearch();
     // The course as a VECTOR, from the ship's own forward math — the chart
     // charts a point one step along it and never re-derives a heading of its
     // own. Landing goes over whole: the chart places the marker differently on
@@ -7077,11 +7084,6 @@ export class PlanetariumMode {
       }
       this.mapHud.setActionsDisabled(this.arrivalInFlight);
     }
-    // The card's next-event sweep: a slice per frame under the same budget the
-    // Observatory's list spends, plus its own staleness guard. Never doubled up
-    // with the panel's — opening the map closes the panel, which cancels that
-    // search.
-    this.updateMapEventSearch();
     // The ◂ Overview chip follows the camera state, and the map has no HUD
     // reference of its own — so its visibility is owned here, every frame,
     // rather than left to whichever transition remembered to set it.

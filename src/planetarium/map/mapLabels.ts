@@ -180,18 +180,27 @@ export function ringClearedLabelShiftPx(
   const vn = v / minorMajorRatio;
   const rho = Math.hypot(u, vn);
   if (rho >= outerRadiusPx) return false;
-  if (rho < 1e-6) {
-    // The parent's own pixel — no outward direction exists. Straight down: the
-    // box's top edge is its near edge, so the point clearance is the box's.
-    out.y = Math.max(outerRadiusPx * minorMajorRatio + padPx, minShiftPx);
-    return true;
-  }
   // The exit direction, normalized-frame unit vector: the boundary there is a
   // CIRCLE, so a box whose every corner sits past the tangent line at the exit
   // point sits past the boundary — the tangent argument is exact, where a
   // screen-space support would only be right face-on.
-  const dU = u / rho;
-  const dV = vn / rho;
+  //
+  // A moon on the parent's own pixel has no radial direction of its own, so
+  // its exit takes SCREEN-DOWN — the label's natural direction — mapped into
+  // the same normalized frame, and then walks the identical path: taking a
+  // shortcut here instead once printed a centre-transiting moon's name across
+  // a rotated foreshortened ring, because "down" measured against the wrong
+  // axis read the annulus as its thinnest extent.
+  let exitU = u;
+  let exitVn = vn;
+  let exitRho = rho;
+  if (rho < 1e-6) {
+    exitU = My;
+    exitVn = my / minorMajorRatio;
+    exitRho = Math.hypot(exitU, exitVn);
+  }
+  const dU = exitU / exitRho;
+  const dV = exitVn / exitRho;
   // The box's four corners relative to its placed point (top-centre), mapped
   // through the same frame the moon was: rotate into the ellipse's axes, then
   // stretch the minor share by 1/ratio. Support = how far the box reaches back
@@ -206,11 +215,14 @@ export function ringClearedLabelShiftPx(
     const reach = -(cu * dU + cv * dV);
     if (reach > support) support = reach;
   }
-  // Walk out along the same normalized ray to the boundary plus pad plus the
-  // box's own reach, and map back to the screen.
-  const s = (outerRadiusPx + padPx + support) / rho;
-  const bx = (u * s) * Mx + (v * s) * mx;
-  const by = (u * s) * My + (v * s) * my;
+  // Walk out along the exit ray to the boundary plus pad plus the box's own
+  // reach, and map back to the screen (the minor share picks its screen
+  // scale back up).
+  const s = (outerRadiusPx + padPx + support) / exitRho;
+  const eu = exitU * s;
+  const ev = exitVn * s * minorMajorRatio;
+  const bx = eu * Mx + ev * mx;
+  const by = eu * My + ev * my;
   let dx = bx - relXPx;
   let dy = by - relYPx;
   const len = Math.hypot(dx, dy);

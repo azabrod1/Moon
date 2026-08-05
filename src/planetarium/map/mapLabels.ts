@@ -56,6 +56,132 @@ export const LABEL_LINE_HEIGHT_PX = 14;
 /** Air demanded around a label box before its neighbour may draw. */
 export const LABEL_BOX_PAD_PX = 3;
 
+/** Air between a label box and the viewport's side edges, and between the box
+ *  and the bottom chrome band. */
+export const LABEL_EDGE_PAD_PX = 4;
+
+/**
+ * The label centre, slid sideways just far enough that its box stays whole on
+ * the frame. "Titan" half off the right edge is a clipped name that reads as a
+ * bug; the same name pinned at the edge under its body reads as a label doing
+ * its best. A viewport too narrow for the box at all parks it centred — there
+ * is no x that satisfies both edges, and centred loses the least.
+ */
+export function clampLabelCenterXPx(
+  xPx: number,
+  halfWidthPx: number,
+  viewportWPx: number,
+  padPx: number = LABEL_EDGE_PAD_PX,
+): number {
+  const lo = halfWidthPx + padPx;
+  const hi = viewportWPx - halfWidthPx - padPx;
+  if (lo > hi) return viewportWPx / 2;
+  return Math.min(Math.max(xPx, lo), hi);
+}
+
+/**
+ * The lowest box-top a label may draw at, given where the bottom chrome band
+ * begins. A name sliding under the scale control or the world bar is unreadable
+ * where it matters and painted where nothing should be — so the band excludes
+ * it, and the exclusion is measured from the chrome actually on screen, not
+ * from CSS numbers restated here. `chromeTopPx` null means nothing was
+ * measured; the viewport bottom then stands in.
+ */
+export function labelMaxBoxTopPx(chromeTopPx: number | null, viewportHPx: number): number {
+  const limit = chromeTopPx ?? viewportHPx;
+  return limit - LABEL_EDGE_PAD_PX - LABEL_LINE_HEIGHT_PX;
+}
+
+/** Below this drawn radius a body is a speck, and a full-size name on a speck
+ *  points at nothing the eye can find — the label waits until the marker is
+ *  worth naming. Planets never trip it (their marker floor is ~6 px); this is
+ *  the true-scale and far-follow regimes, where moons drop to their real size. */
+export const LABEL_MIN_BODY_RADIUS_PX = 1.5;
+
+/** Whether a body's marker is big enough to carry a name. Null — a body whose
+ *  drawn size the caller cannot resolve — passes: hiding a label on missing
+ *  information would hide real names, while showing one costs a speck a name. */
+export function labelWorthDrawing(
+  drawnRadiusPx: number | null,
+  minRadiusPx: number = LABEL_MIN_BODY_RADIUS_PX,
+): boolean {
+  return drawnRadiusPx === null || drawnRadiusPx >= minRadiusPx;
+}
+
+/**
+ * Where an inner moon's label goes when straight-down would land it on the
+ * parent's drawn ring annulus — Saturn's inner family lives entirely inside
+ * the rings, and a name printed across them is unreadable against the texture.
+ *
+ * The projected ring is treated as an ellipse about the parent: `minorDir` is
+ * the screen direction of the projected pole (the minor axis), `minorMajorRatio`
+ * its foreshortening (1 face-on, →0 edge-on), `outerRadiusPx` the outer edge
+ * along the major axis. The moon's position relative to the parent is measured
+ * in that frame; a moon outside the outer edge keeps its ordinary label and
+ * this returns false. Inside, the label slides RADIALLY OUTWARD (in the
+ * ellipse's own normalized sense, so the exit is the nearest one) to just past
+ * the outer edge — and never less than `minShiftPx`, the moon's own marker
+ * clearance, so a moon already near the edge still clears its own dot.
+ *
+ * An edge-on ring (ratio → 0) collapses the annulus to a line: the normalized
+ * radius of any off-plane moon explodes past the edge, and the ordinary label
+ * correctly survives. A moon at the parent's own centre has no direction to
+ * speak of and takes straight down.
+ *
+ * `out` receives the label-centre offset from the moon's anchor, in screen px.
+ */
+export function ringClearedLabelShiftPx(
+  relXPx: number,
+  relYPx: number,
+  outerRadiusPx: number,
+  minorMajorRatio: number,
+  minorDirXPx: number,
+  minorDirYPx: number,
+  minShiftPx: number,
+  out: { x: number; y: number },
+  padPx: number = LABEL_EDGE_PAD_PX,
+): boolean {
+  out.x = 0;
+  out.y = 0;
+  if (!(outerRadiusPx > 0) || !(minorMajorRatio > 0)) return false;
+  const mLen = Math.hypot(minorDirXPx, minorDirYPx);
+  // No usable minor direction = a face-on ring in disguise; treat axes as any
+  // orthogonal pair (the ellipse is a circle, the frame does not matter).
+  const mx = mLen > 1e-9 ? minorDirXPx / mLen : 0;
+  const my = mLen > 1e-9 ? minorDirYPx / mLen : 1;
+  // Major axis: the perpendicular.
+  const Mx = -my;
+  const My = mx;
+  const u = relXPx * Mx + relYPx * My;
+  const v = relXPx * mx + relYPx * my;
+  const vn = v / minorMajorRatio;
+  const rho = Math.hypot(u, vn);
+  if (rho >= outerRadiusPx) return false;
+  if (rho < 1e-6) {
+    // The parent's own pixel — no outward direction exists. Straight down,
+    // clear of the whole annulus.
+    out.y = Math.max(outerRadiusPx * minorMajorRatio + padPx, minShiftPx);
+    return true;
+  }
+  // The nearest boundary point lies along the same normalized ray; walk to it
+  // and add the pad, then enforce the marker's own clearance along the same
+  // direction.
+  const s = (outerRadiusPx + padPx) / rho;
+  const bx = (u * s) * Mx + (v * s) * mx;
+  const by = (u * s) * My + (v * s) * my;
+  let dx = bx - relXPx;
+  let dy = by - relYPx;
+  const len = Math.hypot(dx, dy);
+  if (len < minShiftPx && len > 1e-9) {
+    const grow = minShiftPx / len;
+    dx *= grow;
+    dy *= grow;
+  }
+  out.x = dx;
+  out.y = dy;
+  return true;
+}
+
 export class MapLabelPlacer {
   private readonly x: Float32Array;
   private readonly y: Float32Array;

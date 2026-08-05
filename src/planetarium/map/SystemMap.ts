@@ -187,8 +187,13 @@ import {
   type MapBodyKind,
 } from './mapBodies';
 import {
+  clampLabelCenterXPx,
+  labelMaxBoxTopPx,
+  labelWorthDrawing,
   mapLabelOffsetPx,
   MapLabelPlacer,
+  ringClearedLabelShiftPx,
+  LABEL_LINE_HEIGHT_PX,
   LABEL_NOMINAL_HALF_WIDTH_PX,
 } from './mapLabels';
 import { debugWarn } from '../../shared/debug';
@@ -556,6 +561,32 @@ export class SystemMap {
    *  it is revealed. Names do not change and the font does not either, so one
    *  read per label per session is the whole cost of the box test. */
   private labelHalfWidths = new Map<string, number>();
+  /** Where the bottom chrome begins, measured from the DOM (the scale row and
+   *  the world's bottom bar — whichever stands higher) rather than restated
+   *  from CSS numbers. Null when nothing measured. Re-read when the viewport
+   *  changes and on every open, because the bar's presence can change between
+   *  sessions without a resize. */
+  private labelChromeTopPx: number | null = null;
+  private labelChromeForW = 0;
+  private labelChromeForH = 0;
+  /** The one drawn ring annulus's screen-space ellipse this frame, for the
+   *  labels of the moons that live inside it. Refreshed in renderLabels;
+   *  inactive whenever no revealed system draws a ring. */
+  private labelRingCtx = {
+    parent: null as OrbitEntry | null,
+    centerXPx: 0,
+    centerYPx: 0,
+    outerPx: 0,
+    ratio: 1,
+    minorDirX: 0,
+    minorDirY: 1,
+  };
+  private labelRingShift = { x: 0, y: 0 };
+  /** The transform each label last drew at, so a settled chart writes no DOM.
+   *  Values persist through display: none on purpose — a label re-shown where
+   *  it already stands needs no write at all. */
+  private labelLastPlacedX = new Map<string, number>();
+  private labelLastPlacedY = new Map<string, number>();
 
   private open = false;
   /**
@@ -1068,6 +1099,10 @@ export class SystemMap {
     this.projectionRevision++;
     this.clockUtcMs = utcMs;
     this.ensureLabelContainer();
+    // Bottom-chrome remeasure: the bar the labels dodge can appear or leave
+    // between sessions (landed vs. flying) without any resize to say so.
+    this.labelChromeForW = 0;
+    this.labelChromeForH = 0;
     // The chart draws at the scale its own control claims, whatever displaced
     // the blend while it was shut — a corner chart always draws compressed, and
     // one that failed to hand the blend back would otherwise leave this open
@@ -4554,11 +4589,12 @@ export class SystemMap {
     if (!this.labelContainer) return;
     const w = this.renderer.domElement.clientWidth;
     const h = this.renderer.domElement.clientHeight;
+    this.refreshLabelRingCtx(w, h);
     // Priority order: the Sun first, then the planets inner→outer (catalog
     // order). A label too close to one already placed this frame yields, so the
     // Sun and the inner planets win over their crowded neighbours at true scale.
     this.labelPlacer.begin();
-    this.placeLabel(SUN_DATA.name, this.sun.position, w, h);
+    this.placeLabel(SUN_DATA.name, this.sun.position, w, h, this.sunRadiusPx, false);
     for (const entry of this.orbits) {
       // A name over the solar disc names nothing the viewer can see, and it
       // would win the de-overlap against the bodies that ARE visible there.
@@ -4566,19 +4602,66 @@ export class SystemMap {
         this.hideLabel(entry.planet.name);
         continue;
       }
-      this.placeLabel(entry.planet.name, entry.dot.position, w, h);
+      this.placeLabel(entry.planet.name, entry.dot.position, w, h, entry.drawnRadiusPx, false);
     }
     // Moons last: in a crowded system the planet's own name is the one that
     // must survive the de-overlap.
     for (const system of this.moonSystems) {
       if (!system.revealed) continue;
+      const inRing = this.labelRingCtx.parent === system.parent;
       for (const moon of system.moons) {
         if (!moon.visible || moon.occluded) {
           if (moon.label && moon.label.style.display !== 'none') moon.label.style.display = 'none';
           continue;
         }
-        this.placeLabel(moon.data.name, moon.pos, w, h);
+        this.placeLabel(moon.data.name, moon.pos, w, h, moon.drawnRadiusPx, inRing);
       }
+    }
+  }
+
+  /**
+   * The drawn ring annulus as a screen-space ellipse, once per frame — the
+   * frame the moon labels inside it are placed against. Saturn's inner family
+   * lives entirely inside the annulus, and a name printed across the ring
+   * texture is unreadable; each such label instead slides radially out past
+   * the drawn edge (`ringClearedLabelShiftPx`).
+   *
+   * Only a GLOBE paints an annulus, so a dot-mode ringed planet leaves the
+   * context inactive — as does an annulus smaller than a glyph, which nothing
+   * needs to dodge. The minor axis is the projected pole; its foreshortening
+   * ratio comes from the pole-view angle, which is the ellipse the tilted ring
+   * actually projects to. One system at most wears a ring per chart, so the
+   * first hit wins.
+   */
+  private refreshLabelRingCtx(w: number, h: number): void {
+    const ctx = this.labelRingCtx;
+    ctx.parent = null;
+    for (const system of this.moonSystems) {
+      if (!system.revealed) continue;
+      const parent = system.parent;
+      if (parent.ringOuterFactor <= 1 || !parent.globeDrawn) continue;
+      const outerPx = parent.drawnRadiusPx * parent.ringOuterFactor;
+      if (!(outerPx > LABEL_LINE_HEIGHT_PX)) continue;
+      // Pole in world space; its view-axis component is the ellipse ratio.
+      this.tmpVec3.set(0, 1, 0).applyQuaternion(parent.globe.quaternion);
+      this.tmpDelta.copy(parent.dot.position).sub(this.camera.position).normalize();
+      ctx.ratio = Math.abs(this.tmpVec3.dot(this.tmpDelta));
+      projectToScreen(parent.dot.position, this.camera, w, h, this.tmpProj);
+      ctx.centerXPx = this.tmpProj.x;
+      ctx.centerYPx = this.tmpProj.y;
+      // The pole's screen direction: project a pole-length step off the centre
+      // and take the delta. A face-on ring projects the step to nothing, which
+      // the shift math reads as the circle it is.
+      const stepAU = parent.drawnRadiusPx
+        * mapWorldPerPxAtUnitDepth(Math.max(h, 1), MAP_FOV_DEG)
+        * this.viewDepth(parent.dot.position);
+      this.tmpBodyPos.copy(parent.dot.position).addScaledVector(this.tmpVec3, stepAU);
+      projectToScreen(this.tmpBodyPos, this.camera, w, h, this.tmpProj2);
+      ctx.minorDirX = this.tmpProj2.x - ctx.centerXPx;
+      ctx.minorDirY = this.tmpProj2.y - ctx.centerYPx;
+      ctx.outerPx = outerPx;
+      ctx.parent = parent;
+      return;
     }
   }
 
@@ -4593,10 +4676,32 @@ export class SystemMap {
 
   /** Place one body's label, keyed by its catalog name — never by an index into
    *  a catalog, which is only ever right for as long as one catalog is the
-   *  whole of what the chart draws. A body with no label built is skipped. */
-  private placeLabel(name: string, worldPos: THREE.Vector3, w: number, h: number): void {
+   *  whole of what the chart draws. A body with no label built is skipped.
+   *
+   *  `drawnRadiusPx` is the radius the body's marker was sized from — the gate
+   *  for naming a body at all rides the same number the marker rides, so the
+   *  two can never disagree about whether there is anything to name. Null for
+   *  a body whose size the caller cannot resolve, which passes: hiding on
+   *  missing information would hide real names.
+   *
+   *  `inRingSystem` marks a moon of the system whose annulus is on the frame
+   *  (the ring context); its label dodges the drawn ring instead of taking the
+   *  straight-down offset. */
+  private placeLabel(
+    name: string,
+    worldPos: THREE.Vector3,
+    w: number,
+    h: number,
+    drawnRadiusPx: number | null,
+    inRingSystem: boolean,
+  ): void {
     const label = this.labels.get(name);
     if (!label) return;
+    // A marker smaller than the eye can find is not worth a full-size name.
+    if (!labelWorthDrawing(drawnRadiusPx)) {
+      if (label.style.display !== 'none') label.style.display = 'none';
+      return;
+    }
     projectToScreen(worldPos, this.camera, w, h, this.tmpProj);
     const onScreen =
       this.tmpProj.ndcZ < 1 &&
@@ -4608,19 +4713,70 @@ export class SystemMap {
       if (label.style.display !== 'none') label.style.display = 'none';
       return;
     }
+    const halfWidth = this.labelHalfWidthFor(name, label);
+    const offset = this.labelOffsetPxFor(name);
+    let x = this.tmpProj.x;
+    let boxTop = this.tmpProj.y + offset;
+    const ctx = this.labelRingCtx;
+    if (inRingSystem && ctx.parent !== null && ringClearedLabelShiftPx(
+      this.tmpProj.x - ctx.centerXPx,
+      this.tmpProj.y - ctx.centerYPx,
+      ctx.outerPx,
+      ctx.ratio,
+      ctx.minorDirX,
+      ctx.minorDirY,
+      offset,
+      this.labelRingShift,
+    )) {
+      x = this.tmpProj.x + this.labelRingShift.x;
+      boxTop = this.tmpProj.y + this.labelRingShift.y;
+      // An exit above the anchor places the box by its BOTTOM edge — the shift
+      // cleared a distance for the near edge of the text, not its far one.
+      if (this.labelRingShift.y < 0) boxTop -= LABEL_LINE_HEIGHT_PX;
+    }
+    // The box stays whole on the frame ("Titan" half off the right edge reads
+    // as a bug), and out of the bottom chrome band entirely.
+    x = clampLabelCenterXPx(x, halfWidth, w);
+    if (boxTop > this.labelMaxBoxTop(w, h)) {
+      if (label.style.display !== 'none') label.style.display = 'none';
+      return;
+    }
     // Proximity cull: hide if the label lands too close to an already-placed
     // (higher-priority) label this frame. Tested where the label is DRAWN, not
     // at the body's centre — once the offset varies by body, the two are
     // different points and culling against the centre would judge one label by
     // another label's position.
-    const x = this.tmpProj.x;
-    const y = this.tmpProj.y + this.labelOffsetPxFor(name);
-    if (!this.labelPlacer.place(x, this.tmpProj.y, y, this.labelHalfWidthFor(name, label))) {
+    if (!this.labelPlacer.place(x, this.tmpProj.y, boxTop, halfWidth)) {
       if (label.style.display !== 'none') label.style.display = 'none';
       return;
     }
     if (label.style.display === 'none') label.style.display = '';
-    label.style.transform = `translate(-50%, 0) translate(${x}px, ${y}px)`;
+    // A settled chart re-derives the same position every frame; only a CHANGED
+    // one is worth a style write. The cache survives display flips — a label
+    // re-shown where it already stands keeps its old transform.
+    if (this.labelLastPlacedX.get(name) !== x || this.labelLastPlacedY.get(name) !== boxTop) {
+      this.labelLastPlacedX.set(name, x);
+      this.labelLastPlacedY.set(name, boxTop);
+      label.style.transform = `translate(-50%, 0) translate(${x}px, ${boxTop}px)`;
+    }
+  }
+
+  /** The lowest box-top a label may draw at, from the measured chrome. The
+   *  measure is cached against the viewport it was taken at; openMap drops the
+   *  cache so a bar that came or went between sessions is seen. */
+  private labelMaxBoxTop(w: number, h: number): number {
+    if (this.labelChromeForW !== w || this.labelChromeForH !== h) {
+      this.labelChromeForW = w;
+      this.labelChromeForH = h;
+      let top: number | null = null;
+      for (const id of ['map-scale', 'planetarium-bottom-bar']) {
+        const rect = document.getElementById(id)?.getBoundingClientRect();
+        if (!rect || !(rect.height > 0) || !(rect.top > 0)) continue;
+        top = top === null ? rect.top : Math.min(top, rect.top);
+      }
+      this.labelChromeTopPx = top;
+    }
+    return labelMaxBoxTopPx(this.labelChromeTopPx, h);
   }
 
   /**

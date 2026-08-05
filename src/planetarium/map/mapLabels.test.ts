@@ -8,6 +8,12 @@ import {
   LABEL_BOX_PAD_PX,
   LABEL_LINE_HEIGHT_PX,
   LABEL_NOMINAL_HALF_WIDTH_PX,
+  LABEL_EDGE_PAD_PX,
+  LABEL_MIN_BODY_RADIUS_PX,
+  clampLabelCenterXPx,
+  labelMaxBoxTopPx,
+  labelWorthDrawing,
+  ringClearedLabelShiftPx,
 } from './mapLabels';
 import { MAP_LABEL_CAPACITY } from './mapBodies';
 import { mapMarkerRadiusPx, MAP_BODY_SIZE_DEFAULTS } from './mapBodySize';
@@ -259,5 +265,104 @@ describe('the label box test', () => {
     // 60 px to the side clears the anchor floor but not two 40 px half-widths.
     expect(put(p, 100, 9, 40, 260)).toBe(false);
     expect(put(p, 100, 9, 40, 200 + 80 + LABEL_BOX_PAD_PX + 2)).toBe(true);
+  });
+});
+
+describe('clampLabelCenterXPx', () => {
+  it('leaves a label alone in the middle of the frame', () => {
+    expect(clampLabelCenterXPx(200, 30, 390)).toBe(200);
+  });
+
+  it('pins the box whole at either edge — clipped names read as bugs', () => {
+    // "Titan" half off the 390 px edge: centre must retreat to halfWidth + pad.
+    expect(clampLabelCenterXPx(388, 22, 390)).toBe(390 - 22 - LABEL_EDGE_PAD_PX);
+    expect(clampLabelCenterXPx(1, 22, 390)).toBe(22 + LABEL_EDGE_PAD_PX);
+  });
+
+  it('parks a label centred when the viewport cannot hold it at all', () => {
+    expect(clampLabelCenterXPx(10, 300, 100)).toBe(50);
+  });
+});
+
+describe('labelMaxBoxTopPx', () => {
+  it('measures the band from the chrome actually on screen', () => {
+    // Chrome top at 700: the box (14 px line) plus the pad must fit above it.
+    expect(labelMaxBoxTopPx(700, 800)).toBe(700 - LABEL_EDGE_PAD_PX - LABEL_LINE_HEIGHT_PX);
+  });
+
+  it('falls back to the viewport bottom when nothing was measured', () => {
+    expect(labelMaxBoxTopPx(null, 800)).toBe(800 - LABEL_EDGE_PAD_PX - LABEL_LINE_HEIGHT_PX);
+  });
+});
+
+describe('labelWorthDrawing', () => {
+  it('gates a speck and keeps a marker', () => {
+    expect(labelWorthDrawing(0.4)).toBe(false);
+    expect(labelWorthDrawing(LABEL_MIN_BODY_RADIUS_PX)).toBe(true);
+    expect(labelWorthDrawing(6)).toBe(true);
+  });
+
+  it('shows a label the caller could not size — missing information hides nothing', () => {
+    expect(labelWorthDrawing(null)).toBe(true);
+  });
+
+  it('never trips on a planet marker at the size policy floor', () => {
+    const floor = mapMarkerRadiusPx(
+      PLANETARIUM_BODIES.find((b) => b.name === 'Mercury')!.radiusAU,
+      MAP_BODY_SIZE_DEFAULTS,
+    );
+    expect(labelWorthDrawing(floor)).toBe(true);
+  });
+});
+
+describe('ringClearedLabelShiftPx', () => {
+  const out = { x: 0, y: 0 };
+
+  it('leaves a moon outside the annulus alone', () => {
+    // Face-on ring (ratio 1), outer edge 100 px; moon at 120 px.
+    expect(ringClearedLabelShiftPx(120, 0, 100, 1, 0, 1, 11, out)).toBe(false);
+    expect(out).toEqual({ x: 0, y: 0 });
+  });
+
+  it('slides an inner moon radially outward past the outer edge, face on', () => {
+    // Moon 40 px right of the parent, ring out to 100: the label lands past
+    // 100 + pad along +x, so the shift is (100 + pad − 40, 0).
+    expect(ringClearedLabelShiftPx(40, 0, 100, 1, 0, 1, 11, out)).toBe(true);
+    expect(out.x).toBeCloseTo(100 + LABEL_EDGE_PAD_PX - 40, 6);
+    expect(out.y).toBeCloseTo(0, 6);
+  });
+
+  it('points the shift away from the parent, whatever the quadrant', () => {
+    expect(ringClearedLabelShiftPx(-30, -30, 100, 1, 0, 1, 11, out)).toBe(true);
+    expect(out.x).toBeLessThan(0);
+    expect(out.y).toBeLessThan(0);
+  });
+
+  it('works the ellipse frame, not the circle: a moon on the minor axis exits along it', () => {
+    // Ratio 0.5, minor axis along +y: a moon 30 px up is 60 normalized —
+    // still inside 100 — and its nearest exit is along +y at (100+pad)·0.5.
+    expect(ringClearedLabelShiftPx(0, 30, 100, 0.5, 0, 1, 11, out)).toBe(true);
+    expect(out.x).toBeCloseTo(0, 6);
+    expect(out.y).toBeCloseTo((100 + LABEL_EDGE_PAD_PX) * 0.5 - 30, 6);
+  });
+
+  it('reads an edge-on ring as no annulus at all', () => {
+    // Ratio ~0: any off-plane moon is normalized far outside the edge.
+    expect(ringClearedLabelShiftPx(0, 5, 100, 1e-9, 0, 1, 11, out)).toBe(false);
+  });
+
+  it('enforces the marker clearance when the moon already sits near the edge', () => {
+    // 2 px inside the edge: the raw exit is ~6 px, under the 11 px marker
+    // clearance, so the shift grows to 11 along the same ray.
+    expect(ringClearedLabelShiftPx(98, 0, 100, 1, 0, 1, 11, out)).toBe(true);
+    expect(Math.hypot(out.x, out.y)).toBeCloseTo(11, 6);
+    expect(out.y).toBeCloseTo(0, 6);
+    expect(out.x).toBeGreaterThan(0);
+  });
+
+  it('takes straight down from the parent centre, clear of the whole annulus', () => {
+    expect(ringClearedLabelShiftPx(0, 0, 100, 0.5, 0, 1, 11, out)).toBe(true);
+    expect(out.x).toBe(0);
+    expect(out.y).toBeCloseTo(100 * 0.5 + LABEL_EDGE_PAD_PX, 6);
   });
 });

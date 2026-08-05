@@ -519,3 +519,48 @@ describe('orbit-line body fraction', () => {
     );
   });
 });
+
+describe('the zero-allocation out params', () => {
+  // The out-variant exists for the chart's per-frame passes; these pins are
+  // what "nothing about the math changes with it" rests on. Exact equality,
+  // not closeTo: the two paths must run the same arithmetic, not agree.
+  const dates = [Date.UTC(2026, 7, 5), Date.UTC(1988, 2, 20), Date.UTC(2044, 10, 1)];
+
+  it('writes computeBodyPositionAU into `out` bit-for-bit, Standish and Meeus branches alike', () => {
+    for (const name of ['Mars', 'Earth', 'Pluto']) {
+      const planet = PLANETARIUM_BODIES.find((p) => p.name === name)!;
+      for (const utcMs of dates) {
+        const fresh = computeBodyPositionAU(planet, utcMs);
+        const out = new THREE.Vector3(999, 999, 999);
+        const returned = computeBodyPositionAU(planet, utcMs, out);
+        expect(returned).toBe(out);
+        expect(out.x).toBe(fresh.x);
+        expect(out.y).toBe(fresh.y);
+        expect(out.z).toBe(fresh.z);
+      }
+    }
+  });
+
+  it('fills a handed-over sample buffer with exactly the allocating result', () => {
+    const planet = PLANETARIUM_BODIES.find((p) => p.name === 'Jupiter')!;
+    const fresh = sampleTrajectoryLinePoints(planet, dates[0], 16);
+    const buffer = Array.from({ length: 17 }, () => new THREE.Vector3(7, 7, 7));
+    const held = buffer.slice();
+    const reused = sampleTrajectoryLinePoints(planet, dates[0], 16, buffer);
+    expect(reused).toBe(buffer);
+    for (let i = 0; i <= 16; i++) {
+      expect(reused[i]).toBe(held[i]); // the vectors themselves are reused
+      expect(reused[i].x).toBe(fresh[i].x);
+      expect(reused[i].y).toBe(fresh[i].y);
+      expect(reused[i].z).toBe(fresh[i].z);
+    }
+  });
+
+  it('extends a short buffer and truncates a long one to exactly the loop', () => {
+    const planet = PLANETARIUM_BODIES.find((p) => p.name === 'Venus')!;
+    const short: THREE.Vector3[] = [new THREE.Vector3()];
+    expect(sampleTrajectoryLinePoints(planet, dates[1], 8, short)).toHaveLength(9);
+    const long = Array.from({ length: 30 }, () => new THREE.Vector3());
+    expect(sampleTrajectoryLinePoints(planet, dates[1], 8, long)).toHaveLength(9);
+  });
+});

@@ -64,6 +64,11 @@ import {
 import { tidalLockQuaternion, tidalRollNorth } from '../world/tidalLock';
 import { bodyDisplayName } from '../surfaceView';
 import { ORBIT_LINE_RESAMPLE_MAX_AGE_MS } from '../SolarSystem';
+import {
+  advanceOrbitCursor,
+  needsColdSeed,
+  nextStaleOrbit,
+} from './mapResample';
 import { applyTextureDefaults } from '../world/texturePolicy';
 import { projectToScreen, type ScreenProjection } from '../../shared/three/projectToScreen';
 import {
@@ -247,6 +252,18 @@ const MOON_RING_DRIFT_LIMIT_DEG = 1;
 // Where a moon's elements carry no secular rates at all, a generous sim-time
 // bound stands in, so a ring still refreshes eventually.
 const MOON_RING_MAX_AGE_DAYS = 3650;
+// Floor on the WALL time between refills of one ring. The drift limit above is
+// a sim-time budget, and a warped clock spends it faster than a frame lasts:
+// past about a day of sim time per frame every revealed ring is permanently
+// overdue, the staleness saturates, and one ring's worth of ephemeris plus a
+// buffer upload becomes a fixed per-frame cost that never ends — which is the
+// stutter the whole one-ring-per-frame budget exists to avoid, arriving by the
+// back door. A refill is amortization, not truth: the moons themselves are
+// placed exactly every frame either way, and only the drawn SHAPE of an orbit
+// waits. So a filled ring redraws at most once a second and wears whatever
+// drift accrues in between. First fills are exempt — an unfilled ring is a
+// missing orbit, not a stale one, and those still go one per frame.
+const MOON_RING_MIN_REFILL_MS = 1000;
 // A system's moons appear inside this multiple of the distance a focus on the
 // parent lands at — derived from the same clamped landing the flight itself
 // uses, so focusing a planet always reveals its moons.
@@ -304,6 +321,9 @@ interface MoonEntry {
   ringX: Float32Array;
   ringFilled: boolean;
   ringSampledUtcMs: number;
+  /** Wall clock (ms) of the last fill — what the refill cadence is measured
+   *  against. −Infinity until the first, so nothing gates a first fill. */
+  ringFilledAtMs: number;
   /** Blend the ring's vertices were written at; a moved blend rewrites them. */
   ringBlend: number;
   /** How fast this orbit's shape turns (node + apsides), deg/day. */
@@ -375,6 +395,13 @@ interface OrbitEntry {
   dot: THREE.Sprite;
   /** Vertex index the body last sat at — colors rebuild only on a crossing. */
   lastVertex: number;
+  /** Clock instant THIS orbit's samples were taken at. Per entry, because the
+   *  drift refresh rebuilds one line per frame: a chart-wide epoch would be
+   *  eight lines' worth of lie the moment the first one was refreshed. The
+   *  direction fade is the consumer that shows it — a body's place along its
+   *  own loop measured against another line's epoch wears a visibly wrong
+   *  brightness phase. NaN until the first sampling pass. */
+  epochUtcMs: number;
   /** Largest projected |r| over the samples at the live blend — the
    *  eccentricity-correct extent this orbit contributes (aphelion, not the
    *  semi-major axis, sets the drawn reach). Refreshed with recompressOrbits. */
@@ -512,6 +539,9 @@ export class SystemMap {
   private moonKeyCam = new THREE.Vector3(Number.NaN, Number.NaN, Number.NaN);
   private tmpMoonNormal = new THREE.Vector3();
   private tmpMoonQuat = new THREE.Quaternion();
+  /** Where the ephemeris seam writes a body's heliocentric AU, once per body
+   *  per pass — read out into the entry's own numbers and never held. */
+  private tmpHelio = new THREE.Vector3();
 
   private labelContainer: HTMLElement | null = null;
   /** Labels keyed by catalog name, never by catalog index: the chart's body set
@@ -560,7 +590,22 @@ export class SystemMap {
   private curve: MapCurve = defaultMapCurve();
   private blendState = makeMapBlendState();
   private bodySizeParams: MapBodySizeParams = { ...MAP_BODY_SIZE_DEFAULTS };
-  private epochUtcMs = 0;
+  /** The clock the last refresh decision was taken against — the frame before
+   *  this one, whichever pass drew it. What separates a running clock from a
+   *  jump (see mapResample). NaN before the first decision. */
+  private resampleClockUtcMs = Number.NaN;
+  /** Where the drift sweep has got to. Shared by both passes and deliberately
+   *  NOT reset by close(): a full chart closing to the corner chart hands the
+   *  lap over rather than restarting it. */
+  private orbitCursor = 0;
+  /** One reusable point buffer for the orbit sampler. The samples are copied
+   *  straight into the entry's own Float32Array and nothing here outlives the
+   *  call, so all nine orbits share it — 181 fresh vectors per line is what put
+   *  this pass on the collector's account. */
+  private orbitSampleScratch: THREE.Vector3[] = Array.from(
+    { length: ORBIT_SEGMENTS + 1 },
+    () => new THREE.Vector3(),
+  );
   /** The clock the current frame is drawn at. A planet's position comes from
    *  its dot, which the position pass has already placed; a moon's has to be
    *  computed from its parent, and this is the instant it is computed for. */
@@ -1267,9 +1312,7 @@ export class SystemMap {
     // (a moon, from its parent) is computed on demand, and this is the clock it
     // is computed at.
     this.clockUtcMs = utcMs;
-    if (!this.sampled || Math.abs(utcMs - this.epochUtcMs) > ORBIT_LINE_RESAMPLE_MAX_AGE_MS) {
-      this.resample(utcMs);
-    }
+    this.stepResample(utcMs);
 
     // Advance the scale animation; a live blend re-projects the cached samples.
     // The camera branch below keys off whether the blend moved THIS frame, not
@@ -1461,16 +1504,15 @@ export class SystemMap {
     const t0 = import.meta.env.DEV ? performance.now() : 0;
 
     this.clockUtcMs = utcMs;
-    // The orbit lines are the chart. A map never opened has none, and the
-    // fade along each line reads time against the epoch its samples were taken
-    // at, so a stale epoch mis-fades even when the shapes still hold.
-    if (!this.sampled || Math.abs(utcMs - this.epochUtcMs) > ORBIT_LINE_RESAMPLE_MAX_AGE_MS) {
-      this.resample(utcMs);
-    }
-    // The planet pass is the chart's only expensive step and its only
-    // allocating one (the ephemeris seam hands back a fresh vector per body),
-    // and nothing in it moves unless the clock, the blend or the projection
-    // does. The ship is not part of that: it flies under a paused clock, so its
+    // The orbit lines are the chart. A map never opened has none, and the fade
+    // along each line reads time against the epoch its own samples were taken
+    // at, so a stale epoch mis-fades even when the shapes still hold. The step
+    // is the same one the full chart takes, against the same cursor: whichever
+    // pass is drawing carries the sweep on from where the other left it.
+    this.stepResample(utcMs);
+    // The planet pass is the chart's only expensive step, and nothing in it
+    // moves unless the clock, the blend or the projection does. The ship is
+    // not part of that: it flies under a paused clock, so its
     // placement, its heading and every drawn size run every frame regardless.
     if (miniBodiesStale(this.miniBodyKey, utcMs, this.blend, this.projectionRevision)) {
       stampMiniBodyKey(this.miniBodyKey, utcMs, this.blend, this.projectionRevision);
@@ -2548,33 +2590,54 @@ export class SystemMap {
    * This runs every frame, not only on the frames the position pass does: an
    * unfilled ring is work outstanding whatever the camera and the clock are
    * doing, and the settled chart is exactly where a missing orbit would sit
-   * unfinished forever. Overdue by the widest margin goes first.
+   * unfinished forever. Overdue by the widest margin goes first, among the
+   * rings the refill cadence lets through (MOON_RING_MIN_REFILL_MS).
+   *
+   * Two locals rather than a candidate object: this is a per-frame path, and
+   * the object it used to build was one allocation a frame forever.
    */
   private fillOneMoonRing(utcMs: number): void {
-    let candidate: { system: MoonSystem; moon: MoonEntry } | null = null;
+    const nowMs = performance.now();
+    let system: MoonSystem | null = null;
+    let moon: MoonEntry | null = null;
+    let candidateFilled = false;
     let worst = 1;
-    for (const system of this.moonSystems) {
-      if (!system.revealed) continue;
-      for (const moon of system.moons) {
-        if (!moon.ringFilled) {
-          if (!candidate) candidate = { system, moon };
+    for (const sys of this.moonSystems) {
+      if (!sys.revealed) continue;
+      for (const entry of sys.moons) {
+        if (!entry.ringFilled) {
+          if (!system) {
+            system = sys;
+            moon = entry;
+            candidateFilled = false;
+          }
           continue;
         }
-        const ageDays = Math.abs(utcMs - moon.ringSampledUtcMs) / 86_400_000;
-        const urgency = (ageDays * moon.ringDriftDegPerDay) / MOON_RING_DRIFT_LIMIT_DEG;
+        if (nowMs - entry.ringFilledAtMs < MOON_RING_MIN_REFILL_MS) continue;
+        const ageDays = Math.abs(utcMs - entry.ringSampledUtcMs) / 86_400_000;
+        const urgency = (ageDays * entry.ringDriftDegPerDay) / MOON_RING_DRIFT_LIMIT_DEG;
         if (urgency > worst) {
           worst = urgency;
-          if (!candidate || candidate.moon.ringFilled) candidate = { system, moon };
+          if (!system || candidateFilled) {
+            system = sys;
+            moon = entry;
+            candidateFilled = true;
+          }
         }
       }
     }
-    if (candidate) this.fillMoonRing(candidate.system, candidate.moon, utcMs);
+    if (system && moon) this.fillMoonRing(system, moon, utcMs, nowMs);
   }
 
   /** Sample one moon's orbit through the shared ephemeris seam and hand the
    *  samples to the ring. Kept as unit directions plus true x, so every later
    *  reprojection — a scale blend, a retuned policy — is arithmetic. */
-  private fillMoonRing(system: MoonSystem, moon: MoonEntry, utcMs: number): void {
+  private fillMoonRing(
+    system: MoonSystem,
+    moon: MoonEntry,
+    utcMs: number,
+    nowMs: number,
+  ): void {
     const parentName = system.parent.planet.name;
     const trueR = system.parent.planet.radiusAU;
     for (let i = 0; i <= MOON_RING_SEGMENTS; i++) {
@@ -2587,6 +2650,7 @@ export class SystemMap {
       moon.ringX[i] = d / trueR;
     }
     moon.ringSampledUtcMs = utcMs;
+    moon.ringFilledAtMs = nowMs;
     moon.ringFilled = true;
     this.writeMoonRing(system, moon);
   }
@@ -2711,6 +2775,7 @@ export class SystemMap {
         ringX: new Float32Array(MOON_RING_SEGMENTS + 1),
         ringFilled: false,
         ringSampledUtcMs: 0,
+        ringFilledAtMs: Number.NEGATIVE_INFINITY,
         ringBlend: Number.NaN,
         // Node plus apsides: how fast the drawn shape itself turns. A moon whose
         // fit carries no secular rates falls back to a sim-time bound.
@@ -3697,46 +3762,95 @@ export class SystemMap {
 
   // ---- internals -------------------------------------------------------
 
-  private resample(utcMs: number): void {
-    this.epochUtcMs = utcMs;
-    this.sampled = true;
-    for (const entry of this.orbits) {
-      const pts = sampleTrajectoryLinePoints(entry.planet, utcMs, ORBIT_SEGMENTS);
-      for (let i = 0; i <= ORBIT_SEGMENTS; i++) {
-        const p = pts[i];
-        entry.raw[i * 3] = p.x;
-        entry.raw[i * 3 + 1] = p.y;
-        entry.raw[i * 3 + 2] = p.z;
-      }
-      entry.lastVertex = -1;
+  /**
+   * The frame's orbit-line refresh, and the whole of the chart's cost policy
+   * for it (the decisions themselves are mapResample). Either every line is
+   * seeded at this instant, or at most ONE is rebuilt and the sweep moves on.
+   * Called from both passes, against one cursor and one previous-clock reading:
+   * a full chart closing to the corner chart hands the lap over rather than
+   * starting a fresh one.
+   */
+  private stepResample(utcMs: number): void {
+    const prevClockUtcMs = this.resampleClockUtcMs;
+    this.resampleClockUtcMs = utcMs;
+    if (needsColdSeed(this.sampled, prevClockUtcMs, utcMs, ORBIT_LINE_RESAMPLE_MAX_AGE_MS)) {
+      this.resample(utcMs);
+      return;
     }
-    this.recompressOrbits();
+    // One step a frame, whatever it finds — the sweep is what keeps the nine
+    // lines taking turns instead of one of them holding the budget.
+    this.orbitCursor = advanceOrbitCursor(this.orbitCursor, this.orbits.length);
+    const due = nextStaleOrbit(
+      this.orbits, this.orbitCursor, utcMs, ORBIT_LINE_RESAMPLE_MAX_AGE_MS,
+    );
+    if (due < 0) return;
+    this.orbitCursor = due;
+    this.refreshOrbit(this.orbits[due], utcMs);
   }
 
-  private recompressOrbits(): void {
-    for (const entry of this.orbits) {
-      let maxR = 0;
-      for (let i = 0; i <= ORBIT_SEGMENTS; i++) {
-        projectMapPoint(
-          entry.raw[i * 3],
-          entry.raw[i * 3 + 1],
-          entry.raw[i * 3 + 2],
-          this.blend,
-          this.curve,
-          this.tmpMap,
-        );
-        entry.map[i * 3] = this.tmpMap.x;
-        entry.map[i * 3 + 1] = this.tmpMap.y;
-        entry.map[i * 3 + 2] = this.tmpMap.z;
-        // Projected radius = |compressed point|; the aphelion sample
-        // sets this orbit's reach, so an eccentric orbit (Pluto) isn't clipped
-        // by a semi-major-axis extent.
-        const r = Math.hypot(this.tmpMap.x, this.tmpMap.y, this.tmpMap.z);
-        if (r > maxR) maxR = r;
-      }
-      entry.maxMapRadius = maxR;
-      this.writePositions(entry);
+  /** Seed every line at one instant: the cold path, and the only one allowed
+   *  to leave the chart part-refreshed for no frames at all. */
+  private resample(utcMs: number): void {
+    this.sampled = true;
+    this.resampleClockUtcMs = utcMs;
+    for (const entry of this.orbits) this.refreshOrbit(entry, utcMs);
+  }
+
+  /** Rebuild one line end to end: fresh samples at `utcMs`, compressed into
+   *  its buffer, and the direction fade re-anchored on the epoch that just
+   *  moved under the body. */
+  private refreshOrbit(entry: OrbitEntry, utcMs: number): void {
+    this.sampleOrbit(entry, utcMs);
+    this.recompressOrbit(entry);
+    this.refreshOrbitFade(entry, utcMs, true);
+  }
+
+  /** Sample one body's trajectory into its raw buffer. The sampler writes
+   *  through the shared scratch, so the ephemeris chain allocates nothing. */
+  private sampleOrbit(entry: OrbitEntry, utcMs: number): void {
+    entry.epochUtcMs = utcMs;
+    const pts = sampleTrajectoryLinePoints(
+      entry.planet, utcMs, ORBIT_SEGMENTS, this.orbitSampleScratch,
+    );
+    for (let i = 0; i <= ORBIT_SEGMENTS; i++) {
+      const p = pts[i];
+      entry.raw[i * 3] = p.x;
+      entry.raw[i * 3 + 1] = p.y;
+      entry.raw[i * 3 + 2] = p.z;
     }
+  }
+
+  /** Every cached line back through the live blend — what a scale animation
+   *  and a curve swap need, since both move all nine at once. */
+  private recompressOrbits(): void {
+    for (const entry of this.orbits) this.recompressOrbit(entry);
+  }
+
+  /** One line through the live blend, and the reach it contributes. The extent
+   *  stays honest without a second pass: recomputeExtent takes the max over
+   *  every entry's maxMapRadius, and it runs after this on the same frame. */
+  private recompressOrbit(entry: OrbitEntry): void {
+    let maxR = 0;
+    for (let i = 0; i <= ORBIT_SEGMENTS; i++) {
+      projectMapPoint(
+        entry.raw[i * 3],
+        entry.raw[i * 3 + 1],
+        entry.raw[i * 3 + 2],
+        this.blend,
+        this.curve,
+        this.tmpMap,
+      );
+      entry.map[i * 3] = this.tmpMap.x;
+      entry.map[i * 3 + 1] = this.tmpMap.y;
+      entry.map[i * 3 + 2] = this.tmpMap.z;
+      // Projected radius = |compressed point|; the aphelion sample
+      // sets this orbit's reach, so an eccentric orbit (Pluto) isn't clipped
+      // by a semi-major-axis extent.
+      const r = Math.hypot(this.tmpMap.x, this.tmpMap.y, this.tmpMap.z);
+      if (r > maxR) maxR = r;
+    }
+    entry.maxMapRadius = maxR;
+    this.writePositions(entry);
   }
 
   // Line2 layout: LineGeometry packs the (N+1)-point polyline into an
@@ -3820,11 +3934,10 @@ export class SystemMap {
     const jd = reorient ? ttJDFromUtcMs(utcMs) : 0;
     for (const entry of this.orbits) {
       // The truth seam: the same heliocentric AU the world draws, projected
-      // through the map compression. computeBodyPositionAU returns a fresh
-      // vector (the astronomy layer's own allocation, as the world uses it);
-      // its components are copied straight into the map scratch, so the map
-      // adds no per-frame allocation of its own.
-      const helio = computeBodyPositionAU(entry.planet, utcMs);
+      // through the map compression. The position lands in the map's own
+      // scratch through the seam's out parameter, so a pass that runs every
+      // frame for every body allocates nothing.
+      const helio = computeBodyPositionAU(entry.planet, utcMs, this.tmpHelio);
       entry.helioX = helio.x;
       entry.helioY = helio.y;
       entry.helioZ = helio.z;
@@ -3834,21 +3947,29 @@ export class SystemMap {
       if (reorient) {
         entry.globe.quaternion.copy(computeBodyOrientationQuaternion(entry.planet, jd));
       }
-      // The fade still keys off the sampled loop — cheap and only rebuilt on a
-      // vertex crossing.
-      const frac = this.bodyFraction(entry, utcMs);
-      const i0 = Math.floor(frac * ORBIT_SEGMENTS);
-      if (i0 !== entry.lastVertex) {
-        entry.lastVertex = i0;
-        this.rebuildOrbitColors(entry, frac);
-      }
+      this.refreshOrbitFade(entry, utcMs, false);
     }
     if (reorient) this.orientedUtcMs = utcMs;
   }
 
-  /** Fractional position [0,1) of the body along its sampled loop at `utcMs`. */
-  private bodyFraction(entry: OrbitEntry, utcMs: number): number {
-    return trajectoryLineBodyFraction(entry.planet, this.epochUtcMs, utcMs);
+  /**
+   * Re-anchor one line's direction fade: where the body sits along ITS OWN
+   * sampled loop, measured against the epoch THAT line was sampled at. Reading
+   * a chart-wide epoch here is the visible failure of a staggered refresh —
+   * eight lines wearing a brightness phase belonging to the one that was
+   * rebuilt last.
+   *
+   * The colours are rebuilt only when they would change: on a vertex crossing,
+   * or when `forced` says the loop itself has just moved under the body, which
+   * no crossing test can see (and which the corner chart, whose body pass is
+   * skipped on a settled frame, would otherwise never notice at all).
+   */
+  private refreshOrbitFade(entry: OrbitEntry, utcMs: number, forced: boolean): void {
+    const frac = trajectoryLineBodyFraction(entry.planet, entry.epochUtcMs, utcMs);
+    const i0 = Math.floor(frac * ORBIT_SEGMENTS);
+    if (!forced && i0 === entry.lastVertex) return;
+    entry.lastVertex = i0;
+    this.rebuildOrbitColors(entry, frac);
   }
 
   private rebuildOrbitColors(entry: OrbitEntry, bodyFrac: number): void {
@@ -4496,6 +4617,7 @@ export class SystemMap {
       line,
       dot,
       lastVertex: -1,
+      epochUtcMs: Number.NaN,
       maxMapRadius: 0,
       colorR: tint.r,
       colorG: tint.g,

@@ -19,6 +19,10 @@ import {
 import { DEG, J2000, KM_PER_AU, OBLIQUITY_DEG } from './constants';
 
 const REFERENCE_NORTH = new THREE.Vector3(0, 1, 0);
+// The node line an inclination turns about: +X of the intermediate ecliptic
+// frame. A constant rather than a vector built per call — an orbit line is
+// hundreds of samples and every one of them turns about this same axis.
+const NODE_LINE_AXIS = new THREE.Vector3(1, 0, 0);
 
 // RotX(+ε): carries the ecliptic pole (0,1,0) to (0, cos ε, sin ε) =
 // raDecToVector(270°, 90°−ε), the J2000 equatorial position of the north
@@ -53,7 +57,11 @@ function getDaysSinceJ2000(jd: number): number {
   return jd - J2000;
 }
 
-function computeOrbitalPlanePosition(el: KeplerElements, eccentricAnomalyRad: number): THREE.Vector3 {
+function computeOrbitalPlanePosition(
+  el: KeplerElements,
+  eccentricAnomalyRad: number,
+  out: THREE.Vector3 = new THREE.Vector3(),
+): THREE.Vector3 {
   const x = el.semiMajorAxisAU * (Math.cos(eccentricAnomalyRad) - el.eccentricity);
   const yInPlane =
     el.semiMajorAxisAU *
@@ -61,9 +69,11 @@ function computeOrbitalPlanePosition(el: KeplerElements, eccentricAnomalyRad: nu
     Math.sin(eccentricAnomalyRad);
   // Scene ecliptic frame: longitude increases toward −Z, so the textbook
   // in-plane (x, y) lands at (x, 0, −y).
-  return new THREE.Vector3(x, 0, -yInPlane);
+  return out.set(x, 0, -yInPlane);
 }
 
+/** Turn an in-plane position into the ecliptic frame, IN PLACE and returned:
+ *  both callers hand over a vector built for exactly this. */
 function applyOrbitalOrientation(position: THREE.Vector3, el: KeplerElements): THREE.Vector3 {
   // ω = ϖ − Ω: the tables give the longitude of perihelion, not the argument.
   const argPerihelionRad = (el.lonPerihelionDeg - el.ascendingNodeDeg) * DEG;
@@ -76,9 +86,8 @@ function applyOrbitalOrientation(position: THREE.Vector3, el: KeplerElements): T
   // (+X), +Ω about the pole. planetary.test.ts pins this against the textbook
   // element formula and the Meeus Sun.
   return position
-    .clone()
     .applyAxisAngle(REFERENCE_NORTH, argPerihelionRad)
-    .applyAxisAngle(new THREE.Vector3(1, 0, 0), inclinationRad)
+    .applyAxisAngle(NODE_LINE_AXIS, inclinationRad)
     .applyAxisAngle(REFERENCE_NORTH, ascendingNodeRad);
 }
 
@@ -132,13 +141,27 @@ export function raDecToVector(raDeg: number, decDeg: number, radius = 1): THREE.
  * propagated inside the KeplerElements — see getStandishElements), in the
  * scene's intermediate ecliptic frame.
  */
-export function computeKeplerPositionEcliptic(el: KeplerElements): THREE.Vector3 {
+export function computeKeplerPositionEcliptic(
+  el: KeplerElements,
+  out?: THREE.Vector3,
+): THREE.Vector3 {
   const eccentricAnomalyRad = solveKepler(el.meanAnomalyDeg * DEG, el.eccentricity);
-  return applyOrbitalOrientation(computeOrbitalPlanePosition(el, eccentricAnomalyRad), el);
+  return applyOrbitalOrientation(computeOrbitalPlanePosition(el, eccentricAnomalyRad, out), el);
 }
 
-export function computeKeplerPositionEquatorial(el: KeplerElements): THREE.Vector3 {
-  return eclipticToEquatorial(computeKeplerPositionEcliptic(el));
+/**
+ * `out` is the caller's own vector, written and returned instead of a fresh
+ * one — the zero-allocation seam a sampler that runs this hundreds of times a
+ * frame needs (the same optional-`out` idiom as projectToScreen). The
+ * arithmetic is identical either way: the frame transform is applied in place
+ * to a vector this call has just built, which is what the allocating path did
+ * to its clone.
+ */
+export function computeKeplerPositionEquatorial(
+  el: KeplerElements,
+  out?: THREE.Vector3,
+): THREE.Vector3 {
+  return computeKeplerPositionEcliptic(el, out).applyMatrix4(ECLIPTIC_TO_EQUATORIAL);
 }
 
 /**
@@ -175,11 +198,14 @@ export function computeMoonGeocentricEquatorialAU(jdTT: number, out: THREE.Vecto
  * Earth rides the element tables or their epoch window; the Standish EMB row
  * survives as the independent cross-check in planetary.test.ts.
  */
-export function computeEarthPositionEquatorial(jdTT: number): THREE.Vector3 {
+export function computeEarthPositionEquatorial(
+  jdTT: number,
+  out?: THREE.Vector3,
+): THREE.Vector3 {
   const sun = sunPosition(jdTT);
   const lonRad = (sun.longitude - accumulatedPrecessionLonDeg(jdTT)) * DEG;
   // Negated Sun vector in the λ→−Z ecliptic frame: −(d cos λ, 0, −d sin λ).
-  const ecliptic = new THREE.Vector3(
+  const ecliptic = (out ?? new THREE.Vector3()).set(
     -sun.distance * Math.cos(lonRad),
     0,
     sun.distance * Math.sin(lonRad),
@@ -262,18 +288,31 @@ function clampLineEpochUtcMs(planet: PlanetData, centerUtcMs: number, periodMs: 
  * from the catalog semi-major axis is plenty. Past the element tables the
  * center slides back to the last epoch that holds a whole period (see
  * clampLineEpochUtcMs), so the line stays an orbit however far the clock runs.
+ *
+ * `out` is the caller's own point buffer, written in place and returned. A
+ * chart that re-samples a line while the clock runs does it over and over, and
+ * a fresh vector per sample puts that whole pass on the collector's account;
+ * hand over an array already holding `segments + 1` vectors and it allocates
+ * nothing. Short arrays are extended, long ones truncated, so the result is
+ * always exactly the loop — and identical, sample for sample, to the
+ * allocating call.
  */
 export function sampleTrajectoryLinePoints(
   planet: PlanetData,
   centerUtcMs: number,
   segments: number,
+  out?: THREE.Vector3[],
 ): THREE.Vector3[] {
   const periodMs = trajectoryPeriodMs(planet);
   const epochUtcMs = clampLineEpochUtcMs(planet, centerUtcMs, periodMs);
-  const points: THREE.Vector3[] = [];
+  const points: THREE.Vector3[] = out ?? [];
   for (let i = 0; i <= segments; i++) {
-    points.push(computeBodyPositionAU(planet, epochUtcMs + (i / segments - 0.5) * periodMs));
+    const utcMs = epochUtcMs + (i / segments - 0.5) * periodMs;
+    const held = points[i];
+    if (held) computeBodyPositionAU(planet, utcMs, held);
+    else points[i] = computeBodyPositionAU(planet, utcMs);
   }
+  if (points.length > segments + 1) points.length = segments + 1;
   return points;
 }
 
@@ -352,12 +391,21 @@ export function computeBodyPoleQuaternion(planet: PlanetData): THREE.Quaternion 
  * scene construction and per-frame rebuilds both go through here, so the two
  * can never disagree. Earth dispatches to the Meeus seam (see
  * computeEarthPositionEquatorial for why); everything else is Standish.
+ *
+ * Pass `out` and the position is written into it rather than into a fresh
+ * vector — the same optional zero-allocation seam projectToScreen offers, for
+ * the callers that ask for a position every frame or hundreds of times inside
+ * one. Nothing about the math changes with it.
  */
-export function computeBodyPositionAU(planet: PlanetData, utcMs: number): THREE.Vector3 {
+export function computeBodyPositionAU(
+  planet: PlanetData,
+  utcMs: number,
+  out?: THREE.Vector3,
+): THREE.Vector3 {
   const jd = ttJDFromUtcMs(utcMs);
   return isMeeusPositioned(planet)
-    ? computeEarthPositionEquatorial(jd)
-    : computeKeplerPositionEquatorial(getStandishElements(planet.name, jd));
+    ? computeEarthPositionEquatorial(jd, out)
+    : computeKeplerPositionEquatorial(getStandishElements(planet.name, jd), out);
 }
 
 export function computeBodyState(planet: PlanetData, utcMs: number): BodyState {

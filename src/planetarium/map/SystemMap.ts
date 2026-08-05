@@ -567,10 +567,10 @@ export class SystemMap {
    *  from CSS numbers. Null when nothing measured. Re-read when the viewport
    *  changes and on every open, because the bar's presence can change between
    *  sessions without a resize. */
-  private labelChromeTopPx: number | null = null;
+  private labelStaticChromeTopPx: number | null = null;
   private labelChromeForW = 0;
   private labelChromeForH = 0;
-  private labelChromeCardShown = false;
+  private labelMaxBoxTopCachedPx = Number.POSITIVE_INFINITY;
   private labelCardEl: HTMLElement | null = null;
   /** The one drawn ring annulus's screen-space ellipse this frame, for the
    *  labels of the moons that live inside it. Refreshed in renderLabels;
@@ -4592,6 +4592,7 @@ export class SystemMap {
     if (!this.labelContainer) return;
     const w = this.renderer.domElement.clientWidth;
     const h = this.renderer.domElement.clientHeight;
+    this.refreshLabelChrome(w, h);
     this.refreshLabelRingCtx(w, h);
     // Priority order: the Sun first, then the planets inner→outer (catalog
     // order). A label too close to one already placed this frame yields, so the
@@ -4748,7 +4749,7 @@ export class SystemMap {
       return;
     }
     x = clampedX;
-    if (boxTop > this.labelMaxBoxTop(w, h)) {
+    if (boxTop > this.labelMaxBoxTopCachedPx) {
       if (label.style.display !== 'none') label.style.display = 'none';
       return;
     }
@@ -4771,43 +4772,50 @@ export class SystemMap {
     }
   }
 
-  /** The lowest box-top a label may draw at, from the measured chrome. The
-   *  measure is cached against the viewport AND the picked-body card's shown
-   *  state; openMap drops the cache so a bar that came or went between
-   *  sessions is seen.
+  /**
+   * Measure the bottom chrome and settle this frame's label ceiling — ONCE per
+   * frame, from renderLabels, never from placeLabel: a per-label re-measure
+   * would repeat the geometry reads dozens of times interleaved with the
+   * labels' own display writes, which is a forced-layout spike by
+   * construction. Batched here, every read runs against a clean layout before
+   * the first write.
    *
-   *  The card counts only when it spans the width — the phone's bottom sheet,
-   *  which stands hundreds of px over this band with no resize to announce it.
-   *  The desktop card is a corner and the band is a full-width model: excluding
-   *  for it would hide every label to its right. The class read costs no
-   *  layout, so it runs per frame to catch the flip; the card's HEIGHT can
-   *  also change in place (picking a taller body), so while it is shown the
-   *  measure re-runs on a small frame cadence rather than never. */
-  private labelMaxBoxTop(w: number, h: number): number {
-    const cardShown = !!this.labelCardEl?.classList.contains('visible');
-    if (
-      this.labelChromeForW !== w || this.labelChromeForH !== h
-      || this.labelChromeCardShown !== cardShown
-      || (cardShown && this.frameRevision % 32 === 0)
-    ) {
+   * The static chrome (scale row, world bar) is cached against the viewport;
+   * openMap drops that cache so a bar that came or went between sessions is
+   * seen. The picked-body CARD is read live every frame it is shown — its
+   * class flip is a no-layout read, and its height changes in place on a
+   * repick, so a cache would serve a stale top for exactly the frames that
+   * matter. One getBoundingClientRect per frame on one element, against the
+   * already-clean layout, is the whole cost.
+   *
+   * The card counts only when it spans the width: the phone's bottom sheet,
+   * which stands hundreds of px over this band with no resize to announce it.
+   * "Spans" is measured as the width minus its own side gutters (12 px each,
+   * plus slack) rather than a percentage — a percentage misses the sheet on
+   * very narrow viewports, where fixed gutters are a bigger share. The desktop
+   * card is a corner and the band is a full-width model: excluding for it
+   * would hide every label to its right.
+   */
+  private refreshLabelChrome(w: number, h: number): void {
+    if (this.labelChromeForW !== w || this.labelChromeForH !== h) {
       this.labelChromeForW = w;
       this.labelChromeForH = h;
-      this.labelChromeCardShown = cardShown;
       let top: number | null = null;
       for (const id of ['map-scale', 'planetarium-bottom-bar']) {
         const rect = document.getElementById(id)?.getBoundingClientRect();
         if (!rect || !(rect.height > 0) || !(rect.top > 0)) continue;
         top = top === null ? rect.top : Math.min(top, rect.top);
       }
-      if (cardShown) {
-        const rect = this.labelCardEl!.getBoundingClientRect();
-        if (rect.height > 0 && rect.top > 0 && rect.width >= 0.9 * w) {
-          top = top === null ? rect.top : Math.min(top, rect.top);
-        }
-      }
-      this.labelChromeTopPx = top;
+      this.labelStaticChromeTopPx = top;
     }
-    return labelMaxBoxTopPx(this.labelChromeTopPx, h);
+    let top = this.labelStaticChromeTopPx;
+    if (this.labelCardEl?.classList.contains('visible')) {
+      const rect = this.labelCardEl.getBoundingClientRect();
+      if (rect.height > 0 && rect.top > 0 && rect.width >= w - 32) {
+        top = top === null ? rect.top : Math.min(top, rect.top);
+      }
+    }
+    this.labelMaxBoxTopCachedPx = labelMaxBoxTopPx(top, h);
   }
 
   /**

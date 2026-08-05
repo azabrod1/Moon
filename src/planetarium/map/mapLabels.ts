@@ -131,14 +131,17 @@ export const RING_DODGE_MIN_MINOR_PX = LABEL_LINE_HEIGHT_PX;
  * clearance, so a moon already near the edge still clears its own dot.
  *
  * What exits is the BOX, not a point: the label's rectangle (2·halfWidth wide,
- * one line tall, hung below the placed point) is pushed along the exit
- * direction by its own support — its half-width times the direction's
- * horizontal share, plus its line height when the exit runs upward, where the
- * box hangs back toward the ring. Exact against the tangent for a circle
- * (face-on); at moderate foreshortening the pad covers the tangent-vs-normal
- * mismatch, and the near-edge-on regime where that mismatch grows is inert:
- * an annulus thinner than `minMinorExtentPx` is a sliver nothing needs to
- * dodge, which also keeps coplanar moons off the collapsed ring's distant tip.
+ * one line tall, hung below the placed point) is cleared IN THE NORMALIZED
+ * FRAME, where the ellipse is a circle and the tangent argument is exact —
+ * the box's four corners are mapped through the same rotation-and-stretch the
+ * moon's position was, their support against the inward direction taken, and
+ * the exit radius extended by it. Every corner then sits beyond the tangent
+ * line at the exit point, and past a circle's tangent is past the circle;
+ * working in screen space instead would clear only the face-on case, and a
+ * foreshortened ring would keep a corner of the box inside the annulus. The
+ * near-edge-on regime is inert regardless: an annulus thinner than
+ * `minMinorExtentPx` is a sliver nothing needs to dodge, which also keeps
+ * coplanar moons off the collapsed ring's distant tip.
  *
  * A moon at the parent's own centre has no direction to speak of and takes
  * straight down.
@@ -183,21 +186,33 @@ export function ringClearedLabelShiftPx(
     out.y = Math.max(outerRadiusPx * minorMajorRatio + padPx, minShiftPx);
     return true;
   }
-  // The nearest boundary point lies along the same normalized ray; walk to it
-  // and add the pad.
-  const s = (outerRadiusPx + padPx) / rho;
+  // The exit direction, normalized-frame unit vector: the boundary there is a
+  // CIRCLE, so a box whose every corner sits past the tangent line at the exit
+  // point sits past the boundary — the tangent argument is exact, where a
+  // screen-space support would only be right face-on.
+  const dU = u / rho;
+  const dV = vn / rho;
+  // The box's four corners relative to its placed point (top-centre), mapped
+  // through the same frame the moon was: rotate into the ellipse's axes, then
+  // stretch the minor share by 1/ratio. Support = how far the box reaches back
+  // toward the ring against the exit direction; unrolled, so a per-frame call
+  // allocates nothing.
+  let support = 0;
+  for (let corner = 0; corner < 4; corner++) {
+    const cx = corner & 1 ? halfWidthPx : -halfWidthPx;
+    const cy = corner & 2 ? lineHeightPx : 0;
+    const cu = cx * Mx + cy * My;
+    const cv = (cx * mx + cy * my) / minorMajorRatio;
+    const reach = -(cu * dU + cv * dV);
+    if (reach > support) support = reach;
+  }
+  // Walk out along the same normalized ray to the boundary plus pad plus the
+  // box's own reach, and map back to the screen.
+  const s = (outerRadiusPx + padPx + support) / rho;
   const bx = (u * s) * Mx + (v * s) * mx;
   const by = (u * s) * My + (v * s) * my;
-  // Outward in SCREEN space, then the box's own support along that direction:
-  // the half-width times the horizontal share always, the line height times
-  // the vertical share only going up — hung below its point, the box's top
-  // edge already touches a downward exit.
-  const bLen = Math.hypot(bx, by);
-  const ox = bx / bLen;
-  const oy = by / bLen;
-  const support = halfWidthPx * Math.abs(ox) + (oy < 0 ? lineHeightPx * -oy : 0);
-  let dx = bx + ox * support - relXPx;
-  let dy = by + oy * support - relYPx;
+  let dx = bx - relXPx;
+  let dy = by - relYPx;
   const len = Math.hypot(dx, dy);
   if (len < minShiftPx && len > 1e-9) {
     const grow = minShiftPx / len;

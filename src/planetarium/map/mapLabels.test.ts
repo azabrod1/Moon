@@ -392,6 +392,28 @@ describe('ringClearedLabelShiftPx', () => {
     expect(out.y).toBeCloseTo(0, 6);
   });
 
+  it('clears every corner on a FORESHORTENED ring — the diagonal case', () => {
+    // Ratio 0.3 (minor extent 30, above the floor), moon up-right of centre at
+    // (40, −12). A screen-space support would clear only the box's centre-line
+    // and leave its bottom-left corner inside the annulus (normalized radius
+    // 0.949 of the edge); the normalized-frame support must put every corner
+    // past the boundary.
+    const outer = 100;
+    const ratio = 0.3;
+    const hw = 30;
+    const lh = LABEL_LINE_HEIGHT_PX;
+    expect(ringClearedLabelShiftPx(40, -12, outer, ratio, 0, 1, 0, hw, lh, out)).toBe(true);
+    // The placed point (the box's top-centre) relative to the parent.
+    const px = 40 + out.x;
+    const py = -12 + out.y;
+    // Normalized radius in the same frame the shift works: minor along +y,
+    // stretched by 1/ratio.
+    const norm = (x: number, y: number) => Math.hypot(x, y / ratio);
+    for (const [cx, cy] of [[-hw, 0], [hw, 0], [-hw, lh], [hw, lh]]) {
+      expect(norm(px + cx, py + cy)).toBeGreaterThanOrEqual(outer - 1e-6);
+    }
+  });
+
   it('clears the BOX going up: the line height rides the exit', () => {
     // Moon 40 px above centre, face-on: the box hangs DOWN from its point, so
     // an upward exit must push the point a full line height further for the

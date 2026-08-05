@@ -169,6 +169,11 @@ import {
 } from './mapPicking';
 import { HOVER_HIT_FLOOR_PX } from './mapHover';
 import {
+  markerBehindDisc,
+  markerInFrontOfDisc,
+  markerSeparationPx,
+} from './mapOcclusion';
+import {
   mapBody,
   mapBodyAcceptsCamera,
   MAP_BODIES,
@@ -220,6 +225,16 @@ const GLOBE_HOVER_EMISSIVE = 0.22;
 // The dive eases the camera in to this fraction of its start distance.
 const DIVE_END_DIST_FRAC = 0.14;
 
+// Draw order for the depth-free markers, and the layer one is lifted to for the
+// frames it stands in front of the Sun. Every marker on the chart writes no
+// depth, so among themselves the paint order is the whole of the answer: at
+// rest a dot draws under the solar disc (6), which is right for the far side of
+// the star and wrong for the near one. The lift is per frame and per body,
+// decided by the same gate that culls the far side — a static reshuffle would
+// paint every dot over a star they are mostly behind.
+const MARKER_RENDER_ORDER = 5;
+const MARKER_OVER_SUN_RENDER_ORDER = 7;
+
 // ---- moon systems ------------------------------------------------------
 // Samples per drawn moon orbit. The ring is a closed loop of the moon's own
 // trajectory, so this is the smoothness of an ellipse, not of a circle.
@@ -263,6 +278,15 @@ interface MoonEntry {
   drawnRadiusPx: number;
   globeDrawn: boolean;
   visible: boolean;
+  /** Whether the marker is hidden behind a drawn disc this frame — its own
+   *  state, deliberately not folded into `visible`. `visible` says the chart is
+   *  drawing this moon, which is what the camera clearance and the zoom pivot
+   *  ask; this says a body stands in front of it, so none of its symbol, its
+   *  name or its hit target may be painted. The two occluders are latched apart
+   *  so each one's hysteresis band is its own. */
+  occluded: boolean;
+  occludedByParent: boolean;
+  occludedBySun: boolean;
   /** Clock instant this moon's orientation was built for. NaN until the first
    *  pass — per entry, not per map, so a moon revealed while the clock is
    *  paused is still oriented rather than drawn at identity. */
@@ -393,6 +417,11 @@ interface OrbitEntry {
   drawnRadiusPx: number;
   /** Whether the globe, rather than the dot, is what drew this frame. */
   globeDrawn: boolean;
+  /** Whether the body stands behind the solar disc this frame — the planets'
+   *  only occluder, since nothing else on the chart draws in front of them.
+   *  Suppresses the dot, the label and the hit target; the globe is depth-tested
+   *  and the disc sorts against it on its own. */
+  occluded: boolean;
 }
 
 /**
@@ -431,6 +460,14 @@ export class SystemMap {
   private sun: THREE.Sprite;
   private sunHalo: THREE.Sprite;
   private sunRadiusPx = 0;
+  /** The star as the occlusion gate sees it, refreshed once per drawing pass:
+   *  its camera-space position and the radius its disc actually paints. Every
+   *  marker on the chart is measured against these, and the pass that writes
+   *  them runs before any of them. */
+  private sunViewX = 0;
+  private sunViewY = 0;
+  private sunViewDepth = 1;
+  private sunDiscPx = 0;
   private sunBaseColor = new THREE.Color(SUN_DATA.color);
   private orbits: OrbitEntry[] = [];
   private shipMarker: THREE.Sprite;
@@ -1128,6 +1165,8 @@ export class SystemMap {
       entry.globe.visible = false;
       entry.globeDrawn = false;
       entry.dot.visible = true;
+      entry.occluded = false;
+      entry.dot.renderOrder = MARKER_RENDER_ORDER;
     }
     // The moons let their borrowed paint go the same way, and every system
     // stands down: the next open re-decides what is revealed from scratch.
@@ -2591,6 +2630,12 @@ export class SystemMap {
   private hideMoon(moon: MoonEntry): void {
     moon.visible = false;
     moon.globeDrawn = false;
+    // The occlusion latches go with it: they are a hysteresis band's memory,
+    // and a moon that stops being drawn has nothing to remember.
+    moon.occluded = false;
+    moon.occludedByParent = false;
+    moon.occludedBySun = false;
+    moon.dot.renderOrder = MARKER_RENDER_ORDER;
     // A moon that stops being drawn forgets what it was shaded at, so the next
     // time it appears it arrives at its true shading rather than ramping there
     // from whatever the sky looked like when it left.
@@ -2609,7 +2654,7 @@ export class SystemMap {
     for (const data of getMoonsByPlanet(parentName)) {
       const tint = new THREE.Color(data.color);
       const dot = this.makeGlowSprite(data.color, 1);
-      dot.renderOrder = 5;
+      dot.renderOrder = MARKER_RENDER_ORDER;
       dot.visible = false;
       this.scene.add(dot);
       const globeMat = new THREE.MeshStandardMaterial({ roughness: 0.95, metalness: 0 });
@@ -2654,6 +2699,9 @@ export class SystemMap {
         drawnRadiusPx: 0,
         globeDrawn: false,
         visible: false,
+        occluded: false,
+        occludedByParent: false,
+        occludedBySun: false,
         orientedUtcMs: Number.NaN,
         shade: makeMapShadeState(),
         ring,
@@ -2690,8 +2738,22 @@ export class SystemMap {
       if (!system.revealed) continue;
       const parentDrawnAU = this.parentDrawnRadiusAU(system);
       const parentPos = system.parent.dot.position;
+      // The parent as the occlusion gate sees it — read out of the scratch
+      // before the first moon claims it. Its DRAWN MODE is what matters, not
+      // its size: a planet the chart is still drawing as a marker is a symbol,
+      // and moons pass in front of and behind a symbol alike. Its drawn px
+      // radius is the one the planet pass just sized its globe to.
+      const parentView = this.viewSpace(parentPos);
+      const parentViewX = parentView.x;
+      const parentViewY = parentView.y;
+      const parentDepth = Math.max(-parentView.z, 1e-6);
+      const parentDraws = system.parent.globeDrawn;
+      const parentDiscPx = system.parent.drawnRadiusPx;
       for (const moon of system.moons) {
-        const depth = this.viewDepth(moon.pos);
+        const moonView = this.viewSpace(moon.pos);
+        const viewX = moonView.x;
+        const viewY = moonView.y;
+        const depth = Math.max(-moonView.z, 1e-6);
         const worldPerPx = Math.max(worldPerPxAtUnit * depth, 1e-30);
         const drawnAU = mapMoonRadiusAU(moon.data.radiusAU, parentDrawnAU);
         moon.drawnRadiusAU = drawnAU;
@@ -2714,7 +2776,40 @@ export class SystemMap {
         moon.visible = visible;
         moon.globeDrawn = globe;
         moon.globe.visible = globe;
-        moon.dot.visible = visible && !globe;
+        // Behind the parent's globe, or behind the star. A marker writes no
+        // depth and would otherwise glide across a lit face it is nowhere near
+        // — a transit that is not happening, while the moon's own depth-tested
+        // orbit ring correctly dies at the limb. `visible` is untouched: the
+        // moon is still a drawn surface for the camera to clear, and still what
+        // a zoom pivots on.
+        const parentSepPx = markerSeparationPx(
+          viewX, viewY, depth, parentViewX, parentViewY, parentDepth, worldPerPxAtUnit,
+        );
+        const sunSepPx = markerSeparationPx(
+          viewX, viewY, depth,
+          this.sunViewX, this.sunViewY, this.sunViewDepth,
+          worldPerPxAtUnit,
+        );
+        moon.occludedByParent = visible && markerBehindDisc(
+          parentDraws, depth, moon.drawnRadiusPx,
+          parentDepth, parentDiscPx, parentSepPx, moon.occludedByParent,
+        );
+        moon.occludedBySun = visible && markerBehindDisc(
+          true, depth, moon.drawnRadiusPx,
+          this.sunViewDepth, this.sunDiscPx, sunSepPx, moon.occludedBySun,
+        );
+        moon.occluded = moon.occludedByParent || moon.occludedBySun;
+        moon.dot.visible = visible && !globe && !moon.occluded;
+        // The lift is judged at the widest footprint the dot can paint this
+        // frame: the sprite's own half-extent (the gradient spans the whole
+        // quad, DOT_EXTENT_MUL/2 of the policy radius) at the hover swell —
+        // or a dot at the disc's edge could overlap the star under it.
+        moon.dot.renderOrder = markerInFrontOfDisc(
+          true, depth, moon.drawnRadiusPx * (DOT_EXTENT_MUL / 2) * HOVER_SCALE,
+          this.sunViewDepth, this.sunDiscPx, sunSepPx,
+        )
+          ? MARKER_OVER_SUN_RENDER_ORDER
+          : MARKER_RENDER_ORDER;
         if (globe) moon.globe.scale.setScalar(drawnAU);
         else moon.dot.scale.setScalar(drawnAU * DOT_EXTENT_MUL);
         // Eclipse dim, advanced here because this pass runs on every rendered
@@ -2858,6 +2953,24 @@ export class SystemMap {
    * is merely near would name one thing while a click committed another. A body
    * drawn wider than the floor still answers on its own limb.
    */
+  /** Whether the limb gate currently hides this body. The hover HOLD asks
+   *  before bridging a miss: a hold exists to ride out pointer jitter, and a
+   *  body that slid behind its parent or the Sun mid-hold must release
+   *  immediately — its anchor is gone, and bridging would let a tap open a
+   *  body nothing on screen shows. */
+  isBodyOccluded(name: string): boolean {
+    for (const entry of this.orbits) {
+      if (entry.planet.name === name) return entry.occluded;
+    }
+    for (const system of this.moonSystems) {
+      if (!system.revealed) continue;
+      for (const moon of system.moons) {
+        if (moon.data.name === name) return moon.occluded;
+      }
+    }
+    return false;
+  }
+
   hoverAt(x: number, y: number): string | null {
     this.rebuildPickAnchors();
     const hit = resolvePick(x, y, this.pickAnchors, HOVER_HIT_FLOOR_PX);
@@ -3152,11 +3265,13 @@ export class SystemMap {
     this.pickAnchors.length = 0;
     this.pushAnchor(SUN_DATA.name, this.sun.position, true, w, h, this.sunRadiusPx);
     // Moons before their planets: a moon in front of a planet's disc is the
-    // smaller, nearer target, and nearest-wins needs it in the running.
+    // smaller, nearer target, and nearest-wins needs it in the running. A moon
+    // BEHIND that disc is not a target at all — offering one would take the tap
+    // away from the planet the viewer is actually looking at.
     for (const system of this.moonSystems) {
       if (!system.revealed) continue;
       for (const moon of system.moons) {
-        if (!moon.visible) continue;
+        if (!moon.visible || moon.occluded) continue;
         this.pushAnchor(
           moon.data.name,
           moon.pos,
@@ -3168,6 +3283,9 @@ export class SystemMap {
       }
     }
     for (const entry of this.orbits) {
+      // Nothing behind the solar disc is tappable: the star is what the pointer
+      // is over.
+      if (entry.occluded) continue;
       // A dot is a marker with no footprint of its own — the pointer floor
       // governs it. A globe hands over its drawn radius, so a click on the limb
       // of a body that fills the frame lands on the body.
@@ -3355,6 +3473,14 @@ export class SystemMap {
     mapPos: [number, number, number];
     /** Whether the chart is drawing this body at all this frame. */
     drawn: boolean;
+    /** Whether its MARKER is gated off behind a drawn disc — its parent's globe
+     *  or the solar disc — this frame. Reported apart from `drawn` because they
+     *  answer different questions: a moon behind its parent is still drawn (the
+     *  camera clears it, the zoom pivots on it) while its dot, its label and its
+     *  hit target are all suppressed. An occluded body has no pick anchor, so
+     *  its screen coordinates read -1 the way an off-frame body's do — this is
+     *  what tells the two apart. */
+    occluded: boolean;
     /** Hover feedback, as the materials actually carry it: the marker's tint
      *  against its catalog base, and the globe's emissive lift. */
     hovered: boolean;
@@ -3410,6 +3536,10 @@ export class SystemMap {
         screenY,
         mapPos,
         drawn: true,
+        // Nothing on the chart draws in front of the star: a planet resolved
+        // between the camera and it takes the disc's own pixels through the
+        // depth buffer, which is a partial cover, not a gate.
+        occluded: false,
         hovered: this.hoveredName === name,
         markerLift: this.markerLiftOf(this.sun, this.sunBaseColor),
         globeEmissive: 0,
@@ -3478,6 +3608,7 @@ export class SystemMap {
         worldRingTextureId: 0,
         moonRevealDistanceAU,
         drawn: !!moon?.visible,
+        occluded: !!moon?.occluded,
         hovered: this.hoveredName === name,
         markerLift: moon ? this.markerLiftOf(moon.dot, moon.baseColor) : 0,
         globeEmissive: moon ? maxChannel(moon.globeMat.emissive) : 0,
@@ -3505,6 +3636,7 @@ export class SystemMap {
       screenY,
       mapPos,
       drawn: true,
+      occluded: entry.occluded,
       hovered: this.hoveredName === name,
       markerLift: this.markerLiftOf(entry.dot, entry.baseColor),
       globeEmissive: maxChannel(entry.globeMat.emissive),
@@ -4032,17 +4164,33 @@ export class SystemMap {
     const worldPerPxAtUnit = (2 * Math.tan((MAP_FOV_DEG * Math.PI) / 180 / 2)) / h;
 
     // The Sun is always its billboard — a star has no terminator to draw. The
-    // policy answers in map AU; the px it works out to is the hit target.
-    const sunDepth = this.viewDepth(this.sun.position, camera);
+    // policy answers in map AU; the px it works out to is the hit target. Its
+    // camera-space position is kept in scalars rather than the shared scratch:
+    // every body below is measured against the star, and the scratch is claimed
+    // again by the very next projection.
+    const sunView = this.viewSpace(this.sun.position, camera);
+    const sunViewX = sunView.x;
+    const sunViewY = sunView.y;
+    const sunDepth = Math.max(-sunView.z, 1e-6);
     const sunAU = mapBodyRadiusAU(SUN_DATA.radiusAU, sunDepth, worldPerPxAtUnit, params);
     this.sunRadiusPx = sunAU / Math.max(worldPerPxAtUnit * sunDepth, 1e-30);
     const sunBoost = this.hoveredName === 'Sun' ? HOVER_SCALE : 1;
     this.sun.scale.setScalar(2 * sunAU * sunBoost);
     this.sunHalo.scale.setScalar(2 * sunAU * view.sunHaloRadii);
+    // What the disc actually paints, hover swell included — the limb the gate
+    // below measures against has to be the drawn one.
+    const sunDiscPx = this.sunRadiusPx * sunBoost;
+    this.sunViewX = sunViewX;
+    this.sunViewY = sunViewY;
+    this.sunViewDepth = sunDepth;
+    this.sunDiscPx = sunDiscPx;
 
     const trueScaleTarget = view.trueScaleTarget;
     for (const entry of this.orbits) {
-      const depth = this.viewDepth(entry.dot.position, camera);
+      const view3 = this.viewSpace(entry.dot.position, camera);
+      const viewX = view3.x;
+      const viewY = view3.y;
+      const depth = Math.max(-view3.z, 1e-6);
       const drawnAU = mapBodyRadiusAU(
         entry.planet.radiusAU,
         depth,
@@ -4063,7 +4211,28 @@ export class SystemMap {
       ) === 'globe';
       entry.globeDrawn = globe;
       entry.globe.visible = globe;
-      entry.dot.visible = !globe;
+      // Behind the star: the disc paints over whatever a depth-free marker
+      // draws there, so the marker, its name and its hit target stand down
+      // rather than showing through the photosphere. A globe is left alone —
+      // it is depth-tested, and the disc sorts against it correctly.
+      const sunSepPx = markerSeparationPx(
+        viewX, viewY, depth, sunViewX, sunViewY, sunDepth, worldPerPxAtUnit,
+      );
+      entry.occluded = markerBehindDisc(
+        true, depth, entry.drawnRadiusPx, sunDepth, sunDiscPx, sunSepPx, entry.occluded,
+      );
+      entry.dot.visible = !globe && !entry.occluded;
+      // In front of the star, a marker has to be lifted over the disc: both are
+      // depth-free, and at rest the disc draws last. Judged at the widest
+      // footprint the dot can paint this frame — the sprite's own half-extent
+      // (the gradient spans the whole quad, DOT_EXTENT_MUL/2 of the policy
+      // radius) at the hover swell — or a dot at the disc's edge could
+      // overlap the star under it.
+      entry.dot.renderOrder = markerInFrontOfDisc(
+        true, depth, entry.drawnRadiusPx * (DOT_EXTENT_MUL / 2) * HOVER_SCALE, sunDepth, sunDiscPx, sunSepPx,
+      )
+        ? MARKER_OVER_SUN_RENDER_ORDER
+        : MARKER_RENDER_ORDER;
       if (globe) {
         // One scale on the group carries the sphere and, where there is one,
         // the ring — which is built in planet radii for exactly this reason.
@@ -4092,8 +4261,18 @@ export class SystemMap {
     position: THREE.Vector3,
     camera: THREE.PerspectiveCamera = this.camera,
   ): number {
-    this.tmpView.copy(position).applyMatrix4(camera.matrixWorldInverse);
-    return Math.max(-this.tmpView.z, 1e-6);
+    return Math.max(-this.viewSpace(position, camera).z, 1e-6);
+  }
+
+  /** The whole camera-space position, in the shared scratch: what the depth
+   *  above throws away is exactly what a screen separation needs. Valid until
+   *  the next call — read the three numbers out before projecting anything
+   *  else. */
+  private viewSpace(
+    position: THREE.Vector3,
+    camera: THREE.PerspectiveCamera = this.camera,
+  ): THREE.Vector3 {
+    return this.tmpView.copy(position).applyMatrix4(camera.matrixWorldInverse);
   }
 
   private applyMarkerScale(
@@ -4116,6 +4295,12 @@ export class SystemMap {
     this.labelPlacer.begin();
     this.placeLabel(SUN_DATA.name, this.sun.position, w, h);
     for (const entry of this.orbits) {
+      // A name over the solar disc names nothing the viewer can see, and it
+      // would win the de-overlap against the bodies that ARE visible there.
+      if (entry.occluded) {
+        this.hideLabel(entry.planet.name);
+        continue;
+      }
       this.placeLabel(entry.planet.name, entry.dot.position, w, h);
     }
     // Moons last: in a crowded system the planet's own name is the one that
@@ -4123,13 +4308,22 @@ export class SystemMap {
     for (const system of this.moonSystems) {
       if (!system.revealed) continue;
       for (const moon of system.moons) {
-        if (!moon.visible) {
+        if (!moon.visible || moon.occluded) {
           if (moon.label && moon.label.style.display !== 'none') moon.label.style.display = 'none';
           continue;
         }
         this.placeLabel(moon.data.name, moon.pos, w, h);
       }
     }
+  }
+
+  /** Take one body's label off the frame without asking the placer for a slot —
+   *  what a body hidden behind something else needs, and the reason it is not
+   *  simply skipped: a label left standing is a name over a body nobody can
+   *  see. */
+  private hideLabel(name: string): void {
+    const label = this.labels.get(name);
+    if (label && label.style.display !== 'none') label.style.display = 'none';
   }
 
   /** Place one body's label, keyed by its catalog name — never by an index into
@@ -4223,7 +4417,9 @@ export class SystemMap {
     if (name === SUN_DATA.name) return mapLabelOffsetPx(this.sunRadiusPx);
     const entry = this.entryFor(name);
     if (entry) {
-      return mapLabelOffsetPx(labelClearanceRadiusPx(entry.drawnRadiusPx, entry.dot.visible));
+      // Which LOOK drew, not whether the sprite is on screen: the occlusion gate
+      // hides a dot without changing the size it would have drawn at.
+      return mapLabelOffsetPx(labelClearanceRadiusPx(entry.drawnRadiusPx, !entry.globeDrawn));
     }
     const moon = this.moonEntryFor(name);
     if (moon) {
@@ -4282,7 +4478,7 @@ export class SystemMap {
     line.frustumCulled = false;
     this.scene.add(line);
     const dot = this.makeGlowSprite(planet.color, 1);
-    dot.renderOrder = 5;
+    dot.renderOrder = MARKER_RENDER_ORDER;
     this.scene.add(dot);
     const { globe, globeMat, ringMat, ringOuterFactor } = this.makeGlobe(planet);
     this.scene.add(globe);
@@ -4314,6 +4510,7 @@ export class SystemMap {
       ringOuterFactor,
       drawnRadiusPx: mapMarkerRadiusPx(planet.radiusAU, this.bodySizeParams),
       globeDrawn: false,
+      occluded: false,
     };
   }
 
@@ -4408,14 +4605,23 @@ export class SystemMap {
     return tex;
   }
 
-  /** The solar disc: a limb-darkened billboard rather than a lit sphere, since
-   *  a star is its own light. */
+  /**
+   * The solar disc: a limb-darkened billboard rather than a lit sphere, since a
+   * star is its own light.
+   *
+   * depthTest ON, alone among the chart's sprites. The globes are opaque
+   * depth-writing meshes drawn before every sprite, so this is what stops the
+   * star painting straight over a planet the camera has resolved in front of
+   * it; behind one, the disc's own depth is nearer and it paints as before. It
+   * still writes no depth — the disc must never occlude the markers, which is
+   * the other half of the question and is answered analytically.
+   */
   private makeSunDiscSprite(): THREE.Sprite {
     const mat = new THREE.SpriteMaterial({
       map: this.makeSunDiscTexture(),
       color: SUN_DATA.color,
       transparent: true,
-      depthTest: false,
+      depthTest: true,
       depthWrite: false,
       toneMapped: false,
     });

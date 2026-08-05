@@ -7077,8 +7077,14 @@ export class PlanetariumMode {
     // frame's — the bug the latch exists to fix.
     const candidate = map.hoverAt(this.mapHoverX, this.mapHoverY);
     const now = performance.now();
+    // A held body the limb gate has since hidden releases NOW, not at the
+    // hold's timeout: its anchor is gone, so the hold could only bridge a tap
+    // onto something the screen no longer shows.
+    const held = this.mapHoverName !== null && map.isBodyOccluded(this.mapHoverName)
+      ? null
+      : this.mapHoverName;
     const resolved = resolveMapHover(
-      this.mapHoverName,
+      held,
       candidate,
       now - this.mapHoverHitMs,
       Math.hypot(this.mapHoverX - this.mapHoverAnchorX, this.mapHoverY - this.mapHoverAnchorY),

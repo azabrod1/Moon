@@ -277,6 +277,10 @@ export interface LoadTextureOptions {
   timeoutMs?: number;
   /** Where a texture that arrives after the fallback resolved should land. */
   late?: LateTextureSlot;
+  /** Fallback constructor seam. The default builds the procedural canvas,
+   *  which needs a 2D context — tests running without a DOM inject a plain
+   *  texture here so the timeout/late/retry machinery itself stays testable. */
+  makeFallback?: () => THREE.Texture;
 }
 
 /**
@@ -297,9 +301,9 @@ export function loadTexture(
   kind: MapKind = 'color',
   options: LoadTextureOptions = {},
 ): Promise<THREE.Texture> {
-  const { timeoutMs = 8000, late } = options;
+  const { timeoutMs = 8000, late, makeFallback = () => createFallbackTexture(key, kind) } = options;
   const file = PLANET_TEXTURE_FILES[key];
-  if (!file) return Promise.resolve(createFallbackTexture(key, kind));
+  if (!file) return Promise.resolve(makeFallback());
   const url = resolveTextureUrl(file, tier);
 
   return new Promise((resolve) => {
@@ -309,7 +313,7 @@ export function loadTexture(
       if (settled) return;
       settled = true;
       debugWarn('Planet texture timeout', { key, url });
-      resolve(createFallbackTexture(key, kind));
+      resolve(makeFallback());
     }, timeoutMs);
 
     const onLoaded = (tex: THREE.Texture) => {
@@ -346,7 +350,7 @@ export function loadTexture(
       if (settled) return;
       settled = true;
       clearTimeout(timer);
-      resolve(createFallbackTexture(key, kind));
+      resolve(makeFallback());
     };
 
     const attempt = () => loader.load(url, onLoaded, undefined, onFailed);
@@ -410,7 +414,7 @@ export function initialColorTierRank(tex: { userData?: Record<string, unknown> }
 // material. Makes the 2K stream, its late arrival after a timeout, the 4K
 // upgrade, and the lazy painter order-independent. Disposes whatever it
 // replaces (or itself, when it lost the race).
-function applyColorTierTexture(mat: THREE.MeshStandardMaterial, tex: THREE.Texture, rank: number): boolean {
+export function applyColorTierTexture(mat: THREE.MeshStandardMaterial, tex: THREE.Texture, rank: number): boolean {
   const current = (mat.userData.colorTierRank as number | undefined) ?? 0;
   if (!shouldApplyColorTier(current, rank)) {
     tex.dispose();
@@ -631,7 +635,7 @@ export function moonArchetype(moon: MoonData): SurfaceArchetype {
  * lands), then assign before freeing the fallback it replaces, so no frame
  * samples a disposed texture.
  */
-function connectLateDetailMap(
+export function connectLateDetailMap(
   slot: LateTextureSlot,
   material: THREE.Material,
   read: () => THREE.Texture | null,

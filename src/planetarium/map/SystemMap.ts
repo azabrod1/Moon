@@ -191,24 +191,12 @@ const BG_COLOR = 0x05070d;
 // the chart with no body behind it, so no size policy to follow.
 const SHIP_PX = 26;
 // The ship's ember. It is the one marker with no catalog row behind it, so the
-// tint lives here — once, for the marker and the ping that comes out of it.
+// tint lives here — once, for the marker.
 const SHIP_MARKER_COLOR = 0xffb88a;
 // Orbit line: full tint just ahead of the body fading to this floor behind it.
 const ORBIT_BRIGHT_FLOOR = 0.1;
 // Un-docked ship chevron breathes over this period (ms).
 const SHIP_PULSE_MS = 2000;
-// Opening ping at the ship marker: a ring that swells and fades, three times
-// from the moment the map opens, then rests until the next open. It says "you
-// are here" once — a loop that never stopped would be a state, and the ship's
-// state is already the marker's own (docked ring steady, chevron breathing).
-const PING_CYCLE_MS = 1600;
-const PING_CYCLES = 3;
-// Ring diameter (screen px, full sprite extent) at the start of a cycle, and
-// the fraction it grows by across one. Our ship marker is a fixed SHIP_PX, so
-// a base metered against a live marker size would be this constant anyway.
-const PING_BASE_PX = 60;
-const PING_GROWTH = 0.28;
-const PING_PEAK_OPACITY = 0.7;
 // Hover feedback: the pointed-at dot swells and lifts toward white.
 const HOVER_SCALE = 1.3;
 const HOVER_LIFT = 0.4;
@@ -436,11 +424,6 @@ export class SystemMap {
   private shipMarker: THREE.Sprite;
   private shipChevronTex: THREE.Texture;
   private shipRingTex: THREE.Texture;
-  /** The opening ping's ring. Built once and kept; between pings it is simply
-   *  not visible, so a rested map pays nothing for it. */
-  private pingSprite: THREE.Sprite;
-  private pingElapsedMs = 0;
-  private pingDiameterPx = 0;
   /** One unit sphere behind every globe — each body varies only by material and
    *  by the scale on its group. */
   private globeGeo = new THREE.SphereGeometry(1, 64, 32);
@@ -862,20 +845,6 @@ export class SystemMap {
     this.shipMarker.renderOrder = 10;
     this.scene.add(this.shipMarker);
 
-    const pingMat = new THREE.SpriteMaterial({
-      map: this.makePingTexture(),
-      color: SHIP_MARKER_COLOR,
-      transparent: true,
-      depthTest: false,
-      depthWrite: false,
-      toneMapped: false,
-    });
-    this.pingSprite = new THREE.Sprite(pingMat);
-    // Just under the ship marker: the ring expands out of the marker, and the
-    // marker stays the thing that reads.
-    this.pingSprite.renderOrder = 9;
-    this.pingSprite.visible = false;
-    this.scene.add(this.pingSprite);
   }
 
   isOpen(): boolean {
@@ -988,11 +957,6 @@ export class SystemMap {
     this.zoomFree = false;
     this.syncZoomToCursor();
     this.controls.enabled = true;
-    // Announce the ship, once. The first frame places the marker, and the ping
-    // rides its position from there.
-    this.pingElapsedMs = 0;
-    this.pingDiameterPx = PING_BASE_PX;
-    this.pingSprite.visible = true;
   }
 
   /** Which state owns the camera, what a flight is aiming at, and the body a
@@ -1102,8 +1066,6 @@ export class SystemMap {
     this.scaleZoomRatio = 1;
     this.setHover(null);
     this.cancelFocusPulse();
-    // A ping is an opening, so a session that ends mid-ping ends it too.
-    this.pingSprite.visible = false;
     this.controls.enabled = false;
     // The zoom's own state goes with the session — pivot and latch together, so
     // the closed map is never left claiming an unmoved pivot that sits off the
@@ -3749,23 +3711,6 @@ export class SystemMap {
       const s = Math.sin((this.pulseMs / SHIP_PULSE_MS) * Math.PI * 2);
       mat.opacity = 0.875 + 0.125 * s;
     }
-    this.advancePing(dtMs);
-  }
-
-  /** The opening ping: three swelling rings from the map's own clock, phase-set
-   *  by the open. Accumulated dt rather than wall time, so it runs at the same
-   *  rate whatever the sim clock is doing and starts from zero every open. */
-  private advancePing(dtMs: number): void {
-    if (!this.pingSprite.visible) return;
-    this.pingElapsedMs += dtMs;
-    if (this.pingElapsedMs >= PING_CYCLE_MS * PING_CYCLES) {
-      this.pingSprite.visible = false;
-      return;
-    }
-    const t = (this.pingElapsedMs % PING_CYCLE_MS) / PING_CYCLE_MS;
-    this.pingSprite.position.copy(this.shipMarker.position);
-    this.pingDiameterPx = PING_BASE_PX * (1 + PING_GROWTH * t);
-    (this.pingSprite.material as THREE.SpriteMaterial).opacity = PING_PEAK_OPACITY * (1 - t);
   }
 
   /** Phase (3): rotate the chevron to the ship's on-screen velocity. Reads the
@@ -3940,9 +3885,6 @@ export class SystemMap {
     }
     if (view.withMoons) this.updateMoonDrawnSizes(worldPerPxAtUnit, trueScaleTarget);
     this.applyMarkerScale(this.shipMarker, view.shipPx, worldPerPxAtUnit, camera);
-    if (this.pingSprite.visible) {
-      this.applyMarkerScale(this.pingSprite, this.pingDiameterPx, worldPerPxAtUnit, camera);
-    }
   }
 
   /** Camera-space depth (distance along the view axis) of a map position.
@@ -4385,25 +4327,6 @@ export class SystemMap {
     ctx.lineTo(size * 0.18, size * 0.84);
     ctx.closePath();
     ctx.fill();
-    const tex = new THREE.CanvasTexture(canvas);
-    applyTextureDefaults(tex, 'color');
-    return tex;
-  }
-
-  /** The opening ping's ring: a hollow stroke, drawn big enough that the swell
-   *  stays clean at the sizes it reaches. */
-  private makePingTexture(): THREE.Texture {
-    const size = 256;
-    const canvas = document.createElement('canvas');
-    canvas.width = size;
-    canvas.height = size;
-    const ctx = canvas.getContext('2d')!;
-    ctx.clearRect(0, 0, size, size);
-    ctx.strokeStyle = 'rgba(255,255,255,0.95)';
-    ctx.lineWidth = size * 0.045;
-    ctx.beginPath();
-    ctx.arc(size / 2, size / 2, size * 0.44, 0, Math.PI * 2);
-    ctx.stroke();
     const tex = new THREE.CanvasTexture(canvas);
     applyTextureDefaults(tex, 'color');
     return tex;

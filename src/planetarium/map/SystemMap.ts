@@ -3546,7 +3546,12 @@ export class SystemMap {
     screenY: number;
     /** Map position (AU) the chart places the body at this frame. */
     mapPos: [number, number, number];
-    /** Whether the chart is drawing this body at all this frame. */
+    /** Whether the chart is drawing this body at all this frame — false for a
+     *  moon the chart has not revealed, and equally for any body that is off
+     *  the frame or behind the camera (no pick anchor, no occluder): at the
+     *  extremes the probe must not report a body nobody can see as drawn. A
+     *  body gated behind a drawn disc still reads true — that suppression is
+     *  `occluded`'s answer, not this one's. */
     drawn: boolean;
     /** Whether its MARKER is gated off behind a drawn disc — its parent's globe
      *  or the solar disc — this frame. Reported apart from `drawn` because they
@@ -3610,7 +3615,9 @@ export class SystemMap {
         screenX,
         screenY,
         mapPos,
-        drawn: true,
+        // The star is always in the scene, but "drawn" answers for THIS frame:
+        // no anchor means its disc is off the frame or behind the camera.
+        drawn: !!anchor,
         // Nothing on the chart draws in front of the star: a planet resolved
         // between the camera and it takes the disc's own pixels through the
         // depth buffer, which is a partial cover, not a gate.
@@ -3682,7 +3689,9 @@ export class SystemMap {
         ringTextureId: 0,
         worldRingTextureId: 0,
         moonRevealDistanceAU,
-        drawn: !!moon?.visible,
+        // Revealed AND on the frame (an occluded moon holds no anchor but is
+        // still drawn behind the disc that gates its marker).
+        drawn: !!moon?.visible && (!!anchor || !!moon?.occluded),
         occluded: !!moon?.occluded,
         hovered: this.hoveredName === name,
         markerLift: moon ? this.markerLiftOf(moon.dot, moon.baseColor) : 0,
@@ -3710,7 +3719,10 @@ export class SystemMap {
       screenX,
       screenY,
       mapPos,
-      drawn: true,
+      // Honest at the extremes: no anchor and no occluder means the planet is
+      // off the frame or behind the camera — the chart is not drawing it this
+      // frame, wherever the follow camera has wandered.
+      drawn: !!anchor || entry.occluded,
       occluded: entry.occluded,
       hovered: this.hoveredName === name,
       markerLift: this.markerLiftOf(entry.dot, entry.baseColor),

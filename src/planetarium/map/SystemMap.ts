@@ -1376,7 +1376,11 @@ export class SystemMap {
     this.camera.updateMatrixWorld();
 
     // ── (3) Projection-dependent work, on this frame's final camera pose.
-    this.projectFullView();
+    // Except mid-dive: this frame's FINAL pose is written by setDivePose,
+    // which the mode drives after this update in the same pass and which ends
+    // in this same projection — running it here too would project the whole
+    // chart twice a frame, the first time against a pose about to be replaced.
+    if (this.cam.camState !== 'dive') this.projectFullView();
   }
 
   /**

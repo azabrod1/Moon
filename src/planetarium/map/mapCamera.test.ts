@@ -16,6 +16,8 @@ import {
   mapOverviewPivotDistanceAU,
   mapWorldPerPxAtUnitDepth,
   revealDistanceAU,
+  moonRevealThresholdAU,
+  MOON_REVEAL_PX,
   MAP_FOCUS_MIN_PX,
   MAP_FOCUS_PULSE_MS,
   MAP_FOCUS_REVEAL_PX,
@@ -471,6 +473,30 @@ describe('revealDistanceAU', () => {
     const b = boundsAt(JUPITER_R, JUPITER_MAP_R, 0.01, EXTENT_COMPRESSED);
     const raw = revealDistanceAU(JUPITER_R, H, MAP_FOV_DEG);
     expect(clampFollowDistanceAU(raw, b)).toBe(raw);
+  });
+});
+
+describe('moonRevealThresholdAU', () => {
+  it('meets the moons at its own gate, exactly the px it declares', () => {
+    const d = moonRevealThresholdAU(JUPITER_R, H, MAP_FOV_DEG);
+    expect(discPx(JUPITER_R, d)).toBeCloseTo(MOON_REVEAL_PX, 6);
+  });
+
+  it('reveals farther out than the focus flight lands — the free approach meets moons first', () => {
+    const reveal = moonRevealThresholdAU(JUPITER_R, H, MAP_FOV_DEG);
+    const landing = revealDistanceAU(JUPITER_R, H, MAP_FOV_DEG);
+    expect(reveal).toBeGreaterThan(landing);
+  });
+
+  it('keeps the whole-system overview planets-only: no planet crosses the gate at the fit', () => {
+    // The overview fit for the compressed extent, desktop and portrait phone.
+    for (const [w, h] of [[1280, 800], [390, 844]] as const) {
+      const fit = fitDistanceAU(EXTENT_COMPRESSED, MAP_FOV_DEG, w / h);
+      // Jupiter is the largest disc; if IT stays under the gate at the fit,
+      // every planet does.
+      const reveal = moonRevealThresholdAU(JUPITER_R, h, MAP_FOV_DEG);
+      expect(reveal).toBeLessThan(fit);
+    }
   });
 });
 

@@ -140,6 +140,7 @@ import {
   mapWorldPerPxAtUnitDepth,
   MAP_FOLLOW_MIN_SPREAD,
   revealDistanceAU,
+  moonRevealThresholdAU,
   MAP_FOCUS_FLY_MS,
   MAP_FOCUS_PULSE_MS,
   MAP_FOV_DEG,
@@ -2328,7 +2329,7 @@ export class SystemMap {
 
   private moonRevealDistanceAU(system: MoonSystem): number {
     const h = Math.max(this.renderer.domElement.clientHeight, 1);
-    const raw = revealDistanceAU(system.parent.planet.radiusAU, h, MAP_FOV_DEG);
+    const raw = moonRevealThresholdAU(system.parent.planet.radiusAU, h, MAP_FOV_DEG);
     const bounds = this.followBoundsFor(system.parent.planet.name);
     return Math.max(raw, bounds ? bounds.minDist : 0) * MOON_REVEAL_MARGIN;
   }

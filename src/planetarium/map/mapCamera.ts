@@ -330,6 +330,26 @@ export function revealDistanceAU(
   return apparentDepthAU(trueRadiusAU, MAP_FOCUS_REVEAL_PX, viewportH, fovDeg);
 }
 
+/**
+ * The moon-reveal gate's own disc radius (screen px) — deliberately separate
+ * from the focus-landing constant above. A free zoom-in should meet a system's
+ * moons well before the parent fills the working view; 40 px made the reveal
+ * feel late (the re-feel round's complaint), while at 24 px the revealed frame
+ * still reads (ladder: planning/qa-epsilon-assess/e3-*.png). Focus flights are
+ * unaffected: a focus reveals its system immediately whatever this is.
+ */
+export const MOON_REVEAL_PX = 24;
+
+/** How close (AU) the camera must be to a parent for its moons to appear on a
+ *  free approach — the parent's disc reaching MOON_REVEAL_PX. */
+export function moonRevealThresholdAU(
+  trueRadiusAU: number,
+  viewportH: number,
+  fovDeg: number,
+): number {
+  return apparentDepthAU(trueRadiusAU, MOON_REVEAL_PX, viewportH, fovDeg);
+}
+
 export interface MapFollowBounds {
   minDist: number;
   maxDist: number;

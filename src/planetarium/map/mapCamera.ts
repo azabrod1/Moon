@@ -375,6 +375,8 @@ export function followBounds(
   viewportH: number,
   fovDeg: number,
   sizeParams: MapBodySizeParams,
+  ceilingRadiusAU: number,
+  fitDistAU: number,
   out: MapFollowBounds = { minDist: 0, maxDist: 0, near: 0, far: 0 },
 ): MapFollowBounds {
   const radius = Math.max(trueRadiusAU, 0);
@@ -392,17 +394,28 @@ export function followBounds(
   const wantedDist = apparentDepthAU(radius, MAP_FOCUS_MIN_PX, viewportH, fovDeg);
   const minDist = Math.max(wantedDist, nearFloorDist);
 
-  // Twice the depth where the true disc crosses the marker the chart would draw
-  // instead — past that the subject is a symbol among symbols again.
+  // Twice the depth where the subject's disc crosses the marker the chart
+  // would draw instead — past that the subject is a symbol among symbols
+  // again. Judged on the CAMERA-INDEPENDENT radius, never the drawn one: a
+  // planet's drawn radius pins to its pixel floor and grows with camera
+  // depth, so a ceiling metered on it rides the camera out forever — the
+  // clamp chased the zoom to thousands of AU instead of stopping it. And
+  // never past the overview fit: beyond the frame that shows the whole
+  // chart, the overview is the honest view, not a follow.
+  const ceiling = Math.max(ceilingRadiusAU, 0);
   const crossDist = apparentDepthAU(
-    radius,
-    mapMarkerRadiusPx(radius, sizeParams),
+    ceiling,
+    mapMarkerRadiusPx(ceiling, sizeParams),
     viewportH,
     fovDeg,
   );
+  const spreadFloor = minDist * MAP_FOLLOW_MIN_SPREAD;
   const maxDist = Math.max(
-    crossDist * MAP_FOLLOW_MAX_CROSSOVER_MUL,
-    minDist * MAP_FOLLOW_MIN_SPREAD,
+    Math.min(
+      Math.max(crossDist * MAP_FOLLOW_MAX_CROSSOVER_MUL, spreadFloor),
+      Math.max(fitDistAU, 0) > 0 ? fitDistAU : Number.POSITIVE_INFINITY,
+    ),
+    spreadFloor,
   );
 
   const surface = Math.max(surfaceDistAU, 1e-9);

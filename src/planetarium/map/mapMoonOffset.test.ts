@@ -66,7 +66,7 @@ function coOrbitalGroups(entries: readonly MoonOffsetEntry[]): MoonOffsetEntry[]
 function revealFraming(parent: { radiusAU: number; semiMajorAxisAU: number }, viewportH: number) {
   const mapR = mapRadiusOf(parent.semiMajorAxisAU);
   const bounds = followBounds(
-    parent.radiusAU, 1e-3, mapR, mapR, EXTENT_COMPRESSED, viewportH, MAP_FOV_DEG, SIZE,
+    parent.radiusAU, 1e-3, mapR, mapR, EXTENT_COMPRESSED, viewportH, MAP_FOV_DEG, SIZE, parent.radiusAU, 0,
   );
   const perPxUnit = mapWorldPerPxAtUnitDepth(viewportH, MAP_FOV_DEG);
   const dist = clampFollowDistanceAU(

@@ -3,6 +3,7 @@ import {
   apparentDepthAU,
   clampFollowDistanceAU,
   followBounds,
+  MAP_FOLLOW_MIN_SPREAD,
   mapCameraInitialState,
   mapCameraOwnsPose,
   mapCameraReduce,
@@ -60,6 +61,8 @@ function boundsAt(
   subjectMapRadius: number,
   camDist: number,
   extent: number,
+  ceilingRadiusAU = radiusAU,
+  fitDistAU = 0,
 ) {
   return followBounds(
     radiusAU,
@@ -70,6 +73,8 @@ function boundsAt(
     H,
     MAP_FOV_DEG,
     SIZE,
+    ceilingRadiusAU,
+    fitDistAU,
     { minDist: 0, maxDist: 0, near: 0, far: 0 },
   );
 }
@@ -381,7 +386,7 @@ describe('followBounds', () => {
     // one filling the frame.
     const leavingSurface = 1.8e-3;
     const b = followBounds(
-      JUPITER_R, leavingSurface, 1.5, 2.07, EXTENT_COMPRESSED, H, MAP_FOV_DEG, SIZE,
+      JUPITER_R, leavingSurface, 1.5, 2.07, EXTENT_COMPRESSED, H, MAP_FOV_DEG, SIZE, JUPITER_R, 0,
     );
     expect(b.near).toBeLessThan(leavingSurface);
   });
@@ -397,7 +402,7 @@ describe('followBounds', () => {
   it('holds the whole system inside the far plane from wherever the camera is', () => {
     for (const camOrigin of [0.01, 1, 5, 40]) {
       const b = followBounds(
-        EARTH_R, 0.001, camOrigin, EARTH_MAP_R, EXTENT_TRUE, H, MAP_FOV_DEG, SIZE,
+        EARTH_R, 0.001, camOrigin, EARTH_MAP_R, EXTENT_TRUE, H, MAP_FOV_DEG, SIZE, EARTH_R, 0,
       );
       expect(b.far).toBeGreaterThan(camOrigin + EXTENT_TRUE);
     }
@@ -407,7 +412,7 @@ describe('followBounds', () => {
     // A flight starts at the whole-system fit: a quarter of THAT distance would
     // be a near plane slicing through the foreground.
     const b = followBounds(
-      EARTH_R, 7, 7, EARTH_MAP_R, EXTENT_COMPRESSED, H, MAP_FOV_DEG, SIZE,
+      EARTH_R, 7, 7, EARTH_MAP_R, EXTENT_COMPRESSED, H, MAP_FOV_DEG, SIZE, EARTH_R, 0,
     );
     expect(b.near).toBeCloseTo(EXTENT_COMPRESSED * MAP_OVERVIEW_NEAR_FRAC, 12);
   });
@@ -705,6 +710,8 @@ describe('a follow shell on a body that orbits another', () => {
       H,
       MAP_FOV_DEG,
       SIZE,
+      m.radiusAU,
+      0,
     );
     return Math.abs(bounds.minDist - m.orbitalRadiusAU);
   }
@@ -731,7 +738,7 @@ describe('a follow shell on a body that orbits another', () => {
     // The same policy on a planet: its shell is a ten-thousandth of its own
     // distance from the Sun, so nothing carries the camera into the star.
     const bounds = followBounds(
-      JUPITER_R, 1e-3, JUPITER_MAP_R, JUPITER_MAP_R, EXTENT_COMPRESSED, H, MAP_FOV_DEG, SIZE,
+      JUPITER_R, 1e-3, JUPITER_MAP_R, JUPITER_MAP_R, EXTENT_COMPRESSED, H, MAP_FOV_DEG, SIZE, JUPITER_R, 0,
     );
     expect(JUPITER_MAP_R - bounds.minDist).toBeGreaterThan(1);
   });
@@ -939,7 +946,7 @@ describe('the overview zoom against every moon system', () => {
     const reveal = revealDistanceAU(radiusAU, viewportH, MAP_FOV_DEG);
     const drawn = mapBodyRadiusAU(radiusAU, reveal, perPx, SIZE);
     const bounds = followBounds(
-      drawn, 1e-3, subjectMapR, subjectMapR, extentAU, viewportH, MAP_FOV_DEG, SIZE,
+      drawn, 1e-3, subjectMapR, subjectMapR, extentAU, viewportH, MAP_FOV_DEG, SIZE, drawn, 0,
     );
     const shell = Math.max(reveal, bounds.minDist);
     const clearance = mapBodyRadiusAU(radiusAU, shell, perPx, SIZE)
@@ -1047,5 +1054,43 @@ describe('mapFocusLandPulse', () => {
       prev = v;
     }
     expect(peaks).toBe(2);
+  });
+});
+
+describe('the follow ceiling stands still', () => {
+  // The stress probe rode a planet-follow to 2,275 AU: the ceiling was metered
+  // on the DRAWN radius, which pins to its pixel floor and grows with camera
+  // depth, so maxDistance stayed 1.836× the current distance through four
+  // decades and the clamp never bound. These pin the fix: the ceiling reads
+  // the camera-independent radius and the overview fit, and only the shell's
+  // near side follows the drawn regime.
+  const TRUE_R = JUPITER_R;
+
+  it('holds one ceiling while the drawn radius rides the camera out', () => {
+    // The same body seen at two depths: the px floor makes the drawn radius
+    // grow tenfold; the ceiling must not move with it.
+    const nearSeat = boundsAt(TRUE_R, 5.2, 0.05, EXTENT_COMPRESSED, TRUE_R);
+    const farSeat = boundsAt(TRUE_R * 10, 5.2, 0.5, EXTENT_COMPRESSED, TRUE_R);
+    expect(farSeat.maxDist).toBeCloseTo(nearSeat.maxDist, 12);
+  });
+
+  it('answers the probe: the clamp binds instead of chasing', () => {
+    // At the failure's geometry the old ceiling was ~1.8× whatever the camera
+    // did. With the true radius metering it, the ceiling is a fixed depth a
+    // wheel can actually reach.
+    const b = boundsAt(TRUE_R, 5.2, 0.05, EXTENT_COMPRESSED, TRUE_R);
+    expect(Number.isFinite(b.maxDist)).toBe(true);
+    expect(b.maxDist).toBeLessThan(EXTENT_COMPRESSED);
+  });
+
+  it('never follows past the overview fit', () => {
+    const fit = 2.5;
+    const b = boundsAt(TRUE_R, 5.2, 0.05, EXTENT_COMPRESSED, TRUE_R * 500, fit);
+    expect(b.maxDist).toBe(fit);
+  });
+
+  it('keeps the shell wider than its own floor even under a tiny fit', () => {
+    const b = boundsAt(TRUE_R, 5.2, 0.05, EXTENT_COMPRESSED, TRUE_R, 1e-9);
+    expect(b.maxDist).toBeGreaterThanOrEqual(b.minDist * MAP_FOLLOW_MIN_SPREAD);
   });
 });

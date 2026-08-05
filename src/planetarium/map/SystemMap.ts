@@ -1971,6 +1971,16 @@ export class SystemMap {
     // follow runs in.)
     const radius = this.drawnGlobeRadiusAU(name) ?? this.bodyTrueRadiusAU(name);
     if (radius === null || !this.bodyMapPosition(name, this.tmpBodyPos)) return null;
+    // The zoom-out ceiling is metered on a radius the camera cannot move: a
+    // planet's drawn radius pins to its px floor and grows with depth, so a
+    // ceiling metered on it rides the camera out forever. A moon's drawn
+    // radius is metered against its parent, not the camera — it stays the
+    // honest yardstick (and its inflation is exactly why its shell must be
+    // wider than its true size would allow).
+    const body = mapBody(name);
+    const ceilingRadius = body?.kind === 'moon'
+      ? radius
+      : this.bodyTrueRadiusAU(name) ?? radius;
     const camDist = this.camera.position.distanceTo(this.tmpBodyPos);
     let surface = Math.max(camDist - radius, 1e-9);
     if (alsoClear && alsoClear !== name) {
@@ -1993,6 +2003,8 @@ export class SystemMap {
       Math.max(this.renderer.domElement.clientHeight, 1),
       MAP_FOV_DEG,
       this.bodySizeParams,
+      ceilingRadius,
+      fitDistanceAU(this.extentAU, MAP_FOV_DEG, this.camera.aspect),
       this.tmpBounds,
     );
     return this.clearParentInShell(name, bounds);

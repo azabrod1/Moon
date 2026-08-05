@@ -7043,6 +7043,17 @@ export class PlanetariumMode {
     // painted beneath the taller card. The sweep reads only the clock and its
     // own cursors, so nothing here needs the update to have run.
     this.updateMapEventSearch();
+    // The ◂ Overview chip for the same reason: on a phone the chip is top
+    // chrome the card's height is measured against, so flipping it re-measures
+    // the card — and every flip a user can cause (Focus, Overview, Esc) has
+    // already happened by now, in its event handler. A flip the UPDATE causes
+    // (a flight landing turns the chip on) shows one frame late instead,
+    // which only ever SHRINKS the card's room — the safe direction — and the
+    // chip itself is cosmetic for a frame either way.
+    this.mapHud.setOverviewChip(mapOverviewChipVisible(
+      this.systemMap.getCameraState(),
+      this.systemMap.isZoomFree(),
+    ));
     // The course as a VECTOR, from the ship's own forward math — the chart
     // charts a point one step along it and never re-derives a heading of its
     // own. Landing goes over whole: the chart places the marker differently on
@@ -7084,14 +7095,8 @@ export class PlanetariumMode {
       }
       this.mapHud.setActionsDisabled(this.arrivalInFlight);
     }
-    // The ◂ Overview chip follows the camera state, and the map has no HUD
-    // reference of its own — so its visibility is owned here, every frame,
-    // rather than left to whichever transition remembered to set it.
-    this.mapHud.setOverviewChip(mapOverviewChipVisible(
-      this.systemMap.getCameraState(),
-      this.systemMap.isZoomFree(),
-    ));
-    // The zoom pair follows the same rule, from the map's own predicate.
+    // The zoom pair follows the camera state from the map's own predicate; the
+    // map has no HUD reference of its own, so the per-frame refresh owns it.
     this.refreshMapZoomButtons(this.systemMap);
     // The hint has said its piece once the chart has been zoomed by hand.
     if (this.mapZoomHintShown && this.systemMap.sawZoomGesture()) this.hideMapZoomHint();

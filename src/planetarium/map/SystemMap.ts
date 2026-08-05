@@ -193,6 +193,7 @@ import {
   mapLabelOffsetPx,
   MapLabelPlacer,
   ringClearedLabelShiftPx,
+  LABEL_EDGE_PAD_PX,
   LABEL_LINE_HEIGHT_PX,
   LABEL_NOMINAL_HALF_WIDTH_PX,
 } from './mapLabels';
@@ -569,6 +570,8 @@ export class SystemMap {
   private labelChromeTopPx: number | null = null;
   private labelChromeForW = 0;
   private labelChromeForH = 0;
+  private labelChromeCardShown = false;
+  private labelCardEl: HTMLElement | null = null;
   /** The one drawn ring annulus's screen-space ellipse this frame, for the
    *  labels of the moons that live inside it. Refreshed in renderLabels;
    *  inactive whenever no revealed system draws a ring. */
@@ -4717,6 +4720,7 @@ export class SystemMap {
     const offset = this.labelOffsetPxFor(name);
     let x = this.tmpProj.x;
     let boxTop = this.tmpProj.y + offset;
+    let ringShifted = false;
     const ctx = this.labelRingCtx;
     if (inRingSystem && ctx.parent !== null && ringClearedLabelShiftPx(
       this.tmpProj.x - ctx.centerXPx,
@@ -4726,27 +4730,33 @@ export class SystemMap {
       ctx.minorDirX,
       ctx.minorDirY,
       offset,
+      halfWidth,
+      LABEL_LINE_HEIGHT_PX,
       this.labelRingShift,
     )) {
+      ringShifted = true;
       x = this.tmpProj.x + this.labelRingShift.x;
       boxTop = this.tmpProj.y + this.labelRingShift.y;
-      // An exit above the anchor places the box by its BOTTOM edge — the shift
-      // cleared a distance for the near edge of the text, not its far one.
-      if (this.labelRingShift.y < 0) boxTop -= LABEL_LINE_HEIGHT_PX;
     }
     // The box stays whole on the frame ("Titan" half off the right edge reads
-    // as a bug), and out of the bottom chrome band entirely.
-    x = clampLabelCenterXPx(x, halfWidth, w);
+    // as a bug), and out of the bottom chrome band entirely. A ring-dodged
+    // label the side clamp would drag back over the annulus hides instead —
+    // there is no x that is both on the frame and off the ring.
+    const clampedX = clampLabelCenterXPx(x, halfWidth, w);
+    if (ringShifted && Math.abs(clampedX - x) > LABEL_EDGE_PAD_PX) {
+      if (label.style.display !== 'none') label.style.display = 'none';
+      return;
+    }
+    x = clampedX;
     if (boxTop > this.labelMaxBoxTop(w, h)) {
       if (label.style.display !== 'none') label.style.display = 'none';
       return;
     }
     // Proximity cull: hide if the label lands too close to an already-placed
-    // (higher-priority) label this frame. Tested where the label is DRAWN, not
-    // at the body's centre — once the offset varies by body, the two are
-    // different points and culling against the centre would judge one label by
-    // another label's position.
-    if (!this.labelPlacer.place(x, this.tmpProj.y, boxTop, halfWidth)) {
+    // (higher-priority) label this frame. The anchor test reads the BODY's
+    // position, the box test the rectangle actually drawn — a clamp or a ring
+    // dodge moves the second without inventing a new position for the first.
+    if (!this.labelPlacer.place(this.tmpProj.x, this.tmpProj.y, x, boxTop, halfWidth)) {
       if (label.style.display !== 'none') label.style.display = 'none';
       return;
     }
@@ -4762,17 +4772,38 @@ export class SystemMap {
   }
 
   /** The lowest box-top a label may draw at, from the measured chrome. The
-   *  measure is cached against the viewport it was taken at; openMap drops the
-   *  cache so a bar that came or went between sessions is seen. */
+   *  measure is cached against the viewport AND the picked-body card's shown
+   *  state; openMap drops the cache so a bar that came or went between
+   *  sessions is seen.
+   *
+   *  The card counts only when it spans the width — the phone's bottom sheet,
+   *  which stands hundreds of px over this band with no resize to announce it.
+   *  The desktop card is a corner and the band is a full-width model: excluding
+   *  for it would hide every label to its right. The class read costs no
+   *  layout, so it runs per frame to catch the flip; the card's HEIGHT can
+   *  also change in place (picking a taller body), so while it is shown the
+   *  measure re-runs on a small frame cadence rather than never. */
   private labelMaxBoxTop(w: number, h: number): number {
-    if (this.labelChromeForW !== w || this.labelChromeForH !== h) {
+    const cardShown = !!this.labelCardEl?.classList.contains('visible');
+    if (
+      this.labelChromeForW !== w || this.labelChromeForH !== h
+      || this.labelChromeCardShown !== cardShown
+      || (cardShown && this.frameRevision % 32 === 0)
+    ) {
       this.labelChromeForW = w;
       this.labelChromeForH = h;
+      this.labelChromeCardShown = cardShown;
       let top: number | null = null;
       for (const id of ['map-scale', 'planetarium-bottom-bar']) {
         const rect = document.getElementById(id)?.getBoundingClientRect();
         if (!rect || !(rect.height > 0) || !(rect.top > 0)) continue;
         top = top === null ? rect.top : Math.min(top, rect.top);
+      }
+      if (cardShown) {
+        const rect = this.labelCardEl!.getBoundingClientRect();
+        if (rect.height > 0 && rect.top > 0 && rect.width >= 0.9 * w) {
+          top = top === null ? rect.top : Math.min(top, rect.top);
+        }
       }
       this.labelChromeTopPx = top;
     }
@@ -4850,6 +4881,7 @@ export class SystemMap {
   }
 
   private ensureLabelContainer(): void {
+    if (this.labelCardEl === null) this.labelCardEl = document.getElementById('map-card');
     if (this.labelContainer) return;
     this.labelContainer = document.getElementById('map-labels');
     if (!this.labelContainer) return;

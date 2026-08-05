@@ -81,11 +81,11 @@ describe('MapLabelPlacer', () => {
   it('honours a separation the caller sets', () => {
     const p = new MapLabelPlacer(4);
     p.begin();
-    // Positional: x, anchorY, box top, half-width, separation. Nothing has a
+    // Positional: anchor x/y, box centre x, box top, half-width, separation. Nothing has a
     // width here, so only the anchor floor is in play.
-    p.place(0, 0, 0, 0, 10);
-    expect(p.place(9, 0, 0, 0, 10)).toBe(false);
-    expect(p.place(11, 0, 0, 0, 10)).toBe(true);
+    p.place(0, 0, 0, 0, 0, 10);
+    expect(p.place(9, 0, 9, 0, 0, 10)).toBe(false);
+    expect(p.place(11, 0, 11, 0, 0, 10)).toBe(true);
   });
 });
 
@@ -185,17 +185,17 @@ describe('mapLabelOffsetPx', () => {
 describe('the label box test', () => {
   /** Place a label the way SystemMap does: anchor, drawn top, half-width. */
   const put = (p: MapLabelPlacer, anchorY: number, offset: number, half: number, x = 200) =>
-    p.place(x, anchorY, anchorY + offset, half);
+    p.place(x, anchorY, x, anchorY + offset, half);
 
   it('rejects two names that would lie across each other (the O2 case)', () => {
     // Anchors 35 px apart clear the 26 px anchor floor, so the old rule drew
     // both — and their names, 44 px wide, lay straight across each other.
     const p = new MapLabelPlacer(8);
     p.begin();
-    expect(p.place(200, 100, 109, 22)).toBe(true);
-    expect(p.place(235, 100, 109, 22)).toBe(false);
+    expect(p.place(200, 100, 200, 109, 22)).toBe(true);
+    expect(p.place(235, 100, 235, 109, 22)).toBe(false);
     // Far enough apart that the boxes clear, and it draws again.
-    expect(p.place(200 + 44 + LABEL_BOX_PAD_PX + 1, 100, 109, 22)).toBe(true);
+    expect(p.place(200 + 44 + LABEL_BOX_PAD_PX + 1, 100, 200 + 44 + LABEL_BOX_PAD_PX + 1, 109, 22)).toBe(true);
   });
 
   it('still admits names that only crowd on one axis', () => {
@@ -218,15 +218,15 @@ describe('the label box test', () => {
     // the anchor rule admits both either way.
     const collide = new MapLabelPlacer(8);
     collide.begin();
-    expect(collide.place(200, 100, 100 + 9, 22)).toBe(true);
-    expect(collide.place(232, 100, 100 + 9, 22)).toBe(false);
+    expect(collide.place(200, 100, 200, 100 + 9, 22)).toBe(true);
+    expect(collide.place(232, 100, 232, 100 + 9, 22)).toBe(false);
     const spread = new MapLabelPlacer(8);
     spread.begin();
-    expect(spread.place(200, 100, 100 + 9, 22)).toBe(true);
+    expect(spread.place(200, 100, 200, 100 + 9, 22)).toBe(true);
     // Same anchors. The second body's marker is big, so its name is pushed a
     // whole line further down — and now the two boxes clear.
     const bigOffset = 9 + LABEL_LINE_HEIGHT_PX + LABEL_BOX_PAD_PX + 1;
-    expect(spread.place(232, 100, 100 + bigOffset, 22)).toBe(true);
+    expect(spread.place(232, 100, 232, 100 + bigOffset, 22)).toBe(true);
   });
 
   it('leaves the anchor floor in charge when nothing has a width', () => {
@@ -234,9 +234,9 @@ describe('the label box test', () => {
     // behaviour is the anchor rule exactly as it was.
     const p = new MapLabelPlacer(8);
     p.begin();
-    expect(p.place(100, 100, 100, 0)).toBe(true);
-    expect(p.place(100 + LABEL_MIN_SEP_PX - 1, 100, 100, 0)).toBe(false);
-    expect(p.place(100 + LABEL_MIN_SEP_PX, 100, 100, 0)).toBe(true);
+    expect(p.place(100, 100, 100, 100, 0)).toBe(true);
+    expect(p.place(100 + LABEL_MIN_SEP_PX - 1, 100, 100 + LABEL_MIN_SEP_PX - 1, 100, 0)).toBe(false);
+    expect(p.place(100 + LABEL_MIN_SEP_PX, 100, 100 + LABEL_MIN_SEP_PX, 100, 0)).toBe(true);
   });
 
   it('defaults to the anchor-only behaviour for a two-argument caller', () => {
@@ -245,6 +245,26 @@ describe('the label box test', () => {
     expect(p.place(0, 0)).toBe(true);
     expect(p.place(LABEL_MIN_SEP_PX - 1, 0)).toBe(false);
     expect(p.place(LABEL_MIN_SEP_PX, 0)).toBe(true);
+  });
+
+  it('judges anchors at the BODIES, not at a clamped box — the edge-clamp case', () => {
+    // A body 1 px from the left edge has its 30-px-wide box clamped to centre
+    // 34. Its neighbour's anchor is 53 px away from the BODY — well clear —
+    // and the two boxes clear on the y axis. Testing the anchor at the clamped
+    // x would put a phantom point 25.6 px from the neighbour and hide it.
+    const p = new MapLabelPlacer(8);
+    p.begin();
+    expect(p.place(1, 100, 34, 109, 30)).toBe(true);
+    expect(p.place(50, 120, 50, 129, 30)).toBe(true);
+  });
+
+  it('still rejects boxes that overlap through their MOVED centres', () => {
+    // Anchors far apart, but a ring dodge dragged the second box over the
+    // first: the box test reads the moved centres and catches it.
+    const p = new MapLabelPlacer(8);
+    p.begin();
+    expect(p.place(1, 100, 34, 109, 30)).toBe(true);
+    expect(p.place(90, 112, 60, 112, 30)).toBe(false);
   });
 
   it('culls on the nominal width before anything has been measured', () => {
@@ -320,20 +340,20 @@ describe('ringClearedLabelShiftPx', () => {
 
   it('leaves a moon outside the annulus alone', () => {
     // Face-on ring (ratio 1), outer edge 100 px; moon at 120 px.
-    expect(ringClearedLabelShiftPx(120, 0, 100, 1, 0, 1, 11, out)).toBe(false);
+    expect(ringClearedLabelShiftPx(120, 0, 100, 1, 0, 1, 11, 0, 0, out)).toBe(false);
     expect(out).toEqual({ x: 0, y: 0 });
   });
 
   it('slides an inner moon radially outward past the outer edge, face on', () => {
     // Moon 40 px right of the parent, ring out to 100: the label lands past
     // 100 + pad along +x, so the shift is (100 + pad − 40, 0).
-    expect(ringClearedLabelShiftPx(40, 0, 100, 1, 0, 1, 11, out)).toBe(true);
+    expect(ringClearedLabelShiftPx(40, 0, 100, 1, 0, 1, 11, 0, 0, out)).toBe(true);
     expect(out.x).toBeCloseTo(100 + LABEL_EDGE_PAD_PX - 40, 6);
     expect(out.y).toBeCloseTo(0, 6);
   });
 
   it('points the shift away from the parent, whatever the quadrant', () => {
-    expect(ringClearedLabelShiftPx(-30, -30, 100, 1, 0, 1, 11, out)).toBe(true);
+    expect(ringClearedLabelShiftPx(-30, -30, 100, 1, 0, 1, 11, 0, 0, out)).toBe(true);
     expect(out.x).toBeLessThan(0);
     expect(out.y).toBeLessThan(0);
   });
@@ -341,27 +361,60 @@ describe('ringClearedLabelShiftPx', () => {
   it('works the ellipse frame, not the circle: a moon on the minor axis exits along it', () => {
     // Ratio 0.5, minor axis along +y: a moon 30 px up is 60 normalized —
     // still inside 100 — and its nearest exit is along +y at (100+pad)·0.5.
-    expect(ringClearedLabelShiftPx(0, 30, 100, 0.5, 0, 1, 11, out)).toBe(true);
+    expect(ringClearedLabelShiftPx(0, 30, 100, 0.5, 0, 1, 11, 0, 0, out)).toBe(true);
     expect(out.x).toBeCloseTo(0, 6);
     expect(out.y).toBeCloseTo((100 + LABEL_EDGE_PAD_PX) * 0.5 - 30, 6);
   });
 
   it('reads an edge-on ring as no annulus at all', () => {
-    // Ratio ~0: any off-plane moon is normalized far outside the edge.
-    expect(ringClearedLabelShiftPx(0, 5, 100, 1e-9, 0, 1, 11, out)).toBe(false);
+    // Ratio ~0: the projected annulus is a sliver under the minor-extent
+    // floor, so the dodge stands down before any normalized radius is asked.
+    expect(ringClearedLabelShiftPx(0, 5, 100, 1e-9, 0, 1, 11, 0, 0, out)).toBe(false);
+  });
+
+  it('stands down for a COPLANAR moon under a near-edge-on ring', () => {
+    // In the ring plane the normalized radius stays finite (40 < 100) however
+    // collapsed the annulus is — without the minor-extent floor this shift
+    // would fling the label to the tip of a ring drawn as a line.
+    expect(ringClearedLabelShiftPx(40, 0, 100, 1e-9, 0, 1, 11, 0, 0, out)).toBe(false);
+    expect(out).toEqual({ x: 0, y: 0 });
+    // The floor is the line height: an annulus barely under it stays inert,
+    // one over it dodges.
+    expect(ringClearedLabelShiftPx(40, 0, 100, 0.13, 0, 1, 0, 0, 0, out)).toBe(false);
+    expect(ringClearedLabelShiftPx(40, 0, 100, 0.15, 0, 1, 0, 0, 0, out)).toBe(true);
+  });
+
+  it('clears the BOX, not just its point: a horizontal exit adds the half-width', () => {
+    // Face-on, moon 40 px right: the point exit is 104; a 30 px half-width
+    // box must land its LEFT edge there, so the centre goes 30 further.
+    expect(ringClearedLabelShiftPx(40, 0, 100, 1, 0, 1, 0, 30, LABEL_LINE_HEIGHT_PX, out)).toBe(true);
+    expect(out.x).toBeCloseTo(100 + LABEL_EDGE_PAD_PX + 30 - 40, 6);
+    expect(out.y).toBeCloseTo(0, 6);
+  });
+
+  it('clears the BOX going up: the line height rides the exit', () => {
+    // Moon 40 px above centre, face-on: the box hangs DOWN from its point, so
+    // an upward exit must push the point a full line height further for the
+    // box's bottom edge to clear the annulus.
+    expect(ringClearedLabelShiftPx(0, -40, 100, 1, 0, 1, 0, 30, LABEL_LINE_HEIGHT_PX, out)).toBe(true);
+    expect(out.x).toBeCloseTo(0, 6);
+    expect(out.y).toBeCloseTo(-(100 + LABEL_EDGE_PAD_PX + LABEL_LINE_HEIGHT_PX) + 40, 6);
+    // Straight down needs no such allowance — the box's top edge leads.
+    expect(ringClearedLabelShiftPx(0, 40, 100, 1, 0, 1, 0, 30, LABEL_LINE_HEIGHT_PX, out)).toBe(true);
+    expect(out.y).toBeCloseTo(100 + LABEL_EDGE_PAD_PX - 40, 6);
   });
 
   it('enforces the marker clearance when the moon already sits near the edge', () => {
     // 2 px inside the edge: the raw exit is ~6 px, under the 11 px marker
     // clearance, so the shift grows to 11 along the same ray.
-    expect(ringClearedLabelShiftPx(98, 0, 100, 1, 0, 1, 11, out)).toBe(true);
+    expect(ringClearedLabelShiftPx(98, 0, 100, 1, 0, 1, 11, 0, 0, out)).toBe(true);
     expect(Math.hypot(out.x, out.y)).toBeCloseTo(11, 6);
     expect(out.y).toBeCloseTo(0, 6);
     expect(out.x).toBeGreaterThan(0);
   });
 
   it('takes straight down from the parent centre, clear of the whole annulus', () => {
-    expect(ringClearedLabelShiftPx(0, 0, 100, 0.5, 0, 1, 11, out)).toBe(true);
+    expect(ringClearedLabelShiftPx(0, 0, 100, 0.5, 0, 1, 11, 0, 0, out)).toBe(true);
     expect(out.x).toBe(0);
     expect(out.y).toBeCloseTo(100 * 0.5 + LABEL_EDGE_PAD_PX, 6);
   });

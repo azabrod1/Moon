@@ -108,6 +108,13 @@ export function labelWorthDrawing(
   return drawnRadiusPx === null || drawnRadiusPx >= minRadiusPx;
 }
 
+/** A projected annulus whose minor semi-axis is thinner than this many px is
+ *  not worth dodging: near edge-on the ring is a sliver a name can cross
+ *  legibly — and treating it as a region would fling coplanar moons' labels to
+ *  the ring's distant tip, since their normalized radius stays finite while
+ *  the annulus itself has collapsed. */
+export const RING_DODGE_MIN_MINOR_PX = LABEL_LINE_HEIGHT_PX;
+
 /**
  * Where an inner moon's label goes when straight-down would land it on the
  * parent's drawn ring annulus — Saturn's inner family lives entirely inside
@@ -123,12 +130,21 @@ export function labelWorthDrawing(
  * the outer edge — and never less than `minShiftPx`, the moon's own marker
  * clearance, so a moon already near the edge still clears its own dot.
  *
- * An edge-on ring (ratio → 0) collapses the annulus to a line: the normalized
- * radius of any off-plane moon explodes past the edge, and the ordinary label
- * correctly survives. A moon at the parent's own centre has no direction to
- * speak of and takes straight down.
+ * What exits is the BOX, not a point: the label's rectangle (2·halfWidth wide,
+ * one line tall, hung below the placed point) is pushed along the exit
+ * direction by its own support — its half-width times the direction's
+ * horizontal share, plus its line height when the exit runs upward, where the
+ * box hangs back toward the ring. Exact against the tangent for a circle
+ * (face-on); at moderate foreshortening the pad covers the tangent-vs-normal
+ * mismatch, and the near-edge-on regime where that mismatch grows is inert:
+ * an annulus thinner than `minMinorExtentPx` is a sliver nothing needs to
+ * dodge, which also keeps coplanar moons off the collapsed ring's distant tip.
  *
- * `out` receives the label-centre offset from the moon's anchor, in screen px.
+ * A moon at the parent's own centre has no direction to speak of and takes
+ * straight down.
+ *
+ * `out` receives the offset of the label's placed point (its box's top-centre)
+ * from the moon's anchor, in screen px — box clearance already included.
  */
 export function ringClearedLabelShiftPx(
   relXPx: number,
@@ -138,12 +154,16 @@ export function ringClearedLabelShiftPx(
   minorDirXPx: number,
   minorDirYPx: number,
   minShiftPx: number,
+  halfWidthPx: number,
+  lineHeightPx: number,
   out: { x: number; y: number },
   padPx: number = LABEL_EDGE_PAD_PX,
+  minMinorExtentPx: number = RING_DODGE_MIN_MINOR_PX,
 ): boolean {
   out.x = 0;
   out.y = 0;
   if (!(outerRadiusPx > 0) || !(minorMajorRatio > 0)) return false;
+  if (!(outerRadiusPx * minorMajorRatio > minMinorExtentPx)) return false;
   const mLen = Math.hypot(minorDirXPx, minorDirYPx);
   // No usable minor direction = a face-on ring in disguise; treat axes as any
   // orthogonal pair (the ellipse is a circle, the frame does not matter).
@@ -158,19 +178,26 @@ export function ringClearedLabelShiftPx(
   const rho = Math.hypot(u, vn);
   if (rho >= outerRadiusPx) return false;
   if (rho < 1e-6) {
-    // The parent's own pixel — no outward direction exists. Straight down,
-    // clear of the whole annulus.
+    // The parent's own pixel — no outward direction exists. Straight down: the
+    // box's top edge is its near edge, so the point clearance is the box's.
     out.y = Math.max(outerRadiusPx * minorMajorRatio + padPx, minShiftPx);
     return true;
   }
   // The nearest boundary point lies along the same normalized ray; walk to it
-  // and add the pad, then enforce the marker's own clearance along the same
-  // direction.
+  // and add the pad.
   const s = (outerRadiusPx + padPx) / rho;
   const bx = (u * s) * Mx + (v * s) * mx;
   const by = (u * s) * My + (v * s) * my;
-  let dx = bx - relXPx;
-  let dy = by - relYPx;
+  // Outward in SCREEN space, then the box's own support along that direction:
+  // the half-width times the horizontal share always, the line height times
+  // the vertical share only going up — hung below its point, the box's top
+  // edge already touches a downward exit.
+  const bLen = Math.hypot(bx, by);
+  const ox = bx / bLen;
+  const oy = by / bLen;
+  const support = halfWidthPx * Math.abs(ox) + (oy < 0 ? lineHeightPx * -oy : 0);
+  let dx = bx + ox * support - relXPx;
+  let dy = by + oy * support - relYPx;
   const len = Math.hypot(dx, dy);
   if (len < minShiftPx && len > 1e-9) {
     const grow = minShiftPx / len;
@@ -185,7 +212,10 @@ export function ringClearedLabelShiftPx(
 export class MapLabelPlacer {
   private readonly x: Float32Array;
   private readonly y: Float32Array;
-  /** The drawn box of each placed label: centre x, top y, half-width. */
+  /** The drawn box of each placed label: centre x, top y, half-width. Kept
+   *  apart from the anchor above — a clamp or a ring dodge moves the box while
+   *  the body it names stays put, and each test reads its own point. */
+  private readonly boxX: Float32Array;
   private readonly boxTop: Float32Array;
   private readonly boxHalf: Float32Array;
   private count = 0;
@@ -194,6 +224,7 @@ export class MapLabelPlacer {
     const n = Math.max(1, Math.floor(capacity));
     this.x = new Float32Array(n);
     this.y = new Float32Array(n);
+    this.boxX = new Float32Array(n);
     this.boxTop = new Float32Array(n);
     this.boxHalf = new Float32Array(n);
   }
@@ -221,12 +252,18 @@ export class MapLabelPlacer {
    * what keeps the true-scale inner four from stacking.
    *
    * The BOX test is the new one, and it is over the rectangle the label is
-   * actually DRAWN in — centre x, `boxTop` down through one line — not over the
-   * body's centre. Once the vertical offset varies by body (a big marker pushes
-   * its name further down), the anchor and the label are different points, and
-   * a text box can sit clean of every anchor while lying straight across a
-   * neighbour's name. Rejects only when the two rectangles overlap on BOTH
-   * axes, so a name directly above another still draws.
+   * actually DRAWN in — `boxCenterX` across, `boxTop` down through one line —
+   * not over the body's centre. Once the vertical offset varies by body (a big
+   * marker pushes its name further down), the anchor and the label are
+   * different points, and a text box can sit clean of every anchor while lying
+   * straight across a neighbour's name. Rejects only when the two rectangles
+   * overlap on BOTH axes, so a name directly above another still draws.
+   *
+   * The two tests take two different x's on purpose. An edge clamp or a ring
+   * dodge moves the BOX while the body it names stays put — judging the anchor
+   * test at the moved x builds a hybrid point that is nobody's position, close
+   * enough to a neighbour's anchor to hide a label whose body and box are both
+   * well clear.
    *
    * `halfWidthPx` is the label's measured half-width; a caller with nothing
    * measured yet passes the nominal one. A label that may draw is recorded, up
@@ -235,6 +272,7 @@ export class MapLabelPlacer {
   place(
     x: number,
     y: number,
+    boxCenterX: number = x,
     boxTop: number = y,
     halfWidthPx: number = 0,
     minSepPx: number = LABEL_MIN_SEP_PX,
@@ -248,7 +286,8 @@ export class MapLabelPlacer {
       // Rectangles, both grown by half the pad so the gap between them is the
       // pad rather than twice it.
       if (halfWidthPx > 0 || this.boxHalf[i] > 0) {
-        const overlapX = Math.abs(x - this.x[i]) < halfWidthPx + this.boxHalf[i] + LABEL_BOX_PAD_PX;
+        const overlapX =
+          Math.abs(boxCenterX - this.boxX[i]) < halfWidthPx + this.boxHalf[i] + LABEL_BOX_PAD_PX;
         const overlapY = boxTop < this.boxTop[i] + LABEL_LINE_HEIGHT_PX + LABEL_BOX_PAD_PX
           && boxBottom + LABEL_BOX_PAD_PX > this.boxTop[i];
         if (overlapX && overlapY) return false;
@@ -257,6 +296,7 @@ export class MapLabelPlacer {
     if (this.count < this.x.length) {
       this.x[this.count] = x;
       this.y[this.count] = y;
+      this.boxX[this.count] = boxCenterX;
       this.boxTop[this.count] = boxTop;
       this.boxHalf[this.count] = halfWidthPx;
       this.count++;

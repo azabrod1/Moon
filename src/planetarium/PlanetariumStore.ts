@@ -48,7 +48,11 @@ export interface PlanetariumState {
   showBodyLabelDistances?: boolean; // show distances beneath planet/Sun labels
   showBodyMarkers?: boolean; // show planet glow-dot marker sprites
   showOrbitLines?: boolean;  // show planet orbit lines
-  showMiniChart?: boolean;   // corner system chart while cruising
+  // Corner system chart while cruising — absent until the user flips the ☰
+  // toggle, like skyPref. (The retired always-written `showMiniChart` key is
+  // deliberately ignored on read: every save from the on-by-default era baked
+  // `true` without a user behind it.)
+  miniChartPref?: boolean;
   landedOn?: LandedTarget;   // planet/moon the player is currently landed on
   systemSpeed?: number;      // system speed multiplier (fraction of c)
   systemSlowdown?: boolean;  // whether system slowdown is enabled
@@ -133,7 +137,9 @@ export function sanitizePlanetariumState(raw: unknown): PlanetariumState | null 
       : defaults.showBodyLabelDistances,
     showBodyMarkers: typeof record.showBodyMarkers === 'boolean' ? record.showBodyMarkers : defaults.showBodyMarkers,
     showOrbitLines: typeof record.showOrbitLines === 'boolean' ? record.showOrbitLines : defaults.showOrbitLines,
-    showMiniChart: typeof record.showMiniChart === 'boolean' ? record.showMiniChart : defaults.showMiniChart,
+    // No default, like skyPref below: only a save whose user actually pressed
+    // the toggle carries an opinion about the corner chart.
+    miniChartPref: typeof record.miniChartPref === 'boolean' ? record.miniChartPref : undefined,
     landedOn: sanitizeLandedOn(record.landedOn),
     systemSpeed: isFiniteNumber(record.systemSpeed)
       ? Math.max(0, Math.min(0.4, record.systemSpeed))
@@ -194,7 +200,6 @@ export function createDefaultPlanetariumState(): PlanetariumState {
     showBodyLabelDistances: true,
     showBodyMarkers: true,
     showOrbitLines: false,
-    showMiniChart: true,
     landedOn: null,
     systemSpeed: 0.083,
     systemSlowdown: true,

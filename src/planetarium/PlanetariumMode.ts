@@ -890,11 +890,16 @@ export class PlanetariumMode {
   // system-map-active body class.
   private systemMap: SystemMap | null = null;
   // The corner chart: the same schematic, drawn small in the top-left while
-  // cruising, so the chart flies with you. The user's ☰ preference (persisted;
-  // an old save with no opinion gets it on), the DOM surface that frames the
+  // cruising, so the chart flies with you. Off unless the user turns it on —
+  // the ☰ toggle is the one writer of the persisted preference (below), so a
+  // save has an opinion only after a deliberate flip; dev/capture paths move
+  // this widget state without touching it. The DOM surface that frames the
   // WebGL rectangle and takes the tap, and the rect both of those are written
   // from — one definition, so the frame and the pixels cannot drift apart.
-  private showMiniChart = true;
+  private showMiniChart = false;
+  /** Stored corner-chart preference — null until the user flips the ☰ toggle,
+   *  the skyPref idiom: an untouched preference is never persisted. */
+  private miniChartPrefStored: boolean | null = null;
   private miniChartEl: HTMLElement | null = null;
   private miniRect: MiniChartRect = { left: 0, top: 0, width: 0, height: 0 };
   /** The same rectangle snapped inward to whole device pixels — what is
@@ -6135,6 +6140,9 @@ export class PlanetariumMode {
     });
 
     document.getElementById('settings-mini-toggle')?.addEventListener('click', () => {
+      // The one writer of the persisted preference: only this deliberate flip
+      // gives the save an opinion about the corner chart.
+      this.miniChartPrefStored = !this.showMiniChart;
       this.setMiniChartEnabled(!this.showMiniChart);
     });
 
@@ -11873,7 +11881,9 @@ export class PlanetariumMode {
       showBodyLabelDistances: this.showBodyLabelDistances,
       showBodyMarkers: this.showBodyMarkers,
       showOrbitLines: this.showOrbitLines,
-      showMiniChart: this.showMiniChart,
+      // Absent until the toggle is flipped, like skyPref below — the widget
+      // state itself is NOT the preference (dev/capture paths move it).
+      miniChartPref: this.miniChartPrefStored ?? undefined,
       landedOn: this.landedOn,
       systemSpeed: this.player.systemSpeedMultiplier,
       systemSlowdown: this.systemSlowdown,
@@ -11946,9 +11956,13 @@ export class PlanetariumMode {
     if (orbitsLabel) orbitsLabel.textContent = this.showOrbitLines ? 'On' : 'Off';
     document.getElementById('settings-orbits-toggle')
       ?.setAttribute('aria-pressed', String(this.showOrbitLines));
-    // A save from before the corner chart existed has no opinion about it, and
-    // the chart is on by default — so an absent key reads as on.
-    this.setMiniChartEnabled(saved.showMiniChart ?? true);
+    // Off unless the user has deliberately turned it on. An absent key is a
+    // save with no opinion — including every save from the on-by-default era,
+    // whose always-written `showMiniChart` the store deliberately ignores: it
+    // baked `true` without a user behind it, for exactly the users the
+    // default change is for.
+    this.miniChartPrefStored = saved.miniChartPref ?? null;
+    this.setMiniChartEnabled(saved.miniChartPref ?? false);
 
     // Restore autopilot target (kept even when landed — resumes on exit).
     // Pre-provenance saves migrate by heuristic in the store sanitizer (only

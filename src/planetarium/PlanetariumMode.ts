@@ -11018,9 +11018,6 @@ export class PlanetariumMode {
 
   enterLandedMode(target: NonNullable<LandedTarget>) {
     if (this.isMissionActive()) return;
-    // Landing is a journey change: a mission continuation awaiting its ship
-    // profile must yield to it, like any committed journey.
-    this.journeyCommitGen++;
     this.preLandSpeed = this.player.speedMultiplier;
     this.preLandAutopilot = this.autopilot;
     this.applyLandedTarget(target);
@@ -11034,6 +11031,11 @@ export class PlanetariumMode {
    * ceremony (no speed restore, no "Departing" toast, take-off state intact).
    */
   private applyLandedTarget(target: NonNullable<LandedTarget>, preserveOrbitPair = false) {
+    // Every landing change funnels through here — first landings, the
+    // Observatory's companion swap, tutorial staging — and each is a journey
+    // change a pending mission continuation must yield to (the takeoff bump
+    // lives in exitLandedMode, which doesn't route through this).
+    this.journeyCommitGen++;
     this.moonArrivalCameraLook = null;
     // Landing (and the landed→landed vantage swap) can flip the Sun's exposed
     // fraction in one frame; reseed the flash baseline so it doesn't glare.

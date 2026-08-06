@@ -258,26 +258,29 @@ const DIVE_END_DIST_FRAC = 0.14;
 const MARKER_RENDER_ORDER = 5;
 const MARKER_OVER_SUN_RENDER_ORDER = 7;
 // The resting ladder under those markers: spheres, then orbit lines, then
-// Saturn's annulus. The spheres are transparent-at-full-opacity — same pixels,
-// but drawn from the sprites' own pass, so that when the size policy floors
-// one the marker orders above can compose it exactly like the dot it replaces
-// (a floored sphere is the marker's footprint worn as a face: marker px ×
-// world-per-px runs ~0.4 AU for Mercury at the true-scale overview, so its
-// depth is a lie the Sun's depth-tested disc must never read, and the opaque
-// pass — which runs before every sprite — could never lift it over the disc).
-// The flag is constant because the shader's identity must be: the two drawing
-// passes may disagree about flooring every frame, and a per-pass transparent
-// flip would be a program rebuild per pass per frame. A true-sized sphere
-// keeps real depth at its resting order, which is why the lines and the
-// annulus draw after it: both depth-test, so an orbit line still dies at the
-// limb and crosses the face, and the annulus loses its far half behind the
-// sphere — the same pixels the old opaque arrangement drew. Floored, the
-// sphere takes the marker orders and the annulus steps one under its sphere
-// (4 under 5, 6 under 7), so the pair keeps its own stacking wherever the
-// lift puts it.
-const GLOBE_RENDER_ORDER = 2;
-const ORBIT_LINE_RENDER_ORDER = 3;
-const GLOBE_RING_RENDER_ORDER = 4;
+// Saturn's annulus, then the Sun's halo (4) — every rung its own number, so
+// no pair ever falls back to the transparent pass's depth tie-break. The
+// spheres are transparent-at-full-opacity — same pixels, but drawn from the
+// sprites' own pass, so that when the size policy floors one the marker
+// orders above can compose it exactly like the dot it replaces (a floored
+// sphere is the marker's footprint worn as a face: marker px × world-per-px
+// runs ~0.4 AU for Mercury at the true-scale overview, so its depth is a lie
+// the Sun's depth-tested disc must never read, and the opaque pass — which
+// runs before every sprite — could never lift it over the disc). The flag is
+// constant because the shader's identity must be: the two drawing passes may
+// disagree about flooring every frame, and a per-pass transparent flip would
+// be a program rebuild per pass per frame. A true-sized sphere keeps real
+// depth at its resting order, which is why the lines and the annulus draw
+// after it: both depth-test, so an orbit line still dies at the limb and
+// crosses the face, and the annulus loses its far half behind the sphere —
+// the same pixels the old opaque arrangement drew. Floored, the sphere takes
+// the marker orders and the annulus rides half a step under its own sphere
+// (4.5 under 5, 6.5 under 7): still above the halo, under the dots, and over
+// the disc exactly when its sphere is. The half step is deliberate — a whole
+// step down would land the ring back on the halo's rung.
+const GLOBE_RENDER_ORDER = 1;
+const ORBIT_LINE_RENDER_ORDER = 2;
+const GLOBE_RING_RENDER_ORDER = 3;
 
 // ---- moon systems ------------------------------------------------------
 // Samples per drawn moon orbit. The ring is a closed loop of the moon's own
@@ -4725,12 +4728,20 @@ export class SystemMap {
       // rather than showing through the photosphere. A true-sized globe is
       // left alone — it is depth-tested, and the disc sorts against it
       // correctly. A floored globe is depth-free like the dot, so it hides
-      // behind the same latch.
+      // behind the same latch — judged at the pair's whole drawn reach when a
+      // globe is what draws, so a Saturn whose ring tips still protrude past
+      // the disc is composited under it (tips visible) instead of vanishing.
       const sunSepPx = markerSeparationPx(
         viewX, viewY, depth, sunViewX, sunViewY, sunDepth, worldPerPxAtUnit,
       );
       entry.occluded = markerBehindDisc(
-        true, depth, entry.drawnRadiusPx, sunDepth, sunDiscPx, sunSepPx, entry.occluded,
+        true,
+        depth,
+        globe ? entry.drawnRadiusPx * entry.ringOuterFactor : entry.drawnRadiusPx,
+        sunDepth,
+        sunDiscPx,
+        sunSepPx,
+        entry.occluded,
       );
       entry.globe.visible = globe && !(floored && entry.occluded);
       entry.dot.visible = !globe && !entry.occluded;
@@ -4760,10 +4771,14 @@ export class SystemMap {
         );
         this.setGlobeCompositing(entry.globeMat, entry.globeMesh, floored, lifted);
         if (entry.ringMesh) {
-          // One step under its sphere, wherever the sphere sits.
+          // Half a step under its sphere, wherever the sphere sits — see the
+          // ladder note. The sphere then covers the annulus's crossing strip
+          // on the face (both halves — an accepted marker-scale trade: with no
+          // depth there is no order that draws the crossing right, and the
+          // half that matters is the annulus outside the disc).
           entry.ringMesh.renderOrder = !floored
             ? GLOBE_RING_RENDER_ORDER
-            : (lifted ? MARKER_OVER_SUN_RENDER_ORDER : MARKER_RENDER_ORDER) - 1;
+            : (lifted ? MARKER_OVER_SUN_RENDER_ORDER : MARKER_RENDER_ORDER) - 0.5;
         }
       } else {
         // The dot stands in for the globe, so it is sized from the same policy
@@ -5152,11 +5167,12 @@ export class SystemMap {
     const geometry = new LineGeometry();
     geometry.setPositions(map);
     geometry.setColors(colors);
-    // depthTest ON: the lit globes are opaque depth-writing meshes drawn in
-    // the opaque pass, so a depth-free line (the dot-era default) would paint
-    // straight across every disc afterwards. Tested, the line dies at the limb
-    // and re-emerges past it — a body occludes its own orbit. No depth write:
-    // the lines must never occlude each other or the sprites.
+    // depthTest ON: a true-sized globe writes depth (transparent at full
+    // opacity, but drawn first — see the render-order ladder note), so a
+    // depth-free line (the dot-era default) would paint straight across every
+    // disc afterwards. Tested, the line dies at the limb and re-emerges past
+    // it — a body occludes its own orbit. No depth write: the lines must
+    // never occlude each other or the sprites.
     const material = new LineMaterial({
       linewidth: 1.5,
       vertexColors: true,
@@ -5370,12 +5386,13 @@ export class SystemMap {
    * The solar disc: a limb-darkened billboard rather than a lit sphere, since a
    * star is its own light.
    *
-   * depthTest ON, alone among the chart's sprites. The globes are opaque
-   * depth-writing meshes drawn before every sprite, so this is what stops the
-   * star painting straight over a planet the camera has resolved in front of
-   * it; behind one, the disc's own depth is nearer and it paints as before. It
-   * still writes no depth — the disc must never occlude the markers, which is
-   * the other half of the question and is answered analytically.
+   * depthTest ON, alone among the chart's sprites. A true-sized globe writes
+   * depth from its early slot in the ladder, so this is what stops the star
+   * painting straight over a planet the camera has resolved in front of it;
+   * behind one, the disc's own depth is nearer and it paints as before. It
+   * still writes no depth — the disc must never occlude the markers (or the
+   * depth-free floored globes riding the marker orders), which is the other
+   * half of the question and is answered analytically.
    */
   private makeSunDiscSprite(): THREE.Sprite {
     const mat = new THREE.SpriteMaterial({

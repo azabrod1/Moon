@@ -34,6 +34,14 @@
 
 export type MapBodyDraw = 'globe' | 'dot';
 
+/** The smallest marker radius that draws as a globe at true scale. A mark this
+ *  big is a body-sized footprint either way — painting it as an abstract dot
+ *  reads as an unloaded body, not as a schematic symbol, so once there is room
+ *  for a face the real textured globe draws at the same footprint. Below it a
+ *  mark is a few px, where a globe is mush and a crisp dot is the honest
+ *  symbol — which keeps a revealed system's small moons as dots. */
+export const TRUE_SCALE_GLOBE_MIN_PX = 5;
+
 /**
  * Which of the two looks a body draws as this frame.
  *
@@ -42,8 +50,14 @@ export type MapBodyDraw = 'globe' | 'dot';
  * committed target is true scale; the blend may still be animating toward it,
  * and the draw mode follows the target, not the blend. `trueProjectedPx` — the
  * body's REAL disc radius on screen right now, and `markerRadiusPx` the chart
- * marker it would draw at instead; at true scale the globe is what draws from
- * the moment the first overtakes the second.
+ * marker it would draw at instead.
+ *
+ * Compressed always draws the globe. True scale draws it from the moment the
+ * real disc overtakes the marker — the crossover the size policy hands the
+ * drawn radius over at — and also whenever the marker itself is big enough to
+ * carry a face: the drawn size is floored at the marker either way, so the
+ * globe is no more inflated than the dot it replaces, and it looks like the
+ * world it stands for instead of like a texture that never arrived.
  */
 export function mapBodyDrawMode(
   textureReady: boolean,
@@ -53,7 +67,8 @@ export function mapBodyDrawMode(
 ): MapBodyDraw {
   if (!textureReady) return 'dot';
   if (!trueScaleTarget) return 'globe';
-  return trueProjectedPx >= markerRadiusPx ? 'globe' : 'dot';
+  if (trueProjectedPx >= markerRadiusPx) return 'globe';
+  return markerRadiusPx >= TRUE_SCALE_GLOBE_MIN_PX ? 'globe' : 'dot';
 }
 
 /**

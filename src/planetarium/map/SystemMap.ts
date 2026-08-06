@@ -4605,10 +4605,12 @@ export class SystemMap {
       );
       const worldPerPx = Math.max(worldPerPxAtUnit * depth, 1e-30);
       entry.drawnRadiusPx = drawnAU / worldPerPx;
-      // At true scale the globe is what draws from the moment the body's REAL
-      // disc overtakes the marker the chart would have drawn instead — the same
-      // crossover the size policy already hands the drawn radius over at, so
-      // the swap costs nothing in size and nothing pops.
+      // At true scale the globe draws from the moment the body's REAL disc
+      // overtakes the marker — the same crossover the size policy hands the
+      // drawn radius over at, so the swap costs nothing in size and nothing
+      // pops — and for any planet whose marker is already big enough to carry
+      // a face. Both looks share the policy footprint, so which one draws
+      // never changes what labels, picking, or occlusion measure against.
       const globe = mapBodyDrawMode(
         entry.globeMat.map !== null,
         trueScaleTarget,

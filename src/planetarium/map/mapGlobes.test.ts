@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { mapBodyDrawMode, shouldAdoptTexture } from './mapGlobes';
+import { mapBodyDrawMode, shouldAdoptTexture, TRUE_SCALE_GLOBE_MIN_PX } from './mapGlobes';
 
 describe('mapBodyDrawMode', () => {
   // Overview framing: every body's real disc is far below its chart marker.
@@ -16,33 +16,38 @@ describe('mapBodyDrawMode', () => {
     expect(mapBodyDrawMode(false, true, CLOSE.truePx, CLOSE.markerPx)).toBe('dot');
   });
 
-  it('keeps the dot look at true scale while the marker is what governs', () => {
-    expect(mapBodyDrawMode(true, true, FAR.truePx, FAR.markerPx)).toBe('dot');
+  it('draws the globe at true scale once the marker can carry a face', () => {
+    // The drawn size is floored at the marker either way, so a body-sized mark
+    // that painted as an abstract dot read as an unloaded body. A planet's
+    // marker (here 16 px) is a globe now even while the real disc is nothing.
+    expect(mapBodyDrawMode(true, true, FAR.truePx, FAR.markerPx)).toBe('globe');
   });
 
-  it('hands over the true-scale globe exactly at the marker crossover', () => {
-    // Below the crossover the marker would still floor the drawn size, so a
-    // globe there would be an inflated body calling itself true scale.
-    expect(mapBodyDrawMode(true, true, 15.99, 16)).toBe('dot');
-    expect(mapBodyDrawMode(true, true, 16, 16)).toBe('globe');
+  it('keeps a small mark a crisp dot at true scale', () => {
+    // A revealed system's minor moons floor at a few px, where a globe is
+    // mush and the dot is the honest symbol.
+    const tiny = TRUE_SCALE_GLOBE_MIN_PX - 0.01;
+    expect(mapBodyDrawMode(true, true, 0.001, tiny)).toBe('dot');
+    expect(mapBodyDrawMode(true, true, 0.001, TRUE_SCALE_GLOBE_MIN_PX)).toBe('globe');
+  });
+
+  it('hands over to the REAL disc exactly at the marker crossover', () => {
+    // Below the face floor the real disc is still what flips a small mark to
+    // a globe, at the same crossover the size policy hands the radius over at.
+    const markerPx = TRUE_SCALE_GLOBE_MIN_PX - 1;
+    expect(mapBodyDrawMode(true, true, markerPx - 0.01, markerPx)).toBe('dot');
+    expect(mapBodyDrawMode(true, true, markerPx, markerPx)).toBe('globe');
     expect(mapBodyDrawMode(true, true, CLOSE.truePx, CLOSE.markerPx)).toBe('globe');
-  });
-
-  it('lets the per-body marker floor set its own crossover', () => {
-    // A 20 px disc is a globe for a body whose marker floors at 6 px and still
-    // a dot for one whose marker floors at 16.
-    expect(mapBodyDrawMode(true, true, 20, 6)).toBe('globe');
-    expect(mapBodyDrawMode(true, true, 20, 16)).toBe('globe');
-    expect(mapBodyDrawMode(true, true, 8, 6)).toBe('globe');
-    expect(mapBodyDrawMode(true, true, 8, 16)).toBe('dot');
   });
 
   it('swaps on the committed target, so the blend animation runs one look', () => {
     // The toggle commits, then the 400 ms blend runs. Whatever the blend is
     // doing, every frame of that animation reports the same target — so the
-    // decision is constant across all of it.
-    expect(mapBodyDrawMode(true, true, FAR.truePx, FAR.markerPx)).toBe('dot');
-    expect(mapBodyDrawMode(true, false, FAR.truePx, FAR.markerPx)).toBe('globe');
+    // decision is constant across all of it. A small mark is the case where
+    // the two targets still disagree.
+    const tiny = TRUE_SCALE_GLOBE_MIN_PX - 0.01;
+    expect(mapBodyDrawMode(true, true, 0.001, tiny)).toBe('dot');
+    expect(mapBodyDrawMode(true, false, 0.001, tiny)).toBe('globe');
   });
 });
 

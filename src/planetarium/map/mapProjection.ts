@@ -135,7 +135,10 @@ export function mapRadius(radiusAU: number, blend: number, curve: MapCurve): num
  * true radius and its fully-compressed image (whichever way the curve bends —
  * asinh only compresses, the power law expands below 1 AU), so the root is
  * bracketed by m and the blend-0 inverse of m, and any Newton step that
- * leaves the bracket falls back to bisection. The blend-0 inverse can
+ * leaves the bracket falls back to the bracket's geometric midpoint —
+ * log-space bisection, because the bracket can span a dozen decades in the
+ * power law's expansion region and arithmetic halving cannot cross them in
+ * the iteration budget. The blend-0 inverse can
  * overflow to Infinity on a hard-compressing curve (sinh of a mid-blend
  * radius), so the bracket is also capped at m / blend, which
  * `m = c·(1−blend) + r·blend ≥ r·blend` guarantees. Converges to double
@@ -175,7 +178,12 @@ export function unmapRadius(mapRadiusAU: number, blend: number, curve: MapCurve)
     // edge the residual test just wrote, so recognize it BEFORE the bracket
     // check, which sees an endpoint and would bisect away from the root.
     if (next === r) break;
-    if (!(next > lo && next < hi)) next = lo + (hi - lo) / 2;
+    // The fallback bisects GEOMETRICALLY: the power law's sub-AU expansion
+    // can put the root a dozen decades below the drawn radius, and at a tiny
+    // blend the Newton step overshoots past zero every time — arithmetic
+    // halving covers ~7 decades in the whole budget where the log-space
+    // midpoint crosses them all. Split sqrt against product underflow.
+    if (!(next > lo && next < hi)) next = Math.sqrt(lo) * Math.sqrt(hi);
     if (next === r) break;
     r = next;
   }

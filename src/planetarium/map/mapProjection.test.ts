@@ -425,11 +425,13 @@ describe('isAtOverviewFit', () => {
 });
 
 describe('unmapRadius', () => {
-  // The blends the camera actually crosses: both endpoints, the ease's
-  // midsection, a frame just shy of settling — and 0.601, the blend at which
-  // a Newton step once landed exactly on the bracket edge and was bisected
-  // away from its own converged root.
-  const BLENDS = [MAP_BLEND_COMPRESSED, 0.25, 0.5, 0.601, 0.997, MAP_BLEND_TRUE];
+  // The blends the camera actually crosses: both endpoints, an ease's very
+  // first step (0.004672 — where a tiny blend term leaves Newton overshooting
+  // and the fallback bisection has to carry the whole search), the ease's
+  // midsection, 0.601 (where a Newton step once landed exactly on the bracket
+  // edge and was bisected away from its own converged root), and a frame just
+  // shy of settling.
+  const BLENDS = [MAP_BLEND_COMPRESSED, 0.004672, 0.25, 0.5, 0.601, 0.997, MAP_BLEND_TRUE];
   const CURVES: MapCurve[] = [
     CURVE,
     { kind: 'asinh', s0: MAP_S0_MIN },
@@ -444,7 +446,7 @@ describe('unmapRadius', () => {
   it('inverts mapRadius to double precision across curves, blends and radii', () => {
     for (const curve of CURVES) {
       for (const blend of BLENDS) {
-        for (const r of [1e-6, AU.mercury, AU.earth, AU.saturn, AU.pluto, 100]) {
+        for (const r of [1e-12, 1e-6, AU.mercury, AU.earth, AU.saturn, AU.pluto, 100]) {
           const m = mapRadius(r, blend, curve);
           expect(unmapRadius(m, blend, curve)).toBeCloseTo(r, 9);
         }
@@ -462,6 +464,21 @@ describe('unmapRadius', () => {
   it('maps zero and negative to zero', () => {
     expect(unmapRadius(0, 0.5, CURVE)).toBe(0);
     expect(unmapRadius(-1, 0.5, CURVE)).toBe(0);
+  });
+
+  it('crosses the expansion region within the iteration budget', () => {
+    // Gamma-min expands everything under 1 AU so hard that a compressed pivot
+    // of 0.25 AU unmaps to ~9e-13 — a twelve-decade bracket, at a first-frame
+    // blend where every Newton step overshoots past zero. Arithmetic
+    // bisection stalled ~2e-8 short and the pivot visibly JUMPED 0.167 AU
+    // between two ease frames; the geometric fallback crosses the decades.
+    // The frames are a real 16 ms ease's first two steps.
+    const curve: MapCurve = { kind: 'power', gamma: MAP_GAMMA_MIN };
+    const r0 = Math.pow(0.25, 1 / MAP_GAMMA_MIN);
+    const step1 = remapRadius(0.25, MAP_BLEND_COMPRESSED, 0.004672, curve);
+    expect(step1).toBeCloseTo(mapRadius(r0, 0.004672, curve), 12);
+    const step2 = remapRadius(step1, 0.004672, 0.018176, curve);
+    expect(step2).toBeCloseTo(mapRadius(r0, 0.018176, curve), 12);
   });
 
   it('keeps a root found on the bracket edge instead of bisecting off it', () => {

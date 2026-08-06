@@ -4747,6 +4747,16 @@ export class SystemMap {
       // compressed animation rides out on marker rules instead of handing an
       // AU-scale sphere its depth back while the camera is still far.
       const floored = (trueScaleTarget || view.trueScaleBlend > 0) && truePx < markerPx;
+      // The occlusion latch below holds its answer through a hysteresis band
+      // judged at the drawn footprint — and a draw-mode flip changes that
+      // footprint (a ringed globe is judged at its ring tips, the dot at its
+      // sphere), as does the full↔mini handover, which moves the whole band
+      // to another camera. An answer held from the other regime means
+      // nothing, so a flip re-judges from scratch; false is the forgiving
+      // seed, resolving the band toward drawn the way the limb rule does.
+      // (A footprint the disc cannot swallow was never at risk: the latch's
+      // own disc-must-swallow guard un-hides it on the first judged frame.)
+      const drawModeFlipped = entry.globeDrawn !== globe;
       entry.globeDrawn = globe;
       // Behind the star: the disc paints over whatever a depth-free marker
       // draws there, so the marker, its name and its hit target stand down
@@ -4766,7 +4776,7 @@ export class SystemMap {
         sunDepth,
         sunDiscPx,
         sunSepPx,
-        entry.occluded,
+        drawModeFlipped ? false : entry.occluded,
       );
       entry.globe.visible = globe && !(floored && entry.occluded);
       entry.dot.visible = !globe && !entry.occluded;

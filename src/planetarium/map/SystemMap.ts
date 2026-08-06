@@ -1484,9 +1484,17 @@ export class SystemMap {
           const pivot = this.controls.target;
           const pivotRadius = pivot.length();
           if (pivotRadius > 1e-9) {
-            pivot.multiplyScalar(
-              remapRadius(pivotRadius, blendBefore, this.blend, this.curve) / pivotRadius,
-            );
+            const scale =
+              remapRadius(pivotRadius, blendBefore, this.blend, this.curve) / pivotRadius;
+            // The camera rides the same delta: the dolly below re-derives its
+            // ray from camera − target, so a pivot sliding under a standing
+            // camera would swing the bearing a little toward the radial every
+            // frame — a deep zoom ends the toggle staring down the system's
+            // radius, and a round trip can land on the far side of the pivot.
+            // Carrying the camera keeps the offset vector — the user's
+            // bearing — and leaves the dolly nothing to change but length.
+            this.camera.position.addScaledVector(pivot, scale - 1);
+            pivot.multiplyScalar(scale);
           }
           // Re-dolly to preserve the framing captured at the toggle, so the
           // system holds its apparent size while its extent slides with the

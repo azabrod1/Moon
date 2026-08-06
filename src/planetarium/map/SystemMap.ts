@@ -914,6 +914,13 @@ export class SystemMap {
    *  before the state gates, because a gesture the camera state refuses is
    *  still a user who knows how to zoom. */
   private zoomGestureSeen = false;
+  /** A wheel or pinch dollied since the scale ease last preserved its framing.
+   *  The ease re-dollies to the ratio captured at the toggle every frame, so a
+   *  gesture's new distance would snap back on the very next one — the button
+   *  path rebases inline (zoomNotches), but the wheel's dolly lands inside the
+   *  controls after our listeners run, so it flags here and the ease rebases
+   *  before its next dolly. */
+  private zoomEaseRebase = false;
   private overviewBounds: MapCameraBounds = { minDist: 0, maxDist: 0, near: 0, far: 0 };
   private zoomViewDir = new THREE.Vector3();
   /** The nearest drawn surface to the camera, refilled in place — the scan runs
@@ -937,6 +944,10 @@ export class SystemMap {
   private diveFocusName: string | null = null;
   private diveStartPos = new THREE.Vector3();
   private diveStartTarget = new THREE.Vector3();
+  // The blend the snapshots were taken at: the scale animation keeps running
+  // under a dive, so a cancel may have to carry them into a projection that
+  // moved on while the dive owned the camera.
+  private diveStartBlend = 0;
   private diveOffsetDir = new THREE.Vector3();
   private diveStartDist = 1;
   private tmpVec3 = new THREE.Vector3();
@@ -1172,6 +1183,7 @@ export class SystemMap {
     // waiting for its own visibility rule keeps exactly one pass a frame
     // writing the drawn sizes both of them share.
     this.miniOpen = false;
+    this.resetOcclusionLatches();
     this.projectionRevision++;
     this.clockUtcMs = utcMs;
     this.ensureLabelContainer();
@@ -1496,6 +1508,14 @@ export class SystemMap {
             this.camera.position.addScaledVector(pivot, scale - 1);
             pivot.multiplyScalar(scale);
           }
+          // A wheel or pinch that dollied since the last preserved frame chose
+          // a new framing; re-dollying to the toggle's captured ratio would
+          // snap it back right here. Rebase to what the gesture left standing,
+          // the way the button path already does inline.
+          if (this.zoomEaseRebase) {
+            this.zoomEaseRebase = false;
+            this.rebaseScaleZoomRatio();
+          }
           // Re-dolly to preserve the framing captured at the toggle, so the
           // system holds its apparent size while its extent slides with the
           // blend.
@@ -1505,6 +1525,10 @@ export class SystemMap {
           this.applyBounds();
           this.controls.update();
         } else {
+          // Steady state consumes the gesture flag with no rebase to make:
+          // outside an ease nothing re-dollies, and the next toggle captures
+          // its own fresh ratio at the press.
+          this.zoomEaseRebase = false;
           this.applyBounds();
           this.controls.update();
         }
@@ -1610,6 +1634,7 @@ export class SystemMap {
   openMini(utcMs: number): void {
     if (this.miniOpen || this.open) return;
     this.miniOpen = true;
+    this.resetOcclusionLatches();
     this.clockUtcMs = utcMs;
     if (blendParkCompressed(this.blendState) && this.sampled) this.recompressOrbits();
     // Nothing is seated yet: the first tick fits the pose to a live extent, and
@@ -2336,6 +2361,7 @@ export class SystemMap {
     // does this: a pivot moved under a held drag is a re-seat nothing asked for.
     if (this.zoomPointers.size > 0) return;
     this.reseatZoomPivot();
+    this.zoomEaseRebase = true;
   };
 
   /** The same refresh, from the window's capture phase — so it has to check
@@ -2364,6 +2390,7 @@ export class SystemMap {
     this.zoomGestureSeen = true;
     if (!this.zoomOwnsPivot()) return;
     this.reseatZoomPivot();
+    this.zoomEaseRebase = true;
   };
 
   /** Whether the user has zoomed the chart by wheel or pinch since it opened. */
@@ -2975,6 +3002,23 @@ export class SystemMap {
     this.moonRingWrites++;
   }
 
+  /** Forget every occlusion latch. The latches are a hysteresis band's memory
+   *  under ONE camera; the full↔mini handover swaps cameras (and a reopen may
+   *  be minutes of simulation later), so an answer held across either boundary
+   *  is a band from somewhere else on screen — even when the draw mode happens
+   *  to agree. Both open seams re-judge from scratch; false is the forgiving
+   *  seed, resolving toward drawn the way the limb rule does. */
+  private resetOcclusionLatches(): void {
+    for (const entry of this.orbits) entry.occluded = false;
+    for (const system of this.moonSystems) {
+      for (const moon of system.moons) {
+        moon.occluded = false;
+        moon.occludedByParent = false;
+        moon.occludedBySun = false;
+      }
+    }
+  }
+
   private hideMoon(moon: MoonEntry): void {
     moon.visible = false;
     moon.globeDrawn = false;
@@ -3456,6 +3500,7 @@ export class SystemMap {
     this.diveWasAtOverview = isAtOverviewFit(this.getCameraDistance(), startFit);
     this.diveStartPos.copy(this.camera.position);
     this.diveStartTarget.copy(this.controls.target);
+    this.diveStartBlend = this.blend;
     // Whether that target was the origin or a pivot the free zoom had moved.
     // A cancel restores the pose exactly, so it has to restore what the pose
     // MEANT as well — a floating target under a latch that says nothing has
@@ -3560,6 +3605,19 @@ export class SystemMap {
     if (origin && origin.camState !== 'overview') {
       this.restoreFocusFromDive(origin.focusName, origin.flyGoal === 'overview');
       return;
+    }
+    // The snapshots may be in an outgone projection — the scale ease runs to
+    // its end under a dive, and the overview branch that carries the live
+    // pivot across each blend step stood down the whole time. Carry them the
+    // same way (radial remap + the camera rides the delta), or a cancel after
+    // a mid-ease dive restores a pivot the compressed chart no longer reaches
+    // and the camera settles aimed at empty space.
+    const pivotRadius = this.diveStartTarget.length();
+    if (this.blend !== this.diveStartBlend && pivotRadius > 1e-9) {
+      const scale =
+        remapRadius(pivotRadius, this.diveStartBlend, this.blend, this.curve) / pivotRadius;
+      this.diveStartPos.addScaledVector(this.diveStartTarget, scale - 1);
+      this.diveStartTarget.multiplyScalar(scale);
     }
     this.camera.position.copy(this.diveStartPos);
     this.controls.target.copy(this.diveStartTarget);

@@ -92,33 +92,74 @@ export function mapBodyRadiusPx(
 /**
  * Dot sprite extent per drawn radius, for every body the chart marks with one.
  *
- * The dot is a radial gradient, not a disc: opaque to 0.55 of its half-extent,
- * down to alpha 0.18 at 0.7, gone at 1.0. So it PAINTS about seven tenths of the
- * quad it is given, and a quad sized at the drawn radius would read as a body
- * two thirds the size of the globe it stands in for. At 2.6 the painted edge
- * lands at 0.7 × 1.3 = 0.91 of the drawn radius — near enough that the swap
- * between marker and globe reads as one object changing detail rather than
- * size. The ~9% residual is the price of the gradient and is not worth chasing.
+ * The dot is a radial gradient painted into a square quad, so the quad is
+ * always wider than the mark: the profile below runs out to 0.77 of the
+ * half-extent, and at 2.6 that puts the painted edge at 0.77 × 1.3 = 1.00 of
+ * the drawn radius. Marker and globe therefore paint to the same limb, and the
+ * crossover between them reads as one object changing detail rather than size.
  *
- * It lives here, with the rest of the drawn-size policy, because two things
- * need it: the sprite the scene builds, and anything that has to stay clear of
- * what that sprite paints.
+ * It lives here, with the rest of the drawn-size policy, because three things
+ * need it: the sprite the scene builds, the gate that lifts a marker over the
+ * solar disc (which is judged at the whole quad, gradient skirt and all), and
+ * anything that has to stay clear of what the sprite paints.
  */
 export const DOT_EXTENT_MUL = 2.6;
+
+/** One stop of the marker's radial alpha profile: `at` is the fraction of the
+ *  sprite's half-extent, `alpha` the coverage there, linear in between. */
+export interface DotGradientStop {
+  at: number;
+  alpha: number;
+}
+
+/**
+ * The marker's alpha profile — the shape of every dot the chart draws.
+ *
+ * A flat core with a short feather, not a bulb. The profile it replaced held
+ * 0.18 alpha out at 0.7 of the half-extent and only reached zero at the quad's
+ * own edge, which paints a visible haze half again as wide as the body it
+ * stands for: at marker sizes that reads as a soft blob rather than as a world.
+ * This one carries the same INK — the alpha-weighted equivalent disc, which is
+ * the radius the eye reads a mark at, is within about a percent of the old
+ * profile's, so nothing on the chart changed size — and spends it as coverage
+ * instead of as skirt.
+ *
+ * The feather (0.68 → 0.77) is the mark's only soft edge, and it is sized to
+ * antialias rather than to glow: about a pixel across at the smallest marker
+ * the policy draws.
+ */
+export const DOT_GRADIENT_STOPS: readonly DotGradientStop[] = [
+  { at: 0, alpha: 1 },
+  { at: 0.55, alpha: 0.97 },
+  { at: 0.68, alpha: 0.32 },
+  { at: 0.77, alpha: 0 },
+];
+
+/** Where the profile above reaches zero, as a fraction of the half-extent —
+ *  the painted edge of a dot, derived from the profile rather than restated. */
+export const DOT_PAINTED_FRACTION = ((): number => {
+  for (const stop of DOT_GRADIENT_STOPS) if (stop.alpha <= 0) return stop.at;
+  return 1;
+})();
+
+/** The painted radius of a dot per drawn radius: half the quad, times the share
+ *  of it the profile actually covers. ~1.0 by construction — the marker paints
+ *  the body's drawn limb. */
+export const DOT_PAINTED_EDGE_MUL = (DOT_EXTENT_MUL / 2) * DOT_PAINTED_FRACTION;
 
 /**
  * The radius anything placed beside a body has to clear, in screen px.
  *
- * A globe paints its disc and nothing else, so its drawn radius is the whole
- * of it. A dot paints a quad half again as wide — the gradient's skirt fades
- * out at the half-extent, not at the drawn radius — so a rule written for the
- * globe puts a label a third of the way inside the sprite of the same body.
- * Which look is drawing is a per-frame fact the scene already holds; this is
- * the one place that fact turns into a distance.
+ * Both looks paint to the same edge — a globe's disc is its drawn radius, and
+ * the dot's profile is calibrated so its gradient dies there too — so the two
+ * answers agree to a thousandth. They are still derived apart: the dot's edge
+ * follows the gradient profile, and a future retune of that profile has to move
+ * this with it rather than silently leaving labels standing off a skirt that is
+ * no longer painted.
  */
 export function labelClearanceRadiusPx(drawnRadiusPx: number, drawnAsDot: boolean): number {
   if (!(drawnRadiusPx > 0)) return 0;
-  return drawnAsDot ? (drawnRadiusPx * DOT_EXTENT_MUL) / 2 : drawnRadiusPx;
+  return drawnAsDot ? drawnRadiusPx * DOT_PAINTED_EDGE_MUL : drawnRadiusPx;
 }
 
 /** Ganymede, the largest moon, sets the top of the moon scale. */

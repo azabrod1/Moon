@@ -118,9 +118,17 @@ import {
   mapMoonMarkerRadiusAU,
   mapMoonRadiusAU,
   DOT_EXTENT_MUL,
+  DOT_GRADIENT_STOPS,
   MAP_BODY_SIZE_DEFAULTS,
   type MapBodySizeParams,
 } from './mapBodySize';
+import {
+  augmentMapGlobeMaterial,
+  makeMapSunUniforms,
+  mapTerminatorSoftness,
+  type MapGlobeShading,
+  type MapSunUniforms,
+} from './mapGlobeShading';
 import {
   mapMoonOffsetR,
   moonOffsetEntries,
@@ -223,6 +231,10 @@ const SHIP_PX = 26;
 const SHIP_MARKER_COLOR = 0xffb88a;
 // Orbit line: full tint just ahead of the body fading to this floor behind it.
 const ORBIT_BRIGHT_FLOOR = 0.1;
+// What the followed body's own line fades to while the camera rides it. Faint
+// enough to stop being the brightest thing in a focused frame, present enough
+// that the body is still visibly ON its orbit rather than adrift.
+const FOCUS_ORBIT_DIM = 0.3;
 // Un-docked ship chevron breathes over this period (ms).
 const SHIP_PULSE_MS = 2000;
 // Hover feedback: the pointed-at dot swells and lifts toward white.
@@ -281,12 +293,19 @@ const MOON_TRUE_SCALE_MIN_SEP_PX = 2;
 // dense, and the bodies are the subject.
 const MOON_RING_OPACITY = 0.5;
 
+// The chart's ring annulus tint — see the material for what it is measured
+// against.
+const RING_TINT = 0xd8b98c;
+
 /** One moon on the chart: a marker, a globe, and its drawn orbit. */
 interface MoonEntry {
   data: MoonData;
   dot: THREE.Sprite;
   globe: THREE.Mesh;
   globeMat: THREE.MeshStandardMaterial;
+  /** The softened-terminator handle on that material — one float, written from
+   *  the drawn size every frame the moon is a globe. */
+  globeShading: MapGlobeShading;
   baseColor: THREE.Color;
   /** Live map position (absolute, like every other body's). */
   pos: THREE.Vector3;
@@ -432,6 +451,9 @@ interface OrbitEntry {
    *  — only the texture on the material is borrowed. */
   globe: THREE.Group;
   globeMat: THREE.MeshStandardMaterial;
+  /** The softened-terminator handle on that material — one float, written from
+   *  the drawn size every frame the body is a globe. */
+  globeShading: MapGlobeShading;
   ringMat: THREE.MeshStandardMaterial | null;
   /** Outer edge of the drawn ring in globe radii, 1 where there is no ring —
    *  the body's full drawn reach, which is what a camera has to clear. */
@@ -442,9 +464,9 @@ interface OrbitEntry {
    *  One number per body: the sprite, the framing reach and the label offset all
    *  read it, so none of them can hold a different opinion about how big the
    *  body is. What each of them does with it differs, and deliberately: the
-   *  label buys air for the glyphs against whatever is painted, so it takes the
-   *  dot's full half-extent when a dot is drawing; the framing buys frame for
-   *  the visible picture and correctly ignores the gradient's skirt. Seeded at
+   *  label buys air for the glyphs against whatever is PAINTED (the marker's
+   *  gradient dies at the drawn limb, the globe's disc ends there), while the
+   *  sun-lift gate is a conservative bound and takes the whole quad. Seeded at
    *  the marker size, since that is what a body would draw at before any frame
    *  has measured one. */
   drawnRadiusPx: number;
@@ -502,7 +524,18 @@ export class SystemMap {
   private sunViewDepth = 1;
   private sunDiscPx = 0;
   private sunBaseColor = new THREE.Color(SUN_DATA.color);
+  /** The star as the GLOBES' shader sees it: the same point light the standard
+   *  material is lit by, handed over so the terminator softening can rebuild
+   *  that light exactly instead of guessing at it. One holder for the whole
+   *  chart, written once per drawing pass. */
+  private sunUniforms: MapSunUniforms = makeMapSunUniforms(
+    new THREE.Color(SUN_LIGHT_COLOR),
+    SUN_LIGHT_INTENSITY,
+  );
   private orbits: OrbitEntry[] = [];
+  /** The one entry whose line is dimmed for a follow, remembered so the restore
+   *  lands on the material that was actually written. */
+  private dimmedOrbit: OrbitEntry | null = null;
   /** The same entries by planet name. `entryFor` sits under per-frame paths
    *  (the availability refresh scans every planet each frame), so the lookup
    *  has to be a read, not a search. */
@@ -1245,6 +1278,7 @@ export class SystemMap {
     this.controls.target.set(0, 0, 0);
     this.zoomFree = false;
     this.syncZoomToCursor();
+    this.clearFocusOrbitDim();
     for (const label of this.labels.values()) label.style.display = 'none';
     // Let every borrowed texture go. The world is free to dispose any of them
     // while the map is shut, so the material stops naming one here. The drop is
@@ -1456,6 +1490,7 @@ export class SystemMap {
     this.fullView.sizeParams = this.bodySizeParams;
     this.orientShip(this.fullView);
     this.updateDrawnSizes(this.fullView);
+    this.applyFocusOrbitDim();
     this.renderLabels();
   }
 
@@ -1635,6 +1670,10 @@ export class SystemMap {
   renderMini(draw: MiniDrawRect): void {
     if (!this.miniOpen || this.open) return;
     if (draw.widthDevicePx < 1 || draw.heightDevicePx < 1) return;
+    // The corner chart draws the full chart's own line objects: anything the
+    // full chart dimmed for a follow is given back before this pass, whatever
+    // path that session ended by.
+    this.clearFocusOrbitDim();
     const t0 = import.meta.env.DEV ? performance.now() : 0;
     const renderer = this.renderer;
 
@@ -2897,11 +2936,12 @@ export class SystemMap {
     const parentName = system.parent.planet.name;
     for (const data of getMoonsByPlanet(parentName)) {
       const tint = new THREE.Color(data.color);
-      const dot = this.makeGlowSprite(data.color, 1);
+      const dot = this.makeGlowSprite(data.color);
       dot.renderOrder = MARKER_RENDER_ORDER;
       dot.visible = false;
       this.scene.add(dot);
       const globeMat = new THREE.MeshStandardMaterial({ roughness: 0.95, metalness: 0 });
+      const globeShading = augmentMapGlobeMaterial(globeMat, this.sunUniforms);
       const globe = new THREE.Mesh(this.moonGeo, globeMat);
       globe.renderOrder = 3;
       globe.visible = false;
@@ -2933,6 +2973,7 @@ export class SystemMap {
         dot,
         globe,
         globeMat,
+        globeShading,
         baseColor: tint,
         pos: new THREE.Vector3(),
         dir: new THREE.Vector3(1, 0, 0),
@@ -3045,18 +3086,22 @@ export class SystemMap {
         );
         moon.occluded = moon.occludedByParent || moon.occludedBySun;
         moon.dot.visible = visible && !globe && !moon.occluded;
-        // The lift is judged at the widest footprint the dot can paint this
-        // frame: the sprite's own half-extent (the gradient spans the whole
-        // quad, DOT_EXTENT_MUL/2 of the policy radius) at the hover swell —
-        // or a dot at the disc's edge could overlap the star under it.
+        // The lift is judged at the widest footprint the dot could paint this
+        // frame: the sprite's own half-extent (DOT_EXTENT_MUL/2 of the policy
+        // radius, which bounds the gradient whatever its profile) at the hover
+        // swell — or a dot at the disc's edge could overlap the star under it.
         moon.dot.renderOrder = markerInFrontOfDisc(
           true, depth, moon.drawnRadiusPx * (DOT_EXTENT_MUL / 2) * HOVER_SCALE,
           this.sunViewDepth, this.sunDiscPx, sunSepPx,
         )
           ? MARKER_OVER_SUN_RENDER_ORDER
           : MARKER_RENDER_ORDER;
-        if (globe) moon.globe.scale.setScalar(drawnAU);
-        else moon.dot.scale.setScalar(drawnAU * DOT_EXTENT_MUL);
+        if (globe) {
+          moon.globe.scale.setScalar(drawnAU);
+          moon.globeShading.softness.value = mapTerminatorSoftness(moon.drawnRadiusPx);
+        } else {
+          moon.dot.scale.setScalar(drawnAU * DOT_EXTENT_MUL);
+        }
         // Eclipse dim, advanced here because this pass runs on every rendered
         // frame: the limiter is a wall-clock ramp, and one that only stepped
         // when the sky moved would stall half-dark under a paused clock.
@@ -3670,6 +3715,59 @@ export class SystemMap {
     this.pulseName = null;
     this.pulseElapsedMs = 0;
     this.applyEmphasisLevel(name, this.emphasisLevelFor(name));
+  }
+
+  /**
+   * Quiet the line the followed body rides.
+   *
+   * Followed close up, a body's own heliocentric orbit is not a trajectory any
+   * more: it is a bright chord ruled straight through the middle of the frame,
+   * across the very system the camera came to look at. Every other line on the
+   * chart is still information at that distance — this one is the axis you are
+   * standing on. So it steps back while the follow lasts and comes straight
+   * back when it ends.
+   *
+   * Following a MOON, the line that crosses the frame is the parent's, since
+   * that is the orbit the whole system rides; the moon's own drawn ring is the
+   * subject and is left alone.
+   *
+   * It stands down for as long as the camera is ON a body — flying to one,
+   * riding it, leaving it, diving into it — and comes back at the overview,
+   * where the line is one thin ellipse among nine and is information again.
+   * Handing it back the moment Overview is pressed would flash a bright chord
+   * across a close view at exactly the moment the user asked to leave it.
+   *
+   * One entry is dimmed at a time, and the one that is dimmed is remembered
+   * rather than re-derived, so whatever the camera does next the restore lands
+   * on the material that was actually touched.
+   */
+  private applyFocusOrbitDim(): void {
+    const name = this.cameraSubject();
+    const body = name ? mapBody(name) : null;
+    const entry = body
+      ? this.entryFor(body.kind === 'moon' && body.parentPlanet ? body.parentPlanet : body.name)
+      : null;
+    if (entry === this.dimmedOrbit) return;
+    this.clearFocusOrbitDim();
+    if (!entry) return;
+    this.dimmedOrbit = entry;
+    entry.material.opacity = FOCUS_ORBIT_DIM;
+  }
+
+  /**
+   * Give the dimmed line its brightness back.
+   *
+   * Called on close AND before every corner-chart draw. The corner chart draws
+   * the SAME line objects the full chart does — the whole point of one scene —
+   * so a dim left standing by a session that ended any way but through close()
+   * would show up in the corner as one planet's orbit mysteriously fainter than
+   * the other eight. The chart is the map's memory of itself; nothing may
+   * inherit a state the view that set it has already left.
+   */
+  private clearFocusOrbitDim(): void {
+    if (!this.dimmedOrbit) return;
+    this.dimmedOrbit.material.opacity = 1;
+    this.dimmedOrbit = null;
   }
 
   /** Advance the pulse. Its own entry point into the emphasis apply: setHover
@@ -4474,7 +4572,8 @@ export class SystemMap {
     const sunView = this.viewSpace(this.sun.position, camera);
     const sunViewX = sunView.x;
     const sunViewY = sunView.y;
-    const sunDepth = Math.max(-sunView.z, 1e-6);
+    const sunViewZ = sunView.z;
+    const sunDepth = Math.max(-sunViewZ, 1e-6);
     const sunAU = mapBodyRadiusAU(SUN_DATA.radiusAU, sunDepth, worldPerPxAtUnit, params);
     this.sunRadiusPx = sunAU / Math.max(worldPerPxAtUnit * sunDepth, 1e-30);
     const sunBoost = this.hoveredName === 'Sun' ? HOVER_SCALE : 1;
@@ -4487,6 +4586,10 @@ export class SystemMap {
     this.sunViewY = sunViewY;
     this.sunViewDepth = sunDepth;
     this.sunDiscPx = sunDiscPx;
+    // The globes' shader needs the star in the SAME camera's space, and the
+    // star sits at the chart's origin where the point light lighting them does
+    // — so the disc's own camera-space position is the light's.
+    this.sunUniforms.viewPos.value.set(sunViewX, sunViewY, sunViewZ);
 
     const trueScaleTarget = view.trueScaleTarget;
     for (const entry of this.orbits) {
@@ -4527,10 +4630,10 @@ export class SystemMap {
       entry.dot.visible = !globe && !entry.occluded;
       // In front of the star, a marker has to be lifted over the disc: both are
       // depth-free, and at rest the disc draws last. Judged at the widest
-      // footprint the dot can paint this frame — the sprite's own half-extent
-      // (the gradient spans the whole quad, DOT_EXTENT_MUL/2 of the policy
-      // radius) at the hover swell — or a dot at the disc's edge could
-      // overlap the star under it.
+      // footprint the dot could paint this frame — the sprite's own half-extent
+      // (DOT_EXTENT_MUL/2 of the policy radius, which bounds the gradient
+      // whatever its profile) at the hover swell — or a dot at the disc's edge
+      // could overlap the star under it.
       entry.dot.renderOrder = markerInFrontOfDisc(
         true, depth, entry.drawnRadiusPx * (DOT_EXTENT_MUL / 2) * HOVER_SCALE, sunDepth, sunDiscPx, sunSepPx,
       )
@@ -4540,6 +4643,8 @@ export class SystemMap {
         // One scale on the group carries the sphere and, where there is one,
         // the ring — which is built in planet radii for exactly this reason.
         entry.globe.scale.setScalar(drawnAU);
+        // How hard the terminator may be, from how big the body draws.
+        entry.globeShading.softness.value = mapTerminatorSoftness(entry.drawnRadiusPx);
       } else {
         // The dot stands in for the globe, so it is sized from the same policy
         // radius the globe would draw at — through the gradient's extent rule,
@@ -4859,11 +4964,12 @@ export class SystemMap {
    * above and the transform that draws the label both read it, so a label can
    * never be judged at one place and painted at another.
    *
-   * What it has to clear depends on which look drew this frame: a globe paints
-   * its disc, a dot paints a quad half again as wide. Moons are the case that
-   * bites hardest — they went through here with no entry of their own and took
-   * the flat floor, which puts a name like Ganymede's inside its own marker at
-   * every focused view of Jupiter.
+   * What it has to clear is what the body PAINTS, which is a question for the
+   * size policy and not for this: a globe's disc and a marker's gradient both
+   * end at the drawn radius, but they get there by different routes. Moons are
+   * the case that bites hardest — they went through here with no entry of their
+   * own and took the flat floor, which puts a name like Ganymede's inside its
+   * own marker at every focused view of Jupiter.
    *
    * The clearance is always the UNHOVERED one. A hovered body swells, and a
    * label that moved with it would jitter as the cursor crossed; the residual
@@ -4938,10 +5044,10 @@ export class SystemMap {
     line.renderOrder = 1;
     line.frustumCulled = false;
     this.scene.add(line);
-    const dot = this.makeGlowSprite(planet.color, 1);
+    const dot = this.makeGlowSprite(planet.color);
     dot.renderOrder = MARKER_RENDER_ORDER;
     this.scene.add(dot);
-    const { globe, globeMat, ringMat, ringOuterFactor } = this.makeGlobe(planet);
+    const { globe, globeMat, globeShading, ringMat, ringOuterFactor } = this.makeGlobe(planet);
     this.scene.add(globe);
     // Catalog hex is sRGB; THREE.Color(hex) converts it into the renderer's
     // working (linear) space, so the vertex-coloured line matches the sprite's
@@ -4968,6 +5074,7 @@ export class SystemMap {
       baseColor: tint.clone(),
       globe,
       globeMat,
+      globeShading,
       ringMat,
       ringOuterFactor,
       drawnRadiusPx: mapMarkerRadiusPx(planet.radiusAU, this.bodySizeParams),
@@ -4990,12 +5097,14 @@ export class SystemMap {
   private makeGlobe(planet: PlanetData): {
     globe: THREE.Group;
     globeMat: THREE.MeshStandardMaterial;
+    globeShading: MapGlobeShading;
     ringMat: THREE.MeshStandardMaterial | null;
     ringOuterFactor: number;
   } {
     const globe = new THREE.Group();
     globe.visible = false;
     const globeMat = new THREE.MeshStandardMaterial({ roughness: 0.9, metalness: 0.0 });
+    const globeShading = augmentMapGlobeMaterial(globeMat, this.sunUniforms);
     const mesh = new THREE.Mesh(this.globeGeo, globeMat);
     mesh.renderOrder = 3;
     globe.add(mesh);
@@ -5020,6 +5129,21 @@ export class SystemMap {
         side: THREE.DoubleSide,
         roughness: 0.8,
         metalness: 0,
+        // Warm, and held back, against the chart's cool night fill.
+        //
+        // The world's ring is lit by sunlight alone and reads as warm tan. The
+        // chart lights everything with a second, deliberately blue fill so an
+        // unlit hemisphere is not a hole — and an annulus has no unlit side to
+        // spend that on, so it takes the whole fill as a flat lift over its
+        // entire face. Measured on the ring's own pixels, that came out COOLER
+        // than the ring texture is (red/blue 1.13, against 1.88 for the same
+        // texture in the world) and washed the ring plane into a smoky disc
+        // that the globe's night side disappeared into. The tint is a hue
+        // correction first and a dim second: it takes the red/blue past the
+        // world's and drops the wash about a seventh, which is what lets the
+        // texture's own banding read again. It is the material's own, so
+        // nothing else on the chart moves with it.
+        color: new THREE.Color(RING_TINT),
         // A trace of self-glow, so the ring never disappears entirely in the
         // seasons where the Sun grazes its plane.
         emissive: new THREE.Color(0x1a1510),
@@ -5032,13 +5156,12 @@ export class SystemMap {
       globe.add(ring);
       ringOuterFactor = cfg.outerFactor;
     }
-    return { globe, globeMat, ringMat, ringOuterFactor };
+    return { globe, globeMat, globeShading, ringMat, ringOuterFactor };
   }
 
-  private makeGlowSprite(color: number, coreBoost: number): THREE.Sprite {
-    const tex = this.makeGlowTexture(coreBoost);
+  private makeGlowSprite(color: number): THREE.Sprite {
     const mat = new THREE.SpriteMaterial({
-      map: tex,
+      map: this.glowTexture(),
       color,
       transparent: true,
       depthTest: false,
@@ -5048,18 +5171,35 @@ export class SystemMap {
     return new THREE.Sprite(mat);
   }
 
-  private makeGlowTexture(coreBoost: number): THREE.Texture {
-    const size = 64;
+  /** The marker every body on the chart is drawn with, straight off the size
+   *  policy's alpha profile — the one place that says how much of the quad a dot
+   *  covers, so the sprite and everything that has to clear it read the same
+   *  shape. 128 texels across, because the profile's feather is a tenth of the
+   *  radius and a coarser canvas would quantise it into the stair it exists to
+   *  avoid.
+   *
+   *  ONE texture for the whole chart, built on the first marker and shared by
+   *  every one after it: the mark is the same shape for every body (the tint
+   *  rides on the material, not on the pixels), and seventy-odd copies of it
+   *  would be seventy-odd uploads of the same megabyte-and-a-half. */
+  private glowTex: THREE.Texture | null = null;
+
+  private glowTexture(): THREE.Texture {
+    if (this.glowTex) return this.glowTex;
+    this.glowTex = this.makeGlowTexture();
+    return this.glowTex;
+  }
+
+  private makeGlowTexture(): THREE.Texture {
+    const size = 128;
     const canvas = document.createElement('canvas');
     canvas.width = size;
     canvas.height = size;
     const ctx = canvas.getContext('2d')!;
     const g = ctx.createRadialGradient(size / 2, size / 2, 0, size / 2, size / 2, size / 2);
-    const core = Math.min(1, 0.55 * coreBoost);
-    g.addColorStop(0, 'rgba(255,255,255,1)');
-    g.addColorStop(core, 'rgba(255,255,255,0.85)');
-    g.addColorStop(0.7, 'rgba(255,255,255,0.18)');
-    g.addColorStop(1, 'rgba(255,255,255,0)');
+    for (const stop of DOT_GRADIENT_STOPS) {
+      g.addColorStop(stop.at, `rgba(255,255,255,${stop.alpha})`);
+    }
     ctx.fillStyle = g;
     ctx.fillRect(0, 0, size, size);
     const tex = new THREE.CanvasTexture(canvas);

@@ -1,5 +1,8 @@
 import { describe, it, expect } from 'vitest';
 import {
+  DOT_GRADIENT_STOPS,
+  DOT_PAINTED_EDGE_MUL,
+  DOT_PAINTED_FRACTION,
   labelClearanceRadiusPx,
   mapMoonMarkerRadiusAU,
   mapMoonRadiusAU,
@@ -8,6 +11,7 @@ import {
   mapMarkerRadiusPx,
   DOT_EXTENT_MUL,
   MAP_BODY_SIZE_DEFAULTS,
+  type DotGradientStop,
   type MapBodySizeParams,
 } from './mapBodySize';
 import { mapLabelOffsetPx, LABEL_ANCHOR_OFFSET_PX, LABEL_CLEARANCE_PX } from './mapLabels';
@@ -177,10 +181,9 @@ describe('the moon branch', () => {
 
   it('pins Ganymede\'s label clearance at the default marker, by expression', () => {
     // The case the draw-mode rule exists for. Jupiter at the chart's default
-    // marker; Ganymede is drawn against it, so its marker is a fraction of that
-    // — already past the crossover where the flat label floor stops clearing
-    // anything. Every figure here is computed from the modules' own constants:
-    // a transcribed decimal would drift the moment a knob moved.
+    // marker; Ganymede is drawn against it, so its marker is a fraction of
+    // that. Every figure here is computed from the modules' own constants: a
+    // transcribed decimal would drift the moment a knob moved.
     const jupiter = PLANETARIUM_BODIES.find((p) => p.name === 'Jupiter')!;
     const parentPx = mapMarkerRadiusPx(jupiter.radiusAU);
     expect(parentPx).toBeCloseTo(16.5277, 3);
@@ -191,13 +194,14 @@ describe('the moon branch', () => {
     expect(drawnPx).toBeCloseTo(5.6194, 3);
 
     const clearance = labelClearanceRadiusPx(drawnPx, true);
-    expect(clearance).toBeCloseTo((drawnPx * DOT_EXTENT_MUL) / 2, 12);
-    expect(clearance).toBeCloseTo(7.3052, 3);
-    // Composed: the offset the chart actually draws the name at, clear of the
-    // sprite rather than inside it, and past the flat floor by construction.
-    expect(mapLabelOffsetPx(clearance)).toBeCloseTo(clearance + LABEL_CLEARANCE_PX, 12);
-    expect(mapLabelOffsetPx(clearance)).toBeCloseTo(9.3052, 3);
-    expect(mapLabelOffsetPx(clearance)).toBeGreaterThan(LABEL_ANCHOR_OFFSET_PX);
+    expect(clearance).toBeCloseTo(drawnPx * DOT_PAINTED_EDGE_MUL, 12);
+    expect(clearance).toBeCloseTo(5.6250, 3);
+    // Composed: the offset the chart draws the name at. A marker this size
+    // paints inside the flat floor, so the floor is what places the name — and
+    // it clears the sprite by three px rather than printing inside it, which
+    // is the whole of what the clearance rule is for.
+    expect(mapLabelOffsetPx(clearance)).toBe(LABEL_ANCHOR_OFFSET_PX);
+    expect(mapLabelOffsetPx(clearance)).toBeGreaterThan(clearance + LABEL_CLEARANCE_PX);
   });
 
   it('floors the smallest moons instead of losing them', () => {
@@ -218,19 +222,23 @@ describe('labelClearanceRadiusPx', () => {
     }
   });
 
-  it('gives a dot the half-extent its sprite actually paints', () => {
-    // Jupiter's marker: the sprite is 2.6 drawn radii across, so it reaches
-    // 1.3 of them from the centre — the figure the old disc rule ignored.
-    expect(labelClearanceRadiusPx(16.5277, true)).toBeCloseTo(21.4860, 4);
+  it('gives a dot the radius its gradient actually reaches', () => {
+    // Jupiter's marker: the sprite is 2.6 drawn radii across, and the profile
+    // paints 0.77 of that half-extent — which lands on the drawn radius.
+    expect(labelClearanceRadiusPx(16.5277, true)).toBeCloseTo(16.5442, 4);
     expect(labelClearanceRadiusPx(16.5277, true))
-      .toBeCloseTo((16.5277 * DOT_EXTENT_MUL) / 2, 12);
-    // One definition of the factor: no second literal anywhere.
+      .toBeCloseTo(16.5277 * (DOT_EXTENT_MUL / 2) * DOT_PAINTED_FRACTION, 12);
+    // One definition of each factor: no second literal anywhere.
     expect(DOT_EXTENT_MUL).toBe(2.6);
+    expect(DOT_PAINTED_FRACTION).toBe(0.77);
   });
 
-  it('is the larger of the two whenever a body draws at all', () => {
+  it('agrees with the globe rule, because both looks paint the same limb', () => {
     for (const r of [0.5, 6, 16.53, 40]) {
-      expect(labelClearanceRadiusPx(r, true)).toBeGreaterThan(labelClearanceRadiusPx(r, false));
+      const dot = labelClearanceRadiusPx(r, true);
+      const globe = labelClearanceRadiusPx(r, false);
+      expect(dot).toBeGreaterThanOrEqual(globe);
+      expect(dot / globe).toBeCloseTo(1, 2);
     }
   });
 
@@ -241,30 +249,82 @@ describe('labelClearanceRadiusPx', () => {
   });
 
   it('crosses the flat label floor where the dot rule says it should', () => {
-    // Composed with the label offset, the floor binds until the painted skirt
-    // plus its air overtakes it: 1.3r + 2 > 9 at r > 5.3846.
-    const crossover = (LABEL_ANCHOR_OFFSET_PX - LABEL_CLEARANCE_PX) / (DOT_EXTENT_MUL / 2);
-    expect(crossover).toBeCloseTo(5.3846, 4);
+    // Composed with the label offset, the floor binds until the painted radius
+    // plus its air overtakes it: 1.001r + 2 > 9 just under r = 7.
+    const crossover = (LABEL_ANCHOR_OFFSET_PX - LABEL_CLEARANCE_PX) / DOT_PAINTED_EDGE_MUL;
+    expect(crossover).toBeCloseTo(6.9930, 4);
     expect(mapLabelOffsetPx(labelClearanceRadiusPx(crossover - 0.01, true)))
       .toBe(LABEL_ANCHOR_OFFSET_PX);
     expect(mapLabelOffsetPx(labelClearanceRadiusPx(crossover + 0.01, true)))
       .toBeGreaterThan(LABEL_ANCHOR_OFFSET_PX);
-    // A globe of the same size is still on the floor — the two rules part here.
-    expect(mapLabelOffsetPx(labelClearanceRadiusPx(crossover + 0.01, false)))
-      .toBe(LABEL_ANCHOR_OFFSET_PX);
   });
 
-  it('clears every planet\'s dot sprite, which the disc rule did not', () => {
+  it('clears every planet\'s dot sprite, which the flat floor did not', () => {
     for (const planet of PLANETARIUM_BODIES) {
       const marker = mapMarkerRadiusPx(planet.radiusAU, MAP_BODY_SIZE_DEFAULTS);
       const offset = mapLabelOffsetPx(labelClearanceRadiusPx(marker, true));
-      expect(offset, planet.name).toBeGreaterThanOrEqual(marker * (DOT_EXTENT_MUL / 2));
-      // What the disc rule gave a body whose skirt outgrew the flat floor: a
-      // name inside its own sprite. Jupiter and Saturn are the two.
-      if (marker * (DOT_EXTENT_MUL / 2) > LABEL_ANCHOR_OFFSET_PX) {
-        expect(mapLabelOffsetPx(marker), planet.name)
-          .toBeLessThan(marker * (DOT_EXTENT_MUL / 2));
-      }
+      expect(offset, planet.name).toBeGreaterThanOrEqual(marker * DOT_PAINTED_EDGE_MUL);
     }
+  });
+});
+
+describe('the marker gradient profile', () => {
+  it('is a monotone alpha ramp that reaches zero inside the quad', () => {
+    expect(DOT_GRADIENT_STOPS[0]).toEqual({ at: 0, alpha: 1 });
+    let prevAt = -1;
+    let prevAlpha = Infinity;
+    for (const stop of DOT_GRADIENT_STOPS) {
+      expect(stop.at).toBeGreaterThan(prevAt);
+      expect(stop.at).toBeLessThanOrEqual(1);
+      expect(stop.alpha).toBeLessThanOrEqual(prevAlpha);
+      prevAt = stop.at;
+      prevAlpha = stop.alpha;
+    }
+    expect(DOT_GRADIENT_STOPS[DOT_GRADIENT_STOPS.length - 1].alpha).toBe(0);
+    expect(DOT_PAINTED_FRACTION).toBeLessThan(1);
+  });
+
+  it('paints exactly to the drawn radius, so the two looks share one limb', () => {
+    // The whole point of the extent and the profile being tuned together: a
+    // marker's gradient dies where the globe it stands in for would end.
+    expect(DOT_PAINTED_EDGE_MUL).toBeCloseTo(1, 2);
+  });
+
+  it('carries the same ink as the profile it replaced, so nothing resized', () => {
+    // The mark's readable size is its alpha-weighted equivalent disc — the
+    // radius a solid dot of the same total coverage would have. The rim retune
+    // spent the old profile's ink differently (coverage instead of skirt); it
+    // did not add or remove any, which is what let the size policy and the
+    // label clearance keep their calibration. The profile that was replaced is
+    // quoted here because it is the thing being held to.
+    const LEGACY: readonly DotGradientStop[] = [
+      { at: 0, alpha: 1 },
+      { at: 0.55, alpha: 0.85 },
+      { at: 0.7, alpha: 0.18 },
+      { at: 1, alpha: 0 },
+    ];
+    const ink = (stops: readonly DotGradientStop[]): number => {
+      // ∫ alpha(t) 2t dt over the quad's half-extent, sampled finely — the
+      // equivalent-disc radius is its square root.
+      let area = 0;
+      const dt = 1e-4;
+      for (let t = dt / 2; t < 1; t += dt) {
+        let alpha = 0;
+        for (let i = 1; i < stops.length; i++) {
+          const a = stops[i - 1];
+          const b = stops[i];
+          if (t >= a.at && t <= b.at) {
+            alpha = a.alpha + ((t - a.at) / (b.at - a.at)) * (b.alpha - a.alpha);
+            break;
+          }
+        }
+        area += alpha * 2 * t * dt;
+      }
+      return Math.sqrt(area);
+    };
+    const before = ink(LEGACY);
+    const after = ink(DOT_GRADIENT_STOPS);
+    expect(before).toBeCloseTo(0.6399, 3);
+    expect(Math.abs(after - before) / before).toBeLessThan(0.03);
   });
 });

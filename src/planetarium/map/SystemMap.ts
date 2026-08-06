@@ -1490,6 +1490,13 @@ export class SystemMap {
     // A toggle mid-focus just re-projects, and the follow delta rides it. It is
     // captured against the framing the press found, so it is read before the
     // ledger moves the target.
+    //
+    // A crossing lands first: the blend's camera carry (the pivot remap and
+    // the preserving re-dolly) runs only in the overview branch, which a
+    // crossing stands down — a blend started mid-crossing would re-project the
+    // chart while the free pivot stayed in the outgone projection, and the
+    // landing would aim the camera at where the chart used to be.
+    this.settleFlip();
     const wasOverview = this.cam.camState === 'overview';
     const fit = wasOverview
       ? fitDistanceAU(this.extentAU, MAP_FOV_DEG, this.camera.aspect)
@@ -3835,17 +3842,20 @@ export class SystemMap {
     );
     this.dollyTo(want);
     this.applyBounds();
+    this.camera.updateMatrixWorld();
+    this.syncZoomToCursor();
+    this.controls.enabled = true;
+    this.controls.update();
     // The framing ratio the scale ease preserves per frame was captured at
     // the toggle, before the dive rewrote the pose — an ease still running
     // at cancel would re-dolly this freshly rebuilt frame back toward it on
     // the very next frame (a parked overview restored to the exact fit
     // snaps out by the captured drift). Rebase to the restored framing, the
-    // way the focus restore's overview path already does.
+    // way the focus restore's overview path already does — and AFTER the
+    // controls pass above: applyBounds only assigns the clamps, update()
+    // enforces them, and a rebuilt distance the bounds rejected must not be
+    // the ratio the ease then preserves.
     this.rebaseScaleZoomRatio();
-    this.camera.updateMatrixWorld();
-    this.syncZoomToCursor();
-    this.controls.enabled = true;
-    this.controls.update();
   }
 
   /** Put a cancelled dive back where its focus was. `leaving` means the dive

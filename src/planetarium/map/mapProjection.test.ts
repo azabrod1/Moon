@@ -425,16 +425,18 @@ describe('isAtOverviewFit', () => {
 });
 
 describe('unmapRadius', () => {
-  // The blends the camera actually crosses: both endpoints, an ease's very
-  // first step (0.004672 — where a tiny blend term leaves Newton overshooting
-  // and the fallback bisection has to carry the whole search), the ease's
-  // midsection, 0.601 (where a Newton step once landed exactly on the bracket
-  // edge and was bisected away from its own converged root), and the ease's
-  // LAST frames (0.997 through 0.999999 — where the expansion region's
-  // bracket goes ~100 decades wide and the iteration budget has to cover a
-  // geometric plunge plus Newton's crawl back).
+  // The blends the camera actually crosses: both endpoints, a REVERSE ease's
+  // terminal frame (3.33e-16 — smoothstep lands a few ulps above zero, where
+  // the Newton crawl back from the geometric plunge runs longest), an ease's
+  // very first step (0.004672 — where a tiny blend term leaves Newton
+  // overshooting and the fallback bisection has to carry the whole search),
+  // the ease's midsection, 0.601 (where a Newton step once landed exactly on
+  // the bracket edge and was bisected away from its own converged root), and
+  // the forward ease's LAST frames (0.997 through 0.999999 — where the
+  // expansion region's bracket goes ~100 decades wide and the iteration
+  // budget has to cover a geometric plunge plus Newton's crawl back).
   const BLENDS = [
-    MAP_BLEND_COMPRESSED, 0.004672, 0.25, 0.5, 0.601,
+    MAP_BLEND_COMPRESSED, 3.3306690738754696e-16, 0.004672, 0.25, 0.5, 0.601,
     0.997, 0.9999, 0.99998128125, 0.999999, MAP_BLEND_TRUE,
   ];
   const CURVES: MapCurve[] = [
@@ -495,6 +497,18 @@ describe('unmapRadius', () => {
     const curve: MapCurve = { kind: 'power', gamma: MAP_GAMMA_MIN };
     const m = mapRadius(1e-7, 0.99998128125, curve);
     expect(unmapRadius(m, 0.99998128125, curve)).toBeCloseTo(1e-7, 12);
+  });
+
+  it('converges at a reverse ease\'s terminal frame, ulps above blend zero', () => {
+    // The forward ease's last frames park the blend near 1; a REVERSE ease's
+    // park it a few ulps above 0 (smoothstep at t = 0.99999999). The bracket
+    // cap m / blend goes ~15 decades wide there, and the Newton crawl back
+    // from the geometric plunge runs the longest known path — 58 iterations
+    // on this case, against the 64 budget.
+    const curve: MapCurve = { kind: 'power', gamma: 0.38736 };
+    const blend = 3.3306690738754696e-16;
+    const m = mapRadius(1.2e-6, blend, curve);
+    expect(unmapRadius(m, blend, curve)).toBeCloseTo(1.2e-6, 12);
   });
 
   it('keeps a root found on the bracket edge instead of bisecting off it', () => {

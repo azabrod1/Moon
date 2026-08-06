@@ -257,6 +257,27 @@ const DIVE_END_DIST_FRAC = 0.14;
 // paint every dot over a star they are mostly behind.
 const MARKER_RENDER_ORDER = 5;
 const MARKER_OVER_SUN_RENDER_ORDER = 7;
+// The resting ladder under those markers: spheres, then orbit lines, then
+// Saturn's annulus. The spheres are transparent-at-full-opacity — same pixels,
+// but drawn from the sprites' own pass, so that when the size policy floors
+// one the marker orders above can compose it exactly like the dot it replaces
+// (a floored sphere is the marker's footprint worn as a face: marker px ×
+// world-per-px runs ~0.4 AU for Mercury at the true-scale overview, so its
+// depth is a lie the Sun's depth-tested disc must never read, and the opaque
+// pass — which runs before every sprite — could never lift it over the disc).
+// The flag is constant because the shader's identity must be: the two drawing
+// passes may disagree about flooring every frame, and a per-pass transparent
+// flip would be a program rebuild per pass per frame. A true-sized sphere
+// keeps real depth at its resting order, which is why the lines and the
+// annulus draw after it: both depth-test, so an orbit line still dies at the
+// limb and crosses the face, and the annulus loses its far half behind the
+// sphere — the same pixels the old opaque arrangement drew. Floored, the
+// sphere takes the marker orders and the annulus steps one under its sphere
+// (4 under 5, 6 under 7), so the pair keeps its own stacking wherever the
+// lift puts it.
+const GLOBE_RENDER_ORDER = 2;
+const ORBIT_LINE_RENDER_ORDER = 3;
+const GLOBE_RING_RENDER_ORDER = 4;
 
 // ---- moon systems ------------------------------------------------------
 // Samples per drawn moon orbit. The ring is a closed loop of the moon's own
@@ -451,6 +472,11 @@ interface OrbitEntry {
    *  — only the texture on the material is borrowed. */
   globe: THREE.Group;
   globeMat: THREE.MeshStandardMaterial;
+  /** The sphere and ring meshes inside the group, held for compositing: render
+   *  order lives on the renderable object, not the group, so lifting a floored
+   *  globe over the solar disc has to reach the meshes themselves. */
+  globeMesh: THREE.Mesh;
+  ringMesh: THREE.Mesh | null;
   /** The softened-terminator handle on that material — one float, written from
    *  the drawn size every frame the body is a globe. */
   globeShading: MapGlobeShading;
@@ -474,8 +500,9 @@ interface OrbitEntry {
   globeDrawn: boolean;
   /** Whether the body stands behind the solar disc this frame — the planets'
    *  only occluder, since nothing else on the chart draws in front of them.
-   *  Suppresses the dot, the label and the hit target; the globe is depth-tested
-   *  and the disc sorts against it on its own. */
+   *  Suppresses the dot, the label and the hit target; a true-sized globe is
+   *  depth-tested and the disc sorts against it on its own, while a floored
+   *  globe is depth-free and hides behind this latch the way its dot does. */
   occluded: boolean;
 }
 
@@ -492,6 +519,13 @@ interface MapDrawView {
   /** Whether the scale control's committed target is true scale. The corner
    *  chart is always compressed, whatever the full chart's control says. */
   trueScaleTarget: boolean;
+  /** The scale blend this pass draws at, 0 compressed → 1 true. Together with
+   *  the target it decides when a policy-floored globe composites as a
+   *  depth-free impostor: through the WHOLE true side of the blend, not just
+   *  while the target says true — the camera is still far mid-animation, and a
+   *  floored sphere handed its depth back there would be an AU-scale body that
+   *  can punch through the Sun's depth-tested disc for the rest of the ride. */
+  trueScaleBlend: number;
   /** Whether this pass draws moons at all. */
   withMoons: boolean;
   /** Ship marker extent, screen px. */
@@ -707,6 +741,7 @@ export class SystemMap {
     widthPx: 1,
     heightPx: 1,
     trueScaleTarget: false,
+    trueScaleBlend: 0,
     withMoons: true,
     shipPx: SHIP_PX,
     sunHaloRadii: SUN_HALO_RADII,
@@ -717,6 +752,7 @@ export class SystemMap {
     widthPx: 1,
     heightPx: 1,
     trueScaleTarget: false,
+    trueScaleBlend: 0,
     withMoons: false,
     shipPx: MINI_SHIP_PX,
     sunHaloRadii: MINI_SUN_HALO_RADII,
@@ -1487,6 +1523,7 @@ export class SystemMap {
     this.fullView.widthPx = Math.max(el.clientWidth, 1);
     this.fullView.heightPx = Math.max(el.clientHeight, 1);
     this.fullView.trueScaleTarget = this.isTrueScale();
+    this.fullView.trueScaleBlend = this.blend;
     this.fullView.sizeParams = this.bodySizeParams;
     this.orientShip(this.fullView);
     this.updateDrawnSizes(this.fullView);
@@ -2940,10 +2977,17 @@ export class SystemMap {
       dot.renderOrder = MARKER_RENDER_ORDER;
       dot.visible = false;
       this.scene.add(dot);
-      const globeMat = new THREE.MeshStandardMaterial({ roughness: 0.95, metalness: 0 });
+      // Transparent at full opacity for the same reason as the planets': a
+      // floored moon globe composites by the marker orders, and the flag has
+      // to be constant so the shader's identity is.
+      const globeMat = new THREE.MeshStandardMaterial({
+        roughness: 0.95,
+        metalness: 0,
+        transparent: true,
+      });
       const globeShading = augmentMapGlobeMaterial(globeMat, this.sunUniforms);
       const globe = new THREE.Mesh(this.moonGeo, globeMat);
-      globe.renderOrder = 3;
+      globe.renderOrder = GLOBE_RENDER_ORDER;
       globe.visible = false;
       this.scene.add(globe);
 
@@ -2960,7 +3004,9 @@ export class SystemMap {
       });
       ringMaterial.resolution.set(Math.max(el.clientWidth, 1), Math.max(el.clientHeight, 1));
       const ring = new Line2(ringGeometry, ringMaterial);
-      ring.renderOrder = 1;
+      // After the spheres, whose written depth is what ends this orbit at the
+      // limb of the body it wraps — see the render-order ladder note.
+      ring.renderOrder = ORBIT_LINE_RENDER_ORDER;
       ring.frustumCulled = false;
       system.group.add(ring);
 
@@ -3015,8 +3061,15 @@ export class SystemMap {
 
   /** Phase (3) for the moons: how big each one draws, whether it is a globe,
    *  a marker, or — at true scale, inside its parent's limb — nothing at all,
-   *  and how deep in its parent's shadow it is drawn. */
-  private updateMoonDrawnSizes(worldPerPxAtUnit: number, trueScaleTarget: boolean): void {
+   *  and how deep in its parent's shadow it is drawn. `impostorScale` — whether
+   *  this pass is anywhere on the true side of the scale blend, which is where
+   *  a policy-floored globe composites as a depth-free marker; the planet pass
+   *  derives it and hands it down. */
+  private updateMoonDrawnSizes(
+    worldPerPxAtUnit: number,
+    trueScaleTarget: boolean,
+    impostorScale: boolean,
+  ): void {
     // One wall-clock reading for the whole pass: the shading limiter measures
     // real time, and every moon on the chart is being drawn in the same frame.
     const shadeNowMs = performance.now();
@@ -3053,21 +3106,26 @@ export class SystemMap {
           const sepPx = (moon.pos.distanceTo(parentPos) - parentDrawnAU) / worldPerPx;
           visible = sepPx > MOON_TRUE_SCALE_MIN_SEP_PX;
         }
+        const truePx = moon.data.radiusAU / worldPerPx;
+        const markerPx = mapMoonMarkerRadiusAU(moon.data.radiusAU, parentDrawnAU) / worldPerPx;
         const globe = visible && mapBodyDrawMode(
           moon.globeMat.map !== null,
           trueScaleTarget,
-          moon.data.radiusAU / worldPerPx,
-          mapMoonMarkerRadiusAU(moon.data.radiusAU, parentDrawnAU) / worldPerPx,
+          truePx,
+          markerPx,
         ) === 'globe';
+        // Same rule as the planets': a policy-floored globe composites as a
+        // marker for as long as the pass is on the true side of the blend.
+        const floored = impostorScale && truePx < markerPx;
         moon.visible = visible;
         moon.globeDrawn = globe;
-        moon.globe.visible = globe;
         // Behind the parent's globe, or behind the star. A marker writes no
         // depth and would otherwise glide across a lit face it is nowhere near
         // — a transit that is not happening, while the moon's own depth-tested
         // orbit ring correctly dies at the limb. `visible` is untouched: the
         // moon is still a drawn surface for the camera to clear, and still what
-        // a zoom pivots on.
+        // a zoom pivots on. The latches run before the globe's visibility is
+        // written, because a floored globe hides behind them like its dot.
         const parentSepPx = markerSeparationPx(
           viewX, viewY, depth, parentViewX, parentViewY, parentDepth, worldPerPxAtUnit,
         );
@@ -3085,6 +3143,7 @@ export class SystemMap {
           this.sunViewDepth, this.sunDiscPx, sunSepPx, moon.occludedBySun,
         );
         moon.occluded = moon.occludedByParent || moon.occludedBySun;
+        moon.globe.visible = globe && !(floored && moon.occluded);
         moon.dot.visible = visible && !globe && !moon.occluded;
         // The lift is judged at the widest footprint the dot could paint this
         // frame: the sprite's own half-extent (DOT_EXTENT_MUL/2 of the policy
@@ -3099,6 +3158,15 @@ export class SystemMap {
         if (globe) {
           moon.globe.scale.setScalar(drawnAU);
           moon.globeShading.softness.value = mapTerminatorSoftness(moon.drawnRadiusPx);
+          this.setGlobeCompositing(
+            moon.globeMat,
+            moon.globe,
+            floored,
+            floored && markerInFrontOfDisc(
+              true, depth, moon.drawnRadiusPx,
+              this.sunViewDepth, this.sunDiscPx, sunSepPx,
+            ),
+          );
         } else {
           moon.dot.scale.setScalar(drawnAU * DOT_EXTENT_MUL);
         }
@@ -3577,15 +3645,16 @@ export class SystemMap {
       // is over.
       if (entry.occluded) continue;
       // A dot is a marker with no footprint of its own — the pointer floor
-      // governs it. A globe hands over its drawn radius, so a click on the limb
-      // of a body that fills the frame lands on the body.
+      // governs it. A globe hands over its drawn reach — the ring's outer edge
+      // where there is one — so a click on the limb of a body that fills the
+      // frame lands on the body, and Saturn's annulus is tappable to its rim.
       this.pushAnchor(
         entry.planet.name,
         entry.dot.position,
         true,
         w,
         h,
-        entry.globeDrawn ? entry.drawnRadiusPx : 0,
+        entry.globeDrawn ? entry.drawnRadiusPx * entry.ringOuterFactor : 0,
       );
     }
     // Docked, the ship ring sits on top of its parent's dot — omit it so the tap
@@ -4551,6 +4620,30 @@ export class SystemMap {
     this.camera.updateProjectionMatrix();
   }
 
+  /** Seat a drawn globe in the compositing ladder for this pass. True-sized,
+   *  it keeps real depth at its resting order, where the disc, the lines and
+   *  the annulus all sort against it honestly. Floored, its depth is the
+   *  policy's, not the body's — so it neither writes nor reads depth and takes
+   *  the marker orders instead, composing exactly like the dot it replaces:
+   *  hidden behind the disc by the occlusion latch, painted over while they
+   *  merely overlap (5 under 6), lifted above the star for the frames it
+   *  stands in front (7 over 6). Depth flags and render order are plain
+   *  pipeline state, safe to write per pass per frame. */
+  private setGlobeCompositing(
+    mat: THREE.MeshStandardMaterial,
+    mesh: THREE.Object3D,
+    floored: boolean,
+    lifted: boolean,
+  ): void {
+    mat.depthTest = !floored;
+    mat.depthWrite = !floored;
+    mesh.renderOrder = !floored
+      ? GLOBE_RENDER_ORDER
+      : lifted
+        ? MARKER_OVER_SUN_RENDER_ORDER
+        : MARKER_RENDER_ORDER;
+  }
+
   /**
    * How big everything draws, and — for a body — whether that drawing is a
    * globe or a dot. Markers get `px * (world-per-px at the sprite's camera
@@ -4605,6 +4698,8 @@ export class SystemMap {
       );
       const worldPerPx = Math.max(worldPerPxAtUnit * depth, 1e-30);
       entry.drawnRadiusPx = drawnAU / worldPerPx;
+      const truePx = entry.planet.radiusAU / worldPerPx;
+      const markerPx = mapMarkerRadiusPx(entry.planet.radiusAU, params);
       // At true scale the globe draws from the moment the body's REAL disc
       // overtakes the marker — the same crossover the size policy hands the
       // drawn radius over at, so the swap costs nothing in size and nothing
@@ -4614,21 +4709,30 @@ export class SystemMap {
       const globe = mapBodyDrawMode(
         entry.globeMat.map !== null,
         trueScaleTarget,
-        entry.planet.radiusAU / worldPerPx,
-        mapMarkerRadiusPx(entry.planet.radiusAU, params),
+        truePx,
+        markerPx,
       ) === 'globe';
+      // Floored: the policy, not the body, is what sizes the drawn sphere, so
+      // in world units it is inflated far past the truth and has to composite
+      // as a marker rather than as geometry. Held through the whole true side
+      // of the blend, not just while the target says true, so a true→
+      // compressed animation rides out on marker rules instead of handing an
+      // AU-scale sphere its depth back while the camera is still far.
+      const floored = (trueScaleTarget || view.trueScaleBlend > 0) && truePx < markerPx;
       entry.globeDrawn = globe;
-      entry.globe.visible = globe;
       // Behind the star: the disc paints over whatever a depth-free marker
       // draws there, so the marker, its name and its hit target stand down
-      // rather than showing through the photosphere. A globe is left alone —
-      // it is depth-tested, and the disc sorts against it correctly.
+      // rather than showing through the photosphere. A true-sized globe is
+      // left alone — it is depth-tested, and the disc sorts against it
+      // correctly. A floored globe is depth-free like the dot, so it hides
+      // behind the same latch.
       const sunSepPx = markerSeparationPx(
         viewX, viewY, depth, sunViewX, sunViewY, sunDepth, worldPerPxAtUnit,
       );
       entry.occluded = markerBehindDisc(
         true, depth, entry.drawnRadiusPx, sunDepth, sunDiscPx, sunSepPx, entry.occluded,
       );
+      entry.globe.visible = globe && !(floored && entry.occluded);
       entry.dot.visible = !globe && !entry.occluded;
       // In front of the star, a marker has to be lifted over the disc: both are
       // depth-free, and at rest the disc draws last. Judged at the widest
@@ -4647,6 +4751,20 @@ export class SystemMap {
         entry.globe.scale.setScalar(drawnAU);
         // How hard the terminator may be, from how big the body draws.
         entry.globeShading.softness.value = mapTerminatorSoftness(entry.drawnRadiusPx);
+        // The lift is judged at the widest footprint the pair paints — the
+        // ring's outer edge where there is one, or a floored Saturn would be
+        // lifted while its annulus still lay across the star.
+        const lifted = floored && markerInFrontOfDisc(
+          true, depth, entry.drawnRadiusPx * entry.ringOuterFactor,
+          sunDepth, sunDiscPx, sunSepPx,
+        );
+        this.setGlobeCompositing(entry.globeMat, entry.globeMesh, floored, lifted);
+        if (entry.ringMesh) {
+          // One step under its sphere, wherever the sphere sits.
+          entry.ringMesh.renderOrder = !floored
+            ? GLOBE_RING_RENDER_ORDER
+            : (lifted ? MARKER_OVER_SUN_RENDER_ORDER : MARKER_RENDER_ORDER) - 1;
+        }
       } else {
         // The dot stands in for the globe, so it is sized from the same policy
         // radius the globe would draw at — through the gradient's extent rule,
@@ -4660,7 +4778,13 @@ export class SystemMap {
         );
       }
     }
-    if (view.withMoons) this.updateMoonDrawnSizes(worldPerPxAtUnit, trueScaleTarget);
+    if (view.withMoons) {
+      this.updateMoonDrawnSizes(
+        worldPerPxAtUnit,
+        trueScaleTarget,
+        trueScaleTarget || view.trueScaleBlend > 0,
+      );
+    }
     this.applyMarkerScale(this.shipMarker, view.shipPx, worldPerPxAtUnit, camera);
   }
 
@@ -5043,13 +5167,16 @@ export class SystemMap {
     });
     material.resolution.set(Math.max(el.clientWidth, 1), Math.max(el.clientHeight, 1));
     const line = new Line2(geometry, material);
-    line.renderOrder = 1;
+    // After the spheres, whose written depth is what ends an orbit line at a
+    // globe's limb — see the render-order ladder note.
+    line.renderOrder = ORBIT_LINE_RENDER_ORDER;
     line.frustumCulled = false;
     this.scene.add(line);
     const dot = this.makeGlowSprite(planet.color);
     dot.renderOrder = MARKER_RENDER_ORDER;
     this.scene.add(dot);
-    const { globe, globeMat, globeShading, ringMat, ringOuterFactor } = this.makeGlobe(planet);
+    const { globe, globeMat, globeMesh, ringMesh, globeShading, ringMat, ringOuterFactor } =
+      this.makeGlobe(planet);
     this.scene.add(globe);
     // Catalog hex is sRGB; THREE.Color(hex) converts it into the renderer's
     // working (linear) space, so the vertex-coloured line matches the sprite's
@@ -5076,6 +5203,8 @@ export class SystemMap {
       baseColor: tint.clone(),
       globe,
       globeMat,
+      globeMesh,
+      ringMesh,
       globeShading,
       ringMat,
       ringOuterFactor,
@@ -5099,19 +5228,29 @@ export class SystemMap {
   private makeGlobe(planet: PlanetData): {
     globe: THREE.Group;
     globeMat: THREE.MeshStandardMaterial;
+    globeMesh: THREE.Mesh;
+    ringMesh: THREE.Mesh | null;
     globeShading: MapGlobeShading;
     ringMat: THREE.MeshStandardMaterial | null;
     ringOuterFactor: number;
   } {
     const globe = new THREE.Group();
     globe.visible = false;
-    const globeMat = new THREE.MeshStandardMaterial({ roughness: 0.9, metalness: 0.0 });
+    // Transparent at full opacity: same pixels, but drawn from the sprites'
+    // pass so a floored sphere can composite by the marker orders — see the
+    // GLOBE_RENDER_ORDER note. Constant, so the program's identity never moves.
+    const globeMat = new THREE.MeshStandardMaterial({
+      roughness: 0.9,
+      metalness: 0.0,
+      transparent: true,
+    });
     const globeShading = augmentMapGlobeMaterial(globeMat, this.sunUniforms);
     const mesh = new THREE.Mesh(this.globeGeo, globeMat);
-    mesh.renderOrder = 3;
+    mesh.renderOrder = GLOBE_RENDER_ORDER;
     globe.add(mesh);
 
     let ringMat: THREE.MeshStandardMaterial | null = null;
+    let ringMesh: THREE.Mesh | null = null;
     let ringOuterFactor = 1;
     const cfg = planet.name === 'Saturn' ? RING_CONFIGS[planet.name] : undefined;
     if (cfg) {
@@ -5152,13 +5291,16 @@ export class SystemMap {
         depthWrite: false,
       });
       const ring = new THREE.Mesh(geo, ringMat);
-      // After the orbit lines (renderOrder 1, depth-tested but never
-      // depth-writing), so the ring blends over any line in its footprint.
-      ring.renderOrder = 2;
+      // After its sphere, so the sphere's depth culls the annulus's far half
+      // and passes the near one — and after the orbit lines (depth-tested but
+      // never depth-writing), so the ring blends over any line in its
+      // footprint.
+      ring.renderOrder = GLOBE_RING_RENDER_ORDER;
       globe.add(ring);
+      ringMesh = ring;
       ringOuterFactor = cfg.outerFactor;
     }
-    return { globe, globeMat, globeShading, ringMat, ringOuterFactor };
+    return { globe, globeMat, globeMesh: mesh, ringMesh, globeShading, ringMat, ringOuterFactor };
   }
 
   private makeGlowSprite(color: number): THREE.Sprite {

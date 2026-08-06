@@ -9,14 +9,18 @@
  *    sphere, which would be a body shown half-loaded.
  *
  *    On the compressed chart the globe is the look throughout. At true scale
- *    the whole system is a field of sub-pixel points and the dot IS the visible
- *    object — until the camera closes on one body far enough that its real disc
- *    overtakes the marker the chart would have drawn instead. That crossover,
- *    not a flat pixel threshold, is the gate: it is the size policy's own
- *    "marker and truth meet exactly where they cross" invariant, so the swap is
- *    continuous by construction. Gating on a smaller number would hand the
- *    globe over while the per-body marker floor still governs its drawn size,
- *    and a "true-scale" globe would appear several times inflated.
+ *    it draws from the moment the body's real disc overtakes the marker the
+ *    chart would have drawn instead — the size policy's own "marker and truth
+ *    meet exactly where they cross" invariant, so that swap is continuous by
+ *    construction — and also whenever the marker itself is big enough to carry
+ *    a face (TRUE_SCALE_GLOBE_MIN_PX): the drawn size is floored at the marker
+ *    either way, so a body-sized mark painted as an abstract dot read as an
+ *    unloaded body, not as a schematic symbol. Footprint parity is what keeps
+ *    that free — labels, picking and occlusion all measure the policy radius,
+ *    whichever look draws it. A floored globe composites like the marker it
+ *    replaces (depth-free, hidden and lifted analytically against the solar
+ *    disc): its sphere is inflated in world AU, so its depth is a lie an
+ *    inflated Mercury must never write over the Sun.
  *
  *    The compressed/true decision keys off the scale control's committed
  *    target, not the animating blend, so it happens on the gesture that asked

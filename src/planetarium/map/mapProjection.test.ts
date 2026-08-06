@@ -429,9 +429,14 @@ describe('unmapRadius', () => {
   // first step (0.004672 — where a tiny blend term leaves Newton overshooting
   // and the fallback bisection has to carry the whole search), the ease's
   // midsection, 0.601 (where a Newton step once landed exactly on the bracket
-  // edge and was bisected away from its own converged root), and a frame just
-  // shy of settling.
-  const BLENDS = [MAP_BLEND_COMPRESSED, 0.004672, 0.25, 0.5, 0.601, 0.997, MAP_BLEND_TRUE];
+  // edge and was bisected away from its own converged root), and the ease's
+  // LAST frames (0.997 through 0.999999 — where the expansion region's
+  // bracket goes ~100 decades wide and the iteration budget has to cover a
+  // geometric plunge plus Newton's crawl back).
+  const BLENDS = [
+    MAP_BLEND_COMPRESSED, 0.004672, 0.25, 0.5, 0.601,
+    0.997, 0.9999, 0.99998128125, 0.999999, MAP_BLEND_TRUE,
+  ];
   const CURVES: MapCurve[] = [
     CURVE,
     { kind: 'asinh', s0: MAP_S0_MIN },
@@ -479,6 +484,17 @@ describe('unmapRadius', () => {
     expect(step1).toBeCloseTo(mapRadius(r0, 0.004672, curve), 12);
     const step2 = remapRadius(step1, 0.004672, 0.018176, curve);
     expect(step2).toBeCloseTo(mapRadius(r0, 0.018176, curve), 12);
+  });
+
+  it('converges at a terminal-blend frame in the expansion region', () => {
+    // A real ease's 399 ms frame (smoothstep ≈ 0.99998128125) on gamma-min
+    // with a 1e-7 AU radius: the bracket's low bound underflows ~100 decades
+    // wide, the first geometric midpoint plunges far below the root, and
+    // Newton crawls back in small accepted steps. A 24-iteration budget
+    // returned 67% low here; the crawl measures 29 iterations at worst.
+    const curve: MapCurve = { kind: 'power', gamma: MAP_GAMMA_MIN };
+    const m = mapRadius(1e-7, 0.99998128125, curve);
+    expect(unmapRadius(m, 0.99998128125, curve)).toBeCloseTo(1e-7, 12);
   });
 
   it('keeps a root found on the bracket edge instead of bisecting off it', () => {

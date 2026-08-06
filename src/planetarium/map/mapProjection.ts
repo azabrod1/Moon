@@ -159,7 +159,13 @@ export function unmapRadius(mapRadiusAU: number, blend: number, curve: MapCurve)
   let r = Math.min(mapRadiusAU, hi);
   let best = r;
   let bestErr = Infinity;
-  for (let i = 0; i < 24; i++) {
+  // The budget covers the solver's worst honest path: at a terminal blend in
+  // the expansion region the bracket's low bound underflows ~100 decades
+  // wide, the first geometric midpoint plunges far below the root, and
+  // Newton crawls back in small accepted steps — measured 29 iterations at
+  // the worst swept case (24 returned 67% low there). The function runs once
+  // per ease frame, not per body, so the slack is free.
+  for (let i = 0; i < 64; i++) {
     const compressed = curveRadius(r, curve);
     const f = compressed + (r - compressed) * blend - mapRadiusAU;
     if (f === 0) return r;

@@ -168,8 +168,21 @@ export class MapFocusMenu {
       if (visible[i]) any = true;
     }
     this.emptyEl?.classList.toggle('visible', !any);
-    // A highlight the filter has hidden is not a highlight any more.
-    if (this.highlight >= 0 && !visible[this.highlight]) this.setHighlight(-1);
+    const q = query.trim().toLowerCase();
+    if (q) {
+      // Typing is already choosing: highlight the first row the query NAMES —
+      // not a parent riding along on its moon's match — so the Enter that
+      // follows commits what the search found, no arrow press first.
+      let pick = -1;
+      for (let i = 0; i < this.rows.length; i++) {
+        if (visible[i] && this.rows[i].name.toLowerCase().includes(q)) { pick = i; break; }
+      }
+      if (pick < 0) pick = visible.findIndex((v) => v);
+      this.setHighlight(pick);
+    } else if (this.highlight >= 0 && !visible[this.highlight]) {
+      // A highlight the filter has hidden is not a highlight any more.
+      this.setHighlight(-1);
+    }
   }
 
   private setHighlight(index: number): void {

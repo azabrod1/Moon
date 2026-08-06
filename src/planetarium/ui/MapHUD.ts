@@ -56,6 +56,7 @@ export class MapHUD {
   private focusBtn: HTMLButtonElement | null = null;
   private infoBtn: HTMLButtonElement | null = null;
   private infoPop: HTMLElement | null = null;
+  private infoBody: HTMLElement | null = null;
   private overviewOn = true;
   private flipOn = true;
 
@@ -111,6 +112,7 @@ export class MapHUD {
     this.focusBtn = document.getElementById('map-focus') as HTMLButtonElement | null;
     this.infoBtn = document.getElementById('map-info') as HTMLButtonElement | null;
     this.infoPop = document.getElementById('map-info-popover');
+    this.infoBody = document.getElementById('map-info-body');
     this.card = document.getElementById('map-card');
     this.cardDot = document.getElementById('map-card-dot');
     this.cardName = document.getElementById('map-card-name');
@@ -131,6 +133,9 @@ export class MapHUD {
     this.flipBtn?.addEventListener('click', () => this.onFlip());
     this.focusBtn?.addEventListener('click', () => this.onFocusMenu());
     this.infoBtn?.addEventListener('click', () => this.onInfo());
+    // The fade follows the scroll — it lifts at the end, or it would slice the
+    // closing line's glyphs with nothing below to promise.
+    this.infoBody?.addEventListener('scroll', () => this.updateInfoFade());
     // Delegated so the rebuilt-per-pick buttons need no per-button listeners.
     // Focus and the commit verbs travel on different attributes, so a commit
     // handler can never be reached by a button that isn't one.
@@ -178,12 +183,22 @@ export class MapHUD {
     if (!this.infoPop) return;
     this.infoPop.classList.add('visible');
     anchorAboveMapConsole(this.infoPop);
-    // Read the overflow AFTER the cap is applied: asking before it would answer
-    // "fits" every time and the fade would never appear. A card that does not
-    // scroll gets none (the fact list's rule).
-    const body = document.getElementById('map-info-body');
-    if (body) body.classList.toggle('scrolls', body.scrollHeight > body.clientHeight + 1);
+    // Judge the fade AFTER the cap is applied: asking before it would answer
+    // "fits" every time and the fade would never appear.
+    this.updateInfoFade();
     this.infoBtn?.classList.add('open');
+  }
+
+  /** The fade marks MORE BELOW, nothing else: it shows only while the body
+   *  overflows AND has somewhere left to scroll. A mask that stayed at the
+   *  end of the scroll would cut the closing sentence's glyphs in half —
+   *  which is exactly how it read on an 800px-tall viewport. */
+  private updateInfoFade(): void {
+    const body = this.infoBody;
+    if (!body) return;
+    const more = body.scrollHeight > body.clientHeight + 1
+      && body.scrollTop + body.clientHeight < body.scrollHeight - 1;
+    body.classList.toggle('scrolls', more);
   }
 
   /** Re-seat an open info popover after a viewport change (the picker's rule:
@@ -192,8 +207,7 @@ export class MapHUD {
   reanchorInfo(): void {
     if (!this.isInfoOpen() || !this.infoPop) return;
     anchorAboveMapConsole(this.infoPop);
-    const body = document.getElementById('map-info-body');
-    if (body) body.classList.toggle('scrolls', body.scrollHeight > body.clientHeight + 1);
+    this.updateInfoFade();
   }
 
   /** Closing blurs the button as well: a popover dismissed by Esc must not

@@ -658,6 +658,14 @@ export class SystemMap {
    *  picked-body card, the Focus picker and the info popover. Each counts as a
    *  band only while it spans the width, which is the phone form. */
   private labelSheetEls: (HTMLElement | null)[] = [];
+  /** The corner panels' screen rects this frame — the desktop console, card
+   *  and popovers. A label whose box lands under one hides: half a name
+   *  sticking out from a panel's edge reads as a sliced fragment, not a
+   *  label. The console's rect is viewport-static and cached with the band;
+   *  the sheets' rects are read live beside their band measurement. */
+  private labelObstaclesPx: { left: number; top: number; right: number; bottom: number }[] = [];
+  private labelStaticObstacle: { left: number; top: number; right: number; bottom: number } | null =
+    null;
   /** The one drawn ring annulus's screen-space ellipse this frame, for the
    *  labels of the moons that live inside it. Refreshed in renderLabels;
    *  inactive whenever no revealed system draws a ring. */
@@ -5312,6 +5320,16 @@ export class SystemMap {
       if (label.style.display !== 'none') label.style.display = 'none';
       return;
     }
+    // A corner panel is a hole in the frame, not a band across it: a label
+    // whose box lands under the console, the card or a popover would show as
+    // word fragments sticking out from the panel's edge.
+    for (const ob of this.labelObstaclesPx) {
+      if (x + halfWidth > ob.left && x - halfWidth < ob.right
+        && boxTop + LABEL_LINE_HEIGHT_PX > ob.top && boxTop < ob.bottom) {
+        if (label.style.display !== 'none') label.style.display = 'none';
+        return;
+      }
+    }
     // Proximity cull: hide if the label lands too close to an already-placed
     // (higher-priority) label this frame. The anchor test reads the BODY's
     // position, the box test the rectangle actually drawn — a clamp or a ring
@@ -5366,28 +5384,52 @@ export class SystemMap {
   }
 
   private refreshLabelChrome(w: number, h: number): void {
-    const spanningTop = (el: HTMLElement | null | undefined): number | null => {
+    // A panel that spans the width is a BAND (labels stop above it); one that
+    // does not is a corner OBSTACLE (labels dodge its rect). Bands come from
+    // the phone's sheets, obstacles from the desktop's corner instruments —
+    // the same test the card dock uses, so all three models agree.
+    const measurable = (el: HTMLElement | null | undefined): DOMRect | null => {
       const rect = el?.getBoundingClientRect();
-      if (!rect || !(rect.height > 0) || !(rect.top > 0)) return null;
-      return rect.width >= w - 32 ? rect.top : null;
+      return rect && rect.height > 0 && rect.top > 0 ? rect : null;
     };
+    const pad = 4;
+    const asObstacle = (rect: DOMRect) => ({
+      left: rect.left - pad,
+      top: rect.top - pad,
+      right: rect.right + pad,
+      bottom: rect.bottom + pad,
+    });
     if (this.labelChromeForW !== w || this.labelChromeForH !== h) {
       this.labelChromeForW = w;
       this.labelChromeForH = h;
       let top: number | null = null;
-      const bar = document.getElementById('planetarium-bottom-bar')?.getBoundingClientRect();
-      if (bar && bar.height > 0 && bar.top > 0) top = bar.top;
+      const bar = measurable(document.getElementById('planetarium-bottom-bar'));
+      if (bar) top = bar.top;
       // The console's shape is decided by the viewport alone, so its span is
-      // as cacheable as the bar's.
-      const consoleTop = spanningTop(document.getElementById('map-console'));
-      if (consoleTop !== null) top = top === null ? consoleTop : Math.min(top, consoleTop);
+      // as cacheable as the bar's — as a band on a phone, a rect on a desktop.
+      this.labelStaticObstacle = null;
+      const consoleRect = measurable(document.getElementById('map-console'));
+      if (consoleRect) {
+        if (consoleRect.width >= w - 32) {
+          top = top === null ? consoleRect.top : Math.min(top, consoleRect.top);
+        } else {
+          this.labelStaticObstacle = asObstacle(consoleRect);
+        }
+      }
       this.labelStaticChromeTopPx = top;
     }
     let top = this.labelStaticChromeTopPx;
+    this.labelObstaclesPx.length = 0;
+    if (this.labelStaticObstacle) this.labelObstaclesPx.push(this.labelStaticObstacle);
     for (const el of this.labelSheetEls) {
       if (!el?.classList.contains('visible')) continue;
-      const sheetTop = spanningTop(el);
-      if (sheetTop !== null) top = top === null ? sheetTop : Math.min(top, sheetTop);
+      const rect = measurable(el);
+      if (!rect) continue;
+      if (rect.width >= w - 32) {
+        top = top === null ? rect.top : Math.min(top, rect.top);
+      } else {
+        this.labelObstaclesPx.push(asObstacle(rect));
+      }
     }
     this.labelMaxBoxTopCachedPx = labelMaxBoxTopPx(top, h);
   }

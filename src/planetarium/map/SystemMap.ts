@@ -118,7 +118,7 @@ import {
   mapMoonMarkerRadiusAU,
   mapMoonRadiusAU,
   DOT_EXTENT_MUL,
-  DOT_GRADIENT_STOPS,
+  dotGradientAlpha,
   MAP_BODY_SIZE_DEFAULTS,
   type MapBodySizeParams,
 } from './mapBodySize';
@@ -5190,18 +5190,33 @@ export class SystemMap {
     return this.glowTex;
   }
 
+  /** Authored pixel by pixel, never painted with a gradient fill: WebKit
+   *  corrupts RGB when a gradient-filled translucent canvas is uploaded to
+   *  WebGL without premultiply (three's default) — a quarter of the texels
+   *  come back with channel noise, worst in the near-opaque band where this
+   *  profile's flat core sits, and every marker on the chart speckles on
+   *  Safari. putImageData-authored pixels upload clean on every engine; the
+   *  solar disc and halo below are built the same way for the same reason. */
   private makeGlowTexture(): THREE.Texture {
     const size = 128;
     const canvas = document.createElement('canvas');
     canvas.width = size;
     canvas.height = size;
     const ctx = canvas.getContext('2d')!;
-    const g = ctx.createRadialGradient(size / 2, size / 2, 0, size / 2, size / 2, size / 2);
-    for (const stop of DOT_GRADIENT_STOPS) {
-      g.addColorStop(stop.at, `rgba(255,255,255,${stop.alpha})`);
+    const img = ctx.createImageData(size, size);
+    const data = img.data;
+    const c = size / 2;
+    for (let y = 0; y < size; y++) {
+      for (let x = 0; x < size; x++) {
+        const t = Math.hypot(x + 0.5 - c, y + 0.5 - c) / c;
+        const i = (y * size + x) * 4;
+        data[i] = 255;
+        data[i + 1] = 255;
+        data[i + 2] = 255;
+        data[i + 3] = Math.round(255 * dotGradientAlpha(t));
+      }
     }
-    ctx.fillStyle = g;
-    ctx.fillRect(0, 0, size, size);
+    ctx.putImageData(img, 0, 0);
     const tex = new THREE.CanvasTexture(canvas);
     applyTextureDefaults(tex, 'color');
     return tex;

@@ -135,6 +135,25 @@ export const DOT_GRADIENT_STOPS: readonly DotGradientStop[] = [
   { at: 0.77, alpha: 0 },
 ];
 
+/** The profile sampled at `t` of the half-extent: piecewise linear through the
+ *  stops, holding the first stop inside it and zero past the painted edge —
+ *  exactly what a canvas radial gradient would interpolate from the same
+ *  stops. The texture is authored from this sampler pixel by pixel instead of
+ *  asking a 2D gradient fill to paint it; the reason lives with the texture
+ *  builders that call it. */
+export function dotGradientAlpha(t: number): number {
+  const stops = DOT_GRADIENT_STOPS;
+  if (t <= stops[0].at) return stops[0].alpha;
+  for (let i = 1; i < stops.length; i++) {
+    const lo = stops[i - 1];
+    const hi = stops[i];
+    if (t <= hi.at) {
+      return lo.alpha + ((hi.alpha - lo.alpha) * (t - lo.at)) / (hi.at - lo.at);
+    }
+  }
+  return 0;
+}
+
 /** Where the profile above reaches zero, as a fraction of the half-extent —
  *  the painted edge of a dot, derived from the profile rather than restated. */
 export const DOT_PAINTED_FRACTION = ((): number => {

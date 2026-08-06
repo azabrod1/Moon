@@ -3,6 +3,7 @@ import {
   DOT_GRADIENT_STOPS,
   DOT_PAINTED_EDGE_MUL,
   DOT_PAINTED_FRACTION,
+  dotGradientAlpha,
   labelClearanceRadiusPx,
   mapMoonMarkerRadiusAU,
   mapMoonRadiusAU,
@@ -326,5 +327,30 @@ describe('the marker gradient profile', () => {
     const after = ink(DOT_GRADIENT_STOPS);
     expect(before).toBeCloseTo(0.6399, 3);
     expect(Math.abs(after - before) / before).toBeLessThan(0.03);
+  });
+
+  it('samples as the gradient the stops describe, zero past the painted edge', () => {
+    // The sampler is what the marker texture is authored from, pixel by pixel;
+    // it must reproduce what a canvas radial gradient would have painted from
+    // the same stops — exact at every stop, linear between them, and nothing
+    // outside the profile.
+    for (const stop of DOT_GRADIENT_STOPS) {
+      expect(dotGradientAlpha(stop.at)).toBeCloseTo(stop.alpha, 10);
+    }
+    for (let i = 1; i < DOT_GRADIENT_STOPS.length; i++) {
+      const a = DOT_GRADIENT_STOPS[i - 1];
+      const b = DOT_GRADIENT_STOPS[i];
+      const mid = (a.at + b.at) / 2;
+      expect(dotGradientAlpha(mid)).toBeCloseTo((a.alpha + b.alpha) / 2, 10);
+    }
+    expect(dotGradientAlpha(DOT_PAINTED_FRACTION)).toBe(0);
+    expect(dotGradientAlpha(0.9)).toBe(0);
+    expect(dotGradientAlpha(2)).toBe(0);
+    let prev = Infinity;
+    for (let t = 0; t <= 1; t += 0.01) {
+      const alpha = dotGradientAlpha(t);
+      expect(alpha).toBeLessThanOrEqual(prev + 1e-12);
+      prev = alpha;
+    }
   });
 });

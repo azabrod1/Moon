@@ -2378,7 +2378,14 @@ export class SystemMap {
     // A second finger joining a one-finger rotate starts pinching on its very
     // next move, and that move dollies before anything else could refresh the
     // pivot the rotate left standing.
-    if (this.zoomOwnsPivot() && this.isPinchGesture()) this.reseatZoomPivot();
+    if (this.zoomOwnsPivot() && this.isPinchGesture()) {
+      this.reseatZoomPivot();
+      // The reseat just moved the camera-to-target distance and the first
+      // pinch move may be frames away — a live ease re-dollying the old
+      // ratio against the new pivot in between is a snap the move's own
+      // flag would then preserve. Flag the rebase from the reseat itself.
+      this.zoomEaseRebase = true;
+    }
   };
 
   private onZoomPointerUp = (e: PointerEvent): void => {
@@ -3636,6 +3643,13 @@ export class SystemMap {
     );
     this.dollyTo(want);
     this.applyBounds();
+    // The framing ratio the scale ease preserves per frame was captured at
+    // the toggle, before the dive rewrote the pose — an ease still running
+    // at cancel would re-dolly this freshly rebuilt frame back toward it on
+    // the very next frame (a parked overview restored to the exact fit
+    // snaps out by the captured drift). Rebase to the restored framing, the
+    // way the focus restore's overview path already does.
+    this.rebaseScaleZoomRatio();
     this.camera.updateMatrixWorld();
     this.syncZoomToCursor();
     this.controls.enabled = true;

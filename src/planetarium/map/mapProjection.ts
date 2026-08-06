@@ -126,6 +126,66 @@ export function mapRadius(radiusAU: number, blend: number, curve: MapCurve): num
   return compressed + (radiusAU - compressed) * blend;
 }
 
+/**
+ * The inverse of `mapRadius`: the raw heliocentric radius a drawn radius came
+ * from. Exact at both blend endpoints (identity at true scale; sinh / the
+ * gamma root fully compressed). Mid-blend the equation
+ * `c(r) + (r − c(r))·blend = m` has no closed form on the asinh curve, so it
+ * is solved by a bracketed Newton: the drawn radius always lies between the
+ * true radius and its fully-compressed image (whichever way the curve bends —
+ * asinh only compresses, the power law expands below 1 AU), so the root is
+ * bracketed by m and the blend-0 inverse of m, and any Newton step that
+ * leaves the bracket falls back to bisection. The blend-0 inverse can
+ * overflow to Infinity on a hard-compressing curve (sinh of a mid-blend
+ * radius), so the bracket is also capped at m / blend, which
+ * `m = c·(1−blend) + r·blend ≥ r·blend` guarantees. Converges to double
+ * precision in a handful of steps; f′ = c′·(1−blend) + blend ≥ blend > 0
+ * keeps every Newton step well-conditioned.
+ */
+export function unmapRadius(mapRadiusAU: number, blend: number, curve: MapCurve): number {
+  if (mapRadiusAU <= 0) return 0;
+  if (blend >= MAP_BLEND_TRUE) return mapRadiusAU;
+  const compressedInverse = curve.kind === 'power'
+    ? Math.pow(mapRadiusAU, 1 / curve.gamma)
+    : curve.s0 * Math.sinh(mapRadiusAU / curve.s0);
+  if (blend <= MAP_BLEND_COMPRESSED) return compressedInverse;
+  let lo = Math.min(mapRadiusAU, compressedInverse);
+  let hi = Math.min(Math.max(mapRadiusAU, compressedInverse), mapRadiusAU / blend);
+  let r = Math.min(mapRadiusAU, hi);
+  for (let i = 0; i < 24; i++) {
+    const compressed = curveRadius(r, curve);
+    const f = compressed + (r - compressed) * blend - mapRadiusAU;
+    if (f === 0) return r;
+    if (f > 0) hi = r;
+    else lo = r;
+    const cSlope = curve.kind === 'power'
+      ? (curve.gamma * compressed) / r
+      : 1 / Math.sqrt(1 + (r / curve.s0) ** 2);
+    let next = r - f / (cSlope * (1 - blend) + blend);
+    if (!(next > lo && next < hi)) next = lo + (hi - lo) / 2;
+    if (next === r) break;
+    r = next;
+  }
+  return r;
+}
+
+/**
+ * Where a free map-space radius lands when the blend moves — the same physical
+ * point, re-projected. This is the camera pivot's seam: a cursor-anchored zoom
+ * parks the orbit target on a body in map space, and the scale animation must
+ * carry that point through the re-projection or a pivot acquired at true
+ * scale is left far outside the whole compressed chart.
+ */
+export function remapRadius(
+  mapRadiusAU: number,
+  fromBlend: number,
+  toBlend: number,
+  curve: MapCurve,
+): number {
+  if (fromBlend === toBlend) return mapRadiusAU;
+  return mapRadius(unmapRadius(mapRadiusAU, fromBlend, curve), toBlend, curve);
+}
+
 export interface MapVec3 {
   x: number;
   y: number;

@@ -73,6 +73,7 @@ import {
   fitDistanceAU,
   isAtOverviewFit,
   mapRadius,
+  remapRadius,
   projectMapPoint,
   sanitizeMapCurve,
   MAP_BLEND_TRUE,
@@ -1441,7 +1442,10 @@ export class SystemMap {
     // The camera branch below keys off whether the blend moved THIS frame, not
     // off the flag: the terminal frame clears it while carrying the animation's
     // largest extent change, and that frame needs the same preserving dolly as
-    // every other, or the settled view is left misframed.
+    // every other, or the settled view is left misframed. The pre-advance
+    // blend is read first: the pivot remap below carries the camera's target
+    // across exactly the step the blend just took.
+    const blendBefore = this.blend;
     const blendMoved = blendAdvance(this.blendState, dtMs);
     if (blendMoved) this.recompressOrbits();
 
@@ -1471,6 +1475,19 @@ export class SystemMap {
           this.needsInitialFrame = false;
           this.frameToExtent();
         } else if (blendMoved) {
+          // The free pivot is a point in map space — a cursor-anchored zoom
+          // parks it on the body it closed on — so it rides the re-projection
+          // like every body does, or a pivot acquired at true scale (5–8 AU
+          // out) is left outside the entire compressed chart and the camera
+          // settles staring at empty space. Radial remap only: the layout
+          // scales radii and holds directions.
+          const pivot = this.controls.target;
+          const pivotRadius = pivot.length();
+          if (pivotRadius > 1e-9) {
+            pivot.multiplyScalar(
+              remapRadius(pivotRadius, blendBefore, this.blend, this.curve) / pivotRadius,
+            );
+          }
           // Re-dolly to preserve the framing captured at the toggle, so the
           // system holds its apparent size while its extent slides with the
           // blend.

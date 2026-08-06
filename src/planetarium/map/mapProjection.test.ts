@@ -9,7 +9,9 @@ import {
   mapExtentAU,
   mapRadius,
   projectMapPoint,
+  remapRadius,
   sanitizeMapCurve,
+  unmapRadius,
   diveRestoreDistanceAU,
   MAP_ASINH_S0_DEFAULT,
   MAP_BLEND_COMPRESSED,
@@ -419,5 +421,73 @@ describe('isAtOverviewFit', () => {
     // everything — reject it outright.
     expect(isAtOverviewFit(10, Infinity)).toBe(false);
     expect(isAtOverviewFit(Infinity, Infinity)).toBe(false);
+  });
+});
+
+describe('unmapRadius', () => {
+  // The blends the camera actually crosses: both endpoints, the ease's
+  // midsection, and a frame just shy of settling.
+  const BLENDS = [MAP_BLEND_COMPRESSED, 0.25, 0.5, 0.997, MAP_BLEND_TRUE];
+  const CURVES: MapCurve[] = [
+    CURVE,
+    { kind: 'asinh', s0: MAP_S0_MIN },
+    { kind: 'asinh', s0: MAP_S0_MAX },
+    LEGACY,
+  ];
+
+  it('inverts mapRadius to double precision across curves, blends and radii', () => {
+    for (const curve of CURVES) {
+      for (const blend of BLENDS) {
+        for (const r of [1e-6, AU.mercury, AU.earth, AU.saturn, AU.pluto, 100]) {
+          const m = mapRadius(r, blend, curve);
+          expect(unmapRadius(m, blend, curve)).toBeCloseTo(r, 9);
+        }
+      }
+    }
+  });
+
+  it('is exact at the endpoints, matching mapRadius bit for bit', () => {
+    // True scale is the identity; fully compressed inverts analytically.
+    expect(unmapRadius(AU.saturn, MAP_BLEND_TRUE, CURVE)).toBe(AU.saturn);
+    const compressed = mapCompressedRadius(AU.saturn);
+    expect(unmapRadius(compressed, MAP_BLEND_COMPRESSED, CURVE)).toBeCloseTo(AU.saturn, 12);
+  });
+
+  it('maps zero and negative to zero', () => {
+    expect(unmapRadius(0, 0.5, CURVE)).toBe(0);
+    expect(unmapRadius(-1, 0.5, CURVE)).toBe(0);
+  });
+});
+
+describe('remapRadius', () => {
+  it('is the identity when the blend has not moved', () => {
+    expect(remapRadius(AU.saturn, 0.4, 0.4, CURVE)).toBe(AU.saturn);
+  });
+
+  it('carries a pivot parked on Saturn from true scale to its compressed radius', () => {
+    // The pan-to-blank bug's exact numbers: a cursor zoom at true scale leaves
+    // the pivot at Saturn's 9.5 AU, and the compressed chart draws Saturn at
+    // ~2.08 AU. The remap must land the pivot there, not leave it outside the
+    // ~3 AU chart.
+    const remapped = remapRadius(AU.saturn, MAP_BLEND_TRUE, MAP_BLEND_COMPRESSED, CURVE);
+    expect(remapped).toBeCloseTo(mapCompressedRadius(AU.saturn), 9);
+    expect(remapped).toBeLessThan(mapCompressedRadius(AU.pluto));
+  });
+
+  it('composes across intermediate blends the way the animation steps do', () => {
+    // The camera remaps one frame at a time; chaining the steps must agree
+    // with the single jump, or the pivot drifts over the ease.
+    const steps = [MAP_BLEND_TRUE, 0.8, 0.55, 0.3, 0.1, MAP_BLEND_COMPRESSED];
+    let m = mapRadius(AU.jupiter, MAP_BLEND_TRUE, CURVE);
+    for (let i = 1; i < steps.length; i++) {
+      m = remapRadius(m, steps[i - 1], steps[i], CURVE);
+    }
+    expect(m).toBeCloseTo(mapRadius(AU.jupiter, MAP_BLEND_COMPRESSED, CURVE), 9);
+  });
+
+  it('round-trips a full toggle and back to the starting pivot', () => {
+    const start = mapRadius(AU.mars, MAP_BLEND_COMPRESSED, CURVE);
+    const out = remapRadius(start, MAP_BLEND_COMPRESSED, MAP_BLEND_TRUE, CURVE);
+    expect(remapRadius(out, MAP_BLEND_TRUE, MAP_BLEND_COMPRESSED, CURVE)).toBeCloseTo(start, 9);
   });
 });

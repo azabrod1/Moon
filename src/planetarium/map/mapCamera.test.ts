@@ -13,7 +13,7 @@ import {
   mapFocusLandPulse,
   mapOverviewBounds,
   mapFocusReleasable,
-  mapOverviewChipVisible,
+  mapOverviewAvailable,
   mapOverviewPivotDistanceAU,
   mapWorldPerPxAtUnitDepth,
   mapZoomAvailability,
@@ -91,6 +91,7 @@ describe('mapCameraReduce', () => {
       camState: 'overview',
       flyGoal: null,
       focusName: null,
+      flipOrigin: null,
       diveOrigin: null,
     });
   });
@@ -219,6 +220,7 @@ describe('mapCameraReduce', () => {
       camState: 'following',
       flyGoal: null,
       focusName: 'Io',
+      flipOrigin: null,
       diveOrigin: null,
     });
 
@@ -228,6 +230,7 @@ describe('mapCameraReduce', () => {
       camState: 'following',
       flyGoal: null,
       focusName: 'Io',
+      flipOrigin: null,
       diveOrigin: null,
     });
 
@@ -273,6 +276,11 @@ describe('mapFocusReleasable', () => {
     expect(mapFocusReleasable(diving)).toBe(false);
   });
 
+  it('counts a crossing that is still riding a body, but not one from the overview', () => {
+    expect(mapFocusReleasable(mapCameraReduce(following, { kind: 'flip' }))).toBe(true);
+    expect(mapFocusReleasable(mapCameraReduce(initial, { kind: 'flip' }))).toBe(false);
+  });
+
   it('does not care whether the overview zoom has wandered', () => {
     // This is Esc's rung. A drifted overview is not a focus, so Esc closes the
     // map there — the whole reason this is a separate function from the chip's.
@@ -280,39 +288,47 @@ describe('mapFocusReleasable', () => {
   });
 });
 
-describe('mapOverviewChipVisible', () => {
+describe('mapOverviewAvailable', () => {
   const initial = mapCameraInitialState();
   const inbound = mapCameraReduce(initial, { kind: 'focus', name: 'Saturn' });
   const following = mapCameraReduce(inbound, { kind: 'flyLanded' });
   const leaving = mapCameraReduce(following, { kind: 'release' });
   const diving = mapCameraReduce(following, { kind: 'diveStart', camera: true });
 
-  it('shows while flying to a body and while following it, zoomed or not', () => {
-    expect(mapOverviewChipVisible(inbound, false)).toBe(true);
-    expect(mapOverviewChipVisible(inbound, true)).toBe(true);
-    expect(mapOverviewChipVisible(following, false)).toBe(true);
-    expect(mapOverviewChipVisible(following, true)).toBe(true);
+  it('offers the way home while following a body, zoomed or not', () => {
+    expect(mapOverviewAvailable(following, false)).toBe(true);
+    expect(mapOverviewAvailable(following, true)).toBe(true);
   });
 
   it('shows at an overview whose zoom has wandered, and hides at a clean one', () => {
-    expect(mapOverviewChipVisible(initial, true)).toBe(true);
-    expect(mapOverviewChipVisible(initial, false)).toBe(false);
+    expect(mapOverviewAvailable(initial, true)).toBe(true);
+    expect(mapOverviewAvailable(initial, false)).toBe(false);
   });
 
-  it('hides on the way back out and during a dive, however the zoom sits', () => {
+  it('greys out while any move owns the camera, however the zoom sits', () => {
     for (const free of [false, true]) {
-      expect(mapOverviewChipVisible(leaving, free)).toBe(false);
-      expect(mapOverviewChipVisible(diving, free)).toBe(false);
+      // An inbound flight is releasable, but seating the overview on top of one
+      // would fight the ease writing the pose that frame.
+      expect(mapOverviewAvailable(inbound, free)).toBe(false);
+      expect(mapOverviewAvailable(leaving, free)).toBe(false);
+      expect(mapOverviewAvailable(diving, free)).toBe(false);
     }
   });
 
   it('offers everything the releasable predicate does, and one thing more', () => {
-    for (const state of [initial, inbound, following, leaving, diving]) {
-      if (mapFocusReleasable(state)) expect(mapOverviewChipVisible(state, false)).toBe(true);
+    for (const state of [initial, following, leaving, diving]) {
+      if (mapFocusReleasable(state)) expect(mapOverviewAvailable(state, false)).toBe(true);
     }
     // The one thing more, and the only one.
     expect(mapFocusReleasable(initial)).toBe(false);
-    expect(mapOverviewChipVisible(initial, true)).toBe(true);
+    expect(mapOverviewAvailable(initial, true)).toBe(true);
+  });
+
+  it('greys out while a crossing runs, from either side', () => {
+    for (const free of [false, true]) {
+      expect(mapOverviewAvailable(mapCameraReduce(initial, { kind: 'flip' }), free)).toBe(false);
+      expect(mapOverviewAvailable(mapCameraReduce(following, { kind: 'flip' }), free)).toBe(false);
+    }
   });
 });
 
@@ -328,9 +344,93 @@ describe('mapCameraOwnsPose', () => {
     )).toBe(true);
   });
 
+  it('stands it down through a crossing too — the chart swings underneath', () => {
+    expect(mapCameraOwnsPose(mapCameraReduce(initial, { kind: 'flip' }))).toBe(true);
+  });
+
   it('leaves picking live on the overview and in a settled follow', () => {
     expect(mapCameraOwnsPose(initial)).toBe(false);
     expect(mapCameraOwnsPose(mapCameraReduce(inbound, { kind: 'flyLanded' }))).toBe(false);
+  });
+});
+
+describe('the flip state', () => {
+  const initial = mapCameraInitialState();
+  const inbound = mapCameraReduce(initial, { kind: 'focus', name: 'Europa' });
+  const following = mapCameraReduce(inbound, { kind: 'flyLanded' });
+  const leaving = mapCameraReduce(following, { kind: 'release' });
+  const diving = mapCameraReduce(following, { kind: 'diveStart', camera: true });
+
+  it('is accepted from the overview, carrying where it came from', () => {
+    const flipping = mapCameraReduce(initial, { kind: 'flip' });
+    expect(flipping).toEqual({
+      camState: 'flip',
+      flyGoal: null,
+      focusName: null,
+      flipOrigin: 'overview',
+      diveOrigin: null,
+    });
+  });
+
+  it('is accepted from a follow, and keeps riding its subject', () => {
+    const flipping = mapCameraReduce(following, { kind: 'flip' });
+    expect(flipping).toEqual({
+      camState: 'flip',
+      flyGoal: null,
+      focusName: 'Europa',
+      flipOrigin: 'following',
+      diveOrigin: null,
+    });
+  });
+
+  it('is refused by every state that is already writing the pose', () => {
+    expect(mapCameraReduce(inbound, { kind: 'flip' })).toBe(inbound);
+    expect(mapCameraReduce(leaving, { kind: 'flip' })).toBe(leaving);
+    expect(mapCameraReduce(diving, { kind: 'flip' })).toBe(diving);
+  });
+
+  it('reports no change for a second press — the reversal is the geometry', () => {
+    const flipping = mapCameraReduce(following, { kind: 'flip' });
+    expect(mapCameraReduce(flipping, { kind: 'flip' })).toBe(flipping);
+  });
+
+  it('lands back in the state it left, focus and all', () => {
+    const fromOverview = mapCameraReduce(initial, { kind: 'flip' });
+    expect(mapCameraReduce(fromOverview, { kind: 'flipLanded' })).toEqual(initial);
+    const fromFollow = mapCameraReduce(following, { kind: 'flip' });
+    expect(mapCameraReduce(fromFollow, { kind: 'flipLanded' })).toEqual(following);
+  });
+
+  it('ignores a landing nothing was crossing for', () => {
+    for (const state of [initial, inbound, following, leaving, diving]) {
+      expect(mapCameraReduce(state, { kind: 'flipLanded' })).toBe(state);
+    }
+  });
+
+  it('restarts as a flight when a body is asked for mid-crossing', () => {
+    const flipping = mapCameraReduce(following, { kind: 'flip' });
+    const next = mapCameraReduce(flipping, { kind: 'focus', name: 'Titan' });
+    expect(next.camState).toBe('focusFly');
+    expect(next.flyGoal).toBe('follow');
+    expect(next.focusName).toBe('Titan');
+    expect(next.flipOrigin).toBeNull();
+  });
+
+  it('memos where a crossing would have LANDED when a dive interrupts it', () => {
+    const flipping = mapCameraReduce(following, { kind: 'flip' });
+    const dive = mapCameraReduce(flipping, { kind: 'diveStart', camera: true });
+    expect(dive.diveOrigin).toEqual({
+      camState: 'following',
+      flyGoal: null,
+      focusName: 'Europa',
+    });
+    // And the cancel puts the ride back, not a crossing with no clock left.
+    expect(mapCameraReduce(dive, { kind: 'diveCancel' })).toEqual(following);
+  });
+
+  it('is cleared by a close', () => {
+    const flipping = mapCameraReduce(following, { kind: 'flip' });
+    expect(mapCameraReduce(flipping, { kind: 'close' })).toEqual(initial);
   });
 });
 

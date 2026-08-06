@@ -263,6 +263,8 @@ import { SunLabel } from './ui/SunLabel';
 import { TutorialCard, tutorialCardModel } from './ui/TutorialCard';
 import { SystemMap, type MapTextureSource } from './map/SystemMap';
 import { MapHUD } from './ui/MapHUD';
+import { MapFocusMenu } from './ui/MapFocusMenu';
+import { buildMapFocusRows } from './map/mapFocusRows';
 import { mapCardActions, mapCardOffersVerb, commitBodyPickOutcome, type MapVerb } from './map/mapLogic';
 import { mapBody, mapBodyRefFor } from './map/mapBodies';
 import {
@@ -286,7 +288,7 @@ import {
   MAP_DOUBLE_TAP_MS,
   mapCameraOwnsPose,
   mapFocusReleasable,
-  mapOverviewChipVisible,
+  mapOverviewAvailable,
   type MapZoomAvailability,
 } from './map/mapCamera';
 import { HOVER_RECLAIM_MOVE_PX, resolveMapHover } from './map/mapHover';
@@ -970,9 +972,12 @@ export class PlanetariumMode {
     () => (this.mapDiving ? this.cancelMapDive() : this.closeMap()),
     (verb) => this.commitMapCard(verb),
     () => this.focusMapCard(),
-    () => this.mapOverviewChipPressed(),
+    () => this.mapOverviewPressed(),
     () => this.warpToMapEvent(),
   );
+  // The Focus picker. A pick is exactly the double-tap: the card opens on the
+  // body and the camera goes to it.
+  private mapFocusMenu = new MapFocusMenu((name) => this.pickMapFocusRow(name));
   // The catalog name of the body the card is open on, or null. Also the map's
   // "picked" bridge state.
   private mapPicked: NonNullable<LandedTarget> | null = null;
@@ -4780,10 +4785,15 @@ export class PlanetariumMode {
       if (this.bottomBar.isTimeOpen()) { this.bottomBar.closeTime(); return; }
       if (this.bottomBar.isStatsOpen()) { this.bottomBar.closeStats(); return; }
       // Map micro-rungs, above the map rung: Esc mid-dive cancels the dive
-      // (map stays open); then Esc dismisses the picked-body card; then Esc
-      // releases a focus back to the overview; then Esc over the map drops back
-      // into the ship. Each rung produces a visible change, in that order.
+      // (map stays open); then Esc pops whichever of the console's popovers is
+      // open; then Esc dismisses the picked-body card; then Esc releases a
+      // focus back to the overview; then Esc over the map drops back into the
+      // ship. Each rung produces a visible change, in that order — and the
+      // popovers sit above the release-swallow rung below, or an Esc with the
+      // picker open during a release flight would be eaten by the flight.
       if (this.isMapOpen() && this.mapDiving) { this.cancelMapDive(); return; }
+      if (this.isMapFocusMenuOpen()) { this.closeMapFocusMenu(); return; }
+      if (this.mapHud.isInfoOpen()) { this.closeMapInfo(); return; }
       if (this.mapHud.isCardOpen()) { this.dismissMapCard(); return; }
       if (this.isMapOpen() && this.mapFocusActive()) { this.releaseMapFocus(); return; }
       // A release already flying IS the answer to Esc. Swallow the key rather
@@ -4824,6 +4834,26 @@ export class PlanetariumMode {
       if (this.isSpaceOnControl(e)) return;
       if (e.key.length === 1 && /[\w ]/.test(e.key)) {
         (document.getElementById('deck-search') as HTMLInputElement | null)?.focus();
+        return;
+      }
+      return;
+    }
+
+    // Focus picker open: the same contract the deck has. Arrows and Enter work
+    // the list without focusing the search first, and every printable key types
+    // into it — M and T included, or T would open the deck (which closes the
+    // whole map underneath) and M could never spell "Mars".
+    if (this.isMapFocusMenuOpen() && !e.metaKey && !e.ctrlKey && !e.altKey) {
+      if (e.key === 'ArrowDown') { e.preventDefault(); this.mapFocusMenu.moveHighlight(1); return; }
+      if (e.key === 'ArrowUp') { e.preventDefault(); this.mapFocusMenu.moveHighlight(-1); return; }
+      if (e.key === 'Enter' && !(e.target as HTMLElement).closest('button')) {
+        e.preventDefault();
+        this.mapFocusMenu.commitHighlight();
+        return;
+      }
+      if (this.isSpaceOnControl(e)) return;
+      if (e.key.length === 1 && /[\w ]/.test(e.key)) {
+        this.mapFocusMenu.focusSearch();
         return;
       }
       return;
@@ -6056,6 +6086,15 @@ export class PlanetariumMode {
 
     this.bottomBar.bind();
     this.mapHud.bind();
+    this.mapFocusMenu.bind();
+    // The console's own rows. The card's and the segment's callbacks arrived
+    // with the HUD's constructor; these are assigned, the bottom bar's idiom.
+    this.mapHud.onFlip = () => this.mapFlipPressed();
+    this.mapHud.onFocusMenu = () => this.toggleMapFocusMenu();
+    this.mapHud.onInfo = () => this.toggleMapInfo();
+    // The whole layer going down takes the picker with it — one funnel, so no
+    // close path has to remember this on its own.
+    this.mapHud.onHidden = () => this.closeMapFocusMenu();
     // One instrument at a time: opening the Stats card tucks the Observatory
     // panel back into its chip, with a brief pulse so the hop reads.
     this.bottomBar.onStatsToggle = (open) => {
@@ -6065,10 +6104,12 @@ export class PlanetariumMode {
       }
       // Same pairing with the map card: opening Stats dismisses it.
       if (open) this.dismissMapCard();
+      this.standMapConsoleDown(open);
     };
     // Opening the Time panel dismisses the map card (one instrument at a time).
     this.bottomBar.onTimeToggle = (open) => {
       if (open) this.dismissMapCard();
+      this.standMapConsoleDown(open);
     };
 
     this.sunLabel.attach();
@@ -6633,6 +6674,10 @@ export class PlanetariumMode {
     camState: string;
     flyGoal: string | null;
     focused: string | null;
+    hemisphere: string;
+    flipping: boolean;
+    focusMenuOpen: boolean;
+    infoOpen: boolean;
     diving: boolean;
     diveGapAU: number | null;
     ship: { rotationRad: number; docked: boolean };
@@ -6673,6 +6718,13 @@ export class PlanetariumMode {
       camState: cam.camState,
       flyGoal: cam.flyGoal,
       focused: cam.focusName,
+      // Which side of the chart's plane the camera is held on, and whether a
+      // crossing is running — so a headless check polls the latch instead of
+      // sleeping through the 400 ms and hoping.
+      hemisphere: this.systemMap.getHemisphere(),
+      flipping: this.systemMap.isFlipping(),
+      focusMenuOpen: this.mapFocusMenu.isOpen(),
+      infoOpen: this.mapHud.isInfoOpen(),
       diving: this.mapDiving,
       // Camera-aim-vs-live-dot gap: ~0 once the ease lands proves the dive
       // tracked the moving dot instead of a stale snapshot.
@@ -6754,9 +6806,37 @@ export class PlanetariumMode {
   }
 
   /** Dev bridge: focus a body (the card's Focus button / a double-tap), or
-   *  release the focus with null (the ◂ Overview chip). */
+   *  release the focus with null (the Esc rung). */
   devMapFocus(name: string | null): boolean {
     return name === null ? this.releaseMapFocus() : this.focusMapBody(name);
+  }
+
+  /** Dev bridge: the console's Flip row. A second call mid-crossing turns it
+   *  around, exactly as a second press does. */
+  devMapFlip(): boolean {
+    return this.mapFlipPressed();
+  }
+
+  /** Dev bridge: the console's Overview row — a release flight when there is a
+   *  focus to give back, an instant re-fit when the free zoom has wandered.
+   *  Which one it was is what `mapState().camState` says a frame later. */
+  devMapOverview(): boolean {
+    return this.mapOverviewPressed();
+  }
+
+  /** Dev bridge: the Focus PICKER (the list). `mapFocus(name)` is the camera
+   *  move the picker's rows commit. */
+  devMapFocusMenu(open: boolean): boolean {
+    if (open) this.openMapFocusMenu();
+    else this.closeMapFocusMenu();
+    return this.mapFocusMenu.isOpen();
+  }
+
+  /** Dev bridge: the "How the map works" popover. */
+  devMapInfo(open: boolean): boolean {
+    if (open) this.openMapInfo();
+    else this.closeMapInfo();
+    return this.mapHud.isInfoOpen();
   }
 
   /** Open the full-screen system map. The single safe gate for every entry
@@ -6851,6 +6931,10 @@ export class PlanetariumMode {
     if (!this.mapCommitting) this.clearDiveFade();
 
     this.systemMap?.close();
+    // Both popovers go with the chart. mapHud.hide() takes the picker too (the
+    // onHidden hook), so landing, takeoff, deactivation, a mission start, M and
+    // Esc are all covered by this one call.
+    this.closeMapFocusMenu();
     this.mapHud.hide();
     // The zoom pair goes down with the layer, so a held run has nothing left to
     // press against; the hint goes with it whether or not its own clock ran out.
@@ -7043,17 +7127,26 @@ export class PlanetariumMode {
     // painted beneath the taller card. The sweep reads only the clock and its
     // own cursors, so nothing here needs the update to have run.
     this.updateMapEventSearch();
-    // The ◂ Overview chip for the same reason: on a phone the chip is top
-    // chrome the card's height is measured against, so flipping it re-measures
-    // the card — and every flip a user can cause (Focus, Overview, Esc) has
-    // already happened by now, in its event handler. A flip the UPDATE causes
-    // (a flight landing turns the chip on) shows one frame late instead,
-    // which only ever SHRINKS the card's room — the safe direction — and the
-    // chip itself is cosmetic for a frame either way.
-    this.mapHud.setOverviewChip(mapOverviewChipVisible(
-      this.systemMap.getCameraState(),
-      this.systemMap.isZoomFree(),
-    ));
+    // The console's own rows follow the camera state from the map's predicates;
+    // the map has no HUD reference of its own, so the per-frame refresh owns
+    // them. Greying a row changes nothing about the chart's geometry — the
+    // console holds its size and place whatever its buttons say.
+    const cam = this.systemMap.getCameraState();
+    // A running dive owns the camera even when it is the fade-only kind the
+    // map's own state knows nothing about, so the mode's flag joins both.
+    const cameraFree = !this.mapDiving;
+    this.mapHud.setOverviewEnabled(
+      cameraFree && mapOverviewAvailable(cam, this.systemMap.isZoomFree()),
+    );
+    // The crossing takes a settled view: a flight or a dive is already writing
+    // the pose, and mid-scale-animation the pivot moves under it every frame.
+    // One already crossing keeps the row LIVE, because a second press there is
+    // the way back — greying it out would strand the gesture halfway.
+    this.mapHud.setFlipEnabled(
+      cameraFree
+        && (cam.camState === 'overview' || cam.camState === 'following' || cam.camState === 'flip')
+        && !this.systemMap.isScaleAnimating(),
+    );
     // The course as a VECTOR, from the ship's own forward math — the chart
     // charts a point one step along it and never re-derives a heading of its
     // own. Landing goes over whole: the chart places the marker differently on
@@ -7186,6 +7279,10 @@ export class PlanetariumMode {
     // pointer is not the body that will be there a frame later.
     if (this.mapDiving || this.isMapCameraFlying() || !this.systemMap) return;
     if (!isTap(this.mapPickDownX, this.mapPickDownY, e.clientX, e.clientY)) return;
+    // A tap on the chart is the chart's again: whatever the console had open
+    // over it steps aside, whether the tap lands on a body or on empty space.
+    this.closeMapFocusMenu();
+    this.closeMapInfo();
     // A press that landed on the emphasis commits what the emphasis named, with
     // no second look at a chart that has moved since. The declared consequence:
     // a press on apparently empty space that is in fact the hold's anchor opens
@@ -7351,9 +7448,13 @@ export class PlanetariumMode {
     const target = mapBodyRefFor(name);
     if (!target) return;
     this.mapPicked = target;
-    // One instrument at a time — fold the bottom-bar popovers away.
+    // One instrument at a time — fold the bottom-bar popovers and the console's
+    // own away. The picker especially: a pick from it opens this card, and on a
+    // phone the two are the same strip of screen.
     this.bottomBar.closeTime();
     this.bottomBar.closeStats();
+    this.closeMapFocusMenu();
+    this.closeMapInfo();
     const actions = mapCardActions(target, this.landedOn);
     const color = this.bodyTintCss(name);
     // Zero only while there is no map open to measure against.
@@ -7581,10 +7682,11 @@ export class PlanetariumMode {
     return !!cam && mapFocusReleasable(cam);
   }
 
-  /** The ◂ Overview chip. Two journeys home behind one button: give a focus
-   *  back, or — at an overview a free zoom has wandered off — re-fit the chart.
-   *  Which one is on offer is what the chip's own visibility predicate says. */
-  private mapOverviewChipPressed(): boolean {
+  /** The console's Overview row. Two journeys home behind one button: give a
+   *  focus back, or — at an overview a free zoom has wandered off — re-fit the
+   *  chart. Which one is on offer is what the row's own predicate says, and at
+   *  the parked fit neither is, which is when the row greys out. */
+  private mapOverviewPressed(): boolean {
     const map = this.systemMap;
     const cam = map?.getCameraState();
     if (!map?.isOpen() || !cam || this.mapDiving) return false;
@@ -7592,6 +7694,93 @@ export class PlanetariumMode {
     // A re-fit moves the camera under the pointer the same way a flight does.
     this.poisonMapPick();
     return map.recenterOverview();
+  }
+
+  /** The console's Flip row: cross to the other side of the chart's plane, or
+   *  turn a crossing already under way around. */
+  private mapFlipPressed(): boolean {
+    if (!this.systemMap?.isOpen() || this.mapDiving) return false;
+    // The camera is about to swing a long way around whatever is under the
+    // pointer, the way a flight does.
+    this.poisonMapPick();
+    const flipping = this.systemMap.flipElevation();
+    if (flipping) this.retractMapHover();
+    return flipping;
+  }
+
+  // ── System map: the Focus picker and the info popover ───────────────────
+
+  private isMapFocusMenuOpen(): boolean {
+    return this.mapFocusMenu.isOpen();
+  }
+
+  /** Stats and Time open into the console's own corner, and both sit UNDER the
+   *  map layer. While one of them is up the console steps aside — and its
+   *  popovers, which hang off it, go with it. */
+  private standMapConsoleDown(down: boolean): void {
+    if (!this.isMapOpen()) return;
+    if (down) {
+      this.closeMapFocusMenu();
+      this.closeMapInfo();
+    }
+    this.mapHud.setConsoleStoodDown(down);
+  }
+
+  /**
+   * Open the Focus picker over the chart. The roster is the MAP's, gated by the
+   * camera's own accept rule, so every row is a body the pick will actually
+   * reach; the 'here' pill is the landed body and nothing else.
+   */
+  private openMapFocusMenu(): void {
+    const map = this.systemMap;
+    if (!map?.isOpen() || this.mapDiving) return;
+    // One instrument at a time: the picked-body card and the info popover fold
+    // away, and so do the bottom bar's own popovers (the card's rule).
+    this.dismissMapCard();
+    this.closeMapInfo();
+    this.bottomBar.closeTime();
+    this.bottomBar.closeStats();
+    this.mapFocusMenu.open(
+      buildMapFocusRows((name) => map.acceptsFocus(name), this.landedOn?.name ?? null),
+    );
+    this.mapHud.setFocusMenuOpen(true);
+  }
+
+  private closeMapFocusMenu(): void {
+    if (!this.mapFocusMenu.isOpen()) return;
+    this.mapFocusMenu.close();
+    this.mapHud.setFocusMenuOpen(false);
+  }
+
+  private toggleMapFocusMenu(): void {
+    if (this.mapFocusMenu.isOpen()) this.closeMapFocusMenu();
+    else this.openMapFocusMenu();
+  }
+
+  /** A row was picked: exactly what a double-tap on the chart does — the card
+   *  opens on that body and the camera flies to it. */
+  private pickMapFocusRow(name: string): void {
+    this.closeMapFocusMenu();
+    if (!this.isMapOpen() || this.mapDiving) return;
+    this.openMapCard(name);
+    this.focusMapBody(name);
+  }
+
+  private openMapInfo(): void {
+    if (!this.systemMap?.isOpen()) return;
+    this.closeMapFocusMenu();
+    this.bottomBar.closeTime();
+    this.bottomBar.closeStats();
+    this.mapHud.openInfo();
+  }
+
+  private closeMapInfo(): void {
+    this.mapHud.closeInfo();
+  }
+
+  private toggleMapInfo(): void {
+    if (this.mapHud.isInfoOpen()) this.closeMapInfo();
+    else this.openMapInfo();
   }
 
   /** Whether the camera is already on its way back to the overview. */

@@ -4,9 +4,9 @@ import type { MapEventRowModel } from '../map/mapEvents';
 import { makeTiltGlyph } from './mapTiltGlyph';
 
 /**
- * MapHUD — the on-screen controls for the System map: the segmented scale
- * control (both states always visible, the active one marked), the close chip,
- * the ◂ Overview chip that releases a focus, and the picked-body card (tint dot,
+ * MapHUD — the on-screen controls for the System map: the console (scale
+ * segment, zoom pair, Overview, Flip, Focus, and the line that explains the
+ * chart), the close chip, the info popover, and the picked-body card (tint dot,
  * name, live distance, one-line description, action buttons, the system's next
  * event, facts).
  *
@@ -17,6 +17,29 @@ import { makeTiltGlyph } from './mapTiltGlyph';
  * nothing about them but how they are painted and how much room they get.
  */
 
+/** Sit a map popover directly above the console and cap it at the room left
+ *  over. Measured rather than written into the stylesheet: the console's height
+ *  is whatever its rows come to, and it changes shape at the phone breakpoint.
+ *  Exported because the Focus picker is its own widget and hangs in the same
+ *  place. */
+export function anchorAboveMapConsole(el: HTMLElement): void {
+  const consoleEl = document.getElementById('map-console');
+  const rect = consoleEl?.getBoundingClientRect();
+  if (!rect || !(rect.height > 0)) return;
+  const gap = 8;
+  el.style.bottom = `${Math.round(window.innerHeight - rect.top + gap)}px`;
+  // The top chrome is the ceiling, not the viewport: the action cluster sits
+  // ABOVE the map layer and stays clickable over it, so a popover grown into
+  // that corner would put its own search box behind a live button.
+  let ceiling = 0;
+  for (const id of ['map-close', 'planetarium-actions']) {
+    const chrome = document.getElementById(id)?.getBoundingClientRect();
+    if (chrome && chrome.height > 0) ceiling = Math.max(ceiling, chrome.bottom);
+  }
+  // 12 px of air below it, the same margin the chart's other corners keep.
+  el.style.maxHeight = `${Math.max(0, Math.round(rect.top - gap - ceiling - 12))}px`;
+}
+
 /** The facts viewport is worth having at three rows or more. Below that the
  *  card would carry a hairline, a scrollbar and a sliver — so the section comes
  *  off instead, and the actions keep the room. Measured: three ~14 px rows,
@@ -25,10 +48,28 @@ const MIN_FACTS_PX = 66;
 
 export class MapHUD {
   private root: HTMLElement | null = null;
+  private consoleEl: HTMLElement | null = null;
   private segCompressed: HTMLButtonElement | null = null;
   private segTrue: HTMLButtonElement | null = null;
-  private overviewChip: HTMLElement | null = null;
-  private chipShown = false;
+  private overviewBtn: HTMLButtonElement | null = null;
+  private flipBtn: HTMLButtonElement | null = null;
+  private focusBtn: HTMLButtonElement | null = null;
+  private infoBtn: HTMLButtonElement | null = null;
+  private infoPop: HTMLElement | null = null;
+  private overviewOn = true;
+  private flipOn = true;
+
+  /** The console's own buttons, assigned by the owner (the bottom bar's
+   *  idiom). The constructor's callbacks are the card's and the segment's —
+   *  these arrived with the console and are kept apart from them. */
+  onFlip: () => void = () => {};
+  onFocusMenu: () => void = () => {};
+  /** The ⓘ line. The owner decides — it folds the other instruments away
+   *  before this one appears. */
+  onInfo: () => void = () => {};
+  /** The map layer is going down: the owner closes whatever else it has open
+   *  over the chart. */
+  onHidden: () => void = () => {};
 
   private card: HTMLElement | null = null;
   private cardDot: HTMLElement | null = null;
@@ -62,9 +103,14 @@ export class MapHUD {
   /** Cache elements (every activation) and wire listeners once. */
   bind(): void {
     this.root = document.getElementById('system-map-ui');
+    this.consoleEl = document.getElementById('map-console');
     this.segCompressed = document.getElementById('map-scale-compressed') as HTMLButtonElement | null;
     this.segTrue = document.getElementById('map-scale-true') as HTMLButtonElement | null;
-    this.overviewChip = document.getElementById('map-overview');
+    this.overviewBtn = document.getElementById('map-overview') as HTMLButtonElement | null;
+    this.flipBtn = document.getElementById('map-flip') as HTMLButtonElement | null;
+    this.focusBtn = document.getElementById('map-focus') as HTMLButtonElement | null;
+    this.infoBtn = document.getElementById('map-info') as HTMLButtonElement | null;
+    this.infoPop = document.getElementById('map-info-popover');
     this.card = document.getElementById('map-card');
     this.cardDot = document.getElementById('map-card-dot');
     this.cardName = document.getElementById('map-card-name');
@@ -81,7 +127,10 @@ export class MapHUD {
     this.segCompressed?.addEventListener('click', () => this.onScale(false));
     this.segTrue?.addEventListener('click', () => this.onScale(true));
     document.getElementById('map-close')?.addEventListener('click', () => this.onClose());
-    this.overviewChip?.addEventListener('click', () => this.onOverview());
+    this.overviewBtn?.addEventListener('click', () => this.onOverview());
+    this.flipBtn?.addEventListener('click', () => this.onFlip());
+    this.focusBtn?.addEventListener('click', () => this.onFocusMenu());
+    this.infoBtn?.addEventListener('click', () => this.onInfo());
     // Delegated so the rebuilt-per-pick buttons need no per-button listeners.
     // Focus and the commit verbs travel on different attributes, so a commit
     // handler can never be reached by a button that isn't one.
@@ -95,30 +144,72 @@ export class MapHUD {
     });
   }
 
-  /** Show the ◂ Overview chip while the camera is on a body. The map itself has
-   *  no HUD reference, so the per-frame refresh owns this; writes on change. */
-  setOverviewChip(visible: boolean): void {
-    if (visible === this.chipShown) return;
-    this.chipShown = visible;
-    this.overviewChip?.classList.toggle('visible', visible);
-    // On a phone the chip lands on its own row below the close button, so it
-    // is part of the top chrome the card's height is measured against. A card
-    // opened at a clean overview and then Focus-ed would otherwise keep a cap
-    // that never knew the chip was coming.
-    this.measureCard();
+  /** Grey the Overview row when neither of its journeys home is on offer, and
+   *  the Flip row while anything else owns the camera. The map itself has no
+   *  HUD reference, so the per-frame refresh owns both; they write on change. */
+  setOverviewEnabled(enabled: boolean): void {
+    if (enabled === this.overviewOn) return;
+    this.overviewOn = enabled;
+    if (this.overviewBtn) this.overviewBtn.disabled = !enabled;
+  }
+
+  setFlipEnabled(enabled: boolean): void {
+    if (enabled === this.flipOn) return;
+    this.flipOn = enabled;
+    if (this.flipBtn) this.flipBtn.disabled = !enabled;
+  }
+
+  /** Light the Focus button while its picker stands open. */
+  setFocusMenuOpen(open: boolean): void {
+    this.focusBtn?.classList.toggle('open', open);
+  }
+
+  /** Stand the console down while another instrument takes its corner (Stats
+   *  and Time both open into it), and put it back when they close. */
+  setConsoleStoodDown(down: boolean): void {
+    this.consoleEl?.classList.toggle('stood-down', down);
+  }
+
+  isInfoOpen(): boolean {
+    return !!this.infoPop?.classList.contains('visible');
+  }
+
+  openInfo(): void {
+    if (!this.infoPop) return;
+    this.infoPop.classList.add('visible');
+    anchorAboveMapConsole(this.infoPop);
+    // Read the overflow AFTER the cap is applied: asking before it would answer
+    // "fits" every time and the fade would never appear. A card that does not
+    // scroll gets none (the fact list's rule).
+    const body = document.getElementById('map-info-body');
+    if (body) body.classList.toggle('scrolls', body.scrollHeight > body.clientHeight + 1);
+    this.infoBtn?.classList.add('open');
+  }
+
+  /** Closing blurs the button as well: a popover dismissed by Esc must not
+   *  leave the keyboard focus sitting on the control that reopens it. */
+  closeInfo(): void {
+    if (!this.isInfoOpen()) return;
+    this.infoPop?.classList.remove('visible');
+    this.infoBtn?.classList.remove('open');
+    this.infoBtn?.blur();
   }
 
   show(): void {
     // Explicit value — the element's CSS default is display:none, so clearing
     // the inline style would hide it, not show it.
     if (this.root) this.root.style.display = 'block';
+    this.setConsoleStoodDown(false);
   }
 
   hide(): void {
     if (this.root) this.root.style.display = 'none';
     this.hideCard();
     this.setHoverMeta(null);
-    this.setOverviewChip(false);
+    this.closeInfo();
+    this.setConsoleStoodDown(false);
+    // Whatever else the owner has standing over the chart goes with the layer.
+    this.onHidden();
   }
 
   /** The line about the body under the cursor, or null for nothing hovered.
@@ -259,15 +350,20 @@ export class MapHUD {
   }
 
   /**
-   * Dock the card above the bottom bands (bar + scale control) and cap its
-   * height at the room actually left between them and the top chrome —
-   * measured, so a narrow phone's stacked controls never collide with it.
+   * Dock the card above the bottom bands and cap its height at the room
+   * actually left between them and the top chrome — measured, so a narrow
+   * phone's stacked controls never collide with it.
    *
-   * "Top chrome" is both the close button and the ◂ Overview chip: below 640 px
-   * the chip drops to its own row, and that row is the tightest case this
-   * exists for. What gives under the cap is the facts section; if the room left
-   * for it will not hold three rows, it comes off entirely and the actions keep
-   * the space.
+   * The bands are the world bar, plus the console once it spans the width. On a
+   * desktop the console is a corner instrument on the opposite side, and
+   * docking a left-hand card above its top edge would float it hundreds of px
+   * over nothing; on a phone the console is a full-width strip and IS the band.
+   * Same width test the label pass uses, so the two agree about what counts.
+   *
+   * "Top chrome" is the close button — the only thing above the chart now that
+   * the Overview control has moved into the console. What gives under the cap
+   * is the facts section; if the room left for it will not hold three rows, it
+   * comes off entirely and the actions keep the space.
    */
   measureCard(): void {
     if (!this.card || !this.isCardOpen()) return;
@@ -275,21 +371,19 @@ export class MapHUD {
       const el = document.getElementById(id);
       if (!el) return null;
       const r = el.getBoundingClientRect();
-      // A hidden chip measures as a zero box wherever it sits — read it as
+      // A hidden control measures as a zero box wherever it sits — read it as
       // absent rather than as chrome at the top of the viewport.
       return r.height > 0 ? r : null;
     };
-    const bandsTop = Math.min(
-      rect('planetarium-bottom-bar')?.top ?? Infinity,
-      rect('map-scale')?.top ?? Infinity,
-    );
+    const consoleRect = rect('map-console');
+    const consoleTop = consoleRect && consoleRect.width >= window.innerWidth - 32
+      ? consoleRect.top
+      : Infinity;
+    const bandsTop = Math.min(rect('planetarium-bottom-bar')?.top ?? Infinity, consoleTop);
     const bottom = Math.round(Number.isFinite(bandsTop) ? window.innerHeight - bandsTop + 12 : 96);
     this.card.style.bottom = `${bottom}px`;
 
-    const chromeBottom = Math.max(
-      rect('map-close')?.bottom ?? 0,
-      rect('map-overview')?.bottom ?? 0,
-    );
+    const chromeBottom = rect('map-close')?.bottom ?? 0;
     // The card's own bottom edge sits at (innerHeight − bottom); the top chrome
     // ends at chromeBottom, and 12 px of air between them is the same gap the
     // dock leaves at the other end.

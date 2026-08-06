@@ -156,7 +156,9 @@ import {
   mapFlightFramingDistanceAU,
   mapFocusEase,
   mapFocusLandPulse,
+  mapHemisphereFlipped,
   mapOverviewBounds,
+  mapPolarBand,
   mapOverviewPivotDistanceAU,
   mapWorldPerPxAtUnitDepth,
   mapZoomAvailability,
@@ -171,8 +173,18 @@ import {
   type MapCameraBounds,
   type MapCameraState,
   type MapFollowBounds,
+  type MapHemisphere,
+  type MapPolarBand,
   type MapZoomAvailability,
 } from './mapCamera';
+import {
+  makeMapFlipState,
+  mapFlipAdvance,
+  mapFlipBegin,
+  mapFlipOffset,
+  mapFlipReverse,
+  mapFlipSettle,
+} from './mapFlip';
 import { flushOrbitDamping } from '../input/orbitDamping';
 import {
   anchorOnScreen,
@@ -642,7 +654,10 @@ export class SystemMap {
   private labelChromeForW = 0;
   private labelChromeForH = 0;
   private labelMaxBoxTopCachedPx = Number.POSITIVE_INFINITY;
-  private labelCardEl: HTMLElement | null = null;
+  /** The chart's own sheets, measured live every frame they stand open: the
+   *  picked-body card, the Focus picker and the info popover. Each counts as a
+   *  band only while it spans the width, which is the phone form. */
+  private labelSheetEls: (HTMLElement | null)[] = [];
   /** The one drawn ring annulus's screen-space ellipse this frame, for the
    *  labels of the moons that live inside it. Refreshed in renderLabels;
    *  inactive whenever no revealed system draws a ring. */
@@ -930,10 +945,24 @@ export class SystemMap {
     clearanceDist: Infinity,
   };
 
+  // Which side of the chart's plane the camera is held on, and the crossing
+  // between them. The latch is map state rather than camera state because the
+  // two legal polar bands share no overlap and OrbitControls hold only one
+  // interval: every place that hands the controls their bounds has to write the
+  // band this says, or the clamp drags a mirrored camera back over the plane
+  // inside a frame.
+  private hemisphere: MapHemisphere = 'above';
+  private flipState = makeMapFlipState();
+  private polarBand: MapPolarBand = { min: 0, max: 0 };
+  private tmpFlipOffset = new THREE.Vector3();
+
   // Dive transition (camera pose only — the mode owns the clock, the fade, the
   // token, and the commit). beginDive snapshots the start pose so a cancel can
   // restore it exactly; setDivePose eases toward the focus.
   private diving = false;
+  /** The side the camera was on when a dive took it, so a cancel puts back the
+   *  bounds the restored pose belongs to. */
+  private diveStartHemisphere: MapHemisphere = 'above';
   private diveWasAtOverview = false;
   /** Camera distance as a fraction of the overview fit at dive start. */
   private divePreFitRatio = 1;
@@ -982,9 +1011,10 @@ export class SystemMap {
     this.controls.dampingFactor = 0.08;
     this.controls.enablePan = false;
     this.controls.enabled = false;
-    // Keep it a map: never fully edge-on, never underneath.
-    this.controls.minPolarAngle = 0.08;
-    this.controls.maxPolarAngle = (78 * Math.PI) / 180;
+    // Keep it a map: never fully edge-on, and only ever on the side the latch
+    // names. "Underneath" is a whole hemisphere the flip reaches, not a place
+    // the camera can wander into.
+    this.applyPolarBand();
 
     // The free overview zoom brackets the controls' own wheel handling. The
     // pivot is refreshed once BEFORE the dolly reads its radius — a rotate
@@ -1205,6 +1235,11 @@ export class SystemMap {
     // here and there a wheel would otherwise find the last session's target
     // still standing while everything else said this one had just begun.
     this.cam = mapCameraInitialState();
+    // Every open looks down on the chart from the north, whatever the last
+    // session's flip left standing.
+    this.hemisphere = 'above';
+    mapFlipSettle(this.flipState);
+    this.applyPolarBand();
     this.controls.target.set(0, 0, 0);
     this.zoomFree = false;
     // A fresh session has been shown no gestures yet, whatever the last one saw.
@@ -1229,6 +1264,10 @@ export class SystemMap {
   focusBody(name: string): boolean {
     if (!this.open || this.cam.camState === 'dive') return false;
     if (!this.cameraMayVisit(name)) return false;
+    // A crossing lands before the flight leaves: the flight keeps the direction
+    // the camera is looking from, and mid-crossing that direction is one the
+    // landing would have to clamp away.
+    this.settleFlip();
     const next = mapCameraReduce(this.cam, { kind: 'focus', name });
     if (next === this.cam) return true;
     const fromFocus = this.cam.camState !== 'overview';
@@ -1246,6 +1285,7 @@ export class SystemMap {
    *  was nothing to release, or the release is already under way. */
   releaseFocus(): boolean {
     if (!this.open) return false;
+    this.settleFlip();
     const next = mapCameraReduce(this.cam, { kind: 'release' });
     if (next === this.cam) return false;
     const fromFocus = this.cam.camState !== 'overview';
@@ -1258,9 +1298,80 @@ export class SystemMap {
     return true;
   }
 
+  /**
+   * Cross to the other side of the chart's plane: same pivot, same bearing,
+   * same distance, opposite hemisphere. A press while one is already crossing
+   * turns it around and puts the camera back where it started.
+   *
+   * Refused while anything else owns the camera — a flight, a dive — and while
+   * the scale animation is running, which rewrites the pivot and the framing
+   * every frame and would leave the crossing mirroring a pose that has moved
+   * under it.
+   */
+  flipElevation(): boolean {
+    if (!this.open) return false;
+    // A second press: turn around. The latch goes back with it, so the bounds
+    // describe the side the camera is actually returning to.
+    if (this.cam.camState === 'flip') {
+      mapFlipReverse(this.flipState);
+      this.hemisphere = mapHemisphereFlipped(this.hemisphere);
+      this.applyPolarBand();
+      return true;
+    }
+    if (this.blendState.animating) return false;
+    // Nothing to mirror before the first frame has framed anything: seat the
+    // overview, exactly as a focus asked for that early does.
+    if (this.needsInitialFrame) {
+      this.needsInitialFrame = false;
+      this.recomputeExtent();
+      this.frameToExtent();
+    }
+    const next = mapCameraReduce(this.cam, { kind: 'flip' });
+    if (next === this.cam) return false;
+    this.tmpFlipOffset.copy(this.camera.position).sub(this.controls.target);
+    // The chart's parked bearing is the fallback for a camera looking straight
+    // down the pole, where the offset carries no bearing of its own.
+    if (!mapFlipBegin(this.flipState, this.tmpFlipOffset, 0, 1)) return false;
+    this.cam = next;
+    // A released drag keeps coasting; start from a settled controls state or
+    // the residual fights the crossing (the flight's own rule).
+    flushOrbitDamping(this.controls);
+    this.controls.enabled = false;
+    // The destination band goes on now, not at the landing: every bounds pass
+    // between here and there describes where the camera is going.
+    this.hemisphere = mapHemisphereFlipped(this.hemisphere);
+    this.applyPolarBand();
+    this.cancelFocusPulse();
+    return true;
+  }
+
+  /** Whether the camera would take a focus on this body. The Focus picker's own
+   *  gate, so no row it offers is one `focusBody` would refuse. */
+  acceptsFocus(name: string): boolean {
+    return this.cameraMayVisit(name);
+  }
+
+  /** Which side of the plane the chart is being watched from. */
+  getHemisphere(): MapHemisphere {
+    return this.hemisphere;
+  }
+
+  /** Whether a crossing is running right now. */
+  isFlipping(): boolean {
+    return this.cam.camState === 'flip';
+  }
+
+  /** Whether the compressed↔true animation is still running. The crossing
+   *  refuses while it is: that animation rewrites the pivot and the framing
+   *  every frame, and the crossing would be mirroring a pose that has moved. */
+  isScaleAnimating(): boolean {
+    return this.blendState.animating;
+  }
+
   /** Whether the overview's zoom has carried its pivot off the origin — the
-   *  chart is no longer at the parked fit. Read every frame for the ◂ chip, so
-   *  it allocates nothing and scans nothing (zoomState() does both). */
+   *  chart is no longer at the parked fit. Read every frame for the console's
+   *  Overview row, so it allocates nothing and scans nothing (zoomState() does
+   *  both). */
   isZoomFree(): boolean {
     return this.zoomFree;
   }
@@ -1287,6 +1398,10 @@ export class SystemMap {
   /** Seat the camera at a 3/4 overhead framing the live extent (ship included). */
   private frameToExtent(): void {
     const dist = fitDistanceAU(this.extentAU, MAP_FOV_DEG, this.camera.aspect);
+    // The fit is written in the northern hemisphere, so the latch comes back
+    // with it: framing the whole system is also how a chart flipped underneath
+    // is put the right way up.
+    this.hemisphere = 'above';
     this.camera.position.set(0, dist * 0.82, dist * 0.57).setLength(dist);
     // The target is back on the origin, so the free zoom's pivot has not moved:
     // whatever a previous zoom did, this frame is the parked chart again.
@@ -1318,6 +1433,9 @@ export class SystemMap {
     // last session did. The committed target is what the map reopens at.
     blendSettle(this.blendState);
     this.scaleZoomRatio = 1;
+    // A crossing has nothing to cross on a shut chart; the next open reseats
+    // the hemisphere anyway.
+    mapFlipSettle(this.flipState);
     this.setHover(null);
     this.cancelFocusPulse();
     this.controls.enabled = false;
@@ -1540,6 +1658,9 @@ export class SystemMap {
         break;
       case 'following':
         this.updateFollow();
+        break;
+      case 'flip':
+        this.advanceFlip(dtMs);
         break;
       case 'dive':
         // The mode drives setDivePose; the camera section stands down.
@@ -2236,6 +2357,7 @@ export class SystemMap {
       this.applyBounds();
       return;
     }
+    this.applyPolarBand();
     this.controls.minDistance = bounds.minDist;
     this.controls.maxDistance = bounds.maxDist;
     this.camera.near = bounds.near;
@@ -2322,6 +2444,68 @@ export class SystemMap {
       }
     }
     return out;
+  }
+
+  // ---- the crossing above/below -----------------------------------------
+
+  /** Hand the latched hemisphere's polar band to the controls. Called from
+   *  every bounds pass — the band is part of what the camera is allowed to do,
+   *  and the passes that write the distance clamps are exactly the places that
+   *  would otherwise leave a stale one standing. */
+  private applyPolarBand(): void {
+    mapPolarBand(this.hemisphere, this.polarBand);
+    this.controls.minPolarAngle = this.polarBand.min;
+    this.controls.maxPolarAngle = this.polarBand.max;
+  }
+
+  /**
+   * Advance the crossing one frame.
+   *
+   * The pivot is followed live rather than frozen: a follow crossing rides a
+   * body that keeps moving under it, and at a fast clock a pivot snapshotted at
+   * the press drifts a visible distance before the 400 ms are up. The offset is
+   * the mirror's, so the subject holds its place on screen while the viewer
+   * swings under it.
+   */
+  private advanceFlip(dtMs: number): void {
+    const name = this.cam.flipOrigin === 'following' ? this.cam.focusName : null;
+    const landed = mapFlipAdvance(this.flipState, dtMs);
+    if (name && this.bodyMapPosition(name, this.tmpBodyPos)) {
+      this.controls.target.copy(this.tmpBodyPos);
+      // The ride resumes with a zero delta whenever this ends.
+      this.followPos.copy(this.tmpBodyPos);
+    }
+    mapFlipOffset(this.flipState, this.tmpFlipOffset);
+    this.camera.position.copy(this.controls.target).add(this.tmpFlipOffset);
+    this.camera.lookAt(this.controls.target);
+    // The clip planes ride the crossing: the camera swings a long way around
+    // its subject, and what is nearest changes as it goes.
+    if (name) this.applyFocusClip(name, this.nearestBodyName());
+    else this.applyBounds();
+    if (!landed) return;
+
+    this.cam = mapCameraReduce(this.cam, { kind: 'flipLanded' });
+    if (this.cam.camState === 'following') this.applyFollowBounds();
+    else this.applyBounds();
+    this.syncZoomToCursor();
+    this.controls.enabled = true;
+    this.controls.update();
+  }
+
+  /**
+   * End a crossing where it was going, right now.
+   *
+   * The moves that take the camera somewhere else — a focus, a release, a
+   * commit — need a settled pose to leave from, and mid-crossing there is none:
+   * the camera can be sitting at an elevation neither hemisphere's band
+   * contains, so anything that hands the controls back there is clamped in a
+   * visible snap. Landing the crossing first costs the same snap at worst and
+   * leaves the state machine, the latch and the bounds all agreeing.
+   */
+  private settleFlip(): void {
+    if (this.cam.camState !== 'flip') return;
+    mapFlipSettle(this.flipState);
+    this.advanceFlip(0);
   }
 
   // ---- the free overview zoom -------------------------------------------
@@ -3479,6 +3663,9 @@ export class SystemMap {
     // And refuse a body it cannot place: the ease runs toward a position, and
     // the position it would otherwise be handed is the Sun's.
     if (!this.bodyMapPosition(name, this.tmpBodyPos)) return false;
+    // A crossing lands first: the dive snapshots a start pose for its cancel to
+    // restore, and a mid-crossing pose is one no band contains.
+    this.settleFlip();
     // Memo how the camera sat around a focused body BEFORE the machine forgets
     // it. A follow is restored from where it actually was; an interrupted
     // approach is restored from the framing it was heading for, so a cancel
@@ -3513,6 +3700,9 @@ export class SystemMap {
     // MEANT as well — a floating target under a latch that says nothing has
     // moved is a state no path can get out of.
     this.diveStartZoomFree = this.zoomFree;
+    // And which side of the plane that pose belongs to, so the restore hands
+    // the controls the band it can legally sit in.
+    this.diveStartHemisphere = this.hemisphere;
     this.diveOffsetDir.copy(this.diveStartPos).sub(this.diveStartTarget);
     this.diveStartDist = Math.max(this.diveOffsetDir.length(), 1e-4);
     this.diveOffsetDir.normalize();
@@ -3629,8 +3819,10 @@ export class SystemMap {
     this.camera.position.copy(this.diveStartPos);
     this.controls.target.copy(this.diveStartTarget);
     // The target that comes back may be a pivot the free zoom had moved, so the
-    // latch comes back with it.
+    // latch comes back with it — and so does the hemisphere the restored pose
+    // sits in, before any bounds pass reads it.
     this.zoomFree = this.diveStartZoomFree;
+    this.hemisphere = this.diveStartHemisphere;
     this.camera.lookAt(this.diveStartTarget);
     // View direction restored exactly; the distance is rebuilt against the
     // current extent and aspect, so a scale change or a viewport rotation
@@ -3660,6 +3852,9 @@ export class SystemMap {
    *  interrupted a release — that flight completes to the overview rather than
    *  reversing itself back onto the body the user had just let go of. */
   private restoreFocusFromDive(focusName: string | null, leaving: boolean): void {
+    // Both branches below rebuild the pose from a direction the dive froze, so
+    // the side of the plane that direction belongs to comes back first.
+    this.hemisphere = this.diveStartHemisphere;
     // A focus the chart can no longer place is restored the way a release is:
     // the overview is always somewhere the camera can legally sit.
     const focusPos = focusName ? this.bodyMapPosition(focusName, this.tmpBodyPos) : null;
@@ -4713,6 +4908,7 @@ export class SystemMap {
    *  and the far plane is measured from wherever the camera actually is. */
   private applyBounds(): void {
     const bounds = this.overviewBoundsNow(this.nearestDrawnSurface().clearanceDist);
+    this.applyPolarBand();
     this.controls.minDistance = bounds.minDist;
     this.controls.maxDistance = bounds.maxDist;
     this.camera.near = bounds.near;
@@ -5133,40 +5329,46 @@ export class SystemMap {
    * construction. Batched here, every read runs against a clean layout before
    * the first write.
    *
-   * The static chrome (scale row, world bar) is cached against the viewport;
-   * openMap drops that cache so a bar that came or went between sessions is
-   * seen. The picked-body CARD is read live every frame it is shown — its
-   * class flip is a no-layout read, and its height changes in place on a
-   * repick, so a cache would serve a stale top for exactly the frames that
-   * matter. One getBoundingClientRect per frame on one element, against the
-   * already-clean layout, is the whole cost.
+   * The static chrome (the console, the world bar) is cached against the
+   * viewport; openMap drops that cache so a bar that came or went between
+   * sessions is seen. The chart's SHEETS are read live every frame they stand
+   * open — a class flip is a no-layout read, and a card's height changes in
+   * place on a repick, so a cache would serve a stale top for exactly the
+   * frames that matter. One getBoundingClientRect per frame per open sheet,
+   * against the already-clean layout, is the whole cost.
    *
-   * The card counts only when it spans the width: the phone's bottom sheet,
-   * which stands hundreds of px over this band with no resize to announce it.
-   * "Spans" is measured as the width minus its own side gutters (12 px each,
-   * plus slack) rather than a percentage — a percentage misses the sheet on
-   * very narrow viewports, where fixed gutters are a bigger share. The desktop
-   * card is a corner and the band is a full-width model: excluding for it
-   * would hide every label to its right.
+   * Everything here counts only when it spans the width, the console included:
+   * on a phone it is a bottom strip standing hundreds of px over this band with
+   * no resize to announce it, and on a desktop it is a corner instrument like
+   * the card. The band is a full-width model — excluding for a corner would
+   * hide every label beside it, not just the ones behind it. "Spans" is the
+   * width minus its own side gutters (12 px each, plus slack) rather than a
+   * percentage, which misses the sheet on very narrow viewports where fixed
+   * gutters are a bigger share.
    */
   private refreshLabelChrome(w: number, h: number): void {
+    const spanningTop = (el: HTMLElement | null | undefined): number | null => {
+      const rect = el?.getBoundingClientRect();
+      if (!rect || !(rect.height > 0) || !(rect.top > 0)) return null;
+      return rect.width >= w - 32 ? rect.top : null;
+    };
     if (this.labelChromeForW !== w || this.labelChromeForH !== h) {
       this.labelChromeForW = w;
       this.labelChromeForH = h;
       let top: number | null = null;
-      for (const id of ['map-scale', 'planetarium-bottom-bar']) {
-        const rect = document.getElementById(id)?.getBoundingClientRect();
-        if (!rect || !(rect.height > 0) || !(rect.top > 0)) continue;
-        top = top === null ? rect.top : Math.min(top, rect.top);
-      }
+      const bar = document.getElementById('planetarium-bottom-bar')?.getBoundingClientRect();
+      if (bar && bar.height > 0 && bar.top > 0) top = bar.top;
+      // The console's shape is decided by the viewport alone, so its span is
+      // as cacheable as the bar's.
+      const consoleTop = spanningTop(document.getElementById('map-console'));
+      if (consoleTop !== null) top = top === null ? consoleTop : Math.min(top, consoleTop);
       this.labelStaticChromeTopPx = top;
     }
     let top = this.labelStaticChromeTopPx;
-    if (this.labelCardEl?.classList.contains('visible')) {
-      const rect = this.labelCardEl.getBoundingClientRect();
-      if (rect.height > 0 && rect.top > 0 && rect.width >= w - 32) {
-        top = top === null ? rect.top : Math.min(top, rect.top);
-      }
+    for (const el of this.labelSheetEls) {
+      if (!el?.classList.contains('visible')) continue;
+      const sheetTop = spanningTop(el);
+      if (sheetTop !== null) top = top === null ? sheetTop : Math.min(top, sheetTop);
     }
     this.labelMaxBoxTopCachedPx = labelMaxBoxTopPx(top, h);
   }
@@ -5243,7 +5445,10 @@ export class SystemMap {
   }
 
   private ensureLabelContainer(): void {
-    if (this.labelCardEl === null) this.labelCardEl = document.getElementById('map-card');
+    if (this.labelSheetEls.length === 0) {
+      this.labelSheetEls = ['map-card', 'map-focus-menu', 'map-info-popover']
+        .map((id) => document.getElementById(id));
+    }
     if (this.labelContainer) return;
     this.labelContainer = document.getElementById('map-labels');
     if (!this.labelContainer) return;

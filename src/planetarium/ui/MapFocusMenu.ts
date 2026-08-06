@@ -68,8 +68,19 @@ export class MapFocusMenu {
     this.rootEl.classList.add('visible');
     anchorAboveMapConsole(this.rootEl);
     this.listEl.scrollTop = 0;
+    // The row you are standing on is worth walking in: on the full catalog it
+    // sits below the fold, and a pill nobody can see marks nothing.
+    this.buttons.find((b) => b.classList.contains('here'))
+      ?.scrollIntoView({ block: 'center' });
     // A pointer user types straight into it; a keyboard user arrows from here.
     this.searchEl?.focus();
+  }
+
+  /** Re-seat against the console after a viewport change: the console swaps
+   *  between a corner grid and a bottom strip at the breakpoint, and an open
+   *  popover anchored to the old shape can land on top of the new one. */
+  reanchor(): void {
+    if (this.isOpen() && this.rootEl) anchorAboveMapConsole(this.rootEl);
   }
 
   /** Closing blurs the search as well: a picker dismissed by Esc must not leave
@@ -88,8 +99,12 @@ export class MapFocusMenu {
     this.searchEl?.focus();
   }
 
-  /** Step the highlight over the rows the filter left visible. */
+  /** Step the highlight over the rows the filter left visible. Stepping claims
+   *  the keyboard for the list: focus moves into the search, so the Enter that
+   *  follows commits the highlight rather than re-clicking whatever row button
+   *  happened to hold focus when the arrows started. */
   moveHighlight(delta: number): void {
+    this.searchEl?.focus();
     const visible = this.buttons
       .map((btn, i) => (btn.style.display === 'none' ? -1 : i))
       .filter((i) => i >= 0);

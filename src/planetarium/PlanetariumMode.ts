@@ -2002,9 +2002,14 @@ export class PlanetariumMode {
     if (this.starfield) setStarfieldPixelRatio(this.starfield, this.renderer.getPixelRatio());
     if (this.moonDots) this.moonDots.setPixelRatio(this.renderer.getPixelRatio());
     // Match the map camera aspect and its fat-line resolution to the canvas,
-    // and re-dock the card above the (possibly moved) bottom bands.
+    // and re-dock the card above the (possibly moved) bottom bands. The
+    // console's popovers re-anchor too: a rotation swaps the console between
+    // its corner grid and the bottom strip, and a popover holding its old
+    // `bottom` would land on top of the new shape.
     this.systemMap?.onResize();
     this.mapHud.measureCard();
+    this.mapFocusMenu.reanchor();
+    this.mapHud.reanchorInfo();
   }
 
   update(dt: number): void {
@@ -7724,6 +7729,9 @@ export class PlanetariumMode {
       this.closeMapInfo();
     }
     this.mapHud.setConsoleStoodDown(down);
+    // The console is label chrome — on a phone it is a full-width strip the
+    // labels dodge — and it just changed with no resize to announce it.
+    this.systemMap?.invalidateLabelChrome();
   }
 
   /**
@@ -7768,6 +7776,10 @@ export class PlanetariumMode {
 
   private openMapInfo(): void {
     if (!this.systemMap?.isOpen()) return;
+    // One instrument at a time — the card included: at ≤640px the card and
+    // this popover are full-width sheets in the same place, and the card's
+    // later DOM paints over an info opened under it.
+    this.dismissMapCard();
     this.closeMapFocusMenu();
     this.bottomBar.closeTime();
     this.bottomBar.closeStats();

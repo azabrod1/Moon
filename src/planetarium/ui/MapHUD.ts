@@ -186,6 +186,16 @@ export class MapHUD {
     this.infoBtn?.classList.add('open');
   }
 
+  /** Re-seat an open info popover after a viewport change (the picker's rule:
+   *  the console changes shape at the breakpoint under it). The scroll fade is
+   *  re-judged too — the new cap can make a scrolling body fit, or vice versa. */
+  reanchorInfo(): void {
+    if (!this.isInfoOpen() || !this.infoPop) return;
+    anchorAboveMapConsole(this.infoPop);
+    const body = document.getElementById('map-info-body');
+    if (body) body.classList.toggle('scrolls', body.scrollHeight > body.clientHeight + 1);
+  }
+
   /** Closing blurs the button as well: a popover dismissed by Esc must not
    *  leave the keyboard focus sitting on the control that reopens it. */
   closeInfo(): void {

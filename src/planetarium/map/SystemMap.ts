@@ -5356,6 +5356,15 @@ export class SystemMap {
    * percentage, which misses the sheet on very narrow viewports where fixed
    * gutters are a bigger share.
    */
+  /** Forget the cached static-chrome band; the next label pass re-measures.
+   *  For the owner's console stand-down: the console leaves and returns with
+   *  no viewport change to announce it, and the cache would keep culling
+   *  labels across a strip that is no longer there. */
+  invalidateLabelChrome(): void {
+    this.labelChromeForW = 0;
+    this.labelChromeForH = 0;
+  }
+
   private refreshLabelChrome(w: number, h: number): void {
     const spanningTop = (el: HTMLElement | null | undefined): number | null => {
       const rect = el?.getBoundingClientRect();

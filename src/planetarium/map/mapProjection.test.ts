@@ -426,13 +426,19 @@ describe('isAtOverviewFit', () => {
 
 describe('unmapRadius', () => {
   // The blends the camera actually crosses: both endpoints, the ease's
-  // midsection, and a frame just shy of settling.
-  const BLENDS = [MAP_BLEND_COMPRESSED, 0.25, 0.5, 0.997, MAP_BLEND_TRUE];
+  // midsection, a frame just shy of settling — and 0.601, the blend at which
+  // a Newton step once landed exactly on the bracket edge and was bisected
+  // away from its own converged root.
+  const BLENDS = [MAP_BLEND_COMPRESSED, 0.25, 0.5, 0.601, 0.997, MAP_BLEND_TRUE];
   const CURVES: MapCurve[] = [
     CURVE,
     { kind: 'asinh', s0: MAP_S0_MIN },
     { kind: 'asinh', s0: MAP_S0_MAX },
     LEGACY,
+    // Both edges of the tuning window: gamma-max squares the outer system,
+    // gamma-min expands everything under 1 AU the hardest.
+    { kind: 'power', gamma: MAP_GAMMA_MIN },
+    { kind: 'power', gamma: MAP_GAMMA_MAX },
   ];
 
   it('inverts mapRadius to double precision across curves, blends and radii', () => {
@@ -456,6 +462,17 @@ describe('unmapRadius', () => {
   it('maps zero and negative to zero', () => {
     expect(unmapRadius(0, 0.5, CURVE)).toBe(0);
     expect(unmapRadius(-1, 0.5, CURVE)).toBe(0);
+  });
+
+  it('keeps a root found on the bracket edge instead of bisecting off it', () => {
+    // Saturn on the gamma-max curve at blend 0.601: the Newton iteration
+    // reaches the root to a residual of ~7e-15, writes it as the bracket's
+    // upper edge, and the next step lands exactly on it. Treating that as a
+    // bracket escape used to bisect away and return ~2e-5 AU off — enough
+    // for the per-frame pivot remap to drift visibly over an ease.
+    const curve: MapCurve = { kind: 'power', gamma: MAP_GAMMA_MAX };
+    const m = mapRadius(AU.saturn, 0.601, curve);
+    expect(unmapRadius(m, 0.601, curve)).toBeCloseTo(AU.saturn, 12);
   });
 });
 

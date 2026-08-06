@@ -140,7 +140,9 @@ export function mapRadius(radiusAU: number, blend: number, curve: MapCurve): num
  * radius), so the bracket is also capped at m / blend, which
  * `m = c·(1−blend) + r·blend ≥ r·blend` guarantees. Converges to double
  * precision in a handful of steps; f′ = c′·(1−blend) + blend ≥ blend > 0
- * keeps every Newton step well-conditioned.
+ * keeps every Newton step well-conditioned. The answer returned is the
+ * lowest-residual iterate visited, so no late bisection can trade a converged
+ * root away.
  */
 export function unmapRadius(mapRadiusAU: number, blend: number, curve: MapCurve): number {
   if (mapRadiusAU <= 0) return 0;
@@ -152,21 +154,34 @@ export function unmapRadius(mapRadiusAU: number, blend: number, curve: MapCurve)
   let lo = Math.min(mapRadiusAU, compressedInverse);
   let hi = Math.min(Math.max(mapRadiusAU, compressedInverse), mapRadiusAU / blend);
   let r = Math.min(mapRadiusAU, hi);
+  let best = r;
+  let bestErr = Infinity;
   for (let i = 0; i < 24; i++) {
     const compressed = curveRadius(r, curve);
     const f = compressed + (r - compressed) * blend - mapRadiusAU;
     if (f === 0) return r;
+    const err = Math.abs(f);
+    if (err < bestErr) {
+      bestErr = err;
+      best = r;
+    }
     if (f > 0) hi = r;
     else lo = r;
     const cSlope = curve.kind === 'power'
       ? (curve.gamma * compressed) / r
       : 1 / Math.sqrt(1 + (r / curve.s0) ** 2);
     let next = r - f / (cSlope * (1 - blend) + blend);
+    // A step that lands back on r is convergence — and r is also the bracket
+    // edge the residual test just wrote, so recognize it BEFORE the bracket
+    // check, which sees an endpoint and would bisect away from the root.
+    if (next === r) break;
     if (!(next > lo && next < hi)) next = lo + (hi - lo) / 2;
     if (next === r) break;
     r = next;
   }
-  return r;
+  // The lowest-residual iterate visited, not the last: a step that grazed the
+  // bracket edge can wander off a root it already had to double precision.
+  return best;
 }
 
 /**

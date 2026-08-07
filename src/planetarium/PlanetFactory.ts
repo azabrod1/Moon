@@ -466,9 +466,10 @@ export function upgradeTextureOnApproach(up: TextureUpgrade): void {
   up.state = 'loading';
   const url = resolveTextureUrl(PLANET_TEXTURE_FILES[up.key], '4k');
   // Deliberately a plain load, not the durable seam: this is an optional
-  // sharpen over a real map already on screen, wanted only while the body fills
-  // the view. A failure leaves the body on its 2K map — worth nothing to chase
-  // for the rest of the session the way a missing base map is.
+  // sharpen wanted only while the body fills the view. A failure leaves
+  // whatever is already on the material — the 2K map, or the procedural
+  // fallback if the base fetch is still out on its own ladder — and neither is
+  // worth chasing for the rest of the session the way a missing base map is.
   textureLoader.load(
     url,
     (tex) => {
@@ -1388,10 +1389,11 @@ export function createMoonMeshes(planetName: string): MoonMesh[] {
     });
     const fx = augmentSurfaceMaterial(mat, archetype);
 
-    // Real elevation-derived normal map (linear), where one exists. Nothing
-    // procedural stands in for it — the moon keeps its painted bump until the
-    // real relief lands — and the flag is set up front so the lazy painter
-    // skips its procedural bump for this moon.
+    // Real elevation-derived normal map (linear), where one exists. The flag
+    // goes up with the request, not with the arrival, so the lazy painter never
+    // spends a bump on a moon that has measured relief coming; the moon reads
+    // smooth until that relief lands (a local file, so normally the same beat
+    // it is painted — an outage is what stretches it).
     const normalKey = MOON_NORMAL_KEYS[moonData.name];
     if (normalKey) {
       mat.userData.hasRealNormal = true;
@@ -1401,9 +1403,9 @@ export function createMoonMeshes(planetName: string): MoonMesh[] {
         context: { map: 'moon normal', name: moonData.name },
         onLoad: (tex) => {
           applyTextureDefaults(tex, 'data');
-          // Decode off-thread before assigning (the moon simply keeps its
-          // procedural bump until the normal is cheap to draw); warm the
-          // upload only when the player is landed in this system.
+          // Decode off-thread before assigning (the moon simply keeps drawing
+          // smooth until the normal is cheap to draw); warm the upload only
+          // when the player is landed in this system.
           afterDecode(tex, () => {
             mat.normalMap = tex;
             mat.normalScale.set(1, 1);

@@ -5,6 +5,7 @@ import {
   cancelTextureUpgrade,
   connectLateDetailMap,
   createLateTextureSlot,
+  createMoonMeshes,
   FALLBACK_AFTER_FAILURES,
   initialColorTierRank,
   loadTexture,
@@ -286,6 +287,106 @@ describe('loadTexture end-to-end (faked loader + injected fallback)', () => {
     loaderState.loads[0].onError(new Error('late failure'));
     await vi.advanceTimersByTimeAsync(60_000);
     expect(loaderState.loads).toHaveLength(1);
+  });
+
+  // The other way the fallback resolves. A caller with nowhere to put a late
+  // arrival must stop the ladder here too, or a body nobody can hand a map to
+  // keeps polling for the session.
+  it('stops retrying when the second failure resolved the fallback and no slot exists', async () => {
+    const promise = loadTexture('saturn', '2k', 'color', { makeFallback: fallbackTexture });
+    loaderState.loads[0].onError(new Error('one'));
+    await advanceToRetry(1);
+    loaderState.loads[1].onError(new Error('two'));
+    expect((await promise).userData.proceduralFallback).toBe(true);
+    await vi.advanceTimersByTimeAsync(300_000);
+    expect(loaderState.loads).toHaveLength(2);
+  });
+});
+
+// ── The decode window ────────────────────────────────────────────────────────
+// A texture that lands mid-session is decoded off-thread before it is assigned,
+// and the material it was meant for can be torn down (or lose a rank race)
+// while that decode is pending. Driven through the real moon-normal seam rather
+// than the private helper, so the guard is pinned where it actually runs.
+
+/** A texture whose decode the test settles by hand. */
+function decodableTexture(label: string) {
+  let fulfil!: () => void;
+  let reject!: (err: unknown) => void;
+  const decoded = new Promise<void>((res, rej) => { fulfil = res; reject = rej; });
+  const tex = new THREE.Texture();
+  tex.image = { width: 2048, height: 1024, label, decode: () => decoded };
+  return {
+    tex,
+    /** Settle the decode and let the seam's `.then` callbacks run. */
+    async settle(outcome: 'decoded' | 'failed') {
+      if (outcome === 'decoded') fulfil();
+      else reject(new Error('image decode failed'));
+      await Promise.resolve();
+      await Promise.resolve();
+    },
+  };
+}
+
+/** Listeners three is still holding on the texture — a guard that forgets to
+ *  detach shows up here rather than as a slow leak. */
+function disposeListenerCount(tex: THREE.Texture): number {
+  const dispatcher = tex as unknown as { _listeners?: Record<string, unknown[] | undefined> };
+  return dispatcher._listeners?.dispose?.length ?? 0;
+}
+
+describe('decode-window disposal', () => {
+  beforeEach(() => {
+    loaderState.loads.length = 0;
+  });
+
+  /** Earth's Moon is the one body with a measured normal map. */
+  function moonNormalFetch() {
+    const moons = createMoonMeshes('Earth');
+    const mesh = moons.find((m) => m.data.name === 'Moon')!;
+    const load = loaderState.loads.find((l) => l.url.includes('normal'))!;
+    return { material: mesh.mesh.material as THREE.MeshStandardMaterial, load };
+  }
+
+  it('assigns a normal map that decodes cleanly', async () => {
+    const { material, load } = moonNormalFetch();
+    const arriving = decodableTexture('lola');
+    load.onLoad(arriving.tex);
+    expect(material.normalMap).toBeNull(); // not before the decode
+    await arriving.settle('decoded');
+    expect(material.normalMap).toBe(arriving.tex);
+    expect(disposeListenerCount(arriving.tex)).toBe(0);
+  });
+
+  it('drops a texture disposed while its decode was still pending', async () => {
+    const { material, load } = moonNormalFetch();
+    const arriving = decodableTexture('lola');
+    load.onLoad(arriving.tex);
+    arriving.tex.dispose(); // the material lost the race, or was torn down
+    await arriving.settle('decoded');
+    expect(material.normalMap).toBeNull();
+    expect(disposeListenerCount(arriving.tex)).toBe(0);
+  });
+
+  // A decode can fail on a corrupt image. The texture is still the one the
+  // caller asked for, so it is adopted — three uploads it the old way.
+  it('still adopts a texture whose decode rejected', async () => {
+    const { material, load } = moonNormalFetch();
+    const arriving = decodableTexture('lola');
+    load.onLoad(arriving.tex);
+    await arriving.settle('failed');
+    expect(material.normalMap).toBe(arriving.tex);
+    expect(disposeListenerCount(arriving.tex)).toBe(0);
+  });
+
+  it('drops a disposed texture on the rejected path too', async () => {
+    const { material, load } = moonNormalFetch();
+    const arriving = decodableTexture('lola');
+    load.onLoad(arriving.tex);
+    arriving.tex.dispose();
+    await arriving.settle('failed');
+    expect(material.normalMap).toBeNull();
+    expect(disposeListenerCount(arriving.tex)).toBe(0);
   });
 });
 

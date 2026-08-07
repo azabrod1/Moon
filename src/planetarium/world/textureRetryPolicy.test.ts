@@ -55,6 +55,17 @@ describe('retry delays', () => {
     }
   });
 
+  // The cap bounds the NOMINAL wait and the dither rides on top of it — which
+  // is what the policy documents. Capping after the dither instead would flatten
+  // these three onto one number and lose the spread at exactly the rung where a
+  // scene-wide outage needs it most.
+  it('keeps the full dither band at the top of the ladder', () => {
+    expect(P.capDelayMs).toBe(45_000);
+    expect(retryDelayMs(200, 0)).toBe(33_750);
+    expect(retryDelayMs(200, 0.5)).toBe(45_000);
+    expect(retryDelayMs(200, 1)).toBe(56_250);
+  });
+
   it('grows monotonically until it caps, and stays there', () => {
     let previous = 0;
     let capped = 0;

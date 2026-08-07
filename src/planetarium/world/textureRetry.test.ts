@@ -18,24 +18,30 @@ class FakeTexture {
   dispose(): void { this.disposed = true; }
 }
 
+interface Attempt {
+  url: string;
+  at: number;
+  onLoad: (tex: unknown) => void;
+  onError: (err: unknown) => void;
+}
+
 /** A hand-cranked world: a clock the test moves, a timer queue that fires on
  *  the clock, a loader that records every attempt, and a wake signal the test
- *  dispatches. Nothing here is asynchronous, so the schedule is exact. */
-function harness() {
+ *  dispatches. Nothing here is asynchronous, so the schedule is exact.
+ *  `respond` answers an attempt the instant it goes out — three's loader can
+ *  do that from cache or from an immediate error. */
+function harness(respond?: (attempt: Attempt) => void) {
   let now = 0;
   let nextId = 1;
   const timers = new Map<number, { at: number; fn: () => void }>();
-  const attempts: Array<{
-    url: string;
-    at: number;
-    onLoad: (tex: unknown) => void;
-    onError: (err: unknown) => void;
-  }> = [];
+  const attempts: Attempt[] = [];
   const wakeListeners = new Set<() => void>();
 
   const deps = {
     load: (url, onLoad, _progress, onError) => {
-      attempts.push({ url, at: now, onLoad: onLoad as (t: unknown) => void, onError });
+      const attempt: Attempt = { url, at: now, onLoad: onLoad as (t: unknown) => void, onError };
+      attempts.push(attempt);
+      respond?.(attempt);
     },
     now: () => now,
     setTimer: (fn, delayMs) => {
@@ -165,6 +171,35 @@ describe('durable texture fetch', () => {
   });
 });
 
+// A cached file answers inside the load() call, before the seam has finished
+// building itself. Both callbacks have to be safe that early.
+describe('an attempt answered inline', () => {
+  it('hands over a texture that lands before the seam finishes wiring itself', () => {
+    const tex = new FakeTexture('cached');
+    const h = harness((attempt) => attempt.onLoad(tex));
+    const got: unknown[] = [];
+    fetchTextureDurably({ url: URL, onLoad: (t) => got.push(t) }, h.deps);
+    expect(got).toEqual([tex]);
+    expect(tex.disposed).toBe(false);
+    // The wake subscription is taken before the first attempt goes out, so an
+    // instant success has something to release; taken after, this leaks a
+    // listener per cached texture for the whole session.
+    expect(h.subscribed).toBe(0);
+    expect(h.pendingTimers).toBe(0);
+  });
+
+  it('arms the ladder when the first attempt fails inline', () => {
+    let offline = true;
+    const h = harness((attempt) => { if (offline) attempt.onError(new Error('offline')); });
+    fetchTextureDurably({ url: URL, onLoad: () => {} }, h.deps);
+    expect(h.attempts).toHaveLength(1);
+    offline = false; // the network is back before the retry is due
+    h.advance(delayAfter(1));
+    expect(h.attempts).toHaveLength(2);
+    expect(h.subscribed).toBe(1); // still waiting for the texture
+  });
+});
+
 describe('wake signals', () => {
   it('re-arms a long pending retry the moment the network returns', () => {
     const h = harness();
@@ -285,6 +320,34 @@ describe('browser wake wiring', () => {
       fetch.cancel();
       expect(dom.count('online')).toBe(0); // listeners released with the last fetch
       expect(dom.count('visibilitychange')).toBe(0);
+    } finally {
+      dom.restore();
+    }
+  });
+
+  // A cold start with the network down leaves dozens of fetches waiting, and
+  // they all want the same two events — one pair serves the app.
+  it('shares one pair of listeners, releases it with the last fetch, and re-arms after', () => {
+    const dom = installFakeDom();
+    try {
+      const h = harness();
+      const { subscribeWake: _drop, ...deps } = h.deps;
+      const jupiter = fetchTextureDurably({ url: '/textures/jupiter.jpg', onLoad: () => {} }, deps);
+      const saturn = fetchTextureDurably({ url: '/textures/saturn.jpg', onLoad: () => {} }, deps);
+      expect(dom.count('online')).toBe(1); // one pair, not one per fetch
+      expect(dom.count('visibilitychange')).toBe(1);
+
+      jupiter.cancel();
+      expect(dom.count('online')).toBe(1); // the other fetch still wants them
+      saturn.cancel();
+      expect(dom.count('online')).toBe(0);
+
+      // A body loaded later — a moon photo streaming on approach — must get the
+      // wiring back rather than sitting out its ladder deaf.
+      const mars = fetchTextureDurably({ url: '/textures/mars.jpg', onLoad: () => {} }, deps);
+      expect(dom.count('online')).toBe(1);
+      expect(dom.count('visibilitychange')).toBe(1);
+      mars.cancel();
     } finally {
       dom.restore();
     }

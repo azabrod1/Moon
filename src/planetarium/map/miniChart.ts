@@ -12,7 +12,7 @@
  * stay the subject.
  */
 
-import { MAP_BODY_SIZE_DEFAULTS, type MapBodySizeParams } from './mapBodySize';
+import { MAP_BODY_SIZE_DEFAULTS, type MapBodySizeParams, type MapSunSizeParams } from './mapBodySize';
 
 /** A rectangle in CSS px, measured from the canvas's top-left. */
 export interface MiniChartRect {
@@ -56,6 +56,15 @@ export const MINI_BODY_SIZE_PARAMS: MapBodySizeParams = {
   ...MAP_BODY_SIZE_DEFAULTS,
   minPx: 2.4,
   maxPx: 6,
+};
+
+/** The corner chart's Sun: γ 0 is the constant-size branch — the mini frame
+ *  never zooms, so there is no camera motion for a responsive curve to answer,
+ *  and the old fixed size (this chart's `maxPx`) is exactly right. */
+export const MINI_SUN_SIZE_PARAMS: MapSunSizeParams = {
+  gamma: 0,
+  pivotPx: 6,
+  floorPx: 6,
 };
 
 /** The ship marker's full sprite extent on the corner chart, screen px. */

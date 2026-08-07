@@ -497,6 +497,7 @@ export function followBounds(
   sizeParams: MapBodySizeParams,
   ceilingRadiusAU: number,
   fitDistAU: number,
+  crossoverPx: number | null = null,
   out: MapFollowBounds = { minDist: 0, maxDist: 0, near: 0, far: 0 },
 ): MapFollowBounds {
   const radius = Math.max(trueRadiusAU, 0);
@@ -523,9 +524,13 @@ export function followBounds(
   // never past the overview fit: beyond the frame that shows the whole
   // chart, the overview is the honest view, not a follow.
   const ceiling = Math.max(ceilingRadiusAU, 0);
+  // A subject on its own size branch (the Sun's zoom-responsive curve) hands
+  // its crossover in; everything else crosses at the generic marker. Metering
+  // the ceiling on the WRONG crossover leaves the zoom clamp on a disc the
+  // chart no longer draws once the branch's pivot is retuned.
   const crossDist = apparentDepthAU(
     ceiling,
-    mapMarkerRadiusPx(ceiling, sizeParams),
+    crossoverPx ?? mapMarkerRadiusPx(ceiling, sizeParams),
     viewportH,
     fovDeg,
   );

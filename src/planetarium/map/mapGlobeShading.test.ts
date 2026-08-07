@@ -1,6 +1,10 @@
 import { describe, it, expect } from 'vitest';
+import * as THREE from 'three';
 import {
+  augmentMapGlobeMaterial,
+  makeMapSunUniforms,
   mapTerminatorSoftness,
+  MAP_NIGHT_FLOOR_LINEAR,
   MAP_TERMINATOR_MAX,
   MAP_TERMINATOR_SOFT_PX,
 } from './mapGlobeShading';
@@ -100,5 +104,104 @@ describe('the softened response the shader applies', () => {
     // never a wall of light on the dark hemisphere.
     expect(softened(-0.5, s)).toBeCloseTo((s * s) / (4 * 0.5), 2);
     expect(softened(-1, s)).toBeLessThan(0.02);
+  });
+});
+
+// ── The compile-time seam ────────────────────────────────────────────────────
+// The injection rewrites three's stock fragment shader by string anchor. An
+// anchor that drifts on a three upgrade fails SILENTLY — replace() just
+// no-ops — so the seam is driven here against the shipped ShaderLib source:
+// every anchor must exist, and every rewrite must land.
+describe('augmentMapGlobeMaterial', () => {
+  function compiled() {
+    const mat = new THREE.MeshStandardMaterial();
+    const sun = makeMapSunUniforms(new THREE.Color(0xfff4e2), Math.PI);
+    const shading = augmentMapGlobeMaterial(mat, sun);
+    const shader = {
+      uniforms: {} as Record<string, unknown>,
+      fragmentShader: THREE.ShaderLib.physical.fragmentShader,
+    };
+    mat.onBeforeCompile!(shader as never, null as never);
+    return { sun, shading, shader };
+  }
+
+  it('finds every anchor in the shipped shader source', () => {
+    const src = THREE.ShaderLib.physical.fragmentShader;
+    expect(src).toContain('#include <common>');
+    expect(src).toContain('#include <lights_fragment_begin>');
+    expect(src).toContain(
+      'vec3 outgoingLight = totalDiffuse + totalSpecular + totalEmissiveRadiance;',
+    );
+  });
+
+  it('wires the shared uniforms by identity and lands all three rewrites', () => {
+    const { sun, shading, shader } = compiled();
+    expect(shader.uniforms.uMapSunViewPos).toBe(sun.viewPos);
+    expect(shader.uniforms.uMapSunIrradiance).toBe(sun.irradiance);
+    expect(shader.uniforms.uMapNightFloor).toBe(sun.nightFloor);
+    expect(shader.uniforms.uMapTermSoft).toBe(shading.softness);
+    const out = shader.fragmentShader;
+    expect(out).toContain('uniform vec3 uMapNightFloor;');
+    expect(out).toContain('uMapTermSoft * uMapTermSoft');
+    // The floor is a MAX past the albedo multiply — the stock assembly line
+    // must be gone, replaced by the floored one. The function name is pinned
+    // literally: a min() here would cap daylight at the floor instead of
+    // lifting night, and every other assertion would still pass.
+    expect(out).not.toContain(
+      'vec3 outgoingLight = totalDiffuse + totalSpecular + totalEmissiveRadiance;',
+    );
+    expect(out).toContain('vec3 outgoingLight = max(');
+    expect(out).toContain('totalDiffuse + totalSpecular + totalEmissiveRadiance, uMapNightFloor);');
+  });
+
+  it('keeps one compiled program across bodies: the hook source is shared', () => {
+    // three keys its program cache on onBeforeCompile.toString() — per-body
+    // closures would compile one program per globe. The source must be
+    // byte-identical however many materials carry their own uniforms through.
+    const sun = makeMapSunUniforms(new THREE.Color(0xfff4e2), Math.PI);
+    const a = new THREE.MeshStandardMaterial();
+    const b = new THREE.MeshStandardMaterial();
+    augmentMapGlobeMaterial(a, sun);
+    augmentMapGlobeMaterial(b, sun);
+    expect(a.onBeforeCompile!.toString()).toBe(b.onBeforeCompile!.toString());
+  });
+
+  it('floors above the chart background once tonemapped and encoded', () => {
+    // The whole point of the floor: a globe pixel can never read darker than
+    // empty space (the clear colour is written raw; only materials tonemap).
+    // Mirror three's ACTUAL ACESFilmicToneMapping — the 1/0.6 pre-scale, the
+    // ACES input/output matrices, and the Hill RRTAndODTFit. The first cut of
+    // this test used the scalar 2.51/2.43 fit, which over-predicts ~3× at
+    // these levels and passed a floor that rendered BELOW the background
+    // (measured (3,6,12) on screen) — the mirror must be the shipped curve.
+    const MIN = [
+      [0.59719, 0.35458, 0.04823],
+      [0.07600, 0.90834, 0.01566],
+      [0.02840, 0.13383, 0.83777],
+    ];
+    const MOUT = [
+      [1.60475, -0.53108, -0.07367],
+      [-0.10208, 1.10813, -0.00605],
+      [-0.00327, -0.07276, 1.07602],
+    ];
+    const mul = (m: number[][], v: number[]): number[] =>
+      m.map((row) => row[0] * v[0] + row[1] * v[1] + row[2] * v[2]);
+    const rrt = (v: number[]): number[] => v.map(
+      (x) => (x * (x + 0.0245786) - 0.000090537) / (x * (0.983729 * x + 0.4329510) + 0.238081),
+    );
+    const aces = (v: number[]): number[] =>
+      mul(MOUT, rrt(mul(MIN, v.map((x) => x / 0.6))))
+        .map((x) => Math.min(1, Math.max(0, x)));
+    const srgb = (x: number): number =>
+      x <= 0.0031308 ? x * 12.92 : 1.055 * Math.pow(x, 1 / 2.4) - 0.055;
+    const bg = [0x05, 0x07, 0x0d];
+    const screen = aces(MAP_NIGHT_FLOOR_LINEAR.toArray()).map((x) => srgb(x) * 255);
+    for (let c = 0; c < 3; c++) {
+      // Strictly above the background, and quiet: within a handful of counts.
+      // A night side against space should be nearly invisible — the floor
+      // exists so it can never be a hole, not so it glows.
+      expect(screen[c]).toBeGreaterThan(bg[c] + 0.5);
+      expect(screen[c]).toBeLessThan(bg[c] + 6);
+    }
   });
 });

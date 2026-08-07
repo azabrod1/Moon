@@ -642,6 +642,8 @@ function installDevHooks() {
     setMapGamma: (g: number) => planetariumMode?.devSetMapGamma(g),
     setMapBodySize: (partial: Record<string, number> | null) =>
       planetariumMode?.devSetMapBodySize(partial as never),
+    setMapSunSize: (partial: Record<string, number> | null) =>
+      planetariumMode?.devSetMapSunSize(partial as never),
     setChrome: (visible: boolean) => planetariumMode?.devSetChrome(visible),
     setFov: (deg: number) => planetariumMode?.devSetFov(deg),
     setTimeMs: (utcMs: number) => planetariumMode?.setCurrentUtcMs(utcMs),

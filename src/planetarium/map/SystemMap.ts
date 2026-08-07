@@ -108,6 +108,7 @@ import {
   stampMiniBodyKey,
   MINI_BODY_SIZE_PARAMS,
   MINI_SHIP_PX,
+  MINI_SUN_SIZE_PARAMS,
   MINI_SUN_HALO_RADII,
   type MiniBodyKey,
   type MiniDrawRect,
@@ -118,10 +119,13 @@ import {
   mapMarkerRadiusPx,
   mapMoonMarkerRadiusAU,
   mapMoonRadiusAU,
+  mapSunRadiusAU,
   DOT_EXTENT_MUL,
   dotGradientAlpha,
   MAP_BODY_SIZE_DEFAULTS,
+  MAP_SUN_SIZE_DEFAULTS,
   type MapBodySizeParams,
+  type MapSunSizeParams,
 } from './mapBodySize';
 import {
   augmentMapGlobeMaterial,
@@ -549,6 +553,7 @@ interface MapDrawView {
   /** The Sun's halo, in multiples of its drawn disc. */
   sunHaloRadii: number;
   sizeParams: MapBodySizeParams;
+  sunSizeParams: MapSunSizeParams;
 }
 
 export class SystemMap {
@@ -722,6 +727,7 @@ export class SystemMap {
   private curve: MapCurve = defaultMapCurve();
   private blendState = makeMapBlendState();
   private bodySizeParams: MapBodySizeParams = { ...MAP_BODY_SIZE_DEFAULTS };
+  private sunSizeParams: MapSunSizeParams = { ...MAP_SUN_SIZE_DEFAULTS };
   /** The sweep's memory — cursor and previous clock in one object (see
    *  mapResample.ResampleState). Deliberately untouched by close(), and the
    *  module exports no reset: the lap survives every open/close by shape. */
@@ -773,6 +779,7 @@ export class SystemMap {
     shipPx: SHIP_PX,
     sunHaloRadii: SUN_HALO_RADII,
     sizeParams: MAP_BODY_SIZE_DEFAULTS,
+    sunSizeParams: MAP_SUN_SIZE_DEFAULTS,
   };
   private miniView: MapDrawView = {
     camera: null as unknown as THREE.PerspectiveCamera,
@@ -784,6 +791,7 @@ export class SystemMap {
     shipPx: MINI_SHIP_PX,
     sunHaloRadii: MINI_SUN_HALO_RADII,
     sizeParams: MINI_BODY_SIZE_PARAMS,
+    sunSizeParams: MINI_SUN_SIZE_PARAMS,
   };
   /** Planetocentric offset scratch — a moon's position is its parent's plus
    *  this, and the ephemeris seam fills a caller's vector. */
@@ -1147,6 +1155,10 @@ export class SystemMap {
 
   getBodySizeParams(): MapBodySizeParams {
     return this.bodySizeParams;
+  }
+
+  getSunSizeParams(): MapSunSizeParams {
+    return this.sunSizeParams;
   }
 
   /** How far the camera sits from the point it orbits. That point is the origin
@@ -1555,6 +1567,13 @@ export class SystemMap {
     this.projectionRevision++;
   }
 
+  setSunSizeParams(partial: Partial<MapSunSizeParams> | null): void {
+    this.sunSizeParams = partial === null
+      ? { ...MAP_SUN_SIZE_DEFAULTS }
+      : { ...this.sunSizeParams, ...partial };
+    this.projectionRevision++;
+  }
+
   /**
    * Per-frame refresh, called from PlanetariumMode after positions are final.
    * Recomputes body positions from the clock (never from mode scene state) and
@@ -1713,6 +1732,7 @@ export class SystemMap {
     this.fullView.trueScaleTarget = this.isTrueScale();
     this.fullView.trueScaleBlend = this.blend;
     this.fullView.sizeParams = this.bodySizeParams;
+    this.fullView.sunSizeParams = this.sunSizeParams;
     this.orientShip(this.fullView);
     this.updateDrawnSizes(this.fullView);
     this.applyFocusOrbitDim();
@@ -2324,6 +2344,8 @@ export class SystemMap {
       this.bodySizeParams,
       ceilingRadius,
       fitDistanceAU(this.extentAU, MAP_FOV_DEG, this.camera.aspect),
+      // The Sun crosses marker↔truth at its own pivot, not the generic cap.
+      body?.kind === 'sun' ? this.sunSizeParams.pivotPx : null,
       this.tmpBounds,
     );
     return this.clearParentInShell(name, bounds);
@@ -2897,6 +2919,11 @@ export class SystemMap {
       Math.max(this.renderer.domElement.clientHeight, 1),
       MAP_FOV_DEG,
     );
+    // The Sun sizes on its own zoom-responsive branch — the clearance and
+    // framing figures here must measure the disc that is actually drawn.
+    if (body?.kind === 'sun') {
+      return mapSunRadiusAU(radius, this.viewDepth(this.tmpBodyPos), perPx, this.sunSizeParams);
+    }
     return mapBodyRadiusAU(
       radius,
       this.viewDepth(this.tmpBodyPos),
@@ -4981,7 +5008,7 @@ export class SystemMap {
     const sunViewY = sunView.y;
     const sunViewZ = sunView.z;
     const sunDepth = Math.max(-sunViewZ, 1e-6);
-    const sunAU = mapBodyRadiusAU(SUN_DATA.radiusAU, sunDepth, worldPerPxAtUnit, params);
+    const sunAU = mapSunRadiusAU(SUN_DATA.radiusAU, sunDepth, worldPerPxAtUnit, view.sunSizeParams);
     this.sunRadiusPx = sunAU / Math.max(worldPerPxAtUnit * sunDepth, 1e-30);
     const sunBoost = this.hoveredName === 'Sun' ? HOVER_SCALE : 1;
     this.sun.scale.setScalar(2 * sunAU * sunBoost);

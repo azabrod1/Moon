@@ -90,6 +90,71 @@ export function mapBodyRadiusPx(
 }
 
 /**
+ * The Sun's own drawn-size branch.
+ *
+ * Through the marker policy above the Sun computes far over `maxPx` and pins
+ * to the cap, and its true disc does not overtake the cap until the camera is
+ * practically inside Mercury's orbit — so across the whole useful zoom range
+ * the star drew at one constant screen size while every body around it
+ * resolved and grew. A dive toward a planet then reads wrong twice over: the
+ * planet and its moons swell as the camera closes while the star sits pinned
+ * to the glass, and a disc plus halo sized for the overview dominates a
+ * neighbourhood it is five AU away from.
+ *
+ * So the Sun answers zoom on its own compressive curve: drawn px =
+ * `pivotPx · (true px / pivotPx)^gamma`, floored. The curve meets the true
+ * disc exactly at the pivot (for γ < 1 it sits above truth below the pivot and
+ * below it past it, so `max` with truth hands over continuously there — the
+ * same crossover shape the marker branch has), grows gently as the camera
+ * closes, and settles on the floor at the overview. γ = 0 is the old constant,
+ * kept for the corner chart, whose fixed framing has no zoom to answer.
+ */
+export interface MapSunSizeParams {
+  /** Compression exponent of the zoom response; 0 = constant (the old look). */
+  gamma: number;
+  /** Screen px of radius where the curve meets the true disc. */
+  pivotPx: number;
+  /** Smallest the Sun draws, px of radius — the overview size. */
+  floorPx: number;
+}
+
+export const MAP_SUN_SIZE_DEFAULTS: MapSunSizeParams = {
+  gamma: 0.3,
+  // The old constant cap: past here the true disc takes over, so nothing about
+  // the close-in look moved.
+  pivotPx: 18,
+  // Low enough that the curve is off the floor from about 1.5 px of true disc
+  // — a Jupiter-range view already answers zoom — while the overview keeps a
+  // clear warm mark (the halo carries the star's rank there, not the disc).
+  floorPx: 8,
+};
+
+/** Drawn radius (screen px) for the Sun whose true projected radius is
+ *  `trueProjectedPx`. Never smaller than the true disc, never below the floor. */
+export function mapSunRadiusPx(
+  trueProjectedPx: number,
+  params: MapSunSizeParams = MAP_SUN_SIZE_DEFAULTS,
+): number {
+  if (!(trueProjectedPx > 0)) return params.floorPx;
+  const curved = params.pivotPx * Math.pow(trueProjectedPx / params.pivotPx, params.gamma);
+  const px = curved > trueProjectedPx ? curved : trueProjectedPx;
+  return px > params.floorPx ? px : params.floorPx;
+}
+
+/** The Sun's drawn radius in map-space AU — same camera factor contract as
+ *  `mapBodyRadiusAU`. */
+export function mapSunRadiusAU(
+  trueRadiusAU: number,
+  depthAU: number,
+  worldPerPxAtUnitDepth: number,
+  params: MapSunSizeParams = MAP_SUN_SIZE_DEFAULTS,
+): number {
+  const worldPerPx = worldPerPxAtUnitDepth * Math.max(depthAU, 1e-9);
+  if (!(worldPerPx > 0)) return trueRadiusAU;
+  return mapSunRadiusPx(trueRadiusAU / worldPerPx, params) * worldPerPx;
+}
+
+/**
  * Dot sprite extent per drawn radius, for every body the chart marks with one.
  *
  * The dot is a radial gradient painted into a square quad, so the quad is

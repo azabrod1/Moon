@@ -282,7 +282,7 @@ import {
   type ShadowEventSearch,
 } from './shadowEventSearch';
 import { tidalLockQuaternion, tidalRollNorth } from './world/tidalLock';
-import { type MapBodySizeParams } from './map/mapBodySize';
+import { type MapBodySizeParams, type MapSunSizeParams } from './map/mapBodySize';
 import { type MapMoonOffsetParams } from './map/mapMoonOffset';
 import {
   MAP_DOUBLE_TAP_MS,
@@ -6672,6 +6672,7 @@ export class PlanetariumMode {
     curve: string;
     curveParam: number;
     bodySize: MapBodySizeParams;
+    sunSize: MapSunSizeParams;
     cameraDist: number;
     near: number;
     far: number;
@@ -6712,6 +6713,7 @@ export class PlanetariumMode {
       curve: curve.kind,
       curveParam: curve.kind === 'power' ? curve.gamma : curve.s0,
       bodySize: this.systemMap.getBodySizeParams(),
+      sunSize: this.systemMap.getSunSizeParams(),
       cameraDist: this.systemMap.getCameraDistance(),
       // The clip planes this frame drew with — a body on screen at a healthy
       // radius but rendering nothing is a near plane standing in front of it.
@@ -6773,6 +6775,12 @@ export class PlanetariumMode {
   /** Dev bridge: live tuning of the map's drawn-size policy; null resets. */
   devSetMapBodySize(partial: Partial<MapBodySizeParams> | null): void {
     this.systemMap?.setBodySizeParams(partial);
+  }
+
+  /** Dev bridge: live tuning of the Sun's zoom-responsive size curve
+   *  (gamma, pivotPx, floorPx); null resets. */
+  devSetMapSunSize(partial: Partial<MapSunSizeParams> | null): void {
+    this.systemMap?.setSunSizeParams(partial);
   }
 
   /** Dev bridge: live tuning of the moon-offset policy (gamma, x0, the Io
@@ -6837,7 +6845,7 @@ export class PlanetariumMode {
     return this.mapFocusMenu.isOpen();
   }
 
-  /** Dev bridge: the "How the map works" popover. */
+  /** Dev bridge: the map console's Help popover. */
   devMapInfo(open: boolean): boolean {
     if (open) this.openMapInfo();
     else this.closeMapInfo();

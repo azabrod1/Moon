@@ -32,7 +32,7 @@ import {
   MAP_OVERVIEW_NEAR_FRAC,
   type MapCameraState,
 } from './mapCamera';
-import { MAP_BODY_SIZE_DEFAULTS, mapBodyRadiusAU, mapMarkerRadiusPx } from './mapBodySize';
+import { MAP_BODY_SIZE_DEFAULTS, mapBodyRadiusAU, mapMarkerRadiusPx, mapSunRadiusAU } from './mapBodySize';
 import { fitDistanceAU } from './mapProjection';
 import { PLANETARIUM_BODIES, SUN_DATA } from '../planets/planetData';
 import { MOONS, getMoonsByPlanet } from '../planets/moonData';
@@ -79,6 +79,7 @@ function boundsAt(
     SIZE,
     ceilingRadiusAU,
     fitDistAU,
+    null,
     { minDist: 0, maxDist: 0, near: 0, far: 0 },
   );
 }
@@ -846,15 +847,32 @@ describe('a follow shell on a body that orbits another', () => {
     );
     expect(JUPITER_MAP_R - bounds.minDist).toBeGreaterThan(1);
   });
+
+  it('meters the zoom-out ceiling on a handed-in crossover, for a subject on its own size branch', () => {
+    // The Sun crosses marker↔truth at its size branch's pivot, not at the
+    // generic marker cap. The ceiling must ride the crossover it is handed:
+    // retuning the pivot otherwise moves the drawn curve while the zoom clamp
+    // stays on a disc the chart no longer draws.
+    const at = (crossoverPx: number | null) => followBounds(
+      SUN_DATA.radiusAU, 1e-3, 0.5, 0.5, EXTENT_COMPRESSED, H, MAP_FOV_DEG, SIZE,
+      SUN_DATA.radiusAU, 0, crossoverPx,
+    ).maxDist;
+    // Null falls back to the generic marker — the pre-existing behaviour.
+    expect(at(null)).toBeCloseTo(at(mapMarkerRadiusPx(SUN_DATA.radiusAU, SIZE)), 12);
+    // A larger crossover px crosses NEARER the subject: the ceiling tightens.
+    expect(at(36)).toBeLessThan(at(18));
+    expect(at(18)).toBeCloseTo(at(null), 12); // pivot 18 == old cap: no drift at defaults
+  });
 });
 
 describe('mapOverviewBounds', () => {
   const ASPECT = 16 / 9;
   const FIT = fitDistanceAU(EXTENT_COMPRESSED, MAP_FOV_DEG, ASPECT);
-  // Parked on the opening fit, the only surface anywhere near the camera is the
-  // Sun's drawn disc at the far end of the view.
-  const SUN_DRAWN = mapBodyRadiusAU(
-    SUN_DATA.radiusAU, FIT, mapWorldPerPxAtUnitDepth(H, MAP_FOV_DEG), SIZE,
+  // Parked on the opening fit, the only surface anywhere near the camera is
+  // the Sun's drawn disc at the far end of the view — sized on the Sun's OWN
+  // zoom-responsive branch, exactly as the chart draws it.
+  const SUN_DRAWN = mapSunRadiusAU(
+    SUN_DATA.radiusAU, FIT, mapWorldPerPxAtUnitDepth(H, MAP_FOV_DEG),
   );
   const PARKED_CLEARANCE = FIT - SUN_DRAWN;
   const parked = (clearance = PARKED_CLEARANCE) =>
@@ -1001,8 +1019,8 @@ describe('mapOverviewPivotDistanceAU', () => {
     // Parked, the nearest surface is the Sun's own drawn disc at the far end of
     // the view, so the first re-seat lands the pivot within that disc of where
     // the target already sat — a hair, not a jump.
-    const sunDrawn = mapBodyRadiusAU(
-      SUN_DATA.radiusAU, FIT, mapWorldPerPxAtUnitDepth(H, MAP_FOV_DEG), SIZE,
+    const sunDrawn = mapSunRadiusAU(
+      SUN_DATA.radiusAU, FIT, mapWorldPerPxAtUnitDepth(H, MAP_FOV_DEG),
     );
     const moved = Math.abs(pivot(FIT - sunDrawn) - FIT);
     expect(moved).toBeCloseTo(sunDrawn, 12);

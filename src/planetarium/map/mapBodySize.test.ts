@@ -10,12 +10,16 @@ import {
   mapBodyRadiusAU,
   mapBodyRadiusPx,
   mapMarkerRadiusPx,
+  mapSunRadiusAU,
+  mapSunRadiusPx,
   DOT_EXTENT_MUL,
   MAP_BODY_SIZE_DEFAULTS,
+  MAP_SUN_SIZE_DEFAULTS,
   type DotGradientStop,
   type MapBodySizeParams,
 } from './mapBodySize';
 import { mapLabelOffsetPx, LABEL_ANCHOR_OFFSET_PX, LABEL_CLEARANCE_PX } from './mapLabels';
+import { MINI_BODY_SIZE_PARAMS, MINI_SUN_SIZE_PARAMS } from './miniChart';
 import { PLANETARIUM_BODIES } from '../planets/planetData';
 import { KM_PER_AU } from '../../astronomy/constants';
 
@@ -142,6 +146,91 @@ describe('mapBodyRadiusAU', () => {
   it('survives a degenerate camera', () => {
     expect(mapBodyRadiusAU(earth, 0, worldPerPxAtUnit)).toBeGreaterThan(0);
     expect(mapBodyRadiusAU(earth, 10, 0)).toBe(earth);
+  });
+});
+
+describe('the Sun branch', () => {
+  const P = MAP_SUN_SIZE_DEFAULTS;
+  const SUN_RADIUS_AU = auOf(696_340);
+
+  it('answers zoom: never shrinks closing in, strictly grows once off the floor', () => {
+    let prev = 0;
+    for (const truePx of [0.02, 0.1, 0.5, 2, 8, 17]) {
+      const px = mapSunRadiusPx(truePx);
+      expect(px).toBeGreaterThanOrEqual(prev);
+      if (prev > P.floorPx) expect(px).toBeGreaterThan(prev);
+      prev = px;
+    }
+    // The responsive band covers the range that matters: a couple of true px
+    // (a Jupiter-range view) is already off the floor.
+    expect(mapSunRadiusPx(2)).toBeGreaterThan(P.floorPx);
+  });
+
+  it('rides the compressive curve between floor and pivot', () => {
+    // Well inside the responsive band: the drawn size is the curve exactly.
+    const truePx = 8;
+    expect(mapSunRadiusPx(truePx)).toBeCloseTo(
+      P.pivotPx * Math.pow(truePx / P.pivotPx, P.gamma),
+      9,
+    );
+  });
+
+  it('never draws below the floor, and the overview sits on it', () => {
+    // A whole-system frame projects the Sun far below a pixel.
+    for (const truePx of [1e-4, 0.01, 0.05]) {
+      expect(mapSunRadiusPx(truePx)).toBeGreaterThanOrEqual(P.floorPx);
+    }
+    expect(mapSunRadiusPx(0.05)).toBe(P.floorPx);
+  });
+
+  it('hands over to the true disc exactly at the pivot, continuously', () => {
+    // For gamma < 1 the curve sits above truth below the pivot and below it
+    // past the pivot, so max() switches branch AT the pivot with equal value.
+    expect(mapSunRadiusPx(P.pivotPx)).toBeCloseTo(P.pivotPx, 9);
+    expect(mapSunRadiusPx(P.pivotPx * 0.999)).toBeGreaterThan(P.pivotPx * 0.999);
+    expect(mapSunRadiusPx(P.pivotPx * 2)).toBeCloseTo(P.pivotPx * 2, 9);
+    expect(mapSunRadiusPx(60)).toBe(60); // never shrinks a resolved disc
+  });
+
+  it('gamma 0 is the old constant branch — the corner chart look', () => {
+    const constant = { gamma: 0, pivotPx: 6, floorPx: 6 };
+    for (const truePx of [1e-4, 0.1, 2, 5.9]) {
+      expect(mapSunRadiusPx(truePx, constant)).toBe(6);
+    }
+    expect(mapSunRadiusPx(9, constant)).toBe(9); // truth still overtakes
+  });
+
+  it('carries the same camera-factor contract as the body policy', () => {
+    const sunAU = 0.00465;
+    const worldPerPxAtUnit = (2 * Math.tan((50 * Math.PI) / 180 / 2)) / 800;
+    for (const depth of [40, 8, 1.9, 0.2]) {
+      const worldPerPx = worldPerPxAtUnit * depth;
+      expect(mapSunRadiusAU(sunAU, depth, worldPerPxAtUnit) / worldPerPx)
+        .toBeCloseTo(mapSunRadiusPx(sunAU / worldPerPx), 9);
+    }
+    expect(mapSunRadiusAU(sunAU, 0, worldPerPxAtUnit)).toBeGreaterThan(0);
+    expect(mapSunRadiusAU(sunAU, 10, 0)).toBe(sunAU);
+  });
+
+  it('reproduces the corner chart\'s old Sun exactly, below and above its crossover', () => {
+    // The mini chart's γ=0 config must be byte-identical to what the generic
+    // policy used to draw there: the marker pinned to the mini cap (6 px),
+    // truth overtaking past it. Sweep both sides of the crossover.
+    for (const truePx of [1e-4, 0.5, 3, 5.99, 6, 6.01, 9, 40]) {
+      expect(mapSunRadiusPx(truePx, MINI_SUN_SIZE_PARAMS)).toBe(
+        mapBodyRadiusPx(SUN_RADIUS_AU, truePx, MINI_BODY_SIZE_PARAMS),
+      );
+    }
+  });
+
+  it('responds where the old cap sat pinned: a Jupiter-range view draws a smaller star', () => {
+    // Compressed-map depth from a camera near Jupiter (~1.9 AU) projects the
+    // Sun at ~2 px true; the old policy drew 18 px there regardless.
+    const worldPerPxAtUnit = (2 * Math.tan((50 * Math.PI) / 180 / 2)) / 800;
+    const truePx = 0.00465 / (worldPerPxAtUnit * 1.9);
+    const px = mapSunRadiusPx(truePx);
+    expect(px).toBeLessThan(12);
+    expect(px).toBeGreaterThan(P.floorPx * 0.8);
   });
 });
 

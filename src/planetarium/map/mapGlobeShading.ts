@@ -66,18 +66,42 @@ export interface MapGlobeShading {
   softness: { value: number };
 }
 
+/**
+ * Radiance floor for a charted globe, LINEAR (pre-tonemap) — the least any
+ * globe pixel is allowed to emit.
+ *
+ * The chart's ambient night fill is an irradiance: it multiplies the body's
+ * own albedo, and on a dark body (Callisto's maps run near 0.1) the product
+ * collapses under one 8-bit count after the tonemap. Such a globe renders
+ * BLACKER than the chart's 0x05070d background — a hole punched in whatever
+ * stands behind it, most gruesomely the Sun's disc or a parent's lit face.
+ * The fill's whole purpose is that an unlit hemisphere reads as unlit rather
+ * than as a hole, so the floor is taken on the OUTGOING light, past the
+ * albedo multiply, where no texture can defeat it.
+ *
+ * Tuned to land one to three counts above the background — (6, 9, 16) against
+ * 0x05070d — through three's ACES filmic (Hill fit + input/output matrices,
+ * NOT the scalar 2.51/2.43 fit, which over-predicts by ~3× down here) at the
+ * map's neutral exposure. Deliberately no brighter: a night side against
+ * space SHOULD be nearly invisible — the offense was only ever reading darker
+ * than space. Same cool hue as the fill so the two read as one light.
+ */
+export const MAP_NIGHT_FLOOR_LINEAR = new THREE.Color(0.0082, 0.0108, 0.0169);
+
 /** The star as the shader needs it, shared by every globe on the chart: its
- *  position in the drawing camera's space, and the irradiance it delivers.
- *  One holder, written once per drawing pass. */
+ *  position in the drawing camera's space, the irradiance it delivers, and the
+ *  night floor above. One holder, written once per drawing pass. */
 export interface MapSunUniforms {
   viewPos: { value: THREE.Vector3 };
   irradiance: { value: THREE.Color };
+  nightFloor: { value: THREE.Color };
 }
 
 export function makeMapSunUniforms(color: THREE.Color, intensity: number): MapSunUniforms {
   return {
     viewPos: { value: new THREE.Vector3() },
     irradiance: { value: color.clone().multiplyScalar(intensity) },
+    nightFloor: { value: MAP_NIGHT_FLOOR_LINEAR.clone() },
   };
 }
 
@@ -110,6 +134,7 @@ export function augmentMapGlobeMaterial(
   mat.onBeforeCompile = (shader) => {
     shader.uniforms.uMapSunViewPos = sun.viewPos;
     shader.uniforms.uMapSunIrradiance = sun.irradiance;
+    shader.uniforms.uMapNightFloor = sun.nightFloor;
     shader.uniforms.uMapTermSoft = softness;
     shader.fragmentShader = shader.fragmentShader
       .replace(
@@ -117,6 +142,7 @@ export function augmentMapGlobeMaterial(
         '#include <common>\n'
           + 'uniform vec3 uMapSunViewPos;\n'
           + 'uniform vec3 uMapSunIrradiance;\n'
+          + 'uniform vec3 uMapNightFloor;\n'
           + 'uniform float uMapTermSoft;',
       )
       .replace(
@@ -133,6 +159,14 @@ export function augmentMapGlobeMaterial(
           + '  reflectedLight.directDiffuse +=\n'
           + '    (soft - hard) * uMapSunIrradiance * BRDF_Lambert(material.diffuseColor);\n'
           + '}',
+      )
+      .replace(
+        // Past the albedo multiply, so a dark texture cannot defeat it; before
+        // the tonemap, so the floor rides the same response as the light. A
+        // max, not an add: any lit pixel is far above it and keeps its shape.
+        'vec3 outgoingLight = totalDiffuse + totalSpecular + totalEmissiveRadiance;',
+        'vec3 outgoingLight = max(\n'
+          + '  totalDiffuse + totalSpecular + totalEmissiveRadiance, uMapNightFloor);',
       );
   };
   mat.needsUpdate = true;

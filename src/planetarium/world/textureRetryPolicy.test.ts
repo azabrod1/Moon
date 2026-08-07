@@ -35,6 +35,14 @@ describe('retry delays', () => {
     expect(retryDelayMs(-3, 0.5)).toBe(0);
   });
 
+  it('clamps an out-of-range spread instead of scaling past the dither band', () => {
+    // urlSpread is total onto [0, 1), so these only arrive from a broken
+    // caller — but the clamp is the contract that a bad spread cannot turn
+    // the dither into an amplifier.
+    expect(retryDelayMs(1, -5)).toBe(retryDelayMs(1, 0));
+    expect(retryDelayMs(1, 42)).toBe(retryDelayMs(1, 1));
+  });
+
   // A minute is the contract: long enough that a dead network costs nothing,
   // short enough that the map lands soon after the connection returns even if
   // no wake event fires (a captive-portal login, say).

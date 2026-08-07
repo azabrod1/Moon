@@ -69,11 +69,26 @@ function decodeThenQueueWarm(tex: THREE.Texture): void {
  * For a map that lands mid-session the body is already on screen, so the swap
  * must not put a synchronous JPEG/PNG decode on the frame that first draws it.
  * Falls straight through where `decode` is unavailable.
+ *
+ * Disposal-aware across the decode window, exactly as decodeThenQueueWarm is:
+ * the apply callbacks hand textures to materials and to the warm pump, and a
+ * texture disposed while its decode was pending would be pinned into GPU
+ * storage nothing ever frees.
  */
 function afterDecode(tex: THREE.Texture, apply: () => void): void {
   const img = tex.image as { decode?: () => Promise<void> } | undefined;
-  if (img && typeof img.decode === 'function') img.decode().then(apply, apply);
-  else apply();
+  if (!(img && typeof img.decode === 'function')) {
+    apply();
+    return;
+  }
+  let disposed = false;
+  const onDispose = () => { disposed = true; };
+  tex.addEventListener('dispose', onDispose);
+  const finish = () => {
+    tex.removeEventListener('dispose', onDispose);
+    if (!disposed) apply();
+  };
+  img.decode().then(finish, finish);
 }
 
 /**
@@ -249,12 +264,13 @@ export function createLateTextureSlot<T extends { dispose(): void } = THREE.Text
 }
 
 /**
- * Failures to absorb before the procedural fallback resolves and the world is
- * built without waiting further. One blip retries fast enough (half a second)
- * that the real map still arrives for construction — no visible swap; a second
- * failure means the connection is actually down, and nothing is gained by
- * holding the whole scene for it. The fetch itself is never abandoned: it keeps
- * climbing its ladder and hands the map to the late slot whenever it lands.
+ * The failure count the procedural fallback resolves ON, letting the world
+ * build without waiting further. The first failure is absorbed — one blip
+ * retries fast enough (half a second) that the real map still arrives for
+ * construction with no visible swap; the second means the connection is
+ * actually down, and nothing is gained by holding the whole scene for it.
+ * The fetch itself is never abandoned: it keeps climbing its ladder and hands
+ * the map to the late slot whenever it lands.
  */
 export const FALLBACK_AFTER_FAILURES = 2;
 
@@ -271,7 +287,7 @@ export interface LoadTextureOptions {
 
 /**
  * Load one planet-level texture by key, resolving a grey procedural fallback on
- * timeout or exhausted retries so a caller never blocks on a missing file.
+ * timeout or a second failure so a caller never blocks on a missing file.
  * Returns a FRESH texture on every call — the caller owns it and must dispose it
  * itself (the volume-compare mode loads container/filler maps this way and
  * disposes them on each pair change).

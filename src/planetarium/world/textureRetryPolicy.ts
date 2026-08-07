@@ -19,7 +19,9 @@ export interface TextureRetryPolicy {
   baseDelayMs: number;
   /** Multiplier per consecutive failure. */
   growth: number;
-  /** Ceiling the wait settles at, so a dead network costs one poll a minute. */
+  /** Ceiling the NOMINAL wait settles at — the dither rides on top, so the
+   *  real wait tops out around 1.25× this. A dead network costs one poll a
+   *  minute either way. */
   capDelayMs: number;
   /** Fraction of the wait spread across URLs so simultaneous failures don't
    *  retry in one burst (±this much around the nominal delay). */

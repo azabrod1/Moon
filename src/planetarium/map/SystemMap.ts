@@ -107,6 +107,7 @@ import {
   miniNeedsReseat,
   stampMiniBodyKey,
   MINI_BODY_SIZE_PARAMS,
+  MINI_MARKER_ZOOM_PARAMS,
   MINI_SHIP_PX,
   MINI_SUN_SIZE_PARAMS,
   MINI_SUN_HALO_RADII,
@@ -117,14 +118,17 @@ import {
   labelClearanceRadiusPx,
   mapBodyRadiusAU,
   mapMarkerRadiusPx,
+  mapMarkerZoomScaleAt,
   mapMoonMarkerRadiusAU,
   mapMoonRadiusAU,
   mapSunRadiusAU,
   DOT_EXTENT_MUL,
   dotGradientAlpha,
   MAP_BODY_SIZE_DEFAULTS,
+  MAP_MARKER_ZOOM_DEFAULTS,
   MAP_SUN_SIZE_DEFAULTS,
   type MapBodySizeParams,
+  type MapMarkerZoomParams,
   type MapSunSizeParams,
 } from './mapBodySize';
 import {
@@ -143,7 +147,7 @@ import {
   type MapMoonOffsetParams,
   type MoonOffsetPolicy,
 } from './mapMoonOffset';
-import { mapBodyDrawMode, shouldAdoptTexture } from './mapGlobes';
+import { mapBodyDrawMode, shouldAdoptTexture, MAP_GLOBE_MIN_PX } from './mapGlobes';
 import {
   advanceMapShade,
   makeMapShadeState,
@@ -554,6 +558,14 @@ interface MapDrawView {
   sunHaloRadii: number;
   sizeParams: MapBodySizeParams;
   sunSizeParams: MapSunSizeParams;
+  /** The marker branch's zoom response for this pass. The full chart carries
+   *  the live knobs; the corner chart pins γ 0 — its fixed framing has no
+   *  zoom to answer, so its marks are frozen exactly as they were. */
+  markerZoomParams: MapMarkerZoomParams;
+  /** The smallest marker this pass draws as a globe (planets). The full chart
+   *  takes MAP_GLOBE_MIN_PX so a zoom-shrunken mark demotes to the schematic
+   *  dot; the corner chart takes 0 — always-globe, its established look. */
+  globeMinPx: number;
 }
 
 export class SystemMap {
@@ -630,11 +642,15 @@ export class SystemMap {
    *  outside the update pass. Anchors cache against it. */
   private frameRevision = 0;
   /** The projection dirty key: the clock, the blend and the camera pose the
-   *  last moon pass ran against. */
+   *  last moon pass ran against. Pose means position AND orientation: the
+   *  markers' zoom response reads view-axis depth, so a parent's drawn radius
+   *  — and with it a charted system's spacing — can change under a camera
+   *  that reorients in place (a retarget without a move). */
   private moonKeyUtcMs = Number.NaN;
   private moonKeyRevision = -1;
   private moonKeyBlend = Number.NaN;
   private moonKeyCam = new THREE.Vector3(Number.NaN, Number.NaN, Number.NaN);
+  private moonKeyCamQuat = new THREE.Quaternion(Number.NaN, Number.NaN, Number.NaN, Number.NaN);
   private tmpMoonNormal = new THREE.Vector3();
   private tmpMoonQuat = new THREE.Quaternion();
   /** Where the ephemeris seam writes a body's heliocentric AU, once per body
@@ -728,6 +744,7 @@ export class SystemMap {
   private blendState = makeMapBlendState();
   private bodySizeParams: MapBodySizeParams = { ...MAP_BODY_SIZE_DEFAULTS };
   private sunSizeParams: MapSunSizeParams = { ...MAP_SUN_SIZE_DEFAULTS };
+  private markerZoomParams: MapMarkerZoomParams = { ...MAP_MARKER_ZOOM_DEFAULTS };
   /** The sweep's memory — cursor and previous clock in one object (see
    *  mapResample.ResampleState). Deliberately untouched by close(), and the
    *  module exports no reset: the lap survives every open/close by shape. */
@@ -780,6 +797,8 @@ export class SystemMap {
     sunHaloRadii: SUN_HALO_RADII,
     sizeParams: MAP_BODY_SIZE_DEFAULTS,
     sunSizeParams: MAP_SUN_SIZE_DEFAULTS,
+    markerZoomParams: MAP_MARKER_ZOOM_DEFAULTS,
+    globeMinPx: MAP_GLOBE_MIN_PX,
   };
   private miniView: MapDrawView = {
     camera: null as unknown as THREE.PerspectiveCamera,
@@ -792,6 +811,8 @@ export class SystemMap {
     sunHaloRadii: MINI_SUN_HALO_RADII,
     sizeParams: MINI_BODY_SIZE_PARAMS,
     sunSizeParams: MINI_SUN_SIZE_PARAMS,
+    markerZoomParams: MINI_MARKER_ZOOM_PARAMS,
+    globeMinPx: 0,
   };
   /** Planetocentric offset scratch — a moon's position is its parent's plus
    *  this, and the ephemeris seam fills a caller's vector. */
@@ -1159,6 +1180,10 @@ export class SystemMap {
 
   getSunSizeParams(): MapSunSizeParams {
     return this.sunSizeParams;
+  }
+
+  getMarkerZoomParams(): MapMarkerZoomParams {
+    return this.markerZoomParams;
   }
 
   /** How far the camera sits from the point it orbits. That point is the origin
@@ -1574,6 +1599,13 @@ export class SystemMap {
     this.projectionRevision++;
   }
 
+  setMarkerZoomParams(partial: Partial<MapMarkerZoomParams> | null): void {
+    this.markerZoomParams = partial === null
+      ? { ...MAP_MARKER_ZOOM_DEFAULTS }
+      : { ...this.markerZoomParams, ...partial };
+    this.projectionRevision++;
+  }
+
   /**
    * Per-frame refresh, called from PlanetariumMode after positions are final.
    * Recomputes body positions from the clock (never from mode scene state) and
@@ -1733,6 +1765,7 @@ export class SystemMap {
     this.fullView.trueScaleBlend = this.blend;
     this.fullView.sizeParams = this.bodySizeParams;
     this.fullView.sunSizeParams = this.sunSizeParams;
+    this.fullView.markerZoomParams = this.markerZoomParams;
     this.orientShip(this.fullView);
     this.updateDrawnSizes(this.fullView);
     this.applyFocusOrbitDim();
@@ -2307,7 +2340,11 @@ export class SystemMap {
     // camera can see and what the near plane has to clear, and on a moon the
     // marker is many times the true size. (On a planet the two agree once the
     // camera is close enough to have resolved it, which is the only regime a
-    // follow runs in.)
+    // follow runs in. The marker's zoom response never binds in a SETTLED
+    // shell for the same reason — the subject sits far inside the response's
+    // reference, where the scale is exactly 1; evaluated from an overview or
+    // mid-flight pose, as revealDistanceFor does, the response is live in the
+    // figure, which is correct: it measures the mark as drawn from there.)
     const radius = this.drawnGlobeRadiusAU(name) ?? this.bodyTrueRadiusAU(name);
     if (radius === null || !this.bodyMapPosition(name, this.tmpBodyPos)) return null;
     // The zoom-out ceiling is metered on a radius the camera cannot move: a
@@ -2899,8 +2936,8 @@ export class SystemMap {
   }
 
   /** The globe radius the size policy gives a body at the current pose: its
-   *  true size once the camera can resolve it, its chart marker while it
-   *  cannot. Null for a body the chart cannot place or size. */
+   *  true size once the camera can resolve it, its zoom-scaled chart marker
+   *  while it cannot. Null for a body the chart cannot place or size. */
   private drawnGlobeRadiusAU(name: string): number | null {
     const body = mapBody(name);
     if (body?.kind === 'moon') {
@@ -2924,11 +2961,19 @@ export class SystemMap {
     if (body?.kind === 'sun') {
       return mapSunRadiusAU(radius, this.viewDepth(this.tmpBodyPos), perPx, this.sunSizeParams);
     }
+    // Same zoom response the drawing pass applies, from the same two depths —
+    // the framing and clearance figures measure the mark that is actually
+    // painted. The body's depth is read out before the scratch is claimed for
+    // the star's.
+    const bodyDepth = this.viewDepth(this.tmpBodyPos);
     return mapBodyRadiusAU(
       radius,
-      this.viewDepth(this.tmpBodyPos),
+      bodyDepth,
       perPx,
       this.bodySizeParams,
+      mapMarkerZoomScaleAt(
+        bodyDepth, this.viewDepth(this.sun.position), perPx, this.markerZoomParams,
+      ),
     );
   }
 
@@ -2964,11 +3009,16 @@ export class SystemMap {
   /** A planet's drawn globe radius from its built entry, without going through
    *  a name. The moon pipeline asks for this per system per frame. */
   private planetDrawnGlobeRadiusAU(entry: OrbitEntry): number {
+    const perPx = mapWorldPerPxAtUnitDepth(
+      Math.max(this.renderer.domElement.clientHeight, 1), MAP_FOV_DEG,
+    );
+    const depth = this.viewDepth(entry.dot.position);
     return mapBodyRadiusAU(
       entry.planet.radiusAU,
-      this.viewDepth(entry.dot.position),
-      mapWorldPerPxAtUnitDepth(Math.max(this.renderer.domElement.clientHeight, 1), MAP_FOV_DEG),
+      depth,
+      perPx,
       this.bodySizeParams,
+      mapMarkerZoomScaleAt(depth, this.viewDepth(this.sun.position), perPx, this.markerZoomParams),
     );
   }
 
@@ -3008,7 +3058,8 @@ export class SystemMap {
     const still = utcMs === this.moonKeyUtcMs
       && this.blend === this.moonKeyBlend
       && this.projectionRevision === this.moonKeyRevision
-      && this.camera.position.equals(this.moonKeyCam);
+      && this.camera.position.equals(this.moonKeyCam)
+      && this.camera.quaternion.equals(this.moonKeyCamQuat);
     if (still) {
       // Positions are settled; a ring that has never been filled is not. The
       // fill budget is one per frame, so a reveal on a slow device can land the
@@ -3022,6 +3073,7 @@ export class SystemMap {
     this.moonKeyBlend = this.blend;
     this.moonKeyRevision = this.projectionRevision;
     this.moonKeyCam.copy(this.camera.position);
+    this.moonKeyCamQuat.copy(this.camera.quaternion);
     this.moonPasses++;
 
     const trueScale = this.blend >= MAP_BLEND_TRUE;
@@ -3413,11 +3465,20 @@ export class SystemMap {
         }
         const truePx = moon.data.radiusAU / worldPerPx;
         const markerPx = mapMoonMarkerRadiusAU(moon.data.radiusAU, parentDrawnAU) / worldPerPx;
+        // Moons keep their pre-threshold semantics: compressed always draws
+        // the globe (a revealed system's small moons are globes, and the
+        // overview crowding the planet threshold answers never shows moons at
+        // all), true scale demotes a sub-threshold mark to the dot exactly as
+        // before. Keyed off the scale control's committed TARGET, not the
+        // animating blend, so the decision happens on the gesture that asked
+        // for it — mid-animation a threshold would pop for no reason the
+        // viewer could name. Moons draw on the full view only, so the view's
+        // own globeMinPx (a planets' knob) deliberately plays no part here.
         const globe = visible && mapBodyDrawMode(
           moon.globeMat.map !== null,
-          trueScaleTarget,
           truePx,
           markerPx,
+          trueScaleTarget ? MAP_GLOBE_MIN_PX : 0,
         ) === 'globe';
         // Same rule as the planets': a policy-floored globe composites as a
         // marker for as long as the pass is on the true side of the blend.
@@ -4988,9 +5049,12 @@ export class SystemMap {
   /**
    * How big everything draws, and — for a body — whether that drawing is a
    * globe or a dot. Markers get `px * (world-per-px at the sprite's camera
-   * distance)`; a globe gets the size policy's radius, which is the legibility
-   * floor at the overview and the body's true size once the camera is close
-   * enough to resolve it. One shared camera factor drives both.
+   * distance)`, scaled by the zoom response at the same distance — full size
+   * at every framing out to the planet-orbit views, easing together toward
+   * the whole-system overview; a globe gets the size policy's radius, which
+   * is that scaled floor at the overview and the body's true size once the
+   * camera is close enough to resolve it. One shared camera factor drives
+   * all of it.
    */
   private updateDrawnSizes(view: MapDrawView): void {
     const camera = view.camera;
@@ -5031,27 +5095,38 @@ export class SystemMap {
       const viewX = view3.x;
       const viewY = view3.y;
       const depth = Math.max(-view3.z, 1e-6);
+      // The zoom response this body draws with — its own depth blended toward
+      // the chart centre's (the star's, computed above). One scale carries the
+      // drawn radius, the marker px, and every judgment below, so the mark on
+      // the glass and the figures measured against it cannot disagree.
+      const zoomScale = mapMarkerZoomScaleAt(
+        depth, sunDepth, worldPerPxAtUnit, view.markerZoomParams,
+      );
       const drawnAU = mapBodyRadiusAU(
         entry.planet.radiusAU,
         depth,
         worldPerPxAtUnit,
         params,
+        zoomScale,
       );
       const worldPerPx = Math.max(worldPerPxAtUnit * depth, 1e-30);
       entry.drawnRadiusPx = drawnAU / worldPerPx;
       const truePx = entry.planet.radiusAU / worldPerPx;
-      const markerPx = mapMarkerRadiusPx(entry.planet.radiusAU, params);
-      // At true scale the globe draws from the moment the body's REAL disc
-      // overtakes the marker — the same crossover the size policy hands the
-      // drawn radius over at, so the swap costs nothing in size and nothing
-      // pops — and for any planet whose marker is already big enough to carry
-      // a face. Both looks share the policy footprint, so which one draws
-      // never changes what labels, picking, or occlusion measure against.
+      const markerPx = mapMarkerRadiusPx(entry.planet.radiusAU, params) * zoomScale;
+      // The globe draws from the moment the body's REAL disc overtakes the
+      // marker — the same crossover the size policy hands the drawn radius
+      // over at, so the swap costs nothing in size and nothing pops — and for
+      // any planet whose marker is big enough to carry a face; below that the
+      // schematic dot draws instead (at the far overview the zoom response
+      // shrinks the small planets' marks past the threshold, which is what
+      // turns their night-side spheres back into chart dots). Both looks
+      // share the policy footprint, so which one draws never changes what
+      // labels, picking, or occlusion measure against.
       const globe = mapBodyDrawMode(
         entry.globeMat.map !== null,
-        trueScaleTarget,
         truePx,
         markerPx,
+        view.globeMinPx,
       ) === 'globe';
       // Floored: the policy, not the body, is what sizes the drawn sphere, so
       // in world units it is inflated far past the truth and has to composite

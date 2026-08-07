@@ -16,23 +16,41 @@
  * while the whole spread stays inside [minPx, maxPx]. The chart's subject is
  * the orbits; markers stay markers.
  *
+ * The marker itself is no longer constant in px: it rides a zoom response
+ * (`mapMarkerZoomScale` / `mapMarkerZoomScaleAt` below) driven by
+ * AU-per-screen-px at camera DEPTH — mostly the chart centre's, with a small
+ * share of each body's own. Markers hold full size at every framing from the
+ * inner system out to the planet-orbit views and ease down together as the
+ * camera pulls toward the whole-system overview, where constant-px marks
+ * would pile giant night-side globes onto the star. Depth is the driver
+ * deliberately: it is continuous under every camera move (a zoom-pivot reseat
+ * teleports the orbit target without moving the camera, so any driver
+ * measured against the target would step mid-gesture) and needs no per-frame
+ * state. The per-body share adds a whisper of perspective — a background body
+ * eases a little further than a foreground one, the direction its true disc
+ * would move — kept small so depth difference can never let a small near body
+ * out-draw a big far one.
+ *
  * Invariants the consumers lean on:
  *  - never smaller than the body's true projected size — nothing is shrunk;
- *  - never smaller than minPx, so every body stays visible at the overview
- *    (staying *tappable* is the pick resolver's job: it takes the larger of the
- *    pointer floor and the drawn disc, so a floored marker keeps a full-size
- *    hit target);
+ *  - never smaller than floorScale·minPx, so every body stays visible at the
+ *    overview (staying *tappable* is the pick resolver's job: it takes the
+ *    larger of the pointer floor and the drawn disc, so a floored marker keeps
+ *    a full-size hit target);
  *  - never larger than maxPx while the marker governs, so orbits stay dominant;
- *  - strictly ordered by true radius between the reference radius and the cap;
+ *  - strictly ordered by true radius AT EQUAL DEPTH between the reference
+ *    radius and the cap; across different depths perspective rules, the same
+ *    way it already does for resolved true discs;
  *  - continuous in camera distance: marker and truth meet exactly where they
- *    cross.
+ *    cross, and the zoom response is continuous through its reference point.
  *
  * Bodies smaller than the reference radius all sit on the floor — the chart
  * cannot separate them at the overview and does not pretend to; the reference
  * is a knob, so a view whose smallest body is much smaller can lower it.
  *
- * Every knob lives in the block below and retunes live through the dev bridge,
- * the way the world's moon size curve does.
+ * Every knob lives in the two blocks below (radius curve, zoom response) and
+ * retunes live through the dev bridge, the way the world's moon size curve
+ * does.
  */
 
 import { KM_PER_AU } from '../../astronomy/constants';
@@ -63,7 +81,8 @@ export const MAP_BODY_SIZE_DEFAULTS: MapBodySizeParams = {
 
 /**
  * Marker radius (screen px) for a body of true radius `radiusAU` — the chart
- * symbol, independent of camera distance.
+ * symbol, independent of camera distance. (The DRAWN marker no longer is: the
+ * consumers scale this by `mapMarkerZoomScale` before painting.)
  */
 export function mapMarkerRadiusPx(
   radiusAU: number,
@@ -76,16 +95,117 @@ export function mapMarkerRadiusPx(
 }
 
 /**
- * Drawn radius (screen px): the marker, or the body's true projected radius
- * once that is the larger — so closing in resolves a real globe instead of a
- * symbol, and the symbol never shrinks a body.
+ * The zoom response of the marker branch.
+ *
+ * `auPerPx` is the world span of one screen pixel at the BODY's depth — the
+ * quantity the sizing pass already has in hand per body. Below the reference
+ * the answer is exactly 1: every framing from the inner system out to the
+ * planet-orbit views draws the markers at full size, byte-identical to the
+ * constant-marker chart this replaces. Past it the scale falls on a
+ * compressive power law and settles on the floor, so the whole-system
+ * overview draws every mark at a fraction that keeps the star the biggest
+ * disc on the chart. γ 0 is the constant branch, kept for the corner chart,
+ * whose fixed framing has no zoom to answer.
+ *
+ * Anything degenerate — zero, negative, NaN, infinite — answers 1: a body the
+ * projection cannot place yet draws at its familiar size rather than at a
+ * surprise one.
+ */
+export interface MapMarkerZoomParams {
+  /** Compression exponent of the response; 0 = constant markers (the old
+   *  look). */
+  gamma: number;
+  /** AU-per-px at the body's depth where the shrink begins. In CHART units —
+   *  the compressed chart's AU-per-px, the same space `viewDepth` answers in. */
+  refAuPerPx: number;
+  /** Smallest multiplier the response reaches — the far-overview size. */
+  floorScale: number;
+  /** How much of the response rides the body's OWN depth; the rest rides the
+   *  chart centre's. See `mapMarkerZoomScaleAt`. 1 = pure per-body. */
+  depthShare: number;
+}
+
+export const MAP_MARKER_ZOOM_DEFAULTS: MapMarkerZoomParams = {
+  gamma: 0.75,
+  // Chart-units-per-px just past the framing that holds Jupiter's whole orbit
+  // on a desktop-tall window: everything from there IN is untouched. At the
+  // complaint pose — Neptune's orbit filling a 1300-tall window, ~7.7e-3 —
+  // the response reads ~0.49: the markers halve, and the star's 8 px floor
+  // tops every planet disc again.
+  refAuPerPx: 0.003,
+  // Binds from about the zoom ceiling out. Low enough that the giants sit
+  // under the Sun's floor disc, high enough that the smallest markers
+  // (floorScale·minPx ≈ 2.5 px) stay above the label-culling threshold —
+  // there is a test pinning that margin.
+  floorScale: 0.42,
+  // Mostly the centre's answer, with a fifth of the body's own: enough that a
+  // deep background eases while a foreground body holds, compressed enough
+  // that a tilted fit cannot draw a near small body over a far big one (the
+  // pure per-body response inverted Neptune over Jupiter by 18% there; a
+  // fifth of that spread is under the eye's threshold at marker sizes).
+  depthShare: 0.2,
+};
+
+export function mapMarkerZoomScale(
+  auPerPx: number,
+  params: MapMarkerZoomParams = MAP_MARKER_ZOOM_DEFAULTS,
+): number {
+  if (!(auPerPx > params.refAuPerPx) || !Number.isFinite(auPerPx)) return 1;
+  if (!(params.gamma > 0)) return 1;
+  const s = Math.pow(params.refAuPerPx / auPerPx, params.gamma);
+  return s > params.floorScale ? s : params.floorScale;
+}
+
+/**
+ * The zoom response a BODY draws with: the chart centre's response, times the
+ * body's own raised to `depthShare` — a log-space blend of the two depths.
+ *
+ * The centre (the star sits at the chart's origin) carries the zoom itself:
+ * its depth moves only with the camera, continuously through every gesture.
+ * The body's own depth carries the perspective: a background body eases a
+ * little further than a foreground one, the direction its true disc would
+ * move. Blending in log space keeps both properties exact — at equal depths
+ * the answer is the shared response (ordering by true radius is exact there),
+ * and across unequal depths the per-body spread is compressed by the share —
+ * markers a tilted overview would visibly re-order under the pure response
+ * stay ordered, and the residual swaps live on near-equal markers (within a
+ * few percent) at hundredths of a pixel, under the eye's threshold. Share 1
+ * is the pure per-body response; share 0 pins every marker to the centre's
+ * answer.
+ *
+ * Both responses read 1 inside the reference, and once both depths
+ * individually reach the floor the blend is the floor — so the blend changes
+ * nothing at either end of the zoom and only tempers the spread in between.
+ * (At a tilted ceiling a near-edge body can still sit a few percent off the
+ * floor while the centre is on it; the blend then lands a fifth of that gap
+ * above the floor, which is the perspective share working as intended.)
+ */
+export function mapMarkerZoomScaleAt(
+  bodyDepthAU: number,
+  centralDepthAU: number,
+  worldPerPxAtUnitDepth: number,
+  params: MapMarkerZoomParams = MAP_MARKER_ZOOM_DEFAULTS,
+): number {
+  const central = mapMarkerZoomScale(worldPerPxAtUnitDepth * centralDepthAU, params);
+  const own = mapMarkerZoomScale(worldPerPxAtUnitDepth * bodyDepthAU, params);
+  if (own === central) return central;
+  return central * Math.pow(own / central, params.depthShare);
+}
+
+/**
+ * Drawn radius (screen px): the zoom-scaled marker, or the body's true
+ * projected radius once that is the larger — so closing in resolves a real
+ * globe instead of a symbol, and the symbol never shrinks a body.
+ * `markerScale` scales ONLY the marker branch (1 = the classic chart); truth
+ * always wins the max whatever the scale.
  */
 export function mapBodyRadiusPx(
   radiusAU: number,
   trueProjectedPx: number,
   params: MapBodySizeParams = MAP_BODY_SIZE_DEFAULTS,
+  markerScale = 1,
 ): number {
-  const marker = mapMarkerRadiusPx(radiusAU, params);
+  const marker = mapMarkerRadiusPx(radiusAU, params) * markerScale;
   return trueProjectedPx > marker ? trueProjectedPx : marker;
 }
 
@@ -296,14 +416,21 @@ export function mapMoonRadiusAU(
  * view axis. `worldPerPxAtUnitDepth` is the world span of one screen px at unit
  * depth (2·tan(fov/2) / viewport height) — the same factor the constant-size
  * markers scale with, so one camera fact drives both.
+ *
+ * `markerScale` is the zoom response the caller computed for this body —
+ * `mapMarkerZoomScaleAt` from this same depth plus the chart centre's, which
+ * is why it is handed in rather than derived here. 1 is the classic
+ * constant-marker chart.
  */
 export function mapBodyRadiusAU(
   trueRadiusAU: number,
   depthAU: number,
   worldPerPxAtUnitDepth: number,
   params: MapBodySizeParams = MAP_BODY_SIZE_DEFAULTS,
+  markerScale = 1,
 ): number {
   const worldPerPx = worldPerPxAtUnitDepth * Math.max(depthAU, 1e-9);
   if (!(worldPerPx > 0)) return trueRadiusAU;
-  return mapBodyRadiusPx(trueRadiusAU, trueRadiusAU / worldPerPx, params) * worldPerPx;
+  return mapBodyRadiusPx(trueRadiusAU, trueRadiusAU / worldPerPx, params, markerScale)
+    * worldPerPx;
 }

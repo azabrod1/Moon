@@ -282,7 +282,11 @@ import {
   type ShadowEventSearch,
 } from './shadowEventSearch';
 import { tidalLockQuaternion, tidalRollNorth } from './world/tidalLock';
-import { type MapBodySizeParams, type MapSunSizeParams } from './map/mapBodySize';
+import {
+  type MapBodySizeParams,
+  type MapMarkerZoomParams,
+  type MapSunSizeParams,
+} from './map/mapBodySize';
 import { type MapMoonOffsetParams } from './map/mapMoonOffset';
 import {
   MAP_DOUBLE_TAP_MS,
@@ -6673,6 +6677,7 @@ export class PlanetariumMode {
     curveParam: number;
     bodySize: MapBodySizeParams;
     sunSize: MapSunSizeParams;
+    markerZoom: MapMarkerZoomParams;
     cameraDist: number;
     near: number;
     far: number;
@@ -6714,6 +6719,7 @@ export class PlanetariumMode {
       curveParam: curve.kind === 'power' ? curve.gamma : curve.s0,
       bodySize: this.systemMap.getBodySizeParams(),
       sunSize: this.systemMap.getSunSizeParams(),
+      markerZoom: this.systemMap.getMarkerZoomParams(),
       cameraDist: this.systemMap.getCameraDistance(),
       // The clip planes this frame drew with — a body on screen at a healthy
       // radius but rendering nothing is a near plane standing in front of it.
@@ -6781,6 +6787,12 @@ export class PlanetariumMode {
    *  (gamma, pivotPx, floorPx); null resets. */
   devSetMapSunSize(partial: Partial<MapSunSizeParams> | null): void {
     this.systemMap?.setSunSizeParams(partial);
+  }
+
+  /** Dev bridge: live tuning of the markers' zoom response (gamma,
+   *  refAuPerPx, floorScale, depthShare); null resets. */
+  devSetMapMarkerZoom(partial: Partial<MapMarkerZoomParams> | null): void {
+    this.systemMap?.setMarkerZoomParams(partial);
   }
 
   /** Dev bridge: live tuning of the moon-offset policy (gamma, x0, the Io

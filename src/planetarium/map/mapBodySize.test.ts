@@ -10,16 +10,28 @@ import {
   mapBodyRadiusAU,
   mapBodyRadiusPx,
   mapMarkerRadiusPx,
+  mapMarkerZoomScale,
+  mapMarkerZoomScaleAt,
   mapSunRadiusAU,
   mapSunRadiusPx,
   DOT_EXTENT_MUL,
   MAP_BODY_SIZE_DEFAULTS,
+  MAP_MARKER_ZOOM_DEFAULTS,
   MAP_SUN_SIZE_DEFAULTS,
   type DotGradientStop,
   type MapBodySizeParams,
 } from './mapBodySize';
-import { mapLabelOffsetPx, LABEL_ANCHOR_OFFSET_PX, LABEL_CLEARANCE_PX } from './mapLabels';
-import { MINI_BODY_SIZE_PARAMS, MINI_SUN_SIZE_PARAMS } from './miniChart';
+import {
+  mapLabelOffsetPx,
+  LABEL_ANCHOR_OFFSET_PX,
+  LABEL_CLEARANCE_PX,
+  LABEL_MIN_BODY_RADIUS_PX,
+} from './mapLabels';
+import {
+  MINI_BODY_SIZE_PARAMS,
+  MINI_MARKER_ZOOM_PARAMS,
+  MINI_SUN_SIZE_PARAMS,
+} from './miniChart';
 import { PLANETARIUM_BODIES } from '../planets/planetData';
 import { KM_PER_AU } from '../../astronomy/constants';
 
@@ -146,6 +158,158 @@ describe('mapBodyRadiusAU', () => {
   it('survives a degenerate camera', () => {
     expect(mapBodyRadiusAU(earth, 0, worldPerPxAtUnit)).toBeGreaterThan(0);
     expect(mapBodyRadiusAU(earth, 10, 0)).toBe(earth);
+  });
+});
+
+describe('the marker zoom response', () => {
+  const Z = MAP_MARKER_ZOOM_DEFAULTS;
+
+  it('reads exactly 1 at and below the reference', () => {
+    expect(mapMarkerZoomScale(Z.refAuPerPx)).toBe(1);
+    expect(mapMarkerZoomScale(Z.refAuPerPx / 2)).toBe(1);
+    // The inner-system and Jupiter-orbit framings on a desktop-tall window
+    // both sit under the reference — the classic chart, untouched.
+    expect(mapMarkerZoomScale(0.0026)).toBe(1);
+  });
+
+  it('halves the markers at the complaint pose', () => {
+    // Neptune's orbit filling a 1300-tall window: ~7.7e-3 chart-AU per px.
+    // (0.003 / 0.0077)^0.75 — pinned as a NUMBER so a knob change is a
+    // deliberate retune, not a silent drift.
+    expect(mapMarkerZoomScale(0.0077)).toBeCloseTo(0.4931, 3);
+    // Not floored there: the raw curve still sits above the floor.
+    expect(mapMarkerZoomScale(0.0077)).toBeGreaterThan(Z.floorScale);
+  });
+
+  it('settles on the floor from about the zoom ceiling', () => {
+    expect(mapMarkerZoomScale(0.0107)).toBe(Z.floorScale);
+    // The harness's measured ceiling on an 800-tall window.
+    expect(mapMarkerZoomScale(0.0163)).toBe(Z.floorScale);
+  });
+
+  it('γ 0 is the constant chart — the corner chart pin', () => {
+    for (const auPerPx of [1e-4, 0.0077, 0.05, 40]) {
+      expect(mapMarkerZoomScale(auPerPx, MINI_MARKER_ZOOM_PARAMS)).toBe(1);
+    }
+  });
+
+  it('is monotone nonincreasing and continuous through the reference', () => {
+    let prev = Infinity;
+    for (let auPerPx = 0.001; auPerPx < 0.03; auPerPx += 0.0002) {
+      const s = mapMarkerZoomScale(auPerPx);
+      expect(s).toBeLessThanOrEqual(prev + 1e-12);
+      prev = s;
+    }
+    expect(mapMarkerZoomScale(Z.refAuPerPx * (1 + 1e-9))).toBeCloseTo(1, 6);
+  });
+
+  it('answers 1 to anything degenerate', () => {
+    for (const bad of [0, -1, Number.NaN, Number.POSITIVE_INFINITY]) {
+      expect(mapMarkerZoomScale(bad)).toBe(1);
+    }
+  });
+
+  it('scales only the marker branch; truth always wins the max', () => {
+    const earth = auOf(RADIUS_KM.Earth);
+    const marker = mapMarkerRadiusPx(earth);
+    expect(mapBodyRadiusPx(earth, 0.001, P, 0.5)).toBeCloseTo(marker * 0.5, 12);
+    // A resolved disc is never shrunk, whatever the scale says.
+    expect(mapBodyRadiusPx(earth, 300, P, 0.1)).toBe(300);
+    // The crossover just moves — the scaled marker still meets truth exactly.
+    expect(mapBodyRadiusPx(earth, marker * 0.5, P, 0.5)).toBeCloseTo(marker * 0.5, 12);
+  });
+
+  it('preserves ordering by true radius at equal depth', () => {
+    const ordered = ['Mars', 'Venus', 'Earth', 'Neptune', 'Uranus', 'Saturn', 'Jupiter'] as const;
+    for (const scale of [1, 0.7, Z.floorScale]) {
+      let prev = 0;
+      for (const name of ordered) {
+        const px = mapBodyRadiusPx(auOf(RADIUS_KM[name]), 0.001, P, scale);
+        expect(px).toBeGreaterThan(prev);
+        prev = px;
+      }
+    }
+  });
+
+  it('mapBodyRadiusAU carries the handed-in scale onto the marker branch', () => {
+    const earth = auOf(RADIUS_KM.Earth);
+    const worldPerPxAtUnit = (2 * Math.tan((50 * Math.PI) / 180 / 2)) / 800;
+    const depth = 5;
+    const worldPerPx = worldPerPxAtUnit * depth;
+    expect(mapBodyRadiusAU(earth, depth, worldPerPxAtUnit, P, 0.5) / worldPerPx)
+      .toBeCloseTo(mapMarkerRadiusPx(earth) * 0.5, 9);
+    // The default scale is the classic constant-marker chart.
+    expect(mapBodyRadiusAU(earth, depth, worldPerPxAtUnit, P))
+      .toBeCloseTo(mapMarkerRadiusPx(earth) * worldPerPx, 15);
+  });
+
+  describe('the depth blend (mapMarkerZoomScaleAt)', () => {
+    // The QA harness's camera factor: 50° over an 800 px canvas.
+    const wpp = (2 * Math.tan((50 * Math.PI) / 180 / 2)) / 800;
+
+    it('is the shared response at equal depths — ordering exact there', () => {
+      for (const depth of [2, 6, 12]) {
+        expect(mapMarkerZoomScaleAt(depth, depth, wpp))
+          .toBe(mapMarkerZoomScale(wpp * depth));
+      }
+    });
+
+    it('compresses the per-body spread by the share', () => {
+      const central = mapMarkerZoomScale(wpp * 8);
+      const own = mapMarkerZoomScale(wpp * 12);
+      const blended = mapMarkerZoomScaleAt(12, 8, wpp);
+      expect(blended).toBeCloseTo(central * Math.pow(own / central, Z.depthShare), 12);
+      // Between the two pure answers, far nearer the centre's.
+      expect(blended).toBeGreaterThan(own);
+      expect(blended).toBeLessThan(central);
+    });
+
+    it('share 1 is the pure per-body response, share 0 the centre pin', () => {
+      const one = { ...Z, depthShare: 1 };
+      const zero = { ...Z, depthShare: 0 };
+      expect(mapMarkerZoomScaleAt(12, 8, wpp, one)).toBe(mapMarkerZoomScale(wpp * 12, one));
+      expect(mapMarkerZoomScaleAt(12, 8, wpp, zero)).toBe(mapMarkerZoomScale(wpp * 8, zero));
+    });
+
+    it('cannot invert Jupiter under Neptune at the tilted fit', () => {
+      // The cross-model review's worst case: whole-system fit (camera 7.747
+      // chart-units out) tilted to the 78° polar clamp — near-side Neptune at
+      // depth ~4.98, far-side Jupiter at ~9.46 on a 1300-tall window. The
+      // PURE per-body response drew Neptune 10.5 px over Jupiter's 9.0 — a
+      // size-ordering inversion no honest perspective produces. The blend
+      // holds Jupiter on top with room.
+      const wpp1300 = (2 * Math.tan((50 * Math.PI) / 180 / 2)) / 1300;
+      const neptune = mapMarkerRadiusPx(auOf(RADIUS_KM.Neptune))
+        * mapMarkerZoomScaleAt(4.98, 7.747, wpp1300);
+      const jupiter = mapMarkerRadiusPx(auOf(RADIUS_KM.Jupiter))
+        * mapMarkerZoomScaleAt(9.46, 7.747, wpp1300);
+      expect(jupiter).toBeGreaterThan(neptune * 1.15);
+    });
+
+    it('changes nothing where both depths sit inside the reference or on the floor', () => {
+      // Inner framings: both responses read 1 — the classic chart.
+      expect(mapMarkerZoomScaleAt(2.5, 2.2, wpp)).toBe(1);
+      // The far ceiling: both floored — the uniform overview ease.
+      expect(mapMarkerZoomScaleAt(12, 14, wpp)).toBe(Z.floorScale);
+    });
+  });
+
+  it('keeps every planet disc under the Sun overview floor at the ceiling', () => {
+    // The whole point of the round: at the far overview the star is the
+    // biggest DISC on the chart again. (Saturn's thin ring annulus still
+    // outreaches it — the claim is solid discs.)
+    const sunFloor = MAP_SUN_SIZE_DEFAULTS.floorPx;
+    for (const [name, km] of Object.entries(RADIUS_KM)) {
+      if (name === 'Sun') continue;
+      const px = mapMarkerRadiusPx(auOf(km)) * Z.floorScale;
+      expect(px).toBeLessThan(sunFloor);
+    }
+  });
+
+  it('keeps the shrunken floor above the label-culling threshold', () => {
+    // setMapMarkerZoom is a live knob: a floor pushed under the label
+    // threshold would silently strip the overview of planet names.
+    expect(Z.floorScale * P.minPx).toBeGreaterThan(LABEL_MIN_BODY_RADIUS_PX);
   });
 });
 

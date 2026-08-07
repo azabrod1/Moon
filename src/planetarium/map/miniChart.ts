@@ -9,10 +9,17 @@
  * for a 900 px canvas covers a sixth of a 138 px chart. The size knobs below
  * are the corner chart's own, and they follow the same rule the full chart's do
  * — ordered by true radius, floored so nothing vanishes, capped so the orbits
- * stay the subject.
+ * stay the subject — except the zoom response, which the mini pins off (γ 0):
+ * its framing never zooms, so its marks have nothing to answer.
  */
 
-import { MAP_BODY_SIZE_DEFAULTS, type MapBodySizeParams, type MapSunSizeParams } from './mapBodySize';
+import {
+  MAP_BODY_SIZE_DEFAULTS,
+  MAP_MARKER_ZOOM_DEFAULTS,
+  type MapBodySizeParams,
+  type MapMarkerZoomParams,
+  type MapSunSizeParams,
+} from './mapBodySize';
 
 /** A rectangle in CSS px, measured from the canvas's top-left. */
 export interface MiniChartRect {
@@ -65,6 +72,17 @@ export const MINI_SUN_SIZE_PARAMS: MapSunSizeParams = {
   gamma: 0,
   pivotPx: 6,
   floorPx: 6,
+};
+
+/** The corner chart's marker zoom response: γ 0 for the same reason the Sun's
+ *  is — the fixed 3/4 framing has no zoom to answer, and the full chart's
+ *  response easing these marks would shrink a chart that is already at its
+ *  legibility floor. The mini's marks are frozen exactly as they were. */
+export const MINI_MARKER_ZOOM_PARAMS: MapMarkerZoomParams = {
+  gamma: 0,
+  refAuPerPx: MAP_MARKER_ZOOM_DEFAULTS.refAuPerPx,
+  floorScale: 1,
+  depthShare: MAP_MARKER_ZOOM_DEFAULTS.depthShare,
 };
 
 /** The ship marker's full sprite extent on the corner chart, screen px. */

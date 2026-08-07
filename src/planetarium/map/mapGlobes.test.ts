@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { mapBodyDrawMode, shouldAdoptTexture, TRUE_SCALE_GLOBE_MIN_PX } from './mapGlobes';
+import { mapBodyDrawMode, shouldAdoptTexture, MAP_GLOBE_MIN_PX } from './mapGlobes';
 
 describe('mapBodyDrawMode', () => {
   // Overview framing: every body's real disc is far below its chart marker.
@@ -7,47 +7,58 @@ describe('mapBodyDrawMode', () => {
   // Focus framing: the camera has closed in until the real disc dominates.
   const CLOSE = { truePx: 63, markerPx: 16 };
 
-  it('draws a globe only with a loaded texture on the compressed chart', () => {
-    expect(mapBodyDrawMode(true, false, FAR.truePx, FAR.markerPx)).toBe('globe');
-  });
-
   it('falls back to the dot while the world texture is still loading', () => {
-    expect(mapBodyDrawMode(false, false, FAR.truePx, FAR.markerPx)).toBe('dot');
-    expect(mapBodyDrawMode(false, true, CLOSE.truePx, CLOSE.markerPx)).toBe('dot');
+    expect(mapBodyDrawMode(false, FAR.truePx, FAR.markerPx, MAP_GLOBE_MIN_PX)).toBe('dot');
+    expect(mapBodyDrawMode(false, CLOSE.truePx, CLOSE.markerPx, 0)).toBe('dot');
   });
 
-  it('draws the globe at true scale once the marker can carry a face', () => {
+  it('draws the globe once the marker can carry a face', () => {
     // The drawn size is floored at the marker either way, so a body-sized mark
     // that painted as an abstract dot read as an unloaded body. A planet's
-    // marker (here 16 px) is a globe now even while the real disc is nothing.
-    expect(mapBodyDrawMode(true, true, FAR.truePx, FAR.markerPx)).toBe('globe');
+    // marker (here 16 px) is a globe even while the real disc is nothing.
+    expect(mapBodyDrawMode(true, FAR.truePx, FAR.markerPx, MAP_GLOBE_MIN_PX)).toBe('globe');
   });
 
-  it('keeps a small mark a crisp dot at true scale', () => {
-    // A revealed system's minor moons floor at a few px, where a globe is
-    // mush and the dot is the honest symbol.
-    const tiny = TRUE_SCALE_GLOBE_MIN_PX - 0.01;
-    expect(mapBodyDrawMode(true, true, 0.001, tiny)).toBe('dot');
-    expect(mapBodyDrawMode(true, true, 0.001, TRUE_SCALE_GLOBE_MIN_PX)).toBe('globe');
+  it('keeps a small mark a crisp dot below the face threshold', () => {
+    // A zoom-shrunken planet at the far overview, or a revealed system's
+    // minor moon at true scale: a globe at a few px is mush — and at the
+    // overview an unlit hemisphere — where the dot is the honest symbol.
+    const tiny = MAP_GLOBE_MIN_PX - 0.01;
+    expect(mapBodyDrawMode(true, 0.001, tiny, MAP_GLOBE_MIN_PX)).toBe('dot');
+    expect(mapBodyDrawMode(true, 0.001, MAP_GLOBE_MIN_PX, MAP_GLOBE_MIN_PX)).toBe('globe');
+  });
+
+  it('never demotes an unshrunken planet marker — the classic chart is untouched', () => {
+    // The planets' marker floor is 6 px and the face threshold 5: wherever
+    // the zoom response reads 1 (every framing out to the planet-orbit
+    // views), the compressed chart draws exactly the globes it always did.
+    expect(mapBodyDrawMode(true, 0.001, 6, MAP_GLOBE_MIN_PX)).toBe('globe');
+  });
+
+  it('threshold 0 is the always-globe chart', () => {
+    // The corner chart (marks 2.4–6 px, fixed framing) and compressed-mode
+    // moons keep their established look: any textured mark is a globe.
+    expect(mapBodyDrawMode(true, 0.001, 2.4, 0)).toBe('globe');
+    expect(mapBodyDrawMode(true, 0.001, MAP_GLOBE_MIN_PX - 0.01, 0)).toBe('globe');
   });
 
   it('hands over to the REAL disc exactly at the marker crossover', () => {
     // Below the face floor the real disc is still what flips a small mark to
     // a globe, at the same crossover the size policy hands the radius over at.
-    const markerPx = TRUE_SCALE_GLOBE_MIN_PX - 1;
-    expect(mapBodyDrawMode(true, true, markerPx - 0.01, markerPx)).toBe('dot');
-    expect(mapBodyDrawMode(true, true, markerPx, markerPx)).toBe('globe');
-    expect(mapBodyDrawMode(true, true, CLOSE.truePx, CLOSE.markerPx)).toBe('globe');
+    const markerPx = MAP_GLOBE_MIN_PX - 1;
+    expect(mapBodyDrawMode(true, markerPx - 0.01, markerPx, MAP_GLOBE_MIN_PX)).toBe('dot');
+    expect(mapBodyDrawMode(true, markerPx, markerPx, MAP_GLOBE_MIN_PX)).toBe('globe');
+    expect(mapBodyDrawMode(true, CLOSE.truePx, CLOSE.markerPx, MAP_GLOBE_MIN_PX)).toBe('globe');
   });
 
-  it('swaps on the committed target, so the blend animation runs one look', () => {
-    // The toggle commits, then the 400 ms blend runs. Whatever the blend is
-    // doing, every frame of that animation reports the same target — so the
-    // decision is constant across all of it. A small mark is the case where
-    // the two targets still disagree.
-    const tiny = TRUE_SCALE_GLOBE_MIN_PX - 0.01;
-    expect(mapBodyDrawMode(true, true, 0.001, tiny)).toBe('dot');
-    expect(mapBodyDrawMode(true, false, 0.001, tiny)).toBe('globe');
+  it('the moon call sites switch threshold by committed target, not blend', () => {
+    // Moons pass 0 while compressed and the face threshold at true scale —
+    // the decision the old boolean parameter encoded, now the caller's
+    // ternary on the scale control's committed target. A small mark is the
+    // case where the two thresholds still disagree.
+    const tiny = MAP_GLOBE_MIN_PX - 0.01;
+    expect(mapBodyDrawMode(true, 0.001, tiny, MAP_GLOBE_MIN_PX)).toBe('dot');
+    expect(mapBodyDrawMode(true, 0.001, tiny, 0)).toBe('globe');
   });
 });
 

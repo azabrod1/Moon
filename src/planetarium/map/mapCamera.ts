@@ -6,18 +6,12 @@
  *
  * ## The machine
  *
- * Five states, one owner of the camera at a time:
+ * Four states, one owner of the camera at a time:
  *
  *   overview  — the whole-system fit, OrbitControls free around the Sun
  *   focusFly  — a ~0.9 s eased flight, either INTO a body or back OUT to the fit
  *   following — riding a moving body, orbit/zoom live around it
  *   dive      — the commit transition; the mode drives the pose frame by frame
- *   flip      — the short crossing to the other side of the chart's plane
- *
- * The crossing carries where it came FROM, for the same reason a flight carries
- * where it is going: it lands back in that state, and the two land differently
- * — an overview crossing gives the camera back to the free controls, a follow
- * crossing resumes the ride on the body it never stopped watching.
  *
  * A flight has to say where it is going: the return flight reuses the same ease
  * and the same code, so `flyGoal` is carried explicitly rather than inferred
@@ -141,59 +135,22 @@ const MAP_NEAR_CLEAR_FRAC = 0.5;
  *  orbit vertex rather than landing exactly on it. */
 const MAP_FAR_EXTENT_MARGIN = 1.05;
 
-export type MapCamState = 'overview' | 'focusFly' | 'following' | 'dive' | 'flip';
+export type MapCamState = 'overview' | 'focusFly' | 'following' | 'dive';
 export type MapFlyGoal = 'follow' | 'overview';
-/** The two states a crossing can be launched from, and the one it lands in. */
-export type MapFlipOrigin = 'overview' | 'following';
 
-/** Which side of the chart's plane the camera is held on. */
-export type MapHemisphere = 'above' | 'below';
-
-/** The polar band the camera is held in, measured from north: never fully
- *  edge-on, never underneath. `min` keeps the pole itself out of reach (a view
- *  straight down the axis has no bearing left to orbit by); `max` is where the
- *  chart stops reading as a chart. */
+/** The polar band the camera orbits in, measured from north — the full sphere
+ *  minus a small guard at each pole. A view straight down either axis has no
+ *  bearing left to orbit by, so the guards keep the poles themselves out of
+ *  reach; everything between them, edge-on and underneath included, is a
+ *  legal view. */
 export const MAP_POLAR_MIN_RAD = 0.08;
-export const MAP_POLAR_MAX_RAD = (78 * Math.PI) / 180;
-
-export interface MapPolarBand {
-  min: number;
-  max: number;
-}
-
-/**
- * The band for a hemisphere. The two are exact mirrors and share NO overlap —
- * which is why the map has to hold a latch and write the matching band wherever
- * bounds are applied. OrbitControls clamp against one contiguous interval, so a
- * camera mirrored below the plane under the above-band's clamp is dragged back
- * over it within a frame.
- */
-export function mapPolarBand(
-  hemisphere: MapHemisphere,
-  out: MapPolarBand = { min: 0, max: 0 },
-): MapPolarBand {
-  if (hemisphere === 'above') {
-    out.min = MAP_POLAR_MIN_RAD;
-    out.max = MAP_POLAR_MAX_RAD;
-  } else {
-    out.min = Math.PI - MAP_POLAR_MAX_RAD;
-    out.max = Math.PI - MAP_POLAR_MIN_RAD;
-  }
-  return out;
-}
-
-/** The other side. */
-export function mapHemisphereFlipped(hemisphere: MapHemisphere): MapHemisphere {
-  return hemisphere === 'above' ? 'below' : 'above';
-}
+export const MAP_POLAR_MAX_RAD = Math.PI - MAP_POLAR_MIN_RAD;
 
 /** What a camera dive interrupted, kept so a cancel can restore it. `flyGoal`
  *  is part of the memo: without it, cancelling a dive that interrupted a
- *  RELEASE flight would restore the follow the user had just left. A crossing
- *  is never memoed as itself — it is settled before a dive begins, and the
- *  reducer records the state it would have landed in. */
+ *  RELEASE flight would restore the follow the user had just left. */
 export interface MapDiveOrigin {
-  camState: Exclude<MapCamState, 'dive' | 'flip'>;
+  camState: Exclude<MapCamState, 'dive'>;
   flyGoal: MapFlyGoal | null;
   focusName: string | null;
 }
@@ -204,11 +161,8 @@ export interface MapCameraState {
   flyGoal: MapFlyGoal | null;
   /** The body a focus rides. Held through a release flight too — the camera is
    *  still leaving THAT body, and its radius is what the clip planes meter
-   *  against until the flight is over. Held through a crossing for the same
-   *  reason: the ride continues under it. */
+   *  against until the flight is over. */
   focusName: string | null;
-  /** Where a crossing came from, and where it lands. Only set in `flip`. */
-  flipOrigin: MapFlipOrigin | null;
   diveOrigin: MapDiveOrigin | null;
 }
 
@@ -223,13 +177,6 @@ export type MapCameraEvent =
    *  the camera at all — follow keeps riding under it. */
   | { kind: 'diveStart'; camera: boolean }
   | { kind: 'diveCancel' }
-  /** The Flip button. A press while one is already crossing is a REVERSAL,
-   *  which changes no field here — the camera is still crossing, from the same
-   *  origin, and lands in the same state either way. The geometry owns that
-   *  case, so this reports "nothing changed" for it. */
-  | { kind: 'flip' }
-  /** The crossing reached its far side. */
-  | { kind: 'flipLanded' }
   /** The map closed, or is being reset for a fresh open. */
   | { kind: 'close' };
 
@@ -238,7 +185,6 @@ export function mapCameraInitialState(): MapCameraState {
     camState: 'overview',
     flyGoal: null,
     focusName: null,
-    flipOrigin: null,
     diveOrigin: null,
   };
 }
@@ -270,7 +216,6 @@ export function mapCameraReduce(
         camState: 'focusFly',
         flyGoal: 'follow',
         focusName: event.name,
-        flipOrigin: null,
         diveOrigin: null,
       };
     }
@@ -280,7 +225,6 @@ export function mapCameraReduce(
           camState: 'focusFly',
           flyGoal: 'overview',
           focusName: state.focusName,
-          flipOrigin: null,
           diveOrigin: null,
         };
       }
@@ -293,7 +237,6 @@ export function mapCameraReduce(
           camState: 'following',
           flyGoal: null,
           focusName: state.focusName,
-          flipOrigin: null,
           diveOrigin: null,
         };
       }
@@ -303,25 +246,15 @@ export function mapCameraReduce(
     case 'diveStart': {
       if (!event.camera) return state; // the Autopilot fade leaves the camera alone
       if (state.camState === 'dive') return state;
-      // A crossing is settled before a dive takes the camera, so the memo
-      // records where it would have landed — restoring INTO a crossing would
-      // put the camera back mid-move with no clock left to finish it.
-      const from: MapDiveOrigin = state.camState === 'flip'
-        ? {
-          camState: state.flipOrigin ?? 'overview',
-          flyGoal: null,
-          focusName: state.focusName,
-        }
-        : {
-          camState: state.camState,
-          flyGoal: state.flyGoal,
-          focusName: state.focusName,
-        };
+      const from: MapDiveOrigin = {
+        camState: state.camState,
+        flyGoal: state.flyGoal,
+        focusName: state.focusName,
+      };
       return {
         camState: 'dive',
         flyGoal: null,
         focusName: null,
-        flipOrigin: null,
         diveOrigin: from,
       };
     }
@@ -336,37 +269,10 @@ export function mapCameraReduce(
           camState: 'following',
           flyGoal: null,
           focusName: origin.focusName,
-          flipOrigin: null,
           diveOrigin: null,
         };
       }
       // An interrupted release finishes leaving.
-      return mapCameraInitialState();
-    }
-    case 'flip': {
-      // Only from a settled view. A flight and a dive are already writing the
-      // pose, and the crossing has nothing legal to mirror mid-move.
-      if (state.camState !== 'overview' && state.camState !== 'following') return state;
-      return {
-        camState: 'flip',
-        flyGoal: null,
-        // A follow crossing keeps riding its subject; an overview one has none.
-        focusName: state.camState === 'following' ? state.focusName : null,
-        flipOrigin: state.camState,
-        diveOrigin: null,
-      };
-    }
-    case 'flipLanded': {
-      if (state.camState !== 'flip') return state;
-      if (state.flipOrigin === 'following' && state.focusName) {
-        return {
-          camState: 'following',
-          flyGoal: null,
-          focusName: state.focusName,
-          flipOrigin: null,
-          diveOrigin: null,
-        };
-      }
       return mapCameraInitialState();
     }
     case 'close':
@@ -374,15 +280,11 @@ export function mapCameraReduce(
   }
 }
 
-/** Whether there is a focus to let go of: one is being flown to, one is being
- *  followed, or one is being crossed over. A release flight is already on its
- *  way out. This is Esc's rung — Esc gives a focus back and then closes the
- *  map, and a crossing counts because the ride continues under it: Esc there
- *  has to mean the same thing it means a frame before and a frame after. */
+/** Whether there is a focus to let go of: one is being flown to, or one is
+ *  being followed. A release flight is already on its way out. This is Esc's
+ *  rung — Esc gives a focus back and then closes the map. */
 export function mapFocusReleasable(state: MapCameraState): boolean {
-  return state.camState === 'following'
-    || flying(state, 'follow')
-    || (state.camState === 'flip' && state.flipOrigin === 'following');
+  return state.camState === 'following' || flying(state, 'follow');
 }
 
 /**
@@ -391,8 +293,8 @@ export function mapFocusReleasable(state: MapCameraState): boolean {
  * has wandered off. At the parked fit both refuse, and the row greys out.
  *
  * A move already under way answers no, whichever kind it is. Both journeys home
- * end by seating a pose, and one seated on top of a flight, a dive or a
- * crossing would fight whatever is writing the camera that frame.
+ * end by seating a pose, and one seated on top of a flight or a dive would
+ * fight whatever is writing the camera that frame.
  *
  * Deliberately NOT the same predicate as Esc's. Esc at a wandered overview
  * closes the map, exactly as it always has — the row is an extra affordance
@@ -407,9 +309,7 @@ export function mapOverviewAvailable(state: MapCameraState, zoomFree: boolean): 
 /** Whether taps and hover stand down: the camera is writing its own pose and a
  *  pick would land on a body that has already moved under the pointer. */
 export function mapCameraOwnsPose(state: MapCameraState): boolean {
-  return state.camState === 'focusFly'
-    || state.camState === 'dive'
-    || state.camState === 'flip';
+  return state.camState === 'focusFly' || state.camState === 'dive';
 }
 
 /** The flight's eased progress for a raw fraction of its duration. */

@@ -6098,7 +6098,6 @@ export class PlanetariumMode {
     this.mapFocusMenu.bind();
     // The console's own rows. The card's and the segment's callbacks arrived
     // with the HUD's constructor; these are assigned, the bottom bar's idiom.
-    this.mapHud.onFlip = () => this.mapFlipPressed();
     this.mapHud.onFocusMenu = () => this.toggleMapFocusMenu();
     this.mapHud.onInfo = () => this.toggleMapInfo();
     // The whole layer going down takes the picker with it — one funnel, so no
@@ -6685,8 +6684,6 @@ export class PlanetariumMode {
     camState: string;
     flyGoal: string | null;
     focused: string | null;
-    hemisphere: string;
-    flipping: boolean;
     focusMenuOpen: boolean;
     infoOpen: boolean;
     diving: boolean;
@@ -6731,11 +6728,6 @@ export class PlanetariumMode {
       camState: cam.camState,
       flyGoal: cam.flyGoal,
       focused: cam.focusName,
-      // Which side of the chart's plane the camera is held on, and whether a
-      // crossing is running — so a headless check polls the latch instead of
-      // sleeping through the 400 ms and hoping.
-      hemisphere: this.systemMap.getHemisphere(),
-      flipping: this.systemMap.isFlipping(),
       focusMenuOpen: this.mapFocusMenu.isOpen(),
       infoOpen: this.mapHud.isInfoOpen(),
       diving: this.mapDiving,
@@ -6834,12 +6826,6 @@ export class PlanetariumMode {
    *  release the focus with null (the Esc rung). */
   devMapFocus(name: string | null): boolean {
     return name === null ? this.releaseMapFocus() : this.focusMapBody(name);
-  }
-
-  /** Dev bridge: the console's Flip row. A second call mid-crossing turns it
-   *  around, exactly as a second press does. */
-  devMapFlip(): boolean {
-    return this.mapFlipPressed();
   }
 
   /** Dev bridge: the console's Overview row — a release flight when there is a
@@ -7162,15 +7148,6 @@ export class PlanetariumMode {
     const cameraFree = !this.mapDiving;
     this.mapHud.setOverviewEnabled(
       cameraFree && mapOverviewAvailable(cam, this.systemMap.isZoomFree()),
-    );
-    // The crossing takes a settled view: a flight or a dive is already writing
-    // the pose, and mid-scale-animation the pivot moves under it every frame.
-    // One already crossing keeps the row LIVE, because a second press there is
-    // the way back — greying it out would strand the gesture halfway.
-    this.mapHud.setFlipEnabled(
-      cameraFree
-        && (cam.camState === 'overview' || cam.camState === 'following' || cam.camState === 'flip')
-        && !this.systemMap.isScaleAnimating(),
     );
     // The course as a VECTOR, from the ship's own forward math — the chart
     // charts a point one step along it and never re-derives a heading of its
@@ -7719,18 +7696,6 @@ export class PlanetariumMode {
     // A re-fit moves the camera under the pointer the same way a flight does.
     this.poisonMapPick();
     return map.recenterOverview();
-  }
-
-  /** The console's Flip row: cross to the other side of the chart's plane, or
-   *  turn a crossing already under way around. */
-  private mapFlipPressed(): boolean {
-    if (!this.systemMap?.isOpen() || this.mapDiving) return false;
-    // The camera is about to swing a long way around whatever is under the
-    // pointer, the way a flight does.
-    this.poisonMapPick();
-    const flipping = this.systemMap.flipElevation();
-    if (flipping) this.retractMapHover();
-    return flipping;
   }
 
   // ── System map: the Focus picker and the info popover ───────────────────

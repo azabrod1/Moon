@@ -5,7 +5,7 @@ import { makeTiltGlyph } from './mapTiltGlyph';
 
 /**
  * MapHUD — the on-screen controls for the System map: the console (scale
- * segment, zoom pair, Overview, Flip, Focus, and the line that explains the
+ * segment, zoom pair, Overview, Focus, and the line that explains the
  * chart), the close chip, the info popover, and the picked-body card (tint dot,
  * name, live distance, one-line description, action buttons, the system's next
  * event, facts).
@@ -52,18 +52,15 @@ export class MapHUD {
   private segCompressed: HTMLButtonElement | null = null;
   private segTrue: HTMLButtonElement | null = null;
   private overviewBtn: HTMLButtonElement | null = null;
-  private flipBtn: HTMLButtonElement | null = null;
   private focusBtn: HTMLButtonElement | null = null;
   private infoBtn: HTMLButtonElement | null = null;
   private infoPop: HTMLElement | null = null;
   private infoBody: HTMLElement | null = null;
   private overviewOn = true;
-  private flipOn = true;
 
   /** The console's own buttons, assigned by the owner (the bottom bar's
    *  idiom). The constructor's callbacks are the card's and the segment's —
    *  these arrived with the console and are kept apart from them. */
-  onFlip: () => void = () => {};
   onFocusMenu: () => void = () => {};
   /** The ⓘ line. The owner decides — it folds the other instruments away
    *  before this one appears. */
@@ -108,7 +105,6 @@ export class MapHUD {
     this.segCompressed = document.getElementById('map-scale-compressed') as HTMLButtonElement | null;
     this.segTrue = document.getElementById('map-scale-true') as HTMLButtonElement | null;
     this.overviewBtn = document.getElementById('map-overview') as HTMLButtonElement | null;
-    this.flipBtn = document.getElementById('map-flip') as HTMLButtonElement | null;
     this.focusBtn = document.getElementById('map-focus') as HTMLButtonElement | null;
     this.infoBtn = document.getElementById('map-info') as HTMLButtonElement | null;
     this.infoPop = document.getElementById('map-info-popover');
@@ -130,7 +126,6 @@ export class MapHUD {
     this.segTrue?.addEventListener('click', () => this.onScale(true));
     document.getElementById('map-close')?.addEventListener('click', () => this.onClose());
     this.overviewBtn?.addEventListener('click', () => this.onOverview());
-    this.flipBtn?.addEventListener('click', () => this.onFlip());
     this.focusBtn?.addEventListener('click', () => this.onFocusMenu());
     this.infoBtn?.addEventListener('click', () => this.onInfo());
     // The fade follows the scroll — it lifts at the end, or it would slice the
@@ -149,19 +144,13 @@ export class MapHUD {
     });
   }
 
-  /** Grey the Overview row when neither of its journeys home is on offer, and
-   *  the Flip row while anything else owns the camera. The map itself has no
-   *  HUD reference, so the per-frame refresh owns both; they write on change. */
+  /** Grey the Overview row when neither of its journeys home is on offer. The
+   *  map itself has no HUD reference, so the per-frame refresh owns this; it
+   *  writes on change. */
   setOverviewEnabled(enabled: boolean): void {
     if (enabled === this.overviewOn) return;
     this.overviewOn = enabled;
     if (this.overviewBtn) this.overviewBtn.disabled = !enabled;
-  }
-
-  setFlipEnabled(enabled: boolean): void {
-    if (enabled === this.flipOn) return;
-    this.flipOn = enabled;
-    if (this.flipBtn) this.flipBtn.disabled = !enabled;
   }
 
   /** Light the Focus button while its picker stands open. */

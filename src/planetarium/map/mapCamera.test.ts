@@ -30,6 +30,8 @@ import {
   MAP_OVERVIEW_MIN_DIST_AU,
   MAP_OVERVIEW_MIN_DIST_FRAC,
   MAP_OVERVIEW_NEAR_FRAC,
+  MAP_POLAR_MIN_RAD,
+  MAP_POLAR_MAX_RAD,
   type MapCameraState,
 } from './mapCamera';
 import { MAP_BODY_SIZE_DEFAULTS, mapBodyRadiusAU, mapMarkerRadiusPx, mapSunRadiusAU } from './mapBodySize';
@@ -92,7 +94,6 @@ describe('mapCameraReduce', () => {
       camState: 'overview',
       flyGoal: null,
       focusName: null,
-      flipOrigin: null,
       diveOrigin: null,
     });
   });
@@ -221,7 +222,6 @@ describe('mapCameraReduce', () => {
       camState: 'following',
       flyGoal: null,
       focusName: 'Io',
-      flipOrigin: null,
       diveOrigin: null,
     });
 
@@ -231,7 +231,6 @@ describe('mapCameraReduce', () => {
       camState: 'following',
       flyGoal: null,
       focusName: 'Io',
-      flipOrigin: null,
       diveOrigin: null,
     });
 
@@ -277,11 +276,6 @@ describe('mapFocusReleasable', () => {
     expect(mapFocusReleasable(diving)).toBe(false);
   });
 
-  it('counts a crossing that is still riding a body, but not one from the overview', () => {
-    expect(mapFocusReleasable(mapCameraReduce(following, { kind: 'flip' }))).toBe(true);
-    expect(mapFocusReleasable(mapCameraReduce(initial, { kind: 'flip' }))).toBe(false);
-  });
-
   it('does not care whether the overview zoom has wandered', () => {
     // This is Esc's rung. A drifted overview is not a focus, so Esc closes the
     // map there — the whole reason this is a separate function from the chip's.
@@ -324,13 +318,6 @@ describe('mapOverviewAvailable', () => {
     expect(mapFocusReleasable(initial)).toBe(false);
     expect(mapOverviewAvailable(initial, true)).toBe(true);
   });
-
-  it('greys out while a crossing runs, from either side', () => {
-    for (const free of [false, true]) {
-      expect(mapOverviewAvailable(mapCameraReduce(initial, { kind: 'flip' }), free)).toBe(false);
-      expect(mapOverviewAvailable(mapCameraReduce(following, { kind: 'flip' }), free)).toBe(false);
-    }
-  });
 });
 
 describe('mapCameraOwnsPose', () => {
@@ -345,93 +332,25 @@ describe('mapCameraOwnsPose', () => {
     )).toBe(true);
   });
 
-  it('stands it down through a crossing too — the chart swings underneath', () => {
-    expect(mapCameraOwnsPose(mapCameraReduce(initial, { kind: 'flip' }))).toBe(true);
-  });
-
   it('leaves picking live on the overview and in a settled follow', () => {
     expect(mapCameraOwnsPose(initial)).toBe(false);
     expect(mapCameraOwnsPose(mapCameraReduce(inbound, { kind: 'flyLanded' }))).toBe(false);
   });
 });
 
-describe('the flip state', () => {
-  const initial = mapCameraInitialState();
-  const inbound = mapCameraReduce(initial, { kind: 'focus', name: 'Europa' });
-  const following = mapCameraReduce(inbound, { kind: 'flyLanded' });
-  const leaving = mapCameraReduce(following, { kind: 'release' });
-  const diving = mapCameraReduce(following, { kind: 'diveStart', camera: true });
-
-  it('is accepted from the overview, carrying where it came from', () => {
-    const flipping = mapCameraReduce(initial, { kind: 'flip' });
-    expect(flipping).toEqual({
-      camState: 'flip',
-      flyGoal: null,
-      focusName: null,
-      flipOrigin: 'overview',
-      diveOrigin: null,
-    });
+describe('the polar band', () => {
+  it('is one contiguous interval: the full orbit minus a guard at each pole', () => {
+    expect(MAP_POLAR_MIN_RAD).toBe(0.08);
+    expect(MAP_POLAR_MAX_RAD).toBe(Math.PI - MAP_POLAR_MIN_RAD);
   });
 
-  it('is accepted from a follow, and keeps riding its subject', () => {
-    const flipping = mapCameraReduce(following, { kind: 'flip' });
-    expect(flipping).toEqual({
-      camState: 'flip',
-      flyGoal: null,
-      focusName: 'Europa',
-      flipOrigin: 'following',
-      diveOrigin: null,
-    });
-  });
-
-  it('is refused by every state that is already writing the pose', () => {
-    expect(mapCameraReduce(inbound, { kind: 'flip' })).toBe(inbound);
-    expect(mapCameraReduce(leaving, { kind: 'flip' })).toBe(leaving);
-    expect(mapCameraReduce(diving, { kind: 'flip' })).toBe(diving);
-  });
-
-  it('reports no change for a second press — the reversal is the geometry', () => {
-    const flipping = mapCameraReduce(following, { kind: 'flip' });
-    expect(mapCameraReduce(flipping, { kind: 'flip' })).toBe(flipping);
-  });
-
-  it('lands back in the state it left, focus and all', () => {
-    const fromOverview = mapCameraReduce(initial, { kind: 'flip' });
-    expect(mapCameraReduce(fromOverview, { kind: 'flipLanded' })).toEqual(initial);
-    const fromFollow = mapCameraReduce(following, { kind: 'flip' });
-    expect(mapCameraReduce(fromFollow, { kind: 'flipLanded' })).toEqual(following);
-  });
-
-  it('ignores a landing nothing was crossing for', () => {
-    for (const state of [initial, inbound, following, leaving, diving]) {
-      expect(mapCameraReduce(state, { kind: 'flipLanded' })).toBe(state);
+  it('contains the canonical fit pose and both the edge-on and mirrored views', () => {
+    // The open pose (0, 0.82, 0.57): polar = atan2(horizontal, north).
+    const fitPolar = Math.atan2(0.57, 0.82);
+    for (const polar of [fitPolar, Math.PI / 2, Math.PI - fitPolar]) {
+      expect(polar).toBeGreaterThan(MAP_POLAR_MIN_RAD);
+      expect(polar).toBeLessThan(MAP_POLAR_MAX_RAD);
     }
-  });
-
-  it('restarts as a flight when a body is asked for mid-crossing', () => {
-    const flipping = mapCameraReduce(following, { kind: 'flip' });
-    const next = mapCameraReduce(flipping, { kind: 'focus', name: 'Titan' });
-    expect(next.camState).toBe('focusFly');
-    expect(next.flyGoal).toBe('follow');
-    expect(next.focusName).toBe('Titan');
-    expect(next.flipOrigin).toBeNull();
-  });
-
-  it('memos where a crossing would have LANDED when a dive interrupts it', () => {
-    const flipping = mapCameraReduce(following, { kind: 'flip' });
-    const dive = mapCameraReduce(flipping, { kind: 'diveStart', camera: true });
-    expect(dive.diveOrigin).toEqual({
-      camState: 'following',
-      flyGoal: null,
-      focusName: 'Europa',
-    });
-    // And the cancel puts the ride back, not a crossing with no clock left.
-    expect(mapCameraReduce(dive, { kind: 'diveCancel' })).toEqual(following);
-  });
-
-  it('is cleared by a close', () => {
-    const flipping = mapCameraReduce(following, { kind: 'flip' });
-    expect(mapCameraReduce(flipping, { kind: 'close' })).toEqual(initial);
   });
 });
 

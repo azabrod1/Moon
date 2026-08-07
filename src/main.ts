@@ -626,12 +626,10 @@ function installDevHooks() {
     miniState: () => planetariumMode?.devMiniState() ?? null,
     // Fly to a body and follow it; null flies back out to the overview.
     mapFocus: (name: string | null) => planetariumMode?.devMapFocus(name) ?? false,
-    // The console's rows. mapFlip crosses above/below (a second call mid-way
-    // turns it around); mapOverview is the combined release-or-recentre, which
-    // resolves to a 900 ms flight when there is a focus to give back — poll
-    // mapState().camState for the landing. mapFocusMenu opens the PICKER;
+    // The console's rows. mapOverview is the combined release-or-recentre,
+    // which resolves to a 900 ms flight when there is a focus to give back —
+    // poll mapState().camState for the landing. mapFocusMenu opens the PICKER;
     // mapFocus above is the camera move its rows commit.
-    mapFlip: () => planetariumMode?.devMapFlip() ?? false,
     mapOverview: () => planetariumMode?.devMapOverview() ?? false,
     mapFocusMenu: (open: boolean) => planetariumMode?.devMapFocusMenu(open) ?? false,
     mapInfo: (open: boolean) => planetariumMode?.devMapInfo(open) ?? false,

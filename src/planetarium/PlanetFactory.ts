@@ -30,9 +30,7 @@ import { applyTextureDefaults, clampTier, resolveTextureUrl, type TextureTier, t
 import { augmentSurfaceMaterial, type SurfaceArchetype, type SurfaceShadingFx } from './world/surfaceShading';
 import { queueTextureWarm } from './world/textureWarmer';
 import { createLensShaderUniforms } from '../shared/three/lensShader';
-
-const loader = new THREE.TextureLoader();
-loader.crossOrigin = 'anonymous';
+import { fetchTextureDurably, textureLoader, type DurableTextureFetch } from './world/textureRetry';
 
 /**
  * Decode a freshly loaded image off the render thread, then queue its GPU
@@ -251,26 +249,14 @@ export function createLateTextureSlot<T extends { dispose(): void } = THREE.Text
 }
 
 /**
- * Bounded retry for a texture fetch. A transient failure (a flaky first load on
- * mobile) must not cost a body its real map for the whole session, while an
- * asset that is genuinely missing has to stop asking.
+ * Failures to absorb before the procedural fallback resolves and the world is
+ * built without waiting further. One blip retries fast enough (half a second)
+ * that the real map still arrives for construction — no visible swap; a second
+ * failure means the connection is actually down, and nothing is gained by
+ * holding the whole scene for it. The fetch itself is never abandoned: it keeps
+ * climbing its ladder and hands the map to the late slot whenever it lands.
  */
-export const TEXTURE_LOAD_ATTEMPTS = 3;
-
-export interface TextureRetryPlan {
-  retry: boolean;
-  delayMs: number;
-}
-
-/**
- * Given how many attempts have failed so far: whether to try again, and after
- * how long. 400 ms then 1.2 s — modest enough that both retries normally land
- * inside the load timeout, spaced enough to outlast a blip.
- */
-export function planTextureRetry(attemptsFailed: number, maxAttempts = TEXTURE_LOAD_ATTEMPTS): TextureRetryPlan {
-  if (attemptsFailed < 1 || attemptsFailed >= maxAttempts) return { retry: false, delayMs: 0 };
-  return { retry: true, delayMs: 400 * Math.pow(3, attemptsFailed - 1) };
-}
+export const FALLBACK_AFTER_FAILURES = 2;
 
 export interface LoadTextureOptions {
   /** How long before the procedural fallback resolves. The fetch keeps going. */
@@ -290,10 +276,11 @@ export interface LoadTextureOptions {
  * itself (the volume-compare mode loads container/filler maps this way and
  * disposes them on each pair change).
  *
- * A slow file is not abandoned at the timeout: three's loader cannot be aborted
- * and the map is still the right one, so it is handed to `options.late` once
- * the caller's material exists. Callers that pass no slot have nowhere to put
- * it, so a late arrival is disposed there rather than leaked.
+ * Neither a slow file nor a failing one is abandoned at the timeout: three's
+ * loader cannot be aborted and the map is still the right one, so the fetch
+ * keeps retrying and hands the result to `options.late` once the caller's
+ * material exists. Callers that pass no slot have nowhere to put a late
+ * arrival, so there the fetch stops once the fallback has resolved.
  */
 export function loadTexture(
   key: string,
@@ -308,53 +295,56 @@ export function loadTexture(
 
   return new Promise((resolve) => {
     let settled = false;
-    let attemptsFailed = 0;
+    let fetch: DurableTextureFetch | null = null;
+    let cancelWanted = false;
+    // Once the fallback has resolved and there is no late seam to deliver
+    // through, another attempt could only fetch a map nobody can use.
+    const stopFetching = () => {
+      cancelWanted = true;
+      fetch?.cancel();
+    };
+
     const timer = setTimeout(() => {
       if (settled) return;
       settled = true;
       debugWarn('Planet texture timeout', { key, url });
       resolve(makeFallback());
+      if (!late) stopFetching();
     }, timeoutMs);
 
-    const onLoaded = (tex: THREE.Texture) => {
-      clearTimeout(timer);
-      applyTextureDefaults(tex, kind);
-      if (!settled) {
+    fetch = fetchTextureDurably({
+      url,
+      context: { map: 'planet texture', key },
+      onLoad: (tex) => {
+        clearTimeout(timer);
+        applyTextureDefaults(tex, kind);
+        if (!settled) {
+          settled = true;
+          // loadTexture serves planet-level maps only (bases + Earth details),
+          // which are unconditionally on screen — always safe to warm.
+          decodeThenQueueWarm(tex);
+          resolve(tex);
+          return;
+        }
+        if (late) late.deliver(tex);
+        else tex.dispose();
+      },
+      onFailure: (_err, attemptsFailed) => {
+        if (settled) {
+          if (!late) stopFetching();
+          return;
+        }
+        if (attemptsFailed < FALLBACK_AFTER_FAILURES) return;
+        // Give the caller the procedural map so the scene can be built; the
+        // real one lands on the late slot whenever the network comes back.
         settled = true;
-        // loadTexture serves planet-level maps only (bases + Earth details),
-        // which are unconditionally on screen — always safe to warm.
-        decodeThenQueueWarm(tex);
-        resolve(tex);
-        return;
-      }
-      if (late) late.deliver(tex);
-      else tex.dispose();
-    };
-
-    const onFailed = (err: unknown) => {
-      attemptsFailed += 1;
-      const plan = planTextureRetry(attemptsFailed);
-      // Once the fallback has resolved and there is no late seam to deliver
-      // through, another attempt could only fetch a map nobody can use.
-      const retrying = plan.retry && (!settled || late !== undefined);
-      debugWarn(retrying ? 'Planet texture load failed, retrying' : 'Planet texture fallback activated', {
-        key,
-        url,
-        attempt: attemptsFailed,
-        reason: err instanceof Error ? err.message : String(err),
-      });
-      if (retrying) {
-        setTimeout(attempt, plan.delayMs);
-        return;
-      }
-      if (settled) return;
-      settled = true;
-      clearTimeout(timer);
-      resolve(makeFallback());
-    };
-
-    const attempt = () => loader.load(url, onLoaded, undefined, onFailed);
-    attempt();
+        clearTimeout(timer);
+        debugWarn('Planet texture fallback activated', { key, url, attempt: attemptsFailed });
+        resolve(makeFallback());
+        if (!late) stopFetching();
+      },
+    });
+    if (cancelWanted) fetch.cancel(); // a failure that arrived synchronously
   });
 }
 
@@ -459,7 +449,11 @@ export function upgradeTextureOnApproach(up: TextureUpgrade): void {
   }
   up.state = 'loading';
   const url = resolveTextureUrl(PLANET_TEXTURE_FILES[up.key], '4k');
-  loader.load(
+  // Deliberately a plain load, not the durable seam: this is an optional
+  // sharpen over a real map already on screen, wanted only while the body fills
+  // the view. A failure leaves the body on its 2K map — worth nothing to chase
+  // for the rest of the session the way a missing base map is.
+  textureLoader.load(
     url,
     (tex) => {
       if (up.state === 'cancelled') {
@@ -746,30 +740,29 @@ export async function createPlanetMesh(planet: PlanetData): Promise<PlanetMesh> 
   const textureUpgrade = makeTextureUpgrade(planet.textureKey, mat);
 
   // Real elevation-derived normal map where one exists (Mars/MOLA): it replaces
-  // the colour-as-bump fallback. Load directly so a failed fetch leaves the
-  // surface flat rather than applying a noise normal.
+  // the colour-as-bump fallback. No procedural stand-in — the surface stays
+  // flat until the real relief lands, however long the fetch takes.
   const planetNormalKey = PLANET_NORMAL_KEYS[planet.name];
   if (planetNormalKey) {
     mat.bumpMap = null;
     const normalUrl = resolveTextureUrl(PLANET_TEXTURE_FILES[planetNormalKey], '2k');
-    loader.load(
-      normalUrl,
-      (nrm) => {
+    fetchTextureDurably({
+      url: normalUrl,
+      context: { map: 'planet normal', name: planet.name },
+      onLoad: (nrm) => {
         applyTextureDefaults(nrm, 'data');
-        mat.normalMap = nrm;
-        // Softened: the MOLA rainbow-decoded relief is noisy and over-embossed,
-        // which reads as harsh facets on crater rims up close. Halve it.
-        mat.normalScale.set(0.5, 0.5);
-        mat.needsUpdate = true;
-        decodeThenQueueWarm(nrm); // planet-level (always on screen) — safe to warm
+        // Decode off-thread first: a normal map landing mid-session must not
+        // put a synchronous PNG decode on the frame that adopts it.
+        afterDecode(nrm, () => {
+          mat.normalMap = nrm;
+          // Softened: the MOLA rainbow-decoded relief is noisy and over-embossed,
+          // which reads as harsh facets on crater rims up close. Halve it.
+          mat.normalScale.set(0.5, 0.5);
+          mat.needsUpdate = true;
+          queueTextureWarm(nrm); // planet-level (always on screen) — safe to warm
+        });
       },
-      undefined,
-      (err) =>
-        debugWarn('Planet normal load failed', {
-          name: planet.name,
-          reason: err instanceof Error ? err.message : String(err),
-        }),
-    );
+    });
   }
 
   // A base map that missed the load timeout lands here rather than on the
@@ -1379,73 +1372,58 @@ export function createMoonMeshes(planetName: string): MoonMesh[] {
     });
     const fx = augmentSurfaceMaterial(mat, archetype);
 
-    // Real elevation-derived normal map (linear), where one exists. Load directly
-    // so a failed fetch leaves no normal rather than a noise fallback; the flag is
-    // set up front so the lazy painter skips its procedural bump for this moon.
+    // Real elevation-derived normal map (linear), where one exists. Nothing
+    // procedural stands in for it — the moon keeps its painted bump until the
+    // real relief lands — and the flag is set up front so the lazy painter
+    // skips its procedural bump for this moon.
     const normalKey = MOON_NORMAL_KEYS[moonData.name];
     if (normalKey) {
       mat.userData.hasRealNormal = true;
       const normalUrl = resolveTextureUrl(PLANET_TEXTURE_FILES[normalKey], '2k');
-      loader.load(
-        normalUrl,
-        (tex) => {
+      fetchTextureDurably({
+        url: normalUrl,
+        context: { map: 'moon normal', name: moonData.name },
+        onLoad: (tex) => {
           applyTextureDefaults(tex, 'data');
           // Decode off-thread before assigning (the moon simply keeps its
           // procedural bump until the normal is cheap to draw); warm the
           // upload only when the player is landed in this system.
-          const img = tex.image as { decode?: () => Promise<void> } | undefined;
-          const applyNormal = () => {
+          afterDecode(tex, () => {
             mat.normalMap = tex;
             mat.normalScale.set(1, 1);
             mat.needsUpdate = true;
             if (warmEligibleMoonParents.has(planetName)) queueTextureWarm(tex);
-          };
-          if (img && typeof img.decode === 'function') img.decode().then(applyNormal, applyNormal);
-          else applyNormal();
+          });
         },
-        undefined,
-        (err) =>
-          debugWarn('Moon normal load failed', {
-            name: moonData.name,
-            reason: err instanceof Error ? err.message : String(err),
-          }),
-      );
+      });
     }
 
-    // Photo-textured moons (Moon, Io, …) stream their real image; on true
-    // success it replaces the procedural colour. Load directly rather than via
-    // loadTexture (which resolves a grey fallback on failure) so a failed JPG
-    // keeps the procedural texture. photoLoaded tells the painter not to
-    // clobber a photo that already won.
+    // Photo-textured moons (Moon, Io, …) stream their real image; on arrival it
+    // replaces the procedural colour through the same rank swap the 4K upgrade
+    // uses, whether that arrival is at boot or minutes later. Until then the
+    // painted texture is what shows — a failed fetch never puts grey on a moon.
+    // photoLoaded tells the painter not to clobber a photo that already won.
     const photoFile = moonData.textureKey ? PLANET_TEXTURE_FILES[moonData.textureKey] : undefined;
     const photoUrl = photoFile ? resolveTextureUrl(photoFile, '2k') : undefined;
     if (photoUrl) {
-      loader.load(
-        photoUrl,
-        (tex) => {
+      fetchTextureDurably({
+        url: photoUrl,
+        context: { map: 'moon photo', name: moonData.name },
+        onLoad: (tex) => {
           applyTextureDefaults(tex, 'color');
           // Decode off-thread before the rank swap — the procedural colour
           // stays until the photo is cheap to draw, so the swap can't freeze
           // a frame on a synchronous JPEG decode.
-          const img = tex.image as { decode?: () => Promise<void> } | undefined;
-          const applyPhoto = () => {
+          afterDecode(tex, () => {
             mat.userData.photoLoaded = true;
             // Rank 2: a later 4K upgrade (rank 4) supersedes this; a 4K that
             // already won can't be downgraded by a late-arriving 2K.
             if (applyColorTierTexture(mat, tex, 2) && warmEligibleMoonParents.has(planetName)) {
               queueTextureWarm(tex);
             }
-          };
-          if (img && typeof img.decode === 'function') img.decode().then(applyPhoto, applyPhoto);
-          else applyPhoto();
+          });
         },
-        undefined,
-        (err) =>
-          debugWarn('Moon texture load failed', {
-            name: moonData.name,
-            reason: err instanceof Error ? err.message : String(err),
-          }),
-      );
+      });
     }
 
     const mesh = new THREE.Mesh(geo, mat);

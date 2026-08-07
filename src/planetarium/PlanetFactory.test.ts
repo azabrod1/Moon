@@ -5,14 +5,14 @@ import {
   cancelTextureUpgrade,
   connectLateDetailMap,
   createLateTextureSlot,
+  FALLBACK_AFTER_FAILURES,
   initialColorTierRank,
-  planTextureRetry,
   loadTexture,
   shouldApplyColorTier,
-  TEXTURE_LOAD_ATTEMPTS,
   wireEarthLateDetail,
   type TextureUpgrade,
 } from './PlanetFactory';
+import { retryDelayMs, urlSpread } from './world/textureRetryPolicy';
 
 function upgrade(state: TextureUpgrade['state']): TextureUpgrade {
   return {
@@ -132,36 +132,6 @@ describe('late texture delivery', () => {
   });
 });
 
-describe('bounded texture retries', () => {
-  it('retries a failed fetch with a growing backoff', () => {
-    expect(planTextureRetry(1)).toEqual({ retry: true, delayMs: 400 });
-    expect(planTextureRetry(2)).toEqual({ retry: true, delayMs: 1200 });
-  });
-
-  it('stops once the attempt budget is spent', () => {
-    expect(planTextureRetry(TEXTURE_LOAD_ATTEMPTS).retry).toBe(false);
-    expect(planTextureRetry(TEXTURE_LOAD_ATTEMPTS + 5).retry).toBe(false);
-  });
-
-  it('schedules exactly one retry short of the budget', () => {
-    let retries = 0;
-    for (let failed = 1; failed <= TEXTURE_LOAD_ATTEMPTS; failed++) {
-      if (planTextureRetry(failed).retry) retries += 1;
-    }
-    expect(retries).toBe(TEXTURE_LOAD_ATTEMPTS - 1);
-  });
-
-  it('honours a tighter budget and never retries before a failure', () => {
-    expect(planTextureRetry(1, 1).retry).toBe(false);
-    expect(planTextureRetry(0).retry).toBe(false);
-  });
-
-  it('keeps both retries inside the load timeout', () => {
-    const total = planTextureRetry(1).delayMs + planTextureRetry(2).delayMs;
-    expect(total).toBeLessThan(8000);
-  });
-});
-
 // ── The production seams themselves ──────────────────────────────────────────
 // The suites above pin the pure decisions; these drive the seams the decisions
 // wire into, so removing a delivery, a disposal, or a swap in the production
@@ -256,32 +226,58 @@ describe('loadTexture end-to-end (faked loader + injected fallback)', () => {
     expect(spy.disposed).toBe(true);
   });
 
+  /** Advance to the retry the last failure scheduled, asserting it did not go
+   *  out early. `failures` is how many have happened so far. */
+  async function advanceToRetry(failures: number): Promise<void> {
+    const delay = retryDelayMs(failures, urlSpread(loaderState.loads[0].url));
+    const before = loaderState.loads.length;
+    await vi.advanceTimersByTimeAsync(delay - 1);
+    expect(loaderState.loads).toHaveLength(before);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(loaderState.loads).toHaveLength(before + 1);
+  }
+
   it('retries a failed fetch on the planned backoff and resolves the recovered texture', async () => {
     const promise = loadTexture('saturn', '2k', 'color', { makeFallback: fallbackTexture });
     loaderState.loads[0].onError(new Error('net down'));
     expect(loaderState.loads).toHaveLength(1);
-    await vi.advanceTimersByTimeAsync(400);
-    expect(loaderState.loads).toHaveLength(2);
-    loaderState.loads[1].onError(new Error('net down'));
-    await vi.advanceTimersByTimeAsync(1_200);
-    expect(loaderState.loads).toHaveLength(3);
+    await advanceToRetry(1);
     const real = fakeTexture('recovered');
-    loaderState.loads[2].onLoad(real);
+    loaderState.loads[1].onLoad(real);
     await expect(promise).resolves.toBe(real);
   });
 
-  it('settles for the fallback when the attempt budget is spent, and never fetches again', async () => {
-    const promise = loadTexture('saturn', '2k', 'color', { makeFallback: fallbackTexture });
+  // The scene cannot wait out a real outage, so the procedural map resolves —
+  // but the fetch behind it is never abandoned.
+  it('settles for the fallback once the connection is plainly down, and keeps fetching', async () => {
+    const late = createLateTextureSlot();
+    const promise = loadTexture('saturn', '2k', 'color', { late, makeFallback: fallbackTexture });
     loaderState.loads[0].onError(new Error('one'));
-    await vi.advanceTimersByTimeAsync(400);
+    await advanceToRetry(1);
     loaderState.loads[1].onError(new Error('two'));
-    await vi.advanceTimersByTimeAsync(1_200);
-    loaderState.loads[2].onError(new Error('three'));
     const settled = await promise;
     expect(settled.userData.proceduralFallback).toBe(true);
-    await vi.advanceTimersByTimeAsync(60_000);
+    expect(FALLBACK_AFTER_FAILURES).toBe(2);
+    await advanceToRetry(2);
     expect(loaderState.loads).toHaveLength(3);
   });
+
+  it('adopts a texture that lands long after the fallback, through the late slot', async () => {
+    const delivered: THREE.Texture[] = [];
+    const late = { deliver: (t: THREE.Texture) => delivered.push(t), connect: () => {} };
+    const promise = loadTexture('saturn', '2k', 'color', { late, makeFallback: fallbackTexture });
+    for (let failure = 1; failure <= 12; failure++) {
+      loaderState.loads[failure - 1].onError(new Error(`outage ${failure}`));
+      await advanceToRetry(failure);
+    }
+    expect((await promise).userData.proceduralFallback).toBe(true);
+    // Two full minutes of failures in, the ladder is still asking — and the
+    // arrival goes to the same seam a 4K upgrade swaps through.
+    const real = fakeTexture('recovered');
+    loaderState.loads[12].onLoad(real);
+    expect(delivered).toEqual([real]);
+  });
+
 
   it('stops retrying after the fallback resolved when no late slot exists', async () => {
     const promise = loadTexture('saturn', '2k', 'color', { makeFallback: fallbackTexture });

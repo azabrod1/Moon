@@ -141,7 +141,7 @@ export const MAP_MARKER_ZOOM_DEFAULTS: MapMarkerZoomParams = {
   refAuPerPx: 0.003,
   // Binds from about the zoom ceiling out. Low enough that the giants sit
   // under the Sun's floor disc, high enough that the smallest markers
-  // (floorScale·minPx ≈ 2.5 px) stay above the label-culling threshold —
+  // (floorScale·minPx ≈ 1.76 px) stay above the label-culling threshold —
   // there is a test pinning that margin.
   floorScale: 0.42,
   // Mostly the centre's answer, with a fifth of the body's own: enough that a

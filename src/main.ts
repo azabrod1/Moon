@@ -630,6 +630,13 @@ function installDevHooks() {
     setMapMoonOffset: (partial: Record<string, number> | null) =>
       planetariumMode?.devSetMapMoonOffset(partial) ?? false,
     mapCommit: (verb: 'travel' | 'observe' | 'pilot') => planetariumMode?.devMapCommit(verb) ?? false,
+    // Teleport anywhere: mapTeleportAt runs the gesture at a canvas pixel (a
+    // right-click / a matured long press), mapTeleportState reads the offer,
+    // and the pair below are the chip's own two answers.
+    mapTeleportAt: (xPx: number, yPx: number) => planetariumMode?.devMapTeleportAt(xPx, yPx) ?? null,
+    mapTeleportState: () => planetariumMode?.devMapTeleportState() ?? null,
+    mapTeleportCommit: () => planetariumMode?.devMapTeleportCommit() ?? false,
+    mapTeleportDismiss: () => planetariumMode?.devMapTeleportDismiss(),
     // The corner chart: the ☰ toggle, the opaque/over-the-world A/B, and what
     // it costs per frame.
     setMiniChart: (on: boolean) => planetariumMode?.devSetMiniChart(on),

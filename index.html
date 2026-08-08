@@ -2647,8 +2647,11 @@
     .map-zoom-btn:hover:not(:disabled) { background: rgba(255, 255, 255, 0.09); color: var(--t1); border-color: rgba(255, 255, 255, 0.14); }
     .map-zoom-btn:disabled { opacity: 0.4; cursor: default; }
     .map-zoom-btn svg { width: 18px; height: 18px; }
-    /* The gestures the buttons cannot show, on one line above the world bar
-       for the first map of a session.
+    /* The gestures the buttons cannot show, above the world bar for the first
+       map of a session. Two lines: on a phone one line of this length would be
+       clipped to an ellipsis, and the clipped half is the part nothing else
+       teaches. The block grows upward, so on a phone — where the console is a
+       full-width strip below it — the mode docks it above that strip instead.
 
        The id-qualified pointer-events is load-bearing, not decoration: the
        layer's own `#system-map-ui > *` rule turns pointer events back ON for
@@ -2662,13 +2665,11 @@
       max-width: calc(100vw - 24px);
       font-family: var(--font-ui);
       font-size: 11px;
+      line-height: 1.5;
       letter-spacing: 0.2px;
       color: var(--t3);
       text-align: center;
       text-shadow: 0 0 6px rgba(0, 0, 0, 0.9);
-      white-space: nowrap;
-      overflow: hidden;
-      text-overflow: ellipsis;
       pointer-events: none;
       opacity: 0;
       visibility: hidden;
@@ -2684,8 +2685,51 @@
     }
     @media (max-width: 640px) {
       /* The band between the bar and the console strip is 27 px on a phone
-         against 42 on a desktop, and the line has to sit clear of both. */
+         against 42 on a desktop, and the line has to sit clear of both — the
+         mode re-docks the block above the strip, this is the floor it starts
+         from. */
       #system-map-ui .map-zoom-hint { bottom: 64px; font-size: 10px; }
+    }
+    /* The teleport offer, pinned to the point it names: the mode reprojects
+       that point every frame and writes the transform, so the anchor is the
+       chip's bottom-centre and the lift above the point lives here. Hidden
+       until an offer stands.
+
+       The id-qualified selector is load-bearing, as it is for the hover chip:
+       the layer's `#system-map-ui > *` rule turns pointer events back on, and
+       this one WANTS them — but the z-index and the hidden default have to
+       outrank the layer's own children rule. */
+    #system-map-ui .map-tp-chip {
+      position: absolute;
+      left: 0;
+      top: 0;
+      display: none;
+      padding: 7px 12px;
+      border-radius: var(--r-m);
+      border: 1px solid rgba(var(--accent-rgb), 0.55);
+      background: rgba(12, 14, 20, 0.86);
+      -webkit-backdrop-filter: blur(12px);
+      backdrop-filter: blur(12px);
+      box-shadow: 0 6px 20px rgba(0, 0, 0, 0.45);
+      font-family: var(--font-ui);
+      font-size: 12px;
+      font-weight: 500;
+      letter-spacing: 0.2px;
+      color: var(--t1);
+      white-space: nowrap;
+      cursor: pointer;
+      z-index: 2;
+      transition: background var(--dur) var(--ease), border-color var(--dur) var(--ease);
+    }
+    #system-map-ui .map-tp-chip.visible { display: block; }
+    #system-map-ui .map-tp-chip:hover {
+      background: rgba(var(--accent-rgb), 0.22);
+      border-color: rgba(var(--accent-rgb), 0.8);
+    }
+    @media (max-width: 640px) {
+      /* A finger target on a phone, and the same line at the smaller step the
+         rest of the chart's chrome takes. */
+      #system-map-ui .map-tp-chip { padding: 9px 13px; font-size: 12px; }
     }
     /* The scale segment: the console's top row, split evenly so neither state
        reads as the default. */
@@ -3708,10 +3752,14 @@
         <button id="map-close" class="map-close" aria-label="Close map">
           <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5.5 5.5 L14.5 14.5 M14.5 5.5 L5.5 14.5"></path></svg>
         </button>
-        <!-- One line, once a session, above the world bar: the gestures the
+        <!-- The teleport offer: right-click / long-press on empty chart drops
+             this at the point, and it follows that point every frame. Text and
+             placement are written by the mode. -->
+        <button id="map-tp-chip" class="map-tp-chip" type="button"></button>
+        <!-- Two lines, once a session, above the world bar: the gestures the
              console's buttons do not carry. Fades on its own or the first time
              one of them is used. -->
-        <div id="map-zoom-hint" class="map-zoom-hint">Scroll or pinch to zoom · double-tap a body to focus</div>
+        <div id="map-zoom-hint" class="map-zoom-hint">Scroll or pinch to zoom · double-tap a body to focus<br />Right-click or press and hold empty space to teleport</div>
         <!-- The console: every chart control in one instrument. Its children
              are laid out by the console's own grid on a desktop and by one
              wrapping row on a phone — the SAME elements either way, because the
@@ -3764,6 +3812,7 @@
           <div class="mip-row"><b>Drag</b><span>turns the view</span></div>
           <div class="mip-row"><b>Scroll · pinch</b><span>zooms, riding the cursor</span></div>
           <div class="mip-row"><b>Double-click</b><span>focuses a body and follows it</span></div>
+          <div class="mip-row"><b>Right-click · hold</b><span>offers a teleport to that point in space; the chip confirms it</span></div>
           <div class="mip-row"><b>Scale</b><span>Compressed keeps everything visible; True scale shows the real distances</span></div>
           <div class="mip-row"><b>Time</b><span>the map runs on the sim clock — the bar below still drives it</span></div>
           <div class="mip-row"><b>M · Esc</b><span>M opens and closes the map; Esc backs out one step</span></div>

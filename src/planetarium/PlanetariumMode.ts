@@ -39,6 +39,7 @@ import {
   advancePlanetariumTime,
   computeBodyPositionAU,
   computeBodyState,
+  ECLIPTIC_NORTH_EQUATORIAL,
   formatDateCompact,
   formatTimeRateLabel,
   formatUtcLabel,
@@ -324,6 +325,14 @@ import {
 import { HOVER_RECLAIM_MOVE_PX, resolveMapHover } from './map/mapHover';
 import { mapFactRows, mapHoverMeta } from './map/mapFacts';
 import { isTap } from './map/mapPicking';
+import { projectMapPoint } from './map/mapProjection';
+import {
+  makeTeleportPick,
+  outerOrbitExtentAU,
+  resolveTeleportPick,
+  teleportChipLabel,
+  type TeleportPick,
+} from './map/mapTeleport';
 import {
   miniChartRect,
   miniChartVisible,
@@ -658,6 +667,21 @@ export class PlanetariumMode {
   private static readonly MAP_ZOOM_REPEAT_MAX = 3;
   /** How long the "scroll or pinch" line stays up when nothing dismisses it. */
   private static readonly MAP_ZOOM_HINT_MS = 6000;
+  /** How long a finger has to rest on empty chart before it means "teleport
+   *  here". Past the tap window the double-tap focus uses, so a slow tap is
+   *  never mistaken for a hold; short enough that the offer feels like an
+   *  answer to the press rather than a delay. */
+  private static readonly MAP_TP_PRESS_MS = 450;
+  /** The chip floats this far above the point it names, so the point itself
+   *  stays visible under it. */
+  private static readonly MAP_TP_CHIP_LIFT_PX = 14;
+  /**
+   * How far from the Sun a chosen point may be. A FIXED figure off the planet
+   * catalog — Pluto's orbit with a margin — never the chart's live extent: the
+   * ship's own marker is part of that extent, so measuring against it would let
+   * each teleport outward widen the range the next one may reach.
+   */
+  private static readonly MAP_TP_EXTENT_AU = outerOrbitExtentAU(PLANETARIUM_BODIES);
   private tmpMoonOffset = new THREE.Vector3();
   private tmpMoonOrbitNormal = new THREE.Vector3();
   private tmpMoonShadowLocal = new THREE.Vector3();
@@ -1199,6 +1223,10 @@ export class PlanetariumMode {
   private journeyCommitGen = 0;
   private mapDiveVerb: MapVerb | null = null;
   private mapDiveTarget: NonNullable<LandedTarget> | null = null;
+  /** The other kind of commit the transition can carry: a chosen point in open
+   *  space, which has no body and so no verb and no camera dive — just the
+   *  fade-close the Autopilot commit already uses. */
+  private mapDiveTeleport: { x: number; y: number; z: number; radiusAU: number } | null = null;
   private mapDiveIsCamera = false;
   // Wall-clock stamp (performance.now) of when the current transition began. The
   // input lock is timed off real elapsed time, not the sim dt (capped at 100 ms
@@ -1228,6 +1256,44 @@ export class PlanetariumMode {
   private mapZoomHintSeen = false;
   private mapZoomHintShown = false;
   private mapZoomHintTimer = 0;
+
+  // ── Teleport anywhere ──────────────────────────────────────────────────
+  // One gesture machine over the chart, alongside the pick and the map's own
+  // controls: a right-click (desktop, which catches macOS ctrl-click and the
+  // trackpad's two-finger tap) or a press held past MAP_TP_PRESS_MS on empty
+  // chart offers a point in real space; the chip confirms it.
+  //
+  // The armed press: which pointer, where it went down (client px, the frame
+  // the pick's own slop test uses), and the timer that matures it.
+  private mapTpPressPointerId: number | null = null;
+  private mapTpPressX = 0;
+  private mapTpPressY = 0;
+  private mapTpPressTimer = 0;
+  /** The offer itself: the RAW heliocentric point in AU the chip names, null
+   *  for no offer standing. Raw, not chart, on purpose — the chip reprojects
+   *  it every frame, so it survives a follow flight, a drag and a scale
+   *  animation without ever detaching from the place it means. */
+  private mapTpPoint: { x: number; y: number; z: number } | null = null;
+  private mapTpRadiusAU = 0;
+  private mapTpChipEl: HTMLElement | null = null;
+  private mapTpChipWired = false;
+  private mapTpChipX = NaN;
+  private mapTpChipY = NaN;
+  /** False only between a matured long-press's offer and the next pointerdown
+   *  on the chip itself: the maturing press's own finger-lift synthesizes a
+   *  click at the touch point, and when the range clamp has walked the chip
+   *  onto the finger that click would commit an offer nobody accepted. */
+  private mapTpChipArmed = true;
+  /** Half the chip's laid-out width, measured when it is shown — the frame
+   *  clamp that keeps a long chip from clipping off a phone's edge. */
+  private mapTpChipHalfW = 0;
+  /** Catalog moon-system reach per planet (see teleportSystemReachAU). */
+  private tpSystemReachCache = new Map<string, number>();
+  private mapTpRayOrigin = new THREE.Vector3();
+  private mapTpRayDir = new THREE.Vector3();
+  private mapTpChart = new THREE.Vector3();
+  private mapTpScreen = { x: 0, y: 0 };
+  private mapTpPick: TeleportPick = makeTeleportPick();
 
   // Moon labels
   private moonLabels = new Map<string, HTMLDivElement>();
@@ -1579,6 +1645,10 @@ export class PlanetariumMode {
     orbitDom.addEventListener('pointercancel', (e) => this.mapPointerCancel(e));
     orbitDom.addEventListener('pointermove', (e) => this.mapPointerMove(e));
     orbitDom.addEventListener('pointerleave', () => this.mapPointerLeave());
+    // The desktop half of "teleport anywhere". The contextmenu event rather
+    // than a button-2 pointerdown because it is the gesture, however it was
+    // made: a right-click, macOS ctrl-click, a trackpad two-finger tap.
+    orbitDom.addEventListener('contextmenu', (e) => this.mapContextMenu(e));
     // A release the canvas never sees (drag ends over the HUD, capture lost
     // without a canvas pointercancel) still ends the gesture: the window pair
     // only ever DISARMS — commits stay canvas-only, and after an on-canvas
@@ -1597,6 +1667,11 @@ export class PlanetariumMode {
       this.mapPickPointerId = null;
       this.mapPickPoisoned = false;
       this.mapTapName = null;
+      // An armed teleport press strands the same way: its timer would mature
+      // over a window nobody is looking at. The offer already on screen goes
+      // too — it names a point chosen against a chart the user has left.
+      this.cancelMapLongPress();
+      this.dismissMapTeleportChip();
       // A held zoom button strands the same way — its pointerup goes to
       // whatever took the focus, and the repeat would run on unwatched.
       this.stopMapZoomHold();
@@ -5549,13 +5624,19 @@ export class PlanetariumMode {
       if (this.isDeckOpen()) { this.closeDeck(); return; }
       if (this.bottomBar.isTimeOpen()) { this.bottomBar.closeTime(); return; }
       if (this.bottomBar.isStatsOpen()) { this.bottomBar.closeStats(); return; }
-      // Map micro-rungs, above the map rung: Esc mid-dive cancels the dive
-      // (map stays open); then Esc pops whichever of the console's popovers is
-      // open; then Esc dismisses the picked-body card; then Esc releases a
-      // focus back to the overview; then Esc over the map drops back into the
-      // ship. Each rung produces a visible change, in that order — and the
-      // popovers sit above the release-swallow rung below, or an Esc with the
-      // picker open during a release flight would be eaten by the flight.
+      // Map micro-rungs, above the map rung: Esc gives back a standing
+      // teleport offer; then Esc mid-dive cancels the dive (map stays open);
+      // then Esc pops whichever of the console's popovers is open; then Esc
+      // dismisses the picked-body card; then Esc releases a focus back to the
+      // overview; then Esc over the map drops back into the ship. Each rung
+      // produces a visible change, in that order. The chip rung asks whether
+      // an offer STANDS, on-screen or not: a chip the camera swung off the
+      // frame keeps its offer, and an Esc that skipped it would let that
+      // stale offer resurface later — the one press this cascade spends
+      // invisibly is cheaper than that. The popovers sit above the
+      // release-swallow rung below, or an Esc with the picker open during a
+      // release flight would be eaten by the flight.
+      if (this.mapTpPoint) { this.dismissMapTeleportChip(); return; }
       if (this.isMapOpen() && this.mapDiving) { this.cancelMapDive(); return; }
       if (this.isMapFocusMenuOpen()) { this.closeMapFocusMenu(); return; }
       if (this.mapHud.isInfoOpen()) { this.closeMapInfo(); return; }
@@ -7609,6 +7690,45 @@ export class PlanetariumMode {
     return this.commitMapCard(verb);
   }
 
+  /** Dev bridge: the teleport gesture at a canvas pixel — the same resolution
+   *  a right-click or a matured hold runs, body pick included, so a click on a
+   *  body opens its card here too. Returns what the chip now offers. */
+  devMapTeleportAt(xPx: number, yPx: number): ReturnType<PlanetariumMode['devMapTeleportState']> {
+    if (this.isMapOpen() && !this.mapDiving && !this.isMapCameraFlying() && this.systemMap) {
+      const hit = this.systemMap.pick(xPx, yPx, 'mouse');
+      if (hit.kind === 'body') this.openMapCard(hit.name);
+      else if (hit.kind === 'empty') this.offerMapTeleport(xPx, yPx);
+    }
+    return this.devMapTeleportState();
+  }
+
+  /** Dev bridge: the offer standing over the chart, or null for none. */
+  devMapTeleportState(): {
+    radiusAU: number;
+    pointAU: [number, number, number];
+    label: string;
+    visible: boolean;
+    screen: [number, number];
+  } | null {
+    if (!this.mapTpPoint) return null;
+    return {
+      radiusAU: this.mapTpRadiusAU,
+      pointAU: [this.mapTpPoint.x, this.mapTpPoint.y, this.mapTpPoint.z],
+      label: this.mapTpChipEl?.textContent ?? '',
+      visible: this.isMapTeleportChipVisible(),
+      screen: [this.mapTpChipX, this.mapTpChipY],
+    };
+  }
+
+  /** Dev bridge: press the chip (commit) or give the offer back (dismiss). */
+  devMapTeleportCommit(): boolean {
+    return this.commitMapTeleport();
+  }
+
+  devMapTeleportDismiss(): void {
+    this.dismissMapTeleportChip();
+  }
+
   /** Dev bridge: focus a body (the card's Focus button / a double-tap), or
    *  release the focus with null (the Esc rung). */
   devMapFocus(name: string | null): boolean {
@@ -7695,6 +7815,7 @@ export class PlanetariumMode {
 
     this.systemMap ??= new SystemMap(this.renderer, this.mapTextureSource());
     this.mapHud.bind();
+    this.bindMapTeleportChip();
     this.systemMap.openMap(this.timeState.currentUtcMs);
     this.mapHud.show();
     this.mapHud.render(this.systemMap.isTrueScale());
@@ -7724,6 +7845,7 @@ export class PlanetariumMode {
     this.mapDiving = false;
     this.mapDiveVerb = null;
     this.mapDiveTarget = null;
+    this.mapDiveTeleport = null;
     this.mapPicked = null;
     this.cancelMapEventSearch();
     if (!this.mapCommitting) this.clearDiveFade();
@@ -7751,6 +7873,10 @@ export class PlanetariumMode {
     this.mapPickPointerId = null;
     this.mapPickPoisoned = false;
     this.mapTapName = null;
+    // The teleport gesture goes with the chart it was aimed at, armed or
+    // offered. (Deactivation reaches this through its own closeMap.)
+    this.cancelMapLongPress();
+    this.dismissMapTeleportChip();
     // Give the canvas back to the world only when the mode is live: a teardown
     // close (deactivate) must leave the touch zone and controls inert, or it
     // re-arms the very controls deactivate just retired.
@@ -7878,7 +8004,7 @@ export class PlanetariumMode {
     if (!enabled && this.mapZoomHoldDir === (isIn ? 1 : -1)) this.stopMapZoomHold();
   }
 
-  /** The one-line gesture hint, for the first map of the session. */
+  /** The gesture hint, for the first map of the session. */
   private showMapZoomHint(): void {
     if (this.mapZoomHintSeen) return;
     const el = document.getElementById('map-zoom-hint');
@@ -7887,6 +8013,15 @@ export class PlanetariumMode {
     // counts, or every open would re-teach the same thing.
     this.mapZoomHintSeen = true;
     this.mapZoomHintShown = true;
+    // The block is two lines and grows UPWARD. On a phone the console is a
+    // full-width strip and the band the CSS parks the hint in has room for
+    // one, so dock it above the strip instead — measured, the same width test
+    // the card's dock uses to tell a strip from a corner instrument.
+    const consoleRect = document.getElementById('map-console')?.getBoundingClientRect();
+    el.style.bottom = consoleRect && consoleRect.height > 0
+      && consoleRect.width >= window.innerWidth - 32
+      ? `${Math.round(window.innerHeight - consoleRect.top + 8)}px`
+      : '';
     el.classList.add('visible');
     this.mapZoomHintTimer = window.setTimeout(
       () => this.hideMapZoomHint(),
@@ -7957,6 +8092,9 @@ export class PlanetariumMode {
     // Hover after the bodies have moved and before anything reads the frame:
     // the anchors this resolves against are the ones just written.
     this.updateMapHover();
+    // And the teleport chip, which rides a point rather than a body: the
+    // camera it projects against has just been written too.
+    this.updateMapTeleportChip();
     // Live distance on the open card (writes only on a change), and mirror the
     // arrival-busy state onto the verb buttons.
     if (this.mapPicked && this.mapHud.isCardOpen()) {
@@ -8024,6 +8162,16 @@ export class PlanetariumMode {
     if (this.mapPickPointerId !== null) {
       this.mapPickPoisoned = true;
       this.mapPickHeldName = null;
+      // A second finger is a pinch, not a hold — whatever the first one was
+      // resting on, this gesture is about zooming now.
+      this.cancelMapLongPress();
+      return;
+    }
+    // macOS ctrl-click is the context-menu gesture, and it arrives as a
+    // PRIMARY pointerdown as well as a contextmenu event. Arming a pick for it
+    // would let the release dismiss the offer that same gesture just made.
+    if (e.ctrlKey) {
+      this.poisonMapPick();
       return;
     }
     this.mapPickPoisoned = false;
@@ -8032,7 +8180,12 @@ export class PlanetariumMode {
     this.mapPickDownY = e.clientY;
     this.mapPickPointerType = pointerType;
     this.mapPickHeldName = null;
-    if (pointerType !== 'mouse') return;
+    // A finger or a pen has no right button; the hold is its way of naming a
+    // place. A mouse has one, and a mouse hold is how the map is dragged.
+    if (pointerType !== 'mouse') {
+      this.armMapLongPress(e);
+      return;
+    }
     // A click commits the body the emphasis names. If the press lands on the
     // live hold's anchor, that body is what this gesture is for — snapshotted
     // here, at DOWN, so the release never re-picks a chart that has moved on.
@@ -8049,6 +8202,10 @@ export class PlanetariumMode {
    *  space dismisses the card. */
   private mapPointerUp(e: PointerEvent) {
     if (!this.isMapOpen()) return;
+    // The lift ends the hold whether or not this pointer still owns a pick —
+    // a matured hold has already disarmed the pick, and its timer must not be
+    // left running against the next gesture.
+    if (this.mapTpPressPointerId === e.pointerId) this.cancelMapLongPress();
     if (this.mapPickPointerId !== e.pointerId) return;
     // Disarm BEFORE the dive check: a release that arrives mid-dive must still
     // end its gesture, or the stranded id would tap against this gesture's
@@ -8071,8 +8228,11 @@ export class PlanetariumMode {
     if (!isTap(this.mapPickDownX, this.mapPickDownY, e.clientX, e.clientY)) return;
     // A tap on the chart is the chart's again: whatever the console had open
     // over it steps aside, whether the tap lands on a body or on empty space.
+    // A standing teleport offer is one of those things — the chip's own press
+    // never reaches the canvas, so a tap out here is the answer "not there".
     this.closeMapFocusMenu();
     this.closeMapInfo();
+    this.dismissMapTeleportChip();
     // A press that landed on the emphasis commits what the emphasis named, with
     // no second look at a chart that has moved since. The declared consequence:
     // a press on apparently empty space that is in fact the hold's anchor opens
@@ -8107,6 +8267,7 @@ export class PlanetariumMode {
    *  after an on-canvas release the canvas handler has already disarmed, so
    *  the window pass is a no-op there. */
   private mapPointerCancel(e: PointerEvent) {
+    if (this.mapTpPressPointerId === e.pointerId) this.cancelMapLongPress();
     if (this.mapPickPointerId === e.pointerId) {
       this.mapPickPointerId = null;
       this.mapPickPoisoned = false;
@@ -8128,6 +8289,10 @@ export class PlanetariumMode {
       this.mapPickPoisoned = true;
       this.mapTapName = null;
       this.mapPickHeldName = null;
+      // The hold rides the SAME slop, through the same latch: a finger that has
+      // travelled far enough to be a drag is orbiting the chart, not naming a
+      // place on it.
+      this.cancelMapLongPress();
     }
     if (e.pointerType !== 'mouse') return;
     const rect = this.renderer.domElement.getBoundingClientRect();
@@ -8245,6 +8410,9 @@ export class PlanetariumMode {
     this.bottomBar.closeStats();
     this.closeMapFocusMenu();
     this.closeMapInfo();
+    // A body is a different answer to "where do you want to go": the offer of
+    // a bare point steps aside for it.
+    this.dismissMapTeleportChip();
     const actions = mapCardActions(target, this.landedOn);
     const color = this.bodyTintCss(name);
     // Zero only while there is no map open to measure against.
@@ -8435,6 +8603,7 @@ export class PlanetariumMode {
   private focusMapBody(name: string): boolean {
     if (!this.systemMap?.isOpen() || this.mapDiving) return false;
     this.poisonMapPick();
+    this.dismissMapTeleportChip();
     const flying = this.systemMap.focusBody(name);
     // The hover pass stands down while the camera owns the pose, so the gesture
     // that starts the flight retracts the hover itself — or the chip and
@@ -8449,6 +8618,7 @@ export class PlanetariumMode {
   private releaseMapFocus(): boolean {
     if (!this.systemMap?.isOpen() || this.mapDiving) return false;
     this.poisonMapPick();
+    this.dismissMapTeleportChip();
     const flying = this.systemMap.releaseFocus();
     if (flying) this.retractMapHover();
     return flying;
@@ -8462,6 +8632,10 @@ export class PlanetariumMode {
     if (this.mapPickPointerId !== null) this.mapPickPoisoned = true;
     this.mapTapName = null;
     this.mapPickHeldName = null;
+    // An armed teleport hold is the same kind of half-made gesture, and it is
+    // aimed at a chart that is about to move. (A hold that has already matured
+    // disarms itself first, so this never cancels the press that called it.)
+    this.cancelMapLongPress();
   }
 
   /** Whether Esc has a focus to release before it closes the map. Deliberately
@@ -8483,6 +8657,7 @@ export class PlanetariumMode {
     if (mapFocusReleasable(cam)) return this.releaseMapFocus();
     // A re-fit moves the camera under the pointer the same way a flight does.
     this.poisonMapPick();
+    this.dismissMapTeleportChip();
     return map.recenterOverview();
   }
 
@@ -8597,8 +8772,11 @@ export class PlanetariumMode {
     // bridge and any UI race where the pick changed under the click (a bare
     // mapCommit('observe') on the Sun must not try to land on it).
     if (!mapCardOffersVerb(target, this.landedOn, verb)) return false;
-    // The transition takes over from here; nothing half-tapped survives it.
+    // The transition takes over from here; nothing half-tapped and no standing
+    // offer of somewhere else survives it.
     this.mapTapName = null;
+    this.cancelMapLongPress();
+    this.dismissMapTeleportChip();
     this.mapDiveVerb = verb;
     this.mapDiveTarget = target;
     // Autopilot never dives, and neither does a body the map camera may not
@@ -8654,13 +8832,15 @@ export class PlanetariumMode {
     if (this.mapDiveActiveGen !== this.mapDiveGen) return;
     const verb = this.mapDiveVerb;
     const target = this.mapDiveTarget;
+    const teleport = this.mapDiveTeleport;
     this.systemMap?.endDive(true);
     // closeMap tears the map down and normally clears the fade; mapCommitting
     // keeps it black for the hand-off to the commit / arrival veil.
     this.mapCommitting = true;
     this.closeMap({ restore: false });
     this.mapCommitting = false;
-    if (verb && target) this.commitBodyPick(verb, target, {});
+    if (teleport) this.applyFreeSpaceTeleport(teleport);
+    else if (verb && target) this.commitBodyPick(verb, target, {});
     this.liftDiveFade();
   }
 
@@ -8672,6 +8852,7 @@ export class PlanetariumMode {
     this.mapDiving = false;
     this.mapDiveVerb = null;
     this.mapDiveTarget = null;
+    this.mapDiveTeleport = null;
     this.systemMap?.endDive(false);
     this.liftDiveFade();
   }
@@ -8722,6 +8903,358 @@ export class PlanetariumMode {
     el.style.opacity = '0';
     el.style.display = 'none';
     this.mapFadeOpacityQ = 0; // keep the quantized cache in step with the direct write
+  }
+
+  // ── System map: teleport anywhere ───────────────────────────────────────
+
+  /**
+   * The desktop gesture: a right-click (however it was made) on the chart.
+   *
+   * The native menu is suppressed for the whole time the map owns the frame,
+   * unconditionally. OrbitControls suppresses it too, but only while it is
+   * ENABLED — and the map disables its controls for every dive and every
+   * follow flight, which is exactly when a stray browser menu over the chart
+   * would be most confusing.
+   *
+   * The body pick runs here rather than being inherited: a right-click never
+   * reaches the primary-button pick path, so without this a right-click on
+   * Jupiter would offer to teleport into the middle of it.
+   */
+  private mapContextMenu(e: MouseEvent): void {
+    if (!this.isMapOpen()) return;
+    e.preventDefault();
+    if (this.mapDiving || this.isMapCameraFlying() || !this.systemMap) return;
+    const rect = this.renderer.domElement.getBoundingClientRect();
+    const x = e.clientX - rect.left;
+    const y = e.clientY - rect.top;
+    // The hover emphasis's claim comes first, exactly as it does for a primary
+    // press: at time warp the held body can slide off the fresh pick radius
+    // while its emphasis still names it on screen, and a right-click on that
+    // emphasis is about the body — not an offer to teleport into the space it
+    // just vacated.
+    if (this.mapHoverName && this.mapHoverValid) {
+      const dx = x - this.mapHoverAnchorX;
+      const dy = y - this.mapHoverAnchorY;
+      if (Math.hypot(dx, dy) <= HOVER_RECLAIM_MOVE_PX) {
+        this.openMapCard(this.mapHoverName);
+        return;
+      }
+    }
+    const hit = this.systemMap.pick(x, y, 'mouse');
+    if (hit.kind === 'body') {
+      this.openMapCard(hit.name);
+      return;
+    }
+    // The ship marker is inert to a right-click for the same reason it is
+    // inert to a tap: it is where you already are.
+    if (hit.kind === 'ship') return;
+    this.offerMapTeleport(x, y);
+  }
+
+  /** Arm the phone's half of the gesture. One press at a time; every way a
+   *  press can end (lift, cancel, second finger, drag, blur, close, a camera
+   *  flight) routes through cancelMapLongPress. */
+  private armMapLongPress(e: PointerEvent): void {
+    this.cancelMapLongPress();
+    this.mapTpPressPointerId = e.pointerId;
+    this.mapTpPressX = e.clientX;
+    this.mapTpPressY = e.clientY;
+    this.mapTpPressTimer = window.setTimeout(
+      () => this.matureMapLongPress(),
+      PlanetariumMode.MAP_TP_PRESS_MS,
+    );
+  }
+
+  private cancelMapLongPress(): void {
+    if (this.mapTpPressTimer) {
+      window.clearTimeout(this.mapTpPressTimer);
+      this.mapTpPressTimer = 0;
+    }
+    this.mapTpPressPointerId = null;
+  }
+
+  /**
+   * The press has lasted: it is a teleport gesture now, not a tap.
+   *
+   * A matured hold takes the gesture over completely — it poisons the armed
+   * tap (so the finger-lift does not dismiss the offer it just made) and ends
+   * the chart controls' own gesture and damping (so the chart does not keep
+   * rotating out from under the chip). A hold that resolves to nothing leaves
+   * both alone: the press is still a perfectly good tap.
+   */
+  private matureMapLongPress(): void {
+    const pointerId = this.mapTpPressPointerId;
+    this.mapTpPressTimer = 0;
+    this.mapTpPressPointerId = null;
+    if (pointerId === null || !this.isMapOpen() || !this.systemMap) return;
+    if (this.mapDiving || this.isMapCameraFlying()) return;
+    const rect = this.renderer.domElement.getBoundingClientRect();
+    const x = this.mapTpPressX - rect.left;
+    const y = this.mapTpPressY - rect.top;
+    // A hold on a body is not a gesture of its own: the lift still opens the
+    // card, exactly as a plain tap would.
+    if (this.systemMap.pick(x, y, 'touch').kind !== 'empty') return;
+    if (!this.offerMapTeleport(x, y)) return;
+    this.poisonMapPick();
+    // The finger is still down on this offer. Its lift will synthesize a
+    // click, and the chip may be sitting under it — disarmed until a press
+    // that starts ON the chip (see mapTpChipArmed).
+    this.mapTpChipArmed = false;
+    this.systemMap.cancelControlsGesture(pointerId);
+  }
+
+  /**
+   * Read a point on the chart back into real space and put the offer on it.
+   * False when the gesture resolves to nothing — a ray that misses the
+   * ecliptic plane, one arriving too nearly edge-on to mean a place, or a
+   * point inside a revealed moon system, whose chart space is amplified around
+   * its parent and says nothing about a distance from the Sun.
+   */
+  private offerMapTeleport(xPx: number, yPx: number): boolean {
+    const map = this.systemMap;
+    if (!map) return false;
+    if (!map.chartRayAt(xPx, yPx, this.mapTpRayOrigin, this.mapTpRayDir)) return false;
+    const pick = resolveTeleportPick(
+      this.mapTpRayOrigin,
+      this.mapTpRayDir,
+      ECLIPTIC_NORTH_EQUATORIAL,
+      map.getBlend(),
+      map.getCurve(),
+      PlanetariumMode.MAP_TP_EXTENT_AU,
+      this.mapTpPick,
+    );
+    if (!pick) return false;
+    if (map.chartPointInRevealedSystem(pick.chartX, pick.chartY, pick.chartZ)) return false;
+    this.mapTpPoint = { x: pick.x, y: pick.y, z: pick.z };
+    this.mapTpRadiusAU = pick.radiusAU;
+    this.showMapTeleportChip(teleportChipLabel(pick.radiusAU));
+    return true;
+  }
+
+  /** Cache the chip and wire its press once (the MapHUD bind idiom). */
+  private bindMapTeleportChip(): void {
+    this.mapTpChipEl = document.getElementById('map-tp-chip');
+    if (this.mapTpChipWired || !this.mapTpChipEl) return;
+    this.mapTpChipWired = true;
+    // A deliberate press on the chip always begins with its own pointerdown;
+    // the long-press that MADE the offer never produces one (its pointer went
+    // down on the chart). That asymmetry is the whole disarm mechanism.
+    this.mapTpChipEl.addEventListener('pointerdown', () => { this.mapTpChipArmed = true; });
+    this.mapTpChipEl.addEventListener('click', (e) => {
+      // Suppress the disarmed chip's synthesized click (see mapTpChipArmed).
+      // A keyboard activation arrives with detail 0 and no lift behind it, so
+      // it always passes — the Esc rung can focus the chip and Enter works.
+      if (!this.mapTpChipArmed && e.detail > 0) return;
+      this.commitMapTeleport();
+    });
+  }
+
+  private showMapTeleportChip(label: string): void {
+    const el = this.mapTpChipEl;
+    if (!el) return;
+    el.textContent = label;
+    el.classList.add('visible');
+    // Every fresh offer starts armed; only a matured long-press disarms, and
+    // it does so AFTER this call (the right-click path never disarms at all).
+    this.mapTpChipArmed = true;
+    // Measured once per show, after the label is set and the chip displays:
+    // the width only changes with the label, and the per-frame clamp must not
+    // re-read layout.
+    this.mapTpChipHalfW = el.offsetWidth / 2;
+    // Force the first placement write — the chip may be reappearing at exactly
+    // the pixel the last one was left at.
+    this.mapTpChipX = NaN;
+    this.mapTpChipY = NaN;
+    this.updateMapTeleportChip();
+  }
+
+  /** Whether an offer stands AND is on screen — the dev bridge's state read.
+   *  Deliberately NOT the Esc rung's predicate: that rung dismisses any
+   *  standing offer, visible or not, so a hidden one cannot outlive the
+   *  press and resurface. */
+  private isMapTeleportChipVisible(): boolean {
+    return this.mapTpPoint !== null && !!this.mapTpChipEl?.classList.contains('visible');
+  }
+
+  private dismissMapTeleportChip(): void {
+    if (!this.mapTpPoint) return;
+    this.mapTpPoint = null;
+    this.mapTpRadiusAU = 0;
+    this.mapTpChipEl?.classList.remove('visible');
+    // An offer dismissed by Esc must not leave the keyboard on a chip that is
+    // no longer there.
+    this.mapTpChipEl?.blur();
+  }
+
+  /**
+   * Re-place the chip on the point it names, every map frame. The chip is
+   * anchored to a place, not to a pixel: following a body translates the
+   * camera every frame and the scale toggle re-projects the whole chart, and a
+   * screen-fixed chip would drift off the point within a frame of either. Off
+   * the frame it hides and keeps the offer — the camera can swing back.
+   */
+  private updateMapTeleportChip(): void {
+    const el = this.mapTpChipEl;
+    const map = this.systemMap;
+    const point = this.mapTpPoint;
+    if (!el || !map || !point) return;
+    projectMapPoint(point.x, point.y, point.z, map.getBlend(), map.getCurve(), this.mapTpChart);
+    if (!map.projectChartPoint(this.mapTpChart, this.mapTpScreen)) {
+      el.classList.remove('visible');
+      return;
+    }
+    el.classList.add('visible');
+    // Write only on a change: a settled chart re-derives the same pixel every
+    // frame (the label pass's rule). The x clamp keeps the whole line inside
+    // the frame — a phone press near an edge would otherwise clip the chip
+    // mid-sentence. The anchor tether stretches at the edge; the point itself
+    // is what the chip names, and it stays where it is.
+    const halfW = this.mapTpChipHalfW;
+    const rawX = Math.round(this.mapTpScreen.x);
+    const maxX = window.innerWidth - halfW - 8;
+    const x = maxX > halfW + 8 ? Math.round(Math.min(Math.max(rawX, halfW + 8), maxX)) : rawX;
+    const y = Math.round(this.mapTpScreen.y);
+    if (x === this.mapTpChipX && y === this.mapTpChipY) return;
+    this.mapTpChipX = x;
+    this.mapTpChipY = y;
+    el.style.transform = `translate(-50%, -100%) translate(${x}px, ${
+      y - PlanetariumMode.MAP_TP_CHIP_LIFT_PX
+    }px)`;
+  }
+
+  /**
+   * The chip's press. The chart leaves the same way an Autopilot commit leaves
+   * it — a short fade-close, no camera dive, since there is no body to dive at
+   * — and the transition hands the jump over at the black wall, where the
+   * arrival veil can take over invisibly if the destination needs painting.
+   * Esc during that beat cancels the whole thing, exactly as it does a dive.
+   */
+  private commitMapTeleport(): boolean {
+    if (!this.isMapOpen() || !this.mapTpPoint) return false;
+    // A committed transition owns the way out; the chip is not a second door.
+    if (this.mapDiving || this.isMissionActive()) return false;
+    if (this.arrivalInFlight) {
+      // Never a silent drop: the veil is up over an arrival the user cannot
+      // see, and a chip that did nothing would read as a broken button.
+      this.notification.show('Still arriving — try that again in a moment');
+      return false;
+    }
+    this.mapDiveTeleport = {
+      x: this.mapTpPoint.x,
+      y: this.mapTpPoint.y,
+      z: this.mapTpPoint.z,
+      radiusAU: this.mapTpRadiusAU,
+    };
+    this.dismissMapTeleportChip();
+    this.mapTapName = null;
+    this.mapDiveVerb = null;
+    this.mapDiveTarget = null;
+    this.mapDiveIsCamera = false;
+    this.mapDiving = true;
+    // The chart is about to be left behind; nothing on it is under the cursor.
+    this.resetMapHover();
+    this.mapTransitionStartMs = performance.now();
+    this.mapDiveActiveGen = ++this.mapDiveGen;
+    this.journeyCommitGen++;
+    return true;
+  }
+
+  /**
+   * The free-space jump itself, run at the black wall.
+   *
+   * Deliberately NOT a body arrival: there is no target to hand the body path,
+   * so the transaction is written here — and it holds the throttle exactly as
+   * the pilot left it. The body-jump path floors the commanded cruise speed at
+   * 1c, and that command would outlive this jump and launch a deliberately
+   * resting ship the moment the throttle came up.
+   *
+   * The ship arrives at rest facing the Sun. A body arrival stays under way
+   * because it has a subject to close on; a chosen point in empty space has
+   * none, so rest is the honest answer — and the throttle revives it (together
+   * with the clock, if the jump was made paused).
+   *
+   * The veil still gates it: a point chosen among a planet's moons warms that
+   * system first, so the arrival never reveals a half-painted one.
+   */
+  private applyFreeSpaceTeleport(
+    point: { x: number; y: number; z: number; radiusAU: number },
+  ): void {
+    this.arriveAtSystem(this.nearestSystemAt(point.x, point.y, point.z), () => {
+      // A teleport from the ground must hold the throttle as the pilot left it
+      // too: exitLandedMode restores an ordinary takeoff, which floors the
+      // command at 1c and drops the system throttle to a near-planet crawl —
+      // both of which would outlive this jump. Snapshot around it.
+      const speedCmd = this.landedOn ? this.preLandSpeed : this.player.speedMultiplier;
+      const systemCmd = this.player.systemSpeedMultiplier;
+      if (this.landedOn) this.exitLandedMode();
+      this.player.speedMultiplier = speedCmd;
+      this.player.systemSpeedMultiplier = systemCmd;
+      this.updateSpeedSlider(); // exitLandedMode refreshed it with its own values
+      this.moonArrivalCameraLook = null;
+      this.dotNavMoon = null;
+      // A pilot left engaged re-aims the ship at its own target on the very
+      // next frame — you would leave the chosen point before ever seeing it.
+      this.disengageAutopilot();
+      this.player.setPosition(point.x, point.y, point.z);
+      this.player.headToward(0, 0, 0); // the Sun sits at the scene origin
+      // A teleport is a flight discontinuity: no eased cap and no partial
+      // clear-hold may cross it, and the Sun can go from hidden behind a body
+      // to bare in one frame.
+      this.bodyCap = initialBodyCapState();
+      this.noteSunViewDiscontinuity();
+      // Park LAST, and here rather than inside a jump helper: the never-park
+      // default of a body arrival is load-bearing, and a park flag threaded
+      // through it would outlive this jump.
+      this.player.moving = false;
+      this.resetCruiseCamera();
+      this.notification.show(`Parked ${formatBodyDistance(point.radiusAU)} from the Sun`);
+    }, false);
+  }
+
+  /**
+   * The moon system a point in open space sits inside, or null for a point
+   * with no system around it. This is the warm-up key the free-space jump
+   * hands the arrival veil: a point chosen among Jupiter's moons must not
+   * arrive on an unpainted system, and one out between the orbits owes the
+   * veil nothing.
+   */
+  private nearestSystemAt(x: number, y: number, z: number): string | null {
+    let best: string | null = null;
+    let bestD2 = Infinity;
+    for (const body of PLANETARIUM_BODIES) {
+      const pos = this.planetWorldPositions.get(body.name);
+      if (!pos) continue;
+      const dx = x - pos.x;
+      const dy = y - pos.y;
+      const dz = z - pos.z;
+      const d2 = dx * dx + dy * dy + dz * dz;
+      const reach = this.teleportSystemReachAU(body.name, body.systemRadiusAU);
+      if (d2 > reach * reach || d2 >= bestD2) continue;
+      bestD2 = d2;
+      best = body.name;
+    }
+    return best;
+  }
+
+  /**
+   * How far out a planet's moon system extends for the warm-up test — from
+   * the CATALOG, because the whole point is a system that has never been
+   * built: `systemRadiusAU` is only the speed-throttle radius (Neptune's is
+   * 0.01 AU while Neso swings out to ~0.49), and the live meshes a cold
+   * system does not have yet. Apoapsis with the same 1.15 margin the
+   * moon-system threshold uses, cached — the catalog cannot change.
+   */
+  private teleportSystemReachAU(planetName: string, systemRadiusAU: number): number {
+    let reach = this.tpSystemReachCache.get(planetName);
+    if (reach === undefined) {
+      let moonReachAU = 0;
+      for (const moon of getMoonsByPlanet(planetName)) {
+        moonReachAU = Math.max(moonReachAU, getMoonApoapsisAU(moon.name, planetName));
+      }
+      reach = Math.max(systemRadiusAU, moonReachAU * 1.15);
+      this.tpSystemReachCache.set(planetName, reach);
+    }
+    return reach;
   }
 
   /** Show/hide the full-screen touch flight overlay and drop any captured
@@ -12306,22 +12839,38 @@ export class PlanetariumMode {
     protectLandedUpgrades = false,
   ): void {
     if (this.arrivalInFlight) return;
-    const parentName = this.parentSystemOf(target);
-    const moons = this.planetMoons.get(parentName);
+    const needsUpgradeCover = protectLandedUpgrades && this.landingPairUpgrades(target)
+      .some((up) => up.state === 'idle' || up.state === 'loading');
+    this.arriveAtSystem(this.parentSystemOf(target), action, needsUpgradeCover);
+  }
+
+  /**
+   * The veil core of the arrival above, keyed on the SYSTEM rather than on a
+   * body — so a destination that is not a body at all (a point chosen on the
+   * chart) can hold the same no-half-painted-scene guarantee without a
+   * fabricated target being pushed through the body path. `systemName` null is
+   * a destination with no system around it: nothing to paint, nothing to warm.
+   */
+  private arriveAtSystem(
+    systemName: string | null,
+    action: () => void,
+    needsUpgradeCover: boolean,
+  ): void {
+    if (this.arrivalInFlight) return;
+    const moons = systemName ? this.planetMoons.get(systemName) : undefined;
     const needsPaint = !!moons && moons.some((m) => !m.painted);
     // 4K-class photo maps still waiting for their first GPU upload get drained
     // under the veil below. Smaller maps (the Moon's 2K photo) upload within a
     // frame or two off-gesture via the warm pump — no veil beat for those.
     const needsUploadCover =
       !!moons &&
-      !this.warmedSystems.has(parentName) &&
+      !!systemName &&
+      !this.warmedSystems.has(systemName) &&
       moons.some((m) => {
         const mat = m.mesh.material as THREE.MeshStandardMaterial;
         const img = mat.map?.image as { width?: number } | undefined;
         return !!mat.userData.photoLoaded && (img?.width ?? 0) >= 4096;
       });
-    const needsUpgradeCover = protectLandedUpgrades && this.landingPairUpgrades(target)
-      .some((up) => up.state === 'idle' || up.state === 'loading');
     if (!needsPaint && !needsUploadCover && !needsUpgradeCover) {
       action();
       return;
@@ -12343,15 +12892,17 @@ export class PlanetariumMode {
           // don't paint or teleport into a deactivated mode (the finally still
           // clears the flag and lifts the veil).
           if (!this.active) return;
-          if (moons) this.moonPainter.paintSystemNow(parentName, moons);
+          if (moons && systemName) this.moonPainter.paintSystemNow(systemName, moons);
           action();
           // Upload the system's arrived photo/normal maps while the cover is
           // opaque (a landing already queued them via applyLandedTarget; a
           // cruise jump queues here), so the reveal frame draws a fully
           // resident system instead of stalling once per big map.
-          this.queueSystemMoonMapsForWarm(parentName);
-          pumpTextureWarmQueue(Number.POSITIVE_INFINITY);
-          this.warmedSystems.add(parentName);
+          if (systemName) {
+            this.queueSystemMoonMapsForWarm(systemName);
+            pumpTextureWarmQueue(Number.POSITIVE_INFINITY);
+            this.warmedSystems.add(systemName);
+          }
         } catch (err) {
           debugError('Arrival failed', err);
         } finally {

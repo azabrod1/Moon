@@ -801,6 +801,10 @@ export class SystemMap {
   private tmpMap2: MapVec3 = { x: 0, y: 0, z: 0 };
   private tmpProj: ScreenProjection = { x: 0, y: 0, ndcX: 0, ndcY: 0, ndcZ: 0 };
   private tmpProj2: ScreenProjection = { x: 0, y: 0, ndcX: 0, ndcY: 0, ndcZ: 0 };
+  /** Kept apart from the pair above: the chart-point projection runs from the
+   *  gesture handlers as well as the frame, and those two must never share a
+   *  scratch with the label and anchor passes mid-sweep. */
+  private tmpChartProj: ScreenProjection = { x: 0, y: 0, ndcX: 0, ndcY: 0, ndcZ: 0 };
   private tmpSize = new THREE.Vector2();
   private tmpViewport = new THREE.Vector4();
   private tmpScissor = new THREE.Vector4();
@@ -1572,6 +1576,11 @@ export class SystemMap {
         : this.orbitStyle.opacity;
       entry.lastVertex = -1;
     }
+    // The invalidation above is consumed by the body pass, and the corner
+    // chart SKIPS that pass while time, blend and projection all hold — a
+    // paused mini would show the old brightness indefinitely. The revision
+    // bump is the same door setBodySizeParams uses: both passes re-run once.
+    this.projectionRevision++;
     return { ...this.orbitStyle };
   }
 
@@ -1870,7 +1879,8 @@ export class SystemMap {
     this.stepResample(utcMs);
     // The planet pass is the chart's only expensive step, and nothing in it
     // moves unless the clock, the blend or the projection does. The ship is
-    // not part of that: it flies under a paused clock, so its
+    // not part of that: its pose is the flight's, not the ephemeris's (a
+    // paused clock holds it too, but a camera move still re-sizes it), so its
     // placement, its heading and every drawn size run every frame regardless.
     if (miniBodiesStale(this.miniBodyKey, utcMs, this.blend, this.projectionRevision)) {
       stampMiniBodyKey(this.miniBodyKey, utcMs, this.blend, this.projectionRevision);
@@ -3626,6 +3636,82 @@ export class SystemMap {
     this.rebuildPickAnchors();
     const hit = resolvePick(x, y, this.pickAnchors, HOVER_HIT_FLOOR_PX);
     return hit.kind === 'body' ? hit.name : null;
+  }
+
+  /**
+   * The chart-space ray a canvas pixel points along — how a gesture that names
+   * a place rather than a body reads the chart. Written into the caller's
+   * vectors (no allocation); false when there is no viewport to measure
+   * against. The map renders without the lens pass, so this is plain camera
+   * unprojection, never the world's warped-limb seam.
+   */
+  chartRayAt(xPx: number, yPx: number, origin: THREE.Vector3, dir: THREE.Vector3): boolean {
+    const w = this.renderer.domElement.clientWidth;
+    const h = this.renderer.domElement.clientHeight;
+    if (!(w > 0) || !(h > 0)) return false;
+    // The renderer refreshes the camera matrices at render time only, and a
+    // gesture lands between frames — the same flush the pick anchors take.
+    this.camera.updateMatrixWorld();
+    origin.copy(this.camera.position);
+    dir.set((xPx / w) * 2 - 1, -(yPx / h) * 2 + 1, 0.5).unproject(this.camera).sub(origin);
+    if (!(dir.lengthSq() > 0)) return false;
+    dir.normalize();
+    return true;
+  }
+
+  /**
+   * Where a chart-space point sits on the canvas, in px from its top-left.
+   * False when it is behind the camera or off the frame: anything anchored to
+   * a chart point has nothing to draw in either case.
+   */
+  projectChartPoint(point: THREE.Vector3, out: { x: number; y: number }): boolean {
+    const w = this.renderer.domElement.clientWidth;
+    const h = this.renderer.domElement.clientHeight;
+    if (!(w > 0) || !(h > 0)) return false;
+    this.camera.updateMatrixWorld();
+    projectToScreen(point, this.camera, w, h, this.tmpChartProj);
+    if (this.tmpChartProj.ndcZ >= 1) return false;
+    const { x, y } = this.tmpChartProj;
+    if (x < 0 || x > w || y < 0 || y > h) return false;
+    out.x = x;
+    out.y = y;
+    return true;
+  }
+
+  /**
+   * Whether a chart point falls inside a revealed moon system's drawn
+   * envelope. A revealed system is drawn in AMPLIFIED space — its parent's
+   * radius is blown up until the moons separate — so the chart radius of a
+   * point in there says nothing about a real distance from the Sun. Anything
+   * reading the chart back into real space refuses inside these shells rather
+   * than answering a point nowhere near the pixel it was given.
+   */
+  chartPointInRevealedSystem(x: number, y: number, z: number): boolean {
+    for (const system of this.moonSystems) {
+      if (!system.revealed) continue;
+      const reach = this.systemRingReachAU(system);
+      if (!(reach > 0)) continue;
+      const p = system.parent.dot.position;
+      if (Math.hypot(x - p.x, y - p.y, z - p.z) <= reach) return true;
+    }
+    return false;
+  }
+
+  /**
+   * End the chart controls' gesture on one pointer and drop the damping it
+   * would coast on. For a press that matures INTO another gesture: without
+   * this the chart keeps rotating under the thing the press just produced.
+   * The synthetic cancel is aimed at the canvas — the one element every
+   * terminal event reaches, bubbling or not — and is skipped unless the canvas
+   * actually holds the pointer, since the controls' cancel path releases a
+   * capture it would otherwise not have.
+   */
+  cancelControlsGesture(pointerId: number): void {
+    const el = this.renderer.domElement;
+    if (el.hasPointerCapture?.(pointerId)) {
+      el.dispatchEvent(new PointerEvent('pointercancel', { pointerId }));
+    }
+    flushOrbitDamping(this.controls);
   }
 
   /** Brighten the hovered dot and emphasize its label; restore the previous. */

@@ -9,6 +9,8 @@ import {
   mapStarPixelRatio,
 } from './mapStars';
 import { BRIGHT_STAR_CATALOG } from '../data/brightStars';
+import { starfieldFaintLimitMag } from '../world/starfield';
+import { starBeyondAnchorScale, starPointVisual } from '../world/starPointMapping';
 
 describe('the map star backdrop', () => {
   const stars = createMapStars(2);
@@ -50,6 +52,29 @@ describe('the map star backdrop', () => {
     expect(stars.renderOrder).toBeLessThan(0);
     expect(stars.frustumCulled).toBe(false);
     expect(stars.layers.mask).toBe(1 << MAP_STAR_LAYER);
+  });
+
+  it('writes the exact per-star attributes the planetarium starfield derives', () => {
+    // Parity is an ATTRIBUTE claim, not a range claim: every star's size and
+    // alpha must equal the shared mapping's answer — including the faint-tail
+    // taper past the ramp's anchor, which the planetarium multiplies in and a
+    // range test cannot see missing.
+    const catalog = BRIGHT_STAR_CATALOG.filter((s) => s.magnitude > -10);
+    const faintestMag = starfieldFaintLimitMag();
+    const size = geo.getAttribute('size');
+    const alpha = geo.getAttribute('alpha');
+    let tapered = 0;
+    for (let i = 0; i < catalog.length; i++) {
+      const star = catalog[i];
+      const visual = starPointVisual(star.magnitude, faintestMag);
+      const taper = starBeyondAnchorScale(star.magnitude);
+      expect(size.getX(i)).toBeCloseTo(visual.sizePx, 6);
+      expect(alpha.getX(i)).toBeCloseTo(visual.alpha * taper, 6);
+      if (taper < 1) tapered++;
+    }
+    // The taper must actually bind for part of the catalog, or this test
+    // would pass with the factor deleted.
+    expect(tapered).toBeGreaterThan(0);
   });
 
   it('defaults to literal parity with the planetarium sky', () => {

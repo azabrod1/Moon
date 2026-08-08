@@ -34,7 +34,7 @@ import * as THREE from 'three';
 import { BRIGHT_STAR_CATALOG } from '../data/brightStars';
 import { raDecToVector } from '../../astronomy/planetary';
 import { getStarColor, starfieldFaintLimitMag } from '../world/starfield';
-import { starPointVisual } from '../world/starPointMapping';
+import { starBeyondAnchorScale, starPointVisual } from '../world/starPointMapping';
 
 /** The layer the star points live on. The full chart's camera enables it;
  *  the corner chart's camera keeps the default layer and never sees them. */
@@ -91,7 +91,10 @@ export function createMapStars(rendererPixelRatio: number): THREE.Points {
     colors[i * 3 + 1] = color.g * brightness;
     colors[i * 3 + 2] = color.b * brightness;
     sizes[i] = sizePx;
-    alphas[i] = alpha;
+    // The same faint-tail taper the planetarium applies past the ramp's
+    // anchor — parity means this factor too, or the map's faintest stars sit
+    // a step brighter than the sky's.
+    alphas[i] = alpha * starBeyondAnchorScale(star.magnitude);
   }
 
   const geo = new THREE.BufferGeometry();

@@ -31,7 +31,7 @@ import {
   SUN_POLE_RA_DEG,
   type PlanetData,
 } from './planets/planetData';
-import { applySunGlowTier, cancelTextureUpgrade, createMoonMeshes, createShaderWarmupProbes, setWarmEligibleMoonParents, upgradeTextureOnApproach, ATMOSPHERES, ATMOSPHERE_SHELL_SCALES, type MoonMesh, type TextureUpgrade } from './PlanetFactory';
+import { applySunGlowTier, canAttempt, cancelTextureUpgrade, createMoonMeshes, createShaderWarmupProbes, earnedUpgradeTier, firstUpgradeTier, needsUpgradeCover, setWarmEligibleMoonParents, upgradeTextureOnApproach, ATMOSPHERES, ATMOSPHERE_SHELL_SCALES, type MoonMesh, type TextureUpgrade } from './PlanetFactory';
 import type { SurfaceShadingFx } from './world/surfaceShading';
 import { bindTextureWarmer, invalidateTextureWarmCache, pumpTextureWarmQueue, queueTextureWarm, resetTextureWarmer } from './world/textureWarmer';
 import {
@@ -109,7 +109,7 @@ import {
 } from './world/sunGlareMask';
 import { MoonPainter } from './world/MoonPainter';
 import { ProceduralMoonTexturer } from './world/ProceduralMoonTexturer';
-import { captureDeviceTextureCaps } from './world/texturePolicy';
+import { captureDeviceTextureCaps, type TextureTier } from './world/texturePolicy';
 import { planetshineIntensity } from './world/planetshine';
 import {
   advanceSilhouetteOwners,
@@ -555,7 +555,7 @@ export class PlanetariumMode {
   private static readonly OBSERVE_MOON_TEXTURE_WIDTH = 1024;
 
   // Per-frame time budget for warm texture uploads: small maps batch within
-  // it, a 4K map takes its frame alone (the pump always uploads at least one).
+  // it, a big one takes its frame alone (the pump always uploads at least one).
   private static readonly TEXTURE_WARM_BUDGET_MS = 6;
   // Arrival veil re-entrancy guard (rapid picks, or a pick while one is running).
   private arrivalInFlight = false;
@@ -565,10 +565,14 @@ export class PlanetariumMode {
    *  reveal dwell — e.g. a parked tutorial stop restoring the moment the
    *  in-flight flag clears, or two quick deck picks. */
   private arrivalCoverGen = 0;
+  /** The colour-tier fetches the current arrival started, by handle and attempt
+   *  identity. The cover waits on exactly this set, and the next arrival
+   *  discards whatever is left of it for bodies it isn't going to. */
+  private arrivalUpgradeBatch: Array<{ up: TextureUpgrade; generation: number }> = [];
   private static readonly ARRIVAL_MIN_DWELL_MS = 150;
   // Longest the arrival cover waits (from cover start) for the landed pair's
-  // in-flight 4K fetch+decode before revealing anyway — a stalled fetch must
-  // never pin the veil.
+  // in-flight first-tier fetch+decode before revealing anyway — a stalled fetch
+  // must never pin the veil.
   private static readonly ARRIVAL_UPGRADE_HOLD_MAX_MS = 900;
   private tmpMoonOffset = new THREE.Vector3();
   private tmpMoonOrbitNormal = new THREE.Vector3();
@@ -1668,9 +1672,8 @@ export class PlanetariumMode {
     }
 
     // A restored landed session bypasses arriveThen's arrival veil. The load
-    // screen is its cover: give the landed pair's optional 4K map the same
-    // bounded settle window, upload it here if ready, or cancel it so a late
-    // completion cannot hitch the first Safari Surface gesture.
+    // screen is its cover: give the landed pair's first colour step the same
+    // bounded settle window and upload it here if it arrives inside it.
     if (buildingSolarSystem && this.landedOn) {
       await this.settleRestoredLandedTextureUpgrades();
     }
@@ -1737,15 +1740,20 @@ export class PlanetariumMode {
   }
 
   private async settleRestoredLandedTextureUpgrades(): Promise<void> {
+    // The batch this restore started, by identity — the wait can't be extended
+    // by a fetch that begins for some other reason while it runs.
+    const batch = this.landedPairUpgrades().flatMap((up) =>
+      up.attempt ? [{ up, generation: up.attempt.generation }] : [],
+    );
+    const stillInFlight = () => batch.filter((e) => e.up.attempt?.generation === e.generation);
     const deadline = performance.now() + PlanetariumMode.ARRIVAL_UPGRADE_HOLD_MAX_MS;
-    while (
-      this.active &&
-      performance.now() < deadline &&
-      this.landedPairUpgrades().some((up) => up.state === 'loading')
-    ) {
+    while (this.active && performance.now() < deadline && stillInFlight().length > 0) {
       await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
     }
-    for (const up of this.landedPairUpgrades()) cancelTextureUpgrade(up);
+    // Bounded, so a slow fetch can reach here still running. Release the wait
+    // and let it finish — it applies on a quiet frame later instead of leaving
+    // the body on its boot map for the session.
+    for (const e of stillInFlight()) cancelTextureUpgrade(e.up, 'keep');
     pumpTextureWarmQueue(Number.POSITIVE_INFINITY);
   }
 
@@ -2034,7 +2042,7 @@ export class PlanetariumMode {
     // Stream a higher-res surface map for any body that grows large on screen.
     // Sits after the floating-origin and moon passes: the screen-fraction
     // trigger may only measure same-frame geometry — frame-one and teleport
-    // frames otherwise read stale offsets, and one mis-read fires a 4K fetch.
+    // frames otherwise read stale offsets, and one mis-read fires a download.
     this.updateTextureLOD();
 
     // Camera safety + dynamic near. Deliberately AFTER updateMoonPositions —
@@ -2164,25 +2172,34 @@ export class PlanetariumMode {
 
   private readonly texLODTmp = new THREE.Vector3();
   /**
-   * Stream a higher-resolution colour map for any body that grows large on
+   * Screen fraction (body diameter ÷ viewport height) at which each colour
+   * tier earns its download. 0.15 for the first step: boot-map texels start to
+   * soften there, with lead time to fetch before the body grows. 0.3 for 8K
+   * rather than a half-filled screen, because the Observatory telescope's FOV
+   * floor frames the Moon at ~0.35 — a higher gate would put the 8K step out
+   * of reach on exactly the path built to show it.
+   */
+  private static readonly UPGRADE_AT: Partial<Record<TextureTier, number>> = { '4k': 0.15, '8k': 0.3 };
+
+  /**
+   * Stream higher-resolution colour maps for any body that grows large on
    * screen. The trigger is screen-fraction (apparent diameter ÷ vertical FOV),
    * not raw distance, so a body magnified by the Observatory's narrow-FOV
-   * telescope upgrades the same as a close fly-by would. Only bodies with a 4K
-   * variant on disk carry an upgrade; for every other body this is a no-op.
-   * Cheap to call each frame — the upgrade's own state short-circuits once it
-   * has fired.
+   * telescope upgrades the same as a close fly-by would. Only bodies with a
+   * higher tier on disk carry handles; for every other body this is a no-op.
+   * Cheap to call each frame — a handle that has reached its goal answers
+   * canAttempt in a couple of comparisons, and each body pays at most one
+   * screen projection however many handles it carries.
    */
   private updateTextureLOD(): void {
     if (!this.solarSystem) return;
-    // Upgrade once a body spans ~15% of the viewport height: enough that 2K
-    // texels start to soften, with lead time to fetch 4K before it grows.
-    const UPGRADE_AT = 0.15;
     const canvasW = this.renderer.domElement.clientWidth;
     const canvasH = this.renderer.domElement.clientHeight;
+    const nowMs = performance.now();
     this.camera.updateMatrixWorld();
     for (const planet of this.solarSystem.planets) {
-      const up = planet.textureUpgrade;
-      if (!up) continue;
+      const ups = planet.textureUpgrades;
+      if (ups.length === 0) continue;
       planet.group.getWorldPosition(this.texLODTmp);
       const footprint = projectSphereToScreen(
         this.texLODTmp,
@@ -2192,7 +2209,7 @@ export class PlanetariumMode {
         canvasH,
         this.sphereScreenProjection,
       );
-      if (footprint.diameterPx / Math.max(canvasH, 1) > UPGRADE_AT) upgradeTextureOnApproach(up);
+      this.triggerTextureUpgrades(ups, footprint.diameterPx / Math.max(canvasH, 1), nowMs);
     }
     // Cruise re-renders a procedural moon's texture sharper on close approach;
     // the landed/Observatory path already does this on observe, so gate it to
@@ -2206,45 +2223,48 @@ export class PlanetariumMode {
         // them) — a fake position the triggers must never measure. An invisible
         // moon can't legitimately span the viewport anyway.
         if (!m.mesh.visible) continue;
+        const ups = m.textureUpgrades;
+        // Nothing to measure: no colour ladder, and either the procedural
+        // re-render is off or this frame's single slot is already spent.
+        const tryProcedural = allowMoonTexUpgrade && !moonTexUpgraded;
+        if (!tryProcedural && ups.length === 0) continue;
         m.mesh.getWorldPosition(this.texLODTmp);
         // Rendered size (mesh scale carries the render-curve inflation): the
         // triggers must measure the disc actually on screen.
         const renderedR = m.data.radiusAU * m.mesh.scale.x;
+        const footprint = projectSphereToScreen(
+          this.texLODTmp,
+          renderedR,
+          this.camera,
+          canvasW,
+          canvasH,
+          this.sphereScreenProjection,
+        );
 
-        // Most procedural moons carry no 4K TextureUpgrade handle, so the disc
-        // threshold sits above the photo-upgrade guard. `upgrade` returns false
-        // for a photo / already-sharp / CPU-painted moon, leaving the frame's
-        // slot for a real one (no starvation).
-        if (
-          allowMoonTexUpgrade &&
-          !moonTexUpgraded &&
-          projectSphereToScreen(
-            this.texLODTmp,
-            renderedR,
-            this.camera,
-            canvasW,
-            canvasH,
-            this.sphereScreenProjection,
-          ).diameterPx > this.moonDotParams.texUpgradeDiscPx
-        ) {
+        // Most procedural moons carry no colour ladder, so the disc threshold
+        // sits above the photo-upgrade guard. `upgrade` returns false for a
+        // photo / already-sharp / CPU-painted moon, leaving the frame's slot
+        // for a real one (no starvation).
+        if (tryProcedural && footprint.diameterPx > this.moonDotParams.texUpgradeDiscPx) {
           if (this.moonTexturer.upgrade(m, PlanetariumMode.OBSERVE_MOON_TEXTURE_WIDTH)) {
             moonTexUpgraded = true;
           }
         }
 
-        const up = m.textureUpgrade;
-        if (!up) continue;
-        if (
-          projectSphereToScreen(
-            this.texLODTmp,
-            renderedR,
-            this.camera,
-            canvasW,
-            canvasH,
-            this.sphereScreenProjection,
-          ).diameterPx / Math.max(canvasH, 1) > UPGRADE_AT
-        ) upgradeTextureOnApproach(up);
+        if (ups.length > 0) {
+          this.triggerTextureUpgrades(ups, footprint.diameterPx / Math.max(canvasH, 1), nowMs);
+        }
       }
+    }
+  }
+
+  /** Fetch whatever step each of a body's handles has earned at this screen
+   *  fraction. */
+  private triggerTextureUpgrades(ups: readonly TextureUpgrade[], fraction: number, nowMs: number): void {
+    for (const up of ups) {
+      if (!canAttempt(up, nowMs)) continue;
+      const earned = earnedUpgradeTier(up, fraction, PlanetariumMode.UPGRADE_AT);
+      if (earned) upgradeTextureOnApproach(up, earned, nowMs);
     }
   }
 
@@ -10178,15 +10198,25 @@ export class PlanetariumMode {
     }
   }
 
-  private textureUpgradeForTarget(body: NonNullable<LandedTarget>): TextureUpgrade | undefined {
-    return body.type === 'planet'
-      ? this.solarSystem?.planets.find((p) => p.data.name === body.name)?.textureUpgrade
-      : this.planetMoons.get(body.parentPlanet)?.find((m) => m.data.name === body.name)?.textureUpgrade;
+  private textureUpgradesForTarget(body: NonNullable<LandedTarget>): TextureUpgrade[] {
+    const found = body.type === 'planet'
+      ? this.solarSystem?.planets.find((p) => p.data.name === body.name)?.textureUpgrades
+      : this.planetMoons.get(body.parentPlanet)?.find((m) => m.data.name === body.name)?.textureUpgrades;
+    return found ?? [];
   }
 
-  /** The one-shot 4K upgrade handles of a landing body and the companion its
-   * Observatory can magnify. This pre-landing form lets arriveThen decide that
-   * the upgrade itself requires a cover, before applyLandedTarget runs. */
+  /** Every colour-tier handle in the system, for teardown. */
+  private allTextureUpgrades(): TextureUpgrade[] {
+    const ups: TextureUpgrade[] = [];
+    for (const p of this.solarSystem?.planets ?? []) ups.push(...p.textureUpgrades);
+    for (const moons of this.planetMoons.values()) for (const m of moons) ups.push(...m.textureUpgrades);
+    return ups;
+  }
+
+  /** The colour-tier handles of a landing body and the companion its
+   * Observatory can magnify — a body's globe and cloud shell each contribute
+   * one. This pre-landing form lets arriveThen decide that the first tier
+   * itself requires a cover, before applyLandedTarget runs. */
   private landingPairUpgrades(target: NonNullable<LandedTarget>): TextureUpgrade[] {
     const companion: NonNullable<LandedTarget> | null = target.type === 'moon'
       ? { type: 'planet', name: target.parentPlanet }
@@ -10196,8 +10226,7 @@ export class PlanetariumMode {
     const ups: TextureUpgrade[] = [];
     for (const body of [target, companion]) {
       if (!body) continue;
-      const up = this.textureUpgradeForTarget(body);
-      if (up && !ups.includes(up)) ups.push(up);
+      for (const up of this.textureUpgradesForTarget(body)) if (!ups.includes(up)) ups.push(up);
     }
     return ups;
   }
@@ -10209,16 +10238,18 @@ export class PlanetariumMode {
 
   /**
    * Run an instant teleport (`action`), but if the destination system's moons
-   * aren't painted yet — or carry 4K-class photo maps that haven't reached the
-   * GPU — cover the screen first, make the system drawable, then reveal. A
-   * quick-travel must never flash an unpainted (or, with the visibility gate,
-   * a missing) moon, and a first arrival must not play a train of ~100ms
-   * upload frames on screen (a 4096-wide upload is unsliceable and one lands
-   * per pump frame — four Galileans means four stalled frames in a row).
+   * aren't painted yet — or carry 4096-wide-or-larger photo maps that haven't
+   * reached the GPU — cover the screen first, make the system drawable, then
+   * reveal. A quick-travel must never flash an unpainted (or, with the
+   * visibility gate, a missing) moon, and a first arrival must not play a train
+   * of ~100ms upload frames on screen (a 4096-wide upload is unsliceable and
+   * one lands per pump frame — four Galileans means four stalled frames in a
+   * row).
    * Landings also hold the cover (bounded) for the landed pair's pre-triggered
-   * 4K fetch+decode, so those uploads drain under it instead of just after the
-   * reveal. Warm systems act immediately, exactly as before. A second arrival
-   * while one is mid-flight is ignored.
+   * first-tier fetch+decode, so those uploads drain under it instead of just
+   * after the reveal. Higher tiers are never cover work — they arrive later
+   * through the on-screen trigger. Warm systems act immediately, exactly as
+   * before. A second arrival while one is mid-flight is ignored.
    */
   private arriveThen(
     target: NonNullable<LandedTarget>,
@@ -10226,12 +10257,23 @@ export class PlanetariumMode {
     protectLandedUpgrades = false,
   ): void {
     if (this.arrivalInFlight) return;
+    const landingUpgrades = this.landingPairUpgrades(target);
+    // This arrival supersedes the last one's fetches: the body they were
+    // started for is being left, so their bytes have nowhere to land. Handles
+    // this destination wants as well keep their fetch — it is the same map.
+    for (const entry of this.arrivalUpgradeBatch) {
+      if (!landingUpgrades.includes(entry.up) && entry.up.attempt?.generation === entry.generation) {
+        cancelTextureUpgrade(entry.up, 'discard');
+      }
+    }
+    this.arrivalUpgradeBatch = [];
     const parentName = this.parentSystemOf(target);
     const moons = this.planetMoons.get(parentName);
     const needsPaint = !!moons && moons.some((m) => !m.painted);
-    // 4K-class photo maps still waiting for their first GPU upload get drained
-    // under the veil below. Smaller maps (the Moon's 2K photo) upload within a
-    // frame or two off-gesture via the warm pump — no veil beat for those.
+    // Photo maps 4096 wide or larger still waiting for their first GPU upload
+    // get drained under the veil below. Smaller maps (a moon's boot-tier photo)
+    // upload within a frame or two off-gesture via the warm pump — no veil beat
+    // for those.
     const needsUploadCover =
       !!moons &&
       !this.warmedSystems.has(parentName) &&
@@ -10240,9 +10282,15 @@ export class PlanetariumMode {
         const img = mat.map?.image as { width?: number } | undefined;
         return !!mat.userData.photoLoaded && (img?.width ?? 0) >= 4096;
       });
-    const needsUpgradeCover = protectLandedUpgrades && this.landingPairUpgrades(target)
-      .some((up) => up.state === 'idle' || up.state === 'loading');
-    if (!needsPaint && !needsUploadCover && !needsUpgradeCover) {
+    let upgradeCover = false;
+    if (protectLandedUpgrades) {
+      // A cover is the ideal moment to retry a step that failed earlier: its
+      // fetch, decode and upload get a bounded window with nothing on screen.
+      for (const up of landingUpgrades) up.retryAtMs = undefined;
+      const nowMs = performance.now();
+      upgradeCover = landingUpgrades.some((up) => needsUpgradeCover(up, nowMs));
+    }
+    if (!needsPaint && !needsUploadCover && !upgradeCover) {
       action();
       return;
     }
@@ -10270,28 +10318,39 @@ export class PlanetariumMode {
           this.queueSystemMoonMapsForWarm(parentName);
           pumpTextureWarmQueue(Number.POSITIVE_INFINITY);
           this.warmedSystems.add(parentName);
+          // Capture the fetches this arrival started (applyLandedTarget, inside
+          // the action above) once, by identity. The hold below then waits on
+          // exactly these: a step that completes and immediately starts the next
+          // one can't extend the cover, and nothing that starts afterwards for
+          // another reason can either.
+          this.arrivalUpgradeBatch = this.landedPairUpgrades().flatMap((up) =>
+            up.attempt ? [{ up, generation: up.attempt.generation }] : [],
+          );
         } catch (err) {
           debugError('Arrival failed', err);
         } finally {
           this.arrivalInFlight = false;
-          // A landing pre-triggers the landed pair's 4K upgrades
-          // (applyLandedTarget), and their fetch+decode may still be in flight
+          // A landing pre-triggers the landed pair's first colour step
+          // (applyLandedTarget), and its fetch+decode may still be in flight
           // when the drain above runs — revealed too early, each finishes as a
           // ~100ms upload frame on the fresh scene. Keep the opaque cover up
           // until they resolve (bounded — a stalled fetch must never pin the
           // veil), drain once more, then reveal.
+          const batch = this.arrivalUpgradeBatch;
           const holdDeadline = coverStart + PlanetariumMode.ARRIVAL_UPGRADE_HOLD_MAX_MS;
           const tryLift = () => {
             if (coverGen !== this.arrivalCoverGen) return; // a newer arrival owns the veil now
-            const loadingUpgrades = this.landedPairUpgrades().filter((up) => up.state === 'loading');
-            if (this.active && performance.now() < holdDeadline && loadingUpgrades.length > 0) {
+            const pending = batch.filter((e) => e.up.attempt?.generation === e.generation);
+            if (this.active && performance.now() < holdDeadline && pending.length > 0) {
               requestAnimationFrame(tryLift);
               return;
             }
-            // Optional 4K that missed the covered window keeps its 2K floor;
-            // its eventual completion is disposed instead of uploading during
-            // a later Surface/transport gesture.
-            for (const up of loadingUpgrades) cancelTextureUpgrade(up);
+            // A step that missed the covered window is released, not dropped:
+            // the body keeps the map it has, and the download that is already
+            // on its way applies on a quiet frame after the reveal. Throwing it
+            // away here is what used to pin a body to its boot map for the rest
+            // of the session.
+            for (const e of pending) cancelTextureUpgrade(e.up, 'keep');
             pumpTextureWarmQueue(Number.POSITIVE_INFINITY);
             // Hold the cover until the painted, teleported scene has rendered
             // (the landed/jumped system first appears on the next
@@ -10364,10 +10423,15 @@ export class PlanetariumMode {
     this.queueSystemMoonMapsForWarm(warmParent);
     // The landed body and its vantage companion are this session's guaranteed
     // close-ups (the Observatory magnifies them regardless of distance), so
-    // start their one-shot 4K upgrades now: fetch, decode, and upload spend
+    // start their first colour step now: fetch, decode, and upload spend
     // the parked seconds right after touchdown instead of the first
-    // magnifying gesture (a 4096-wide upload alone is a ~100ms frame).
-    for (const up of this.landedPairUpgrades()) upgradeTextureOnApproach(up);
+    // magnifying gesture (a 4096-wide upload alone is a ~100ms frame). Only
+    // the first step — the tiers above it ride the on-screen trigger, so no
+    // goal can hold a landing behind its cover.
+    for (const up of this.landedPairUpgrades()) {
+      const first = firstUpgradeTier(up);
+      if (first) upgradeTextureOnApproach(up, first);
+    }
     // The reticle's screen position belongs to the previous target — drop it
     // now rather than letting it float stale until the next landed frame
     // (cross-system picks can interpose a transition with no guide pass).
@@ -11006,8 +11070,8 @@ export class PlanetariumMode {
     this.updatePlanetScaling();
     this.updateMoonPositions();
     // Same same-frame-geometry rule as the cruise path — and the landed
-    // Observatory telescope (narrow FOV) is exactly where 2K softness shows,
-    // so the 4K trigger keeps running while landed.
+    // Observatory telescope (narrow FOV) is exactly where a soft map shows, so
+    // the colour-tier triggers keep running while landed.
     this.updateTextureLOD();
     this.updateShadowVisuals();
     if (shouldRefreshUi) this.updateOrbitDetails();
@@ -11575,6 +11639,10 @@ export class PlanetariumMode {
 
   dispose() {
     this.deactivate();
+    // Abandon every colour-tier fetch still in flight: a callback that landed
+    // after this point would apply to a material nothing draws and queue an
+    // upload into a warmer with no renderer behind it.
+    for (const up of this.allTextureUpgrades()) cancelTextureUpgrade(up, 'discard');
     resetTextureWarmer(); // drop queued warm-ups and the renderer binding with the mode
     this.moonTexturer.dispose();
     this.notification.dispose();

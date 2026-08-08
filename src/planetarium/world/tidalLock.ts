@@ -9,10 +9,7 @@
  * of the window.
  */
 import * as THREE from 'three';
-import { eclipticToEquatorial } from '../../astronomy/planetary';
-
-/** Ecliptic north in the scene's equatorial frame. */
-const ECLIPTIC_NORTH = eclipticToEquatorial(new THREE.Vector3(0, 1, 0));
+import { ECLIPTIC_NORTH_EQUATORIAL } from '../../astronomy/planetary';
 
 /**
  * The roll reference a moon's locked face is levelled against — its orbit
@@ -32,7 +29,7 @@ export function tidalRollNorth(
   orbitNormal: THREE.Vector3,
   out: THREE.Vector3,
 ): THREE.Vector3 {
-  if (moonName === 'Moon' && parentPlanetName === 'Earth') return out.copy(ECLIPTIC_NORTH);
+  if (moonName === 'Moon' && parentPlanetName === 'Earth') return out.copy(ECLIPTIC_NORTH_EQUATORIAL);
   return out.copy(orbitNormal);
 }
 

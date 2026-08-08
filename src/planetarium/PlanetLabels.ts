@@ -66,6 +66,70 @@ export interface ForegroundDisc {
 }
 
 /**
+ * One aimable body this frame — a planet, the Sun, or a rendered moon that
+ * has something drawn on screen (dot, marker, label, or resolved disc). The
+ * hover/tap picker hit-tests against these; it is deliberately NOT the
+ * foreground-disc list, which drops every body under the mesh-size threshold —
+ * exactly the distant marker-dots the picker most needs to catch.
+ */
+export interface PickCandidate {
+  name: string;
+  screenX: number;
+  screenY: number;
+  /** Pointer catch radius in CSS px (drawn radius, floored so tiny dots stay hittable). */
+  pickRadiusPx: number;
+  distFromCamera: number;
+}
+
+/**
+ * Choose the body under a screen point, or null. A candidate qualifies only
+ * when the pointer sits inside its catch radius AND its centre is not covered
+ * by a nearer foreground disc (planets/moons/Sun/ship — the ship blocks but,
+ * being absent from `candidates`, is never itself returned). Among survivors
+ * the nearest pointer-to-centre distance wins; ties break to the nearer body.
+ * Pure: all geometry is passed in, so it unit-tests without a scene.
+ */
+export function pickBodyAtPointer(
+  candidates: PickCandidate[],
+  blockers: ForegroundDisc[],
+  x: number,
+  y: number,
+): string | null {
+  let best: string | null = null;
+  let bestDist2 = Infinity;
+  let bestDepth = Infinity;
+  for (const c of candidates) {
+    const ddx = x - c.screenX;
+    const ddy = y - c.screenY;
+    const dist2 = ddx * ddx + ddy * ddy;
+    if (dist2 > c.pickRadiusPx * c.pickRadiusPx) continue;
+
+    let occluded = false;
+    for (const b of blockers) {
+      // A moon's disc is named `moon:<name>`; strip it so a moon can't occlude
+      // its own pick, the same way the label loops exclude their own disc.
+      const bn = b.name.startsWith('moon:') ? b.name.slice(5) : b.name;
+      if (bn === c.name) continue;
+      if (b.distFromCamera >= c.distFromCamera) continue;
+      const bdx = c.screenX - b.screenX;
+      const bdy = c.screenY - b.screenY;
+      if (bdx * bdx + bdy * bdy < b.radiusPx * b.radiusPx) {
+        occluded = true;
+        break;
+      }
+    }
+    if (occluded) continue;
+
+    if (dist2 < bestDist2 || (dist2 === bestDist2 && c.distFromCamera < bestDepth)) {
+      best = c.name;
+      bestDist2 = dist2;
+      bestDepth = c.distFromCamera;
+    }
+  }
+  return best;
+}
+
+/**
  * Pixel radius of a body's rendered disc, given its scene radius (AU), the
  * camera distance, `tan(fov/2)`, and the canvas height. A sphere's silhouette
  * subtends asin(R/d), which projects to R/√(d²−R²) — NOT the linear R/d: the
@@ -312,6 +376,12 @@ export class PlanetLabels {
       showMarkers?: boolean;
       showLabels?: boolean;
       excludeName?: string;
+      // When set, this one body's label draws even with labels off, shows its
+      // distance line through `hide-distances`, and reads at full opacity —
+      // the hover/tap reveal. Only visibility policy is lifted; the physical
+      // gates (glare, occlusion, off-screen, the landed body's own exclusion)
+      // still apply.
+      revealedBody?: string;
       sunMask?: SunGlareMaskParams;
       /** Sun position in the same space as `planetPositions` — feeds the
        *  beacon policy's heliocentric-distance term. Falls back to the
@@ -329,7 +399,15 @@ export class PlanetLabels {
       markerShipTest?: (markerWorldPos: THREE.Vector3) => boolean;
     } = {},
   ) {
-    const { showMarkers = true, showLabels = true, excludeName, sunMask, sunPos, markerShipTest } = options;
+    const {
+      showMarkers = true,
+      showLabels = true,
+      excludeName,
+      revealedBody,
+      sunMask,
+      sunPos,
+      markerShipTest,
+    } = options;
     const maskActive = !!sunMask && sunMask.active;
     const canvasWidth = renderer.domElement.clientWidth;
     const canvasHeight = renderer.domElement.clientHeight;
@@ -380,21 +458,30 @@ export class PlanetLabels {
       entry.sprite.position.set(pos.x, pos.y, pos.z);
       if (entry.sprite.scale.x !== markerScale) entry.sprite.scale.setScalar(markerScale);
 
-      // Hide marker once the planet subtends enough pixels to be visible as a mesh.
+      const isRevealed = entry.planet.name === revealedBody;
+
+      // Once the planet subtends enough pixels to read as a mesh, it drops its
+      // marker sprite; its NAME label goes too — UNLESS it is the revealed body,
+      // whose label (name + distance) must still draw over the resolved disc.
+      // The label suppression here is a visibility policy, so the reveal exempts
+      // it; the marker never returns (a mesh needs no beacon).
       const planetVisualSize = entry.planet.radiusAU * 2;
       const angularSize = planetVisualSize / Math.max(distFromPlayer, 0.0001);
-      if (angularSize > 0.01) {
+      const resolvedMesh = angularSize > 0.01;
+      if (resolvedMesh) {
         entry.sprite.visible = false;
-        if (entry.labelVisible) {
-          entry.label.style.display = 'none';
-          entry.labelVisible = false;
+        if (!isRevealed) {
+          if (entry.labelVisible) {
+            entry.label.style.display = 'none';
+            entry.labelVisible = false;
+          }
+          continue;
         }
-        continue;
       }
 
       // One projection, reused by the marker occlusion/fade and the label
-      // placement. Needed whenever a marker or a label could show.
-      const proj = showLabels || showMarkers
+      // placement. Needed whenever a marker or a label (incl. a reveal) could show.
+      const proj = showLabels || showMarkers || isRevealed
         ? projectSphereToScreen(
             pos,
             entry.planet.radiusAU,
@@ -405,78 +492,83 @@ export class PlanetLabels {
           )
         : null;
 
-      // Marker occlusion is analytic (the sprite renders without a depth test —
-      // see the material comment): hidden when its center sits inside a nearer
-      // body's disc, or when the body is behind the camera. Runs even with
-      // labels off — the sprite has no other occlusion.
-      let markerOccluded = !proj || proj.ndcZ >= 1;
-      if (proj && !markerOccluded) {
-        for (const disc of foregroundDiscs) {
-          if (disc.name === entry.planet.name) continue;
-          // The ship's circle never hides a beacon on its own: a planet dead
-          // ahead sits right above the ship, inside the circle but beside the
-          // hull, and culling it there makes an approaching world vanish.
-          // Inside the circle the precise hull raycast decides instead, so
-          // the beacon hides exactly when hull pixels cover it and stays lit
-          // beside them. Labels below still use the plain circle.
-          if (disc.name === 'ship') {
-            if (!markerShipTest) continue;
-            // No screen gate here: the circle is sized for label culling and
-            // no fixed multiple of it tracks every profile's true reach
-            // (Juno's magnetometer boom tip sits at ~4.9 circle radii). The
-            // callback does its own exact sight-line pre-reject against the
-            // widest-hull sphere, so calling it per marker stays cheap.
-            if (markerShipTest(entry.sprite.position)) {
+      // Marker work only for the un-resolved (marker-tier) case — a resolved
+      // mesh keeps its sprite hidden regardless.
+      if (!resolvedMesh) {
+        // Marker occlusion is analytic (the sprite renders without a depth test —
+        // see the material comment): hidden when its center sits inside a nearer
+        // body's disc, or when the body is behind the camera. Runs even with
+        // labels off — the sprite has no other occlusion.
+        let markerOccluded = !proj || proj.ndcZ >= 1;
+        if (proj && !markerOccluded) {
+          for (const disc of foregroundDiscs) {
+            if (disc.name === entry.planet.name) continue;
+            // The ship's circle never hides a beacon on its own: a planet dead
+            // ahead sits right above the ship, inside the circle but beside the
+            // hull, and culling it there makes an approaching world vanish.
+            // Inside the circle the precise hull raycast decides instead, so
+            // the beacon hides exactly when hull pixels cover it and stays lit
+            // beside them. Labels below still use the plain circle.
+            if (disc.name === 'ship') {
+              if (!markerShipTest) continue;
+              // No screen gate here: the circle is sized for label culling and
+              // no fixed multiple of it tracks every profile's true reach
+              // (Juno's magnetometer boom tip sits at ~4.9 circle radii). The
+              // callback does its own exact sight-line pre-reject against the
+              // widest-hull sphere, so calling it per marker stays cheap.
+              if (markerShipTest(entry.sprite.position)) {
+                markerOccluded = true;
+                break;
+              }
+              continue;
+            }
+            if (distFromCamera <= disc.distFromCamera) continue;
+            const mdx = proj.x - disc.screenX;
+            const mdy = proj.y - disc.screenY;
+            if (mdx * mdx + mdy * mdy < disc.radiusPx * disc.radiusPx) {
               markerOccluded = true;
               break;
             }
-            continue;
-          }
-          if (distFromCamera <= disc.distFromCamera) continue;
-          const mdx = proj.x - disc.screenX;
-          const mdy = proj.y - disc.screenY;
-          if (mdx * mdx + mdy * mdy < disc.radiusPx * disc.radiusPx) {
-            markerOccluded = true;
-            break;
           }
         }
-      }
-      entry.sprite.visible = showMarkers && !markerOccluded;
+        entry.sprite.visible = showMarkers && !markerOccluded;
 
-      // Marker sprites also fade inside the Sun's glare like the other point
-      // consumers. Materials are per-body, so per-sprite opacity is safe; a mask
-      // of 0 restores full opacity (byte-identical to an un-masked build).
-      if (showMarkers) {
-        const spriteMat = entry.sprite.material as THREE.SpriteMaterial;
-        const markerMask = maskActive && proj ? sunGlareMaskAt(sunMask, proj.x, proj.y) : 0;
-        const spriteOpacity = 1 - 0.98 * markerMask;
-        if (spriteMat.opacity !== spriteOpacity) spriteMat.opacity = spriteOpacity;
-      }
+        // Marker sprites also fade inside the Sun's glare like the other point
+        // consumers. Materials are per-body, so per-sprite opacity is safe; a mask
+        // of 0 restores full opacity (byte-identical to an un-masked build).
+        if (showMarkers) {
+          const spriteMat = entry.sprite.material as THREE.SpriteMaterial;
+          const markerMask = maskActive && proj ? sunGlareMaskAt(sunMask, proj.x, proj.y) : 0;
+          const spriteOpacity = 1 - 0.98 * markerMask;
+          if (spriteMat.opacity !== spriteOpacity) spriteMat.opacity = spriteOpacity;
+        }
 
-      // Beacon policy: size and brightness track apparent brightness — Earth
-      // seen from Neptune shrinks to a pale point, Venus stays prominent from
-      // anywhere, nothing vanishes (planetMarkers.ts owns the curve). Camera
-      // distance, not player distance: the marker is what the camera sees.
-      // Channel split: photometric brightness writes .color while the Sun-glare
-      // fade above owns .opacity, so the two compose (energy = brightness ×
-      // glare visibility) without either overwriting the other. sizeMul is a
-      // multiplier (≤1) on the viewport-pinned base scale (markerScale, above),
-      // the sole owner of absolute on-screen size — so photometry can shrink a
-      // fainter beacon but never balloon one past the pin.
-      if (entry.sprite.visible) {
-        const rSun = sunPos
-          ? Math.hypot(pos.x - sunPos.x, pos.y - sunPos.y, pos.z - sunPos.z)
-          : entry.planet.semiMajorAxisAU;
-        const mag = markerMagnitude(entry.planet.radiusAU, distFromCamera, rSun, entry.markerAlbedo);
-        const vis = markerVisual(mag, PLANET_MARKER_PARAMS, this.markerScratch);
-        const absoluteScale = markerScale * vis.sizeMul;
-        if (entry.sprite.scale.x !== absoluteScale) entry.sprite.scale.setScalar(absoluteScale);
-        entry.sprite.material.color.setScalar(vis.brightness);
+        // Beacon policy: size and brightness track apparent brightness — Earth
+        // seen from Neptune shrinks to a pale point, Venus stays prominent from
+        // anywhere, nothing vanishes (planetMarkers.ts owns the curve). Camera
+        // distance, not player distance: the marker is what the camera sees.
+        // Channel split: photometric brightness writes .color while the Sun-glare
+        // fade above owns .opacity, so the two compose (energy = brightness ×
+        // glare visibility) without either overwriting the other. sizeMul is a
+        // multiplier (≤1) on the viewport-pinned base scale (markerScale, above),
+        // the sole owner of absolute on-screen size — so photometry can shrink a
+        // fainter beacon but never balloon one past the pin.
+        if (entry.sprite.visible) {
+          const rSun = sunPos
+            ? Math.hypot(pos.x - sunPos.x, pos.y - sunPos.y, pos.z - sunPos.z)
+            : entry.planet.semiMajorAxisAU;
+          const mag = markerMagnitude(entry.planet.radiusAU, distFromCamera, rSun, entry.markerAlbedo);
+          const vis = markerVisual(mag, PLANET_MARKER_PARAMS, this.markerScratch);
+          const absoluteScale = markerScale * vis.sizeMul;
+          if (entry.sprite.scale.x !== absoluteScale) entry.sprite.scale.setScalar(absoluteScale);
+          entry.sprite.material.color.setScalar(vis.brightness);
+        }
       }
 
       // Markers are GPU billboards; only the HTML label needs projection and
-      // occlusion work, so skip the rest when labels are off (or unprojected).
-      if (!showLabels || !proj) {
+      // occlusion work, so skip the rest when labels are off (or unprojected) —
+      // unless this body is the revealed one, which draws its label anyway.
+      if ((!showLabels && !isRevealed) || !proj) {
         if (entry.labelVisible) {
           entry.label.style.display = 'none';
           entry.labelVisible = false;
@@ -530,6 +622,8 @@ export class PlanetLabels {
           entry.label.style.display = 'block';
           entry.labelVisible = true;
         }
+        // Full-opacity + distance-line override rides on the `.revealed` class.
+        entry.label.classList.toggle('revealed', isRevealed);
         const transform = `translate(${screenX}px, ${screenY + labelOffsetY}px)`;
         if (transform !== entry.lastTransform) {
           entry.label.style.transform = transform;

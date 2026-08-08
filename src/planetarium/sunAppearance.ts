@@ -164,6 +164,81 @@ export function diamondRingStrength(occluderLikeness: number, visibleFraction: n
   return like * fade * rise;
 }
 
+/** How deep under an occluder's edge the chromosphere still reads, in solar
+ *  radii. Authored rather than physical: the real shell is thinner than this,
+ *  but a contact lasts only a handful of frames and the reds have to arrive and
+ *  leave over a readable span of the geometry instead of one frame's worth.
+ *  The ceiling is the other side of that trade — a Moon barely 4% wider than
+ *  the Sun is only a couple of hundredths of a radius off centre half a minute
+ *  after second contact, and anything more generous than this leaves a red arc
+ *  burning through the middle of totality, where both limbs are long buried.
+ *  It lands near the real shell's depth, which is the honest place for it. */
+const CHROMOSPHERE_SCALE_HEIGHT_SR = 0.005;
+
+/** Wall-time constants for the contact-red envelopes. The arc lights as the
+ *  limb breaks and lingers a beat after it closes — slower than the diamond
+ *  blaze, which is a point source and snaps. */
+export const CHROMOSPHERE_ATTACK_TAU_S = 0.15;
+export const CHROMOSPHERE_RELEASE_TAU_S = 0.35;
+
+export interface ChromosphereSideWeights {
+  /** The limb AWAY from the occluder — where the last sliver of photosphere
+   *  dies at second contact and the first returns at third. */
+  anti: number;
+  /** The limb TOWARD the occluder, covered first and uncovered last. Spent
+   *  before it can show for ordinary total geometry; a hybrid's near-tangent
+   *  pass (occluder barely larger than the disc) legitimately lights both
+   *  limbs, which is physically right — a barely-total eclipse flashes
+   *  chromosphere most of the way round. */
+  toward: number;
+}
+
+/**
+ * How brightly the chromosphere reads on each limb of an eclipsed Sun.
+ *
+ * With the occluder's centre `separationSr` from the Sun's centre and its
+ * radius `occluderRadiiSr` (both in solar radii, the Sun's radius being 1), the
+ * occluder's edge buries the AWAY limb by `occluderRadiiSr - 1 - separationSr`:
+ * exactly 0 when the two limbs touch — second/third contact, the instant the
+ * photosphere vanishes or returns — and growing as the occluder slides on to
+ * swallow that limb. The TOWARD limb is buried by
+ * `separationSr + occluderRadiiSr - 1`, already twice as deep at contact, so
+ * its weight is gone before it can be seen.
+ *
+ * Both depths fade through one authored scale height, and both sides stay shut
+ * until the exposed fraction is a sliver: with any real photosphere on screen
+ * the reds are drowned by it. Transmission begins once under 3% of the disc
+ * remains and completes through the last 0.2%.
+ *
+ * A sub-Sun occluder gets nothing at all. Annular geometry has no total
+ * contact, so there is never a moment when the photosphere is gone and the
+ * chromosphere is the brightest thing left.
+ *
+ * Both weights only climb near a contact, where the occluder sits about
+ * `occluderRadiiSr - 1` off centre — far enough from concentric that the
+ * Sun-to-occluder direction is well conditioned, so the limb these weights name
+ * cannot flip under the caller mid-flash.
+ */
+export function chromosphereSideWeights(input: {
+  separationSr: number;
+  occluderRadiiSr: number;
+  visibleFraction: number;
+}): ChromosphereSideWeights {
+  const radii = input.occluderRadiiSr;
+  if (!(radii > 1)) return { anti: 0, toward: 0 };
+  const separation = Math.max(input.separationSr, 0);
+  const photosphereSwamp = 1 - THREE.MathUtils.smoothstep(
+    Math.max(input.visibleFraction, 0), 0.002, 0.03,
+  );
+  if (!(photosphereSwamp > 0)) return { anti: 0, toward: 0 };
+  const survives = (burial: number) => photosphereSwamp
+    * Math.exp(-Math.max(burial, 0) / CHROMOSPHERE_SCALE_HEIGHT_SR);
+  return {
+    anti: survives(radii - 1 - separation),
+    toward: survives(separation + radii - 1),
+  };
+}
+
 /**
  * Whether a solar occluder is an eclipse (keep the silhouette night-lift kill)
  * or ordinary landscape (keep the night fills). A body a few solar diameters
@@ -215,6 +290,41 @@ export function advanceSunEmergenceFlash(input: {
   const speed = THREE.MathUtils.smoothstep(riseRate, 0.12, 1.4);
   const uncoveredEnergy = Math.sqrt(1 - previous);
   return Math.max(decayed, speed * uncoveredEnergy);
+}
+
+/**
+ * One-frame envelope for the diamond-ring blaze, advanced in WALL time.
+ *
+ * `diamondRingStrength` is a pure function of the exposed fraction, and a warped
+ * clock crosses its whole band inside a single frame — driven straight from it
+ * the uniform would step 0 -> 1 -> 0 with nothing in between. Smoothing on real
+ * seconds instead means the bloom rises and releases at the speed an eye reads,
+ * whatever rate the sim clock runs at.
+ *
+ * The two time constants differ because the eye does: light floods in the moment
+ * the limb breaks, while the dazzle it leaves behind outlives its source. `snap`
+ * is for view discontinuities — a jump has no continuous motion to smooth, so
+ * the envelope lands on the new scene's value directly.
+ *
+ * Every contact-driven strength has the same one-frame problem, so the taus are
+ * overridable and the chromosphere arcs ride this too; the defaults are the
+ * blaze's own.
+ */
+export function advanceDiamondRing(input: {
+  current: number;
+  target: number;
+  dt: number;
+  snap: boolean;
+  attackTau?: number;
+  releaseTau?: number;
+}): number {
+  const target = THREE.MathUtils.clamp(input.target, 0, 1);
+  if (input.snap) return target;
+  const current = THREE.MathUtils.clamp(input.current, 0, 1);
+  const dt = Math.max(input.dt, 0);
+  if (!(dt > 0)) return current;
+  const tau = target > current ? (input.attackTau ?? 0.12) : (input.releaseTau ?? 0.25);
+  return current + (target - current) * (1 - Math.exp(-dt / tau));
 }
 
 /**

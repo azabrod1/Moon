@@ -33,6 +33,10 @@ import {
   CAM_REACQUIRE_SETTLE_ANGLE_DEG,
   CAM_REACQUIRE_SETTLE_RADIUS_FRAC,
 } from './cruiseView';
+// cruiseView itself stays dependency-free (the up axis is passed in); the
+// test pins it against the REAL flight horizon the mode hands it.
+import { FLIGHT_UP_SCENE, flightDirectionFromAngles } from './flightFrame';
+import { DEG2RAD } from '../shared/math/angles';
 
 const KM_PER_AU = 149_597_870.7;
 const KM = 1 / KM_PER_AU;
@@ -299,20 +303,48 @@ describe('nearestShellSurfaceDistanceAU', () => {
 describe('chaseIdealOffset', () => {
   it('reproduces the chase-branch pose formula at the unified lift', () => {
     const forward = new THREE.Vector3(0.3, -0.5, 0.8).normalize();
-    const out = chaseIdealOffset(forward, new THREE.Vector3());
+    const up = FLIGHT_UP_SCENE;
+    const out = chaseIdealOffset(forward, up, new THREE.Vector3());
     const camDist = CRUISE_CAM_DIST_AU;
+    const lift = camDist * CHASE_CAM_LIFT_FRAC;
     // Steady follow, reset, and the reacquire target must all resolve to this
     // one formula — a drift here is the old 0.45/0.35 rig split reappearing.
-    expect(out.x).toBe(-forward.x * camDist);
-    expect(out.y).toBe(-forward.y * camDist + camDist * CHASE_CAM_LIFT_FRAC);
-    expect(out.z).toBe(-forward.z * camDist);
+    expect(out.x).toBe(-forward.x * camDist + up.x * lift);
+    expect(out.y).toBe(-forward.y * camDist + up.y * lift);
+    expect(out.z).toBe(-forward.z * camDist + up.z * lift);
   });
 
   it('lifts by 0.35 of the chase distance (reset and steady follow unified)', () => {
     expect(CHASE_CAM_LIFT_FRAC).toBe(0.35);
-    const out = chaseIdealOffset({ x: 0, y: 0, z: 1 }, new THREE.Vector3());
+    const out = chaseIdealOffset({ x: 0, y: 0, z: 1 }, { x: 0, y: 1, z: 0 }, new THREE.Vector3());
     expect(out.y).toBe(CRUISE_CAM_DIST_AU * 0.35);
     expect(out.z).toBe(-CRUISE_CAM_DIST_AU);
+  });
+
+  it('rides the passed-in up: the same rig at every heading around the flight horizon', () => {
+    // The rig must tilt WITH the horizon, not with world-Y. For a forward
+    // lying in the flight plane the offset decomposes exactly into
+    //   up-component  = +lift·dist        (the camera sits above the ship)
+    //   in-plane part = −dist·forward     (straight down the trail)
+    // Note the camera→ship RAY is the negation: its up-component is
+    // −lift·dist, so the ship is below the optical axis. That is the pose,
+    // not a "level" one.
+    const lift = CRUISE_CAM_DIST_AU * CHASE_CAM_LIFT_FRAC;
+    for (const headingDeg of [0, 37, 90, 143, 180, 231, 270, 314]) {
+      const forward = flightDirectionFromAngles(headingDeg * DEG2RAD, 0, new THREE.Vector3());
+      expect(Math.abs(forward.dot(FLIGHT_UP_SCENE))).toBeLessThan(1e-12);
+
+      const out = chaseIdealOffset(forward, FLIGHT_UP_SCENE, new THREE.Vector3());
+      const alongUp = out.dot(FLIGHT_UP_SCENE);
+      expect(alongUp).toBeCloseTo(lift, 14);
+
+      const inPlane = out.clone().addScaledVector(FLIGHT_UP_SCENE, -alongUp);
+      expect(inPlane.x).toBeCloseTo(-CRUISE_CAM_DIST_AU * forward.x, 14);
+      expect(inPlane.y).toBeCloseTo(-CRUISE_CAM_DIST_AU * forward.y, 14);
+      expect(inPlane.z).toBeCloseTo(-CRUISE_CAM_DIST_AU * forward.z, 14);
+      // Distance to the ship is heading-independent — the rig is rigid.
+      expect(out.length()).toBeCloseTo(CRUISE_CAM_DIST_AU * Math.hypot(1, CHASE_CAM_LIFT_FRAC), 14);
+    }
   });
 });
 

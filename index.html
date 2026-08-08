@@ -1450,9 +1450,12 @@
       pointer-events: none;
       font-family: var(--font);
     }
-    .planet-label-name { display: block; font-size: 10px; font-weight: 500; color: var(--text-primary); text-shadow: 0 0 6px rgba(0,0,0,0.9); }
+    .planet-label-name { display: block; font-size: 10px; font-weight: 500; color: var(--text-primary); text-shadow: 0 0 6px rgba(0,0,0,0.9); opacity: 0.8; transition: opacity 0.15s; }
     .planet-label-dist { display: block; font-size: 10px; color: var(--text-dim); margin-top: 1px; }
     #planet-labels.hide-distances .planet-label-dist { display: none; }
+    /* Hover/tap reveal: full opacity, and the distance line shows through hide-distances. */
+    .planet-label.revealed .planet-label-name { opacity: 1; }
+    #planet-labels .planet-label.revealed .planet-label-dist { display: block; }
 
     /* Constellation labels */
     .constellation-label {
@@ -1477,15 +1480,22 @@
       margin-top: -6px;
       font-size: 10px;
       font-weight: 400;
-      color: rgba(200, 210, 230, 0.85);
+      color: rgba(200, 210, 230, 0.7);
       text-shadow: 0 0 4px rgba(0,0,0,0.9);
       white-space: nowrap;
       pointer-events: none;
       font-family: var(--font);
+      transition: opacity 0.15s, color 0.15s;
     }
     .moon-label.edge {
       opacity: 0.6;
       font-size: 10px;
+    }
+    /* Hover/tap reveal beats both the base colour alpha and the edge-clamp
+       opacity — must follow .moon-label.edge so equal specificity resolves here. */
+    .moon-label.revealed {
+      color: rgba(200, 210, 230, 1);
+      opacity: 1;
     }
 
     /* Touch steer zones (mobile only) */
@@ -3433,8 +3443,8 @@
         <div class="settings-row">
           <span class="settings-label">Label distances</span>
           <button class="settings-toggle" id="settings-label-distances-toggle"
-                  aria-label="Label distances" aria-pressed="true">
-            <span id="settings-label-distances-label">On</span>
+                  aria-label="Label distances" aria-pressed="false">
+            <span id="settings-label-distances-label">On hover</span>
           </button>
         </div>
         <div class="settings-row">

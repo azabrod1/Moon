@@ -341,6 +341,7 @@ export const SUN_VEIL_BETA = 1.12;
 export const sunGlareFragmentShader = /* glsl */ `
 uniform float uExtent;
 uniform float uVisibleFraction;
+uniform float uShipSunVisibility;
 uniform float uGlareStrength;
 uniform float uPointLike;
 uniform float uCameraFx;
@@ -355,8 +356,31 @@ uniform vec2 uOccluderOffsetSr;
 // side). Zero when un-occluded or concentric — then pLight === pSun byte-for-byte.
 uniform vec2 uGlareCentroidSr;
 // Authored second/third-contact diamond-ring strength (0 for annular, exactly 0
-// at totality). Drives a compact contact blaze plus a short diffraction cross.
+// at totality). Drives the compact contact bead and its round dazzle.
 uniform float uDiamondRing;
+// The occluder's centre for the bead's silhouette cut, same frame as
+// uOccluderOffsetSr. Tracks it while a crescent burns, but FREEZES with the
+// centroid through the melting release: cut against the live limb, a warped
+// clock walks the limb across the frozen bead in a few frames and the fade
+// reads as a snap — frozen together, the bead and its black edge die as one
+// picture at any clock rate.
+uniform vec2 uDiamondOccluderSr;
+// The bead cut's kill fraction — depth x silhouette shade x eclipse likeness,
+// advanced on a wall-time envelope by the controller so an eligibility edge
+// (ratio leaving the eclipse-like range under a releasing bead) fades in real
+// time instead of un-carving the disc in one frame.
+uniform float uBeadCarveDepth;
+// Screen angle of the Sun's projected north pole, in the same camera-view XY
+// frame as uOccluderOffsetSr, and how much to trust it: 1 when the axis lies
+// across the frame, falling to 0 as it turns toward the camera and its
+// projection stops naming a direction at all.
+uniform float uSunPoleScreenAngle;
+uniform float uSunPoleAnisotropy;
+// How brightly the chromosphere reads on the limb AWAY from the occluder and on
+// the limb toward it, on the controller's wall-time envelopes. Both 0 unless a
+// total contact is live, so nothing below them draws otherwise.
+uniform float uChromoAnti;
+uniform float uChromoToward;
 uniform float uExposureScale;
 uniform float uEmergenceFlash;
 uniform float uAtmosphereMix;
@@ -401,6 +425,12 @@ float fbm2(vec2 p) {
   return value;
 }
 
+vec2 spinDir(vec2 direction, float radians) {
+  float c = cos(radians);
+  float s = sin(radians);
+  return vec2(direction.x * c - direction.y * s, direction.x * s + direction.y * c);
+}
+
 void main() {
   vec2 p = (vUv - 0.5) * 2.0;
   float planeRadius = length(p);
@@ -433,6 +463,10 @@ void main() {
   float diagonalWidthA = max(fwidth(pB.x - pB.y) * 1.25, 0.014);
   float diagonalWidthB = max(fwidth(pB.x + pB.y) * 1.25, 0.014);
   float sensorWidth = max(fwidth(pB.y) * 1.15, 0.007);
+  // Solar radii per output pixel, for terms that must stay resolvable on a
+  // tiny on-screen Sun. Taken here because derivatives after the discard
+  // below are undefined.
+  float srPerPx = max(fwidth(pB.x), fwidth(pB.y)) * uExtent;
   if (planeRadius >= 1.0) discard;
 
   float solarRadii = baseRadius * uExtent;
@@ -455,10 +489,18 @@ void main() {
   float aureole = 0.015 / (1.0 + lightOutside * lightOutside * 0.90);
   float tail = 0.0016 / pow(max(lightSolarRadii, 1.0), 1.50);
   float visibleEnergy = pow(clamp(uVisibleFraction, 0.0, 1.0), 0.38);
+  // The nearby player ship is a camera foreground, not a celestial eclipse
+  // owner. Shape its sampled source coverage like the compact celestial PSF
+  // without feeding it back into uVisibleFraction/corona state. The wide veil
+  // below intentionally uses the raw linear coverage, matching veilAmt's
+  // existing celestial convention.
+  float shipVisibility = clamp(uShipSunVisibility, 0.0, 1.0);
+  float shipDirectEnergy = pow(shipVisibility, 0.38);
   // The scene's exposure adaptation also tempers the lens glare (uExposureScale
   // = sqrt(exposure)), so staring into the Sun tightens the halo the way a
   // stopped-down camera would instead of gaining 1.5 stops on the scene.
-  float glare = (core + aureole + tail) * visibleEnergy * uGlareStrength * uExposureScale;
+  float glare = (core + aureole + tail) * visibleEnergy * shipDirectEnergy
+    * uGlareStrength * uExposureScale;
 
   // Once the solar disc becomes only a few pixels wide, a restrained optical
   // starburst keeps it distinct from the starfield. Derivative-scaled widths
@@ -473,7 +515,7 @@ void main() {
   // the reference stills show long thin diffraction spikes WITH a visible disc.
   // Carry a fraction of them through the mid-range on the camera-fx term.
   float starburst = (horizontal + vertical + diagonal)
-    * max(uPointLike, uCameraFx * uSpikeSustain) * visibleEnergy * 0.30;
+    * max(uPointLike, uCameraFx * uSpikeSustain) * visibleEnergy * shipDirectEnergy * 0.30;
   glare += starburst;
 
   // A short, low-energy sensor streak bridges the scale range where the disc
@@ -482,27 +524,61 @@ void main() {
   float sensorLine = exp(-abs(pLightB.y) / sensorWidth)
     * exp(-abs(pLightB.x) * 1.55);
   float sensorStreak = sensorLine * uCameraFx * (1.0 - uPointLike * 0.72)
-    * visibleEnergy * 0.055;
+    * visibleEnergy * shipDirectEnergy * 0.055;
   glare += sensorStreak;
 
+  // The occluder's own disc in the base frame: the bead cut just below and the
+  // silhouette wash carve further down both measure against it.
+  float occluderDistance = length(pB * uExtent - uOccluderOffsetSr);
+  float occluderCore = 1.0 - smoothstep(uOccluderRadii - 0.07, uOccluderRadii + 0.05, occluderDistance);
+
   // Diamond ring: at second/third contact the exposed sliver is optically a
-  // point again, so a compact blaze plus a short diffraction cross returns at the
-  // crescent centroid (pLight — at those coverages the centroid IS the contact
-  // point). uDiamondRing is authored and topology-gated (0 for annular, exactly 0
-  // at totality), so this never fakes a ring at annularity. The amplitude is
-  // modest and rides uExposureScale: the exposure meter's totality release is
-  // what makes it blaze, not a second brightness ramp of its own. It carries no
-  // visibleEnergy factor, so a covered or buried Sun cannot fade it by exposed
-  // fraction alone — the buried-camera path in updateSunShader zeroes uDiamondRing
-  // explicitly.
-  float diamondCore = exp(-lightOutside * 3.1);
-  float diamondArms = (horizontal + vertical) * 0.5;
-  glare += uDiamondRing * (diamondCore + diamondArms) * uGlareStrength * uExposureScale;
+  // point again, so a compact blaze returns at the crescent centroid (pLight —
+  // at those coverages the centroid IS the contact point). Measured from the
+  // centroid itself, NOT on lightOutside: that profile subtracts the
+  // photosphere radius because the mesh normally draws the disc, but at
+  // contact there is no disc — on it the "bead" is a Sun-sized flat plateau
+  // that hands bloom a huge source to smear across the silhouette. Both terms
+  // are radially symmetric on purpose: an eye standing on a surface has no
+  // aperture to diffract that point into a cross, so the honest look is a
+  // brilliant bead wrapped in a soft round dazzle, with the corona supplying
+  // the ring around it. The amplitude rides uExposureScale: the exposure
+  // meter's totality release is what makes it blaze, not a second brightness
+  // ramp of its own. uDiamondRing is authored and topology-gated (0 for
+  // annular, exactly 0 at totality), so this never fakes a ring at annularity,
+  // and it carries no visibleEnergy factor — a covered or buried Sun cannot
+  // fade it by exposed fraction alone, so the buried-camera path in
+  // updateSunShader zeroes uDiamondRing explicitly.
+  // Decay lengths floored in screen pixels: authored purely in solar radii,
+  // the jewel collapses below one pixel on a cruise-scale Sun and shimmers
+  // with pixel phase (or misses the bloom threshold entirely). The dazzle must
+  // stay compact and sub-saturating along the limb: hue cannot rise through a
+  // saturated channel, so a wide bright dazzle whites out the chromosphere
+  // arc beside the bead — the reds only read where the dazzle has died off.
+  float beadDist = lightSolarRadii;
+  float coreFold = max(1.0 / 12.0, srPerPx * 2.0);
+  float dazzleFold = max(1.0 / 3.0, srPerPx * 4.0);
+  float diamondCore = exp(-beadDist / coreFold) * 2.4;
+  float diamondDazzle = exp(-beadDist / dazzleFold) * 0.15;
+  // Because it has no visibleEnergy, the generic silhouette floor below still
+  // leaves the bead a mid-grey wash across the occluded disc; it takes its own
+  // near-total kill so the occulter stays a black ball inside the blaze.
+  // uBeadCarveDepth carries the whole kill (depth x shade x eclipse-likeness)
+  // through one wall-time envelope on the CPU, so an eligibility edge — the
+  // occluder ratio crossing out of the eclipse-like range under a releasing
+  // bead — fades over real time instead of un-carving in a frame. The cut
+  // measures the latched offset — see uDiamondOccluderSr.
+  float beadEdge = 1.0 - smoothstep(uOccluderRadii - 0.12, uOccluderRadii + 0.04,
+    length(pB * uExtent - uDiamondOccluderSr));
+  float beadCarve = 1.0 - uBeadCarveDepth * beadEdge;
+  glare += uDiamondRing * (diamondCore + diamondDazzle) * beadCarve
+    * uGlareStrength * uExposureScale * shipDirectEnergy;
 
   // Limb crossings and third contact briefly overwhelm the virtual optics
   // before exposure adaptation catches up. The controller supplies a
   // derivative-triggered impulse with a short exponential decay.
-  float emergenceBloom = exp(-lightOutside * 1.25) * uEmergenceFlash * visibleEnergy * 1.15;
+  float emergenceBloom = exp(-lightOutside * 1.25) * uEmergenceFlash
+    * visibleEnergy * shipDirectEnergy * 1.15;
   glare = (glare + emergenceBloom) * mix(1.0, 0.60, uAtmosphereMix);
 
   // A body deep into covering the Sun reads as a dark silhouette even through
@@ -513,8 +589,6 @@ void main() {
   // the disc sits in the glare rather than being punched out of it. Only
   // grazing first-contact slivers arrive with uOccluderShade 0 and keep the
   // full wash — from a real bite onward the disc is carved at full strength.
-  float occluderDistance = length(pB * uExtent - uOccluderOffsetSr);
-  float occluderCore = 1.0 - smoothstep(uOccluderRadii - 0.07, uOccluderRadii + 0.05, occluderDistance);
   float silhouette = 1.0 - uOccluderShade * 0.88 * occluderCore;
   glare *= silhouette;
 
@@ -555,7 +629,8 @@ void main() {
   float armX = exp(-armAcross * armAcross) * exp(-abs(pxOff.x) / max(uArmDecayPx, 1.0));
   float armY = exp(-armAcrossV * armAcrossV) * exp(-abs(pxOff.y) / max(uArmDecayYPx, 1.0)) * 0.25;
   float veilEnergy = uVeilStrength * uVeilAmt * uExposureScale
-    * (1.0 + 0.5 * uEmergenceFlash) * mix(1.0, 0.60, uAtmosphereMix);
+    * shipVisibility * (1.0 + 0.5 * uEmergenceFlash)
+    * mix(1.0, 0.60, uAtmosphereMix);
   float veil = (veilShape + (armX + armY) * uArmCoeff) * veilEnergy * silhouette;
 
   // Once the photosphere is covered, remove its glare and reveal a restrained
@@ -580,30 +655,117 @@ void main() {
     // The glare plane is screen-space (no depth test), so the eclipsing body
     // cannot z-mask it; carve its disc out analytically instead. The corona
     // hugging that black limb — not a wash across it — is what makes totality
-    // read. uOccluderRadii is the occluder's angular size in solar radii.
+    // read. Measured against the occluder's OWN disc: a circle about the Sun's
+    // centre misses the centre offset at the contacts, letting the corona lip
+    // over the toward-side limb — a bright rim INSIDE the black disc once the
+    // bead no longer washes it out. Near-concentric the two circles coincide,
+    // so mid-totality keeps its exact look.
     float occluderEdge = max(uOccluderRadii, 1.0);
-    float occluderMask = smoothstep(occluderEdge - 0.05, occluderEdge + 0.03, solarRadii);
-    float pastLimb = max(solarRadii - occluderEdge, 0.0);
+    // The feather reaches only about a pixel inside the limb: wider, and the
+    // corona's inner ring (plus its bloom) reads as a grey lift just inside
+    // the black disc instead of a hard-edged hug against it.
+    float occluderMask = smoothstep(occluderEdge - 0.02, occluderEdge + 0.03, occluderDistance);
+    // Height for the corona's falloff, measured from the same edge the mask
+    // carves — the black limb the eye sees. Measured from the Sun's centre it
+    // parts ways with the mask at contact geometry: a shelf of zero-height
+    // (maximum brightness) corona opens just past the anti-side limb, exactly
+    // where the contact reds live, and widens with the occluder ratio. At
+    // concentric geometry the two centres coincide, so mid-totality reads
+    // identically either way.
+    float pastLimb = max(occluderDistance - occluderEdge, 0.0);
     // Real coronas are lobed and ragged: two broad equatorial streamers, a
     // few polar plumes, and cloudWarp-modulated fine rays with no readable
     // periodicity, all falling off steeply away from the bright limb ring.
-    float broadStreamers = pow(abs(cos(angleWarp - 0.18)), 2.6);
-    float polarPlumes = pow(abs(sin(angleWarp + 0.08)), 7.0) * 0.32;
+    // Every angle here is measured from the Sun's own axis — the projected
+    // pole, turned a quarter so zero lands on the equator — so the lobes stand
+    // where the star's rotation puts them instead of on a fixed screen angle.
+    // The small offsets keep the two lobe families from sharing one exact axis.
+    float coronaAngle = angleWarp - uSunPoleScreenAngle - 1.5707963;
+    float broadStreamers = pow(abs(cos(coronaAngle - 0.18)), 2.6);
+    float polarPlumes = pow(abs(sin(coronaAngle + 0.08)), 7.0) * 0.32;
     float fineStreamers = pow(0.5 + 0.5 * cos(angleWarp * 17.0 + cloudWarp * 0.6), 20.0)
       * (0.4 + 1.2 * cloudWarp);
     float coronaTexture = mix(0.72, 1.16, cloudWarp);
     float innerCorona = exp(-pastLimb * 3.2) * 0.5;
+    // Streamers read long in a photograph, so the anisotropy lives mostly in
+    // REACH: equatorial rays decay slowly and carry far past the limb, polar
+    // plumes die close to it, with only a slight amplitude lift on top. Pole-on,
+    // the projection names no equator to stretch toward, so both relax to one
+    // middling reach rather than snapping to whatever angle survived.
+    // The two reaches straddle the single rate this used to fall at, so the
+    // light the equator gains is roughly what the poles give up and totality
+    // keeps its overall brightness.
+    float equatorness = pow(abs(sin(angle - uSunPoleScreenAngle)), 1.5);
+    float coronaReach = mix(0.75, mix(1.7, 0.52, equatorness), uSunPoleAnisotropy);
     float coronaShape = (
       0.03 + broadStreamers + polarPlumes + fineStreamers * 0.10
     ) * coronaTexture;
-    float coronaFalloff = exp(-pastLimb * 0.75) / pow(max(solarRadii, 1.0), 0.7);
+    float coronaFalloff = exp(-pastLimb * coronaReach) / pow(max(solarRadii, 1.0), 0.7);
     corona = eclipse * occluderMask * (innerCorona + coronaShape * coronaFalloff * 0.75);
 
     // The chromosphere is normally drowned by the photosphere. Behind the
     // occluder mask it survives only while the cover is barely larger than
-    // the disc — which is exactly the second/third-contact flash.
+    // the disc — which is exactly the second/third-contact flash. A third of
+    // the weight this ring once carried alone: it is the faint all-around base
+    // now, and the contact arc below is what the eye actually reads.
     float chromosphereNoise = 0.72 + 0.28 * sin(angle * 19.0 + cloudWarp * 5.0);
-    chromosphere = eclipse * occluderMask * exp(-outside * 13.0) * chromosphereNoise * 0.35;
+    float chromoRadial = exp(-outside * 13.0);
+    chromosphere = eclipse * occluderMask * chromoRadial * chromosphereNoise * 0.117;
+
+    // Second and third contact do not photograph as an even red rim: the arc
+    // burns on the limb the occluder has NOT buried — the side the last sliver
+    // of photosphere was on — with a few prominences standing off it. The mask
+    // above is a circle about the SUN's centre, so it over-covers exactly that
+    // limb by the centre offset; these terms carve against the occluder's own
+    // disc instead, and the arc sits hard against the black edge where it
+    // belongs. normalize() of the offset is undefined near concentric geometry
+    // and a NaN would survive multiplication by zero, so the branch tests the
+    // offset itself and not only the strengths.
+    if ((uChromoAnti + uChromoToward) > 0.001
+      && dot(uOccluderOffsetSr, uOccluderOffsetSr) > 1e-8) {
+      vec2 axisDir = normalize(uOccluderOffsetSr);
+      vec2 antiDir = -axisDir;
+      vec2 limbDir = pB / baseRadius;
+      float contactMask = smoothstep(
+        uOccluderRadii - 0.02, uOccluderRadii + 0.02, occluderDistance
+      );
+      // The shell stands on the photosphere, and at contact the photosphere's
+      // edge IS the occluder's edge, so the profile decays outward from there.
+      // Measuring it from the Sun's centre instead puts most of the arc under
+      // the carve on this very limb, leaving a one-pixel hairline.
+      float contactRadial = exp(-max(occluderDistance - uOccluderRadii, 0.0) * 9.0)
+        * contactMask;
+      float arc = (
+        pow(max(dot(limbDir, antiDir), 0.0), 6.0) * uChromoAnti
+        + pow(max(dot(limbDir, axisDir), 0.0), 6.0) * uChromoToward
+      ) * contactRadial;
+      // The white inner corona saturates the tonemapper wherever it stands,
+      // and hue cannot rise through a saturated channel — additive pink under
+      // it only whitens further. Part the corona under the contact window
+      // instead: a feathered angular notch, deepest at the limb and fading
+      // with height, so the flash owns its spot while the streamers above
+      // keep their reach. Photographs do the same — the reds dominate the
+      // contact region because the corona there is comparatively faint.
+      float contactWindow = pow(max(dot(limbDir, antiDir), 0.0), 4.0) * uChromoAnti
+        + pow(max(dot(limbDir, axisDir), 0.0), 4.0) * uChromoToward;
+      corona *= 1.0 - 0.75 * contactWindow * exp(-pastLimb * 2.5);
+      // Three prominence points, 17-34 degrees around the contact, standing
+      // clear of the limb in the darker gap the parted corona leaves — they
+      // are what carries the colour at any framing; the limb arc itself is a
+      // hairline at honest scale.
+      // Squared explicitly: pow() of a negative base is undefined in GLSL, and
+      // this base goes negative across the whole occluded disc — Metal happens
+      // to forgive it, other drivers return NaN and bloom smears it framewide.
+      float promT = (occluderDistance - uOccluderRadii - 0.035) / 0.026;
+      float promRadial = exp(-promT * promT);
+      float prominences = (
+        pow(max(dot(limbDir, spinDir(antiDir, -0.50)), 0.0), 160.0)
+        + pow(max(dot(limbDir, spinDir(antiDir, 0.29)), 0.0), 160.0) * 0.8
+        + pow(max(dot(limbDir, spinDir(antiDir, 0.59)), 0.0), 160.0) * 0.6
+      ) * promRadial * contactMask * uChromoAnti;
+      chromosphere += eclipse * (arc + prominences * 1.1)
+        * 0.95 * uGlareStrength * uExposureScale;
+    }
   }
 
   float warmth = smoothstep(1.6, 7.0, solarRadii) * 0.30;
@@ -616,11 +778,20 @@ void main() {
     uVeilWarmth * smoothstep(0.25, 0.9, dHat));
   veilColor = mix(veilColor, uAtmosphereColor, uAtmosphereMix * 0.88);
   vec3 coronaColor = vec3(0.90, 0.95, 1.0);
-  vec3 chromosphereColor = vec3(1.0, 0.24, 0.10);
-  vec3 rgb = (glareColor * glare + coronaColor * corona + chromosphereColor * chromosphere) * baseEdgeFade
+  // Hydrogen-alpha: the flash spectrum is pink-magenta, blue above green. An
+  // orange-red here reads as sunset light instead of chromosphere.
+  vec3 chromosphereColor = vec3(1.0, 0.29, 0.33);
+  // These totality terms share the screen-space glare plane and cannot depth
+  // test against the foreground ship. Apply the compact-source transmission at
+  // composition so they cannot leak across a hull that covers the solar disc.
+  vec3 eclipseRgb = (coronaColor * corona + chromosphereColor * chromosphere)
+    * shipDirectEnergy;
+  vec3 rgb = (glareColor * glare + eclipseRgb) * baseEdgeFade
     + veilColor * veil * edgeFade;
   float alpha = clamp(
-    (glare + corona + chromosphere) * baseEdgeFade + veil * edgeFade, 0.0, 1.0
+    (glare + (corona + chromosphere) * shipDirectEnergy) * baseEdgeFade
+      + veil * edgeFade,
+    0.0, 1.0
   );
 
   gl_FragColor = vec4(rgb, alpha);

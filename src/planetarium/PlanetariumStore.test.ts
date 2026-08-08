@@ -64,6 +64,38 @@ describe('autopilot provenance migration (autopilotUserEngaged)', () => {
   });
 });
 
+describe('headingBasis — the flight-frame migration flag', () => {
+  // Absence is load-bearing: it is how a save written before heading/pitch
+  // became ecliptic angles is recognized, so it may never be defaulted in.
+  it('passes an explicit ecliptic flag through the sanitizer', () => {
+    expect(sanitizePlanetariumState(rawSave({ headingBasis: 'ecliptic' }))?.headingBasis)
+      .toBe('ecliptic');
+  });
+
+  it('stays absent for a legacy save (the signal to convert once, at apply)', () => {
+    expect(sanitizePlanetariumState(rawSave({}))?.headingBasis).toBeUndefined();
+  });
+
+  it('strips junk values rather than trusting them', () => {
+    for (const junk of ['equatorial', '', 1, true, {}, null]) {
+      expect(sanitizePlanetariumState(rawSave({ headingBasis: junk }))?.headingBasis)
+        .toBeUndefined();
+    }
+  });
+
+  it('is stamped on the default state — a new journey is never legacy', () => {
+    expect(createDefaultPlanetariumState().headingBasis).toBe('ecliptic');
+  });
+
+  it('survives a save→load round trip, so a converted save never re-converts', () => {
+    // The load path writes the parsed state back; a flag dropped anywhere in
+    // that loop would compound the rotation on every reload.
+    const once = sanitizePlanetariumState(rawSave({ headingBasis: 'ecliptic' }));
+    const twice = sanitizePlanetariumState(JSON.parse(JSON.stringify(once)));
+    expect(twice?.headingBasis).toBe('ecliptic');
+  });
+});
+
 describe('showBodyMarkers is a plain boolean (default true)', () => {
   it('defaults to true when the field is absent from the save', () => {
     expect(sanitizePlanetariumState(rawSave({}))?.showBodyMarkers).toBe(true);
@@ -80,18 +112,28 @@ describe('showBodyMarkers is a plain boolean (default true)', () => {
   });
 });
 
-describe('showBodyLabelDistances is a plain boolean (default true)', () => {
-  it('defaults to true when the field is absent from the save', () => {
-    expect(sanitizePlanetariumState(rawSave({}))?.showBodyLabelDistances).toBe(true);
-    expect(createDefaultPlanetariumState().showBodyLabelDistances).toBe(true);
+describe('labelDistancesMode (default hover; legacy boolean dropped)', () => {
+  it('defaults to hover when the field is absent from the save', () => {
+    expect(sanitizePlanetariumState(rawSave({}))?.labelDistancesMode).toBe('hover');
+    expect(createDefaultPlanetariumState().labelDistancesMode).toBe('hover');
   });
 
-  it('round-trips an explicit false', () => {
-    expect(sanitizePlanetariumState(rawSave({ showBodyLabelDistances: false }))?.showBodyLabelDistances).toBe(false);
+  it('round-trips the two literals', () => {
+    expect(sanitizePlanetariumState(rawSave({ labelDistancesMode: 'always' }))?.labelDistancesMode).toBe('always');
+    expect(sanitizePlanetariumState(rawSave({ labelDistancesMode: 'hover' }))?.labelDistancesMode).toBe('hover');
   });
 
-  it('non-boolean garbage falls back to the default', () => {
-    expect(sanitizePlanetariumState(rawSave({ showBodyLabelDistances: 'no' }))?.showBodyLabelDistances).toBe(true);
+  it('drops the legacy showBodyLabelDistances boolean (both values → hover)', () => {
+    const optIn = sanitizePlanetariumState(rawSave({ showBodyLabelDistances: true }));
+    expect(optIn?.labelDistancesMode).toBe('hover');
+    expect('showBodyLabelDistances' in JSON.parse(JSON.stringify(optIn))).toBe(false);
+    const optOut = sanitizePlanetariumState(rawSave({ showBodyLabelDistances: false }));
+    expect(optOut?.labelDistancesMode).toBe('hover');
+  });
+
+  it('garbage (or an unknown literal) falls back to hover', () => {
+    expect(sanitizePlanetariumState(rawSave({ labelDistancesMode: 'sometimes' }))?.labelDistancesMode).toBe('hover');
+    expect(sanitizePlanetariumState(rawSave({ labelDistancesMode: 1 }))?.labelDistancesMode).toBe('hover');
   });
 });
 

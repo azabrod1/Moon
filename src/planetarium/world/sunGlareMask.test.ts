@@ -26,6 +26,7 @@ const base = (): SunGlareMaskParams => ({
   sunXPx: 0,
   sunYPx: 0,
   peak: 1,
+  transmission: 1,
   armCoeff: 0,
   armDecayPx: 1,
   armDecayYPx: 1,
@@ -121,6 +122,7 @@ describe('sunGlareMaskForRect — nearest-point', () => {
     sunXPx: 700,
     sunYPx: 475,
     peak: 0.8,
+    transmission: 1,
     armCoeff: 0.28,
     armDecayPx: 30,
     armDecayYPx: 12,
@@ -178,6 +180,41 @@ describe('sunLabelClearRadiusPx', () => {
   });
 });
 
+describe('foreground transmission', () => {
+  it('preserves the existing mask exactly at full transmission', () => {
+    const p = base();
+    for (const d of [0, 20, 81, 140, 500]) {
+      const expected = Math.max(
+        ss(0.01, 0.08, p.peak * moffat(d)),
+        0,
+      );
+      expect(sunGlareMaskAt(p, d, 0)).toBeCloseTo(expected, 9);
+    }
+  });
+
+  it('removes the wash, compact core, and label clearance at zero transmission', () => {
+    const p = { ...base(), transmission: 0, coreOuterPx: 30 };
+    expect(sunGlareMaskAt(p, 0, 0)).toBe(0);
+    expect(sunGlareMaskAt(p, 10, 0)).toBe(0);
+    expect(sunLabelClearRadiusPx(p)).toBe(0);
+  });
+
+  it('applies linear transmission before the wide-mask threshold', () => {
+    const p = { ...base(), peak: 0.08, transmission: 0.5 };
+    expect(sunGlareMaskAt(p, 0, 0)).toBeCloseTo(ss(0.01, 0.08, 0.04), 9);
+  });
+
+  it('shapes the compact core like the direct glare energy', () => {
+    const p = {
+      ...base(),
+      peak: 0,
+      transmission: 0.25,
+      coreOuterPx: 30,
+    };
+    expect(sunGlareMaskAt(p, 0, 0)).toBeCloseTo(Math.pow(0.25, 0.38), 9);
+  });
+});
+
 describe('sunGlareMaskGLSL', () => {
   it('interpolates the shared Moffat constants as GLSL floats', () => {
     const src = sunGlareMaskGLSL();
@@ -187,6 +224,8 @@ describe('sunGlareMaskGLSL', () => {
     // Guards the degenerate cases the GPU path relies on.
     expect(src).toContain('uSunMaskActive < 0.5');
     expect(src).toContain('clip.w <= 0.0');
+    expect(src).toContain('uSunMaskTransmission');
+    expect(src).toContain('coreMask *= pow(transmission, 0.38)');
   });
 });
 
@@ -201,10 +240,20 @@ describe('sunGlareMaskCoreOuterPx', () => {
     expect(sunGlareMaskCoreOuterPx(1000, 500, 0)).toBe(0);
   });
 
-  it('still covers the whole disc plus a 1.2× margin through a deep partial', () => {
-    // A surviving sliver (10% exposed) keeps the core over the disc + margin so
-    // stars can't pop against the limb-hugging bloom.
-    expect(sunGlareMaskCoreOuterPx(100, 1, 0.1)).toBeGreaterThanOrEqual(120);
+  it('still covers the whole disc plus a margin through a deep partial', () => {
+    // A surviving sliver (10% exposed) keeps the core past the limb so stars
+    // can't pop against the limb-hugging bloom.
+    expect(sunGlareMaskCoreOuterPx(100, 1, 0.1)).toBeGreaterThanOrEqual(110);
+  });
+
+  it('hugs the blaze through a partial instead of holding the full-sun reach', () => {
+    // During an eclipse the occluder's mesh depth-occludes the covered side and
+    // the crescent-centred wash mask carries the lit side, so the core must
+    // release sky as the Sun is eaten — a quarter-covered Sun keeps well under
+    // the 2.5× full-sun blaze.
+    expect(sunGlareMaskCoreOuterPx(100, 1, 0.23)).toBeLessThan(180);
+    expect(sunGlareMaskCoreOuterPx(100, 1, 0.23))
+      .toBeLessThan(sunGlareMaskCoreOuterPx(100, 1, 1));
   });
 
   it('is monotone nondecreasing in the exposed fraction', () => {

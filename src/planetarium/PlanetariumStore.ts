@@ -26,6 +26,10 @@ export type LandedTarget =
   | { type: 'moon'; name: string; parentPlanet: string }
   | null;
 
+/** How the distance line under body labels behaves: revealed only on
+ *  hover/tap, or always shown. */
+export type LabelDistancesMode = 'hover' | 'always';
+
 export interface PlanetariumState {
   positionAU: { x: number; y: number; z: number };
   headingRad: number;
@@ -45,7 +49,7 @@ export interface PlanetariumState {
   showShip: boolean;         // show player ship mesh
   showConstellations?: boolean; // show constellation lines overlay
   showBodyLabels?: boolean;  // show planet/moon/Sun name labels
-  showBodyLabelDistances?: boolean; // show distances beneath planet/Sun labels
+  labelDistancesMode?: LabelDistancesMode; // distance line: reveal on hover/tap, or always
   showBodyMarkers?: boolean; // show planet glow-dot marker sprites
   showOrbitLines?: boolean;  // show planet orbit lines
   // Corner system chart while cruising — absent until the user flips the ☰
@@ -66,6 +70,11 @@ export interface PlanetariumState {
    * toggle: the default is device-dependent (on for fine pointers) and is
    * resolved at read time, never persisted. */
   skyPref?: boolean;
+  /** Which basis `headingRad`/`pitchRad` are measured in. Absent means the
+   * old scene-equatorial basis: those saves are converted once, at apply, so
+   * a returning ship still points where it was left. Only the ANGLES change
+   * basis — `positionAU` is frame-independent. */
+  headingBasis?: 'ecliptic';
 }
 
 function isFiniteNumber(value: unknown): value is number {
@@ -132,9 +141,12 @@ export function sanitizePlanetariumState(raw: unknown): PlanetariumState | null 
     showShip: typeof record.showShip === 'boolean' ? record.showShip : defaults.showShip,
     showConstellations: typeof record.showConstellations === 'boolean' ? record.showConstellations : defaults.showConstellations,
     showBodyLabels: typeof record.showBodyLabels === 'boolean' ? record.showBodyLabels : defaults.showBodyLabels,
-    showBodyLabelDistances: typeof record.showBodyLabelDistances === 'boolean'
-      ? record.showBodyLabelDistances
-      : defaults.showBodyLabelDistances,
+    // Only the two literals survive. A legacy boolean `showBodyLabelDistances`
+    // (either value) is deliberately dropped: both collapse to hover-reveal, so
+    // the resting screen is quiet regardless of the old opt-out.
+    labelDistancesMode: record.labelDistancesMode === 'always' || record.labelDistancesMode === 'hover'
+      ? record.labelDistancesMode
+      : defaults.labelDistancesMode,
     showBodyMarkers: typeof record.showBodyMarkers === 'boolean' ? record.showBodyMarkers : defaults.showBodyMarkers,
     showOrbitLines: typeof record.showOrbitLines === 'boolean' ? record.showOrbitLines : defaults.showOrbitLines,
     // No default, like skyPref below: only a save whose user actually pressed
@@ -154,6 +166,10 @@ export function sanitizePlanetariumState(raw: unknown): PlanetariumState | null 
     // so the 30 s auto-save (JSON.stringify drops it) can't bake one device's
     // hover/pointer default into a save that may be opened on another.
     skyPref: typeof record.skyPref === 'boolean' ? record.skyPref : undefined,
+    // Explicit passthrough, and no default: absence is the legacy signal the
+    // apply-time conversion reads. Dropping the field here would re-convert
+    // an already-converted save on every load and compound the rotation.
+    headingBasis: record.headingBasis === 'ecliptic' ? 'ecliptic' : undefined,
   };
 }
 
@@ -197,13 +213,14 @@ export function createDefaultPlanetariumState(): PlanetariumState {
     showShip: true,
     showConstellations: false,
     showBodyLabels: true,
-    showBodyLabelDistances: true,
+    labelDistancesMode: 'hover',
     showBodyMarkers: true,
     showOrbitLines: false,
     landedOn: null,
     systemSpeed: 0.083,
     systemSlowdown: true,
     autopilotUserEngaged: false,
+    headingBasis: 'ecliptic',
   };
 }
 

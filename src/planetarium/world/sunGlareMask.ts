@@ -45,6 +45,9 @@ export interface SunGlareMaskParams {
   /** Wash amplitude `uVeilStrength × veilAmt × exposureScale` (shader veilEnergy
    *  without the flash/atmosphere terms). ~0 in the outer system. */
   peak: number;
+  /** Foreground source transmission. The wide wash uses it linearly; the
+   *  compact geometric core uses the glare shader's `pow(x, 0.38)` response. */
+  transmission: number;
   /** Diffraction-arm coefficient (shader uArmCoeff); 0 once the disc resolves. */
   armCoeff: number;
   /** Horizontal arm e-fold length, CSS px. */
@@ -70,19 +73,30 @@ function clamp01(x: number): number {
 }
 
 /**
+ * How much of a point consumer's alpha the mask may remove at saturation.
+ * Deliberately short of 1: veiling glare attenuates, it doesn't erase — a
+ * bright star still shows through the thin outer wash the way Venus shows
+ * through twilight glare. Where the drawn halo is genuinely bright, the
+ * surviving sliver of star alpha adds a few counts under a hundred-count
+ * blaze and stays invisible, so the halo still reads opaque.
+ */
+export const SUN_GLARE_MASK_MAX_KILL = 0.9;
+
+/**
  * Outer radius of the geometric obscuration core, in CSS px. The core stands in
  * for the saturated blaze around the *exposed* photosphere, floored at the bare
  * outer-system glint so a distant point-Sun still obscures coincident dots.
  *
  * Two things govern it. While any sliver of photosphere still burns, the core
- * covers the whole disc plus a margin — `1.2 ×` the disc radius at minimum,
- * because the surviving sliver's bloom hugs the limb and stars must not pop
- * against it. On top of that margin, the reach out to the full `2.5 ×` blaze
- * decays with the visible energy (`^0.38`, the drawn glare's own convention), so
- * a deep partial keeps a tight core and a full Sun keeps the wide one. Only the
- * final 0.2% — the collapse into totality — releases the whole core to 0, which
- * is what lets the corona and stars own the sky beside a void-black eclipsing
- * disc (that disc's own opaque mesh depth-occludes whatever is behind it).
+ * keeps a hair of margin past the limb (`1.05 ×` the disc radius) and grows
+ * toward the full `2.5 ×` blaze with the exposed fraction (`√vis` — tighter
+ * through the partials than the drawn glare's `^0.38` energy convention on
+ * purpose: during an eclipse the occluder's opaque mesh depth-occludes the
+ * covered side, and the crescent-centred wash mask carries the lit side's
+ * bloom, so a disc-wide core would only erase honest sky). Only the final
+ * 0.2% — the collapse into totality — releases the whole core to 0, which is
+ * what lets the corona and stars own the sky beside a void-black eclipsing
+ * disc.
  */
 export function sunGlareMaskCoreOuterPx(
   solarRadiusPx: number,
@@ -90,7 +104,7 @@ export function sunGlareMaskCoreOuterPx(
   bodyVisibleFraction: number,
 ): number {
   const vis = clamp01(bodyVisibleFraction);
-  const reach = solarRadiusPx * (1.2 + 1.3 * Math.pow(vis, 0.38));
+  const reach = solarRadiusPx * (1.05 + 1.45 * Math.sqrt(vis));
   return Math.max(glintFloorPx, reach) * smoothstep(0, 0.002, vis);
 }
 
@@ -134,6 +148,7 @@ export function sunGlareMaskActivation(input: SunGlareMaskActivationInput): bool
  * so the wash, the directional arms, and the core are computed once.
  */
 function maskFromOffsets(p: SunGlareMaskParams, dx: number, dy: number, dPx: number): number {
+  const transmission = clamp01(p.transmission);
   const h = Math.max(p.viewportHeight, 1);
   // Screen-space Moffat wash — the same profile the glare fragment draws.
   const dNorm = dPx / (SUN_VEIL_SCALE_H * h);
@@ -145,12 +160,13 @@ function maskFromOffsets(p: SunGlareMaskParams, dx: number, dy: number, dPx: num
   const ay = dx / 1.7;
   const armX = Math.exp(-ax * ax) * Math.exp(-Math.abs(dx) / Math.max(p.armDecayPx, 1));
   const armY = Math.exp(-ay * ay) * Math.exp(-Math.abs(dy) / Math.max(p.armDecayYPx, 1)) * 0.25;
-  const localVeil = p.peak * (moffat + p.armCoeff * (armX + armY));
+  const localVeil = p.peak * transmission * (moffat + p.armCoeff * (armX + armY));
   const wideMask = smoothstep(0.01, 0.08, localVeil);
   // A small geometric core independent of the wash so the bare outer-system
   // glint (wash ~0) still obscures points sitting right on it.
   const coreMask = p.coreOuterPx > 0
-    ? 1 - smoothstep(0.45 * p.coreOuterPx, p.coreOuterPx, dPx)
+    ? (1 - smoothstep(0.45 * p.coreOuterPx, p.coreOuterPx, dPx))
+      * Math.pow(transmission, 0.38)
     : 0;
   return Math.max(wideMask, coreMask);
 }
@@ -196,11 +212,13 @@ const SUN_LABEL_CLEAR_PAD_PX = 12;
  * non-decreasing in `peak`.
  */
 export function sunLabelClearRadiusPx(p: SunGlareMaskParams): number {
-  if (!p.active) return 0;
-  if (p.peak <= SUN_LABEL_CLEAR_L) return SUN_LABEL_CLEAR_PAD_PX;
+  const transmission = clamp01(p.transmission);
+  if (!p.active || transmission <= 0) return 0;
+  const effectivePeak = p.peak * transmission;
+  if (effectivePeak <= SUN_LABEL_CLEAR_L) return SUN_LABEL_CLEAR_PAD_PX;
   const h = Math.max(p.viewportHeight, 1);
   // peak · (1 + dNorm²)^(-β) = L  ->  dNorm² = (peak / L)^(1/β) − 1
-  const ratio = Math.pow(p.peak / SUN_LABEL_CLEAR_L, 1 / SUN_VEIL_BETA);
+  const ratio = Math.pow(effectivePeak / SUN_LABEL_CLEAR_L, 1 / SUN_VEIL_BETA);
   const dNorm = Math.sqrt(Math.max(ratio - 1, 0));
   return dNorm * SUN_VEIL_SCALE_H * h + SUN_LABEL_CLEAR_PAD_PX;
 }
@@ -227,6 +245,7 @@ uniform float uSunMaskActive;
 uniform vec2 uSunMaskScreenPx;
 uniform vec2 uSunMaskViewportPx;
 uniform float uSunMaskPeak;
+uniform float uSunMaskTransmission;
 uniform float uSunMaskArmCoeff;
 uniform float uSunMaskArmDecayPx;
 uniform float uSunMaskArmDecayYPx;
@@ -250,11 +269,14 @@ float sunGlareMask(vec4 clip) {
   float ay = d.x / 1.7;
   float armX = exp(-ax * ax) * exp(-abs(d.x) / max(uSunMaskArmDecayPx, 1.0));
   float armY = exp(-ay * ay) * exp(-abs(d.y) / max(uSunMaskArmDecayYPx, 1.0)) * 0.25;
-  float localVeil = uSunMaskPeak * (moffat + uSunMaskArmCoeff * (armX + armY));
+  float transmission = clamp(uSunMaskTransmission, 0.0, 1.0);
+  float localVeil = uSunMaskPeak * transmission
+    * (moffat + uSunMaskArmCoeff * (armX + armY));
   float wideMask = smoothstep(0.01, 0.08, localVeil);
   float coreMask = uSunMaskCoreOuterPx > 0.5
     ? 1.0 - smoothstep(0.45 * uSunMaskCoreOuterPx, uSunMaskCoreOuterPx, dPx)
     : 0.0;
+  coreMask *= pow(transmission, 0.38);
   return max(wideMask, coreMask);
 }
 `;
@@ -266,6 +288,7 @@ export interface SunGlareMaskUniforms extends LensShaderUniforms {
   uSunMaskScreenPx: { value: THREE.Vector2 };
   uSunMaskViewportPx: { value: THREE.Vector2 };
   uSunMaskPeak: { value: number };
+  uSunMaskTransmission: { value: number };
   uSunMaskArmCoeff: { value: number };
   uSunMaskArmDecayPx: { value: number };
   uSunMaskArmDecayYPx: { value: number };
@@ -280,6 +303,7 @@ export function createSunGlareMaskUniforms(): SunGlareMaskUniforms {
     uSunMaskScreenPx: { value: new THREE.Vector2() },
     uSunMaskViewportPx: { value: new THREE.Vector2(1, 1) },
     uSunMaskPeak: { value: 0 },
+    uSunMaskTransmission: { value: 1 },
     uSunMaskArmCoeff: { value: 0 },
     uSunMaskArmDecayPx: { value: 0 },
     uSunMaskArmDecayYPx: { value: 0 },
@@ -300,6 +324,7 @@ export function applySunGlareMaskParams(
   u.uSunMaskScreenPx.value.set(p.sunXPx, p.sunYPx);
   u.uSunMaskViewportPx.value.set(viewportWidth, p.viewportHeight);
   u.uSunMaskPeak.value = p.peak;
+  u.uSunMaskTransmission.value = clamp01(p.transmission);
   u.uSunMaskArmCoeff.value = p.armCoeff;
   u.uSunMaskArmDecayPx.value = p.armDecayPx;
   u.uSunMaskArmDecayYPx.value = p.armDecayYPx;
@@ -324,7 +349,7 @@ export function augmentPointsMaterialWithSunGlareMask(mat: THREE.PointsMaterial)
       )
       .replace(
         '#include <project_vertex>',
-        '#include <project_vertex>\n\tvSunGlareMaskAlpha = 1.0 - 0.98 * sunGlareMask(gl_Position);',
+        `#include <project_vertex>\n\tvSunGlareMaskAlpha = 1.0 - ${SUN_GLARE_MASK_MAX_KILL.toFixed(2)} * sunGlareMask(gl_Position);`,
       );
     shader.fragmentShader = shader.fragmentShader
       .replace('#include <common>', '#include <common>\nvarying float vSunGlareMaskAlpha;')

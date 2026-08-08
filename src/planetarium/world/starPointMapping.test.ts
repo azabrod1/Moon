@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import {
+  STAR_FAINT_ANCHOR_MAG,
   STAR_POINT_MAPPING,
+  starBeyondAnchorScale,
   starFaintFraction,
   starPointBaseSize,
   starPointBrightness,
@@ -41,6 +43,31 @@ describe('starPointMapping — formulas', () => {
     expect(v.alpha).toBeCloseTo(STAR_POINT_MAPPING.faintMinAlpha, 12); // 0.45
     // baseSize at mag 6.5 clamps to 1.2, then × 0.8 = 0.96, floored to 1.0.
     expect(v.sizePx).toBe(1.0);
+  });
+
+  it('leaves everything at or above the anchor completely untouched', () => {
+    // The whole point of pinning the anchor: deepening the catalog must not
+    // reach any star that was already on the sky.
+    for (const mag of [-1.44, 0, 2.5, 5, 6.5, 7.0, STAR_FAINT_ANCHOR_MAG]) {
+      expect(starBeyondAnchorScale(mag)).toBe(1);
+    }
+  });
+
+  it('tapers past the anchor toward a floor, never to nothing', () => {
+    const p = STAR_POINT_MAPPING;
+    const justPast = starBeyondAnchorScale(STAR_FAINT_ANCHOR_MAG + 0.48); // the 7.5 catalog edge
+    expect(justPast).toBeLessThan(1);
+    expect(justPast).toBeGreaterThan(p.beyondAnchorAlphaScale);
+    // Monotone down, and it bottoms out rather than fading a real star away.
+    let previous = 1;
+    for (let d = 0; d <= 4; d += 0.1) {
+      const scale = starBeyondAnchorScale(STAR_FAINT_ANCHOR_MAG + d);
+      expect(scale).toBeLessThanOrEqual(previous + 1e-12);
+      expect(scale).toBeGreaterThanOrEqual(p.beyondAnchorAlphaScale);
+      previous = scale;
+    }
+    expect(starBeyondAnchorScale(STAR_FAINT_ANCHOR_MAG + p.beyondAnchorRangeMag))
+      .toBeCloseTo(p.beyondAnchorAlphaScale, 12);
   });
 
   it('visual: an out scratch is filled and returned (zero-alloc path)', () => {

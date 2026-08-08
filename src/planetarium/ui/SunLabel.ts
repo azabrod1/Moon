@@ -43,13 +43,24 @@ export class SunLabel {
     distanceFromSunAU: number,
     sunRadiusPx: number,
     isOccluded: (screenX: number, screenY: number, depth: number) => boolean,
+    // Label visibility policy: `labelsOn` is the master "Planet labels" setting;
+    // `revealed` is the hover/tap reveal, which draws the Sun label (and its
+    // distance line, at full opacity) even with labels off. The physical gate
+    // below (hidden inside 1.67 AU) is never lifted by the reveal.
+    labelsOn: boolean,
+    revealed: boolean,
     sunMask?: SunGlareMaskParams,
   ): void {
     if (!this.el) return;
+    if (!labelsOn && !revealed) {
+      this.hide();
+      return;
+    }
     if (!shouldShowSunLabel(distanceFromSunAU)) {
       this.hide();
       return;
     }
+    this.el.classList.toggle('revealed', revealed);
 
     const projected = projectToScreen(sunWorldPos, camera, canvas.clientWidth, canvas.clientHeight);
     const screenX = projected.x;

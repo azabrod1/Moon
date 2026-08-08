@@ -1,11 +1,26 @@
 import { describe, expect, it } from 'vitest';
 import { BLOOM_THRESHOLD } from '../../app/bloomConfig';
 import { BRIGHT_STAR_CATALOG } from '../data/brightStars';
-import { starRenderColor } from './starfield';
+import { starfieldFaintLimitMag, starRenderColor } from './starfield';
+import { STAR_FAINT_ANCHOR_MAG } from './starPointMapping';
 
 // Rec.709 luminance weights — the same coefficients three's bloom high-pass
 // (LuminosityHighPassShader) uses for the working sRGB colour space.
 const REC709 = [0.2126, 0.7152, 0.0722] as const;
+
+describe('starfield faint anchor', () => {
+  it('is pinned, not read off the catalog', () => {
+    // The catalog now runs deeper than the anchor. If the faint limit tracked
+    // the catalog again, every star in the last 1.6 magnitudes would brighten
+    // and the moon dots' handoff would slide with it.
+    expect(starfieldFaintLimitMag()).toBe(STAR_FAINT_ANCHOR_MAG);
+    const faintest = BRIGHT_STAR_CATALOG.reduce(
+      (dimmest, s) => (s.magnitude > -10 && s.magnitude > dimmest ? s.magnitude : dimmest),
+      -Infinity,
+    );
+    expect(faintest).toBeGreaterThan(STAR_FAINT_ANCHOR_MAG);
+  });
+});
 
 describe('starfield bloom-threshold invariant', () => {
   it('keeps every catalog star below the bloom cutoff, with headroom to spare', () => {

@@ -77,8 +77,10 @@ export interface MoonDotParams {
    *  Applied before the disc/edge crossfades — a resolved or edge target still
    *  fades out. */
   targetMinIntensity: number;
-  /** Below the star catalog's faint limit, alpha ramps from the star faint-end
-   *  floor to zero over this many magnitudes — dots fade in from nothing. */
+  /** Below the starfield's anchor magnitude, alpha ramps from the star
+   *  faint-end floor to zero over this many magnitudes — dots fade in from
+   *  nothing. (The sky itself carries catalog stars a little past the anchor
+   *  on its own taper; the dots' ramp starts at the anchor.) */
   faintExtendMag: number;
   /** System-edge fade: dots ramp in over the last fraction of the system
    *  visibility threshold distance, so a system's dots never appear as a
@@ -247,7 +249,7 @@ const starVisualScratch: StarPointVisual = { brightness: 0, sizePx: 0, alpha: 0 
 /**
  * Full per-frame visual for one moon dot. Composition order is deliberate and
  * test-pinned: star-scale brightness/size/alpha from the shared mapping → extend
- * the faint-end alpha below the catalog limit toward zero → floor the nav
+ * the faint-end alpha below the anchor magnitude toward zero → floor the nav
  * target's contribution only where there is real flux → multiply the disc-handoff
  * crossfade and the system-edge fade.
  * Pass `out` to reuse a result object (per-frame callers — no allocation).
@@ -279,7 +281,7 @@ export function moonDotVisual(
   const effectiveMag = Math.max(magnitude, params.magCeiling);
   const star = starPointVisual(effectiveMag, starFaintLimitMag, starMapping, starVisualScratch);
 
-  // Extend the faint-end alpha below the catalog limit toward zero. At the limit
+  // Extend the faint-end alpha below the anchor magnitude toward zero. At the limit
   // the star floor is faintMinAlpha and this multiplier is 1, so the two meet
   // continuously; a dimmer dot fades on to nothing over faintExtendMag.
   const extend =

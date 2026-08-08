@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import {
+  advanceDiamondRing,
   advanceSunEmergenceFlash,
+  chromosphereSideWeights,
   circleOcclusionFraction,
   diamondRingStrength,
   eclipseOccluderLikeness,
@@ -150,6 +152,66 @@ describe('diamondRingStrength', () => {
   });
 });
 
+describe('chromosphereSideWeights', () => {
+  // The 2026-08-12 total eclipse: the Moon's disc is 3.9% wider than the Sun's,
+  // so both contacts happen with the centres 0.039 solar radii apart and
+  // mid-totality is concentric.
+  const R = 1.039;
+  const CONTACT = R - 1;
+  const totalGeometry = (separationSr: number, visibleFraction = 0) =>
+    chromosphereSideWeights({ separationSr, occluderRadiiSr: R, visibleFraction });
+
+  it('burns on the away limb at both contacts', () => {
+    // Second and third contact are the same geometry — the occluder arrives at
+    // this separation and leaves through it — so one assertion covers both.
+    expect(totalGeometry(CONTACT).anti).toBeCloseTo(1, 6);
+    expect(totalGeometry(CONTACT - 0.003).anti).toBeGreaterThanOrEqual(0.5);
+    expect(totalGeometry(CONTACT + 0.003).anti).toBeGreaterThanOrEqual(0.5);
+  });
+
+  it('is spent by mid-totality, when the occluder has buried both limbs', () => {
+    expect(totalGeometry(0).anti).toBeLessThanOrEqual(0.05);
+  });
+
+  it('never lights the limb the occluder covers first', () => {
+    for (let d = 0; d <= 0.5; d += 0.005) {
+      expect(totalGeometry(d).toward).toBeLessThanOrEqual(0.05);
+    }
+  });
+
+  it('stays dark while any real photosphere is still exposed', () => {
+    const sliver = totalGeometry(CONTACT, 0.05);
+    expect(sliver.anti).toBe(0);
+    expect(sliver.toward).toBe(0);
+    // The gate closes across the band, not at one value.
+    expect(totalGeometry(CONTACT, 0.002).anti).toBeCloseTo(1, 6);
+    expect(totalGeometry(CONTACT, 0.03).anti).toBe(0);
+    expect(totalGeometry(CONTACT, 0.012).anti).toBeLessThan(1);
+  });
+
+  it('gives annular geometry no contact reds at all', () => {
+    for (let d = 0; d <= 0.3; d += 0.01) {
+      const w = chromosphereSideWeights({
+        separationSr: d, occluderRadiiSr: 0.9, visibleFraction: 0,
+      });
+      expect(w.anti).toBe(0);
+      expect(w.toward).toBe(0);
+    }
+    // Exactly Sun-sized is still no total contact.
+    expect(chromosphereSideWeights({
+      separationSr: 0, occluderRadiiSr: 1, visibleFraction: 0,
+    }).anti).toBe(0);
+  });
+
+  it('depends on nothing but its inputs, so the clock rate cannot reach it', () => {
+    const once = totalGeometry(0.02, 0.001);
+    totalGeometry(CONTACT, 0);
+    totalGeometry(0, 0.5);
+    const again = totalGeometry(0.02, 0.001);
+    expect(again).toEqual(once);
+  });
+});
+
 describe('silhouetteSizeGate', () => {
   it('keeps the silhouette for eclipse-scale occluders, annular through total', () => {
     expect(silhouetteSizeGate(0.9)).toBe(1);  // annular (sub-Sun) keeps its black disc
@@ -215,6 +277,66 @@ describe('advanceSunEmergenceFlash', () => {
       dt: 1 / 60,
       eligible: false,
     })).toBe(0);
+  });
+});
+
+describe('advanceDiamondRing', () => {
+  it('advances at the same rate whatever the frame cadence', () => {
+    const whole = advanceDiamondRing({ current: 0.2, target: 1, dt: 1 / 30, snap: false });
+    const half = advanceDiamondRing({ current: 0.2, target: 1, dt: 1 / 60, snap: false });
+    const halves = advanceDiamondRing({ current: half, target: 1, dt: 1 / 60, snap: false });
+    expect(halves).toBeCloseTo(whole, 6);
+  });
+
+  it('strikes faster than it releases', () => {
+    const struck = advanceDiamondRing({ current: 0, target: 1, dt: 0.1, snap: false });
+    const released = 1 - advanceDiamondRing({ current: 1, target: 0, dt: 0.1, snap: false });
+    expect(struck).toBeGreaterThan(released);
+  });
+
+  it('snaps to the target in both directions', () => {
+    expect(advanceDiamondRing({ current: 0, target: 0.7, dt: 1 / 60, snap: true })).toBe(0.7);
+    expect(advanceDiamondRing({ current: 1, target: 0, dt: 1 / 60, snap: true })).toBe(0);
+  });
+
+  it('leaves the blaze on its own constants when none are named', () => {
+    // The chromosphere arcs pass their own taus; omitting them has to reproduce
+    // the diamond's shipped 0.12 s strike / 0.25 s release exactly.
+    const strike = advanceDiamondRing({ current: 0.2, target: 1, dt: 0.05, snap: false });
+    expect(strike).toBeCloseTo(0.2 + 0.8 * (1 - Math.exp(-0.05 / 0.12)), 12);
+    const release = advanceDiamondRing({ current: 1, target: 0, dt: 0.05, snap: false });
+    expect(release).toBeCloseTo(1 - 1 * (1 - Math.exp(-0.05 / 0.25)), 12);
+  });
+
+  it('takes named constants on each edge independently', () => {
+    const slowStrike = advanceDiamondRing({
+      current: 0, target: 1, dt: 0.05, snap: false, attackTau: 0.15, releaseTau: 0.35,
+    });
+    expect(slowStrike).toBeCloseTo(1 - Math.exp(-0.05 / 0.15), 12);
+    const slowRelease = advanceDiamondRing({
+      current: 1, target: 0, dt: 0.05, snap: false, attackTau: 0.15, releaseTau: 0.35,
+    });
+    expect(slowRelease).toBeCloseTo(Math.exp(-0.05 / 0.35), 12);
+    // Slower constants mean less travel per frame on both edges.
+    expect(slowStrike).toBeLessThan(
+      advanceDiamondRing({ current: 0, target: 1, dt: 0.05, snap: false }),
+    );
+    expect(slowRelease).toBeGreaterThan(
+      advanceDiamondRing({ current: 1, target: 0, dt: 0.05, snap: false }),
+    );
+  });
+
+  it('holds still on a zero or negative frame delta', () => {
+    expect(advanceDiamondRing({ current: 0.4, target: 1, dt: 0, snap: false })).toBe(0.4);
+    expect(advanceDiamondRing({ current: 0.4, target: 1, dt: -0.5, snap: false })).toBe(0.4);
+  });
+
+  it('decays to nothing within a couple of seconds', () => {
+    let value = 1;
+    for (let i = 0; i < 120; i += 1) {
+      value = advanceDiamondRing({ current: value, target: 0, dt: 1 / 60, snap: false });
+    }
+    expect(value).toBeLessThan(1e-3);
   });
 });
 

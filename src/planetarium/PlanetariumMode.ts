@@ -20,12 +20,18 @@ import {
   type SolarSystemObjects,
   type PlanetariumLayout,
 } from './SolarSystem';
-import { PlayerShip } from './PlayerShip';
-import { PlanetLabels } from './PlanetLabels';
-import { PlanetariumStore, createDefaultPlanetariumState, type PlanetariumState, type LandedTarget } from './PlanetariumStore';
+import { PlayerShip, type ShipProfile } from './PlayerShip';
+import { PlanetLabels, discRadiusPx, pickBodyAtPointer, type PickCandidate } from './PlanetLabels';
+import { PlanetariumStore, createDefaultPlanetariumState, type PlanetariumState, type LandedTarget, type LabelDistancesMode } from './PlanetariumStore';
 import { solarExposureTarget } from './solarExposure';
 import { computeStats } from './stats';
-import { PLANETARIUM_BODIES, SUN_DATA, type PlanetData } from './planets/planetData';
+import {
+  PLANETARIUM_BODIES,
+  SUN_DATA,
+  SUN_POLE_DEC_DEG,
+  SUN_POLE_RA_DEG,
+  type PlanetData,
+} from './planets/planetData';
 import { applySunGlowTier, cancelTextureUpgrade, createMoonMeshes, createShaderWarmupProbes, setWarmEligibleMoonParents, upgradeTextureOnApproach, ATMOSPHERES, ATMOSPHERE_SHELL_SCALES, type MoonMesh, type TextureUpgrade } from './PlanetFactory';
 import type { SurfaceShadingFx } from './world/surfaceShading';
 import { bindTextureWarmer, invalidateTextureWarmCache, pumpTextureWarmQueue, queueTextureWarm, resetTextureWarmer } from './world/textureWarmer';
@@ -74,7 +80,12 @@ import { OBSERVATORY_JUMP_LEAD_MS, stepperSearchFromUtcMs } from './observatoryT
 import { surfacePerfBeginSpan, surfacePerfEndSpan } from './surfacePerf';
 import { findEvent, type EventType } from '../astronomy/ephemeris';
 import { KM_PER_AU } from '../astronomy/constants';
-import { createPlanetariumStarfield, setStarfieldPixelRatio, starfieldFaintLimitMag } from './world/starfield';
+import {
+  createPlanetariumStarfield,
+  setStarfieldGain,
+  setStarfieldPixelRatio,
+  starfieldFaintLimitMag,
+} from './world/starfield';
 import { MoonDots } from './world/MoonDots';
 import {
   MOON_DOT_PARAMS,
@@ -150,7 +161,11 @@ import {
   renderedMoonRadiusAU,
 } from './moonRenderSize';
 import {
+  advanceDiamondRing,
   advanceSunEmergenceFlash,
+  chromosphereSideWeights,
+  CHROMOSPHERE_ATTACK_TAU_S,
+  CHROMOSPHERE_RELEASE_TAU_S,
   circleOcclusionFraction,
   diamondRingStrength,
   eclipseOccluderLikeness,
@@ -183,6 +198,16 @@ import {
   ringAnnulusDistanceAU,
   type CameraBodyShell,
 } from './cruiseView';
+import {
+  SHIP_SUN_DISC_SAMPLES,
+  shipHullMayOverlapSource,
+  unblockedShipSunFraction,
+} from './shipSunOcclusion';
+import {
+  eclipticHeadingPitchFromEquatorial,
+  flightAnglesFromSceneDirection,
+  FLIGHT_UP_SCENE,
+} from './flightFrame';
 import { KM_CONSTANTS } from '../shared/constants/physicalData';
 import { smoothstepUnclamped } from '../shared/math/smoothstep';
 import {
@@ -380,6 +405,11 @@ const RING_GLARE_TRANSMISSION: Record<RingStyle, number> = {
 // glare's falloff (the ISS reference stills that inspired it are at Earth).
 const SUN_ANG_RADIUS_AT_1AU = Math.asin(SUN_DATA.radiusAU);
 
+/** The Sun's rotation axis as a scene direction. Built once through the frame's
+ *  single chirality definition site, so the corona's lobes inherit the same
+ *  sky the stars and constellations are drawn in. */
+const SUN_POLE_DIRECTION = raDecToVector(SUN_POLE_RA_DEG, SUN_POLE_DEC_DEG).normalize();
+
 // Visibility floor the veil billboard is sized to: the pixel radius where the
 // wash and arms fall below this HDR value is the quad's support, so the quad
 // tracks the light instead of an authored amount. Small enough that the
@@ -404,7 +434,6 @@ export class PlanetariumMode {
   // as the single sizing policy; the state-dependent anchor pick is
   // moonRenderAnchorRatio, and every controller consumer resolves through
   // renderedMoonSizeAU so the dev γ override reaches all of them.
-  /** Ecliptic north in the scene's equatorial frame (tidal-lock roll reference for Earth's Moon). */
   private static readonly EARTH_DETAIL_MIN_DISTANCE_AU = 0.03;
   private static readonly EARTH_DETAIL_MIN_ANGULAR_DIAMETER_RAD = 0.003;
   /** Per-frame wall-clock slice for the Observatory panel's upcoming-events search. */
@@ -434,9 +463,114 @@ export class PlanetariumMode {
   private constellations: Constellations | null = null;
   private showConstellations = false;
   private showBodyLabels = true;
-  private showBodyLabelDistances = true;
+  private labelDistancesMode: LabelDistancesMode = 'hover';
   private showBodyMarkers = true;
   private showOrbitLines = false;
+
+  // Hover/tap body reveal. `revealedBody` is the one body (planet, moon, or
+  // 'Sun') whose label is drawn regardless of the label/marker settings and of
+  // hide-distances — resolved once per frame from the pointer against a live
+  // pick list. Touch reveal holds for a spell after a tap; mouse hover tracks
+  // the pointer live. `worldLabelsModalHidden` is the separate modal-hide.
+  private revealedBody: string | null = null;
+  private hoverClientX = 0;
+  private hoverClientY = 0;
+  private hoverEligible = false; // pointer is a mouse currently over canvas/touch-zone
+  private touchRevealBody: string | null = null;
+  private touchRevealUntil = 0;
+  // A recognized tap queues its point; the next pipeline frame builds a fresh
+  // pick list and resolves it (a flick can be faster than one render frame, so
+  // hit-testing right in the pointerup handler would read a stale/empty list).
+  private pendingTapX = 0;
+  private pendingTapY = 0;
+  private hasPendingTap = false;
+  private static readonly TOUCH_REVEAL_MS = 2500;
+  private static readonly TAP_SLOP_PX = 4;
+  private static readonly TAP_MAX_MS = 500;
+  // Tap gesture bookkeeping for the window-level tracker.
+  private gesturePointerId: number | null = null;
+  private gestureStartX = 0;
+  private gestureStartY = 0;
+  private gestureStartT = 0;
+  private gestureMoved = false;
+  private gestureMultiPointer = false;
+  private pointersDown = 0;
+  private worldLabelsModalHidden = false;
+  // Pooled pick list (references into `bodyPickPool`, exact length each frame)
+  // and its projection scratch — zero allocation in steady state.
+  private bodyPickPool: PickCandidate[] = [];
+  private bodyPickList: PickCandidate[] = [];
+  private pickProjScratch: ScreenProjection = { x: 0, y: 0, ndcX: 0, ndcY: 0, ndcZ: 0 };
+  private pickTempV = new THREE.Vector3();
+  private pickScenePositions: Map<string, { x: number; y: number; z: number }> | null = null;
+  private readonly labelPlayerOrigin = { x: 0, y: 0, z: 0 };
+  private planetLabelsContainerEl: HTMLElement | null = null;
+
+  // A gesture is only tracked when it BEGINS on the renderer canvas or a
+  // touch-flight-zone — never on UI/overlay chrome sitting above them.
+  private isCanvasOrZone(target: EventTarget | null): boolean {
+    if (!(target instanceof Element)) return false;
+    if (target === this.renderer.domElement) return true;
+    return target.classList.contains('touch-flight-zone');
+  }
+
+  // Window-level, capture-phase pointer tracker owned by the mode: the orbit
+  // canvas listener early-returns outside drags, and coarse-pointer cruise
+  // touches land on the touch-zones above the canvas, so neither sees the taps
+  // and hovers the reveal needs. It only OBSERVES — no preventDefault — so a
+  // body tap still steers exactly as before.
+  private onWindowPointerDown = (e: PointerEvent): void => {
+    if (!this.active) return;
+    const originOk = this.isCanvasOrZone(e.target);
+    this.hoverClientX = e.clientX;
+    this.hoverClientY = e.clientY;
+    this.hoverEligible = e.pointerType === 'mouse' && originOk;
+    this.pointersDown++;
+    if (this.gesturePointerId === null && this.pointersDown === 1 && originOk) {
+      this.gesturePointerId = e.pointerId;
+      this.gestureStartX = e.clientX;
+      this.gestureStartY = e.clientY;
+      this.gestureStartT = e.timeStamp;
+      this.gestureMoved = false;
+      this.gestureMultiPointer = false;
+    } else {
+      // A second finger (or a down that didn't start the gesture) disqualifies
+      // the current tap.
+      this.gestureMultiPointer = true;
+    }
+  };
+
+  private onWindowPointerMove = (e: PointerEvent): void => {
+    if (!this.active) return;
+    this.hoverClientX = e.clientX;
+    this.hoverClientY = e.clientY;
+    this.hoverEligible = e.pointerType === 'mouse' && this.isCanvasOrZone(e.target);
+    if (this.gesturePointerId === e.pointerId) {
+      const dx = e.clientX - this.gestureStartX;
+      const dy = e.clientY - this.gestureStartY;
+      const slop = PlanetariumMode.TAP_SLOP_PX;
+      if (dx * dx + dy * dy > slop * slop) this.gestureMoved = true;
+    }
+  };
+
+  private onWindowPointerUp = (e: PointerEvent): void => {
+    if (!this.active) return;
+    this.pointersDown = Math.max(0, this.pointersDown - 1);
+    if (this.gesturePointerId === e.pointerId) {
+      const heldMs = e.timeStamp - this.gestureStartT;
+      const isTap = !this.gestureMoved && !this.gestureMultiPointer && heldMs <= PlanetariumMode.TAP_MAX_MS;
+      // Mouse clicks rely on live hover, not the timed reveal, so only touch/pen
+      // taps arm the 2.5 s window.
+      if (isTap && e.pointerType !== 'mouse') this.handleBodyTap(e.clientX, e.clientY);
+      this.gesturePointerId = null;
+    }
+  };
+
+  private onWindowPointerCancel = (e: PointerEvent): void => {
+    this.pointersDown = Math.max(0, this.pointersDown - 1);
+    if (this.gesturePointerId === e.pointerId) this.gesturePointerId = null;
+    this.clearBodyReveal();
+  };
 
   // Planet world positions in AU (true positions, not offset)
   private planetWorldPositions = new Map<string, { x: number; y: number; z: number }>();
@@ -534,6 +668,26 @@ export class PlanetariumMode {
   private sunExposure = 1;
   private lastSunVisibleFraction = 1;
   private sunEmergenceFlash = 0;
+  /** Wall-time envelope behind uDiamondRing. The authored strength is a pure
+   *  function of the exposed fraction, which a warped clock can cross in one
+   *  frame; this carries the blaze at human speed regardless of time rate. */
+  private sunDiamondRing = 0;
+  /** Headless-QA scale on the uDiamondRing write (1 = normal). Lets a capture
+   *  decompose a contact frame into diamond-term vs everything-else shares. */
+  private devDiamondScale = 1;
+  /** Wall-time envelope behind uBeadCarveDepth — the bead's silhouette-cut
+   *  kill. Smoothed so eligibility edges (the occluder ratio crossing out of
+   *  the eclipse-like range while the bead still releases) fade, never pop. */
+  private sunBeadCarveDepth = 0;
+  /** Last usable screen angle of the Sun's rotation axis. Held across the frames
+   *  where the axis points too near the camera to project into a direction. */
+  private sunPoleScreenAngle = 0;
+  /** Wall-time envelopes behind uChromoAnti/uChromoToward — the contact
+   *  chromosphere on the limb away from the occluder and on the limb toward it.
+   *  Same reason as the blaze above: the geometry that lights them is a sliver
+   *  of the eclipse a warped clock steps straight over. */
+  private sunChromoAnti = 0;
+  private sunChromoToward = 0;
   // DOM chrome flood at the whiteout wall; last written opacity string keeps
   // the per-frame style write to actual changes only.
   private sunGlareFloodEl: HTMLElement | null = null;
@@ -696,9 +850,12 @@ export class PlanetariumMode {
    *  buffers fill in updateMoonDotsForCamera after the final camera pose. */
   private moonDots: MoonDots | null = null;
   private moonDotParams: MoonDotParams = { ...MOON_DOT_PARAMS };
-  /** Catalog faint-limit magnitude the dots' faint-end handoff lines up to
-   *  (the starfield's dimmest star); computed once. */
+  /** Faint-limit magnitude the dots' faint-end handoff lines up to — the
+   *  starfield's pinned anchor, not the catalog's dimmest entry. */
   private starFaintLimitMag = 6.5;
+  /** Eased telescope light grasp behind the starfield's uStarGain. 1 outside
+   *  the surface view, where it is a no-op on every star. */
+  private starGain = 1;
   /** Per-system inward fade [0,1], cached in updateMoonPositions where the
    *  player distance / visibility threshold are in hand. */
   private moonSystemEdgeFade = new Map<string, number>();
@@ -795,6 +952,10 @@ export class PlanetariumMode {
   // skipped so the camera can sit a few radii from a body without being pushed
   // back out past its moon system.
   private devFreeCamera = false;
+  // The profile-aware ship/Sun QA pose must survive updatePlanetScaling's
+  // deliberate per-frame mission-profile reassertion. Null in normal runtime;
+  // only the DEV bridge can set it.
+  private devShipProfileOverride: ShipProfile | null = null;
 
   // Near-Sun coverage meter — telemetry for the dev bridge only. The exposure
   // that actually reaches the render is sunExposure: updateSunShader adapts it
@@ -1079,6 +1240,7 @@ export class PlanetariumMode {
     priorityPx: number;
     halfW: number;
     isTarget: boolean;
+    isRevealed: boolean;
   }> = [];
   private resumePrompt = new PlanetariumResumePrompt();
   private helpModal = new PlanetariumHelpModal();
@@ -1446,7 +1608,15 @@ export class PlanetariumMode {
       // held key; yaw/pitch/throttle recompute from this set each frame
       // (processInput), so clearing it is enough.
       this.keys.clear();
+      this.clearBodyReveal();
     });
+
+    // Window-level capture tracker for the hover/tap body reveal (see the
+    // handler fields). Registered once; every handler gates on `this.active`.
+    window.addEventListener('pointerdown', this.onWindowPointerDown, true);
+    window.addEventListener('pointermove', this.onWindowPointerMove, true);
+    window.addEventListener('pointerup', this.onWindowPointerUp, true);
+    window.addEventListener('pointercancel', this.onWindowPointerCancel, true);
 
     this.handleKeyDown = this.handleKeyDown.bind(this);
     this.handleKeyUp = this.handleKeyUp.bind(this);
@@ -1548,7 +1718,12 @@ export class PlanetariumMode {
     this.sunExposure = 1;
     this.lastSunVisibleFraction = 1;
     this.sunEmergenceFlash = 0;
+    this.sunDiamondRing = 0;
+    this.sunPoleScreenAngle = 0;
+    this.sunChromoAnti = 0;
+    this.sunChromoToward = 0;
     this.sunAtmosphereMix = 0;
+    this.starGain = 1;
     this.renderer.toneMappingExposure = 1;
     // Compile + validate the GPU texturer once, before the visibility gate can
     // run (the gate paints during update(), which only runs while active). The
@@ -1660,6 +1835,9 @@ export class PlanetariumMode {
     if (!this.planetLabels) {
       this.planetLabels = new PlanetLabels(this.scene, this.camera);
     }
+    // Cache the label container the PlanetLabels constructor just appended, so
+    // the per-frame container-visibility sync doesn't query the DOM each frame.
+    this.planetLabelsContainerEl = document.getElementById('planet-labels');
 
     // Create the Planetarium starfield.
     if (!this.starfield) {
@@ -1888,6 +2066,7 @@ export class PlanetariumMode {
   deactivate(): void {
     this.moonArrivalCameraLook = null;
     this.dotNavMoon = null;
+    this.clearBodyReveal();
     // A live tutorial hands the pre-tutorial state back first, synchronously — the
     // teardown below (excursion drop, landed exit, save) then applies to the
     // restored journey exactly as it would for a non-tutorialing player.
@@ -1908,7 +2087,13 @@ export class PlanetariumMode {
     this.sunExposure = 1;
     this.lastSunVisibleFraction = 1;
     this.sunEmergenceFlash = 0;
+    this.sunDiamondRing = 0;
+    this.sunPoleScreenAngle = 0;
+    this.sunChromoAnti = 0;
+    this.sunChromoToward = 0;
     this.sunAtmosphereMix = 0;
+    this.starGain = 1;
+    if (this.starfield) setStarfieldGain(this.starfield, 1);
     this.applySunGlareFlood(0);
     this.clearSunSilhouette();
     this.renderer.toneMappingExposure = 1;
@@ -1920,6 +2105,10 @@ export class PlanetariumMode {
       this.camera.near = LANDED_NEAR_AU;
       this.camera.updateProjectionMatrix();
     }
+    // Same for the camera basis: cruise leaves the flight horizon on
+    // camera.up, and another mode (or a reactivation's first landed frame)
+    // must inherit plain world-up.
+    this.setCameraFrameUp(PlanetariumMode.SCENE_NORTH);
     // Same for the governor: activation flips `active` before the restore
     // resolves, so the reactivation window must not run on this journey's
     // leftover cap or clear-hold.
@@ -2028,6 +2217,9 @@ export class PlanetariumMode {
 
     // Runs in both branches below — a tutorial narrates landed and cruise scenes.
     this.updateTutorial();
+    // Also both: the light grasp belongs to the surface view, which lives in the
+    // landed pipeline, and it still has to ease back to 1 out in cruise.
+    this.updateStarGain(dt);
 
     // Landed mode: camera orbits body, skip flight controls
     if (this.landedOn) {
@@ -2217,29 +2409,13 @@ export class PlanetariumMode {
     // of projecting/writing overlays that can't show.
     const mapOpen = this.isMapOpen();
 
-    // Occlusion pipeline: planet discs → Sun + moon + ship discs → labels +
-    // markers. The occluder passes run whenever either consumer is on: marker
-    // sprites render without a depth test (see the material comment in
-    // PlanetLabels), so this analytic disc set is their only occlusion.
-    if (this.planetLabels && !mapOpen && (this.showBodyLabels || this.showBodyMarkers)) {
-      const scenePositions = new Map<string, { x: number; y: number; z: number }>();
-      for (const planet of this.solarSystem.planets) {
-        scenePositions.set(planet.data.name, {
-          x: planet.group.position.x,
-          y: planet.group.position.y,
-          z: planet.group.position.z,
-        });
-      }
-      this.planetLabels.collectForegroundDiscs(scenePositions, this.renderer);
-      this.collectDynamicOccluders();
-      // Main (flight) path: landedOn is null here — narrowed by early return above.
-      this.planetLabels.renderLabels(scenePositions, { x: 0, y: 0, z: 0 }, this.renderer, {
-        showMarkers: this.showBodyMarkers,
-        showLabels: this.showBodyLabels,
-        sunMask: this.sunGlareMaskParams,
-        sunPos: this.solarSystem.sun.position,
-        markerShipTest: this.isMarkerBehindShip,
-      });
+    // Occlusion + label/marker + hover-reveal pipeline: planet discs → Sun +
+    // moon + ship discs → pick list → reveal → labels + markers.
+    // Main (flight) path: landedOn is null here — narrowed by early return above.
+    // The hull test rides along only here: the ship is drawn in flight, so its
+    // beacon occlusion needs the precise raycast.
+    if (!mapOpen) {
+      this.runBodyLabelPipeline(undefined, this.isMarkerBehindShip);
     }
 
     // Update constellation labels
@@ -2249,11 +2425,6 @@ export class PlanetariumMode {
         this.renderer.domElement.clientWidth,
         this.renderer.domElement.clientHeight,
       );
-    }
-
-    if (this.showBodyLabels && !mapOpen) {
-      this.renderMoonLabels();
-      this.updateSunLabel();
     }
 
     if (this.autopilotTarget) {
@@ -2433,7 +2604,11 @@ export class PlanetariumMode {
       // that back keeps the step and the escape from fighting, and lets a
       // re-grab promote straight to 'orbit'. OrbitControls stays idle here.
       const tau = this.advanceChaseFollowTau(dt);
-      const ideal = chaseIdealOffset(this.player.getForwardDirection(), this.tmpChaseIdeal);
+      const ideal = chaseIdealOffset(
+        this.player.getForwardDirection(),
+        FLIGHT_UP_SCENE,
+        this.tmpChaseIdeal,
+      );
       const settled = reacquireCameraStep(this.camera.position, this.camera.position, ideal, dt, tau);
       this.camera.lookAt(0, 0, 0);
       if (settled) this.camOwner = 'chase'; // state switch only — the step already posed the camera
@@ -2459,7 +2634,7 @@ export class PlanetariumMode {
     // steering so a tap bends the pursuit curve instead of stepping it, and the
     // gain derives from dt so 60 Hz and 120 Hz converge alike.
     const forward = this.player.getForwardDirection();
-    const idealPos = chaseIdealOffset(forward, this.tmpChaseIdeal);
+    const idealPos = chaseIdealOffset(forward, FLIGHT_UP_SCENE, this.tmpChaseIdeal);
     const tau = this.advanceChaseFollowTau(dt);
     this.camera.position.lerp(idealPos, cameraFollowGain(dt, tau));
   }
@@ -2632,10 +2807,18 @@ export class PlanetariumMode {
           undefined,
           this.tmpDotVisual,
         );
-        m.dotScreenAlpha = v.alpha;
+        // The dots share the starfield's telescope light grasp, same soft knee:
+        // the mapping contract says a moon dot is as visible as an equally
+        // bright star, and the surface view is exactly where both are honest
+        // photometry — a gained sky over ungained dots would sink every dot
+        // below its star twin. Inactive (gain 1) everywhere else.
+        const dotAlpha = this.starGain > 1.001
+          ? 1 - Math.pow(1 - v.alpha, this.starGain)
+          : v.alpha;
+        m.dotScreenAlpha = dotAlpha;
         m.dotScreenSizePx = v.sizePx;
 
-        if (v.alpha <= 0) {
+        if (dotAlpha <= 0) {
           this.moonDots.hide(i);
           continue;
         }
@@ -2658,7 +2841,7 @@ export class PlanetariumMode {
           chroma.g * v.brightness,
           chroma.b * v.brightness,
           v.sizePx,
-          v.alpha,
+          dotAlpha,
         );
       }
     }
@@ -2708,9 +2891,11 @@ export class PlanetariumMode {
       isEarthMoon ? undefined : outOrbitNormal,
     );
     if (outOrbitNormal && isEarthMoon) {
-      // Roll reference, not orbit normal — the choice lives in one place so the
-      // world and the map roll the same moon the same way. The shadow engine
-      // and the guide slots read the true normal straight from the seam.
+      // Roll reference, not orbit normal: the Moon's spin axis sits ~1.5° from
+      // ecliptic north (Cassini state) vs 5.1° for the orbit normal, so the
+      // tidal-lock roll stays on ecliptic north. The choice lives in one place
+      // so the world and the map roll the same moon the same way; the shadow
+      // engine and the guide slots read the true normal straight from the seam.
       tidalRollNorth(moon.name, parentPlanet.name, outOrbitNormal, outOrbitNormal);
     }
     return out;
@@ -2952,7 +3137,11 @@ export class PlanetariumMode {
     // setProfile explicitly; this per-frame reapply is a deliberate, cheap
     // safety net guaranteeing the displayed model tracks mission state through
     // every code path (incl. state restore) — do not "optimize" it away.
-    this.player.setProfile(this.activeHistoricJourney?.shipProfile ?? 'default');
+    this.player.setProfile(
+      this.devShipProfileOverride
+        ?? this.activeHistoricJourney?.shipProfile
+        ?? 'default',
+    );
   }
 
   /**
@@ -3350,6 +3539,294 @@ export class PlanetariumMode {
     if (this.footprintReticleEl) this.footprintReticleEl.style.display = 'none';
   }
 
+  /** Reveal is inert while any overlay owns the screen (or in surface view):
+   *  the pointer there aims at UI, not the sky behind it. */
+  private isRevealBlocked(): boolean {
+    return this.landedView === 'surface'
+      // The map owns the frame and the canvas: its taps and hovers are map
+      // gestures, and the label pipeline is skipped outright while it is up, so
+      // an unblocked tap would otherwise sit queued and resolve on close.
+      || this.isMapOpen()
+      || this.isDeckOpen()
+      || this.menuPanel.isOpen()
+      || this.isHelpOpen()
+      || this.isToolsMenuOpen()
+      || this.surfaceTargetMenu.isOpen()
+      || this.isMissionActive()
+      || this.tutorial !== null;
+  }
+
+  /** Drop every scrap of transient reveal + gesture state at once. */
+  private clearBodyReveal(): void {
+    this.revealedBody = null;
+    this.touchRevealBody = null;
+    this.touchRevealUntil = 0;
+    this.hoverEligible = false;
+    this.gesturePointerId = null;
+    this.hasPendingTap = false;
+    // A blur/deactivate mid-gesture never delivers the matching pointerup, so
+    // reset the down-count too — otherwise it strands above zero and the
+    // single-pointer guard rejects every future tap.
+    this.pointersDown = 0;
+  }
+
+  private pickListHas(name: string): boolean {
+    for (const c of this.bodyPickList) if (c.name === name) return true;
+    return false;
+  }
+
+  /** A recognized single-tap on the sky queues a timed reveal of whatever body
+   *  sits under it — resolved next frame against a fresh pick list. Additive, so
+   *  the tap still steers as usual. */
+  private handleBodyTap(clientX: number, clientY: number): void {
+    if (this.isRevealBlocked()) return;
+    this.pendingTapX = clientX;
+    this.pendingTapY = clientY;
+    this.hasPendingTap = true;
+  }
+
+  /**
+   * The one place the labels/markers/reveal pipeline runs each cruise or landed
+   * (non-surface) frame. Occluders and the pick list refresh first; the reveal
+   * resolves against them; then the label + marker passes draw, threaded with
+   * the revealed body. Kept ungated on the label/marker settings so a hover can
+   * be detected even with everything toggled off.
+   *
+   * `markerShipTest` comes from the flight path only: the ship is not drawn
+   * while landed, so there is no hull that could cover a beacon there.
+   */
+  private runBodyLabelPipeline(
+    excludeName?: string,
+    markerShipTest?: (markerWorldPos: THREE.Vector3) => boolean,
+  ): void {
+    if (!this.planetLabels || !this.solarSystem) return;
+
+    const blocked = this.isRevealBlocked();
+    const touchActive = this.touchRevealBody !== null && performance.now() < this.touchRevealUntil;
+    const gestureActive = this.gesturePointerId !== null;
+    // The picker only needs to run while the user is actually pointing at the
+    // sky — a mouse over the canvas, a live touch gesture, a queued tap, or a
+    // touch reveal still counting down. Everything else keeps the steady-state
+    // cost at zero.
+    const pickerWanted = !blocked && (this.hoverEligible || touchActive || gestureActive || this.hasPendingTap);
+    const runOccluders = this.showBodyLabels || this.showBodyMarkers || this.revealedBody !== null || pickerWanted;
+
+    if (runOccluders) {
+      const scenePositions = this.ensurePickScenePositions();
+      for (const planet of this.solarSystem.planets) {
+        const p = planet.group.position;
+        const slot = scenePositions.get(planet.data.name)!;
+        slot.x = p.x; slot.y = p.y; slot.z = p.z;
+      }
+      this.planetLabels.collectForegroundDiscs(scenePositions, this.renderer);
+      this.collectDynamicOccluders();
+      if (pickerWanted) {
+        this.buildBodyPickList(scenePositions, excludeName);
+        // Resolve a just-recognized tap against this fresh pick list.
+        if (this.hasPendingTap) {
+          const hit = pickBodyAtPointer(this.bodyPickList, this.planetLabels.foregroundDiscs, this.pendingTapX, this.pendingTapY);
+          if (hit) {
+            this.touchRevealBody = hit;
+            this.touchRevealUntil = performance.now() + PlanetariumMode.TOUCH_REVEAL_MS;
+          }
+          this.hasPendingTap = false;
+        }
+      } else {
+        this.bodyPickList.length = 0;
+      }
+
+      this.resolveBodyReveal(pickerWanted);
+
+      if (this.showBodyLabels || this.showBodyMarkers || this.revealedBody !== null) {
+        this.planetLabels.renderLabels(scenePositions, this.labelPlayerOrigin, this.renderer, {
+          showMarkers: this.showBodyMarkers,
+          showLabels: this.showBodyLabels,
+          excludeName,
+          revealedBody: this.revealedBody ?? undefined,
+          sunMask: this.sunGlareMaskParams,
+          sunPos: this.solarSystem.sun.position,
+          markerShipTest,
+        });
+      }
+      if (this.showBodyLabels || this.revealedBody !== null) {
+        this.renderMoonLabels();
+        this.updateSunLabel();
+      }
+    } else {
+      this.bodyPickList.length = 0;
+      this.resolveBodyReveal(false);
+    }
+
+    this.syncWorldLabelContainers();
+  }
+
+  private ensurePickScenePositions(): Map<string, { x: number; y: number; z: number }> {
+    if (!this.pickScenePositions) {
+      this.pickScenePositions = new Map();
+      if (this.solarSystem) {
+        for (const planet of this.solarSystem.planets) {
+          this.pickScenePositions.set(planet.data.name, { x: 0, y: 0, z: 0 });
+        }
+      }
+    }
+    return this.pickScenePositions;
+  }
+
+  /**
+   * Rebuild the per-frame pick list: every planet, the Sun and every visible
+   * moon that has something drawn on screen this frame. With both labels AND
+   * markers off, a marker-tier planet is invisible, so only resolved discs
+   * (visible meshes) stay aimable. Reuses a pooled candidate array + one
+   * projection scratch, so a steady-state frame allocates nothing.
+   */
+  private buildBodyPickList(
+    scenePositions: Map<string, { x: number; y: number; z: number }>,
+    excludeName?: string,
+  ): void {
+    this.bodyPickList.length = 0;
+    if (!this.planetLabels || !this.solarSystem) return;
+    const canvasW = this.renderer.domElement.clientWidth;
+    const canvasH = this.renderer.domElement.clientHeight;
+    const halfFovTan = Math.tan((this.camera.fov * Math.PI) / 360);
+    // markerPx is the on-screen quad SIZE (diameter); the drawn radius is half of
+    // it — the 18 px floor in pushPickCandidate then sets the actual catch radius.
+    const markerRadiusPx = THREE.MathUtils.clamp(0.032 * Math.min(canvasW, canvasH), 18, 30) / 2;
+    const bothOff = !this.showBodyLabels && !this.showBodyMarkers;
+    const targetMoon = this.currentDotTargetMoon();
+    const cam = this.camera.position;
+    const proj = this.pickProjScratch;
+
+    // Planets.
+    for (const planet of this.solarSystem.planets) {
+      if (planet.data.name === excludeName) continue;
+      const pos = scenePositions.get(planet.data.name);
+      if (!pos) continue;
+      const dx = pos.x - cam.x;
+      const dy = pos.y - cam.y;
+      const dz = pos.z - cam.z;
+      const dist = Math.sqrt(dx * dx + dy * dy + dz * dz);
+      const isDisc = (planet.data.radiusAU * 2) / Math.max(dist, 0.0001) > 0.01;
+      if (bothOff && !isDisc) continue;
+      projectToScreen(pos, this.camera, canvasW, canvasH, proj);
+      if (!this.pickProjOnScreen(canvasW, canvasH)) continue;
+      const drawnPx = isDisc ? discRadiusPx(planet.data.radiusAU, dist, halfFovTan, canvasH) : markerRadiusPx;
+      this.pushPickCandidate(planet.data.name, proj.x, proj.y, drawnPx, dist);
+    }
+
+    // The Sun — always drawn; the reveal still gates it on the 1.67 AU rule.
+    {
+      const sunPos = this.solarSystem.sun.position;
+      const dist = cam.distanceTo(sunPos);
+      projectToScreen(sunPos, this.camera, canvasW, canvasH, proj);
+      if (this.pickProjOnScreen(canvasW, canvasH)) {
+        this.pushPickCandidate('Sun', proj.x, proj.y, discRadiusPx(SUN_DATA.radiusAU, dist, halfFovTan, canvasH), dist);
+      }
+    }
+
+    // Visible moons — but only those actually drawn as more than a point: the
+    // same readable-disc / faint-dot gate the moon-label renderer uses (nav
+    // target exempt, exactly as there), so pick and render agree on every moon.
+    const tempV = this.pickTempV;
+    for (const planet of this.solarSystem.planets) {
+      const moons = this.planetMoons.get(planet.data.name);
+      if (!moons) continue;
+      const parentR = planet.data.radiusAU;
+      const anchor = this.moonRenderAnchorRatio(planet.data.name);
+      for (const m of moons) {
+        if (!m.mesh.visible) continue;
+        if (this.landedOn?.type === 'moon' && this.landedOn.name === m.data.name) continue;
+        m.mesh.getWorldPosition(tempV);
+        const dx = tempV.x - cam.x;
+        const dy = tempV.y - cam.y;
+        const dz = tempV.z - cam.z;
+        const dist = Math.sqrt(dx * dx + dy * dy + dz * dz);
+        projectToScreen(tempV, this.camera, canvasW, canvasH, proj);
+        if (!this.pickProjOnScreen(canvasW, canvasH)) continue;
+        const effR = this.renderedMoonSizeAU(m.data.radiusAU, parentR, anchor);
+        const discPadPx = discRadiusPx(effR, dist, halfFovTan, canvasH) * 1.1;
+        const dotAlpha = m.dotScreenAlpha ?? 0;
+        if (discPadPx < 1.0 && dotAlpha < 0.03 && m.data.name !== targetMoon) continue;
+        const dotPx = (m.dotScreenSizePx ?? 0) / 2;
+        this.pushPickCandidate(m.data.name, proj.x, proj.y, Math.max(discPadPx, dotPx), dist);
+      }
+    }
+  }
+
+  /** Append one pick candidate, reusing a pooled object (zero allocation in
+   *  steady state). pickRadiusPx floors at 18 so tiny dots stay hittable. */
+  private pushPickCandidate(name: string, x: number, y: number, radiusPx: number, dist: number): void {
+    const n = this.bodyPickList.length;
+    let c = this.bodyPickPool[n];
+    if (!c) {
+      c = { name: '', screenX: 0, screenY: 0, pickRadiusPx: 0, distFromCamera: 0 };
+      this.bodyPickPool[n] = c;
+    }
+    c.name = name;
+    c.screenX = x;
+    c.screenY = y;
+    c.pickRadiusPx = Math.max(radiusPx, 18);
+    c.distFromCamera = dist;
+    this.bodyPickList.push(c);
+  }
+
+  /** Whether the current `pickProjScratch` projection is in front of the camera
+   *  and within the label margin. */
+  private pickProjOnScreen(canvasW: number, canvasH: number): boolean {
+    const p = this.pickProjScratch;
+    return p.ndcZ < 1 && p.x > -50 && p.x < canvasW + 50 && p.y > -50 && p.y < canvasH + 50;
+  }
+
+  /** Resolve `revealedBody` from the pointer: touch reveal first (while its
+   *  window is open and the body is still drawn), then live mouse hover. */
+  private resolveBodyReveal(pickerWanted: boolean): void {
+    if (this.isRevealBlocked()) {
+      this.revealedBody = null;
+      this.touchRevealBody = null;
+      this.touchRevealUntil = 0;
+      this.hasPendingTap = false;
+      // Drop hover eligibility too: an overlay can open over a still pointer, so
+      // without this the last hover would re-fire the instant the overlay closes,
+      // with no pointer movement.
+      this.hoverEligible = false;
+      return;
+    }
+    if (this.touchRevealBody !== null) {
+      if (performance.now() >= this.touchRevealUntil || !this.pickListHas(this.touchRevealBody)) {
+        this.touchRevealBody = null;
+        this.touchRevealUntil = 0;
+      } else {
+        this.revealedBody = this.touchRevealBody;
+        return;
+      }
+    }
+    if (pickerWanted && this.hoverEligible && this.planetLabels) {
+      this.revealedBody = pickBodyAtPointer(
+        this.bodyPickList, this.planetLabels.foregroundDiscs, this.hoverClientX, this.hoverClientY,
+      );
+      return;
+    }
+    this.revealedBody = null;
+  }
+
+  /** Container-level visibility for the HTML label layers. They stay renderable
+   *  whenever labels are on OR a body is being revealed (per-child hiding does
+   *  the rest), fold away in surface view, and honour the modal hide. */
+  private syncWorldLabelContainers(): void {
+    const show = !this.worldLabelsModalHidden
+      && this.landedView !== 'surface'
+      // Nothing may re-show world labels over the map: the system-map-active
+      // class force-hides the DOM anyway, but a modal closing under the map
+      // would otherwise clear the hide flag and leave them nominally shown.
+      && !this.isMapOpen()
+      && (this.showBodyLabels || this.revealedBody !== null);
+    const disp = show ? '' : 'none';
+    const planetEl = this.planetLabelsContainerEl;
+    if (planetEl && planetEl.style.display !== disp) planetEl.style.display = disp;
+    if (this.moonLabelContainer && this.moonLabelContainer.style.display !== disp) {
+      this.moonLabelContainer.style.display = disp;
+    }
+  }
+
   /**
    * Second pass: contribute foreground discs for the Sun, visible moons and
    * the player ship to `planetLabels`, so any label or marker rendered
@@ -3458,6 +3935,47 @@ export class PlanetariumMode {
   private markerShipRayDir = new THREE.Vector3();
   private markerShipMeshes: THREE.Object3D[] = [];
   private markerShipHits: THREE.Intersection[] = [];
+  private shipSunRight = new THREE.Vector3();
+  private shipSunUp = new THREE.Vector3();
+  private shipSunRayDir = new THREE.Vector3();
+  private shipSunToShip = new THREE.Vector3();
+  private shipSunVisibility = 1;
+  private shipSunRaycastCount = 0;
+  private devShipSunOcclusionEnabled = true;
+
+  /** Refresh the live solid-hull list. Profile swaps and Cassini's async GLB
+   *  resolution make a persistent cache unsafe without invalidation, while the
+   *  Sun overlap gate makes this rare traversal cheap in practice. */
+  private collectSolidShipMeshes(): void {
+    this.player.group.updateWorldMatrix(true, true);
+    this.markerShipMeshes.length = 0;
+    const collect = (object: THREE.Object3D): void => {
+      if (!object.visible) return;
+      const mesh = object as THREE.Mesh;
+      if (mesh.isMesh) {
+        const material = mesh.material as THREE.Material | THREE.Material[];
+        const additive = Array.isArray(material)
+          ? material.every((candidate) => candidate.blending === THREE.AdditiveBlending)
+          : material.blending === THREE.AdditiveBlending;
+        if (!additive) this.markerShipMeshes.push(mesh);
+      }
+      for (const child of object.children) collect(child);
+    };
+    collect(this.player.group);
+  }
+
+  /** Test one bounded camera ray against the hull list collected above. */
+  private rayHitsCollectedShip(direction: THREE.Vector3, far = Infinity): boolean {
+    this.markerShipRaycaster.set(this.camera.position, direction);
+    this.markerShipRaycaster.near = 0;
+    this.markerShipRaycaster.far = far;
+    this.markerShipHits.length = 0;
+    return this.markerShipRaycaster.intersectObjects(
+      this.markerShipMeshes,
+      false,
+      this.markerShipHits,
+    ).length > 0;
+  }
 
   /**
    * True when the sight line from the camera to a far marker passes through
@@ -3482,29 +4000,79 @@ export class PlanetariumMode {
       const t = -cam.dot(dir); // ray parameter at closest approach to the origin
       if (t <= 0 || camDistSq - t * t > extentSq) return false;
     }
-    // The hull pose is a frame stale at label time: player.update() moved
-    // it earlier this frame but world matrices refresh at render — and a
-    // just-swapped profile has never been through a render at all. Refresh
-    // before the raycast reads them.
-    this.player.group.updateWorldMatrix(true, true);
-    this.markerShipMeshes.length = 0;
-    const collect = (o: THREE.Object3D) => {
-      if (!o.visible) return;
-      const mesh = o as THREE.Mesh;
-      if (mesh.isMesh) {
-        const m = mesh.material as THREE.Material | THREE.Material[];
-        const additive = Array.isArray(m)
-          ? m.every((x) => x.blending === THREE.AdditiveBlending)
-          : m.blending === THREE.AdditiveBlending;
-        if (!additive) this.markerShipMeshes.push(mesh);
-      }
-      for (const child of o.children) collect(child);
-    };
-    collect(this.player.group);
-    this.markerShipRaycaster.set(cam, dir);
-    this.markerShipHits.length = 0;
-    return this.markerShipRaycaster.intersectObjects(this.markerShipMeshes, false, this.markerShipHits).length > 0;
+    // The hull pose is a frame stale at label time: player.update() moved it
+    // earlier this frame but world matrices refresh at render — and a
+    // just-swapped profile has never been through a render at all.
+    this.collectSolidShipMeshes();
+    return this.rayHitsCollectedShip(dir);
   };
+
+  /**
+   * Fraction of deterministic rays across the physical solar disc that reach
+   * the Sun without hitting the foreground ship. This is an independent
+   * camera-optics transmission signal: it must never enter celestial eclipse,
+   * exposure, corona, flash, or silhouette state.
+   */
+  private computeShipSunVisibility(
+    sunDirection: THREE.Vector3,
+    sunDistance: number,
+    sunAngularRadius: number,
+    eligible: boolean,
+  ): number {
+    this.shipSunRaycastCount = 0;
+    if (
+      !this.devShipSunOcclusionEnabled ||
+      !eligible ||
+      !this.player.group.visible ||
+      this.landedOn
+    ) return 1;
+
+    const cameraDistance = this.camera.position.length();
+    // The dev free-camera Sun rig may seat the camera at the floating origin,
+    // inside the visible ship. That is not a meaningful foreground hull pose.
+    if (!(cameraDistance > 1e-12)) return 1;
+
+    const toShip = this.shipSunToShip.copy(this.camera.position)
+      .multiplyScalar(-1 / cameraDistance);
+    const shipAlongRay = cameraDistance * toShip.dot(sunDirection);
+    if (
+      shipAlongRay + SHIP_ANY_HULL_EXTENT_AU <= 0 ||
+      shipAlongRay - SHIP_ANY_HULL_EXTENT_AU >= sunDistance
+    ) return 1;
+    if (!shipHullMayOverlapSource(
+      cameraDistance,
+      SHIP_ANY_HULL_EXTENT_AU,
+      toShip.dot(sunDirection),
+      sunAngularRadius,
+    )) return 1;
+
+    this.collectSolidShipMeshes();
+
+    // Form an exact tangent basis around the Sun direction from camera-right.
+    // Projecting first keeps the sample disc circular even when the Sun is
+    // off-axis. Fall back to camera-up only at the degenerate parallel case.
+    this.camera.updateMatrixWorld();
+    const elements = this.camera.matrixWorld.elements;
+    const right = this.shipSunRight.set(elements[0], elements[1], elements[2]);
+    right.addScaledVector(sunDirection, -right.dot(sunDirection));
+    if (right.lengthSq() < 1e-12) {
+      right.set(elements[4], elements[5], elements[6]);
+      right.addScaledVector(sunDirection, -right.dot(sunDirection));
+    }
+    right.normalize();
+    const up = this.shipSunUp.crossVectors(sunDirection, right).normalize();
+    const tangentRadius = Math.tan(sunAngularRadius);
+    let unblocked = 0;
+    for (const sample of SHIP_SUN_DISC_SAMPLES) {
+      const ray = this.shipSunRayDir.copy(sunDirection)
+        .addScaledVector(right, sample.x * tangentRadius)
+        .addScaledVector(up, sample.y * tangentRadius)
+        .normalize();
+      this.shipSunRaycastCount++;
+      if (!this.rayHitsCollectedShip(ray, sunDistance)) unblocked++;
+    }
+    return unblockedShipSunFraction(unblocked, SHIP_SUN_DISC_SAMPLES.length);
+  }
 
   /**
    * Third pass: place HTML labels for visible moons. Uses the occluder set
@@ -3524,6 +4092,10 @@ export class PlanetariumMode {
     const candidates = this.moonLabelCandidates;
     let candidateCount = 0;
     const targetMoon = this.currentDotTargetMoon();
+    // With labels off the pass still runs to draw a single revealed moon; every
+    // other moon stays hidden.
+    const labelsOn = this.showBodyLabels;
+    const revealedMoon = this.revealedBody;
     // A moon earns a label when its disc reads as more than a point, OR its dot
     // is at least faintly visible, OR it's the explicit nav target. A sub-pixel
     // moon too dim to dot gets no label pointing at empty sky.
@@ -3538,6 +4110,11 @@ export class PlanetariumMode {
         if (!label) continue;
         // Suppress the landed moon's own label — no need to label what you're standing on.
         if (this.landedOn?.type === 'moon' && this.landedOn.name === m.data.name) {
+          if (label.style.display !== 'none') label.style.display = 'none';
+          continue;
+        }
+        // With labels off, only the revealed moon draws; everything else hides.
+        if (!labelsOn && m.data.name !== revealedMoon) {
           if (label.style.display !== 'none') label.style.display = 'none';
           continue;
         }
@@ -3620,7 +4197,7 @@ export class PlanetariumMode {
         }
         let c = candidates[candidateCount];
         if (!c) {
-          c = { label, sx: 0, sy: 0, onScreen: false, priorityPx: 0, halfW: 0, isTarget: false };
+          c = { label, sx: 0, sy: 0, onScreen: false, priorityPx: 0, halfW: 0, isTarget: false, isRevealed: false };
           candidates.push(c);
         }
         c.label = label;
@@ -3628,6 +4205,7 @@ export class PlanetariumMode {
         c.sy = sy;
         c.onScreen = onScreen;
         c.isTarget = targetMoon === m.data.name;
+        c.isRevealed = revealedMoon === m.data.name;
         // Collision priority is apparent footprint: a readable disc by its px
         // radius, a sub-pixel moon by its dot's weighted glyph size, so among
         // piled-up dots the brighter one keeps its label.
@@ -3641,12 +4219,14 @@ export class PlanetariumMode {
     }
 
     candidates.length = candidateCount;
-    // The nav target sorts first so a sibling's label can never suppress the
-    // moon you are flying at. Then visible labels outrank edge-clamped ones (an
-    // off-screen moon pinned to the margin must not suppress a genuinely visible
-    // neighbor), then bigger apparent discs win.
+    // The revealed moon sorts first so it always wins its de-overlap contest,
+    // then the nav target (a sibling's label can never suppress the moon you are
+    // flying at). Then visible labels outrank edge-clamped ones (an off-screen
+    // moon pinned to the margin must not suppress a genuinely visible neighbor),
+    // then bigger apparent discs win.
     candidates.sort(
       (a, b) =>
+        Number(b.isRevealed) - Number(a.isRevealed) ||
         Number(b.isTarget) - Number(a.isTarget) ||
         Number(b.onScreen) - Number(a.onScreen) ||
         b.priorityPx - a.priorityPx,
@@ -3679,6 +4259,7 @@ export class PlanetariumMode {
       c.label.style.left = `${c.sx}px`;
       c.label.style.top = `${c.sy}px`;
       c.label.classList.toggle('edge', !c.onScreen);
+      c.label.classList.toggle('revealed', c.isRevealed);
     }
   }
 
@@ -3716,6 +4297,7 @@ export class PlanetariumMode {
     sunXPx: 0,
     sunYPx: 0,
     peak: 0,
+    transmission: 1,
     armCoeff: 0,
     armDecayPx: 0,
     armDecayYPx: 0,
@@ -3930,6 +4512,7 @@ export class PlanetariumMode {
           glareMat.uniforms.uGlareStrength.value);
         glareMat.uniforms.uGlareStrength.value = baseStrength * interiorFade;
         glareMat.uniforms.uVisibleFraction.value = 1;
+        glareMat.uniforms.uShipSunVisibility.value = 1;
         glareMat.uniforms.uAtmosphereMix.value = 0;
         glareMat.uniforms.uEmergenceFlash.value = this.sunEmergenceFlash;
         // Inside the photosphere the veil has no meaning; collapse the billboard.
@@ -3939,14 +4522,26 @@ export class PlanetariumMode {
         // No occluder crescent from inside the photosphere: clear the light-shift
         // and contact-blaze uniforms and undo the crescent's min-size growth, so a
         // buried-camera frame entered straight from a second-contact pose can't
-        // leave a displaced glare centroid or a diamond ring live. uDiamondRing
-        // carries no visibleEnergy factor, so only an explicit reset zeroes it.
+        // leave a displaced glare centroid, a diamond ring, or a contact arc
+        // live. Those terms carry no visibleEnergy factor, so only an explicit
+        // reset zeroes them — and their envelope state goes with them, or the
+        // frame that surfaces again would release from a stale blaze.
         glareMat.uniforms.uGlareCentroidSr.value.set(0, 0);
+        glareMat.uniforms.uDiamondOccluderSr.value.set(0, 0);
         glareMat.uniforms.uDiamondRing.value = 0;
+        glareMat.uniforms.uBeadCarveDepth.value = 0;
+        glareMat.uniforms.uChromoAnti.value = 0;
+        glareMat.uniforms.uChromoToward.value = 0;
+        this.sunDiamondRing = 0;
+        this.sunBeadCarveDepth = 0;
+        this.sunChromoAnti = 0;
+        this.sunChromoToward = 0;
         const baseMinHalfPx = (glareMat.userData.baseMinHalfPx ??=
           glareMat.uniforms.uMinHalfSizePx.value);
         glareMat.uniforms.uMinHalfSizePx.value = baseMinHalfPx;
       }
+      this.shipSunVisibility = 1;
+      this.shipSunRaycastCount = 0;
       this.clearSunSilhouette();
       if (ghostMat) ghostMat.uniforms.uGhostStrength.value = 0;
       // No limb sits in front of a camera buried in the photosphere; kill the
@@ -4129,9 +4724,39 @@ export class PlanetariumMode {
     }
 
     if (!appearanceEligible) this.sunAtmosphereMix = 0;
+    // This frame's occluder geometry, resolved once: the strongest occluder's
+    // angular size against the Sun's, whether that size reads as an eclipse at
+    // all, and how deeply the disc is covered. The chromosphere shell just
+    // below and every eclipse term on the glare plane are driven from these.
+    const occluderAngularRadius = this.sunDominantOccluderAngularRadius;
+    const occluderToSunRatio = occluderAngularRadius > 0
+      ? occluderAngularRadius / solarAngularRadius
+      : 0;
+    const occluderLikeness = eclipseOccluderLikeness(occluderToSunRatio);
+    // Silhouette carve: a body covering the Sun reads as a dark disc through
+    // the PSF/veil wash (the shader multiplies those terms down inside it).
+    // Driven by body-only coverage — ring dimming must not punch silhouettes.
+    // The gate is overlap-exists, not overlap-depth: a new moon biting the Sun
+    // is backlit and void-black from first contact, so the carve reaches full
+    // strength by ~15% cover — ramping it in over deep coverage instead left the
+    // glare painting across the dark disc all through the partial phases, a
+    // translucent Moon the light seemed to pass through. Only a grazing sliver
+    // keeps the full wash: that bite really is smaller than the saturated core.
+    const coverage = 1 - THREE.MathUtils.clamp(bodyVisibleFraction, 0, 1);
+    const occluderShade = occluderAngularRadius > 0 && appearanceEligible
+      ? THREE.MathUtils.smoothstep(coverage, 0.03, 0.15)
+      : 0;
     if (prominenceMat) {
+      // The 1.065-radii shell is limb detail for a close approach. An eclipse
+      // occluder is only a few percent wider than the photosphere, so at deep
+      // zoom the shell pokes out all the way around it — a full pink ring where
+      // the sky should be black. Hand the reds to the glare plane's contact
+      // chromosphere while such a body is on the disc. A sub-Sun (annular)
+      // occluder can never hide the shell, and likeness reads 0 there, so that
+      // geometry keeps it.
       prominenceMat.uniforms.uCloseVisibility.value = inFront
         ? THREE.MathUtils.smoothstep(solarRadiusPx, 55, 160)
+          * (1 - occluderShade * occluderLikeness)
         : 0;
     }
     // A queued view discontinuity reseeds the baseline with THIS frame's
@@ -4160,34 +4785,35 @@ export class PlanetariumMode {
       // veilAmt is 0 unless the wash is on-screen and unoccluded; the billboard
       // size and arm uniforms are set after exposure below (they need it).
       glareMat.uniforms.uVeilAmt.value = veilAmt;
+      // Where the Sun's rotation axis lies across the frame. Decomposed on the
+      // camera basis exactly the way the occluder offset is, because the corona
+      // measures its angles in that same camera-view XY frame — output pixels
+      // would be the wrong space. As the axis turns toward the camera its
+      // projection shortens until it names no direction at all; short of that
+      // the last good angle is held and the shape relaxes toward isotropic,
+      // rather than letting a vanishing vector spin the streamers.
+      {
+        const e = this.camera.matrixWorld.elements;
+        const poleX = SUN_POLE_DIRECTION.x * e[0]
+          + SUN_POLE_DIRECTION.y * e[1] + SUN_POLE_DIRECTION.z * e[2];
+        const poleY = SUN_POLE_DIRECTION.x * e[4]
+          + SUN_POLE_DIRECTION.y * e[5] + SUN_POLE_DIRECTION.z * e[6];
+        const acrossFrame = Math.hypot(poleX, poleY);
+        if (acrossFrame > 0.05) this.sunPoleScreenAngle = Math.atan2(poleY, poleX);
+        glareMat.uniforms.uSunPoleScreenAngle.value = this.sunPoleScreenAngle;
+        glareMat.uniforms.uSunPoleAnisotropy.value =
+          THREE.MathUtils.smoothstep(acrossFrame, 0.05, 0.25);
+      }
       // Corona gate: 1 when the strongest occluder is Sun-sized (a true
       // eclipse), 0 when a whole planet fills the sky in front of the Sun.
       // The occluder's size in solar radii also positions the shader's
-      // carve-out of the eclipsing disc.
-      const occluderAngularRadius = this.sunDominantOccluderAngularRadius;
-      const occluderToSunRatio = occluderAngularRadius > 0
-        ? occluderAngularRadius / solarAngularRadius
-        : 0;
-      glareMat.uniforms.uEclipseLike.value = eclipseOccluderLikeness(occluderToSunRatio);
+      // carve-out of the eclipsing disc, which the silhouette shade above
+      // drives, positioned from the occluder's true direction so an off-centre
+      // partial carves where the body actually is.
+      glareMat.uniforms.uEclipseLike.value = occluderLikeness;
       glareMat.uniforms.uOccluderRadii.value = occluderAngularRadius > 0
         ? THREE.MathUtils.clamp(occluderToSunRatio, 0.5, 3)
         : 1;
-      // Silhouette carve: a body covering the Sun reads as a dark disc
-      // through the PSF/veil wash (the shader multiplies those terms down
-      // inside it). Driven by body-only coverage — ring dimming must not
-      // punch silhouettes — and positioned from the occluder's true direction
-      // so an off-centre partial carves where the body actually is. The gate
-      // is overlap-exists, not overlap-depth: a new moon biting the Sun is
-      // backlit and void-black from first contact, so the carve reaches full
-      // strength by ~15% cover — ramping it in over deep coverage instead
-      // left the glare painting across the dark disc all through the partial
-      // phases, a translucent Moon the light seemed to pass through. Only a
-      // grazing sliver keeps the full wash: that bite really is smaller than
-      // the saturated core.
-      const coverage = 1 - THREE.MathUtils.clamp(bodyVisibleFraction, 0, 1);
-      const occluderShade = occluderAngularRadius > 0 && appearanceEligible
-        ? THREE.MathUtils.smoothstep(coverage, 0.03, 0.15)
-        : 0;
       glareMat.uniforms.uOccluderShade.value = occluderShade;
       // The silhouetted body itself also drops its night-side lifts (starlight
       // fill, planetshine): backlit by the photosphere it reads void black —
@@ -4211,9 +4837,24 @@ export class PlanetariumMode {
         silhouetteSnap,
       );
       // Default to no light shift and no diamond unless an occluder is on the
-      // disc this frame. Reset every frame so nothing goes stale.
-      this.sunCrescentCentroidSr = 0;
-      this.sunCrescentDisplacementPx = 0;
+      // disc this frame. Reset every frame so nothing goes stale — with one
+      // exception: while the diamond envelope is still releasing into totality,
+      // hold the last contact-point shift. The crescent centroid drops to 0 the
+      // frame coverage completes, and re-centring the residual bead would flash
+      // a symmetric halo behind the occulted disc; the dazzle must melt where
+      // the light died. Every discontinuity snaps the envelope to 0 first, so
+      // the latch can never carry a contact point across a jump.
+      const holdContactPoint = occluderShade > 0
+        && bodyVisibleFraction <= 0
+        && this.sunDiamondRing > 0.01
+        && !silhouetteSnap;
+      if (!holdContactPoint) {
+        this.sunCrescentCentroidSr = 0;
+        this.sunCrescentDisplacementPx = 0;
+      }
+      let diamondTarget = 0;
+      let chromoAntiTarget = 0;
+      let chromoTowardTarget = 0;
       if (occluderShade > 0) {
         // The glare quad billboards in camera-view XY and its fragment
         // measures in solar radii, so the offset is the angular separation
@@ -4227,42 +4868,113 @@ export class PlanetariumMode {
           (d.x * e[0] + d.y * e[1] + d.z * e[2]) / solarAngularRadius,
           (d.x * e[4] + d.y * e[5] + d.z * e[6]) / solarAngularRadius,
         );
-        // Exposed-crescent centroid from the RAW occluder/Sun ratio and the true
-        // separation (never the clamped uOccluderRadii). It rides uOccluderOffsetSr's
-        // solar-radii camera-basis frame: unit(toward occluder) x centroidSr, and
-        // centroidSr is signed negative — away from the occluder, onto the lit
-        // limb — so the glare hangs on the exposed crescent, not over the bite.
+        // Centre separation in solar radii, from the true angular separation and
+        // the RAW occluder/Sun ratio (never the clamped uOccluderRadii). Every
+        // occluded frame needs it: the contact latch below freezes the crescent,
+        // but where the two limbs stand is what tells the chromosphere whether a
+        // contact is happening at all.
         const separationSr = Math.acos(THREE.MathUtils.clamp(
           this.sunDominantOccluderDirection.dot(toSun), -1, 1,
         )) / solarAngularRadius;
-        visibleCrescentGeometry(separationSr, occluderToSunRatio, this.sunCrescent);
         // Two bodies on the disc make one lens centroid meaningless; fade the
-        // shift and the diamond off when a runner-up occluder is non-trivial.
+        // shift, the diamond, and the contact reds off when a runner-up
+        // occluder is non-trivial.
         const guard = 1 - THREE.MathUtils.smoothstep(this.sunSecondOccluderFraction, 0.05, 0.12);
-        const centroidSr = this.sunCrescent.centroidSr * guard;
-        this.sunCrescentCentroidSr = centroidSr;
-        const offsetLen = Math.hypot(offsetSr.x, offsetSr.y);
-        if (offsetLen > 1e-6) {
-          const scale = centroidSr / offsetLen;
-          glareMat.uniforms.uGlareCentroidSr.value.set(offsetSr.x * scale, offsetSr.y * scale);
+        // Contact reds, one weight per limb. Body-only coverage again: rings
+        // dim brightness, they do not change which limb is buried.
+        const chromo = chromosphereSideWeights({
+          separationSr,
+          occluderRadiiSr: occluderToSunRatio,
+          visibleFraction: bodyVisibleFraction,
+        });
+        chromoAntiTarget = chromo.anti * occluderLikeness * guard;
+        chromoTowardTarget = chromo.toward * occluderLikeness * guard;
+        if (holdContactPoint) {
+          // uGlareCentroidSr keeps its last exposed-frame value; only the quad
+          // growth needs re-applying, because the base half-size is rewritten
+          // every frame. diamondTarget stays 0 — totality earns no bead, this
+          // is just the residual melting in place.
+          glareMat.uniforms.uMinHalfSizePx.value += this.sunCrescentDisplacementPx;
         } else {
-          glareMat.uniforms.uGlareCentroidSr.value.set(0, 0);
+          // The bead's silhouette cut follows the live occluder only while a
+          // crescent burns; through the latch it keeps its last exposed-frame
+          // value, frozen with the centroid, so the melting bead and the black
+          // limb that cuts it fade as one picture at any clock rate.
+          (glareMat.uniforms.uDiamondOccluderSr.value as THREE.Vector2).copy(offsetSr);
+          // Exposed-crescent centroid on uOccluderOffsetSr's solar-radii
+          // camera-basis frame: unit(toward occluder) x centroidSr, and
+          // centroidSr is signed negative — away from the occluder, onto the lit
+          // limb — so the glare hangs on the exposed crescent, not over the bite.
+          visibleCrescentGeometry(separationSr, occluderToSunRatio, this.sunCrescent);
+          const centroidSr = this.sunCrescent.centroidSr * guard;
+          this.sunCrescentCentroidSr = centroidSr;
+          const offsetLen = Math.hypot(offsetSr.x, offsetSr.y);
+          if (offsetLen > 1e-6) {
+            const scale = centroidSr / offsetLen;
+            glareMat.uniforms.uGlareCentroidSr.value.set(offsetSr.x * scale, offsetSr.y * scale);
+          } else {
+            glareMat.uniforms.uGlareCentroidSr.value.set(0, 0);
+          }
+          // The quad grows by the centroid displacement so the shifted wash and PSF
+          // never clip at the billboard edge.
+          this.sunCrescentDisplacementPx = Math.abs(centroidSr) * solarRadiusPx;
+          glareMat.uniforms.uMinHalfSizePx.value += this.sunCrescentDisplacementPx;
+          // Authored diamond ring: annular gets none, exactly 0 at totality, same
+          // guard as the shift. Body-only coverage (rings dim brightness, not the
+          // contact topology).
+          diamondTarget = diamondRingStrength(occluderLikeness, bodyVisibleFraction) * guard;
         }
-        // The quad grows by the centroid displacement so the shifted wash and PSF
-        // never clip at the billboard edge.
-        this.sunCrescentDisplacementPx = Math.abs(centroidSr) * solarRadiusPx;
-        glareMat.uniforms.uMinHalfSizePx.value += this.sunCrescentDisplacementPx;
-        // Authored diamond ring: annular gets none, exactly 0 at totality, same
-        // guard as the shift. Body-only coverage (rings dim brightness, not the
-        // contact topology).
-        glareMat.uniforms.uDiamondRing.value = diamondRingStrength(
-          eclipseOccluderLikeness(occluderToSunRatio), bodyVisibleFraction,
-        ) * guard;
       } else {
         glareMat.uniforms.uOccluderOffsetSr.value.set(0, 0);
         glareMat.uniforms.uGlareCentroidSr.value.set(0, 0);
-        glareMat.uniforms.uDiamondRing.value = 0;
+        glareMat.uniforms.uDiamondOccluderSr.value.set(0, 0);
       }
+      // The authored strength is a per-frame function of the exposed fraction,
+      // and its band is narrow enough that a warped clock steps across the whole
+      // of it between two frames. The uniform therefore follows on wall time:
+      // the rise and release always take the same real interval, so a fast clock
+      // costs the bead amplitude rather than turning it into a one-frame pop. A
+      // queued view discontinuity snaps it — a jump has no motion to smooth.
+      this.sunDiamondRing = advanceDiamondRing({
+        current: this.sunDiamondRing,
+        target: diamondTarget,
+        dt,
+        snap: silhouetteSnap,
+      });
+      glareMat.uniforms.uDiamondRing.value = this.sunDiamondRing * this.devDiamondScale;
+      // The bead's silhouette-cut kill rides its own envelope: shade and
+      // likeness are continuous almost everywhere, but likeness has a hard
+      // edge at ratio 1 and a residual bead can still be releasing when the
+      // geometry crosses it.
+      this.sunBeadCarveDepth = advanceDiamondRing({
+        current: this.sunBeadCarveDepth,
+        target: 0.99 * occluderShade * occluderLikeness,
+        dt,
+        snap: silhouetteSnap,
+        releaseTau: 0.2,
+      });
+      glareMat.uniforms.uBeadCarveDepth.value = this.sunBeadCarveDepth;
+      // The contact reds have the same problem and take the same treatment, on
+      // their own slower constants: the arc lights as the limb breaks and holds
+      // a beat after it closes.
+      this.sunChromoAnti = advanceDiamondRing({
+        current: this.sunChromoAnti,
+        target: chromoAntiTarget,
+        dt,
+        snap: silhouetteSnap,
+        attackTau: CHROMOSPHERE_ATTACK_TAU_S,
+        releaseTau: CHROMOSPHERE_RELEASE_TAU_S,
+      });
+      this.sunChromoToward = advanceDiamondRing({
+        current: this.sunChromoToward,
+        target: chromoTowardTarget,
+        dt,
+        snap: silhouetteSnap,
+        attackTau: CHROMOSPHERE_ATTACK_TAU_S,
+        releaseTau: CHROMOSPHERE_RELEASE_TAU_S,
+      });
+      glareMat.uniforms.uChromoAnti.value = this.sunChromoAnti;
+      glareMat.uniforms.uChromoToward.value = this.sunChromoToward;
     }
 
     // Eyes/cameras clamp down quickly on a bright source and recover more
@@ -4275,6 +4987,19 @@ export class PlanetariumMode {
       sunMat.uniforms.uAtmosphereMix.value = this.sunAtmosphereMix;
       sunMat.uniforms.uAtmosphereColor.value.copy(this.sunAtmosphereColor);
     }
+    // Sample after the camera-safety and chase passes have finalised the frame's
+    // pose. Keep this render-only source transmission entirely separate from
+    // the celestial visibility/exposure/flash state resolved above.
+    this.shipSunVisibility = this.computeShipSunVisibility(
+      toSun,
+      sunDistance,
+      solarAngularRadius,
+      inFront && appearanceEligible,
+    );
+    if (glareMat) {
+      glareMat.uniforms.uShipSunVisibility.value = this.shipSunVisibility;
+    }
+    const effectiveVeilAmt = veilAmt * this.shipSunVisibility;
     // The arm terms the glare draws with this frame; mirrored into the mask so
     // the fade uses exactly the profile on screen. 0 whenever the wash is off.
     let maskArmCoeff = 0;
@@ -4286,9 +5011,13 @@ export class PlanetariumMode {
       // where the wash and arms actually fade out and hand the shader the exact
       // arm decay lengths used to size it — the quad always contains the arms it
       // draws. 0 amount (off-screen, occluded, in totality) collapses it all.
-      if (appearanceEligible && veilAmt > 0) {
+      if (appearanceEligible && effectiveVeilAmt > 0) {
         this.computeSunVeilSupport(
-          veilAmt, glareMat.uniforms.uVeilStrength.value, exposureScale, viewportHeight, veilArmCoeff,
+          effectiveVeilAmt,
+          glareMat.uniforms.uVeilStrength.value,
+          exposureScale,
+          viewportHeight,
+          veilArmCoeff,
         );
         // Grow the veil billboard by the centroid displacement so the wash
         // shifted onto the exposed crescent never clips at the quad edge.
@@ -4310,10 +5039,11 @@ export class PlanetariumMode {
       const offAxis = THREE.MathUtils.smoothstep(centreDistanceNdc, 0.12, 0.55);
       const edgeFade = 1 - THREE.MathUtils.smoothstep(centreDistanceNdc, 1.02, 1.45);
       const visibleEnergy = Math.pow(THREE.MathUtils.clamp(visibleFraction, 0, 1), 0.5);
+      const shipEnergy = Math.pow(this.shipSunVisibility, 0.5);
       ghostMat.uniforms.uSunNdc.value.set(this.tmpSunScreen.x, this.tmpSunScreen.y);
       ghostMat.uniforms.uViewportPx.value.set(viewportWidth, viewportHeight);
       ghostMat.uniforms.uGhostStrength.value = appearanceEligible
-        ? opticalFx * offAxis * edgeFade * visibleEnergy * 0.05
+        ? opticalFx * offAxis * edgeFade * visibleEnergy * shipEnergy * 0.05
         : 0;
       ghostMat.uniforms.uExposureScale.value = exposureScale;
       ghostMat.uniforms.uEmergenceFlash.value = this.sunEmergenceFlash;
@@ -4359,6 +5089,7 @@ export class PlanetariumMode {
     }
     const veilStrengthNow = glareMat ? glareMat.uniforms.uVeilStrength.value : 1.4;
     maskParams.peak = veilStrengthNow * veilAmt * exposureScale;
+    maskParams.transmission = this.shipSunVisibility;
     maskParams.armCoeff = maskArmCoeff;
     maskParams.armDecayPx = maskArmDecayPx;
     maskParams.armDecayYPx = maskArmDecayYPx;
@@ -4384,7 +5115,7 @@ export class PlanetariumMode {
     // and a covering footprint must never activate it (see above). sunVeilSupport
     // holds the real wash reach only when the veil is live; it is stale scratch
     // otherwise, so pass 0 in that case rather than a bogus reach.
-    const washSupportPx = veilAmt > 0 ? this.sunVeilSupport.halfPx : 0;
+    const washSupportPx = effectiveVeilAmt > 0 ? this.sunVeilSupport.halfPx : 0;
     const activationInput = this.sunGlareMaskActivationInput;
     activationInput.sunFootprintKind = sunFootprintKind;
     activationInput.sunXPx = maskParams.sunXPx;
@@ -4393,7 +5124,9 @@ export class PlanetariumMode {
     activationInput.washSupportPx = washSupportPx;
     activationInput.viewportWidth = viewportWidth;
     activationInput.viewportHeight = viewportHeight;
-    maskParams.active = maskParams.active && sunGlareMaskActivation(activationInput);
+    maskParams.active = maskParams.active
+      && this.shipSunVisibility > 0
+      && sunGlareMaskActivation(activationInput);
     this.applySunGlareMaskToPoints(viewportWidth);
   }
 
@@ -4657,6 +5390,11 @@ export class PlanetariumMode {
     // line crossing the ecliptic would streak straight through the eclipse.
     // The "Orbit lines" setting hides the same furniture everywhere else.
     const hideAll = this.landedView === 'surface' || !this.showOrbitLines;
+    // The asteroid belt is scene furniture too: its particles aren't
+    // photometric (a real belt asteroid sits far below naked-eye), so on the
+    // eclipse-dimmed surface sky they were the only "stars" that survived the
+    // exposure — a false string of dots along the ecliptic.
+    this.solarSystem.asteroidBelt.visible = this.landedView !== 'surface';
     for (let i = 0; i < this.solarSystem.orbitLines.length; i++) {
       const orbit = this.solarSystem.orbitLines[i];
       orbit.visible = !hideAll;
@@ -5115,6 +5853,8 @@ export class PlanetariumMode {
       this.player.getDistanceFromSun(),
       sunRadiusPx,
       (x, y, depth) => this.planetLabels?.isScreenPointOccluded(x, y, depth) ?? false,
+      this.showBodyLabels,
+      this.revealedBody === 'Sun',
       this.sunGlareMaskParams,
     );
   }
@@ -5273,6 +6013,7 @@ export class PlanetariumMode {
     ) {
       return;
     }
+    this.clearBodyReveal();
     // A pre-tutorial surface view can't be snapshotted (view sub-states are
     // session-only; getState() carries none of them) — settle to orbit view
     // now so the tutorial starts from a state the restore can reproduce.
@@ -5640,10 +6381,11 @@ export class PlanetariumMode {
         // is no totality to hold Next for.
         tutorial.totalityReached = true;
       }
-      // The card teaches the panel as the way to find an eclipse, so it must be
-      // on screen. Surface entry closed it; reopen it over the sky exactly as
-      // the HUD's Observatory chip does. On phones show() starts the sheet at
-      // peek, clear of the centered Sun, and the HUD chevron clamps to it.
+      // The card teaches the panel as the way to find an eclipse, so it must
+      // be on screen even when the tutorial's arrival was quiet and the panel
+      // never opened (surface entry only keeps a panel that was already open).
+      // On phones show() starts the sheet at peek, clear of the centered Sun,
+      // and the HUD chevron clamps to it.
       this.openObservatoryPanel();
       this.markTutorialStaged(generation);
     });
@@ -6205,11 +6947,11 @@ export class PlanetariumMode {
 
     const labelDistancesToggle = document.getElementById('settings-label-distances-toggle');
     labelDistancesToggle?.addEventListener('click', () => {
-      this.showBodyLabelDistances = !this.showBodyLabelDistances;
+      this.labelDistancesMode = this.labelDistancesMode === 'always' ? 'hover' : 'always';
       this.applyBodyLabelVisibility();
       const label = document.getElementById('settings-label-distances-label');
-      if (label) label.textContent = this.showBodyLabelDistances ? 'On' : 'Off';
-      labelDistancesToggle.setAttribute('aria-pressed', String(this.showBodyLabelDistances));
+      if (label) label.textContent = this.labelDistancesMode === 'always' ? 'Always' : 'On hover';
+      labelDistancesToggle.setAttribute('aria-pressed', String(this.labelDistancesMode === 'always'));
     });
 
     document.getElementById('settings-markers-toggle')?.addEventListener('click', () => {
@@ -8198,28 +8940,25 @@ export class PlanetariumMode {
   }
 
   /**
-   * Hide/restore the planet+moon label layers around a modal. Restoring
-   * defers to the surface view and to the labels setting when one of them
-   * owns the hidden state (their skipped label pipeline would never re-hide
-   * stale labels a modal-close revealed).
+   * Hide/restore the planet+moon label layers around a modal. This is only the
+   * modal-hide flag; the resting container visibility (labels setting + active
+   * reveal + surface view) is `syncWorldLabelContainers`, which reads it.
    */
   private setWorldLabelsVisible(visible: boolean) {
-    if (visible && (this.landedView === 'surface' || this.isMapOpen() || !this.showBodyLabels)) return;
-    const planetLabelsEl = document.getElementById('planet-labels');
-    const moonLabelsEl = this.moonLabelContainer;
-    if (planetLabelsEl) planetLabelsEl.style.display = visible ? '' : 'none';
-    if (moonLabelsEl) moonLabelsEl.style.display = visible ? '' : 'none';
+    this.worldLabelsModalHidden = !visible;
+    this.syncWorldLabelContainers();
   }
 
   /** Apply the two independent visibility flags. The HTML label layers follow
-   *  `showBodyLabels`; the marker sprites follow `showBodyMarkers`. When both
-   *  are off the per-frame pipeline stops running, so clear the sprites here;
-   *  when only the markers are off, clear them too (the pipeline keeps running
-   *  for labels but won't re-show a sprite it's told to keep hidden). Re-showing
-   *  the labels defers to surface view, which owns its own label hiding. */
+   *  `showBodyLabels` (plus any live reveal); the marker sprites follow
+   *  `showBodyMarkers`. When both are off the sprites need clearing here; when
+   *  only the markers are off, clear them too (the pipeline keeps running for
+   *  labels but won't re-show a sprite it's told to keep hidden). The distance
+   *  line shows only in 'always' mode — 'hover' leaves the container in
+   *  `hide-distances`, where the per-label reveal class does the revealing. */
   private applyBodyLabelVisibility() {
-    this.setWorldLabelsVisible(this.showBodyLabels);
-    this.planetLabels?.setDistancesVisible(this.showBodyLabelDistances);
+    this.syncWorldLabelContainers();
+    this.planetLabels?.setDistancesVisible(this.labelDistancesMode === 'always');
     if (!this.showBodyLabels && !this.showBodyMarkers) {
       this.planetLabels?.hideAll();
     } else if (!this.showBodyMarkers) {
@@ -8490,12 +9229,16 @@ export class PlanetariumMode {
     lookTarget: THREE.Vector3;
     movingAfter: boolean;
   }) {
-    const dx = options.lookTarget.x - options.targetPosition.x;
-    const dy = options.lookTarget.y - options.targetPosition.y;
-    const dz = options.lookTarget.z - options.targetPosition.z;
-    const horizontal = Math.sqrt(dx * dx + dz * dz);
+    // Through the flight-frame seam, not an inline atan2 pair: the pose
+    // fields this lerps into are ecliptic angles, and hand-framed milestone
+    // postcards would otherwise aim up to 23.4° off their look target.
+    const aim = flightAnglesFromSceneDirection(
+      options.lookTarget.x - options.targetPosition.x,
+      options.lookTarget.y - options.targetPosition.y,
+      options.lookTarget.z - options.targetPosition.z,
+    );
     const startHeading = this.player.heading;
-    let endHeading = Math.atan2(dz, dx);
+    let endHeading = aim.headingRad;
     // Shortest-path heading lerp: pick the equivalent endHeading within ±π of start
     // so we never sweep the long way around when crossing the ±π branch cut.
     const dh = endHeading - startHeading;
@@ -8509,7 +9252,7 @@ export class PlanetariumMode {
       startHeading,
       endHeading,
       startPitch: this.player.pitch,
-      endPitch: Math.atan2(dy, Math.max(horizontal, 1e-8)),
+      endPitch: aim.pitchRad,
       endMoving: options.movingAfter,
     };
     this.player.moving = true;
@@ -8576,12 +9319,54 @@ export class PlanetariumMode {
     // OrbitControls' own gesture with it), drop its damping residuals, then
     // seat the camera at the chase pose.
     this.cancelOrbitGesture();
+    // Cruise rides the flight horizon. Every cruise entry funnels through
+    // here — first pointing, Travel jumps, takeoff, a non-landed restore — so
+    // this is where the basis flips back after any landed excursion.
+    this.setCameraFrameUp(FLIGHT_UP_SCENE);
     this.pendingChaseReclaim = false;
     flushOrbitDamping(this.controls);
     this.camOwner = 'chase';
     const forward = this.player.getForwardDirection();
-    chaseIdealOffset(forward, this.camera.position);
+    chaseIdealOffset(forward, FLIGHT_UP_SCENE, this.camera.position);
     this.controls.target.set(0, 0, 0);
+  }
+
+  /**
+   * The single writer of the camera's up axis outside surface view: cruise
+   * rides the flight horizon (so the system's plane renders level at every
+   * heading), landed framing rides world-up.
+   *
+   * OrbitControls caches its orbit axis from `object.up` at construction
+   * (`_quat`/`_quatInverse`, verified against three r0.183.2), so writing
+   * `camera.up` alone would leave drags — and landed autoRotate — precessing
+   * about the old axis. The cached axis is therefore resynced on EVERY call,
+   * even when the requested up is already in place: the dev framing rigs pose
+   * the camera themselves and write `camera.up` directly without touching the
+   * controls, so "already correct" up is no proof the cache agrees. Two
+   * quaternion ops, and this only runs at mode transitions. A rename on a
+   * three upgrade falls through to a DEV warning and the up write alone.
+   */
+  private setCameraFrameUp(up: THREE.Vector3) {
+    if (!this.camera.up.equals(up)) {
+      // Flipping the basis under a live gesture would swing the view in the
+      // user's hand: end the gesture (no-op when nothing is held) and drop the
+      // damping residuals so no coast replays in the old basis.
+      this.cancelOrbitGesture();
+      flushOrbitDamping(this.controls);
+      this.camera.up.copy(up);
+    }
+    const c = this.controls as unknown as {
+      _quat?: THREE.Quaternion;
+      _quatInverse?: THREE.Quaternion;
+    };
+    if (c._quat && c._quatInverse) {
+      c._quat.setFromUnitVectors(this.camera.up, PlanetariumMode.SCENE_NORTH);
+      c._quatInverse.copy(c._quat).invert();
+      return;
+    }
+    if (import.meta.env.DEV) {
+      console.warn('OrbitControls orbit-axis fields missing — three upgrade renamed them; drags will orbit the stale axis');
+    }
   }
 
   /** End a physically held orbit drag across a flight discontinuity: dispatch a
@@ -9131,6 +9916,25 @@ export class PlanetariumMode {
     }
   }
 
+  /**
+   * Telescope light grasp. A narrow field on a dark sky is exactly what a
+   * telescope buys you — the same aperture spread over less sky, so faint stars
+   * climb out of the background — and the surface view is the only place the
+   * app offers one. Everywhere else the gain is exactly 1 and the field renders
+   * as built. It eases rather than steps so a zoom gesture doesn't strobe the
+   * faint end, and the shader clamps each star so the lift can only reach the
+   * stars that have opacity left to gain.
+   */
+  private updateStarGain(dt: number): void {
+    if (!this.starfield) return;
+    const target = this.landedView === 'surface'
+      ? THREE.MathUtils.clamp(Math.pow(60 / Math.max(displayFovDeg(this.camera), 1e-3), 0.6), 1, 3)
+      : 1;
+    const blend = 1 - Math.exp(-Math.max(dt, 0) / 0.3);
+    this.starGain += (target - this.starGain) * blend;
+    setStarfieldGain(this.starfield, this.starGain);
+  }
+
   /** The one legal camera-FOV writer: routes through the lens overscan. */
   private setDisplayFov(deg: number): void {
     applyDesignFov(this.camera as THREE.PerspectiveCamera, deg);
@@ -9175,6 +9979,11 @@ export class PlanetariumMode {
     offNdcY: number,
   ): void {
     const canvas = this.renderer.domElement;
+    // Framing rigs are world-up, not flight-horizon: a stored screenshot
+    // baseline must not roll 23.4° the day cruise changed its horizon, or
+    // before/after comparisons stop comparing. (These poses bypass the cruise
+    // camera entirely — updateCruiseCamera is skipped under devFreeCamera.)
+    cam.up.set(0, 1, 0);
     let aimNdcX = offNdcX;
     let aimNdcY = offNdcY;
     for (let i = 0; i < 4; i++) {
@@ -9307,6 +10116,66 @@ export class PlanetariumMode {
     return true;
   }
 
+  /**
+   * Headless-QA pose for the reported regression: hold the ship at screen
+   * centre and put the Sun on a requested output-space ray behind it. The
+   * profile is loaded before the pose is returned so sparse probes and the
+   * async Cassini GLB can be swept deterministically.
+   */
+  async devFrameSunBehindShip(
+    distanceAU = 5,
+    offNdcX = 0,
+    offNdcY = 0,
+    profile: ShipProfile = 'default',
+  ): Promise<boolean> {
+    if (!this.solarSystem) return false;
+    if (profile !== 'default') await this.player.ensureProfileLoaded(profile);
+    this.devShipProfileOverride = profile;
+    this.player.setProfile(profile);
+    this.showShip = true;
+    this.player.group.visible = true;
+    this.player.moving = false;
+    this.devFreeCamera = true;
+
+    const forward = this.tmpSunView.set(1, 0, 0);
+    const aim = flightAnglesFromSceneDirection(forward.x, forward.y, forward.z);
+    this.player.heading = aim.headingRad;
+    this.player.pitch = aim.pitchRad;
+    this.player.syncModelOrientation();
+
+    const cam = this.camera as THREE.PerspectiveCamera;
+    this.setDisplayFov(60);
+    this.setCameraFrameUp(FLIGHT_UP_SCENE);
+    chaseIdealOffset(forward, FLIGHT_UP_SCENE, cam.position);
+    this.controls.target.set(0, 0, 0);
+    cam.lookAt(0, 0, 0);
+    cam.updateMatrixWorld(true);
+
+    const canvas = this.renderer.domElement;
+    screenPointToWorldRay(
+      (offNdcX * 0.5 + 0.5) * Math.max(canvas.clientWidth, 1),
+      (-offNdcY * 0.5 + 0.5) * Math.max(canvas.clientHeight, 1),
+      cam,
+      Math.max(canvas.clientWidth, 1),
+      Math.max(canvas.clientHeight, 1),
+      this.tmpScreenRay,
+    );
+    const sunScene = this.tmpSunDirection.copy(cam.position)
+      .addScaledVector(this.tmpScreenRay, Math.max(distanceAU, SUN_DATA.radiusAU * 2));
+    // Floating origin maps the heliocentric Sun (0,0,0) to -player.
+    this.player.posX = -sunScene.x;
+    this.player.posY = -sunScene.y;
+    this.player.posZ = -sunScene.z;
+    this.noteSunViewDiscontinuity();
+    return true;
+  }
+
+  /** DEV-only A/B gate; production always starts enabled. */
+  devSetShipSunOcclusion(enabled: boolean): boolean {
+    this.devShipSunOcclusionEnabled = enabled;
+    return this.devShipSunOcclusionEnabled;
+  }
+
   /** Solid, non-HDR limb target for assertion-based lens QA. It deliberately
    * bypasses the textured Sun/glare so thresholding measures one connected
    * geometric silhouette rather than whichever saturated optical layer wins. */
@@ -9411,6 +10280,12 @@ export class PlanetariumMode {
 
   /** DEV-only: live-tune the veiling-glare knobs for the warmth A/B montage and
    *  strength QA without rebuilding the Sun material. */
+  devSetDiamondScale(k: number): boolean {
+    if (!Number.isFinite(k)) return false;
+    this.devDiamondScale = Math.max(k, 0);
+    return true;
+  }
+
   devSetVeil(opts: { warmth?: number; strength?: number }): boolean {
     const glareMat = this.solarSystem?.sun.userData.sunGlareMaterial as THREE.ShaderMaterial | undefined;
     if (!glareMat) return false;
@@ -9425,6 +10300,23 @@ export class PlanetariumMode {
     return { ...this.sunGlareMaskParams };
   }
 
+  /** The Sun's drawn screen position and radius in CSS pixels, through the same
+   *  lens-aware projection the shader path meters with. Readback only. */
+  private devSunScreenGeometry(): { sunXPx: number; sunYPx: number; sunRadiusPx: number } {
+    if (!this.solarSystem) return { sunXPx: 0, sunYPx: 0, sunRadiusPx: 0 };
+    const width = Math.max(this.renderer.domElement.clientWidth, 1);
+    const height = Math.max(this.renderer.domElement.clientHeight, 1);
+    const projection = projectSphereToScreen(
+      this.solarSystem.sun.position, SUN_DATA.radiusAU, this.camera, width, height,
+      this.sphereScreenProjection,
+    );
+    return {
+      sunXPx: (projection.ndcX * 0.5 + 0.5) * width,
+      sunYPx: (-projection.ndcY * 0.5 + 0.5) * height,
+      sunRadiusPx: projection.radiusPx,
+    };
+  }
+
   /** Headless-QA readback for transient Sun optics and atmospheric grazing. */
   devSunAppearance(): unknown {
     const sunMat = this.solarSystem?.sun.userData.sunMaterial as THREE.ShaderMaterial | undefined;
@@ -9435,6 +10327,8 @@ export class PlanetariumMode {
       exposure: this.sunExposure,
       whiteout: sunMat ? (sunMat.uniforms.uWhiteout.value as number) : 0,
       visibleFraction: this.lastSunVisibleFraction,
+      shipSunVisibility: this.shipSunVisibility,
+      shipSunRaycastCount: this.shipSunRaycastCount,
       emergenceFlash: this.sunEmergenceFlash,
       atmosphereMix: this.sunAtmosphereMix,
       atmosphereColor: `#${this.sunAtmosphereColor.getHexString()}`,
@@ -9443,6 +10337,25 @@ export class PlanetariumMode {
       occluderOffsetSr: offset ? [offset.x, offset.y] : [0, 0],
       glareCentroidSr: centroid ? [centroid.x, centroid.y] : [0, 0],
       diamondRing: glareMat ? (glareMat.uniforms.uDiamondRing.value as number) : 0,
+      diamondOccluderSr: glareMat
+        ? [
+          (glareMat.uniforms.uDiamondOccluderSr.value as THREE.Vector2).x,
+          (glareMat.uniforms.uDiamondOccluderSr.value as THREE.Vector2).y,
+        ]
+        : [0, 0],
+      beadCarveDepth: glareMat ? (glareMat.uniforms.uBeadCarveDepth.value as number) : 0,
+      poleScreenAngle: this.sunPoleScreenAngle,
+      poleAnisotropy: glareMat ? (glareMat.uniforms.uSunPoleAnisotropy.value as number) : 0,
+      chromoAnti: glareMat ? (glareMat.uniforms.uChromoAnti.value as number) : 0,
+      chromoToward: glareMat ? (glareMat.uniforms.uChromoToward.value as number) : 0,
+      closeProminences: this.solarSystem
+        ? ((this.solarSystem.sun.userData.sunProminenceMaterial as THREE.ShaderMaterial | undefined)
+          ?.uniforms.uCloseVisibility.value as number ?? 0)
+        : 0,
+      // Where the disc actually landed this frame, so a capture can put a
+      // measurement window on a named part of it (a limb, the bead) instead of
+      // guessing from the frame centre.
+      ...this.devSunScreenGeometry(),
       secondOccluderFraction: this.sunSecondOccluderFraction,
       // Applied (smoothed) dim of the current silhouette owner, and the size
       // gate that scaled its target this frame.
@@ -9546,6 +10459,7 @@ export class PlanetariumMode {
     // legal camera.fov writer — a raw `cam.fov = fovDeg` would set the display
     // FOV as the overscan and desync every lens seam.
     this.setDisplayFov(fovDeg);
+    cam.up.set(0, 1, 0); // framing rig, not the cruise rig — world-up baseline
     cam.lookAt(sceneOffset);
     this.controls.target.copy(sceneOffset);
     this.showShip = false;
@@ -9596,6 +10510,7 @@ export class PlanetariumMode {
     // applyDesignFov (via setDisplayFov) is the only legal camera.fov writer
     // under the lens contract; a raw `cam.fov = fovDeg` desyncs the overscan.
     this.setDisplayFov(fovDeg);
+    cam.up.set(0, 1, 0); // framing rig, not the cruise rig — world-up baseline
     cam.lookAt(tangentOffset);
     this.controls.target.copy(tangentOffset);
     this.showShip = false;
@@ -9663,6 +10578,9 @@ export class PlanetariumMode {
         : null,
       camPos: { x: cam.position.x, y: cam.position.y, z: cam.position.z },
       camLen: Math.hypot(cam.position.x, cam.position.y, cam.position.z),
+      // Which frame the camera is riding: the flight horizon in cruise,
+      // world-up landed and under the dev framing rigs.
+      camUp: { x: cam.up.x, y: cam.up.y, z: cam.up.z },
       fov: cam.fov,
       moving: this.player.moving,
       devFree: this.devFreeCamera,
@@ -10331,7 +11249,9 @@ export class PlanetariumMode {
       paused: this.timeState.paused,
       fovDeg: displayFovDeg(this.camera),
       tracking: this.surfaceTracking,
-      targetName: this.surfaceTargetDisplayName(this.surfaceTarget),
+      // The chip shows the name standalone, so the prose article goes: "Sun",
+      // not "the Sun".
+      targetName: this.surfaceTargetDisplayName(this.surfaceTarget).replace(/^the /, ''),
       showLookatChip: this.surfaceTargetChoiceCount() >= 2,
       discNote,
       swapLabel: companion ? `Stand on ${bodyDisplayName(companion.name)}` : null,
@@ -10777,6 +11697,7 @@ export class PlanetariumMode {
   ) {
     const landedInfo = this.surfaceLandedInfo();
     if (!landedInfo) return;
+    this.clearBodyReveal();
     // Entering surface view drops the landed system's 5%-of-parent mesh-scale
     // floor, so a moon shrinks to its true silhouette in one frame — its Sun
     // occlusion can fall and the exposed fraction rise. Re-pointing/event jumps
@@ -10838,11 +11759,12 @@ export class PlanetariumMode {
       return;
     }
     this.landedView = 'surface';
-    // The panel makes way for the sky: it covered the event on
-    // mobile and intercepted HUD clicks on desktop. The HUD's Observatory
-    // chip reopens it over the surface view as an explicit opt-in; exiting
-    // does not auto-reopen.
-    this.closeObservatoryPanel();
+    // An open panel survives the entry: its event rows and vantage button are
+    // how the sky was found, and losing them on "Look up" read as the panel
+    // vanishing. Re-showing parks the phone sheet at peek so the centred
+    // subject stays clear; the HUD's Observatory chip still toggles it both
+    // ways, and a closed panel stays closed — the bare sky is the default.
+    if (this.observatoryPanel.isOpen()) this.observatoryPanel.show();
     // The orbit-details overlay is an orbit-view instrument — the surface sky
     // must not carry ellipse axes/sectors across it.
     this.syncOrbitDetailsVisibility();
@@ -10903,10 +11825,17 @@ export class PlanetariumMode {
 
   private finalizeSurfaceExit() {
     this.landedView = 'orbit';
+    // The telescope's light grasp leaves with the telescope: no easing back on
+    // the way out, or the cruise sky would carry a lifted faint end for a beat.
+    this.starGain = 1;
+    if (this.starfield) setStarfieldGain(this.starfield, 1);
     this.surfaceFovAnim = null;
     this.surfaceSpotAnchor = null;
     this.surfaceLook.detach();
-    this.camera.up.set(0, 1, 0); // OrbitControls assumes world-up
+    // Back to the landed orbit view, which is world-up (OrbitControls' cached
+    // orbit axis is already world-up from the landing). The cruise basis is
+    // the flight horizon and gets reapplied by resetCruiseCamera on takeoff.
+    this.camera.up.set(0, 1, 0);
     this.setDisplayFov(60);
     this.setSurfaceLabelContainersHidden(false);
     this.observatoryHud.hide();
@@ -11438,6 +12367,9 @@ export class PlanetariumMode {
     // change a pending mission continuation must yield to (the takeoff bump
     // lives in exitLandedMode, which doesn't route through this).
     this.journeyCommitGen++;
+    // The same seam clears any transient reveal, so a touch reveal can't
+    // survive a ground change or companion swap.
+    this.clearBodyReveal();
     this.moonArrivalCameraLook = null;
     // Landing (and the landed→landed vantage swap) can flip the Sun's exposed
     // fraction in one frame; reseed the flash baseline so it doesn't glare.
@@ -11565,6 +12497,10 @@ export class PlanetariumMode {
     // takeoff reset that reads it — a landed drag may later set 'orbit'
     // harmlessly.
     this.camOwner = 'chase';
+    // Landed framing is world-up: the orbit view, its autoRotate precession
+    // and the lit-side opening pose are all authored against celestial north.
+    // Must precede the framing lookAt below (it reads camera.up).
+    this.setCameraFrameUp(PlanetariumMode.SCENE_NORTH);
 
     // Frame the body to ~⅓ of the view (see landedView), opening on its lit
     // hemisphere. The camera ends up 1.5×camDist from the body at scene origin.
@@ -11934,6 +12870,7 @@ export class PlanetariumMode {
     // profile must yield to it. (Mission startup's own exitLandedMode call
     // runs after its generation check has already passed — no self-abort.)
     this.journeyCommitGen++;
+    this.clearBodyReveal();
     // The governor is frozen while landed, so a cap tightened on the approach
     // must not ramp-limit the departure — and no partial clear-hold may
     // survive into it. Reset here — the single takeoff chokepoint (also the
@@ -12137,30 +13074,11 @@ export class PlanetariumMode {
     // World-presentation passes are gated while the map owns the frame.
     const mapOpen = this.isMapOpen();
 
-    // Occlusion pipeline while landed: planets → Sun + moons + ship → labels +
-    // markers; surface view hides everything. The occluder passes run whenever
-    // either consumer is on: marker sprites render without a depth test (see
-    // the material comment in PlanetLabels), so this analytic disc set is
-    // their only occlusion.
-    if (this.planetLabels && this.landedView !== 'surface' && !mapOpen && (this.showBodyLabels || this.showBodyMarkers)) {
-      const scenePositions = new Map<string, { x: number; y: number; z: number }>();
-      for (const planet of this.solarSystem.planets) {
-        scenePositions.set(planet.data.name, {
-          x: planet.group.position.x,
-          y: planet.group.position.y,
-          z: planet.group.position.z,
-        });
-      }
+    // Occlusion + label/marker + hover-reveal pipeline while landed; surface
+    // view runs its own hidden-label handling, so skip it there.
+    if (this.landedView !== 'surface' && !mapOpen) {
       const landedPlanetName = this.landedOn?.type === 'planet' ? this.landedOn.name : undefined;
-      this.planetLabels.collectForegroundDiscs(scenePositions, this.renderer);
-      this.collectDynamicOccluders();
-      this.planetLabels.renderLabels(scenePositions, { x: 0, y: 0, z: 0 }, this.renderer, {
-        showMarkers: this.showBodyMarkers,
-        showLabels: this.showBodyLabels,
-        excludeName: landedPlanetName,
-        sunMask: this.sunGlareMaskParams,
-        sunPos: this.solarSystem.sun.position,
-      });
+      this.runBodyLabelPipeline(landedPlanetName);
     }
 
     // Update constellation labels while landed
@@ -12170,11 +13088,6 @@ export class PlanetariumMode {
         this.renderer.domElement.clientWidth,
         this.renderer.domElement.clientHeight,
       );
-    }
-
-    if (this.landedView !== 'surface' && this.showBodyLabels && !mapOpen) {
-      this.renderMoonLabels();
-      this.updateSunLabel();
     }
     this.updateOrbitLineVisibility();
 
@@ -12254,7 +13167,7 @@ export class PlanetariumMode {
       showShip: this.showShip,
       showConstellations: this.showConstellations,
       showBodyLabels: this.showBodyLabels,
-      showBodyLabelDistances: this.showBodyLabelDistances,
+      labelDistancesMode: this.labelDistancesMode,
       showBodyMarkers: this.showBodyMarkers,
       showOrbitLines: this.showOrbitLines,
       // Absent until the toggle is flipped, like skyPref below — the widget
@@ -12269,6 +13182,11 @@ export class PlanetariumMode {
       // undefined, so an untouched preference never bakes a device default
       // into the save.
       skyPref: this.skyPrefStored ?? undefined,
+      // Stamped at the source, not in saveState: every session-internal
+      // snapshot (pre-mission, pre-tool, the tutorial's) round-trips through
+      // here and back into restoreState, and an unlabeled one would be read
+      // as legacy and re-rotate the ship on every tutorial exit or tool return.
+      headingBasis: 'ecliptic',
     };
   }
 
@@ -12277,8 +13195,20 @@ export class PlanetariumMode {
     this.player.posX = saved.positionAU.x;
     this.player.posY = saved.positionAU.y;
     this.player.posZ = saved.positionAU.z;
-    this.player.heading = saved.headingRad;
-    this.player.pitch = saved.pitchRad ?? 0;
+    // Saves written before the flight frame moved onto the ecliptic hold
+    // scene-equatorial angles; convert at APPLY so the ship still aims at the
+    // same world direction (unconverted, a saved close approach would miss
+    // its target by ~4.7 arrival-disc diameters). The stored copy stays
+    // unflagged with its legacy angles, so the conversion fires exactly once
+    // per load however many times the save is written back.
+    if (saved.headingBasis === 'ecliptic') {
+      this.player.heading = saved.headingRad;
+      this.player.pitch = saved.pitchRad ?? 0;
+    } else {
+      const converted = eclipticHeadingPitchFromEquatorial(saved.headingRad, saved.pitchRad ?? 0);
+      this.player.heading = converted.headingRad;
+      this.player.pitch = converted.pitchRad;
+    }
     this.player.speedMultiplier = saved.speed;
     this.player.moving = saved.landedOn ? false : (saved.moving ?? saved.speed > 0);
     // A restore is a position discontinuity; drop the whole governor state
@@ -12316,15 +13246,15 @@ export class PlanetariumMode {
     const constLabel = document.getElementById('settings-constellations-label');
     if (constLabel) constLabel.textContent = this.showConstellations ? 'On' : 'Off';
     this.showBodyLabels = saved.showBodyLabels ?? true;
-    this.showBodyLabelDistances = saved.showBodyLabelDistances ?? true;
+    this.labelDistancesMode = saved.labelDistancesMode ?? 'hover';
     this.showBodyMarkers = saved.showBodyMarkers ?? true;
     this.applyBodyLabelVisibility();
     const labelsLabel = document.getElementById('settings-labels-label');
     if (labelsLabel) labelsLabel.textContent = this.showBodyLabels ? 'On' : 'Off';
     const labelDistancesLabel = document.getElementById('settings-label-distances-label');
-    if (labelDistancesLabel) labelDistancesLabel.textContent = this.showBodyLabelDistances ? 'On' : 'Off';
+    if (labelDistancesLabel) labelDistancesLabel.textContent = this.labelDistancesMode === 'always' ? 'Always' : 'On hover';
     document.getElementById('settings-label-distances-toggle')
-      ?.setAttribute('aria-pressed', String(this.showBodyLabelDistances));
+      ?.setAttribute('aria-pressed', String(this.labelDistancesMode === 'always'));
     const markersLabel = document.getElementById('settings-markers-label');
     if (markersLabel) markersLabel.textContent = this.showBodyMarkers ? 'On' : 'Off';
     this.showOrbitLines = saved.showOrbitLines ?? false;

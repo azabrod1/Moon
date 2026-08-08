@@ -34,6 +34,26 @@ import { createLensShaderUniforms } from '../shared/three/lensShader';
 const loader = new THREE.TextureLoader();
 loader.crossOrigin = 'anonymous';
 
+type TextureLoad = (
+  url: string,
+  onLoad: (tex: THREE.Texture) => void,
+  onError: (err: unknown) => void,
+) => void;
+
+// A colour-tier fetch goes through this indirection so the completion,
+// staleness and failure paths that decide what reaches the GPU can be
+// exercised without a GL context or a network — the same injected-seam pattern
+// the texture warmer uses for its upload call. Nothing in the app rebinds it.
+let loadUpgradeTexture: TextureLoad = (url, onLoad, onError) =>
+  loader.load(url, onLoad, undefined, onError);
+
+/** Swap the tier fetch for a stub. Returns the previous one, to restore. */
+export function setUpgradeTextureLoader(load: TextureLoad): TextureLoad {
+  const previous = loadUpgradeTexture;
+  loadUpgradeTexture = load;
+  return previous;
+}
+
 /**
  * Decode a freshly loaded image off the render thread, then queue its GPU
  * upload for the budgeted warm pump — so the first frame that draws the map
@@ -367,21 +387,28 @@ export function resolveUpgradeTier(up: TextureUpgrade, requested: TextureTier): 
 }
 
 /**
- * The highest step a body's screen fraction has earned, given the per-tier
- * trigger fractions the caller tunes — null when it has earned none. Handing
- * that step straight to upgradeTextureOnApproach is what keeps a body first
- * seen already filling the screen from paying for a rung it would replace
- * seconds later; the staged walk up the ladder happens only when the approach
- * crosses the lower fraction first.
+ * Screen fraction (body diameter ÷ viewport height) at which each tier earns
+ * its download. 0.15 for the first step: boot-map texels start to soften there,
+ * with lead time to fetch before the body grows. 0.22 for 8K because of one
+ * view in particular — standing on Earth with the Observatory telescope on the
+ * Moon, the view the 8K map exists for. Its default framing is a 2.2° FOV,
+ * which puts the Moon at 0.25 of the viewport height, so a gate above that
+ * would leave the flagship view on the 4K map until the player thought to zoom
+ * further in.
  */
-export function earnedUpgradeTier(
-  up: TextureUpgrade,
-  fraction: number,
-  triggerAt: Partial<Record<TextureTier, number>>,
-): TextureTier | null {
+export const UPGRADE_TRIGGER_FRACTION: Partial<Record<TextureTier, number>> = { '4k': 0.15, '8k': 0.22 };
+
+/**
+ * The highest step a body's screen fraction has earned — null when it has
+ * earned none. Handing that step straight to upgradeTextureOnApproach is what
+ * keeps a body first seen already filling the screen from paying for a rung it
+ * would replace seconds later; the staged walk up the ladder happens only when
+ * the approach crosses the lower fraction first.
+ */
+export function earnedUpgradeTier(up: TextureUpgrade, fraction: number): TextureTier | null {
   let earned: TextureTier | null = null;
   for (const tier of up.tiers) {
-    const at = triggerAt[tier];
+    const at = UPGRADE_TRIGGER_FRACTION[tier];
     if (at !== undefined && fraction > at) earned = tier; // ascending: keep the highest
   }
   return earned;
@@ -396,14 +423,24 @@ export function canAttempt(up: TextureUpgrade, nowMs: number): boolean {
   return up.retryAtMs === undefined || nowMs >= up.retryAtMs;
 }
 
-/** Should an arrival cover hold for this handle? Only the first step is cover
- *  work: it replaces the boot map the player would otherwise be revealed onto,
- *  and its upload is what would otherwise stall the reveal. A body already on
- *  that step and reaching for a higher goal rides the on-screen trigger
- *  instead, and never delays a landing. */
-export function needsUpgradeCover(up: TextureUpgrade, nowMs: number): boolean {
-  if (up.appliedTier !== null || !firstUpgradeTier(up)) return false;
-  return up.attempt !== undefined || canAttempt(up, nowMs);
+/**
+ * Is this handle's first step the work an arrival cover exists to hide? True
+ * while the body is still on its boot map and either nothing is in flight or
+ * what is in flight is that first step.
+ *
+ * Anything higher is never cover work. The on-screen trigger can start a fetch
+ * for the ceiling directly, and holding a landing behind a map that size buys
+ * nothing: the player is revealed onto the same boot map either way. A body
+ * that already has its first step is in the same position.
+ *
+ * A cooldown deliberately does not suppress this — an arrival is the ideal
+ * moment to retry a failed first step, so the caller clears it for exactly the
+ * handles this returns true for.
+ */
+export function needsUpgradeCover(up: TextureUpgrade): boolean {
+  const first = firstUpgradeTier(up);
+  if (!first || up.appliedTier !== null) return false;
+  return !up.attempt || up.attempt.tier === first;
 }
 
 // Apply a freshly loaded colour map only if it out-ranks what's already on the
@@ -466,7 +503,7 @@ export function upgradeTextureOnApproach(
   // out and superseded) if the handle no longer carries its generation.
   const abandoned = () => up.attempt?.generation !== generation;
   const url = resolveTextureUrl(PLANET_TEXTURE_FILES[up.key], tier);
-  loader.load(
+  loadUpgradeTexture(
     url,
     (tex) => {
       if (abandoned()) {
@@ -498,7 +535,6 @@ export function upgradeTextureOnApproach(
       if (img && typeof img.decode === 'function') img.decode().then(applyUpgrade, applyUpgrade);
       else applyUpgrade();
     },
-    undefined,
     (err) => {
       if (abandoned()) return;
       up.attempt = undefined;

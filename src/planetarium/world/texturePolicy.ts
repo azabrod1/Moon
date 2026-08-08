@@ -8,8 +8,10 @@
  */
 import * as THREE from 'three';
 
-/** Every resolution tier, ascending. The one ordering the clamp and the
- *  step-up logic share — nothing may restate it. */
+/** Every resolution tier that exists, ascending. This list names them and
+ *  fixes that ascending convention: the device clamp walks it directly, and a
+ *  body's own upgrade ladder names whichever subset it has on disk in the same
+ *  order. A new resolution is an entry here plus a folder. */
 export const TEXTURE_TIERS = ['2k', '4k', '8k'] as const;
 export type TextureTier = (typeof TEXTURE_TIERS)[number];
 export type MapKind = 'color' | 'data';

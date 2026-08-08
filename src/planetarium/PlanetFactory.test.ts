@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   applyColorTierTexture,
   canAttempt,
@@ -9,15 +9,14 @@ import {
   makeTextureUpgrade,
   needsUpgradeCover,
   resolveUpgradeTier,
+  setUpgradeTextureLoader,
   TIER_RANK,
+  upgradeTextureOnApproach,
+  UPGRADE_TRIGGER_FRACTION,
   type TextureUpgrade,
 } from './PlanetFactory';
 import { captureDeviceTextureCaps, type TextureTier } from './world/texturePolicy';
 import { bindTextureWarmer, pumpTextureWarmQueue, queueTextureWarm, resetTextureWarmer } from './world/textureWarmer';
-
-// The screen fractions PlanetariumMode.UPGRADE_AT tunes: the mode owns the
-// numbers, this file pins the policy they drive.
-const TRIGGER_AT: Partial<Record<TextureTier, number>> = { '4k': 0.15, '8k': 0.3 };
 
 // Device caps are captured from the live renderer; a fake renderer is the seam.
 function withMaxTextureSize(size: number): void {
@@ -37,8 +36,9 @@ function handle(key: string): TextureUpgrade {
 }
 
 let generation = 0;
-/** Put an attempt on a handle the way upgradeTextureOnApproach does, without
- *  a loader: the tests are about what the handle then permits. */
+/** Put an attempt on a handle the way upgradeTextureOnApproach does, for the
+ *  tests that are about what the handle then permits rather than what the
+ *  fetch does. */
 function startAttempt(up: TextureUpgrade, tier: TextureTier, startedAtMs = 0): number {
   up.attempt = { tier, generation: ++generation, startedAtMs };
   up.retryAtMs = undefined;
@@ -93,14 +93,27 @@ describe('upgrade ladders', () => {
     const up = handle('moon');
     expect(firstUpgradeTier(up)).toBeNull();
     expect(canAttempt(up, 0)).toBe(false);
-    expect(needsUpgradeCover(up, 0)).toBe(false);
+    expect(needsUpgradeCover(up)).toBe(false);
+  });
+
+  it('resolves the device ceiling once, at creation', () => {
+    const up = handle('moon');
+    expect(up.effectiveMaxTier).toBe('8k');
+    // Caps are captured before any handle exists; re-reading them later would
+    // make a handle's ceiling drift under it. Every reader must go through the
+    // stored ceiling, not the live cap.
+    withMaxTextureSize(2048);
+    expect(up.effectiveMaxTier).toBe('8k');
+    expect(resolveUpgradeTier(up, '8k')).toBe('8k');
+    expect(firstUpgradeTier(up)).toBe('4k');
+    expect(canAttempt(up, 0)).toBe(true);
   });
 });
 
 describe('screen-fraction band policy', () => {
   it('goes straight to the ceiling for a body already filling the screen', () => {
     const up = handle('moon');
-    const earned = earnedUpgradeTier(up, 0.35, TRIGGER_AT);
+    const earned = earnedUpgradeTier(up, 0.35);
     expect(earned).toBe('8k');
     // No 4K on the way: the intermediate map would be replaced seconds later,
     // for a whole extra download and upload.
@@ -109,18 +122,31 @@ describe('screen-fraction band policy', () => {
 
   it('stages the ladder when the approach crosses the lower fraction first', () => {
     const up = handle('moon');
-    expect(earnedUpgradeTier(up, 0.2, TRIGGER_AT)).toBe('4k');
+    expect(earnedUpgradeTier(up, 0.2)).toBe('4k');
     up.appliedTier = '4k';
-    expect(earnedUpgradeTier(up, 0.35, TRIGGER_AT)).toBe('8k');
+    expect(earnedUpgradeTier(up, 0.35)).toBe('8k');
     expect(resolveUpgradeTier(up, '8k')).toBe('8k');
   });
 
   it('earns nothing for a body still small on screen', () => {
-    expect(earnedUpgradeTier(handle('moon'), 0.1, TRIGGER_AT)).toBeNull();
+    expect(earnedUpgradeTier(handle('moon'), 0.1)).toBeNull();
   });
 
   it('gives a single-step ladder its one tier', () => {
-    expect(earnedUpgradeTier(handle('earthClouds'), 0.9, TRIGGER_AT)).toBe('4k');
+    expect(earnedUpgradeTier(handle('earthClouds'), 0.9)).toBe('4k');
+  });
+
+  it('reaches 8K at the telescope framing the tier exists for', () => {
+    // Standing on Earth, the Observatory telescope's default framing puts the
+    // Moon at 0.25 of the viewport height. The gate has to sit under that.
+    expect(UPGRADE_TRIGGER_FRACTION['8k']).toBeLessThan(0.25);
+    expect(earnedUpgradeTier(handle('moon'), 0.25)).toBe('8k');
+  });
+
+  it('needs the fraction strictly past a gate, not merely at it', () => {
+    const up = handle('moon');
+    expect(earnedUpgradeTier(up, UPGRADE_TRIGGER_FRACTION['8k']!)).toBe('4k');
+    expect(earnedUpgradeTier(up, UPGRADE_TRIGGER_FRACTION['4k']!)).toBeNull();
   });
 });
 
@@ -131,11 +157,11 @@ describe('upgrade attempts', () => {
     expect(canAttempt(up, 1_500)).toBe(false);
   });
 
-  it('lets a hung fetch be superseded after a minute', () => {
+  it('supersedes a fetch at exactly the hung-attempt age, not a moment before', () => {
     const up = handle('moon');
-    startAttempt(up, '4k', 1_000);
-    expect(canAttempt(up, 60_999)).toBe(false);
-    expect(canAttempt(up, 61_001)).toBe(true);
+    startAttempt(up, '4k', 0);
+    expect(canAttempt(up, 59_999)).toBe(false);
+    expect(canAttempt(up, 60_000)).toBe(true);
   });
 
   it('keeps a released fetch running so it can still apply', () => {
@@ -148,31 +174,186 @@ describe('upgrade attempts', () => {
     expect(up.retryAtMs).toBeUndefined();
   });
 
-  it('discards an abandoned fetch and cools down before retrying', () => {
+  it('discards an abandoned fetch and retries at exactly the cooldown instant', () => {
     const up = handle('moon');
     const gen = startAttempt(up, '4k', 0);
     cancelTextureUpgrade(up, 'discard', 1_000);
     // The completion no longer matches the handle, so it disposes itself.
     expect(up.attempt?.generation).not.toBe(gen);
-    expect(canAttempt(up, 1_100)).toBe(false);
-    expect(canAttempt(up, 9_100)).toBe(true);
+    expect(up.retryAtMs).toBe(9_000);
+    expect(canAttempt(up, 8_999)).toBe(false);
+    expect(canAttempt(up, 9_000)).toBe(true);
   });
 });
 
 describe('arrival cover policy', () => {
   it('covers a body that has not got its first step yet', () => {
     const idle = handle('moon');
-    expect(needsUpgradeCover(idle, 0)).toBe(true);
+    expect(needsUpgradeCover(idle)).toBe(true);
     const loading = handle('moon');
     startAttempt(loading, '4k', 0);
-    expect(needsUpgradeCover(loading, 0)).toBe(true);
+    expect(needsUpgradeCover(loading)).toBe(true);
+  });
+
+  it('does not cover a fetch that jumped straight to the ceiling', () => {
+    // The on-screen trigger can start an 8K fetch on a body still showing its
+    // boot map; no landing waits behind a download that size.
+    const up = handle('moon');
+    startAttempt(up, '8k', 0);
+    expect(needsUpgradeCover(up)).toBe(false);
   });
 
   it('does not cover a body already on a photo tier reaching for its goal', () => {
     const up = handle('moon');
     up.appliedTier = '4k';
-    expect(needsUpgradeCover(up, 0)).toBe(false);
+    expect(needsUpgradeCover(up)).toBe(false);
     expect(canAttempt(up, 0)).toBe(true); // the 8K goal still rides the on-screen trigger
+  });
+
+  it('leaves a higher step\'s cooldown for the arrival to respect', () => {
+    // An arrival clears retryAtMs only where it is covering the work. A failed
+    // 8K keeps its cooldown across landings; only a failed first step is
+    // retried under the cover.
+    const up = handle('moon');
+    up.appliedTier = '4k';
+    up.retryAtMs = 9_000;
+    expect(needsUpgradeCover(up)).toBe(false);
+    expect(canAttempt(up, 8_999)).toBe(false);
+  });
+});
+
+describe('what a fetch puts on the material', () => {
+  type Pending = { url: string; onLoad: (tex: THREE.Texture) => void; onError: (err: unknown) => void };
+  let pending: Pending[] = [];
+  let restore: ((load: never) => void) | null = null;
+
+  const flush = () => new Promise<void>((resolve) => setTimeout(resolve, 0));
+
+  /** A texture whose decode this test releases by hand, so the window between
+   *  arrival and apply — the one cancellation has to survive — is steerable. */
+  function arriving(): { tex: THREE.Texture; finishDecode: () => void } {
+    const tex = new THREE.Texture();
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    tex.image = { decode: () => gate };
+    return { tex, finishDecode: release };
+  }
+
+  beforeEach(() => {
+    pending = [];
+    const previous = setUpgradeTextureLoader((url, onLoad, onError) => {
+      pending.push({ url, onLoad, onError });
+    });
+    restore = () => setUpgradeTextureLoader(previous);
+  });
+
+  afterEach(() => {
+    restore?.(undefined as never);
+    restore = null;
+  });
+
+  it('applies a completed fetch and queues its upload', async () => {
+    const uploaded: THREE.Texture[] = [];
+    bindTextureWarmer((tex) => uploaded.push(tex));
+    const up = handle('moon');
+    upgradeTextureOnApproach(up, '8k', 1_000);
+    expect(pending).toHaveLength(1);
+    expect(pending[0].url).toMatch(/textures\/8k\/moon\.jpg$/);
+
+    const arrival = arriving();
+    pending[0].onLoad(arrival.tex);
+    arrival.finishDecode();
+    await flush();
+
+    expect(up.material.map).toBe(arrival.tex);
+    expect(up.appliedTier).toBe('8k');
+    expect(up.attempt).toBeUndefined();
+    pumpTextureWarmQueue(Number.POSITIVE_INFINITY);
+    expect(uploaded).toEqual([arrival.tex]);
+  });
+
+  it('drops a fetch abandoned before its image arrived', async () => {
+    const up = handle('moon');
+    upgradeTextureOnApproach(up, '4k', 0);
+    cancelTextureUpgrade(up, 'discard', 0);
+
+    const arrival = arriving();
+    const disposed = watchDispose(arrival.tex);
+    pending[0].onLoad(arrival.tex);
+    await flush();
+
+    expect(disposed()).toBe(true);
+    expect(up.material.map).toBeNull();
+    expect(up.appliedTier).toBeNull();
+  });
+
+  it('drops a fetch abandoned while its image was decoding', async () => {
+    const up = handle('moon');
+    upgradeTextureOnApproach(up, '4k', 0);
+
+    const arrival = arriving();
+    const disposed = watchDispose(arrival.tex);
+    pending[0].onLoad(arrival.tex); // past the first check, now decoding
+    cancelTextureUpgrade(up, 'discard', 0);
+    arrival.finishDecode();
+    await flush();
+
+    expect(disposed()).toBe(true);
+    expect(up.material.map).toBeNull();
+    expect(up.appliedTier).toBeNull();
+  });
+
+  it('lets a released fetch apply after the cover has gone', async () => {
+    const up = handle('moon');
+    upgradeTextureOnApproach(up, '4k', 0);
+    cancelTextureUpgrade(up, 'keep', 0);
+
+    const arrival = arriving();
+    pending[0].onLoad(arrival.tex);
+    arrival.finishDecode();
+    await flush();
+
+    expect(up.material.map).toBe(arrival.tex);
+    expect(up.appliedTier).toBe('4k');
+  });
+
+  it('cannot let a superseded fetch overwrite the one that replaced it', async () => {
+    const up = handle('moon');
+    upgradeTextureOnApproach(up, '4k', 0);
+    upgradeTextureOnApproach(up, '8k', 61_000); // the first one hung; supersede it
+    expect(pending).toHaveLength(2);
+
+    const stale = arriving();
+    const staleDisposed = watchDispose(stale.tex);
+    pending[0].onLoad(stale.tex);
+    await flush();
+    expect(staleDisposed()).toBe(true);
+    expect(up.material.map).toBeNull();
+
+    const fresh = arriving();
+    pending[1].onLoad(fresh.tex);
+    fresh.finishDecode();
+    await flush();
+    expect(up.material.map).toBe(fresh.tex);
+    expect(up.appliedTier).toBe('8k');
+  });
+
+  it('stamps a failed fetch\'s cooldown from the moment it failed', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const up = handle('moon');
+      upgradeTextureOnApproach(up, '4k', 0); // a start stamp far from the real clock
+      const before = performance.now();
+      pending[0].onError(new Error('404'));
+      const after = performance.now();
+      expect(up.attempt).toBeUndefined();
+      // Wall clock at failure, not the attempt's start stamp: a cooldown
+      // measured from the start would already be in the past.
+      expect(up.retryAtMs).toBeGreaterThanOrEqual(before + 8_000);
+      expect(up.retryAtMs).toBeLessThanOrEqual(after + 8_000);
+    } finally {
+      warn.mockRestore();
+    }
   });
 });
 

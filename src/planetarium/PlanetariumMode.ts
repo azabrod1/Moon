@@ -109,7 +109,7 @@ import {
 } from './world/sunGlareMask';
 import { MoonPainter } from './world/MoonPainter';
 import { ProceduralMoonTexturer } from './world/ProceduralMoonTexturer';
-import { captureDeviceTextureCaps, type TextureTier } from './world/texturePolicy';
+import { captureDeviceTextureCaps } from './world/texturePolicy';
 import { planetshineIntensity } from './world/planetshine';
 import {
   advanceSilhouetteOwners,
@@ -565,9 +565,10 @@ export class PlanetariumMode {
    *  reveal dwell — e.g. a parked tutorial stop restoring the moment the
    *  in-flight flag clears, or two quick deck picks. */
   private arrivalCoverGen = 0;
-  /** The colour-tier fetches the current arrival started, by handle and attempt
-   *  identity. The cover waits on exactly this set, and the next arrival
-   *  discards whatever is left of it for bodies it isn't going to. */
+  /** What the live cover is waiting on: the first-step fetches in flight when
+   *  it went up, by handle and attempt identity. Taken once per arrival, so a
+   *  fetch that starts later — including the next step of a ladder — can never
+   *  extend a hold that is already running. */
   private arrivalUpgradeBatch: Array<{ up: TextureUpgrade; generation: number }> = [];
   private static readonly ARRIVAL_MIN_DWELL_MS = 150;
   // Longest the arrival cover waits (from cover start) for the landed pair's
@@ -1740,11 +1741,10 @@ export class PlanetariumMode {
   }
 
   private async settleRestoredLandedTextureUpgrades(): Promise<void> {
-    // The batch this restore started, by identity — the wait can't be extended
-    // by a fetch that begins for some other reason while it runs.
-    const batch = this.landedPairUpgrades().flatMap((up) =>
-      up.attempt ? [{ up, generation: up.attempt.generation }] : [],
-    );
+    // The load screen owns the wait-list the same way an arrival cover does,
+    // so a teleport taken straight out of a restored session sees it too.
+    this.arrivalUpgradeBatch = this.coverWaitList();
+    const batch = this.arrivalUpgradeBatch;
     const stillInFlight = () => batch.filter((e) => e.up.attempt?.generation === e.generation);
     const deadline = performance.now() + PlanetariumMode.ARRIVAL_UPGRADE_HOLD_MAX_MS;
     while (this.active && performance.now() < deadline && stillInFlight().length > 0) {
@@ -2172,16 +2172,6 @@ export class PlanetariumMode {
 
   private readonly texLODTmp = new THREE.Vector3();
   /**
-   * Screen fraction (body diameter ÷ viewport height) at which each colour
-   * tier earns its download. 0.15 for the first step: boot-map texels start to
-   * soften there, with lead time to fetch before the body grows. 0.3 for 8K
-   * rather than a half-filled screen, because the Observatory telescope's FOV
-   * floor frames the Moon at ~0.35 — a higher gate would put the 8K step out
-   * of reach on exactly the path built to show it.
-   */
-  private static readonly UPGRADE_AT: Partial<Record<TextureTier, number>> = { '4k': 0.15, '8k': 0.3 };
-
-  /**
    * Stream higher-resolution colour maps for any body that grows large on
    * screen. The trigger is screen-fraction (apparent diameter ÷ vertical FOV),
    * not raw distance, so a body magnified by the Observatory's narrow-FOV
@@ -2263,7 +2253,7 @@ export class PlanetariumMode {
   private triggerTextureUpgrades(ups: readonly TextureUpgrade[], fraction: number, nowMs: number): void {
     for (const up of ups) {
       if (!canAttempt(up, nowMs)) continue;
-      const earned = earnedUpgradeTier(up, fraction, PlanetariumMode.UPGRADE_AT);
+      const earned = earnedUpgradeTier(up, fraction);
       if (earned) upgradeTextureOnApproach(up, earned, nowMs);
     }
   }
@@ -10236,6 +10226,18 @@ export class PlanetariumMode {
     return this.landedOn ? this.landingPairUpgrades(this.landedOn) : [];
   }
 
+  /** The landed pair's first-step fetches running right now, by attempt
+   *  identity. A cover waits on these and nothing else: a higher step the
+   *  on-screen trigger started is not what the reveal is hiding, and a step
+   *  that begins after this list is taken cannot extend the hold. */
+  private coverWaitList(): Array<{ up: TextureUpgrade; generation: number }> {
+    return this.landedPairUpgrades().flatMap((up) =>
+      up.attempt && up.attempt.tier === firstUpgradeTier(up)
+        ? [{ up, generation: up.attempt.generation }]
+        : [],
+    );
+  }
+
   /**
    * Run an instant teleport (`action`), but if the destination system's moons
    * aren't painted yet — or carry 4096-wide-or-larger photo maps that haven't
@@ -10258,13 +10260,15 @@ export class PlanetariumMode {
   ): void {
     if (this.arrivalInFlight) return;
     const landingUpgrades = this.landingPairUpgrades(target);
-    // This arrival supersedes the last one's fetches: the body they were
-    // started for is being left, so their bytes have nowhere to land. Handles
-    // this destination wants as well keep their fetch — it is the same map.
-    for (const entry of this.arrivalUpgradeBatch) {
-      if (!landingUpgrades.includes(entry.up) && entry.up.attempt?.generation === entry.generation) {
-        cancelTextureUpgrade(entry.up, 'discard');
-      }
+    // A teleport abandons every fetch in flight anywhere in the system except
+    // the ones for where it is going. Sweeping all the handles, rather than
+    // just the ones the last arrival started, is what catches a fetch the
+    // on-screen trigger began during a close approach: left behind, it would
+    // otherwise still land and pay a full-size upload on the first frames of
+    // the destination. Handles this destination wants keep their fetch — it is
+    // the same map.
+    for (const up of this.allTextureUpgrades()) {
+      if (!landingUpgrades.includes(up)) cancelTextureUpgrade(up, 'discard');
     }
     this.arrivalUpgradeBatch = [];
     const parentName = this.parentSystemOf(target);
@@ -10284,11 +10288,15 @@ export class PlanetariumMode {
       });
     let upgradeCover = false;
     if (protectLandedUpgrades) {
-      // A cover is the ideal moment to retry a step that failed earlier: its
-      // fetch, decode and upload get a bounded window with nothing on screen.
-      for (const up of landingUpgrades) up.retryAtMs = undefined;
-      const nowMs = performance.now();
-      upgradeCover = landingUpgrades.some((up) => needsUpgradeCover(up, nowMs));
+      for (const up of landingUpgrades) {
+        if (!needsUpgradeCover(up)) continue;
+        // A cover is the ideal moment to retry a first step that failed
+        // earlier: its fetch, decode and upload get a bounded window with
+        // nothing on screen. A higher step that failed keeps its cooldown,
+        // because nothing here is covering that one.
+        up.retryAtMs = undefined;
+        upgradeCover = true;
+      }
     }
     if (!needsPaint && !needsUploadCover && !upgradeCover) {
       action();
@@ -10318,14 +10326,9 @@ export class PlanetariumMode {
           this.queueSystemMoonMapsForWarm(parentName);
           pumpTextureWarmQueue(Number.POSITIVE_INFINITY);
           this.warmedSystems.add(parentName);
-          // Capture the fetches this arrival started (applyLandedTarget, inside
-          // the action above) once, by identity. The hold below then waits on
-          // exactly these: a step that completes and immediately starts the next
-          // one can't extend the cover, and nothing that starts afterwards for
-          // another reason can either.
-          this.arrivalUpgradeBatch = this.landedPairUpgrades().flatMap((up) =>
-            up.attempt ? [{ up, generation: up.attempt.generation }] : [],
-          );
+          // Take the hold's wait-list once, now that the landing has started
+          // its fetches (applyLandedTarget, inside the action above).
+          this.arrivalUpgradeBatch = this.coverWaitList();
         } catch (err) {
           debugError('Arrival failed', err);
         } finally {

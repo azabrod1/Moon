@@ -12,10 +12,13 @@
  * Glass v1 is two shells sharing one program (BackSide then FrontSide): a
  * view-dependent alpha that stays near-clear face-on and dense at the rim, a
  * tight warm fresnel edge lobe, an opening discarded around +Y on both shells,
- * and — on the back wall only — the container's own colour map ghosted in and
- * lit by the key, so glass-Jupiter still reads as Jupiter. The ghost's gain is
- * normalized by the map's mean luminance so a dark-ocean Earth reads as
- * translucent as bright-banded Jupiter rather than a solid unlit ball.
+ * and — on the NEAR shell — the container's own colour map as a key-shaded
+ * surface skin, so glass-Jupiter still reads as Jupiter and orbiting slides
+ * the bands with honest convex parallax (a back-wall ghost counter-rotates
+ * like a hollow mask; only the sub-unity loom still paints the far wall, its
+ * lit-world treatment needs the interior). The ghost's gain is normalized by
+ * the map's mean luminance so a dark-ocean Earth reads as translucent as
+ * bright-banded Jupiter rather than a solid unlit ball.
  */
 import * as THREE from 'three';
 import {
@@ -140,7 +143,9 @@ const FILL_HEMI_INTENSITY = 1.6;
 // the surface only WHISPERS through the vessel (blended at the view-dependent
 // alpha, the ghost is faint at the clear centre and densest toward the rim) —
 // the caption must read "empty glass Jupiter", not "Jupiter at night".
-const GHOST_TARGET_LUM = 0.85;
+// (1.0, not lower: the key shading below averages ~0.75 over the lit face, so
+// the target rides higher to keep the same presence the flat hologram had.)
+const GHOST_TARGET_LUM = 1.0;
 // Floor sits below the gain the brightest map needs (Moon at target 0.32 wants
 // ~0.44) so every container normalizes to the target — bright Jupiter/Moon read
 // as translucent as dark Earth. It only guards against a near-black map (gain -> 0).
@@ -152,16 +157,30 @@ const GHOST_GAIN_MAX = 5.0;
 // own mean (converted to the shader's linear space), so peaks flatten toward
 // the body's overall translucency and the glass illusion survives every map.
 const GHOST_KNEE_X_MEAN = 2.5;
+// Absolute ceiling on a presented ghost texel (knee·gain, linear), applied
+// RIM-GRADED in the shader (full map contrast at the clear centre, hard and
+// uniform at the limb): the limb stacks ghost + lift + fresnel lobes at shell
+// alpha ~0.9, and any bright-texel VARIATION that crosses the 0.92 bloom
+// threshold there blooms as beads dotted along the rim (Saturn's storms,
+// Jupiter's cream bands). Clamping the whole map instead flattened the bright
+// bands to plastic — the ceiling belongs only where the stack can bloom.
+const GHOST_TEXEL_CEIL = 0.72;
 // The ghost's presented luminance floor: the alpha curve's low end (its clear-centre
 // value). Raised from a barely-there whisper so the container's bands stay readable
 // ABOVE the fill at a default camera during a pour — a floor, not a re-light, so the
 // glass-not-solid feel survives (the rim stays denser via the fresnel curve).
-const GHOST_FLOOR_ALPHA = 0.14;
+const GHOST_FLOOR_ALPHA = 0.17;
+// Studio-key floor on the ghost's shading: 1 would be a flat unlit hologram (no
+// light direction revealed by orbiting), 0 a hard day/night terminator on what
+// must read as glass. The high floor keeps the map present on the dark half
+// while the lit shoulder still travels as the camera orbits.
+const GHOST_KEY_FLOOR = 0.45;
 // Cold-open empty lift: while the vessel is empty, a gentle studio fill brightens
 // the ghost so the empty glass reads as a full subject, easing OUT over the first 5%
 // of occupancy — the house lights dim over the first breath of the pour, never a snap.
-// An extra on top of GHOST_FLOOR_ALPHA (which holds at every fill).
-const EMPTY_LIFT_GAIN = 0.55;
+// An extra on top of GHOST_FLOOR_ALPHA (which holds at every fill). Held modest:
+// past ~0.5 the empty vessel reads as a glowing lamp, not lit glass.
+const EMPTY_LIFT_GAIN = 0.38;
 const EMPTY_LIFT_FADE_END = 0.05;
 
 // --- backdrop --------------------------------------------------------------
@@ -177,7 +196,9 @@ const LOADING_DIM = 0.4;
 // --- atmosphere ghost ------------------------------------------------------
 // Containers with an atmosphere get the app's own glow shell, faded to this
 // fraction so it whispers "this is that planet" without competing with the glass.
-const ATMOSPHERE_GHOST_ALPHA = 0.3;
+// Low: stacked on the warm fresnel rim + bloom it reads as a sickly halo well
+// before it reads as air.
+const ATMOSPHERE_GHOST_ALPHA = 0.16;
 
 // --- liquid ----------------------------------------------------------------
 // The molten liquid sits at a radius a hair inside the glass so the meniscus
@@ -427,6 +448,7 @@ uniform float uGhostGain;
 uniform float uMouthPlaneY; // the opening's plane height on the unit sphere (2 = no mouth)
 uniform float uMouthOpen;   // 0 closed sphere → 1 irised open
 uniform float uGhostKnee;   // ghost texel ceiling (linear) — flattens bright peaks
+uniform float uGhostKneeRim; // absolute bloom-guard ceiling, engaged only toward the limb
 uniform float uBackShell;   // 1 for the far shell (lit ghost), 0 for the near shell
 uniform float uDim;         // 1 normally, < 1 while an in-mode pair swap loads
 uniform float uReveal;      // 1 presented, eases 0→1 on reveal (held 0 until a pair is fully loaded)
@@ -440,6 +462,9 @@ varying vec3 vWorldNormal;
 varying vec3 vObjPos;
 varying vec2 vUv;
 
+// The studio key (KEY_LIGHT_DIR), injected so the ghost skin shades under the
+// same light that lights the contents — one light source, one story.
+const vec3 KEY_DIR = vec3(${KEY_LIGHT_DIR.x.toFixed(4)}, ${KEY_LIGHT_DIR.y.toFixed(4)}, ${KEY_LIGHT_DIR.z.toFixed(4)});
 // Sub-unity loom vessel lighting (applied in the back-shell ghost branch below):
 // the giant looms straight overhead and lights the tiny vessel from above. Tunable.
 const vec3 LOOM_KEY = vec3(-0.301, 0.905, 0.301); // strongly overhead, camera-left (unit)
@@ -496,35 +521,56 @@ void main() {
 
   // Second fresnel lobe — a faint green-cyan absorption tint (thick-glass iron
   // colour), steep enough to sit only in the outer third of the disc so the
-  // face stays clear (no milky billiard-ball veil across the centre).
+  // face stays clear (no milky billiard-ball veil across the centre). Held low:
+  // both shells add it, and over a warm banded ghost the cyan wash is what
+  // turns the vessel pale and ghostly.
   float shoulder = pow(fres, 2.6);
-  col += vec3(0.75, 1.0, 0.92) * shoulder * 0.14;
+  col += vec3(0.75, 1.0, 0.92) * shoulder * 0.07;
 
   // No front-shell specular glint: a tight HDR ping over the bloom threshold
   // read as a bright blob floating mid-vessel and added nothing — the fresnel
   // rim + the glass-cut lip carry the "reflective surface" cue on their own.
 
-  // Ghosted back wall: the far shell shows the container's surface faintly.
-  // The key modulates the shell so orbiting reveals a light DIRECTION (lit
-  // shoulder, falloff, dark side) — but the floor keeps the texture present on
-  // the dark half, so no day/night terminator ever reads on the glass. The
-  // knee clamps bright texels (icecaps, cloud decks) that would otherwise
-  // punch through the vessel as solid glowing patches. A cheap limb factor
-  // keeps it a surface, not a decal.
-  if (uBackShell > 0.5 && uHasGhost > 0.5) {
-    // The container's REAL colour map as an UNLIT hologram — independent of the
-    // key so its identity (Jupiter's cream/rust bands, Saturn's ochre) survives
-    // every sun angle, on the night limb too. Auto-gained per container so
+  // Ghosted container surface: the NEAR shell carries the container's colour
+  // map, a front-surface skin — orbiting slides the bands with honest convex
+  // parallax (painted on the far wall they counter-rotate like a hollow mask:
+  // the drag feels broken even though the orbit itself is standard). The studio
+  // key modulates the skin with a high floor, so orbiting reveals a light
+  // DIRECTION (lit shoulder, falloff) while the map stays present on the dark
+  // half — no day/night terminator ever reads on the glass. The knee clamps
+  // bright texels (icecaps, cloud decks) that would otherwise punch through
+  // the vessel as solid glowing patches. The sub-unity loom is the exception:
+  // its vessel keeps the far-wall ghost (the lit-world treatment below wants
+  // the interior surface, and the giant owns the light there).
+  float ghostShellW = mix(1.0 - uBackShell, uBackShell, uLoomLit);
+  if (uHasGhost > 0.5) {
+    // The container's REAL colour map, auto-gained per container so
     // low-contrast maps still band. Fresnel-shaped: bands at the limb, melting
     // to a clear centre (~0.34 rim → ~0.07 centre). Native saturation kept.
     float ghostAlpha = mix(${GHOST_FLOOR_ALPHA.toFixed(3)}, 0.34, pow(fres, 1.3));
     vec3 ghostTex = min(texture2D(uGhostMap, vUv).rgb, vec3(uGhostKnee));
-    col += ghostTex * uGhostGain * ghostAlpha;
+    // Rim-graded bloom guard: the limb stacks every lobe at dense alpha, so
+    // bright-texel variation there beads the halo (Saturn's storm ovals read as
+    // glints dotted along the arc); the centre never blooms and keeps the map's
+    // full contrast. The ceiling must be FULLY engaged well before the edge —
+    // a partial clamp at the limb still lets bright texels poke over the bloom
+    // threshold — so it saturates by fres 0.8 (the outer ~10% of the radius).
+    ghostTex = min(ghostTex, mix(vec3(1.0), vec3(uGhostKneeRim), smoothstep(0.55, 0.8, fres)));
+    // Key shading, floored high (glass, not a planet at night). Loom vessels
+    // keep the flat hologram — their light comes from the giant overhead.
+    float keyShade = mix(
+      ${GHOST_KEY_FLOOR.toFixed(3)} + ${(1 - GHOST_KEY_FLOOR).toFixed(3)} * max(dot(N, KEY_DIR), 0.0),
+      1.0, uLoomLit);
+    col += ghostTex * uGhostGain * ghostAlpha * keyShade * ghostShellW;
     // Cold-open empty lift: a gentle studio fill on the ghost while the vessel is
     // empty, easing out over the first breath of the pour — never in the Sun ember branch
     // (below), and shell alpha is untouched. Rides the ghost hue, a touch fuller at the
     // clear centre than the fresnel curve so the empty glass reads as a full subject.
-    col += ghostTex * uGhostGain * (0.6 + 0.4 * pow(fres, 1.3)) * uEmptyLift * ${EMPTY_LIFT_GAIN.toFixed(3)};
+    // Deliberately NOT key-shaded: this is the flat house fill; the base ghost
+    // above carries the light direction. Keying both flattened bright pastel
+    // maps (Saturn) into mud. Flat across the disc too (no fresnel ramp): the
+    // rim already stacks every other lobe, and house light has no direction.
+    col += ghostTex * uGhostGain * 0.7 * uEmptyLift * ${EMPTY_LIFT_GAIN.toFixed(3)} * ghostShellW;
     // Sub-unity honest loom: the giant is wedged in the mouth on +Y and looms
     // straight overhead. It lights the tiny vessel from above — planetshine for a
     // Jupiter-class giant, literal sunlight for a Sun giant. Paint the container's
@@ -533,13 +579,13 @@ void main() {
     // survives the glass blend instead of reading as a black pebble. Loom-gated:
     // uLoomLit 0 leaves every normal-framing vessel byte-identical.
     float loomShade = LOOM_AMBIENT + (1.0 - LOOM_AMBIENT) * max(dot(N, LOOM_KEY), 0.0);
-    col += ghostTex * uGhostGain * loomShade * LOOM_GAIN * uLoomLit;
-    alpha = mix(alpha, max(alpha, LOOM_BODY_ALPHA), uLoomLit);
+    col += ghostTex * uGhostGain * loomShade * LOOM_GAIN * uLoomLit * ghostShellW;
+    alpha = mix(alpha, max(alpha, LOOM_BODY_ALPHA), uLoomLit * uBackShell);
   } else if (uBackShell > 0.5) {
     // A ghost-less container (the Sun) would otherwise be a void behind glass:
     // give the vessel an ember interior instead — its own colour pulled toward
     // deep fire, amplitude sized against the low face-on alpha it blends under.
-    vec3 emberTint = mix(uCatalogTint, vec3(1.0, 0.45, 0.15), 0.6);
+    vec3 emberTint = mix(uCatalogTint, vec3(1.0, 0.42, 0.12), 0.85);
     // Granulate the ember so the close dome plainly reads as the Sun's surface, not a
     // flat brown gradient. Two fbm octaves DRIFTING at a slow solar-convection pace (so
     // the idle dome is clearly alive at a glance, never busy), SHARPENED into crisp cells
@@ -555,7 +601,11 @@ void main() {
     float g2 = gFbm(vObjPos.xy * 18.0 + vec2(-uTime * 0.017, uTime * 0.025));
     float cells = clamp(0.5 + (g1 * 0.68 + g2 * 0.32 - 0.5) * 3.2, 0.0, 1.0);
     emberTint *= mix(1.0, mix(0.86, 1.14, cells), uContainerIsSun);
-    col += emberTint * (0.3 + 0.5 * (1.0 - ndv));
+    // Amplitude floor raised from 0.3 (and the tint pushed toward fire): under
+    // the front shell's face-on alpha the old level tone-mapped to chocolate
+    // mud — the Sun must read warm-LIT even at the clear centre. The limb may
+    // kiss the bloom threshold now; on the Sun that soft warm ring is the point.
+    col += emberTint * (0.5 + 0.6 * (1.0 - ndv));
   }
 
   // Glass-cut rim: additive with the peak just over the 0.92 bloom threshold (a
@@ -1184,6 +1234,7 @@ interface GlassUniforms {
   uHasGhost: { value: number };
   uGhostGain: { value: number };
   uGhostKnee: { value: number };
+  uGhostKneeRim: { value: number };
   uMouthPlaneY: { value: number };
   /** 0 closed sphere → 1 irised open (eased during a pour). */
   uMouthOpen: { value: number };
@@ -1477,6 +1528,7 @@ export class CompareScene {
       uHasGhost: { value: 0 },
       uGhostGain: { value: 1 },
       uGhostKnee: { value: 1 },
+      uGhostKneeRim: { value: 1 },
       uMouthPlaneY: { value: 0.93 },
       uMouthOpen: { value: 0 },
       uDim: { value: 1 },
@@ -1487,7 +1539,10 @@ export class CompareScene {
       uEmptyLift: { value: 0 },
       uTime: { value: 0 },
     };
-    this.glassGeo = new THREE.SphereGeometry(CONTAINER_R, 64, 32);
+    // 128×64, not 64×32: the interpolated-normal scallop of a coarser sphere
+    // modulates the fresnel lobes along the limb, and with the halo thinned the
+    // scallop peaks read as glints dotted around the rim.
+    this.glassGeo = new THREE.SphereGeometry(CONTAINER_R, 128, 64);
     this.backMat = this.makeGlassMaterial(THREE.BackSide, 1);
     this.frontMat = this.makeGlassMaterial(THREE.FrontSide, 0);
     this.backShell = new THREE.Mesh(this.glassGeo, this.backMat);
@@ -1919,6 +1974,8 @@ export class CompareScene {
       // sRGB-encoded pixels, so convert the ceiling through the ~2.2 curve.
       this.glassUniforms.uGhostKnee.value =
         Math.pow(Math.min(GHOST_KNEE_X_MEAN * ghost.meanLum, 1), 2.2);
+      // The limb's bloom guard: knee·gain never exceeds GHOST_TEXEL_CEIL there.
+      this.glassUniforms.uGhostKneeRim.value = GHOST_TEXEL_CEIL / ghost.gain;
       this.ghostTex = ghost.tex;
       this.lastGhostMeanLum = ghost.meanLum;
       // Melt-identity bands: two mid container-palette stops read through the
@@ -1931,6 +1988,7 @@ export class CompareScene {
       // melt-identity tint (the molten pool stays pure).
       this.glassUniforms.uGhostMap.value = this.emptyTex;
       this.glassUniforms.uHasGhost.value = 0;
+      this.glassUniforms.uGhostKneeRim.value = 1;
       this.ghostTex = null;
       this.lastGhostMeanLum = 0;
       this.liquidUniforms.uContainerMix.value = 0;
@@ -3682,7 +3740,9 @@ function makeAtmosphereGhost(config: AtmosphereConfig): THREE.Mesh {
   // The glow shell is WHOLE — it must NOT inherit the mouth cut, or its hard
   // edge reads as a glitch from high angles (the soft additive halo arcing over
   // the opening is far better than a sliced rim). The lip ring frames the mouth.
-  const geo = new THREE.SphereGeometry(CONTAINER_R * config.scale, 64, 32);
+  // 128×64 to match the glass shells: the additive fringe hugs the silhouette,
+  // and a coarser shell's faceting beads it into glints spaced along the limb.
+  const geo = new THREE.SphereGeometry(CONTAINER_R * config.scale, 128, 64);
   const mat = new THREE.ShaderMaterial({
     vertexShader: atmosphereVertexShader,
     fragmentShader: atmosphereFragmentShader,

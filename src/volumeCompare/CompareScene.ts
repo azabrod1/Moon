@@ -497,7 +497,10 @@ void main() {
   vec3 N = normalize(vWorldNormal);
   vec3 V = normalize(uCam - vWorldPos);
   float ndv = abs(dot(N, V));
-  float fres = 1.0 - ndv;
+  // Clamped: interpolation rounding can push |N·V| a hair past 1, and a
+  // negative base into the non-integral pow()s below is undefined — Apple
+  // Metal turns it into NaN sparkle (same paranoia as the granulation hashes).
+  float fres = clamp(1.0 - ndv, 0.0, 1.0);
 
   // A thin bright glass-cut rim on the opening — a crisp lip LINE (triangular
   // falloff ~0.028 wide), warm-tinted toward the key colour, not a fat collar.
@@ -543,7 +546,12 @@ void main() {
   // its vessel keeps the far-wall ghost (the lit-world treatment below wants
   // the interior surface, and the giant owns the light there).
   float ghostShellW = mix(1.0 - uBackShell, uBackShell, uLoomLit);
-  if (uHasGhost > 0.5) {
+  // The inner gate must stay NESTED (not &&-ed into the outer condition): a
+  // ghosted container's non-carrier shell would otherwise fall through to the
+  // ember else-branch and paint the Sun's fire dome inside every planet.
+  if (uHasGhost > 0.5) { if (ghostShellW > 0.001) {
+    // ghostShellW is uniform-derived, so this branch is coherent — the shell
+    // that isn't carrying the ghost skips the texture fetch entirely.
     // The container's REAL colour map, auto-gained per container so
     // low-contrast maps still band. Fresnel-shaped: bands at the limb, melting
     // to a clear centre (~0.34 rim → ~0.07 centre). Native saturation kept.
@@ -581,7 +589,7 @@ void main() {
     float loomShade = LOOM_AMBIENT + (1.0 - LOOM_AMBIENT) * max(dot(N, LOOM_KEY), 0.0);
     col += ghostTex * uGhostGain * loomShade * LOOM_GAIN * uLoomLit * ghostShellW;
     alpha = mix(alpha, max(alpha, LOOM_BODY_ALPHA), uLoomLit * uBackShell);
-  } else if (uBackShell > 0.5) {
+  } } else if (uBackShell > 0.5) {
     // A ghost-less container (the Sun) would otherwise be a void behind glass:
     // give the vessel an ember interior instead — its own colour pulled toward
     // deep fire, amplitude sized against the low face-on alpha it blends under.

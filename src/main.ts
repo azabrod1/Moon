@@ -659,6 +659,9 @@ function installDevHooks() {
     // retunes live, null restores defaults. Returns what is now in force.
     setMapStars: (arg: boolean | Record<string, number> | null) =>
       planetariumMode?.devSetMapStars(arg as never) ?? null,
+    // The orbit lines: {opacity, brightness} retunes live, null restores.
+    setMapOrbitStyle: (partial: Record<string, number> | null) =>
+      planetariumMode?.devSetMapOrbitStyle(partial as never) ?? null,
     setChrome: (visible: boolean) => planetariumMode?.devSetChrome(visible),
     setFov: (deg: number) => planetariumMode?.devSetFov(deg),
     setTimeMs: (utcMs: number) => planetariumMode?.setCurrentUtcMs(utcMs),

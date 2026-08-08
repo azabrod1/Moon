@@ -780,7 +780,9 @@ describe('a follow shell on a body that orbits another', () => {
     expect(at(null)).toBeCloseTo(at(mapMarkerRadiusPx(SUN_DATA.radiusAU, SIZE)), 12);
     // A larger crossover px crosses NEARER the subject: the ceiling tightens.
     expect(at(36)).toBeLessThan(at(18));
-    expect(at(18)).toBeCloseTo(at(null), 12); // pivot 18 == old cap: no drift at defaults
+    // The Sun's pivot and the marker cap ride the same ×0.7, so the
+    // pivot==cap coincidence (and this no-drift identity) survives the shrink.
+    expect(at(12.6)).toBeCloseTo(at(null), 12);
   });
 });
 

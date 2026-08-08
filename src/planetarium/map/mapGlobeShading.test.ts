@@ -194,7 +194,9 @@ describe('augmentMapGlobeMaterial', () => {
         .map((x) => Math.min(1, Math.max(0, x)));
     const srgb = (x: number): number =>
       x <= 0.0031308 ? x * 12.92 : 1.055 * Math.pow(x, 1 / 2.4) - 0.055;
-    const bg = [0x05, 0x07, 0x0d];
+    // The chart background is pure black (SystemMap's BG_COLOR) — the floor
+    // is retuned against it, and this constant must move with any repaint.
+    const bg = [0, 0, 0];
     const screen = aces(MAP_NIGHT_FLOOR_LINEAR.toArray()).map((x) => srgb(x) * 255);
     for (let c = 0; c < 3; c++) {
       // Strictly above the background, and quiet: within a handful of counts.

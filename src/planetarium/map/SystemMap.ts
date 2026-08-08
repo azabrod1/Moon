@@ -240,7 +240,10 @@ export interface MapTextureSource {
 }
 
 const ORBIT_SEGMENTS = 180;
-const BG_COLOR = 0x05070d;
+// Pure black: the chart's sky is the real star catalog now, and a navy wash
+// behind real stars is the one thing the actual sky never has. (The night
+// floor in mapGlobeShading is tuned against this value — retune them together.)
+const BG_COLOR = 0x000000;
 // Screen size (px, full sprite extent) for the ship marker — the one marker on
 // the chart with no body behind it, so no size policy to follow.
 const SHIP_PX = 26;
@@ -249,10 +252,28 @@ const SHIP_PX = 26;
 const SHIP_MARKER_COLOR = 0xffb88a;
 // Orbit line: full tint just ahead of the body fading to this floor behind it.
 const ORBIT_BRIGHT_FLOOR = 0.1;
-// What the followed body's own line fades to while the camera rides it. Faint
-// enough to stop being the brightest thing in a focused frame, present enough
-// that the body is still visibly ON its orbit rather than adrift.
+// What the followed body's own line fades to while the camera rides it — a
+// FRACTION of the base opacity, not an absolute, so the restore and the dim
+// both follow the live style. Faint enough to stop being the brightest thing
+// in a focused frame, present enough that the body is still visibly ON its
+// orbit rather than adrift.
 const FOCUS_ORBIT_DIM = 0.3;
+
+export interface MapOrbitStyleParams {
+  /** Line opacity, the base every state derives from (the focus dim is a
+   *  fraction of it). */
+  opacity: number;
+  /** Multiplier on the catalog tint the vertex colours are built from. */
+  brightness: number;
+}
+
+// Softer than full: the lines are wayfinding, and at catalog tint over pure
+// black they out-shouted the bodies riding them. Values are a taste pass —
+// the dev bridge's setMapOrbitStyle retunes both live.
+export const MAP_ORBIT_STYLE_DEFAULTS: MapOrbitStyleParams = {
+  opacity: 0.6,
+  brightness: 0.8,
+};
 // Un-docked ship chevron breathes over this period (ms).
 const SHIP_PULSE_MS = 2000;
 // Hover feedback: the pointed-at dot swells and lifts toward white.
@@ -597,6 +618,10 @@ export class SystemMap {
     SUN_LIGHT_INTENSITY,
   );
   private orbits: OrbitEntry[] = [];
+  /** The live line style. Every opacity write on an orbit material derives
+   *  from this — the focus dim as a fraction of it, the restore back to it —
+   *  so a retune never strands a line on a stale value. */
+  private orbitStyle: MapOrbitStyleParams = { ...MAP_ORBIT_STYLE_DEFAULTS };
   /** The one entry whose line is dimmed for a follow, remembered so the restore
    *  lands on the material that was actually written. */
   private dimmedOrbit: OrbitEntry | null = null;
@@ -1529,6 +1554,25 @@ export class SystemMap {
       ? { ...MAP_MARKER_ZOOM_DEFAULTS }
       : { ...this.markerZoomParams, ...partial };
     this.projectionRevision++;
+  }
+
+  /** The orbit lines' knob: a partial retunes opacity/brightness, null
+   *  restores the defaults. Returns what is now in force. Applies immediately:
+   *  opacities are rewritten through the same one-derivation the focus dim
+   *  uses, and every line's vertex colours are invalidated so the new
+   *  brightness paints on the next colour refresh — the lazy path only
+   *  rebuilds on a body crossing a sampled vertex, which could sit for hours. */
+  setOrbitStyle(partial: Partial<MapOrbitStyleParams> | null): MapOrbitStyleParams {
+    this.orbitStyle = partial === null
+      ? { ...MAP_ORBIT_STYLE_DEFAULTS }
+      : { ...this.orbitStyle, ...partial };
+    for (const entry of this.orbits) {
+      entry.material.opacity = entry === this.dimmedOrbit
+        ? FOCUS_ORBIT_DIM * this.orbitStyle.opacity
+        : this.orbitStyle.opacity;
+      entry.lastVertex = -1;
+    }
+    return { ...this.orbitStyle };
   }
 
   /** The star backdrop's knob: booleans toggle it, a partial retunes it, null
@@ -4093,7 +4137,7 @@ export class SystemMap {
     this.clearFocusOrbitDim();
     if (!entry) return;
     this.dimmedOrbit = entry;
-    entry.material.opacity = FOCUS_ORBIT_DIM;
+    entry.material.opacity = FOCUS_ORBIT_DIM * this.orbitStyle.opacity;
   }
 
   /**
@@ -4108,7 +4152,10 @@ export class SystemMap {
    */
   private clearFocusOrbitDim(): void {
     if (!this.dimmedOrbit) return;
-    this.dimmedOrbit.material.opacity = 1;
+    // Back to the LIVE base, never a literal: with a softened default, a
+    // hardcoded 1 would hand the restored line back BRIGHTER than every
+    // other orbit on the chart — including the corner chart's copy.
+    this.dimmedOrbit.material.opacity = this.orbitStyle.opacity;
     this.dimmedOrbit = null;
   }
 
@@ -4595,10 +4642,12 @@ export class SystemMap {
   }
 
   private rebuildOrbitColors(entry: OrbitEntry, bodyFrac: number): void {
-    // Working (linear) channels, cached at build — matches the sprite material.
-    const r = entry.colorR;
-    const g = entry.colorG;
-    const b = entry.colorB;
+    // Working (linear) channels, cached at build — matches the sprite
+    // material. The style's brightness multiplies the tint here, the one
+    // place the vertex colours are written, so the knob can't half-apply.
+    const r = entry.colorR * this.orbitStyle.brightness;
+    const g = entry.colorG * this.orbitStyle.brightness;
+    const b = entry.colorB * this.orbitStyle.brightness;
     for (let i = 0; i <= ORBIT_SEGMENTS; i++) {
       // Forward arc distance from the body to this vertex, [0,1): 0 = right
       // ahead of the body (full tint), ~1 = just behind (darkest).
@@ -5523,6 +5572,7 @@ export class SystemMap {
       linewidth: 1.5,
       vertexColors: true,
       transparent: true,
+      opacity: this.orbitStyle.opacity,
       depthTest: true,
       depthWrite: false,
       toneMapped: false,

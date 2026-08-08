@@ -72,21 +72,22 @@ export interface MapGlobeShading {
  *
  * The chart's ambient night fill is an irradiance: it multiplies the body's
  * own albedo, and on a dark body (Callisto's maps run near 0.1) the product
- * collapses under one 8-bit count after the tonemap. Such a globe renders
- * BLACKER than the chart's 0x05070d background — a hole punched in whatever
- * stands behind it, most gruesomely the Sun's disc or a parent's lit face.
- * The fill's whole purpose is that an unlit hemisphere reads as unlit rather
- * than as a hole, so the floor is taken on the OUTGOING light, past the
- * albedo multiply, where no texture can defeat it.
+ * collapses under one 8-bit count after the tonemap. Against the old navy
+ * background such a globe rendered BLACKER than the sky — a hole punched in
+ * whatever stood behind it. Over today's pure-black chart a night side can
+ * no longer read darker than space, but the real star catalog now sits
+ * behind it, and a floor keeps the occulting disc a BODY on an OLED rather
+ * than an unexplained void in the star field. The floor is taken on the
+ * OUTGOING light, past the albedo multiply, where no texture can defeat it.
  *
- * Tuned to land one to three counts above the background — (6, 9, 16) against
- * 0x05070d — through three's ACES filmic (Hill fit + input/output matrices,
+ * Tuned to land one to a few counts above the background — (1, 2, 4) against
+ * pure black — through three's ACES filmic (Hill fit + input/output matrices,
  * NOT the scalar 2.51/2.43 fit, which over-predicts by ~3× down here) at the
  * map's neutral exposure. Deliberately no brighter: a night side against
- * space SHOULD be nearly invisible — the offense was only ever reading darker
- * than space. Same cool hue as the fill so the two read as one light.
+ * space SHOULD be nearly invisible — it must only never be a hole. Same cool
+ * hue as the fill so the two read as one light.
  */
-export const MAP_NIGHT_FLOOR_LINEAR = new THREE.Color(0.0082, 0.0108, 0.0169);
+export const MAP_NIGHT_FLOOR_LINEAR = new THREE.Color(0.00328, 0.00432, 0.00676);
 
 /** The star as the shader needs it, shared by every globe on the chart: its
  *  position in the drawing camera's space, the irradiance it delivers, and the

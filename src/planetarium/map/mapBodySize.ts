@@ -72,9 +72,15 @@ export interface MapBodySizeParams {
   refRadiusAU: number;
 }
 
+// ×0.7 of the first tuning (6/18): at the old sizes a zoomed-out chart read
+// as discs first and a system second — the Sun's disc spanned the inner
+// orbits. The shrink is uniform so every ratio the marker-zoom pass tuned
+// survives; a stated consequence is that Mercury and Mars (and, at the far
+// fit, the ice giants) now sit under the 5 px globe threshold wherever the
+// marker governs, and draw as tinted dots — a 4 px globe is mush anyway.
 export const MAP_BODY_SIZE_DEFAULTS: MapBodySizeParams = {
-  minPx: 6,
-  maxPx: 18,
+  minPx: 4.2,
+  maxPx: 12.6,
   gamma: 0.3,
   refRadiusAU: MAP_BODY_REF_RADIUS_KM / KM_PER_AU,
 };
@@ -240,13 +246,16 @@ export interface MapSunSizeParams {
 
 export const MAP_SUN_SIZE_DEFAULTS: MapSunSizeParams = {
   gamma: 0.3,
-  // The old constant cap: past here the true disc takes over, so nothing about
-  // the close-in look moved.
-  pivotPx: 18,
+  // ×0.7 with the planet markers (12.6 = the marker branch's new ceiling, as
+  // 18 was of the old): the crossover to the true disc moves in with it, so
+  // the mid-zoom shrink lands nearer ×0.78 than ×0.7 — the pivot is a hybrid
+  // knob, not a pure scale. The far overview is where the old Sun spanned
+  // the inner orbits, and the floor below is the exact ×0.7 that fixes it.
+  pivotPx: 12.6,
   // Low enough that the curve is off the floor from about 1.5 px of true disc
   // — a Jupiter-range view already answers zoom — while the overview keeps a
   // clear warm mark (the halo carries the star's rank there, not the disc).
-  floorPx: 8,
+  floorPx: 5.6,
 };
 
 /** Drawn radius (screen px) for the Sun whose true projected radius is

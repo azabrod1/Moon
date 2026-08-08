@@ -94,9 +94,10 @@ export function labelMaxBoxTopPx(chromeTopPx: number | null, viewportHPx: number
 
 /** Below this drawn radius a body is a speck, and a full-size name on a speck
  *  points at nothing the eye can find — the label waits until the marker is
- *  worth naming. Planets keep a margin over it even at the far overview
- *  (their zoom-scaled floor bottoms out near 2.5 px — a test pins that
- *  margin); what this actually culls is the true-scale and far-follow
+ *  worth naming. Planets keep a margin over it even at the far overview,
+ *  but a whisker of one: their zoom-scaled floor bottoms out near 1.76 px
+ *  after the ×0.7 marker shrink (a test pins that margin — retune the two
+ *  together). What this actually culls is the true-scale and far-follow
  *  regimes, where moons drop to their real size. */
 export const LABEL_MIN_BODY_RADIUS_PX = 1.5;
 

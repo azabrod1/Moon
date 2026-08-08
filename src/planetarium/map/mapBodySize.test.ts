@@ -309,7 +309,13 @@ describe('the marker zoom response', () => {
   it('keeps the shrunken floor above the label-culling threshold', () => {
     // setMapMarkerZoom is a live knob: a floor pushed under the label
     // threshold would silently strip the overview of planet names.
+    // Since the ×0.7 marker shrink the margin is a WHISKER — 0.42 × 4.2 =
+    // 1.764 over a 1.5 threshold — held deliberately: the overview keeps its
+    // names, and any further shrink must retune the threshold with it. The
+    // second assert is the whisker's floor, so a drift under ~0.2 px of
+    // margin fails loudly here instead of as flickering overview labels.
     expect(Z.floorScale * P.minPx).toBeGreaterThan(LABEL_MIN_BODY_RADIUS_PX);
+    expect(Z.floorScale * P.minPx).toBeGreaterThan(LABEL_MIN_BODY_RADIUS_PX + 0.2);
   });
 });
 
@@ -440,16 +446,16 @@ describe('the moon branch', () => {
     // transcribed decimal would drift the moment a knob moved.
     const jupiter = PLANETARIUM_BODIES.find((p) => p.name === 'Jupiter')!;
     const parentPx = mapMarkerRadiusPx(jupiter.radiusAU);
-    expect(parentPx).toBeCloseTo(16.5277, 3);
+    expect(parentPx).toBeCloseTo(11.5694, 3);
     // The marker function is linear in the parent's drawn size, so feeding it px
     // answers in px.
     const drawnPx = mapMoonMarkerRadiusAU(GANYMEDE, parentPx);
     expect(drawnPx).toBeCloseTo(parentPx * 0.34, 12);
-    expect(drawnPx).toBeCloseTo(5.6194, 3);
+    expect(drawnPx).toBeCloseTo(3.9336, 3);
 
     const clearance = labelClearanceRadiusPx(drawnPx, true);
     expect(clearance).toBeCloseTo(drawnPx * DOT_PAINTED_EDGE_MUL, 12);
-    expect(clearance).toBeCloseTo(5.6250, 3);
+    expect(clearance).toBeCloseTo(3.9375, 3);
     // Composed: the offset the chart draws the name at. A marker this size
     // paints inside the flat floor, so the floor is what places the name — and
     // it clears the sprite by three px rather than printing inside it, which

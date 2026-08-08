@@ -286,7 +286,7 @@ import { ObservatoryHUD, type SurfaceHudState } from './ui/ObservatoryHUD';
 import { SurfaceTargetMenu } from './ui/SurfaceTargetMenu';
 import { SunLabel } from './ui/SunLabel';
 import { TutorialCard, tutorialCardModel } from './ui/TutorialCard';
-import { SystemMap, type MapTextureSource } from './map/SystemMap';
+import { SystemMap, type MapTextureSource, type MapOrbitStyleParams } from './map/SystemMap';
 import { MapHUD } from './ui/MapHUD';
 import { MapFocusMenu } from './ui/MapFocusMenu';
 import { buildMapFocusRows } from './map/mapFocusRows';
@@ -2238,21 +2238,27 @@ export class PlanetariumMode {
     }
 
     const isScriptedTransfer = this.updateScriptedTransfer(dt);
+    // A paused clock holds the ship with the world: no steering, no
+    // autopilot, no governor maturation — cruise resumes exactly as left.
+    // Scripted transfers are the deliberate exception (a milestone pauses
+    // the clock and THEN flies its arc). Derived every frame, never saved.
+    this.player.held = !isScriptedTransfer && this.timeState.paused;
     if (!isScriptedTransfer) {
-      // Process keyboard input
+      // Process keyboard input (held: early-returns with zeroed steering)
       this.processInput();
 
-      // Autopilot: steer toward target if no manual steering input
-      if (this.autopilot && this.autopilotTarget && this.player.yawInput === 0 && this.player.pitchInput === 0) {
-        this.applyAutopilot();
+      if (!this.player.held) {
+        // Autopilot: steer toward target if no manual steering input
+        if (this.autopilot && this.autopilotTarget && this.player.yawInput === 0 && this.player.pitchInput === 0) {
+          this.applyAutopilot();
+        }
+
+        // Compute system speed throttle before player update
+        const throttleResult = this.computeSystemSpeedFactor();
+        this.systemSpeedFactor = throttleResult.factor;
+        this.nearestSystemPlanet = throttleResult.planet;
+        this.player.systemSpeedFactor = (this.throttleOverride || !this.systemSlowdown) ? 1.0 : this.systemSpeedFactor;
       }
-
-      // Compute system speed throttle before player update
-      const throttleResult = this.computeSystemSpeedFactor();
-      this.systemSpeedFactor = throttleResult.factor;
-      this.nearestSystemPlanet = throttleResult.planet;
-      this.player.systemSpeedFactor = (this.throttleOverride || !this.systemSlowdown) ? 1.0 : this.systemSpeedFactor;
-
     }
 
     // Body-proximity governor (moons + planets + the Sun): the planet
@@ -2269,23 +2275,29 @@ export class PlanetariumMode {
     // transfers too: the applied cap is unused there (player.update is
     // skipped) but the state stays current, so a transfer never ends on a
     // stale-tight ramp.
-    const geom = this.computeBodySpeedCap();
-    this.bodyCap = advanceBodyCap(
-      this.bodyCap,
-      geom.capAUPerS,
-      geom.releaseEfoldS,
-      this.player.commandedSpeedAUPerS,
-      this.throttleOverride || !this.systemSlowdown,
-      dt,
-    );
-    this.player.speedCapAUPerS = this.bodyCap.applied;
+    // Held, the governor freezes with the ship: its release ramp and the
+    // override clear-hold mature on wall dt, and a pause taken mid-flyby
+    // must not hand back a fully released cap in one frame. Geometry can't
+    // change while everything is frozen, so a stale state is a current one.
+    if (!this.player.held) {
+      const geom = this.computeBodySpeedCap();
+      this.bodyCap = advanceBodyCap(
+        this.bodyCap,
+        geom.capAUPerS,
+        geom.releaseEfoldS,
+        this.player.commandedSpeedAUPerS,
+        this.throttleOverride || !this.systemSlowdown,
+        dt,
+      );
+      this.player.speedCapAUPerS = this.bodyCap.applied;
+    }
 
     // Autopilot glide: bring the cruise to rest at the arrival standoff, not
     // the collision shell, by capping closing speed at K × distance-past-the-
     // standoff. Applied AFTER the governor's own cap and OUTSIDE the override
     // latch (a plain min on the effective speed) — the pilot's contract is that
     // you leave the glide by disengaging, never by out-throttling it.
-    if (this.autopilot && this.autopilotTarget) {
+    if (!this.player.held && this.autopilot && this.autopilotTarget) {
       const inp = this.resolveAutopilotMoonInputs(this.autopilotTarget);
       if (inp) {
         const dx = inp.moonPos.x - this.player.posX;
@@ -2428,7 +2440,9 @@ export class PlanetariumMode {
       );
     }
 
-    if (this.autopilotTarget) {
+    // Held, arrival stays undetected too: the check can disengage the
+    // autopilot and park the ship, and a frozen frame must decide nothing.
+    if (this.autopilotTarget && !this.player.held) {
       this.checkAutopilotArrival();
     }
     this.updateSunShader(dt);
@@ -5412,7 +5426,10 @@ export class PlanetariumMode {
     if (this.landedOn) return;
     // The map is a clock instrument, not a cockpit: while it owns the frame,
     // no key/touch/gyro steers the coasting ship and the throttle is inert.
-    if (this.isMapOpen()) {
+    // A held ship (paused clock) is inert the same way — and the key set
+    // keeps tracking the physical keys through both, so what resumes on
+    // unpause is exactly what the hands are doing at that moment.
+    if (this.isMapOpen() || this.player.held) {
       this.player.yawInput = 0;
       this.player.pitchInput = 0;
       return;
@@ -5693,7 +5710,10 @@ export class PlanetariumMode {
       // re-fire either toggle while the key is held.
       if (e.repeat) return;
       if (this.isMapOpen()) this.timeTogglePause();
-      else this.player.moving = !this.player.moving;
+      // A paused clock holds the ship; a thrust toggle banked invisibly
+      // under the freeze would fire as surprise thrust (or a mystery park)
+      // on unpause — Space goes inert instead of latching.
+      else if (!this.timeState.paused) this.player.moving = !this.player.moving;
     }
   }
 
@@ -6682,6 +6702,9 @@ export class PlanetariumMode {
     // Tap speed center to toggle system throttle override (temporary)
     document.querySelector('.speed-center')?.addEventListener('click', () => {
       if (this.isMissionActive()) return;
+      // A held ship takes no throttle commands: a change banked under the
+      // freeze would act only at unpause, as a surprise.
+      if (this.timeState.paused) return;
       if (!this.systemSlowdown) return; // already disabled globally
       this.throttleOverride = !this.throttleOverride;
       // Arming starts a fresh clear-hold — a stale unbound interval from
@@ -6692,6 +6715,7 @@ export class PlanetariumMode {
 
     document.getElementById('planetarium-speed-up')?.addEventListener('click', () => {
       if (this.isMissionActive()) return;
+      if (this.timeState.paused) return; // held ship: throttle inert
       this.reviveParkedShip(); // stepping the throttle up means "go"
       if (this.inSystemMode) {
         if (this.player.systemSpeedMultiplier < 0.001) {
@@ -6710,6 +6734,7 @@ export class PlanetariumMode {
     });
     document.getElementById('planetarium-speed-down')?.addEventListener('click', () => {
       if (this.isMissionActive()) return;
+      if (this.timeState.paused) return; // held ship: throttle inert
       if (this.inSystemMode) {
         if (this.player.systemSpeedMultiplier < 0.002) {
           this.player.systemSpeedMultiplier = 0;
@@ -7223,7 +7248,10 @@ export class PlanetariumMode {
       fwd.x,
       fwd.y,
       fwd.z,
-      this.player.moving,
+      // Effective motion: a held ship (paused clock) reads as not moving,
+      // so the chart's chevron sits still instead of pulsing over a frozen
+      // world — the original complaint this state exists to fix.
+      this.player.moving && !this.player.held,
       // Never landed: the ground is one of the states that stands the chart
       // down, so a live corner chart is always a flying one.
       null,
@@ -7528,6 +7556,14 @@ export class PlanetariumMode {
    *  refAuPerPx, floorScale, depthShare); null resets. */
   devSetMapMarkerZoom(partial: Partial<MapMarkerZoomParams> | null): void {
     this.systemMap?.setMarkerZoomParams(partial);
+  }
+
+  /** Dev bridge: the orbit lines' style — a partial ({opacity, brightness})
+   *  retunes live, null restores defaults. */
+  devSetMapOrbitStyle(
+    partial: Partial<MapOrbitStyleParams> | null,
+  ): MapOrbitStyleParams | null {
+    return this.systemMap?.setOrbitStyle(partial) ?? null;
   }
 
   /** Dev bridge: the chart's star backdrop — false/true toggles, a partial
@@ -7913,7 +7949,8 @@ export class PlanetariumMode {
       fwd.x,
       fwd.y,
       fwd.z,
-      this.player.moving,
+      // Effective motion — held reads as still, same as the corner chart.
+      this.player.moving && !this.player.held,
       this.landedOn,
       this.lastFrameDtMs,
     );

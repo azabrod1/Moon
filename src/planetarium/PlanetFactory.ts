@@ -83,9 +83,9 @@ export function setWarmEligibleMoonParents(parents: ReadonlySet<string>): void {
 }
 
 // Texture filenames — bundled locally in public/textures/ (Solar System Scope
-// CC BY 4.0 + NASA; Pluto is New Horizons / USGS, see TEXTURE_4K_KEYS). The
-// filename stays resolution-agnostic; world/texturePolicy maps it through the
-// active tier to a URL.
+// CC BY 4.0 + NASA; Pluto is New Horizons / USGS, and the higher Moon tiers are
+// NASA SVS — see TEXTURE_UPGRADE_TIERS). The filename stays resolution-
+// agnostic; world/texturePolicy maps it through the active tier to a URL.
 const PLANET_TEXTURE_FILES: Record<string, string> = {
   mercury: 'mercury.jpg',
   venus: 'venus.jpg',
@@ -248,46 +248,170 @@ export function loadTexture(key: string, tier: TextureTier = '2k', kind: MapKind
 }
 
 /**
- * Streamed colour-map upgrade for a body that grows large on screen. Bodies
- * start at 2K (fast first paint); when the player gets close — or zooms the
- * Observatory telescope onto them — a 4K colour map is fetched once and swapped
- * in. Only bodies with a 4K variant on disk (public/textures/4k/) carry one.
+ * Goal-based colour-map upgrade for a body that grows large on screen. Bodies
+ * boot on their flat map (fast first paint); when the player gets close — or
+ * zooms the Observatory telescope onto them — the handle walks its step list
+ * toward the highest tier both the assets on disk and the device can hold.
+ * Only the keys listed in TEXTURE_UPGRADE_TIERS carry a handle.
+ *
+ * The handle stores goals and at most one in-flight attempt, never a lifecycle
+ * state: every question a caller asks ("is there work left?", "does this need
+ * a cover?") is derived from those. Nothing can strand a body in a terminal
+ * state and pin it to its boot map for the rest of the session.
  */
 export interface TextureUpgrade {
   key: string; // PLANET_TEXTURE_FILES key
   material: THREE.MeshStandardMaterial;
-  state: 'idle' | 'loading' | 'done' | 'failed' | 'cancelled';
+  /** Steps available for this key, ascending — the goal is the last one. */
+  tiers: readonly TextureTier[];
+  /** This device's ceiling, resolved once at creation (the caps are captured
+   *  before any handle exists). A 4096-cap device with an 8K goal therefore
+   *  settles at 4K instead of re-arming forever for a tier it can't hold. */
+  effectiveMaxTier: TextureTier;
+  /** Highest tier this handle has fetched and offered, or null while the body
+   *  is still on the map it booted with. The material's colorTierRank stays
+   *  the truth about what is on screen; this tracks the handle's progress. */
+  appliedTier: TextureTier | null;
+  /** The one fetch in flight, if any. */
+  attempt?: { tier: TextureTier; generation: number; startedAtMs: number };
+  /** Wall-clock instant (performance.now) before which no new attempt starts.
+   *  Never the simulation clock, which jumps centuries per second. */
+  retryAtMs?: number;
 }
 
-// Texture keys with a 4K colour variant under public/textures/4k/. A 4K variant
-// must be the SAME albedo product as its 2K base (colour-matched if its grading
-// differs) so the on-approach swap reads as a pure sharpen — no brightness/contrast
-// pop — and never double-counts relief against a normal map. Mars (same source at
-// 2x), the Moon (SVS LRO albedo colour-matched via tools/colormatch.mjs), and
-// Jupiter (SSC 4K — same product as the 2K, needed no match) qualify. Venus / Uranus
-// / Neptune are genuinely low-frequency (no real 4K detail); Io/Europa/Ganymede/
-// Triton already ship 4K as their base map. Pluto is a real New Horizons LORRI
-// mosaic (USGS, 300 m) registered to the IAU prime meridian and tinted through a
-// brightness->albedo ramp (the source is grayscale); its never-imaged south is an
-// honest dark cap, and its under-imaged far hemisphere is left as the real low-res
-// data — soft, but honest (synthetic relief/detail was tried and dropped: it read
-// as fake craters at grazing light). Both tiers bake from one source, so 4K is a
-// pure sharpen.
-const TEXTURE_4K_KEYS = new Set(['mars', 'moon', 'jupiter', 'pluto']);
+// Higher-resolution colour tiers on disk, per texture key, ascending. Every
+// step must be the SAME albedo product as the map below it (colour-matched if
+// its grading differs) so the on-approach swap reads as a pure sharpen — no
+// brightness/contrast pop — and never double-counts relief against a normal
+// map. Mars is the same source at 2x, and Jupiter's 4K is the same Solar
+// System Scope product as its boot map (needed no match). The Moon's 4K and 8K
+// are both the SVS CGI Moon Kit LROC WAC albedo, colour-matched to the shipped
+// grade via tools/colormatch.mjs — and its relief comes from a separate SVS
+// ldem_16 LOLA normal map, so the albedo carries no baked shading to fight.
+// Earth's 4K clouds are the SSS cloud product (CC BY 4.0) the 2K boot map is
+// downsampled from. Venus / Uranus / Neptune are genuinely low-frequency (no
+// real 4K detail); Io/Europa/Ganymede/Triton already ship 4K as their base
+// map. Pluto is a real New Horizons LORRI mosaic (USGS, 300 m) registered to
+// the IAU prime meridian and tinted through a brightness->albedo ramp (the
+// source is grayscale); its never-imaged south is an honest dark cap, and its
+// under-imaged far hemisphere is left as the real low-res data — soft, but
+// honest (synthetic relief/detail was tried and dropped: it read as fake
+// craters at grazing light). Both its tiers bake from one source, so 4K is a
+// pure sharpen. Earth's day map has no 8K step: the only 8K product available
+// is a different one (no bathymetry or sea ice), which the same-product rule
+// forbids.
+const TEXTURE_UPGRADE_TIERS: Record<string, readonly TextureTier[]> = {
+  mars: ['4k'],
+  jupiter: ['4k'],
+  pluto: ['4k'],
+  moon: ['4k', '8k'],
+  earthClouds: ['4k'],
+};
 
-function makeTextureUpgrade(
+// Colour-map precedence: procedural floor 0, then one rank per tier. Ranks are
+// what make every apply order-independent — a late boot-map arrival can't
+// downgrade a higher tier that already won.
+export const TIER_RANK: Record<TextureTier, number> = { '2k': 2, '4k': 4, '8k': 8 };
+
+// A hung fetch must not own a handle for the session: past this age a fresh
+// approach may supersede the in-flight attempt. TextureLoader cannot abort, so
+// the superseded download disposes itself on arrival (generation mismatch).
+const UPGRADE_ATTEMPT_TIMEOUT_MS = 60_000;
+// Cooldown after a failed or discarded attempt. Fixed, not doubling: the
+// triggers only evaluate while a body fills the screen, so the retry rate is
+// already bounded by the player staying in front of it.
+const UPGRADE_RETRY_MS = 8_000;
+
+// Attempt identity. Every fetch closes over its own value and compares before
+// touching the handle, so a late callback whose attempt was abandoned disposes
+// its texture instead of applying it.
+let upgradeGeneration = 0;
+
+export function makeTextureUpgrade(
   key: string | undefined,
   material: THREE.MeshStandardMaterial,
 ): TextureUpgrade | undefined {
-  if (!key || !TEXTURE_4K_KEYS.has(key)) return undefined;
-  return { key, material, state: 'idle' };
+  if (!key) return undefined;
+  const tiers = TEXTURE_UPGRADE_TIERS[key];
+  if (!tiers) return undefined;
+  return {
+    key,
+    material,
+    tiers,
+    effectiveMaxTier: clampTier(tiers[tiers.length - 1]),
+    appliedTier: null,
+  };
+}
+
+/** The lowest step this device can honour — the one an arrival veil covers.
+ *  null when the device can hold none of the steps. */
+export function firstUpgradeTier(up: TextureUpgrade): TextureTier | null {
+  const first = up.tiers[0];
+  return first && TIER_RANK[first] <= TIER_RANK[up.effectiveMaxTier] ? first : null;
+}
+
+/** The highest step at or below `requested` that this device can hold and this
+ *  handle has not already taken — null when nothing is left to fetch. Asking
+ *  for the ceiling straight away is legal and skips the rungs below it, so a
+ *  body that is already filling the screen never pays for a map it would
+ *  replace seconds later. */
+export function resolveUpgradeTier(up: TextureUpgrade, requested: TextureTier): TextureTier | null {
+  const ceiling = Math.min(TIER_RANK[requested], TIER_RANK[up.effectiveMaxTier]);
+  const floor = up.appliedTier ? TIER_RANK[up.appliedTier] : 0;
+  let best: TextureTier | null = null;
+  for (const tier of up.tiers) {
+    const rank = TIER_RANK[tier];
+    if (rank > floor && rank <= ceiling) best = tier; // ascending: the last match is the highest
+  }
+  return best;
+}
+
+/**
+ * The highest step a body's screen fraction has earned, given the per-tier
+ * trigger fractions the caller tunes — null when it has earned none. Handing
+ * that step straight to upgradeTextureOnApproach is what keeps a body first
+ * seen already filling the screen from paying for a rung it would replace
+ * seconds later; the staged walk up the ladder happens only when the approach
+ * crosses the lower fraction first.
+ */
+export function earnedUpgradeTier(
+  up: TextureUpgrade,
+  fraction: number,
+  triggerAt: Partial<Record<TextureTier, number>>,
+): TextureTier | null {
+  let earned: TextureTier | null = null;
+  for (const tier of up.tiers) {
+    const at = triggerAt[tier];
+    if (at !== undefined && fraction > at) earned = tier; // ascending: keep the highest
+  }
+  return earned;
+}
+
+/** The one predicate behind every "should this fetch?" question — the on-screen
+ *  trigger, the landing prefetch and the veil-cover test all ask it. True when
+ *  a step remains, nothing useful is in flight, and any cooldown has passed. */
+export function canAttempt(up: TextureUpgrade, nowMs: number): boolean {
+  if (!resolveUpgradeTier(up, up.effectiveMaxTier)) return false;
+  if (up.attempt && nowMs - up.attempt.startedAtMs < UPGRADE_ATTEMPT_TIMEOUT_MS) return false;
+  return up.retryAtMs === undefined || nowMs >= up.retryAtMs;
+}
+
+/** Should an arrival cover hold for this handle? Only the first step is cover
+ *  work: it replaces the boot map the player would otherwise be revealed onto,
+ *  and its upload is what would otherwise stall the reveal. A body already on
+ *  that step and reaching for a higher goal rides the on-screen trigger
+ *  instead, and never delays a landing. */
+export function needsUpgradeCover(up: TextureUpgrade, nowMs: number): boolean {
+  if (up.appliedTier !== null || !firstUpgradeTier(up)) return false;
+  return up.attempt !== undefined || canAttempt(up, nowMs);
 }
 
 // Apply a freshly loaded colour map only if it out-ranks what's already on the
-// material (procedural floor = 0, 2K = 2, 4K = 4). Makes the 2K stream, the 4K
-// upgrade, and the lazy painter order-independent: a late 2K arrival can't
-// downgrade a 4K that already won. Disposes whatever it replaces (or itself).
-function applyColorTierTexture(mat: THREE.MeshStandardMaterial, tex: THREE.Texture, rank: number): boolean {
+// material (TIER_RANK, procedural floor 0). Makes the boot stream, every tier
+// upgrade, and the lazy painter order-independent: a late boot-map arrival
+// can't downgrade an 8K that already won. Disposes whatever it replaces (or
+// itself). Exported for the tests that pin that ordering.
+export function applyColorTierTexture(mat: THREE.MeshStandardMaterial, tex: THREE.Texture, rank: number): boolean {
   const current = (mat.userData.colorTierRank as number | undefined) ?? 0;
   if (rank <= current) {
     tex.dispose();
@@ -319,66 +443,97 @@ function applyColorTierTexture(mat: THREE.MeshStandardMaterial, tex: THREE.Textu
 }
 
 /**
- * Fetch and swap in a body's 4K colour map. One-shot (guarded by the upgrade's
- * own state). Loads directly rather than via loadTexture so a failed fetch
- * leaves the 2K map in place instead of resolving a grey fallback. No-ops on a
- * GPU that can't hold a 4096 map (clampTier), so it never thrashes there.
+ * Fetch one step of a body's colour ladder and swap it in. `requested` is the
+ * tier the caller's evidence justifies; the highest step at or below it that
+ * this device and this handle still need is what actually gets fetched. Loads
+ * directly rather than via loadTexture so a failed fetch leaves the current
+ * map in place instead of resolving a grey fallback. Cheap to call every
+ * frame — canAttempt is the whole guard, and it no-ops on a GPU that can't
+ * hold the step, so it never thrashes there.
  */
-export function upgradeTextureOnApproach(up: TextureUpgrade): void {
-  if (up.state !== 'idle') return;
-  if (clampTier('4k') !== '4k') {
-    up.state = 'done'; // device stays at 2K; don't re-check every frame
-    return;
-  }
-  up.state = 'loading';
-  const url = resolveTextureUrl(PLANET_TEXTURE_FILES[up.key], '4k');
+export function upgradeTextureOnApproach(
+  up: TextureUpgrade,
+  requested: TextureTier,
+  nowMs = performance.now(),
+): void {
+  if (!canAttempt(up, nowMs)) return;
+  const tier = resolveUpgradeTier(up, requested);
+  if (!tier) return;
+  const generation = ++upgradeGeneration;
+  up.attempt = { tier, generation, startedAtMs: nowMs };
+  up.retryAtMs = undefined;
+  // The attempt this callback belongs to was abandoned (discarded, or timed
+  // out and superseded) if the handle no longer carries its generation.
+  const abandoned = () => up.attempt?.generation !== generation;
+  const url = resolveTextureUrl(PLANET_TEXTURE_FILES[up.key], tier);
   loader.load(
     url,
     (tex) => {
-      if (up.state === 'cancelled') {
+      if (abandoned()) {
         tex.dispose();
         return;
       }
       applyTextureDefaults(tex, 'color');
       // Decode before the rank swap: the material keeps its current map until
-      // the 4K is cheap to draw, so a mid-session upgrade never freezes the
-      // frame on a synchronous decode — and the warm queue then uploads it off
-      // any gesture frame. The 4K trigger only fires for a body filling the
+      // the new one is cheap to draw, so a mid-session upgrade never freezes
+      // the frame on a synchronous decode — and the warm queue then uploads it
+      // off any gesture frame. The triggers only fire for a body filling the
       // view, so warming here can't upload hidden bodies.
       const img = tex.image as { decode?: () => Promise<void> } | undefined;
       const applyUpgrade = () => {
-        // A covered landing gives the local fetch/decode a bounded window. If
-        // it missed that window, retain the already-drawable 2K map for this
-        // session instead of letting a late 32 MiB upload freeze an unrelated
-        // visible gesture (most painfully Safari's first Surface click).
-        if (up.state === 'cancelled') {
+        // An abandoned attempt drops its bytes here. A merely uncovered one
+        // still applies: the download is already paid for, so disposing it
+        // would cost the same unsliceable upload again later plus a second
+        // trip over the network — while applying it costs one upload on a
+        // quiet warm-pump frame.
+        if (abandoned()) {
           tex.dispose();
           return;
         }
-        if (applyColorTierTexture(up.material, tex, 4)) queueTextureWarm(tex);
+        up.attempt = undefined;
+        up.appliedTier = tier;
+        if (applyColorTierTexture(up.material, tex, TIER_RANK[tier])) queueTextureWarm(tex);
         up.material.userData.photoLoaded = true; // keep the lazy painter off it
-        up.state = 'done';
       };
       if (img && typeof img.decode === 'function') img.decode().then(applyUpgrade, applyUpgrade);
       else applyUpgrade();
     },
     undefined,
     (err) => {
-      if (up.state === 'cancelled') return;
-      up.state = 'failed';
-      debugWarn('4K texture upgrade failed', {
+      if (abandoned()) return;
+      up.attempt = undefined;
+      up.retryAtMs = performance.now() + UPGRADE_RETRY_MS;
+      debugWarn('Texture upgrade failed', {
         key: up.key,
+        tier,
         reason: err instanceof Error ? err.message : String(err),
       });
     },
   );
 }
 
-/** Stop an in-flight optional 4K upgrade after its covered warm-up window.
- * TextureLoader cannot abort the request, so the completion path disposes it
- * without assigning or uploading it. The existing 2K material stays intact. */
-export function cancelTextureUpgrade(up: TextureUpgrade): void {
-  if (up.state === 'loading') up.state = 'cancelled';
+/**
+ * Release a claim on an in-flight attempt. TextureLoader cannot abort, so the
+ * download completes either way and the flavor decides what becomes of it:
+ *
+ * - `keep` — nothing is dropped. The caller (an arrival cover whose bounded
+ *   hold expired) merely stops waiting; the completion applies on a later
+ *   quiet frame. Dropping it instead would buy nothing: the upload still has
+ *   to be paid the moment the player looks, and the bytes would have to be
+ *   fetched a second time to pay it.
+ * - `discard` — the attempt is abandoned (its completion disposes itself) and
+ *   a cooldown keeps the handle calm until a later approach asks again. For
+ *   fetches whose reason is gone: a superseded arrival, a departed body, a
+ *   disposed mode.
+ */
+export function cancelTextureUpgrade(
+  up: TextureUpgrade,
+  flavor: 'keep' | 'discard',
+  nowMs = performance.now(),
+): void {
+  if (!up.attempt || flavor === 'keep') return;
+  up.attempt = undefined;
+  up.retryAtMs = nowMs + UPGRADE_RETRY_MS;
 }
 
 function createFallbackTexture(key: string, kind: MapKind = 'color'): THREE.Texture {
@@ -469,7 +624,10 @@ export interface PlanetMesh {
   nightMaterial?: THREE.ShaderMaterial; // For Earth night lights
   cloudsMesh?: THREE.Mesh;
   fx?: SurfaceShadingFx;
-  textureUpgrade?: TextureUpgrade; // 4K colour map streamed in on close approach
+  /** Colour-map ladders streamed in on close approach — one per upgradable
+   *  material, so Earth's globe and its cloud shell each carry their own.
+   *  Empty for a body with no higher tier on disk. */
+  textureUpgrades: TextureUpgrade[];
 }
 
 // Icy / high-albedo moons get the icy night-fill (and, later, a specular ice
@@ -534,9 +692,12 @@ export async function createPlanetMesh(planet: PlanetData): Promise<PlanetMesh> 
     : undefined;
   const sunTan = SUN_RADIUS_AU / planet.semiMajorAxisAU; // solar angular radius at the planet
   const fx = augmentSurfaceMaterial(mat, planetArchetype(planet), ringShadow, sunTan);
-  // 4K colour upgrade on close approach, for the bodies that carry a 4K variant
-  // (Mars, Jupiter). The base 2K map above is the floor; updateTextureLOD swaps in 4K.
-  const textureUpgrade = makeTextureUpgrade(planet.textureKey, mat);
+  // Higher colour tiers on close approach, for the keys that have them (see
+  // TEXTURE_UPGRADE_TIERS). The boot map above is the floor; updateTextureLOD
+  // walks the ladder from there.
+  const textureUpgrades: TextureUpgrade[] = [];
+  const surfaceUpgrade = makeTextureUpgrade(planet.textureKey, mat);
+  if (surfaceUpgrade) textureUpgrades.push(surfaceUpgrade);
 
   // Real elevation-derived normal map where one exists (Mars/MOLA): it replaces
   // the colour-as-bump fallback. Load directly so a failed fetch leaves the
@@ -610,6 +771,10 @@ export async function createPlanetMesh(planet: PlanetData): Promise<PlanetMesh> 
     });
     cloudsMesh = new THREE.Mesh(cloudGeo, cloudMat);
     group.add(cloudsMesh);
+    // The cloud deck is its own colour map on its own shell, so it carries its
+    // own handle: the globe and the clouds sharpen independently.
+    const cloudsUpgrade = makeTextureUpgrade('earthClouds', cloudMat);
+    if (cloudsUpgrade) textureUpgrades.push(cloudsUpgrade);
 
     const earthMat = mesh.material as THREE.MeshStandardMaterial;
     earthMat.bumpMap = bumpTex;
@@ -632,7 +797,7 @@ export async function createPlanetMesh(planet: PlanetData): Promise<PlanetMesh> 
     group.add(rings);
   }
 
-  return { group, mesh, data: planet, rings, ringFx, atmosphere, nightMesh, nightMaterial, cloudsMesh, fx, textureUpgrade };
+  return { group, mesh, data: planet, rings, ringFx, atmosphere, nightMesh, nightMaterial, cloudsMesh, fx, textureUpgrades };
 }
 
 export function createPlanetariumSun(useBloom = true): THREE.Group {
@@ -901,7 +1066,9 @@ export interface MoonMesh {
    *  a moon is never made visible before this is true. */
   painted: boolean;
   fx?: SurfaceShadingFx;
-  textureUpgrade?: TextureUpgrade; // 4K colour map streamed in on close approach
+  /** Colour-map ladder streamed in on close approach — one entry for a
+   *  photo-textured moon with higher tiers on disk, empty for every other. */
+  textureUpgrades: TextureUpgrade[];
   /** Per-frame moon-dot cache (updateMoonPositions → updateMoonDotsForCamera):
    *  the sun-visible fraction from this frame's eclipse shading, and the dot's
    *  final screen alpha / size that the label pass reads for its sub-pixel
@@ -1222,9 +1389,9 @@ export function createMoonMeshes(planetName: string): MoonMesh[] {
           const img = tex.image as { decode?: () => Promise<void> } | undefined;
           const applyPhoto = () => {
             mat.userData.photoLoaded = true;
-            // Rank 2: a later 4K upgrade (rank 4) supersedes this; a 4K that
-            // already won can't be downgraded by a late-arriving 2K.
-            if (applyColorTierTexture(mat, tex, 2) && warmEligibleMoonParents.has(planetName)) {
+            // Boot-tier rank: a later tier upgrade supersedes this, and a tier
+            // that already won can't be downgraded by a late-arriving boot map.
+            if (applyColorTierTexture(mat, tex, TIER_RANK['2k']) && warmEligibleMoonParents.has(planetName)) {
               queueTextureWarm(tex);
             }
           };
@@ -1244,7 +1411,8 @@ export function createMoonMeshes(planetName: string): MoonMesh[] {
     mesh.name = moonData.name;
     mesh.visible = false; // hidden until painted and the player is close
 
-    result.push({ mesh, data: moonData, painted: false, fx, textureUpgrade: makeTextureUpgrade(moonData.textureKey, mat) });
+    const photoUpgrade = makeTextureUpgrade(moonData.textureKey, mat);
+    result.push({ mesh, data: moonData, painted: false, fx, textureUpgrades: photoUpgrade ? [photoUpgrade] : [] });
   }
 
   return result;

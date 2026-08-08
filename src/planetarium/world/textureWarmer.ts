@@ -1,11 +1,11 @@
 /**
  * Deferred GPU texture warm-up. three.js uploads a texture to the GPU on the
  * first frame that draws it, which lands the whole bill — synchronous image
- * decode, a 32MB-scale texSubImage2D for a 4K map, the mipmap build — inside
- * whatever gesture first reveals the body (measured: 100–250ms freezes on
- * landing and vantage swaps). Queueing a texture here right after its image
- * arrives moves that upload to a budgeted per-frame pump on an uneventful
- * frame instead.
+ * decode, a 32MB-scale texSubImage2D for a 4K map (four times that for an 8K
+ * one), the mipmap build — inside whatever gesture first reveals the body
+ * (measured: 100–250ms freezes on landing and vantage swaps). Queueing a
+ * texture here right after its image arrives moves that upload to a budgeted
+ * per-frame pump on an uneventful frame instead.
  *
  * Fail-open by design: if the pump never runs, an entry is disposed before
  * its turn, or an upload throws, the texture simply uploads lazily on first
@@ -59,7 +59,8 @@ export function queueTextureWarm(tex: THREE.Texture): void {
  * Upload queued textures until the time budget is spent. Always uploads at
  * least one when possible — a single big upload is unsliceable and its cost
  * unknowable until paid — then stops once past budget, so a burst of small
- * maps drains in one call while a 4K map takes its frame alone.
+ * maps drains in one call while the biggest single map (an 8K albedo, the
+ * largest unsliceable upload the app has) takes its frame alone.
  */
 export function pumpTextureWarmQueue(budgetMs: number): void {
   if (!uploadFn) return;

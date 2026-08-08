@@ -185,6 +185,13 @@ import {
 } from './mapCamera';
 import { flushOrbitDamping } from '../input/orbitDamping';
 import {
+  createMapStars,
+  mapStarPixelRatio,
+  setMapStarParams,
+  MAP_STAR_LAYER,
+  type MapStarParams,
+} from './mapStars';
+import {
   anchorOnScreen,
   pickRadiusFor,
   resolvePick,
@@ -999,6 +1006,10 @@ export class SystemMap {
   // yields. Sized for the whole roster, so the pool cannot bind.
   private labelPlacer = new MapLabelPlacer(MAP_LABEL_CAPACITY);
 
+  // The star backdrop — built once in the constructor, camera-centred per
+  // render, layer-gated to the full chart's camera (see mapStars).
+  private stars: THREE.Points;
+
   constructor(renderer: THREE.WebGLRenderer, textures: MapTextureSource) {
     this.renderer = renderer;
     this.textures = textures;
@@ -1018,6 +1029,13 @@ export class SystemMap {
     this.miniCamera = new THREE.PerspectiveCamera(MAP_FOV_DEG, 1, 1e-4, 1000);
     this.fullView.camera = this.camera;
     this.miniView.camera = this.miniCamera;
+
+    // The star backdrop rides the full chart's camera on its own layer; the
+    // corner chart's camera never enables it, so the little frame stays the
+    // clean schematic. Re-centred on the camera every render.
+    this.stars = createMapStars(renderer.getPixelRatio());
+    this.scene.add(this.stars);
+    this.camera.layers.enable(MAP_STAR_LAYER);
 
     this.controls = new OrbitControls(this.camera, el);
     this.controls.enableDamping = true;
@@ -1513,6 +1531,25 @@ export class SystemMap {
     this.projectionRevision++;
   }
 
+  /** The star backdrop's knob: booleans toggle it, a partial retunes it, null
+   *  restores the defaults (and shows it). Returns what is now in force. */
+  setStars(
+    arg: boolean | Partial<MapStarParams> | null,
+  ): MapStarParams & { visible: boolean } {
+    if (typeof arg === 'boolean') {
+      this.stars.visible = arg;
+    } else {
+      setMapStarParams(this.stars, arg);
+      this.stars.visible = true;
+    }
+    const mat = this.stars.material as THREE.ShaderMaterial;
+    return {
+      alphaMul: mat.uniforms.alphaMul.value as number,
+      sizeMul: mat.uniforms.sizeMul.value as number,
+      visible: this.stars.visible,
+    };
+  }
+
   /**
    * Per-frame refresh, called from PlanetariumMode after positions are final.
    * Recomputes body positions from the clock (never from mode scene state) and
@@ -1693,6 +1730,11 @@ export class SystemMap {
     // still writing this every frame; the map draws at neutral and gives the
     // world's value back untouched, so neither view can drag the other.
     renderer.toneMappingExposure = MAP_EXPOSURE;
+    // The backdrop is directional: it re-centres on the camera so every star
+    // keeps its bearing, and the ratio uniform tracks the renderer's.
+    this.stars.position.copy(this.camera.position);
+    (this.stars.material as THREE.ShaderMaterial).uniforms.pixelRatio.value =
+      mapStarPixelRatio(renderer.getPixelRatio());
     // Restore in finally so a throw inside render() never strands the world
     // renderer on the map's target/viewport/autoClear/exposure state.
     try {

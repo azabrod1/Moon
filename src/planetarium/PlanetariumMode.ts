@@ -313,6 +313,7 @@ import {
   type MapSunSizeParams,
 } from './map/mapBodySize';
 import { type MapMoonOffsetParams } from './map/mapMoonOffset';
+import { type MapStarParams } from './map/mapStars';
 import {
   MAP_DOUBLE_TAP_MS,
   mapCameraOwnsPose,
@@ -7527,6 +7528,14 @@ export class PlanetariumMode {
    *  refAuPerPx, floorScale, depthShare); null resets. */
   devSetMapMarkerZoom(partial: Partial<MapMarkerZoomParams> | null): void {
     this.systemMap?.setMarkerZoomParams(partial);
+  }
+
+  /** Dev bridge: the chart's star backdrop — false/true toggles, a partial
+   *  ({alphaMul, sizeMul}) retunes, null restores defaults. */
+  devSetMapStars(
+    arg: boolean | Partial<MapStarParams> | null,
+  ): (MapStarParams & { visible: boolean }) | null {
+    return this.systemMap?.setStars(arg) ?? null;
   }
 
   /** Dev bridge: live tuning of the moon-offset policy (gamma, x0, the Io

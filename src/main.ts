@@ -655,6 +655,10 @@ function installDevHooks() {
       planetariumMode?.devSetMapSunSize(partial as never),
     setMapMarkerZoom: (partial: Record<string, number> | null) =>
       planetariumMode?.devSetMapMarkerZoom(partial as never),
+    // The chart's star backdrop: false/true toggles, {alphaMul, sizeMul}
+    // retunes live, null restores defaults. Returns what is now in force.
+    setMapStars: (arg: boolean | Record<string, number> | null) =>
+      planetariumMode?.devSetMapStars(arg as never) ?? null,
     setChrome: (visible: boolean) => planetariumMode?.devSetChrome(visible),
     setFov: (deg: number) => planetariumMode?.devSetFov(deg),
     setTimeMs: (utcMs: number) => planetariumMode?.setCurrentUtcMs(utcMs),

@@ -164,7 +164,7 @@ const GHOST_KNEE_X_MEAN = 2.5;
 // threshold there blooms as beads dotted along the rim (Saturn's storms,
 // Jupiter's cream bands). Clamping the whole map instead flattened the bright
 // bands to plastic — the ceiling belongs only where the stack can bloom.
-const GHOST_TEXEL_CEIL = 0.72;
+const GHOST_TEXEL_CEIL = 0.62;
 // The ghost's presented luminance floor: the alpha curve's low end (its clear-centre
 // value). Raised from a barely-there whisper so the container's bands stay readable
 // ABOVE the fill at a default camera during a pour — a floor, not a re-light, so the
@@ -198,7 +198,7 @@ const LOADING_DIM = 0.4;
 // fraction so it whispers "this is that planet" without competing with the glass.
 // Low: stacked on the warm fresnel rim + bloom it reads as a sickly halo well
 // before it reads as air.
-const ATMOSPHERE_GHOST_ALPHA = 0.16;
+const ATMOSPHERE_GHOST_ALPHA = 0.10;
 
 // --- liquid ----------------------------------------------------------------
 // The molten liquid sits at a radius a hair inside the glass so the meniscus
@@ -520,7 +520,10 @@ void main() {
   // its contents).
   float edge = pow(fres, 5.0);
   vec3 rimTint = mix(mix(uWarmTint, uCatalogTint, 0.35), uWarmTint, 0.5 * uFill);
-  vec3 col = rimTint * edge;
+  // 0.55, not full strength: at 1.0 the warm lobe rides the rest of the limb
+  // stack over the bloom threshold most of the way round, and the vessel wears
+  // a radiant ring. The glass cue survives as a quiet edge highlight.
+  vec3 col = rimTint * edge * 0.55;
 
   // Second fresnel lobe — a faint green-cyan absorption tint (thick-glass iron
   // colour), steep enough to sit only in the outer third of the disc so the
@@ -555,7 +558,7 @@ void main() {
     // The container's REAL colour map, auto-gained per container so
     // low-contrast maps still band. Fresnel-shaped: bands at the limb, melting
     // to a clear centre (~0.34 rim → ~0.07 centre). Native saturation kept.
-    float ghostAlpha = mix(${GHOST_FLOOR_ALPHA.toFixed(3)}, 0.34, pow(fres, 1.3));
+    float ghostAlpha = mix(${GHOST_FLOOR_ALPHA.toFixed(3)}, 0.30, pow(fres, 1.3));
     vec3 ghostTex = min(texture2D(uGhostMap, vUv).rgb, vec3(uGhostKnee));
     // Rim-graded bloom guard: the limb stacks every lobe at dense alpha, so
     // bright-texel variation there beads the halo (Saturn's storm ovals read as

@@ -93,6 +93,7 @@ import {
   MOON_DOT_PARAMS,
   albedoProxyFromColor,
   chromaticityRGB,
+  discDiameterPx,
   moonDotVisual,
   parentDominanceFade,
   systemEdgeFade,
@@ -2405,14 +2406,17 @@ export class PlanetariumMode {
       // so the per-moon proximity ratio never reads a stale parent.
       const systemFade = this.moonSystemEdgeFade.get(planet.data.name) ?? 0;
       planet.group.getWorldPosition(this.tmpDotParentPos);
-      const parentDiscPx = projectSphereToScreen(
-        this.tmpDotParentPos,
+      // The gate asks whether the parent anchors the SCENE, so its input is the
+      // analytic tangent size from camera distance alone — never the rendered
+      // footprint, which measures 0 px once the parent leaves the frustum and
+      // would blank every moon dot in the system the moment the parent is
+      // steered past the camera plane, with its moons still mid-viewport.
+      const parentDiscPx = discDiameterPx(
         planet.data.radiusAU,
-        this.camera,
-        canvasW,
+        this.tmpDotParentPos.distanceTo(cam),
+        this.displayFovDeg(),
         canvasH,
-        this.sphereScreenProjection,
-      ).diameterPx;
+      );
       for (const m of moons) {
         const i = idx++;
         // Same gate as the mesh: only a shown (visible & painted) moon dots, and

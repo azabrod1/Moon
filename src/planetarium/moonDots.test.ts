@@ -297,6 +297,26 @@ describe('moonDots — parent-dominance gate', () => {
   });
 });
 
+describe('moonDots — parent-gate anchor is orientation-independent (steering-blackout pin)', () => {
+  // The gate's input must be the analytic tangent size from camera distance,
+  // never a rendered footprint: an off-frustum footprint measures 0 px, which
+  // slams the gate — and every moon dot in the system — shut the frame the
+  // parent's limb crosses the camera plane, with its moons still mid-viewport.
+  it('holds a close system fully open at the measured blackout standoff', () => {
+    // Camera 0.00382 AU from Jupiter's centre (angular radius 7.18°): the
+    // geometry where steering 83° off-axis blanked all 14 moon dots. The
+    // distance-based anchor clears the full-open threshold at any plausible
+    // display FOV and viewport height, with no orientation input to collapse.
+    for (const fovDeg of [40, 50, 60, 70, 80]) {
+      for (const viewportH of [390, 900, 1600]) {
+        const px = discDiameterPx(jupiter.radiusAU, 0.00382, fovDeg, viewportH);
+        expect(px).toBeGreaterThan(P.parentGateFullPx);
+        expect(parentDominanceFade(px)).toBe(1);
+      }
+    }
+  });
+});
+
 describe('moonDots — parent-gate proximity release', () => {
   // parentDominanceFade(0, ratio) forces the gate term to 0 (disc ≪ start), so
   // the result equals the proximity-release term alone — the clean way to pin it.

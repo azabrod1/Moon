@@ -3498,7 +3498,8 @@ export class PlanetariumMode {
    * afterwards (planet, moon, sun) is occluded when it would sit on top of
    * one of them. Must run AFTER `planetLabels.collectForegroundDiscs()` and
    * BEFORE any label rendering (`renderLabels`, `renderMoonLabels`,
-   * `updateSunLabel`).
+   * `updateSunLabel`). A body blocks only while it is a face seen from
+   * outside: one the camera sits inside is a room, not an obstacle.
    */
   private collectDynamicOccluders() {
     if (!this.planetLabels || !this.solarSystem) return;
@@ -3547,8 +3548,18 @@ export class PlanetariumMode {
         // Effective rendered radius: the same curve the mesh uses, so the
         // occlusion disc matches what's actually drawn.
         const effectiveRadiusAU = this.renderedMoonSizeAU(m.data.radiusAU, parentR, this.moonRenderAnchorRatio(planet.data.name));
-        const angularSize = (effectiveRadiusAU * 2) / Math.max(distFromCamera, 0.0001);
-        if (angularSize <= 0.01) continue;
+        // A sphere the camera is inside occludes nothing: its back faces cull
+        // and you see out through it. The projection answers 'covering' there —
+        // a conservative classification, not a measured disc — which as a
+        // blocker would blank every label and beacon in the sky. Testing it
+        // first also guarantees a positive distance for the ratio below.
+        if (distFromCamera <= effectiveRadiusAU) continue;
+        // Angular-size gate, compared WITHOUT a floor under the distance: a
+        // floored denominator turns the ratio into an absolute-size test at
+        // close range, and no moon whose rendered radius is under ~75 km can
+        // ever satisfy it — Phobos and Deimos would contribute no occlusion
+        // disc at any distance, letting labels and beacons draw over their faces.
+        if (effectiveRadiusAU * 2 <= 0.01 * distFromCamera) continue;
 
         const proj = projectSphereToScreen(
           tempV,

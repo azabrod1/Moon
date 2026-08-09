@@ -104,6 +104,8 @@ import {
   LABEL_DOT_MIN_ALPHA,
   LABEL_READABLE_RADIUS_PX,
   MOON_LABEL_PLACEMENT_PARAMS,
+  placeMoonLabels,
+  type MoonLabelCandidate,
   type MoonLabelPlacementParams,
 } from './moonLabelPlacement';
 import {
@@ -997,19 +999,16 @@ export class PlanetariumMode {
   private moonLabelContainer: HTMLDivElement | null = null;
   // Pooled per-frame scratch for renderMoonLabels' de-overlap pass. The element
   // and the moon record ride along so the decision can be applied without a
-  // lookup; the contest itself reads only the screen-space fields.
-  private moonLabelCandidates: Array<{
-    label: HTMLDivElement;
-    moon: MoonMesh;
-    sx: number;
-    sy: number;
-    onScreen: boolean;
-    priorityPx: number;
-    halfW: number;
-    isTarget: boolean;
-    isRevealed: boolean;
-    isUnlit: boolean;
-  }> = [];
+  // lookup; the contest itself sees only the DOM-free candidate fields.
+  private moonLabelCandidates: Array<
+    MoonLabelCandidate & { label: HTMLDivElement; moon: MoonMesh }
+  > = [];
+  /** The names the label contest placed last frame, and the buffer this frame
+   *  refills. Two sets, swapped and cleared, so an incumbent's defence of its
+   *  slot costs no allocation. Cleared together wherever the previous frame's
+   *  sky stops being an argument about this one — see clearMoonLabelIncumbents. */
+  private moonLabelIncumbents = new Set<string>();
+  private moonLabelIncumbentsBuffer = new Set<string>();
   private resumePrompt = new PlanetariumResumePrompt();
   private helpModal = new PlanetariumHelpModal();
   private menuPanel = new PlanetariumMenuPanel();
@@ -1786,6 +1785,7 @@ export class PlanetariumMode {
   deactivate(): void {
     this.moonArrivalCameraLook = null;
     this.dotNavMoon = null;
+    this.clearMoonLabelIncumbents();
     this.clearBodyReveal();
     // A live tutorial hands the pre-tutorial state back first, synchronously — the
     // teardown below (excursion drop, landed exit, save) then applies to the
@@ -3821,11 +3821,11 @@ export class PlanetariumMode {
     const canvasH = this.renderer.domElement.clientHeight;
     const tempV = new THREE.Vector3();
 
-    // Two passes: gather placeable labels, then place big-to-small with
-    // greedy screen-rect suppression — on approach a system's labels pile
-    // onto near-identical pixels ("PhoDeimos"); the smaller apparent moon
-    // yields. Rects are estimated (reading offsetWidth would force reflow).
-    // Candidate objects are pooled — steady-state frames allocate nothing.
+    // Two passes: gather the placeable labels here, then hand the contest to
+    // placeMoonLabels — who yields to whom is a rule set with its own tests, and
+    // this pass owns only the gathering and the DOM. Rects are estimated
+    // (reading offsetWidth would force reflow). Candidate objects are pooled —
+    // steady-state frames allocate nothing.
     const candidates = this.moonLabelCandidates;
     let candidateCount = 0;
     const targetMoon = this.currentDotTargetMoon();
@@ -3963,11 +3963,15 @@ export class PlanetariumMode {
         }
         let c = candidates[candidateCount];
         if (!c) {
-          c = { label, moon: m, sx: 0, sy: 0, onScreen: false, priorityPx: 0, halfW: 0, isTarget: false, isRevealed: false, isUnlit: false };
+          c = {
+            label, moon: m, name: '', sx: 0, sy: 0, onScreen: false, priorityPx: 0,
+            halfW: 0, isTarget: false, isRevealed: false, isUnlit: false, placed: false,
+          };
           candidates.push(c);
         }
         c.label = label;
         c.moon = m;
+        c.name = m.data.name;
         c.sx = sx;
         c.sy = sy;
         c.onScreen = onScreen;
@@ -3990,42 +3994,18 @@ export class PlanetariumMode {
     }
 
     candidates.length = candidateCount;
-    // The revealed moon sorts first so it always wins its de-overlap contest,
-    // then the nav target (a sibling's label can never suppress the moon you are
-    // flying at). Then visible labels outrank edge-clamped ones (an off-screen
-    // moon pinned to the margin must not suppress a genuinely visible neighbor),
-    // then bigger apparent discs win.
-    candidates.sort(
-      (a, b) =>
-        Number(b.isRevealed) - Number(a.isRevealed) ||
-        Number(b.isTarget) - Number(a.isTarget) ||
-        Number(b.onScreen) - Number(a.onScreen) ||
-        b.priorityPx - a.priorityPx,
-    );
-    const LABEL_H = 18;
-    let placedCount = 0;
-    // In-place partition: indices [0, placedCount) hold the placed labels.
+    placeMoonLabels(candidates, this.moonLabelIncumbents, placement);
+    // Apply the decision, and record this frame's winners as the next frame's
+    // incumbents. The two sets are swapped rather than rebuilt, and a name that
+    // stops being a candidate simply ages out of the buffer being refilled.
+    const nextIncumbents = this.moonLabelIncumbentsBuffer;
+    nextIncumbents.clear();
     for (let i = 0; i < candidates.length; i++) {
       const c = candidates[i];
-      let collides = false;
-      for (let j = 0; j < placedCount; j++) {
-        const p = candidates[j];
-        if (
-          Math.abs(c.sx - p.sx) < c.halfW + p.halfW &&
-          Math.abs(c.sy - p.sy) < LABEL_H
-        ) {
-          collides = true;
-          break;
-        }
-      }
-      if (collides) {
-        c.label.style.display = 'none';
+      if (!c.placed) {
+        if (c.label.style.display !== 'none') c.label.style.display = 'none';
         continue;
       }
-      const swap = candidates[placedCount];
-      candidates[placedCount] = c;
-      candidates[i] = swap;
-      placedCount++;
       c.label.style.display = 'block';
       c.label.style.left = `${c.sx}px`;
       c.label.style.top = `${c.sy}px`;
@@ -4033,7 +4013,10 @@ export class PlanetariumMode {
       c.label.classList.toggle('unlit', c.isUnlit);
       c.label.classList.toggle('revealed', c.isRevealed);
       c.moon.labelDisplayed = true;
+      nextIncumbents.add(c.name);
     }
+    this.moonLabelIncumbentsBuffer = this.moonLabelIncumbents;
+    this.moonLabelIncumbents = nextIncumbents;
   }
 
   /** Mark that the camera or scene just jumped, so the next Sun-shader frame
@@ -4051,6 +4034,16 @@ export class PlanetariumMode {
     // must not out-vote the new scene's true dominant occluder through the 15%
     // rule. The next computeVisibleSunFraction elects a fresh incumbent.
     this.sunDominantOccluderMesh = null;
+    this.clearMoonLabelIncumbents();
+  }
+
+  /** Drop the moon labels' cross-frame incumbents, so the next contest runs
+   *  cold. Call wherever the previous frame's sky stops being an argument about
+   *  this one: a scene jump lands on different moons entirely, and a held name
+   *  from the sky you left would defend a slot it never earned here. */
+  private clearMoonLabelIncumbents(): void {
+    this.moonLabelIncumbents.clear();
+    this.moonLabelIncumbentsBuffer.clear();
   }
 
   // Scratch for the veil support pass, reused across the gate's upper-bound and
@@ -6980,6 +6973,9 @@ export class PlanetariumMode {
    *  line shows only in 'always' mode — 'hover' leaves the container in
    *  `hide-distances`, where the per-label reveal class does the revealing. */
   private applyBodyLabelVisibility() {
+    // Labels going away take their incumbency with them: coming back, every
+    // name should have to win its slot again rather than inherit one.
+    this.clearMoonLabelIncumbents();
     this.syncWorldLabelContainers();
     this.planetLabels?.setDistancesVisible(this.labelDistancesMode === 'always');
     if (!this.showBodyLabels && !this.showBodyMarkers) {

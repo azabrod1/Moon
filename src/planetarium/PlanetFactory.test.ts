@@ -6,11 +6,14 @@ import {
   cancelTextureUpgrade,
   earnedUpgradeTier,
   firstUpgradeTier,
+  makeGeometryUpgrade,
   makeTextureUpgrade,
+  needsGeometryUpgrade,
   needsUpgradeCover,
   resolveUpgradeTier,
   setUpgradeTextureLoader,
   TIER_RANK,
+  upgradeGeometryOnApproach,
   upgradeTextureOnApproach,
   UPGRADE_TRIGGER_FRACTION,
   type TextureUpgrade,
@@ -45,9 +48,10 @@ function startAttempt(up: TextureUpgrade, tier: TextureTier, startedAtMs = 0): n
   return up.attempt.generation;
 }
 
-function watchDispose(tex: THREE.Texture): () => boolean {
+/** Disposal is an event, not a flag, on both textures and geometries. */
+function watchDispose(resource: THREE.Texture | THREE.BufferGeometry): () => boolean {
   let disposed = false;
-  tex.addEventListener('dispose', () => { disposed = true; });
+  resource.addEventListener('dispose', () => { disposed = true; });
   return () => disposed;
 }
 
@@ -354,6 +358,77 @@ describe('what a fetch puts on the material', () => {
     } finally {
       warn.mockRestore();
     }
+  });
+});
+
+describe('silhouette detail', () => {
+  function sphere(radiusAU: number, segments: number): THREE.Mesh {
+    return new THREE.Mesh(new THREE.SphereGeometry(radiusAU, segments, segments / 2));
+  }
+  const widthSegments = (mesh: THREE.Mesh) =>
+    (mesh.geometry as THREE.SphereGeometry).parameters.widthSegments;
+
+  it('leaves a body alone until its chords could show', () => {
+    const mesh = sphere(1, 64);
+    const before = mesh.geometry;
+    const up = makeGeometryUpgrade([{ mesh, radiusAU: 1 }]);
+    expect(needsGeometryUpgrade(up, 900)).toBe(false);
+    expect(upgradeGeometryOnApproach(up, 900)).toBe(false);
+    expect(mesh.geometry).toBe(before);
+    expect(up.applied).toBe(false);
+  });
+
+  it('needs the footprint strictly past the threshold, not merely at it', () => {
+    const mesh = sphere(1, 64);
+    const up = makeGeometryUpgrade([{ mesh, radiusAU: 1 }]);
+    expect(upgradeGeometryOnApproach(up, 1250)).toBe(false);
+    expect(upgradeGeometryOnApproach(up, 1251)).toBe(true);
+  });
+
+  it('rebuilds every sphere at its own radius and disposes what it replaced', () => {
+    // Earth's shape: globe plus the two shells that draw an edge at the body's
+    // own radius, each of which has to keep its offset.
+    const globe = sphere(1, 64);
+    const night = sphere(1.001, 64);
+    const clouds = sphere(1.01, 64);
+    const dropped = [globe, night, clouds].map((m) => watchDispose(m.geometry));
+    const up = makeGeometryUpgrade([
+      { mesh: globe, radiusAU: 1 },
+      { mesh: night, radiusAU: 1.001 },
+      { mesh: clouds, radiusAU: 1.01 },
+    ]);
+
+    expect(upgradeGeometryOnApproach(up, 4000)).toBe(true);
+    for (const mesh of [globe, night, clouds]) expect(widthSegments(mesh)).toBe(256);
+    expect((globe.geometry as THREE.SphereGeometry).parameters.radius).toBe(1);
+    expect((night.geometry as THREE.SphereGeometry).parameters.radius).toBe(1.001);
+    expect((clouds.geometry as THREE.SphereGeometry).parameters.radius).toBe(1.01);
+    expect(dropped.map((d) => d())).toEqual([true, true, true]);
+  });
+
+  it('rebuilds once and then stops asking', () => {
+    const mesh = sphere(1, 48);
+    const up = makeGeometryUpgrade([{ mesh, radiusAU: 1 }]);
+    expect(upgradeGeometryOnApproach(up, 4000)).toBe(true);
+    const fine = mesh.geometry;
+    const disposedAfter = watchDispose(fine);
+
+    expect(needsGeometryUpgrade(up, 9000)).toBe(false);
+    expect(upgradeGeometryOnApproach(up, 9000)).toBe(false);
+    expect(mesh.geometry).toBe(fine); // the same buffers, not an identical rebuild
+    expect(disposedAfter()).toBe(false);
+  });
+
+  it('keeps the transform the render curve writes', () => {
+    // Mesh scale carries the moon render-curve inflation and the rotation
+    // carries the real phase; a geometry swap must not touch either.
+    const mesh = sphere(1, 48);
+    mesh.scale.setScalar(3.5);
+    mesh.rotation.set(0.1, 0.2, 0.3);
+    const up = makeGeometryUpgrade([{ mesh, radiusAU: 1 }]);
+    upgradeGeometryOnApproach(up, 4000);
+    expect(mesh.scale.x).toBe(3.5);
+    expect([mesh.rotation.x, mesh.rotation.y, mesh.rotation.z]).toEqual([0.1, 0.2, 0.3]);
   });
 });
 

@@ -443,6 +443,76 @@ export function needsUpgradeCover(up: TextureUpgrade): boolean {
   return !up.attempt || up.attempt.tier === first;
 }
 
+/**
+ * Silhouette detail upgrade, the geometry sibling of the colour ladders above:
+ * a body's sphere is rebuilt at a fine segment count once it grows large
+ * enough on screen for its polygon chords to show.
+ *
+ * A sphere of N longitude segments cuts its own silhouette into flat chords
+ * whose sagitta — how far each chord sits inside the true circle — is
+ * (1 − cos(π/N)) × the on-screen radius. At 64 segments that is 0.0012r, which
+ * reaches a quarter-pixel around 400px of radius and a visible three-quarter
+ * pixel around 625px: past there the disc reads faintly scalloped, which is
+ * what an "oval" close-up actually is. At 256 segments the same figure is
+ * 7.5e-5r — still under half a pixel with the body at 5000px of radius, i.e.
+ * below what antialiasing already smooths away at any framing the app offers.
+ */
+export interface GeometryUpgrade {
+  /** Every mesh whose silhouette is this body's silhouette, each with the
+   *  radius its sphere was built at — the globe, plus any shell drawn just
+   *  above it that draws a hard edge of its own. */
+  spheres: readonly { mesh: THREE.Mesh; radiusAU: number }[];
+  /** One-way: the fine spheres are built once and kept for the session. */
+  applied: boolean;
+}
+
+// Screen diameter past which the coarsest silhouette in use starts to show its
+// chords. Set by the coarsest, not the average: a body built at more segments
+// crosses it having shown nothing, and pays one rebuild it did not strictly
+// need — cheaper than carrying a second threshold per segment tier.
+const GEOMETRY_UPGRADE_AT_PX = 1250;
+const GEOMETRY_UPGRADE_SEGMENTS = 256;
+
+export function makeGeometryUpgrade(
+  spheres: readonly { mesh: THREE.Mesh; radiusAU: number }[],
+): GeometryUpgrade {
+  return { spheres, applied: false };
+}
+
+/** Has this body grown large enough for its chords to show, with the fine
+ *  spheres not yet built? */
+export function needsGeometryUpgrade(up: GeometryUpgrade, diameterPx: number): boolean {
+  return !up.applied && diameterPx > GEOMETRY_UPGRADE_AT_PX;
+}
+
+/**
+ * Rebuild a body's spheres at the fine segment count. Built here rather than at
+ * creation because most bodies never come close enough to need one, and 65k
+ * triangles per body at boot would be paid by every body in the system.
+ *
+ * The swap is safe to make on a body already on screen and already textured.
+ * Assigning `geometry` touches nothing about the object's transform, so the
+ * render-curve inflation carried on mesh.scale and the body's rotation phase
+ * both survive it; SphereGeometry lays out the same equirectangular UVs at any
+ * segment count, so whatever colour map has already won stays registered
+ * exactly as it was; and the mesh is never without geometry between the two
+ * statements, so no frame can draw a half-built body.
+ */
+export function upgradeGeometryOnApproach(up: GeometryUpgrade, diameterPx: number): boolean {
+  if (!needsGeometryUpgrade(up, diameterPx)) return false;
+  up.applied = true;
+  for (const { mesh, radiusAU } of up.spheres) {
+    const previous = mesh.geometry;
+    mesh.geometry = new THREE.SphereGeometry(
+      radiusAU,
+      GEOMETRY_UPGRADE_SEGMENTS,
+      GEOMETRY_UPGRADE_SEGMENTS / 2,
+    );
+    previous.dispose();
+  }
+  return true;
+}
+
 // Apply a freshly loaded colour map only if it out-ranks what's already on the
 // material (TIER_RANK, procedural floor 0). Makes the boot stream, every tier
 // upgrade, and the lazy painter order-independent: a late boot-map arrival
@@ -649,6 +719,13 @@ function createAtmosphereGlow(radiusAU: number, config: AtmosphereConfig): THREE
   return new THREE.Mesh(geo, mat);
 }
 
+// Earth's companion shells sit just above the globe: the night lights hug the
+// surface, the cloud deck floats a little higher. Both are drawn at the same
+// segment count as the globe, so all three silhouettes coarsen and refine
+// together.
+const EARTH_NIGHT_SHELL_SCALE = 1.001;
+const EARTH_CLOUD_SHELL_SCALE = 1.01;
+
 export interface PlanetMesh {
   group: THREE.Group;
   mesh: THREE.Mesh;
@@ -664,6 +741,9 @@ export interface PlanetMesh {
    *  material, so Earth's globe and its cloud shell each carry their own.
    *  Empty for a body with no higher tier on disk. */
   textureUpgrades: TextureUpgrade[];
+  /** Silhouette detail, rebuilt on close approach — the globe and every shell
+   *  that draws an edge at the body's own radius. */
+  geometryUpgrade: GeometryUpgrade;
 }
 
 // Icy / high-albedo moons get the icy night-fill (and, later, a specular ice
@@ -706,6 +786,8 @@ export async function createPlanetMesh(planet: PlanetData): Promise<PlanetMesh> 
     : null;
   const texture = await surfaceTexturePromise;
 
+  // Boot detail, sized to keep first load cheap across a whole system. A body
+  // the player actually closes on rebuilds finer through its geometryUpgrade.
   const segments = planet.radiusKm > 50000 ? 128 : planet.radiusKm > 5000 ? 96 : 64;
 
   const geo = new THREE.SphereGeometry(planet.radiusAU, segments, segments / 2);
@@ -729,7 +811,7 @@ export async function createPlanetMesh(planet: PlanetData): Promise<PlanetMesh> 
   const sunTan = SUN_RADIUS_AU / planet.semiMajorAxisAU; // solar angular radius at the planet
   const fx = augmentSurfaceMaterial(mat, planetArchetype(planet), ringShadow, sunTan);
   // Higher colour tiers on close approach, for the keys that have them (see
-  // TEXTURE_UPGRADE_TIERS). The boot map above is the floor; updateTextureLOD
+  // TEXTURE_UPGRADE_TIERS). The boot map above is the floor; updateBodyLOD
   // walks the ladder from there.
   const textureUpgrades: TextureUpgrade[] = [];
   const surfaceUpgrade = makeTextureUpgrade(planet.textureKey, mat);
@@ -782,7 +864,7 @@ export async function createPlanetMesh(planet: PlanetData): Promise<PlanetMesh> 
   if (planet.name === 'Earth' && earthDetailTexturePromise) {
     const [nightTex, cloudTex, bumpTex, roughTex] = await earthDetailTexturePromise;
 
-    const nightGeo = new THREE.SphereGeometry(planet.radiusAU * 1.001, segments, segments / 2);
+    const nightGeo = new THREE.SphereGeometry(planet.radiusAU * EARTH_NIGHT_SHELL_SCALE, segments, segments / 2);
     nightMaterial = new THREE.ShaderMaterial({
       uniforms: {
         nightTexture: { value: nightTex },
@@ -797,7 +879,7 @@ export async function createPlanetMesh(planet: PlanetData): Promise<PlanetMesh> 
     nightMesh = new THREE.Mesh(nightGeo, nightMaterial);
     group.add(nightMesh);
 
-    const cloudGeo = new THREE.SphereGeometry(planet.radiusAU * 1.01, segments, segments / 2);
+    const cloudGeo = new THREE.SphereGeometry(planet.radiusAU * EARTH_CLOUD_SHELL_SCALE, segments, segments / 2);
     const cloudMat = new THREE.MeshStandardMaterial({
       map: cloudTex,
       transparent: true,
@@ -833,7 +915,17 @@ export async function createPlanetMesh(planet: PlanetData): Promise<PlanetMesh> 
     group.add(rings);
   }
 
-  return { group, mesh, data: planet, rings, ringFx, atmosphere, nightMesh, nightMaterial, cloudsMesh, fx, textureUpgrades };
+  // Every mesh that draws a hard edge at the body's own radius refines
+  // together — up close the cloud deck, not the globe, IS Earth's silhouette.
+  // The atmosphere shell is left out: it renders soft additive alpha with no
+  // edge for a chord to break, so its own segment count never shows.
+  const geometryUpgrade = makeGeometryUpgrade([
+    { mesh, radiusAU: planet.radiusAU },
+    ...(nightMesh ? [{ mesh: nightMesh, radiusAU: planet.radiusAU * EARTH_NIGHT_SHELL_SCALE }] : []),
+    ...(cloudsMesh ? [{ mesh: cloudsMesh, radiusAU: planet.radiusAU * EARTH_CLOUD_SHELL_SCALE }] : []),
+  ]);
+
+  return { group, mesh, data: planet, rings, ringFx, atmosphere, nightMesh, nightMaterial, cloudsMesh, fx, textureUpgrades, geometryUpgrade };
 }
 
 export function createPlanetariumSun(useBloom = true): THREE.Group {
@@ -844,7 +936,11 @@ export function createPlanetariumSun(useBloom = true): THREE.Group {
   // seamless at the poles and longitude wrap; exposure decides how much of
   // that detail survives when the camera points at the star.
   // 128×64 segments: the cruise governor parks the camera at 1.2 photosphere
-  // radii, where a 64-segment silhouette shows visible polygon chords.
+  // radii, where a 64-segment silhouette shows visible polygon chords. The Sun
+  // carries no geometry upgrade beyond that — its limb is never a hard edge to
+  // break into chords, being drawn under an additive corona and glare stack
+  // that washes the photosphere boundary out at exactly the framings where a
+  // planet's chords would start to read.
   const geo = new THREE.SphereGeometry(SUN_DATA.radiusAU, 128, 64);
   const sunMat = new THREE.ShaderMaterial({
     uniforms: {
@@ -1105,6 +1201,11 @@ export interface MoonMesh {
   /** Colour-map ladder streamed in on close approach — one entry for a
    *  photo-textured moon with higher tiers on disk, empty for every other. */
   textureUpgrades: TextureUpgrade[];
+  /** Silhouette detail, rebuilt on close approach. Every moon carries one:
+   *  the Observatory frames even a tiny moon to a fixed screen fraction, so
+   *  size at boot says nothing about the silhouette it will be asked to
+   *  draw. */
+  geometryUpgrade: GeometryUpgrade;
   /** Per-frame moon-dot cache (updateMoonPositions → updateMoonDotsForCamera):
    *  the sun-visible fraction from this frame's eclipse shading, and the dot's
    *  final screen alpha / size that the label pass reads for its sub-pixel
@@ -1356,6 +1457,8 @@ export function createMoonMeshes(planetName: string): MoonMesh[] {
     // Observatory frames every moon to a fixed screen fraction regardless of
     // size, so even tiny moons need a smooth limb up close — the old 16/24
     // segment tiers faceted visibly. Floor at 48 (cheap: ~2k tris); big moons 64.
+    // Boot detail only: a moon the player observes rebuilds finer through its
+    // geometryUpgrade, whatever bucket its radius put it in here.
     const segments = moonData.radiusKm > 1000 ? 64 : 48;
     const geo = new THREE.SphereGeometry(moonData.radiusAU, segments, segments / 2);
 
@@ -1448,7 +1551,14 @@ export function createMoonMeshes(planetName: string): MoonMesh[] {
     mesh.visible = false; // hidden until painted and the player is close
 
     const photoUpgrade = makeTextureUpgrade(moonData.textureKey, mat);
-    result.push({ mesh, data: moonData, painted: false, fx, textureUpgrades: photoUpgrade ? [photoUpgrade] : [] });
+    result.push({
+      mesh,
+      data: moonData,
+      painted: false,
+      fx,
+      textureUpgrades: photoUpgrade ? [photoUpgrade] : [],
+      geometryUpgrade: makeGeometryUpgrade([{ mesh, radiusAU: moonData.radiusAU }]),
+    });
   }
 
   return result;

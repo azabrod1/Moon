@@ -31,7 +31,7 @@ import {
   SUN_POLE_RA_DEG,
   type PlanetData,
 } from './planets/planetData';
-import { applySunGlowTier, canAttempt, cancelTextureUpgrade, createMoonMeshes, createShaderWarmupProbes, earnedUpgradeTier, firstUpgradeTier, needsUpgradeCover, setWarmEligibleMoonParents, upgradeTextureOnApproach, ATMOSPHERES, ATMOSPHERE_SHELL_SCALES, type MoonMesh, type TextureUpgrade } from './PlanetFactory';
+import { applySunGlowTier, canAttempt, cancelTextureUpgrade, createMoonMeshes, createShaderWarmupProbes, earnedUpgradeTier, firstUpgradeTier, needsUpgradeCover, setWarmEligibleMoonParents, upgradeGeometryOnApproach, upgradeTextureOnApproach, ATMOSPHERES, ATMOSPHERE_SHELL_SCALES, type MoonMesh, type TextureUpgrade } from './PlanetFactory';
 import type { SurfaceShadingFx } from './world/surfaceShading';
 import { bindTextureWarmer, invalidateTextureWarmCache, pumpTextureWarmQueue, queueTextureWarm, resetTextureWarmer } from './world/textureWarmer';
 import {
@@ -2039,11 +2039,11 @@ export class PlanetariumMode {
     // scene-space positions and record discs for label culling.
     this.updateMoonPositions();
 
-    // Stream a higher-res surface map for any body that grows large on screen.
-    // Sits after the floating-origin and moon passes: the screen-fraction
-    // trigger may only measure same-frame geometry — frame-one and teleport
-    // frames otherwise read stale offsets, and one mis-read fires a download.
-    this.updateTextureLOD();
+    // Raise map resolution and sphere detail for any body that grows large on
+    // screen. Sits after the floating-origin and moon passes: the footprint may
+    // only measure same-frame geometry — frame-one and teleport frames
+    // otherwise read stale offsets, and one mis-read fires a download.
+    this.updateBodyLOD();
 
     // Camera safety + dynamic near. Deliberately AFTER updateMoonPositions —
     // at the top time rates a capped 100 ms frame moves a moon 36 simulated
@@ -2172,16 +2172,18 @@ export class PlanetariumMode {
 
   private readonly texLODTmp = new THREE.Vector3();
   /**
-   * Stream higher-resolution colour maps for any body that grows large on
-   * screen. The trigger is screen-fraction (apparent diameter ÷ vertical FOV),
-   * not raw distance, so a body magnified by the Observatory's narrow-FOV
-   * telescope upgrades the same as a close fly-by would. Only bodies with a
-   * higher tier on disk carry handles; for every other body this is a no-op.
-   * Cheap to call each frame — a handle that has reached its goal answers
-   * canAttempt in a couple of comparisons, and each body pays at most one
-   * screen projection however many handles it carries.
+   * Raise a body's detail as it grows large on screen: higher-resolution
+   * colour maps, and a finer sphere once its polygon chords would show. Both
+   * read the one screen footprint measured here per body — apparent size, not
+   * raw distance, so a body magnified by the Observatory's narrow-FOV
+   * telescope upgrades exactly as a close fly-by would.
+   *
+   * Cheap to call each frame: a body with nothing left to gain is skipped
+   * before its projection, a colour handle that has reached its goal answers
+   * canAttempt in a couple of comparisons, and no body is ever projected twice
+   * however many handles it carries.
    */
-  private updateTextureLOD(): void {
+  private updateBodyLOD(): void {
     if (!this.solarSystem) return;
     const canvasW = this.renderer.domElement.clientWidth;
     const canvasH = this.renderer.domElement.clientHeight;
@@ -2189,7 +2191,10 @@ export class PlanetariumMode {
     this.camera.updateMatrixWorld();
     for (const planet of this.solarSystem.planets) {
       const ups = planet.textureUpgrades;
-      if (ups.length === 0) continue;
+      const geo = planet.geometryUpgrade;
+      // Nothing left to measure: every ladder has reached its goal and the
+      // silhouette is already fine.
+      if (ups.length === 0 && geo.applied) continue;
       planet.group.getWorldPosition(this.texLODTmp);
       const footprint = projectSphereToScreen(
         this.texLODTmp,
@@ -2199,6 +2204,7 @@ export class PlanetariumMode {
         canvasH,
         this.sphereScreenProjection,
       );
+      upgradeGeometryOnApproach(geo, footprint.diameterPx);
       this.triggerTextureUpgrades(ups, footprint.diameterPx / Math.max(canvasH, 1), nowMs);
     }
     // Cruise re-renders a procedural moon's texture sharper on close approach;
@@ -2214,10 +2220,12 @@ export class PlanetariumMode {
         // moon can't legitimately span the viewport anyway.
         if (!m.mesh.visible) continue;
         const ups = m.textureUpgrades;
-        // Nothing to measure: no colour ladder, and either the procedural
-        // re-render is off or this frame's single slot is already spent.
+        const geo = m.geometryUpgrade;
+        // Nothing to measure: silhouette already fine, no colour ladder, and
+        // either the procedural re-render is off or this frame's single slot
+        // is already spent.
         const tryProcedural = allowMoonTexUpgrade && !moonTexUpgraded;
-        if (!tryProcedural && ups.length === 0) continue;
+        if (!tryProcedural && ups.length === 0 && geo.applied) continue;
         m.mesh.getWorldPosition(this.texLODTmp);
         // Rendered size (mesh scale carries the render-curve inflation): the
         // triggers must measure the disc actually on screen.
@@ -2241,6 +2249,7 @@ export class PlanetariumMode {
           }
         }
 
+        upgradeGeometryOnApproach(geo, footprint.diameterPx);
         if (ups.length > 0) {
           this.triggerTextureUpgrades(ups, footprint.diameterPx / Math.max(canvasH, 1), nowMs);
         }
@@ -11073,9 +11082,9 @@ export class PlanetariumMode {
     this.updatePlanetScaling();
     this.updateMoonPositions();
     // Same same-frame-geometry rule as the cruise path — and the landed
-    // Observatory telescope (narrow FOV) is exactly where a soft map shows, so
-    // the colour-tier triggers keep running while landed.
-    this.updateTextureLOD();
+    // Observatory telescope (narrow FOV) is exactly where a soft map and a
+    // chorded limb show, so the triggers keep running while landed.
+    this.updateBodyLOD();
     this.updateShadowVisuals();
     if (shouldRefreshUi) this.updateOrbitDetails();
     this.pumpObservatoryEventSearch();

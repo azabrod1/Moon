@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import * as THREE from 'three';
 import { applyDesignFov } from '../math/lensProjection';
 import {
+  estimateSphereScreenDiameterPx,
   projectSphereToScreen,
   projectToScreen,
   screenPointToWorldRay,
@@ -238,5 +239,98 @@ describe('projectSphereToScreen', () => {
     );
     expect(sphere.footprintKind).toBe('covering');
     expect(sphere.radiusPx).toBe(Math.hypot(width, height));
+  });
+});
+
+describe('estimateSphereScreenDiameterPx', () => {
+  const DEG = Math.PI / 180;
+
+  /** Cameras spanning what the app actually points at this seam: the
+   *  planetarium camera at full and reduced lens strength across its FOV
+   *  range, and the lens-less flight/compare cameras. */
+  function sweepCameras(width: number, height: number): THREE.PerspectiveCamera[] {
+    const cams: THREE.PerspectiveCamera[] = [];
+    for (const fov of [20, 40, 60, 75, 90, 105]) {
+      for (const strength of [1, 0.75, 0.5, null]) {
+        const camera = new THREE.PerspectiveCamera(fov, width / height, 0.01, 100);
+        if (strength !== null) {
+          camera.userData.lens = { strength, designFovDeg: fov };
+          applyDesignFov(camera, fov);
+        }
+        camera.updateMatrixWorld(true);
+        cams.push(camera);
+      }
+    }
+    return cams;
+  }
+
+  /** A sphere of angular radius alphaDeg, offAxisDeg off the view axis at
+   *  azimuth azDeg, 10 units out. Camera sits at origin looking down -z. */
+  function sphereAt(offAxisDeg: number, azDeg: number, alphaDeg: number) {
+    const d = 10;
+    const theta = offAxisDeg * DEG;
+    const az = azDeg * DEG;
+    return {
+      centre: new THREE.Vector3(
+        Math.sin(theta) * Math.cos(az) * d,
+        Math.sin(theta) * Math.sin(az) * d,
+        -Math.cos(theta) * d,
+      ),
+      radius: Math.sin(alphaDeg * DEG) * d,
+    };
+  }
+
+  it('never underestimates the sampled footprint across FOVs, strengths, aspects, and poses', () => {
+    for (const [width, height] of [[390, 844], [1600, 900]] as const) {
+      for (const camera of sweepCameras(width, height)) {
+        const designFov = camera.userData.lens?.designFovDeg ?? camera.fov;
+        for (const offFraction of [0, 0.3, 0.6, 0.9, 1.1, 1.3]) {
+          for (const az of [0, 45, 90]) {
+            for (const alphaDeg of [0.05, 0.5, 2, 8]) {
+              const { centre, radius } = sphereAt((designFov / 2) * offFraction, az, alphaDeg);
+              const est = estimateSphereScreenDiameterPx(centre, radius, camera, width, height);
+              const full = projectSphereToScreen(centre, radius, camera, width, height);
+              if (full.footprintKind === 'none') continue; // 0 px: any estimate satisfies the gate
+              expect(est).toBeGreaterThanOrEqual(full.diameterPx);
+            }
+          }
+        }
+      }
+    }
+  });
+
+  it('stays tight enough to be a useful gate for centred small bodies', () => {
+    for (const [width, height] of [[390, 844], [1600, 900]] as const) {
+      for (const camera of sweepCameras(width, height)) {
+        for (const alphaDeg of [0.5, 2]) {
+          const { centre, radius } = sphereAt(0, 0, alphaDeg);
+          const est = estimateSphereScreenDiameterPx(centre, radius, camera, width, height);
+          const full = projectSphereToScreen(centre, radius, camera, width, height);
+          expect(est).toBeLessThanOrEqual(full.diameterPx * 2.5); // margin 1.5 x mild lens factors
+        }
+      }
+    }
+  });
+
+  it('returns 0 behind the camera and Infinity for near/straddling poses', () => {
+    const width = 1280;
+    const height = 720;
+    const camera = lensCamera(width, height);
+    expect(estimateSphereScreenDiameterPx(new THREE.Vector3(0, 0, 5), 1, camera, width, height)).toBe(0);
+    // Inside the sphere: the full path reports 'covering'; the estimate defers.
+    expect(estimateSphereScreenDiameterPx(new THREE.Vector3(0, 0, -1), 5, camera, width, height)).toBe(Infinity);
+    // Close (distance < 4 radii): defer to the full measurement.
+    expect(estimateSphereScreenDiameterPx(new THREE.Vector3(0, 0, -3), 1, camera, width, height)).toBe(Infinity);
+  });
+
+  it('defers far-off-axis poses on non-conformal cameras to the full measurement', () => {
+    const width = 1600;
+    const height = 900;
+    const rectilinear = new THREE.PerspectiveCamera(105, width / height, 0.01, 100);
+    rectilinear.updateMatrixWorld(true);
+    const theta = (105 / 2) * 1.3 * (Math.PI / 180);
+    const centre = new THREE.Vector3(Math.sin(theta) * 10, 0, -Math.cos(theta) * 10);
+    const radius = Math.sin(8 * (Math.PI / 180)) * 10;
+    expect(estimateSphereScreenDiameterPx(centre, radius, rectilinear, width, height)).toBe(Infinity);
   });
 });

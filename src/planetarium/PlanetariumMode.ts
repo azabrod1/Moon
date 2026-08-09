@@ -32,7 +32,7 @@ import {
   SUN_POLE_RA_DEG,
   type PlanetData,
 } from './planets/planetData';
-import { applySunGlowTier, canAttempt, cancelTextureUpgrade, createMoonMeshes, createShaderWarmupProbes, earnedUpgradeTier, firstUpgradeTier, needsUpgradeCover, setWarmEligibleMoonParents, upgradeComplete, upgradeGeometryOnApproach, upgradeTextureOnApproach, ATMOSPHERES, ATMOSPHERE_SHELL_SCALES, type MoonMesh, type TextureUpgrade } from './PlanetFactory';
+import { applySunGlowTier, canAttempt, cancelTextureUpgrade, createMoonMeshes, createShaderWarmupProbes, earnedUpgradeTier, firstUpgradeTier, lodMeasurementRelevant, needsUpgradeCover, setWarmEligibleMoonParents, upgradeComplete, upgradeGeometryOnApproach, upgradeTextureOnApproach, ATMOSPHERES, ATMOSPHERE_SHELL_SCALES, type MoonMesh, type TextureUpgrade } from './PlanetFactory';
 import type { SurfaceShadingFx } from './world/surfaceShading';
 import { bindTextureWarmer, invalidateTextureWarmCache, pumpTextureWarmQueue, queueTextureWarm, resetTextureWarmer } from './world/textureWarmer';
 import {
@@ -223,6 +223,7 @@ import {
 import { KM_CONSTANTS } from '../shared/constants/physicalData';
 import { smoothstepUnclamped } from '../shared/math/smoothstep';
 import {
+  estimateSphereScreenDiameterPx,
   projectSphereToScreen,
   projectToScreen,
   screenPointToWorldRay,
@@ -2681,6 +2682,14 @@ export class PlanetariumMode {
       // silhouette is already fine. (every() is true for a ladder-less body.)
       if (geo.applied && ups.every(upgradeComplete)) continue;
       planet.group.getWorldPosition(this.bodyLODTmp);
+      // A body with work left still skips the full 32-ray measurement while a
+      // conservative overestimate of its diameter stays under every trigger
+      // it could pull — the overestimate crossing first is what makes the
+      // skip unable to miss a real trigger.
+      const estPx = estimateSphereScreenDiameterPx(
+        this.bodyLODTmp, planet.data.radiusAU, this.camera, canvasW, canvasH,
+      );
+      if (!lodMeasurementRelevant(geo, ups, estPx, canvasH, null)) continue;
       const footprint = projectSphereToScreen(
         this.bodyLODTmp,
         planet.data.radiusAU,
@@ -2707,14 +2716,26 @@ export class PlanetariumMode {
         const ups = m.textureUpgrades;
         const geo = m.geometryUpgrade;
         // Nothing to measure: silhouette already fine, no colour ladder, and
-        // either the procedural re-render is off or this frame's single slot
-        // is already spent.
-        const tryProcedural = allowMoonTexUpgrade && !moonTexUpgraded;
+        // the procedural re-render is off, ineligible for this moon (photo /
+        // CPU-painted / already sharp — the texturer's own screen, so a moon
+        // upgrade() would refuse never buys a measurement), or this frame's
+        // single slot is already spent.
+        const tryProcedural = allowMoonTexUpgrade && !moonTexUpgraded
+          && this.moonTexturer.canUpgrade(m, PlanetariumMode.OBSERVE_MOON_TEXTURE_WIDTH);
         if (!tryProcedural && geo.applied && ups.every(upgradeComplete)) continue;
         m.mesh.getWorldPosition(this.bodyLODTmp);
         // Rendered size (mesh scale carries the render-curve inflation): the
         // triggers must measure the disc actually on screen.
         const renderedR = m.data.radiusAU * m.mesh.scale.x;
+        // Same skip as the planet loop: a conservative overestimate under
+        // every pullable trigger proves the full measurement moot this frame.
+        const estPx = estimateSphereScreenDiameterPx(
+          this.bodyLODTmp, renderedR, this.camera, canvasW, canvasH,
+        );
+        if (!lodMeasurementRelevant(
+          geo, ups, estPx, canvasH,
+          tryProcedural ? this.moonDotParams.texUpgradeDiscPx : null,
+        )) continue;
         const footprint = projectSphereToScreen(
           this.bodyLODTmp,
           renderedR,

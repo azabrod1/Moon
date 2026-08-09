@@ -637,6 +637,34 @@ export function upgradeGeometryOnApproach(up: GeometryUpgrade, diameterPx: numbe
   return true;
 }
 
+/**
+ * Whether a body's per-frame LOD measurement could possibly act, given a
+ * conservative OVERestimate of its screen diameter. This is the skip gate in
+ * front of the full 32-ray footprint: it asks the very predicates the loop
+ * would feed (`needsGeometryUpgrade`, `earnedUpgradeTier`, the procedural
+ * re-render threshold), so a threshold the overestimate does not cross is one
+ * the real — smaller — footprint cannot cross either. Feeding it anything
+ * other than a true overestimate breaks that guarantee and can strand a body
+ * on its boot map. `proceduralThresholdPx` is null when the procedural
+ * re-render path is not in play for this body this frame.
+ */
+export function lodMeasurementRelevant(
+  geo: GeometryUpgrade,
+  ups: readonly TextureUpgrade[],
+  estimatedDiameterPx: number,
+  canvasHeight: number,
+  proceduralThresholdPx: number | null,
+): boolean {
+  if (needsGeometryUpgrade(geo, estimatedDiameterPx)) return true;
+  if (proceduralThresholdPx !== null && estimatedDiameterPx > proceduralThresholdPx) return true;
+  const fraction = estimatedDiameterPx / Math.max(canvasHeight, 1);
+  for (const up of ups) {
+    if (upgradeComplete(up)) continue;
+    if (earnedUpgradeTier(up, fraction) !== null) return true;
+  }
+  return false;
+}
+
 /** Rank guard for the colour maps (procedural floor = 0, 2K = 2, 4K = 4):
  *  strictly higher wins, so a late 2K arrival can never downgrade a 4K that
  *  already won the race, and a real map always beats the procedural floor. */

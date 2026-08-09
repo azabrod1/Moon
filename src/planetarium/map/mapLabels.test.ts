@@ -11,6 +11,7 @@ import {
   LABEL_EDGE_PAD_PX,
   LABEL_MIN_BODY_RADIUS_PX,
   clampLabelCenterXPx,
+  labelCrowdedByAnchor,
   labelMaxBoxTopPx,
   labelWorthDrawing,
   ringClearedLabelShiftPx,
@@ -460,5 +461,33 @@ describe('ringClearedLabelShiftPx', () => {
     for (const [cx, cy] of [[-hw, 0], [hw, 0], [-hw, lh], [hw, lh]]) {
       expect(norm(out.x + cx, out.y + cy)).toBeGreaterThanOrEqual(outer - 1e-6);
     }
+  });
+});
+
+describe('furniture yielding to drawn bodies', () => {
+  const at = (x: number, y: number, discRadiusPx = 0) => ({ x, y, discRadiusPx });
+
+  it('yields inside the same separation two names keep', () => {
+    expect(labelCrowdedByAnchor(100, 100, [at(100, 100 + LABEL_MIN_SEP_PX - 1)])).toBe(true);
+    expect(labelCrowdedByAnchor(100, 100, [at(100, 100 + LABEL_MIN_SEP_PX + 1)])).toBe(false);
+  });
+
+  it('clears the disc, not the centre — a name beside Saturn must miss the globe', () => {
+    const saturn = at(400, 300, 40);
+    // 50 px away is outside the bare separation and well inside the globe's.
+    expect(labelCrowdedByAnchor(450, 300, [saturn])).toBe(true);
+    expect(labelCrowdedByAnchor(400 + 40 + LABEL_MIN_SEP_PX + 2, 300, [saturn])).toBe(false);
+  });
+
+  it('measures a radius, not a box — a diagonal miss is a miss', () => {
+    // Both offsets inside the box test, the diagonal outside the circle.
+    const d = LABEL_MIN_SEP_PX - 2;
+    expect(labelCrowdedByAnchor(0, 0, [at(d, d)])).toBe(false);
+    expect(labelCrowdedByAnchor(0, 0, [at(d, 0)])).toBe(true);
+  });
+
+  it('is clear when the chart has drawn nothing near it', () => {
+    expect(labelCrowdedByAnchor(10, 10, [])).toBe(false);
+    expect(labelCrowdedByAnchor(10, 10, [at(900, 700, 30), at(500, 20)])).toBe(false);
   });
 });

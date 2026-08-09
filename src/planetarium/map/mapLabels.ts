@@ -18,6 +18,36 @@
  *  one hides this frame — the true-scale inner four otherwise stack. */
 export const LABEL_MIN_SEP_PX = 26;
 
+/**
+ * Whether a piece of chart FURNITURE printed at (x, y) lands on top of
+ * something the chart drew.
+ *
+ * The distance rings' labels are the caller: they stay out of the de-overlap
+ * pass — a ruler that shoved a planet's name aside would be the wrong way
+ * round — so what they get instead is a one-way yield, and this is the test.
+ * The label goes; the thing it collided with never does.
+ *
+ * Measured at the same separation two names keep from each other, widened by
+ * whatever disc the anchor is wearing: a name beside Saturn's globe has to
+ * clear the globe, not its centre.
+ */
+export function labelCrowdedByAnchor(
+  xPx: number,
+  yPx: number,
+  anchors: readonly { x: number; y: number; discRadiusPx: number }[],
+): boolean {
+  for (const anchor of anchors) {
+    const reach = LABEL_MIN_SEP_PX + anchor.discRadiusPx;
+    const dx = anchor.x - xPx;
+    const dy = anchor.y - yPx;
+    // Box first: the common answer is "nowhere near", and it costs two
+    // comparisons instead of a square root.
+    if (Math.abs(dx) > reach || Math.abs(dy) > reach) continue;
+    if (dx * dx + dy * dy <= reach * reach) return true;
+  }
+  return false;
+}
+
 /** How far below a body's centre a label sits when the body's own marker is
  *  small enough not to matter. The historical flat offset, and still the floor. */
 export const LABEL_ANCHOR_OFFSET_PX = 9;

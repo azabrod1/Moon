@@ -2345,6 +2345,7 @@
     }
     .tgl.on { background: rgba(var(--accent-rgb), 0.55); }
     .tgl.on::after { transform: translateX(12px); background: #fff; }
+    .tgl:disabled { cursor: default; }
 
     /* Shared close button */
     .pk-x {
@@ -2646,6 +2647,13 @@
     }
     .map-panel-body::-webkit-scrollbar { width: 4px; }
     .map-panel-body::-webkit-scrollbar-thumb { background: rgba(255, 255, 255, 0.10); border-radius: 2px; }
+    /* MORE BELOW — the card's fact-list idiom. Opening help pushes Layers and
+       the footnote out of sight, and a panel that just ends looks like a panel
+       with nothing more in it. */
+    .map-panel-body.scrolls {
+      -webkit-mask-image: linear-gradient(to bottom, #000 calc(100% - 16px), transparent);
+      mask-image: linear-gradient(to bottom, #000 calc(100% - 16px), transparent);
+    }
     .map-panel-sep { flex: none; height: 1px; margin: 11px -15px; background: var(--line-dim); }
     /* Two columns: the gesture and what it does. The label column is sized to
        hold the longest of them ("Right-click · hold") on one line. */
@@ -2673,6 +2681,9 @@
       line-height: 1.45;
       color: var(--t2);
     }
+    /* The same row, named for the pointer the reader actually has: there is no
+       right button on a phone, and the neighbouring rows are pointer-neutral. */
+    .map-help-coarse { display: none; }
     .map-help-note {
       grid-column: 1 / -1;
       margin: 1px 0 0;
@@ -2863,8 +2874,8 @@
     /* The gestures the buttons cannot show, above the world bar for the first
        map of a session. Two lines: on a phone one line of this length would be
        clipped to an ellipsis, and the clipped half is the part nothing else
-       teaches. The block grows upward, so on a phone — where the console is a
-       full-width strip below it — the mode docks it above that strip instead.
+       teaches. The block grows upward, so on a phone — where the panel is a
+       full-width sheet below it — the mode docks it above that sheet instead.
 
        The id-qualified pointer-events is load-bearing, not decoration: the
        layer's own `#system-map-ui > *` rule turns pointer events back ON for
@@ -2890,14 +2901,14 @@
       z-index: 1;
     }
     #system-map-ui .map-zoom-hint.visible { opacity: 1; visibility: visible; }
-    /* In a narrow desktop window the centred line reaches the console's column.
-       There is room for it in the band between the world bar and the console's
+    /* In a narrow desktop window the centred line reaches the panel's column.
+       There is room for it in the band between the world bar and the panel's
        bottom edge, so it drops into that band rather than being cut short. */
     @media (min-width: 641px) and (max-width: 820px) {
       #system-map-ui .map-zoom-hint { bottom: 56px; }
     }
     @media (max-width: 640px) {
-      /* The band between the bar and the console strip is 27 px on a phone
+      /* The band between the bar and the sheet is 27 px on a phone
          against 42 on a desktop, and the line has to sit clear of both — the
          mode re-docks the block above the strip, this is the floor it starts
          from. */
@@ -2951,9 +2962,28 @@
     .mfm-list { margin: 6px -7px 0; padding: 0 2px; max-height: 152px; flex: none; }
     #map-panel .pk-empty { padding: 12px 8px 4px; }
     #map-panel .pk-empty.visible { display: block; }
-    /* Rows are deck rows on <button>s — reset the UA button chrome (the
+    /* A row is a wrapper carrying the deck's row look; the controls inside it
+       are siblings — the commit button, and the release chip when the camera is
+       riding that body. A button inside a button is invalid, unreachable by
+       keyboard and ambiguous to a screen reader, so the two never nest. */
+    .mfm-row { width: 100%; font-family: var(--font-ui); text-align: left; }
+    /* The commit button IS the row's clickable area: it takes the slack and
+       carries the dot, the name and the `here` tag. UA button chrome reset (the
        Look-at menu's idiom). */
-    .mfm-row { border: none; background: none; width: 100%; font-family: var(--font-ui); text-align: left; }
+    .mfm-pick {
+      flex: 1;
+      min-width: 0;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 0;
+      border: none;
+      background: none;
+      color: inherit;
+      font-family: var(--font-ui);
+      text-align: left;
+      cursor: pointer;
+    }
     .mfm-row .pk-dot { width: 8px; height: 8px; }
     .mfm-row.pk-moon .pk-dot { width: 5px; height: 5px; }
     /* The body the player is standing on. */
@@ -3010,6 +3040,8 @@
       .map-panel.collapsed .map-panel-chev { transform: rotate(180deg); }
       /* No pill on a phone — the collapsed header is one. */
       .map-pill.visible { display: none; }
+      .map-help-fine { display: none; }
+      .map-help-coarse { display: inline; }
       /* Finger targets. */
       .map-panel-btn { width: 28px; height: 28px; font-size: 12px; }
       .map-panel-btn svg { width: 13px; height: 13px; }
@@ -3056,7 +3088,7 @@
     }
     #system-map-ui .map-hover-meta.visible { display: block; }
     /* Picked-body card — docked bottom-left, above the bottom bands (measured:
-       the world bar, plus the console once it spans the width on a phone). The
+       the world bar, plus the panel once it spans the width on a phone). The
        height cap is measured too (MapHUD.measureCard), so box-sizing has to
        count the padding in it. */
     .map-card {
@@ -3906,19 +3938,19 @@
             <svg class="map-panel-glyph" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" aria-hidden="true"><ellipse cx="10" cy="10" rx="7.5" ry="3.2"></ellipse><circle cx="10" cy="10" r="1.1" fill="currentColor" stroke="none"></circle><circle cx="16.2" cy="8.4" r="1.3" fill="currentColor" stroke="none"></circle></svg>
             <b class="map-panel-title">System map</b>
             <span class="kbd">M</span>
-            <button id="map-info" class="map-panel-btn" type="button" title="How the map works" aria-label="How the map works" aria-expanded="false">?</button>
-            <button id="map-panel-collapse" class="map-panel-btn" type="button" title="Collapse" aria-label="Collapse the panel">
+            <button id="map-info" class="map-panel-btn" type="button" title="How the map works" aria-label="How the map works" aria-expanded="false" aria-controls="map-help-grid">?</button>
+            <button id="map-panel-collapse" class="map-panel-btn" type="button" title="Collapse" aria-label="Collapse the panel" aria-controls="map-panel-body">
               <svg class="map-panel-x" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" aria-hidden="true"><path d="M5.5 5.5 L14.5 14.5 M14.5 5.5 L5.5 14.5"></path></svg>
               <svg class="map-panel-chev" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5.5 8 L10 12.5 L14.5 8"></path></svg>
             </button>
           </div>
-          <div class="map-panel-body">
+          <div class="map-panel-body" id="map-panel-body">
             <div id="map-help-grid" class="map-help-grid">
               <div class="map-help-row"><b>Tap a body</b><span>opens its card — travel, facts, the next event</span></div>
               <div class="map-help-row"><b>Drag</b><span>turns the view</span></div>
               <div class="map-help-row"><b>Scroll · pinch</b><span>zooms, riding the cursor</span></div>
               <div class="map-help-row"><b>Double-tap</b><span>focuses a body and follows it</span></div>
-              <div class="map-help-row"><b>Right-click · hold</b><span>offers a teleport to that point in space; the chip confirms it</span></div>
+              <div class="map-help-row"><b><span class="map-help-fine">Right-click · hold</span><span class="map-help-coarse">Hold</span></b><span>offers a teleport to that point in space; the chip confirms it</span></div>
               <div class="map-help-row"><b><kbd class="kbd">M</kbd> <kbd class="kbd">Esc</kbd></b><span>M opens and closes the map; Esc backs out one step</span></div>
               <p class="map-help-note">The map runs on the sim clock — the time bar below still drives it.</p>
             </div>
@@ -3954,7 +3986,7 @@
                 <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" aria-hidden="true"><circle cx="9" cy="9" r="5.5"></circle><path d="M13.2 13.2 L17 17"></path></svg>
                 <input id="map-focus-search" type="text" placeholder="Find a body…" autocomplete="off" spellcheck="false" aria-label="Find a body">
               </label>
-              <div class="pk-list mfm-list" id="map-focus-list"></div>
+              <div class="pk-list mfm-list" id="map-focus-list" role="list"></div>
               <div class="pk-empty" id="map-focus-empty">No bodies match.</div>
             </div>
             <div class="map-panel-sep"></div>

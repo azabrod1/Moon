@@ -1180,6 +1180,10 @@ export class PlanetariumMode {
   // which is about the OBSERVATORY panel.
   private mapPanelCollapsed = false;
   private mapPanelCollapsedPref = false;
+  // Whether the first map of the session has decided the panel's opening
+  // shape yet. It cannot be decided before then: the answer depends on which
+  // layout the panel lays out in, and that is a measurement.
+  private mapPanelSeeded = false;
   // Whether the panel's help grid stands open. Reset whenever the panel folds
   // away or the map closes: a rung of the Esc cascade answers this flag, and it
   // must never fire for a grid nobody can see.
@@ -2296,14 +2300,15 @@ export class PlanetariumMode {
   onResize(): void {
     if (this.starfield) setStarfieldPixelRatio(this.starfield, this.renderer.getPixelRatio());
     if (this.moonDots) this.moonDots.setPixelRatio(this.renderer.getPixelRatio());
-    // Match the map camera aspect and its fat-line resolution to the canvas,
-    // re-cap the control panel and re-dock the card above the (possibly moved)
-    // bottom bands. A rotation swaps the panel between its corner shape and the
-    // phone's bottom sheet, and a cap measured against the old viewport would
-    // leave it standing off the top of the new one.
-    this.systemMap?.onResize();
+    // The panel is re-capped BEFORE the chart re-projects: the label pass
+    // inside onResize measures the panel's rect, and a rotation changes both
+    // the cap and the panel's whole shape. Measured after, the labels would
+    // dodge the shape the panel had in the old viewport for a frame — and on a
+    // phone that shape is a full-width band. measurePanel's own geometry door
+    // drops the chrome cache and re-docks the hint.
     this.mapHud.measurePanel();
     this.mapHud.measureCard();
+    this.systemMap?.onResize();
   }
 
   update(dt: number): void {
@@ -6970,6 +6975,13 @@ export class PlanetariumMode {
     this.mapHud.onPickRow = (name) => this.pickMapFocusRow(name);
     this.mapHud.onReleaseFocus = () => { this.releaseMapFocus(); };
     this.mapHud.onLayer = (key, on) => this.setMapLayer(key, on);
+    // Every way the panel's shape can change funnels here: the label placer
+    // caches the panel's rect (it is chrome that does not move on its own), and
+    // the zoom hint measured its dock once when it was shown.
+    this.mapHud.onPanelGeometry = () => {
+      this.systemMap?.invalidateLabelChrome();
+      this.redockMapZoomHint();
+    };
     // One instrument at a time: opening the Stats card tucks the Observatory
     // panel back into its chip, with a brief pulse so the hop reads.
     this.bottomBar.onStatsToggle = (open) => {
@@ -7755,7 +7767,7 @@ export class PlanetariumMode {
     return name === null ? this.releaseMapFocus() : this.focusMapBody(name);
   }
 
-  /** Dev bridge: the console's Overview row — a release flight when there is a
+  /** Dev bridge: the panel's Reset view row — a release flight when there is a
    *  focus to give back, an instant re-fit when the free zoom has wandered.
    *  Which one it was is what `mapState().camState` says a frame later. */
   devMapOverview(): boolean {
@@ -7871,6 +7883,17 @@ export class PlanetariumMode {
     // it is a thing you open to read once.
     this.mapHelpOpen = false;
     this.mapHud.setHelpOpen(false);
+    // First map of the session: a phone opens with the sheet folded to its
+    // header. Expanded it is two thirds of the screen and every drawn body
+    // sits behind it — the chart is what the screen is for, and a control
+    // panel over an empty patch of stars is not a map. The desktop panel is a
+    // corner instrument and opens standing. Seeded once, then it is the
+    // session's to remember.
+    if (!this.mapPanelSeeded) {
+      this.mapPanelSeeded = true;
+      this.mapHud.setPanelCollapsed(false);
+      this.mapPanelCollapsedPref = this.isMapPanelBand();
+    }
     this.mapPanelCollapsed = this.mapPanelCollapsedPref;
     this.mapHud.setPanelCollapsed(this.mapPanelCollapsed);
     // The find-a-body list is the chart's roster gated by the camera's own
@@ -8778,7 +8801,7 @@ export class PlanetariumMode {
     return !!cam && mapFocusReleasable(cam);
   }
 
-  /** The console's Overview row. Two journeys home behind one button: give a
+  /** The panel's Reset view row. Two journeys home behind one button: give a
    *  focus back, or — at an overview a free zoom has wandered off — re-fit the
    *  chart. Which one is on offer is what the row's own predicate says, and at
    *  the parked fit neither is, which is when the row greys out. */
@@ -8830,12 +8853,15 @@ export class PlanetariumMode {
     // nobody can see is exactly the stale-offer bug.
     if (collapsed) this.setMapHelpOpen(false);
     this.mapHud.setPanelCollapsed(collapsed);
-    // The sheet is a band the teleport chip would float over, and the chip is
-    // an offer about a point the sheet now covers. Desktop keeps its offer —
-    // the panel is a corner instrument there, and the chip has room beside it.
-    if (!collapsed && this.isMapPanelBand()) this.dismissMapTeleportChip();
-    this.redockMapZoomHint();
-    this.systemMap?.invalidateLabelChrome();
+    // The sheet is a band, and both the teleport chip and an open body card
+    // would be under it — the card entirely so, at either phone size. The
+    // exclusion runs BOTH ways: opening the card folds the sheet, and
+    // unfolding the sheet dismisses the card. Desktop keeps both — the panel
+    // is a corner instrument there, and they have room beside it.
+    if (!collapsed && this.isMapPanelBand()) {
+      this.dismissMapTeleportChip();
+      this.dismissMapCard();
+    }
   }
 
   /** The panel's help grid. Nothing else opens with it — on a phone the card
@@ -8854,8 +8880,6 @@ export class PlanetariumMode {
     }
     this.mapHelpOpen = open;
     this.mapHud.setHelpOpen(open);
-    this.redockMapZoomHint();
-    this.systemMap?.invalidateLabelChrome();
   }
 
   private toggleMapHelp(): void {

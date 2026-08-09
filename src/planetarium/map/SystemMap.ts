@@ -227,6 +227,7 @@ import {
   mapLabelOffsetPx,
   MapLabelPlacer,
   ringClearedLabelShiftPx,
+  labelCrowdedByAnchor,
   LABEL_EDGE_PAD_PX,
   LABEL_LINE_HEIGHT_PX,
   LABEL_NOMINAL_HALF_WIDTH_PX,
@@ -843,6 +844,14 @@ export class SystemMap {
   // toggle starts, so the whole animation re-fits to the new extent and the
   // system keeps its apparent size instead of zooming as the blend slides.
   private scaleZoomRatio = 1;
+  /** The framing distance the zoom readout is metered against while a body is
+   *  being followed, and the body it belongs to. Cached rather than derived on
+   *  demand: the derivation reaches followBoundsFor, which measures the canvas,
+   *  and the readout is asked for every frame — a live derivation would put a
+   *  layout read in the steady-state path. Refreshed where the frame already
+   *  measures: when the followed body changes, and on a resize. */
+  private followFramingName: string | null = null;
+  private followFramingAU = 0;
 
   // Scratch — no per-frame allocation in steady state.
   private tmpMap: MapVec3 = { x: 0, y: 0, z: 0 };
@@ -1089,12 +1098,19 @@ export class SystemMap {
   private constellationLines: THREE.LineSegments;
   private distanceRings: THREE.LineSegments;
   private layers: MapLayerState = { ...MAP_LAYER_DEFAULTS };
-  /** One DOM node per ring, in ring order, and where each one was last put.
-   *  Built on the first frame the layer is on; written only on a change. */
+  /** One DOM node per ring, in ring order, and where each one was last put —
+   *  as NUMBERS, so a still chart compares two integers per ring instead of
+   *  building a transform string it is about to throw away. Built on the first
+   *  frame the layer is on. */
+  /** Whether the body-label container is currently switched off at the
+   *  container, and the one body the off-layer pass is still painting. */
+  private labelContainerHidden = false;
+  private soloLabelName: string | null = null;
   private ringLabels: HTMLDivElement[] = [];
   private ringLabelContainer: HTMLElement | null = null;
   private ringLabelShown: boolean[] = [];
-  private ringLabelTransforms: string[] = [];
+  private ringLabelX: number[] = [];
+  private ringLabelY: number[] = [];
   private tmpRingProj = { x: 0, y: 0 };
 
   constructor(renderer: THREE.WebGLRenderer, textures: MapTextureSource) {
@@ -1305,12 +1321,26 @@ export class SystemMap {
     const dist = this.getCameraDistance();
     if (!(dist > 0)) return 1;
     let reference = fitDistanceAU(this.extentAU, MAP_FOV_DEG, this.camera.aspect);
-    if (mapFocusReleasable(this.cam)) {
-      const name = this.cam.focusName;
-      const framing = name === null ? null : this.revealDistanceFor(name);
-      if (framing !== null && framing > 0) reference = framing;
+    // Reads only the cached reference — no DOM, no bounds derivation. The
+    // name guard covers the frame between a focus starting and the camera
+    // pass that measures its framing.
+    if (mapFocusReleasable(this.cam)
+      && this.cam.focusName !== null
+      && this.cam.focusName === this.followFramingName
+      && this.followFramingAU > 0) {
+      reference = this.followFramingAU;
     }
     return reference / dist;
+  }
+
+  /** Re-derive the followed body's framing distance when the subject changes.
+   *  Called from the camera pass, which is already measuring the canvas this
+   *  frame; a resize drops the name so the next pass re-derives. */
+  private refreshFollowFramingRef(): void {
+    const name = mapFocusReleasable(this.cam) ? this.cam.focusName : null;
+    if (name === this.followFramingName) return;
+    this.followFramingName = name;
+    this.followFramingAU = name === null ? 0 : (this.revealDistanceFor(name) ?? 0);
   }
 
   /** Dev forensics: the free overview zoom's whole state — where the camera and
@@ -1450,14 +1480,14 @@ export class SystemMap {
     return true;
   }
 
-  /** Whether the camera would take a focus on this body. The Focus picker's own
+  /** Whether the camera would take a focus on this body. The find-a-body list's
    *  gate, so no row it offers is one `focusBody` would refuse. */
   acceptsFocus(name: string): boolean {
     return this.cameraMayVisit(name);
   }
 
   /** Whether the overview's zoom has carried its pivot off the origin — the
-   *  chart is no longer at the parked fit. Read every frame for the console's
+   *  chart is no longer at the parked fit. Read every frame for the panel's
    *  Overview row, so it allocates nothing and scans nothing (zoomState() does
    *  both). */
   isZoomFree(): boolean {
@@ -1550,6 +1580,10 @@ export class SystemMap {
     this.syncZoomToCursor();
     this.clearFocusOrbitDim();
     for (const label of this.labels.values()) label.style.display = 'none';
+    // The container is the layer switch's, not the session's: a map closed with
+    // names off must not reopen with the container still down.
+    this.setLabelContainerHidden(false);
+    this.soloLabelName = null;
     // Let every borrowed texture go. The world is free to dispose any of them
     // while the map is shut, so the material stops naming one here. The drop is
     // only as deep as the material: the renderer's per-material uniform cache
@@ -1722,9 +1756,10 @@ export class SystemMap {
     }
     this.constellationLines.visible = this.layers.constellations;
     this.distanceRings.visible = this.ringsDrawable();
-    // Both label sets are the LABEL PASS's to show and hide — one owner, or a
-    // switch and a frame would fight over the same display property. The pass
-    // reads these flags on its next run, which the revision bump guarantees.
+    // The names come off in one sweep here rather than one-by-one every frame;
+    // from then on the pass either hides the container outright or paints the
+    // single exempt label. The pass owns showing them again.
+    if (!this.layers.bodyLabels) this.hideAllBodyLabels();
   }
 
   /**
@@ -1891,6 +1926,9 @@ export class SystemMap {
     // After the camera phase, so a flight that landed this frame pulses from
     // zero rather than from one frame in.
     this.advanceFocusPulse(dtMs);
+    // The zoom readout's reference, refreshed here — inside the pass that
+    // already measures — so the readout itself can stay DOM-free.
+    this.refreshFollowFramingRef();
     // Flush the matrices BEFORE any projection. The renderer refreshes them
     // only at render time, which runs after this update, so a
     // projection-dependent pass must force it.
@@ -2250,8 +2288,10 @@ export class SystemMap {
     }
     // The reveal shell and every drawn size are metered in screen px, so a
     // viewport change moves them: let the next frame re-decide rather than
-    // carrying the old decision.
+    // carrying the old decision. The zoom readout's framing reference is one of
+    // them — dropping the name makes the next camera pass re-derive it.
     this.projectionRevision++;
+    this.followFramingName = null;
     // A viewport change (device rotation, window resize) refits the overview:
     // the vertical FOV is fixed, so portrait fits far less width and the old
     // dolly distance would clip the outer system. Only the parked overview
@@ -4166,7 +4206,7 @@ export class SystemMap {
     this.controls.update();
   }
 
-  private rebuildPickAnchors(): void {
+  private rebuildPickAnchors(viewW?: number, viewH?: number): void {
     // The renderer only refreshes the camera matrices at render time; a pick
     // landing between a controls move and the next frame must project against
     // the live pose, so flush the matrix here before projecting the anchors.
@@ -4179,8 +4219,8 @@ export class SystemMap {
     // pose does: a resize that leaves a deliberately zoomed camera exactly
     // where it was still re-projects every anchor, and a pick taken before the
     // next frame would otherwise be answered in the old viewport's pixels.
-    const w = this.renderer.domElement.clientWidth;
-    const h = this.renderer.domElement.clientHeight;
+    const w = viewW ?? this.renderer.domElement.clientWidth;
+    const h = viewH ?? this.renderer.domElement.clientHeight;
     if (this.anchorKeyRevision === this.frameRevision
       && this.anchorKeyProjection === this.projectionRevision
       && this.anchorKeyWidth === w
@@ -5447,24 +5487,30 @@ export class SystemMap {
     // placed against a de-overlap that has no other label in it, which is
     // exactly right for the only name on screen.
     if (!this.layers.bodyLabels) {
+      // Names off, nothing under the camera: the container goes down and the
+      // whole pass is skipped. Every label inside it was hidden once, when the
+      // switch flipped (applyLayers), so there is nothing per-frame to undo.
       const subject = this.cameraSubject();
-      for (const [name, label] of this.labels) {
-        if (name !== subject && label.style.display !== 'none') label.style.display = 'none';
+      if (subject === null) {
+        this.setLabelContainerHidden(true);
+        return;
       }
-      for (const system of this.moonSystems) {
-        if (!system.revealed) continue;
-        for (const moon of system.moons) {
-          if (moon.data.name === subject) continue;
-          if (moon.label && moon.label.style.display !== 'none') moon.label.style.display = 'none';
-        }
+      // One name survives the switch — the body the camera is on. The
+      // container comes back for it and nothing else is touched: the subject
+      // that just lost the camera is the only label that has to be put away.
+      this.setLabelContainerHidden(false);
+      if (this.soloLabelName !== null && this.soloLabelName !== subject) {
+        this.hideBodyLabel(this.soloLabelName);
       }
-      if (subject === null) return;
+      this.soloLabelName = subject;
       this.refreshLabelChrome(w, h);
       this.refreshLabelRingCtx(w, h);
       this.labelPlacer.begin();
       this.placeSubjectLabel(subject, w, h);
       return;
     }
+    this.setLabelContainerHidden(false);
+    this.soloLabelName = null;
     this.refreshLabelChrome(w, h);
     this.refreshLabelRingCtx(w, h);
     // Priority order: the Sun first, then the planets inner→outer (catalog
@@ -5494,6 +5540,38 @@ export class SystemMap {
         this.placeLabel(moon.data.name, moon.pos, w, h, moon.drawnRadiusPx, inRing);
       }
     }
+  }
+
+  private setLabelContainerHidden(hidden: boolean): void {
+    if (hidden === this.labelContainerHidden) return;
+    this.labelContainerHidden = hidden;
+    if (this.labelContainer) this.labelContainer.style.display = hidden ? 'none' : '';
+  }
+
+  /** Put one body's label away, whichever kind of body it is. */
+  private hideBodyLabel(name: string): void {
+    this.hideLabel(name);
+    for (const system of this.moonSystems) {
+      for (const moon of system.moons) {
+        if (moon.data.name !== name) continue;
+        if (moon.label && moon.label.style.display !== 'none') moon.label.style.display = 'none';
+        return;
+      }
+    }
+  }
+
+  /** Every name away at once — the one-time sweep the body-labels switch runs
+   *  as it goes off, so the per-frame pass has nothing left to clean up. */
+  private hideAllBodyLabels(): void {
+    for (const label of this.labels.values()) {
+      if (label.style.display !== 'none') label.style.display = 'none';
+    }
+    for (const system of this.moonSystems) {
+      for (const moon of system.moons) {
+        if (moon.label && moon.label.style.display !== 'none') moon.label.style.display = 'none';
+      }
+    }
+    this.soloLabelName = null;
   }
 
   /** Place the camera's own subject and nothing else — the exemption body
@@ -5538,11 +5616,18 @@ export class SystemMap {
       return;
     }
     this.ensureRingLabels();
+    // The frame's drawn anchors, for the yield below. Guarded by its own key,
+    // so this is at most one rebuild a frame — and it happens only while the
+    // rings are actually drawing. The viewport is handed over rather than
+    // re-measured: this pass has just been given it.
+    this.rebuildPickAnchors(w, h);
     const points = ringLabelPoints();
     for (let i = 0; i < this.ringLabels.length; i++) {
       const label = this.ringLabels[i];
-      if (!this.projectChartPoint(points[i], this.tmpRingProj)
-        || !(w > 0) || !(h > 0)) {
+      const on = (w > 0) && (h > 0)
+        && this.projectChartPoint(points[i], this.tmpRingProj)
+        && !this.ringLabelCrowded(this.tmpRingProj.x, this.tmpRingProj.y);
+      if (!on) {
         if (this.ringLabelShown[i]) {
           this.ringLabelShown[i] = false;
           label.style.display = 'none';
@@ -5553,13 +5638,36 @@ export class SystemMap {
         this.ringLabelShown[i] = true;
         label.style.display = '';
       }
-      const transform =
-        `translate(-50%, 0) translate(${Math.round(this.tmpRingProj.x)}px, ${Math.round(this.tmpRingProj.y)}px)`;
-      if (transform !== this.ringLabelTransforms[i]) {
-        this.ringLabelTransforms[i] = transform;
-        label.style.transform = transform;
+      // Round first, compare numbers, and build the string only when the
+      // rounded position has actually moved: a parked chart writes nothing and
+      // allocates nothing.
+      const x = Math.round(this.tmpRingProj.x);
+      const y = Math.round(this.tmpRingProj.y);
+      if (x !== this.ringLabelX[i] || y !== this.ringLabelY[i]) {
+        this.ringLabelX[i] = x;
+        this.ringLabelY[i] = y;
+        label.style.transform = `translate(-50%, 0) translate(${x}px, ${y}px)`;
       }
     }
+  }
+
+  /**
+   * Whether a ring label lands on top of something the chart has drawn.
+   *
+   * The rings are furniture and stay OUT of the de-overlap pass — a ruler that
+   * shoved a planet's name aside would be the wrong way round. What they get
+   * instead is a one-way yield: the label goes, the ring never does. The
+   * bearing is fixed, so whichever bodies happen to sit along it on the clock's
+   * date are exactly the ones that would print through the label ("1 AU" behind
+   * the Sun, "10 AU" under Saturn).
+   *
+   * Measured against the frame's own anchors — every body the chart drew, plus
+   * the ship marker, which is just as opaque to read through — at the same
+   * separation the label pass keeps between two names, widened by whatever disc
+   * the anchor is wearing.
+   */
+  private ringLabelCrowded(x: number, y: number): boolean {
+    return labelCrowdedByAnchor(x, y, this.pickAnchors);
   }
 
   private ensureRingLabels(): void {
@@ -5574,7 +5682,8 @@ export class SystemMap {
       this.ringLabelContainer.appendChild(div);
       this.ringLabels.push(div);
       this.ringLabelShown.push(false);
-      this.ringLabelTransforms.push('');
+      this.ringLabelX.push(Number.NaN);
+      this.ringLabelY.push(Number.NaN);
     }
   }
 
@@ -5717,7 +5826,7 @@ export class SystemMap {
       return;
     }
     // A corner panel is a hole in the frame, not a band across it: a label
-    // whose box lands under the console, the card or a popover would show as
+    // whose box lands under the panel, the pill or the card would show as
     // word fragments sticking out from the panel's edge.
     for (const ob of this.labelObstaclesPx) {
       if (x + halfWidth > ob.left && x - halfWidth < ob.right

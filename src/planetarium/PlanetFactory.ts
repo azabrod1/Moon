@@ -717,8 +717,10 @@ export function upgradeTextureOnApproach(
   // Deliberately a plain load, not the durable seam: this is an optional
   // sharpen wanted only while the body fills the view. A failure leaves
   // whatever is already on the material — the boot map, or the procedural
-  // fallback if the base fetch is still out on its own ladder — and neither is
-  // worth chasing for the rest of the session the way a missing base map is.
+  // fallback if the base fetch is still out on its own ladder. The retry it
+  // gets is demand-driven rather than durable: a cooldown, then another
+  // attempt only if the body still earns the tier on a later frame. A base map
+  // is chased for the whole session because nothing else can stand in for it.
   loadUpgradeTexture(
     url,
     (tex) => {
@@ -943,6 +945,29 @@ export function connectLateDetailMap(
   }));
 }
 
+/**
+ * Register the late arrival for a detail map that is ALSO a ranked colour map
+ * — the cloud deck, which hangs off a slot like the other three but carries
+ * its own upgrade handle on the same material.
+ *
+ * It cannot take the direct-assign path above: a boot-tier fetch that
+ * recovered late would overwrite (and free) a higher tier the approach had
+ * already installed, and the handle — still reporting that tier applied —
+ * would never fetch it again, leaving the deck downgraded for the session.
+ * Routing through the rank guard makes the recovered arrival lose instead.
+ */
+export function connectLateColorMap(
+  slot: LateTextureSlot,
+  material: THREE.MeshStandardMaterial,
+  rank: number,
+): void {
+  slot.connect((tex) => afterDecode(tex, () => {
+    // The guard owns the whole swap: assign before dispose, and disposing the
+    // arrival itself when it lost the race.
+    if (applyColorTierTexture(material, tex, rank)) queueTextureWarm(tex);
+  }));
+}
+
 /** The Earth-specific slot set, one per detail map. */
 export interface EarthLateSlots {
   night: LateTextureSlot;
@@ -968,7 +993,7 @@ export function wireEarthLateDetail(
     () => nightMat.uniforms.nightTexture.value as THREE.Texture | null,
     (tex) => { nightMat.uniforms.nightTexture.value = tex; },
   );
-  connectLateDetailMap(slots.clouds, cloudMat, () => cloudMat.map, (tex) => { cloudMat.map = tex; });
+  connectLateColorMap(slots.clouds, cloudMat, TIER_RANK['2k']);
   connectLateDetailMap(slots.bump, earthMat, () => earthMat.bumpMap, (tex) => { earthMat.bumpMap = tex; });
   connectLateDetailMap(
     slots.roughness, earthMat,
@@ -1123,6 +1148,10 @@ export async function createPlanetMesh(planet: PlanetData): Promise<PlanetMesh> 
       depthWrite: false,
       roughness: 1.0,
     });
+    // Ranked like the globe's map: the deck takes tier arrivals from two
+    // directions — its upgrade handle and its late slot — and both have to be
+    // able to tell the map construction got from the procedural fallback.
+    cloudMat.userData.colorTierRank = initialColorTierRank(cloudTex);
     cloudsMesh = new THREE.Mesh(cloudGeo, cloudMat);
     group.add(cloudsMesh);
     // The cloud deck is its own colour map on its own shell, so it carries its

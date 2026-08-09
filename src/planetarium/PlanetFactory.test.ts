@@ -839,6 +839,54 @@ describe('wireEarthLateDetail', () => {
     s.roughness.deliver(fakeTexture('r'));
     expect(spies.map((f) => f.disposed)).toEqual([true, true, true, true]);
   });
+
+  it('keeps the cloud deck on the higher tier when its boot-tier fetch recovers late', () => {
+    // The deck is the one late slot that is also a ranked colour map, so it
+    // takes arrivals from two directions. In this order — boot fetch times
+    // out, the approach installs 4K, the boot fetch finally recovers — a
+    // direct assign would free the 4K and leave the deck downgraded for the
+    // session, because the upgrade handle still reports 4K applied and never
+    // fetches it again.
+    const s = slots();
+    const fallback = fallbackTexture();
+    const cloudMat = new THREE.MeshStandardMaterial({ map: fallback });
+    materials.push(cloudMat);
+    cloudMat.userData.colorTierRank = initialColorTierRank(fallback);
+    wireEarthLateDetail(
+      s,
+      new THREE.ShaderMaterial({ uniforms: { nightTexture: { value: null } } }),
+      cloudMat,
+      new THREE.MeshStandardMaterial(),
+    );
+
+    const sharp = fakeTexture('clouds-4k');
+    expect(applyColorTierTexture(cloudMat, sharp, TIER_RANK['4k'])).toBe(true);
+
+    const recovered = fakeTexture('clouds-2k');
+    const recoveredSpy = disposeSpy(recovered);
+    s.clouds.deliver(recovered);
+
+    expect(cloudMat.map).toBe(sharp);
+    // The loser is freed rather than left resident with nothing pointing at it.
+    expect(recoveredSpy.disposed).toBe(true);
+  });
+
+  it('still adopts a recovered boot-tier deck when nothing better has landed', () => {
+    const s = slots();
+    const fallback = fallbackTexture();
+    const cloudMat = new THREE.MeshStandardMaterial({ map: fallback });
+    materials.push(cloudMat);
+    cloudMat.userData.colorTierRank = initialColorTierRank(fallback);
+    wireEarthLateDetail(
+      s,
+      new THREE.ShaderMaterial({ uniforms: { nightTexture: { value: null } } }),
+      cloudMat,
+      new THREE.MeshStandardMaterial(),
+    );
+    const recovered = fakeTexture('clouds-2k');
+    s.clouds.deliver(recovered);
+    expect(cloudMat.map).toBe(recovered);
+  });
 });
 
 describe('silhouette detail', () => {

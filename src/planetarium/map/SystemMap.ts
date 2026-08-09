@@ -178,6 +178,7 @@ import {
   MAP_FOV_DEG,
   MAP_POLAR_MIN_RAD,
   MAP_POLAR_MAX_RAD,
+  mapFocusReleasable,
   type MapCameraBounds,
   type MapCameraState,
   type MapFollowBounds,
@@ -698,17 +699,17 @@ export class SystemMap {
   private labelChromeForH = 0;
   private labelMaxBoxTopCachedPx = Number.POSITIVE_INFINITY;
   /** The chart's own sheets, measured live every frame they stand open: the
-   *  picked-body card, the Focus picker and the info popover. Each counts as a
-   *  band only while it spans the width, which is the phone form. */
+   *  picked-body card. It counts as a band only while it spans the width,
+   *  which is the phone form. */
   private labelSheetEls: (HTMLElement | null)[] = [];
-  /** The corner panels' screen rects this frame — the desktop console, card
-   *  and popovers. A label whose box lands under one hides: half a name
-   *  sticking out from a panel's edge reads as a sliced fragment, not a
-   *  label. The console's rect is viewport-static and cached with the band;
-   *  the sheets' rects are read live beside their band measurement. */
+  /** The corner panels' screen rects this frame — the control panel (or the
+   *  pill it folds into) and the card. A label whose box lands under one
+   *  hides: half a name sticking out from a panel's edge reads as a sliced
+   *  fragment, not a label. The panel's rect is cached with the band and
+   *  re-read only when the owner says its shape changed; the sheets' rects are
+   *  read live beside their band measurement. */
   private labelObstaclesPx: { left: number; top: number; right: number; bottom: number }[] = [];
-  private labelStaticObstacle: { left: number; top: number; right: number; bottom: number } | null =
-    null;
+  private labelStaticObstacles: { left: number; top: number; right: number; bottom: number }[] = [];
   /** The one drawn ring annulus's screen-space ellipse this frame, for the
    *  labels of the moons that live inside it. Refreshed in renderLabels;
    *  inactive whenever no revealed system draws a ring. */
@@ -1217,6 +1218,36 @@ export class SystemMap {
    *  to ask the camera's own position for it. */
   getCameraDistance(): number {
     return this.camera.position.distanceTo(this.controls.target);
+  }
+
+  /**
+   * How far in the chart is drawn, as a multiple of the framing it would give
+   * you by itself — the number the panel prints beside the zoom pair.
+   *
+   * The reference depends on what owns the camera, because "1×" has to mean
+   * the same thing to a reader in every state. At an overview (and any free
+   * camera) it is the whole-system fit, so a parked chart reads exactly 1.0×.
+   * While a body is being FOLLOWED it is that body's own entry framing — the
+   * distance a focus flight lands at — so following a moon walks the familiar
+   * half-to-thirty range instead of printing six figures. A release flight or
+   * a dive is metered against the system again; the sweep the reader sees is
+   * honest feedback that the camera is on its way out.
+   *
+   * Not to be confused with the private `scaleZoomRatio`, which is the
+   * RECIPROCAL (camera distance ÷ fit) captured across a scale toggle so the
+   * framing survives it. The two answer opposite questions and unifying them
+   * would silently invert one of them.
+   */
+  zoomRatio(): number {
+    const dist = this.getCameraDistance();
+    if (!(dist > 0)) return 1;
+    let reference = fitDistanceAU(this.extentAU, MAP_FOV_DEG, this.camera.aspect);
+    if (mapFocusReleasable(this.cam)) {
+      const name = this.cam.focusName;
+      const framing = name === null ? null : this.revealDistanceFor(name);
+      if (framing !== null && framing > 0) reference = framing;
+    }
+    return reference / dist;
   }
 
   /** Dev forensics: the free overview zoom's whole state — where the camera and
@@ -5465,16 +5496,17 @@ export class SystemMap {
    * construction. Batched here, every read runs against a clean layout before
    * the first write.
    *
-   * The static chrome (the console, the world bar) is cached against the
+   * The static chrome (the control panel, the world bar) is cached against the
    * viewport; openMap drops that cache so a bar that came or went between
-   * sessions is seen. The chart's SHEETS are read live every frame they stand
+   * sessions is seen, and invalidateLabelChrome drops it for the panel's own
+   * shape changes. The chart's SHEETS are read live every frame they stand
    * open — a class flip is a no-layout read, and a card's height changes in
    * place on a repick, so a cache would serve a stale top for exactly the
    * frames that matter. One getBoundingClientRect per frame per open sheet,
    * against the already-clean layout, is the whole cost.
    *
-   * Everything here counts only when it spans the width, the console included:
-   * on a phone it is a bottom strip standing hundreds of px over this band with
+   * Everything here counts only when it spans the width, the panel included:
+   * on a phone it is a bottom sheet standing hundreds of px over this band with
    * no resize to announce it, and on a desktop it is a corner instrument like
    * the card. The band is a full-width model — excluding for a corner would
    * hide every label beside it, not just the ones behind it. "Spans" is the
@@ -5483,9 +5515,9 @@ export class SystemMap {
    * gutters are a bigger share.
    */
   /** Forget the cached static-chrome band; the next label pass re-measures.
-   *  For the owner's console stand-down: the console leaves and returns with
-   *  no viewport change to announce it, and the cache would keep culling
-   *  labels across a strip that is no longer there. */
+   *  The panel changes shape with no viewport change to announce it — a
+   *  stand-down, a collapse, the help grid opening — and the cache would keep
+   *  culling labels across a shape that is no longer there. */
   invalidateLabelChrome(): void {
     this.labelChromeForW = 0;
     this.labelChromeForH = 0;
@@ -5513,22 +5545,25 @@ export class SystemMap {
       let top: number | null = null;
       const bar = measurable(document.getElementById('planetarium-bottom-bar'));
       if (bar) top = bar.top;
-      // The console's shape is decided by the viewport alone, so its span is
-      // as cacheable as the bar's — as a band on a phone, a rect on a desktop.
-      this.labelStaticObstacle = null;
-      const consoleRect = measurable(document.getElementById('map-console'));
-      if (consoleRect) {
-        if (consoleRect.width >= w - 32) {
-          top = top === null ? consoleRect.top : Math.min(top, consoleRect.top);
+      // The panel and the pill it folds into are one instrument in two shapes,
+      // and only one of them is ever on screen. Their rects are cached rather
+      // than read per frame: nothing about them moves on its own, and the
+      // owner invalidates this cache on every edge that changes them.
+      this.labelStaticObstacles.length = 0;
+      for (const id of ['map-panel', 'map-pill']) {
+        const rect = measurable(document.getElementById(id));
+        if (!rect) continue;
+        if (rect.width >= w - 32) {
+          top = top === null ? rect.top : Math.min(top, rect.top);
         } else {
-          this.labelStaticObstacle = asObstacle(consoleRect);
+          this.labelStaticObstacles.push(asObstacle(rect));
         }
       }
       this.labelStaticChromeTopPx = top;
     }
     let top = this.labelStaticChromeTopPx;
     this.labelObstaclesPx.length = 0;
-    if (this.labelStaticObstacle) this.labelObstaclesPx.push(this.labelStaticObstacle);
+    for (const obstacle of this.labelStaticObstacles) this.labelObstaclesPx.push(obstacle);
     for (const el of this.labelSheetEls) {
       if (!el?.classList.contains('visible')) continue;
       const rect = measurable(el);
@@ -5615,8 +5650,7 @@ export class SystemMap {
 
   private ensureLabelContainer(): void {
     if (this.labelSheetEls.length === 0) {
-      this.labelSheetEls = ['map-card', 'map-focus-menu', 'map-info-popover']
-        .map((id) => document.getElementById(id));
+      this.labelSheetEls = ['map-card'].map((id) => document.getElementById(id));
     }
     if (this.labelContainer) return;
     this.labelContainer = document.getElementById('map-labels');

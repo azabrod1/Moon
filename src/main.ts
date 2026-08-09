@@ -644,13 +644,15 @@ function installDevHooks() {
     miniState: () => planetariumMode?.devMiniState() ?? null,
     // Fly to a body and follow it; null flies back out to the overview.
     mapFocus: (name: string | null) => planetariumMode?.devMapFocus(name) ?? false,
-    // The console's rows. mapOverview is the combined release-or-recentre,
-    // which resolves to a 900 ms flight when there is a focus to give back —
-    // poll mapState().camState for the landing. mapFocusMenu opens the PICKER;
-    // mapFocus above is the camera move its rows commit.
+    // The panel's rows. mapOverview is the combined release-or-recentre, which
+    // resolves to a 900 ms flight when there is a focus to give back — poll
+    // mapState().camState for the landing. mapInfo drives the help grid;
+    // mapPanel reads or drives the panel itself ({collapsed, helpOpen}, null
+    // for the defaults) and reports sheetExpanded for the phone layout.
     mapOverview: () => planetariumMode?.devMapOverview() ?? false,
-    mapFocusMenu: (open: boolean) => planetariumMode?.devMapFocusMenu(open) ?? false,
     mapInfo: (open: boolean) => planetariumMode?.devMapInfo(open) ?? false,
+    mapPanel: (partial?: { collapsed?: boolean; helpOpen?: boolean } | null) =>
+      planetariumMode?.devMapPanel(partial) ?? null,
     // Map curve A/B: setMapS picks the asinh curve with that softening scale
     // (AU), setMapGamma the power law with that exponent. Both leave the
     // Compressed/True blend alone and hold the framing across the swap.

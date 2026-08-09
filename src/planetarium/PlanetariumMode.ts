@@ -289,7 +289,6 @@ import { SunLabel } from './ui/SunLabel';
 import { TutorialCard, tutorialCardModel } from './ui/TutorialCard';
 import { SystemMap, type MapTextureSource, type MapOrbitStyleParams } from './map/SystemMap';
 import { MapHUD } from './ui/MapHUD';
-import { MapFocusMenu } from './ui/MapFocusMenu';
 import { buildMapFocusRows } from './map/mapFocusRows';
 import { mapCardActions, mapCardOffersVerb, commitBodyPickOutcome, type MapVerb } from './map/mapLogic';
 import { mapBody, mapBodyRefFor } from './map/mapBodies';
@@ -317,9 +316,11 @@ import { type MapMoonOffsetParams } from './map/mapMoonOffset';
 import { type MapStarParams } from './map/mapStars';
 import {
   MAP_DOUBLE_TAP_MS,
+  formatMapZoomRatio,
   mapCameraOwnsPose,
   mapFocusReleasable,
   mapOverviewAvailable,
+  mapZoomReadoutQuantum,
   type MapZoomAvailability,
 } from './map/mapCamera';
 import { HOVER_RECLAIM_MOVE_PX, resolveMapHover } from './map/mapHover';
@@ -1165,9 +1166,24 @@ export class PlanetariumMode {
     () => this.mapOverviewPressed(),
     () => this.warpToMapEvent(),
   );
-  // The Focus picker. A pick is exactly the double-tap: the card opens on the
-  // body and the camera goes to it.
-  private mapFocusMenu = new MapFocusMenu((name) => this.pickMapFocusRow(name));
+  // Whether the chart's control panel is folded away to its pill (on a phone,
+  // to its own header) right now, and what the next map open should show.
+  // Two fields because they answer different questions: a dismissal folds the
+  // panel away without speaking for the user, and only the collapse control
+  // itself banks a preference. NOT to be confused with mapRestorePanel above,
+  // which is about the OBSERVATORY panel.
+  private mapPanelCollapsed = false;
+  private mapPanelCollapsedPref = false;
+  // Whether the panel's help grid stands open. Reset whenever the panel folds
+  // away or the map closes: a rung of the Esc cascade answers this flag, and it
+  // must never fire for a grid nobody can see.
+  private mapHelpOpen = false;
+  // The (followed body, releasable) pair the find-a-body list was last painted
+  // for, so the per-frame refresh repaints the chip only when it changes.
+  private mapFollowingPainted: string | null = null;
+  // The zoom readout's last written quantum, so the string is rebuilt only when
+  // the printed number changes.
+  private mapZoomReadoutQ = Number.NaN;
   // The catalog name of the body the card is open on, or null. Also the map's
   // "picked" bridge state.
   private mapPicked: NonNullable<LandedTarget> | null = null;
@@ -2271,14 +2287,13 @@ export class PlanetariumMode {
     if (this.starfield) setStarfieldPixelRatio(this.starfield, this.renderer.getPixelRatio());
     if (this.moonDots) this.moonDots.setPixelRatio(this.renderer.getPixelRatio());
     // Match the map camera aspect and its fat-line resolution to the canvas,
-    // and re-dock the card above the (possibly moved) bottom bands. The
-    // console's popovers re-anchor too: a rotation swaps the console between
-    // its corner grid and the bottom strip, and a popover holding its old
-    // `bottom` would land on top of the new shape.
+    // re-cap the control panel and re-dock the card above the (possibly moved)
+    // bottom bands. A rotation swaps the panel between its corner shape and the
+    // phone's bottom sheet, and a cap measured against the old viewport would
+    // leave it standing off the top of the new one.
     this.systemMap?.onResize();
+    this.mapHud.measurePanel();
     this.mapHud.measureCard();
-    this.mapFocusMenu.reanchor();
-    this.mapHud.reanchorInfo();
   }
 
   update(dt: number): void {
@@ -5626,25 +5641,35 @@ export class PlanetariumMode {
       if (this.bottomBar.isStatsOpen()) { this.bottomBar.closeStats(); return; }
       // Map micro-rungs, above the map rung: Esc gives back a standing
       // teleport offer; then Esc mid-dive cancels the dive (map stays open);
-      // then Esc pops whichever of the console's popovers is open; then Esc
-      // dismisses the picked-body card; then Esc releases a focus back to the
-      // overview; then Esc over the map drops back into the ship. Each rung
-      // produces a visible change, in that order. The chip rung asks whether
-      // an offer STANDS, on-screen or not: a chip the camera swung off the
-      // frame keeps its offer, and an Esc that skipped it would let that
-      // stale offer resurface later — the one press this cascade spends
-      // invisibly is cheaper than that. The popovers sit above the
-      // release-swallow rung below, or an Esc with the picker open during a
-      // release flight would be eaten by the flight.
+      // then Esc closes the panel's help grid; then Esc dismisses the
+      // picked-body card; then Esc releases a focus back to the overview; then
+      // Esc folds the panel away; then Esc over the map drops back into the
+      // ship. Each rung produces a visible change, in that order. The chip rung
+      // asks whether an offer STANDS, on-screen or not: a chip the camera swung
+      // off the frame keeps its offer, and an Esc that skipped it would let
+      // that stale offer resurface later — the one press this cascade spends
+      // invisibly is cheaper than that. Help sits above the release-swallow
+      // rung below, or an Esc with the grid open during a release flight would
+      // be eaten by the flight.
+      //
+      // One rung is not in this list and cannot be: a focused search field
+      // takes Esc on its own element, before the window ever hears it. That is
+      // DOM mechanics rather than a rung — the field clears its query, or gives
+      // the keyboard back, and the cascade below resumes from the next press.
       if (this.mapTpPoint) { this.dismissMapTeleportChip(); return; }
       if (this.isMapOpen() && this.mapDiving) { this.cancelMapDive(); return; }
-      if (this.isMapFocusMenuOpen()) { this.closeMapFocusMenu(); return; }
-      if (this.mapHud.isInfoOpen()) { this.closeMapInfo(); return; }
+      if (this.isMapOpen() && this.mapHelpOpen) { this.setMapHelpOpen(false); return; }
       if (this.mapHud.isCardOpen()) { this.dismissMapCard(); return; }
       if (this.isMapOpen() && this.mapFocusActive()) { this.releaseMapFocus(); return; }
       // A release already flying IS the answer to Esc. Swallow the key rather
       // than letting an impatient second press fall through and shut the map.
       if (this.isMapOpen() && this.isMapReleasing()) return;
+      // Esc is a dismissal, not a layout choice: the panel folds away without
+      // banking the preference, so the next map still opens with it standing.
+      if (this.isMapOpen() && !this.mapPanelCollapsed) {
+        this.setMapPanelCollapsed(true, { bank: false });
+        return;
+      }
       if (this.isMapOpen()) { this.closeMap(); return; }
       if (this.surfaceTargetMenu.isOpen()) { this.closeSurfaceTargetMenu(); return; }
       if (this.landedView === 'surface') { this.exitSurfaceView(); return; }
@@ -5680,26 +5705,6 @@ export class PlanetariumMode {
       if (this.isSpaceOnControl(e)) return;
       if (e.key.length === 1 && /[\w ]/.test(e.key)) {
         (document.getElementById('deck-search') as HTMLInputElement | null)?.focus();
-        return;
-      }
-      return;
-    }
-
-    // Focus picker open: the same contract the deck has. Arrows and Enter work
-    // the list without focusing the search first, and every printable key types
-    // into it — M and T included, or T would open the deck (which closes the
-    // whole map underneath) and M could never spell "Mars".
-    if (this.isMapFocusMenuOpen() && !e.metaKey && !e.ctrlKey && !e.altKey) {
-      if (e.key === 'ArrowDown') { e.preventDefault(); this.mapFocusMenu.moveHighlight(1); return; }
-      if (e.key === 'ArrowUp') { e.preventDefault(); this.mapFocusMenu.moveHighlight(-1); return; }
-      if (e.key === 'Enter' && !(e.target as HTMLElement).closest('button')) {
-        e.preventDefault();
-        this.mapFocusMenu.commitHighlight();
-        return;
-      }
-      if (this.isSpaceOnControl(e)) return;
-      if (e.key.length === 1 && /[\w ]/.test(e.key)) {
-        this.mapFocusMenu.focusSearch();
         return;
       }
       return;
@@ -6944,14 +6949,16 @@ export class PlanetariumMode {
 
     this.bottomBar.bind();
     this.mapHud.bind();
-    this.mapFocusMenu.bind();
-    // The console's own rows. The card's and the segment's callbacks arrived
+    // The panel's own rows. The card's and the segment's callbacks arrived
     // with the HUD's constructor; these are assigned, the bottom bar's idiom.
-    this.mapHud.onFocusMenu = () => this.toggleMapFocusMenu();
-    this.mapHud.onInfo = () => this.toggleMapInfo();
-    // The whole layer going down takes the picker with it — one funnel, so no
-    // close path has to remember this on its own.
-    this.mapHud.onHidden = () => this.closeMapFocusMenu();
+    this.mapHud.onHelp = () => this.toggleMapHelp();
+    // The × banks the preference; every other way the panel folds away does
+    // not (Esc is a dismissal, and the phone's card exclusion is a layout
+    // reflex), so only this path passes bank.
+    this.mapHud.onCollapse = () => this.setMapPanelCollapsed(true, { bank: true });
+    this.mapHud.onExpand = () => this.setMapPanelCollapsed(false, { bank: true });
+    this.mapHud.onPickRow = (name) => this.pickMapFocusRow(name);
+    this.mapHud.onReleaseFocus = () => { this.releaseMapFocus(); };
     // One instrument at a time: opening the Stats card tucks the Observatory
     // panel back into its chip, with a brief pulse so the hop reads.
     this.bottomBar.onStatsToggle = (open) => {
@@ -6961,12 +6968,12 @@ export class PlanetariumMode {
       }
       // Same pairing with the map card: opening Stats dismisses it.
       if (open) this.dismissMapCard();
-      this.standMapConsoleDown(open);
+      this.standMapPanelDown(open);
     };
     // Opening the Time panel dismisses the map card (one instrument at a time).
     this.bottomBar.onTimeToggle = (open) => {
       if (open) this.dismissMapCard();
-      this.standMapConsoleDown(open);
+      this.standMapPanelDown(open);
     };
 
     this.sunLabel.attach();
@@ -7536,8 +7543,8 @@ export class PlanetariumMode {
     camState: string;
     flyGoal: string | null;
     focused: string | null;
-    focusMenuOpen: boolean;
-    infoOpen: boolean;
+    panelCollapsed: boolean;
+    helpOpen: boolean;
     diving: boolean;
     diveGapAU: number | null;
     ship: { rotationRad: number; docked: boolean };
@@ -7580,8 +7587,8 @@ export class PlanetariumMode {
       camState: cam.camState,
       flyGoal: cam.flyGoal,
       focused: cam.focusName,
-      focusMenuOpen: this.mapFocusMenu.isOpen(),
-      infoOpen: this.mapHud.isInfoOpen(),
+      panelCollapsed: this.mapPanelCollapsed,
+      helpOpen: this.mapHelpOpen,
       diving: this.mapDiving,
       // Camera-aim-vs-live-dot gap: ~0 once the ease lands proves the dive
       // tracked the moving dot instead of a stale snapshot.
@@ -7742,19 +7749,36 @@ export class PlanetariumMode {
     return this.mapOverviewPressed();
   }
 
-  /** Dev bridge: the Focus PICKER (the list). `mapFocus(name)` is the camera
-   *  move the picker's rows commit. */
-  devMapFocusMenu(open: boolean): boolean {
-    if (open) this.openMapFocusMenu();
-    else this.closeMapFocusMenu();
-    return this.mapFocusMenu.isOpen();
+  /** Dev bridge: the panel's help grid. Kept under its old name — it is the
+   *  same question ("is the map's help showing?") asked of the surface that
+   *  replaced the popover. */
+  devMapInfo(open: boolean): boolean {
+    this.setMapHelpOpen(open);
+    return this.mapHelpOpen;
   }
 
-  /** Dev bridge: the map console's Help popover. */
-  devMapInfo(open: boolean): boolean {
-    if (open) this.openMapInfo();
-    else this.closeMapInfo();
-    return this.mapHud.isInfoOpen();
+  /** Dev bridge: read or drive the control panel. No argument reads it, a
+   *  partial writes only the fields it carries, null puts the defaults back;
+   *  the answer is always the state now in force. `sheetExpanded` is derived —
+   *  at the phone breakpoint an open panel IS the expanded sheet — and is
+   *  read-only for that reason. */
+  devMapPanel(
+    partial?: { collapsed?: boolean; helpOpen?: boolean } | null,
+  ): { collapsed: boolean; helpOpen: boolean; sheetExpanded: boolean } {
+    if (partial === null) {
+      this.setMapHelpOpen(false);
+      this.setMapPanelCollapsed(false, { bank: true });
+    } else if (partial) {
+      if (partial.collapsed !== undefined) {
+        this.setMapPanelCollapsed(partial.collapsed, { bank: true });
+      }
+      if (partial.helpOpen !== undefined) this.setMapHelpOpen(partial.helpOpen);
+    }
+    return {
+      collapsed: this.mapPanelCollapsed,
+      helpOpen: this.mapHelpOpen,
+      sheetExpanded: this.isMapPanelBand() && !this.mapPanelCollapsed,
+    };
   }
 
   /** Open the full-screen system map. The single safe gate for every entry
@@ -7819,6 +7843,21 @@ export class PlanetariumMode {
     this.systemMap.openMap(this.timeState.currentUtcMs);
     this.mapHud.show();
     this.mapHud.render(this.systemMap.isTrueScale());
+    // The panel comes back the way it was left this session; help does not —
+    // it is a thing you open to read once.
+    this.mapHelpOpen = false;
+    this.mapHud.setHelpOpen(false);
+    this.mapPanelCollapsed = this.mapPanelCollapsedPref;
+    this.mapHud.setPanelCollapsed(this.mapPanelCollapsed);
+    // The find-a-body list is the chart's roster gated by the camera's own
+    // accept rule, so every row is a body the pick will actually reach; the
+    // 'here' pill is the landed body and nothing else.
+    this.mapHud.setFocusRows(buildMapFocusRows(
+      (name) => this.systemMap!.acceptsFocus(name),
+      this.landedOn?.name ?? null,
+    ));
+    this.mapFollowingPainted = null;
+    this.mapZoomReadoutQ = Number.NaN;
     // The gestures the buttons cannot show, for the first map of the session.
     this.showMapZoomHint();
     this.updateMapView();
@@ -7851,10 +7890,12 @@ export class PlanetariumMode {
     if (!this.mapCommitting) this.clearDiveFade();
 
     this.systemMap?.close();
-    // Both popovers go with the chart. mapHud.hide() takes the picker too (the
-    // onHidden hook), so landing, takeoff, deactivation, a mission start, M and
-    // Esc are all covered by this one call.
-    this.closeMapFocusMenu();
+    // The help grid goes with the chart: landing, takeoff, deactivation, a
+    // mission start, M and Esc all reach here, so no close path has to
+    // remember it on its own. The collapsed/open preference deliberately does
+    // NOT reset — that is the one thing the session keeps.
+    this.mapHelpOpen = false;
+    this.mapHud.setHelpOpen(false);
     this.mapHud.hide();
     // The zoom pair goes down with the layer, so a held run has nothing left to
     // press against; the hint goes with it whether or not its own clock ran out.
@@ -8013,20 +8054,32 @@ export class PlanetariumMode {
     // counts, or every open would re-teach the same thing.
     this.mapZoomHintSeen = true;
     this.mapZoomHintShown = true;
-    // The block is two lines and grows UPWARD. On a phone the console is a
-    // full-width strip and the band the CSS parks the hint in has room for
-    // one, so dock it above the strip instead — measured, the same width test
-    // the card's dock uses to tell a strip from a corner instrument.
-    const consoleRect = document.getElementById('map-console')?.getBoundingClientRect();
-    el.style.bottom = consoleRect && consoleRect.height > 0
-      && consoleRect.width >= window.innerWidth - 32
-      ? `${Math.round(window.innerHeight - consoleRect.top + 8)}px`
-      : '';
+    this.dockMapZoomHint(el);
     el.classList.add('visible');
     this.mapZoomHintTimer = window.setTimeout(
       () => this.hideMapZoomHint(),
       PlanetariumMode.MAP_ZOOM_HINT_MS,
     );
+  }
+
+  /** Dock the hint clear of the panel. The block is two lines and grows
+   *  UPWARD, and on a phone the panel is a full-width sheet with only one
+   *  line's worth of band beneath it — so the hint sits above the sheet
+   *  instead. Measured, the same width test the card's dock uses to tell a
+   *  band from a corner instrument. */
+  private dockMapZoomHint(el: HTMLElement): void {
+    const rect = document.getElementById('map-panel')?.getBoundingClientRect();
+    el.style.bottom = rect && rect.height > 0 && rect.width >= window.innerWidth - 32
+      ? `${Math.round(window.innerHeight - rect.top + 8)}px`
+      : '';
+  }
+
+  /** The sheet grew or shrank under a hint that measured its dock once, when
+   *  it was shown. */
+  private redockMapZoomHint(): void {
+    if (!this.mapZoomHintShown) return;
+    const el = document.getElementById('map-zoom-hint');
+    if (el) this.dockMapZoomHint(el);
   }
 
   private hideMapZoomHint(): void {
@@ -8060,10 +8113,10 @@ export class PlanetariumMode {
     // painted beneath the taller card. The sweep reads only the clock and its
     // own cursors, so nothing here needs the update to have run.
     this.updateMapEventSearch();
-    // The console's own rows follow the camera state from the map's predicates;
+    // The panel's own rows follow the camera state from the map's predicates;
     // the map has no HUD reference of its own, so the per-frame refresh owns
     // them. Greying a row changes nothing about the chart's geometry — the
-    // console holds its size and place whatever its buttons say.
+    // panel holds its size and place whatever its buttons say.
     const cam = this.systemMap.getCameraState();
     // A running dive owns the camera even when it is the fade-only kind the
     // map's own state knows nothing about, so the mode's flag joins both.
@@ -8119,10 +8172,39 @@ export class PlanetariumMode {
     // The zoom pair follows the camera state from the map's own predicate; the
     // map has no HUD reference of its own, so the per-frame refresh owns it.
     this.refreshMapZoomButtons(this.systemMap);
+    this.refreshMapPanelReadouts();
     // The hint has said its piece once the chart has been zoomed by hand.
     if (this.mapZoomHintShown && this.systemMap.sawZoomGesture()) this.hideMapZoomHint();
     // Advance an in-flight dive / autopilot-close transition.
     if (this.mapDiving) this.advanceMapTransition();
+  }
+
+  /**
+   * The panel's two live readouts, refreshed after the chart has settled this
+   * frame: how far in the camera is, and which row of the find-a-body list is
+   * the one being ridden.
+   *
+   * Both write only on a change. The readout is quantized first so the string
+   * is built only when the printed number moves; the chip's repaint keys on
+   * the pair (followed body, is a release actually on offer) — the chip is the
+   * release control, and one shown during the flight home would offer a
+   * journey already under way.
+   */
+  private refreshMapPanelReadouts(): void {
+    const map = this.systemMap;
+    if (!map) return;
+    const ratio = map.zoomRatio();
+    const q = mapZoomReadoutQuantum(ratio);
+    if (q !== this.mapZoomReadoutQ) {
+      this.mapZoomReadoutQ = q;
+      this.mapHud.setZoomReadout(formatMapZoomRatio(ratio));
+    }
+    const cam = map.getCameraState();
+    const following = mapFocusReleasable(cam) ? cam.focusName : null;
+    if (following !== this.mapFollowingPainted) {
+      this.mapFollowingPainted = following;
+      this.mapHud.setFollowing(following);
+    }
   }
 
   // ── System map: pick → card → commit, and the dive ──────────────────────
@@ -8226,12 +8308,11 @@ export class PlanetariumMode {
     // pointer is not the body that will be there a frame later.
     if (this.mapDiving || this.isMapCameraFlying() || !this.systemMap) return;
     if (!isTap(this.mapPickDownX, this.mapPickDownY, e.clientX, e.clientY)) return;
-    // A tap on the chart is the chart's again: whatever the console had open
+    // A tap on the chart is the chart's again: whatever the panel had open
     // over it steps aside, whether the tap lands on a body or on empty space.
     // A standing teleport offer is one of those things — the chip's own press
     // never reaches the canvas, so a tap out here is the answer "not there".
-    this.closeMapFocusMenu();
-    this.closeMapInfo();
+    this.setMapHelpOpen(false);
     this.dismissMapTeleportChip();
     // A press that landed on the emphasis commits what the emphasis named, with
     // no second look at a chart that has moved since. The declared consequence:
@@ -8403,13 +8484,16 @@ export class PlanetariumMode {
     const target = mapBodyRefFor(name);
     if (!target) return;
     this.mapPicked = target;
-    // One instrument at a time — fold the bottom-bar popovers and the console's
-    // own away. The picker especially: a pick from it opens this card, and on a
-    // phone the two are the same strip of screen.
+    // One instrument at a time — fold the bottom-bar popovers and the panel's
+    // help grid away. On a phone the sheet folds to its header as well: at
+    // 320 px an expanded sheet and this card cannot both be read, and what
+    // gives is the control the user is not looking at.
     this.bottomBar.closeTime();
     this.bottomBar.closeStats();
-    this.closeMapFocusMenu();
-    this.closeMapInfo();
+    this.setMapHelpOpen(false);
+    if (!this.mapPanelCollapsed && this.isMapPanelBand()) {
+      this.setMapPanelCollapsed(true, { bank: false });
+    }
     // A body is a different answer to "where do you want to go": the offer of
     // a bare point steps aside for it.
     this.dismissMapTeleportChip();
@@ -8661,86 +8745,81 @@ export class PlanetariumMode {
     return map.recenterOverview();
   }
 
-  // ── System map: the Focus picker and the info popover ───────────────────
+  // ── System map: the control panel ───────────────────────────────────────
 
-  private isMapFocusMenuOpen(): boolean {
-    return this.mapFocusMenu.isOpen();
-  }
-
-  /** Stats and Time open into the console's own corner, and both sit UNDER the
-   *  map layer. While one of them is up the console steps aside — and its
-   *  popovers, which hang off it, go with it. */
-  private standMapConsoleDown(down: boolean): void {
+  /** Stats and Time open into the panel's own corner, and both sit UNDER the
+   *  map layer. While one of them is up the panel steps aside — and the help
+   *  grid, which is only readable while the panel stands, goes with it. */
+  private standMapPanelDown(down: boolean): void {
     if (!this.isMapOpen()) return;
-    if (down) {
-      this.closeMapFocusMenu();
-      this.closeMapInfo();
-    }
-    this.mapHud.setConsoleStoodDown(down);
-    // The console is label chrome — on a phone it is a full-width strip the
+    if (down) this.setMapHelpOpen(false);
+    this.mapHud.setPanelStoodDown(down);
+    // The panel is label chrome — on a phone it is a full-width sheet the
     // labels dodge — and it just changed with no resize to announce it.
     this.systemMap?.invalidateLabelChrome();
   }
 
+  /** Whether the panel is drawn as a full-width band, which is the phone's
+   *  bottom sheet. The chart's own width test, so the panel, the card's dock
+   *  and the label pass all agree about what counts as a band. */
+  private isMapPanelBand(): boolean {
+    const rect = document.getElementById('map-panel')?.getBoundingClientRect();
+    return !!rect && rect.height > 0 && rect.width >= window.innerWidth - 32;
+  }
+
   /**
-   * Open the Focus picker over the chart. The roster is the MAP's, gated by the
-   * camera's own accept rule, so every row is a body the pick will actually
-   * reach; the 'here' pill is the landed body and nothing else.
+   * Fold the panel away, or bring it back. `bank` decides whether the session
+   * remembers it: only the explicit collapse control speaks for the user, so
+   * an Esc dismissal or the phone's card exclusion leaves the next map open
+   * showing the panel exactly as before.
    */
-  private openMapFocusMenu(): void {
-    const map = this.systemMap;
-    if (!map?.isOpen() || this.mapDiving) return;
-    // One instrument at a time: the picked-body card and the info popover fold
-    // away, and so do the bottom bar's own popovers (the card's rule).
-    this.dismissMapCard();
-    this.closeMapInfo();
-    this.bottomBar.closeTime();
-    this.bottomBar.closeStats();
-    this.mapFocusMenu.open(
-      buildMapFocusRows((name) => map.acceptsFocus(name), this.landedOn?.name ?? null),
-    );
-    this.mapHud.setFocusMenuOpen(true);
+  private setMapPanelCollapsed(collapsed: boolean, opts: { bank: boolean }): void {
+    if (!this.isMapOpen()) return;
+    if (opts.bank) this.mapPanelCollapsedPref = collapsed;
+    if (collapsed === this.mapPanelCollapsed) return;
+    this.mapPanelCollapsed = collapsed;
+    // A folded panel cannot show a help grid, and an Esc rung answering a flag
+    // nobody can see is exactly the stale-offer bug.
+    if (collapsed) this.setMapHelpOpen(false);
+    this.mapHud.setPanelCollapsed(collapsed);
+    // The sheet is a band the teleport chip would float over, and the chip is
+    // an offer about a point the sheet now covers. Desktop keeps its offer —
+    // the panel is a corner instrument there, and the chip has room beside it.
+    if (!collapsed && this.isMapPanelBand()) this.dismissMapTeleportChip();
+    this.redockMapZoomHint();
+    this.systemMap?.invalidateLabelChrome();
   }
 
-  private closeMapFocusMenu(): void {
-    if (!this.mapFocusMenu.isOpen()) return;
-    this.mapFocusMenu.close();
-    this.mapHud.setFocusMenuOpen(false);
+  /** The panel's help grid. Nothing else opens with it — on a phone the card
+   *  and the grid are the same strip of screen. */
+  private setMapHelpOpen(open: boolean): void {
+    if (open) {
+      if (!this.isMapOpen()) return;
+      // A `?` pressed on a folded sheet has to unfold it, or it would set a
+      // flag for a grid the reader cannot see.
+      if (this.mapPanelCollapsed) this.setMapPanelCollapsed(false, { bank: false });
+      this.dismissMapCard();
+      this.bottomBar.closeTime();
+      this.bottomBar.closeStats();
+    } else if (!this.mapHelpOpen) {
+      return;
+    }
+    this.mapHelpOpen = open;
+    this.mapHud.setHelpOpen(open);
+    this.redockMapZoomHint();
+    this.systemMap?.invalidateLabelChrome();
   }
 
-  private toggleMapFocusMenu(): void {
-    if (this.mapFocusMenu.isOpen()) this.closeMapFocusMenu();
-    else this.openMapFocusMenu();
+  private toggleMapHelp(): void {
+    this.setMapHelpOpen(!this.mapHelpOpen);
   }
 
-  /** A row was picked: exactly what a double-tap on the chart does — the card
-   *  opens on that body and the camera flies to it. */
+  /** A find-a-body row was picked: exactly what a double-tap on the chart does
+   *  — the card opens on that body and the camera flies to it. */
   private pickMapFocusRow(name: string): void {
-    this.closeMapFocusMenu();
     if (!this.isMapOpen() || this.mapDiving) return;
     this.openMapCard(name);
     this.focusMapBody(name);
-  }
-
-  private openMapInfo(): void {
-    if (!this.systemMap?.isOpen()) return;
-    // One instrument at a time — the card included: at ≤640px the card and
-    // this popover are full-width sheets in the same place, and the card's
-    // later DOM paints over an info opened under it.
-    this.dismissMapCard();
-    this.closeMapFocusMenu();
-    this.bottomBar.closeTime();
-    this.bottomBar.closeStats();
-    this.mapHud.openInfo();
-  }
-
-  private closeMapInfo(): void {
-    this.mapHud.closeInfo();
-  }
-
-  private toggleMapInfo(): void {
-    if (this.mapHud.isInfoOpen()) this.closeMapInfo();
-    else this.openMapInfo();
   }
 
   /** Whether the camera is already on its way back to the overview. */

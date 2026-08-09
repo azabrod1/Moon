@@ -76,4 +76,24 @@ describe('buildMapFocusRows', () => {
     // sibling ride-along.
     expect(kept).toEqual(['Saturn', 'Titan', 'Uranus', 'Titania']);
   });
+
+  it('quotes a planet\u2019s orbit and says what the Sun is', () => {
+    const rows = buildMapFocusRows(drawEverything, null);
+    const meta = (name: string): string | undefined =>
+      rows.find((r) => r.name === name)?.meta;
+    expect(meta(SUN_DATA.name)).toBe('star');
+    // Catalog semi-major axes, printed with a tenth while it still says
+    // something and without one once the number is two digits wide.
+    expect(meta('Earth')).toBe('1.0 AU');
+    expect(meta('Mercury')).toBe('0.4 AU');
+    expect(meta('Jupiter')).toBe('5.2 AU');
+    expect(meta('Neptune')).toBe('30 AU');
+  });
+
+  it('leaves moons bare', () => {
+    const rows = buildMapFocusRows(drawEverything, null);
+    for (const row of rows) {
+      if (row.parent) expect(row.meta).toBeUndefined();
+    }
+  });
 });

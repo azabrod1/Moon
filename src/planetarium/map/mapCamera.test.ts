@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import {
   apparentDepthAU,
   clampFollowDistanceAU,
+  formatMapZoomRatio,
   followBounds,
   MAP_FOLLOW_MIN_SPREAD,
   mapCameraInitialState,
@@ -17,6 +18,7 @@ import {
   mapOverviewPivotDistanceAU,
   mapWorldPerPxAtUnitDepth,
   mapZoomAvailability,
+  mapZoomReadoutQuantum,
   mapZoomNotchAvailable,
   mapZoomNotchDistanceAU,
   MAP_ZOOM_NOTCH_FACTOR,
@@ -1285,5 +1287,37 @@ describe('the follow ceiling stands still', () => {
   it('keeps the shell wider than its own floor even under a tiny fit', () => {
     const b = boundsAt(TRUE_R, 5.2, 0.05, EXTENT_COMPRESSED, TRUE_R, 1e-9);
     expect(b.maxDist).toBeGreaterThanOrEqual(b.minDist * MAP_FOLLOW_MIN_SPREAD);
+  });
+});
+
+describe('the zoom readout', () => {
+  it('prints a tenth below the whole-number threshold and none above it', () => {
+    expect(formatMapZoomRatio(1)).toBe('1.0×');
+    expect(formatMapZoomRatio(0.5)).toBe('0.5×');
+    expect(formatMapZoomRatio(2.94)).toBe('2.9×');
+    expect(formatMapZoomRatio(3)).toBe('3×');
+    expect(formatMapZoomRatio(12.4)).toBe('12×');
+  });
+
+  it('clamps what it prints, so a degenerate pose never flashes six digits', () => {
+    expect(formatMapZoomRatio(1e9)).toBe('999×');
+    expect(formatMapZoomRatio(0)).toBe('0.1×');
+    expect(formatMapZoomRatio(-4)).toBe('0.1×');
+    expect(formatMapZoomRatio(Number.NaN)).toBe('0.1×');
+  });
+
+  it('gives every printed string its own quantum', () => {
+    // The change detector must never collide across the branch: 2.96 prints
+    // "3.0" and 3.04 prints "3", and a shared quantum would skip that write.
+    expect(mapZoomReadoutQuantum(2.96)).not.toBe(mapZoomReadoutQuantum(3.04));
+    expect(formatMapZoomRatio(2.96)).toBe('3.0×');
+    expect(formatMapZoomRatio(3.04)).toBe('3×');
+  });
+
+  it('holds its quantum while the raw ratio drifts under the printed step', () => {
+    expect(mapZoomReadoutQuantum(1.21)).toBe(mapZoomReadoutQuantum(1.2338));
+    expect(mapZoomReadoutQuantum(1.21)).not.toBe(mapZoomReadoutQuantum(1.27));
+    expect(mapZoomReadoutQuantum(8.1)).toBe(mapZoomReadoutQuantum(8.4));
+    expect(mapZoomReadoutQuantum(8.1)).not.toBe(mapZoomReadoutQuantum(8.7));
   });
 });

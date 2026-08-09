@@ -719,3 +719,40 @@ export function mapFocusLandPulse(tMs: number): number {
   const phase = (tMs - index * cycleMs) / cycleMs;
   return Math.pow(MAP_FOCUS_PULSE_DECAY, index) * Math.sin(Math.PI * phase);
 }
+
+/**
+ * The zoom readout — how far in the chart is drawn, as a multiple of the
+ * framing the camera's own state would give by itself. SystemMap.zoomRatio()
+ * decides which framing that is; these two decide how it reads.
+ *
+ * The printed value is clamped rather than trusted: a camera caught mid-flight
+ * at a degenerate pose can produce anything, and a readout that flashes six
+ * digits for one frame reads as a bug in the chart rather than in the number.
+ *
+ * The quantum exists so the string is built only when the printed number
+ * changes — the raw ratio drifts every frame and the text does not. The two
+ * branches are kept in different signs so a value that rounds to 3 from below
+ * ("3.0") and one that rounds to 3 from above ("3") can never share a quantum
+ * and silently skip the write.
+ */
+const MAP_ZOOM_READOUT_MIN = 0.1;
+const MAP_ZOOM_READOUT_MAX = 999;
+/** At and above this the tenth is noise, so the readout drops it. */
+const MAP_ZOOM_READOUT_WHOLE_AT = 3;
+
+function clampZoomReadout(ratio: number): number {
+  if (!Number.isFinite(ratio)) return MAP_ZOOM_READOUT_MIN;
+  return Math.min(MAP_ZOOM_READOUT_MAX, Math.max(MAP_ZOOM_READOUT_MIN, ratio));
+}
+
+export function mapZoomReadoutQuantum(ratio: number): number {
+  const value = clampZoomReadout(ratio);
+  return value >= MAP_ZOOM_READOUT_WHOLE_AT
+    ? Math.round(value)
+    : -Math.round(value * 10);
+}
+
+export function formatMapZoomRatio(ratio: number): string {
+  const value = clampZoomReadout(ratio);
+  return `${value >= MAP_ZOOM_READOUT_WHOLE_AT ? value.toFixed(0) : value.toFixed(1)}×`;
+}

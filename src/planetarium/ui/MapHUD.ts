@@ -1,43 +1,42 @@
 import type { MapCardAction, MapVerb } from '../map/mapLogic';
 import type { FactRow } from '../map/mapFacts';
 import type { MapEventRowModel } from '../map/mapEvents';
+import { filterDeckRows } from '../deckLogic';
+import type { MapFocusRow } from '../map/mapFocusRows';
 import { makeTiltGlyph } from './mapTiltGlyph';
 
 /**
- * MapHUD — the on-screen controls for the System map: the console (scale
- * segment, zoom pair, Overview, Focus, and the line that explains the
- * chart), the close chip, the info popover, and the picked-body card (tint dot,
- * name, live distance, one-line description, action buttons, the system's next
- * event, facts).
+ * MapHUD — the on-screen controls for the System map: the one glass panel
+ * (help grid, scale segment, zoom pair and readout, Reset view, the
+ * find-a-body list), the pill it folds into, the close chip, and the
+ * picked-body card (tint dot, name, live distance, one-line description,
+ * action buttons, the system's next event, facts).
  *
  * DOM-thin: the markup lives in index.html, this caches the elements and wires
  * their listeners once (the bind()/wired idiom). It owns no map state — it
  * reports intent through the callbacks and reflects state through its setters.
- * The facts arrive as data, already resolved and formatted; this decides
+ * Collapsed-vs-open and help-open are the owner's session state; this paints
+ * them. The facts arrive as data, already resolved and formatted; this decides
  * nothing about them but how they are painted and how much room they get.
+ *
+ * The find-a-body list is built on the deck's row family (`pk-row`, `pk-dot`,
+ * `pk-info`, `pk-tag-here`) with `mfm-*` overrides — the Look-at menu's idiom.
+ * The deck's own row DOM and sticky machinery are not extractable; its pure
+ * search filter is, and that is what the query runs through, so a search here
+ * behaves exactly as a search there does.
  */
 
-/** Sit a map popover directly above the console and cap it at the room left
- *  over. Measured rather than written into the stylesheet: the console's height
- *  is whatever its rows come to, and it changes shape at the phone breakpoint.
- *  Exported because the Focus picker is its own widget and hangs in the same
- *  place. */
-export function anchorAboveMapConsole(el: HTMLElement): void {
-  const consoleEl = document.getElementById('map-console');
-  const rect = consoleEl?.getBoundingClientRect();
-  if (!rect || !(rect.height > 0)) return;
-  const gap = 8;
-  el.style.bottom = `${Math.round(window.innerHeight - rect.top + gap)}px`;
-  // The top chrome is the ceiling, not the viewport: the action cluster sits
-  // ABOVE the map layer and stays clickable over it, so a popover grown into
-  // that corner would put its own search box behind a live button.
+/** The top chrome the panel may not grow into. It is the ceiling rather than
+ *  the viewport: the action cluster sits ABOVE the map layer and stays
+ *  clickable over it, so a panel grown into that corner would put its own
+ *  search box behind a live button. */
+function panelCeilingPx(): number {
   let ceiling = 0;
   for (const id of ['map-close', 'planetarium-actions']) {
     const chrome = document.getElementById(id)?.getBoundingClientRect();
     if (chrome && chrome.height > 0) ceiling = Math.max(ceiling, chrome.bottom);
   }
-  // 12 px of air below it, the same margin the chart's other corners keep.
-  el.style.maxHeight = `${Math.max(0, Math.round(rect.top - gap - ceiling - 12))}px`;
+  return ceiling;
 }
 
 /** The facts viewport is worth having at three rows or more. Below that the
@@ -46,28 +45,53 @@ export function anchorAboveMapConsole(el: HTMLElement): void {
  *  their two gaps, the hairline and its pad. */
 const MIN_FACTS_PX = 66;
 
+/** What the caption under the scale segment says about the chart you are
+ *  looking at. The always-visible teaching line, which is why the help grid
+ *  carries no Scale row. */
+const SCALE_NOTE_COMPRESSED = 'Distances compressed so every body stays visible.';
+const SCALE_NOTE_TRUE = 'Real distances for the clock’s date.';
+
 export class MapHUD {
   private root: HTMLElement | null = null;
-  private consoleEl: HTMLElement | null = null;
+  private panel: HTMLElement | null = null;
+  private pill: HTMLElement | null = null;
+  private helpGrid: HTMLElement | null = null;
+  private helpBtn: HTMLButtonElement | null = null;
+  private collapseBtn: HTMLButtonElement | null = null;
   private segCompressed: HTMLButtonElement | null = null;
   private segTrue: HTMLButtonElement | null = null;
+  private scaleNote: HTMLElement | null = null;
+  private zoomReadout: HTMLElement | null = null;
+  private lastZoomReadout = '';
   private overviewBtn: HTMLButtonElement | null = null;
-  private focusBtn: HTMLButtonElement | null = null;
-  private infoBtn: HTMLButtonElement | null = null;
-  private infoPop: HTMLElement | null = null;
-  private infoBody: HTMLElement | null = null;
   private overviewOn = true;
 
-  /** The console's own buttons, assigned by the owner (the bottom bar's
-   *  idiom). The constructor's callbacks are the card's and the segment's —
-   *  these arrived with the console and are kept apart from them. */
-  onFocusMenu: () => void = () => {};
-  /** The ⓘ line. The owner decides — it folds the other instruments away
-   *  before this one appears. */
-  onInfo: () => void = () => {};
-  /** The map layer is going down: the owner closes whatever else it has open
-   *  over the chart. */
-  onHidden: () => void = () => {};
+  private searchEl: HTMLInputElement | null = null;
+  private listEl: HTMLElement | null = null;
+  private emptyEl: HTMLElement | null = null;
+  /** Every row built for this map session, and the buttons painting them —
+   *  index for index, so the filter's answer maps straight onto the DOM. */
+  private rows: MapFocusRow[] = [];
+  private buttons: HTMLButtonElement[] = [];
+  private highlight = -1;
+  /** The row the camera is riding, and the button carrying the release chip.
+   *  Held so a repaint can take the chip off the old row without a scan. */
+  private followingName: string | null = null;
+  private followingBtn: HTMLButtonElement | null = null;
+  private followingChip: HTMLButtonElement | null = null;
+
+  /** The panel's own rows, assigned by the owner (the bottom bar's idiom).
+   *  The constructor's callbacks are the card's and the segment's — these
+   *  arrived with the panel and are kept apart from them. */
+  onHelp: () => void = () => {};
+  /** The × / chevron: fold the panel away. The owner banks the preference. */
+  onCollapse: () => void = () => {};
+  /** The pill (or a collapsed sheet's header button): bring it back. */
+  onExpand: () => void = () => {};
+  /** A find-a-body row was chosen. */
+  onPickRow: (name: string) => void = () => {};
+  /** The `following` chip on the followed row: give the focus back. */
+  onReleaseFocus: () => void = () => {};
 
   private card: HTMLElement | null = null;
   private cardDot: HTMLElement | null = null;
@@ -101,14 +125,19 @@ export class MapHUD {
   /** Cache elements (every activation) and wire listeners once. */
   bind(): void {
     this.root = document.getElementById('system-map-ui');
-    this.consoleEl = document.getElementById('map-console');
+    this.panel = document.getElementById('map-panel');
+    this.pill = document.getElementById('map-pill');
+    this.helpGrid = document.getElementById('map-help-grid');
+    this.helpBtn = document.getElementById('map-info') as HTMLButtonElement | null;
+    this.collapseBtn = document.getElementById('map-panel-collapse') as HTMLButtonElement | null;
     this.segCompressed = document.getElementById('map-scale-compressed') as HTMLButtonElement | null;
     this.segTrue = document.getElementById('map-scale-true') as HTMLButtonElement | null;
+    this.scaleNote = document.getElementById('map-scale-note');
+    this.zoomReadout = document.getElementById('map-zoom-readout');
     this.overviewBtn = document.getElementById('map-overview') as HTMLButtonElement | null;
-    this.focusBtn = document.getElementById('map-focus') as HTMLButtonElement | null;
-    this.infoBtn = document.getElementById('map-info') as HTMLButtonElement | null;
-    this.infoPop = document.getElementById('map-info-popover');
-    this.infoBody = document.getElementById('map-info-body');
+    this.searchEl = document.getElementById('map-focus-search') as HTMLInputElement | null;
+    this.listEl = document.getElementById('map-focus-list');
+    this.emptyEl = document.getElementById('map-focus-empty');
     this.card = document.getElementById('map-card');
     this.cardDot = document.getElementById('map-card-dot');
     this.cardName = document.getElementById('map-card-name');
@@ -126,11 +155,17 @@ export class MapHUD {
     this.segTrue?.addEventListener('click', () => this.onScale(true));
     document.getElementById('map-close')?.addEventListener('click', () => this.onClose());
     this.overviewBtn?.addEventListener('click', () => this.onOverview());
-    this.focusBtn?.addEventListener('click', () => this.onFocusMenu());
-    this.infoBtn?.addEventListener('click', () => this.onInfo());
-    // The fade follows the scroll — it lifts at the end, or it would slice the
-    // closing line's glyphs with nothing below to promise.
-    this.infoBody?.addEventListener('scroll', () => this.updateInfoFade());
+    this.helpBtn?.addEventListener('click', () => this.onHelp());
+    // One button, two meanings: it folds an open panel away and brings a
+    // collapsed sheet's body back (on a phone the collapsed header keeps this
+    // button, and it is the only way back).
+    this.collapseBtn?.addEventListener('click', () => {
+      if (this.panel?.classList.contains('collapsed')) this.onExpand();
+      else this.onCollapse();
+    });
+    this.pill?.addEventListener('click', () => this.onExpand());
+    this.searchEl?.addEventListener('input', () => this.applyFilter());
+    this.searchEl?.addEventListener('keydown', (e) => this.searchKeydown(e));
     // Delegated so the rebuilt-per-pick buttons need no per-button listeners.
     // Focus and the commit verbs travel on different attributes, so a commit
     // handler can never be reached by a button that isn't one.
@@ -144,85 +179,297 @@ export class MapHUD {
     });
   }
 
-  /** Grey the Overview row when neither of its journeys home is on offer. The
-   *  map itself has no HUD reference, so the per-frame refresh owns this; it
-   *  writes on change. */
+  // ── The panel ──────────────────────────────────────────────────────────
+
+  /**
+   * Fold the panel away, or bring it back.
+   *
+   * The class is all this writes: at the breakpoint the same class leaves the
+   * phone's header standing and takes only the body, so the DOM never has to
+   * know which layout it is in. The pill is offered whenever the panel is
+   * folded and hidden by the phone's own rule — a collapsed sheet's header IS
+   * the pill down there.
+   */
+  setPanelCollapsed(collapsed: boolean): void {
+    this.panel?.classList.toggle('collapsed', collapsed);
+    this.pill?.classList.toggle('visible', collapsed);
+    this.collapseBtn?.setAttribute(
+      'aria-label',
+      collapsed ? 'Open the panel' : 'Collapse the panel',
+    );
+    this.collapseBtn?.setAttribute('title', collapsed ? 'Open' : 'Collapse');
+    this.measurePanel();
+  }
+
+  /** Show or hide the help grid, keeping the `?` lit with it — the button's
+   *  pressed state and the grid are one thing, never two. */
+  setHelpOpen(open: boolean): void {
+    this.helpGrid?.classList.toggle('visible', open);
+    this.helpBtn?.classList.toggle('open', open);
+    this.helpBtn?.setAttribute('aria-expanded', open ? 'true' : 'false');
+    if (!open) this.helpBtn?.blur();
+    this.measurePanel();
+  }
+
+  /**
+   * Cap the panel at the room actually left between where it docks and the top
+   * chrome. Measured rather than written into the stylesheet: the panel's
+   * height is whatever its sections come to, and both ends move — the chart's
+   * chrome changes with the viewport, and the panel changes shape at the phone
+   * breakpoint.
+   *
+   * The dock is bottom-anchored, so its own bottom edge is the same number
+   * whatever the cap does to its height — which is why this can be read
+   * without clearing the cap first.
+   */
+  measurePanel(): void {
+    const panel = this.panel;
+    if (!panel) return;
+    const rect = panel.getBoundingClientRect();
+    if (!(rect.height > 0)) return;
+    // 12 px of air below the top chrome, the same margin the chart's other
+    // corners keep.
+    panel.style.maxHeight = `${Math.max(0, Math.round(rect.bottom - panelCeilingPx() - 12))}px`;
+  }
+
+  /** Stand the panel down while another instrument takes its corner (Stats and
+   *  Time both open into it), and put it back when they close. The pill goes
+   *  with it — the corner is what is being given up, not the panel. */
+  setPanelStoodDown(down: boolean): void {
+    this.panel?.classList.toggle('stood-down', down);
+    this.pill?.classList.toggle('stood-down', down);
+  }
+
+  /** Grey the Reset view row when neither of its journeys home is on offer.
+   *  The map itself has no HUD reference, so the per-frame refresh owns this;
+   *  it writes on change. */
   setOverviewEnabled(enabled: boolean): void {
     if (enabled === this.overviewOn) return;
     this.overviewOn = enabled;
     if (this.overviewBtn) this.overviewBtn.disabled = !enabled;
   }
 
-  /** Light the Focus button while its picker stands open. */
-  setFocusMenuOpen(open: boolean): void {
-    this.focusBtn?.classList.toggle('open', open);
+  /** How far in the camera has come, as the panel prints it. The caller
+   *  quantizes; this writes only on a change. */
+  setZoomReadout(text: string): void {
+    if (text === this.lastZoomReadout) return;
+    this.lastZoomReadout = text;
+    if (this.zoomReadout) this.zoomReadout.textContent = text;
   }
 
-  /** Stand the console down while another instrument takes its corner (Stats
-   *  and Time both open into it), and put it back when they close. */
-  setConsoleStoodDown(down: boolean): void {
-    this.consoleEl?.classList.toggle('stood-down', down);
+  /** Reflect which scale is active on the segmented control, and say what that
+   *  scale means underneath it. */
+  render(trueScale: boolean): void {
+    this.setActive(this.segCompressed, !trueScale);
+    this.setActive(this.segTrue, trueScale);
+    if (this.scaleNote) {
+      this.scaleNote.textContent = trueScale ? SCALE_NOTE_TRUE : SCALE_NOTE_COMPRESSED;
+    }
   }
 
-  isInfoOpen(): boolean {
-    return !!this.infoPop?.classList.contains('visible');
+  // ── Find a body ────────────────────────────────────────────────────────
+
+  /** Rebuild the list. The query starts empty: the list is opened to go
+   *  somewhere, and the last trip's search says nothing about this one. */
+  setFocusRows(rows: MapFocusRow[]): void {
+    if (!this.listEl) return;
+    this.rows = rows;
+    this.buttons = [];
+    this.highlight = -1;
+    this.followingBtn = null;
+    this.followingName = null;
+    this.listEl.textContent = '';
+    for (const row of rows) this.listEl.appendChild(this.buildRow(row));
+    if (this.searchEl) this.searchEl.value = '';
+    this.applyFilter();
+    this.listEl.scrollTop = 0;
+    // The row you are standing on is worth walking in: on the full catalog it
+    // sits below the fold, and a pill nobody can see marks nothing.
+    this.buttons.find((b) => b.classList.contains('here'))
+      ?.scrollIntoView({ block: 'center' });
   }
 
-  openInfo(): void {
-    if (!this.infoPop) return;
-    this.infoPop.classList.add('visible');
-    anchorAboveMapConsole(this.infoPop);
-    // Judge the fade AFTER the cap is applied: asking before it would answer
-    // "fits" every time and the fade would never appear.
-    this.updateInfoFade();
-    this.infoBtn?.classList.add('open');
+  /**
+   * Mark the row the camera is riding, and offer the way off it.
+   *
+   * `name` is null whenever there is nothing to release — including while a
+   * release is already flying, which is why the caller passes the releasable
+   * predicate's answer rather than the focus name. A chip that stood through
+   * the flight would offer a release that has already happened.
+   */
+  setFollowing(name: string | null): void {
+    if (name === this.followingName) return;
+    this.followingName = name;
+    if (this.followingBtn) {
+      this.followingBtn.classList.remove('mfm-followed');
+      this.followingChip?.remove();
+      this.followingBtn = null;
+    }
+    if (name === null) return;
+    const index = this.rows.findIndex((row) => row.name === name);
+    const btn = index >= 0 ? this.buttons[index] : undefined;
+    if (!btn) return;
+    this.followingBtn = btn;
+    btn.classList.add('mfm-followed');
+    btn.appendChild(this.ensureFollowingChip());
   }
 
-  /** The fade marks MORE BELOW, nothing else: it shows only while the body
-   *  overflows AND has somewhere left to scroll. A mask that stayed at the
-   *  end of the scroll would cut the closing sentence's glyphs in half —
-   *  which is exactly how it read on an 800px-tall viewport. */
-  private updateInfoFade(): void {
-    const body = this.infoBody;
-    if (!body) return;
-    const more = body.scrollHeight > body.clientHeight + 1
-      && body.scrollTop + body.clientHeight < body.scrollHeight - 1;
-    body.classList.toggle('scrolls', more);
+  private ensureFollowingChip(): HTMLButtonElement {
+    if (this.followingChip) return this.followingChip;
+    const chip = document.createElement('button');
+    chip.type = 'button';
+    chip.className = 'mfm-following';
+    chip.textContent = 'following';
+    chip.title = 'Stop following';
+    // The chip is a control inside a control: the row flies TO the body, the
+    // chip gives it back, so its click must not also re-commit the row.
+    chip.addEventListener('click', (e) => {
+      e.stopPropagation();
+      this.onReleaseFocus();
+    });
+    this.followingChip = chip;
+    return chip;
   }
 
-  /** Re-seat an open info popover after a viewport change (the picker's rule:
-   *  the console changes shape at the breakpoint under it). The scroll fade is
-   *  re-judged too — the new cap can make a scrolling body fit, or vice versa. */
-  reanchorInfo(): void {
-    if (!this.isInfoOpen() || !this.infoPop) return;
-    anchorAboveMapConsole(this.infoPop);
-    this.updateInfoFade();
+  /**
+   * The search owns the keyboard while it holds focus.
+   *
+   * Every key stops here: the window's own cascade bails on INPUT targets, but
+   * a bail is not the same promise as never being reached, and "Mars" has to
+   * be typeable with M bound to the map. Repeats are dropped for the same
+   * reason the window ladder drops them — a held Esc must not clear the query
+   * and blur the field in one press.
+   */
+  private searchKeydown(e: KeyboardEvent): void {
+    e.stopPropagation();
+    if (e.repeat) return;
+    if (e.key === 'ArrowDown') { e.preventDefault(); this.moveHighlight(1); return; }
+    if (e.key === 'ArrowUp') { e.preventDefault(); this.moveHighlight(-1); return; }
+    if (e.key === 'Enter') { e.preventDefault(); this.commitHighlight(); return; }
+    if (e.key === 'Escape') {
+      e.preventDefault();
+      // A query is what Esc gives back first; an empty field has nothing left
+      // to undo, so the key hands the chart's own cascade back its keyboard.
+      if (this.searchEl?.value) {
+        this.searchEl.value = '';
+        this.applyFilter();
+      } else {
+        this.searchEl?.blur();
+      }
+    }
   }
 
-  /** Closing blurs the button as well: a popover dismissed by Esc must not
-   *  leave the keyboard focus sitting on the control that reopens it. */
-  closeInfo(): void {
-    if (!this.isInfoOpen()) return;
-    this.infoPop?.classList.remove('visible');
-    this.infoBtn?.classList.remove('open');
-    this.infoBtn?.blur();
+  /** Step the highlight over the rows the filter left visible. */
+  private moveHighlight(delta: number): void {
+    const visible = this.visibleIndices();
+    if (visible.length === 0) return;
+    const at = visible.indexOf(this.highlight);
+    const next = at < 0
+      ? (delta > 0 ? visible[0] : visible[visible.length - 1])
+      : visible[(at + delta + visible.length) % visible.length];
+    this.setHighlight(next);
+    this.buttons[next]?.scrollIntoView({ block: 'nearest' });
   }
+
+  /** Enter: commit the highlighted row, or the only one a search has left. */
+  private commitHighlight(): void {
+    const visible = this.visibleIndices();
+    const index = this.highlight >= 0 && visible.includes(this.highlight)
+      ? this.highlight
+      : (visible.length === 1 ? visible[0] : -1);
+    if (index < 0) return;
+    this.onPickRow(this.rows[index].name);
+  }
+
+  private visibleIndices(): number[] {
+    return this.buttons
+      .map((btn, i) => (btn.style.display === 'none' ? -1 : i))
+      .filter((i) => i >= 0);
+  }
+
+  private buildRow(row: MapFocusRow): HTMLButtonElement {
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    // The deck's own two row shapes: a planet is a sticky header its moons
+    // scroll beneath, a moon is indented under it.
+    btn.className = `pk-row mfm-row ${row.parent ? 'pk-moon' : 'pk-planet'}`;
+    const dot = document.createElement('span');
+    dot.className = 'pk-dot';
+    dot.style.background = `#${row.color.toString(16).padStart(6, '0')}`;
+    const info = document.createElement('span');
+    info.className = 'pk-info';
+    const name = document.createElement('b');
+    // Raw catalog names, as the deck's rows carry them: the search matches what
+    // the row says.
+    name.textContent = row.name;
+    info.appendChild(name);
+    if (row.meta) {
+      const meta = document.createElement('small');
+      meta.textContent = row.meta;
+      info.appendChild(meta);
+    }
+    btn.append(dot, info);
+    if (row.here) {
+      const pill = document.createElement('span');
+      pill.className = 'pk-tag-here';
+      // Where you are standing — the deck's word for the same thing.
+      pill.textContent = 'here';
+      btn.classList.add('here', 'mfm-current');
+      btn.appendChild(pill);
+    }
+    btn.addEventListener('click', () => this.onPickRow(row.name));
+    this.buttons.push(btn);
+    return btn;
+  }
+
+  private applyFilter(): void {
+    const query = this.searchEl?.value ?? '';
+    const visible = filterDeckRows(query, this.rows);
+    let any = false;
+    for (let i = 0; i < this.buttons.length; i++) {
+      this.buttons[i].style.display = visible[i] ? '' : 'none';
+      if (visible[i]) any = true;
+    }
+    this.emptyEl?.classList.toggle('visible', !any);
+    const q = query.trim().toLowerCase();
+    if (q) {
+      // Typing is already choosing: highlight the first row the query NAMES —
+      // not a parent riding along on its moon's match — so the Enter that
+      // follows commits what the search found, no arrow press first.
+      let pick = -1;
+      for (let i = 0; i < this.rows.length; i++) {
+        if (visible[i] && this.rows[i].name.toLowerCase().includes(q)) { pick = i; break; }
+      }
+      if (pick < 0) pick = visible.findIndex((v) => v);
+      this.setHighlight(pick);
+    } else if (this.highlight >= 0 && !visible[this.highlight]) {
+      // A highlight the filter has hidden is not a highlight any more.
+      this.setHighlight(-1);
+    }
+  }
+
+  private setHighlight(index: number): void {
+    if (this.highlight >= 0) this.buttons[this.highlight]?.classList.remove('hl');
+    this.highlight = index;
+    if (index >= 0) this.buttons[index]?.classList.add('hl');
+  }
+
+  // ── The layer ──────────────────────────────────────────────────────────
 
   show(): void {
     // Explicit value — the element's CSS default is display:none, so clearing
     // the inline style would hide it, not show it.
     if (this.root) this.root.style.display = 'block';
-    this.setConsoleStoodDown(false);
+    this.setPanelStoodDown(false);
   }
 
   hide(): void {
     if (this.root) this.root.style.display = 'none';
     this.hideCard();
     this.setHoverMeta(null);
-    this.closeInfo();
-    this.setConsoleStoodDown(false);
-    // Whatever else the owner has standing over the chart goes with the layer.
-    this.onHidden();
+    this.setPanelStoodDown(false);
+    // The keyboard must not be left inside a field the chart no longer shows.
+    this.searchEl?.blur();
   }
 
   /** The line about the body under the cursor, or null for nothing hovered.
@@ -236,12 +483,6 @@ export class MapHUD {
     this.lastHoverMeta = text;
     this.hoverMeta.textContent = text ?? '';
     this.hoverMeta.classList.toggle('visible', text !== null);
-  }
-
-  /** Reflect which scale is active on the segmented control. */
-  render(trueScale: boolean): void {
-    this.setActive(this.segCompressed, !trueScale);
-    this.setActive(this.segTrue, trueScale);
   }
 
   isCardOpen(): boolean {
@@ -367,14 +608,15 @@ export class MapHUD {
    * actually left between them and the top chrome — measured, so a narrow
    * phone's stacked controls never collide with it.
    *
-   * The bands are the world bar, plus the console once it spans the width. On a
-   * desktop the console is a corner instrument on the opposite side, and
-   * docking a left-hand card above its top edge would float it hundreds of px
-   * over nothing; on a phone the console is a full-width strip and IS the band.
-   * Same width test the label pass uses, so the two agree about what counts.
+   * The bands are the world bar, plus the panel once it spans the width. On a
+   * desktop the panel is a corner instrument on the opposite side, and docking
+   * a left-hand card above its top edge would float it hundreds of px over
+   * nothing; on a phone the panel is a full-width sheet and IS the band — a
+   * collapsed sheet's header no less than an open one. Same width test the
+   * label pass uses, so the two agree about what counts.
    *
    * "Top chrome" is the close button — the only thing above the chart now that
-   * the Overview control has moved into the console. What gives under the cap
+   * the Overview control has moved into the panel. What gives under the cap
    * is the facts section; if the room left for it will not hold three rows, it
    * comes off entirely and the actions keep the space.
    */
@@ -388,11 +630,11 @@ export class MapHUD {
       // absent rather than as chrome at the top of the viewport.
       return r.height > 0 ? r : null;
     };
-    const consoleRect = rect('map-console');
-    const consoleTop = consoleRect && consoleRect.width >= window.innerWidth - 32
-      ? consoleRect.top
+    const panelRect = rect('map-panel');
+    const panelTop = panelRect && panelRect.width >= window.innerWidth - 32
+      ? panelRect.top
       : Infinity;
-    const bandsTop = Math.min(rect('planetarium-bottom-bar')?.top ?? Infinity, consoleTop);
+    const bandsTop = Math.min(rect('planetarium-bottom-bar')?.top ?? Infinity, panelTop);
     const bottom = Math.round(Number.isFinite(bandsTop) ? window.innerHeight - bandsTop + 12 : 96);
     this.card.style.bottom = `${bottom}px`;
 

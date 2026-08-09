@@ -79,6 +79,7 @@ import {
 } from '../astronomy/shadows';
 import { ShadowVisuals, createShadowVisualsWarmupProbes, type GuideSlotInput } from './world/ShadowVisuals';
 import { OBSERVATORY_JUMP_LEAD_MS, stepperSearchFromUtcMs } from './observatoryTime';
+import { resolveJumpPolicy } from './observatoryJump';
 import { surfacePerfBeginSpan, surfacePerfEndSpan } from './surfacePerf';
 import { findEvent, type EventType } from '../astronomy/ephemeris';
 import { KM_PER_AU } from '../astronomy/constants';
@@ -9304,6 +9305,22 @@ export class PlanetariumMode {
     return null;
   }
 
+  /** Lit fraction below which a disc reads as unlit — the same bucket the
+   *  panel's phase names call "New". */
+  private static readonly PHASE_DARK_LIT_FRACTION = 0.02;
+
+  /** True when the surface view is pointed at the phase hero's own subject —
+   *  the body the no-event headline is describing. */
+  private isPhaseSubjectTracked(info: ObservatorySubjectInfo): boolean {
+    const target = this.surfaceTarget;
+    if (info.kind === 'earth') {
+      return info.subject === 'Moon'
+        ? target.kind === 'moon' && target.moonName === 'Moon'
+        : target.kind === 'parent';
+    }
+    return info.kind === 'moon-phase' && target.kind === 'parent';
+  }
+
   /** 8 Hz surface-HUD text pass (headline, narrative, when-line, FOV, disc note). */
   private renderSurfaceHud() {
     if (!this.landedOn || this.landedView !== 'surface') return;
@@ -9325,6 +9342,17 @@ export class PlanetariumMode {
       const phase = subject ? observatoryPhaseText(now, subject) : null;
       headline = phase?.headline ?? `${this.landedOn.name} sky`;
       subText = phase?.meta ?? '';
+      // A new companion is a real sight the frame cannot show: the disc is up
+      // there with its night side turned to you. Say so, or an empty frame
+      // reads as the body having failed to load.
+      if (
+        subject &&
+        phase &&
+        phase.litFraction < PlanetariumMode.PHASE_DARK_LIT_FRACTION &&
+        this.isPhaseSubjectTracked(subject)
+      ) {
+        subText += ' — its unlit side faces you, so the disc is dark';
+      }
     }
 
     let discNote: string | null = null;
@@ -9600,26 +9628,78 @@ export class PlanetariumMode {
     this.observatoryPanel.setEvents(rows, status, this.timeState.currentUtcMs);
   }
 
-  private jumpToShadowEvent(event: ShadowEvent) {
+  /**
+   * Decide where an event jump watches from — and re-land first when the
+   * policy stages the event's namesake observer. The vantage must change
+   * before the surface target is picked, so both halves of the decision are
+   * settled here and returned together: the view to end in, and the body the
+   * jump moved you to (null = you never left).
+   */
+  private stageJumpVantage(
+    eventParentPlanet: string,
+    isStepper: boolean,
+  ): { view: 'surface' | 'orbit'; relocatedTo: string | null } {
+    const landed = this.surfaceLandedInfo();
+    if (!landed) return { view: 'orbit', relocatedTo: null };
+    const policy = resolveJumpPolicy({
+      eventParentPlanet,
+      landed,
+      isStepper,
+      guidesOn: this.showShadowGuides,
+    });
+    // The tutorial stages its own ground, clock and surface entry, and holds
+    // its Next button on a fixed instant of that staging: a panel jump under
+    // an open card must not flip the ground or the view mode beneath it.
+    const tutorialActive = this.tutorial !== null;
+    const relocate = policy.relocateToParent && !tutorialActive;
+    if (relocate) this.relandInSystem({ type: 'planet', name: eventParentPlanet });
+    // Already on the ground: a jump re-points the sky it is showing and never
+    // drops back to orbit — the guides exception only decides where a jump
+    // from the orbit view lands.
+    const view =
+      this.landedView === 'surface' ? 'surface'
+      : tutorialActive ? 'orbit'
+      : policy.view;
+    return { view, relocatedTo: relocate ? eventParentPlanet : null };
+  }
+
+  /**
+   * Jump to a shadow event: park the clock just before its peak and show the
+   * event. `isStepper` marks the Earth-almanac rows, which are event-TYPE
+   * requests and stage their namesake observer; the upcoming-list rows promise
+   * this event from where you already stand, so they keep the vantage.
+   */
+  private jumpToShadowEvent(event: ShadowEvent, isStepper = false) {
+    // Missions hide the Observatory control and close its panel: a jump
+    // reaching the handler is a click that outlived the panel it came from.
+    if (this.isMissionActive()) return;
     // A jump moves the clock — every ∅ the open picker baked is now wrong.
     this.closeSurfaceTargetMenu();
     // The clock leaps to the event and reframes; reseed the flash baseline so
     // the jump's one-frame visibility step doesn't fire a Sun emergence.
     this.noteSunViewDiscontinuity();
     this.lastObservatoryEvent = event;
+    // One jump source at a time: a full moon and a lunar eclipse coincide by
+    // definition, so a stale phase jump left standing here would frame the
+    // companion while the HUD narrated the eclipse.
+    this.lastPhaseJump = null;
     // Park shortly before the peak with the clock running at 1× real time —
     // the user watches the event happen instead of landing on a frozen peak.
     this.timeState = { ...this.timeState, rate: 1, paused: false };
     this.setCurrentUtcMs(event.peakUtcMs - OBSERVATORY_JUMP_LEAD_MS);
     this.observatoryPanel.flashNowBar();
-    if (this.landedView === 'surface') {
-      // Surface view active: re-point it at the event's observer-level target
-      // instead of orbit-framing (jumps never auto-enter the surface view).
-      // The clock just moved, so refresh the scene graph before the re-entry
-      // fits its FOV off the (otherwise stale) target geometry.
-      this.refreshLandedScene();
-      const landedInfo = this.surfaceLandedInfo();
-      if (landedInfo) this.enterSurfaceView(selectSurfaceTarget(landedInfo, event.spec), 'event');
+    const { view, relocatedTo } = this.stageJumpVantage(event.spec.parentPlanet, isStepper);
+    // The clock — and possibly the ground — just moved, so realign the scene
+    // graph before the entry FOV fit and the orbit framing read the geometry.
+    this.refreshLandedScene();
+    // Built AFTER any re-land: hoisted, it would select the surface target for
+    // the vantage the jump just left.
+    const landedInfo = this.surfaceLandedInfo();
+    if (view === 'surface' && landedInfo) {
+      this.enterSurfaceView(selectSurfaceTarget(landedInfo, event.spec), 'event', {
+        immediate: relocatedTo !== null,
+        suppressHint: true,
+      });
     } else {
       this.frameObservatoryEvent(event.spec);
     }
@@ -9629,14 +9709,31 @@ export class PlanetariumMode {
     this.observatoryPanel.collapseSheetToPeek();
     this.renderObservatoryPanel();
     this.startObservatoryEventSearch();
-    this.notification.show(this.describeShadowEvent(event));
+    // One toast per jump, describing the event from the vantage it ended on.
+    this.notification.show(
+      this.jumpToastPrefix(relocatedTo) + this.describeShadowEvent(event),
+    );
+  }
+
+  /** "Standing on Earth — " when the jump moved you there; '' when it didn't. */
+  private jumpToastPrefix(relocatedTo: string | null): string {
+    return relocatedTo ? `Standing on ${bodyDisplayName(relocatedTo)} — ` : '';
   }
 
   private static shadowSpecsEqual(a: ShadowEventSpec, b: ShadowEventSpec): boolean {
     return a.kind === b.kind && a.parentPlanet === b.parentPlanet && a.moonName === b.moonName;
   }
 
+  /**
+   * The four Earth-almanac stepper rows. They are event-TYPE requests named
+   * for Earth-sky phenomena, so they stage the Earth vantage their names imply
+   * (relocating a player standing on the Moon) and then show the event.
+   */
   private handleObservatoryJump(type: EventType, direction: 1 | -1) {
+    // Stepper clicks defer 10 ms so the pressed pill paints before the search
+    // blocks the thread; a mission can begin in that gap, and it hides the
+    // Observatory control and closes the panel this click came from.
+    if (this.isMissionActive()) return;
     // Same clock-move staleness as the shadow jumps (which close it again).
     this.closeSurfaceTargetMenu();
     // Same clock-leap-and-reframe as the shadow jumps: reseed the flash baseline
@@ -9660,7 +9757,7 @@ export class PlanetariumMode {
         this.notification.show('No event found within the search range');
         return;
       }
-      this.jumpToShadowEvent(event);
+      this.jumpToShadowEvent(event, true);
       return;
     }
 
@@ -9676,17 +9773,27 @@ export class PlanetariumMode {
       return;
     }
     this.lastPhaseJump = { type, utcMs: found.getTime() };
+    // One jump source at a time: a full moon that lands inside a coinciding
+    // lunar eclipse would otherwise leave that eclipse "relevant", and the HUD
+    // would narrate it over a view framed for the phase.
+    this.lastObservatoryEvent = null;
     // Same park-and-watch policy as the shadow jumps.
     this.timeState = { ...this.timeState, rate: 1, paused: false };
     this.setCurrentUtcMs(found.getTime() - OBSERVATORY_JUMP_LEAD_MS);
     this.observatoryPanel.flashNowBar();
-    if (this.landedView === 'surface') {
+    // The phase rows are Earth's almanac — their namesake observer is Earth.
+    const { view, relocatedTo } = this.stageJumpVantage('Earth', true);
+    // Same reason as the shadow jumps: the clock (and possibly the ground)
+    // moved, so realign the scene graph before anything fits a FOV off it.
+    this.refreshLandedScene();
+    const landedInfo = this.surfaceLandedInfo();
+    if (view === 'surface' && landedInfo) {
       // Phase jumps point the surface view at the companion (the Moon you
-      // just made full), never at an event geometry. The clock moved, so
-      // refresh the scene graph before the re-entry fits its FOV.
-      this.refreshLandedScene();
-      const landedInfo = this.surfaceLandedInfo();
-      if (landedInfo) this.enterSurfaceView(selectSurfaceTarget(landedInfo, null), 'companion');
+      // just made full), never at an event geometry.
+      this.enterSurfaceView(selectSurfaceTarget(landedInfo, null), 'companion', {
+        immediate: relocatedTo !== null,
+        suppressHint: true,
+      });
     } else {
       this.frameObservatoryEvent();
     }
@@ -9694,8 +9801,12 @@ export class PlanetariumMode {
     this.observatoryPanel.collapseSheetToPeek();
     this.renderObservatoryPanel();
     this.startObservatoryEventSearch();
-    // Toast leads with the date — after a jump, *when* is the headline.
-    this.notification.show(`${formatUtcLabel(found.getTime())} — ${OBSERVATORY_EVENT_LABELS[type]}`);
+    // Toast leads with the date — after a jump, *when* is the headline (after
+    // the ground, when the jump moved you).
+    this.notification.show(
+      this.jumpToastPrefix(relocatedTo) +
+        `${formatUtcLabel(found.getTime())} — ${OBSERVATORY_EVENT_LABELS[type]}`,
+    );
   }
 
   /**
@@ -9829,13 +9940,18 @@ export class PlanetariumMode {
    * the camera leaves orbit, glides down to a vantage on the landed body's
    * surface, and tracks the target until the user drags. OrbitControls hand
    * the pointer to SurfaceLook until exit. `immediate` snaps the FOV instead of
-   * easing it when already in surface view — used by the vantage swap, where
-   * the subject changes (see the re-point branch).
+   * easing it when already in surface view — used where the body underfoot
+   * changed (see the re-point branch). `suppressHint` is for entries that put
+   * their own message in the notification slot right after (see the hint).
    */
-  enterSurfaceView(target?: SurfaceTarget, entryContext?: SurfaceEntryContext, immediate = false) {
+  enterSurfaceView(
+    target?: SurfaceTarget,
+    entryContext?: SurfaceEntryContext,
+    opts?: { immediate?: boolean; suppressHint?: boolean },
+  ) {
     const perfSpan = import.meta.env.DEV ? surfacePerfBeginSpan('enterSurfaceView') : null;
     try {
-      this.enterSurfaceViewImpl(target, entryContext, immediate);
+      this.enterSurfaceViewImpl(target, entryContext, opts);
     } finally {
       if (import.meta.env.DEV) {
         surfacePerfEndSpan(perfSpan, {
@@ -9849,7 +9965,7 @@ export class PlanetariumMode {
   private enterSurfaceViewImpl(
     target?: SurfaceTarget,
     entryContext?: SurfaceEntryContext,
-    immediate = false,
+    opts?: { immediate?: boolean; suppressHint?: boolean },
   ) {
     const landedInfo = this.surfaceLandedInfo();
     if (!landedInfo) return;
@@ -9891,8 +10007,8 @@ export class PlanetariumMode {
     );
     this.surfaceFovDeg = entryFov;
     if (this.landedView === 'surface') {
-      if (immediate) {
-        // Vantage swap: the subject itself changed, so easing the FOV would
+      if (opts?.immediate) {
+        // The ground under the observer changed, so easing the FOV would
         // show the new body at the old body's zoom for ~½s — a jarring flash
         // (swap to Earth briefly fills the frame; swap to the Moon opens as a
         // speck and "grows in"), which reads as the swap lagging or not firing.
@@ -9929,10 +10045,11 @@ export class PlanetariumMode {
     this.controls.enabled = false;
     this.surfaceLook.attach();
     this.setSurfaceLabelContainersHidden(true);
-    // One-time controls hint on first-ever surface entry. Tutorial entries skip
-    // it entirely: the banner is muted then anyway, and showing it would
-    // consume the seen-flag without the user ever reading the hint.
-    if (!this.tutorial && !this.store.hasSeenSurfaceHint()) {
+    // One-time controls hint on first-ever surface entry. Tutorial and event-
+    // jump entries skip it entirely: both put their own message in the single
+    // notification slot immediately after, so showing it would consume the
+    // seen-flag without the user ever reading the hint.
+    if (!this.tutorial && !opts?.suppressHint && !this.store.hasSeenSurfaceHint()) {
       this.store.markSurfaceHintSeen();
       this.notification.show('Drag to look around · scroll or pinch to zoom');
     }
@@ -10783,6 +10900,42 @@ export class PlanetariumMode {
   }
 
   /**
+   * Re-land on another body of the same system in place — no departure, no
+   * arrival ceremony, no toast. Shared by the vantage swap and the event
+   * jumps that stage their namesake observer, so the invariants exist once.
+   * Returns whether the surface view was active on entry: the caller owns the
+   * re-entry (swap and jump point the new sky at different targets), and it
+   * must pass `immediate` so the fitted FOV snaps — the subject changed.
+   *
+   * The pair-moon memory is kept on purpose: after a moon → parent re-land the
+   * orbit-details subject stays the moon you left (the better vantage on the
+   * whole ellipse), and a generic parent has no one-tap swap back.
+   */
+  private relandInSystem(target: NonNullable<LandedTarget>): boolean {
+    const previous = this.landedOn;
+    const wasSurface = this.landedView === 'surface';
+    if (previous?.type === 'moon' && target.type === 'planet') {
+      this.orbitPairMoon = { moonName: previous.name, parentName: previous.parentPlanet };
+    }
+    this.applyLandedTarget(target, true);
+    // applyLandedTarget parked the player on the new body, but the scene graph
+    // still reflects the old vantage until the next frame — and the surface
+    // re-entry reads it synchronously to fit the FOV. Refresh it now.
+    this.refreshLandedScene();
+    if (wasSurface) {
+      // applyLandedTarget re-enabled OrbitControls and reset the camera for
+      // orbit view — re-assert the surface invariants, or the ground gets dual
+      // camera control (OrbitControls live under SurfaceLook). Its fresh orbit
+      // camera position becomes the exit restore point for the *new* body (the
+      // old one was scaled to the previous body's radius).
+      this.preSurfaceCameraPos.copy(this.camera.position);
+      this.preSurfaceAutoRotate = this.controls.autoRotate;
+      this.controls.enabled = false;
+    }
+    return wasSurface;
+  }
+
+  /**
    * Vantage swap: re-land on the companion body (Moon ↔ Earth, moon ↔ parent)
    * in place — no departure, no toast ceremony. Same system, so moon
    * positions and the upcoming-events search stay valid. If the surface view
@@ -10796,26 +10949,8 @@ export class PlanetariumMode {
     const companion = this.swapCompanionTarget();
     if (!companion || !this.landedOn) return;
     const previous = this.landedOn;
-    const wasSurface = this.landedView === 'surface';
-    // Remember the pair moon across a moon→parent swap: the orbit-details
-    // subject survives standing on the parent (the better vantage on the
-    // whole ellipse — and there is no one-tap swap back from a generic parent).
-    if (previous.type === 'moon' && companion.type === 'planet') {
-      this.orbitPairMoon = { moonName: previous.name, parentName: previous.parentPlanet };
-    }
-    this.applyLandedTarget(companion, true);
-    // applyLandedTarget parked the player on the companion, but the scene graph
-    // still reflects the old vantage until the next frame — and the surface
-    // re-entry below reads it synchronously to fit the FOV. Refresh it now.
-    this.refreshLandedScene();
+    const wasSurface = this.relandInSystem(companion);
     if (wasSurface) {
-      // applyLandedTarget re-enabled OrbitControls and reset the camera for
-      // orbit view — re-assert the surface invariants. Its fresh orbit camera
-      // position becomes the exit restore point for the *new* body (the old
-      // one was scaled to the previous body's radius).
-      this.preSurfaceCameraPos.copy(this.camera.position);
-      this.preSurfaceAutoRotate = this.controls.autoRotate;
-      this.controls.enabled = false;
       // No-arg re-derives from the relevant event (landedOn just changed —
       // the same event reads differently from the companion: a transit seen
       // from the parent is a solar eclipse, from the moon it's your own
@@ -10828,7 +10963,8 @@ export class PlanetariumMode {
             ? { kind: 'moon', moonName: previous.name }
             : { kind: 'parent' },
         liveSwapEvent ? 'event' : 'companion',
-        true, // snap the FOV — the subject changed, an ease would flash/lag
+        // Snap the FOV — the subject changed, an ease would flash/lag.
+        { immediate: true },
       );
     }
     this.notification.show(`Standing on ${bodyDisplayName(companion.name)}`);

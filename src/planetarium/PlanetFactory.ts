@@ -38,12 +38,71 @@ type TextureLoad = (
   onError: (err: unknown) => void,
 ) => void;
 
+/**
+ * Whether this platform can bake the vertical flip into `createImageBitmap`.
+ * Decided by observation, not feature sniffing: a 1x2 white-over-black bitmap
+ * is created with `imageOrientation: 'flipY'` and read back — only an actually
+ * inverted pixel counts as support. On platforms that ignore the option (or
+ * lack the API) the check fails closed to the HTMLImageElement path, whose
+ * worst case is today's slower upload, never a flipped map. Probed lazily on
+ * the first tier fetch: module load must stay DOM-free for the tests.
+ */
+let bitmapFlipProbe: Promise<boolean> | null = null;
+function bitmapUploadUsable(): Promise<boolean> {
+  bitmapFlipProbe ??= (async () => {
+    try {
+      if (typeof createImageBitmap !== 'function') return false;
+      const sample = new ImageData(1, 2);
+      sample.data.set([255, 255, 255, 255, 0, 0, 0, 255]);
+      const bitmap = await createImageBitmap(sample, { imageOrientation: 'flipY' });
+      const canvas = document.createElement('canvas');
+      canvas.width = 1;
+      canvas.height = 2;
+      const ctx = canvas.getContext('2d');
+      if (!ctx) return false;
+      ctx.drawImage(bitmap, 0, 0);
+      const topPixel = ctx.getImageData(0, 0, 1, 1).data;
+      bitmap.close();
+      return topPixel[0] < 128; // black on top: the flip really happened
+    } catch {
+      return false;
+    }
+  })();
+  return bitmapFlipProbe;
+}
+
+/**
+ * Fetch a tier map as an ImageBitmap with the flip baked in. Three.js cannot
+ * flip an ImageBitmap at upload (flipY is ignored for them), which is exactly
+ * the point: the HTMLImageElement path pays a CPU repack of the full decoded
+ * image INSIDE texSubImage2D to honour flipY — ~650ms of frozen main thread
+ * when the 8K Moon lands mid-session. A pre-flipped bitmap uploads without
+ * that pass, and its decode already happened off this thread.
+ */
+async function loadTierBitmap(url: string): Promise<THREE.Texture> {
+  const response = await fetch(url);
+  if (!response.ok) throw new Error(`HTTP ${response.status} for ${url}`);
+  const blob = await response.blob();
+  const bitmap = await createImageBitmap(blob, {
+    imageOrientation: 'flipY',
+    premultiplyAlpha: 'none',
+  });
+  const tex = new THREE.Texture(bitmap);
+  tex.flipY = false; // baked into the bitmap above
+  tex.needsUpdate = true;
+  return tex;
+}
+
 // A colour-tier fetch goes through this indirection so the completion,
 // staleness and failure paths that decide what reaches the GPU can be
 // exercised without a GL context or a network — the same injected-seam pattern
 // the texture warmer uses for its upload call. Nothing in the app rebinds it.
-let loadUpgradeTexture: TextureLoad = (url, onLoad, onError) =>
-  textureLoader.load(url, onLoad, undefined, onError);
+let loadUpgradeTexture: TextureLoad = (url, onLoad, onError) => {
+  bitmapUploadUsable().then((usable) => {
+    if (usable) loadTierBitmap(url).then(onLoad, onError);
+    else textureLoader.load(url, onLoad, undefined, onError);
+  });
+};
 
 /** Swap the tier fetch for a stub. Returns the previous one, to restore. */
 export function setUpgradeTextureLoader(load: TextureLoad): TextureLoad {

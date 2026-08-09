@@ -54,6 +54,14 @@ export interface MoonLabelPlacementParams {
    *  are estimated rather than measured; reading a real one would force a
    *  layout every frame. */
   labelHeightPx: number;
+  /** Clearance (px) between a slid anchor and the limb it slid past, so the
+   *  name reads beside the moon rather than touching it. */
+  slidePadPx: number;
+  /** How far past the disc's centre line the anchor must travel before the
+   *  slide changes sides (px). A slide is a whole chord wide, so a label that
+   *  chose its side on the sign of a near-zero offset would teleport across the
+   *  moon on a pixel of drift. */
+  slideSideDeadBandPx: number;
 }
 
 export const MOON_LABEL_PLACEMENT_PARAMS: MoonLabelPlacementParams = {
@@ -62,6 +70,8 @@ export const MOON_LABEL_PLACEMENT_PARAMS: MoonLabelPlacementParams = {
   incumbentEvictRatio: 1.3,
   leaveInsetPx: 4,
   labelHeightPx: 18,
+  slidePadPx: 4,
+  slideSideDeadBandPx: 8,
 };
 
 /**
@@ -84,6 +94,91 @@ export interface MoonLabelCandidate {
   placed: boolean;
 }
 
+/** Where an anchor ended up after clearing the disc, and which way it went:
+ *  −1 or +1 along the free axis, 0 when it never had to move. */
+export interface AnchorSlide {
+  x: number;
+  y: number;
+  side: number;
+}
+
+/**
+ * Slide a margin-clamped label anchor along the margin it is pinned to until it
+ * clears the moon's own disc, writing the result into `out`. Returns false when
+ * nothing on that edge clears — the caller then hides the label.
+ *
+ * A screen-filling moon has no "just above the limb" left on screen: the clamp
+ * pushes the anchor back down onto the disc face, where the name reads as
+ * graffiti on the moon. The anchor rides one margin line, so the fix is
+ * closed-form — the perpendicular distance from the disc centre to that line
+ * fixes the half-chord, and the first clear point is the chord end plus a pad.
+ *
+ * The side is sticky (`prevSide`), because a slide is a whole chord wide: a
+ * label choosing its side on the sign of a near-zero offset would jump the width
+ * of the moon whenever the anchor breathed across the centre line. The opposite
+ * side is tried only when the preferred one runs off the margin box.
+ *
+ * Hides rather than slides when the anchor is pinned in a corner (both margins
+ * spoken for, no free axis), when neither side of the chord fits inside the
+ * box, or when the slide would carry the name more than a disc radius plus its
+ * own half-width from where it started.
+ */
+export function clampAnchorClearOfDisc(
+  anchorX: number,
+  anchorY: number,
+  clampedX: boolean,
+  clampedY: boolean,
+  discX: number,
+  discY: number,
+  discRadiusPx: number,
+  halfW: number,
+  minX: number,
+  maxX: number,
+  minY: number,
+  maxY: number,
+  prevSide: number,
+  out: AnchorSlide,
+  params: MoonLabelPlacementParams = MOON_LABEL_PLACEMENT_PARAMS,
+): boolean {
+  out.x = anchorX;
+  out.y = anchorY;
+  out.side = 0;
+  const dx = anchorX - discX;
+  const dy = anchorY - discY;
+  const r = discRadiusPx;
+  if (dx * dx + dy * dy >= r * r) return true;
+  // Only a clamped anchor can be inside: unclamped it sits exactly on the limb,
+  // where this distance test would be at the mercy of float rounding.
+  if (!clampedX && !clampedY) return true;
+  // Pinned in a corner: both margins are spoken for, so there is no free axis
+  // left to slide along.
+  if (clampedX && clampedY) return false;
+
+  const alongIsX = clampedY;
+  const perp = alongIsX ? dy : dx;
+  const along = alongIsX ? anchorX : anchorY;
+  const foot = alongIsX ? discX : discY;
+  const lo = alongIsX ? minX : minY;
+  const hi = alongIsX ? maxX : maxY;
+  const reach = Math.sqrt(Math.max(r * r - perp * perp, 0)) + params.slidePadPx;
+  const offset = along - foot;
+  let side = prevSide === 0 || Math.abs(offset) > params.slideSideDeadBandPx
+    ? (offset >= 0 ? 1 : -1)
+    : prevSide;
+
+  const maxSlide = r + halfW;
+  let target = foot + side * reach;
+  if (target < lo || target > hi || Math.abs(target - along) > maxSlide) {
+    side = -side;
+    target = foot + side * reach;
+    if (target < lo || target > hi || Math.abs(target - along) > maxSlide) return false;
+  }
+  out.side = side;
+  if (alongIsX) out.x = target;
+  else out.y = target;
+  return true;
+}
+
 /**
  * Rank within a tier: apparent footprint, with an incumbent's own bid inflated
  * by the eviction ratio. Expressing the defence as a scale on the incumbent's
@@ -97,6 +192,14 @@ function rankPriority(
   params: MoonLabelPlacementParams,
 ): number {
   return prevPlaced.has(c.name) ? c.priorityPx * params.incumbentEvictRatio : c.priorityPx;
+}
+
+/** The nav target and the hover reveal are the two labels the player asked for
+ *  by hand. When they land on the same pixels both still draw: a hover that
+ *  renders nothing reads as broken, and the moon you are flying at must never
+ *  vanish, so the overlap is the lesser evil. */
+function bothAlwaysDraw(a: MoonLabelCandidate, b: MoonLabelCandidate): boolean {
+  return (a.isTarget && b.isRevealed) || (a.isRevealed && b.isTarget);
 }
 
 /** Whether two candidate rects overlap. `settled` picks the smaller leave rect,
@@ -117,11 +220,12 @@ function rectsCollide(
  * Run the de-overlap contest over `candidates`, marking `placed` on each. Sorts
  * the array in place (stable, so equal bids keep catalog order).
  *
- * The revealed moon sorts first so it always wins its contest, then the nav
- * target (a sibling's label can never suppress the moon you are flying at),
- * then visible labels outrank edge-clamped ones (an off-screen moon pinned to
- * the margin must not suppress a genuinely visible neighbour), then rank by
- * apparent footprint with the incumbent's defence folded in. Incumbency lives
+ * The nav target sorts first: aiming outranks pointing, because a reveal is a
+ * passing hover while the target is a commitment the player made. Then the
+ * revealed moon, then visible labels outrank edge-clamped ones (an off-screen
+ * moon pinned to the margin must not suppress a genuinely visible neighbour),
+ * then rank by apparent footprint with the incumbent's defence folded in. Those
+ * top two never suppress EACH OTHER — see bothAlwaysDraw. Incumbency lives
  * strictly inside the last term: a moon that gains a tier this frame takes the
  * slot outright, since a tier means the player asked for that label.
  *
@@ -135,8 +239,8 @@ export function placeMoonLabels(
 ): void {
   candidates.sort(
     (a, b) =>
-      Number(b.isRevealed) - Number(a.isRevealed) ||
       Number(b.isTarget) - Number(a.isTarget) ||
+      Number(b.isRevealed) - Number(a.isRevealed) ||
       Number(b.onScreen) - Number(a.onScreen) ||
       rankPriority(b, prevPlaced, params) - rankPriority(a, prevPlaced, params),
   );
@@ -149,6 +253,7 @@ export function placeMoonLabels(
     let collides = false;
     for (let j = 0; j < placedCount; j++) {
       const p = candidates[j];
+      if (bothAlwaysDraw(c, p)) continue;
       if (rectsCollide(c, p, cSettled && prevPlaced.has(p.name), params)) {
         collides = true;
         break;

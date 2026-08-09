@@ -1,7 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import {
   MOON_LABEL_PLACEMENT_PARAMS,
+  clampAnchorClearOfDisc,
   placeMoonLabels,
+  type AnchorSlide,
   type MoonLabelCandidate,
 } from './moonLabelPlacement';
 
@@ -89,8 +91,8 @@ describe('moonLabelPlacement — the greedy contest', () => {
 
 describe('moonLabelPlacement — a dark moon keeps its rank', () => {
   it('sinks a candidate whose priority collapsed with its dot', () => {
-    // What the strobe looked like: an eclipsed moon's priority falls with its
-    // alpha, so it loses a contest it was winning a frame earlier.
+    // Rank follows the bid, and an eclipsed moon's alpha collapses: bidding it
+    // loses a contest the same moon's full footprint wins.
     expect(run([
       cand('Metis', { priorityPx: 0 }),
       cand('Adrastea', { priorityPx: 2 }),
@@ -104,6 +106,31 @@ describe('moonLabelPlacement — a dark moon keeps its rank', () => {
       cand('Metis', { priorityPx: 6, isUnlit: true }),
       cand('Adrastea', { priorityPx: 2 }),
     ])).toEqual(['Metis']);
+  });
+});
+
+describe('moonLabelPlacement — the target and the reveal', () => {
+  it('sorts the nav target above the hover reveal', () => {
+    const cs = [cand('Io', { isRevealed: true }), cand('Metis', { isTarget: true })];
+    placeMoonLabels(cs, NONE);
+    expect(cs[0].name).toBe('Metis');
+  });
+
+  it('draws both when they land on the same pixels', () => {
+    // A hover that renders nothing reads as broken, and the moon you are flying
+    // at must never vanish — the overlap is the lesser evil.
+    expect(run([
+      cand('Io', { sx: 0, isTarget: true }),
+      cand('Metis', { sx: 5, isRevealed: true }),
+    ])).toEqual(['Io', 'Metis']);
+  });
+
+  it('still suppresses an ordinary label under either of them', () => {
+    expect(run([
+      cand('Io', { sx: 0, isTarget: true }),
+      cand('Metis', { sx: 5, isRevealed: true }),
+      cand('Thebe', { sx: 10, priorityPx: 1000 }),
+    ])).toEqual(['Io', 'Metis']);
   });
 });
 
@@ -180,6 +207,109 @@ describe('moonLabelPlacement — incumbency', () => {
       held,
       { ...P, incumbentEvictRatio: 1 },
     )).toEqual(['Io']);
+  });
+});
+
+describe('moonLabelPlacement — sliding an anchor clear of its own disc', () => {
+  // A 1000x600 viewport with the usual 30 px label margin.
+  const MIN_X = 30;
+  const MAX_X = 970;
+  const MIN_Y = 30;
+  const MAX_Y = 570;
+  const HALF_W = 20;
+  const out: AnchorSlide = { x: 0, y: 0, side: 0 };
+  /** Anchor clamped to the top margin, disc centre just below it. */
+  const slideTop = (
+    over: Partial<{ anchorX: number; discX: number; discY: number; r: number; halfW: number; prevSide: number }> = {},
+  ) => {
+    const discX = over.discX ?? 200;
+    return {
+      ok: clampAnchorClearOfDisc(
+        over.anchorX ?? discX, MIN_Y, false, true,
+        discX, over.discY ?? 60, over.r ?? 100, over.halfW ?? HALF_W,
+        MIN_X, MAX_X, MIN_Y, MAX_Y,
+        over.prevSide ?? 0, out,
+      ),
+      out,
+    };
+  };
+
+  it('leaves an anchor that already clears the limb exactly where it was', () => {
+    const ok = clampAnchorClearOfDisc(
+      500, MIN_Y, false, true, 500, 400, 100, HALF_W,
+      MIN_X, MAX_X, MIN_Y, MAX_Y, 0, out,
+    );
+    expect(ok).toBe(true);
+    expect(out.x).toBe(500);
+    expect(out.y).toBe(MIN_Y);
+    expect(out.side).toBe(0);
+  });
+
+  it('slides along the clamped edge to the chord end plus a pad', () => {
+    const { ok } = slideTop();
+    // Perpendicular distance 30 from a radius-100 disc: the chord reaches
+    // sqrt(100² − 30²) either way from the centre column.
+    const expected = 200 + Math.sqrt(100 * 100 - 30 * 30) + P.slidePadPx;
+    expect(ok).toBe(true);
+    expect(out.x).toBeCloseTo(expected, 6);
+    expect(out.y).toBe(MIN_Y);
+    expect(out.side).toBe(1);
+  });
+
+  it('hides rather than sliding when the anchor is pinned in a corner', () => {
+    const ok = clampAnchorClearOfDisc(
+      MIN_X, MIN_Y, true, true, 60, 60, 100, HALF_W,
+      MIN_X, MAX_X, MIN_Y, MAX_Y, 0, out,
+    );
+    expect(ok).toBe(false);
+  });
+
+  it('hides when no point on the edge clears the disc', () => {
+    // A disc wider than the whole margin box: both chord ends are off it.
+    const { ok } = slideTop({ discX: 500, r: 900 });
+    expect(ok).toBe(false);
+  });
+
+  it('hides when clearing would carry the name too far from where it sat', () => {
+    // A hair-thin label: the cap is radius + half-width, and the chord end of a
+    // dead-centre crossing is a full radius plus the pad.
+    const { ok } = slideTop({ discY: MIN_Y, halfW: 1 });
+    expect(ok).toBe(false);
+  });
+
+  it('holds the side it left on rather than teleporting across the chord', () => {
+    const { ok } = slideTop({ prevSide: -1 });
+    const expected = 200 - (Math.sqrt(100 * 100 - 30 * 30) + P.slidePadPx);
+    expect(ok).toBe(true);
+    expect(out.x).toBeCloseTo(expected, 6);
+    expect(out.side).toBe(-1);
+  });
+
+  it('keeps the held side through drift inside the dead band, and drops it past', () => {
+    const inside = P.slideSideDeadBandPx - 1;
+    expect(slideTop({ anchorX: 200 + inside, prevSide: -1 }).out.side).toBe(-1);
+    const past = P.slideSideDeadBandPx + 1;
+    expect(slideTop({ anchorX: 200 + past, prevSide: -1 }).out.side).toBe(1);
+  });
+
+  it('takes the other side when the held one runs off the margin box', () => {
+    // Disc hard against the right margin: sliding right would leave the screen.
+    const { ok } = slideTop({ discX: MAX_X - 20, prevSide: 1 });
+    expect(ok).toBe(true);
+    expect(out.side).toBe(-1);
+    expect(out.x).toBeGreaterThanOrEqual(MIN_X);
+    expect(out.x).toBeLessThan(MAX_X - 20);
+  });
+
+  it('slides along the vertical margin when that is the clamped edge', () => {
+    const ok = clampAnchorClearOfDisc(
+      MIN_X, 300, true, false, 60, 300, 100, HALF_W,
+      MIN_X, MAX_X, MIN_Y, MAX_Y, -1, out,
+    );
+    expect(ok).toBe(true);
+    expect(out.x).toBe(MIN_X);
+    expect(out.y).toBeCloseTo(300 - (Math.sqrt(100 * 100 - 30 * 30) + P.slidePadPx), 6);
+    expect(out.side).toBe(-1);
   });
 });
 

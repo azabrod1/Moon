@@ -104,7 +104,9 @@ import {
   LABEL_DOT_MIN_ALPHA,
   LABEL_READABLE_RADIUS_PX,
   MOON_LABEL_PLACEMENT_PARAMS,
+  clampAnchorClearOfDisc,
   placeMoonLabels,
+  type AnchorSlide,
   type MoonLabelCandidate,
   type MoonLabelPlacementParams,
 } from './moonLabelPlacement';
@@ -1009,6 +1011,12 @@ export class PlanetariumMode {
    *  sky stops being an argument about this one — see clearMoonLabelIncumbents. */
   private moonLabelIncumbents = new Set<string>();
   private moonLabelIncumbentsBuffer = new Set<string>();
+  /** Which way each label last slid to clear its own moon's disc. Same lifecycle
+   *  as the incumbents: after a scene jump the side a name held is about a moon
+   *  that is no longer there. */
+  private moonLabelSlideSides = new Map<string, number>();
+  /** Scratch for one anchor slide — the pass reads it out before the next call. */
+  private moonLabelSlide: AnchorSlide = { x: 0, y: 0, side: 0 };
   private resumePrompt = new PlanetariumResumePrompt();
   private helpModal = new PlanetariumHelpModal();
   private menuPanel = new PlanetariumMenuPanel();
@@ -3931,19 +3939,38 @@ export class PlanetariumMode {
                          sy >= margin && sy <= canvasH - margin;
         sx = Math.max(margin, Math.min(canvasW - margin, sx));
         sy = Math.max(margin, Math.min(canvasH - margin, sy));
+        // Estimated half-width of the drawn name (measuring one would force a
+        // layout): the slide is bounded by it, and the contest below rects by it.
+        const halfW = (m.data.name.length * 6.5 + 12) / 2;
         // The clamp can shove the anchor back onto the disc when the limb has
-        // left the screen — there's no "just above" to show there, so drop the
-        // label (the self-excluded occlusion probe below never catches this).
-        // Only a clamped anchor can be inside: unclamped it sits exactly on
-        // the limb, where this distance test would be at the mercy of float
-        // rounding.
-        if (sx !== proj.x || sy !== syLifted) {
-          const ddx = sx - proj.x;
-          const ddy = sy - proj.y;
-          if (ddx * ddx + ddy * ddy < radiusPx * radiusPx) {
-            label.style.display = 'none';
+        // left the screen — there's no "just above" to show there, so the anchor
+        // slides along the margin it is pinned to until it clears the limb, and
+        // hides only when nothing on that edge clears (the self-excluded
+        // occlusion probe below never catches this). Only a clamped anchor can
+        // be inside: unclamped it sits exactly on the limb, where this distance
+        // test would be at the mercy of float rounding.
+        const clampedX = sx !== proj.x;
+        const clampedY = sy !== syLifted;
+        if (clampedX || clampedY) {
+          const slide = this.moonLabelSlide;
+          const cleared = clampAnchorClearOfDisc(
+            sx, sy, clampedX, clampedY,
+            proj.x, proj.y, radiusPx, halfW,
+            margin, canvasW - margin, margin, canvasH - margin,
+            this.moonLabelSlideSides.get(m.data.name) ?? 0,
+            slide,
+            placement,
+          );
+          if (!cleared) {
+            if (label.style.display !== 'none') label.style.display = 'none';
             continue;
           }
+          sx = slide.x;
+          sy = slide.y;
+          // Remember which way it went, but never forget it on a frame that
+          // needed no slide — the side has to outlive the moments the anchor
+          // happens to sit clear, or it flips the moment it is needed again.
+          if (slide.side !== 0) this.moonLabelSlideSides.set(m.data.name, slide.side);
         }
         // Label sits above the moon (translate(-50%, -100%) + -6px margin).
         // Exclude this moon's own disc so it doesn't cull itself.
@@ -3988,7 +4015,7 @@ export class PlanetariumMode {
           discRadiusPadPx,
           (isUnlit ? dotLitAlpha : dotAlpha) * (m.dotScreenSizePx ?? 0),
         );
-        c.halfW = (m.data.name.length * 6.5 + 12) / 2;
+        c.halfW = halfW;
         candidateCount++;
       }
     }
@@ -4044,6 +4071,7 @@ export class PlanetariumMode {
   private clearMoonLabelIncumbents(): void {
     this.moonLabelIncumbents.clear();
     this.moonLabelIncumbentsBuffer.clear();
+    this.moonLabelSlideSides.clear();
   }
 
   // Scratch for the veil support pass, reused across the gate's upper-bound and

@@ -31,7 +31,7 @@ import {
   SUN_POLE_RA_DEG,
   type PlanetData,
 } from './planets/planetData';
-import { applySunGlowTier, canAttempt, cancelTextureUpgrade, createMoonMeshes, createShaderWarmupProbes, earnedUpgradeTier, firstUpgradeTier, needsUpgradeCover, setWarmEligibleMoonParents, upgradeGeometryOnApproach, upgradeTextureOnApproach, ATMOSPHERES, ATMOSPHERE_SHELL_SCALES, type MoonMesh, type TextureUpgrade } from './PlanetFactory';
+import { applySunGlowTier, canAttempt, cancelTextureUpgrade, createMoonMeshes, createShaderWarmupProbes, earnedUpgradeTier, firstUpgradeTier, needsUpgradeCover, setWarmEligibleMoonParents, upgradeComplete, upgradeGeometryOnApproach, upgradeTextureOnApproach, ATMOSPHERES, ATMOSPHERE_SHELL_SCALES, type MoonMesh, type TextureUpgrade } from './PlanetFactory';
 import type { SurfaceShadingFx } from './world/surfaceShading';
 import { bindTextureWarmer, invalidateTextureWarmCache, pumpTextureWarmQueue, queueTextureWarm, resetTextureWarmer } from './world/textureWarmer';
 import {
@@ -2170,7 +2170,7 @@ export class PlanetariumMode {
     }
   }
 
-  private readonly texLODTmp = new THREE.Vector3();
+  private readonly bodyLODTmp = new THREE.Vector3();
   /**
    * Raise a body's detail as it grows large on screen: higher-resolution
    * colour maps, and a finer sphere once its polygon chords would show. Both
@@ -2193,11 +2193,11 @@ export class PlanetariumMode {
       const ups = planet.textureUpgrades;
       const geo = planet.geometryUpgrade;
       // Nothing left to measure: every ladder has reached its goal and the
-      // silhouette is already fine.
-      if (ups.length === 0 && geo.applied) continue;
-      planet.group.getWorldPosition(this.texLODTmp);
+      // silhouette is already fine. (every() is true for a ladder-less body.)
+      if (geo.applied && ups.every(upgradeComplete)) continue;
+      planet.group.getWorldPosition(this.bodyLODTmp);
       const footprint = projectSphereToScreen(
-        this.texLODTmp,
+        this.bodyLODTmp,
         planet.data.radiusAU,
         this.camera,
         canvasW,
@@ -2225,13 +2225,13 @@ export class PlanetariumMode {
         // either the procedural re-render is off or this frame's single slot
         // is already spent.
         const tryProcedural = allowMoonTexUpgrade && !moonTexUpgraded;
-        if (!tryProcedural && ups.length === 0 && geo.applied) continue;
-        m.mesh.getWorldPosition(this.texLODTmp);
+        if (!tryProcedural && geo.applied && ups.every(upgradeComplete)) continue;
+        m.mesh.getWorldPosition(this.bodyLODTmp);
         // Rendered size (mesh scale carries the render-curve inflation): the
         // triggers must measure the disc actually on screen.
         const renderedR = m.data.radiusAU * m.mesh.scale.x;
         const footprint = projectSphereToScreen(
-          this.texLODTmp,
+          this.bodyLODTmp,
           renderedR,
           this.camera,
           canvasW,

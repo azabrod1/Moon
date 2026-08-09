@@ -13,6 +13,7 @@ import {
   resolveUpgradeTier,
   setUpgradeTextureLoader,
   TIER_RANK,
+  upgradeComplete,
   upgradeGeometryOnApproach,
   upgradeTextureOnApproach,
   UPGRADE_TRIGGER_FRACTION,
@@ -428,7 +429,47 @@ describe('silhouette detail', () => {
     const up = makeGeometryUpgrade([{ mesh, radiusAU: 1 }]);
     upgradeGeometryOnApproach(up, 4000);
     expect(mesh.scale.x).toBe(3.5);
+    expect(mesh.scale.y).toBe(3.5);
+    expect(mesh.scale.z).toBe(3.5);
     expect([mesh.rotation.x, mesh.rotation.y, mesh.rotation.z]).toEqual([0.1, 0.2, 0.3]);
+  });
+
+  it('builds the fine sphere full and 2:1, with untouched angular extents', () => {
+    // A partial phi/theta range or a squashed height count would keep the
+    // texture registered wrong or the pole caps coarse while every other
+    // assertion here still passes.
+    const mesh = sphere(1, 64);
+    const up = makeGeometryUpgrade([{ mesh, radiusAU: 1 }]);
+    upgradeGeometryOnApproach(up, 4000);
+    const p = (mesh.geometry as THREE.SphereGeometry).parameters;
+    expect(p.widthSegments).toBe(256);
+    expect(p.heightSegments).toBe(128);
+    expect(p.phiStart).toBe(0);
+    expect(p.phiLength).toBe(Math.PI * 2);
+    expect(p.thetaStart).toBe(0);
+    expect(p.thetaLength).toBe(Math.PI);
+  });
+
+  it('disposes a replaced geometry exactly once', () => {
+    const mesh = sphere(1, 64);
+    let disposals = 0;
+    mesh.geometry.addEventListener('dispose', () => disposals++);
+    const up = makeGeometryUpgrade([{ mesh, radiusAU: 1 }]);
+    upgradeGeometryOnApproach(up, 4000);
+    upgradeGeometryOnApproach(up, 4000);
+    expect(disposals).toBe(1);
+  });
+});
+
+describe('upgradeComplete', () => {
+  const handle = (appliedTier: TextureTier | null, effectiveMaxTier: TextureTier) =>
+    ({ appliedTier, effectiveMaxTier }) as TextureUpgrade;
+
+  it('is the settled state the per-frame loop skips on', () => {
+    expect(upgradeComplete(handle(null, '8k'))).toBe(false); // still on the boot map
+    expect(upgradeComplete(handle('4k', '8k'))).toBe(false); // mid-ladder
+    expect(upgradeComplete(handle('8k', '8k'))).toBe(true); // goal reached
+    expect(upgradeComplete(handle('4k', '4k'))).toBe(true); // device ceiling reached
   });
 });
 

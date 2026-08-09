@@ -299,6 +299,13 @@ export interface TextureUpgrade {
   retryAtMs?: number;
 }
 
+/** True once this handle has fetched everything the device can hold — the
+ *  per-frame trigger loop skips a body once every handle reports this and its
+ *  silhouette is fine, so a fully-upgraded body costs no projection. */
+export function upgradeComplete(up: TextureUpgrade): boolean {
+  return up.appliedTier === up.effectiveMaxTier;
+}
+
 // Higher-resolution colour tiers on disk, per texture key, ascending. Every
 // step must be the SAME albedo product as the map below it (colour-matched if
 // its grading differs) so the on-approach swap reads as a pure sharpen — no

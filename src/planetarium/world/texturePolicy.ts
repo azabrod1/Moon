@@ -2,27 +2,39 @@
  * Texture loading policy for the Planetarium, in one place: device capability
  * capture (anisotropy, max size), colour-space by map kind, and the
  * resolution-tier → URL mapping. Centralising it keeps every creation site
- * (planet, moon, ring, procedural fallback) consistent, and lets a later phase
- * introduce 4K assets by flipping a tier instead of editing each loader.
+ * (planet, moon, ring, procedural fallback) consistent, and lets a new
+ * resolution ship as a folder plus a tier entry instead of an edit to each
+ * loader.
  */
 import * as THREE from 'three';
 
-export type TextureTier = '2k' | '4k';
+/** Every resolution tier that exists, ascending. This list names them and
+ *  fixes that ascending convention: the device clamp walks it directly, and a
+ *  body's own upgrade ladder names whichever subset it has on disk in the same
+ *  order. A new resolution is an entry here plus a folder. */
+export const TEXTURE_TIERS = ['2k', '4k', '8k'] as const;
+export type TextureTier = (typeof TEXTURE_TIERS)[number];
 export type MapKind = 'color' | 'data';
 
-// Folder convention: the original 2K assets live flat in public/textures/;
-// 4K variants, when they exist, sit under public/textures/4k/ with identical
-// filenames, so a texture's key/filename stays resolution-agnostic.
+// Folder convention: the flat files in public/textures/ are the BOOT tier —
+// whatever ships as a body's first-paint map, which is not literally 2048 wide
+// for every body (earth-day boots at 4096). Higher tiers sit under
+// public/textures/<tier>/ with identical filenames, so a texture's key and
+// filename stay resolution-agnostic.
 const TEXTURE_BASE = import.meta.env.BASE_URL + 'textures/';
 
 export function resolveTextureUrl(file: string, tier: TextureTier): string {
-  return tier === '4k' ? `${TEXTURE_BASE}4k/${file}` : `${TEXTURE_BASE}${file}`;
+  return tier === '2k' ? `${TEXTURE_BASE}${file}` : `${TEXTURE_BASE}${tier}/${file}`;
 }
 
+// Smallest GL max-texture-size that can hold a tier's maps. The boot tier has
+// no floor: it is what the device gets when nothing larger fits.
+const TIER_MIN_TEXTURE_SIZE: Record<TextureTier, number> = { '2k': 0, '4k': 4096, '8k': 8192 };
+
 // Captured once from the live renderer before any texture loads: anisotropy
-// needs the GL context, and the max texture size decides whether 4K is even
+// needs the GL context, and the max texture size decides which tiers are even
 // loadable. The defaults are safe pre-capture — anisotropy 1 is "off", and
-// 4096 is the smallest size a 4K tier needs.
+// 4096 admits the 4K tier while holding 8K back until a real cap is known.
 let chosenAnisotropy = 1;
 let maxTextureSize = 4096;
 
@@ -44,12 +56,17 @@ export function applyTextureDefaults(tex: THREE.Texture, kind: MapKind): void {
 }
 
 /**
- * Resolve the tier a device can actually honour: drop 4K → 2K only when the GL
- * max texture size can't hold a 4096 map. Capability-based, not a "this is a
- * phone" guess — modern phones are strong, so quality isn't gated on device
- * class. One-way — nothing upgrades past what this returns.
+ * Resolve the tier a device can actually honour: the highest tier that is both
+ * at or below the request and within the GL max texture size. One descending
+ * pass, so a device that can't hold 4096 answers an 8K request with the boot
+ * tier rather than stepping down a single rung to a 4K it also can't hold.
+ * Capability-based, not a "this is a phone" guess — modern phones are strong,
+ * so quality isn't gated on device class. One-way: nothing upgrades past what
+ * this returns.
  */
 export function clampTier(tier: TextureTier): TextureTier {
-  if (tier === '4k' && maxTextureSize < 4096) return '2k';
-  return tier;
+  for (let i = TEXTURE_TIERS.indexOf(tier); i > 0; i--) {
+    if (maxTextureSize >= TIER_MIN_TEXTURE_SIZE[TEXTURE_TIERS[i]]) return TEXTURE_TIERS[i];
+  }
+  return TEXTURE_TIERS[0];
 }

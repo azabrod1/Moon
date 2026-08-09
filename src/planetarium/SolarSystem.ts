@@ -76,6 +76,17 @@ function alignedCircleElements(planet: PlanetData): KeplerElements {
 export const ORBIT_LINE_SEGMENTS = 256;
 
 /**
+ * How far the clock may drift from the epoch the orbit polylines were sampled
+ * at before they must be re-sampled. A real-trajectory strip passes through
+ * its body only near the epoch: past half a period a body re-treads a loop
+ * that has precessed a little, and year-over-year perturbation wiggle creeps
+ * in. 60 days keeps every body within ~a third of its own radius of the drawn
+ * line for a few-ms resample a handful of times per simulated year. One
+ * definition site — the cruise orbit lines and the system map both read it.
+ */
+export const ORBIT_LINE_RESAMPLE_MAX_AGE_MS = 60 * 86_400_000;
+
+/**
  * Realistic-mode segment count, sized so the polyline's chord sagitta stays
  * under ~a quarter of the body's own radius — the planet has to sit ON its
  * line even at landed zoom: N ≈ 2π·√(a / (8·R/4)), rounded up to a multiple

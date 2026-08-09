@@ -8,12 +8,13 @@
 //   node gen-maps.mjs --src=/tmp/dl   # read sources from elsewhere (downloads)
 //
 // Jobs:
-//   earth-roughness  earth-day.jpg  -> earth-roughness.png  (ocean glossy, land matte)
-//   moon-normal      moon-height.*  -> moon-normal.png      (tangent-space normal)
-//   mars-normal      mars-height.*  -> mars-normal.png
+//   earth-roughness  earth-day.jpg     -> earth-roughness.png  (ocean glossy, land matte)
+//   moon-normal      ldem_16_uint.tif  -> moon-normal.png      (tangent-space normal)
+//   mars-normal      mars-mola.jpg     -> mars-normal.png
 //
-// height->normal jobs need an elevation source dropped in first (USGS/MOLA/etc.);
-// they no-op with a notice if the source file is absent.
+// height->normal jobs need an elevation source dropped in first (USGS/LOLA/MOLA);
+// they no-op with a notice if the source file is absent. Jobs whose source is a
+// shipped texture read it from public/textures regardless of --src.
 import { chromium } from 'playwright';
 import { readFile, writeFile, access } from 'node:fs/promises';
 import path from 'node:path';
@@ -26,20 +27,73 @@ function arg(name, def) {
 }
 const srcDir = path.resolve(arg('src', TEX));
 
-// Each job: source filename (resolved against srcDir), output (always TEX), the
-// transform name, an output scale (data maps don't need full color res), and
-// transform options. earth-roughness runs from a shipped source; the normal jobs
-// need an elevation source dropped into srcDir (--src=...) first:
-//   moon-height.png  <- SVS CGI Moon Kit ldem_4_uint.tif (LOLA), TIFF->PNG via sips
+// Each job: source filename (resolved against srcDir, or against `from` when the
+// source is a shipped map that must not follow --src), output (always TEX), the
+// transform name, an output scale (data maps don't need full color res), an
+// optional `decode` for sources no browser can read, and transform options.
+// The normal jobs need an elevation source dropped into srcDir (--src=...) first:
+//   ldem_16_uint.tif <- SVS CGI Moon Kit (LOLA), 5760x2880 unsigned 16-bit
 //   mars-mola.jpg    <- NASA marsoweb MOLA_cylin.jpg (colorized; mola:true decodes hue->elevation)
+//
+// moon-normal's strength is tied to its output resolution: per-texel height
+// deltas shrink as texels get smaller, so halving the sample spacing needs
+// roughly double the strength to keep the same macro relief.
 const JOBS = {
-  'earth-roughness': { src: 'earth-day.jpg',  out: 'earth-roughness.png', fn: 'oceanRoughness', scale: 0.25 },
-  'moon-normal':     { src: 'moon-height.png', out: 'moon-normal.png',     fn: 'heightToNormal', scale: 1, opts: { strength: 3.0 } },
+  'earth-roughness': { src: 'earth-day.jpg', from: TEX, out: 'earth-roughness.png', fn: 'oceanRoughness', scale: 0.5 },
+  'moon-normal':     { src: 'ldem_16_uint.tif', out: 'moon-normal.png', fn: 'normalsFromHeights', scale: 0.5, decode: 'uint16-tiff', opts: { strength: 6.0 } },
   'mars-normal':     { src: 'mars-mola.jpg',   out: 'mars-normal.png',     fn: 'heightToNormal', scale: 0.25, opts: { strength: 2.4, mola: true } },
 };
 
 async function exists(p) {
   try { await access(p); return true; } catch { return false; }
+}
+
+// Minimal reader for an uncompressed 16-bit grayscale TIFF, enough for the LOLA
+// elevation maps and nothing more. It exists because the 8-bit canvas the rest of
+// this file runs on would quantize the Moon's ~20km relief into ~78m steps, and
+// those steps show up as terracing across the smooth maria. Heights therefore
+// stay 16-bit here and float from there on.
+function readUint16Tiff(buf) {
+  const order = buf.readUInt16LE(0);
+  if (order !== 0x4949) throw new Error('expected a little-endian ("II") TIFF');
+  if (buf.readUInt16LE(2) !== 42) throw new Error('not a TIFF (bad magic)');
+  const TYPE_SIZE = { 1: 1, 3: 2, 4: 4 }; // BYTE / SHORT / LONG — the rest is skipped
+  const entries = new Map();
+  const ifd = buf.readUInt32LE(4);
+  const count = buf.readUInt16LE(ifd);
+  for (let i = 0; i < count; i++) {
+    const at = ifd + 2 + i * 12;
+    const tag = buf.readUInt16LE(at), type = buf.readUInt16LE(at + 2), n = buf.readUInt32LE(at + 4);
+    const size = TYPE_SIZE[type] || 0;
+    if (!size) continue; // ascii/rational tags carry nothing this reader needs
+    const base = n * size > 4 ? buf.readUInt32LE(at + 8) : at + 8;
+    const vals = [];
+    for (let k = 0; k < n; k++) {
+      const o = base + k * size;
+      vals.push(type === 1 ? buf.readUInt8(o) : type === 3 ? buf.readUInt16LE(o) : buf.readUInt32LE(o));
+    }
+    entries.set(tag, vals);
+  }
+  const one = (tag, def) => (entries.has(tag) ? entries.get(tag)[0] : def);
+  const width = one(256), height = one(257);
+  const bits = one(258, 8), samples = one(277, 1), compression = one(259, 1);
+  if (width === undefined || height === undefined) throw new Error('TIFF is missing image dimensions');
+  if (bits !== 16 || samples !== 1) throw new Error(`expected 16-bit single-sample data, got ${bits}-bit x${samples}`);
+  if (compression !== 1) throw new Error(`expected uncompressed data, got compression ${compression}`);
+  const offsets = entries.get(273), counts = entries.get(279);
+  if (!offsets || !counts) throw new Error('TIFF is missing strip offsets/byte counts');
+  const rowsPerStrip = one(278, height);
+  const out = new Uint16Array(width * height);
+  let row = 0;
+  for (let s = 0; s < offsets.length; s++) {
+    const rows = Math.min(rowsPerStrip, height - row);
+    const need = rows * width * 2;
+    if (counts[s] < need) throw new Error(`strip ${s} is short: ${counts[s]} < ${need} bytes`);
+    for (let i = 0; i < rows * width; i++) out[row * width + i] = buf.readUInt16LE(offsets[s] + i * 2);
+    row += rows;
+  }
+  if (row !== height) throw new Error(`strips cover ${row} of ${height} rows`);
+  return { width, height, data: out };
 }
 
 // Runs in the page (injected as a string, eval'd to a map of transforms — robust
@@ -93,18 +147,50 @@ const PAGE_TRANSFORMS = `
     }
   }
 
-  // Grayscale height (red channel) -> tangent-space normal via central difference.
+  // Grayscale height (red channel) -> tangent-space normal. Kept as the entry
+  // point for sources that arrive as an image; the gradient work is shared with
+  // the float path, which is the one that preserves 16-bit elevation detail.
+  function heightToNormal(src, dst, w, h, opts) {
+    const s = src.data;
+    const heights = new Float64Array(w * h);
+    for (let i = 0; i < heights.length; i++) heights[i] = s[i * 4] / 255;
+    normalsFromHeights(heights, dst, w, h, opts);
+  }
+
+  // Bilinear resample of a float height field. Longitude wraps (equirectangular
+  // maps are seamless in x), latitude clamps. At an exact 2:1 reduction the
+  // half-texel offsets make this a 2x2 box average, so no detail is skipped.
+  function resampleHeights(src, sw, sh, dw, dh) {
+    const out = new Float64Array(dw * dh);
+    const sx = sw / dw, sy = sh / dh;
+    for (let y = 0; y < dh; y++) {
+      let fy = (y + 0.5) * sy - 0.5;
+      if (fy < 0) fy = 0; else if (fy > sh - 1) fy = sh - 1;
+      const y0 = Math.floor(fy), y1 = Math.min(y0 + 1, sh - 1), ty = fy - y0;
+      for (let x = 0; x < dw; x++) {
+        const fx = (x + 0.5) * sx - 0.5;
+        const x0 = Math.floor(fx), tx = fx - x0;
+        const xa = ((x0 % sw) + sw) % sw, xb = ((x0 + 1) % sw + sw) % sw;
+        const top = src[y0 * sw + xa] * (1 - tx) + src[y0 * sw + xb] * tx;
+        const bot = src[y1 * sw + xa] * (1 - tx) + src[y1 * sw + xb] * tx;
+        out[y * dw + x] = top * (1 - ty) + bot * ty;
+      }
+    }
+    return out;
+  }
+
+  // Float height field -> tangent-space normal via central difference.
   // Longitude wraps, latitude clamps. The longitude slope is divided by cos(lat):
   // equirectangular x-texels collapse toward the poles, and Three samples normal
   // maps in a normalized tangent frame, so that scaling has to live in the map.
   // ny is flipped to match the OpenGL/Three normal convention.
-  function heightToNormal(src, dst, w, h, opts) {
+  function normalsFromHeights(s, dst, w, h, opts) {
     const strength = (opts && opts.strength) || 2.0;
-    const s = src.data, d = dst.data;
+    const d = dst.data;
     const H = (x, y) => {
       x = ((x % w) + w) % w;
       y = y < 0 ? 0 : y >= h ? h - 1 : y;
-      return s[(y * w + x) * 4] / 255;
+      return s[y * w + x];
     };
     for (let y = 0; y < h; y++) {
       const lat = (0.5 - (y + 0.5) / h) * Math.PI;          // +pi/2 N .. -pi/2 S
@@ -123,19 +209,52 @@ const PAGE_TRANSFORMS = `
     }
   }
 
-  return { oceanRoughness, heightToNormal, molaToHeight };
+  return { oceanRoughness, heightToNormal, normalsFromHeights, resampleHeights, molaToHeight };
 })()
 `;
+
+// The 16-bit height path never touches an <img>: the samples cross into the page
+// as raw bytes, become floats there, and only the finished normal map is rasterized.
+async function runHeightJob(page, def, buf) {
+  const tif = readUint16Tiff(buf);
+  const w = Math.round(tif.width * def.scale), h = Math.round(tif.height * def.scale);
+  return page.evaluate(async ({ b64, sw, sh, w, h, fn, opts, transforms }) => {
+    const T = eval(transforms);
+    const bin = atob(b64);
+    const bytes = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+    const raw = new Uint16Array(bytes.buffer);
+    const heights = new Float64Array(raw.length);
+    for (let i = 0; i < raw.length; i++) heights[i] = raw[i] / 65535;
+    const field = sw === w && sh === h ? heights : T.resampleHeights(heights, sw, sh, w, h);
+    const cv = document.createElement('canvas');
+    cv.width = w; cv.height = h;
+    const ctx = cv.getContext('2d');
+    const dst = ctx.createImageData(w, h);
+    T[fn](field, dst, w, h, opts);
+    ctx.putImageData(dst, 0, 0);
+    return cv.toDataURL('image/png').split(',')[1];
+  }, {
+    b64: Buffer.from(tif.data.buffer, tif.data.byteOffset, tif.data.byteLength).toString('base64'),
+    sw: tif.width, sh: tif.height, w, h, fn: def.fn, opts: def.opts || {}, transforms: PAGE_TRANSFORMS,
+  });
+}
 
 async function runJob(page, name) {
   const def = JOBS[name];
   if (!def) { console.log(`[gen-maps] unknown job: ${name}`); return false; }
-  const srcPath = path.join(srcDir, def.src);
+  const srcPath = path.join(def.from || srcDir, def.src);
   if (!(await exists(srcPath))) {
     console.log(`[gen-maps] skip ${name}: source not found (${srcPath})`);
     return false;
   }
   const buf = await readFile(srcPath);
+  if (def.decode === 'uint16-tiff') {
+    const b64 = await runHeightJob(page, def, buf);
+    await writeFile(path.join(TEX, def.out), Buffer.from(b64, 'base64'));
+    console.log(`[gen-maps] ${name}: ${def.src} -> ${def.out}`);
+    return true;
+  }
   const mime = def.src.endsWith('.png') ? 'image/png' : 'image/jpeg';
   const outB64 = await page.evaluate(async ({ b64, mime, fn, scale, opts, transforms }) => {
     const T = eval(transforms);

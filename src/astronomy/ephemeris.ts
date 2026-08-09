@@ -64,9 +64,11 @@ export interface SunPosition {
 
 /**
  * Low-precision Sun position (Meeus Ch. 25, simplified).
- * Good to ~0.01° longitude.
+ * Good to ~0.01° longitude. `out` is the caller's own record, written and
+ * returned instead of a fresh one — the same optional-`out` idiom as the
+ * vector seams, for the samplers that evaluate this hundreds of times a frame.
  */
-export function sunPosition(jd: number): SunPosition {
+export function sunPosition(jd: number, out?: SunPosition): SunPosition {
   const t = T(jd);
 
   // Geometric mean longitude (degrees)
@@ -94,10 +96,10 @@ export function sunPosition(jd: number): SunPosition {
   const trueAnomaly = (M + C) * DEG;
   const R = (1.000001018 * (1 - e * e)) / (1 + e * Math.cos(trueAnomaly));
 
-  return {
-    longitude: norm360(apparentLon),
-    distance: R,
-  };
+  const result = out ?? { longitude: 0, distance: 0 };
+  result.longitude = norm360(apparentLon);
+  result.distance = R;
+  return result;
 }
 
 export interface MoonPosition {

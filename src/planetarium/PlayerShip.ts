@@ -52,6 +52,13 @@ export class PlayerShip {
   systemSpeedFactor = 1.0;      // 1 = open space, 0 = deep in system (set by PlanetariumMode)
   speedCapAUPerS = Infinity;    // per-frame moon-proximity cap (set by PlanetariumMode)
   moving = true;
+  /** A paused sim clock holds the ship with the world. Derived by the mode
+   *  every cruise frame, never saved: `moving` is the throttle's state and
+   *  survives the pause untouched — held is the freeze laid over it. While
+   *  held, speed reads 0 (the readout shows what the ship is actually
+   *  doing), steering and integration skip, and the exhaust follows the
+   *  zero speed off. */
+  held = false;
   yawInput = 0;
   pitchInput = 0;
   distanceTraveled = 0;
@@ -185,7 +192,7 @@ export class PlayerShip {
   }
 
   get speedAUPerS(): number {
-    if (!this.moving) return 0;
+    if (!this.moving || this.held) return 0;
     return Math.min(this.commandedSpeedAUPerS, this.speedCapAUPerS);
   }
 
@@ -238,7 +245,7 @@ export class PlayerShip {
 
     }
 
-    if (this.moving) {
+    if (this.moving && !this.held) {
       if (this.yawInput !== 0) {
         this.heading += this.yawInput * dt * 0.8;
       }
@@ -254,7 +261,7 @@ export class PlayerShip {
     // the renderer draws is the pose the ship is flying.
     this.syncModelOrientation();
 
-    if (!this.moving) return;
+    if (!this.moving || this.held) return;
 
     const speed = this.speedAUPerS;
     const updatedDirection = this.getForwardDirection();
@@ -295,7 +302,18 @@ export class PlayerShip {
    *  with the system, not with celestial north. Allocates — callers hold the
    *  result for a frame. */
   getForwardDirection(): THREE.Vector3 {
-    return flightDirectionFromAngles(this.heading, this.pitch);
+    return this.writeForwardDirection(new THREE.Vector3());
+  }
+
+  /**
+   * The same unit heading, written into a caller's vector — the allocation-free
+   * form for per-frame readers. It is deliberately the ONLY place the pose
+   * fields become a direction: anything that re-derives one from heading and
+   * pitch is a second opinion about which way the ship points, and it would
+   * silently disagree the first time the flight frame's own convention moves.
+   */
+  writeForwardDirection(out: THREE.Vector3): THREE.Vector3 {
+    return flightDirectionFromAngles(this.heading, this.pitch, out);
   }
 
   static readonly SPEED_MIN = 0;

@@ -27,6 +27,7 @@ import {
   PLANET_MARKER_PARAMS,
   type PlanetMarkerVisual,
 } from './planetMarkers';
+import { formatBodyDistance } from './bodyDistance';
 
 export interface PlanetLabel {
   sprite: THREE.Sprite;
@@ -193,26 +194,52 @@ export class PlanetLabels {
       // tint as neon, so the palette stays pale. Alphas/radii are unchanged —
       // this adds colour, not size.
       const tint = new THREE.Color(body.markerColor);
-      const mixToWhite = (c: THREE.Color, w: number) =>
-        `${Math.round(THREE.MathUtils.lerp(c.r, 1, w) * 255)}, ` +
-        `${Math.round(THREE.MathUtils.lerp(c.g, 1, w) * 255)}, ` +
-        `${Math.round(THREE.MathUtils.lerp(c.b, 1, w) * 255)}`;
+      const mixToWhite = (w: number): [number, number, number] => [
+        THREE.MathUtils.lerp(tint.r, 1, w) * 255,
+        THREE.MathUtils.lerp(tint.g, 1, w) * 255,
+        THREE.MathUtils.lerp(tint.b, 1, w) * 255,
+      ];
 
-      const gradient = ctx.createRadialGradient(32, 32, 2, 32, 32, 32);
-      gradient.addColorStop(0, `rgba(${mixToWhite(tint, 0.5)}, 1.0)`);
-      gradient.addColorStop(0.14, `rgba(${mixToWhite(tint, 0.25)}, 0.8)`);
-      gradient.addColorStop(0.35, `rgba(${mixToWhite(tint, 0)}, 0.3)`);
-      gradient.addColorStop(0.65, `rgba(${mixToWhite(tint, 0)}, 0.06)`);
-      gradient.addColorStop(1, `rgba(${mixToWhite(tint, 0)}, 0)`);
-      ctx.fillStyle = gradient;
-      ctx.fillRect(0, 0, 64, 64);
-
-      // Lightly-hued crisp center so the beacon stays a point, not a smudge,
-      // while still carrying its colour.
-      ctx.beginPath();
-      ctx.arc(32, 32, 4.5, 0, Math.PI * 2);
-      ctx.fillStyle = `rgba(${mixToWhite(tint, 0.55)}, 1.0)`;
-      ctx.fill();
+      // Authored pixel by pixel, never painted with a gradient fill: WebKit
+      // corrupts RGB when a gradient-filled translucent canvas is uploaded to
+      // WebGL without premultiply (three's default), and the beacon rides that
+      // upload. The stops span the old gradient's 2 px core to its 32 px edge,
+      // linear in between, with the crisp centre — the point that keeps the
+      // beacon from smudging — composited over them at a pixel's feather.
+      const stops = [
+        { at: 0, rgb: mixToWhite(0.5), a: 1.0 },
+        { at: 0.14, rgb: mixToWhite(0.25), a: 0.8 },
+        { at: 0.35, rgb: mixToWhite(0), a: 0.3 },
+        { at: 0.65, rgb: mixToWhite(0), a: 0.06 },
+        { at: 1, rgb: mixToWhite(0), a: 0 },
+      ];
+      const core = mixToWhite(0.55);
+      const img = ctx.createImageData(64, 64);
+      const data = img.data;
+      for (let y = 0; y < 64; y++) {
+        for (let x = 0; x < 64; x++) {
+          const r = Math.hypot(x + 0.5 - 32, y + 0.5 - 32);
+          const t = Math.min(1, Math.max(0, (r - 2) / 30));
+          let hi = 1;
+          while (stops[hi].at < t) hi++;
+          const lo = stops[hi - 1];
+          const k = (t - lo.at) / (stops[hi].at - lo.at);
+          const gradA = lo.a + (stops[hi].a - lo.a) * k;
+          const cov = Math.min(1, Math.max(0, 5 - r));
+          const outA = cov + gradA * (1 - cov);
+          const i = (y * 64 + x) * 4;
+          if (outA > 0) {
+            for (let ch = 0; ch < 3; ch++) {
+              const gradC = lo.rgb[ch] + (stops[hi].rgb[ch] - lo.rgb[ch]) * k;
+              data[i + ch] = Math.round(
+                (core[ch] * cov + gradC * gradA * (1 - cov)) / outA,
+              );
+            }
+          }
+          data[i + 3] = Math.round(255 * outA);
+        }
+      }
+      ctx.putImageData(img, 0, 0);
 
       const spriteTex = new THREE.CanvasTexture(canvas);
       // No depth test: the marker sits at its body's own center, where the
@@ -266,7 +293,8 @@ export class PlanetLabels {
 
   /**
    * Populates `foregroundDiscs` with the planets that are rendered as meshes
-   * this frame (angular size large enough to occlude labels). Callers may
+   * this frame — seen from outside, at an angular size large enough to occlude
+   * labels. Callers may
    * then `addForegroundDisc()` additional occluders (moons, ship) before
    * invoking `renderLabels()` so those external occluders are considered.
    */
@@ -294,6 +322,11 @@ export class PlanetLabels {
       const dy = pos.y - camY;
       const dz = pos.z - camZ;
       const distFromCamera = Math.sqrt(dx * dx + dy * dy + dz * dz);
+      // A sphere the camera is inside occludes nothing: its back faces cull and
+      // you see out through it. The projection answers 'covering' there — a
+      // conservative classification, not a measured disc — which as a blocker
+      // would blank every label and beacon in the sky.
+      if (distFromCamera <= entry.planet.radiusAU) continue;
       const angularSize = (entry.planet.radiusAU * 2) / Math.max(distFromCamera, 0.0001);
       if (angularSize <= 0.01) continue;
 
@@ -603,9 +636,7 @@ export class PlanetLabels {
           entry.lastTransform = transform;
         }
 
-        const distanceText = distFromPlayer < 0.01
-          ? `${(distFromPlayer * 149597870.7).toFixed(0)} km`
-          : `${distFromPlayer.toFixed(2)} AU`;
+        const distanceText = formatBodyDistance(distFromPlayer);
         if (distanceText !== entry.lastDistanceText) {
           entry.distEl.textContent = distanceText;
           entry.lastDistanceText = distanceText;

@@ -1,42 +1,22 @@
 /**
- * Constellation line overlay for the Planetarium starfield. Projects bright
- * stars onto a fixed-radius celestial sphere and draws the canonical 88-line
- * figures on top of them. Toggled on/off by the settings panel.
+ * Constellation line overlay for the Planetarium starfield. Draws the canonical
+ * 88 figures on the star sphere, through the catalog stars their endpoints name
+ * (the snap lives in data/constellationGeometry, shared with the system map's
+ * own sky). Toggled on/off by the settings panel.
+ *
+ * The hue and the opacity are this sky's own: the chart composites its figures
+ * differently, so only the geometry is shared.
  */
 import * as THREE from 'three';
-import { CONSTELLATIONS } from './data/constellations';
-import { BRIGHT_STAR_CATALOG } from './data/brightStars';
 import { projectToScreen } from '../shared/three/projectToScreen';
-import { raDecToVector } from '../astronomy/planetary';
+import {
+  constellationLabelAnchors,
+  constellationSegmentPositions,
+} from './data/constellationGeometry';
 import { STAR_SPHERE_RADIUS } from './world/starfield';
-import { DEG2RAD, RAD2DEG } from '../shared/math/angles';
 
-const SNAP_RADIUS_DEG = 3; // max degrees to snap a constellation vertex to a catalog star
 const LINE_COLOR = 0x6688bb;
 const LINE_OPACITY = 0.28;
-
-/** Convert RA/Dec (degrees) to a 3D point on the star sphere — a thin
- *  out-param wrapper over raDecToVector, the single chirality definition site. */
-function celestialToVec3(raDeg: number, decDeg: number, out: THREE.Vector3): THREE.Vector3 {
-  return out.copy(raDecToVector(raDeg, decDeg, STAR_SPHERE_RADIUS));
-}
-
-/**
- * Angular distance between two points given in degrees (RA/Dec).
- * Returns degrees.
- */
-function angularDistDeg(ra1: number, dec1: number, ra2: number, dec2: number): number {
-  const d1 = dec1 * DEG2RAD;
-  const d2 = dec2 * DEG2RAD;
-  const dRa = (ra2 - ra1) * DEG2RAD;
-  const sinD1 = Math.sin(d1), cosD1 = Math.cos(d1);
-  const sinD2 = Math.sin(d2), cosD2 = Math.cos(d2);
-  const sinDRa = Math.sin(dRa), cosDRa = Math.cos(dRa);
-  const a = cosD2 * sinDRa;
-  const b = cosD1 * sinD2 - sinD1 * cosD2 * cosDRa;
-  const c = sinD1 * sinD2 + cosD1 * cosD2 * cosDRa;
-  return Math.atan2(Math.sqrt(a * a + b * b), c) * RAD2DEG;
-}
 
 interface LabelState {
   el: HTMLDivElement;
@@ -51,107 +31,31 @@ export class Constellations {
   private labelContainer: HTMLDivElement;
 
   constructor() {
-    // Build a cache of snapped positions: for each unique RA/Dec endpoint
-    // in constellation data, find the nearest catalog star within SNAP_RADIUS_DEG.
-    const snapCache = new Map<string, [number, number]>();
-
-    const snap = (ra: number, dec: number): [number, number] => {
-      const key = `${ra},${dec}`;
-      const cached = snapCache.get(key);
-      if (cached) return cached;
-
-      let bestRa = ra;
-      let bestDec = dec;
-      let bestDist = SNAP_RADIUS_DEG;
-
-      for (const star of BRIGHT_STAR_CATALOG) {
-        const d = angularDistDeg(ra, dec, star.raDeg, star.decDeg);
-        if (d < bestDist) {
-          bestDist = d;
-          bestRa = star.raDeg;
-          bestDec = star.decDeg;
-        }
-      }
-
-      const result: [number, number] = [bestRa, bestDec];
-      snapCache.set(key, result);
-      return result;
-    };
-
-    let totalSegments = 0;
-    for (const constellation of CONSTELLATIONS) totalSegments += constellation.lines.length;
-
-    const positions = new Float32Array(totalSegments * 6); // 2 vertices × 3 components
-    let idx = 0;
-    const vectorScratch = new THREE.Vector3();
-
     this.labelContainer = document.createElement('div');
     this.labelContainer.id = 'constellation-labels';
     this.labelContainer.style.cssText =
       'position:fixed;top:0;left:0;width:100%;height:100%;pointer-events:none;z-index:14;overflow:hidden;';
     document.body.appendChild(this.labelContainer);
 
-    for (const constellation of CONSTELLATIONS) {
-      // Build line geometry and compute the label anchor as the mean DIRECTION
-      // of the figure's endpoints. Averaging RA numerically breaks on figures
-      // that span the 0h wrap (Pisces straddles the vernal equinox: averaging
-      // RA 350° and 10° lands at 180° — the opposite sky); summing unit
-      // vectors and normalizing is wrap-free by construction.
-      const centroidSum = new THREE.Vector3();
-      let nPoints = 0;
-      const pointSet = new Set<string>();
-
-      for (const [ra1, dec1, ra2, dec2] of constellation.lines) {
-        const [sra1, sdec1] = snap(ra1, dec1);
-        const [sra2, sdec2] = snap(ra2, dec2);
-
-        celestialToVec3(sra1, sdec1, vectorScratch);
-        positions[idx++] = vectorScratch.x;
-        positions[idx++] = vectorScratch.y;
-        positions[idx++] = vectorScratch.z;
-
-        celestialToVec3(sra2, sdec2, vectorScratch);
-        positions[idx++] = vectorScratch.x;
-        positions[idx++] = vectorScratch.y;
-        positions[idx++] = vectorScratch.z;
-
-        const k1 = `${sra1},${sdec1}`;
-        const k2 = `${sra2},${sdec2}`;
-        if (!pointSet.has(k1)) {
-          pointSet.add(k1);
-          centroidSum.add(celestialToVec3(sra1, sdec1, vectorScratch));
-          nPoints++;
-        }
-        if (!pointSet.has(k2)) {
-          pointSet.add(k2);
-          centroidSum.add(celestialToVec3(sra2, sdec2, vectorScratch));
-          nPoints++;
-        }
-      }
-
-      // A near-zero sum (endpoints spread antipodally) has no meaningful mean
-      // direction — no real figure does this, but a label at a garbage anchor
-      // is worse than none.
-      if (nPoints > 0 && centroidSum.lengthSq() > 1e-6) {
-        const labelEl = document.createElement('div');
-        labelEl.className = 'constellation-label';
-        labelEl.textContent = constellation.name;
-        labelEl.style.display = 'none';
-        this.labelContainer.appendChild(labelEl);
-
-        const pos = centroidSum.clone().normalize().multiplyScalar(STAR_SPHERE_RADIUS);
-
-        this.labels.push({
-          el: labelEl,
-          pos,
-          visible: false,
-          lastTransform: '',
-        });
-      }
+    for (const anchor of constellationLabelAnchors(STAR_SPHERE_RADIUS)) {
+      const labelEl = document.createElement('div');
+      labelEl.className = 'constellation-label';
+      labelEl.textContent = anchor.name;
+      labelEl.style.display = 'none';
+      this.labelContainer.appendChild(labelEl);
+      this.labels.push({
+        el: labelEl,
+        pos: anchor.position,
+        visible: false,
+        lastTransform: '',
+      });
     }
 
     const geo = new THREE.BufferGeometry();
-    geo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+    geo.setAttribute(
+      'position',
+      new THREE.BufferAttribute(constellationSegmentPositions(STAR_SPHERE_RADIUS), 3),
+    );
 
     const mat = new THREE.LineBasicMaterial({
       color: LINE_COLOR,

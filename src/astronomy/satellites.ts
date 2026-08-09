@@ -162,6 +162,10 @@ export interface SatelliteOrbitMeta {
   periodDays: number;
   /** |Ω̇|, the node-precession rate — bounds how fast the orbit plane drifts. */
   nodeRateDegPerDay: number;
+  /** |ω̇|, the apsidal-precession rate — how fast the ellipse turns in its own
+   *  plane. With the node rate this bounds how fast a drawn orbit stales: the
+   *  moon's motion ALONG the curve never does, only the curve's own rotation. */
+  apsisRateDegPerDay: number;
   /** Inclination to the moon's own reference plane (the precession cone half-angle). */
   inclinationDeg: number;
 }
@@ -173,6 +177,7 @@ export function getSatelliteOrbitMeta(name: string): SatelliteOrbitMeta {
     eccentricity: record.eccentricity,
     periodDays: 360 / Math.abs(record.meanAnomalyRateDegPerDay),
     nodeRateDegPerDay: Math.abs(record.ascendingNodeRateDegPerDay),
+    apsisRateDegPerDay: Math.abs(record.argPeriapsisRateDegPerDay),
     inclinationDeg: record.inclinationDeg,
   };
 }
@@ -183,6 +188,7 @@ export const EARTH_MOON_ORBIT_META: SatelliteOrbitMeta = {
   eccentricity: 0.0549,
   periodDays: 27.321661,
   nodeRateDegPerDay: 0.0529539, // 18.6-year node regression
+  apsisRateDegPerDay: 0.1114, // 8.85-year apsidal advance
   inclinationDeg: 5.145, // to the ecliptic
 };
 

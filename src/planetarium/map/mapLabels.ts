@@ -30,13 +30,18 @@ export const LABEL_MIN_SEP_PX = 26;
  * Measured at the same separation two names keep from each other, widened by
  * whatever disc the anchor is wearing: a name beside Saturn's globe has to
  * clear the globe, not its centre.
+ *
+ * Only the anchors that stand for a BODY count. The chart carries one inert
+ * anchor — the ship marker — so that a tap on it lands on something and does
+ * nothing; it is not a body, and furniture has no reason to get out of its way.
  */
 export function labelCrowdedByAnchor(
   xPx: number,
   yPx: number,
-  anchors: readonly { x: number; y: number; discRadiusPx: number }[],
+  anchors: readonly { x: number; y: number; discRadiusPx: number; pickable: boolean }[],
 ): boolean {
   for (const anchor of anchors) {
+    if (!anchor.pickable) continue;
     const reach = LABEL_MIN_SEP_PX + anchor.discRadiusPx;
     const dx = anchor.x - xPx;
     const dy = anchor.y - yPx;

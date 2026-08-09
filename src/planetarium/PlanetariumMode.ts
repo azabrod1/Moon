@@ -8824,10 +8824,10 @@ export class PlanetariumMode {
   private standMapPanelDown(down: boolean): void {
     if (!this.isMapOpen()) return;
     if (down) this.setMapHelpOpen(false);
-    this.mapHud.setPanelStoodDown(down);
     // The panel is label chrome — on a phone it is a full-width sheet the
-    // labels dodge — and it just changed with no resize to announce it.
-    this.systemMap?.invalidateLabelChrome();
+    // labels dodge — and it just changed with no resize to announce it. That
+    // announcement is the panel's own geometry door; nothing here repeats it.
+    this.mapHud.setPanelStoodDown(down);
   }
 
   /** Whether the panel is drawn as a full-width band, which is the phone's

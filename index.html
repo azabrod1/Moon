@@ -2966,17 +2966,29 @@
        are siblings — the commit button, and the release chip when the camera is
        riding that body. A button inside a button is invalid, unreachable by
        keyboard and ambiguous to a screen reader, so the two never nest. */
-    .mfm-row { width: 100%; font-family: var(--font-ui); text-align: left; }
+    /* The row's own vertical padding moves onto the commit button below, and
+       the button stretches to fill the row: padding left on the wrapper would
+       be a band of dead pixels above and below the name, inside a row that
+       looks like one target. */
+    .mfm-row {
+      width: 100%;
+      padding-top: 0;
+      padding-bottom: 0;
+      align-items: stretch;
+      font-family: var(--font-ui);
+      text-align: left;
+    }
     /* The commit button IS the row's clickable area: it takes the slack and
        carries the dot, the name and the `here` tag. UA button chrome reset (the
        Look-at menu's idiom). */
     .mfm-pick {
       flex: 1;
       min-width: 0;
+      min-height: 31px;
       display: flex;
       align-items: center;
       gap: 10px;
-      padding: 0;
+      padding: 4px 0;
       border: none;
       background: none;
       color: inherit;
@@ -2984,6 +2996,7 @@
       text-align: left;
       cursor: pointer;
     }
+    .mfm-row.pk-moon .mfm-pick { min-height: 27px; }
     .mfm-row .pk-dot { width: 8px; height: 8px; }
     .mfm-row.pk-moon .pk-dot { width: 5px; height: 5px; }
     /* The body the player is standing on. */
@@ -2995,6 +3008,9 @@
        the release is actually on offer. */
     .mfm-following {
       flex: none;
+      /* The row stretches its children; a chip that stretched with it would be
+         a full-height pill beside a one-line name. */
+      align-self: center;
       padding: 2px 6px;
       border: 1px solid rgba(var(--accent-rgb), 0.35);
       border-radius: 999px;

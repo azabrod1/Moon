@@ -852,6 +852,11 @@ export class SystemMap {
    *  measures: when the followed body changes, and on a resize. */
   private followFramingName: string | null = null;
   private followFramingAU = 0;
+  /** Whether the cached framing belongs to a SETTLED follow. The inbound
+   *  flight re-derives its landing distance every frame because that distance
+   *  moves on approach, so a reference taken once on the way in would leave the
+   *  readout printing a stale number at the pose it is supposed to call 1.0×. */
+  private followFramingSettled = false;
 
   // Scratch — no per-frame allocation in steady state.
   private tmpMap: MapVec3 = { x: 0, y: 0, z: 0 };
@@ -1337,9 +1342,14 @@ export class SystemMap {
    *  Called from the camera pass, which is already measuring the canvas this
    *  frame; a resize drops the name so the next pass re-derives. */
   private refreshFollowFramingRef(): void {
+    const settled = this.cam.camState === 'following';
     const name = mapFocusReleasable(this.cam) ? this.cam.focusName : null;
-    if (name === this.followFramingName) return;
+    // The landing is a change of state, not of subject: the flight has been
+    // keeping this fresh from its own landing distance, and the pose it settles
+    // on is the one the readout has to call 1.0×.
+    if (name === this.followFramingName && settled === this.followFramingSettled) return;
     this.followFramingName = name;
+    this.followFramingSettled = settled;
     this.followFramingAU = name === null ? 0 : (this.revealDistanceFor(name) ?? 0);
   }
 
@@ -2292,6 +2302,7 @@ export class SystemMap {
     // them — dropping the name makes the next camera pass re-derive it.
     this.projectionRevision++;
     this.followFramingName = null;
+    this.followFramingSettled = false;
     // A viewport change (device rotation, window resize) refits the overview:
     // the vertical FOV is fixed, so portrait fits far less width and the old
     // dolly distance would clip the outer system. Only the parked overview
@@ -2382,6 +2393,12 @@ export class SystemMap {
         const landingDist = this.revealDistanceFor(name);
         if (landingDist !== null) {
           this.flyOffset.copy(this.flyDir).multiplyScalar(landingDist);
+          // The zoom readout's reference, free: this is the same number the
+          // readout wants and the flight has just paid for it. Taken every
+          // frame, so the value standing at the landing is the landing's own.
+          this.followFramingName = name;
+          this.followFramingSettled = false;
+          this.followFramingAU = landingDist;
         }
       }
     } else {
@@ -5661,10 +5678,9 @@ export class SystemMap {
    * date are exactly the ones that would print through the label ("1 AU" behind
    * the Sun, "10 AU" under Saturn).
    *
-   * Measured against the frame's own anchors — every body the chart drew, plus
-   * the ship marker, which is just as opaque to read through — at the same
-   * separation the label pass keeps between two names, widened by whatever disc
-   * the anchor is wearing.
+   * Measured against the frame's own anchors — the Sun, the planets and every
+   * revealed moon — at the same separation the label pass keeps between two
+   * names, widened by whatever disc the anchor is wearing.
    */
   private ringLabelCrowded(x: number, y: number): boolean {
     return labelCrowdedByAnchor(x, y, this.pickAnchors);

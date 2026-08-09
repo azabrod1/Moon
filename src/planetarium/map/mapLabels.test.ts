@@ -465,7 +465,7 @@ describe('ringClearedLabelShiftPx', () => {
 });
 
 describe('furniture yielding to drawn bodies', () => {
-  const at = (x: number, y: number, discRadiusPx = 0) => ({ x, y, discRadiusPx });
+  const at = (x: number, y: number, discRadiusPx = 0) => ({ x, y, discRadiusPx, pickable: true });
 
   it('yields inside the same separation two names keep', () => {
     expect(labelCrowdedByAnchor(100, 100, [at(100, 100 + LABEL_MIN_SEP_PX - 1)])).toBe(true);
@@ -489,5 +489,11 @@ describe('furniture yielding to drawn bodies', () => {
   it('is clear when the chart has drawn nothing near it', () => {
     expect(labelCrowdedByAnchor(10, 10, [])).toBe(false);
     expect(labelCrowdedByAnchor(10, 10, [at(900, 700, 30), at(500, 20)])).toBe(false);
+  });
+
+  it('ignores the inert anchor — the ship is not a body to get out of the way of', () => {
+    const ship = { x: 100, y: 100, discRadiusPx: 0, pickable: false };
+    expect(labelCrowdedByAnchor(100, 100, [ship])).toBe(false);
+    expect(labelCrowdedByAnchor(100, 100, [ship, at(100, 100)])).toBe(true);
   });
 });

@@ -137,6 +137,22 @@ export class MapHUD {
    *  because measureCard re-shows the row to measure it, and only a row with
    *  something to say may come back. */
   private eventRow: MapEventRowModel | null = null;
+  /**
+   * The card control a pointer actually went down on, or null.
+   *
+   * A tap on a body opens the card UNDER THE FINGER, and the browser then
+   * synthesizes a compatibility click at the same point — which lands on
+   * whichever control has just materialized there and fires it. Measured on a
+   * 320 px phone, a single tap on Jupiter committed the card's Teleport: one
+   * touch, and the ship was gone.
+   *
+   * The teleport chip's own asymmetry is the fix: a deliberate press always
+   * begins with its own pointerdown ON the control, and the synthesized click
+   * after an opening tap has none. So a pointer click is honoured only when
+   * this names the control it landed on. No timers — a suppression window is a
+   * guess about how fast a person is.
+   */
+  private cardArmedEl: HTMLElement | null = null;
   private hoverMeta: HTMLElement | null = null;
   private lastHoverMeta: string | null = null;
   private lastDist = '';
@@ -215,13 +231,35 @@ export class MapHUD {
     // Focus and the commit verbs travel on different attributes, so a commit
     // handler can never be reached by a button that isn't one.
     // The whole event row is one target — it says one thing and does one thing.
-    this.cardEvent?.addEventListener('click', () => this.onEvent());
+    // Every one of them arms on its own pointerdown (see cardArmedEl).
+    this.cardEvent?.addEventListener('pointerdown', () => {
+      this.cardArmedEl = this.cardEvent;
+    });
+    this.cardEvent?.addEventListener('click', (e) => {
+      if (!this.cardClickAllowed(e, this.cardEvent)) return;
+      this.onEvent();
+    });
+    this.cardActions?.addEventListener('pointerdown', (e) => {
+      this.cardArmedEl = (e.target as HTMLElement).closest('button[data-action]');
+    });
     this.cardActions?.addEventListener('click', (e) => {
       const btn = (e.target as HTMLElement).closest('button[data-action]') as HTMLButtonElement | null;
       if (!btn || btn.disabled) return;
+      if (!this.cardClickAllowed(e, btn)) return;
       if (btn.dataset.action === 'focus') this.onFocus();
       else if (btn.dataset.verb) this.onVerb(btn.dataset.verb as MapVerb);
     });
+  }
+
+  /** Whether a click on a card control is one the user actually made on it.
+   *  A keyboard activation arrives with detail 0 and no pointer behind it, so
+   *  it always passes — the card stays fully operable without a pointer. */
+  private cardClickAllowed(e: MouseEvent, control: HTMLElement | null): boolean {
+    if (e.detail === 0) return true;
+    const armed = this.cardArmedEl === control;
+    // One press, one activation: whether it fired or not, the arming is spent.
+    this.cardArmedEl = null;
+    return armed;
   }
 
   // ── The panel ──────────────────────────────────────────────────────────
@@ -274,13 +312,18 @@ export class MapHUD {
     const panel = this.panel;
     if (!panel) return;
     const rect = panel.getBoundingClientRect();
-    if (!(rect.height > 0)) return;
-    // 12 px of air below the top chrome, the same margin the chart's other
-    // corners keep.
-    const cap = Math.max(0, Math.round(rect.bottom - panelCeilingPx() - 12));
-    panel.style.maxHeight = `${cap}px`;
-    this.growFocusList(cap);
-    this.updatePanelFade();
+    if (rect.height > 0) {
+      // 12 px of air below the top chrome, the same margin the chart's other
+      // corners keep.
+      const cap = Math.max(0, Math.round(rect.bottom - panelCeilingPx() - 12));
+      panel.style.maxHeight = `${cap}px`;
+      this.growFocusList(cap);
+      this.updatePanelFade();
+    }
+    // Told UNCONDITIONALLY, including for a panel that has just measured as
+    // nothing: a shape that went to zero is a geometry change like any other —
+    // the band it occupied is free now, and a cache still holding its old rect
+    // would go on steering labels around a panel that is not there.
     this.onPanelGeometry();
   }
 
@@ -300,13 +343,22 @@ export class MapHUD {
   private growFocusList(cap: number): void {
     const list = this.listEl;
     const panel = this.panel;
-    // A held list is answering a different question (see holdListHeight).
-    if (!list || !panel || this.listHeldPx !== null) return;
-    list.style.maxHeight = '';
+    if (!list || !panel) return;
     // The phone's cap is the stylesheet's and stays there: the sheet is a band
     // across a screen the chart also has to be read on, and a list that grew
-    // into the slack would take the chart's share of it.
-    if (panel.getBoundingClientRect().width >= window.innerWidth - 32) return;
+    // into the slack would take the chart's share of it. Cleared BEFORE any
+    // guard below can return — a resize across the breakpoint while a query is
+    // held would otherwise leave a desktop maximum standing over the phone's
+    // cap, and the held height with it.
+    if (panel.getBoundingClientRect().width >= window.innerWidth - 32) {
+      list.style.maxHeight = '';
+      return;
+    }
+    // A held list is answering a different question (see holdListHeight), and
+    // its grown maximum has to stay: clearing it here would let the
+    // stylesheet's floor clamp the very height being held.
+    if (this.listHeldPx !== null) return;
+    list.style.maxHeight = '';
     const floor = Number.parseFloat(getComputedStyle(list).maxHeight);
     if (!Number.isFinite(floor)) return;
     const slack = cap - panel.getBoundingClientRect().height;
@@ -354,6 +406,9 @@ export class MapHUD {
   setPanelStoodDown(down: boolean): void {
     this.panel?.classList.toggle('stood-down', down);
     this.pill?.classList.toggle('stood-down', down);
+    // Standing down empties the corner, which is a geometry change like any
+    // other — same door, so the label cache and the hint's dock both hear it.
+    this.onPanelGeometry();
   }
 
   /** Paint the layer switches. The owner holds the state; this only reflects
@@ -591,10 +646,13 @@ export class MapHUD {
 
   private applyFilter(): void {
     const query = this.searchEl?.value ?? '';
-    // Take (or give back) the height BEFORE the filter writes, so what is held
-    // is the height the list had when the user started typing.
+    // The height is TAKEN before the filter writes — what is held has to be the
+    // height the list had when the user started typing — and GIVEN BACK after
+    // them, at the bottom: releasing re-measures the panel, and a measurement
+    // taken while the matching rows are still hidden reads a panel that is
+    // about to grow, hands the list slack that does not exist, and judges the
+    // scroll cue on a body that has not been refilled yet.
     if (query.trim()) this.holdListHeight();
-    else this.releaseListHeight();
     const visible = filterDeckRows(query, this.rows);
     let any = false;
     for (let i = 0; i < this.rowEls.length; i++) {
@@ -617,6 +675,7 @@ export class MapHUD {
       // A highlight the filter has hidden is not a highlight any more.
       this.setHighlight(-1);
     }
+    if (!q) this.releaseListHeight();
   }
 
   private setHighlight(index: number): void {
@@ -702,12 +761,16 @@ export class MapHUD {
         this.cardActions.appendChild(btn);
       }
     }
+    // The card has just appeared under whatever opened it. Nothing on it has
+    // been pressed yet, so nothing on it is armed.
+    this.cardArmedEl = null;
     this.card.classList.add('visible');
     this.measureCard();
   }
 
   hideCard(): void {
     this.card?.classList.remove('visible');
+    this.cardArmedEl = null;
     this.eventRow = null;
     if (this.cardEvent) this.cardEvent.style.display = 'none';
   }

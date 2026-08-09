@@ -288,7 +288,7 @@ export function mapFocusReleasable(state: MapCameraState): boolean {
 }
 
 /**
- * Whether the console's Overview row has anything to do. It offers two ways
+ * Whether the panel's Reset view row has anything to do. It offers two ways
  * home, not one: giving up a focus, and re-fitting an overview that a free zoom
  * has wandered off. At the parked fit both refuse, and the row greys out.
  *

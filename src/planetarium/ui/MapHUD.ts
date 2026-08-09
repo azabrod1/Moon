@@ -407,8 +407,11 @@ export class MapHUD {
     this.panel?.classList.toggle('stood-down', down);
     this.pill?.classList.toggle('stood-down', down);
     // Standing down empties the corner, which is a geometry change like any
-    // other — same door, so the label cache and the hint's dock both hear it.
-    this.onPanelGeometry();
+    // other. A full remeasure rather than the bare notification: a resize can
+    // cross the phone breakpoint while the panel is stood down (its zero
+    // height skips the cap pass), so the return trip must reapply the cap —
+    // measurePanel() notifies the geometry door unconditionally either way.
+    this.measurePanel();
   }
 
   /** Paint the layer switches. The owner holds the state; this only reflects

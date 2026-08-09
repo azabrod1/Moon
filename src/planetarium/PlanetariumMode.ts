@@ -1006,9 +1006,10 @@ export class PlanetariumMode {
     MoonLabelCandidate & { label: HTMLDivElement; moon: MoonMesh }
   > = [];
   /** The names the label contest placed last frame, and the buffer this frame
-   *  refills. Two sets, swapped and cleared, so an incumbent's defence of its
-   *  slot costs no allocation. Cleared together wherever the previous frame's
-   *  sky stops being an argument about this one — see clearMoonLabelIncumbents. */
+   *  refills. Two sets swapped and refilled rather than one rebuilt, so an
+   *  incumbent's defence of its slot never allocates a set per frame. Both are
+   *  cleared wherever the previous frame's sky stops being an argument about
+   *  this one — see clearMoonLabelIncumbents. */
   private moonLabelIncumbents = new Set<string>();
   private moonLabelIncumbentsBuffer = new Set<string>();
   /** Which way each label last slid to clear its own moon's disc. Same lifecycle
@@ -3856,8 +3857,14 @@ export class PlanetariumMode {
       if (!moons) continue;
       for (const m of moons) {
         // Cleared on the way in and set only where a label is really placed, so
-        // every path out of this loop leaves the pick list an honest answer.
+        // every path out of this loop leaves the pick list an honest answer. The
+        // dark-style bit is read here and cleared with it: a moon that drops out
+        // of the pass — hidden, landed on, off the back of the camera — comes
+        // back through the enter threshold rather than being held on the leave
+        // one by a memory of the last time it was dark.
         m.labelDisplayed = false;
+        const wasUnlit = m.labelUnlit ?? false;
+        m.labelUnlit = false;
         const label = this.moonLabels.get(m.data.name);
         if (!label) continue;
         // Suppress the landed moon's own label — no need to label what you're standing on.
@@ -3911,7 +3918,6 @@ export class PlanetariumMode {
         const isTarget = targetMoon === m.data.name;
         if (!readable && dotLitAlpha < LABEL_DOT_MIN_ALPHA && !isTarget) {
           if (label.style.display !== 'none') label.style.display = 'none';
-          m.labelUnlit = false;
           continue;
         }
         // Dark-kept: the name is held by the lit dot while the real one has gone
@@ -3919,7 +3925,7 @@ export class PlanetariumMode {
         // flickering across a single threshold. A readable disc never takes the
         // style — a resolved moon sits at a low dot alpha as its normal state,
         // handed off to the disc.
-        const dark = m.labelUnlit
+        const dark = wasUnlit
           ? dotAlpha <= placement.unlitLeaveAlpha
           : dotAlpha < placement.unlitEnterAlpha;
         const isUnlit = !readable && dark && dotLitAlpha >= LABEL_DOT_MIN_ALPHA;
@@ -3974,7 +3980,8 @@ export class PlanetariumMode {
         }
         // Label sits above the moon (translate(-50%, -100%) + -6px margin).
         // Exclude this moon's own disc so it doesn't cull itself.
-        const labelOccluded = this.planetLabels?.isScreenPointOccluded(sx, sy - 10, moonCamDist, `moon:${m.data.name}`) ?? false;
+        const selfDisc = `moon:${m.data.name}`;
+        const labelOccluded = this.planetLabels?.isScreenPointOccluded(sx, sy - 10, moonCamDist, selfDisc) ?? false;
         if (labelOccluded) {
           label.style.display = 'none';
           continue;
@@ -3984,7 +3991,7 @@ export class PlanetariumMode {
         // name floats over the parent's limb announcing something you cannot
         // see. A lit moon needs no such proof — its dot is the proof.
         if (isUnlit
-          && (this.planetLabels?.isScreenPointOccluded(proj.x, proj.y, moonCamDist, `moon:${m.data.name}`) ?? false)) {
+          && (this.planetLabels?.isScreenPointOccluded(proj.x, proj.y, moonCamDist, selfDisc) ?? false)) {
           if (label.style.display !== 'none') label.style.display = 'none';
           continue;
         }
@@ -4072,6 +4079,15 @@ export class PlanetariumMode {
     this.moonLabelIncumbents.clear();
     this.moonLabelIncumbentsBuffer.clear();
     this.moonLabelSlideSides.clear();
+    // The per-moon label bits are the same memory kept somewhere else. The pick
+    // list reads labelDisplayed one frame late, so without this a name from the
+    // sky just left stays aimable for a frame in the sky just arrived at.
+    for (const moons of this.planetMoons.values()) {
+      for (const m of moons) {
+        m.labelDisplayed = false;
+        m.labelUnlit = false;
+      }
+    }
   }
 
   // Scratch for the veil support pass, reused across the gate's upper-bound and

@@ -455,7 +455,9 @@ describe('moonDots — nav-target floor survives the parent gate (design A)', ()
     // renderMoonLabels gates a sub-pixel label at LABEL_DOT_MIN_ALPHA; the
     // outbound continuity QA bar is 0.02. The floor must clear both, or a
     // retune could silently kill the nav-target label while the dot still
-    // (barely) shows.
+    // (barely) shows. The label bar's own value is pinned here too, so lowering
+    // the shared constant can never quietly satisfy this guard instead.
+    expect(LABEL_DOT_MIN_ALPHA).toBe(0.03);
     const QA_DOT_MIN_ALPHA = 0.02;
     expect(P.targetMinIntensity).toBeGreaterThan(LABEL_DOT_MIN_ALPHA);
     expect(P.targetMinIntensity).toBeGreaterThan(QA_DOT_MIN_ALPHA);

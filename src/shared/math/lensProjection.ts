@@ -112,6 +112,72 @@ export function lensEffectiveStrength(designFovDeg: number, aspect: number, stre
 }
 
 /**
+ * Precomputed constants of the forward warp. Everything in `lensWarpNdc` that
+ * depends only on the camera — not on the point being warped — lives here, so
+ * hot loops (32 rim rays per sphere, every labelled body, every frame) hoist
+ * the two `tan`s and the edge normalization instead of re-deriving them per
+ * point. Build with `makeLensWarpContext`; a context is valid for as long as
+ * the camera's FOVs/aspect/strength are — one frame, in practice.
+ */
+export interface LensWarpContext {
+  tanHalfRender: number;
+  aspect: number;
+  strength: number;
+  rEdge: number;
+}
+
+export function makeLensWarpContext(
+  designFovDeg: number,
+  renderFovDeg: number,
+  aspect: number,
+  strength: number,
+  out: LensWarpContext,
+): LensWarpContext {
+  out.aspect = aspect;
+  out.strength = strength;
+  if (strength <= 0) {
+    out.tanHalfRender = 0;
+    out.rEdge = 1;
+    return out;
+  }
+  out.tanHalfRender = Math.tan((renderFovDeg / 2) * DEG);
+  out.rEdge = lensRadial((designFovDeg / 2) * DEG, strength);
+  return out;
+}
+
+/** Point half of the forward map: same math as `lensWarpNdc`, constants from
+ *  the context. The two must stay value-identical — `lensWarpNdc` delegates
+ *  here so there is exactly one definition. */
+export function lensWarpNdcWithContext(
+  ctx: LensWarpContext,
+  ndcX: number,
+  ndcY: number,
+  out: { x: number; y: number },
+): { x: number; y: number } {
+  if (ctx.strength <= 0) {
+    out.x = ndcX;
+    out.y = ndcY;
+    return out;
+  }
+  const dx = ndcX * ctx.aspect * ctx.tanHalfRender;
+  const dy = ndcY * ctx.tanHalfRender;
+  const tanTheta = Math.hypot(dx, dy);
+  if (tanTheta < 1e-9) {
+    out.x = 0;
+    out.y = 0;
+    return out;
+  }
+  const theta = Math.atan(tanTheta);
+  const r = lensRadial(theta, ctx.strength) / ctx.rEdge;
+  const scale = r / tanTheta;
+  out.x = (dx * scale) / ctx.aspect;
+  out.y = dy * scale;
+  return out;
+}
+
+const warpCtxScratch: LensWarpContext = { tanHalfRender: 0, aspect: 1, strength: 0, rEdge: 1 };
+
+/**
  * Forward map: rectilinear NDC under the (overscanned) render camera → output
  * NDC after the lens pass. Identity at strength 0. Used by projectToScreen so
  * DOM overlays match the warped image.
@@ -125,27 +191,8 @@ export function lensWarpNdc(
   strength: number,
   out: { x: number; y: number },
 ): { x: number; y: number } {
-  if (strength <= 0) {
-    out.x = ndcX;
-    out.y = ndcY;
-    return out;
-  }
-  const tanHalfRender = Math.tan((renderFovDeg / 2) * DEG);
-  const dx = ndcX * aspect * tanHalfRender;
-  const dy = ndcY * tanHalfRender;
-  const tanTheta = Math.hypot(dx, dy);
-  if (tanTheta < 1e-9) {
-    out.x = 0;
-    out.y = 0;
-    return out;
-  }
-  const theta = Math.atan(tanTheta);
-  const rEdge = lensRadial((designFovDeg / 2) * DEG, strength);
-  const r = lensRadial(theta, strength) / rEdge;
-  const scale = r / tanTheta;
-  out.x = (dx * scale) / aspect;
-  out.y = dy * scale;
-  return out;
+  makeLensWarpContext(designFovDeg, renderFovDeg, aspect, strength, warpCtxScratch);
+  return lensWarpNdcWithContext(warpCtxScratch, ndcX, ndcY, out);
 }
 
 /**

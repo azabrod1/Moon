@@ -6145,27 +6145,37 @@ export class PlanetariumMode {
     this.statsPanel.render(stats, this.fpsDisplay);
   }
 
+  private readonly sunLabelOcclusionProbe = (x: number, y: number, depth: number): boolean =>
+    this.planetLabels?.isScreenPointOccluded(x, y, depth) ?? false;
+
   private updateSunLabel() {
     if (!this.solarSystem) return;
     const sunPos = this.solarSystem.sun.position;
     const canvas = this.renderer.domElement;
-    const sunRadiusPx = projectSphereToScreen(
-      sunPos,
-      SUN_DATA.radiusAU,
-      this.camera,
-      canvas.clientWidth,
-      canvas.clientHeight,
-      this.sphereScreenProjection,
-    ).radiusPx;
+    const distanceFromSunAU = this.player.getDistanceFromSun();
+    const revealed = this.revealedBody === 'Sun';
+    // The footprint (32 rim rays through the lens) only feeds the visible
+    // label's offset — when the label's own gates will hide it anyway, pass a
+    // zero radius and skip the measurement.
+    const sunRadiusPx = SunLabel.wantsFootprint(this.showBodyLabels, revealed, distanceFromSunAU)
+      ? projectSphereToScreen(
+        sunPos,
+        SUN_DATA.radiusAU,
+        this.camera,
+        canvas.clientWidth,
+        canvas.clientHeight,
+        this.sphereScreenProjection,
+      ).radiusPx
+      : 0;
     this.sunLabel.update(
       sunPos,
       this.camera,
       this.renderer.domElement,
-      this.player.getDistanceFromSun(),
+      distanceFromSunAU,
       sunRadiusPx,
-      (x, y, depth) => this.planetLabels?.isScreenPointOccluded(x, y, depth) ?? false,
+      this.sunLabelOcclusionProbe,
       this.showBodyLabels,
-      this.revealedBody === 'Sun',
+      revealed,
       this.sunGlareMaskParams,
     );
   }

@@ -33,6 +33,12 @@ import {
 } from './planets/planetData';
 import { applySunGlowTier, cancelTextureUpgrade, createMoonMeshes, createShaderWarmupProbes, setWarmEligibleMoonParents, upgradeTextureOnApproach, ATMOSPHERES, ATMOSPHERE_SHELL_SCALES, type MoonMesh, type TextureUpgrade } from './PlanetFactory';
 import type { SurfaceShadingFx } from './world/surfaceShading';
+import {
+  computeSurfaceSkyDrive,
+  createSurfaceSkyDome,
+  surfaceSkyParams,
+  type SurfaceSkyDome,
+} from './world/surfaceSky';
 import { bindTextureWarmer, invalidateTextureWarmCache, pumpTextureWarmQueue, queueTextureWarm, resetTextureWarmer } from './world/textureWarmer';
 import {
   advancePlanetariumTime,
@@ -991,6 +997,20 @@ export class PlanetariumMode {
   private surfaceSpotAnchor: THREE.Vector3 | null = null;
   // Marker over the tracked target — sticky across the hysteresis band.
   private surfaceMarkerKind: SurfaceMarkerKind = 'brackets';
+  // Surface-view atmosphere sky (world/surfaceSky): a camera-centred dome that
+  // daylights the vault while standing on a body with an ATMOSPHERES entry and
+  // collapses it through a solar eclipse. Created once at activation (so the
+  // boot compile pass links its program), driven per frame by updateSurfaceSky.
+  private surfaceSky: SurfaceSkyDome | null = null;
+  /** Entry/exit ease for the dome's radiance — the sky fades in over the
+   *  orbit→ground glide instead of slamming on. */
+  private surfaceSkyFade = 0;
+  /** 0..1 — how much of the starfield this frame's sky leaves visible. Feeds
+   *  the star gain and the constellation wash; exactly 1 off-surface and on
+   *  airless worlds. */
+  private surfaceSkyStarVisibility = 1;
+  private tmpSurfaceSkySunDir = new THREE.Vector3();
+  private tmpSurfaceSkyZenith = new THREE.Vector3();
   // Observatory-panel rect, cached per viewport size for the chevron clamp
   // (the panel is CSS-fixed; it only moves on resize — desktop side panel
   // vs ≤640px bottom sheet).
@@ -1612,6 +1632,14 @@ export class PlanetariumMode {
 
     if (this.showConstellations) {
       this.ensureConstellationsReady();
+    }
+
+    // Surface-sky dome, built before the boot compile pass below so its
+    // program links behind the load veil, never inside the first "Look up"
+    // gesture. Invisible and all-zero until updateSurfaceSky drives it.
+    if (!this.surfaceSky) {
+      this.surfaceSky = createSurfaceSkyDome();
+      this.scene.add(this.surfaceSky.mesh);
     }
 
     // Configure camera — disable OrbitControls on touch devices during flight
@@ -8014,6 +8042,95 @@ export class PlanetariumMode {
   }
 
   /**
+   * Per-frame surface-sky drive: recentre the dome on the camera and feed the
+   * shader its levers from the live geometry — the Sun's elevation at the
+   * observer and the exposed fraction of the solar disc. Runs every landed
+   * frame; off-surface (or on an airless body) it only has to finish the
+   * fade-out and hand the stars back.
+   */
+  private updateSurfaceSky(dt: number) {
+    const sky = this.surfaceSky;
+    if (!sky) return;
+    const params = this.landedOn ? surfaceSkyParams(this.landedOn.name) : null;
+    const active = this.landedView === 'surface' && params !== null && !!this.solarSystem;
+    const blend = 1 - Math.exp(-Math.max(dt, 0) / 0.18);
+    this.surfaceSkyFade += ((active ? 1 : 0) - this.surfaceSkyFade) * blend;
+    if (!active || !params) {
+      this.surfaceSkyStarVisibility = 1;
+      // Landing swaps tear surface view down immediately — no lit frame to
+      // fade from, so an inactive sky with no live palette just goes dark.
+      this.surfaceSkyFade = 0;
+      sky.mesh.visible = false;
+      return;
+    }
+
+    const camPos = this.camera.position;
+    const camRadius = Math.max(camPos.length(), 1e-12);
+    const zenith = this.tmpSurfaceSkyZenith.copy(camPos).multiplyScalar(1 / camRadius);
+    const sunDir = this.tmpSurfaceSkySunDir
+      .copy(this.solarSystem!.sun.position)
+      .sub(camPos);
+    const sunDistance = Math.max(sunDir.length(), 1e-12);
+    sunDir.multiplyScalar(1 / sunDistance);
+    const drive = computeSurfaceSkyDrive(
+      zenith.dot(sunDir),
+      this.surfaceSkySunVisibleFraction(sunDir, sunDistance),
+    );
+    const fade = this.surfaceSkyFade;
+    this.surfaceSkyStarVisibility = THREE.MathUtils.lerp(1, drive.starVisibility, fade);
+
+    sky.mesh.visible = true;
+    sky.mesh.position.copy(camPos);
+    const u = sky.uniforms;
+    u.uZenith.value.copy(zenith);
+    u.uSunDir.value.copy(sunDir);
+    // The hovering vantage sees the limb dipped below the astronomical
+    // horizon; the shader keys its haze band to that visible horizon.
+    const bodyRadius = this.getLandedBodyRadiusAU();
+    const cosDip = THREE.MathUtils.clamp(bodyRadius / camRadius, 0, 1);
+    u.uHorizonSin.value = -Math.sqrt(Math.max(0, 1 - cosDip * cosDip));
+    u.uSkylight.value = drive.skylight * params.strength * fade;
+    u.uTwilight.value = drive.twilight * params.strength * fade;
+    u.uDuskRing.value = drive.duskRing * fade;
+    u.uDayColor.value.copy(params.day);
+    u.uHorizonColor.value.copy(params.horizon);
+    u.uSunsetColor.value.copy(params.sunset);
+  }
+
+  /**
+   * Exposed fraction of the solar disc for the SKY's lighting — the same
+   * angular-overlap product as computeVisibleSunFraction but camera-direction
+   * independent (no eligibility window: the sky must stay dark when the player
+   * free-looks away from a total eclipse) and without the dominant-occluder
+   * bookkeeping the glare pipeline needs. The landed body's own mesh is
+   * skipped: the horizon burying the Sun is the day/night gate's job, and the
+   * circular-overlap model is meaningless for a sphere the camera stands on.
+   */
+  private surfaceSkySunVisibleFraction(
+    sunDirection: THREE.Vector3,
+    sunDistance: number,
+  ): number {
+    const sunAngularRadius = Math.asin(
+      THREE.MathUtils.clamp(SUN_DATA.radiusAU / sunDistance, 0, 0.999999),
+    );
+    const landedName = this.landedOn?.name;
+    let visible = 1;
+    for (const planet of this.solarSystem?.planets ?? []) {
+      if (planet.data.name === landedName) continue;
+      visible *= 1 - this.sunOcclusionByMesh(planet.mesh, sunDirection, sunDistance, sunAngularRadius);
+      if (visible < 1e-4) return 0;
+    }
+    for (const moons of this.planetMoons.values()) {
+      for (const moon of moons) {
+        if (moon.data.name === landedName) continue;
+        visible *= 1 - this.sunOcclusionByMesh(moon.mesh, sunDirection, sunDistance, sunAngularRadius);
+        if (visible < 1e-4) return 0;
+      }
+    }
+    return THREE.MathUtils.clamp(visible, 0, 1);
+  }
+
+  /**
    * Telescope light grasp. A narrow field on a dark sky is exactly what a
    * telescope buys you — the same aperture spread over less sky, so faint stars
    * climb out of the background — and the surface view is the only place the
@@ -8024,12 +8141,24 @@ export class PlanetariumMode {
    */
   private updateStarGain(dt: number): void {
     if (!this.starfield) return;
+    // The surface sky's daylight wash rides the same gain: below 1 the shader
+    // scales the field linearly toward invisible, so a blue day blanks the
+    // stars, twilight thins them, and an eclipse's totality (starVisibility
+    // recovering) eases them back in through this same glide.
     const target = this.landedView === 'surface'
       ? THREE.MathUtils.clamp(Math.pow(60 / Math.max(this.displayFovDeg(), 1e-3), 0.6), 1, 3)
+        * this.surfaceSkyStarVisibility
       : 1;
     const blend = 1 - Math.exp(-Math.max(dt, 0) / 0.3);
     this.starGain += (target - this.starGain) * blend;
     setStarfieldGain(this.starfield, this.starGain);
+    // The constellation figures are sky furniture drawn over the vault — the
+    // same wash that hides the stars has to hide them (a stick figure floating
+    // on a blue day sky reads as a glitch). Self-healing: off-surface the
+    // visibility is pinned back to 1 above.
+    this.constellations?.setDaylightWash(
+      this.landedView === 'surface' ? this.surfaceSkyStarVisibility : 1,
+    );
   }
 
   /** The FOV the frame displays (under the lens pass, camera.fov holds the
@@ -9966,6 +10095,12 @@ export class PlanetariumMode {
     // the way out, or the cruise sky would carry a lifted faint end for a beat.
     this.starGain = 1;
     if (this.starfield) setStarfieldGain(this.starfield, 1);
+    // The daylight sky is a surface-view instrument the same way: snap it off
+    // (the orbit camera pops to space anyway) and hand the full field back.
+    this.surfaceSkyFade = 0;
+    this.surfaceSkyStarVisibility = 1;
+    if (this.surfaceSky) this.surfaceSky.mesh.visible = false;
+    this.constellations?.setDaylightWash(1);
     this.surfaceFovAnim = null;
     this.surfaceSpotAnchor = null;
     this.surfaceLook.detach();
@@ -11223,6 +11358,9 @@ export class PlanetariumMode {
     // NDC projection reads directly.
     this.camera.updateMatrixWorld();
     this.updateSunShader(dt);
+    // Sky after the surface re-pin for the same reason as the Sun metering:
+    // the dome's zenith/sun geometry must read this frame's camera pose.
+    this.updateSurfaceSky(dt);
     this.updateShadowGuideCamera();
     this.updateOrbitFocusLabels();
 

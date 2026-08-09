@@ -25,8 +25,9 @@ export function starfieldFaintLimitMag(): number {
   return STAR_FAINT_ANCHOR_MAG;
 }
 
-/** Telescope light grasp: how much the surface view's narrow field lifts the
- *  faint end. 1 leaves the field exactly as built. */
+/** Telescope light grasp above 1 (how much the surface view's narrow field
+ *  lifts the faint end) and daylight wash below 1 (the surface sky scaling the
+ *  whole field toward invisible). 1 leaves the field exactly as built. */
 export function setStarfieldGain(starfield: THREE.Points, gain: number): void {
   const mat = starfield.material as THREE.ShaderMaterial;
   const uniform = mat.uniforms?.uStarGain;
@@ -168,15 +169,18 @@ export function createPlanetariumStarfield(rendererPixelRatio: number): THREE.Po
             max(max(halfC.x, halfC.y), max(halfD.x, halfD.y))
           );
           gl_PointSize = max(1.0, 2.0 * sourceHalfPx);
-          // Gain lifts the faint end on a soft knee, 1-(1-a)^g: alpha 1 stays 1
-          // (no star climbs over the bloom cutoff the field is built to stay
-          // under), the map is strictly monotone in alpha, so the magnitude
+          // Gain above 1 lifts the faint end on a soft knee, 1-(1-a)^g: alpha 1
+          // stays 1 (no star climbs over the bloom cutoff the field is built to
+          // stay under), the map is strictly monotone in alpha, so the magnitude
           // ordering survives every gain — a hard min() collapsed the whole
-          // catalog to opacity 1 below a ~13-degree field. Branched so an
-          // ungained frame is byte-identical, not merely pow-identical.
+          // catalog to opacity 1 below a ~13-degree field. Below 1 it is the
+          // daylight wash instead — the surface sky scaling the whole field
+          // toward invisible, brightest stars last only through the knee the
+          // linear scale keeps. Branched so an ungained frame is byte-identical,
+          // not merely pow-identical (and alpha * 1.0 is exact at the seam).
           float gained = uStarGain > 1.001
             ? 1.0 - pow(1.0 - alpha, uStarGain)
-            : alpha;
+            : alpha * min(uStarGain, 1.0);
           vAlpha = gained
             * (1.0 - ${SUN_GLARE_MASK_MAX_KILL.toFixed(2)} * sunGlareMask(gl_Position));
         }

@@ -49,6 +49,7 @@ export class Constellations {
   readonly lines: THREE.LineSegments;
   private labels: LabelState[] = [];
   private labelContainer: HTMLDivElement;
+  private daylightWash = 1;
 
   constructor() {
     // Build a cache of snapped positions: for each unique RA/Dec endpoint
@@ -195,6 +196,21 @@ export class Constellations {
         label.visible = false;
       }
     }
+  }
+
+  /**
+   * Daylight wash from the surface-view sky: scales the figures (lines and
+   * name labels together) toward invisible while the sky is bright, back to
+   * full under a dark one. Idempotent and cheap when unchanged, so the mode
+   * can drive it every frame; the visibility toggle above stays the on/off
+   * switch — this only fades what that switch shows.
+   */
+  setDaylightWash(visibility: number): void {
+    const wash = THREE.MathUtils.clamp(visibility, 0, 1);
+    if (Math.abs(wash - this.daylightWash) < 0.005) return;
+    this.daylightWash = wash;
+    (this.lines.material as THREE.LineBasicMaterial).opacity = LINE_OPACITY * wash;
+    this.labelContainer.style.opacity = wash.toFixed(3);
   }
 
   setVisible(visible: boolean): void {

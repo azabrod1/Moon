@@ -416,8 +416,11 @@ export function resolveMarkerKind(
 }
 
 /** Shadow-guide resolvability thresholds (px, with hysteresis): cone
- * silhouette edges and footprint rings activate once their projected size
- * clears the ON bound and hold until it drops below the OFF bound. Sits
+ * silhouette edges and footprint rings activate once their screen size
+ * (measured footprint or analytic tangent disc, whichever the caller can
+ * answer with everywhere) clears the ON bound and hold until it drops below
+ * the OFF bound. The band is also what absorbs the small difference between
+ * those two sizings, so a caller may switch without a step at the gate. Sits
  * below the marker scale (MARKER_BRACKETS_MIN_PX) deliberately — guides are
  * hairlines, legible a little earlier than a bracketed disc. */
 export const GUIDE_RESOLVABLE_ON_PX = 8;

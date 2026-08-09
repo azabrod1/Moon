@@ -3160,7 +3160,9 @@ export class PlanetariumMode {
    * the frame, after the surface camera re-pins, so silhouette edges and
    * resolvability gates read the camera pose that will actually render. The
    * reticle is the HUD's sub-resolution glyph reused as an HTML marker over
-   * a collapsed (sub-resolution) true-scale footprint.
+   * a collapsed (sub-resolution) true-scale footprint. The guides size their
+   * occluder discs from the display fov — the overscan in `camera.fov` is not
+   * an angle anything on screen is measured against.
    */
   private updateShadowGuideCamera() {
     const parentName = this.observatoryParentPlanetName();
@@ -3177,6 +3179,7 @@ export class PlanetariumMode {
         this.camera,
         w,
         h,
+        this.displayFovDeg(),
       );
       if (this.shadowVisuals.getFootprintReticleLocal(this.tmpGuideReticle)) {
         this.tmpGuideReticle.add(systemGroup.position);

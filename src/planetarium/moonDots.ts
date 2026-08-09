@@ -20,8 +20,12 @@
  * copy the dev bridge merges into (`__moon.setMoonDotParams`) for tuning by eye.
  */
 
-import { DEG2RAD } from '../shared/math/angles';
 import { STAR_POINT_MAPPING, starPointVisual, type StarPointMapping, type StarPointVisual } from './world/starPointMapping';
+
+// The disc-size closed form lives on the shared scalar shelf — subsystems that
+// size a disc without touching photometry (shadow guides) import it there.
+// Re-exported so the dot pipeline's own consumers keep one import.
+export { discDiameterPx } from '../shared/math/discScreenSize';
 
 const clamp = (v: number, min: number, max: number) => Math.max(min, Math.min(max, v));
 const lerp = (x: number, y: number, t: number) => (1 - t) * x + t * y;
@@ -141,24 +145,6 @@ export const MOON_DOT_PARAMS: MoonDotParams = {
   // threshold sits below that: arriving at a procedural moon sharpens it.
   texUpgradeDiscPx: 80,
 };
-
-/**
- * On-screen disc DIAMETER (px) of a sphere of rendered radius r at distance
- * `distAU`, using the true-silhouette tangent angle (matches `discRadiusPx` in
- * PlanetLabels, so the dot's handoff and the label offset agree).
- */
-export function discDiameterPx(
-  renderedRadiusAU: number,
-  distAU: number,
-  fovDeg: number,
-  viewportHpx: number,
-): number {
-  const r = renderedRadiusAU;
-  const halfFovTan = Math.tan((fovDeg * DEG2RAD) / 2);
-  const tangentSq = distAU * distAU - r * r;
-  const tangent = Math.sqrt(Math.max(tangentSq, r * r * 1e-12));
-  return (r / (tangent * halfFovTan)) * viewportHpx;
-}
 
 /**
  * Albedo proxy from a catalog tint: the tint's Rec.709 luminance clamped to a

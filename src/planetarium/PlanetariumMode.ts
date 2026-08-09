@@ -221,6 +221,7 @@ import {
 import { applyLensShaderUniforms, type LensShaderUniforms } from '../shared/three/lensShader';
 import { setText } from '../shared/dom';
 import { Constellations } from './Constellations';
+import { snapConstellations } from './data/constellationGeometry';
 import { getMoonsByPlanet, MOONS, type MoonData } from './planets/moonData';
 import { RING_CONFIGS, type RingStyle } from './planets/rings';
 import { filterDeckRows, groupDeckBodies, observeArrivalAction, type DeckRow } from './deckLogic';
@@ -2076,6 +2077,13 @@ export class PlanetariumMode {
     if (buildingSolarSystem && this.landedOn) {
       await this.settleRestoredLandedTextureUpgrades();
     }
+
+    // Warm the constellation snap here, still behind the load screen: the
+    // banded build costs ~10ms, and paying it now — rather than scheduling it
+    // for later — guarantees the session's first consumer (the system map's
+    // chart on M, or the sky's toggle) finds the memo hot however soon the
+    // gesture comes.
+    snapConstellations();
 
     reportActivationProgress(FIRST_PLANETARIUM_ACTIVATION_TOTAL_UNITS);
     performance.measure('plm:activate', 'plm:activate:start');

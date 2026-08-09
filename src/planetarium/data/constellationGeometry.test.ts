@@ -5,6 +5,7 @@ import {
   constellationLabelAnchors,
   constellationSegmentPositions,
   snapConstellations,
+  snapPointToCatalog,
 } from './constellationGeometry';
 import { CONSTELLATIONS } from './constellations';
 import { BRIGHT_STAR_CATALOG } from './brightStars';
@@ -158,5 +159,70 @@ describe('the shared constellation snap', () => {
     // documented one.
     expect(moved).toBeGreaterThan(0);
     expect(CONSTELLATION_SNAP_RADIUS_DEG).toBe(3);
+  });
+});
+
+/**
+ * Every unique endpoint in today's figure data is already an exact catalog
+ * coordinate, so the byte-identity suite above never makes the search choose
+ * between stars. This sweep does: synthetic off-star points across the whole
+ * sky — poles, the RA wrap, points at varied pulls from a star — each
+ * checked for exact equality against a naive full-catalog trig scan, which
+ * is the oracle for who wins.
+ *
+ * What the sweep deliberately does NOT claim: the no-star-within-radius
+ * fallback, the exact 3° cutoff, and an exact cosine tie are all unreachable
+ * against this catalog — ~26k stars put two dozen inside any 3° circle, so
+ * the nearest is never anywhere near the radius and never exactly tied.
+ * Those branches are read-verified; the tie rule mirrors the reference
+ * scan's catalog-order winner by construction.
+ */
+describe('snapPointToCatalog', () => {
+  const naiveSnap = (ra: number, dec: number): [number, number] => {
+    const angularDistDeg = (ra1: number, dec1: number, ra2: number, dec2: number): number => {
+      const d1 = dec1 * DEG2RAD;
+      const d2 = dec2 * DEG2RAD;
+      const dRa = (ra2 - ra1) * DEG2RAD;
+      const sinD1 = Math.sin(d1), cosD1 = Math.cos(d1);
+      const sinD2 = Math.sin(d2), cosD2 = Math.cos(d2);
+      const sinDRa = Math.sin(dRa), cosDRa = Math.cos(dRa);
+      const a = cosD2 * sinDRa;
+      const b = cosD1 * sinD2 - sinD1 * cosD2 * cosDRa;
+      const c = sinD1 * sinD2 + cosD1 * cosD2 * cosDRa;
+      return Math.atan2(Math.sqrt(a * a + b * b), c) * RAD2DEG;
+    };
+    let bestRa = ra;
+    let bestDec = dec;
+    let bestDist = CONSTELLATION_SNAP_RADIUS_DEG;
+    for (const star of BRIGHT_STAR_CATALOG) {
+      const d = angularDistDeg(ra, dec, star.raDeg, star.decDeg);
+      if (d < bestDist) {
+        bestDist = d;
+        bestRa = star.raDeg;
+        bestDec = star.decDeg;
+      }
+    }
+    return [bestRa, bestDec];
+  };
+
+  it('matches the naive full-catalog scan across the sky, off-star points included', () => {
+    const points: [number, number][] = [];
+    // Golden-angle spiral: deterministic, incommensurate with the catalog's
+    // structure, and reaching both polar caps.
+    for (let i = 0; i < 120; i++) {
+      points.push([(i * 137.50776405) % 360, -88 + ((i * 47.9) % 176)]);
+    }
+    const anchor = BRIGHT_STAR_CATALOG.find((s) => Math.abs(s.decDeg) < 60)!;
+    points.push(
+      [anchor.raDeg, anchor.decDeg],
+      [anchor.raDeg, anchor.decDeg + 0.5],
+      [anchor.raDeg, anchor.decDeg + 1.7],
+      [anchor.raDeg, anchor.decDeg + 2.6],
+      [0.01, 15], [359.99, 15],
+      [12, 89.99], [200, -89.99],
+    );
+    for (const [ra, dec] of points) {
+      expect(snapPointToCatalog(ra, dec), `at ra ${ra}, dec ${dec}`).toEqual(naiveSnap(ra, dec));
+    }
   });
 });

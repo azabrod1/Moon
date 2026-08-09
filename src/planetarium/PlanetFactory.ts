@@ -55,15 +55,21 @@ function bitmapUploadUsable(): Promise<boolean> {
       const sample = new ImageData(1, 2);
       sample.data.set([255, 255, 255, 255, 0, 0, 0, 255]);
       const bitmap = await createImageBitmap(sample, { imageOrientation: 'flipY' });
-      const canvas = document.createElement('canvas');
-      canvas.width = 1;
-      canvas.height = 2;
-      const ctx = canvas.getContext('2d');
-      if (!ctx) return false;
-      ctx.drawImage(bitmap, 0, 0);
-      const topPixel = ctx.getImageData(0, 0, 1, 1).data;
-      bitmap.close();
-      return topPixel[0] < 128; // black on top: the flip really happened
+      try {
+        const canvas = document.createElement('canvas');
+        canvas.width = 1;
+        canvas.height = 2;
+        const ctx = canvas.getContext('2d');
+        if (!ctx) return false;
+        ctx.drawImage(bitmap, 0, 0);
+        const px = ctx.getImageData(0, 0, 1, 2).data;
+        // Demand the full inverted image — opaque black over opaque white. A
+        // silently failed draw reads back blank [0,0,0,0], and "red < 128"
+        // alone would call that a pass.
+        return px[0] < 128 && px[3] > 128 && px[4] > 128 && px[7] > 128;
+      } finally {
+        bitmap.close();
+      }
     } catch {
       return false;
     }
@@ -79,10 +85,20 @@ function bitmapUploadUsable(): Promise<boolean> {
  * when the 8K Moon lands mid-session. A pre-flipped bitmap uploads without
  * that pass, and its decode already happened off this thread.
  */
+/** Thrown for transport failures (HTTP status, network, stream) — the cases
+ *  where re-fetching through another decoder cannot help and the handle's
+ *  ordinary cooldown-and-retry is the right response. */
+class TierFetchError extends Error {}
+
 async function loadTierBitmap(url: string): Promise<THREE.Texture> {
-  const response = await fetch(url);
-  if (!response.ok) throw new Error(`HTTP ${response.status} for ${url}`);
-  const blob = await response.blob();
+  let blob: Blob;
+  try {
+    const response = await fetch(url);
+    if (!response.ok) throw new Error(`HTTP ${response.status} for ${url}`);
+    blob = await response.blob();
+  } catch (err) {
+    throw new TierFetchError(err instanceof Error ? err.message : String(err));
+  }
   const bitmap = await createImageBitmap(blob, {
     imageOrientation: 'flipY',
     premultiplyAlpha: 'none',
@@ -90,6 +106,11 @@ async function loadTierBitmap(url: string): Promise<THREE.Texture> {
   const tex = new THREE.Texture(bitmap);
   tex.flipY = false; // baked into the bitmap above
   tex.needsUpdate = true;
+  // The GPU copy made at upload is independent of the bitmap, and an applied
+  // texture must KEEP its image (three re-uploads from it after a context
+  // loss) — but a disposed texture is done for good, and without this the
+  // decoded bitmap (~128MB at 8K) lingers until GC notices.
+  tex.addEventListener('dispose', () => bitmap.close());
   return tex;
 }
 
@@ -99,8 +120,19 @@ async function loadTierBitmap(url: string): Promise<THREE.Texture> {
 // the texture warmer uses for its upload call. Nothing in the app rebinds it.
 let loadUpgradeTexture: TextureLoad = (url, onLoad, onError) => {
   bitmapUploadUsable().then((usable) => {
-    if (usable) loadTierBitmap(url).then(onLoad, onError);
-    else textureLoader.load(url, onLoad, undefined, onError);
+    if (!usable) {
+      textureLoader.load(url, onLoad, undefined, onError);
+      return;
+    }
+    loadTierBitmap(url).then(onLoad, (err) => {
+      // Transport failures go to the handle's cooldown as always. A DECODE
+      // failure is different: the probe passed on a 1x2 sample, but this
+      // platform balked at the real image (size limits, memory pressure) —
+      // the HTMLImageElement path may still manage it, so spend one fallback
+      // load before surfacing the error.
+      if (err instanceof TierFetchError) onError(err);
+      else textureLoader.load(url, onLoad, undefined, onError);
+    });
   });
 };
 
@@ -719,7 +751,12 @@ export function lodMeasurementRelevant(
   const fraction = estimatedDiameterPx / Math.max(canvasHeight, 1);
   for (const up of ups) {
     if (upgradeComplete(up)) continue;
-    if (earnedUpgradeTier(up, fraction) !== null) return true;
+    // Both earned and resolve grow with the fraction, so a tier the
+    // OVERestimate cannot resolve into a fetchable step is one the real
+    // footprint cannot either — e.g. a Moon already on 4K stops pulling
+    // measurements until the estimate reaches into the 8K band.
+    const earned = earnedUpgradeTier(up, fraction);
+    if (earned !== null && resolveUpgradeTier(up, earned) !== null) return true;
   }
   return false;
 }

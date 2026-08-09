@@ -250,7 +250,7 @@ describe('estimateSphereScreenDiameterPx', () => {
    *  range, and the lens-less flight/compare cameras. */
   function sweepCameras(width: number, height: number): THREE.PerspectiveCamera[] {
     const cams: THREE.PerspectiveCamera[] = [];
-    for (const fov of [20, 40, 60, 75, 90, 105]) {
+    for (const fov of [1.5, 5, 20, 40, 60, 75, 90, 105]) {
       for (const strength of [1, 0.75, 0.5, null]) {
         const camera = new THREE.PerspectiveCamera(fov, width / height, 0.01, 100);
         if (strength !== null) {

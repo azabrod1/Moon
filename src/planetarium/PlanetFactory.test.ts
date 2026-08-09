@@ -1070,11 +1070,14 @@ describe('lodMeasurementRelevant', () => {
     expect(lodMeasurementRelevant(geoApplied(), [up], 1e6, H, null)).toBe(false);
   });
 
-  it('keeps measuring a partially-climbed ladder', () => {
+  it('keeps measuring a partially-climbed ladder, but not a band it already climbed', () => {
     withMaxTextureSize(16384);
     const up = handle('moon');
     up.appliedTier = '4k';
     expect(lodMeasurementRelevant(geoApplied(), [up], 0.23 * H, H, null)).toBe(true);
+    // Inside the 4K band with 4K already applied nothing is fetchable: the
+    // earned tier must also RESOLVE to a remaining step to pull a measurement.
+    expect(lodMeasurementRelevant(geoApplied(), [up], 0.16 * H, H, null)).toBe(false);
     expect(lodMeasurementRelevant(geoApplied(), [up], 0.14 * H, H, null)).toBe(false);
   });
 

@@ -342,12 +342,24 @@ const MASS_FLOOR_NIGHT = 0.42;
 // shared surface-shading hook; hue-preserving and directional like massFloorLift,
 // and a pure floor, so bright-albedo fillers (Moon marbles) stay byte-close.
 const PILE_FLOOR = 0.045;
+// Amplitude of the wrapped key fill below (albedo-scaled, warm key tint). Sized
+// to lift the terminator belt to a shaded-but-alive level without flattening
+// the lit hemisphere's advantage.
+const MARBLE_WRAP_GAIN = 0.32;
 // The marble floor's injected chunk (byte-identical for every filler material, so the
 // compiled program is shared across pairs). Runs after the surface-shading terms, in
 // linear radiance before <opaque_fragment>; `normal`/`vSunViewDir` are the standard
 // material's perturbed view-space normal and the shading hook's key direction. Only
 // the final radiance is lifted — spec/roughness/metalness untouched, no plastic.
 const PILE_FLOOR_FRAGMENT = /* glsl */ `{
+  // Wrapped key fill: pure Lambert dies to zero exactly at the geometric
+  // terminator while the night-side lifts are flat, so every marble wears a
+  // dark VALLEY BELT at the same world angle — the pile reads as balls with a
+  // line drawn through them. The wrap term peaks with the key, still carries
+  // half strength at the terminator, and fades to zero only at the antipode:
+  // the belt fills in while the light's direction keeps travelling.
+  float pfWrap = clamp(dot(normalize(normal), normalize(vSunViewDir)) * 0.5 + 0.5, 0.0, 1.0);
+  outgoingLight += diffuseColor.rgb * vec3(1.0, 0.91, 0.78) * (${MARBLE_WRAP_GAIN.toFixed(3)} * pfWrap * pfWrap);
   float pfCurLum = dot(outgoingLight, vec3(0.2126, 0.7152, 0.0722));
   float pfNdl = max(dot(normalize(normal), normalize(vSunViewDir)), 0.0);
   float pfTarget = ${PILE_FLOOR.toFixed(3)} * (${MASS_FLOOR_NIGHT.toFixed(3)} + ${(1 - MASS_FLOOR_NIGHT).toFixed(3)} * pfNdl);
@@ -3005,17 +3017,11 @@ export class CompareScene {
     this.poseSandSurface(LIQUID_SPHERE_VOLUME);
   }
 
-  /** Begin the overflow spill: ~SPILL_COUNT grains over SPILL_EMIT_S at the rim.
-   *  Marbles only — at sand top-out the rim burst read as confetti (the settled
-   *  heap and the brim-flat surface already tell the moment), so sand's spilling
-   *  beat runs with no airborne garnish. */
-  beginSpill(): void {
-    if (this.sandRegime) return;
-    this.spillActive = true;
-    this.spillElapsed = 0;
-    this.spillEmitted = 0;
-    this.spillCarry = 0;
-  }
+  /** The overflow spill is retired for every regime: the rim burst at top-out
+   *  read as confetti, and the settled pile against the brim already tells the
+   *  moment. The spill machinery stays (grain pool, animate path) but is never
+   *  armed; the pour-time surface splash is a separate path and remains. */
+  beginSpill(): void {}
 
   /** Spawn stream grains at the mouth this frame, across a gaussian disc ~half
    *  the mouth radius (dense core, sparse edge — display-only cross-section). */

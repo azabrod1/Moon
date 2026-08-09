@@ -293,7 +293,8 @@ export class PlanetLabels {
 
   /**
    * Populates `foregroundDiscs` with the planets that are rendered as meshes
-   * this frame (angular size large enough to occlude labels). Callers may
+   * this frame — seen from outside, at an angular size large enough to occlude
+   * labels. Callers may
    * then `addForegroundDisc()` additional occluders (moons, ship) before
    * invoking `renderLabels()` so those external occluders are considered.
    */
@@ -321,6 +322,11 @@ export class PlanetLabels {
       const dy = pos.y - camY;
       const dz = pos.z - camZ;
       const distFromCamera = Math.sqrt(dx * dx + dy * dy + dz * dz);
+      // A sphere the camera is inside occludes nothing: its back faces cull and
+      // you see out through it. The projection answers 'covering' there — a
+      // conservative classification, not a measured disc — which as a blocker
+      // would blank every label and beacon in the sky.
+      if (distFromCamera <= entry.planet.radiusAU) continue;
       const angularSize = (entry.planet.radiusAU * 2) / Math.max(distFromCamera, 0.0001);
       if (angularSize <= 0.01) continue;
 

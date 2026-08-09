@@ -32,7 +32,7 @@ import {
   SUN_POLE_RA_DEG,
   type PlanetData,
 } from './planets/planetData';
-import { applySunGlowTier, cancelTextureUpgrade, createMoonMeshes, createShaderWarmupProbes, setWarmEligibleMoonParents, upgradeTextureOnApproach, ATMOSPHERES, ATMOSPHERE_SHELL_SCALES, type MoonMesh, type TextureUpgrade } from './PlanetFactory';
+import { applySunGlowTier, canAttempt, cancelTextureUpgrade, createMoonMeshes, createShaderWarmupProbes, earnedUpgradeTier, firstUpgradeTier, needsUpgradeCover, setWarmEligibleMoonParents, upgradeComplete, upgradeGeometryOnApproach, upgradeTextureOnApproach, ATMOSPHERES, ATMOSPHERE_SHELL_SCALES, type MoonMesh, type TextureUpgrade } from './PlanetFactory';
 import type { SurfaceShadingFx } from './world/surfaceShading';
 import { bindTextureWarmer, invalidateTextureWarmCache, pumpTextureWarmQueue, queueTextureWarm, resetTextureWarmer } from './world/textureWarmer';
 import {
@@ -92,12 +92,23 @@ import {
   MOON_DOT_PARAMS,
   albedoProxyFromColor,
   chromaticityRGB,
+  discDiameterPx,
   moonDotVisual,
   parentDominanceFade,
   systemEdgeFade,
   type MoonDotParams,
   type MoonDotVisual,
 } from './moonDots';
+import {
+  LABEL_DOT_MIN_ALPHA,
+  LABEL_READABLE_RADIUS_PX,
+  MOON_LABEL_PLACEMENT_PARAMS,
+  clampAnchorClearOfDisc,
+  placeMoonLabels,
+  type AnchorSlide,
+  type MoonLabelCandidate,
+  type MoonLabelPlacementParams,
+} from './moonLabelPlacement';
 import {
   applySunGlareMaskParams,
   sunGlareMaskActivation,
@@ -623,7 +634,7 @@ export class PlanetariumMode {
   private static readonly OBSERVE_MOON_TEXTURE_WIDTH = 1024;
 
   // Per-frame time budget for warm texture uploads: small maps batch within
-  // it, a 4K map takes its frame alone (the pump always uploads at least one).
+  // it, a big one takes its frame alone (the pump always uploads at least one).
   private static readonly TEXTURE_WARM_BUDGET_MS = 6;
   // Arrival veil re-entrancy guard (rapid picks, or a pick while one is running).
   private arrivalInFlight = false;
@@ -633,10 +644,15 @@ export class PlanetariumMode {
    *  reveal dwell — e.g. a parked tutorial stop restoring the moment the
    *  in-flight flag clears, or two quick deck picks. */
   private arrivalCoverGen = 0;
+  /** What the live cover is waiting on: the first-step fetches in flight when
+   *  it went up, by handle and attempt identity. Taken once per arrival, so a
+   *  fetch that starts later — including the next step of a ladder — can never
+   *  extend a hold that is already running. */
+  private arrivalUpgradeBatch: Array<{ up: TextureUpgrade; generation: number }> = [];
   private static readonly ARRIVAL_MIN_DWELL_MS = 150;
   // Longest the arrival cover waits (from cover start) for the landed pair's
-  // in-flight 4K fetch+decode before revealing anyway — a stalled fetch must
-  // never pin the veil.
+  // in-flight first-tier fetch+decode before revealing anyway — a stalled fetch
+  // must never pin the veil.
   private static readonly ARRIVAL_UPGRADE_HOLD_MAX_MS = 900;
   /** How long the veil takes to fade back out once its class comes off — the
    *  0.3 s CSS transition on `#arrival-veil`, plus a frame of slack because the
@@ -883,6 +899,7 @@ export class PlanetariumMode {
    *  buffers fill in updateMoonDotsForCamera after the final camera pose. */
   private moonDots: MoonDots | null = null;
   private moonDotParams: MoonDotParams = { ...MOON_DOT_PARAMS };
+  private moonLabelPlacementParams: MoonLabelPlacementParams = { ...MOON_LABEL_PLACEMENT_PARAMS };
   /** Faint-limit magnitude the dots' faint-end handoff lines up to — the
    *  starfield's pinned anchor, not the catalog's dimmest entry. */
   private starFaintLimitMag = 6.5;
@@ -898,6 +915,10 @@ export class PlanetariumMode {
   private tmpDotParentPos = new THREE.Vector3();
   private tmpDotChroma = { r: 1, g: 1, b: 1 };
   private tmpDotVisual: MoonDotVisual = { intensity: 0, alpha: 0, sizePx: 0, brightness: 0, magnitude: 0 };
+  /** Dedicated scratch for the fully-lit twin of each dot. Separate from
+   *  tmpDotVisual on purpose: that result's size and brightness are still needed
+   *  for the GPU write, so sharing one object would corrupt the dot itself. */
+  private tmpDotLitVisual: MoonDotVisual = { intensity: 0, alpha: 0, sizePx: 0, brightness: 0, magnitude: 0 };
   /** The moon a nav lock is aimed at, kept alive past autopilot disengage /
    *  arrival-look drop so its dot floor and label exemption survive manual
    *  flight to the moon. Session-only, never persisted; cleared on a jump/engage
@@ -1329,17 +1350,25 @@ export class PlanetariumMode {
   // Moon labels
   private moonLabels = new Map<string, HTMLDivElement>();
   private moonLabelContainer: HTMLDivElement | null = null;
-  // Pooled per-frame scratch for renderMoonLabels' de-overlap pass.
-  private moonLabelCandidates: Array<{
-    label: HTMLDivElement;
-    sx: number;
-    sy: number;
-    onScreen: boolean;
-    priorityPx: number;
-    halfW: number;
-    isTarget: boolean;
-    isRevealed: boolean;
-  }> = [];
+  // Pooled per-frame scratch for renderMoonLabels' de-overlap pass. The element
+  // and the moon record ride along so the decision can be applied without a
+  // lookup; the contest itself sees only the DOM-free candidate fields.
+  private moonLabelCandidates: Array<
+    MoonLabelCandidate & { label: HTMLDivElement; moon: MoonMesh }
+  > = [];
+  /** The names the label contest placed last frame, and the buffer this frame
+   *  refills. Two sets swapped and refilled rather than one rebuilt, so an
+   *  incumbent's defence of its slot never allocates a set per frame. Both are
+   *  cleared wherever the previous frame's sky stops being an argument about
+   *  this one — see clearMoonLabelIncumbents. */
+  private moonLabelIncumbents = new Set<string>();
+  private moonLabelIncumbentsBuffer = new Set<string>();
+  /** Which way each label last slid to clear its own moon's disc. Same lifecycle
+   *  as the incumbents: after a scene jump the side a name held is about a moon
+   *  that is no longer there. */
+  private moonLabelSlideSides = new Map<string, number>();
+  /** Scratch for one anchor slide — the pass reads it out before the next call. */
+  private moonLabelSlide: AnchorSlide = { x: 0, y: 0, side: 0 };
   private resumePrompt = new PlanetariumResumePrompt();
   private helpModal = new PlanetariumHelpModal();
   private menuPanel = new PlanetariumMenuPanel();
@@ -2071,9 +2100,8 @@ export class PlanetariumMode {
     }
 
     // A restored landed session bypasses arriveThen's arrival veil. The load
-    // screen is its cover: give the landed pair's optional 4K map the same
-    // bounded settle window, upload it here if ready, or cancel it so a late
-    // completion cannot hitch the first Safari Surface gesture.
+    // screen is its cover: give the landed pair's first colour step the same
+    // bounded settle window and upload it here if it arrives inside it.
     if (buildingSolarSystem && this.landedOn) {
       await this.settleRestoredLandedTextureUpgrades();
     }
@@ -2147,15 +2175,19 @@ export class PlanetariumMode {
   }
 
   private async settleRestoredLandedTextureUpgrades(): Promise<void> {
+    // The load screen owns the wait-list the same way an arrival cover does,
+    // so a teleport taken straight out of a restored session sees it too.
+    this.arrivalUpgradeBatch = this.coverWaitList();
+    const batch = this.arrivalUpgradeBatch;
+    const stillInFlight = () => batch.filter((e) => e.up.attempt?.generation === e.generation);
     const deadline = performance.now() + PlanetariumMode.ARRIVAL_UPGRADE_HOLD_MAX_MS;
-    while (
-      this.active &&
-      performance.now() < deadline &&
-      this.landedPairUpgrades().some((up) => up.state === 'loading')
-    ) {
+    while (this.active && performance.now() < deadline && stillInFlight().length > 0) {
       await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
     }
-    for (const up of this.landedPairUpgrades()) cancelTextureUpgrade(up);
+    // Bounded, so a slow fetch can reach here still running. Release the wait
+    // and let it finish — it applies on a quiet frame later instead of leaving
+    // the body on its boot map for the session.
+    for (const e of stillInFlight()) cancelTextureUpgrade(e.up, 'keep');
     pumpTextureWarmQueue(Number.POSITIVE_INFINITY);
   }
 
@@ -2180,6 +2212,7 @@ export class PlanetariumMode {
   deactivate(): void {
     this.moonArrivalCameraLook = null;
     this.dotNavMoon = null;
+    this.clearMoonLabelIncumbents();
     this.clearBodyReveal();
     // A live tutorial hands the pre-tutorial state back first, synchronously — the
     // teardown below (excursion drop, landed exit, save) then applies to the
@@ -2474,13 +2507,14 @@ export class PlanetariumMode {
     // scene-space positions and record discs for label culling.
     this.updateMoonPositions();
 
-    // Stream a higher-res surface map for any body that grows large on screen.
-    // Sits after the floating-origin and moon passes: the screen-fraction
-    // trigger may only measure same-frame geometry — frame-one and teleport
-    // frames otherwise read stale offsets, and one mis-read fires a 4K fetch.
-    // Skipped while the map owns the frame: the world spheres aren't drawn, so
-    // a schematic-view zoom must not trigger a 4K fetch for an unseen surface.
-    if (!this.isMapOpen()) this.updateTextureLOD();
+    // Raise map resolution and sphere detail for any body that grows large on
+    // screen. Sits after the floating-origin and moon passes: the footprint may
+    // only measure same-frame geometry — frame-one and teleport frames
+    // otherwise read stale offsets, and one mis-read fires a download.
+    // Skipped while the chart owns the frame: the world spheres aren't drawn
+    // there, so a schematic-view zoom must not fetch anything for an unseen
+    // surface.
+    if (!this.isMapOpen()) this.updateBodyLOD();
 
     // Camera safety + dynamic near. Deliberately AFTER updateMoonPositions —
     // at the top time rates a capped 100 ms frame moves a moon 36 simulated
@@ -2621,37 +2655,42 @@ export class PlanetariumMode {
     }
   }
 
-  private readonly texLODTmp = new THREE.Vector3();
+  private readonly bodyLODTmp = new THREE.Vector3();
   /**
-   * Stream a higher-resolution colour map for any body that grows large on
-   * screen. The trigger is screen-fraction (apparent diameter ÷ vertical FOV),
-   * not raw distance, so a body magnified by the Observatory's narrow-FOV
-   * telescope upgrades the same as a close fly-by would. Only bodies with a 4K
-   * variant on disk carry an upgrade; for every other body this is a no-op.
-   * Cheap to call each frame — the upgrade's own state short-circuits once it
-   * has fired.
+   * Raise a body's detail as it grows large on screen: higher-resolution
+   * colour maps, and a finer sphere once its polygon chords would show. Both
+   * read the one screen footprint measured here per body — apparent size, not
+   * raw distance, so a body magnified by the Observatory's narrow-FOV
+   * telescope upgrades exactly as a close fly-by would.
+   *
+   * Cheap to call each frame: a body with nothing left to gain is skipped
+   * before its projection, a colour handle that has reached its goal answers
+   * canAttempt in a couple of comparisons, and no body is ever projected twice
+   * however many handles it carries.
    */
-  private updateTextureLOD(): void {
+  private updateBodyLOD(): void {
     if (!this.solarSystem) return;
-    // Upgrade once a body spans ~15% of the viewport height: enough that 2K
-    // texels start to soften, with lead time to fetch 4K before it grows.
-    const UPGRADE_AT = 0.15;
     const canvasW = this.renderer.domElement.clientWidth;
     const canvasH = this.renderer.domElement.clientHeight;
+    const nowMs = performance.now();
     this.camera.updateMatrixWorld();
     for (const planet of this.solarSystem.planets) {
-      const up = planet.textureUpgrade;
-      if (!up) continue;
-      planet.group.getWorldPosition(this.texLODTmp);
+      const ups = planet.textureUpgrades;
+      const geo = planet.geometryUpgrade;
+      // Nothing left to measure: every ladder has reached its goal and the
+      // silhouette is already fine. (every() is true for a ladder-less body.)
+      if (geo.applied && ups.every(upgradeComplete)) continue;
+      planet.group.getWorldPosition(this.bodyLODTmp);
       const footprint = projectSphereToScreen(
-        this.texLODTmp,
+        this.bodyLODTmp,
         planet.data.radiusAU,
         this.camera,
         canvasW,
         canvasH,
         this.sphereScreenProjection,
       );
-      if (footprint.diameterPx / Math.max(canvasH, 1) > UPGRADE_AT) upgradeTextureOnApproach(up);
+      upgradeGeometryOnApproach(geo, footprint.diameterPx);
+      this.triggerTextureUpgrades(ups, footprint.diameterPx / Math.max(canvasH, 1), nowMs);
     }
     // Cruise re-renders a procedural moon's texture sharper on close approach;
     // the landed/Observatory path already does this on observe, so gate it to
@@ -2665,45 +2704,51 @@ export class PlanetariumMode {
         // them) — a fake position the triggers must never measure. An invisible
         // moon can't legitimately span the viewport anyway.
         if (!m.mesh.visible) continue;
-        m.mesh.getWorldPosition(this.texLODTmp);
+        const ups = m.textureUpgrades;
+        const geo = m.geometryUpgrade;
+        // Nothing to measure: silhouette already fine, no colour ladder, and
+        // either the procedural re-render is off or this frame's single slot
+        // is already spent.
+        const tryProcedural = allowMoonTexUpgrade && !moonTexUpgraded;
+        if (!tryProcedural && geo.applied && ups.every(upgradeComplete)) continue;
+        m.mesh.getWorldPosition(this.bodyLODTmp);
         // Rendered size (mesh scale carries the render-curve inflation): the
         // triggers must measure the disc actually on screen.
         const renderedR = m.data.radiusAU * m.mesh.scale.x;
+        const footprint = projectSphereToScreen(
+          this.bodyLODTmp,
+          renderedR,
+          this.camera,
+          canvasW,
+          canvasH,
+          this.sphereScreenProjection,
+        );
 
-        // Most procedural moons carry no 4K TextureUpgrade handle, so the disc
-        // threshold sits above the photo-upgrade guard. `upgrade` returns false
-        // for a photo / already-sharp / CPU-painted moon, leaving the frame's
-        // slot for a real one (no starvation).
-        if (
-          allowMoonTexUpgrade &&
-          !moonTexUpgraded &&
-          projectSphereToScreen(
-            this.texLODTmp,
-            renderedR,
-            this.camera,
-            canvasW,
-            canvasH,
-            this.sphereScreenProjection,
-          ).diameterPx > this.moonDotParams.texUpgradeDiscPx
-        ) {
+        // Most procedural moons carry no colour ladder, so the disc threshold
+        // sits above the photo-upgrade guard. `upgrade` returns false for a
+        // photo / already-sharp / CPU-painted moon, leaving the frame's slot
+        // for a real one (no starvation).
+        if (tryProcedural && footprint.diameterPx > this.moonDotParams.texUpgradeDiscPx) {
           if (this.moonTexturer.upgrade(m, PlanetariumMode.OBSERVE_MOON_TEXTURE_WIDTH)) {
             moonTexUpgraded = true;
           }
         }
 
-        const up = m.textureUpgrade;
-        if (!up) continue;
-        if (
-          projectSphereToScreen(
-            this.texLODTmp,
-            renderedR,
-            this.camera,
-            canvasW,
-            canvasH,
-            this.sphereScreenProjection,
-          ).diameterPx / Math.max(canvasH, 1) > UPGRADE_AT
-        ) upgradeTextureOnApproach(up);
+        upgradeGeometryOnApproach(geo, footprint.diameterPx);
+        if (ups.length > 0) {
+          this.triggerTextureUpgrades(ups, footprint.diameterPx / Math.max(canvasH, 1), nowMs);
+        }
       }
+    }
+  }
+
+  /** Fetch whatever step each of a body's handles has earned at this screen
+   *  fraction. */
+  private triggerTextureUpgrades(ups: readonly TextureUpgrade[], fraction: number, nowMs: number): void {
+    for (const up of ups) {
+      if (!canAttempt(up, nowMs)) continue;
+      const earned = earnedUpgradeTier(up, fraction);
+      if (earned) upgradeTextureOnApproach(up, earned, nowMs);
     }
   }
 
@@ -2850,6 +2895,7 @@ export class PlanetariumMode {
     const cam = this.camera.position;
     const targetMoon = this.currentDotTargetMoon();
     const landedMoonName = this.landedOn?.type === 'moon' ? this.landedOn.name : null;
+    const kneeActive = this.starGain > 1.001;
 
     let idx = 0;
     for (const planet of this.solarSystem.planets) {
@@ -2865,14 +2911,17 @@ export class PlanetariumMode {
       // so the per-moon proximity ratio never reads a stale parent.
       const systemFade = this.moonSystemEdgeFade.get(planet.data.name) ?? 0;
       planet.group.getWorldPosition(this.tmpDotParentPos);
-      const parentDiscPx = projectSphereToScreen(
-        this.tmpDotParentPos,
+      // The gate asks whether the parent anchors the SCENE, so its input is the
+      // analytic tangent size from camera distance alone — never the rendered
+      // footprint, which measures 0 px once the parent leaves the frustum and
+      // would blank every moon dot in the system the moment the parent is
+      // steered past the camera plane, with its moons still mid-viewport.
+      const parentDiscPx = discDiameterPx(
         planet.data.radiusAU,
-        this.camera,
-        canvasW,
+        this.tmpDotParentPos.distanceTo(cam),
+        displayFovDeg(this.camera),
         canvasH,
-        this.sphereScreenProjection,
-      ).diameterPx;
+      );
       for (const m of moons) {
         const i = idx++;
         // Same gate as the mesh: only a shown (visible & painted) moon dots, and
@@ -2881,6 +2930,8 @@ export class PlanetariumMode {
         if (!m.mesh.visible || m.data.name === landedMoonName) {
           this.moonDots.hide(i);
           m.dotScreenAlpha = 0;
+          m.dotLitScreenAlpha = 0;
+          m.dotLitScreenSizePx = 0;
           continue;
         }
 
@@ -2935,16 +2986,47 @@ export class PlanetariumMode {
           undefined,
           this.tmpDotVisual,
         );
+        // The same dot with illumination forced full — phase and eclipse shading
+        // both 1, every other argument identical. The label pass names a moon by
+        // this alpha, so a terminator or an eclipse cannot strobe a name off,
+        // while the parent gate, the system edge and the disc handoff still
+        // reach it and retire the name honestly. Its own scratch object: `v`
+        // still has to feed the GPU write below.
+        const lit = moonDotVisual(
+          renderedR,
+          distAU,
+          sunDistAU,
+          1,
+          albedo,
+          1,
+          discPx,
+          targetMoon === m.data.name,
+          systemFade,
+          parentFade,
+          this.starFaintLimitMag,
+          params,
+          undefined,
+          this.tmpDotLitVisual,
+        );
         // The dots share the starfield's telescope light grasp, same soft knee:
         // the mapping contract says a moon dot is as visible as an equally
         // bright star, and the surface view is exactly where both are honest
         // photometry — a gained sky over ungained dots would sink every dot
-        // below its star twin. Inactive (gain 1) everywhere else.
-        const dotAlpha = this.starGain > 1.001
+        // below its star twin. Inactive (gain 1) everywhere else. Both alphas
+        // take it, or they would differ by more than illumination.
+        const dotAlpha = kneeActive
           ? 1 - Math.pow(1 - v.alpha, this.starGain)
           : v.alpha;
         m.dotScreenAlpha = dotAlpha;
+        m.dotLitScreenAlpha = kneeActive
+          ? 1 - Math.pow(1 - lit.alpha, this.starGain)
+          : lit.alpha;
         m.dotScreenSizePx = v.sizePx;
+        // The lit twin's SIZE travels with its alpha: the label contest bids the
+        // product, and the star mapping shrinks an unlit dot as well as dimming
+        // it, so a bid built from the real size would still move with the
+        // terminator.
+        m.dotLitScreenSizePx = lit.sizePx;
 
         if (dotAlpha <= 0) {
           this.moonDots.hide(i);
@@ -3150,6 +3232,15 @@ export class PlanetariumMode {
     this.moonDotParams = partial === null
       ? { ...MOON_DOT_PARAMS }
       : { ...this.moonDotParams, ...partial };
+  }
+
+  /** Dev-bridge live tuning of the moon-label placement knobs (the dark-label
+   *  band). A partial merges into the running copy; null resets to the shipped
+   *  defaults. */
+  devSetMoonLabelPlacementParams(partial: Partial<MoonLabelPlacementParams> | null): void {
+    this.moonLabelPlacementParams = partial === null
+      ? { ...MOON_LABEL_PLACEMENT_PARAMS }
+      : { ...this.moonLabelPlacementParams, ...partial };
   }
 
   /**
@@ -3618,7 +3709,9 @@ export class PlanetariumMode {
    * the frame, after the surface camera re-pins, so silhouette edges and
    * resolvability gates read the camera pose that will actually render. The
    * reticle is the HUD's sub-resolution glyph reused as an HTML marker over
-   * a collapsed (sub-resolution) true-scale footprint.
+   * a collapsed (sub-resolution) true-scale footprint. The guides size their
+   * occluder discs from the display fov — the overscan in `camera.fov` is not
+   * an angle anything on screen is measured against.
    */
   private updateShadowGuideCamera() {
     const parentName = this.observatoryParentPlanetName();
@@ -3635,6 +3728,7 @@ export class PlanetariumMode {
         this.camera,
         w,
         h,
+        displayFovDeg(this.camera),
       );
       if (this.shadowVisuals.getFootprintReticleLocal(this.tmpGuideReticle)) {
         this.tmpGuideReticle.add(systemGroup.position);
@@ -3851,10 +3945,15 @@ export class PlanetariumMode {
       }
     }
 
-    // Visible moons — but only those actually drawn as more than a point: the
-    // same readable-disc / faint-dot gate the moon-label renderer uses (nav
-    // target exempt, exactly as there), so pick and render agree on every moon.
+    // Visible moons. The invariant is that pick and label agree: anything you
+    // can read the name of is aimable, and nothing else is. So this reuses the
+    // label pass's own thresholds — a readable disc, or a dot bright enough to
+    // see, or the nav target — plus, for a moon whose dot has gone dark, the
+    // label the placement pass actually drew.
     const tempV = this.pickTempV;
+    // Whether a drawn label is even possible this frame; without one, a dark
+    // moon has nothing on screen to tap.
+    const labelsShowing = this.showBodyLabels || this.revealedBody !== null;
     for (const planet of this.solarSystem.planets) {
       const moons = this.planetMoons.get(planet.data.name);
       if (!moons) continue;
@@ -3873,7 +3972,11 @@ export class PlanetariumMode {
         const effR = this.renderedMoonSizeAU(m.data.radiusAU, parentR, anchor);
         const discPadPx = discRadiusPx(effR, dist, halfFovTan, canvasH) * 1.1;
         const dotAlpha = m.dotScreenAlpha ?? 0;
-        if (discPadPx < 1.0 && dotAlpha < 0.03 && m.data.name !== targetMoon) continue;
+        const aimable = discPadPx >= LABEL_READABLE_RADIUS_PX
+          || dotAlpha >= LABEL_DOT_MIN_ALPHA
+          || m.data.name === targetMoon
+          || (labelsShowing && (m.labelDisplayed ?? false));
+        if (!aimable) continue;
         const dotPx = (m.dotScreenSizePx ?? 0) / 2;
         this.pushPickCandidate(m.data.name, proj.x, proj.y, Math.max(discPadPx, dotPx), dist);
       }
@@ -3961,7 +4064,8 @@ export class PlanetariumMode {
    * afterwards (planet, moon, sun) is occluded when it would sit on top of
    * one of them. Must run AFTER `planetLabels.collectForegroundDiscs()` and
    * BEFORE any label rendering (`renderLabels`, `renderMoonLabels`,
-   * `updateSunLabel`).
+   * `updateSunLabel`). A body blocks only while it is a face seen from
+   * outside: one the camera sits inside is a room, not an obstacle.
    */
   private collectDynamicOccluders() {
     if (!this.planetLabels || !this.solarSystem) return;
@@ -4010,8 +4114,18 @@ export class PlanetariumMode {
         // Effective rendered radius: the same curve the mesh uses, so the
         // occlusion disc matches what's actually drawn.
         const effectiveRadiusAU = this.renderedMoonSizeAU(m.data.radiusAU, parentR, this.moonRenderAnchorRatio(planet.data.name));
-        const angularSize = (effectiveRadiusAU * 2) / Math.max(distFromCamera, 0.0001);
-        if (angularSize <= 0.01) continue;
+        // A sphere the camera is inside occludes nothing: its back faces cull
+        // and you see out through it. The projection answers 'covering' there —
+        // a conservative classification, not a measured disc — which as a
+        // blocker would blank every label and beacon in the sky. Testing it
+        // first also guarantees a positive distance for the ratio below.
+        if (distFromCamera <= effectiveRadiusAU) continue;
+        // Angular-size gate, compared WITHOUT a floor under the distance: a
+        // floored denominator turns the ratio into an absolute-size test at
+        // close range, and no moon whose rendered radius is under ~75 km can
+        // ever satisfy it — Phobos and Deimos would contribute no occlusion
+        // disc at any distance, letting labels and beacons draw over their faces.
+        if (effectiveRadiusAU * 2 <= 0.01 * distFromCamera) continue;
 
         const proj = projectSphereToScreen(
           tempV,
@@ -4212,11 +4326,11 @@ export class PlanetariumMode {
     const canvasH = this.renderer.domElement.clientHeight;
     const tempV = new THREE.Vector3();
 
-    // Two passes: gather placeable labels, then place big-to-small with
-    // greedy screen-rect suppression — on approach a system's labels pile
-    // onto near-identical pixels ("PhoDeimos"); the smaller apparent moon
-    // yields. Rects are estimated (reading offsetWidth would force reflow).
-    // Candidate objects are pooled — steady-state frames allocate nothing.
+    // Two passes: gather the placeable labels here, then hand the contest to
+    // placeMoonLabels — who yields to whom is a rule set with its own tests, and
+    // this pass owns only the gathering and the DOM. Rects are estimated
+    // (reading offsetWidth would force reflow). Candidate objects are pooled —
+    // steady-state frames allocate nothing.
     const candidates = this.moonLabelCandidates;
     let candidateCount = 0;
     const targetMoon = this.currentDotTargetMoon();
@@ -4225,15 +4339,28 @@ export class PlanetariumMode {
     const labelsOn = this.showBodyLabels;
     const revealedMoon = this.revealedBody;
     // A moon earns a label when its disc reads as more than a point, OR its dot
-    // is at least faintly visible, OR it's the explicit nav target. A sub-pixel
-    // moon too dim to dot gets no label pointing at empty sky.
-    const LABEL_READABLE_RADIUS_PX = 1.0;
-    const LABEL_DOT_MIN_ALPHA = 0.03;
+    // would be at least faintly visible with the moon fully lit, OR it is the
+    // explicit nav target. Judging by the lit dot is the point: a moon in
+    // eclipse or at new phase is still there and still aimable, so its name
+    // holds through the darkness in the .unlit style instead of strobing with
+    // the terminator. A moon too faint to dot even fully lit gets no label
+    // pointing at empty sky — and the nav target is the one wayfinding
+    // exception, named however dim, because you asked for it by name.
+    const placement = this.moonLabelPlacementParams;
 
     for (const planet of this.solarSystem.planets) {
       const moons = this.planetMoons.get(planet.data.name);
       if (!moons) continue;
       for (const m of moons) {
+        // Cleared on the way in and set only where a label is really placed, so
+        // every path out of this loop leaves the pick list an honest answer. The
+        // dark-style bit is read here and cleared with it: a moon that drops out
+        // of the pass — hidden, landed on, off the back of the camera — comes
+        // back through the enter threshold rather than being held on the leave
+        // one by a memory of the last time it was dark.
+        m.labelDisplayed = false;
+        const wasUnlit = m.labelUnlit ?? false;
+        m.labelUnlit = false;
         const label = this.moonLabels.get(m.data.name);
         if (!label) continue;
         // Suppress the landed moon's own label — no need to label what you're standing on.
@@ -4280,13 +4407,25 @@ export class PlanetariumMode {
         ).radiusPx * 1.1;
 
         // Sub-pixel gating: a moon whose disc doesn't read and whose dot is too
-        // faint to see keeps no label — unless it's the nav target.
+        // faint to see even fully lit keeps no label — unless it's the nav target.
         const dotAlpha = m.dotScreenAlpha ?? 0;
+        const dotLitAlpha = m.dotLitScreenAlpha ?? 0;
         const readable = discRadiusPadPx >= LABEL_READABLE_RADIUS_PX;
-        if (!readable && dotAlpha < LABEL_DOT_MIN_ALPHA && targetMoon !== m.data.name) {
+        const isTarget = targetMoon === m.data.name;
+        if (!readable && dotLitAlpha < LABEL_DOT_MIN_ALPHA && !isTarget) {
           if (label.style.display !== 'none') label.style.display = 'none';
           continue;
         }
+        // Dark-kept: the name is held by the lit dot while the real one has gone
+        // out. The band is sticky per moon so the style cannot pulse with a dot
+        // flickering across a single threshold. A readable disc never takes the
+        // style — a resolved moon sits at a low dot alpha as its normal state,
+        // handed off to the disc.
+        const dark = wasUnlit
+          ? dotAlpha <= placement.unlitLeaveAlpha
+          : dotAlpha < placement.unlitEnterAlpha;
+        const isUnlit = !readable && dark && dotLitAlpha >= LABEL_DOT_MIN_ALPHA;
+        m.labelUnlit = isUnlit;
         // Lift the anchor clear of whichever is larger — the disc limb or the
         // dot glyph (for a sub-pixel moon the dot is the only thing on screen).
         const radiusPx = Math.max(discRadiusPadPx, (m.dotScreenSizePx ?? 0) / 2);
@@ -4302,93 +4441,115 @@ export class PlanetariumMode {
                          sy >= margin && sy <= canvasH - margin;
         sx = Math.max(margin, Math.min(canvasW - margin, sx));
         sy = Math.max(margin, Math.min(canvasH - margin, sy));
+        // Estimated half-width of the drawn name (measuring one would force a
+        // layout): the slide is bounded by it, and the contest below rects by it.
+        const halfW = (m.data.name.length * 6.5 + 12) / 2;
         // The clamp can shove the anchor back onto the disc when the limb has
-        // left the screen — there's no "just above" to show there, so drop the
-        // label (the self-excluded occlusion probe below never catches this).
-        // Only a clamped anchor can be inside: unclamped it sits exactly on
-        // the limb, where this distance test would be at the mercy of float
-        // rounding.
-        if (sx !== proj.x || sy !== syLifted) {
-          const ddx = sx - proj.x;
-          const ddy = sy - proj.y;
-          if (ddx * ddx + ddy * ddy < radiusPx * radiusPx) {
-            label.style.display = 'none';
+        // left the screen — there's no "just above" to show there, so the anchor
+        // slides along the margin it is pinned to until it clears the limb, and
+        // hides only when nothing on that edge clears (the self-excluded
+        // occlusion probe below never catches this). Only a clamped anchor can
+        // be inside: unclamped it sits exactly on the limb, where this distance
+        // test would be at the mercy of float rounding.
+        const clampedX = sx !== proj.x;
+        const clampedY = sy !== syLifted;
+        if (clampedX || clampedY) {
+          const slide = this.moonLabelSlide;
+          const cleared = clampAnchorClearOfDisc(
+            sx, sy, clampedX, clampedY,
+            proj.x, proj.y, radiusPx, halfW,
+            margin, canvasW - margin, margin, canvasH - margin,
+            this.moonLabelSlideSides.get(m.data.name) ?? 0,
+            slide,
+            placement,
+          );
+          if (!cleared) {
+            if (label.style.display !== 'none') label.style.display = 'none';
             continue;
           }
+          sx = slide.x;
+          sy = slide.y;
+          // Remember which way it went, but never forget it on a frame that
+          // needed no slide — the side has to outlive the moments the anchor
+          // happens to sit clear, or it flips the moment it is needed again.
+          if (slide.side !== 0) this.moonLabelSlideSides.set(m.data.name, slide.side);
         }
         // Label sits above the moon (translate(-50%, -100%) + -6px margin).
         // Exclude this moon's own disc so it doesn't cull itself.
-        const labelOccluded = this.planetLabels?.isScreenPointOccluded(sx, sy - 10, moonCamDist, `moon:${m.data.name}`) ?? false;
+        const selfDisc = `moon:${m.data.name}`;
+        const labelOccluded = this.planetLabels?.isScreenPointOccluded(sx, sy - 10, moonCamDist, selfDisc) ?? false;
         if (labelOccluded) {
           label.style.display = 'none';
           continue;
         }
+        // A dark-kept label has no dot under it, so nothing on screen ties the
+        // name to the moon: require the moon's own centre unoccluded too, or the
+        // name floats over the parent's limb announcing something you cannot
+        // see. A lit moon needs no such proof — its dot is the proof.
+        if (isUnlit
+          && (this.planetLabels?.isScreenPointOccluded(proj.x, proj.y, moonCamDist, selfDisc) ?? false)) {
+          if (label.style.display !== 'none') label.style.display = 'none';
+          continue;
+        }
         let c = candidates[candidateCount];
         if (!c) {
-          c = { label, sx: 0, sy: 0, onScreen: false, priorityPx: 0, halfW: 0, isTarget: false, isRevealed: false };
+          c = {
+            label, moon: m, name: '', sx: 0, sy: 0, onScreen: false, priorityPx: 0,
+            halfW: 0, isTarget: false, isRevealed: false, isUnlit: false, placed: false,
+          };
           candidates.push(c);
         }
         c.label = label;
+        c.moon = m;
+        c.name = m.data.name;
         c.sx = sx;
         c.sy = sy;
         c.onScreen = onScreen;
-        c.isTarget = targetMoon === m.data.name;
+        c.isTarget = isTarget;
         c.isRevealed = revealedMoon === m.data.name;
+        c.isUnlit = isUnlit;
         // Collision priority is apparent footprint: a readable disc by its px
         // radius, a sub-pixel moon by its dot's weighted glyph size, so among
-        // piled-up dots the brighter one keeps its label.
+        // piled-up dots the brighter one keeps its label. A dark-kept moon
+        // contests with the footprint it would have fully lit — BOTH factors
+        // from the lit twin, since the star mapping shrinks an unlit dot as
+        // well as dimming it. Eclipse state must not reorder the contest, or
+        // the strobe just moves to whichever neighbour loses the slot.
         c.priorityPx = Math.max(
           discRadiusPadPx,
-          dotAlpha * (m.dotScreenSizePx ?? 0),
+          isUnlit
+            ? dotLitAlpha * (m.dotLitScreenSizePx ?? 0)
+            : dotAlpha * (m.dotScreenSizePx ?? 0),
         );
-        c.halfW = (m.data.name.length * 6.5 + 12) / 2;
+        c.halfW = halfW;
         candidateCount++;
       }
     }
 
     candidates.length = candidateCount;
-    // The revealed moon sorts first so it always wins its de-overlap contest,
-    // then the nav target (a sibling's label can never suppress the moon you are
-    // flying at). Then visible labels outrank edge-clamped ones (an off-screen
-    // moon pinned to the margin must not suppress a genuinely visible neighbor),
-    // then bigger apparent discs win.
-    candidates.sort(
-      (a, b) =>
-        Number(b.isRevealed) - Number(a.isRevealed) ||
-        Number(b.isTarget) - Number(a.isTarget) ||
-        Number(b.onScreen) - Number(a.onScreen) ||
-        b.priorityPx - a.priorityPx,
-    );
-    const LABEL_H = 18;
-    let placedCount = 0;
-    // In-place partition: indices [0, placedCount) hold the placed labels.
+    placeMoonLabels(candidates, this.moonLabelIncumbents, placement);
+    // Apply the decision, and record this frame's winners as the next frame's
+    // incumbents. The two sets are swapped rather than rebuilt, and a name that
+    // stops being a candidate simply ages out of the buffer being refilled.
+    const nextIncumbents = this.moonLabelIncumbentsBuffer;
+    nextIncumbents.clear();
     for (let i = 0; i < candidates.length; i++) {
       const c = candidates[i];
-      let collides = false;
-      for (let j = 0; j < placedCount; j++) {
-        const p = candidates[j];
-        if (
-          Math.abs(c.sx - p.sx) < c.halfW + p.halfW &&
-          Math.abs(c.sy - p.sy) < LABEL_H
-        ) {
-          collides = true;
-          break;
-        }
-      }
-      if (collides) {
-        c.label.style.display = 'none';
+      if (!c.placed) {
+        if (c.label.style.display !== 'none') c.label.style.display = 'none';
         continue;
       }
-      const swap = candidates[placedCount];
-      candidates[placedCount] = c;
-      candidates[i] = swap;
-      placedCount++;
       c.label.style.display = 'block';
       c.label.style.left = `${c.sx}px`;
       c.label.style.top = `${c.sy}px`;
       c.label.classList.toggle('edge', !c.onScreen);
+      c.label.classList.toggle('unlit', c.isUnlit);
       c.label.classList.toggle('revealed', c.isRevealed);
+      c.moon.labelDisplayed = true;
+      nextIncumbents.add(c.name);
     }
+    this.moonLabelIncumbentsBuffer = this.moonLabelIncumbents;
+    this.moonLabelIncumbents = nextIncumbents;
   }
 
   /** Mark that the camera or scene just jumped, so the next Sun-shader frame
@@ -4406,6 +4567,26 @@ export class PlanetariumMode {
     // must not out-vote the new scene's true dominant occluder through the 15%
     // rule. The next computeVisibleSunFraction elects a fresh incumbent.
     this.sunDominantOccluderMesh = null;
+    this.clearMoonLabelIncumbents();
+  }
+
+  /** Drop the moon labels' cross-frame incumbents, so the next contest runs
+   *  cold. Call wherever the previous frame's sky stops being an argument about
+   *  this one: a scene jump lands on different moons entirely, and a held name
+   *  from the sky you left would defend a slot it never earned here. */
+  private clearMoonLabelIncumbents(): void {
+    this.moonLabelIncumbents.clear();
+    this.moonLabelIncumbentsBuffer.clear();
+    this.moonLabelSlideSides.clear();
+    // The per-moon label bits are the same memory kept somewhere else. The pick
+    // list reads labelDisplayed one frame late, so without this a name from the
+    // sky just left stays aimable for a frame in the sky just arrived at.
+    for (const moons of this.planetMoons.values()) {
+      for (const m of moons) {
+        m.labelDisplayed = false;
+        m.labelUnlit = false;
+      }
+    }
   }
 
   // Scratch for the veil support pass, reused across the gate's upper-bound and
@@ -9695,6 +9876,9 @@ export class PlanetariumMode {
    *  line shows only in 'always' mode — 'hover' leaves the container in
    *  `hide-distances`, where the per-label reveal class does the revealing. */
   private applyBodyLabelVisibility() {
+    // Labels going away take their incumbency with them: coming back, every
+    // name should have to win its slot again rather than inherit one.
+    this.clearMoonLabelIncumbents();
     this.syncWorldLabelContainers();
     this.planetLabels?.setDistancesVisible(this.labelDistancesMode === 'always');
     if (!this.showBodyLabels && !this.showBodyMarkers) {
@@ -11296,11 +11480,17 @@ export class PlanetariumMode {
     const cam = this.camera as THREE.PerspectiveCamera;
     const playerAbs = { x: this.player.posX, y: this.player.posY, z: this.player.posZ };
     // Dot + label render-truth (DEV QA): the moon's final screen alpha this
-    // frame and whether its label is shown. Null for a planet (no dot/label).
+    // frame, the same alpha with illumination forced full (what the label gate
+    // reads), and whether its label is shown. Null for a planet (no dot/label).
     let dotScreenAlpha: number | null = null;
+    let dotLitScreenAlpha: number | null = null;
     for (const moons of this.planetMoons.values()) {
       const mm = moons.find((x) => x.data.name === name);
-      if (mm) { dotScreenAlpha = mm.dotScreenAlpha ?? 0; break; }
+      if (mm) {
+        dotScreenAlpha = mm.dotScreenAlpha ?? 0;
+        dotLitScreenAlpha = mm.dotLitScreenAlpha ?? 0;
+        break;
+      }
     }
     const lbl = this.moonLabels.get(name);
     const labelVisible = lbl ? lbl.style.display !== 'none' : null;
@@ -11325,6 +11515,7 @@ export class PlanetariumMode {
       camOwner: this.camOwner,
       userOrbiting: this.camOwner === 'orbit', // forensics back-compat
       dotScreenAlpha,
+      dotLitScreenAlpha,
       labelVisible,
     };
   }
@@ -12950,15 +13141,25 @@ export class PlanetariumMode {
     }
   }
 
-  private textureUpgradeForTarget(body: NonNullable<LandedTarget>): TextureUpgrade | undefined {
-    return body.type === 'planet'
-      ? this.solarSystem?.planets.find((p) => p.data.name === body.name)?.textureUpgrade
-      : this.planetMoons.get(body.parentPlanet)?.find((m) => m.data.name === body.name)?.textureUpgrade;
+  private textureUpgradesForTarget(body: NonNullable<LandedTarget>): TextureUpgrade[] {
+    const found = body.type === 'planet'
+      ? this.solarSystem?.planets.find((p) => p.data.name === body.name)?.textureUpgrades
+      : this.planetMoons.get(body.parentPlanet)?.find((m) => m.data.name === body.name)?.textureUpgrades;
+    return found ?? [];
   }
 
-  /** The one-shot 4K upgrade handles of a landing body and the companion its
-   * Observatory can magnify. This pre-landing form lets arriveThen decide that
-   * the upgrade itself requires a cover, before applyLandedTarget runs. */
+  /** Every colour-tier handle in the system, for teardown. */
+  private allTextureUpgrades(): TextureUpgrade[] {
+    const ups: TextureUpgrade[] = [];
+    for (const p of this.solarSystem?.planets ?? []) ups.push(...p.textureUpgrades);
+    for (const moons of this.planetMoons.values()) for (const m of moons) ups.push(...m.textureUpgrades);
+    return ups;
+  }
+
+  /** The colour-tier handles of a landing body and the companion its
+   * Observatory can magnify — a body's globe and cloud shell each contribute
+   * one. This pre-landing form lets arriveThen decide that the first tier
+   * itself requires a cover, before applyLandedTarget runs. */
   private landingPairUpgrades(target: NonNullable<LandedTarget>): TextureUpgrade[] {
     const companion: NonNullable<LandedTarget> | null = target.type === 'moon'
       ? { type: 'planet', name: target.parentPlanet }
@@ -12968,8 +13169,7 @@ export class PlanetariumMode {
     const ups: TextureUpgrade[] = [];
     for (const body of [target, companion]) {
       if (!body) continue;
-      const up = this.textureUpgradeForTarget(body);
-      if (up && !ups.includes(up)) ups.push(up);
+      for (const up of this.textureUpgradesForTarget(body)) if (!ups.includes(up)) ups.push(up);
     }
     return ups;
   }
@@ -12979,18 +13179,32 @@ export class PlanetariumMode {
     return this.landedOn ? this.landingPairUpgrades(this.landedOn) : [];
   }
 
+  /** The landed pair's first-step fetches running right now, by attempt
+   *  identity. A cover waits on these and nothing else: a higher step the
+   *  on-screen trigger started is not what the reveal is hiding, and a step
+   *  that begins after this list is taken cannot extend the hold. */
+  private coverWaitList(): Array<{ up: TextureUpgrade; generation: number }> {
+    return this.landedPairUpgrades().flatMap((up) =>
+      up.attempt && up.attempt.tier === firstUpgradeTier(up)
+        ? [{ up, generation: up.attempt.generation }]
+        : [],
+    );
+  }
+
   /**
    * Run an instant teleport (`action`), but if the destination system's moons
-   * aren't painted yet — or carry 4K-class photo maps that haven't reached the
-   * GPU — cover the screen first, make the system drawable, then reveal. A
-   * quick-travel must never flash an unpainted (or, with the visibility gate,
-   * a missing) moon, and a first arrival must not play a train of ~100ms
-   * upload frames on screen (a 4096-wide upload is unsliceable and one lands
-   * per pump frame — four Galileans means four stalled frames in a row).
+   * aren't painted yet — or carry 4096-wide-or-larger photo maps that haven't
+   * reached the GPU — cover the screen first, make the system drawable, then
+   * reveal. A quick-travel must never flash an unpainted (or, with the
+   * visibility gate, a missing) moon, and a first arrival must not play a train
+   * of ~100ms upload frames on screen (a 4096-wide upload is unsliceable and
+   * one lands per pump frame — four Galileans means four stalled frames in a
+   * row).
    * Landings also hold the cover (bounded) for the landed pair's pre-triggered
-   * 4K fetch+decode, so those uploads drain under it instead of just after the
-   * reveal. Warm systems act immediately, exactly as before. A second arrival
-   * while one is mid-flight is ignored.
+   * first-tier fetch+decode, so those uploads drain under it instead of just
+   * after the reveal. Higher tiers are never cover work — they arrive later
+   * through the on-screen trigger. Warm systems act immediately, exactly as
+   * before. A second arrival while one is mid-flight is ignored.
    */
   private arriveThen(
     target: NonNullable<LandedTarget>,
@@ -12998,9 +13212,20 @@ export class PlanetariumMode {
     protectLandedUpgrades = false,
   ): void {
     if (this.arrivalInFlight) return;
-    const needsUpgradeCover = protectLandedUpgrades && this.landingPairUpgrades(target)
-      .some((up) => up.state === 'idle' || up.state === 'loading');
-    this.arriveAtSystem(this.parentSystemOf(target), action, needsUpgradeCover);
+    const landingUpgrades = this.landingPairUpgrades(target);
+    let upgradeCover = false;
+    if (protectLandedUpgrades) {
+      for (const up of landingUpgrades) {
+        if (!needsUpgradeCover(up)) continue;
+        // A cover is the ideal moment to retry a first step that failed
+        // earlier: its fetch, decode and upload get a bounded window with
+        // nothing on screen. A higher step that failed keeps its cooldown,
+        // because nothing here is covering that one.
+        up.retryAtMs = undefined;
+        upgradeCover = true;
+      }
+    }
+    this.arriveAtSystem(this.parentSystemOf(target), action, upgradeCover, landingUpgrades);
   }
 
   /**
@@ -13009,18 +13234,33 @@ export class PlanetariumMode {
    * chart) can hold the same no-half-painted-scene guarantee without a
    * fabricated target being pushed through the body path. `systemName` null is
    * a destination with no system around it: nothing to paint, nothing to warm.
+   * `keepUpgrades` are the fetches the destination itself wants; every other
+   * one in flight is abandoned here.
    */
   private arriveAtSystem(
     systemName: string | null,
     action: () => void,
-    needsUpgradeCover: boolean,
+    upgradeCover: boolean,
+    keepUpgrades: readonly TextureUpgrade[] = [],
   ): void {
     if (this.arrivalInFlight) return;
+    // A teleport abandons every fetch in flight anywhere in the system except
+    // the ones for where it is going. Sweeping all the handles, rather than
+    // just the ones the last arrival started, is what catches a fetch the
+    // on-screen trigger began during a close approach: left behind, it would
+    // otherwise still land and pay a full-size upload on the first frames of
+    // the destination. Handles this destination wants keep their fetch — it is
+    // the same map.
+    for (const up of this.allTextureUpgrades()) {
+      if (!keepUpgrades.includes(up)) cancelTextureUpgrade(up, 'discard');
+    }
+    this.arrivalUpgradeBatch = [];
     const moons = systemName ? this.planetMoons.get(systemName) : undefined;
     const needsPaint = !!moons && moons.some((m) => !m.painted);
-    // 4K-class photo maps still waiting for their first GPU upload get drained
-    // under the veil below. Smaller maps (the Moon's 2K photo) upload within a
-    // frame or two off-gesture via the warm pump — no veil beat for those.
+    // Photo maps 4096 wide or larger still waiting for their first GPU upload
+    // get drained under the veil below. Smaller maps (a moon's boot-tier photo)
+    // upload within a frame or two off-gesture via the warm pump — no veil beat
+    // for those.
     const needsUploadCover =
       !!moons &&
       !!systemName &&
@@ -13030,7 +13270,7 @@ export class PlanetariumMode {
         const img = mat.map?.image as { width?: number } | undefined;
         return !!mat.userData.photoLoaded && (img?.width ?? 0) >= 4096;
       });
-    if (!needsPaint && !needsUploadCover && !needsUpgradeCover) {
+    if (!needsPaint && !needsUploadCover && !upgradeCover) {
       action();
       return;
     }
@@ -13062,28 +13302,36 @@ export class PlanetariumMode {
             pumpTextureWarmQueue(Number.POSITIVE_INFINITY);
             this.warmedSystems.add(systemName);
           }
+          // Take the hold's wait-list once, now that the landing has started
+          // its fetches (applyLandedTarget, inside the action above). A
+          // destination with no body to land on starts none, and the list is
+          // empty.
+          this.arrivalUpgradeBatch = this.coverWaitList();
         } catch (err) {
           debugError('Arrival failed', err);
         } finally {
           this.arrivalInFlight = false;
-          // A landing pre-triggers the landed pair's 4K upgrades
-          // (applyLandedTarget), and their fetch+decode may still be in flight
+          // A landing pre-triggers the landed pair's first colour step
+          // (applyLandedTarget), and its fetch+decode may still be in flight
           // when the drain above runs — revealed too early, each finishes as a
           // ~100ms upload frame on the fresh scene. Keep the opaque cover up
           // until they resolve (bounded — a stalled fetch must never pin the
           // veil), drain once more, then reveal.
+          const batch = this.arrivalUpgradeBatch;
           const holdDeadline = coverStart + PlanetariumMode.ARRIVAL_UPGRADE_HOLD_MAX_MS;
           const tryLift = () => {
             if (coverGen !== this.arrivalCoverGen) return; // a newer arrival owns the veil now
-            const loadingUpgrades = this.landedPairUpgrades().filter((up) => up.state === 'loading');
-            if (this.active && performance.now() < holdDeadline && loadingUpgrades.length > 0) {
+            const pending = batch.filter((e) => e.up.attempt?.generation === e.generation);
+            if (this.active && performance.now() < holdDeadline && pending.length > 0) {
               requestAnimationFrame(tryLift);
               return;
             }
-            // Optional 4K that missed the covered window keeps its 2K floor;
-            // its eventual completion is disposed instead of uploading during
-            // a later Surface/transport gesture.
-            for (const up of loadingUpgrades) cancelTextureUpgrade(up);
+            // A step that missed the covered window is released, not dropped:
+            // the body keeps the map it has, and the download that is already
+            // on its way applies on a quiet frame after the reveal. Throwing it
+            // away here is what used to pin a body to its boot map for the rest
+            // of the session.
+            for (const e of pending) cancelTextureUpgrade(e.up, 'keep');
             pumpTextureWarmQueue(Number.POSITIVE_INFINITY);
             // Hold the cover until the painted, teleported scene has rendered
             // (the landed/jumped system first appears on the next
@@ -13165,10 +13413,15 @@ export class PlanetariumMode {
     this.queueSystemMoonMapsForWarm(warmParent);
     // The landed body and its vantage companion are this session's guaranteed
     // close-ups (the Observatory magnifies them regardless of distance), so
-    // start their one-shot 4K upgrades now: fetch, decode, and upload spend
+    // start their first colour step now: fetch, decode, and upload spend
     // the parked seconds right after touchdown instead of the first
-    // magnifying gesture (a 4096-wide upload alone is a ~100ms frame).
-    for (const up of this.landedPairUpgrades()) upgradeTextureOnApproach(up);
+    // magnifying gesture (a 4096-wide upload alone is a ~100ms frame). Only
+    // the first step — the tiers above it ride the on-screen trigger, so no
+    // goal can hold a landing behind its cover.
+    for (const up of this.landedPairUpgrades()) {
+      const first = firstUpgradeTier(up);
+      if (first) upgradeTextureOnApproach(up, first);
+    }
     // The reticle's screen position belongs to the previous target — drop it
     // now rather than letting it float stale until the next landed frame
     // (cross-system picks can interpose a transition with no guide pass).
@@ -13813,10 +14066,11 @@ export class PlanetariumMode {
     this.updatePlanetScaling();
     this.updateMoonPositions();
     // Same same-frame-geometry rule as the cruise path — and the landed
-    // Observatory telescope (narrow FOV) is exactly where 2K softness shows,
-    // so the 4K trigger keeps running while landed. Skipped while the map owns
-    // the frame: the ground isn't drawn, so nothing should fetch a 4K surface.
-    if (!this.isMapOpen()) this.updateTextureLOD();
+    // Observatory telescope (narrow FOV) is exactly where a soft map and a
+    // chorded limb show, so the triggers keep running while landed. Skipped
+    // while the chart owns the frame: the ground isn't drawn there, so nothing
+    // should fetch for it.
+    if (!this.isMapOpen()) this.updateBodyLOD();
     this.updateShadowVisuals();
     if (shouldRefreshUi) this.updateOrbitDetails();
     this.pumpObservatoryEventSearch();
@@ -14401,6 +14655,10 @@ export class PlanetariumMode {
 
   dispose() {
     this.deactivate();
+    // Abandon every colour-tier fetch still in flight: a callback that landed
+    // after this point would apply to a material nothing draws and queue an
+    // upload into a warmer with no renderer behind it.
+    for (const up of this.allTextureUpgrades()) cancelTextureUpgrade(up, 'discard');
     resetTextureWarmer(); // drop queued warm-ups and the renderer binding with the mode
     this.moonTexturer.dispose();
     this.notification.dispose();

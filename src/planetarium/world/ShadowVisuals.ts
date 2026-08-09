@@ -18,6 +18,10 @@
  * plus view-dependent cone silhouette edges that fade in once the occluder
  * resolves on screen, and fade out with the camera inside a cone (you can't
  * see a volume's outline from inside it — and you'd be inside that shadow).
+ * "Resolves on screen" is decided from the analytic tangent size at the
+ * camera's distance, never a sampled footprint: a footprint reads 0 px as soon
+ * as its body leaves the frustum, which would blink the edges off whenever the
+ * parent is steered past the frame edge with its guides still mid-viewport.
  *
  * Honesty contract: every position, radius and length is
  * true scale, computed from the same closed forms the event engine
@@ -47,6 +51,7 @@ import { Line2 } from 'three/addons/lines/Line2.js';
 import { LineGeometry } from 'three/addons/lines/LineGeometry.js';
 import { LineMaterial } from 'three/addons/lines/LineMaterial.js';
 import { KM_PER_AU } from '../../astronomy/constants';
+import { discDiameterPx } from '../../shared/math/discScreenSize';
 import {
   computeConeSilhouette,
   computeShadowConeProfileKm,
@@ -760,7 +765,9 @@ export class ShadowVisuals {
    * resolvability gates, inside-a-cone fill suppression, footprint
    * rings-vs-reticle collapse, and the px-width line resolution uniforms.
    * `cameraLocalAU` is the camera position in this system's parent-centered
-   * frame.
+   * frame. `displayFovDeg` is the fov the viewer actually sees — the lens pass
+   * keeps the overscan in `camera.fov`, so the occluder gates below size their
+   * discs from this angle and never from the camera's own field.
    */
   updateCameraGuides(
     cameraLocalAU: THREE.Vector3,
@@ -768,6 +775,7 @@ export class ShadowVisuals {
     camera: THREE.PerspectiveCamera,
     viewportWidthPx: number,
     viewportHeightPx: number,
+    displayFovDeg: number,
   ): void {
     for (let i = 0; i < this.lineMaterials.length; i++) {
       const material = this.lineMaterials[i];
@@ -781,28 +789,31 @@ export class ShadowVisuals {
     }
     if (!this.guidesVisible) return;
 
-    const parentPx = projectSphereToScreen(
-      systemWorldPosition,
+    // Both occluder gates ask "is this body big enough on screen for its edges
+    // to read", so both size the disc analytically from camera distance — the
+    // question still has an answer when the body is outside the frustum, where a
+    // measured footprint reads 0 px and would blink the edges off. The lens
+    // rescales an in-frustum disc slightly; the 8/6 px hysteresis in
+    // resolveGuideVisibility absorbs that, whereas a measured/analytic hybrid
+    // would step exactly at the frustum boundary — the blink itself.
+    const parentDiscPx = discDiameterPx(
       this.parentRadiusEffAU,
-      camera,
-      viewportWidthPx,
+      cameraLocalAU.length(),
+      displayFovDeg,
       viewportHeightPx,
-      this.sphereProjection,
-    ).diameterPx;
-    this.parentEdgesResolvable = resolveGuideVisibility(parentPx, this.parentEdgesResolvable);
+    );
+    this.parentEdgesResolvable = resolveGuideVisibility(parentDiscPx, this.parentEdgesResolvable);
     this.poseConeEdges(this.parentUmbraRec, this.parentEdgesResolvable, cameraLocalAU);
     this.poseConeEdges(this.parentPenumbraRec, this.parentEdgesResolvable, cameraLocalAU);
 
     if (this.moonUmbraRec.posed) {
-      const moonPx = projectSphereToScreen(
-        this.tmpWorld.copy(systemWorldPosition).add(this.landedMoonOffsetAU),
+      const moonDiscPx = discDiameterPx(
         this.landedMoonRadiusAU,
-        camera,
-        viewportWidthPx,
+        cameraLocalAU.distanceTo(this.landedMoonOffsetAU),
+        displayFovDeg,
         viewportHeightPx,
-        this.sphereProjection,
-      ).diameterPx;
-      this.moonEdgesResolvable = resolveGuideVisibility(moonPx, this.moonEdgesResolvable);
+      );
+      this.moonEdgesResolvable = resolveGuideVisibility(moonDiscPx, this.moonEdgesResolvable);
     }
     this.poseConeEdges(this.moonUmbraRec, this.moonEdgesResolvable, cameraLocalAU);
     this.poseConeEdges(this.moonPenumbraRec, this.moonEdgesResolvable, cameraLocalAU);
@@ -815,6 +826,10 @@ export class ShadowVisuals {
         slot.footprintRingsVisible = false;
         continue;
       }
+      // The footprint ring keeps the MEASURED projection: it is a ring lying on
+      // the parent's surface, not a sphere seen from outside, so the tangent
+      // form would not describe it. It is also always in view when it matters —
+      // the reticle handoff below only runs for a camera-facing spot.
       const ringPx = projectSphereToScreen(
         this.tmpWorld.copy(systemWorldPosition).add(slot.hitPosAU),
         slot.footprintRadiusAU,

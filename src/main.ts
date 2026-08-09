@@ -616,6 +616,8 @@ function installDevHooks() {
     setMoonSizeGamma: (gamma: number | null) => planetariumMode?.devSetMoonSizeGamma(gamma),
     setMoonDotParams: (partial: Record<string, unknown> | null) =>
       planetariumMode?.devSetMoonDotParams(partial as never),
+    setMoonLabelPlacementParams: (partial: Record<string, unknown> | null) =>
+      planetariumMode?.devSetMoonLabelPlacementParams(partial as never),
     tutorialStart: () => planetariumMode?.devTutorialStart() ?? false,
     tutorialNext: () => planetariumMode?.devTutorialNext(),
     tutorialBack: () => planetariumMode?.devTutorialBack(),

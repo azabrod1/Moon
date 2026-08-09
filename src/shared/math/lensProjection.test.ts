@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   LENS_INVERSE_ITERATIONS,
   applyDesignFov,
+  displayFovDeg,
   lensCornerTheta,
   lensDisplayHalfTan,
   lensEffectiveStrength,
@@ -171,7 +172,7 @@ describe('lensUnwarpNdc', () => {
   });
 });
 
-describe('applyDesignFov / lensDisplayHalfTan', () => {
+describe('applyDesignFov / displayFovDeg / lensDisplayHalfTan', () => {
   it('writes the overscan to the camera and keeps the design on userData', () => {
     const camera = {
       fov: 60,
@@ -191,6 +192,20 @@ describe('applyDesignFov / lensDisplayHalfTan', () => {
     };
     applyDesignFov(bare, 50);
     expect(bare.fov).toBe(50);
+  });
+
+  it('reads back the design FOV, never the overscan the warp samples from', () => {
+    const camera = {
+      fov: 60,
+      aspect: 16 / 9,
+      userData: { lens: { strength: 0.7, designFovDeg: 60 } },
+      updateProjectionMatrix() { /* noop */ },
+    };
+    applyDesignFov(camera, 45);
+    expect(displayFovDeg(camera)).toBe(45);
+    expect(camera.fov).toBeGreaterThan(45);
+    // No lens on the camera: the render FOV is what the frame displays.
+    expect(displayFovDeg({ fov: 32, userData: {} })).toBe(32);
   });
 
   it('display half-tangent reduces to tan(fov/2) at strength 0', () => {

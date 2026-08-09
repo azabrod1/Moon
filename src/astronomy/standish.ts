@@ -14,9 +14,9 @@
  * source files — never re-round them; standish.test.ts spot-checks oddball
  * digits and pins five epochs of JPL Horizons vectors against the
  * propagation. The "Earth"
- * rows are the Earth–Moon barycenter ("EM Bary"): consumed only for Earth's
- * decorative orbit line and cross-model tests — the rendered Earth stays
- * Meeus (see computeEarthPositionEquatorial).
+ * rows are the Earth–Moon barycenter ("EM Bary"): consumed only by the
+ * cross-model tests — the rendered Earth and its orbit line are both Meeus
+ * (see computeEarthPositionEquatorial).
  *
  * Source-format quirks an editor must not "fix": the e column of the txt
  * files is headed "rad, rad/Cy" but is dimensionless eccentricity; Mars and
@@ -95,12 +95,29 @@ const TABLE_1_MAX_T = 0.5; // 2050 AD
 const TABLE_2_MIN_T = -50; // 3000 BC
 const TABLE_2_MAX_T = 10; // 3000 AD
 
+const DAYS_PER_JULIAN_CENTURY = 36525;
+
+/**
+ * TT Julian Day span these tables answer for (Table 2's, the wider fit).
+ * Outside it the propagation clamps its own epoch, so the elements — and
+ * every position derived from them — freeze at the edge. Callers that sample
+ * a range of epochs must keep the whole range inside, or the samples past the
+ * edge all return the same point.
+ */
+export const STANDISH_MIN_JD = J2000 + TABLE_2_MIN_T * DAYS_PER_JULIAN_CENTURY;
+export const STANDISH_MAX_JD = J2000 + TABLE_2_MAX_T * DAYS_PER_JULIAN_CENTURY;
+
 function normalizeDeg180(deg: number): number {
   const wrapped = ((deg % 360) + 360) % 360;
   return wrapped > 180 ? wrapped - 360 : wrapped;
 }
 
-function propagate(row: StandishRow, extras: ExtraTerms | undefined, T: number): KeplerElements {
+function propagate(
+  row: StandishRow,
+  extras: ExtraTerms | undefined,
+  T: number,
+  out?: KeplerElements,
+): KeplerElements {
   const lonPerihelionDeg = row.lonPeri + row.lonPeriDot * T;
   // M = L − ϖ, normalized only AFTER the subtraction — L itself is enormous
   // (Mercury L̇ ≈ 149472.674 °/cy) and must keep full precision until then.
@@ -109,14 +126,17 @@ function propagate(row: StandishRow, extras: ExtraTerms | undefined, T: number):
     meanAnomalyDeg +=
       extras.b * T * T + extras.c * Math.cos(extras.f * T * DEG) + extras.s * Math.sin(extras.f * T * DEG);
   }
-  return {
-    semiMajorAxisAU: row.a + row.aDot * T,
-    eccentricity: row.e + row.eDot * T,
-    inclinationDeg: row.i + row.iDot * T,
-    lonPerihelionDeg,
-    ascendingNodeDeg: row.node + row.nodeDot * T,
-    meanAnomalyDeg: normalizeDeg180(meanAnomalyDeg),
-  };
+  // The same six numbers whether they land in the caller's record or a fresh
+  // one — `out` exists for the per-frame samplers, which would otherwise leave
+  // one element record behind per sample.
+  const el = out ?? ({} as KeplerElements);
+  el.semiMajorAxisAU = row.a + row.aDot * T;
+  el.eccentricity = row.e + row.eDot * T;
+  el.inclinationDeg = row.i + row.iDot * T;
+  el.lonPerihelionDeg = lonPerihelionDeg;
+  el.ascendingNodeDeg = row.node + row.nodeDot * T;
+  el.meanAnomalyDeg = normalizeDeg180(meanAnomalyDeg);
+  return el;
 }
 
 /**
@@ -124,21 +144,30 @@ function propagate(row: StandishRow, extras: ExtraTerms | undefined, T: number):
  * 1800–2050 fit, Table 2 (with its M correction terms) everywhere else,
  * clamped to Table 2's 3000 BC – 3000 AD validity.
  */
-export function getStandishElements(name: string, jdTT: number): KeplerElements {
-  const T = (jdTT - J2000) / 36525;
+export function getStandishElements(
+  name: string,
+  jdTT: number,
+  out?: KeplerElements,
+): KeplerElements {
+  const T = (jdTT - J2000) / DAYS_PER_JULIAN_CENTURY;
   const table = T >= TABLE_1_MIN_T && T <= TABLE_1_MAX_T ? 1 : 2;
-  return getElementsFromTable(table, name, jdTT);
+  return getElementsFromTable(table, name, jdTT, out);
 }
 
 /** @internal Exposed for tests only (table handoff + verbatim value spot-checks). */
-export function getElementsFromTable(table: 1 | 2, name: string, jdTT: number): KeplerElements {
+export function getElementsFromTable(
+  table: 1 | 2,
+  name: string,
+  jdTT: number,
+  out?: KeplerElements,
+): KeplerElements {
   const row = (table === 1 ? TABLE_1 : TABLE_2)[name];
   if (!row) {
     throw new Error(`No Standish elements for body "${name}"`);
   }
-  let T = (jdTT - J2000) / 36525;
+  let T = (jdTT - J2000) / DAYS_PER_JULIAN_CENTURY;
   if (table === 2) {
     T = Math.min(TABLE_2_MAX_T, Math.max(TABLE_2_MIN_T, T));
   }
-  return propagate(row, table === 2 ? TABLE_2_EXTRAS[name] : undefined, T);
+  return propagate(row, table === 2 ? TABLE_2_EXTRAS[name] : undefined, T, out);
 }

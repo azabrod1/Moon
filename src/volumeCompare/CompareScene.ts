@@ -166,21 +166,30 @@ const GHOST_KNEE_X_MEAN = 2.5;
 // bands to plastic — the ceiling belongs only where the stack can bloom.
 const GHOST_TEXEL_CEIL = 0.62;
 // The ghost's presented luminance floor: the alpha curve's low end (its clear-centre
-// value). Raised from a barely-there whisper so the container's bands stay readable
-// ABOVE the fill at a default camera during a pour — a floor, not a re-light, so the
-// glass-not-solid feel survives (the rim stays denser via the fresnel curve).
-const GHOST_FLOOR_ALPHA = 0.17;
+// value). Held near zero: any real floor across the face reads as fog filling the
+// vessel ("haunted planet"), while true glass is clear in the centre and carries its
+// colour at the limb. The map's identity lives in the fresnel-weighted rim band; the
+// trade is that mid-pour the bands read mostly at the rim, with the fill as subject.
+// Not zero either: against the black studio a fully clear centre is a black VOID
+// (an eclipse, not glass) — this floor is the faint tinted transmission that says
+// "coloured glass", and the saturation boost below keeps it vivid rather than foggy.
+const GHOST_FLOOR_ALPHA = 0.13;
+// Transmitted-tint saturation: fog reads gray, stained glass reads vivid. The ghost
+// map is pushed past native saturation so the little colour that transmits through
+// the clear centre (and the denser rim band) says "tinted crystal", not "haze".
+const GHOST_SATURATION = 1.55;
 // Studio-key floor on the ghost's shading: 1 would be a flat unlit hologram (no
 // light direction revealed by orbiting), 0 a hard day/night terminator on what
-// must read as glass. The high floor keeps the map present on the dark half
-// while the lit shoulder still travels as the camera orbits.
-const GHOST_KEY_FLOOR = 0.45;
-// Cold-open empty lift: while the vessel is empty, a gentle studio fill brightens
-// the ghost so the empty glass reads as a full subject, easing OUT over the first 5%
-// of occupancy — the house lights dim over the first breath of the pour, never a snap.
-// An extra on top of GHOST_FLOOR_ALPHA (which holds at every fill). Held modest:
-// past ~0.5 the empty vessel reads as a glowing lamp, not lit glass.
-const EMPTY_LIFT_GAIN = 0.38;
+// must read as glass. Held HIGH: tinted glass transmits light rather than
+// diffusing it, so its colour barely shades with direction — at 0.45 the dark
+// half of a now-clearer vessel collapsed into a black eclipse. The lit shoulder
+// still travels as the camera orbits, just as a whisper.
+const GHOST_KEY_FLOOR = 0.72;
+// The empty-vessel ease: 1 while the vessel is empty, gone over the first few
+// percent of occupancy (and back on Reset). It now drives the REAL-PLANET idle —
+// the empty container is the actual body, dissolving into the glass vessel as
+// the pour begins, so transparency arrives exactly when there is something
+// inside to see.
 const EMPTY_LIFT_FADE_END = 0.05;
 
 // --- backdrop --------------------------------------------------------------
@@ -333,12 +342,24 @@ const MASS_FLOOR_NIGHT = 0.42;
 // shared surface-shading hook; hue-preserving and directional like massFloorLift,
 // and a pure floor, so bright-albedo fillers (Moon marbles) stay byte-close.
 const PILE_FLOOR = 0.045;
+// Amplitude of the wrapped key fill below (albedo-scaled, warm key tint). Sized
+// to lift the terminator belt to a shaded-but-alive level without flattening
+// the lit hemisphere's advantage.
+const MARBLE_WRAP_GAIN = 0.32;
 // The marble floor's injected chunk (byte-identical for every filler material, so the
 // compiled program is shared across pairs). Runs after the surface-shading terms, in
 // linear radiance before <opaque_fragment>; `normal`/`vSunViewDir` are the standard
 // material's perturbed view-space normal and the shading hook's key direction. Only
 // the final radiance is lifted — spec/roughness/metalness untouched, no plastic.
 const PILE_FLOOR_FRAGMENT = /* glsl */ `{
+  // Wrapped key fill: pure Lambert dies to zero exactly at the geometric
+  // terminator while the night-side lifts are flat, so every marble wears a
+  // dark VALLEY BELT at the same world angle — the pile reads as balls with a
+  // line drawn through them. The wrap term peaks with the key, still carries
+  // half strength at the terminator, and fades to zero only at the antipode:
+  // the belt fills in while the light's direction keeps travelling.
+  float pfWrap = clamp(dot(normalize(normal), normalize(vSunViewDir)) * 0.5 + 0.5, 0.0, 1.0);
+  outgoingLight += diffuseColor.rgb * vec3(1.0, 0.91, 0.78) * (${MARBLE_WRAP_GAIN.toFixed(3)} * pfWrap * pfWrap);
   float pfCurLum = dot(outgoingLight, vec3(0.2126, 0.7152, 0.0722));
   float pfNdl = max(dot(normalize(normal), normalize(vSunViewDir)), 0.0);
   float pfTarget = ${PILE_FLOOR.toFixed(3)} * (${MASS_FLOOR_NIGHT.toFixed(3)} + ${(1 - MASS_FLOOR_NIGHT).toFixed(3)} * pfNdl);
@@ -512,8 +533,9 @@ void main() {
   // View-dependent alpha: clearest face-on (stars read through the face), dense
   // at the rim (constant alpha reads as a frosted billiard ball and
   // double-darkens where the shells cross). The floor stays visibly above zero —
-  // a fully-clear centre reveals raw void and the vessel reads as a hole.
-  float alpha = mix(0.14, 0.9, pow(fres, 2.5));
+  // a fully-clear centre reveals raw void and the vessel reads as a hole — but
+  // only just: both shells stack it, and much past ~0.08 the face frosts over.
+  float alpha = mix(0.08, 0.9, pow(fres, 2.5));
 
   // Tight warm fresnel edge lobe, blended with a faint catalog-colour rim; the
   // rim warms toward the key colour as the liquid rises (the glass reacts to
@@ -556,10 +578,25 @@ void main() {
     // ghostShellW is uniform-derived, so this branch is coherent — the shell
     // that isn't carrying the ghost skips the texture fetch entirely.
     // The container's REAL colour map, auto-gained per container so
-    // low-contrast maps still band. Fresnel-shaped: bands at the limb, melting
-    // to a clear centre (~0.34 rim → ~0.07 centre). Native saturation kept.
-    float ghostAlpha = mix(${GHOST_FLOOR_ALPHA.toFixed(3)}, 0.30, pow(fres, 1.3));
-    vec3 ghostTex = min(texture2D(uGhostMap, vUv).rgb, vec3(uGhostKnee));
+    // low-contrast maps still band. Fresnel-shaped like tinted glass: the
+    // centre is nearly clear (stars and the fill read straight through) and
+    // the map's colour concentrates in the outer band where a glass sphere
+    // really carries its tint. Steeper than the old curve on purpose — a
+    // shallow ramp spreads the map across the face and turns it into fog.
+    float ghostAlpha = mix(${GHOST_FLOOR_ALPHA.toFixed(3)}, 0.42, pow(fres, 1.9));
+    vec3 mapTex = texture2D(uGhostMap, vUv).rgb;
+    vec3 ghostTex = mapTex;
+    // Saturate BEFORE the knee/ceiling clamps so the boost can never push a
+    // channel back over the bloom guards it just passed.
+    float ghostLum = dot(ghostTex, vec3(0.2126, 0.7152, 0.0722));
+    ghostTex = clamp(mix(vec3(ghostLum), ghostTex, ${GHOST_SATURATION.toFixed(2)}), 0.0, 1.0);
+    // Shadow lift: coloured glass has no true black — dark pigment still
+    // transmits light. The sub-unity power lifts the map's dark regions
+    // (Jupiter's poles, Earth's oceans) toward a dim tinted transmission while
+    // leaving the bright bands untouched, so no part of the vessel reads as a
+    // solid planet lost in shadow.
+    ghostTex = pow(ghostTex, vec3(0.7));
+    ghostTex = min(ghostTex, vec3(uGhostKnee));
     // Rim-graded bloom guard: the limb stacks every lobe at dense alpha, so
     // bright-texel variation there beads the halo (Saturn's storm ovals read as
     // glints dotted along the arc); the centre never blooms and keeps the map's
@@ -573,15 +610,6 @@ void main() {
       ${GHOST_KEY_FLOOR.toFixed(3)} + ${(1 - GHOST_KEY_FLOOR).toFixed(3)} * max(dot(N, KEY_DIR), 0.0),
       1.0, uLoomLit);
     col += ghostTex * uGhostGain * ghostAlpha * keyShade * ghostShellW;
-    // Cold-open empty lift: a gentle studio fill on the ghost while the vessel is
-    // empty, easing out over the first breath of the pour — never in the Sun ember branch
-    // (below), and shell alpha is untouched. Rides the ghost hue, a touch fuller at the
-    // clear centre than the fresnel curve so the empty glass reads as a full subject.
-    // Deliberately NOT key-shaded: this is the flat house fill; the base ghost
-    // above carries the light direction. Keying both flattened bright pastel
-    // maps (Saturn) into mud. Flat across the disc too (no fresnel ramp): the
-    // rim already stacks every other lobe, and house light has no direction.
-    col += ghostTex * uGhostGain * 0.7 * uEmptyLift * ${EMPTY_LIFT_GAIN.toFixed(3)} * ghostShellW;
     // Sub-unity honest loom: the giant is wedged in the mouth on +Y and looms
     // straight overhead. It lights the tiny vessel from above — planetshine for a
     // Jupiter-class giant, literal sunlight for a Sun giant. Paint the container's
@@ -592,6 +620,20 @@ void main() {
     float loomShade = LOOM_AMBIENT + (1.0 - LOOM_AMBIENT) * max(dot(N, LOOM_KEY), 0.0);
     col += ghostTex * uGhostGain * loomShade * LOOM_GAIN * uLoomLit * ghostShellW;
     alpha = mix(alpha, max(alpha, LOOM_BODY_ALPHA), uLoomLit * uBackShell);
+    // Real-planet idle: while the vessel is empty, the container is the actual
+    // body — the honest colour map, studio-key lit with a soft fill and mild
+    // limb darkening — and it dissolves into the glass vessel over the first
+    // breath of the pour. The crossfade replaces every glass lobe (rim, shoulder,
+    // ghost), so the idle frame is a clean product shot, not planet-plus-glow.
+    // Front shell only; the loom holds uEmptyLift at 0 (its vessel is full of
+    // the giant), and the ghost-less Sun keeps its ember dome in the branch below.
+    float solidW = uEmptyLift * (1.0 - uBackShell);
+    if (solidW > 0.001) {
+      float solidShade = 0.24 + 0.76 * max(dot(N, KEY_DIR), 0.0);
+      solidShade *= mix(0.55, 1.0, pow(ndv, 0.5));
+      col = mix(col, mapTex * solidShade, solidW);
+      alpha = mix(alpha, 1.0, solidW);
+    }
   } } else if (uBackShell > 0.5) {
     // A ghost-less container (the Sun) would otherwise be a void behind glass:
     // give the vessel an ember interior instead — its own colour pulled toward
@@ -2975,17 +3017,11 @@ export class CompareScene {
     this.poseSandSurface(LIQUID_SPHERE_VOLUME);
   }
 
-  /** Begin the overflow spill: ~SPILL_COUNT grains over SPILL_EMIT_S at the rim.
-   *  Marbles only — at sand top-out the rim burst read as confetti (the settled
-   *  heap and the brim-flat surface already tell the moment), so sand's spilling
-   *  beat runs with no airborne garnish. */
-  beginSpill(): void {
-    if (this.sandRegime) return;
-    this.spillActive = true;
-    this.spillElapsed = 0;
-    this.spillEmitted = 0;
-    this.spillCarry = 0;
-  }
+  /** The overflow spill is retired for every regime: the rim burst at top-out
+   *  read as confetti, and the settled pile against the brim already tells the
+   *  moment. The spill machinery stays (grain pool, animate path) but is never
+   *  armed; the pour-time surface splash is a separate path and remains. */
+  beginSpill(): void {}
 
   /** Spawn stream grains at the mouth this frame, across a gaussian disc ~half
    *  the mouth radius (dense core, sparse edge — display-only cross-section). */
@@ -3449,22 +3485,24 @@ export class CompareScene {
     this.revealEase += (this.revealTarget - this.revealEase) * (1 - Math.exp(-dt / 0.12));
     if (Math.abs(this.revealTarget - this.revealEase) < 0.001) this.revealEase = this.revealTarget;
     this.glassUniforms.uReveal.value = this.revealEase;
-    if (this.atmosphere) {
-      (this.atmosphere.material as THREE.ShaderMaterial).uniforms.alphaScale.value =
-        ATMOSPHERE_GHOST_ALPHA * this.revealEase;
-    }
-    // Cold-open empty lift: occupied volume fraction (whichever counter leads the
-    // fill), gone over the first few percent so the empty vessel reads as a full
-    // subject and the lift is provably out once the pour is under way. Eased in
+    // Real-planet idle ease: occupied volume fraction (whichever counter leads the
+    // fill), gone over the first few percent — the actual body dissolves into the
+    // glass vessel as the pour gets under way, and re-forms on Reset. Eased in
     // TIME as well: a boulder commits its whole fraction the frame it spawns, so
-    // the raw occupancy step would pop the ghost dim — the house lights dim over a
-    // beat instead. Off for the sub-unity loom (that vessel is full of the giant).
+    // the raw occupancy step would pop the crossfade — the planet melts away over
+    // a beat instead. Off for the sub-unity loom (that vessel is full of the giant).
     const occupied = Math.max(this.poured, this.melted, this.boulderCommitted) / Math.max(this.simN, 1e-9);
     const liftTarget =
       this.glassUniforms.uLoomLit.value > 0.5 ? 0 : 1 - THREE.MathUtils.smoothstep(occupied, 0, EMPTY_LIFT_FADE_END);
     this.emptyLiftEase += (liftTarget - this.emptyLiftEase) * (1 - Math.exp(-dt / 0.25));
     if (Math.abs(liftTarget - this.emptyLiftEase) < 0.001) this.emptyLiftEase = liftTarget;
     this.glassUniforms.uEmptyLift.value = this.emptyLiftEase;
+    if (this.atmosphere) {
+      // Fuller atmosphere while the real planet is showing (it belongs to a solid
+      // body); back down to a whisper on the glass so it never reads as a halo.
+      (this.atmosphere.material as THREE.ShaderMaterial).uniforms.alphaScale.value =
+        ATMOSPHERE_GHOST_ALPHA * this.revealEase * (1 + 1.8 * this.emptyLiftEase);
+    }
   }
 
   dispose(): void {

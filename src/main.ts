@@ -623,6 +623,63 @@ function installDevHooks() {
     tutorialBack: () => planetariumMode?.devTutorialBack(),
     tutorialSkip: () => planetariumMode?.devTutorialSkip(),
     tutorialState: () => planetariumMode?.devTutorialState() ?? null,
+    openMap: () => planetariumMode?.devOpenMap() ?? false,
+    closeMap: () => planetariumMode?.devCloseMap() ?? false,
+    mapState: () => planetariumMode?.devMapState() ?? null,
+    mapPick: (name: string) => planetariumMode?.devMapPick(name) ?? false,
+    mapProbe: (name: string) => planetariumMode?.devMapProbe(name) ?? null,
+    mapMoonStats: () => planetariumMode?.devMapMoonStats() ?? null,
+    setMapMoonOffset: (partial: Record<string, number> | null) =>
+      planetariumMode?.devSetMapMoonOffset(partial) ?? false,
+    mapCommit: (verb: 'travel' | 'observe' | 'pilot') => planetariumMode?.devMapCommit(verb) ?? false,
+    // Teleport anywhere: mapTeleportAt runs the gesture at a canvas pixel (a
+    // right-click / a matured long press), mapTeleportState reads the offer,
+    // and the pair below are the chip's own two answers.
+    mapTeleportAt: (xPx: number, yPx: number) => planetariumMode?.devMapTeleportAt(xPx, yPx) ?? null,
+    mapTeleportState: () => planetariumMode?.devMapTeleportState() ?? null,
+    mapTeleportCommit: () => planetariumMode?.devMapTeleportCommit() ?? false,
+    mapTeleportDismiss: () => planetariumMode?.devMapTeleportDismiss(),
+    // The corner chart: the ☰ toggle, the opaque/over-the-world A/B, and what
+    // it costs per frame.
+    setMiniChart: (on: boolean) => planetariumMode?.devSetMiniChart(on),
+    setMiniOpaque: (opaque: boolean) => planetariumMode?.devSetMiniOpaque(opaque),
+    miniState: () => planetariumMode?.devMiniState() ?? null,
+    // Fly to a body and follow it; null flies back out to the overview.
+    mapFocus: (name: string | null) => planetariumMode?.devMapFocus(name) ?? false,
+    // The panel's rows. mapOverview is the combined release-or-recentre, which
+    // resolves to a 900 ms flight when there is a focus to give back — poll
+    // mapState().camState for the landing. mapInfo drives the help grid;
+    // mapPanel reads or drives the panel itself ({collapsed, helpOpen}, null
+    // for the defaults) and reports sheetExpanded for the phone layout.
+    mapOverview: () => planetariumMode?.devMapOverview() ?? false,
+    mapInfo: (open: boolean) => planetariumMode?.devMapInfo(open) ?? false,
+    mapPanel: (partial?: { collapsed?: boolean; helpOpen?: boolean } | null) =>
+      planetariumMode?.devMapPanel(partial) ?? null,
+    // Map curve A/B: setMapS picks the asinh curve with that softening scale
+    // (AU), setMapGamma the power law with that exponent. Both leave the
+    // Compressed/True blend alone and hold the framing across the swap.
+    setMapS: (s: number) => planetariumMode?.devSetMapS(s),
+    setMapGamma: (g: number) => planetariumMode?.devSetMapGamma(g),
+    setMapBodySize: (partial: Record<string, number> | null) =>
+      planetariumMode?.devSetMapBodySize(partial as never),
+    setMapSunSize: (partial: Record<string, number> | null) =>
+      planetariumMode?.devSetMapSunSize(partial as never),
+    setMapMarkerZoom: (partial: Record<string, number> | null) =>
+      planetariumMode?.devSetMapMarkerZoom(partial as never),
+    // The chart's star backdrop: false/true toggles, {alphaMul, sizeMul}
+    // retunes live, null restores defaults. Returns what is now in force.
+    setMapStars: (arg: boolean | Record<string, number> | null) =>
+      planetariumMode?.devSetMapStars(arg as never) ?? null,
+    // The orbit lines: {opacity, brightness} retunes live, null restores.
+    setMapOrbitStyle: (partial: Record<string, number> | null) =>
+      planetariumMode?.devSetMapOrbitStyle(partial as never) ?? null,
+    // The chart's layer switches — {orbitLines, bodyLabels, ambientMoons,
+    // constellations, distanceRings}; null restores the defaults. Writes the
+    // session state whether or not the map is open, and reaches the chart only
+    // while it is (a closed chart is on the defaults, and the corner chart
+    // draws the same objects). mapState().layers reads it back.
+    setMapLayers: (partial: Record<string, boolean> | null) =>
+      planetariumMode?.devSetMapLayers(partial as never) ?? null,
     setChrome: (visible: boolean) => planetariumMode?.devSetChrome(visible),
     setFov: (deg: number) => planetariumMode?.devSetFov(deg),
     setTimeMs: (utcMs: number) => planetariumMode?.setCurrentUtcMs(utcMs),
@@ -743,7 +800,30 @@ async function init() {
     }
 
     renderer.toneMappingExposure = exposureCurrent;
-    renderScene(camera);
+    // The system map draws its own scene straight to the backbuffer (it owns a
+    // renderer-state transaction), bypassing the world composer while open. It
+    // rides the same render-timing bracket so the telemetry path stays intact.
+    if (appMode === 'planetarium' && planetariumMode?.isMapOpen()) {
+      const perfRender = import.meta.env.DEV
+        ? surfacePerfBeginRender(renderer.info.programs?.length ?? 0, renderer.info.memory.textures)
+        : null;
+      // Close the telemetry span in finally so a throw inside the map render
+      // can't strand it open and skew every later frame's timing.
+      try {
+        planetariumMode.renderMapFrame();
+      } finally {
+        if (import.meta.env.DEV) {
+          surfacePerfEndRender(perfRender, renderer.info.programs?.length ?? 0, renderer.info.memory.textures);
+        }
+      }
+    } else {
+      renderScene(camera);
+      // The corner chart draws over the finished world frame, inside its own
+      // scissor rectangle and its own renderer-state transaction — so the
+      // composer's targets and every pixel outside that rectangle are exactly
+      // what renderScene left.
+      if (appMode === 'planetarium') planetariumMode?.renderMiniChartFrame();
+    }
   }
 
   animate();

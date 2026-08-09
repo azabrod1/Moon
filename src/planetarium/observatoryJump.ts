@@ -47,9 +47,12 @@ export interface JumpPolicy {
  *
  * Relocation is same-system-only and only ever moon → its own parent: a
  * cross-system re-land would drop the player onto a body that may still be
- * unpainted, with no arrival veil to hold it, and a type-stepper may only
- * relocate where a one-tap return exists — today that is the Earth↔Moon pair,
- * the only two-way swap.
+ * unpainted, with no arrival veil to hold it. This function relocates for any
+ * same-system stepper; the stricter rule — relocate only where a one-tap
+ * return exists — is carried by which steppers exist at all. Today that is
+ * the Earth rows alone (Earth↔Moon is the only two-way swap), so a stepper
+ * for another system must not ship until its parent offers a swap back to
+ * the moon.
  */
 export function resolveJumpPolicy(input: JumpPolicyInput): JumpPolicy {
   const relocateToParent =

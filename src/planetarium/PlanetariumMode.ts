@@ -9305,10 +9305,6 @@ export class PlanetariumMode {
     return null;
   }
 
-  /** Lit fraction below which a disc reads as unlit — the same bucket the
-   *  panel's phase names call "New". */
-  private static readonly PHASE_DARK_LIT_FRACTION = 0.02;
-
   /** True when the surface view is pointed at the phase hero's own subject —
    *  the body the no-event headline is describing. */
   private isPhaseSubjectTracked(info: ObservatorySubjectInfo): boolean {
@@ -9344,11 +9340,13 @@ export class PlanetariumMode {
       subText = phase?.meta ?? '';
       // A new companion is a real sight the frame cannot show: the disc is up
       // there with its night side turned to you. Say so, or an empty frame
-      // reads as the body having failed to load.
+      // reads as the body having failed to load. Keyed to the headline's own
+      // phase name — a "New" name spans under ~1% lit — so this line can never
+      // call a disc dark while the headline calls it a crescent.
       if (
         subject &&
         phase &&
-        phase.litFraction < PlanetariumMode.PHASE_DARK_LIT_FRACTION &&
+        phase.headline.startsWith('New ') &&
         this.isPhaseSubjectTracked(subject)
       ) {
         subText += ' — its unlit side faces you, so the disc is dark';
@@ -9679,10 +9677,6 @@ export class PlanetariumMode {
     // the jump's one-frame visibility step doesn't fire a Sun emergence.
     this.noteSunViewDiscontinuity();
     this.lastObservatoryEvent = event;
-    // One jump source at a time: a full moon and a lunar eclipse coincide by
-    // definition, so a stale phase jump left standing here would frame the
-    // companion while the HUD narrated the eclipse.
-    this.lastPhaseJump = null;
     // Park shortly before the peak with the clock running at 1× real time —
     // the user watches the event happen instead of landing on a frozen peak.
     this.timeState = { ...this.timeState, rate: 1, paused: false };
@@ -9773,10 +9767,12 @@ export class PlanetariumMode {
       return;
     }
     this.lastPhaseJump = { type, utcMs: found.getTime() };
-    // One jump source at a time: a full moon that lands inside a coinciding
-    // lunar eclipse would otherwise leave that eclipse "relevant", and the HUD
-    // would narrate it over a view framed for the phase.
-    this.lastObservatoryEvent = null;
+    // A stale shadow event is deliberately left standing: relevantObservatoryEvent
+    // is window-gated, so it only ever resurfaces while that eclipse is truly in
+    // the sky — a full-moon jump that lands inside a coinciding lunar eclipse
+    // SHOULD have the HUD narrate the eclipse over the phase framing (same body,
+    // wider fit). Clearing it here would also reset the eclipse steppers'
+    // skip-the-parked-event search window.
     // Same park-and-watch policy as the shadow jumps.
     this.timeState = { ...this.timeState, rate: 1, paused: false };
     this.setCurrentUtcMs(found.getTime() - OBSERVATORY_JUMP_LEAD_MS);
@@ -9983,6 +9979,10 @@ export class PlanetariumMode {
     // Surface view hides the whole bottom bar — an open Time panel would
     // otherwise reappear stale on exit.
     this.bottomBar.closeTime();
+    // Surface view hides the ☰ button with the rest of the top cluster, so a
+    // menu left open would float orphaned over the sky with Escape mapped to
+    // the view exit, not the menu.
+    this.closeMenuPanel();
     // Manual entry right after an event jump points at the event's
     // observer-level target — "Look up" during an eclipse shows the eclipse.
     const liveEvent = this.relevantObservatoryEvent();

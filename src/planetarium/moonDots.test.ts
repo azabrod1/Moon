@@ -232,6 +232,33 @@ describe('moonDots — the fully-lit twin behind dotLitScreenAlpha', () => {
     expect(lit().alpha).toBeGreaterThan(LABEL_DOT_MIN_ALPHA);
   });
 
+  // The label contest bids alpha × sizePx. A dark-kept moon bids the lit twin's
+  // pair, so the bid is the same whatever the terminator is doing.
+  const contestBid = (opts: Parameters<typeof visualAt>[1]) => {
+    const real = visualAt(0.02, opts);
+    const twin = lit();
+    return real.alpha < LABEL_DOT_MIN_ALPHA
+      ? twin.alpha * twin.sizePx
+      : real.alpha * real.sizePx;
+  };
+
+  it('bids the same contest footprint fully lit, eclipsed and at new phase', () => {
+    const litBid = contestBid({ phaseCos: 1, shade: 1 });
+    expect(litBid).toBeGreaterThan(0);
+    expect(contestBid({ shade: 0 })).toBe(litBid);
+    expect(contestBid({ phaseCos: -1 })).toBe(litBid);
+  });
+
+  it('would still sink a dark moon if only the alpha came from the twin', () => {
+    // An unlit dot's magnitude is +Infinity, so the star mapping clamps its
+    // point size to the floor: the size has to come from the twin as well, or
+    // the bid drops several times over and the contest reorders on eclipse.
+    const eclipsed = visualAt(0.02, { shade: 0 });
+    const twin = lit();
+    expect(eclipsed.sizePx).toBeLessThan(twin.sizePx);
+    expect(twin.alpha * eclipsed.sizePx).toBeLessThan(twin.alpha * twin.sizePx);
+  });
+
   it('still dies with the system edge, the parent gate and the disc handoff', () => {
     // Nothing here is photometric, so all of it must reach the label: a name
     // that outlived the system-visibility threshold would strand on a moon the

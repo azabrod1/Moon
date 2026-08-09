@@ -35,9 +35,18 @@ export const LABEL_DOT_MIN_ALPHA = 0.03;
 
 export interface MoonLabelPlacementParams {
   /** Dark-label style band, read against the dot's ACTUAL alpha: the `.unlit`
-   *  class turns on below `unlitEnterAlpha` and off above `unlitLeaveAlpha`. Two
-   *  thresholds because a dot hovering near a single one flickers on its own
-   *  photometry, and the style would pulse with it. */
+   *  class turns on below `unlitEnterAlpha` and off above `unlitLeaveAlpha`.
+   *
+   *  Enter EQUALS the label-keep gate (LABEL_DOT_MIN_ALPHA), and must: the
+   *  moment a label survives only because the lit twin vouched for it, it is a
+   *  dark-kept label and takes the whole treatment — the quieter style, the
+   *  lit-twin contest bid, and the extra proof that the moon's own centre is
+   *  unoccluded. Any gap between the two would leave a label kept alive yet
+   *  neither styled nor centre-proofed, naming something that may be hidden.
+   *
+   *  Leave sits above enter purely for hysteresis: a dot resting on a single
+   *  threshold flickers on its own photometry, and the style would pulse with
+   *  it. */
   unlitEnterAlpha: number;
   unlitLeaveAlpha: number;
   /** How much bigger a challenger must be to take a slot off the label that
@@ -65,7 +74,7 @@ export interface MoonLabelPlacementParams {
 }
 
 export const MOON_LABEL_PLACEMENT_PARAMS: MoonLabelPlacementParams = {
-  unlitEnterAlpha: 0.02,
+  unlitEnterAlpha: LABEL_DOT_MIN_ALPHA,
   unlitLeaveAlpha: 0.05,
   incumbentEvictRatio: 1.3,
   leaveInsetPx: 4,

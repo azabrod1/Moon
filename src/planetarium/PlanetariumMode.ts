@@ -2451,6 +2451,7 @@ export class PlanetariumMode {
           this.moonDots.hide(i);
           m.dotScreenAlpha = 0;
           m.dotLitScreenAlpha = 0;
+          m.dotLitScreenSizePx = 0;
           continue;
         }
 
@@ -2541,6 +2542,11 @@ export class PlanetariumMode {
           ? 1 - Math.pow(1 - lit.alpha, this.starGain)
           : lit.alpha;
         m.dotScreenSizePx = v.sizePx;
+        // The lit twin's SIZE travels with its alpha: the label contest bids the
+        // product, and the star mapping shrinks an unlit dot as well as dimming
+        // it, so a bid built from the real size would still move with the
+        // terminator.
+        m.dotLitScreenSizePx = lit.sizePx;
 
         if (dotAlpha <= 0) {
           this.moonDots.hide(i);
@@ -4015,12 +4021,15 @@ export class PlanetariumMode {
         // Collision priority is apparent footprint: a readable disc by its px
         // radius, a sub-pixel moon by its dot's weighted glyph size, so among
         // piled-up dots the brighter one keeps its label. A dark-kept moon
-        // contests with the footprint it would have fully lit — eclipse state
-        // must not reorder the contest, or the strobe just moves to whichever
-        // neighbour loses the slot.
+        // contests with the footprint it would have fully lit — BOTH factors
+        // from the lit twin, since the star mapping shrinks an unlit dot as
+        // well as dimming it. Eclipse state must not reorder the contest, or
+        // the strobe just moves to whichever neighbour loses the slot.
         c.priorityPx = Math.max(
           discRadiusPadPx,
-          (isUnlit ? dotLitAlpha : dotAlpha) * (m.dotScreenSizePx ?? 0),
+          isUnlit
+            ? dotLitAlpha * (m.dotLitScreenSizePx ?? 0)
+            : dotAlpha * (m.dotScreenSizePx ?? 0),
         );
         c.halfW = halfW;
         candidateCount++;

@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  LABEL_DOT_MIN_ALPHA,
   MOON_LABEL_PLACEMENT_PARAMS,
   clampAnchorClearOfDisc,
   placeMoonLabels,
@@ -34,6 +35,19 @@ const run = (cs: MoonLabelCandidate[], prev: ReadonlySet<string> = NONE, params 
   placeMoonLabels(cs, prev, params);
   return placed(cs);
 };
+
+describe('moonLabelPlacement — the dark-label band', () => {
+  it('enters exactly where the label-keep gate lets a dark moon live', () => {
+    // Any gap between the two would leave a label kept alive by the lit twin
+    // yet neither styled as dark nor held to the centre-unoccluded proof —
+    // a name at full strength over something that may be hidden.
+    expect(P.unlitEnterAlpha).toBe(LABEL_DOT_MIN_ALPHA);
+  });
+
+  it('leaves above where it enters, so the style cannot pulse with the dot', () => {
+    expect(P.unlitLeaveAlpha).toBeGreaterThan(P.unlitEnterAlpha);
+  });
+});
 
 describe('moonLabelPlacement — the greedy contest', () => {
   it('answers for an empty list and for a lone label', () => {

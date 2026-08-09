@@ -12,10 +12,29 @@
        favicon.svg if the art changes. -->
   <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png?v=3" />
   <meta name="theme-color" content="#050814" />
-  <link rel="preconnect" href="https://fonts.googleapis.com" />
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-  <link href="https://fonts.googleapis.com/css2?family=Geist:wght@300;400;500;600&family=Geist+Mono:wght@400;500&display=swap" rel="stylesheet" />
   <style>
+
+    /* Geist, bundled with the app (public/fonts, SIL OFL 1.1 — OFL.txt sits
+       beside the files). Variable faces, so the whole 100–900 range comes from
+       one file per family and every weight the UI asks for is real.
+
+       The urls are RELATIVE on purpose: this page is served from the Vite
+       base, which is not the domain root on Pages — a root-absolute path like
+       the favicon's would 404 there. */
+    @font-face {
+      font-family: 'Geist';
+      src: url('fonts/Geist-Variable.woff2') format('woff2');
+      font-weight: 100 900;
+      font-style: normal;
+      font-display: swap;
+    }
+    @font-face {
+      font-family: 'Geist Mono';
+      src: url('fonts/GeistMono-Variable.woff2') format('woff2');
+      font-weight: 100 900;
+      font-style: normal;
+      font-display: swap;
+    }
 
     * { margin: 0; padding: 0; box-sizing: border-box; }
     html, body { width: 100%; height: 100%; overflow: hidden; background: #000; touch-action: none; -webkit-user-select: none; user-select: none; }

@@ -1219,7 +1219,33 @@ export interface MoonMesh {
    *  gating and offset. Transient — meaningful only for a shown moon. */
   dotSunVisibleFraction?: number;
   dotScreenAlpha?: number;
+  /** The same dot alpha and point size computed with illumination forced full
+   *  (phase and eclipse shading both 1). Every other fade — parent-dominance
+   *  gate, system edge, disc handoff, light-grasp knee — composes into them
+   *  identically, so they differ from the real pair by illumination alone: the
+   *  label pass names a moon by what it would show fully lit, yet a name still
+   *  dies where the system stops being shown.
+   *
+   *  The label contest bids alpha × size, and that bid must not move with the
+   *  terminator, or the contest simply hands the flicker to whichever neighbour
+   *  loses the slot. So BOTH factors of a dark moon's bid come from the lit
+   *  twin. The alpha alone is not enough: an unlit dot's apparent magnitude is
+   *  +Infinity, which clamps the star mapping's point size to its floor, so a
+   *  dark moon bidding its real size still sinks by several times.
+   *
+   *  Zeroed with dotScreenAlpha whenever the dot is hidden. */
+  dotLitScreenAlpha?: number;
+  dotLitScreenSizePx?: number;
   dotScreenSizePx?: number;
+  /** Whether the label pass actually drew this moon's name last frame. The pick
+   *  list is built before the labels are placed, so it reads a one-frame-old
+   *  answer — imperceptible at label timescales, and it keeps the rule exact: a
+   *  moon dark enough to have no dot is aimable only where you can read it. */
+  labelDisplayed?: boolean;
+  /** Sticky `.unlit` style bit across frames (the hysteresis band lives in
+   *  MOON_LABEL_PLACEMENT_PARAMS), so the dark style cannot pulse with a dot
+   *  flickering across a single threshold. */
+  labelUnlit?: boolean;
   /** Applied-shading limiter state (world/shadeSmoothing): the smoothed
    *  sun-visible fraction actually shown, its wall-clock stamp, and whether the
    *  blood-moon tint is held while the smoothed value is still under the red

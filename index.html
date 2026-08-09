@@ -1491,8 +1491,16 @@
       opacity: 0.6;
       font-size: 10px;
     }
-    /* Hover/tap reveal beats both the base colour alpha and the edge-clamp
-       opacity — must follow .moon-label.edge so equal specificity resolves here. */
+    /* The moon is there but its dot has gone dark (eclipse or new phase): the
+       name holds, quieter, so it reads as "there, but dark". */
+    .moon-label.unlit {
+      opacity: 0.55;
+    }
+    /* All three classes carry opacity at equal specificity, so source order is
+       the whole cascade: .edge, then .unlit, then .revealed. An edge-clamped
+       dark label lands on .unlit's value rather than compounding the two, and
+       the hover/tap reveal beats both — and the base colour alpha — from last
+       place. Keep them in this order. */
     .moon-label.revealed {
       color: rgba(200, 210, 230, 1);
       opacity: 1;

@@ -15,6 +15,7 @@ import {
   pickMoonTextureUpgrade,
   systemEdgeFade,
 } from './moonDots';
+import { LABEL_DOT_MIN_ALPHA } from './moonLabelPlacement';
 
 const P = MOON_DOT_PARAMS;
 // A representative star faint limit for the mapping (the app derives the real
@@ -200,6 +201,74 @@ describe('moonDots — visual composition', () => {
   });
 });
 
+describe('moonDots — the fully-lit twin behind dotLitScreenAlpha', () => {
+  // The label pass keeps a moon named through eclipse and new phase by asking
+  // for the same dot with illumination forced full — a second moonDotVisual call
+  // with phaseCos = 1 and shadeFraction = 1, every other argument identical.
+  // These pin the contract that makes that safe: the twin differs from the real
+  // dot by illumination and nothing else, so a name still retires wherever the
+  // moon itself stops being shown.
+  const lit = (opts: Parameters<typeof visualAt>[1] = {}) =>
+    visualAt(0.02, { ...opts, phaseCos: 1, shade: 1 });
+
+  it('is the real dot exactly when the moon is already fully lit', () => {
+    const real = visualAt(0.02, { phaseCos: 1, shade: 1 });
+    const twin = lit();
+    expect(twin.alpha).toBe(real.alpha);
+    expect(twin.sizePx).toBe(real.sizePx);
+    expect(twin.brightness).toBe(real.brightness);
+    expect(twin.magnitude).toBe(real.magnitude);
+  });
+
+  it('stays visible where a total eclipse takes the real dot to zero', () => {
+    const eclipsed = visualAt(0.02, { shade: 0 });
+    expect(eclipsed.alpha).toBe(0);
+    expect(lit().alpha).toBeGreaterThan(LABEL_DOT_MIN_ALPHA);
+  });
+
+  it('stays visible where new phase takes the real dot to zero', () => {
+    const newPhase = visualAt(0.02, { phaseCos: -1 });
+    expect(newPhase.alpha).toBe(0);
+    expect(lit().alpha).toBeGreaterThan(LABEL_DOT_MIN_ALPHA);
+  });
+
+  // The label contest bids alpha × sizePx. A dark-kept moon bids the lit twin's
+  // pair, so the bid is the same whatever the terminator is doing.
+  const contestBid = (opts: Parameters<typeof visualAt>[1]) => {
+    const real = visualAt(0.02, opts);
+    const twin = lit();
+    return real.alpha < LABEL_DOT_MIN_ALPHA
+      ? twin.alpha * twin.sizePx
+      : real.alpha * real.sizePx;
+  };
+
+  it('bids the same contest footprint fully lit, eclipsed and at new phase', () => {
+    const litBid = contestBid({ phaseCos: 1, shade: 1 });
+    expect(litBid).toBeGreaterThan(0);
+    expect(contestBid({ shade: 0 })).toBe(litBid);
+    expect(contestBid({ phaseCos: -1 })).toBe(litBid);
+  });
+
+  it('would still sink a dark moon if only the alpha came from the twin', () => {
+    // An unlit dot's magnitude is +Infinity, so the star mapping clamps its
+    // point size to the floor: the size has to come from the twin as well, or
+    // the bid drops several times over and the contest reorders on eclipse.
+    const eclipsed = visualAt(0.02, { shade: 0 });
+    const twin = lit();
+    expect(eclipsed.sizePx).toBeLessThan(twin.sizePx);
+    expect(twin.alpha * eclipsed.sizePx).toBeLessThan(twin.alpha * twin.sizePx);
+  });
+
+  it('still dies with the system edge, the parent gate and the disc handoff', () => {
+    // Nothing here is photometric, so all of it must reach the label: a name
+    // that outlived the system-visibility threshold would strand on a moon the
+    // scene has already stopped drawing.
+    expect(lit({ systemFade: 0 }).alpha).toBe(0);
+    expect(lit({ parentFade: 0 }).alpha).toBe(0);
+    expect(lit({ discPx: P.fadeEndPx }).alpha).toBe(0);
+  });
+});
+
 describe('moonDots — faint-end extension continuity', () => {
   it('meets the star floor at the limit and ramps to 0 over faintExtendMag', () => {
     const at = (mag: number) =>
@@ -297,6 +366,26 @@ describe('moonDots — parent-dominance gate', () => {
   });
 });
 
+describe('moonDots — parent-gate anchor is orientation-independent (steering-blackout pin)', () => {
+  // The gate's input must be the analytic tangent size from camera distance,
+  // never a rendered footprint: an off-frustum footprint measures 0 px, which
+  // slams the gate — and every moon dot in the system — shut the frame the
+  // parent's limb crosses the camera plane, with its moons still mid-viewport.
+  it('holds a close system fully open at the measured blackout standoff', () => {
+    // Camera 0.00382 AU from Jupiter's centre (angular radius 7.18°): the
+    // geometry where steering 83° off-axis blanked all 14 moon dots. The
+    // distance-based anchor clears the full-open threshold at any plausible
+    // display FOV and viewport height, with no orientation input to collapse.
+    for (const fovDeg of [40, 50, 60, 70, 80]) {
+      for (const viewportH of [390, 900, 1600]) {
+        const px = discDiameterPx(jupiter.radiusAU, 0.00382, fovDeg, viewportH);
+        expect(px).toBeGreaterThan(P.parentGateFullPx);
+        expect(parentDominanceFade(px)).toBe(1);
+      }
+    }
+  });
+});
+
 describe('moonDots — parent-gate proximity release', () => {
   // parentDominanceFade(0, ratio) forces the gate term to 0 (disc ≪ start), so
   // the result equals the proximity-release term alone — the clean way to pin it.
@@ -390,10 +479,12 @@ describe('moonDots — nav-target floor survives the parent gate (design A)', ()
   });
 
   it('keeps the floor above the label and QA visibility bars (retune guard)', () => {
-    // renderMoonLabels gates a sub-pixel label at dotAlpha ≥ 0.03; the outbound
-    // continuity QA bar is 0.02. The floor must clear both, or a retune could
-    // silently kill the nav-target label while the dot still (barely) shows.
-    const LABEL_DOT_MIN_ALPHA = 0.03;
+    // renderMoonLabels gates a sub-pixel label at LABEL_DOT_MIN_ALPHA; the
+    // outbound continuity QA bar is 0.02. The floor must clear both, or a
+    // retune could silently kill the nav-target label while the dot still
+    // (barely) shows. The label bar's own value is pinned here too, so lowering
+    // the shared constant can never quietly satisfy this guard instead.
+    expect(LABEL_DOT_MIN_ALPHA).toBe(0.03);
     const QA_DOT_MIN_ALPHA = 0.02;
     expect(P.targetMinIntensity).toBeGreaterThan(LABEL_DOT_MIN_ALPHA);
     expect(P.targetMinIntensity).toBeGreaterThan(QA_DOT_MIN_ALPHA);

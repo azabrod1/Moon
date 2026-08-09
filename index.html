@@ -2500,6 +2500,25 @@
        lose to a future reorder for something a body name drifting over the
        scale control would look like a bug. */
     #map-labels { position: absolute; inset: 0; pointer-events: none; z-index: 0; }
+    /* The AU rings' own names, under the body names (DOM order decides between
+       two siblings at the same z). The id-qualified pointer-events is
+       load-bearing, not decoration: the layer's own `#system-map-ui > *` rule
+       turns pointer events back ON for every child, and a plain class rule
+       cannot outrank it — this container would then swallow every drag and
+       pick on the chart beneath it. */
+    #map-ring-labels { position: absolute; inset: 0; pointer-events: none; z-index: 0; }
+    .map-ring-label {
+      position: absolute;
+      left: 0;
+      top: 0;
+      font-family: var(--font-mono);
+      font-size: 9px;
+      letter-spacing: 0.08em;
+      color: var(--t3);
+      text-shadow: 0 0 6px rgba(0, 0, 0, 0.9);
+      white-space: nowrap;
+      will-change: transform;
+    }
     .map-close, .map-panel, .map-pill, .map-card { z-index: 1; }
     .map-label {
       position: absolute;
@@ -2783,6 +2802,25 @@
       color: var(--t3);
     }
     .map-panel-hint { margin-left: auto; font-family: var(--font-ui); font-size: 9px; color: var(--t3); }
+    /* One switch per layer. The label takes the slack so the tag and the
+       switch sit together at the right whether or not the tag is showing. */
+    .map-layer { display: flex; align-items: center; gap: 8px; height: 28px; }
+    .map-layer-k { flex: 1; min-width: 0; font-family: var(--font-ui); font-size: 12px; color: var(--t1); }
+    /* What a layer needs before it means anything. */
+    .map-layer-tag {
+      flex: none;
+      font-style: normal;
+      font-family: var(--font-mono);
+      font-size: 7.5px;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+      color: var(--t3);
+    }
+    /* A layer with nothing to draw at this scale: shown, so the chart is
+       honest about what it has, but not pressable. */
+    .map-layer.dim { opacity: 0.45; pointer-events: none; }
+    .map-layer.dim .map-layer-tag { display: inline; }
+    .map-layer .map-layer-tag { display: none; }
     /* The honest line about what the chart draws, kept where it can always be
        read rather than behind the help button. */
     .map-panel-foot {
@@ -3843,6 +3881,7 @@
            empty-space drags orbit/zoom the map; the HUD children capture their
            own. Shown/hidden by the mode; the WebGL map draws on the canvas. -->
       <div id="system-map-ui">
+        <div id="map-ring-labels"></div>
         <div id="map-labels"></div>
         <!-- What the cursor is resting on, for the one kind of body the chart
              cannot draw in the right place. Mouse only; hidden by default. -->
@@ -3917,6 +3956,31 @@
               </label>
               <div class="pk-list mfm-list" id="map-focus-list"></div>
               <div class="pk-empty" id="map-focus-empty">No bodies match.</div>
+            </div>
+            <div class="map-panel-sep"></div>
+            <div id="map-layers" class="map-panel-sec">
+              <div class="map-panel-sec-head"><b>Layers</b></div>
+              <div class="map-layer" id="map-layer-orbits">
+                <span class="map-layer-k">Orbit lines</span>
+                <button class="tgl on" type="button" role="switch" aria-checked="true" aria-label="Orbit lines"></button>
+              </div>
+              <div class="map-layer" id="map-layer-labels">
+                <span class="map-layer-k">Body labels</span>
+                <button class="tgl on" type="button" role="switch" aria-checked="true" aria-label="Body labels"></button>
+              </div>
+              <div class="map-layer" id="map-layer-moons">
+                <span class="map-layer-k">Moons</span>
+                <button class="tgl on" type="button" role="switch" aria-checked="true" aria-label="Moons"></button>
+              </div>
+              <div class="map-layer" id="map-layer-constellations">
+                <span class="map-layer-k">Constellations</span>
+                <button class="tgl" type="button" role="switch" aria-checked="false" aria-label="Constellations"></button>
+              </div>
+              <div class="map-layer" id="map-layer-rings">
+                <span class="map-layer-k">Distance rings</span>
+                <i class="map-layer-tag">true scale</i>
+                <button class="tgl" type="button" role="switch" aria-checked="false" aria-label="Distance rings"></button>
+              </div>
             </div>
             <div class="map-panel-foot">Sizes enlarged to stay visible · orbits &amp; positions real</div>
           </div>

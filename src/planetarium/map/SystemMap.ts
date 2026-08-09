@@ -185,6 +185,13 @@ import {
   type MapZoomAvailability,
 } from './mapCamera';
 import { flushOrbitDamping } from '../input/orbitDamping';
+import { createMapConstellations } from './mapConstellations';
+import {
+  MAP_RING_RADII_AU,
+  createMapDistanceRings,
+  ringLabelPoints,
+  ringLabelText,
+} from './mapDistanceRings';
 import {
   createMapStars,
   mapStarPixelRatio,
@@ -274,6 +281,46 @@ export interface MapOrbitStyleParams {
 export const MAP_ORBIT_STYLE_DEFAULTS: MapOrbitStyleParams = {
   opacity: 0.6,
   brightness: 0.8,
+};
+
+/**
+ * What the chart draws, as five switches. Each one is VISIBILITY — a layer off
+ * is not drawn at all. Style knobs (setOrbitStyle) stay orthogonal: an opacity
+ * of zero would hide a line on the full chart and leak into the corner chart,
+ * which draws the same objects.
+ */
+export interface MapLayerState {
+  /** The planets' orbit lines, and every moon's ring with them. */
+  orbitLines: boolean;
+  /** The `.map-label` names. The camera's own subject keeps its name whatever
+   *  this says — following an anonymous dot is not a state worth offering. */
+  bodyLabels: boolean;
+  /** Whether a moon system reveals itself as the camera nears it. The camera's
+   *  own subject reveals regardless. */
+  ambientMoons: boolean;
+  /**
+   * The 88 figures, on the chart's own sky.
+   *
+   * Deliberately independent of the world's `showConstellations` setting, and
+   * not seeded from it: they are different skies (one seen from the ship, one
+   * from above the whole system), they want different defaults (the chart is a
+   * schematic and starts clean), and the world's is a stored preference while
+   * this one lasts a session.
+   */
+  constellations: boolean;
+  /** The dashed AU rings. Drawn only once true scale has settled — see the
+   *  draw gate. */
+  distanceRings: boolean;
+}
+
+/** Exactly what the chart drew before it had switches: the three long-standing
+ *  layers on, the two new ones off. */
+export const MAP_LAYER_DEFAULTS: MapLayerState = {
+  orbitLines: true,
+  bodyLabels: true,
+  ambientMoons: true,
+  constellations: false,
+  distanceRings: false,
 };
 // Un-docked ship chevron breathes over this period (ms).
 const SHIP_PULSE_MS = 2000;
@@ -1039,6 +1086,16 @@ export class SystemMap {
   // The star backdrop — built once in the constructor, camera-centred per
   // render, layer-gated to the full chart's camera (see mapStars).
   private stars: THREE.Points;
+  private constellationLines: THREE.LineSegments;
+  private distanceRings: THREE.LineSegments;
+  private layers: MapLayerState = { ...MAP_LAYER_DEFAULTS };
+  /** One DOM node per ring, in ring order, and where each one was last put.
+   *  Built on the first frame the layer is on; written only on a change. */
+  private ringLabels: HTMLDivElement[] = [];
+  private ringLabelContainer: HTMLElement | null = null;
+  private ringLabelShown: boolean[] = [];
+  private ringLabelTransforms: string[] = [];
+  private tmpRingProj = { x: 0, y: 0 };
 
   constructor(renderer: THREE.WebGLRenderer, textures: MapTextureSource) {
     this.renderer = renderer;
@@ -1065,6 +1122,12 @@ export class SystemMap {
     // clean schematic. Re-centred on the camera every render.
     this.stars = createMapStars(renderer.getPixelRatio());
     this.scene.add(this.stars);
+    // The figures the stars sit on, and the AU rings, ride the same layer for
+    // the same reason. Both start hidden — they are the two optional layers.
+    this.constellationLines = createMapConstellations();
+    this.scene.add(this.constellationLines);
+    this.distanceRings = createMapDistanceRings();
+    this.scene.add(this.distanceRings);
     this.camera.layers.enable(MAP_STAR_LAYER);
 
     this.controls = new OrbitControls(this.camera, el);
@@ -1514,6 +1577,13 @@ export class SystemMap {
         this.hideMoon(moon);
       }
     }
+    // The layers go back to what the chart draws by default. The corner chart
+    // renders these very objects, and it is not the full chart's session: a
+    // map closed with its orbit lines switched off would leave the little
+    // frame permanently missing them. The owner re-applies its session state
+    // on the next openMap.
+    this.setLayers(null);
+    this.hideRingLabels();
     this.projectionRevision++;
   }
 
@@ -1615,6 +1685,62 @@ export class SystemMap {
     return { ...this.orbitStyle };
   }
 
+  /**
+   * The chart's layer switches: a partial writes only the keys it carries,
+   * null puts the defaults back. Returns what is now in force.
+   *
+   * Every changed key bumps the projection revision. The moon-reveal pass and
+   * the label pass both sit behind stillness early-outs — a chart nobody is
+   * touching costs nothing, which is the point — so without the bump a switch
+   * flipped on a paused, motionless chart would do nothing until the camera
+   * moved.
+   */
+  setLayers(partial: Partial<MapLayerState> | null): MapLayerState {
+    const want = partial === null
+      ? { ...MAP_LAYER_DEFAULTS }
+      : { ...this.layers, ...partial };
+    let changed = false;
+    for (const key of Object.keys(want) as (keyof MapLayerState)[]) {
+      if (want[key] !== this.layers[key]) changed = true;
+    }
+    this.layers = want;
+    this.applyLayers();
+    if (changed) this.projectionRevision++;
+    return { ...this.layers };
+  }
+
+  getLayers(): MapLayerState {
+    return { ...this.layers };
+  }
+
+  /** Push the switches onto the objects they govern. Idempotent — every path
+   *  that can change what a switch means calls it. */
+  private applyLayers(): void {
+    for (const entry of this.orbits) entry.line.visible = this.layers.orbitLines;
+    for (const system of this.moonSystems) {
+      for (const moon of system.moons) moon.ring.visible = this.layers.orbitLines;
+    }
+    this.constellationLines.visible = this.layers.constellations;
+    this.distanceRings.visible = this.ringsDrawable();
+    // Both label sets are the LABEL PASS's to show and hide — one owner, or a
+    // switch and a frame would fight over the same display property. The pass
+    // reads these flags on its next run, which the revision bump guarantees.
+  }
+
+  /**
+   * Whether the rings may be drawn at all: asked for, at true scale, and the
+   * blend settled there.
+   *
+   * The blend term is what keeps them honest. Mid-animation the chart is
+   * neither scale, so a ring at 5 AU would sit on nothing — the ring says "this
+   * is five AU" and only a settled true scale makes that true. The switch ROW
+   * keys on the committed target instead, so it wakes the instant True scale is
+   * pressed and the rings simply arrive when the animation lands.
+   */
+  private ringsDrawable(): boolean {
+    return this.layers.distanceRings && this.isTrueScale() && this.blend >= MAP_BLEND_TRUE;
+  }
+
   /** The star backdrop's knob: booleans toggle it, a partial retunes it, null
    *  restores the defaults (and shows it). Returns what is now in force. */
   setStars(
@@ -1671,7 +1797,12 @@ export class SystemMap {
     // across exactly the step the blend just took.
     const blendBefore = this.blend;
     const blendMoved = blendAdvance(this.blendState, dtMs);
-    if (blendMoved) this.recompressOrbits();
+    if (blendMoved) {
+      this.recompressOrbits();
+      // The rings' gate has a blend term, and the blend moves on its own.
+      const drawable = this.ringsDrawable();
+      if (drawable !== this.distanceRings.visible) this.applyLayers();
+    }
 
     // Re-read the world's textures before anything decides how to draw. This
     // runs after the world's own update in the same frame, so a tier swap made
@@ -1817,6 +1948,8 @@ export class SystemMap {
     // The backdrop is directional: it re-centres on the camera so every star
     // keeps its bearing, and the ratio uniform tracks the renderer's.
     this.stars.position.copy(this.camera.position);
+    // The figures ride the same directional sphere, so they re-centre with it.
+    this.constellationLines.position.copy(this.camera.position);
     (this.stars.material as THREE.ShaderMaterial).uniforms.pixelRatio.value =
       mapStarPixelRatio(renderer.getPixelRatio());
     // Restore in finally so a throw inside render() never strands the world
@@ -3050,8 +3183,13 @@ export class SystemMap {
     for (const system of this.moonSystems) {
       const parent = system.parent;
       const parentPos = parent.dot.position;
+      // Two ways in, and only one of them is a switch: the camera's own
+      // subject always reveals. A moon the camera is following or diving at
+      // and does not draw is a black wall in the middle of the frame and a
+      // follow target nobody can see.
       const revealed = focusSystem === parent.planet.name
-        || this.camera.position.distanceTo(parentPos) < this.moonRevealDistanceAU(system);
+        || (this.layers.ambientMoons
+          && this.camera.position.distanceTo(parentPos) < this.moonRevealDistanceAU(system));
       if (revealed && !system.built) this.buildMoonSystem(system);
       system.revealed = revealed;
       system.group.visible = revealed;
@@ -3329,6 +3467,10 @@ export class SystemMap {
       });
       ringMaterial.resolution.set(Math.max(el.clientWidth, 1), Math.max(el.clientHeight, 1));
       const ring = new Line2(ringGeometry, ringMaterial);
+      // Built late, so it starts from the switch rather than from on: a system
+      // first revealed after the orbit lines were switched off would otherwise
+      // arrive wearing rings nobody asked for.
+      ring.visible = this.layers.orbitLines;
       // After the spheres, whose written depth is what ends this orbit at the
       // limb of the body it wraps — see the render-order ladder note.
       ring.renderOrder = ORBIT_LINE_RENDER_ORDER;
@@ -5298,6 +5440,31 @@ export class SystemMap {
     if (!this.labelContainer) return;
     const w = this.renderer.domElement.clientWidth;
     const h = this.renderer.domElement.clientHeight;
+    this.renderRingLabels(w, h);
+    // Names off: the container is hidden, so nothing here would be seen — and
+    // the placement work is skipped rather than done into the dark. The one
+    // exception is the body the camera is on, which keeps its name; it is
+    // placed against a de-overlap that has no other label in it, which is
+    // exactly right for the only name on screen.
+    if (!this.layers.bodyLabels) {
+      const subject = this.cameraSubject();
+      for (const [name, label] of this.labels) {
+        if (name !== subject && label.style.display !== 'none') label.style.display = 'none';
+      }
+      for (const system of this.moonSystems) {
+        if (!system.revealed) continue;
+        for (const moon of system.moons) {
+          if (moon.data.name === subject) continue;
+          if (moon.label && moon.label.style.display !== 'none') moon.label.style.display = 'none';
+        }
+      }
+      if (subject === null) return;
+      this.refreshLabelChrome(w, h);
+      this.refreshLabelRingCtx(w, h);
+      this.labelPlacer.begin();
+      this.placeSubjectLabel(subject, w, h);
+      return;
+    }
     this.refreshLabelChrome(w, h);
     this.refreshLabelRingCtx(w, h);
     // Priority order: the Sun first, then the planets inner→outer (catalog
@@ -5326,6 +5493,96 @@ export class SystemMap {
         }
         this.placeLabel(moon.data.name, moon.pos, w, h, moon.drawnRadiusPx, inRing);
       }
+    }
+  }
+
+  /** Place the camera's own subject and nothing else — the exemption body
+   *  labels keeps when the layer is off. */
+  private placeSubjectLabel(subject: string, w: number, h: number): void {
+    if (subject === SUN_DATA.name) {
+      this.placeLabel(SUN_DATA.name, this.sun.position, w, h, this.sunRadiusPx, false);
+      return;
+    }
+    const entry = this.entryFor(subject);
+    if (entry) {
+      if (entry.occluded) this.hideLabel(subject);
+      else this.placeLabel(subject, entry.dot.position, w, h, entry.drawnRadiusPx, false);
+      return;
+    }
+    for (const system of this.moonSystems) {
+      if (!system.revealed) continue;
+      for (const moon of system.moons) {
+        if (moon.data.name !== subject) continue;
+        if (!moon.visible || moon.occluded) {
+          if (moon.label && moon.label.style.display !== 'none') moon.label.style.display = 'none';
+          return;
+        }
+        const inRing = this.labelRingCtx.parent === system.parent;
+        this.placeLabel(subject, moon.pos, w, h, moon.drawnRadiusPx, inRing);
+        return;
+      }
+    }
+  }
+
+  /**
+   * The AU rings' own names, one per ring at its +X ecliptic point.
+   *
+   * Their own container, a sibling of the body labels: they are chart furniture
+   * rather than bodies, so they sit under the names and take no part in the
+   * de-overlap — a ruler that shoved a planet's name aside would be the wrong
+   * way round. Nothing is built until a ring is actually drawn.
+   */
+  private renderRingLabels(w: number, h: number): void {
+    if (!this.ringsDrawable()) {
+      this.hideRingLabels();
+      return;
+    }
+    this.ensureRingLabels();
+    const points = ringLabelPoints();
+    for (let i = 0; i < this.ringLabels.length; i++) {
+      const label = this.ringLabels[i];
+      if (!this.projectChartPoint(points[i], this.tmpRingProj)
+        || !(w > 0) || !(h > 0)) {
+        if (this.ringLabelShown[i]) {
+          this.ringLabelShown[i] = false;
+          label.style.display = 'none';
+        }
+        continue;
+      }
+      if (!this.ringLabelShown[i]) {
+        this.ringLabelShown[i] = true;
+        label.style.display = '';
+      }
+      const transform =
+        `translate(-50%, 0) translate(${Math.round(this.tmpRingProj.x)}px, ${Math.round(this.tmpRingProj.y)}px)`;
+      if (transform !== this.ringLabelTransforms[i]) {
+        this.ringLabelTransforms[i] = transform;
+        label.style.transform = transform;
+      }
+    }
+  }
+
+  private ensureRingLabels(): void {
+    if (this.ringLabels.length > 0) return;
+    this.ringLabelContainer = document.getElementById('map-ring-labels');
+    if (!this.ringLabelContainer) return;
+    for (const radiusAU of MAP_RING_RADII_AU) {
+      const div = document.createElement('div');
+      div.className = 'map-ring-label';
+      div.textContent = ringLabelText(radiusAU);
+      div.style.display = 'none';
+      this.ringLabelContainer.appendChild(div);
+      this.ringLabels.push(div);
+      this.ringLabelShown.push(false);
+      this.ringLabelTransforms.push('');
+    }
+  }
+
+  private hideRingLabels(): void {
+    for (let i = 0; i < this.ringLabels.length; i++) {
+      if (!this.ringLabelShown[i]) continue;
+      this.ringLabelShown[i] = false;
+      this.ringLabels[i].style.display = 'none';
     }
   }
 

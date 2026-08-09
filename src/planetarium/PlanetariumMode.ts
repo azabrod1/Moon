@@ -287,7 +287,13 @@ import { ObservatoryHUD, type SurfaceHudState } from './ui/ObservatoryHUD';
 import { SurfaceTargetMenu } from './ui/SurfaceTargetMenu';
 import { SunLabel } from './ui/SunLabel';
 import { TutorialCard, tutorialCardModel } from './ui/TutorialCard';
-import { SystemMap, type MapTextureSource, type MapOrbitStyleParams } from './map/SystemMap';
+import {
+  MAP_LAYER_DEFAULTS,
+  SystemMap,
+  type MapLayerState,
+  type MapOrbitStyleParams,
+  type MapTextureSource,
+} from './map/SystemMap';
 import { MapHUD } from './ui/MapHUD';
 import { buildMapFocusRows } from './map/mapFocusRows';
 import { mapCardActions, mapCardOffersVerb, commitBodyPickOutcome, type MapVerb } from './map/mapLogic';
@@ -1184,6 +1190,10 @@ export class PlanetariumMode {
   // The zoom readout's last written quantum, so the string is rebuilt only when
   // the printed number changes.
   private mapZoomReadoutQ = Number.NaN;
+  // Which chart layers are switched on. Session state: the chart itself goes
+  // back to the defaults on close, because the corner chart draws the same
+  // objects and is not this session's to restyle.
+  private mapLayers: MapLayerState = { ...MAP_LAYER_DEFAULTS };
   // The catalog name of the body the card is open on, or null. Also the map's
   // "picked" bridge state.
   private mapPicked: NonNullable<LandedTarget> | null = null;
@@ -6959,6 +6969,7 @@ export class PlanetariumMode {
     this.mapHud.onExpand = () => this.setMapPanelCollapsed(false, { bank: true });
     this.mapHud.onPickRow = (name) => this.pickMapFocusRow(name);
     this.mapHud.onReleaseFocus = () => { this.releaseMapFocus(); };
+    this.mapHud.onLayer = (key, on) => this.setMapLayer(key, on);
     // One instrument at a time: opening the Stats card tucks the Observatory
     // panel back into its chip, with a brief pulse so the hop reads.
     this.bottomBar.onStatsToggle = (open) => {
@@ -7545,6 +7556,7 @@ export class PlanetariumMode {
     focused: string | null;
     panelCollapsed: boolean;
     helpOpen: boolean;
+    layers: MapLayerState;
     diving: boolean;
     diveGapAU: number | null;
     ship: { rotationRad: number; docked: boolean };
@@ -7589,6 +7601,7 @@ export class PlanetariumMode {
       focused: cam.focusName,
       panelCollapsed: this.mapPanelCollapsed,
       helpOpen: this.mapHelpOpen,
+      layers: { ...this.mapLayers },
       diving: this.mapDiving,
       // Camera-aim-vs-live-dot gap: ~0 once the ease lands proves the dive
       // tracked the moving dot instead of a stale snapshot.
@@ -7757,6 +7770,17 @@ export class PlanetariumMode {
     return this.mapHelpOpen;
   }
 
+  /** Dev bridge: the chart's layer switches. A partial writes only the keys it
+   *  carries, null restores the defaults; the answer is the session state now
+   *  in force, which is what a reopened map will show. */
+  devSetMapLayers(partial: Partial<MapLayerState> | null): MapLayerState {
+    this.mapLayers = partial === null
+      ? { ...MAP_LAYER_DEFAULTS }
+      : { ...this.mapLayers, ...partial };
+    this.applyMapLayers();
+    return { ...this.mapLayers };
+  }
+
   /** Dev bridge: read or drive the control panel. No argument reads it, a
    *  partial writes only the fields it carries, null puts the defaults back;
    *  the answer is always the state now in force. `sheetExpanded` is derived —
@@ -7858,6 +7882,9 @@ export class PlanetariumMode {
     ));
     this.mapFollowingPainted = null;
     this.mapZoomReadoutQ = Number.NaN;
+    // The chart reopens with the session's layers; close() left it on the
+    // defaults so the corner chart could never inherit them.
+    this.applyMapLayers();
     // The gestures the buttons cannot show, for the first map of the session.
     this.showMapZoomHint();
     this.updateMapView();
@@ -8205,6 +8232,27 @@ export class PlanetariumMode {
       this.mapFollowingPainted = following;
       this.mapHud.setFollowing(following);
     }
+    // The rings row keys on the COMMITTED scale, not the blend: the switch
+    // should wake the moment True scale is pressed, and the rings arrive when
+    // the animation lands. Writes on change.
+    this.mapHud.setRingsRowDim(!map.isTrueScale());
+  }
+
+  /**
+   * A chart layer was switched. The session holds the answer; the chart is
+   * told only while it is open — a closed map is on the defaults, and writing
+   * a session layer into it would leak straight into the corner chart, which
+   * draws the same objects.
+   */
+  private setMapLayer(key: keyof MapLayerState, on: boolean): void {
+    if (this.mapLayers[key] === on) return;
+    this.mapLayers = { ...this.mapLayers, [key]: on };
+    this.applyMapLayers();
+  }
+
+  private applyMapLayers(): void {
+    if (this.isMapOpen()) this.systemMap?.setLayers(this.mapLayers);
+    this.mapHud.setLayers(this.mapLayers);
   }
 
   // ── System map: pick → card → commit, and the dive ──────────────────────

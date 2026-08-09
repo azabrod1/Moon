@@ -671,6 +671,13 @@ function installDevHooks() {
     // The orbit lines: {opacity, brightness} retunes live, null restores.
     setMapOrbitStyle: (partial: Record<string, number> | null) =>
       planetariumMode?.devSetMapOrbitStyle(partial as never) ?? null,
+    // The chart's layer switches — {orbitLines, bodyLabels, ambientMoons,
+    // constellations, distanceRings}; null restores the defaults. Writes the
+    // session state whether or not the map is open, and reaches the chart only
+    // while it is (a closed chart is on the defaults, and the corner chart
+    // draws the same objects). mapState().layers reads it back.
+    setMapLayers: (partial: Record<string, boolean> | null) =>
+      planetariumMode?.devSetMapLayers(partial as never) ?? null,
     setChrome: (visible: boolean) => planetariumMode?.devSetChrome(visible),
     setFov: (deg: number) => planetariumMode?.devSetFov(deg),
     setTimeMs: (utcMs: number) => planetariumMode?.setCurrentUtcMs(utcMs),

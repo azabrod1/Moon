@@ -3,6 +3,7 @@ import type { FactRow } from '../map/mapFacts';
 import type { MapEventRowModel } from '../map/mapEvents';
 import { filterDeckRows } from '../deckLogic';
 import type { MapFocusRow } from '../map/mapFocusRows';
+import type { MapLayerState } from '../map/SystemMap';
 import { makeTiltGlyph } from './mapTiltGlyph';
 
 /**
@@ -51,6 +52,16 @@ const MIN_FACTS_PX = 66;
 const SCALE_NOTE_COMPRESSED = 'Distances compressed so every body stays visible.';
 const SCALE_NOTE_TRUE = 'Real distances for the clock’s date.';
 
+/** The layer switches, in the order the panel lists them: what the chart has
+ *  always drawn first, then the two you can add. */
+const LAYER_ROWS: readonly { key: keyof MapLayerState; id: string }[] = [
+  { key: 'orbitLines', id: 'map-layer-orbits' },
+  { key: 'bodyLabels', id: 'map-layer-labels' },
+  { key: 'ambientMoons', id: 'map-layer-moons' },
+  { key: 'constellations', id: 'map-layer-constellations' },
+  { key: 'distanceRings', id: 'map-layer-rings' },
+];
+
 export class MapHUD {
   private root: HTMLElement | null = null;
   private panel: HTMLElement | null = null;
@@ -65,6 +76,8 @@ export class MapHUD {
   private lastZoomReadout = '';
   private overviewBtn: HTMLButtonElement | null = null;
   private overviewOn = true;
+  private layerRows: { key: keyof MapLayerState; row: HTMLElement | null; tgl: HTMLElement | null }[] = [];
+  private ringsRowDim: boolean | null = null;
 
   private searchEl: HTMLInputElement | null = null;
   private listEl: HTMLElement | null = null;
@@ -92,6 +105,8 @@ export class MapHUD {
   onPickRow: (name: string) => void = () => {};
   /** The `following` chip on the followed row: give the focus back. */
   onReleaseFocus: () => void = () => {};
+  /** A layer switch was pressed. The owner holds the state and paints it back. */
+  onLayer: (key: keyof MapLayerState, on: boolean) => void = () => {};
 
   private card: HTMLElement | null = null;
   private cardDot: HTMLElement | null = null;
@@ -164,6 +179,14 @@ export class MapHUD {
       else this.onCollapse();
     });
     this.pill?.addEventListener('click', () => this.onExpand());
+    for (const { key, id } of LAYER_ROWS) {
+      const row = document.getElementById(id);
+      const tgl = row?.querySelector('.tgl') as HTMLElement | null;
+      this.layerRows.push({ key, row, tgl });
+      tgl?.addEventListener('click', () => {
+        this.onLayer(key, !tgl.classList.contains('on'));
+      });
+    }
     this.searchEl?.addEventListener('input', () => this.applyFilter());
     this.searchEl?.addEventListener('keydown', (e) => this.searchKeydown(e));
     // Delegated so the rebuilt-per-pick buttons need no per-button listeners.
@@ -238,6 +261,28 @@ export class MapHUD {
   setPanelStoodDown(down: boolean): void {
     this.panel?.classList.toggle('stood-down', down);
     this.pill?.classList.toggle('stood-down', down);
+  }
+
+  /** Paint the layer switches. The owner holds the state; this only reflects
+   *  it, so a refused or clamped write can never leave a switch lying. */
+  setLayers(layers: MapLayerState): void {
+    for (const { key, tgl } of this.layerRows) {
+      if (!tgl) continue;
+      const on = layers[key];
+      tgl.classList.toggle('on', on);
+      tgl.setAttribute('aria-checked', on ? 'true' : 'false');
+    }
+  }
+
+  /** Dim the distance-rings row while the chart is not at true scale — the
+   *  rings measure real distance, and there is none to measure on a compressed
+   *  chart. Keyed on the COMMITTED scale, so the row wakes on the press rather
+   *  than when the animation lands. */
+  setRingsRowDim(dim: boolean): void {
+    if (dim === this.ringsRowDim) return;
+    this.ringsRowDim = dim;
+    const row = this.layerRows.find((r) => r.key === 'distanceRings')?.row;
+    row?.classList.toggle('dim', dim);
   }
 
   /** Grey the Reset view row when neither of its journeys home is on offer.

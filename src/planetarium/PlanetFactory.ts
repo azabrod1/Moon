@@ -908,7 +908,23 @@ export interface MoonMesh {
    *  gating and offset. Transient — meaningful only for a shown moon. */
   dotSunVisibleFraction?: number;
   dotScreenAlpha?: number;
+  /** The same dot alpha computed with illumination forced full (phase and
+   *  eclipse shading both 1). Every other fade — parent-dominance gate, system
+   *  edge, disc handoff, light-grasp knee — composes into it identically, so the
+   *  two alphas differ by illumination alone: the label pass names a moon by
+   *  what it would show fully lit, yet a name still dies where the system stops
+   *  being shown. Zeroed with dotScreenAlpha whenever the dot is hidden. */
+  dotLitScreenAlpha?: number;
   dotScreenSizePx?: number;
+  /** Whether the label pass actually drew this moon's name last frame. The pick
+   *  list is built before the labels are placed, so it reads a one-frame-old
+   *  answer — imperceptible at label timescales, and it keeps the rule exact: a
+   *  moon dark enough to have no dot is aimable only where you can read it. */
+  labelDisplayed?: boolean;
+  /** Sticky `.unlit` style bit across frames (the hysteresis band lives in
+   *  MOON_LABEL_PLACEMENT_PARAMS), so the dark style cannot pulse with a dot
+   *  flickering across a single threshold. */
+  labelUnlit?: boolean;
   /** Applied-shading limiter state (world/shadeSmoothing): the smoothed
    *  sun-visible fraction actually shown, its wall-clock stamp, and whether the
    *  blood-moon tint is held while the smoothed value is still under the red

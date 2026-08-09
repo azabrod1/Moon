@@ -15,6 +15,7 @@ import {
   pickMoonTextureUpgrade,
   systemEdgeFade,
 } from './moonDots';
+import { LABEL_DOT_MIN_ALPHA } from './moonLabelPlacement';
 
 const P = MOON_DOT_PARAMS;
 // A representative star faint limit for the mapping (the app derives the real
@@ -197,6 +198,47 @@ describe('moonDots — visual composition', () => {
     // Shrink binds when the disc is smaller than the capped point inside the window.
     const tiny = visualAt(0.05, { discPx: P.fadeStartPx + 0.2 });
     expect(tiny.sizePx).toBeLessThanOrEqual(Math.min(P.sizeMaxPx, starPointVisual(P.magCeiling, FAINT_LIMIT).sizePx));
+  });
+});
+
+describe('moonDots — the fully-lit twin behind dotLitScreenAlpha', () => {
+  // The label pass keeps a moon named through eclipse and new phase by asking
+  // for the same dot with illumination forced full — a second moonDotVisual call
+  // with phaseCos = 1 and shadeFraction = 1, every other argument identical.
+  // These pin the contract that makes that safe: the twin differs from the real
+  // dot by illumination and nothing else, so a name still retires wherever the
+  // moon itself stops being shown.
+  const lit = (opts: Parameters<typeof visualAt>[1] = {}) =>
+    visualAt(0.02, { ...opts, phaseCos: 1, shade: 1 });
+
+  it('is the real dot exactly when the moon is already fully lit', () => {
+    const real = visualAt(0.02, { phaseCos: 1, shade: 1 });
+    const twin = lit();
+    expect(twin.alpha).toBe(real.alpha);
+    expect(twin.sizePx).toBe(real.sizePx);
+    expect(twin.brightness).toBe(real.brightness);
+    expect(twin.magnitude).toBe(real.magnitude);
+  });
+
+  it('stays visible where a total eclipse takes the real dot to zero', () => {
+    const eclipsed = visualAt(0.02, { shade: 0 });
+    expect(eclipsed.alpha).toBe(0);
+    expect(lit().alpha).toBeGreaterThan(LABEL_DOT_MIN_ALPHA);
+  });
+
+  it('stays visible where new phase takes the real dot to zero', () => {
+    const newPhase = visualAt(0.02, { phaseCos: -1 });
+    expect(newPhase.alpha).toBe(0);
+    expect(lit().alpha).toBeGreaterThan(LABEL_DOT_MIN_ALPHA);
+  });
+
+  it('still dies with the system edge, the parent gate and the disc handoff', () => {
+    // Nothing here is photometric, so all of it must reach the label: a name
+    // that outlived the system-visibility threshold would strand on a moon the
+    // scene has already stopped drawing.
+    expect(lit({ systemFade: 0 }).alpha).toBe(0);
+    expect(lit({ parentFade: 0 }).alpha).toBe(0);
+    expect(lit({ discPx: P.fadeEndPx }).alpha).toBe(0);
   });
 });
 
@@ -410,10 +452,10 @@ describe('moonDots — nav-target floor survives the parent gate (design A)', ()
   });
 
   it('keeps the floor above the label and QA visibility bars (retune guard)', () => {
-    // renderMoonLabels gates a sub-pixel label at dotAlpha ≥ 0.03; the outbound
-    // continuity QA bar is 0.02. The floor must clear both, or a retune could
-    // silently kill the nav-target label while the dot still (barely) shows.
-    const LABEL_DOT_MIN_ALPHA = 0.03;
+    // renderMoonLabels gates a sub-pixel label at LABEL_DOT_MIN_ALPHA; the
+    // outbound continuity QA bar is 0.02. The floor must clear both, or a
+    // retune could silently kill the nav-target label while the dot still
+    // (barely) shows.
     const QA_DOT_MIN_ALPHA = 0.02;
     expect(P.targetMinIntensity).toBeGreaterThan(LABEL_DOT_MIN_ALPHA);
     expect(P.targetMinIntensity).toBeGreaterThan(QA_DOT_MIN_ALPHA);

@@ -101,6 +101,12 @@ import {
   type MoonDotVisual,
 } from './moonDots';
 import {
+  LABEL_DOT_MIN_ALPHA,
+  LABEL_READABLE_RADIUS_PX,
+  MOON_LABEL_PLACEMENT_PARAMS,
+  type MoonLabelPlacementParams,
+} from './moonLabelPlacement';
+import {
   applySunGlareMaskParams,
   sunGlareMaskActivation,
   sunGlareMaskCoreOuterPx,
@@ -768,6 +774,7 @@ export class PlanetariumMode {
    *  buffers fill in updateMoonDotsForCamera after the final camera pose. */
   private moonDots: MoonDots | null = null;
   private moonDotParams: MoonDotParams = { ...MOON_DOT_PARAMS };
+  private moonLabelPlacementParams: MoonLabelPlacementParams = { ...MOON_LABEL_PLACEMENT_PARAMS };
   /** Faint-limit magnitude the dots' faint-end handoff lines up to — the
    *  starfield's pinned anchor, not the catalog's dimmest entry. */
   private starFaintLimitMag = 6.5;
@@ -783,6 +790,10 @@ export class PlanetariumMode {
   private tmpDotParentPos = new THREE.Vector3();
   private tmpDotChroma = { r: 1, g: 1, b: 1 };
   private tmpDotVisual: MoonDotVisual = { intensity: 0, alpha: 0, sizePx: 0, brightness: 0, magnitude: 0 };
+  /** Dedicated scratch for the fully-lit twin of each dot. Separate from
+   *  tmpDotVisual on purpose: that result's size and brightness are still needed
+   *  for the GPU write, so sharing one object would corrupt the dot itself. */
+  private tmpDotLitVisual: MoonDotVisual = { intensity: 0, alpha: 0, sizePx: 0, brightness: 0, magnitude: 0 };
   /** The moon a nav lock is aimed at, kept alive past autopilot disengage /
    *  arrival-look drop so its dot floor and label exemption survive manual
    *  flight to the moon. Session-only, never persisted; cleared on a jump/engage
@@ -984,9 +995,12 @@ export class PlanetariumMode {
   // Moon labels
   private moonLabels = new Map<string, HTMLDivElement>();
   private moonLabelContainer: HTMLDivElement | null = null;
-  // Pooled per-frame scratch for renderMoonLabels' de-overlap pass.
+  // Pooled per-frame scratch for renderMoonLabels' de-overlap pass. The element
+  // and the moon record ride along so the decision can be applied without a
+  // lookup; the contest itself reads only the screen-space fields.
   private moonLabelCandidates: Array<{
     label: HTMLDivElement;
+    moon: MoonMesh;
     sx: number;
     sy: number;
     onScreen: boolean;
@@ -994,6 +1008,7 @@ export class PlanetariumMode {
     halfW: number;
     isTarget: boolean;
     isRevealed: boolean;
+    isUnlit: boolean;
   }> = [];
   private resumePrompt = new PlanetariumResumePrompt();
   private helpModal = new PlanetariumHelpModal();
@@ -2391,6 +2406,7 @@ export class PlanetariumMode {
     const cam = this.camera.position;
     const targetMoon = this.currentDotTargetMoon();
     const landedMoonName = this.landedOn?.type === 'moon' ? this.landedOn.name : null;
+    const kneeActive = this.starGain > 1.001;
 
     let idx = 0;
     for (const planet of this.solarSystem.planets) {
@@ -2425,6 +2441,7 @@ export class PlanetariumMode {
         if (!m.mesh.visible || m.data.name === landedMoonName) {
           this.moonDots.hide(i);
           m.dotScreenAlpha = 0;
+          m.dotLitScreenAlpha = 0;
           continue;
         }
 
@@ -2479,15 +2496,41 @@ export class PlanetariumMode {
           undefined,
           this.tmpDotVisual,
         );
+        // The same dot with illumination forced full — phase and eclipse shading
+        // both 1, every other argument identical. The label pass names a moon by
+        // this alpha, so a terminator or an eclipse cannot strobe a name off,
+        // while the parent gate, the system edge and the disc handoff still
+        // reach it and retire the name honestly. Its own scratch object: `v`
+        // still has to feed the GPU write below.
+        const lit = moonDotVisual(
+          renderedR,
+          distAU,
+          sunDistAU,
+          1,
+          albedo,
+          1,
+          discPx,
+          targetMoon === m.data.name,
+          systemFade,
+          parentFade,
+          this.starFaintLimitMag,
+          params,
+          undefined,
+          this.tmpDotLitVisual,
+        );
         // The dots share the starfield's telescope light grasp, same soft knee:
         // the mapping contract says a moon dot is as visible as an equally
         // bright star, and the surface view is exactly where both are honest
         // photometry — a gained sky over ungained dots would sink every dot
-        // below its star twin. Inactive (gain 1) everywhere else.
-        const dotAlpha = this.starGain > 1.001
+        // below its star twin. Inactive (gain 1) everywhere else. Both alphas
+        // take it, or they would differ by more than illumination.
+        const dotAlpha = kneeActive
           ? 1 - Math.pow(1 - v.alpha, this.starGain)
           : v.alpha;
         m.dotScreenAlpha = dotAlpha;
+        m.dotLitScreenAlpha = kneeActive
+          ? 1 - Math.pow(1 - lit.alpha, this.starGain)
+          : lit.alpha;
         m.dotScreenSizePx = v.sizePx;
 
         if (dotAlpha <= 0) {
@@ -2700,6 +2743,15 @@ export class PlanetariumMode {
     this.moonDotParams = partial === null
       ? { ...MOON_DOT_PARAMS }
       : { ...this.moonDotParams, ...partial };
+  }
+
+  /** Dev-bridge live tuning of the moon-label placement knobs (the dark-label
+   *  band). A partial merges into the running copy; null resets to the shipped
+   *  defaults. */
+  devSetMoonLabelPlacementParams(partial: Partial<MoonLabelPlacementParams> | null): void {
+    this.moonLabelPlacementParams = partial === null
+      ? { ...MOON_LABEL_PLACEMENT_PARAMS }
+      : { ...this.moonLabelPlacementParams, ...partial };
   }
 
   /**
@@ -3392,10 +3444,15 @@ export class PlanetariumMode {
       }
     }
 
-    // Visible moons — but only those actually drawn as more than a point: the
-    // same readable-disc / faint-dot gate the moon-label renderer uses (nav
-    // target exempt, exactly as there), so pick and render agree on every moon.
+    // Visible moons. The invariant is that pick and label agree: anything you
+    // can read the name of is aimable, and nothing else is. So this reuses the
+    // label pass's own thresholds — a readable disc, or a dot bright enough to
+    // see, or the nav target — plus, for a moon whose dot has gone dark, the
+    // label the placement pass actually drew.
     const tempV = this.pickTempV;
+    // Whether a drawn label is even possible this frame; without one, a dark
+    // moon has nothing on screen to tap.
+    const labelsShowing = this.showBodyLabels || this.revealedBody !== null;
     for (const planet of this.solarSystem.planets) {
       const moons = this.planetMoons.get(planet.data.name);
       if (!moons) continue;
@@ -3414,7 +3471,11 @@ export class PlanetariumMode {
         const effR = this.renderedMoonSizeAU(m.data.radiusAU, parentR, anchor);
         const discPadPx = discRadiusPx(effR, dist, halfFovTan, canvasH) * 1.1;
         const dotAlpha = m.dotScreenAlpha ?? 0;
-        if (discPadPx < 1.0 && dotAlpha < 0.03 && m.data.name !== targetMoon) continue;
+        const aimable = discPadPx >= LABEL_READABLE_RADIUS_PX
+          || dotAlpha >= LABEL_DOT_MIN_ALPHA
+          || m.data.name === targetMoon
+          || (labelsShowing && (m.labelDisplayed ?? false));
+        if (!aimable) continue;
         const dotPx = (m.dotScreenSizePx ?? 0) / 2;
         this.pushPickCandidate(m.data.name, proj.x, proj.y, Math.max(discPadPx, dotPx), dist);
       }
@@ -3773,15 +3834,22 @@ export class PlanetariumMode {
     const labelsOn = this.showBodyLabels;
     const revealedMoon = this.revealedBody;
     // A moon earns a label when its disc reads as more than a point, OR its dot
-    // is at least faintly visible, OR it's the explicit nav target. A sub-pixel
-    // moon too dim to dot gets no label pointing at empty sky.
-    const LABEL_READABLE_RADIUS_PX = 1.0;
-    const LABEL_DOT_MIN_ALPHA = 0.03;
+    // would be at least faintly visible with the moon fully lit, OR it is the
+    // explicit nav target. Judging by the lit dot is the point: a moon in
+    // eclipse or at new phase is still there and still aimable, so its name
+    // holds through the darkness in the .unlit style instead of strobing with
+    // the terminator. A moon too faint to dot even fully lit gets no label
+    // pointing at empty sky — and the nav target is the one wayfinding
+    // exception, named however dim, because you asked for it by name.
+    const placement = this.moonLabelPlacementParams;
 
     for (const planet of this.solarSystem.planets) {
       const moons = this.planetMoons.get(planet.data.name);
       if (!moons) continue;
       for (const m of moons) {
+        // Cleared on the way in and set only where a label is really placed, so
+        // every path out of this loop leaves the pick list an honest answer.
+        m.labelDisplayed = false;
         const label = this.moonLabels.get(m.data.name);
         if (!label) continue;
         // Suppress the landed moon's own label — no need to label what you're standing on.
@@ -3828,13 +3896,26 @@ export class PlanetariumMode {
         ).radiusPx * 1.1;
 
         // Sub-pixel gating: a moon whose disc doesn't read and whose dot is too
-        // faint to see keeps no label — unless it's the nav target.
+        // faint to see even fully lit keeps no label — unless it's the nav target.
         const dotAlpha = m.dotScreenAlpha ?? 0;
+        const dotLitAlpha = m.dotLitScreenAlpha ?? 0;
         const readable = discRadiusPadPx >= LABEL_READABLE_RADIUS_PX;
-        if (!readable && dotAlpha < LABEL_DOT_MIN_ALPHA && targetMoon !== m.data.name) {
+        const isTarget = targetMoon === m.data.name;
+        if (!readable && dotLitAlpha < LABEL_DOT_MIN_ALPHA && !isTarget) {
           if (label.style.display !== 'none') label.style.display = 'none';
+          m.labelUnlit = false;
           continue;
         }
+        // Dark-kept: the name is held by the lit dot while the real one has gone
+        // out. The band is sticky per moon so the style cannot pulse with a dot
+        // flickering across a single threshold. A readable disc never takes the
+        // style — a resolved moon sits at a low dot alpha as its normal state,
+        // handed off to the disc.
+        const dark = m.labelUnlit
+          ? dotAlpha <= placement.unlitLeaveAlpha
+          : dotAlpha < placement.unlitEnterAlpha;
+        const isUnlit = !readable && dark && dotLitAlpha >= LABEL_DOT_MIN_ALPHA;
+        m.labelUnlit = isUnlit;
         // Lift the anchor clear of whichever is larger — the disc limb or the
         // dot glyph (for a sub-pixel moon the dot is the only thing on screen).
         const radiusPx = Math.max(discRadiusPadPx, (m.dotScreenSizePx ?? 0) / 2);
@@ -3871,23 +3952,37 @@ export class PlanetariumMode {
           label.style.display = 'none';
           continue;
         }
+        // A dark-kept label has no dot under it, so nothing on screen ties the
+        // name to the moon: require the moon's own centre unoccluded too, or the
+        // name floats over the parent's limb announcing something you cannot
+        // see. A lit moon needs no such proof — its dot is the proof.
+        if (isUnlit
+          && (this.planetLabels?.isScreenPointOccluded(proj.x, proj.y, moonCamDist, `moon:${m.data.name}`) ?? false)) {
+          if (label.style.display !== 'none') label.style.display = 'none';
+          continue;
+        }
         let c = candidates[candidateCount];
         if (!c) {
-          c = { label, sx: 0, sy: 0, onScreen: false, priorityPx: 0, halfW: 0, isTarget: false, isRevealed: false };
+          c = { label, moon: m, sx: 0, sy: 0, onScreen: false, priorityPx: 0, halfW: 0, isTarget: false, isRevealed: false, isUnlit: false };
           candidates.push(c);
         }
         c.label = label;
+        c.moon = m;
         c.sx = sx;
         c.sy = sy;
         c.onScreen = onScreen;
-        c.isTarget = targetMoon === m.data.name;
+        c.isTarget = isTarget;
         c.isRevealed = revealedMoon === m.data.name;
+        c.isUnlit = isUnlit;
         // Collision priority is apparent footprint: a readable disc by its px
         // radius, a sub-pixel moon by its dot's weighted glyph size, so among
-        // piled-up dots the brighter one keeps its label.
+        // piled-up dots the brighter one keeps its label. A dark-kept moon
+        // contests with the footprint it would have fully lit — eclipse state
+        // must not reorder the contest, or the strobe just moves to whichever
+        // neighbour loses the slot.
         c.priorityPx = Math.max(
           discRadiusPadPx,
-          dotAlpha * (m.dotScreenSizePx ?? 0),
+          (isUnlit ? dotLitAlpha : dotAlpha) * (m.dotScreenSizePx ?? 0),
         );
         c.halfW = (m.data.name.length * 6.5 + 12) / 2;
         candidateCount++;
@@ -3935,7 +4030,9 @@ export class PlanetariumMode {
       c.label.style.left = `${c.sx}px`;
       c.label.style.top = `${c.sy}px`;
       c.label.classList.toggle('edge', !c.onScreen);
+      c.label.classList.toggle('unlit', c.isUnlit);
       c.label.classList.toggle('revealed', c.isRevealed);
+      c.moon.labelDisplayed = true;
     }
   }
 
@@ -8516,11 +8613,17 @@ export class PlanetariumMode {
     const cam = this.camera as THREE.PerspectiveCamera;
     const playerAbs = { x: this.player.posX, y: this.player.posY, z: this.player.posZ };
     // Dot + label render-truth (DEV QA): the moon's final screen alpha this
-    // frame and whether its label is shown. Null for a planet (no dot/label).
+    // frame, the same alpha with illumination forced full (what the label gate
+    // reads), and whether its label is shown. Null for a planet (no dot/label).
     let dotScreenAlpha: number | null = null;
+    let dotLitScreenAlpha: number | null = null;
     for (const moons of this.planetMoons.values()) {
       const mm = moons.find((x) => x.data.name === name);
-      if (mm) { dotScreenAlpha = mm.dotScreenAlpha ?? 0; break; }
+      if (mm) {
+        dotScreenAlpha = mm.dotScreenAlpha ?? 0;
+        dotLitScreenAlpha = mm.dotLitScreenAlpha ?? 0;
+        break;
+      }
     }
     const lbl = this.moonLabels.get(name);
     const labelVisible = lbl ? lbl.style.display !== 'none' : null;
@@ -8545,6 +8648,7 @@ export class PlanetariumMode {
       camOwner: this.camOwner,
       userOrbiting: this.camOwner === 'orbit', // forensics back-compat
       dotScreenAlpha,
+      dotLitScreenAlpha,
       labelVisible,
     };
   }

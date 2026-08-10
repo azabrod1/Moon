@@ -53,6 +53,15 @@ export function captureDeviceTextureCaps(renderer: THREE.WebGLRenderer): void {
 export function applyTextureDefaults(tex: THREE.Texture, kind: MapKind): void {
   tex.anisotropy = chosenAnisotropy;
   tex.colorSpace = kind === 'color' ? THREE.SRGBColorSpace : THREE.NoColorSpace;
+  // Opt out of three's immutable texStorage2D allocation (the flag is our
+  // patches/three escape hatch): for sRGB maps the driver pays a full-image
+  // conversion inside the immutable upload — ~200ms frozen main thread for an
+  // 8K on Chromium, a comparable deferred stall on WebKit — while the mutable
+  // texImage2D path uploads the same bytes into the same internal format for
+  // a fraction of that. Same pixels, same sampling, same mips; only the
+  // allocation call changes. These maps upload once and never resize, so
+  // immutability buys nothing here.
+  tex.userData.mutableStorage = true;
 }
 
 /**

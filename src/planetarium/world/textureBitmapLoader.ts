@@ -1,11 +1,13 @@
 /**
- * The upload-friendly texture decode path. Today only the colour-tier ladder
- * (PlanetFactory) takes it; the durable-fetch seam (textureRetry) shares this
- * module's `textureLoader` but deliberately keeps the HTMLImageElement path —
- * see the measured reasoning at its defaultDeps. Honouring `flipY` on an
- * HTMLImageElement texture costs a synchronous CPU repack of the entire
- * decoded image INSIDE `texSubImage2D`; `createImageBitmap` with the flip
- * baked in decodes off this thread and uploads without that pass.
+ * The upload-friendly texture decode path, shared by every streamed map: the
+ * boot set through the durable-fetch seam (textureRetry) and the colour-tier
+ * ladder (PlanetFactory). Honouring `flipY` on an HTMLImageElement texture
+ * costs a synchronous CPU repack of the entire decoded image INSIDE
+ * `texSubImage2D`; `createImageBitmap` with the flip baked in decodes off
+ * this thread and uploads without that pass. (The other half of the upload
+ * bill — the driver's sRGB conversion into an immutable texStorage2D
+ * allocation — is paid by BOTH decode paths, and is what texturePolicy's
+ * `mutableStorage` opt-out plus patches/three removes.)
  *
  * Guarded by observation, not feature sniffing: a 1x2 readback probe must
  * come back actually inverted before any real image takes this path. Anything
@@ -120,7 +122,8 @@ async function loadBitmapTexture(url: string, stillWanted?: () => boolean): Prom
 
 /**
  * Load a texture through the bitmap path when the probe allows it, the shared
- * `textureLoader` otherwise. The colour-tier ladder's default loader.
+ * `textureLoader` otherwise. The seam both the durable fetch and the tier
+ * ladder call.
  */
 export const loadStreamedTexture: TextureLoad = (url, onLoad, onError, stillWanted) => {
   // No API means no probe to wait for: fall back synchronously, preserving

@@ -4,6 +4,7 @@
   "description": "Flyable solar-system planetarium: real ephemerides, eclipses, and surface observatories",
   "type": "module",
   "scripts": {
+    "postinstall": "patch-package",
     "dev": "vite",
     "gen:stars": "node gen-stars.mjs",
     "gen:moons": "node gen-moons.mjs",
@@ -21,6 +22,7 @@
   },
   "devDependencies": {
     "@types/node": "^25.5.2",
+    "patch-package": "^8.0.1",
     "playwright": "^1.60.0",
     "vitest": "^4.1.8"
   }

@@ -200,6 +200,7 @@ import {
   CAM_FOLLOW_TAU_IDLE_S,
   CAM_FOLLOW_TAU_TURN_S,
   CAM_FOLLOW_TURN_BLEND_S,
+  ORBIT_DAMPING_TAU_S,
   cameraFollowGain,
   chaseIdealOffset,
   reacquireCameraStep,
@@ -840,6 +841,10 @@ export class PlanetariumMode {
    *  Sun's below, and each moon's on MoonMesh). One increment site covers
    *  cruise and landed: updateLanded runs inside update(). */
   private frameStamp = 0;
+  /** The frameStamp whose OrbitControls damping step has already run — the
+   *  controls wrapper (see the constructor) uses it to hold the instance to
+   *  one step per rendered frame. */
+  private controlsDampingFrame = -1;
   /** The Sun's screen projection, measured once per frame and shared by its
    *  four per-frame consumers (exposure meter, occlusion pass, sun shader,
    *  sun label) — identical inputs, so one measurement serves all. Its own
@@ -1653,10 +1658,31 @@ export class PlanetariumMode {
 
     this.controls = new OrbitControls(camera, renderer.domElement);
     this.controls.enableDamping = true;
-    this.controls.dampingFactor = 0.05;
+    // Re-derived from real frame time at the top of update(); this seeds the
+    // first frame only.
+    this.controls.dampingFactor = cameraFollowGain(1 / 60, ORBIT_DAMPING_TAU_S);
     this.controls.enabled = false;
     this.controls.minDistance = CRUISE_CONTROLS_MIN_DISTANCE_AU;
     this.controls.maxDistance = 5;
+    // OrbitControls advances its damping by a fixed fraction per update()
+    // CALL, and its own pointer/wheel handlers each call update() on top of
+    // this mode's per-frame call. Whether a frame catches an input event is
+    // set by the beat between device report rate and refresh rate, so during
+    // a drag the camera advanced ~2× on event frames vs quiet ones — a speed
+    // flutter that reads as jitter against a large nearby disc. Hold the
+    // instance to ONE step per rendered frame: the first call in a frame
+    // claims the stamp, later ones just accumulate their input deltas for the
+    // next frame's step — the render could not have shown them any earlier.
+    // While the mode is inactive update() never stamps, so pass handler calls
+    // through untouched rather than gate them against a frozen stamp.
+    const stepControlsDamping = this.controls.update.bind(this.controls);
+    this.controls.update = (deltaTime?: number | null): boolean => {
+      if (this.active) {
+        if (this.controlsDampingFrame === this.frameStamp) return false;
+        this.controlsDampingFrame = this.frameStamp;
+      }
+      return stepControlsDamping(deltaTime);
+    };
 
     // Yield the chase cam only on an actual orbit drag, never on a plain
     // click. We track raw pointer pixels because the chase cam moves the
@@ -2373,6 +2399,11 @@ export class PlanetariumMode {
     if (!this.active || !this.solarSystem) return;
     this.lastFrameDtMs = dt * 1000;
     this.frameStamp++;
+    // One damping step runs per frame (the controls wrapper enforces it), so
+    // size that step by the frame's real duration: the coast then decays at
+    // e^(−t/τ) in wall time on any refresh rate, and a hitch frame advances
+    // by exactly the time it took.
+    this.controls.dampingFactor = cameraFollowGain(dt, ORBIT_DAMPING_TAU_S);
 
     // Upload one budget's worth of freshly loaded textures while nothing is
     // being asked of the frame — otherwise the whole decode+upload bill lands

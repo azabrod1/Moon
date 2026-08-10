@@ -3,11 +3,16 @@
  * styling (accent reserved for happening-now warmth). "From ⟨body⟩ ▾" vantage
  * header (click = change vantage) with swap chip, phase hero (SVG glyph +
  * angular-diameter data line; Quiet-sky card on moonless grounds), live
- * now-bar, the surface-view entry, Earth's prev/next jump rows with next-date
- * metas, and the per-system upcoming-events list with classification badges.
+ * now-bar, the sky window that is the door to the surface view (with its
+ * watch row and one-time coach mark), Earth's prev/next finder rows with
+ * next-date metas, and the per-system upcoming-events list with
+ * classification badges. "Look up" names that door; "Surface view" stays the
+ * name of the mode it opens.
+ *
  * Pure DOM + ephemeris reads; clock changes, camera work, and the chunked
  * event search live in PlanetariumMode. 8 Hz renders touch text nodes only;
- * list rebuilds happen only in setEvents.
+ * the window's structure is gated on a state key and list rebuilds happen
+ * only in setEvents.
  */
 import { computeOrbitalState, type EventType } from '../../astronomy/ephemeris';
 import { formatDateCompact } from '../../astronomy/planetary';

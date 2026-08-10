@@ -92,7 +92,7 @@ export const TUTORIAL_STEPS: readonly TutorialStep[] = [
   {
     id: 'eclipse',
     title: 'August 2, 2027',
-    body: 'You got here through the Observatory: land on Earth, then pick the next Solar Eclipse in the panel. You’re standing in the path of the Moon’s shadow — watch the Sun as the Moon crosses it.',
+    body: 'You got here through the Observatory: land on Earth, pick the next Solar Eclipse in the panel, then Look up. You’re standing in the path of the Moon’s shadow — watch the Sun as the Moon crosses it.',
     primaryLabel: 'Next: wrap up',
     ghostLabel: 'Skip tutorial',
     stage: 'eclipse',

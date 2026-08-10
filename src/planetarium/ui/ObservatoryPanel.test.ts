@@ -132,6 +132,7 @@ describe('observatoryWindowState', () => {
   });
 
   it('idle names the ground you are standing on', () => {
+    expect(state({}).mode).toBe('idle');
     expect(state({}).title).toBe('Look up');
     expect(state({}).sub).toBe('See the sky from Earth');
     expect(state({ landed: onMoon }).sub).toBe('See the sky from the Moon');
@@ -222,6 +223,9 @@ describe('observatoryWindowState', () => {
   });
 
   it('only a live window pulses, and it carries the relocation flag through', () => {
+    // The mode itself is what styles ember and runs the tick — pin it, not
+    // just the flag riding beside it.
+    expect(state({ live: { spec: solar, classification: 'total' } }).mode).toBe('live');
     expect(state({ live: { spec: solar, classification: 'total' } }).showNow).toBe(true);
     expect(
       state({ landed: onMoon, relocates: true, live: { spec: solar, classification: 'total' } })

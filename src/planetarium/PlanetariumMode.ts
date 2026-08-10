@@ -1082,7 +1082,10 @@ export class PlanetariumMode {
   // cleared on every ground change (applyLandedTarget) and on takeoff.
   private surfacePickedTarget: SurfaceTarget | null = null;
   // Set when the click that dismissed the coach mark is the same click
-  // entering the surface view; consumed by that one entry.
+  // entering the surface view; consumed by that one entry. Every window-click
+  // path that ends WITHOUT entering (picker opens instead, mission gap, live
+  // event gone) clears it — left armed, it would eat the hint on some later,
+  // unrelated entry.
   private coachSuppressesNextSurfaceHint = false;
   private surfaceFovDeg = SURFACE_FOV_DEFAULT_DEG;
   private surfaceTracking = true;
@@ -11849,11 +11852,13 @@ export class PlanetariumMode {
 
   private toggleSurfaceView() {
     if (this.landedView === 'surface') {
+      this.coachSuppressesNextSurfaceHint = false;
       this.exitSurfaceView();
       return;
     }
     // Second click while the picker is up reads as "never mind".
     if (this.surfaceTargetMenu.isOpen()) {
+      this.coachSuppressesNextSurfaceHint = false;
       this.closeSurfaceTargetMenu();
       return;
     }
@@ -11864,12 +11869,26 @@ export class PlanetariumMode {
       return;
     }
     if (this.lookupOpensMenu()) {
+      this.coachSuppressesNextSurfaceHint = false;
       this.openSurfaceTargetMenu();
       return;
     }
     const pick = this.surfacePickedTarget;
     if (pick) this.enterSurfaceView(pick, 'companion');
     else this.enterSurfaceView();
+    this.dismissSheetAfterDoorEntry();
+  }
+
+  /**
+   * Entering the surface through the panel commits the screen to the sky —
+   * and the ≤640px sheet is an overlay covering exactly that sky, holding
+   * the HUD lifted into it. It leaves with the click; the desktop panel sits
+   * beside the scene and stays.
+   */
+  private dismissSheetAfterDoorEntry() {
+    if (this.landedView === 'surface' && this.observatoryPanel.sheetFormActive()) {
+      this.closeObservatoryPanel();
+    }
   }
 
   /**
@@ -11884,10 +11903,16 @@ export class PlanetariumMode {
   private watchLiveEvent() {
     // Missions hide the Observatory control and close its panel; the watch
     // row and window can outlive the panel by the length of a click.
-    if (this.isMissionActive()) return;
+    if (this.isMissionActive()) {
+      this.coachSuppressesNextSurfaceHint = false;
+      return;
+    }
     const event = this.liveShadowEventNow();
     const landed = this.surfaceLandedInfo();
-    if (!event || !landed) return;
+    if (!event || !landed) {
+      this.coachSuppressesNextSurfaceHint = false;
+      return;
+    }
     // The tutorial stages its own ground, clock and surface entry, and holds
     // its Next button on a fixed instant of that staging: a click under an
     // open card must not move the ground beneath it. It still enters — a
@@ -11920,6 +11945,7 @@ export class PlanetariumMode {
       this.renderObservatoryPanel();
       this.publishObservatoryEvents();
     }
+    this.dismissSheetAfterDoorEntry();
     if (tutorialActive) return;
     this.notification.show(
       this.jumpToastPrefix(relocate ? event.spec.parentPlanet : null) +
@@ -12006,6 +12032,7 @@ export class PlanetariumMode {
   private pickSurfaceTarget(target: SurfaceTarget) {
     this.surfacePickedTarget = target;
     this.enterSurfaceView(target, 'companion');
+    this.dismissSheetAfterDoorEntry();
   }
 
   private renderObservatoryPanel() {
@@ -12643,16 +12670,19 @@ export class PlanetariumMode {
       return;
     }
     this.lastPhaseJump = { type, utcMs: found.getTime() };
-    // A stale shadow event is deliberately left standing: relevantObservatoryEvent
-    // is window-gated, so it only ever resurfaces while that eclipse is truly in
-    // the sky — a full-moon jump that lands inside a coinciding lunar eclipse
-    // SHOULD have the HUD narrate the eclipse over the phase framing (same body,
-    // wider fit). Clearing it here would also reset the eclipse steppers'
-    // skip-the-parked-event search window.
     // Same park-and-watch policy as the shadow jumps.
     this.timeState = { ...this.timeState, rate: 1, paused: false };
     this.setCurrentUtcMs(found.getTime() - OBSERVATORY_JUMP_LEAD_MS);
     this.observatoryPanel.flashNowBar();
+    // A full-moon jump can land inside a coinciding lunar eclipse. Adopt it:
+    // the HUD then narrates the eclipse over the phase framing (same body,
+    // wider story), the eclipse steppers treat it as parked and search past
+    // it, and the window stays lit through the frames the restarted search
+    // below needs to re-find it — resolved now, while the old results still
+    // hold the event. With nothing overhead the last event simply stands;
+    // it only ever resurfaces through its own window gate.
+    const coinciding = this.liveShadowEventNow();
+    if (coinciding) this.lastObservatoryEvent = coinciding;
     // Same reason as the shadow jumps: the clock moved, so realign the scene
     // graph before anything fits a FOV off it.
     this.refreshLandedScene();

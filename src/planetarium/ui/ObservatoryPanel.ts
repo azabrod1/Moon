@@ -665,6 +665,13 @@ export class ObservatoryPanel {
     return this.panelEl?.classList.contains('visible') ?? false;
   }
 
+  /** ≤640px the panel is an overlay sheet covering the lower sky — the owner
+   *  asks so it can dismiss the cover when a click hands that sky to the
+   *  surface view. The desktop panel sits beside the scene and stays. */
+  sheetFormActive(): boolean {
+    return this.isOpen() && this.isSheetForm();
+  }
+
   /** ≤640px the panel renders as a bottom sheet (CSS media query). */
   private isSheetForm(): boolean {
     return window.innerWidth <= 640;
@@ -1146,15 +1153,7 @@ export class ObservatoryPanel {
   ): void {
     const state = observatoryWindowState(input);
     const watch = observatoryWatchRowState(input);
-    const key = [
-      state.mode,
-      state.title,
-      state.sub,
-      state.glyph,
-      state.showNow ? '1' : '0',
-      state.relocates ? '1' : '0',
-      watch.visible ? watch.title + '|' + watch.meta : '',
-    ].join('');
+    const key = observatoryWindowKey(state, watch);
     if (key !== this.windowKey) {
       this.windowKey = key;
       setText('observatory-window-title', state.title);

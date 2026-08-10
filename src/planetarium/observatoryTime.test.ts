@@ -156,6 +156,17 @@ describe('resolveLiveEvent', () => {
     expect(resolveLiveEvent(1_002 * HOUR, 'Earth', [eclipse], ended)).toBe(eclipse);
   });
 
+  it('a last target still in its lead-in yields to one genuinely underway', () => {
+    // The preference holds on bare contacts alone — the lead-in lights a
+    // window, it does not defend one.
+    const underway = span(998 * HOUR, 999 * HOUR, 1_003 * HOUR);
+    const approaching = span(1_000 * HOUR, 1_001 * HOUR, 1_002 * HOUR);
+    const justBefore = 1_000 * HOUR - 60_000;
+    expect(resolveLiveEvent(justBefore, 'Earth', [underway, approaching], approaching)).toBe(
+      underway,
+    );
+  });
+
   it('the jump target lights the window before the search has re-found it', () => {
     // The results are cleared on every jump; the chunked sweep refills over
     // the following frames.

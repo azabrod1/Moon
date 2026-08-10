@@ -3881,7 +3881,8 @@
         <button class="obs-watchrow" id="observatory-watch" style="display:none"><i>&#x2726;</i><b id="observatory-watch-title"></b><em id="observatory-watch-meta"></em></button>
         <!-- The sky window: the door to the surface view, and the way back
              out of it. One pictogram shows at a time (data-glyph); the phase
-             terminator is a mask, so the glass shows through the dark limb. -->
+             glyph paints the lit region alone, so the glass shows through
+             the dark limb. -->
         <button class="obs-window" id="observatory-lookup" data-glyph="stars">
           <span class="ow-stars" aria-hidden="true"></span>
           <span class="ow-glyph" aria-hidden="true">
@@ -3912,7 +3913,9 @@
              clicks off the panel and any of its three acknowledgments retires
              it for good, while a programmatic close only puts it away. -->
         <div class="obs-coach" id="observatory-coach" style="display:none">
-          <b><i>NEW</i>Look up</b>
+          <!-- No heading: the window it points at is already titled "Look up",
+               and the same words twice in a stack read as a stutter. -->
+          <b><i>NEW</i></b>
           <p>Step through here and you&rsquo;re standing on the ground, looking up. Everything overhead is at its real size and its real place.</p>
           <button type="button" id="observatory-coach-got">Got it</button>
         </div>

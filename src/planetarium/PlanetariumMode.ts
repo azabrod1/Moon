@@ -1081,6 +1081,9 @@ export class PlanetariumMode {
   // The Look-at menu pick "Look up" returns to for the rest of this landing —
   // cleared on every ground change (applyLandedTarget) and on takeoff.
   private surfacePickedTarget: SurfaceTarget | null = null;
+  // Set when the click that dismissed the coach mark is the same click
+  // entering the surface view; consumed by that one entry.
+  private coachSuppressesNextSurfaceHint = false;
   private surfaceFovDeg = SURFACE_FOV_DEFAULT_DEG;
   private surfaceTracking = true;
   private surfaceLook: SurfaceLook;
@@ -1395,6 +1398,12 @@ export class PlanetariumMode {
     () => this.cancelObservatoryEventSearch(),
     () => this.toggleSurfaceView(),
     () => this.watchLiveEvent(),
+    (viaWindow) => {
+      this.store.markLookupCoachSeen();
+      // Two first-timer notices inside two seconds is one too many; the
+      // controls hint comes back on the next entry if it is still unseen.
+      this.coachSuppressesNextSurfaceHint = viaWindow;
+    },
     () => this.swapLandedVantage(),
     (on) => this.handleOrbitDetailsToggle(on),
     () => {
@@ -12029,6 +12038,12 @@ export class PlanetariumMode {
         live: live ? { spec: live.spec, classification: live.classification } : null,
         relocates: live ? this.liveEventRelocates(live, landed) : false,
       },
+      // The tutorial stages its own scenes through this panel and owns the
+      // single card slot; a coach mark under one of them is noise.
+      showCoach:
+        this.tutorial === null &&
+        this.landedView !== 'surface' &&
+        !this.store.hasSeenLookupCoach(),
     };
     this.observatoryPanel.render(this.timeState.currentUtcMs, subject, extras);
   }
@@ -12824,6 +12839,10 @@ export class PlanetariumMode {
   ) {
     const landedInfo = this.surfaceLandedInfo();
     if (!landedInfo) return;
+    // Consume the coach's one-entry hint suppression here, whichever branch
+    // below this entry takes — it belongs to the click, not to the outcome.
+    const coachSuppress = this.coachSuppressesNextSurfaceHint;
+    this.coachSuppressesNextSurfaceHint = false;
     this.clearBodyReveal();
     // Entering surface view drops the landed system's 5%-of-parent mesh-scale
     // floor, so a moon shrinks to its true silhouette in one frame — its Sun
@@ -12904,11 +12923,11 @@ export class PlanetariumMode {
     this.controls.enabled = false;
     this.surfaceLook.attach();
     this.setSurfaceLabelContainersHidden(true);
-    // One-time controls hint on first-ever surface entry. Tutorial and event-
-    // jump entries skip it entirely: both put their own message in the single
-    // notification slot immediately after, so showing it would consume the
-    // seen-flag without the user ever reading the hint.
-    if (!this.tutorial && !opts?.suppressHint && !this.store.hasSeenSurfaceHint()) {
+    // One-time controls hint on first-ever surface entry. Tutorial, event-jump
+    // and just-read-the-coach entries skip it entirely: each puts its own
+    // message in the single notification slot immediately after, so showing
+    // the hint would consume the seen-flag without the user ever reading it.
+    if (!this.tutorial && !opts?.suppressHint && !coachSuppress && !this.store.hasSeenSurfaceHint()) {
       this.store.markSurfaceHintSeen();
       this.notification.show('Drag to look around · scroll or pinch to zoom');
     }

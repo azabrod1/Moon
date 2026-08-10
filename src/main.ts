@@ -776,13 +776,14 @@ async function init() {
     if (import.meta.env.DEV) surfacePerfFrameStart(rafTimestamp);
     // Drift poll on a countdown: innerWidth/innerHeight are cheap but not
     // free at once-per-frame, and the events below re-arm an immediate check
-    // for every transition that announces itself. The poll survives only for
-    // the iOS moves that don't (URL-bar collapse, keyboard dismissal) — a
-    // few-frame correction latency there is invisible; a stale aspect held
-    // for good is not.
+    // for every transition that announces itself (visualViewport covers the
+    // iOS URL-bar and keyboard moves). The poll survives only for a
+    // transition that emits nothing at all; every third frame caps that
+    // worst case at two extra stale-aspect frames over the old per-frame
+    // check — a stale aspect held for good is the failure that matters.
     if (viewportCheckDirty || --viewportCheckCountdown <= 0) {
       viewportCheckDirty = false;
-      viewportCheckCountdown = 10;
+      viewportCheckCountdown = 3;
       syncViewportIfDrifted();
     }
     const now = performance.now();

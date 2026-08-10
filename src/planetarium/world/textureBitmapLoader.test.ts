@@ -68,6 +68,37 @@ describe('loadStreamedTexture', () => {
     expect(bitmap.close).toHaveBeenCalledTimes(1);
   });
 
+  it('never starts the fetch when interest lapsed during the probe', async () => {
+    setBitmapProbeForTests(true);
+    const fetchSpy = vi.fn();
+    vi.stubGlobal('fetch', fetchSpy);
+    vi.stubGlobal('createImageBitmap', vi.fn());
+    const { calls } = deferredLoad();
+    const onError = vi.fn();
+    loadStreamedTexture('textures/8k/f.jpg', vi.fn(), onError, () => false);
+    await flush();
+    expect(fetchSpy).not.toHaveBeenCalled();
+    expect(calls).toHaveLength(0);
+    expect(onError).toHaveBeenCalledTimes(1);
+    expect(onError.mock.calls[0][0]).toBeInstanceOf(TextureTransportError);
+  });
+
+  it('skips the decoder fallback when interest lapsed mid-decode', async () => {
+    setBitmapProbeForTests(true);
+    let wanted = true;
+    vi.stubGlobal('fetch', vi.fn(async () => ({ ok: true, blob: async () => new Blob() })));
+    vi.stubGlobal('createImageBitmap', vi.fn(async () => {
+      wanted = false; // superseded while decoding
+      throw new Error('decoder died');
+    }));
+    const { calls } = deferredLoad();
+    const onError = vi.fn();
+    loadStreamedTexture('textures/8k/g.jpg', vi.fn(), onError, () => wanted);
+    await flush();
+    expect(calls).toHaveLength(0);
+    expect(onError).toHaveBeenCalledTimes(1);
+  });
+
   it('declines the decode when interest lapsed while the bytes were in the air', async () => {
     setBitmapProbeForTests(true);
     const cib = vi.fn(async () => fakeBitmap());

@@ -128,10 +128,10 @@ function defaultDeps(): TextureRetryDeps {
 }
 
 /**
- * Fetch a texture, and keep fetching it until it lands. The first attempt is
- * dispatched immediately (a healthy load behaves like a bare loader call, one
- * upload-capability probe microtask later); every failure schedules the next
- * one on the backoff ladder, which never runs out.
+ * Fetch a texture, and keep fetching it until it lands. The first attempt goes
+ * out synchronously (so a healthy load behaves exactly like a bare loader
+ * call); every failure schedules the next one on the backoff ladder, which
+ * never runs out.
  */
 export function fetchTextureDurably(
   request: DurableTextureRequest,

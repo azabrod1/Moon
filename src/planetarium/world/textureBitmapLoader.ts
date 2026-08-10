@@ -1,12 +1,11 @@
 /**
- * The upload-friendly texture decode path, shared by every streamed map: the
- * boot set through the durable-fetch seam (textureRetry) and the colour-tier
- * ladder (PlanetFactory). Honouring `flipY` on an HTMLImageElement texture
- * costs a synchronous CPU repack of the entire decoded image INSIDE
- * `texSubImage2D` — ~650ms of frozen main thread for an 8K map, and the boot
- * texture set pays the same bill spread across the reveal. `createImageBitmap`
- * with the flip baked in decodes off this thread and uploads without that
- * pass.
+ * The upload-friendly texture decode path. Today only the colour-tier ladder
+ * (PlanetFactory) takes it; the durable-fetch seam (textureRetry) shares this
+ * module's `textureLoader` but deliberately keeps the HTMLImageElement path —
+ * see the measured reasoning at its defaultDeps. Honouring `flipY` on an
+ * HTMLImageElement texture costs a synchronous CPU repack of the entire
+ * decoded image INSIDE `texSubImage2D`; `createImageBitmap` with the flip
+ * baked in decodes off this thread and uploads without that pass.
  *
  * Guarded by observation, not feature sniffing: a 1x2 readback probe must
  * come back actually inverted before any real image takes this path. Anything
@@ -121,8 +120,7 @@ async function loadBitmapTexture(url: string, stillWanted?: () => boolean): Prom
 
 /**
  * Load a texture through the bitmap path when the probe allows it, the shared
- * `textureLoader` otherwise. The seam both the durable fetch and the tier
- * ladder call.
+ * `textureLoader` otherwise. The colour-tier ladder's default loader.
  */
 export const loadStreamedTexture: TextureLoad = (url, onLoad, onError, stillWanted) => {
   // No API means no probe to wait for: fall back synchronously, preserving
@@ -133,12 +131,21 @@ export const loadStreamedTexture: TextureLoad = (url, onLoad, onError, stillWant
     return;
   }
   bitmapUploadUsable().then((usable) => {
+    // Interest can lapse while the one-time probe is still resolving; don't
+    // even start the fetch for an attempt already superseded.
+    if (stillWanted && !stillWanted()) {
+      onError(new TextureTransportError(`superseded: ${url}`));
+      return;
+    }
     if (!usable) {
       textureLoader.load(url, onLoad, undefined, onError);
       return;
     }
     loadBitmapTexture(url, stillWanted).then(onLoad, (err) => {
       if (err instanceof TextureTransportError) onError(err);
+      // A decode failure spends one fallback load — but not for a caller
+      // whose interest lapsed mid-decode: that would re-fetch for nobody.
+      else if (stillWanted && !stillWanted()) onError(err);
       else textureLoader.load(url, onLoad, undefined, onError);
     });
   });

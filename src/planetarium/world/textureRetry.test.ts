@@ -1,5 +1,6 @@
 import { describe, it, expect, vi } from 'vitest';
 import { fetchTextureDurably, type TextureRetryDeps } from './textureRetry';
+import { textureLoader } from './textureBitmapLoader';
 import {
   DEFAULT_TEXTURE_RETRY_POLICY,
   retryDelayMs,
@@ -390,5 +391,26 @@ describe('cancellation', () => {
     h.advance(600_000);
     expect(h.attempts).toHaveLength(1);
     expect(h.pendingTimers).toBe(0);
+  });
+});
+
+describe('default loader path', () => {
+  it('dispatches through the image loader synchronously, even where createImageBitmap exists', () => {
+    // Pins the deliberate production choice: the durable seam stays on the
+    // HTMLImageElement path (the bitmap path measured slower on WebKit's
+    // boot and no better on Chromium's until three's sRGB storage
+    // allocation is fixed — see defaultDeps). Synchronous dispatch is the
+    // tell: the bitmap path cannot dispatch before its probe microtask.
+    vi.stubGlobal('createImageBitmap', vi.fn());
+    const load = vi.spyOn(textureLoader, 'load').mockImplementation((() => new FakeTexture('t')) as never);
+    try {
+      const fetch = fetchTextureDurably({ url: 'textures/pin.jpg', onLoad: () => {} });
+      expect(load).toHaveBeenCalledTimes(1);
+      expect(load.mock.calls[0][0]).toBe('textures/pin.jpg');
+      fetch.cancel();
+    } finally {
+      load.mockRestore();
+      vi.unstubAllGlobals();
+    }
   });
 });

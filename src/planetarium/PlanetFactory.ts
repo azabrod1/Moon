@@ -30,111 +30,17 @@ import { applyTextureDefaults, clampTier, resolveTextureUrl, type TextureTier, t
 import { augmentSurfaceMaterial, type SurfaceArchetype, type SurfaceShadingFx } from './world/surfaceShading';
 import { queueTextureWarm } from './world/textureWarmer';
 import { createLensShaderUniforms } from '../shared/three/lensShader';
-import { fetchTextureDurably, textureLoader, type DurableTextureFetch } from './world/textureRetry';
-
-type TextureLoad = (
-  url: string,
-  onLoad: (tex: THREE.Texture) => void,
-  onError: (err: unknown) => void,
-) => void;
-
-/**
- * Whether this platform can bake the vertical flip into `createImageBitmap`.
- * Decided by observation, not feature sniffing: a 1x2 white-over-black bitmap
- * is created with `imageOrientation: 'flipY'` and read back — only an actually
- * inverted pixel counts as support. On platforms that ignore the option (or
- * lack the API) the check fails closed to the HTMLImageElement path, whose
- * worst case is today's slower upload, never a flipped map. Probed lazily on
- * the first tier fetch: module load must stay DOM-free for the tests.
- */
-let bitmapFlipProbe: Promise<boolean> | null = null;
-function bitmapUploadUsable(): Promise<boolean> {
-  bitmapFlipProbe ??= (async () => {
-    try {
-      if (typeof createImageBitmap !== 'function') return false;
-      const sample = new ImageData(1, 2);
-      sample.data.set([255, 255, 255, 255, 0, 0, 0, 255]);
-      const bitmap = await createImageBitmap(sample, { imageOrientation: 'flipY' });
-      try {
-        const canvas = document.createElement('canvas');
-        canvas.width = 1;
-        canvas.height = 2;
-        const ctx = canvas.getContext('2d');
-        if (!ctx) return false;
-        ctx.drawImage(bitmap, 0, 0);
-        const px = ctx.getImageData(0, 0, 1, 2).data;
-        // Demand the full inverted image — opaque black over opaque white. A
-        // silently failed draw reads back blank [0,0,0,0], and "red < 128"
-        // alone would call that a pass.
-        return px[0] < 128 && px[3] > 128 && px[4] > 128 && px[7] > 128;
-      } finally {
-        bitmap.close();
-      }
-    } catch {
-      return false;
-    }
-  })();
-  return bitmapFlipProbe;
-}
-
-/**
- * Fetch a tier map as an ImageBitmap with the flip baked in. Three.js cannot
- * flip an ImageBitmap at upload (flipY is ignored for them), which is exactly
- * the point: the HTMLImageElement path pays a CPU repack of the full decoded
- * image INSIDE texSubImage2D to honour flipY — ~650ms of frozen main thread
- * when the 8K Moon lands mid-session. A pre-flipped bitmap uploads without
- * that pass, and its decode already happened off this thread.
- */
-/** Thrown for transport failures (HTTP status, network, stream) — the cases
- *  where re-fetching through another decoder cannot help and the handle's
- *  ordinary cooldown-and-retry is the right response. */
-class TierFetchError extends Error {}
-
-async function loadTierBitmap(url: string): Promise<THREE.Texture> {
-  let blob: Blob;
-  try {
-    const response = await fetch(url);
-    if (!response.ok) throw new Error(`HTTP ${response.status} for ${url}`);
-    blob = await response.blob();
-  } catch (err) {
-    throw new TierFetchError(err instanceof Error ? err.message : String(err));
-  }
-  const bitmap = await createImageBitmap(blob, {
-    imageOrientation: 'flipY',
-    premultiplyAlpha: 'none',
-  });
-  const tex = new THREE.Texture(bitmap);
-  tex.flipY = false; // baked into the bitmap above
-  tex.needsUpdate = true;
-  // The GPU copy made at upload is independent of the bitmap, and an applied
-  // texture must KEEP its image (three re-uploads from it after a context
-  // loss) — but a disposed texture is done for good, and without this the
-  // decoded bitmap (~128MB at 8K) lingers until GC notices.
-  tex.addEventListener('dispose', () => bitmap.close());
-  return tex;
-}
+import { fetchTextureDurably, type DurableTextureFetch } from './world/textureRetry';
+import { loadStreamedTexture, type TextureLoad } from './world/textureBitmapLoader';
 
 // A colour-tier fetch goes through this indirection so the completion,
 // staleness and failure paths that decide what reaches the GPU can be
 // exercised without a GL context or a network — the same injected-seam pattern
 // the texture warmer uses for its upload call. Nothing in the app rebinds it.
-let loadUpgradeTexture: TextureLoad = (url, onLoad, onError) => {
-  bitmapUploadUsable().then((usable) => {
-    if (!usable) {
-      textureLoader.load(url, onLoad, undefined, onError);
-      return;
-    }
-    loadTierBitmap(url).then(onLoad, (err) => {
-      // Transport failures go to the handle's cooldown as always. A DECODE
-      // failure is different: the probe passed on a 1x2 sample, but this
-      // platform balked at the real image (size limits, memory pressure) —
-      // the HTMLImageElement path may still manage it, so spend one fallback
-      // load before surfacing the error.
-      if (err instanceof TierFetchError) onError(err);
-      else textureLoader.load(url, onLoad, undefined, onError);
-    });
-  });
-};
+// The default is the shared probe-guarded bitmap path (textureBitmapLoader):
+// transport failures reach the handle's cooldown as always, decode failures
+// spend one HTMLImageElement fallback first.
+let loadUpgradeTexture: TextureLoad = loadStreamedTexture;
 
 /** Swap the tier fetch for a stub. Returns the previous one, to restore. */
 export function setUpgradeTextureLoader(load: TextureLoad): TextureLoad {

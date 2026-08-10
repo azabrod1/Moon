@@ -68,6 +68,23 @@ describe('loadStreamedTexture', () => {
     expect(bitmap.close).toHaveBeenCalledTimes(1);
   });
 
+  it('declines the decode when interest lapsed while the bytes were in the air', async () => {
+    setBitmapProbeForTests(true);
+    const cib = vi.fn(async () => fakeBitmap());
+    vi.stubGlobal('fetch', vi.fn(async () => ({ ok: true, blob: async () => new Blob() })));
+    vi.stubGlobal('createImageBitmap', cib);
+    const { calls } = deferredLoad();
+    const onLoad = vi.fn();
+    const onError = vi.fn();
+    loadStreamedTexture('textures/8k/e.jpg', onLoad, onError, () => false);
+    await flush();
+    expect(cib).not.toHaveBeenCalled();
+    expect(onLoad).not.toHaveBeenCalled();
+    expect(calls).toHaveLength(0);
+    expect(onError).toHaveBeenCalledTimes(1);
+    expect(onError.mock.calls[0][0]).toBeInstanceOf(TextureTransportError);
+  });
+
   it('surfaces transport failures to onError without a decoder fallback', async () => {
     setBitmapProbeForTests(true);
     vi.stubGlobal('fetch', vi.fn(async () => ({ ok: false, status: 404, blob: async () => new Blob() })));

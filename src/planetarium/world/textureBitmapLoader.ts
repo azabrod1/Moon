@@ -33,6 +33,12 @@ export type TextureLoad = (
   url: string,
   onLoad: (tex: THREE.Texture) => void,
   onError: (err: unknown) => void,
+  /** Consulted between the fetch landing and the decode: a caller whose
+   *  interest can lapse mid-flight (a superseded tier attempt) declines the
+   *  decode here, sparing a full-size bitmap nobody will draw. The image
+   *  path never needed this — its decode was always deferred to the apply
+   *  callback, behind the caller's own staleness guard. */
+  stillWanted?: () => boolean,
 ) => void;
 
 /** Thrown for transport failures — the cases where re-fetching through
@@ -76,7 +82,7 @@ function bitmapUploadUsable(): Promise<boolean> {
 
 /** Fetch a map as an ImageBitmap with the flip baked in, wrapped in a texture
  *  that knows not to flip again. */
-async function loadBitmapTexture(url: string): Promise<THREE.Texture> {
+async function loadBitmapTexture(url: string, stillWanted?: () => boolean): Promise<THREE.Texture> {
   let blob: Blob;
   try {
     const response = await fetch(url);
@@ -84,6 +90,13 @@ async function loadBitmapTexture(url: string): Promise<THREE.Texture> {
     blob = await response.blob();
   } catch (err) {
     throw new TextureTransportError(err instanceof Error ? err.message : String(err));
+  }
+  // The fetch itself cannot be recalled, but the decode can be declined: an
+  // attempt superseded while its bytes were in the air stops here, before a
+  // full-size bitmap (~128MB at 8K) is created for nobody. Reported as a
+  // transport error: the caller's own staleness guard makes it a no-op.
+  if (stillWanted && !stillWanted()) {
+    throw new TextureTransportError(`superseded: ${url}`);
   }
   const bitmap = await createImageBitmap(blob, {
     imageOrientation: 'flipY',
@@ -111,7 +124,7 @@ async function loadBitmapTexture(url: string): Promise<THREE.Texture> {
  * `textureLoader` otherwise. The seam both the durable fetch and the tier
  * ladder call.
  */
-export const loadStreamedTexture: TextureLoad = (url, onLoad, onError) => {
+export const loadStreamedTexture: TextureLoad = (url, onLoad, onError, stillWanted) => {
   // No API means no probe to wait for: fall back synchronously, preserving
   // the bare-loader timing (three's own loader also dispatches sync). This is
   // also the path the DOM-free tests drive their injected loaders through.
@@ -124,7 +137,7 @@ export const loadStreamedTexture: TextureLoad = (url, onLoad, onError) => {
       textureLoader.load(url, onLoad, undefined, onError);
       return;
     }
-    loadBitmapTexture(url).then(onLoad, (err) => {
+    loadBitmapTexture(url, stillWanted).then(onLoad, (err) => {
       if (err instanceof TextureTransportError) onError(err);
       else textureLoader.load(url, onLoad, undefined, onError);
     });

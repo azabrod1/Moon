@@ -793,6 +793,11 @@ export function upgradeTextureOnApproach(
         reason: err instanceof Error ? err.message : String(err),
       });
     },
+    // The bitmap path consults this between fetch and decode, so a
+    // superseded attempt's bytes are dropped before a full-size bitmap is
+    // ever created — the same never-decode-abandoned-bytes guarantee the
+    // image path always had.
+    () => !abandoned(),
   );
 }
 

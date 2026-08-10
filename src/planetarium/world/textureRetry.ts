@@ -17,7 +17,7 @@
  */
 import type * as THREE from 'three';
 import { debugWarn } from '../../shared/debug';
-import { loadStreamedTexture } from './textureBitmapLoader';
+import { textureLoader } from './textureBitmapLoader';
 import {
   DEFAULT_TEXTURE_RETRY_POLICY,
   newTextureRetryState,
@@ -110,10 +110,15 @@ function subscribeWakeSignals(fn: () => void): () => void {
 
 function defaultDeps(): TextureRetryDeps {
   return {
-    // The probe-guarded bitmap path: the boot set's uploads skip the flipY
-    // CPU repack exactly like the colour-tier ladder's. Transport failures
-    // land in onError and climb this seam's own backoff ladder, unchanged.
-    load: (url, onLoad, _onProgress, onError) => loadStreamedTexture(url, onLoad, onError),
+    // Deliberately the HTMLImageElement path, NOT loadStreamedTexture: an
+    // A/B on the bundled build showed the bitmap path REGRESSES WebKit's
+    // boot (worst frame ~305ms -> ~330-420ms, ~+180ms to first picture)
+    // while Chromium's reveal freeze only shrinks partially — the dominant
+    // upload cost on both engines is the driver's sRGB conversion into
+    // three's immutable texStorage2D allocation, which bitmaps don't skip.
+    // Re-flip this seam to loadStreamedTexture when that storage path is
+    // fixed; the bitmap decode then wins on both engines.
+    load: (url, onLoad, onProgress, onError) => textureLoader.load(url, onLoad, onProgress, onError),
     now: () => Date.now(),
     setTimer: (fn, delayMs) => setTimeout(fn, delayMs),
     clearTimer: (handle) => clearTimeout(handle),

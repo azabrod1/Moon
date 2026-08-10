@@ -159,6 +159,7 @@ import {
   surfaceTargetKey,
   transportTrackingUp,
   type SurfaceEntryContext,
+  type SurfaceLandedInfo,
   type SurfaceMarkerKind,
   type SurfaceTarget,
   type SurfaceTargetChoice,
@@ -290,6 +291,7 @@ import { PlanetariumTimePanel } from './ui/PlanetariumTimePanel';
 import {
   formatObservatoryClock,
   formatEventRowTime,
+  liveEventVerb,
   ObservatoryPanel,
   observatoryPhaseText,
   type ObservatoryEventRow,
@@ -1392,6 +1394,7 @@ export class PlanetariumMode {
     },
     () => this.cancelObservatoryEventSearch(),
     () => this.toggleSurfaceView(),
+    () => this.watchLiveEvent(),
     () => this.swapLandedVantage(),
     (on) => this.handleOrbitDetailsToggle(on),
     () => {
@@ -11881,13 +11884,7 @@ export class PlanetariumMode {
     // open card must not move the ground beneath it. It still enters — a
     // control that does nothing reads as broken.
     const tutorialActive = this.tutorial !== null;
-    const relocate =
-      !tutorialActive &&
-      resolveShowVantage({
-        eventParentPlanet: event.spec.parentPlanet,
-        eventMoonName: event.spec.moonName,
-        landed,
-      }).relocateToParent;
+    const relocate = !tutorialActive && this.liveEventRelocates(event, landed);
     const wasSurface = relocate
       ? this.relandInSystem({ type: 'planet', name: event.spec.parentPlanet })
       : this.landedView === 'surface';
@@ -12005,18 +12002,40 @@ export class PlanetariumMode {
   private renderObservatoryPanel() {
     if (!this.observatoryPanel.isOpen() || !this.landedOn) return;
     const subject = this.buildObservatorySubject();
-    if (!subject) return;
+    const landed = this.surfaceLandedInfo();
+    if (!subject || !landed) return;
+    const live = this.liveShadowEventNow();
     const extras: ObservatoryRenderExtras = {
       vantageName: `From ${bodyDisplayName(this.landedOn.name)}`,
-      vantageBody: this.landedOn.name,
       swapName: this.swapCompanionTarget()?.name ?? null,
       nowTag: this.observatoryNowTag(),
-      surfaceActive: this.landedView === 'surface',
-      lookupOpensMenu: this.lookupOpensMenu(),
+      // The tag's other job is the rate label — worth replacing only where
+      // that would read the uninformative "realtime". Every jump parks at
+      // rate 1, unpaused, so a jump into an event always shows the verb.
+      nowVerb:
+        live && this.timeState.rate === 1 && !this.timeState.paused
+          ? liveEventVerb(live.spec)
+          : null,
       nextDates: this.observatoryNextDates(),
       finderAffix: this.landedOn.type === 'moon' ? `from ${this.landedOn.parentPlanet}` : null,
+      window: {
+        surfaceActive: this.landedView === 'surface',
+        lookupOpensMenu: this.lookupOpensMenu(),
+        landed,
+        live: live ? { spec: live.spec, classification: live.classification } : null,
+        relocates: live ? this.liveEventRelocates(live, landed) : false,
+      },
     };
     this.observatoryPanel.render(this.timeState.currentUtcMs, subject, extras);
+  }
+
+  /** Would stepping through the window re-land the player first? */
+  private liveEventRelocates(event: ShadowEvent, landed: SurfaceLandedInfo): boolean {
+    return resolveShowVantage({
+      eventParentPlanet: event.spec.parentPlanet,
+      eventMoonName: event.spec.moonName,
+      landed,
+    }).relocateToParent;
   }
 
   /** The phase hero's subject, with disc data read from the rendered scene objects. */
@@ -12526,7 +12545,22 @@ export class PlanetariumMode {
     this.startObservatoryEventSearch();
     // One toast per jump. Nothing moved but the clock, so it leads with the
     // event itself.
-    this.notification.show(this.describeShadowEvent(event));
+    this.notification.show(this.describeShadowEvent(event) + this.observatoryJumpHandoff());
+  }
+
+  /**
+   * The instant after a jump is the weakest moment in the whole flow: the
+   * clock moved and it isn't obvious what to do next. When the jump left the
+   * window live, flash it — and when the step it now offers would move the
+   * player to better ground, say so in the toast. Returns the suffix.
+   */
+  private observatoryJumpHandoff(): string {
+    const live = this.liveShadowEventNow();
+    if (!live) return '';
+    this.observatoryPanel.flashWindow();
+    const landed = this.surfaceLandedInfo();
+    if (!landed || !this.liveEventRelocates(live, landed)) return '';
+    return ` — Look up to stand on ${bodyDisplayName(live.spec.parentPlanet)}`;
   }
 
   /** "Standing on Earth — " when the step moved you there; '' when it didn't. */
@@ -12614,9 +12648,12 @@ export class PlanetariumMode {
     this.observatoryPanel.collapseSheetToPeek();
     this.renderObservatoryPanel();
     this.startObservatoryEventSearch();
-    // Toast leads with the date — after a jump, *when* is the headline.
+    // Toast leads with the date — after a jump, *when* is the headline. A
+    // phase jump can still land inside a coinciding eclipse, so it gets the
+    // same hand-off.
     this.notification.show(
-      `${formatUtcLabel(found.getTime())} — ${OBSERVATORY_EVENT_LABELS[type]}`,
+      `${formatUtcLabel(found.getTime())} — ${OBSERVATORY_EVENT_LABELS[type]}` +
+        this.observatoryJumpHandoff(),
     );
   }
 

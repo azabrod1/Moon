@@ -79,8 +79,7 @@ export function selectSurfaceTarget(
  * the selectSurfaceTarget table row for row.
  */
 export function surfaceEventNarrative(landed: SurfaceLandedInfo, spec: SurfaceEventInfo): string {
-  const moonDisplay =
-    spec.parentPlanet === 'Earth' && spec.moonName === 'Moon' ? 'The Moon' : spec.moonName;
+  const moonDisplay = narrativeMoonName(spec);
   if (landed.type === 'moon' && landed.name === spec.moonName) {
     return spec.kind === 'eclipse'
       ? `${spec.parentPlanet} is covering the Sun`
@@ -92,6 +91,38 @@ export function surfaceEventNarrative(landed: SurfaceLandedInfo, spec: SurfaceEv
   return spec.kind === 'eclipse'
     ? `${moonDisplay} is in ${spec.parentPlanet}'s shadow`
     : `${moonDisplay}'s shadow is crossing ${spec.parentPlanet}`;
+}
+
+function narrativeMoonName(spec: SurfaceEventInfo): string {
+  return spec.parentPlanet === 'Earth' && spec.moonName === 'Moon' ? 'The Moon' : spec.moonName;
+}
+
+/**
+ * True where the observer is outside the event's own geometry — watching
+ * from the parent's ground during an eclipse, or from a sibling moon. These
+ * are the fall-through rows of the narrative table above.
+ */
+function watchesFromOutside(landed: SurfaceLandedInfo, spec: SurfaceEventInfo): boolean {
+  if (landed.type === 'moon' && landed.name === spec.moonName) return false;
+  return !(
+    landed.type === 'planet' &&
+    landed.name === spec.parentPlanet &&
+    spec.kind === 'shadow-transit'
+  );
+}
+
+/**
+ * The same table condensed for a slot too narrow for the sentence: the rows
+ * that watch from outside the event drop their verb ("Io's shadow on
+ * Jupiter"), which is where the longest sentences overrun. The rows an
+ * observer is inside are short already and stay as they read in the HUD.
+ */
+export function surfaceEventPhrase(landed: SurfaceLandedInfo, spec: SurfaceEventInfo): string {
+  if (!watchesFromOutside(landed, spec)) return surfaceEventNarrative(landed, spec);
+  const moonDisplay = narrativeMoonName(spec);
+  return spec.kind === 'eclipse'
+    ? `${moonDisplay} in ${spec.parentPlanet}'s shadow`
+    : `${moonDisplay}'s shadow on ${spec.parentPlanet}`;
 }
 
 /**

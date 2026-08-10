@@ -1,5 +1,14 @@
 import { describe, it, expect } from 'vitest';
-import { observatoryPhaseText, sheetReleaseTarget } from './ObservatoryPanel';
+import {
+  liveEventVerb,
+  observatoryPhaseText,
+  observatoryWatchRowState,
+  observatoryWindowState,
+  phaseGlyphLitPath,
+  sheetReleaseTarget,
+  type ObservatoryWindowInput,
+} from './ObservatoryPanel';
+import type { SurfaceEventInfo, SurfaceLandedInfo } from '../surfaceView';
 
 // Pins for the bottom sheet's free-drag release decision (≤640px form).
 // dy is finger travel in px, down positive; target height = start − dy.
@@ -82,5 +91,217 @@ describe('observatoryPhaseText subject kinds', () => {
     expect(
       observatoryPhaseText(T, { kind: 'earth', subject: 'Moon', angularDiameterDeg: 0.5, distanceKm: 384_400 }),
     ).not.toBeNull();
+  });
+});
+
+// The sky window's copy table. Titles are observer-true — they name the
+// sight from where the player stands — and the sub-line carries the offer,
+// naming a destination only when stepping through moves you there.
+describe('observatoryWindowState', () => {
+  const onEarth: SurfaceLandedInfo = { type: 'planet', name: 'Earth' };
+  const onMoon: SurfaceLandedInfo = { type: 'moon', name: 'Moon', parentPlanet: 'Earth' };
+  const onMars: SurfaceLandedInfo = { type: 'planet', name: 'Mars' };
+  const onJupiter: SurfaceLandedInfo = { type: 'planet', name: 'Jupiter' };
+  const onEuropa: SurfaceLandedInfo = { type: 'moon', name: 'Europa', parentPlanet: 'Jupiter' };
+  const solar: SurfaceEventInfo = { kind: 'shadow-transit', parentPlanet: 'Earth', moonName: 'Moon' };
+  const lunar: SurfaceEventInfo = { kind: 'eclipse', parentPlanet: 'Earth', moonName: 'Moon' };
+  const ioTransit: SurfaceEventInfo = { kind: 'shadow-transit', parentPlanet: 'Jupiter', moonName: 'Io' };
+
+  const state = (over: Partial<ObservatoryWindowInput>) =>
+    observatoryWindowState({
+      surfaceActive: false,
+      lookupOpensMenu: false,
+      landed: onEarth,
+      live: null,
+      relocates: false,
+      hasPhase: true,
+      ...over,
+    });
+
+  it('on the surface the same slot is the way back out', () => {
+    const s = state({ surfaceActive: true, live: { spec: solar, classification: 'total' } });
+    expect(s.mode).toBe('return');
+    expect(s.title).toBe('Return to orbit');
+    expect(s.sub).toBe('Leave the surface · Esc');
+    expect(s.glyph).toBe('orbit');
+    expect(s.showNow).toBe(false);
+    expect(s.relocates).toBe(false);
+  });
+
+  it('idle names the ground you are standing on', () => {
+    expect(state({}).title).toBe('Look up');
+    expect(state({}).sub).toBe('See the sky from Earth');
+    expect(state({ landed: onMoon }).sub).toBe('See the sky from the Moon');
+    expect(state({}).showNow).toBe(false);
+  });
+
+  it('idle says so where the step opens the picker first', () => {
+    expect(state({ landed: onMars, lookupOpensMenu: true }).sub).toBe(
+      'Choose what to watch from Mars',
+    );
+  });
+
+  it('a vantage with no phase subject shows bare stars, never an invented disc', () => {
+    expect(state({}).glyph).toBe('phase');
+    expect(state({ landed: onJupiter, hasPhase: false }).glyph).toBe('stars');
+  });
+
+  it('standing on Earth, its own events take their almanac names', () => {
+    expect(state({ live: { spec: solar, classification: 'total' } }).title).toBe(
+      'Total eclipse overhead',
+    );
+    expect(state({ live: { spec: solar, classification: 'annular' } }).title).toBe(
+      'Annular eclipse overhead',
+    );
+    expect(state({ live: { spec: lunar, classification: 'partial' } }).title).toBe(
+      'Lunar eclipse overhead',
+    );
+  });
+
+  it('elsewhere the title is what an observer there would actually see', () => {
+    expect(
+      state({ landed: onMoon, live: { spec: solar, classification: 'total' } }).title,
+    ).toBe('Your shadow is crossing Earth');
+    expect(
+      state({ landed: onMoon, live: { spec: lunar, classification: 'total' } }).title,
+    ).toBe('Earth is covering the Sun');
+    expect(
+      state({ landed: onJupiter, live: { spec: ioTransit, classification: 'total' } }).title,
+    ).toBe('Io is crossing the Sun');
+    expect(
+      state({ landed: onEuropa, live: { spec: ioTransit, classification: 'total' } }).title,
+    ).toBe("Io's shadow on Jupiter");
+  });
+
+  it('the sub names the destination only when the step relocates', () => {
+    expect(
+      state({ landed: onMoon, relocates: true, live: { spec: solar, classification: 'total' } }).sub,
+    ).toBe('stand on Earth to see the eclipse');
+    expect(
+      state({ landed: onMoon, relocates: true, live: { spec: lunar, classification: 'total' } }).sub,
+    ).toBe('stand on Earth to see it turn red');
+    expect(
+      state({ landed: onMoon, relocates: true, live: { spec: lunar, classification: 'partial' } })
+        .sub,
+    ).toBe('stand on Earth to watch the eclipse');
+    expect(
+      state({ landed: onJupiter, live: { spec: ioTransit, classification: 'total' } }).sub,
+    ).toBe('see it from the surface');
+  });
+
+  it('a lunar eclipse from Earth promises only what its classification delivers', () => {
+    expect(state({ live: { spec: lunar, classification: 'total' } }).sub).toBe(
+      'see the Moon turn red',
+    );
+    expect(state({ live: { spec: lunar, classification: 'partial' } }).sub).toBe(
+      'the Moon is crossing Earth’s shadow',
+    );
+    expect(state({ live: { spec: lunar, classification: 'penumbral' } }).sub).toBe(
+      'a subtle dimming — easy to miss',
+    );
+  });
+
+  it('the pictogram follows the sight, never the event kind', () => {
+    // Watching the Sun get covered — from the shadow spot, or as the moon.
+    expect(state({ live: { spec: solar, classification: 'total' } }).glyph).toBe('sun');
+    expect(
+      state({ landed: onMoon, live: { spec: lunar, classification: 'total' } }).glyph,
+    ).toBe('sun');
+    // Watching a body sit inside a shadow.
+    expect(state({ live: { spec: lunar, classification: 'total' } }).glyph).toBe('reddened');
+    // Watching a shadow crawl a disc.
+    expect(
+      state({ landed: onMoon, live: { spec: solar, classification: 'total' } }).glyph,
+    ).toBe('shadow-dot');
+    expect(
+      state({ landed: onEuropa, live: { spec: ioTransit, classification: 'total' } }).glyph,
+    ).toBe('shadow-dot');
+  });
+
+  it('only a live window pulses, and it carries the relocation flag through', () => {
+    expect(state({ live: { spec: solar, classification: 'total' } }).showNow).toBe(true);
+    expect(
+      state({ landed: onMoon, relocates: true, live: { spec: solar, classification: 'total' } })
+        .relocates,
+    ).toBe(true);
+  });
+});
+
+// The offer's home on the ground: in orbit the window carries it, and two
+// ember rows would dilute what ember means.
+describe('observatoryWatchRowState', () => {
+  const onMoon: SurfaceLandedInfo = { type: 'moon', name: 'Moon', parentPlanet: 'Earth' };
+  const solar: SurfaceEventInfo = { kind: 'shadow-transit', parentPlanet: 'Earth', moonName: 'Moon' };
+
+  const row = (over: Partial<ObservatoryWindowInput>) =>
+    observatoryWatchRowState({
+      surfaceActive: true,
+      lookupOpensMenu: false,
+      landed: onMoon,
+      live: { spec: solar, classification: 'total' },
+      relocates: true,
+      hasPhase: true,
+      ...over,
+    });
+
+  it('shows only on the surface, only while live, only when the step relocates', () => {
+    expect(row({}).visible).toBe(true);
+    expect(row({ surfaceActive: false }).visible).toBe(false);
+    expect(row({ live: null }).visible).toBe(false);
+    expect(row({ relocates: false }).visible).toBe(false);
+  });
+
+  it('names the destination and the classification', () => {
+    expect(row({}).title).toBe('Watch from Earth');
+    expect(row({}).meta).toBe('total eclipse');
+    expect(row({ live: { spec: solar, classification: 'partial' } }).meta).toBe('partial eclipse');
+  });
+});
+
+describe('liveEventVerb', () => {
+  it('from Earth both shadow directions are eclipses', () => {
+    expect(liveEventVerb({ kind: 'eclipse', parentPlanet: 'Earth', moonName: 'Moon' })).toBe('eclipse');
+    expect(liveEventVerb({ kind: 'shadow-transit', parentPlanet: 'Earth', moonName: 'Moon' })).toBe('eclipse');
+  });
+
+  it('elsewhere a shadow crossing the planet is the transit the panel names it', () => {
+    expect(liveEventVerb({ kind: 'shadow-transit', parentPlanet: 'Jupiter', moonName: 'Io' })).toBe('transit');
+    expect(liveEventVerb({ kind: 'eclipse', parentPlanet: 'Jupiter', moonName: 'Io' })).toBe('eclipse');
+  });
+});
+
+// The phase glyph paints the LIT region: r=19 disc at (20,20), the sunward
+// semicircle closed by the terminator ellipse. Both arcs run top → bottom →
+// top, so the sweep flags are what say which side each one bulges toward.
+describe('phaseGlyphLitPath', () => {
+  it('full moon lights the whole disc — the two arcs bulge opposite ways', () => {
+    expect(phaseGlyphLitPath(1, true)).toBe('M 20 1 A 19 19 0 0 1 20 39 A 19.00 19 0 0 1 20 1 Z');
+    expect(phaseGlyphLitPath(1, false)).toBe('M 20 1 A 19 19 0 0 0 20 39 A 19.00 19 0 0 0 20 1 Z');
+  });
+
+  it('new moon lights nothing — both arcs bulge the same way', () => {
+    expect(phaseGlyphLitPath(0, true)).toBe('M 20 1 A 19 19 0 0 1 20 39 A 19.00 19 0 0 0 20 1 Z');
+    expect(phaseGlyphLitPath(0, false)).toBe('M 20 1 A 19 19 0 0 0 20 39 A 19.00 19 0 0 1 20 1 Z');
+  });
+
+  it('a quarter is the straight-terminator case (zero semi-minor axis)', () => {
+    expect(phaseGlyphLitPath(0.5, true)).toBe('M 20 1 A 19 19 0 0 1 20 39 A 0.00 19 0 0 1 20 1 Z');
+  });
+
+  it('the lit limb follows the light, and the terminator bows into it on a crescent', () => {
+    // Waning 5%: lit limb on the left, terminator bowed left of centre so the
+    // crescent is thin.
+    expect(phaseGlyphLitPath(0.05, false)).toBe(
+      'M 20 1 A 19 19 0 0 0 20 39 A 17.10 19 0 0 1 20 1 Z',
+    );
+    // Waxing gibbous 90%: lit limb on the right, terminator bowed the other way.
+    expect(phaseGlyphLitPath(0.9, true)).toBe(
+      'M 20 1 A 19 19 0 0 1 20 39 A 15.20 19 0 0 1 20 1 Z',
+    );
+  });
+
+  it('clamps a lit fraction outside 0..1 instead of inverting the terminator', () => {
+    expect(phaseGlyphLitPath(1.4, true)).toBe(phaseGlyphLitPath(1, true));
+    expect(phaseGlyphLitPath(-0.2, true)).toBe(phaseGlyphLitPath(0, true));
   });
 });

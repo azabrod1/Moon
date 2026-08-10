@@ -35,6 +35,7 @@ import {
   surfaceAltitudeAU,
   surfaceEventExpectation,
   surfaceEventNarrative,
+  surfaceEventPhrase,
   surfaceTargetKey,
   transportTrackingUp,
   type SurfaceEventInfo,
@@ -155,6 +156,17 @@ describe('surfaceEventNarrative — observer/event relationship, not camera targ
 
   it("Earth's Moon keeps its article", () => {
     expect(surfaceEventNarrative(onEarth, lunarEclipse)).toBe("The Moon is in Earth's shadow");
+  });
+
+  it('the narrow-slot phrase drops the verb only on the watching-from-outside rows', () => {
+    // Rows the observer is inside are short already and read identically.
+    expect(surfaceEventPhrase(onMars, phobosTransit)).toBe('Phobos is crossing the Sun');
+    expect(surfaceEventPhrase(onMoon, lunarEclipse)).toBe('Earth is covering the Sun');
+    expect(surfaceEventPhrase(onPhobos, phobosTransit)).toBe('Your shadow is crossing Mars');
+    // The two that overrun a panel-width title lose theirs.
+    expect(surfaceEventPhrase(onDeimos, phobosTransit)).toBe("Phobos's shadow on Mars");
+    expect(surfaceEventPhrase(onEuropa, ioEclipse)).toBe("Io in Jupiter's shadow");
+    expect(surfaceEventPhrase(onEarth, lunarEclipse)).toBe("The Moon in Earth's shadow");
   });
 });
 

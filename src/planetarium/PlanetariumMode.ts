@@ -836,6 +836,22 @@ export class PlanetariumMode {
     minX: 0, maxX: 0, minY: 0, maxY: 0,
     footprintKind: 'none',
   };
+  /** Monotonic per-update() stamp guarding the shared projection caches (the
+   *  Sun's below, and each moon's on MoonMesh). One increment site covers
+   *  cruise and landed: updateLanded runs inside update(). */
+  private frameStamp = 0;
+  /** The Sun's screen projection, measured once per frame and shared by its
+   *  four per-frame consumers (exposure meter, occlusion pass, sun shader,
+   *  sun label) — identical inputs, so one measurement serves all. Its own
+   *  object, never the sphereScreenProjection scratch: consumers hold the
+   *  reference across their whole pass. */
+  private sunScreenProjectionCache: SphereScreenProjection = {
+    x: 0, y: 0, ndcX: 0, ndcY: 0, ndcZ: 0,
+    footprintX: 0, footprintY: 0, radiusPx: 0, diameterPx: 0,
+    minX: 0, maxX: 0, minY: 0, maxY: 0,
+    footprintKind: 'none',
+  };
+  private sunScreenProjectionFrame = -1;
   private tmpSunOccluderPosition = new THREE.Vector3();
   private tmpSunOccluderDirection = new THREE.Vector3();
   private tmpSunOccluderScale = new THREE.Vector3();
@@ -2356,6 +2372,7 @@ export class PlanetariumMode {
   update(dt: number): void {
     if (!this.active || !this.solarSystem) return;
     this.lastFrameDtMs = dt * 1000;
+    this.frameStamp++;
 
     // Upload one budget's worth of freshly loaded textures while nothing is
     // being asked of the frame — otherwise the whole decode+upload bill lands
@@ -2539,17 +2556,12 @@ export class PlanetariumMode {
     // Coverage meter: output-space overlap of the displayed tangent footprint,
     // not the overscan camera's rectilinear angular box. Telemetry for
     // devExposurePeek() only; updateSunShader owns the adapted render exposure.
-    this.solarSystem.sun.getWorldPosition(this.tmpSunView);
+    // The shared measurement uses sun.position, which IS the Sun's world
+    // position here: a direct scene child, posed by applyFloatingOrigin
+    // earlier this frame.
     const exposureWidth = this.renderer.domElement.clientWidth;
     const exposureHeight = this.renderer.domElement.clientHeight;
-    const exposureFootprint = projectSphereToScreen(
-      this.tmpSunView,
-      SUN_DATA.radiusAU,
-      this.camera,
-      exposureWidth,
-      exposureHeight,
-      this.sphereScreenProjection,
-    );
+    const exposureFootprint = this.getSunScreenProjection();
     const overlapW = Math.max(
       0,
       Math.min(exposureFootprint.maxX, exposureWidth) - Math.max(exposureFootprint.minX, 0),
@@ -4088,6 +4100,64 @@ export class PlanetariumMode {
    * `updateSunLabel`). A body blocks only while it is a face seen from
    * outside: one the camera sits inside is a room, not an obstacle.
    */
+  /** See sunScreenProjectionCache. Every caller runs inside update(), after
+   *  applyFloatingOrigin has posed the Sun and the camera is final, so one
+   *  measurement per frameStamp serves them all. The viewport floor matches
+   *  updateSunShader's historical Math.max(…, 1): only a zero-sized (hidden)
+   *  canvas is affected, where nothing draws anyway. */
+  private getSunScreenProjection(): SphereScreenProjection {
+    if (this.sunScreenProjectionFrame !== this.frameStamp && this.solarSystem) {
+      this.sunScreenProjectionFrame = this.frameStamp;
+      projectSphereToScreen(
+        this.solarSystem.sun.position,
+        SUN_DATA.radiusAU,
+        this.camera,
+        Math.max(this.renderer.domElement.clientWidth, 1),
+        Math.max(this.renderer.domElement.clientHeight, 1),
+        this.sunScreenProjectionCache,
+      );
+    }
+    return this.sunScreenProjectionCache;
+  }
+
+  /** A moon's effective-radius screen projection, measured at most once per
+   *  frame (MoonMesh.effProj): the occlusion-disc and label passes ask with
+   *  identical inputs — the mesh's world position, the rendered-size radius,
+   *  the settled camera — so whichever runs first serves the other. Gates
+   *  differ per pass (occluders skip small discs, labels skip hidden names),
+   *  which the lazy fill absorbs: a moon only ever measures for its first
+   *  asker. A cache hit ignores the arguments, so only those two passes may
+   *  call this. updateBodyLOD in particular must NOT join: it runs before the
+   *  camera-safety pass and deliberately measures a different camera pose. */
+  private moonEffScreenProjection(
+    m: MoonMesh,
+    worldPos: THREE.Vector3,
+    effRadiusAU: number,
+  ): NonNullable<MoonMesh['effProj']> {
+    let cache = m.effProj;
+    if (!cache) {
+      cache = m.effProj = { frame: -1, x: 0, y: 0, ndcZ: 0, radiusPx: 0, footprintX: 0, footprintY: 0 };
+    }
+    if (cache.frame !== this.frameStamp) {
+      const proj = projectSphereToScreen(
+        worldPos,
+        effRadiusAU,
+        this.camera,
+        this.renderer.domElement.clientWidth,
+        this.renderer.domElement.clientHeight,
+        this.sphereScreenProjection,
+      );
+      cache.frame = this.frameStamp;
+      cache.x = proj.x;
+      cache.y = proj.y;
+      cache.ndcZ = proj.ndcZ;
+      cache.radiusPx = proj.radiusPx;
+      cache.footprintX = proj.footprintX;
+      cache.footprintY = proj.footprintY;
+    }
+    return cache;
+  }
+
   private collectDynamicOccluders() {
     if (!this.planetLabels || !this.solarSystem) return;
     const canvasW = this.renderer.domElement.clientWidth;
@@ -4104,14 +4174,7 @@ export class PlanetariumMode {
     {
       const sunPos = this.solarSystem.sun.position;
       const distFromCamera = this.camera.position.distanceTo(sunPos);
-      const proj = projectSphereToScreen(
-        sunPos,
-        SUN_DATA.radiusAU,
-        this.camera,
-        canvasW,
-        canvasH,
-        this.sphereScreenProjection,
-      );
+      const proj = this.getSunScreenProjection();
       if (proj.ndcZ < 1 && distFromCamera > 0) {
         const radiusPx = proj.radiusPx * 1.1;
         this.planetLabels.addForegroundDisc({
@@ -4148,14 +4211,7 @@ export class PlanetariumMode {
         // disc at any distance, letting labels and beacons draw over their faces.
         if (effectiveRadiusAU * 2 <= 0.01 * distFromCamera) continue;
 
-        const proj = projectSphereToScreen(
-          tempV,
-          effectiveRadiusAU,
-          this.camera,
-          canvasW,
-          canvasH,
-          this.sphereScreenProjection,
-        );
+        const proj = this.moonEffScreenProjection(m, tempV, effectiveRadiusAU);
         if (proj.ndcZ >= 1) continue;
         const screenX = proj.footprintX;
         const screenY = proj.footprintY;
@@ -4398,34 +4454,23 @@ export class PlanetariumMode {
 
         m.mesh.getWorldPosition(tempV);
         const moonCamDist = tempV.distanceTo(this.camera.position);
-        const proj = projectSphereToScreen(
-          tempV,
-          m.data.radiusAU * m.mesh.scale.x,
-          this.camera,
-          canvasW,
-          canvasH,
-          this.sphereScreenProjection,
-        );
-        if (proj.ndcZ >= 1) {
-          if (label.style.display !== 'none') label.style.display = 'none';
-          continue;
-        }
-
         // Rendered disc radius: the same curve the mesh uses, padded so the
         // label anchor clears the limb instead of riding on the moon's face.
+        // One measurement serves anchor and pad — a sphere projection's centre
+        // fields are radius-independent (pinned in the projectToScreen tests)
+        // — and it is the same measurement the occlusion pass already took for
+        // this moon this frame.
         const effRadiusAU = this.renderedMoonSizeAU(
           m.data.radiusAU,
           planet.data.radiusAU,
           this.moonRenderAnchorRatio(planet.data.name),
         );
-        const discRadiusPadPx = projectSphereToScreen(
-          tempV,
-          effRadiusAU,
-          this.camera,
-          canvasW,
-          canvasH,
-          this.sphereScreenProjection,
-        ).radiusPx * 1.1;
+        const proj = this.moonEffScreenProjection(m, tempV, effRadiusAU);
+        if (proj.ndcZ >= 1) {
+          if (label.style.display !== 'none') label.style.display = 'none';
+          continue;
+        }
+        const discRadiusPadPx = proj.radiusPx * 1.1;
 
         // Sub-pixel gating: a moon whose disc doesn't read and whose dot is too
         // faint to see even fully lit keeps no label — unless it's the nav target.
@@ -4937,14 +4982,7 @@ export class PlanetariumMode {
     let veilArmCoeff = 0;
 
     if (inFront) {
-      const sunProjection = projectSphereToScreen(
-        this.solarSystem.sun.position,
-        SUN_DATA.radiusAU,
-        this.camera,
-        viewportWidth,
-        viewportHeight,
-        this.sphereScreenProjection,
-      );
+      const sunProjection = this.getSunScreenProjection();
       this.tmpSunScreen.set(sunProjection.ndcX, sunProjection.ndcY, sunProjection.ndcZ);
       centreDistanceNdc = Math.hypot(this.tmpSunScreen.x, this.tmpSunScreen.y);
       const glareExtent = SUN_GLARE_EXTENT_SOLAR_RADII;
@@ -5436,7 +5474,9 @@ export class PlanetariumMode {
     // intersected the frustum). Building a core from that giant radius is how the
     // off-frame Sun erased the sky, so keep only the honest glint floor here; the
     // activation gate below then also refuses to activate on a covering footprint.
-    const sunFootprintKind = inFront ? this.sphereScreenProjection.footprintKind : 'none';
+    // Read the Sun's OWN projection: the shared scratch has been overwritten
+    // by moon/ship measurements since the Sun was measured this frame.
+    const sunFootprintKind = inFront ? this.getSunScreenProjection().footprintKind : 'none';
     maskParams.coreOuterPx = sunFootprintKind === 'covering'
       ? glintFloorPx
       : sunGlareMaskCoreOuterPx(solarRadiusPx, glintFloorPx, bodyVisibleFraction);
@@ -6172,21 +6212,13 @@ export class PlanetariumMode {
   private updateSunLabel() {
     if (!this.solarSystem) return;
     const sunPos = this.solarSystem.sun.position;
-    const canvas = this.renderer.domElement;
     const distanceFromSunAU = this.player.getDistanceFromSun();
     const revealed = this.revealedBody === 'Sun';
     // The footprint (32 rim rays through the lens) only feeds the visible
     // label's offset — when the label's own gates will hide it anyway, pass a
     // zero radius and skip the measurement.
     const sunRadiusPx = SunLabel.wantsFootprint(this.showBodyLabels, revealed, distanceFromSunAU)
-      ? projectSphereToScreen(
-        sunPos,
-        SUN_DATA.radiusAU,
-        this.camera,
-        canvas.clientWidth,
-        canvas.clientHeight,
-        this.sphereScreenProjection,
-      ).radiusPx
+      ? this.getSunScreenProjection().radiusPx
       : 0;
     this.sunLabel.update(
       sunPos,

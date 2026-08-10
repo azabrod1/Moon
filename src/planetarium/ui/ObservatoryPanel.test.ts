@@ -4,6 +4,7 @@ import {
   liveEventVerb,
   observatoryPhaseText,
   observatoryWatchRowState,
+  observatoryWindowKey,
   observatoryWindowState,
   phaseGlyphLitPath,
   sheetReleaseTarget,
@@ -349,5 +350,68 @@ describe('formatCountdown', () => {
   it('a year out reads in years, one decimal', () => {
     expect(formatCountdown(0, at(365 * DAY, MIN))).toBe('in 1.0 years');
     expect(formatCountdown(0, at(500 * DAY, MIN))).toBe('in 1.4 years');
+  });
+});
+
+// The window's structural render guard. Everything that costs DOM to change
+// belongs in the key, and nothing that doesn't — an unchanged state on the
+// 8 Hz cadence must not restart the NOW tick's pulse.
+describe('observatoryWindowKey', () => {
+  const onMoon: SurfaceLandedInfo = { type: 'moon', name: 'Moon', parentPlanet: 'Earth' };
+  const solar: SurfaceEventInfo = { kind: 'shadow-transit', parentPlanet: 'Earth', moonName: 'Moon' };
+  const input: ObservatoryWindowInput = {
+    surfaceActive: false,
+    lookupOpensMenu: false,
+    landed: onMoon,
+    live: { spec: solar, classification: 'total' },
+    relocates: true,
+    hasPhase: true,
+  };
+  const key = (over: Partial<ObservatoryWindowInput> = {}) => {
+    const merged = { ...input, ...over };
+    return observatoryWindowKey(
+      observatoryWindowState(merged),
+      observatoryWatchRowState(merged),
+    );
+  };
+
+  it('is stable across renders of the same state', () => {
+    expect(key()).toBe(key());
+    // The clock moving inside the same event changes nothing structural.
+    expect(key({ live: { spec: solar, classification: 'total' } })).toBe(key());
+  });
+
+  it('changes for every visible difference the render has to apply', () => {
+    const base = key();
+    expect(key({ surfaceActive: true })).not.toBe(base); // mode + glyph
+    expect(key({ live: null })).not.toBe(base); // title, sub, NOW tick
+    expect(key({ relocates: false })).not.toBe(base); // sub line
+    // Classification only where it reaches the copy: a lunar eclipse's sub
+    // splits on totality, a shadow transit's does not.
+    const lunar: SurfaceEventInfo = { kind: 'eclipse', parentPlanet: 'Earth', moonName: 'Moon' };
+    expect(key({ live: { spec: lunar, classification: 'total' } })).not.toBe(
+      key({ live: { spec: lunar, classification: 'partial' } }),
+    );
+    // The watch row's own copy, with the window state held fixed.
+    expect(key({ surfaceActive: true })).not.toBe(
+      key({ surfaceActive: true, relocates: false }),
+    );
+    expect(key({ surfaceActive: true })).not.toBe(
+      key({ surfaceActive: true, live: { spec: solar, classification: 'partial' } }),
+    );
+  });
+
+  it('separates its fields, so a shift of text between them still registers', () => {
+    expect(
+      observatoryWindowKey(
+        { mode: 'idle', title: 'ab', sub: '', glyph: 'stars', showNow: false, relocates: false },
+        { visible: false, title: '', meta: '' },
+      ),
+    ).not.toBe(
+      observatoryWindowKey(
+        { mode: 'idle', title: 'a', sub: 'b', glyph: 'stars', showNow: false, relocates: false },
+        { visible: false, title: '', meta: '' },
+      ),
+    );
   });
 });

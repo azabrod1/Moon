@@ -258,6 +258,27 @@ export function liveEventVerb(spec: SurfaceEventInfo): string {
   return isEarthAlmanacPair(spec) ? 'eclipse' : 'transit';
 }
 
+/**
+ * Everything about the window and watch row that costs DOM to change. The
+ * render pass swaps structure only when this differs, so an unchanged state
+ * on the 8 Hz cadence touches nothing — restarting the NOW tick's animation
+ * eight times a second reads as a frozen-bright dot, not a pulse.
+ */
+export function observatoryWindowKey(
+  state: ObservatoryWindowState,
+  watch: ObservatoryWatchRowState,
+): string {
+  return [
+    state.mode,
+    state.title,
+    state.sub,
+    state.glyph,
+    state.showNow ? '1' : '0',
+    state.relocates ? '1' : '0',
+    watch.visible ? `${watch.title}|${watch.meta}` : '',
+  ].join('\u0000');
+}
+
 /** One row of the upcoming-events list. Each row closes over its engine
  * event, so a click jumps to exactly what the row showed — a key re-lookup
  * would silently no-op while a restarted search repopulates its map. */

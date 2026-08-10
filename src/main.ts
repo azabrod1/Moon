@@ -774,7 +774,17 @@ async function init() {
   function animate(rafTimestamp = performance.now()) {
     requestAnimationFrame(animate);
     if (import.meta.env.DEV) surfacePerfFrameStart(rafTimestamp);
-    syncViewportIfDrifted();
+    // Drift poll on a countdown: innerWidth/innerHeight are cheap but not
+    // free at once-per-frame, and the events below re-arm an immediate check
+    // for every transition that announces itself. The poll survives only for
+    // the iOS moves that don't (URL-bar collapse, keyboard dismissal) — a
+    // few-frame correction latency there is invisible; a stale aspect held
+    // for good is not.
+    if (viewportCheckDirty || --viewportCheckCountdown <= 0) {
+      viewportCheckDirty = false;
+      viewportCheckCountdown = 10;
+      syncViewportIfDrifted();
+    }
     const now = performance.now();
     const rawDt = (now - lastTime) / 1000;
     const dt = Math.min(rawDt, 0.1); // cap at 100ms to avoid huge jumps
@@ -890,6 +900,18 @@ function syncViewport() {
 }
 
 window.addEventListener('resize', syncViewport);
+
+// Viewport transitions that DO announce themselves pull the drift poll
+// forward to the next frame (the poll itself runs on a countdown in
+// animate()). visualViewport fires for iOS URL-bar/keyboard moves that the
+// window resize event misses; visibility return covers a rotation that
+// happened while the tab slept.
+let viewportCheckDirty = false;
+let viewportCheckCountdown = 0;
+const armViewportCheck = () => { viewportCheckDirty = true; };
+window.addEventListener('orientationchange', armViewportCheck);
+window.visualViewport?.addEventListener('resize', armViewportCheck);
+document.addEventListener('visibilitychange', armViewportCheck);
 
 // A mouse click leaves the pressed button focused, and the browser then turns
 // the next Space press into a re-fire of that button — so "click Faster, hit

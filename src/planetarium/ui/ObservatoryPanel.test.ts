@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import {
+  formatCountdown,
   liveEventVerb,
   observatoryPhaseText,
   observatoryWatchRowState,
@@ -8,6 +9,7 @@ import {
   sheetReleaseTarget,
   type ObservatoryWindowInput,
 } from './ObservatoryPanel';
+import type { ShadowEvent } from '../../astronomy/shadows';
 import type { SurfaceEventInfo, SurfaceLandedInfo } from '../surfaceView';
 
 // Pins for the bottom sheet's free-drag release decision (≤640px form).
@@ -303,5 +305,49 @@ describe('phaseGlyphLitPath', () => {
   it('clamps a lit fraction outside 0..1 instead of inverting the terminator', () => {
     expect(phaseGlyphLitPath(1.4, true)).toBe(phaseGlyphLitPath(1, true));
     expect(phaseGlyphLitPath(-0.2, true)).toBe(phaseGlyphLitPath(0, true));
+  });
+});
+
+// Countdowns read in words at meta size; one unit per rung, and the rung
+// boundaries are what keep the right column from growing.
+describe('formatCountdown', () => {
+  const MIN = 60_000;
+  const HOUR = 60 * MIN;
+  const DAY = 24 * HOUR;
+  const at = (peakOffsetMs: number, spanMs = HOUR) =>
+    ({
+      startUtcMs: peakOffsetMs - spanMs,
+      peakUtcMs: peakOffsetMs,
+      endUtcMs: peakOffsetMs + spanMs,
+    }) as ShadowEvent;
+
+  it('inside the contacts it is happening; past them it has ended', () => {
+    expect(formatCountdown(0, at(0))).toBe('now');
+    expect(formatCountdown(0, at(HOUR))).toBe('now'); // first contact is now
+    expect(formatCountdown(HOUR + 1, at(0))).toBe('ended');
+  });
+
+  it('under an hour counts minutes, and never counts down to zero', () => {
+    expect(formatCountdown(0, at(59 * MIN, MIN))).toBe('in 59 min');
+    expect(formatCountdown(0, at(2 * MIN, MIN))).toBe('in 2 min');
+    // Sub-minute: the row still says something rather than "in 0 min".
+    expect(formatCountdown(0, at(90_000, MIN))).toBe('in 1 min');
+  });
+
+  it('an hour and up counts whole hours, singular at one', () => {
+    expect(formatCountdown(0, at(60 * MIN, MIN))).toBe('in 1 hour');
+    expect(formatCountdown(0, at(119 * MIN, MIN))).toBe('in 1 hour');
+    expect(formatCountdown(0, at(2 * HOUR, MIN))).toBe('in 2 hours');
+    expect(formatCountdown(0, at(47 * HOUR, MIN))).toBe('in 47 hours');
+  });
+
+  it('two days and up counts whole days', () => {
+    expect(formatCountdown(0, at(48 * HOUR, MIN))).toBe('in 2 days');
+    expect(formatCountdown(0, at(364 * DAY, MIN))).toBe('in 364 days');
+  });
+
+  it('a year out reads in years, one decimal', () => {
+    expect(formatCountdown(0, at(365 * DAY, MIN))).toBe('in 1.0 years');
+    expect(formatCountdown(0, at(500 * DAY, MIN))).toBe('in 1.4 years');
   });
 });

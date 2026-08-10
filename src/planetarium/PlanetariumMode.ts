@@ -12007,7 +12007,11 @@ export class PlanetariumMode {
     const live = this.liveShadowEventNow();
     const extras: ObservatoryRenderExtras = {
       vantageName: `From ${bodyDisplayName(this.landedOn.name)}`,
-      swapName: this.swapCompanionTarget()?.name ?? null,
+      // A verb, not a place: the bare name read as a link to the Moon.
+      swapName: (() => {
+        const companion = this.swapCompanionTarget();
+        return companion ? `Stand on ${bodyDisplayName(companion.name)}` : null;
+      })(),
       nowTag: this.observatoryNowTag(),
       // The tag's other job is the rate label — worth replacing only where
       // that would read the uninformative "realtime". Every jump parks at
@@ -12126,13 +12130,16 @@ export class PlanetariumMode {
     }
     const fresh = this.observatoryNextDatesCache!;
     const searchActive = this.observatoryEventSearch !== null;
-    const dateMeta = (ms: number | null) => (ms ? `next · ${formatDateCompact(ms)}` : '');
+    // A bare date, no "next ·" prefix: the row is a finder, so the date on it
+    // can only be the next one — and the line also carries the almanac affix
+    // and two steppers.
+    const dateMeta = (ms: number | null) => (ms ? formatDateCompact(ms) : '');
     // Eclipse rows reuse the single-result upcoming search, which reports an
     // in-progress event — label that case "now" instead of a parked-at date.
     const eclipseMeta = (event: ShadowEvent | undefined) => {
       if (!event) return searchActive ? '· · ·' : '';
-      if (now >= event.startUtcMs && now <= event.endUtcMs) return 'happening now';
-      return `next · ${formatDateCompact(event.peakUtcMs)}`;
+      if (now >= event.startUtcMs && now <= event.endUtcMs) return 'now';
+      return formatDateCompact(event.peakUtcMs);
     };
     return {
       full: dateMeta(fresh.fullMs),
@@ -12499,7 +12506,7 @@ export class PlanetariumMode {
     const status = search && search.index < search.specs.length
       ? `Scanning ${search.index + 1}/${search.specs.length}…`
       : rows.length === 0 ? 'No events in range' : '';
-    this.observatoryPanel.setEvents(rows, status, this.timeState.currentUtcMs);
+    this.observatoryPanel.setEvents(rows, status);
   }
 
   /**

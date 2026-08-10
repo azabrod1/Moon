@@ -785,10 +785,11 @@
     .obs-eyebrow { display: flex; justify-content: space-between; align-items: center; }
     .obs-eyebrow b { font-size: 10px; font-weight: 600; letter-spacing: 0.18em; text-transform: uppercase; color: var(--obs-t3); }
     .obs-close {
-      background: none; border: none; font-size: 14px; color: var(--obs-t3);
-      line-height: 1; cursor: pointer; padding: 2px 3px; font-family: var(--font);
+      background: none; border: none; font-size: 16px; color: var(--obs-t3);
+      line-height: 1; cursor: pointer; font-family: var(--font);
+      padding: 6px 9px; margin: -4px -9px -4px 0; border-radius: 8px;
     }
-    .obs-close:hover { color: var(--obs-t1); }
+    .obs-close:hover { color: var(--obs-t1); background: rgba(255, 255, 255, 0.06); }
     .obs-vantage { display: flex; justify-content: space-between; align-items: center; margin-top: 8px; }
     /* "From ⟨body⟩ ▾" — the vantage line is the change-vantage affordance:
        it opens the deck's Observatory tab with the panel kept open behind. */
@@ -826,6 +827,7 @@
     #observatory-panel.quiet .obs-sec,
     #observatory-panel.quiet #observatory-events-list,
     #observatory-panel.quiet #observatory-events-status,
+    #observatory-panel.quiet #observatory-key-explain,
     #observatory-panel.quiet .obs-foot { display: none; }
     .obs-hero-text { min-width: 0; }
     .obs-hero-text h1 { font-size: 22px; font-weight: 300; letter-spacing: 0.005em; color: var(--obs-t1); line-height: 1.1; margin: 0; }
@@ -948,25 +950,36 @@
       margin-top: 16px; padding-top: 12px; border-top: 1px solid var(--obs-hairline-dim);
       font-size: 10px; font-weight: 600; letter-spacing: 0.18em; text-transform: uppercase; color: var(--obs-t3);
     }
-    .obs-jrow { display: flex; align-items: center; gap: 8px; padding: 7px 0; }
-    .obs-jrow + .obs-jrow { border-top: 1px solid rgba(255, 255, 255, 0.03); }
-    .obs-lblwrap { flex: 1; min-width: 0; }
-    .obs-lbl { font-size: 12.5px; color: var(--obs-t1); }
+    .obs-jrow2 { display: flex; align-items: center; gap: 6px; padding: 5px 0; }
+    .obs-jrow2 + .obs-jrow2 { border-top: 1px solid rgba(255, 255, 255, 0.03); }
+    .obs-lbl { flex: 1; min-width: 0; font-size: 12.5px; color: var(--obs-t1); }
     /* Whose almanac these four rows read. Filled in only from a vantage that
        isn't the one the row names — standing on the Moon, "Full Moon" sits
        under a hero reading "New Earth". */
     .obs-lbl-from { margin-left: 2px; font-size: 10px; color: var(--obs-t3); }
     .obs-lbl-from:empty { display: none; }
-    .obs-nextdate { margin-top: 2px; font-size: 10px; color: var(--obs-t3); font-variant-numeric: tabular-nums; min-height: 12px; }
-    .obs-tpill {
-      flex: none; font-size: 10px; font-weight: 500; letter-spacing: 0.03em; padding: 4px 9px;
-      border-radius: 999px; background: rgba(255, 255, 255, 0.05); border: 1px solid var(--obs-hairline-dim);
-      color: var(--obs-t2); cursor: pointer; white-space: nowrap; font-variant-numeric: tabular-nums;
-      font-family: var(--font); min-width: 46px; text-align: center;
+    /* The next date rides the row, never wraps: it shares the line with the
+       almanac affix and two steppers, and at 320px there is nothing to spare. */
+    .obs-nd {
+      flex: none; margin-right: 4px; font-family: var(--obs-mono); font-size: 10px;
+      color: var(--obs-t3); font-variant-numeric: tabular-nums; white-space: nowrap;
     }
-    .obs-tpill:hover:not(:disabled) { background: rgba(var(--accent-rgb), 0.12); color: var(--obs-t1); border-color: rgba(var(--accent-rgb), 0.3); }
-    .obs-tpill:disabled { opacity: 0.4; cursor: default; }
-    .obs-ev { display: flex; align-items: center; gap: 10px; padding: 8px 0; }
+    .obs-step {
+      flex: none; width: 26px; height: 26px; border-radius: var(--r-s);
+      background: rgba(255, 255, 255, 0.05); border: 1px solid var(--obs-hairline-dim);
+      color: var(--obs-t2); font-size: 13px; line-height: 1; cursor: pointer; font-family: var(--font);
+    }
+    .obs-step:hover:not(:disabled) { background: rgba(var(--accent-rgb), 0.12); color: var(--obs-t1); border-color: rgba(var(--accent-rgb), 0.3); }
+    .obs-step:disabled { opacity: 0.4; cursor: default; }
+    /* The whole row is the jump — a real button, so Enter and Space work and
+       the tap target is the row you were reading. */
+    .obs-ev {
+      display: flex; align-items: center; gap: 10px; width: 100%; margin: 0 -2px;
+      padding: 9px 2px; border: none; border-radius: var(--r-s); background: none;
+      font-family: var(--font); text-align: left; cursor: pointer;
+    }
+    .obs-ev:hover { background: rgba(255, 255, 255, 0.04); }
+    .obs-ev:focus-visible { outline: 1px solid var(--accent); outline-offset: -1px; }
     .obs-ev + .obs-ev { border-top: 1px solid rgba(255, 255, 255, 0.03); }
     /* Leading glyph rail: filled disc scaled to the apparent ∅ from this
        vantage; hollow ring = below resolution even at max zoom. */
@@ -974,13 +987,15 @@
     .obs-ev-disc { border-radius: 50%; background: #cfd6e4; }
     .obs-ev-ring { width: 7px; height: 7px; border-radius: 50%; border: 1px solid var(--obs-t2); }
     .obs-ev-right { display: flex; flex-direction: column; align-items: flex-end; gap: 3px; flex: none; }
+    /* Countdown above the ∅: how far away, then how big — the two questions a
+       row answers about an event that hasn't happened yet. */
+    .obs-cd { font-size: 10.5px; color: var(--obs-t2); font-variant-numeric: tabular-nums; white-space: nowrap; }
     .obs-ev-dia { font-family: var(--obs-mono, ui-monospace, monospace); font-size: 10px; letter-spacing: 0.4px; color: var(--obs-t2); white-space: nowrap; }
-    .obs-key { float: right; font-size: 9.5px; letter-spacing: 0.6px; color: var(--obs-t2); text-transform: none; }
     /* Speck rows dim by color remap — the ∅ value stays readable (it is the
        explanation), the classification badge keeps one step more ink than
-       the time (it still carries information), live countdowns and Jump
-       pills never dim. */
+       the time (it still carries information), live countdowns never dim. */
     .obs-ev.speck .obs-ev-name, .obs-ev.speck .obs-badge { color: var(--obs-t2); }
+    .obs-sec .obs-info { float: right; margin-top: -2px; }
     .obs-ev.speck .obs-ev-time { color: var(--obs-t3); }
     .obs-ev-main { flex: 1; min-width: 0; }
     .obs-ev-name { font-size: 12.5px; color: var(--obs-t1); line-height: 1.35; }
@@ -994,7 +1009,6 @@
       font-size: 8px; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase;
       padding: 2px 6px; border-radius: 4px; background: rgba(255, 255, 255, 0.06); color: var(--obs-t2); flex: none;
     }
-    .obs-cd { color: var(--obs-t2); margin-left: auto; padding-left: 8px; min-width: 52px; text-align: right; }
     .obs-ev.live .obs-cd { color: var(--obs-warm); font-weight: 500; }
     .obs-ev.live .obs-cd::before {
       content: ''; display: inline-block; width: 4px; height: 4px; border-radius: 50%;
@@ -1016,7 +1030,7 @@
     /* General sibling (~): the hidden input sits first in the label so it is
        the label's control (the ⓘ button is also labelable), not beside the pill. */
     .obs-foot input:checked ~ .obs-tgl { background: rgba(var(--accent-rgb), 0.55); }
-    .obs-foot input:checked ~ .obs-tgl::after { left: 14px; }
+    .obs-foot input:checked ~ .obs-tgl::after { left: 14px; background: #eef1f7; }
     .obs-footlbl { display: inline-flex; align-items: center; gap: 7px; }
     .obs-info {
       flex: none; width: 15px; height: 15px; padding: 0; position: relative;
@@ -3628,7 +3642,7 @@
     }
     @media (hover: none) {
       .obs-close { padding: 8px 12px; margin: -8px -8px -8px 0; }
-      .obs-tpill { min-height: 28px; }
+      .obs-step { width: 30px; height: 30px; }
       .obs-foot { min-height: 32px; }
       .shud-tb-btn { min-height: 32px; }
     }
@@ -3873,40 +3887,33 @@
         </button>
         <div id="observatory-earth-rows">
           <div class="obs-sec">Jump to</div>
-          <div class="obs-jrow">
-            <div class="obs-lblwrap">
-              <div class="obs-lbl">Full Moon <span class="obs-lbl-from"></span></div>
-              <div class="obs-nextdate" id="observatory-meta-full"></div>
-            </div>
-            <button class="obs-tpill" id="observatory-prev-full" title="Previous full moon">&#8249; Last</button>
-            <button class="obs-tpill" id="observatory-next-full" title="Next full moon">Next &#8250;</button>
+          <div class="obs-jrow2">
+            <span class="obs-lbl">Full Moon <span class="obs-lbl-from"></span></span>
+            <span class="obs-nd" id="observatory-meta-full"></span>
+            <button class="obs-step" id="observatory-prev-full" title="Previous full moon">&#8249;</button>
+            <button class="obs-step" id="observatory-next-full" title="Next full moon">&#8250;</button>
           </div>
-          <div class="obs-jrow">
-            <div class="obs-lblwrap">
-              <div class="obs-lbl">New Moon <span class="obs-lbl-from"></span></div>
-              <div class="obs-nextdate" id="observatory-meta-new"></div>
-            </div>
-            <button class="obs-tpill" id="observatory-prev-new" title="Previous new moon">&#8249; Last</button>
-            <button class="obs-tpill" id="observatory-next-new" title="Next new moon">Next &#8250;</button>
+          <div class="obs-jrow2">
+            <span class="obs-lbl">New Moon <span class="obs-lbl-from"></span></span>
+            <span class="obs-nd" id="observatory-meta-new"></span>
+            <button class="obs-step" id="observatory-prev-new" title="Previous new moon">&#8249;</button>
+            <button class="obs-step" id="observatory-next-new" title="Next new moon">&#8250;</button>
           </div>
-          <div class="obs-jrow">
-            <div class="obs-lblwrap">
-              <div class="obs-lbl">Lunar Eclipse <span class="obs-lbl-from"></span></div>
-              <div class="obs-nextdate" id="observatory-meta-lunar"></div>
-            </div>
-            <button class="obs-tpill" id="observatory-prev-lunar" title="Previous lunar eclipse">&#8249; Last</button>
-            <button class="obs-tpill" id="observatory-next-lunar" title="Next lunar eclipse">Next &#8250;</button>
+          <div class="obs-jrow2">
+            <span class="obs-lbl">Lunar Eclipse <span class="obs-lbl-from"></span></span>
+            <span class="obs-nd" id="observatory-meta-lunar"></span>
+            <button class="obs-step" id="observatory-prev-lunar" title="Previous lunar eclipse">&#8249;</button>
+            <button class="obs-step" id="observatory-next-lunar" title="Next lunar eclipse">&#8250;</button>
           </div>
-          <div class="obs-jrow">
-            <div class="obs-lblwrap">
-              <div class="obs-lbl">Solar Eclipse <span class="obs-lbl-from"></span></div>
-              <div class="obs-nextdate" id="observatory-meta-solar"></div>
-            </div>
-            <button class="obs-tpill" id="observatory-prev-solar" title="Previous solar eclipse">&#8249; Last</button>
-            <button class="obs-tpill" id="observatory-next-solar" title="Next solar eclipse">Next &#8250;</button>
+          <div class="obs-jrow2">
+            <span class="obs-lbl">Solar Eclipse <span class="obs-lbl-from"></span></span>
+            <span class="obs-nd" id="observatory-meta-solar"></span>
+            <button class="obs-step" id="observatory-prev-solar" title="Previous solar eclipse">&#8249;</button>
+            <button class="obs-step" id="observatory-next-solar" title="Next solar eclipse">&#8250;</button>
           </div>
         </div>
-        <div class="obs-sec">Upcoming <span class="obs-key">&#9679; shows a disc &nbsp;&#9675; too small to see</span></div>
+        <div class="obs-sec">Upcoming<button type="button" class="obs-info" id="observatory-key-info" aria-expanded="false" aria-controls="observatory-key-explain" aria-label="What do the row dots mean?">i</button></div>
+        <div class="obs-explain" id="observatory-key-explain" style="display:none">The dot beside each event is how big that body looks from where you&rsquo;re standing. A filled disc grows with its apparent size; a hollow ring means it stays a point of light even at full zoom.</div>
         <div id="observatory-events-list"></div>
         <div class="obs-scan" id="observatory-events-status"></div>
         <!-- The hidden checkbox must precede the ⓘ button: a <button> is

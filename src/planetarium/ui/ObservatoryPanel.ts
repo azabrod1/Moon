@@ -365,16 +365,22 @@ function formatDiscDataLine(angularDiameterDeg: number, distanceKm: number): str
   return `∅ ${deg}° · ${Math.round(distanceKm).toLocaleString('en-US')} km`;
 }
 
-function formatCountdown(nowUtcMs: number, event: ShadowEvent): string {
+/**
+ * How far off an event is, in words: "in 2 days", never "in 2d". One unit
+ * per rung — an hour and twenty minutes of extra precision is noise on a
+ * row whose job is "soon or not". The rungs are chosen so the widest string
+ * ("in 364 days") still clears the right column.
+ */
+export function formatCountdown(nowUtcMs: number, event: ShadowEvent): string {
   if (nowUtcMs > event.endUtcMs) return 'ended';
   if (nowUtcMs >= event.startUtcMs) return 'now';
   const totalMinutes = Math.floor((event.peakUtcMs - nowUtcMs) / 60_000);
-  if (totalMinutes < 60) return `in ${Math.max(totalMinutes, 1)}m`;
+  if (totalMinutes < 60) return `in ${Math.max(totalMinutes, 1)} min`;
   const totalHours = Math.floor(totalMinutes / 60);
-  if (totalHours < 48) return `in ${totalHours}h ${totalMinutes % 60}m`;
+  if (totalHours < 48) return `in ${totalHours} ${totalHours === 1 ? 'hour' : 'hours'}`;
   const totalDays = Math.floor(totalHours / 24);
-  if (totalDays < 365) return `in ${totalDays}d`;
-  return `in ${((event.peakUtcMs - nowUtcMs) / (365.25 * 86_400_000)).toFixed(1)}y`;
+  if (totalDays < 365) return `in ${totalDays} ${totalDays === 1 ? 'day' : 'days'}`;
+  return `in ${((event.peakUtcMs - nowUtcMs) / (365.25 * 86_400_000)).toFixed(1)} years`;
 }
 
 /**
@@ -461,6 +467,8 @@ export class ObservatoryPanel {
   private guidesExplainEl: HTMLElement | null = null;
   private orbitInfoEl: HTMLElement | null = null;
   private orbitExplainEl: HTMLElement | null = null;
+  private keyInfoEl: HTMLElement | null = null;
+  private keyExplainEl: HTMLElement | null = null;
   private orbitAvailable = false;
   private renderedRows: { row: ObservatoryEventRow; rowEl: HTMLElement; countdownEl: HTMLElement }[] = [];
   private wired = false;
@@ -521,6 +529,8 @@ export class ObservatoryPanel {
     this.guidesExplainEl = document.getElementById('observatory-guides-explain');
     this.orbitInfoEl = document.getElementById('observatory-orbit-info');
     this.orbitExplainEl = document.getElementById('observatory-orbit-explain');
+    this.keyInfoEl = document.getElementById('observatory-key-info');
+    this.keyExplainEl = document.getElementById('observatory-key-explain');
     if (this.wired) return;
     this.wired = true;
     // Seed the crossing detector — the first updateSheetInset call must not
@@ -550,6 +560,7 @@ export class ObservatoryPanel {
     });
     this.wireInfoNote(this.guidesInfoEl, this.guidesExplainEl);
     this.wireInfoNote(this.orbitInfoEl, this.orbitExplainEl);
+    this.wireInfoNote(this.keyInfoEl, this.keyExplainEl);
     this.windowEl?.addEventListener('click', () => this.onLookup());
     this.watchRowEl?.addEventListener('click', () => this.onWatchLive());
     this.swapEl?.addEventListener('click', () => this.onSwap());
@@ -738,6 +749,7 @@ export class ObservatoryPanel {
     this.abortSheetDrag?.();
     this.collapseInfoNote(this.guidesInfoEl, this.guidesExplainEl);
     this.collapseInfoNote(this.orbitInfoEl, this.orbitExplainEl);
+    this.collapseInfoNote(this.keyInfoEl, this.keyExplainEl);
     this.panelEl?.classList.remove('visible');
     document.body.classList.remove('observatory-sheet-open');
     this.updateSheetInset();
@@ -933,16 +945,21 @@ export class ObservatoryPanel {
   }
 
   /** Replace the upcoming-events list; an empty statusText hides the status line. */
-  setEvents(rows: ObservatoryEventRow[], statusText: string, nowUtcMs: number): void {
+  setEvents(rows: ObservatoryEventRow[], statusText: string): void {
     setText('observatory-events-status', statusText);
     if (!this.eventsListEl) return;
     this.eventsListEl.textContent = '';
     this.renderedRows = [];
     for (const row of rows) {
-      // The year earns its width only when the event is far out.
-      const includeYear = Math.abs(row.event.peakUtcMs - nowUtcMs) > 300 * 86_400_000;
-      const rowEl = document.createElement('div');
+      // The whole row is the jump: a real button, so it answers to the
+      // keyboard and the tap target is the row you were reading. Each row
+      // closes over its own event — a key re-lookup would silently no-op
+      // while a restarted search repopulates the map.
+      const rowEl = document.createElement('button');
+      rowEl.type = 'button';
       rowEl.className = row.speck ? 'obs-ev speck' : 'obs-ev';
+      rowEl.setAttribute('aria-label', `Jump to ${row.label}`);
+      rowEl.addEventListener('click', () => this.onEventJump(row.event));
       // Rail glyph: a disc sized to the apparent ∅ (log scale, 3–9px), or
       // the hollow "nothing to see from here" ring for specks.
       const railEl = document.createElement('span');
@@ -978,24 +995,20 @@ export class ObservatoryPanel {
       }
       const timeEl = document.createElement('span');
       timeEl.className = 'obs-ev-time';
-      timeEl.textContent = row.magnitudeText
-        ? `${formatEventRowTime(row.event.peakUtcMs, includeYear)} · ${row.magnitudeText}`
-        : formatEventRowTime(row.event.peakUtcMs, includeYear);
-      const countdownEl = document.createElement('span');
-      countdownEl.className = 'obs-cd';
-      metaEl.append(badgeEl, timeEl, countdownEl);
+      // No year: the countdown beside it carries far-ness in words, and the
+      // meta line has magnitude to fit as well.
+      const when = formatEventRowTime(row.event.peakUtcMs, false);
+      timeEl.textContent = row.magnitudeText ? `${when} · ${row.magnitudeText}` : when;
+      metaEl.append(badgeEl, timeEl);
       mainEl.append(nameEl, metaEl);
       const rightEl = document.createElement('span');
       rightEl.className = 'obs-ev-right';
-      const jumpEl = document.createElement('button');
-      jumpEl.className = 'obs-tpill';
-      jumpEl.textContent = 'Jump';
-      jumpEl.title = `Jump to ${row.label}`;
-      jumpEl.addEventListener('click', () => this.onEventJump(row.event));
+      const countdownEl = document.createElement('span');
+      countdownEl.className = 'obs-cd';
       const diameterEl = document.createElement('span');
       diameterEl.className = 'obs-ev-dia';
       diameterEl.textContent = `∅ ${formatDiscDeg(row.discDeg)}°`;
-      rightEl.append(jumpEl, diameterEl);
+      rightEl.append(countdownEl, diameterEl);
       rowEl.append(railEl, mainEl, rightEl);
       this.eventsListEl.appendChild(rowEl);
       this.renderedRows.push({ row, rowEl, countdownEl });

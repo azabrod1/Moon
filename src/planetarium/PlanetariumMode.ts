@@ -77,8 +77,8 @@ import {
   type ShadowEventSpec,
 } from '../astronomy/shadows';
 import { ShadowVisuals, createShadowVisualsWarmupProbes, type GuideSlotInput } from './world/ShadowVisuals';
-import { OBSERVATORY_JUMP_LEAD_MS, stepperSearchFromUtcMs } from './observatoryTime';
-import { resolveJumpPolicy } from './observatoryJump';
+import { OBSERVATORY_JUMP_LEAD_MS, resolveLiveEvent, stepperSearchFromUtcMs } from './observatoryTime';
+import { resolveShowVantage } from './observatoryJump';
 import { surfacePerfBeginSpan, surfacePerfEndSpan } from './surfacePerf';
 import { findEvent, type EventType } from '../astronomy/ephemeris';
 import { KM_PER_AU } from '../astronomy/constants';
@@ -11845,15 +11845,80 @@ export class PlanetariumMode {
       this.closeSurfaceTargetMenu();
       return;
     }
+    // A live event outranks the picker and the remembered pick alike — the
+    // window says what is overhead, so the click has to deliver exactly that.
+    if (this.liveShadowEventNow()) {
+      this.watchLiveEvent();
+      return;
+    }
     if (this.lookupOpensMenu()) {
       this.openSurfaceTargetMenu();
       return;
     }
-    // A live event always outranks the remembered pick — "Look up" during an
-    // eclipse must show the eclipse (the no-arg path derives that target).
-    const pick = this.relevantObservatoryEvent() ? null : this.surfacePickedTarget;
+    const pick = this.surfacePickedTarget;
     if (pick) this.enterSurfaceView(pick, 'companion');
     else this.enterSurfaceView();
+  }
+
+  /**
+   * Step onto the ground the live event is worth watching from: relocate
+   * when another body in the system is the better seat, then point the sky
+   * at what the event looks like from there.
+   *
+   * Shadow guides ride along deliberately — an explicit step through the
+   * window enters the surface with the cones still drawn (they render there),
+   * and leaving restores the instrument view.
+   */
+  private watchLiveEvent() {
+    // Missions hide the Observatory control and close its panel; the watch
+    // row and window can outlive the panel by the length of a click.
+    if (this.isMissionActive()) return;
+    const event = this.liveShadowEventNow();
+    const landed = this.surfaceLandedInfo();
+    if (!event || !landed) return;
+    // The tutorial stages its own ground, clock and surface entry, and holds
+    // its Next button on a fixed instant of that staging: a click under an
+    // open card must not move the ground beneath it. It still enters — a
+    // control that does nothing reads as broken.
+    const tutorialActive = this.tutorial !== null;
+    const relocate =
+      !tutorialActive &&
+      resolveShowVantage({
+        eventParentPlanet: event.spec.parentPlanet,
+        eventMoonName: event.spec.moonName,
+        landed,
+      }).relocateToParent;
+    const wasSurface = relocate
+      ? this.relandInSystem({ type: 'planet', name: event.spec.parentPlanet })
+      : this.landedView === 'surface';
+    // Built AFTER any re-land: hoisted, it would select the surface target
+    // for the vantage the step just left.
+    const landedInfo = this.surfaceLandedInfo();
+    if (!landedInfo) return;
+    // The surface HUD narrates from the last event — this step is what makes
+    // this one the sky being watched.
+    this.lastObservatoryEvent = event;
+    this.enterSurfaceView(selectSurfaceTarget(landedInfo, event.spec), 'event', {
+      // From the ground the re-point must snap: easing would show the new
+      // body at the old body's zoom. From orbit the flag is a no-op and the
+      // normal entry glide runs.
+      immediate: wasSurface,
+      // Every live entry puts the event's own toast in the single
+      // notification slot, so the one-time controls hint would be consumed
+      // unread.
+      suppressHint: true,
+    });
+    if (relocate) {
+      // Row hints and ∅ badges are observer-conditioned and baked at publish
+      // time — republish so they describe the ground you now stand on.
+      this.renderObservatoryPanel();
+      this.publishObservatoryEvents();
+    }
+    if (tutorialActive) return;
+    this.notification.show(
+      this.jumpToastPrefix(relocate ? event.spec.parentPlanet : null) +
+        this.describeShadowEvent(event),
+    );
   }
 
   /**
@@ -11869,7 +11934,7 @@ export class PlanetariumMode {
       this.landedOn?.type === 'planet' &&
       this.landedOn.name !== 'Earth' &&
       getMoonsByPlanet(this.landedOn.name).length > 0 &&
-      !this.relevantObservatoryEvent() &&
+      !this.liveShadowEventNow() &&
       this.surfacePickedTarget === null
     );
   }
@@ -11949,6 +12014,7 @@ export class PlanetariumMode {
       surfaceActive: this.landedView === 'surface',
       lookupOpensMenu: this.lookupOpensMenu(),
       nextDates: this.observatoryNextDates(),
+      finderAffix: this.landedOn.type === 'moon' ? `from ${this.landedOn.parentPlanet}` : null,
     };
     this.observatoryPanel.render(this.timeState.currentUtcMs, subject, extras);
   }
@@ -12055,6 +12121,24 @@ export class PlanetariumMode {
       lunar: eclipseMeta(this.observatoryEventResults.get('eclipse|Moon')),
       solar: eclipseMeta(this.observatoryEventResults.get('shadow-transit|Moon')),
     };
+  }
+
+  /**
+   * The event in this system's sky right now — what the panel's window and
+   * watch row offer to take you to. Resolved from the events the chunked
+   * upcoming search has already found, so asking costs a map walk and never
+   * a search; re-resolved at click time so the offer and what it delivers
+   * can't disagree.
+   */
+  private liveShadowEventNow(): ShadowEvent | null {
+    const parentPlanet = this.observatoryParentPlanetName();
+    if (!parentPlanet) return null;
+    return resolveLiveEvent(
+      this.timeState.currentUtcMs,
+      parentPlanet,
+      this.observatoryEventResults.values(),
+      this.lastObservatoryEvent,
+    );
   }
 
   /** The last jumped-to event while the clock sits inside its (padded) window. */
@@ -12400,47 +12484,12 @@ export class PlanetariumMode {
   }
 
   /**
-   * Decide where an event jump watches from — and re-land first when the
-   * policy stages the event's namesake observer. The vantage must change
-   * before the surface target is picked, so both halves of the decision are
-   * settled here and returned together: the view to end in, and the body the
-   * jump moved you to (null = you never left).
-   */
-  private stageJumpVantage(
-    eventParentPlanet: string,
-    isStepper: boolean,
-  ): { view: 'surface' | 'orbit'; relocatedTo: string | null } {
-    const landed = this.surfaceLandedInfo();
-    if (!landed) return { view: 'orbit', relocatedTo: null };
-    const policy = resolveJumpPolicy({
-      eventParentPlanet,
-      landed,
-      isStepper,
-      guidesOn: this.showShadowGuides,
-    });
-    // The tutorial stages its own ground, clock and surface entry, and holds
-    // its Next button on a fixed instant of that staging: a panel jump under
-    // an open card must not flip the ground or the view mode beneath it.
-    const tutorialActive = this.tutorial !== null;
-    const relocate = policy.relocateToParent && !tutorialActive;
-    if (relocate) this.relandInSystem({ type: 'planet', name: eventParentPlanet });
-    // Already on the ground: a jump re-points the sky it is showing and never
-    // drops back to orbit — the guides exception only decides where a jump
-    // from the orbit view lands.
-    const view =
-      this.landedView === 'surface' ? 'surface'
-      : tutorialActive ? 'orbit'
-      : policy.view;
-    return { view, relocatedTo: relocate ? eventParentPlanet : null };
-  }
-
-  /**
    * Jump to a shadow event: park the clock just before its peak and show the
-   * event. `isStepper` marks the Earth-almanac rows, which are event-TYPE
-   * requests and stage their namesake observer; the upcoming-list rows promise
-   * this event from where you already stand, so they keep the vantage.
+   * event from where the player already is. A jump moves time and nothing
+   * else — not the ground, not the view mode. The sky window is the one door
+   * to the surface, and it is the click that carries relocation and aim.
    */
-  private jumpToShadowEvent(event: ShadowEvent, isStepper = false) {
+  private jumpToShadowEvent(event: ShadowEvent) {
     // Missions hide the Observatory control and close its panel: a jump
     // reaching the handler is a click that outlived the panel it came from.
     if (this.isMissionActive()) return;
@@ -12455,16 +12504,15 @@ export class PlanetariumMode {
     this.timeState = { ...this.timeState, rate: 1, paused: false };
     this.setCurrentUtcMs(event.peakUtcMs - OBSERVATORY_JUMP_LEAD_MS);
     this.observatoryPanel.flashNowBar();
-    const { view, relocatedTo } = this.stageJumpVantage(event.spec.parentPlanet, isStepper);
-    // The clock — and possibly the ground — just moved, so realign the scene
-    // graph before the entry FOV fit and the orbit framing read the geometry.
+    // The clock just moved, so realign the scene graph before the entry FOV
+    // fit and the orbit framing read the geometry off it.
     this.refreshLandedScene();
-    // Built AFTER any re-land: hoisted, it would select the surface target for
-    // the vantage the jump just left.
     const landedInfo = this.surfaceLandedInfo();
-    if (view === 'surface' && landedInfo) {
+    if (this.landedView === 'surface' && landedInfo) {
+      // Already on the ground: re-point the sky it is showing, from the ground
+      // it is standing on. A jump never relocates — the window carries the
+      // better-vantage offer, and taking it is the user's call.
       this.enterSurfaceView(selectSurfaceTarget(landedInfo, event.spec), 'event', {
-        immediate: relocatedTo !== null,
         suppressHint: true,
       });
     } else {
@@ -12476,13 +12524,12 @@ export class PlanetariumMode {
     this.observatoryPanel.collapseSheetToPeek();
     this.renderObservatoryPanel();
     this.startObservatoryEventSearch();
-    // One toast per jump, describing the event from the vantage it ended on.
-    this.notification.show(
-      this.jumpToastPrefix(relocatedTo) + this.describeShadowEvent(event),
-    );
+    // One toast per jump. Nothing moved but the clock, so it leads with the
+    // event itself.
+    this.notification.show(this.describeShadowEvent(event));
   }
 
-  /** "Standing on Earth — " when the jump moved you there; '' when it didn't. */
+  /** "Standing on Earth — " when the step moved you there; '' when it didn't. */
   private jumpToastPrefix(relocatedTo: string | null): string {
     return relocatedTo ? `Standing on ${bodyDisplayName(relocatedTo)} — ` : '';
   }
@@ -12493,8 +12540,8 @@ export class PlanetariumMode {
 
   /**
    * The four Earth-almanac stepper rows. They are event-TYPE requests named
-   * for Earth-sky phenomena, so they stage the Earth vantage their names imply
-   * (relocating a player standing on the Moon) and then show the event.
+   * for Earth-sky phenomena — the row says whose almanac that is — and like
+   * every jump they move the clock alone: the ground and the view stay put.
    */
   private handleObservatoryJump(type: EventType, direction: 1 | -1) {
     // Stepper clicks defer 10 ms so the pressed pill paints before the search
@@ -12524,7 +12571,7 @@ export class PlanetariumMode {
         this.notification.show('No event found within the search range');
         return;
       }
-      this.jumpToShadowEvent(event, true);
+      this.jumpToShadowEvent(event);
       return;
     }
 
@@ -12550,17 +12597,14 @@ export class PlanetariumMode {
     this.timeState = { ...this.timeState, rate: 1, paused: false };
     this.setCurrentUtcMs(found.getTime() - OBSERVATORY_JUMP_LEAD_MS);
     this.observatoryPanel.flashNowBar();
-    // The phase rows are Earth's almanac — their namesake observer is Earth.
-    const { view, relocatedTo } = this.stageJumpVantage('Earth', true);
-    // Same reason as the shadow jumps: the clock (and possibly the ground)
-    // moved, so realign the scene graph before anything fits a FOV off it.
+    // Same reason as the shadow jumps: the clock moved, so realign the scene
+    // graph before anything fits a FOV off it.
     this.refreshLandedScene();
     const landedInfo = this.surfaceLandedInfo();
-    if (view === 'surface' && landedInfo) {
+    if (this.landedView === 'surface' && landedInfo) {
       // Phase jumps point the surface view at the companion (the Moon you
       // just made full), never at an event geometry.
       this.enterSurfaceView(selectSurfaceTarget(landedInfo, null), 'companion', {
-        immediate: relocatedTo !== null,
         suppressHint: true,
       });
     } else {
@@ -12570,11 +12614,9 @@ export class PlanetariumMode {
     this.observatoryPanel.collapseSheetToPeek();
     this.renderObservatoryPanel();
     this.startObservatoryEventSearch();
-    // Toast leads with the date — after a jump, *when* is the headline (after
-    // the ground, when the jump moved you).
+    // Toast leads with the date — after a jump, *when* is the headline.
     this.notification.show(
-      this.jumpToastPrefix(relocatedTo) +
-        `${formatUtcLabel(found.getTime())} — ${OBSERVATORY_EVENT_LABELS[type]}`,
+      `${formatUtcLabel(found.getTime())} — ${OBSERVATORY_EVENT_LABELS[type]}`,
     );
   }
 

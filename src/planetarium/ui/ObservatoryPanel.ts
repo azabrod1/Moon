@@ -52,6 +52,9 @@ export interface ObservatoryRenderExtras {
   lookupOpensMenu: boolean;
   /** Earth finder metas ('' hides one, '···' = still scanning); null = not the Earth system. */
   nextDates: { full: string; new: string; lunar: string; solar: string } | null;
+  /** Name the finder rows' almanac ("from Earth") — only worth the width
+   *  where the vantage isn't the one the row names. */
+  finderAffix: string | null;
 }
 
 /** One row of the upcoming-events list. Each row closes over its engine
@@ -240,6 +243,7 @@ export class ObservatoryPanel {
   private glyphShadowEl: SVGPathElement | null = null;
   private nowBarEl: HTMLElement | null = null;
   private swapEl: HTMLElement | null = null;
+  private finderAffixEls: HTMLElement[] = [];
   private eventsListEl: HTMLElement | null = null;
   private orbitRowEl: HTMLElement | null = null;
   private orbitToggleEl: HTMLInputElement | null = null;
@@ -293,6 +297,9 @@ export class ObservatoryPanel {
     this.glyphShadowEl = document.getElementById('observatory-glyph-shadow') as SVGPathElement | null;
     this.nowBarEl = document.getElementById('observatory-nowbar');
     this.swapEl = document.getElementById('observatory-swap');
+    this.finderAffixEls = [
+      ...(this.earthRowsEl?.querySelectorAll<HTMLElement>('.obs-lbl-from') ?? []),
+    ];
     this.eventsListEl = document.getElementById('observatory-events-list');
     this.orbitRowEl = document.getElementById('observatory-orbit-row');
     this.orbitToggleEl = document.getElementById('observatory-orbit-toggle') as HTMLInputElement | null;
@@ -801,6 +808,15 @@ export class ObservatoryPanel {
     );
 
     if (this.earthRowsEl) this.earthRowsEl.style.display = extras.nextDates ? '' : 'none';
+    if (extras.nextDates && this.finderAffixEls.length > 0) {
+      // Standing on the Moon, "Full Moon" sits under a hero reading "New
+      // Earth": the affix says whose sky the row is naming. From Earth it
+      // says nothing the vantage line hasn't.
+      const affix = extras.finderAffix ?? '';
+      if (this.finderAffixEls[0].textContent !== affix) {
+        for (const el of this.finderAffixEls) el.textContent = affix;
+      }
+    }
     if (extras.nextDates) {
       setText('observatory-meta-full', extras.nextDates.full);
       setText('observatory-meta-new', extras.nextDates.new);

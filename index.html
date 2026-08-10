@@ -861,9 +861,11 @@
     .obs-jrow + .obs-jrow { border-top: 1px solid rgba(255, 255, 255, 0.03); }
     .obs-lblwrap { flex: 1; min-width: 0; }
     .obs-lbl { font-size: 12.5px; color: var(--obs-t1); }
-    /* These four rows jump to an Earth-sky event and stand you on Earth to
-       watch it — the row says so before the tap, not only in the toast. */
+    /* Whose almanac these four rows read. Filled in only from a vantage that
+       isn't the one the row names — standing on the Moon, "Full Moon" sits
+       under a hero reading "New Earth". */
     .obs-lbl-from { margin-left: 2px; font-size: 10px; color: var(--obs-t3); }
+    .obs-lbl-from:empty { display: none; }
     .obs-nextdate { margin-top: 2px; font-size: 10px; color: var(--obs-t3); font-variant-numeric: tabular-nums; min-height: 12px; }
     .obs-tpill {
       flex: none; font-size: 10px; font-weight: 500; letter-spacing: 0.03em; padding: 4px 9px;
@@ -3750,7 +3752,7 @@
           <div class="obs-sec">Jump to</div>
           <div class="obs-jrow">
             <div class="obs-lblwrap">
-              <div class="obs-lbl">Full Moon <span class="obs-lbl-from">from Earth</span></div>
+              <div class="obs-lbl">Full Moon <span class="obs-lbl-from"></span></div>
               <div class="obs-nextdate" id="observatory-meta-full"></div>
             </div>
             <button class="obs-tpill" id="observatory-prev-full" title="Previous full moon">&#8249; Last</button>
@@ -3758,7 +3760,7 @@
           </div>
           <div class="obs-jrow">
             <div class="obs-lblwrap">
-              <div class="obs-lbl">New Moon <span class="obs-lbl-from">from Earth</span></div>
+              <div class="obs-lbl">New Moon <span class="obs-lbl-from"></span></div>
               <div class="obs-nextdate" id="observatory-meta-new"></div>
             </div>
             <button class="obs-tpill" id="observatory-prev-new" title="Previous new moon">&#8249; Last</button>
@@ -3766,7 +3768,7 @@
           </div>
           <div class="obs-jrow">
             <div class="obs-lblwrap">
-              <div class="obs-lbl">Lunar Eclipse <span class="obs-lbl-from">from Earth</span></div>
+              <div class="obs-lbl">Lunar Eclipse <span class="obs-lbl-from"></span></div>
               <div class="obs-nextdate" id="observatory-meta-lunar"></div>
             </div>
             <button class="obs-tpill" id="observatory-prev-lunar" title="Previous lunar eclipse">&#8249; Last</button>
@@ -3774,7 +3776,7 @@
           </div>
           <div class="obs-jrow">
             <div class="obs-lblwrap">
-              <div class="obs-lbl">Solar Eclipse <span class="obs-lbl-from">from Earth</span></div>
+              <div class="obs-lbl">Solar Eclipse <span class="obs-lbl-from"></span></div>
               <div class="obs-nextdate" id="observatory-meta-solar"></div>
             </div>
             <button class="obs-tpill" id="observatory-prev-solar" title="Previous solar eclipse">&#8249; Last</button>

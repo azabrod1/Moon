@@ -398,6 +398,24 @@ describe('sweepSegmentSphere — the shared collision test', () => {
     expect(sweepSegmentSphere(-2e-3, R * 2, 0, 2e-3, R * 2, 0, 0, 0, 0, R)).toBeNull();
   });
 
+  it('is a SEGMENT, not the infinite line it lies on', () => {
+    // A body dead ahead but beyond this frame's step: the ray hits, the
+    // travelled segment does not, and only the segment may collide.
+    expect(sweepSegmentSphere(-2e-3, 0, 0, -1e-3, 0, 0, 0, 0, 0, R)).toBeNull();
+    // …and one behind the start, on the same line running away from it.
+    expect(sweepSegmentSphere(1e-3, 0, 0, 2e-3, 0, 0, 0, 0, 0, R)).toBeNull();
+    // The same step extended far enough does make contact.
+    expect(sweepSegmentSphere(-2e-3, 0, 0, 2e-3, 0, 0, 0, 0, 0, R)).not.toBeNull();
+  });
+
+  it('the shell boundary itself is clear — contact means inside it', () => {
+    const grazeOutside = sweepSegmentSphere(-2e-3, R, 0, 2e-3, R, 0, 0, 0, 0, R);
+    expect(grazeOutside).toBeNull();
+    const grazeInside = sweepSegmentSphere(-2e-3, R * 0.999, 0, 2e-3, R * 0.999, 0, 0, 0, 0, R);
+    expect(grazeInside).not.toBeNull();
+    expect(grazeInside!.oy).toBeCloseTo(1, 9);
+  });
+
   it('a zero-length segment degenerates to the endpoint check', () => {
     expect(sweepSegmentSphere(R * 2, 0, 0, R * 2, 0, 0, 0, 0, 0, R)).toBeNull();
     const hit = sweepSegmentSphere(R * 0.5, 0, 0, R * 0.5, 0, 0, 0, 0, 0, R);

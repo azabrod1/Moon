@@ -137,16 +137,27 @@ export class GyroSteering {
       return;
     }
 
-    this.yawValue = THREE.MathUtils.lerp(
+    this.yawValue = GyroSteering.smooth(
       this.yawValue,
       this.normalizeDelta(this.baseline.yawDeg - mapped.yawDeg),
-      0.18,
     );
-    this.pitchValue = THREE.MathUtils.lerp(
+    this.pitchValue = GyroSteering.smooth(
       this.pitchValue,
       this.normalizeDelta(mapped.pitchDeg - this.baseline.pitchDeg),
-      0.18,
     );
+  }
+
+  /** Ease toward the tilt target, and SNAP to a true zero once inside the
+   *  residue band. The ease alone only ever approaches zero (×0.82 an
+   *  event), so a centered phone would keep steering by ~1e-6 for a minute —
+   *  and every "is the pilot flying?" test downstream reads this sum. Hands
+   *  off the phone must mean exactly zero, or the ship never counts as
+   *  unattended: no autopilot steering, no arrival look, no bounce off a
+   *  body you flew into. The band sits far under the smallest tilt the dead
+   *  zone passes, so real steering is untouched. */
+  private static smooth(value: number, target: number): number {
+    const eased = THREE.MathUtils.lerp(value, target, 0.18);
+    return Math.abs(eased) < 1e-4 ? 0 : eased;
   }
 
   private getScreenAngle(): number {

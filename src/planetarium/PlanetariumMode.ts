@@ -415,12 +415,6 @@ function mixHex(hex: number, target: number, t: number): string {
   return `rgb(${ch(16)}, ${ch(8)}, ${ch(0)})`;
 }
 
-/** Steering inputs at or above this are a hand on the stick; below it the
- *  pilot counts as idle. Never compare steering to exact zero: gyro input
- *  eases toward zero inside its dead zone (×0.82 per event) and carries a
- *  float residue for tens of seconds after the phone is centered. */
-const STEER_IDLE_EPS = 0.02;
-
 const OBSERVATORY_EVENT_LABELS: Record<EventType, string> = {
   'full-moon': 'Full Moon',
   'new-moon': 'New Moon',
@@ -2450,11 +2444,7 @@ export class PlanetariumMode {
 
       if (!this.player.held) {
         // Autopilot: steer toward target if no manual steering input
-        // (epsilon — gyro residue would otherwise block autopilot steering
-        // for up to a minute after a tilt).
-        if (this.autopilot && this.autopilotTarget
-          && Math.abs(this.player.yawInput) < STEER_IDLE_EPS
-          && Math.abs(this.player.pitchInput) < STEER_IDLE_EPS) {
+        if (this.autopilot && this.autopilotTarget && this.player.yawInput === 0 && this.player.pitchInput === 0) {
           this.applyAutopilot();
         }
 
@@ -5858,11 +5848,7 @@ export class PlanetariumMode {
       (this.keys.has('s') ? 1 : 0);
     if (this.touchThrottle !== 0) throttle = this.touchThrottle;
 
-    // Steering intent is epsilon-gated, matching every other idle check:
-    // gyro residue after centering the phone must read as hands-off here
-    // too, or it would keep cancelling the arrival look and re-grabbing the
-    // camera for a minute after a tilt.
-    const steering = Math.abs(yaw) >= STEER_IDLE_EPS || Math.abs(pitch) >= STEER_IDLE_EPS;
+    const steering = yaw !== 0 || pitch !== 0;
     const hasManualInput = steering || throttle !== 0;
 
     // The arrival look is cinematic assistance, never a control lock. Any
@@ -10669,22 +10655,18 @@ export class PlanetariumMode {
    * Land a swept shell contact: park the ship on the shell, and — when the
    * pilot's hands are off the stick — swing the nose outward so the leave
    * law pulls it straight away. An actively steering pilot keeps their
-   * heading (the shell holds them regardless; repeatedly snapping the nose
-   * against a held stick was the reported grind-fight), and "hands off" is
-   * an epsilon test because gyro steering holds a float residue for tens of
-   * seconds after centering. Autopilot cancels outright on contact: its
-   * glide contract already failed (a body swept in at time warp), and its
-   * re-aim would fight the outward bounce frame by frame.
+   * heading — the shell holds them regardless, and repeatedly snapping the
+   * nose against a held stick was the reported grind-fight. Autopilot ends
+   * on contact: its glide contract already failed (a body swept in at time
+   * warp), and its re-aim would fight the outward bounce frame by frame —
+   * silently, since the pilot did nothing to take the stick.
    */
   private applyShellContact(cx: number, cy: number, cz: number, shellR: number, hit: SweepContact) {
     this.player.posX = cx + hit.ox * shellR;
     this.player.posY = cy + hit.oy * shellR;
     this.player.posZ = cz + hit.oz * shellR;
-    if (this.autopilot) this.disableAutopilot();
-    const steering =
-      Math.abs(this.player.yawInput) >= STEER_IDLE_EPS ||
-      Math.abs(this.player.pitchInput) >= STEER_IDLE_EPS;
-    if (steering) return;
+    if (this.autopilot) this.disengageAutopilot();
+    if (this.player.yawInput !== 0 || this.player.pitchInput !== 0) return;
     const forward = this.player.getForwardDirection();
     if (forward.x * hit.ox + forward.y * hit.oy + forward.z * hit.oz < 0.15) {
       this.player.headToward(

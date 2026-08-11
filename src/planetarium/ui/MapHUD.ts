@@ -297,7 +297,7 @@ export class MapHUD {
     this.measurePanel();
   }
 
-  /** Show or hide the help grid, keeping the `?` lit with it — the button's
+  /** Show or hide the help grid, keeping its row lit with it — the button's
    *  pressed state and the grid are one thing, never two. */
   setHelpOpen(open: boolean): void {
     this.helpGrid?.classList.toggle('visible', open);
@@ -305,6 +305,11 @@ export class MapHUD {
     this.helpBtn?.setAttribute('aria-expanded', open ? 'true' : 'false');
     if (!open) this.helpBtn?.blur();
     this.measurePanel();
+    // The grid opens at the FOOT of a body that scrolls, so on a short panel it
+    // can unfold entirely below the fold and read as a press that did nothing.
+    // After the measure, so the cap and the list's share are already standing
+    // and the scroll lands where the grid finally is.
+    if (open) this.helpGrid?.scrollIntoView({ block: 'nearest' });
   }
 
   /**

@@ -2629,7 +2629,11 @@
     }
     .map-panel-btn:hover { background: rgba(255, 255, 255, 0.07); color: var(--t1); }
     /* Lit while the help grid stands open. */
-    .map-panel-btn.open { background: rgba(var(--accent-rgb), 0.16); color: var(--t1); }
+    .map-panel-btn-wide.open {
+      background: rgba(var(--accent-rgb), 0.16);
+      color: var(--t1);
+      border-color: rgba(var(--accent-rgb), 0.3);
+    }
     .map-panel-btn svg { width: 12px; height: 12px; }
     /* The collapse glyph is a × on a desktop (the panel folds to the pill) and
        a chevron on a phone (the sheet folds to its own header). One button,
@@ -2673,7 +2677,17 @@
       padding: 0 2px;
       flex: none;
     }
-    .map-help-grid.visible { display: grid; }
+    .map-help-grid.visible { display: grid; margin-top: 10px; }
+    /* The disclosure that opens it. A named row in the panel's own wide-button
+       idiom (Reset view's), so what it does is readable without pressing it —
+       the `?` it replaces said nothing until you tried it. */
+    .map-help-toggle { justify-content: space-between; padding: 0 11px; }
+    .map-help-chev {
+      flex: none;
+      color: var(--t3);
+      transition: transform var(--dur) var(--ease);
+    }
+    .map-help-toggle[aria-expanded="true"] .map-help-chev { transform: rotate(180deg); }
     /* The row is a wrapper for reading, not for layout: its two children are
        the grid's cells. */
     .map-help-row { display: contents; }
@@ -2701,10 +2715,6 @@
       color: var(--t3);
       text-wrap: pretty;
     }
-    /* The rule under the help grid belongs to the grid: it is there to close
-       the section off, and a closed section needs no line. */
-    .map-help-grid + .map-panel-sep { display: none; }
-    .map-help-grid.visible + .map-panel-sep { display: block; }
     /* The scale segment, split evenly so neither state reads as the default. */
     .map-scale {
       flex: none;
@@ -3057,14 +3067,11 @@
       .map-panel.collapsed .map-panel-body { display: none; }
       /* The collapsed sheet is one tap target — the whole header reopens it
          (MapHUD wires the tap), so it slims down to a strip that only has to
-         say "the map controls fold out of here". The help button stands down
-         with the body: its grid lives in the part that is hidden, and a strip
-         that is all one action should not carry a second one. The chevron
-         stays — it is the arrow saying which way the sheet will go — and
-         brightens from hint to control. */
+         say "the map controls fold out of here". The chevron stays — it is the
+         arrow saying which way the sheet will go — and brightens from hint to
+         control. */
       .map-panel.collapsed { cursor: pointer; padding-bottom: 5px; }
       .map-panel.collapsed .map-panel-grip { margin-bottom: 5px; }
-      .map-panel.collapsed #map-info { display: none; }
       .map-panel.collapsed .map-panel-btn { color: var(--t2); }
       .map-panel.collapsed:active { background-color: rgba(20, 25, 34, 0.9); }
       /* No keys on a phone: the M chip and the help grid's key row name a
@@ -3983,23 +3990,12 @@
             <svg class="map-panel-glyph" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" aria-hidden="true"><circle cx="10" cy="10" r="6.5"></circle><circle cx="10" cy="10" r="1.7" fill="currentColor" stroke="none"></circle><circle cx="15.6" cy="6.8" r="1.4" fill="currentColor" stroke="none"></circle></svg>
             <b class="map-panel-title">System map</b>
             <span class="kbd" title="Press M to open and close the map">M</span>
-            <button id="map-info" class="map-panel-btn" type="button" title="How the map works" aria-label="How the map works" aria-expanded="false" aria-controls="map-help-grid">?</button>
             <button id="map-panel-collapse" class="map-panel-btn" type="button" title="Collapse" aria-label="Collapse the panel" aria-controls="map-panel-body">
               <svg class="map-panel-x" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" aria-hidden="true"><path d="M5.5 5.5 L14.5 14.5 M14.5 5.5 L5.5 14.5"></path></svg>
               <svg class="map-panel-chev" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5.5 8 L10 12.5 L14.5 8"></path></svg>
             </button>
           </div>
           <div class="map-panel-body" id="map-panel-body">
-            <div id="map-help-grid" class="map-help-grid">
-              <div class="map-help-row"><b>Tap a body</b><span>opens its card — travel, facts, the next event</span></div>
-              <div class="map-help-row"><b>Drag</b><span>turns the view</span></div>
-              <div class="map-help-row"><b>Scroll · pinch</b><span>zooms, riding the cursor</span></div>
-              <div class="map-help-row"><b>Double-tap</b><span>focuses a body and follows it</span></div>
-              <div class="map-help-row"><b><span class="map-help-fine">Right-click · hold</span><span class="map-help-coarse">Hold</span></b><span>offers a teleport to that point in space; the chip confirms it</span></div>
-              <div class="map-help-row map-help-keys"><b><kbd class="kbd">M</kbd> <kbd class="kbd">Esc</kbd></b><span>M opens and closes the map; Esc backs out one step</span></div>
-              <p class="map-help-note">The map runs on the sim clock — the time bar below still drives it.</p>
-            </div>
-            <div class="map-panel-sep"></div>
             <div id="map-scale" class="map-scale" role="radiogroup" aria-label="Map scale">
               <button class="map-scale-seg on" id="map-scale-compressed" role="radio" aria-checked="true">Compressed</button>
               <button class="map-scale-seg" id="map-scale-true" role="radio" aria-checked="false">True scale</button>
@@ -4058,6 +4054,25 @@
                 <i class="map-layer-tag">true scale</i>
                 <button class="tgl" type="button" role="switch" aria-checked="false" aria-label="Distance rings"></button>
               </div>
+            </div>
+            <div class="map-panel-sep"></div>
+            <!-- Help, named rather than glyphed: a bare `?` makes the reader
+                 guess at what is behind it, and most of what the grid teaches
+                 the chart already shows once a session above the world bar.
+                 What is left (the long-press teleport, and which clock the map
+                 runs on) is worth a row that says what it opens. -->
+            <button id="map-info" class="map-panel-btn-wide map-help-toggle" type="button" aria-expanded="false" aria-controls="map-help-grid">
+              How the map works
+              <svg class="map-help-chev" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5.5 8 L10 12.5 L14.5 8"></path></svg>
+            </button>
+            <div id="map-help-grid" class="map-help-grid">
+              <div class="map-help-row"><b>Tap a body</b><span>opens its card — travel, facts, the next event</span></div>
+              <div class="map-help-row"><b>Drag</b><span>turns the view</span></div>
+              <div class="map-help-row"><b>Scroll · pinch</b><span>zooms, riding the cursor</span></div>
+              <div class="map-help-row"><b>Double-tap</b><span>focuses a body and follows it</span></div>
+              <div class="map-help-row"><b><span class="map-help-fine">Right-click · hold</span><span class="map-help-coarse">Hold</span></b><span>offers a teleport to that point in space; the chip confirms it</span></div>
+              <div class="map-help-row map-help-keys"><b><kbd class="kbd">M</kbd> <kbd class="kbd">Esc</kbd></b><span>M opens and closes the map; Esc backs out one step</span></div>
+              <p class="map-help-note">The map runs on the sim clock — the time bar below still drives it.</p>
             </div>
             <div class="map-panel-foot">Sizes enlarged to stay visible · orbits &amp; positions real</div>
           </div>

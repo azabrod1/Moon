@@ -2628,8 +2628,14 @@
       transition: background 0.14s var(--ease), color 0.14s var(--ease);
     }
     .map-panel-btn:hover { background: rgba(255, 255, 255, 0.07); color: var(--t1); }
-    /* Lit while the help grid stands open. */
-    .map-panel-btn-wide.open {
+    /* Lit while the help grid stands open. Scoped to the help row (the only
+       wide button that ever takes `.open`) and spelled out for :hover too: the
+       plain `.open` selector loses to `.map-panel-btn-wide:hover:not(:disabled)`
+       further down, and the pointer is resting ON this button in the instant
+       after it is pressed — so an open row would paint itself closed. The `?`
+       it replaced never hit this: it tied its own hover rule and won on order. */
+    .map-help-toggle.open,
+    .map-help-toggle.open:hover:not(:disabled) {
       background: rgba(var(--accent-rgb), 0.16);
       color: var(--t1);
       border-color: rgba(var(--accent-rgb), 0.3);
@@ -2671,13 +2677,19 @@
       -webkit-mask-image: linear-gradient(to bottom, #000 calc(100% - 16px), transparent);
       mask-image: linear-gradient(to bottom, #000 calc(100% - 16px), transparent);
     }
+    /* The top fade starts BELOW the hairline. A mask clips to the border box,
+       so a gradient that began at transparent took this element's own
+       border-top with it — the header's dividing line blinked out for exactly
+       as long as the body was scrolled. The first 1px is held opaque so the
+       line stays put and the content fades under it, which is the thing the
+       fade was for. */
     .map-panel-body.scrolls-up {
-      -webkit-mask-image: linear-gradient(to bottom, transparent, #000 16px);
-      mask-image: linear-gradient(to bottom, transparent, #000 16px);
+      -webkit-mask-image: linear-gradient(to bottom, #000 0 1px, transparent 1px, #000 17px);
+      mask-image: linear-gradient(to bottom, #000 0 1px, transparent 1px, #000 17px);
     }
     .map-panel-body.scrolls-up.scrolls {
-      -webkit-mask-image: linear-gradient(to bottom, transparent, #000 16px, #000 calc(100% - 16px), transparent);
-      mask-image: linear-gradient(to bottom, transparent, #000 16px, #000 calc(100% - 16px), transparent);
+      -webkit-mask-image: linear-gradient(to bottom, #000 0 1px, transparent 1px, #000 17px, #000 calc(100% - 16px), transparent);
+      mask-image: linear-gradient(to bottom, #000 0 1px, transparent 1px, #000 17px, #000 calc(100% - 16px), transparent);
     }
     .map-panel-sep { flex: none; height: 1px; margin: 11px -15px; background: var(--line-dim); }
     /* Two columns: the gesture and what it does. The label column is sized to

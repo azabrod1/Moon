@@ -350,17 +350,29 @@ describe('departure feel — the reported outcomes, closed loop', () => {
   });
 
   it('no bang: past the spool the speed TRACKS the leave law', () => {
-    // The tracked ratio settles near 1/(1 + K·τ) ≈ 0.92 — the transition's
-    // deliberate lag against a target that grows while being chased — and
-    // must never exceed the law itself.
+    // Chasing a target that grows as it is chased leaves a steady lag of
+    // 1/(1 + LEAVE_K·τ) — derived, so re-tuning either knob re-derives the
+    // expectation instead of silently loosening it. Speed may sit just
+    // under the law; it may never exceed it.
+    const lag = 1 / (1 + BODY_LEAVE_K_PER_S * CAP_TRANSITION_TAU_S);
     const samples = simulateRelease(3.0);
     for (const r of samples) {
       if (r.t <= 3 * CAP_TRANSITION_TAU_S) continue;
+      const floor = lag * (r.t > 5 * CAP_TRANSITION_TAU_S ? 0.99 : 0.98);
       const law = governedSpeedCap(r.d - R, R, -1, K, VMIN);
-      const floor = r.t > 5 * CAP_TRANSITION_TAU_S ? 0.9 : 0.85;
       expect(r.speed / law, `t=${r.t.toFixed(2)}`).toBeGreaterThan(floor);
       expect(r.speed).toBeLessThanOrEqual(law + 1e-15);
     }
+  });
+
+  it('leaving is brisker than arriving — the deliberate asymmetry', () => {
+    // Turning away means you have decided to go: the pull-away must outpace
+    // the approach glide at the same distance, and by a real margin.
+    const d = 40 * R; // well outside the shell, inside the valve knee
+    const closing = governedSpeedCap(d - R, R, 1, K, VMIN);
+    const leaving = governedSpeedCap(d - R, R, -1, K, VMIN);
+    expect(leaving).toBeGreaterThan(closing * 1.3);
+    expect(leaving).toBeLessThan(closing * 3); // brisk, not a slingshot
   });
 
   it('stately recede: the disc halves on the leave constant, not a detonation curve', () => {

@@ -33,11 +33,13 @@ export const SUN_APPROACH_SURFACE_RADII = 1.2;
 export const BODY_APPROACH_V_MIN_AU_S = 2 / KM_PER_AU;
 
 /** Departure pace: receding speed is capped at this × the distance to the
- *  body's CENTER, so the disc shrinks at a constant fractional rate (halves
- *  every ln 2 / K ≈ 2.8 s) — a stately pull-away at every body scale.
- *  Deliberately its own constant (= approach K today): the one-line
- *  brisker-exits knob. */
-export const BODY_LEAVE_K_PER_S = MOON_APPROACH_K_PER_S;
+ *  body's CENTER, so the disc shrinks at a constant fractional rate — a
+ *  steady pull-away at every body scale rather than a stall and a bang.
+ *  Deliberately BRISKER than the approach glide (1.6×, halving the disc
+ *  every ~1.7 s against the approach's ~2.8 s): arriving is the show and
+ *  wants easing into, but someone who has turned away has decided to go,
+ *  and holding them to the arrival pace reads as molasses. */
+export const BODY_LEAVE_K_PER_S = 0.4;
 
 /** The leave law alone binds to 4 × the commanded speed of CENTER distance
  *  regardless of body size — for a moonlet that is many seconds capped

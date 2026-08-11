@@ -34,6 +34,8 @@ export type ObservatorySubjectInfo =
       subject: 'Moon' | 'Earth';
       angularDiameterDeg: number;
       distanceKm: number;
+      /** Subject's catalog tint — the phase glyph is painted in it. */
+      tintCss: string;
     }
   | {
       kind: 'moon-phase';
@@ -43,6 +45,8 @@ export type ObservatorySubjectInfo =
       waxing: boolean;
       angularDiameterDeg: number;
       distanceKm: number;
+      /** Subject's catalog tint — the phase glyph is painted in it. */
+      tintCss: string;
     }
   | { kind: 'events-only'; parentName: string }
   /** Moonless system (Mercury, Venus): the hero becomes the "Quiet sky" card. */
@@ -419,7 +423,13 @@ export function formatCountdown(nowUtcMs: number, event: ShadowEvent): string {
 export function observatoryPhaseText(
   utcMs: number,
   info: ObservatorySubjectInfo,
-): { headline: string; meta: string; litFraction: number; lightOnRight: boolean } | null {
+): {
+  headline: string;
+  meta: string;
+  litFraction: number;
+  lightOnRight: boolean;
+  tint: string;
+} | null {
   if (info.kind === 'earth') {
     const state = computeOrbitalState(new Date(utcMs));
     const illumination = info.subject === 'Earth' ? 1 - state.illumination : state.illumination;
@@ -435,6 +445,7 @@ export function observatoryPhaseText(
       meta: `${info.subject === 'Earth' ? 'Earth' : 'The Moon'} · ${Math.round(illumination * 100)}% lit`,
       litFraction: illumination,
       lightOnRight: !waning,
+      tint: info.tintCss,
     };
   }
   if (info.kind === 'moon-phase') {
@@ -443,6 +454,7 @@ export function observatoryPhaseText(
       meta: `${info.parentName} · ${Math.round(info.illumination * 100)}% lit`,
       litFraction: info.illumination,
       lightOnRight: info.waxing,
+      tint: info.tintCss,
     };
   }
   return null;
@@ -459,6 +471,8 @@ export function observatoryPhaseText(
  * dark shape laid over a lit disc is an opaque blob against bright sky, and
  * masking the lit disc with the shadow multiplies the mask's own antialiased
  * edge into a hairline that traces the whole rim at 1× pixel density.
+ * (A stroke-only ghost circle marks the whole limb separately — additive
+ * light, so it leaves neither mark.)
  */
 export function phaseGlyphLitPath(litFraction: number, lightOnRight: boolean): string {
   const f = Math.min(1, Math.max(0, litFraction));
@@ -470,11 +484,34 @@ export function phaseGlyphLitPath(litFraction: number, lightOnRight: boolean): s
   return `M 20 1 A 19 19 0 0 ${litSweep} 20 39 A ${rt} 19 0 0 ${termSweep} 20 1 Z`;
 }
 
+/**
+ * Gradient stops for the phase glyph, from the subject's catalog tint: the
+ * lit region brightens toward the light and falls to a dusk shade at the far
+ * limb. Flat fill was the alternative, and a full disc under it is a
+ * featureless dot — the shading is what keeps Full reading as a body.
+ */
+export function phaseGlyphPaint(tintCss: string): { bright: string; limb: string } {
+  const n = parseInt(tintCss.slice(1), 16);
+  const tint = [(n >> 16) & 0xff, (n >> 8) & 0xff, n & 0xff];
+  // Ramp endpoints (design constants, not body tints): starlit white and
+  // dusk slate. The tint survives the mix at both ends.
+  const toward = (target: number[], k: number) =>
+    `rgb(${tint.map((c, i) => Math.round(c + (target[i] - c) * k)).join(', ')})`;
+  return {
+    bright: toward([242, 245, 251], 0.7),
+    limb: toward([69, 78, 99], 0.42),
+  };
+}
+
 export class ObservatoryPanel {
   private panelEl: HTMLElement | null = null;
   private earthRowsEl: HTMLElement | null = null;
   private heroEl: HTMLElement | null = null;
   private glyphLitEl: SVGPathElement | null = null;
+  private glyphGradEl: SVGRadialGradientElement | null = null;
+  private windowGradEl: SVGRadialGradientElement | null = null;
+  /** Last tint written into the gradient stops — changes on vantage swaps. */
+  private appliedPhaseTint: string | null = null;
   private nowBarEl: HTMLElement | null = null;
   private swapEl: HTMLElement | null = null;
   private finderAffixEls: HTMLElement[] = [];
@@ -547,6 +584,12 @@ export class ObservatoryPanel {
     this.earthRowsEl = document.getElementById('observatory-earth-rows');
     this.heroEl = document.getElementById('observatory-hero');
     this.glyphLitEl = document.getElementById('observatory-glyph-lit') as SVGPathElement | null;
+    this.glyphGradEl = document.getElementById(
+      'observatory-glyph-grad',
+    ) as SVGRadialGradientElement | null;
+    this.windowGradEl = document.getElementById(
+      'observatory-window-grad',
+    ) as SVGRadialGradientElement | null;
     this.nowBarEl = document.getElementById('observatory-nowbar');
     this.swapEl = document.getElementById('observatory-swap');
     this.finderAffixEls = [
@@ -1121,7 +1164,7 @@ export class ObservatoryPanel {
       setText('observatory-phase-name', phase.headline);
       setText('observatory-phase-meta', phase.meta);
       setText('observatory-phase-data', formatDiscDataLine(info.angularDiameterDeg, info.distanceKm));
-      this.setGlyph(phase.litFraction, phase.lightOnRight);
+      this.setGlyph(phase);
     }
 
     setText('observatory-now', formatObservatoryClock(utcMs));
@@ -1206,7 +1249,23 @@ export class ObservatoryPanel {
     this.windowEl.classList.add('flash');
   }
 
-  private setGlyph(litFraction: number, lightOnRight: boolean): void {
-    this.glyphLitEl?.setAttribute('d', phaseGlyphLitPath(litFraction, lightOnRight));
+  /** Hero terminator + the shared gradient paint (hero and window discs). */
+  private setGlyph(phase: { litFraction: number; lightOnRight: boolean; tint: string }): void {
+    this.glyphLitEl?.setAttribute('d', phaseGlyphLitPath(phase.litFraction, phase.lightOnRight));
+    // The gradient's bright pole sits on the side the light comes from.
+    const cx = phase.lightOnRight ? '26.5' : '13.5';
+    this.glyphGradEl?.setAttribute('cx', cx);
+    this.windowGradEl?.setAttribute('cx', cx);
+    if (phase.tint !== this.appliedPhaseTint) {
+      this.appliedPhaseTint = phase.tint;
+      const paint = phaseGlyphPaint(phase.tint);
+      for (const grad of [this.glyphGradEl, this.windowGradEl]) {
+        const stops = grad?.querySelectorAll('stop');
+        if (stops?.length === 2) {
+          stops[0].setAttribute('stop-color', paint.bright);
+          stops[1].setAttribute('stop-color', paint.limb);
+        }
+      }
+    }
   }
 }

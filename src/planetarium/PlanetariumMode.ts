@@ -12099,6 +12099,7 @@ export class PlanetariumMode {
         subject,
         angularDiameterDeg: angularDiameterDeg(this.surfaceTargetRadiusAU(target), distAU),
         distanceKm: distAU * KM_PER_AU,
+        tintCss: this.bodyTintCss(subject),
       };
     }
     if (this.landedOn.type === 'moon') {
@@ -12112,14 +12113,14 @@ export class PlanetariumMode {
         waxing: this.isParentWaxing(parentName, this.landedOn.name),
         angularDiameterDeg: angularDiameterDeg(this.surfaceTargetRadiusAU({ kind: 'parent' }), distAU),
         distanceKm: distAU * KM_PER_AU,
+        tintCss: this.bodyTintCss(parentName),
       };
     }
     if (getMoonsByPlanet(parentName).length === 0) {
-      const body = PLANETARIUM_BODIES.find((b) => b.name === parentName);
       return {
         kind: 'companionless',
         planetName: parentName,
-        tintCss: body ? `#${body.color.toString(16).padStart(6, '0')}` : '#5b6377',
+        tintCss: this.bodyTintCss(parentName),
       };
     }
     return { kind: 'events-only', parentName };

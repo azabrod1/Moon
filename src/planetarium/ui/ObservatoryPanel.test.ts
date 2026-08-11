@@ -7,6 +7,7 @@ import {
   observatoryWindowKey,
   observatoryWindowState,
   phaseGlyphLitPath,
+  phaseGlyphPaint,
   sheetReleaseTarget,
   type ObservatoryWindowInput,
 } from './ObservatoryPanel';
@@ -90,10 +91,27 @@ describe('observatoryPhaseText subject kinds', () => {
     ).toBeNull();
   });
 
-  it('phase subjects do', () => {
-    expect(
-      observatoryPhaseText(T, { kind: 'earth', subject: 'Moon', angularDiameterDeg: 0.5, distanceKm: 384_400 }),
-    ).not.toBeNull();
+  it('phase subjects do, carrying the subject tint through to the glyph paint', () => {
+    const moon = observatoryPhaseText(T, {
+      kind: 'earth',
+      subject: 'Moon',
+      angularDiameterDeg: 0.5,
+      distanceKm: 384_400,
+      tintCss: '#aaaaaa',
+    });
+    expect(moon).not.toBeNull();
+    expect(moon!.tint).toBe('#aaaaaa');
+    const mars = observatoryPhaseText(T, {
+      kind: 'moon-phase',
+      parentName: 'Mars',
+      moonName: 'Phobos',
+      illumination: 0.4,
+      waxing: true,
+      angularDiameterDeg: 42,
+      distanceKm: 9_376,
+      tintCss: '#9a4a2a',
+    });
+    expect(mars!.tint).toBe('#9a4a2a');
   });
 });
 
@@ -310,6 +328,33 @@ describe('phaseGlyphLitPath', () => {
   it('clamps a lit fraction outside 0..1 instead of inverting the terminator', () => {
     expect(phaseGlyphLitPath(1.4, true)).toBe(phaseGlyphLitPath(1, true));
     expect(phaseGlyphLitPath(-0.2, true)).toBe(phaseGlyphLitPath(0, true));
+  });
+});
+
+// The glyph's gradient stops, from the subject's catalog tint. The bright
+// stop leans starlit-white, the limb stop dusk-slate; the tint has to
+// survive at both ends or a Full Earth reads as a plain grey dot.
+describe('phaseGlyphPaint', () => {
+  it('keeps the Moon silver and Earth blue', () => {
+    expect(phaseGlyphPaint('#aaaaaa')).toEqual({
+      bright: 'rgb(220, 223, 227)',
+      limb: 'rgb(128, 131, 140)',
+    });
+    expect(phaseGlyphPaint('#3a6ec0')).toEqual({
+      bright: 'rgb(187, 205, 233)',
+      limb: 'rgb(63, 97, 153)',
+    });
+  });
+
+  it('the ramp stays ordered: bright above the tint, limb below it', () => {
+    const { bright, limb } = phaseGlyphPaint('#9a4a2a');
+    const lum = (css: string) =>
+      css
+        .match(/\d+/g)!
+        .map(Number)
+        .reduce((a, b) => a + b, 0);
+    expect(lum(bright)).toBeGreaterThan(0x9a + 0x4a + 0x2a);
+    expect(lum(limb)).toBeLessThan(0x9a + 0x4a + 0x2a);
   });
 });
 

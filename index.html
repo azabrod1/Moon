@@ -812,11 +812,11 @@
     .obs-swap i { font-style: normal; font-size: 11px; color: var(--obs-accent); }
     .obs-hero { display: flex; align-items: center; gap: 14px; margin: 16px 0 4px; padding: 0 2px; }
     .obs-glyph { width: 40px; height: 40px; flex: none; filter: drop-shadow(0 0 8px rgba(220, 230, 255, 0.14)); }
-    /* The disc circle exists for the Quiet-sky ring below; the lit path is
-       what draws a phase, so the dark limb is absent and the glass shows
-       through it. */
-    .obs-glyph-disc { fill: none; }
-    .obs-glyph-lit { fill: #cfd6e4; }
+    /* The lit path is what draws a phase, so the dark side is only the disc
+       circle's hairline ghost and the glass shows through it. The same circle
+       becomes the Quiet-sky ring below. */
+    .obs-glyph-disc { fill: none; stroke: rgba(207, 214, 228, 0.16); stroke-width: 1; }
+    .obs-glyph-lit { fill: url(#observatory-glyph-grad); }
     .obs-glyph-quietdot { display: none; }
     /* Companionless vantage (no moons in the system): the hero becomes the
        Quiet-sky card — a ring glyph in the body's catalog tint — and the
@@ -890,6 +890,7 @@
     }
     .ow-g { display: none; width: 22px; height: 22px; }
     .ow-g-phase { width: 20px; height: 20px; filter: drop-shadow(0 0 6px rgba(220, 230, 255, 0.25)); }
+    .ow-g-ghost { fill: none; stroke: rgba(207, 214, 228, 0.16); stroke-width: 1; }
     .ow-g-sun { filter: drop-shadow(0 0 5px rgba(255, 214, 178, 0.55)); }
     .ow-g-red { filter: drop-shadow(0 0 5px rgba(255, 140, 110, 0.4)); }
     .ow-g-dot { filter: drop-shadow(0 0 5px rgba(220, 230, 255, 0.2)); }
@@ -3860,6 +3861,12 @@
         </div>
         <div class="obs-hero" id="observatory-hero">
           <svg class="obs-glyph" viewBox="0 0 40 40" aria-hidden="true">
+            <defs>
+              <radialGradient id="observatory-glyph-grad" gradientUnits="userSpaceOnUse" cx="26.5" cy="20" r="26">
+                <stop offset="0" stop-color="rgb(220, 223, 227)"></stop>
+                <stop offset="1" stop-color="rgb(128, 131, 140)"></stop>
+              </radialGradient>
+            </defs>
             <path class="obs-glyph-lit" id="observatory-glyph-lit" d=""></path>
             <circle class="obs-glyph-disc" cx="20" cy="20" r="19"></circle>
             <circle class="obs-glyph-quietdot" cx="20" cy="20" r="2.2"></circle>
@@ -3886,7 +3893,16 @@
         <button class="obs-window" id="observatory-lookup" data-glyph="stars">
           <span class="ow-stars" aria-hidden="true"></span>
           <span class="ow-glyph" aria-hidden="true">
-            <svg class="ow-g ow-g-phase" viewBox="0 0 40 40"><path id="observatory-window-lit" d="" fill="#cfd6e4"></path></svg>
+            <svg class="ow-g ow-g-phase" viewBox="0 0 40 40">
+              <defs>
+                <radialGradient id="observatory-window-grad" gradientUnits="userSpaceOnUse" cx="26.5" cy="20" r="26">
+                  <stop offset="0" stop-color="rgb(220, 223, 227)"></stop>
+                  <stop offset="1" stop-color="rgb(128, 131, 140)"></stop>
+                </radialGradient>
+              </defs>
+              <path id="observatory-window-lit" d="" fill="url(#observatory-window-grad)"></path>
+              <circle class="ow-g-ghost" cx="20" cy="20" r="19"></circle>
+            </svg>
             <svg class="ow-g ow-g-sun" viewBox="0 0 22 22">
               <circle cx="11" cy="11" r="8" fill="none" stroke="rgba(255,230,205,0.9)" stroke-width="1.3"></circle>
               <circle cx="11" cy="11" r="7.1" fill="#0f0a0c"></circle>

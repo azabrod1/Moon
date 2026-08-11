@@ -206,11 +206,24 @@ export class MapHUD {
     // One button, two meanings: it folds an open panel away and brings a
     // collapsed sheet's body back (on a phone the collapsed header keeps this
     // button, and it is the only way back).
-    this.collapseBtn?.addEventListener('click', () => {
+    this.collapseBtn?.addEventListener('click', (e) => {
+      // Stopped BEFORE the fold: the header tap below reads the class this
+      // handler is about to write, and a bubbled click would see the fresh
+      // 'collapsed' and reopen the panel in the same press.
+      e.stopPropagation();
       if (this.panel?.classList.contains('collapsed')) this.onExpand();
       else this.onCollapse();
     });
     this.pill?.addEventListener('click', () => this.onExpand());
+    // On a phone the collapsed sheet keeps only its header, and the whole
+    // strip is the way back in — a thumb should not have to find the chevron.
+    // Guarded on the class, so an open panel never sees it (and the desktop's
+    // collapsed panel is display:none, so it cannot be clicked at all). The
+    // chevron's own handler fires first and bubbles here; the second expand
+    // is the owner's no-op.
+    this.panel?.addEventListener('click', () => {
+      if (this.panel?.classList.contains('collapsed')) this.onExpand();
+    });
     for (const { key, id } of LAYER_ROWS) {
       const row = document.getElementById(id);
       const tgl = row?.querySelector('.tgl') as HTMLButtonElement | null;

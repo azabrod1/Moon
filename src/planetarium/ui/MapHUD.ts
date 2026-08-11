@@ -407,15 +407,28 @@ export class MapHUD {
     this.measurePanel();
   }
 
-  /** Mark the panel body as having more below — the card's fact-list idiom.
-   *  Shows only while the body overflows AND has somewhere left to scroll: a
-   *  mask that stayed at the end of the scroll would cut the footnote in half. */
+  /**
+   * Mark which way the panel body has more — the card's fact-list idiom, at
+   * both ends.
+   *
+   * Each edge shows only while there is somewhere left to scroll THAT way: a
+   * bottom mask that stayed at the end of the scroll would cut the footnote in
+   * half, and a top one at the start would dim the scale segment for nothing.
+   *
+   * The top edge earns its own mask because the sections do not end where the
+   * body does. The find list is a fixed porthole with its own scrollbar, so a
+   * body scrolled past it slices that window against the header's hairline —
+   * with its search box and heading already gone above, a hard edge there reads
+   * as a list that has been cut off rather than one that has been scrolled.
+   */
   private updatePanelFade(): void {
     const body = this.panelBody;
     if (!body) return;
-    const more = body.scrollHeight > body.clientHeight + 1
-      && body.scrollTop + body.clientHeight < body.scrollHeight - 1;
+    const overflows = body.scrollHeight > body.clientHeight + 1;
+    const more = overflows && body.scrollTop + body.clientHeight < body.scrollHeight - 1;
+    const above = overflows && body.scrollTop > 1;
     body.classList.toggle('scrolls', more);
+    body.classList.toggle('scrolls-up', above);
   }
 
   /** Stand the panel down while another instrument takes its corner (Stats and

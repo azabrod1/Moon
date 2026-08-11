@@ -2659,12 +2659,25 @@
     }
     .map-panel-body::-webkit-scrollbar { width: 4px; }
     .map-panel-body::-webkit-scrollbar-thumb { background: rgba(255, 255, 255, 0.10); border-radius: 2px; }
-    /* MORE BELOW — the card's fact-list idiom. Opening help pushes Layers and
-       the footnote out of sight, and a panel that just ends looks like a panel
-       with nothing more in it. */
+    /* MORE BELOW / MORE ABOVE — the card's fact-list idiom, at both ends.
+       Below: opening help pushes Layers and the footnote out of sight, and a
+       panel that just ends looks like a panel with nothing more in it.
+       Above: the find list is a fixed porthole with its own scrollbar, so a
+       scrolled body slices that window against the header's hairline — a hard
+       edge there reads as a list cut off rather than one scrolled past. Both
+       ends spelled out rather than composed, since a mask-image cannot be
+       stacked from two rules. */
     .map-panel-body.scrolls {
       -webkit-mask-image: linear-gradient(to bottom, #000 calc(100% - 16px), transparent);
       mask-image: linear-gradient(to bottom, #000 calc(100% - 16px), transparent);
+    }
+    .map-panel-body.scrolls-up {
+      -webkit-mask-image: linear-gradient(to bottom, transparent, #000 16px);
+      mask-image: linear-gradient(to bottom, transparent, #000 16px);
+    }
+    .map-panel-body.scrolls-up.scrolls {
+      -webkit-mask-image: linear-gradient(to bottom, transparent, #000 16px, #000 calc(100% - 16px), transparent);
+      mask-image: linear-gradient(to bottom, transparent, #000 16px, #000 calc(100% - 16px), transparent);
     }
     .map-panel-sep { flex: none; height: 1px; margin: 11px -15px; background: var(--line-dim); }
     /* Two columns: the gesture and what it does. The label column is sized to

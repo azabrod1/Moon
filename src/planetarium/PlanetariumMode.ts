@@ -257,7 +257,9 @@ import {
   PLANET_ARRIVAL_STANDOFF_FLOOR_AU,
   SUN_APPROACH_SURFACE_RADII,
   SUN_ARRIVAL_RADII,
+  sweepSegmentSphere,
   type BodyCapState,
+  type SweepContact,
   type MoonArrivalInputs,
 } from './arrivalLogic';
 import {
@@ -412,6 +414,12 @@ function mixHex(hex: number, target: number, t: number): string {
   };
   return `rgb(${ch(16)}, ${ch(8)}, ${ch(0)})`;
 }
+
+/** Steering inputs at or above this are a hand on the stick; below it the
+ *  pilot counts as idle. Never compare steering to exact zero: gyro input
+ *  eases toward zero inside its dead zone (×0.82 per event) and carries a
+ *  float residue for tens of seconds after the phone is centered. */
+const STEER_IDLE_EPS = 0.02;
 
 const OBSERVATORY_EVENT_LABELS: Record<EventType, string> = {
   'full-moon': 'Full Moon',
@@ -2442,7 +2450,11 @@ export class PlanetariumMode {
 
       if (!this.player.held) {
         // Autopilot: steer toward target if no manual steering input
-        if (this.autopilot && this.autopilotTarget && this.player.yawInput === 0 && this.player.pitchInput === 0) {
+        // (epsilon — gyro residue would otherwise block autopilot steering
+        // for up to a minute after a tilt).
+        if (this.autopilot && this.autopilotTarget
+          && Math.abs(this.player.yawInput) < STEER_IDLE_EPS
+          && Math.abs(this.player.pitchInput) < STEER_IDLE_EPS) {
           this.applyAutopilot();
         }
 
@@ -2518,7 +2530,14 @@ export class PlanetariumMode {
     // time warp) the rendered gap alternates by the per-frame pushback —
     // invisible at the old 17,000 km chase distance, a visible shimmy of the
     // near-full-screen disc at 3,000 km.
-    if (!this.devFreeCamera) {
+    // Scripted transfers own the ship and skip the resolvers: prevPlayerPos
+    // freezes at the transfer's origin (it refreshes only on integrating
+    // frames), so the sweep would re-test the whole traveled chord each
+    // frame and pin the ship to any body the path grazes. The first
+    // post-transfer frame re-seeds prevPlayerPos before integrating, so
+    // handback resolves cleanly. Plain teleports are safe the same way —
+    // their handlers run between frames, ahead of that re-seed.
+    if (!this.devFreeCamera && !isScriptedTransfer) {
       this.resolvePlanetCollisions();
       this.resolveMoonCollisions();
     }
@@ -5839,7 +5858,12 @@ export class PlanetariumMode {
       (this.keys.has('s') ? 1 : 0);
     if (this.touchThrottle !== 0) throttle = this.touchThrottle;
 
-    const hasManualInput = yaw !== 0 || pitch !== 0 || throttle !== 0;
+    // Steering intent is epsilon-gated, matching every other idle check:
+    // gyro residue after centering the phone must read as hands-off here
+    // too, or it would keep cancelling the arrival look and re-grabbing the
+    // camera for a minute after a tilt.
+    const steering = Math.abs(yaw) >= STEER_IDLE_EPS || Math.abs(pitch) >= STEER_IDLE_EPS;
+    const hasManualInput = steering || throttle !== 0;
 
     // The arrival look is cinematic assistance, never a control lock. Any
     // explicit flight input hands the camera straight back to the pilot.
@@ -5861,7 +5885,7 @@ export class PlanetariumMode {
     // steer only while yaw/pitch are idle. Disengaging on W was how a 20c
     // hurry-up quietly went ballistic and sailed past its destination with
     // nothing left to park the ship.
-    if (this.autopilot && (yaw !== 0 || pitch !== 0)) {
+    if (this.autopilot && steering) {
       this.disableAutopilot();
     }
 
@@ -10636,101 +10660,63 @@ export class PlanetariumMode {
     return min;
   }
 
-  /** Moon counterpart of resolvePlanetCollisions, with one difference: it
-   *  sweeps the whole frame segment (prevPlayerPos → current) instead of
-   *  checking the endpoint — endpoint checks tunnel exactly at moon scale. */
+  /**
+   * Land a swept shell contact: park the ship on the shell, and — when the
+   * pilot's hands are off the stick — swing the nose outward so the leave
+   * law pulls it straight away. An actively steering pilot keeps their
+   * heading (the shell holds them regardless; repeatedly snapping the nose
+   * against a held stick was the reported grind-fight), and "hands off" is
+   * an epsilon test because gyro steering holds a float residue for tens of
+   * seconds after centering. Autopilot cancels outright on contact: its
+   * glide contract already failed (a body swept in at time warp), and its
+   * re-aim would fight the outward bounce frame by frame.
+   */
+  private applyShellContact(cx: number, cy: number, cz: number, shellR: number, hit: SweepContact) {
+    this.player.posX = cx + hit.ox * shellR;
+    this.player.posY = cy + hit.oy * shellR;
+    this.player.posZ = cz + hit.oz * shellR;
+    if (this.autopilot) this.disableAutopilot();
+    const steering =
+      Math.abs(this.player.yawInput) >= STEER_IDLE_EPS ||
+      Math.abs(this.player.pitchInput) >= STEER_IDLE_EPS;
+    if (steering) return;
+    const forward = this.player.getForwardDirection();
+    if (forward.x * hit.ox + forward.y * hit.oy + forward.z * hit.oz < 0.15) {
+      this.player.headToward(
+        this.player.posX + hit.ox * shellR * 2,
+        this.player.posZ + hit.oz * shellR * 2,
+        this.player.posY + hit.oy * shellR * 2,
+      );
+    }
+  }
+
   private resolveMoonCollisions() {
     const p0 = this.prevPlayerPos;
-    const forward = this.player.getForwardDirection();
     this.forEachGovernedMoon((x, y, z, renderedR) => {
       // Same clearance bubble as the arrival standoff and camera safety.
       const collisionR = moonCollisionRadius(renderedR, SHIP_CLEARANCE_AU);
-      const dx = this.player.posX - p0.x;
-      const dy = this.player.posY - p0.y;
-      const dz = this.player.posZ - p0.z;
-      const cx = x - p0.x;
-      const cy = y - p0.y;
-      const cz = z - p0.z;
-      const segLenSq = dx * dx + dy * dy + dz * dz;
-      const t = segLenSq > 0 ? Math.min(1, Math.max(0, (cx * dx + cy * dy + cz * dz) / segLenSq)) : 0;
-      let ox = p0.x + dx * t - x;
-      let oy = p0.y + dy * t - y;
-      let oz = p0.z + dz * t - z;
-      let d = Math.sqrt(ox * ox + oy * oy + oz * oz);
-      if (d >= collisionR) return;
-      if (d < 1e-9) {
-        // Dead-center pass: push back along the incoming segment.
-        ox = -dx;
-        oy = -dy;
-        oz = -dz;
-        d = Math.sqrt(ox * ox + oy * oy + oz * oz);
-        if (d < 1e-9) {
-          ox = 1;
-          oy = 0;
-          oz = 0;
-          d = 1;
-        }
-      }
-      ox /= d;
-      oy /= d;
-      oz /= d;
-      this.player.posX = x + ox * collisionR;
-      this.player.posY = y + oy * collisionR;
-      this.player.posZ = z + oz * collisionR;
-      if (forward.x * ox + forward.y * oy + forward.z * oz < 0.15) {
-        this.player.headToward(
-          this.player.posX + ox * collisionR * 2,
-          this.player.posZ + oz * collisionR * 2,
-          this.player.posY + oy * collisionR * 2,
-        );
-      }
+      const hit = sweepSegmentSphere(
+        p0.x, p0.y, p0.z,
+        this.player.posX, this.player.posY, this.player.posZ,
+        x, y, z, collisionR,
+      );
+      if (hit) this.applyShellContact(x, y, z, collisionR, hit);
     });
   }
 
   private resolvePlanetCollisions() {
     if (!this.solarSystem) return;
-
-    const offset = new THREE.Vector3();
-    const outwardHeading = new THREE.Vector3();
-    const forward = this.player.getForwardDirection();
-
+    const p0 = this.prevPlayerPos;
     for (const planet of this.solarSystem.planets) {
       const worldPos = planet.group.userData.worldPosAU as { x: number; y: number; z: number } | undefined;
       if (!worldPos) continue;
-
-      offset.set(
-        this.player.posX - worldPos.x,
-        this.player.posY - worldPos.y,
-        this.player.posZ - worldPos.z,
-      );
-
-      let distance = offset.length();
       const collisionRadius = this.getPlanetCollisionRadius(planet.data.name, planet.data.radiusAU, planet.group.scale.x);
-      if (distance >= collisionRadius) continue;
-
-      if (distance < 1e-8) {
-        offset.copy(forward).multiplyScalar(-1);
-        distance = offset.length();
-      }
-      if (distance < 1e-8) {
-        offset.set(1, 0, 0);
-        distance = 1;
-      }
-
-      offset.divideScalar(distance);
-      this.player.posX = worldPos.x + offset.x * collisionRadius;
-      this.player.posY = worldPos.y + offset.y * collisionRadius;
-      this.player.posZ = worldPos.z + offset.z * collisionRadius;
-
-      if (forward.dot(offset) < 0.15) {
-        outwardHeading.copy(offset).multiplyScalar(collisionRadius * 2);
-        this.player.headToward(
-          this.player.posX + outwardHeading.x,
-          this.player.posZ + outwardHeading.z,
-          this.player.posY + outwardHeading.y,
-        );
-      }
-
+      const hit = sweepSegmentSphere(
+        p0.x, p0.y, p0.z,
+        this.player.posX, this.player.posY, this.player.posZ,
+        worldPos.x, worldPos.y, worldPos.z, collisionRadius,
+      );
+      if (hit) this.applyShellContact(worldPos.x, worldPos.y, worldPos.z, collisionRadius, hit);
     }
   }
 

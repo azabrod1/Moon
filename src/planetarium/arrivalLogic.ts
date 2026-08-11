@@ -280,6 +280,61 @@ export function moonCollisionRadius(renderedR: number, shipClearance: number): n
   return renderedR + shipClearance;
 }
 
+/** Unit outward pushback direction for a swept shell contact. */
+export interface SweepContact {
+  ox: number;
+  oy: number;
+  oz: number;
+}
+
+/**
+ * Sweep the frame segment p0→p1 against a sphere: the shared collision test
+ * for moons AND planets. Checking only the endpoint tunnels — at override
+ * speeds a frame step (~4,800 km at 60 fps, ~30,000 km on a 100 ms hitch)
+ * out-strides a terrestrial planet's shell diameter, and it tunnels exactly
+ * at moon scale even at governed speeds. Returns the unit outward direction
+ * from the sphere center at the segment's closest approach, or null when the
+ * swept path stays clear (the common case — no allocation there).
+ *
+ * A dead-center pass has no radial direction; push back along the incoming
+ * segment, and a zero-length segment dead on the center falls back to +X.
+ */
+export function sweepSegmentSphere(
+  p0x: number, p0y: number, p0z: number,
+  p1x: number, p1y: number, p1z: number,
+  cx: number, cy: number, cz: number,
+  radius: number,
+): SweepContact | null {
+  const dx = p1x - p0x;
+  const dy = p1y - p0y;
+  const dz = p1z - p0z;
+  const tox = cx - p0x;
+  const toy = cy - p0y;
+  const toz = cz - p0z;
+  const segLenSq = dx * dx + dy * dy + dz * dz;
+  const t = segLenSq > 0
+    ? Math.min(1, Math.max(0, (tox * dx + toy * dy + toz * dz) / segLenSq))
+    : 0;
+  let ox = p0x + dx * t - cx;
+  let oy = p0y + dy * t - cy;
+  let oz = p0z + dz * t - cz;
+  let d = Math.sqrt(ox * ox + oy * oy + oz * oz);
+  if (d >= radius) return null;
+  if (d < 1e-9) {
+    ox = -dx;
+    oy = -dy;
+    oz = -dz;
+    d = Math.sqrt(ox * ox + oy * oy + oz * oz);
+    if (d < 1e-9) {
+      ox = 1;
+      oy = 0;
+      oz = 0;
+      d = 1;
+    }
+  }
+  return { ox: ox / d, oy: oy / d, oz: oz / d };
+}
+
 /** True when the forward ray from `origin` through `through` passes within
  *  `radius` of `point` ahead of the ship (behind the ship can't be hit). */
 function rayPassesNear(

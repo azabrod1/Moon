@@ -13,6 +13,7 @@ import {
   moonCollisionRadius,
   rampedSpeedCap,
   sunArrivalPose,
+  sweepSegmentSphere,
   BODY_APPROACH_V_MIN_AU_S,
   BODY_CAP_CLEAR_HOLD_S,
   BODY_LEAVE_K_PER_S,
@@ -371,6 +372,49 @@ describe('departure feel — the reported outcomes, closed loop', () => {
     const ideal = Math.log(2) / BODY_LEAVE_K_PER_S;
     expect(halvingS).toBeGreaterThan(ideal * 0.8);
     expect(halvingS).toBeLessThan(ideal * 1.2);
+  });
+});
+
+describe('sweepSegmentSphere — the shared collision test', () => {
+  const R = 8.8e-5; // an Earth-class shell
+
+  it('catches a through-pass whose endpoints are both far outside', () => {
+    // One override-speed frame out-strides the whole shell diameter — the
+    // endpoint-only planet check this replaces tunneled here.
+    const hit = sweepSegmentSphere(-2e-3, 1e-5, 0, 2e-3, 1e-5, 0, 0, 0, 0, R);
+    expect(hit).not.toBeNull();
+    // Pushback points from the center toward the segment's closest approach.
+    expect(hit!.oy).toBeCloseTo(1, 9);
+    expect(Math.abs(hit!.ox)).toBeLessThan(1e-9);
+  });
+
+  it('catches an endpoint inside the shell', () => {
+    const hit = sweepSegmentSphere(-2e-3, 0, 0, -R * 0.5, 0, 0, 0, 0, 0, R);
+    expect(hit).not.toBeNull();
+    expect(hit!.ox).toBeCloseTo(-1, 9); // out the near side it came from
+  });
+
+  it('passes a clean miss without contact (and without allocating a hit)', () => {
+    expect(sweepSegmentSphere(-2e-3, R * 2, 0, 2e-3, R * 2, 0, 0, 0, 0, R)).toBeNull();
+  });
+
+  it('a zero-length segment degenerates to the endpoint check', () => {
+    expect(sweepSegmentSphere(R * 2, 0, 0, R * 2, 0, 0, 0, 0, 0, R)).toBeNull();
+    const hit = sweepSegmentSphere(R * 0.5, 0, 0, R * 0.5, 0, 0, 0, 0, 0, R);
+    expect(hit).not.toBeNull();
+    expect(hit!.ox).toBeCloseTo(1, 9);
+  });
+
+  it('a dead-center pass pushes back along the incoming segment', () => {
+    const hit = sweepSegmentSphere(-2e-3, 0, 0, 2e-3, 0, 0, 0, 0, 0, R);
+    expect(hit).not.toBeNull();
+    expect(hit!.ox).toBeCloseTo(-1, 9);
+  });
+
+  it('a zero-length segment dead on the center still yields a finite pushback', () => {
+    const hit = sweepSegmentSphere(0, 0, 0, 0, 0, 0, 0, 0, 0, R);
+    expect(hit).not.toBeNull();
+    expect(Math.hypot(hit!.ox, hit!.oy, hit!.oz)).toBeCloseTo(1, 12);
   });
 });
 

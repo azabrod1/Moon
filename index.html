@@ -2680,8 +2680,9 @@
     .map-help-grid.visible { display: grid; margin-top: 10px; }
     /* The disclosure that opens it. A named row in the panel's own wide-button
        idiom (Reset view's), so what it does is readable without pressing it —
-       the `?` it replaces said nothing until you tried it. */
-    .map-help-toggle { justify-content: space-between; padding: 0 11px; }
+       the `?` it replaces said nothing until you tried it. The label and its
+       chevron centre together, as Reset view's icon and label do: a word this
+       short parked at the far edge from its own arrow reads as two controls. */
     .map-help-chev {
       flex: none;
       color: var(--t3);
@@ -4057,12 +4058,12 @@
             </div>
             <div class="map-panel-sep"></div>
             <!-- Help, named rather than glyphed: a bare `?` makes the reader
-                 guess at what is behind it, and most of what the grid teaches
-                 the chart already shows once a session above the world bar.
-                 What is left (the long-press teleport, and which clock the map
-                 runs on) is worth a row that says what it opens. -->
-            <button id="map-info" class="map-panel-btn-wide map-help-toggle" type="button" aria-expanded="false" aria-controls="map-help-grid">
-              How the map works
+                 guess at what is behind it. Just "Help" — the panel it sits in
+                 is already titled System map, so naming the map again here
+                 would say it twice, and the row's neighbours ("Zoom", "Reset
+                 view") are this short. -->
+            <button id="map-info" class="map-panel-btn-wide map-help-toggle" type="button" title="What the gestures do" aria-expanded="false" aria-controls="map-help-grid">
+              Help
               <svg class="map-help-chev" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5.5 8 L10 12.5 L14.5 8"></path></svg>
             </button>
             <div id="map-help-grid" class="map-help-grid">

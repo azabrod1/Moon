@@ -3,9 +3,10 @@
  * and the Sun. The planet throttle knows nothing smaller than a system —
  * deep inside one it still allows the in-system speed setting (~25,000 km/s
  * by default), which crosses a body standoff in about a second. These
- * functions give every body its own approach dynamics (and moons their
- * arrival pose); PlanetariumMode feeds live positions and applies the
- * results.
+ * functions give every body its own approach AND departure dynamics — both
+ * tied to distance, so arrivals glide and departures pull away instead of
+ * detonating off a time ramp — (and moons their arrival pose);
+ * PlanetariumMode feeds live positions and applies the results.
  */
 import * as THREE from 'three';
 import { KM_PER_AU } from '../astronomy/constants';
@@ -31,61 +32,86 @@ export const SUN_APPROACH_SURFACE_RADII = 1.2;
  *  collision bubble, not the governor, is what holds you off the mesh. */
 export const BODY_APPROACH_V_MIN_AU_S = 2 / KM_PER_AU;
 
+/** Departure pace: receding speed is capped at this × the distance to the
+ *  body's CENTER, so the disc shrinks at a constant fractional rate (halves
+ *  every ln 2 / K ≈ 2.8 s) — a stately pull-away at every body scale.
+ *  Deliberately its own constant (= approach K today): the one-line
+ *  brisker-exits knob. */
+export const BODY_LEAVE_K_PER_S = MOON_APPROACH_K_PER_S;
+
+/** The leave law alone binds to 4 × the commanded speed of CENTER distance
+ *  regardless of body size — for a moonlet that is many seconds capped
+ *  against empty sky. Past this many surface radii (disc ≲ 3°) the leave
+ *  term opens quadratically, so a release always completes within a few
+ *  radii of the disc fading. Inert for approaches and for any release that
+ *  finishes inside the knee. */
+export const LEAVE_VALVE_KNEE_RADII = 40;
+
 /**
- * Proximity speed cap near one body: closing speed is limited to
- * K × (distance to the rendered surface), floored at vMin. The cap applies
- * only while the heading closes on the body — `cap = base / g`, with g a
- * smoothstep of the approach cosine over [0, 0.3] — so it fades out
- * continuously as the nose swings past the limb: a flyby ends by sailing
- * on, never by wading out of molasses. Receding or grazing flight is free.
+ * Proximity speed cap near one body. Closing, speed is limited to
+ * K × (distance to the rendered surface), floored at vMin — the glide.
+ * Receding, it is limited to BODY_LEAVE_K_PER_S × (distance to the CENTER),
+ * valve-opened past the knee — the leave law, which ties departures to
+ * distance the same way arrivals are (a pure-time release reads as
+ * nothing-nothing-BANG; this reads as a steady pull-away).
+ *
+ * The two laws blend HARMONICALLY over the approach-cosine smoothstep band
+ * [0, 0.3]: `1 / (w/vIn + (1−w)/vOut)`. As vOut → ∞ this reduces exactly to
+ * the historical `vIn / w` band fade, so the proven inbound behavior is the
+ * special case — an arithmetic blend here would hand a near-tangent closing
+ * course most of the leave law's speed (~9,000 km/s at Jupiter's shell) and
+ * grind it into the resolver.
+ *
+ * `surfaceDistAU` is the RAW `dist − surfaceRadius`, negative while an
+ * endpoint sits momentarily inside the surface — the center distance must
+ * stay exact there, so it is recovered by sum, never from a clamped value.
  */
 export function governedSpeedCap(
   surfaceDistAU: number,
+  surfaceRadiusAU: number,
   cosApproach: number,
   kPerS: number,
   vMinAUPerS: number,
 ): number {
-  if (cosApproach <= 0) return Infinity;
-  const t = Math.min(cosApproach / 0.3, 1);
-  const g = t * t * (3 - 2 * t);
-  if (g <= 0) return Infinity;
-  const base = Math.max(surfaceDistAU * kPerS, vMinAUPerS);
-  return base / g;
+  const centerDistAU = surfaceDistAU + surfaceRadiusAU;
+  const kneeAU = LEAVE_VALVE_KNEE_RADII * surfaceRadiusAU;
+  const valve = centerDistAU > kneeAU ? (centerDistAU / kneeAU) ** 2 : 1;
+  const vOut = BODY_LEAVE_K_PER_S * centerDistAU * valve;
+  const t = THREE.MathUtils.clamp(cosApproach / 0.3, 0, 1);
+  const w = t * t * (3 - 2 * t);
+  if (w <= 0) return vOut;
+  const vIn = Math.max(Math.max(surfaceDistAU, 0) * kPerS, vMinAUPerS);
+  if (w >= 1) return vIn;
+  return 1 / (w / vIn + (1 - w) / vOut);
 }
 
-/** After a moon flyby the applied cap relaxes by e per this many seconds, so
- *  leaving reads as a pull-away — full in-system speed returns over ~4–5 s
- *  from a deep flyby — instead of a one-frame snap to thousands of km/s. */
-export const MOON_CAP_RELEASE_EFOLD_S = 1;
-
-/** Planets (and the Sun) release slower: passing one at the moons' 1 s
- *  e-fold puts the ship at thousands of km/s before a turnaround completes —
- *  a planet is a minutes-scale scene, and the pull-away should leave time to
- *  swing back for another look (~13 s to full speed instead of ~5). */
-export const PLANET_CAP_RELEASE_EFOLD_S = 2.5;
-
-/** Above this the ramp stops mattering against any real speed setting
- *  (~25c); promote to Infinity so no stale finite cap lingers as state. */
-const CAP_FULLY_RELEASED_AU_S = 0.05;
+/** Pace of the cap's loosening transition (a target-residual ease, so the
+ *  normalized progress is body-independent: 50% in ~0.24 s, 95% in ~1.05 s
+ *  whether the target is a moonlet's leave law or Jupiter's). */
+export const CAP_TRANSITION_TAU_S = 0.35;
 
 /**
  * Time-eased speed cap: `geomCap` is the instantaneous geometric cap from
- * `governedSpeedCap`, `prevCap` the cap applied last frame. Tightening (and
- * first contact) applies instantly — decelerating late is the safety half.
- * Loosening grows exponentially from the previous cap, so however the
- * geometric cap releases (nose past the limb, receding, distance opening),
- * speed returns as a ramp, never a step.
+ * `governedSpeedCap` (min over bodies), `prevCap` the cap applied last
+ * frame. Tightening (and first contact) applies instantly — decelerating
+ * late is the safety half. Loosening eases the RESIDUAL toward the target
+ * (`prev + (geom − prev) × (1 − e^(−dt/τ))`): body-scale independent —
+ * a multiplicative e-fold from a shell pin needs ~2.4 s beside Jupiter with
+ * 1.5 s of it invisible — and exactly frame-rate independent for a given
+ * elapsed time. Once the transition catches the leave law, the cap simply
+ * tracks it: distance-tied from there, no unbounded time growth.
  */
 export function rampedSpeedCap(
   geomCap: number,
   prevCap: number,
   dtS: number,
-  efoldS: number,
+  tauS: number,
 ): number {
   if (geomCap <= prevCap) return geomCap;
-  const grown = prevCap * Math.exp(dtS / efoldS);
-  if (!Number.isFinite(geomCap) && grown >= CAP_FULLY_RELEASED_AU_S) return Infinity;
-  return Math.min(geomCap, grown);
+  // A bodiless frame (pre-load) has nothing to govern — and Infinity must
+  // not reach the residual arithmetic, where a zero dt would make it NaN.
+  if (!Number.isFinite(geomCap)) return geomCap;
+  return prevCap + (geomCap - prevCap) * (1 - Math.exp(-dtS / tauS));
 }
 
 /** The override auto-clears only after the cap has read unbound continuously
@@ -102,22 +128,24 @@ const CAP_BIND_FRACTION = 0.999;
  * Per-frame governor state. `candidate` is the eased cap the governor would
  * apply — integrated EVERY frame, bypassed or not, so easing state never
  * resets to Infinity mid-escape and a bypass that ends mid-flyby resumes the
- * ramp where it truly is. `applied` is what the ship actually gets (Infinity
- * while a bypass hatch is open). `engaged` is the latch: the INSTANTANEOUS
- * geometric cap binds against the commanded (uncapped, throttle-dialed)
- * speed — never the applied speed, which already contains the cap and reads
- * 0 parked. `unboundS` is how long the latch has read unbound while a bypass
- * was active — the override auto-clear waits out BODY_CAP_CLEAR_HOLD_S on it.
- * `releaseEfoldS` is the ramp pace of the LAST body that actually governed —
- * adopted while binding, kept through the release, so a planet flyby keeps
- * releasing at the planet pace even though the planet no longer binds.
+ * transition where it truly is. `applied` is what the ship actually gets
+ * (Infinity while a bypass hatch is open). `engaged` is the latch: the
+ * INSTANTANEOUS geometric cap binds against the commanded (uncapped,
+ * throttle-dialed) speed — never the applied speed, which already contains
+ * the cap and reads 0 parked. With the finite leave law, `engaged` stays
+ * true through a departure until the law crosses the commanded speed — a
+ * few seconds of flight — so the override auto-clear completes a few
+ * seconds past a body rather than moments past the limb, and a ship parked
+ * nose-away beside a body stays latched until it actually leaves (the pill
+ * tap always clears by hand). `unboundS` is how long the latch has read
+ * unbound while a bypass was active — the auto-clear waits out
+ * BODY_CAP_CLEAR_HOLD_S on it.
  */
 export interface BodyCapState {
   candidate: number;
   applied: number;
   engaged: boolean;
   unboundS: number;
-  releaseEfoldS: number;
 }
 
 /** Fresh state for flight discontinuities (jump, takeoff, restore,
@@ -128,30 +156,23 @@ export function initialBodyCapState(): BodyCapState {
     applied: Infinity,
     engaged: false,
     unboundS: 0,
-    releaseEfoldS: MOON_CAP_RELEASE_EFOLD_S,
   };
 }
 
 /**
  * Advance the governor state one frame. `geomCap` is this frame's
- * instantaneous cap (min over all governed bodies) and `geomReleaseEfoldS`
- * the release pace of the body that set it; `commandedAUPerS` is the speed
- * the dialed throttle would fly uncapped, `bypass` whether an escape hatch
- * (throttle override, system slowdown off) is open.
+ * instantaneous cap (min over all governed bodies); `commandedAUPerS` is the
+ * speed the dialed throttle would fly uncapped, `bypass` whether an escape
+ * hatch (throttle override, system slowdown off) is open.
  */
 export function advanceBodyCap(
   prev: BodyCapState,
   geomCap: number,
-  geomReleaseEfoldS: number,
   commandedAUPerS: number,
   bypass: boolean,
   dtS: number,
 ): BodyCapState {
-  // While the geometric cap actually governs (at or under the ramp), the
-  // binding body's release pace is adopted; once it lets go the latched pace
-  // carries the whole release.
-  const releaseEfoldS = geomCap <= prev.candidate ? geomReleaseEfoldS : prev.releaseEfoldS;
-  const candidate = rampedSpeedCap(geomCap, prev.candidate, dtS, releaseEfoldS);
+  const candidate = rampedSpeedCap(geomCap, prev.candidate, dtS, CAP_TRANSITION_TAU_S);
   const engaged = geomCap < commandedAUPerS * CAP_BIND_FRACTION;
   return {
     candidate,
@@ -161,7 +182,6 @@ export function advanceBodyCap(
     // unbound; any other frame resets it, so a partial hold can't survive
     // re-engagement or complete long after the hatch opened.
     unboundS: bypass && !engaged ? prev.unboundS + dtS : 0,
-    releaseEfoldS,
   };
 }
 

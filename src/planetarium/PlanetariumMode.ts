@@ -253,10 +253,8 @@ import {
   BODY_APPROACH_V_MIN_AU_S,
   BODY_CAP_CLEAR_HOLD_S,
   MOON_APPROACH_K_PER_S,
-  MOON_CAP_RELEASE_EFOLD_S,
   PLANET_APPROACH_K_PER_S,
   PLANET_ARRIVAL_STANDOFF_FLOOR_AU,
-  PLANET_CAP_RELEASE_EFOLD_S,
   SUN_APPROACH_SURFACE_RADII,
   SUN_ARRIVAL_RADII,
   type BodyCapState,
@@ -2459,9 +2457,11 @@ export class PlanetariumMode {
     // Body-proximity governor (moons + planets + the Sun): the planet
     // throttle knows nothing smaller than a system, so near a body it still
     // allows the in-system setting — several standoffs per second. Cap the
-    // closing speed at K × surface distance instead (same escape hatch as
-    // the throttle). Tightening applies instantly; release ramps so a flyby
-    // ends with a pull-away, not a one-frame snap back to thousands of km/s.
+    // closing speed at K × surface distance and the receding speed at the
+    // distance-tied leave law instead (same escape hatch as the throttle).
+    // Tightening applies instantly; loosening runs through a short
+    // transition ease onto the leave law, so a flyby ends with a steady
+    // pull-away, never a time-exponential detonation.
     // The throttle override (and systemSlowdown off) bypasses the applied
     // cap the same frame — no lingering crawl — while the candidate keeps
     // integrating and the engaged latch keeps telling the override
@@ -2475,11 +2475,9 @@ export class PlanetariumMode {
     // must not hand back a fully released cap in one frame. Geometry can't
     // change while everything is frozen, so a stale state is a current one.
     if (!this.player.held) {
-      const geom = this.computeBodySpeedCap();
       this.bodyCap = advanceBodyCap(
         this.bodyCap,
-        geom.capAUPerS,
-        geom.releaseEfoldS,
+        this.computeBodySpeedCap(),
         this.player.commandedSpeedAUPerS,
         this.throttleOverride || !this.systemSlowdown,
         dt,
@@ -10488,30 +10486,24 @@ export class PlanetariumMode {
    *  and the Sun at SUN_APPROACH_SURFACE_RADII × its photosphere — the Sun
    *  has no collision shell, and the system throttle's inner edge sits
    *  INSIDE the photosphere, so this glide is the only brake. */
-  private computeBodySpeedCap(): { capAUPerS: number; releaseEfoldS: number } {
+  private computeBodySpeedCap(): number {
     const f = this.player.getForwardDirection();
     let cap = Infinity;
-    let releaseEfoldS = MOON_CAP_RELEASE_EFOLD_S;
-    const consider = (x: number, y: number, z: number, surfaceR: number, kPerS: number, efoldS: number) => {
+    const consider = (x: number, y: number, z: number, surfaceR: number, kPerS: number) => {
       const dx = x - this.player.posX;
       const dy = y - this.player.posY;
       const dz = z - this.player.posZ;
       const dist = Math.sqrt(dx * dx + dy * dy + dz * dz);
       if (dist < 1e-12) return;
       const cos = (dx * f.x + dy * f.y + dz * f.z) / dist;
-      const c = governedSpeedCap(
-        Math.max(dist - surfaceR, 0),
-        cos,
-        kPerS,
-        BODY_APPROACH_V_MIN_AU_S,
-      );
-      if (c < cap) {
-        cap = c;
-        releaseEfoldS = efoldS;
-      }
+      // Raw surface distance, deliberately unclamped: the leave law recovers
+      // the exact center distance from it even with the ship momentarily
+      // inside the surface.
+      const c = governedSpeedCap(dist - surfaceR, surfaceR, cos, kPerS, BODY_APPROACH_V_MIN_AU_S);
+      if (c < cap) cap = c;
     };
     this.forEachGovernedMoon((x, y, z, renderedR) =>
-      consider(x, y, z, renderedR, MOON_APPROACH_K_PER_S, MOON_CAP_RELEASE_EFOLD_S));
+      consider(x, y, z, renderedR, MOON_APPROACH_K_PER_S));
     if (this.solarSystem) {
       for (const planet of this.solarSystem.planets) {
         const wp = planet.group.userData.worldPosAU as { x: number; y: number; z: number } | undefined;
@@ -10520,7 +10512,6 @@ export class PlanetariumMode {
           wp.x, wp.y, wp.z,
           planetEnvelopeRadiusAU(planet.data.radiusAU, planet.group.scale.x, ATMOSPHERE_SHELL_SCALES[planet.data.name]),
           PLANET_APPROACH_K_PER_S,
-          PLANET_CAP_RELEASE_EFOLD_S,
         );
       }
       // The Sun sits at the heliocentric origin.
@@ -10528,10 +10519,9 @@ export class PlanetariumMode {
         0, 0, 0,
         (KM_CONSTANTS.SUN_RADIUS / KM_PER_AU) * SUN_APPROACH_SURFACE_RADII,
         PLANET_APPROACH_K_PER_S,
-        PLANET_CAP_RELEASE_EFOLD_S,
       );
     }
-    return { capAUPerS: cap, releaseEfoldS };
+    return cap;
   }
 
   private pushCameraShell(sceneX: number, sceneY: number, sceneZ: number, surfaceRadiusAU: number) {

@@ -15,8 +15,9 @@ import {
   sunArrivalPose,
   BODY_APPROACH_V_MIN_AU_S,
   BODY_CAP_CLEAR_HOLD_S,
-  MOON_CAP_RELEASE_EFOLD_S,
-  PLANET_CAP_RELEASE_EFOLD_S,
+  BODY_LEAVE_K_PER_S,
+  CAP_TRANSITION_TAU_S,
+  LEAVE_VALVE_KNEE_RADII,
   MOON_APPROACH_K_PER_S,
   PLANET_APPROACH_K_PER_S,
   MOON_ARRIVAL_APPARENT_DIAMETER_DEG,
@@ -25,6 +26,7 @@ import {
   MOON_ARRIVAL_STANDOFF_FLOOR_AU,
   SUN_APPROACH_SURFACE_RADII,
   SUN_ARRIVAL_RADII,
+  type BodyCapState,
   type MoonArrivalInputs,
 } from './arrivalLogic';
 import { MOONS } from './planets/moonData';
@@ -71,78 +73,144 @@ function catalogInputs(moonName: string, angleRad = 0.7): MoonArrivalInputs {
 }
 
 describe('governedSpeedCap', () => {
+  // A Moon-class synthetic body: rendered radius 1e-5 AU (~1,500 km).
+  const R = 1e-5;
+
   it('head-on approach is capped at K × surface distance', () => {
-    expect(governedSpeedCap(1e-4, 1, K, VMIN)).toBeCloseTo(1e-4 * K, 12);
+    expect(governedSpeedCap(1e-4, R, 1, K, VMIN)).toBeCloseTo(1e-4 * K, 12);
   });
 
-  it('the floor keeps a creep speed available at the surface', () => {
-    expect(governedSpeedCap(0, 1, K, VMIN)).toBe(VMIN);
-    expect(governedSpeedCap(1e-9, 1, K, VMIN)).toBe(VMIN);
+  it('the floor keeps a creep speed available at — and inside — the surface', () => {
+    expect(governedSpeedCap(0, R, 1, K, VMIN)).toBe(VMIN);
+    expect(governedSpeedCap(1e-9, R, 1, K, VMIN)).toBe(VMIN);
+    // A swept endpoint momentarily inside the surface: raw negative surface
+    // distance still floors the approach term instead of going negative.
+    expect(governedSpeedCap(-1e-6, R, 1, K, VMIN)).toBe(VMIN);
   });
 
-  it('receding or side-on flight is uncapped', () => {
-    expect(governedSpeedCap(1e-4, 0, K, VMIN)).toBe(Infinity);
-    expect(governedSpeedCap(1e-4, -1, K, VMIN)).toBe(Infinity);
+  it('receding or side-on flight is capped at exactly the leave law', () => {
+    // THE departure contract: leaving speed is a function of where you are —
+    // LEAVE_K × center distance — never Infinity, never a time ramp.
+    expect(governedSpeedCap(1e-4, R, 0, K, VMIN)).toBeCloseTo(BODY_LEAVE_K_PER_S * 1.1e-4, 12);
+    expect(governedSpeedCap(1e-4, R, -1, K, VMIN)).toBeCloseTo(BODY_LEAVE_K_PER_S * 1.1e-4, 12);
+    // Inside the surface the center distance stays exact (sum, not a clamp).
+    expect(governedSpeedCap(-1e-6, R, -1, K, VMIN)).toBeCloseTo(BODY_LEAVE_K_PER_S * 9e-6, 12);
   });
 
-  it('the grazing band releases smoothly: half-smoothstep doubles the cap', () => {
-    const full = governedSpeedCap(1e-4, 0.3, K, VMIN);
-    expect(governedSpeedCap(1e-4, 0.15, K, VMIN)).toBeCloseTo(full * 2, 10);
-    // Continuity toward the free side: a whisker of closing cosine allows
-    // a huge (but finite) cap, never a jump from capped to free.
-    expect(governedSpeedCap(1e-4, 0.005, K, VMIN)).toBeGreaterThan(full * 100);
-    expect(governedSpeedCap(1e-4, 0.005, K, VMIN)).toBeLessThan(Infinity);
+  it('the grazing band blends the two laws harmonically', () => {
+    const vIn = 1e-4 * K;
+    const vOut = BODY_LEAVE_K_PER_S * 1.1e-4;
+    // Half-smoothstep: the harmonic mean of the closing glide and the leave law.
+    expect(governedSpeedCap(1e-4, R, 0.15, K, VMIN)).toBeCloseTo(
+      1 / (0.5 / vIn + 0.5 / vOut),
+      12,
+    );
+  });
+
+  it('a giant body keeps the proven closing band: harmonic ≈ the old vIn/w fade', () => {
+    // Jupiter-class shell contact: vOut/vIn ~ 900. An arithmetic blend would
+    // hand a near-tangent CLOSING course half the leave law (~9,000 km/s);
+    // the harmonic blend stays within a hair under the historical vIn/w.
+    const surfaceDist = 5.44e-7; // one ship clearance off the shell
+    const giantR = 5e-4;
+    const vIn = Math.max(surfaceDist * K, VMIN);
+    const oldLaw = vIn / 0.5;
+    const cap = governedSpeedCap(surfaceDist, giantR, 0.15, K, VMIN);
+    expect(cap).toBeLessThan(oldLaw);
+    expect(cap).toBeGreaterThan(oldLaw * 0.99);
+  });
+
+  it('the release valve is inert below the knee, continuous at it, quadratic past it', () => {
+    const knee = LEAVE_VALVE_KNEE_RADII * R; // center distance at the knee
+    expect(governedSpeedCap(knee - R, R, -1, K, VMIN)).toBeCloseTo(BODY_LEAVE_K_PER_S * knee, 12);
+    // 10% past the knee: the law picks up a (1.1)² opening.
+    expect(governedSpeedCap(1.1 * knee - R, R, -1, K, VMIN)).toBeCloseTo(
+      BODY_LEAVE_K_PER_S * 1.1 * knee * 1.21,
+      10,
+    );
+    // Deep past it (100 R): ×6.25 — the empty-sky tail is gone.
+    expect(governedSpeedCap(100 * R - R, R, -1, K, VMIN)).toBeCloseTo(
+      BODY_LEAVE_K_PER_S * 100 * R * (100 / LEAVE_VALVE_KNEE_RADII) ** 2,
+      10,
+    );
+  });
+
+  it('is monotone in the approach cosine: swinging the nose in only tightens', () => {
+    let prev = 0;
+    for (const cos of [0.9, 0.3, 0.2, 0.1, 0.05, 0, -0.5]) {
+      const cap = governedSpeedCap(1e-4, R, cos, K, VMIN);
+      if (prev > 0) expect(cap).toBeGreaterThanOrEqual(prev);
+      prev = cap;
+    }
+  });
+
+  it('closer means slower, monotonically, closing and receding alike', () => {
+    for (const cos of [1, -1]) {
+      let prev = Infinity;
+      for (const d of [1e-3, 1e-4, 1e-5, 1e-6]) {
+        const cap = governedSpeedCap(d, R, cos, K, VMIN);
+        expect(cap).toBeLessThan(prev);
+        prev = cap;
+      }
+    }
   });
 
   it('beyond the band the cap is exactly the base — no over-tightening', () => {
-    expect(governedSpeedCap(2e-4, 0.9, K, VMIN)).toBeCloseTo(2e-4 * K, 12);
-  });
-
-  it('closer means slower, monotonically', () => {
-    let prev = Infinity;
-    for (const d of [1e-3, 1e-4, 1e-5, 1e-6]) {
-      const cap = governedSpeedCap(d, 1, K, VMIN);
-      expect(cap).toBeLessThan(prev);
-      prev = cap;
-    }
+    expect(governedSpeedCap(2e-4, R, 0.9, K, VMIN)).toBeCloseTo(2e-4 * K, 12);
   });
 });
 
 describe('rampedSpeedCap', () => {
-  const E = MOON_CAP_RELEASE_EFOLD_S;
+  const TAU = CAP_TRANSITION_TAU_S;
 
   it('tightening applies instantly, including first contact from Infinity', () => {
-    expect(rampedSpeedCap(1e-6, Infinity, 1 / 60, E)).toBe(1e-6);
-    expect(rampedSpeedCap(1e-7, 1e-6, 1 / 60, E)).toBe(1e-7);
+    expect(rampedSpeedCap(1e-6, Infinity, 1 / 60, TAU)).toBe(1e-6);
+    expect(rampedSpeedCap(1e-7, 1e-6, 1 / 60, TAU)).toBe(1e-7);
   });
 
   it('a steady cap passes through unchanged', () => {
-    expect(rampedSpeedCap(1e-6, 1e-6, 1 / 60, E)).toBe(1e-6);
-    expect(rampedSpeedCap(Infinity, Infinity, 1 / 60, E)).toBe(Infinity);
+    expect(rampedSpeedCap(1e-6, 1e-6, 1 / 60, TAU)).toBe(1e-6);
+    expect(rampedSpeedCap(Infinity, Infinity, 1 / 60, TAU)).toBe(Infinity);
   });
 
-  it('release grows by e per e-fold, never past the geometric cap', () => {
-    expect(rampedSpeedCap(Infinity, 1e-6, E, E)).toBeCloseTo(1e-6 * Math.E, 12);
-    expect(rampedSpeedCap(2e-6, 1e-6, 10 * E, E)).toBe(2e-6);
+  it('loosening eases the residual: 1 − 1/e of the gap per τ, never past the target', () => {
+    expect(rampedSpeedCap(1e-5, 1e-6, TAU, TAU)).toBeCloseTo(
+      1e-6 + (1e-5 - 1e-6) * (1 - Math.exp(-1)),
+      15,
+    );
+    // Long dt converges to the target instead of overshooting it.
+    expect(rampedSpeedCap(2e-6, 1e-6, 100 * TAU, TAU)).toBeCloseTo(2e-6, 15);
   });
 
-  it('a full release promotes to Infinity instead of lingering finite', () => {
-    // From a deep-flyby cap, enough elapsed time crosses the release ceiling.
-    expect(rampedSpeedCap(Infinity, 2e-6, 15 * E, E)).toBe(Infinity);
+  it('normalized progress is body-scale independent', () => {
+    // The same fraction of the gap closes per unit time whether the target
+    // is a moonlet's leave law or a giant's — the multiplicative ramp this
+    // replaces needed ~2.4 s beside Jupiter vs ~1.1 s at the Moon.
+    const frac = (target: number) =>
+      (rampedSpeedCap(target, 1e-6, 2 * TAU, TAU) - 1e-6) / (target - 1e-6);
+    expect(frac(1e-5)).toBeCloseTo(frac(1e-2), 12);
+    expect(frac(1e-5)).toBeCloseTo(1 - Math.exp(-2), 12);
   });
 
-  it('the ramp reaches in-system speed in a few seconds, not instantly', () => {
-    // ~300 km/s flyby cap back to the ~25,000 km/s in-system band.
-    const flyby = 300 / KM_PER_AU;
-    const inSystem = 25_000 / KM_PER_AU;
-    let cap = flyby;
-    let t = 0;
-    while (cap < inSystem && t < 60) {
-      cap = rampedSpeedCap(Infinity, cap, 1 / 60, E);
-      t += 1 / 60;
-    }
-    expect(t).toBeGreaterThan(2);
-    expect(t).toBeLessThan(8);
+  it('is frame-rate independent for a given elapsed time', () => {
+    const target = 3e-6;
+    const run = (dts: number[]) => {
+      let cap = 1e-7;
+      for (const dt of dts) cap = rampedSpeedCap(target, cap, dt, TAU);
+      return cap;
+    };
+    const total = 1.05;
+    const at60 = run(new Array(63).fill(total / 63));
+    const at30 = run(new Array(31).fill(total / 31)); // ~34 ms frames
+    const hitchy = run([0.1, ...new Array(57).fill((total - 0.1) / 57)]);
+    const oneStep = run([total]);
+    expect(at60 / oneStep).toBeCloseTo(1, 12);
+    expect(at30 / oneStep).toBeCloseTo(1, 12);
+    expect(hitchy / oneStep).toBeCloseTo(1, 12);
+  });
+
+  it('a bodiless frame (Infinity target) releases outright', () => {
+    expect(rampedSpeedCap(Infinity, 1e-6, 1 / 60, TAU)).toBe(Infinity);
   });
 });
 
@@ -153,19 +221,24 @@ describe('advanceBodyCap — the governor latch', () => {
   it('stays latched (clear timer pinned at zero) while a body binds', () => {
     let s = initialBodyCapState();
     const geomCap = COMMANDED / 10;
-    for (let t = 0; t < 3; t += DT) s = advanceBodyCap(s, geomCap, MOON_CAP_RELEASE_EFOLD_S, COMMANDED, true, DT);
+    for (let t = 0; t < 3; t += DT) s = advanceBodyCap(s, geomCap, COMMANDED, true, DT);
     expect(s.engaged).toBe(true);
     expect(s.unboundS).toBe(0);
     expect(s.applied).toBe(Infinity); // bypassed…
-    expect(s.candidate).toBeCloseTo(geomCap, 12); // …but the ramp memory stays live
+    expect(s.candidate).toBeCloseTo(geomCap, 12); // …but the transition memory stays live
+  });
+
+  it('does not latch on a cap the dialed speed never reaches', () => {
+    const s = advanceBodyCap(initialBodyCapState(), COMMANDED * 2, COMMANDED, true, DT);
+    expect(s.engaged).toBe(false);
   });
 
   it('completes the clear-hold only after a sustained unbound stretch', () => {
     let s = initialBodyCapState();
-    s = advanceBodyCap(s, COMMANDED / 10, MOON_CAP_RELEASE_EFOLD_S, COMMANDED, true, DT); // bound once
+    s = advanceBodyCap(s, COMMANDED / 10, COMMANDED, true, DT); // bound once
     let held = 0;
     while (s.unboundS < BODY_CAP_CLEAR_HOLD_S) {
-      s = advanceBodyCap(s, Infinity, MOON_CAP_RELEASE_EFOLD_S, COMMANDED, true, DT); // flying away
+      s = advanceBodyCap(s, COMMANDED * 10, COMMANDED, true, DT); // far past the body
       held += DT;
       expect(held).toBeLessThan(BODY_CAP_CLEAR_HOLD_S + 1); // and it can't wedge
     }
@@ -175,69 +248,129 @@ describe('advanceBodyCap — the governor latch', () => {
   it('a one-frame grazing re-bind resets the hold instead of clearing through it', () => {
     let s = initialBodyCapState();
     for (let t = 0; t < BODY_CAP_CLEAR_HOLD_S * 0.9; t += DT) {
-      s = advanceBodyCap(s, Infinity, MOON_CAP_RELEASE_EFOLD_S, COMMANDED, true, DT);
+      s = advanceBodyCap(s, COMMANDED * 10, COMMANDED, true, DT);
     }
     expect(s.unboundS).toBeGreaterThan(0);
-    s = advanceBodyCap(s, COMMANDED / 10, MOON_CAP_RELEASE_EFOLD_S, COMMANDED, true, DT); // graze
+    s = advanceBodyCap(s, COMMANDED / 10, COMMANDED, true, DT); // graze
     expect(s.unboundS).toBe(0);
   });
 
   it('a parked ship beside a body stays latched on its DIALED speed', () => {
     // The commanded speed ignores the parked state; the latch must too, or
     // parking beside a moon would start clearing the override immediately.
-    const geomCap = governedSpeedCap(2 * SHIP_CLEARANCE_AU, 1, K, VMIN);
-    const s = advanceBodyCap(initialBodyCapState(), geomCap, MOON_CAP_RELEASE_EFOLD_S, COMMANDED, true, DT);
+    const geomCap = governedSpeedCap(2 * SHIP_CLEARANCE_AU, 1.16e-5, 1, K, VMIN);
+    const s = advanceBodyCap(initialBodyCapState(), geomCap, COMMANDED, true, DT);
     expect(s.engaged).toBe(true);
   });
 
-  it('the ramp memory survives a bypass and re-applies the moment it ends', () => {
+  it('under the leave law, an override departure unbinds after seconds of flight', () => {
+    // New contract with finite receding caps: `engaged` holds until the
+    // leave law crosses the commanded speed — a bypassed departure flies a
+    // few seconds before the clear-hold can even start, instead of clearing
+    // moments past the limb. Closed loop at full override speed, nose out.
+    const R = 1.16e-5;
+    let d = R + SHIP_CLEARANCE_AU; // center distance, from the shell
+    let s = initialBodyCapState();
+    let t = 0;
+    while (s.unboundS < BODY_CAP_CLEAR_HOLD_S && t < 20) {
+      const geom = governedSpeedCap(d - R, R, -1, K, VMIN);
+      s = advanceBodyCap(s, geom, COMMANDED, true, DT);
+      d += COMMANDED * DT; // bypass: the ship flies the dialed speed
+      t += DT;
+    }
+    expect(t).toBeGreaterThan(2);
+    expect(t).toBeLessThan(7);
+  });
+
+  it('the transition memory survives a bypass and re-applies the moment it ends', () => {
     let s = initialBodyCapState();
     const geomCap = COMMANDED / 100;
-    s = advanceBodyCap(s, geomCap, MOON_CAP_RELEASE_EFOLD_S, COMMANDED, true, DT);
+    s = advanceBodyCap(s, geomCap, COMMANDED, true, DT);
     expect(s.applied).toBe(Infinity);
-    s = advanceBodyCap(s, geomCap, MOON_CAP_RELEASE_EFOLD_S, COMMANDED, false, DT); // hatch closes
+    s = advanceBodyCap(s, geomCap, COMMANDED, false, DT); // hatch closes
     expect(s.applied).toBeCloseTo(geomCap, 12); // tight at once — no Infinity restart
   });
 
-  it('the auto-clear hand-off starts clean: no wall ramp survives the bypass edge', () => {
+  it('the auto-clear hand-off starts clean: no wall memory survives the bypass edge', () => {
     // Controller contract: when the sustained hold auto-clears the override
     // it resets to initialBodyCapState. Without that, the candidate's
-    // wall-level ramp memory (only ~2x grown over the hold) would become the
-    // applied cap on the bypass true→false edge and brake a full-speed ship
-    // to a crawl for several seconds.
+    // wall-level memory would become the applied cap on the bypass
+    // true→false edge and brake a full-speed ship mid-flight.
     let s = initialBodyCapState();
-    s = advanceBodyCap(s, COMMANDED / 1000, MOON_CAP_RELEASE_EFOLD_S, COMMANDED, true, DT); // deep at a wall, bypassed
+    s = advanceBodyCap(s, COMMANDED / 1000, COMMANDED, true, DT); // deep at a wall, bypassed
     expect(s.candidate).toBeLessThan(COMMANDED); // the memory the reset discards
     s = initialBodyCapState(); // the controller's reset at auto-clear
-    s = advanceBodyCap(s, Infinity, MOON_CAP_RELEASE_EFOLD_S, COMMANDED, false, DT); // first un-bypassed frame
-    expect(s.applied).toBe(Infinity);
-  });
-
-  it('a planet flyby releases at the planet pace, latched through the whole ramp', () => {
-    // Passing a planet at the moons' 1 s e-fold puts the ship at thousands
-    // of km/s before a turnaround completes — planets release slower, and
-    // the pace must persist after the planet stops binding.
-    let s = initialBodyCapState();
-    const wallCap = COMMANDED / 100;
-    s = advanceBodyCap(s, wallCap, PLANET_CAP_RELEASE_EFOLD_S, COMMANDED, false, DT); // planet binds
-    expect(s.releaseEfoldS).toBe(PLANET_CAP_RELEASE_EFOLD_S);
-    s = advanceBodyCap(s, Infinity, MOON_CAP_RELEASE_EFOLD_S, COMMANDED, false, DT); // nose past the limb
-    expect(s.releaseEfoldS).toBe(PLANET_CAP_RELEASE_EFOLD_S); // pace latched, not the frame's default
-    expect(s.candidate).toBeCloseTo(wallCap * Math.exp(DT / PLANET_CAP_RELEASE_EFOLD_S), 12);
-  });
-
-  it('a moon re-binding mid-release takes the ramp back to the moon pace', () => {
-    let s = initialBodyCapState();
-    s = advanceBodyCap(s, COMMANDED / 100, PLANET_CAP_RELEASE_EFOLD_S, COMMANDED, false, DT);
-    s = advanceBodyCap(s, Infinity, MOON_CAP_RELEASE_EFOLD_S, COMMANDED, false, DT); // planet releasing
-    s = advanceBodyCap(s, COMMANDED / 200, MOON_CAP_RELEASE_EFOLD_S, COMMANDED, false, DT); // a moon binds
-    expect(s.releaseEfoldS).toBe(MOON_CAP_RELEASE_EFOLD_S);
+    s = advanceBodyCap(s, COMMANDED * 100, COMMANDED, false, DT); // first un-bypassed frame, body far behind
+    expect(s.applied).toBeGreaterThan(COMMANDED); // unbinding — no crawl hand-off
   });
 
   it('a planet approach at the in-system default engages ~100,000 km out', () => {
     const engageDistAU = COMMANDED / PLANET_APPROACH_K_PER_S; // cap == speed here
-    expect(governedSpeedCap(engageDistAU, 1, PLANET_APPROACH_K_PER_S, VMIN)).toBeCloseTo(COMMANDED, 12);
+    expect(governedSpeedCap(engageDistAU, 4.26e-5, 1, PLANET_APPROACH_K_PER_S, VMIN)).toBeCloseTo(COMMANDED, 12);
     expect(engageDistAU * KM_PER_AU).toBeCloseTo(100_000, -3);
+  });
+});
+
+describe('departure feel — the reported outcomes, closed loop', () => {
+  // Alex's two complaints as asserts. Before this design, a Moon-shell
+  // release moved ~5 km in the first half second and ~33 km in the first
+  // full second (invisible against a 1,738 km body — "still stuck"), then
+  // the time-exponential ripped the gap 2×→20× in under 3 s ("shoots off in
+  // an instant"). Measured: scratchpad collide-before/report.md, 2026-08-11.
+  const R = 1.1616e-5; // the Moon as rendered
+  const DT = 1 / 60;
+  const COMMANDED = 25_000 / KM_PER_AU;
+
+  /** Simulate a release from a shell grind: cap pinned at the closing glide,
+   *  nose flipped out, then plain forward integration under the governor. */
+  function simulateRelease(seconds: number) {
+    const shell = R + SHIP_CLEARANCE_AU;
+    const pin = governedSpeedCap(shell - R, R, 1, K, VMIN);
+    let s: BodyCapState = { candidate: pin, applied: pin, engaged: true, unboundS: 0 };
+    let d = shell;
+    const samples: { t: number; d: number; speed: number }[] = [{ t: 0, d, speed: pin }];
+    for (let t = DT; t <= seconds + 1e-9; t += DT) {
+      const geom = governedSpeedCap(d - R, R, -1, K, VMIN);
+      s = advanceBodyCap(s, geom, COMMANDED, false, DT);
+      const speed = Math.min(COMMANDED, s.applied);
+      d += speed * DT;
+      samples.push({ t, d, speed });
+    }
+    return samples;
+  }
+
+  it('no dead-stick: a shell release visibly moves within the first second', () => {
+    const samples = simulateRelease(1.0);
+    const at = (t: number) => samples.find((r) => r.t >= t - 1e-9)!;
+    const shell = R + SHIP_CLEARANCE_AU;
+    const kmGained = (t: number) => (at(t).d - shell) * KM_PER_AU;
+    expect(kmGained(0.5)).toBeGreaterThan(80);
+    expect(kmGained(1.0)).toBeGreaterThan(250);
+  });
+
+  it('no bang: past the spool the speed TRACKS the leave law', () => {
+    // The tracked ratio settles near 1/(1 + K·τ) ≈ 0.92 — the transition's
+    // deliberate lag against a target that grows while being chased — and
+    // must never exceed the law itself.
+    const samples = simulateRelease(3.0);
+    for (const r of samples) {
+      if (r.t <= 3 * CAP_TRANSITION_TAU_S) continue;
+      const law = governedSpeedCap(r.d - R, R, -1, K, VMIN);
+      const floor = r.t > 5 * CAP_TRANSITION_TAU_S ? 0.9 : 0.85;
+      expect(r.speed / law, `t=${r.t.toFixed(2)}`).toBeGreaterThan(floor);
+      expect(r.speed).toBeLessThanOrEqual(law + 1e-15);
+    }
+  });
+
+  it('stately recede: the disc halves on the leave constant, not a detonation curve', () => {
+    const samples = simulateRelease(6.0);
+    const base = samples.find((r) => r.t >= 3 * CAP_TRANSITION_TAU_S)!;
+    const doubled = samples.find((r) => r.d >= 2 * base.d);
+    expect(doubled).toBeDefined();
+    const halvingS = doubled!.t - base.t;
+    const ideal = Math.log(2) / BODY_LEAVE_K_PER_S;
+    expect(halvingS).toBeGreaterThan(ideal * 0.8);
+    expect(halvingS).toBeLessThan(ideal * 1.2);
   });
 });
 

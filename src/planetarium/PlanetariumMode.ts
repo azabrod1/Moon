@@ -7116,6 +7116,11 @@ export class PlanetariumMode {
       // Arming starts a fresh clear-hold — a stale unbound interval from
       // before the tap must not auto-clear the override moments later.
       if (this.throttleOverride) this.bodyCap = { ...this.bodyCap, unboundS: 0 };
+      // Name the state change: the pill sits between the − / + steppers on
+      // phones, and an unnoticed fat-finger arms a full-speed bypass.
+      this.notification.show(this.throttleOverride
+        ? 'Speed limits off — full throttle everywhere.'
+        : 'Speed limits back on.');
       this.updateSpeedSlider();
     });
 

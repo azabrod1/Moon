@@ -1,45 +1,60 @@
 /**
  * Fetches the bright-star catalog sidecar and installs it in the
  * data/brightStars store. One shared, memoized load: main.ts kicks it at init
- * (so the parse overlaps the solar-system build) and PlanetariumMode.activate
+ * (so the fetch overlaps the solar-system build) and PlanetariumMode.activate
  * awaits the same promise inside its solar-system gate — both ride a single
  * retry ladder, never two.
  *
  * The first attempt drinks the boot fetch-warm started at HTML parse
  * (index.html warms the bin ahead of the texture wave). That request cannot
- * be aborted from here — the inline script owns it — so there is no
- * per-attempt timeout on it; a fetch hung mid-transfer belongs to the same
- * class as a hung boot texture, owned by the loading screen's 15s backstop.
- * What CAN fail fast (dead network, 404, bad bytes) gets two fresh, aborted
- * retries with short backoff; after that the load rejects, activate throws,
- * and the boot error screen shows — a sky with no stars is exactly the
- * half-loaded scene the app promises never to reveal.
+ * be aborted from here — the inline script owns it — so it is ABANDONED at
+ * its deadline instead (the promise is left to settle into the inline
+ * script's own rejection guard) and bounded retries take over. Every attempt
+ * carries a deadline: the whole ladder must resolve or reject inside the
+ * loading screen's 15s force-hide, because the failure UX is activate
+ * throwing into the VISIBLE boot error — a sky with no stars is exactly the
+ * half-loaded scene the app promises never to reveal, and an unbounded hang
+ * here would let the force-hide reveal it.
+ * Worst case ≈ 5 + 0.3 + 3.5 + 1 + 3.5 = 13.3s.
  */
 import { BRIGHT_STAR_BIN_FILE, parseBrightStarBin, setBrightStarCatalog } from '../data/brightStars';
 import { takeBootWarmResponse } from './textureBitmapLoader';
 import { debugWarn } from '../../shared/debug';
 
-const RETRY_BACKOFF_MS = [300, 1500];
-const RETRY_TIMEOUT_MS = 6000;
+const WARM_ATTEMPT_MS = 5000;
+const RETRY_TIMEOUT_MS = 3500;
+const RETRY_BACKOFF_MS = [300, 1000];
 
 let loadPromise: Promise<void> | null = null;
 
+function withDeadline<T>(promise: Promise<T>, ms: number, what: string): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(`${what} timed out after ${ms}ms`)), ms);
+    promise.then(
+      (value) => { clearTimeout(timer); resolve(value); },
+      (err) => { clearTimeout(timer); reject(err); },
+    );
+  });
+}
+
 async function fetchCatalogOnce(url: string, attempt: number): Promise<ArrayBuffer> {
-  let response: Response;
   if (attempt === 0) {
-    response = await (takeBootWarmResponse(url) ?? fetch(url));
-  } else {
-    // Retries are ours to bound: a stalled retry must not outlive the boot.
-    const abort = new AbortController();
-    const timer = setTimeout(() => abort.abort(), RETRY_TIMEOUT_MS);
-    try {
-      response = await fetch(url, { signal: abort.signal });
-    } finally {
-      clearTimeout(timer);
-    }
+    return withDeadline((async () => {
+      const response = await (takeBootWarmResponse(url) ?? fetch(url));
+      if (!response.ok) throw new Error(`HTTP ${response.status} for ${url}`);
+      return response.arrayBuffer();
+    })(), WARM_ATTEMPT_MS, 'star catalog warm fetch');
   }
-  if (!response.ok) throw new Error(`HTTP ${response.status} for ${url}`);
-  return response.arrayBuffer();
+  // Retries are ours to abort — the signal bounds the body read too.
+  const abort = new AbortController();
+  const timer = setTimeout(() => abort.abort(), RETRY_TIMEOUT_MS);
+  try {
+    const response = await fetch(url, { signal: abort.signal });
+    if (!response.ok) throw new Error(`HTTP ${response.status} for ${url}`);
+    return await response.arrayBuffer();
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 /** Load + install the catalog. Idempotent; the memo clears only on final

@@ -154,6 +154,15 @@ export const loadStreamedTexture: TextureLoad = (url, onLoad, onError, stillWant
   });
 };
 
+/** Start the one-time flip probe now, so its round through the microtask
+ *  queue (bitmap create + canvas readback) overlaps app construction instead
+ *  of gating the first streamed fetch — every boot texture waits on the
+ *  verdict before its network request is even issued. Call once from app
+ *  init; module load itself must stay DOM-free for the tests. */
+export function warmBitmapUploadProbe(): void {
+  if (typeof createImageBitmap === 'function') void bitmapUploadUsable();
+}
+
 /** Test seam: force the probe verdict (pass null to restore the real probe). */
 export function setBitmapProbeForTests(result: boolean | null): void {
   bitmapFlipProbe = result === null ? null : Promise.resolve(result);

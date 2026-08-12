@@ -120,6 +120,7 @@ import {
 import { MoonPainter } from './world/MoonPainter';
 import { ProceduralMoonTexturer } from './world/ProceduralMoonTexturer';
 import { captureDeviceTextureCaps } from './world/texturePolicy';
+import { warmBitmapUploadProbe } from './world/textureBitmapLoader';
 import { planetshineIntensity } from './world/planetshine';
 import {
   advanceSilhouetteOwners,
@@ -1638,6 +1639,10 @@ export class PlanetariumMode {
     // Capture device texture caps from the live renderer before any body loads,
     // so anisotropy and tier limits apply to the very first textures created.
     captureDeviceTextureCaps(renderer);
+    // Resolve the bitmap-upload probe during construction: every streamed
+    // boot texture awaits its verdict before fetching, so starting it here
+    // takes it off the first fetch's critical path.
+    warmBitmapUploadProbe();
     // Warm uploads go through the renderer so freshly loaded maps reach the
     // GPU on quiet frames instead of inside a gesture's first draw.
     bindTextureWarmer((tex) => renderer.initTexture(tex));

@@ -1021,7 +1021,15 @@ function registerServiceWorker(): void {
   if (!import.meta.env.PROD) return;
   if (!('serviceWorker' in navigator)) return;
   if (new URLSearchParams(location.search).has('nosw')) return;
-  navigator.serviceWorker.register(import.meta.env.BASE_URL + 'sw.js').catch((err) => {
+  navigator.serviceWorker.register(import.meta.env.BASE_URL + 'sw.js').then((registration) => {
+    // register() with an unchanged script URL short-circuits without an
+    // update check, and deploy pickup otherwise rides the browser's
+    // navigation soft update (measured: real Chrome and WebKit do it,
+    // Playwright's bundled Chromium doesn't). One explicit check per boot
+    // makes "at most one deploy behind" deterministic instead of
+    // browser-dependent.
+    registration.update().catch(() => {});
+  }).catch((err) => {
     debugWarn('Service worker registration failed', { err: String(err) });
   });
 }

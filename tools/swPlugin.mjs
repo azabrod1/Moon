@@ -71,7 +71,13 @@ export default function swPlugin() {
       if (textures.length < MIN_WARM_TEXTURES) {
         throw new Error(`sw: only ${textures.length} warm textures found (expected >= ${MIN_WARM_TEXTURES})`);
       }
-      const precache = [starPath, ...textures];
+      // Fonts join the precache so the SECOND visit is already fully
+      // data-silent — they load too early in the boot for the runtime fetch
+      // handler to have stored them on visit one otherwise.
+      const fonts = Object.keys(manifest).filter(
+        (p) => p.startsWith(base + 'fonts/') && p.endsWith('.woff2'),
+      );
+      const precache = [starPath, ...textures, ...fonts];
       for (const p of precache) {
         if (!(p in manifest)) {
           throw new Error(`sw: warm-script file is not in dist: ${p}`);

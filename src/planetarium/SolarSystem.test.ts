@@ -310,11 +310,14 @@ describe('createOrbitLineMaterial', () => {
   });
 
   it('pins the authored width and opacity levels', () => {
-    // Taste knobs, pinned as literals so silent drift is loud: 1.75 CSS px
-    // authored width (the edge feather eats ~0.5 px of solid core), the
-    // pre-existing 0.05/0.4 neighbourhood law, 0.3 overview.
-    expect(ORBIT_LINE_WIDTH_PX).toBe(1.75);
-    expect(ORBIT_LINE_OPACITY_FLOOR).toBe(0.05);
+    // Taste knobs, pinned as literals so silent drift is loud. Values from
+    // the 2026-08-12 tuning grid at Alex's near-Jupiter framing: width 2.25
+    // collapses the lens-resample dash ripple (1.67:1 → 1.19:1 — a width
+    // effect, not an opacity one), floor 0.10 doubles the dim-arc brightness
+    // without flattening the near/far hierarchy (0.12 does), overview 0.3 and
+    // the 0.4 neighbourhood cap unchanged.
+    expect(ORBIT_LINE_WIDTH_PX).toBe(2.25);
+    expect(ORBIT_LINE_OPACITY_FLOOR).toBe(0.1);
     expect(ORBIT_LINE_OPACITY_CAP).toBe(0.4);
     expect(ORBIT_LINE_OVERVIEW_OPACITY).toBe(0.3);
   });

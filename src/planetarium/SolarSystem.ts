@@ -161,11 +161,13 @@ export function resampleOrbitLines(
  * The fragment feather softens the outer ~1 device px of each side, so the
  * solid core reads slightly narrower than this number.
  */
-export const ORBIT_LINE_WIDTH_PX = 1.75;
+export const ORBIT_LINE_WIDTH_PX = 2.25;
 
 /** Opacity when neither term speaks for a line: far from the player's
- * neighbourhood with the camera too close to read the orbit as a ring. */
-export const ORBIT_LINE_OPACITY_FLOOR = 0.05;
+ * neighbourhood with the camera too close to read the orbit as a ring.
+ * Tuned with the width: below ~2 px the lens resample's brightness ripple
+ * reads as dashes, and at 0.05 the ripple was proportionally huge. */
+export const ORBIT_LINE_OPACITY_FLOOR = 0.1;
 /** Neighbourhood saturation — the player is on/near this orbit. */
 export const ORBIT_LINE_OPACITY_CAP = 0.4;
 /** Map-read level once the camera is pulled far enough to see the whole ring. */

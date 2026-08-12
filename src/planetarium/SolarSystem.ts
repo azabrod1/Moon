@@ -22,6 +22,7 @@ import {
 import { KM_PER_AU } from '../astronomy/constants';
 import type { KeplerElements } from '../astronomy/standish';
 import { augmentPointsMaterialWithSunGlareMask } from './world/sunGlareMask';
+import { ORBIT_LINE_STENCIL_REF, applyOrbitLineStencilGate } from './world/orbitLineStencil';
 import {
   augmentFixedScreenLineForLens,
   createLensShaderUniforms,
@@ -209,7 +210,8 @@ export function orbitLineOpacity(
 
 /** Orbit lines are scene furniture: draw them beneath every default-order
  * transparent (belt dots, atmosphere shells, exhaust) instead of letting the
- * bounding-sphere z-sort flip the layering as the camera moves. */
+ * bounding-sphere z-sort flip the layering as the camera moves. Drawing
+ * first is also what lets their stencil stamp gate the décor drawn after. */
 const ORBIT_LINE_RENDER_ORDER = -1;
 
 function replaceExactlyOnce(source: string, anchor: string, replacement: string): string {
@@ -254,15 +256,25 @@ export function createOrbitLineMaterial(
     linewidth: ORBIT_LINE_WIDTH_PX,
     transparent: true,
     opacity,
-    // The core WRITES depth, deliberately: the starfield (85 AU dome,
-    // depth-tested) draws after the lines (renderOrder -1 vs 0), so stars
-    // land z-rejected where a line covers them. No alpha value can do this —
-    // a blended star punches through a dim line at (1-alpha) and turns every
-    // floor-opacity arc into a string of beads (Alex's "lines on the orbit";
-    // the bisect measured stars compositing over the lines at 99-100%).
-    depthWrite: true,
+    // No depth write: overlapping rings must blend, not z-chop each other
+    // into patches (a depth-writing attempt did exactly that where Uranus's
+    // and Neptune's rings pile up on the horizon). Planets still occlude the
+    // lines through the depth TEST.
+    depthWrite: false,
     worldUnits: false,
   });
+  // The visible core stamps the stencil buffer instead: décor point fields
+  // (starfield, asteroid belt) draw later and stencil-test NotEqual 1, so a
+  // star or belt dot can never composite over a line and bead it — no alpha
+  // can do this (a dot behind a dim line shows through at 1-alpha, and a
+  // belt dot is usually NEARER than an outer ring, so depth can never reject
+  // it), and depth quantization ties at tiny landed/close-pass near planes
+  // make depth-writing unreliable here anyway. Fragments hidden behind a
+  // planet fail the depth test and stamp nothing, so décor still shows where
+  // the line itself is occluded. Bodies (moon dots) deliberately don't test.
+  material.stencilWrite = true;
+  material.stencilRef = ORBIT_LINE_STENCIL_REF;
+  material.stencilZPass = THREE.ReplaceStencilOp;
   let fragment = material.fragmentShader;
   fragment = replaceExactlyOnce(
     fragment,
@@ -279,11 +291,12 @@ export function createOrbitLineMaterial(
     'gl_FragColor = vec4( diffuseColor.rgb, alpha );',
     /* glsl */ `#ifndef WORLD_UNITS
 				float lineEdgeCoverage = 1.0 - smoothstep( 1.0 - lineEdgeWidth, 1.0, abs( vUv.x ) );
-				// The material depth-writes so the core occludes stars; the
-				// feather's near-invisible shoulder must not cut them too, so
-				// sub-threshold fragments discard instead of blending. The step
-				// this truncates from the ramp is at most 0.3 x opacity — under
-				// the floor opacities that is below one luma level on black.
+				// The core stamps the décor stencil, and discarded fragments
+				// stamp nothing — so the feather's near-invisible shoulder
+				// discards instead of blending, keeping it from blanking stars
+				// it can't visually cover. The step this truncates from the
+				// ramp is at most 0.3 x opacity — under the floor opacities
+				// that is below one luma level on black.
 				if ( lineEdgeCoverage < 0.3 ) discard;
 				alpha *= lineEdgeCoverage;
 			#endif
@@ -426,6 +439,10 @@ export function createAsteroidBelt(): THREE.Points {
   // Fade belt dots that sit behind the Sun's glare. The uniform refs are driven
   // per frame by the controller; inactive until then, so the belt is unchanged.
   belt.userData.sunGlareMaskUniforms = augmentPointsMaterialWithSunGlareMask(material);
+  // Belt dots are usually NEARER than the outer rings, so without this gate
+  // they pass the depth test and stud every ring behind them (Alex's tan
+  // bumps: 1.6 studs per 1000 line px, +52 luma each).
+  applyOrbitLineStencilGate(material);
   return belt;
 }
 

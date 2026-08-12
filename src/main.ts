@@ -73,6 +73,10 @@ try {
   renderer = new THREE.WebGLRenderer({
     antialias: true,
     powerPreference: 'high-performance',
+    // The orbit-line/décor stencil contract (world/orbitLineStencil.ts) needs
+    // a stencil buffer on the default framebuffer for the no-float direct
+    // path; the composer path carries its own (buildComposer).
+    stencil: true,
   });
 } catch (err) {
   debugError('Failed to create WebGL renderer', err);
@@ -254,8 +258,17 @@ function buildComposer(
   }
 
   // Every remaining composer path is float-capable, so linear HDR survives to
-  // OutputPass (with or without the runtime bloom pass enabled).
-  composer = new EffectComposer(renderer);
+  // OutputPass (with or without the runtime bloom pass enabled). The target
+  // mirrors EffectComposer's default (half-float) plus a stencil buffer for
+  // the orbit-line/décor contract (world/orbitLineStencil.ts); setSize below
+  // takes care of the initial dimensions.
+  composer = new EffectComposer(
+    renderer,
+    new THREE.WebGLRenderTarget(window.innerWidth, window.innerHeight, {
+      type: THREE.HalfFloatType,
+      stencilBuffer: true,
+    }),
+  );
   composer.setPixelRatio(getTargetPixelRatio());
   composer.setSize(window.innerWidth, window.innerHeight);
   composer.addPass(new RenderPass(scene, cam));

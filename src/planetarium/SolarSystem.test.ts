@@ -23,6 +23,10 @@ import {
   type SolarSystemObjects,
 } from './SolarSystem';
 import { createLensShaderUniforms } from '../shared/three/lensShader';
+import {
+  ORBIT_LINE_STENCIL_REF,
+  applyOrbitLineStencilGate,
+} from './world/orbitLineStencil';
 import { computeBodyPositionAU, eclipticToEquatorial } from '../astronomy/planetary';
 import { ASTEROID_BELT, PLANETARIUM_BODIES } from './planets/planetData';
 
@@ -71,6 +75,28 @@ function minDistToPolyline(p: THREE.Vector3, points: THREE.Vector3[]): number {
   }
   return best;
 }
+
+describe('orbit-line stencil contract', () => {
+  it('makes a décor material test-only against the line stamp', () => {
+    const material = new THREE.PointsMaterial();
+    applyOrbitLineStencilGate(material);
+    // stencilWrite doubles as three's stencil-TEST enable; the zeroed write
+    // mask is what keeps the material from stamping anything itself.
+    expect(material.stencilWrite).toBe(true);
+    expect(material.stencilWriteMask).toBe(0x00);
+    expect(material.stencilFunc).toBe(THREE.NotEqualStencilFunc);
+    expect(material.stencilRef).toBe(ORBIT_LINE_STENCIL_REF);
+  });
+
+  it('gates the asteroid belt so nearer dots cannot stud the outer rings', () => {
+    const belt = createAsteroidBelt();
+    const material = belt.material as THREE.PointsMaterial;
+    expect(material.stencilWrite).toBe(true);
+    expect(material.stencilWriteMask).toBe(0x00);
+    expect(material.stencilFunc).toBe(THREE.NotEqualStencilFunc);
+    expect(material.stencilRef).toBe(ORBIT_LINE_STENCIL_REF);
+  });
+});
 
 describe('asteroid belt', () => {
   it('builds the same position and colour buffers on every load', () => {
@@ -279,10 +305,17 @@ describe('createOrbitLineMaterial', () => {
     expect(material.fragmentShader).toContain('abs( vUv.x )');
     expect(material.fragmentShader).not.toContain('fwidth( vUv.y )');
     expect(material.fragmentShader).not.toContain('if ( len2 > 1.0 ) discard;');
-    // Star occlusion: the core depth-writes (stars draw later and z-reject
-    // under it — blending can never hide a star behind a dim line) and the
-    // invisible feather shoulder discards so it doesn't cut stars silently.
-    expect(material.depthWrite).toBe(true);
+    // Décor gating: the core stamps the stencil (stars/belt test NotEqual and
+    // skip those pixels — blending can never hide a dot behind a dim line,
+    // and depth can neither reject a NEARER belt dot nor survive tiny-near
+    // quantization ties), the invisible feather shoulder discards so it
+    // stamps nothing, and depth stays read-only so coincident rings blend
+    // instead of z-chopping each other.
+    expect(material.depthWrite).toBe(false);
+    expect(material.stencilWrite).toBe(true);
+    expect(material.stencilRef).toBe(ORBIT_LINE_STENCIL_REF);
+    expect(material.stencilZPass).toBe(THREE.ReplaceStencilOp);
+    expect(material.stencilWriteMask).toBe(0xff);
     expect(material.fragmentShader).toContain('lineEdgeCoverage < 0.3');
     // Distinct from the ShadowVisuals guides' 'fixed-screen-line-lens-v2' so
     // the two patched shader families can never share a compiled program.

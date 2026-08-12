@@ -7,6 +7,7 @@ import * as THREE from 'three';
 import { BRIGHT_STAR_CATALOG } from '../data/brightStars';
 import { raDecToVector } from '../../astronomy/planetary';
 import { SUN_GLARE_MASK_MAX_KILL, createSunGlareMaskUniforms, sunGlareMaskGLSL } from './sunGlareMask';
+import { applyOrbitLineStencilGate } from './orbitLineStencil';
 import {
   STAR_FAINT_ANCHOR_MAG,
   starBeyondAnchorScale,
@@ -207,6 +208,10 @@ export function createPlanetariumStarfield(rendererPixelRatio: number): THREE.Po
     depthWrite: false,
     vertexColors: true,
   });
+  // Skip star points where an orbit-line core stamped the stencil: the dome
+  // is farther than every ring but draws after them, and a star compositing
+  // over a dim ribbon at (1-alpha) beads it into a dotted string.
+  applyOrbitLineStencilGate(mat);
 
   return new THREE.Points(geo, mat);
 }

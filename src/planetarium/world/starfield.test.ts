@@ -1,7 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import { BLOOM_THRESHOLD } from '../../app/bloomConfig';
 import { BRIGHT_STAR_CATALOG } from '../data/brightStars';
-import { starfieldFaintLimitMag, starRenderColor } from './starfield';
+import * as THREE from 'three';
+import { createPlanetariumStarfield, starfieldFaintLimitMag, starRenderColor } from './starfield';
+import { ORBIT_LINE_STENCIL_REF } from './orbitLineStencil';
 import { STAR_FAINT_ANCHOR_MAG } from './starPointMapping';
 
 // Rec.709 luminance weights — the same coefficients three's bloom high-pass
@@ -47,5 +49,16 @@ describe('starfield bloom-threshold invariant', () => {
     // Yet the field genuinely rides near the cutoff — the threshold move earns
     // its keep. If a brightness retune drops this floor, the guard is going slack.
     expect(maxLuma).toBeGreaterThan(0.85);
+  });
+});
+
+describe('starfield décor stencil gate', () => {
+  it('tests against the orbit-line stamp without stamping anything itself', () => {
+    const starfield = createPlanetariumStarfield(2);
+    const material = starfield.material as THREE.ShaderMaterial;
+    expect(material.stencilWrite).toBe(true);
+    expect(material.stencilWriteMask).toBe(0x00);
+    expect(material.stencilFunc).toBe(THREE.NotEqualStencilFunc);
+    expect(material.stencilRef).toBe(ORBIT_LINE_STENCIL_REF);
   });
 });

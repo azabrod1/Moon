@@ -411,6 +411,15 @@ export interface TextureUpgrade {
   /** Wall-clock instant (performance.now) before which no new attempt starts.
    *  Never the simulation clock, which jumps centuries per second. */
   retryAtMs?: number;
+  /** The tier whose last fetch/decode failed, and how many times in a row.
+   *  While set, the next attempt steps DOWN one rung when one remains — a
+   *  Moon whose 8K decode keeps dying under a phone's memory pressure still
+   *  deserves the 4K it skipped — and the failing tier's cooldown doubles
+   *  per consecutive failure so a device that can never hold it isn't
+   *  re-downloading the map every 8 s for as long as the body fills the
+   *  screen. Cleared once a tier at or above the failed one applies — a
+   *  successful lower rung keeps the streak so the backoff stays honest. */
+  lastFailure?: { tier: TextureTier; streak: number };
 }
 
 /** True once this handle has fetched everything the device can hold — the
@@ -458,10 +467,14 @@ export const TIER_RANK: Record<TextureTier, number> = { '2k': 2, '4k': 4, '8k': 
 // approach may supersede the in-flight attempt. TextureLoader cannot abort, so
 // the superseded download disposes itself on arrival (generation mismatch).
 const UPGRADE_ATTEMPT_TIMEOUT_MS = 60_000;
-// Cooldown after a failed or discarded attempt. Fixed, not doubling: the
-// triggers only evaluate while a body fills the screen, so the retry rate is
-// already bounded by the player staying in front of it.
+// Cooldown after a failed or discarded attempt. A discarded attempt's is
+// fixed: the triggers only evaluate while a body fills the screen, so the
+// retry rate is already bounded by the player staying in front of it. A
+// FAILED tier's doubles per consecutive failure (capped below) — see
+// TextureUpgrade.lastFailure.
 const UPGRADE_RETRY_MS = 8_000;
+// Ceiling on the failure backoff doublings: 8s → 16s → 32s → 64s → 128s.
+const UPGRADE_RETRY_MAX_DOUBLINGS = 4;
 
 // Attempt identity. Every fetch closes over its own value and compares before
 // touching the handle, so a late callback whose attempt was abandoned disposes
@@ -503,6 +516,18 @@ export function resolveUpgradeTier(up: TextureUpgrade, requested: TextureTier): 
   for (const tier of up.tiers) {
     const rank = TIER_RANK[tier];
     if (rank > floor && rank <= ceiling) best = tier; // ascending: the last match is the highest
+  }
+  return best;
+}
+
+/** The highest step strictly under `tier` this handle still needs — the rung
+ *  a failing top tier falls back to. null when nothing remains below it. */
+function highestTierBelow(up: TextureUpgrade, tier: TextureTier): TextureTier | null {
+  const floor = up.appliedTier ? TIER_RANK[up.appliedTier] : 0;
+  let best: TextureTier | null = null;
+  for (const step of up.tiers) {
+    const rank = TIER_RANK[step];
+    if (rank > floor && rank < TIER_RANK[tier]) best = step; // ascending: last match is highest
   }
   return best;
 }
@@ -735,8 +760,17 @@ export function upgradeTextureOnApproach(
   nowMs = performance.now(),
 ): void {
   if (!canAttempt(up, nowMs)) return;
-  const tier = resolveUpgradeTier(up, requested);
+  let tier = resolveUpgradeTier(up, requested);
   if (!tier) return;
+  // Re-attempting the tier that just failed: take the rung below it first
+  // when one remains, so the body sharpens with the map this device CAN
+  // hold instead of staying on its boot map behind an endless top-tier
+  // retry. The failed tier stays the goal — once the lower rung applies,
+  // lastFailure survives and keeps its backoff honest.
+  if (up.lastFailure && tier === up.lastFailure.tier) {
+    const below = highestTierBelow(up, up.lastFailure.tier);
+    if (below) tier = below;
+  }
   const generation = ++upgradeGeneration;
   up.attempt = { tier, generation, startedAtMs: nowMs };
   up.retryAtMs = undefined;
@@ -777,6 +811,9 @@ export function upgradeTextureOnApproach(
         }
         up.attempt = undefined;
         up.appliedTier = tier;
+        if (up.lastFailure && TIER_RANK[tier] >= TIER_RANK[up.lastFailure.tier]) {
+          up.lastFailure = undefined;
+        }
         if (applyColorTierTexture(up.material, tex, TIER_RANK[tier])) queueTextureWarm(tex);
         up.material.userData.photoLoaded = true; // keep the lazy painter off it
       };
@@ -786,10 +823,15 @@ export function upgradeTextureOnApproach(
     (err) => {
       if (abandoned()) return;
       up.attempt = undefined;
-      up.retryAtMs = performance.now() + UPGRADE_RETRY_MS;
+      const streak = up.lastFailure?.tier === tier ? up.lastFailure.streak + 1 : 1;
+      up.lastFailure = { tier, streak };
+      up.retryAtMs =
+        performance.now() +
+        UPGRADE_RETRY_MS * 2 ** Math.min(streak - 1, UPGRADE_RETRY_MAX_DOUBLINGS);
       debugWarn('Texture upgrade failed', {
         key: up.key,
         tier,
+        attempt: streak,
         reason: err instanceof Error ? err.message : String(err),
       });
     },

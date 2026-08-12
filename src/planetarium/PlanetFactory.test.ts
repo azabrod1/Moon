@@ -353,6 +353,67 @@ describe('what a fetch puts on the material', () => {
     expect(up.appliedTier).toBe('8k');
   });
 
+  it('falls back one rung after a failed top tier, then keeps chasing the goal', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const up = handle('moon');
+      // Close approach earns 8K straight away; the fetch dies (mobile decode
+      // under memory pressure, a 404, a dropped connection — same handle state).
+      upgradeTextureOnApproach(up, '8k', 0);
+      expect(pending[0].url).toMatch(/8k\/moon/);
+      pending[0].onError(new Error('decode failed'));
+      expect(up.lastFailure).toEqual({ tier: '8k', streak: 1 });
+
+      // Next attempt (cooldown passed, body still huge): the rung below is
+      // fetched INSTEAD of the failed tier, so the Moon sharpens to the map
+      // this device can hold rather than idling on its boot map forever.
+      upgradeTextureOnApproach(up, '8k', 60_000);
+      expect(pending[1].url).toMatch(/4k\/moon/);
+      const arrival = arriving();
+      pending[1].onLoad(arrival.tex);
+      arrival.finishDecode();
+      await flush();
+      expect(up.appliedTier).toBe('4k');
+      // A successful lower rung does not absolve the failed tier...
+      expect(up.lastFailure).toEqual({ tier: '8k', streak: 1 });
+
+      // ...and with no rung left below it, the goal itself is retried.
+      up.retryAtMs = undefined;
+      upgradeTextureOnApproach(up, '8k', 120_000);
+      expect(pending[2].url).toMatch(/8k\/moon/);
+      const eight = arriving();
+      pending[2].onLoad(eight.tex);
+      eight.finishDecode();
+      await flush();
+      expect(up.appliedTier).toBe('8k');
+      expect(up.lastFailure).toBeUndefined(); // reaching the failed tier clears it
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('backs off a repeatedly failing tier exponentially, capped', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const up = handle('moon');
+      up.appliedTier = '4k'; // no rung left below the goal
+      const delays: number[] = [];
+      for (let i = 0; i < 7; i++) {
+        up.retryAtMs = undefined;
+        upgradeTextureOnApproach(up, '8k', i * 1_000_000);
+        const before = performance.now();
+        pending[pending.length - 1].onError(new Error('still failing'));
+        delays.push((up.retryAtMs ?? 0) - before);
+      }
+      // 8s, 16s, 32s, 64s, 128s, then held at the cap.
+      const tolerant = delays.map((d) => Math.round(d / 1000));
+      expect(tolerant).toEqual([8, 16, 32, 64, 128, 128, 128]);
+      expect(up.lastFailure).toEqual({ tier: '8k', streak: 7 });
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
   it('stamps a failed fetch\'s cooldown from the moment it failed', () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     try {

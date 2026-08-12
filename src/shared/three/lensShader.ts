@@ -162,10 +162,13 @@ export function augmentFixedScreenLineForLens(
     // endpoints (trimSegment parks one just in front of the near plane, with a
     // huge finite ndc.xy; both-behind segments have negative clip w). The
     // warp/unwarp pair is numerically explosive there, scattering the quad's
-    // vertices across the frame as giant triangles. Those endpoints are at
-    // most barely on-frame, so keep the stock quad for them: the width is
-    // uncorrected only where the line exits the screen, and the vertex stays
-    // clipped where the stock path would clip it.
+    // vertices across the frame as giant triangles. Keep the stock quad for
+    // those segments. When the camera sits on the line's own path (a ring
+    // being ridden, an umbra cone being stood in), a sizeable fraction of the
+    // primitive takes this fallback, not just an off-screen sliver — measured
+    // effect: on-screen weight gets MORE uniform, because the warp math was
+    // mis-thinning exactly those segments before it exploded. Behind-camera
+    // vertices stay clipped as the stock path clips them.
     bool lensApplies = clipStart.w > 0.0 && clipEnd.w > 0.0
       && length(ndcStart.xy) < 8.0 && length(ndcEnd.xy) < 8.0;
     if (lensApplies) {

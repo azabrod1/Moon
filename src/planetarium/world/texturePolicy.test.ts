@@ -15,14 +15,14 @@ afterEach(() => withMaxTextureSize(4096));
 
 describe('resolveTextureUrl', () => {
   it('keeps boot-tier assets in the flat textures folder', () => {
-    const url = resolveTextureUrl('mars.jpg', '2k');
-    expect(url).toMatch(/textures\/mars\.jpg$/);
+    const url = resolveTextureUrl('mars.webp', '2k');
+    expect(url).toMatch(/textures\/mars\.webp$/);
     expect(url).not.toContain('4k/');
   });
 
   it('routes higher tiers to their own subfolder, same filename', () => {
-    expect(resolveTextureUrl('mars.jpg', '4k')).toMatch(/textures\/4k\/mars\.jpg$/);
-    expect(resolveTextureUrl('moon.jpg', '8k')).toMatch(/textures\/8k\/moon\.jpg$/);
+    expect(resolveTextureUrl('mars.webp', '4k')).toMatch(/textures\/4k\/mars\.webp$/);
+    expect(resolveTextureUrl('moon.webp', '8k')).toMatch(/textures\/8k\/moon\.webp$/);
   });
 });
 

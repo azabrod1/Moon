@@ -878,6 +878,15 @@ export interface NormalUpgrade {
   state: 'idle' | 'inflight' | 'done';
   /** Wall-clock cooldown after a failure, same shape as TextureUpgrade's. */
   retryAtMs?: number;
+  /** Identity of the current attempt — the relief ladder's version of the
+   *  colour attempt's generation. Bumped when an attempt starts and when one
+   *  is abandoned (hung-request timeout, mode disposal), so a zombie
+   *  callback disposes its texture instead of writing to the material. */
+  generation: number;
+  /** performance.now() at which the in-flight attempt started; a request
+   *  that never calls back is abandoned past UPGRADE_ATTEMPT_TIMEOUT_MS
+   *  (TextureLoader cannot abort, so abandonment is by identity). */
+  startedAtMs?: number;
 }
 
 export function makeNormalUpgrade(
@@ -890,7 +899,16 @@ export function makeNormalUpgrade(
   // A device that can't hold the step never arms the handle, mirroring
   // effectiveMaxTier — no per-frame trigger can then spin on it.
   if (clampTier(tier) !== tier) return undefined;
-  return { key: normalKey, tier, material, state: 'idle' };
+  return { key: normalKey, tier, material, state: 'idle', generation: 0 };
+}
+
+/** Abandon any in-flight relief fetch (mode disposal): the late completion
+ *  then disposes itself instead of writing to a torn-down material or
+ *  queueing an upload into the reset warmer. */
+export function cancelNormalUpgrade(up: NormalUpgrade | undefined): void {
+  if (!up || up.state !== 'inflight') return;
+  up.generation++;
+  up.state = 'idle';
 }
 
 /** True while the handle still has (or may retry) work — the LOD loop keeps
@@ -938,17 +956,38 @@ export function upgradeNormalOnApproach(
   fraction: number,
   nowMs = performance.now(),
 ): void {
-  if (!up || up.state !== 'idle') return;
+  if (!up) return;
+  if (up.state === 'inflight') {
+    // A request that never calls back would otherwise hold 'inflight' for the
+    // session and no retry could ever start. Past the shared attempt timeout
+    // the attempt is abandoned by identity and the handle freed to try again.
+    if (up.startedAtMs !== undefined && nowMs - up.startedAtMs >= UPGRADE_ATTEMPT_TIMEOUT_MS) {
+      up.generation++;
+      up.state = 'idle';
+    } else return;
+  }
+  if (up.state !== 'idle') return;
   if (up.retryAtMs !== undefined && nowMs < up.retryAtMs) return;
   const at = UPGRADE_TRIGGER_FRACTION['4k'];
   if (at === undefined || !(fraction > at)) return;
   up.state = 'inflight';
+  up.startedAtMs = nowMs;
+  const generation = ++up.generation;
+  const abandoned = () => up.generation !== generation;
   const url = resolveTextureUrl(PLANET_TEXTURE_FILES[up.key], up.tier);
   loadUpgradeTexture(
     url,
     (tex) => {
+      if (abandoned()) {
+        tex.dispose();
+        return;
+      }
       applyTextureDefaults(tex, 'data');
       const finish = () => {
+        if (abandoned()) {
+          tex.dispose();
+          return;
+        }
         up.state = 'done';
         if (applyNormalTierTexture(up.material, tex, TIER_RANK[up.tier])) queueTextureWarm(tex);
       };
@@ -957,6 +996,7 @@ export function upgradeNormalOnApproach(
       else finish();
     },
     (err) => {
+      if (abandoned()) return;
       up.state = 'idle';
       up.retryAtMs = performance.now() + UPGRADE_RETRY_MS;
       debugWarn('Normal-map upgrade failed', {

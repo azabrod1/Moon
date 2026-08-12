@@ -1,4 +1,5 @@
 import { describe, it, expect } from 'vitest';
+import { PLANET_TEXTURE_FILES } from '../PlanetFactory';
 import {
   DEFAULT_TEXTURE_RETRY_POLICY,
   newTextureRetryState,
@@ -14,13 +15,10 @@ import {
 } from './textureRetryPolicy';
 
 const P = DEFAULT_TEXTURE_RETRY_POLICY;
-const URLS = [
-  '/textures/mercury.jpg', '/textures/venus.jpg', '/textures/earth-day.jpg',
-  '/textures/mars.jpg', '/textures/jupiter.jpg', '/textures/saturn.jpg',
-  '/textures/uranus.jpg', '/textures/neptune.jpg', '/textures/pluto.jpg',
-  '/textures/moon.jpg', '/textures/io.jpg', '/textures/europa.jpg',
-  '/textures/moon-normal.png', '/textures/mars-normal.png',
-];
+// The dither hashes the WHOLE URL, extension included, so the spread claims
+// below are only evidence if they run against the URLs the scene really
+// fetches — the shipped manifest, not a hand-copied snapshot of it.
+const URLS = Object.values(PLANET_TEXTURE_FILES).map((f) => `/textures/${f}`);
 
 describe('retry delays', () => {
   it('waits a beat before the first retry, then doubles', () => {

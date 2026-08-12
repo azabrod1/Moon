@@ -23,6 +23,20 @@ describe('index.html boot texture preloads', () => {
     expect(preloaded).toHaveLength(new Set(preloaded).size); // no duplicates
   });
 
+  it('names files that exist on disk', () => {
+    // Manifest and preload list agreeing proves nothing if both carry the
+    // same stale name — every boot request would 404 while this suite stayed
+    // green. Texture paths are runtime strings (invisible to tsc and Vite),
+    // so the shipped directory is the only ground truth.
+    const onDisk = new Set(
+      Object.keys(import.meta.glob('../../public/textures/*'))
+        .map((p) => p.split('/').pop()!),
+    );
+    for (const file of Object.values(PLANET_TEXTURE_FILES)) {
+      expect(onDisk, `public/textures/${file} is missing`).toContain(file);
+    }
+  });
+
   it('preloads the blocking planet set before the durable moon wave', () => {
     // The 13 awaited planet-level maps gate the loading screen; the moon
     // system streams behind the veil. Order is the only priority signal a

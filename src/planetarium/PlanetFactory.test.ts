@@ -5,6 +5,7 @@ import {
   applyNormalTierTexture,
   canAttempt,
   cancelTextureUpgrade,
+  cancelNormalUpgrade,
   makeNormalUpgrade,
   normalUpgradePending,
   upgradeNormalOnApproach,
@@ -483,6 +484,51 @@ describe('what a fetch puts on the material', () => {
     } finally {
       warn.mockRestore();
     }
+  });
+
+  it('abandons a hung relief fetch at the attempt timeout, then tries again', async () => {
+    const mat = new THREE.MeshStandardMaterial();
+    materials.push(mat);
+    const nu = makeNormalUpgrade('moonNormal', mat)!;
+    upgradeNormalOnApproach(nu, 0.3, 0);
+    expect(pending).toHaveLength(1);
+    // A request that never calls back holds the handle only until the shared
+    // attempt timeout; the next trigger past it starts a fresh fetch.
+    upgradeNormalOnApproach(nu, 0.3, 59_999);
+    expect(pending).toHaveLength(1);
+    upgradeNormalOnApproach(nu, 0.3, 60_000);
+    expect(pending).toHaveLength(2);
+    // The abandoned attempt's eventual completion disposes itself.
+    const stale = arriving();
+    const staleDisposed = watchDispose(stale.tex);
+    pending[0].onLoad(stale.tex);
+    await flush();
+    expect(mat.normalMap).toBeNull();
+    expect(staleDisposed()).toBe(true);
+    // The live attempt still lands normally.
+    const live = arriving();
+    pending[1].onLoad(live.tex);
+    live.finishDecode();
+    await flush();
+    expect(mat.normalMap).toBe(live.tex);
+    expect(normalUpgradePending(nu)).toBe(false);
+  });
+
+  it('drops a relief completion that lands after cancellation', async () => {
+    const mat = new THREE.MeshStandardMaterial();
+    materials.push(mat);
+    const nu = makeNormalUpgrade('moonNormal', mat)!;
+    upgradeNormalOnApproach(nu, 0.3, 0);
+    expect(pending).toHaveLength(1);
+    // Mode disposal abandons the attempt; the late callback must not write to
+    // the torn-down material or queue an upload into the reset warmer.
+    cancelNormalUpgrade(nu);
+    const arrival = arriving();
+    const disposed = watchDispose(arrival.tex);
+    pending[0].onLoad(arrival.tex);
+    await flush();
+    expect(mat.normalMap).toBeNull();
+    expect(disposed()).toBe(true);
   });
 
   it('denies the relief tier to a device that cannot hold it', () => {

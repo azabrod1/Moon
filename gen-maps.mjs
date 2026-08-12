@@ -49,7 +49,7 @@ const srcDir = path.resolve(arg('src', TEX));
 // the LOLA TIFF present replaces it with the 16-bit derivation below —
 // visually equivalent at this scale, minus the 8-bit terracing.
 const JOBS = {
-  'earth-roughness': { src: 'earth-day.jpg', from: TEX, out: 'earth-roughness.png', fn: 'oceanRoughness', scale: 0.25 },
+  'earth-roughness': { src: 'earth-day.webp', from: TEX, out: 'earth-roughness.png', fn: 'oceanRoughness', scale: 0.25 },
   'moon-normal':     { src: 'ldem_16_uint.tif', out: 'moon-normal.png', fn: 'normalsFromHeights', scale: 0.25, decode: 'uint16-tiff', opts: { strength: 3.0 } },
   'moon-normal-4k':  { src: 'ldem_16_uint.tif', out: '4k/moon-normal.png', fn: 'normalsFromHeights', scale: 0.5, decode: 'uint16-tiff', opts: { strength: 6.0 } },
   'mars-normal':     { src: 'mars-mola.jpg',   out: 'mars-normal.png',     fn: 'heightToNormal', scale: 0.25, opts: { strength: 2.4, mola: true } },
@@ -256,6 +256,14 @@ async function runJob(page, name) {
   if (!def) { console.log(`[gen-maps] unknown job: ${name}`); return false; }
   const srcPath = path.join(def.from || srcDir, def.src);
   if (!(await exists(srcPath))) {
+    // Only srcDir sources (the hand-dropped elevation maps) may be absent; a
+    // `from` source is a shipped map, and skipping one quietly would let a
+    // rename leave this job regenerating nothing while exiting green.
+    if (def.from) {
+      console.error(`[gen-maps] ${name}: shipped source missing (${srcPath})`);
+      process.exitCode = 1;
+      return false;
+    }
     console.log(`[gen-maps] skip ${name}: source not found (${srcPath})`);
     return false;
   }
@@ -266,7 +274,9 @@ async function runJob(page, name) {
     console.log(`[gen-maps] ${name}: ${def.src} -> ${def.out}`);
     return true;
   }
-  const mime = def.src.endsWith('.png') ? 'image/png' : 'image/jpeg';
+  const mime = def.src.endsWith('.png') ? 'image/png'
+    : def.src.endsWith('.webp') ? 'image/webp'
+    : 'image/jpeg';
   const outB64 = await page.evaluate(async ({ b64, mime, fn, scale, opts, transforms }) => {
     const T = eval(transforms);
     const img = new Image();

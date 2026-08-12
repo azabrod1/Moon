@@ -32,7 +32,7 @@ import {
   SUN_POLE_RA_DEG,
   type PlanetData,
 } from './planets/planetData';
-import { applySunGlowTier, canAttempt, cancelTextureUpgrade, createMoonMeshes, createShaderWarmupProbes, earnedUpgradeTier, firstUpgradeTier, lodMeasurementRelevant, needsUpgradeCover, normalUpgradePending, setWarmEligibleMoonParents, upgradeComplete, upgradeGeometryOnApproach, upgradeNormalOnApproach, upgradeTextureOnApproach, ATMOSPHERES, ATMOSPHERE_SHELL_SCALES, UPGRADE_TRIGGER_FRACTION, type MoonMesh, type TextureUpgrade } from './PlanetFactory';
+import { applySunGlowTier, canAttempt, cancelNormalUpgrade, cancelTextureUpgrade, createMoonMeshes, createShaderWarmupProbes, earnedUpgradeTier, firstUpgradeTier, lodMeasurementRelevant, needsUpgradeCover, normalUpgradePending, setWarmEligibleMoonParents, upgradeComplete, upgradeGeometryOnApproach, upgradeNormalOnApproach, upgradeTextureOnApproach, ATMOSPHERES, ATMOSPHERE_SHELL_SCALES, UPGRADE_TRIGGER_FRACTION, type MoonMesh, type TextureUpgrade } from './PlanetFactory';
 import type { SurfaceShadingFx } from './world/surfaceShading';
 import { bindTextureWarmer, invalidateTextureWarmCache, pumpTextureWarmQueue, queueTextureWarm, resetTextureWarmer } from './world/textureWarmer';
 import {
@@ -2913,7 +2913,9 @@ export class PlanetariumMode {
    *  as stutter. Clamping the TARGET keeps the follow lerp continuous; the
    *  safety escape stays as the backstop for fast geometry. Shells are last
    *  frame's pool (built by updateCruiseCameraSafety after the camera step);
-   *  one frame of body motion is well inside the escape's own margin. */
+   *  one frame of body motion is well inside the escape's own margin, and
+   *  resetCruiseCamera empties the pool so the frame after a jump or takeoff
+   *  clamps against nothing rather than shells from the old origin. */
   private clampChaseIdealToShells(ideal: THREE.Vector3): THREE.Vector3 {
     const escaped = escapeCameraPenetrations(
       ideal, this.cameraShellPool, this.cameraShellCount, CAMERA_BODY_MARGIN_AU,
@@ -10398,6 +10400,12 @@ export class PlanetariumMode {
     this.pendingChaseReclaim = false;
     flushOrbitDamping(this.controls);
     this.camOwner = 'chase';
+    // The chase-ideal clamp reads last frame's shell pool, and a cruise entry
+    // is exactly where "last frame" lies: after a Travel jump or takeoff the
+    // floating origin moved, so those shells sit anywhere but on the bodies.
+    // Drop them; the clamp no-ops for one frame until updateCruiseCameraSafety
+    // rebuilds the pool at the new origin (its escape stays the backstop).
+    this.cameraShellCount = 0;
     const forward = this.player.getForwardDirection();
     chaseIdealOffset(forward, FLIGHT_UP_SCENE, this.camera.position);
     this.controls.target.set(0, 0, 0);
@@ -14819,6 +14827,10 @@ export class PlanetariumMode {
     // after this point would apply to a material nothing draws and queue an
     // upload into a warmer with no renderer behind it.
     for (const up of this.allTextureUpgrades()) cancelTextureUpgrade(up, 'discard');
+    // The relief tiers ride the same network and need the same abandonment.
+    for (const moons of this.planetMoons.values()) {
+      for (const m of moons) cancelNormalUpgrade(m.normalUpgrade);
+    }
     resetTextureWarmer(); // drop queued warm-ups and the renderer binding with the mode
     this.moonTexturer.dispose();
     this.notification.dispose();

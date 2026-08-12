@@ -18,6 +18,9 @@ const pairs = Number(arg('pairs', '6'));
 const out = arg('out', '/tmp/moon-perf/ab.json');
 const throttleCpu = process.argv.includes('--cpu');
 const throttleNet = process.argv.includes('--net');
+// --netspec=100:20 → 100 Mbps down / 20 ms RTT (a good phone on 5G or fast
+// WiFi). Overrides --net's fixed 4G shape.
+const netspec = arg('netspec', '');
 
 const browser = await chromium.launch({
   headless: true,
@@ -64,7 +67,15 @@ async function boot(url) {
   const page = await context.newPage();
   const cdp = await context.newCDPSession(page);
   if (throttleCpu) await cdp.send('Emulation.setCPUThrottlingRate', { rate: 4 });
-  if (throttleNet) {
+  if (netspec) {
+    const [mbps, latency] = netspec.split(':').map(Number);
+    await cdp.send('Network.enable');
+    await cdp.send('Network.emulateNetworkConditions', {
+      offline: false, latency: latency || 20,
+      downloadThroughput: ((mbps || 100) * 1024 * 1024) / 8,
+      uploadThroughput: (10 * 1024 * 1024) / 8,
+    });
+  } else if (throttleNet) {
     await cdp.send('Network.enable');
     await cdp.send('Network.emulateNetworkConditions', {
       offline: false, latency: 150,
@@ -95,6 +106,12 @@ async function boot(url) {
       }));
     const img = performance.getEntriesByType('resource')
       .filter((r) => /\.(jpg|jpeg|png|webp|ktx2)($|\?)/.test(r.name));
+    const imgWaterfall = img.map((r) => ({
+      name: r.name.split('/').slice(-2).join('/'),
+      start: Math.round(r.startTime),
+      end: Math.round(r.responseEnd),
+      kb: Math.round((r.encodedBodySize || r.transferSize || 0) / 1024),
+    })).sort((x, y) => x.start - y.start);
     const imgBeforeEntry = img.filter((r) => r.responseEnd <= (window.__perf.loadingHiddenAt ?? Infinity));
     const lt = window.__perf.longTasks;
     return {
@@ -110,6 +127,8 @@ async function boot(url) {
       imgBeforeEntryBytes: imgBeforeEntry.reduce((s, r) => s + (r.encodedBodySize || r.transferSize || 0), 0),
       imgLastEndBeforeEntry: imgBeforeEntry.length
         ? Math.round(Math.max(...imgBeforeEntry.map((r) => r.responseEnd))) : 0,
+      allImgEnd: img.length ? Math.round(Math.max(...img.map((r) => r.responseEnd))) : 0,
+      imgWaterfall,
       longTaskTotal: Math.round(lt.reduce((s, t) => s + t.dur, 0)),
       worstLongTasks: lt.slice().sort((a, b) => b.dur - a.dur).slice(0, 6)
         .map((t) => ({ start: Math.round(t.start), dur: Math.round(t.dur) })),
@@ -150,6 +169,7 @@ const keys = [
   ['longTaskTotal', (r) => r.longTaskTotal],
   ['imgBeforeEntryBytes', (r) => r.imgBeforeEntryBytes],
   ['imgBeforeEntryCount', (r) => r.imgBeforeEntryCount],
+  ['allImgEnd', (r) => r.allImgEnd],
 ];
 console.log('\nmetric              A(median [min..max])          B(median [min..max])');
 for (const [name, get] of keys) {

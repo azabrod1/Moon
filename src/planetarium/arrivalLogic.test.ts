@@ -16,8 +16,8 @@ import {
   sweepSegmentSphere,
   BODY_APPROACH_V_MIN_AU_S,
   BODY_CAP_CLEAR_HOLD_S,
-  BODY_LEAVE_K_PER_S,
   CAP_TRANSITION_TAU_S,
+  LEAVE_HEADSTART_RADII,
   LEAVE_VALVE_KNEE_RADII,
   MOON_APPROACH_K_PER_S,
   PLANET_APPROACH_K_PER_S,
@@ -91,26 +91,46 @@ describe('governedSpeedCap', () => {
 
   it('receding or side-on flight is capped at exactly the leave law', () => {
     // THE departure contract: leaving speed is a function of where you are —
-    // LEAVE_K × center distance — never Infinity, never a time ramp.
-    expect(governedSpeedCap(1e-4, R, 0, K, VMIN)).toBeCloseTo(BODY_LEAVE_K_PER_S * 1.1e-4, 12);
-    expect(governedSpeedCap(1e-4, R, -1, K, VMIN)).toBeCloseTo(BODY_LEAVE_K_PER_S * 1.1e-4, 12);
-    // Inside the surface the center distance stays exact (sum, not a clamp).
-    expect(governedSpeedCap(-1e-6, R, -1, K, VMIN)).toBeCloseTo(BODY_LEAVE_K_PER_S * 9e-6, 12);
+    // the approach K on the head-started height, opened by the valve —
+    // never Infinity, never a time ramp.
+    const lift = 1e-4 + LEAVE_HEADSTART_RADII * R;
+    const law = K * lift * (lift / (LEAVE_VALVE_KNEE_RADII * R)) ** 2;
+    expect(governedSpeedCap(1e-4, R, 0, K, VMIN)).toBeCloseTo(law, 12);
+    expect(governedSpeedCap(1e-4, R, -1, K, VMIN)).toBeCloseTo(law, 12);
+  });
+
+  it('beside the shell, leaving is as unhurried as arriving — the head start is the whole gap', () => {
+    // The near-zone contract: the leave cap IS the approach glide, read one
+    // head start higher — a visible creep at the shell (~0.05 R/s), nothing
+    // like a brisk pull, and inside the valve knee no valve term at all.
+    expect(governedSpeedCap(0, R, -1, K, VMIN)).toBeCloseTo(K * LEAVE_HEADSTART_RADII * R, 15);
+    const h = 0.1 * R;
+    expect(governedSpeedCap(h, R, -1, K, VMIN)).toBeCloseTo(
+      K * (h + LEAVE_HEADSTART_RADII * R),
+      15,
+    );
+  });
+
+  it('inside the surface the leave cap clamps to the shell value — never negative', () => {
+    expect(governedSpeedCap(-1e-6, R, -1, K, VMIN)).toBeCloseTo(K * LEAVE_HEADSTART_RADII * R, 15);
+    expect(governedSpeedCap(-0.9 * R, R, -1, K, VMIN)).toBeCloseTo(K * LEAVE_HEADSTART_RADII * R, 15);
   });
 
   it('the grazing band blends the two laws harmonically', () => {
-    const vIn = 1e-4 * K;
-    const vOut = BODY_LEAVE_K_PER_S * 1.1e-4;
+    // Posed close in, where the two laws are comparable (lift below the knee).
+    const h = 2e-6;
+    const vIn = Math.max(h * K, VMIN);
+    const vOut = K * (h + LEAVE_HEADSTART_RADII * R);
     // Half-smoothstep: the harmonic mean of the closing glide and the leave law.
-    expect(governedSpeedCap(1e-4, R, 0.15, K, VMIN)).toBeCloseTo(
+    expect(governedSpeedCap(h, R, 0.15, K, VMIN)).toBeCloseTo(
       1 / (0.5 / vIn + 0.5 / vOut),
       12,
     );
   });
 
   it('a giant body keeps the proven closing band: harmonic ≈ the old vIn/w fade', () => {
-    // Jupiter-class shell contact: vOut/vIn ~ 900. An arithmetic blend would
-    // hand a near-tangent CLOSING course half the leave law (~9,000 km/s);
+    // Jupiter-class shell contact: vOut/vIn ~ 185. An arithmetic blend would
+    // hand a near-tangent CLOSING course half the leave law (~1,900 km/s);
     // the harmonic blend stays within a hair under the historical vIn/w.
     const surfaceDist = 5.44e-7; // one ship clearance off the shell
     const giantR = 5e-4;
@@ -121,18 +141,20 @@ describe('governedSpeedCap', () => {
     expect(cap).toBeGreaterThan(oldLaw * 0.99);
   });
 
-  it('the release valve is inert below the knee, continuous at it, quadratic past it', () => {
-    const knee = LEAVE_VALVE_KNEE_RADII * R; // center distance at the knee
-    expect(governedSpeedCap(knee - R, R, -1, K, VMIN)).toBeCloseTo(BODY_LEAVE_K_PER_S * knee, 12);
+  it('the release valve is inert below the knee, continuous at it, cubic past it', () => {
+    const knee = LEAVE_VALVE_KNEE_RADII * R; // head-started height at the knee
+    const kneeH = knee - LEAVE_HEADSTART_RADII * R; // raw height that reaches it
+    expect(governedSpeedCap(kneeH, R, -1, K, VMIN)).toBeCloseTo(K * knee, 12);
     // 10% past the knee: the law picks up a (1.1)² opening.
-    expect(governedSpeedCap(1.1 * knee - R, R, -1, K, VMIN)).toBeCloseTo(
-      BODY_LEAVE_K_PER_S * 1.1 * knee * 1.21,
+    expect(governedSpeedCap(kneeH + 0.1 * knee, R, -1, K, VMIN)).toBeCloseTo(
+      K * 1.1 * knee * 1.21,
       10,
     );
-    // Deep past it (100 R): ×6.25 — the empty-sky tail is gone.
-    expect(governedSpeedCap(100 * R - R, R, -1, K, VMIN)).toBeCloseTo(
-      BODY_LEAVE_K_PER_S * 100 * R * (100 / LEAVE_VALVE_KNEE_RADII) ** 2,
-      10,
+    // Ten knees out the opening is ×100: any dialed speed is loose change
+    // against the cube, which is what frees a departure within seconds.
+    expect(governedSpeedCap(10 * knee - LEAVE_HEADSTART_RADII * R, R, -1, K, VMIN)).toBeCloseTo(
+      K * 10 * knee * 100,
+      8,
     );
   });
 
@@ -264,11 +286,12 @@ describe('advanceBodyCap — the governor latch', () => {
     expect(s.engaged).toBe(true);
   });
 
-  it('under the leave law, an override departure unbinds after seconds of flight', () => {
-    // New contract with finite receding caps: `engaged` holds until the
-    // leave law crosses the commanded speed — a bypassed departure flies a
-    // few seconds before the clear-hold can even start, instead of clearing
-    // moments past the limb. Closed loop at full override speed, nose out.
+  it('under the leave law, an override departure unbinds only once genuinely away', () => {
+    // `engaged` holds until the leave law crosses the commanded speed. A
+    // full-override sprint outruns the opened valve within a dozen radii,
+    // so the clear-hold completes in about a second of flight — but the
+    // ship is many radii gone by then, and a parked or grinding ship beside
+    // the shell (cap ~ the glide, far under any dial) never unbinds at all.
     const R = 1.16e-5;
     let d = R + SHIP_CLEARANCE_AU; // center distance, from the shell
     let s = initialBodyCapState();
@@ -279,8 +302,9 @@ describe('advanceBodyCap — the governor latch', () => {
       d += COMMANDED * DT; // bypass: the ship flies the dialed speed
       t += DT;
     }
-    expect(t).toBeGreaterThan(2);
-    expect(t).toBeLessThan(7);
+    expect(t).toBeGreaterThan(0.5);
+    expect(t).toBeLessThan(2);
+    expect(d / R).toBeGreaterThan(8);
   });
 
   it('the transition memory survives a bypass and re-applies the moment it ends', () => {
@@ -313,18 +337,21 @@ describe('advanceBodyCap — the governor latch', () => {
 });
 
 describe('departure feel — the reported outcomes, closed loop', () => {
-  // Alex's two complaints as asserts. Before this design, a Moon-shell
+  // The reported complaints as asserts. Before this design, a Moon-shell
   // release moved ~5 km in the first half second and ~33 km in the first
   // full second (invisible against a 1,738 km body — "still stuck"), then
   // the time-exponential ripped the gap 2×→20× in under 3 s ("shoots off in
   // an instant"). Measured: scratchpad collide-before/report.md, 2026-08-11.
+  // The shape flown here is the three-zone departure: really slow beside
+  // the body (arrival pacing), picking up through the knee, and free of the
+  // governor entirely within a few seconds — at any dial, at any body scale.
   const R = 1.1616e-5; // the Moon as rendered
   const DT = 1 / 60;
   const COMMANDED = 25_000 / KM_PER_AU;
 
   /** Simulate a release from a shell grind: cap pinned at the closing glide,
    *  nose flipped out, then plain forward integration under the governor. */
-  function simulateRelease(seconds: number) {
+  function simulateRelease(seconds: number, commanded = COMMANDED) {
     const shell = R + SHIP_CLEARANCE_AU;
     const pin = governedSpeedCap(shell - R, R, 1, K, VMIN);
     let s: BodyCapState = { candidate: pin, applied: pin, engaged: true, unboundS: 0 };
@@ -332,58 +359,88 @@ describe('departure feel — the reported outcomes, closed loop', () => {
     const samples: { t: number; d: number; speed: number }[] = [{ t: 0, d, speed: pin }];
     for (let t = DT; t <= seconds + 1e-9; t += DT) {
       const geom = governedSpeedCap(d - R, R, -1, K, VMIN);
-      s = advanceBodyCap(s, geom, COMMANDED, false, DT);
-      const speed = Math.min(COMMANDED, s.applied);
+      s = advanceBodyCap(s, geom, commanded, false, DT);
+      const speed = Math.min(commanded, s.applied);
       d += speed * DT;
       samples.push({ t, d, speed });
     }
     return samples;
   }
 
-  it('no dead-stick: a shell release visibly moves within the first second', () => {
-    const samples = simulateRelease(1.0);
-    const at = (t: number) => samples.find((r) => r.t >= t - 1e-9)!;
+  const gainedKm = (samples: { t: number; d: number }[], t: number) => {
     const shell = R + SHIP_CLEARANCE_AU;
-    const kmGained = (t: number) => (at(t).d - shell) * KM_PER_AU;
-    expect(kmGained(0.5)).toBeGreaterThan(80);
-    expect(kmGained(1.0)).toBeGreaterThan(250);
+    return (samples.find((r) => r.t >= t - 1e-9)!.d - shell) * KM_PER_AU;
+  };
+
+  it('no dead-stick, but no pull either: the first second is a visible creep', () => {
+    // Alive from the first frame — well clear of the ~33 km/s-equivalent
+    // freeze that read as "stuck" — while staying at arrival pacing, a
+    // fraction of the old brisk law's ~540 km opening second.
+    const samples = simulateRelease(1.0);
+    expect(gainedKm(samples, 0.5)).toBeGreaterThan(18);
+    expect(gainedKm(samples, 1.0)).toBeGreaterThan(55);
+    expect(gainedKm(samples, 1.0)).toBeLessThan(140);
   });
 
-  it('no bang: past the spool the speed TRACKS the leave law', () => {
-    // Chasing a target that grows as it is chased leaves a steady lag of
-    // 1/(1 + LEAVE_K·τ) — derived, so re-tuning either knob re-derives the
-    // expectation instead of silently loosening it. Speed may sit just
-    // under the law; it may never exceed it.
-    const lag = 1 / (1 + BODY_LEAVE_K_PER_S * CAP_TRANSITION_TAU_S);
+  it('really slow beside the body: the first three seconds hold arrival pacing', () => {
+    // Sub-knee the leave law IS the approach glide (head-started), so three
+    // seconds out the ship is still beside the Moon, creeping under ~300 km/s
+    // — plenty of window to change your mind and turn back.
     const samples = simulateRelease(3.0);
     for (const r of samples) {
+      expect(r.speed * KM_PER_AU, `t=${r.t.toFixed(2)}`).toBeLessThan(300);
+    }
+    expect(gainedKm(samples, 3.0)).toBeLessThan(650);
+  });
+
+  it('no bang: through the slow zone the speed TRACKS the law, not a spool', () => {
+    // Chasing a target that grows as it is chased leaves a steady lag of
+    // ~1/(1 + K·τ) — derived, so re-tuning either knob re-derives the
+    // expectation; discrete 60 Hz integration sits a couple points under
+    // the continuous equilibrium. Speed may trail the law; never exceed it.
+    const floor = 0.96 / (1 + K * CAP_TRANSITION_TAU_S);
+    const samples = simulateRelease(3.5);
+    for (const r of samples) {
       if (r.t <= 3 * CAP_TRANSITION_TAU_S) continue;
-      const floor = lag * (r.t > 5 * CAP_TRANSITION_TAU_S ? 0.99 : 0.98);
+      if (r.d - R + LEAVE_HEADSTART_RADII * R >= 0.9 * LEAVE_VALVE_KNEE_RADII * R) break;
       const law = governedSpeedCap(r.d - R, R, -1, K, VMIN);
       expect(r.speed / law, `t=${r.t.toFixed(2)}`).toBeGreaterThan(floor);
       expect(r.speed).toBeLessThanOrEqual(law + 1e-15);
     }
   });
 
-  it('leaving is brisker than arriving — the deliberate asymmetry', () => {
-    // Turning away means you have decided to go: the pull-away must outpace
-    // the approach glide at the same distance, and by a real margin.
-    const d = 40 * R; // well outside the shell, inside the valve knee
-    const closing = governedSpeedCap(d - R, R, 1, K, VMIN);
-    const leaving = governedSpeedCap(d - R, R, -1, K, VMIN);
-    expect(leaving).toBeGreaterThan(closing * 1.3);
-    expect(leaving).toBeLessThan(closing * 3); // brisk, not a slingshot
+  it('then it picks up and runs entirely free within a few seconds — at any dial', () => {
+    // The commitment contract: by the time the ship has clearly left, no
+    // throttle at all. The ramp to it stays continuous — per-frame speed
+    // never steps more than ~a sixth, a steady surge rather than a bang.
+    for (const dialKmS of [25_000, 892]) {
+      const commanded = dialKmS / KM_PER_AU;
+      const samples = simulateRelease(8.0, commanded);
+      const free = samples.find((r) => r.speed >= commanded * 0.999);
+      expect(free, `dial ${dialKmS}`).toBeDefined();
+      expect(free!.t, `dial ${dialKmS}`).toBeGreaterThan(4);
+      expect(free!.t, `dial ${dialKmS}`).toBeLessThan(7);
+      for (let i = 2; i < samples.length; i++) {
+        expect(samples[i].speed / samples[i - 1].speed, `dial ${dialKmS} t=${samples[i].t.toFixed(2)}`)
+          .toBeLessThan(1.35);
+      }
+    }
   });
 
-  it('stately recede: the disc halves on the leave constant, not a detonation curve', () => {
-    const samples = simulateRelease(6.0);
-    const base = samples.find((r) => r.t >= 3 * CAP_TRANSITION_TAU_S)!;
-    const doubled = samples.find((r) => r.d >= 2 * base.d);
-    expect(doubled).toBeDefined();
-    const halvingS = doubled!.t - base.t;
-    const ideal = Math.log(2) / BODY_LEAVE_K_PER_S;
-    expect(halvingS).toBeGreaterThan(ideal * 0.8);
-    expect(halvingS).toBeLessThan(ideal * 1.2);
+  it('the asymmetry lives at the ends: symmetric beside the body, unbound once away', () => {
+    // At matched heights in the near zone the two laws read the same glide —
+    // the head start is the only gap…
+    const h = 0.3 * R;
+    const closing = governedSpeedCap(h, R, 1, K, VMIN);
+    const leaving = governedSpeedCap(h, R, -1, K, VMIN);
+    expect(leaving / closing).toBeGreaterThan(1);
+    expect(leaving / closing).toBeLessThan(2);
+    // …while a few radii out the opened valve has left the approach glide
+    // far behind: leaving runs free where arriving is still firmly governed.
+    const far = 8 * R;
+    expect(governedSpeedCap(far, R, -1, K, VMIN)).toBeGreaterThan(
+      50 * governedSpeedCap(far, R, 1, K, VMIN),
+    );
   });
 });
 

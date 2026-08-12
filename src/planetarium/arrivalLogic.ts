@@ -32,41 +32,44 @@ export const SUN_APPROACH_SURFACE_RADII = 1.2;
  *  collision bubble, not the governor, is what holds you off the mesh. */
 export const BODY_APPROACH_V_MIN_AU_S = 2 / KM_PER_AU;
 
-/** Departure pace: receding speed is capped at this × the distance to the
- *  body's CENTER, so the disc shrinks at a constant fractional rate — a
- *  steady pull-away at every body scale rather than a stall and a bang.
- *  Deliberately BRISKER than the approach glide (1.6×, halving the disc
- *  every ~1.7 s against the approach's ~2.8 s): arriving is the show and
- *  wants easing into, but someone who has turned away has decided to go,
- *  and holding them to the arrival pace reads as molasses. */
-export const BODY_LEAVE_K_PER_S = 0.4;
+/** Departure near zone: for its first moments a leave is capped by the SAME
+ *  K × height glide as an approach — right beside a body, leaving is as
+ *  unhurried as arriving — but with this head start (in surface radii) added
+ *  to the height, so the shell itself reads as a visible creep (~0.05 R/s)
+ *  instead of the near-freeze the approach floor would pin a parked
+ *  nose-out ship at. */
+export const LEAVE_HEADSTART_RADII = 0.2;
 
-/** The leave law alone binds to 4 × the commanded speed of CENTER distance
- *  regardless of body size — for a moonlet that is many seconds capped
- *  against empty sky. Past this many surface radii (disc ≲ 3°) the leave
- *  term opens quadratically, so a release always completes within a few
- *  radii of the disc fading. Inert for approaches and for any release that
- *  finishes inside the knee. */
-export const LEAVE_VALVE_KNEE_RADII = 40;
+/** Knee of the departure valve, measured on the head-started height. Inside
+ *  it the leave cap is the plain glide — the really-slow zone, crossed in
+ *  ~3–4 s of flight. Past it the cap opens as the SQUARE of the ratio (a
+ *  cubic law overall), so it outruns any dialed speed within ~1/(2K) ≈ 2 s
+ *  more: a departure is genuinely governed only for its first few seconds —
+ *  slow beside the body, picking up through the knee, and entirely free once
+ *  the ship has clearly left. Everything is in radii, so a moonlet departure
+ *  and a Jupiter departure share one subjective timeline. */
+export const LEAVE_VALVE_KNEE_RADII = 0.55;
 
 /**
  * Proximity speed cap near one body. Closing, speed is limited to
  * K × (distance to the rendered surface), floored at vMin — the glide.
- * Receding, it is limited to BODY_LEAVE_K_PER_S × (distance to the CENTER),
- * valve-opened past the knee — the leave law, which ties departures to
- * distance the same way arrivals are (a pure-time release reads as
- * nothing-nothing-BANG; this reads as a steady pull-away).
+ * Receding, it is limited to K × (height + head start), squared open past
+ * the valve knee — the leave law: as slow as an arrival right beside the
+ * body, then releasing completely within a few seconds of flight. (A
+ * pure-time release reads as nothing-nothing-BANG; a flat distance law
+ * holds a committed departure against empty sky for tens of seconds.)
  *
  * The two laws blend HARMONICALLY over the approach-cosine smoothstep band
  * [0, 0.3]: `1 / (w/vIn + (1−w)/vOut)`. As vOut → ∞ this reduces exactly to
  * the historical `vIn / w` band fade, so the proven inbound behavior is the
  * special case — an arithmetic blend here would hand a near-tangent closing
- * course most of the leave law's speed (~9,000 km/s at Jupiter's shell) and
- * grind it into the resolver.
+ * course a large share of an opened leave valve and grind it into the
+ * resolver.
  *
- * `surfaceDistAU` is the RAW `dist − surfaceRadius`, negative while an
- * endpoint sits momentarily inside the surface — the center distance must
- * stay exact there, so it is recovered by sum, never from a clamped value.
+ * `surfaceDistAU` is the RAW `dist − surfaceRadius`, negative while a swept
+ * endpoint sits momentarily inside the surface. Both laws clamp the height,
+ * so inside the shell the leave cap holds the shell's own creep and the
+ * approach cap its floor — neither ever goes negative.
  */
 export function governedSpeedCap(
   surfaceDistAU: number,
@@ -75,10 +78,10 @@ export function governedSpeedCap(
   kPerS: number,
   vMinAUPerS: number,
 ): number {
-  const centerDistAU = surfaceDistAU + surfaceRadiusAU;
+  const liftAU = Math.max(surfaceDistAU, 0) + LEAVE_HEADSTART_RADII * surfaceRadiusAU;
   const kneeAU = LEAVE_VALVE_KNEE_RADII * surfaceRadiusAU;
-  const valve = centerDistAU > kneeAU ? (centerDistAU / kneeAU) ** 2 : 1;
-  const vOut = BODY_LEAVE_K_PER_S * centerDistAU * valve;
+  const valve = liftAU > kneeAU ? (liftAU / kneeAU) ** 2 : 1;
+  const vOut = kPerS * liftAU * valve;
   const t = THREE.MathUtils.clamp(cosApproach / 0.3, 0, 1);
   const w = t * t * (3 - 2 * t);
   if (w <= 0) return vOut;
@@ -101,7 +104,8 @@ export const CAP_TRANSITION_TAU_S = 0.35;
  * a multiplicative e-fold from a shell pin needs ~2.4 s beside Jupiter with
  * 1.5 s of it invisible — and exactly frame-rate independent for a given
  * elapsed time. Once the transition catches the leave law, the cap simply
- * tracks it: distance-tied from there, no unbounded time growth.
+ * tracks it — distance-tied — until the valve outruns the dialed speed and
+ * the departure runs free.
  */
 export function rampedSpeedCap(
   geomCap: number,
@@ -135,9 +139,10 @@ const CAP_BIND_FRACTION = 0.999;
  * INSTANTANEOUS geometric cap binds against the commanded (uncapped,
  * throttle-dialed) speed — never the applied speed, which already contains
  * the cap and reads 0 parked. With the finite leave law, `engaged` stays
- * true through a departure until the law crosses the commanded speed — a
- * few seconds of flight — so the override auto-clear completes a few
- * seconds past a body rather than moments past the limb, and a ship parked
+ * true through a departure until the law crosses the commanded speed — for
+ * a governed departure a few seconds of flight, for a full-override sprint
+ * a dozen radii of distance — so the auto-clear completes once the ship has
+ * genuinely left rather than moments past the limb, and a ship parked
  * nose-away beside a body stays latched until it actually leaves (the pill
  * tap always clears by hand). `unboundS` is how long the latch has read
  * unbound while a bypass was active — the auto-clear waits out

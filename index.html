@@ -15,32 +15,35 @@
   <!-- Boot texture preloads: every map the boot path fetches, so the network
        starts on them at HTML parse instead of idling until the JS has parsed,
        the renderer is built, and createSolarSystem finally asks (~0.5-1 s of
-       dead air on a phone). as="fetch" matches the streamed loader's plain
-       fetch() (textureBitmapLoader); the rare probe-fail <img> fallback would
-       re-fetch, which is the old cost, not a new one. Blocking set first
+       dead air on a phone). as="fetch" + crossorigin="anonymous" together
+       mirror the streamed loader's plain fetch() (mode cors, credentials
+       same-origin, textureBitmapLoader) — drop either and the preload cache
+       misses and every map downloads TWICE. The rare probe-fail <img>
+       fallback still re-fetches, which is the old cost, not a new one.
+       Blocking set first
        (largest first), then the durable moon-system wave. The set is pinned
        to PLANET_TEXTURE_FILES by bootTexturePreloads.test.ts. -->
-  <link rel="preload" as="fetch" href="/textures/earth-day.jpg" />
-  <link rel="preload" as="fetch" href="/textures/earth-clouds.jpg" />
-  <link rel="preload" as="fetch" href="/textures/mercury.jpg" />
-  <link rel="preload" as="fetch" href="/textures/mars.jpg" />
-  <link rel="preload" as="fetch" href="/textures/earth-night.jpg" />
-  <link rel="preload" as="fetch" href="/textures/earth-roughness.png" />
-  <link rel="preload" as="fetch" href="/textures/jupiter.jpg" />
-  <link rel="preload" as="fetch" href="/textures/pluto.jpg" />
-  <link rel="preload" as="fetch" href="/textures/earth-bump.png" />
-  <link rel="preload" as="fetch" href="/textures/neptune.jpg" />
-  <link rel="preload" as="fetch" href="/textures/venus.jpg" />
-  <link rel="preload" as="fetch" href="/textures/saturn.jpg" />
-  <link rel="preload" as="fetch" href="/textures/uranus.jpg" />
-  <link rel="preload" as="fetch" href="/textures/moon-normal.png" />
-  <link rel="preload" as="fetch" href="/textures/mars-normal.png" />
-  <link rel="preload" as="fetch" href="/textures/europa.jpg" />
-  <link rel="preload" as="fetch" href="/textures/io.jpg" />
-  <link rel="preload" as="fetch" href="/textures/ganymede.jpg" />
-  <link rel="preload" as="fetch" href="/textures/triton.jpg" />
-  <link rel="preload" as="fetch" href="/textures/moon.jpg" />
-  <link rel="preload" as="fetch" href="/textures/callisto.jpg" />
+  <link rel="preload" as="fetch" crossorigin="anonymous" href="/textures/earth-day.jpg" />
+  <link rel="preload" as="fetch" crossorigin="anonymous" href="/textures/earth-clouds.jpg" />
+  <link rel="preload" as="fetch" crossorigin="anonymous" href="/textures/mercury.jpg" />
+  <link rel="preload" as="fetch" crossorigin="anonymous" href="/textures/mars.jpg" />
+  <link rel="preload" as="fetch" crossorigin="anonymous" href="/textures/earth-night.jpg" />
+  <link rel="preload" as="fetch" crossorigin="anonymous" href="/textures/earth-roughness.png" />
+  <link rel="preload" as="fetch" crossorigin="anonymous" href="/textures/jupiter.jpg" />
+  <link rel="preload" as="fetch" crossorigin="anonymous" href="/textures/pluto.jpg" />
+  <link rel="preload" as="fetch" crossorigin="anonymous" href="/textures/earth-bump.png" />
+  <link rel="preload" as="fetch" crossorigin="anonymous" href="/textures/neptune.jpg" />
+  <link rel="preload" as="fetch" crossorigin="anonymous" href="/textures/venus.jpg" />
+  <link rel="preload" as="fetch" crossorigin="anonymous" href="/textures/saturn.jpg" />
+  <link rel="preload" as="fetch" crossorigin="anonymous" href="/textures/uranus.jpg" />
+  <link rel="preload" as="fetch" crossorigin="anonymous" href="/textures/moon-normal.png" />
+  <link rel="preload" as="fetch" crossorigin="anonymous" href="/textures/mars-normal.png" />
+  <link rel="preload" as="fetch" crossorigin="anonymous" href="/textures/europa.jpg" />
+  <link rel="preload" as="fetch" crossorigin="anonymous" href="/textures/io.jpg" />
+  <link rel="preload" as="fetch" crossorigin="anonymous" href="/textures/ganymede.jpg" />
+  <link rel="preload" as="fetch" crossorigin="anonymous" href="/textures/triton.jpg" />
+  <link rel="preload" as="fetch" crossorigin="anonymous" href="/textures/moon.jpg" />
+  <link rel="preload" as="fetch" crossorigin="anonymous" href="/textures/callisto.jpg" />
   <style>
 
     /* Geist, bundled with the app (public/fonts, SIL OFL 1.1 — OFL.txt sits

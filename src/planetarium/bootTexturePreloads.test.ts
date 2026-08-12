@@ -9,7 +9,10 @@ import { PLANET_TEXTURE_FILES } from './PlanetFactory';
 // megabytes nobody reads.
 
 function preloadedTextures(): string[] {
-  return [...html.matchAll(/<link rel="preload" as="fetch" href="\/textures\/([^"]+)"/g)]
+  // crossorigin="anonymous" is load-bearing: with it the preload's request
+  // mode/credentials match the streamed loader's plain fetch(), without it
+  // the preload cache misses and every boot map downloads twice.
+  return [...html.matchAll(/<link rel="preload" as="fetch" crossorigin="anonymous" href="\/textures\/([^"]+)"/g)]
     .map((m) => m[1]);
 }
 

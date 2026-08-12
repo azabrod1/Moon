@@ -128,7 +128,12 @@ export function setWarmEligibleMoonParents(parents: ReadonlySet<string>): void {
 // CC BY 4.0 + NASA; Pluto is New Horizons / USGS, and the higher Moon tiers are
 // NASA SVS — see TEXTURE_UPGRADE_TIERS). The filename stays resolution-
 // agnostic; world/texturePolicy maps it through the active tier to a URL.
-const PLANET_TEXTURE_FILES: Record<string, string> = {
+// Every entry is fetched at boot (planet bases + Earth details blocking, the
+// moon system + normals durably behind the veil), which is why index.html
+// preloads exactly this set — bootTexturePreloads.test.ts pins the two lists
+// to each other, so a new entry here fails the build until the preload
+// (or an explicit exemption there) follows.
+export const PLANET_TEXTURE_FILES: Record<string, string> = {
   mercury: 'mercury.jpg',
   venus: 'venus.jpg',
   earthDay: 'earth-day.jpg',
@@ -412,13 +417,13 @@ export interface TextureUpgrade {
    *  Never the simulation clock, which jumps centuries per second. */
   retryAtMs?: number;
   /** The tier whose last fetch/decode failed, and how many times in a row.
-   *  While set, the next attempt steps DOWN one rung when one remains — a
-   *  Moon whose 8K decode keeps dying under a phone's memory pressure still
-   *  deserves the 4K it skipped — and the failing tier's cooldown doubles
-   *  per consecutive failure so a device that can never hold it isn't
-   *  re-downloading the map every 8 s for as long as the body fills the
-   *  screen. Cleared once a tier at or above the failed one applies — a
-   *  successful lower rung keeps the streak so the backoff stays honest. */
+   *  The failing tier's cooldown doubles per consecutive failure (capped) so
+   *  a device that can never decode it — an 8K bitmap is a ~128 MB transient
+   *  — isn't re-downloading the map every 8 s for as long as the body fills
+   *  the screen. The rung-at-a-time climb in resolveUpgradeTier means a
+   *  failing top tier can only ever strand the ladder one rung short, never
+   *  on the boot map. Cleared once a tier at or above the failed one
+   *  applies. */
   lastFailure?: { tier: TextureTier; streak: number };
 }
 
@@ -504,32 +509,27 @@ export function firstUpgradeTier(up: TextureUpgrade): TextureTier | null {
   return first && TIER_RANK[first] <= TIER_RANK[up.effectiveMaxTier] ? first : null;
 }
 
-/** The highest step at or below `requested` that this device can hold and this
- *  handle has not already taken — null when nothing is left to fetch. Asking
- *  for the ceiling straight away is legal and skips the rungs below it, so a
- *  body that is already filling the screen never pays for a map it would
- *  replace seconds later. */
+/** The step `requested` earns for this device and handle — null when nothing
+ *  is left to fetch. From the boot map the ladder is climbed ONE RUNG AT A
+ *  TIME even when the screen fraction earns the top directly: the first rung
+ *  is a quarter of the bytes, so the body sharpens seconds sooner, a flyby
+ *  that leaves before the rung applies never pays for the top tier, and a
+ *  phone whose 8K decode dies under memory pressure still holds the 4K it
+ *  fetched on the way up. Once a rung has applied, the highest remaining
+ *  earned step is taken directly. */
 export function resolveUpgradeTier(up: TextureUpgrade, requested: TextureTier): TextureTier | null {
   const ceiling = Math.min(TIER_RANK[requested], TIER_RANK[up.effectiveMaxTier]);
   const floor = up.appliedTier ? TIER_RANK[up.appliedTier] : 0;
+  let first: TextureTier | null = null;
   let best: TextureTier | null = null;
   for (const tier of up.tiers) {
     const rank = TIER_RANK[tier];
-    if (rank > floor && rank <= ceiling) best = tier; // ascending: the last match is the highest
+    if (rank > floor && rank <= ceiling) {
+      first ??= tier; // ascending: the first match is the lowest
+      best = tier; // ...and the last match is the highest
+    }
   }
-  return best;
-}
-
-/** The highest step strictly under `tier` this handle still needs — the rung
- *  a failing top tier falls back to. null when nothing remains below it. */
-function highestTierBelow(up: TextureUpgrade, tier: TextureTier): TextureTier | null {
-  const floor = up.appliedTier ? TIER_RANK[up.appliedTier] : 0;
-  let best: TextureTier | null = null;
-  for (const step of up.tiers) {
-    const rank = TIER_RANK[step];
-    if (rank > floor && rank < TIER_RANK[tier]) best = step; // ascending: last match is highest
-  }
-  return best;
+  return floor === 0 ? first : best;
 }
 
 /**
@@ -760,17 +760,8 @@ export function upgradeTextureOnApproach(
   nowMs = performance.now(),
 ): void {
   if (!canAttempt(up, nowMs)) return;
-  let tier = resolveUpgradeTier(up, requested);
+  const tier = resolveUpgradeTier(up, requested);
   if (!tier) return;
-  // Re-attempting the tier that just failed: take the rung below it first
-  // when one remains, so the body sharpens with the map this device CAN
-  // hold instead of staying on its boot map behind an endless top-tier
-  // retry. The failed tier stays the goal — once the lower rung applies,
-  // lastFailure survives and keeps its backoff honest.
-  if (up.lastFailure && tier === up.lastFailure.tier) {
-    const below = highestTierBelow(up, up.lastFailure.tier);
-    if (below) tier = below;
-  }
   const generation = ++upgradeGeneration;
   up.attempt = { tier, generation, startedAtMs: nowMs };
   up.retryAtMs = undefined;
@@ -865,6 +856,116 @@ export function cancelTextureUpgrade(
   if (!up.attempt || flavor === 'keep') return;
   up.attempt = undefined;
   up.retryAtMs = nowMs + UPGRADE_RETRY_MS;
+}
+
+// Higher-resolution RELIEF tiers on disk, per normal-map key. The Moon's
+// close-approach relief (2880x1440, ~8.8 MB) used to ship as the boot map —
+// a third of all boot traffic for detail no spawn-distance Moon can show —
+// so boot now fetches the 1440x720 map and this tier streams in on approach,
+// exactly like the colour ladders above.
+const NORMAL_UPGRADE_TIERS: Record<string, TextureTier> = {
+  moonNormal: '4k',
+};
+
+/** One body's streamed relief upgrade: the data-map sibling of TextureUpgrade,
+ *  narrower because a relief ladder has exactly one step and no cover/arrival
+ *  semantics — the boot relief is already on the mesh, so this is purely an
+ *  on-approach sharpen. */
+export interface NormalUpgrade {
+  key: string; // PLANET_TEXTURE_FILES key
+  tier: TextureTier;
+  material: THREE.MeshStandardMaterial;
+  state: 'idle' | 'inflight' | 'done';
+  /** Wall-clock cooldown after a failure, same shape as TextureUpgrade's. */
+  retryAtMs?: number;
+}
+
+export function makeNormalUpgrade(
+  normalKey: string | undefined,
+  material: THREE.MeshStandardMaterial,
+): NormalUpgrade | undefined {
+  if (!normalKey) return undefined;
+  const tier = NORMAL_UPGRADE_TIERS[normalKey];
+  if (!tier) return undefined;
+  // A device that can't hold the step never arms the handle, mirroring
+  // effectiveMaxTier — no per-frame trigger can then spin on it.
+  if (clampTier(tier) !== tier) return undefined;
+  return { key: normalKey, tier, material, state: 'idle' };
+}
+
+/** True while the handle still has (or may retry) work — the LOD loop keeps
+ *  measuring a moon for this the same way it does for an unfinished colour
+ *  ladder. */
+export function normalUpgradePending(up: NormalUpgrade | undefined): boolean {
+  return !!up && up.state !== 'done';
+}
+
+/**
+ * Rank-guarded normal-map swap — applyColorTierTexture's data-map sibling.
+ * The boot relief and the 4K relief race over the network (the boot file is
+ * durable and can land minutes late on a bad link), so both arrivals pass
+ * through this guard: whichever rank is higher stays, the loser is disposed.
+ */
+export function applyNormalTierTexture(
+  mat: THREE.MeshStandardMaterial,
+  tex: THREE.Texture,
+  rank: number,
+): boolean {
+  const current = (mat.userData.normalTierRank as number | undefined) ?? 0;
+  if (rank <= current) {
+    tex.dispose();
+    return false;
+  }
+  const prev = mat.normalMap;
+  mat.normalMap = tex;
+  mat.normalScale.set(1, 1);
+  mat.userData.normalTierRank = rank;
+  mat.needsUpdate = true;
+  if (prev) prev.dispose();
+  return true;
+}
+
+/**
+ * Fetch a moon's close-approach relief once its disc has earned it — the same
+ * screen fraction that earns the first colour rung, since relief legibility
+ * and texel legibility track the same disc size. Failure cools down and the
+ * trigger asks again while the body still fills the view, exactly like the
+ * colour ladder. A fetch that outlives an arrival simply applies late: the
+ * warm queue uploads it off-gesture, and the moon draws it on return.
+ */
+export function upgradeNormalOnApproach(
+  up: NormalUpgrade | undefined,
+  fraction: number,
+  nowMs = performance.now(),
+): void {
+  if (!up || up.state !== 'idle') return;
+  if (up.retryAtMs !== undefined && nowMs < up.retryAtMs) return;
+  const at = UPGRADE_TRIGGER_FRACTION['4k'];
+  if (at === undefined || !(fraction > at)) return;
+  up.state = 'inflight';
+  const url = resolveTextureUrl(PLANET_TEXTURE_FILES[up.key], up.tier);
+  loadUpgradeTexture(
+    url,
+    (tex) => {
+      applyTextureDefaults(tex, 'data');
+      const finish = () => {
+        up.state = 'done';
+        if (applyNormalTierTexture(up.material, tex, TIER_RANK[up.tier])) queueTextureWarm(tex);
+      };
+      const img = tex.image as { decode?: () => Promise<void> } | undefined;
+      if (img && typeof img.decode === 'function') img.decode().then(finish, finish);
+      else finish();
+    },
+    (err) => {
+      up.state = 'idle';
+      up.retryAtMs = performance.now() + UPGRADE_RETRY_MS;
+      debugWarn('Normal-map upgrade failed', {
+        key: up.key,
+        tier: up.tier,
+        reason: err instanceof Error ? err.message : String(err),
+      });
+    },
+  );
 }
 
 function createFallbackTexture(key: string, kind: MapKind = 'color'): THREE.Texture {
@@ -1548,6 +1649,10 @@ export interface MoonMesh {
   /** Colour-map ladder streamed in on close approach — one entry for a
    *  photo-textured moon with higher tiers on disk, empty for every other. */
   textureUpgrades: TextureUpgrade[];
+  /** Close-approach relief tier, for the moons whose measured normal map
+   *  ships one (the Moon). Undefined when no tier exists on disk or the
+   *  device can't hold it. */
+  normalUpgrade?: NormalUpgrade;
   /** Silhouette detail, rebuilt on close approach. Every moon carries one:
    *  the Observatory frames even a tiny moon to a fixed screen fraction, so
    *  size at boot says nothing about the silhouette it will be asked to
@@ -1876,12 +1981,13 @@ export function createMoonMeshes(planetName: string): MoonMesh[] {
           applyTextureDefaults(tex, 'data');
           // Decode off-thread before assigning (the moon simply keeps drawing
           // smooth until the normal is cheap to draw); warm the upload only
-          // when the player is landed in this system.
+          // when the player is landed in this system. Rank-guarded: on a bad
+          // link this durable boot fetch can land AFTER the close-approach
+          // relief tier, and must not downgrade it.
           afterDecode(tex, () => {
-            mat.normalMap = tex;
-            mat.normalScale.set(1, 1);
-            mat.needsUpdate = true;
-            if (warmEligibleMoonParents.has(planetName)) queueTextureWarm(tex);
+            if (applyNormalTierTexture(mat, tex, TIER_RANK['2k']) && warmEligibleMoonParents.has(planetName)) {
+              queueTextureWarm(tex);
+            }
           });
         },
       });
@@ -1926,6 +2032,7 @@ export function createMoonMeshes(planetName: string): MoonMesh[] {
       painted: false,
       fx,
       textureUpgrades: photoUpgrade ? [photoUpgrade] : [],
+      normalUpgrade: makeNormalUpgrade(normalKey, mat),
       geometryUpgrade: makeGeometryUpgrade([{ mesh, radiusAU: moonData.radiusAU }]),
     });
   }

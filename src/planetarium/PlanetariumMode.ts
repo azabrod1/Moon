@@ -32,7 +32,7 @@ import {
   SUN_POLE_RA_DEG,
   type PlanetData,
 } from './planets/planetData';
-import { applySunGlowTier, canAttempt, cancelTextureUpgrade, createMoonMeshes, createShaderWarmupProbes, earnedUpgradeTier, firstUpgradeTier, lodMeasurementRelevant, needsUpgradeCover, setWarmEligibleMoonParents, upgradeComplete, upgradeGeometryOnApproach, upgradeTextureOnApproach, ATMOSPHERES, ATMOSPHERE_SHELL_SCALES, type MoonMesh, type TextureUpgrade } from './PlanetFactory';
+import { applySunGlowTier, canAttempt, cancelTextureUpgrade, createMoonMeshes, createShaderWarmupProbes, earnedUpgradeTier, firstUpgradeTier, lodMeasurementRelevant, needsUpgradeCover, normalUpgradePending, setWarmEligibleMoonParents, upgradeComplete, upgradeGeometryOnApproach, upgradeNormalOnApproach, upgradeTextureOnApproach, ATMOSPHERES, ATMOSPHERE_SHELL_SCALES, UPGRADE_TRIGGER_FRACTION, type MoonMesh, type TextureUpgrade } from './PlanetFactory';
 import type { SurfaceShadingFx } from './world/surfaceShading';
 import { bindTextureWarmer, invalidateTextureWarmCache, pumpTextureWarmQueue, queueTextureWarm, resetTextureWarmer } from './world/textureWarmer';
 import {
@@ -2232,7 +2232,14 @@ export class PlanetariumMode {
   private async settleRestoredLandedTextureUpgrades(): Promise<void> {
     // The load screen owns the wait-list the same way an arrival cover does,
     // so a teleport taken straight out of a restored session sees it too.
-    this.arrivalUpgradeBatch = this.coverWaitList();
+    // Boot waits on the landed BODY alone, not the pair: the reveal frames
+    // the body front and centre, and holding a returning player's whole boot
+    // behind the companion's cloud deck (4 MB for a backdrop) is what pushed
+    // this hold to its cap on every landed-on-the-Moon save. The companion's
+    // prefetch still runs — it just sharpens a beat after the reveal.
+    this.arrivalUpgradeBatch = this.coverWaitList(
+      this.landedOn ? this.textureUpgradesForTarget(this.landedOn) : [],
+    );
     const batch = this.arrivalUpgradeBatch;
     const stillInFlight = () => batch.filter((e) => e.up.attempt?.generation === e.generation);
     const deadline = performance.now() + PlanetariumMode.ARRIVAL_UPGRADE_HOLD_MAX_MS;
@@ -2770,6 +2777,10 @@ export class PlanetariumMode {
         if (!m.mesh.visible) continue;
         const ups = m.textureUpgrades;
         const geo = m.geometryUpgrade;
+        // A pending relief tier keeps the moon measurable the same way an
+        // unfinished colour ladder does (it shares the colour ladder's first
+        // trigger fraction below).
+        const normalPending = normalUpgradePending(m.normalUpgrade);
         // Nothing to measure: silhouette already fine, no colour ladder, and
         // the procedural re-render is off, ineligible for this moon (photo /
         // CPU-painted / already sharp — the texturer's own screen, so a moon
@@ -2777,7 +2788,7 @@ export class PlanetariumMode {
         // single slot is already spent.
         const tryProcedural = allowMoonTexUpgrade && !moonTexUpgraded
           && this.moonTexturer.canUpgrade(m, PlanetariumMode.OBSERVE_MOON_TEXTURE_WIDTH);
-        if (!tryProcedural && geo.applied && ups.every(upgradeComplete)) continue;
+        if (!tryProcedural && !normalPending && geo.applied && ups.every(upgradeComplete)) continue;
         m.mesh.getWorldPosition(this.bodyLODTmp);
         // Rendered size (mesh scale carries the render-curve inflation): the
         // triggers must measure the disc actually on screen.
@@ -2790,7 +2801,8 @@ export class PlanetariumMode {
         if (!lodMeasurementRelevant(
           geo, ups, estPx, canvasH,
           tryProcedural ? this.moonDotParams.texUpgradeDiscPx : null,
-        )) continue;
+        ) && !(normalPending
+          && estPx / Math.max(canvasH, 1) > (UPGRADE_TRIGGER_FRACTION['4k'] ?? Infinity))) continue;
         const footprint = projectSphereToScreen(
           this.bodyLODTmp,
           renderedR,
@@ -2811,9 +2823,11 @@ export class PlanetariumMode {
         }
 
         upgradeGeometryOnApproach(geo, footprint.diameterPx);
+        const fraction = footprint.diameterPx / Math.max(canvasH, 1);
         if (ups.length > 0) {
-          this.triggerTextureUpgrades(ups, footprint.diameterPx / Math.max(canvasH, 1), nowMs);
+          this.triggerTextureUpgrades(ups, fraction, nowMs);
         }
+        upgradeNormalOnApproach(m.normalUpgrade, fraction, nowMs);
       }
     }
   }
@@ -13327,8 +13341,10 @@ export class PlanetariumMode {
    *  identity. A cover waits on these and nothing else: a higher step the
    *  on-screen trigger started is not what the reveal is hiding, and a step
    *  that begins after this list is taken cannot extend the hold. */
-  private coverWaitList(): Array<{ up: TextureUpgrade; generation: number }> {
-    return this.landedPairUpgrades().flatMap((up) =>
+  private coverWaitList(
+    ups: readonly TextureUpgrade[] = this.landedPairUpgrades(),
+  ): Array<{ up: TextureUpgrade; generation: number }> {
+    return ups.flatMap((up) =>
       up.attempt && up.attempt.tier === firstUpgradeTier(up)
         ? [{ up, generation: up.attempt.generation }]
         : [],

@@ -279,7 +279,7 @@ describe('createOrbitLineMaterial', () => {
     expect(material.fragmentShader).toContain('abs( vUv.x )');
     expect(material.fragmentShader).not.toContain('fwidth( vUv.y )');
     expect(material.fragmentShader).not.toContain('if ( len2 > 1.0 ) discard;');
-    // Distinct from the ShadowVisuals guides' 'fixed-screen-line-lens-v1' so
+    // Distinct from the ShadowVisuals guides' 'fixed-screen-line-lens-v2' so
     // the two patched shader families can never share a compiled program.
     expect(material.customProgramCacheKey()).toBe('orbit-line-lens-buttcap-v1');
     expect(material.transparent).toBe(true);
@@ -301,6 +301,10 @@ describe('createOrbitLineMaterial', () => {
     };
     material.onBeforeCompile(shader as never, null as never);
     expect(shader.vertexShader).toContain('lensUnwarpOutputNdc');
+    // The camera-plane guard: segments wrapping/grazing the camera must keep
+    // the stock quad (near-singular NDC endpoints explode the warp math into
+    // frame-filling triangles — found by QA at outer-system framings).
+    expect(shader.vertexShader).toContain('clipStart.w > 0.0 && clipEnd.w > 0.0');
     expect(shader.uniforms.uLensStrength).toBe(lensUniforms.uLensStrength);
     expect(shader.uniforms.uLensREdge).toBe(lensUniforms.uLensREdge);
   });

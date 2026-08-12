@@ -240,7 +240,7 @@ function replaceExactlyOnce(source: string, anchor: string, replacement: string)
  * constant in final output space (CLAUDE.md lens contract; same helper as the
  * ShadowVisuals guides). The patched fragment source already yields a distinct
  * program-cache entry, but the explicit cache key keeps us deliberately apart
- * from the helper's shared `fixed-screen-line-lens-v1` key.
+ * from the helper's shared `fixed-screen-line-lens-v2` key.
  */
 export function createOrbitLineMaterial(
   color: number,

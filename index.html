@@ -2628,8 +2628,18 @@
       transition: background 0.14s var(--ease), color 0.14s var(--ease);
     }
     .map-panel-btn:hover { background: rgba(255, 255, 255, 0.07); color: var(--t1); }
-    /* Lit while the help grid stands open. */
-    .map-panel-btn.open { background: rgba(var(--accent-rgb), 0.16); color: var(--t1); }
+    /* Lit while the help grid stands open. Scoped to the help row (the only
+       wide button that ever takes `.open`) and spelled out for :hover too: the
+       plain `.open` selector loses to `.map-panel-btn-wide:hover:not(:disabled)`
+       further down, and the pointer is resting ON this button in the instant
+       after it is pressed — so an open row would paint itself closed. The `?`
+       it replaced never hit this: it tied its own hover rule and won on order. */
+    .map-help-toggle.open,
+    .map-help-toggle.open:hover:not(:disabled) {
+      background: rgba(var(--accent-rgb), 0.16);
+      color: var(--t1);
+      border-color: rgba(var(--accent-rgb), 0.3);
+    }
     .map-panel-btn svg { width: 12px; height: 12px; }
     /* The collapse glyph is a × on a desktop (the panel folds to the pill) and
        a chevron on a phone (the sheet folds to its own header). One button,
@@ -2655,12 +2665,31 @@
     }
     .map-panel-body::-webkit-scrollbar { width: 4px; }
     .map-panel-body::-webkit-scrollbar-thumb { background: rgba(255, 255, 255, 0.10); border-radius: 2px; }
-    /* MORE BELOW — the card's fact-list idiom. Opening help pushes Layers and
-       the footnote out of sight, and a panel that just ends looks like a panel
-       with nothing more in it. */
+    /* MORE BELOW / MORE ABOVE — the card's fact-list idiom, at both ends.
+       Below: opening help pushes Layers and the footnote out of sight, and a
+       panel that just ends looks like a panel with nothing more in it.
+       Above: the find list is a fixed porthole with its own scrollbar, so a
+       scrolled body slices that window against the header's hairline — a hard
+       edge there reads as a list cut off rather than one scrolled past. Both
+       ends spelled out rather than composed, since a mask-image cannot be
+       stacked from two rules. */
     .map-panel-body.scrolls {
       -webkit-mask-image: linear-gradient(to bottom, #000 calc(100% - 16px), transparent);
       mask-image: linear-gradient(to bottom, #000 calc(100% - 16px), transparent);
+    }
+    /* The top fade starts BELOW the hairline. A mask clips to the border box,
+       so a gradient that began at transparent took this element's own
+       border-top with it — the header's dividing line blinked out for exactly
+       as long as the body was scrolled. The first 1px is held opaque so the
+       line stays put and the content fades under it, which is the thing the
+       fade was for. */
+    .map-panel-body.scrolls-up {
+      -webkit-mask-image: linear-gradient(to bottom, #000 0 1px, transparent 1px, #000 17px);
+      mask-image: linear-gradient(to bottom, #000 0 1px, transparent 1px, #000 17px);
+    }
+    .map-panel-body.scrolls-up.scrolls {
+      -webkit-mask-image: linear-gradient(to bottom, #000 0 1px, transparent 1px, #000 17px, #000 calc(100% - 16px), transparent);
+      mask-image: linear-gradient(to bottom, #000 0 1px, transparent 1px, #000 17px, #000 calc(100% - 16px), transparent);
     }
     .map-panel-sep { flex: none; height: 1px; margin: 11px -15px; background: var(--line-dim); }
     /* Two columns: the gesture and what it does. The label column is sized to
@@ -2673,7 +2702,18 @@
       padding: 0 2px;
       flex: none;
     }
-    .map-help-grid.visible { display: grid; }
+    .map-help-grid.visible { display: grid; margin-top: 10px; }
+    /* The disclosure that opens it. A named row in the panel's own wide-button
+       idiom (Reset view's), so what it does is readable without pressing it —
+       the `?` it replaces said nothing until you tried it. The label and its
+       chevron centre together, as Reset view's icon and label do: a word this
+       short parked at the far edge from its own arrow reads as two controls. */
+    .map-help-chev {
+      flex: none;
+      color: var(--t3);
+      transition: transform var(--dur) var(--ease);
+    }
+    .map-help-toggle[aria-expanded="true"] .map-help-chev { transform: rotate(180deg); }
     /* The row is a wrapper for reading, not for layout: its two children are
        the grid's cells. */
     .map-help-row { display: contents; }
@@ -2701,10 +2741,6 @@
       color: var(--t3);
       text-wrap: pretty;
     }
-    /* The rule under the help grid belongs to the grid: it is there to close
-       the section off, and a closed section needs no line. */
-    .map-help-grid + .map-panel-sep { display: none; }
-    .map-help-grid.visible + .map-panel-sep { display: block; }
     /* The scale segment, split evenly so neither state reads as the default. */
     .map-scale {
       flex: none;
@@ -3055,6 +3091,21 @@
       }
       .map-panel.collapsed { display: flex; }
       .map-panel.collapsed .map-panel-body { display: none; }
+      /* The collapsed sheet is one tap target — the whole header reopens it
+         (MapHUD wires the tap), so it slims down to a strip that only has to
+         say "the map controls fold out of here". The chevron stays — it is the
+         arrow saying which way the sheet will go — and brightens from hint to
+         control. */
+      .map-panel.collapsed { cursor: pointer; padding-bottom: 5px; }
+      .map-panel.collapsed .map-panel-grip { margin-bottom: 5px; }
+      .map-panel.collapsed .map-panel-btn { color: var(--t2); }
+      .map-panel.collapsed:active { background-color: rgba(20, 25, 34, 0.9); }
+      /* No keys on a phone: the M chip and the help grid's key row name a
+         keyboard the reader does not have. The chip was also the header's
+         spacer, so the title takes over pushing the buttons to the edge. */
+      .map-panel-head .kbd { display: none; }
+      .map-panel-title { flex: 1; }
+      .map-help-keys { display: none; }
       /* The sheet is a band across a screen the chart also has to be read on:
          the body scrolls inside its share rather than pushing the chart off
          the top. */
@@ -3069,6 +3120,9 @@
       /* Finger targets. */
       .map-panel-btn { width: 28px; height: 28px; font-size: 12px; }
       .map-panel-btn svg { width: 13px; height: 13px; }
+      /* The fold/unfold arrow is the header's one control — drawn at control
+         size, not hint size. */
+      .map-panel-btn .map-panel-chev { width: 16px; height: 16px; }
       .map-scale { height: 34px; }
       .map-scale-seg { font-size: 12px; }
       .map-zoom-btn { width: 34px; height: 30px; }
@@ -3959,26 +4013,15 @@
         <div id="map-panel" class="map-panel pn pn-high" role="region" aria-label="System map controls">
           <div class="map-panel-grip" aria-hidden="true"></div>
           <div class="map-panel-head">
-            <svg class="map-panel-glyph" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" aria-hidden="true"><ellipse cx="10" cy="10" rx="7.5" ry="3.2"></ellipse><circle cx="10" cy="10" r="1.1" fill="currentColor" stroke="none"></circle><circle cx="16.2" cy="8.4" r="1.3" fill="currentColor" stroke="none"></circle></svg>
+            <svg class="map-panel-glyph" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" aria-hidden="true"><circle cx="10" cy="10" r="6.5"></circle><circle cx="10" cy="10" r="1.7" fill="currentColor" stroke="none"></circle><circle cx="15.6" cy="6.8" r="1.4" fill="currentColor" stroke="none"></circle></svg>
             <b class="map-panel-title">System map</b>
-            <span class="kbd">M</span>
-            <button id="map-info" class="map-panel-btn" type="button" title="How the map works" aria-label="How the map works" aria-expanded="false" aria-controls="map-help-grid">?</button>
+            <span class="kbd" title="Press M to open and close the map">M</span>
             <button id="map-panel-collapse" class="map-panel-btn" type="button" title="Collapse" aria-label="Collapse the panel" aria-controls="map-panel-body">
               <svg class="map-panel-x" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" aria-hidden="true"><path d="M5.5 5.5 L14.5 14.5 M14.5 5.5 L5.5 14.5"></path></svg>
               <svg class="map-panel-chev" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5.5 8 L10 12.5 L14.5 8"></path></svg>
             </button>
           </div>
           <div class="map-panel-body" id="map-panel-body">
-            <div id="map-help-grid" class="map-help-grid">
-              <div class="map-help-row"><b>Tap a body</b><span>opens its card — travel, facts, the next event</span></div>
-              <div class="map-help-row"><b>Drag</b><span>turns the view</span></div>
-              <div class="map-help-row"><b>Scroll · pinch</b><span>zooms, riding the cursor</span></div>
-              <div class="map-help-row"><b>Double-tap</b><span>focuses a body and follows it</span></div>
-              <div class="map-help-row"><b><span class="map-help-fine">Right-click · hold</span><span class="map-help-coarse">Hold</span></b><span>offers a teleport to that point in space; the chip confirms it</span></div>
-              <div class="map-help-row"><b><kbd class="kbd">M</kbd> <kbd class="kbd">Esc</kbd></b><span>M opens and closes the map; Esc backs out one step</span></div>
-              <p class="map-help-note">The map runs on the sim clock — the time bar below still drives it.</p>
-            </div>
-            <div class="map-panel-sep"></div>
             <div id="map-scale" class="map-scale" role="radiogroup" aria-label="Map scale">
               <button class="map-scale-seg on" id="map-scale-compressed" role="radio" aria-checked="true">Compressed</button>
               <button class="map-scale-seg" id="map-scale-true" role="radio" aria-checked="false">True scale</button>
@@ -4038,14 +4081,36 @@
                 <button class="tgl" type="button" role="switch" aria-checked="false" aria-label="Distance rings"></button>
               </div>
             </div>
+            <div class="map-panel-sep"></div>
+            <!-- Help, named rather than glyphed: a bare `?` makes the reader
+                 guess at what is behind it. Just "Help" — the panel it sits in
+                 is already titled System map, so naming the map again here
+                 would say it twice, and the row's neighbours ("Zoom", "Reset
+                 view") are this short. No tooltip: the word says what it does,
+                 and every gloss written for it reached for vocabulary
+                 ("gestures") that this app uses in its source and nowhere on
+                 screen. -->
+            <button id="map-info" class="map-panel-btn-wide map-help-toggle" type="button" aria-expanded="false" aria-controls="map-help-grid">
+              Help
+              <svg class="map-help-chev" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5.5 8 L10 12.5 L14.5 8"></path></svg>
+            </button>
+            <div id="map-help-grid" class="map-help-grid">
+              <div class="map-help-row"><b>Tap a body</b><span>opens its card — travel, facts, the next event</span></div>
+              <div class="map-help-row"><b>Drag</b><span>turns the view</span></div>
+              <div class="map-help-row"><b>Scroll · pinch</b><span>zooms, riding the cursor</span></div>
+              <div class="map-help-row"><b>Double-tap</b><span>focuses a body and follows it</span></div>
+              <div class="map-help-row"><b><span class="map-help-fine">Right-click · hold</span><span class="map-help-coarse">Hold</span></b><span>offers a teleport to that point in space; the chip confirms it</span></div>
+              <div class="map-help-row map-help-keys"><b><kbd class="kbd">M</kbd> <kbd class="kbd">Esc</kbd></b><span>M opens and closes the map; Esc backs out one step</span></div>
+              <p class="map-help-note">The map runs on the sim clock — the time bar below still drives it.</p>
+            </div>
             <div class="map-panel-foot">Sizes enlarged to stay visible · orbits &amp; positions real</div>
           </div>
         </div>
         <!-- The panel folded away: the same corner, one line of it. -->
         <button id="map-pill" class="map-pill" type="button" aria-label="Open the map panel">
-          <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" aria-hidden="true"><ellipse cx="10" cy="10" rx="7.5" ry="3.2"></ellipse><circle cx="10" cy="10" r="1.1" fill="currentColor" stroke="none"></circle><circle cx="16.2" cy="8.4" r="1.3" fill="currentColor" stroke="none"></circle></svg>
+          <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" aria-hidden="true"><circle cx="10" cy="10" r="6.5"></circle><circle cx="10" cy="10" r="1.7" fill="currentColor" stroke="none"></circle><circle cx="15.6" cy="6.8" r="1.4" fill="currentColor" stroke="none"></circle></svg>
           System map
-          <span class="kbd">M</span>
+          <span class="kbd" title="Press M to open and close the map">M</span>
         </button>
         <div id="map-card" class="map-card" role="dialog" aria-label="Body actions">
           <div class="map-card-head">

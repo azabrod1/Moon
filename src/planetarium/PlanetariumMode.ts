@@ -9165,8 +9165,11 @@ export class PlanetariumMode {
   private setMapHelpOpen(open: boolean): void {
     if (open) {
       if (!this.isMapOpen()) return;
-      // A `?` pressed on a folded sheet has to unfold it, or it would set a
-      // flag for a grid the reader cannot see.
+      // Help opened on a folded sheet has to unfold it, or it would set a flag
+      // for a grid the reader cannot see. No POINTER can arrive that way any
+      // more — the Help row lives in the body, which a folded sheet hides — but
+      // the dev bridge opens help directly, and that path still needs the
+      // unfold rather than a stale offer.
       if (this.mapPanelCollapsed) this.setMapPanelCollapsed(false, { bank: false });
       this.dismissMapCard();
       this.bottomBar.closeTime();

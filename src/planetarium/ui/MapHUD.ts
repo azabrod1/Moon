@@ -8,10 +8,11 @@ import { makeTiltGlyph } from './mapTiltGlyph';
 
 /**
  * MapHUD — the on-screen controls for the System map: the one glass panel
- * (help grid, scale segment, zoom pair and readout, Reset view, the
- * find-a-body list), the pill it folds into, the close chip, and the
- * picked-body card (tint dot, name, live distance, one-line description,
- * action buttons, the system's next event, facts).
+ * (scale segment, zoom pair and readout, Reset view, the find-a-body list,
+ * the layer switches, and a Help row folding out the gesture grid at the
+ * foot), the pill it folds into, the close chip, and the picked-body card
+ * (tint dot, name, live distance, one-line description, action buttons, the
+ * system's next event, facts).
  *
  * DOM-thin: the markup lives in index.html, this caches the elements and wires
  * their listeners once (the bind()/wired idiom). It owns no map state — it
@@ -211,6 +212,34 @@ export class MapHUD {
       else this.onCollapse();
     });
     this.pill?.addEventListener('click', () => this.onExpand());
+    // On a phone the collapsed sheet keeps only its header, and the whole
+    // strip is the way back in — a thumb should not have to find the chevron.
+    //
+    // The state is snapshotted in the CAPTURE phase, before any control inside
+    // the panel has run, and the bubble handler answers to that snapshot alone.
+    // Reading the class on the way back up instead would be answering a
+    // question the same press has already changed: a tap on a find-a-body row
+    // opens the card, and opening a card FOLDS the phone sheet — so the click
+    // would arrive here at a panel wearing a fresh `collapsed`, unfold it, and
+    // the unfold dismisses the very card the tap opened. Measured: the card was
+    // built (its name painted) and destroyed within the one dispatch.
+    //
+    // The chevron is excluded rather than silenced: it already toggles both
+    // ways on its own, and stopping propagation there would rob main.ts's
+    // document-level rule of the click it uses to blur a pointer-pressed
+    // button — leaving the sheet's own chevron focused, where the next Space
+    // re-fires it instead of pausing the sim.
+    let pressBeganCollapsed = false;
+    this.panel?.addEventListener(
+      'click',
+      () => { pressBeganCollapsed = !!this.panel?.classList.contains('collapsed'); },
+      true,
+    );
+    this.panel?.addEventListener('click', (e) => {
+      if (!pressBeganCollapsed) return;
+      if ((e.target as HTMLElement).closest('#map-panel-collapse')) return;
+      this.onExpand();
+    });
     for (const { key, id } of LAYER_ROWS) {
       const row = document.getElementById(id);
       const tgl = row?.querySelector('.tgl') as HTMLButtonElement | null;
@@ -281,17 +310,33 @@ export class MapHUD {
       collapsed ? 'Open the panel' : 'Collapse the panel',
     );
     this.collapseBtn?.setAttribute('title', collapsed ? 'Open' : 'Collapse');
+    // The same disclosure pairing the Help row below it uses: this button's
+    // aria-controls names the body, so it owes a state to go with it.
+    this.collapseBtn?.setAttribute('aria-expanded', collapsed ? 'false' : 'true');
     this.measurePanel();
   }
 
-  /** Show or hide the help grid, keeping the `?` lit with it — the button's
+  /** Show or hide the help grid, keeping its row lit with it — the button's
    *  pressed state and the grid are one thing, never two. */
   setHelpOpen(open: boolean): void {
     this.helpGrid?.classList.toggle('visible', open);
     this.helpBtn?.classList.toggle('open', open);
     this.helpBtn?.setAttribute('aria-expanded', open ? 'true' : 'false');
-    if (!open) this.helpBtn?.blur();
+    // Focus stays where the user put it. The button used to be dropped on
+    // close, which was survivable while it sat in the header; at the foot of
+    // the body it is the 91st focusable thing on the page, behind all ~75 rows
+    // of the find list, so a keyboard close would exile the user to <body> and
+    // charge them the whole list to get back to the control they just pressed.
+    // Nothing visual depended on it either: the lit state is the `.open` class,
+    // and there is no `:focus` rule on this button. A POINTER press is still
+    // blurred — main.ts's document-level rule owns that, and it is why the
+    // chevron above must not stop propagation.
     this.measurePanel();
+    // The grid opens at the FOOT of a body that scrolls, so on a short panel it
+    // can unfold entirely below the fold and read as a press that did nothing.
+    // After the measure, so the cap and the list's share are already standing
+    // and the scroll lands where the grid finally is.
+    if (open) this.helpGrid?.scrollIntoView({ block: 'nearest' });
   }
 
   /**
@@ -389,15 +434,28 @@ export class MapHUD {
     this.measurePanel();
   }
 
-  /** Mark the panel body as having more below — the card's fact-list idiom.
-   *  Shows only while the body overflows AND has somewhere left to scroll: a
-   *  mask that stayed at the end of the scroll would cut the footnote in half. */
+  /**
+   * Mark which way the panel body has more — the card's fact-list idiom, at
+   * both ends.
+   *
+   * Each edge shows only while there is somewhere left to scroll THAT way: a
+   * bottom mask that stayed at the end of the scroll would cut the footnote in
+   * half, and a top one at the start would dim the scale segment for nothing.
+   *
+   * The top edge earns its own mask because the sections do not end where the
+   * body does. The find list is a fixed porthole with its own scrollbar, so a
+   * body scrolled past it slices that window against the header's hairline —
+   * with its search box and heading already gone above, a hard edge there reads
+   * as a list that has been cut off rather than one that has been scrolled.
+   */
   private updatePanelFade(): void {
     const body = this.panelBody;
     if (!body) return;
-    const more = body.scrollHeight > body.clientHeight + 1
-      && body.scrollTop + body.clientHeight < body.scrollHeight - 1;
+    const overflows = body.scrollHeight > body.clientHeight + 1;
+    const more = overflows && body.scrollTop + body.clientHeight < body.scrollHeight - 1;
+    const above = overflows && body.scrollTop > 1;
     body.classList.toggle('scrolls', more);
+    body.classList.toggle('scrolls-up', above);
   }
 
   /** Stand the panel down while another instrument takes its corner (Stats and

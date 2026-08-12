@@ -7,11 +7,13 @@
 import { describe, expect, it } from 'vitest';
 import * as THREE from 'three';
 import { Line2 } from 'three/addons/lines/Line2.js';
+import { LineMaterial } from 'three/addons/lines/LineMaterial.js';
 import {
   ORBIT_LINE_OPACITY_CAP,
   ORBIT_LINE_OPACITY_FLOOR,
   ORBIT_LINE_OVERVIEW_OPACITY,
   ORBIT_LINE_SEGMENTS,
+  ORBIT_LINE_WIDTH_PX,
   createAsteroidBelt,
   createOrbitLineMaterial,
   getPlanetOrbitalPosition,
@@ -186,6 +188,9 @@ describe('resampleOrbitLines', () => {
     const attributeBefore = instanceStartOf(mercury);
     const versionBefore = attributeBefore.data.version;
     const before = new THREE.Vector3().fromBufferAttribute(attributeBefore, 0);
+    const sphereCentreBefore = mercury.geometry.boundingSphere!.center.clone();
+    // The instanced buffer is flagged for repeated re-upload from creation on.
+    expect(attributeBefore.data.usage).toBe(THREE.DynamicDrawUsage);
 
     const later = J2000_UTC_MS + 200 * 365.25 * 86_400_000;
     resampleOrbitLines(objects, 'realistic', later);
@@ -196,12 +201,27 @@ describe('resampleOrbitLines', () => {
     // vertex sits somewhere else entirely on the (precessed) orbit, and the
     // resample must land in place: the same geometry and interleaved buffer
     // (churning GPU buffers on the periodic drift rebuild is what the fast
-    // path exists to avoid), with the upload flagged.
+    // path exists to avoid), with the upload flagged and the cached bounds
+    // recomputed for the moved strip (stale bounds = stale frustum culling).
     expect(after.distanceTo(before)).toBeGreaterThan(1e-4);
     expect(mercury.geometry).toBe(geometryBefore);
     expect(instanceStartOf(mercury)).toBe(attributeBefore);
     expect(attributeBefore.data.version).toBeGreaterThan(versionBefore);
     expect(attributeBefore.count).toBe(orbitLineSegmentCount(PLANETARIUM_BODIES[0]));
+    expect(
+      mercury.geometry.boundingSphere!.center.distanceTo(sphereCentreBefore),
+    ).toBeGreaterThan(1e-7);
+  });
+
+  it('keeps the realistic strip a strip — the period seam stays open', () => {
+    // sampleTrajectoryLinePoints spans epoch −P/2 → +P/2; the endpoints differ
+    // by one period of precession/perturbation and must never be snapped shut
+    // (a forced closure would falsify the planet-sits-on-its-line guarantee
+    // near the seam).
+    const objects = makeBareObjects();
+    resampleOrbitLines(objects, 'realistic', J2000_UTC_MS);
+    const points = polylinePoints(objects.orbitLines[0]);
+    expect(points[0].distanceTo(points[points.length - 1])).toBeGreaterThan(0);
   });
 
   it('swaps in a fresh geometry and disposes the old one when the segment count changes', () => {
@@ -221,6 +241,7 @@ describe('resampleOrbitLines', () => {
     expect(mercury.geometry).not.toBe(geometryBefore);
     expect(disposed).toBe(true);
     expect(instanceStartOf(mercury).count).toBe(ORBIT_LINE_SEGMENTS);
+    expect(instanceStartOf(mercury).data.usage).toBe(THREE.DynamicDrawUsage);
     expect(mercury.geometry.boundingSphere).not.toBeNull();
   });
 
@@ -252,7 +273,11 @@ describe('createOrbitLineMaterial', () => {
     const material = createOrbitLineMaterial(0xff0000, 0.2, createLensShaderUniforms());
     // Anchors are asserted at patch time (replaceExactlyOnce throws on a three
     // upgrade that moves them) — construction alone proves they still match.
-    expect(material.fragmentShader).toContain('lineEdgeWidth');
+    // The feather must ride vUv.x: x is the cross-line axis, y runs along the
+    // segment (feathering y re-creates the joint beading, inverted).
+    expect(material.fragmentShader).toContain('fwidth( vUv.x )');
+    expect(material.fragmentShader).toContain('abs( vUv.x )');
+    expect(material.fragmentShader).not.toContain('fwidth( vUv.y )');
     expect(material.fragmentShader).not.toContain('if ( len2 > 1.0 ) discard;');
     // Distinct from the ShadowVisuals guides' 'fixed-screen-line-lens-v1' so
     // the two patched shader families can never share a compiled program.
@@ -260,6 +285,34 @@ describe('createOrbitLineMaterial', () => {
     expect(material.transparent).toBe(true);
     expect(material.depthWrite).toBe(false);
     expect(material.worldUnits).toBe(false);
+  });
+
+  it('wires the lens width pre-distortion into the compiled program', () => {
+    const lensUniforms = createLensShaderUniforms();
+    const material = createOrbitLineMaterial(0xff0000, 0.2, lensUniforms);
+    // Feed onBeforeCompile the stock sources the renderer would hand it: the
+    // lens augment must inject its GLSL into the vertex stage and alias the
+    // shared uniform block (identity, not copies — one applyLensShaderUniforms
+    // call per frame drives all nine materials).
+    const shader = {
+      uniforms: {} as Record<string, { value: unknown }>,
+      vertexShader: new LineMaterial().vertexShader,
+      fragmentShader: material.fragmentShader,
+    };
+    material.onBeforeCompile(shader as never, null as never);
+    expect(shader.vertexShader).toContain('lensUnwarpOutputNdc');
+    expect(shader.uniforms.uLensStrength).toBe(lensUniforms.uLensStrength);
+    expect(shader.uniforms.uLensREdge).toBe(lensUniforms.uLensREdge);
+  });
+
+  it('pins the authored width and opacity levels', () => {
+    // Taste knobs, pinned as literals so silent drift is loud: 1.75 CSS px
+    // authored width (the edge feather eats ~0.5 px of solid core), the
+    // pre-existing 0.05/0.4 neighbourhood law, 0.3 overview.
+    expect(ORBIT_LINE_WIDTH_PX).toBe(1.75);
+    expect(ORBIT_LINE_OPACITY_FLOOR).toBe(0.05);
+    expect(ORBIT_LINE_OPACITY_CAP).toBe(0.4);
+    expect(ORBIT_LINE_OVERVIEW_OPACITY).toBe(0.3);
   });
 });
 
@@ -301,5 +354,7 @@ describe('orbitLineOpacity', () => {
     expect(orbitLineOpacity(Number.NaN, 10, 1)).toBe(ORBIT_LINE_OPACITY_FLOOR);
     expect(orbitLineOpacity(1, Number.POSITIVE_INFINITY, 1)).toBe(ORBIT_LINE_OPACITY_FLOOR);
     expect(orbitLineOpacity(1, 10, 0)).toBe(ORBIT_LINE_OPACITY_FLOOR);
+    // Infinity passes a bare `> 0` check but would drive proximity to NaN.
+    expect(orbitLineOpacity(1, 10, Number.POSITIVE_INFINITY)).toBe(ORBIT_LINE_OPACITY_FLOOR);
   });
 });

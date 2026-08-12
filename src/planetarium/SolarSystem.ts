@@ -190,7 +190,8 @@ export function orbitLineOpacity(
   if (
     !Number.isFinite(playerSunDistAU) ||
     !Number.isFinite(cameraSunDistAU) ||
-    !(semiMajorAxisAU > 0)
+    !Number.isFinite(semiMajorAxisAU) ||
+    semiMajorAxisAU <= 0
   ) {
     return ORBIT_LINE_OPACITY_FLOOR;
   }

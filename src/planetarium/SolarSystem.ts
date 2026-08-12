@@ -167,7 +167,7 @@ export const ORBIT_LINE_WIDTH_PX = 2.25;
  * neighbourhood with the camera too close to read the orbit as a ring.
  * Tuned with the width: below ~2 px the lens resample's brightness ripple
  * reads as dashes, and at 0.05 the ripple was proportionally huge. */
-export const ORBIT_LINE_OPACITY_FLOOR = 0.1;
+export const ORBIT_LINE_OPACITY_FLOOR = 0.14;
 /** Neighbourhood saturation — the player is on/near this orbit. */
 export const ORBIT_LINE_OPACITY_CAP = 0.4;
 /** Map-read level once the camera is pulled far enough to see the whole ring. */
@@ -254,7 +254,13 @@ export function createOrbitLineMaterial(
     linewidth: ORBIT_LINE_WIDTH_PX,
     transparent: true,
     opacity,
-    depthWrite: false,
+    // The core WRITES depth, deliberately: the starfield (85 AU dome,
+    // depth-tested) draws after the lines (renderOrder -1 vs 0), so stars
+    // land z-rejected where a line covers them. No alpha value can do this —
+    // a blended star punches through a dim line at (1-alpha) and turns every
+    // floor-opacity arc into a string of beads (Alex's "lines on the orbit";
+    // the bisect measured stars compositing over the lines at 99-100%).
+    depthWrite: true,
     worldUnits: false,
   });
   let fragment = material.fragmentShader;
@@ -272,7 +278,14 @@ export function createOrbitLineMaterial(
     fragment,
     'gl_FragColor = vec4( diffuseColor.rgb, alpha );',
     /* glsl */ `#ifndef WORLD_UNITS
-				alpha *= 1.0 - smoothstep( 1.0 - lineEdgeWidth, 1.0, abs( vUv.x ) );
+				float lineEdgeCoverage = 1.0 - smoothstep( 1.0 - lineEdgeWidth, 1.0, abs( vUv.x ) );
+				// The material depth-writes so the core occludes stars; the
+				// feather's near-invisible shoulder must not cut them too, so
+				// sub-threshold fragments discard instead of blending. The step
+				// this truncates from the ramp is at most 0.3 x opacity — under
+				// the floor opacities that is below one luma level on black.
+				if ( lineEdgeCoverage < 0.3 ) discard;
+				alpha *= lineEdgeCoverage;
 			#endif
 
 			gl_FragColor = vec4( diffuseColor.rgb, alpha );`,

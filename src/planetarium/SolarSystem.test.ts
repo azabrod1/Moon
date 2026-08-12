@@ -279,11 +279,15 @@ describe('createOrbitLineMaterial', () => {
     expect(material.fragmentShader).toContain('abs( vUv.x )');
     expect(material.fragmentShader).not.toContain('fwidth( vUv.y )');
     expect(material.fragmentShader).not.toContain('if ( len2 > 1.0 ) discard;');
+    // Star occlusion: the core depth-writes (stars draw later and z-reject
+    // under it — blending can never hide a star behind a dim line) and the
+    // invisible feather shoulder discards so it doesn't cut stars silently.
+    expect(material.depthWrite).toBe(true);
+    expect(material.fragmentShader).toContain('lineEdgeCoverage < 0.3');
     // Distinct from the ShadowVisuals guides' 'fixed-screen-line-lens-v2' so
     // the two patched shader families can never share a compiled program.
     expect(material.customProgramCacheKey()).toBe('orbit-line-lens-buttcap-v1');
     expect(material.transparent).toBe(true);
-    expect(material.depthWrite).toBe(false);
     expect(material.worldUnits).toBe(false);
   });
 
@@ -317,7 +321,9 @@ describe('createOrbitLineMaterial', () => {
     // without flattening the near/far hierarchy (0.12 does), overview 0.3 and
     // the 0.4 neighbourhood cap unchanged.
     expect(ORBIT_LINE_WIDTH_PX).toBe(2.25);
-    expect(ORBIT_LINE_OPACITY_FLOOR).toBe(0.1);
+    // 0.14: Alex's second "bit brighter" nudge (2026-08-12), applied together
+    // with the depth-write star occlusion that removed the bead artifact.
+    expect(ORBIT_LINE_OPACITY_FLOOR).toBe(0.14);
     expect(ORBIT_LINE_OPACITY_CAP).toBe(0.4);
     expect(ORBIT_LINE_OVERVIEW_OPACITY).toBe(0.3);
   });

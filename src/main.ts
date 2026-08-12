@@ -405,7 +405,11 @@ async function switchAppMode(newMode: AppMode) {
       newMode === 'planetarium' ? 'Entering Planets...'
         : newMode === 'moonFlight' ? 'Entering Flight...'
           : 'Gathering planets...';
-    await sleep(400);
+    // The beat lets the fade-to-black actually show between two live modes.
+    // On first boot the loading screen still covers everything, so the wait
+    // would be 400 ms of nothing, serial, before any texture is even asked
+    // for — a fifth of the whole fast-network startup.
+    if (appModeInitialized) await sleep(400);
 
     if (newMode === 'planetarium') {
       // --- Switch to Planetarium ---

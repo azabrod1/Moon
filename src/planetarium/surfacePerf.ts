@@ -272,14 +272,19 @@ export function surfacePerfEndRender(
   });
 }
 
-function textureIdentity(tex: { name?: string; image?: unknown }): Omit<SurfacePerfUploadToken, 'startedAtMs'> {
+function textureIdentity(
+  tex: { name?: string; image?: unknown; userData?: Record<string, unknown> },
+): Omit<SurfacePerfUploadToken, 'startedAtMs'> {
   const image = tex.image as {
     width?: number;
     height?: number;
     currentSrc?: string;
     src?: string;
   } | undefined;
-  const src = image?.currentSrc || image?.src || '';
+  // Bitmap-backed textures carry no image src; the loader stamps the URL on
+  // userData instead.
+  const src = image?.currentSrc || image?.src
+    || (typeof tex.userData?.sourceUrl === 'string' ? tex.userData.sourceUrl : '');
   const basename = src ? src.split(/[/?#]/).filter(Boolean).pop() ?? '' : '';
   return {
     name: tex.name || basename || '(unnamed texture)',

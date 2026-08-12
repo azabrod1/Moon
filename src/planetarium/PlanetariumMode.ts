@@ -32,7 +32,7 @@ import {
   SUN_POLE_RA_DEG,
   type PlanetData,
 } from './planets/planetData';
-import { applySunGlowTier, canAttempt, cancelTextureUpgrade, createMoonMeshes, createShaderWarmupProbes, earnedUpgradeTier, firstUpgradeTier, needsUpgradeCover, setWarmEligibleMoonParents, upgradeComplete, upgradeGeometryOnApproach, upgradeTextureOnApproach, ATMOSPHERES, ATMOSPHERE_SHELL_SCALES, type MoonMesh, type TextureUpgrade } from './PlanetFactory';
+import { applySunGlowTier, canAttempt, cancelTextureUpgrade, createMoonMeshes, createShaderWarmupProbes, earnedUpgradeTier, firstUpgradeTier, lodMeasurementRelevant, needsUpgradeCover, setWarmEligibleMoonParents, upgradeComplete, upgradeGeometryOnApproach, upgradeTextureOnApproach, ATMOSPHERES, ATMOSPHERE_SHELL_SCALES, type MoonMesh, type TextureUpgrade } from './PlanetFactory';
 import type { SurfaceShadingFx } from './world/surfaceShading';
 import { bindTextureWarmer, invalidateTextureWarmCache, pumpTextureWarmQueue, queueTextureWarm, resetTextureWarmer } from './world/textureWarmer';
 import {
@@ -202,6 +202,7 @@ import {
   CAM_FOLLOW_TAU_IDLE_S,
   CAM_FOLLOW_TAU_TURN_S,
   CAM_FOLLOW_TURN_BLEND_S,
+  ORBIT_DAMPING_TAU_S,
   cameraFollowGain,
   chaseIdealOffset,
   reacquireCameraStep,
@@ -225,6 +226,7 @@ import {
 import { KM_CONSTANTS } from '../shared/constants/physicalData';
 import { smoothstepUnclamped } from '../shared/math/smoothstep';
 import {
+  estimateSphereScreenDiameterPx,
   projectSphereToScreen,
   projectToScreen,
   screenPointToWorldRay,
@@ -253,13 +255,13 @@ import {
   BODY_APPROACH_V_MIN_AU_S,
   BODY_CAP_CLEAR_HOLD_S,
   MOON_APPROACH_K_PER_S,
-  MOON_CAP_RELEASE_EFOLD_S,
   PLANET_APPROACH_K_PER_S,
   PLANET_ARRIVAL_STANDOFF_FLOOR_AU,
-  PLANET_CAP_RELEASE_EFOLD_S,
   SUN_APPROACH_SURFACE_RADII,
   SUN_ARRIVAL_RADII,
+  sweepSegmentSphere,
   type BodyCapState,
+  type SweepContact,
   type MoonArrivalInputs,
 } from './arrivalLogic';
 import {
@@ -838,6 +840,26 @@ export class PlanetariumMode {
     minX: 0, maxX: 0, minY: 0, maxY: 0,
     footprintKind: 'none',
   };
+  /** Monotonic per-update() stamp guarding the shared projection caches (the
+   *  Sun's below, and each moon's on MoonMesh). One increment site covers
+   *  cruise and landed: updateLanded runs inside update(). */
+  private frameStamp = 0;
+  /** The frameStamp whose OrbitControls damping step has already run — the
+   *  controls wrapper (see the constructor) uses it to hold the instance to
+   *  one step per rendered frame. */
+  private controlsDampingFrame = -1;
+  /** The Sun's screen projection, measured once per frame and shared by its
+   *  four per-frame consumers (exposure meter, occlusion pass, sun shader,
+   *  sun label) — identical inputs, so one measurement serves all. Its own
+   *  object, never the sphereScreenProjection scratch: consumers hold the
+   *  reference across their whole pass. */
+  private sunScreenProjectionCache: SphereScreenProjection = {
+    x: 0, y: 0, ndcX: 0, ndcY: 0, ndcZ: 0,
+    footprintX: 0, footprintY: 0, radiusPx: 0, diameterPx: 0,
+    minX: 0, maxX: 0, minY: 0, maxY: 0,
+    footprintKind: 'none',
+  };
+  private sunScreenProjectionFrame = -1;
   private tmpSunOccluderPosition = new THREE.Vector3();
   private tmpSunOccluderDirection = new THREE.Vector3();
   private tmpSunOccluderScale = new THREE.Vector3();
@@ -1652,10 +1674,31 @@ export class PlanetariumMode {
 
     this.controls = new OrbitControls(camera, renderer.domElement);
     this.controls.enableDamping = true;
-    this.controls.dampingFactor = 0.05;
+    // Re-derived from real frame time at the top of update(); this seeds the
+    // first frame only.
+    this.controls.dampingFactor = cameraFollowGain(1 / 60, ORBIT_DAMPING_TAU_S);
     this.controls.enabled = false;
     this.controls.minDistance = CRUISE_CONTROLS_MIN_DISTANCE_AU;
     this.controls.maxDistance = 5;
+    // OrbitControls advances its damping by a fixed fraction per update()
+    // CALL, and its own pointer/wheel handlers each call update() on top of
+    // this mode's per-frame call. Whether a frame catches an input event is
+    // set by the beat between device report rate and refresh rate, so during
+    // a drag the camera advanced ~2× on event frames vs quiet ones — a speed
+    // flutter that reads as jitter against a large nearby disc. Hold the
+    // instance to ONE step per rendered frame: the first call in a frame
+    // claims the stamp, later ones just accumulate their input deltas for the
+    // next frame's step — the render could not have shown them any earlier.
+    // While the mode is inactive update() never stamps, so pass handler calls
+    // through untouched rather than gate them against a frozen stamp.
+    const stepControlsDamping = this.controls.update.bind(this.controls);
+    this.controls.update = (deltaTime?: number | null): boolean => {
+      if (this.active) {
+        if (this.controlsDampingFrame === this.frameStamp) return false;
+        this.controlsDampingFrame = this.frameStamp;
+      }
+      return stepControlsDamping(deltaTime);
+    };
 
     // Yield the chase cam only on an actual orbit drag, never on a plain
     // click. We track raw pointer pixels because the chase cam moves the
@@ -2371,6 +2414,12 @@ export class PlanetariumMode {
   update(dt: number): void {
     if (!this.active || !this.solarSystem) return;
     this.lastFrameDtMs = dt * 1000;
+    this.frameStamp++;
+    // One damping step runs per frame (the controls wrapper enforces it), so
+    // size that step by the frame's real duration: the coast then decays at
+    // e^(−t/τ) in wall time on any refresh rate, and a hitch frame advances
+    // by exactly the time it took.
+    this.controls.dampingFactor = cameraFollowGain(dt, ORBIT_DAMPING_TAU_S);
 
     // Upload one budget's worth of freshly loaded textures while nothing is
     // being asked of the frame — otherwise the whole decode+upload bill lands
@@ -2426,9 +2475,11 @@ export class PlanetariumMode {
     // Body-proximity governor (moons + planets + the Sun): the planet
     // throttle knows nothing smaller than a system, so near a body it still
     // allows the in-system setting — several standoffs per second. Cap the
-    // closing speed at K × surface distance instead (same escape hatch as
-    // the throttle). Tightening applies instantly; release ramps so a flyby
-    // ends with a pull-away, not a one-frame snap back to thousands of km/s.
+    // closing speed at K × surface distance and the receding speed at the
+    // distance-tied leave law instead (same escape hatch as the throttle).
+    // Tightening applies instantly; loosening runs through a short
+    // transition ease onto the leave law, so a flyby ends with a steady
+    // pull-away, never a time-exponential detonation.
     // The throttle override (and systemSlowdown off) bypasses the applied
     // cap the same frame — no lingering crawl — while the candidate keeps
     // integrating and the engaged latch keeps telling the override
@@ -2442,11 +2493,9 @@ export class PlanetariumMode {
     // must not hand back a fully released cap in one frame. Geometry can't
     // change while everything is frozen, so a stale state is a current one.
     if (!this.player.held) {
-      const geom = this.computeBodySpeedCap();
       this.bodyCap = advanceBodyCap(
         this.bodyCap,
-        geom.capAUPerS,
-        geom.releaseEfoldS,
+        this.computeBodySpeedCap(),
         this.player.commandedSpeedAUPerS,
         this.throttleOverride || !this.systemSlowdown,
         dt,
@@ -2487,7 +2536,14 @@ export class PlanetariumMode {
     // time warp) the rendered gap alternates by the per-frame pushback —
     // invisible at the old 17,000 km chase distance, a visible shimmy of the
     // near-full-screen disc at 3,000 km.
-    if (!this.devFreeCamera) {
+    // Scripted transfers own the ship and skip the resolvers: prevPlayerPos
+    // freezes at the transfer's origin (it refreshes only on integrating
+    // frames), so the sweep would re-test the whole traveled chord each
+    // frame and pin the ship to any body the path grazes. The first
+    // post-transfer frame re-seeds prevPlayerPos before integrating, so
+    // handback resolves cleanly. Plain teleports are safe the same way —
+    // their handlers run between frames, ahead of that re-seed.
+    if (!this.devFreeCamera && !isScriptedTransfer) {
       this.resolvePlanetCollisions();
       this.resolveMoonCollisions();
     }
@@ -2554,17 +2610,12 @@ export class PlanetariumMode {
     // Coverage meter: output-space overlap of the displayed tangent footprint,
     // not the overscan camera's rectilinear angular box. Telemetry for
     // devExposurePeek() only; updateSunShader owns the adapted render exposure.
-    this.solarSystem.sun.getWorldPosition(this.tmpSunView);
+    // The shared measurement uses sun.position, which IS the Sun's world
+    // position here: a direct scene child, posed by applyFloatingOrigin
+    // earlier this frame.
     const exposureWidth = this.renderer.domElement.clientWidth;
     const exposureHeight = this.renderer.domElement.clientHeight;
-    const exposureFootprint = projectSphereToScreen(
-      this.tmpSunView,
-      SUN_DATA.radiusAU,
-      this.camera,
-      exposureWidth,
-      exposureHeight,
-      this.sphereScreenProjection,
-    );
+    const exposureFootprint = this.getSunScreenProjection();
     const overlapW = Math.max(
       0,
       Math.min(exposureFootprint.maxX, exposureWidth) - Math.max(exposureFootprint.minX, 0),
@@ -2697,6 +2748,14 @@ export class PlanetariumMode {
       // silhouette is already fine. (every() is true for a ladder-less body.)
       if (geo.applied && ups.every(upgradeComplete)) continue;
       planet.group.getWorldPosition(this.bodyLODTmp);
+      // A body with work left still skips the full 32-ray measurement while a
+      // conservative overestimate of its diameter stays under every trigger
+      // it could pull — the overestimate crossing first is what makes the
+      // skip unable to miss a real trigger.
+      const estPx = estimateSphereScreenDiameterPx(
+        this.bodyLODTmp, planet.data.radiusAU, this.camera, canvasW, canvasH,
+      );
+      if (!lodMeasurementRelevant(geo, ups, estPx, canvasH, null)) continue;
       const footprint = projectSphereToScreen(
         this.bodyLODTmp,
         planet.data.radiusAU,
@@ -2723,14 +2782,26 @@ export class PlanetariumMode {
         const ups = m.textureUpgrades;
         const geo = m.geometryUpgrade;
         // Nothing to measure: silhouette already fine, no colour ladder, and
-        // either the procedural re-render is off or this frame's single slot
-        // is already spent.
-        const tryProcedural = allowMoonTexUpgrade && !moonTexUpgraded;
+        // the procedural re-render is off, ineligible for this moon (photo /
+        // CPU-painted / already sharp — the texturer's own screen, so a moon
+        // upgrade() would refuse never buys a measurement), or this frame's
+        // single slot is already spent.
+        const tryProcedural = allowMoonTexUpgrade && !moonTexUpgraded
+          && this.moonTexturer.canUpgrade(m, PlanetariumMode.OBSERVE_MOON_TEXTURE_WIDTH);
         if (!tryProcedural && geo.applied && ups.every(upgradeComplete)) continue;
         m.mesh.getWorldPosition(this.bodyLODTmp);
         // Rendered size (mesh scale carries the render-curve inflation): the
         // triggers must measure the disc actually on screen.
         const renderedR = m.data.radiusAU * m.mesh.scale.x;
+        // Same skip as the planet loop: a conservative overestimate under
+        // every pullable trigger proves the full measurement moot this frame.
+        const estPx = estimateSphereScreenDiameterPx(
+          this.bodyLODTmp, renderedR, this.camera, canvasW, canvasH,
+        );
+        if (!lodMeasurementRelevant(
+          geo, ups, estPx, canvasH,
+          tryProcedural ? this.moonDotParams.texUpgradeDiscPx : null,
+        )) continue;
         const footprint = projectSphereToScreen(
           this.bodyLODTmp,
           renderedR,
@@ -4083,6 +4154,64 @@ export class PlanetariumMode {
    * `updateSunLabel`). A body blocks only while it is a face seen from
    * outside: one the camera sits inside is a room, not an obstacle.
    */
+  /** See sunScreenProjectionCache. Every caller runs inside update(), after
+   *  applyFloatingOrigin has posed the Sun and the camera is final, so one
+   *  measurement per frameStamp serves them all. The viewport floor matches
+   *  updateSunShader's historical Math.max(…, 1): only a zero-sized (hidden)
+   *  canvas is affected, where nothing draws anyway. */
+  private getSunScreenProjection(): SphereScreenProjection {
+    if (this.sunScreenProjectionFrame !== this.frameStamp && this.solarSystem) {
+      this.sunScreenProjectionFrame = this.frameStamp;
+      projectSphereToScreen(
+        this.solarSystem.sun.position,
+        SUN_DATA.radiusAU,
+        this.camera,
+        Math.max(this.renderer.domElement.clientWidth, 1),
+        Math.max(this.renderer.domElement.clientHeight, 1),
+        this.sunScreenProjectionCache,
+      );
+    }
+    return this.sunScreenProjectionCache;
+  }
+
+  /** A moon's effective-radius screen projection, measured at most once per
+   *  frame (MoonMesh.effProj): the occlusion-disc and label passes ask with
+   *  identical inputs — the mesh's world position, the rendered-size radius,
+   *  the settled camera — so whichever runs first serves the other. Gates
+   *  differ per pass (occluders skip small discs, labels skip hidden names),
+   *  which the lazy fill absorbs: a moon only ever measures for its first
+   *  asker. A cache hit ignores the arguments, so only those two passes may
+   *  call this. updateBodyLOD in particular must NOT join: it runs before the
+   *  camera-safety pass and deliberately measures a different camera pose. */
+  private moonEffScreenProjection(
+    m: MoonMesh,
+    worldPos: THREE.Vector3,
+    effRadiusAU: number,
+  ): NonNullable<MoonMesh['effProj']> {
+    let cache = m.effProj;
+    if (!cache) {
+      cache = m.effProj = { frame: -1, x: 0, y: 0, ndcZ: 0, radiusPx: 0, footprintX: 0, footprintY: 0 };
+    }
+    if (cache.frame !== this.frameStamp) {
+      const proj = projectSphereToScreen(
+        worldPos,
+        effRadiusAU,
+        this.camera,
+        this.renderer.domElement.clientWidth,
+        this.renderer.domElement.clientHeight,
+        this.sphereScreenProjection,
+      );
+      cache.frame = this.frameStamp;
+      cache.x = proj.x;
+      cache.y = proj.y;
+      cache.ndcZ = proj.ndcZ;
+      cache.radiusPx = proj.radiusPx;
+      cache.footprintX = proj.footprintX;
+      cache.footprintY = proj.footprintY;
+    }
+    return cache;
+  }
+
   private collectDynamicOccluders() {
     if (!this.planetLabels || !this.solarSystem) return;
     const canvasW = this.renderer.domElement.clientWidth;
@@ -4099,14 +4228,7 @@ export class PlanetariumMode {
     {
       const sunPos = this.solarSystem.sun.position;
       const distFromCamera = this.camera.position.distanceTo(sunPos);
-      const proj = projectSphereToScreen(
-        sunPos,
-        SUN_DATA.radiusAU,
-        this.camera,
-        canvasW,
-        canvasH,
-        this.sphereScreenProjection,
-      );
+      const proj = this.getSunScreenProjection();
       if (proj.ndcZ < 1 && distFromCamera > 0) {
         const radiusPx = proj.radiusPx * 1.1;
         this.planetLabels.addForegroundDisc({
@@ -4143,14 +4265,7 @@ export class PlanetariumMode {
         // disc at any distance, letting labels and beacons draw over their faces.
         if (effectiveRadiusAU * 2 <= 0.01 * distFromCamera) continue;
 
-        const proj = projectSphereToScreen(
-          tempV,
-          effectiveRadiusAU,
-          this.camera,
-          canvasW,
-          canvasH,
-          this.sphereScreenProjection,
-        );
+        const proj = this.moonEffScreenProjection(m, tempV, effectiveRadiusAU);
         if (proj.ndcZ >= 1) continue;
         const screenX = proj.footprintX;
         const screenY = proj.footprintY;
@@ -4393,34 +4508,23 @@ export class PlanetariumMode {
 
         m.mesh.getWorldPosition(tempV);
         const moonCamDist = tempV.distanceTo(this.camera.position);
-        const proj = projectSphereToScreen(
-          tempV,
-          m.data.radiusAU * m.mesh.scale.x,
-          this.camera,
-          canvasW,
-          canvasH,
-          this.sphereScreenProjection,
-        );
-        if (proj.ndcZ >= 1) {
-          if (label.style.display !== 'none') label.style.display = 'none';
-          continue;
-        }
-
         // Rendered disc radius: the same curve the mesh uses, padded so the
         // label anchor clears the limb instead of riding on the moon's face.
+        // One measurement serves anchor and pad — a sphere projection's centre
+        // fields are radius-independent (pinned in the projectToScreen tests)
+        // — and it is the same measurement the occlusion pass already took for
+        // this moon this frame.
         const effRadiusAU = this.renderedMoonSizeAU(
           m.data.radiusAU,
           planet.data.radiusAU,
           this.moonRenderAnchorRatio(planet.data.name),
         );
-        const discRadiusPadPx = projectSphereToScreen(
-          tempV,
-          effRadiusAU,
-          this.camera,
-          canvasW,
-          canvasH,
-          this.sphereScreenProjection,
-        ).radiusPx * 1.1;
+        const proj = this.moonEffScreenProjection(m, tempV, effRadiusAU);
+        if (proj.ndcZ >= 1) {
+          if (label.style.display !== 'none') label.style.display = 'none';
+          continue;
+        }
+        const discRadiusPadPx = proj.radiusPx * 1.1;
 
         // Sub-pixel gating: a moon whose disc doesn't read and whose dot is too
         // faint to see even fully lit keeps no label — unless it's the nav target.
@@ -4932,14 +5036,7 @@ export class PlanetariumMode {
     let veilArmCoeff = 0;
 
     if (inFront) {
-      const sunProjection = projectSphereToScreen(
-        this.solarSystem.sun.position,
-        SUN_DATA.radiusAU,
-        this.camera,
-        viewportWidth,
-        viewportHeight,
-        this.sphereScreenProjection,
-      );
+      const sunProjection = this.getSunScreenProjection();
       this.tmpSunScreen.set(sunProjection.ndcX, sunProjection.ndcY, sunProjection.ndcZ);
       centreDistanceNdc = Math.hypot(this.tmpSunScreen.x, this.tmpSunScreen.y);
       const glareExtent = SUN_GLARE_EXTENT_SOLAR_RADII;
@@ -5431,7 +5528,9 @@ export class PlanetariumMode {
     // intersected the frustum). Building a core from that giant radius is how the
     // off-frame Sun erased the sky, so keep only the honest glint floor here; the
     // activation gate below then also refuses to activate on a covering footprint.
-    const sunFootprintKind = inFront ? this.sphereScreenProjection.footprintKind : 'none';
+    // Read the Sun's OWN projection: the shared scratch has been overwritten
+    // by moon/ship measurements since the Sun was measured this frame.
+    const sunFootprintKind = inFront ? this.getSunScreenProjection().footprintKind : 'none';
     maskParams.coreOuterPx = sunFootprintKind === 'covering'
       ? glintFloorPx
       : sunGlareMaskCoreOuterPx(solarRadiusPx, glintFloorPx, bodyVisibleFraction);
@@ -5765,7 +5864,8 @@ export class PlanetariumMode {
       (this.keys.has('s') ? 1 : 0);
     if (this.touchThrottle !== 0) throttle = this.touchThrottle;
 
-    const hasManualInput = yaw !== 0 || pitch !== 0 || throttle !== 0;
+    const steering = yaw !== 0 || pitch !== 0;
+    const hasManualInput = steering || throttle !== 0;
 
     // The arrival look is cinematic assistance, never a control lock. Any
     // explicit flight input hands the camera straight back to the pilot.
@@ -5787,7 +5887,7 @@ export class PlanetariumMode {
     // steer only while yaw/pitch are idle. Disengaging on W was how a 20c
     // hurry-up quietly went ballistic and sailed past its destination with
     // nothing left to park the ship.
-    if (this.autopilot && (yaw !== 0 || pitch !== 0)) {
+    if (this.autopilot && steering) {
       this.disableAutopilot();
     }
 
@@ -6161,27 +6261,29 @@ export class PlanetariumMode {
     this.statsPanel.render(stats, this.fpsDisplay);
   }
 
+  private readonly sunLabelOcclusionProbe = (x: number, y: number, depth: number): boolean =>
+    this.planetLabels?.isScreenPointOccluded(x, y, depth) ?? false;
+
   private updateSunLabel() {
     if (!this.solarSystem) return;
     const sunPos = this.solarSystem.sun.position;
-    const canvas = this.renderer.domElement;
-    const sunRadiusPx = projectSphereToScreen(
-      sunPos,
-      SUN_DATA.radiusAU,
-      this.camera,
-      canvas.clientWidth,
-      canvas.clientHeight,
-      this.sphereScreenProjection,
-    ).radiusPx;
+    const distanceFromSunAU = this.player.getDistanceFromSun();
+    const revealed = this.revealedBody === 'Sun';
+    // The footprint (32 rim rays through the lens) only feeds the visible
+    // label's offset — when the label's own gates will hide it anyway, pass a
+    // zero radius and skip the measurement.
+    const sunRadiusPx = SunLabel.wantsFootprint(this.showBodyLabels, revealed, distanceFromSunAU)
+      ? this.getSunScreenProjection().radiusPx
+      : 0;
     this.sunLabel.update(
       sunPos,
       this.camera,
       this.renderer.domElement,
-      this.player.getDistanceFromSun(),
+      distanceFromSunAU,
       sunRadiusPx,
-      (x, y, depth) => this.planetLabels?.isScreenPointOccluded(x, y, depth) ?? false,
+      this.sunLabelOcclusionProbe,
       this.showBodyLabels,
-      this.revealedBody === 'Sun',
+      revealed,
       this.sunGlareMaskParams,
     );
   }
@@ -7016,6 +7118,11 @@ export class PlanetariumMode {
       // Arming starts a fresh clear-hold — a stale unbound interval from
       // before the tap must not auto-clear the override moments later.
       if (this.throttleOverride) this.bodyCap = { ...this.bodyCap, unboundS: 0 };
+      // Name the state change: the pill sits between the − / + steppers on
+      // phones, and an unnoticed fat-finger arms a full-speed bypass.
+      this.notification.show(this.throttleOverride
+        ? 'Speed limits off — full throttle everywhere.'
+        : 'Speed limits back on.');
       this.updateSpeedSlider();
     });
 
@@ -9074,8 +9181,11 @@ export class PlanetariumMode {
   private setMapHelpOpen(open: boolean): void {
     if (open) {
       if (!this.isMapOpen()) return;
-      // A `?` pressed on a folded sheet has to unfold it, or it would set a
-      // flag for a grid the reader cannot see.
+      // Help opened on a folded sheet has to unfold it, or it would set a flag
+      // for a grid the reader cannot see. No POINTER can arrive that way any
+      // more — the Help row lives in the body, which a folded sheet hides — but
+      // the dev bridge opens help directly, and that path still needs the
+      // unfold rather than a stale offer.
       if (this.mapPanelCollapsed) this.setMapPanelCollapsed(false, { bank: false });
       this.dismissMapCard();
       this.bottomBar.closeTime();
@@ -10410,30 +10520,24 @@ export class PlanetariumMode {
    *  and the Sun at SUN_APPROACH_SURFACE_RADII × its photosphere — the Sun
    *  has no collision shell, and the system throttle's inner edge sits
    *  INSIDE the photosphere, so this glide is the only brake. */
-  private computeBodySpeedCap(): { capAUPerS: number; releaseEfoldS: number } {
+  private computeBodySpeedCap(): number {
     const f = this.player.getForwardDirection();
     let cap = Infinity;
-    let releaseEfoldS = MOON_CAP_RELEASE_EFOLD_S;
-    const consider = (x: number, y: number, z: number, surfaceR: number, kPerS: number, efoldS: number) => {
+    const consider = (x: number, y: number, z: number, surfaceR: number, kPerS: number) => {
       const dx = x - this.player.posX;
       const dy = y - this.player.posY;
       const dz = z - this.player.posZ;
       const dist = Math.sqrt(dx * dx + dy * dy + dz * dz);
       if (dist < 1e-12) return;
       const cos = (dx * f.x + dy * f.y + dz * f.z) / dist;
-      const c = governedSpeedCap(
-        Math.max(dist - surfaceR, 0),
-        cos,
-        kPerS,
-        BODY_APPROACH_V_MIN_AU_S,
-      );
-      if (c < cap) {
-        cap = c;
-        releaseEfoldS = efoldS;
-      }
+      // Raw surface distance, deliberately unclamped: at or inside the
+      // collision shell both laws clamp themselves — the approach to its
+      // floor, the leave law to the shell's own creep.
+      const c = governedSpeedCap(dist - surfaceR, surfaceR, cos, kPerS, BODY_APPROACH_V_MIN_AU_S);
+      if (c < cap) cap = c;
     };
     this.forEachGovernedMoon((x, y, z, renderedR) =>
-      consider(x, y, z, renderedR, MOON_APPROACH_K_PER_S, MOON_CAP_RELEASE_EFOLD_S));
+      consider(x, y, z, renderedR, MOON_APPROACH_K_PER_S));
     if (this.solarSystem) {
       for (const planet of this.solarSystem.planets) {
         const wp = planet.group.userData.worldPosAU as { x: number; y: number; z: number } | undefined;
@@ -10442,7 +10546,6 @@ export class PlanetariumMode {
           wp.x, wp.y, wp.z,
           planetEnvelopeRadiusAU(planet.data.radiusAU, planet.group.scale.x, ATMOSPHERE_SHELL_SCALES[planet.data.name]),
           PLANET_APPROACH_K_PER_S,
-          PLANET_CAP_RELEASE_EFOLD_S,
         );
       }
       // The Sun sits at the heliocentric origin.
@@ -10450,10 +10553,9 @@ export class PlanetariumMode {
         0, 0, 0,
         (KM_CONSTANTS.SUN_RADIUS / KM_PER_AU) * SUN_APPROACH_SURFACE_RADII,
         PLANET_APPROACH_K_PER_S,
-        PLANET_CAP_RELEASE_EFOLD_S,
       );
     }
-    return { capAUPerS: cap, releaseEfoldS };
+    return cap;
   }
 
   private pushCameraShell(sceneX: number, sceneY: number, sceneZ: number, surfaceRadiusAU: number) {
@@ -10568,101 +10670,59 @@ export class PlanetariumMode {
     return min;
   }
 
-  /** Moon counterpart of resolvePlanetCollisions, with one difference: it
-   *  sweeps the whole frame segment (prevPlayerPos → current) instead of
-   *  checking the endpoint — endpoint checks tunnel exactly at moon scale. */
+  /**
+   * Land a swept shell contact: park the ship on the shell, and — when the
+   * pilot's hands are off the stick — swing the nose outward so the leave
+   * law pulls it straight away. An actively steering pilot keeps their
+   * heading — the shell holds them regardless, and repeatedly snapping the
+   * nose against a held stick was the reported grind-fight. Autopilot ends
+   * on contact: its glide contract already failed (a body swept in at time
+   * warp), and its re-aim would fight the outward bounce frame by frame —
+   * silently, since the pilot did nothing to take the stick.
+   */
+  private applyShellContact(cx: number, cy: number, cz: number, shellR: number, hit: SweepContact) {
+    this.player.posX = cx + hit.ox * shellR;
+    this.player.posY = cy + hit.oy * shellR;
+    this.player.posZ = cz + hit.oz * shellR;
+    if (this.autopilot) this.disengageAutopilot();
+    if (this.player.yawInput !== 0 || this.player.pitchInput !== 0) return;
+    const forward = this.player.getForwardDirection();
+    if (forward.x * hit.ox + forward.y * hit.oy + forward.z * hit.oz < 0.15) {
+      this.player.headToward(
+        this.player.posX + hit.ox * shellR * 2,
+        this.player.posZ + hit.oz * shellR * 2,
+        this.player.posY + hit.oy * shellR * 2,
+      );
+    }
+  }
+
   private resolveMoonCollisions() {
     const p0 = this.prevPlayerPos;
-    const forward = this.player.getForwardDirection();
     this.forEachGovernedMoon((x, y, z, renderedR) => {
       // Same clearance bubble as the arrival standoff and camera safety.
       const collisionR = moonCollisionRadius(renderedR, SHIP_CLEARANCE_AU);
-      const dx = this.player.posX - p0.x;
-      const dy = this.player.posY - p0.y;
-      const dz = this.player.posZ - p0.z;
-      const cx = x - p0.x;
-      const cy = y - p0.y;
-      const cz = z - p0.z;
-      const segLenSq = dx * dx + dy * dy + dz * dz;
-      const t = segLenSq > 0 ? Math.min(1, Math.max(0, (cx * dx + cy * dy + cz * dz) / segLenSq)) : 0;
-      let ox = p0.x + dx * t - x;
-      let oy = p0.y + dy * t - y;
-      let oz = p0.z + dz * t - z;
-      let d = Math.sqrt(ox * ox + oy * oy + oz * oz);
-      if (d >= collisionR) return;
-      if (d < 1e-9) {
-        // Dead-center pass: push back along the incoming segment.
-        ox = -dx;
-        oy = -dy;
-        oz = -dz;
-        d = Math.sqrt(ox * ox + oy * oy + oz * oz);
-        if (d < 1e-9) {
-          ox = 1;
-          oy = 0;
-          oz = 0;
-          d = 1;
-        }
-      }
-      ox /= d;
-      oy /= d;
-      oz /= d;
-      this.player.posX = x + ox * collisionR;
-      this.player.posY = y + oy * collisionR;
-      this.player.posZ = z + oz * collisionR;
-      if (forward.x * ox + forward.y * oy + forward.z * oz < 0.15) {
-        this.player.headToward(
-          this.player.posX + ox * collisionR * 2,
-          this.player.posZ + oz * collisionR * 2,
-          this.player.posY + oy * collisionR * 2,
-        );
-      }
+      const hit = sweepSegmentSphere(
+        p0.x, p0.y, p0.z,
+        this.player.posX, this.player.posY, this.player.posZ,
+        x, y, z, collisionR,
+      );
+      if (hit) this.applyShellContact(x, y, z, collisionR, hit);
     });
   }
 
   private resolvePlanetCollisions() {
     if (!this.solarSystem) return;
-
-    const offset = new THREE.Vector3();
-    const outwardHeading = new THREE.Vector3();
-    const forward = this.player.getForwardDirection();
-
+    const p0 = this.prevPlayerPos;
     for (const planet of this.solarSystem.planets) {
       const worldPos = planet.group.userData.worldPosAU as { x: number; y: number; z: number } | undefined;
       if (!worldPos) continue;
-
-      offset.set(
-        this.player.posX - worldPos.x,
-        this.player.posY - worldPos.y,
-        this.player.posZ - worldPos.z,
-      );
-
-      let distance = offset.length();
       const collisionRadius = this.getPlanetCollisionRadius(planet.data.name, planet.data.radiusAU, planet.group.scale.x);
-      if (distance >= collisionRadius) continue;
-
-      if (distance < 1e-8) {
-        offset.copy(forward).multiplyScalar(-1);
-        distance = offset.length();
-      }
-      if (distance < 1e-8) {
-        offset.set(1, 0, 0);
-        distance = 1;
-      }
-
-      offset.divideScalar(distance);
-      this.player.posX = worldPos.x + offset.x * collisionRadius;
-      this.player.posY = worldPos.y + offset.y * collisionRadius;
-      this.player.posZ = worldPos.z + offset.z * collisionRadius;
-
-      if (forward.dot(offset) < 0.15) {
-        outwardHeading.copy(offset).multiplyScalar(collisionRadius * 2);
-        this.player.headToward(
-          this.player.posX + outwardHeading.x,
-          this.player.posZ + outwardHeading.z,
-          this.player.posY + outwardHeading.y,
-        );
-      }
-
+      const hit = sweepSegmentSphere(
+        p0.x, p0.y, p0.z,
+        this.player.posX, this.player.posY, this.player.posZ,
+        worldPos.x, worldPos.y, worldPos.z, collisionRadius,
+      );
+      if (hit) this.applyShellContact(worldPos.x, worldPos.y, worldPos.z, collisionRadius, hit);
     }
   }
 

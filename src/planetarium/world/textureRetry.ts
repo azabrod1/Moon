@@ -15,8 +15,9 @@
  * caller (the colour-tier rank swap, the late-slot hand-off), so an arrival
  * five minutes in adopts through exactly the machinery a 4K upgrade uses.
  */
-import * as THREE from 'three';
+import type * as THREE from 'three';
 import { debugWarn } from '../../shared/debug';
+import { loadStreamedTexture } from './textureBitmapLoader';
 import {
   DEFAULT_TEXTURE_RETRY_POLICY,
   newTextureRetryState,
@@ -28,11 +29,6 @@ import {
   urlSpread,
   type TextureRetryPolicy,
 } from './textureRetryPolicy';
-
-/** The app's texture loader. Shared so every fetch carries the same settings
- *  (and so the retry seam and the direct 4K upgrade queue behind one loader). */
-export const textureLoader = new THREE.TextureLoader();
-textureLoader.crossOrigin = 'anonymous';
 
 type TimerHandle = ReturnType<typeof setTimeout>;
 
@@ -114,7 +110,16 @@ function subscribeWakeSignals(fn: () => void): () => void {
 
 function defaultDeps(): TextureRetryDeps {
   return {
-    load: (url, onLoad, onProgress, onError) => textureLoader.load(url, onLoad, onProgress, onError),
+    // The probe-guarded bitmap path: decode happens off this thread and the
+    // upload skips the flipY CPU repack. This seam briefly went back to the
+    // HTMLImageElement loader when an A/B showed bitmaps regressing WebKit's
+    // boot — the real cost was the driver's sRGB conversion inside three's
+    // immutable texStorage2D allocation, which neither decode path skipped.
+    // With streamed maps opting into mutable storage (texturePolicy +
+    // patches/three), the bitmap path measures fastest on both engines.
+    // Transport failures land in onError and climb this seam's own backoff
+    // ladder, unchanged.
+    load: (url, onLoad, _onProgress, onError) => loadStreamedTexture(url, onLoad, onError),
     now: () => Date.now(),
     setTimer: (fn, delayMs) => setTimeout(fn, delayMs),
     clearTimer: (handle) => clearTimeout(handle),
@@ -124,10 +129,10 @@ function defaultDeps(): TextureRetryDeps {
 }
 
 /**
- * Fetch a texture, and keep fetching it until it lands. The first attempt goes
- * out synchronously (so a healthy load behaves exactly like a bare loader
- * call); every failure schedules the next one on the backoff ladder, which
- * never runs out.
+ * Fetch a texture, and keep fetching it until it lands. The first attempt is
+ * dispatched immediately (a healthy load behaves like a bare loader call, at
+ * most one upload-capability probe microtask later); every failure schedules
+ * the next one on the backoff ladder, which never runs out.
  */
 export function fetchTextureDurably(
   request: DurableTextureRequest,

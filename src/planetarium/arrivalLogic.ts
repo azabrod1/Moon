@@ -3,13 +3,15 @@
  * and the Sun. The planet throttle knows nothing smaller than a system —
  * deep inside one it still allows the in-system speed setting (~25,000 km/s
  * by default), which crosses a body standoff in about a second. These
- * functions give every body its own approach dynamics (and moons their
- * arrival pose); PlanetariumMode feeds live positions and applies the
- * results.
+ * functions give every body its own approach AND departure dynamics — both
+ * tied to distance, so arrivals glide and departures pull away instead of
+ * detonating off a time ramp — (and moons their arrival pose);
+ * PlanetariumMode feeds live positions and applies the results.
  */
 import * as THREE from 'three';
 import { KM_PER_AU } from '../astronomy/constants';
 import { DEG2RAD } from '../shared/math/angles';
+import { SHIP_CLEARANCE_AU } from './cruiseView';
 
 /** Approach dynamics: distance to the moon's surface e-folds every 1/K
  *  seconds, so every moon from Ganymede to Deimos gets the same subjective
@@ -31,61 +33,104 @@ export const SUN_APPROACH_SURFACE_RADII = 1.2;
  *  collision bubble, not the governor, is what holds you off the mesh. */
 export const BODY_APPROACH_V_MIN_AU_S = 2 / KM_PER_AU;
 
+/** Departure near zone: for its first moments a leave is capped by the SAME
+ *  K × height glide as an approach — right beside a body, leaving is as
+ *  unhurried as arriving — but with this head start added to the height, so
+ *  the shell itself reads as a visible creep (~0.05 shell radii per second)
+ *  instead of the near-freeze the approach floor would pin a parked
+ *  nose-out ship at.
+ *
+ *  The leave law's datum is the COLLISION SHELL (rendered radius + hull
+ *  clearance) — the surface the resolvers actually park the ship on — and
+ *  the head start and knee scale on that shell radius. Rendered radii would
+ *  break the smallest bodies: the fixed clearance dwarfs a moonlet's mesh,
+ *  so a ship parked at one would measure several "radii" up, start past the
+ *  valve knee, and detonate off the shell in a fraction of a second. */
+export const LEAVE_HEADSTART_RADII = 0.2;
+
+/** Knee of the departure valve, measured on the head-started shell height.
+ *  Inside it the leave cap is the plain glide — the really-slow zone,
+ *  crossed in ~3 s of flight. Past it the cap opens as the SQUARE of the
+ *  ratio (a cubic law overall), so it outruns any dialed speed within
+ *  ~1/(2K) ≈ 2 s more: a departure is genuinely governed only for its first
+ *  few seconds — slow beside the body, picking up through the knee, and
+ *  entirely free once the ship has clearly left. Everything is in shell
+ *  radii, so a moonlet departure and a Jupiter departure share one
+ *  subjective timeline. */
+export const LEAVE_VALVE_KNEE_RADII = 0.38;
+
 /**
- * Proximity speed cap near one body: closing speed is limited to
- * K × (distance to the rendered surface), floored at vMin. The cap applies
- * only while the heading closes on the body — `cap = base / g`, with g a
- * smoothstep of the approach cosine over [0, 0.3] — so it fades out
- * continuously as the nose swings past the limb: a flyby ends by sailing
- * on, never by wading out of molasses. Receding or grazing flight is free.
+ * Proximity speed cap near one body. Closing, speed is limited to
+ * K × (distance to the rendered surface), floored at vMin — the glide.
+ * Receding, it is limited to K × (height + head start), squared open past
+ * the valve knee — the leave law: as slow as an arrival right beside the
+ * body, then releasing completely within a few seconds of flight. (A
+ * pure-time release reads as nothing-nothing-BANG; a flat distance law
+ * holds a committed departure against empty sky for tens of seconds.)
+ *
+ * The two laws blend HARMONICALLY over the approach-cosine smoothstep band
+ * [0, 0.3]: `1 / (w/vIn + (1−w)/vOut)`. As vOut → ∞ this reduces exactly to
+ * the historical `vIn / w` band fade, so the proven inbound behavior is the
+ * special case — an arithmetic blend here would hand a near-tangent closing
+ * course a large share of an opened leave valve and grind it into the
+ * resolver.
+ *
+ * `surfaceDistAU` is the RAW `dist − surfaceRadius`, negative while a swept
+ * endpoint sits momentarily inside the surface. Both laws clamp: at or
+ * inside the collision shell the leave cap holds the shell's own creep
+ * (floored at vMin, like the approach) and the approach cap its floor —
+ * neither ever goes negative, and swinging the nose out is never slower
+ * than swinging it in.
  */
 export function governedSpeedCap(
   surfaceDistAU: number,
+  surfaceRadiusAU: number,
   cosApproach: number,
   kPerS: number,
   vMinAUPerS: number,
 ): number {
-  if (cosApproach <= 0) return Infinity;
-  const t = Math.min(cosApproach / 0.3, 1);
-  const g = t * t * (3 - 2 * t);
-  if (g <= 0) return Infinity;
-  const base = Math.max(surfaceDistAU * kPerS, vMinAUPerS);
-  return base / g;
+  const shellRadiusAU = surfaceRadiusAU + SHIP_CLEARANCE_AU;
+  const liftAU =
+    Math.max(surfaceDistAU - SHIP_CLEARANCE_AU, 0) + LEAVE_HEADSTART_RADII * shellRadiusAU;
+  const kneeAU = LEAVE_VALVE_KNEE_RADII * shellRadiusAU;
+  const valve = liftAU > kneeAU ? (liftAU / kneeAU) ** 2 : 1;
+  const vOut = Math.max(kPerS * liftAU * valve, vMinAUPerS);
+  const t = THREE.MathUtils.clamp(cosApproach / 0.3, 0, 1);
+  const w = t * t * (3 - 2 * t);
+  if (w <= 0) return vOut;
+  const vIn = Math.max(Math.max(surfaceDistAU, 0) * kPerS, vMinAUPerS);
+  if (w >= 1) return vIn;
+  return 1 / (w / vIn + (1 - w) / vOut);
 }
 
-/** After a moon flyby the applied cap relaxes by e per this many seconds, so
- *  leaving reads as a pull-away — full in-system speed returns over ~4–5 s
- *  from a deep flyby — instead of a one-frame snap to thousands of km/s. */
-export const MOON_CAP_RELEASE_EFOLD_S = 1;
-
-/** Planets (and the Sun) release slower: passing one at the moons' 1 s
- *  e-fold puts the ship at thousands of km/s before a turnaround completes —
- *  a planet is a minutes-scale scene, and the pull-away should leave time to
- *  swing back for another look (~13 s to full speed instead of ~5). */
-export const PLANET_CAP_RELEASE_EFOLD_S = 2.5;
-
-/** Above this the ramp stops mattering against any real speed setting
- *  (~25c); promote to Infinity so no stale finite cap lingers as state. */
-const CAP_FULLY_RELEASED_AU_S = 0.05;
+/** Pace of the cap's loosening transition (a target-residual ease, so the
+ *  normalized progress is body-independent: 50% in ~0.24 s, 95% in ~1.05 s
+ *  whether the target is a moonlet's leave law or Jupiter's). */
+export const CAP_TRANSITION_TAU_S = 0.35;
 
 /**
  * Time-eased speed cap: `geomCap` is the instantaneous geometric cap from
- * `governedSpeedCap`, `prevCap` the cap applied last frame. Tightening (and
- * first contact) applies instantly — decelerating late is the safety half.
- * Loosening grows exponentially from the previous cap, so however the
- * geometric cap releases (nose past the limb, receding, distance opening),
- * speed returns as a ramp, never a step.
+ * `governedSpeedCap` (min over bodies), `prevCap` the cap applied last
+ * frame. Tightening (and first contact) applies instantly — decelerating
+ * late is the safety half. Loosening eases the RESIDUAL toward the target
+ * (`prev + (geom − prev) × (1 − e^(−dt/τ))`): body-scale independent —
+ * a multiplicative e-fold from a shell pin needs ~2.4 s beside Jupiter with
+ * 1.5 s of it invisible — and exactly frame-rate independent for a given
+ * elapsed time. Once the transition catches the leave law, the cap simply
+ * tracks it — distance-tied — until the valve outruns the dialed speed and
+ * the departure runs free.
  */
 export function rampedSpeedCap(
   geomCap: number,
   prevCap: number,
   dtS: number,
-  efoldS: number,
+  tauS: number,
 ): number {
   if (geomCap <= prevCap) return geomCap;
-  const grown = prevCap * Math.exp(dtS / efoldS);
-  if (!Number.isFinite(geomCap) && grown >= CAP_FULLY_RELEASED_AU_S) return Infinity;
-  return Math.min(geomCap, grown);
+  // A bodiless frame (pre-load) has nothing to govern — and Infinity must
+  // not reach the residual arithmetic, where a zero dt would make it NaN.
+  if (!Number.isFinite(geomCap)) return geomCap;
+  return prevCap + (geomCap - prevCap) * (1 - Math.exp(-dtS / tauS));
 }
 
 /** The override auto-clears only after the cap has read unbound continuously
@@ -102,22 +147,25 @@ const CAP_BIND_FRACTION = 0.999;
  * Per-frame governor state. `candidate` is the eased cap the governor would
  * apply — integrated EVERY frame, bypassed or not, so easing state never
  * resets to Infinity mid-escape and a bypass that ends mid-flyby resumes the
- * ramp where it truly is. `applied` is what the ship actually gets (Infinity
- * while a bypass hatch is open). `engaged` is the latch: the INSTANTANEOUS
- * geometric cap binds against the commanded (uncapped, throttle-dialed)
- * speed — never the applied speed, which already contains the cap and reads
- * 0 parked. `unboundS` is how long the latch has read unbound while a bypass
- * was active — the override auto-clear waits out BODY_CAP_CLEAR_HOLD_S on it.
- * `releaseEfoldS` is the ramp pace of the LAST body that actually governed —
- * adopted while binding, kept through the release, so a planet flyby keeps
- * releasing at the planet pace even though the planet no longer binds.
+ * transition where it truly is. `applied` is what the ship actually gets
+ * (Infinity while a bypass hatch is open). `engaged` is the latch: the
+ * INSTANTANEOUS geometric cap binds against the commanded (uncapped,
+ * throttle-dialed) speed — never the applied speed, which already contains
+ * the cap and reads 0 parked. With the finite leave law, `engaged` stays
+ * true through a departure until the law crosses the commanded speed — for
+ * a governed departure a few seconds of flight, for a full-override sprint
+ * a dozen radii of distance — so the auto-clear completes once the ship has
+ * genuinely left rather than moments past the limb, and a ship parked
+ * nose-away beside a body stays latched until it actually leaves (the pill
+ * tap always clears by hand). `unboundS` is how long the latch has read
+ * unbound while a bypass was active — the auto-clear waits out
+ * BODY_CAP_CLEAR_HOLD_S on it.
  */
 export interface BodyCapState {
   candidate: number;
   applied: number;
   engaged: boolean;
   unboundS: number;
-  releaseEfoldS: number;
 }
 
 /** Fresh state for flight discontinuities (jump, takeoff, restore,
@@ -128,30 +176,23 @@ export function initialBodyCapState(): BodyCapState {
     applied: Infinity,
     engaged: false,
     unboundS: 0,
-    releaseEfoldS: MOON_CAP_RELEASE_EFOLD_S,
   };
 }
 
 /**
  * Advance the governor state one frame. `geomCap` is this frame's
- * instantaneous cap (min over all governed bodies) and `geomReleaseEfoldS`
- * the release pace of the body that set it; `commandedAUPerS` is the speed
- * the dialed throttle would fly uncapped, `bypass` whether an escape hatch
- * (throttle override, system slowdown off) is open.
+ * instantaneous cap (min over all governed bodies); `commandedAUPerS` is the
+ * speed the dialed throttle would fly uncapped, `bypass` whether an escape
+ * hatch (throttle override, system slowdown off) is open.
  */
 export function advanceBodyCap(
   prev: BodyCapState,
   geomCap: number,
-  geomReleaseEfoldS: number,
   commandedAUPerS: number,
   bypass: boolean,
   dtS: number,
 ): BodyCapState {
-  // While the geometric cap actually governs (at or under the ramp), the
-  // binding body's release pace is adopted; once it lets go the latched pace
-  // carries the whole release.
-  const releaseEfoldS = geomCap <= prev.candidate ? geomReleaseEfoldS : prev.releaseEfoldS;
-  const candidate = rampedSpeedCap(geomCap, prev.candidate, dtS, releaseEfoldS);
+  const candidate = rampedSpeedCap(geomCap, prev.candidate, dtS, CAP_TRANSITION_TAU_S);
   const engaged = geomCap < commandedAUPerS * CAP_BIND_FRACTION;
   return {
     candidate,
@@ -161,7 +202,6 @@ export function advanceBodyCap(
     // unbound; any other frame resets it, so a partial hold can't survive
     // re-engagement or complete long after the hatch opened.
     unboundS: bypass && !engaged ? prev.unboundS + dtS : 0,
-    releaseEfoldS,
   };
 }
 
@@ -258,6 +298,61 @@ export interface MoonArrivalPose {
  *  far larger (pinned by the catalog sweep). */
 export function moonCollisionRadius(renderedR: number, shipClearance: number): number {
   return renderedR + shipClearance;
+}
+
+/** Unit outward pushback direction for a swept shell contact. */
+export interface SweepContact {
+  ox: number;
+  oy: number;
+  oz: number;
+}
+
+/**
+ * Sweep the frame segment p0→p1 against a sphere: the shared collision test
+ * for moons AND planets. Checking only the endpoint tunnels — at override
+ * speeds a frame step (~4,800 km at 60 fps, ~30,000 km on a 100 ms hitch)
+ * out-strides a terrestrial planet's shell diameter, and it tunnels exactly
+ * at moon scale even at governed speeds. Returns the unit outward direction
+ * from the sphere center at the segment's closest approach, or null when the
+ * swept path stays clear (the common case — no allocation there).
+ *
+ * A dead-center pass has no radial direction; push back along the incoming
+ * segment, and a zero-length segment dead on the center falls back to +X.
+ */
+export function sweepSegmentSphere(
+  p0x: number, p0y: number, p0z: number,
+  p1x: number, p1y: number, p1z: number,
+  cx: number, cy: number, cz: number,
+  radius: number,
+): SweepContact | null {
+  const dx = p1x - p0x;
+  const dy = p1y - p0y;
+  const dz = p1z - p0z;
+  const tox = cx - p0x;
+  const toy = cy - p0y;
+  const toz = cz - p0z;
+  const segLenSq = dx * dx + dy * dy + dz * dz;
+  const t = segLenSq > 0
+    ? Math.min(1, Math.max(0, (tox * dx + toy * dy + toz * dz) / segLenSq))
+    : 0;
+  let ox = p0x + dx * t - cx;
+  let oy = p0y + dy * t - cy;
+  let oz = p0z + dz * t - cz;
+  let d = Math.sqrt(ox * ox + oy * oy + oz * oz);
+  if (d >= radius) return null;
+  if (d < 1e-9) {
+    ox = -dx;
+    oy = -dy;
+    oz = -dz;
+    d = Math.sqrt(ox * ox + oy * oy + oz * oz);
+    if (d < 1e-9) {
+      ox = 1;
+      oy = 0;
+      oz = 0;
+      d = 1;
+    }
+  }
+  return { ox: ox / d, oy: oy / d, oz: oz / d };
 }
 
 /** True when the forward ray from `origin` through `through` passes within

@@ -4,34 +4,51 @@
  * passes in the numbers from `computeStats` plus the current FPS.
  */
 import { formatAU, type PlanetariumStats } from '../stats';
-import { setText } from '../../shared/dom';
 
 export class PlanetariumStatsPanel {
   private rootEl: HTMLElement | null = null;
+  // This runs every frame: elements are looked up once at bind and each write
+  // diffs against the last string, so an unchanged stat costs no DOM touch.
+  private readonly cells = new Map<string, { el: HTMLElement; last: string }>();
 
   bind(): void {
     this.rootEl = document.getElementById('planetarium-bottom-bar');
+    this.cells.clear();
+    for (const id of [
+      'stat-fps', 'stat-distance', 'stat-light-time', 'stat-intensity', 'stat-speed',
+      'stat-nearest', 'stat-temp', 'stat-traveled', 'stat-time',
+    ]) {
+      const el = document.getElementById(id);
+      if (el) this.cells.set(id, { el, last: '' });
+    }
+  }
+
+  private set(id: string, text: string): void {
+    const cell = this.cells.get(id);
+    if (!cell || cell.last === text) return;
+    cell.el.textContent = text;
+    cell.last = text;
   }
 
   render(stats: PlanetariumStats, fps: number): void {
     if (!this.rootEl) return;
 
-    setText('stat-fps', `${fps}`);
-    setText('stat-distance', `${formatAU(stats.distanceFromSunAU)} AU`);
-    setText('stat-light-time', stats.lightTravelTime);
-    setText('stat-intensity', `${stats.solarIntensityPct.toFixed(1)}%`);
-    setText(
+    this.set('stat-fps', `${fps}`);
+    this.set('stat-distance', `${formatAU(stats.distanceFromSunAU)} AU`);
+    this.set('stat-light-time', stats.lightTravelTime);
+    this.set('stat-intensity', `${stats.solarIntensityPct.toFixed(1)}%`);
+    this.set(
       'stat-speed',
       `${stats.speedC.toFixed(1)}c / ${Math.round(stats.speedKmS).toLocaleString()} km/s`,
     );
-    setText(
+    this.set(
       'stat-nearest',
       stats.nearestPlanet
         ? `${stats.nearestPlanet.name} ${formatAU(stats.nearestPlanet.distanceAU)}`
         : '--',
     );
-    setText('stat-temp', `${Math.round(stats.blackbodyTempK)} K`);
-    setText('stat-traveled', `${formatAU(stats.distanceTraveled)} AU`);
-    setText('stat-time', stats.timeElapsed);
+    this.set('stat-temp', `${Math.round(stats.blackbodyTempK)} K`);
+    this.set('stat-traveled', `${formatAU(stats.distanceTraveled)} AU`);
+    this.set('stat-time', stats.timeElapsed);
   }
 }

@@ -1874,7 +1874,11 @@ export class CompareScene {
   private async loadGhost(name: string): Promise<GhostLoad | null> {
     const tex = await this.loadBodyColor(name);
     if (!tex) return null;
-    const stats = sampleMapStats(tex.image as CanvasImageSource | null, bodyColor(name));
+    const stats = sampleMapStats(
+      tex.image as CanvasImageSource | null,
+      bodyColor(name),
+      tex.userData.bitmapPreFlipped === true,
+    );
     const meanLum = stats.meanLum;
     const gain = THREE.MathUtils.clamp(
       GHOST_TARGET_LUM / Math.max(meanLum, 0.05),
@@ -2072,7 +2076,11 @@ export class CompareScene {
       palette = [new THREE.Color(0x2a0a02), new THREE.Color(0xb03408), new THREE.Color(0xff8a2a), new THREE.Color(0xfff0c0)];
       this.grainFlecks = [new THREE.Color(0x8a2a08), new THREE.Color(0xd05010), new THREE.Color(0xff8a2a), new THREE.Color(0xffd070)];
     } else {
-      const stats = sampleMapStats(fillerTex?.image as CanvasImageSource | null, bodyColor(filler));
+      const stats = sampleMapStats(
+        fillerTex?.image as CanvasImageSource | null,
+        bodyColor(filler),
+        fillerTex?.userData.bitmapPreFlipped === true,
+      );
       palette = stats.palette;
       this.grainFlecks = stats.flecks;
     }
@@ -3620,7 +3628,11 @@ function tintedFallbackStats(tint: number): MapStats {
  * grains — a single pass so the ghost, the molten-liquid palette, and the grain
  * flecks never read the same canvas twice. Unreadable image → mean 0 + defaults.
  */
-function sampleMapStats(image: CanvasImageSource | null, fallbackTint?: number): MapStats {
+function sampleMapStats(
+  image: CanvasImageSource | null,
+  fallbackTint?: number,
+  preFlipped = false,
+): MapStats {
   const fallback = (): MapStats => fallbackTint === undefined
     ? { meanLum: 0, palette: defaultPalette(), flecks: defaultPalette() }
     : tintedFallbackStats(fallbackTint);
@@ -3632,7 +3644,15 @@ function sampleMapStats(image: CanvasImageSource | null, fallbackTint?: number):
   const ctx = c.getContext('2d', { willReadFrequently: true });
   if (!ctx) return fallback();
   try {
+    if (preFlipped) {
+      // The bitmap loader bakes the GPU's vertical flip into the image; undo
+      // it here so this CPU readback samples the same rows in the same order
+      // as an HTMLImageElement delivery would.
+      ctx.translate(0, size);
+      ctx.scale(1, -1);
+    }
     ctx.drawImage(image, 0, 0, size, size);
+    if (preFlipped) ctx.setTransform(1, 0, 0, 1, 0, 0);
     const data = ctx.getImageData(0, 0, size, size).data;
     const n = size * size;
     const samples: { luma: number; r: number; g: number; b: number }[] = new Array(n);

@@ -1,0 +1,44 @@
+diff --git a/node_modules/three/build/three.cjs b/node_modules/three/build/three.cjs
+index 3a1ddbe..957cbdc 100644
+--- a/node_modules/three/build/three.cjs
++++ b/node_modules/three/build/three.cjs
+@@ -71326,7 +71326,7 @@ function WebGLTextures( _gl, extensions, state, properties, capabilities, utils,
+ 			let mipmap;
+ 			const mipmaps = texture.mipmaps;
+ 
+-			const useTexStorage = ( texture.isVideoTexture !== true );
++			const useTexStorage = ( texture.isVideoTexture !== true && texture.userData.mutableStorage !== true );
+ 			const allocateMemory = ( sourceProperties.__version === undefined ) || ( forceUpload === true );
+ 			const dataReady = source.dataReady;
+ 			const levels = getMipLevels( texture, image );
+@@ -71770,7 +71770,7 @@ function WebGLTextures( _gl, extensions, state, properties, capabilities, utils,
+ 				glType = utils.convert( texture.type ),
+ 				glInternalFormat = getInternalFormat( texture.internalFormat, glFormat, glType, texture.colorSpace );
+ 
+-			const useTexStorage = ( texture.isVideoTexture !== true );
++			const useTexStorage = ( texture.isVideoTexture !== true && texture.userData.mutableStorage !== true );
+ 			const allocateMemory = ( sourceProperties.__version === undefined ) || ( forceUpload === true );
+ 			const dataReady = source.dataReady;
+ 			let levels = getMipLevels( texture, image );
+diff --git a/node_modules/three/build/three.module.js b/node_modules/three/build/three.module.js
+index ddec5ac..db1aaab 100644
+--- a/node_modules/three/build/three.module.js
++++ b/node_modules/three/build/three.module.js
+@@ -11863,7 +11863,7 @@ function WebGLTextures( _gl, extensions, state, properties, capabilities, utils,
+ 			let mipmap;
+ 			const mipmaps = texture.mipmaps;
+ 
+-			const useTexStorage = ( texture.isVideoTexture !== true );
++			const useTexStorage = ( texture.isVideoTexture !== true && texture.userData.mutableStorage !== true );
+ 			const allocateMemory = ( sourceProperties.__version === undefined ) || ( forceUpload === true );
+ 			const dataReady = source.dataReady;
+ 			const levels = getMipLevels( texture, image );
+@@ -12307,7 +12307,7 @@ function WebGLTextures( _gl, extensions, state, properties, capabilities, utils,
+ 				glType = utils.convert( texture.type ),
+ 				glInternalFormat = getInternalFormat( texture.internalFormat, glFormat, glType, texture.colorSpace );
+ 
+-			const useTexStorage = ( texture.isVideoTexture !== true );
++			const useTexStorage = ( texture.isVideoTexture !== true && texture.userData.mutableStorage !== true );
+ 			const allocateMemory = ( sourceProperties.__version === undefined ) || ( forceUpload === true );
+ 			const dataReady = source.dataReady;
+ 			let levels = getMipLevels( texture, image );

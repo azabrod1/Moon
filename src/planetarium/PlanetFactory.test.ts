@@ -12,6 +12,7 @@ import {
   firstUpgradeTier,
   initialColorTierRank,
   loadTexture,
+  lodMeasurementRelevant,
   makeGeometryUpgrade,
   makeTextureUpgrade,
   needsGeometryUpgrade,
@@ -1046,5 +1047,50 @@ describe('colour tier precedence', () => {
     pumpTextureWarmQueue(Number.POSITIVE_INFINITY);
     // Uploading the disposed map would allocate GPU storage nothing frees.
     expect(uploaded).toEqual([big]);
+  });
+});
+
+describe('lodMeasurementRelevant', () => {
+  const H = 844;
+  const geoApplied = () => ({ ...makeGeometryUpgrade([]), applied: true });
+
+  it('pulls the measurement when the overestimate crosses the geometry threshold', () => {
+    const geo = makeGeometryUpgrade([]);
+    expect(lodMeasurementRelevant(geo, [], 1251, H, null)).toBe(true);
+    expect(lodMeasurementRelevant(geo, [], 1249, H, null)).toBe(false);
+    expect(lodMeasurementRelevant(geoApplied(), [], 1e6, H, null)).toBe(false);
+  });
+
+  it('pulls the measurement when an unfinished ladder could earn a tier', () => {
+    withMaxTextureSize(16384);
+    const up = handle('moon'); // ['4k', '8k']
+    expect(lodMeasurementRelevant(geoApplied(), [up], 0.16 * H, H, null)).toBe(true);
+    expect(lodMeasurementRelevant(geoApplied(), [up], 0.14 * H, H, null)).toBe(false);
+    up.appliedTier = '8k'; // ladder complete: nothing to earn at any size
+    expect(lodMeasurementRelevant(geoApplied(), [up], 1e6, H, null)).toBe(false);
+  });
+
+  it('keeps measuring a partially-climbed ladder, but not a band it already climbed', () => {
+    withMaxTextureSize(16384);
+    const up = handle('moon');
+    up.appliedTier = '4k';
+    expect(lodMeasurementRelevant(geoApplied(), [up], 0.23 * H, H, null)).toBe(true);
+    // Inside the 4K band with 4K already applied nothing is fetchable: the
+    // earned tier must also RESOLVE to a remaining step to pull a measurement.
+    expect(lodMeasurementRelevant(geoApplied(), [up], 0.16 * H, H, null)).toBe(false);
+    expect(lodMeasurementRelevant(geoApplied(), [up], 0.14 * H, H, null)).toBe(false);
+  });
+
+  it('pulls the measurement for an eligible procedural moon above its disc threshold', () => {
+    expect(lodMeasurementRelevant(geoApplied(), [], 81, H, 80)).toBe(true);
+    expect(lodMeasurementRelevant(geoApplied(), [], 79, H, 80)).toBe(false);
+    expect(lodMeasurementRelevant(geoApplied(), [], 500, H, null)).toBe(false);
+  });
+
+  it('an Infinity estimate (near/straddling pose) always measures while work remains', () => {
+    withMaxTextureSize(16384);
+    const up = handle('moon');
+    expect(lodMeasurementRelevant(geoApplied(), [up], Infinity, H, null)).toBe(true);
+    expect(lodMeasurementRelevant(makeGeometryUpgrade([]), [], Infinity, H, null)).toBe(true);
   });
 });

@@ -250,6 +250,17 @@ export function cameraFollowGain(dtS: number, tauS: number): number {
   return 1 - Math.exp(-dtS / Math.max(tauS, 1e-4));
 }
 
+/** τ for the OrbitControls damping coast (drag glide in cruise orbit and the
+ *  landed view). OrbitControls steps damping by a fixed fraction per update()
+ *  CALL, and it calls update() from its own pointer handlers on top of the
+ *  mode's per-frame call — so frames that happen to catch an input event
+ *  advanced ~2× the frames that didn't, a speed flutter a nearby disc makes
+ *  visible. The mode gates the instance to one step per rendered frame and
+ *  sizes the factor from this τ via cameraFollowGain, so the coast is uniform
+ *  and refresh-rate independent. 80 ms reproduces the pre-gate drag response
+ *  at 120 Hz (where nearly every frame carried the doubled step). */
+export const ORBIT_DAMPING_TAU_S = 0.08;
+
 /** The chase camera's vertical lift above the ship, as a fraction of the chase
  *  distance. Reset, steady follow, and reacquisition all resolve to this one
  *  lift so the camera settles to a single pose (an earlier reset used a taller

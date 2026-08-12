@@ -271,12 +271,23 @@ export class ProceduralMoonTexturer {
    * already sharp, or a fully photo-backed one) returns false without consuming
    * the slot.
    */
-  upgrade(moon: MoonMesh, width: number): boolean {
-    if (!this.gpuUsable || this.gl.isContextLost()) return false; // keep the baseline
+  /** upgrade()'s ineligibility screen, callable per frame without touching the
+   *  GPU: false for a CPU-painted moon, one already at/above `width`, or one
+   *  whose colour AND normal are photo-owned. The per-frame LOD loop asks this
+   *  before spending a footprint measurement on a moon that upgrade() would
+   *  refuse anyway; upgrade() delegates here so the two can never disagree.
+   *  Cheapest checks first — the context-lost query is a GL call. */
+  canUpgrade(moon: MoonMesh, width: number): boolean {
     const mat = moon.mesh.material as THREE.MeshStandardMaterial;
     const current = mat.userData.proceduralWidth as number | undefined;
     if (current === undefined || current >= width) return false; // CPU-painted, or already sharp enough
     if (mat.userData.photoLoaded && mat.userData.hasRealNormal) return false; // nothing procedural to sharpen
+    return this.gpuUsable && !this.gl.isContextLost(); // keep the baseline when the GPU is gone
+  }
+
+  upgrade(moon: MoonMesh, width: number): boolean {
+    if (!this.canUpgrade(moon, width)) return false;
+    const mat = moon.mesh.material as THREE.MeshStandardMaterial;
     try {
       const start = performance.now();
       this.renderAndAssign(moon, mat, width, width / 2);

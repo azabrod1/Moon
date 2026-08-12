@@ -30,20 +30,17 @@ import { applyTextureDefaults, clampTier, resolveTextureUrl, type TextureTier, t
 import { augmentSurfaceMaterial, type SurfaceArchetype, type SurfaceShadingFx } from './world/surfaceShading';
 import { queueTextureWarm } from './world/textureWarmer';
 import { createLensShaderUniforms } from '../shared/three/lensShader';
-import { fetchTextureDurably, textureLoader, type DurableTextureFetch } from './world/textureRetry';
-
-type TextureLoad = (
-  url: string,
-  onLoad: (tex: THREE.Texture) => void,
-  onError: (err: unknown) => void,
-) => void;
+import { fetchTextureDurably, type DurableTextureFetch } from './world/textureRetry';
+import { loadStreamedTexture, type TextureLoad } from './world/textureBitmapLoader';
 
 // A colour-tier fetch goes through this indirection so the completion,
 // staleness and failure paths that decide what reaches the GPU can be
 // exercised without a GL context or a network — the same injected-seam pattern
 // the texture warmer uses for its upload call. Nothing in the app rebinds it.
-let loadUpgradeTexture: TextureLoad = (url, onLoad, onError) =>
-  textureLoader.load(url, onLoad, undefined, onError);
+// The default is the shared probe-guarded bitmap path (textureBitmapLoader):
+// transport failures reach the handle's cooldown as always, decode failures
+// spend one HTMLImageElement fallback first.
+let loadUpgradeTexture: TextureLoad = loadStreamedTexture;
 
 /** Swap the tier fetch for a stub. Returns the previous one, to restore. */
 export function setUpgradeTextureLoader(load: TextureLoad): TextureLoad {
@@ -637,6 +634,39 @@ export function upgradeGeometryOnApproach(up: GeometryUpgrade, diameterPx: numbe
   return true;
 }
 
+/**
+ * Whether a body's per-frame LOD measurement could possibly act, given a
+ * conservative OVERestimate of its screen diameter. This is the skip gate in
+ * front of the full 32-ray footprint: it asks the very predicates the loop
+ * would feed (`needsGeometryUpgrade`, `earnedUpgradeTier`, the procedural
+ * re-render threshold), so a threshold the overestimate does not cross is one
+ * the real — smaller — footprint cannot cross either. Feeding it anything
+ * other than a true overestimate breaks that guarantee and can strand a body
+ * on its boot map. `proceduralThresholdPx` is null when the procedural
+ * re-render path is not in play for this body this frame.
+ */
+export function lodMeasurementRelevant(
+  geo: GeometryUpgrade,
+  ups: readonly TextureUpgrade[],
+  estimatedDiameterPx: number,
+  canvasHeight: number,
+  proceduralThresholdPx: number | null,
+): boolean {
+  if (needsGeometryUpgrade(geo, estimatedDiameterPx)) return true;
+  if (proceduralThresholdPx !== null && estimatedDiameterPx > proceduralThresholdPx) return true;
+  const fraction = estimatedDiameterPx / Math.max(canvasHeight, 1);
+  for (const up of ups) {
+    if (upgradeComplete(up)) continue;
+    // Both earned and resolve grow with the fraction, so a tier the
+    // OVERestimate cannot resolve into a fetchable step is one the real
+    // footprint cannot either — e.g. a Moon already on 4K stops pulling
+    // measurements until the estimate reaches into the 8K band.
+    const earned = earnedUpgradeTier(up, fraction);
+    if (earned !== null && resolveUpgradeTier(up, earned) !== null) return true;
+  }
+  return false;
+}
+
 /** Rank guard for the colour maps (procedural floor = 0, 2K = 2, 4K = 4):
  *  strictly higher wins, so a late 2K arrival can never downgrade a 4K that
  *  already won the race, and a real map always beats the procedural floor. */
@@ -763,6 +793,11 @@ export function upgradeTextureOnApproach(
         reason: err instanceof Error ? err.message : String(err),
       });
     },
+    // The bitmap path consults this between fetch and decode, so a
+    // superseded attempt's bytes are dropped before a full-size bitmap is
+    // ever created — the same never-decode-abandoned-bytes guarantee the
+    // image path always had.
+    () => !abandoned(),
   );
 }
 
@@ -1500,6 +1535,16 @@ export interface MoonMesh {
   dotLitScreenAlpha?: number;
   dotLitScreenSizePx?: number;
   dotScreenSizePx?: number;
+  /** Per-frame effective-radius screen projection, shared between the
+   *  occlusion-disc pass and the label pass (same centre, same rendered-size
+   *  radius, same camera — whichever runs first this frame measures, the other
+   *  reuses). `frame` is PlanetariumMode's frameStamp; the centre fields
+   *  (x/y/ndcZ) are radius-independent by the projection's pinned invariant.
+   *  Allocated once per moon, transient like the dot cache above. */
+  effProj?: {
+    frame: number; x: number; y: number; ndcZ: number;
+    radiusPx: number; footprintX: number; footprintY: number;
+  };
   /** Whether the label pass actually drew this moon's name last frame. The pick
    *  list is built before the labels are placed, so it reads a one-frame-old
    *  answer — imperceptible at label timescales, and it keeps the rule exact: a

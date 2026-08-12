@@ -1,5 +1,6 @@
 import { describe, it, expect, vi } from 'vitest';
 import { fetchTextureDurably, type TextureRetryDeps } from './textureRetry';
+import { setBitmapProbeForTests } from './textureBitmapLoader';
 import {
   DEFAULT_TEXTURE_RETRY_POLICY,
   retryDelayMs,
@@ -390,5 +391,27 @@ describe('cancellation', () => {
     h.advance(600_000);
     expect(h.attempts).toHaveLength(1);
     expect(h.pendingTimers).toBe(0);
+  });
+});
+
+describe('default loader path', () => {
+  it('delivers a pre-flipped bitmap texture through the streamed-texture seam', async () => {
+    // Pins the deliberate production choice: with mutable storage removing
+    // the sRGB allocation stall (texturePolicy + patches/three), the durable
+    // seam takes the probe-guarded bitmap path — a delivered texture carries
+    // the loader's pre-flipped mark, which no plain TextureLoader result has.
+    setBitmapProbeForTests(true);
+    vi.stubGlobal('fetch', vi.fn(async () => ({ ok: true, blob: async () => new Blob() })));
+    vi.stubGlobal('createImageBitmap', vi.fn(async () => ({ width: 4, height: 2, close: () => {} })));
+    try {
+      const delivered = await new Promise<{ userData: Record<string, unknown> }>((resolve) => {
+        fetchTextureDurably({ url: 'textures/pin.jpg', onLoad: (tex) => resolve(tex) });
+      });
+      expect(delivered.userData.bitmapPreFlipped).toBe(true);
+      expect(delivered.userData.sourceUrl).toBe('textures/pin.jpg');
+    } finally {
+      setBitmapProbeForTests(null);
+      vi.unstubAllGlobals();
+    }
   });
 });

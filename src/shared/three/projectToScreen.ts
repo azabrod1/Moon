@@ -16,7 +16,13 @@
  */
 import * as THREE from 'three';
 
-import { lensUnwarpNdc, lensWarpNdc } from '../math/lensProjection';
+import {
+  lensUnwarpNdc,
+  lensWarpNdc,
+  lensWarpNdcWithContext,
+  makeLensWarpContext,
+  type LensWarpContext,
+} from '../math/lensProjection';
 
 export interface ScreenProjection {
   /** Pixel x (CSS px, top-left origin) against `width`. Not rounded. */
@@ -65,6 +71,10 @@ const sphereBasisU = new THREE.Vector3();
 const sphereBasisV = new THREE.Vector3();
 const sphereRimDirection = new THREE.Vector3();
 const sphereCentreProjection: ScreenProjection = { x: 0, y: 0, ndcX: 0, ndcY: 0, ndcZ: 0 };
+// Projected rim points, kept from the bounds loop so the radius loop reads
+// them back instead of re-deriving and re-projecting the identical rays.
+const rimXPx = new Float64Array(32);
+const rimYPx = new Float64Array(32);
 const worldRayPoint = new THREE.Vector3();
 const CAMERA_UP = new THREE.Vector3(0, 1, 0);
 const CAMERA_RIGHT = new THREE.Vector3(1, 0, 0);
@@ -145,26 +155,37 @@ export function projectToSourceScreen(
   return result;
 }
 
+/** Per-call constants of the rim-ray projection: the render-frustum tangent
+ *  and the lens warp context, both fixed for a given camera pose. Hoisted by
+ *  `prepareRimContext` so the 32-ray loops below pay per-point math only —
+ *  re-deriving these per ray (two `tan`s, the edge normalization, and a lens
+ *  config object) was the hottest line in the whole app near moon systems. */
+const rimCtx = {
+  tanHalfRender: 0,
+  aspect: 1,
+  lensActive: false,
+  warp: { tanHalfRender: 0, aspect: 1, strength: 0, rEdge: 1 } as LensWarpContext,
+};
+
+function prepareRimContext(camera: THREE.PerspectiveCamera): void {
+  rimCtx.tanHalfRender = Math.tan(THREE.MathUtils.degToRad(camera.fov * 0.5));
+  rimCtx.aspect = camera.aspect;
+  const lens = cameraLensConfig(camera);
+  rimCtx.lensActive = !!(lens && lens.strength > 0);
+  if (lens && rimCtx.lensActive) {
+    makeLensWarpContext(lens.designFovDeg, lens.renderFovDeg, lens.aspect, lens.strength, rimCtx.warp);
+  }
+}
+
 function projectCameraRayToOutputNdc(
   direction: THREE.Vector3,
-  camera: THREE.PerspectiveCamera,
   out: { x: number; y: number },
 ): boolean {
   if (direction.z >= -1e-9) return false;
-  const tanHalfRender = Math.tan(THREE.MathUtils.degToRad(camera.fov * 0.5));
-  out.x = (direction.x / -direction.z) / (camera.aspect * tanHalfRender);
-  out.y = (direction.y / -direction.z) / tanHalfRender;
-  const lens = cameraLensConfig(camera);
-  if (lens && lens.strength > 0) {
-    lensWarpNdc(
-      out.x,
-      out.y,
-      lens.designFovDeg,
-      lens.renderFovDeg,
-      lens.aspect,
-      lens.strength,
-      warpScratch,
-    );
+  out.x = (direction.x / -direction.z) / (rimCtx.aspect * rimCtx.tanHalfRender);
+  out.y = (direction.y / -direction.z) / rimCtx.tanHalfRender;
+  if (rimCtx.lensActive) {
+    lensWarpNdcWithContext(rimCtx.warp, out.x, out.y, warpScratch);
     out.x = warpScratch.x;
     out.y = warpScratch.y;
   }
@@ -273,6 +294,7 @@ export function projectSphereToScreen(
   let maxY = -Infinity;
   const rimNdc = warpScratch;
   const samples = 32;
+  prepareRimContext(camera);
   for (let i = 0; i < samples; i++) {
     const phase = (i / samples) * Math.PI * 2;
     sphereRimDirection
@@ -280,7 +302,7 @@ export function projectSphereToScreen(
       .multiplyScalar(cosAlpha)
       .addScaledVector(sphereBasisU, Math.cos(phase) * sinAlpha)
       .addScaledVector(sphereBasisV, Math.sin(phase) * sinAlpha);
-    if (!projectCameraRayToOutputNdc(sphereRimDirection, camera, rimNdc)) {
+    if (!projectCameraRayToOutputNdc(sphereRimDirection, rimNdc)) {
       // A rim ray crossed the camera plane: the rectilinear projection is
       // undefined, so we can't measure the limb. Before taking the conservative
       // viewport-covering guess, rule out the sphere being wholly outside the
@@ -308,6 +330,8 @@ export function projectSphereToScreen(
     }
     const x = (rimNdc.x * 0.5 + 0.5) * width;
     const y = (-rimNdc.y * 0.5 + 0.5) * height;
+    rimXPx[i] = x;
+    rimYPx[i] = y;
     minX = Math.min(minX, x);
     maxX = Math.max(maxX, x);
     minY = Math.min(minY, y);
@@ -317,16 +341,7 @@ export function projectSphereToScreen(
   const footprintY = (minY + maxY) * 0.5;
   let radiusPx = 0;
   for (let i = 0; i < samples; i++) {
-    const phase = (i / samples) * Math.PI * 2;
-    sphereRimDirection
-      .copy(sphereDirection)
-      .multiplyScalar(cosAlpha)
-      .addScaledVector(sphereBasisU, Math.cos(phase) * sinAlpha)
-      .addScaledVector(sphereBasisV, Math.sin(phase) * sinAlpha);
-    projectCameraRayToOutputNdc(sphereRimDirection, camera, rimNdc);
-    const x = (rimNdc.x * 0.5 + 0.5) * width;
-    const y = (-rimNdc.y * 0.5 + 0.5) * height;
-    radiusPx = Math.max(radiusPx, Math.hypot(x - footprintX, y - footprintY));
+    radiusPx = Math.max(radiusPx, Math.hypot(rimXPx[i] - footprintX, rimYPx[i] - footprintY));
   }
   // Sampling can miss the true extremum between adjacent rim rays. A secant
   // pad makes the returned radius/bounds conservative for the conformal path
@@ -347,6 +362,106 @@ export function projectSphereToScreen(
   result.maxY = maxY;
   result.footprintKind = 'sampled';
   return result;
+}
+
+const estOffAxis = new THREE.Vector3();
+const estTangent = new THREE.Vector3();
+const estRimA = { x: 0, y: 0 };
+const estRimB = { x: 0, y: 0 };
+
+/** Safety factor on the two-axis extent below. The rim projects to a
+ *  near-ellipse, but its PIXEL-space major axis need not align with the two
+ *  view-space directions sampled here: anisotropic pixel scaling (a portrait
+ *  viewport) rotates the ellipse, and two perpendicular central chords can
+ *  under-read a major axis by up to 1/sqrt(2) (both sampled at 45° to it).
+ *  1.5 covers that bound plus the blend's non-elliptical residue and the
+ *  sampling pad; the property sweep in the tests holds the overestimate
+ *  contract across FOVs, strengths, aspects, azimuths, and poses. */
+const ESTIMATE_MARGIN = 1.5;
+
+/**
+ * Cheap conservative OVERestimate of `projectSphereToScreen(...).diameterPx`:
+ * the tangent cone's four extreme rim rays (radial and tangential pairs)
+ * through the exact same per-ray projection, instead of 32 samples twice.
+ *
+ * Contract: for any pose where the full function would return a `'sampled'`
+ * or `'covering'` footprint, this returns a value (possibly Infinity) that is
+ * >= its `diameterPx` — so a threshold the estimate does NOT cross is one the
+ * real footprint cannot cross, and per-frame consumers (LOD/upgrade triggers)
+ * may skip the full measurement on that basis. Behind-camera spheres return 0,
+ * matching the full function's degenerate-point footprint. Near/straddling
+ * poses return Infinity (always measure). Never use this where the actual
+ * on-screen size is consumed — it is a gate, not a measurement.
+ */
+export function estimateSphereScreenDiameterPx(
+  centre: { x: number; y: number; z: number },
+  radius: number,
+  camera: THREE.PerspectiveCamera,
+  width: number,
+  height: number,
+): number {
+  const safeRadius = Math.max(radius, 0);
+  if (safeRadius === 0) return 0;
+  sphereCentreView.set(centre.x, centre.y, centre.z).applyMatrix4(camera.matrixWorldInverse);
+  // Behind the camera: no display footprint (the full path returns a
+  // degenerate point there).
+  if (sphereCentreView.z >= safeRadius) return 0;
+  const distance = sphereCentreView.length();
+  // Close, inside, or straddling the camera plane: the tangent-cone geometry
+  // degenerates toward the full path's 'covering' cases — always measure.
+  if (sphereCentreView.z > -safeRadius) return Infinity;
+  if (!(distance > safeRadius * 4)) return Infinity;
+
+  sphereDirection.copy(sphereCentreView).multiplyScalar(1 / distance);
+  const sinAlpha = safeRadius / distance;
+  const cosAlpha = Math.sqrt(Math.max(1 - sinAlpha * sinAlpha, 0));
+  prepareRimContext(camera);
+  // The two-chord bound below holds for near-elliptical rims. At full lens
+  // strength the projection is conformal, so that is every pose — but any
+  // rectilinear component (reduced or zero strength) degenerates toward the
+  // 90° pole, and past ~49° off-axis the rim's conic grows lopsided enough to
+  // break the bound (measured by the test sweep). Defer those poses to the
+  // full measurement; they are far outside every frame that matters.
+  const conformal = rimCtx.lensActive && rimCtx.warp.strength >= 1;
+  if (!conformal) {
+    const rimAngle = Math.acos(THREE.MathUtils.clamp(-sphereCentreView.z / distance, -1, 1))
+      + Math.asin(THREE.MathUtils.clamp(sinAlpha, 0, 1));
+    if (rimAngle > 45 * (Math.PI / 180)) return Infinity;
+  }
+  // Radial rim pair: within the plane spanned by the view axis and the centre
+  // direction — where every projection in the lens family stretches most.
+  estOffAxis.set(sphereDirection.x, sphereDirection.y, 0);
+  if (estOffAxis.lengthSq() < 1e-18) estOffAxis.set(1, 0, 0);
+  else estOffAxis.normalize();
+  sphereRimDirection
+    .copy(sphereDirection).multiplyScalar(cosAlpha)
+    .addScaledVector(estOffAxis, sinAlpha);
+  if (!projectCameraRayToOutputNdc(sphereRimDirection, estRimA)) return Infinity;
+  sphereRimDirection
+    .copy(sphereDirection).multiplyScalar(cosAlpha)
+    .addScaledVector(estOffAxis, -sinAlpha);
+  if (!projectCameraRayToOutputNdc(sphereRimDirection, estRimB)) return Infinity;
+  const radialExtent = Math.hypot(
+    (estRimA.x - estRimB.x) * 0.5 * width,
+    (estRimA.y - estRimB.y) * 0.5 * height,
+  );
+  // Tangential rim pair: perpendicular to the radial plane.
+  estTangent.crossVectors(sphereDirection, estOffAxis);
+  if (estTangent.lengthSq() < 1e-18) estTangent.set(0, 1, 0);
+  else estTangent.normalize();
+  sphereRimDirection
+    .copy(sphereDirection).multiplyScalar(cosAlpha)
+    .addScaledVector(estTangent, sinAlpha);
+  if (!projectCameraRayToOutputNdc(sphereRimDirection, estRimA)) return Infinity;
+  sphereRimDirection
+    .copy(sphereDirection).multiplyScalar(cosAlpha)
+    .addScaledVector(estTangent, -sinAlpha);
+  if (!projectCameraRayToOutputNdc(sphereRimDirection, estRimB)) return Infinity;
+  const tangentialExtent = Math.hypot(
+    (estRimA.x - estRimB.x) * 0.5 * width,
+    (estRimA.y - estRimB.y) * 0.5 * height,
+  );
+  return Math.max(radialExtent, tangentialExtent) * ESTIMATE_MARGIN;
 }
 
 /** Build a world-space ray through a displayed screen point. */

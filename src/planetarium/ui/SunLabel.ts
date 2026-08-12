@@ -21,6 +21,15 @@ export function shouldShowSunLabel(distanceFromSunAU: number): boolean {
 }
 
 export class SunLabel {
+  /** Whether `update` can possibly show the label — the same gates it applies
+   *  first thing. The caller checks this BEFORE measuring the Sun's screen
+   *  footprint (a 32-rim-ray lens projection), which is only consumed by a
+   *  visible label; keep these two gate sets in step with update()'s
+   *  early-outs. */
+  static wantsFootprint(labelsOn: boolean, revealed: boolean, distanceFromSunAU: number): boolean {
+    return (labelsOn || revealed) && shouldShowSunLabel(distanceFromSunAU);
+  }
+
   private el: HTMLDivElement | null = null;
   private visible = false;
   private lastTransform = '';

@@ -8,6 +8,8 @@ import {
   governedSpeedCap,
   initialBodyCapState,
   moonArrivalCameraLookWeight,
+  moonArrivalReleaseFade,
+  MOON_ARRIVAL_RELEASE_S,
   moonArrivalPose,
   moonArrivalStandoffAU,
   moonCollisionRadius,
@@ -373,6 +375,25 @@ describe('moon teleport camera tracking', () => {
     expect(moonArrivalCameraLookWeight(d * 1.5, d, true)).toBeCloseTo(0.5, 10);
     expect(moonArrivalCameraLookWeight(d * 2, d, true)).toBe(0);
     expect(moonArrivalCameraLookWeight(d * 3, d, true)).toBe(0);
+  });
+
+  it('eases a steering release from full weight to zero, never in one frame', () => {
+    // Untouched (releaseElapsedS null → callers pass 0) the fade is inert.
+    expect(moonArrivalReleaseFade(0)).toBe(1);
+    // The first steered frame must NOT collapse the look — that one-frame
+    // collapse was the visible camera snap on the first touch after a moon
+    // teleport (the touch zone turns a stationary tap into full steering).
+    expect(moonArrivalReleaseFade(1 / 60)).toBeGreaterThan(0.9);
+    // Monotone decay across the window...
+    let prev = 1;
+    for (let t = 0; t <= MOON_ARRIVAL_RELEASE_S + 0.01; t += 0.02) {
+      const fade = moonArrivalReleaseFade(t);
+      expect(fade).toBeLessThanOrEqual(prev);
+      prev = fade;
+    }
+    // ...fully released at the window's end and beyond.
+    expect(moonArrivalReleaseFade(MOON_ARRIVAL_RELEASE_S)).toBe(0);
+    expect(moonArrivalReleaseFade(MOON_ARRIVAL_RELEASE_S * 5)).toBe(0);
   });
 });
 

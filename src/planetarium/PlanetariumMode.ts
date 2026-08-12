@@ -246,6 +246,7 @@ import {
   governedSpeedCap,
   initialBodyCapState,
   moonArrivalCameraLookWeight,
+  moonArrivalReleaseFade,
   moonArrivalPose,
   moonArrivalStandoffAU,
   moonCollisionRadius,
@@ -955,8 +956,11 @@ export class PlanetariumMode {
   /** A moon teleport keeps its collision-safe flyby heading, but the camera
    *  tracks the moon through closest approach. Without that decoupling the
    *  nearby disc rides far off the optical axis and perspective projects the
-   *  spherical mesh as an oval. Manual steering/orbiting cancels immediately;
-   *  the receding leg eases back to the ordinary ship-centred chase view. */
+   *  spherical mesh as an oval. Manual steering releases it over
+   *  MOON_ARRIVAL_RELEASE_S (on touch a stationary tap is already full
+   *  steering, so a one-frame cancel snapped the view); grabbing the orbit
+   *  camera still cancels outright — that gesture owns the camera itself.
+   *  The receding leg eases back to the ordinary ship-centred chase view. */
   private moonArrivalCameraLook: {
     name: string;
     parentPlanet: string;
@@ -964,6 +968,9 @@ export class PlanetariumMode {
     previousDistanceAU: number;
     approached: boolean;
     receding: boolean;
+    /** Seconds since steering released the look; null while it still owns
+     *  the aim. Advanced each frame once set, driving the release fade. */
+    releaseElapsedS: number | null;
   } | null = null;
   private tmpMoonArrivalLook = new THREE.Vector3();
   /** Reused arrival-pose inputs for the engaged moon autopilot: refilled from
@@ -2570,7 +2577,7 @@ export class PlanetariumMode {
     // days, so "last frame's positions" can be a different sky — and BEFORE
     // the label pass, which projects through the final camera.
     this.updateCruiseCameraSafety();
-    this.updateMoonArrivalCameraLook();
+    this.updateMoonArrivalCameraLook(dt);
 
     // The HTML label/marker projections below read camera.matrixWorldInverse,
     // which the renderer refreshes only at render time — after this update().
@@ -2841,11 +2848,11 @@ export class PlanetariumMode {
       // that back keeps the step and the escape from fighting, and lets a
       // re-grab promote straight to 'orbit'. OrbitControls stays idle here.
       const tau = this.advanceChaseFollowTau(dt);
-      const ideal = chaseIdealOffset(
+      const ideal = this.clampChaseIdealToShells(chaseIdealOffset(
         this.player.getForwardDirection(),
         FLIGHT_UP_SCENE,
         this.tmpChaseIdeal,
-      );
+      ));
       const settled = reacquireCameraStep(this.camera.position, this.camera.position, ideal, dt, tau);
       this.camera.lookAt(0, 0, 0);
       if (settled) this.camOwner = 'chase'; // state switch only — the step already posed the camera
@@ -2871,9 +2878,29 @@ export class PlanetariumMode {
     // steering so a tap bends the pursuit curve instead of stepping it, and the
     // gain derives from dt so 60 Hz and 120 Hz converge alike.
     const forward = this.player.getForwardDirection();
-    const idealPos = chaseIdealOffset(forward, FLIGHT_UP_SCENE, this.tmpChaseIdeal);
+    const idealPos = this.clampChaseIdealToShells(
+      chaseIdealOffset(forward, FLIGHT_UP_SCENE, this.tmpChaseIdeal),
+    );
     const tau = this.advanceChaseFollowTau(dt);
     this.camera.position.lerp(idealPos, cameraFollowGain(dt, tau));
+  }
+
+  /** Keep the chase/reacquire target itself out of every padded body shell.
+   *  Parked at a moon's standoff, the swinging chase offset dips inside the
+   *  camera's exclusion shell across a whole arc of headings; chasing an
+   *  illegal target left the downstream safety escape re-projecting the
+   *  camera undamped every frame of a turn — error accumulating against the
+   *  clamp, then releasing in a rush — which a near-full-screen disc reads
+   *  as stutter. Clamping the TARGET keeps the follow lerp continuous; the
+   *  safety escape stays as the backstop for fast geometry. Shells are last
+   *  frame's pool (built by updateCruiseCameraSafety after the camera step);
+   *  one frame of body motion is well inside the escape's own margin. */
+  private clampChaseIdealToShells(ideal: THREE.Vector3): THREE.Vector3 {
+    const escaped = escapeCameraPenetrations(
+      ideal, this.cameraShellPool, this.cameraShellCount, CAMERA_BODY_MARGIN_AU,
+    );
+    if (escaped) ideal.set(escaped.x, escaped.y, escaped.z);
+    return ideal;
   }
 
   /** Keep a just-teleported moon on the optical axis while the ship flies the
@@ -2881,7 +2908,7 @@ export class PlanetariumMode {
    *  camera has a circular silhouette; easing the target back toward the ship
    *  only after the moon has receded to its small arrival size makes the handoff
    *  unobtrusive. Runs after OrbitControls + camera safety, before projection. */
-  private updateMoonArrivalCameraLook(): void {
+  private updateMoonArrivalCameraLook(dt: number): void {
     const look = this.moonArrivalCameraLook;
     if (!look || this.landedOn || this.devFreeCamera || this.camOwner !== 'chase') return;
 
@@ -2889,6 +2916,8 @@ export class PlanetariumMode {
       .get(look.parentPlanet)
       ?.find((candidate) => candidate.data.name === look.name);
     if (!moon?.mesh.visible) return;
+
+    if (look.releaseElapsedS !== null) look.releaseElapsedS += dt;
 
     moon.mesh.getWorldPosition(this.tmpMoonArrivalLook);
     const distanceAU = this.tmpMoonArrivalLook.distanceTo(this.camera.position);
@@ -2905,7 +2934,7 @@ export class PlanetariumMode {
       distanceAU,
       look.arrivalDistanceAU,
       look.receding,
-    );
+    ) * moonArrivalReleaseFade(look.releaseElapsedS ?? 0);
     if (weight <= 0) {
       this.moonArrivalCameraLook = null;
       return;
@@ -5844,8 +5873,13 @@ export class PlanetariumMode {
     const hasManualInput = yaw !== 0 || pitch !== 0 || throttle !== 0;
 
     // The arrival look is cinematic assistance, never a control lock. Any
-    // explicit flight input hands the camera straight back to the pilot.
-    if (hasManualInput) this.moonArrivalCameraLook = null;
+    // explicit flight input hands the camera back to the pilot — eased over
+    // MOON_ARRIVAL_RELEASE_S rather than in one frame: on the touch flight
+    // zone a stationary tap is already full steering, and the instant cancel
+    // read as the camera snapping on the first touch after a teleport.
+    if (hasManualInput && this.moonArrivalCameraLook) {
+      this.moonArrivalCameraLook.releaseElapsedS ??= 0;
+    }
 
     // Flying reacquires the chase camera — but an actively held drag outranks
     // steering (a hand on the orbit and a finger on W: the drag wins until
@@ -10690,7 +10724,14 @@ export class PlanetariumMode {
       this.player.posX = x + ox * collisionR;
       this.player.posY = y + oy * collisionR;
       this.player.posZ = z + oz * collisionR;
-      if (forward.x * ox + forward.y * oy + forward.z * oz < 0.15) {
+      // Redirect the heading only for a ship actually driving INTO the bubble.
+      // A parked ship turning in place (segLen 0, or riding the projection as
+      // the moon's own orbit carries the bubble) used to get re-aimed outward
+      // every frame its nose passed ~81° off the radial — a snap-turn-snap
+      // limit cycle against the pilot that read as stutter. The projection
+      // above already keeps a stationary ship out of the surface.
+      const movingInward = segLenSq > 0 && dx * ox + dy * oy + dz * oz < 0;
+      if (movingInward && forward.x * ox + forward.y * oy + forward.z * oz < 0.15) {
         this.player.headToward(
           this.player.posX + ox * collisionR * 2,
           this.player.posZ + oz * collisionR * 2,
@@ -10779,6 +10820,7 @@ export class PlanetariumMode {
       previousDistanceAU: arrivalDistanceAU,
       approached: false,
       receding: false,
+      releaseElapsedS: null,
     };
     // Retain the nav moon (applyJumpDestination cleared it above): keeps the
     // dot floor + label if the player takes manual control before arrival.

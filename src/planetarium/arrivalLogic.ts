@@ -203,6 +203,25 @@ export function moonArrivalCameraLookWeight(
   return 1 - eased;
 }
 
+/** Seconds over which manual steering hands the arrival look back to the
+ *  ship. On the touch flight zone a stationary first tap is already full
+ *  steering input, and cancelling the look in one frame swung the camera
+ *  from the moon to the ship as an instant snap — up to the whole off-axis
+ *  allowance — on the first touch after a teleport. */
+export const MOON_ARRIVAL_RELEASE_S = 0.35;
+
+/**
+ * Fade multiplier for a released arrival look: 1 at the moment steering
+ * begins, easing to 0 once MOON_ARRIVAL_RELEASE_S has elapsed. Multiplies
+ * moonArrivalCameraLookWeight, so a release during the receding leg only
+ * ever shortens the ease that was already running.
+ */
+export function moonArrivalReleaseFade(releaseElapsedS: number): number {
+  if (!(releaseElapsedS > 0)) return 1;
+  const t = THREE.MathUtils.clamp(releaseElapsedS / MOON_ARRIVAL_RELEASE_S, 0, 1);
+  return 1 - t * t * (3 - 2 * t);
+}
+
 /** Standoff floor (~500 km) so the smallest arrivals never park
  *  uncomfortably tight. The old ~7,500 km value was tuned when the smallest
  *  rendered moon was a ~3,000 km marble; against curve-rendered specks it

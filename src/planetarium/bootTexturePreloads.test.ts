@@ -52,6 +52,10 @@ describe('index.html boot texture fetch-warm', () => {
     // Before the texture LOOP's fetch expression (the files array literal
     // sits above both — declaration order isn't fetch order).
     expect(starWarm).toBeLessThan(script.indexOf("'%BASE_URL%textures/' + files[i]"));
+    // The handoff itself, not just the URL: the request must start AND land
+    // in the warm map, or the loader quietly fetches the bin a second time.
+    expect(script).toContain('var starRequest = fetch(starUrl)');
+    expect(script).toContain('warm.set(starUrl, starRequest)');
     const shipped = Object.keys(import.meta.glob('../../public/stardata/*'))
       .map((p) => p.split('/').pop()!);
     expect(shipped, `public/${BRIGHT_STAR_BIN_FILE} is missing`)

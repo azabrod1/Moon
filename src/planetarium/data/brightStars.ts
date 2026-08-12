@@ -71,18 +71,29 @@ export function parseBrightStarBin(buf: ArrayBuffer): StarRecord[] {
       colorIndex: view.getInt16(offset + 10, true) / 1e2,
     };
   }
-  const decoder = new TextDecoder();
+  // fatal: a "well-formed catalog" claim must cover the names too — silent
+  // U+FFFD replacement would install a corrupted sky as if it were fine.
+  const decoder = new TextDecoder('utf-8', { fatal: true });
   let offset = starsEnd;
+  let lastNamedIndex = -1;
   for (let n = 0; n < nameCount; n++) {
     if (buf.byteLength < offset + 3) {
       throw new Error('bright-star bin: truncated name block');
     }
     const starIndex = view.getUint16(offset, true);
     const byteLen = view.getUint8(offset + 2);
-    if (starIndex >= starCount || buf.byteLength < offset + 3 + byteLen) {
+    // The encoder writes names in ascending star order; anything else is a
+    // corrupt table (a duplicate index would silently alias two names onto
+    // one star and leave another unnamed).
+    if (starIndex >= starCount || starIndex <= lastNamedIndex || buf.byteLength < offset + 3 + byteLen) {
       throw new Error('bright-star bin: bad name record');
     }
-    records[starIndex].name = decoder.decode(new Uint8Array(buf, offset + 3, byteLen));
+    lastNamedIndex = starIndex;
+    try {
+      records[starIndex].name = decoder.decode(new Uint8Array(buf, offset + 3, byteLen));
+    } catch {
+      throw new Error('bright-star bin: name is not valid UTF-8');
+    }
     offset += 3 + byteLen;
   }
   if (offset !== buf.byteLength) {

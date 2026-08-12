@@ -133,6 +133,17 @@ describe('service worker template: fetch handler', () => {
     expect(harness.netFetch).toHaveBeenCalledTimes(1);
   });
 
+  it('never stores a non-200 response, even one carrying the right bytes', async () => {
+    // Pins the status guard on its own: digest-matching bytes on an error
+    // status (a misconfigured edge, a captive portal echo) must not cache.
+    const weird = new Map([[MOON_PATH, () => new Response(MOON_BYTES.slice(), { status: 203 })]]);
+    const harness = bootWorker(MANIFEST, [], weird);
+    const { responded, waits } = dispatchFetch(harness, new Request(ORIGIN + MOON_PATH));
+    await responded!;
+    await Promise.all(waits);
+    expect(harness.store.size).toBe(0);
+  });
+
   it('serves tampered network bytes fail-open but never stores them', async () => {
     const tampered = new Map([[MOON_PATH, () => new Response('evil', { status: 200 })]]);
     const harness = bootWorker(MANIFEST, [], tampered);

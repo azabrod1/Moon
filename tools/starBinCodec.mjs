@@ -43,7 +43,8 @@ const I16 = { min: -32768, max: 32767 };
 
 /** Encode the catalog. Records keep their array order; names refer back by index. */
 export function encodeBrightStarBin(records) {
-  if (records.length > 0xffff) {
+  // u16 name indices address records 0..65535, so up to 65,536 records fit.
+  if (records.length > 0x10000) {
     throw new Error(`star count ${records.length} exceeds the u16 name-index space`);
   }
   const encoder = new TextEncoder();

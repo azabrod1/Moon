@@ -2,6 +2,8 @@ import { describe, expect, it } from 'vitest';
 import { parseBrightStarBin, type StarRecord } from './brightStars';
 import { loadBrightStarCatalogFromDisk } from './brightStarsTestCatalog';
 import golden from './brightStarsGolden.json';
+// @ts-expect-error node-side generator codec, untyped mjs
+import { encodeBrightStarBin } from '../../../tools/starBinCodec.mjs';
 
 // The golden fixture was captured from the last TS-literal catalog at the
 // moment of the binary migration and is regenerated ONLY by `npm run
@@ -43,6 +45,27 @@ describe('bright-star binary sidecar', () => {
     for (let i = 2; i < records.length; i++) {
       expect(records[i].magnitude).toBeGreaterThanOrEqual(records[i - 1].magnitude);
     }
+  });
+});
+
+describe('encoder → parser round-trip', () => {
+  // Without this, an encoder mutation (endianness, scale, name index) hides
+  // until the next `npm run gen:stars` regenerates the shipped bin.
+  it('reproduces records through a fresh encode', () => {
+    const records: StarRecord[] = [
+      { raDeg: 0, decDeg: 0, magnitude: -26.7, colorIndex: 0.66, name: 'Sol' },
+      { raDeg: 101.2872, decDeg: -16.7161, magnitude: -1.44, colorIndex: 0.01, name: 'Sirius' },
+      { raDeg: 355.2118, decDeg: -56.4207, magnitude: 7.5, colorIndex: 0.08 },
+    ];
+    const bytes = encodeBrightStarBin(records) as Uint8Array;
+    const copy = new Uint8Array(bytes).buffer;
+    expect(parseBrightStarBin(copy)).toEqual(records);
+  });
+
+  it('refuses values the integer scales cannot carry exactly', () => {
+    expect(() => encodeBrightStarBin([
+      { raDeg: 1.00001, decDeg: 0, magnitude: 0, colorIndex: 0 },
+    ])).toThrow(/integer round-trip/);
   });
 });
 
@@ -88,6 +111,29 @@ describe('parseBrightStarBin rejections', () => {
     for (const cut of [4, 12, 20, 25, whole.byteLength - 1]) {
       expect(() => parseBrightStarBin(whole.slice(0, cut)), `cut at ${cut}`).toThrow();
     }
+  });
+
+  it('rejects a name table that is not strictly ascending', () => {
+    // Two names for star 0: the second would silently overwrite the first
+    // while some other star stays unnamed — aliasing, not a catalog.
+    const buf = new ArrayBuffer(12 + 12 + 3 + 1 + 3 + 1);
+    const view = new DataView(buf);
+    new Uint8Array(buf).set(new TextEncoder().encode('MSTR'), 0);
+    view.setUint16(4, 1, true);
+    view.setUint16(6, 2, true);
+    view.setUint32(8, 1, true);
+    for (const [at, name] of [[24, 'A'], [28, 'B']] as const) {
+      view.setUint16(at, 0, true);
+      view.setUint8(at + 2, 1);
+      new Uint8Array(buf).set(new TextEncoder().encode(name), at + 3);
+    }
+    expect(() => parseBrightStarBin(buf)).toThrow(/bad name record/);
+  });
+
+  it('rejects a name that is not valid UTF-8', () => {
+    const buf = validBin();
+    new Uint8Array(buf)[27] = 0xff; // orphan continuation byte in 'Sir'
+    expect(() => parseBrightStarBin(buf)).toThrow(/not valid UTF-8/);
   });
 
   it('rejects trailing garbage', () => {

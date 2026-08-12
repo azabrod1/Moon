@@ -45,6 +45,12 @@ export default function swPlugin() {
     configResolved(config) {
       outDir = path.resolve(config.root, config.build.outDir);
       base = config.base;
+      if (!base.startsWith('/')) {
+        // Manifest keys are absolute pathnames because the worker matches on
+        // url.pathname; a relative base ('./') would emit keys no request
+        // ever matches — a worker that installs and then serves nothing.
+        throw new Error(`sw: relative Vite base "${base}" unsupported — build with an absolute base`);
+      }
     },
     closeBundle() {
       const manifest = {};
@@ -82,6 +88,14 @@ export default function swPlugin() {
         if (!(p in manifest)) {
           throw new Error(`sw: warm-script file is not in dist: ${p}`);
         }
+      }
+      // The precache IS the second-visit win — these throws are its test
+      // harness, and they run on every build including CI's pre-deploy one.
+      // A refactor that quietly emits an empty or gutted list must not ship.
+      if (!precache.includes(starPath)) throw new Error('sw: star bin missing from precache');
+      if (fonts.length < 2) throw new Error(`sw: expected the two boot fonts, found ${fonts.length}`);
+      if (precache.length < MIN_WARM_TEXTURES + 3) {
+        throw new Error(`sw: precache collapsed to ${precache.length} entries`);
       }
 
       const template = readFileSync(TEMPLATE_PATH, 'utf8');

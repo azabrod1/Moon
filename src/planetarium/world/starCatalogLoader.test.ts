@@ -1,6 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { loadBrightStarCatalog, resetStarCatalogLoaderForTests } from './starCatalogLoader';
 import { brightStarCatalog, setBrightStarCatalog } from '../data/brightStars';
+import mainSource from '../../main.ts?raw';
+import planetariumModeSource from '../PlanetariumMode.ts?raw';
 // eslint-style note: the encoder is node-side; tests build tiny valid bins by hand.
 
 /** A minimal valid one-star catalog bin (mirrors the parser fixture). */
@@ -33,6 +35,24 @@ afterEach(() => {
   vi.useRealTimers();
   vi.unstubAllGlobals();
   resetStarCatalogLoaderForTests();
+});
+
+describe('boot wiring', () => {
+  // A real PlanetariumMode in vitest costs a renderer, a DOM id forest and a
+  // store — the harness price this repo has twice declined to pay. But the
+  // load-before-consume ordering is the module's whole correctness contract,
+  // and dropping either side of it would otherwise survive the suite (boots
+  // only fail on slow networks, the worst kind of miss). So the two call
+  // sites are pinned in source, the same way index.html's warm script is.
+  it('activate awaits the catalog inside the solar-system gate', () => {
+    expect(planetariumModeSource).toMatch(
+      /Promise\.all\(\[\s*createSolarSystem\([\s\S]{0,400}?loadBrightStarCatalog\(\),\s*\]\)/,
+    );
+  });
+
+  it('main kicks the shared load at init, rejection-guarded', () => {
+    expect(mainSource).toContain('loadBrightStarCatalog().catch(() => {})');
+  });
 });
 
 describe('loadBrightStarCatalog', () => {
@@ -68,6 +88,12 @@ describe('loadBrightStarCatalog', () => {
     await vi.advanceTimersByTimeAsync(5000 + 300);
     await load;
     expect(fetchSpy).toHaveBeenCalledTimes(1);
+    // Retries must bypass the HTTP cache: a complete-but-corrupt 200 can sit
+    // there for 10 minutes, and default-mode retries would reparse it.
+    expect(fetchSpy).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.objectContaining({ cache: 'reload' }),
+    );
     expect(brightStarCatalog()).toHaveLength(1);
   });
 
@@ -75,6 +101,20 @@ describe('loadBrightStarCatalog', () => {
     const fetchSpy = vi
       .fn()
       .mockResolvedValueOnce(new Response('gone', { status: 404 }))
+      .mockResolvedValue(okResponse());
+    vi.stubGlobal('fetch', fetchSpy);
+    const load = loadBrightStarCatalog();
+    await vi.advanceTimersByTimeAsync(300);
+    await load;
+    expect(fetchSpy).toHaveBeenCalledTimes(2);
+  });
+
+  it('rejects a non-200 even when its body is a parseable catalog', async () => {
+    // Pins the ok-guard itself: a soft-404 or error page that happens to
+    // carry valid bytes must not slip through on status alone.
+    const fetchSpy = vi
+      .fn()
+      .mockResolvedValueOnce(new Response(tinyBin(), { status: 500 }))
       .mockResolvedValue(okResponse());
     vi.stubGlobal('fetch', fetchSpy);
     const load = loadBrightStarCatalog();

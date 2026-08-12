@@ -45,11 +45,15 @@ async function fetchCatalogOnce(url: string, attempt: number): Promise<ArrayBuff
       return response.arrayBuffer();
     })(), WARM_ATTEMPT_MS, 'star catalog warm fetch');
   }
-  // Retries are ours to abort — the signal bounds the body read too.
+  // Retries are ours to abort — the signal bounds the body read too. They
+  // bypass the HTTP cache ('reload'): when the first attempt died on a
+  // PARSE error, its bytes came from a complete-but-corrupt 200 the cache
+  // may hold for 10 minutes, and default-mode retries would reparse that
+  // same body twice and burn the whole ladder on it.
   const abort = new AbortController();
   const timer = setTimeout(() => abort.abort(), RETRY_TIMEOUT_MS);
   try {
-    const response = await fetch(url, { signal: abort.signal });
+    const response = await fetch(url, { cache: 'reload', signal: abort.signal });
     if (!response.ok) throw new Error(`HTTP ${response.status} for ${url}`);
     return await response.arrayBuffer();
   } finally {

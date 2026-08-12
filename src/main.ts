@@ -374,24 +374,29 @@ const planetariumUI = document.getElementById('planetarium-ui')!;
 const modeTransition = document.getElementById('mode-transition')!;
 const transitionMsg = document.getElementById('transition-msg')!;
 
+function setLoadingPercentText(text: string) {
+  // A failed boot's error message owns the screen: a still-running loader
+  // branch (the solar system keeps fetching after the catalog gate throws)
+  // must not overwrite the one instruction the user has with "…100%".
+  const loadingScreen = document.getElementById('loading-screen');
+  if (loadingScreen?.dataset.bootError) return;
+  const loadEl = document.getElementById('loading-msg');
+  if (loadEl) loadEl.textContent = text;
+  transitionMsg.textContent = text;
+}
+
 function setPlanetsLoadingPercent(completedUnits: number, totalUnits: number) {
   const clampedTotalUnits = Math.max(totalUnits, 1);
   const clampedCompletedUnits = Math.min(Math.max(completedUnits, 0), clampedTotalUnits);
   const pct = Math.round((clampedCompletedUnits / clampedTotalUnits) * 100);
-  const text = `Loading Planets... ${pct}%`;
-  const loadEl = document.getElementById('loading-msg');
-  if (loadEl) loadEl.textContent = text;
-  transitionMsg.textContent = text;
+  setLoadingPercentText(`Loading Planets... ${pct}%`);
 }
 
 function setFlightLoadingPercent(completedUnits: number, totalUnits: number) {
   const clampedTotalUnits = Math.max(totalUnits, 1);
   const clampedCompletedUnits = Math.min(Math.max(completedUnits, 0), clampedTotalUnits);
   const pct = Math.round((clampedCompletedUnits / clampedTotalUnits) * 100);
-  const text = `Entering Flight... ${pct}%`;
-  const loadEl = document.getElementById('loading-msg');
-  if (loadEl) loadEl.textContent = text;
-  transitionMsg.textContent = text;
+  setLoadingPercentText(`Entering Flight... ${pct}%`);
 }
 
 async function switchAppMode(newMode: AppMode) {
@@ -974,38 +979,32 @@ function syncViewportIfDrifted() {
  */
 async function shedServiceWorkerIfRequested(): Promise<boolean> {
   if (!('serviceWorker' in navigator)) return false;
-  const FLAG = 'moon-nosw-reloaded';
-  if (!new URLSearchParams(location.search).has('nosw')) {
-    // Normal boot: retire any leftover loop guard so a future ?nosw works.
-    try { sessionStorage.removeItem(FLAG); } catch { /* storage unavailable */ }
-    return false;
-  }
+  const params = new URLSearchParams(location.search);
+  if (!params.has('nosw')) return false;
   debugWarn('Service worker kill switch (?nosw=1): unregistering');
+  // Unregister and cache-delete are independent recoveries — one failing
+  // must not take the other down with it.
   try {
     const registration = await navigator.serviceWorker.getRegistration(import.meta.env.BASE_URL);
     await registration?.unregister();
+  } catch (err) {
+    debugError('Service worker unregister failed', err);
+  }
+  try {
     for (const name of await caches.keys()) {
       if (name.startsWith('moon-data-')) await caches.delete(name);
     }
   } catch (err) {
-    debugError('Service worker shed failed', err);
+    debugError('Service worker cache delete failed', err);
   }
-  if (navigator.serviceWorker.controller) {
+  if (navigator.serviceWorker.controller && !params.has('noswr')) {
     // Unregistering doesn't release the current document; one reload does.
-    // The sessionStorage flag breaks a reload loop; if the flag can't be
-    // persisted, don't risk the loop — the worker is unregistered either
-    // way, so the NEXT manual reload boots clean.
-    let alreadyReloaded = true;
-    try {
-      alreadyReloaded = sessionStorage.getItem(FLAG) === '1';
-      if (!alreadyReloaded) sessionStorage.setItem(FLAG, '1');
-    } catch { alreadyReloaded = true; }
-    if (!alreadyReloaded) {
-      location.reload();
-      return true;
-    }
-  } else {
-    try { sessionStorage.removeItem(FLAG); } catch { /* storage unavailable */ }
+    // The loop guard rides the URL itself (`noswr`), not storage — the kill
+    // switch must work in storage-restricted contexts too, and a marker the
+    // navigation carries can't loop by construction.
+    params.set('noswr', '1');
+    location.replace(`${location.pathname}?${params.toString()}${location.hash}`);
+    return true;
   }
   return false;
 }
@@ -1034,20 +1033,30 @@ function registerServiceWorker(): void {
   });
 }
 
-// Safety: never leave loading screen stuck for more than 15s — unless init
-// already FAILED, in which case the screen is the error display and hiding it
-// would reveal a half-built scene with the explanation gone.
-setTimeout(() => {
+// Safety: a finished boot must never leave the loading screen stranded past
+// 15s. Strictly a finished one — while init is still unsettled there is
+// nothing behind the screen worth showing (a suspended mobile tab can resume
+// with every boot timer overdue at once, and hiding then would reveal a
+// half-built black scene), and after a FAILURE the screen is the error
+// display. In both of those cases keep it up and check back.
+let initSettled = false;
+setTimeout(function forceHideCheck() {
   const ls = document.getElementById('loading-screen');
-  const shouldForceHide = !!ls && !ls.classList.contains('hidden') && !ls.dataset.bootError;
-  if (shouldForceHide) {
-    debugWarn('Loading timeout reached before init finished');
-    console.warn('Loading timeout — forcing hide');
-    ls.classList.add('hidden');
+  if (!ls || ls.classList.contains('hidden') || ls.dataset.bootError) return;
+  if (!initSettled) {
+    debugWarn('Loading is running long; keeping the screen until init settles');
+    setTimeout(forceHideCheck, 5000);
+    return;
   }
+  debugWarn('Loading timeout reached after init finished');
+  console.warn('Loading timeout — forcing hide');
+  ls.classList.add('hidden');
 }, 15000);
 
-init().catch((err) => {
+init().then(() => {
+  initSettled = true;
+}).catch((err) => {
+  initSettled = true;
   debugError('Init failed', err);
   console.error('Init failed:', err);
   // The message lives INSIDE the loading screen, so the screen must stay up

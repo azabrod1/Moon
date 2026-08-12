@@ -10511,9 +10511,9 @@ export class PlanetariumMode {
       const dist = Math.sqrt(dx * dx + dy * dy + dz * dz);
       if (dist < 1e-12) return;
       const cos = (dx * f.x + dy * f.y + dz * f.z) / dist;
-      // Raw surface distance, deliberately unclamped: the leave law recovers
-      // the exact center distance from it even with the ship momentarily
-      // inside the surface.
+      // Raw surface distance, deliberately unclamped: at or inside the
+      // collision shell both laws clamp themselves — the approach to its
+      // floor, the leave law to the shell's own creep.
       const c = governedSpeedCap(dist - surfaceR, surfaceR, cos, kPerS, BODY_APPROACH_V_MIN_AU_S);
       if (c < cap) cap = c;
     };

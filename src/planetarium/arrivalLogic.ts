@@ -11,6 +11,7 @@
 import * as THREE from 'three';
 import { KM_PER_AU } from '../astronomy/constants';
 import { DEG2RAD } from '../shared/math/angles';
+import { SHIP_CLEARANCE_AU } from './cruiseView';
 
 /** Approach dynamics: distance to the moon's surface e-folds every 1/K
  *  seconds, so every moon from Ganymede to Deimos gets the same subjective
@@ -34,21 +35,29 @@ export const BODY_APPROACH_V_MIN_AU_S = 2 / KM_PER_AU;
 
 /** Departure near zone: for its first moments a leave is capped by the SAME
  *  K × height glide as an approach — right beside a body, leaving is as
- *  unhurried as arriving — but with this head start (in surface radii) added
- *  to the height, so the shell itself reads as a visible creep (~0.05 R/s)
+ *  unhurried as arriving — but with this head start added to the height, so
+ *  the shell itself reads as a visible creep (~0.05 shell radii per second)
  *  instead of the near-freeze the approach floor would pin a parked
- *  nose-out ship at. */
+ *  nose-out ship at.
+ *
+ *  The leave law's datum is the COLLISION SHELL (rendered radius + hull
+ *  clearance) — the surface the resolvers actually park the ship on — and
+ *  the head start and knee scale on that shell radius. Rendered radii would
+ *  break the smallest bodies: the fixed clearance dwarfs a moonlet's mesh,
+ *  so a ship parked at one would measure several "radii" up, start past the
+ *  valve knee, and detonate off the shell in a fraction of a second. */
 export const LEAVE_HEADSTART_RADII = 0.2;
 
-/** Knee of the departure valve, measured on the head-started height. Inside
- *  it the leave cap is the plain glide — the really-slow zone, crossed in
- *  ~3 s of flight. Past it the cap opens as the SQUARE of the ratio (a
- *  cubic law overall), so it outruns any dialed speed within ~1/(2K) ≈ 2 s
- *  more: a departure is genuinely governed only for its first few seconds —
- *  slow beside the body, picking up through the knee, and entirely free once
- *  the ship has clearly left. Everything is in radii, so a moonlet departure
- *  and a Jupiter departure share one subjective timeline. */
-export const LEAVE_VALVE_KNEE_RADII = 0.47;
+/** Knee of the departure valve, measured on the head-started shell height.
+ *  Inside it the leave cap is the plain glide — the really-slow zone,
+ *  crossed in ~3 s of flight. Past it the cap opens as the SQUARE of the
+ *  ratio (a cubic law overall), so it outruns any dialed speed within
+ *  ~1/(2K) ≈ 2 s more: a departure is genuinely governed only for its first
+ *  few seconds — slow beside the body, picking up through the knee, and
+ *  entirely free once the ship has clearly left. Everything is in shell
+ *  radii, so a moonlet departure and a Jupiter departure share one
+ *  subjective timeline. */
+export const LEAVE_VALVE_KNEE_RADII = 0.38;
 
 /**
  * Proximity speed cap near one body. Closing, speed is limited to
@@ -67,9 +76,11 @@ export const LEAVE_VALVE_KNEE_RADII = 0.47;
  * resolver.
  *
  * `surfaceDistAU` is the RAW `dist − surfaceRadius`, negative while a swept
- * endpoint sits momentarily inside the surface. Both laws clamp the height,
- * so inside the shell the leave cap holds the shell's own creep and the
- * approach cap its floor — neither ever goes negative.
+ * endpoint sits momentarily inside the surface. Both laws clamp: at or
+ * inside the collision shell the leave cap holds the shell's own creep
+ * (floored at vMin, like the approach) and the approach cap its floor —
+ * neither ever goes negative, and swinging the nose out is never slower
+ * than swinging it in.
  */
 export function governedSpeedCap(
   surfaceDistAU: number,
@@ -78,10 +89,12 @@ export function governedSpeedCap(
   kPerS: number,
   vMinAUPerS: number,
 ): number {
-  const liftAU = Math.max(surfaceDistAU, 0) + LEAVE_HEADSTART_RADII * surfaceRadiusAU;
-  const kneeAU = LEAVE_VALVE_KNEE_RADII * surfaceRadiusAU;
+  const shellRadiusAU = surfaceRadiusAU + SHIP_CLEARANCE_AU;
+  const liftAU =
+    Math.max(surfaceDistAU - SHIP_CLEARANCE_AU, 0) + LEAVE_HEADSTART_RADII * shellRadiusAU;
+  const kneeAU = LEAVE_VALVE_KNEE_RADII * shellRadiusAU;
   const valve = liftAU > kneeAU ? (liftAU / kneeAU) ** 2 : 1;
-  const vOut = kPerS * liftAU * valve;
+  const vOut = Math.max(kPerS * liftAU * valve, vMinAUPerS);
   const t = THREE.MathUtils.clamp(cosApproach / 0.3, 0, 1);
   const w = t * t * (3 - 2 * t);
   if (w <= 0) return vOut;

@@ -1,31 +1,35 @@
 import { describe, expect, it } from 'vitest';
 import html from '../../index.html?raw';
 import { PLANET_TEXTURE_FILES } from './PlanetFactory';
+import { takeBootWarmResponse } from './world/textureBitmapLoader';
 
-// index.html preloads the whole boot texture set so the network starts on it
-// at HTML parse. These tests pin the preload tags to the manifest: a texture
-// added to PLANET_TEXTURE_FILES without a preload boots with dead network
-// time again, and a preload for a file the boot no longer fetches downloads
-// megabytes nobody reads.
+// index.html fetch-warms the whole boot texture set so the network starts on
+// it at HTML parse. These tests pin the warm list to the manifest: a texture
+// added to PLANET_TEXTURE_FILES without a warm boots with dead network time
+// again, and a warm for a file the boot no longer fetches downloads
+// megabytes nobody reads. An inline script rather than <link rel="preload"
+// as="fetch"> because WebKit never matches such a preload to the loader's
+// later fetch() under any credentials mode — on Safari every boot map
+// downloaded twice.
 
-function preloadedTextures(): string[] {
-  // crossorigin="anonymous" is load-bearing: with it the preload's request
-  // mode/credentials match the streamed loader's plain fetch(), without it
-  // the preload cache misses and every boot map downloads twice.
-  return [...html.matchAll(/<link rel="preload" as="fetch" crossorigin="anonymous" href="\/textures\/([^"]+)"/g)]
-    .map((m) => m[1]);
+function warmScript(): string {
+  return html.match(/<script id="boot-texture-warm">([\s\S]*?)<\/script>/)?.[1] ?? '';
 }
 
-describe('index.html boot texture preloads', () => {
-  it('preloads exactly the boot texture manifest', () => {
-    const preloaded = preloadedTextures();
-    expect(new Set(preloaded)).toEqual(new Set(Object.values(PLANET_TEXTURE_FILES)));
-    expect(preloaded).toHaveLength(new Set(preloaded).size); // no duplicates
+function warmedTextures(): string[] {
+  return [...warmScript().matchAll(/'([^']+\.webp)'/g)].map((m) => m[1]);
+}
+
+describe('index.html boot texture fetch-warm', () => {
+  it('warms exactly the boot texture manifest', () => {
+    const warmed = warmedTextures();
+    expect(new Set(warmed)).toEqual(new Set(Object.values(PLANET_TEXTURE_FILES)));
+    expect(warmed).toHaveLength(new Set(warmed).size); // no duplicates
   });
 
   it('names files that exist on disk', () => {
-    // Manifest and preload list agreeing proves nothing if both carry the
-    // same stale name — every boot request would 404 while this suite stayed
+    // Manifest and warm list agreeing proves nothing if both carry the same
+    // stale name — every boot request would 404 while this suite stayed
     // green. Texture paths are runtime strings (invisible to tsc and Vite),
     // so the shipped directory is the only ground truth.
     const onDisk = new Set(
@@ -37,12 +41,12 @@ describe('index.html boot texture preloads', () => {
     }
   });
 
-  it('preloads the blocking planet set before the durable moon wave', () => {
+  it('warms the blocking planet set before the durable moon wave', () => {
     // The 13 awaited planet-level maps gate the loading screen; the moon
-    // system streams behind the veil. Order is the only priority signal a
-    // same-priority preload list carries, so the gate's files must all sit
-    // before the first background one.
-    const preloaded = preloadedTextures();
+    // system streams behind the veil. Order is the only priority signal the
+    // warm loop carries, so the gate's files must all sit before the first
+    // background one.
+    const warmed = warmedTextures();
     const durableWave = new Set([
       PLANET_TEXTURE_FILES.moonNormal,
       PLANET_TEXTURE_FILES.marsNormal,
@@ -53,11 +57,29 @@ describe('index.html boot texture preloads', () => {
       PLANET_TEXTURE_FILES.callisto,
       PLANET_TEXTURE_FILES.triton,
     ]);
-    const firstBackground = preloaded.findIndex((f) => durableWave.has(f));
-    const lastBlocking = preloaded.reduce(
+    const firstBackground = warmed.findIndex((f) => durableWave.has(f));
+    const lastBlocking = warmed.reduce(
       (last, f, i) => (durableWave.has(f) ? last : i),
       -1,
     );
     expect(firstBackground).toBeGreaterThan(lastBlocking);
+  });
+
+  it('stashes the promises under the key the loader takes them from', () => {
+    // Both ends of the handoff, pinned against each other: the inline script
+    // must write the global this test stores under, and takeBootWarmResponse
+    // must find what is stored there — rename either alone and this fails.
+    expect(warmScript()).toContain('window.__bootTexWarm = warm');
+    // The URLs must ride the Vite base: this page is not served from the
+    // domain root on Pages, and a bare '/textures/' key would neither fetch
+    // nor match the loader's BASE_URL-joined URL there.
+    expect(warmScript()).toContain("'%BASE_URL%textures/' + files[i]");
+    const warmed = Promise.resolve(new Response());
+    (globalThis as Record<string, unknown>).__bootTexWarm = new Map([['textures/x.webp', warmed]]);
+    try {
+      expect(takeBootWarmResponse('textures/x.webp')).toBe(warmed);
+    } finally {
+      delete (globalThis as Record<string, unknown>).__bootTexWarm;
+    }
   });
 });

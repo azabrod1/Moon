@@ -12,38 +12,6 @@
        favicon.svg if the art changes. -->
   <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png?v=3" />
   <meta name="theme-color" content="#050814" />
-  <!-- Boot texture preloads: every map the boot path fetches, so the network
-       starts on them at HTML parse instead of idling until the JS has parsed,
-       the renderer is built, and createSolarSystem finally asks (~0.5-1 s of
-       dead air on a phone). as="fetch" + crossorigin="anonymous" together
-       mirror the streamed loader's plain fetch() (mode cors, credentials
-       same-origin, textureBitmapLoader) — drop either and the preload cache
-       misses and every map downloads TWICE. The rare probe-fail <img>
-       fallback still re-fetches, which is the old cost, not a new one.
-       Blocking set first
-       (largest first), then the durable moon-system wave. The set is pinned
-       to PLANET_TEXTURE_FILES by bootTexturePreloads.test.ts. -->
-  <link rel="preload" as="fetch" crossorigin="anonymous" href="/textures/earth-day.webp" />
-  <link rel="preload" as="fetch" crossorigin="anonymous" href="/textures/earth-clouds.webp" />
-  <link rel="preload" as="fetch" crossorigin="anonymous" href="/textures/mercury.webp" />
-  <link rel="preload" as="fetch" crossorigin="anonymous" href="/textures/mars.webp" />
-  <link rel="preload" as="fetch" crossorigin="anonymous" href="/textures/earth-night.webp" />
-  <link rel="preload" as="fetch" crossorigin="anonymous" href="/textures/earth-roughness.webp" />
-  <link rel="preload" as="fetch" crossorigin="anonymous" href="/textures/jupiter.webp" />
-  <link rel="preload" as="fetch" crossorigin="anonymous" href="/textures/pluto.webp" />
-  <link rel="preload" as="fetch" crossorigin="anonymous" href="/textures/earth-bump.webp" />
-  <link rel="preload" as="fetch" crossorigin="anonymous" href="/textures/neptune.webp" />
-  <link rel="preload" as="fetch" crossorigin="anonymous" href="/textures/venus.webp" />
-  <link rel="preload" as="fetch" crossorigin="anonymous" href="/textures/saturn.webp" />
-  <link rel="preload" as="fetch" crossorigin="anonymous" href="/textures/uranus.webp" />
-  <link rel="preload" as="fetch" crossorigin="anonymous" href="/textures/moon-normal.webp" />
-  <link rel="preload" as="fetch" crossorigin="anonymous" href="/textures/mars-normal.webp" />
-  <link rel="preload" as="fetch" crossorigin="anonymous" href="/textures/europa.webp" />
-  <link rel="preload" as="fetch" crossorigin="anonymous" href="/textures/io.webp" />
-  <link rel="preload" as="fetch" crossorigin="anonymous" href="/textures/ganymede.webp" />
-  <link rel="preload" as="fetch" crossorigin="anonymous" href="/textures/triton.webp" />
-  <link rel="preload" as="fetch" crossorigin="anonymous" href="/textures/moon.webp" />
-  <link rel="preload" as="fetch" crossorigin="anonymous" href="/textures/callisto.webp" />
   <style>
 
     /* Geist, bundled with the app (public/fonts, SIL OFL 1.1 — OFL.txt sits
@@ -4447,5 +4415,42 @@
   </div>
 
   <script type="module" src="/src/main.ts"></script>
+  <!-- Boot texture fetch-warm: every map the boot path fetches starts
+       downloading here, at HTML parse, instead of idling until the JS has
+       parsed, the renderer is built, and createSolarSystem finally asks
+       (~0.5-1 s of dead air on a phone). A <link rel="preload" as="fetch">
+       looks equivalent but is not: WebKit never matches such a preload to a
+       later fetch(), whatever the credentials mode, so on Safari every boot
+       map downloaded TWICE. These ARE the loader's fetches instead —
+       textureBitmapLoader takes each promise from the map below, at most
+       once (a Response body is single-use, and a taken entry must not serve
+       a retry). Placed after the module script so the app bundle's request
+       wins a serial connection; the rare probe-fail <img> fallback still
+       re-fetches, which is the old cost, not a new one. Blocking set first
+       (largest first), then the durable moon-system wave. The set is pinned
+       to PLANET_TEXTURE_FILES by bootTexturePreloads.test.ts. -->
+  <script id="boot-texture-warm">
+    (function () {
+      var files = [
+        'earth-day.webp', 'earth-clouds.webp', 'mercury.webp', 'mars.webp',
+        'earth-night.webp', 'earth-roughness.webp', 'jupiter.webp', 'pluto.webp',
+        'earth-bump.webp', 'neptune.webp', 'venus.webp', 'saturn.webp',
+        'uranus.webp',
+        'moon-normal.webp', 'mars-normal.webp', 'europa.webp', 'io.webp',
+        'ganymede.webp', 'triton.webp', 'moon.webp', 'callisto.webp',
+      ];
+      var warm = new Map();
+      for (var i = 0; i < files.length; i++) {
+        var url = '%BASE_URL%textures/' + files[i];
+        var request = fetch(url);
+        // A dead network rejects these before the loader takes them; the
+        // side-listener keeps that off the unhandled-rejection channel while
+        // the stored promise still carries the rejection to its taker.
+        request.catch(function () {});
+        warm.set(url, request);
+      }
+      window.__bootTexWarm = warm;
+    })();
+  </script>
 </body>
 </html>

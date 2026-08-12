@@ -3,6 +3,7 @@ import * as THREE from 'three';
 import {
   loadStreamedTexture,
   setBitmapProbeForTests,
+  takeBootWarmResponse,
   textureLoader,
   TextureTransportError,
 } from './textureBitmapLoader';
@@ -143,5 +144,36 @@ describe('loadStreamedTexture', () => {
     const tex = new THREE.Texture();
     calls[0].onLoad(tex);
     expect(onLoad).toHaveBeenCalledWith(tex);
+  });
+
+  it('drinks the boot fetch-warm instead of fetching the same URL again', async () => {
+    setBitmapProbeForTests(true);
+    const bitmap = fakeBitmap();
+    const fetchSpy = vi.fn(async () => ({ ok: true, blob: async () => new Blob() }));
+    vi.stubGlobal('fetch', fetchSpy);
+    vi.stubGlobal('createImageBitmap', vi.fn(async () => bitmap));
+    const warmed = Promise.resolve({ ok: true, blob: async () => new Blob() });
+    vi.stubGlobal('__bootTexWarm', new Map([['textures/warm.webp', warmed]]));
+    const onLoad = vi.fn();
+    loadStreamedTexture('textures/warm.webp', onLoad, vi.fn());
+    await flush();
+    expect(fetchSpy).not.toHaveBeenCalled();
+    expect(onLoad).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('takeBootWarmResponse', () => {
+  it('hands a warmed promise over exactly once', () => {
+    const warmed = Promise.resolve(new Response());
+    vi.stubGlobal('__bootTexWarm', new Map([['textures/a.webp', warmed]]));
+    expect(takeBootWarmResponse('textures/a.webp')).toBe(warmed);
+    // A Response body is single-use, and a taken entry must never serve a
+    // later retry — the second asker fetches fresh.
+    expect(takeBootWarmResponse('textures/a.webp')).toBeUndefined();
+    expect(takeBootWarmResponse('textures/other.webp')).toBeUndefined();
+  });
+
+  it('is absent-safe before the warm script has run', () => {
+    expect(takeBootWarmResponse('textures/a.webp')).toBeUndefined();
   });
 });

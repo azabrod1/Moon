@@ -6,39 +6,61 @@
  */
 import { describe, expect, it } from 'vitest';
 import * as THREE from 'three';
+import { Line2 } from 'three/addons/lines/Line2.js';
 import {
+  ORBIT_LINE_OPACITY_CAP,
+  ORBIT_LINE_OPACITY_FLOOR,
+  ORBIT_LINE_OVERVIEW_OPACITY,
   ORBIT_LINE_SEGMENTS,
   createAsteroidBelt,
+  createOrbitLineMaterial,
   getPlanetOrbitalPosition,
+  orbitLineOpacity,
   orbitLineSegmentCount,
   resampleOrbitLines,
   type SolarSystemObjects,
 } from './SolarSystem';
+import { createLensShaderUniforms } from '../shared/three/lensShader';
 import { computeBodyPositionAU, eclipticToEquatorial } from '../astronomy/planetary';
 import { ASTEROID_BELT, PLANETARIUM_BODIES } from './planets/planetData';
 
 const J2000_UTC_MS = Date.UTC(2000, 0, 1, 12, 0, 0);
 
 function makeBareObjects(): Pick<SolarSystemObjects, 'orbitLines' | 'orbitLinesEpochUtcMs'> {
-  // Exactly the fields resampleOrbitLines declares it needs.
+  // Exactly the fields resampleOrbitLines declares it needs. Default Line2
+  // geometry is empty, so the first resample exercises the fill path.
   return {
-    orbitLines: PLANETARIUM_BODIES.map(
-      () => new THREE.Line(new THREE.BufferGeometry(), new THREE.LineBasicMaterial()),
-    ),
+    orbitLines: PLANETARIUM_BODIES.map(() => new Line2()),
     orbitLinesEpochUtcMs: 0,
   };
 }
 
-function minDistToPolyline(p: THREE.Vector3, position: THREE.BufferAttribute): number {
+function instanceStartOf(line: Line2): THREE.InterleavedBufferAttribute {
+  // NB: fat-line geometry also carries a `position` attribute, but that is the
+  // 8-vertex unit quad — the polyline lives in instanceStart/instanceEnd.
+  return line.geometry.getAttribute('instanceStart') as THREE.InterleavedBufferAttribute;
+}
+
+/** The sampled polyline back out of the instanced pair layout. */
+function polylinePoints(line: Line2): THREE.Vector3[] {
+  const start = instanceStartOf(line);
+  const end = line.geometry.getAttribute('instanceEnd') as THREE.InterleavedBufferAttribute;
+  const points: THREE.Vector3[] = [];
+  for (let i = 0; i < start.count; i++) {
+    points.push(new THREE.Vector3().fromBufferAttribute(start, i));
+  }
+  points.push(new THREE.Vector3().fromBufferAttribute(end, end.count - 1));
+  return points;
+}
+
+function minDistToPolyline(p: THREE.Vector3, points: THREE.Vector3[]): number {
   let best = Infinity;
-  const a = new THREE.Vector3();
-  const b = new THREE.Vector3();
   const ab = new THREE.Vector3();
   const ap = new THREE.Vector3();
   const closest = new THREE.Vector3();
-  for (let i = 0; i + 1 < position.count; i++) {
-    a.fromBufferAttribute(position, i);
-    b.fromBufferAttribute(position, i + 1);
+  for (let i = 0; i + 1 < points.length; i++) {
+    const a = points[i];
+    const b = points[i + 1];
     ab.subVectors(b, a);
     ap.subVectors(p, a);
     const t = Math.max(0, Math.min(1, ap.dot(ab) / ab.lengthSq()));
@@ -106,16 +128,18 @@ describe('aligned layout positions', () => {
 });
 
 describe('resampleOrbitLines', () => {
-  it('fills every line with a closed orbit and stamps the epoch', () => {
+  it('fills every line with a full-period orbit and stamps the epoch', () => {
     const objects = makeBareObjects();
     resampleOrbitLines(objects, 'realistic', J2000_UTC_MS);
 
     expect(objects.orbitLinesEpochUtcMs).toBe(J2000_UTC_MS);
     for (let i = 0; i < objects.orbitLines.length; i++) {
       const geometry = objects.orbitLines[i].geometry;
-      const position = geometry.getAttribute('position');
-      expect(position.count, PLANETARIUM_BODIES[i].name).toBe(
-        orbitLineSegmentCount(PLANETARIUM_BODIES[i]) + 1,
+      expect(instanceStartOf(objects.orbitLines[i]).count, PLANETARIUM_BODIES[i].name).toBe(
+        orbitLineSegmentCount(PLANETARIUM_BODIES[i]),
+      );
+      expect(geometry.instanceCount, PLANETARIUM_BODIES[i].name).toBe(
+        orbitLineSegmentCount(PLANETARIUM_BODIES[i]),
       );
       expect(geometry.boundingSphere, PLANETARIUM_BODIES[i].name).not.toBeNull();
       // Bounding sphere must be orbit-sized, not the default empty sphere.
@@ -146,10 +170,7 @@ describe('resampleOrbitLines', () => {
           const body = PLANETARIUM_BODIES[i];
           const pos = computeBodyPositionAU(body, epoch + staleMs);
           const p = new THREE.Vector3(pos.x, pos.y, pos.z);
-          const offAU = minDistToPolyline(
-            p,
-            objects.orbitLines[i].geometry.getAttribute('position') as THREE.BufferAttribute,
-          );
+          const offAU = minDistToPolyline(p, polylinePoints(objects.orbitLines[i]));
           expect(offAU, `${body.name} @ ${new Date(epoch).toISOString()} +${staleMs / 86_400_000}d`)
             .toBeLessThan(body.radiusAU * 0.5);
         }
@@ -157,24 +178,50 @@ describe('resampleOrbitLines', () => {
     }
   });
 
-  it('moves the lines and the bounding spheres when resampled centuries later', () => {
+  it('moves the lines in place — same geometry, same buffer — when resampled centuries later', () => {
     const objects = makeBareObjects();
     resampleOrbitLines(objects, 'realistic', J2000_UTC_MS);
-    const mercury = objects.orbitLines[0].geometry;
-    const before = new THREE.Vector3().fromBufferAttribute(mercury.getAttribute('position'), 0);
+    const mercury = objects.orbitLines[0];
+    const geometryBefore = mercury.geometry;
+    const attributeBefore = instanceStartOf(mercury);
+    const versionBefore = attributeBefore.data.version;
+    const before = new THREE.Vector3().fromBufferAttribute(attributeBefore, 0);
 
     const later = J2000_UTC_MS + 200 * 365.25 * 86_400_000;
     resampleOrbitLines(objects, 'realistic', later);
 
     expect(objects.orbitLinesEpochUtcMs).toBe(later);
-    const after = new THREE.Vector3().fromBufferAttribute(mercury.getAttribute('position'), 0);
+    const after = new THREE.Vector3().fromBufferAttribute(instanceStartOf(mercury), 0);
     // The strip starts half a period before the epoch — 200 years later that
     // vertex sits somewhere else entirely on the (precessed) orbit, and the
-    // resample must land in place (same attribute, same count).
+    // resample must land in place: the same geometry and interleaved buffer
+    // (churning GPU buffers on the periodic drift rebuild is what the fast
+    // path exists to avoid), with the upload flagged.
     expect(after.distanceTo(before)).toBeGreaterThan(1e-4);
-    expect(mercury.getAttribute('position').count).toBe(
-      orbitLineSegmentCount(PLANETARIUM_BODIES[0]) + 1,
-    );
+    expect(mercury.geometry).toBe(geometryBefore);
+    expect(instanceStartOf(mercury)).toBe(attributeBefore);
+    expect(attributeBefore.data.version).toBeGreaterThan(versionBefore);
+    expect(attributeBefore.count).toBe(orbitLineSegmentCount(PLANETARIUM_BODIES[0]));
+  });
+
+  it('swaps in a fresh geometry and disposes the old one when the segment count changes', () => {
+    const objects = makeBareObjects();
+    resampleOrbitLines(objects, 'realistic', J2000_UTC_MS);
+    const mercury = objects.orbitLines[0];
+    const geometryBefore = mercury.geometry;
+    let disposed = false;
+    geometryBefore.addEventListener('dispose', () => {
+      disposed = true;
+    });
+
+    // Aligned circles use ORBIT_LINE_SEGMENTS (256) — a different count than
+    // Mercury's realistic 1024, so the in-place path must refuse.
+    resampleOrbitLines(objects, 'aligned', J2000_UTC_MS);
+
+    expect(mercury.geometry).not.toBe(geometryBefore);
+    expect(disposed).toBe(true);
+    expect(instanceStartOf(mercury).count).toBe(ORBIT_LINE_SEGMENTS);
+    expect(mercury.geometry.boundingSphere).not.toBeNull();
   });
 
   it('draws catalog-radius ecliptic circles in aligned mode', () => {
@@ -185,7 +232,7 @@ describe('resampleOrbitLines', () => {
     const objects = makeBareObjects();
     resampleOrbitLines(objects, 'aligned', J2000_UTC_MS);
     for (let i = 0; i < objects.orbitLines.length; i++) {
-      const position = objects.orbitLines[i].geometry.getAttribute('position');
+      const start = instanceStartOf(objects.orbitLines[i]);
       const radiusAU = PLANETARIUM_BODIES[i].semiMajorAxisAU;
       for (const vertexIndex of [0, 64, 192]) {
         const angle = (vertexIndex / ORBIT_LINE_SEGMENTS) * Math.PI * 2;
@@ -193,9 +240,66 @@ describe('resampleOrbitLines', () => {
           new THREE.Vector3(radiusAU * Math.cos(angle), 0, -radiusAU * Math.sin(angle)),
         );
         // BufferAttribute is float32: ~1e-7 relative quantization.
-        const v = new THREE.Vector3().fromBufferAttribute(position, vertexIndex);
+        const v = new THREE.Vector3().fromBufferAttribute(start, vertexIndex);
         expect(v.distanceTo(expected), PLANETARIUM_BODIES[i].name).toBeLessThan(1e-5 * (1 + radiusAU));
       }
     }
+  });
+});
+
+describe('createOrbitLineMaterial', () => {
+  it('applies the butt-cap + edge-feather patch and keeps its own program-cache key', () => {
+    const material = createOrbitLineMaterial(0xff0000, 0.2, createLensShaderUniforms());
+    // Anchors are asserted at patch time (replaceExactlyOnce throws on a three
+    // upgrade that moves them) — construction alone proves they still match.
+    expect(material.fragmentShader).toContain('lineEdgeWidth');
+    expect(material.fragmentShader).not.toContain('if ( len2 > 1.0 ) discard;');
+    // Distinct from the ShadowVisuals guides' 'fixed-screen-line-lens-v1' so
+    // the two patched shader families can never share a compiled program.
+    expect(material.customProgramCacheKey()).toBe('orbit-line-lens-buttcap-v1');
+    expect(material.transparent).toBe(true);
+    expect(material.depthWrite).toBe(false);
+    expect(material.worldUnits).toBe(false);
+  });
+});
+
+describe('orbitLineOpacity', () => {
+  const NEPTUNE_A = 30.07;
+
+  it('pins a far orbit to the floor when the camera is close', () => {
+    expect(orbitLineOpacity(1, 0.001, NEPTUNE_A)).toBe(ORBIT_LINE_OPACITY_FLOOR);
+  });
+
+  it('saturates at the cap when the player rides the orbit', () => {
+    expect(orbitLineOpacity(9.58, 0.001, 9.58)).toBe(ORBIT_LINE_OPACITY_CAP);
+  });
+
+  it('reaches full overview from a whole-system camera, however extreme the ratio', () => {
+    // Mercury from 55 AU: camera/a ≈ 142 — the unclamped house smoothstep
+    // would go hugely negative here and silently revive the headline bug.
+    expect(orbitLineOpacity(55, 55, 0.387)).toBe(ORBIT_LINE_OVERVIEW_OPACITY);
+    // Through Neptune, every orbit reads as chart furniture from the
+    // whole-system pose (55 AU frames Neptune whole; Pluto's ring doesn't fit
+    // that frame, and its overview correctly stays partial).
+    for (const body of PLANETARIUM_BODIES) {
+      if (body.semiMajorAxisAU > NEPTUNE_A) continue;
+      expect(
+        orbitLineOpacity(55, 55, body.semiMajorAxisAU),
+        body.name,
+      ).toBeGreaterThanOrEqual(0.25);
+    }
+  });
+
+  it('ramps the overview term between 1 and 2 orbit radii of camera pullout', () => {
+    const mid = orbitLineOpacity(1, NEPTUNE_A * 1.5, NEPTUNE_A);
+    expect(mid).toBeCloseTo(ORBIT_LINE_OVERVIEW_OPACITY * 0.5, 5);
+    expect(orbitLineOpacity(1, NEPTUNE_A * 0.99, NEPTUNE_A)).toBe(ORBIT_LINE_OPACITY_FLOOR);
+    expect(orbitLineOpacity(1, NEPTUNE_A * 2, NEPTUNE_A)).toBe(ORBIT_LINE_OVERVIEW_OPACITY);
+  });
+
+  it('falls back to the floor on degenerate inputs', () => {
+    expect(orbitLineOpacity(Number.NaN, 10, 1)).toBe(ORBIT_LINE_OPACITY_FLOOR);
+    expect(orbitLineOpacity(1, Number.POSITIVE_INFINITY, 1)).toBe(ORBIT_LINE_OPACITY_FLOOR);
+    expect(orbitLineOpacity(1, 10, 0)).toBe(ORBIT_LINE_OPACITY_FLOOR);
   });
 });

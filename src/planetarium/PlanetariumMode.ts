@@ -16,10 +16,12 @@ import {
   CREATE_SOLAR_SYSTEM_TOTAL_UNITS,
   createSolarSystem,
   ORBIT_LINE_RESAMPLE_MAX_AGE_MS,
+  orbitLineOpacity,
   resampleOrbitLines,
   type SolarSystemObjects,
   type PlanetariumLayout,
 } from './SolarSystem';
+import type { LineMaterial } from 'three/addons/lines/LineMaterial.js';
 import { PlayerShip, type ShipProfile } from './PlayerShip';
 import { PlanetLabels, discRadiusPx, pickBodyAtPointer, type PickCandidate } from './PlanetLabels';
 import { PlanetariumStore, createDefaultPlanetariumState, type PlanetariumState, type LandedTarget, type LabelDistancesMode } from './PlanetariumStore';
@@ -5796,15 +5798,30 @@ export class PlanetariumMode {
     // eclipse-dimmed surface sky they were the only "stars" that survived the
     // exposure — a false string of dots along the ecliptic.
     this.solarSystem.asteroidBelt.visible = this.landedView !== 'surface';
+    const playerSunDistAU = this.player.getDistanceFromSun();
+    // Scene coords: the Sun sits at -player (floating origin), both call sites
+    // run after applyFloatingOrigin and the camera pose, so this is fresh.
+    const cameraSunDistAU = this.camera.position.distanceTo(this.solarSystem.sun.position);
     for (let i = 0; i < this.solarSystem.orbitLines.length; i++) {
       const orbit = this.solarSystem.orbitLines[i];
       orbit.visible = !hideAll;
       if (hideAll) continue;
       const body = PLANETARIUM_BODIES[i];
-      const distToOrbit = Math.abs(this.player.getDistanceFromSun() - body.semiMajorAxisAU);
-      const fadeRange = Math.max(body.semiMajorAxisAU * 0.3, 1.0);
-      const opacity = Math.max(0.05, Math.min(0.4, 1 - distToOrbit / fadeRange));
-      (orbit.material as THREE.LineBasicMaterial).opacity = opacity;
+      (orbit.material as LineMaterial).opacity = orbitLineOpacity(
+        playerSunDistAU,
+        cameraSunDistAU,
+        body.semiMajorAxisAU,
+      );
+    }
+    if (!hideAll) {
+      // One shared uniform block for all nine lines' width pre-distortion
+      // (material.resolution itself is refreshed by LineSegments2 per draw).
+      applyLensShaderUniforms(
+        this.solarSystem.orbitLensUniforms,
+        this.camera,
+        this.renderer.domElement.clientWidth,
+        this.renderer.domElement.clientHeight,
+      );
     }
   }
 

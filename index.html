@@ -4440,6 +4440,12 @@
         'ganymede.webp', 'triton.webp', 'moon.webp', 'callisto.webp',
       ];
       var warm = new Map();
+      // The star-catalog sidecar goes first: 313KB that gates the starfield
+      // build, ahead of the 9.2MB texture wave.
+      var starUrl = '%BASE_URL%stardata/bright-stars.v1.bin';
+      var starRequest = fetch(starUrl);
+      starRequest.catch(function () {});
+      warm.set(starUrl, starRequest);
       for (var i = 0; i < files.length; i++) {
         var url = '%BASE_URL%textures/' + files[i];
         var request = fetch(url);

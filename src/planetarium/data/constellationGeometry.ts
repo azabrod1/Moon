@@ -36,7 +36,7 @@
  */
 import * as THREE from 'three';
 import { CONSTELLATIONS } from './constellations';
-import { BRIGHT_STAR_CATALOG } from './brightStars';
+import { brightStarCatalog } from './brightStars';
 import { raDecToVector } from '../../astronomy/planetary';
 import { DEG2RAD } from '../../shared/math/angles';
 
@@ -76,14 +76,15 @@ interface CatalogIndex {
 let catalogIndex: CatalogIndex | null = null;
 
 function buildCatalogIndex(): CatalogIndex {
-  const n = BRIGHT_STAR_CATALOG.length;
-  const order = BRIGHT_STAR_CATALOG.map((_, i) => i)
-    .sort((a, b) => BRIGHT_STAR_CATALOG[a].decDeg - BRIGHT_STAR_CATALOG[b].decDeg);
+  const stars = brightStarCatalog();
+  const n = stars.length;
+  const order = stars.map((_, i) => i)
+    .sort((a, b) => stars[a].decDeg - stars[b].decDeg);
   const sx = new Float64Array(n), sy = new Float64Array(n), sz = new Float64Array(n);
   const sRa = new Float64Array(n), sDec = new Float64Array(n);
   const catalogPos = new Int32Array(n);
   for (let i = 0; i < n; i++) {
-    const star = BRIGHT_STAR_CATALOG[order[i]];
+    const star = stars[order[i]];
     const d = star.decDeg * DEG2RAD, r = star.raDeg * DEG2RAD;
     const cosD = Math.cos(d);
     sx[i] = cosD * Math.cos(r);

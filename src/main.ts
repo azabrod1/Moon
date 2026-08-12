@@ -22,6 +22,7 @@ import { BLOOM_RADIUS, BLOOM_THRESHOLD } from './app/bloomConfig';
 import { createLensPass, updateLensPass, type LensParams } from './app/LensPass';
 import { applyDesignFov, LENS_DEFAULT_STRENGTH } from './shared/math/lensProjection';
 import { stepExposure } from './planetarium/solarExposure';
+import { loadBrightStarCatalog } from './planetarium/world/starCatalogLoader';
 import { debugError, debugLog, debugWarn } from './shared/debug';
 import {
   clearSurfacePerf,
@@ -762,6 +763,11 @@ function installDevHooks() {
 async function init() {
   (window as any).__initStarted = true;
   debugLog('Init started');
+  // Start the star-catalog sidecar load now so its fetch+parse overlap the
+  // solar-system build; PlanetariumMode.activate awaits the same shared
+  // promise (and surfaces the real error — this kick must not double-report,
+  // and an unguarded early rejection would leak as unhandled).
+  loadBrightStarCatalog().catch(() => {});
   // Build identity in the menu footer: lets anyone confirm which deploy a
   // device is actually running (cached phone tabs have repeatedly shown
   // days-old bundles while looking current). It rides with the debug overlay
@@ -949,10 +955,12 @@ function syncViewportIfDrifted() {
 // ================================================================
 // Start
 // ================================================================
-// Safety: never leave loading screen stuck for more than 15s
+// Safety: never leave loading screen stuck for more than 15s — unless init
+// already FAILED, in which case the screen is the error display and hiding it
+// would reveal a half-built scene with the explanation gone.
 setTimeout(() => {
   const ls = document.getElementById('loading-screen');
-  const shouldForceHide = !!ls && !ls.classList.contains('hidden');
+  const shouldForceHide = !!ls && !ls.classList.contains('hidden') && !ls.dataset.bootError;
   if (shouldForceHide) {
     debugWarn('Loading timeout reached before init finished');
     console.warn('Loading timeout — forcing hide');
@@ -963,9 +971,14 @@ setTimeout(() => {
 init().catch((err) => {
   debugError('Init failed', err);
   console.error('Init failed:', err);
-  // Never leave user stuck on loading screen
-  const loadingScreen = document.getElementById('loading-screen');
-  if (loadingScreen) loadingScreen.classList.add('hidden');
+  // The message lives INSIDE the loading screen, so the screen must stay up
+  // (or come back — a failure after the 15s force-hide re-covers the broken
+  // scene) for the user to ever read it.
   const loadingMsg = document.getElementById('loading-msg');
   if (loadingMsg) loadingMsg.textContent = 'Something went wrong. Please refresh.';
+  const loadingScreen = document.getElementById('loading-screen');
+  if (loadingScreen) {
+    loadingScreen.dataset.bootError = '1';
+    loadingScreen.classList.remove('hidden');
+  }
 });

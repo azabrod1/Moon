@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import html from '../../index.html?raw';
 import { PLANET_TEXTURE_FILES } from './PlanetFactory';
+import { BRIGHT_STAR_BIN_FILE } from './data/brightStars';
 import { takeBootWarmResponse } from './world/textureBitmapLoader';
 
 // index.html fetch-warms the whole boot texture set so the network starts on
@@ -39,6 +40,22 @@ describe('index.html boot texture fetch-warm', () => {
     for (const file of Object.values(PLANET_TEXTURE_FILES)) {
       expect(onDisk, `public/textures/${file} is missing`).toContain(file);
     }
+  });
+
+  it('warms the star-catalog sidecar ahead of the texture wave', () => {
+    // The catalog gates the starfield build inside activate; its 313KB must
+    // hit the network before the 9.2MB of maps queue up behind it. Same
+    // BASE_URL join as the loader's fetch, or the taker key never matches.
+    const script = warmScript();
+    const starWarm = script.indexOf(`'%BASE_URL%${BRIGHT_STAR_BIN_FILE}'`);
+    expect(starWarm).toBeGreaterThan(-1);
+    // Before the texture LOOP's fetch expression (the files array literal
+    // sits above both — declaration order isn't fetch order).
+    expect(starWarm).toBeLessThan(script.indexOf("'%BASE_URL%textures/' + files[i]"));
+    const shipped = Object.keys(import.meta.glob('../../public/stardata/*'))
+      .map((p) => p.split('/').pop()!);
+    expect(shipped, `public/${BRIGHT_STAR_BIN_FILE} is missing`)
+      .toContain(BRIGHT_STAR_BIN_FILE.split('/').pop()!);
   });
 
   it('warms the blocking planet set before the durable moon wave', () => {

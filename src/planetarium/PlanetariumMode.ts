@@ -35,6 +35,7 @@ import {
 import { applySunGlowTier, canAttempt, cancelNormalUpgrade, cancelTextureUpgrade, createMoonMeshes, createShaderWarmupProbes, earnedUpgradeTier, firstUpgradeTier, lodMeasurementRelevant, needsUpgradeCover, normalUpgradePending, setWarmEligibleMoonParents, upgradeComplete, upgradeGeometryOnApproach, upgradeNormalOnApproach, upgradeTextureOnApproach, ATMOSPHERES, ATMOSPHERE_SHELL_SCALES, UPGRADE_TRIGGER_FRACTION, type MoonMesh, type TextureUpgrade } from './PlanetFactory';
 import type { SurfaceShadingFx } from './world/surfaceShading';
 import { bindTextureWarmer, invalidateTextureWarmCache, pumpTextureWarmQueue, queueTextureWarm, resetTextureWarmer } from './world/textureWarmer';
+import { loadBrightStarCatalog } from './world/starCatalogLoader';
 import {
   advancePlanetariumTime,
   computeBodyPositionAU,
@@ -1960,9 +1961,20 @@ export class PlanetariumMode {
       const initialWorldUtcMs = savedState?.astroTimeUtcMs ?? this.timeState.currentUtcMs;
       performance.mark('plm:solar-system:start');
       try {
-        this.solarSystem = await createSolarSystem((progress) => {
-          reportActivationProgress(progress.completedUnits);
-        }, this.useBloom, this.layoutMode, new Date(initialWorldUtcMs));
+        // The star catalog rides the same gate as the solar system: awaiting
+        // it HERE (not later, next to the starfield build) keeps activate's
+        // yield points where they always were — update() frames run during
+        // activation, and a new suspension between the solarSystem assignment
+        // and restoreState would hand them constructor-default state on a
+        // slow network. main.ts kicked the load at init; this await usually
+        // finds it already settled.
+        const [solarSystem] = await Promise.all([
+          createSolarSystem((progress) => {
+            reportActivationProgress(progress.completedUnits);
+          }, this.useBloom, this.layoutMode, new Date(initialWorldUtcMs)),
+          loadBrightStarCatalog(),
+        ]);
+        this.solarSystem = solarSystem;
       } catch (error) {
         this.resumePrompt.cancel();
         throw error;

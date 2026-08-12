@@ -8,7 +8,9 @@ import {
   snapPointToCatalog,
 } from './constellationGeometry';
 import { CONSTELLATIONS } from './constellations';
-import { BRIGHT_STAR_CATALOG } from './brightStars';
+import { loadBrightStarCatalogFromDisk } from './brightStarsTestCatalog';
+
+const BRIGHT_STAR_CATALOG = loadBrightStarCatalogFromDisk();
 import { raDecToVector } from '../../astronomy/planetary';
 import { STAR_SPHERE_RADIUS } from '../world/starfield';
 import { DEG2RAD, RAD2DEG } from '../../shared/math/angles';

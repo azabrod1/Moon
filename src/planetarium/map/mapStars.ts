@@ -31,7 +31,7 @@
  * uniforms so the dev bridge can retune live without rebuilding the geometry.
  */
 import * as THREE from 'three';
-import { BRIGHT_STAR_CATALOG } from '../data/brightStars';
+import { brightStarCatalog } from '../data/brightStars';
 import { raDecToVector } from '../../astronomy/planetary';
 import { getStarColor, starfieldFaintLimitMag } from '../world/starfield';
 import { starBeyondAnchorScale, starPointVisual } from '../world/starPointMapping';
@@ -69,7 +69,7 @@ export function mapStarPixelRatio(rendererPixelRatio: number): number {
 
 export function createMapStars(rendererPixelRatio: number): THREE.Points {
   // Sol is a body on the chart, not a backdrop star.
-  const catalog = BRIGHT_STAR_CATALOG.filter((s) => s.magnitude > -10);
+  const catalog = brightStarCatalog().filter((s) => s.magnitude > -10);
   const count = catalog.length;
   const positions = new Float32Array(count * 3);
   const colors = new Float32Array(count * 3);

@@ -4,7 +4,7 @@
  * tint). Pure builders — no scene or mode state.
  */
 import * as THREE from 'three';
-import { BRIGHT_STAR_CATALOG } from '../data/brightStars';
+import { brightStarCatalog } from '../data/brightStars';
 import { raDecToVector } from '../../astronomy/planetary';
 import { SUN_GLARE_MASK_MAX_KILL, createSunGlareMaskUniforms, sunGlareMaskGLSL } from './sunGlareMask';
 import {
@@ -78,7 +78,7 @@ export function setStarfieldPixelRatio(starfield: THREE.Points, rendererPixelRat
 
 export function createPlanetariumStarfield(rendererPixelRatio: number): THREE.Points {
   // Filter out Sol (rendered as 3D mesh)
-  const catalog = BRIGHT_STAR_CATALOG.filter((s) => s.magnitude > -10);
+  const catalog = brightStarCatalog().filter((s) => s.magnitude > -10);
   const starCount = catalog.length;
   const positions = new Float32Array(starCount * 3);
   const colors = new Float32Array(starCount * 3);

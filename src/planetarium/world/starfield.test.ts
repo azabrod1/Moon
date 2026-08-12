@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import { BLOOM_THRESHOLD } from '../../app/bloomConfig';
-import { BRIGHT_STAR_CATALOG } from '../data/brightStars';
+import { loadBrightStarCatalogFromDisk } from '../data/brightStarsTestCatalog';
+
+const BRIGHT_STAR_CATALOG = loadBrightStarCatalogFromDisk();
 import { starfieldFaintLimitMag, starRenderColor } from './starfield';
 import { STAR_FAINT_ANCHOR_MAG } from './starPointMapping';
 

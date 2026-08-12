@@ -8,7 +8,9 @@ import {
   MAP_STAR_SPHERE_RADIUS,
   mapStarPixelRatio,
 } from './mapStars';
-import { BRIGHT_STAR_CATALOG } from '../data/brightStars';
+import { loadBrightStarCatalogFromDisk } from '../data/brightStarsTestCatalog';
+
+const BRIGHT_STAR_CATALOG = loadBrightStarCatalogFromDisk();
 import { starfieldFaintLimitMag } from '../world/starfield';
 import { starBeyondAnchorScale, starPointVisual } from '../world/starPointMapping';
 

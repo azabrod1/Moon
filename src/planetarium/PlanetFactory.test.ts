@@ -281,7 +281,7 @@ describe('what a fetch puts on the material', () => {
     up.appliedTier = '4k'; // past the first rung, the earned top is fetched directly
     upgradeTextureOnApproach(up, '8k', 1_000);
     expect(pending).toHaveLength(1);
-    expect(pending[0].url).toMatch(/textures\/8k\/moon\.jpg$/);
+    expect(pending[0].url).toMatch(/textures\/8k\/moon\.webp$/);
 
     const arrival = arriving();
     pending[0].onLoad(arrival.tex);
@@ -436,7 +436,7 @@ describe('what a fetch puts on the material', () => {
 
     upgradeNormalOnApproach(nu, 0.3, 0);
     expect(pending).toHaveLength(1);
-    expect(pending[0].url).toMatch(/textures\/4k\/moon-normal\.png$/);
+    expect(pending[0].url).toMatch(/textures\/4k\/moon-normal\.webp$/);
     // In flight: the trigger must not double-fetch.
     upgradeNormalOnApproach(nu, 0.3, 1);
     expect(pending).toHaveLength(1);

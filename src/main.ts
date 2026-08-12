@@ -763,6 +763,10 @@ function installDevHooks() {
 async function init() {
   (window as any).__initStarted = true;
   debugLog('Init started');
+  // The service-worker kill switch runs before ANYTHING else: it exists for
+  // the boots where something SW-served is broken, so it cannot wait for a
+  // boot to succeed. True = a shedding reload is on its way; stop here.
+  if (await shedServiceWorkerIfRequested()) return;
   // Start the star-catalog sidecar load now so its fetch+parse overlap the
   // solar-system build; PlanetariumMode.activate awaits the same shared
   // promise (and surfaces the real error — this kick must not double-report,
@@ -863,6 +867,10 @@ async function init() {
   logStartupTimings();
 
   document.getElementById('loading-screen')?.classList.add('hidden');
+  // Boot is settled — now the data service worker may install (its precache
+  // revalidates against the HTTP cache the boot just filled, so this order
+  // makes install nearly free instead of competing with boot fetches).
+  registerServiceWorker();
   await planetariumMode?.showDeferredResumePromptIfNeeded();
 
   if (autoMode === 'volumeCompare') {
@@ -955,6 +963,69 @@ function syncViewportIfDrifted() {
 // ================================================================
 // Start
 // ================================================================
+/**
+ * ?nosw=1 — the service-worker kill switch. Unregisters the app's data
+ * worker, deletes its caches, and (once, guarded) reloads to shed a
+ * controller that claimed this page. Runs at the very top of init because
+ * its whole reason to exist is boots where SW-served data is broken. Every
+ * step tolerates failure — a broken storage layer must not take the kill
+ * switch down with it. Returns true when a reload was scheduled and init
+ * must stop.
+ */
+async function shedServiceWorkerIfRequested(): Promise<boolean> {
+  if (!('serviceWorker' in navigator)) return false;
+  const FLAG = 'moon-nosw-reloaded';
+  if (!new URLSearchParams(location.search).has('nosw')) {
+    // Normal boot: retire any leftover loop guard so a future ?nosw works.
+    try { sessionStorage.removeItem(FLAG); } catch { /* storage unavailable */ }
+    return false;
+  }
+  debugWarn('Service worker kill switch (?nosw=1): unregistering');
+  try {
+    const registration = await navigator.serviceWorker.getRegistration(import.meta.env.BASE_URL);
+    await registration?.unregister();
+    for (const name of await caches.keys()) {
+      if (name.startsWith('moon-data-')) await caches.delete(name);
+    }
+  } catch (err) {
+    debugError('Service worker shed failed', err);
+  }
+  if (navigator.serviceWorker.controller) {
+    // Unregistering doesn't release the current document; one reload does.
+    // The sessionStorage flag breaks a reload loop; if the flag can't be
+    // persisted, don't risk the loop — the worker is unregistered either
+    // way, so the NEXT manual reload boots clean.
+    let alreadyReloaded = true;
+    try {
+      alreadyReloaded = sessionStorage.getItem(FLAG) === '1';
+      if (!alreadyReloaded) sessionStorage.setItem(FLAG, '1');
+    } catch { alreadyReloaded = true; }
+    if (!alreadyReloaded) {
+      location.reload();
+      return true;
+    }
+  } else {
+    try { sessionStorage.removeItem(FLAG); } catch { /* storage unavailable */ }
+  }
+  return false;
+}
+
+/**
+ * Register the data-only service worker (generated into dist/sw.js at
+ * build — see tools/swPlugin.mjs). Detached and fully caught: it is an
+ * optimization, and no failure in it may ever re-cover a working app with
+ * the boot error screen. Dev is exempt — dev serves no sw.js and caching
+ * would fight hot reload anyway.
+ */
+function registerServiceWorker(): void {
+  if (!import.meta.env.PROD) return;
+  if (!('serviceWorker' in navigator)) return;
+  if (new URLSearchParams(location.search).has('nosw')) return;
+  navigator.serviceWorker.register(import.meta.env.BASE_URL + 'sw.js').catch((err) => {
+    debugWarn('Service worker registration failed', { err: String(err) });
+  });
+}
+
 // Safety: never leave loading screen stuck for more than 15s — unless init
 // already FAILED, in which case the screen is the error display and hiding it
 // would reveal a half-built scene with the explanation gone.

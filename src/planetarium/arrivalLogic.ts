@@ -42,13 +42,13 @@ export const LEAVE_HEADSTART_RADII = 0.2;
 
 /** Knee of the departure valve, measured on the head-started height. Inside
  *  it the leave cap is the plain glide — the really-slow zone, crossed in
- *  ~3–4 s of flight. Past it the cap opens as the SQUARE of the ratio (a
+ *  ~3 s of flight. Past it the cap opens as the SQUARE of the ratio (a
  *  cubic law overall), so it outruns any dialed speed within ~1/(2K) ≈ 2 s
  *  more: a departure is genuinely governed only for its first few seconds —
  *  slow beside the body, picking up through the knee, and entirely free once
  *  the ship has clearly left. Everything is in radii, so a moonlet departure
  *  and a Jupiter departure share one subjective timeline. */
-export const LEAVE_VALVE_KNEE_RADII = 0.55;
+export const LEAVE_VALVE_KNEE_RADII = 0.47;
 
 /**
  * Proximity speed cap near one body. Closing, speed is limited to

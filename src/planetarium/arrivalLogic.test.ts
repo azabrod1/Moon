@@ -430,7 +430,7 @@ describe('departure feel — the reported outcomes, closed loop', () => {
   it('the asymmetry lives at the ends: symmetric beside the body, unbound once away', () => {
     // At matched heights in the near zone the two laws read the same glide —
     // the head start is the only gap…
-    const h = 0.3 * R;
+    const h = 0.25 * R;
     const closing = governedSpeedCap(h, R, 1, K, VMIN);
     const leaving = governedSpeedCap(h, R, -1, K, VMIN);
     expect(leaving / closing).toBeGreaterThan(1);

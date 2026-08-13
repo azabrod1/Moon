@@ -725,6 +725,10 @@ function installDevHooks() {
     // element at a time to isolate what's flashing/leaking light). DEV-only
     // like the rest of the bridge.
     scene: () => scene,
+    // Composer pass list for post-pass forensics (patch a pass's shader or
+    // uniforms in-page and re-render, no rebuild). Null while a mode bypasses
+    // the composer.
+    composerPasses: () => composer?.passes ?? null,
     // Mode-agnostic leak probe for the enter/exit heap check.
     rendererInfo: () => ({
       geometries: renderer.info.memory.geometries,

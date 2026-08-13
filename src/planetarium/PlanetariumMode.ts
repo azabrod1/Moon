@@ -249,8 +249,6 @@ import {
   autopilotGlideCap,
   governedSpeedCap,
   initialBodyCapState,
-  moonArrivalCameraLookWeight,
-  moonArrivalReleaseFade,
   moonArrivalPose,
   moonArrivalStandoffAU,
   moonCollisionRadius,
@@ -267,6 +265,14 @@ import {
   type SweepContact,
   type MoonArrivalInputs,
 } from './arrivalLogic';
+import {
+  clearArrivalLook,
+  createCruiseAimState,
+  cutAim,
+  releaseArrivalLook,
+  startArrivalLook,
+  stepCruiseAim,
+} from './cruiseAim';
 import {
   canStartTutorial,
   isStepSettled,
@@ -958,29 +964,21 @@ export class PlanetariumMode {
    *  visibility-keyed set can't see it there). Drops once the mesh shows;
    *  a stale seed is neutralized by distance on its own. */
   private governedMoonSeed: { name: string; parentPlanet: string } | null = null;
-  /** A moon teleport keeps its collision-safe flyby heading, but the camera
-   *  tracks the moon through closest approach. Without that decoupling the
-   *  nearby disc rides far off the optical axis and perspective projects the
-   *  spherical mesh as an oval. Any user gesture releases it over
-   *  MOON_ARRIVAL_RELEASE_S — steering (on touch a stationary tap is already
-   *  full steering) and the orbit grab alike: both used to cancel in one
-   *  frame, which snapped the centred moon across the viewport on the first
-   *  input after a teleport. The fade's aim interpolates moon→origin, and
-   *  every cruise camera owner aims at origin, so a release that outlives an
-   *  ownership change still lands exactly on the new owner's pose.
-   *  The receding leg eases back to the ordinary ship-centred chase view. */
-  private moonArrivalCameraLook: {
-    name: string;
-    parentPlanet: string;
-    arrivalDistanceAU: number;
-    previousDistanceAU: number;
-    approached: boolean;
-    receding: boolean;
-    /** Seconds since steering released the look; null while it still owns
-     *  the aim. Advanced each frame once set, driving the release fade. */
-    releaseElapsedS: number | null;
-  } | null = null;
-  private tmpMoonArrivalLook = new THREE.Vector3();
+  /** The cruise aim pipeline's state (see cruiseAim.ts, the module header
+   *  is the subsystem doc): arrival-look bookkeeping plus the continuity
+   *  filter that makes one-frame aim snaps structurally impossible outside
+   *  an authored cut. Advanced once per frame by updateCruiseAimStage —
+   *  the LAST cruise camera writer, after the final position. */
+  private cruiseAim = createCruiseAimState();
+  /** Catalog refs for the live arrival look's analytic position (parent
+   *  world + ephemeris offset — a cold jump's mesh is invisible while it
+   *  paints, so the mesh transform can never be the source). Set by
+   *  jumpToMoon, cleared wherever the look is cleared. */
+  private arrivalLookMoon: MoonData | null = null;
+  private arrivalLookParentBody: PlanetData | null = null;
+  private tmpAimMoonWorld = new THREE.Vector3();
+  private tmpAimDir = new THREE.Vector3();
+  private tmpAimTarget = new THREE.Vector3();
   /** Reused arrival-pose inputs for the engaged moon autopilot: refilled from
    *  live positions/scale each frame (resolveAutopilotMoonInputs) so the glide
    *  cap, aim blend, and arrival test allocate nothing in steady flight. */
@@ -1750,9 +1748,7 @@ export class PlanetariumMode {
         this.camOwner = 'orbit';
         // The arrival look fades out under the drag rather than cancelling —
         // a one-frame cancel snapped the centred moon to the chase aim.
-        if (this.moonArrivalCameraLook) {
-          this.moonArrivalCameraLook.releaseElapsedS ??= 0;
-        }
+        releaseArrivalLook(this.cruiseAim);
       }
     });
     const endOrbitDrag = (e?: PointerEvent) => {
@@ -2307,7 +2303,12 @@ export class PlanetariumMode {
   }
 
   deactivate(): void {
-    this.moonArrivalCameraLook = null;
+    // Clear + cut: deactivation is an authored discontinuity (the next
+    // activation reposes absolutely), so the aim adopts fresh on return.
+    clearArrivalLook(this.cruiseAim);
+    cutAim(this.cruiseAim);
+    this.arrivalLookMoon = null;
+    this.arrivalLookParentBody = null;
     this.dotNavMoon = null;
     this.clearMoonLabelIncumbents();
     this.clearBodyReveal();
@@ -2631,7 +2632,7 @@ export class PlanetariumMode {
     // days, so "last frame's positions" can be a different sky — and BEFORE
     // the label pass, which projects through the final camera.
     this.updateCruiseCameraSafety();
-    this.updateMoonArrivalCameraLook(dt);
+    this.updateCruiseAimStage(dt);
 
     // The HTML label/marker projections below read camera.matrixWorldInverse,
     // which the renderer refreshes only at render time — after this update().
@@ -2914,8 +2915,9 @@ export class PlanetariumMode {
         FLIGHT_UP_SCENE,
         this.tmpChaseIdeal,
       ));
+      // No lookAt here: the aim stage is the frame's last aim writer and
+      // aims at origin (plus any fading deflection) from the final position.
       const settled = reacquireCameraStep(this.camera.position, this.camera.position, ideal, dt, tau);
-      this.camera.lookAt(0, 0, 0);
       if (settled) this.camOwner = 'chase'; // state switch only — the step already posed the camera
       return;
     }
@@ -2966,54 +2968,47 @@ export class PlanetariumMode {
     return ideal;
   }
 
-  /** Keep a just-teleported moon on the optical axis while the ship flies the
-   *  existing offset collision-safe course. A sphere centred on a perspective
-   *  camera has a circular silhouette; easing the target back toward the ship
-   *  only after the moon has receded to its small arrival size makes the handoff
-   *  unobtrusive. Runs after OrbitControls + camera safety, before projection. */
-  private updateMoonArrivalCameraLook(dt: number): void {
-    const look = this.moonArrivalCameraLook;
-    if (!look || this.landedOn || this.devFreeCamera) return;
-    // A look that still owns the aim only runs under the chase camera. A
-    // RELEASING look keeps fading through 'orbit'/'reacquiring' too: the
-    // orbit grab starts the release rather than cancelling, and freezing the
-    // fade at an ownership flip would re-create the one-frame snap it exists
-    // to prevent. Its aim interpolates moon→origin — the target every cruise
-    // owner aims at — so the fade converges on the live owner's own pose.
-    if (this.camOwner !== 'chase' && look.releaseElapsedS === null) return;
+  /** The single LAST aim writer of the cruise frame (see cruiseAim.ts):
+   *  composes the arrival look over the origin aim and rate-limits the
+   *  deflection so no upstream seam can emit a one-frame aim snap. Runs
+   *  after OrbitControls + camera safety — aim derives from the FINAL
+   *  camera position, which is what lets the safety escape skip its old
+   *  stale-quaternion re-aim. The look's moon position is ANALYTIC (parent
+   *  world + ephemeris offset): a cold jump's mesh is invisible while it
+   *  paints, and the look must hold through that veil so the reveal opens
+   *  already aimed. */
+  private updateCruiseAimStage(dt: number): void {
+    if (this.landedOn || this.devFreeCamera) return;
 
-    const moon = this.planetMoons
-      .get(look.parentPlanet)
-      ?.find((candidate) => candidate.data.name === look.name);
-    if (!moon?.mesh.visible) return;
-
-    if (look.releaseElapsedS !== null) look.releaseElapsedS += dt;
-
-    moon.mesh.getWorldPosition(this.tmpMoonArrivalLook);
-    const distanceAU = this.tmpMoonArrivalLook.distanceTo(this.camera.position);
-    if (distanceAU < look.arrivalDistanceAU * 0.98) look.approached = true;
-    if (
-      look.approached &&
-      distanceAU > look.previousDistanceAU * 1.0001
-    ) {
-      look.receding = true;
-    }
-    look.previousDistanceAU = distanceAU;
-
-    const weight = moonArrivalCameraLookWeight(
-      distanceAU,
-      look.arrivalDistanceAU,
-      look.receding,
-    ) * moonArrivalReleaseFade(look.releaseElapsedS ?? 0);
-    if (weight <= 0) {
-      this.moonArrivalCameraLook = null;
-      return;
+    let moonWorld: THREE.Vector3 | null = null;
+    const moon = this.arrivalLookMoon;
+    const parentBody = this.arrivalLookParentBody;
+    if (this.cruiseAim.look && moon && parentBody) {
+      const parentPos = this.planetWorldPositions.get(moon.parentPlanet);
+      if (parentPos) {
+        this.getMoonWorldOffsetAU(moon, parentBody, this.tmpAimMoonWorld);
+        this.tmpAimMoonWorld.x += parentPos.x;
+        this.tmpAimMoonWorld.y += parentPos.y;
+        this.tmpAimMoonWorld.z += parentPos.z;
+        moonWorld = this.tmpAimMoonWorld;
+      }
     }
 
-    // The ship is scene origin under floating-origin rendering. Interpolating
-    // moon→origin gives a smooth receding handoff without moving the chase rig.
-    this.tmpMoonArrivalLook.multiplyScalar(weight);
-    this.camera.lookAt(this.tmpMoonArrivalLook);
+    stepCruiseAim(
+      this.cruiseAim,
+      this.camera.position,
+      moonWorld,
+      this.renderOriginAU,
+      dt,
+      this.tmpAimDir,
+    );
+    this.camera.lookAt(
+      this.tmpAimTarget.copy(this.camera.position).add(this.tmpAimDir),
+    );
+    if (!this.cruiseAim.look) {
+      this.arrivalLookMoon = null;
+      this.arrivalLookParentBody = null;
+    }
   }
 
   /** The moon whose dot never fully fades and whose label wins de-overlap: the
@@ -3024,7 +3019,7 @@ export class PlanetariumMode {
    *  survive a hand-flown final approach. `dotNavMoon` is cleared when you jump/
    *  engage elsewhere, land, deactivate, or leave the parent's system. */
   private currentDotTargetMoon(): string | null {
-    if (this.moonArrivalCameraLook) return this.moonArrivalCameraLook.name;
+    if (this.cruiseAim.look) return this.cruiseAim.look.name;
     if (
       this.autopilot &&
       this.autopilotUserEngaged &&
@@ -5948,9 +5943,7 @@ export class PlanetariumMode {
     // MOON_ARRIVAL_RELEASE_S rather than in one frame: on the touch flight
     // zone a stationary tap is already full steering, and the instant cancel
     // read as the camera snapping on the first touch after a teleport.
-    if (hasManualInput && this.moonArrivalCameraLook) {
-      this.moonArrivalCameraLook.releaseElapsedS ??= 0;
-    }
+    if (hasManualInput) releaseArrivalLook(this.cruiseAim);
 
     // Flying reacquires the chase camera — but an actively held drag outranks
     // steering (a hand on the orbit and a finger on W: the drag wins until
@@ -9737,7 +9730,10 @@ export class PlanetariumMode {
       this.player.speedMultiplier = speedCmd;
       this.player.systemSpeedMultiplier = systemCmd;
       this.updateSpeedSlider(); // exitLandedMode refreshed it with its own values
-      this.moonArrivalCameraLook = null;
+      // Clear only: the resetCruiseCamera below this jump's repose cuts.
+      clearArrivalLook(this.cruiseAim);
+      this.arrivalLookMoon = null;
+      this.arrivalLookParentBody = null;
       this.dotNavMoon = null;
       // A pilot left engaged re-aims the ship at its own target on the very
       // next frame — you would leave the chosen point before ever seeing it.
@@ -10446,7 +10442,11 @@ export class PlanetariumMode {
   private resetCruiseCamera() {
     // A reset is an absolute repose to chase: end any held drag (and
     // OrbitControls' own gesture with it), drop its damping residuals, then
-    // seat the camera at the chase pose.
+    // seat the camera at the chase pose. It is also THE aim cut site: every
+    // deliberate cruise discontinuity (jumps, takeoff, intro, restore)
+    // funnels through here, and the aim stage adopts fresh on the next
+    // frame instead of sweeping from pre-repose state.
+    cutAim(this.cruiseAim);
     this.cancelOrbitGesture();
     // Cruise rides the flight horizon. Every cruise entry funnels through
     // here — first pointing, Travel jumps, takeoff, a non-landed restore — so
@@ -10698,10 +10698,8 @@ export class PlanetariumMode {
     const escaped = escapeCameraPenetrations(camPos, this.cameraShellPool, this.cameraShellCount, CAMERA_BODY_MARGIN_AU);
     if (escaped) {
       camPos.set(escaped.x, escaped.y, escaped.z);
-      // OrbitControls oriented the camera from its pre-escape position; leave
-      // the quaternion stale and the frame renders down the old ray with the
-      // ship flung off-centre.
-      this.camera.lookAt(this.controls.target);
+      // No re-aim needed: the aim stage runs after this pass and derives
+      // the frame's aim from the FINAL camera position by construction.
     }
 
     // Near plane from the FINAL camera position: nearest body surface,
@@ -10834,19 +10832,21 @@ export class PlanetariumMode {
     const destination = this.getMoonJumpDestination(moon);
     if (!destination) return;
     this.applyJumpDestination(destination, moon.name, options.notify !== false);
-    this.tmpMoonArrivalLook
+    // Sequence contract (test-pinned in cruiseAim.test.ts): the apply above
+    // cleared the look and its resetCruiseCamera cut the aim; starting the
+    // look now means the FIRST aim step adopts the weight-1 moon aim
+    // exactly — the veiled reveal opens already aimed, never sweeping.
+    this.tmpAimDir
       .copy(destination.bodyPosition)
       .sub(destination.position);
-    const arrivalDistanceAU = this.tmpMoonArrivalLook.distanceTo(this.camera.position);
-    this.moonArrivalCameraLook = {
-      name: moon.name,
-      parentPlanet: moon.parentPlanet,
-      arrivalDistanceAU,
-      previousDistanceAU: arrivalDistanceAU,
-      approached: false,
-      receding: false,
-      releaseElapsedS: null,
-    };
+    const arrivalDistanceAU = this.tmpAimDir.distanceTo(this.camera.position);
+    startArrivalLook(this.cruiseAim, moon.name, moon.parentPlanet, arrivalDistanceAU);
+    // Catalog refs for the analytic per-frame moon position (the mesh is
+    // not a legal source: it may be unpainted and untransformed for the
+    // whole veil window).
+    this.arrivalLookMoon = moon;
+    this.arrivalLookParentBody =
+      PLANETARIUM_BODIES.find((b) => b.name === moon.parentPlanet) ?? null;
     // Retain the nav moon (applyJumpDestination cleared it above): keeps the
     // dot floor + label if the player takes manual control before arrival.
     this.dotNavMoon = { name: moon.name, parentPlanet: moon.parentPlanet };
@@ -10862,7 +10862,10 @@ export class PlanetariumMode {
     bodyName: string,
     notify: boolean,
   ) {
-    this.moonArrivalCameraLook = null;
+    // Clear here; the resetCruiseCamera in this repose is the matching cut.
+    clearArrivalLook(this.cruiseAim);
+    this.arrivalLookMoon = null;
+    this.arrivalLookParentBody = null;
     // A jump to a different body drops the retained nav moon; a moon jump
     // re-sets it right after (jumpToMoon), so a planet jump is the clearing case.
     this.dotNavMoon = null;
@@ -13777,7 +13780,13 @@ export class PlanetariumMode {
     // The same seam clears any transient reveal, so a touch reveal can't
     // survive a ground change or companion swap.
     this.clearBodyReveal();
-    this.moonArrivalCameraLook = null;
+    // Clear + cut: the landed framing below is an authored repose, and the
+    // cruise aim must adopt fresh at the next takeoff, not sweep from a
+    // pre-landing deflection.
+    clearArrivalLook(this.cruiseAim);
+    cutAim(this.cruiseAim);
+    this.arrivalLookMoon = null;
+    this.arrivalLookParentBody = null;
     // Landing (and the landed→landed vantage swap) can flip the Sun's exposed
     // fraction in one frame; reseed the flash baseline so it doesn't glare.
     this.noteSunViewDiscontinuity();
@@ -14623,7 +14632,11 @@ export class PlanetariumMode {
   }
 
   private restoreState(saved: PlanetariumState) {
-    this.moonArrivalCameraLook = null;
+    // Clear + cut: a restore reposes the whole journey absolutely.
+    clearArrivalLook(this.cruiseAim);
+    cutAim(this.cruiseAim);
+    this.arrivalLookMoon = null;
+    this.arrivalLookParentBody = null;
     this.player.posX = saved.positionAU.x;
     this.player.posY = saved.positionAU.y;
     this.player.posZ = saved.positionAU.z;

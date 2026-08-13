@@ -3933,6 +3933,9 @@ export class PlanetariumMode {
           revealedBody: this.revealedBody ?? undefined,
           sunMask: this.sunGlareMaskParams,
           sunPos: this.solarSystem.sun.position,
+          // Last frame's rect (the Sun label updates after this pass; it
+          // moves sub-pixel per frame, so the lag is invisible).
+          sunLabelRect: this.sunLabel.blockerRect(),
           markerShipTest,
         });
       }

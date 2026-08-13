@@ -34,6 +34,25 @@ export class SunLabel {
   private visible = false;
   private lastTransform = '';
   private lastDistText = '';
+  // Last placed anchor + measured box, exposed to the planet-label contest as
+  // a blocker rect (measured once on reveal, like the planet labels' boxes).
+  private lastAnchorX = 0;
+  private lastAnchorY = 0;
+  private boxW = 64;
+  private boxH = 24;
+  private blockerScratch = { x: 0, y: 0, w: 64, h: 24 };
+
+  /** The label's screen rect while visible (top-left at the transform anchor,
+   *  the shared convention), or null when hidden. Planet labels clear this
+   *  rect in their de-overlap contest — the Sun's own label never yields. */
+  blockerRect(): { x: number; y: number; w: number; h: number } | null {
+    if (!this.visible) return null;
+    this.blockerScratch.x = this.lastAnchorX;
+    this.blockerScratch.y = this.lastAnchorY;
+    this.blockerScratch.w = this.boxW;
+    this.blockerScratch.h = this.boxH;
+    return this.blockerScratch;
+  }
 
   attach(): void {
     const container = document.getElementById('planet-labels');
@@ -93,6 +112,7 @@ export class SunLabel {
       && screenY > -LABEL_MARGIN_PX && screenY < canvas.clientHeight + LABEL_MARGIN_PX;
 
     if (!occluded && onScreen) {
+      const justRevealed = !this.visible;
       if (!this.visible) {
         this.el.style.display = 'block';
         this.visible = true;
@@ -101,6 +121,12 @@ export class SunLabel {
       if (transform !== this.lastTransform) {
         this.el.style.transform = transform;
         this.lastTransform = transform;
+      }
+      this.lastAnchorX = screenX;
+      this.lastAnchorY = screenY + labelOffsetY;
+      if (justRevealed && this.el.offsetWidth > 0) {
+        this.boxW = this.el.offsetWidth;
+        this.boxH = this.el.offsetHeight;
       }
       const distText = formatBodyDistance(distanceFromSunAU);
       if (distText !== this.lastDistText) {

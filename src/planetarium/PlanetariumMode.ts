@@ -2618,21 +2618,24 @@ export class PlanetariumMode {
     // scene-space positions and record discs for label culling.
     this.updateMoonPositions();
 
-    // Raise map resolution and sphere detail for any body that grows large on
-    // screen. Sits after the floating-origin and moon passes: the footprint may
-    // only measure same-frame geometry — frame-one and teleport frames
-    // otherwise read stale offsets, and one mis-read fires a download.
-    // Skipped while the chart owns the frame: the world spheres aren't drawn
-    // there, so a schematic-view zoom must not fetch anything for an unseen
-    // surface.
-    if (!this.isMapOpen()) this.updateBodyLOD();
-
     // Camera safety + dynamic near. Deliberately AFTER updateMoonPositions —
     // at the top time rates a capped 100 ms frame moves a moon 36 simulated
     // days, so "last frame's positions" can be a different sky — and BEFORE
     // the label pass, which projects through the final camera.
     this.updateCruiseCameraSafety();
     this.updateCruiseAimStage(dt);
+
+    // Raise map resolution and sphere detail for any body that grows large on
+    // screen. Sits after the floating-origin and moon passes (the footprint
+    // may only measure same-frame geometry — frame-one and teleport frames
+    // otherwise read stale offsets, and one mis-read fires a download) AND
+    // after the aim stage: LOD projects through the camera, and during a
+    // reacquire the pre-aim orientation is arbitrarily stale now that the
+    // aim stage is the frame's only aim writer — one misclassified footprint
+    // could fire an irreversible texture upload. Skipped while the chart
+    // owns the frame: the world spheres aren't drawn there, so a
+    // schematic-view zoom must not fetch anything for an unseen surface.
+    if (!this.isMapOpen()) this.updateBodyLOD();
 
     // The HTML label/marker projections below read camera.matrixWorldInverse,
     // which the renderer refreshes only at render time — after this update().

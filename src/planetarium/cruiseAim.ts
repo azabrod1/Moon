@@ -176,6 +176,23 @@ const tmpAxis = new THREE.Vector3();
 const tmpTransport = new THREE.Quaternion();
 const tmpStep = new THREE.Quaternion();
 
+/** The one antipodal-rotation axis: no great circle is preferred when two
+ *  directions oppose, so every antipodal case in this module rotates about
+ *  the SAME deterministic axis — the cruise up-basis projected onto the
+ *  plane perpendicular to `dir` (the sweep stays upright, yaw-like, instead
+ *  of pitching through the zenith), with a canonical fallback when `dir` IS
+ *  the up axis. Three's setFromUnitVectors picks a component-dependent axis
+ *  that can flip across a tiny perturbation — never rely on it here. */
+function antipodalAxis(dir: THREE.Vector3, out: THREE.Vector3): THREE.Vector3 {
+  const align = FLIGHT_UP_SCENE.dot(dir);
+  out.copy(FLIGHT_UP_SCENE).addScaledVector(dir, -align);
+  if (out.lengthSq() < 1e-12) {
+    // dir is the up pole itself: any horizon axis works; pick one, forever.
+    out.set(1, 0, 0).addScaledVector(dir, -dir.x);
+  }
+  return out.normalize();
+}
+
 /**
  * Advance one frame. camPos is the camera's scene position;
  * moonWorldPosAU is the look target's HELIOCENTRIC position (null when it
@@ -286,8 +303,18 @@ export function stepCruiseAim(
   } else {
     // Transport last frame's aim by the base rotation, so position-driven
     // aim motion (drags, damping coasts, reacquire) passes through 1:1 and
-    // only the residual deflection is rate-limited.
-    tmpTransport.setFromUnitVectors(state.prevBaseDir, baseDir);
+    // only the residual deflection is rate-limited. An exactly-reversed
+    // base (only an authored repose or a pathological pushback moves the
+    // camera that far in one frame) takes the module's canonical antipodal
+    // axis — transport is uncapped, so its axis must never be left to
+    // setFromUnitVectors' perturbation-sensitive choice.
+    if (state.prevBaseDir.dot(baseDir) < -1 + 1e-10) {
+      tmpTransport.setFromAxisAngle(
+        antipodalAxis(state.prevBaseDir, tmpAxis), Math.PI,
+      );
+    } else {
+      tmpTransport.setFromUnitVectors(state.prevBaseDir, baseDir);
+    }
     state.aimDir.applyQuaternion(tmpTransport).normalize();
 
     const dot = THREE.MathUtils.clamp(state.aimDir.dot(tmpDesired), -1, 1);
@@ -300,12 +327,8 @@ export function stepCruiseAim(
       if (tmpAxis.lengthSq() < 1e-12) {
         // Exact/near antipodal (a receding flyby can put the moon almost
         // directly behind the chase camera): no unique great circle, so
-        // rotate about a deterministic axis — the perpendicular to the aim
-        // most aligned with the cruise up-basis keeps the sweep upright.
-        tmpAxis.crossVectors(FLIGHT_UP_SCENE, state.aimDir);
-        if (tmpAxis.lengthSq() < 1e-12) {
-          tmpAxis.set(1, 0, 0).cross(state.aimDir);
-        }
+        // take the module's canonical axis.
+        antipodalAxis(state.aimDir, tmpAxis);
       }
       tmpAxis.normalize();
       tmpStep.setFromAxisAngle(tmpAxis, maxStep);

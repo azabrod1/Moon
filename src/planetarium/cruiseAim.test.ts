@@ -273,24 +273,96 @@ describe('degenerate directions', () => {
   });
 });
 
+describe('frame contract (heliocentric world vs scene)', () => {
+  it('a large render origin changes the aim exactly as moonWorld − renderOrigin − camPos', () => {
+    const state = createCruiseAimState();
+    const dt = 1 / 60;
+    const camPos = new THREE.Vector3(0, 1e-6, 3e-6);
+    // Jupiter-distance render origin: the ship is 5 AU out; the moon's
+    // heliocentric position is nothing like its scene position.
+    const renderOrigin = new THREE.Vector3(3.2, -1.1, 4.7);
+    const moonScene = new THREE.Vector3(0, 0, -2.9e-3);
+    const moonWorld = moonScene.clone().add(renderOrigin);
+    clearArrivalLook(state);
+    cutAim(state);
+    startArrivalLook(state, 'Io', 'Jupiter', moonScene.distanceTo(camPos));
+    stepCruiseAim(state, camPos, moonWorld, renderOrigin, dt, out);
+    const want = pointMixDir(camPos, moonScene, 1);
+    expect(angleBetween(out, want)).toBeLessThan(1e-9);
+  });
+
+  it('loss fade re-derives the last known WORLD position against the live render origin', () => {
+    const state = createCruiseAimState();
+    const dt = 1 / 60;
+    const camPos = new THREE.Vector3(0, 1e-6, 3e-6);
+    const renderOrigin = new THREE.Vector3(3.2, -1.1, 4.7);
+    const moonScene = new THREE.Vector3(0, 0, -2.9e-3);
+    const moonWorld = moonScene.clone().add(renderOrigin);
+    cutAim(state);
+    startArrivalLook(state, 'Io', 'Jupiter', moonScene.distanceTo(camPos));
+    stepCruiseAim(state, camPos, moonWorld, renderOrigin, dt, out);
+    // Moon lost; the SHIP keeps cruising — the render origin moves toward
+    // the moon's fixed world position. A frozen scene-frame direction would
+    // be geometrically wrong; the re-derived one tracks the true bearing.
+    const movedOrigin = renderOrigin.clone().add(new THREE.Vector3(0, 0, -1.4e-3));
+    stepCruiseAim(state, camPos, null, movedOrigin, dt, out);
+    expect(state.look!.releaseElapsedS).not.toBeNull(); // true loss latched release
+    const expectedScene = moonWorld.clone().sub(movedOrigin);
+    // Mid-fade the desired aim blends toward base, but its moon component
+    // must be the RE-DERIVED bearing: the emitted aim stays within the
+    // arc between base and the re-derived moon aim — and measurably closer
+    // to the re-derived bearing than to the stale pre-move one.
+    const freshDir = pointMixDir(camPos, expectedScene, 1);
+    const staleDir = pointMixDir(camPos, moonScene, 1);
+    expect(angleBetween(out, freshDir)).toBeLessThan(angleBetween(out, staleDir));
+  });
+});
+
 describe('warp and loss lifecycle', () => {
-  it('an apparent-direction step beyond LOOK_WARP_RELEASE_RAD latches release and rebaselines', () => {
+  it('a warp frame releases with exact fade phase and no classification', () => {
     const state = createCruiseAimState();
     const dt = 1 / 60;
     const { camPos, moonWorld } = jumpArrival(state);
     stepCruiseAim(state, camPos, moonWorld, ORIGIN, dt, out);
     expect(state.look!.releaseElapsedS).toBeNull();
-    // Clock jump: moon teleports 90° around its parent.
+    // Clock jump beyond BOTH thresholds: 90° around the parent AND past
+    // the 2× recede backstop distance.
     const q = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), Math.PI / 2);
-    const warped = moonWorld.clone().applyQuaternion(q);
+    const warped = moonWorld.clone().applyQuaternion(q).multiplyScalar(3);
     stepCruiseAim(state, camPos, warped, ORIGIN, dt, out);
-    expect(state.look === null || state.look.releaseElapsedS !== null).toBe(true);
-    if (state.look) {
-      // Rebaselined: the classification datum is the post-warp distance.
-      expect(state.look.previousDistanceAU).toBeCloseTo(
-        warped.clone().sub(camPos).length(), 12,
-      );
+    const look = state.look!;
+    // Release latched ON the warp frame, and the fade ticked THAT frame:
+    // the first post-warp weight already carries fade(dt), never fade(0)=1.
+    expect(look.releaseElapsedS).toBeCloseTo(dt, 12);
+    // Classification suppressed: even past the 2× backstop distance the
+    // warp frame must not latch receding — the next ordinary frame
+    // classifies against the rebaselined datum.
+    expect(look.receding).toBe(false);
+    expect(look.previousDistanceAU).toBeCloseTo(
+      warped.clone().sub(camPos).length(), 12,
+    );
+    // Next ordinary frame: classification resumes and the backstop fires.
+    stepCruiseAim(state, camPos, warped, ORIGIN, dt, out);
+    expect(state.look === null || state.look.receding).toBe(true);
+  });
+
+  it('a permanently-warping moon still self-clears within the release fade', () => {
+    const state = createCruiseAimState();
+    const dt = 1 / 60;
+    const { camPos, moonWorld } = jumpArrival(state);
+    stepCruiseAim(state, camPos, moonWorld, ORIGIN, dt, out);
+    const spin = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), Math.PI / 3);
+    const pos = moonWorld.clone();
+    let prev = out.clone();
+    const frames = Math.ceil(MOON_ARRIVAL_RELEASE_S / dt) + 2;
+    for (let i = 0; i < frames; i++) {
+      pos.applyQuaternion(spin); // warps EVERY frame — never classifies
+      stepCruiseAim(state, camPos, pos, ORIGIN, dt, out);
+      const step = angleBetween(prev, out);
+      expect(step).toBeLessThanOrEqual(Math.min(AIM_RATE_CAP_RAD_PER_S * dt, AIM_STEP_MAX_RAD) + 1e-9);
+      prev = out.clone();
     }
+    expect(state.look).toBeNull(); // the fade ran to zero through the chaos
   });
 
   it('sub-threshold apparent motion does not release', () => {
@@ -320,6 +392,33 @@ describe('warp and loss lifecycle', () => {
       prev = out.clone();
     }
     expect(angleBetween(out, baseDir)).toBeLessThan(1e-6);
+  });
+
+  it('null→resolved reappearance corrects under the cap', () => {
+    const state = createCruiseAimState();
+    const dt = 1 / 60;
+    const { camPos, moonWorld } = jumpArrival(state);
+    stepCruiseAim(state, camPos, moonWorld, ORIGIN, dt, out);
+    let prev = out.clone();
+    // Lose the moon for three frames (release latches, fade starts)...
+    for (let i = 0; i < 3; i++) {
+      stepCruiseAim(state, camPos, null, ORIGIN, dt, out);
+      expect(angleBetween(prev, out)).toBeLessThanOrEqual(
+        Math.min(AIM_RATE_CAP_RAD_PER_S * dt, AIM_STEP_MAX_RAD) + 1e-9,
+      );
+      prev = out.clone();
+    }
+    // ...then it reappears 30° away: the correction is a capped sweep,
+    // never a snap.
+    const q = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), Math.PI / 6);
+    const reappeared = moonWorld.clone().applyQuaternion(q);
+    for (let i = 0; i < 10; i++) {
+      stepCruiseAim(state, camPos, reappeared, ORIGIN, dt, out);
+      expect(angleBetween(prev, out)).toBeLessThanOrEqual(
+        Math.min(AIM_RATE_CAP_RAD_PER_S * dt, AIM_STEP_MAX_RAD) + 1e-9,
+      );
+      prev = out.clone();
+    }
   });
 
   it('a look that never resolved simply drops', () => {

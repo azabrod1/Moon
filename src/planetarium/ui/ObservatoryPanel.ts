@@ -3,16 +3,28 @@
  * styling (accent reserved for happening-now warmth). "From ⟨body⟩ ▾" vantage
  * header (click = change vantage) with swap chip, phase hero (SVG glyph +
  * angular-diameter data line; Quiet-sky card on moonless grounds), live
- * now-bar, the surface-view entry, Earth's prev/next jump rows with next-date
- * metas, and the per-system upcoming-events list with classification badges.
+ * now-bar, the sky window that is the door to the surface view (with its
+ * watch row and one-time coach mark), Earth's prev/next finder rows with
+ * next-date metas, and the per-system upcoming-events list with
+ * classification badges. "Look up" names that door; "Surface view" stays the
+ * name of the mode it opens.
+ *
  * Pure DOM + ephemeris reads; clock changes, camera work, and the chunked
  * event search live in PlanetariumMode. 8 Hz renders touch text nodes only;
- * list rebuilds happen only in setEvents.
+ * the window's structure is gated on a state key and list rebuilds happen
+ * only in setEvents.
  */
 import { computeOrbitalState, type EventType } from '../../astronomy/ephemeris';
 import { formatDateCompact } from '../../astronomy/planetary';
-import type { ShadowEvent } from '../../astronomy/shadows';
-import { bodyDisplayName, formatDiscDeg } from '../surfaceView';
+import type { ShadowClassification, ShadowEvent } from '../../astronomy/shadows';
+import {
+  bodyDisplayName,
+  formatDiscDeg,
+  selectSurfaceTarget,
+  surfaceEventPhrase,
+  type SurfaceEventInfo,
+  type SurfaceLandedInfo,
+} from '../surfaceView';
 import { setText } from '../../shared/dom';
 
 /** What the phase hero shows for the current landed body. */
@@ -22,6 +34,8 @@ export type ObservatorySubjectInfo =
       subject: 'Moon' | 'Earth';
       angularDiameterDeg: number;
       distanceKm: number;
+      /** Subject's catalog tint — the phase glyph is painted in it. */
+      tintCss: string;
     }
   | {
       kind: 'moon-phase';
@@ -31,6 +45,8 @@ export type ObservatorySubjectInfo =
       waxing: boolean;
       angularDiameterDeg: number;
       distanceKm: number;
+      /** Subject's catalog tint — the phase glyph is painted in it. */
+      tintCss: string;
     }
   | { kind: 'events-only'; parentName: string }
   /** Moonless system (Mercury, Venus): the hero becomes the "Quiet sky" card. */
@@ -40,18 +56,231 @@ export type ObservatorySubjectInfo =
 export interface ObservatoryRenderExtras {
   /** "From Earth" — the vantage line doubles as the change-vantage button. */
   vantageName: string;
-  /** Bare landed-body name for copy ("Moon", not "From Moon"). */
-  vantageBody: string;
   /** Companion body name for the swap chip, or null to hide it. */
   swapName: string | null;
   /** Now-bar tag: 'paused' | 'realtime' | a rate label. */
   nowTag: string;
-  /** Surface view active → the Look up button becomes the exit affordance. */
-  surfaceActive: boolean;
-  /** Look up will open the Look-at picker first — the hint says so. */
-  lookupOpensMenu: boolean;
+  /** Word to show in place of the tag while an event is overhead, or null.
+   *  Panel-only — the surface HUD's transport clock keeps the rate label. */
+  nowVerb: string | null;
   /** Earth finder metas ('' hides one, '···' = still scanning); null = not the Earth system. */
   nextDates: { full: string; new: string; lunar: string; solar: string } | null;
+  /** Name the finder rows' almanac ("from Earth") — only worth the width
+   *  where the vantage isn't the one the row names. */
+  finderAffix: string | null;
+  /** Everything the sky window's state depends on that only the owner knows. */
+  window: ObservatoryWindowContext;
+  /** Show the one-time coach mark under the window. */
+  showCoach: boolean;
+}
+
+/** Which of the window's pictograms is showing. 'stars' is the bare sky — a
+ *  vantage with no phase subject has no disc to draw. */
+export type ObservatoryWindowGlyph =
+  | 'phase'
+  | 'stars'
+  | 'sun'
+  | 'reddened'
+  | 'shadow-dot'
+  | 'orbit';
+
+/** The window inputs the owner supplies (scene, clock and event side). */
+export interface ObservatoryWindowContext {
+  /** The surface view is up — the same slot is the way back out. */
+  surfaceActive: boolean;
+  /** Stepping through opens the target picker first (generic planets). */
+  lookupOpensMenu: boolean;
+  landed: SurfaceLandedInfo;
+  /** The event overhead right now, or null. */
+  live: { spec: SurfaceEventInfo; classification: ShadowClassification } | null;
+  /** Stepping through re-lands the player first. */
+  relocates: boolean;
+}
+
+export interface ObservatoryWindowInput extends ObservatoryWindowContext {
+  /** False where the vantage has no phase subject (a generic planet). */
+  hasPhase: boolean;
+}
+
+export interface ObservatoryWindowState {
+  mode: 'idle' | 'live' | 'return';
+  title: string;
+  sub: string;
+  glyph: ObservatoryWindowGlyph;
+  showNow: boolean;
+  relocates: boolean;
+}
+
+/** Earth's own almanac pair — the events its sky has proper names for. */
+function isEarthAlmanacPair(spec: SurfaceEventInfo): boolean {
+  return spec.parentPlanet === 'Earth' && spec.moonName === 'Moon';
+}
+
+function standingOn(landed: SurfaceLandedInfo, planetName: string): boolean {
+  return landed.type === 'planet' && landed.name === planetName;
+}
+
+/**
+ * What the sky window says and shows.
+ *
+ * Titles are observer-true: they name the sight from where the player
+ * actually stands, so "The Moon is crossing the Sun" appears only where an
+ * observer would see that. The sub-line carries the offer, and names a
+ * destination only when stepping through moves you there.
+ */
+export function observatoryWindowState(input: ObservatoryWindowInput): ObservatoryWindowState {
+  if (input.surfaceActive) {
+    return {
+      mode: 'return',
+      title: 'Return to orbit',
+      // The exit restores the landed orbit camera, not deep space.
+      sub: 'Leave the surface · Esc',
+      glyph: 'orbit',
+      showNow: false,
+      relocates: false,
+    };
+  }
+  const live = input.live;
+  if (!live) {
+    const body = bodyDisplayName(input.landed.name);
+    return {
+      mode: 'idle',
+      title: 'Look up',
+      sub: input.lookupOpensMenu
+        ? `Choose what to watch from ${body}`
+        : `See the sky from ${body}`,
+      glyph: input.hasPhase ? 'phase' : 'stars',
+      showNow: false,
+      relocates: false,
+    };
+  }
+  return {
+    mode: 'live',
+    title: windowEventTitle(input.landed, live.spec, live.classification),
+    sub: windowEventSub(input.landed, live.spec, live.classification, input.relocates),
+    // Keyed off the sight the surface view will actually point at, so the
+    // pictogram can't tell a different story from the title beside it.
+    glyph: windowEventGlyph(selectSurfaceTarget(input.landed, live.spec).kind),
+    showNow: true,
+    relocates: input.relocates,
+  };
+}
+
+function windowEventTitle(
+  landed: SurfaceLandedInfo,
+  spec: SurfaceEventInfo,
+  classification: ShadowClassification,
+): string {
+  if (isEarthAlmanacPair(spec) && standingOn(landed, 'Earth')) {
+    if (spec.kind === 'eclipse') return 'Lunar eclipse overhead';
+    // The badge word the upcoming list already computes leads the solar
+    // form; a transit never classifies penumbral, so that falls back plain.
+    const badge =
+      classification === 'total' || classification === 'partial' || classification === 'annular'
+        ? classification[0].toUpperCase() + classification.slice(1)
+        : 'Solar';
+    return `${badge} eclipse overhead`;
+  }
+  return surfaceEventPhrase(landed, spec);
+}
+
+function windowEventSub(
+  landed: SurfaceLandedInfo,
+  spec: SurfaceEventInfo,
+  classification: ShadowClassification,
+  relocates: boolean,
+): string {
+  if (relocates) {
+    const parent = bodyDisplayName(spec.parentPlanet);
+    if (spec.kind === 'eclipse') {
+      return classification === 'total'
+        ? `stand on ${parent} to see it turn red`
+        : `stand on ${parent} to watch the eclipse`;
+    }
+    return `stand on ${parent} to see the eclipse`;
+  }
+  // Standing on Earth while its own Moon darkens: the sub says what the
+  // classification honestly delivers, since a penumbral eclipse looks like
+  // nothing happened unless the panel says that IS the show.
+  if (isEarthAlmanacPair(spec) && spec.kind === 'eclipse' && standingOn(landed, 'Earth')) {
+    if (classification === 'total') return 'see the Moon turn red';
+    if (classification === 'penumbral') return 'a subtle dimming — easy to miss';
+    return 'the Moon is crossing Earth’s shadow';
+  }
+  return 'see it from the surface';
+}
+
+/**
+ * Three pictograms, one per kind of sight: the Sun with a bite out of it,
+ * a body sitting reddened inside a shadow, and a shadow crawling a disc.
+ * The ring is a pictogram, not a promise of corona.
+ */
+function windowEventGlyph(sight: ReturnType<typeof selectSurfaceTarget>['kind']): ObservatoryWindowGlyph {
+  switch (sight) {
+    case 'sun':
+    case 'sun-from-spot':
+      return 'sun';
+    case 'moon':
+      return 'reddened';
+    case 'parent':
+      return 'shadow-dot';
+  }
+}
+
+export interface ObservatoryWatchRowState {
+  visible: boolean;
+  title: string;
+  meta: string;
+}
+
+/**
+ * The watch row is the surface view's home for the better-vantage offer: on
+ * the ground the window slot is the way back out, so the offer needs a row
+ * of its own. In orbit view the window already carries it a few pixels away,
+ * and ember is reserved for happening-now — two ember rows dilute that.
+ */
+export function observatoryWatchRowState(input: ObservatoryWindowInput): ObservatoryWatchRowState {
+  const live = input.live;
+  if (!live || !input.surfaceActive || !input.relocates) {
+    return { visible: false, title: '', meta: '' };
+  }
+  return {
+    visible: true,
+    title: `Watch from ${bodyDisplayName(live.spec.parentPlanet)}`,
+    meta: live.classification === 'none' ? 'eclipse in progress' : `${live.classification} eclipse`,
+  };
+}
+
+/**
+ * The word the now-bar's tag shows while an event is overhead. Earth's own
+ * pair reads "eclipse" whichever way its shadow points — from that ground
+ * both are eclipses; elsewhere a moon's shadow crossing the planet is the
+ * transit the panel names it.
+ */
+export function liveEventVerb(spec: SurfaceEventInfo): string {
+  if (spec.kind === 'eclipse') return 'eclipse';
+  return isEarthAlmanacPair(spec) ? 'eclipse' : 'transit';
+}
+
+/**
+ * Everything about the window and watch row that costs DOM to change. The
+ * render pass swaps structure only when this differs, so an unchanged state
+ * on the 8 Hz cadence touches nothing — restarting the NOW tick's animation
+ * eight times a second reads as a frozen-bright dot, not a pulse.
+ */
+export function observatoryWindowKey(
+  state: ObservatoryWindowState,
+  watch: ObservatoryWatchRowState,
+): string {
+  return [
+    state.mode,
+    state.title,
+    state.sub,
+    state.glyph,
+    state.showNow ? '1' : '0',
+    state.relocates ? '1' : '0',
+    watch.visible ? `${watch.title}|${watch.meta}` : '',
+  ].join('\u0000');
 }
 
 /** One row of the upcoming-events list. Each row closes over its engine
@@ -168,16 +397,22 @@ function formatDiscDataLine(angularDiameterDeg: number, distanceKm: number): str
   return `∅ ${deg}° · ${Math.round(distanceKm).toLocaleString('en-US')} km`;
 }
 
-function formatCountdown(nowUtcMs: number, event: ShadowEvent): string {
+/**
+ * How far off an event is, in words: "in 2 days", never "in 2d". One unit
+ * per rung — an hour and twenty minutes of extra precision is noise on a
+ * row whose job is "soon or not". The rungs are chosen so the widest string
+ * ("in 364 days") still clears the right column.
+ */
+export function formatCountdown(nowUtcMs: number, event: ShadowEvent): string {
   if (nowUtcMs > event.endUtcMs) return 'ended';
   if (nowUtcMs >= event.startUtcMs) return 'now';
   const totalMinutes = Math.floor((event.peakUtcMs - nowUtcMs) / 60_000);
-  if (totalMinutes < 60) return `in ${Math.max(totalMinutes, 1)}m`;
+  if (totalMinutes < 60) return `in ${Math.max(totalMinutes, 1)} min`;
   const totalHours = Math.floor(totalMinutes / 60);
-  if (totalHours < 48) return `in ${totalHours}h ${totalMinutes % 60}m`;
+  if (totalHours < 48) return `in ${totalHours} ${totalHours === 1 ? 'hour' : 'hours'}`;
   const totalDays = Math.floor(totalHours / 24);
-  if (totalDays < 365) return `in ${totalDays}d`;
-  return `in ${((event.peakUtcMs - nowUtcMs) / (365.25 * 86_400_000)).toFixed(1)}y`;
+  if (totalDays < 365) return `in ${totalDays} ${totalDays === 1 ? 'day' : 'days'}`;
+  return `in ${((event.peakUtcMs - nowUtcMs) / (365.25 * 86_400_000)).toFixed(1)} years`;
 }
 
 /**
@@ -188,7 +423,13 @@ function formatCountdown(nowUtcMs: number, event: ShadowEvent): string {
 export function observatoryPhaseText(
   utcMs: number,
   info: ObservatorySubjectInfo,
-): { headline: string; meta: string; litFraction: number; lightOnRight: boolean } | null {
+): {
+  headline: string;
+  meta: string;
+  litFraction: number;
+  lightOnRight: boolean;
+  tint: string;
+} | null {
   if (info.kind === 'earth') {
     const state = computeOrbitalState(new Date(utcMs));
     const illumination = info.subject === 'Earth' ? 1 - state.illumination : state.illumination;
@@ -204,6 +445,7 @@ export function observatoryPhaseText(
       meta: `${info.subject === 'Earth' ? 'Earth' : 'The Moon'} · ${Math.round(illumination * 100)}% lit`,
       litFraction: illumination,
       lightOnRight: !waning,
+      tint: info.tintCss,
     };
   }
   if (info.kind === 'moon-phase') {
@@ -212,34 +454,76 @@ export function observatoryPhaseText(
       meta: `${info.parentName} · ${Math.round(info.illumination * 100)}% lit`,
       litFraction: info.illumination,
       lightOnRight: info.waxing,
+      tint: info.tintCss,
     };
   }
   return null;
 }
 
 /**
- * SVG path for the phase glyph's shadow region: the dark-limb semicircle
- * closed by the elliptical terminator (semi-minor axis ∝ |2f − 1|). Crescent
- * (f < ½) bows the terminator into the lit side; gibbous bows it back. Disc:
- * r=19 centered at (20,20), matching the markup's <circle>.
+ * SVG path for the phase glyph's LIT region: the sunward semicircle closed by
+ * the elliptical terminator (semi-minor axis ∝ |2f − 1|). Crescent (f < ½)
+ * bows the terminator into the lit side; gibbous bows it back. Disc: r=19
+ * centered at (20,20).
+ *
+ * The light is what gets painted, so the dark limb is simply absent and the
+ * glass panel shows through it. The two alternatives both leave a mark: a
+ * dark shape laid over a lit disc is an opaque blob against bright sky, and
+ * masking the lit disc with the shadow multiplies the mask's own antialiased
+ * edge into a hairline that traces the whole rim at 1× pixel density.
+ * (A stroke-only ghost circle marks the whole limb separately — additive
+ * light, so it leaves neither mark.)
  */
-export function phaseGlyphShadowPath(litFraction: number, lightOnRight: boolean): string {
+export function phaseGlyphLitPath(litFraction: number, lightOnRight: boolean): string {
   const f = Math.min(1, Math.max(0, litFraction));
   const c = 2 * f - 1; // −1 new … +1 full
   const rt = (19 * Math.abs(c)).toFixed(2);
-  // Dark limb = the semicircle away from the light; sweep flags follow.
-  const darkSweep = lightOnRight ? 0 : 1;
+  // Lit limb = the semicircle toward the light; sweep flags follow.
+  const litSweep = lightOnRight ? 1 : 0;
   const termSweep = (f < 0.5) === lightOnRight ? 0 : 1;
-  return `M 20 1 A 19 19 0 0 ${darkSweep} 20 39 A ${rt} 19 0 0 ${termSweep} 20 1 Z`;
+  return `M 20 1 A 19 19 0 0 ${litSweep} 20 39 A ${rt} 19 0 0 ${termSweep} 20 1 Z`;
+}
+
+/**
+ * Gradient stops for the phase glyph, from the subject's catalog tint: the
+ * lit region brightens toward the light and falls to a dusk shade at the far
+ * limb. Flat fill was the alternative, and a full disc under it is a
+ * featureless dot — the shading is what keeps Full reading as a body.
+ */
+export function phaseGlyphPaint(tintCss: string): { bright: string; limb: string } {
+  const n = parseInt(tintCss.slice(1), 16);
+  const tint = [(n >> 16) & 0xff, (n >> 8) & 0xff, n & 0xff];
+  // Ramp endpoints (design constants, not body tints): starlit white and
+  // dusk slate. The tint survives the mix at both ends.
+  const toward = (target: number[], k: number) =>
+    `rgb(${tint.map((c, i) => Math.round(c + (target[i] - c) * k)).join(', ')})`;
+  return {
+    bright: toward([242, 245, 251], 0.7),
+    limb: toward([69, 78, 99], 0.42),
+  };
 }
 
 export class ObservatoryPanel {
   private panelEl: HTMLElement | null = null;
   private earthRowsEl: HTMLElement | null = null;
   private heroEl: HTMLElement | null = null;
-  private glyphShadowEl: SVGPathElement | null = null;
+  private glyphLitEl: SVGPathElement | null = null;
+  private glyphGradEl: SVGRadialGradientElement | null = null;
+  private windowGradEl: SVGRadialGradientElement | null = null;
+  /** Last tint written into the gradient stops — changes on vantage swaps. */
+  private appliedPhaseTint: string | null = null;
   private nowBarEl: HTMLElement | null = null;
   private swapEl: HTMLElement | null = null;
+  private finderAffixEls: HTMLElement[] = [];
+  private windowEl: HTMLElement | null = null;
+  private windowLitEl: SVGPathElement | null = null;
+  private watchRowEl: HTMLElement | null = null;
+  private coachEl: HTMLElement | null = null;
+  private coachVisible = false;
+  // The window's structural state, so an 8 Hz render that changes nothing
+  // touches no DOM: re-writing it would restart the NOW tick's pulse eight
+  // times a second and read as a frozen-bright dot.
+  private windowKey = '';
   private eventsListEl: HTMLElement | null = null;
   private orbitRowEl: HTMLElement | null = null;
   private orbitToggleEl: HTMLInputElement | null = null;
@@ -250,6 +534,8 @@ export class ObservatoryPanel {
   private guidesExplainEl: HTMLElement | null = null;
   private orbitInfoEl: HTMLElement | null = null;
   private orbitExplainEl: HTMLElement | null = null;
+  private keyInfoEl: HTMLElement | null = null;
+  private keyExplainEl: HTMLElement | null = null;
   private orbitAvailable = false;
   private renderedRows: { row: ObservatoryEventRow; rowEl: HTMLElement; countdownEl: HTMLElement }[] = [];
   private wired = false;
@@ -279,6 +565,13 @@ export class ObservatoryPanel {
     private onGuidesToggle: (on: boolean) => void,
     private onClose: () => void,
     private onLookup: () => void,
+    /** The watch row: step onto the ground the event is worth watching from.
+     *  Never onLookup — on the surface that first branch is the way OUT. */
+    private onWatchLive: () => void,
+    /** The coach mark was acknowledged by the user — retire it for good.
+     *  `viaWindow` means the acknowledging click is also entering the
+     *  surface view, so that entry owes no second first-timer notice. */
+    private onCoachAck: (viaWindow: boolean) => void,
     private onSwap: () => void,
     private onOrbitDetailsToggle: (on: boolean) => void,
     private onLayoutChange: () => void,
@@ -290,9 +583,22 @@ export class ObservatoryPanel {
     this.panelEl = document.getElementById('observatory-panel');
     this.earthRowsEl = document.getElementById('observatory-earth-rows');
     this.heroEl = document.getElementById('observatory-hero');
-    this.glyphShadowEl = document.getElementById('observatory-glyph-shadow') as SVGPathElement | null;
+    this.glyphLitEl = document.getElementById('observatory-glyph-lit') as SVGPathElement | null;
+    this.glyphGradEl = document.getElementById(
+      'observatory-glyph-grad',
+    ) as SVGRadialGradientElement | null;
+    this.windowGradEl = document.getElementById(
+      'observatory-window-grad',
+    ) as SVGRadialGradientElement | null;
     this.nowBarEl = document.getElementById('observatory-nowbar');
     this.swapEl = document.getElementById('observatory-swap');
+    this.finderAffixEls = [
+      ...(this.earthRowsEl?.querySelectorAll<HTMLElement>('.obs-lbl-from') ?? []),
+    ];
+    this.windowEl = document.getElementById('observatory-lookup');
+    this.windowLitEl = document.getElementById('observatory-window-lit') as SVGPathElement | null;
+    this.watchRowEl = document.getElementById('observatory-watch');
+    this.coachEl = document.getElementById('observatory-coach');
     this.eventsListEl = document.getElementById('observatory-events-list');
     this.orbitRowEl = document.getElementById('observatory-orbit-row');
     this.orbitToggleEl = document.getElementById('observatory-orbit-toggle') as HTMLInputElement | null;
@@ -301,12 +607,16 @@ export class ObservatoryPanel {
     this.guidesExplainEl = document.getElementById('observatory-guides-explain');
     this.orbitInfoEl = document.getElementById('observatory-orbit-info');
     this.orbitExplainEl = document.getElementById('observatory-orbit-explain');
+    this.keyInfoEl = document.getElementById('observatory-key-info');
+    this.keyExplainEl = document.getElementById('observatory-key-explain');
     if (this.wired) return;
     this.wired = true;
     // Seed the crossing detector — the first updateSheetInset call must not
     // read the initial form as a breakpoint crossing.
     this.wasSheetForm = this.isSheetForm();
     document.getElementById('observatory-close')?.addEventListener('click', () => {
+      // Closing the panel on a coach mark is a read message, not a missed one.
+      this.acknowledgeCoach(false);
       this.hide();
       this.onClose(); // owner drops its chunked search immediately, not next frame
     });
@@ -330,7 +640,15 @@ export class ObservatoryPanel {
     });
     this.wireInfoNote(this.guidesInfoEl, this.guidesExplainEl);
     this.wireInfoNote(this.orbitInfoEl, this.orbitExplainEl);
-    document.getElementById('observatory-lookup')?.addEventListener('click', () => this.onLookup());
+    this.wireInfoNote(this.keyInfoEl, this.keyExplainEl);
+    this.windowEl?.addEventListener('click', () => {
+      this.acknowledgeCoach(true);
+      this.onLookup();
+    });
+    document.getElementById('observatory-coach-got')?.addEventListener('click', () =>
+      this.acknowledgeCoach(false),
+    );
+    this.watchRowEl?.addEventListener('click', () => this.onWatchLive());
     this.swapEl?.addEventListener('click', () => this.onSwap());
     document.getElementById('observatory-vantage-btn')?.addEventListener('click', () => this.onVantageChangeRequest());
     this.wireJump('observatory-prev-full', 'full-moon', -1);
@@ -390,6 +708,13 @@ export class ObservatoryPanel {
     return this.panelEl?.classList.contains('visible') ?? false;
   }
 
+  /** ≤640px the panel is an overlay sheet covering the lower sky — the owner
+   *  asks so it can dismiss the cover when a click hands that sky to the
+   *  surface view. The desktop panel sits beside the scene and stays. */
+  sheetFormActive(): boolean {
+    return this.isOpen() && this.isSheetForm();
+  }
+
   /** ≤640px the panel renders as a bottom sheet (CSS media query). */
   private isSheetForm(): boolean {
     return window.innerWidth <= 640;
@@ -397,19 +722,21 @@ export class ObservatoryPanel {
 
   /**
    * The peek height — the floor of the drag range: the summary through the
-   * now-bar. The sheet never parks lower (short of dismissing) because the
-   * bottom time pill hides while the sheet is open — the now-bar is the only
-   * clock on screen, and the floor keeps it there. The anchor chain is
-   * visibility-aware (offsetHeight, not inline style): surface view hides
-   * the now-bar via a body class and events-only subjects hide the hero
-   * inline — falling through to the vantage row keeps the sheet from
-   * collapsing to a sliver when both are gone.
+   * sky window. Jumps park the sheet here, so the floor has to clear the
+   * window and the watch row above it — the whole reason a jump is worth
+   * anything is the step it offers next. The now-bar sits above the window,
+   * so the older rationale still holds: the bottom time pill hides while the
+   * sheet is open, and the floor keeps the only clock on screen. The anchor
+   * chain is visibility-aware (offsetHeight, not inline style): surface view
+   * hides the now-bar via a body class and events-only subjects hide the
+   * hero inline — falling through keeps the sheet from collapsing to a
+   * sliver when they are gone.
    */
   private peekHeightPx(): number {
     const panel = this.panelEl;
     if (!panel) return 0;
     const vantage = panel.querySelector('.obs-vantage') as HTMLElement | null;
-    for (const anchor of [this.nowBarEl, this.heroEl, vantage]) {
+    for (const anchor of [this.coachEl, this.windowEl, this.nowBarEl, this.heroEl, vantage]) {
       if (anchor && anchor.offsetHeight > 0) {
         return Math.min(anchor.offsetTop + anchor.offsetHeight + 12, this.sheetFullHeightPx());
       }
@@ -515,6 +842,11 @@ export class ObservatoryPanel {
     this.abortSheetDrag?.();
     this.collapseInfoNote(this.guidesInfoEl, this.guidesExplainEl);
     this.collapseInfoNote(this.orbitInfoEl, this.orbitExplainEl);
+    this.collapseInfoNote(this.keyInfoEl, this.keyExplainEl);
+    // Put the coach away WITHOUT retiring it: a panel closed by a mission,
+    // a takeoff or a tutorial would otherwise burn a one-time message the
+    // user never had time to read.
+    this.setCoachVisible(false);
     this.panelEl?.classList.remove('visible');
     document.body.classList.remove('observatory-sheet-open');
     this.updateSheetInset();
@@ -710,16 +1042,21 @@ export class ObservatoryPanel {
   }
 
   /** Replace the upcoming-events list; an empty statusText hides the status line. */
-  setEvents(rows: ObservatoryEventRow[], statusText: string, nowUtcMs: number): void {
+  setEvents(rows: ObservatoryEventRow[], statusText: string): void {
     setText('observatory-events-status', statusText);
     if (!this.eventsListEl) return;
     this.eventsListEl.textContent = '';
     this.renderedRows = [];
     for (const row of rows) {
-      // The year earns its width only when the event is far out.
-      const includeYear = Math.abs(row.event.peakUtcMs - nowUtcMs) > 300 * 86_400_000;
-      const rowEl = document.createElement('div');
+      // The whole row is the jump: a real button, so it answers to the
+      // keyboard and the tap target is the row you were reading. Each row
+      // closes over its own event — a key re-lookup would silently no-op
+      // while a restarted search repopulates the map.
+      const rowEl = document.createElement('button');
+      rowEl.type = 'button';
       rowEl.className = row.speck ? 'obs-ev speck' : 'obs-ev';
+      rowEl.setAttribute('aria-label', `Jump to ${row.label}`);
+      rowEl.addEventListener('click', () => this.onEventJump(row.event));
       // Rail glyph: a disc sized to the apparent ∅ (log scale, 3–9px), or
       // the hollow "nothing to see from here" ring for specks.
       const railEl = document.createElement('span');
@@ -755,24 +1092,20 @@ export class ObservatoryPanel {
       }
       const timeEl = document.createElement('span');
       timeEl.className = 'obs-ev-time';
-      timeEl.textContent = row.magnitudeText
-        ? `${formatEventRowTime(row.event.peakUtcMs, includeYear)} · ${row.magnitudeText}`
-        : formatEventRowTime(row.event.peakUtcMs, includeYear);
-      const countdownEl = document.createElement('span');
-      countdownEl.className = 'obs-cd';
-      metaEl.append(badgeEl, timeEl, countdownEl);
+      // No year: the countdown beside it carries far-ness in words, and the
+      // meta line has magnitude to fit as well.
+      const when = formatEventRowTime(row.event.peakUtcMs, false);
+      timeEl.textContent = row.magnitudeText ? `${when} · ${row.magnitudeText}` : when;
+      metaEl.append(badgeEl, timeEl);
       mainEl.append(nameEl, metaEl);
       const rightEl = document.createElement('span');
       rightEl.className = 'obs-ev-right';
-      const jumpEl = document.createElement('button');
-      jumpEl.className = 'obs-tpill';
-      jumpEl.textContent = 'Jump';
-      jumpEl.title = `Jump to ${row.label}`;
-      jumpEl.addEventListener('click', () => this.onEventJump(row.event));
+      const countdownEl = document.createElement('span');
+      countdownEl.className = 'obs-cd';
       const diameterEl = document.createElement('span');
       diameterEl.className = 'obs-ev-dia';
       diameterEl.textContent = `∅ ${formatDiscDeg(row.discDeg)}°`;
-      rightEl.append(jumpEl, diameterEl);
+      rightEl.append(countdownEl, diameterEl);
       rowEl.append(railEl, mainEl, rightEl);
       this.eventsListEl.appendChild(rowEl);
       this.renderedRows.push({ row, rowEl, countdownEl });
@@ -790,17 +1123,16 @@ export class ObservatoryPanel {
       this.swapEl.style.display = extras.swapName ? '' : 'none';
       if (extras.swapName) setText('observatory-swap-name', extras.swapName);
     }
-    setText('observatory-lookup-label', extras.surfaceActive ? 'Return to orbit' : 'Surface view');
-    setText(
-      'observatory-lookup-hint',
-      extras.surfaceActive
-        ? '— leave the surface'
-        : extras.lookupOpensMenu
-          ? '— pick what to look at'
-          : `— look up from ${bodyDisplayName(extras.vantageBody)}`,
-    );
-
     if (this.earthRowsEl) this.earthRowsEl.style.display = extras.nextDates ? '' : 'none';
+    if (extras.nextDates && this.finderAffixEls.length > 0) {
+      // Standing on the Moon, "Full Moon" sits under a hero reading "New
+      // Earth": the affix says whose sky the row is naming. From Earth it
+      // says nothing the vantage line hasn't.
+      const affix = extras.finderAffix ?? '';
+      if (this.finderAffixEls[0].textContent !== affix) {
+        for (const el of this.finderAffixEls) el.textContent = affix;
+      }
+    }
     if (extras.nextDates) {
       setText('observatory-meta-full', extras.nextDates.full);
       setText('observatory-meta-new', extras.nextDates.new);
@@ -832,11 +1164,16 @@ export class ObservatoryPanel {
       setText('observatory-phase-name', phase.headline);
       setText('observatory-phase-meta', phase.meta);
       setText('observatory-phase-data', formatDiscDataLine(info.angularDiameterDeg, info.distanceKm));
-      this.setGlyph(phase.litFraction, phase.lightOnRight);
+      this.setGlyph(phase);
     }
 
     setText('observatory-now', formatObservatoryClock(utcMs));
-    setText('observatory-now-tag', extras.nowTag);
+    // The verb only ever replaces the uninformative "realtime" — the rate
+    // label still owns the tag everywhere else.
+    setText('observatory-now-tag', extras.nowVerb ?? extras.nowTag);
+
+    this.renderWindow({ ...extras.window, hasPhase: phase !== null }, phase);
+    this.setCoachVisible(extras.showCoach);
 
     for (const { row, rowEl, countdownEl } of this.renderedRows) {
       const text = formatCountdown(utcMs, row.event);
@@ -846,7 +1183,89 @@ export class ObservatoryPanel {
     }
   }
 
-  private setGlyph(litFraction: number, lightOnRight: boolean): void {
-    this.glyphShadowEl?.setAttribute('d', phaseGlyphShadowPath(litFraction, lightOnRight));
+  /**
+   * The sky window and the watch row above it. Everything structural is
+   * gated on a state key: the window carries a pulsing NOW tick and a mask
+   * the hero shares an id space with, and the 8 Hz cadence would restart the
+   * one and churn the other. Only the phase terminator moves every render,
+   * and that is an attribute write on a node that stays put.
+   */
+  private renderWindow(
+    input: ObservatoryWindowInput,
+    phase: { litFraction: number; lightOnRight: boolean } | null,
+  ): void {
+    const state = observatoryWindowState(input);
+    const watch = observatoryWatchRowState(input);
+    const key = observatoryWindowKey(state, watch);
+    if (key !== this.windowKey) {
+      this.windowKey = key;
+      setText('observatory-window-title', state.title);
+      setText('observatory-window-sub', state.sub);
+      if (this.windowEl) {
+        this.windowEl.dataset.glyph = state.glyph;
+        this.windowEl.classList.toggle('live', state.mode === 'live');
+        this.windowEl.classList.toggle('return', state.mode === 'return');
+      }
+      if (this.watchRowEl) {
+        this.watchRowEl.style.display = watch.visible ? '' : 'none';
+        if (watch.visible) {
+          setText('observatory-watch-title', watch.title);
+          setText('observatory-watch-meta', watch.meta);
+        }
+      }
+      // The watch row appearing or vanishing changes the sheet's height, and
+      // the peek floor is measured to the window's bottom edge.
+      this.updateSheetInset();
+    }
+    if (state.glyph === 'phase' && phase) {
+      this.windowLitEl?.setAttribute(
+        'd',
+        phaseGlyphLitPath(phase.litFraction, phase.lightOnRight),
+      );
+    }
+  }
+
+  private setCoachVisible(show: boolean): void {
+    if (this.coachVisible === show) return;
+    this.coachVisible = show;
+    if (this.coachEl) this.coachEl.style.display = show ? '' : 'none';
+    // The coach sits at the bottom of the peek floor — the sheet has to grow
+    // around it, and shrink back when it goes.
+    this.updateSheetInset();
+  }
+
+  private acknowledgeCoach(viaWindow: boolean): void {
+    if (!this.coachVisible) return;
+    this.setCoachVisible(false);
+    this.onCoachAck(viaWindow);
+  }
+
+  /** One flash on the window — the hand-off after a jump that lit it up. */
+  flashWindow(): void {
+    if (!this.windowEl) return;
+    this.windowEl.classList.remove('flash');
+    // Force a reflow so re-adding the class restarts the animation.
+    void this.windowEl.offsetWidth;
+    this.windowEl.classList.add('flash');
+  }
+
+  /** Hero terminator + the shared gradient paint (hero and window discs). */
+  private setGlyph(phase: { litFraction: number; lightOnRight: boolean; tint: string }): void {
+    this.glyphLitEl?.setAttribute('d', phaseGlyphLitPath(phase.litFraction, phase.lightOnRight));
+    // The gradient's bright pole sits on the side the light comes from.
+    const cx = phase.lightOnRight ? '26.5' : '13.5';
+    this.glyphGradEl?.setAttribute('cx', cx);
+    this.windowGradEl?.setAttribute('cx', cx);
+    if (phase.tint !== this.appliedPhaseTint) {
+      this.appliedPhaseTint = phase.tint;
+      const paint = phaseGlyphPaint(phase.tint);
+      for (const grad of [this.glyphGradEl, this.windowGradEl]) {
+        const stops = grad?.querySelectorAll('stop');
+        if (stops?.length === 2) {
+          stops[0].setAttribute('stop-color', paint.bright);
+          stops[1].setAttribute('stop-color', paint.limb);
+        }
+      }
+    }
   }
 }

@@ -233,6 +233,7 @@ import {
   LABEL_NOMINAL_HALF_WIDTH_PX,
 } from './mapLabels';
 import { debugWarn } from '../../shared/debug';
+import { applyMapOrbitButtCaps } from './mapOrbitMaterial';
 
 /**
  * Read-only access to the world's live surface textures. The map re-reads these
@@ -3513,7 +3514,9 @@ export class SystemMap {
 
       const ringGeometry = new LineGeometry();
       ringGeometry.setPositions(new Float32Array((MOON_RING_SEGMENTS + 1) * 3));
-      const ringMaterial = new LineMaterial({
+      // Butt caps like the planet orbits: at half opacity the stock round
+      // caps' joint overlap blends to 1.5x brightness — ticks every segment.
+      const ringMaterial = applyMapOrbitButtCaps(new LineMaterial({
         color: data.color,
         linewidth: 1,
         transparent: true,
@@ -3521,7 +3524,7 @@ export class SystemMap {
         depthTest: true,
         depthWrite: false,
         toneMapped: false,
-      });
+      }));
       ringMaterial.resolution.set(Math.max(el.clientWidth, 1), Math.max(el.clientHeight, 1));
       const ring = new Line2(ringGeometry, ringMaterial);
       // Built late, so it starts from the switch rather than from on: a system
@@ -6070,7 +6073,7 @@ export class SystemMap {
     // disc afterwards. Tested, the line dies at the limb and re-emerges past
     // it — a body occludes its own orbit. No depth write: the lines must
     // never occlude each other or the sprites.
-    const material = new LineMaterial({
+    const material = applyMapOrbitButtCaps(new LineMaterial({
       linewidth: 1.5,
       vertexColors: true,
       transparent: true,
@@ -6078,7 +6081,7 @@ export class SystemMap {
       depthTest: true,
       depthWrite: false,
       toneMapped: false,
-    });
+    }));
     material.resolution.set(Math.max(el.clientWidth, 1), Math.max(el.clientHeight, 1));
     const line = new Line2(geometry, material);
     // After the spheres, whose written depth is what ends an orbit line at a

@@ -11702,8 +11702,13 @@ export class PlanetariumMode {
     'speedAUPerS', 'capAUPerS',
     // Dot + label render-truth for the continuity invariant (DEV QA).
     'dotAlpha', 'dotSizePx', 'discPx', 'labelVis',
+    // Camera forward (world): the aim-rate battery derives per-frame aim
+    // angular velocity from consecutive samples to assert the cruise-aim
+    // continuity cap (see cruiseAim.ts).
+    'aimX', 'aimY', 'aimZ',
   ] as const;
   private devTraceWorld = new THREE.Vector3();
+  private devTraceAim = new THREE.Vector3();
   private devTraceProj: ScreenProjection = { x: 0, y: 0, ndcX: 0, ndcY: 0, ndcZ: 0 };
 
   /** Start recording per-frame samples of a moon's rendered state. */
@@ -11791,7 +11796,11 @@ export class PlanetariumMode {
     buf[k++] = dotAlpha;
     buf[k++] = dotSizePx;
     buf[k++] = disc;
-    buf[k] = labelVis;
+    buf[k++] = labelVis;
+    this.camera.getWorldDirection(this.devTraceAim);
+    buf[k++] = this.devTraceAim.x;
+    buf[k++] = this.devTraceAim.y;
+    buf[k] = this.devTraceAim.z;
     this.devTraceCount++;
   }
 

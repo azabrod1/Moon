@@ -170,9 +170,13 @@ export const ORBIT_LINE_WIDTH_PX = 2.25;
  * reads as dashes, and at 0.05 the ripple was proportionally huge. */
 export const ORBIT_LINE_OPACITY_FLOOR = 0.14;
 /** Neighbourhood saturation — the player is on/near this orbit. */
-export const ORBIT_LINE_OPACITY_CAP = 0.4;
-/** Map-read level once the camera is pulled far enough to see the whole ring. */
-export const ORBIT_LINE_OVERVIEW_OPACITY = 0.3;
+export const ORBIT_LINE_OPACITY_CAP = 0.55;
+/** Map-read level once the camera is pulled far enough to see the whole ring.
+ * Sits at the cap deliberately: at whole-system zoom the arcs peak at
+ * 110–150/255 luma — confident chart lines — and the lens resample's
+ * residual few-code ripple falls below visible contrast, where the old dim
+ * lines let it read as banding. */
+export const ORBIT_LINE_OVERVIEW_OPACITY = 0.55;
 
 /**
  * Per-frame orbit-line opacity. Two independent claims on visibility, max-

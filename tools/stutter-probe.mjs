@@ -2,6 +2,7 @@
 //
 //   node tools/stutter-probe.mjs --mode=turn   # keyboard yaw near Moon; stutter metric
 //   node tools/stutter-probe.mjs --mode=tap    # mobile first-touch after teleport; snap metric
+//   node tools/stutter-probe.mjs --mode=drag   # desktop first click-drag after teleport; snap metric
 //
 // Both modes: teleport to the Moon through the real map flow
 // (openMap -> mapPick -> mapCommit('travel')), wait for arrival, trace the
@@ -73,11 +74,15 @@ try {
     const p = window.__moon.probe('Moon');
     return p && p.distToBodyAU != null && p.distToBodyAU < 1e-4;
   }, { timeout: 60000 });
-  // Let the approach/park finish: wait until the ship stops moving.
-  await page.waitForFunction(() => {
-    const p = window.__moon.probe('Moon');
-    return p && p.moving === false;
-  }, { timeout: 90000 }).catch(() => console.log('[probe] ship still moving after 90s — tracing anyway'));
+  // Drag mode probes the seconds right after arrival — the arrival camera
+  // look is at full weight and the user's first instinct-click lands here.
+  // The other modes let the approach/park finish first.
+  if (mode !== 'drag') {
+    await page.waitForFunction(() => {
+      const p = window.__moon.probe('Moon');
+      return p && p.moving === false;
+    }, { timeout: 90000 }).catch(() => console.log('[probe] ship still moving after 90s — tracing anyway'));
+  }
   const parked = await page.evaluate(() => window.__moon.probe('Moon'));
   console.log(`[probe] parked: ${JSON.stringify(parked)}`);
 
@@ -97,6 +102,24 @@ try {
     await page.waitForTimeout(1500);
     // Second touch for comparison (arrival look already cancelled).
     await hold(300, 300, 1500);
+    await page.waitForTimeout(1500);
+  } else if (mode === 'drag') {
+    // Desktop first click-drag after teleport: a mouse press that moves a few
+    // pixels — the smallest gesture that crosses the 4px orbit-drag threshold.
+    const drag = async (px) => {
+      await page.mouse.move(640, 400);
+      await page.mouse.down();
+      for (let i = 1; i <= 6; i++) {
+        await page.mouse.move(640 + (px * i) / 6, 400);
+        await page.waitForTimeout(32);
+      }
+      await page.mouse.up();
+    };
+    await page.waitForTimeout(500);
+    await drag(24);
+    await page.waitForTimeout(1500);
+    // Second drag for comparison (arrival look already cancelled).
+    await drag(24);
     await page.waitForTimeout(1500);
   } else {
     await page.waitForTimeout(500);     // quiet lead-in
@@ -130,8 +153,8 @@ try {
     const dj = Math.hypot(samples[i].vx - samples[i - 1].vx, samples[i].vy - samples[i - 1].vy);
     jerks.push({ i: samples[i].i, t: samples[i].t, dj, dtMs: samples[i].dtMs, distAU: samples[i].distAU });
   }
-  if (isTap) {
-    console.log('[tap] per-frame moon screen position:');
+  if (isTap || mode === 'drag') {
+    console.log(`[${mode}] per-frame moon screen position:`);
     for (const s of samples) {
       console.log(`   f${s.i} t=${Math.round(s.t)} dt=${s.dtMs.toFixed(0)}ms scr=(${rows[s.i][F.scrX].toFixed(1)},${rows[s.i][F.scrY].toFixed(1)}) disc=${s.discPx.toFixed(0)}px`);
     }

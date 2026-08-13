@@ -961,10 +961,13 @@ export class PlanetariumMode {
   /** A moon teleport keeps its collision-safe flyby heading, but the camera
    *  tracks the moon through closest approach. Without that decoupling the
    *  nearby disc rides far off the optical axis and perspective projects the
-   *  spherical mesh as an oval. Manual steering releases it over
-   *  MOON_ARRIVAL_RELEASE_S (on touch a stationary tap is already full
-   *  steering, so a one-frame cancel snapped the view); grabbing the orbit
-   *  camera still cancels outright — that gesture owns the camera itself.
+   *  spherical mesh as an oval. Any user gesture releases it over
+   *  MOON_ARRIVAL_RELEASE_S — steering (on touch a stationary tap is already
+   *  full steering) and the orbit grab alike: both used to cancel in one
+   *  frame, which snapped the centred moon across the viewport on the first
+   *  input after a teleport. The fade's aim interpolates moon→origin, and
+   *  every cruise camera owner aims at origin, so a release that outlives an
+   *  ownership change still lands exactly on the new owner's pose.
    *  The receding leg eases back to the ordinary ship-centred chase view. */
   private moonArrivalCameraLook: {
     name: string;
@@ -1745,7 +1748,11 @@ export class PlanetariumMode {
         // Moved > 4px = a drag: the user owns the camera. Legal from any
         // owner — OrbitControls re-derives its spherical from the live camera.
         this.camOwner = 'orbit';
-        this.moonArrivalCameraLook = null;
+        // The arrival look fades out under the drag rather than cancelling —
+        // a one-frame cancel snapped the centred moon to the chase aim.
+        if (this.moonArrivalCameraLook) {
+          this.moonArrivalCameraLook.releaseElapsedS ??= 0;
+        }
       }
     });
     const endOrbitDrag = (e?: PointerEvent) => {
@@ -2966,7 +2973,14 @@ export class PlanetariumMode {
    *  unobtrusive. Runs after OrbitControls + camera safety, before projection. */
   private updateMoonArrivalCameraLook(dt: number): void {
     const look = this.moonArrivalCameraLook;
-    if (!look || this.landedOn || this.devFreeCamera || this.camOwner !== 'chase') return;
+    if (!look || this.landedOn || this.devFreeCamera) return;
+    // A look that still owns the aim only runs under the chase camera. A
+    // RELEASING look keeps fading through 'orbit'/'reacquiring' too: the
+    // orbit grab starts the release rather than cancelling, and freezing the
+    // fade at an ownership flip would re-create the one-frame snap it exists
+    // to prevent. Its aim interpolates moon→origin — the target every cruise
+    // owner aims at — so the fade converges on the live owner's own pose.
+    if (this.camOwner !== 'chase' && look.releaseElapsedS === null) return;
 
     const moon = this.planetMoons
       .get(look.parentPlanet)

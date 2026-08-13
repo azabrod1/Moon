@@ -282,7 +282,11 @@ export function createOrbitLineMaterial(
     /* glsl */ `float alpha = opacity;
 
 			#ifndef WORLD_UNITS
-				float lineEdgeWidth = fwidth( vUv.x );
+				// True screen-space gradient, not fwidth: fwidth is |ddx|+|ddy|,
+				// which overstates the gradient by up to sqrt(2) depending on the
+				// segment's screen slope, so an fwidth-sized feather breathes
+				// along a curving arc and bands it at the raster staircase period.
+				float lineEdgeWidth = length( vec2( dFdx( vUv.x ), dFdy( vUv.x ) ) );
 			#endif`,
   );
   fragment = replaceExactlyOnce(fragment, 'if ( len2 > 1.0 ) discard;', 'discard;');
@@ -290,14 +294,22 @@ export function createOrbitLineMaterial(
     fragment,
     'gl_FragColor = vec4( diffuseColor.rgb, alpha );',
     /* glsl */ `#ifndef WORLD_UNITS
-				float lineEdgeCoverage = 1.0 - smoothstep( 1.0 - lineEdgeWidth, 1.0, abs( vUv.x ) );
+				// Linear coverage ramp that reaches exactly zero AT the quad
+				// edge: a trapezoid profile whose ramps are one pixel wide sums
+				// to the same per-column flux wherever the line centre falls
+				// between pixel centres, so the sub-pixel phase drift along a
+				// shallow arc produces no brightness banding. A smoothstep, or
+				// any ramp that ends short of the edge, leaves a residual
+				// coverage step whose beat is visible as evenly spaced bands on
+				// far-out orbit arcs.
+				float lineEdgeCoverage = clamp( ( 1.0 - abs( vUv.x ) ) / max( lineEdgeWidth, 1e-5 ), 0.0, 1.0 );
 				// The core stamps the décor stencil, and discarded fragments
-				// stamp nothing — so the feather's near-invisible shoulder
-				// discards instead of blending, keeping it from blanking stars
-				// it can't visually cover. The step this truncates from the
-				// ramp is at most 0.3 x opacity — under the floor opacities
-				// that is below one luma level on black.
-				if ( lineEdgeCoverage < 0.3 ) discard;
+				// stamp nothing. The threshold must sit near zero — any step
+				// truncated from the ramp re-creates the banding — so the
+				// stamped band spans essentially the whole quad; the décor it
+				// additionally culls is ~22% more edge pixels, and star/belt
+				// stud counts measurably drop with the smoother edge.
+				if ( lineEdgeCoverage < 0.05 ) discard;
 				alpha *= lineEdgeCoverage;
 			#endif
 
@@ -305,7 +317,7 @@ export function createOrbitLineMaterial(
   );
   material.fragmentShader = fragment;
   augmentFixedScreenLineForLens(material, lensUniforms);
-  material.customProgramCacheKey = () => 'orbit-line-lens-buttcap-v1';
+  material.customProgramCacheKey = () => 'orbit-line-lens-buttcap-v2';
   return material;
 }
 

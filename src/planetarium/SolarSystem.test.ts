@@ -300,9 +300,12 @@ describe('createOrbitLineMaterial', () => {
     // Anchors are asserted at patch time (replaceExactlyOnce throws on a three
     // upgrade that moves them) — construction alone proves they still match.
     // The feather must ride vUv.x: x is the cross-line axis, y runs along the
-    // segment (feathering y re-creates the joint beading, inverted).
-    expect(material.fragmentShader).toContain('fwidth( vUv.x )');
+    // segment (feathering y re-creates the joint beading, inverted). The
+    // derivative must be the true gradient length, not fwidth, whose
+    // slope-dependent sqrt(2) overshoot bands shallow arcs.
+    expect(material.fragmentShader).toContain('length( vec2( dFdx( vUv.x ), dFdy( vUv.x ) ) )');
     expect(material.fragmentShader).toContain('abs( vUv.x )');
+    expect(material.fragmentShader).not.toContain('fwidth( vUv.x )');
     expect(material.fragmentShader).not.toContain('fwidth( vUv.y )');
     expect(material.fragmentShader).not.toContain('if ( len2 > 1.0 ) discard;');
     // Décor gating: the core stamps the stencil (stars/belt test NotEqual and
@@ -316,10 +319,19 @@ describe('createOrbitLineMaterial', () => {
     expect(material.stencilRef).toBe(ORBIT_LINE_STENCIL_REF);
     expect(material.stencilZPass).toBe(THREE.ReplaceStencilOp);
     expect(material.stencilWriteMask).toBe(0xff);
-    expect(material.fragmentShader).toContain('lineEdgeCoverage < 0.3');
+    // The coverage ramp must be linear and reach zero AT the quad edge, with a
+    // near-zero discard threshold: any coverage step left at the edge snaps
+    // pixels lit/gone as sub-pixel phase drifts, banding shallow arcs at
+    // evenly spaced intervals (the 0.3 threshold this replaced did exactly
+    // that).
+    expect(material.fragmentShader).toContain(
+      'clamp( ( 1.0 - abs( vUv.x ) ) / max( lineEdgeWidth, 1e-5 ), 0.0, 1.0 )',
+    );
+    expect(material.fragmentShader).toContain('lineEdgeCoverage < 0.05');
+    expect(material.fragmentShader).not.toContain('smoothstep( 1.0 - lineEdgeWidth');
     // Distinct from the ShadowVisuals guides' 'fixed-screen-line-lens-v2' so
     // the two patched shader families can never share a compiled program.
-    expect(material.customProgramCacheKey()).toBe('orbit-line-lens-buttcap-v1');
+    expect(material.customProgramCacheKey()).toBe('orbit-line-lens-buttcap-v2');
     expect(material.transparent).toBe(true);
     expect(material.worldUnits).toBe(false);
   });

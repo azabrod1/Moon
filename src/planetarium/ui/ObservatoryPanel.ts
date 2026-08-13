@@ -4,7 +4,7 @@
  * header (click = change vantage) with swap chip, phase hero (SVG glyph +
  * angular-diameter data line; Quiet-sky card on moonless grounds), live
  * now-bar, the sky window that is the door to the surface view (with its
- * watch row and one-time coach mark), Earth's prev/next finder rows with
+ * watch row), Earth's prev/next finder rows with
  * next-date metas, and the per-system upcoming-events list with
  * classification badges. "Look up" names that door; "Surface view" stays the
  * name of the mode it opens.
@@ -70,8 +70,6 @@ export interface ObservatoryRenderExtras {
   finderAffix: string | null;
   /** Everything the sky window's state depends on that only the owner knows. */
   window: ObservatoryWindowContext;
-  /** Show the one-time coach mark under the window. */
-  showCoach: boolean;
 }
 
 /** Which of the window's pictograms is showing. 'stars' is the bare sky — a
@@ -518,8 +516,6 @@ export class ObservatoryPanel {
   private windowEl: HTMLElement | null = null;
   private windowLitEl: SVGPathElement | null = null;
   private watchRowEl: HTMLElement | null = null;
-  private coachEl: HTMLElement | null = null;
-  private coachVisible = false;
   // The window's structural state, so an 8 Hz render that changes nothing
   // touches no DOM: re-writing it would restart the NOW tick's pulse eight
   // times a second and read as a frozen-bright dot.
@@ -568,10 +564,6 @@ export class ObservatoryPanel {
     /** The watch row: step onto the ground the event is worth watching from.
      *  Never onLookup — on the surface that first branch is the way OUT. */
     private onWatchLive: () => void,
-    /** The coach mark was acknowledged by the user — retire it for good.
-     *  `viaWindow` means the acknowledging click is also entering the
-     *  surface view, so that entry owes no second first-timer notice. */
-    private onCoachAck: (viaWindow: boolean) => void,
     private onSwap: () => void,
     private onOrbitDetailsToggle: (on: boolean) => void,
     private onLayoutChange: () => void,
@@ -598,7 +590,6 @@ export class ObservatoryPanel {
     this.windowEl = document.getElementById('observatory-lookup');
     this.windowLitEl = document.getElementById('observatory-window-lit') as SVGPathElement | null;
     this.watchRowEl = document.getElementById('observatory-watch');
-    this.coachEl = document.getElementById('observatory-coach');
     this.eventsListEl = document.getElementById('observatory-events-list');
     this.orbitRowEl = document.getElementById('observatory-orbit-row');
     this.orbitToggleEl = document.getElementById('observatory-orbit-toggle') as HTMLInputElement | null;
@@ -615,8 +606,6 @@ export class ObservatoryPanel {
     // read the initial form as a breakpoint crossing.
     this.wasSheetForm = this.isSheetForm();
     document.getElementById('observatory-close')?.addEventListener('click', () => {
-      // Closing the panel on a coach mark is a read message, not a missed one.
-      this.acknowledgeCoach(false);
       this.hide();
       this.onClose(); // owner drops its chunked search immediately, not next frame
     });
@@ -641,13 +630,7 @@ export class ObservatoryPanel {
     this.wireInfoNote(this.guidesInfoEl, this.guidesExplainEl);
     this.wireInfoNote(this.orbitInfoEl, this.orbitExplainEl);
     this.wireInfoNote(this.keyInfoEl, this.keyExplainEl);
-    this.windowEl?.addEventListener('click', () => {
-      this.acknowledgeCoach(true);
-      this.onLookup();
-    });
-    document.getElementById('observatory-coach-got')?.addEventListener('click', () =>
-      this.acknowledgeCoach(false),
-    );
+    this.windowEl?.addEventListener('click', () => this.onLookup());
     this.watchRowEl?.addEventListener('click', () => this.onWatchLive());
     this.swapEl?.addEventListener('click', () => this.onSwap());
     document.getElementById('observatory-vantage-btn')?.addEventListener('click', () => this.onVantageChangeRequest());
@@ -736,7 +719,7 @@ export class ObservatoryPanel {
     const panel = this.panelEl;
     if (!panel) return 0;
     const vantage = panel.querySelector('.obs-vantage') as HTMLElement | null;
-    for (const anchor of [this.coachEl, this.windowEl, this.nowBarEl, this.heroEl, vantage]) {
+    for (const anchor of [this.windowEl, this.nowBarEl, this.heroEl, vantage]) {
       if (anchor && anchor.offsetHeight > 0) {
         return Math.min(anchor.offsetTop + anchor.offsetHeight + 12, this.sheetFullHeightPx());
       }
@@ -843,10 +826,6 @@ export class ObservatoryPanel {
     this.collapseInfoNote(this.guidesInfoEl, this.guidesExplainEl);
     this.collapseInfoNote(this.orbitInfoEl, this.orbitExplainEl);
     this.collapseInfoNote(this.keyInfoEl, this.keyExplainEl);
-    // Put the coach away WITHOUT retiring it: a panel closed by a mission,
-    // a takeoff or a tutorial would otherwise burn a one-time message the
-    // user never had time to read.
-    this.setCoachVisible(false);
     this.panelEl?.classList.remove('visible');
     document.body.classList.remove('observatory-sheet-open');
     this.updateSheetInset();
@@ -1173,7 +1152,6 @@ export class ObservatoryPanel {
     setText('observatory-now-tag', extras.nowVerb ?? extras.nowTag);
 
     this.renderWindow({ ...extras.window, hasPhase: phase !== null }, phase);
-    this.setCoachVisible(extras.showCoach);
 
     for (const { row, rowEl, countdownEl } of this.renderedRows) {
       const text = formatCountdown(utcMs, row.event);
@@ -1223,21 +1201,6 @@ export class ObservatoryPanel {
         phaseGlyphLitPath(phase.litFraction, phase.lightOnRight),
       );
     }
-  }
-
-  private setCoachVisible(show: boolean): void {
-    if (this.coachVisible === show) return;
-    this.coachVisible = show;
-    if (this.coachEl) this.coachEl.style.display = show ? '' : 'none';
-    // The coach sits at the bottom of the peek floor — the sheet has to grow
-    // around it, and shrink back when it goes.
-    this.updateSheetInset();
-  }
-
-  private acknowledgeCoach(viaWindow: boolean): void {
-    if (!this.coachVisible) return;
-    this.setCoachVisible(false);
-    this.onCoachAck(viaWindow);
   }
 
   /** One flash on the window — the hand-off after a jump that lit it up. */

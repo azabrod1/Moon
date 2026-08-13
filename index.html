@@ -935,29 +935,6 @@
       0% { box-shadow: 0 0 0 1px rgba(var(--ember-rgb), 0.8), 0 0 26px rgba(var(--ember-rgb), 0.4); }
       100% { box-shadow: none; }
     }
-    .obs-coach {
-      position: relative; margin: 10px 2px 2px; padding: 11px 13px; border-radius: var(--r-m);
-      border: 1px solid rgba(var(--accent-rgb), 0.45); background: #0c101c;
-      box-shadow: 0 14px 44px rgba(0, 0, 0, 0.55);
-    }
-    /* Points up at the window it is talking about. */
-    .obs-coach::before {
-      content: ''; position: absolute; top: -5px; left: 28px; width: 8px; height: 8px;
-      background: #0c101c; border-left: 1px solid rgba(var(--accent-rgb), 0.45);
-      border-top: 1px solid rgba(var(--accent-rgb), 0.45); transform: rotate(45deg);
-    }
-    .obs-coach b { display: block; font-size: 11.5px; font-weight: 600; color: var(--obs-t1); }
-    .obs-coach b i {
-      color: var(--obs-accent); font-style: normal; font-family: var(--obs-mono);
-      font-size: 8.5px; font-weight: 600; letter-spacing: 0.14em; margin-right: 7px; vertical-align: 1px;
-    }
-    .obs-coach p { margin: 5px 0 9px; font-size: 11px; line-height: 1.55; color: var(--obs-t2); }
-    .obs-coach button {
-      font-family: var(--font); font-size: 10.5px; font-weight: 500; color: var(--obs-t2);
-      background: rgba(255, 255, 255, 0.05); border: 1px solid var(--obs-hairline-dim);
-      border-radius: var(--r-s); padding: 4px 10px; cursor: pointer;
-    }
-    .obs-coach button:hover { color: var(--obs-t1); background: rgba(255, 255, 255, 0.09); }
     /* Ember stays reserved for happening-now, so this row exists only while
        an event is overhead and only where the window can't carry the offer. */
     .obs-watchrow {
@@ -3979,16 +3956,6 @@
           <span class="ow-text"><b><i><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-linecap="round" aria-hidden="true"><path d="M2.2 9.2 L12.8 3.2" stroke-width="2.9"></path><path d="M7.6 6.8 L4.8 14" stroke-width="1.3"></path><path d="M8.4 6.8 L11.2 14" stroke-width="1.3"></path><circle cx="14.3" cy="2.1" r="0.9" fill="currentColor" stroke="none"></circle></svg></i><span id="observatory-window-title">Look up</span></b><small id="observatory-window-sub"></small></span>
           <span class="ow-now" aria-hidden="true">now</span>
         </button>
-        <!-- One-time coach mark under the window. Not a modal: it takes no
-             clicks off the panel and any of its three acknowledgments retires
-             it for good, while a programmatic close only puts it away. -->
-        <div class="obs-coach" id="observatory-coach" style="display:none">
-          <!-- No heading: the window it points at is already titled "Look up",
-               and the same words twice in a stack read as a stutter. -->
-          <b><i>NEW</i></b>
-          <p>Step through here and you&rsquo;re standing on the ground, looking up. Everything overhead is at its real size and its real place.</p>
-          <button type="button" id="observatory-coach-got">Got it</button>
-        </div>
         <div id="observatory-earth-rows">
           <div class="obs-sec">Jump to</div>
           <div class="obs-jrow2">

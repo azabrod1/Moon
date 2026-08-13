@@ -14,7 +14,6 @@ const STORAGE_KEY = 'orbital-sim-planetarium-state';
 const LEGACY_STORAGE_KEY = 'orbital-sim-explore-state';
 const HELP_SEEN_KEY = 'planetarium-help-seen';
 const SURFACE_HINT_SEEN_KEY = 'planetarium-surface-hint-seen';
-const LOOKUP_COACH_SEEN_KEY = 'planetarium-lookup-coach-seen';
 // Pre-rename key, read-only compat: a user who dismissed help in the old
 // "explore" build shouldn't be shown it again after upgrading.
 const LEGACY_HELP_SEEN_KEY = 'explore-help-seen';
@@ -359,23 +358,6 @@ export class PlanetariumStore {
   markSurfaceHintSeen(): void {
     try {
       localStorage.setItem(SURFACE_HINT_SEEN_KEY, '1');
-    } catch {
-      /* ignore: private browsing */
-    }
-  }
-
-  /** True once the sky window's one-time coach mark has been acknowledged. */
-  hasSeenLookupCoach(): boolean {
-    try {
-      return Boolean(localStorage.getItem(LOOKUP_COACH_SEEN_KEY));
-    } catch {
-      return false;
-    }
-  }
-
-  markLookupCoachSeen(): void {
-    try {
-      localStorage.setItem(LOOKUP_COACH_SEEN_KEY, '1');
     } catch {
       /* ignore: private browsing */
     }

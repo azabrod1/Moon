@@ -329,6 +329,18 @@ describe('createOrbitLineMaterial', () => {
     );
     expect(material.fragmentShader).toContain('lineEdgeCoverage < 0.05');
     expect(material.fragmentShader).not.toContain('smoothstep( 1.0 - lineEdgeWidth');
+    // The three coverage statements must survive IN ORDER — compute, then the
+    // near-zero discard (what keeps the stencil stamp off invisible
+    // shoulders), then the alpha multiply (what actually feathers the edge).
+    // Dropping the multiply or softening the discard to `alpha = 0.0` would
+    // pass any single-token check while regressing banding or star blanking.
+    const frag = material.fragmentShader;
+    const iCompute = frag.indexOf('float lineEdgeCoverage = clamp(');
+    const iDiscard = frag.indexOf('if ( lineEdgeCoverage < 0.05 ) discard;');
+    const iMultiply = frag.indexOf('alpha *= lineEdgeCoverage;');
+    expect(iCompute).toBeGreaterThan(-1);
+    expect(iDiscard).toBeGreaterThan(iCompute);
+    expect(iMultiply).toBeGreaterThan(iDiscard);
     // Distinct from the ShadowVisuals guides' 'fixed-screen-line-lens-v2' so
     // the two patched shader families can never share a compiled program.
     expect(material.customProgramCacheKey()).toBe('orbit-line-lens-buttcap-v2');

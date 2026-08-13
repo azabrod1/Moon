@@ -233,7 +233,7 @@ import {
   LABEL_NOMINAL_HALF_WIDTH_PX,
 } from './mapLabels';
 import { debugWarn } from '../../shared/debug';
-import { applyMapOrbitButtCaps } from './mapOrbitMaterial';
+import { createMapMoonRingMaterial, createMapPlanetOrbitMaterial } from './mapOrbitMaterial';
 
 /**
  * Read-only access to the world's live surface textures. The map re-reads these
@@ -3409,6 +3409,15 @@ export class SystemMap {
       moon.ringDirs[i * 3 + 2] = this.tmpMoonOffset.z / d;
       moon.ringX[i] = d / trueR;
     }
+    // Close the ring exactly: one period of apsidal/nodal drift separates the
+    // last sample from the first — degrees of arc for fast-precessing moons —
+    // and the line's butt caps no longer pad the gap. The ring is chart
+    // furniture anchored at the moon, so the seam parks under its dot.
+    const seam = MOON_RING_SEGMENTS * 3;
+    moon.ringDirs[seam] = moon.ringDirs[0];
+    moon.ringDirs[seam + 1] = moon.ringDirs[1];
+    moon.ringDirs[seam + 2] = moon.ringDirs[2];
+    moon.ringX[MOON_RING_SEGMENTS] = moon.ringX[0];
     moon.ringSampledUtcMs = utcMs;
     moon.ringFilledAtMs = nowMs;
     moon.ringFilled = true;
@@ -3514,17 +3523,7 @@ export class SystemMap {
 
       const ringGeometry = new LineGeometry();
       ringGeometry.setPositions(new Float32Array((MOON_RING_SEGMENTS + 1) * 3));
-      // Butt caps like the planet orbits: at half opacity the stock round
-      // caps' joint overlap blends to 1.5x brightness — ticks every segment.
-      const ringMaterial = applyMapOrbitButtCaps(new LineMaterial({
-        color: data.color,
-        linewidth: 1,
-        transparent: true,
-        opacity: MOON_RING_OPACITY,
-        depthTest: true,
-        depthWrite: false,
-        toneMapped: false,
-      }));
+      const ringMaterial = createMapMoonRingMaterial(data.color, MOON_RING_OPACITY);
       ringMaterial.resolution.set(Math.max(el.clientWidth, 1), Math.max(el.clientHeight, 1));
       const ring = new Line2(ringGeometry, ringMaterial);
       // Built late, so it starts from the switch rather than from on: a system
@@ -4806,6 +4805,17 @@ export class SystemMap {
       entry.raw[i * 3 + 1] = p.y;
       entry.raw[i * 3 + 2] = p.z;
     }
+    // The sampled strip's ends meet half a period from the body, separated by
+    // one period of element drift — sub-pixel for most bodies but chart-visible
+    // for the slow ones, and the lines' butt caps no longer pad it. Pinch both
+    // ends onto their midpoint so the loop closes exactly; the drift becomes a
+    // sub-gap-sized kink at the seam instead of a hole in the ring.
+    const last = ORBIT_SEGMENTS * 3;
+    for (let k = 0; k < 3; k++) {
+      const mid = (entry.raw[k] + entry.raw[last + k]) / 2;
+      entry.raw[k] = mid;
+      entry.raw[last + k] = mid;
+    }
   }
 
   /** Every cached line back through the live blend — what a scale animation
@@ -6067,21 +6077,10 @@ export class SystemMap {
     const geometry = new LineGeometry();
     geometry.setPositions(map);
     geometry.setColors(colors);
-    // depthTest ON: a true-sized globe writes depth (transparent at full
-    // opacity, but drawn first — see the render-order ladder note), so a
-    // depth-free line (the dot-era default) would paint straight across every
-    // disc afterwards. Tested, the line dies at the limb and re-emerges past
-    // it — a body occludes its own orbit. No depth write: the lines must
-    // never occlude each other or the sprites.
-    const material = applyMapOrbitButtCaps(new LineMaterial({
-      linewidth: 1.5,
-      vertexColors: true,
-      transparent: true,
-      opacity: this.orbitStyle.opacity,
-      depthTest: true,
-      depthWrite: false,
-      toneMapped: false,
-    }));
+    // Depth contract and cap patch live with the factory (see the render-order
+    // ladder note for why the globes' written depth is what ends a line at a
+    // limb).
+    const material = createMapPlanetOrbitMaterial(this.orbitStyle.opacity);
     material.resolution.set(Math.max(el.clientWidth, 1), Math.max(el.clientHeight, 1));
     const line = new Line2(geometry, material);
     // After the spheres, whose written depth is what ends an orbit line at a

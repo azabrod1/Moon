@@ -50,6 +50,14 @@ export const PLANET_LABEL_ENTER_EXPAND_PX = 3;
  *  drifting apart re-admits the loser only once a real gap exists. */
 export const PLANET_LABEL_SETTLED_INSET_PX = 2;
 
+/** Plain rect intersection on the shared anchor convention. Exported for the
+ *  one contest rule that runs OUTSIDE the resolver: the Sun's label yields to
+ *  a revealed planet label (the user explicitly asked to read that name), and
+ *  SunLabel does that test itself after this pass has placed the reveal. */
+export function rectsOverlap(a: LabelRect, b: LabelRect): boolean {
+  return overlaps(a, 0, b, 0);
+}
+
 function overlaps(a: LabelRect, insetA: number, b: LabelRect, insetB: number): boolean {
   return (
     a.x + insetA < b.x + b.w - insetB &&

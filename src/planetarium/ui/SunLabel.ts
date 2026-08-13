@@ -9,6 +9,7 @@ import * as THREE from 'three';
 import { formatBodyDistance } from '../bodyDistance';
 import { projectToScreen } from '../../shared/three/projectToScreen';
 import { sunLabelClearRadiusPx, type SunGlareMaskParams } from '../world/sunGlareMask';
+import { rectsOverlap, type LabelRect } from '../planetLabelPlacement';
 
 const LABEL_MARGIN_PX = 50;
 const LABEL_OFFSET_PX = 16;
@@ -41,6 +42,7 @@ export class SunLabel {
   private boxW = 64;
   private boxH = 24;
   private blockerScratch = { x: 0, y: 0, w: 64, h: 24 };
+  private yieldScratch = { x: 0, y: 0, w: 64, h: 24 };
 
   /** The label's screen rect while visible (top-left at the transform anchor,
    *  the shared convention), or null when hidden. Planet labels clear this
@@ -78,6 +80,12 @@ export class SunLabel {
     labelsOn: boolean,
     revealed: boolean,
     sunMask?: SunGlareMaskParams,
+    // The revealed planet label's rect, if one is drawn this frame. The Sun's
+    // label is an uncontestable blocker in the planet-label contest, so a
+    // revealed inner planet's exempt label would otherwise overprint it —
+    // recreating the exact pileup the contest removes. The user's reveal
+    // gesture outranks the anchor label; it returns on unhover.
+    yieldToRect?: LabelRect | null,
   ): void {
     if (!this.el) return;
     if (!labelsOn && !revealed) {
@@ -111,7 +119,16 @@ export class SunLabel {
       && screenX > -LABEL_MARGIN_PX && screenX < canvas.clientWidth + LABEL_MARGIN_PX
       && screenY > -LABEL_MARGIN_PX && screenY < canvas.clientHeight + LABEL_MARGIN_PX;
 
-    if (!occluded && onScreen) {
+    let yielded = false;
+    if (yieldToRect) {
+      this.yieldScratch.x = screenX;
+      this.yieldScratch.y = screenY + labelOffsetY;
+      this.yieldScratch.w = this.boxW;
+      this.yieldScratch.h = this.boxH;
+      yielded = rectsOverlap(this.yieldScratch, yieldToRect);
+    }
+
+    if (!occluded && !yielded && onScreen) {
       const justRevealed = !this.visible;
       if (!this.visible) {
         this.el.style.display = 'block';

@@ -181,6 +181,22 @@ export class PlanetLabels {
   // Pooled contest inputs, refilled each frame from the entries' slots.
   private contestants: PlanetLabelContestant[] = [];
   private contestBlockers: LabelRect[] = [];
+  private revealedRectScratch: LabelRect = { x: 0, y: 0, w: 0, h: 0 };
+  private revealedRectEntry: PlanetLabel | null = null;
+
+  /** The revealed body's label rect, while that label is actually drawn this
+   *  frame — the one label the Sun's own label must yield to (revealing a
+   *  crowded inner planet is exactly the gesture that asks to read its name,
+   *  and the Sun label is otherwise an uncontestable blocker). */
+  revealedLabelRect(): LabelRect | null {
+    const entry = this.revealedRectEntry;
+    if (!entry || !entry.labelVisible) return null;
+    this.revealedRectScratch.x = entry.lastAnchorX;
+    this.revealedRectScratch.y = entry.lastAnchorY;
+    this.revealedRectScratch.w = entry.labelW;
+    this.revealedRectScratch.h = entry.labelH;
+    return this.revealedRectScratch;
+  }
 
   constructor(scene: THREE.Scene, camera: THREE.PerspectiveCamera) {
     this.camera = camera;
@@ -707,6 +723,7 @@ export class PlanetLabels {
     // a pulled-back view stacks the inner planets' labels onto near-identical
     // pixels and someone must yield. Runs before this frame paints, so a
     // same-frame show-then-deny is two style writes, never a visible flash.
+    this.revealedRectEntry = null;
     this.contestants.length = 0;
     for (const entry of this.labels) {
       if (!entry.labelVisible) {
@@ -721,6 +738,7 @@ export class PlanetLabels {
       slot.priority = -entry.lastMag;
       slot.incumbent = entry.heldSlotLastFrame;
       slot.exempt = entry.planet.name === revealedBody;
+      if (slot.exempt) this.revealedRectEntry = entry;
       this.contestants.push(slot);
     }
     if (this.contestants.length > 0) {

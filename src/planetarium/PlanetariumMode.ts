@@ -6281,6 +6281,8 @@ export class PlanetariumMode {
       this.showBodyLabels,
       revealed,
       this.sunGlareMaskParams,
+      // Fresh this frame: renderLabels just placed the revealed label.
+      this.planetLabels?.revealedLabelRect() ?? null,
     );
   }
 

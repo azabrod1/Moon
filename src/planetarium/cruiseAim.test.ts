@@ -40,8 +40,10 @@ function pointMixDir(camPos: THREE.Vector3, moonScene: THREE.Vector3, weight: nu
 
 function jumpArrival(state: CruiseAimState) {
   const { camPos, moonWorld, arrivalDist } = arrivalScene();
-  // The REAL applyJumpDestination sequence: clear, then the
-  // resetCruiseCamera funnel cuts, then jumpToMoon starts the look.
+  // The jump-funnel sequence an authored look must ride: clear, then the
+  // resetCruiseCamera funnel cuts, then the look starts. (Dormant in
+  // production — moon teleports arrive settled and start no look — but the
+  // ordering contract is what any future look revives.)
   clearArrivalLook(state);
   cutAim(state);
   startArrivalLook(state, 'Io', 'Jupiter', arrivalDist);

@@ -969,10 +969,12 @@ export class PlanetariumMode {
    *  an authored cut. Advanced once per frame by updateCruiseAimStage —
    *  the LAST cruise camera writer, after the final position. */
   private cruiseAim = createCruiseAimState();
-  /** Catalog refs for the live arrival look's analytic position (parent
-   *  world + ephemeris offset — a cold jump's mesh is invisible while it
-   *  paints, so the mesh transform can never be the source). Set by
-   *  jumpToMoon, cleared wherever the look is cleared. */
+  /** Catalog refs for an authored look's analytic position (parent world +
+   *  ephemeris offset — a cold jump's mesh is invisible while it paints, so
+   *  the mesh transform can never be the source). Dormant: no production
+   *  path starts a look since moon teleports arrive settled; any future
+   *  look must set these beside its startArrivalLook and they clear
+   *  wherever the look is cleared. */
   private arrivalLookMoon: MoonData | null = null;
   private arrivalLookParentBody: PlanetData | null = null;
   private tmpAimMoonWorld = new THREE.Vector3();
@@ -2971,14 +2973,16 @@ export class PlanetariumMode {
   }
 
   /** The single LAST aim writer of the cruise frame (see cruiseAim.ts):
-   *  composes the arrival look over the origin aim and rate-limits the
+   *  composes any authored look over the origin aim and rate-limits the
    *  deflection so no upstream seam can emit a one-frame aim snap. Runs
    *  after OrbitControls + camera safety — aim derives from the FINAL
    *  camera position, which is what lets the safety escape skip its old
-   *  stale-quaternion re-aim. The look's moon position is ANALYTIC (parent
-   *  world + ephemeris offset): a cold jump's mesh is invisible while it
-   *  paints, and the look must hold through that veil so the reveal opens
-   *  already aimed. */
+   *  stale-quaternion re-aim. NO production path starts a look today (moon
+   *  teleports arrive directly in the settled pose), so the look branch
+   *  below is a dormant hook; if a look returns, its moon position must
+   *  stay ANALYTIC (parent world + ephemeris offset) — a cold jump's mesh
+   *  is invisible while it paints, and a look would have to hold through
+   *  that veil. */
   private updateCruiseAimStage(dt: number): void {
     if (this.landedOn || this.devFreeCamera) return;
 
@@ -10942,7 +10946,7 @@ export class PlanetariumMode {
       camDist: CRUISE_CAM_DIST_AU,
       shipClearance: SHIP_CLEARANCE_AU,
     });
-    return { position: pose.position, lookTarget: pose.aimPoint, bodyPosition };
+    return { position: pose.position, lookTarget: pose.aimPoint };
   }
 
   /**

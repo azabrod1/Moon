@@ -24,7 +24,15 @@
  *    the deflection's change is rate-limited, to
  *    min(AIM_RATE_CAP_RAD_PER_S·dt, AIM_STEP_MAX_RAD).
  *
- * The arrival look's target is fed ANALYTICALLY (parent world position +
+ * The arrival look is DORMANT: no production path calls startArrivalLook —
+ * moon teleports arrive directly in the settled pose (the moon-centred
+ * postcard override was retired because its ~20° offset from the settled
+ * pose made every first input pay a visible hand-back). The machinery
+ * stays because it is the one safe home for any future authored look: a
+ * look started here inherits the continuity guarantee below instead of
+ * reviving the snap class.
+ *
+ * An authored look's target is fed ANALYTICALLY (parent world position +
  * ephemeris offset, heliocentric) rather than from the mesh transform:
  * updateMoonPositions skips invisible unpainted moons, and a cold jump's
  * mesh is invisible by design for the whole veiled paint window — the look
@@ -122,9 +130,10 @@ export function createCruiseAimState(): CruiseAimState {
   };
 }
 
-/** A moon teleport begins tracking. Does NOT restore a cut aim — the jump
- *  funnel cuts deliberately and the first step must adopt the arrival aim
- *  exactly, not sweep toward it. */
+/** An authored look begins tracking (dormant: no production caller — see
+ *  the module header). Does NOT restore a cut aim — the jump funnel cuts
+ *  deliberately and the first step must adopt the desired aim exactly,
+ *  not sweep toward it. */
 export function startArrivalLook(
   state: CruiseAimState,
   name: string,

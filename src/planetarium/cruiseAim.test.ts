@@ -13,7 +13,7 @@ import {
   stepCruiseAim,
   type CruiseAimState,
 } from './cruiseAim';
-import { MOON_ARRIVAL_RELEASE_S } from './arrivalLogic';
+import { MOON_ARRIVAL_ENGAGE_FULL_RATIO, MOON_ARRIVAL_RELEASE_S } from './arrivalLogic';
 
 const ORIGIN = new THREE.Vector3(0, 0, 0);
 const out = new THREE.Vector3();
@@ -38,22 +38,51 @@ function pointMixDir(camPos: THREE.Vector3, moonScene: THREE.Vector3, weight: nu
   return moonScene.clone().multiplyScalar(weight).sub(camPos).normalize();
 }
 
+/** An arrival distance that puts `camToMoonAU` deep inside the engage band,
+ *  so the tracking look runs at full weight (the mid-flythrough state). */
+function deepArrivalDistFor(camToMoonAU: number): number {
+  return camToMoonAU / (MOON_ARRIVAL_ENGAGE_FULL_RATIO * 0.75);
+}
+
 function jumpArrival(state: CruiseAimState) {
   const { camPos, moonWorld, arrivalDist } = arrivalScene();
-  // The jump-funnel sequence an authored look must ride: clear, then the
-  // resetCruiseCamera funnel cuts, then the look starts. (Dormant in
-  // production — moon teleports arrive settled and start no look — but the
-  // ordering contract is what any future look revives.)
+  // The REAL applyJumpDestination sequence: clear, then the
+  // resetCruiseCamera funnel cuts, then jumpToMoon starts the look —
+  // un-engaged at the standoff, weight exactly zero.
   clearArrivalLook(state);
   cutAim(state);
   startArrivalLook(state, 'Io', 'Jupiter', arrivalDist);
   return { camPos, moonWorld };
 }
 
+/** The same funnel sequence, but with the look declared as if arrival was
+ *  far out: the camera→moon distance sits deep inside the engage band and
+ *  tracking runs fully engaged. */
+function engagedPass(state: CruiseAimState) {
+  const { camPos, moonWorld } = arrivalScene();
+  clearArrivalLook(state);
+  cutAim(state);
+  startArrivalLook(state, 'Io', 'Jupiter', deepArrivalDistFor(moonWorld.distanceTo(camPos)));
+  return { camPos, moonWorld };
+}
+
 describe('jump arrival', () => {
-  it('frame one adopts the weight-1 moon aim exactly — no sweep', () => {
+  it('frame one at the standoff adopts the BASE aim exactly — zero deflection to hand back', () => {
     const state = createCruiseAimState();
     const { camPos, moonWorld } = jumpArrival(state);
+    stepCruiseAim(state, camPos, moonWorld, ORIGIN, 1 / 60, out);
+    const want = camPos.clone().negate().normalize();
+    // acos noise at parallel bottoms out ~1.5e-8 rad; 1e-7 is still far
+    // below anything a pixel could show.
+    expect(angleBetween(out, want)).toBeLessThan(1e-7);
+    // Un-engaged is NOT "handoff complete": the look survives, waiting for
+    // a hands-off pass to develop.
+    expect(state.look).not.toBeNull();
+  });
+
+  it('a fully engaged pass adopts the weight-1 moon aim exactly', () => {
+    const state = createCruiseAimState();
+    const { camPos, moonWorld } = engagedPass(state);
     stepCruiseAim(state, camPos, moonWorld, ORIGIN, 1 / 60, out);
     const want = pointMixDir(camPos, moonWorld, 1);
     expect(angleBetween(out, want)).toBeLessThan(1e-9);
@@ -67,13 +96,9 @@ describe('jump arrival', () => {
     expect(state.hasAim).toBe(true);
   });
 
-  it('holds full weight through an unresolvable veil window (cold jump)', () => {
-    // The analytic source makes this near-unreachable, but the contract is
-    // pinned: a look that HAS resolved once keeps aiming from the last
-    // known world position rather than dropping — while an input-free veil
-    // window with resolution keeps weight 1 outright.
+  it('an engaged input-free pass holds full weight indefinitely', () => {
     const state = createCruiseAimState();
-    const { camPos, moonWorld } = jumpArrival(state);
+    const { camPos, moonWorld } = engagedPass(state);
     for (let i = 0; i < 120; i++) {
       stepCruiseAim(state, camPos, moonWorld, ORIGIN, 1 / 60, out);
     }
@@ -86,7 +111,7 @@ describe('jump arrival', () => {
 describe('release fade', () => {
   it('reaches the origin aim within MOON_ARRIVAL_RELEASE_S, C0 at every frame', () => {
     const state = createCruiseAimState();
-    const { camPos, moonWorld } = jumpArrival(state);
+    const { camPos, moonWorld } = engagedPass(state);
     const dt = 1 / 60;
     stepCruiseAim(state, camPos, moonWorld, ORIGIN, dt, out);
     releaseArrivalLook(state);
@@ -121,7 +146,7 @@ describe('release fade', () => {
 describe('continuity enforcement', () => {
   it('clearArrivalLook alone still slews — an orphaned deflection never snaps', () => {
     const state = createCruiseAimState();
-    const { camPos, moonWorld } = jumpArrival(state);
+    const { camPos, moonWorld } = engagedPass(state);
     const dt = 1 / 60;
     stepCruiseAim(state, camPos, moonWorld, ORIGIN, dt, out);
     const aimed = out.clone();
@@ -135,7 +160,7 @@ describe('continuity enforcement', () => {
 
   it('cap=∞ mutation guard: without enforcement the same clear IS a one-frame snap', () => {
     const state = createCruiseAimState();
-    const { camPos, moonWorld } = jumpArrival(state);
+    const { camPos, moonWorld } = engagedPass(state);
     const dt = 1 / 60;
     stepCruiseAim(state, camPos, moonWorld, ORIGIN, dt, out);
     const aimed = out.clone();
@@ -148,7 +173,7 @@ describe('continuity enforcement', () => {
 
   it('a 100ms hitch frame clamps to AIM_STEP_MAX_RAD, lags, then converges without overshoot', () => {
     const state = createCruiseAimState();
-    const { camPos, moonWorld } = jumpArrival(state);
+    const { camPos, moonWorld } = engagedPass(state);
     stepCruiseAim(state, camPos, moonWorld, ORIGIN, 1 / 60, out);
     clearArrivalLook(state);
     const aimed = out.clone();
@@ -174,7 +199,7 @@ describe('continuity enforcement', () => {
     // compare at common wall-clock instants.
     const run = (hz: number) => {
       const state = createCruiseAimState();
-      const { camPos, moonWorld } = jumpArrival(state);
+      const { camPos, moonWorld } = engagedPass(state);
       stepCruiseAim(state, camPos, moonWorld, ORIGIN, 1 / hz, out);
       clearArrivalLook(state);
       const samples: THREE.Vector3[] = [];
@@ -213,7 +238,7 @@ describe('transport (base motion passes 1:1)', () => {
   it('a nonzero residual transports across base rotation without decay or growth', () => {
     const state = createCruiseAimState();
     const dt = 1 / 60;
-    const { camPos, moonWorld } = jumpArrival(state);
+    const { camPos, moonWorld } = engagedPass(state);
     stepCruiseAim(state, camPos, moonWorld, ORIGIN, dt, out);
     const base0 = camPos.clone().negate().normalize();
     const residual0 = angleBetween(out, base0);
@@ -239,10 +264,11 @@ describe('degenerate directions', () => {
     const camPos = new THREE.Vector3(0, 0, 3e-6);
     stepCruiseAim(state, camPos, null, ORIGIN, dt, out);
     const ahead = out.clone();
-    // A moon essentially behind the camera at full weight.
+    // A moon essentially behind the camera at full weight (declared arrival
+    // far out so the engage band reads fully engaged).
     const moonWorld = new THREE.Vector3(1e-9, 0, 3.001e-6 + 2.9e-3);
     clearArrivalLook(state);
-    startArrivalLook(state, 'Io', 'Jupiter', 2.9e-3);
+    startArrivalLook(state, 'Io', 'Jupiter', deepArrivalDistFor(2.9e-3));
     let prev = ahead.clone();
     for (let i = 0; i < 2000; i++) {
       stepCruiseAim(state, camPos, moonWorld, ORIGIN, dt, out);
@@ -264,7 +290,7 @@ describe('degenerate directions', () => {
       stepCruiseAim(state, camPos, null, ORIGIN, dt, out);
       // Desired exactly behind: moon dead astern at weight 1.
       const moonWorld = new THREE.Vector3(0, 0, 3e-6 + 2.9e-3);
-      startArrivalLook(state, 'Io', 'Jupiter', 2.9e-3);
+      startArrivalLook(state, 'Io', 'Jupiter', deepArrivalDistFor(2.9e-3));
       stepCruiseAim(state, camPos, moonWorld, ORIGIN, dt, out);
       return out.clone();
     };
@@ -287,7 +313,7 @@ describe('frame contract (heliocentric world vs scene)', () => {
     const moonWorld = moonScene.clone().add(renderOrigin);
     clearArrivalLook(state);
     cutAim(state);
-    startArrivalLook(state, 'Io', 'Jupiter', moonScene.distanceTo(camPos));
+    startArrivalLook(state, 'Io', 'Jupiter', deepArrivalDistFor(moonScene.distanceTo(camPos)));
     stepCruiseAim(state, camPos, moonWorld, renderOrigin, dt, out);
     const want = pointMixDir(camPos, moonScene, 1);
     expect(angleBetween(out, want)).toBeLessThan(1e-9);
@@ -301,7 +327,7 @@ describe('frame contract (heliocentric world vs scene)', () => {
     const moonScene = new THREE.Vector3(0, 0, -2.9e-3);
     const moonWorld = moonScene.clone().add(renderOrigin);
     cutAim(state);
-    startArrivalLook(state, 'Io', 'Jupiter', moonScene.distanceTo(camPos));
+    startArrivalLook(state, 'Io', 'Jupiter', deepArrivalDistFor(moonScene.distanceTo(camPos)));
     stepCruiseAim(state, camPos, moonWorld, renderOrigin, dt, out);
     // Moon lost; the SHIP keeps cruising — the render origin moves toward
     // the moon's fixed world position. A frozen scene-frame direction would
@@ -351,7 +377,7 @@ describe('warp and loss lifecycle', () => {
   it('a permanently-warping moon still self-clears within the release fade', () => {
     const state = createCruiseAimState();
     const dt = 1 / 60;
-    const { camPos, moonWorld } = jumpArrival(state);
+    const { camPos, moonWorld } = engagedPass(state);
     stepCruiseAim(state, camPos, moonWorld, ORIGIN, dt, out);
     const spin = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), Math.PI / 3);
     const pos = moonWorld.clone();
@@ -382,7 +408,7 @@ describe('warp and loss lifecycle', () => {
   it('true loss (never-null history) fades out from the last known world position', () => {
     const state = createCruiseAimState();
     const dt = 1 / 60;
-    const { camPos, moonWorld } = jumpArrival(state);
+    const { camPos, moonWorld } = engagedPass(state);
     stepCruiseAim(state, camPos, moonWorld, ORIGIN, dt, out);
     const aimed = out.clone();
     let prev = aimed.clone();
@@ -399,7 +425,7 @@ describe('warp and loss lifecycle', () => {
   it('null→resolved reappearance corrects under the cap', () => {
     const state = createCruiseAimState();
     const dt = 1 / 60;
-    const { camPos, moonWorld } = jumpArrival(state);
+    const { camPos, moonWorld } = engagedPass(state);
     stepCruiseAim(state, camPos, moonWorld, ORIGIN, dt, out);
     let prev = out.clone();
     // Lose the moon for three frames (release latches, fade starts)...
@@ -448,6 +474,68 @@ describe('warp and loss lifecycle', () => {
       stepCruiseAim(state, camPos, farMoon, ORIGIN, dt, out);
     }
     expect(state.look).toBeNull();
+  });
+});
+
+describe('engage gating (the settled-arrival contract)', () => {
+  it('an un-engaged look holds the base aim exactly, frame after frame', () => {
+    const state = createCruiseAimState();
+    const { camPos, moonWorld } = jumpArrival(state);
+    const baseDir = camPos.clone().negate().normalize();
+    for (let i = 0; i < 180; i++) {
+      stepCruiseAim(state, camPos, moonWorld, ORIGIN, 1 / 60, out);
+      expect(angleBetween(out, baseDir)).toBeLessThan(1e-7); // acos parallel noise floor
+    }
+    expect(state.look).not.toBeNull();
+  });
+
+  it('input at the standoff: the fade runs out with the aim never leaving base', () => {
+    // Alex's exact scenario, as arithmetic: teleport, then click before the
+    // pass develops. Zero deflection exists, so zero motion may occur.
+    const state = createCruiseAimState();
+    const { camPos, moonWorld } = jumpArrival(state);
+    const dt = 1 / 60;
+    stepCruiseAim(state, camPos, moonWorld, ORIGIN, dt, out);
+    releaseArrivalLook(state);
+    const baseDir = camPos.clone().negate().normalize();
+    for (let i = 0; i < Math.ceil(MOON_ARRIVAL_RELEASE_S / dt) + 2; i++) {
+      stepCruiseAim(state, camPos, moonWorld, ORIGIN, dt, out);
+      expect(angleBetween(out, baseDir)).toBeLessThan(1e-7); // acos parallel noise floor
+    }
+    expect(state.look).toBeNull(); // the release fade still ends the look
+  });
+
+  it('a closing pass fades tracking in under the cap and ends on the moon', () => {
+    const state = createCruiseAimState();
+    const dt = 1 / 60;
+    const camPos = new THREE.Vector3(0, 1e-6, 3e-6);
+    const arrivalDist = 2.9e-3;
+    const moonWorld = new THREE.Vector3(0, 0, -arrivalDist);
+    clearArrivalLook(state);
+    cutAim(state);
+    startArrivalLook(state, 'Io', 'Jupiter', arrivalDist);
+    stepCruiseAim(state, camPos, moonWorld, ORIGIN, dt, out);
+    let prev = out.clone();
+    // Glide the moon in along the line of sight to a tenth of the arrival
+    // distance (deep inside the engage band), well under the warp threshold
+    // per frame.
+    const frames = 260;
+    for (let i = 1; i <= frames; i++) {
+      moonWorld.z = -arrivalDist * (1 - 0.9 * (i / frames));
+      stepCruiseAim(state, camPos, moonWorld, ORIGIN, dt, out);
+      expect(angleBetween(prev, out)).toBeLessThanOrEqual(
+        Math.min(AIM_RATE_CAP_RAD_PER_S * dt, AIM_STEP_MAX_RAD) + 1e-9,
+      );
+      prev = out.clone();
+    }
+    expect(state.look).not.toBeNull();
+    expect(state.look!.releaseElapsedS).toBeNull(); // hands-off: never released
+    // Let the limiter settle on the final geometry: full tracking.
+    for (let i = 0; i < 40; i++) {
+      stepCruiseAim(state, camPos, moonWorld, ORIGIN, dt, out);
+    }
+    const want = pointMixDir(camPos, moonWorld, 1);
+    expect(angleBetween(out, want)).toBeLessThan(1e-6);
   });
 });
 

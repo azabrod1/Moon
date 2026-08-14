@@ -270,6 +270,7 @@ import {
   createCruiseAimState,
   cutAim,
   releaseArrivalLook,
+  startArrivalLook,
   stepCruiseAim,
 } from './cruiseAim';
 import {
@@ -969,12 +970,10 @@ export class PlanetariumMode {
    *  an authored cut. Advanced once per frame by updateCruiseAimStage —
    *  the LAST cruise camera writer, after the final position. */
   private cruiseAim = createCruiseAimState();
-  /** Catalog refs for an authored look's analytic position (parent world +
-   *  ephemeris offset — a cold jump's mesh is invisible while it paints, so
-   *  the mesh transform can never be the source). Dormant: no production
-   *  path starts a look since moon teleports arrive settled; any future
-   *  look must set these beside its startArrivalLook and they clear
-   *  wherever the look is cleared. */
+  /** Catalog refs for the live arrival look's analytic position (parent
+   *  world + ephemeris offset — a cold jump's mesh is invisible while it
+   *  paints, so the mesh transform can never be the source). Set by
+   *  jumpToMoon, cleared wherever the look is cleared. */
   private arrivalLookMoon: MoonData | null = null;
   private arrivalLookParentBody: PlanetData | null = null;
   private tmpAimMoonWorld = new THREE.Vector3();
@@ -1738,6 +1737,13 @@ export class PlanetariumMode {
       this.orbitPointerId = e.pointerId;
       this.orbitPointerStartX = e.clientX;
       this.orbitPointerStartY = e.clientY;
+      // A press is already interaction intent: hand the flythrough look back
+      // NOW, not at the 4px drag threshold — otherwise a held-still press
+      // sits under a camera that starts tracking the moon a few seconds in.
+      // Matches the touch zone, where a stationary tap is full input. (The
+      // camera does not move here: at the standoff the look is un-engaged —
+      // zero deflection — and mid-pass the release is the eased fade.)
+      releaseArrivalLook(this.cruiseAim);
     });
     orbitDom.addEventListener('pointermove', (e) => {
       if (!this.orbitDragging || e.pointerId !== this.orbitPointerId || this.camOwner === 'orbit') return;
@@ -2973,16 +2979,13 @@ export class PlanetariumMode {
   }
 
   /** The single LAST aim writer of the cruise frame (see cruiseAim.ts):
-   *  composes any authored look over the origin aim and rate-limits the
-   *  deflection so no upstream seam can emit a one-frame aim snap. Runs
-   *  after OrbitControls + camera safety — aim derives from the FINAL
-   *  camera position, which is what lets the safety escape skip its old
-   *  stale-quaternion re-aim. NO production path starts a look today (moon
-   *  teleports arrive directly in the settled pose), so the look branch
-   *  below is a dormant hook; if a look returns, its moon position must
-   *  stay ANALYTIC (parent world + ephemeris offset) — a cold jump's mesh
-   *  is invisible while it paints, and a look would have to hold through
-   *  that veil. */
+   *  composes the engage-gated flythrough look over the origin aim and
+   *  rate-limits the deflection so no upstream seam can emit a one-frame
+   *  aim snap. Runs after OrbitControls + camera safety — aim derives from
+   *  the FINAL camera position, which is what lets the safety escape skip
+   *  its old stale-quaternion re-aim. The look's moon position is ANALYTIC
+   *  (parent world + ephemeris offset): a cold jump's mesh is invisible
+   *  while it paints, and the look must resolve through that veil window. */
   private updateCruiseAimStage(dt: number): void {
     if (this.landedOn || this.devFreeCamera) return;
 
@@ -10838,12 +10841,25 @@ export class PlanetariumMode {
     const destination = this.getMoonJumpDestination(moon);
     if (!destination) return;
     this.applyJumpDestination(destination, moon.name, options.notify !== false);
-    // No arrival look: a moon teleport arrives ALREADY in the settled chase
+    // The engage-gated tracking look (cruiseAim.ts): weight is EXACTLY zero
+    // at this arrival distance, so the teleport arrives in the settled chase
     // pose — aim at the ship, moon riding upper-frame off the flyby heading —
-    // the exact pose the orbit rig maintains, so the first click, drag, or
-    // keypress has nothing to hand back and moves nothing. (The old
-    // moon-centred postcard override put the camera ~20° from the settled
-    // pose, and every first input paid that difference as a visible adjust.)
+    // and the first click, drag, or keypress finds zero deflection and moves
+    // nothing. Tracking fades in only if the player lets the flythrough
+    // develop hands-off, holding the moon in frame through closest approach.
+    // (An always-on look here put ~20° between the arrival and settled
+    // poses, and every first input paid it as a visible adjust.)
+    this.tmpAimDir
+      .copy(destination.bodyPosition)
+      .sub(destination.position);
+    const arrivalDistanceAU = this.tmpAimDir.distanceTo(this.camera.position);
+    startArrivalLook(this.cruiseAim, moon.name, moon.parentPlanet, arrivalDistanceAU);
+    // Catalog refs for the analytic per-frame moon position (the mesh is
+    // not a legal source: it may be unpainted and untransformed for the
+    // whole veil window).
+    this.arrivalLookMoon = moon;
+    this.arrivalLookParentBody =
+      PLANETARIUM_BODIES.find((b) => b.name === moon.parentPlanet) ?? null;
     // Retain the nav moon (applyJumpDestination cleared it above): keeps the
     // dot floor + label if the player takes manual control before arrival.
     this.dotNavMoon = { name: moon.name, parentPlanet: moon.parentPlanet };
@@ -10946,7 +10962,7 @@ export class PlanetariumMode {
       camDist: CRUISE_CAM_DIST_AU,
       shipClearance: SHIP_CLEARANCE_AU,
     });
-    return { position: pose.position, lookTarget: pose.aimPoint };
+    return { position: pose.position, lookTarget: pose.aimPoint, bodyPosition };
   }
 
   /**

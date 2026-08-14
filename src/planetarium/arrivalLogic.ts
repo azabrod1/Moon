@@ -262,6 +262,36 @@ export function moonArrivalReleaseFade(releaseElapsedS: number): number {
   return 1 - t * t * (3 - 2 * t);
 }
 
+/** Engage band for the flythrough tracking look, in fractions of the arrival
+ *  camera distance. The look is EXACTLY zero at the arrival standoff and
+ *  through the first stretch of the glide — a teleport's first input must
+ *  find zero deflection (an always-on look put ~20° between the arrival and
+ *  settled poses, and every first input paid it as a visible adjust) — and
+ *  reaches full tracking well before the near-miss geometry carries the
+ *  moon out of the fixed chase frame (~3 rendered radii on close passes). */
+export const MOON_ARRIVAL_ENGAGE_START_RATIO = 0.5;
+export const MOON_ARRIVAL_ENGAGE_FULL_RATIO = 0.2;
+
+/**
+ * How far a hands-off flythrough has developed, 0→1: zero at (and anywhere
+ * beyond) MOON_ARRIVAL_ENGAGE_START_RATIO × the arrival camera distance,
+ * easing to 1 at MOON_ARRIVAL_ENGAGE_FULL_RATIO ×. Multiplies
+ * moonArrivalCameraLookWeight, so the tracking shot fades in as the flyby
+ * closes and back out as it recedes — and a look released by input while
+ * still un-engaged carries no deflection at all.
+ */
+export function moonArrivalTrackEngage(
+  cameraDistanceAU: number,
+  arrivalCameraDistanceAU: number,
+): number {
+  if (!(arrivalCameraDistanceAU > 0)) return 0;
+  return 1 - THREE.MathUtils.smoothstep(
+    cameraDistanceAU,
+    MOON_ARRIVAL_ENGAGE_FULL_RATIO * arrivalCameraDistanceAU,
+    MOON_ARRIVAL_ENGAGE_START_RATIO * arrivalCameraDistanceAU,
+  );
+}
+
 /** Standoff floor (~500 km) so the smallest arrivals never park
  *  uncomfortably tight. The old ~7,500 km value was tuned when the smallest
  *  rendered moon was a ~3,000 km marble; against curve-rendered specks it

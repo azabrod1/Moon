@@ -9,6 +9,9 @@ import {
   initialBodyCapState,
   moonArrivalCameraLookWeight,
   moonArrivalReleaseFade,
+  moonArrivalTrackEngage,
+  MOON_ARRIVAL_ENGAGE_FULL_RATIO,
+  MOON_ARRIVAL_ENGAGE_START_RATIO,
   MOON_ARRIVAL_RELEASE_S,
   moonArrivalPose,
   moonArrivalStandoffAU,
@@ -943,5 +946,41 @@ describe('autopilotArrived', () => {
     // A parked stop needs a nonzero closing speed at the trigger distance;
     // exactly at the standoff the cap is zero, so arrival must trigger above it.
     expect(autopilotGlideCap(1.05 * S, S)).toBeGreaterThan(0);
+  });
+});
+
+describe('moonArrivalTrackEngage', () => {
+  const S = 2.9e-3; // arrival camera distance
+
+  it('is EXACTLY zero at the arrival standoff and anywhere beyond it', () => {
+    expect(moonArrivalTrackEngage(S, S)).toBe(0);
+    expect(moonArrivalTrackEngage(2 * S, S)).toBe(0);
+    expect(moonArrivalTrackEngage(MOON_ARRIVAL_ENGAGE_START_RATIO * S, S)).toBe(0);
+  });
+
+  it('reaches full tracking at (and inside) the engage-full distance', () => {
+    expect(moonArrivalTrackEngage(MOON_ARRIVAL_ENGAGE_FULL_RATIO * S, S)).toBe(1);
+    expect(moonArrivalTrackEngage(0.05 * S, S)).toBe(1);
+  });
+
+  it('rises monotonically as the pass closes through the band', () => {
+    const steps = 40;
+    let prev = 0;
+    for (let i = 0; i <= steps; i++) {
+      const r = MOON_ARRIVAL_ENGAGE_START_RATIO
+        + (MOON_ARRIVAL_ENGAGE_FULL_RATIO - MOON_ARRIVAL_ENGAGE_START_RATIO) * (i / steps);
+      const w = moonArrivalTrackEngage(r * S, S);
+      expect(w).toBeGreaterThanOrEqual(prev);
+      expect(w).toBeGreaterThanOrEqual(0);
+      expect(w).toBeLessThanOrEqual(1);
+      prev = w;
+    }
+    expect(prev).toBe(1);
+  });
+
+  it('a degenerate arrival distance engages nothing', () => {
+    expect(moonArrivalTrackEngage(1e-5, 0)).toBe(0);
+    expect(moonArrivalTrackEngage(1e-5, -1)).toBe(0);
+    expect(moonArrivalTrackEngage(1e-5, NaN)).toBe(0);
   });
 });

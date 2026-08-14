@@ -24,15 +24,15 @@
  *    the deflection's change is rate-limited, to
  *    min(AIM_RATE_CAP_RAD_PER_S·dt, AIM_STEP_MAX_RAD).
  *
- * The arrival look is DORMANT: no production path calls startArrivalLook —
- * moon teleports arrive directly in the settled pose (the moon-centred
- * postcard override was retired because its ~20° offset from the settled
- * pose made every first input pay a visible hand-back). The machinery
- * stays because it is the one safe home for any future authored look: a
- * look started here inherits the continuity guarantee below instead of
- * reviving the snap class.
+ * The arrival look is ENGAGE-GATED (moonArrivalTrackEngage): its weight is
+ * EXACTLY zero at the teleport standoff, so a fresh arrival's first input
+ * finds zero deflection and pays nothing — the retired always-on postcard
+ * put ~20° between the arrival and settled poses, and every first input
+ * paid it as a visible adjust. The tracking shot fades in only as a
+ * hands-off flythrough closes inside the engage band, holds the moon
+ * through closest approach, and fades back out on the receding leg.
  *
- * An authored look's target is fed ANALYTICALLY (parent world position +
+ * The look's target is fed ANALYTICALLY (parent world position +
  * ephemeris offset, heliocentric) rather than from the mesh transform:
  * updateMoonPositions skips invisible unpainted moons, and a cold jump's
  * mesh is invisible by design for the whole veiled paint window — the look
@@ -55,6 +55,7 @@ import * as THREE from 'three';
 import {
   moonArrivalCameraLookWeight,
   moonArrivalReleaseFade,
+  moonArrivalTrackEngage,
 } from './arrivalLogic';
 import { FLIGHT_UP_SCENE } from './flightFrame';
 
@@ -130,10 +131,10 @@ export function createCruiseAimState(): CruiseAimState {
   };
 }
 
-/** An authored look begins tracking (dormant: no production caller — see
- *  the module header). Does NOT restore a cut aim — the jump funnel cuts
- *  deliberately and the first step must adopt the desired aim exactly,
- *  not sweep toward it. */
+/** A moon teleport begins tracking (engage-gated: weight is zero until the
+ *  flythrough closes inside the engage band). Does NOT restore a cut aim —
+ *  the jump funnel cuts deliberately and the first step must adopt the
+ *  desired aim exactly, not sweep toward it. */
 export function startArrivalLook(
   state: CruiseAimState,
   name: string,
@@ -286,21 +287,29 @@ export function stepCruiseAim(
       }
 
       if (look.releaseElapsedS !== null) look.releaseElapsedS += dtS;
-      const weight =
+      // Disengage terms (recede ease, release fade) END the look at zero;
+      // the engage term merely gates it — an un-engaged look is a live
+      // zero-weight look waiting for the hands-off pass to develop, and
+      // must NOT be dropped as "handoff complete".
+      const disengage =
         moonArrivalCameraLookWeight(
           camToMoonLen,
           look.arrivalDistanceAU,
           look.receding,
         ) * moonArrivalReleaseFade(look.releaseElapsedS ?? 0);
-      if (weight <= 0) {
+      if (disengage <= 0) {
         state.look = null; // handoff complete; residual eases out below
       } else {
-        // Today's shipped composition, expressed as a direction: the aim
-        // point interpolates moon→origin, viewed from the camera.
-        tmpDesired.copy(tmpMoonScene).multiplyScalar(weight).sub(camPos);
-        const len = tmpDesired.length();
-        if (len > 1e-12) tmpDesired.multiplyScalar(1 / len);
-        else tmpDesired.copy(baseDir);
+        const weight =
+          disengage * moonArrivalTrackEngage(camToMoonLen, look.arrivalDistanceAU);
+        if (weight > 0) {
+          // The shipped composition, expressed as a direction: the aim
+          // point interpolates moon→origin, viewed from the camera.
+          tmpDesired.copy(tmpMoonScene).multiplyScalar(weight).sub(camPos);
+          const len = tmpDesired.length();
+          if (len > 1e-12) tmpDesired.multiplyScalar(1 / len);
+          else tmpDesired.copy(baseDir);
+        }
       }
     }
   }

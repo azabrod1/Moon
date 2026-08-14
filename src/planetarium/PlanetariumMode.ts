@@ -270,7 +270,6 @@ import {
   createCruiseAimState,
   cutAim,
   releaseArrivalLook,
-  startArrivalLook,
   stepCruiseAim,
 } from './cruiseAim';
 import {
@@ -10835,21 +10834,12 @@ export class PlanetariumMode {
     const destination = this.getMoonJumpDestination(moon);
     if (!destination) return;
     this.applyJumpDestination(destination, moon.name, options.notify !== false);
-    // Sequence contract (test-pinned in cruiseAim.test.ts): the apply above
-    // cleared the look and its resetCruiseCamera cut the aim; starting the
-    // look now means the FIRST aim step adopts the weight-1 moon aim
-    // exactly — the veiled reveal opens already aimed, never sweeping.
-    this.tmpAimDir
-      .copy(destination.bodyPosition)
-      .sub(destination.position);
-    const arrivalDistanceAU = this.tmpAimDir.distanceTo(this.camera.position);
-    startArrivalLook(this.cruiseAim, moon.name, moon.parentPlanet, arrivalDistanceAU);
-    // Catalog refs for the analytic per-frame moon position (the mesh is
-    // not a legal source: it may be unpainted and untransformed for the
-    // whole veil window).
-    this.arrivalLookMoon = moon;
-    this.arrivalLookParentBody =
-      PLANETARIUM_BODIES.find((b) => b.name === moon.parentPlanet) ?? null;
+    // No arrival look: a moon teleport arrives ALREADY in the settled chase
+    // pose — aim at the ship, moon riding upper-frame off the flyby heading —
+    // the exact pose the orbit rig maintains, so the first click, drag, or
+    // keypress has nothing to hand back and moves nothing. (The old
+    // moon-centred postcard override put the camera ~20° from the settled
+    // pose, and every first input paid that difference as a visible adjust.)
     // Retain the nav moon (applyJumpDestination cleared it above): keeps the
     // dot floor + label if the player takes manual control before arrival.
     this.dotNavMoon = { name: moon.name, parentPlanet: moon.parentPlanet };

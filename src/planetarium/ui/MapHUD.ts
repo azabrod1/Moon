@@ -380,6 +380,15 @@ export class MapHUD {
    * transitionend listener catches where the fold lands.
    */
   setPanelCollapsed(collapsed: boolean): void {
+    // A fold that would hide the focused control (Esc from a layer switch, a
+    // phone pick whose card folds the sheet) moves focus to the chevron — the
+    // one control the folded chip keeps, where it materializes on
+    // focus-visible. Left alone, focus would sit in a subtree the visibility
+    // delay is about to take off the accessibility tree.
+    if (collapsed && this.panel?.contains(document.activeElement)
+      && document.activeElement !== this.collapseBtn) {
+      this.collapseBtn?.focus();
+    }
     this.panel?.classList.toggle('collapsed', collapsed);
     this.dock?.classList.toggle('panel-open', !collapsed);
     this.collapseBtn?.setAttribute(

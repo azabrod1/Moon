@@ -3420,27 +3420,6 @@
     .mfm-row.mfm-current { background: rgba(255, 255, 255, 0.05); }
     /* The body the camera is riding. */
     .mfm-row.mfm-followed { background: rgba(var(--accent-rgb), 0.12); }
-    /* The row the camera is riding, and the way off it: the chip is the
-       release control, so the list can undo what it started. Shown only while
-       the release is actually on offer. */
-    .mfm-following {
-      flex: none;
-      /* The row stretches its children; a chip that stretched with it would be
-         a full-height pill beside a one-line name. */
-      align-self: center;
-      padding: 2px 6px;
-      border: 1px solid rgba(var(--accent-rgb), 0.35);
-      border-radius: 999px;
-      background: none;
-      font-family: var(--font-mono);
-      font-size: 8px;
-      letter-spacing: 0.14em;
-      text-transform: uppercase;
-      color: var(--accent);
-      cursor: pointer;
-      transition: background 0.14s var(--ease);
-    }
-    .mfm-following:hover { background: rgba(var(--accent-rgb), 0.16); }
     @media (max-width: 640px) {
       /* One sheet across the bottom, above the world bar: the dock spans the
          row and the open panel takes all of it. Collapsed, the panel is the
@@ -3494,9 +3473,15 @@
       .mfm-row.pk-moon .mfm-pick { min-height: 34px; }
     }
     @media (prefers-reduced-motion: reduce) {
+      /* The collapsed-state variants are spelled out because their own rules
+         outrank the bare classes — without them the fold would snap shut but
+         keep its 320ms visibility delay, leaving hidden controls tabbable for
+         exactly that long. */
       .map-panel, .map-panel-glyph, .map-panel-title, .map-panel-btn, .map-panel-chev,
       .map-fold, .map-fold-clip, .map-panel-body, .map-help-chip, .map-help-card,
-      .map-trayw, .map-tray, .map-cell-moons svg { transition: none; }
+      .map-trayw, .map-tray, .map-cell-moons svg,
+      .map-panel.collapsed .map-fold-clip,
+      .map-panel.collapsed .map-panel-body { transition: none; }
     }
     /* Hover feedback on a fine pointer: the pointed-at label brightens. */
     .map-label.hover { color: #fff; font-weight: 600; text-shadow: 0 0 8px rgba(0, 0, 0, 0.95); }

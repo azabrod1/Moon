@@ -2435,6 +2435,15 @@ export class PlanetariumMode {
   onResize(): void {
     if (this.starfield) setStarfieldPixelRatio(this.starfield, this.renderer.getPixelRatio());
     if (this.moonDots) this.moonDots.setPixelRatio(this.renderer.getPixelRatio());
+    // A resize can carry the layout across the breakpoint, and the phone
+    // invariant — the expanded sheet and the body card are never up together —
+    // is otherwise enforced only on the edges that OPEN one of them. A window
+    // dragged narrow with both standing re-applies the card-open rule here:
+    // the sheet folds (non-banked, a layout reflex), the card stays.
+    if (this.isMapOpen() && this.isPhoneLayout()
+      && !this.mapPanelCollapsed && this.mapHud.isCardOpen()) {
+      this.setMapPanelCollapsed(true, { bank: false });
+    }
     // The panel is re-capped BEFORE the chart re-projects: the label pass
     // inside onResize measures the panel's rect, and a rotation changes both
     // the cap and the panel's whole shape. Measured after, the labels would

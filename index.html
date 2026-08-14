@@ -2808,7 +2808,9 @@
       transition: width 0.32s var(--ease), height 0.32s var(--ease);
     }
     .map-panel-glyph svg { width: 100%; height: 100%; display: block; }
-    .map-panel.collapsed .map-panel-glyph { width: 20px; height: 20px; margin: 3px auto; }
+    /* 2px margins, so the folded chip comes to exactly the help chip's 46:
+       20 glyph + 4 margin + 20 padding + 2 border. */
+    .map-panel.collapsed .map-panel-glyph { width: 20px; height: 20px; margin: 2px auto; }
     .map-panel.collapsed:hover .map-panel-glyph { color: var(--t1); }
     /* Named the way the ☰ menu names it, in the Stats card's title voice. */
     .map-panel-title {
@@ -2846,7 +2848,9 @@
     .map-panel-btn svg { width: 15px; height: 15px; flex: none; }
     /* The chevron folds away with the title — but a keyboard can still reach
        it, and focus makes it materialize so the reopen key has a visible home. */
-    .map-panel.collapsed .map-panel-btn { width: 0; opacity: 0; overflow: hidden; pointer-events: none; }
+    /* Height capped with the glyph row, or the button would hold the folded
+       chip 2px (6 on a phone) taller than the help chip beside it. */
+    .map-panel.collapsed .map-panel-btn { width: 0; height: 24px; opacity: 0; overflow: hidden; pointer-events: none; }
     .map-panel.collapsed .map-panel-btn:focus-visible { width: 26px; opacity: 1; }
     /* Points down while open ("fold away"), up while folded. */
     .map-panel-chev { display: block; transition: transform 0.32s var(--ease); }
@@ -3443,6 +3447,12 @@
       .smx.panel-open .map-help-chip { position: absolute; bottom: calc(100% + 8px); right: 0; }
       /* The guide overlays the sheet's foot rather than docking beside it. */
       .map-help-card { left: 0; right: 0; width: auto; max-height: min(430px, calc(100vh - 90px)); }
+      /* Folded, it rises ABOVE the two-chip dock instead — the chips stay in
+         reach, and the chip that opened it can close it. */
+      .smx:not(.panel-open) .map-help-card {
+        bottom: calc(100% + 8px);
+        max-height: min(430px, calc(100vh - 144px));
+      }
       /* No keys on a phone: the help grid's key row names a keyboard the
          reader does not have. */
       .map-help-keys { display: none; }

@@ -5,11 +5,12 @@
 //
 // Used for the 4K Moon: the NASA SVS CGI Moon Kit colour map
 // (lroc_color_poles_4k.tif, https://svs.gsfc.nasa.gov/4720) is the SAME natural-
-// colour LRO albedo as our shipped 2K moon.jpg but ~15% darker, so this re-grades
-// it to the shipped look at 4K. Recipe:
+// colour LRO albedo as our shipped 2K moon map but ~15% darker, so this re-grades
+// it to the shipped look at 4K. Output format follows the --out extension
+// (.webp/.jpg lossy at --quality, .png lossless). Recipe:
 //   curl -sL https://svs.gsfc.nasa.gov/vis/a000000/a004700/a004720/lroc_color_poles_4k.tif -o moon.tif
 //   sips -s format jpeg -z 2048 4096 moon.tif --out moon_src.jpg
-//   node tools/colormatch.mjs --src=moon_src.jpg --ref=public/textures/moon.jpg --out=public/textures/4k/moon.jpg
+//   node tools/colormatch.mjs --src=moon_src.jpg --ref=public/textures/moon.webp --out=public/textures/4k/moon.webp
 import { chromium } from 'playwright';
 import { readFile, writeFile } from 'node:fs/promises';
 
@@ -18,20 +19,23 @@ function arg(name, def) {
   return hit ? hit.slice(name.length + 3) : def;
 }
 const srcPath = arg('src', '/tmp/tex-dl/moon_lroc_4k.jpg');
-const refPath = arg('ref', 'public/textures/moon.jpg');
-const outPath = arg('out', 'public/textures/4k/moon.jpg');
+const refPath = arg('ref', 'public/textures/moon.webp');
+const outPath = arg('out', 'public/textures/4k/moon.webp');
 const quality = Number(arg('quality', '0.92'));
+
+const mimeFor = (p) => p.endsWith('.png') ? 'image/png'
+  : p.endsWith('.webp') ? 'image/webp'
+  : 'image/jpeg';
 
 async function uri(p) {
   const buf = await readFile(p);
-  const mime = p.endsWith('.png') ? 'image/png' : 'image/jpeg';
-  return `data:${mime};base64,${buf.toString('base64')}`;
+  return `data:${mimeFor(p)};base64,${buf.toString('base64')}`;
 }
 
 const br = await chromium.launch({ headless: true });
 try {
   const pg = await br.newPage();
-  const out = await pg.evaluate(async ({ srcUri, refUri, quality }) => {
+  const out = await pg.evaluate(async ({ srcUri, refUri, quality, outMime }) => {
     const load = (s) => new Promise((res) => { const i = new Image(); i.onload = () => res(i); i.src = s; });
     const stats = (img) => {
       const w = img.naturalWidth, h = img.naturalHeight;
@@ -60,8 +64,8 @@ try {
       }
     }
     x.putImageData(img, 0, 0);
-    return { dataUrl: c.toDataURL('image/jpeg', quality), srcMean: src.mean, refMean: ref.mean, gain };
-  }, { srcUri: await uri(srcPath), refUri: await uri(refPath), quality });
+    return { dataUrl: c.toDataURL(outMime, quality), srcMean: src.mean, refMean: ref.mean, gain };
+  }, { srcUri: await uri(srcPath), refUri: await uri(refPath), quality, outMime: mimeFor(outPath) });
   await writeFile(outPath, Buffer.from(out.dataUrl.split(',')[1], 'base64'));
   console.log(`[colormatch] src mean ${out.srcMean.map((v) => v.toFixed(1))} -> ref mean ${out.refMean.map((v) => v.toFixed(1))} (gain ${out.gain.map((v) => v.toFixed(3))})`);
   console.log(`[colormatch] wrote ${outPath}`);

@@ -47,6 +47,23 @@ export type TextureLoad = (
 export class TextureTransportError extends Error {}
 
 /**
+ * The boot fetch-warm handoff. index.html starts a plain fetch() for every
+ * boot map at HTML parse and stashes the promises under this global — a
+ * <link rel="preload" as="fetch"> would look equivalent, but WebKit never
+ * matches such a preload to a later fetch() whatever the credentials mode,
+ * so on Safari every boot map downloaded twice. Each entry is taken AT MOST
+ * ONCE: a Response body is single-use, and a taken entry must never serve a
+ * later retry (a warmed rejection falls through to the durable ladder's own
+ * fresh fetch).
+ */
+export function takeBootWarmResponse(url: string): Promise<Response> | undefined {
+  const warm = (globalThis as { __bootTexWarm?: Map<string, Promise<Response>> }).__bootTexWarm;
+  const hit = warm?.get(url);
+  if (hit) warm!.delete(url);
+  return hit;
+}
+
+/**
  * Whether this platform can bake the vertical flip into `createImageBitmap`.
  * A 1x2 white-over-black bitmap is created with `imageOrientation: 'flipY'`
  * and read back — only the full inverted image (opaque black over opaque
@@ -86,7 +103,7 @@ function bitmapUploadUsable(): Promise<boolean> {
 async function loadBitmapTexture(url: string, stillWanted?: () => boolean): Promise<THREE.Texture> {
   let blob: Blob;
   try {
-    const response = await fetch(url);
+    const response = await (takeBootWarmResponse(url) ?? fetch(url));
     if (!response.ok) throw new Error(`HTTP ${response.status} for ${url}`);
     blob = await response.blob();
   } catch (err) {
@@ -153,6 +170,15 @@ export const loadStreamedTexture: TextureLoad = (url, onLoad, onError, stillWant
     });
   });
 };
+
+/** Start the one-time flip probe now, so its round through the microtask
+ *  queue (bitmap create + canvas readback) overlaps app construction instead
+ *  of gating the first streamed fetch — every boot texture waits on the
+ *  verdict before its network request is even issued. Call once from app
+ *  init; module load itself must stay DOM-free for the tests. */
+export function warmBitmapUploadProbe(): void {
+  if (typeof createImageBitmap === 'function') void bitmapUploadUsable();
+}
 
 /** Test seam: force the probe verdict (pass null to restore the real probe). */
 export function setBitmapProbeForTests(result: boolean | null): void {

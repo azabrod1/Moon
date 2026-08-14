@@ -25,7 +25,10 @@ async function dataUri(p) {
 }
 
 await mkdir(outDir, { recursive: true });
-const browser = await chromium.launch({ headless: true });
+const browser = await chromium.launch({
+  headless: true,
+  executablePath: process.env.PW_CHROMIUM || undefined, // pinned-browser environments
+});
 try {
   const page = await browser.newPage({ viewport: { width: 1100, height: 340 }, deviceScaleFactor: 1 });
   for (const body of bodies) {

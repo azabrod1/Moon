@@ -88,7 +88,7 @@ const voyager1Milestones: HistoricMilestone[] = [
     imageCredit: 'NASA',
     imageSourceLabel: 'Voyager 1’s Launch Vehicle',
     imageSourceUrl: 'https://science.nasa.gov/image-detail/pia21739/',
-    ...textureFallback('earth-day.jpg', 'Earth'),
+    ...textureFallback('earth-day.webp', 'Earth'),
   },
   {
     id: 'jupiter',
@@ -104,7 +104,7 @@ const voyager1Milestones: HistoricMilestone[] = [
     imageCredit: 'NASA/JPL',
     imageSourceLabel: 'Voyager picture of Jupiter',
     imageSourceUrl: 'https://www.jpl.nasa.gov/images/pia01371-voyager-picture-of-jupiter/',
-    ...textureFallback('jupiter.jpg', 'Jupiter'),
+    ...textureFallback('jupiter.webp', 'Jupiter'),
   },
   {
     id: 'saturn',
@@ -120,7 +120,7 @@ const voyager1Milestones: HistoricMilestone[] = [
     imageCredit: 'NASA/JPL',
     imageSourceLabel: 'Voyager 1 Image of Saturn',
     imageSourceUrl: 'https://www.nasa.gov/image-article/voyager-1-image-of-saturn/',
-    ...textureFallback('saturn.jpg', 'Saturn'),
+    ...textureFallback('saturn.webp', 'Saturn'),
   },
   {
     id: 'interstellar',
@@ -160,7 +160,7 @@ const voyager2Milestones: HistoricMilestone[] = [
     imageCredit: 'NASA/JPL',
     imageSourceLabel: 'Voyager 2 prelaunch view',
     imageSourceUrl: 'https://photojournal.jpl.nasa.gov/catalog/PIA21746',
-    ...textureFallback('earth-day.jpg', 'Earth'),
+    ...textureFallback('earth-day.webp', 'Earth'),
   },
   {
     id: 'jupiter',
@@ -176,7 +176,7 @@ const voyager2Milestones: HistoricMilestone[] = [
     imageCredit: 'NASA/JPL',
     imageSourceLabel: 'Voyager at Jupiter',
     imageSourceUrl: 'https://science.nasa.gov/gallery/voyager-at-jupiter/',
-    ...textureFallback('jupiter.jpg', 'Jupiter'),
+    ...textureFallback('jupiter.webp', 'Jupiter'),
   },
   {
     id: 'saturn',
@@ -192,7 +192,7 @@ const voyager2Milestones: HistoricMilestone[] = [
     imageCredit: 'NASA/JPL',
     imageSourceLabel: 'Voyager 2 view of Saturn',
     imageSourceUrl: 'https://www.nasa.gov/image-article/voyager-2-image-of-saturn/',
-    ...textureFallback('saturn.jpg', 'Saturn'),
+    ...textureFallback('saturn.webp', 'Saturn'),
   },
   {
     id: 'uranus',
@@ -208,7 +208,7 @@ const voyager2Milestones: HistoricMilestone[] = [
     imageCredit: 'NASA/JPL',
     imageSourceLabel: 'Voyager 2 Image of Uranus',
     imageSourceUrl: 'https://www.nasa.gov/image-article/voyager-2-image-of-uranus/',
-    ...textureFallback('uranus.jpg', 'Uranus'),
+    ...textureFallback('uranus.webp', 'Uranus'),
   },
   {
     id: 'neptune',
@@ -224,7 +224,7 @@ const voyager2Milestones: HistoricMilestone[] = [
     imageCredit: 'NASA/JPL',
     imageSourceLabel: 'Voyager 2 Image of Neptune',
     imageSourceUrl: 'https://www.nasa.gov/image-article/voyager-2-image-of-neptune/',
-    ...textureFallback('neptune.jpg', 'Neptune'),
+    ...textureFallback('neptune.webp', 'Neptune'),
   },
   {
     id: 'interstellar',
@@ -264,7 +264,7 @@ const cassiniMilestones: HistoricMilestone[] = [
     imageCredit: 'NASA',
     imageSourceLabel: 'Remembering Cassini’s beautiful launch',
     imageSourceUrl: 'https://science.nasa.gov/missions/cassini/remembering-cassinis-beautiful-launch-19-years-ago/',
-    ...textureFallback('earth-day.jpg', 'Earth'),
+    ...textureFallback('earth-day.webp', 'Earth'),
   },
   {
     id: 'venus-assist',
@@ -280,7 +280,7 @@ const cassiniMilestones: HistoricMilestone[] = [
     imageCredit: 'NASA/JPL',
     imageSourceLabel: 'Venus: high cloud views',
     imageSourceUrl: 'https://www.jpl.nasa.gov/images/pia00223-venus-multiple-views-of-high-level-clouds/',
-    ...textureFallback('venus.jpg', 'Venus'),
+    ...textureFallback('venus.webp', 'Venus'),
   },
   {
     id: 'jupiter',
@@ -296,7 +296,7 @@ const cassiniMilestones: HistoricMilestone[] = [
     imageCredit: 'NASA/JPL/University of Arizona',
     imageSourceLabel: 'Cassini Jupiter portrait',
     imageSourceUrl: 'https://www.jpl.nasa.gov/images/pia04866-cassini-jupiter-portrait/',
-    ...textureFallback('jupiter.jpg', 'Jupiter'),
+    ...textureFallback('jupiter.webp', 'Jupiter'),
   },
   {
     id: 'saturn-arrival',
@@ -312,7 +312,7 @@ const cassiniMilestones: HistoricMilestone[] = [
     imageCredit: 'NASA/JPL/Space Science Institute',
     imageSourceLabel: 'Cassini Saturn view',
     imageSourceUrl: 'https://www.jpl.nasa.gov/images/pia05983-saturn-in-natural-color/',
-    ...textureFallback('saturn.jpg', 'Saturn'),
+    ...textureFallback('saturn.webp', 'Saturn'),
   },
   {
     id: 'huygens',
@@ -328,7 +328,7 @@ const cassiniMilestones: HistoricMilestone[] = [
     imageCredit: 'NASA/JPL/ESA/University of Arizona',
     imageSourceLabel: 'Huygens Titan Mosaic #1',
     imageSourceUrl: 'https://www.jpl.nasa.gov/images/pia07870-huygens-titan-mosaic-1/',
-    ...textureFallback('saturn.jpg', 'Saturn'),
+    ...textureFallback('saturn.webp', 'Saturn'),
   },
   {
     id: 'grand-finale',
@@ -344,7 +344,7 @@ const cassiniMilestones: HistoricMilestone[] = [
     imageCredit: 'NASA/JPL/Space Science Institute',
     imageSourceLabel: 'Finale ringscape',
     imageSourceUrl: 'https://www.jpl.nasa.gov/images/pia21891-finale-ringscape/',
-    ...textureFallback('saturn.jpg', 'Saturn'),
+    ...textureFallback('saturn.webp', 'Saturn'),
   },
 ];
 
@@ -363,7 +363,7 @@ const newHorizonsMilestones: HistoricMilestone[] = [
     imageCredit: 'NASA',
     imageSourceLabel: 'January 2006: New Horizons launched',
     imageSourceUrl: 'https://www.nasa.gov/image-article/january-2006-new-horizons-launched/',
-    ...textureFallback('earth-day.jpg', 'Earth'),
+    ...textureFallback('earth-day.webp', 'Earth'),
   },
   {
     id: 'jupiter-assist',
@@ -379,7 +379,7 @@ const newHorizonsMilestones: HistoricMilestone[] = [
     imageCredit: 'NASA/Johns Hopkins University Applied Physics Laboratory/Southwest Research Institute',
     imageSourceLabel: 'Full Jupiter mosaic',
     imageSourceUrl: 'https://science.nasa.gov/photojournal/full-jupiter-mosaic/',
-    ...textureFallback('jupiter.jpg', 'Jupiter'),
+    ...textureFallback('jupiter.webp', 'Jupiter'),
   },
   {
     id: 'pluto',
@@ -395,7 +395,7 @@ const newHorizonsMilestones: HistoricMilestone[] = [
     imageCredit: 'NASA/JHUAPL/SwRI',
     imageSourceLabel: 'Color image of Pluto',
     imageSourceUrl: 'https://www.jpl.nasa.gov/images/pia20291-color-image-of-pluto/',
-    ...textureFallback('pluto.jpg', 'Pluto'),
+    ...textureFallback('pluto.webp', 'Pluto'),
   },
   {
     id: 'kuiper-belt',
@@ -410,7 +410,7 @@ const newHorizonsMilestones: HistoricMilestone[] = [
     imageCredit: 'NASA/Johns Hopkins University Applied Physics Laboratory/Southwest Research Institute',
     imageSourceLabel: 'First images of Arrokoth',
     imageSourceUrl: 'https://science.nasa.gov/resource/first-images-of-arrokoth-2014-mu69/',
-    ...textureFallback('pluto.jpg', 'Pluto'),
+    ...textureFallback('pluto.webp', 'Pluto'),
     // Camera sits past Pluto's Jan 2019 position (11.9, -12.6, 28.9) along the
     // outbound radial, looking back at it — Pluto's world position comes from
     // computeBodyState (Standish elements); retune if the planet model changes.
@@ -435,7 +435,7 @@ const junoMilestones: HistoricMilestone[] = [
     imageCredit: 'NASA',
     imageSourceLabel: 'Juno lifts off',
     imageSourceUrl: 'https://www.nasa.gov/image-article/juno-lifts-off/',
-    ...textureFallback('earth-day.jpg', 'Earth'),
+    ...textureFallback('earth-day.webp', 'Earth'),
   },
   {
     id: 'earth-flyby',
@@ -451,7 +451,7 @@ const junoMilestones: HistoricMilestone[] = [
     imageCredit: 'NASA/JPL-Caltech',
     imageSourceLabel: 'Juno’s approach to the Earth-Moon system',
     imageSourceUrl: 'https://science.nasa.gov/photojournal/junos-approach-to-the-earth-moon-system/',
-    ...textureFallback('earth-day.jpg', 'Earth'),
+    ...textureFallback('earth-day.webp', 'Earth'),
   },
   {
     id: 'jupiter-arrival',
@@ -467,7 +467,7 @@ const junoMilestones: HistoricMilestone[] = [
     imageCredit: 'NASA/JPL-Caltech',
     imageSourceLabel: 'Juno enters orbit around Jupiter',
     imageSourceUrl: 'https://www.jpl.nasa.gov/news/juno-enters-orbit-around-jupiter/',
-    ...textureFallback('jupiter.jpg', 'Jupiter'),
+    ...textureFallback('jupiter.webp', 'Jupiter'),
   },
   {
     id: 'polar-passes',
@@ -483,7 +483,7 @@ const junoMilestones: HistoricMilestone[] = [
     imageCredit: 'NASA/JPL-Caltech/SwRI/MSSS',
     imageSourceLabel: 'Close-ups of polar storms on Jupiter',
     imageSourceUrl: 'https://www.jpl.nasa.gov/images/pia25730-nasas-juno-mission-captures-close-ups-of-polar-storms-on-jupiter/',
-    ...textureFallback('jupiter.jpg', 'Jupiter'),
+    ...textureFallback('jupiter.webp', 'Jupiter'),
   },
 ];
 

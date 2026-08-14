@@ -1,0 +1,126 @@
+{
+  "count": 25792,
+  "nameCount": 343,
+  "fnv1a32": 4171521369,
+  "samples": [
+    {
+      "index": 0,
+      "raDeg": 0,
+      "decDeg": 0,
+      "magnitude": -26.7,
+      "colorIndex": 0.66,
+      "name": "Sol"
+    },
+    {
+      "index": 1,
+      "raDeg": 101.2872,
+      "decDeg": -16.7161,
+      "magnitude": -1.44,
+      "colorIndex": 0.01,
+      "name": "Sirius"
+    },
+    {
+      "index": 2,
+      "raDeg": 95.9879,
+      "decDeg": -52.6957,
+      "magnitude": -0.62,
+      "colorIndex": 0.16,
+      "name": "Canopus"
+    },
+    {
+      "index": 3,
+      "raDeg": 213.9154,
+      "decDeg": 19.1824,
+      "magnitude": -0.05,
+      "colorIndex": 1.24,
+      "name": "Arcturus"
+    },
+    {
+      "index": 4,
+      "raDeg": 219.9115,
+      "decDeg": -60.834,
+      "magnitude": -0.01,
+      "colorIndex": 0.71,
+      "name": "Rigil Kentaurus"
+    },
+    {
+      "index": 5,
+      "raDeg": 279.2346,
+      "decDeg": 38.7837,
+      "magnitude": 0.03,
+      "colorIndex": 0,
+      "name": "Vega"
+    },
+    {
+      "index": 6,
+      "raDeg": 79.1723,
+      "decDeg": 45.998,
+      "magnitude": 0.08,
+      "colorIndex": 0.8,
+      "name": "Capella"
+    },
+    {
+      "index": 7,
+      "raDeg": 78.6345,
+      "decDeg": -8.2016,
+      "magnitude": 0.18,
+      "colorIndex": -0.03,
+      "name": "Rigel"
+    },
+    {
+      "index": 8,
+      "raDeg": 114.8255,
+      "decDeg": 5.225,
+      "magnitude": 0.4,
+      "colorIndex": 0.43,
+      "name": "Procyon"
+    },
+    {
+      "index": 9,
+      "raDeg": 24.4283,
+      "decDeg": -57.2368,
+      "magnitude": 0.45,
+      "colorIndex": -0.16,
+      "name": "Achernar"
+    },
+    {
+      "index": 10,
+      "raDeg": 88.7929,
+      "decDeg": 7.4071,
+      "magnitude": 0.45,
+      "colorIndex": 1.5,
+      "name": "Betelgeuse"
+    },
+    {
+      "index": 11,
+      "raDeg": 210.9559,
+      "decDeg": -60.373,
+      "magnitude": 0.61,
+      "colorIndex": -0.23,
+      "name": "Hadar"
+    },
+    {
+      "index": 247,
+      "raDeg": 28.5988,
+      "decDeg": 63.6701,
+      "magnitude": 3.35,
+      "colorIndex": -0.15,
+      "name": "Segin"
+    },
+    {
+      "index": 25435,
+      "raDeg": 165.8345,
+      "decDeg": 35.9699,
+      "magnitude": 7.49,
+      "colorIndex": 1.5,
+      "name": "Lalande 21185"
+    },
+    {
+      "index": 25791,
+      "raDeg": 243.3242,
+      "decDeg": 13.5268,
+      "magnitude": 7.5,
+      "colorIndex": 0.65
+    }
+  ]
+}

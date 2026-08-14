@@ -2,10 +2,17 @@ import { promises as fs } from 'fs';
 import https from 'https';
 import path from 'path';
 import { gunzipSync } from 'zlib';
+import { catalogFixture, encodeBrightStarBin } from './tools/starBinCodec.mjs';
 
 const DEFAULT_MAGNITUDE = 7.5;
 const HYG_V37_URL = 'https://raw.githubusercontent.com/astronexus/HYG-Database/main/hyg/v3/hyg_v37.csv.gz';
-const OUTPUT_PATH = path.resolve(process.cwd(), 'src/planetarium/data/brightStars.ts');
+// The catalog ships as a binary sidecar (format: tools/starBinCodec.mjs;
+// parser: src/planetarium/data/brightStars.ts). The golden fixture is
+// regenerated WITH it — the two must always move together, the way gen:moons
+// owns its goldens: a regen that changes values is a deliberate fixture
+// update, and brightStars.test.ts goes red on any mismatch between them.
+const BIN_PATH = path.resolve(process.cwd(), 'public/stardata/bright-stars.v1.bin');
+const GOLDEN_PATH = path.resolve(process.cwd(), 'src/planetarium/data/brightStarsGolden.json');
 
 function parseMagnitudeArg(rawValue) {
   if (rawValue === undefined) return DEFAULT_MAGNITUDE;
@@ -113,42 +120,6 @@ function roundNumber(value, decimals) {
   return Number(value.toFixed(decimals));
 }
 
-function escapeString(value) {
-  return JSON.stringify(value);
-}
-
-function buildOutput(stars, magnitudeThreshold) {
-  const lines = [
-    'export interface StarRecord {',
-    '  raDeg: number;',
-    '  decDeg: number;',
-    '  magnitude: number;',
-    '  colorIndex: number;',
-    '  name?: string;',
-    '}',
-    '',
-    `// Generated from HYG Database v3.7 (Astronexus) filtered to visual magnitude <= ${magnitudeThreshold}.`,
-    'export const BRIGHT_STAR_CATALOG: StarRecord[] = [',
-  ];
-
-  for (const star of stars) {
-    const parts = [
-      `raDeg: ${star.raDeg}`,
-      `decDeg: ${star.decDeg}`,
-      `magnitude: ${star.magnitude}`,
-      `colorIndex: ${star.colorIndex}`,
-    ];
-
-    if (star.name) {
-      parts.push(`name: ${escapeString(star.name)}`);
-    }
-
-    lines.push(`  { ${parts.join(', ')} },`);
-  }
-
-  lines.push('];', '');
-  return lines.join('\n');
-}
 
 async function generateCatalog(magnitudeThreshold) {
   const compressedCatalog = await download(HYG_V37_URL);
@@ -209,7 +180,9 @@ async function generateCatalog(magnitudeThreshold) {
   });
 
   stars.sort((left, right) => left.magnitude - right.magnitude);
-  await fs.writeFile(OUTPUT_PATH, buildOutput(stars, magnitudeThreshold), 'utf8');
+  await fs.mkdir(path.dirname(BIN_PATH), { recursive: true });
+  await fs.writeFile(BIN_PATH, encodeBrightStarBin(stars));
+  await fs.writeFile(GOLDEN_PATH, JSON.stringify(catalogFixture(stars), null, 2) + '\n', 'utf8');
 
   return stars.length;
 }
@@ -218,7 +191,8 @@ async function main() {
   const magnitudeThreshold = parseMagnitudeArg(process.argv[2]);
   const count = await generateCatalog(magnitudeThreshold);
   console.log(`Generated ${count.toLocaleString()} stars at magnitude <= ${magnitudeThreshold}.`);
-  console.log(`Wrote ${OUTPUT_PATH}`);
+  console.log(`Wrote ${BIN_PATH}`);
+  console.log(`Wrote ${GOLDEN_PATH} — deliberate fixture update; run npm test.`);
 }
 
 main().catch((error) => {

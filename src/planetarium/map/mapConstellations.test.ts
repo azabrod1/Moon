@@ -3,6 +3,11 @@ import * as THREE from 'three';
 import { createMapConstellations } from './mapConstellations';
 import { createMapStars, MAP_STAR_LAYER, MAP_STAR_SPHERE_RADIUS } from './mapStars';
 import { constellationSegmentPositions } from '../data/constellationGeometry';
+import { loadBrightStarCatalogFromDisk } from '../data/brightStarsTestCatalog';
+
+// The snap and the star backdrop both read the catalog store; fill it the
+// way the app's loader would before anything asks.
+loadBrightStarCatalogFromDisk();
 
 describe('the chart’s constellation figures', () => {
   it('draws the shared snap at the chart’s own sphere radius', () => {

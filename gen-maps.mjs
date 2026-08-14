@@ -9,7 +9,8 @@
 //
 // Jobs:
 //   earth-roughness  earth-day.jpg     -> earth-roughness.png  (ocean glossy, land matte)
-//   moon-normal      ldem_16_uint.tif  -> moon-normal.png      (tangent-space normal)
+//   moon-normal      ldem_16_uint.tif  -> moon-normal.png      (boot-tier tangent-space normal)
+//   moon-normal-4k   ldem_16_uint.tif  -> 4k/moon-normal.png   (close-approach tier)
 //   mars-normal      mars-mola.jpg     -> mars-normal.png
 //
 // height->normal jobs need an elevation source dropped in first (USGS/LOLA/MOLA);
@@ -38,9 +39,19 @@ const srcDir = path.resolve(arg('src', TEX));
 // moon-normal's strength is tied to its output resolution: per-texel height
 // deltas shrink as texels get smaller, so halving the sample spacing needs
 // roughly double the strength to keep the same macro relief.
+//
+// The lunar relief ships in two tiers: the 1440x720 boot map (8.8 MB at
+// 2880x1440 was a third of all boot traffic, for relief no spawn-distance
+// Moon can show) and the 2880x1440 close-approach map under 4k/, streamed
+// when the Moon actually fills the view (PlanetFactory's normal upgrade).
+// NOTE: the committed boot-tier file is the pre-16-bit-source original
+// (heightToNormal from moon-height.png at strength 3.0); regenerating with
+// the LOLA TIFF present replaces it with the 16-bit derivation below —
+// visually equivalent at this scale, minus the 8-bit terracing.
 const JOBS = {
-  'earth-roughness': { src: 'earth-day.jpg', from: TEX, out: 'earth-roughness.png', fn: 'oceanRoughness', scale: 0.5 },
-  'moon-normal':     { src: 'ldem_16_uint.tif', out: 'moon-normal.png', fn: 'normalsFromHeights', scale: 0.5, decode: 'uint16-tiff', opts: { strength: 6.0 } },
+  'earth-roughness': { src: 'earth-day.webp', from: TEX, out: 'earth-roughness.png', fn: 'oceanRoughness', scale: 0.25 },
+  'moon-normal':     { src: 'ldem_16_uint.tif', out: 'moon-normal.png', fn: 'normalsFromHeights', scale: 0.25, decode: 'uint16-tiff', opts: { strength: 3.0 } },
+  'moon-normal-4k':  { src: 'ldem_16_uint.tif', out: '4k/moon-normal.png', fn: 'normalsFromHeights', scale: 0.5, decode: 'uint16-tiff', opts: { strength: 6.0 } },
   'mars-normal':     { src: 'mars-mola.jpg',   out: 'mars-normal.png',     fn: 'heightToNormal', scale: 0.25, opts: { strength: 2.4, mola: true } },
 };
 
@@ -245,6 +256,14 @@ async function runJob(page, name) {
   if (!def) { console.log(`[gen-maps] unknown job: ${name}`); return false; }
   const srcPath = path.join(def.from || srcDir, def.src);
   if (!(await exists(srcPath))) {
+    // Only srcDir sources (the hand-dropped elevation maps) may be absent; a
+    // `from` source is a shipped map, and skipping one quietly would let a
+    // rename leave this job regenerating nothing while exiting green.
+    if (def.from) {
+      console.error(`[gen-maps] ${name}: shipped source missing (${srcPath})`);
+      process.exitCode = 1;
+      return false;
+    }
     console.log(`[gen-maps] skip ${name}: source not found (${srcPath})`);
     return false;
   }
@@ -255,7 +274,9 @@ async function runJob(page, name) {
     console.log(`[gen-maps] ${name}: ${def.src} -> ${def.out}`);
     return true;
   }
-  const mime = def.src.endsWith('.png') ? 'image/png' : 'image/jpeg';
+  const mime = def.src.endsWith('.png') ? 'image/png'
+    : def.src.endsWith('.webp') ? 'image/webp'
+    : 'image/jpeg';
   const outB64 = await page.evaluate(async ({ b64, mime, fn, scale, opts, transforms }) => {
     const T = eval(transforms);
     const img = new Image();

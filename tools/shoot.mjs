@@ -40,6 +40,7 @@ await mkdir(outDir, { recursive: true });
 const useGpu = !process.argv.includes('--software');
 const browser = await chromium.launch({
   headless: true,
+  executablePath: process.env.PW_CHROMIUM || undefined, // pinned-browser environments
   args: useGpu
     ? ['--use-gl=angle', '--use-angle=metal', '--enable-gpu', '--ignore-gpu-blocklist', '--enable-unsafe-swiftshader']
     : ['--use-gl=angle', '--use-angle=swiftshader', '--enable-unsafe-swiftshader', '--ignore-gpu-blocklist'],

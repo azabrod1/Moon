@@ -2,8 +2,13 @@ import * as THREE from 'three';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   applyColorTierTexture,
+  applyNormalTierTexture,
   canAttempt,
   cancelTextureUpgrade,
+  cancelNormalUpgrade,
+  makeNormalUpgrade,
+  normalUpgradePending,
+  upgradeNormalOnApproach,
   connectLateDetailMap,
   createLateTextureSlot,
   createMoonMeshes,
@@ -119,19 +124,22 @@ describe('upgrade ladders', () => {
     // stored ceiling, not the live cap.
     withMaxTextureSize(2048);
     expect(up.effectiveMaxTier).toBe('8k');
-    expect(resolveUpgradeTier(up, '8k')).toBe('8k');
     expect(firstUpgradeTier(up)).toBe('4k');
     expect(canAttempt(up, 0)).toBe(true);
   });
 });
 
 describe('screen-fraction band policy', () => {
-  it('goes straight to the ceiling for a body already filling the screen', () => {
+  it('climbs one rung at a time from the boot map, even when the top is earned', () => {
     const up = handle('moon');
     const earned = earnedUpgradeTier(up, 0.35);
     expect(earned).toBe('8k');
-    // No 4K on the way: the intermediate map would be replaced seconds later,
-    // for a whole extra download and upload.
+    // The first rung is a quarter of the bytes, so the body sharpens seconds
+    // sooner; a flyby that leaves before it applies never pays for the top
+    // tier; and a phone whose 8K decode dies still holds the 4K it climbed
+    // through. The top tier follows the moment the rung has applied.
+    expect(resolveUpgradeTier(up, earned!)).toBe('4k');
+    up.appliedTier = '4k';
     expect(resolveUpgradeTier(up, earned!)).toBe('8k');
   });
 
@@ -271,9 +279,10 @@ describe('what a fetch puts on the material', () => {
     const uploaded: THREE.Texture[] = [];
     bindTextureWarmer((tex) => uploaded.push(tex));
     const up = handle('moon');
+    up.appliedTier = '4k'; // past the first rung, the earned top is fetched directly
     upgradeTextureOnApproach(up, '8k', 1_000);
     expect(pending).toHaveLength(1);
-    expect(pending[0].url).toMatch(/textures\/8k\/moon\.jpg$/);
+    expect(pending[0].url).toMatch(/textures\/8k\/moon\.webp$/);
 
     const arrival = arriving();
     pending[0].onLoad(arrival.tex);
@@ -350,7 +359,183 @@ describe('what a fetch puts on the material', () => {
     fresh.finishDecode();
     await flush();
     expect(up.material.map).toBe(fresh.tex);
-    expect(up.appliedTier).toBe('8k');
+    // The superseding attempt re-resolved from the boot floor: the first rung.
+    expect(up.appliedTier).toBe('4k');
+  });
+
+  it('walks the ladder through a first-rung failure to the top', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const up = handle('moon');
+      // Close approach earns 8K, but from the boot map the climb starts at
+      // the first rung — and that fetch dies (a 404, a dropped connection).
+      upgradeTextureOnApproach(up, '8k', 0);
+      expect(pending[0].url).toMatch(/4k\/moon/);
+      pending[0].onError(new Error('network dropped'));
+      expect(up.lastFailure).toEqual({ tier: '4k', streak: 1 });
+
+      // Next attempt (cooldown passed, body still huge): the rung is retried,
+      // succeeds, and clears its failure record.
+      upgradeTextureOnApproach(up, '8k', 60_000);
+      expect(pending[1].url).toMatch(/4k\/moon/);
+      const arrival = arriving();
+      pending[1].onLoad(arrival.tex);
+      arrival.finishDecode();
+      await flush();
+      expect(up.appliedTier).toBe('4k');
+      expect(up.lastFailure).toBeUndefined();
+
+      // With the rung applied, the earned top is fetched directly — so a
+      // failing top tier can only ever strand the ladder one rung short,
+      // never on the boot map.
+      upgradeTextureOnApproach(up, '8k', 120_000);
+      expect(pending[2].url).toMatch(/8k\/moon/);
+      const eight = arriving();
+      pending[2].onLoad(eight.tex);
+      eight.finishDecode();
+      await flush();
+      expect(up.appliedTier).toBe('8k');
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('backs off a repeatedly failing tier exponentially, capped', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const up = handle('moon');
+      up.appliedTier = '4k'; // no rung left below the goal
+      const delays: number[] = [];
+      for (let i = 0; i < 7; i++) {
+        up.retryAtMs = undefined;
+        upgradeTextureOnApproach(up, '8k', i * 1_000_000);
+        const before = performance.now();
+        pending[pending.length - 1].onError(new Error('still failing'));
+        delays.push((up.retryAtMs ?? 0) - before);
+      }
+      // 8s, 16s, 32s, 64s, 128s, then held at the cap.
+      const tolerant = delays.map((d) => Math.round(d / 1000));
+      expect(tolerant).toEqual([8, 16, 32, 64, 128, 128, 128]);
+      expect(up.lastFailure).toEqual({ tier: '8k', streak: 7 });
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('streams the Moon relief tier once the disc has earned the first rung', async () => {
+    const mat = new THREE.MeshStandardMaterial();
+    materials.push(mat);
+    const nu = makeNormalUpgrade('moonNormal', mat);
+    expect(nu).toBeDefined();
+    expect(makeNormalUpgrade('marsNormal', mat)).toBeUndefined(); // no tier on disk
+    expect(makeNormalUpgrade(undefined, mat)).toBeUndefined();
+
+    // Below the first colour rung's fraction the relief stays boot-tier.
+    upgradeNormalOnApproach(nu, UPGRADE_TRIGGER_FRACTION['4k']!, 0);
+    expect(pending).toHaveLength(0);
+    expect(normalUpgradePending(nu)).toBe(true);
+
+    upgradeNormalOnApproach(nu, 0.3, 0);
+    expect(pending).toHaveLength(1);
+    expect(pending[0].url).toMatch(/textures\/4k\/moon-normal\.webp$/);
+    // In flight: the trigger must not double-fetch.
+    upgradeNormalOnApproach(nu, 0.3, 1);
+    expect(pending).toHaveLength(1);
+
+    const arrival = arriving();
+    pending[0].onLoad(arrival.tex);
+    arrival.finishDecode();
+    await flush();
+    expect(mat.normalMap).toBe(arrival.tex);
+    expect(normalUpgradePending(nu)).toBe(false); // done — the LOD loop stops measuring for it
+    upgradeNormalOnApproach(nu, 0.9, 2);
+    expect(pending).toHaveLength(1);
+  });
+
+  it('never lets a late boot relief downgrade the streamed tier', () => {
+    const mat = new THREE.MeshStandardMaterial();
+    materials.push(mat);
+    const four = new THREE.Texture();
+    const boot = new THREE.Texture();
+    const bootDisposed = watchDispose(boot);
+    expect(applyNormalTierTexture(mat, four, TIER_RANK['4k'])).toBe(true);
+    // The durable boot fetch lands minutes later on a bad link: rank-guarded out.
+    expect(applyNormalTierTexture(mat, boot, TIER_RANK['2k'])).toBe(false);
+    expect(mat.normalMap).toBe(four);
+    expect(bootDisposed()).toBe(true);
+  });
+
+  it('cools down a failed relief fetch, then lets the trigger ask again', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const mat = new THREE.MeshStandardMaterial();
+      materials.push(mat);
+      const nu = makeNormalUpgrade('moonNormal', mat)!;
+      upgradeNormalOnApproach(nu, 0.3, 0);
+      const before = performance.now();
+      pending[0].onError(new Error('404'));
+      expect(normalUpgradePending(nu)).toBe(true);
+      expect(nu.retryAtMs).toBeGreaterThanOrEqual(before + 8_000);
+      // Still cooling: no fetch. Past the cooldown: one more attempt.
+      upgradeNormalOnApproach(nu, 0.3, nu.retryAtMs! - 1);
+      expect(pending).toHaveLength(1);
+      upgradeNormalOnApproach(nu, 0.3, nu.retryAtMs!);
+      expect(pending).toHaveLength(2);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('abandons a hung relief fetch at the attempt timeout, then tries again', async () => {
+    const mat = new THREE.MeshStandardMaterial();
+    materials.push(mat);
+    const nu = makeNormalUpgrade('moonNormal', mat)!;
+    upgradeNormalOnApproach(nu, 0.3, 0);
+    expect(pending).toHaveLength(1);
+    // A request that never calls back holds the handle only until the shared
+    // attempt timeout; the next trigger past it starts a fresh fetch.
+    upgradeNormalOnApproach(nu, 0.3, 59_999);
+    expect(pending).toHaveLength(1);
+    upgradeNormalOnApproach(nu, 0.3, 60_000);
+    expect(pending).toHaveLength(2);
+    // The abandoned attempt's eventual completion disposes itself.
+    const stale = arriving();
+    const staleDisposed = watchDispose(stale.tex);
+    pending[0].onLoad(stale.tex);
+    await flush();
+    expect(mat.normalMap).toBeNull();
+    expect(staleDisposed()).toBe(true);
+    // The live attempt still lands normally.
+    const live = arriving();
+    pending[1].onLoad(live.tex);
+    live.finishDecode();
+    await flush();
+    expect(mat.normalMap).toBe(live.tex);
+    expect(normalUpgradePending(nu)).toBe(false);
+  });
+
+  it('drops a relief completion that lands after cancellation', async () => {
+    const mat = new THREE.MeshStandardMaterial();
+    materials.push(mat);
+    const nu = makeNormalUpgrade('moonNormal', mat)!;
+    upgradeNormalOnApproach(nu, 0.3, 0);
+    expect(pending).toHaveLength(1);
+    // Mode disposal abandons the attempt; the late callback must not write to
+    // the torn-down material or queue an upload into the reset warmer.
+    cancelNormalUpgrade(nu);
+    const arrival = arriving();
+    const disposed = watchDispose(arrival.tex);
+    pending[0].onLoad(arrival.tex);
+    await flush();
+    expect(mat.normalMap).toBeNull();
+    expect(disposed()).toBe(true);
+  });
+
+  it('denies the relief tier to a device that cannot hold it', () => {
+    withMaxTextureSize(2048);
+    const mat = new THREE.MeshStandardMaterial();
+    materials.push(mat);
+    expect(makeNormalUpgrade('moonNormal', mat)).toBeUndefined();
   });
 
   it('stamps a failed fetch\'s cooldown from the moment it failed', () => {

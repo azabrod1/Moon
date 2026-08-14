@@ -48,7 +48,10 @@ try {
   await settle(200);
   console.log('near-new:', JSON.stringify(await page.evaluate(() => window.__moon.probeLanded())));
   await page.screenshot({ path: path.join(outDir, 'moon_near_new_x4.png') });
-  // Jump to the next full moon (re-points the surface view) and re-shoot.
+  // Jump to the next full moon and re-shoot. Deliberately fired from INSIDE the
+  // surface view: this is a framing comparison, so both shots must come from the
+  // same camera being re-pointed. A jump from the orbit view auto-enters the
+  // surface view instead (window.__moon.exitSurface() is the way back out).
   await page.evaluate(() => window.__moon.jumpEvent('full-moon', 1));
   await settle(1200);
   console.log('full-moon:', JSON.stringify(await page.evaluate(() => window.__moon.probeLanded())));

@@ -22,6 +22,7 @@ import { BLOOM_RADIUS, BLOOM_THRESHOLD } from './app/bloomConfig';
 import { createLensPass, updateLensPass, type LensParams } from './app/LensPass';
 import { applyDesignFov, LENS_DEFAULT_STRENGTH } from './shared/math/lensProjection';
 import { stepExposure } from './planetarium/solarExposure';
+import { loadBrightStarCatalog } from './planetarium/world/starCatalogLoader';
 import { debugError, debugLog, debugWarn } from './shared/debug';
 import {
   clearSurfacePerf,
@@ -386,24 +387,29 @@ const planetariumUI = document.getElementById('planetarium-ui')!;
 const modeTransition = document.getElementById('mode-transition')!;
 const transitionMsg = document.getElementById('transition-msg')!;
 
+function setLoadingPercentText(text: string) {
+  // A failed boot's error message owns the screen: a still-running loader
+  // branch (the solar system keeps fetching after the catalog gate throws)
+  // must not overwrite the one instruction the user has with "…100%".
+  const loadingScreen = document.getElementById('loading-screen');
+  if (loadingScreen?.dataset.bootError) return;
+  const loadEl = document.getElementById('loading-msg');
+  if (loadEl) loadEl.textContent = text;
+  transitionMsg.textContent = text;
+}
+
 function setPlanetsLoadingPercent(completedUnits: number, totalUnits: number) {
   const clampedTotalUnits = Math.max(totalUnits, 1);
   const clampedCompletedUnits = Math.min(Math.max(completedUnits, 0), clampedTotalUnits);
   const pct = Math.round((clampedCompletedUnits / clampedTotalUnits) * 100);
-  const text = `Loading Planets... ${pct}%`;
-  const loadEl = document.getElementById('loading-msg');
-  if (loadEl) loadEl.textContent = text;
-  transitionMsg.textContent = text;
+  setLoadingPercentText(`Loading Planets... ${pct}%`);
 }
 
 function setFlightLoadingPercent(completedUnits: number, totalUnits: number) {
   const clampedTotalUnits = Math.max(totalUnits, 1);
   const clampedCompletedUnits = Math.min(Math.max(completedUnits, 0), clampedTotalUnits);
   const pct = Math.round((clampedCompletedUnits / clampedTotalUnits) * 100);
-  const text = `Entering Flight... ${pct}%`;
-  const loadEl = document.getElementById('loading-msg');
-  if (loadEl) loadEl.textContent = text;
-  transitionMsg.textContent = text;
+  setLoadingPercentText(`Entering Flight... ${pct}%`);
 }
 
 async function switchAppMode(newMode: AppMode) {
@@ -418,7 +424,11 @@ async function switchAppMode(newMode: AppMode) {
       newMode === 'planetarium' ? 'Entering Planets...'
         : newMode === 'moonFlight' ? 'Entering Flight...'
           : 'Gathering planets...';
-    await sleep(400);
+    // The beat lets the fade-to-black actually show between two live modes.
+    // On first boot the loading screen still covers everything, so the wait
+    // would be 400 ms of nothing, serial, before any texture is even asked
+    // for — a fifth of the whole fast-network startup.
+    if (appModeInitialized) await sleep(400);
 
     if (newMode === 'planetarium') {
       // --- Switch to Planetarium ---
@@ -775,6 +785,15 @@ function installDevHooks() {
 async function init() {
   (window as any).__initStarted = true;
   debugLog('Init started');
+  // The service-worker kill switch runs before ANYTHING else: it exists for
+  // the boots where something SW-served is broken, so it cannot wait for a
+  // boot to succeed. True = a shedding reload is on its way; stop here.
+  if (await shedServiceWorkerIfRequested()) return;
+  // Start the star-catalog sidecar load now so its fetch+parse overlap the
+  // solar-system build; PlanetariumMode.activate awaits the same shared
+  // promise (and surfaces the real error — this kick must not double-report,
+  // and an unguarded early rejection would leak as unhandled).
+  loadBrightStarCatalog().catch(() => {});
   // Build identity in the menu footer: lets anyone confirm which deploy a
   // device is actually running (cached phone tabs have repeatedly shown
   // days-old bundles while looking current). It rides with the debug overlay
@@ -870,6 +889,10 @@ async function init() {
   logStartupTimings();
 
   document.getElementById('loading-screen')?.classList.add('hidden');
+  // Boot is settled — now the data service worker may install (its precache
+  // revalidates against the HTTP cache the boot just filled, so this order
+  // makes install nearly free instead of competing with boot fetches).
+  registerServiceWorker();
   await planetariumMode?.showDeferredResumePromptIfNeeded();
 
   if (autoMode === 'volumeCompare') {
@@ -962,23 +985,105 @@ function syncViewportIfDrifted() {
 // ================================================================
 // Start
 // ================================================================
-// Safety: never leave loading screen stuck for more than 15s
-setTimeout(() => {
-  const ls = document.getElementById('loading-screen');
-  const shouldForceHide = !!ls && !ls.classList.contains('hidden');
-  if (shouldForceHide) {
-    debugWarn('Loading timeout reached before init finished');
-    console.warn('Loading timeout — forcing hide');
-    ls.classList.add('hidden');
+/**
+ * ?nosw=1 — the service-worker kill switch. Unregisters the app's data
+ * worker, deletes its caches, and (once, guarded) reloads to shed a
+ * controller that claimed this page. Runs at the very top of init because
+ * its whole reason to exist is boots where SW-served data is broken. Every
+ * step tolerates failure — a broken storage layer must not take the kill
+ * switch down with it. Returns true when a reload was scheduled and init
+ * must stop.
+ */
+async function shedServiceWorkerIfRequested(): Promise<boolean> {
+  if (!('serviceWorker' in navigator)) return false;
+  const params = new URLSearchParams(location.search);
+  if (!params.has('nosw')) return false;
+  debugWarn('Service worker kill switch (?nosw=1): unregistering');
+  // Unregister and cache-delete are independent recoveries — one failing
+  // must not take the other down with it.
+  try {
+    const registration = await navigator.serviceWorker.getRegistration(import.meta.env.BASE_URL);
+    await registration?.unregister();
+  } catch (err) {
+    debugError('Service worker unregister failed', err);
   }
+  try {
+    for (const name of await caches.keys()) {
+      if (name.startsWith('moon-data-')) await caches.delete(name);
+    }
+  } catch (err) {
+    debugError('Service worker cache delete failed', err);
+  }
+  if (navigator.serviceWorker.controller && !params.has('noswr')) {
+    // Unregistering doesn't release the current document; one reload does.
+    // The loop guard rides the URL itself (`noswr`), not storage — the kill
+    // switch must work in storage-restricted contexts too, and a marker the
+    // navigation carries can't loop by construction.
+    params.set('noswr', '1');
+    location.replace(`${location.pathname}?${params.toString()}${location.hash}`);
+    return true;
+  }
+  return false;
+}
+
+/**
+ * Register the data-only service worker (generated into dist/sw.js at
+ * build — see tools/swPlugin.mjs). Detached and fully caught: it is an
+ * optimization, and no failure in it may ever re-cover a working app with
+ * the boot error screen. Dev is exempt — dev serves no sw.js and caching
+ * would fight hot reload anyway.
+ */
+function registerServiceWorker(): void {
+  if (!import.meta.env.PROD) return;
+  if (!('serviceWorker' in navigator)) return;
+  if (new URLSearchParams(location.search).has('nosw')) return;
+  navigator.serviceWorker.register(import.meta.env.BASE_URL + 'sw.js').then((registration) => {
+    // register() with an unchanged script URL short-circuits without an
+    // update check, and deploy pickup otherwise rides the browser's
+    // navigation soft update (measured: real Chrome and WebKit do it,
+    // Playwright's bundled Chromium doesn't). One explicit check per boot
+    // makes "at most one deploy behind" deterministic instead of
+    // browser-dependent.
+    registration.update().catch(() => {});
+  }).catch((err) => {
+    debugWarn('Service worker registration failed', { err: String(err) });
+  });
+}
+
+// Safety: a finished boot must never leave the loading screen stranded past
+// 15s. Strictly a finished one — while init is still unsettled there is
+// nothing behind the screen worth showing (a suspended mobile tab can resume
+// with every boot timer overdue at once, and hiding then would reveal a
+// half-built black scene), and after a FAILURE the screen is the error
+// display. In both of those cases keep it up and check back.
+let initSettled = false;
+setTimeout(function forceHideCheck() {
+  const ls = document.getElementById('loading-screen');
+  if (!ls || ls.classList.contains('hidden') || ls.dataset.bootError) return;
+  if (!initSettled) {
+    debugWarn('Loading is running long; keeping the screen until init settles');
+    setTimeout(forceHideCheck, 5000);
+    return;
+  }
+  debugWarn('Loading timeout reached after init finished');
+  console.warn('Loading timeout — forcing hide');
+  ls.classList.add('hidden');
 }, 15000);
 
-init().catch((err) => {
+init().then(() => {
+  initSettled = true;
+}).catch((err) => {
+  initSettled = true;
   debugError('Init failed', err);
   console.error('Init failed:', err);
-  // Never leave user stuck on loading screen
-  const loadingScreen = document.getElementById('loading-screen');
-  if (loadingScreen) loadingScreen.classList.add('hidden');
+  // The message lives INSIDE the loading screen, so the screen must stay up
+  // (or come back — a failure after the 15s force-hide re-covers the broken
+  // scene) for the user to ever read it.
   const loadingMsg = document.getElementById('loading-msg');
   if (loadingMsg) loadingMsg.textContent = 'Something went wrong. Please refresh.';
+  const loadingScreen = document.getElementById('loading-screen');
+  if (loadingScreen) {
+    loadingScreen.dataset.bootError = '1';
+    loadingScreen.classList.remove('hidden');
+  }
 });

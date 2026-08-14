@@ -212,9 +212,14 @@ export function advanceBodyCap(
 export const MOON_ARRIVAL_APPARENT_DIAMETER_DEG = 5;
 
 /** Flyby impact parameter in rendered radii: full thrust straight ahead
- *  passes the limb at this clearance, and the moon rides about a third
- *  off-center instead of bullseye. */
-export const MOON_ARRIVAL_IMPACT_RADII = 2.5;
+ *  passes the moon's center at this distance — under a radius of sky above
+ *  the limb. The clearance floor below still outranks this on the smallest
+ *  meshes. Tighter reads closer but kills the pass: the proximity governor
+ *  meters speed by height above the collision shell, and a perigee that
+ *  falls inside the leave valve's knee turns the flythrough into a hover
+ *  beside the body (1.35 parked outright; 1.6 hung ~12 s at perigee and
+ *  crept out with no sling). 1.8 is the closest pass that keeps its pace. */
+export const MOON_ARRIVAL_IMPACT_RADII = 1.8;
 
 /** Ceiling on how far the aim may swing off the moon: tiny meshes parked
  *  under their separation caps would otherwise push the disc out of frame. */

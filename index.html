@@ -2183,6 +2183,31 @@
       pointer-events: auto;
       transition: none;
     }
+    /* Busy note inside the veil. The covering black over dark space reads as
+       a dead screen — and the veil deliberately catches clicks while the
+       destination loads — so after a beat the hold names itself, and a click
+       on the veil pulses the note (heard, not ready yet). */
+    #arrival-veil-note {
+      position: absolute;
+      left: 50%;
+      top: 58%;
+      transform: translateX(-50%);
+      font-family: var(--font);
+      font-size: 13px;
+      letter-spacing: 0.04em;
+      color: rgba(199, 208, 224, 0.92);
+      opacity: 0;
+      transition: opacity 0.25s ease;
+      pointer-events: none;
+      white-space: nowrap;
+    }
+    #arrival-veil-note.show { opacity: 0.85; }
+    #arrival-veil-note.pulse { animation: veil-note-pulse 0.45s ease; }
+    @keyframes veil-note-pulse {
+      0% { opacity: 0.85; }
+      40% { opacity: 1; transform: translateX(-50%) scale(1.05); }
+      100% { opacity: 0.85; transform: translateX(-50%) scale(1); }
+    }
 
     /* Map dive fade: the schematic darkens to black as the camera dives into a
        picked body, then either the arrival veil takes over invisibly (black
@@ -3789,7 +3814,7 @@
   <div id="mode-transition">
     <p id="transition-msg">Loading Solar System...</p>
   </div>
-  <div id="arrival-veil"></div>
+  <div id="arrival-veil"><div id="arrival-veil-note"></div></div>
   <div id="map-dive-fade"></div>
 
   <div id="ui-overlay">

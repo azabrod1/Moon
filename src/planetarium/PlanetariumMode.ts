@@ -659,6 +659,8 @@ export class PlanetariumMode {
    *  fetch that starts later — including the next step of a ladder — can never
    *  extend a hold that is already running. */
   private arrivalUpgradeBatch: Array<{ up: TextureUpgrade; generation: number }> = [];
+  /** Delayed reveal of the veil's busy note — cleared whenever the veil lifts. */
+  private arrivalNoteTimer: number | undefined;
   private static readonly ARRIVAL_MIN_DWELL_MS = 150;
   // Longest the arrival cover waits (from cover start) for the landed pair's
   // in-flight first-tier fetch+decode before revealing anyway — a stalled fetch
@@ -7196,6 +7198,21 @@ export class PlanetariumMode {
   }
 
   private wireUpUI() {
+    // The covering arrival veil catches pointers by design (nothing
+    // half-loaded may be interacted with) — but a caught click must not die
+    // silently: reveal the busy note at once and pulse it, so the click
+    // reads as heard-but-not-ready instead of a dead button.
+    document.getElementById('arrival-veil')?.addEventListener('pointerdown', (e) => {
+      const veil = e.currentTarget as HTMLElement;
+      if (!veil.classList.contains('covering')) return;
+      const note = document.getElementById('arrival-veil-note');
+      if (!note) return;
+      note.classList.add('show');
+      note.classList.remove('pulse');
+      void note.offsetWidth; // restart the pulse animation
+      note.classList.add('pulse');
+    });
+
     // Tap speed center to toggle system throttle override (temporary)
     document.querySelector('.speed-center')?.addEventListener('click', () => {
       if (this.isMissionActive()) return;
@@ -13636,7 +13653,13 @@ export class PlanetariumMode {
         upgradeCover = true;
       }
     }
-    this.arriveAtSystem(this.parentSystemOf(target), action, upgradeCover, landingUpgrades);
+    this.arriveAtSystem(
+      this.parentSystemOf(target),
+      action,
+      upgradeCover,
+      landingUpgrades,
+      bodyDisplayName(target.name),
+    );
   }
 
   /**
@@ -13653,6 +13676,7 @@ export class PlanetariumMode {
     action: () => void,
     upgradeCover: boolean,
     keepUpgrades: readonly TextureUpgrade[] = [],
+    noteLabel: string | null = null,
   ): void {
     if (this.arrivalInFlight) return;
     // A teleport abandons every fetch in flight anywhere in the system except
@@ -13689,6 +13713,18 @@ export class PlanetariumMode {
     const veil = document.getElementById('arrival-veil');
     const coverStart = performance.now();
     veil?.classList.add('covering'); // snaps fully opaque (no fade-in) — see CSS
+    // The covering black over mostly-black space reads as a dead screen (and
+    // deliberately catches clicks), so a hold that outlives a beat names
+    // itself. Instant arrivals — the common warm case — never flash it.
+    const note = document.getElementById('arrival-veil-note');
+    if (note) {
+      note.textContent = `Preparing ${noteLabel ?? 'the view'}…`;
+      note.classList.remove('show', 'pulse');
+    }
+    window.clearTimeout(this.arrivalNoteTimer);
+    this.arrivalNoteTimer = window.setTimeout(() => {
+      if (veil?.classList.contains('covering')) note?.classList.add('show');
+    }, 350);
     // The veil owns the screen from here until its fade-out finishes.
     this.arrivalVeilClearAtMs = Number.POSITIVE_INFINITY;
     const coverGen = ++this.arrivalCoverGen;
@@ -13753,6 +13789,8 @@ export class PlanetariumMode {
             window.setTimeout(() => {
               if (coverGen !== this.arrivalCoverGen) return;
               veil?.classList.remove('covering');
+              window.clearTimeout(this.arrivalNoteTimer);
+              document.getElementById('arrival-veil-note')?.classList.remove('show', 'pulse');
               this.arrivalVeilClearAtMs = performance.now() + PlanetariumMode.ARRIVAL_VEIL_FADE_MS;
             }, wait);
           };

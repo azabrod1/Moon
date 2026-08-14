@@ -748,11 +748,11 @@ export class SystemMap {
   private labelChromeForH = 0;
   private labelMaxBoxTopCachedPx = Number.POSITIVE_INFINITY;
   /** The chart's own sheets, measured live every frame they stand open: the
-   *  picked-body card. It counts as a band only while it spans the width,
-   *  which is the phone form. */
+   *  picked-body card and the gesture guide. One counts as a band only while
+   *  it spans the width, which is the phone form. */
   private labelSheetEls: (HTMLElement | null)[] = [];
-  /** The corner panels' screen rects this frame — the control panel (or the
-   *  pill it folds into) and the card. A label whose box lands under one
+  /** The corner panels' screen rects this frame — the control panel (open or
+   *  folded to its chip), the help chip and the card. A label whose box lands under one
    *  hides: half a name sticking out from a panel's edge reads as a sliced
    *  fragment, not a label. The panel's rect is cached with the band and
    *  re-read only when the owner says its shape changed; the sheets' rects are
@@ -5855,7 +5855,7 @@ export class SystemMap {
       return;
     }
     // A corner panel is a hole in the frame, not a band across it: a label
-    // whose box lands under the panel, the pill or the card would show as
+    // whose box lands under the panel, the help chip or the card would show as
     // word fragments sticking out from the panel's edge.
     for (const ob of this.labelObstaclesPx) {
       if (x + halfWidth > ob.left && x - halfWidth < ob.right
@@ -5911,7 +5911,7 @@ export class SystemMap {
    */
   /** Forget the cached static-chrome band; the next label pass re-measures.
    *  The panel changes shape with no viewport change to announce it — a
-   *  stand-down, a collapse, the help grid opening — and the cache would keep
+   *  stand-down, a fold, the moon tray opening — and the cache would keep
    *  culling labels across a shape that is no longer there. */
   invalidateLabelChrome(): void {
     this.labelChromeForW = 0;
@@ -5940,12 +5940,15 @@ export class SystemMap {
       let top: number | null = null;
       const bar = measurable(document.getElementById('planetarium-bottom-bar'));
       if (bar) top = bar.top;
-      // The panel and the pill it folds into are one instrument in two shapes,
-      // and only one of them is ever on screen. Their rects are cached rather
-      // than read per frame: nothing about them moves on its own, and the
-      // owner invalidates this cache on every edge that changes them.
+      // The dock's two standing pieces, measured one by one — the panel (open
+      // sheet, corner instrument, or folded chip) and the help chip beside
+      // it. Never their wrapper: the dock is a transparent row that spans the
+      // phone width, and its rect would read as a band with two chips in it.
+      // The rects are cached rather than read per frame: nothing about them
+      // moves on its own, and the owner invalidates this cache on every edge
+      // that changes them (the fold's start and its transitionend included).
       this.labelStaticObstacles.length = 0;
-      for (const id of ['map-panel', 'map-pill']) {
+      for (const id of ['map-panel', 'map-help-chip']) {
         const rect = measurable(document.getElementById(id));
         if (!rect) continue;
         if (rect.width >= w - 32) {
@@ -6045,7 +6048,9 @@ export class SystemMap {
 
   private ensureLabelContainer(): void {
     if (this.labelSheetEls.length === 0) {
-      this.labelSheetEls = ['map-card'].map((id) => document.getElementById(id));
+      // The picked-body card and the gesture guide: transient sheets the
+      // labels dodge only while their `visible` class stands.
+      this.labelSheetEls = ['map-card', 'map-help-card'].map((id) => document.getElementById(id));
     }
     if (this.labelContainer) return;
     this.labelContainer = document.getElementById('map-labels');

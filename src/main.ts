@@ -671,7 +671,7 @@ function installDevHooks() {
     mapFocus: (name: string | null) => planetariumMode?.devMapFocus(name) ?? false,
     // The panel's rows. mapOverview is the combined release-or-recentre, which
     // resolves to a 900 ms flight when there is a focus to give back — poll
-    // mapState().camState for the landing. mapInfo drives the help grid;
+    // mapState().camState for the landing. mapInfo drives the gesture guide;
     // mapPanel reads or drives the panel itself ({collapsed, helpOpen}, null
     // for the defaults) and reports sheetExpanded for the phone layout.
     mapOverview: () => planetariumMode?.devMapOverview() ?? false,

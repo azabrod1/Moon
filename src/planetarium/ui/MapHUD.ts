@@ -7,25 +7,33 @@ import type { MapLayerState } from '../map/SystemMap';
 import { makeTiltGlyph } from './mapTiltGlyph';
 
 /**
- * MapHUD — the on-screen controls for the System map: the one glass panel
- * (scale segment, zoom pair and readout, Reset view, the find-a-body list,
- * the layer switches, and a Help row folding out the gesture grid at the
- * foot), the pill it folds into, the close chip, and the picked-body card
- * (tint dot, name, live distance, one-line description, action buttons, the
- * system's next event, facts).
+ * MapHUD — the on-screen controls for the System map: the bottom-right dock
+ * (the standalone `?` chip, the panel, and the gesture-guide card beside
+ * them), the close chip, and the picked-body card (tint dot, name, live
+ * distance, one-line description, action buttons, the system's next event,
+ * facts).
+ *
+ * The panel and its collapsed state are ONE element: open ↔ closed is a
+ * grid-rows fold down to a 46px glyph chip, so nothing here swaps trees —
+ * the `collapsed` class is the whole state, and the fold's transitionend
+ * re-measures the geometry the animation moved.
  *
  * DOM-thin: the markup lives in index.html, this caches the elements and wires
  * their listeners once (the bind()/wired idiom). It owns no map state — it
  * reports intent through the callbacks and reflects state through its setters.
  * Collapsed-vs-open and help-open are the owner's session state; this paints
- * them. The facts arrive as data, already resolved and formatted; this decides
- * nothing about them but how they are painted and how much room they get.
+ * them. The one UI state it holds itself is which planet's moon tray stands
+ * open — a disclosure, like the search highlight, not a mode. The facts arrive
+ * as data, already resolved and formatted; this decides nothing about them but
+ * how they are painted and how much room they get.
  *
- * The find-a-body list is built on the deck's row family (`pk-row`, `pk-dot`,
- * `pk-info`, `pk-tag-here`) with `mfm-*` overrides — the Look-at menu's idiom.
- * The deck's own row DOM and sticky machinery are not extractable; its pure
- * search filter is, and that is what the query runs through, so a search here
- * behaves exactly as a search there does.
+ * The Focus picker's front page is the planet GRID (Sun + planets, a moon
+ * tray folding open beneath the disclosed planet); a query swaps it for the
+ * deck's flat filtered rows (`pk-row`, `pk-dot`, `pk-info`, `pk-tag-here`
+ * with `mfm-*` overrides — the Look-at menu's idiom). Both are built from the
+ * same MapFocusRow[]. The deck's own row DOM and sticky machinery are not
+ * extractable; its pure search filter is, and that is what the query runs
+ * through, so a search here behaves exactly as a search there does.
  */
 
 /** The top chrome the panel may not grow into. It is the ceiling rather than
@@ -41,6 +49,20 @@ function panelCeilingPx(): number {
   return ceiling;
 }
 
+/** The dock's layout intent: the phone sheet below the breakpoint, the corner
+ *  instrument above it. Asked of the stylesheet's own media condition rather
+ *  than of a rect — a rect read mid-fold answers with the animation's
+ *  progress, not the layout. */
+function phoneLayout(): boolean {
+  return window.matchMedia('(max-width: 640px)').matches;
+}
+
+/** While the phone sheet is open the help chip floats above its top-right
+ *  corner: 46px of chip and the 8px gap the dock keeps. The panel's measured
+ *  cap reserves this, or a full-height sheet would push the chip under the
+ *  top chrome. */
+const PHONE_HELP_CHIP_RESERVE_PX = 54;
+
 /** The facts viewport is worth having at three rows or more. Below that the
  *  card would carry a hairline, a scrollbar and a sliver — so the section comes
  *  off instead, and the actions keep the room. Measured: three ~14 px rows,
@@ -48,8 +70,8 @@ function panelCeilingPx(): number {
 const MIN_FACTS_PX = 66;
 
 /** What the caption under the scale segment says about the chart you are
- *  looking at. The always-visible teaching line, which is why the help grid
- *  carries no Scale row. */
+ *  looking at. The always-visible teaching line, which is why the gesture
+ *  guide carries no Scale row. */
 const SCALE_NOTE_COMPRESSED = 'Distances compressed so every body stays visible.';
 const SCALE_NOTE_TRUE = 'Real distances for the clock’s date.';
 
@@ -65,10 +87,11 @@ const LAYER_ROWS: readonly { key: keyof MapLayerState; id: string }[] = [
 
 export class MapHUD {
   private root: HTMLElement | null = null;
+  private dock: HTMLElement | null = null;
   private panel: HTMLElement | null = null;
-  private pill: HTMLElement | null = null;
-  private helpGrid: HTMLElement | null = null;
-  private helpBtn: HTMLButtonElement | null = null;
+  private foldEl: HTMLElement | null = null;
+  private helpChip: HTMLButtonElement | null = null;
+  private helpCard: HTMLElement | null = null;
   private collapseBtn: HTMLButtonElement | null = null;
   private segCompressed: HTMLButtonElement | null = null;
   private segTrue: HTMLButtonElement | null = null;
@@ -80,13 +103,19 @@ export class MapHUD {
   private panelBody: HTMLElement | null = null;
   private layerRows: { key: keyof MapLayerState; row: HTMLElement | null; tgl: HTMLButtonElement | null }[] = [];
   private ringsRowDim: boolean | null = null;
-  /** The list's height while a query is active, or null when it is free to
-   *  follow its contents. */
-  private listHeldPx: number | null = null;
 
   private searchEl: HTMLInputElement | null = null;
+  private pickerEl: HTMLElement | null = null;
   private listEl: HTMLElement | null = null;
   private emptyEl: HTMLElement | null = null;
+  private gridEl: HTMLElement | null = null;
+  private traywEl: HTMLElement | null = null;
+  private trayHeadEl: HTMLElement | null = null;
+  private trayChipsEl: HTMLElement | null = null;
+  private followRowEl: HTMLElement | null = null;
+  private followDotEl: HTMLElement | null = null;
+  private followNameEl: HTMLElement | null = null;
+  private followReleaseBtn: HTMLButtonElement | null = null;
   /** Every row built for this map session, and the buttons painting them —
    *  index for index, so the filter's answer maps straight onto the DOM. */
   private rows: MapFocusRow[] = [];
@@ -95,19 +124,37 @@ export class MapHUD {
    *  a separate element (see buildRow). */
   private rowEls: HTMLElement[] = [];
   private highlight = -1;
-  /** The row the camera is riding, and the button carrying the release chip.
-   *  Held so a repaint can take the chip off the old row without a scan. */
+  /** The grid's cells by body name, for the here/followed rings and the tray
+   *  disclosure paint. Rebuilt with the rows. */
+  private cells = new Map<string, { cell: HTMLElement; moonsBtn: HTMLButtonElement | null }>();
+  /** The rows' moons grouped under their planets, in catalog order — what a
+   *  tray opens onto. */
+  private moonsByPlanet = new Map<string, MapFocusRow[]>();
+  /** Which planet's moon tray stands open, or null. The picker's one piece of
+   *  HUD-local UI state — a disclosure, reset with the rows. */
+  private openTray: string | null = null;
+  /** The landed body's name, for the ember ring and the tray chips' `here`
+   *  tint. From the same rows everything else reads. */
+  private hereName: string | null = null;
+  /** The body the camera is riding. Cached so a tray built later still paints
+   *  its chips followed, and so repaints are change-only. */
   private followingName: string | null = null;
-  private followingRow: HTMLElement | null = null;
-  private followingChip: HTMLButtonElement | null = null;
+  /** Whether the next help-open should move focus into the card: set when the
+   *  chip was activated by keyboard (detail 0), consumed by setHelpOpen. */
+  private focusHelpOnOpen = false;
 
   /** The panel's own rows, assigned by the owner (the bottom bar's idiom).
    *  The constructor's callbacks are the card's and the segment's — these
    *  arrived with the panel and are kept apart from them. */
+  /** The `?` chip: toggle the gesture guide. */
   onHelp: () => void = () => {};
-  /** The × / chevron: fold the panel away. The owner banks the preference. */
+  /** The card's own ×: close it. A separate intent from the toggle — a close
+   *  control on a card still fading out must never reopen it. */
+  onHelpClose: () => void = () => {};
+  /** The chevron: fold the panel away. The owner banks the preference. */
   onCollapse: () => void = () => {};
-  /** The pill (or a collapsed sheet's header button): bring it back. */
+  /** The folded chip (any tap on it, or the chevron a keyboard kept): bring
+   *  the panel back. */
   onExpand: () => void = () => {};
   /** A find-a-body row was chosen. */
   onPickRow: (name: string) => void = () => {};
@@ -116,10 +163,11 @@ export class MapHUD {
   /** A layer switch was pressed. The owner holds the state and paints it back. */
   onLayer: (key: keyof MapLayerState, on: boolean) => void = () => {};
   /**
-   * The panel's own geometry moved — it was folded, the help grid opened, the
-   * list resized under a query, the caption swapped to a line of a different
-   * length. The panel is bottom-anchored, so ALL of those move its top edge,
-   * and the label placer caches that rect. One door, so no new section has to
+   * The dock's own geometry moved — the panel folded or landed its fold, the
+   * moon tray opened, the picker swapped between grid and results, the guide
+   * joined or left, the caption swapped to a line of a different length. The
+   * panel is bottom-anchored, so ALL of those move its top edge, and the
+   * label placer caches the dock's rects. One door, so no new section has to
    * remember to tell it.
    */
   onPanelGeometry: () => void = () => {};
@@ -172,10 +220,11 @@ export class MapHUD {
   /** Cache elements (every activation) and wire listeners once. */
   bind(): void {
     this.root = document.getElementById('system-map-ui');
+    this.dock = document.getElementById('map-dock');
     this.panel = document.getElementById('map-panel');
-    this.pill = document.getElementById('map-pill');
-    this.helpGrid = document.getElementById('map-help-grid');
-    this.helpBtn = document.getElementById('map-info') as HTMLButtonElement | null;
+    this.foldEl = this.panel?.querySelector('.map-fold') ?? null;
+    this.helpChip = document.getElementById('map-help-chip') as HTMLButtonElement | null;
+    this.helpCard = document.getElementById('map-help-card');
     this.collapseBtn = document.getElementById('map-panel-collapse') as HTMLButtonElement | null;
     this.panelBody = document.getElementById('map-panel-body');
     this.segCompressed = document.getElementById('map-scale-compressed') as HTMLButtonElement | null;
@@ -184,8 +233,17 @@ export class MapHUD {
     this.zoomReadout = document.getElementById('map-zoom-readout');
     this.overviewBtn = document.getElementById('map-overview') as HTMLButtonElement | null;
     this.searchEl = document.getElementById('map-focus-search') as HTMLInputElement | null;
+    this.pickerEl = document.getElementById('map-picker');
     this.listEl = document.getElementById('map-focus-list');
     this.emptyEl = document.getElementById('map-focus-empty');
+    this.gridEl = document.getElementById('map-focus-grid');
+    this.traywEl = document.getElementById('map-moon-tray');
+    this.trayHeadEl = document.getElementById('map-moon-tray-head');
+    this.trayChipsEl = document.getElementById('map-moon-tray-chips');
+    this.followRowEl = document.getElementById('map-following-row');
+    this.followDotEl = document.getElementById('map-following-dot');
+    this.followNameEl = document.getElementById('map-following-name');
+    this.followReleaseBtn = document.getElementById('map-following-release') as HTMLButtonElement | null;
     this.card = document.getElementById('map-card');
     this.cardDot = document.getElementById('map-card-dot');
     this.cardName = document.getElementById('map-card-name');
@@ -203,32 +261,39 @@ export class MapHUD {
     this.segTrue?.addEventListener('click', () => this.onScale(true));
     document.getElementById('map-close')?.addEventListener('click', () => this.onClose());
     this.overviewBtn?.addEventListener('click', () => this.onOverview());
-    this.helpBtn?.addEventListener('click', () => this.onHelp());
-    // One button, two meanings: it folds an open panel away and brings a
-    // collapsed sheet's body back (on a phone the collapsed header keeps this
-    // button, and it is the only way back).
+    // The chip toggles the guide; a keyboard activation (detail 0) is
+    // remembered so the open can hand the card the focus it came from.
+    this.helpChip?.addEventListener('click', (e) => {
+      this.focusHelpOnOpen = e.detail === 0;
+      this.onHelp();
+    });
+    document.getElementById('map-help-close')?.addEventListener('click', () => this.onHelpClose());
+    // One button, two meanings: it folds an open panel away, and — for the
+    // keyboard that can still reach it inside the folded chip — brings the
+    // panel back. A pointer never sees the second meaning (the folded chevron
+    // is pointer-inert; the whole chip below answers the tap instead).
     this.collapseBtn?.addEventListener('click', () => {
       if (this.panel?.classList.contains('collapsed')) this.onExpand();
       else this.onCollapse();
     });
-    this.pill?.addEventListener('click', () => this.onExpand());
-    // On a phone the collapsed sheet keeps only its header, and the whole
-    // strip is the way back in — a thumb should not have to find the chevron.
+    // The folded panel is one 46px chip, and the whole chip is the way back
+    // in — both layouts now, since both fold to the same chip.
     //
     // The state is snapshotted in the CAPTURE phase, before any control inside
     // the panel has run, and the bubble handler answers to that snapshot alone.
     // Reading the class on the way back up instead would be answering a
-    // question the same press has already changed: a tap on a find-a-body row
-    // opens the card, and opening a card FOLDS the phone sheet — so the click
-    // would arrive here at a panel wearing a fresh `collapsed`, unfold it, and
-    // the unfold dismisses the very card the tap opened. Measured: the card was
-    // built (its name painted) and destroyed within the one dispatch.
+    // question the same press has already changed: the chevron's own handler
+    // above folds the panel DURING the dispatch, so the bubble would arrive at
+    // a panel wearing a fresh `collapsed` and unfold what the press just
+    // folded. (The phone sheet's card exclusion once hit the same wall from
+    // the other side — a tap that opened the card folded the sheet, and the
+    // unfold destroyed the card within the one dispatch.)
     //
     // The chevron is excluded rather than silenced: it already toggles both
     // ways on its own, and stopping propagation there would rob main.ts's
     // document-level rule of the click it uses to blur a pointer-pressed
-    // button — leaving the sheet's own chevron focused, where the next Space
-    // re-fires it instead of pausing the sim.
+    // button — leaving the chevron focused, where the next Space re-fires it
+    // instead of pausing the sim.
     let pressBeganCollapsed = false;
     this.panel?.addEventListener(
       'click',
@@ -240,6 +305,20 @@ export class MapHUD {
       if ((e.target as HTMLElement).closest('#map-panel-collapse')) return;
       this.onExpand();
     });
+    // The fold animates geometry no resize announces: re-measure when the
+    // panel's width morph, the body fold or the moon tray lands. Filtered to
+    // the three elements whose landing moves the panel's box — the title's
+    // max-width and the body's opacity ride the same transitions and say
+    // nothing new.
+    this.panel?.addEventListener('transitionend', (e) => {
+      const rows = e.propertyName === 'grid-template-rows'
+        && (e.target === this.foldEl || e.target === this.traywEl);
+      const width = e.target === this.panel && e.propertyName === 'width';
+      if (!rows && !width) return;
+      this.measurePanel();
+      this.measureCard();
+    });
+    this.followReleaseBtn?.addEventListener('click', () => this.onReleaseFocus());
     for (const { key, id } of LAYER_ROWS) {
       const row = document.getElementById(id);
       const tgl = row?.querySelector('.tgl') as HTMLButtonElement | null;
@@ -250,9 +329,6 @@ export class MapHUD {
     }
     this.searchEl?.addEventListener('input', () => this.applyFilter());
     this.searchEl?.addEventListener('keydown', (e) => this.searchKeydown(e));
-    // A field the user has walked away from is no longer a control they are
-    // aiming at, so the list is free to fit its contents again.
-    this.searchEl?.addEventListener('blur', () => this.releaseListHeight());
     // The fade marks MORE BELOW and nothing else: it lifts at the end of the
     // scroll, or it would slice the footnote's glyphs with nothing beneath.
     this.panelBody?.addEventListener('scroll', () => this.updatePanelFade());
@@ -296,47 +372,59 @@ export class MapHUD {
   /**
    * Fold the panel away, or bring it back.
    *
-   * The class is all this writes: at the breakpoint the same class leaves the
-   * phone's header standing and takes only the body, so the DOM never has to
-   * know which layout it is in. The pill is offered whenever the panel is
-   * folded and hidden by the phone's own rule — a collapsed sheet's header IS
-   * the pill down there.
+   * The class is all this writes: the fold is the stylesheet's (grid rows +
+   * width morph), and the same class folds the desktop instrument and the
+   * phone sheet down to the same 46px chip, so the DOM never has to know
+   * which layout it is in. The dock's `panel-open` mirror is for the phone's
+   * floating help chip. The measure here catches the toggle's START; the
+   * transitionend listener catches where the fold lands.
    */
   setPanelCollapsed(collapsed: boolean): void {
     this.panel?.classList.toggle('collapsed', collapsed);
-    this.pill?.classList.toggle('visible', collapsed);
+    this.dock?.classList.toggle('panel-open', !collapsed);
     this.collapseBtn?.setAttribute(
       'aria-label',
       collapsed ? 'Open the panel' : 'Collapse the panel',
     );
     this.collapseBtn?.setAttribute('title', collapsed ? 'Open' : 'Collapse');
-    // The same disclosure pairing the Help row below it uses: this button's
-    // aria-controls names the body, so it owes a state to go with it.
+    // The disclosure pairing: this button's aria-controls names the body, so
+    // it owes a state to go with it.
     this.collapseBtn?.setAttribute('aria-expanded', collapsed ? 'false' : 'true');
     this.measurePanel();
+    this.measureCard();
   }
 
-  /** Show or hide the help grid, keeping its row lit with it — the button's
-   *  pressed state and the grid are one thing, never two. */
+  /**
+   * Show or hide the gesture guide, keeping the chip lit with it — the chip's
+   * pressed state and the card are one thing, never two.
+   *
+   * Focus is managed only when the keyboard is the pointer: a chip activated
+   * by key hands the card's × its focus (the card sits after the whole panel
+   * in DOM order — a keyboard user should not have to walk there), and any
+   * close that would strand focus inside the hidden card gives it back to the
+   * chip. A pointer press keeps its own rules — main.ts's document-level
+   * blur owns that.
+   */
   setHelpOpen(open: boolean): void {
-    this.helpGrid?.classList.toggle('visible', open);
-    this.helpBtn?.classList.toggle('open', open);
-    this.helpBtn?.setAttribute('aria-expanded', open ? 'true' : 'false');
-    // Focus stays where the user put it. The button used to be dropped on
-    // close, which was survivable while it sat in the header; at the foot of
-    // the body it is the 91st focusable thing on the page, behind all ~75 rows
-    // of the find list, so a keyboard close would exile the user to <body> and
-    // charge them the whole list to get back to the control they just pressed.
-    // Nothing visual depended on it either: the lit state is the `.open` class,
-    // and there is no `:focus` rule on this button. A POINTER press is still
-    // blurred — main.ts's document-level rule owns that, and it is why the
-    // chevron above must not stop propagation.
-    this.measurePanel();
-    // The grid opens at the FOOT of a body that scrolls, so on a short panel it
-    // can unfold entirely below the fold and read as a press that did nothing.
-    // After the measure, so the cap and the list's share are already standing
-    // and the scroll lands where the grid finally is.
-    if (open) this.helpGrid?.scrollIntoView({ block: 'nearest' });
+    const wasOpen = !!this.dock?.classList.contains('help-open');
+    this.dock?.classList.toggle('help-open', open);
+    // The `visible` class is the label pass's cue that this sheet is standing
+    // chrome (the picked card's idiom) — the labels dodge an open guide.
+    this.helpCard?.classList.toggle('visible', open);
+    this.helpChip?.classList.toggle('on', open);
+    this.helpChip?.setAttribute('aria-expanded', open ? 'true' : 'false');
+    if (!open && this.helpCard?.contains(document.activeElement)) {
+      this.helpChip?.focus();
+    }
+    this.helpCard?.setAttribute('aria-hidden', open ? 'false' : 'true');
+    if (open && !wasOpen && this.focusHelpOnOpen) {
+      (document.getElementById('map-help-close') as HTMLButtonElement | null)?.focus();
+    }
+    this.focusHelpOnOpen = false;
+    // The card stands beside the panel, not in it — no height changed, but
+    // the label placer caches the dock's chrome and the guide just joined or
+    // left it.
+    this.onPanelGeometry();
   }
 
   /**
@@ -359,10 +447,13 @@ export class MapHUD {
     const rect = panel.getBoundingClientRect();
     if (rect.height > 0) {
       // 12 px of air below the top chrome, the same margin the chart's other
-      // corners keep.
-      const cap = Math.max(0, Math.round(rect.bottom - panelCeilingPx() - 12));
+      // corners keep. The open phone sheet also reserves the help chip's
+      // floating row above its own top edge.
+      const chipReserve = phoneLayout() && !panel.classList.contains('collapsed')
+        ? PHONE_HELP_CHIP_RESERVE_PX
+        : 0;
+      const cap = Math.max(0, Math.round(rect.bottom - panelCeilingPx() - 12 - chipReserve));
       panel.style.maxHeight = `${cap}px`;
-      this.growFocusList(cap);
       this.updatePanelFade();
     }
     // Told UNCONDITIONALLY, including for a panel that has just measured as
@@ -370,68 +461,6 @@ export class MapHUD {
     // the band it occupied is free now, and a cache still holding its old rect
     // would go on steering labels around a panel that is not there.
     this.onPanelGeometry();
-  }
-
-  /**
-   * The find list is the panel's slack consumer: a 75-body catalog in a
-   * two-row porthole is a list you can only search, never browse, and on a tall
-   * viewport the panel has room to spare below the sections that hold their
-   * height.
-   *
-   * The stylesheet keeps the FLOOR (and the phone's cap, which is not
-   * negotiable — the sheet is a band across a screen the chart also has to be
-   * read on). This only ever hands over what the cap leaves after everything
-   * else has taken its share: clear the override so the CSS floor is what is
-   * standing, measure what the panel then comes to, and give the difference to
-   * the list. A body already scrolling has no slack, so nothing changes.
-   */
-  private growFocusList(cap: number): void {
-    const list = this.listEl;
-    const panel = this.panel;
-    if (!list || !panel) return;
-    // The phone's cap is the stylesheet's and stays there: the sheet is a band
-    // across a screen the chart also has to be read on, and a list that grew
-    // into the slack would take the chart's share of it. Cleared BEFORE any
-    // guard below can return — a resize across the breakpoint while a query is
-    // held would otherwise leave a desktop maximum standing over the phone's
-    // cap, and the held height with it.
-    if (panel.getBoundingClientRect().width >= window.innerWidth - 32) {
-      list.style.maxHeight = '';
-      return;
-    }
-    // A held list is answering a different question (see holdListHeight), and
-    // its grown maximum has to stay: clearing it here would let the
-    // stylesheet's floor clamp the very height being held.
-    if (this.listHeldPx !== null) return;
-    list.style.maxHeight = '';
-    const floor = Number.parseFloat(getComputedStyle(list).maxHeight);
-    if (!Number.isFinite(floor)) return;
-    const slack = cap - panel.getBoundingClientRect().height;
-    if (slack > 1) list.style.maxHeight = `${Math.round(floor + slack)}px`;
-  }
-
-  /**
-   * Hold the list at the height it had when the query started.
-   *
-   * The panel is bottom-anchored, so a list that shrinks as a query narrows it
-   * slides the whole panel — header, help button and all — down the screen
-   * while the user is still typing into it. The control they reach for next has
-   * moved. `height` rather than `max-height`: the point is that the box does not
-   * follow its contents at all until the query is gone.
-   */
-  private holdListHeight(): void {
-    const list = this.listEl;
-    if (!list || this.listHeldPx !== null) return;
-    this.listHeldPx = list.getBoundingClientRect().height;
-    list.style.height = `${Math.round(this.listHeldPx)}px`;
-  }
-
-  private releaseListHeight(): void {
-    const list = this.listEl;
-    if (!list || this.listHeldPx === null) return;
-    this.listHeldPx = null;
-    list.style.height = '';
-    this.measurePanel();
   }
 
   /**
@@ -458,12 +487,12 @@ export class MapHUD {
     body.classList.toggle('scrolls-up', above);
   }
 
-  /** Stand the panel down while another instrument takes its corner (Stats and
-   *  Time both open into it), and put it back when they close. The pill goes
-   *  with it — the corner is what is being given up, not the panel. */
+  /** Stand the dock down while another instrument takes its corner (Stats and
+   *  Time both open into it), and put it back when they close. The whole
+   *  cluster goes — help chip, panel and guide — because the corner is what
+   *  is being given up, not the panel. */
   setPanelStoodDown(down: boolean): void {
-    this.panel?.classList.toggle('stood-down', down);
-    this.pill?.classList.toggle('stood-down', down);
+    this.dock?.classList.toggle('stood-down', down);
     // Standing down empties the corner, which is a geometry change like any
     // other. A full remeasure rather than the bare notification: a resize can
     // cross the phone breakpoint while the panel is stood down (its zero
@@ -533,73 +562,175 @@ export class MapHUD {
     }
   }
 
-  // ── Find a body ────────────────────────────────────────────────────────
+  // ── The Focus picker ───────────────────────────────────────────────────
 
-  /** Rebuild the list. The query starts empty: the list is opened to go
-   *  somewhere, and the last trip's search says nothing about this one. */
+  /** Catalog tint as CSS — the rows carry 0xRRGGBB. */
+  private static rowColorCss(row: MapFocusRow): string {
+    return `#${row.color.toString(16).padStart(6, '0')}`;
+  }
+
+  /** Rebuild the picker — the planet grid, the tray roster behind it, and the
+   *  flat search rows — from one set of rows. The query starts empty and the
+   *  tray closed: the picker is opened to go somewhere, and the last trip's
+   *  search says nothing about this one. */
   setFocusRows(rows: MapFocusRow[]): void {
     if (!this.listEl) return;
     this.rows = rows;
     this.rowEls = [];
     this.highlight = -1;
-    this.followingRow = null;
     this.followingName = null;
-    this.releaseListHeight();
+    this.hereName = rows.find((row) => row.here)?.name ?? null;
     this.listEl.textContent = '';
     for (const row of rows) this.listEl.appendChild(this.buildRow(row));
+    // The empty line lives INSIDE the fixed-height results box (it must not
+    // add height below it), so the clear above took it out — put it back.
+    if (this.emptyEl) this.listEl.appendChild(this.emptyEl);
+    this.buildGrid(rows);
+    this.setTray(null);
+    this.paintFollowing();
     if (this.searchEl) this.searchEl.value = '';
     this.applyFilter();
     this.listEl.scrollTop = 0;
-    // The row you are standing on is worth walking in: on the full catalog it
-    // sits below the fold, and a pill nobody can see marks nothing.
-    this.rowEls.find((el) => el.classList.contains('here'))
-      ?.scrollIntoView({ block: 'center' });
+    this.measurePanel();
+  }
+
+  /** The grid: one cell per parentless row, in roster order — the fly-to
+   *  button, and the moon-count disclosure when the planet has moons. */
+  private buildGrid(rows: MapFocusRow[]): void {
+    const grid = this.gridEl;
+    if (!grid) return;
+    this.cells.clear();
+    this.moonsByPlanet.clear();
+    grid.textContent = '';
+    for (const row of rows) {
+      if (!row.parent) continue;
+      const group = this.moonsByPlanet.get(row.parent);
+      if (group) group.push(row);
+      else this.moonsByPlanet.set(row.parent, [row]);
+    }
+    for (const row of rows) {
+      if (row.parent) continue;
+      const moons = this.moonsByPlanet.get(row.name) ?? [];
+      const cell = document.createElement('div');
+      cell.className = 'map-cell';
+      if (row.here) cell.classList.add('here');
+      const go = document.createElement('button');
+      go.type = 'button';
+      go.className = 'map-cell-go';
+      const dot = document.createElement('span');
+      dot.className = 'pk-dot';
+      dot.style.background = MapHUD.rowColorCss(row);
+      const name = document.createElement('b');
+      name.textContent = row.name;
+      go.append(dot, name);
+      // The tooltip carries the row's one line of meta — the orbit the list
+      // used to print beside the name. "star" would just repeat the Sun.
+      go.title = `Focus ${row.name}`
+        + (row.meta && row.meta !== 'star' ? ` · ${row.meta}` : '');
+      go.addEventListener('click', () => this.onPickRow(row.name));
+      cell.appendChild(go);
+      let moonsBtn: HTMLButtonElement | null = null;
+      if (moons.length > 0) {
+        moonsBtn = document.createElement('button');
+        moonsBtn.type = 'button';
+        moonsBtn.className = 'map-cell-moons';
+        moonsBtn.innerHTML = `${moons.length}<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5.5 8 L10 12.5 L14.5 8"></path></svg>`;
+        const gloss = `${moons.length} moon${moons.length > 1 ? 's' : ''}`;
+        moonsBtn.title = `${row.name} — ${gloss}`;
+        moonsBtn.setAttribute('aria-label', `Show the ${gloss} of ${row.name}`);
+        moonsBtn.setAttribute('aria-expanded', 'false');
+        moonsBtn.setAttribute('aria-controls', 'map-moon-tray');
+        moonsBtn.addEventListener('click', () => {
+          this.setTray(this.openTray === row.name ? null : row.name);
+        });
+        cell.appendChild(moonsBtn);
+      }
+      grid.appendChild(cell);
+      this.cells.set(row.name, { cell, moonsBtn });
+    }
+  }
+
+  /**
+   * Fold the moon tray open under the grid (or away). The chips are rebuilt
+   * for the disclosed planet — from the cached here/following names too, so a
+   * tray opened later still wears the rings the state earned earlier.
+   */
+  private setTray(name: string | null): void {
+    this.openTray = name;
+    if (name && this.trayHeadEl && this.trayChipsEl) {
+      const moons = this.moonsByPlanet.get(name) ?? [];
+      this.trayHeadEl.textContent = `${name} · ${moons.length} moon${moons.length > 1 ? 's' : ''}`;
+      this.trayChipsEl.textContent = '';
+      for (const moon of moons) {
+        const chip = document.createElement('button');
+        chip.type = 'button';
+        chip.className = 'map-tray-chip';
+        chip.dataset.name = moon.name;
+        if (moon.name === this.followingName) chip.classList.add('followed');
+        if (moon.name === this.hereName) chip.classList.add('here');
+        const dot = document.createElement('span');
+        dot.className = 'pk-dot';
+        dot.style.background = MapHUD.rowColorCss(moon);
+        chip.append(dot, moon.name);
+        chip.title = `Focus ${moon.name}`;
+        chip.addEventListener('click', () => this.onPickRow(moon.name));
+        this.trayChipsEl.appendChild(chip);
+      }
+    }
+    this.traywEl?.classList.toggle('open', name !== null);
+    for (const [cellName, { cell, moonsBtn }] of this.cells) {
+      cell.classList.toggle('open', cellName === name);
+      moonsBtn?.setAttribute('aria-expanded', cellName === name ? 'true' : 'false');
+    }
+    // The tray folds the panel taller or shorter; the transitionend listener
+    // catches where it lands, this catches the start.
     this.measurePanel();
   }
 
   /**
-   * Mark the row the camera is riding, and offer the way off it.
+   * Mark the body the camera is riding — the following row under the grid
+   * with its release chip, the accent ring on the cell, the lit tray chip,
+   * and the flat row's tint for a search in progress.
    *
    * `name` is null whenever there is nothing to release — including while a
    * release is already flying, which is why the caller passes the releasable
-   * predicate's answer rather than the focus name. A chip that stood through
+   * predicate's answer rather than the focus name. A row that stood through
    * the flight would offer a release that has already happened.
    */
   setFollowing(name: string | null): void {
     if (name === this.followingName) return;
     this.followingName = name;
-    if (this.followingRow) {
-      this.followingRow.classList.remove('mfm-followed');
-      this.followingChip?.remove();
-      this.followingRow = null;
-    }
-    if (name === null) return;
-    const index = this.rows.findIndex((row) => row.name === name);
-    const rowEl = index >= 0 ? this.rowEls[index] : undefined;
-    if (!rowEl) return;
-    this.followingRow = rowEl;
-    rowEl.classList.add('mfm-followed');
-    const chip = this.ensureFollowingChip();
-    // Named for what it does to the body it sits beside — "following" alone is
-    // a state, and a control has to say its action.
-    chip.setAttribute('aria-label', `Stop following ${name}`);
-    chip.title = `Stop following ${name}`;
-    rowEl.appendChild(chip);
+    this.paintFollowing();
   }
 
-  private ensureFollowingChip(): HTMLButtonElement {
-    if (this.followingChip) return this.followingChip;
-    const chip = document.createElement('button');
-    chip.type = 'button';
-    chip.className = 'mfm-following';
-    chip.textContent = 'following';
-    // A sibling of the row's own commit button, never inside it: the row flies
-    // TO the body and this gives it back, and one button cannot legally
-    // contain another — a nested control is unreachable to a keyboard and
-    // ambiguous to a screen reader.
-    chip.addEventListener('click', () => this.onReleaseFocus());
-    this.followingChip = chip;
-    return chip;
+  private paintFollowing(): void {
+    const name = this.followingName;
+    if (this.followRowEl) {
+      this.followRowEl.hidden = name === null;
+      if (name !== null) {
+        const row = this.rows.find((r) => r.name === name);
+        if (this.followDotEl && row) this.followDotEl.style.background = MapHUD.rowColorCss(row);
+        if (this.followNameEl) this.followNameEl.textContent = `Following ${name}`;
+        // Named for what it does to the body it sits beside — "following"
+        // alone is a state, and a control has to say its action.
+        this.followReleaseBtn?.setAttribute('aria-label', `Stop following ${name}`);
+        if (this.followReleaseBtn) this.followReleaseBtn.title = `Stop following ${name}`;
+      }
+    }
+    for (const [cellName, { cell }] of this.cells) {
+      cell.classList.toggle('followed', cellName === name);
+    }
+    const chips = this.trayChipsEl?.children;
+    if (chips) {
+      for (const chip of chips) {
+        chip.classList.toggle('followed', (chip as HTMLElement).dataset.name === name);
+      }
+    }
+    for (let i = 0; i < this.rowEls.length; i++) {
+      this.rowEls[i].classList.toggle('mfm-followed', this.rows[i].name === name);
+    }
+    // The row appearing or leaving moves the bottom-anchored panel's top edge.
+    this.measurePanel();
   }
 
   /**
@@ -614,9 +745,13 @@ export class MapHUD {
   private searchKeydown(e: KeyboardEvent): void {
     e.stopPropagation();
     if (e.repeat) return;
-    if (e.key === 'ArrowDown') { e.preventDefault(); this.moveHighlight(1); return; }
-    if (e.key === 'ArrowUp') { e.preventDefault(); this.moveHighlight(-1); return; }
-    if (e.key === 'Enter') { e.preventDefault(); this.commitHighlight(); return; }
+    // The arrows and Enter drive the RESULTS, and the results stand only
+    // while a query does — with the grid up they would walk an invisible
+    // list. (Tab walks the grid itself; that is the browser's.)
+    const searching = !!this.searchEl?.value.trim();
+    if (e.key === 'ArrowDown') { e.preventDefault(); if (searching) this.moveHighlight(1); return; }
+    if (e.key === 'ArrowUp') { e.preventDefault(); if (searching) this.moveHighlight(-1); return; }
+    if (e.key === 'Enter') { e.preventDefault(); if (searching) this.commitHighlight(); return; }
     if (e.key === 'Escape') {
       e.preventDefault();
       // A query is what Esc gives back first; an empty field has nothing left
@@ -649,7 +784,15 @@ export class MapHUD {
       ? this.highlight
       : (visible.length === 1 ? visible[0] : -1);
     if (index < 0) return;
-    this.onPickRow(this.rows[index].name);
+    this.commitRow(this.rows[index].name);
+  }
+
+  /** A search result was chosen: the query is spent — clear it, hand the
+   *  picker back to the grid, and only then fly. */
+  private commitRow(name: string): void {
+    if (this.searchEl) this.searchEl.value = '';
+    this.applyFilter();
+    this.onPickRow(name);
   }
 
   private visibleIndices(): number[] {
@@ -659,11 +802,10 @@ export class MapHUD {
   }
 
   /**
-   * One row: a plain wrapper carrying the deck's row look, with the controls
-   * inside it as SIBLINGS — the commit button that flies to the body, and (when
-   * it is the one being followed) the release chip. The wrapper is not itself
-   * interactive: a button inside a button is invalid, unreachable by keyboard
-   * and ambiguous to a screen reader.
+   * One flat search row: a plain wrapper carrying the deck's row look, with
+   * the commit button inside it. The wrapper is not itself interactive: a
+   * button inside a button is invalid, unreachable by keyboard and ambiguous
+   * to a screen reader — the same rule the grid cells follow.
    */
   private buildRow(row: MapFocusRow): HTMLElement {
     const wrap = document.createElement('div');
@@ -676,7 +818,7 @@ export class MapHUD {
     pick.className = 'mfm-pick';
     const dot = document.createElement('span');
     dot.className = 'pk-dot';
-    dot.style.background = `#${row.color.toString(16).padStart(6, '0')}`;
+    dot.style.background = MapHUD.rowColorCss(row);
     const info = document.createElement('span');
     info.className = 'pk-info';
     const name = document.createElement('b');
@@ -699,7 +841,7 @@ export class MapHUD {
       // Inside the commit button, so the whole row stays one target.
       pick.appendChild(pill);
     }
-    pick.addEventListener('click', () => this.onPickRow(row.name));
+    pick.addEventListener('click', () => this.commitRow(row.name));
     wrap.appendChild(pick);
     this.rowEls.push(wrap);
     return wrap;
@@ -707,13 +849,13 @@ export class MapHUD {
 
   private applyFilter(): void {
     const query = this.searchEl?.value ?? '';
-    // The height is TAKEN before the filter writes — what is held has to be the
-    // height the list had when the user started typing — and GIVEN BACK after
-    // them, at the bottom: releasing re-measures the panel, and a measurement
-    // taken while the matching rows are still hidden reads a panel that is
-    // about to grow, hands the list slack that does not exist, and judges the
-    // scroll cue on a body that has not been refilled yet.
-    if (query.trim()) this.holdListHeight();
+    const q = query.trim().toLowerCase();
+    // The mode swap: a query stands the flat results in for the grid (the
+    // results box is a fixed-height porthole, so the bottom-anchored panel's
+    // top edge holds still while the query narrows). Geometry moves only when
+    // the MODE changes, and the measure below owns that edge.
+    const wasSearching = !!this.pickerEl?.classList.contains('searching');
+    this.pickerEl?.classList.toggle('searching', !!q);
     const visible = filterDeckRows(query, this.rows);
     let any = false;
     for (let i = 0; i < this.rowEls.length; i++) {
@@ -721,7 +863,6 @@ export class MapHUD {
       if (visible[i]) any = true;
     }
     this.emptyEl?.classList.toggle('visible', !any);
-    const q = query.trim().toLowerCase();
     if (q) {
       // Typing is already choosing: highlight the first row the query NAMES —
       // not a parent riding along on its moon's match — so the Enter that
@@ -732,11 +873,12 @@ export class MapHUD {
       }
       if (pick < 0) pick = visible.findIndex((v) => v);
       this.setHighlight(pick);
-    } else if (this.highlight >= 0 && !visible[this.highlight]) {
-      // A highlight the filter has hidden is not a highlight any more.
+      if (this.listEl) this.listEl.scrollTop = 0;
+    } else if (this.highlight >= 0) {
+      // No query, no results on screen — no highlight either.
       this.setHighlight(-1);
     }
-    if (!q) this.releaseListHeight();
+    if (wasSearching !== !!q) this.measurePanel();
   }
 
   private setHighlight(index: number): void {
@@ -756,7 +898,6 @@ export class MapHUD {
 
   hide(): void {
     if (this.root) this.root.style.display = 'none';
-    this.releaseListHeight();
     this.hideCard();
     this.setHoverMeta(null);
     this.setPanelStoodDown(false);
@@ -904,12 +1045,11 @@ export class MapHUD {
    * actually left between them and the top chrome — measured, so a narrow
    * phone's stacked controls never collide with it.
    *
-   * The bands are the world bar, plus the panel once it spans the width. On a
-   * desktop the panel is a corner instrument on the opposite side, and docking
+   * The bands are the world bar, plus the dock on the phone layout. On a
+   * desktop the dock is a corner instrument on the opposite side, and docking
    * a left-hand card above its top edge would float it hundreds of px over
-   * nothing; on a phone the panel is a full-width sheet and IS the band — a
-   * collapsed sheet's header no less than an open one. Same width test the
-   * label pass uses, so the two agree about what counts.
+   * nothing; on a phone the card spans the width, so the dock is its band —
+   * the folded two-chip dock no less than the open sheet.
    *
    * "Top chrome" is the close button — the only thing above the chart now that
    * the Overview control has moved into the panel. What gives under the cap
@@ -926,11 +1066,13 @@ export class MapHUD {
       // absent rather than as chrome at the top of the viewport.
       return r.height > 0 ? r : null;
     };
-    const panelRect = rect('map-panel');
-    const panelTop = panelRect && panelRect.width >= window.innerWidth - 32
-      ? panelRect.top
-      : Infinity;
-    const bandsTop = Math.min(rect('planetarium-bottom-bar')?.top ?? Infinity, panelTop);
+    // The bands are the world bar, plus — on the phone layout — the whole
+    // dock: the open sheet spans the row, and even the folded two-chip dock
+    // owns its strip of the bottom (the card spans the width down there, so a
+    // corner test would lay it across the chips). Layout intent rather than a
+    // width test, because mid-fold the sheet's rect is neither shape.
+    const dockTop = phoneLayout() ? rect('map-dock')?.top ?? Infinity : Infinity;
+    const bandsTop = Math.min(rect('planetarium-bottom-bar')?.top ?? Infinity, dockTop);
     const bottom = Math.round(Number.isFinite(bandsTop) ? window.innerHeight - bandsTop + 12 : 96);
     this.card.style.bottom = `${bottom}px`;
 

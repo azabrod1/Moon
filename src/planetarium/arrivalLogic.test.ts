@@ -27,9 +27,11 @@ import {
   MOON_APPROACH_K_PER_S,
   PLANET_APPROACH_K_PER_S,
   MOON_ARRIVAL_APPARENT_DIAMETER_DEG,
+  MOON_ARRIVAL_IMPACT_RADII,
   MOON_ARRIVAL_MAX_OFFAXIS_DEG,
   MOON_ARRIVAL_SEPARATION_CAP,
   MOON_ARRIVAL_STANDOFF_FLOOR_AU,
+  MOON_FLYTHROUGH_MIN_IMPACT_CAM_DISTS,
   SUN_APPROACH_SURFACE_RADII,
   SUN_ARRIVAL_RADII,
   type BodyCapState,
@@ -617,7 +619,7 @@ describe('moonArrivalPose — ladder fixtures', () => {
   });
 
   it('the aim is a flyby: off the center, above the collision bubble, under the swing ceiling', () => {
-    for (const name of ['Moon', 'Titan', 'Io', 'Phobos', 'Deimos', 'Charon', 'Phoebe', 'Miranda']) {
+    for (const name of ['Moon', 'Titan', 'Io', 'Charon', 'Phoebe', 'Miranda']) {
       const { inp, pose, dist } = standoff(name);
       const b = pose.aimPoint.distanceTo(inp.moonPos);
       const collisionR = moonCollisionRadius(inp.renderedR, inp.shipClearance);
@@ -757,18 +759,39 @@ describe('moonArrivalPose — catalog sweep (all moons, three orbit phases)', ()
           pose.position.distanceTo(inp.parentPos),
           `${moon.name}: parent clearance`,
         ).toBeGreaterThan(inp.parentClearance - 1e-12);
-        // The flyby misses the moon: closest approach of the forward ray to
-        // the moon's center is the impact parameter, above the bubble.
+        // The arrival class is exactly the gate formula: the flythrough needs
+        // its impact parameter to clear the camera boom.
+        expect(pose.flythrough, `${moon.name}: arrival class`).toBe(
+          inp.renderedR * MOON_ARRIVAL_IMPACT_RADII >=
+            inp.camDist * MOON_FLYTHROUGH_MIN_IMPACT_CAM_DISTS,
+        );
         const fwd = pose.aimPoint.clone().sub(pose.position).normalize();
         const toMoon = inp.moonPos.clone().sub(pose.position);
         const closest = toMoon
           .clone()
           .addScaledVector(fwd, -toMoon.dot(fwd))
           .length();
-        expect(closest, `${moon.name}: flyby miss distance`).toBeGreaterThanOrEqual(
-          collisionR * 1.15 - 1e-12,
-        );
+        if (pose.flythrough) {
+          // The flyby misses the moon: closest approach of the forward ray to
+          // the moon's center is the impact parameter, above the bubble.
+          expect(closest, `${moon.name}: flyby miss distance`).toBeGreaterThanOrEqual(
+            collisionR * 1.15 - 1e-12,
+          );
+        } else {
+          // Planet-style: aimed dead at the body — the governed glide, not
+          // miss geometry, is what stops the ship.
+          expect(pose.aimPoint.distanceTo(inp.moonPos), `${moon.name}: direct aim`).toBe(0);
+        }
       }
+    }
+  });
+
+  it('the split lands on the named-moon line: classical moons fly, the moonlet swarm parks', () => {
+    for (const name of ['Moon', 'Io', 'Europa', 'Ganymede', 'Callisto', 'Titan', 'Triton', 'Charon', 'Miranda', 'Phoebe']) {
+      expect(moonArrivalPose(catalogInputs(name)).flythrough, name).toBe(true);
+    }
+    for (const name of ['Styx', 'Nix', 'Kerberos', 'Hydra', 'Phobos', 'Deimos', 'Pan', 'Cordelia']) {
+      expect(moonArrivalPose(catalogInputs(name)).flythrough, name).toBe(false);
     }
   });
 

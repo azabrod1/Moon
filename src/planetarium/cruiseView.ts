@@ -87,6 +87,16 @@ export const CAMERA_BODY_MARGIN_AU = SHIP_REFERENCE_RADIUS_AU * 2.5;
  *  and never for more than moments. */
 export const CRUISE_NEAR_MIN_AU = 2e-8;
 
+/** Keep-out margin around the orbit rig's polar singularities while the USER
+ *  is orbiting. OrbitControls' spherical degenerates at its up-axis poles:
+ *  one medium upward drag from any arrival reached the exact pole, where the
+ *  camera pinned dead and horizontal drags rolled the sky around the screen
+ *  center instead of panning. Applied only under 'orbit' ownership, ratcheted
+ *  to the grab pose — the CHASE pose legitimately passes the margin during
+ *  steep flight (pitch is bounded ±88.2°, the chase lift adds ~19°), and a
+ *  clamp active in chase would fight the follow, or snap the camera on grab. */
+export const ORBIT_POLAR_MARGIN_RAD = 15 * DEG2RAD;
+
 /** Dynamic-near clamp ceiling (~135 km): safely below the camera-to-hull
  *  minimum (CRUISE_CAM_DIST_AU − SHIP_HULL_MAX_EXTENT_AU ≈ 320 km × the 0.3
  *  fraction), and just under the legacy static 1e-6 AU near so far-field

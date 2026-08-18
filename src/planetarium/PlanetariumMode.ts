@@ -205,6 +205,7 @@ import {
   CAM_FOLLOW_TAU_TURN_S,
   CAM_FOLLOW_TURN_BLEND_S,
   ORBIT_DAMPING_TAU_S,
+  ORBIT_POLAR_MARGIN_RAD,
   cameraFollowGain,
   chaseIdealOffset,
   reacquireCameraStep,
@@ -1753,6 +1754,13 @@ export class PlanetariumMode {
         // Moved > 4px = a drag: the user owns the camera. Legal from any
         // owner — OrbitControls re-derives its spherical from the live camera.
         this.camOwner = 'orbit';
+        // Keep the user's orbiting off the rig's polar singularities, but
+        // ratchet to the grab pose: a steep-flight chase pose can sit inside
+        // the margin, and a fixed clamp would snap the camera on grab. The
+        // user can always drag away from a pole, never newly into one.
+        const polar = this.controls.getPolarAngle();
+        this.controls.minPolarAngle = Math.min(ORBIT_POLAR_MARGIN_RAD, polar);
+        this.controls.maxPolarAngle = Math.max(Math.PI - ORBIT_POLAR_MARGIN_RAD, polar);
         // The arrival look fades out under the drag rather than cancelling —
         // a one-frame cancel snapped the centred moon to the chase aim.
         releaseArrivalLook(this.cruiseAim);
@@ -1778,6 +1786,14 @@ export class PlanetariumMode {
     };
     orbitDom.addEventListener('pointerup', endOrbitDrag);
     orbitDom.addEventListener('pointercancel', endOrbitDrag);
+    // A wheel zoom is camera work like any drag or keypress: the player is
+    // already composing the shot, so the flythrough look hands back rather
+    // than panning underneath them. (OrbitControls consumes the wheel for
+    // the dolly itself; this only retires the look.)
+    orbitDom.addEventListener('wheel', () => {
+      if (!this.active || this.landedView === 'surface') return;
+      releaseArrivalLook(this.cruiseAim);
+    }, { passive: true });
 
     // System-map picking shares the canvas with the map's OrbitControls: a tap
     // (small travel) picks a body / dismisses the card, a drag orbits. All the
@@ -2905,6 +2921,11 @@ export class PlanetariumMode {
     // Player is always at scene origin due to floating origin.
     this.controls.target.set(0, 0, 0);
 
+    // The polar keep-out exists only under user ownership: OrbitControls
+    // re-clamps from the live camera on every update() call, and the chase
+    // pose crosses the margin legitimately during steep flight.
+    if (this.camOwner !== 'orbit') this.clearOrbitPolarClamps();
+
     if (this.camOwner === 'orbit') {
       // The user owns the camera: OrbitControls is the sole writer and its
       // damping coast finishes the gesture. Nothing follows or reverses it.
@@ -2934,6 +2955,11 @@ export class PlanetariumMode {
 
     this.updateCameraFollow(dt);
     this.controls.update();
+  }
+
+  private clearOrbitPolarClamps() {
+    this.controls.minPolarAngle = 0;
+    this.controls.maxPolarAngle = Math.PI;
   }
 
   /** Advance the idle↔turning blend and return the eased follow τ. Shared by
@@ -10849,17 +10875,30 @@ export class PlanetariumMode {
     // develop hands-off, holding the moon in frame through closest approach.
     // (An always-on look here put ~20° between the arrival and settled
     // poses, and every first input paid it as a visible adjust.)
-    this.tmpAimDir
-      .copy(destination.bodyPosition)
-      .sub(destination.position);
-    const arrivalDistanceAU = this.tmpAimDir.distanceTo(this.camera.position);
-    startArrivalLook(this.cruiseAim, moon.name, moon.parentPlanet, arrivalDistanceAU);
-    // Catalog refs for the analytic per-frame moon position (the mesh is
-    // not a legal source: it may be unpainted and untransformed for the
-    // whole veil window).
-    this.arrivalLookMoon = moon;
-    this.arrivalLookParentBody =
-      PLANETARIUM_BODIES.find((b) => b.name === moon.parentPlanet) ?? null;
+    // Moonlet arrivals (flythrough: false) aim dead at the body with no pass
+    // to film: no look, nothing for the camera to do but hold the chase.
+    if (destination.flythrough) {
+      this.tmpAimDir
+        .copy(destination.bodyPosition)
+        .sub(destination.position);
+      const arrivalDistanceAU = this.tmpAimDir.distanceTo(this.camera.position);
+      startArrivalLook(this.cruiseAim, moon.name, moon.parentPlanet, arrivalDistanceAU);
+      // Catalog refs for the analytic per-frame moon position (the mesh is
+      // not a legal source: it may be unpainted and untransformed for the
+      // whole veil window).
+      this.arrivalLookMoon = moon;
+      this.arrivalLookParentBody =
+        PLANETARIUM_BODIES.find((b) => b.name === moon.parentPlanet) ?? null;
+    } else {
+      // A moonlet "arrival under way" is a bounce, not an approach: full
+      // thrust crosses the whole standoff in seconds, slides off the
+      // pebble-sized collision shell, and the leave valve slings the moon
+      // out of frame. Park instead — the caller decision the jump funnel
+      // reserves (the same one dev framing and the tutorial use) — with the
+      // body dead-centre; the throttle revives the ship the moment the
+      // player wants to close in.
+      this.player.moving = false;
+    }
     // Retain the nav moon (applyJumpDestination cleared it above): keeps the
     // dot floor + label if the player takes manual control before arrival.
     this.dotNavMoon = { name: moon.name, parentPlanet: moon.parentPlanet };
@@ -10962,7 +11001,12 @@ export class PlanetariumMode {
       camDist: CRUISE_CAM_DIST_AU,
       shipClearance: SHIP_CLEARANCE_AU,
     });
-    return { position: pose.position, lookTarget: pose.aimPoint, bodyPosition };
+    return {
+      position: pose.position,
+      lookTarget: pose.aimPoint,
+      bodyPosition,
+      flythrough: pose.flythrough,
+    };
   }
 
   /**
@@ -14494,6 +14538,10 @@ export class PlanetariumMode {
     this.applyFloatingOrigin();
     if (this.landedView !== 'surface') {
       this.controls.target.set(0, 0, 0);
+      // Landed orbiting keeps the full polar range (looking straight down a
+      // pole at the globe is a legitimate framing); a clamp ratcheted during
+      // a cruise grab must not leak across the landing.
+      this.clearOrbitPolarClamps();
       this.controls.update();
       // Label/marker projections later this frame read camera.matrixWorldInverse,
       // which the renderer refreshes only at render time. Refresh it here, past

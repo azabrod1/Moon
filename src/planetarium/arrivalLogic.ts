@@ -225,6 +225,15 @@ export const MOON_ARRIVAL_IMPACT_RADII = 1.8;
  *  under their separation caps would otherwise push the disc out of frame. */
 export const MOON_ARRIVAL_MAX_OFFAXIS_DEG = 12;
 
+/** The flythrough needs its lateral show to dwarf the chase rig: below this
+ *  many camera-boom lengths of impact parameter, the whole pass — perigee,
+ *  abeam slide, sling — happens INSIDE the camera's own trail distance, and
+ *  reads as teleporting on top of a rock while the view crawls. Those moons
+ *  arrive planet-style instead: aimed dead at the body, the governed glide
+ *  as the show. Splits the catalog at the named-moon line (every classical
+ *  moon plus Charon flies; the moonlet swarm parks). */
+export const MOON_FLYTHROUGH_MIN_IMPACT_CAM_DISTS = 2;
+
 /**
  * How strongly a moon teleport's camera should keep looking at the moon.
  * The flyby path still aims past the limb; only the camera is decoupled from
@@ -338,9 +347,13 @@ export interface MoonArrivalInputs {
 
 export interface MoonArrivalPose {
   position: THREE.Vector3;
-  /** Heading target: offset from the moon's center so forward flight is a
-   *  flyby past the limb, never a collision course. */
+  /** Heading target. Flythrough arrivals offset it from the moon's center so
+   *  forward flight is a flyby past the limb; direct arrivals aim at the
+   *  center itself and let the governed glide park the ship. */
   aimPoint: THREE.Vector3;
+  /** True when this arrival stages the near-miss flythrough (and its camera
+   *  tracking); false for the planet-style head-on glide at moonlets. */
+  flythrough: boolean;
 }
 
 /** Collision bubble around a moon mesh: rendered radius plus the full hull
@@ -482,7 +495,9 @@ export function autopilotArrived(distToMoonCenterAU: number, standoffAU: number)
  * superior conjunction); fallback is outward along the parent→moon radial,
  * which always clears the parent, its rings, and the line of sight.
  *
- * Aim: offset by an impact parameter so full thrust sweeps past the limb.
+ * Aim: for flythrough-class moons, offset by an impact parameter so full
+ * thrust sweeps past the limb; moonlets whose pass would fit inside the
+ * camera boom aim dead at the body instead (planet-style, flythrough:false).
  * The clearance floor outranks composition — without it the smallest
  * curve-rendered moons keep almost no miss margin. Side selection selects the perp
  * toward the parent so the moon slides to the opposite third and the two
@@ -512,6 +527,14 @@ export function moonArrivalPose(inp: MoonArrivalInputs): MoonArrivalPose {
         ? moonPos.clone().sub(parentPos).divideScalar(orbitR)
         : new THREE.Vector3(1, 0, 0);
     position = moonPos.clone().addScaledVector(outward, dist);
+  }
+
+  // Moonlets get the planet-style arrival: aimed dead at the body, no flyby
+  // offset — their pass would fit inside the camera boom (see the gate
+  // constant). The glide clamps at the collision shell like any head-on
+  // planet approach, so no miss geometry is needed.
+  if (renderedR * MOON_ARRIVAL_IMPACT_RADII < inp.camDist * MOON_FLYTHROUGH_MIN_IMPACT_CAM_DISTS) {
+    return { position, aimPoint: moonPos.clone(), flythrough: false };
   }
 
   // Required perpendicular miss, converted to an aim offset: a ray aimed b
@@ -545,7 +568,7 @@ export function moonArrivalPose(inp: MoonArrivalInputs): MoonArrivalPose {
     perp.multiplyScalar(-1);
     aimPoint = moonPos.clone().addScaledVector(perp, b);
   }
-  return { position, aimPoint };
+  return { position, aimPoint, flythrough: true };
 }
 
 /** Standoff for a Sun teleport, in photosphere radii: 8 puts a ~14° disc in

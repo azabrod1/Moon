@@ -4,6 +4,7 @@ import {
   advanceBodyCap,
   autopilotAimBlend,
   autopilotArrived,
+  autopilotCloseStandoffAU,
   autopilotGlideCap,
   governedSpeedCap,
   initialBodyCapState,
@@ -969,6 +970,44 @@ describe('autopilotArrived', () => {
     // A parked stop needs a nonzero closing speed at the trigger distance;
     // exactly at the standoff the cap is zero, so arrival must trigger above it.
     expect(autopilotGlideCap(1.05 * S, S)).toBeGreaterThan(0);
+  });
+});
+
+describe('autopilotCloseStandoffAU — engaging inside the postcard', () => {
+  it('retargets the Moon at the pose floor: 1.5× the collision bubble, well under the postcard', () => {
+    const inp = catalogInputs('Moon');
+    const close = autopilotCloseStandoffAU(inp);
+    expect(close).toBeCloseTo(moonCollisionRadius(inp.renderedR, inp.shipClearance) * 1.5, 12);
+    expect(close).toBeLessThan(moonArrivalStandoffAU(inp));
+  });
+
+  it('the reported bug case flies again: a third of the postcard out is arrived on the postcard, live on the retarget', () => {
+    // Engaging autopilot beside the Moon used to ring the bell and park the
+    // ship on the spot: any distance inside the ~23-radii postcard counted as
+    // arrived, and the glide cap was zero there anyway.
+    const inp = catalogInputs('Moon');
+    const postcard = moonArrivalStandoffAU(inp);
+    const dist = postcard / 3;
+    expect(autopilotArrived(dist, postcard)).toBe(true); // the old instant bell
+    const close = autopilotCloseStandoffAU(inp);
+    expect(autopilotArrived(dist, close)).toBe(false); // retargeted: still flying
+    expect(autopilotGlideCap(dist, close)).toBeGreaterThan(0); // and free to move
+  });
+
+  it('across the catalog the retarget stays between the collision bubble and the postcard', () => {
+    for (const moon of MOONS) {
+      for (const angle of [0.7, 2.4, 4.1]) {
+        const inp = catalogInputs(moon.name, angle);
+        const close = autopilotCloseStandoffAU(inp);
+        const bubble = moonCollisionRadius(inp.renderedR, inp.shipClearance);
+        // The arrival margin (1.05×) must clear the shell the resolvers park
+        // on, or a close approach could never latch.
+        expect(1.05 * close, `${moon.name}: latch clears the shell`).toBeGreaterThan(bubble);
+        expect(close, `${moon.name}: never past the postcard`).toBeLessThanOrEqual(
+          moonArrivalStandoffAU(inp) + 1e-15,
+        );
+      }
+    }
   });
 });
 

@@ -249,6 +249,7 @@ import {
   advanceBodyCap,
   autopilotAimBlend,
   autopilotArrived,
+  autopilotCloseStandoffAU,
   autopilotGlideCap,
   governedSpeedCap,
   initialBodyCapState,
@@ -931,6 +932,14 @@ export class PlanetariumMode {
   private autopilotAim = new THREE.Vector3();
   private autopilotAimMoonPos = new THREE.Vector3();
   private autopilotAimFor: string | null = null;
+  /** Close-approach retarget, decided on the first frame the engaged target's
+   *  geometry resolves (lazily, so a mid-cruise save restore re-decides from
+   *  the restored position): null = undecided, false = the normal postcard
+   *  cruise, true = the ship was ALREADY inside the arrival threshold when
+   *  autopilot engaged, so the glide retargets the close standoff — engaging
+   *  beside a body buys a real approach, never an instant "Arrived" that
+   *  parks the ship where it stands. */
+  private autopilotCloseApproach: boolean | null = null;
 
   // Moon world positions in AU (true positions, not offset)
   private moonWorldPositions = new Map<string, { x: number; y: number; z: number }>();
@@ -2590,7 +2599,7 @@ export class PlanetariumMode {
         const dy = inp.moonPos.y - this.player.posY;
         const dz = inp.moonPos.z - this.player.posZ;
         const dist = Math.sqrt(dx * dx + dy * dy + dz * dz);
-        const glide = autopilotGlideCap(dist, moonArrivalStandoffAU(inp));
+        const glide = autopilotGlideCap(dist, this.autopilotMoonStandoffAU(inp, dist));
         if (glide < this.player.speedCapAUPerS) this.player.speedCapAUPerS = glide;
       }
     }
@@ -14544,8 +14553,10 @@ export class PlanetariumMode {
     this.controls.maxDistance = 5;
     this.resetCruiseCamera();
 
-    // Restore autopilot
+    // Restore autopilot — re-deciding the close-approach latch: takeoff
+    // parks the ship right beside the body, a fresh measurement's problem.
     this.autopilot = this.preLandAutopilot;
+    this.autopilotCloseApproach = null;
     this.updateAutopilotButton();
 
     this.landedOn = null;
@@ -14863,6 +14874,9 @@ export class PlanetariumMode {
     // user picks ever produce a non-Mercury target).
     this.autopilotTarget = saved.autopilotTarget ?? null;
     this.autopilotUserEngaged = saved.autopilotUserEngaged ?? false;
+    // Deliberately not persisted: the latch re-decides lazily from the
+    // restored position, which reproduces the engage-time decision.
+    this.autopilotCloseApproach = null;
     this.updateAutopilotButton();
     this.skyPrefStored = saved.skyPref ?? null;
     const shipLabel = document.getElementById('settings-ship-label');
@@ -14939,6 +14953,22 @@ export class PlanetariumMode {
     return inp;
   }
 
+  /**
+   * The standoff the engaged moon autopilot glides to this frame — and the
+   * single decider of the close-approach latch: the first measured frame
+   * compares the ship's distance against the postcard, and an engage that
+   * would have counted as already-arrived retargets the whole cruise (glide
+   * cap, aim, arrival test) at the close standoff instead of ringing the
+   * bell where it stands.
+   */
+  private autopilotMoonStandoffAU(inp: MoonArrivalInputs, distToMoonCenterAU: number): number {
+    const postcard = moonArrivalStandoffAU(inp);
+    if (this.autopilotCloseApproach === null) {
+      this.autopilotCloseApproach = autopilotArrived(distToMoonCenterAU, postcard);
+    }
+    return this.autopilotCloseApproach ? autopilotCloseStandoffAU(inp) : postcard;
+  }
+
   private applyAutopilot() {
     if (!this.autopilotTarget) return;
     const pos = this.getTargetWorldPosition(this.autopilotTarget);
@@ -14950,11 +14980,19 @@ export class PlanetariumMode {
     // target.
     const inp = this.resolveAutopilotMoonInputs(this.autopilotTarget);
     if (inp) {
-      const standoff = moonArrivalStandoffAU(inp);
       const dx = inp.moonPos.x - this.player.posX;
       const dy = inp.moonPos.y - this.player.posY;
       const dz = inp.moonPos.z - this.player.posZ;
       const dist = Math.sqrt(dx * dx + dy * dy + dz * dz);
+      const standoff = this.autopilotMoonStandoffAU(inp, dist);
+      if (this.autopilotCloseApproach) {
+        // Close approach: planet-style, dead at the body — the moonlet
+        // arrival rule. The flyby aim was composed for the postcard's
+        // geometry; from inside it the offset reads as a sideways slide the
+        // glide cap (keyed on center distance) would never let converge.
+        this.player.headToward(inp.moonPos.x, inp.moonPos.z, inp.moonPos.y);
+        return;
+      }
       if (dist < 3 * standoff) {
         const blend = autopilotAimBlend(dist, standoff);
         const staleSq = (0.02 * standoff) ** 2;
@@ -14997,6 +15035,9 @@ export class PlanetariumMode {
     this.autopilotTarget = target;
     this.autopilot = true;
     this.autopilotUserEngaged = true;
+    // Undecided until the first frame the target's geometry resolves — the
+    // decider is autopilotMoonStandoffAU / checkAutopilotArrival.
+    this.autopilotCloseApproach = null;
     this.player.moving = true;
     if (this.player.speedMultiplier < PlayerShip.SPEED_DEFAULT) {
       this.player.speedMultiplier = PlayerShip.SPEED_DEFAULT;
@@ -15010,6 +15051,7 @@ export class PlanetariumMode {
     this.autopilotTarget = null;
     this.autopilot = false;
     this.autopilotUserEngaged = false;
+    this.autopilotCloseApproach = null;
     this.updateAutopilotButton();
   }
 
@@ -15064,20 +15106,36 @@ export class PlanetariumMode {
         // The Sun governor glides asymptotically toward its 1.2-photosphere
         // shell, so a tight threshold would never be crossed. 1.5x the
         // teleport standoff lets the pilot ring the bell while the final
-        // glide is still visibly under way.
+        // glide is still visibly under way. (No close-approach retarget:
+        // a Sun arrival never parks the ship, so an inside-threshold engage
+        // just re-rings the bell over the still-running glide.)
         arrived = dist < SUN_DATA.radiusAU * SUN_ARRIVAL_RADII * 1.5;
       } else {
         const body = PLANETARIUM_BODIES.find(b => b.name === this.autopilotTarget!.name);
-        arrived = dist < (body ? body.systemRadiusAU * 0.3 : 0.003);
+        const broad = dist < (body ? body.systemRadiusAU * 0.3 : 0.003);
+        // Same retarget as the moons: engaging inside the (system-sized)
+        // arrival threshold means "take me closer", so the cruise runs to
+        // 1.5× the collision shell — the governed glide is the brake — and
+        // only rings the bell there.
+        if (this.autopilotCloseApproach === null) this.autopilotCloseApproach = broad;
+        arrived = this.autopilotCloseApproach && body
+          ? dist < this.getPlanetCollisionRadius(body.name, body.radiusAU, this.planetScale) * 1.5
+          : broad;
       }
     } else {
-      // Resolvable moon: the glide has eased the ship to rest at the postcard
-      // standoff (`pos` is the moon's own world position here, so `dist` is to
-      // its center). Otherwise fall back to the legacy surface-proximity
+      // Resolvable moon: the glide has eased the ship to rest at the standoff
+      // (`pos` is the moon's own world position here, so `dist` is to its
+      // center) — the postcard, or the close standoff when the engage was
+      // already inside it. Otherwise fall back to the legacy surface-proximity
       // threshold — the parent-fallback position has no meaningful standoff.
       const inp = this.resolveAutopilotMoonInputs(this.autopilotTarget);
       if (inp) {
-        arrived = autopilotArrived(dist, moonArrivalStandoffAU(inp));
+        arrived = autopilotArrived(dist, this.autopilotMoonStandoffAU(inp, dist));
+      } else if (this.autopilotCloseApproach) {
+        // Geometry momentarily unresolvable mid-close-approach: the legacy
+        // threshold is postcard-scale and would re-fire the instant arrival
+        // this latch exists to prevent — decide nothing on such a frame.
+        arrived = false;
       } else {
         const moons = this.planetMoons.get(this.autopilotTarget.parentPlanet);
         const moonMesh = moons?.find(m => m.data.name === this.autopilotTarget!.name);

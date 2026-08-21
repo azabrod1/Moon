@@ -483,6 +483,25 @@ export function autopilotArrived(distToMoonCenterAU: number, standoffAU: number)
 }
 
 /**
+ * Retargeted standoff for an autopilot engaged ALREADY at/inside the postcard.
+ * The postcard is a long way out — ~23 rendered radii on Earth's Moon — so a
+ * pilot cruising anywhere inside it who taps Autopilot used to get an instant
+ * "Arrived" that parked the ship (and the glide cap, zero inside the standoff,
+ * would have frozen it regardless). Such an engage clearly means "take me
+ * closer": glide to rest at the pose floor instead — 1.5× the collision
+ * bubble, the same clearance `moonArrivalStandoffAU` refuses to park inside —
+ * so the button always buys a real approach and the shell stays the backstop.
+ * The min is a guard only: the catalog sweep pins every postcard above the
+ * bubble floor, so this is the floor itself in practice.
+ */
+export function autopilotCloseStandoffAU(inp: MoonArrivalInputs): number {
+  return Math.min(
+    moonArrivalStandoffAU(inp),
+    moonCollisionRadius(inp.renderedR, inp.shipClearance) * 1.5,
+  );
+}
+
+/**
  * Arrival pose for a moon-precise jump: where the ship appears, and where
  * it points.
  *

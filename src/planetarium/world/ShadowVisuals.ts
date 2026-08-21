@@ -70,6 +70,39 @@ import { projectSphereToScreen, type SphereScreenProjection } from '../../shared
 
 const UP = new THREE.Vector3(0, 1, 0);
 const FORWARD = new THREE.Vector3(0, 0, 1); // CircleGeometry's / unit ring's facing axis
+
+// Radially-graded shadow spot: alpha follows the Sun-cover fraction across the
+// footprint — a flat-dark core (the umbra, or the antumbra where cover
+// plateaus below 1 because the Sun's ring still lights it), easing to nothing
+// at the penumbra rim. The 0.6 power widens the dark heart the way space
+// photos show it (cover stays high until the Moon's disc slides mostly off
+// the Sun): a diffuse smudge, dark for the inner half, soft skirt to zero —
+// never a uniform disc.
+const SPOT_CORE_DARK = 0.8;
+const SPOT_VERTEX = /* glsl */ `
+varying float vR;
+void main() {
+  vR = length(position.xy);
+  gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+}`;
+const SPOT_FRAGMENT = /* glsl */ `
+uniform float uInnerFrac;
+uniform float uCoreCover;
+varying float vR;
+void main() {
+  float cover = uCoreCover * pow(1.0 - smoothstep(min(uInnerFrac, 0.999), 1.0, vR), 0.6);
+  gl_FragColor = vec4(0.0, 0.0, 0.0, ${SPOT_CORE_DARK.toFixed(2)} * cover);
+}`;
+
+function makeSpotMaterial(): THREE.ShaderMaterial {
+  return new THREE.ShaderMaterial({
+    vertexShader: SPOT_VERTEX,
+    fragmentShader: SPOT_FRAGMENT,
+    uniforms: { uInnerFrac: { value: 0 }, uCoreCover: { value: 1 } },
+    transparent: true,
+    depthWrite: false,
+  });
+}
 /** Show the landed moon's cones once its shadow axis passes within this many parent radii. */
 const MOON_CONE_GATE_RADII = 3;
 
@@ -212,6 +245,9 @@ export function createShadowVisualsWarmupProbes(): { group: THREE.Group; dispose
   const fill = coneMaterial(0xffffff, 0.1);
   const cone = new THREE.CylinderGeometry(1e-9, 0, 1e-9, 3, 1, true);
   group.add(new THREE.Mesh(cone, fill));
+  const spotFill = makeSpotMaterial();
+  const disc = new THREE.CircleGeometry(1e-9, 3);
+  group.add(new THREE.Mesh(disc, spotFill));
   const segment = new LineGeometry();
   segment.setPositions([0, 0, 0, 0, 1e-9, 0]);
   const solid = new LineMaterial({ color: 0xffffff, linewidth: 1, opacity: 0.5, transparent: true, depthWrite: false });
@@ -227,9 +263,11 @@ export function createShadowVisualsWarmupProbes(): { group: THREE.Group; dispose
     group,
     dispose: () => {
       fill.dispose();
+      spotFill.dispose();
       solid.dispose();
       dashed.dispose();
       cone.dispose();
+      disc.dispose();
       segment.dispose();
     },
   };
@@ -261,7 +299,6 @@ export class ShadowVisuals {
   private parentAxisLine: GuideLine;
   private slots: GuideSlot[];
 
-  private spotMaterial: THREE.MeshBasicMaterial;
   private spots = new Map<string, THREE.Mesh>();
 
   private guidesVisible = false;
@@ -356,13 +393,6 @@ export class ShadowVisuals {
 
     this.guidesGroup.visible = false;
     this.root.add(this.guidesGroup);
-
-    this.spotMaterial = new THREE.MeshBasicMaterial({
-      color: 0x000000,
-      transparent: true,
-      opacity: 0.55,
-      depthWrite: false,
-    });
   }
 
   private makeLineMaterial(
@@ -965,6 +995,7 @@ export class ShadowVisuals {
    * axis ray (from the moon, anti-sunward) with the sphere at local origin,
    * size the disc to the penumbra radius there, and lift it off the surface
    * by its own sagitta so the flat disc doesn't pierce the curvature. The
+   * disc's fill is radially graded (see SPOT_FRAGMENT), not uniform. The
    * 0.9·parentRadius cap is a degenerate-case guard (a flat disc stops
    * approximating a hemispheric cap) — no catalog moon reaches it; if one
    * ever did, the drawn spot would under-read the true penumbra.
@@ -997,6 +1028,18 @@ export class ShadowVisuals {
       parentRadiusAU * 0.9,
     );
 
+    // Grade the disc like the real footprint: the flat-dark core spans |umbra|
+    // (antumbra when negative) as a fraction of the drawn radius, and the core's
+    // darkness is the Sun-cover fraction on the axis — 1 once the umbra reaches
+    // the surface, (moon/Sun angular-size ratio)² inside an antumbra.
+    const umbKm = this.profileScratch.umbraRadiusKm;
+    const penKm = this.profileScratch.penumbraRadiusKm;
+    const uniforms = (spot.material as THREE.ShaderMaterial).uniforms;
+    uniforms.uInnerFrac.value = Math.min(Math.abs(umbKm) / (spotRadiusAU * KM_PER_AU), 1);
+    // (pen+umb)/(pen−umb) = moonAngRadius/sunAngRadius at the hit point.
+    const ratio = (penKm + umbKm) / Math.max(penKm - umbKm, 1e-9);
+    uniforms.uCoreCover.value = umbKm >= 0 ? 1 : ratio * ratio;
+
     const dir = this.tmpVec.copy(moonOffsetAU).addScaledVector(moonAxis, tAU).normalize();
     const sagittaAU =
       parentRadiusAU - Math.sqrt(Math.max(parentRadiusAU * parentRadiusAU - spotRadiusAU * spotRadiusAU, 0));
@@ -1009,7 +1052,7 @@ export class ShadowVisuals {
   private ensureSpot(moonName: string): THREE.Mesh {
     let spot = this.spots.get(moonName);
     if (!spot) {
-      spot = new THREE.Mesh(this.unitDisc, this.spotMaterial);
+      spot = new THREE.Mesh(this.unitDisc, makeSpotMaterial());
       spot.visible = false;
       this.spots.set(moonName, spot);
       this.root.add(spot);
@@ -1028,7 +1071,7 @@ export class ShadowVisuals {
     }
     for (const material of this.lineMaterials) material.dispose();
     this.lineMaterials.length = 0;
-    this.spotMaterial.dispose();
+    for (const spot of this.spots.values()) (spot.material as THREE.Material).dispose();
     this.spots.clear();
   }
 }

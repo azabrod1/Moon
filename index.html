@@ -2183,6 +2183,31 @@
       pointer-events: auto;
       transition: none;
     }
+    /* Busy note inside the veil. The covering black over dark space reads as
+       a dead screen — and the veil deliberately catches clicks while the
+       destination loads — so after a beat the hold names itself, and a click
+       on the veil pulses the note (heard, not ready yet). */
+    #arrival-veil-note {
+      position: absolute;
+      left: 50%;
+      top: 58%;
+      transform: translateX(-50%);
+      font-family: var(--font);
+      font-size: 13px;
+      letter-spacing: 0.04em;
+      color: rgba(199, 208, 224, 0.92);
+      opacity: 0;
+      transition: opacity 0.25s ease;
+      pointer-events: none;
+      white-space: nowrap;
+    }
+    #arrival-veil-note.show { opacity: 0.85; }
+    #arrival-veil-note.pulse { animation: veil-note-pulse 0.45s ease; }
+    @keyframes veil-note-pulse {
+      0% { opacity: 0.85; }
+      40% { opacity: 1; transform: translateX(-50%) scale(1.05); }
+      100% { opacity: 0.85; transform: translateX(-50%) scale(1); }
+    }
 
     /* Map dive fade: the schematic darkens to black as the camera dives into a
        picked body, then either the arrival veil takes over invisibly (black
@@ -2662,7 +2687,7 @@
       white-space: nowrap;
       will-change: transform;
     }
-    .map-close, .map-panel, .map-pill, .map-card { z-index: 1; }
+    .map-close, .smx, .map-card { z-index: 1; }
     .map-label {
       position: absolute;
       left: 0; top: 0;
@@ -2699,55 +2724,115 @@
     }
     .map-close:hover { background: rgba(255, 255, 255, 0.09); color: var(--t1); border-color: rgba(255, 255, 255, 0.14); }
     .map-close svg { width: 18px; height: 18px; }
-    /* ── The chart's panel ────────────────────────────────────────────────
-       One glass instrument in the bottom-right corner, above the world bar
-       (the Stats popover's own corner figure — the two never stand together,
-       the panel steps aside while Stats or Time is up). Everything the chart
-       is driven by lives here: the help grid, the scale segment, zoom, Reset
-       view, the layer switches and the find-a-body list.
+    /* ── The chart's dock ─────────────────────────────────────────────────
+       One bottom-right cluster above the world bar: the standalone help chip
+       and the panel, bottom-aligned (the Stats popover's own corner figure —
+       the two never stand together, the dock steps aside while Stats or Time
+       is up). Everything the chart is driven by lives in the panel: the scale
+       segment, zoom and Reset, the Focus picker and the layer switches; the
+       gesture guide stands beside it, behind the `?` chip.
 
-       ONE element for both layouts: a corner panel on a desktop, a bottom
+       ONE panel for both layouts: a corner instrument on a desktop, a bottom
        sheet on a phone. The breakpoint restyles it rather than swapping trees
-       — the mode reaches for several of its children by id.
+       — the mode reaches for several of its children by id. Open ↔ collapsed
+       is the same element too: the panel FOLDS down to a 46px glyph chip (a
+       grid-rows fold and a width morph), so display:none never appears and
+       the motion says where the controls went.
 
        The material is the app's elevated glass (.pn .pn-high), so the panel
-       is the same surface as the deck and the menus rather than a lookalike. */
-    .map-panel {
+       is the same surface as the deck and the menus rather than a lookalike.
+
+       The dock itself is a transparent flex row, and on a phone it spans the
+       width: pointer events go OFF on it and back on on its children, or the
+       empty run beside the chips would swallow chart drags. Id-qualified
+       because the layer's own `#system-map-ui > *` rule turns them on. */
+    .smx {
       position: absolute;
-      right: 12px;
-      bottom: 72px;
-      width: 272px;
+      right: 14px;
+      bottom: 62px;
+      display: flex;
+      align-items: flex-end;
+      gap: 8px;
       max-width: calc(100vw - 24px);
+    }
+    #system-map-ui .smx { pointer-events: none; }
+    .smx > * { pointer-events: auto; }
+    /* Stats and Time open into this same corner. One instrument wins it. */
+    #map-dock.stood-down { display: none; }
+    .map-help-chip {
+      width: 46px;
+      height: 46px;
+      flex: none;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      border-radius: 14px;
+      color: var(--t2);
+      cursor: pointer;
+      padding: 0;
+      transition: color 0.14s var(--ease), background 0.14s var(--ease), border-color 0.14s var(--ease);
+    }
+    .map-help-chip svg { width: 17px; height: 17px; }
+    .map-help-chip:hover { color: var(--t1); border-color: rgba(255, 255, 255, 0.14); }
+    .map-help-chip.on {
+      color: var(--t1);
+      background: rgba(var(--accent-rgb), 0.16);
+      border-color: rgba(var(--accent-rgb), 0.4);
+    }
+    .map-panel {
+      position: relative;
+      flex: none;
+      width: 272px;
       box-sizing: border-box;
       display: flex;
       flex-direction: column;
-      padding: 12px 15px 10px;
+      padding: 11px 14px 9px;
+      transition: width 0.32s var(--ease);
     }
-    /* Stats and Time open into this same corner. One instrument wins it. */
-    #map-panel.stood-down, #map-pill.stood-down { display: none; }
-    /* Collapsed on a desktop is the pill; the phone rules below keep the
-       header standing instead. */
-    .map-panel.collapsed { display: none; }
+    /* Folded, the panel is its own 46px glyph chip. The whole chip reopens
+       (MapHUD wires the tap). */
+    .map-panel.collapsed { width: 46px; padding: 10px; cursor: pointer; }
+    .map-panel.collapsed:hover { border-color: rgba(255, 255, 255, 0.14); }
     .map-panel-head {
       display: flex;
       align-items: center;
       gap: 8px;
       flex: none;
     }
-    .map-panel-glyph { width: 16px; height: 16px; flex: none; color: var(--t2); }
+    .map-panel.collapsed .map-panel-head { gap: 0; }
+    .map-panel-glyph {
+      width: 16px;
+      height: 16px;
+      flex: none;
+      color: var(--t2);
+      transition: width 0.32s var(--ease), height 0.32s var(--ease);
+    }
+    .map-panel-glyph svg { width: 100%; height: 100%; display: block; }
+    /* 2px margins, so the folded chip comes to exactly the help chip's 46:
+       20 glyph + 4 margin + 20 padding + 2 border. */
+    .map-panel.collapsed .map-panel-glyph { width: 20px; height: 20px; margin: 2px auto; }
+    .map-panel.collapsed:hover .map-panel-glyph { color: var(--t1); }
     /* Named the way the ☰ menu names it, in the Stats card's title voice. */
     .map-panel-title {
+      flex: 1;
+      min-width: 0;
       font-family: var(--font-ui);
       font-size: 10px;
       font-weight: 600;
       letter-spacing: 0.18em;
       text-transform: uppercase;
       color: var(--t3);
+      white-space: nowrap;
+      /* An explicit open maximum, so the fold can animate it away — `auto`
+         cannot tween to zero. Wider than the title will ever run. */
+      max-width: 200px;
+      transition: max-width 0.32s var(--ease), opacity 0.2s var(--ease);
     }
-    .map-panel-head .kbd { margin-left: auto; }
+    .map-panel.collapsed .map-panel-title { flex: none; max-width: 0; opacity: 0; overflow: hidden; }
     .map-panel-btn {
-      width: 24px;
-      height: 24px;
+      width: 26px;
+      height: 26px;
+      flex: none;
       display: inline-flex;
       align-items: center;
       justify-content: center;
@@ -2755,30 +2840,41 @@
       border-radius: var(--r-s);
       background: none;
       color: var(--t3);
-      font-family: var(--font-ui);
-      font-size: 11.5px;
-      font-weight: 500;
       cursor: pointer;
-      transition: background 0.14s var(--ease), color 0.14s var(--ease);
+      padding: 0;
+      transition: background 0.14s var(--ease), color 0.14s var(--ease), opacity 0.2s var(--ease), width 0.32s var(--ease);
     }
     .map-panel-btn:hover { background: rgba(255, 255, 255, 0.07); color: var(--t1); }
-    /* Lit while the help grid stands open. Scoped to the help row (the only
-       wide button that ever takes `.open`) and spelled out for :hover too: the
-       plain `.open` selector loses to `.map-panel-btn-wide:hover:not(:disabled)`
-       further down, and the pointer is resting ON this button in the instant
-       after it is pressed — so an open row would paint itself closed. The `?`
-       it replaced never hit this: it tied its own hover rule and won on order. */
-    .map-help-toggle.open,
-    .map-help-toggle.open:hover:not(:disabled) {
-      background: rgba(var(--accent-rgb), 0.16);
-      color: var(--t1);
-      border-color: rgba(var(--accent-rgb), 0.3);
+    .map-panel-btn svg { width: 15px; height: 15px; flex: none; }
+    /* The chevron folds away with the title — but a keyboard can still reach
+       it, and focus makes it materialize so the reopen key has a visible home. */
+    /* Height capped with the glyph row, or the button would hold the folded
+       chip 2px (6 on a phone) taller than the help chip beside it. */
+    .map-panel.collapsed .map-panel-btn { width: 0; height: 24px; opacity: 0; overflow: hidden; pointer-events: none; }
+    .map-panel.collapsed .map-panel-btn:focus-visible { width: 26px; opacity: 1; }
+    /* Points down while open ("fold away"), up while folded. */
+    .map-panel-chev { display: block; transition: transform 0.32s var(--ease); }
+    .map-panel.collapsed .map-panel-chev { transform: rotate(180deg); }
+    /* The fold: grid rows animate the body's height without anyone measuring
+       it; the clip owns overflow so the content slides behind the header. The
+       visibility delay keeps the controls tabbable exactly as long as they are
+       visible — a folded panel must not hide a keyboard inside it. */
+    .map-fold {
+      display: grid;
+      grid-template-rows: 1fr;
+      min-height: 0;
+      transition: grid-template-rows 0.32s var(--ease);
     }
-    .map-panel-btn svg { width: 12px; height: 12px; }
-    /* The collapse glyph is a × on a desktop (the panel folds to the pill) and
-       a chevron on a phone (the sheet folds to its own header). One button,
-       two glyphs — the mode never has to know which layout it is in. */
-    .map-panel-chev { display: none; }
+    .map-panel.collapsed .map-fold { grid-template-rows: 0fr; }
+    .map-fold-clip {
+      overflow: hidden;
+      min-height: 0;
+      display: flex;
+      flex-direction: column;
+      visibility: visible;
+      transition: visibility 0s;
+    }
+    .map-panel.collapsed .map-fold-clip { visibility: hidden; transition: visibility 0s 0.32s; }
     /* The scroll container. Everything below the header lives in here, so a
        viewport too short for the whole panel scrolls the controls rather than
        spilling them over the world bar. */
@@ -2786,8 +2882,8 @@
       display: flex;
       flex-direction: column;
       min-height: 0;
-      margin-top: 11px;
-      padding-top: 11px;
+      margin-top: 10px;
+      padding-top: 10px;
       border-top: 1px solid var(--line-dim);
       overflow-y: auto;
       /* The full-bleed separators reach past the padding; without this they
@@ -2796,6 +2892,16 @@
       overscroll-behavior: contain;
       scrollbar-width: thin;
       scrollbar-color: rgba(255, 255, 255, 0.14) transparent;
+      /* The content fades and sinks as the fold takes its height; opening
+         brings it back a beat after the rows have started growing. */
+      opacity: 1;
+      transform: none;
+      transition: opacity 0.22s var(--ease) 0.06s, transform 0.32s var(--ease);
+    }
+    .map-panel.collapsed .map-panel-body {
+      opacity: 0;
+      transform: translateY(8px);
+      transition: opacity 0.16s var(--ease), transform 0.32s var(--ease);
     }
     .map-panel-body::-webkit-scrollbar { width: 4px; }
     .map-panel-body::-webkit-scrollbar-thumb { background: rgba(255, 255, 255, 0.10); border-radius: 2px; }
@@ -2825,29 +2931,53 @@
       -webkit-mask-image: linear-gradient(to bottom, #000 0 1px, transparent 1px, #000 17px, #000 calc(100% - 16px), transparent);
       mask-image: linear-gradient(to bottom, #000 0 1px, transparent 1px, #000 17px, #000 calc(100% - 16px), transparent);
     }
-    .map-panel-sep { flex: none; height: 1px; margin: 11px -15px; background: var(--line-dim); }
+    .map-panel-sep { flex: none; height: 1px; margin: 10px -14px; background: var(--line-dim); }
+    /* ── The gesture guide ────────────────────────────────────────────────
+       A standalone card behind the `?` chip, docked BESIDE the cluster and
+       bottom-aligned so it grows upward into the chart — it can never be
+       clipped by the panel's own scroll or fold. On a phone it overlays the
+       sheet's foot instead (see the breakpoint). Visibility carries a delay
+       matching the fade so its controls leave the tab order only when they
+       have left the screen; pointer-events go off the moment it closes, so a
+       fading card never eats a chart click. */
+    .map-help-card {
+      position: absolute;
+      right: calc(100% + 10px);
+      bottom: 0;
+      width: 286px;
+      max-height: min(430px, calc(100vh - 86px));
+      overflow-y: auto;
+      padding: 12px 15px;
+      border-radius: var(--r-l);
+      opacity: 0;
+      visibility: hidden;
+      transform: translateY(8px);
+      cursor: default;
+      z-index: 2;
+      transition: opacity 0.22s var(--ease), transform 0.26s var(--ease), visibility 0.26s;
+    }
+    .smx > .map-help-card { pointer-events: none; }
+    .smx.help-open > .map-help-card { pointer-events: auto; }
+    .smx.help-open .map-help-card { opacity: 1; visibility: visible; transform: none; }
+    .map-help-head { display: flex; align-items: center; gap: 8px; }
+    .map-help-eyebrow {
+      flex: 1;
+      font-family: var(--font-ui);
+      font-size: 10px;
+      font-weight: 600;
+      letter-spacing: 0.18em;
+      text-transform: uppercase;
+      color: var(--t3);
+    }
     /* Two columns: the gesture and what it does. The label column is sized to
        hold the longest of them ("Right-click · hold") on one line. */
     .map-help-grid {
-      display: none;
+      display: grid;
       grid-template-columns: 96px 1fr;
       row-gap: 8px;
       column-gap: 10px;
-      padding: 0 2px;
-      flex: none;
+      margin-top: 10px;
     }
-    .map-help-grid.visible { display: grid; margin-top: 10px; }
-    /* The disclosure that opens it. A named row in the panel's own wide-button
-       idiom (Reset view's), so what it does is readable without pressing it —
-       the `?` it replaces said nothing until you tried it. The label and its
-       chevron centre together, as Reset view's icon and label do: a word this
-       short parked at the far edge from its own arrow reads as two controls. */
-    .map-help-chev {
-      flex: none;
-      color: var(--t3);
-      transition: transform var(--dur) var(--ease);
-    }
-    .map-help-toggle[aria-expanded="true"] .map-help-chev { transform: rotate(180deg); }
     /* The row is a wrapper for reading, not for layout: its two children are
        the grid's cells. */
     .map-help-row { display: contents; }
@@ -2906,7 +3036,7 @@
        Always visible, so nobody has to open help to learn it. */
     .map-panel-caption {
       flex: none;
-      margin: 7px 2px 0;
+      margin: 6px 1px 0;
       font-family: var(--font-ui);
       font-size: 10.5px;
       line-height: 1.5;
@@ -2917,7 +3047,7 @@
       flex: none;
       display: flex;
       align-items: center;
-      margin-top: 12px;
+      margin-top: 10px;
     }
     .map-panel-k {
       font-family: var(--font-ui);
@@ -2958,28 +3088,17 @@
       color: var(--t2);
       font-variant-numeric: tabular-nums;
     }
-    .map-panel-btn-wide {
-      flex: none;
-      width: 100%;
-      height: 30px;
-      margin-top: 10px;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      gap: 6px;
-      border: 1px solid var(--line-dim);
-      border-radius: var(--r-s);
-      background: rgba(255, 255, 255, 0.04);
-      color: var(--t2);
+    .map-zoom-vsep { width: 1px; height: 16px; background: var(--line-dim); margin: 0 3px; flex: none; }
+    /* Reset rides the zoom row as its text member — the same chrome as the
+       −/+ pair, worded. */
+    .map-zoom-reset {
+      width: auto;
+      padding: 0 9px;
       font-family: var(--font-ui);
-      font-size: 11.5px;
+      font-size: 11px;
       font-weight: 500;
-      cursor: pointer;
-      transition: background var(--dur) var(--ease), color var(--dur) var(--ease), border-color var(--dur) var(--ease);
+      letter-spacing: 0.2px;
     }
-    .map-panel-btn-wide:hover:not(:disabled) { background: rgba(255, 255, 255, 0.08); color: var(--t1); border-color: rgba(255, 255, 255, 0.14); }
-    .map-panel-btn-wide:disabled { opacity: 0.4; cursor: default; }
-    .map-panel-btn-wide svg { width: 13px; height: 13px; flex: none; }
     .map-panel-sec { flex: none; display: flex; flex-direction: column; min-height: 0; }
     .map-panel-sec-head { display: flex; align-items: baseline; }
     .map-panel-sec-head b {
@@ -2993,7 +3112,7 @@
     .map-panel-hint { margin-left: auto; font-family: var(--font-ui); font-size: 9px; color: var(--t3); }
     /* One switch per layer. The label takes the slack so the tag and the
        switch sit together at the right whether or not the tag is showing. */
-    .map-layer { display: flex; align-items: center; gap: 8px; height: 28px; }
+    .map-layer { display: flex; align-items: center; gap: 8px; height: 26px; }
     .map-layer-k { flex: 1; min-width: 0; font-family: var(--font-ui); font-size: 12px; color: var(--t1); }
     /* What a layer needs before it means anything. */
     .map-layer-tag {
@@ -3014,8 +3133,8 @@
        read rather than behind the help button. */
     .map-panel-foot {
       flex: none;
-      margin-top: 9px;
-      padding-top: 9px;
+      margin-top: 8px;
+      padding-top: 8px;
       border-top: 1px solid var(--line-dim);
       font-family: var(--font-mono);
       font-size: 7.5px;
@@ -3024,31 +3143,6 @@
       line-height: 1.6;
       color: var(--t3);
     }
-    /* The collapsed panel: the same corner, one line of it. */
-    .map-pill {
-      position: absolute;
-      right: 12px;
-      bottom: 72px;
-      display: none;
-      align-items: center;
-      gap: 8px;
-      height: 36px;
-      padding: 0 13px;
-      border-radius: var(--r-m);
-      background: rgba(8, 10, 15, 0.7);
-      border: 1px solid var(--line);
-      -webkit-backdrop-filter: blur(12px);
-      backdrop-filter: blur(12px);
-      color: var(--t2);
-      font-family: var(--font-ui);
-      font-size: 11.5px;
-      font-weight: 500;
-      cursor: pointer;
-      transition: background var(--dur) var(--ease), color var(--dur) var(--ease);
-    }
-    .map-pill.visible { display: inline-flex; }
-    .map-pill:hover { background: rgba(16, 20, 28, 0.8); color: var(--t1); }
-    .map-pill svg { width: 14px; height: 14px; flex: none; }
     /* The gestures the buttons cannot show, above the world bar for the first
        map of a session. Two lines: on a phone one line of this length would be
        clipped to an ellipsis, and the clipped half is the part nothing else
@@ -3133,13 +3227,162 @@
          rest of the chart's chrome takes. */
       #system-map-ui .map-tp-chip { padding: 9px 13px; font-size: 12px; }
     }
-    /* The find-a-body list: deck rows over the chart's own roster, so every
-       row is a body the camera will actually go to. */
+    /* The Focus picker. At rest it is the planet GRID — the whole roster's
+       front page, no scrolling — with a moon tray folding open beneath the
+       disclosed planet. A query swaps the grid for the deck's flat filtered
+       rows; committing or clearing swaps back. */
     .mfm-search { margin: 7px 0 0; height: 30px; padding: 0 9px; gap: 8px; border-color: var(--line-dim); border-radius: var(--r-s); }
     .mfm-search input { font-size: 12px; }
-    .mfm-list { margin: 6px -7px 0; padding: 0 2px; max-height: 152px; flex: none; }
+    /* Search mode: the flat results at a FIXED height, so the bottom-anchored
+       panel's top edge holds still under the typing hand (the old porthole's
+       held-height machinery, now a stylesheet fact). The empty line lives
+       inside the box for the same reason. */
+    .mfm-list { display: none; margin: 6px -6px 0; padding: 0 2px; height: 200px; flex: none; }
+    #map-picker.searching .mfm-list { display: block; }
+    #map-picker.searching .map-grid,
+    #map-picker.searching .map-trayw,
+    #map-picker.searching .map-following { display: none; }
     #map-panel .pk-empty { padding: 12px 8px 4px; }
     #map-panel .pk-empty.visible { display: block; }
+    /* The planet grid: Sun + nine planets in two columns, every cell a body
+       the camera will actually go to. A cell is a wrapper over two SIBLING
+       buttons — fly-to, and the moon-count disclosure — never nested. */
+    .map-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 4px; margin-top: 8px; flex: none; }
+    .map-cell {
+      display: flex;
+      align-items: stretch;
+      border: 1px solid transparent;
+      border-radius: var(--r-s);
+      background: rgba(255, 255, 255, 0.03);
+      overflow: hidden;
+      transition: background 0.14s var(--ease), border-color 0.14s var(--ease);
+    }
+    .map-cell:hover { background: rgba(255, 255, 255, 0.06); }
+    .map-cell.open { border-color: rgba(var(--accent-rgb), 0.38); background: rgba(var(--accent-rgb), 0.09); }
+    .map-cell-go {
+      flex: 1;
+      min-width: 0;
+      height: 30px;
+      display: flex;
+      align-items: center;
+      gap: 7px;
+      padding: 0 4px 0 8px;
+      border: none;
+      background: none;
+      color: var(--t1);
+      cursor: pointer;
+      text-align: left;
+      font-family: var(--font-ui);
+    }
+    .map-cell-go b { font-size: 12px; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .map-cell .pk-dot { width: 8px; height: 8px; }
+    .map-cell-moons {
+      flex: none;
+      display: inline-flex;
+      align-items: center;
+      gap: 1px;
+      padding: 0 6px;
+      border: none;
+      border-left: 1px solid var(--line-dim);
+      background: none;
+      color: var(--t3);
+      font-family: var(--font-mono);
+      font-size: 9px;
+      cursor: pointer;
+      transition: background 0.14s var(--ease), color 0.14s var(--ease);
+    }
+    .map-cell-moons:hover { background: rgba(255, 255, 255, 0.07); color: var(--t1); }
+    .map-cell-moons svg { width: 10px; height: 10px; transition: transform 0.24s var(--ease); }
+    .map-cell.open .map-cell-moons { color: var(--t1); }
+    .map-cell.open .map-cell-moons svg { transform: rotate(180deg); }
+    /* You-are-here wears the ember ring; the followed body the accent one. */
+    .map-cell.here .pk-dot { box-shadow: 0 0 0 1.5px rgba(8, 10, 15, 0.9), 0 0 0 3px rgba(var(--ember-rgb), 0.55); }
+    .map-cell.followed .pk-dot { box-shadow: 0 0 0 1.5px rgba(8, 10, 15, 0.9), 0 0 0 3px rgba(var(--accent-rgb), 0.6); }
+    /* The moon tray — folds open under the grid with the fold's own motion.
+       Same visibility delay as the panel fold: closed chips leave the tab
+       order when they leave the screen. */
+    .map-trayw { display: grid; grid-template-rows: 0fr; transition: grid-template-rows 0.28s var(--ease); flex: none; }
+    .map-trayw.open { grid-template-rows: 1fr; }
+    .map-tray { overflow: hidden; min-height: 0; visibility: hidden; transition: visibility 0s 0.28s; }
+    .map-trayw.open .map-tray { visibility: visible; transition: visibility 0s; }
+    .map-tray-in { margin-top: 6px; border: 1px solid var(--line-dim); border-radius: var(--r-s); background: rgba(255, 255, 255, 0.02); }
+    .map-tray-head {
+      display: flex;
+      align-items: baseline;
+      gap: 8px;
+      padding: 8px 10px 0;
+      font-family: var(--font-mono);
+      font-size: 8.5px;
+      letter-spacing: 0.14em;
+      text-transform: uppercase;
+      color: var(--t3);
+    }
+    .map-tray-chips {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 4px;
+      padding: 7px 9px 9px;
+      max-height: 92px;
+      overflow-y: auto;
+      overscroll-behavior: contain;
+      scrollbar-width: thin;
+      scrollbar-color: rgba(255, 255, 255, 0.14) transparent;
+    }
+    .map-tray-chips::-webkit-scrollbar { width: 4px; }
+    .map-tray-chips::-webkit-scrollbar-thumb { background: rgba(255, 255, 255, 0.1); border-radius: 2px; }
+    .map-tray-chip {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      height: 25px;
+      padding: 0 9px;
+      border-radius: 999px;
+      border: 1px solid var(--line-dim);
+      background: rgba(255, 255, 255, 0.035);
+      font-family: var(--font-ui);
+      font-size: 11px;
+      color: var(--t2);
+      cursor: pointer;
+      transition: background 0.14s var(--ease), color 0.14s var(--ease), border-color 0.14s var(--ease);
+    }
+    .map-tray-chip:hover { color: var(--t1); border-color: var(--line); background: rgba(255, 255, 255, 0.07); }
+    .map-tray-chip.followed { border-color: rgba(var(--accent-rgb), 0.5); color: var(--t1); background: rgba(var(--accent-rgb), 0.12); }
+    /* The moon under your feet, when the landed body is one. */
+    .map-tray-chip.here { border-color: rgba(var(--ember-rgb), 0.5); }
+    .map-tray-chip .pk-dot { width: 5px; height: 5px; }
+    /* The following state, and the way off it. */
+    .map-following {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin-top: 8px;
+      padding: 6px 9px;
+      border-radius: var(--r-s);
+      border: 1px solid rgba(var(--accent-rgb), 0.28);
+      background: rgba(var(--accent-rgb), 0.09);
+      font-family: var(--font-ui);
+      font-size: 11px;
+      color: var(--t1);
+      flex: none;
+    }
+    .map-following[hidden] { display: none; }
+    .map-following .pk-dot { width: 6px; height: 6px; }
+    .map-following-x {
+      margin-left: auto;
+      flex: none;
+      padding: 2px 7px;
+      border: 1px solid rgba(var(--accent-rgb), 0.35);
+      border-radius: 999px;
+      background: none;
+      font-family: var(--font-mono);
+      font-size: 8px;
+      letter-spacing: 0.14em;
+      text-transform: uppercase;
+      color: var(--accent);
+      cursor: pointer;
+      transition: background 0.14s var(--ease);
+    }
+    .map-following-x:hover { background: rgba(var(--accent-rgb), 0.16); }
     /* A row is a wrapper carrying the deck's row look; the controls inside it
        are siblings — the commit button, and the release chip when the camera is
        riding that body. A button inside a button is invalid, unreachable by
@@ -3181,88 +3424,74 @@
     .mfm-row.mfm-current { background: rgba(255, 255, 255, 0.05); }
     /* The body the camera is riding. */
     .mfm-row.mfm-followed { background: rgba(var(--accent-rgb), 0.12); }
-    /* The row the camera is riding, and the way off it: the chip is the
-       release control, so the list can undo what it started. Shown only while
-       the release is actually on offer. */
-    .mfm-following {
-      flex: none;
-      /* The row stretches its children; a chip that stretched with it would be
-         a full-height pill beside a one-line name. */
-      align-self: center;
-      padding: 2px 6px;
-      border: 1px solid rgba(var(--accent-rgb), 0.35);
-      border-radius: 999px;
-      background: none;
-      font-family: var(--font-mono);
-      font-size: 8px;
-      letter-spacing: 0.14em;
-      text-transform: uppercase;
-      color: var(--accent);
-      cursor: pointer;
-      transition: background 0.14s var(--ease);
-    }
-    .mfm-following:hover { background: rgba(var(--accent-rgb), 0.16); }
     @media (max-width: 640px) {
-      /* One sheet across the bottom, above the world bar: the panel keeps its
-         elements and changes shape. Collapsing leaves the header standing —
-         that header IS the phone's pill, so there is no second element for a
-         thumb to hunt for. */
-      .map-panel {
-        left: 12px;
-        right: 12px;
-        bottom: 84px;
-        width: auto;
-        padding: 6px 14px 12px;
-      }
+      /* One sheet across the bottom, above the world bar: the dock spans the
+         row and the open panel takes all of it. Collapsed, the panel is the
+         same 46px glyph chip as on a desktop, right-docked beside the help
+         chip — a two-chip dock, and the whole chip reopens. */
+      .smx { left: 10px; right: 10px; bottom: 66px; justify-content: flex-end; max-width: none; }
+      .map-panel { flex: 0 1 auto; width: 100%; padding-top: 6px; }
+      .map-panel.collapsed { flex: none; width: 46px; padding: 10px; }
       .map-panel-grip {
         display: block;
         flex: none;
         width: 36px;
         height: 4px;
-        margin: 2px auto 8px;
+        margin: 2px auto 7px;
         border-radius: 2px;
         background: rgba(255, 255, 255, 0.16);
       }
-      .map-panel.collapsed { display: flex; }
-      .map-panel.collapsed .map-panel-body { display: none; }
-      /* The collapsed sheet is one tap target — the whole header reopens it
-         (MapHUD wires the tap), so it slims down to a strip that only has to
-         say "the map controls fold out of here". The chevron stays — it is the
-         arrow saying which way the sheet will go — and brightens from hint to
-         control. */
-      .map-panel.collapsed { cursor: pointer; padding-bottom: 5px; }
-      .map-panel.collapsed .map-panel-grip { margin-bottom: 5px; }
-      .map-panel.collapsed .map-panel-btn { color: var(--t2); }
-      .map-panel.collapsed:active { background-color: rgba(20, 25, 34, 0.9); }
-      /* No keys on a phone: the M chip and the help grid's key row name a
-         keyboard the reader does not have. The chip was also the header's
-         spacer, so the title takes over pushing the buttons to the edge. */
-      .map-panel-head .kbd { display: none; }
-      .map-panel-title { flex: 1; }
+      .map-panel.collapsed .map-panel-grip { display: none; }
+      /* While the sheet is open the help chip floats just above its top-right
+         corner — the sheet has taken the whole row. */
+      .smx.panel-open .map-help-chip { position: absolute; bottom: calc(100% + 8px); right: 0; }
+      /* The guide overlays the sheet's foot rather than docking beside it. */
+      .map-help-card { left: 0; right: 0; width: auto; max-height: min(430px, calc(100vh - 90px)); }
+      /* Folded, it rises ABOVE the two-chip dock instead — the chips stay in
+         reach, and the chip that opened it can close it. */
+      .smx:not(.panel-open) .map-help-card {
+        bottom: calc(100% + 8px);
+        max-height: min(430px, calc(100vh - 144px));
+      }
+      /* No keys on a phone: the help grid's key row names a keyboard the
+         reader does not have. */
       .map-help-keys { display: none; }
+      .map-help-fine { display: none; }
+      .map-help-coarse { display: inline; }
       /* The sheet is a band across a screen the chart also has to be read on:
          the body scrolls inside its share rather than pushing the chart off
          the top. */
       .map-panel-body { max-height: 56vh; }
-      .map-panel-x { display: none; }
-      .map-panel-chev { display: block; transition: transform var(--dur) var(--ease); }
-      .map-panel.collapsed .map-panel-chev { transform: rotate(180deg); }
-      /* No pill on a phone — the collapsed header is one. */
-      .map-pill.visible { display: none; }
-      .map-help-fine { display: none; }
-      .map-help-coarse { display: inline; }
       /* Finger targets. */
-      .map-panel-btn { width: 28px; height: 28px; font-size: 12px; }
-      .map-panel-btn svg { width: 13px; height: 13px; }
-      /* The fold/unfold arrow is the header's one control — drawn at control
-         size, not hint size. */
-      .map-panel-btn .map-panel-chev { width: 16px; height: 16px; }
+      .map-panel-btn { width: 30px; height: 30px; }
+      .map-panel-btn svg { width: 16px; height: 16px; }
+      .map-panel.collapsed .map-panel-btn:focus-visible { width: 30px; }
       .map-scale { height: 34px; }
       .map-scale-seg { font-size: 12px; }
       .map-zoom-btn { width: 34px; height: 30px; }
-      .map-panel-btn-wide { height: 34px; }
-      .mfm-search { height: 32px; }
-      .mfm-list { max-height: 124px; }
+      .map-zoom-reset { width: auto; padding: 0 11px; font-size: 12px; }
+      .mfm-search { height: 36px; }
+      .mfm-search input { font-size: 13px; }
+      .map-cell-go { height: 42px; }
+      .map-cell-go b { font-size: 13px; }
+      .map-cell-moons { padding: 0 9px; font-size: 10px; }
+      .map-tray-chip { height: 34px; padding: 0 13px; font-size: 12px; }
+      .map-tray-chips { max-height: 128px; }
+      .map-layer { height: 32px; }
+      .mfm-list { height: 240px; }
+      .mfm-row .mfm-pick { min-height: 38px; }
+      .mfm-row.pk-moon .mfm-pick { min-height: 34px; }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      /* The collapsed-state variants are spelled out because their own rules
+         outrank the bare classes — without them the fold would snap shut but
+         keep its 320ms visibility delay, leaving hidden controls tabbable for
+         exactly that long. */
+      .map-panel, .map-panel-glyph, .map-panel-title, .map-panel-btn, .map-panel-chev,
+      .map-fold, .map-fold-clip, .map-panel-body, .map-help-chip, .map-help-card,
+      .map-trayw, .map-tray, .map-cell-moons svg,
+      .map-panel.collapsed .map-fold-clip,
+      .map-panel.collapsed .map-panel-body { transition: none; }
     }
     /* Hover feedback on a fine pointer: the pointed-at label brightens. */
     .map-label.hover { color: #fff; font-weight: 600; text-shadow: 0 0 8px rgba(0, 0, 0, 0.95); }
@@ -3789,7 +4018,7 @@
   <div id="mode-transition">
     <p id="transition-msg">Loading Solar System...</p>
   </div>
-  <div id="arrival-veil"></div>
+  <div id="arrival-veil"><div id="arrival-veil-note"></div></div>
   <div id="map-dive-fade"></div>
 
   <div id="ui-overlay">
@@ -4192,111 +4421,127 @@
              panel's buttons do not carry. Fades on its own or the first time
              one of them is used. -->
         <div id="map-zoom-hint" class="map-zoom-hint">Scroll or pinch to zoom · double-tap a body to focus<br />Right-click or press and hold empty space to teleport</div>
-        <!-- The panel: every chart control in one instrument. A corner panel on
-             a desktop and a bottom sheet on a phone — the SAME elements either
-             way, because the mode reaches for several of them by id. -->
-        <div id="map-panel" class="map-panel pn pn-high" role="region" aria-label="System map controls">
-          <div class="map-panel-grip" aria-hidden="true"></div>
-          <div class="map-panel-head">
-            <svg class="map-panel-glyph" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" aria-hidden="true"><circle cx="10" cy="10" r="6.5"></circle><circle cx="10" cy="10" r="1.7" fill="currentColor" stroke="none"></circle><circle cx="15.6" cy="6.8" r="1.4" fill="currentColor" stroke="none"></circle></svg>
-            <b class="map-panel-title">System map</b>
-            <span class="kbd" title="Press M to open and close the map">M</span>
-            <button id="map-panel-collapse" class="map-panel-btn" type="button" title="Collapse" aria-label="Collapse the panel" aria-controls="map-panel-body">
-              <svg class="map-panel-x" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" aria-hidden="true"><path d="M5.5 5.5 L14.5 14.5 M14.5 5.5 L5.5 14.5"></path></svg>
-              <svg class="map-panel-chev" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5.5 8 L10 12.5 L14.5 8"></path></svg>
-            </button>
+        <!-- The dock: the standalone help chip and the panel, one bottom-right
+             cluster. A corner instrument on a desktop and a bottom sheet on a
+             phone — the SAME elements either way, because the mode reaches for
+             several of them by id. Open ↔ closed is one animated fold: the
+             panel folds down to a 46px glyph chip rather than swapping to a
+             pill. -->
+        <div id="map-dock" class="smx">
+          <button id="map-help-chip" class="map-help-chip pn pn-high" type="button" title="Help" aria-label="Help" aria-expanded="false" aria-controls="map-help-card">
+            <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="M6.9 7.1 C6.9 5.3 8.3 4.1 10 4.1 S13.1 5.4 13.1 7.1 C13.1 9.7 10 9.5 10 12.1"></path><circle cx="10" cy="15.5" r="1.05" fill="currentColor" stroke="none"></circle></svg>
+          </button>
+          <div id="map-panel" class="map-panel pn pn-high" role="region" aria-label="System map controls">
+            <div class="map-panel-grip" aria-hidden="true"></div>
+            <div class="map-panel-head">
+              <span class="map-panel-glyph"><svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" aria-hidden="true"><circle cx="10" cy="10" r="3.6"></circle><ellipse cx="10" cy="10" rx="8.2" ry="3.1" transform="rotate(-18 10 10)"></ellipse></svg></span>
+              <b class="map-panel-title">System map</b>
+              <button id="map-panel-collapse" class="map-panel-btn" type="button" title="Collapse" aria-label="Collapse the panel" aria-controls="map-panel-body" aria-expanded="true">
+                <svg class="map-panel-chev" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5.5 8 L10 12.5 L14.5 8"></path></svg>
+              </button>
+            </div>
+            <div class="map-fold"><div class="map-fold-clip">
+              <div class="map-panel-body" id="map-panel-body">
+                <div id="map-scale" class="map-scale" role="radiogroup" aria-label="Map scale">
+                  <button class="map-scale-seg on" id="map-scale-compressed" role="radio" aria-checked="true">Compressed</button>
+                  <button class="map-scale-seg" id="map-scale-true" role="radio" aria-checked="false">True scale</button>
+                </div>
+                <p id="map-scale-note" class="map-panel-caption">Distances compressed so every body stays visible.</p>
+                <div class="map-panel-row">
+                  <span class="map-panel-k">Zoom</span>
+                  <div class="map-zoom-pair">
+                    <button id="map-zoom-out" class="map-zoom-btn" type="button" aria-label="Zoom out" title="Zoom out">
+                      <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" aria-hidden="true"><path d="M5.5 10 H14.5"></path></svg>
+                    </button>
+                    <span id="map-zoom-readout" class="map-zoom-readout">1.0×</span>
+                    <button id="map-zoom-in" class="map-zoom-btn" type="button" aria-label="Zoom in" title="Zoom in">
+                      <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" aria-hidden="true"><path d="M10 5.5 V14.5 M5.5 10 H14.5"></path></svg>
+                    </button>
+                    <span class="map-zoom-vsep"></span>
+                    <button id="map-overview" class="map-zoom-btn map-zoom-reset" type="button" title="Reset view — frame the whole system">Reset</button>
+                  </div>
+                </div>
+                <div class="map-panel-sep"></div>
+                <div id="map-picker" class="map-panel-sec">
+                  <div class="map-panel-sec-head">
+                    <b>Focus</b>
+                    <span class="map-panel-hint">or double-tap a body</span>
+                  </div>
+                  <label class="pk-search mfm-search">
+                    <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" aria-hidden="true"><circle cx="9" cy="9" r="5.5"></circle><path d="M13.2 13.2 L17 17"></path></svg>
+                    <input id="map-focus-search" type="text" placeholder="Find a body…" autocomplete="off" spellcheck="false" aria-label="Find a body">
+                  </label>
+                  <!-- The roster's front page: Sun + planets, all visible, no
+                       scrolling; a planet's moons fold out of the tray under
+                       the grid. MapHUD builds both from the same rows the
+                       search list reads. -->
+                  <div id="map-focus-grid" class="map-grid"></div>
+                  <div id="map-moon-tray" class="map-trayw">
+                    <div class="map-tray"><div class="map-tray-in">
+                      <div class="map-tray-head" id="map-moon-tray-head"></div>
+                      <div class="map-tray-chips" id="map-moon-tray-chips"></div>
+                    </div></div>
+                  </div>
+                  <div id="map-following-row" class="map-following" hidden>
+                    <span class="pk-dot" id="map-following-dot"></span>
+                    <span id="map-following-name"></span>
+                    <button id="map-following-release" class="map-following-x" type="button">release</button>
+                  </div>
+                  <div class="pk-list mfm-list" id="map-focus-list" role="list">
+                    <div class="pk-empty" id="map-focus-empty">No bodies match.</div>
+                  </div>
+                </div>
+                <div class="map-panel-sep"></div>
+                <div id="map-layers" class="map-panel-sec">
+                  <div class="map-panel-sec-head"><b>Layers</b></div>
+                  <div class="map-layer" id="map-layer-orbits">
+                    <span class="map-layer-k">Orbit lines</span>
+                    <button class="tgl on" type="button" role="switch" aria-checked="true" aria-label="Orbit lines"></button>
+                  </div>
+                  <div class="map-layer" id="map-layer-labels">
+                    <span class="map-layer-k">Body labels</span>
+                    <button class="tgl on" type="button" role="switch" aria-checked="true" aria-label="Body labels"></button>
+                  </div>
+                  <div class="map-layer" id="map-layer-moons">
+                    <span class="map-layer-k">Moons</span>
+                    <button class="tgl on" type="button" role="switch" aria-checked="true" aria-label="Moons"></button>
+                  </div>
+                  <div class="map-layer" id="map-layer-constellations">
+                    <span class="map-layer-k">Constellations</span>
+                    <button class="tgl" type="button" role="switch" aria-checked="false" aria-label="Constellations"></button>
+                  </div>
+                  <div class="map-layer" id="map-layer-rings">
+                    <span class="map-layer-k">Distance rings</span>
+                    <i class="map-layer-tag">true scale</i>
+                    <button class="tgl" type="button" role="switch" aria-checked="false" aria-label="Distance rings"></button>
+                  </div>
+                </div>
+                <div class="map-panel-foot">Sizes enlarged to stay visible · orbits &amp; positions real</div>
+              </div>
+            </div></div>
           </div>
-          <div class="map-panel-body" id="map-panel-body">
-            <div id="map-scale" class="map-scale" role="radiogroup" aria-label="Map scale">
-              <button class="map-scale-seg on" id="map-scale-compressed" role="radio" aria-checked="true">Compressed</button>
-              <button class="map-scale-seg" id="map-scale-true" role="radio" aria-checked="false">True scale</button>
+          <!-- The gesture guide, standing beside the cluster where the panel's
+               scroll and fold can never clip it. The `?` chip is its
+               disclosure; the M badge the header used to wear lives on as the
+               keys row here. -->
+          <div id="map-help-card" class="map-help-card pn pn-high" role="dialog" aria-label="Reading the chart" aria-hidden="true">
+            <div class="map-help-head">
+              <b class="map-help-eyebrow">Reading the chart</b>
+              <button id="map-help-close" class="map-panel-btn" type="button" aria-label="Close help">
+                <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" aria-hidden="true"><path d="M5.5 5.5 L14.5 14.5 M14.5 5.5 L5.5 14.5"></path></svg>
+              </button>
             </div>
-            <p id="map-scale-note" class="map-panel-caption">Distances compressed so every body stays visible.</p>
-            <div class="map-panel-row">
-              <span class="map-panel-k">Zoom</span>
-              <div class="map-zoom-pair">
-                <button id="map-zoom-out" class="map-zoom-btn" type="button" aria-label="Zoom out" title="Zoom out">
-                  <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" aria-hidden="true"><path d="M5.5 10 H14.5"></path></svg>
-                </button>
-                <span id="map-zoom-readout" class="map-zoom-readout">1.0×</span>
-                <button id="map-zoom-in" class="map-zoom-btn" type="button" aria-label="Zoom in" title="Zoom in">
-                  <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" aria-hidden="true"><path d="M10 5.5 V14.5 M5.5 10 H14.5"></path></svg>
-                </button>
-              </div>
-            </div>
-            <button id="map-overview" class="map-panel-btn-wide" type="button" title="Clear focus, pan and zoom — frame the whole system">
-              <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" aria-hidden="true"><path d="M7 3.5 H4.8 A1.3 1.3 0 0 0 3.5 4.8 V7"></path><path d="M13 3.5 H15.2 A1.3 1.3 0 0 1 16.5 4.8 V7"></path><path d="M7 16.5 H4.8 A1.3 1.3 0 0 1 3.5 15.2 V13"></path><path d="M13 16.5 H15.2 A1.3 1.3 0 0 0 16.5 15.2 V13"></path></svg>
-              Reset view
-            </button>
-            <div class="map-panel-sep"></div>
-            <div class="map-panel-sec">
-              <div class="map-panel-sec-head">
-                <b>Focus</b>
-                <span class="map-panel-hint">or double-tap a body</span>
-              </div>
-              <label class="pk-search mfm-search">
-                <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" aria-hidden="true"><circle cx="9" cy="9" r="5.5"></circle><path d="M13.2 13.2 L17 17"></path></svg>
-                <input id="map-focus-search" type="text" placeholder="Find a body…" autocomplete="off" spellcheck="false" aria-label="Find a body">
-              </label>
-              <div class="pk-list mfm-list" id="map-focus-list" role="list"></div>
-              <div class="pk-empty" id="map-focus-empty">No bodies match.</div>
-            </div>
-            <div class="map-panel-sep"></div>
-            <div id="map-layers" class="map-panel-sec">
-              <div class="map-panel-sec-head"><b>Layers</b></div>
-              <div class="map-layer" id="map-layer-orbits">
-                <span class="map-layer-k">Orbit lines</span>
-                <button class="tgl on" type="button" role="switch" aria-checked="true" aria-label="Orbit lines"></button>
-              </div>
-              <div class="map-layer" id="map-layer-labels">
-                <span class="map-layer-k">Body labels</span>
-                <button class="tgl on" type="button" role="switch" aria-checked="true" aria-label="Body labels"></button>
-              </div>
-              <div class="map-layer" id="map-layer-moons">
-                <span class="map-layer-k">Moons</span>
-                <button class="tgl on" type="button" role="switch" aria-checked="true" aria-label="Moons"></button>
-              </div>
-              <div class="map-layer" id="map-layer-constellations">
-                <span class="map-layer-k">Constellations</span>
-                <button class="tgl" type="button" role="switch" aria-checked="false" aria-label="Constellations"></button>
-              </div>
-              <div class="map-layer" id="map-layer-rings">
-                <span class="map-layer-k">Distance rings</span>
-                <i class="map-layer-tag">true scale</i>
-                <button class="tgl" type="button" role="switch" aria-checked="false" aria-label="Distance rings"></button>
-              </div>
-            </div>
-            <div class="map-panel-sep"></div>
-            <!-- Help, named rather than glyphed: a bare `?` makes the reader
-                 guess at what is behind it. Just "Help" — the panel it sits in
-                 is already titled System map, so naming the map again here
-                 would say it twice, and the row's neighbours ("Zoom", "Reset
-                 view") are this short. No tooltip: the word says what it does,
-                 and every gloss written for it reached for vocabulary
-                 ("gestures") that this app uses in its source and nowhere on
-                 screen. -->
-            <button id="map-info" class="map-panel-btn-wide map-help-toggle" type="button" aria-expanded="false" aria-controls="map-help-grid">
-              Help
-              <svg class="map-help-chev" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5.5 8 L10 12.5 L14.5 8"></path></svg>
-            </button>
-            <div id="map-help-grid" class="map-help-grid">
+            <div class="map-help-grid">
               <div class="map-help-row"><b>Tap a body</b><span>opens its card — travel, facts, the next event</span></div>
               <div class="map-help-row"><b>Drag</b><span>turns the view</span></div>
-              <div class="map-help-row"><b>Scroll · pinch</b><span>zooms, riding the cursor</span></div>
+              <div class="map-help-row"><b><span class="map-help-fine">Scroll · pinch</span><span class="map-help-coarse">Pinch</span></b><span>zooms<span class="map-help-fine">, riding the cursor</span></span></div>
               <div class="map-help-row"><b>Double-tap</b><span>focuses a body and follows it</span></div>
               <div class="map-help-row"><b><span class="map-help-fine">Right-click · hold</span><span class="map-help-coarse">Hold</span></b><span>offers a teleport to that point in space; the chip confirms it</span></div>
               <div class="map-help-row map-help-keys"><b><kbd class="kbd">M</kbd> <kbd class="kbd">Esc</kbd></b><span>M opens and closes the map; Esc backs out one step</span></div>
               <p class="map-help-note">The map runs on the sim clock — the time bar below still drives it.</p>
             </div>
-            <div class="map-panel-foot">Sizes enlarged to stay visible · orbits &amp; positions real</div>
           </div>
         </div>
-        <!-- The panel folded away: the same corner, one line of it. -->
-        <button id="map-pill" class="map-pill" type="button" aria-label="Open the map panel">
-          <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" aria-hidden="true"><circle cx="10" cy="10" r="6.5"></circle><circle cx="10" cy="10" r="1.7" fill="currentColor" stroke="none"></circle><circle cx="15.6" cy="6.8" r="1.4" fill="currentColor" stroke="none"></circle></svg>
-          System map
-          <span class="kbd" title="Press M to open and close the map">M</span>
-        </button>
         <div id="map-card" class="map-card" role="dialog" aria-label="Body actions">
           <div class="map-card-head">
             <span class="map-card-dot" id="map-card-dot"></span>

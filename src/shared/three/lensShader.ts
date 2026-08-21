@@ -158,29 +158,44 @@ export function augmentFixedScreenLineForLens(
         'gl_Position = clip;',
         /* glsl */ `
   #ifndef WORLD_UNITS
-    vec2 lensOutStart = lensWarpSourceNdc(ndcStart.xy);
-    vec2 lensOutEnd = lensWarpSourceNdc(ndcEnd.xy);
-    vec2 lensDir = lensOutEnd - lensOutStart;
-    lensDir.x *= aspect;
-    lensDir = normalize(lensDir);
-    vec2 lensOffset = vec2(lensDir.y, -lensDir.x);
-    lensDir.x /= aspect;
-    lensOffset.x /= aspect;
-    if (position.x < 0.0) lensOffset *= -1.0;
-    if (position.y < 0.0) lensOffset -= lensDir;
-    else if (position.y > 1.0) lensOffset += lensDir;
-    lensOffset *= linewidth;
-    lensOffset /= resolution.y;
-    vec2 lensOutCentre = position.y < 0.5 ? lensOutStart : lensOutEnd;
-    vec2 lensDesiredOutput = lensOutCentre + lensOffset;
-    vec2 lensPredistortedSource = lensUnwarpOutputNdc(lensDesiredOutput);
-    clip.xy = lensPredistortedSource * clip.w;
+    // A segment that wraps or grazes the camera plane has near-singular NDC
+    // endpoints (trimSegment parks one just in front of the near plane, with a
+    // huge finite ndc.xy; both-behind segments have negative clip w). The
+    // warp/unwarp pair is numerically explosive there, scattering the quad's
+    // vertices across the frame as giant triangles. Keep the stock quad for
+    // those segments. When the camera sits on the line's own path (a ring
+    // being ridden, an umbra cone being stood in), a sizeable fraction of the
+    // primitive takes this fallback, not just an off-screen sliver — measured
+    // effect: on-screen weight gets MORE uniform, because the warp math was
+    // mis-thinning exactly those segments before it exploded. Behind-camera
+    // vertices stay clipped as the stock path clips them.
+    bool lensApplies = clipStart.w > 0.0 && clipEnd.w > 0.0
+      && length(ndcStart.xy) < 8.0 && length(ndcEnd.xy) < 8.0;
+    if (lensApplies) {
+      vec2 lensOutStart = lensWarpSourceNdc(ndcStart.xy);
+      vec2 lensOutEnd = lensWarpSourceNdc(ndcEnd.xy);
+      vec2 lensDir = lensOutEnd - lensOutStart;
+      lensDir.x *= aspect;
+      lensDir = normalize(lensDir);
+      vec2 lensOffset = vec2(lensDir.y, -lensDir.x);
+      lensDir.x /= aspect;
+      lensOffset.x /= aspect;
+      if (position.x < 0.0) lensOffset *= -1.0;
+      if (position.y < 0.0) lensOffset -= lensDir;
+      else if (position.y > 1.0) lensOffset += lensDir;
+      lensOffset *= linewidth;
+      lensOffset /= resolution.y;
+      vec2 lensOutCentre = position.y < 0.5 ? lensOutStart : lensOutEnd;
+      vec2 lensDesiredOutput = lensOutCentre + lensOffset;
+      vec2 lensPredistortedSource = lensUnwarpOutputNdc(lensDesiredOutput);
+      clip.xy = lensPredistortedSource * clip.w;
+    }
   #endif
   gl_Position = clip;
 `,
       );
   };
-  material.customProgramCacheKey = () => 'fixed-screen-line-lens-v1';
+  material.customProgramCacheKey = () => 'fixed-screen-line-lens-v2';
   material.needsUpdate = true;
   return uniforms;
 }

@@ -28,6 +28,11 @@ import {
   type PlanetMarkerVisual,
 } from './planetMarkers';
 import { formatBodyDistance } from './bodyDistance';
+import {
+  resolvePlanetLabelContest,
+  type LabelRect,
+  type PlanetLabelContestant,
+} from './planetLabelPlacement';
 
 export interface PlanetLabel {
   sprite: THREE.Sprite;
@@ -45,6 +50,14 @@ export interface PlanetLabel {
   labelW: number;
   labelH: number;
   lastOpacity: string;
+  // De-overlap contest state: where the label anchor landed this frame, the
+  // marker magnitude that ranks it, whether it held a slot at the end of last
+  // frame's contest, and its pooled contestant slot (no per-frame allocation).
+  lastAnchorX: number;
+  lastAnchorY: number;
+  lastMag: number;
+  heldSlotLastFrame: boolean;
+  contestSlot: PlanetLabelContestant;
 }
 
 // Nominal label box before the DOM has been measured (roughly two 10px lines).
@@ -165,6 +178,25 @@ export class PlanetLabels {
     footprintKind: 'none',
   };
   private markerScratch: PlanetMarkerVisual = { sizeMul: 0, brightness: 0 };
+  // Pooled contest inputs, refilled each frame from the entries' slots.
+  private contestants: PlanetLabelContestant[] = [];
+  private contestBlockers: LabelRect[] = [];
+  private revealedRectScratch: LabelRect = { x: 0, y: 0, w: 0, h: 0 };
+  private revealedRectEntry: PlanetLabel | null = null;
+
+  /** The revealed body's label rect, while that label is actually drawn this
+   *  frame — the one label the Sun's own label must yield to (revealing a
+   *  crowded inner planet is exactly the gesture that asks to read its name,
+   *  and the Sun label is otherwise an uncontestable blocker). */
+  revealedLabelRect(): LabelRect | null {
+    const entry = this.revealedRectEntry;
+    if (!entry || !entry.labelVisible) return null;
+    this.revealedRectScratch.x = entry.lastAnchorX;
+    this.revealedRectScratch.y = entry.lastAnchorY;
+    this.revealedRectScratch.w = entry.labelW;
+    this.revealedRectScratch.h = entry.labelH;
+    return this.revealedRectScratch;
+  }
 
   constructor(scene: THREE.Scene, camera: THREE.PerspectiveCamera) {
     this.camera = camera;
@@ -287,6 +319,21 @@ export class PlanetLabels {
         labelW: NOMINAL_LABEL_W,
         labelH: NOMINAL_LABEL_H,
         lastOpacity: '',
+        lastAnchorX: 0,
+        lastAnchorY: 0,
+        lastMag: 99,
+        heldSlotLastFrame: false,
+        contestSlot: {
+          name: body.name,
+          x: 0,
+          y: 0,
+          w: NOMINAL_LABEL_W,
+          h: NOMINAL_LABEL_H,
+          priority: 0,
+          incumbent: false,
+          exempt: false,
+          place: false,
+        },
       });
     }
   }
@@ -393,6 +440,10 @@ export class PlanetLabels {
        *  beacon policy's heliocentric-distance term. Falls back to the
        *  catalog semi-major axis when absent. */
       sunPos?: { x: number; y: number; z: number };
+      /** The Sun label's screen rect (last frame's — it updates after this
+       *  pass and moves sub-pixel per frame). Planet labels must clear it:
+       *  the whole-system pileup printed Mercury's name into the Sun's. */
+      sunLabelRect?: LabelRect | null;
       /** Precise hull test for marker-vs-ship occlusion. The ship's
        *  foreground disc is a generous circle — right for keeping text off
        *  the hull, but wrong in both directions for a beacon: culling by the
@@ -412,6 +463,7 @@ export class PlanetLabels {
       revealedBody,
       sunMask,
       sunPos,
+      sunLabelRect,
       markerShipTest,
     } = options;
     const maskActive = !!sunMask && sunMask.active;
@@ -559,11 +611,14 @@ export class PlanetLabels {
         // multiplier (≤1) on the viewport-pinned base scale (markerScale, above),
         // the sole owner of absolute on-screen size — so photometry can shrink a
         // fainter beacon but never balloon one past the pin.
+        const rSun = sunPos
+          ? Math.hypot(pos.x - sunPos.x, pos.y - sunPos.y, pos.z - sunPos.z)
+          : entry.planet.semiMajorAxisAU;
+        const mag = markerMagnitude(entry.planet.radiusAU, distFromCamera, rSun, entry.markerAlbedo);
+        // Cached for the label contest below: apparent brightness is the rank
+        // when stacked labels fight for a slot.
+        entry.lastMag = mag;
         if (entry.sprite.visible) {
-          const rSun = sunPos
-            ? Math.hypot(pos.x - sunPos.x, pos.y - sunPos.y, pos.z - sunPos.z)
-            : entry.planet.semiMajorAxisAU;
-          const mag = markerMagnitude(entry.planet.radiusAU, distFromCamera, rSun, entry.markerAlbedo);
           const vis = markerVisual(mag, PLANET_MARKER_PARAMS, this.markerScratch);
           const absoluteScale = markerScale * vis.sizeMul;
           if (entry.sprite.scale.x !== absoluteScale) entry.sprite.scale.setScalar(absoluteScale);
@@ -635,6 +690,8 @@ export class PlanetLabels {
           entry.label.style.transform = transform;
           entry.lastTransform = transform;
         }
+        entry.lastAnchorX = screenX;
+        entry.lastAnchorY = screenY + labelOffsetY;
 
         const distanceText = formatBodyDistance(distFromPlayer);
         if (distanceText !== entry.lastDistanceText) {
@@ -659,6 +716,42 @@ export class PlanetLabels {
       } else if (entry.labelVisible) {
         entry.label.style.display = 'none';
         entry.labelVisible = false;
+      }
+    }
+
+    // De-overlap contest over the labels that survived their physical gates:
+    // a pulled-back view stacks the inner planets' labels onto near-identical
+    // pixels and someone must yield. Runs before this frame paints, so a
+    // same-frame show-then-deny is two style writes, never a visible flash.
+    this.revealedRectEntry = null;
+    this.contestants.length = 0;
+    for (const entry of this.labels) {
+      if (!entry.labelVisible) {
+        entry.heldSlotLastFrame = false;
+        continue;
+      }
+      const slot = entry.contestSlot;
+      slot.x = entry.lastAnchorX;
+      slot.y = entry.lastAnchorY;
+      slot.w = entry.labelW;
+      slot.h = entry.labelH;
+      slot.priority = -entry.lastMag;
+      slot.incumbent = entry.heldSlotLastFrame;
+      slot.exempt = entry.planet.name === revealedBody;
+      if (slot.exempt) this.revealedRectEntry = entry;
+      this.contestants.push(slot);
+    }
+    if (this.contestants.length > 0) {
+      this.contestBlockers.length = 0;
+      if (sunLabelRect) this.contestBlockers.push(sunLabelRect);
+      resolvePlanetLabelContest(this.contestants, this.contestBlockers);
+      for (const entry of this.labels) {
+        if (!entry.labelVisible) continue;
+        if (!entry.contestSlot.place) {
+          entry.label.style.display = 'none';
+          entry.labelVisible = false;
+        }
+        entry.heldSlotLastFrame = entry.contestSlot.place;
       }
     }
   }

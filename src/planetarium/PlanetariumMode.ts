@@ -16,10 +16,12 @@ import {
   CREATE_SOLAR_SYSTEM_TOTAL_UNITS,
   createSolarSystem,
   ORBIT_LINE_RESAMPLE_MAX_AGE_MS,
+  orbitLineOpacity,
   resampleOrbitLines,
   type SolarSystemObjects,
   type PlanetariumLayout,
 } from './SolarSystem';
+import type { LineMaterial } from 'three/addons/lines/LineMaterial.js';
 import { PlayerShip, type ShipProfile } from './PlayerShip';
 import { PlanetLabels, discRadiusPx, pickBodyAtPointer, type PickCandidate } from './PlanetLabels';
 import { PlanetariumStore, createDefaultPlanetariumState, type PlanetariumState, type LandedTarget, type LabelDistancesMode } from './PlanetariumStore';
@@ -664,6 +666,8 @@ export class PlanetariumMode {
    *  fetch that starts later — including the next step of a ladder — can never
    *  extend a hold that is already running. */
   private arrivalUpgradeBatch: Array<{ up: TextureUpgrade; generation: number }> = [];
+  /** Delayed reveal of the veil's busy note — cleared whenever the veil lifts. */
+  private arrivalNoteTimer: number | undefined;
   private static readonly ARRIVAL_MIN_DWELL_MS = 150;
   // Longest the arrival cover waits (from cover start) for the landed pair's
   // in-flight first-tier fetch+decode before revealing anyway — a stalled fetch
@@ -1236,8 +1240,8 @@ export class PlanetariumMode {
     () => this.mapOverviewPressed(),
     () => this.warpToMapEvent(),
   );
-  // Whether the chart's control panel is folded away to its pill (on a phone,
-  // to its own header) right now, and what the next map open should show.
+  // Whether the chart's control panel is folded down to its glyph chip right
+  // now, and what the next map open should show.
   // Two fields because they answer different questions: a dismissal folds the
   // panel away without speaking for the user, and only the collapse control
   // itself banks a preference. NOT to be confused with mapRestorePanel above,
@@ -1248,9 +1252,9 @@ export class PlanetariumMode {
   // shape yet. It cannot be decided before then: the answer depends on which
   // layout the panel lays out in, and that is a measurement.
   private mapPanelSeeded = false;
-  // Whether the panel's help grid stands open. Reset whenever the panel folds
-  // away or the map closes: a rung of the Esc cascade answers this flag, and it
-  // must never fire for a grid nobody can see.
+  // Whether the gesture guide stands open beside the panel. Reset whenever
+  // the panel folds away or the map closes: a rung of the Esc cascade answers
+  // this flag, and it must never fire for a card nobody can see.
   private mapHelpOpen = false;
   // The (followed body, releasable) pair the find-a-body list was last painted
   // for, so the per-frame refresh repaints the chip only when it changes.
@@ -2462,6 +2466,15 @@ export class PlanetariumMode {
   onResize(): void {
     if (this.starfield) setStarfieldPixelRatio(this.starfield, this.renderer.getPixelRatio());
     if (this.moonDots) this.moonDots.setPixelRatio(this.renderer.getPixelRatio());
+    // A resize can carry the layout across the breakpoint, and the phone
+    // invariant — the expanded sheet and the body card are never up together —
+    // is otherwise enforced only on the edges that OPEN one of them. A window
+    // dragged narrow with both standing re-applies the card-open rule here:
+    // the sheet folds (non-banked, a layout reflex), the card stays.
+    if (this.isMapOpen() && this.isPhoneLayout()
+      && !this.mapPanelCollapsed && this.mapHud.isCardOpen()) {
+      this.setMapPanelCollapsed(true, { bank: false });
+    }
     // The panel is re-capped BEFORE the chart re-projects: the label pass
     // inside onResize measures the panel's rect, and a rotation changes both
     // the cap and the panel's whole shape. Measured after, the labels would
@@ -4060,6 +4073,9 @@ export class PlanetariumMode {
           revealedBody: this.revealedBody ?? undefined,
           sunMask: this.sunGlareMaskParams,
           sunPos: this.solarSystem.sun.position,
+          // Last frame's rect (the Sun label updates after this pass; it
+          // moves sub-pixel per frame, so the lag is invisible).
+          sunLabelRect: this.sunLabel.blockerRect(),
           markerShipTest,
         });
       }
@@ -5925,15 +5941,30 @@ export class PlanetariumMode {
     // eclipse-dimmed surface sky they were the only "stars" that survived the
     // exposure — a false string of dots along the ecliptic.
     this.solarSystem.asteroidBelt.visible = this.landedView !== 'surface';
+    const playerSunDistAU = this.player.getDistanceFromSun();
+    // Scene coords: the Sun sits at -player (floating origin), both call sites
+    // run after applyFloatingOrigin and the camera pose, so this is fresh.
+    const cameraSunDistAU = this.camera.position.distanceTo(this.solarSystem.sun.position);
     for (let i = 0; i < this.solarSystem.orbitLines.length; i++) {
       const orbit = this.solarSystem.orbitLines[i];
       orbit.visible = !hideAll;
       if (hideAll) continue;
       const body = PLANETARIUM_BODIES[i];
-      const distToOrbit = Math.abs(this.player.getDistanceFromSun() - body.semiMajorAxisAU);
-      const fadeRange = Math.max(body.semiMajorAxisAU * 0.3, 1.0);
-      const opacity = Math.max(0.05, Math.min(0.4, 1 - distToOrbit / fadeRange));
-      (orbit.material as THREE.LineBasicMaterial).opacity = opacity;
+      (orbit.material as LineMaterial).opacity = orbitLineOpacity(
+        playerSunDistAU,
+        cameraSunDistAU,
+        body.semiMajorAxisAU,
+      );
+    }
+    if (!hideAll) {
+      // One shared uniform block for all nine lines' width pre-distortion
+      // (material.resolution itself is refreshed by LineSegments2 per draw).
+      applyLensShaderUniforms(
+        this.solarSystem.orbitLensUniforms,
+        this.camera,
+        this.renderer.domElement.clientWidth,
+        this.renderer.domElement.clientHeight,
+      );
     }
   }
 
@@ -6070,7 +6101,7 @@ export class PlanetariumMode {
       if (this.bottomBar.isStatsOpen()) { this.bottomBar.closeStats(); return; }
       // Map micro-rungs, above the map rung: Esc gives back a standing
       // teleport offer; then Esc mid-dive cancels the dive (map stays open);
-      // then Esc closes the panel's help grid; then Esc dismisses the
+      // then Esc closes the gesture guide; then Esc dismisses the
       // picked-body card; then Esc releases a focus back to the overview; then
       // Esc folds the panel away; then Esc over the map drops back into the
       // ship. Each rung produces a visible change, in that order. The chip rung
@@ -6394,6 +6425,8 @@ export class PlanetariumMode {
       this.showBodyLabels,
       revealed,
       this.sunGlareMaskParams,
+      // Fresh this frame: renderLabels just placed the revealed label.
+      this.planetLabels?.revealedLabelRect() ?? null,
     );
   }
 
@@ -7216,6 +7249,21 @@ export class PlanetariumMode {
   }
 
   private wireUpUI() {
+    // The covering arrival veil catches pointers by design (nothing
+    // half-loaded may be interacted with) — but a caught click must not die
+    // silently: reveal the busy note at once and pulse it, so the click
+    // reads as heard-but-not-ready instead of a dead button.
+    document.getElementById('arrival-veil')?.addEventListener('pointerdown', (e) => {
+      const veil = e.currentTarget as HTMLElement;
+      if (!veil.classList.contains('covering')) return;
+      const note = document.getElementById('arrival-veil-note');
+      if (!note) return;
+      note.classList.add('show');
+      note.classList.remove('pulse');
+      void note.offsetWidth; // restart the pulse animation
+      note.classList.add('pulse');
+    });
+
     // Tap speed center to toggle system throttle override (temporary)
     document.querySelector('.speed-center')?.addEventListener('click', () => {
       if (this.isMissionActive()) return;
@@ -7388,9 +7436,10 @@ export class PlanetariumMode {
     // The panel's own rows. The card's and the segment's callbacks arrived
     // with the HUD's constructor; these are assigned, the bottom bar's idiom.
     this.mapHud.onHelp = () => this.toggleMapHelp();
-    // The × banks the preference; every other way the panel folds away does
-    // not (Esc is a dismissal, and the phone's card exclusion is a layout
-    // reflex), so only this path passes bank.
+    this.mapHud.onHelpClose = () => this.setMapHelpOpen(false);
+    // The chevron banks the preference; every other way the panel folds away
+    // does not (Esc is a dismissal, and the phone's card exclusion is a
+    // layout reflex), so only this path passes bank.
     this.mapHud.onCollapse = () => this.setMapPanelCollapsed(true, { bank: true });
     this.mapHud.onExpand = () => this.setMapPanelCollapsed(false, { bank: true });
     this.mapHud.onPickRow = (name) => this.pickMapFocusRow(name);
@@ -8195,9 +8244,9 @@ export class PlanetariumMode {
     return this.mapOverviewPressed();
   }
 
-  /** Dev bridge: the panel's help grid. Kept under its old name — it is the
+  /** Dev bridge: the gesture guide. Kept under its old name — it is the
    *  same question ("is the map's help showing?") asked of the surface that
-   *  replaced the popover. */
+   *  replaced the in-panel grid. */
   devMapInfo(open: boolean): boolean {
     this.setMapHelpOpen(open);
     return this.mapHelpOpen;
@@ -8234,7 +8283,7 @@ export class PlanetariumMode {
     return {
       collapsed: this.mapPanelCollapsed,
       helpOpen: this.mapHelpOpen,
-      sheetExpanded: this.isMapPanelBand() && !this.mapPanelCollapsed,
+      sheetExpanded: this.isPhoneLayout() && !this.mapPanelCollapsed,
     };
   }
 
@@ -8305,7 +8354,7 @@ export class PlanetariumMode {
     this.mapHelpOpen = false;
     this.mapHud.setHelpOpen(false);
     // First map of the session: a phone opens with the sheet folded to its
-    // header. Expanded it is two thirds of the screen and every drawn body
+    // chip. Expanded it is two thirds of the screen and every drawn body
     // sits behind it — the chart is what the screen is for, and a control
     // panel over an empty patch of stars is not a map. The desktop panel is a
     // corner instrument and opens standing. Seeded once, then it is the
@@ -8313,7 +8362,7 @@ export class PlanetariumMode {
     if (!this.mapPanelSeeded) {
       this.mapPanelSeeded = true;
       this.mapHud.setPanelCollapsed(false);
-      this.mapPanelCollapsedPref = this.isMapPanelBand();
+      this.mapPanelCollapsedPref = this.isPhoneLayout();
     }
     this.mapPanelCollapsed = this.mapPanelCollapsedPref;
     this.mapHud.setPanelCollapsed(this.mapPanelCollapsed);
@@ -8361,7 +8410,7 @@ export class PlanetariumMode {
     if (!this.mapCommitting) this.clearDiveFade();
 
     this.systemMap?.close();
-    // The help grid goes with the chart: landing, takeoff, deactivation, a
+    // The gesture guide goes with the chart: landing, takeoff, deactivation, a
     // mission start, M and Esc all reach here, so no close path has to
     // remember it on its own. The collapsed/open preference deliberately does
     // NOT reset — that is the one thing the session keeps.
@@ -8533,14 +8582,17 @@ export class PlanetariumMode {
     );
   }
 
-  /** Dock the hint clear of the panel. The block is two lines and grows
-   *  UPWARD, and on a phone the panel is a full-width sheet with only one
-   *  line's worth of band beneath it — so the hint sits above the sheet
-   *  instead. Measured, the same width test the card's dock uses to tell a
-   *  band from a corner instrument. */
+  /** Dock the hint clear of the dock. The block is two lines and grows
+   *  UPWARD, and on a phone the dock owns the band it would land in — the
+   *  full-width sheet no less than the folded two-chip dock — so the hint
+   *  sits above whichever of them is standing. A desktop keeps the
+   *  stylesheet's floor; the corner instrument is beside the centred line,
+   *  not under it. */
   private dockMapZoomHint(el: HTMLElement): void {
-    const rect = document.getElementById('map-panel')?.getBoundingClientRect();
-    el.style.bottom = rect && rect.height > 0 && rect.width >= window.innerWidth - 32
+    const rect = this.isPhoneLayout()
+      ? document.getElementById('map-dock')?.getBoundingClientRect()
+      : null;
+    el.style.bottom = rect && rect.height > 0
       ? `${Math.round(window.innerHeight - rect.top + 8)}px`
       : '';
   }
@@ -8976,14 +9028,14 @@ export class PlanetariumMode {
     const target = mapBodyRefFor(name);
     if (!target) return;
     this.mapPicked = target;
-    // One instrument at a time — fold the bottom-bar popovers and the panel's
-    // help grid away. On a phone the sheet folds to its header as well: at
-    // 320 px an expanded sheet and this card cannot both be read, and what
-    // gives is the control the user is not looking at.
+    // One instrument at a time — fold the bottom-bar popovers and the gesture
+    // guide away. On a phone the sheet folds to its chip as well: at 320 px
+    // an expanded sheet and this card cannot both be read, and what gives is
+    // the control the user is not looking at.
     this.bottomBar.closeTime();
     this.bottomBar.closeStats();
     this.setMapHelpOpen(false);
-    if (!this.mapPanelCollapsed && this.isMapPanelBand()) {
+    if (!this.mapPanelCollapsed && this.isPhoneLayout()) {
       this.setMapPanelCollapsed(true, { bank: false });
     }
     // A body is a different answer to "where do you want to go": the offer of
@@ -9251,12 +9303,13 @@ export class PlanetariumMode {
     this.mapHud.setPanelStoodDown(down);
   }
 
-  /** Whether the panel is drawn as a full-width band, which is the phone's
-   *  bottom sheet. The chart's own width test, so the panel, the card's dock
-   *  and the label pass all agree about what counts as a band. */
-  private isMapPanelBand(): boolean {
-    const rect = document.getElementById('map-panel')?.getBoundingClientRect();
-    return !!rect && rect.height > 0 && rect.width >= window.innerWidth - 32;
+  /** Whether the dock lays out as the phone's bottom sheet. Asked of the
+   *  stylesheet's own media condition rather than of a rect: the panel now
+   *  ANIMATES between its shapes, and a rect read mid-fold answers with the
+   *  animation's progress, not the layout. (The card dock and the label pass
+   *  still read rects — they want painted truth, not intent.) */
+  private isPhoneLayout(): boolean {
+    return window.matchMedia('(max-width: 640px)').matches;
   }
 
   /**
@@ -9270,32 +9323,31 @@ export class PlanetariumMode {
     if (opts.bank) this.mapPanelCollapsedPref = collapsed;
     if (collapsed === this.mapPanelCollapsed) return;
     this.mapPanelCollapsed = collapsed;
-    // A folded panel cannot show a help grid, and an Esc rung answering a flag
-    // nobody can see is exactly the stale-offer bug.
+    // Folding the panel takes the open guide with it: the fold is a step
+    // back from the corner, and a guide left floating beside a chip would
+    // outrank the chart the fold just gave the screen to.
     if (collapsed) this.setMapHelpOpen(false);
     this.mapHud.setPanelCollapsed(collapsed);
     // The sheet is a band, and both the teleport chip and an open body card
     // would be under it — the card entirely so, at either phone size. The
     // exclusion runs BOTH ways: opening the card folds the sheet, and
     // unfolding the sheet dismisses the card. Desktop keeps both — the panel
-    // is a corner instrument there, and they have room beside it.
-    if (!collapsed && this.isMapPanelBand()) {
+    // is a corner instrument there, and they have room beside it. Layout
+    // intent, not a rect: at this instant the sheet is one frame into its
+    // unfold and still measures as the chip.
+    if (!collapsed && this.isPhoneLayout()) {
       this.dismissMapTeleportChip();
       this.dismissMapCard();
     }
   }
 
-  /** The panel's help grid. Nothing else opens with it — on a phone the card
-   *  and the grid are the same strip of screen. */
+  /** The gesture guide behind the `?` chip. It stands beside the panel, not
+   *  in it, so a folded panel is no bar to reading it (the two-chip dock);
+   *  nothing else opens WITH it — on a phone the guide and the body card are
+   *  the same strip of screen. */
   private setMapHelpOpen(open: boolean): void {
     if (open) {
       if (!this.isMapOpen()) return;
-      // Help opened on a folded sheet has to unfold it, or it would set a flag
-      // for a grid the reader cannot see. No POINTER can arrive that way any
-      // more — the Help row lives in the body, which a folded sheet hides — but
-      // the dev bridge opens help directly, and that path still needs the
-      // unfold rather than a stale offer.
-      if (this.mapPanelCollapsed) this.setMapPanelCollapsed(false, { bank: false });
       this.dismissMapCard();
       this.bottomBar.closeTime();
       this.bottomBar.closeStats();
@@ -13697,7 +13749,13 @@ export class PlanetariumMode {
         upgradeCover = true;
       }
     }
-    this.arriveAtSystem(this.parentSystemOf(target), action, upgradeCover, landingUpgrades);
+    this.arriveAtSystem(
+      this.parentSystemOf(target),
+      action,
+      upgradeCover,
+      landingUpgrades,
+      bodyDisplayName(target.name),
+    );
   }
 
   /**
@@ -13714,6 +13772,7 @@ export class PlanetariumMode {
     action: () => void,
     upgradeCover: boolean,
     keepUpgrades: readonly TextureUpgrade[] = [],
+    noteLabel: string | null = null,
   ): void {
     if (this.arrivalInFlight) return;
     // A teleport abandons every fetch in flight anywhere in the system except
@@ -13750,6 +13809,18 @@ export class PlanetariumMode {
     const veil = document.getElementById('arrival-veil');
     const coverStart = performance.now();
     veil?.classList.add('covering'); // snaps fully opaque (no fade-in) — see CSS
+    // The covering black over mostly-black space reads as a dead screen (and
+    // deliberately catches clicks), so a hold that outlives a beat names
+    // itself. Instant arrivals — the common warm case — never flash it.
+    const note = document.getElementById('arrival-veil-note');
+    if (note) {
+      note.textContent = `Preparing ${noteLabel ?? 'the view'}…`;
+      note.classList.remove('show', 'pulse');
+    }
+    window.clearTimeout(this.arrivalNoteTimer);
+    this.arrivalNoteTimer = window.setTimeout(() => {
+      if (veil?.classList.contains('covering')) note?.classList.add('show');
+    }, 350);
     // The veil owns the screen from here until its fade-out finishes.
     this.arrivalVeilClearAtMs = Number.POSITIVE_INFINITY;
     const coverGen = ++this.arrivalCoverGen;
@@ -13814,6 +13885,8 @@ export class PlanetariumMode {
             window.setTimeout(() => {
               if (coverGen !== this.arrivalCoverGen) return;
               veil?.classList.remove('covering');
+              window.clearTimeout(this.arrivalNoteTimer);
+              document.getElementById('arrival-veil-note')?.classList.remove('show', 'pulse');
               this.arrivalVeilClearAtMs = performance.now() + PlanetariumMode.ARRIVAL_VEIL_FADE_MS;
             }, wait);
           };

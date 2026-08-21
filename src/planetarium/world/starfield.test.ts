@@ -1,10 +1,15 @@
 import { describe, expect, it } from 'vitest';
 import { BLOOM_THRESHOLD } from '../../app/bloomConfig';
+import * as THREE from 'three';
 import { loadBrightStarCatalogFromDisk } from '../data/brightStarsTestCatalog';
-
-const BRIGHT_STAR_CATALOG = loadBrightStarCatalogFromDisk();
-import { starfieldFaintLimitMag, starRenderColor } from './starfield';
+import { createPlanetariumStarfield, starfieldFaintLimitMag, starRenderColor } from './starfield';
+import { ORBIT_LINE_STENCIL_REF } from './orbitLineStencil';
 import { STAR_FAINT_ANCHOR_MAG } from './starPointMapping';
+
+// Installing the shipped catalog in the store is the point, not just the
+// return value: the builder exercised below reads brightStarCatalog(), which
+// throws until something has loaded it.
+const BRIGHT_STAR_CATALOG = loadBrightStarCatalogFromDisk();
 
 // Rec.709 luminance weights — the same coefficients three's bloom high-pass
 // (LuminosityHighPassShader) uses for the working sRGB colour space.
@@ -49,5 +54,16 @@ describe('starfield bloom-threshold invariant', () => {
     // Yet the field genuinely rides near the cutoff — the threshold move earns
     // its keep. If a brightness retune drops this floor, the guard is going slack.
     expect(maxLuma).toBeGreaterThan(0.85);
+  });
+});
+
+describe('starfield décor stencil gate', () => {
+  it('tests against the orbit-line stamp without stamping anything itself', () => {
+    const starfield = createPlanetariumStarfield(2);
+    const material = starfield.material as THREE.ShaderMaterial;
+    expect(material.stencilWrite).toBe(true);
+    expect(material.stencilWriteMask).toBe(0x00);
+    expect(material.stencilFunc).toBe(THREE.NotEqualStencilFunc);
+    expect(material.stencilRef).toBe(ORBIT_LINE_STENCIL_REF);
   });
 });

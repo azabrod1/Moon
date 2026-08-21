@@ -233,6 +233,7 @@ import {
   LABEL_NOMINAL_HALF_WIDTH_PX,
 } from './mapLabels';
 import { debugWarn } from '../../shared/debug';
+import { createMapMoonRingMaterial, createMapPlanetOrbitMaterial } from './mapOrbitMaterial';
 
 /**
  * Read-only access to the world's live surface textures. The map re-reads these
@@ -747,11 +748,11 @@ export class SystemMap {
   private labelChromeForH = 0;
   private labelMaxBoxTopCachedPx = Number.POSITIVE_INFINITY;
   /** The chart's own sheets, measured live every frame they stand open: the
-   *  picked-body card. It counts as a band only while it spans the width,
-   *  which is the phone form. */
+   *  picked-body card and the gesture guide. One counts as a band only while
+   *  it spans the width, which is the phone form. */
   private labelSheetEls: (HTMLElement | null)[] = [];
-  /** The corner panels' screen rects this frame — the control panel (or the
-   *  pill it folds into) and the card. A label whose box lands under one
+  /** The corner panels' screen rects this frame — the control panel (open or
+   *  folded to its chip), the help chip and the card. A label whose box lands under one
    *  hides: half a name sticking out from a panel's edge reads as a sliced
    *  fragment, not a label. The panel's rect is cached with the band and
    *  re-read only when the owner says its shape changed; the sheets' rects are
@@ -3408,6 +3409,15 @@ export class SystemMap {
       moon.ringDirs[i * 3 + 2] = this.tmpMoonOffset.z / d;
       moon.ringX[i] = d / trueR;
     }
+    // Close the ring exactly: one period of apsidal/nodal drift separates the
+    // last sample from the first — degrees of arc for fast-precessing moons —
+    // and the line's butt caps no longer pad the gap. The ring is chart
+    // furniture anchored at the moon, so the seam parks under its dot.
+    const seam = MOON_RING_SEGMENTS * 3;
+    moon.ringDirs[seam] = moon.ringDirs[0];
+    moon.ringDirs[seam + 1] = moon.ringDirs[1];
+    moon.ringDirs[seam + 2] = moon.ringDirs[2];
+    moon.ringX[MOON_RING_SEGMENTS] = moon.ringX[0];
     moon.ringSampledUtcMs = utcMs;
     moon.ringFilledAtMs = nowMs;
     moon.ringFilled = true;
@@ -3513,15 +3523,7 @@ export class SystemMap {
 
       const ringGeometry = new LineGeometry();
       ringGeometry.setPositions(new Float32Array((MOON_RING_SEGMENTS + 1) * 3));
-      const ringMaterial = new LineMaterial({
-        color: data.color,
-        linewidth: 1,
-        transparent: true,
-        opacity: MOON_RING_OPACITY,
-        depthTest: true,
-        depthWrite: false,
-        toneMapped: false,
-      });
+      const ringMaterial = createMapMoonRingMaterial(data.color, MOON_RING_OPACITY);
       ringMaterial.resolution.set(Math.max(el.clientWidth, 1), Math.max(el.clientHeight, 1));
       const ring = new Line2(ringGeometry, ringMaterial);
       // Built late, so it starts from the switch rather than from on: a system
@@ -4803,6 +4805,17 @@ export class SystemMap {
       entry.raw[i * 3 + 1] = p.y;
       entry.raw[i * 3 + 2] = p.z;
     }
+    // The sampled strip's ends meet half a period from the body, separated by
+    // one period of element drift — sub-pixel for most bodies but chart-visible
+    // for the slow ones, and the lines' butt caps no longer pad it. Pinch both
+    // ends onto their midpoint so the loop closes exactly; the drift becomes a
+    // sub-gap-sized kink at the seam instead of a hole in the ring.
+    const last = ORBIT_SEGMENTS * 3;
+    for (let k = 0; k < 3; k++) {
+      const mid = (entry.raw[k] + entry.raw[last + k]) / 2;
+      entry.raw[k] = mid;
+      entry.raw[last + k] = mid;
+    }
   }
 
   /** Every cached line back through the live blend — what a scale animation
@@ -5842,7 +5855,7 @@ export class SystemMap {
       return;
     }
     // A corner panel is a hole in the frame, not a band across it: a label
-    // whose box lands under the panel, the pill or the card would show as
+    // whose box lands under the panel, the help chip or the card would show as
     // word fragments sticking out from the panel's edge.
     for (const ob of this.labelObstaclesPx) {
       if (x + halfWidth > ob.left && x - halfWidth < ob.right
@@ -5898,7 +5911,7 @@ export class SystemMap {
    */
   /** Forget the cached static-chrome band; the next label pass re-measures.
    *  The panel changes shape with no viewport change to announce it — a
-   *  stand-down, a collapse, the help grid opening — and the cache would keep
+   *  stand-down, a fold, the moon tray opening — and the cache would keep
    *  culling labels across a shape that is no longer there. */
   invalidateLabelChrome(): void {
     this.labelChromeForW = 0;
@@ -5927,12 +5940,15 @@ export class SystemMap {
       let top: number | null = null;
       const bar = measurable(document.getElementById('planetarium-bottom-bar'));
       if (bar) top = bar.top;
-      // The panel and the pill it folds into are one instrument in two shapes,
-      // and only one of them is ever on screen. Their rects are cached rather
-      // than read per frame: nothing about them moves on its own, and the
-      // owner invalidates this cache on every edge that changes them.
+      // The dock's two standing pieces, measured one by one — the panel (open
+      // sheet, corner instrument, or folded chip) and the help chip beside
+      // it. Never their wrapper: the dock is a transparent row that spans the
+      // phone width, and its rect would read as a band with two chips in it.
+      // The rects are cached rather than read per frame: nothing about them
+      // moves on its own, and the owner invalidates this cache on every edge
+      // that changes them (the fold's start and its transitionend included).
       this.labelStaticObstacles.length = 0;
-      for (const id of ['map-panel', 'map-pill']) {
+      for (const id of ['map-panel', 'map-help-chip']) {
         const rect = measurable(document.getElementById(id));
         if (!rect) continue;
         if (rect.width >= w - 32) {
@@ -6032,7 +6048,9 @@ export class SystemMap {
 
   private ensureLabelContainer(): void {
     if (this.labelSheetEls.length === 0) {
-      this.labelSheetEls = ['map-card'].map((id) => document.getElementById(id));
+      // The picked-body card and the gesture guide: transient sheets the
+      // labels dodge only while their `visible` class stands.
+      this.labelSheetEls = ['map-card', 'map-help-card'].map((id) => document.getElementById(id));
     }
     if (this.labelContainer) return;
     this.labelContainer = document.getElementById('map-labels');
@@ -6064,21 +6082,10 @@ export class SystemMap {
     const geometry = new LineGeometry();
     geometry.setPositions(map);
     geometry.setColors(colors);
-    // depthTest ON: a true-sized globe writes depth (transparent at full
-    // opacity, but drawn first — see the render-order ladder note), so a
-    // depth-free line (the dot-era default) would paint straight across every
-    // disc afterwards. Tested, the line dies at the limb and re-emerges past
-    // it — a body occludes its own orbit. No depth write: the lines must
-    // never occlude each other or the sprites.
-    const material = new LineMaterial({
-      linewidth: 1.5,
-      vertexColors: true,
-      transparent: true,
-      opacity: this.orbitStyle.opacity,
-      depthTest: true,
-      depthWrite: false,
-      toneMapped: false,
-    });
+    // Depth contract and cap patch live with the factory (see the render-order
+    // ladder note for why the globes' written depth is what ends a line at a
+    // limb).
+    const material = createMapPlanetOrbitMaterial(this.orbitStyle.opacity);
     material.resolution.set(Math.max(el.clientWidth, 1), Math.max(el.clientHeight, 1));
     const line = new Line2(geometry, material);
     // After the spheres, whose written depth is what ends an orbit line at a

@@ -2,8 +2,15 @@
  * Builds the Planetarium scene graph: Sun, all planets, orbit lines, asteroid belt.
  * `layoutMode` is 'aligned' (evenly spread for a compact overview) or 'realistic'
  * (ephemeris positions at a given date). Units are AU on the ecliptic.
+ *
+ * Orbit lines are Line2 fat lines (pixel-authored width, butt caps, feathered
+ * edges — see createOrbitLineMaterial) pre-distorted for the lens pass, with a
+ * per-frame opacity law (orbitLineOpacity) driven by PlanetariumMode.
  */
 import * as THREE from 'three';
+import { Line2 } from 'three/addons/lines/Line2.js';
+import { LineGeometry } from 'three/addons/lines/LineGeometry.js';
+import { LineMaterial } from 'three/addons/lines/LineMaterial.js';
 import { PLANETARIUM_BODIES, ASTEROID_BELT, type PlanetData } from './planets/planetData';
 import { createPlanetMesh, createPlanetariumSun, type PlanetMesh } from './PlanetFactory';
 import {
@@ -15,6 +22,13 @@ import {
 import { KM_PER_AU } from '../astronomy/constants';
 import type { KeplerElements } from '../astronomy/standish';
 import { augmentPointsMaterialWithSunGlareMask } from './world/sunGlareMask';
+import { ORBIT_LINE_STENCIL_REF, applyOrbitLineStencilGate } from './world/orbitLineStencil';
+import {
+  augmentFixedScreenLineForLens,
+  createLensShaderUniforms,
+  type LensShaderUniforms,
+} from '../shared/three/lensShader';
+import { smoothstepUnclamped } from '../shared/math/smoothstep';
 
 export type PlanetariumLayout = 'aligned' | 'realistic';
 export const CREATE_SOLAR_SYSTEM_TOTAL_UNITS =
@@ -28,9 +42,12 @@ export interface SolarSystemLoadProgress {
 export interface SolarSystemObjects {
   sun: THREE.Group;
   planets: PlanetMesh[];
-  orbitLines: THREE.Line[];
+  orbitLines: Line2[];
   /** Sim epoch the orbit lines were last sampled at (lazy drift rebuild). */
   orbitLinesEpochUtcMs: number;
+  /** One shared uniform block for every orbit line's lens pre-distortion —
+   * refreshed once per frame by PlanetariumMode.updateOrbitLineVisibility. */
+  orbitLensUniforms: LensShaderUniforms;
   asteroidBelt: THREE.Points;
   sunLight: THREE.PointLight;
 }
@@ -119,12 +136,12 @@ function sampleLinePoints(
 
 /**
  * Re-sample every orbit line's geometry at the given sim epoch and re-stamp
- * orbitLinesEpochUtcMs. Mutates the existing geometry in place — replacing
- * the Line objects would break the orbitLines[i] ↔ PLANETARIUM_BODIES[i]
- * coupling and orphan GPU buffers — and recomputes each bounding sphere
- * (setFromPoints updates attributes but never invalidates the cached sphere,
- * which would leave frustum culling stale). The staleness *policy* (when to
- * call this) lives with the caller, PlanetariumMode.rebuildOrbitLinesIfStale.
+ * orbitLinesEpochUtcMs. Writes each polyline in place via setOrbitLinePoints —
+ * replacing the Line objects would break the orbitLines[i] ↔
+ * PLANETARIUM_BODIES[i] coupling — including fresh bounds (an updated buffer
+ * never invalidates the cached sphere, which would leave frustum culling
+ * stale). The staleness *policy* (when to call this) lives with the caller,
+ * PlanetariumMode.rebuildOrbitLinesIfStale.
  */
 export function resampleOrbitLines(
   objects: Pick<SolarSystemObjects, 'orbitLines' | 'orbitLinesEpochUtcMs'>,
@@ -133,22 +150,252 @@ export function resampleOrbitLines(
 ): void {
   for (let i = 0; i < objects.orbitLines.length; i++) {
     const points = sampleLinePoints(PLANETARIUM_BODIES[i], layoutMode, utcMs);
-    const geometry = objects.orbitLines[i].geometry;
-    geometry.setFromPoints(points);
-    geometry.computeBoundingSphere();
+    setOrbitLinePoints(objects.orbitLines[i], points);
   }
   objects.orbitLinesEpochUtcMs = utcMs;
 }
 
-function createOrbitLine(points: THREE.Vector3[], color: number, opacity: number): THREE.Line {
-  const geometry = new THREE.BufferGeometry().setFromPoints(points);
-  const material = new THREE.LineBasicMaterial({
+/**
+ * Screen-space orbit-line width in CSS px (LineSegments2 refreshes
+ * `material.resolution` from the renderer viewport on every draw, so the value
+ * is DPR-invariant; the lens augment keeps it constant in final output space).
+ * The fragment feather softens the outer ~1 device px of each side, so the
+ * solid core reads slightly narrower than this number.
+ */
+export const ORBIT_LINE_WIDTH_PX = 2.25;
+
+/** Opacity when neither term speaks for a line: far from the player's
+ * neighbourhood with the camera too close to read the orbit as a ring.
+ * Tuned with the width: below ~2 px the lens resample's brightness ripple
+ * reads as dashes, and at 0.05 the ripple was proportionally huge. */
+export const ORBIT_LINE_OPACITY_FLOOR = 0.14;
+/** Neighbourhood saturation — the player is on/near this orbit. */
+export const ORBIT_LINE_OPACITY_CAP = 0.55;
+/** Map-read level once the camera is pulled far enough to see the whole ring.
+ * Sits at the cap deliberately: at whole-system zoom the arcs peak at
+ * 110–150/255 luma — confident chart lines — and the lens resample's
+ * residual few-code ripple falls below visible contrast, where the old dim
+ * lines let it read as banding. */
+export const ORBIT_LINE_OVERVIEW_OPACITY = 0.55;
+
+/**
+ * Per-frame orbit-line opacity. Two independent claims on visibility, max-
+ * combined: `proximity` keeps the player's own neighbourhood bright (the
+ * pre-existing law: full within ~a third of the orbit radius, gone beyond it),
+ * and `overview` restores the lines as chart furniture whenever the camera —
+ * not the player, so a pulled-back or Sun-framed view counts — stands far
+ * enough outside an orbit to see it whole (ramps over camera distance 1→2
+ * orbit radii). Without the overview term a whole-system view pins every line
+ * to the floor, because the player is parked on one planet while the camera
+ * does the sightseeing.
+ */
+export function orbitLineOpacity(
+  playerSunDistAU: number,
+  cameraSunDistAU: number,
+  semiMajorAxisAU: number,
+): number {
+  if (
+    !Number.isFinite(playerSunDistAU) ||
+    !Number.isFinite(cameraSunDistAU) ||
+    !Number.isFinite(semiMajorAxisAU) ||
+    semiMajorAxisAU <= 0
+  ) {
+    return ORBIT_LINE_OPACITY_FLOOR;
+  }
+  const fadeRangeAU = Math.max(semiMajorAxisAU * 0.3, 1);
+  const proximity = 1 - Math.abs(playerSunDistAU - semiMajorAxisAU) / fadeRangeAU;
+  const overviewT = Math.min(1, Math.max(0, cameraSunDistAU / semiMajorAxisAU - 1));
+  const overview = ORBIT_LINE_OVERVIEW_OPACITY * smoothstepUnclamped(overviewT);
+  return Math.min(
+    ORBIT_LINE_OPACITY_CAP,
+    Math.max(ORBIT_LINE_OPACITY_FLOOR, Math.max(proximity, overview)),
+  );
+}
+
+/** Orbit lines are scene furniture: draw them beneath every default-order
+ * transparent (belt dots, atmosphere shells, exhaust) instead of letting the
+ * bounding-sphere z-sort flip the layering as the camera moves. Drawing
+ * first is also what lets their stencil stamp gate the décor drawn after. */
+const ORBIT_LINE_RENDER_ORDER = -1;
+
+function replaceExactlyOnce(source: string, anchor: string, replacement: string): string {
+  const first = source.indexOf(anchor);
+  if (first === -1 || source.indexOf(anchor, first + 1) !== -1) {
+    throw new Error(`orbit-line shader anchor not found exactly once: "${anchor}"`);
+  }
+  return source.replace(anchor, replacement);
+}
+
+/**
+ * LineMaterial tuned for a low-opacity transparent polyline. Two stock
+ * fragment-shader behaviours are wrong for that use and get patched out
+ * (`replaceExactlyOnce` fails the build loudly if a three upgrade moves the
+ * anchors):
+ *
+ * - Round endcaps survive past each segment end and double-blend over the
+ *   neighbour segment's quad — at orbit tessellation that is a bright bead at
+ *   every joint. Butt caps instead; the resulting outer-bend notch is
+ *   `w·tan(θ/2)` ≈ 0.02 px at the coarsest ring (256 segments), invisible.
+ * - Body side edges are hard rasterized edges (the stock feather exists only
+ *   on the alpha-to-coverage path, which needs MSAA the composer target does
+ *   not have, and it *assigns* over the opacity). Feather the outer device
+ *   pixel of each side via `vUv.x` — the cross-line axis — multiplying into
+ *   `alpha` so the per-frame opacity fade survives. The derivative is taken
+ *   before the cap discard (tile GPUs dislike derivatives after non-uniform
+ *   discards).
+ *
+ * The lens augment then pre-distorts the screen-space width so it stays
+ * constant in final output space (CLAUDE.md lens contract; same helper as the
+ * ShadowVisuals guides). The patched fragment source already yields a distinct
+ * program-cache entry, but the explicit cache key keeps us deliberately apart
+ * from the helper's shared `fixed-screen-line-lens-v2` key.
+ */
+export function createOrbitLineMaterial(
+  color: number,
+  opacity: number,
+  lensUniforms: LensShaderUniforms,
+): LineMaterial {
+  const material = new LineMaterial({
     color,
+    linewidth: ORBIT_LINE_WIDTH_PX,
     transparent: true,
     opacity,
+    // No depth write: overlapping rings must blend, not z-chop each other
+    // into patches (a depth-writing attempt did exactly that where Uranus's
+    // and Neptune's rings pile up on the horizon). Planets still occlude the
+    // lines through the depth TEST.
     depthWrite: false,
+    worldUnits: false,
   });
-  return new THREE.Line(geometry, material);
+  // The visible core stamps the stencil buffer instead: décor point fields
+  // (starfield, asteroid belt) draw later and stencil-test NotEqual 1, so a
+  // star or belt dot can never composite over a line and bead it — no alpha
+  // can do this (a dot behind a dim line shows through at 1-alpha, and a
+  // belt dot is usually NEARER than an outer ring, so depth can never reject
+  // it), and depth quantization ties at tiny landed/close-pass near planes
+  // make depth-writing unreliable here anyway. Fragments hidden behind a
+  // planet fail the depth test and stamp nothing, so décor still shows where
+  // the line itself is occluded. Bodies (moon dots) deliberately don't test.
+  material.stencilWrite = true;
+  material.stencilRef = ORBIT_LINE_STENCIL_REF;
+  material.stencilZPass = THREE.ReplaceStencilOp;
+  let fragment = material.fragmentShader;
+  fragment = replaceExactlyOnce(
+    fragment,
+    'float alpha = opacity;',
+    /* glsl */ `float alpha = opacity;
+
+			#ifndef WORLD_UNITS
+				// True screen-space gradient, not fwidth: fwidth is |ddx|+|ddy|,
+				// which overstates the gradient by up to sqrt(2) depending on the
+				// segment's screen slope, so an fwidth-sized feather breathes
+				// along a curving arc and bands it at the raster staircase period.
+				float lineEdgeWidth = length( vec2( dFdx( vUv.x ), dFdy( vUv.x ) ) );
+			#endif`,
+  );
+  fragment = replaceExactlyOnce(fragment, 'if ( len2 > 1.0 ) discard;', 'discard;');
+  fragment = replaceExactlyOnce(
+    fragment,
+    'gl_FragColor = vec4( diffuseColor.rgb, alpha );',
+    /* glsl */ `#ifndef WORLD_UNITS
+				// Linear coverage ramp that reaches exactly zero AT the quad
+				// edge: a trapezoid profile whose ramps are one pixel wide sums
+				// to the same per-column flux wherever the line centre falls
+				// between pixel centres, so the sub-pixel phase drift along a
+				// shallow arc produces no brightness banding. A smoothstep, or
+				// any ramp that ends short of the edge, leaves a residual
+				// coverage step whose beat is visible as evenly spaced bands on
+				// far-out orbit arcs.
+				float lineEdgeCoverage = clamp( ( 1.0 - abs( vUv.x ) ) / max( lineEdgeWidth, 1e-5 ), 0.0, 1.0 );
+				// The core stamps the décor stencil, and discarded fragments
+				// stamp nothing. The threshold must sit near zero — any step
+				// truncated from the ramp re-creates the banding — so the
+				// stamped band spans essentially the whole quad; the décor it
+				// additionally culls is ~22% more edge pixels, and star/belt
+				// stud counts measurably drop with the smoother edge.
+				if ( lineEdgeCoverage < 0.05 ) discard;
+				alpha *= lineEdgeCoverage;
+			#endif
+
+			gl_FragColor = vec4( diffuseColor.rgb, alpha );`,
+  );
+  material.fragmentShader = fragment;
+  augmentFixedScreenLineForLens(material, lensUniforms);
+  material.customProgramCacheKey = () => 'orbit-line-lens-buttcap-v2';
+  return material;
+}
+
+/**
+ * (Re)fill a Line2's polyline. Same segment count writes the pair-format
+ * positions into the existing instanced buffer (LineGeometry.setPositions
+ * would allocate a fresh GPU buffer per call — the periodic drift resample
+ * must not churn); a different count (aligned ↔ realistic switch) swaps in a
+ * fresh geometry and disposes the old one so its GPU buffers release
+ * deterministically. Bounding box before sphere: the sphere centres on the
+ * cached box.
+ */
+function setOrbitLinePoints(line: Line2, points: THREE.Vector3[]): void {
+  const geometry = line.geometry;
+  const start = geometry.getAttribute('instanceStart') as
+    | THREE.InterleavedBufferAttribute
+    | undefined;
+  const end = geometry.getAttribute('instanceEnd') as
+    | THREE.InterleavedBufferAttribute
+    | undefined;
+  const pairFloats = (points.length - 1) * 6;
+  if (
+    start !== undefined &&
+    end !== undefined &&
+    start.data === end.data &&
+    start.data.stride === 6 &&
+    start.offset === 0 &&
+    end.offset === 3 &&
+    start.data.array.length === pairFloats
+  ) {
+    const array = start.data.array as Float32Array;
+    for (let i = 0; i < points.length - 1; i++) {
+      const a = points[i];
+      const b = points[i + 1];
+      const o = i * 6;
+      array[o] = a.x;
+      array[o + 1] = a.y;
+      array[o + 2] = a.z;
+      array[o + 3] = b.x;
+      array[o + 4] = b.y;
+      array[o + 5] = b.z;
+    }
+    start.data.needsUpdate = true;
+    geometry.instanceCount = start.count;
+    geometry.computeBoundingBox();
+    geometry.computeBoundingSphere();
+    return;
+  }
+
+  const flat = new Float32Array(points.length * 3);
+  for (let i = 0; i < points.length; i++) {
+    flat[i * 3] = points[i].x;
+    flat[i * 3 + 1] = points[i].y;
+    flat[i * 3 + 2] = points[i].z;
+  }
+  const fresh = new LineGeometry();
+  fresh.setPositions(flat);
+  (fresh.getAttribute('instanceStart') as THREE.InterleavedBufferAttribute).data.setUsage(
+    THREE.DynamicDrawUsage,
+  );
+  geometry.dispose();
+  line.geometry = fresh;
+}
+
+function createOrbitLine(
+  points: THREE.Vector3[],
+  color: number,
+  opacity: number,
+  lensUniforms: LensShaderUniforms,
+): Line2 {
+  const line = new Line2(new LineGeometry(), createOrbitLineMaterial(color, opacity, lensUniforms));
+  setOrbitLinePoints(line, points);
+  line.renderOrder = ORBIT_LINE_RENDER_ORDER;
+  return line;
 }
 
 const ASTEROID_BELT_SEED = 0x41535452;
@@ -208,6 +455,10 @@ export function createAsteroidBelt(): THREE.Points {
   // Fade belt dots that sit behind the Sun's glare. The uniform refs are driven
   // per frame by the controller; inactive until then, so the belt is unchanged.
   belt.userData.sunGlareMaskUniforms = augmentPointsMaterialWithSunGlareMask(material);
+  // Belt dots are usually NEARER than the outer rings, so without this gate
+  // they pass the depth test and stud every ring behind them (Alex's tan
+  // bumps: 1.6 studs per 1000 line px, +52 luma each).
+  applyOrbitLineStencilGate(material);
   return belt;
 }
 
@@ -238,11 +489,12 @@ export async function createSolarSystem(
 
   // Lines, planets, and the restored clock share one epoch at startup.
   const orbitLinesEpochUtcMs = (date ?? new Date()).getTime();
-  const orbitLines: THREE.Line[] = [];
+  const orbitLensUniforms = createLensShaderUniforms();
+  const orbitLines: Line2[] = [];
   for (let i = 0; i < PLANETARIUM_BODIES.length; i++) {
     const body = PLANETARIUM_BODIES[i];
     const orbitPoints = sampleLinePoints(body, layoutMode, orbitLinesEpochUtcMs);
-    const line = createOrbitLine(orbitPoints, body.color, 0.2);
+    const line = createOrbitLine(orbitPoints, body.color, 0.2, orbitLensUniforms);
     line.name = `orbit-${body.name}`;
     orbitLines.push(line);
     completedUnits += 1;
@@ -258,6 +510,7 @@ export async function createSolarSystem(
     planets,
     orbitLines,
     orbitLinesEpochUtcMs,
+    orbitLensUniforms,
     asteroidBelt,
     sunLight,
   };

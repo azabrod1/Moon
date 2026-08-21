@@ -74,6 +74,10 @@ try {
   renderer = new THREE.WebGLRenderer({
     antialias: true,
     powerPreference: 'high-performance',
+    // The orbit-line/décor stencil contract (world/orbitLineStencil.ts) needs
+    // a stencil buffer on the default framebuffer for the no-float direct
+    // path; the composer path carries its own (buildComposer).
+    stencil: true,
   });
 } catch (err) {
   debugError('Failed to create WebGL renderer', err);
@@ -255,8 +259,17 @@ function buildComposer(
   }
 
   // Every remaining composer path is float-capable, so linear HDR survives to
-  // OutputPass (with or without the runtime bloom pass enabled).
-  composer = new EffectComposer(renderer);
+  // OutputPass (with or without the runtime bloom pass enabled). The target
+  // mirrors EffectComposer's default (half-float) plus a stencil buffer for
+  // the orbit-line/décor contract (world/orbitLineStencil.ts); setSize below
+  // takes care of the initial dimensions.
+  composer = new EffectComposer(
+    renderer,
+    new THREE.WebGLRenderTarget(window.innerWidth, window.innerHeight, {
+      type: THREE.HalfFloatType,
+      stencilBuffer: true,
+    }),
+  );
   composer.setPixelRatio(getTargetPixelRatio());
   composer.setSize(window.innerWidth, window.innerHeight);
   composer.addPass(new RenderPass(scene, cam));
@@ -658,7 +671,7 @@ function installDevHooks() {
     mapFocus: (name: string | null) => planetariumMode?.devMapFocus(name) ?? false,
     // The panel's rows. mapOverview is the combined release-or-recentre, which
     // resolves to a 900 ms flight when there is a focus to give back — poll
-    // mapState().camState for the landing. mapInfo drives the help grid;
+    // mapState().camState for the landing. mapInfo drives the gesture guide;
     // mapPanel reads or drives the panel itself ({collapsed, helpOpen}, null
     // for the defaults) and reports sheetExpanded for the phone layout.
     mapOverview: () => planetariumMode?.devMapOverview() ?? false,
@@ -722,6 +735,10 @@ function installDevHooks() {
     // element at a time to isolate what's flashing/leaking light). DEV-only
     // like the rest of the bridge.
     scene: () => scene,
+    // Composer pass list for post-pass forensics (patch a pass's shader or
+    // uniforms in-page and re-render, no rebuild). Null while a mode bypasses
+    // the composer.
+    composerPasses: () => composer?.passes ?? null,
     // Mode-agnostic leak probe for the enter/exit heap check.
     rendererInfo: () => ({
       geometries: renderer.info.memory.geometries,

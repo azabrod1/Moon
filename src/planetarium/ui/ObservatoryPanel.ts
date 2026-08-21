@@ -194,20 +194,20 @@ function windowEventSub(
     const parent = bodyDisplayName(spec.parentPlanet);
     if (spec.kind === 'eclipse') {
       return classification === 'total'
-        ? `stand on ${parent} to see it turn red`
-        : `stand on ${parent} to watch the eclipse`;
+        ? `Stand on ${parent} to see it turn red`
+        : `Stand on ${parent} to watch the eclipse`;
     }
-    return `stand on ${parent} to see the eclipse`;
+    return `Stand on ${parent} to see the eclipse`;
   }
   // Standing on Earth while its own Moon darkens: the sub says what the
   // classification honestly delivers, since a penumbral eclipse looks like
   // nothing happened unless the panel says that IS the show.
   if (isEarthAlmanacPair(spec) && spec.kind === 'eclipse' && standingOn(landed, 'Earth')) {
-    if (classification === 'total') return 'see the Moon turn red';
-    if (classification === 'penumbral') return 'a subtle dimming — easy to miss';
-    return 'the Moon is crossing Earth’s shadow';
+    if (classification === 'total') return 'See the Moon turn red';
+    if (classification === 'penumbral') return 'A subtle dimming — easy to miss';
+    return 'The Moon is crossing Earth’s shadow';
   }
-  return 'see it from the surface';
+  return 'See it from the surface';
 }
 
 /**

@@ -198,28 +198,28 @@ describe('observatoryWindowState', () => {
   it('the sub names the destination only when the step relocates', () => {
     expect(
       state({ landed: onMoon, relocates: true, live: { spec: solar, classification: 'total' } }).sub,
-    ).toBe('stand on Earth to see the eclipse');
+    ).toBe('Stand on Earth to see the eclipse');
     expect(
       state({ landed: onMoon, relocates: true, live: { spec: lunar, classification: 'total' } }).sub,
-    ).toBe('stand on Earth to see it turn red');
+    ).toBe('Stand on Earth to see it turn red');
     expect(
       state({ landed: onMoon, relocates: true, live: { spec: lunar, classification: 'partial' } })
         .sub,
-    ).toBe('stand on Earth to watch the eclipse');
+    ).toBe('Stand on Earth to watch the eclipse');
     expect(
       state({ landed: onJupiter, live: { spec: ioTransit, classification: 'total' } }).sub,
-    ).toBe('see it from the surface');
+    ).toBe('See it from the surface');
   });
 
   it('a lunar eclipse from Earth promises only what its classification delivers', () => {
     expect(state({ live: { spec: lunar, classification: 'total' } }).sub).toBe(
-      'see the Moon turn red',
+      'See the Moon turn red',
     );
     expect(state({ live: { spec: lunar, classification: 'partial' } }).sub).toBe(
-      'the Moon is crossing Earth’s shadow',
+      'The Moon is crossing Earth’s shadow',
     );
     expect(state({ live: { spec: lunar, classification: 'penumbral' } }).sub).toBe(
-      'a subtle dimming — easy to miss',
+      'A subtle dimming — easy to miss',
     );
   });
 

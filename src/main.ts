@@ -443,7 +443,10 @@ async function switchAppMode(newMode: AppMode) {
 
       if (!planetariumMode) {
         debugLog('Creating Planetarium mode');
-        planetariumMode = new PlanetariumMode(scene, planetariumCamera, renderer, useBloom);
+        // The boot shader warm-up compiles the variant the frame actually
+        // draws: into the composer's target when there is a composer, to the
+        // canvas otherwise — the same branch renderScene takes.
+        planetariumMode = new PlanetariumMode(scene, planetariumCamera, renderer, useBloom, () => composer !== null);
         // The ☰ "How many fit?" item arrives here: the
         // mode closes its own entry surfaces, then this callback owns the switch.
         planetariumMode.onVolumeCompareRequest(() => {

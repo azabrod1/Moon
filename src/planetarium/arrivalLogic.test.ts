@@ -7,14 +7,14 @@ import {
   autopilotGlideCap,
   governedSpeedCap,
   initialBodyCapState,
-  moonArrivalCameraLookWeight,
-  moonArrivalReleaseFade,
-  moonArrivalTrackEngage,
-  MOON_ARRIVAL_ENGAGE_FULL_RATIO,
-  MOON_ARRIVAL_ENGAGE_START_RATIO,
-  MOON_ARRIVAL_RELEASE_S,
-  moonArrivalPose,
-  moonArrivalStandoffAU,
+  arrivalCameraLookWeight,
+  arrivalLookReleaseFade,
+  arrivalTrackEngage,
+  ARRIVAL_ENGAGE_FULL_RATIO,
+  ARRIVAL_ENGAGE_START_RATIO,
+  ARRIVAL_LOOK_RELEASE_S,
+  arrivalPose,
+  arrivalStandoffAU,
   moonCollisionRadius,
   rampedSpeedCap,
   sunArrivalPose,
@@ -22,20 +22,19 @@ import {
   BODY_APPROACH_V_MIN_AU_S,
   BODY_CAP_CLEAR_HOLD_S,
   CAP_TRANSITION_TAU_S,
-  LEAVE_HEADSTART_RADII,
-  LEAVE_VALVE_KNEE_RADII,
-  MOON_APPROACH_K_PER_S,
-  PLANET_APPROACH_K_PER_S,
+  DEPARTURE_HEADSTART_RADII,
+  DEPARTURE_KNEE_RADII,
+  BODY_APPROACH_K_PER_S,
   MOON_ARRIVAL_APPARENT_DIAMETER_DEG,
-  MOON_ARRIVAL_IMPACT_RADII,
-  MOON_ARRIVAL_MAX_OFFAXIS_DEG,
+  ARRIVAL_IMPACT_RADII,
+  ARRIVAL_MAX_OFFAXIS_DEG,
   MOON_ARRIVAL_SEPARATION_CAP,
   MOON_ARRIVAL_STANDOFF_FLOOR_AU,
-  MOON_FLYTHROUGH_MIN_IMPACT_CAM_DISTS,
+  FLYBY_MIN_IMPACT_CAM_DISTS,
   SUN_APPROACH_SURFACE_RADII,
   SUN_ARRIVAL_RADII,
   type BodyCapState,
-  type MoonArrivalInputs,
+  type ArrivalInputs,
 } from './arrivalLogic';
 import { MOONS } from './planets/moonData';
 import { PLANETARIUM_BODIES, SUN_DATA } from './planets/planetData';
@@ -52,13 +51,13 @@ import { FLIGHT_UP_SCENE } from './flightFrame';
 // curve, so a sizing change re-exercises every pose invariant automatically.
 import { MOON_RENDER_ANCHOR_RATIO, renderedMoonRadiusAU } from './moonRenderSize';
 
-const K = MOON_APPROACH_K_PER_S;
+const K = BODY_APPROACH_K_PER_S;
 const VMIN = BODY_APPROACH_V_MIN_AU_S;
 
 /** Real-catalog inputs for one moon, posed at `angleRad` around its parent
  *  (parent placed on the +X axis at its semi-major axis; Sun at origin —
  *  the same world the controller feeds from live positions). */
-function catalogInputs(moonName: string, angleRad = 0.7): MoonArrivalInputs {
+function catalogInputs(moonName: string, angleRad = 0.7): ArrivalInputs {
   const moon = MOONS.find((m) => m.name === moonName)!;
   const parent = PLANETARIUM_BODIES.find((b) => b.name === moon.parentPlanet)!;
   const parentPos = new THREE.Vector3(parent.semiMajorAxisAU, 0, 0);
@@ -69,7 +68,7 @@ function catalogInputs(moonName: string, angleRad = 0.7): MoonArrivalInputs {
   );
   const parentCollision = parent.radiusAU + SHIP_CLEARANCE_AU;
   return {
-    moonPos: offset.clone().add(parentPos),
+    targetPos: offset.clone().add(parentPos),
     parentPos,
     orbitR: moon.orbitalRadiusAU,
     renderedR: renderedMoonRadiusAU(moon.radiusAU, parent.radiusAU, MOON_RENDER_ANCHOR_RATIO),
@@ -96,36 +95,36 @@ describe('governedSpeedCap', () => {
     expect(governedSpeedCap(-1e-6, R, 1, K, VMIN)).toBe(VMIN);
   });
 
-  // The leave law's datum: the collision shell the resolvers park on.
+  // The departure law's datum: the collision shell the resolvers park on.
   const SHELL = R + SHIP_CLEARANCE_AU;
 
-  it('receding or side-on flight is capped at exactly the leave law', () => {
+  it('receding or side-on flight is capped at exactly the departure law', () => {
     // THE departure contract: leaving speed is a function of where you are —
     // the approach K on the head-started shell height, opened by the valve —
     // never Infinity, never a time ramp.
-    const lift = (1e-4 - SHIP_CLEARANCE_AU) + LEAVE_HEADSTART_RADII * SHELL;
-    const law = K * lift * (lift / (LEAVE_VALVE_KNEE_RADII * SHELL)) ** 2;
+    const lift = (1e-4 - SHIP_CLEARANCE_AU) + DEPARTURE_HEADSTART_RADII * SHELL;
+    const law = K * lift * (lift / (DEPARTURE_KNEE_RADII * SHELL)) ** 2;
     expect(governedSpeedCap(1e-4, R, 0, K, VMIN)).toBeCloseTo(law, 12);
     expect(governedSpeedCap(1e-4, R, -1, K, VMIN)).toBeCloseTo(law, 12);
   });
 
   it('parked on the shell, leaving is as unhurried as arriving — the head start is the whole gap', () => {
-    // The near-zone contract: the leave cap IS the approach glide, read one
+    // The near-zone contract: the departure cap IS the approach glide, read one
     // head start above the collision shell — a visible creep (~0.05 shell
     // radii/s), nothing like a brisk pull, and below the knee no valve term.
     expect(governedSpeedCap(SHIP_CLEARANCE_AU, R, -1, K, VMIN)).toBeCloseTo(
-      K * LEAVE_HEADSTART_RADII * SHELL,
+      K * DEPARTURE_HEADSTART_RADII * SHELL,
       15,
     );
     const aboveShell = 0.1 * SHELL;
     expect(governedSpeedCap(SHIP_CLEARANCE_AU + aboveShell, R, -1, K, VMIN)).toBeCloseTo(
-      K * (aboveShell + LEAVE_HEADSTART_RADII * SHELL),
+      K * (aboveShell + DEPARTURE_HEADSTART_RADII * SHELL),
       15,
     );
   });
 
-  it('at or inside the collision shell the leave cap clamps to the parked creep', () => {
-    const parked = K * LEAVE_HEADSTART_RADII * SHELL;
+  it('at or inside the collision shell the departure cap clamps to the parked creep', () => {
+    const parked = K * DEPARTURE_HEADSTART_RADII * SHELL;
     expect(governedSpeedCap(SHIP_CLEARANCE_AU * 0.5, R, -1, K, VMIN)).toBeCloseTo(parked, 15);
     expect(governedSpeedCap(0, R, -1, K, VMIN)).toBeCloseTo(parked, 15);
     expect(governedSpeedCap(-0.9 * R, R, -1, K, VMIN)).toBeCloseTo(parked, 15);
@@ -135,8 +134,8 @@ describe('governedSpeedCap', () => {
     // Posed close in, where the two laws are comparable (lift below the knee).
     const h = 2e-6;
     const vIn = Math.max(h * K, VMIN);
-    const vOut = K * ((h - SHIP_CLEARANCE_AU) + LEAVE_HEADSTART_RADII * SHELL);
-    // Half-smoothstep: the harmonic mean of the closing glide and the leave law.
+    const vOut = K * ((h - SHIP_CLEARANCE_AU) + DEPARTURE_HEADSTART_RADII * SHELL);
+    // Half-smoothstep: the harmonic mean of the closing glide and the departure law.
     expect(governedSpeedCap(h, R, 0.15, K, VMIN)).toBeCloseTo(
       1 / (0.5 / vIn + 0.5 / vOut),
       12,
@@ -145,7 +144,7 @@ describe('governedSpeedCap', () => {
 
   it('a giant body keeps the proven closing band: harmonic ≈ the old vIn/w fade', () => {
     // Jupiter-class shell contact: vOut/vIn ~ 185. An arithmetic blend would
-    // hand a near-tangent CLOSING course half the leave law (~1,900 km/s);
+    // hand a near-tangent CLOSING course half the departure law (~1,900 km/s);
     // the harmonic blend stays within a hair under the historical vIn/w.
     const surfaceDist = 5.44e-7; // one ship clearance off the shell
     const giantR = 5e-4;
@@ -156,10 +155,10 @@ describe('governedSpeedCap', () => {
     expect(cap).toBeGreaterThan(oldLaw * 0.99);
   });
 
-  it('the release valve is inert below the knee, continuous at it, cubic past it', () => {
-    const knee = LEAVE_VALVE_KNEE_RADII * SHELL; // head-started shell height at the knee
+  it('the departure opening is inert below the knee, continuous at it, cubic past it', () => {
+    const knee = DEPARTURE_KNEE_RADII * SHELL; // head-started shell height at the knee
     // Raw surface distance whose shell height reaches the knee lift.
-    const kneeDist = SHIP_CLEARANCE_AU + (LEAVE_VALVE_KNEE_RADII - LEAVE_HEADSTART_RADII) * SHELL;
+    const kneeDist = SHIP_CLEARANCE_AU + (DEPARTURE_KNEE_RADII - DEPARTURE_HEADSTART_RADII) * SHELL;
     expect(governedSpeedCap(kneeDist, R, -1, K, VMIN)).toBeCloseTo(K * knee, 12);
     // 10% past the knee: the law picks up a (1.1)² opening.
     expect(governedSpeedCap(kneeDist + 0.1 * knee, R, -1, K, VMIN)).toBeCloseTo(
@@ -223,7 +222,7 @@ describe('rampedSpeedCap', () => {
 
   it('normalized progress is body-scale independent', () => {
     // The same fraction of the gap closes per unit time whether the target
-    // is a moonlet's leave law or a giant's — the multiplicative ramp this
+    // is a moonlet's departure law or a giant's — the multiplicative ramp this
     // replaces needed ~2.4 s beside Jupiter vs ~1.1 s at the Moon.
     const frac = (target: number) =>
       (rampedSpeedCap(target, 1e-6, 2 * TAU, TAU) - 1e-6) / (target - 1e-6);
@@ -300,14 +299,14 @@ describe('advanceBodyCap — the governor latch', () => {
     const geomCap = governedSpeedCap(2 * SHIP_CLEARANCE_AU, 1.16e-5, 1, K, VMIN);
     const s = advanceBodyCap(initialBodyCapState(), geomCap, COMMANDED, true, DT);
     expect(s.engaged).toBe(true);
-    // Nose-away parked is the leave law's own creep — far under any dial,
+    // Nose-away parked is the departure law's own creep — far under any dial,
     // so pointing out to sea while parked cannot start the auto-clear either.
     const geomAway = governedSpeedCap(SHIP_CLEARANCE_AU, 1.16e-5, -1, K, VMIN);
     expect(advanceBodyCap(initialBodyCapState(), geomAway, COMMANDED, true, DT).engaged).toBe(true);
   });
 
-  it('under the leave law, an override departure unbinds only once genuinely away', () => {
-    // `engaged` holds until the leave law crosses the commanded speed. A
+  it('under the departure law, an override departure unbinds only once genuinely away', () => {
+    // `engaged` holds until the departure law crosses the commanded speed. A
     // full-override sprint outruns the opened valve within a dozen radii,
     // so the clear-hold completes in about a second of flight — but the
     // ship is many radii gone by then, and a parked or grinding ship beside
@@ -350,8 +349,8 @@ describe('advanceBodyCap — the governor latch', () => {
   });
 
   it('a planet approach at the in-system default engages ~100,000 km out', () => {
-    const engageDistAU = COMMANDED / PLANET_APPROACH_K_PER_S; // cap == speed here
-    expect(governedSpeedCap(engageDistAU, 4.26e-5, 1, PLANET_APPROACH_K_PER_S, VMIN)).toBeCloseTo(COMMANDED, 12);
+    const engageDistAU = COMMANDED / BODY_APPROACH_K_PER_S; // cap == speed here
+    expect(governedSpeedCap(engageDistAU, 4.26e-5, 1, BODY_APPROACH_K_PER_S, VMIN)).toBeCloseTo(COMMANDED, 12);
     expect(engageDistAU * KM_PER_AU).toBeCloseTo(100_000, -3);
   });
 });
@@ -403,7 +402,7 @@ describe('departure feel — the reported outcomes, closed loop', () => {
   });
 
   it('really slow beside the body: the first three seconds hold arrival pacing', () => {
-    // Sub-knee the leave law IS the approach glide (head-started), so three
+    // Sub-knee the departure law IS the approach glide (head-started), so three
     // seconds out the ship is still beside the Moon, creeping under ~300 km/s
     // — plenty of window to change your mind and turn back.
     const samples = simulateRelease(3.0);
@@ -423,7 +422,7 @@ describe('departure feel — the reported outcomes, closed loop', () => {
     const samples = simulateRelease(3.5);
     for (const r of samples) {
       if (r.t <= 3 * CAP_TRANSITION_TAU_S) continue;
-      if (r.d - shell + LEAVE_HEADSTART_RADII * shell >= 0.9 * LEAVE_VALVE_KNEE_RADII * shell) break;
+      if (r.d - shell + DEPARTURE_HEADSTART_RADII * shell >= 0.9 * DEPARTURE_KNEE_RADII * shell) break;
       const law = governedSpeedCap(r.d - R, R, -1, K, VMIN);
       expect(r.speed / law, `t=${r.t.toFixed(2)}`).toBeGreaterThan(floor);
       expect(r.speed).toBeLessThanOrEqual(law + 1e-15);
@@ -474,14 +473,14 @@ describe('departure feel — the reported outcomes, closed loop', () => {
       // under the approach floor — and it latches against the dial, so a
       // parked nose-away ship can't start the override auto-clear.
       const park = governedSpeedCap(SHIP_CLEARANCE_AU, bodyR, -1, K, VMIN);
-      expect(park, tag).toBeCloseTo(Math.max(K * LEAVE_HEADSTART_RADII * shellR, VMIN), 15);
+      expect(park, tag).toBeCloseTo(Math.max(K * DEPARTURE_HEADSTART_RADII * shellR, VMIN), 15);
       expect(park, tag).toBeGreaterThanOrEqual(VMIN);
       expect(advanceBodyCap(initialBodyCapState(), park, commanded, true, DT).engaged, tag).toBe(true);
       // The closed-loop timeline: sub-knee at 2.5 s, past it by 3.6 s, free
       // within a few seconds — the same story at every rung.
       const samples = simulateRelease(8.0, commanded, bodyR);
       const speedAt = (t: number) => samples.find((r) => r.t >= t - 1e-9)!.speed;
-      const kneeSpeed = K * LEAVE_VALVE_KNEE_RADII * shellR;
+      const kneeSpeed = K * DEPARTURE_KNEE_RADII * shellR;
       expect(speedAt(2.5), tag).toBeLessThan(kneeSpeed);
       expect(speedAt(3.6), tag).toBeGreaterThan(kneeSpeed);
       const free = samples.find((r) => r.speed >= commanded * 0.999);
@@ -580,11 +579,11 @@ describe('sweepSegmentSphere — the shared collision test', () => {
   });
 });
 
-describe('moonArrivalPose — ladder fixtures', () => {
+describe('arrivalPose — ladder fixtures', () => {
   const standoff = (name: string) => {
     const inp = catalogInputs(name);
-    const pose = moonArrivalPose(inp);
-    return { inp, pose, dist: pose.position.distanceTo(inp.moonPos) };
+    const pose = arrivalPose(inp);
+    return { inp, pose, dist: pose.position.distanceTo(inp.targetPos) };
   };
 
   it('the Moon parks where its disc reads the target size from the camera', () => {
@@ -621,7 +620,7 @@ describe('moonArrivalPose — ladder fixtures', () => {
   it('the aim is a flyby: off the center, above the collision bubble, under the swing ceiling', () => {
     for (const name of ['Moon', 'Titan', 'Io', 'Charon', 'Phoebe', 'Miranda']) {
       const { inp, pose, dist } = standoff(name);
-      const b = pose.aimPoint.distanceTo(inp.moonPos);
+      const b = pose.aimPoint.distanceTo(inp.targetPos);
       const collisionR = moonCollisionRadius(inp.renderedR, inp.shipClearance);
       expect(b).toBeGreaterThanOrEqual(collisionR * 1.15 - 1e-12);
       // The swing ceiling holds except where the clearance floor outranks it
@@ -632,9 +631,9 @@ describe('moonArrivalPose — ladder fixtures', () => {
       const clearanceDeg =
         Math.atan2((missM * dist) / Math.sqrt(dist * dist - missM * missM), dist) * RAD2DEG;
       const offAxis =
-        pose.aimPoint.clone().sub(pose.position).angleTo(inp.moonPos.clone().sub(pose.position));
+        pose.aimPoint.clone().sub(pose.position).angleTo(inp.targetPos.clone().sub(pose.position));
       expect(offAxis * RAD2DEG).toBeLessThanOrEqual(
-        Math.max(MOON_ARRIVAL_MAX_OFFAXIS_DEG, clearanceDeg) + 0.01,
+        Math.max(ARRIVAL_MAX_OFFAXIS_DEG, clearanceDeg) + 0.01,
       );
       expect(offAxis * RAD2DEG).toBeLessThanOrEqual(15);
       expect(Math.atan2(b, dist) * RAD2DEG).toBeCloseTo(offAxis * RAD2DEG, 5);
@@ -661,9 +660,9 @@ describe('moon teleport camera tracking', () => {
 
   it('reproduces the oval on the ship-centred chase ray and removes it when tracking the Moon', () => {
     const inp = catalogInputs('Moon');
-    const pose = moonArrivalPose(inp);
+    const pose = arrivalPose(inp);
     const flightForward = pose.aimPoint.clone().sub(pose.position).normalize();
-    const startToMoon = inp.moonPos.clone().sub(pose.position);
+    const startToMoon = inp.targetPos.clone().sub(pose.position);
     const startAlong = startToMoon.dot(flightForward);
 
     // A deterministic point on the real flyby line: close enough that the
@@ -679,70 +678,70 @@ describe('moon teleport camera tracking', () => {
     const ovalRatio = projectedAxisRatio(
       cameraPos,
       shipCentredForward,
-      inp.moonPos,
+      inp.targetPos,
       inp.renderedR,
     );
     expect(ovalRatio).toBeGreaterThan(1.1);
 
-    const cameraDistance = cameraPos.distanceTo(inp.moonPos);
+    const cameraDistance = cameraPos.distanceTo(inp.targetPos);
     const arrivalCameraDistance = pose.position
       .clone()
       .add(chaseIdealOffset(flightForward, FLIGHT_UP_SCENE, new THREE.Vector3()))
-      .distanceTo(inp.moonPos);
-    const weight = moonArrivalCameraLookWeight(
+      .distanceTo(inp.targetPos);
+    const weight = arrivalCameraLookWeight(
       cameraDistance,
       arrivalCameraDistance,
       false,
     );
-    const trackedTarget = shipPos.clone().lerp(inp.moonPos, weight);
+    const trackedTarget = shipPos.clone().lerp(inp.targetPos, weight);
     const trackedForward = trackedTarget.sub(cameraPos).normalize();
     expect(projectedAxisRatio(
       cameraPos,
       trackedForward,
-      inp.moonPos,
+      inp.targetPos,
       inp.renderedR,
     )).toBeCloseTo(1, 10);
   });
 
   it('holds through approach, then smoothly releases over one arrival distance', () => {
     const d = 10;
-    expect(moonArrivalCameraLookWeight(d * 0.2, d, false)).toBe(1);
-    expect(moonArrivalCameraLookWeight(d * 0.2, d, true)).toBe(1);
-    expect(moonArrivalCameraLookWeight(d, d, true)).toBe(1);
-    expect(moonArrivalCameraLookWeight(d * 1.5, d, true)).toBeCloseTo(0.5, 10);
-    expect(moonArrivalCameraLookWeight(d * 2, d, true)).toBe(0);
-    expect(moonArrivalCameraLookWeight(d * 3, d, true)).toBe(0);
+    expect(arrivalCameraLookWeight(d * 0.2, d, false)).toBe(1);
+    expect(arrivalCameraLookWeight(d * 0.2, d, true)).toBe(1);
+    expect(arrivalCameraLookWeight(d, d, true)).toBe(1);
+    expect(arrivalCameraLookWeight(d * 1.5, d, true)).toBeCloseTo(0.5, 10);
+    expect(arrivalCameraLookWeight(d * 2, d, true)).toBe(0);
+    expect(arrivalCameraLookWeight(d * 3, d, true)).toBe(0);
   });
 
   it('eases a steering release from full weight to zero, never in one frame', () => {
     // Untouched (releaseElapsedS null → callers pass 0) the fade is inert.
-    expect(moonArrivalReleaseFade(0)).toBe(1);
+    expect(arrivalLookReleaseFade(0)).toBe(1);
     // The first steered frame must NOT collapse the look — that one-frame
     // collapse was the visible camera snap on the first touch after a moon
     // teleport (the touch zone turns a stationary tap into full steering).
-    expect(moonArrivalReleaseFade(1 / 60)).toBeGreaterThan(0.9);
+    expect(arrivalLookReleaseFade(1 / 60)).toBeGreaterThan(0.9);
     // Monotone decay across the window...
     let prev = 1;
-    for (let t = 0; t <= MOON_ARRIVAL_RELEASE_S + 0.01; t += 0.02) {
-      const fade = moonArrivalReleaseFade(t);
+    for (let t = 0; t <= ARRIVAL_LOOK_RELEASE_S + 0.01; t += 0.02) {
+      const fade = arrivalLookReleaseFade(t);
       expect(fade).toBeLessThanOrEqual(prev);
       prev = fade;
     }
     // ...fully released at the window's end and beyond.
-    expect(moonArrivalReleaseFade(MOON_ARRIVAL_RELEASE_S)).toBe(0);
-    expect(moonArrivalReleaseFade(MOON_ARRIVAL_RELEASE_S * 5)).toBe(0);
+    expect(arrivalLookReleaseFade(ARRIVAL_LOOK_RELEASE_S)).toBe(0);
+    expect(arrivalLookReleaseFade(ARRIVAL_LOOK_RELEASE_S * 5)).toBe(0);
   });
 });
 
-describe('moonArrivalPose — catalog sweep (all moons, three orbit phases)', () => {
+describe('arrivalPose — catalog sweep (all moons, three orbit phases)', () => {
   const angles = [0.7, 2.4, 4.1];
 
   it('every arrival in the catalog satisfies the standoff and flyby invariants', () => {
     for (const moon of MOONS) {
       for (const angle of angles) {
         const inp = catalogInputs(moon.name, angle);
-        const pose = moonArrivalPose(inp);
-        const dist = pose.position.distanceTo(inp.moonPos);
+        const pose = arrivalPose(inp);
+        const dist = pose.position.distanceTo(inp.targetPos);
         const collisionR = moonCollisionRadius(inp.renderedR, inp.shipClearance);
 
         for (const v of [pose.position, pose.aimPoint]) {
@@ -759,19 +758,19 @@ describe('moonArrivalPose — catalog sweep (all moons, three orbit phases)', ()
           pose.position.distanceTo(inp.parentPos),
           `${moon.name}: parent clearance`,
         ).toBeGreaterThan(inp.parentClearance - 1e-12);
-        // The arrival class is exactly the gate formula: the flythrough needs
+        // The arrival class is exactly the gate formula: the flyby needs
         // its impact parameter to clear the camera boom.
-        expect(pose.flythrough, `${moon.name}: arrival class`).toBe(
-          inp.renderedR * MOON_ARRIVAL_IMPACT_RADII >=
-            inp.camDist * MOON_FLYTHROUGH_MIN_IMPACT_CAM_DISTS,
+        expect(pose.flyby, `${moon.name}: arrival class`).toBe(
+          inp.renderedR * ARRIVAL_IMPACT_RADII >=
+            inp.camDist * FLYBY_MIN_IMPACT_CAM_DISTS,
         );
         const fwd = pose.aimPoint.clone().sub(pose.position).normalize();
-        const toMoon = inp.moonPos.clone().sub(pose.position);
+        const toMoon = inp.targetPos.clone().sub(pose.position);
         const closest = toMoon
           .clone()
           .addScaledVector(fwd, -toMoon.dot(fwd))
           .length();
-        if (pose.flythrough) {
+        if (pose.flyby) {
           // The flyby misses the moon: closest approach of the forward ray to
           // the moon's center is the impact parameter, above the bubble.
           expect(closest, `${moon.name}: flyby miss distance`).toBeGreaterThanOrEqual(
@@ -780,7 +779,7 @@ describe('moonArrivalPose — catalog sweep (all moons, three orbit phases)', ()
         } else {
           // Planet-style: aimed dead at the body — the governed glide, not
           // miss geometry, is what stops the ship.
-          expect(pose.aimPoint.distanceTo(inp.moonPos), `${moon.name}: direct aim`).toBe(0);
+          expect(pose.aimPoint.distanceTo(inp.targetPos), `${moon.name}: direct aim`).toBe(0);
         }
       }
     }
@@ -788,10 +787,10 @@ describe('moonArrivalPose — catalog sweep (all moons, three orbit phases)', ()
 
   it('the split lands on the named-moon line: classical moons fly, the moonlet swarm parks', () => {
     for (const name of ['Moon', 'Io', 'Europa', 'Ganymede', 'Callisto', 'Titan', 'Triton', 'Charon', 'Miranda', 'Phoebe']) {
-      expect(moonArrivalPose(catalogInputs(name)).flythrough, name).toBe(true);
+      expect(arrivalPose(catalogInputs(name)).flyby, name).toBe(true);
     }
     for (const name of ['Styx', 'Nix', 'Kerberos', 'Hydra', 'Phobos', 'Deimos', 'Pan', 'Cordelia']) {
-      expect(moonArrivalPose(catalogInputs(name)).flythrough, name).toBe(false);
+      expect(arrivalPose(catalogInputs(name)).flyby, name).toBe(false);
     }
   });
 
@@ -802,12 +801,12 @@ describe('moonArrivalPose — catalog sweep (all moons, three orbit phases)', ()
     // pinned by the binds-on-apparent-size test below.
     for (const moon of MOONS) {
       const inp = catalogInputs(moon.name);
-      const pose = moonArrivalPose(inp);
+      const pose = arrivalPose(inp);
       const fwd = pose.aimPoint.clone().sub(pose.position).normalize();
       const camPos = pose.position
         .clone()
         .add(chaseIdealOffset(fwd, FLIGHT_UP_SCENE, new THREE.Vector3()));
-      const apparentDeg = 2 * Math.asin(inp.renderedR / camPos.distanceTo(inp.moonPos)) * RAD2DEG;
+      const apparentDeg = 2 * Math.asin(inp.renderedR / camPos.distanceTo(inp.targetPos)) * RAD2DEG;
       expect(apparentDeg, `${moon.name}: arrival disc`).toBeGreaterThan(2.4);
     }
   });
@@ -818,8 +817,8 @@ describe('moonArrivalPose — catalog sweep (all moons, three orbit phases)', ()
     for (const moon of MOONS) {
       const inp = catalogInputs(moon.name);
       const raw = inp.renderedR / Math.sin(half) - CAM_DIST_AU;
-      const pose = moonArrivalPose(inp);
-      const dist = pose.position.distanceTo(inp.moonPos);
+      const pose = arrivalPose(inp);
+      const dist = pose.position.distanceTo(inp.targetPos);
       if (Math.abs(dist - raw) > 1e-9) continue; // a floor or cap bound instead
       // Compose the real chase-camera pose: camDist behind the ship along
       // the heading, lifted 0.35·camDist (the unified chase rig).
@@ -827,7 +826,7 @@ describe('moonArrivalPose — catalog sweep (all moons, three orbit phases)', ()
       const camPos = pose.position
         .clone()
         .add(chaseIdealOffset(fwd, FLIGHT_UP_SCENE, new THREE.Vector3()));
-      const apparentDeg = 2 * Math.asin(inp.renderedR / camPos.distanceTo(inp.moonPos)) * RAD2DEG;
+      const apparentDeg = 2 * Math.asin(inp.renderedR / camPos.distanceTo(inp.targetPos)) * RAD2DEG;
       expect(apparentDeg).toBeGreaterThan(MOON_ARRIVAL_APPARENT_DIAMETER_DEG - 0.5);
       expect(apparentDeg).toBeLessThan(MOON_ARRIVAL_APPARENT_DIAMETER_DEG + 0.5);
       checked++;
@@ -841,9 +840,9 @@ describe('moonArrivalPose — catalog sweep (all moons, three orbit phases)', ()
     // Synthetic: force the bubble with an oversized clearance; the arrival
     // must sit on the parent→moon radial, beyond the moon.
     const parentPos = new THREE.Vector3(1, 0, 0);
-    const moonPos = parentPos.clone().add(new THREE.Vector3(3e-4, 0, 0));
-    const pose = moonArrivalPose({
-      moonPos,
+    const targetPos = parentPos.clone().add(new THREE.Vector3(3e-4, 0, 0));
+    const pose = arrivalPose({
+      targetPos,
       parentPos,
       orbitR: 3e-4,
       renderedR: 1e-5,
@@ -852,12 +851,12 @@ describe('moonArrivalPose — catalog sweep (all moons, three orbit phases)', ()
       camDist: CAM_DIST_AU,
       shipClearance: SHIP_CLEARANCE_AU,
     });
-    const radial = moonPos.clone().sub(parentPos).normalize();
-    const fromMoon = pose.position.clone().sub(moonPos).normalize();
+    const radial = targetPos.clone().sub(parentPos).normalize();
+    const fromMoon = pose.position.clone().sub(targetPos).normalize();
     expect(fromMoon.dot(radial)).toBeCloseTo(1, 6);
     // Parent dead ahead past the moon: the aim still exists, is finite, and
     // still misses the moon itself (the parent pushback owns what's beyond).
-    expect(pose.aimPoint.distanceTo(moonPos)).toBeGreaterThan(0);
+    expect(pose.aimPoint.distanceTo(targetPos)).toBeGreaterThan(0);
   });
 });
 
@@ -887,17 +886,17 @@ describe('sunArrivalPose', () => {
   });
 });
 
-describe('moonArrivalStandoffAU — the pose distance, extracted', () => {
-  it('equals |pose.position − moonPos| across the whole catalog and three phases', () => {
+describe('arrivalStandoffAU — the pose distance, extracted', () => {
+  it('equals |pose.position − targetPos| across the whole catalog and three phases', () => {
     // By construction: the pose parks the ship exactly one standoff from the
     // moon (sun-side or the outward-radial fallback, both unit offsets), so the
     // extracted distance must reproduce the pose geometry moon-for-moon.
     for (const moon of MOONS) {
       for (const angle of [0.7, 2.4, 4.1]) {
         const inp = catalogInputs(moon.name, angle);
-        const pose = moonArrivalPose(inp);
-        expect(moonArrivalStandoffAU(inp), `${moon.name} @ ${angle}`).toBeCloseTo(
-          pose.position.distanceTo(inp.moonPos),
+        const pose = arrivalPose(inp);
+        expect(arrivalStandoffAU(inp), `${moon.name} @ ${angle}`).toBeCloseTo(
+          pose.position.distanceTo(inp.targetPos),
           12,
         );
       }
@@ -972,27 +971,27 @@ describe('autopilotArrived', () => {
   });
 });
 
-describe('moonArrivalTrackEngage', () => {
+describe('arrivalTrackEngage', () => {
   const S = 2.9e-3; // arrival camera distance
 
   it('is EXACTLY zero at the arrival standoff and anywhere beyond it', () => {
-    expect(moonArrivalTrackEngage(S, S)).toBe(0);
-    expect(moonArrivalTrackEngage(2 * S, S)).toBe(0);
-    expect(moonArrivalTrackEngage(MOON_ARRIVAL_ENGAGE_START_RATIO * S, S)).toBe(0);
+    expect(arrivalTrackEngage(S, S)).toBe(0);
+    expect(arrivalTrackEngage(2 * S, S)).toBe(0);
+    expect(arrivalTrackEngage(ARRIVAL_ENGAGE_START_RATIO * S, S)).toBe(0);
   });
 
   it('reaches full tracking at (and inside) the engage-full distance', () => {
-    expect(moonArrivalTrackEngage(MOON_ARRIVAL_ENGAGE_FULL_RATIO * S, S)).toBe(1);
-    expect(moonArrivalTrackEngage(0.05 * S, S)).toBe(1);
+    expect(arrivalTrackEngage(ARRIVAL_ENGAGE_FULL_RATIO * S, S)).toBe(1);
+    expect(arrivalTrackEngage(0.05 * S, S)).toBe(1);
   });
 
   it('rises monotonically as the pass closes through the band', () => {
     const steps = 40;
     let prev = 0;
     for (let i = 0; i <= steps; i++) {
-      const r = MOON_ARRIVAL_ENGAGE_START_RATIO
-        + (MOON_ARRIVAL_ENGAGE_FULL_RATIO - MOON_ARRIVAL_ENGAGE_START_RATIO) * (i / steps);
-      const w = moonArrivalTrackEngage(r * S, S);
+      const r = ARRIVAL_ENGAGE_START_RATIO
+        + (ARRIVAL_ENGAGE_FULL_RATIO - ARRIVAL_ENGAGE_START_RATIO) * (i / steps);
+      const w = arrivalTrackEngage(r * S, S);
       expect(w).toBeGreaterThanOrEqual(prev);
       expect(w).toBeGreaterThanOrEqual(0);
       expect(w).toBeLessThanOrEqual(1);
@@ -1002,8 +1001,8 @@ describe('moonArrivalTrackEngage', () => {
   });
 
   it('a degenerate arrival distance engages nothing', () => {
-    expect(moonArrivalTrackEngage(1e-5, 0)).toBe(0);
-    expect(moonArrivalTrackEngage(1e-5, -1)).toBe(0);
-    expect(moonArrivalTrackEngage(1e-5, NaN)).toBe(0);
+    expect(arrivalTrackEngage(1e-5, 0)).toBe(0);
+    expect(arrivalTrackEngage(1e-5, -1)).toBe(0);
+    expect(arrivalTrackEngage(1e-5, NaN)).toBe(0);
   });
 });

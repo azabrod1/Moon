@@ -24,12 +24,12 @@
  *    the deflection's change is rate-limited, to
  *    min(AIM_RATE_CAP_RAD_PER_S·dt, AIM_STEP_MAX_RAD).
  *
- * The arrival look is ENGAGE-GATED (moonArrivalTrackEngage): its weight is
+ * The arrival look is ENGAGE-GATED (arrivalTrackEngage): its weight is
  * EXACTLY zero at the teleport standoff, so a fresh arrival's first input
  * finds zero deflection and pays nothing — the retired always-on postcard
  * put ~20° between the arrival and settled poses, and every first input
  * paid it as a visible adjust. The tracking shot fades in only as a
- * hands-off flythrough closes inside the engage band, holds the moon
+ * hands-off flyby closes inside the engage band, holds the moon
  * through closest approach, and fades back out on the receding leg.
  *
  * The look's target is fed ANALYTICALLY (parent world position +
@@ -53,9 +53,9 @@
  */
 import * as THREE from 'three';
 import {
-  moonArrivalCameraLookWeight,
-  moonArrivalReleaseFade,
-  moonArrivalTrackEngage,
+  arrivalCameraLookWeight,
+  arrivalLookReleaseFade,
+  arrivalTrackEngage,
 } from './arrivalLogic';
 import { FLIGHT_UP_SCENE } from './flightFrame';
 
@@ -132,7 +132,7 @@ export function createCruiseAimState(): CruiseAimState {
 }
 
 /** A moon teleport begins tracking (engage-gated: weight is zero until the
- *  flythrough closes inside the engage band). Does NOT restore a cut aim —
+ *  flyby closes inside the engage band). Does NOT restore a cut aim —
  *  the jump funnel cuts deliberately and the first step must adopt the
  *  desired aim exactly, not sweep toward it. */
 export function startArrivalLook(
@@ -292,16 +292,16 @@ export function stepCruiseAim(
       // zero-weight look waiting for the hands-off pass to develop, and
       // must NOT be dropped as "handoff complete".
       const disengage =
-        moonArrivalCameraLookWeight(
+        arrivalCameraLookWeight(
           camToMoonLen,
           look.arrivalDistanceAU,
           look.receding,
-        ) * moonArrivalReleaseFade(look.releaseElapsedS ?? 0);
+        ) * arrivalLookReleaseFade(look.releaseElapsedS ?? 0);
       if (disengage <= 0) {
         state.look = null; // handoff complete; residual eases out below
       } else {
         const weight =
-          disengage * moonArrivalTrackEngage(camToMoonLen, look.arrivalDistanceAU);
+          disengage * arrivalTrackEngage(camToMoonLen, look.arrivalDistanceAU);
         if (weight > 0) {
           // The shipped composition, expressed as a direction: the aim
           // point interpolates moon→origin, viewed from the camera.

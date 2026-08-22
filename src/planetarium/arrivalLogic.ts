@@ -13,16 +13,12 @@ import { KM_PER_AU } from '../astronomy/constants';
 import { DEG2RAD } from '../shared/math/angles';
 import { SHIP_CLEARANCE_AU } from './cruiseView';
 
-/** Approach dynamics: distance to the moon's surface e-folds every 1/K
- *  seconds, so every moon from Ganymede to Deimos gets the same subjective
- *  ease-in regardless of scale. 4 s reads as a brisk glide — the collision
- *  sweep, not this cap, is what prevents impact. */
-export const MOON_APPROACH_K_PER_S = 1 / 4;
-
-/** Planets (and the Sun) launch at the moons' proven glide. A separate dial
- *  so a gentler planet feel is a one-line change if flying QA asks for it —
- *  a planet approach spans minutes where a moon's spans seconds. */
-export const PLANET_APPROACH_K_PER_S = MOON_APPROACH_K_PER_S;
+/** Approach dynamics, every body class: distance to the surface e-folds every
+ *  1/K seconds, so Ganymede, Deimos, and Jupiter all get the same subjective
+ *  ease-in regardless of scale — 4 s reads as a brisk glide. The collision
+ *  sweep, not this cap, is what prevents impact. (A per-class dial stays a
+ *  one-line change if flying QA ever wants a gentler planet feel.) */
+export const BODY_APPROACH_K_PER_S = 1 / 4;
 
 /** The Sun has no collision shell, so the governed glide is the only brake
  *  before the corona; govern against an effective surface above the
@@ -33,23 +29,23 @@ export const SUN_APPROACH_SURFACE_RADII = 1.2;
  *  collision bubble, not the governor, is what holds you off the mesh. */
 export const BODY_APPROACH_V_MIN_AU_S = 2 / KM_PER_AU;
 
-/** Departure near zone: for its first moments a leave is capped by the SAME
- *  K × height glide as an approach — right beside a body, leaving is as
+/** Departure near zone: for its first moments a departure is capped by the
+ *  SAME K × height glide as an approach — right beside a body, leaving is as
  *  unhurried as arriving — but with this head start added to the height, so
  *  the shell itself reads as a visible creep (~0.05 shell radii per second)
  *  instead of the near-freeze the approach floor would pin a parked
  *  nose-out ship at.
  *
- *  The leave law's datum is the COLLISION SHELL (rendered radius + hull
+ *  The departure law's datum is the COLLISION SHELL (rendered radius + hull
  *  clearance) — the surface the resolvers actually park the ship on — and
  *  the head start and knee scale on that shell radius. Rendered radii would
  *  break the smallest bodies: the fixed clearance dwarfs a moonlet's mesh,
  *  so a ship parked at one would measure several "radii" up, start past the
- *  valve knee, and detonate off the shell in a fraction of a second. */
-export const LEAVE_HEADSTART_RADII = 0.2;
+ *  knee, and detonate off the shell in a fraction of a second. */
+export const DEPARTURE_HEADSTART_RADII = 0.2;
 
-/** Knee of the departure valve, measured on the head-started shell height.
- *  Inside it the leave cap is the plain glide — the really-slow zone,
+/** Knee of the departure law, measured on the head-started shell height.
+ *  Inside it the departure cap is the plain glide — the really-slow zone,
  *  crossed in ~3 s of flight. Past it the cap opens as the SQUARE of the
  *  ratio (a cubic law overall), so it outruns any dialed speed within
  *  ~1/(2K) ≈ 2 s more: a departure is genuinely governed only for its first
@@ -57,27 +53,27 @@ export const LEAVE_HEADSTART_RADII = 0.2;
  *  entirely free once the ship has clearly left. Everything is in shell
  *  radii, so a moonlet departure and a Jupiter departure share one
  *  subjective timeline. */
-export const LEAVE_VALVE_KNEE_RADII = 0.38;
+export const DEPARTURE_KNEE_RADII = 0.38;
 
 /**
  * Proximity speed cap near one body. Closing, speed is limited to
  * K × (distance to the rendered surface), floored at vMin — the glide.
- * Receding, it is limited to K × (height + head start), squared open past
- * the valve knee — the leave law: as slow as an arrival right beside the
- * body, then releasing completely within a few seconds of flight. (A
- * pure-time release reads as nothing-nothing-BANG; a flat distance law
- * holds a committed departure against empty sky for tens of seconds.)
+ * Receding, it is limited to K × (height + head start), opening as the
+ * square past the knee — the departure law: as slow as an arrival right
+ * beside the body, then free within a few seconds of flight. (A pure-time
+ * opening reads as nothing-nothing-BANG; a flat distance law holds a
+ * committed departure against empty sky for tens of seconds.)
  *
  * The two laws blend HARMONICALLY over the approach-cosine smoothstep band
  * [0, 0.3]: `1 / (w/vIn + (1−w)/vOut)`. As vOut → ∞ this reduces exactly to
  * the historical `vIn / w` band fade, so the proven inbound behavior is the
  * special case — an arithmetic blend here would hand a near-tangent closing
- * course a large share of an opened leave valve and grind it into the
+ * course a large share of an opened departure cap and grind it into the
  * resolver.
  *
  * `surfaceDistAU` is the RAW `dist − surfaceRadius`, negative while a swept
  * endpoint sits momentarily inside the surface. Both laws clamp: at or
- * inside the collision shell the leave cap holds the shell's own creep
+ * inside the collision shell the departure cap holds the shell's own creep
  * (floored at vMin, like the approach) and the approach cap its floor —
  * neither ever goes negative, and swinging the nose out is never slower
  * than swinging it in.
@@ -90,11 +86,11 @@ export function governedSpeedCap(
   vMinAUPerS: number,
 ): number {
   const shellRadiusAU = surfaceRadiusAU + SHIP_CLEARANCE_AU;
-  const liftAU =
-    Math.max(surfaceDistAU - SHIP_CLEARANCE_AU, 0) + LEAVE_HEADSTART_RADII * shellRadiusAU;
-  const kneeAU = LEAVE_VALVE_KNEE_RADII * shellRadiusAU;
-  const valve = liftAU > kneeAU ? (liftAU / kneeAU) ** 2 : 1;
-  const vOut = Math.max(kPerS * liftAU * valve, vMinAUPerS);
+  const paddedHeightAU =
+    Math.max(surfaceDistAU - SHIP_CLEARANCE_AU, 0) + DEPARTURE_HEADSTART_RADII * shellRadiusAU;
+  const kneeAU = DEPARTURE_KNEE_RADII * shellRadiusAU;
+  const opening = paddedHeightAU > kneeAU ? (paddedHeightAU / kneeAU) ** 2 : 1;
+  const vOut = Math.max(kPerS * paddedHeightAU * opening, vMinAUPerS);
   const t = THREE.MathUtils.clamp(cosApproach / 0.3, 0, 1);
   const w = t * t * (3 - 2 * t);
   if (w <= 0) return vOut;
@@ -105,7 +101,7 @@ export function governedSpeedCap(
 
 /** Pace of the cap's loosening transition (a target-residual ease, so the
  *  normalized progress is body-independent: 50% in ~0.24 s, 95% in ~1.05 s
- *  whether the target is a moonlet's leave law or Jupiter's). */
+ *  whether the target is a moonlet's departure law or Jupiter's). */
 export const CAP_TRANSITION_TAU_S = 0.35;
 
 /**
@@ -116,8 +112,8 @@ export const CAP_TRANSITION_TAU_S = 0.35;
  * (`prev + (geom − prev) × (1 − e^(−dt/τ))`): body-scale independent —
  * a multiplicative e-fold from a shell pin needs ~2.4 s beside Jupiter with
  * 1.5 s of it invisible — and exactly frame-rate independent for a given
- * elapsed time. Once the transition catches the leave law, the cap simply
- * tracks it — distance-tied — until the valve outruns the dialed speed and
+ * elapsed time. Once the transition catches the departure law, the cap simply
+ * tracks it — distance-tied — until it outruns the dialed speed and
  * the departure runs free.
  */
 export function rampedSpeedCap(
@@ -151,7 +147,7 @@ const CAP_BIND_FRACTION = 0.999;
  * (Infinity while a bypass hatch is open). `engaged` is the latch: the
  * INSTANTANEOUS geometric cap binds against the commanded (uncapped,
  * throttle-dialed) speed — never the applied speed, which already contains
- * the cap and reads 0 parked. With the finite leave law, `engaged` stays
+ * the cap and reads 0 parked. With the finite departure law, `engaged` stays
  * true through a departure until the law crosses the commanded speed — for
  * a governed departure a few seconds of flight, for a full-override sprint
  * a dozen radii of distance — so the auto-clear completes once the ship has
@@ -216,23 +212,23 @@ export const MOON_ARRIVAL_APPARENT_DIAMETER_DEG = 5;
  *  the limb. The clearance floor below still outranks this on the smallest
  *  meshes. Tighter reads closer but kills the pass: the proximity governor
  *  meters speed by height above the collision shell, and a perigee that
- *  falls inside the leave valve's knee turns the flythrough into a hover
+ *  falls inside the departure knee turns the flyby into a hover
  *  beside the body (1.35 parked outright; 1.6 hung ~12 s at perigee and
  *  crept out with no sling). 1.8 is the closest pass that keeps its pace. */
-export const MOON_ARRIVAL_IMPACT_RADII = 1.8;
+export const ARRIVAL_IMPACT_RADII = 1.8;
 
 /** Ceiling on how far the aim may swing off the moon: tiny meshes parked
  *  under their separation caps would otherwise push the disc out of frame. */
-export const MOON_ARRIVAL_MAX_OFFAXIS_DEG = 12;
+export const ARRIVAL_MAX_OFFAXIS_DEG = 12;
 
-/** The flythrough needs its lateral show to dwarf the chase rig: below this
+/** The flyby needs its lateral show to dwarf the chase rig: below this
  *  many camera-boom lengths of impact parameter, the whole pass — perigee,
  *  abeam slide, sling — happens INSIDE the camera's own trail distance, and
  *  reads as teleporting on top of a rock while the view crawls. Those moons
  *  arrive planet-style instead: aimed dead at the body, the governed glide
  *  as the show. Splits the catalog at the named-moon line (every classical
  *  moon plus Charon flies; the moonlet swarm parks). */
-export const MOON_FLYTHROUGH_MIN_IMPACT_CAM_DISTS = 2;
+export const FLYBY_MIN_IMPACT_CAM_DISTS = 2;
 
 /**
  * How strongly a moon teleport's camera should keep looking at the moon.
@@ -241,7 +237,7 @@ export const MOON_FLYTHROUGH_MIN_IMPACT_CAM_DISTS = 2;
  * Track fully through closest approach, then ease back to the ship between
  * one and two arrival-camera distances on the receding leg.
  */
-export function moonArrivalCameraLookWeight(
+export function arrivalCameraLookWeight(
   cameraDistanceAU: number,
   arrivalCameraDistanceAU: number,
   receding: boolean,
@@ -262,47 +258,47 @@ export function moonArrivalCameraLookWeight(
  *  steering input, and cancelling the look in one frame swung the camera
  *  from the moon to the ship as an instant snap — up to the whole off-axis
  *  allowance — on the first touch after a teleport. */
-export const MOON_ARRIVAL_RELEASE_S = 0.35;
+export const ARRIVAL_LOOK_RELEASE_S = 0.35;
 
 /**
  * Fade multiplier for a released arrival look: 1 at the moment steering
- * begins, easing to 0 once MOON_ARRIVAL_RELEASE_S has elapsed. Multiplies
- * moonArrivalCameraLookWeight, so a release during the receding leg only
+ * begins, easing to 0 once ARRIVAL_LOOK_RELEASE_S has elapsed. Multiplies
+ * arrivalCameraLookWeight, so a release during the receding leg only
  * ever shortens the ease that was already running.
  */
-export function moonArrivalReleaseFade(releaseElapsedS: number): number {
+export function arrivalLookReleaseFade(releaseElapsedS: number): number {
   if (!(releaseElapsedS > 0)) return 1;
-  const t = THREE.MathUtils.clamp(releaseElapsedS / MOON_ARRIVAL_RELEASE_S, 0, 1);
+  const t = THREE.MathUtils.clamp(releaseElapsedS / ARRIVAL_LOOK_RELEASE_S, 0, 1);
   return 1 - t * t * (3 - 2 * t);
 }
 
-/** Engage band for the flythrough tracking look, in fractions of the arrival
+/** Engage band for the flyby tracking look, in fractions of the arrival
  *  camera distance. The look is EXACTLY zero at the arrival standoff and
  *  through the first stretch of the glide — a teleport's first input must
  *  find zero deflection (an always-on look put ~20° between the arrival and
  *  settled poses, and every first input paid it as a visible adjust) — and
  *  reaches full tracking well before the near-miss geometry carries the
  *  moon out of the fixed chase frame (~3 rendered radii on close passes). */
-export const MOON_ARRIVAL_ENGAGE_START_RATIO = 0.5;
-export const MOON_ARRIVAL_ENGAGE_FULL_RATIO = 0.2;
+export const ARRIVAL_ENGAGE_START_RATIO = 0.5;
+export const ARRIVAL_ENGAGE_FULL_RATIO = 0.2;
 
 /**
- * How far a hands-off flythrough has developed, 0→1: zero at (and anywhere
- * beyond) MOON_ARRIVAL_ENGAGE_START_RATIO × the arrival camera distance,
- * easing to 1 at MOON_ARRIVAL_ENGAGE_FULL_RATIO ×. Multiplies
- * moonArrivalCameraLookWeight, so the tracking shot fades in as the flyby
+ * How far a hands-off flyby has developed, 0→1: zero at (and anywhere
+ * beyond) ARRIVAL_ENGAGE_START_RATIO × the arrival camera distance,
+ * easing to 1 at ARRIVAL_ENGAGE_FULL_RATIO ×. Multiplies
+ * arrivalCameraLookWeight, so the tracking shot fades in as the flyby
  * closes and back out as it recedes — and a look released by input while
  * still un-engaged carries no deflection at all.
  */
-export function moonArrivalTrackEngage(
+export function arrivalTrackEngage(
   cameraDistanceAU: number,
   arrivalCameraDistanceAU: number,
 ): number {
   if (!(arrivalCameraDistanceAU > 0)) return 0;
   return 1 - THREE.MathUtils.smoothstep(
     cameraDistanceAU,
-    MOON_ARRIVAL_ENGAGE_FULL_RATIO * arrivalCameraDistanceAU,
-    MOON_ARRIVAL_ENGAGE_START_RATIO * arrivalCameraDistanceAU,
+    ARRIVAL_ENGAGE_FULL_RATIO * arrivalCameraDistanceAU,
+    ARRIVAL_ENGAGE_START_RATIO * arrivalCameraDistanceAU,
   );
 }
 
@@ -327,9 +323,9 @@ export const PLANET_ARRIVAL_STANDOFF_FLOOR_AU = 2e-5;
  *  Cordelia) this is what actually binds. Unchanged from the original. */
 export const MOON_ARRIVAL_SEPARATION_CAP = 0.45;
 
-export interface MoonArrivalInputs {
+export interface ArrivalInputs {
   /** Moon and parent world positions (AU), and their live separation. */
-  moonPos: THREE.Vector3;
+  targetPos: THREE.Vector3;
   parentPos: THREE.Vector3;
   orbitR: number;
   /** Mesh radius as drawn: true radius, or the moonRenderSize curve's
@@ -345,15 +341,15 @@ export interface MoonArrivalInputs {
   shipClearance: number;
 }
 
-export interface MoonArrivalPose {
+export interface ArrivalPose {
   position: THREE.Vector3;
-  /** Heading target. Flythrough arrivals offset it from the moon's center so
+  /** Heading target. Flyby arrivals offset it from the moon's center so
    *  forward flight is a flyby past the limb; direct arrivals aim at the
    *  center itself and let the governed glide park the ship. */
   aimPoint: THREE.Vector3;
-  /** True when this arrival stages the near-miss flythrough (and its camera
+  /** True when this arrival stages the near-miss flyby (and its camera
    *  tracking); false for the planet-style head-on glide at moonlets. */
-  flythrough: boolean;
+  flyby: boolean;
 }
 
 /** Collision bubble around a moon mesh: rendered radius plus the full hull
@@ -441,11 +437,11 @@ function rayPassesNear(
  * Standoff distance from the moon's center: the mesh subtends
  * MOON_ARRIVAL_APPARENT_DIAMETER_DEG from the camera (camDist behind the
  * ship), floored by the legacy standoff and the collision bubble (×1.5) and
- * capped at a fraction of the moon–parent separation. `moonArrivalPose` places
- * the ship exactly this far out, so |pose.position − moonPos| == this value by
+ * capped at a fraction of the moon–parent separation. `arrivalPose` places
+ * the ship exactly this far out, so |pose.position − targetPos| == this value by
  * construction; the autopilot glide rests the cruise here too.
  */
-export function moonArrivalStandoffAU(inp: MoonArrivalInputs): number {
+export function arrivalStandoffAU(inp: ArrivalInputs): number {
   const collisionR = moonCollisionRadius(inp.renderedR, inp.shipClearance);
   const half = (MOON_ARRIVAL_APPARENT_DIAMETER_DEG / 2) * DEG2RAD;
   return Math.min(
@@ -463,7 +459,7 @@ export function moonArrivalStandoffAU(inp: MoonArrivalInputs): number {
  *  cruise eases to rest at the postcard distance rather than grinding into the
  *  collision shell. Continuous, and exactly zero at or inside the standoff. */
 export function autopilotGlideCap(distToMoonCenterAU: number, standoffAU: number): number {
-  return MOON_APPROACH_K_PER_S * Math.max(distToMoonCenterAU - standoffAU, 0);
+  return BODY_APPROACH_K_PER_S * Math.max(distToMoonCenterAU - standoffAU, 0);
 }
 
 /** How strongly the autopilot heading swings from the moon's center toward the
@@ -486,7 +482,7 @@ export function autopilotArrived(distToMoonCenterAU: number, standoffAU: number)
  * Arrival pose for a moon-precise jump: where the ship appears, and where
  * it points.
  *
- * Standoff (moonArrivalStandoffAU): the mesh subtends
+ * Standoff (arrivalStandoffAU): the mesh subtends
  * MOON_ARRIVAL_APPARENT_DIAMETER_DEG from the camera (camDist behind the
  * ship), clamped by the legacy floor, the collision bubble, and the separation
  * cap. Position: sun side preferred so
@@ -495,9 +491,9 @@ export function autopilotArrived(distToMoonCenterAU: number, standoffAU: number)
  * superior conjunction); fallback is outward along the parent→moon radial,
  * which always clears the parent, its rings, and the line of sight.
  *
- * Aim: for flythrough-class moons, offset by an impact parameter so full
+ * Aim: for flyby-class moons, offset by an impact parameter so full
  * thrust sweeps past the limb; moonlets whose pass would fit inside the
- * camera boom aim dead at the body instead (planet-style, flythrough:false).
+ * camera boom aim dead at the body instead (planet-style, flyby:false).
  * The clearance floor outranks composition — without it the smallest
  * curve-rendered moons keep almost no miss margin. Side selection selects the perp
  * toward the parent so the moon slides to the opposite third and the two
@@ -510,31 +506,31 @@ export function autopilotArrived(distToMoonCenterAU: number, standoffAU: number)
  * point inside it (Pan) — the flyby still misses the moon, and the planet
  * pushback is the backstop for what lies beyond.
  */
-export function moonArrivalPose(inp: MoonArrivalInputs): MoonArrivalPose {
-  const { moonPos, parentPos, orbitR, renderedR } = inp;
+export function arrivalPose(inp: ArrivalInputs): ArrivalPose {
+  const { targetPos, parentPos, orbitR, renderedR } = inp;
   const collisionR = moonCollisionRadius(renderedR, inp.shipClearance);
-  const dist = moonArrivalStandoffAU(inp);
+  const dist = arrivalStandoffAU(inp);
 
-  const sunDir = moonPos.clone().multiplyScalar(-1).normalize();
-  let position = moonPos.clone().addScaledVector(sunDir, dist);
+  const sunDir = targetPos.clone().multiplyScalar(-1).normalize();
+  let position = targetPos.clone().addScaledVector(sunDir, dist);
   const occluded =
-    new THREE.Line3(position, moonPos)
+    new THREE.Line3(position, targetPos)
       .closestPointToPoint(parentPos, true, new THREE.Vector3())
       .distanceTo(parentPos) < inp.parentCollision;
   if (position.distanceTo(parentPos) < inp.parentClearance || occluded) {
     const outward =
       orbitR > 1e-9
-        ? moonPos.clone().sub(parentPos).divideScalar(orbitR)
+        ? targetPos.clone().sub(parentPos).divideScalar(orbitR)
         : new THREE.Vector3(1, 0, 0);
-    position = moonPos.clone().addScaledVector(outward, dist);
+    position = targetPos.clone().addScaledVector(outward, dist);
   }
 
   // Moonlets get the planet-style arrival: aimed dead at the body, no flyby
   // offset — their pass would fit inside the camera boom (see the gate
   // constant). The glide clamps at the collision shell like any head-on
   // planet approach, so no miss geometry is needed.
-  if (renderedR * MOON_ARRIVAL_IMPACT_RADII < inp.camDist * MOON_FLYTHROUGH_MIN_IMPACT_CAM_DISTS) {
-    return { position, aimPoint: moonPos.clone(), flythrough: false };
+  if (renderedR * ARRIVAL_IMPACT_RADII < inp.camDist * FLYBY_MIN_IMPACT_CAM_DISTS) {
+    return { position, aimPoint: targetPos.clone(), flyby: false };
   }
 
   // Required perpendicular miss, converted to an aim offset: a ray aimed b
@@ -546,29 +542,29 @@ export function moonArrivalPose(inp: MoonArrivalInputs): MoonArrivalPose {
   // Clearance outranks BOTH composition terms: at close parks (the standoff
   // floor on the smallest meshes) the swing ceiling can fall under the
   // required miss, and safety wins — the aim may swing a few degrees past
-  // MOON_ARRIVAL_MAX_OFFAXIS_DEG there (≤ ~14° in the catalog, pinned by
+  // ARRIVAL_MAX_OFFAXIS_DEG there (≤ ~14° in the catalog, pinned by
   // the ladder test).
   const b = Math.max(
     Math.min(
-      renderedR * MOON_ARRIVAL_IMPACT_RADII,
-      dist * Math.sin(MOON_ARRIVAL_MAX_OFFAXIS_DEG * DEG2RAD),
+      renderedR * ARRIVAL_IMPACT_RADII,
+      dist * Math.sin(ARRIVAL_MAX_OFFAXIS_DEG * DEG2RAD),
     ),
     clearB,
   );
 
-  const viewDir = moonPos.clone().sub(position).normalize();
+  const viewDir = targetPos.clone().sub(position).normalize();
   const toParent = parentPos.clone().sub(position);
   let perp = toParent.clone().addScaledVector(viewDir, -toParent.dot(viewDir));
   if (perp.lengthSq() < 1e-18) perp = new THREE.Vector3().crossVectors(viewDir, new THREE.Vector3(0, 1, 0));
   if (perp.lengthSq() < 1e-18) perp = new THREE.Vector3().crossVectors(viewDir, new THREE.Vector3(1, 0, 0));
   perp.normalize();
 
-  let aimPoint = moonPos.clone().addScaledVector(perp, b);
+  let aimPoint = targetPos.clone().addScaledVector(perp, b);
   if (rayPassesNear(position, aimPoint, parentPos, inp.parentCollision * 1.1)) {
     perp.multiplyScalar(-1);
-    aimPoint = moonPos.clone().addScaledVector(perp, b);
+    aimPoint = targetPos.clone().addScaledVector(perp, b);
   }
-  return { position, aimPoint, flythrough: true };
+  return { position, aimPoint, flyby: true };
 }
 
 /** Standoff for a Sun teleport, in photosphere radii: 8 puts a ~14° disc in

@@ -252,21 +252,20 @@ import {
   autopilotGlideCap,
   governedSpeedCap,
   initialBodyCapState,
-  moonArrivalPose,
-  moonArrivalStandoffAU,
+  arrivalPose,
+  arrivalStandoffAU,
   moonCollisionRadius,
   sunArrivalPose,
   BODY_APPROACH_V_MIN_AU_S,
   BODY_CAP_CLEAR_HOLD_S,
-  MOON_APPROACH_K_PER_S,
-  PLANET_APPROACH_K_PER_S,
+  BODY_APPROACH_K_PER_S,
   PLANET_ARRIVAL_STANDOFF_FLOOR_AU,
   SUN_APPROACH_SURFACE_RADII,
   SUN_ARRIVAL_RADII,
   sweepSegmentSphere,
   type BodyCapState,
   type SweepContact,
-  type MoonArrivalInputs,
+  type ArrivalInputs,
 } from './arrivalLogic';
 import {
   clearArrivalLook,
@@ -646,7 +645,7 @@ export class PlanetariumMode {
   private static readonly MOON_PAINT_MAX_PER_FRAME = 4;
   // Resolution a procedural moon is re-rendered to when observed (landed): the
   // Observatory frames any body to a fixed screen fraction regardless of size,
-  // so the flythrough baseline (256/512) looks low-res up close. GPU paint makes
+  // so the flyby baseline (256/512) looks low-res up close. GPU paint makes
   // this nearly free; the result stays for the session.
   private static readonly OBSERVE_MOON_TEXTURE_WIDTH = 1024;
 
@@ -924,7 +923,7 @@ export class PlanetariumMode {
   // Provenance: did the user pick the target, or is it a legacy-save leftover?
   // Only user-engaged targets render the "→ name" chip or survive a landing.
   private autopilotUserEngaged = false;
-  /** Cached flyby aim for the autopilot blend zone. `moonArrivalPose` builds a
+  /** Cached flyby aim for the autopilot blend zone. `arrivalPose` builds a
    *  dozen vectors per call, and the pose depends only on the moon/parent
    *  state — so recompute when the moon has moved a couple percent of the
    *  standoff (every frame under warp, almost never at 1×), not per frame. */
@@ -987,8 +986,8 @@ export class PlanetariumMode {
   /** Reused arrival-pose inputs for the engaged moon autopilot: refilled from
    *  live positions/scale each frame (resolveAutopilotMoonInputs) so the glide
    *  cap, aim blend, and arrival test allocate nothing in steady flight. */
-  private tmpAutopilotInputs: MoonArrivalInputs = {
-    moonPos: new THREE.Vector3(),
+  private tmpAutopilotInputs: ArrivalInputs = {
+    targetPos: new THREE.Vector3(),
     parentPos: new THREE.Vector3(),
     orbitR: 0,
     renderedR: 0,
@@ -1742,7 +1741,7 @@ export class PlanetariumMode {
       this.orbitPointerId = e.pointerId;
       this.orbitPointerStartX = e.clientX;
       this.orbitPointerStartY = e.clientY;
-      // A press is already interaction intent: hand the flythrough look back
+      // A press is already interaction intent: hand the flyby look back
       // NOW, not at the 4px drag threshold — otherwise a held-still press
       // sits under a camera that starts tracking the moon a few seconds in.
       // Matches the touch zone, where a stationary tap is full input. (The
@@ -1791,7 +1790,7 @@ export class PlanetariumMode {
     orbitDom.addEventListener('pointerup', endOrbitDrag);
     orbitDom.addEventListener('pointercancel', endOrbitDrag);
     // A wheel zoom is camera work like any drag or keypress: the player is
-    // already composing the shot, so the flythrough look hands back rather
+    // already composing the shot, so the flyby look hands back rather
     // than panning underneath them. (OrbitControls consumes the wheel for
     // the dolly itself; this only retires the look.)
     orbitDom.addEventListener('wheel', () => {
@@ -2551,9 +2550,9 @@ export class PlanetariumMode {
     // throttle knows nothing smaller than a system, so near a body it still
     // allows the in-system setting — several standoffs per second. Cap the
     // closing speed at K × surface distance and the receding speed at the
-    // distance-tied leave law instead (same escape hatch as the throttle).
+    // distance-tied departure law instead (same escape hatch as the throttle).
     // Tightening applies instantly; loosening runs through a short
-    // transition ease onto the leave law, so a flyby ends with a steady
+    // transition ease onto the departure law, so a flyby ends with a steady
     // pull-away, never a time-exponential detonation.
     // The throttle override (and systemSlowdown off) bypasses the applied
     // cap the same frame — no lingering crawl — while the candidate keeps
@@ -2586,11 +2585,11 @@ export class PlanetariumMode {
     if (!this.player.held && this.autopilot && this.autopilotTarget) {
       const inp = this.resolveAutopilotMoonInputs(this.autopilotTarget);
       if (inp) {
-        const dx = inp.moonPos.x - this.player.posX;
-        const dy = inp.moonPos.y - this.player.posY;
-        const dz = inp.moonPos.z - this.player.posZ;
+        const dx = inp.targetPos.x - this.player.posX;
+        const dy = inp.targetPos.y - this.player.posY;
+        const dz = inp.targetPos.z - this.player.posZ;
         const dist = Math.sqrt(dx * dx + dy * dy + dz * dz);
-        const glide = autopilotGlideCap(dist, moonArrivalStandoffAU(inp));
+        const glide = autopilotGlideCap(dist, arrivalStandoffAU(inp));
         if (glide < this.player.speedCapAUPerS) this.player.speedCapAUPerS = glide;
       }
     }
@@ -3018,7 +3017,7 @@ export class PlanetariumMode {
   }
 
   /** The single LAST aim writer of the cruise frame (see cruiseAim.ts):
-   *  composes the engage-gated flythrough look over the origin aim and
+   *  composes the engage-gated flyby look over the origin aim and
    *  rate-limits the deflection so no upstream seam can emit a one-frame
    *  aim snap. Runs after OrbitControls + camera safety — aim derives from
    *  the FINAL camera position, which is what lets the safety escape skip
@@ -3377,7 +3376,7 @@ export class PlanetariumMode {
    * updateMoonPositions applies, so they stay visible). The landed camera
    * frames off this, so a small moon's inflated mesh fills the view like any
    * other body and the camera never seats itself inside the mesh. Uses the
-   * flythrough anchor deliberately, not the state selector: the framing target
+   * flyby anchor deliberately, not the state selector: the framing target
    * must stay stable while surface view (anchor 0) is active.
    */
   private getLandedBodyRenderedRadiusAU(): number {
@@ -3395,11 +3394,11 @@ export class PlanetariumMode {
    * the anchor inflate toward it on the moonRenderSize curve — most are a
    * sliver of their giant parent and would be sub-pixel at true scale — and
    * the anchor depends on what you're looking at:
-   *  - Flying, or any system you're not landed in: the full flythrough anchor,
+   *  - Flying, or any system you're not landed in: the full flyby anchor,
    *    so every moon stays a findable speck as you pass.
    *  - Observing the parent PLANET: a smaller anchor — you're focused on the
    *    system, and it should read closer to honest relative sizes.
-   *  - Observing a MOON: the flythrough anchor (unchanged), so the siblings
+   *  - Observing a MOON: the flyby anchor (unchanged), so the siblings
    *    stay findable around the one being inspected.
    *  - Surface view: no inflation — true angular sizes, a moon crossing the
    *    Sun must be its real size.
@@ -3410,7 +3409,7 @@ export class PlanetariumMode {
    */
   private moonRenderAnchorRatio(parentName: string): number {
     if (parentName !== this.observatoryParentPlanetName()) {
-      return MOON_RENDER_ANCHOR_RATIO; // flythrough / other systems
+      return MOON_RENDER_ANCHOR_RATIO; // flyby / other systems
     }
     if (this.landedView === 'surface') return 0; // true angular sizes
     if (this.landedOn?.type === 'planet') return MOON_RENDER_ANCHOR_RATIO_OBSERVING;
@@ -6006,7 +6005,7 @@ export class PlanetariumMode {
 
     // The arrival look is cinematic assistance, never a control lock. Any
     // explicit flight input hands the camera back to the pilot — eased over
-    // MOON_ARRIVAL_RELEASE_S rather than in one frame: on the touch flight
+    // ARRIVAL_LOOK_RELEASE_S rather than in one frame: on the touch flight
     // zone a stationary tap is already full steering, and the instant cancel
     // read as the camera snapping on the first touch after a teleport.
     if (hasManualInput) releaseArrivalLook(this.cruiseAim);
@@ -10683,8 +10682,8 @@ export class PlanetariumMode {
       parentPos.x + offset.x,
       parentPos.y + offset.y,
       parentPos.z + offset.z,
-      // Flythrough anchor deliberately, not the state selector: jump seeds
-      // only exist in cruise, where the flythrough anchor is the live one.
+      // Flyby anchor deliberately, not the state selector: jump seeds
+      // only exist in cruise, where the flyby anchor is the live one.
       this.renderedMoonSizeAU(moon.radiusAU, parent.radiusAU, MOON_RENDER_ANCHOR_RATIO),
     );
   }
@@ -10706,12 +10705,12 @@ export class PlanetariumMode {
       const cos = (dx * f.x + dy * f.y + dz * f.z) / dist;
       // Raw surface distance, deliberately unclamped: at or inside the
       // collision shell both laws clamp themselves — the approach to its
-      // floor, the leave law to the shell's own creep.
+      // floor, the departure law to the shell's own creep.
       const c = governedSpeedCap(dist - surfaceR, surfaceR, cos, kPerS, BODY_APPROACH_V_MIN_AU_S);
       if (c < cap) cap = c;
     };
     this.forEachGovernedMoon((x, y, z, renderedR) =>
-      consider(x, y, z, renderedR, MOON_APPROACH_K_PER_S));
+      consider(x, y, z, renderedR, BODY_APPROACH_K_PER_S));
     if (this.solarSystem) {
       for (const planet of this.solarSystem.planets) {
         const wp = planet.group.userData.worldPosAU as { x: number; y: number; z: number } | undefined;
@@ -10719,14 +10718,14 @@ export class PlanetariumMode {
         consider(
           wp.x, wp.y, wp.z,
           planetEnvelopeRadiusAU(planet.data.radiusAU, planet.group.scale.x, ATMOSPHERE_SHELL_SCALES[planet.data.name]),
-          PLANET_APPROACH_K_PER_S,
+          BODY_APPROACH_K_PER_S,
         );
       }
       // The Sun sits at the heliocentric origin.
       consider(
         0, 0, 0,
         (KM_CONSTANTS.SUN_RADIUS / KM_PER_AU) * SUN_APPROACH_SURFACE_RADII,
-        PLANET_APPROACH_K_PER_S,
+        BODY_APPROACH_K_PER_S,
       );
     }
     return cap;
@@ -10923,13 +10922,13 @@ export class PlanetariumMode {
     // at this arrival distance, so the teleport arrives in the settled chase
     // pose — aim at the ship, moon riding upper-frame off the flyby heading —
     // and the first click, drag, or keypress finds zero deflection and moves
-    // nothing. Tracking fades in only if the player lets the flythrough
+    // nothing. Tracking fades in only if the player lets the flyby
     // develop hands-off, holding the moon in frame through closest approach.
     // (An always-on look here put ~20° between the arrival and settled
     // poses, and every first input paid it as a visible adjust.)
-    // Moonlet arrivals (flythrough: false) aim dead at the body with no pass
+    // Moonlet arrivals (flyby: false) aim dead at the body with no pass
     // to film: no look, nothing for the camera to do but hold the chase.
-    if (destination.flythrough) {
+    if (destination.flyby) {
       this.tmpAimDir
         .copy(destination.bodyPosition)
         .sub(destination.position);
@@ -10944,7 +10943,7 @@ export class PlanetariumMode {
     } else {
       // A moonlet "arrival under way" is a bounce, not an approach: full
       // thrust crosses the whole standoff in seconds, slides off the
-      // pebble-sized collision shell, and the leave valve slings the moon
+      // pebble-sized collision shell, and the departure law slings the moon
       // out of frame. Park instead — the caller decision the jump funnel
       // reserves (the same one dev framing and the tutorial use) — with the
       // body dead-centre; the throttle revives the ship the moment the
@@ -11024,7 +11023,7 @@ export class PlanetariumMode {
    * rendered size comes from the catalog through the render curve, not the
    * live mesh (scale is still 1 in never-visited systems). The pose
    * math itself — apparent-size standoff, sun-side/outward placement, flyby
-   * aim — lives in arrivalLogic.moonArrivalPose (pure, catalog-swept in its
+   * aim — lives in arrivalLogic.arrivalPose (pure, catalog-swept in its
    * tests); the lookTarget is the flyby aim point, not the moon's center.
    */
   private getMoonJumpDestination(moon: MoonData) {
@@ -11036,12 +11035,12 @@ export class PlanetariumMode {
     const parentCollision = this.getPlanetCollisionRadius(parentBody.name, parentBody.radiusAU, this.planetScale);
     const ring = RING_CONFIGS[parentBody.name];
     const bodyPosition = offset.clone().add(parentPos);
-    const pose = moonArrivalPose({
-      moonPos: bodyPosition,
+    const pose = arrivalPose({
+      targetPos: bodyPosition,
       parentPos,
       orbitR: offset.length(),
-      // Flythrough anchor deliberately: jumps commit from cruise, where the
-      // flythrough anchor is the size the arriving player will see.
+      // Flyby anchor deliberately: jumps commit from cruise, where the
+      // flyby anchor is the size the arriving player will see.
       renderedR: this.renderedMoonSizeAU(moon.radiusAU, parentBody.radiusAU, MOON_RENDER_ANCHOR_RATIO),
       parentCollision,
       // Rings render as a flat disc, but a spherical clearance is simpler and
@@ -11057,7 +11056,7 @@ export class PlanetariumMode {
       position: pose.position,
       lookTarget: pose.aimPoint,
       bodyPosition,
-      flythrough: pose.flythrough,
+      flyby: pose.flyby,
     };
   }
 
@@ -13990,7 +13989,7 @@ export class PlanetariumMode {
       if (body) this.surfacePoleAxis.copy(raDecToVector(body.poleRaDeg, body.poleDecDeg)).normalize();
     } else if (target.type === 'moon') {
       // Observatory magnifies the moon to a fixed screen fraction, so re-render
-      // its procedural texture sharper than the flythrough baseline. No-op for
+      // its procedural texture sharper than the flyby baseline. No-op for
       // photo moons / already-sharp ones; fail-closed; the upgrade stays for the
       // session.
       const moons = this.planetMoons.get(target.parentPlanet);
@@ -14906,7 +14905,7 @@ export class PlanetariumMode {
    */
   private resolveAutopilotMoonInputs(
     target: NonNullable<LandedTarget>,
-  ): MoonArrivalInputs | null {
+  ): ArrivalInputs | null {
     if (target.type !== 'moon') return null;
     const wp = this.moonWorldPositions.get(target.name);
     if (!wp) return null;
@@ -14918,9 +14917,9 @@ export class PlanetariumMode {
     if (!mesh || !mesh.painted || !mesh.mesh.visible) return null;
 
     const inp = this.tmpAutopilotInputs;
-    inp.moonPos.set(wp.x, wp.y, wp.z);
+    inp.targetPos.set(wp.x, wp.y, wp.z);
     inp.parentPos.set(parentPos.x, parentPos.y, parentPos.z);
-    inp.orbitR = inp.moonPos.distanceTo(inp.parentPos);
+    inp.orbitR = inp.targetPos.distanceTo(inp.parentPos);
     // Live rendered radius (true size, or the render curve's size below the
     // anchor) — the sphere the arriving player actually sees, same as the
     // governor uses in forEachGovernedMoon.
@@ -14950,27 +14949,27 @@ export class PlanetariumMode {
     // target.
     const inp = this.resolveAutopilotMoonInputs(this.autopilotTarget);
     if (inp) {
-      const standoff = moonArrivalStandoffAU(inp);
-      const dx = inp.moonPos.x - this.player.posX;
-      const dy = inp.moonPos.y - this.player.posY;
-      const dz = inp.moonPos.z - this.player.posZ;
+      const standoff = arrivalStandoffAU(inp);
+      const dx = inp.targetPos.x - this.player.posX;
+      const dy = inp.targetPos.y - this.player.posY;
+      const dz = inp.targetPos.z - this.player.posZ;
       const dist = Math.sqrt(dx * dx + dy * dy + dz * dz);
       if (dist < 3 * standoff) {
         const blend = autopilotAimBlend(dist, standoff);
         const staleSq = (0.02 * standoff) ** 2;
         if (
           this.autopilotAimFor !== this.autopilotTarget.name ||
-          this.autopilotAimMoonPos.distanceToSquared(inp.moonPos) > staleSq
+          this.autopilotAimMoonPos.distanceToSquared(inp.targetPos) > staleSq
         ) {
-          this.autopilotAim.copy(moonArrivalPose(inp).aimPoint);
-          this.autopilotAimMoonPos.copy(inp.moonPos);
+          this.autopilotAim.copy(arrivalPose(inp).aimPoint);
+          this.autopilotAimMoonPos.copy(inp.targetPos);
           this.autopilotAimFor = this.autopilotTarget.name;
         }
         const aim = this.autopilotAim;
         this.player.headToward(
-          inp.moonPos.x + (aim.x - inp.moonPos.x) * blend,
-          inp.moonPos.z + (aim.z - inp.moonPos.z) * blend,
-          inp.moonPos.y + (aim.y - inp.moonPos.y) * blend,
+          inp.targetPos.x + (aim.x - inp.targetPos.x) * blend,
+          inp.targetPos.z + (aim.z - inp.targetPos.z) * blend,
+          inp.targetPos.y + (aim.y - inp.targetPos.y) * blend,
         );
         return;
       }
@@ -15077,7 +15076,7 @@ export class PlanetariumMode {
       // threshold — the parent-fallback position has no meaningful standoff.
       const inp = this.resolveAutopilotMoonInputs(this.autopilotTarget);
       if (inp) {
-        arrived = autopilotArrived(dist, moonArrivalStandoffAU(inp));
+        arrived = autopilotArrived(dist, arrivalStandoffAU(inp));
       } else {
         const moons = this.planetMoons.get(this.autopilotTarget.parentPlanet);
         const moonMesh = moons?.find(m => m.data.name === this.autopilotTarget!.name);

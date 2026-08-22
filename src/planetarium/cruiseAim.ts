@@ -85,10 +85,14 @@ export const LOOK_WARP_RELEASE_RAD = (8 * Math.PI) / 180;
  *  pin at 1 chasing a moon the flyby never "reached". */
 export const LOOK_RECEDE_BACKSTOP_RATIO = 2;
 
-/** Moon-arrival look bookkeeping (the former PlanetariumMode
- *  `moonArrivalCameraLook`, moved here whole). */
+/** Arrival-look bookkeeping for the engage-gated tracking shot. */
 export interface ArrivalLookState {
+  /** Which catalog the target lives in: a moon resolves through its parent
+   *  + the ephemeris seam, a planet straight from the planet positions. The
+   *  moon-only consumers (dots, label incumbency) key off this. */
+  kind: 'planet' | 'moon';
   name: string;
+  /** Parent planet name for moon targets; '' for planets. */
   parentPlanet: string;
   arrivalDistanceAU: number;
   previousDistanceAU: number;
@@ -131,19 +135,19 @@ export function createCruiseAimState(): CruiseAimState {
   };
 }
 
-/** A moon teleport begins tracking (engage-gated: weight is zero until the
+/** A flyby teleport begins tracking (engage-gated: weight is zero until the
  *  flyby closes inside the engage band). Does NOT restore a cut aim —
  *  the jump funnel cuts deliberately and the first step must adopt the
  *  desired aim exactly, not sweep toward it. */
 export function startArrivalLook(
   state: CruiseAimState,
-  name: string,
-  parentPlanet: string,
+  body: { kind: 'planet' | 'moon'; name: string; parentPlanet?: string },
   arrivalDistanceAU: number,
 ): void {
   state.look = {
-    name,
-    parentPlanet,
+    kind: body.kind,
+    name: body.name,
+    parentPlanet: body.parentPlanet ?? '',
     arrivalDistanceAU,
     previousDistanceAU: arrivalDistanceAU,
     approached: false,

@@ -33,6 +33,7 @@ import {
   SUN_POLE_DEC_DEG,
   SUN_POLE_RA_DEG,
   type PlanetData,
+  LIGHT_SPEED_AU_PER_S,
 } from './planets/planetData';
 import { applySunGlowTier, canAttempt, cancelNormalUpgrade, cancelTextureUpgrade, createMoonMeshes, createShaderWarmupProbes, earnedUpgradeTier, firstUpgradeTier, lodMeasurementRelevant, needsUpgradeCover, normalUpgradePending, setWarmEligibleMoonParents, upgradeComplete, upgradeGeometryOnApproach, upgradeNormalOnApproach, upgradeTextureOnApproach, ATMOSPHERES, ATMOSPHERE_SHELL_SCALES, UPGRADE_TRIGGER_FRACTION, type MoonMesh, type TextureUpgrade } from './PlanetFactory';
 import type { SurfaceShadingFx } from './world/surfaceShading';
@@ -254,6 +255,7 @@ import {
   initialBodyCapState,
   arrivalPose,
   planetPostcardPose,
+  type LaneBody,
   arrivalStandoffAU,
   moonCollisionRadius,
   sunArrivalPose,
@@ -968,7 +970,32 @@ export class PlanetariumMode {
    *  while its mesh may still be unpainted behind the arrival veil (the
    *  visibility-keyed set can't see it there). Drops once the mesh shows;
    *  a stale seed is neutralized by distance on its own. */
-  private governedMoonSeed: { name: string; parentPlanet: string } | null = null;
+  /** Analytic governor seeds: moons whose meshes may still be unpainted
+   *  (invisible to the visibility-keyed governed set) but whose physics must
+   *  hold from the first post-jump frame. A moon jump seeds its target; a
+   *  planet flyby jump seeds the WHOLE satellite system — the lane-scored
+   *  approach is only as good as the governor that enforces it, and a cold
+   *  system's moons finish painting mid-pass. Each seed retires when its
+   *  mesh turns visible; every flight discontinuity clears the set. */
+  private governedMoonSeeds: { name: string; parentPlanet: string }[] = [];
+
+  /** DEV forensics: the last authored arrival pose, recorded at the jump so
+   *  the flyby probe asserts measured trajectories against the authored
+   *  geometry instead of re-deriving it. Never read by app code. */
+  private devLastArrivalPose: {
+    body: string;
+    kind: 'planet' | 'moon';
+    flyby: boolean;
+    position: number[];
+    aimPoint: number[];
+    bodyPosition: number[];
+    renderedRAU: number;
+    standoffAU: number;
+  } | null = null;
+
+  /** DEV forensics: which governed body owns the instantaneous speed cap
+   *  this frame, and at what value. */
+  private devCapOwner: { name: string; capAUPerS: number } | null = null;
   /** The cruise aim pipeline's state (see cruiseAim.ts, the module header
    *  is the subsystem doc): arrival-look bookkeeping plus the continuity
    *  filter that makes one-frame aim snaps structurally impossible outside
@@ -2334,6 +2361,7 @@ export class PlanetariumMode {
     // activation reposes absolutely), so the aim adopts fresh on return.
     clearArrivalLook(this.cruiseAim);
     cutAim(this.cruiseAim);
+    this.governedMoonSeeds = [];
     this.arrivalLookMoon = null;
     this.arrivalLookParentBody = null;
     this.dotNavMoon = null;
@@ -3029,16 +3057,27 @@ export class PlanetariumMode {
     if (this.landedOn || this.devFreeCamera) return;
 
     let moonWorld: THREE.Vector3 | null = null;
-    const moon = this.arrivalLookMoon;
-    const parentBody = this.arrivalLookParentBody;
-    if (this.cruiseAim.look && moon && parentBody) {
-      const parentPos = this.planetWorldPositions.get(moon.parentPlanet);
-      if (parentPos) {
-        this.getMoonWorldOffsetAU(moon, parentBody, this.tmpAimMoonWorld);
-        this.tmpAimMoonWorld.x += parentPos.x;
-        this.tmpAimMoonWorld.y += parentPos.y;
-        this.tmpAimMoonWorld.z += parentPos.z;
+    const look = this.cruiseAim.look;
+    if (look?.kind === 'planet') {
+      // Planet targets resolve straight from the planet positions, which
+      // rebuild analytically every frame — including behind the veil.
+      const pos = this.planetWorldPositions.get(look.name);
+      if (pos) {
+        this.tmpAimMoonWorld.set(pos.x, pos.y, pos.z);
         moonWorld = this.tmpAimMoonWorld;
+      }
+    } else {
+      const moon = this.arrivalLookMoon;
+      const parentBody = this.arrivalLookParentBody;
+      if (look && moon && parentBody) {
+        const parentPos = this.planetWorldPositions.get(moon.parentPlanet);
+        if (parentPos) {
+          this.getMoonWorldOffsetAU(moon, parentBody, this.tmpAimMoonWorld);
+          this.tmpAimMoonWorld.x += parentPos.x;
+          this.tmpAimMoonWorld.y += parentPos.y;
+          this.tmpAimMoonWorld.z += parentPos.z;
+          moonWorld = this.tmpAimMoonWorld;
+        }
       }
     }
 
@@ -3067,7 +3106,7 @@ export class PlanetariumMode {
    *  survive a hand-flown final approach. `dotNavMoon` is cleared when you jump/
    *  engage elsewhere, land, deactivate, or leave the parent's system. */
   private currentDotTargetMoon(): string | null {
-    if (this.cruiseAim.look) return this.cruiseAim.look.name;
+    if (this.cruiseAim.look?.kind === 'moon') return this.cruiseAim.look.name;
     if (
       this.autopilot &&
       this.autopilotUserEngaged &&
@@ -6864,7 +6903,7 @@ export class PlanetariumMode {
       this.closeDeck();
       this.tutorialArriveWhenIdle(generation, { type: 'planet', name: 'Saturn' }, () => {
         if (this.landedOn) this.exitLandedMode();
-        this.jumpToPlanet(saturn, { notify: false });
+        this.jumpToPlanet(saturn, { notify: false, pose: 'postcard' });
         // Freeze-frame: the card narrates over a parked ship. Left under way
         // (the arrival default), it would glide from the standoff to Saturn's
         // collision shell in ~20 s, right under the copy.
@@ -9819,6 +9858,7 @@ export class PlanetariumMode {
       this.updateSpeedSlider(); // exitLandedMode refreshed it with its own values
       // Clear only: the resetCruiseCamera below this jump's repose cuts.
       clearArrivalLook(this.cruiseAim);
+      this.governedMoonSeeds = [];
       this.arrivalLookMoon = null;
       this.arrivalLookParentBody = null;
       this.dotNavMoon = null;
@@ -10647,33 +10687,38 @@ export class PlanetariumMode {
    *  orbital epoch at the top time rates (1 yr/s moves a moon 36 simulated
    *  days per capped frame). Pre-existing, main-parity; the camera-safety
    *  pass runs AFTER the refresh and is immune. */
-  private forEachGovernedMoon(cb: (x: number, y: number, z: number, renderedRAU: number) => void) {
+  private forEachGovernedMoon(
+    cb: (x: number, y: number, z: number, renderedRAU: number, name: string) => void,
+  ) {
     for (const moons of this.planetMoons.values()) {
       for (const m of moons) {
         if (!m.painted || !m.mesh.visible) continue;
-        if (this.governedMoonSeed && m.data.name === this.governedMoonSeed.name) {
-          this.governedMoonSeed = null; // the visible mesh covers it from here
+        if (this.governedMoonSeeds.length) {
+          // The visible mesh covers its seed from here.
+          const i = this.governedMoonSeeds.findIndex((s) => s.name === m.data.name);
+          if (i >= 0) this.governedMoonSeeds.splice(i, 1);
         }
         const wp = this.moonWorldPositions.get(m.data.name);
         if (!wp) continue;
-        cb(wp.x, wp.y, wp.z, m.data.radiusAU * m.mesh.scale.x);
+        cb(wp.x, wp.y, wp.z, m.data.radiusAU * m.mesh.scale.x, m.data.name);
       }
     }
-    const seed = this.governedMoonSeed;
-    if (!seed) return;
-    const moon = MOONS.find((mn) => mn.name === seed.name);
-    const parent = PLANETARIUM_BODIES.find((b) => b.name === seed.parentPlanet);
-    const parentPos = this.planetWorldPositions.get(seed.parentPlanet);
-    if (!moon || !parent || !parentPos) return;
-    const offset = this.getMoonWorldOffsetAU(moon, parent, this.tmpMoonOffset);
-    cb(
-      parentPos.x + offset.x,
-      parentPos.y + offset.y,
-      parentPos.z + offset.z,
-      // Flyby anchor deliberately, not the state selector: jump seeds
-      // only exist in cruise, where the flyby anchor is the live one.
-      this.renderedMoonSizeAU(moon.radiusAU, parent.radiusAU, MOON_RENDER_ANCHOR_RATIO),
-    );
+    for (const seed of this.governedMoonSeeds) {
+      const moon = MOONS.find((mn) => mn.name === seed.name);
+      const parent = PLANETARIUM_BODIES.find((b) => b.name === seed.parentPlanet);
+      const parentPos = this.planetWorldPositions.get(seed.parentPlanet);
+      if (!moon || !parent || !parentPos) continue;
+      const offset = this.getMoonWorldOffsetAU(moon, parent, this.tmpMoonOffset);
+      cb(
+        parentPos.x + offset.x,
+        parentPos.y + offset.y,
+        parentPos.z + offset.z,
+        // Flyby anchor deliberately, not the state selector: jump seeds
+        // only exist in cruise, where the flyby anchor is the live one.
+        this.renderedMoonSizeAU(moon.radiusAU, parent.radiusAU, MOON_RENDER_ANCHOR_RATIO),
+        moon.name,
+      );
+    }
   }
 
   /** Min proximity cap over every governed body: visible painted moons (plus
@@ -10684,7 +10729,8 @@ export class PlanetariumMode {
   private computeBodySpeedCap(): number {
     const f = this.player.getForwardDirection();
     let cap = Infinity;
-    const consider = (x: number, y: number, z: number, surfaceR: number, kPerS: number) => {
+    let owner: string | null = null;
+    const consider = (x: number, y: number, z: number, surfaceR: number, kPerS: number, name: string) => {
       const dx = x - this.player.posX;
       const dy = y - this.player.posY;
       const dz = z - this.player.posZ;
@@ -10695,10 +10741,13 @@ export class PlanetariumMode {
       // collision shell both laws clamp themselves — the approach to its
       // floor, the departure law to the shell's own creep.
       const c = governedSpeedCap(dist - surfaceR, surfaceR, cos, kPerS, BODY_APPROACH_V_MIN_AU_S);
-      if (c < cap) cap = c;
+      if (c < cap) {
+        cap = c;
+        owner = name;
+      }
     };
-    this.forEachGovernedMoon((x, y, z, renderedR) =>
-      consider(x, y, z, renderedR, BODY_APPROACH_K_PER_S));
+    this.forEachGovernedMoon((x, y, z, renderedR, name) =>
+      consider(x, y, z, renderedR, BODY_APPROACH_K_PER_S, name));
     if (this.solarSystem) {
       for (const planet of this.solarSystem.planets) {
         const wp = planet.group.userData.worldPosAU as { x: number; y: number; z: number } | undefined;
@@ -10707,6 +10756,7 @@ export class PlanetariumMode {
           wp.x, wp.y, wp.z,
           planetEnvelopeRadiusAU(planet.data.radiusAU, planet.group.scale.x, ATMOSPHERE_SHELL_SCALES[planet.data.name]),
           BODY_APPROACH_K_PER_S,
+          planet.data.name,
         );
       }
       // The Sun sits at the heliocentric origin.
@@ -10714,8 +10764,10 @@ export class PlanetariumMode {
         0, 0, 0,
         (KM_CONSTANTS.SUN_RADIUS / KM_PER_AU) * SUN_APPROACH_SURFACE_RADII,
         BODY_APPROACH_K_PER_S,
+        'Sun',
       );
     }
+    this.devCapOwner = owner ? { name: owner, capAUPerS: cap } : null;
     return cap;
   }
 
@@ -10885,11 +10937,148 @@ export class PlanetariumMode {
     }
   }
 
-  jumpToPlanet(planet: PlanetData, options: { notify?: boolean; distanceMultiplier?: number } = {}) {
+  jumpToPlanet(
+    planet: PlanetData,
+    options: {
+      notify?: boolean;
+      distanceMultiplier?: number;
+      /** 'flyby' (default) is the user teleport: the authored drive-by.
+       *  'postcard' is the legacy centered framing kept byte-stable for the
+       *  callers whose compositions are authored around it — the tutorial's
+       *  freeze-frames, the dev screenshot bridge, and dev framing. It never
+       *  starts a camera look and never seeds the governor. */
+      pose?: 'flyby' | 'postcard';
+    } = {},
+  ) {
     if (this.isMissionActive()) return;
-    const destination = this.getJumpDestination(planet, options.distanceMultiplier ?? 1);
+    if (options.pose === 'postcard') {
+      const destination = this.getJumpDestination(planet, options.distanceMultiplier ?? 1);
+      if (!destination) return;
+      this.applyJumpDestination(destination, planet.name, options.notify !== false);
+      return;
+    }
+    const destination = this.getPlanetFlybyDestination(planet);
     if (!destination) return;
-    this.applyJumpDestination(destination, planet.name, options.notify !== false);
+    this.applyJumpDestination(
+      { position: destination.position, lookTarget: destination.aimPoint },
+      planet.name,
+      options.notify !== false,
+    );
+    if (destination.flyby) {
+      // The engage-gated tracking look, planet kind: weight is EXACTLY zero
+      // at this arrival distance (see jumpToMoon for the full rationale) —
+      // the first input finds zero deflection; tracking fades in only if the
+      // hands-off pass develops. Derived AFTER the repose above, from the
+      // final camera position, exactly like the moon path.
+      this.tmpAimDir.copy(destination.bodyPosition).sub(destination.position);
+      const arrivalDistanceAU = this.tmpAimDir.distanceTo(this.camera.position);
+      startArrivalLook(
+        this.cruiseAim,
+        { kind: 'planet', name: planet.name },
+        arrivalDistanceAU,
+      );
+    }
+    // Seed the governor with the WHOLE satellite system: in a cold system
+    // the meshes are unpainted behind the veil and invisible to the
+    // visibility-keyed governed set — the lane-scored approach is only as
+    // good as the governor that enforces it, and paint can finish mid-pass.
+    this.governedMoonSeeds = MOONS
+      .filter((m) => m.parentPlanet === planet.name)
+      .map((m) => ({ name: m.name, parentPlanet: m.parentPlanet }));
+  }
+
+  /**
+   * The drive-by destination for a user planet teleport: live positions and
+   * ring orientation in, `arrivalPose` out. Satellites go in as lane bodies
+   * (analytic epoch positions, finite-difference velocities per SIMULATED
+   * second, governor-rendered radii) so the drop never reads another body's
+   * brakes; the planet's own velocity feeds the one-shot aim lead. The
+   * commanded speed is the post-jump in-system value (applyJumpDestination
+   * clamps the dials right after this), so the lane simulation paces the
+   * giants' coast regime the way the real governor will.
+   */
+  private getPlanetFlybyDestination(planet: PlanetData) {
+    const pos = this.planetWorldPositions.get(planet.name);
+    if (!pos) return null;
+    const targetPos = new THREE.Vector3(pos.x, pos.y, pos.z);
+    const nowMs = this.timeState.currentUtcMs;
+    const VEL_DT_MS = 60_000;
+    const futurePlanet = computeBodyState(planet, nowMs + VEL_DT_MS).positionAU;
+    const targetVelAUPerS = new THREE.Vector3(
+      futurePlanet.x - pos.x,
+      futurePlanet.y - pos.y,
+      futurePlanet.z - pos.z,
+    ).multiplyScalar(1000 / VEL_DT_MS);
+
+    const laneBodies: LaneBody[] = [];
+    const off0 = new THREE.Vector3();
+    const off1 = new THREE.Vector3();
+    for (const m of MOONS) {
+      if (m.parentPlanet !== planet.name) continue;
+      computeMoonOffsetEquatorialAU(m.name, planet.name, nowMs, off0);
+      computeMoonOffsetEquatorialAU(m.name, planet.name, nowMs + VEL_DT_MS, off1);
+      laneBodies.push({
+        pos: off0.clone().add(targetPos),
+        velAUPerS: off1.sub(off0).multiplyScalar(1000 / VEL_DT_MS).add(targetVelAUPerS),
+        governedRadiusAU: this.renderedMoonSizeAU(
+          m.radiusAU, planet.radiusAU, MOON_RENDER_ANCHOR_RATIO,
+        ),
+      });
+    }
+
+    const ring = RING_CONFIGS[planet.name];
+    const mesh = this.solarSystem?.planets.find((p) => p.data.name === planet.name);
+    // Rings lie in the planet group's local XZ: the world ring normal is the
+    // group's +Y (the IAU pole; the spin phase rotates about it, so this is
+    // stable within a frame).
+    const ringNormal = ring && mesh
+      ? new THREE.Vector3(0, 1, 0).applyQuaternion(mesh.group.quaternion).normalize()
+      : undefined;
+
+    const commandedAUPerS = LIGHT_SPEED_AU_PER_S * Math.min(
+      Math.min(this.player.systemSpeedMultiplier, PlayerShip.SYSTEM_SPEED_DEFAULT),
+      Math.max(this.player.speedMultiplier, PlayerShip.SPEED_DEFAULT),
+    );
+
+    const pose = arrivalPose({
+      kind: 'planet',
+      targetPos,
+      parentPos: new THREE.Vector3(0, 0, 0),
+      orbitR: targetPos.length(),
+      renderedR: planet.radiusAU * this.planetScale,
+      parentCollision: 0,
+      parentClearance: 0,
+      camDist: CRUISE_CAM_DIST_AU,
+      shipClearance: SHIP_CLEARANCE_AU,
+      targetVelAUPerS,
+      timeRate: this.timeState.rate,
+      commandedAUPerS,
+      ...(ring && ringNormal
+        ? {
+            ringNormal,
+            ringInnerAU: planet.radiusAU * ring.innerFactor,
+            ringOuterAU: planet.radiusAU * ring.outerFactor,
+          }
+        : {}),
+      laneBodies,
+    });
+    this.devLastArrivalPose = {
+      body: planet.name,
+      kind: 'planet',
+      flyby: pose.flyby,
+      position: pose.position.toArray(),
+      aimPoint: pose.aimPoint.toArray(),
+      bodyPosition: targetPos.toArray(),
+      renderedRAU: planet.radiusAU * this.planetScale,
+      standoffAU: pose.position.distanceTo(targetPos),
+    };
+    return {
+      position: pose.position,
+      lookTarget: pose.aimPoint,
+      aimPoint: pose.aimPoint,
+      bodyPosition: targetPos,
+      flyby: pose.flyby,
+    };
   }
 
   jumpToSun(options: { notify?: boolean } = {}) {
@@ -10921,7 +11110,11 @@ export class PlanetariumMode {
         .copy(destination.bodyPosition)
         .sub(destination.position);
       const arrivalDistanceAU = this.tmpAimDir.distanceTo(this.camera.position);
-      startArrivalLook(this.cruiseAim, moon.name, moon.parentPlanet, arrivalDistanceAU);
+      startArrivalLook(
+        this.cruiseAim,
+        { kind: 'moon', name: moon.name, parentPlanet: moon.parentPlanet },
+        arrivalDistanceAU,
+      );
       // Catalog refs for the analytic per-frame moon position (the mesh is
       // not a legal source: it may be unpainted and untransformed for the
       // whole veil window).
@@ -10945,7 +11138,20 @@ export class PlanetariumMode {
     // still unpainted behind the arrival veil, invisible to the
     // visibility-keyed governed set, and one ungoverned 100 ms frame at the
     // in-system default would cross the whole standoff.
-    this.governedMoonSeed = { name: moon.name, parentPlanet: moon.parentPlanet };
+    this.governedMoonSeeds = [{ name: moon.name, parentPlanet: moon.parentPlanet }];
+    const parentForSize = PLANETARIUM_BODIES.find((b) => b.name === moon.parentPlanet);
+    this.devLastArrivalPose = {
+      body: moon.name,
+      kind: 'moon',
+      flyby: destination.flyby,
+      position: destination.position.toArray(),
+      aimPoint: destination.lookTarget.toArray(),
+      bodyPosition: destination.bodyPosition.toArray(),
+      renderedRAU: parentForSize
+        ? this.renderedMoonSizeAU(moon.radiusAU, parentForSize.radiusAU, MOON_RENDER_ANCHOR_RATIO)
+        : moon.radiusAU,
+      standoffAU: destination.position.distanceTo(destination.bodyPosition),
+    };
   }
 
   private applyJumpDestination(
@@ -10957,6 +11163,8 @@ export class PlanetariumMode {
     clearArrivalLook(this.cruiseAim);
     this.arrivalLookMoon = null;
     this.arrivalLookParentBody = null;
+    // Seeds die with the old scene; the jump that needs them re-seeds after.
+    this.governedMoonSeeds = [];
     // A jump to a different body drops the retained nav moon; a moon jump
     // re-sets it right after (jumpToMoon), so a planet jump is the clearing case.
     this.dotNavMoon = null;
@@ -11062,7 +11270,7 @@ export class PlanetariumMode {
     }
     const mesh = this.solarSystem.planets.find((p) => p.data.name === name);
     if (!mesh) return false;
-    this.jumpToPlanet(mesh.data, { notify: false, distanceMultiplier });
+    this.jumpToPlanet(mesh.data, { notify: false, distanceMultiplier, pose: 'postcard' });
     this.player.moving = false; // hold position so the body stays centered for capture
     return true;
   }
@@ -11722,6 +11930,18 @@ export class PlanetariumMode {
   }
 
   /** Headless-screenshot diagnostics: read back camera/body geometry. */
+  /** DEV: the authored pose of the last flyby-capable jump (see field). */
+  devArrivalPose(): unknown {
+    return this.devLastArrivalPose;
+  }
+
+  /** DEV: which governed body owned the speed cap on the last cruise frame. */
+  devGovernorOwner(): unknown {
+    return this.devCapOwner
+      ? { name: this.devCapOwner.name, capKmS: this.devCapOwner.capAUPerS * KM_PER_AU }
+      : null;
+  }
+
   devProbe(name: string): unknown {
     let pos = this.planetWorldPositions.get(name) ?? null;
     const mesh = this.solarSystem?.planets.find((p) => p.data.name === name);
@@ -13911,6 +14131,7 @@ export class PlanetariumMode {
     // pre-landing deflection.
     clearArrivalLook(this.cruiseAim);
     cutAim(this.cruiseAim);
+    this.governedMoonSeeds = [];
     this.arrivalLookMoon = null;
     this.arrivalLookParentBody = null;
     // Landing (and the landed→landed vantage swap) can flip the Sun's exposed
@@ -14765,6 +14986,7 @@ export class PlanetariumMode {
     // Clear + cut: a restore reposes the whole journey absolutely.
     clearArrivalLook(this.cruiseAim);
     cutAim(this.cruiseAim);
+    this.governedMoonSeeds = [];
     this.arrivalLookMoon = null;
     this.arrivalLookParentBody = null;
     this.player.posX = saved.positionAU.x;

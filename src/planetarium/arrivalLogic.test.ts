@@ -42,6 +42,7 @@ import {
   isFlybyClass,
   LANE_CLEAN_RATIO,
   type LaneBody,
+  type ArrivalPose,
 } from './arrivalLogic';
 import { MOONS } from './planets/moonData';
 import { PLANETARIUM_BODIES, SUN_DATA } from './planets/planetData';

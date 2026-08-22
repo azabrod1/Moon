@@ -51,7 +51,7 @@ function jumpArrival(state: CruiseAimState) {
   // un-engaged at the standoff, weight exactly zero.
   clearArrivalLook(state);
   cutAim(state);
-  startArrivalLook(state, 'Io', 'Jupiter', arrivalDist);
+  startArrivalLook(state, { kind: 'moon', name: 'Io', parentPlanet: 'Jupiter' }, arrivalDist);
   return { camPos, moonWorld };
 }
 
@@ -62,7 +62,7 @@ function engagedPass(state: CruiseAimState) {
   const { camPos, moonWorld } = arrivalScene();
   clearArrivalLook(state);
   cutAim(state);
-  startArrivalLook(state, 'Io', 'Jupiter', deepArrivalDistFor(moonWorld.distanceTo(camPos)));
+  startArrivalLook(state, { kind: 'moon', name: 'Io', parentPlanet: 'Jupiter' }, deepArrivalDistFor(moonWorld.distanceTo(camPos)));
   return { camPos, moonWorld };
 }
 
@@ -268,7 +268,7 @@ describe('degenerate directions', () => {
     // far out so the engage band reads fully engaged).
     const moonWorld = new THREE.Vector3(1e-9, 0, 3.001e-6 + 2.9e-3);
     clearArrivalLook(state);
-    startArrivalLook(state, 'Io', 'Jupiter', deepArrivalDistFor(2.9e-3));
+    startArrivalLook(state, { kind: 'moon', name: 'Io', parentPlanet: 'Jupiter' }, deepArrivalDistFor(2.9e-3));
     let prev = ahead.clone();
     for (let i = 0; i < 2000; i++) {
       stepCruiseAim(state, camPos, moonWorld, ORIGIN, dt, out);
@@ -290,7 +290,7 @@ describe('degenerate directions', () => {
       stepCruiseAim(state, camPos, null, ORIGIN, dt, out);
       // Desired exactly behind: moon dead astern at weight 1.
       const moonWorld = new THREE.Vector3(0, 0, 3e-6 + 2.9e-3);
-      startArrivalLook(state, 'Io', 'Jupiter', deepArrivalDistFor(2.9e-3));
+      startArrivalLook(state, { kind: 'moon', name: 'Io', parentPlanet: 'Jupiter' }, deepArrivalDistFor(2.9e-3));
       stepCruiseAim(state, camPos, moonWorld, ORIGIN, dt, out);
       return out.clone();
     };
@@ -313,7 +313,7 @@ describe('frame contract (heliocentric world vs scene)', () => {
     const moonWorld = moonScene.clone().add(renderOrigin);
     clearArrivalLook(state);
     cutAim(state);
-    startArrivalLook(state, 'Io', 'Jupiter', deepArrivalDistFor(moonScene.distanceTo(camPos)));
+    startArrivalLook(state, { kind: 'moon', name: 'Io', parentPlanet: 'Jupiter' }, deepArrivalDistFor(moonScene.distanceTo(camPos)));
     stepCruiseAim(state, camPos, moonWorld, renderOrigin, dt, out);
     const want = pointMixDir(camPos, moonScene, 1);
     expect(angleBetween(out, want)).toBeLessThan(1e-9);
@@ -327,7 +327,7 @@ describe('frame contract (heliocentric world vs scene)', () => {
     const moonScene = new THREE.Vector3(0, 0, -2.9e-3);
     const moonWorld = moonScene.clone().add(renderOrigin);
     cutAim(state);
-    startArrivalLook(state, 'Io', 'Jupiter', deepArrivalDistFor(moonScene.distanceTo(camPos)));
+    startArrivalLook(state, { kind: 'moon', name: 'Io', parentPlanet: 'Jupiter' }, deepArrivalDistFor(moonScene.distanceTo(camPos)));
     stepCruiseAim(state, camPos, moonWorld, renderOrigin, dt, out);
     // Moon lost; the SHIP keeps cruising — the render origin moves toward
     // the moon's fixed world position. A frozen scene-frame direction would
@@ -452,7 +452,7 @@ describe('warp and loss lifecycle', () => {
   it('a look that never resolved simply drops', () => {
     const state = createCruiseAimState();
     const camPos = new THREE.Vector3(0, 0, 3e-6);
-    startArrivalLook(state, 'Io', 'Jupiter', 2.9e-3);
+    startArrivalLook(state, { kind: 'moon', name: 'Io', parentPlanet: 'Jupiter' }, 2.9e-3);
     stepCruiseAim(state, camPos, null, ORIGIN, 1 / 60, out);
     expect(state.look).toBeNull();
     const want = camPos.clone().negate().normalize();
@@ -464,7 +464,7 @@ describe('warp and loss lifecycle', () => {
     const dt = 1 / 60;
     const camPos = new THREE.Vector3(0, 1e-6, 3e-6);
     const arrivalDist = 2.9e-3;
-    startArrivalLook(state, 'Io', 'Jupiter', arrivalDist);
+    startArrivalLook(state, { kind: 'moon', name: 'Io', parentPlanet: 'Jupiter' }, arrivalDist);
     // First (and only) samples put the moon beyond 2× arrival: approached
     // never latched, but the backstop must force receding → weight 0.
     const farMoon = new THREE.Vector3(0, 0, -arrivalDist * (LOOK_RECEDE_BACKSTOP_RATIO + 0.1));
@@ -513,7 +513,7 @@ describe('engage gating (the settled-arrival contract)', () => {
     const moonWorld = new THREE.Vector3(0, 0, -arrivalDist);
     clearArrivalLook(state);
     cutAim(state);
-    startArrivalLook(state, 'Io', 'Jupiter', arrivalDist);
+    startArrivalLook(state, { kind: 'moon', name: 'Io', parentPlanet: 'Jupiter' }, arrivalDist);
     stepCruiseAim(state, camPos, moonWorld, ORIGIN, dt, out);
     let prev = out.clone();
     // Glide the moon in along the line of sight to a tenth of the arrival

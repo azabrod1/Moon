@@ -253,6 +253,7 @@ import {
   governedSpeedCap,
   initialBodyCapState,
   arrivalPose,
+  planetPostcardPose,
   arrivalStandoffAU,
   moonCollisionRadius,
   sunArrivalPose,
@@ -10626,26 +10627,13 @@ export class PlanetariumMode {
   ) {
     const pos = this.planetWorldPositions.get(planet.name);
     if (!pos) return null;
-
-    const viewDist = Math.max(
-      planet.radiusAU * 8,
-      this.getPlanetCollisionRadius(planet.name, planet.radiusAU, this.planetScale) + planet.radiusAU * 2,
+    return planetPostcardPose(
+      new THREE.Vector3(pos.x, pos.y, pos.z),
+      planet.radiusAU,
+      this.getPlanetCollisionRadius(planet.name, planet.radiusAU, this.planetScale),
+      distanceMultiplier,
       floorAU,
-    ) * distanceMultiplier;
-    const offsetDir = new THREE.Vector3(-pos.x, -pos.y, -pos.z);
-    if (offsetDir.lengthSq() < 1e-8) {
-      offsetDir.set(-1, 0.25, 0);
-    }
-    offsetDir.normalize();
-
-    return {
-      position: new THREE.Vector3(
-        pos.x + offsetDir.x * viewDist,
-        pos.y + offsetDir.y * viewDist,
-        pos.z + offsetDir.z * viewDist,
-      ),
-      lookTarget: new THREE.Vector3(pos.x, pos.y, pos.z),
-    };
+    );
   }
 
   /** The governor/collision body set: every visible painted moon (world

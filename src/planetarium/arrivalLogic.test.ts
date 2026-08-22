@@ -35,6 +35,13 @@ import {
   SUN_ARRIVAL_RADII,
   type BodyCapState,
   type ArrivalInputs,
+  planetPostcardPose,
+  passGeometryMinAU,
+  estimatePassDurationS,
+  scoreApproachLane,
+  isFlybyClass,
+  LANE_CLEAN_RATIO,
+  type LaneBody,
 } from './arrivalLogic';
 import { MOONS } from './planets/moonData';
 import { PLANETARIUM_BODIES, SUN_DATA } from './planets/planetData';
@@ -1004,5 +1011,323 @@ describe('arrivalTrackEngage', () => {
     expect(arrivalTrackEngage(1e-5, 0)).toBe(0);
     expect(arrivalTrackEngage(1e-5, -1)).toBe(0);
     expect(arrivalTrackEngage(1e-5, NaN)).toBe(0);
+  });
+});
+
+describe('planetPostcardPose — the legacy centered framing, pinned', () => {
+  // Historic milestones, the tutorial freeze-frames, and the dev screenshot
+  // bridge are authored around this exact pose; these goldens keep it
+  // byte-stable while user teleports move to the flyby. Values are the
+  // formula's own output at the pin date — update only with a deliberate
+  // recomposition of those scenes.
+  it('drops on the sunward radial at 8 radii, aimed dead at the center', () => {
+    const pose = planetPostcardPose(
+      new THREE.Vector3(1.35, 0.02, -0.55), 2.2701e-5, 2.72e-5, 1, 2e-5,
+    );
+    expect(pose.position.x).toBeCloseTo(1.3498318300457426, 15);
+    expect(pose.position.y).toBeCloseTo(0.019997508593270260, 15);
+    expect(pose.position.z).toBeCloseTo(-0.54993148631493227, 15);
+    expect(pose.lookTarget.x).toBe(1.35);
+    expect(pose.lookTarget.y).toBe(0.02);
+    expect(pose.lookTarget.z).toBe(-0.55);
+  });
+
+  it('the historic floor binds INSIDE the max and the multiplier scales the whole arm', () => {
+    const pose = planetPostcardPose(
+      new THREE.Vector3(-20.1, 3.2, 25.4), 7.9e-6, 9.5e-6, 0.5, 0.001,
+    );
+    expect(pose.position.x).toBeCloseTo(-20.099691230760769, 15);
+    expect(pose.position.y).toBeCloseTo(3.1999508427081822, 15);
+    expect(pose.position.z).toBeCloseTo(25.399609813996193, 15);
+  });
+
+  it('a body at the exact origin takes the fixed fallback radial', () => {
+    const pose = planetPostcardPose(
+      new THREE.Vector3(0, 0, 0), 1e-5, 1.2e-5, 1, 2e-5,
+    );
+    expect(pose.position.x).toBeCloseTo(-0.000077611400011626551, 18);
+    expect(pose.position.y).toBeCloseTo(0.000019402850002906638, 18);
+    expect(pose.position.z).toBe(0);
+  });
+
+  it('collision envelope + 2 radii outranks 8 radii when the envelope is fat', () => {
+    // A body whose envelope dwarfs its radius (an atmosphere-shelled giant
+    // at a small rendered scale) must stand off the envelope, not the mesh.
+    const r = 1e-5;
+    const fatEnvelope = 2e-4;
+    const pose = planetPostcardPose(
+      new THREE.Vector3(5, 0, 0), r, fatEnvelope, 1, 2e-5,
+    );
+    const dist = pose.position.distanceTo(new THREE.Vector3(5, 0, 0));
+    expect(dist).toBeCloseTo(fatEnvelope + 2 * r, 12);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The planets' drive-by (unified arrivalPose, kind: 'planet')
+// ---------------------------------------------------------------------------
+
+import { RING_CONFIGS } from './planets/rings';
+
+/** Real-catalog planet inputs, posed on the +X axis at the semi-major axis
+ *  (the same world the controller feeds). Ring geometry uses a synthetic
+ *  normal per test — the app derives it from the live mesh orientation. */
+function planetInputs(name: string, extra: Partial<ArrivalInputs> = {}): ArrivalInputs {
+  const planet = PLANETARIUM_BODIES.find((b) => b.name === name)!;
+  const targetPos = new THREE.Vector3(planet.semiMajorAxisAU, 0, 0);
+  const ring = RING_CONFIGS[name];
+  return {
+    kind: 'planet',
+    targetPos,
+    parentPos: new THREE.Vector3(0, 0, 0),
+    orbitR: planet.semiMajorAxisAU,
+    renderedR: planet.radiusAU,
+    parentCollision: 0,
+    parentClearance: 0,
+    camDist: CAM_DIST_AU,
+    shipClearance: SHIP_CLEARANCE_AU,
+    ...(ring
+      ? {
+          ringNormal: new THREE.Vector3(0, 1, 0),
+          ringInnerAU: planet.radiusAU * ring.innerFactor,
+          ringOuterAU: planet.radiusAU * ring.outerFactor,
+        }
+      : {}),
+    ...extra,
+  };
+}
+
+const PLANET_NAMES = PLANETARIUM_BODIES
+  .filter((b) => b.name !== 'Sun')
+  .map((b) => b.name);
+
+/** Un-led perigee of a pose: the aim ray's closest approach to the center. */
+function poseCenterMissAU(pose: ArrivalPose, targetPos: THREE.Vector3): number {
+  const u = pose.aimPoint.clone().sub(pose.position).normalize();
+  const rel = targetPos.clone().sub(pose.position);
+  return rel.addScaledVector(u, -Math.max(rel.dot(u), 0)).length();
+}
+
+describe('the shared flyby gate', () => {
+  it('every planet flies — the park class is genuinely moonlet-scale', () => {
+    for (const name of PLANET_NAMES) {
+      const planet = PLANETARIUM_BODIES.find((b) => b.name === name)!;
+      expect(isFlybyClass(planet.radiusAU, CAM_DIST_AU), name).toBe(true);
+    }
+    // Threshold sanity: the park side begins under ~490 km rendered.
+    const thresholdAU = (CAM_DIST_AU * FLYBY_MIN_IMPACT_CAM_DISTS) / ARRIVAL_IMPACT_RADII;
+    expect(thresholdAU * KM_PER_AU).toBeGreaterThan(400);
+    expect(thresholdAU * KM_PER_AU).toBeLessThan(600);
+  });
+
+  it('the pass-geometry minimum is inert for every catalog flyby moon', () => {
+    for (const moon of MOONS) {
+      const inp = catalogInputs(moon.name);
+      if (!isFlybyClass(inp.renderedR, inp.camDist)) continue;
+      const half = (MOON_ARRIVAL_APPARENT_DIAMETER_DEG / 2) * DEG2RAD;
+      const apparentLaw = inp.renderedR / Math.sin(half) - inp.camDist;
+      expect(apparentLaw, moon.name).toBeGreaterThanOrEqual(
+        passGeometryMinAU(inp.renderedR),
+      );
+    }
+  });
+});
+
+describe('planet flyby pose — catalog sweep', () => {
+  it('drops at the pass-geometry standoff with the full authored impact parameter', () => {
+    for (const name of PLANET_NAMES) {
+      const inp = planetInputs(name);
+      const pose = arrivalPose(inp);
+      expect(pose.flyby, name).toBe(true);
+      const standoff = arrivalStandoffAU(inp);
+      expect(pose.position.distanceTo(inp.targetPos), name).toBeCloseTo(standoff, 12);
+      // ~8.8 radii, never the legacy floor for real planets.
+      expect(standoff / inp.renderedR, name).toBeGreaterThan(8.5);
+      expect(standoff / inp.renderedR, name).toBeLessThan(9.2);
+      // The un-led center miss is the full b (no off-axis shaving): between
+      // b·cos(12°) and b.
+      const b = inp.renderedR * ARRIVAL_IMPACT_RADII;
+      const miss = poseCenterMissAU(pose, inp.targetPos);
+      expect(miss, name).toBeGreaterThan(b * 0.97);
+      expect(miss, name).toBeLessThanOrEqual(b * 1.0001);
+    }
+  });
+
+  it('ringed planets pass clear of the sheet: plane altitude at the pass ≥ 0.5 R', () => {
+    for (const name of Object.keys(RING_CONFIGS)) {
+      const inp = planetInputs(name);
+      const pose = arrivalPose(inp);
+      const u = pose.aimPoint.clone().sub(pose.position).normalize();
+      const rel = inp.targetPos.clone().sub(pose.position);
+      const atPass = pose.position.clone().addScaledVector(u, Math.max(rel.dot(u), 0));
+      const altitude = Math.abs(
+        atPass.sub(inp.targetPos).dot(inp.ringNormal!),
+      );
+      expect(altitude, name).toBeGreaterThanOrEqual(inp.renderedR * 0.5 * 0.999);
+    }
+  });
+
+  it('a solstice-like ring pole on the sun line still yields a legal pass (the fan rotates off it)', () => {
+    // Uranus worst case: ring normal within ~8° of the sun line. The plain
+    // sun-side candidate cannot clear the sheet; the elevation fan must.
+    const planet = PLANETARIUM_BODIES.find((b) => b.name === 'Uranus')!;
+    const sunLine = new THREE.Vector3(-1, 0, 0); // drop dir ≈ −targetPos dir
+    const nearPole = sunLine.clone()
+      .applyAxisAngle(new THREE.Vector3(0, 0, 1), 8 * DEG2RAD)
+      .normalize();
+    const ring = RING_CONFIGS.Uranus;
+    const inp = planetInputs('Uranus', {
+      ringNormal: nearPole,
+      ringInnerAU: planet.radiusAU * ring.innerFactor,
+      ringOuterAU: planet.radiusAU * ring.outerFactor,
+    });
+    const pose = arrivalPose(inp);
+    expect(pose.flyby).toBe(true);
+    const u = pose.aimPoint.clone().sub(pose.position).normalize();
+    const rel = inp.targetPos.clone().sub(pose.position);
+    const atPass = pose.position.clone().addScaledVector(u, Math.max(rel.dot(u), 0));
+    const altitude = Math.abs(atPass.sub(inp.targetPos).dot(nearPole));
+    expect(altitude).toBeGreaterThanOrEqual(planet.radiusAU * 0.5 * 0.999);
+    // And the sheet is never crossed inside the annulus within the corridor.
+    const denom = u.dot(nearPole);
+    if (Math.abs(denom) > 1e-12) {
+      const tCross = -pose.position.clone().sub(inp.targetPos).dot(nearPole) / denom;
+      if (tCross > 0 && tCross < rel.length() * 2.5) {
+        const crossR = pose.position.clone().addScaledVector(u, tCross)
+          .sub(inp.targetPos).length();
+        const inAnnulus = crossR >= inp.ringInnerAU! * 0.95 && crossR <= inp.ringOuterAU! * 1.05;
+        expect(inAnnulus).toBe(false);
+      }
+    }
+  });
+
+  it('is deterministic: identical inputs give identical poses', () => {
+    const a = arrivalPose(planetInputs('Jupiter'));
+    const c = arrivalPose(planetInputs('Jupiter'));
+    expect(a.position.toArray()).toEqual(c.position.toArray());
+    expect(a.aimPoint.toArray()).toEqual(c.aimPoint.toArray());
+  });
+});
+
+describe('the approach lane scorer', () => {
+  const marsLike = () => planetInputs('Mars');
+
+  it('an empty lane scores a perfect 1', () => {
+    const inp = marsLike();
+    const pose = arrivalPose(inp);
+    expect(scoreApproachLane(
+      pose.position, pose.aimPoint, inp.targetPos, inp.renderedR,
+      [], 25_000 / KM_PER_AU, 1, inp.renderedR * 4,
+    )).toBe(1);
+  });
+
+  it('a Deimos-like body parked on the sun-side lane produces the measured-class dip', () => {
+    const inp = marsLike();
+    const standoff = arrivalStandoffAU(inp);
+    const sunDir = inp.targetPos.clone().multiplyScalar(-1).normalize();
+    const drop = inp.targetPos.clone().addScaledVector(sunDir, standoff);
+    // Plant the body ~0.2 standoffs ahead of the drop, on the lane.
+    const lurker: LaneBody = {
+      pos: drop.clone().addScaledVector(sunDir, -standoff * 0.2),
+      velAUPerS: new THREE.Vector3(0, 0, 0),
+      governedRadiusAU: 6.2 / KM_PER_AU,
+    };
+    const aim = inp.targetPos.clone(); // dead-center legacy aim: the old world
+    const score = scoreApproachLane(
+      drop, aim, inp.targetPos, inp.renderedR,
+      [lurker], 25_000 / KM_PER_AU, 1, inp.renderedR * 4,
+    );
+    expect(score).toBeLessThan(0.5);
+  });
+
+  it('the planet pose rotates its drop until the lane is clean again', () => {
+    const inp = marsLike();
+    const standoff = arrivalStandoffAU(inp);
+    const sunDir = inp.targetPos.clone().multiplyScalar(-1).normalize();
+    const drop = inp.targetPos.clone().addScaledVector(sunDir, standoff);
+    const lurker: LaneBody = {
+      pos: drop.clone().addScaledVector(sunDir, -standoff * 0.2),
+      velAUPerS: new THREE.Vector3(0, 0, 0),
+      governedRadiusAU: 6.2 / KM_PER_AU,
+    };
+    const pose = arrivalPose({ ...inp, laneBodies: [lurker], commandedAUPerS: 25_000 / KM_PER_AU });
+    const score = scoreApproachLane(
+      pose.position, pose.aimPoint, inp.targetPos, inp.renderedR,
+      [lurker], 25_000 / KM_PER_AU, 1, inp.renderedR * 4,
+    );
+    expect(score).toBeGreaterThanOrEqual(LANE_CLEAN_RATIO);
+    // And it still faces a mostly-lit planet: within the fan's ±60°/±25°.
+    const dropDir = pose.position.clone().sub(inp.targetPos).normalize();
+    expect(dropDir.dot(sunDir)).toBeGreaterThan(Math.cos(66 * DEG2RAD));
+  });
+
+  it('catches a fast satellite CROSSING the lane between samples', () => {
+    const inp = marsLike();
+    const standoff = arrivalStandoffAU(inp);
+    const sunDir = inp.targetPos.clone().multiplyScalar(-1).normalize();
+    const drop = inp.targetPos.clone().addScaledVector(sunDir, standoff);
+    const side = new THREE.Vector3(0, 0, 1);
+    // Starts well off the lane, sweeps across it at Metis-class speed ~5 s in.
+    const crosserSpeed = 30 / KM_PER_AU; // 30 km/s
+    const midpoint = drop.clone().addScaledVector(sunDir, -standoff * 0.35);
+    const crosser: LaneBody = {
+      pos: midpoint.clone().addScaledVector(side, crosserSpeed * 5),
+      velAUPerS: side.clone().multiplyScalar(-crosserSpeed),
+      governedRadiusAU: 300 / KM_PER_AU,
+    };
+    const score = scoreApproachLane(
+      drop, inp.targetPos.clone(), inp.targetPos, inp.renderedR,
+      [crosser], 25_000 / KM_PER_AU, 1, inp.renderedR * 4,
+    );
+    expect(score).toBeLessThan(0.9);
+  });
+});
+
+describe('the one-shot aim lead', () => {
+  it('shifts the aim by the target velocity over the estimated pass time', () => {
+    const inp = planetInputs('Mercury');
+    const vel = new THREE.Vector3(0, 0, 47.4 / KM_PER_AU); // heliocentric-ish
+    const unled = arrivalPose(inp);
+    const led = arrivalPose({ ...inp, targetVelAUPerS: vel, commandedAUPerS: 25_000 / KM_PER_AU });
+    const shift = led.aimPoint.clone().sub(unled.aimPoint);
+    // The shift is along the velocity and sized by a governed-pass duration
+    // (~9 s at K=1/4 for this geometry, coast-corrected).
+    const standoff = arrivalStandoffAU(inp);
+    const expectedS = estimatePassDurationS(
+      standoff - inp.renderedR,
+      (ARRIVAL_IMPACT_RADII - 1) * inp.renderedR,
+      25_000 / KM_PER_AU,
+    );
+    expect(shift.length()).toBeCloseTo(vel.length() * expectedS, 10);
+    expect(shift.clone().normalize().dot(vel.clone().normalize())).toBeCloseTo(1, 6);
+    expect(expectedS).toBeGreaterThan(5);
+    expect(expectedS).toBeLessThan(15);
+  });
+
+  it('zero velocity reproduces the un-led aim exactly', () => {
+    const inp = planetInputs('Mars');
+    const a = arrivalPose(inp);
+    const c = arrivalPose({ ...inp, targetVelAUPerS: new THREE.Vector3(0, 0, 0) });
+    expect(a.aimPoint.toArray()).toEqual(c.aimPoint.toArray());
+  });
+});
+
+describe('estimatePassDurationS', () => {
+  it('pure glide: the e-fold log at K', () => {
+    expect(estimatePassDurationS(8e-4, 1e-4, Infinity)).toBeCloseTo(4 * Math.log(8), 12);
+  });
+
+  it('coast + glide where the far-field law exceeds the dialed speed', () => {
+    const commanded = 1e-4; // AU/s; law at s0=8e-3 is K*s0=2e-3 >> commanded
+    const s0 = 8e-3;
+    const sCoastEnd = commanded / BODY_APPROACH_K_PER_S; // 4e-4
+    const expected = (s0 - sCoastEnd) / commanded + 4 * Math.log(sCoastEnd / 1e-4);
+    expect(estimatePassDurationS(s0, 1e-4, commanded)).toBeCloseTo(expected, 10);
+  });
+
+  it('degenerate inputs stay finite', () => {
+    expect(estimatePassDurationS(0, 1e-4, Infinity)).toBe(0);
+    expect(estimatePassDurationS(1e-4, 1e-3, Infinity)).toBe(0);
+    expect(Number.isFinite(estimatePassDurationS(1, 1e-9, 0))).toBe(true);
   });
 });

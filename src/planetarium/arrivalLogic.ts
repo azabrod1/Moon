@@ -423,8 +423,11 @@ export interface ArrivalPose {
    *  center itself and let the governed glide park the ship. */
   aimPoint: THREE.Vector3;
   /** True when this arrival stages the near-miss flyby (and its camera
-   *  tracking); false for the planet-style head-on glide at moonlets. */
+   *  tracking); false for the head-on park at moonlet-scale bodies. */
   flyby: boolean;
+  /** The authored impact parameter (AU) behind a flyby aim — the probe
+   *  battery asserts measured perigees against this. Absent on parks. */
+  impactParameterAU?: number;
 }
 
 /** Collision bubble around a moon mesh: rendered radius plus the full hull
@@ -654,7 +657,12 @@ export function arrivalPose(inp: ArrivalInputs): ArrivalPose {
       }
     }
   }
-  return { position, aimPoint, flyby: true };
+  return {
+    position,
+    aimPoint,
+    flyby: true,
+    impactParameterAU: impactParameterAU(inp, position.distanceTo(targetPos)),
+  };
 }
 
 /** A lane reading at or above this keeps the arrival's pacing effectively
@@ -879,8 +887,22 @@ function planetFlybyPose(inp: ArrivalInputs): ArrivalPose {
     return out;
   };
 
+  const withB = (position: THREE.Vector3, aimPoint: THREE.Vector3): ArrivalPose => ({
+    position,
+    aimPoint,
+    flyby: true,
+    impactParameterAU: impactParameterAU(inp, position.distanceTo(targetPos)),
+  });
+
   let best: ArrivalPose | null = null;
   let bestLane = -1;
+  // Fail-closed datum for the (unreachable-in-catalog) case where the ring
+  // filter rejects the WHOLE fan: the least-bad candidate is the one whose
+  // pass keeps the most ring-plane altitude — never the unvalidated
+  // sunward ray, which can be exactly the annulus punch-through the filter
+  // exists to forbid.
+  let bestRejected: ArrivalPose | null = null;
+  let bestRejectedAltitude = -1;
   const tryCandidates = (
     list: readonly { dir: THREE.Vector3; cost: number }[],
   ): ArrivalPose | null => {
@@ -891,15 +913,20 @@ function planetFlybyPose(inp: ArrivalInputs): ArrivalPose {
         position, aimPoint, targetPos, inp.ringNormal, renderedR,
         inp.ringInnerAU ?? 0, inp.ringOuterAU ?? 0,
       )) {
+        const altitude = ringPassAltitudeAU(position, aimPoint, targetPos, inp.ringNormal);
+        if (altitude > bestRejectedAltitude) {
+          bestRejectedAltitude = altitude;
+          bestRejected = withB(position, aimPoint);
+        }
         continue;
       }
       const lane = inp.laneBodies?.length
         ? poseLaneScore(inp, position, aimPoint)
         : 1;
-      if (lane >= LANE_CLEAN_RATIO) return { position, aimPoint, flyby: true };
+      if (lane >= LANE_CLEAN_RATIO) return withB(position, aimPoint);
       if (lane > bestLane) {
         bestLane = lane;
-        best = { position, aimPoint, flyby: true };
+        best = withB(position, aimPoint);
       }
     }
     return null;
@@ -915,8 +942,24 @@ function planetFlybyPose(inp: ArrivalInputs): ArrivalPose {
   );
   if (wideClean) return wideClean;
   if (best) return best;
+  if (bestRejected) return bestRejected;
   const position = targetPos.clone().addScaledVector(sunDir, dist);
-  return { position, aimPoint: planetFlybyAim(inp, position), flyby: true };
+  return withB(position, planetFlybyAim(inp, position));
+}
+
+/** Ring-plane altitude of the aim ray's closest approach to the center. */
+function ringPassAltitudeAU(
+  position: THREE.Vector3,
+  aimPoint: THREE.Vector3,
+  targetPos: THREE.Vector3,
+  normal: THREE.Vector3,
+): number {
+  const u = aimPoint.clone().sub(position);
+  if (u.lengthSq() < 1e-24) return 0;
+  u.normalize();
+  const rel = position.clone().sub(targetPos);
+  const atPass = rel.clone().addScaledVector(u, Math.max(-rel.dot(u), 0));
+  return Math.abs(atPass.dot(normal));
 }
 
 /** The flyover aim for one planet drop: scene-up perp (ringless) or the
@@ -979,8 +1022,12 @@ export function estimatePassDurationS(
   const s0 = Math.max(surfaceDist0AU, 1e-12);
   const sPass = Math.min(Math.max(passHeightAU, 1e-12), s0);
   const k = BODY_APPROACH_K_PER_S;
+  // Coast ends where the glide law undercuts the dial — but never short of
+  // the pass height itself: a dial slower than K x passHeight coasts the
+  // whole way in, and the glide term must not resurrect distance already
+  // covered.
   const sCoastEnd = Number.isFinite(commandedAUPerS) && commandedAUPerS > 0
-    ? Math.min(commandedAUPerS / k, s0)
+    ? Math.min(Math.max(commandedAUPerS / k, sPass), s0)
     : s0;
   const coastS = sCoastEnd < s0 ? (s0 - sCoastEnd) / commandedAUPerS : 0;
   const glideS = (1 / k) * Math.log(Math.max(sCoastEnd / sPass, 1));
@@ -1016,10 +1063,25 @@ export function scoreApproachLane(
   const dir = aimPoint.clone().sub(dropPos);
   if (dir.lengthSq() < 1e-24) return 1;
   dir.normalize();
-  const commanded = Number.isFinite(commandedAUPerS) && commandedAUPerS > 0
-    ? commandedAUPerS
+  // Zero is a real dial position, not "unlimited": only an absent/invalid
+  // input (NaN, negative, Infinity) falls back to the pure glide.
+  const commanded = Number.isFinite(commandedAUPerS) && commandedAUPerS >= 0
+    ? Math.max(commandedAUPerS, 1e-12)
     : Infinity;
   const k = BODY_APPROACH_K_PER_S;
+
+  // Horizon derived from the pass itself (estimate + exit + slack) so a
+  // slow dial can't outlive a fixed cap; a run that would still truncate is
+  // scored FAIL-CLOSED (a truncated simulation proves nothing clean).
+  const DT_S = 0.2;
+  const surfaceDist0 = dropPos.distanceTo(targetPos) - targetSurfaceRadiusAU;
+  const estimateS = estimatePassDurationS(
+    surfaceDist0, targetSurfaceRadiusAU * 0.5, commandedAUPerS,
+  );
+  const maxSteps = Math.min(
+    Math.max(Math.ceil((estimateS * 2 + 60) / DT_S), 600),
+    6000,
+  );
 
   const ship = dropPos.clone();
   const prevShip = new THREE.Vector3();
@@ -1027,13 +1089,12 @@ export function scoreApproachLane(
   const bodyPos = new THREE.Vector3();
   const relStart = new THREE.Vector3();
   const relStep = new THREE.Vector3();
-  const DT_S = 0.2;
-  const MAX_STEPS = 600; // 2 real minutes — beyond any authored pass
   let worst = 1;
   let receding = false;
   let elapsed = 0;
+  let completed = false;
 
-  for (let step = 0; step < MAX_STEPS; step++) {
+  for (let step = 0; step < maxSteps; step++) {
     toTarget.copy(targetPos).sub(ship);
     const centerDist = toTarget.length();
     const surfaceDist = centerDist - targetSurfaceRadiusAU;
@@ -1047,11 +1108,14 @@ export function scoreApproachLane(
     const pace = Math.min(commanded, targetCap);
     prevShip.copy(ship);
     ship.addScaledVector(dir, pace * DT_S);
-    elapsed += DT_S;
 
     for (const body of laneBodies) {
-      // Body position over this step (linear at the live clock rate), and
-      // the ship→body RELATIVE segment's closest approach within the step.
+      // Everything in one synchronized window [elapsed, elapsed + DT]: the
+      // body starts the step where the ship does, and the closest approach
+      // is solved on the RELATIVE segment, so a fast inner moon can't slip
+      // between samples. (Body velocities are TARGET-RELATIVE — the frozen
+      // target is the frame; handing bodies the shared heliocentric
+      // translation would read as fictitious lane drift.)
       bodyPos.copy(body.pos).addScaledVector(body.velAUPerS, elapsed * timeRate);
       relStart.copy(bodyPos).sub(prevShip);
       relStep.copy(body.velAUPerS).multiplyScalar(DT_S * timeRate)
@@ -1060,13 +1124,15 @@ export function scoreApproachLane(
       const tClosest = stepLenSq > 1e-30
         ? THREE.MathUtils.clamp(-relStart.dot(relStep) / stepLenSq, 0, 1)
         : 0;
-      const closest = relStart.addScaledVector(relStep, tClosest).length();
+      // The ship→body offset at the same in-step moment as the closest
+      // approach — the relative segment IS that offset over the window, so
+      // both the distance and the approach cosine read one synchronized
+      // instant.
+      relStart.addScaledVector(relStep, tClosest);
+      const closest = relStart.length();
       const bodySurface = closest - body.governedRadiusAU;
-      // Approach cosine toward the body from the ship's actual heading.
-      bodyPos.sub(prevShip);
-      const toBodyLen = bodyPos.length();
-      const cosBody = toBodyLen > 1e-12
-        ? THREE.MathUtils.clamp(bodyPos.dot(dir) / toBodyLen, -1, 1)
+      const cosBody = closest > 1e-12
+        ? THREE.MathUtils.clamp(relStart.dot(dir) / closest, -1, 1)
         : 1;
       const bodyCap = governedSpeedCap(
         bodySurface, body.governedRadiusAU, cosBody,
@@ -1078,12 +1144,16 @@ export function scoreApproachLane(
         if (ratio < worst) worst = ratio;
       }
     }
+    elapsed += DT_S;
 
     const nowDist = targetPos.distanceTo(ship);
     if (nowDist > centerDist) receding = true;
-    if (receding && nowDist - targetSurfaceRadiusAU > exitDistAU) break;
+    if (receding && nowDist - targetSurfaceRadiusAU > exitDistAU) {
+      completed = true;
+      break;
+    }
   }
-  return worst;
+  return completed ? worst : Math.min(worst, LANE_CLEAN_RATIO - 0.01);
 }
 
 /** Standoff for a Sun teleport, in photosphere radii: 8 puts a ~14° disc in

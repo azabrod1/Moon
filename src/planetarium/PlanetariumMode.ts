@@ -991,6 +991,7 @@ export class PlanetariumMode {
     bodyPosition: number[];
     renderedRAU: number;
     standoffAU: number;
+    bAU?: number;
   } | null = null;
 
   /** DEV forensics: which governed body owns the instantaneous speed cap
@@ -10997,6 +10998,26 @@ export class PlanetariumMode {
    * clamps the dials right after this), so the lane simulation paces the
    * giants' coast regime the way the real governor will.
    */
+  /** The speed the throttle will command right after this jump, at a given
+   *  distance from the destination's system anchor: the post-clamp dials run
+   *  through the SAME system-throttle blend computeSystemSpeedFactor applies
+   *  live — at a giant's 8.8-radii standoff the cruise share is still
+   *  nonzero, and a lane scored against the bare in-system dial paces its
+   *  coast ~20% slow. */
+  private postJumpCommandedAUPerS(distToAnchorAU: number, systemRadiusAU: number): number {
+    const speedMult = Math.max(this.player.speedMultiplier, PlayerShip.SPEED_DEFAULT);
+    const sysMult = Math.min(this.player.systemSpeedMultiplier, PlayerShip.SYSTEM_SPEED_DEFAULT);
+    const cruise = LIGHT_SPEED_AU_PER_S * speedMult;
+    const system = LIGHT_SPEED_AU_PER_S * Math.min(sysMult, speedMult);
+    let factor = 1;
+    if (systemRadiusAU > 0 && distToAnchorAU < systemRadiusAU) {
+      const inner = systemRadiusAU * 0.05;
+      const t = Math.min(1, Math.max(0, (distToAnchorAU - inner) / (systemRadiusAU - inner)));
+      factor = t * t * (3 - 2 * t);
+    }
+    return system + (cruise - system) * factor;
+  }
+
   private getPlanetFlybyDestination(planet: PlanetData) {
     const pos = this.planetWorldPositions.get(planet.name);
     if (!pos) return null;
@@ -11019,7 +11040,10 @@ export class PlanetariumMode {
       computeMoonOffsetEquatorialAU(m.name, planet.name, nowMs + VEL_DT_MS, off1);
       laneBodies.push({
         pos: off0.clone().add(targetPos),
-        velAUPerS: off1.sub(off0).multiplyScalar(1000 / VEL_DT_MS).add(targetVelAUPerS),
+        // TARGET-RELATIVE velocity (pure orbital motion): the lane scorer's
+        // frame holds the target frozen, so the shared heliocentric
+        // translation must not appear as satellite drift.
+        velAUPerS: off1.sub(off0).multiplyScalar(1000 / VEL_DT_MS),
         governedRadiusAU: this.renderedMoonSizeAU(
           m.radiusAU, planet.radiusAU, MOON_RENDER_ANCHOR_RATIO,
         ),
@@ -11035,10 +11059,18 @@ export class PlanetariumMode {
       ? new THREE.Vector3(0, 1, 0).applyQuaternion(mesh.group.quaternion).normalize()
       : undefined;
 
-    const commandedAUPerS = LIGHT_SPEED_AU_PER_S * Math.min(
-      Math.min(this.player.systemSpeedMultiplier, PlayerShip.SYSTEM_SPEED_DEFAULT),
-      Math.max(this.player.speedMultiplier, PlayerShip.SPEED_DEFAULT),
-    );
+    const dropStandoffAU = arrivalStandoffAU({
+      kind: 'planet',
+      targetPos,
+      parentPos: new THREE.Vector3(0, 0, 0),
+      orbitR: targetPos.length(),
+      renderedR: planet.radiusAU * this.planetScale,
+      parentCollision: 0,
+      parentClearance: 0,
+      camDist: CRUISE_CAM_DIST_AU,
+      shipClearance: SHIP_CLEARANCE_AU,
+    });
+    const commandedAUPerS = this.postJumpCommandedAUPerS(dropStandoffAU, planet.systemRadiusAU);
 
     const pose = arrivalPose({
       kind: 'planet',
@@ -11071,6 +11103,7 @@ export class PlanetariumMode {
       bodyPosition: targetPos.toArray(),
       renderedRAU: planet.radiusAU * this.planetScale,
       standoffAU: pose.position.distanceTo(targetPos),
+      bAU: pose.impactParameterAU,
     };
     return {
       position: pose.position,
@@ -11151,6 +11184,7 @@ export class PlanetariumMode {
         ? this.renderedMoonSizeAU(moon.radiusAU, parentForSize.radiusAU, MOON_RENDER_ANCHOR_RATIO)
         : moon.radiusAU,
       standoffAU: destination.position.distanceTo(destination.bodyPosition),
+      bAU: destination.impactParameterAU,
     };
   }
 
@@ -11227,10 +11261,46 @@ export class PlanetariumMode {
     const parentPosRaw = this.planetWorldPositions.get(moon.parentPlanet);
     if (!parentBody || !parentPosRaw) return null;
     const parentPos = new THREE.Vector3(parentPosRaw.x, parentPosRaw.y, parentPosRaw.z);
+    const nowMs = this.timeState.currentUtcMs;
+    const VEL_DT_MS = 60_000;
     const offset = this.getMoonWorldOffsetAU(moon, parentBody, new THREE.Vector3());
     const parentCollision = this.getPlanetCollisionRadius(parentBody.name, parentBody.radiusAU, this.planetScale);
     const ring = RING_CONFIGS[parentBody.name];
     const bodyPosition = offset.clone().add(parentPos);
+
+    // The one-shot aim lead wants the moon's TOTAL heliocentric velocity
+    // (parent's orbit + the moon's own): the aim must land where the moon
+    // really is at closest approach. The lane bodies below are
+    // TARGET-RELATIVE instead — the scorer's frame holds the target frozen.
+    const futureParent = computeBodyState(parentBody, nowMs + VEL_DT_MS).positionAU;
+    const targetOff1 = new THREE.Vector3();
+    computeMoonOffsetEquatorialAU(moon.name, parentBody.name, nowMs + VEL_DT_MS, targetOff1);
+    const targetOrbitalVel = targetOff1.clone().sub(offset).multiplyScalar(1000 / VEL_DT_MS);
+    const targetVelAUPerS = new THREE.Vector3(
+      futureParent.x - parentPos.x,
+      futureParent.y - parentPos.y,
+      futureParent.z - parentPos.z,
+    ).multiplyScalar(1000 / VEL_DT_MS).add(targetOrbitalVel);
+
+    // Sibling moons contest the lane (co-orbitals, conjunctions): relative
+    // velocity = sibling orbital − target orbital (the shared parent motion
+    // cancels in the frozen-target frame).
+    const laneBodies: LaneBody[] = [];
+    const off0 = new THREE.Vector3();
+    const off1 = new THREE.Vector3();
+    for (const m of MOONS) {
+      if (m.parentPlanet !== moon.parentPlanet || m.name === moon.name) continue;
+      computeMoonOffsetEquatorialAU(m.name, parentBody.name, nowMs, off0);
+      computeMoonOffsetEquatorialAU(m.name, parentBody.name, nowMs + VEL_DT_MS, off1);
+      laneBodies.push({
+        pos: off0.clone().add(parentPos),
+        velAUPerS: off1.sub(off0).multiplyScalar(1000 / VEL_DT_MS).sub(targetOrbitalVel),
+        governedRadiusAU: this.renderedMoonSizeAU(
+          m.radiusAU, parentBody.radiusAU, MOON_RENDER_ANCHOR_RATIO,
+        ),
+      });
+    }
+
     const pose = arrivalPose({
       targetPos: bodyPosition,
       parentPos,
@@ -11247,12 +11317,19 @@ export class PlanetariumMode {
       ),
       camDist: CRUISE_CAM_DIST_AU,
       shipClearance: SHIP_CLEARANCE_AU,
+      targetVelAUPerS,
+      timeRate: this.timeState.rate,
+      commandedAUPerS: this.postJumpCommandedAUPerS(
+        bodyPosition.distanceTo(parentPos), parentBody.systemRadiusAU,
+      ),
+      laneBodies,
     });
     return {
       position: pose.position,
       lookTarget: pose.aimPoint,
       bodyPosition,
       flyby: pose.flyby,
+      impactParameterAU: pose.impactParameterAU,
     };
   }
 

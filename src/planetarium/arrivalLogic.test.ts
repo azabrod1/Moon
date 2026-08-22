@@ -1268,13 +1268,16 @@ describe('the approach lane scorer', () => {
     const sunDir = inp.targetPos.clone().multiplyScalar(-1).normalize();
     const drop = inp.targetPos.clone().addScaledVector(sunDir, standoff);
     const side = new THREE.Vector3(0, 0, 1);
-    // Starts well off the lane, sweeps across it at Metis-class speed ~5 s in.
-    const crosserSpeed = 30 / KM_PER_AU; // 30 km/s
+    // Starts well off the lane, sweeps across it at Metis-class speed at an
+    // off-grid moment (t=4.73 s), with a governed radius SMALLER than one
+    // relative step — endpoint-only sampling would miss it; only the
+    // within-step relative closest-approach solve catches the crossing.
+    const crosserSpeed = 35 / KM_PER_AU;
     const midpoint = drop.clone().addScaledVector(sunDir, -standoff * 0.35);
     const crosser: LaneBody = {
-      pos: midpoint.clone().addScaledVector(side, crosserSpeed * 5),
+      pos: midpoint.clone().addScaledVector(side, crosserSpeed * 4.73),
       velAUPerS: side.clone().multiplyScalar(-crosserSpeed),
-      governedRadiusAU: 300 / KM_PER_AU,
+      governedRadiusAU: 90 / KM_PER_AU,
     };
     const score = scoreApproachLane(
       drop, inp.targetPos.clone(), inp.targetPos, inp.renderedR,
@@ -1401,5 +1404,110 @@ describe('the wide-net fan — a satellite disc face-on to the sun line', () => 
     const sunDir = inp.targetPos.clone().multiplyScalar(-1).normalize();
     const dropDir = pose.position.clone().sub(inp.targetPos).normalize();
     expect(dropDir.dot(sunDir)).toBeGreaterThan(0.999);
+  });
+});
+
+describe('flyover composition — the signed contract', () => {
+  it('an unringed planet slides UNDER the frame: the aim offset points along projected scene-up', () => {
+    const inp = planetInputs('Mars');
+    const pose = arrivalPose(inp);
+    const viewDir = inp.targetPos.clone().sub(pose.position).normalize();
+    const upPerp = FLIGHT_UP_SCENE.clone()
+      .addScaledVector(viewDir, -FLIGHT_UP_SCENE.dot(viewDir))
+      .normalize();
+    const offset = pose.aimPoint.clone().sub(inp.targetPos).normalize();
+    expect(offset.dot(upPerp)).toBeGreaterThan(0.99);
+  });
+
+  it('a ringed planet aims along the ring normal signed toward scene-up', () => {
+    const normal = new THREE.Vector3(0.2, -0.9, 0.1).normalize(); // "down" pole
+    const planet = PLANETARIUM_BODIES.find((b) => b.name === 'Saturn')!;
+    const ring = RING_CONFIGS.Saturn;
+    const inp = planetInputs('Saturn', {
+      ringNormal: normal,
+      ringInnerAU: planet.radiusAU * ring.innerFactor,
+      ringOuterAU: planet.radiusAU * ring.outerFactor,
+    });
+    const pose = arrivalPose(inp);
+    const viewDir = inp.targetPos.clone().sub(pose.position).normalize();
+    const signed = normal.dot(FLIGHT_UP_SCENE) >= 0 ? normal.clone() : normal.clone().negate();
+    const perp = signed.addScaledVector(viewDir, -signed.dot(viewDir)).normalize();
+    const offset = pose.aimPoint.clone().sub(inp.targetPos).normalize();
+    expect(offset.dot(perp)).toBeGreaterThan(0.99);
+  });
+});
+
+describe('representative moon pose goldens — byte-stable', () => {
+  // Exact outputs at the pin date; a semantic change to the shared pose math
+  // must show up here as a deliberate fixture update, never a silent drift.
+  it('Io (flyby class)', () => {
+    const pose = arrivalPose(catalogInputs('Io'));
+    expect(pose.flyby).toBe(true);
+    expect(pose.position.x).toBeCloseTo(5.2047406198911705, 15);
+    expect(pose.position.z).toBeCloseTo(0.0018158341269308733, 15);
+    expect(pose.aimPoint.x).toBeCloseTo(5.2051560177500615, 15);
+    expect(pose.aimPoint.z).toBeCloseTo(0.0017831343892584413, 15);
+    expect(pose.impactParameterAU!).toBeCloseTo(0.000032844660015313005, 18);
+  });
+
+  it('Phobos (park class)', () => {
+    const pose = arrivalPose(catalogInputs('Phobos'));
+    expect(pose.flyby).toBe(false);
+    expect(pose.position.x).toBeCloseTo(1.5240420715910481, 15);
+    expect(pose.position.z).toBeCloseTo(0.000040375987734152321, 18);
+    expect(pose.aimPoint.x).toBeCloseTo(1.5240479362461139, 15);
+  });
+
+  it('Charon (separation-cap-bound flyby)', () => {
+    const pose = arrivalPose(catalogInputs('Charon'));
+    expect(pose.flyby).toBe(true);
+    expect(pose.position.x).toBeCloseTo(39.480041231023293, 14);
+    expect(pose.aimPoint.z).toBeCloseTo(0.000077073748822255761, 18);
+    expect(pose.impactParameterAU!).toBeCloseTo(0.0000072915476329704215, 19);
+  });
+});
+
+describe('fail-closed edges', () => {
+  it('an all-ring-rejected fan ships the highest-altitude candidate, never the raw sunward ray', () => {
+    // Absurd annulus (covers everything a corridor can cross) with a normal
+    // that dooms every candidate: the fallback must still be the candidate
+    // with the MOST ring-plane altitude.
+    const planet = PLANETARIUM_BODIES.find((b) => b.name === 'Saturn')!;
+    const inp = planetInputs('Saturn', {
+      ringNormal: new THREE.Vector3(-1, 0, 0).normalize(), // ~sun line at +X world
+      ringInnerAU: 0,
+      ringOuterAU: planet.radiusAU * 1000,
+    });
+    const pose = arrivalPose(inp);
+    expect(pose.flyby).toBe(true);
+    // The chosen drop must NOT be the plain sunward radial (which flies the
+    // sheet dead-on); it must carry real elevation off the doomed axis.
+    const sunDir = inp.targetPos.clone().multiplyScalar(-1).normalize();
+    const dropDir = pose.position.clone().sub(inp.targetPos).normalize();
+    expect(dropDir.dot(sunDir)).toBeLessThan(0.95);
+  });
+
+  it('a zero commanded dial fails the lane closed instead of pacing at Infinity', () => {
+    const inp = planetInputs('Mars');
+    const pose = arrivalPose(inp);
+    const body: LaneBody = {
+      pos: inp.targetPos.clone().addScaledVector(new THREE.Vector3(0, 1, 0), inp.renderedR * 20),
+      velAUPerS: new THREE.Vector3(0, 0, 0),
+      governedRadiusAU: inp.renderedR,
+    };
+    const score = scoreApproachLane(
+      pose.position, pose.aimPoint, inp.targetPos, inp.renderedR,
+      [body], 0, 1, inp.renderedR * 4,
+    );
+    expect(score).toBeLessThan(LANE_CLEAN_RATIO);
+  });
+
+  it('a dial slower than the pass height coasts the whole way in', () => {
+    // commanded/K < passHeight: the coast runs s0 -> sPass at the dial; the
+    // glide term must not resurrect distance already covered.
+    const s0 = 8e-3;
+    const sPass = 1e-3;
+    const commanded = 2e-5; // commanded/K = 8e-5 < sPass
+    expect(estimatePassDurationS(s0, sPass, commanded)).toBeCloseTo((s0 - sPass) / commanded, 8);
   });
 });

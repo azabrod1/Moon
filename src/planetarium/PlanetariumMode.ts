@@ -34,7 +34,7 @@ import {
   SUN_POLE_RA_DEG,
   type PlanetData,
 } from './planets/planetData';
-import { applySunGlowTier, canAttempt, cancelNormalUpgrade, cancelTextureUpgrade, createMoonMeshes, createShaderWarmupProbes, earnedUpgradeTier, firstUpgradeTier, lodMeasurementRelevant, needsUpgradeCover, normalUpgradePending, setWarmEligibleMoonParents, upgradeComplete, upgradeGeometryOnApproach, upgradeNormalOnApproach, upgradeTextureOnApproach, ATMOSPHERES, ATMOSPHERE_SHELL_SCALES, UPGRADE_TRIGGER_FRACTION, type MoonMesh, type TextureUpgrade } from './PlanetFactory';
+import { applySunGlowTier, canAttempt, cancelNormalUpgrade, cancelTextureUpgrade, createMoonMeshes, createShaderWarmupProbes, earnedUpgradeTier, firstUpgradeTier, lodMeasurementRelevant, needsUpgradeCover, normalUpgradePending, resolveUpgradeTier, setWarmEligibleMoonParents, upgradeComplete, upgradeGeometryOnApproach, upgradeNormalOnApproach, upgradeTextureOnApproach, ATMOSPHERES, ATMOSPHERE_SHELL_SCALES, PLANET_TEXTURE_FILES, UPGRADE_TRIGGER_FRACTION, type MoonMesh, type TextureUpgrade } from './PlanetFactory';
 import type { SurfaceShadingFx } from './world/surfaceShading';
 import { bindTextureWarmer, invalidateTextureWarmCache, pumpTextureWarmQueue, queueTextureWarm, resetTextureWarmer } from './world/textureWarmer';
 import { loadBrightStarCatalog } from './world/starCatalogLoader';
@@ -123,7 +123,7 @@ import {
 } from './world/sunGlareMask';
 import { MoonPainter } from './world/MoonPainter';
 import { ProceduralMoonTexturer } from './world/ProceduralMoonTexturer';
-import { captureDeviceTextureCaps } from './world/texturePolicy';
+import { captureDeviceTextureCaps, resolveTextureUrl } from './world/texturePolicy';
 import { warmBitmapUploadProbe } from './world/textureBitmapLoader';
 import { planetshineIntensity } from './world/planetshine';
 import {
@@ -658,8 +658,10 @@ export class PlanetariumMode {
   // first close-up, so spending idle seconds on their fetch+decode means a
   // later arrival's veil finds the maps resident instead of holding its full
   // bounded window on a cold cache. The delay keeps the fetches clear of the
-  // boot texture wave, and the uploads ride the budgeted warm pump like any
-  // other upgrade — never a gesture frame.
+  // boot texture wave; the uploads ride the budgeted warm pump like any other
+  // upgrade, off the first draw that would otherwise pay them mid-gesture
+  // (the pump itself runs every frame, so each 4096-wide upload still costs
+  // one frame somewhere in the seconds after the fetch lands).
   private bootPairWarmTimer: number | undefined;
   private static readonly BOOT_PAIR_WARM_DELAY_MS = 5000;
   // Arrival veil re-entrancy guard (rapid picks, or a pick while one is running).
@@ -2247,14 +2249,51 @@ export class PlanetariumMode {
   private scheduleBootPairWarm(): void {
     window.clearTimeout(this.bootPairWarmTimer);
     this.bootPairWarmTimer = window.setTimeout(() => {
-      if (!this.active || this.arrivalInFlight) return;
+      if (!this.active) return;
+      // An arrival owns the network and the frame budget for as long as its
+      // veil is on screen. Speculation yields and tries again later.
+      if (this.arrivalVeilUp()) {
+        this.scheduleBootPairWarm();
+        return;
+      }
       // A metered connection gets no speculative bytes — the pair still
       // sharpens through the normal triggers when actually visited.
       const connection = (navigator as { connection?: { saveData?: boolean } }).connection;
       if (connection?.saveData) return;
+      // Full speculation decodes and uploads the maps, parking two 4096-wide
+      // maps' GPU storage for a pair the session may never visit. That is a
+      // desktop budget; a touch-first device gets the bytes pulled into the
+      // HTTP/service-worker cache only, so its later arrival skips the
+      // network but pays no residency up front. (Quality tiers stay
+      // capability-based — this split concerns speculation only, and
+      // saveData is absent on iOS Safari so it cannot be the gate.)
+      const cacheOnly =
+        /iPad|iPhone|iPod/.test(navigator.userAgent) ||
+        (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1) || // iPadOS desktop UA
+        (navigator.maxTouchPoints > 0 && window.innerWidth <= 1024);
       for (const up of this.landingPairUpgrades({ type: 'planet', name: 'Earth' })) {
+        // The live loader's attempt/cooldown gate, so a re-armed timer never
+        // duplicates a pending desktop attempt. The cache-only fetch marks no
+        // attempt on the handle, so a reactivation inside its download window
+        // can start the same transfer twice — bounded, and the second ride
+        // comes off the cache it is filling.
+        if (!canAttempt(up, performance.now())) continue;
         const first = firstUpgradeTier(up);
-        if (first) upgradeTextureOnApproach(up, first);
+        if (!first) continue;
+        if (cacheOnly) {
+          const tier = resolveUpgradeTier(up, first);
+          // The body must be read to completion: an unread Response is
+          // dropped, and the browser may cancel the transfer with it — the
+          // bytes only reliably reach the HTTP/service-worker cache once the
+          // stream has been drained.
+          if (tier) {
+            fetch(resolveTextureUrl(PLANET_TEXTURE_FILES[up.key], tier))
+              .then((r) => r.arrayBuffer())
+              .catch(() => {});
+          }
+        } else {
+          upgradeTextureOnApproach(up, first);
+        }
       }
     }, PlanetariumMode.BOOT_PAIR_WARM_DELAY_MS);
   }
@@ -11967,7 +12006,9 @@ export class PlanetariumMode {
    *  pipeline (commitBodyPick → arriveThen and its veil), unlike devLand,
    *  which enters landed mode directly and never raises the cover. */
   devObserve(name: string): boolean {
-    if (!this.solarSystem) return false;
+    // Unlike devLand this refuses when another mode owns the screen: the
+    // relocation would flash the global arrival veil over that mode.
+    if (!this.active || !this.solarSystem) return false;
     let target: NonNullable<LandedTarget> | null = null;
     if (this.solarSystem.planets.some((p) => p.data.name === name)) {
       target = { type: 'planet', name };

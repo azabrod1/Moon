@@ -80,6 +80,7 @@ import {
   type ShadowEventSpec,
 } from '../astronomy/shadows';
 import { ShadowVisuals, createShadowVisualsWarmupProbes, type GuideSlotInput } from './world/ShadowVisuals';
+import { warmUpSceneShaders } from './world/shaderWarmup';
 import { OBSERVATORY_JUMP_LEAD_MS, resolveLiveEvent, stepperSearchFromUtcMs } from './observatoryTime';
 import { resolveShowVantage } from './observatoryJump';
 import { surfacePerfBeginSpan, surfacePerfEndSpan } from './surfacePerf';
@@ -134,7 +135,7 @@ import {
   type SilhouetteTarget,
   type SilhouetteAdvanceOptions,
 } from './world/shadeSmoothing';
-import { debugError } from '../shared/debug';
+import { debugError, debugWarn } from '../shared/debug';
 import { GyroSteering } from './input/GyroSteering';
 import { SurfaceLook } from './input/SurfaceLook';
 import {
@@ -1659,17 +1660,28 @@ export class PlanetariumMode {
 
   active = false;
   private useBloom: boolean;
+  /** Live answer to "does the scene render into a target (the composer) or
+   *  straight to the canvas" — the owner of the composer supplies it, so the
+   *  boot shader warm-up compiles the variant the frame actually draws. */
+  private readonly rendersThroughComposer: () => boolean;
+  // Dev tripwire for the warm-up: program count right after it, compared a
+  // couple of frames later — the first live frames must not compile anything
+  // it missed (that stall is the very thing it exists to prevent).
+  private shaderWarmupProgramCount: number | null = null;
+  private framesSinceShaderWarmup = 0;
 
   constructor(
     scene: THREE.Scene,
     camera: THREE.PerspectiveCamera,
     renderer: THREE.WebGLRenderer,
     useBloom = true,
+    rendersThroughComposer: () => boolean = () => useBloom,
   ) {
     this.scene = scene;
     this.camera = camera;
     this.renderer = renderer;
     this.useBloom = useBloom;
+    this.rendersThroughComposer = rendersThroughComposer;
     // Capture device texture caps from the live renderer before any body loads,
     // so anisotropy and tier limits apply to the very first textures created.
     captureDeviceTextureCaps(renderer);
@@ -2186,9 +2198,6 @@ export class PlanetariumMode {
       // so a first landing or surface view doesn't pay ANGLE program links
       // mid-gesture. Runs after restoreState/starfield/constellations so the
       // compiled set matches what a restored session actually renders.
-      // compileAsync submits synchronously and then polls; the race below only
-      // guards a hung poll (it cancels no work), and on any failure lazy
-      // first-draw compilation remains the fallback.
       performance.mark('plm:precompile:start');
       const probes = createShaderWarmupProbes();
       // The landed system's shadow visuals attach at landing, after this
@@ -2197,21 +2206,17 @@ export class PlanetariumMode {
       // that reads as a dead click on slow GPUs).
       const shadowProbes = createShadowVisualsWarmupProbes();
       this.scene.add(probes.group, shadowProbes.group);
-      const compiled = this.renderer.compileAsync(this.scene, this.camera).catch(() => undefined);
-      await Promise.race([compiled, new Promise((resolve) => window.setTimeout(resolve, 3000))]);
-      // Safari commonly lacks KHR_parallel_shader_compile, where Three's
-      // compileAsync cannot prove that the driver has linked anything. Also,
-      // the live bloom scene renders to a linear target while compileAsync
-      // above prepares the sRGB canvas key. Two real, 1-pixel draws under the
-      // load veil cover both output variants without the old landed-time
-      // six-direction/full-canvas sweeps that blocked visible input.
-      try {
-        this.renderShaderWarmupDraw([probes.group, shadowProbes.group]);
-      } catch (err) {
-        // Warm-up is an optimization only; lazy first draw remains the
-        // fail-open path on a driver that rejects the probe render.
-        debugError('Shader warm-up draw failed', err);
-      }
+      // Compile with the live path's kind of target bound (three keys every
+      // program on it) and force the links with one 1-pixel draw — see
+      // world/shaderWarmup.ts for the why and the pinned contract. Fail-open:
+      // on any failure lazy first-draw compilation remains the fallback.
+      const { compiled } = await warmUpSceneShaders(this.renderer, this.scene, this.camera, {
+        drawsThroughComposer: this.rendersThroughComposer(),
+        probeGroups: [probes.group, shadowProbes.group],
+        onError: (stage, err) => debugError(`Shader warm-up ${stage} failed`, err),
+      });
+      this.shaderWarmupProgramCount = this.renderer.info.programs?.length ?? null;
+      this.framesSinceShaderWarmup = 0;
       // Probe materials are disposed only once compileAsync's poll has fully
       // settled — disposing a material mid-poll throws inside a timer callback
       // that no try/catch around the await could reach.
@@ -2304,55 +2309,6 @@ export class PlanetariumMode {
       this.scene.add(this.constellations.lines);
     }
     this.constellations.setVisible(this.showConstellations);
-  }
-
-  /** Force the boot probe families through both render output program keys.
-   * Raster work is scissored to one pixel and runs only behind the load veil. */
-  private renderShaderWarmupDraw(groups: readonly THREE.Group[]): void {
-    const prevTarget = this.renderer.getRenderTarget();
-    const prevViewport = this.renderer.getViewport(new THREE.Vector4());
-    const prevScissor = this.renderer.getScissor(new THREE.Vector4());
-    const prevScissorTest = this.renderer.getScissorTest();
-    const target = new THREE.WebGLRenderTarget(1, 1);
-    const forward = new THREE.Vector3();
-    const forcedFrustumObjects: THREE.Object3D[] = [];
-    this.camera.updateMatrixWorld();
-    this.camera.getWorldDirection(forward);
-    const probeDistance = Math.max(this.camera.near * 4, 1e-6);
-    for (const group of groups) {
-      group.visible = true;
-      group.position.copy(this.camera.position).addScaledVector(forward, probeDistance);
-    }
-    // One view is enough when culling is disabled: every currently visible
-    // planet/atmosphere/cloud custom material is submitted even when its body
-    // sits behind the boot camera. The probe groups cover future moon/shadow
-    // variants whose real meshes are not visible yet.
-    this.scene.traverse((obj) => {
-      if (!obj.frustumCulled) return;
-      forcedFrustumObjects.push(obj);
-      obj.frustumCulled = false;
-    });
-
-    const drawOnePixel = (renderTarget: THREE.WebGLRenderTarget | null) => {
-      this.renderer.setRenderTarget(renderTarget);
-      this.renderer.setViewport(0, 0, 1, 1);
-      this.renderer.setScissor(0, 0, 1, 1);
-      this.renderer.setScissorTest(true);
-      this.renderer.render(this.scene, this.camera);
-    };
-
-    try {
-      drawOnePixel(target); // linear output key used by EffectComposer
-      drawOnePixel(null); // sRGB canvas key used by Safari's no-bloom path
-    } finally {
-      for (const group of groups) group.visible = false;
-      for (const obj of forcedFrustumObjects) obj.frustumCulled = true;
-      this.renderer.setRenderTarget(prevTarget);
-      this.renderer.setViewport(prevViewport);
-      this.renderer.setScissor(prevScissor);
-      this.renderer.setScissorTest(prevScissorTest);
-      target.dispose();
-    }
   }
 
   private async settleRestoredLandedTextureUpgrades(): Promise<void> {
@@ -2559,6 +2515,16 @@ export class PlanetariumMode {
     if (!this.active || !this.solarSystem) return;
     this.lastFrameDtMs = dt * 1000;
     this.frameStamp++;
+    if (this.shaderWarmupProgramCount !== null && ++this.framesSinceShaderWarmup >= 3) {
+      const now = this.renderer.info.programs?.length ?? 0;
+      if (now > this.shaderWarmupProgramCount) {
+        debugWarn('Boot shader warm-up missed programs: the first live frames compiled more', {
+          afterWarmup: this.shaderWarmupProgramCount,
+          now,
+        });
+      }
+      this.shaderWarmupProgramCount = null;
+    }
     // One damping step runs per frame (the controls wrapper enforces it), so
     // size that step by the frame's real duration: the coast then decays at
     // e^(−t/τ) in wall time on any refresh rate, and a hitch frame advances

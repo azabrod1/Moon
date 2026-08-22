@@ -653,6 +653,15 @@ export class PlanetariumMode {
   // Per-frame time budget for warm texture uploads: small maps batch within
   // it, a big one takes its frame alone (the pump always uploads at least one).
   private static readonly TEXTURE_WARM_BUDGET_MS = 6;
+  // Speculative warm of the Earth+Moon pair's first colour steps a beat after
+  // activation: eclipse vantages land on Earth and the Moon is the most-taken
+  // first close-up, so spending idle seconds on their fetch+decode means a
+  // later arrival's veil finds the maps resident instead of holding its full
+  // bounded window on a cold cache. The delay keeps the fetches clear of the
+  // boot texture wave, and the uploads ride the budgeted warm pump like any
+  // other upgrade — never a gesture frame.
+  private bootPairWarmTimer: number | undefined;
+  private static readonly BOOT_PAIR_WARM_DELAY_MS = 5000;
   // Arrival veil re-entrancy guard (rapid picks, or a pick while one is running).
   private arrivalInFlight = false;
   /** Monotonic veil-cover token: each veiled arrival claims the veil, so a
@@ -2226,8 +2235,28 @@ export class PlanetariumMode {
     // gesture comes.
     snapConstellations();
 
+    this.scheduleBootPairWarm();
+
     reportActivationProgress(FIRST_PLANETARIUM_ACTIVATION_TOTAL_UNITS);
     performance.measure('plm:activate', 'plm:activate:start');
+  }
+
+  /** Arm the speculative Earth+Moon warm (see BOOT_PAIR_WARM_DELAY_MS).
+   *  Idempotent across activations: a step already applied or in flight
+   *  no-ops in upgradeTextureOnApproach's own guards. */
+  private scheduleBootPairWarm(): void {
+    window.clearTimeout(this.bootPairWarmTimer);
+    this.bootPairWarmTimer = window.setTimeout(() => {
+      if (!this.active || this.arrivalInFlight) return;
+      // A metered connection gets no speculative bytes — the pair still
+      // sharpens through the normal triggers when actually visited.
+      const connection = (navigator as { connection?: { saveData?: boolean } }).connection;
+      if (connection?.saveData) return;
+      for (const up of this.landingPairUpgrades({ type: 'planet', name: 'Earth' })) {
+        const first = firstUpgradeTier(up);
+        if (first) upgradeTextureOnApproach(up, first);
+      }
+    }, PlanetariumMode.BOOT_PAIR_WARM_DELAY_MS);
   }
 
   private ensureConstellationsReady() {
@@ -2356,6 +2385,7 @@ export class PlanetariumMode {
     }
 
     this.active = false;
+    window.clearTimeout(this.bootPairWarmTimer);
     this.sunExposure = 1;
     this.lastSunVisibleFraction = 1;
     this.sunEmergenceFlash = 0;
@@ -11931,6 +11961,25 @@ export class PlanetariumMode {
       }
     }
     return false;
+  }
+
+  /** Headless support: an Observatory relocation through the REAL pick
+   *  pipeline (commitBodyPick → arriveThen and its veil), unlike devLand,
+   *  which enters landed mode directly and never raises the cover. */
+  devObserve(name: string): boolean {
+    if (!this.solarSystem) return false;
+    let target: NonNullable<LandedTarget> | null = null;
+    if (this.solarSystem.planets.some((p) => p.data.name === name)) {
+      target = { type: 'planet', name };
+    } else {
+      for (const [parentName, moons] of this.planetMoons) {
+        if (moons.some((m) => m.data.name === name)) {
+          target = { type: 'moon', name, parentPlanet: parentName };
+          break;
+        }
+      }
+    }
+    return target ? this.commitBodyPick('observe', target, {}) : false;
   }
 
   /** Headless support: enter the volume-compare tool through the REAL gate, so a

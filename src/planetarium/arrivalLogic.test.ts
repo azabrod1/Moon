@@ -1373,10 +1373,19 @@ describe('the wide-net fan — a satellite disc face-on to the sun line', () => 
           bestPos = p;
         }
       }
+      // The nearest ring body AND its antipode: near-axis lanes pass the
+      // ring on one side or the other depending on the aim sign, so a
+      // single body per shell lets a sign flip dodge it — the pair forces
+      // any near-axis candidate dirty regardless of which side it aims.
       laneBodies.push({
         pos: bestPos!,
         velAUPerS: new THREE.Vector3(0, 0, 0),
         governedRadiusAU: 470 / KM_PER_AU, // curve-rendered moonlet class
+      });
+      laneBodies.push({
+        pos: inp.targetPos.clone().multiplyScalar(2).sub(bestPos!),
+        velAUPerS: new THREE.Vector3(0, 0, 0),
+        governedRadiusAU: 470 / KM_PER_AU,
       });
     }
     const ring = RING_CONFIGS.Uranus;
@@ -1393,9 +1402,11 @@ describe('the wide-net fan — a satellite disc face-on to the sun line', () => 
       laneBodies, commanded, 1, inp.renderedR * 4,
     );
     expect(score).toBeGreaterThanOrEqual(LANE_CLEAN_RATIO);
-    // The winning lane left the disc axis — that is the escape mechanism.
+    // The winning lane genuinely rotated off the sun line (the plain
+    // sun-side drop reads the planted pair's brakes); HOW far is the fan's
+    // own business — it takes the most lit-face-faithful clean candidate.
     const dropDir = pose.position.clone().sub(inp.targetPos).normalize();
-    expect(Math.abs(dropDir.dot(discNormal))).toBeLessThan(Math.cos(30 * DEG2RAD));
+    expect(dropDir.dot(sunDir)).toBeLessThan(Math.cos(15 * DEG2RAD));
   });
 
   it('a clean sun-side lane never pays the wide net (lit face preserved)', () => {

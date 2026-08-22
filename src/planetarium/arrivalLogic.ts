@@ -963,25 +963,30 @@ function ringPassAltitudeAU(
 }
 
 /** The flyover aim for one planet drop: scene-up perp (ringless) or the
- *  ring-normal perp (sign toward scene-up, chosen deterministically at the
- *  jump), offset by the shared impact parameter from the led center. */
+ *  ring-normal perp, offset by the shared impact parameter from the led
+ *  center. The perp's SIGN is chosen so its projection carries non-negative
+ *  screen-up — aim above the target, planet slides UNDER the frame. Passing
+ *  over vs under the ring plane is compositionally symmetric, but an aim
+ *  BELOW the target parks the arrival with the planet clipped off the top
+ *  of the frame for the whole first stretch (caught on a live Uranus
+ *  epoch whose projected ring normal pointed down-screen). Deterministic:
+ *  pure function of the jump geometry. */
 function planetFlybyAim(inp: ArrivalInputs, position: THREE.Vector3): THREE.Vector3 {
   const viewDir = inp.targetPos.clone().sub(position).normalize();
   const dist = position.distanceTo(inp.targetPos);
   const b = impactParameterAU(inp, dist);
   const led = ledTargetPos(inp, position);
 
-  let basis: THREE.Vector3 | null = null;
+  const screenUp = FLIGHT_UP_SCENE.clone()
+    .addScaledVector(viewDir, -FLIGHT_UP_SCENE.dot(viewDir));
+  let perp: THREE.Vector3;
   if (inp.ringNormal) {
-    basis = inp.ringNormal.dot(FLIGHT_UP_SCENE) >= 0
-      ? inp.ringNormal.clone()
-      : inp.ringNormal.clone().multiplyScalar(-1);
-  }
-  let perp = (basis ?? FLIGHT_UP_SCENE.clone())
-    .addScaledVector(viewDir, -(basis ?? FLIGHT_UP_SCENE).dot(viewDir));
-  if (perp.lengthSq() < 1e-12) {
-    perp = FLIGHT_UP_SCENE.clone()
-      .addScaledVector(viewDir, -FLIGHT_UP_SCENE.dot(viewDir));
+    perp = inp.ringNormal.clone()
+      .addScaledVector(viewDir, -inp.ringNormal.dot(viewDir));
+    if (perp.lengthSq() < 1e-12) perp = screenUp.clone();
+    else if (perp.dot(screenUp) < 0) perp.multiplyScalar(-1);
+  } else {
+    perp = screenUp.clone();
   }
   if (perp.lengthSq() < 1e-12) {
     perp = new THREE.Vector3().crossVectors(viewDir, new THREE.Vector3(1, 0, 0));

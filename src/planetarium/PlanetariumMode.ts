@@ -11935,11 +11935,17 @@ export class PlanetariumMode {
     return this.devLastArrivalPose;
   }
 
-  /** DEV: which governed body owned the speed cap on the last cruise frame. */
+  /** DEV: which governed body owned the speed cap on the last cruise frame.
+   *  `binding` is the honest read — the minimum cap constrains nothing while
+   *  it still sits above the commanded speed (a coasting giant approach
+   *  reports its moonlets as owners all the way in without ever slowing). */
   devGovernorOwner(): unknown {
-    return this.devCapOwner
-      ? { name: this.devCapOwner.name, capKmS: this.devCapOwner.capAUPerS * KM_PER_AU }
-      : null;
+    if (!this.devCapOwner) return null;
+    return {
+      name: this.devCapOwner.name,
+      capKmS: this.devCapOwner.capAUPerS * KM_PER_AU,
+      binding: this.devCapOwner.capAUPerS < this.player.commandedSpeedAUPerS * 0.999,
+    };
   }
 
   devProbe(name: string): unknown {

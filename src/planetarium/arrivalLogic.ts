@@ -5,8 +5,14 @@
  * by default), which crosses a body standoff in about a second. These
  * functions give every body its own approach AND departure dynamics — both
  * tied to distance, so arrivals glide and departures pull away instead of
- * detonating off a time ramp — (and moons their arrival pose);
- * PlanetariumMode feeds live positions and applies the results.
+ * detonating off a time ramp — and every teleportable body its arrival
+ * pose: one shared drive-by for planets and moons (authored past-the-limb
+ * pass, lane-scored drop so no bystander body ever owns the arrival's
+ * speed cap, one-shot aim lead so the pass geometry survives the target's
+ * own orbital motion), a centered park for moonlet-scale bodies, and the
+ * legacy "postcard" framing kept verbatim for authored scenes (tutorial,
+ * historic journeys, the dev screenshot bridge). PlanetariumMode feeds
+ * live positions and applies the results.
  */
 import * as THREE from 'three';
 import { KM_PER_AU } from '../astronomy/constants';
@@ -673,6 +679,15 @@ const RING_MIN_PASS_ALTITUDE_RADII = 0.5;
 const PLANET_DROP_AZ_DEG = [0, 20, -20, 40, -40, 60, -60];
 const PLANET_DROP_EL_DEG = [0, 25, -25];
 
+/** The wide net, tried only when every narrow candidate reads a dirty lane:
+ *  a satellite system face-on to the sun line (Uranus near solstice) wraps
+ *  ALL near-sun approaches in its moonlet shells — the lane must leave the
+ *  disc axis entirely, and a half-lit arrival beats an arrival that reads
+ *  another body's brakes. Measured: Miranda + Bianca held a sun-line Uranus
+ *  approach to 0.54 of its own law with two handover surges. */
+const PLANET_DROP_WIDE_AZ_DEG = [0, 30, -30, 60, -60, 90, -90, 120, -120, 150, -150, 180];
+const PLANET_DROP_WIDE_EL_DEG = [40, -40, 60, -60];
+
 function outwardRadialPosition(inp: ArrivalInputs, dist: number): THREE.Vector3 {
   const outward =
     inp.orbitR > 1e-9
@@ -844,43 +859,61 @@ function planetFlybyPose(inp: ArrivalInputs): ArrivalPose {
   e1.normalize();
   const e2 = new THREE.Vector3().crossVectors(sunDir, e1).normalize();
 
-  const candidates: { dir: THREE.Vector3; cost: number }[] = [];
-  for (const azDeg of PLANET_DROP_AZ_DEG) {
-    for (const elDeg of PLANET_DROP_EL_DEG) {
-      const az = azDeg * DEG2RAD;
-      const el = elDeg * DEG2RAD;
-      const dir = sunDir.clone().multiplyScalar(Math.cos(az) * Math.cos(el))
-        .addScaledVector(e1, Math.sin(az) * Math.cos(el))
-        .addScaledVector(e2, Math.sin(el))
-        .normalize();
-      candidates.push({
-        dir,
-        cost: Math.acos(THREE.MathUtils.clamp(dir.dot(sunDir), -1, 1)),
-      });
+  const buildCandidates = (azList: readonly number[], elList: readonly number[]) => {
+    const out: { dir: THREE.Vector3; cost: number }[] = [];
+    for (const azDeg of azList) {
+      for (const elDeg of elList) {
+        const az = azDeg * DEG2RAD;
+        const el = elDeg * DEG2RAD;
+        const dir = sunDir.clone().multiplyScalar(Math.cos(az) * Math.cos(el))
+          .addScaledVector(e1, Math.sin(az) * Math.cos(el))
+          .addScaledVector(e2, Math.sin(el))
+          .normalize();
+        out.push({
+          dir,
+          cost: Math.acos(THREE.MathUtils.clamp(dir.dot(sunDir), -1, 1)),
+        });
+      }
     }
-  }
-  candidates.sort((a, c) => a.cost - c.cost);
+    out.sort((a, c) => a.cost - c.cost);
+    return out;
+  };
 
   let best: ArrivalPose | null = null;
   let bestLane = -1;
-  for (const cand of candidates) {
-    const position = targetPos.clone().addScaledVector(cand.dir, dist);
-    const aimPoint = planetFlybyAim(inp, position);
-    if (inp.ringNormal && !rayClearsRingSheet(
-      position, aimPoint, targetPos, inp.ringNormal, renderedR,
-      inp.ringInnerAU ?? 0, inp.ringOuterAU ?? 0,
-    )) {
-      continue;
+  const tryCandidates = (
+    list: readonly { dir: THREE.Vector3; cost: number }[],
+  ): ArrivalPose | null => {
+    for (const cand of list) {
+      const position = targetPos.clone().addScaledVector(cand.dir, dist);
+      const aimPoint = planetFlybyAim(inp, position);
+      if (inp.ringNormal && !rayClearsRingSheet(
+        position, aimPoint, targetPos, inp.ringNormal, renderedR,
+        inp.ringInnerAU ?? 0, inp.ringOuterAU ?? 0,
+      )) {
+        continue;
+      }
+      const lane = inp.laneBodies?.length
+        ? poseLaneScore(inp, position, aimPoint)
+        : 1;
+      if (lane >= LANE_CLEAN_RATIO) return { position, aimPoint, flyby: true };
+      if (lane > bestLane) {
+        bestLane = lane;
+        best = { position, aimPoint, flyby: true };
+      }
     }
-    const lane = inp.laneBodies?.length
-      ? poseLaneScore(inp, position, aimPoint)
-      : 1;
-    if (lane >= LANE_CLEAN_RATIO) return { position, aimPoint, flyby: true };
-    if (lane > bestLane) {
-      bestLane = lane;
-      best = { position, aimPoint, flyby: true };
-    }
-  }
+    return null;
+  };
+
+  const narrowClean = tryCandidates(buildCandidates(PLANET_DROP_AZ_DEG, PLANET_DROP_EL_DEG));
+  if (narrowClean) return narrowClean;
+  // Every lit-face-faithful lane is dirty: cast the wide net before settling
+  // — leaving the satellite disc's axis costs arrival phase but removes the
+  // handover dance outright wherever any clean corridor exists.
+  const wideClean = tryCandidates(
+    buildCandidates(PLANET_DROP_WIDE_AZ_DEG, PLANET_DROP_WIDE_EL_DEG),
+  );
+  if (wideClean) return wideClean;
   if (best) return best;
   const position = targetPos.clone().addScaledVector(sunDir, dist);
   return { position, aimPoint: planetFlybyAim(inp, position), flyby: true };

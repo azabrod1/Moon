@@ -26,17 +26,18 @@
  *
  * The arrival look is ENGAGE-GATED (arrivalTrackEngage): its weight is
  * EXACTLY zero at the teleport standoff, so a fresh arrival's first input
- * finds zero deflection and pays nothing — the retired always-on postcard
- * put ~20° between the arrival and settled poses, and every first input
- * paid it as a visible adjust. The tracking shot fades in only as a
- * hands-off flyby closes inside the engage band, holds the moon
- * through closest approach, and fades back out on the receding leg.
+ * finds zero deflection and pays nothing — an always-on look puts ~20°
+ * between the arrival and settled poses, and every first input pays it as
+ * a visible adjust. The tracking shot fades in only as a hands-off flyby
+ * closes inside the engage band, holds the target through closest
+ * approach, and fades back out on the receding leg.
  *
- * The look's target is fed ANALYTICALLY (parent world position +
- * ephemeris offset, heliocentric) rather than from the mesh transform:
- * updateMoonPositions skips invisible unpainted moons, and a cold jump's
- * mesh is invisible by design for the whole veiled paint window — the look
- * must hold full weight there so veil-lift opens already aimed. The frame
+ * The look's target is fed ANALYTICALLY (a moon: parent world position +
+ * ephemeris offset; a planet: its live ephemeris position), heliocentric,
+ * never from the mesh transform: updateMoonPositions skips invisible
+ * unpainted moons, and a cold jump's mesh is invisible by design for the
+ * whole veiled paint window — the look must hold full weight there so
+ * veil-lift opens already aimed. The frame
  * conversion (heliocentric world → scene) happens in exactly one place,
  * inside the step. A look whose target genuinely cannot be resolved latches
  * release and fades out from the last known world position; a clock jump or

@@ -1332,3 +1332,74 @@ describe('estimatePassDurationS', () => {
     expect(Number.isFinite(estimatePassDurationS(1, 1e-9, 0))).toBe(true);
   });
 });
+
+describe('the wide-net fan — a satellite disc face-on to the sun line', () => {
+  it('escapes the Uranus-solstice geometry the narrow fan cannot', () => {
+    // Uranus near solstice: the moonlet disc faces the Sun, so every
+    // lit-face-faithful lane flies down the disc axis. Build that geometry
+    // synthetically: the disc normal IS the sun line, and two Miranda/
+    // Bianca-class bodies sit on their orbit rings nearest the incoming
+    // lane — measured live, this held the ship to 0.54 of Uranus's law.
+    const inp = planetInputs('Uranus');
+    const planet = PLANETARIUM_BODIES.find((b) => b.name === 'Uranus')!;
+    const sunDir = inp.targetPos.clone().multiplyScalar(-1).normalize();
+    // The disc normal sits ~8° off the sun line (the 2026 geometry).
+    const discNormal = sunDir.clone()
+      .applyAxisAngle(new THREE.Vector3(0, 0, 1), 8 * DEG2RAD)
+      .normalize();
+    const commanded = 25_000 / KM_PER_AU;
+    // One Miranda-class and one Bianca-class body, each parked at the ring
+    // azimuth CLOSEST to the sun-line lane — the measured binding pair.
+    const laneBodies: LaneBody[] = [];
+    const basis1 = new THREE.Vector3().crossVectors(discNormal, new THREE.Vector3(0, 1, 0)).normalize();
+    const basis2 = new THREE.Vector3().crossVectors(discNormal, basis1).normalize();
+    for (const orbitKm of [129_900, 59_165]) {
+      const orbitAU = orbitKm / KM_PER_AU;
+      let bestPos: THREE.Vector3 | null = null;
+      let bestLineDist = Infinity;
+      for (let i = 0; i < 360; i++) {
+        const a = (i / 360) * Math.PI * 2;
+        const p = inp.targetPos.clone()
+          .addScaledVector(basis1, Math.cos(a) * orbitAU)
+          .addScaledVector(basis2, Math.sin(a) * orbitAU);
+        // Distance from the sun-side lane (the line target + t·sunDir, t>0).
+        const rel = p.clone().sub(inp.targetPos);
+        const lineDist = rel.addScaledVector(sunDir, -rel.dot(sunDir)).length();
+        if (lineDist < bestLineDist) {
+          bestLineDist = lineDist;
+          bestPos = p;
+        }
+      }
+      laneBodies.push({
+        pos: bestPos!,
+        velAUPerS: new THREE.Vector3(0, 0, 0),
+        governedRadiusAU: 470 / KM_PER_AU, // curve-rendered moonlet class
+      });
+    }
+    const ring = RING_CONFIGS.Uranus;
+    const pose = arrivalPose({
+      ...inp,
+      ringNormal: discNormal,
+      ringInnerAU: planet.radiusAU * ring.innerFactor,
+      ringOuterAU: planet.radiusAU * ring.outerFactor,
+      laneBodies,
+      commandedAUPerS: commanded,
+    });
+    const score = scoreApproachLane(
+      pose.position, pose.aimPoint, inp.targetPos, inp.renderedR,
+      laneBodies, commanded, 1, inp.renderedR * 4,
+    );
+    expect(score).toBeGreaterThanOrEqual(LANE_CLEAN_RATIO);
+    // The winning lane left the disc axis — that is the escape mechanism.
+    const dropDir = pose.position.clone().sub(inp.targetPos).normalize();
+    expect(Math.abs(dropDir.dot(discNormal))).toBeLessThan(Math.cos(30 * DEG2RAD));
+  });
+
+  it('a clean sun-side lane never pays the wide net (lit face preserved)', () => {
+    const inp = planetInputs('Uranus');
+    const pose = arrivalPose({ ...inp, laneBodies: [], commandedAUPerS: 25_000 / KM_PER_AU });
+    const sunDir = inp.targetPos.clone().multiplyScalar(-1).normalize();
+    const dropDir = pose.position.clone().sub(inp.targetPos).normalize();
+    expect(dropDir.dot(sunDir)).toBeGreaterThan(0.999);
+  });
+});

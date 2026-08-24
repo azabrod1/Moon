@@ -16,12 +16,16 @@ import {
   moonArrivalPose,
   moonArrivalStandoffAU,
   moonCollisionRadius,
+  contactAimStep,
+  grazeDeflectAim,
+  movingBodySpeedCap,
   rampedSpeedCap,
   sunArrivalPose,
   sweepSegmentSphere,
   BODY_APPROACH_V_MIN_AU_S,
   BODY_CAP_CLEAR_HOLD_S,
   CAP_TRANSITION_TAU_S,
+  GRAZE_OUTWARD_BIAS,
   LEAVE_HEADSTART_RADII,
   LEAVE_VALVE_KNEE_RADII,
   MOON_APPROACH_K_PER_S,
@@ -1005,5 +1009,150 @@ describe('moonArrivalTrackEngage', () => {
     expect(moonArrivalTrackEngage(1e-5, 0)).toBe(0);
     expect(moonArrivalTrackEngage(1e-5, -1)).toBe(0);
     expect(moonArrivalTrackEngage(1e-5, NaN)).toBe(0);
+  });
+});
+
+describe('grazeDeflectAim', () => {
+  const out = new THREE.Vector3();
+
+  it('keeps the tangential direction and peels out by exactly the bias', () => {
+    // Approach 30° below the tangent against a +Y outward normal, sliding +X.
+    const f = new THREE.Vector3(Math.cos(-30 * DEG2RAD), Math.sin(-30 * DEG2RAD), 0);
+    grazeDeflectAim(f.x, f.y, f.z, 0, 1, 0, out);
+    expect(out.length()).toBeCloseTo(1, 12);
+    // The slide continues where it was going (+X), nothing lateral appears.
+    expect(out.x).toBeGreaterThan(0.9);
+    expect(Math.abs(out.z)).toBeLessThan(1e-12);
+    // Outward component = the bias on a unit tangent, renormalized.
+    expect(out.y).toBeCloseTo(GRAZE_OUTWARD_BIAS / Math.hypot(1, GRAZE_OUTWARD_BIAS), 12);
+  });
+
+  it('a pure tangent skim keeps its heading, tilted out by the bias angle', () => {
+    grazeDeflectAim(1, 0, 0, 0, 1, 0, out);
+    expect(Math.asin(out.y)).toBeCloseTo(Math.atan(GRAZE_OUTWARD_BIAS), 9);
+    expect(out.x).toBeGreaterThan(0.9);
+  });
+
+  it('a dead-center hit veers sideways — never the 180° boomerang', () => {
+    const f = new THREE.Vector3(0, -1, 0); // straight into a +Y-normal shell
+    grazeDeflectAim(f.x, f.y, f.z, 0, 1, 0, out);
+    expect(out.length()).toBeCloseTo(1, 12);
+    // A perpendicular slide with the gentle outward peel: ~104° off the nose
+    // (the bias is the only backward component), nowhere near the −1 of a
+    // reversal — so the ease that follows always has a defined swing plane.
+    expect(out.dot(f)).toBeCloseTo(-GRAZE_OUTWARD_BIAS / Math.hypot(1, GRAZE_OUTWARD_BIAS), 12);
+    expect(out.y).toBeGreaterThan(0);
+    expect(Math.hypot(out.x, out.z)).toBeGreaterThan(0.9);
+  });
+
+  it('is deterministic for a given normal (the veer cannot flicker between contacts)', () => {
+    const n = new THREE.Vector3(0.1, 0.9, 0.2).normalize();
+    const a = grazeDeflectAim(-n.x, -n.y, -n.z, n.x, n.y, n.z, new THREE.Vector3());
+    const b = grazeDeflectAim(-n.x, -n.y, -n.z, n.x, n.y, n.z, new THREE.Vector3());
+    expect(a.distanceTo(b)).toBe(0);
+  });
+
+  it('never aims inward, from any direction on the approach cone', () => {
+    const n = new THREE.Vector3(0.3, -0.5, 0.81).normalize();
+    for (let i = 0; i < 40; i++) {
+      const theta = (i / 40) * Math.PI * 2;
+      const f = new THREE.Vector3(Math.cos(theta), Math.sin(theta), Math.sin(theta * 2) * 0.5).normalize();
+      grazeDeflectAim(f.x, f.y, f.z, n.x, n.y, n.z, out);
+      expect(out.length()).toBeCloseTo(1, 12);
+      expect(out.dot(n)).toBeGreaterThan(0);
+    }
+  });
+});
+
+describe('contactAimStep', () => {
+  it('converges monotonically onto the target and reports done within ~1 s', () => {
+    const dir = new THREE.Vector3(1, 0, 0);
+    const target = new THREE.Vector3(0, 1, 0); // a 90° swing
+    let done = false;
+    let prevDot = dir.dot(target);
+    let steps = 0;
+    while (!done && steps < 300) {
+      done = contactAimStep(dir, target, 1 / 60, dir); // out aliases dir
+      expect(dir.length()).toBeCloseTo(1, 12);
+      const d = dir.dot(target);
+      expect(d).toBeGreaterThanOrEqual(prevDot - 1e-12);
+      prevDot = d;
+      steps++;
+    }
+    expect(done).toBe(true);
+    expect(steps / 60).toBeLessThan(1.0);
+  });
+
+  it('a capped 100 ms hitch frame still yields a unit direction mid-swing', () => {
+    const dir = new THREE.Vector3(1, 0, 0);
+    // The widest swing the graze can arm: a dead-center veer, ~104° off the nose.
+    const target = new THREE.Vector3(-GRAZE_OUTWARD_BIAS, Math.hypot(1, GRAZE_OUTWARD_BIAS), 0).normalize();
+    contactAimStep(dir, target, 0.1, dir);
+    expect(dir.length()).toBeCloseTo(1, 12);
+    expect(Number.isFinite(dir.x)).toBe(true);
+  });
+});
+
+describe('movingBodySpeedCap', () => {
+  it('matches the plain law for a body at rest', () => {
+    expect(movingBodySpeedCap(1e-4, 1e-5, 0.5, 0, K, VMIN))
+      .toBe(governedSpeedCap(1e-4, 1e-5, 0.5, K, VMIN));
+  });
+
+  it('credits the body velocity along the nose on top of the law', () => {
+    const B = 30 / KM_PER_AU;
+    expect(movingBodySpeedCap(SHIP_CLEARANCE_AU, 1e-5, -1, B, K, VMIN))
+      .toBeCloseTo(governedSpeedCap(SHIP_CLEARANCE_AU, 1e-5, -1, K, VMIN) + B, 15);
+  });
+
+  it('motion against the nose earns no credit', () => {
+    expect(movingBodySpeedCap(1e-4, 1e-5, 1, -30 / KM_PER_AU, K, VMIN))
+      .toBe(governedSpeedCap(1e-4, 1e-5, 1, K, VMIN));
+  });
+
+  it('a committed closing course earns no credit either — a crossing body must not sell closing speed', () => {
+    // Nose 0.8-aligned with the body, body velocity partly along the nose but
+    // ⊥ the sightline: v·f̂ > 0 yet nothing about the geometry reduces the
+    // real closing rate, so the glide contract must hold exactly.
+    expect(movingBodySpeedCap(1e-4, 1e-5, 0.8, 30 / KM_PER_AU, K, VMIN))
+      .toBe(governedSpeedCap(1e-4, 1e-5, 0.8, K, VMIN));
+  });
+
+  it('the credit tapers on the same blend the law uses (half-weight at cos 0.15)', () => {
+    const B = 30 / KM_PER_AU;
+    expect(movingBodySpeedCap(1e-4, 1e-5, 0.15, B, K, VMIN))
+      .toBeCloseTo(governedSpeedCap(1e-4, 1e-5, 0.15, K, VMIN) + B / 2, 15);
+  });
+
+  it('escapes Metis’s leading face at 1× real time, where the world-frame law is pinned forever', () => {
+    // Metis is the catalog's fastest bulldozer: 31.5 km/s orbital speed
+    // (√(GM_jup/r) at r = 128,000 km) against a leave-valve creep of ~5% of
+    // its curve-inflated shell per second (~27 km/s). Creep < closing speed,
+    // so before the body-frame credit a ship caught on its leading face
+    // could never out-walk it — at plain 1×, no time warp involved.
+    const metis = MOONS.find((m) => m.name === 'Metis')!;
+    const jupiter = PLANETARIUM_BODIES.find((b) => b.name === 'Jupiter')!;
+    const renderedR = renderedMoonRadiusAU(metis.radiusAU, jupiter.radiusAU, MOON_RENDER_ANCHOR_RATIO);
+    const shellR = renderedR + SHIP_CLEARANCE_AU;
+    const B = 31.5 / KM_PER_AU;
+    expect(K * LEAVE_HEADSTART_RADII * shellR).toBeLessThan(B); // the bulldozer regime is real
+
+    // 1-D shell ride: h = height above the shell. Each frame the engine flies
+    // min(commanded, cap) along the dead-outward nose while the moon closes
+    // at B; the resolver clamps the ship at the shell (h never negative).
+    const commanded = 25_000 / KM_PER_AU; // the in-system default (~0.083c)
+    const simulate = (credited: boolean) => {
+      const dt = 1 / 60;
+      let h = 0;
+      for (let t = 0; t < 10; t += dt) {
+        const cap = credited
+          ? movingBodySpeedCap(h + SHIP_CLEARANCE_AU, renderedR, -1, B, K, VMIN)
+          : governedSpeedCap(h + SHIP_CLEARANCE_AU, renderedR, -1, K, VMIN);
+        h = Math.max(0, h + (Math.min(commanded, cap) - B) * dt);
+      }
+      return h;
+    };
+    expect(simulate(false)).toBeLessThan(0.02 * shellR); // glued to the blade
+    expect(simulate(true)).toBeGreaterThan(LEAVE_VALVE_KNEE_RADII * shellR); // walks off and leaves
   });
 });

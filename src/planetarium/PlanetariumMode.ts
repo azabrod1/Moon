@@ -251,14 +251,18 @@ import {
   autopilotAimBlend,
   autopilotArrived,
   autopilotGlideCap,
-  governedSpeedCap,
+  contactAimStep,
+  grazeDeflectAim,
   initialBodyCapState,
   moonArrivalPose,
   moonArrivalStandoffAU,
   moonCollisionRadius,
+  movingBodySpeedCap,
   sunArrivalPose,
   BODY_APPROACH_V_MIN_AU_S,
   BODY_CAP_CLEAR_HOLD_S,
+  CONTACT_AIM_TTL_S,
+  CONTACT_ALIGN_OUT_MAX,
   MOON_APPROACH_K_PER_S,
   PLANET_APPROACH_K_PER_S,
   PLANET_ARRIVAL_STANDOFF_FLOOR_AU,
@@ -946,6 +950,22 @@ export class PlanetariumMode {
 
   // Moon world positions in AU (true positions, not offset)
   private moonWorldPositions = new Map<string, { x: number; y: number; z: number }>();
+  /** Per-moon world velocity (AU per frame-second, the same capped dt the
+   *  ship integrates on), differenced in updateMoonPositions from
+   *  consecutive passes of the map above — the governor's moving-body
+   *  credit reads it (same one-frame staleness as the positions, so the
+   *  pair stays consistent). `pass` gates the difference: a moon whose
+   *  entry wasn't written on the immediately previous pass (re-entering
+   *  visibility, a mode gap) restamps at zero instead of reading the gap
+   *  as a teleport. */
+  private moonWorldVels = new Map<string, { x: number; y: number; z: number; pass: number }>();
+  /** Pass counter + the sim clock the last pass saw: updateMoonPositions
+   *  detects clock discontinuities ITSELF (the sim advance not matching
+   *  dt × rate) rather than trusting every jump seam to raise a flag —
+   *  timeJumpToNow, the typed date field, and milestone stagings all write
+   *  the clock without going through setCurrentUtcMs. */
+  private moonVelPassIndex = 0;
+  private moonVelPrevSimMs = Number.NaN;
   /** Photometric sub-pixel moon dots (world/MoonDots) + their live knobs. The
    *  buffers fill in updateMoonDotsForCamera after the final camera pose. */
   private moonDots: MoonDots | null = null;
@@ -1026,6 +1046,14 @@ export class PlanetariumMode {
    *  whole segment, not the endpoint (one 100 ms frame at the in-system
    *  default steps ~2,500 km, clean through a small moon's bubble). */
   private prevPlayerPos = new THREE.Vector3();
+  /** The armed shell-contact graze (see applyShellContact / applyContactAim):
+   *  the unit aim the nose eases onto after a hands-off bump. Transient —
+   *  never saved; steering input, autopilot, jumps, landings, and the
+   *  post-contact TTL all retire it. */
+  private contactAimTarget = new THREE.Vector3();
+  private contactAimActive = false;
+  private contactAimAgeS = 0;
+  private tmpContactForward = new THREE.Vector3();
 
   private layoutMode: PlanetariumLayout = 'realistic';
   // The current frame's wall delta in ms — the system map's scale animation
@@ -2574,6 +2602,10 @@ export class PlanetariumMode {
           this.applyAutopilot();
         }
 
+        // Shell-contact graze: ease the nose along the armed deflection
+        // (hands-off only; any steering input reclaims the stick).
+        this.applyContactAim(dt);
+
         // Compute system speed throttle before player update
         const throttleResult = this.computeSystemSpeedFactor();
         this.systemSpeedFactor = throttleResult.factor;
@@ -2586,7 +2618,10 @@ export class PlanetariumMode {
     // throttle knows nothing smaller than a system, so near a body it still
     // allows the in-system setting — several standoffs per second. Cap the
     // closing speed at K × surface distance and the receding speed at the
-    // distance-tied leave law instead (same escape hatch as the throttle).
+    // distance-tied leave law instead (same escape hatch as the throttle),
+    // each measured in the body's own rest frame — its velocity along the
+    // nose rides on top (movingBodySpeedCap), so a body sweeping toward the
+    // ship can shove it but never trap it.
     // Tightening applies instantly; loosening runs through a short
     // transition ease onto the leave law, so a flyby ends with a steady
     // pull-away, never a time-exponential detonation.
@@ -2687,7 +2722,7 @@ export class PlanetariumMode {
 
     // Position moon meshes first so `collectDynamicOccluders` can read their
     // scene-space positions and record discs for label culling.
-    this.updateMoonPositions();
+    this.updateMoonPositions(dt);
 
     // Camera safety + dynamic near. Deliberately AFTER updateMoonPositions —
     // at the top time rates a capped 100 ms frame moves a moon 36 simulated
@@ -3640,15 +3675,38 @@ export class PlanetariumMode {
 
   /**
    * First pass: position moon meshes, update visibility, and record world AU
-   * positions. Label placement is split into `renderMoonLabels()` so that
-   * moon labels can consult the full set of foreground occluders (planets,
-   * other moons, ship) gathered mid-frame.
+   * positions and per-moon frame velocities. Label placement is split into
+   * `renderMoonLabels()` so that moon labels can consult the full set of
+   * foreground occluders (planets, other moons, ship) gathered mid-frame.
+   *
+   * `dtS` is the frame's capped dt — the same step the sim clock and the
+   * ship integrate on — and the denominator of the per-moon velocities.
+   * Pass 0 from any out-of-frame refresh (a vantage swap): that pass stamps
+   * positions and zeroes velocities, like any discontinuity.
    */
-  private updateMoonPositions() {
+  private updateMoonPositions(dtS = 0) {
     if (!this.solarSystem) return;
     const PLANETSHINE_GAIN = 500; // lift faint physical planetshine to a visible night-side glow
     const PLANETSHINE_MAX = 0.12; // cap well below daylight; large/near parents (Jupiter) sit at the cap
     const shadeNowMs = performance.now(); // wall clock for the applied-shading limiter
+
+    // Moon-velocity pass bookkeeping. Velocities may only be differenced
+    // across two consecutive passes whose clock advanced by exactly this
+    // frame's dt × rate — any other step (an event jump, Now, a typed date,
+    // a milestone staging: seams that write the clock directly) is a
+    // teleport, and differencing across it would hand the governor an
+    // astronomical bogus velocity, whose credit would unbind the cap for a
+    // frame. Detected here, at the one consumer, instead of trusting every
+    // jump seam to raise a flag.
+    this.moonVelPassIndex++;
+    const simNowMs = this.timeState.currentUtcMs;
+    const expectedSimStepS = this.timeState.paused ? 0 : dtS * this.timeState.rate;
+    const simStepS = (simNowMs - this.moonVelPrevSimMs) / 1000;
+    const simStepContinuous =
+      Number.isFinite(simStepS) &&
+      Math.abs(simStepS - expectedSimStepS) <= Math.max(Math.abs(expectedSimStepS) * 0.25, 0.05);
+    this.moonVelPrevSimMs = simNowMs;
+    const velDenomS = dtS > 0 && simStepContinuous ? dtS : 0;
     // Nearest system with textures still queued — the background drain paints it
     // first (you're likeliest to reach it next). Tracked across the planet loop.
     let nearestPending: string | null = null;
@@ -3786,6 +3844,27 @@ export class PlanetariumMode {
           m.fx.uPlanetshineColor.value.set(planet.data.color);
           m.fx.uPlanetshineIntensity.value = Math.min(shine, PLANETSHINE_MAX);
         }
+
+        // World velocity (AU per frame-second) for the governor's moving-body
+        // credit, differenced against the entry this write replaces — valid
+        // only when that entry was written on the immediately previous pass
+        // and this pass's clock step was continuous (velDenomS above).
+        const prevMoonPos = this.moonWorldPositions.get(m.data.name);
+        let moonVel = this.moonWorldVels.get(m.data.name);
+        if (!moonVel) {
+          moonVel = { x: 0, y: 0, z: 0, pass: 0 };
+          this.moonWorldVels.set(m.data.name, moonVel);
+        }
+        if (prevMoonPos && velDenomS > 0 && moonVel.pass === this.moonVelPassIndex - 1) {
+          moonVel.x = (wp.x + offset.x - prevMoonPos.x) / velDenomS;
+          moonVel.y = (wp.y + offset.y - prevMoonPos.y) / velDenomS;
+          moonVel.z = (wp.z + offset.z - prevMoonPos.z) / velDenomS;
+        } else {
+          moonVel.x = 0;
+          moonVel.y = 0;
+          moonVel.z = 0;
+        }
+        moonVel.pass = this.moonVelPassIndex;
 
         this.moonWorldPositions.set(m.data.name, {
           x: wp.x + offset.x,
@@ -10502,6 +10581,9 @@ export class PlanetariumMode {
       endPitch: aim.pitchRad,
       endMoving: options.movingAfter,
     };
+    // The transfer owns the pose from here; an armed contact graze must not
+    // resume steering on the handback frame.
+    this.contactAimActive = false;
     this.player.moving = true;
     // A scripted transfer never poses the camera, so a user-owned camera must
     // reacquire the chase rather than snap to it — snapping from a 90° offset
@@ -10569,6 +10651,9 @@ export class PlanetariumMode {
     // funnels through here, and the aim stage adopts fresh on the next
     // frame instead of sweeping from pre-repose state.
     cutAim(this.cruiseAim);
+    // Same cut for the contact graze: a deliberate repose supersedes any
+    // armed deflection, which must not steer the fresh pose.
+    this.contactAimActive = false;
     this.cancelOrbitGesture();
     // Cruise rides the flight horizon. Every cruise entry funnels through
     // here — first pointing, Travel jumps, takeoff, a non-landed restore — so
@@ -10695,7 +10780,12 @@ export class PlanetariumMode {
    *  orbital epoch at the top time rates (1 yr/s moves a moon 36 simulated
    *  days per capped frame). Pre-existing, main-parity; the camera-safety
    *  pass runs AFTER the refresh and is immune. */
-  private forEachGovernedMoon(cb: (x: number, y: number, z: number, renderedRAU: number) => void) {
+  private forEachGovernedMoon(
+    cb: (
+      x: number, y: number, z: number, renderedRAU: number,
+      vxAUPerS: number, vyAUPerS: number, vzAUPerS: number,
+    ) => void,
+  ) {
     for (const moons of this.planetMoons.values()) {
       for (const m of moons) {
         if (!m.painted || !m.mesh.visible) continue;
@@ -10704,7 +10794,8 @@ export class PlanetariumMode {
         }
         const wp = this.moonWorldPositions.get(m.data.name);
         if (!wp) continue;
-        cb(wp.x, wp.y, wp.z, m.data.radiusAU * m.mesh.scale.x);
+        const vel = this.moonWorldVels.get(m.data.name);
+        cb(wp.x, wp.y, wp.z, m.data.radiusAU * m.mesh.scale.x, vel?.x ?? 0, vel?.y ?? 0, vel?.z ?? 0);
       }
     }
     const seed = this.governedMoonSeed;
@@ -10721,6 +10812,10 @@ export class PlanetariumMode {
       // Flythrough anchor deliberately, not the state selector: jump seeds
       // only exist in cruise, where the flythrough anchor is the live one.
       this.renderedMoonSizeAU(moon.radiusAU, parent.radiusAU, MOON_RENDER_ANCHOR_RATIO),
+      // The seed lives only behind the arrival veil, where the ship is parked
+      // at the standoff — no moving-body credit needed before the painted
+      // mesh takes over.
+      0, 0, 0,
     );
   }
 
@@ -10728,11 +10823,18 @@ export class PlanetariumMode {
    *  the jump seed) at rendered radii, all planets at their envelope radii,
    *  and the Sun at SUN_APPROACH_SURFACE_RADII × its photosphere — the Sun
    *  has no collision shell, and the system throttle's inner edge sits
-   *  INSIDE the photosphere, so this glide is the only brake. */
+   *  INSIDE the photosphere, so this glide is the only brake. Each body's
+   *  law is evaluated in ITS rest frame (movingBodySpeedCap credits the
+   *  body's velocity along the nose): a moon sweeping into the ship used to
+   *  outrun the world-frame leave creep and bulldoze it forever — with the
+   *  credit the ship can always walk off the moving shell. */
   private computeBodySpeedCap(): number {
     const f = this.player.getForwardDirection();
     let cap = Infinity;
-    const consider = (x: number, y: number, z: number, surfaceR: number, kPerS: number) => {
+    const consider = (
+      x: number, y: number, z: number, surfaceR: number, kPerS: number,
+      vxAUPerS: number, vyAUPerS: number, vzAUPerS: number,
+    ) => {
       const dx = x - this.player.posX;
       const dy = y - this.player.posY;
       const dz = z - this.player.posZ;
@@ -10742,26 +10844,33 @@ export class PlanetariumMode {
       // Raw surface distance, deliberately unclamped: at or inside the
       // collision shell both laws clamp themselves — the approach to its
       // floor, the leave law to the shell's own creep.
-      const c = governedSpeedCap(dist - surfaceR, surfaceR, cos, kPerS, BODY_APPROACH_V_MIN_AU_S);
+      const c = movingBodySpeedCap(
+        dist - surfaceR, surfaceR, cos,
+        vxAUPerS * f.x + vyAUPerS * f.y + vzAUPerS * f.z,
+        kPerS, BODY_APPROACH_V_MIN_AU_S,
+      );
       if (c < cap) cap = c;
     };
-    this.forEachGovernedMoon((x, y, z, renderedR) =>
-      consider(x, y, z, renderedR, MOON_APPROACH_K_PER_S));
+    this.forEachGovernedMoon((x, y, z, renderedR, vx, vy, vz) =>
+      consider(x, y, z, renderedR, MOON_APPROACH_K_PER_S, vx, vy, vz));
     if (this.solarSystem) {
       for (const planet of this.solarSystem.planets) {
         const wp = planet.group.userData.worldPosAU as { x: number; y: number; z: number } | undefined;
         if (!wp) continue;
+        const vel = planet.group.userData.worldVelAUPerS as { x: number; y: number; z: number } | undefined;
         consider(
           wp.x, wp.y, wp.z,
           planetEnvelopeRadiusAU(planet.data.radiusAU, planet.group.scale.x, ATMOSPHERE_SHELL_SCALES[planet.data.name]),
           PLANET_APPROACH_K_PER_S,
+          vel?.x ?? 0, vel?.y ?? 0, vel?.z ?? 0,
         );
       }
-      // The Sun sits at the heliocentric origin.
+      // The Sun sits pinned at the heliocentric origin.
       consider(
         0, 0, 0,
         (KM_CONSTANTS.SUN_RADIUS / KM_PER_AU) * SUN_APPROACH_SURFACE_RADII,
         PLANET_APPROACH_K_PER_S,
+        0, 0, 0,
       );
     }
     return cap;
@@ -10878,29 +10987,64 @@ export class PlanetariumMode {
   }
 
   /**
-   * Land a swept shell contact: park the ship on the shell, and — when the
-   * pilot's hands are off the stick — swing the nose outward so the leave
-   * law pulls it straight away. An actively steering pilot keeps their
-   * heading — the shell holds them regardless, and repeatedly snapping the
-   * nose against a held stick was the reported grind-fight. Autopilot ends
-   * on contact: its glide contract already failed (a body swept in at time
-   * warp), and its re-aim would fight the outward bounce frame by frame —
-   * silently, since the pilot did nothing to take the stick.
+   * Land a swept shell contact: park the ship on the shell and, when the
+   * pilot's hands are off the stick, arm the graze — deflect the nose onto
+   * the forward direction's tangential part plus a small outward bias
+   * (grazeDeflectAim), swung there over a few tenths of a second by
+   * applyContactAim — so a bump skims the limb and peels away. The old
+   * response snapped the nose 180° to the radial in one frame: it discarded
+   * the approach direction, whipped the chase camera, and on a moving body's
+   * leading face aimed the ship straight along the bulldozer blade. An
+   * actively steering pilot keeps their heading — the shell holds them
+   * regardless, and re-aiming against a held stick was the reported
+   * grind-fight. Autopilot ends on contact: its glide contract already
+   * failed (a body swept in at time warp), and its re-aim would fight the
+   * deflection frame by frame — silently, since the pilot did nothing to
+   * take the stick. A parked ship is revived (the pilot's own throttle-up
+   * guards apply): a body plowing into it is a physical shove, and a dead
+   * hull would otherwise be bulldozed across the sky with no way out.
    */
   private applyShellContact(cx: number, cy: number, cz: number, shellR: number, hit: SweepContact) {
     this.player.posX = cx + hit.ox * shellR;
     this.player.posY = cy + hit.oy * shellR;
     this.player.posZ = cz + hit.oz * shellR;
     if (this.autopilot) this.disengageAutopilot();
+    this.reviveParkedShip();
     if (this.player.yawInput !== 0 || this.player.pitchInput !== 0) return;
     const forward = this.player.getForwardDirection();
-    if (forward.x * hit.ox + forward.y * hit.oy + forward.z * hit.oz < 0.15) {
-      this.player.headToward(
-        this.player.posX + hit.ox * shellR * 2,
-        this.player.posZ + hit.oz * shellR * 2,
-        this.player.posY + hit.oy * shellR * 2,
+    if (forward.x * hit.ox + forward.y * hit.oy + forward.z * hit.oz < CONTACT_ALIGN_OUT_MAX) {
+      grazeDeflectAim(
+        forward.x, forward.y, forward.z,
+        hit.ox, hit.oy, hit.oz,
+        this.contactAimTarget,
       );
+      this.contactAimActive = true;
+      this.contactAimAgeS = 0;
     }
+  }
+
+  /**
+   * One frame of the armed contact graze: swing the nose toward the deflected
+   * aim on the contact τ (contactAimStep). Steering input or autopilot
+   * reclaims the stick instantly; convergence or the post-contact TTL retires
+   * the swing. Runs in the cruise steering slot — after processInput, before
+   * the ship integrates — so the frame flies the eased heading.
+   */
+  private applyContactAim(dt: number) {
+    if (!this.contactAimActive) return;
+    if (this.player.yawInput !== 0 || this.player.pitchInput !== 0 || this.autopilot) {
+      this.contactAimActive = false;
+      return;
+    }
+    this.contactAimAgeS += dt;
+    const forward = this.player.writeForwardDirection(this.tmpContactForward);
+    const done = contactAimStep(forward, this.contactAimTarget, dt, forward);
+    this.player.headToward(
+      this.player.posX + forward.x,
+      this.player.posZ + forward.z,
+      this.player.posY + forward.y,
+    );
+    if (done || this.contactAimAgeS >= CONTACT_AIM_TTL_S) this.contactAimActive = false;
   }
 
   private resolveMoonCollisions() {
@@ -13980,6 +14124,7 @@ export class PlanetariumMode {
     // pre-landing deflection.
     clearArrivalLook(this.cruiseAim);
     cutAim(this.cruiseAim);
+    this.contactAimActive = false;
     this.arrivalLookMoon = null;
     this.arrivalLookParentBody = null;
     // Landing (and the landed→landed vantage swap) can flip the Sun's exposed
@@ -14694,7 +14839,7 @@ export class PlanetariumMode {
     }
 
     this.updatePlanetScaling();
-    this.updateMoonPositions();
+    this.updateMoonPositions(dt);
     // Same same-frame-geometry rule as the cruise path — and the landed
     // Observatory telescope (narrow FOV) is exactly where a soft map and a
     // chorded limb show, so the triggers keep running while landed. Skipped
@@ -15175,13 +15320,34 @@ export class PlanetariumMode {
     resampleOrbitLines(this.solarSystem, this.layoutMode, this.timeState.currentUtcMs);
   }
 
-  rebuildPlanetPositions(_dt = 0) {
+  rebuildPlanetPositions(dtS = 0) {
     if (!this.solarSystem) return;
     this.rebuildOrbitLinesIfStale();
     for (let i = 0; i < this.solarSystem.planets.length; i++) {
       const planet = this.solarSystem.planets[i];
       const body = PLANETARIUM_BODIES[i];
       const state = computeBodyState(body, this.timeState.currentUtcMs);
+
+      // Per-frame world velocity (AU per frame-second, the same capped dt
+      // the ship integrates on) for the governor's moving-body credit,
+      // differenced against the position this pass replaces. A dt-less
+      // rebuild is a discontinuity (clock set, restore) and reads as zero —
+      // a jump is a teleport, not motion.
+      const prevPos = planet.group.userData.worldPosAU as { x: number; y: number; z: number } | undefined;
+      let vel = planet.group.userData.worldVelAUPerS as { x: number; y: number; z: number } | undefined;
+      if (!vel) {
+        vel = { x: 0, y: 0, z: 0 };
+        planet.group.userData.worldVelAUPerS = vel;
+      }
+      if (dtS > 0 && prevPos) {
+        vel.x = (state.positionAU.x - prevPos.x) / dtS;
+        vel.y = (state.positionAU.y - prevPos.y) / dtS;
+        vel.z = (state.positionAU.z - prevPos.z) / dtS;
+      } else {
+        vel.x = 0;
+        vel.y = 0;
+        vel.z = 0;
+      }
 
       planet.group.quaternion.copy(state.orientationQuaternion);
       planet.mesh.rotation.y = 0;

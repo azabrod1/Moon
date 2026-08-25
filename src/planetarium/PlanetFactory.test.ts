@@ -3,9 +3,12 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   applyColorTierTexture,
   applyNormalTierTexture,
+  armArrivalWarmGoal,
   canAttempt,
   cancelTextureUpgrade,
   cancelNormalUpgrade,
+  disarmArrivalWarmGoal,
+  pumpArrivalWarmGoal,
   makeNormalUpgrade,
   normalUpgradePending,
   upgradeNormalOnApproach,
@@ -1277,5 +1280,126 @@ describe('lodMeasurementRelevant', () => {
     const up = handle('moon');
     expect(lodMeasurementRelevant(geoApplied(), [up], Infinity, H, null)).toBe(true);
     expect(lodMeasurementRelevant(makeGeometryUpgrade([]), [], Infinity, H, null)).toBe(true);
+  });
+});
+
+describe('arrival warm goals', () => {
+  let pending: Array<{ url: string; onLoad: (tex: THREE.Texture) => void; onError: (err: unknown) => void }>;
+  let restore: (() => void) | null = null;
+  const flush = () => new Promise<void>((resolve) => setTimeout(resolve, 0));
+
+  /** Complete a pending fetch with an instantly-decoding texture. */
+  async function land(entry: { onLoad: (tex: THREE.Texture) => void }): Promise<THREE.Texture> {
+    const tex = new THREE.Texture();
+    tex.image = { decode: () => Promise.resolve() };
+    entry.onLoad(tex);
+    await flush();
+    return tex;
+  }
+
+  beforeEach(() => {
+    pending = [];
+    const previous = setUpgradeTextureLoader((url, onLoad, onError) => {
+      pending.push({ url, onLoad, onError });
+    });
+    restore = () => setUpgradeTextureLoader(previous);
+  });
+
+  afterEach(() => {
+    restore?.();
+    restore = null;
+  });
+
+  it('arms to the top tier an approach can earn', () => {
+    const up = handle('moon');
+    expect(armArrivalWarmGoal(up)).toBe(true);
+    expect(up.warmGoal).toBe('8k');
+  });
+
+  it('refuses to arm when the device holds no step', () => {
+    withMaxTextureSize(2048);
+    const up = handle('moon');
+    expect(armArrivalWarmGoal(up)).toBe(false);
+    expect(up.warmGoal).toBeUndefined();
+    expect(pumpArrivalWarmGoal(up, 0)).toBe(false);
+    expect(pending).toHaveLength(0);
+  });
+
+  it('climbs the whole ladder rung by rung from a single arm', async () => {
+    const up = handle('moon');
+    armArrivalWarmGoal(up);
+    expect(pumpArrivalWarmGoal(up, 0)).toBe(true);
+    expect(pending).toHaveLength(1);
+    expect(pending[0].url).toMatch(/textures\/4k\/moon\.webp$/);
+    // In flight: further pumps start nothing.
+    expect(pumpArrivalWarmGoal(up, 16)).toBe(true);
+    expect(pending).toHaveLength(1);
+
+    await land(pending[0]);
+    expect(up.appliedTier).toBe('4k');
+    expect(pumpArrivalWarmGoal(up, 32)).toBe(true);
+    expect(pending).toHaveLength(2);
+    expect(pending[1].url).toMatch(/textures\/8k\/moon\.webp$/);
+
+    await land(pending[1]);
+    expect(up.appliedTier).toBe('8k');
+    // Goal reached: the pump disarms and reports itself prunable.
+    expect(pumpArrivalWarmGoal(up, 48)).toBe(false);
+    expect(up.warmGoal).toBeUndefined();
+  });
+
+  it('settles at the device ceiling', async () => {
+    withMaxTextureSize(4096);
+    const up = handle('moon');
+    expect(armArrivalWarmGoal(up)).toBe(true);
+    pumpArrivalWarmGoal(up, 0);
+    expect(pending).toHaveLength(1);
+    await land(pending[0]);
+    expect(up.appliedTier).toBe('4k');
+    // 8K is out of this device's reach — the goal is done, not stuck.
+    expect(pumpArrivalWarmGoal(up, 16)).toBe(false);
+    expect(pending).toHaveLength(1);
+  });
+
+  it('hands a failed tier back to the on-screen trigger instead of retrying', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const up = handle('moon');
+      armArrivalWarmGoal(up);
+      pumpArrivalWarmGoal(up, 0);
+      pending[0].onError(new Error('offline'));
+      await flush();
+      // Disarmed: no background retry loop, even long past the cooldown.
+      expect(pumpArrivalWarmGoal(up, 10_000_000)).toBe(false);
+      expect(pending).toHaveLength(1);
+      expect(up.warmGoal).toBeUndefined();
+      // The demand-driven trigger path is untouched and retries as always.
+      upgradeTextureOnApproach(up, '4k', 10_000_000);
+      expect(pending).toHaveLength(2);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('never warm-fetches a tier that already failed before arming', () => {
+    const up = handle('moon');
+    up.lastFailure = { tier: '4k', streak: 1 };
+    expect(armArrivalWarmGoal(up)).toBe(true);
+    // Cooldown long over — the warm-up still declines; only the on-screen
+    // trigger may retry a tier with a failure on record.
+    expect(pumpArrivalWarmGoal(up, 10_000_000)).toBe(false);
+    expect(pending).toHaveLength(0);
+    expect(up.warmGoal).toBeUndefined();
+  });
+
+  it('disarm stops the climb between rungs', async () => {
+    const up = handle('moon');
+    armArrivalWarmGoal(up);
+    pumpArrivalWarmGoal(up, 0);
+    await land(pending[0]);
+    expect(up.appliedTier).toBe('4k');
+    disarmArrivalWarmGoal(up);
+    expect(pumpArrivalWarmGoal(up, 16)).toBe(false);
+    expect(pending).toHaveLength(1); // the 8K fetch never starts
   });
 });

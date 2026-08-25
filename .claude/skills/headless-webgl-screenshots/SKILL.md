@@ -141,6 +141,7 @@ from prod). Also callable straight from the browser console under `npm run dev`:
 | `ready()` | solar system loaded? |
 | `bodies()` | list top-level planet names |
 | `jumpTo(name, distMult)` | cruise-jump near a planet (top-level planets only — returns false for moons) |
+| `travelTo(name)` | cruise teleport to a planet OR moon through the REAL pick pipeline (commitBodyPick → arriveThen: veil, arrival pose, destination warm-up) — the deck's Travel verb, for arrival QA |
 | `frame(name, fill, phaseDeg)` | pose camera on a planet or moon to a fill fraction (phase 0 = lit, ~145 = crescent) |
 | `probe(name)` | camera/body diagnostics — planets from the world map, moons resolved live from the ephemeris (includes distance-to-body and distance-to-parent, for arrival QA) |
 | `land(name)` | land on a body — the real landed pipeline, not a camera pose |

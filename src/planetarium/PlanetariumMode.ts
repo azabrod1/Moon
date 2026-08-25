@@ -34,7 +34,7 @@ import {
   SUN_POLE_RA_DEG,
   type PlanetData,
 } from './planets/planetData';
-import { applySunGlowTier, canAttempt, cancelNormalUpgrade, cancelTextureUpgrade, createMoonMeshes, createShaderWarmupProbes, earnedUpgradeTier, firstUpgradeTier, lodMeasurementRelevant, needsUpgradeCover, normalUpgradePending, resolveUpgradeTier, setWarmEligibleMoonParents, upgradeComplete, upgradeGeometryOnApproach, upgradeNormalOnApproach, upgradeTextureOnApproach, ATMOSPHERES, ATMOSPHERE_SHELL_SCALES, PLANET_TEXTURE_FILES, UPGRADE_TRIGGER_FRACTION, type MoonMesh, type TextureUpgrade } from './PlanetFactory';
+import { applySunGlowTier, armArrivalWarmGoal, canAttempt, cancelNormalUpgrade, cancelTextureUpgrade, createMoonMeshes, createShaderWarmupProbes, disarmArrivalWarmGoal, earnedUpgradeTier, firstUpgradeTier, lodMeasurementRelevant, needsUpgradeCover, normalUpgradePending, pumpArrivalWarmGoal, resolveUpgradeTier, setWarmEligibleMoonParents, upgradeComplete, upgradeGeometryOnApproach, upgradeNormalOnApproach, upgradeTextureOnApproach, ATMOSPHERES, ATMOSPHERE_SHELL_SCALES, PLANET_TEXTURE_FILES, UPGRADE_TRIGGER_FRACTION, type MoonMesh, type TextureUpgrade } from './PlanetFactory';
 import type { SurfaceShadingFx } from './world/surfaceShading';
 import { bindTextureWarmer, invalidateTextureWarmCache, pumpTextureWarmQueue, queueTextureWarm, resetTextureWarmer } from './world/textureWarmer';
 import { loadBrightStarCatalog } from './world/starCatalogLoader';
@@ -2564,6 +2564,9 @@ export class PlanetariumMode {
     // inside whatever gesture first draws the map. Runs in every mode so
     // landed sessions warm up too.
     pumpTextureWarmQueue(PlanetariumMode.TEXTURE_WARM_BUDGET_MS);
+    // Climb any committed destination's warm ladder (see
+    // warmArrivalDestination) — a no-op the moment every goal has disarmed.
+    this.pumpArrivalWarmGoals();
 
     // Runs in both branches below — a tutorial narrates landed and cruise scenes.
     this.updateTutorial();
@@ -12112,6 +12115,26 @@ export class PlanetariumMode {
     return false;
   }
 
+  /** Headless support: a cruise teleport through the REAL pick pipeline
+   *  (commitBodyPick → arriveThen, its veil, and the arrival warm-up) —
+   *  unlike devJumpToBody, which poses the jump directly and resolves
+   *  top-level planets only. Resolves a planet, else a moon by name. */
+  devTravelTo(name: string): boolean {
+    if (!this.active || !this.solarSystem) return false;
+    let target: NonNullable<LandedTarget> | null = null;
+    if (this.solarSystem.planets.some((p) => p.data.name === name)) {
+      target = { type: 'planet', name };
+    } else {
+      for (const [parentName, moons] of this.planetMoons) {
+        if (moons.some((m) => m.data.name === name)) {
+          target = { type: 'moon', name, parentPlanet: parentName };
+          break;
+        }
+      }
+    }
+    return target ? this.commitBodyPick('travel', target, {}) : false;
+  }
+
   /** Headless support: an Observatory relocation through the REAL pick
    *  pipeline (commitBodyPick → arriveThen and its veil), unlike devLand,
    *  which enters landed mode directly and never raises the cover. */
@@ -13851,6 +13874,12 @@ export class PlanetariumMode {
   // the entry, since it frees the uploads).
   private warmedSystems = new Set<string>();
 
+  /** Colour handles with a live arrival warm goal (armArrivalWarmGoal): the
+   *  committed destination's ladder, climbing from jump commit instead of
+   *  waiting for the glide to cross each on-screen trigger. Rebuilt per
+   *  arrival; pruned as goals disarm themselves. */
+  private arrivalWarmUps: TextureUpgrade[] = [];
+
   /** Queue a system's arrived moon photo/normal maps for warm upload. Photos
    * only — a GPU-painted procedural map is render-target-backed (already
    * resident) and a CPU CanvasTexture is small; the real normal map (the
@@ -13951,11 +13980,71 @@ export class PlanetariumMode {
     }
     this.arriveAtSystem(
       this.parentSystemOf(target),
-      action,
+      // Warm-up runs WITH the action — under the opaque veil on a cold
+      // arrival, on the teleport's own cut frame on a warm one — and after
+      // it, so a landing's first-tier kick (applyLandedTarget) already owns
+      // its handle when the goals arm.
+      () => {
+        action();
+        this.warmArrivalDestination(target);
+      },
       upgradeCover,
       landingUpgrades,
       bodyDisplayName(target.name),
     );
+  }
+
+  /**
+   * Committed-destination warm-up: a jump knows where it is going, so the LOD
+   * work its approach is certain to earn — the colour rungs above the boot
+   * map, the Moon's close-approach relief, the fine silhouette — starts at
+   * commit instead of when the glide crosses each on-screen trigger
+   * mid-flight (each of those crossings used to land a fetch+decode plus an
+   * unsliceable GPU upload as a visible frame spike during the approach —
+   * worst on WebKit, where a 4K/8K upload is the largest single-frame bill
+   * the app pays). Fetch+decode overlap the veil and the early glide; the
+   * uploads drain under the veiled pump(∞) or the budgeted warm pump.
+   *
+   * Deliberately veil-neutral: nothing armed here joins coverWaitList (it
+   * admits only the landed pair's FIRST-tier attempts), so a cruise jump's
+   * veil lifts exactly as before. Target only, not the Observatory pair —
+   * the companion keeps riding its own on-screen triggers.
+   */
+  private warmArrivalDestination(target: NonNullable<LandedTarget>): void {
+    const nowMs = performance.now();
+    this.arrivalWarmUps = [];
+    for (const up of this.textureUpgradesForTarget(target)) {
+      if (armArrivalWarmGoal(up)) this.arrivalWarmUps.push(up);
+    }
+    // First rung starts now — under the veil, or with the teleport cut.
+    this.pumpArrivalWarmGoals();
+    if (target.type === 'moon') {
+      const moon = this.planetMoons
+        .get(target.parentPlanet)
+        ?.find((m) => m.data.name === target.name);
+      if (moon) {
+        // Fraction 1 is the forced form of the LOD loop's own call: the
+        // approach will cross the relief trigger anyway, and a failure keeps
+        // its cooldown and falls back to that trigger.
+        upgradeNormalOnApproach(moon.normalUpgrade, 1, nowMs);
+        upgradeGeometryOnApproach(moon.geometryUpgrade, Number.POSITIVE_INFINITY);
+      }
+    } else {
+      const planet = this.solarSystem?.planets.find((p) => p.data.name === target.name);
+      if (planet) upgradeGeometryOnApproach(planet.geometryUpgrade, Number.POSITIVE_INFINITY);
+    }
+  }
+
+  /** Climb the armed destination goals — at most one gated fetch start per
+   *  handle per frame — pruning goals that have disarmed themselves. */
+  private pumpArrivalWarmGoals(): void {
+    if (this.arrivalWarmUps.length === 0) return;
+    const nowMs = performance.now();
+    let keep = 0;
+    for (const up of this.arrivalWarmUps) {
+      if (pumpArrivalWarmGoal(up, nowMs)) this.arrivalWarmUps[keep++] = up;
+    }
+    this.arrivalWarmUps.length = keep;
   }
 
   /**
@@ -13983,7 +14072,13 @@ export class PlanetariumMode {
     // the destination. Handles this destination wants keep their fetch — it is
     // the same map.
     for (const up of this.allTextureUpgrades()) {
-      if (!keepUpgrades.includes(up)) cancelTextureUpgrade(up, 'discard');
+      if (!keepUpgrades.includes(up)) {
+        cancelTextureUpgrade(up, 'discard');
+        // A departed destination's warm goal goes with its fetches — a goal
+        // may only outlive the approach it was armed for on the body the
+        // player is still headed to.
+        disarmArrivalWarmGoal(up);
+      }
     }
     this.arrivalUpgradeBatch = [];
     const moons = systemName ? this.planetMoons.get(systemName) : undefined;
@@ -15457,8 +15552,13 @@ export class PlanetariumMode {
     this.deactivate();
     // Abandon every colour-tier fetch still in flight: a callback that landed
     // after this point would apply to a material nothing draws and queue an
-    // upload into a warmer with no renderer behind it.
-    for (const up of this.allTextureUpgrades()) cancelTextureUpgrade(up, 'discard');
+    // upload into a warmer with no renderer behind it. Warm goals go with
+    // them — nothing may start a fetch after this point.
+    for (const up of this.allTextureUpgrades()) {
+      cancelTextureUpgrade(up, 'discard');
+      disarmArrivalWarmGoal(up);
+    }
+    this.arrivalWarmUps = [];
     // The relief tiers ride the same network and need the same abandonment.
     for (const moons of this.planetMoons.values()) {
       for (const m of moons) cancelNormalUpgrade(m.normalUpgrade);

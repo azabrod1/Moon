@@ -425,6 +425,9 @@ export interface TextureUpgrade {
    *  on the boot map. Cleared once a tier at or above the failed one
    *  applies. */
   lastFailure?: { tier: TextureTier; streak: number };
+  /** A committed arrival's warm-up target — see armArrivalWarmGoal. Set only
+   *  through arm/disarm so the one-shot-per-tier semantics hold. */
+  warmGoal?: TextureTier;
 }
 
 /** True once this handle has fetched everything the device can hold — the
@@ -856,6 +859,72 @@ export function cancelTextureUpgrade(
   if (!up.attempt || flavor === 'keep') return;
   up.attempt = undefined;
   up.retryAtMs = nowMs + UPGRADE_RETRY_MS;
+}
+
+// --- Arrival warm goals ------------------------------------------------------
+//
+// The on-screen triggers are reactive: each rung's fetch starts only when the
+// live disc crosses its screen fraction, which for a teleport approach means
+// mid-glide — every tier lands as a fetch+decode+unsliceable-upload spike in
+// front of a moving camera (the measured "touch of stuttering" on a first
+// Moon approach; worst on WebKit, where the upload bill is largest). But a
+// committed jump KNOWS its destination, and its hands-off glide is certain to
+// cross every trigger within seconds — so a warm goal lets the ladder climb
+// from jump commit instead: fetch+decode overlap the arrival veil and the
+// early glide, and the uploads drain under the veil's unbounded pump or on
+// the gentlest frames of the approach.
+//
+// Veil-neutral by construction: a goal only ever starts the same attempts the
+// triggers would, and an arrival cover's wait-list (PlanetariumMode's
+// coverWaitList) admits nothing but the landed pair's FIRST-tier attempts —
+// so a cruise jump's veil lifts exactly as it did before warm goals existed.
+//
+// One-shot per tier, never a background loop: a tier that has EVER failed is
+// left to the demand-driven trigger (which retries only while the body fills
+// the view), so an armed goal on a device that can't decode 8K cannot keep
+// re-downloading it after the player has flown away. Goals are disarmed by
+// the teleport-away sweep and mode disposal.
+
+/**
+ * Arm a handle for a committed arrival: the goal is the top tier any
+ * on-screen trigger could pull (fraction 1 — the body filling the viewport,
+ * which a completed approach reaches). Returns false — and leaves the handle
+ * unarmed — when no fetchable step remains for this device.
+ */
+export function armArrivalWarmGoal(up: TextureUpgrade): boolean {
+  const goal = earnedUpgradeTier(up, 1);
+  if (!goal || !resolveUpgradeTier(up, goal)) {
+    up.warmGoal = undefined;
+    return false;
+  }
+  up.warmGoal = goal;
+  return true;
+}
+
+export function disarmArrivalWarmGoal(up: TextureUpgrade): void {
+  up.warmGoal = undefined;
+}
+
+/**
+ * One frame of goal-driven climbing: start the next rung when the handle is
+ * free, exactly as an on-screen trigger would. Returns false once the goal
+ * has disarmed itself — reached, unreachable, or handed back to the trigger
+ * by a failure — so callers can prune their armed list.
+ */
+export function pumpArrivalWarmGoal(up: TextureUpgrade, nowMs: number): boolean {
+  const goal = up.warmGoal;
+  if (!goal) return false;
+  const next = resolveUpgradeTier(up, goal);
+  if (!next) {
+    up.warmGoal = undefined;
+    return false;
+  }
+  if (up.lastFailure && TIER_RANK[up.lastFailure.tier] >= TIER_RANK[next]) {
+    up.warmGoal = undefined;
+    return false;
+  }
+  if (canAttempt(up, nowMs)) upgradeTextureOnApproach(up, next, nowMs);
+  return true;
 }
 
 // Higher-resolution RELIEF tiers on disk, per normal-map key. The Moon's

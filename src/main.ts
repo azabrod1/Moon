@@ -627,6 +627,7 @@ function installDevHooks() {
       return planetariumLens.strength;
     },
     probe: (name: string) => planetariumMode?.devProbe(name) ?? null,
+    travelTo: (name: string) => planetariumMode?.devTravelTo(name) ?? false,
     land: (name: string) => planetariumMode?.devLand(name) ?? false,
     observe: (name: string) => planetariumMode?.devObserve(name) ?? false,
     lookUp: () => planetariumMode?.devLookUp() ?? false,

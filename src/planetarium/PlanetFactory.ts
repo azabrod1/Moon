@@ -547,6 +547,30 @@ export function firstUpgradeTier(up: TextureUpgrade): TextureTier | null {
   return first && TIER_RANK[first] <= TIER_RANK[up.effectiveMaxTier] ? first : null;
 }
 
+// Cache-prefetch order: likeliest travel destinations first, so a connection
+// that only gets partway through has still warmed the jumps people make.
+const TIER_PREFETCH_ORDER = ['moon', 'mars', 'jupiter', 'earthClouds', 'pluto'];
+
+/** The URL of every first colour-tier file still unfetched across `ups` — the
+ *  exact set an arrival cover can end up waiting on — deduped and ordered
+ *  likeliest destination first. Feeds the post-boot HTTP-cache prefetch
+ *  (world/tierPrefetch); honours the device cap through firstUpgradeTier. */
+export function firstTierPrefetchUrls(ups: readonly TextureUpgrade[]): string[] {
+  const rank = (up: TextureUpgrade) => {
+    const i = TIER_PREFETCH_ORDER.indexOf(up.key);
+    return i === -1 ? TIER_PREFETCH_ORDER.length : i;
+  };
+  const urls: string[] = [];
+  for (const up of [...ups].sort((a, b) => rank(a) - rank(b))) {
+    if (up.appliedTier !== null) continue;
+    const first = firstUpgradeTier(up);
+    if (!first) continue;
+    const url = resolveTextureUrl(resolveTierFile(up.key, first), first);
+    if (!urls.includes(url)) urls.push(url);
+  }
+  return urls;
+}
+
 /** The step `requested` earns for this device and handle — null when nothing
  *  is left to fetch. From the boot map the ladder is climbed ONE RUNG AT A
  *  TIME even when the screen fraction earns the top directly: the first rung
@@ -814,6 +838,14 @@ export function upgradeTextureOnApproach(
   const load: TextureLoad = file.endsWith('.ktx2') && ktx2
     ? (u, onLoad, onError) => ktx2(u, onLoad, onError)
     : loadUpgradeTexture;
+  // DEV forensic: per-attempt fetch/decode wall times (window.__texProfile).
+  const texProf: Record<string, number | string> = { key: up.key, tier, startedAt: nowMs };
+  if (import.meta.env.DEV && typeof window !== 'undefined') {
+    const w = window as unknown as { __texProfile?: object[] };
+    const ring = (w.__texProfile ??= []);
+    ring.push(texProf);
+    if (ring.length > 256) ring.shift();
+  }
   // Deliberately a plain load, not the durable seam: this is an optional
   // sharpen wanted only while the body fills the view. A failure leaves
   // whatever is already on the material — the boot map, or the procedural
@@ -824,6 +856,7 @@ export function upgradeTextureOnApproach(
   load(
     url,
     (tex) => {
+      texProf.loadedAt = performance.now();
       if (abandoned()) {
         tex.dispose();
         return;
@@ -836,6 +869,7 @@ export function upgradeTextureOnApproach(
       // view, so warming here can't upload hidden bodies.
       const img = tex.image as { decode?: () => Promise<void> } | undefined;
       const applyUpgrade = () => {
+        texProf.decodedAt = performance.now();
         // An abandoned attempt drops its bytes here. A merely uncovered one
         // still applies: the download is already paid for, so disposing it
         // would cost the same unsliceable upload again later plus a second

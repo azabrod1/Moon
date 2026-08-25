@@ -898,6 +898,10 @@ async function init() {
   // revalidates against the HTTP cache the boot just filled, so this order
   // makes install nearly free instead of competing with boot fetches).
   registerServiceWorker();
+  // ...and the first colour-tier files may warm the HTTP cache, so a later
+  // travel's arrival veil finds its fetch already paid (the module delays
+  // past the service worker's install burst on its own).
+  planetariumMode?.startFirstTierCachePrefetch();
   await planetariumMode?.showDeferredResumePromptIfNeeded();
 
   if (autoMode === 'volumeCompare') {

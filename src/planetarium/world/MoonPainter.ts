@@ -45,7 +45,18 @@ export class MoonPainter {
    * from the queue. Used by the visibility gate and the arrival veil.
    */
   paintSystemNow(parentName: string, moons: MoonMesh[]): void {
-    for (const m of moons) if (!m.painted) this.paint(m);
+    for (const m of moons) {
+      if (m.painted) continue;
+      const t0 = import.meta.env.DEV ? performance.now() : 0;
+      this.paint(m);
+      if (import.meta.env.DEV && typeof window !== 'undefined') {
+        // DEV forensic: per-moon synchronous paint cost (window.__paintProfile).
+        const w = window as unknown as { __paintProfile?: object[] };
+        const ring = (w.__paintProfile ??= []);
+        ring.push({ moon: m.data.name, ms: performance.now() - t0 });
+        if (ring.length > 256) ring.shift();
+      }
+    }
     this.pending.delete(parentName);
   }
 

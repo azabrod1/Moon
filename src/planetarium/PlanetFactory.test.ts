@@ -19,6 +19,7 @@ import {
   createMoonMeshes,
   earnedUpgradeTier,
   FALLBACK_AFTER_FAILURES,
+  firstTierPrefetchUrls,
   firstUpgradeTier,
   initialColorTierRank,
   loadTexture,
@@ -1462,5 +1463,27 @@ describe('the compressed 8K tier override', () => {
     expect(tex.userData.mutableStorage).toBeUndefined(); // compressed keeps texStorage2D
     pumpTextureWarmQueue(Number.POSITIVE_INFINITY);
     expect(uploaded).toEqual([tex]);
+  });
+});
+
+describe('firstTierPrefetchUrls', () => {
+  it('lists each unfetched first tier once, likeliest destinations first', () => {
+    const ups = [handle('jupiter'), handle('mars'), handle('moon'), handle('jupiter')];
+    expect(firstTierPrefetchUrls(ups)).toEqual([
+      '/textures/4k/moon.webp',
+      '/textures/4k/mars.webp',
+      '/textures/4k/jupiter.webp',
+    ]);
+  });
+
+  it('skips handles that already applied a tier — their veil never waits', () => {
+    const mars = handle('mars');
+    mars.appliedTier = '4k';
+    expect(firstTierPrefetchUrls([mars, handle('pluto')])).toEqual(['/textures/4k/pluto.webp']);
+  });
+
+  it('prefetches nothing a capped device could never load', () => {
+    withMaxTextureSize(2048);
+    expect(firstTierPrefetchUrls([handle('moon'), handle('jupiter')])).toEqual([]);
   });
 });

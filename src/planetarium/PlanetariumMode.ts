@@ -34,7 +34,8 @@ import {
   SUN_POLE_RA_DEG,
   type PlanetData,
 } from './planets/planetData';
-import { applySunGlowTier, armArrivalWarmGoal, bindKtx2TierLoader, canAttempt, cancelNormalUpgrade, cancelTextureUpgrade, createMoonMeshes, createShaderWarmupProbes, disarmArrivalWarmGoal, earnedUpgradeTier, firstUpgradeTier, lodMeasurementRelevant, needsUpgradeCover, normalUpgradePending, pumpArrivalWarmGoal, resolveUpgradeTier, setWarmEligibleMoonParents, upgradeComplete, upgradeGeometryOnApproach, upgradeNormalOnApproach, upgradeTextureOnApproach, ATMOSPHERES, ATMOSPHERE_SHELL_SCALES, PLANET_TEXTURE_FILES, UPGRADE_TRIGGER_FRACTION, type MoonMesh, type TextureUpgrade } from './PlanetFactory';
+import { applySunGlowTier, armArrivalWarmGoal, bindKtx2TierLoader, canAttempt, cancelNormalUpgrade, cancelTextureUpgrade, createMoonMeshes, createShaderWarmupProbes, disarmArrivalWarmGoal, earnedUpgradeTier, firstTierPrefetchUrls, firstUpgradeTier, lodMeasurementRelevant, needsUpgradeCover, normalUpgradePending, pumpArrivalWarmGoal, resolveUpgradeTier, setWarmEligibleMoonParents, upgradeComplete, upgradeGeometryOnApproach, upgradeNormalOnApproach, upgradeTextureOnApproach, ATMOSPHERES, ATMOSPHERE_SHELL_SCALES, PLANET_TEXTURE_FILES, UPGRADE_TRIGGER_FRACTION, type MoonMesh, type TextureUpgrade } from './PlanetFactory';
+import { cachePrefetchAllowed, startCachePrefetch, type CachePrefetchHandle, type ConnectionHints } from './world/tierPrefetch';
 import type { KTX2Loader } from 'three/examples/jsm/loaders/KTX2Loader.js';
 import type { SurfaceShadingFx } from './world/surfaceShading';
 import { bindTextureWarmer, invalidateTextureWarmCache, pumpTextureWarmQueue, queueTextureWarm, resetTextureWarmer } from './world/textureWarmer';
@@ -14028,6 +14029,10 @@ export class PlanetariumMode {
    *  arrival; pruned as goals disarm themselves. */
   private arrivalWarmUps: TextureUpgrade[] = [];
 
+  /** The post-boot first-tier cache prefetch, once started (see
+   *  startFirstTierCachePrefetch) — held for cancellation on dispose. */
+  private tierPrefetch: CachePrefetchHandle | null = null;
+
   /** Lazily imported KTX2 loader behind the compressed-tier binding — null
    *  until the first .ktx2 tier fetch of the session. */
   private ktx2Loader: Promise<KTX2Loader> | null = null;
@@ -14135,6 +14140,17 @@ export class PlanetariumMode {
       // because nothing here is covering that one.
       up.retryAtMs = undefined;
       upgradeCover = true;
+      // Start the covered fetch NOW, not two frames from now under the veil:
+      // the network round-trip is the hold's dominant cost (see the
+      // tierPrefetch header), so it should overlap the veil composite and the
+      // covered paint/teleport work instead of queueing behind them. Safe
+      // ahead of arriveAtSystem's sweep — these handles are its keep-list —
+      // and idempotent under the veil: the landing kick and the warm goals
+      // both find the attempt in flight and leave it be, and coverWaitList
+      // (taken after the action) waits on this attempt by identity exactly as
+      // if it had started under the cover.
+      const first = firstUpgradeTier(up);
+      if (first) upgradeTextureOnApproach(up, first);
     }
     this.arriveAtSystem(
       this.parentSystemOf(target),
@@ -14202,6 +14218,32 @@ export class PlanetariumMode {
       const planet = this.solarSystem?.planets.find((p) => p.data.name === target.name);
       if (planet) upgradeGeometryOnApproach(planet.geometryUpgrade, Number.POSITIVE_INFINITY);
     }
+  }
+
+  /**
+   * Post-boot: warm the HTTP cache with every first colour-tier file a future
+   * arrival veil could wait on (~4MB total; see world/tierPrefetch's header
+   * for the profiling that motivates this). Called once from boot after the
+   * loading screen clears; idempotent, and skipped on connections that asked
+   * for restraint. Bytes only — nothing decodes, uploads, or applies here, so
+   * the LOD ladder and the veil semantics are untouched: the arrival still
+   * runs its own fetch, which now completes from the disk cache.
+   */
+  startFirstTierCachePrefetch(): void {
+    if (this.tierPrefetch) return;
+    const conn = (navigator as { connection?: ConnectionHints }).connection;
+    if (!cachePrefetchAllowed(conn)) return;
+    const urls = firstTierPrefetchUrls(this.allTextureUpgrades());
+    if (urls.length === 0) return;
+    this.tierPrefetch = startCachePrefetch({
+      urls,
+      // A live tier fetch owns the network — it is exactly what an arrival
+      // veil or an approach sharpen is waiting on right now. (arrivalInFlight
+      // alone is too brief a signal: it clears with the covered work, while
+      // the fetch it started runs on through the veil hold.)
+      shouldPause: () =>
+        this.arrivalInFlight || this.allTextureUpgrades().some((up) => up.attempt !== undefined),
+    });
   }
 
   /** Climb the armed destination goals — at most one gated fetch start per
@@ -14272,6 +14314,12 @@ export class PlanetariumMode {
     this.arrivalInFlight = true;
     const veil = document.getElementById('arrival-veil');
     const coverStart = performance.now();
+    // DEV forensic: per-phase wall times of this hold, readable from the
+    // console / harness as window.__arrivalProfile (last arrival wins).
+    const prof: Record<string, number> = { start: coverStart, needsPaint: needsPaint ? 1 : 0, upgradeCover: upgradeCover ? 1 : 0, uploadCover: needsUploadCover ? 1 : 0 };
+    if (import.meta.env.DEV && typeof window !== 'undefined') {
+      (window as unknown as { __arrivalProfile?: object }).__arrivalProfile = prof;
+    }
     veil?.classList.add('covering'); // snaps fully opaque (no fade-in) — see CSS
     // The covering black over mostly-black space reads as a dead screen (and
     // deliberately catches clicks), so a hold that outlives a beat names
@@ -14294,12 +14342,15 @@ export class PlanetariumMode {
     requestAnimationFrame(() =>
       requestAnimationFrame(() => {
         try {
+          prof.coveredAt = performance.now();
           // The mode could have been left during the two-frame cover window —
           // don't paint or teleport into a deactivated mode (the finally still
           // clears the flag and lifts the veil).
           if (!this.active) return;
           if (moons && systemName) this.moonPainter.paintSystemNow(systemName, moons);
+          prof.paintDoneAt = performance.now();
           action();
+          prof.actionDoneAt = performance.now();
           // Upload the system's arrived photo/normal maps while the cover is
           // opaque (a landing already queued them via applyLandedTarget; a
           // cruise jump queues here), so the reveal frame draws a fully
@@ -14309,6 +14360,7 @@ export class PlanetariumMode {
             pumpTextureWarmQueue(Number.POSITIVE_INFINITY);
             this.warmedSystems.add(systemName);
           }
+          prof.warmPumpDoneAt = performance.now();
           // Take the hold's wait-list once, now that the arrival has started
           // its fetches (applyLandedTarget or the arrival warm-up, inside the
           // action above). Taken over the destination's own handles
@@ -14329,6 +14381,7 @@ export class PlanetariumMode {
           // until they resolve (bounded — a stalled fetch must never pin the
           // veil), drain once more, then reveal.
           const batch = this.arrivalUpgradeBatch;
+          prof.waitBatch = batch.length;
           const holdDeadline = coverStart + PlanetariumMode.ARRIVAL_UPGRADE_HOLD_MAX_MS;
           const tryLift = () => {
             if (coverGen !== this.arrivalCoverGen) return; // a newer arrival owns the veil now
@@ -14337,6 +14390,8 @@ export class PlanetariumMode {
               requestAnimationFrame(tryLift);
               return;
             }
+            prof.fetchWaitDoneAt = performance.now();
+            prof.fetchAbandoned = pending.length;
             // A step that missed the covered window is released, not dropped:
             // the body keeps the map it has, and the download that is already
             // on its way applies on a quiet frame after the reveal. Throwing it
@@ -14344,6 +14399,7 @@ export class PlanetariumMode {
             // of the session.
             for (const e of pending) cancelTextureUpgrade(e.up, 'keep');
             pumpTextureWarmQueue(Number.POSITIVE_INFINITY);
+            prof.finalPumpDoneAt = performance.now();
             // Hold the cover until the painted, teleported scene has rendered
             // (the landed/jumped system first appears on the next
             // update→render) and at least the min dwell, so a fast machine
@@ -14352,6 +14408,7 @@ export class PlanetariumMode {
             const wait = Math.max(48, PlanetariumMode.ARRIVAL_MIN_DWELL_MS - (performance.now() - coverStart));
             window.setTimeout(() => {
               if (coverGen !== this.arrivalCoverGen) return;
+              prof.revealAt = performance.now();
               veil?.classList.remove('covering');
               window.clearTimeout(this.arrivalNoteTimer);
               document.getElementById('arrival-veil-note')?.classList.remove('show', 'pulse');
@@ -15759,6 +15816,8 @@ export class PlanetariumMode {
       disarmArrivalWarmGoal(up);
     }
     this.arrivalWarmUps = [];
+    this.tierPrefetch?.cancel();
+    this.tierPrefetch = null;
     // Unbind before the loader teardown so no late tier fetch can race a
     // disposing transcoder; a loader never instantiated disposes nothing.
     bindKtx2TierLoader(null);

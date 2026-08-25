@@ -73,6 +73,7 @@ export function pumpTextureWarmQueue(budgetMs: number): void {
       tex.removeEventListener('dispose', onDispose);
     }
     const perfUpload = import.meta.env.DEV ? surfacePerfBeginTextureUpload(tex) : null;
+    const uploadStart = import.meta.env.DEV ? performance.now() : 0;
     let uploaded = false;
     try {
       uploadFn(tex);
@@ -81,7 +82,22 @@ export function pumpTextureWarmQueue(budgetMs: number): void {
       // Fail open: drop the entry; the texture uploads lazily on first draw.
       debugWarn('Texture warm upload failed', { err: String(err) });
     } finally {
-      if (import.meta.env.DEV) surfacePerfEndTextureUpload(perfUpload);
+      if (import.meta.env.DEV) {
+        surfacePerfEndTextureUpload(perfUpload);
+        // DEV forensic: every warm upload's wall time (window.__uploadProfile).
+        if (typeof window !== 'undefined') {
+          const img = tex.image as { width?: number; height?: number } | undefined;
+          const w = window as unknown as { __uploadProfile?: object[] };
+          const ring = (w.__uploadProfile ??= []);
+          ring.push({
+            at: uploadStart,
+            ms: performance.now() - uploadStart,
+            size: `${img?.width ?? '?'}x${img?.height ?? '?'}`,
+            name: tex.name || '(unnamed)',
+          });
+          if (ring.length > 256) ring.shift();
+        }
+      }
     }
     if (uploaded) warmedVersions.set(tex, tex.version);
     if (performance.now() - start >= budgetMs) return;

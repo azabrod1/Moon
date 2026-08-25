@@ -8,7 +8,7 @@
 import { ShaderPass } from 'three/addons/postprocessing/ShaderPass.js';
 import { lensPassFragmentShader, lensRadial } from '../shared/math/lensProjection';
 
-const DEG = Math.PI / 180;
+import { DEG2RAD as DEG } from '../shared/math/angles';
 
 /** Per-camera lens parameters, carried on `camera.userData.lens`. */
 export interface LensParams {

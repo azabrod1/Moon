@@ -722,8 +722,14 @@ describe('the ring-clearance knob', () => {
     // against this implementation run twice: the params grew a field, so
     // comparing the new code with itself passes a regression common to both
     // paths — and object identity would pass a knob that did nothing and one
-    // that did too much alike. Float precision, no tolerance: these are outputs
-    // of a pure function, so anything but equality is a change.
+    // that did too much alike. Tolerance is two ULPs, not zero: the curve runs
+    // through Math.pow, whose last bit is legitimately engine-dependent
+    // (ECMAScript does not require correctly-rounded transcendentals, and V8
+    // builds differ), while any real curve or squeeze change moves these radii
+    // by millions of ULPs — the pin binds exactly as before on every engine.
+    const expectSameRadius = (got: number, want: number, label: string) => {
+      expect(Math.abs(got - want), label).toBeLessThanOrEqual(2 * Number.EPSILON * Math.abs(want));
+    };
     setMapRingOuterFactors(CHART_RINGS);
     const params = { ...MAP_MOON_OFFSET_DEFAULTS, ringClearanceMul: 0 };
     let checked = 0;
@@ -733,9 +739,9 @@ describe('the ring-clearance knob', () => {
       for (const [name, peri, mean, apo] of rows as [string, number, number, number][]) {
         const e = entries.find((x) => x.name === name);
         expect(e, `${planet}: the catalog no longer has ${name}`).toBeDefined();
-        expect(mapMoonOffsetR(policy, e!.periX), `${name} periapsis`).toBe(peri);
-        expect(mapMoonOffsetR(policy, e!.meanX), `${name} mean`).toBe(mean);
-        expect(mapMoonOffsetR(policy, e!.apoX), `${name} apoapsis`).toBe(apo);
+        expectSameRadius(mapMoonOffsetR(policy, e!.periX), peri, `${name} periapsis`);
+        expectSameRadius(mapMoonOffsetR(policy, e!.meanX), mean, `${name} mean`);
+        expectSameRadius(mapMoonOffsetR(policy, e!.apoX), apo, `${name} apoapsis`);
         checked += 3;
       }
     }

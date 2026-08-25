@@ -25,7 +25,7 @@ import {
   type SurfaceEventInfo,
   type SurfaceLandedInfo,
 } from '../surfaceView';
-import { setText } from '../../shared/dom';
+import { MOBILE_BREAKPOINT_PX, setText } from '../../shared/dom';
 
 /** What the phase hero shows for the current landed body. */
 export type ObservatorySubjectInfo =
@@ -549,6 +549,8 @@ export class ObservatoryPanel {
   // the content returns.
   private sheetAtPeek = true;
   private wasSheetForm = false;
+  /** The window resize listener, named so dispose can remove it. */
+  private onWindowResize: (() => void) | null = null;
   // A live handle/panel drag owns the sheet's height — content rebuilds must
   // not re-assert the detent mid-gesture (the chunked event search publishes
   // rows for seconds right after open).
@@ -622,8 +624,10 @@ export class ObservatoryPanel {
     });
     this.wireSheetDrag();
     // Crossing the 640px breakpoint re-houses the panel (sheet ↔ side
-    // panel) — the published inset must follow.
-    window.addEventListener('resize', () => this.updateSheetInset());
+    // panel) — the published inset must follow. Named so dispose can drop it:
+    // a window listener would keep a disposed panel reachable and firing.
+    this.onWindowResize = () => this.updateSheetInset();
+    window.addEventListener('resize', this.onWindowResize);
     const guidesToggle = document.getElementById('observatory-guides-toggle') as HTMLInputElement | null;
     const guidesCaption = document.getElementById('observatory-guides-cap');
     guidesToggle?.addEventListener('change', () => {
@@ -695,11 +699,11 @@ export class ObservatoryPanel {
       // so the disabled state paints before the search blocks the main thread.
       button.disabled = true;
       window.setTimeout(() => {
-        try {
-          this.onJump(type, direction);
-        } finally {
-          button.disabled = false;
-        }
+        button.disabled = false;
+        // The panel can close inside the gap (Esc, Leave, the map stashing
+        // it) — a dismissed panel's click must not still warp the clock.
+        if (!this.isOpen()) return;
+        this.onJump(type, direction);
       }, 10);
     });
   }
@@ -717,7 +721,7 @@ export class ObservatoryPanel {
 
   /** ≤640px the panel renders as a bottom sheet (CSS media query). */
   private isSheetForm(): boolean {
-    return window.innerWidth <= 640;
+    return window.innerWidth <= MOBILE_BREAKPOINT_PX;
   }
 
   /**
@@ -1266,6 +1270,16 @@ export class ObservatoryPanel {
           stops[1].setAttribute('stop-color', paint.limb);
         }
       }
+    }
+  }
+
+  /** Owner teardown: drop the window resize listener, which would otherwise
+   *  keep a disposed panel — and its owner, through the callbacks — reachable
+   *  and firing. Element listeners die with their elements. */
+  dispose(): void {
+    if (this.onWindowResize) {
+      window.removeEventListener('resize', this.onWindowResize);
+      this.onWindowResize = null;
     }
   }
 }

@@ -1171,15 +1171,23 @@ function createFallbackTexture(key: string, kind: MapKind = 'color'): THREE.Text
   return tex;
 }
 
-function createAtmosphereGlow(radiusAU: number, config: AtmosphereConfig): THREE.Mesh {
-  const geo = new THREE.SphereGeometry(radiusAU * config.scale, 64, 32);
-  const mat = new THREE.ShaderMaterial({
+/**
+ * The atmosphere glow ShaderMaterial — the ONE place the shader's uniform
+ * block is assembled from an AtmosphereConfig, shared with the volume-compare
+ * ghost so a uniform added to shared/shaders/atmosphere.ts is wired here and
+ * nowhere else. Callers own geometry, scale and render order.
+ */
+export function createAtmosphereMaterial(
+  config: AtmosphereConfig,
+  planetRadius: number,
+  opts?: { initialAlpha?: number; initialSunDir?: THREE.Vector3 },
+): THREE.ShaderMaterial {
+  return new THREE.ShaderMaterial({
     vertexShader: atmosphereVertexShader,
     fragmentShader: atmosphereFragmentShader,
     uniforms: {
-      // Fed per frame from the body's sun direction and approach distance.
-      uSunDirWorld: { value: new THREE.Vector3(0, 0, 1) },
-      alphaScale: { value: 0.0 }, // faded out until the per-frame distance feed runs (no first-frame flash)
+      uSunDirWorld: { value: opts?.initialSunDir?.clone() ?? new THREE.Vector3(0, 0, 1) },
+      alphaScale: { value: opts?.initialAlpha ?? 0.0 },
       uDayColor: { value: new THREE.Vector3(...config.dayColor) },
       uSunsetColor: { value: new THREE.Vector3(...config.sunsetColor) },
       uMieColor: { value: new THREE.Vector3(...config.mieColor) },
@@ -1189,15 +1197,20 @@ function createAtmosphereGlow(radiusAU: number, config: AtmosphereConfig): THREE
       uPower: { value: config.power },
       uIntensity: { value: config.intensity },
       uHaloStrength: { value: config.haloStrength },
-      uPlanetRadius: { value: radiusAU },
+      uPlanetRadius: { value: planetRadius },
     },
     transparent: true,
     side: THREE.BackSide,
     depthWrite: false,
     blending: THREE.AdditiveBlending,
   });
+}
 
-  return new THREE.Mesh(geo, mat);
+function createAtmosphereGlow(radiusAU: number, config: AtmosphereConfig): THREE.Mesh {
+  const geo = new THREE.SphereGeometry(radiusAU * config.scale, 64, 32);
+  // alphaScale starts at 0: faded out until the per-frame distance feed runs
+  // (no first-frame flash); uSunDirWorld is fed per frame the same way.
+  return new THREE.Mesh(geo, createAtmosphereMaterial(config, radiusAU));
 }
 
 // Earth's companion shells sit just above the globe: the night lights hug the
@@ -1225,6 +1238,15 @@ export interface PlanetMesh {
   /** Silhouette detail, rebuilt on close approach — the globe and every shell
    *  that draws an edge at the body's own radius. */
   geometryUpgrade: GeometryUpgrade;
+  /** Live heliocentric position (AU), stashed by the mode's rebuild pass.
+   *  Typed here (not on userData) so the dozen per-frame readers share one
+   *  nullability story instead of each restating the shape through a cast.
+   *  Absent until the first rebuild. */
+  worldPosAU?: { x: number; y: number; z: number };
+  /** Per-frame world velocity (AU/s on the capped frame dt) for the
+   *  governor's moving-body credit; zeroed across clock discontinuities.
+   *  Absent until the first velocity pass. */
+  worldVelAUPerS?: { x: number; y: number; z: number };
 }
 
 // Icy / high-albedo moons get the icy night-fill (and, later, a specular ice

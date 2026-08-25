@@ -11,6 +11,7 @@
  * positions and applies the results.
  */
 import * as THREE from 'three';
+import { smoothstepUnclamped } from '../shared/math/smoothstep';
 import { KM_PER_AU } from '../astronomy/constants';
 import { DEG2RAD } from '../shared/math/angles';
 import { SHIP_CLEARANCE_AU } from './cruiseView';
@@ -66,7 +67,7 @@ export const LEAVE_VALVE_KNEE_RADII = 0.38;
  *  closing course" has exactly one definition. */
 function approachBlendWeight(cosApproach: number): number {
   const t = THREE.MathUtils.clamp(cosApproach / 0.3, 0, 1);
-  return t * t * (3 - 2 * t);
+  return smoothstepUnclamped(t);
 }
 
 /**
@@ -262,7 +263,7 @@ export function moonArrivalCameraLookWeight(
     0,
     1,
   );
-  const eased = t * t * (3 - 2 * t);
+  const eased = smoothstepUnclamped(t);
   return 1 - eased;
 }
 
@@ -282,7 +283,7 @@ export const MOON_ARRIVAL_RELEASE_S = 0.35;
 export function moonArrivalReleaseFade(releaseElapsedS: number): number {
   if (!(releaseElapsedS > 0)) return 1;
   const t = THREE.MathUtils.clamp(releaseElapsedS / MOON_ARRIVAL_RELEASE_S, 0, 1);
-  return 1 - t * t * (3 - 2 * t);
+  return 1 - smoothstepUnclamped(t);
 }
 
 /** Engage band for the flythrough tracking look, in fractions of the arrival

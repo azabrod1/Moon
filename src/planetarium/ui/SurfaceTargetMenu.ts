@@ -12,6 +12,7 @@ import {
   type SurfaceTarget,
   type SurfaceTargetChoice,
 } from '../surfaceView';
+import { cssHexColor } from '../../shared/color';
 
 export class SurfaceTargetMenu {
   private rootEl: HTMLElement | null = null;
@@ -56,7 +57,7 @@ export class SurfaceTargetMenu {
         (current ? ' stm-current' : '');
       const dot = document.createElement('span');
       dot.className = 'pk-dot';
-      dot.style.background = `#${choice.color.toString(16).padStart(6, '0')}`;
+      dot.style.background = cssHexColor(choice.color);
       const info = document.createElement('span');
       info.className = 'pk-info';
       const name = document.createElement('b');

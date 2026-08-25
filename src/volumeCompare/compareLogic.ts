@@ -13,6 +13,7 @@
  */
 
 import { KM_CONSTANTS } from '../shared/constants/physicalData';
+import { smoothstepUnclamped } from '../shared/math/smoothstep';
 import { PLANETARIUM_BODIES, SUN_DATA } from '../planetarium/planets/planetData';
 import { MOONS } from '../planetarium/planets/moonData';
 
@@ -462,7 +463,7 @@ export function targetReached(target: number, poured: number, regime: FillRegime
 export function sandFillFraction(elapsed: number, duration: number): number {
   if (duration <= 0) return 1;
   const t = Math.min(1, Math.max(0, elapsed / duration));
-  return t * t * (3 - 2 * t);
+  return smoothstepUnclamped(t);
 }
 
 /**

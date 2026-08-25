@@ -14,3 +14,16 @@ export function setText(id: string, text: string): void {
   const el = document.getElementById(id);
   if (el) el.textContent = text;
 }
+
+/** THE mobile breakpoint (CSS px) — every layout decision and media query
+ *  draws this same line; changing it means changing the CSS too. */
+export const MOBILE_BREAKPOINT_PX = 640;
+
+/** Phone-width viewport, measured the way CSS media queries measure it.
+ *  Sites that compare `window.innerWidth <= MOBILE_BREAKPOINT_PX` keep that
+ *  idiom deliberately (innerWidth includes a desktop scrollbar, so the two
+ *  can differ by its width) — use the constant there, this helper where the
+ *  decision must agree with the stylesheet exactly. */
+export function isPhoneViewport(): boolean {
+  return window.matchMedia(`(max-width: ${MOBILE_BREAKPOINT_PX}px)`).matches;
+}

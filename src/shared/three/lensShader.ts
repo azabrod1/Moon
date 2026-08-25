@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 import { lensRadial } from '../math/lensProjection';
 
-const DEG = Math.PI / 180;
+import { DEG2RAD as DEG } from '../math/angles';
 
 /** Uniform block shared by pre-warp screen primitives. They draw into the
  * rectilinear source but author their centres and sizes in final-output pixels. */
@@ -103,6 +103,60 @@ vec2 lensUnwarpOutputNdc(vec2 outputNdc) {
   vec2 sourceAspect = d * (sourceRadius / outputRadius);
   return vec2(sourceAspect.x / uLensAspect, sourceAspect.y);
 }
+`;
+
+/**
+ * Point-sprite pre-distortion, vertex side — the statement block a lens-aware
+ * Points shader runs after writing gl_Position. Warps the centre into output
+ * space, then bounds gl_PointSize conservatively by unwarping the four
+ * corners of the desired output quad (the source-space footprint of a warped
+ * disc is anisotropic; the max over the corners always covers it). ONE
+ * definition for every point-sprite consumer (moon dots, starfield) — the
+ * pre-distortion contract must never drift between them.
+ *
+ * The surrounding shader declares `attribute float size`, `uniform float
+ * pixelRatio`, the pair of varyings `vec2 vLensOutputCentre` / `float
+ * vLensTargetDiameterPx`, and interpolates a block providing
+ * lensWarpSourceNdc/lensUnwarpOutputNdc (lensShaderGLSL, or a superset like
+ * the sun-glare mask block).
+ */
+export const lensPointSpriteVertexGLSL = /* glsl */ `
+          vec2 sourceCentre = gl_Position.xy / gl_Position.w;
+          vLensOutputCentre = lensWarpSourceNdc(sourceCentre);
+          vLensTargetDiameterPx = size * pixelRatio;
+          vec2 halfOutputNdc = vec2(
+            vLensTargetDiameterPx / max(uLensFramebufferPx.x, 1.0),
+            vLensTargetDiameterPx / max(uLensFramebufferPx.y, 1.0)
+          );
+          vec2 sourceA = lensUnwarpOutputNdc(vLensOutputCentre + halfOutputNdc);
+          vec2 sourceB = lensUnwarpOutputNdc(vLensOutputCentre - halfOutputNdc);
+          vec2 sourceC = lensUnwarpOutputNdc(vLensOutputCentre + vec2(halfOutputNdc.x, -halfOutputNdc.y));
+          vec2 sourceD = lensUnwarpOutputNdc(vLensOutputCentre + vec2(-halfOutputNdc.x, halfOutputNdc.y));
+          vec2 halfA = abs(sourceA - sourceCentre) * uLensFramebufferPx * 0.5;
+          vec2 halfB = abs(sourceB - sourceCentre) * uLensFramebufferPx * 0.5;
+          vec2 halfC = abs(sourceC - sourceCentre) * uLensFramebufferPx * 0.5;
+          vec2 halfD = abs(sourceD - sourceCentre) * uLensFramebufferPx * 0.5;
+          float sourceHalfPx = max(
+            max(max(halfA.x, halfA.y), max(halfB.x, halfB.y)),
+            max(max(halfC.x, halfC.y), max(halfD.x, halfD.y))
+          );
+          gl_PointSize = max(1.0, 2.0 * sourceHalfPx);
+`;
+
+/**
+ * Point-sprite disc kernel, fragment side — pairs with
+ * lensPointSpriteVertexGLSL. Measures each fragment's distance from the
+ * warped centre in OUTPUT pixels (so the drawn disc is round after the lens
+ * pass), discards outside the disc, and leaves `falloff` (and `d`) for the
+ * shader's own colour/alpha line.
+ */
+export const lensPointSpriteFragmentGLSL = /* glsl */ `
+          vec2 sourceNdc = gl_FragCoord.xy / uLensFramebufferPx * 2.0 - 1.0;
+          vec2 outputNdc = lensWarpSourceNdc(sourceNdc);
+          vec2 outputOffsetPx = (outputNdc - vLensOutputCentre) * uLensFramebufferPx * 0.5;
+          float d = length(outputOffsetPx) / max(vLensTargetDiameterPx, 1e-6);
+          if (d > 0.5) discard;
+          float falloff = 1.0 - smoothstep(0.2, 0.5, d);
 `;
 
 /** Pre-distort a fixed-size SpriteMaterial quad into the overscan source so the

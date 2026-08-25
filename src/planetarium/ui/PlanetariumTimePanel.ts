@@ -136,6 +136,11 @@ export class PlanetariumTimePanel {
   private reverseBtn: HTMLElement | null = null;
   private pauseBtn: HTMLElement | null = null;
   private playBtn: HTMLElement | null = null;
+  /** Removals for the window-level listeners the sliders attach (one blur
+   *  handler per slider). Element listeners die with their elements; these
+   *  would keep the panel — and its owner, through the callbacks — reachable
+   *  after dispose. */
+  private windowTeardowns: Array<() => void> = [];
 
   private wired = false;
   private displayIndex = 0;
@@ -395,9 +400,11 @@ export class PlanetariumTimePanel {
     el.addEventListener('pointerleave', () => {
       if (!drag.active) this.hideTip();
     });
-    window.addEventListener('blur', () => {
+    const onWindowBlur = () => {
       if (drag.active) endDrag();
-    });
+    };
+    window.addEventListener('blur', onWindowBlur);
+    this.windowTeardowns.push(() => window.removeEventListener('blur', onWindowBlur));
     el.addEventListener('keydown', (e) => {
       if (e.key === 'ArrowRight' || e.key === '.') this.callbacks.onStep(1);
       else if (e.key === 'ArrowLeft' || e.key === ',') this.callbacks.onStep(-1);
@@ -449,5 +456,18 @@ export class PlanetariumTimePanel {
     el.classList.toggle('on', on);
     el.classList.toggle('armed', armed && !on);
     el.setAttribute('aria-checked', on ? 'true' : 'false');
+  }
+
+  /** Owner teardown: drop the sliders' window-level blur listeners, which
+   *  would otherwise keep the panel — and its owner, through the callbacks —
+   *  reachable after the mode is disposed. Element listeners die with their
+   *  elements. */
+  dispose(): void {
+    if (this.flashTimer !== null) {
+      window.clearTimeout(this.flashTimer);
+      this.flashTimer = null;
+    }
+    for (const teardown of this.windowTeardowns) teardown();
+    this.windowTeardowns.length = 0;
   }
 }

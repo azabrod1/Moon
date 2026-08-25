@@ -8,6 +8,7 @@ import { brightStarCatalog } from '../data/brightStars';
 import { raDecToVector } from '../../astronomy/planetary';
 import { SUN_GLARE_MASK_MAX_KILL, createSunGlareMaskUniforms, sunGlareMaskGLSL } from './sunGlareMask';
 import { applyOrbitLineStencilGate } from './orbitLineStencil';
+import { lensPointSpriteFragmentGLSL, lensPointSpriteVertexGLSL } from '../../shared/three/lensShader';
 import {
   STAR_FAINT_ANCHOR_MAG,
   starBeyondAnchorScale,
@@ -149,26 +150,7 @@ export function createPlanetariumStarfield(rendererPixelRatio: number): THREE.Po
           vColor = color;
           vec4 mvPosition = modelViewMatrix * vec4(position, 1.0);
           gl_Position = projectionMatrix * mvPosition;
-          vec2 sourceCentre = gl_Position.xy / gl_Position.w;
-          vLensOutputCentre = lensWarpSourceNdc(sourceCentre);
-          vLensTargetDiameterPx = size * pixelRatio;
-          vec2 halfOutputNdc = vec2(
-            vLensTargetDiameterPx / max(uLensFramebufferPx.x, 1.0),
-            vLensTargetDiameterPx / max(uLensFramebufferPx.y, 1.0)
-          );
-          vec2 sourceA = lensUnwarpOutputNdc(vLensOutputCentre + halfOutputNdc);
-          vec2 sourceB = lensUnwarpOutputNdc(vLensOutputCentre - halfOutputNdc);
-          vec2 sourceC = lensUnwarpOutputNdc(vLensOutputCentre + vec2(halfOutputNdc.x, -halfOutputNdc.y));
-          vec2 sourceD = lensUnwarpOutputNdc(vLensOutputCentre + vec2(-halfOutputNdc.x, halfOutputNdc.y));
-          vec2 halfA = abs(sourceA - sourceCentre) * uLensFramebufferPx * 0.5;
-          vec2 halfB = abs(sourceB - sourceCentre) * uLensFramebufferPx * 0.5;
-          vec2 halfC = abs(sourceC - sourceCentre) * uLensFramebufferPx * 0.5;
-          vec2 halfD = abs(sourceD - sourceCentre) * uLensFramebufferPx * 0.5;
-          float sourceHalfPx = max(
-            max(max(halfA.x, halfA.y), max(halfB.x, halfB.y)),
-            max(max(halfC.x, halfC.y), max(halfD.x, halfD.y))
-          );
-          gl_PointSize = max(1.0, 2.0 * sourceHalfPx);
+${lensPointSpriteVertexGLSL}
           // Gain lifts the faint end on a soft knee, 1-(1-a)^g: alpha 1 stays 1
           // (no star climbs over the bloom cutoff the field is built to stay
           // under), the map is strictly monotone in alpha, so the magnitude
@@ -189,12 +171,7 @@ export function createPlanetariumStarfield(rendererPixelRatio: number): THREE.Po
         varying float vLensTargetDiameterPx;
         ${sunGlareMaskGLSL()}
         void main() {
-          vec2 sourceNdc = gl_FragCoord.xy / uLensFramebufferPx * 2.0 - 1.0;
-          vec2 outputNdc = lensWarpSourceNdc(sourceNdc);
-          vec2 outputOffsetPx = (outputNdc - vLensOutputCentre) * uLensFramebufferPx * 0.5;
-          float d = length(outputOffsetPx) / max(vLensTargetDiameterPx, 1e-6);
-          if (d > 0.5) discard;
-          float falloff = 1.0 - smoothstep(0.2, 0.5, d);
+${lensPointSpriteFragmentGLSL}
           gl_FragColor = vec4(vColor, falloff * vAlpha);
           // Exposure + ACES + sRGB when this material draws straight to screen
           // (the no-bloom path): the exposure that crushes the Sun's neighbours

@@ -98,6 +98,15 @@ export type ResamplePlan =
   | { kind: 'one'; index: number }
   | { kind: 'none' };
 
+// plan() runs every frame of both charts for the map's whole life, and a
+// settled chart answers 'none' every single frame — those two constant
+// answers are shared frozen singletons so the steady state allocates
+// nothing. A 'one' plan stays a fresh object: it only fires when a line
+// actually rebuilds (~180 ephemeris evaluations), where one small object is
+// noise — and a shared mutable index would alias across calls.
+const COLD_PLAN: ResamplePlan = Object.freeze({ kind: 'cold' });
+const NONE_PLAN: ResamplePlan = Object.freeze({ kind: 'none' });
+
 /**
  * The sweep's whole memory: where the lap has got to, and the clock reading
  * the last decision was taken against. One object, owned by the chart and
@@ -127,10 +136,10 @@ export class ResampleSweep {
   ): ResamplePlan {
     const prev = this.#prevClockUtcMs;
     this.#prevClockUtcMs = utcMs;
-    if (needsColdSeed(sampled, prev, utcMs, maxAgeMs)) return { kind: 'cold' };
+    if (needsColdSeed(sampled, prev, utcMs, maxAgeMs)) return COLD_PLAN;
     this.#cursor = advanceOrbitCursor(this.#cursor, entries.length);
     const due = nextStaleOrbit(entries, this.#cursor, utcMs, maxAgeMs);
-    if (due < 0) return { kind: 'none' };
+    if (due < 0) return NONE_PLAN;
     this.#cursor = due;
     return { kind: 'one', index: due };
   }

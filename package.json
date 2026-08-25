@@ -10,6 +10,7 @@
     "gen:moons": "node gen-moons.mjs",
     "gen:constellations": "node gen-constellations.mjs",
     "gen:maps": "node gen-maps.mjs",
+    "gen:ktx2": "node tools/gen-moon-ktx2.mjs",
     "build": "tsc && vite build",
     "preview": "vite preview",
     "test": "vitest run src"
@@ -22,6 +23,7 @@
   },
   "devDependencies": {
     "@types/node": "^25.5.2",
+    "basis_universal": "^1.16.4-1",
     "patch-package": "^8.0.1",
     "playwright": "^1.60.0",
     "vitest": "^4.1.8"

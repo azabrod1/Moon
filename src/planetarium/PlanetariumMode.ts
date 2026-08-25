@@ -34,7 +34,8 @@ import {
   SUN_POLE_RA_DEG,
   type PlanetData,
 } from './planets/planetData';
-import { applySunGlowTier, armArrivalWarmGoal, canAttempt, cancelNormalUpgrade, cancelTextureUpgrade, createMoonMeshes, createShaderWarmupProbes, disarmArrivalWarmGoal, earnedUpgradeTier, firstUpgradeTier, lodMeasurementRelevant, needsUpgradeCover, normalUpgradePending, pumpArrivalWarmGoal, resolveUpgradeTier, setWarmEligibleMoonParents, upgradeComplete, upgradeGeometryOnApproach, upgradeNormalOnApproach, upgradeTextureOnApproach, ATMOSPHERES, ATMOSPHERE_SHELL_SCALES, PLANET_TEXTURE_FILES, UPGRADE_TRIGGER_FRACTION, type MoonMesh, type TextureUpgrade } from './PlanetFactory';
+import { applySunGlowTier, armArrivalWarmGoal, bindKtx2TierLoader, canAttempt, cancelNormalUpgrade, cancelTextureUpgrade, createMoonMeshes, createShaderWarmupProbes, disarmArrivalWarmGoal, earnedUpgradeTier, firstUpgradeTier, lodMeasurementRelevant, needsUpgradeCover, normalUpgradePending, pumpArrivalWarmGoal, resolveUpgradeTier, setWarmEligibleMoonParents, upgradeComplete, upgradeGeometryOnApproach, upgradeNormalOnApproach, upgradeTextureOnApproach, ATMOSPHERES, ATMOSPHERE_SHELL_SCALES, PLANET_TEXTURE_FILES, UPGRADE_TRIGGER_FRACTION, type MoonMesh, type TextureUpgrade } from './PlanetFactory';
+import type { KTX2Loader } from 'three/examples/jsm/loaders/KTX2Loader.js';
 import type { SurfaceShadingFx } from './world/surfaceShading';
 import { bindTextureWarmer, invalidateTextureWarmCache, pumpTextureWarmQueue, queueTextureWarm, resetTextureWarmer } from './world/textureWarmer';
 import { loadBrightStarCatalog } from './world/starCatalogLoader';
@@ -1721,6 +1722,22 @@ export class PlanetariumMode {
     // Warm uploads go through the renderer so freshly loaded maps reach the
     // GPU on quiet frames instead of inside a gesture's first draw.
     bindTextureWarmer((tex) => renderer.initTexture(tex));
+    // The 8K compressed tier's loader (see PlanetFactory's TIER_FILE_OVERRIDES),
+    // bound lazily: the KTX2 machinery — loader chunk, transcoder worker, wasm —
+    // loads only if a session actually earns that tier. Fail-open at every step:
+    // a failed import or load lands in the ladder's own onError, whose cooldown
+    // and one-rung-short worst case are the same as any 8K network failure.
+    bindKtx2TierLoader((url, onLoad, onError) => {
+      this.ktx2Loader ??= import('three/examples/jsm/loaders/KTX2Loader.js').then(({ KTX2Loader }) =>
+        new KTX2Loader()
+          .setTranscoderPath(import.meta.env.BASE_URL + 'basis/')
+          .detectSupport(renderer),
+      );
+      this.ktx2Loader.then(
+        (loader) => loader.load(url, onLoad, undefined, onError),
+        (err) => onError(err),
+      );
+    });
     // GPU moon-texture painter (synchronous CPU fallback inside). Inject its
     // paint into the lazy painter; MoonPainter's queue + the visibility gate +
     // the arrival veil are unchanged — only the per-moon paint moves to the GPU.
@@ -6848,7 +6865,7 @@ export class PlanetariumMode {
       finish();
     };
     if (plan.veilGate && snap.state.landedOn) {
-      this.arriveThen(snap.state.landedOn, applyRestore, true);
+      this.arriveThen(snap.state.landedOn, applyRestore);
     } else {
       applyRestore();
     }
@@ -6931,7 +6948,7 @@ export class PlanetariumMode {
       const live = this.tutorial;
       if (!live || live.generation !== generation) return;
       action();
-    }, true);
+    });
   }
 
   /** Accent pulse on the deck row the theater is about to press. Stale pulses
@@ -10352,7 +10369,7 @@ export class PlanetariumMode {
         this.closeObservatoryPanel();
         this.pulseObservatoryChip();
       }
-    }, true);
+    });
   }
 
   private async startHistoricJourney(missionId: HistoricMissionId) {
@@ -13884,6 +13901,10 @@ export class PlanetariumMode {
    *  arrival; pruned as goals disarm themselves. */
   private arrivalWarmUps: TextureUpgrade[] = [];
 
+  /** Lazily imported KTX2 loader behind the compressed-tier binding — null
+   *  until the first .ktx2 tier fetch of the session. */
+  private ktx2Loader: Promise<KTX2Loader> | null = null;
+
   /** Queue a system's arrived moon photo/normal maps for warm upload. Photos
    * only — a GPU-painted procedural map is render-target-backed (already
    * resident) and a CPU CanvasTexture is small; the real normal map (the
@@ -13966,21 +13987,27 @@ export class PlanetariumMode {
   private arriveThen(
     target: NonNullable<LandedTarget>,
     action: () => void,
-    protectLandedUpgrades = false,
   ): void {
     if (this.arrivalInFlight) return;
     const landingUpgrades = this.landingPairUpgrades(target);
     let upgradeCover = false;
-    if (protectLandedUpgrades) {
-      for (const up of landingUpgrades) {
-        if (!needsUpgradeCover(up)) continue;
-        // A cover is the ideal moment to retry a first step that failed
-        // earlier: its fetch, decode and upload get a bounded window with
-        // nothing on screen. A higher step that failed keeps its cooldown,
-        // because nothing here is covering that one.
-        up.retryAtMs = undefined;
-        upgradeCover = true;
-      }
+    // Every arrival — landing OR cruise jump — covers the pair's first
+    // steps. Cruise jumps used to skip this, and the warm-up's pre-fetched
+    // first tiers then decoded+uploaded on the first visible seconds of the
+    // approach (measured: the Moon's 4K albedo and Earth's 4K cloud deck
+    // each as a dropped frame right after a Moon teleport — the boot moon
+    // map sits under the 4096 upload-cover threshold, so no other veil
+    // condition catches that jump). First steps only, bounded by
+    // ARRIVAL_UPGRADE_HOLD_MAX_MS, and only while a body still sits on its
+    // boot map — repeat jumps stay instant.
+    for (const up of landingUpgrades) {
+      if (!needsUpgradeCover(up)) continue;
+      // A cover is the ideal moment to retry a first step that failed
+      // earlier: its fetch, decode and upload get a bounded window with
+      // nothing on screen. A higher step that failed keeps its cooldown,
+      // because nothing here is covering that one.
+      up.retryAtMs = undefined;
+      upgradeCover = true;
     }
     this.arriveAtSystem(
       this.parentSystemOf(target),
@@ -14017,8 +14044,19 @@ export class PlanetariumMode {
   private warmArrivalDestination(target: NonNullable<LandedTarget>): void {
     const nowMs = performance.now();
     this.arrivalWarmUps = [];
-    for (const up of this.textureUpgradesForTarget(target)) {
+    const targetUps = this.textureUpgradesForTarget(target);
+    for (const up of targetUps) {
       if (armArrivalWarmGoal(up)) this.arrivalWarmUps.push(up);
+    }
+    // The vantage companion gets its FIRST step only, landing-style: on a
+    // moon arrival the parent fills a good share of the sky, and its boot
+    // map's first sharpen used to land as a mid-approach upload spike
+    // (measured: Earth's 4K cloud deck after a Moon teleport). One step, no
+    // goal — the companion's higher rungs stay demand-driven.
+    for (const up of this.landingPairUpgrades(target)) {
+      if (targetUps.includes(up)) continue;
+      const first = firstUpgradeTier(up);
+      if (first) upgradeTextureOnApproach(up, first, nowMs);
     }
     // First rung starts now — under the veil, or with the teleport cut.
     this.pumpArrivalWarmGoals();
@@ -14144,11 +14182,15 @@ export class PlanetariumMode {
             pumpTextureWarmQueue(Number.POSITIVE_INFINITY);
             this.warmedSystems.add(systemName);
           }
-          // Take the hold's wait-list once, now that the landing has started
-          // its fetches (applyLandedTarget, inside the action above). A
-          // destination with no body to land on starts none, and the list is
-          // empty.
-          this.arrivalUpgradeBatch = this.coverWaitList();
+          // Take the hold's wait-list once, now that the arrival has started
+          // its fetches (applyLandedTarget or the arrival warm-up, inside the
+          // action above). Taken over the destination's own handles
+          // (keepUpgrades), not the landed pair, so a cruise jump's covered
+          // first step is waited on exactly like a landing's; a destination
+          // with no body starts no fetch and the list is empty. Only
+          // FIRST-tier attempts enter (coverWaitList's own rule) — the warm
+          // ladder's higher rungs can never extend the hold.
+          this.arrivalUpgradeBatch = this.coverWaitList(keepUpgrades);
         } catch (err) {
           debugError('Arrival failed', err);
         } finally {
@@ -15563,6 +15605,11 @@ export class PlanetariumMode {
       disarmArrivalWarmGoal(up);
     }
     this.arrivalWarmUps = [];
+    // Unbind before the loader teardown so no late tier fetch can race a
+    // disposing transcoder; a loader never instantiated disposes nothing.
+    bindKtx2TierLoader(null);
+    this.ktx2Loader?.then((loader) => loader.dispose()).catch(() => {});
+    this.ktx2Loader = null;
     // The relief tiers ride the same network and need the same abandonment.
     for (const moons of this.planetMoons.values()) {
       for (const m of moons) cancelNormalUpgrade(m.normalUpgrade);

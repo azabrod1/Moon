@@ -10,6 +10,7 @@ npm run build      # TypeScript check + production build (dist/)
 npm test           # vitest — astronomy + planetarium unit/golden tests
 npm run gen:moons  # Regenerate satellite elements + goldens from JPL (--offline uses .moon-data-cache/)
 npm run gen:maps   # Regenerate derived texture maps (runs in headless Chromium)
+npm run gen:ktx2   # Regenerate the Moon's GPU-compressed 8K tier from its webp (headless Chromium + bundled basisu)
 ```
 
 **Run `npm run build` and `npm test` after every change.** There is no linter; the strict tsconfig (`noUnusedLocals`/`noUnusedParameters`) is what catches refactor leftovers. CI runs the same then deploys Pages on push to `main`. `planning/` is gitignored local scratch — never commit it; stage by explicit path, never `git add -A`.

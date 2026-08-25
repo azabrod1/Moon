@@ -4,11 +4,13 @@ import {
   applyColorTierTexture,
   applyNormalTierTexture,
   armArrivalWarmGoal,
+  bindKtx2TierLoader,
   canAttempt,
   cancelTextureUpgrade,
   cancelNormalUpgrade,
   disarmArrivalWarmGoal,
   pumpArrivalWarmGoal,
+  resolveTierFile,
   makeNormalUpgrade,
   normalUpgradePending,
   upgradeNormalOnApproach,
@@ -1401,5 +1403,64 @@ describe('arrival warm goals', () => {
     disarmArrivalWarmGoal(up);
     expect(pumpArrivalWarmGoal(up, 16)).toBe(false);
     expect(pending).toHaveLength(1); // the 8K fetch never starts
+  });
+});
+
+describe('the compressed 8K tier override', () => {
+  let pending: Array<{ url: string; onLoad: (tex: THREE.Texture) => void; onError: (err: unknown) => void }>;
+  let restore: (() => void) | null = null;
+  const flush = () => new Promise<void>((resolve) => setTimeout(resolve, 0));
+
+  beforeEach(() => {
+    pending = [];
+    const previous = setUpgradeTextureLoader((url, onLoad, onError) => {
+      pending.push({ url, onLoad, onError });
+    });
+    restore = () => setUpgradeTextureLoader(previous);
+  });
+
+  afterEach(() => {
+    bindKtx2TierLoader(null);
+    restore?.();
+    restore = null;
+  });
+
+  it('is inert while no KTX2 loader is bound: the classic map is fetched', () => {
+    expect(resolveTierFile('moon', '8k')).toBe('moon.webp');
+    const up = handle('moon');
+    up.appliedTier = '4k';
+    upgradeTextureOnApproach(up, '8k', 0);
+    expect(pending).toHaveLength(1);
+    expect(pending[0].url).toMatch(/textures\/8k\/moon\.webp$/);
+  });
+
+  it('routes the 8K through the bound loader and leaves every other rung classic', async () => {
+    const ktx2Calls: Array<{ url: string; onLoad: (tex: THREE.Texture) => void }> = [];
+    bindKtx2TierLoader((url, onLoad) => ktx2Calls.push({ url, onLoad }));
+    expect(resolveTierFile('moon', '8k')).toBe('moon.ktx2');
+    expect(resolveTierFile('moon', '4k')).toBe('moon.webp');
+    expect(resolveTierFile('earthClouds', '4k')).toBe('earth-clouds.webp');
+
+    const up = handle('moon');
+    up.appliedTier = '4k';
+    upgradeTextureOnApproach(up, '8k', 0);
+    expect(pending).toHaveLength(0); // never the image path
+    expect(ktx2Calls).toHaveLength(1);
+    expect(ktx2Calls[0].url).toMatch(/textures\/8k\/moon\.ktx2$/);
+
+    // A compressed arrival applies through the same rank machinery. Its
+    // loader-set colour space must survive applyTextureDefaults untouched.
+    const uploaded: THREE.Texture[] = [];
+    bindTextureWarmer((t) => uploaded.push(t));
+    const tex = new THREE.CompressedTexture([], 8192, 4096);
+    tex.colorSpace = THREE.SRGBColorSpace;
+    ktx2Calls[0].onLoad(tex);
+    await flush();
+    expect(up.appliedTier).toBe('8k');
+    expect(up.material.map).toBe(tex);
+    expect(tex.colorSpace).toBe(THREE.SRGBColorSpace);
+    expect(tex.userData.mutableStorage).toBeUndefined(); // compressed keeps texStorage2D
+    pumpTextureWarmQueue(Number.POSITIVE_INFINITY);
+    expect(uploaded).toEqual([tex]);
   });
 });

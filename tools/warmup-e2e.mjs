@@ -56,14 +56,33 @@ await page.goto(url);
 await page.waitForFunction(() => globalThis.__moon?.ready?.(), null, { timeout: 90_000 });
 
 const preCommit = tierFetches.filter((f) => f.path.includes('moon'));
+const preJumpDist = await moonDistAU();
 const commitAtMs = Date.now();
 const committed = await page.evaluate(() => globalThis.__moon.travelTo('Moon'));
 if (!committed) await fail('travelTo("Moon") returned false');
-const d0 = await moonDistAU();
+// The teleport pose applies inside the veiled action, two (possibly slow)
+// frames after the commit call — wait for the position snap, then read the
+// arrival standoff distance. Reading immediately would take the BOOT
+// position as d0 and turn every later ratio into noise.
+let d0 = null;
+let poseAtMs = commitAtMs;
+{
+  const poseDeadline = Date.now() + 20_000;
+  while (Date.now() < poseDeadline) {
+    const d = await moonDistAU();
+    if (d !== null && preJumpDist !== null && d < preJumpDist * 0.5) {
+      d0 = d;
+      poseAtMs = Date.now();
+      break;
+    }
+    await new Promise((r) => setTimeout(r, 50));
+  }
+}
+if (d0 === null) await fail('teleport pose never applied (distance never snapped in)');
 
 // Watch the ladder land, recording the ship→Moon distance at each request so
 // the log shows the fetches fired at the standoff, not after an approach.
-const want = ['4k/moon-normal.webp', '4k/moon.webp', '8k/moon.webp'];
+const want = ['4k/moon-normal.webp', '4k/moon.webp', '8k/moon.ktx2'];
 /** @type {Record<string, {atMs: number, distAU: number}>} */
 const seen = {};
 const deadline = Date.now() + 30_000;
@@ -79,11 +98,17 @@ for (const w of want) {
   if (!seen[w]) await fail(`${w} was never fetched after the travel commit`);
 }
 // The discriminator: the relief fetch belongs to the commit, not the glide.
-// (Only the warm-up can issue it here — the on-screen trigger needs the disc
-// past 15% of the viewport, ~2.5 s of hands-off approach away.)
-const reliefMs = seen['4k/moon-normal.webp'].atMs - commitAtMs;
-if (reliefMs > 1_500) {
-  await fail(`4K relief requested ${reliefMs} ms after commit — that's glide-trigger timing, not commit timing`);
+// Only the warm-up can issue it at the standoff — the on-screen trigger
+// needs the disc past 15% of the viewport, which the glide reaches only
+// after closing to ~0.55x the commit distance. Time is a soft signal (a
+// loaded machine stretches the veil's two-frame deferral); distance is the
+// physics, so it arbitrates.
+const relief = seen['4k/moon-normal.webp'];
+const reliefMs = relief.atMs - poseAtMs;
+if (reliefMs > 1_500 && !(relief.distAU > 0.6 * d0)) {
+  await fail(
+    `4K relief requested ${reliefMs} ms after the arrival pose at ${(relief.distAU / d0).toFixed(2)}x the standoff — that's glide-trigger territory, not commit territory`,
+  );
 }
 
 // Veil-neutrality: the cover (if this cold arrival raised one) must lift on

@@ -466,6 +466,41 @@ const TEXTURE_UPGRADE_TIERS: Record<string, readonly TextureTier[]> = {
   earthClouds: ['4k'],
 };
 
+// The Moon's 8K tier ships GPU-compressed (KTX2/UASTC, mip chain baked by
+// tools/gen-moon-ktx2.mjs): the raw upload of a 33MP RGBA map is the largest
+// unsliceable main-thread bill in the app — measured as THE dropped frame
+// right after a Moon teleport — while a compressed upload takes a few
+// milliseconds and stays compressed in VRAM (~45MB instead of ~180MB). The
+// wire cost is real (UASTC+zstd is a few times the webp), paid only when a
+// session earns the tier and cached by the service worker thereafter. The
+// webp stays on disk as the runtime fallback: the override is consulted only
+// while a KTX2 loader is bound, so tests and a session whose transcoder
+// failed to load fetch the classic map instead.
+const TIER_FILE_OVERRIDES: Record<string, Partial<Record<TextureTier, string>>> = {
+  moon: { '8k': 'moon.ktx2' },
+};
+
+type Ktx2TierLoad = (
+  url: string,
+  onLoad: (tex: THREE.Texture) => void,
+  onError: (err: unknown) => void,
+) => void;
+let ktx2TierLoader: Ktx2TierLoad | null = null;
+
+/** Bind (or clear, with null) the KTX2 tier fetch. The mode binds a lazy
+ *  KTX2Loader wrapper at init and clears it at dispose; while unbound every
+ *  entry in TIER_FILE_OVERRIDES is inert. */
+export function bindKtx2TierLoader(fn: Ktx2TierLoad | null): void {
+  ktx2TierLoader = fn;
+}
+
+/** The file a tier fetch actually asks for — the compressed override when its
+ *  loader is bound, the key's shared classic file otherwise. */
+export function resolveTierFile(key: string, tier: TextureTier): string {
+  const override = ktx2TierLoader ? TIER_FILE_OVERRIDES[key]?.[tier] : undefined;
+  return override ?? PLANET_TEXTURE_FILES[key];
+}
+
 // Colour-map precedence: procedural floor 0, then one rank per tier. Ranks are
 // what make every apply order-independent — a late boot-map arrival can't
 // downgrade a higher tier that already won.
@@ -771,7 +806,14 @@ export function upgradeTextureOnApproach(
   // The attempt this callback belongs to was abandoned (discarded, or timed
   // out and superseded) if the handle no longer carries its generation.
   const abandoned = () => up.attempt?.generation !== generation;
-  const url = resolveTextureUrl(PLANET_TEXTURE_FILES[up.key], tier);
+  // Capture the KTX2 binding with the file choice, so an unbind between the
+  // resolve and the fetch can't strand a .ktx2 URL on the image loader.
+  const ktx2 = ktx2TierLoader;
+  const file = resolveTierFile(up.key, tier);
+  const url = resolveTextureUrl(file, tier);
+  const load: TextureLoad = file.endsWith('.ktx2') && ktx2
+    ? (u, onLoad, onError) => ktx2(u, onLoad, onError)
+    : loadUpgradeTexture;
   // Deliberately a plain load, not the durable seam: this is an optional
   // sharpen wanted only while the body fills the view. A failure leaves
   // whatever is already on the material — the boot map, or the procedural
@@ -779,7 +821,7 @@ export function upgradeTextureOnApproach(
   // gets is demand-driven rather than durable: a cooldown, then another
   // attempt only if the body still earns the tier on a later frame. A base map
   // is chased for the whole session because nothing else can stand in for it.
-  loadUpgradeTexture(
+  load(
     url,
     (tex) => {
       if (abandoned()) {

@@ -225,11 +225,14 @@ export function surfacePerfFrameStart(rafTimestampMs: number): void {
   }
   // Resolve input→next-frame while both samples are live. Deriving this later
   // from the bounded frame ring gives old clicks a fake multi-second delay
-  // once their real following frame has rolled out of the ring.
+  // once their real following frame has rolled out of the ring. Pointerups
+  // resolve here too: Safari acts on pointerup (the reason this module
+  // exists), and the snapshot's pointerUpToFrameMs column reads the same
+  // fields — without this branch it was permanently null.
   const relativeFrameAtMs = relativeMs(rafTimestampMs);
   for (const input of trace.inputs) {
     if (
-      input.phase === 'click' &&
+      (input.phase === 'click' || input.phase === 'pointerup') &&
       input.nextFrameAtMs === undefined &&
       input.atMs <= relativeFrameAtMs
     ) {

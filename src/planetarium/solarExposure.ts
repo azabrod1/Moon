@@ -4,8 +4,14 @@
  * The eye adapts to the Sun: fly close and it fills the view, the exposure
  * falls, and everything else — stars, corona haze, faint discs — sinks below
  * visibility the way it does when you look near the real Sun. This module is
- * the pure math: how much of the frame the solar disc covers, the exposure that
- * coverage should command, and the time-constant glide between the two.
+ * the pure math: the exposure a given coverage should command
+ * (solarExposureTarget) and the time-constant glide between the two
+ * (stepExposure). The LIVE coverage number is NOT computed here: under the
+ * stereographic lens the app measures the displayed footprint overlap
+ * (projectSphereToScreen, see the coverage meter in PlanetariumMode's
+ * update), because a rectilinear angular box misstates on-screen size.
+ * solarViewportCoverage below is that older rectilinear surrogate, kept as
+ * the test harness that sweeps the exposure constants at physical distances.
  *
  * Exposure is a display-referred lever (renderer.toneMappingExposure), applied
  * once at the end of the pipeline. It cannot pull anything back below the bloom
@@ -23,6 +29,12 @@ export const TAU_DIM = 0.30;
 export const TAU_RECOVER = 1.6;
 
 /**
+ * TEST-HARNESS ONLY — no production caller. The app's live coverage is the
+ * lens-aware footprint overlap (see the module header); this surrogate exists
+ * so the exposure-curve tests can sweep coverage at physical distances
+ * without a camera. If it is ever wired to the live camera, `fovYRad` must
+ * come from displayFovDeg, never camera.fov (which holds the lens overscan).
+ *
  * Fraction of the viewport the solar disc covers, as a box-overlap surrogate —
  * the axis-aligned overlap of the disc's angular bounding box with the frustum's
  * angular extent, NOT true disc area. Deliberate: the surrogate is cheap,

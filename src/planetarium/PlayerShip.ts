@@ -39,6 +39,9 @@ export class PlayerShip {
   private junoModel: THREE.Group | null = null;
   private spacecraftReferenceRadiusAU: number;
   private profile: ShipProfile = 'default';
+  /** update()'s per-frame forward direction — internal scratch so steady-state
+   *  integration allocates nothing (getForwardDirection allocates by contract). */
+  private forwardScratch = new THREE.Vector3();
   private exhaustCone: THREE.Mesh;
   private exhaustCore: THREE.Mesh;
 
@@ -264,7 +267,7 @@ export class PlayerShip {
     if (!this.moving || this.held) return;
 
     const speed = this.speedAUPerS;
-    const updatedDirection = this.getForwardDirection();
+    const updatedDirection = this.writeForwardDirection(this.forwardScratch);
 
     const dx = updatedDirection.x * speed * dt;
     const dy = updatedDirection.y * speed * dt;

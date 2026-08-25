@@ -625,6 +625,46 @@ export class PlanetariumMode {
     this.clearBodyReveal();
   };
 
+  /** Window-level disarm for map gestures whose release the canvas never
+   *  sees (drag ends over the HUD, capture lost without a canvas
+   *  pointercancel). Named so dispose() can remove it. */
+  private onWindowMapDisarm = (e: PointerEvent): void => {
+    this.mapPointerCancel(e);
+  };
+
+  /** Focus loss cancels every armed gesture and held key — the matching
+   *  releases may never arrive. Named so dispose() can remove it. */
+  private onWindowBlur = (): void => {
+    // Focus loss mid-drag: the pointerup may never arrive, so cancel the
+    // gesture outright — OrbitControls' capture and document listeners tear
+    // down with our bookkeeping.
+    this.cancelOrbitGesture();
+    // The map's armed pick would strand the same way — and a mouse reuses
+    // one pointer id, so the NEXT click's release could then tap against
+    // this gesture's stale down point. A half-made double-tap goes with it.
+    this.mapPickPointerId = null;
+    this.mapPickPoisoned = false;
+    this.mapTapName = null;
+    // An armed teleport press strands the same way: its timer would mature
+    // over a window nobody is looking at. The offer already on screen goes
+    // too — it names a point chosen against a chart the user has left.
+    this.cancelMapLongPress();
+    this.dismissMapTeleportChip();
+    // A held zoom button strands the same way — its pointerup goes to
+    // whatever took the focus, and the repeat would run on unwatched.
+    this.stopMapZoomHold();
+    // The map's hover latch strands the same way: no move arrives while the
+    // window is away, so the stored pointer would still claim a cursor that
+    // could be anywhere by the time focus comes back.
+    this.resetMapHover();
+    // Focus loss (e.g. Cmd-Tab) means the keyups won't arrive, so a held key
+    // would linger — with W held the ship accelerates unattended. Drop every
+    // held key; yaw/pitch/throttle recompute from this set each frame
+    // (processInput), so clearing it is enough.
+    this.keys.clear();
+    this.clearBodyReveal();
+  };
+
   // Planet world positions in AU (true positions, not offset)
   private planetWorldPositions = new Map<string, { x: number; y: number; z: number }>();
 
@@ -950,8 +990,19 @@ export class PlanetariumMode {
   private autopilotAimMoonPos = new THREE.Vector3();
   private autopilotAimFor: string | null = null;
 
-  // Moon world positions in AU (true positions, not offset)
-  private moonWorldPositions = new Map<string, { x: number; y: number; z: number }>();
+  /** Per-planet moon-shadow caster candidates, keyed by the sun's angular
+   *  size at the parent when built — see the rebuild gate in
+   *  updateMoonPositions. */
+  private moonShadowCasterCache = new Map<string, { sunTan: number; names: Set<string> }>();
+
+  // Moon world positions in AU (true positions, not offset). Entries are
+  // written only while a moon is shown and are never pruned, so `pass` (the
+  // updateMoonPositions pass that last wrote the entry, from
+  // moonVelPassIndex) is the freshness stamp: consumers that must not act on
+  // a frozen position from a system left long ago (getTargetWorldPosition)
+  // accept an entry only within one pass of current. Entries are mutated in
+  // place — steady-state frames allocate nothing here.
+  private moonWorldPositions = new Map<string, { x: number; y: number; z: number; pass: number }>();
   /** Per-moon world velocity (AU per frame-second, the same capped dt the
    *  ship integrates on), differenced in updateMoonPositions from
    *  consecutive passes of the map above — the governor's moving-body
@@ -1124,6 +1175,10 @@ export class PlanetariumMode {
   private orbitPointerStartX = 0;
   private orbitPointerStartY = 0;
   private readonly tmpChaseIdeal = new THREE.Vector3();
+  /** Scratch for per-frame writeForwardDirection reads (chase follow,
+   *  reacquire, body-cap governor, shell contact). Each consumer uses the
+   *  vector immediately — never held across another consumer's turn. */
+  private readonly tmpForwardDir = new THREE.Vector3();
 
   // Landed mode: camera orbits a planet/moon while ship is hidden
   private landedOn: LandedTarget = null;
@@ -1477,7 +1532,13 @@ export class PlanetariumMode {
       this.showShadowGuides = on;
       this.shadowVisuals.setGuidesVisible(on);
     },
-    () => this.cancelObservatoryEventSearch(),
+    () => {
+      this.cancelObservatoryEventSearch();
+      // Self-closes (the panel's X, the phone sheet's drag-dismiss) bypass
+      // closeObservatoryPanel — resync the telescope chip's .on accent here
+      // or it stays lit until the next deck/panel toggle.
+      this.updateClusterOnStates();
+    },
     () => this.toggleSurfaceView(),
     () => this.watchLiveEvent(),
     (viaWindow) => {
@@ -1884,39 +1945,10 @@ export class PlanetariumMode {
     // without a canvas pointercancel) still ends the gesture: the window pair
     // only ever DISARMS — commits stay canvas-only, and after an on-canvas
     // release these run second and find the id already cleared.
-    window.addEventListener('pointerup', (e) => this.mapPointerCancel(e));
-    window.addEventListener('pointercancel', (e) => this.mapPointerCancel(e));
+    window.addEventListener('pointerup', this.onWindowMapDisarm);
+    window.addEventListener('pointercancel', this.onWindowMapDisarm);
 
-    window.addEventListener('blur', () => {
-      // Focus loss mid-drag: the pointerup may never arrive, so cancel the
-      // gesture outright — OrbitControls' capture and document listeners tear
-      // down with our bookkeeping.
-      this.cancelOrbitGesture();
-      // The map's armed pick would strand the same way — and a mouse reuses
-      // one pointer id, so the NEXT click's release could then tap against
-      // this gesture's stale down point. A half-made double-tap goes with it.
-      this.mapPickPointerId = null;
-      this.mapPickPoisoned = false;
-      this.mapTapName = null;
-      // An armed teleport press strands the same way: its timer would mature
-      // over a window nobody is looking at. The offer already on screen goes
-      // too — it names a point chosen against a chart the user has left.
-      this.cancelMapLongPress();
-      this.dismissMapTeleportChip();
-      // A held zoom button strands the same way — its pointerup goes to
-      // whatever took the focus, and the repeat would run on unwatched.
-      this.stopMapZoomHold();
-      // The map's hover latch strands the same way: no move arrives while the
-      // window is away, so the stored pointer would still claim a cursor that
-      // could be anywhere by the time focus comes back.
-      this.resetMapHover();
-      // Focus loss (e.g. Cmd-Tab) means the keyups won't arrive, so a held key
-      // would linger — with W held the ship accelerates unattended. Drop every
-      // held key; yaw/pitch/throttle recompute from this set each frame
-      // (processInput), so clearing it is enough.
-      this.keys.clear();
-      this.clearBodyReveal();
-    });
+    window.addEventListener('blur', this.onWindowBlur);
 
     // Window-level capture tracker for the hover/tap body reveal (see the
     // handler fields). Registered once; every handler gates on `this.active`.
@@ -2156,6 +2188,11 @@ export class PlanetariumMode {
     // Cache the label container the PlanetLabels constructor just appended, so
     // the per-frame container-visibility sync doesn't query the DOM each frame.
     this.planetLabelsContainerEl = document.getElementById('planet-labels');
+    // The Sun label lives inside that container, which deactivate() destroys
+    // with PlanetLabels — so it must re-attach per activation, not in the
+    // once-per-session wireUpUI (a mode round-trip would orphan it: never
+    // rendering again while its blocker rect still suppressed planet labels).
+    this.sunLabel.attach();
 
     // Create the Planetarium starfield.
     if (!this.starfield) {
@@ -2499,11 +2536,13 @@ export class PlanetariumMode {
     this.hideFootprintReticle();
     this.hideOrbitFocusLabels();
 
-    // Dispose planet labels.
+    // Dispose planet labels — and the Sun label, whose element lives inside
+    // the container this removes (re-attached on activate).
     if (this.planetLabels) {
       this.planetLabels.dispose();
       this.planetLabels = null;
     }
+    this.sunLabel.dispose();
 
     // Dispose the moon-dot layer (geometry + material); recreated on activate.
     if (this.moonDots) {
@@ -2739,11 +2778,16 @@ export class PlanetariumMode {
     // reachable interaction shell matches the visual shell.
     this.checkOrbitCrossings();
     this.checkPlanetVisits();
-    this.checkProximityLand();
 
     // Position moon meshes first so `collectDynamicOccluders` can read their
     // scene-space positions and record discs for label culling.
     this.updateMoonPositions(dt);
+
+    // AFTER the moon pass on purpose: proximity reads the just-refreshed
+    // moonWorldPositions instead of re-propagating every in-range moon's
+    // ephemeris a second time at the same instant (~18 duplicate Kepler
+    // solves per frame inside Saturn's system).
+    this.checkProximityLand();
 
     // Camera safety + dynamic near. Deliberately AFTER updateMoonPositions —
     // at the top time rates a capped 100 ms frame moves a moon 36 simulated
@@ -2762,7 +2806,11 @@ export class PlanetariumMode {
     // could fire an irreversible texture upload. Skipped while the chart
     // owns the frame: the world spheres aren't drawn there, so a
     // schematic-view zoom must not fetch anything for an unseen surface.
-    if (!this.isMapOpen()) this.updateBodyLOD();
+    // (`mapOpen` also gates the other world-presentation passes below — the
+    // world composer is bypassed entirely while the chart owns the frame, so
+    // per-frame work whose only output is the world render is pure waste.)
+    const mapOpen = this.isMapOpen();
+    if (!mapOpen) this.updateBodyLOD();
 
     // The HTML label/marker projections below read camera.matrixWorldInverse,
     // which the renderer refreshes only at render time — after this update().
@@ -2773,8 +2821,11 @@ export class PlanetariumMode {
 
     // Photometric moon dots: fill the buffers now the cruise camera is settled
     // (safety escape + arrival look applied), before the label pass reads each
-    // dot's screen contribution for its sub-pixel gating.
-    this.updateMoonDotsForCamera();
+    // dot's screen contribution for its sub-pixel gating. Skipped with the
+    // rest of the world passes while the map owns the frame — the label pass
+    // that reads the contributions is gated the same way, and the fill reruns
+    // before the first world render after the map closes.
+    if (!mapOpen) this.updateMoonDotsForCamera();
 
     // Coverage meter: output-space overlap of the displayed tangent footprint,
     // not the overscan camera's rectilinear angular box. Telemetry for
@@ -2799,11 +2850,6 @@ export class PlanetariumMode {
       1,
     );
     this.exposureTarget = solarExposureTarget(this.exposureCoverage);
-
-    // World-presentation passes are gated while the map owns the frame — the
-    // system-map-active class force-hides their DOM, so this only saves the CPU
-    // of projecting/writing overlays that can't show.
-    const mapOpen = this.isMapOpen();
 
     // Occlusion + label/marker + hover-reveal pipeline: planet discs → Sun +
     // moon + ship discs → pick list → reveal → labels + markers.
@@ -3046,7 +3092,7 @@ export class PlanetariumMode {
       // re-grab promote straight to 'orbit'. OrbitControls stays idle here.
       const tau = this.advanceChaseFollowTau(dt);
       const ideal = this.clampChaseIdealToShells(chaseIdealOffset(
-        this.player.getForwardDirection(),
+        this.player.writeForwardDirection(this.tmpForwardDir),
         FLIGHT_UP_SCENE,
         this.tmpChaseIdeal,
       ));
@@ -3080,7 +3126,7 @@ export class PlanetariumMode {
     // Chase camera: smoothly lerp behind the ship. The τ eases between idle and
     // steering so a tap bends the pursuit curve instead of stepping it, and the
     // gain derives from dt so 60 Hz and 120 Hz converge alike.
-    const forward = this.player.getForwardDirection();
+    const forward = this.player.writeForwardDirection(this.tmpForwardDir);
     const idealPos = this.clampChaseIdealToShells(
       chaseIdealOffset(forward, FLIGHT_UP_SCENE, this.tmpChaseIdeal),
     );
@@ -3770,23 +3816,39 @@ export class PlanetariumMode {
       let moonShadowCount = 0;
       let casterNames: Set<string> | null = null;
       let sunTanAtParent = 0;
-      if (surfFx) {
+      // Only for a shown system: hidden systems' moons all early-out below,
+      // so their caster set is never consulted (the count still zeroes after
+      // the loop), and the selection sort/Set need not be built for them.
+      if (surfFx && visible) {
         this.tmpMoonShadowQuat.copy(planet.group.quaternion).invert();
         const SUN_RADIUS_AU = 695_700 / 149_597_870.7;
         sunTanAtParent = SUN_RADIUS_AU / Math.max(Math.hypot(wp.x, wp.y, wp.z), 1e-9);
-        casterNames = new Set(
-          [...moons]
-            // Filter to moons whose umbra actually reaches the surface FIRST,
-            // then take the largest few — else a big, far moon whose umbra falls
-            // short (Iapetus, Nereid) steals a slot from a real caster (Tethys,
-            // Galatea). orbitalRadiusAU is the mean distance; the loop re-checks
-            // the live distance per frame.
-            .filter((mm) => mm.data.radiusAU / parentR > 0.003
-              && mm.data.radiusAU > mm.data.orbitalRadiusAU * sunTanAtParent)
-            .sort((a, b) => b.data.radiusAU - a.data.radiusAU)
-            .slice(0, surfFx.uMoonShadow.value.length)
-            .map((mm) => mm.data.name),
-        );
+        // The candidate set depends only on catalog constants and the sun's
+        // angular size at the parent, which drifts on the parent's orbital
+        // timescale — cache it and rebuild on a >0.5% sun-size change instead
+        // of re-filtering/sorting/allocating per frame. Selection is a coarse
+        // mean-distance prefilter; the live per-frame umbra check below stays.
+        let casterCache = this.moonShadowCasterCache.get(planet.data.name);
+        if (!casterCache || Math.abs(casterCache.sunTan - sunTanAtParent) > casterCache.sunTan * 0.005) {
+          casterCache = {
+            sunTan: sunTanAtParent,
+            names: new Set(
+              [...moons]
+                // Filter to moons whose umbra actually reaches the surface FIRST,
+                // then take the largest few — else a big, far moon whose umbra falls
+                // short (Iapetus, Nereid) steals a slot from a real caster (Tethys,
+                // Galatea). orbitalRadiusAU is the mean distance; the loop re-checks
+                // the live distance per frame.
+                .filter((mm) => mm.data.radiusAU / parentR > 0.003
+                  && mm.data.radiusAU > mm.data.orbitalRadiusAU * sunTanAtParent)
+                .sort((a, b) => b.data.radiusAU - a.data.radiusAU)
+                .slice(0, surfFx.uMoonShadow.value.length)
+                .map((mm) => mm.data.name),
+            ),
+          };
+          this.moonShadowCasterCache.set(planet.data.name, casterCache);
+        }
+        casterNames = casterCache.names;
       }
 
       // Hard rule: paint a system before it's shown. The gate runs every frame
@@ -3867,19 +3929,29 @@ export class PlanetariumMode {
         }
 
         // World velocity (AU per frame-second) for the governor's moving-body
-        // credit, differenced against the entry this write replaces — valid
-        // only when that entry was written on the immediately previous pass
-        // and this pass's clock step was continuous (velDenomS above).
-        const prevMoonPos = this.moonWorldPositions.get(m.data.name);
+        // credit, differenced against the entry values this pass overwrites —
+        // valid only when that entry was written on the immediately previous
+        // pass and this pass's clock step was continuous (velDenomS above).
+        // The position entry is mutated in place (difference first, then
+        // overwrite), so steady-state frames allocate nothing.
+        let moonPos = this.moonWorldPositions.get(m.data.name);
+        // A just-created entry holds zeros, not a previous position — it must
+        // never feed the difference (the same first-write hole the old
+        // fresh-object write dodged by checking existence).
+        const hadPrevPos = moonPos !== undefined;
+        if (!moonPos) {
+          moonPos = { x: 0, y: 0, z: 0, pass: 0 };
+          this.moonWorldPositions.set(m.data.name, moonPos);
+        }
         let moonVel = this.moonWorldVels.get(m.data.name);
         if (!moonVel) {
           moonVel = { x: 0, y: 0, z: 0, pass: 0 };
           this.moonWorldVels.set(m.data.name, moonVel);
         }
-        if (prevMoonPos && velDenomS > 0 && moonVel.pass === this.moonVelPassIndex - 1) {
-          moonVel.x = (wp.x + offset.x - prevMoonPos.x) / velDenomS;
-          moonVel.y = (wp.y + offset.y - prevMoonPos.y) / velDenomS;
-          moonVel.z = (wp.z + offset.z - prevMoonPos.z) / velDenomS;
+        if (hadPrevPos && velDenomS > 0 && moonVel.pass === this.moonVelPassIndex - 1) {
+          moonVel.x = (wp.x + offset.x - moonPos.x) / velDenomS;
+          moonVel.y = (wp.y + offset.y - moonPos.y) / velDenomS;
+          moonVel.z = (wp.z + offset.z - moonPos.z) / velDenomS;
         } else {
           moonVel.x = 0;
           moonVel.y = 0;
@@ -3887,11 +3959,10 @@ export class PlanetariumMode {
         }
         moonVel.pass = this.moonVelPassIndex;
 
-        this.moonWorldPositions.set(m.data.name, {
-          x: wp.x + offset.x,
-          y: wp.y + offset.y,
-          z: wp.z + offset.z,
-        });
+        moonPos.x = wp.x + offset.x;
+        moonPos.y = wp.y + offset.y;
+        moonPos.z = wp.z + offset.z;
+        moonPos.pass = this.moonVelPassIndex;
 
         // Rendered size: moons below the anchor inflate toward it on the
         // compressive curve (size ordering survives — small moons no longer
@@ -4476,7 +4547,7 @@ export class PlanetariumMode {
     const camX = this.camera.position.x;
     const camY = this.camera.position.y;
     const camZ = this.camera.position.z;
-    const tempV = new THREE.Vector3();
+    const tempV = this.tmpLabelMoonWorld;
 
     // The Sun. No angular-size gate: markers no longer depth-test, so this
     // disc is the only thing keeping a far planet's marker (and label) from
@@ -4563,6 +4634,9 @@ export class PlanetariumMode {
   // markers whose sight line passes the hull, typically zero per frame.
   private markerShipRaycaster = new THREE.Raycaster();
   private markerShipRayDir = new THREE.Vector3();
+  /** Moon world-position scratch for the occluder + moon-label passes (they
+   *  never nest; each read is consumed within its own loop iteration). */
+  private readonly tmpLabelMoonWorld = new THREE.Vector3();
   private markerShipMeshes: THREE.Object3D[] = [];
   private markerShipHits: THREE.Intersection[] = [];
   private shipSunRight = new THREE.Vector3();
@@ -4712,7 +4786,7 @@ export class PlanetariumMode {
     if (!this.solarSystem || this.moonLabelContainer === null) return;
     const canvasW = this.renderer.domElement.clientWidth;
     const canvasH = this.renderer.domElement.clientHeight;
-    const tempV = new THREE.Vector3();
+    const tempV = this.tmpLabelMoonWorld;
 
     // Two passes: gather the placeable labels here, then hand the contest to
     // placeMoonLabels — who yields to whom is a rule set with its own tests, and
@@ -5672,12 +5746,18 @@ export class PlanetariumMode {
     // Sample after the camera-safety and chase passes have finalised the frame's
     // pose. Keep this render-only source transmission entirely separate from
     // the celestial visibility/exposure/flash state resolved above.
-    this.shipSunVisibility = this.computeShipSunVisibility(
-      toSun,
-      sunDistance,
-      solarAngularRadius,
-      inFront && appearanceEligible,
-    );
+    // While the map owns the frame the world composer never draws, so the
+    // hull traversal + disc raycasts (a sustained cost on sunward legs, where
+    // the overlap gate stays open) would feed nothing — hold the last value;
+    // the probe re-runs in update() before the first world render after close.
+    if (!this.isMapOpen()) {
+      this.shipSunVisibility = this.computeShipSunVisibility(
+        toSun,
+        sunDistance,
+        solarAngularRadius,
+        inFront && appearanceEligible,
+      );
+    }
     if (glareMat) {
       glareMat.uniforms.uShipSunVisibility.value = this.shipSunVisibility;
     }
@@ -6226,6 +6306,13 @@ export class PlanetariumMode {
       // surface view, the panel and the landing from a single press. No rung
       // here wants a repeat: each one is a discrete dismissal.
       if (e.repeat) return;
+      // The arrival veil's contract is that nothing half-loaded may be
+      // interacted with — it blocks pointers by construction, but the
+      // keyboard arrives here, and an Esc inside the covered hold would walk
+      // the cascade to exitLandedMode(): a takeoff fired under an opaque
+      // veil, "Departing" toast and all. Swallow the press for the ~1 s the
+      // veil owns the screen; the ceremony ends with everything dismissable.
+      if (this.arrivalVeilUp()) return;
       if (this.isHelpOpen()) { this.hideHelp(); return; }
       // One Esc, one meaning while tutorialing: end the tutorial. Above the deck rung
       // on purpose — during the deck theater the open deck is tutorial-owned, and
@@ -6486,11 +6573,15 @@ export class PlanetariumMode {
       const moonThreshold = this.getMoonSystemThresholdAU(planet.data.radiusAU, moons);
       if (dist > moonThreshold) continue;
       for (const m of moons) {
-        // Compute moon's real AU position (parent + orbital offset)
-        const offset = this.getMoonWorldOffsetAU(m.data, planet.data, this.tmpMoonOffset);
-        const mdx = this.player.posX - (wp.x + offset.x);
-        const mdy = this.player.posY - (wp.y + offset.y);
-        const mdz = this.player.posZ - (wp.z + offset.z);
+        // The moon pass just wrote this frame's world position — reuse it
+        // rather than re-propagating the ephemeris at the same instant. A
+        // stale/absent entry means the moon isn't shown (unpainted first
+        // frame in a system): nothing to land on yet, skip it.
+        const mp = this.moonWorldPositions.get(m.data.name);
+        if (!mp || this.moonVelPassIndex - mp.pass > 1) continue;
+        const mdx = this.player.posX - mp.x;
+        const mdy = this.player.posY - mp.y;
+        const mdz = this.player.posZ - mp.z;
         const md = Math.sqrt(mdx * mdx + mdy * mdy + mdz * mdz);
         const moonLandThreshold = Math.max(m.data.radiusAU * this.planetScale * 3, 0.0003);
         if (md < moonLandThreshold && md < closestDist) {
@@ -7606,8 +7697,6 @@ export class PlanetariumMode {
       if (open) this.dismissMapCard();
       this.standMapPanelDown(open);
     };
-
-    this.sunLabel.attach();
 
     // Astronomy time controls. The transport, Now, and date input keep their
     // id-based handlers here — the rail widget's callbacks only cover the
@@ -10588,12 +10677,14 @@ export class PlanetariumMode {
       options.lookTarget.z - options.targetPosition.z,
     );
     const startHeading = this.player.heading;
-    let endHeading = aim.headingRad;
-    // Shortest-path heading lerp: pick the equivalent endHeading within ±π of start
-    // so we never sweep the long way around when crossing the ±π branch cut.
-    const dh = endHeading - startHeading;
-    if (dh > Math.PI) endHeading -= 2 * Math.PI;
-    else if (dh < -Math.PI) endHeading += 2 * Math.PI;
+    // Shortest-path heading lerp: pick the equivalent endHeading within ±π of
+    // start so we never sweep the long way around. The wrap must be fully
+    // modular, not a single ±2π nudge: `heading` accumulates unbounded under
+    // sustained yaw (a full-stick turn adds a revolution every ~8 s), and a
+    // one-step correction would leave N whole extra revolutions in the lerp.
+    const TWO_PI = 2 * Math.PI;
+    const dh = ((aim.headingRad - startHeading) % TWO_PI + 3 * Math.PI) % TWO_PI - Math.PI;
+    const endHeading = startHeading + dh;
     this.scriptedTransfer = {
       elapsed: 0,
       duration: 1.15,
@@ -10853,7 +10944,7 @@ export class PlanetariumMode {
    *  outrun the world-frame leave creep and bulldoze it forever — with the
    *  credit the ship can always walk off the moving shell. */
   private computeBodySpeedCap(): number {
-    const f = this.player.getForwardDirection();
+    const f = this.player.writeForwardDirection(this.tmpForwardDir);
     let cap = Infinity;
     const consider = (
       x: number, y: number, z: number, surfaceR: number, kPerS: number,
@@ -11035,7 +11126,7 @@ export class PlanetariumMode {
     if (this.autopilot) this.disengageAutopilot();
     this.reviveParkedShip();
     if (this.player.yawInput !== 0 || this.player.pitchInput !== 0) return;
-    const forward = this.player.getForwardDirection();
+    const forward = this.player.writeForwardDirection(this.tmpForwardDir);
     if (forward.x * hit.ox + forward.y * hit.oy + forward.z * hit.oz < CONTACT_ALIGN_OUT_MAX) {
       grazeDeflectAim(
         forward.x, forward.y, forward.z,
@@ -12212,10 +12303,9 @@ export class PlanetariumMode {
    *  search (the per-frame work that loads when landed — for lag profiling). */
   devOpenObservatory(): boolean {
     if (!this.landedOn) return false;
-    this.bottomBar.closeStats();
-    this.observatoryPanel.show();
-    this.renderObservatoryPanel();
-    this.startObservatoryEventSearch();
+    // Through the one panel-open sequence, so the dev bridge lights the
+    // cluster chip exactly like the user path.
+    this.openObservatoryPanel();
     return true;
   }
 
@@ -12252,15 +12342,19 @@ export class PlanetariumMode {
       const r = this.getLandedBodyRenderedRadiusAU();
       subjectAngularDeg = (2 * Math.atan(r / Math.max(camLen, 1e-12)) * 180) / Math.PI;
     }
+    // Measure against the DISPLAYED field of view, never cam.fov: under the
+    // lens cam.fov holds the overscan, which would systematically understate
+    // the fill fraction — the exact number this probe exists to pin.
+    const displayFov = displayFovDeg(cam);
     return {
       landedOn: this.landedOn ? { type: this.landedOn.type, name: this.landedOn.name } : null,
       view: this.landedView,
-      fov: cam.fov,
+      fov: displayFov,
       surfaceFovDeg: this.surfaceFovDeg,
       camLenAU: camLen,
       subjectName,
       subjectAngularDeg,
-      subjectFillFraction: cam.fov > 0 ? subjectAngularDeg / cam.fov : 0,
+      subjectFillFraction: displayFov > 0 ? subjectAngularDeg / displayFov : 0,
     };
   }
 
@@ -12597,8 +12691,38 @@ export class PlanetariumMode {
     }).relocateToParent;
   }
 
-  /** The phase hero's subject, with disc data read from the rendered scene objects. */
+  /** One subject per instant: the panel and the surface HUD both render on
+   *  the same 8 Hz tick, and on a moon vantage each build costs several full
+   *  ephemeris evaluations (parent illumination + waxing probes). The
+   *  subject is a pure function of the clock and the vantage identity, so
+   *  key on exactly those. */
+  private observatorySubjectMemo: {
+    utcMs: number; type: string; name: string; value: ObservatorySubjectInfo | null;
+  } | null = null;
+
   private buildObservatorySubject(): ObservatorySubjectInfo | null {
+    if (!this.landedOn) return null;
+    const memo = this.observatorySubjectMemo;
+    if (
+      memo &&
+      memo.utcMs === this.timeState.currentUtcMs &&
+      memo.type === this.landedOn.type &&
+      memo.name === this.landedOn.name
+    ) {
+      return memo.value;
+    }
+    const value = this.buildObservatorySubjectUncached();
+    this.observatorySubjectMemo = {
+      utcMs: this.timeState.currentUtcMs,
+      type: this.landedOn.type,
+      name: this.landedOn.name,
+      value,
+    };
+    return value;
+  }
+
+  /** The phase hero's subject, with disc data read from the rendered scene objects. */
+  private buildObservatorySubjectUncached(): ObservatorySubjectInfo | null {
     if (!this.landedOn) return null;
     const parentName = this.observatoryParentPlanetName()!;
     if (parentName === 'Earth') {
@@ -13441,11 +13565,16 @@ export class PlanetariumMode {
       }
       // Re-point (event jump): a short ease to the new target's fitted FOV
       // (predictable framing beats preserving a zoom tuned for the previous
-      // subject).
+      // subject). If the ENTRY glide is still running, carry a position ease
+      // too: a positionless anim pins the camera straight to the (possibly
+      // relocated) vantage next frame — a visible mid-air pop when an event
+      // row is clicked inside the entry's 0.35 s. Seed it from the camera's
+      // live position so the glide continues from exactly where it is.
+      const midEntryGlide = this.surfaceFovAnim?.fromPos != null;
       this.surfaceFovAnim = {
         fromFov: displayFovDeg(this.camera),
         toFov: entryFov,
-        fromPos: null,
+        fromPos: midEntryGlide ? this.camera.position.clone() : null,
         elapsed: 0,
         duration: 0.45,
         finalizeExit: false,
@@ -13784,13 +13913,11 @@ export class PlanetariumMode {
     // for a resolvable disc, the hairline reticle for sub-pixel specks (the
     // 70px bracket floor around empty sky read as "something visible here"),
     // and an edge chevron pointing back when free look loses the target.
+    // Projects through the world matrix refreshed just above — nothing has
+    // touched the camera since.
     const canvas = this.renderer.domElement;
     const w = canvas.clientWidth;
     const h = canvas.clientHeight;
-    // The tracking lookAt above only dirtied the local matrix; project through
-    // THIS frame's pose, not last render's, or the marker trails the disc by a
-    // frame during re-points and drag-look.
-    this.camera.updateMatrixWorld();
     const targetRadiusAU = this.surfaceTargetRadiusAU(this.surfaceTarget);
     const proj = projectSphereToScreen(
       targetPos,
@@ -14432,8 +14559,13 @@ export class PlanetariumMode {
 
     this.updateObservatoryButtonVisibility();
 
-    // Shadow visuals live in the landed system's moon group (Mercury/Venus
-    // have none — attach is skipped and update() finds no moons).
+    // Shadow visuals live in the landed system's moon group. Detach comes
+    // first, unconditionally: a ceremony-free re-land (observe-tab pick) onto
+    // a planet WITHOUT a group (Mercury/Venus have no moons) would otherwise
+    // skip both branches and leave the previous system's spots/guides parented
+    // — frozen in whatever pose they last drew — until the next takeoff.
+    this.shadowVisuals.detach();
+    this.orbitDetailsVisuals.detach();
     const systemGroup = this.moonSystemGroups.get(this.observatoryParentPlanetName() ?? '');
     if (systemGroup) {
       this.shadowVisuals.attach(systemGroup);
@@ -15205,6 +15337,10 @@ export class PlanetariumMode {
     // user picks ever produce a non-Mercury target).
     this.autopilotTarget = saved.autopilotTarget ?? null;
     this.autopilotUserEngaged = saved.autopilotUserEngaged ?? false;
+    // The flag and the target restore from separate fields, and the store
+    // sanitizer can drop a malformed/renamed target while keeping the flag —
+    // an engaged Pilot chip steering nothing. Targetless, disengage.
+    if (this.autopilot && !this.autopilotTarget) this.autopilot = false;
     this.updateAutopilotButton();
     this.skyPrefStored = saved.skyPref ?? null;
     const shipLabel = document.getElementById('settings-ship-label');
@@ -15230,10 +15366,17 @@ export class PlanetariumMode {
       if (target.name === 'Sun') return SUN_WORLD_POSITION;
       return this.planetWorldPositions.get(target.name) ?? null;
     }
-    // For moons, use precise position when available; fall back to parent planet
-    return this.moonWorldPositions.get(target.name)
-      ?? this.planetWorldPositions.get(target.parentPlanet)
-      ?? null;
+    // For moons, use the precise cached position only while it is FRESH —
+    // written for a currently-shown moon this pass or the one before (the
+    // autopilot runs before the frame's refill). Entries persist unpruned
+    // after a system drops out of range, so an unguarded read would steer
+    // the far-field autopilot toward where the moon was when last seen —
+    // arbitrarily far from the live moon after a clock warp — and ring the
+    // moon-branch arrival test in empty space. Stale or absent, fall back to
+    // the parent planet like the never-visited case always has.
+    const wp = this.moonWorldPositions.get(target.name);
+    if (wp && this.moonVelPassIndex - wp.pass <= 1) return wp;
+    return this.planetWorldPositions.get(target.parentPlanet) ?? null;
   }
 
   /**
@@ -15596,6 +15739,17 @@ export class PlanetariumMode {
 
   dispose() {
     this.deactivate();
+    // The constructor's window-level listeners (activate/deactivate own only
+    // the key handlers): without these removals a disposed mode — and its
+    // whole scene graph, through the closures — stays reachable, and its
+    // blur handler keeps firing.
+    window.removeEventListener('pointerup', this.onWindowMapDisarm);
+    window.removeEventListener('pointercancel', this.onWindowMapDisarm);
+    window.removeEventListener('blur', this.onWindowBlur);
+    window.removeEventListener('pointerdown', this.onWindowPointerDown, true);
+    window.removeEventListener('pointermove', this.onWindowPointerMove, true);
+    window.removeEventListener('pointerup', this.onWindowPointerUp, true);
+    window.removeEventListener('pointercancel', this.onWindowPointerCancel, true);
     // Abandon every colour-tier fetch still in flight: a callback that landed
     // after this point would apply to a material nothing draws and queue an
     // upload into a warmer with no renderer behind it. Warm goals go with

@@ -81,6 +81,13 @@ describe('surfacePerf DEV trace', () => {
     };
     expect(snapshot.summary.clicksMissingAfterPointerUp).toBe(1);
     expect(snapshot.summary.pointerUpFollowingFrames).toHaveLength(2);
+    // The pointerup column must RESOLVE, not just exist: Safari acts on
+    // pointerup, so a null here would blind the trace to the exact case the
+    // module was built to diagnose.
+    for (const entry of snapshot.summary.pointerUpFollowingFrames) {
+      expect(entry.pointerUpToFrameMs).not.toBeNull();
+      expect(entry.pointerUpToFrameMs!).toBeLessThan(20);
+    }
     expect(snapshot.summary.followingFrames).toHaveLength(1);
     expect(snapshot.summary.followingFrames[0].clickToFrameMs).not.toBeNull();
     expect(snapshot.summary.followingFrames[0].clickToFrameMs!).toBeLessThan(20);

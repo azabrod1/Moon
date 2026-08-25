@@ -57,6 +57,11 @@ export class SunLabel {
   }
 
   attach(): void {
+    // Idempotent: the host container is torn down and recreated per mode
+    // activation (PlanetLabels.dispose removes `#planet-labels`, taking this
+    // element with it), so attach must be safe to call on every activation —
+    // drop any previous element before appending into the fresh container.
+    this.dispose();
     const container = document.getElementById('planet-labels');
     if (!container) return;
     this.el = document.createElement('div');

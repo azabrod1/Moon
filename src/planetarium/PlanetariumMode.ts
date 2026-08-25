@@ -109,6 +109,7 @@ import {
   LABEL_READABLE_RADIUS_PX,
   MOON_LABEL_PLACEMENT_PARAMS,
   clampAnchorClearOfDisc,
+  edgeLabelSystemCap,
   placeMoonLabels,
   type AnchorSlide,
   type MoonLabelCandidate,
@@ -4850,7 +4851,7 @@ export class PlanetariumMode {
         let c = candidates[candidateCount];
         if (!c) {
           c = {
-            label, moon: m, name: '', sx: 0, sy: 0, onScreen: false, priorityPx: 0,
+            label, moon: m, name: '', parent: '', sx: 0, sy: 0, onScreen: false, priorityPx: 0,
             halfW: 0, isTarget: false, isRevealed: false, isUnlit: false, placed: false,
           };
           candidates.push(c);
@@ -4858,6 +4859,7 @@ export class PlanetariumMode {
         c.label = label;
         c.moon = m;
         c.name = m.data.name;
+        c.parent = planet.data.name;
         c.sx = sx;
         c.sy = sy;
         c.onScreen = onScreen;
@@ -4883,7 +4885,9 @@ export class PlanetariumMode {
     }
 
     candidates.length = candidateCount;
-    placeMoonLabels(candidates, this.moonLabelIncumbents, placement);
+    // On a phone-width canvas each system pins at most one off-screen moon's
+    // label to the margins — see edgeLabelSystemCap. Desktop is uncapped.
+    placeMoonLabels(candidates, this.moonLabelIncumbents, placement, edgeLabelSystemCap(canvasW));
     // Apply the decision, and record this frame's winners as the next frame's
     // incumbents. The two sets are swapped rather than rebuilt, and a name that
     // stops being a candidate simply ages out of the buffer being refilled.

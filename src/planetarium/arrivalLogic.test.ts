@@ -25,6 +25,7 @@ import {
   BODY_APPROACH_V_MIN_AU_S,
   BODY_CAP_CLEAR_HOLD_S,
   CAP_TRANSITION_TAU_S,
+  CONTACT_AIM_TAU_S,
   GRAZE_OUTWARD_BIAS,
   LEAVE_HEADSTART_RADII,
   LEAVE_VALVE_KNEE_RADII,
@@ -1065,13 +1066,13 @@ describe('grazeDeflectAim', () => {
 });
 
 describe('contactAimStep', () => {
-  it('converges monotonically onto the target and reports done within ~1 s', () => {
+  it('converges monotonically onto the target and reports done within ~6τ', () => {
     const dir = new THREE.Vector3(1, 0, 0);
     const target = new THREE.Vector3(0, 1, 0); // a 90° swing
     let done = false;
     let prevDot = dir.dot(target);
     let steps = 0;
-    while (!done && steps < 300) {
+    while (!done && steps < 600) {
       done = contactAimStep(dir, target, 1 / 60, dir); // out aliases dir
       expect(dir.length()).toBeCloseTo(1, 12);
       const d = dir.dot(target);
@@ -1080,7 +1081,8 @@ describe('contactAimStep', () => {
       steps++;
     }
     expect(done).toBe(true);
-    expect(steps / 60).toBeLessThan(1.0);
+    // The half-degree done latch on a 90° swing lands at ln(90/0.5) ≈ 5.2τ.
+    expect(steps / 60).toBeLessThan(6 * CONTACT_AIM_TAU_S);
   });
 
   it('a capped 100 ms hitch frame still yields a unit direction mid-swing', () => {

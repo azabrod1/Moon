@@ -393,9 +393,11 @@ export interface SweepContact {
 // MOVING body's leading face aimed the ship straight along the bulldozer
 // blade, the direction that never slides off.
 
-/** Outward bias added to the graze tangent (≈14°): enough that a hands-off
- *  contact visibly peels away instead of orbiting the shell. */
-export const GRAZE_OUTWARD_BIAS = 0.25;
+/** Outward bias added to the graze tangent (≈8.5°): enough that a hands-off
+ *  contact drifts clear instead of orbiting the shell, shallow enough that
+ *  the deflection reads as a nudge, not a swerve (flying QA: the first cut's
+ *  14° was "should be even less dramatic"). */
+export const GRAZE_OUTWARD_BIAS = 0.15;
 
 /** Below this tangential magnitude a hit counts as dead-center — no usable
  *  slide direction — and the aim veers onto a stable perpendicular instead:
@@ -408,9 +410,11 @@ export const GRAZE_TANGENT_MIN = 0.05;
  *  component under this); a ship already leaving keeps its heading. */
 export const CONTACT_ALIGN_OUT_MAX = 0.15;
 
-/** e-fold time of the contact re-aim swing — ~95% of the turn in ~0.35 s:
- *  a guided deflection, not a one-frame snap. */
-export const CONTACT_AIM_TAU_S = 0.12;
+/** e-fold time of the contact re-aim swing — ~95% of the turn in ~0.6 s:
+ *  a guided deflection, not a one-frame snap (softened with the bias in the
+ *  same QA pass). Wide swings may ride into the TTL before the half-degree
+ *  done latch; the ~1° they land with is visually settled. */
+export const CONTACT_AIM_TAU_S = 0.2;
 
 /** The armed re-aim survives this long past the last contact frame, then
  *  expires — a stale target can't steer a later, unrelated flight. */

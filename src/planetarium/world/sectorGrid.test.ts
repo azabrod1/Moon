@@ -45,7 +45,7 @@ describe('sector uv rectangles', () => {
 
 describe('sector tile transform', () => {
   it('maps the sector rectangle onto the tile interior (three applies uv * repeat + offset)', () => {
-    const g = SECTOR_TILE.gutter / SECTOR_TILE.size; // 8/2048
+    const g = SECTOR_TILE.gutterX / SECTOR_TILE.width; // 8/2048
     for (const s of allSectors()) {
       const rect = sectorUvRect(G, s);
       const t = sectorTileTransform(G, s);
@@ -58,7 +58,7 @@ describe('sector tile transform', () => {
 
   it('a gutterless layout maps exactly onto [0,1]²', () => {
     const rect = sectorUvRect(G, { c: 5, r: 2 });
-    const t = sectorTileTransform(G, { c: 5, r: 2 }, { size: 2048, gutter: 0 });
+    const t = sectorTileTransform(G, { c: 5, r: 2 }, { width: 2048, height: 2048, gutterX: 0, gutterY: 0, spanU: 1, leadU: 0 });
     expect(rect.u0 * t.repeatX + t.offsetX).toBeCloseTo(0, 12);
     expect(rect.u1 * t.repeatX + t.offsetX).toBeCloseTo(1, 12);
     expect(rect.v0 * t.repeatY + t.offsetY).toBeCloseTo(0, 12);
@@ -67,7 +67,7 @@ describe('sector tile transform', () => {
 
   it('data crops: a 2048-wide base map cuts into 272² crops (256 content + 8 gutter) mapped alike', () => {
     const layout = dataCropLayout(G, 2048);
-    expect(layout).toEqual({ size: 272, gutter: 8 });
+    expect(layout).toEqual({ width: 272, height: 272, gutterX: 8, gutterY: 8, spanU: 1, leadU: 0 });
     const rect = sectorUvRect(G, { c: 1, r: 3 });
     const t = sectorTileTransform(G, { c: 1, r: 3 }, layout);
     expect(rect.u0 * t.repeatX + t.offsetX).toBeCloseTo(8 / 272, 12);
@@ -79,6 +79,25 @@ describe('sector tile transform', () => {
     expect(t.repeatX * 272).toBeCloseTo(2048, 9);
   });
 
+  it('normal-map crops are two sectors wide with a UNIFORM transform (the tangent frame cancels)', () => {
+    const layout = dataCropLayout(G, 2880, 2); // 4k/moon-normal
+    expect(layout).toEqual({ width: 752, height: 376, gutterX: 16, gutterY: 8, spanU: 2, leadU: 0.5 });
+    for (const s of [{ c: 0, r: 0 }, { c: 3, r: 1 }, { c: 7, r: 3 }]) {
+      const t = sectorTileTransform(G, s, layout);
+      // Uniform scale: three normalises its derivative tangent frame by the
+      // larger axis, so only an equal u/v scale shades relief like the globe.
+      expect(t.repeatX).toBeCloseTo(t.repeatY, 12);
+      // The sector's own rectangle lands in the middle half of the interior.
+      const rect = sectorUvRect(G, s);
+      const gW = 16 / 752;
+      const fW = 720 / 752;
+      expect(rect.u0 * t.repeatX + t.offsetX).toBeCloseTo(gW + 0.25 * fW, 12);
+      expect(rect.u1 * t.repeatX + t.offsetX).toBeCloseTo(gW + 0.75 * fW, 12);
+      expect(rect.v0 * t.repeatY + t.offsetY).toBeCloseTo(8 / 376, 12);
+      expect(rect.v1 * t.repeatY + t.offsetY).toBeCloseTo(368 / 376, 12);
+    }
+  });
+
   it('applies to a texture with clamped wrapping (a sector never wraps)', () => {
     const tex = new THREE.Texture();
     applySectorTileTransform(tex, G, { c: 3, r: 2 });
@@ -86,7 +105,7 @@ describe('sector tile transform', () => {
     expect(tex.wrapT).toBe(THREE.ClampToEdgeWrapping);
     // The transform is what three's mapTransform uniform is built from.
     tex.updateMatrix();
-    const g = SECTOR_TILE.gutter / SECTOR_TILE.size;
+    const g = SECTOR_TILE.gutterX / SECTOR_TILE.width;
     const p = new THREE.Vector3(0.375, 0.5, 1).applyMatrix3(tex.matrix); // sector (3,2)'s NW corner
     expect(p.x).toBeCloseTo(g, 12);
     expect(p.y).toBeCloseTo(1 - g, 12);

@@ -93,7 +93,16 @@ describe('upgrade ladders', () => {
     materials.push(mat);
     expect(makeTextureUpgrade('earthDay', mat)).toBeUndefined();
     expect(makeTextureUpgrade('uranus', mat)).toBeUndefined();
+    expect(makeTextureUpgrade('neptune', mat)).toBeUndefined();
     expect(makeTextureUpgrade(undefined, mat)).toBeUndefined();
+  });
+
+  it('ships one 4K step for Mercury, Venus and Saturn (their SSS sources passed the same-product gate)', () => {
+    for (const key of ['mercury', 'venus', 'saturn']) {
+      const mat = new THREE.MeshStandardMaterial();
+      materials.push(mat);
+      expect(makeTextureUpgrade(key, mat)?.tiers, key).toEqual(['4k']);
+    }
   });
 
   it('settles at the ceiling a 4096-cap device can hold, without re-arming', () => {

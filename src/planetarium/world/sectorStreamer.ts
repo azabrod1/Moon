@@ -53,6 +53,7 @@ import {
 import { SECTOR_RENDER_ORDER, createSectorMaterial, syncSectorMaterial } from './sectorMaterial';
 import { loadStreamedTexture, type TextureLoad } from './textureBitmapLoader';
 import { applyTextureDefaults, resolveTileUrl, type TextureTier } from './texturePolicy';
+import { TIER_RANK } from '../PlanetFactory';
 import { queueTextureWarm, type WarmOutcome } from './textureWarmer';
 
 export type CropSlot = 'bumpMap' | 'normalMap' | 'roughnessMap';
@@ -64,6 +65,8 @@ export interface SectorCropSpec {
   tier: TextureTier;
   /** Width of that base map — the crop layout (content + gutter) follows. */
   baseWidth: number;
+  /** Sectors of longitude a crop spans (normal maps: 2, see sectorGrid). */
+  spanU?: number;
 }
 
 export interface SectorSetSpec {
@@ -87,11 +90,11 @@ export const SECTOR_SETS: Record<string, SectorSetSpec> = {
   },
   Mars: {
     colorKey: 'mars',
-    crops: { normalMap: { key: 'mars-normal', tier: '2k', baseWidth: 1440 } },
+    crops: { normalMap: { key: 'mars-normal', tier: '2k', baseWidth: 1440, spanU: 2 } },
   },
   Moon: {
     colorKey: 'moon',
-    crops: { normalMap: { key: 'moon-normal', tier: '4k', baseWidth: 2880 } },
+    crops: { normalMap: { key: 'moon-normal', tier: '4k', baseWidth: 2880, spanU: 2 } },
   },
 };
 
@@ -163,7 +166,10 @@ interface SectorSlot {
   wanted: boolean;
   /** Crop-slot signature of the base when this sector was loaded. */
   signature: string;
-  loading?: { pending: number; loaded: Partial<Record<MapName, THREE.Texture>> };
+  /** In-flight load: `owned` holds every decoded texture from the moment it
+   *  exists (queued for warming or resident), so a release can dispose it —
+   *  which also dequeues it from the warm pump through its dispose hook. */
+  loading?: { pending: number; loaded: Partial<Record<MapName, THREE.Texture>>; owned: THREE.Texture[] };
   mesh?: THREE.Mesh;
   textures: THREE.Texture[];
   failStreak: number;
@@ -188,12 +194,29 @@ export interface SectorStats {
   bodies: Record<string, { resident: string[]; loading: string[] }>;
 }
 
+/** A real map in a material slot — not the procedural stand-in a failed
+ *  boot fetch leaves there (a crop of the real map over a flat fallback would
+ *  be a rectangle of relief on a smooth globe). */
+function realMapIn(mat: THREE.MeshStandardMaterial, slot: CropSlot): boolean {
+  const tex = mat[slot];
+  return !!tex && tex.userData?.proceduralFallback !== true;
+}
+
+/** The globe draws a real photo map (boot tier or higher) — the only base a
+ *  real tile may overlay. A body still on its procedural floor (a fallback
+ *  after a failed fetch, a painted moon before its photo lands) would show a
+ *  sector as a rectangle of a different world. */
+function realAlbedoOn(mat: THREE.MeshStandardMaterial): boolean {
+  const rank = mat.userData?.colorTierRank as number | undefined;
+  return (rank ?? 0) >= TIER_RANK['2k'];
+}
+
 /** Which crop slots the base material carries right now — sectors loaded
  *  under a different signature reload so their maps stay the base's. */
 function cropSignature(mat: THREE.MeshStandardMaterial, spec: SectorSetSpec): string {
   let sig = '';
   for (const slot of ['bumpMap', 'normalMap', 'roughnessMap'] as const) {
-    if (spec.crops[slot] && mat[slot]) sig += slot[0];
+    if (spec.crops[slot] && realMapIn(mat, slot)) sig += slot[0];
   }
   return sig;
 }
@@ -285,7 +308,7 @@ export class SectorStreamer {
     this.lastNowMs = nowMs;
     const { handle, slots } = body;
 
-    if (suspend === 'all') {
+    if (suspend === 'all' || !realAlbedoOn(handle.material)) {
       for (const slot of slots) this.release(slot);
       return;
     }
@@ -411,15 +434,19 @@ export class SectorStreamer {
     ];
     for (const cropSlot of ['bumpMap', 'normalMap', 'roughnessMap'] as const) {
       const crop = handle.spec.crops[cropSlot];
-      if (!crop || !handle.material[cropSlot]) continue;
+      if (!crop || !realMapIn(handle.material, cropSlot)) continue;
       maps.push({
         name: cropSlot,
         url: resolveTileUrl(crop.key, crop.tier, slot.sector.c, slot.sector.r),
         kind: 'data',
-        layout: dataCropLayout(this.grid, crop.baseWidth),
+        layout: dataCropLayout(this.grid, crop.baseWidth, crop.spanU ?? 1),
       });
     }
-    const loading = { pending: maps.length, loaded: {} as Partial<Record<MapName, THREE.Texture>> };
+    const loading = {
+      pending: maps.length,
+      loaded: {} as Partial<Record<MapName, THREE.Texture>>,
+      owned: [] as THREE.Texture[],
+    };
     slot.loading = loading;
 
     const fail = () => {
@@ -442,13 +469,15 @@ export class SectorStreamer {
           }
           applyTextureDefaults(tex, m.kind);
           applySectorTileTransform(tex, this.grid, slot.sector, m.layout);
+          loading.owned.push(tex); // owned from here: a release disposes it even mid-queue
           this.warm(tex, (outcome) => {
             if (!stillWanted()) {
               tex.dispose();
               return;
             }
             if (outcome !== 'warmed') {
-              if (outcome === 'failed') tex.dispose();
+              // 'disposed' only reaches a still-wanted attempt if something
+              // else disposed the texture; either way the attempt is over.
               fail();
               return;
             }
@@ -488,8 +517,11 @@ export class SectorStreamer {
   }
 
   private disposeLoaded(slot: SectorSlot): void {
-    for (const tex of Object.values(slot.loading?.loaded ?? {})) tex.dispose();
-    if (slot.loading) slot.loading.loaded = {};
+    const loading = slot.loading;
+    if (!loading) return;
+    for (const tex of loading.owned) tex.dispose();
+    loading.owned = [];
+    loading.loaded = {};
   }
 
   /** Back to idle from any state: the mesh leaves the globe, and every

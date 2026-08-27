@@ -24,7 +24,8 @@
 //   node tools/gen-tiles.mjs earth --verify   # reassemble + gate only
 //   --cache=<dir>  source cache (default .moon-data-cache)
 import sharp from 'sharp';
-import { mkdir, writeFile, access, stat } from 'node:fs/promises';
+import { mkdir, writeFile, access, stat, unlink } from 'node:fs/promises';
+import { execFileSync } from 'node:child_process';
 import path from 'node:path';
 
 sharp.cache(false);
@@ -44,7 +45,9 @@ const jobsWanted = args.filter((a) => !a.startsWith('--'));
 // SECTOR_TILE). Horizontal gutters wrap across the ±180° seam; vertical ones
 // clamp at the poles. Data-map crops (bump / normal / roughness) are pure
 // crops of the base maps with the same 8-px gutter, so the relief under a
-// sector is exactly the base's relief.
+// sector is exactly the base's relief; normal-map crops are cut two sectors
+// wide so their UV transform is uniform (sectorGrid explains the tangent
+// frame reason).
 export const GRID = { cols: 8, rows: 4, tile: 2048, gutter: 8 };
 const CONTENT = GRID.tile - 2 * GRID.gutter; // 2032
 const FULL_W = GRID.cols * CONTENT; // 16256
@@ -125,38 +128,48 @@ async function writeWebp(pipeline, out) {
   return size;
 }
 
-/** Pad an equirect raw buffer by `g` on every side: wrap horizontally (the
- *  left gutter is the map's right edge and vice versa), clamp vertically. */
-async function padWrapClamp(raw, w, h, channels, g) {
+/** Pad an equirect raw buffer: `gx` px each side horizontally by WRAPPING
+ *  (the left pad is the map's right edge and vice versa), `gy` px top and
+ *  bottom by clamping. */
+async function padWrapClamp(raw, w, h, channels, gx, gy) {
   const wrapped = await sharp(raw, { raw: { width: w, height: h, channels }, limitInputPixels: false })
-    .extend({ left: g, right: g, extendWith: 'repeat' })
+    .extend({ left: gx, right: gx, extendWith: 'repeat' })
     .raw().toBuffer();
-  return sharp(wrapped, { raw: { width: w + 2 * g, height: h, channels }, limitInputPixels: false })
-    .extend({ top: g, bottom: g, extendWith: 'copy' })
+  return sharp(wrapped, { raw: { width: w + 2 * gx, height: h, channels }, limitInputPixels: false })
+    .extend({ top: gy, bottom: gy, extendWith: 'copy' })
     .raw().toBuffer();
 }
 
-/** Cut an equirect (w × h, `content` px per sector) into gutter-padded
- *  sector tiles of `content + 2·gutter` px under tiles/<key>/<tier>/. */
-async function cutGrid(raw, w, h, channels, content, key, tier, webpOpts) {
+/**
+ * Cut an equirect (w × h, `content` px per sector) into gutter-padded sector
+ * images under tiles/<key>/<tier>/: each `spanU · content + 2·gutter` px wide
+ * (the sector plus (spanU−1)/2 of a neighbour each side — normal maps use 2,
+ * see world/sectorGrid.ts) and `content + 2·gutter` px tall.
+ */
+async function cutGrid(raw, w, h, channels, content, key, tier, webpOpts, spanU = 1) {
   const g = GRID.gutter;
   if (w !== GRID.cols * content || h !== GRID.rows * content) {
     throw new Error(`${key}: ${w}x${h} is not ${GRID.cols}x${GRID.rows} sectors of ${content}`);
   }
-  const padded = await padWrapClamp(raw, w, h, channels, g);
-  const size = content + 2 * g;
+  const lead = ((spanU - 1) / 2) * content; // px of neighbour before the sector's own edge
+  const gx = spanU * g; // horizontal gutter scales with the span: equal gutter FRACTION on both axes
+  const padded = await padWrapClamp(raw, w, h, channels, lead + gx, g);
+  const width = spanU * (content + 2 * g);
+  const height = content + 2 * g;
   let total = 0;
   for (let r = 0; r < GRID.rows; r++) {
     for (let c = 0; c < GRID.cols; c++) {
       const out = path.join(TEX, 'tiles', key, tier, `${c}_${r}.webp`);
-      const pipeline = sharp(padded, { raw: { width: w + 2 * g, height: h + 2 * g, channels }, limitInputPixels: false })
-        .extract({ left: c * content, top: r * content, width: size, height: size });
+      // The left pad is exactly lead + gx, so the crop for column c starts at
+      // c·content in padded coordinates whatever its span.
+      const pipeline = sharp(padded, { raw: { width: w + 2 * (lead + gx), height: h + 2 * g, channels }, limitInputPixels: false })
+        .extract({ left: c * content, top: r * content, width, height });
       await mkdir(path.dirname(out), { recursive: true });
       await pipeline.webp(webpOpts).toFile(out);
       total += (await stat(out)).size;
     }
   }
-  console.log(`  tiles/${key}/${tier}: ${GRID.cols * GRID.rows} × ${size}² ${(total / 1e6).toFixed(1)} MB`);
+  console.log(`  tiles/${key}/${tier}: ${GRID.cols * GRID.rows} × ${width}×${height} ${(total / 1e6).toFixed(1)} MB`);
 }
 
 const cutTiles = (raw, key, webpOpts = PHOTO_WEBP) => cutGrid(raw, FULL_W, FULL_H, 3, CONTENT, key, '16k', webpOpts);
@@ -164,10 +177,22 @@ const cutTiles = (raw, key, webpOpts = PHOTO_WEBP) => cutGrid(raw, FULL_W, FULL_
 /** Data-map crops: the base map (e.g. 2048×1024) cut into sector crops with
  *  the same gutter, losslessly — never resampled, so a sector's relief is
  *  bit-for-bit the base's. `tier` names the base map's tier folder. */
-async function cutDataCrops(srcPath, key, tier) {
+async function cutDataCrops(srcPath, key, tier, spanU = 1) {
   const { data, info } = await sharp(srcPath).removeAlpha().raw().toBuffer({ resolveWithObject: true });
   const content = info.width / GRID.cols;
-  await cutGrid(data, info.width, info.height, info.channels, content, key, tier, DATA_WEBP);
+  await cutGrid(data, info.width, info.height, info.channels, content, key, tier, DATA_WEBP, spanU);
+}
+
+/** Earth's ocean-gloss mask is DERIVED from the day map (gen-maps.mjs), so a
+ *  re-based day map regenerates it here, before its crops are cut: the crops
+ *  must be of the mask that matches the tiles' coastlines. */
+async function regenerateEarthRoughness() {
+  execFileSync('node', ['gen-maps.mjs', 'earth-roughness'], { stdio: 'inherit' });
+  const png = path.join(TEX, 'earth-roughness.png');
+  const out = path.join(TEX, 'earth-roughness.webp');
+  await sharp(png).webp(DATA_WEBP).toFile(out);
+  await unlink(png);
+  console.log(`  earth-roughness.webp regenerated from the new day map (${((await stat(out)).size / 1024).toFixed(0)} KB)`);
 }
 
 async function writeDownsamples(raw, outs) {
@@ -295,8 +320,7 @@ const JOBS = {
     grade: gradeOceanInPlace,
     downsamples: [{ w: 4096, h: 2048, out: path.join(TEX, 'earth-day.webp') }],
     ref: path.join(TEX, 'earth-day.webp'),
-    // Run `node gen-maps.mjs earth-roughness` between the boot map and this
-    // job so the roughness crops come from the regenerated mask.
+    derive: regenerateEarthRoughness,
     dataCrops: [
       { src: path.join(TEX, 'earth-bump.webp'), key: 'earth-bump', tier: '2k' },
       { src: path.join(TEX, 'earth-roughness.webp'), key: 'earth-roughness', tier: '2k' },
@@ -310,7 +334,7 @@ const JOBS = {
     match: path.join(TEX, '4k', 'moon.webp'),
     downsamples: [],
     ref: path.join(TEX, '4k', 'moon.webp'),
-    dataCrops: [{ src: path.join(TEX, '4k', 'moon-normal.webp'), key: 'moon-normal', tier: '4k' }],
+    dataCrops: [{ src: path.join(TEX, '4k', 'moon-normal.webp'), key: 'moon-normal', tier: '4k', spanU: 2 }],
   },
   // USGS Mars Viking MDIM 2.1 colour mosaic via WMS (what NASA Eyes ships).
   // The service's tone is a muted brown-grey (mean 122,97,95); NASA Eyes
@@ -329,7 +353,7 @@ const JOBS = {
       { w: 2048, h: 1024, out: path.join(TEX, 'mars.webp') },
     ],
     ref: path.join(TEX, '4k', 'mars.webp'),
-    dataCrops: [{ src: path.join(TEX, 'mars-normal.webp'), key: 'mars-normal', tier: '2k' }],
+    dataCrops: [{ src: path.join(TEX, 'mars-normal.webp'), key: 'mars-normal', tier: '2k', spanU: 2 }],
   },
   // Solar System Scope 4K steps for the planets whose 8K/4K sources passed the
   // same-product gate against the shipped 2K boot maps (RMS 3.6 / 1.6 / 1.6).
@@ -359,7 +383,8 @@ for (const name of names) {
     await writeDownsamples(raw, job.downsamples);
     await cutTiles(raw, job.key, job.webp);
     await verify(job.key, job.ref);
-    for (const d of job.dataCrops ?? []) await cutDataCrops(d.src, d.key, d.tier);
+    if (job.derive) await job.derive();
+    for (const d of job.dataCrops ?? []) await cutDataCrops(d.src, d.key, d.tier, d.spanU ?? 1);
   }
   console.log(`  ${((Date.now() - t0) / 1000).toFixed(0)} s`);
 }

@@ -2,15 +2,24 @@
  * Sector grid math for streamed surface tiles — the equirect version of the
  * cube-face LOD NASA Eyes uses. A body's map is split into an 8×4 grid of 45°
  * sectors; each sector is its own mesh (a partial SphereGeometry) carrying
- * GLOBAL equirect UVs, so the body's shared bump / normal / roughness maps
- * sample exactly as they do on the base sphere, and the sector's own 2048²
- * tile is sampled through a per-texture offset/repeat that maps the sector's
- * global UV rectangle onto the tile's [0,1]².
+ * GLOBAL equirect UVs, and every map it draws — its 2048² colour tile and
+ * crops of the globe's relief / roughness maps — is sampled through a
+ * per-texture offset/repeat that maps the sector's global UV rectangle onto
+ * that image's interior (inside its gutter).
  *
  * Tile {c}_{r} on disk (tools/gen-tiles.mjs) is the sub-rectangle
  * u ∈ [c/cols, (c+1)/cols], v ∈ [1−(r+1)/rows, 1−r/rows] of the same equirect
  * the base map is — column 0 at the western edge, row 0 at the north — so the
  * tile and the base map agree on every surface point by construction.
+ *
+ * Normal-map crops are cut TWO sectors wide (the sector centred, half a
+ * neighbour each side): three derives the tangent frame from screen-space
+ * derivatives of the transformed normal-map UV and normalises it by the
+ * larger axis, so a crop whose transform scaled u by 8 and v by 4 would shade
+ * relief with a different east–west/north–south balance than the globe under
+ * it. A 90°×45° crop has a 4×4 transform — uniform — and the frame cancels
+ * exactly. (Bump and roughness crops are unaffected: bump differences are
+ * taken per screen pixel, roughness is a plain sample.)
  *
  * Geometry convention is three's SphereGeometry: a vertex at parametric
  * (u, v) sits at (−cos φ sin θ, cos θ, sin φ sin θ) with φ = 2πu, θ = πv, and
@@ -36,20 +45,42 @@ export interface Sector {
   r: number;
 }
 
-/** A tile's pixel layout: `size` px square with a `gutter` of neighbouring
- *  texels on every side, so only the interior `size − 2·gutter` px carries the
- *  sector itself. Colour tiles are 2048² with an 8-px gutter (content 2032²);
- *  data crops keep the same 8-px gutter around their base map's sector. */
+/** An image's pixel layout: `width × height` px with gutters of
+ *  neighbouring texels (`gutterX` each side, `gutterY` top and bottom), so
+ *  only the interior carries surface; the interior spans `spanU` sectors of
+ *  longitude, starting `leadU` sectors before the sector's own western edge,
+ *  and exactly the sector's 45° of latitude. Colour tiles: 2048² with an 8-px
+ *  gutter (content 2032², one sector). Normal-map crops: two sectors wide,
+ *  centred (leadU = 0.5), with the horizontal gutter doubled so the gutter
+ *  FRACTION — and with it the UV scale — is the same on both axes. */
 export interface TileLayout {
-  size: number;
-  gutter: number;
+  width: number;
+  height: number;
+  gutterX: number;
+  gutterY: number;
+  spanU: number;
+  leadU: number;
 }
 
-export const SECTOR_TILE: TileLayout = { size: 2048, gutter: 8 };
+export const SECTOR_TILE: TileLayout = { width: 2048, height: 2048, gutterX: 8, gutterY: 8, spanU: 1, leadU: 0 };
 
-/** Layout of a data-map crop for a base map `baseWidth` px wide on the grid. */
-export function dataCropLayout(grid: SectorGrid, baseWidth: number, gutter = SECTOR_TILE.gutter): TileLayout {
-  return { size: baseWidth / grid.cols + 2 * gutter, gutter };
+/** Layout of a data-map crop for a base map `baseWidth` px wide on the grid,
+ *  `spanU` sectors wide (centred on the sector when wider than one). */
+export function dataCropLayout(
+  grid: SectorGrid,
+  baseWidth: number,
+  spanU = 1,
+  gutter = SECTOR_TILE.gutterY,
+): TileLayout {
+  const content = baseWidth / grid.cols;
+  return {
+    width: spanU * (content + 2 * gutter),
+    height: content + 2 * gutter,
+    gutterX: spanU * gutter,
+    gutterY: gutter,
+    spanU,
+    leadU: (spanU - 1) / 2,
+  };
 }
 
 /** Global equirect UV rectangle of a sector (u0 < u1, v0 < v1; v grows north). */
@@ -76,23 +107,29 @@ export function sectorSphereArgs(
 }
 
 /**
- * The tile texture's UV transform: three applies `uv * repeat + offset`, and
- * the sector's global rectangle must land on the tile's INTERIOR — the
- * content square inside the gutter. With f = content/size and g = gutter/size:
- * u' = (u − u0)·cols·f + g, v' = (v − v0)·rows·f + g (from sectorUvRect).
+ * A tile or crop texture's UV transform: three applies `uv * repeat + offset`,
+ * and the image's global rectangle (the sector's, widened by the layout's
+ * span) must land on its INTERIOR — the content inside the gutter. With
+ * fW = contentWidth/width, fH = contentHeight/height, gW = gutter/width,
+ * gH = gutter/height:
+ *   u' = (u − (u0 − leadU/cols)) · (cols/spanU) · fW + gW
+ *   v' = (v − v0) · rows · fH + gH        (rectangle from sectorUvRect).
  */
 export function sectorTileTransform(
   grid: SectorGrid,
   s: Sector,
   layout: TileLayout = SECTOR_TILE,
 ): { offsetX: number; offsetY: number; repeatX: number; repeatY: number } {
-  const f = (layout.size - 2 * layout.gutter) / layout.size;
-  const g = layout.gutter / layout.size;
+  const fW = (layout.width - 2 * layout.gutterX) / layout.width;
+  const fH = (layout.height - 2 * layout.gutterY) / layout.height;
+  const gW = layout.gutterX / layout.width;
+  const gH = layout.gutterY / layout.height;
+  const colsPerImage = grid.cols / layout.spanU;
   return {
-    offsetX: -s.c * f + g,
-    offsetY: -(grid.rows - 1 - s.r) * f + g,
-    repeatX: grid.cols * f,
-    repeatY: grid.rows * f,
+    offsetX: -((s.c - layout.leadU) / layout.spanU) * fW + gW,
+    offsetY: -(grid.rows - 1 - s.r) * fH + gH,
+    repeatX: colsPerImage * fW,
+    repeatY: grid.rows * fH,
   };
 }
 

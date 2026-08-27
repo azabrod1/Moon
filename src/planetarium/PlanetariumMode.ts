@@ -875,6 +875,11 @@ export class PlanetariumMode {
    *  Null when disabled (`?sectors=0`) or before the system exists. */
   private sectors: SectorStreamer | null = null;
   private readonly sectorsEnabled = new URLSearchParams(location.search).get('sectors') !== '0';
+  /** Latched from webglcontextlost to webglcontextrestored: a GL call on a
+   *  lost context silently succeeds, so an upload "warmed" in that window is
+   *  a texture that never reached the GPU — nothing may be admitted until
+   *  the context is back, and whatever was admitted is dropped again then. */
+  private glContextLost = false;
   private readonly sectorCamLocal = new THREE.Vector3();
   private readonly sectorWorldCentre = new THREE.Vector3();
   private readonly sectorWorldScale = new THREE.Vector3();
@@ -1724,8 +1729,10 @@ export class PlanetariumMode {
     glCanvas.addEventListener('webglcontextlost', () => {
       invalidateTextureWarmCache();
       // Sector tiles closed their decoded bitmaps after upload, so a restore
-      // cannot re-upload them: drop every sector now; they stream back in
-      // (from the service-worker cache) once the context is back.
+      // cannot re-upload them: drop every sector now and hold streaming off
+      // until the context is back (see glContextLost); they stream back in
+      // from the service-worker cache after the restore.
+      this.glContextLost = true;
       this.sectors?.dropAll();
       this.invalidateRtPaintedMoons(this.moonTexturer.onContextLost());
       // Dots gate on painted moons — blank them with the same invalidation so a
@@ -1734,6 +1741,10 @@ export class PlanetariumMode {
     });
     glCanvas.addEventListener('webglcontextrestored', () => {
       this.moonTexturer.onContextRestored();
+      // Anything a stray frame admitted while the context was lost was
+      // "uploaded" into nothing: drop it before the latch clears.
+      this.sectors?.dropAll();
+      this.glContextLost = false;
     });
     this.player = new PlayerShip();
     this.store = new PlanetariumStore();
@@ -2385,6 +2396,10 @@ export class PlanetariumMode {
   private updateSectorStreaming(): void {
     const sectors = this.sectors;
     if (!sectors || !this.solarSystem) return;
+    if (this.glContextLost) {
+      sectors.dropAll();
+      return;
+    }
     const canvasW = this.renderer.domElement.clientWidth;
     const canvasH = this.renderer.domElement.clientHeight;
     const dpr = this.renderer.getPixelRatio();
@@ -13982,18 +13997,12 @@ export class PlanetariumMode {
     for (const up of this.allTextureUpgrades()) {
       if (!keepUpgrades.includes(up)) cancelTextureUpgrade(up, 'discard');
     }
-    // Sector tiles of every body outside the destination system go now: a
-    // tile upload for a left-behind globe must not land under the veil or on
-    // the first frames of the new one (a released tile leaves the warm queue
-    // through its dispose hook).
-    if (this.sectors) {
-      const keep = new Set<string>();
-      if (systemName) {
-        keep.add(systemName);
-        for (const m of this.planetMoons.get(systemName) ?? []) keep.add(m.data.name);
-      }
-      this.sectors.releaseAllExcept(keep);
-    }
+    // Every sector tile goes now, destination included: a tile upload for
+    // the globe being left must not land under the veil or on the first
+    // frames of the new scene (a released tile leaves the warm queue through
+    // its dispose hook), and the destination's own sectors stream back in a
+    // beat after the reveal — from the cache, for a body seen before.
+    this.sectors?.dropAll();
     this.arrivalUpgradeBatch = [];
     const moons = systemName ? this.planetMoons.get(systemName) : undefined;
     const needsPaint = !!moons && moons.some((m) => !m.painted);

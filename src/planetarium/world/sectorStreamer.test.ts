@@ -60,6 +60,7 @@ function earthHandle(): SectorBodyHandle & { fineCalls: number } {
     roughnessMap: new THREE.Texture(),
   });
   augmentSurfaceMaterial(material, 'earth');
+  material.userData.colorTierRank = 2; // a real boot map is on the globe
   const mesh = new THREE.Mesh(new THREE.SphereGeometry(R, 16, 8), material);
   const handle = {
     name: 'Earth',
@@ -318,6 +319,69 @@ describe('SectorStreamer', () => {
     streamer.dispose();
     expect(streamer.has('Moon')).toBe(false);
     expect(moon.mesh.children.length).toBe(0);
+  });
+
+  it('a release while decoded maps wait in the warm queue disposes them (dequeued, never uploaded)', () => {
+    warm.auto = null; // hold the pump
+    streamer.update('Earth', cameraOver(2, 1), measureOf({ '2_1': 900 }), 0);
+    let disposed = 0;
+    for (const r of loader.requests.splice(0)) {
+      const tex = new THREE.Texture();
+      tex.addEventListener('dispose', () => disposed++);
+      r.onLoad(tex); // decoded, now queued for warming
+    }
+    expect(warm.queued.length).toBe(3);
+    streamer.update('Earth', cameraOver(2, 1), measureOf({ '2_1': 100 }), 16); // released while queued
+    expect(disposed).toBe(3);
+    warm.settle('disposed'); // what the real pump reports for a disposed entry
+    expect(earth.mesh.children.length).toBe(0);
+    expect(streamer.stats().resident).toBe(0);
+    expect(streamer.stats().loading).toBe(0);
+  });
+
+  it('never streams over a globe still on its procedural floor', () => {
+    loader.auto = true;
+    earth.material.userData.colorTierRank = 0; // boot fetch failed: procedural fallback showing
+    streamer.update('Earth', cameraOver(2, 1), measureOf({ '2_1': 900 }), 0);
+    expect(loader.requests.length).toBe(0);
+    expect(streamer.stats().resident).toBe(0);
+    earth.material.userData.colorTierRank = 2; // the real map lands
+    streamer.update('Earth', cameraOver(2, 1), measureOf({ '2_1': 900 }), 16);
+    expect(streamer.stats().resident).toBe(1);
+    // …and a base that loses its real map (never in practice, but the gate
+    // is one predicate) drops its sectors.
+    earth.material.userData.colorTierRank = 0;
+    streamer.update('Earth', cameraOver(2, 1), measureOf({ '2_1': 900 }), 32);
+    expect(streamer.stats().resident).toBe(0);
+  });
+
+  it('treats a procedural-fallback relief map as absent (no crop over a flat stand-in)', () => {
+    loader.auto = true;
+    (earth.material.bumpMap as THREE.Texture).userData.proceduralFallback = true;
+    streamer.update('Earth', cameraOver(2, 1), measureOf({ '2_1': 900 }), 0);
+    const urls = loader.requests.map((r) => r.url);
+    expect(urls.some((u) => /earth-bump/.test(u))).toBe(false);
+    expect(urls.some((u) => /earth-roughness/.test(u))).toBe(true);
+    const mat = (earth.mesh.children[0] as THREE.Mesh).material as THREE.MeshStandardMaterial;
+    expect(mat.bumpMap).toBeNull();
+  });
+
+  it('normal-map crops load with the two-sector-wide uniform transform', () => {
+    loader.auto = true;
+    const moon = earthHandle();
+    moon.name = 'Moon';
+    moon.spec = SECTOR_SETS.Moon;
+    moon.material.bumpMap = null;
+    moon.material.roughnessMap = null;
+    moon.material.normalMap = new THREE.Texture();
+    streamer.register(moon);
+    streamer.update('Moon', cameraOver(2, 1), measureOf({ '2_1': 900 }), 0);
+    const mat = (moon.mesh.children[0] as THREE.Mesh).material as THREE.MeshStandardMaterial;
+    expect(mat.normalMap).not.toBeNull();
+    expect(mat.normalMap!.repeat.x).toBeCloseTo(mat.normalMap!.repeat.y, 6);
+    const expected = sectorTileTransform(G, { c: 2, r: 1 }, dataCropLayout(G, 2880, 2));
+    expect(mat.normalMap!.offset.x).toBeCloseTo(expected.offsetX, 12);
+    expect(mat.normalMap!.repeat.x).toBeCloseTo(expected.repeatX, 12);
   });
 
   it('closes the decoded bitmap once a tile is resident', () => {

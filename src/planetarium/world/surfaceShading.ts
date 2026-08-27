@@ -192,11 +192,34 @@ const SURFACE_FRAGMENT_BODY = /* glsl */ `{
   }
 }`;
 
+/** What a material was augmented with, kept beside it so a dependent
+ *  material (a streamed surface sector) can be augmented identically and share
+ *  the same per-frame fx objects. A side table, not userData: userData is
+ *  JSON-cloned by Material.copy and can hold render-target refs. */
+export interface SurfaceShadingArgs {
+  archetype: SurfaceArchetype;
+  ringShadow?: RingShadowConfig;
+  sunTan: number;
+  fx: SurfaceShadingFx;
+}
+const augmentArgs = new WeakMap<THREE.Material, SurfaceShadingArgs>();
+
+/** The augmentation a material received, or undefined for a plain one. */
+export function surfaceShadingArgsOf(mat: THREE.Material): SurfaceShadingArgs | undefined {
+  return augmentArgs.get(mat);
+}
+
 export function augmentSurfaceMaterial(
   mat: THREE.MeshStandardMaterial,
   archetype: SurfaceArchetype,
   ringShadow?: RingShadowConfig,
   sunTan = 0,
+  /** Share another material's fx objects instead of creating fresh ones: the
+   *  mode writes sun direction, moon shadows and planetshine into ONE object
+   *  per body, and every material drawing that body's surface must read the
+   *  same values (a streamed sector tinted differently from the globe under
+   *  it is a rectangle in the middle of an eclipse). */
+  shared?: SurfaceShadingFx,
 ): SurfaceShadingFx {
   const night = NIGHT_FILL[archetype];
 
@@ -204,7 +227,7 @@ export function augmentSurfaceMaterial(
   // lazily compiles; onBeforeCompile assigns the same objects into the shader.
   const moonShadow: THREE.Vector4[] = [];
   for (let i = 0; i < MAX_MOON_SHADOWS; i++) moonShadow.push(new THREE.Vector4());
-  const fx: SurfaceShadingFx = {
+  const fx: SurfaceShadingFx = shared ?? {
     uSunDirWorld: { value: new THREE.Vector3(1, 0, 0) },
     uSunDirLocal: { value: new THREE.Vector3(1, 0, 0) },
     uMoonShadow: { value: moonShadow },
@@ -214,6 +237,7 @@ export function augmentSurfaceMaterial(
     uPlanetshineIntensity: { value: 0 },
     uSilhouette: { value: 0 },
   };
+  augmentArgs.set(mat, { archetype, ringShadow, sunTan, fx });
   const uNightColor = { value: new THREE.Color(night.color) };
   const uNightStrength = { value: night.strength };
   const uTermWidth = { value: night.termWidth };

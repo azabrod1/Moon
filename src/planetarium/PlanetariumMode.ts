@@ -37,6 +37,7 @@ import {
 import { applySunGlowTier, canAttempt, cancelNormalUpgrade, cancelTextureUpgrade, createMoonMeshes, createShaderWarmupProbes, earnedUpgradeTier, firstUpgradeTier, lodMeasurementRelevant, needsUpgradeCover, normalUpgradePending, resolveUpgradeTier, setWarmEligibleMoonParents, upgradeComplete, upgradeGeometryOnApproach, upgradeNormalOnApproach, upgradeTextureOnApproach, ATMOSPHERES, ATMOSPHERE_SHELL_SCALES, PLANET_TEXTURE_FILES, UPGRADE_TRIGGER_FRACTION, type MoonMesh, type TextureUpgrade } from './PlanetFactory';
 import type { SurfaceShadingFx } from './world/surfaceShading';
 import { bindTextureWarmer, invalidateTextureWarmCache, pumpTextureWarmQueue, queueTextureWarm, resetTextureWarmer } from './world/textureWarmer';
+import { SECTOR_RELEASE_DEVICE_PX, SECTOR_SETS, SectorStreamer, type SectorMeasure, type SectorStats, type SectorSuspend } from './world/sectorStreamer';
 import { loadBrightStarCatalog } from './world/starCatalogLoader';
 import {
   advancePlanetariumTime,
@@ -654,6 +655,10 @@ export class PlanetariumMode {
   // Per-frame time budget for warm texture uploads: small maps batch within
   // it, a big one takes its frame alone (the pump always uploads at least one).
   private static readonly TEXTURE_WARM_BUDGET_MS = 6;
+  /** Above this simulation rate (s/s) a globe turns visibly under the camera
+   *  (Earth: 3.75°/s at 900 s/s), so admitting sector tiles would only churn
+   *  21 MiB uploads — residents hold, nothing new starts. */
+  private static readonly SECTOR_SPIN_SUSPEND_RATE = 900;
   // Speculative warm of the Earth+Moon pair's first colour steps a beat after
   // activation: eclipse vantages land on Earth and the Moon is the most-taken
   // first close-up, so spending idle seconds on their fetch+decode means a
@@ -861,6 +866,21 @@ export class PlanetariumMode {
   private probeLimbMarker: THREE.Sprite | null = null;
   private probeLimbDir = new THREE.Vector3();
   private sphereScreenProjection: SphereScreenProjection = {
+    x: 0, y: 0, ndcX: 0, ndcY: 0, ndcZ: 0,
+    footprintX: 0, footprintY: 0, radiusPx: 0, diameterPx: 0,
+    minX: 0, maxX: 0, minY: 0, maxY: 0,
+    footprintKind: 'none',
+  };
+  /** Sector streaming (world/sectorStreamer): the hero bodies' 16K tiles.
+   *  Null when disabled (`?sectors=0`) or before the system exists. */
+  private sectors: SectorStreamer | null = null;
+  private readonly sectorsEnabled = new URLSearchParams(location.search).get('sectors') !== '0';
+  private readonly sectorCamLocal = new THREE.Vector3();
+  private readonly sectorWorldCentre = new THREE.Vector3();
+  private readonly sectorWorldScale = new THREE.Vector3();
+  // Its own projection scratch: the LOD loop's is read after its call by
+  // consumers that expect it untouched.
+  private sectorProjection: SphereScreenProjection = {
     x: 0, y: 0, ndcX: 0, ndcY: 0, ndcZ: 0,
     footprintX: 0, footprintY: 0, radiusPx: 0, diameterPx: 0,
     minX: 0, maxX: 0, minY: 0, maxY: 0,
@@ -1703,6 +1723,10 @@ export class PlanetariumMode {
     const glCanvas = renderer.domElement;
     glCanvas.addEventListener('webglcontextlost', () => {
       invalidateTextureWarmCache();
+      // Sector tiles closed their decoded bitmaps after upload, so a restore
+      // cannot re-upload them: drop every sector now; they stream back in
+      // (from the service-worker cache) once the context is back.
+      this.sectors?.dropAll();
       this.invalidateRtPaintedMoons(this.moonTexturer.onContextLost());
       // Dots gate on painted moons — blank them with the same invalidation so a
       // stale dot can't outlive the mesh it belonged to.
@@ -2094,6 +2118,7 @@ export class PlanetariumMode {
         }
       }
       performance.measure('plm:moon-meshes', 'plm:moon-meshes:start');
+      this.registerSectorBodies();
 
       for (const orbit of this.solarSystem.orbitLines) {
         this.scene.add(orbit);
@@ -2272,10 +2297,7 @@ export class PlanetariumMode {
       // network but pays no residency up front. (Quality tiers stay
       // capability-based — this split concerns speculation only, and
       // saveData is absent on iOS Safari so it cannot be the gate.)
-      const cacheOnly =
-        /iPad|iPhone|iPod/.test(navigator.userAgent) ||
-        (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1) || // iPadOS desktop UA
-        (navigator.maxTouchPoints > 0 && window.innerWidth <= 1024);
+      const cacheOnly = this.touchFirstDevice();
       for (const up of this.landingPairUpgrades({ type: 'planet', name: 'Earth' })) {
         // The live loader's attempt/cooldown gate, so a re-armed timer never
         // duplicates a pending desktop attempt. The cache-only fetch marks no
@@ -2301,6 +2323,124 @@ export class PlanetariumMode {
         }
       }
     }, PlanetariumMode.BOOT_PAIR_WARM_DELAY_MS);
+  }
+
+  /** A phone or tablet: the device class that gets cache-only speculation and
+   *  the smaller sector-tile working set. Capability-based quality tiers are
+   *  unaffected; this only sizes what is held in memory on speculation. */
+  private touchFirstDevice(): boolean {
+    return (
+      /iPad|iPhone|iPod/.test(navigator.userAgent) ||
+      (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1) || // iPadOS desktop UA
+      (navigator.maxTouchPoints > 0 && window.innerWidth <= 1024)
+    );
+  }
+
+  /** Wire the hero bodies' sector sets (SECTOR_SETS) onto their globe meshes.
+   *  Sector meshes become children of the globe, so they ride its spin, pole
+   *  and (for the Moon) the render-curve scale; the streamer forces the fine
+   *  silhouette grid before the first sector shows. */
+  private registerSectorBodies(): void {
+    if (!this.sectorsEnabled || !this.solarSystem) return;
+    const sectors = new SectorStreamer({ touch: this.touchFirstDevice() });
+    for (const planet of this.solarSystem.planets) {
+      const spec = SECTOR_SETS[planet.data.name];
+      if (!spec) continue;
+      sectors.register({
+        name: planet.data.name,
+        spec,
+        mesh: planet.mesh,
+        material: planet.mesh.material as THREE.MeshStandardMaterial,
+        radiusAU: planet.data.radiusAU,
+        ensureFineGeometry: () => { upgradeGeometryOnApproach(planet.geometryUpgrade, Number.POSITIVE_INFINITY); },
+      });
+    }
+    for (const moons of this.planetMoons.values()) {
+      for (const m of moons) {
+        const spec = SECTOR_SETS[m.data.name];
+        if (!spec) continue;
+        sectors.register({
+          name: m.data.name,
+          spec,
+          mesh: m.mesh,
+          material: m.mesh.material as THREE.MeshStandardMaterial,
+          radiusAU: m.data.radiusAU,
+          ensureFineGeometry: () => { upgradeGeometryOnApproach(m.geometryUpgrade, Number.POSITIVE_INFINITY); },
+        });
+      }
+    }
+    this.sectors = sectors;
+  }
+
+  /**
+   * Per-frame sector streaming for the hero bodies. Runs every frame for
+   * every registered body, independently of updateBodyLOD's skips: a fully
+   * upgraded globe filling the view is exactly the one whose sectors must
+   * keep being measured, admitted and released. Per body: the camera in the
+   * globe's local frame (radius = catalog radius there, whatever the render
+   * scale), a whole-disc size gate, then per facing sector the exact lens-
+   * aware footprint of its bounding sphere in DEVICE pixels — the unit the
+   * texel-density thresholds are in.
+   */
+  private updateSectorStreaming(): void {
+    const sectors = this.sectors;
+    if (!sectors || !this.solarSystem) return;
+    const canvasW = this.renderer.domElement.clientWidth;
+    const canvasH = this.renderer.domElement.clientHeight;
+    const dpr = this.renderer.getPixelRatio();
+    const nowMs = performance.now();
+    const spinning = Math.abs(this.timeState.rate) > PlanetariumMode.SECTOR_SPIN_SUSPEND_RATE;
+    const chart = this.isMapOpen();
+    const grounded = this.landedView === 'surface' ? this.landedOn?.name ?? null : null;
+
+    const visit = (name: string, mesh: THREE.Mesh, radiusAU: number, hidden: boolean) => {
+      if (!sectors.has(name)) return;
+      // The ground under a surface observer isn't drawn (the near plane culls
+      // it) and every sector "faces" a camera on the surface: hold nothing.
+      // A hidden globe (an unpainted or out-of-range moon) holds nothing either.
+      let suspend: SectorSuspend = 'none';
+      if (hidden || grounded === name) suspend = 'all';
+      else if (spinning || chart) suspend = 'admissions';
+      mesh.getWorldPosition(this.sectorWorldCentre); // refreshes matrixWorld too
+      const worldScale = mesh.getWorldScale(this.sectorWorldScale).x;
+      const worldR = radiusAU * worldScale;
+      this.sectorCamLocal.copy(this.camera.position);
+      mesh.worldToLocal(this.sectorCamLocal);
+      // Whole-disc gate: no sector's bounding sphere can reach the release
+      // size while the conservative disc estimate sits under it.
+      const discEst = estimateSphereScreenDiameterPx(this.sectorWorldCentre, worldR, this.camera, canvasW, canvasH);
+      if (discEst * dpr < SECTOR_RELEASE_DEVICE_PX) {
+        sectors.update(name, this.sectorCamLocal, () => null, nowMs, suspend);
+        return;
+      }
+      const measure = (bsCentreLocal: THREE.Vector3, bsRadiusLocal: number): SectorMeasure | null => {
+        this.sectorWorldCentre.copy(bsCentreLocal);
+        mesh.localToWorld(this.sectorWorldCentre);
+        const r = bsRadiusLocal * worldScale;
+        const est = estimateSphereScreenDiameterPx(this.sectorWorldCentre, r, this.camera, canvasW, canvasH);
+        if (est * dpr < SECTOR_RELEASE_DEVICE_PX) return null;
+        const fp = projectSphereToScreen(this.sectorWorldCentre, r, this.camera, canvasW, canvasH, this.sectorProjection);
+        if (!(fp.diameterPx > 0)) return null;
+        // Entirely outside the frame: nothing to sharpen.
+        if (fp.maxX < 0 || fp.minX > canvasW || fp.maxY < 0 || fp.minY > canvasH) return null;
+        const dx = (fp.footprintX - canvasW / 2) / Math.max(canvasW / 2, 1);
+        const dy = (fp.footprintY - canvasH / 2) / Math.max(canvasH / 2, 1);
+        return { devicePx: fp.diameterPx * dpr, centrality: Math.max(0, 1 - Math.hypot(dx, dy)) };
+      };
+      sectors.update(name, this.sectorCamLocal, measure, nowMs, suspend);
+    };
+
+    for (const planet of this.solarSystem.planets) {
+      visit(planet.data.name, planet.mesh, planet.data.radiusAU, !planet.mesh.visible);
+    }
+    for (const moons of this.planetMoons.values()) {
+      for (const m of moons) visit(m.data.name, m.mesh, m.data.radiusAU, !m.mesh.visible);
+    }
+  }
+
+  /** Dev bridge: what the streamer holds right now. */
+  devSectorStats(): SectorStats | null {
+    return this.sectors?.stats() ?? null;
   }
 
   private ensureConstellationsReady() {
@@ -2707,6 +2847,7 @@ export class PlanetariumMode {
     // owns the frame: the world spheres aren't drawn there, so a
     // schematic-view zoom must not fetch anything for an unseen surface.
     if (!this.isMapOpen()) this.updateBodyLOD();
+    this.updateSectorStreaming();
 
     // The HTML label/marker projections below read camera.matrixWorldInverse,
     // which the renderer refreshes only at render time — after this update().
@@ -13841,6 +13982,18 @@ export class PlanetariumMode {
     for (const up of this.allTextureUpgrades()) {
       if (!keepUpgrades.includes(up)) cancelTextureUpgrade(up, 'discard');
     }
+    // Sector tiles of every body outside the destination system go now: a
+    // tile upload for a left-behind globe must not land under the veil or on
+    // the first frames of the new one (a released tile leaves the warm queue
+    // through its dispose hook).
+    if (this.sectors) {
+      const keep = new Set<string>();
+      if (systemName) {
+        keep.add(systemName);
+        for (const m of this.planetMoons.get(systemName) ?? []) keep.add(m.data.name);
+      }
+      this.sectors.releaseAllExcept(keep);
+    }
     this.arrivalUpgradeBatch = [];
     const moons = systemName ? this.planetMoons.get(systemName) : undefined;
     const needsPaint = !!moons && moons.some((m) => !m.painted);
@@ -14701,6 +14854,7 @@ export class PlanetariumMode {
     // while the chart owns the frame: the ground isn't drawn there, so nothing
     // should fetch for it.
     if (!this.isMapOpen()) this.updateBodyLOD();
+    this.updateSectorStreaming();
     this.updateShadowVisuals();
     if (shouldRefreshUi) this.updateOrbitDetails();
     this.pumpObservatoryEventSearch();
@@ -15297,6 +15451,8 @@ export class PlanetariumMode {
     for (const moons of this.planetMoons.values()) {
       for (const m of moons) cancelNormalUpgrade(m.normalUpgrade);
     }
+    this.sectors?.dispose();
+    this.sectors = null;
     resetTextureWarmer(); // drop queued warm-ups and the renderer binding with the mode
     this.moonTexturer.dispose();
     this.notification.dispose();

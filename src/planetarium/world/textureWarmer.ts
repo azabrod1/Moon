@@ -33,22 +33,45 @@ let warmedVersions = new WeakMap<THREE.Texture, number>();
 // One listener per queued texture, removed on drain or dispose, so long-lived
 // textures don't retain warm-up closures for their whole life.
 const disposeListeners = new Map<THREE.Texture, () => void>();
+// Callers that must not draw a texture before it is resident (a streamed
+// surface tile swaps onto its material only once the upload has been paid
+// off-gesture) register here; the entry is cleared when the texture drains,
+// is disposed, or fails — a callback never fires for a texture nobody can
+// draw, and never twice.
+export type WarmOutcome = 'warmed' | 'failed' | 'disposed';
+const residentCallbacks = new Map<THREE.Texture, (outcome: WarmOutcome) => void>();
 
 /** Inject the upload call (bind renderer.initTexture). Entries queued earlier wait. */
 export function bindTextureWarmer(fn: WarmUpload): void {
   uploadFn = fn;
 }
 
-/** Queue a texture for warm upload. Idempotent per texture; safe before bind. */
-export function queueTextureWarm(tex: THREE.Texture): void {
-  if (warmedVersions.get(tex) === tex.version) return;
+/**
+ * Queue a texture for warm upload. Idempotent per texture; safe before bind.
+ * `onOutcome` (optional) settles exactly once, synchronously, when the entry
+ * leaves the queue: 'warmed' right after a successful upload — the seam a
+ * caller uses to assign a map ONLY once drawing it is free — 'failed' when
+ * the upload threw (the texture is not resident; drawing it would pay the
+ * upload on the render path), 'disposed' when the texture was disposed while
+ * queued. An already-resident texture settles 'warmed' at once; a re-queue of
+ * a pending texture replaces its callback.
+ */
+export function queueTextureWarm(tex: THREE.Texture, onOutcome?: (outcome: WarmOutcome) => void): void {
+  if (warmedVersions.get(tex) === tex.version) {
+    onOutcome?.('warmed');
+    return;
+  }
+  if (onOutcome) residentCallbacks.set(tex, onOutcome);
   if (disposeListeners.has(tex)) return;
   const onDispose = () => {
     // A disposed texture must never be warm-uploaded: initTexture would
     // allocate GPU storage that nothing references and nothing ever frees.
     disposeListeners.delete(tex);
+    const cb = residentCallbacks.get(tex);
+    residentCallbacks.delete(tex);
     const i = queue.indexOf(tex);
     if (i !== -1) queue.splice(i, 1);
+    cb?.('disposed');
   };
   disposeListeners.set(tex, onDispose);
   tex.addEventListener('dispose', onDispose);
@@ -83,7 +106,10 @@ export function pumpTextureWarmQueue(budgetMs: number): void {
     } finally {
       if (import.meta.env.DEV) surfacePerfEndTextureUpload(perfUpload);
     }
+    const onOutcome = residentCallbacks.get(tex);
+    residentCallbacks.delete(tex);
     if (uploaded) warmedVersions.set(tex, tex.version);
+    onOutcome?.(uploaded ? 'warmed' : 'failed');
     if (performance.now() - start >= budgetMs) return;
   }
 }
@@ -97,6 +123,7 @@ export function invalidateTextureWarmCache(): void {
 export function resetTextureWarmer(): void {
   for (const [tex, onDispose] of disposeListeners) tex.removeEventListener('dispose', onDispose);
   disposeListeners.clear();
+  residentCallbacks.clear();
   queue.length = 0;
   uploadFn = null;
   invalidateTextureWarmCache();

@@ -444,9 +444,12 @@ export function upgradeComplete(up: TextureUpgrade): boolean {
 // grade via tools/colormatch.mjs — and its relief comes from a separate SVS
 // ldem_16 LOLA normal map, so the albedo carries no baked shading to fight.
 // Earth's 4K clouds are the SSS cloud product (CC BY 4.0) the 2K boot map is
-// downsampled from. Venus / Uranus / Neptune are genuinely low-frequency (no
-// real 4K detail); Io/Europa/Ganymede/Triton already ship 4K as their base
-// map. Pluto is a real New Horizons LORRI mosaic (USGS, 300 m) registered to
+// downsampled from. Mercury, Venus and Saturn are the same Solar System Scope
+// products as their boot maps (gated: RMS 3.6 / 1.6 / 1.6 against the shipped
+// 2K); Venus and Saturn are low-frequency, so their 4K steps cost ~130 KB each
+// and mainly remove texel blockiness at the wall. Uranus / Neptune stay 2K
+// (no real detail to add); Io/Europa/Ganymede/Triton already ship 4K as
+// their base map. Pluto is a real New Horizons LORRI mosaic (USGS, 300 m) registered to
 // the IAU prime meridian and tinted through a brightness->albedo ramp (the
 // source is grayscale); its never-imaged south is an honest dark cap, and its
 // under-imaged far hemisphere is left as the real low-res data — soft, but
@@ -456,8 +459,11 @@ export function upgradeComplete(up: TextureUpgrade): boolean {
 // is a different one (no bathymetry or sea ice), which the same-product rule
 // forbids.
 const TEXTURE_UPGRADE_TIERS: Record<string, readonly TextureTier[]> = {
+  mercury: ['4k'],
+  venus: ['4k'],
   mars: ['4k'],
   jupiter: ['4k'],
+  saturn: ['4k'],
   pluto: ['4k'],
   moon: ['4k', '8k'],
   earthClouds: ['4k'],

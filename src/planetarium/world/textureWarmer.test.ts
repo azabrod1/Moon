@@ -133,3 +133,70 @@ describe('textureWarmer', () => {
     expect(uploaded).toEqual([good]);
   });
 });
+
+describe('textureWarmer onOutcome', () => {
+  let uploaded: THREE.Texture[];
+
+  beforeEach(() => {
+    resetTextureWarmer();
+    uploaded = [];
+  });
+
+  afterEach(() => {
+    resetTextureWarmer();
+  });
+
+  it('settles warmed exactly once, after the upload, and never before the pump', () => {
+    bindTextureWarmer((tex) => uploaded.push(tex));
+    const tex = new THREE.Texture();
+    const calls: string[] = [];
+    queueTextureWarm(tex, (o) => calls.push(`${o}@${uploaded.length}`));
+    expect(calls).toEqual([]);
+    pumpTextureWarmQueue(Number.POSITIVE_INFINITY);
+    expect(calls).toEqual(['warmed@1']); // ran after the upload landed
+    pumpTextureWarmQueue(Number.POSITIVE_INFINITY);
+    expect(calls).toEqual(['warmed@1']);
+  });
+
+  it('settles warmed at once for a texture that is already resident', () => {
+    bindTextureWarmer((tex) => uploaded.push(tex));
+    const tex = new THREE.Texture();
+    queueTextureWarm(tex);
+    pumpTextureWarmQueue(Number.POSITIVE_INFINITY);
+    const calls: string[] = [];
+    queueTextureWarm(tex, (o) => calls.push(o));
+    expect(calls).toEqual(['warmed']);
+    expect(uploaded.length).toBe(1); // no second upload
+  });
+
+  it('settles disposed for a texture disposed before its turn, and never uploads it', () => {
+    bindTextureWarmer((tex) => uploaded.push(tex));
+    const tex = new THREE.Texture();
+    const calls: string[] = [];
+    queueTextureWarm(tex, (o) => calls.push(o));
+    tex.dispose();
+    pumpTextureWarmQueue(Number.POSITIVE_INFINITY);
+    expect(calls).toEqual(['disposed']);
+    expect(uploaded).toEqual([]);
+  });
+
+  it('settles failed for an upload that threw (the texture is not resident)', () => {
+    bindTextureWarmer(() => { throw new Error('context lost'); });
+    const tex = new THREE.Texture();
+    const calls: string[] = [];
+    queueTextureWarm(tex, (o) => calls.push(o));
+    pumpTextureWarmQueue(Number.POSITIVE_INFINITY);
+    expect(calls).toEqual(['failed']);
+  });
+
+  it('a callback registered on a re-queue of a pending texture replaces, not duplicates', () => {
+    bindTextureWarmer((tex) => uploaded.push(tex));
+    const tex = new THREE.Texture();
+    const calls: string[] = [];
+    queueTextureWarm(tex, () => calls.push('first'));
+    queueTextureWarm(tex, () => calls.push('second'));
+    pumpTextureWarmQueue(Number.POSITIVE_INFINITY);
+    expect(calls).toEqual(['second']);
+    expect(uploaded.length).toBe(1);
+  });
+});

@@ -92,7 +92,7 @@ describe('upgrade ladders', () => {
     const mat = new THREE.MeshStandardMaterial();
     materials.push(mat);
     expect(makeTextureUpgrade('earthDay', mat)).toBeUndefined();
-    expect(makeTextureUpgrade('venus', mat)).toBeUndefined();
+    expect(makeTextureUpgrade('uranus', mat)).toBeUndefined();
     expect(makeTextureUpgrade(undefined, mat)).toBeUndefined();
   });
 

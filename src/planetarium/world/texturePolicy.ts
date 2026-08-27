@@ -27,6 +27,13 @@ export function resolveTextureUrl(file: string, tier: TextureTier): string {
   return tier === '2k' ? `${TEXTURE_BASE}${file}` : `${TEXTURE_BASE}${tier}/${file}`;
 }
 
+/** Sector tile sets live under textures/tiles/<key>/<tier>/<c>_<r>.webp —
+ *  a colour set's tier names its source resolution ('16k'), a data crop's
+ *  the base map it was cut from ('2k', '4k'). Cut by tools/gen-tiles.mjs. */
+export function resolveTileUrl(key: string, tier: string, c: number, r: number): string {
+  return `${TEXTURE_BASE}tiles/${key}/${tier}/${c}_${r}.webp`;
+}
+
 // Smallest GL max-texture-size that can hold a tier's maps. The boot tier has
 // no floor: it is what the device gets when nothing larger fits.
 const TIER_MIN_TEXTURE_SIZE: Record<TextureTier, number> = { '2k': 0, '4k': 4096, '8k': 8192 };

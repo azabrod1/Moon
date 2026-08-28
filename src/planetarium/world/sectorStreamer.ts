@@ -66,7 +66,10 @@ import { queueTextureWarm, type WarmOutcome } from './textureWarmer';
 export type CropSlot = 'bumpMap' | 'normalMap' | 'roughnessMap';
 
 export interface SectorCropSpec {
-  /** Tile-set key under textures/tiles/ (tools/gen-tiles.mjs). */
+  /** Tile-set key under textures/tiles/: the FILE STEM of the base map the
+   *  crops were cut from (`earth-roughness.v2` for earth-roughness.v2.webp),
+   *  so a base that ships under a new name takes its crops with it — see
+   *  SECTOR_SETS. */
   key: string;
   /** The base map's tier folder the crops were cut from. */
   tier: TextureTier;
@@ -77,6 +80,8 @@ export interface SectorCropSpec {
 }
 
 export interface SectorSetSpec {
+  /** Tile-set key of the colour tiles: the file stem of the globe's own
+   *  colour map (its boot file, or the tier the tiles were matched to). */
   colorKey: string;
   /** Crops for the relief / roughness slots the base material carries. A slot
    *  the base does not currently have is not loaded; if the base gains one
@@ -86,18 +91,28 @@ export interface SectorSetSpec {
 
 /** The bodies that ship a sector set, by catalog name. Colour tiles are the
  *  16K sets; every crop is the base map it names, sector-cut with the same
- *  gutter (tools/gen-tiles.mjs writes both). */
+ *  gutter (tools/gen-tiles.mjs writes both).
+ *
+ *  Every key is the file stem of the map it was cut from or matched to
+ *  (sectorTiles.assets.test pins this). That is what keeps a globe and its
+ *  tiles coherent through the service worker: the worker may serve a
+ *  one-deploy-old body under any pathname it already holds for a boot, so a
+ *  base map that changes ships under a new name (`.v2` -> `.v3`) — and with
+ *  the stem in the tile paths, a set cut from the new map cannot be reached
+ *  through the old paths, nor the old set through the new. A re-cut of a
+ *  set whose base did not change (a layout change, a new gutter) bumps the
+ *  base's name for the same reason. */
 export const SECTOR_SETS: Record<string, SectorSetSpec> = {
   Earth: {
-    colorKey: 'earth-day',
+    colorKey: 'earth-day.v2',
     crops: {
       bumpMap: { key: 'earth-bump', tier: '2k', baseWidth: 2048 },
-      roughnessMap: { key: 'earth-roughness', tier: '4k', baseWidth: 4096 },
+      roughnessMap: { key: 'earth-roughness.v2', tier: '4k', baseWidth: 4096 },
     },
   },
   Mars: {
-    colorKey: 'mars',
-    crops: { normalMap: { key: 'mars-normal', tier: '2k', baseWidth: 1440, spanU: 2 } },
+    colorKey: 'mars.v2',
+    crops: { normalMap: { key: 'mars-normal.v2', tier: '2k', baseWidth: 1440, spanU: 2 } },
   },
   Moon: {
     colorKey: 'moon',

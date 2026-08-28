@@ -164,7 +164,9 @@ async function padWrapClamp(raw, w, h, channels, gx, gy) {
 
 /**
  * Cut an equirect (w × h, `content` px per sector) into gutter-padded sector
- * images under tiles/<key>/<tier>/: each `spanU · content + 2·gutter` px wide
+ * images under tiles/<key>/<tier>/ (key = the base map's file stem, so a
+ * re-based map's new name carries its tiles' paths with it): each
+ * `spanU · content + 2·gutter` px wide
  * (the sector plus (spanU−1)/2 of a neighbour each side — normal maps use 2,
  * see world/sectorGrid.ts) and `content + 2·gutter` px tall.
  */
@@ -234,7 +236,7 @@ async function deriveEarthRoughness(water) {
   await sharp(roughOf(await scoreAt(W / 2, H / 2)), { raw: { width: W / 2, height: H / 2, channels: 3 } })
     .webp(DATA_WEBP).toFile(out);
   console.log(`  ${path.relative(TEX, out).padEnd(34)} ${((await stat(out)).size / 1024).toFixed(0).padStart(6)} KB`);
-  await cutGrid(roughOf(await scoreAt(W, H)), W, H, 3, W / GRID.cols, 'earth-roughness', '4k', DATA_WEBP);
+  await cutGrid(roughOf(await scoreAt(W, H)), W, H, 3, W / GRID.cols, 'earth-roughness.v2', '4k', DATA_WEBP);
 }
 
 async function writeDownsamples(raw, outs) {
@@ -357,7 +359,7 @@ const JOBS = {
   // Blue Marble Next Generation, August 2004, plain (flat ocean) — the NASA
   // product NASA Eyes ships. 21600x10800 from assets.science.nasa.gov.
   earth: {
-    key: 'earth-day',
+    key: 'earth-day.v2',
     src: () => path.join(CACHE, 'bmng_200408_21600.jpg'),
     grade: gradeOceanInPlace,
     // `.v2`: a re-based map ships under a NEW pathname. The service worker
@@ -389,7 +391,7 @@ const JOBS = {
   // faces), and so does this — the gains are that ratio. The old Solar
   // System Scope map was a far more saturated orange (183,98,71).
   mars: {
-    key: 'mars',
+    key: 'mars.v2',
     raw: marsRaw,
     grade: gradeGains([164 / 122, 104 / 97, 90 / 95]),
     // The Viking mosaic's grain is not detail: q75 tiles read identically to
@@ -400,7 +402,7 @@ const JOBS = {
       { w: 2048, h: 1024, out: path.join(TEX, 'mars.v2.webp') },
     ],
     ref: path.join(TEX, '4k', 'mars.v2.webp'),
-    dataCrops: [{ src: path.join(TEX, 'mars-normal.v2.webp'), key: 'mars-normal', tier: '2k', spanU: 2 }],
+    dataCrops: [{ src: path.join(TEX, 'mars-normal.v2.webp'), key: 'mars-normal.v2', tier: '2k', spanU: 2 }],
   },
   // Solar System Scope 4K steps for the planets whose 8K/4K sources passed the
   // same-product gate against the shipped 2K boot maps (RMS 3.6 / 1.6 / 1.6).

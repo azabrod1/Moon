@@ -64,16 +64,33 @@ describe('shipped sector tile sets', () => {
     }
   }
 
+  it('every set key is the file stem of the map it was cut from', () => {
+    // The stem carries a re-based map's new name into its tiles' paths, so
+    // the service worker can never pair an old globe with new tiles or the
+    // reverse (it may serve a one-deploy-old body under an unchanged
+    // pathname for a boot).
+    const stem = (file: string) => file.replace(/^.*\//, '').replace(/\.webp$/, '');
+    expect(SECTOR_SETS.Earth.colorKey).toBe(stem(PLANET_TEXTURE_FILES.earthDay));
+    expect(SECTOR_SETS.Mars.colorKey).toBe(stem(PLANET_TEXTURE_FILES.mars));
+    expect(SECTOR_SETS.Moon.colorKey).toBe(stem(PLANET_TEXTURE_FILES.moon));
+    expect(SECTOR_SETS.Earth.crops.bumpMap!.key).toBe(stem(PLANET_TEXTURE_FILES.earthBump));
+    expect(SECTOR_SETS.Earth.crops.roughnessMap!.key).toBe(stem(PLANET_TEXTURE_FILES.earthRoughness));
+    expect(SECTOR_SETS.Mars.crops.normalMap!.key).toBe(stem(PLANET_TEXTURE_FILES.marsNormal));
+    expect(SECTOR_SETS.Moon.crops.normalMap!.key).toBe(stem(PLANET_TEXTURE_FILES.moonNormal));
+    for (const [body, set] of Object.entries(SECTOR_SETS)) {
+      expect(existsSync(tileDir(set.colorKey, '16k')), `${body}: no 16k folder for ${set.colorKey}`).toBe(true);
+    }
+  });
+
   it('every crop set names the width of the base map it was cut from', () => {
-    // The base maps the crops overlay, by their PLANET_TEXTURE_FILES key.
     // The map each crop set was cut from. Earth's gloss mask is derived at
     // 4096 by gen-tiles and its crops cut there; the whole-globe map ships at
     // half that width (the far view needs no more), so its shipped file is
     // exactly a 2x downsample of the crops' base.
     const baseFiles: Record<string, { file: string; shippedScale: number }> = {
       'earth-bump': { file: PLANET_TEXTURE_FILES.earthBump, shippedScale: 1 },
-      'earth-roughness': { file: PLANET_TEXTURE_FILES.earthRoughness, shippedScale: 0.5 },
-      'mars-normal': { file: PLANET_TEXTURE_FILES.marsNormal, shippedScale: 1 },
+      'earth-roughness.v2': { file: PLANET_TEXTURE_FILES.earthRoughness, shippedScale: 0.5 },
+      'mars-normal.v2': { file: PLANET_TEXTURE_FILES.marsNormal, shippedScale: 1 },
       'moon-normal': { file: `4k/${PLANET_TEXTURE_FILES.moonNormal}`, shippedScale: 1 },
     };
     for (const set of Object.values(SECTOR_SETS)) {

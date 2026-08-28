@@ -819,11 +819,13 @@ describe('moonArrivalPose — catalog sweep (all moons, three orbit phases)', ()
     }
   });
 
-  it('the split lands on the named-moon line: classical moons fly, the moonlet swarm parks', () => {
-    for (const name of ['Moon', 'Io', 'Europa', 'Ganymede', 'Callisto', 'Titan', 'Triton', 'Charon', 'Miranda', 'Phoebe']) {
+  it('the split lands below the moonlet swarm: only the smallest arrivals park', () => {
+    for (const name of ['Moon', 'Io', 'Europa', 'Ganymede', 'Callisto', 'Titan', 'Triton', 'Charon', 'Miranda', 'Phoebe', 'Pan', 'Puck']) {
       expect(moonArrivalPose(catalogInputs(name)).flythrough, name).toBe(true);
     }
-    for (const name of ['Styx', 'Nix', 'Kerberos', 'Hydra', 'Phobos', 'Deimos', 'Pan', 'Cordelia']) {
+    // The seven whose rendered radius is under the gate — Mars's two, the
+    // innermost Uranian, and Pluto's minors.
+    for (const name of ['Phobos', 'Deimos', 'Cordelia', 'Styx', 'Nix', 'Kerberos', 'Hydra']) {
       expect(moonArrivalPose(catalogInputs(name)).flythrough, name).toBe(false);
     }
   });

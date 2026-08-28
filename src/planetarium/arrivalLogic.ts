@@ -240,8 +240,12 @@ export const MOON_ARRIVAL_MAX_OFFAXIS_DEG = 12;
  *  abeam slide, sling — happens INSIDE the camera's own trail distance, and
  *  reads as teleporting on top of a rock while the view crawls. Those moons
  *  arrive planet-style instead: aimed dead at the body, the governed glide
- *  as the show. Splits the catalog at the named-moon line (every classical
- *  moon plus Charon flies; the moonlet swarm parks). */
+ *  as the show. Measured in boom lengths, so the line moves with the rig:
+ *  the shorter the trail, the smaller a body may be and still be worth
+ *  flying past. On the current rig the line sits at ~244 km of RENDERED
+ *  radius, under the moonlet swarm — every named moon and most moonlets
+ *  fly, and seven arrivals park (Phobos, Deimos, Cordelia, and Pluto's
+ *  four minors). */
 export const MOON_FLYTHROUGH_MIN_IMPACT_CAM_DISTS = 2;
 
 /**

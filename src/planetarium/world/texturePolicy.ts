@@ -49,12 +49,26 @@ const TIER_MIN_TEXTURE_SIZE: Record<TextureTier, number> = { '2k': 0, '4k': 4096
 // 4096 admits the 4K tier while holding 8K back until a real cap is known.
 let chosenAnisotropy = 1;
 let maxTextureSize = 4096;
+let touchBudget = false;
 
-export function captureDeviceTextureCaps(renderer: THREE.WebGLRenderer): void {
+export function captureDeviceTextureCaps(
+  renderer: THREE.WebGLRenderer,
+  touch: boolean = typeof window !== 'undefined' && 'ontouchstart' in window,
+): void {
   // Cap at 8: past the point of visible return for these few large spheres and
   // the rings, and cheaper than the 16 most desktops report.
   chosenAnisotropy = Math.min(8, renderer.capabilities.getMaxAnisotropy());
   maxTextureSize = renderer.capabilities.maxTextureSize;
+  touchBudget = touch;
+}
+
+/** True on a touch device. WebGL exposes no GPU-memory figure, and a phone's
+ *  GL max-texture-size (16384 on every recent iPhone) says nothing about how
+ *  many 8K maps its shared memory will hold at once — so the one budget
+ *  decision that is about total residency, not a single map's size, falls
+ *  back on this coarse signal. See TOUCH_TIER_CAP in PlanetFactory. */
+export function touchTextureBudget(): boolean {
+  return touchBudget;
 }
 
 /**

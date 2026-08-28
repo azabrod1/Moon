@@ -29,9 +29,13 @@ const FILES = [
   'saturn.jpg', 'uranus.jpg', 'neptune.jpg', 'pluto.jpg', 'moon.jpg', 'moon-normal.png',
   'io.jpg', 'europa.jpg', 'ganymede.jpg', 'callisto.jpg', 'triton.jpg',
   '4k/mars.jpg', '4k/jupiter.jpg', '4k/pluto.jpg', '4k/moon.jpg', '4k/earth-clouds.jpg',
-  '4k/moon-normal.png', '8k/moon.jpg',
+  '4k/moon-normal.png', '8k/moon.jpg', '8k/earth-clouds.jpg',
 ];
 const isData = (f) => /normal|bump|roughness/.test(f);
+// The cloud deck draws at 0.35 opacity over the globe, so its compression
+// noise is a third as visible as a globe map's: q60 holds up in close crops
+// and halves the bytes of the heaviest maps under the arrival veils.
+const isCloudDeck = (f) => /earth-clouds/.test(f);
 
 let from = 0;
 let to = 0;
@@ -49,11 +53,11 @@ for (const file of FILES) {
   // keepMetadata carries any ICC profile across so a color-managed decode
   // shows the same colors the original showed.
   if (isData(file)) await img.webp({ lossless: true, effort: 5 }).keepMetadata().toFile(out);
-  else await img.webp({ quality: 85, effort: 5 }).keepMetadata().toFile(out);
+  else await img.webp({ quality: isCloudDeck(file) ? 60 : 85, effort: 5 }).keepMetadata().toFile(out);
   const outSize = (await stat(out)).size;
   from += size;
   to += outSize;
-  console.log(`${file.padEnd(24)} ${(size / 1024).toFixed(0).padStart(6)}KB -> ${(outSize / 1024).toFixed(0).padStart(6)}KB ${isData(file) ? '[lossless]' : '[q85]'}`);
+  console.log(`${file.padEnd(24)} ${(size / 1024).toFixed(0).padStart(6)}KB -> ${(outSize / 1024).toFixed(0).padStart(6)}KB ${isData(file) ? '[lossless]' : isCloudDeck(file) ? '[q60]' : '[q85]'}`);
   if (clean) await unlink(src);
 }
 console.log(`total: ${(from / 1e6).toFixed(1)}MB -> ${(to / 1e6).toFixed(1)}MB (-${Math.round((1 - to / from) * 100)}%)${clean ? ', sources removed' : ''}`);

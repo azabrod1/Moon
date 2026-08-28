@@ -30,6 +30,7 @@ import {
   upgradeGeometryOnApproach,
   upgradeTextureOnApproach,
   UPGRADE_TRIGGER_FRACTION,
+  upgradeTriggerFraction,
   wireEarthLateDetail,
   type TextureUpgrade,
 } from './PlanetFactory';
@@ -38,10 +39,10 @@ import { captureDeviceTextureCaps, type TextureTier } from './world/texturePolic
 import { bindTextureWarmer, pumpTextureWarmQueue, queueTextureWarm, resetTextureWarmer } from './world/textureWarmer';
 
 // Device caps are captured from the live renderer; a fake renderer is the seam.
-function withMaxTextureSize(size: number): void {
+function withMaxTextureSize(size: number, touch = false): void {
   captureDeviceTextureCaps({
     capabilities: { getMaxAnisotropy: () => 8, maxTextureSize: size },
-  } as unknown as THREE.WebGLRenderer);
+  } as unknown as THREE.WebGLRenderer, touch);
 }
 
 const materials: THREE.MeshStandardMaterial[] = [];
@@ -80,10 +81,20 @@ afterEach(() => {
 });
 
 describe('upgrade ladders', () => {
-  it('gives the Moon an 8K goal and the cloud deck a 4K one', () => {
+  it('gives the Moon and the cloud deck an 8K goal', () => {
     expect(handle('moon').tiers).toEqual(['4k', '8k']);
     expect(handle('moon').effectiveMaxTier).toBe('8k');
-    expect(handle('earthClouds').tiers).toEqual(['4k']);
+    expect(handle('earthClouds').tiers).toEqual(['4k', '8k']);
+    expect(handle('earthClouds').effectiveMaxTier).toBe('8k');
+  });
+
+  it('stops the cloud deck at 4K on a touch device, and only the deck', () => {
+    // A second 8K resident beside the Moon's is a phone-memory risk; the
+    // Moon's own 8K is the telescope map and keeps its goal.
+    withMaxTextureSize(16384, true);
+    expect(handle('earthClouds').effectiveMaxTier).toBe('4k');
+    expect(handle('moon').effectiveMaxTier).toBe('8k');
+    expect(resolveUpgradeTier(handle('earthClouds'), '8k')).toBe('4k');
   });
 
   it('builds no ladder for a key with nothing higher on disk', () => {
@@ -165,7 +176,23 @@ describe('screen-fraction band policy', () => {
   });
 
   it('gives a single-step ladder its one tier', () => {
-    expect(earnedUpgradeTier(handle('earthClouds'), 0.9)).toBe('4k');
+    expect(earnedUpgradeTier(handle('mars'), 0.9)).toBe('4k');
+  });
+
+  it('holds the cloud deck at 4K until Earth is close, past the telescope gate', () => {
+    // The deck's 8K is for the close approach, where the 16K ground sectors
+    // arrive; the Moon's 0.22 gate would fetch it for every boot-view Earth.
+    const up = handle('earthClouds');
+    expect(upgradeTriggerFraction('earthClouds', '8k')).toBeGreaterThan(UPGRADE_TRIGGER_FRACTION['8k']!);
+    expect(upgradeTriggerFraction('earthClouds', '4k')).toBe(UPGRADE_TRIGGER_FRACTION['4k']);
+    expect(upgradeTriggerFraction('moon', '8k')).toBe(UPGRADE_TRIGGER_FRACTION['8k']);
+    expect(earnedUpgradeTier(up, 0.3)).toBe('4k');
+    expect(earnedUpgradeTier(up, 0.9)).toBe('8k');
+    // The measurement skip agrees: a 4K deck at 0.3 pulls no projection.
+    up.appliedTier = '4k';
+    const geo = { applied: true } as unknown as Parameters<typeof lodMeasurementRelevant>[0];
+    expect(lodMeasurementRelevant(geo, [up], 0.3 * 1000, 1000, null)).toBe(false);
+    expect(lodMeasurementRelevant(geo, [up], 0.9 * 1000, 1000, null)).toBe(true);
   });
 
   it('reaches 8K at the telescope framing the tier exists for', () => {

@@ -26,7 +26,7 @@ import {
   SUN_GLARE_EXTENT_SOLAR_RADII,
 } from '../shared/shaders/sun';
 import { debugWarn } from '../shared/debug';
-import { applyTextureDefaults, clampTier, resolveTextureUrl, type TextureTier, type MapKind } from './world/texturePolicy';
+import { applyTextureDefaults, clampTier, resolveTextureUrl, type TextureTier, type MapKind, touchTextureBudget } from './world/texturePolicy';
 import { augmentSurfaceMaterial, type SurfaceArchetype, type SurfaceShadingFx } from './world/surfaceShading';
 import { queueTextureWarm } from './world/textureWarmer';
 import { createLensShaderUniforms } from '../shared/three/lensShader';
@@ -462,7 +462,10 @@ export function upgradeComplete(up: TextureUpgrade): boolean {
 // craters at grazing light). Both its tiers bake from one source, so 4K is a
 // pure sharpen. Earth's day map has no 8K step: the only 8K product available
 // is a different one (no bathymetry or sea ice), which the same-product rule
-// forbids.
+// forbids — its close-range detail comes from the 16K sector tiles instead,
+// which is why the cloud deck climbs to 8K: with the ground streamed at 16K,
+// a 4K deck is the soft layer on top of it. The 8K deck is the SSS product
+// itself (the 4K is its downsample: RMS 7 against it, equal means).
 const TEXTURE_UPGRADE_TIERS: Record<string, readonly TextureTier[]> = {
   mercury: ['4k'],
   venus: ['4k'],
@@ -471,8 +474,17 @@ const TEXTURE_UPGRADE_TIERS: Record<string, readonly TextureTier[]> = {
   saturn: ['4k'],
   pluto: ['4k'],
   moon: ['4k', '8k'],
-  earthClouds: ['4k'],
+  earthClouds: ['4k', '8k'],
 };
+
+// Per-key ceiling on touch devices, applied over the GL clamp. An 8K RGBA map
+// is 171 MiB resident with its mips; the cloud deck's 8K would sit beside
+// the Moon's 8K, Earth's 4K day map and the 16K sector tiles in the one view
+// the app is built around (Earth close, Moon in the sky). A desktop GPU holds
+// that; a phone's shared memory is the app's known weak spot (an unexplained
+// crash teleporting to the Moon on an iPhone). The Moon keeps its 8K — it is
+// the flagship telescope map — and the deck stops at 4K.
+const TOUCH_TIER_CAP: Partial<Record<string, TextureTier>> = { earthClouds: '4k' };
 
 // Colour-map precedence: procedural floor 0, then one rank per tier. Ranks are
 // what make every apply order-independent — a late boot-map arrival can't
@@ -504,11 +516,14 @@ export function makeTextureUpgrade(
   if (!key) return undefined;
   const tiers = TEXTURE_UPGRADE_TIERS[key];
   if (!tiers) return undefined;
+  let top = tiers[tiers.length - 1];
+  const cap = TOUCH_TIER_CAP[key];
+  if (cap && touchTextureBudget() && TIER_RANK[cap] < TIER_RANK[top]) top = cap;
   return {
     key,
     material,
     tiers,
-    effectiveMaxTier: clampTier(tiers[tiers.length - 1]),
+    effectiveMaxTier: clampTier(top),
     appliedTier: null,
   };
 }
@@ -556,6 +571,23 @@ export function resolveUpgradeTier(up: TextureUpgrade, requested: TextureTier): 
 export const UPGRADE_TRIGGER_FRACTION: Partial<Record<TextureTier, number>> = { '4k': 0.15, '8k': 0.22 };
 
 /**
+ * Per-key overrides of the gates above. The cloud deck's 8K exists for the
+ * close approach, not the telescope: a 4K texel of the deck spans one device
+ * pixel only once Earth's disc stands about 1.2 viewport heights tall (0.6 on
+ * a 2x display), so the Moon's 0.22 gate would pull 4.7 MB and 171 MiB of GPU
+ * memory for every boot-view Earth. 0.5 is that 2x figure with fetch lead,
+ * which is also where the 16K ground sectors start arriving.
+ */
+const UPGRADE_TRIGGER_FRACTION_BY_KEY: Record<string, Partial<Record<TextureTier, number>>> = {
+  earthClouds: { '8k': 0.5 },
+};
+
+/** The screen fraction at which `tier` earns its download for `key`. */
+export function upgradeTriggerFraction(key: string, tier: TextureTier): number | undefined {
+  return UPGRADE_TRIGGER_FRACTION_BY_KEY[key]?.[tier] ?? UPGRADE_TRIGGER_FRACTION[tier];
+}
+
+/**
  * The highest step a body's screen fraction has earned — null when it has
  * earned none. Handing that step straight to upgradeTextureOnApproach is what
  * keeps a body first seen already filling the screen from paying for a rung it
@@ -565,7 +597,7 @@ export const UPGRADE_TRIGGER_FRACTION: Partial<Record<TextureTier, number>> = { 
 export function earnedUpgradeTier(up: TextureUpgrade, fraction: number): TextureTier | null {
   let earned: TextureTier | null = null;
   for (const tier of up.tiers) {
-    const at = UPGRADE_TRIGGER_FRACTION[tier];
+    const at = upgradeTriggerFraction(up.key, tier);
     if (at !== undefined && fraction > at) earned = tier; // ascending: keep the highest
   }
   return earned;

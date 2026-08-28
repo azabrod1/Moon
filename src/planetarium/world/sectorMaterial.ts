@@ -1,9 +1,10 @@
 /**
  * The material a streamed surface sector draws with. A sector overlays its
- * body's globe with a 2048² tile of a 16K source plus crops of the globe's
- * own relief / roughness maps, and it must shade EXACTLY like the globe under
- * it: same lighting terms, same eclipse and planetshine uniforms, same scalar
- * state — or the sector reads as a rectangle on the surface.
+ * body's globe (or a coarser sector) with a 2048² tile of a finer source plus
+ * crops of the globe's own relief / roughness maps, and it must shade EXACTLY
+ * like the surface under it: same lighting terms, same eclipse and
+ * planetshine uniforms, same scalar state — or the sector reads as a
+ * rectangle on the surface.
  *
  * Built fresh rather than cloned: Material.copy() drops onBeforeCompile (the
  * surface shading hook) and JSON-clones userData (which can hold a render
@@ -28,14 +29,23 @@ export interface SectorMaps {
   roughnessMap?: THREE.Texture | null;
 }
 
-/** Draw order: sectors before the globe, so early-Z rejects the globe's
- *  fragments under a resident sector instead of shading the largest thing on
- *  screen twice. */
+/** Draw order of a level-0 sector: before the globe, so early-Z rejects the
+ *  globe's fragments under a resident sector instead of shading the largest
+ *  thing on screen twice. */
 export const SECTOR_RENDER_ORDER = -1;
+
+/** Draw order of a sector at `level`: each finer level draws before the one
+ *  above it (−1, −2, …), so the finest tile over a patch of surface is the
+ *  one that fills the depth buffer there and the coarser ones behind it are
+ *  rejected rather than shaded. */
+export function sectorRenderOrder(level: number): number {
+  return SECTOR_RENDER_ORDER - level;
+}
 
 export function createSectorMaterial(
   base: THREE.MeshStandardMaterial,
   maps: SectorMaps,
+  level = 0,
 ): THREE.MeshStandardMaterial {
   const mat = new THREE.MeshStandardMaterial({
     map: maps.map,
@@ -44,12 +54,14 @@ export function createSectorMaterial(
     roughnessMap: maps.roughnessMap ?? null,
   });
   syncSectorMaterial(mat, base);
-  // The sector's vertices coincide with the globe's (sectorGrid pins it), so
-  // depth ties exactly; a units-only offset breaks the tie in the sector's
-  // favour without a slope term that could pull it under the shells above.
+  // The sector's vertices coincide with the globe's and with every coarser
+  // sector's (sectorGrid pins it), so depth ties exactly; a units-only offset
+  // breaks the tie one step per level, finest nearest. The slope FACTOR stays
+  // 0 at every level: it grows without bound at the limb, where it would pull
+  // a sector out through the cloud, night and atmosphere shells above it.
   mat.polygonOffset = true;
   mat.polygonOffsetFactor = 0;
-  mat.polygonOffsetUnits = -1;
+  mat.polygonOffsetUnits = -(level + 1);
   const args = surfaceShadingArgsOf(base);
   if (args) augmentSurfaceMaterial(mat, args.archetype, args.ringShadow, args.sunTan, args.fx);
   return mat;

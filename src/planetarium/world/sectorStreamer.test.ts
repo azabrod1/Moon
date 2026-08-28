@@ -4,6 +4,7 @@ import {
   SECTOR_ADMIT_MARGIN,
   SECTOR_ATTEMPT_TIMEOUT_MS,
   SECTOR_INFLIGHT_CAP_DESKTOP,
+  SECTOR_LEVEL_16K,
   SECTOR_RELEASE_TEXEL_PX,
   SECTOR_RESIDENT_CAP_DESKTOP,
   SECTOR_RESIDENT_CAP_TOUCH,
@@ -14,10 +15,11 @@ import {
   SECTOR_WANT_TEXEL_PX_TOUCH,
   SectorStreamer,
   type SectorBodyHandle,
+  type SectorLevel,
   type SectorMeasure,
 } from './sectorStreamer';
 import { SECTOR_RENDER_ORDER } from './sectorMaterial';
-import { SECTOR_GRID_16K, sectorCentreDirection, sectorTileTransform, dataCropLayout, SECTOR_TILE, sphereDirection } from './sectorGrid';
+import { SECTOR_GRID_16K, finerGrid, sectorCentreDirection, sectorTileTransform, dataCropLayout, SECTOR_TILE, sphereDirection } from './sectorGrid';
 import { augmentSurfaceMaterial } from './surfaceShading';
 import type { WarmOutcome } from './textureWarmer';
 
@@ -88,13 +90,40 @@ function cameraOver(c: number, r: number, dist = 1.5): THREE.Vector3 {
 
 /** A measure that magnifies a listed set of sectors (by "c_r", in texel px) and hides the rest. */
 function measureOf(sizes: Record<string, number>, centrality = 1) {
-  return (centre: THREE.Vector3, _radius: number): SectorMeasure | null => {
-    for (let r = 0; r < G.rows; r++) {
-      for (let c = 0; c < G.cols; c++) {
-        const d = sectorCentreDirection(G, { c, r }, new THREE.Vector3()).multiplyScalar(R);
-        if (d.distanceTo(centre) < 1e-9) {
-          const px = sizes[`${c}_${r}`];
-          return px === undefined ? null : { pxPerLocalUnit: px / TEXEL_LEN_4K, centrality };
+  return measureLevels([SECTOR_LEVEL_16K], sizes, centrality);
+}
+
+/** No level-1 tiles ship yet, so the pyramid is exercised on a synthetic
+ *  second level: the 16×8 grid of 2048² tiles cut from a 32512-wide source
+ *  that Earth's level 1 will be. */
+const LEVEL_1: SectorLevel = {
+  tier: '32k',
+  grid: finerGrid(SECTOR_GRID_16K),
+  layout: SECTOR_TILE,
+  sourceWidth: 2 * SECTOR_LEVEL_16K.sourceWidth,
+};
+const TWO_LEVELS = [SECTOR_LEVEL_16K, LEVEL_1];
+
+/** Surface length of the texel a level's demand is measured against: the
+ *  globe's map for level 0, the level below's source for the rest. */
+function refTexelLen(levels: SectorLevel[], level: number): number {
+  return level === 0 ? TEXEL_LEN_4K : (2 * Math.PI * R) / levels[level - 1].sourceWidth;
+}
+
+/** A measure over a pyramid: sizes are keyed by the stats id ("c_r" at level
+ *  0, "L1/c_r" below it) and given in texel px OF THAT LEVEL'S OWN reference
+ *  map, so one number means the same thing at every level. */
+function measureLevels(levels: SectorLevel[], sizes: Record<string, number>, centrality = 1) {
+  return (centre: THREE.Vector3, _radius?: number): SectorMeasure | null => {
+    for (let level = 0; level < levels.length; level++) {
+      const grid = levels[level].grid;
+      for (let r = 0; r < grid.rows; r++) {
+        for (let c = 0; c < grid.cols; c++) {
+          const d = sectorCentreDirection(grid, { c, r }, new THREE.Vector3()).multiplyScalar(R);
+          if (d.distanceTo(centre) < 1e-9) {
+            const px = sizes[level === 0 ? `${c}_${r}` : `L${level}/${c}_${r}`];
+            return px === undefined ? null : { pxPerLocalUnit: px / refTexelLen(levels, level), centrality };
+          }
         }
       }
     }
@@ -724,6 +753,78 @@ describe('SectorStreamer', () => {
     // One failure, one base cooldown: retried right after SECTOR_RETRY_MS.
     s.update('Earth', cameraOver(2, 1), measureOf({ '2_1': 2 }), SECTOR_RETRY_MS + 1);
     expect(loader.requests.length).toBe(3);
+  });
+
+  /** Earth with the synthetic second level wired on. */
+  function twoLevelEarth(): ReturnType<typeof earthHandle> {
+    const h = earthHandle();
+    h.spec = { ...SECTOR_SETS.Earth, levels: TWO_LEVELS };
+    streamer.register(h);
+    return h;
+  }
+  const G1 = LEVEL_1.grid;
+  const overLevel1 = (c: number, r: number, dist = 1.5) =>
+    sectorCentreDirection(G1, { c, r }, new THREE.Vector3()).multiplyScalar(dist * R);
+
+  it('a finer level fetches its own colour tile and its parent\'s crops, through the parent\'s transform', () => {
+    loader.auto = true;
+    const earth2 = twoLevelEarth();
+    // Child (5, 3) is the south-east quarter of level 0's (2, 1).
+    streamer.update('Earth', overLevel1(5, 3), measureLevels(TWO_LEVELS, { 'L1/5_3': 2 }), 0);
+    expect(loader.requests.map((r) => r.url).sort()).toEqual([
+      expect.stringMatching(/tiles\/earth-bump\/2k\/2_1\.webp$/),
+      expect.stringMatching(/tiles\/earth-day\.v2\/32k\/5_3\.webp$/),
+      expect.stringMatching(/tiles\/earth-roughness\.v2\/4k\/2_1\.webp$/),
+    ]);
+    const mat = (earth2.mesh.children[0] as THREE.Mesh).material as THREE.MeshStandardMaterial;
+    // The colour tile carries its own level's transform…
+    const tileT = sectorTileTransform(G1, { c: 5, r: 3 }, SECTOR_TILE);
+    expect(mat.map!.offset.x).toBeCloseTo(tileT.offsetX, 12);
+    expect(mat.map!.repeat.x).toBeCloseTo(tileT.repeatX, 12);
+    // …and each crop the PARENT's, verbatim: the mesh's uvs are global, so a
+    // quarter of the parent's rectangle lands on a quarter of the crop.
+    for (const [slot, layout] of [
+      ['bumpMap', dataCropLayout(G, 2048)], ['roughnessMap', dataCropLayout(G, 4096)],
+    ] as const) {
+      const parentT = sectorTileTransform(G, { c: 2, r: 1 }, layout);
+      expect(mat[slot]!.offset.x).toBeCloseTo(parentT.offsetX, 12);
+      expect(mat[slot]!.offset.y).toBeCloseTo(parentT.offsetY, 12);
+      expect(mat[slot]!.repeat.x).toBeCloseTo(parentT.repeatX, 12);
+      expect(mat[slot]!.repeat.y).toBeCloseTo(parentT.repeatY, 12);
+    }
+  });
+
+  it('a finer sector draws before the level above it, on half the segments', () => {
+    loader.auto = true;
+    const earth2 = twoLevelEarth();
+    streamer.update('Earth', overLevel1(5, 3), measureLevels(TWO_LEVELS, { '2_1': 2, 'L1/5_3': 2 }), 0);
+    const meshes = earth2.mesh.children as THREE.Mesh[];
+    expect(meshes).toHaveLength(2);
+    const byOrder = meshes.slice().sort((a, b) => a.renderOrder - b.renderOrder);
+    expect(byOrder.map((m) => m.renderOrder)).toEqual([SECTOR_RENDER_ORDER - 1, SECTOR_RENDER_ORDER]);
+    for (const m of byOrder) {
+      const mat = m.material as THREE.MeshStandardMaterial;
+      const level = m.renderOrder === SECTOR_RENDER_ORDER ? 0 : 1;
+      expect(mat.polygonOffsetFactor).toBe(0); // never a slope term: it grows at the limb
+      expect(mat.polygonOffsetUnits).toBe(-(level + 1));
+      expect(m.geometry.getAttribute('position').count).toBe(level === 0 ? 33 * 33 : 17 * 17);
+    }
+  });
+
+  it('stats keep the level-0 ids flat and namespace the levels below, with per-level counts', () => {
+    loader.auto = true;
+    twoLevelEarth();
+    streamer.update('Earth', overLevel1(5, 3), measureLevels(TWO_LEVELS, { '2_1': 2, 'L1/5_3': 2 }), 0);
+    const body = streamer.stats().bodies.Earth;
+    expect(body.resident.slice().sort()).toEqual(['2_1', 'L1/5_3']);
+    expect(body.byLevel.map((l) => l.resident)).toEqual([1, 1]);
+    expect(body.byLevel[1].gpuBytes).toBe(0); // the fakes carry no image
+    // A single-level body still reports one level and bare ids.
+    const mars = marsWithoutRelief();
+    streamer.update('Mars', cameraOver(2, 1), measureOf({ '2_1': 2 }), 0);
+    expect(streamer.stats().bodies.Mars.resident).toEqual(['2_1']);
+    expect(streamer.stats().bodies.Mars.byLevel).toHaveLength(1);
+    expect(mars.mesh.children).toHaveLength(1);
   });
 
   it('asks the measure about each sector at its point nearest the camera, not its centre', () => {

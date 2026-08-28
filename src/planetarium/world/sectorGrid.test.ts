@@ -4,8 +4,11 @@ import {
   sectorNearestDirection,
   SECTOR_GRID_16K,
   SECTOR_TILE,
+  ancestorSector,
   applySectorTileTransform,
   dataCropLayout,
+  finerGrid,
+  parentSector,
   sectorAngularRadius,
   sectorBoundingSphere,
   sectorCentreDirection,
@@ -41,6 +44,79 @@ describe('sector uv rectangles', () => {
       area += (r.u1 - r.u0) * (r.v1 - r.v0);
     }
     expect(area).toBeCloseTo(1, 12);
+  });
+});
+
+describe('sector levels', () => {
+  it('a level doubles the grid, and a sector\'s parent is its halved coordinates', () => {
+    expect(finerGrid(G)).toEqual({ cols: 16, rows: 8 });
+    expect(finerGrid(finerGrid(G))).toEqual({ cols: 32, rows: 16 });
+    expect(parentSector({ c: 0, r: 0 })).toEqual({ c: 0, r: 0 });
+    expect(parentSector({ c: 5, r: 3 })).toEqual({ c: 2, r: 1 });
+    expect(parentSector({ c: 15, r: 7 })).toEqual({ c: 7, r: 3 });
+    expect(ancestorSector({ c: 21, r: 13 }, 0)).toEqual({ c: 21, r: 13 });
+    expect(ancestorSector({ c: 21, r: 13 }, 1)).toEqual({ c: 10, r: 6 });
+    expect(ancestorSector({ c: 21, r: 13 }, 2)).toEqual({ c: 5, r: 3 });
+  });
+
+  it('the four children of a sector tile its rectangle exactly, and none leaves it', () => {
+    const child = finerGrid(G);
+    for (const p of allSectors()) {
+      const pr = sectorUvRect(G, p);
+      let area = 0;
+      for (const s of [
+        { c: 2 * p.c, r: 2 * p.r }, { c: 2 * p.c + 1, r: 2 * p.r },
+        { c: 2 * p.c, r: 2 * p.r + 1 }, { c: 2 * p.c + 1, r: 2 * p.r + 1 },
+      ]) {
+        expect(parentSector(s)).toEqual(p);
+        const cr = sectorUvRect(child, s);
+        expect(cr.u0).toBeGreaterThanOrEqual(pr.u0 - 1e-12);
+        expect(cr.u1).toBeLessThanOrEqual(pr.u1 + 1e-12);
+        expect(cr.v0).toBeGreaterThanOrEqual(pr.v0 - 1e-12);
+        expect(cr.v1).toBeLessThanOrEqual(pr.v1 + 1e-12);
+        area += (cr.u1 - cr.u0) * (cr.v1 - cr.v0);
+      }
+      expect(area).toBeCloseTo((pr.u1 - pr.u0) * (pr.v1 - pr.v0), 12);
+    }
+  });
+
+  it('a child\'s vertices land on the same lattice as its parent\'s, at half the segments', () => {
+    // The level halves the segments as it doubles the grid: 16 per 22.5° is
+    // the same 256 × 128 sphere 32 per 45° is, so a child never fights its
+    // parent (or the globe) for depth along a chord.
+    const R = 1.7;
+    const key = (x: number, y: number, z: number) => `${x.toFixed(9)},${y.toFixed(9)},${z.toFixed(9)}`;
+    const parentSet = new Set<string>();
+    for (const s of allSectors()) {
+      const pos = sectorSphereGeometry(R, G, s, 32).getAttribute('position');
+      for (let i = 0; i < pos.count; i++) parentSet.add(key(pos.getX(i), pos.getY(i), pos.getZ(i)));
+    }
+    const child = finerGrid(G);
+    for (const s of [{ c: 0, r: 0 }, { c: 7, r: 3 }, { c: 10, r: 5 }, { c: 15, r: 7 }]) {
+      const geo = sectorSphereGeometry(R, child, s, 16);
+      const pos = geo.getAttribute('position');
+      expect(pos.count).toBe(17 * 17);
+      for (let i = 0; i < pos.count; i++) {
+        expect(parentSet.has(key(pos.getX(i), pos.getY(i), pos.getZ(i)))).toBe(true);
+      }
+    }
+  });
+
+  it('a child\'s uvs stay inside its own rectangle, which is inside its parent\'s', () => {
+    const child = finerGrid(G);
+    for (const s of [{ c: 3, r: 2 }, { c: 14, r: 6 }]) {
+      const rect = sectorUvRect(child, s);
+      const parentRect = sectorUvRect(G, parentSector(s));
+      const uv = sectorSphereGeometry(1, child, s, 16).getAttribute('uv');
+      for (let i = 0; i < uv.count; i++) {
+        expect(uv.getX(i)).toBeGreaterThanOrEqual(rect.u0 - 1e-12);
+        expect(uv.getX(i)).toBeLessThanOrEqual(rect.u1 + 1e-12);
+        expect(uv.getY(i)).toBeGreaterThanOrEqual(rect.v0 - 1e-12);
+        expect(uv.getY(i)).toBeLessThanOrEqual(rect.v1 + 1e-12);
+      }
+      expect(rect.u0).toBeGreaterThanOrEqual(parentRect.u0);
+      expect(rect.v1).toBeLessThanOrEqual(parentRect.v1);
+    }
   });
 });
 

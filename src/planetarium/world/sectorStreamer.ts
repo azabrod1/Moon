@@ -37,6 +37,15 @@
  * globe's (sectorMaterial), share its per-frame shading uniforms, and mirror
  * its scalar state every frame; they own every texture they draw.
  *
+ * A set is a PYRAMID of levels (SectorSetSpec.levels), and nothing here is
+ * written for a particular one: a slot carries its level, the level carries
+ * its grid, tile layout and source width, and every URL and UV transform
+ * comes from that. Level 0 sits on the globe, level k on level k−1 with its
+ * grid doubled; the parent of a slot is the arithmetic (⌊c/2⌋, ⌊r/2⌋), and
+ * its segments halve as the grid doubles so every level lands on the same
+ * vertex lattice. Slots exist only for the levels a spec declares, so a body
+ * that ships one level costs exactly one level's worth of work.
+ *
  * Pure apart from three's scene graph: the loader, the warm pump and the
  * screen measurement are injected, so the policy is unit-tested without a
  * renderer. PlanetariumMode owns the per-frame call and the device facts.
@@ -45,6 +54,7 @@ import * as THREE from 'three';
 import {
   SECTOR_GRID_16K,
   SECTOR_TILE,
+  ancestorSector,
   applySectorTileTransform,
   dataCropLayout,
   sectorAngularRadius,
@@ -57,7 +67,7 @@ import {
   type SectorGrid,
   type TileLayout,
 } from './sectorGrid';
-import { SECTOR_RENDER_ORDER, createSectorMaterial, syncSectorMaterial } from './sectorMaterial';
+import { createSectorMaterial, sectorRenderOrder, syncSectorMaterial } from './sectorMaterial';
 import { loadStreamedTexture, type TextureLoad } from './textureBitmapLoader';
 import { applyTextureDefaults, resolveTileUrl, type TextureTier } from './texturePolicy';
 import { TIER_RANK } from '../PlanetFactory';
@@ -79,15 +89,47 @@ export interface SectorCropSpec {
   spanU?: number;
 }
 
+/** One level of a body's tile pyramid: the colour tiles cut from one source,
+ *  on one grid, in one pixel layout. Level 0 sits on the globe; level k sits
+ *  on level k−1, its grid doubled and its sectors a quarter the size. */
+export interface SectorLevel {
+  /** Tier folder the level's colour tiles live under (texturePolicy
+   *  .resolveTileUrl) — by convention the source's width class ('16k'). */
+  tier: string;
+  grid: SectorGrid;
+  /** Pixel layout of one of this level's colour tiles. */
+  layout: TileLayout;
+  /** Width of the equirect source this level's tiles were cut from. It is
+   *  what the level BELOW measures magnification against: a level-1 tile has
+   *  something to add exactly when a level-0 texel is already magnified. */
+  sourceWidth: number;
+}
+
 export interface SectorSetSpec {
   /** Tile-set key of the colour tiles: the file stem of the globe's own
-   *  colour map (its boot file, or the tier the tiles were matched to). */
+   *  colour map (its boot file, or the tier the tiles were matched to). The
+   *  key is the same at every level; the level's tier folder separates them. */
   colorKey: string;
   /** Crops for the relief / roughness slots the base material carries. A slot
    *  the base does not currently have is not loaded; if the base gains one
-   *  later (Mars's relief arrives after boot) resident sectors reload. */
+   *  later (Mars's relief arrives after boot) resident sectors reload. Crops
+   *  belong to LEVEL 0: mesh uvs are global, so a finer sector samples its
+   *  level-0 ancestor's crop through that ancestor's own transform — the same
+   *  file, the same offset/repeat, no sub-rectangle. */
   crops: Partial<Record<CropSlot, SectorCropSpec>>;
+  /** The pyramid, coarsest first. Slots exist only for the levels declared
+   *  here, so a body with one level costs exactly what it costs today. */
+  levels: SectorLevel[];
 }
+
+/** The 16K colour level every shipped set is cut at: 8 × 4 sectors of 2048²
+ *  tiles with an 8-px gutter, from a 16256-wide equirect (8 × 2032 content). */
+export const SECTOR_LEVEL_16K: SectorLevel = {
+  tier: '16k',
+  grid: SECTOR_GRID_16K,
+  layout: SECTOR_TILE,
+  sourceWidth: SECTOR_GRID_16K.cols * (SECTOR_TILE.width - 2 * SECTOR_TILE.gutterX),
+};
 
 /** The bodies that ship a sector set, by catalog name. Colour tiles are the
  *  16K sets; every crop is the base map it names, sector-cut with the same
@@ -109,14 +151,17 @@ export const SECTOR_SETS: Record<string, SectorSetSpec> = {
       bumpMap: { key: 'earth-bump', tier: '2k', baseWidth: 2048 },
       roughnessMap: { key: 'earth-roughness.v2', tier: '4k', baseWidth: 4096 },
     },
+    levels: [SECTOR_LEVEL_16K],
   },
   Mars: {
     colorKey: 'mars.v2',
     crops: { normalMap: { key: 'mars-normal.v2', tier: '2k', baseWidth: 1440, spanU: 2 } },
+    levels: [SECTOR_LEVEL_16K],
   },
   Moon: {
     colorKey: 'moon',
     crops: { normalMap: { key: 'moon-normal', tier: '4k', baseWidth: 2880, spanU: 2 } },
+    levels: [SECTOR_LEVEL_16K],
   },
 };
 
@@ -176,7 +221,9 @@ const SECTOR_RETRY_MAX_DOUBLINGS = 4;
  *  session. The same figure as the tier ladder's attempt timeout. */
 export const SECTOR_ATTEMPT_TIMEOUT_MS = 60_000;
 
-/** Segments per 45° sector: 32 × 8 = the globe's 256-segment fine grid. */
+/** Segments per level-0 (45°) sector: 32 × 8 = the globe's 256-segment fine
+ *  grid. A level halves it as the grid doubles, so every level's vertices
+ *  land on that one lattice and no sector fights another for depth. */
 export const SECTOR_SEGMENTS = 32;
 
 /** How a sector reads on screen this frame, from the mode's projection. */
@@ -218,6 +265,13 @@ type MapName = 'map' | CropSlot;
 
 interface SectorSlot {
   sector: Sector;
+  /** Which level of the body's pyramid this slot belongs to (0 = coarsest). */
+  level: number;
+  /** The slot one level up that contains this one, and the four this one
+   *  contains — resolved once at registration, so the pyramid rules cost a
+   *  pointer walk rather than a lookup. */
+  parent?: SectorSlot;
+  children: SectorSlot[];
   centreDir: THREE.Vector3;
   angularRadius: number;
   bsCentre: THREE.Vector3;
@@ -260,6 +314,7 @@ interface SectorLoad {
 interface SectorBody {
   handle: SectorBodyHandle;
   slots: SectorSlot[];
+  levels: SectorLevel[];
   /** Diagnostic: the largest texel magnification measured this frame. */
   maxTexelPx: number;
 }
@@ -268,7 +323,6 @@ export interface SectorStreamerOptions {
   touch: boolean;
   load?: TextureLoad;
   warm?: (tex: THREE.Texture, onOutcome: (o: WarmOutcome) => void) => void;
-  grid?: SectorGrid;
 }
 
 export interface SectorStats {
@@ -292,7 +346,17 @@ export interface SectorStats {
      *  (0 while nothing faces the camera or the body is gated off). */
     maxTexelPx: number;
     gpuBytes: number;
+    /** The same counts split by pyramid level, coarsest first. */
+    byLevel: Array<{ resident: number; loading: number; gpuBytes: number }>;
   }>;
+}
+
+/** A slot's id in the stats: bare `c_r` at level 0 — the ids every probe
+ *  script already reads — and namespaced `L1/c_r` below it, so no two levels
+ *  of the same body can collide in one flat list. */
+function slotId(slot: SectorSlot): string {
+  const cell = `${slot.sector.c}_${slot.sector.r}`;
+  return slot.level === 0 ? cell : `L${slot.level}/${cell}`;
 }
 
 /** Estimated GPU bytes of a texture: RGBA8 at its image size, plus mips.
@@ -370,7 +434,6 @@ function releaseBitmap(tex: THREE.Texture): void {
 
 export class SectorStreamer {
   private readonly bodies = new Map<string, SectorBody>();
-  private readonly grid: SectorGrid;
   private readonly load: TextureLoad;
   private readonly warm: (tex: THREE.Texture, onOutcome: (o: WarmOutcome) => void) => void;
   private readonly residentCap: number;
@@ -385,7 +448,6 @@ export class SectorStreamer {
   private readonly sunPointScratch = new THREE.Vector3();
 
   constructor(opts: SectorStreamerOptions) {
-    this.grid = opts.grid ?? SECTOR_GRID_16K;
     this.load = opts.load ?? loadStreamedTexture;
     this.warm = opts.warm ?? queueTextureWarm;
     this.residentCap = opts.touch ? SECTOR_RESIDENT_CAP_TOUCH : SECTOR_RESIDENT_CAP_DESKTOP;
@@ -396,31 +458,49 @@ export class SectorStreamer {
 
   register(handle: SectorBodyHandle): void {
     this.unregister(handle.name);
+    const levels = handle.spec.levels;
     const slots: SectorSlot[] = [];
-    for (let r = 0; r < this.grid.rows; r++) {
-      for (let c = 0; c < this.grid.cols; c++) {
-        const sector = { c, r };
-        const bsCentre = new THREE.Vector3();
-        const bs = sectorBoundingSphere(this.grid, sector, handle.radiusAU, bsCentre);
-        slots.push({
-          sector,
-          centreDir: sectorCentreDirection(this.grid, sector, new THREE.Vector3()),
-          angularRadius: sectorAngularRadius(this.grid, sector),
-          bsCentre,
-          bsRadius: bs.radius,
-          state: 'idle',
-          gen: 0,
-          score: 0,
-          keep: false,
-          wanted: false,
-          signature: '',
-          maps: {},
-          failStreak: 0,
-          retryAtMs: 0,
-        });
+    // Coarsest level first, so the per-frame pass measures a parent before
+    // the children whose visit it gates.
+    const byKey = new Map<string, SectorSlot>();
+    for (let level = 0; level < levels.length; level++) {
+      const grid = levels[level].grid;
+      for (let r = 0; r < grid.rows; r++) {
+        for (let c = 0; c < grid.cols; c++) {
+          const sector = { c, r };
+          const bsCentre = new THREE.Vector3();
+          const bs = sectorBoundingSphere(grid, sector, handle.radiusAU, bsCentre);
+          const slot: SectorSlot = {
+            sector,
+            level,
+            children: [],
+            centreDir: sectorCentreDirection(grid, sector, new THREE.Vector3()),
+            angularRadius: sectorAngularRadius(grid, sector),
+            bsCentre,
+            bsRadius: bs.radius,
+            state: 'idle',
+            gen: 0,
+            score: 0,
+            keep: false,
+            wanted: false,
+            signature: '',
+            maps: {},
+            failStreak: 0,
+            retryAtMs: 0,
+          };
+          if (level > 0) {
+            const parent = byKey.get(`${level - 1}:${c >> 1}:${r >> 1}`);
+            if (parent) {
+              slot.parent = parent;
+              parent.children.push(slot);
+            }
+          }
+          byKey.set(`${level}:${c}:${r}`, slot);
+          slots.push(slot);
+        }
       }
     }
-    this.bodies.set(handle.name, { handle, slots, maxTexelPx: 0 });
+    this.bodies.set(handle.name, { handle, slots, levels, maxTexelPx: 0 });
   }
 
   unregister(name: string): void {
@@ -479,17 +559,18 @@ export class SectorStreamer {
       let texelPx = 0;
       let score = 0;
       let fetchable = false;
+      const grid = body.levels[slot.level].grid;
       if (sectorMayFaceCamera(slot.centreDir, slot.angularRadius, this.camScratch, handle.radiusAU)) {
         // Measured where the sector is most magnified — its point nearest the
         // sub-camera point — not at its centre, which a camera over a
         // neighbouring sector sees foreshortened.
-        sectorNearestDirection(this.grid, slot.sector, this.camDirScratch, this.pointScratch);
+        sectorNearestDirection(grid, slot.sector, this.camDirScratch, this.pointScratch);
         const m = measure(slot.bsCentre, slot.bsRadius, this.pointScratch);
         if (m) {
           texelPx = m.pxPerLocalUnit * texelLen;
           if (texelPx > body.maxTexelPx) body.maxTexelPx = texelPx;
           const night = sunLocal !== null
-            && sectorNearestDirection(this.grid, slot.sector, sunLocal, this.sunPointScratch).dot(sunLocal) < SECTOR_NIGHT_DOT;
+            && sectorNearestDirection(grid, slot.sector, sunLocal, this.sunPointScratch).dot(sunLocal) < SECTOR_NIGHT_DOT;
           fetchable = !m.offscreen && !night;
           if (fetchable) score = texelPx * (0.5 + 0.5 * Math.max(0, Math.min(1, m.centrality)));
         }
@@ -565,21 +646,30 @@ export class SectorStreamer {
       const resident: string[] = [];
       const loading: string[] = [];
       const reloading: string[] = [];
+      const byLevel = body.levels.map(() => ({ resident: 0, loading: 0, gpuBytes: 0 }));
       let gpuBytes = 0;
       for (const s of body.slots) {
-        const id = `${s.sector.c}_${s.sector.r}`;
+        const id = slotId(s);
+        const level = byLevel[s.level];
         if (s.state === 'resident') {
           resident.push(id);
+          level.resident += 1;
           if (s.loading) reloading.push(id);
-        } else if (s.state === 'loading') loading.push(id);
-        for (const tex of Object.values(s.maps)) gpuBytes += textureGpuBytes(tex);
-        for (const tex of s.loading?.owned ?? []) gpuBytes += textureGpuBytes(tex);
+        } else if (s.state === 'loading') {
+          loading.push(id);
+          level.loading += 1;
+        }
+        let slotBytes = 0;
+        for (const tex of Object.values(s.maps)) slotBytes += textureGpuBytes(tex);
+        for (const tex of s.loading?.owned ?? []) slotBytes += textureGpuBytes(tex);
+        level.gpuBytes += slotBytes;
+        gpuBytes += slotBytes;
       }
       out.resident += resident.length;
       out.loading += loading.length;
       out.inflight += loading.length + reloading.length;
       out.gpuBytes += gpuBytes;
-      out.bodies[name] = { resident, loading, reloading, maxTexelPx: body.maxTexelPx, gpuBytes };
+      out.bodies[name] = { resident, loading, reloading, maxTexelPx: body.maxTexelPx, gpuBytes, byLevel };
     }
     return out;
   }
@@ -627,12 +717,22 @@ export class SectorStreamer {
     slot.gen = gen;
     const stillWanted = () => slot.gen === gen;
 
-    const maps: Array<{ name: MapName; url: string; kind: 'color' | 'data'; layout: TileLayout }> = [
+    // Every map carries the (grid, sector, layout) triple its own image was
+    // cut on. The colour tile is this slot's level; the crops are level 0's,
+    // sampled at the slot's level-0 ANCESTOR through that ancestor's own
+    // transform — mesh uvs are global, so the transform depends on the image,
+    // not on which mesh reads it, and a finer sector needs no crop of its own.
+    const level = body.levels[slot.level];
+    const base = body.levels[0];
+    const baseSector = ancestorSector(slot.sector, slot.level);
+    const maps: Array<{ name: MapName; url: string; kind: 'color' | 'data'; grid: SectorGrid; sector: Sector; layout: TileLayout }> = [
       {
         name: 'map',
-        url: resolveTileUrl(handle.spec.colorKey, '16k', slot.sector.c, slot.sector.r),
+        url: resolveTileUrl(handle.spec.colorKey, level.tier, slot.sector.c, slot.sector.r),
         kind: 'color',
-        layout: SECTOR_TILE,
+        grid: level.grid,
+        sector: slot.sector,
+        layout: level.layout,
       },
     ];
     for (const cropSlot of ['bumpMap', 'normalMap', 'roughnessMap'] as const) {
@@ -640,9 +740,11 @@ export class SectorStreamer {
       if (!crop || !realMapIn(handle.material, cropSlot)) continue;
       maps.push({
         name: cropSlot,
-        url: resolveTileUrl(crop.key, crop.tier, slot.sector.c, slot.sector.r),
+        url: resolveTileUrl(crop.key, crop.tier, baseSector.c, baseSector.r),
         kind: 'data',
-        layout: dataCropLayout(this.grid, crop.baseWidth, crop.spanU ?? 1),
+        grid: base.grid,
+        sector: baseSector,
+        layout: dataCropLayout(base.grid, crop.baseWidth, crop.spanU ?? 1),
       });
     }
     const loading: SectorLoad = {
@@ -676,7 +778,7 @@ export class SectorStreamer {
             return;
           }
           applyTextureDefaults(tex, m.kind);
-          applySectorTileTransform(tex, this.grid, slot.sector, m.layout);
+          applySectorTileTransform(tex, m.grid, m.sector, m.layout);
           tex.userData.gpuBytes = textureGpuBytes(tex);
           loading.owned.push(tex); // owned from here: a release disposes it even mid-queue
           this.warm(tex, (outcome) => {
@@ -732,16 +834,18 @@ export class SectorStreamer {
     const loaded = loading.loaded;
     // A reload's geometry is the outgoing mesh's: same sector, same globe.
     const previousMesh = slot.mesh;
-    const geometry = previousMesh?.geometry ?? sectorSphereGeometry(handle.radiusAU, this.grid, slot.sector, SECTOR_SEGMENTS);
+    const geometry = previousMesh?.geometry ?? sectorSphereGeometry(
+      handle.radiusAU, body.levels[slot.level].grid, slot.sector, SECTOR_SEGMENTS >> slot.level,
+    );
     const material = createSectorMaterial(handle.material, {
       map,
       bumpMap: loaded.bumpMap ?? null,
       normalMap: loaded.normalMap ?? null,
       roughnessMap: loaded.roughnessMap ?? null,
-    });
+    }, slot.level);
     const mesh = new THREE.Mesh(geometry, material);
-    mesh.name = `${handle.name} sector ${slot.sector.c}_${slot.sector.r}`;
-    mesh.renderOrder = SECTOR_RENDER_ORDER;
+    mesh.name = `${handle.name} sector ${slotId(slot)}`;
+    mesh.renderOrder = sectorRenderOrder(slot.level);
     handle.mesh.add(mesh);
     const previousMaps = slot.maps;
     slot.mesh = mesh;

@@ -208,6 +208,15 @@ export interface AtmosphereConfig {
 // Sun's physical radius in AU — for solar angular radius (penumbra width) at a planet.
 const SUN_RADIUS_AU = 695_700 / 149_597_870.7;
 
+/** The Sun's point light, as the scene actually lights bodies. The decay is
+ *  0.3, not the physical 2: at inverse-square the outer planets would be
+ *  unreadable, so the falloff is authored. Exported because anything that has
+ *  to agree photometrically with the lit ground — a scattering table baked at
+ *  unit irradiance, say — must use THIS law rather than a physical one, and a
+ *  test holds the two together. */
+export const SUN_LIGHT_INTENSITY = 3;
+export const SUN_LIGHT_DECAY = 0.3;
+
 // Exported so the volume-compare mode's ghost shell reads the same tuning —
 // a hand-kept copy would drift the moment these numbers get touched.
 export const ATMOSPHERES: Record<string, AtmosphereConfig> = {
@@ -1806,7 +1815,7 @@ export function createPlanetariumSun(useBloom = true): THREE.Group {
   lensGhosts.frustumCulled = false;
   group.add(lensGhosts);
 
-  const light = new THREE.PointLight(0xfff5e0, 3, 0, 0.3);
+  const light = new THREE.PointLight(0xfff5e0, SUN_LIGHT_INTENSITY, 0, SUN_LIGHT_DECAY);
   group.add(light);
 
   group.userData.sunMaterial = sunMat;

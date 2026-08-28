@@ -27,7 +27,7 @@ import { createHash } from 'node:crypto';
 import { closeSync, openSync, readSync, readFileSync, readdirSync, existsSync, statSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { SECTOR_GRID_16K, SECTOR_TILE, dataCropLayout, type SectorGrid } from './sectorGrid';
-import { SECTOR_SETS, levelSourceWidth, type SectorTileSet } from './sectorStreamer';
+import { SECTOR_NIGHT_SETS, SECTOR_SETS, levelSourceWidth, type SectorSetSpec, type SectorSide, type SectorTileSet } from './sectorStreamer';
 import { SECTOR_SET_TABLE, type GeneratedSectorSet } from './sectorSets.generated';
 import { PLANET_TEXTURE_FILES } from '../PlanetFactory';
 
@@ -39,6 +39,19 @@ const TILES_ROOT = process.env.TILES_ROOT
   ? resolve(process.env.TILES_ROOT)
   : resolve(TEXTURES, 'tiles');
 const SETS_JSON = resolve(TILES_ROOT, 'sets.v1.json');
+
+/** A WebP container's first chunk: `VP8 ` lossy, `VP8L` lossless, `VP8X`
+ *  extended — and only the extended form can carry an alpha channel. */
+function webpChunk(file: string): string {
+  const b = Buffer.alloc(16);
+  const fd = openSync(file, 'r');
+  try {
+    readSync(fd, b, 0, b.length, 0);
+  } finally {
+    closeSync(fd);
+  }
+  return b.toString('ascii', 12, 16);
+}
 
 /** Canvas size from a WebP container: VP8 (lossy), VP8L (lossless) or VP8X
  *  (extended) first chunk. */
@@ -73,6 +86,8 @@ function webpSize(file: string): { width: number; height: number } {
 interface AppSet {
   body: string;
   slot: string;
+  /** Which of the body's lighting families this set belongs to. */
+  side: SectorSide;
   set: SectorTileSet;
   entry: GeneratedSectorSet;
   /** The grid the app will sample this set on. */
@@ -82,14 +97,26 @@ interface AppSet {
   level: number | null;
 }
 
+/** Every (body, side, spec) the app names — the day pyramids on the globes and
+ *  the night pyramids on the night shells. */
+function appSpecs(): Array<[string, SectorSide, SectorSetSpec]> {
+  return [
+    ...Object.entries(SECTOR_SETS).map(([body, spec]) => [body, 'day', spec] as [string, SectorSide, SectorSetSpec]),
+    ...Object.entries(SECTOR_NIGHT_SETS).map(([body, spec]) => [body, 'night', spec] as [string, SectorSide, SectorSetSpec]),
+  ];
+}
+
 /** Why a set the app names may legitimately have no folder under the tiles
  *  root being read — and nothing else may. A finer colour level is hundreds
  *  of megabytes published from the tile host; a root named by TILES_ROOT is
- *  being checked instead of the app's own. A level-0 set or a crop ships
- *  inside the app, so its absence is a 404'd quarter of a globe, not a
- *  configuration. */
-export function absenceAllowed(set: Pick<AppSet, 'level'>): string | null {
+ *  being checked instead of the app's own. The night family is the host's at
+ *  every level: it sharpens a night map the app already ships, so a device
+ *  that gets none of it draws exactly what it draws today. A DAY level-0 set
+ *  or a crop ships inside the app, so its absence is a 404'd quarter of a
+ *  globe, not a configuration. */
+export function absenceAllowed(set: Pick<AppSet, 'level' | 'side'>): string | null {
   if (process.env.TILES_ROOT) return `TILES_ROOT points at ${process.env.TILES_ROOT}, not the app's own tiles`;
+  if (set.side === 'night') return 'the night family is published from the tile host at every level';
   if (set.level !== null && set.level > 0) return `level ${set.level} is published from the tile host, not from public/`;
   return null;
 }
@@ -100,16 +127,16 @@ export function absenceAllowed(set: Pick<AppSet, 'level'>): string | null {
  *  has to fail here rather than 404 a quarter of a globe into softness. */
 function appSets(): AppSet[] {
   const out: AppSet[] = [];
-  for (const [body, spec] of Object.entries(SECTOR_SETS)) {
+  for (const [body, side, spec] of appSpecs()) {
     const named: Array<[string, SectorTileSet, SectorGrid, number | null]> = spec.levels.map(
-      (l, level) => [`map L${level}`, l.set, l.grid, level],
+      (l, level) => [`${side} map L${level}`, l.set, l.grid, level],
     );
     // Crops are cut for level 0 and sampled there by every level above it.
-    for (const [slot, crop] of Object.entries(spec.crops)) named.push([slot, crop, SECTOR_GRID_16K, null]);
+    for (const [slot, crop] of Object.entries(spec.crops)) named.push([`${side} ${slot}`, crop, SECTOR_GRID_16K, null]);
     for (const [slot, set, grid, level] of named) {
       const entry = SECTOR_SET_TABLE[`${set.key}/${set.tier}`];
       expect(entry, `${body} ${slot}: no generated entry for ${set.key}/${set.tier}`).toBeDefined();
-      out.push({ body, slot, set, entry, grid, level });
+      out.push({ body, slot, side, set, entry, grid, level });
     }
   }
   return out;
@@ -176,15 +203,16 @@ describe('sector tile sets: what the app asks for', () => {
     // that derivation meets the width gen-tiles measured on the files: a
     // level pointed at a set cut at another size would otherwise ask for
     // tiles at a magnification that set cannot repay.
-    for (const [body, spec] of Object.entries(SECTOR_SETS)) {
+    for (const [body, side, spec] of appSpecs()) {
       for (const [level, l] of spec.levels.entries()) {
+        const what = `${body} ${side} L${level}`;
         const entry = SECTOR_SET_TABLE[`${l.set.key}/${l.set.tier}`];
-        expect({ width: entry.tileWidth, height: entry.tileHeight }, `${body} L${level}`).toEqual({
+        expect({ width: entry.tileWidth, height: entry.tileHeight }, what).toEqual({
           width: l.layout.width,
           height: l.layout.height,
         });
-        expect(entry.spanU, `${body} L${level}`).toBe(l.layout.spanU);
-        expect(entry.baseWidth, `${body} L${level}`).toBe(levelSourceWidth(l));
+        expect(entry.spanU, what).toBe(l.layout.spanU);
+        expect(entry.baseWidth, what).toBe(levelSourceWidth(l));
       }
     }
   });
@@ -195,7 +223,7 @@ describe('sector tile sets: what the app asks for', () => {
     // The runtime reads spanU from the generated table, so a re-cut at the
     // wrong span would agree with itself everywhere — this is the one place
     // the span is stated rather than measured.
-    for (const [body, spec] of Object.entries(SECTOR_SETS)) {
+    for (const [body, , spec] of appSpecs()) {
       for (const [slot, crop] of Object.entries(spec.crops)) {
         const want = slot === 'normalMap' ? 2 : 1;
         expect(crop.spanU, `${body} ${slot}`).toBe(want);
@@ -208,7 +236,7 @@ describe('sector tile sets: what the app asks for', () => {
     // The app builds its crop layout from the width and span in the table;
     // this is the check that the arithmetic reproduces the tile size gen-tiles
     // actually measured on disk.
-    for (const [body, spec] of Object.entries(SECTOR_SETS)) {
+    for (const [body, , spec] of appSpecs()) {
       for (const [slot, crop] of Object.entries(spec.crops)) {
         const entry = SECTOR_SET_TABLE[`${crop.key}/${crop.tier}`];
         const layout = dataCropLayout(SECTOR_GRID_16K, crop.baseWidth, crop.spanU);
@@ -226,6 +254,7 @@ describe('sector tile sets: what the app asks for', () => {
     // another.
     const stem = (file: string) => file.replace(/^.*\//, '').replace(/\.webp$/, '');
     expect(SECTOR_SETS.Earth.levels[0].set.key).toBe(stem(PLANET_TEXTURE_FILES.earthDay));
+    expect(SECTOR_NIGHT_SETS.Earth.levels[0].set.key).toBe(stem(PLANET_TEXTURE_FILES.earthNight));
     expect(SECTOR_SETS.Mars.levels[0].set.key).toBe(stem(PLANET_TEXTURE_FILES.mars));
     expect(SECTOR_SETS.Moon.levels[0].set.key).toBe(stem(PLANET_TEXTURE_FILES.moon));
     expect(SECTOR_SETS.Earth.crops.bumpMap!.key).toBe(stem(PLANET_TEXTURE_FILES.earthBump));
@@ -235,13 +264,26 @@ describe('sector tile sets: what the app asks for', () => {
     // Every level of one body is a cut of that same map, so they share its
     // stem and are told apart by their tier — which is what makes `<key>/
     // <tier>` a name for one level rather than for a whole pyramid.
-    for (const [body, spec] of Object.entries(SECTOR_SETS)) {
+    for (const [body, , spec] of appSpecs()) {
       const tiers = new Set<string>();
       for (const l of spec.levels) {
         expect(l.set.key, `${body} level keys`).toBe(spec.levels[0].set.key);
         expect(tiers.has(l.set.tier), `${body}: two levels in tier ${l.set.tier}`).toBe(false);
         tiers.add(l.set.tier);
       }
+    }
+  });
+
+  it('the night maps carry no alpha channel', () => {
+    // The night shader multiplies the map's alpha into its additive output, so
+    // a shell drawing a 3-channel map (alpha 1) and a sector drawing a
+    // 4-channel tile would be two brightnesses over the same ground. Both are
+    // plain `VP8 ` today, which cannot carry alpha at all; this is what keeps
+    // a re-cut from quietly changing that.
+    for (const map of ['earth-night.v2.webp', '4k/earth-night.v2.webp']) {
+      const file = resolve(TEXTURES, map);
+      expect(existsSync(file), `${map} missing on disk`).toBe(true);
+      expect(webpChunk(file), map).toBe('VP8 ');
     }
   });
 
@@ -257,8 +299,8 @@ describe('sector tile sets: what the app asks for', () => {
       'mars-normal.v2': { file: PLANET_TEXTURE_FILES.marsNormal, shippedScale: 1 },
       'moon-normal': { file: `4k/${PLANET_TEXTURE_FILES.moonNormal}`, shippedScale: 1 },
     };
-    for (const set of Object.values(SECTOR_SETS)) {
-      for (const crop of Object.values(set.crops)) {
+    for (const [, , spec] of appSpecs()) {
+      for (const crop of Object.values(spec.crops)) {
         const base = baseFiles[crop.key];
         expect(base, `no base map known for crop set ${crop.key}`).toBeDefined();
         const path = resolve(TEXTURES, base.file);
@@ -278,13 +320,16 @@ describe('sector tile sets: the files on disk', () => {
     // It must never be able to excuse a set that ships inside the app: a
     // missing level-0 folder or crop is a quarter of a globe served as 404s,
     // which the streamer survives by staying soft and saying nothing.
-    expect(absenceAllowed({ level: 0 })).toBeNull();
-    expect(absenceAllowed({ level: null })).toBeNull();
-    expect(absenceAllowed({ level: 1 })).toContain('tile host');
     const before = process.env.TILES_ROOT;
     try {
+      // The rule as CI sees it, whichever root this run was pointed at.
+      delete process.env.TILES_ROOT;
+      expect(absenceAllowed({ level: 0, side: 'day' })).toBeNull();
+      expect(absenceAllowed({ level: null, side: 'day' })).toBeNull();
+      expect(absenceAllowed({ level: 1, side: 'day' })).toContain('tile host');
+      expect(absenceAllowed({ level: 0, side: 'night' })).toContain('tile host');
       process.env.TILES_ROOT = '/somewhere/else';
-      expect(absenceAllowed({ level: 0 })).toContain('/somewhere/else');
+      expect(absenceAllowed({ level: 0, side: 'day' })).toContain('/somewhere/else');
     } finally {
       if (before === undefined) delete process.env.TILES_ROOT;
       else process.env.TILES_ROOT = before;
@@ -323,6 +368,17 @@ describe('sector tile sets: the files on disk', () => {
       expect(entry, `${id} in sets.v1.json`).toEqual(SECTOR_SET_TABLE[id]);
     }
     expect(new Set(Object.keys(published))).toEqual(new Set(setsOnDisk()));
+  });
+
+  it('night tiles carry no alpha channel either', () => {
+    // The other half of the shell-and-sector agreement above: both sides of
+    // the night lights have to reach the shader with the same alpha.
+    for (const { body, slot, set } of setsOnDiskForApp().present) {
+      if (set.key !== 'earth-night.v2') continue;
+      for (const f of readdirSync(setDir(set)).filter((n) => n.endsWith('.webp'))) {
+        expect(webpChunk(resolve(setDir(set), f)), `${body} ${slot} ${f}`).toBe('VP8 ');
+      }
+    }
   });
 
   it('every set folder is named for the bytes inside it', () => {

@@ -285,7 +285,17 @@ export const SECTOR_SETS: Record<string, SectorSetSpec> = {
  *  the way the sets above are streamed onto the globe. No crops — relief and
  *  gloss are daylight terms, and the night material has no slot for them — so
  *  a night sector costs its colour tile and nothing else. */
-export const SECTOR_NIGHT_SETS: Record<string, SectorSetSpec> = {};
+export const SECTOR_NIGHT_SETS: Record<string, SectorSetSpec> = {
+  // NASA Black Marble 2016 at 500 m, the same eight-tile product the day
+  // levels come from and the same two levels, so a night sector sharpens
+  // exactly where a day one does. The shipped night map is 4K — 10 km per
+  // pixel — which from the near band is a smear where a lit coastline should
+  // be; these are 1.2 km and 600 m.
+  Earth: {
+    crops: {},
+    levels: [sectorLevel16k('earth-night.v2'), sectorLevel32k('earth-night.v2')],
+  },
+};
 
 /** A sector is wanted once one texel of the map BELOW it spans this many
  *  DEVICE pixels at the sector's nearest point — that map is then visibly

@@ -1,6 +1,6 @@
 /**
  * GENERATED — written by `node tools/gen-tiles.mjs` from the tile sets on
- * disk (and mirrored in public/textures/tiles/sets.v1.json). Never edit by hand.
+ * disk (and mirrored in that tiles root's sets.v1.json). Never edit by hand.
  *
  * A sector tile set is published under a folder named for its own contents,
  * tiles/<key>/<tier>.<setHash8>/, and this table is where the app reads that
@@ -61,6 +61,20 @@ export const SECTOR_SET_TABLE: Record<string, GeneratedSectorSet> = /* table:beg
     "baseWidth": 16256,
     "spanU": 1,
     "fileCount": 32
+  },
+  "earth-day.v2/32k": {
+    "setHash8": "f4174afc",
+    "grid": {
+      "cols": 16,
+      "rows": 8
+    },
+    "content": 2032,
+    "gutter": 8,
+    "tileWidth": 2048,
+    "tileHeight": 2048,
+    "baseWidth": 32512,
+    "spanU": 1,
+    "fileCount": 128
   },
   "earth-roughness.v2/4k": {
     "setHash8": "a10813ad",

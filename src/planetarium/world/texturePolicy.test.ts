@@ -65,10 +65,10 @@ describe('resolveTileUrl', () => {
     // read after that import so nothing could turn streaming off first. An
     // empty hash 404s instead, which the body survives by keeping its base
     // map. sectorTiles.assets.test.ts is what keeps the shipped sets named.
-    expect(sectorSetHash('earth-day.v2', '32k')).toBe('');
-    expect(sectorSetLayout('earth-day.v2', '32k')).toEqual({ baseWidth: 0, spanU: 1 });
-    expect(resolveTileUrl('earth-day.v2', '32k', sectorSetHash('earth-day.v2', '32k'), 0, 0))
-      .toContain('textures/tiles/earth-day.v2/32k./0_0.webp');
+    expect(sectorSetHash('earth-day.v2', '64k')).toBe('');
+    expect(sectorSetLayout('earth-day.v2', '64k')).toEqual({ baseWidth: 0, spanU: 1 });
+    expect(resolveTileUrl('earth-day.v2', '64k', sectorSetHash('earth-day.v2', '64k'), 0, 0))
+      .toContain('textures/tiles/earth-day.v2/64k./0_0.webp');
   });
 });
 

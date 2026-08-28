@@ -112,14 +112,9 @@ function measureOf(sizes: Record<string, number>, centrality = 1) {
   return measureLevels([LEVEL_0], sizes, centrality);
 }
 
-/** No level-1 tiles ship yet, so the pyramid is exercised on a synthetic
- *  second level: the 16×8 grid of 2048² tiles cut from a 32512-wide source
- *  that Earth's level 1 will be. */
-const LEVEL_1: SectorLevel = {
-  set: tileSet('earth-day.v2', '32k'),
-  grid: finerGrid(SECTOR_GRID_16K),
-  layout: SECTOR_TILE,
-};
+/** Earth's shipped level 1: the 16×8 grid of 2048² tiles cut from a
+ *  32512-wide source. The pyramid is exercised on the real thing. */
+const LEVEL_1: SectorLevel = SECTOR_SETS.Earth.levels[1];
 const TWO_LEVELS = [LEVEL_0, LEVEL_1];
 /** The step between the two levels: a level-1 sector's demand is read against
  *  level 0's source, which is this many times finer than the globe's own map,
@@ -892,11 +887,10 @@ describe('SectorStreamer', () => {
       .toEqual(['2_1', 'L1/4_2', 'L1/4_3', 'L1/5_2', 'L1/5_3']);
     const urls = loader.requests.map((r) => r.url);
     expect(urls).toContainEqual(expect.stringMatching(/tiles\/earth-day\.v2\/16k\.[0-9a-f]{8}\/2_1\.webp$/));
-    // Each level names its own set, so each carries its own hash — and this
-    // second level ships nowhere yet, so its is the empty one an unpublished
-    // set fails open to.
+    // Each level names its own set, so each carries its own hash: a child's
+    // URL cannot resolve through its parent's.
     for (const c of ['4_2', '5_2', '4_3', '5_3']) {
-      expect(urls).toContainEqual(expect.stringMatching(new RegExp(`tiles/earth-day\\.v2/32k\\./${c}\\.webp$`)));
+      expect(urls).toContainEqual(expect.stringMatching(new RegExp(`tiles/earth-day\\.v2/32k\\.[0-9a-f]{8}/${c}\\.webp$`)));
     }
     // The parent's crop tile, once per sector that draws it: the parent and
     // its four children.

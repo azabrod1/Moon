@@ -85,6 +85,7 @@ import {
   ancestorSector,
   applySectorTileTransform,
   dataCropLayout,
+  finerGrid,
   sectorAngularRadius,
   sectorBoundingSphere,
   sectorCentreDirection,
@@ -212,6 +213,14 @@ export function sectorLevel16k(key: string): SectorLevel {
   return { set: tileSet(key, '16k'), grid: SECTOR_GRID_16K, layout: SECTOR_TILE };
 }
 
+/** A key's 32K colour level: the same 2048² tiles with the same 8-px gutter,
+ *  on the doubled grid — 16 × 8 sectors of a 32512-wide equirect, a quarter of
+ *  the ground per tile at twice the texels across it. The tier names the
+ *  source width class, so a level is told from its siblings by tier alone. */
+export function sectorLevel32k(key: string): SectorLevel {
+  return { set: tileSet(key, '32k'), grid: finerGrid(SECTOR_GRID_16K), layout: SECTOR_TILE };
+}
+
 /** The bodies that ship a sector set, by catalog name. Colour tiles are the
  *  16K sets; every crop is the base map it names, sector-cut with the same
  *  gutter (tools/gen-tiles.mjs writes both).
@@ -230,7 +239,9 @@ export const SECTOR_SETS: Record<string, SectorSetSpec> = {
       bumpMap: tileSet('earth-bump', '2k'),
       roughnessMap: tileSet('earth-roughness.v2', '4k'),
     },
-    levels: [sectorLevel16k('earth-day.v2')],
+    // Level 1 is the same NASA product at 500 m (the eight 21600² Blue Marble
+    // tiles), so the child under a parent is a sharpen, not another world.
+    levels: [sectorLevel16k('earth-day.v2'), sectorLevel32k('earth-day.v2')],
   },
   Mars: {
     crops: { normalMap: tileSet('mars-normal.v2', '2k') },

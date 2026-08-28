@@ -14,10 +14,17 @@
  * recomputing each set's hash from its bytes — and is the half that belongs
  * to gen-tiles once the sets are published from their own repository rather
  * than from public/. Reads only WebP headers — no decode.
+ *
+ * That second half runs against ONE tiles root: public/textures/tiles, or
+ * whatever `TILES_ROOT` names (a staging root holding the levels that are too
+ * big to ship inside the app). A set the root does not hold is skipped only
+ * for a reason `absenceAllowed` will state — never for a level-0 set or a
+ * crop, which ship in the app and whose absence is exactly the bug this
+ * suite exists to catch.
  */
 import { describe, it, expect } from 'vitest';
 import { createHash } from 'node:crypto';
-import { closeSync, openSync, readSync, readFileSync, readdirSync, existsSync } from 'node:fs';
+import { closeSync, openSync, readSync, readFileSync, readdirSync, existsSync, statSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { SECTOR_GRID_16K, SECTOR_TILE, dataCropLayout, type SectorGrid } from './sectorGrid';
 import { SECTOR_SETS, levelSourceWidth, type SectorTileSet } from './sectorStreamer';
@@ -25,7 +32,13 @@ import { SECTOR_SET_TABLE, type GeneratedSectorSet } from './sectorSets.generate
 import { PLANET_TEXTURE_FILES } from '../PlanetFactory';
 
 const TEXTURES = resolve(__dirname, '../../../public/textures');
-const SETS_JSON = resolve(TEXTURES, 'tiles/sets.v1.json');
+/** The tiles root this run reads. A finer level is gigabytes and is published
+ *  from the tile host rather than from public/, so a developer checking a
+ *  staging root points this at it; CI has only the app's own. */
+const TILES_ROOT = process.env.TILES_ROOT
+  ? resolve(process.env.TILES_ROOT)
+  : resolve(TEXTURES, 'tiles');
+const SETS_JSON = resolve(TILES_ROOT, 'sets.v1.json');
 
 /** Canvas size from a WebP container: VP8 (lossy), VP8L (lossless) or VP8X
  *  (extended) first chunk. */
@@ -64,6 +77,21 @@ interface AppSet {
   entry: GeneratedSectorSet;
   /** The grid the app will sample this set on. */
   grid: SectorGrid;
+  /** Which level of the body's colour pyramid this is; null for a crop, which
+   *  belongs to level 0 whatever samples it. */
+  level: number | null;
+}
+
+/** Why a set the app names may legitimately have no folder under the tiles
+ *  root being read — and nothing else may. A finer colour level is hundreds
+ *  of megabytes published from the tile host; a root named by TILES_ROOT is
+ *  being checked instead of the app's own. A level-0 set or a crop ships
+ *  inside the app, so its absence is a 404'd quarter of a globe, not a
+ *  configuration. */
+export function absenceAllowed(set: Pick<AppSet, 'level'>): string | null {
+  if (process.env.TILES_ROOT) return `TILES_ROOT points at ${process.env.TILES_ROOT}, not the app's own tiles`;
+  if (set.level !== null && set.level > 0) return `level ${set.level} is published from the tile host, not from public/`;
+  return null;
 }
 
 /** Every set the app names, with the table entry it resolves to. Every LEVEL
@@ -73,22 +101,52 @@ interface AppSet {
 function appSets(): AppSet[] {
   const out: AppSet[] = [];
   for (const [body, spec] of Object.entries(SECTOR_SETS)) {
-    const named: Array<[string, SectorTileSet, SectorGrid]> = spec.levels.map(
-      (l, level) => [`map L${level}`, l.set, l.grid],
+    const named: Array<[string, SectorTileSet, SectorGrid, number | null]> = spec.levels.map(
+      (l, level) => [`map L${level}`, l.set, l.grid, level],
     );
     // Crops are cut for level 0 and sampled there by every level above it.
-    for (const [slot, crop] of Object.entries(spec.crops)) named.push([slot, crop, SECTOR_GRID_16K]);
-    for (const [slot, set, grid] of named) {
+    for (const [slot, crop] of Object.entries(spec.crops)) named.push([slot, crop, SECTOR_GRID_16K, null]);
+    for (const [slot, set, grid, level] of named) {
       const entry = SECTOR_SET_TABLE[`${set.key}/${set.tier}`];
       expect(entry, `${body} ${slot}: no generated entry for ${set.key}/${set.tier}`).toBeDefined();
-      out.push({ body, slot, set, entry, grid });
+      out.push({ body, slot, set, entry, grid, level });
     }
   }
   return out;
 }
 
 function setDir(set: SectorTileSet): string {
-  return resolve(TEXTURES, 'tiles', set.key, `${set.tier}.${set.hash}`);
+  return resolve(TILES_ROOT, set.key, `${set.tier}.${set.hash}`);
+}
+
+/** Every `<key>/<tier>` the tiles root actually holds a folder for. */
+function setsOnDisk(): string[] {
+  const out: string[] = [];
+  for (const key of readdirSync(TILES_ROOT)) {
+    const keyDir = resolve(TILES_ROOT, key);
+    if (!statSync(keyDir).isDirectory()) continue;
+    for (const folder of readdirSync(keyDir)) {
+      if (!statSync(resolve(keyDir, folder)).isDirectory()) continue;
+      out.push(`${key}/${folder.split('.')[0]}`);
+    }
+  }
+  return out;
+}
+
+/** The sets this run can read bytes for, and a line per set it cannot. */
+function setsOnDiskForApp(): { present: AppSet[]; skipped: string[] } {
+  const present: AppSet[] = [];
+  const skipped: string[] = [];
+  for (const s of appSets()) {
+    if (existsSync(setDir(s.set))) {
+      present.push(s);
+      continue;
+    }
+    const why = absenceAllowed(s);
+    expect(why, `${s.body} ${s.slot}: no folder ${s.set.key}/${s.set.tier}.${s.set.hash} under ${TILES_ROOT}`).not.toBeNull();
+    skipped.push(`${s.set.key}/${s.set.tier}: ${why}`);
+  }
+  return { present, skipped };
 }
 
 describe('sector tile sets: what the app asks for', () => {
@@ -215,10 +273,29 @@ describe('sector tile sets: the files on disk', () => {
   // This half only holds while the sets ship inside the app. Once they are
   // published from their own repository the same checks live in
   // `gen-tiles --verify`, where the bytes are.
+  it('only excuses a missing set folder for a level the app does not ship', () => {
+    // This rule is what lets the suite run in CI, where only public/ exists.
+    // It must never be able to excuse a set that ships inside the app: a
+    // missing level-0 folder or crop is a quarter of a globe served as 404s,
+    // which the streamer survives by staying soft and saying nothing.
+    expect(absenceAllowed({ level: 0 })).toBeNull();
+    expect(absenceAllowed({ level: null })).toBeNull();
+    expect(absenceAllowed({ level: 1 })).toContain('tile host');
+    const before = process.env.TILES_ROOT;
+    try {
+      process.env.TILES_ROOT = '/somewhere/else';
+      expect(absenceAllowed({ level: 0 })).toContain('/somewhere/else');
+    } finally {
+      if (before === undefined) delete process.env.TILES_ROOT;
+      else process.env.TILES_ROOT = before;
+    }
+  });
+
   it('every named set is a full grid of tiles at its declared size', () => {
-    for (const { body, slot, set, entry } of appSets()) {
+    const { present, skipped } = setsOnDiskForApp();
+    for (const line of skipped) console.log(`  skipped (not under ${TILES_ROOT}) ${line}`);
+    for (const { body, slot, set, entry } of present) {
       const dir = setDir(set);
-      expect(existsSync(dir), `${body} ${slot}: no folder ${set.key}/${set.tier}.${set.hash}`).toBe(true);
       const files = readdirSync(dir).filter((f) => f.endsWith('.webp')).sort();
       const expected: string[] = [];
       for (let r = 0; r < entry.grid.rows; r++) {
@@ -235,18 +312,24 @@ describe('sector tile sets: the files on disk', () => {
   });
 
   it('ships the same table in sets.v1.json as in the generated module', () => {
-    // gen-tiles writes both from one object in one pass, so they can only
+    // gen-tiles writes both from one object in one pass, so an entry can only
     // differ if a run was interrupted or one of them was hand-edited — and
     // sets.v1.json is what a publisher or a smoke script reads to find the
-    // folder the app is asking for.
-    expect(JSON.parse(readFileSync(SETS_JSON, 'utf8'))).toEqual(SECTOR_SET_TABLE);
+    // folder the app is asking for. A root publishes the sets that are IN it,
+    // so the file is the table restricted to this root: every entry identical,
+    // naming every folder the root holds and no folder it does not.
+    const published: Record<string, GeneratedSectorSet> = JSON.parse(readFileSync(SETS_JSON, 'utf8'));
+    for (const [id, entry] of Object.entries(published)) {
+      expect(entry, `${id} in sets.v1.json`).toEqual(SECTOR_SET_TABLE[id]);
+    }
+    expect(new Set(Object.keys(published))).toEqual(new Set(setsOnDisk()));
   });
 
   it('every set folder is named for the bytes inside it', () => {
     // gen-tiles' recipe: SHA-256 over the sorted `<name>\0<file sha256>\n`
     // list of the whole set, first 8 hex. One changed tile moves the folder,
     // which is what lets a tile URL be cached with no expiry.
-    for (const { body, slot, set } of appSets()) {
+    for (const { body, slot, set } of setsOnDiskForApp().present) {
       const dir = setDir(set);
       const files = readdirSync(dir).filter((f) => f.endsWith('.webp')).sort();
       const hash = createHash('sha256');

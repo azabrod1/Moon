@@ -369,6 +369,21 @@ describe('SectorStreamer', () => {
     expect(streamer.stats().bodies.Earth.resident).toEqual(['2_1']);
   });
 
+  it('reports the GPU bytes its textures hold, from their sizes', () => {
+    const sized = (w: number, h: number) => { const t = new THREE.Texture(); t.image = { width: w, height: h }; return t; };
+    loader.load = (url, onLoad) => onLoad(/earth-day/.test(url) ? sized(2048, 2048) : sized(272, 272));
+    const s = new SectorStreamer({ touch: false, load: loader.load, warm: warm.warm });
+    s.register(earth);
+    s.update('Earth', cameraOver(2, 1), measureOf({ '2_1': 2 }), 0);
+    // One colour tile plus two crops (bump, roughness), RGBA8 with mips.
+    const tile = Math.round(2048 * 2048 * 4 * (4 / 3));
+    const crop = Math.round(272 * 272 * 4 * (4 / 3));
+    expect(s.stats().bodies.Earth.gpuBytes).toBe(tile + 2 * crop);
+    expect(s.stats().gpuBytes).toBe(tile + 2 * crop);
+    s.update('Earth', cameraOver(2, 1), measureOf({ '2_1': 0.1 }), 16);
+    expect(s.stats().gpuBytes).toBe(0);
+  });
+
   it('aborts the fetches of a sector released while they are in the air', () => {
     streamer.update('Earth', cameraOver(2, 1), measureOf({ '2_1': 2 }), 0);
     expect(loader.requests.length).toBeGreaterThan(0);

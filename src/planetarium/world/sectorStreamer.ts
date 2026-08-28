@@ -265,13 +265,26 @@ export interface SectorStreamerOptions {
 export interface SectorStats {
   resident: number;
   loading: number;
+  /** GPU memory the sector textures hold, estimated from their dimensions
+   *  (RGBA8 plus a third for mips) — resident sets and what loads have
+   *  decoded so far. The caps are counts; this is the figure to read them
+   *  against on a device: ten colour tiles alone are ~213 MiB. */
+  gpuBytes: number;
   bodies: Record<string, {
     resident: string[];
     loading: string[];
     /** Largest device-px-per-base-texel measured for the body this frame
      *  (0 while nothing faces the camera or the body is gated off). */
     maxTexelPx: number;
+    gpuBytes: number;
   }>;
+}
+
+/** Estimated GPU bytes of a texture: RGBA8 at its image size, plus mips. */
+function textureGpuBytes(tex: THREE.Texture): number {
+  const img = tex.image as { width?: unknown; height?: unknown } | undefined;
+  if (!img || typeof img.width !== 'number' || typeof img.height !== 'number') return 0;
+  return Math.round(img.width * img.height * 4 * (4 / 3));
 }
 
 /** A real map in a material slot — not the procedural stand-in a failed
@@ -520,18 +533,22 @@ export class SectorStreamer {
   }
 
   stats(): SectorStats {
-    const out: SectorStats = { resident: 0, loading: 0, bodies: {} };
+    const out: SectorStats = { resident: 0, loading: 0, gpuBytes: 0, bodies: {} };
     for (const [name, body] of this.bodies) {
       const resident: string[] = [];
       const loading: string[] = [];
+      let gpuBytes = 0;
       for (const s of body.slots) {
         const id = `${s.sector.c}_${s.sector.r}`;
         if (s.state === 'resident') resident.push(id);
         else if (s.state === 'loading') loading.push(id);
+        for (const tex of Object.values(s.maps)) gpuBytes += textureGpuBytes(tex);
+        for (const tex of s.loading?.owned ?? []) gpuBytes += textureGpuBytes(tex);
       }
       out.resident += resident.length;
       out.loading += loading.length;
-      out.bodies[name] = { resident, loading, maxTexelPx: body.maxTexelPx };
+      out.gpuBytes += gpuBytes;
+      out.bodies[name] = { resident, loading, maxTexelPx: body.maxTexelPx, gpuBytes };
     }
     return out;
   }

@@ -844,12 +844,13 @@ export class SectorStreamer {
     }
     stale.sort((a, b) => b.slot.score - a.slot.score);
     for (const s of stale) {
-      if (!this.canStartLoad()) break;
+      if (this.inflightCount() >= this.inflightCap) break;
       // Only a resident with nothing in the air still has a set to reload:
       // anything else lost the maps the reservation below is sized against.
       if (s.slot.state !== 'resident' || s.slot.loading) continue;
       // The maps a reload fetches are bytes the resident does not hold yet.
       if (!this.roomFor(this.reloadBytes(s.body, s.slot))) continue;
+      if (!this.poolRoomFor(this.loadFetchCount(s.body, s.slot))) continue;
       this.startLoad(s.body, s.slot, s.body.signature);
     }
 
@@ -858,7 +859,10 @@ export class SectorStreamer {
     // better first admission wherever both are asked for.
     candidates.sort((a, b) => b.slot.score - a.slot.score || a.slot.level - b.slot.level);
     for (const candidate of candidates) {
-      if (!this.canStartLoad()) break;
+      if (this.inflightCount() >= this.inflightCap) break;
+      // The pool is checked before the room is made: an admission must never
+      // evict a resident for a load that then cannot start.
+      if (!this.poolRoomFor(this.loadFetchCount(candidate.body, candidate.slot))) continue;
       // A candidate that cannot be paid for is passed over, not the end of
       // the pass: sets differ in size between levels and between bodies, so
       // a cheaper or smaller one behind it may still fit in the room there
@@ -968,9 +972,24 @@ export class SectorStreamer {
     return crop ? layoutGpuBytes(dataCropLayout(body.levels[0].grid, crop.baseWidth, crop.spanU ?? 1)) : 0;
   }
 
-  /** Another load may start: a slot allowance and a fetch out of the pool. */
-  private canStartLoad(): boolean {
-    return this.inflightCount() < this.inflightCap && this.fetchCount() < this.fetchPool;
+  /** Map fetches a load for this slot would put on the wire: its colour tile
+   *  and every crop of the current set it does not already hold (a reload
+   *  keeps what it draws, so it is usually one). */
+  private loadFetchCount(body: SectorBody, slot: SectorSlot): number {
+    let n = slot.maps.map ? 0 : 1;
+    for (const name of CROP_SLOTS) {
+      if (!body.handle.spec.crops[name] || !realMapIn(body.handle.material, name) || slot.maps[name]) continue;
+      n += 1;
+    }
+    return n;
+  }
+
+  /** Room in the fetch pool for every request a load would make. Taken by
+   *  the whole set, not one token per slot: a sector shows nothing until all
+   *  of its maps are resident, so a set half on the wire would hold its
+   *  reservation and the pool behind a sector that could have finished. */
+  private poolRoomFor(fetches: number): boolean {
+    return this.fetchCount() + fetches <= this.fetchPool;
   }
 
   /** Drop everything (an arrival, context loss, mode teardown); bodies stay

@@ -7,6 +7,7 @@ import {
   SECTOR_BUDGET_BYTES_TOUCH,
   SECTOR_ENVELOPE_BYTES_DESKTOP,
   SECTOR_EVICT_DWELL_MS,
+  SECTOR_FETCH_POOL_DESKTOP,
   SECTOR_INFLIGHT_CAP_DESKTOP,
   SECTOR_LEVEL_16K,
   SECTOR_RELEASE_TEXEL_PX,
@@ -22,6 +23,7 @@ import {
   type SectorBodyHandle,
   type SectorLevel,
   type SectorMeasure,
+  type SectorSetSpec,
 } from './sectorStreamer';
 import { SECTOR_RENDER_ORDER } from './sectorMaterial';
 import { SECTOR_GRID_16K, finerGrid, sectorCentreDirection, sectorTileTransform, dataCropLayout, SECTOR_TILE, sphereDirection } from './sectorGrid';
@@ -1131,6 +1133,28 @@ describe('SectorStreamer', () => {
     expect(streamer.stats().bodies.Earth.resident.slice().sort()).toEqual(before);
     streamer.update('Earth', INSIDE, measureOf(withNewcomer), SECTOR_EVICT_DWELL_MS);
     expect(streamer.stats().bodies.Earth.resident).toContain('0_0');
+  });
+
+  it('takes the fetch pool by the whole set, so no set starts that the pool cannot carry', () => {
+    // A set of four maps against a pool of six: one goes, the second waits
+    // however much slot allowance and budget there is.
+    const spec: SectorSetSpec = {
+      ...SECTOR_SETS.Earth,
+      crops: {
+        ...SECTOR_SETS.Earth.crops,
+        normalMap: { key: 'mars-normal.v2', tier: '2k', baseWidth: 1440, spanU: 2 },
+      },
+    };
+    const big = earthHandle();
+    big.name = 'Big';
+    big.spec = spec;
+    big.material.normalMap = new THREE.Texture();
+    streamer.register(big);
+    streamer.update('Big', INSIDE, measureOf({ '2_1': 3, '3_1': 2 }), 0);
+    expect(loader.requests).toHaveLength(4);
+    expect(loader.requests.length).toBeLessThanOrEqual(SECTOR_FETCH_POOL_DESKTOP);
+    expect(streamer.stats().inflight).toBe(1);
+    expect(streamer.stats().reserved).toBe(sectorSetGpuBytes(spec));
   });
 
   it('starts the eviction dwell when the tile lands, not when the fetch does', () => {

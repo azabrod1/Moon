@@ -22,12 +22,24 @@
  * Integrity: a body is stored only after its SHA-256 matches the manifest
  * (a ≤10-minute-stale HTTP-cache body or mid-rollout edge response can never
  * be stored under a fresh hash), only complete 200s are stored, and entries
- * live under content-addressed keys (pathname?swv=hash) — a deploy that
+ * live under content-addressed keys (href?swv=hash) — a deploy that
  * changes a file changes its key, stale keys are pruned on activate, and
  * unchanged files are never refetched. Verification runs OFF the response
  * path: the page gets the network stream immediately; a clone is hashed and
  * conditionally stored under waitUntil. On any failure the page simply has
  * the network bytes — byte-for-byte what a worker-less page would have.
+ *
+ * Tile sets are the one thing this worker may hold from ANOTHER origin, and
+ * they are cached on a different contract (TILE_ORIGINS / TILE_SETS below):
+ * a set's own content hash is in its folder name, so a tile path is either
+ * new or a 404 and the body under it can never go stale. Those are stored
+ * cache-first by full URL with no digest and no ?swv= — the path IS the
+ * identity, a truncated transfer still fails at arrayBuffer(), and the
+ * digests are checked where the bytes are published, not on every device.
+ * Every cache key here is an absolute href for that reason: the activate
+ * prune compares what cache.keys() hands back (always absolute) against
+ * these keys, and pathname-shaped keys would make every off-origin entry
+ * look unknown and delete it on every boot.
  *
  * skipWaiting+claim are safe for the same reason the worker is safe at all:
  * with no code cached, the wrong worker generation can at worst serve a
@@ -41,8 +53,35 @@ const CACHE_NAME = 'moon-data-v1';
 const INSTALL_FETCH_TIMEOUT_MS = 10000;
 const INSTALL_CONCURRENCY = 4;
 
+/** Absolute href of a same-origin path (the manifest is keyed by pathname). */
+function absolute(path) {
+  return new URL(path, self.location.origin).href;
+}
+
 function cacheKey(pathname) {
-  return pathname + '?swv=' + MANIFEST[pathname];
+  return absolute(pathname) + '?swv=' + MANIFEST[pathname];
+}
+
+/** Absolute prefixes of the tile sets the app currently names. A set folder
+ *  carries the hash of its own contents, so these change whenever the tiles
+ *  do — which is what lets a tile body be cached with no digest and no
+ *  expiry, and what makes a set the app dropped prunable on activate.
+ *  Deliberately only the sets the app names at its coarsest level: Cache
+ *  Storage for off-origin bodies is charged to THIS origin, and WebKit
+ *  evicts a whole origin at once, so an unbounded tile appetite could evict
+ *  the boot precache this worker exists for. */
+const TILE_SET_HREFS = TILE_SETS.map(absolute);
+
+/** The cache key for a content-addressed tile on an allowlisted origin, or
+ *  null for everything else. Same-origin tiles are not this branch's
+ *  business: they sit in the manifest like every other data file. */
+function immutableTileKey(url) {
+  if (url.origin === self.location.origin) return null;
+  if (TILE_ORIGINS.indexOf(url.origin) < 0) return null;
+  for (const prefix of TILE_SET_HREFS) {
+    if (url.href.indexOf(prefix) === 0) return url.href;
+  }
+  return null;
 }
 
 async function sha256Hex(buffer) {
@@ -64,6 +103,22 @@ async function verifyAndPut(cache, pathname, response) {
   const body = await response.arrayBuffer();
   if ((await sha256Hex(body)) !== MANIFEST[pathname]) return false;
   await cache.put(cacheKey(pathname), new Response(body, {
+    headers: { 'content-type': response.headers.get('content-type') || 'application/octet-stream' },
+  }));
+  return true;
+}
+
+/**
+ * Store a content-addressed tile under its full URL. No digest: the set hash
+ * in the path is the identity, so the only failure this has to exclude is an
+ * incomplete transfer — and arrayBuffer() rejects on one. status 200 only,
+ * which also excludes an opaque cross-origin response (status 0): a host
+ * without CORS must stay a visible failure, never a cached one.
+ */
+async function putImmutable(cache, href, response) {
+  if (response.status !== 200) return false;
+  const body = await response.arrayBuffer();
+  await cache.put(href, new Response(body, {
     headers: { 'content-type': response.headers.get('content-type') || 'application/octet-stream' },
   }));
   return true;
@@ -121,7 +176,12 @@ self.addEventListener('activate', (event) => {
     const current = new Set(Object.keys(MANIFEST).map(cacheKey));
     for (const request of await cache.keys()) {
       const url = new URL(request.url);
-      if (!current.has(url.pathname + url.search)) await cache.delete(request);
+      if (current.has(url.href)) continue;
+      // A tile of a set the app still names is kept: its path names its own
+      // bytes, so it is never stale. A set the app dropped falls through and
+      // is deleted — that is the only thing that frees tile bytes.
+      if (immutableTileKey(url)) continue;
+      await cache.delete(request);
     }
   })());
 });
@@ -131,10 +191,22 @@ self.addEventListener('fetch', (event) => {
   if (request.method !== 'GET') return;
   if (request.headers.has('range')) return;
   const url = new URL(request.url);
-  if (url.origin !== self.location.origin) return;
   // A query would alias different requests onto one manifest body — the
   // app's data fetches are always bare paths, so anything else passes.
   if (url.search !== '') return;
+  if (url.origin !== self.location.origin) {
+    const tileKey = immutableTileKey(url);
+    if (!tileKey) return;
+    event.respondWith((async () => {
+      const cache = await caches.open(CACHE_NAME);
+      const hit = await cache.match(tileKey);
+      if (hit) return hit;
+      const response = await fetch(request);
+      event.waitUntil(putImmutable(cache, tileKey, response.clone()).catch(() => {}));
+      return response;
+    })().catch(() => fetch(request)));
+    return;
+  }
   // Not in the manifest — HTML, JS, sw.js itself, anything unknown — is the
   // browser's business; this worker never answers for it.
   if (!Object.prototype.hasOwnProperty.call(MANIFEST, url.pathname)) return;

@@ -6,14 +6,25 @@ import template from '../../tools/sw.template.js?raw';
 // build). String pins can't prove behavior, so this suite EXECUTES the
 // template against fake caches/fetch/events and asserts the contract:
 // cache-first by content-hash key, verify-before-store off the response
-// path, fail-open everywhere, and a fetch handler that never answers for
-// anything outside its manifest.
+// path, fail-open everywhere, a fetch handler that never answers for
+// anything outside its manifest, and — for tile sets whose folder names
+// carry their own content hash — cache-first by full URL, but only for an
+// origin the build put on the allowlist.
+//
+// Everything here is keyed by absolute href, cache and fake network alike,
+// because the worker's own keys are: pathname keys would collide across
+// origins and make the activate prune delete every off-origin body.
 
 const ORIGIN = 'https://site.test';
+const TILE_ORIGIN = 'https://tiles.test';
 const MOON_PATH = '/Moon/textures/moon.webp';
 const STAR_PATH = '/Moon/stardata/bright-stars.v1.bin';
+// A content-addressed set folder: <tier>.<hash of the set's own files>.
+const TILE_SET_PREFIX = `${TILE_ORIGIN}/textures/tiles/earth-day.v2/16k.1a2b3c4d/`;
+const TILE_URL = `${TILE_SET_PREFIX}2_1.webp`;
 const MOON_BYTES = new TextEncoder().encode('moon-pixels');
 const STAR_BYTES = new TextEncoder().encode('star-records');
+const TILE_BYTES = new TextEncoder().encode('tile-pixels');
 
 async function sha256Hex(bytes: Uint8Array): Promise<string> {
   const digest = await crypto.subtle.digest('SHA-256', bytes.slice().buffer);
@@ -58,6 +69,7 @@ function bootWorker(
   manifest: Record<string, string>,
   precache: string[],
   network: Map<string, () => Response>,
+  tiles: { origins?: string[]; sets?: string[] } = {},
 ): Harness {
   const handlers: Record<string, (event: never) => void> = {};
   const { cache, store } = fakeCaches();
@@ -70,14 +82,16 @@ function bootWorker(
     },
   };
   const netFetch = vi.fn(async (input: string | Request) => {
-    const pathname = new URL(typeof input === 'string' ? input : input.url, ORIGIN).pathname;
-    const respond = network.get(pathname);
+    const href = new URL(typeof input === 'string' ? input : input.url, ORIGIN).href;
+    const respond = network.get(href);
     if (!respond) return new Response('not found', { status: 404 });
     return respond();
   });
   const source = template.replace(
     '/* __INJECT_MANIFEST__ */',
-    `const MANIFEST = ${JSON.stringify(manifest)};\nconst PRECACHE = ${JSON.stringify(precache)};`,
+    `const MANIFEST = ${JSON.stringify(manifest)};\nconst PRECACHE = ${JSON.stringify(precache)};\n` +
+      `const TILE_ORIGINS = ${JSON.stringify(tiles.origins ?? [])};\n` +
+      `const TILE_SETS = ${JSON.stringify(tiles.sets ?? [])};`,
   );
   new Function('self', 'caches', 'fetch', source)(self, { open: async () => cache }, netFetch);
   return { handlers, store, cache, self, netFetch };
@@ -112,9 +126,12 @@ beforeEach(async () => {
 
 const healthyNetwork = () =>
   new Map<string, () => Response>([
-    [MOON_PATH, () => new Response(MOON_BYTES.slice(), { status: 200, headers: { 'content-type': 'image/webp' } })],
-    [STAR_PATH, () => new Response(STAR_BYTES.slice(), { status: 200 })],
+    [ORIGIN + MOON_PATH, () => new Response(MOON_BYTES.slice(), { status: 200, headers: { 'content-type': 'image/webp' } })],
+    [ORIGIN + STAR_PATH, () => new Response(STAR_BYTES.slice(), { status: 200 })],
+    [TILE_URL, () => new Response(TILE_BYTES.slice(), { status: 200, headers: { 'content-type': 'image/webp' } })],
   ]);
+
+const tileHost = { origins: [TILE_ORIGIN], sets: [TILE_SET_PREFIX] };
 
 describe('service worker template: fetch handler', () => {
   it('serves a cold request from the network immediately, body intact, then caches it', async () => {
@@ -136,7 +153,7 @@ describe('service worker template: fetch handler', () => {
   it('never stores a non-200 response, even one carrying the right bytes', async () => {
     // Pins the status guard on its own: digest-matching bytes on an error
     // status (a misconfigured edge, a captive portal echo) must not cache.
-    const weird = new Map([[MOON_PATH, () => new Response(MOON_BYTES.slice(), { status: 203 })]]);
+    const weird = new Map([[ORIGIN + MOON_PATH, () => new Response(MOON_BYTES.slice(), { status: 203 })]]);
     const harness = bootWorker(MANIFEST, [], weird);
     const { responded, waits } = dispatchFetch(harness, new Request(ORIGIN + MOON_PATH));
     await responded!;
@@ -145,7 +162,7 @@ describe('service worker template: fetch handler', () => {
   });
 
   it('serves tampered network bytes fail-open but never stores them', async () => {
-    const tampered = new Map([[MOON_PATH, () => new Response('evil', { status: 200 })]]);
+    const tampered = new Map([[ORIGIN + MOON_PATH, () => new Response('evil', { status: 200 })]]);
     const harness = bootWorker(MANIFEST, [], tampered);
     const { responded, waits } = dispatchFetch(harness, new Request(ORIGIN + MOON_PATH));
     expect(await (await responded!).text()).toBe('evil');
@@ -184,10 +201,82 @@ describe('service worker template: fetch handler', () => {
   });
 });
 
+describe('service worker template: content-addressed tile sets', () => {
+  it('serves an allowlisted tile from the network, caches it by full URL, then from cache', async () => {
+    const harness = bootWorker(MANIFEST, [], healthyNetwork(), tileHost);
+    const { responded, waits } = dispatchFetch(harness, new Request(TILE_URL));
+    expect(new Uint8Array(await (await responded!).arrayBuffer())).toEqual(TILE_BYTES);
+    await Promise.all(waits);
+    // No ?swv=: the set hash in the path is already the body's identity.
+    expect([...harness.store.keys()]).toEqual([TILE_URL]);
+    const again = dispatchFetch(harness, new Request(TILE_URL));
+    expect(new Uint8Array(await (await again.responded!).arrayBuffer())).toEqual(TILE_BYTES);
+    expect(harness.netFetch).toHaveBeenCalledTimes(1);
+  });
+
+  it('ignores a cross-origin tile whose origin is not allowlisted', () => {
+    const harness = bootWorker(MANIFEST, [], healthyNetwork(), { origins: [], sets: [TILE_SET_PREFIX] });
+    const { responded } = dispatchFetch(harness, new Request(TILE_URL));
+    expect(responded).toBeUndefined();
+    expect(harness.netFetch).not.toHaveBeenCalled();
+  });
+
+  it('ignores anything on an allowlisted origin that is not one of the named sets', () => {
+    const harness = bootWorker(MANIFEST, [], healthyNetwork(), tileHost);
+    const outside = [
+      `${TILE_ORIGIN}/textures/tiles/earth-day.v2/16k.deadbeef/2_1.webp`, // a set the app no longer names
+      `${TILE_ORIGIN}/index.html`,
+      `${TILE_ORIGIN}/textures/moon.webp`,
+      `${TILE_SET_PREFIX}2_1.webp?v=2`, // a query would alias one cached body
+    ];
+    for (const url of outside) {
+      expect(dispatchFetch(harness, new Request(url)).responded, url).toBeUndefined();
+    }
+    expect(harness.netFetch).not.toHaveBeenCalled();
+  });
+
+  it('never stores a tile response that is not a complete 200', async () => {
+    const cases: Array<[string, () => Response]> = [
+      ['404', () => new Response('not found', { status: 404 })],
+      ['503', () => new Response(TILE_BYTES.slice(), { status: 503 })],
+      // An opaque response is what a host without CORS gives an <img> — and
+      // caching one would turn a missing header into a blank texture that
+      // outlives the fix. Response cannot be constructed with status 0.
+      ['opaque', () => ({ status: 0, clone: () => ({ status: 0 }) }) as unknown as Response],
+    ];
+    for (const [label, respond] of cases) {
+      const harness = bootWorker(MANIFEST, [], new Map([[TILE_URL, respond]]), tileHost);
+      const { responded, waits } = dispatchFetch(harness, new Request(TILE_URL));
+      await responded!;
+      await Promise.all(waits);
+      expect(harness.store.size, label).toBe(0);
+    }
+  });
+
+  it('with an empty allowlist behaves exactly as a same-origin-only worker', () => {
+    const harness = bootWorker(MANIFEST, [], healthyNetwork());
+    expect(dispatchFetch(harness, new Request(TILE_URL)).responded).toBeUndefined();
+    expect(harness.netFetch).not.toHaveBeenCalled();
+  });
+
+  it('activate keeps tiles of the sets it still names and prunes the rest', async () => {
+    const harness = bootWorker(MANIFEST, [], healthyNetwork(), tileHost);
+    const dropped = `${TILE_ORIGIN}/textures/tiles/earth-day.v2/16k.deadbeef/2_1.webp`;
+    const elsewhere = 'https://other.test/textures/tiles/earth-day.v2/16k.1a2b3c4d/2_1.webp';
+    for (const href of [TILE_URL, dropped, elsewhere]) {
+      harness.store.set(href, { body: TILE_BYTES.slice(), type: 'image/webp' });
+    }
+    await dispatchLifecycle(harness, 'activate');
+    expect(harness.store.has(TILE_URL)).toBe(true);
+    expect(harness.store.has(dropped)).toBe(false);
+    expect(harness.store.has(elsewhere)).toBe(false);
+  });
+});
+
 describe('service worker template: lifecycle', () => {
   it('precaches the boot set verified, and one bad file cannot block the rest', async () => {
     const network = healthyNetwork();
-    network.set(MOON_PATH, () => new Response('outage', { status: 503 }));
+    network.set(ORIGIN + MOON_PATH, () => new Response('outage', { status: 503 }));
     const harness = bootWorker(MANIFEST, [MOON_PATH, STAR_PATH], network);
     await dispatchLifecycle(harness, 'install');
     expect(harness.self.skipWaiting).toHaveBeenCalled();

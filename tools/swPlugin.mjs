@@ -16,6 +16,13 @@
  * build FAILS if the script is missing, a warm file doesn't exist in dist,
  * or the texture count collapses (the gen-maps "loud missing source"
  * convention).
+ *
+ * Sector tile sets are injected separately from the manifest: their folder
+ * names carry a hash of their own contents, so the worker caches them with
+ * no digest and no expiry, and an off-origin set needs its origin on an
+ * allowlist before the worker will touch it at all. Both lists are emitted
+ * here so there is one build-time source for what the app fetches and what
+ * the worker is allowed to keep.
  */
 import { createHash } from 'node:crypto';
 import { readdirSync, readFileSync, statSync, writeFileSync, existsSync } from 'node:fs';
@@ -24,6 +31,7 @@ import { fileURLToPath } from 'node:url';
 
 const DATA_DIRS = ['textures', 'stardata', 'fonts', 'models', 'historic'];
 const MIN_WARM_TEXTURES = 21;
+const TILE_ROOT = 'textures/tiles';
 const TEMPLATE_PATH = fileURLToPath(new URL('./sw.template.js', import.meta.url));
 
 function walkFiles(dir) {
@@ -34,6 +42,25 @@ function walkFiles(dir) {
     else out.push(full);
   }
   return out;
+}
+
+/** URL prefixes of the shipped tile sets — one per <key>/<tier> folder under
+ *  textures/tiles/. The worker matches cached tiles against these, so a set
+ *  that leaves the app is pruned off devices that hold it. */
+function tileSetPrefixes(outDir, base) {
+  const root = path.join(outDir, TILE_ROOT);
+  if (!existsSync(root)) return [];
+  const prefixes = [];
+  for (const key of readdirSync(root)) {
+    const keyDir = path.join(root, key);
+    if (!statSync(keyDir).isDirectory()) continue;
+    for (const tier of readdirSync(keyDir)) {
+      if (statSync(path.join(keyDir, tier)).isDirectory()) {
+        prefixes.push(`${base}${TILE_ROOT}/${key}/${tier}/`);
+      }
+    }
+  }
+  return prefixes.sort();
 }
 
 export default function swPlugin() {
@@ -98,15 +125,29 @@ export default function swPlugin() {
         throw new Error(`sw: precache collapsed to ${precache.length} entries`);
       }
 
+      // The tile list is the worker's whole picture of what tile bytes are
+      // legitimate: an empty one silently turns tile caching off and lets the
+      // activate prune delete every tile a device holds. Loud, like the
+      // precache checks above.
+      const tileSets = tileSetPrefixes(outDir, base);
+      if (tileSets.length === 0) throw new Error(`sw: no tile sets found under dist/${TILE_ROOT}/`);
+      // Off-origin tile hosts, empty while the tiles ship with the app: the
+      // worker touches a cross-origin request only for an origin named here.
+      const tileOrigins = [];
+
       const template = readFileSync(TEMPLATE_PATH, 'utf8');
       const marker = '/* __INJECT_MANIFEST__ */';
       if (!template.includes(marker)) throw new Error('sw: template inject marker missing');
       const sw = template.replace(
         marker,
-        `const MANIFEST = ${JSON.stringify(manifest)};\nconst PRECACHE = ${JSON.stringify(precache)};`,
+        `const MANIFEST = ${JSON.stringify(manifest)};\nconst PRECACHE = ${JSON.stringify(precache)};\n` +
+          `const TILE_ORIGINS = ${JSON.stringify(tileOrigins)};\nconst TILE_SETS = ${JSON.stringify(tileSets)};`,
       );
       writeFileSync(path.join(outDir, 'sw.js'), sw);
-      console.log(`sw.js: ${Object.keys(manifest).length} manifest entries, ${precache.length} precached`);
+      console.log(
+        `sw.js: ${Object.keys(manifest).length} manifest entries, ${precache.length} precached, ` +
+          `${tileSets.length} tile sets${tileOrigins.length ? ` from ${tileOrigins.join(' ')}` : ''}`,
+      );
     },
   };
 }

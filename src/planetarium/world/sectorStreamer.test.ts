@@ -853,6 +853,69 @@ describe('SectorStreamer', () => {
     }
   });
 
+  /** The Moon's planned level 1: its source stops at 27360 across, so its
+   *  tiles are cut at the native 1710 px of content — a 1726² NPOT tile and a
+   *  1.68× step, not the 2× and 2048² the other two bodies get. */
+  const MOON_LEVEL_1: SectorLevel = {
+    tier: '27k',
+    grid: finerGrid(SECTOR_GRID_16K),
+    layout: { width: 1726, height: 1726, gutterX: 8, gutterY: 8, spanU: 1, leadU: 0 },
+    sourceWidth: 16 * 1710,
+  };
+
+  it('carries an NPOT finer level at its own size: url, transform, segments and bytes', () => {
+    expect(MOON_LEVEL_1.layout.width - 2 * MOON_LEVEL_1.layout.gutterX)
+      .toBe(MOON_LEVEL_1.sourceWidth / MOON_LEVEL_1.grid.cols);
+    expect(MOON_LEVEL_1.sourceWidth / SECTOR_LEVEL_16K.sourceWidth).toBeCloseTo(1.683, 3);
+    const levels = [SECTOR_LEVEL_16K, MOON_LEVEL_1];
+    const spec = { ...SECTOR_SETS.Moon, levels };
+    const moon = earthHandle();
+    moon.name = 'Moon';
+    moon.spec = spec;
+    moon.material.bumpMap = null;
+    moon.material.roughnessMap = null;
+    moon.material.normalMap = new THREE.Texture();
+    streamer.register(moon);
+    // The bytes are committed from the layouts before a byte is fetched: the
+    // NPOT tile plus the parent's normal crop, and nothing rounded to 2048².
+    const childBytes = Math.round(1726 * 1726 * 4 * (4 / 3))
+      + Math.round(dataCropLayout(G, 2880, 2).width * dataCropLayout(G, 2880, 2).height * 4 * (4 / 3));
+    expect(sectorSetGpuBytes(spec, 1)).toBe(childBytes);
+    expect(sectorSetGpuBytes(spec, 1)).toBeLessThan(sectorSetGpuBytes(spec, 0));
+    // Children only: the parent is held back by its cooldown after one
+    // failure, so the reservation in flight is the finer level's own.
+    streamer.update('Moon', overLevel1(5, 3), measureLevels(levels, { '2_1': CHILD_WANT_PX - 0.01 }), 0);
+    loader.failAll();
+    loader.auto = true;
+    warm.auto = null;
+    streamer.update('Moon', overLevel1(5, 3), measureLevels(levels, { '2_1': 2 * CHILD_WANT_PX }), 16);
+    expect(streamer.stats().reserved).toBe(2 * childBytes); // two loads allowed at once
+    expect(loader.requests.map((r) => r.url).sort()).toEqual([
+      expect.stringMatching(/tiles\/moon-normal\/4k\/2_1\.webp$/),
+      expect.stringMatching(/tiles\/moon-normal\/4k\/2_1\.webp$/),
+      expect.stringMatching(/tiles\/moon\/27k\/4_2\.webp$/),
+      expect.stringMatching(/tiles\/moon\/27k\/5_2\.webp$/),
+    ]);
+    warm.settle('warmed');
+    const s = streamer.stats();
+    expect(s.reserved).toBe(0);
+    expect(s.residentBytes).toBe(2 * childBytes);
+    expect(s.bodies.Moon.resident).toEqual(['L1/4_2', 'L1/5_2']);
+    // The colour tile reads through its own NPOT layout, the crop through
+    // the parent's two-sector-wide one.
+    const mesh = (moon.mesh.children as THREE.Mesh[]).find((m) => m.name.endsWith('L1/4_2'))!;
+    const mat = mesh.material as THREE.MeshStandardMaterial;
+    const tileT = sectorTileTransform(MOON_LEVEL_1.grid, { c: 4, r: 2 }, MOON_LEVEL_1.layout);
+    expect(mat.map!.offset.x).toBeCloseTo(tileT.offsetX, 12);
+    expect(mat.map!.repeat.x).toBeCloseTo(tileT.repeatX, 12);
+    expect(mat.map!.repeat.y).toBeCloseTo(tileT.repeatY, 12);
+    const cropT = sectorTileTransform(G, { c: 2, r: 1 }, dataCropLayout(G, 2880, 2));
+    expect(mat.normalMap!.offset.x).toBeCloseTo(cropT.offsetX, 12);
+    expect(mat.normalMap!.repeat.x).toBeCloseTo(cropT.repeatX, 12);
+    // Half the segments of the level above, on the globe's own lattice.
+    expect(mesh.geometry.getAttribute('position').count).toBe(17 * 17);
+  });
+
   it('a finer sector draws before the level above it, on half the segments', () => {
     loader.auto = true;
     const earth2 = twoLevelEarth();

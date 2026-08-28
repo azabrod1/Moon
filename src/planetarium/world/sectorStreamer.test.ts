@@ -7,9 +7,11 @@ import {
   SECTOR_RELEASE_TEXEL_PX,
   SECTOR_RESIDENT_CAP_DESKTOP,
   SECTOR_RESIDENT_CAP_TOUCH,
+  SECTOR_RELEASE_TEXEL_PX_TOUCH,
   SECTOR_RETRY_MS,
   SECTOR_SETS,
   SECTOR_WANT_TEXEL_PX,
+  SECTOR_WANT_TEXEL_PX_TOUCH,
   SectorStreamer,
   type SectorBodyHandle,
   type SectorMeasure,
@@ -112,6 +114,21 @@ describe('SectorStreamer', () => {
     streamer = new SectorStreamer({ touch: false, load: loader.load, warm: warm.warm });
     earth = earthHandle();
     streamer.register(earth);
+  });
+
+  it('asks later on touch, and releases later', () => {
+    expect(SECTOR_WANT_TEXEL_PX_TOUCH).toBeGreaterThan(SECTOR_WANT_TEXEL_PX);
+    const s = new SectorStreamer({ touch: true, load: loader.load, warm: warm.warm });
+    s.register(earth);
+    loader.auto = true;
+    s.update('Earth', cameraOver(2, 1), measureOf({ '2_1': SECTOR_WANT_TEXEL_PX_TOUCH - 0.01 }), 0);
+    expect(s.stats().resident).toBe(0);
+    s.update('Earth', cameraOver(2, 1), measureOf({ '2_1': SECTOR_WANT_TEXEL_PX_TOUCH + 0.01 }), 16);
+    expect(s.stats().resident).toBe(1);
+    s.update('Earth', cameraOver(2, 1), measureOf({ '2_1': SECTOR_RELEASE_TEXEL_PX_TOUCH + 0.01 }), 32);
+    expect(s.stats().resident).toBe(1);
+    s.update('Earth', cameraOver(2, 1), measureOf({ '2_1': SECTOR_RELEASE_TEXEL_PX_TOUCH - 0.01 }), 48);
+    expect(s.stats().resident).toBe(0);
   });
 
   it('requests nothing while every facing sector is under the want size', () => {

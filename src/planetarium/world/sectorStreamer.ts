@@ -131,9 +131,18 @@ export const SECTOR_SETS: Record<string, SectorSetSpec> = {
  *  that is 21 MiB of GPU memory for nothing visible), and measuring against
  *  the 2K boot map while the 8K is still in flight would admit sectors the
  *  8K's arrival then releases — a sharpen that un-sharpens. In device
- *  pixels, so a 3× phone wants tiles where a 1× monitor does not. */
-export const SECTOR_WANT_TEXEL_PX = 1.25;
-export const SECTOR_RELEASE_TEXEL_PX = 0.8;
+ *  pixels, so a 3× phone wants tiles where a 1× monitor does not.
+ *
+ *  Desktop asks at 1.0: a base texel spanning one device pixel is the point
+ *  where a finer map first shows, and the fetch after that is the only
+ *  delay. Touch asks later, at 1.25: its 2–3× displays already reach that
+ *  magnification at nearly twice the distance, and every earlier tile is a
+ *  200 KB fetch and 21 MiB of shared memory on the device with the least
+ *  of both. */
+export const SECTOR_WANT_TEXEL_PX = 1.0;
+export const SECTOR_RELEASE_TEXEL_PX = 0.65;
+export const SECTOR_WANT_TEXEL_PX_TOUCH = 1.25;
+export const SECTOR_RELEASE_TEXEL_PX_TOUCH = 0.8;
 /** Map width assumed while a globe's map has no readable image (never in
  *  practice: a real map is an ImageBitmap or a painted canvas). */
 const SECTOR_FALLBACK_MAP_WIDTH = 4096;
@@ -366,6 +375,8 @@ export class SectorStreamer {
   private readonly warm: (tex: THREE.Texture, onOutcome: (o: WarmOutcome) => void) => void;
   private readonly residentCap: number;
   private readonly inflightCap: number;
+  private readonly wantTexelPx: number;
+  private readonly releaseTexelPx: number;
   private generation = 0;
   private lastNowMs = 0;
   private readonly camScratch = new THREE.Vector3();
@@ -379,6 +390,8 @@ export class SectorStreamer {
     this.warm = opts.warm ?? queueTextureWarm;
     this.residentCap = opts.touch ? SECTOR_RESIDENT_CAP_TOUCH : SECTOR_RESIDENT_CAP_DESKTOP;
     this.inflightCap = opts.touch ? SECTOR_INFLIGHT_CAP_TOUCH : SECTOR_INFLIGHT_CAP_DESKTOP;
+    this.wantTexelPx = opts.touch ? SECTOR_WANT_TEXEL_PX_TOUCH : SECTOR_WANT_TEXEL_PX;
+    this.releaseTexelPx = opts.touch ? SECTOR_RELEASE_TEXEL_PX_TOUCH : SECTOR_RELEASE_TEXEL_PX;
   }
 
   register(handle: SectorBodyHandle): void {
@@ -453,7 +466,7 @@ export class SectorStreamer {
       suspend === 'all'
       || !realAlbedoOn(handle.material)
       || !cropsReady(handle.material, handle.spec)
-      || pxPerLocalUnitNearest * texelLen < SECTOR_RELEASE_TEXEL_PX
+      || pxPerLocalUnitNearest * texelLen < this.releaseTexelPx
     ) {
       for (const slot of slots) this.release(slot);
       return;
@@ -482,8 +495,8 @@ export class SectorStreamer {
         }
       }
       slot.score = score;
-      slot.wanted = fetchable && texelPx > SECTOR_WANT_TEXEL_PX;
-      slot.keep = texelPx > SECTOR_RELEASE_TEXEL_PX;
+      slot.wanted = fetchable && texelPx > this.wantTexelPx;
+      slot.keep = texelPx > this.releaseTexelPx;
       if (slot.loading && nowMs - slot.loading.startedAtMs > SECTOR_ATTEMPT_TIMEOUT_MS) this.failLoad(slot);
       if (slot.state !== 'idle' && !slot.keep) this.release(slot);
       // A load for a set the base no longer has is abandoned: a fresh

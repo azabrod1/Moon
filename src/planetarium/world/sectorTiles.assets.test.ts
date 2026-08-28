@@ -41,7 +41,11 @@ const TILES_ROOT = process.env.TILES_ROOT
 const SETS_JSON = resolve(TILES_ROOT, 'sets.v1.json');
 
 /** A WebP container's first chunk: `VP8 ` lossy, `VP8L` lossless, `VP8X`
- *  extended — and only the extended form can carry an alpha channel. */
+ *  extended. Only `VP8 ` cannot carry an alpha channel at all — VP8L holds
+ *  one in its own header and VP8X in an ALPH chunk beside the image — so
+ *  pinning a file to `VP8 ` is a proxy for "no alpha" and a stricter one than
+ *  the property itself: a lossless re-encode with no alpha in it would fail
+ *  the pin, which is the safe direction to fail in. */
 function webpChunk(file: string): string {
   const b = Buffer.alloc(16);
   const fd = openSync(file, 'r');
@@ -372,12 +376,26 @@ describe('sector tile sets: the files on disk', () => {
 
   it('night tiles carry no alpha channel either', () => {
     // The other half of the shell-and-sector agreement above: both sides of
-    // the night lights have to reach the shader with the same alpha.
-    for (const { body, slot, set } of setsOnDiskForApp().present) {
-      if (set.key !== 'earth-night.v2') continue;
-      for (const f of readdirSync(setDir(set)).filter((n) => n.endsWith('.webp'))) {
-        expect(webpChunk(resolve(setDir(set), f)), `${body} ${slot} ${f}`).toBe('VP8 ');
+    // the night lights have to reach the shader with the same alpha. Every
+    // night set is accounted for here — its bytes read, or its absence a
+    // reason this root has already approved — because a loop over a list that
+    // came back empty is a green test that checked nothing. One tile per set
+    // is the whole set: a set is cut in a single pass by a single encoder.
+    const night = appSets().filter((s) => s.set.key === 'earth-night.v2');
+    expect(night.length, 'no night sets to check').toBeGreaterThan(0);
+    const { present, skipped } = setsOnDiskForApp();
+    for (const { body, slot, set } of night) {
+      const where = `${body} ${slot} ${set.key}/${set.tier}`;
+      if (!present.some((p) => p.set === set)) {
+        expect(skipped.join('\n'), `${where}: absent and unexplained`).toContain(`${set.key}/${set.tier}:`);
+        continue;
       }
+      const [tile] = readdirSync(setDir(set)).filter((n) => n.endsWith('.webp')).sort();
+      expect(tile, `${where}: no tiles in the folder`).toBeDefined();
+      expect(
+        webpChunk(resolve(setDir(set), tile)),
+        `${where} ${tile}: VP8L and VP8X can both carry alpha and VP8 cannot`,
+      ).toBe('VP8 ');
     }
   });
 

@@ -2653,7 +2653,11 @@ export class PlanetariumMode {
       mesh.getWorldQuaternion(this.sectorWorldQuat);
       this.sectorWorldQuatInv.copy(this.sectorWorldQuat).invert();
       // Spin gate: how fast this body's orientation turned since its last
-      // visit, in degrees per real second.
+      // visit, in degrees per real second. Latched per FAMILY key, not per
+      // body: two families of one body measure the same quaternion and keep
+      // one entry each, which is a duplicate rate and nothing worse — while a
+      // latch keyed on the body's name would let one family's suspend decide
+      // the other's, the collision every other lookup here is keyed to avoid.
       let spinning = false;
       const prev = this.sectorSpin.get(key);
       if (prev) {

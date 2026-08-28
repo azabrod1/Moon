@@ -155,6 +155,17 @@ varying vec3 vSunDir;
 
 void main() {
   vec4 nightColor = texture2D(nightTexture, vUv * uUvRepeat + uUvOffset);
+  // The composite's lights and its blue casts separate on the sign of the
+  // chroma, with a gap between them. Every light source measured on the map
+  // is warm — b-r from -8 to -37 counts across New York, London, Tokyo,
+  // Delhi, Cairo and Sao Paulo — while everything that is not a light is
+  // cold: snow and ice (Greenland +38, Svalbard +35, the Andes +23, the
+  // Himalaya +22, Norway's highlands +22), the map's own background (+12 to
+  // +25), and the polar no-data fill. Additive over a dark globe, an ice
+  // sheet at +38 is a lit continent that blooms. So fade a pixel out by how
+  // blue it is: gone by +12, the least blue of the casts, and untouched from
+  // neutral upward — eight counts of margin below the warmest light there is.
+  nightColor.rgb *= smoothstep(-12.0 / 255.0, 0.0, nightColor.r - nightColor.b);
   // Show night lights only on dark side
   float sunDot = dot(vNormal, vSunDir);
   float nightMix = 1.0 - smoothstep(${EARTH_NIGHT_MIX_DARK.toFixed(1)}, ${EARTH_NIGHT_MIX_LIT.toFixed(1)}, sunDot); // ordered edges (reversed smoothstep is undefined)

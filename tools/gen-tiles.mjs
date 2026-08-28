@@ -296,8 +296,14 @@ function nearNoData(r, g, b) {
 const NODATA_RESIDUE_MAX = 0.0005;
 
 /** The first row of a `height`-row equirect at or below 80 deg south — the
- *  latitude past which the composite is nothing but no-data fill. */
-const antarcticRow = (height) => Math.ceil(((90 + 80) / 180) * height);
+ *  latitude past which the composite is nothing but no-data fill. Every level
+ *  cut here is a full-sphere 2:1 equirect, which is the only shape this
+ *  arithmetic is right for; a latitude-cropped product would have to say so
+ *  rather than have the gate silently measure the wrong band. */
+const antarcticRow = (width, height) => {
+  if (width !== 2 * height) throw new Error(`polar band: ${width}x${height} is not a full-sphere 2:1 equirect`);
+  return Math.ceil(((90 + 80) / 180) * height);
+};
 
 /**
  * The mask ran, asserted on the pixels every artifact of this cut is made
@@ -315,7 +321,7 @@ function noDataGateRaw(raw, width, height, what) {
   for (let i = 0; i < raw.length; i += 3) {
     if (nearNoData(raw[i], raw[i + 1], raw[i + 2])) left++;
   }
-  const y0 = antarcticRow(height);
+  const y0 = antarcticRow(width, height);
   let notBackground = 0;
   for (let y = y0; y < height; y++) {
     for (let x = 0; x < width; x++) {
@@ -354,7 +360,7 @@ async function polarBandGate(file) {
     }
     return m.map((v) => v / n);
   };
-  const cap = meanOf(0, antarcticRow(info.height), info.width, info.height);
+  const cap = meanOf(0, antarcticRow(info.width, info.height), info.width, info.height);
   // Mid-Pacific, 5 deg either side of the equator: the emptiest water there is.
   const sea = meanOf(
     Math.round(info.width * ((-170 + 180) / 360)), Math.round(info.height * (85 / 180)),
@@ -368,6 +374,48 @@ async function polarBandGate(file) {
     throw new Error(`${name}: below 80S the mean is (${say(cap)}) against open ocean at (${say(sea)}) — ${off.toFixed(1)} counts apart, and the no-data fill is ${say(BLACK_MARBLE_NODATA[0].map(Number))}`);
   }
   console.log(`  polar band  ${name.padEnd(26)} PASS (cap ${say(cap)} vs ocean ${say(sea)}, ${off.toFixed(1)} counts apart; ${fromFill.toFixed(0)} from the fill)`);
+}
+
+/**
+ * And the same thing on the TILES of one level, which is the only way a level
+ * past the first can be checked at all: its equirect is gigabytes and the
+ * whole-map gate above needs the whole map in memory. The bottom row of a cut
+ * holds every pixel below 80 deg south, so the band is read out of those
+ * tiles' own bytes: after the mask it is the map's background and holds not
+ * one pixel of the fill. The tolerance is 3 counts against a fixed value
+ * rather than the 1 the raw gate uses — a lossy encode of a flat dithered
+ * field lands a couple of counts off, and by a different couple at each size
+ * (the 16K tiles come back at 4,5,14 for the 4,5,16 they were cut from).
+ */
+async function polarTileGate(key, tier, grid, content) {
+  const dir = await setDir(key, tier);
+  const { width, height } = gridSize(grid, content);
+  const tileW = content + 2 * GUTTER;
+  // The gate's band, in rows of the bottom tile's own image: its content
+  // starts one gutter in, and carries the level's last `content` rows.
+  const y0 = GUTTER + Math.max(0, antarcticRow(width, height) - (grid.rows - 1) * content);
+  const mean = [0, 0, 0];
+  let n = 0;
+  let fill = 0;
+  for (let c = 0; c < grid.cols; c++) {
+    const file = path.join(dir, `${c}_${grid.rows - 1}.webp`);
+    const data = await sharp(file, { limitInputPixels: false }).removeAlpha().raw().toBuffer();
+    for (let y = y0; y < GUTTER + content; y++) {
+      for (let x = GUTTER; x < GUTTER + content; x++) {
+        const i = (y * tileW + x) * 3;
+        mean[0] += data[i]; mean[1] += data[i + 1]; mean[2] += data[i + 2];
+        if (nearNoData(data[i], data[i + 1], data[i + 2])) fill++;
+        n++;
+      }
+    }
+  }
+  const say = (m) => m.map((v) => v.toFixed(1)).join(',');
+  const band = mean.map((v) => v / n);
+  const off = Math.max(...band.map((v, k) => Math.abs(v - BLACK_MARBLE_BACKGROUND_MEAN[k])));
+  if (off > 3 || fill > 0) {
+    throw new Error(`${key}/${tier}: below 80S the tiles mean (${say(band)}) against the map's background at (${say(BLACK_MARBLE_BACKGROUND_MEAN)}) with ${fill} of ${n} px still within a count of the fill ${BLACK_MARBLE_NODATA[0]} — the no-data mask did not reach this level`);
+  }
+  console.log(`  polar tiles ${`${key}/${tier}`.padEnd(26)} PASS (${n} px below 80S mean ${say(band)}, ${off.toFixed(1)} off the background; ${fill} near the fill)`);
 }
 
 async function writeWebp(pipeline, out) {
@@ -1309,11 +1357,13 @@ async function levelRowSource(job, level) {
     const water = job.grade ? job.grade(raw) : undefined;
     return { rows: memoryRowSource(raw, width, height), water };
   }
-  // The cached resample's NAME states every transform baked into it (today
-  // only the ocean grade), so changing one cannot be silently skipped by a
-  // machine that already holds the old bytes. A per-pixel mask is deliberately
-  // not one of them: it runs on the rows below, after the cache, where no
-  // cache can reach it.
+  // The cached resample's NAME states every transform baked into it, so
+  // changing one cannot be silently skipped by a machine that already holds
+  // the old bytes. The per-pixel no-data mask is one of them: it keys SOURCE
+  // values, so it has to run before the resample blends them away, which puts
+  // it inside these cached bytes. `rawToken` is the only thing standing
+  // between a stale cache and a re-published set with the mask missing from
+  // it, so it changes whenever the mask does.
   const stem = [job.key, level.tier, `${width}x${height}`, job.rawToken].filter(Boolean).join('.');
   const out = cache('levels', `${stem}.rgb`);
   await mkdir(path.dirname(out), { recursive: true });
@@ -1358,6 +1408,7 @@ for (const name of names) {
       for (const level of levelsOf(job)) {
         await verify(job.key, level.tier, level.grid, CONTENT, job.ref);
         await seamGate(job.key, level.tier, level.grid, CONTENT);
+        if (job.mask) await polarTileGate(job.key, level.tier, level.grid, CONTENT);
       }
       // A level against the one it sits on: both have to be on disk, so a
       // run pinned to one level checks only that level's own gates.
@@ -1396,6 +1447,10 @@ for (const name of names) {
           if (job.mask) for (const d of job.downsamples ?? []) await polarBandGate(d.out);
         }
         await cutGrid(rows, level.grid, CONTENT, job.key, level.tier, job.webp ?? PHOTO_WEBP);
+        // Every level, not only the one the whole-map gate can read: the mask
+        // runs for all of them, and a run pinned to a finer level with
+        // --level=n has nothing else standing between it and an unmasked cap.
+        if (job.mask) await polarTileGate(job.key, level.tier, level.grid, CONTENT);
         await verify(job.key, level.tier, level.grid, CONTENT, job.ref);
         await seamGate(job.key, level.tier, level.grid, CONTENT);
         if (index > 0) {

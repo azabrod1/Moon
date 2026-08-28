@@ -9,6 +9,7 @@ import {
   SECTOR_EVICT_DWELL_MS,
   SECTOR_FETCH_POOL_DESKTOP,
   SECTOR_INFLIGHT_CAP_DESKTOP,
+  SECTOR_KEEP_LIGHT_MARGIN,
   SECTOR_MAX_LEVEL,
   SECTOR_NIGHT_DOT,
   SECTOR_RELEASE_TEXEL_PX,
@@ -21,6 +22,7 @@ import {
   SECTOR_WANT_TEXEL_PX,
   SECTOR_WANT_TEXEL_PX_TOUCH,
   SectorStreamer,
+  daySectorFamily,
   sectorFamilyKey,
   sectorLevel16k,
   sectorLevel32k,
@@ -228,6 +230,21 @@ function sunPastSector(deg: number): THREE.Vector3 {
 function sectorSunExtremes(sun: THREE.Vector3): { lit: number; dark: number } {
   const at = (dir: THREE.Vector3) => sectorNearestDirection(G, SEC, dir, new THREE.Vector3()).dot(sun);
   return { lit: at(sun), dark: at(sun.clone().negate()) };
+}
+
+/** The sun placed so that one of those two extremes reads exactly `target`.
+ *  Both fall as the sun leaves the sector, so a bisection lands on the gate's
+ *  own input — which is what lets a test sit INSIDE the release margin rather
+ *  than somewhere near it. */
+function sunWhereExtremeIs(which: 'lit' | 'dark', target: number): THREE.Vector3 {
+  let lo = 0;
+  let hi = 180;
+  for (let i = 0; i < 60; i++) {
+    const mid = (lo + hi) / 2;
+    if (sectorSunExtremes(sunPastSector(mid))[which] > target) lo = mid;
+    else hi = mid;
+  }
+  return sunPastSector((lo + hi) / 2);
 }
 
 describe('SectorStreamer', () => {
@@ -477,7 +494,7 @@ describe('SectorStreamer', () => {
     expect(loader.requests).toEqual([]);
   });
 
-  it('does not reload a resident where no fetch is allowed — past the limb, on the night side', () => {
+  it('does not reload a resident where no fetch is allowed — past the limb, past the terminator', () => {
     const mars = marsWithoutRelief();
     loader.auto = true;
     const sunOver = (c: number, r: number) => sectorCentreDirection(G, { c, r }, new THREE.Vector3());
@@ -485,8 +502,10 @@ describe('SectorStreamer', () => {
     loader.auto = false;
     loader.requests.length = 0;
     mars.material.normalMap = new THREE.Texture();
-    // Sunset first: the resident stays (kept while big) but nothing is fetched for it.
-    streamer.update('Mars', cameraOver(2, 1), measureOf({ '2_1': 2 }), 16, 'none', sunOver(6, 2));
+    // Dusk, inside the margin the resident is held through: it stays, and
+    // nothing is fetched for it.
+    const dusk = sunWhereExtremeIs('lit', SECTOR_NIGHT_DOT - SECTOR_KEEP_LIGHT_MARGIN / 2);
+    streamer.update('Mars', cameraOver(2, 1), measureOf({ '2_1': 2 }), 16, 'none', dusk);
     expect(streamer.stats().bodies.Mars.resident).toEqual(['2_1']);
     expect(loader.requests).toEqual([]);
     // Sunrise: now it reloads.
@@ -872,7 +891,7 @@ describe('SectorStreamer', () => {
     expect(streamer.stats().resident).toBe(0); // …until it is small as well
   });
 
-  it('never fetches a sector deep on the night side; a resident one stays while it is big', () => {
+  it('never fetches a sector deep on the night side, and gives up a resident the sun leaves', () => {
     loader.auto = true;
     const sunOver = (c: number, r: number) => sectorCentreDirection(G, { c, r }, new THREE.Vector3());
     // Sun over the antipode of sector 2_1: the sector is deep in the night.
@@ -881,9 +900,10 @@ describe('SectorStreamer', () => {
     // Sun over the sector: fetched.
     streamer.update('Earth', cameraOver(2, 1), measureOf({ '2_1': 2 }), 16, 'none', sunOver(2, 1));
     expect(streamer.stats().resident).toBe(1);
-    // Sunset: kept while big (score 0 — the first to go under cap pressure).
+    // Sunset, and the clock keeps running under a parked camera: the sector
+    // is as big as it ever was, and draws nothing at all. It goes.
     streamer.update('Earth', cameraOver(2, 1), measureOf({ '2_1': 2 }), 32, 'none', sunOver(6, 2));
-    expect(streamer.stats().resident).toBe(1);
+    expect(streamer.stats().resident).toBe(0);
     // Twilight — the sector centre just past the terminator (dot ≈ −0.08) —
     // is still fetchable: its day-side half is lit.
     streamer.dropAll();
@@ -907,6 +927,45 @@ describe('SectorStreamer', () => {
     streamer.dropAll();
     streamer.update('Earth', cameraOver(2, 1), measureOf({ '2_1': 2 }), 80, 'none', sunPastCornerBy(100));
     expect(streamer.stats().resident).toBe(0);
+  });
+
+  it('keeps a resident through the release margin past the gate, and lets it go after', () => {
+    loader.auto = true;
+    // The gate that admits and the gate that releases are the same test a
+    // margin apart, so a terminator creeping across a sector cannot flap a
+    // 23 MiB upload: the sector is refused a fresh tile the moment its most
+    // lit point passes the twilight margin, keeps the one it has for the
+    // whole of SECTOR_KEEP_LIGHT_MARGIN past it, and only then gives it up.
+    const inBand = sunWhereExtremeIs('lit', SECTOR_NIGHT_DOT - SECTOR_KEEP_LIGHT_MARGIN / 2);
+    const past = sunWhereExtremeIs('lit', SECTOR_NIGHT_DOT - SECTOR_KEEP_LIGHT_MARGIN - 0.01);
+    expect(sectorSunExtremes(inBand).lit).toBeCloseTo(SECTOR_NIGHT_DOT - SECTOR_KEEP_LIGHT_MARGIN / 2, 6);
+    expect(sectorSunExtremes(past).lit).toBeCloseTo(SECTOR_NIGHT_DOT - SECTOR_KEEP_LIGHT_MARGIN - 0.01, 6);
+    streamer.update('Earth', cameraOver(2, 1), measureOf({ '2_1': 2 }), 0, 'none', sunPastSector(0));
+    expect(streamer.stats().resident).toBe(1);
+    // Inside the band: refused a new tile, and keeping the one it has.
+    streamer.update('Earth', cameraOver(2, 1), measureOf({ '2_1': 2 }), 16, 'none', inBand);
+    expect(streamer.stats().resident).toBe(1);
+    expect(streamer.stats().bodies.Earth.scores['2_1']).toBeUndefined();
+    streamer.update('Earth', cameraOver(2, 1), measureOf({ '2_1': 2 }), 32, 'none', past);
+    expect(streamer.stats().resident).toBe(0);
+    // And the release is a release, not a flap: a sunset walked one degree at
+    // a time, then a sunrise, is one drop and one admission — not a pair per
+    // step across the edge.
+    streamer.dropAll();
+    let flips = 0;
+    let held = 0;
+    let t = 100;
+    const step = (sun: THREE.Vector3) => {
+      streamer.update('Earth', cameraOver(2, 1), measureOf({ '2_1': 2 }), (t += 16), 'none', sun);
+      const now = streamer.stats().resident;
+      if (now !== held) flips += 1;
+      held = now;
+    };
+    for (let deg = 0; deg <= 180; deg += 1) step(sunPastSector(deg));
+    expect(held).toBe(0);
+    for (let deg = 180; deg >= 0; deg -= 1) step(sunPastSector(deg));
+    expect(held).toBe(1);
+    expect(flips).toBe(3); // the first admission, the sunset, the sunrise
   });
 
   it('a crop failing while the colour tile waits in the warm queue counts as ONE failure', () => {
@@ -1600,7 +1659,10 @@ describe('SectorStreamer', () => {
     // admits it, or what it gives up first shows here as a diff.
     const events: string[] = [];
     let frame = 0;
-    const tileId = (url: string) => /\/16k\.[0-9a-f]{8}\/(\d+_\d+)\.webp$/.exec(url)?.[1] ?? null;
+    // The set key is part of the id, not only the tier: a body with a second
+    // family publishes a level-0 set of its own at the same 16k tier, and a
+    // tier-only pattern would record its tiles as this trace's.
+    const tileId = (url: string) => /\/earth-day\.v2\/16k\.[0-9a-f]{8}\/(\d+_\d+)\.webp$/.exec(url)?.[1] ?? null;
     const pending: Array<() => void> = [];
     const recording = (url: string, onLoad: (t: THREE.Texture) => void) => {
       const id = tileId(url);
@@ -1621,13 +1683,20 @@ describe('SectorStreamer', () => {
     let clock = 0;
     const run = (sizes: Record<string, number>, frames: number) => {
       for (let i = 0; i < frames; i++) {
-        s.update('Earth', INSIDE, measureOf(sizes), clock);
+        s.update('Earth', INSIDE, measureOf(sizes), clock, 'none', sun);
         // The fetches in flight land between frames.
         for (const settle of pending.splice(0)) settle();
         frame += 1;
         clock += 16;
       }
     };
+    // A real sun, over the north pole: the day family's gate and its weight
+    // ramp both run, where a null sun would pin lightFraction at 1 and leave
+    // this trace blind to the one term every body's day sectors are ranked
+    // by. At this sun every sector the script poses is fetchable, and the
+    // northern row it admits from is lit at every sample point — the southern
+    // row it never admits from is the one the ramp scales down.
+    const sun = new THREE.Vector3(0, 1, 0);
     // The script is frames, so it needs somewhere to spend the seconds a
     // sector is protected for after it appears.
     const hold = (ms: number) => {
@@ -1686,6 +1755,27 @@ describe('SectorStreamer', () => {
     ]);
     const stats = s.stats();
     expect(stats.residentBytes + stats.reserved).toBeLessThanOrEqual(stats.budget);
+    // And the weight really is in the ranking these decisions came out of:
+    // the northern row the script admits from is lit at all six sample
+    // points and scores its magnification whole, while the southern row is
+    // lit at three of them and scores half of its own.
+    expect(stats.bodies.Earth.scores['4_1']).toBeCloseTo(3.0, 9);
+    expect(stats.bodies.Earth.scores['4_2']).toBeCloseTo(1.4 / 2, 9);
+  });
+
+  it('scales a day sector by how much of it the sun is on', () => {
+    // The day family's own ramp, the counterpart of the night shell's mask:
+    // nothing at the twilight margin its gate refuses past, everything in
+    // full sun, and a smooth step between — so a sector crossing the
+    // terminator gives up its score gradually instead of at a line. This is
+    // the term every registered day family is ranked through, the Moon's and
+    // Mars's included.
+    const weight = daySectorFamily(new THREE.MeshStandardMaterial()).weight;
+    expect(weight(SECTOR_NIGHT_DOT)).toBe(0);
+    expect(weight(SECTOR_NIGHT_DOT - 0.5)).toBe(0);
+    expect(weight(0)).toBe(1);
+    expect(weight(1)).toBe(1);
+    expect(weight(SECTOR_NIGHT_DOT / 2)).toBeCloseTo(0.5, 12);
   });
 
   it('asks the measure about each sector at its point nearest the camera, not its centre', () => {
@@ -1814,6 +1904,28 @@ describe('a body\'s night family: a second set of sectors on the night shell', (
     const late = scoresAt(160); // …and mostly in the dark
     expect(early.day).toBeGreaterThan(early.night);
     expect(late.night).toBeGreaterThan(late.day);
+  });
+
+  it('gives up a night resident the sunrise reaches, a margin past its own edge', () => {
+    loader.auto = true;
+    // The mirror of the day family's release, read on the shell's own edge:
+    // once the DARKEST point of a night sector has risen past the lit edge,
+    // no pixel of it draws anything and its tile is the day family's to
+    // spend. Held through the margin first, so a sector sitting on the
+    // terminator cannot flap one.
+    const inBand = sunWhereExtremeIs('dark', EARTH_NIGHT_MIX_LIT + SECTOR_KEEP_LIGHT_MARGIN / 2);
+    const past = sunWhereExtremeIs('dark', EARTH_NIGHT_MIX_LIT + SECTOR_KEEP_LIGHT_MARGIN + 0.01);
+    expect(sectorSunExtremes(inBand).dark).toBeCloseTo(EARTH_NIGHT_MIX_LIT + SECTOR_KEEP_LIGHT_MARGIN / 2, 6);
+    expect(sectorSunExtremes(past).dark).toBeCloseTo(EARTH_NIGHT_MIX_LIT + SECTOR_KEEP_LIGHT_MARGIN + 0.01, 6);
+    frame({ '2_1': 2 }, sunPastSector(180), 1000);
+    expect(held().night).toEqual(['night/2_1']);
+    // Past the fetch gate, inside the margin: no new tile, and it keeps the
+    // one it has.
+    frame({ '2_1': 2 }, inBand, 2000);
+    expect(held().night).toEqual(['night/2_1']);
+    expect(streamer.stats().bodies.Earth.scores['night/2_1']).toBeUndefined();
+    frame({ '2_1': 2 }, past, 3000);
+    expect(held().night).toEqual([]);
   });
 
   it('reserves a night sector\'s colour tile and nothing else', () => {

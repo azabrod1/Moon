@@ -118,6 +118,42 @@ describe('the night sector material', () => {
       .toContain(`smoothstep(${EARTH_NIGHT_MIX_DARK.toFixed(1)}, ${EARTH_NIGHT_MIX_LIT.toFixed(1)}, sunDot)`);
   });
 
+  it('fades out what is blue on the map and leaves the lights alone', () => {
+    // Black Marble's lights are all warm and everything it draws that is not
+    // a light is blue: snow and ice, the background wash, the polar no-data
+    // fill. Additive over a dark globe an ice sheet reads as a lit continent
+    // and blooms, so the shader keys on the sign of the chroma. These are the
+    // means the edges were set from, measured on the shipped 4K map, and the
+    // arithmetic is the shader's own line.
+    // The shader's line, in counts: smoothstep(-12, 0, red - blue).
+    const keep = (r: number, b: number): number => {
+      const t = Math.max(0, Math.min(1, (r - b + 12) / 12));
+      return t * t * (3 - 2 * t);
+    };
+    // Patch means as (red, blue); green is not in the key.
+    const artefacts: Array<[string, number, number]> = [
+      ['Greenland interior (42,48,80)', 41.8, 80.0],
+      ['Svalbard (31,35,66)', 30.6, 65.7],
+      ['the Himalaya (26,25,48)', 26.0, 48.4],
+      ['Norway highlands (20,22,42)', 20.0, 41.9],
+      ['the Andes (26,25,49)', 25.6, 49.0],
+      ['the Sahara background (35,32,60)', 35, 60],
+      ['open ocean (4,5,16)', 4, 16],
+    ];
+    for (const [where, r, b] of artefacts) expect(keep(r, b), where).toBe(0);
+    // Six cities sampled run 160 to 219 in red and 8 to 37 counts warm, so
+    // the marginal one is eight counts clear of neutral — and neutral itself
+    // is untouched, which is where the margin comes from.
+    const lights: Array<[string, number, number]> = [
+      ['the warmest-marginal city', 168, 160],
+      ['a bright city core', 219, 182],
+      ['neutral', 40, 40],
+    ];
+    for (const [where, r, b] of lights) expect(keep(r, b), where).toBe(1);
+    expect(createEarthNightShellMaterial(null).fragmentShader)
+      .toContain('nightColor.rgb *= smoothstep(-12.0 / 255.0, 0.0, nightColor.r - nightColor.b);');
+  });
+
   it('reads the width of the map the shell is drawing', () => {
     const shell = createEarthNightShellMaterial(null);
     const family = earthNightSectorFamily(shell);

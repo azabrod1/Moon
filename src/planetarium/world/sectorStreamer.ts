@@ -21,8 +21,11 @@
  * point): a tile is wanted once that map is visibly magnified and released
  * once it no longer is, with hysteresis between, so a disc breathing around
  * the threshold never flaps a 21 MiB upload. A sector that is magnified but
- * off the frame or on the night side is never fetched, yet stays resident
- * while it is magnified — a pan or a sunrise brings it back for free.
+ * off the frame is never fetched, yet stays resident while it is magnified —
+ * a pan brings it back for free. Light is the one thing residency does not
+ * survive: a sector its family has stopped drawing anywhere holds a tile for
+ * nothing, so it is released a margin past its own light edge (see the gate
+ * below).
  *
  * A tile is drawn only once it is resident on the GPU: the fetch decodes off
  * the main thread (textureBitmapLoader), the warm pump uploads it on its
@@ -65,6 +68,19 @@
  * from the twilight margin to full sun, night's is the shell's own night mask
  * — so at the terminator a pair of tiles for the same ground is ranked by how
  * much of that ground each one lights, instead of both being paid for in full.
+ * The gate reads once more for a RESIDENT, a margin later
+ * (SECTOR_KEEP_LIGHT_MARGIN): a sector whose ground has turned past its own
+ * family's edge draws nothing anywhere and is released, whichever side it is.
+ *
+ * A known trade-off at the terminator, measured over the US east coast at
+ * 1.5 R: the night family takes four sectors of the desktop budget and the
+ * day family makes four fewer admissions for it, two of them level-0 blocks
+ * of the lit crescent that fall back to the globe's 4K map so the dark limb
+ * can be sharp. Nothing is mis-ranked — each night sector out-scores what it
+ * displaced, and where both families want the same ground the lit one wins —
+ * the budget is simply binding. Keeping the crescent sharp as well needs the
+ * globe's tier ladder and the tiles to draw on one ledger, which they do not
+ * yet.
  *
  * A set is a PYRAMID of levels (SectorSetSpec.levels), and nothing here is
  * written for a particular one: a slot carries its level, the level carries
@@ -337,6 +353,17 @@ const SECTOR_FALLBACK_MAP_WIDTH = 4096;
  *  its own, which is the shell's night mask (SectorFamily.lightEdge); the two
  *  are separate numbers that happen to be equal today. */
 export const SECTOR_NIGHT_DOT = -0.1;
+
+/** How far past its family's light edge a RESIDENT sector's extreme point
+ *  travels before it is released. A sector its family has stopped drawing
+ *  anywhere is a tile's worth of a shared budget for nothing on screen — a
+ *  night sector whose ground has turned into the sunrise, a day sector that
+ *  has turned past the terminator — and at the terminator that is exactly the
+ *  size of the candidate the other family is being refused. Releasing at the
+ *  edge itself would flap a 21 MiB upload as the edge crept back and forth
+ *  across it, so the release runs this far past the gate. One margin serves
+ *  both families: they measure opposite ends of the same rule. */
+export const SECTOR_KEEP_LIGHT_MARGIN = 0.05;
 
 /** What the sectors of every body together may hold on the GPU. This is the
  *  real bound: bytes, reserved from the known tile layouts at admission
@@ -638,7 +665,9 @@ export interface SectorStats {
      *  (0 while nothing faces the camera or the body is gated off). */
     maxTexelPx: number;
     gpuBytes: number;
-    /** The same counts split by pyramid level, coarsest first. */
+    /** The same counts split by pyramid level, coarsest first — per BODY like
+     *  everything here, so a body with two families adds both into one level:
+     *  only the ids in `resident` say which family a slot belongs to. */
     byLevel: Array<{ resident: number; loading: number; gpuBytes: number }>;
     /** Every slot the last selection WANTED, by id, with the screen-space
      *  error that ranked it — resident, loading and blocked alike. The lists
@@ -664,7 +693,12 @@ function slotId(slot: SectorSlot, side: SectorSide = 'day'): string {
  *  centre. Five points is what separates a sector the family lights entirely
  *  from one it lights along an edge, which is all the score needs; the gate's
  *  own extreme point is added to them per frame, so a sector that is fetchable
- *  can never average to a weight of zero. */
+ *  can never average to a weight of zero. Two consequences worth knowing
+ *  before reading a lightFraction: a top- or bottom-row sector has two of its
+ *  four corners at the same pole (sphereDirection(u, 0) is the pole for every
+ *  u), so a polar sector is sampled at three places and its pole twice; and
+ *  the extreme point is by definition the most favourable one for its own
+ *  family, so the mean can never fall below a sixth of it. */
 function sectorLightSamples(grid: SectorGrid, s: Sector): THREE.Vector3[] {
   const u0 = s.c / grid.cols;
   const u1 = (s.c + 1) / grid.cols;
@@ -1046,6 +1080,9 @@ export class SectorStreamer {
       let texelPx = 0;
       let score = 0;
       let fetchable = false;
+      // Whether a resident may stay for the light, as opposed to the size —
+      // true wherever there is no sun to measure against.
+      let litToKeep = true;
       const grid = body.levels[slot.level].grid;
       // Slots below level 0 are visited only under a parent that is wanted or
       // kept this frame — a parent's own map is 4x coarser, so where it has
@@ -1078,6 +1115,13 @@ export class SectorStreamer {
             const unlit = family.side === 'day'
               ? extremeDot < family.lightEdge
               : extremeDot >= family.lightEdge;
+            // The same test a margin later decides whether a RESIDENT stays:
+            // once the ground under it has turned past its family's edge the
+            // sector draws nothing at all, and the bytes are the other
+            // family's to use.
+            litToKeep = family.side === 'day'
+              ? extremeDot >= family.lightEdge - SECTOR_KEEP_LIGHT_MARGIN
+              : extremeDot < family.lightEdge + SECTOR_KEEP_LIGHT_MARGIN;
             if (unlit) fetchable = false;
             else {
               let sum = family.weight(extremeDot);
@@ -1104,7 +1148,7 @@ export class SectorStreamer {
       }
       slot.score = score;
       slot.wanted = fetchable && texelPx > this.wantTexelPx;
-      slot.keep = texelPx > this.releaseTexelPx;
+      slot.keep = texelPx > this.releaseTexelPx && litToKeep;
       if (slot.loading && nowMs - slot.loading.startedAtMs > SECTOR_ATTEMPT_TIMEOUT_MS) this.failLoad(slot);
       if (slot.state !== 'idle' && !slot.keep) this.release(slot);
       // A load for a set the base no longer has is abandoned: a fresh

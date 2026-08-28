@@ -1484,6 +1484,101 @@ describe('SectorStreamer', () => {
     expect(s.residentBytes).toBe(5 * EARTH_SET_BYTES);
   });
 
+  it('takes the same level-0 decisions in the same order: a golden trace', () => {
+    // A scripted session — a pose, a pan, a globe map landing on the budget,
+    // a context loss — with every fetch the streamer starts and every tile it
+    // drops recorded in order. Any change to what level 0 admits, when it
+    // admits it, or what it gives up first shows here as a diff.
+    const events: string[] = [];
+    let frame = 0;
+    const tileId = (url: string) => /\/16k\/(\d+_\d+)\.webp$/.exec(url)?.[1] ?? null;
+    const pending: Array<() => void> = [];
+    const recording = (url: string, onLoad: (t: THREE.Texture) => void) => {
+      const id = tileId(url);
+      if (id) events.push(`f${frame} +${id}`);
+      const tex = new THREE.Texture();
+      if (id) tex.addEventListener('dispose', () => events.push(`f${frame} -${id}`));
+      pending.push(() => onLoad(tex));
+    };
+    const s = new SectorStreamer({ touch: false, load: recording, warm: warm.warm });
+    s.register(earthHandle());
+    // Room for four sets, so the working set is decided by the budget from
+    // the first frame rather than by the count cap.
+    s.setGlobalMapBytes(SECTOR_ENVELOPE_BYTES_DESKTOP - 4 * EARTH_SET_BYTES);
+    const poseA = { '2_1': 3.0, '3_1': 2.6, '1_1': 2.2, '4_1': 1.8, '2_2': 1.4, '3_2': 1.2 };
+    // A pan east: three of the six leave the measure, one drops under the
+    // release size, and three sectors ahead of the camera come up.
+    const poseB = { '4_1': 3.0, '5_1': 2.6, '3_1': 2.2, '6_1': 1.8, '4_2': 1.4, '2_1': 0.5 };
+    let clock = 0;
+    const run = (sizes: Record<string, number>, frames: number) => {
+      for (let i = 0; i < frames; i++) {
+        s.update('Earth', INSIDE, measureOf(sizes), clock);
+        // The fetches in flight land between frames.
+        for (const settle of pending.splice(0)) settle();
+        frame += 1;
+        clock += 16;
+      }
+    };
+    // The script is frames, so it needs somewhere to spend the seconds a
+    // sector is protected for after it appears.
+    const hold = (ms: number) => {
+      clock += ms;
+      events.push(`f${frame} * ${ms / 1000}s of looking`);
+    };
+    run(poseA, 4);
+    hold(2_000);
+    run(poseA, 2);
+    run(poseB, 3);
+    hold(2_000);
+    run(poseB, 2);
+    events.push(`f${frame} * the globe's own map grows: room for two sets`);
+    s.setGlobalMapBytes(SECTOR_ENVELOPE_BYTES_DESKTOP - 2 * EARTH_SET_BYTES);
+    run(poseB, 2);
+    hold(2_000);
+    // A sector ahead of the camera comes up sharp enough to be worth a
+    // resident one: the only eviction in the script that is not a give-back.
+    const poseC = { ...poseB, '7_1': 12 };
+    run(poseC, 3);
+    events.push(`f${frame} * context loss`);
+    s.dropAll();
+    run(poseC, 3);
+    expect(events).toEqual([
+      // Two admissions a frame (the in-flight cap), strongest first, until the
+      // budget is full at four; the two under it never out-rank the weakest
+      // by the margin, dwell or no dwell.
+      'f0 +2_1',
+      'f0 +3_1',
+      'f1 +1_1',
+      'f1 +4_1',
+      'f4 * 2s of looking',
+      // The pan: one sector leaves the measure, one falls under the release
+      // size, and the two strongest of what is now ahead take their room.
+      'f6 -1_1',
+      'f6 -2_1',
+      'f6 +5_1',
+      'f6 +6_1',
+      'f9 * 2s of looking',
+      // The give-back is immediate and takes the weakest first.
+      "f11 * the globe's own map grows: room for two sets",
+      'f11 -6_1',
+      'f11 -3_1',
+      'f13 * 2s of looking',
+      // The one eviction for a candidate: it out-ranks the weakest resident
+      // by more than the margin, and takes exactly that one sector.
+      'f13 -5_1',
+      'f13 +7_1',
+      // Everything is dropped and streams back on the next frame, strongest
+      // first, into the budget as it now stands.
+      'f16 * context loss',
+      'f16 -4_1',
+      'f16 -7_1',
+      'f16 +7_1',
+      'f16 +4_1',
+    ]);
+    const stats = s.stats();
+    expect(stats.residentBytes + stats.reserved).toBeLessThanOrEqual(stats.budget);
+  });
+
   it('asks the measure about each sector at its point nearest the camera, not its centre', () => {
     const asked = new Map<string, THREE.Vector3>();
     const recording = (centre: THREE.Vector3, _r: number, surfaceDir: THREE.Vector3): SectorMeasure | null => {

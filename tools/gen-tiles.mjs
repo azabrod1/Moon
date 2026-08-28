@@ -125,11 +125,14 @@ const rawOf = (buf) => sharp(buf, { raw: { width: FULL_W, height: FULL_H, channe
  * product paints every sea and large lake close to black — the open ocean
  * (2,5,20) but also the Persian Gulf, Caspian, Baltic and Yellow Sea at
  * (0,3,4), which a blue-dominance test misses and would leave as black holes
- * beside a blue ocean. Land never gets that dark (the darkest rainforest
- * sits at luminance 25+, water under 12), so a luminance ramp splits them;
- * the greenest of the dark forest pixels, which reach into the ramp, are
- * held back by a green-over-blue term that dark lakes (Superior 9,18,8) do
- * not trip. SHALLOW: the bright turquoise banks and reef shelves
+ * beside a blue ocean. Land never gets that dark: measured on the source,
+ * water sits under luminance 12 and land above 22 (the darkest rainforest
+ * 25+, with a thin band of dark highland forest reaching down to ~19), so
+ * a ramp from 12 to 22 splits them, and a green-over-blue term holds back
+ * the forest pixels inside the ramp (New Guinea highlands 13,24,5 -> 0)
+ * while the dark lakes mostly keep their score (Superior 9,18,8 keeps 59%
+ * of it at full resolution; at 4096 it averages to 0,5,12 and keeps all).
+ * SHALLOW: the bright turquoise banks and reef shelves
  * (Bahamas 8,127,151) are water too, and gloss over them is the sun glint
  * the real coast shows; blue-over-red finds them, and nothing on land is
  * blue-over-red by more than a few units (ice, snow and salt are neutral).
@@ -234,12 +237,18 @@ async function cutDataCrops(srcPath, key, tier, spanU = 1) {
  *  to 2048 for the boot map the far view samples. The averaged score is
  *  quantised to 16 levels first: a coast edge in 16 steps of 0.03
  *  roughness is indistinguishable from a continuous one under the sheen,
- *  and the lossless boot file drops from 282 KB to 81 KB for it. */
+ *  and the lossless boot file drops from 282 KB to 75 KB for it. */
 async function deriveEarthRoughness(water) {
   const ROUGH_LAND = 0.92, ROUGH_WATER = 0.45, LEVELS = 16;
   const W = 4096, H = 2048;
-  const scoreAt = (w, h) => sharp(water, { raw: { width: FULL_W, height: FULL_H, channels: 1 }, limitInputPixels: false })
-    .resize(w, h, { fit: 'fill', kernel: 'mitchell' }).raw().toBuffer();
+  // sharp hands a one-channel raw input back as three channels unless told
+  // to keep it grey; a three-channel score read as one scrambles the map.
+  const scoreAt = async (w, h) => {
+    const score = await sharp(water, { raw: { width: FULL_W, height: FULL_H, channels: 1 }, limitInputPixels: false })
+      .resize(w, h, { fit: 'fill', kernel: 'mitchell' }).toColourspace('b-w').raw().toBuffer();
+    if (score.length !== w * h) throw new Error(`water score at ${w}x${h}: ${score.length} bytes, not ${w * h}`);
+    return score;
+  };
   const roughOf = (score) => {
     const rough = Buffer.alloc(score.length * 3);
     for (let p = 0; p < score.length; p++) {
@@ -447,7 +456,7 @@ for (const name of names) {
     // colour set (the tiles and downsamples are left alone). A derived map
     // needs the graded source again, but not its tiles.
     for (const d of job.dataCrops ?? []) await cutDataCrops(d.src, d.key, d.tier, d.spanU ?? 1);
-    if (job.derive) await job.derive(job.grade(await fullRaw(job.src(), job.match)));
+    if (job.derive && job.grade && job.src) await job.derive(job.grade(await fullRaw(job.src(), job.match)));
   } else if (job.flat) {
     await writeWebp(sharp(job.flat.src(), { limitInputPixels: false }).removeAlpha()
       .resize(4096, 2048, { fit: 'fill', kernel: 'lanczos3' }), job.flat.out);

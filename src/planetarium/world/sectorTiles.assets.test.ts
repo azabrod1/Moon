@@ -83,10 +83,11 @@ describe('shipped sector tile sets', () => {
   });
 
   it('every crop set names the width of the base map it was cut from', () => {
-    // The map each crop set was cut from. Earth's gloss mask is derived at
-    // 4096 by gen-tiles and its crops cut there; the whole-globe map ships at
-    // half that width (the far view needs no more), so its shipped file is
-    // exactly a 2x downsample of the crops' base.
+    // The map each crop set was cut from. Earth's gloss mask is derived by
+    // gen-tiles from one full-resolution water score: the crops are cut from
+    // its 4096 resize, the whole-globe file is its 2048 resize (the far view
+    // needs no more) — so the shipped width is half the crops' base width,
+    // which is all this pins; the crop dimensions are pinned above.
     const baseFiles: Record<string, { file: string; shippedScale: number }> = {
       'earth-bump': { file: PLANET_TEXTURE_FILES.earthBump, shippedScale: 1 },
       'earth-roughness.v2': { file: PLANET_TEXTURE_FILES.earthRoughness, shippedScale: 0.5 },

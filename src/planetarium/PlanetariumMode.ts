@@ -1734,7 +1734,9 @@ export class PlanetariumMode {
     this.rendersThroughComposer = rendersThroughComposer;
     // Capture device texture caps from the live renderer before any body loads,
     // so anisotropy and tier limits apply to the very first textures created.
-    captureDeviceTextureCaps(renderer);
+    // The touch budget is the same device class the sector caps and the
+    // boot warm use, not a bare touchscreen test: a touch laptop is a desktop.
+    captureDeviceTextureCaps(renderer, this.touchFirstDevice());
     // Resolve the bitmap-upload probe during construction: every streamed
     // boot texture awaits its verdict before fetching, so starting it here
     // takes it off the first fetch's critical path.

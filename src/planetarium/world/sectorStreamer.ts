@@ -264,7 +264,11 @@ export interface SectorStreamerOptions {
 
 export interface SectorStats {
   resident: number;
+  /** Fresh admissions in flight. */
   loading: number;
+  /** Every load in flight — admissions and residents' in-place reloads —
+   *  the figure the in-flight cap counts. */
+  inflight: number;
   /** GPU memory the sector textures hold, estimated from their dimensions
    *  (RGBA8 plus a third for mips) — resident sets and what loads have
    *  decoded so far. The caps are counts; this is the figure to read them
@@ -273,6 +277,8 @@ export interface SectorStats {
   bodies: Record<string, {
     resident: string[];
     loading: string[];
+    /** Residents reloading in place (also listed under resident). */
+    reloading: string[];
     /** Largest device-px-per-base-texel measured for the body this frame
      *  (0 while nothing faces the camera or the body is gated off). */
     maxTexelPx: number;
@@ -498,8 +504,11 @@ export class SectorStreamer {
     // new admissions: the base gained (or lost) a relief map, and a sector
     // that shades differently from the globe around it is the worse defect.
     // Releasing them instead would blink each one sharp -> soft -> sharp.
+    // Only where a fetch is allowed at all (on the frame, on the day side —
+    // score > 0): a resident past the limb keeps its old set until a pan
+    // brings it back, as an admission there would wait too.
     const stale = slots
-      .filter((s) => s.state === 'resident' && !s.loading && s.signature !== signature && nowMs >= s.retryAtMs)
+      .filter((s) => s.state === 'resident' && !s.loading && s.score > 0 && s.signature !== signature && nowMs >= s.retryAtMs)
       .sort((a, b) => b.score - a.score);
     for (const slot of stale) {
       if (this.inflightCount() >= this.inflightCap) break;
@@ -533,22 +542,26 @@ export class SectorStreamer {
   }
 
   stats(): SectorStats {
-    const out: SectorStats = { resident: 0, loading: 0, gpuBytes: 0, bodies: {} };
+    const out: SectorStats = { resident: 0, loading: 0, inflight: 0, gpuBytes: 0, bodies: {} };
     for (const [name, body] of this.bodies) {
       const resident: string[] = [];
       const loading: string[] = [];
+      const reloading: string[] = [];
       let gpuBytes = 0;
       for (const s of body.slots) {
         const id = `${s.sector.c}_${s.sector.r}`;
-        if (s.state === 'resident') resident.push(id);
-        else if (s.state === 'loading') loading.push(id);
+        if (s.state === 'resident') {
+          resident.push(id);
+          if (s.loading) reloading.push(id);
+        } else if (s.state === 'loading') loading.push(id);
         for (const tex of Object.values(s.maps)) gpuBytes += textureGpuBytes(tex);
         for (const tex of s.loading?.owned ?? []) gpuBytes += textureGpuBytes(tex);
       }
       out.resident += resident.length;
       out.loading += loading.length;
+      out.inflight += loading.length + reloading.length;
       out.gpuBytes += gpuBytes;
-      out.bodies[name] = { resident, loading, maxTexelPx: body.maxTexelPx, gpuBytes };
+      out.bodies[name] = { resident, loading, reloading, maxTexelPx: body.maxTexelPx, gpuBytes };
     }
     return out;
   }
@@ -698,7 +711,9 @@ export class SectorStreamer {
     const map = loading?.loaded.map;
     if (!loading || !map) return;
     const loaded = loading.loaded;
-    const geometry = sectorSphereGeometry(handle.radiusAU, this.grid, slot.sector, SECTOR_SEGMENTS);
+    // A reload's geometry is the outgoing mesh's: same sector, same globe.
+    const previousMesh = slot.mesh;
+    const geometry = previousMesh?.geometry ?? sectorSphereGeometry(handle.radiusAU, this.grid, slot.sector, SECTOR_SEGMENTS);
     const material = createSectorMaterial(handle.material, {
       map,
       bumpMap: loaded.bumpMap ?? null,
@@ -709,7 +724,6 @@ export class SectorStreamer {
     mesh.name = `${handle.name} sector ${slot.sector.c}_${slot.sector.r}`;
     mesh.renderOrder = SECTOR_RENDER_ORDER;
     handle.mesh.add(mesh);
-    const previousMesh = slot.mesh;
     const previousMaps = slot.maps;
     slot.mesh = mesh;
     slot.maps = { ...loaded };
@@ -717,14 +731,14 @@ export class SectorStreamer {
     slot.loading = undefined;
     slot.state = 'resident';
     slot.failStreak = 0;
-    if (previousMesh) this.removeMesh(previousMesh);
+    if (previousMesh) this.removeMesh(previousMesh, true);
     const kept = new Set(Object.values(slot.maps));
     for (const tex of Object.values(previousMaps)) if (!kept.has(tex)) tex.dispose();
   }
 
-  private removeMesh(mesh: THREE.Mesh): void {
+  private removeMesh(mesh: THREE.Mesh, geometryReused = false): void {
     mesh.removeFromParent();
-    mesh.geometry.dispose();
+    if (!geometryReused) mesh.geometry.dispose();
     (mesh.material as THREE.Material).dispose();
   }
 

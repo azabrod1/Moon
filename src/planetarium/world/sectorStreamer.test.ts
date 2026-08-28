@@ -297,19 +297,42 @@ describe('SectorStreamer', () => {
     // upload that costs — and the old sector keeps drawing meanwhile.
     expect(loader.requests.map((r) => r.url)).toEqual([expect.stringMatching(/tiles\/mars-normal\.v2\/2k\/2_1\.webp$/)]);
     expect(streamer.stats().bodies.Mars.resident).toEqual(['2_1']);
+    expect(streamer.stats().bodies.Mars.reloading).toEqual(['2_1']);
+    expect(streamer.stats().inflight).toBe(1);
+    expect(streamer.stats().loading).toBe(0);
     expect(sectorMesh(mars)).toBe(before);
     expect(mars.mesh.children).toHaveLength(1);
     loader.resolveAll();
-    // The swap: new mesh with the crop, old material disposed, colour tile reused.
+    // The swap: new mesh with the crop, old material disposed, colour tile
+    // and geometry reused.
     expect(mars.mesh.children).toHaveLength(1);
     expect(sectorMesh(mars)).not.toBe(before);
+    expect(sectorMesh(mars).geometry).toBe(before.geometry);
     expect(sectorMat(mars).normalMap).not.toBeNull();
     expect(sectorMat(mars).map).toBe(colourTile);
     expect(oldMaterialGone()).toBe(true);
+    expect(streamer.stats().bodies.Mars.reloading).toEqual([]);
     expect(streamer.stats().bodies.Mars.resident).toEqual(['2_1']);
     // Settled: the next frame asks for nothing more.
     streamer.update('Mars', cameraOver(2, 1), measureOf({ '2_1': 2 }), 32);
     expect(loader.requests).toEqual([]);
+  });
+
+  it('does not reload a resident where no fetch is allowed — past the limb, on the night side', () => {
+    const mars = marsWithoutRelief();
+    loader.auto = true;
+    const sunOver = (c: number, r: number) => sectorCentreDirection(G, { c, r }, new THREE.Vector3());
+    streamer.update('Mars', cameraOver(2, 1), measureOf({ '2_1': 2 }), 0, 'none', sunOver(2, 1));
+    loader.auto = false;
+    loader.requests.length = 0;
+    mars.material.normalMap = new THREE.Texture();
+    // Sunset first: the resident stays (kept while big) but nothing is fetched for it.
+    streamer.update('Mars', cameraOver(2, 1), measureOf({ '2_1': 2 }), 16, 'none', sunOver(6, 2));
+    expect(streamer.stats().bodies.Mars.resident).toEqual(['2_1']);
+    expect(loader.requests).toEqual([]);
+    // Sunrise: now it reloads.
+    streamer.update('Mars', cameraOver(2, 1), measureOf({ '2_1': 2 }), 32, 'none', sunOver(2, 1));
+    expect(loader.requests.map((r) => r.url)).toEqual([expect.stringMatching(/tiles\/mars-normal\.v2\/2k\/2_1\.webp$/)]);
   });
 
   it('keeps a resident drawing when its reload fails, and retries after the backoff', () => {

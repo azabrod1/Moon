@@ -286,8 +286,13 @@ export interface SectorStats {
   }>;
 }
 
-/** Estimated GPU bytes of a texture: RGBA8 at its image size, plus mips. */
+/** Estimated GPU bytes of a texture: RGBA8 at its image size, plus mips.
+ *  Read from the image while it is still attached; a resident tile's bitmap
+ *  is closed after its upload, so the figure is stashed on the texture at
+ *  decode (userData.gpuBytes) and read from there afterwards. */
 function textureGpuBytes(tex: THREE.Texture): number {
+  const stashed = tex.userData?.gpuBytes;
+  if (typeof stashed === 'number') return stashed;
   const img = tex.image as { width?: unknown; height?: unknown } | undefined;
   if (!img || typeof img.width !== 'number' || typeof img.height !== 'number') return 0;
   return Math.round(img.width * img.height * 4 * (4 / 3));
@@ -659,6 +664,7 @@ export class SectorStreamer {
           }
           applyTextureDefaults(tex, m.kind);
           applySectorTileTransform(tex, this.grid, slot.sector, m.layout);
+          tex.userData.gpuBytes = textureGpuBytes(tex);
           loading.owned.push(tex); // owned from here: a release disposes it even mid-queue
           this.warm(tex, (outcome) => {
             if (!stillWanted()) {

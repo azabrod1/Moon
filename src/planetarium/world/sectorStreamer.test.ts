@@ -403,6 +403,10 @@ describe('SectorStreamer', () => {
     const crop = Math.round(272 * 272 * 4 * (4 / 3));
     expect(s.stats().bodies.Earth.gpuBytes).toBe(tile + 2 * crop);
     expect(s.stats().gpuBytes).toBe(tile + 2 * crop);
+    // The figure survives the bitmap being closed after upload.
+    const mat = (earth.mesh.children[0] as THREE.Mesh).material as THREE.MeshStandardMaterial;
+    mat.map!.image = undefined;
+    expect(s.stats().gpuBytes).toBe(tile + 2 * crop);
     s.update('Earth', cameraOver(2, 1), measureOf({ '2_1': 0.1 }), 16);
     expect(s.stats().gpuBytes).toBe(0);
   });

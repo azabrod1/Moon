@@ -101,7 +101,7 @@ import { applyTextureDefaults, resolveTileUrl, sectorSetHash, sectorSetLayout } 
 import { TIER_RANK } from '../PlanetFactory';
 import { debugWarn } from '../../shared/debug';
 import { queueTextureWarm, type WarmOutcome } from './textureWarmer';
-import type { SectorMemoryLimits } from './gpuEnvelope';
+import { sectorBudgetBytes, type SectorMemoryLimits } from './gpuEnvelope';
 
 /** The material slots a sector may carry a crop of, in a fixed order. */
 export const CROP_SLOTS = ['bumpMap', 'normalMap', 'roughnessMap'] as const;
@@ -253,9 +253,10 @@ export const SECTOR_SETS: Record<string, SectorSetSpec> = {
  *  never flaps a 21 MiB upload. One rule per level: the map below a level-0
  *  sector is the globe's own, the map below a level-k sector is level k−1's
  *  source, so a finer level is asked for exactly where the level above it
- *  has run out of texels. Measured against the finest colour map the
- *  globe will hold on this device (SectorBodyHandle.topMapWidth), or the
- *  one it draws if that is wider: the Moon's 8K rung needs twice the
+ *  has run out of texels. Measured against the finest colour map the globe
+ *  can currently reach on its tier ladder (SectorBodyHandle.topMapWidth — a
+ *  rung refused for want of memory, or given back under pressure, lowers
+ *  it), or the one it draws if that is wider: the Moon's 8K rung needs twice the
  *  magnification a 4K map does before a tile shows anything (a tile under
  *  that is 21 MiB of GPU memory for nothing visible), and measuring against
  *  the 2K boot map while the 8K is still in flight would admit sectors the
@@ -275,9 +276,10 @@ const SECTOR_FALLBACK_MAP_WIDTH = 4096;
 export const SECTOR_NIGHT_DOT = -0.1;
 
 /** Every number above is per device and comes in through
- *  SectorStreamerOptions.limits — the byte ceiling the sectors may hold,
- *  the envelope they share with the ladder's globe maps, the resident /
- *  in-flight / fetch caps, and the two texel thresholds. world/gpuEnvelope
+ *  SectorStreamerOptions.limits — the byte ceiling the sectors may hold, the
+ *  floor the globe maps may not take from them, the envelope they share with
+ *  those maps, the resident / in-flight / fetch caps, and the two texel
+ *  thresholds. world/gpuEnvelope
  *  is the one place a device becomes those numbers; the streamer only spends
  *  them. */
 /** How long a sector is safe from eviction once it is DRAWN. Without it a
@@ -344,10 +346,14 @@ export interface SectorBodyHandle {
   mesh: THREE.Mesh;
   material: THREE.MeshStandardMaterial;
   radiusAU: number;
-  /** Width of the finest colour map this device will hold for the globe
-   *  (its tier ladder's top), the map magnification is measured against.
-   *  Omitted for a body with no ladder: its boot map is its finest. */
-  topMapWidth?: number;
+  /** Width of the finest colour map the globe can currently reach on its
+   *  tier ladder — what the map magnification is measured against. Read per
+   *  frame, not stored: a rung refused for want of memory, released under
+   *  pressure or failed to load moves the top down, and sectors measured
+   *  against a map the globe will not hold arrive at twice the magnification
+   *  they were meant to. Omitted for a body with no ladder: its boot map is
+   *  its finest. */
+  topMapWidth?: () => number | undefined;
   /** Rebuild the globe on its fine grid now (idempotent); sectors must not
    *  show over a coarse globe, whose chords they would float above. */
   ensureFineGeometry: () => void;
@@ -462,8 +468,12 @@ export interface SectorStats {
   residentBytes: number;
   reserved: number;
   /** This device's sector budget right now — its ceiling, or what the total
-   *  envelope leaves over the globe maps (globalBytes), whichever is less. */
+   *  envelope leaves over the globe maps (globalBytes), whichever is less,
+   *  and never below the floor. */
   budget: number;
+  /** The bytes the globe maps may not take from the tiles (0 while no body
+   *  is registered). */
+  floor: number;
   envelope: number;
   globalBytes: number;
   bodies: Record<string, {
@@ -574,7 +584,7 @@ function cropsReady(mat: THREE.MeshStandardMaterial, spec: SectorSetSpec): boole
 function baseTexelLength(handle: SectorBodyHandle): number {
   const img = handle.material.map?.image as { width?: unknown } | undefined;
   const drawn = img && typeof img.width === 'number' && img.width > 0 ? img.width : 0;
-  const width = Math.max(drawn, handle.topMapWidth ?? 0) || SECTOR_FALLBACK_MAP_WIDTH;
+  const width = Math.max(drawn, handle.topMapWidth?.() ?? 0) || SECTOR_FALLBACK_MAP_WIDTH;
   return (2 * Math.PI * handle.radiusAU) / width;
 }
 
@@ -613,6 +623,7 @@ export class SectorStreamer {
   private readonly fetchPool: number;
   private readonly ceilingBytes: number;
   private readonly envelopeBytes: number;
+  private readonly sectorFloorBytes: number;
   private readonly wantTexelPx: number;
   private readonly releaseTexelPx: number;
   private globalBytes = 0;
@@ -634,6 +645,7 @@ export class SectorStreamer {
     this.fetchPool = opts.limits.fetchPool;
     this.ceilingBytes = opts.limits.ceilingBytes;
     this.envelopeBytes = opts.limits.envelopeBytes;
+    this.sectorFloorBytes = opts.limits.sectorFloorBytes;
     this.wantTexelPx = opts.limits.wantTexelPx;
     this.releaseTexelPx = opts.limits.releaseTexelPx;
   }
@@ -715,7 +727,7 @@ export class SectorStreamer {
 
   /** The GPU bytes the globe maps hold right now (the tier ladder's applied
    *  colour maps, which only the mode can see). The sector budget is what
-   *  the envelope leaves over them. */
+   *  the envelope leaves over them, down to the floor. */
   setGlobalMapBytes(bytes: number): void {
     const before = this.globalBytes;
     this.globalBytes = Math.max(0, bytes);
@@ -725,21 +737,50 @@ export class SectorStreamer {
     // allowed. Growing it takes nothing from anyone.
     if (this.globalBytes > before) this.trimToBudget();
     // Streaming that has quietly switched itself off looks like a soft
-    // surface, not like a fault. Say it once, with the two figures that
-    // explain it.
-    if (this.budget() === 0 && !this.warnedNoBudget) {
+    // surface, not like a fault. Say it once, with the figures that explain
+    // it. A budget under one whole set is the same silence as a budget of
+    // zero: nothing can be admitted with it, and a fraction of a set is not
+    // a smaller tile.
+    const smallest = this.smallestSetBytes();
+    if (smallest > 0 && this.budget() < smallest && !this.warnedNoBudget) {
       this.warnedNoBudget = true;
-      debugWarn('Surface tiles off: the globe maps alone fill the memory envelope', {
+      debugWarn('Surface tiles off: the budget is below one sector set', {
         globeMapsMiB: Math.round(this.globalBytes / (1024 * 1024)),
+        budgetMiB: Math.round(this.budget() / (1024 * 1024)),
+        setMiB: Math.round(smallest / (1024 * 1024)),
         envelopeMiB: Math.round(this.envelopeBytes / (1024 * 1024)),
       });
     }
   }
 
+  /** The floor this session actually owes the tiles: nothing at all while no
+   *  body that could want one is registered (`?sectors=0` builds no streamer
+   *  at all, but a mode may also run before or after registration), so the
+   *  ladder is never asked to reserve memory for tiles nobody can load. */
+  floorBytes(): number {
+    return this.bodies.size > 0 ? this.sectorFloorBytes : 0;
+  }
+
   /** What the sectors may hold together: their own ceiling, or whatever the
-   *  total envelope leaves over the globe maps, whichever is less. */
+   *  total envelope leaves over the globe maps, whichever is less — and never
+   *  below the floor. */
   budget(): number {
-    return Math.max(0, Math.min(this.ceilingBytes, this.envelopeBytes - this.globalBytes));
+    return sectorBudgetBytes(
+      { envelopeBytes: this.envelopeBytes, ceilingBytes: this.ceilingBytes },
+      this.globalBytes,
+      this.floorBytes(),
+    );
+  }
+
+  /** The cheapest whole set any registered body could admit — the figure a
+   *  budget has to reach to be worth anything. */
+  private smallestSetBytes(): number {
+    let smallest = 0;
+    for (const body of this.bodies.values()) {
+      const bytes = sectorSetGpuBytes(body.handle.spec, 0, (slot) => realMapIn(body.handle.material, slot));
+      if (bytes > 0 && (smallest === 0 || bytes < smallest)) smallest = bytes;
+    }
+    return smallest;
   }
 
   /**
@@ -1156,6 +1197,7 @@ export class SectorStreamer {
       residentBytes: 0,
       reserved: 0,
       budget: this.budget(),
+      floor: this.floorBytes(),
       envelope: this.envelopeBytes,
       globalBytes: this.globalBytes,
       bodies: {},

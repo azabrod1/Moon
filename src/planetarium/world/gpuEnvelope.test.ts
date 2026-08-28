@@ -1,13 +1,21 @@
 import { describe, it, expect } from 'vitest';
 import {
   classifyDevice,
+  fillRateTierCaps,
+  ladderCeilingBytes,
   legacyProfile,
   legacyTouchFirst,
+  planRelease,
+  sectorBudgetBytes,
+  EARTH_SECTOR_SET_BYTES,
+  FILL_RATE_TIER_CAP,
   LEGACY_DESKTOP_PROFILE,
   LEGACY_TOUCH_PROFILE,
   type DeviceClass,
   type DeviceSignals,
+  type ReleaseCandidate,
 } from './gpuEnvelope';
+import { SECTOR_SETS, sectorSetGpuBytes } from './sectorStreamer';
 
 const MiB = 1024 * 1024;
 
@@ -343,18 +351,24 @@ describe('the compatibility profile', () => {
       id: 'legacy-touch',
       envelopeBytes: 320 * MiB,
       ceilingBytes: 144 * MiB,
+      sectorFloorBytes: 2 * EARTH_SECTOR_SET_BYTES,
       residentCap: 8,
       inflightCap: 1,
       fetchPool: 3,
       wantTexelPx: 1.25,
       releaseTexelPx: 0.8,
       cacheOnlyWarm: true,
-      tierCaps: { earthClouds: '4k', moon: '4k' },
+      // The Moon's 4K cap is gone: whether a device holds the 8K rung is
+      // arithmetic against the envelope now, and the compressed Moon tier is
+      // 42.7 MiB rather than the 171 the cap was written against. The cloud
+      // deck's cap stays, and is about fill rate rather than memory.
+      tierCaps: { earthClouds: '4k' },
     });
     expect(LEGACY_DESKTOP_PROFILE).toEqual({
       id: 'legacy-desktop',
       envelopeBytes: 768 * MiB,
       ceilingBytes: 256 * MiB,
+      sectorFloorBytes: 3 * EARTH_SECTOR_SET_BYTES,
       residentCap: 16,
       inflightCap: 2,
       fetchPool: 6,
@@ -403,5 +417,102 @@ describe('the compatibility profile', () => {
       'SwiftShader: no GPU at all: legacy-desktop -> limited',
       'A 2 GB Android phone: legacy-touch -> limited',
     ]);
+  });
+});
+
+describe('the envelope arithmetic', () => {
+  const DESKTOP = LEGACY_DESKTOP_PROFILE;
+  const TOUCH = LEGACY_TOUCH_PROFILE;
+  const SET = sectorSetGpuBytes(SECTOR_SETS.Earth);
+
+  it('states one Earth sector set in bytes, and the floors in whole sets of it', () => {
+    // The constant is policy and the layout is the streamer's; they have to
+    // be the same number or a floor is a fraction of a set.
+    expect(EARTH_SECTOR_SET_BYTES).toBe(SET);
+    expect(TOUCH.sectorFloorBytes).toBe(2 * SET);
+    expect(DESKTOP.sectorFloorBytes).toBe(3 * SET);
+  });
+
+  it('gives the tiles the smaller of their ceiling and what the maps leave', () => {
+    expect(sectorBudgetBytes(DESKTOP, 0, DESKTOP.sectorFloorBytes)).toBe(DESKTOP.ceilingBytes);
+    expect(sectorBudgetBytes(DESKTOP, DESKTOP.envelopeBytes - 4 * SET, DESKTOP.sectorFloorBytes))
+      .toBe(4 * SET);
+  });
+
+  it('never trims the tiles below the floor, whatever the maps have taken', () => {
+    for (const ladder of [DESKTOP.envelopeBytes, 2 * DESKTOP.envelopeBytes]) {
+      expect(sectorBudgetBytes(DESKTOP, ladder, DESKTOP.sectorFloorBytes))
+        .toBe(DESKTOP.sectorFloorBytes);
+    }
+    expect(sectorBudgetBytes(TOUCH, TOUCH.envelopeBytes, TOUCH.sectorFloorBytes))
+      .toBe(TOUCH.sectorFloorBytes);
+  });
+
+  it('owes no floor where no tile can load', () => {
+    // `?sectors=0`: refusing a globe map to reserve memory for tiles that
+    // cannot load would be the failure this floor exists to prevent, upside
+    // down.
+    expect(sectorBudgetBytes(DESKTOP, DESKTOP.envelopeBytes, 0)).toBe(0);
+    expect(ladderCeilingBytes(DESKTOP, 0)).toBe(DESKTOP.envelopeBytes);
+  });
+
+  it('leaves the ladder the envelope less the tiles floor', () => {
+    expect(ladderCeilingBytes(TOUCH, TOUCH.sectorFloorBytes))
+      .toBe(TOUCH.envelopeBytes - 2 * SET);
+    // A floor bigger than the tiles could ever hold is still only the tiles
+    // ceiling, either way round.
+    expect(ladderCeilingBytes(TOUCH, 4 * TOUCH.ceilingBytes))
+      .toBe(TOUCH.envelopeBytes - TOUCH.ceilingBytes);
+  });
+
+  it('keeps the cloud deck off 8K on a phone and a tablet, and only there', () => {
+    // Not a memory cap: an 8K transparent shell is shaded over the whole
+    // globe, on the devices with the least fill rate to spend.
+    expect(FILL_RATE_TIER_CAP.earthClouds).toEqual({ phone: '4k', tablet: '4k' });
+    expect(fillRateTierCaps('phone')).toEqual({ earthClouds: '4k' });
+    expect(fillRateTierCaps('tablet')).toEqual({ earthClouds: '4k' });
+    expect(fillRateTierCaps('desktop')).toEqual({});
+    expect(fillRateTierCaps('limited')).toEqual({});
+    // And nothing else is capped by class any more: what a device holds is
+    // arithmetic against its envelope.
+    expect(Object.keys(FILL_RATE_TIER_CAP)).toEqual(['earthClouds']);
+  });
+});
+
+describe('planning a release', () => {
+  const candidate = (over: Partial<ReleaseCandidate>): ReleaseCandidate => ({
+    id: 'body:key', heldBytes: 42 * 1024 * 1024, lowBytes: 10 * 1024 * 1024, distance: 1, ...over,
+  });
+  const ROOMY = { ladderBytes: 0, envelopeBytes: 1024 * 1024 * 1024 };
+
+  it('takes the farthest rung', () => {
+    const plan = planRelease([
+      candidate({ id: 'near', distance: 0.5 }),
+      candidate({ id: 'far', distance: 9 }),
+      candidate({ id: 'middle', distance: 3 }),
+    ], ROOMY);
+    expect(plan?.id).toBe('far');
+  });
+
+  it('takes nothing when there is nothing to take', () => {
+    expect(planRelease([], ROOMY)).toBeNull();
+    // A rung whose lower map costs what it does is no gain at all.
+    expect(planRelease([candidate({ heldBytes: 10, lowBytes: 10 })], ROOMY)).toBeNull();
+  });
+
+  it('refuses a swap whose transient does not fit', () => {
+    // A release holds the high map AND the low one until the swap lands, so
+    // the pair has to fit the envelope or the release raises the peak it is
+    // there to lower.
+    const envelopeBytes = 100;
+    const tight = { ladderBytes: 95, envelopeBytes };
+    expect(planRelease([candidate({ heldBytes: 40, lowBytes: 10 })], tight)).toBeNull();
+    expect(planRelease([candidate({ heldBytes: 40, lowBytes: 5 })], tight)?.id).toBe('body:key');
+    // …and it is the farthest of the ones that DO fit, not the farthest of all.
+    const plan = planRelease([
+      candidate({ id: 'far-but-fat', distance: 9, heldBytes: 40, lowBytes: 10 }),
+      candidate({ id: 'near-and-thin', distance: 2, heldBytes: 40, lowBytes: 5 }),
+    ], tight);
+    expect(plan?.id).toBe('near-and-thin');
   });
 });

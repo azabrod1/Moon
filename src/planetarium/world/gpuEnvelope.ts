@@ -80,6 +80,13 @@ export interface SectorMemoryLimits {
   envelopeBytes: number;
   /** What the tiles alone may hold, whatever the envelope leaves free. */
   ceilingBytes: number;
+  /** What the tiles keep whatever the globe maps have taken. The globe ladder
+   *  may not grow into it, and the budget is never trimmed below it while a
+   *  body that can want a tile is registered: a surface at 20x magnification
+   *  with no tile at all is a worse picture than any map the ladder refuses,
+   *  and "the ladder asked first" is not a reason to decide that for the rest
+   *  of the session. */
+  sectorFloorBytes: number;
   /** Resident sectors across all bodies: a draw-call ceiling, not the budget. */
   residentCap: number;
   /** Sector loads in flight (colour + crops of one sector count as one). */
@@ -101,30 +108,50 @@ export interface DeviceProfile extends SectorMemoryLimits {
   /** The speculative boot warm pulls its bytes into the HTTP cache only,
    *  rather than decoding and uploading maps a session may never visit. */
   cacheOnlyWarm: boolean;
-  /** Ladder rungs this profile refuses whatever the GL max texture size
-   *  allows. Keyed by upgrade key; absent means the ladder's own top. */
+  /** Ladder rungs this profile refuses however much memory is free — the
+   *  fill-rate caps below. Keyed by upgrade key; absent means the ladder's
+   *  own top, admitted or refused by the memory arithmetic alone. */
   tierCaps: Readonly<Partial<Record<string, TextureTier>>>;
 }
 
 const MiB = 1024 * 1024;
 
-/** Per-key ceilings on a touch-first device, applied over the GL clamp. An 8K
- *  RGBA map is 171 MiB resident with its mips, and a phone's shared memory is
- *  the app's known weak spot (an unexplained crash teleporting to the Moon on
- *  an iPhone). Neither 8K earns its place there. The Moon's: at the
- *  telescope's default framing on a phone the disc is ~630 device pixels,
- *  where a 4K texel already spans half a pixel — the 8K first shows once the
- *  disc passes ~1600 device pixels, and from there the 16K sector tiles
- *  (measured against this ceiling) take over at a fraction of the memory. The
- *  cloud deck's: it would sit beside Earth's 4K day map and the sector tiles
- *  in the close approach the sectors serve. */
-const TOUCH_TIER_CAPS: Readonly<Partial<Record<string, TextureTier>>> = { earthClouds: '4k', moon: '4k' };
+/** GPU bytes one Earth surface sector set holds — its 2048² colour tile plus
+ *  its own copies of the bump and roughness crops. The floors below are
+ *  whole sets of it, because a fraction of a set buys nothing: half a set
+ *  admits no tile. Pinned against the streamer's own layout arithmetic in
+ *  gpuEnvelope.test.ts. */
+export const EARTH_SECTOR_SET_BYTES = 24_251_050;
+
+/**
+ * The one ladder cap that is NOT about memory. Whether a device holds an 8K
+ * map is arithmetic — the envelope, the sector floor and what the ladder
+ * already holds decide it, and a rung that does not fit is refused wherever
+ * it is asked for. Fill rate is a different question, and the cloud deck is
+ * where it bites: a full-screen transparent shell at 8K is shaded per pixel
+ * over the whole globe, on the devices with the least fill rate to spend.
+ * One entry, per class, so the reason it exists stays legible.
+ */
+export const FILL_RATE_TIER_CAP: Readonly<Record<string, Readonly<Partial<Record<DeviceClass, TextureTier>>>>> = {
+  earthClouds: { phone: '4k', tablet: '4k' },
+};
+
+/** The fill-rate caps a class carries, in the shape a profile stores. */
+export function fillRateTierCaps(cls: DeviceClass): Partial<Record<string, TextureTier>> {
+  const caps: Partial<Record<string, TextureTier>> = {};
+  for (const [key, byClass] of Object.entries(FILL_RATE_TIER_CAP)) {
+    const cap = byClass[cls];
+    if (cap) caps[key] = cap;
+  }
+  return caps;
+}
 
 /**
  * A touch-first device's numbers. An Earth sector set — its 2048² tile plus
  * its copies of the bump and roughness crops — is ~23.1 MiB, so this holds
- * six of them. Six is what a phone held before the budget was in bytes at
- * all, and a phone's shared memory is the app's known weak spot.
+ * six of them, and never fewer than two whatever the globe maps have taken.
+ * Six is what a phone held before the budget was in bytes at all, and a
+ * phone's shared memory is the app's known weak spot.
  *
  * It asks for tiles later than a desktop, at 1.25 device pixels per texel:
  * a 2–3× display reaches that magnification at nearly twice the distance, and
@@ -135,33 +162,106 @@ export const LEGACY_TOUCH_PROFILE: DeviceProfile = {
   id: 'legacy-touch',
   envelopeBytes: 320 * MiB,
   ceilingBytes: 144 * MiB,
+  sectorFloorBytes: 2 * EARTH_SECTOR_SET_BYTES,
   residentCap: 8,
   inflightCap: 1,
   fetchPool: 3,
   wantTexelPx: 1.25,
   releaseTexelPx: 0.8,
   cacheOnlyWarm: true,
-  tierCaps: TOUCH_TIER_CAPS,
+  tierCaps: fillRateTierCaps('phone'),
 };
 
 /**
- * A desktop's numbers: eleven Earth sector sets under the ceiling, inside an
- * envelope the globe maps share. It asks at 1.0 device pixels per texel —
- * a base texel spanning one device pixel is the point where a finer map
- * first shows, and the fetch after that is the only delay.
+ * A desktop's numbers: eleven Earth sector sets under the ceiling and three
+ * under the floor, inside an envelope the globe maps share. It asks at 1.0
+ * device pixels per texel — a base texel spanning one device pixel is the
+ * point where a finer map first shows, and the fetch after that is the only
+ * delay.
  */
 export const LEGACY_DESKTOP_PROFILE: DeviceProfile = {
   id: 'legacy-desktop',
   envelopeBytes: 768 * MiB,
   ceilingBytes: 256 * MiB,
+  sectorFloorBytes: 3 * EARTH_SECTOR_SET_BYTES,
   residentCap: 16,
   inflightCap: 2,
   fetchPool: 6,
   wantTexelPx: 1.0,
   releaseTexelPx: 0.65,
   cacheOnlyWarm: false,
-  tierCaps: {},
+  tierCaps: fillRateTierCaps('desktop'),
 };
+
+// --- The envelope arithmetic -------------------------------------------------
+//
+// Two managers spend one envelope: the sector streamer's per-slot ledger (with
+// reservations, a dwell and a pyramid) and the colour ladder's per-material
+// one. They share it through the numbers below rather than through a merged
+// allocator — each keeps its own admission rules, and neither can spend the
+// other's floor.
+
+/** What the tiles may hold right now: their own ceiling, or whatever the
+ *  envelope leaves over the globe maps, whichever is less — but never below
+ *  the floor, which the globe maps are not allowed to take. `liveFloorBytes`
+ *  is the floor this session actually owes: zero where no body can want a
+ *  tile, so a session with tiles switched off is not asked to reserve
+ *  memory for them. */
+export function sectorBudgetBytes(
+  limits: Pick<SectorMemoryLimits, 'envelopeBytes' | 'ceilingBytes'>,
+  ladderBytes: number,
+  liveFloorBytes: number,
+): number {
+  const free = limits.envelopeBytes - Math.max(0, ladderBytes);
+  const floor = Math.min(Math.max(0, liveFloorBytes), limits.ceilingBytes);
+  return Math.max(0, Math.min(limits.ceilingBytes, Math.max(floor, free)));
+}
+
+/** The most the globe maps may hold: the envelope less the tiles' floor. The
+ *  admission test every ladder rung passes before it is fetched and again
+ *  before it is applied. */
+export function ladderCeilingBytes(
+  limits: Pick<SectorMemoryLimits, 'envelopeBytes' | 'ceilingBytes'>,
+  liveFloorBytes: number,
+): number {
+  return Math.max(0, limits.envelopeBytes - Math.min(Math.max(0, liveFloorBytes), limits.ceilingBytes));
+}
+
+/** One rung the planner may take back, as the ledger sees it. */
+export interface ReleaseCandidate {
+  /** The handle this describes, for the trace and the warning. */
+  id: string;
+  /** GPU bytes the rung holds now. */
+  heldBytes: number;
+  /** GPU bytes the tier below will hold — paid ALONGSIDE the rung from the
+   *  moment the swap's fetch decodes until the high map is disposed. */
+  lowBytes: number;
+  /** Scene distance from the camera. The farthest map is the least missed,
+   *  and is the one a return trip re-earns from the cache anyway. */
+  distance: number;
+}
+
+/**
+ * The rung to take back, or null. Farthest first, one at a time: a release is
+ * an asynchronous swap that transiently holds the high map AND the low one,
+ * so a plan that started several at once would raise the peak it exists to
+ * lower. A candidate may only start when that transient itself fits the
+ * envelope — the sectors are trimmed synchronously if that is what it takes,
+ * which is why the transient is measured against the whole envelope rather
+ * than against the ladder's ceiling.
+ */
+export function planRelease(
+  candidates: readonly ReleaseCandidate[],
+  ctx: { ladderBytes: number; envelopeBytes: number },
+): ReleaseCandidate | null {
+  let best: ReleaseCandidate | null = null;
+  for (const c of candidates) {
+    if (c.heldBytes <= c.lowBytes) continue; // nothing to gain
+    if (ctx.ladderBytes + c.lowBytes > ctx.envelopeBytes) continue;
+    if (!best || c.distance > best.distance) best = c;
+  }
+  return best;
+}
 
 /** Software rasterisers, which deserve the smallest of everything. Matched
  *  positively and never inferred: a browser that withholds the renderer

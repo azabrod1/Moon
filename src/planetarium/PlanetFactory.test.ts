@@ -23,7 +23,25 @@ import {
   initialColorTierRank,
   loadTexture,
   appliedTierGpuBytes,
+  appliedTierHeldBytes,
+  bindTierAdmission,
+  cancelTierRelease,
   equirectMapGpuBytes,
+  reachableTopTier,
+  releaseBandFraction,
+  releaseColorTier,
+  releaseDue,
+  releaseDwellMs,
+  releaseExpired,
+  releaseTargetTier,
+  startTierRelease,
+  textureGpuBytes,
+  tierUploadBytes,
+  trackReleaseBand,
+  RELEASE_ATTEMPT_TIMEOUT_MS,
+  RELEASE_BAND_DIVISOR,
+  RELEASE_REEARN_GRACE_MS,
+  type TierAdmission,
   lodMeasurementRelevant,
   makeGeometryUpgrade,
   makeTextureUpgrade,
@@ -44,7 +62,7 @@ import {
 } from './PlanetFactory';
 import { retryDelayMs, urlSpread } from './world/textureRetryPolicy';
 import { captureDeviceCaps, resetDeviceCapsForTests, type TextureTier } from './world/texturePolicy';
-import { LEGACY_DESKTOP_PROFILE, LEGACY_TOUCH_PROFILE } from './world/gpuEnvelope';
+import { ladderCeilingBytes, LEGACY_DESKTOP_PROFILE, LEGACY_TOUCH_PROFILE } from './world/gpuEnvelope';
 import { SECTOR_SETS, sectorSetGpuBytes } from './world/sectorStreamer';
 import { bindTextureWarmer, pumpTextureWarmQueue, queueTextureWarm, resetTextureWarmer } from './world/textureWarmer';
 
@@ -101,17 +119,19 @@ describe('upgrade ladders', () => {
     expect(handle('earthClouds').effectiveMaxTier).toBe('8k');
   });
 
-  it('stops both 8K maps at 4K on a touch device, whatever the GL cap', () => {
-    // 171 MiB each in a phone's shared memory, for detail its display only
-    // shows at magnifications the sector tiles serve.
+  it('caps the cloud deck at 4K on a touch device, and caps nothing else', () => {
+    // The one cap that is not about memory: a full-screen transparent shell
+    // at 8K is shaded per pixel over the whole globe, on the devices with the
+    // least fill rate to spend. The Moon's 8K is a memory question, and the
+    // envelope answers it wherever it is asked.
     withMaxTextureSize(16384, true);
     expect(handle('earthClouds').effectiveMaxTier).toBe('4k');
-    expect(handle('moon').effectiveMaxTier).toBe('4k');
     expect(resolveUpgradeTier(handle('earthClouds'), '8k')).toBe('4k');
-    expect(resolveUpgradeTier(handle('moon'), '8k')).toBe('4k');
-    // Desktop keeps the goals.
+    expect(handle('moon').effectiveMaxTier).toBe('8k');
+    // Desktop keeps both goals.
     withMaxTextureSize(16384, false);
     expect(handle('moon').effectiveMaxTier).toBe('8k');
+    expect(handle('earthClouds').effectiveMaxTier).toBe('8k');
   });
 
   it('builds no ladder for a key with nothing higher on disk', () => {
@@ -1390,18 +1410,24 @@ describe('the ladder against the sector memory envelope', () => {
     expect(budget / sectorSetGpuBytes(SECTOR_SETS.Earth)).toBeGreaterThanOrEqual(7);
   });
 
-  it('leaves a phone nothing at its heaviest: every 4K map at once fills the envelope', () => {
+  it('never lets a phone reach its heaviest: the rung that would is refused', () => {
+    // Every ladder at its top at once, on a device whose transcoder is
+    // unavailable — what the ladder USED to be able to hold, since nothing
+    // ever asked whether the next map fit.
     const worst = ladderWorstCaseBytes(true);
-    // Eight 4K maps — the touch caps hold both 8K rungs down to 4K.
-    expect(mib(worst)).toBeCloseTo(341.3, 1);
-    // Over the envelope, so the sector budget is nothing: a phone that has
-    // approached every body streams no tiles until the ladder gives maps
-    // back. The streamer says so once rather than going quiet.
-    expect(worst).toBeGreaterThan(LEGACY_TOUCH_PROFILE.envelopeBytes);
-    // A phone that has approached the two hero bodies alone still streams.
-    const heroes = 3 * 42.7 * 1024 * 1024; // Moon 4K, cloud deck 4K, Mars 4K
-    expect(LEGACY_TOUCH_PROFILE.envelopeBytes - heroes)
-      .toBeGreaterThanOrEqual(5 * sectorSetGpuBytes(SECTOR_SETS.Earth));
+    expect(mib(worst)).toBeGreaterThan(mib(LEGACY_TOUCH_PROFILE.envelopeBytes));
+    // It is now unreachable. The rung that would cross the envelope less the
+    // tiles' floor is refused before it is fetched, so the ladder settles
+    // under that line and the tiles keep their floor whatever the session
+    // has toured.
+    const ceiling = ladderCeilingBytes(LEGACY_TOUCH_PROFILE, LEGACY_TOUCH_PROFILE.sectorFloorBytes);
+    expect(mib(ceiling)).toBeCloseTo(273.7, 1);
+    expect(LEGACY_TOUCH_PROFILE.envelopeBytes - ceiling)
+      .toBeGreaterThanOrEqual(2 * sectorSetGpuBytes(SECTOR_SETS.Earth));
+    // Six 4K maps fit under it; the seventh does not.
+    const map4k = equirectMapGpuBytes(4096);
+    expect(6 * map4k).toBeLessThanOrEqual(ceiling);
+    expect(7 * map4k).toBeGreaterThan(ceiling);
   });
 
   it('charges a GPU-compressed rung the blocks its container really carries', () => {
@@ -1600,5 +1626,469 @@ describe('the compressed 8K tier override', () => {
     expect(tex.userData.mutableStorage).toBeUndefined(); // compressed keeps texStorage2D
     pumpTextureWarmQueue(Number.POSITIVE_INFINITY);
     expect(uploaded).toEqual([tex]);
+  });
+});
+
+describe('the release band', () => {
+  it('sits strictly below the trigger that earned the rung, for every ladder', () => {
+    // The band is anchored to the TRIGGER, never to the fraction a body
+    // happened to measure when it earned the tier: every committed arrival
+    // earns at fraction 1, so a band a third of THAT would sit above the
+    // trigger and flap forever at the framing the tier exists for.
+    for (const [key, tiers] of Object.entries(TEXTURE_UPGRADE_TIERS)) {
+      for (const tier of tiers) {
+        const trigger = upgradeTriggerFraction(key, tier)!;
+        expect(releaseBandFraction(key, tier), `${key} ${tier}`).toBe(trigger / RELEASE_BAND_DIVISOR);
+        expect(releaseBandFraction(key, tier), `${key} ${tier}`).toBeLessThan(trigger);
+      }
+    }
+  });
+
+  it('holds a rung earned by an arrival at the framing that arrival lands on', () => {
+    const up = handle('moon');
+    // The teleport arms at fraction 1 and both rungs apply under the veil.
+    armArrivalWarmGoal(up);
+    up.appliedTier = '8k';
+    // The player pulls back to a quarter of the viewport — still earning the
+    // 8K (its trigger is 0.22), and nowhere near giving it back.
+    trackReleaseBand(up, 0.25, 1_000);
+    expect(up.belowBandSinceMs).toBeUndefined();
+    expect(releaseDue(up, 60_000)).toBe(false);
+  });
+
+  it('tracks the clock continuously and resets on every crossing back up', () => {
+    const up = handle('moon');
+    up.appliedTier = '4k';
+    const band = releaseBandFraction('moon', '4k');
+    trackReleaseBand(up, band - 0.001, 1_000);
+    expect(up.belowBandSinceMs).toBe(1_000);
+    trackReleaseBand(up, band - 0.001, 5_000);
+    expect(up.belowBandSinceMs).toBe(1_000); // still the same stay
+    trackReleaseBand(up, band + 0.001, 6_000);
+    expect(up.belowBandSinceMs).toBeUndefined();
+    trackReleaseBand(up, 0, 7_000);
+    expect(up.belowBandSinceMs).toBe(7_000);
+  });
+
+  it('waits out eight seconds for a 4K rung, at any frame rate', () => {
+    expect(releaseDwellMs('4k', false)).toBe(8_000);
+    for (const hz of [30, 60]) {
+      const up = handle('mars');
+      up.appliedTier = '4k';
+      const step = 1_000 / hz;
+      let due: number | null = null;
+      for (let t = 0; t <= 20_000; t += step) {
+        trackReleaseBand(up, 0, t);
+        if (due === null && releaseDue(up, t)) due = t;
+      }
+      expect(due, `${hz} Hz`).not.toBeNull();
+      expect(due!, `${hz} Hz`).toBeGreaterThanOrEqual(8_000);
+      expect(due!, `${hz} Hz`).toBeLessThan(8_000 + step + 1);
+    }
+  });
+
+  it('waits thirty for an 8K one, and eight when it arrived compressed', () => {
+    expect(releaseDwellMs('8k', false)).toBe(30_000);
+    expect(releaseDwellMs('8k', true)).toBe(8_000);
+    const up = handle('moon');
+    up.appliedTier = '8k';
+    const step = 1_000 / 60;
+    for (let t = 0; t <= 40_000; t += step) trackReleaseBand(up, 0, t);
+    expect(releaseDue(up, 29_000)).toBe(false);
+    expect(releaseDue(up, 30_001)).toBe(true);
+    // The compressed rung re-uploads in milliseconds, so it is as cheap to
+    // take back as a 4K.
+    const compressed = new THREE.Texture();
+    (compressed as unknown as { isCompressedTexture: boolean }).isCompressedTexture = true;
+    up.material.map = compressed;
+    expect(releaseDue(up, 8_001)).toBe(true);
+  });
+
+  it('never counts a dwell for a body that has hovered around the band', () => {
+    const up = handle('mars');
+    up.appliedTier = '4k';
+    const band = releaseBandFraction('mars', '4k');
+    const step = 1_000 / 30;
+    // Half a minute of alternating just under and just over the band.
+    for (let t = 0; t <= 30_000; t += step) {
+      trackReleaseBand(up, Math.floor(t / 1_000) % 2 === 0 ? band - 0.001 : band + 0.001, t);
+      expect(releaseDue(up, t), `t=${t}`).toBe(false);
+    }
+  });
+
+  it('has nothing to give while the body is on its boot map', () => {
+    const up = handle('mars');
+    trackReleaseBand(up, 0, 1_000);
+    expect(up.belowBandSinceMs).toBeUndefined();
+    expect(releaseDue(up, 60_000)).toBe(false);
+    expect(releaseTargetTier(up)).toBeNull();
+  });
+
+  it('names the tier below: one rung down, or the boot map', () => {
+    const up = handle('moon');
+    up.appliedTier = '8k';
+    expect(releaseTargetTier(up)).toBe('4k');
+    up.appliedTier = '4k';
+    expect(releaseTargetTier(up)).toBe('2k'); // the map every device boots with
+  });
+});
+
+describe('what a release puts on the material', () => {
+  type Pending = { url: string; onLoad: (tex: THREE.Texture) => void; onError: (err: unknown) => void };
+  let pending: Pending[] = [];
+  let restore: (() => void) | null = null;
+  const flush = () => new Promise<void>((resolve) => setTimeout(resolve, 0));
+
+  beforeEach(() => {
+    pending = [];
+    const previous = setUpgradeTextureLoader((url, onLoad, onError) => {
+      pending.push({ url, onLoad, onError });
+    });
+    restore = () => setUpgradeTextureLoader(previous);
+  });
+
+  afterEach(() => {
+    restore?.();
+    restore = null;
+  });
+
+  /** A handle on a real 4K map, as a body that has climbed one rung has. */
+  function onFourK(key = 'moon'): TextureUpgrade {
+    const up = handle(key);
+    const map = new THREE.Texture({ width: 4096, height: 2048 } as unknown as HTMLImageElement);
+    up.material.map = map;
+    up.material.userData.colorTierRank = TIER_RANK['4k'];
+    up.material.userData.photoLoaded = true;
+    up.appliedTier = '4k';
+    return up;
+  }
+
+  it('fetches the map below and swaps it in once it has decoded', async () => {
+    const up = onFourK();
+    up.appliedTier = '8k';
+    up.material.userData.colorTierRank = TIER_RANK['8k'];
+    expect(startTierRelease(up, 1_000)).toBe(true);
+    expect(pending).toHaveLength(1);
+    expect(pending[0].url).toMatch(/textures\/4k\/moon\.webp$/);
+    // The body draws its 8K map the whole time the fetch is in the air.
+    expect(up.appliedTier).toBe('8k');
+    expect(up.material.userData.colorTierRank).toBe(TIER_RANK['8k']);
+
+    const low = new THREE.Texture({ width: 4096, height: 2048 } as unknown as HTMLImageElement);
+    pending[0].onLoad(low);
+    await flush();
+    expect(up.material.map).toBe(low);
+    expect(up.appliedTier).toBe('4k');
+    expect(up.material.userData.colorTierRank).toBe(TIER_RANK['4k']);
+    expect(up.release).toBeUndefined();
+  });
+
+  it('drops to the boot map when the rung it gives back is the first', async () => {
+    const up = onFourK('mars');
+    expect(startTierRelease(up, 1_000)).toBe(true);
+    expect(pending[0].url).toMatch(/textures\/mars\.v2\.webp$/);
+    pending[0].onLoad(new THREE.Texture());
+    await flush();
+    // The boot map is not a member of the ladder, so the handle is back where
+    // it started and the climb begins from the bottom rung again.
+    expect(up.appliedTier).toBeNull();
+    expect(up.material.userData.colorTierRank).toBe(2);
+    expect(resolveUpgradeTier(up, '4k')).toBe('4k');
+  });
+
+  it('keeps the high map until the low one is on the material', async () => {
+    const up = onFourK();
+    const high = up.material.map!;
+    const wasDisposed = watchDispose(high);
+    let mapAtDispose: THREE.Texture | null | undefined;
+    high.addEventListener('dispose', () => { mapAtDispose = up.material.map; });
+    startTierRelease(up, 1_000);
+    expect(wasDisposed()).toBe(false); // still drawing the high one, mid-fetch
+    const low = new THREE.Texture();
+    pending[0].onLoad(low);
+    await flush();
+    expect(up.material.map).toBe(low);
+    // Assigned before disposed, exactly like the way up: no frame samples a
+    // freed texture, and none draws a body with no map.
+    expect(mapAtDispose).toBe(low);
+    expect(wasDisposed()).toBe(true);
+  });
+
+  it('carries the colour-as-bump alias and keeps the body a photographed one', async () => {
+    const up = onFourK('mars');
+    up.material.bumpMap = up.material.map; // a body that bumps off its colour map
+    startTierRelease(up, 1_000);
+    const low = new THREE.Texture();
+    pending[0].onLoad(low);
+    await flush();
+    expect(up.material.bumpMap).toBe(low); // never left pointing at freed memory
+    // The body still has a real photograph on it: the lazy painter must not
+    // start painting over the map a release just put there.
+    expect(up.material.userData.photoLoaded).toBe(true);
+  });
+
+  it('earns nothing for five seconds afterwards', async () => {
+    const up = onFourK();
+    up.appliedTier = '8k';
+    up.warmGoal = '8k'; // the arrival that fetched it is over; the goal is not
+    startTierRelease(up, 1_000);
+    pending[0].onLoad(new THREE.Texture());
+    await flush();
+    const releasedAt = up.releasedAtMs!;
+    expect(canAttempt(up, releasedAt + RELEASE_REEARN_GRACE_MS - 1)).toBe(false);
+    expect(canAttempt(up, releasedAt + RELEASE_REEARN_GRACE_MS + 1)).toBe(true);
+    // …and the goal that would have climbed straight back up is gone with it.
+    expect(up.warmGoal).toBeUndefined();
+    expect(resolveUpgradeTier(up, '8k')).toBe('8k'); // still climbable, just not now
+  });
+
+  it('takes one swap at a time, and never while a rung is being fetched', () => {
+    const up = onFourK();
+    expect(startTierRelease(up, 1_000)).toBe(true);
+    expect(startTierRelease(up, 1_100)).toBe(false);
+    expect(pending).toHaveLength(1);
+    cancelTierRelease(up);
+    const climbing = onFourK();
+    startAttempt(climbing, '8k', 1_000);
+    expect(startTierRelease(climbing, 1_000)).toBe(false);
+  });
+
+  it('keeps the map it has when the fetch fails, and says so once', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const up = onFourK();
+      const high = up.material.map!;
+      const settled: boolean[] = [];
+      startTierRelease(up, 1_000, { onSettled: (ok) => settled.push(ok) });
+      pending[0].onError(new Error('offline'));
+      await flush();
+      expect(settled).toEqual([false]);
+      expect(up.material.map).toBe(high);
+      expect(up.appliedTier).toBe('4k');
+      expect(up.release).toBeUndefined();
+      expect(up.releasedAtMs).toBeUndefined(); // nothing was given back
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('waits out a cooldown after a swap that could not be fetched', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const up = onFourK();
+      up.belowBandSinceMs = 0;
+      expect(releaseDue(up, 60_000)).toBe(true);
+      startTierRelease(up, 60_000);
+      pending[0].onError(new Error('offline'));
+      await flush();
+      // The same body is the farthest candidate again on the very next
+      // frame; without the cooldown the planner would ask it for the rest of
+      // the session.
+      expect(releaseDue(up, up.releaseRetryAtMs! - 1)).toBe(false);
+      expect(releaseDue(up, up.releaseRetryAtMs! + 1)).toBe(true);
+      expect(up.releaseFailures).toBe(1);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('abandons a swap that has been in the air too long', () => {
+    const up = onFourK();
+    startTierRelease(up, 1_000);
+    expect(releaseExpired(up, 1_000 + RELEASE_ATTEMPT_TIMEOUT_MS)).toBe(false);
+    expect(releaseExpired(up, 1_001 + RELEASE_ATTEMPT_TIMEOUT_MS)).toBe(true);
+    cancelTierRelease(up);
+    expect(releaseExpired(up, 60_000)).toBe(false); // nothing in the air
+  });
+
+  it('drops a swap that lands after it was abandoned', async () => {
+    const up = onFourK();
+    const high = up.material.map!;
+    startTierRelease(up, 1_000);
+    cancelTierRelease(up); // a teleport, a timeout, mode disposal
+    const low = new THREE.Texture();
+    const wasDisposed = watchDispose(low);
+    pending[0].onLoad(low);
+    await flush();
+    expect(up.material.map).toBe(high);
+    expect(wasDisposed()).toBe(true);
+    expect(up.appliedTier).toBe('4k');
+  });
+
+  it('re-fetches the same tier on a restore, and calls it no release', async () => {
+    // A rung closes its decoded source once the upload is paid, so a lost GL
+    // context has nothing to re-upload from: the map is fetched again at the
+    // tier the body already had.
+    const up = onFourK();
+    expect(startTierRelease(up, 1_000, { restore: true })).toBe(true);
+    expect(pending[0].url).toMatch(/textures\/4k\/moon\.webp$/);
+    const again = new THREE.Texture();
+    pending[0].onLoad(again);
+    await flush();
+    expect(up.material.map).toBe(again);
+    expect(up.appliedTier).toBe('4k'); // unchanged: nothing was given back
+    expect(up.releasedAtMs).toBeUndefined();
+    expect(canAttempt(up, 1_100)).toBe(true);
+  });
+
+  it('puts a lower map on a material only through the deliberate swap', () => {
+    // The rank guard exists to stop a late arrival undoing a finer map, so
+    // the way down cannot go through it.
+    const mat = new THREE.MeshStandardMaterial();
+    materials.push(mat);
+    mat.userData.colorTierRank = TIER_RANK['8k'];
+    const low = new THREE.Texture();
+    expect(applyColorTierTexture(mat, low, TIER_RANK['4k'])).toBe(false);
+    const other = new THREE.Texture();
+    releaseColorTier(mat, other, TIER_RANK['4k']);
+    expect(mat.map).toBe(other);
+    expect(mat.userData.colorTierRank).toBe(TIER_RANK['4k']);
+  });
+});
+
+describe('what the ladder is allowed to hold', () => {
+  type Pending = { url: string; onLoad: (tex: THREE.Texture) => void; onError: (err: unknown) => void };
+  let pending: Pending[] = [];
+  let restore: (() => void) | null = null;
+  const flush = () => new Promise<void>((resolve) => setTimeout(resolve, 0));
+
+  beforeEach(() => {
+    pending = [];
+    const previous = setUpgradeTextureLoader((url, onLoad, onError) => {
+      pending.push({ url, onLoad, onError });
+    });
+    restore = () => setUpgradeTextureLoader(previous);
+  });
+
+  afterEach(() => {
+    bindTierAdmission(null);
+    bindKtx2TierLoader(null);
+    restore?.();
+    restore = null;
+  });
+
+  const always = (verdict: TierAdmission) => bindTierAdmission(() => verdict);
+
+  it('does not start a fetch the ledger blocks', () => {
+    always('blocked');
+    const up = handle('moon');
+    upgradeTextureOnApproach(up, '4k', 1_000);
+    expect(pending).toHaveLength(0);
+    // A refusal is arithmetic, not a failure: no cooldown, no attempt, and
+    // the same question is asked again the next frame.
+    expect(up.attempt).toBeUndefined();
+    expect(up.retryAtMs).toBeUndefined();
+    expect(up.lastFailure).toBeUndefined();
+    expect(canAttempt(up, 1_016)).toBe(true);
+    bindTierAdmission(null);
+    upgradeTextureOnApproach(up, '4k', 1_016);
+    expect(pending).toHaveLength(1);
+  });
+
+  it('keeps a warm goal that is only blocked, and drops one that can never fit', () => {
+    always('blocked');
+    const up = handle('moon');
+    expect(armArrivalWarmGoal(up)).toBe(true);
+    expect(pumpArrivalWarmGoal(up, 1_000)).toBe(true); // a release may still make room
+    expect(up.warmGoal).toBe('8k');
+    expect(pending).toHaveLength(0);
+    always('refuse');
+    expect(pumpArrivalWarmGoal(up, 2_000)).toBe(false);
+    expect(up.warmGoal).toBeUndefined();
+    // And a goal aimed at a rung nothing could ever fit never arms at all.
+    expect(armArrivalWarmGoal(handle('mars'))).toBe(false);
+  });
+
+  it('drops a decoded map that turns out not to fit, and keeps the rung it has', async () => {
+    // The estimate that admitted the fetch is nominal; the texture in hand is
+    // the real figure, and a 4x transcode fallback is exactly the case.
+    let verdict: TierAdmission = 'admit';
+    bindTierAdmission(() => verdict);
+    const up = handle('moon');
+    const boot = new THREE.Texture();
+    up.material.map = boot;
+    up.material.userData.colorTierRank = 2;
+    upgradeTextureOnApproach(up, '4k', 1_000);
+    expect(pending).toHaveLength(1);
+    verdict = 'blocked';
+    const arrival = new THREE.Texture({ width: 4096, height: 2048 } as unknown as HTMLImageElement);
+    const wasDisposed = watchDispose(arrival);
+    pending[0].onLoad(arrival);
+    await flush();
+    expect(wasDisposed()).toBe(true);
+    expect(up.material.map).toBe(boot); // a real map either way
+    expect(up.appliedTier).toBeNull();
+    expect(up.attempt).toBeUndefined();
+  });
+
+  it('charges a compressed container one byte a texel only where the transcoder has a target', () => {
+    const mib = (bytes: number) => bytes / (1024 * 1024);
+    // No loader bound at all: the classic map is what gets fetched.
+    expect(mib(tierUploadBytes('moon', '8k'))).toBeCloseTo(170.7, 1);
+    // Bound on a GPU with a compressed format to transcode into.
+    bindKtx2TierLoader(() => {}, true);
+    expect(mib(tierUploadBytes('moon', '8k'))).toBeCloseTo(42.7, 1);
+    // Bound on one without: three transcodes to RGBA32 and hands back four
+    // times the size the container's blocks suggest. The filename cannot
+    // tell these two apart, which is why the charge does not read it.
+    bindKtx2TierLoader(() => {}, false);
+    expect(mib(tierUploadBytes('moon', '8k'))).toBeCloseTo(170.7, 1);
+    expect(mib(tierUploadBytes('moon', '4k'))).toBeCloseTo(42.7, 1);
+  });
+
+  it('measures a decoded candidate, a stashed figure and a nominal tier alike', () => {
+    const mib = (bytes: number) => bytes / (1024 * 1024);
+    const tex = new THREE.Texture({ width: 4096, height: 2048 } as unknown as HTMLImageElement);
+    expect(mib(textureGpuBytes(tex))).toBeCloseTo(42.7, 1);
+    // A texture whose source was closed after its upload keeps the figure.
+    tex.userData.gpuBytes = 123;
+    expect(textureGpuBytes(tex)).toBe(123);
+    // Nothing readable: the tier's nominal size, or nothing at all.
+    expect(mib(textureGpuBytes(new THREE.Texture(), 8192))).toBeCloseTo(170.7, 1);
+    expect(textureGpuBytes(null)).toBe(0);
+  });
+
+  it('counts the decoded image a rung is still holding in RAM', () => {
+    const mib = (bytes: number) => bytes / (1024 * 1024);
+    const up = handle('moon');
+    up.appliedTier = '4k';
+    const bitmap = { width: 4096, height: 2048, close: () => {} };
+    up.material.map = new THREE.Texture(bitmap as unknown as HTMLImageElement);
+    // 42.7 MiB on the GPU with its mips, and 32 more still in RAM behind it
+    // — the same memory on the device where the envelope binds.
+    expect(mib(appliedTierGpuBytes(up))).toBeCloseTo(42.7, 1);
+    expect(mib(appliedTierHeldBytes(up))).toBeCloseTo(74.7, 1);
+    // Once the source is closed and the figure stashed, only the GPU copy is
+    // left to count: what is held in its place is a thumbnail to re-upload
+    // from after a context loss.
+    up.material.map.userData.gpuBytes = equirectMapGpuBytes(4096);
+    up.material.map.userData.sourceReleased = true;
+    up.material.map.image = { width: 256, height: 128, close: () => {} };
+    expect(mib(appliedTierHeldBytes(up))).toBeCloseTo(42.7, 1);
+    // And a body still on its boot map weighs nothing at all: the maps every
+    // device carries regardless are not the ladder's optional weight.
+    up.appliedTier = null;
+    expect(appliedTierHeldBytes(up)).toBe(0);
+  });
+
+  it('follows a refusal down: the top the tiles are measured against', () => {
+    // Sectors measured against an 8K the globe will not hold arrive at twice
+    // the magnification they were meant for.
+    const up = handle('moon');
+    expect(reachableTopTier(up)).toBe('8k');
+    bindTierAdmission((_up, tier) => (tier === '8k' ? 'blocked' : 'admit'));
+    expect(reachableTopTier(up)).toBe('4k');
+    up.appliedTier = '4k';
+    expect(reachableTopTier(up)).toBe('4k');
+    // What it already holds is reachable by definition, whatever the ledger
+    // would say about fetching it now.
+    up.appliedTier = '8k';
+    always('blocked');
+    expect(reachableTopTier(up)).toBe('8k');
+    // A rung whose fetch failed leaves the ladder one short until it lands.
+    up.appliedTier = null;
+    bindTierAdmission(null);
+    up.lastFailure = { tier: '4k', streak: 1 };
+    expect(reachableTopTier(up)).toBeNull();
   });
 });

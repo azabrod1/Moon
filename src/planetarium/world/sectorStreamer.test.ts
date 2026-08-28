@@ -64,6 +64,12 @@ const R = 1;
  *  streamer takes numbers, not a device guess, so a test says which. */
 const DESKTOP = LEGACY_DESKTOP_PROFILE;
 const TOUCH = LEGACY_TOUCH_PROFILE;
+/** The same desktop numbers with no sector floor. Most of the tests below
+ *  squeeze the budget to one set or to nothing to watch what the streamer
+ *  gives up first — a squeeze the shipped floor is there to prevent, and
+ *  which would otherwise stop the eviction machinery from being exercised at
+ *  all. The floor's own behaviour is pinned in its own describe block. */
+const NO_FLOOR = { ...DESKTOP, sectorFloorBytes: 0 };
 const EARTH_SET_BYTES = sectorSetGpuBytes(SECTOR_SETS.Earth);
 const EARTH_FITS_DESKTOP = Math.floor(DESKTOP.ceilingBytes / EARTH_SET_BYTES);
 const EARTH_FITS_TOUCH = Math.floor(TOUCH.ceilingBytes / EARTH_SET_BYTES);
@@ -173,7 +179,7 @@ describe('SectorStreamer', () => {
   beforeEach(() => {
     loader = new FakeLoader();
     warm = new FakeWarm();
-    streamer = new SectorStreamer({ limits: DESKTOP, load: loader.load, warm: warm.warm });
+    streamer = new SectorStreamer({ limits: NO_FLOOR, load: loader.load, warm: warm.warm });
     earth = earthHandle();
     streamer.register(earth);
   });
@@ -766,7 +772,7 @@ describe('SectorStreamer', () => {
     // A Moon booting on 2K with an 8K rung: measured against 2K, a sector
     // would be admitted now and released the moment the 8K lands.
     earth.material.map!.image = { width: 2048, height: 1024 };
-    earth.topMapWidth = 8192;
+    earth.topMapWidth = () => 8192;
     streamer.update('Earth', cameraOver(2, 1), measureOf({ '2_1': 2 * DESKTOP.wantTexelPx - 0.02 }), 0);
     expect(loader.requests.length).toBe(0);
     streamer.update('Earth', cameraOver(2, 1), measureOf({ '2_1': 2 * DESKTOP.wantTexelPx + 0.02 }), 16);
@@ -774,7 +780,7 @@ describe('SectorStreamer', () => {
     // The drawn map wins when it is the wider (Earth boots at 4096 with no ladder).
     streamer.dropAll();
     earth.material.map!.image = { width: 4096, height: 2048 };
-    earth.topMapWidth = 2048;
+    earth.topMapWidth = () => 2048;
     streamer.update('Earth', cameraOver(2, 1), measureOf({ '2_1': DESKTOP.wantTexelPx + 0.02 }), 32);
     expect(streamer.stats().resident).toBe(1);
   });
@@ -1299,17 +1305,22 @@ describe('SectorStreamer', () => {
     expect(s.resident).toBe(0);
   });
 
-  it('says once when the globe maps have taken the whole envelope', () => {
+  it('says once when the budget falls under one whole set', () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     try {
-      streamer.setGlobalMapBytes(DESKTOP.envelopeBytes - 1);
+      // A budget that cannot hold one set is the same silence as a budget of
+      // nothing: no tile is admitted with it, and a fraction of a set is not
+      // a smaller tile. The warning is what tells a soft surface from a
+      // fault, so it fires there rather than at zero.
+      streamer.setGlobalMapBytes(DESKTOP.envelopeBytes - EARTH_SET_BYTES);
       expect(warn).not.toHaveBeenCalled();
+      streamer.setGlobalMapBytes(DESKTOP.envelopeBytes - EARTH_SET_BYTES + 1);
+      expect(streamer.stats().budget).toBeLessThan(EARTH_SET_BYTES);
+      expect(warn).toHaveBeenCalledTimes(1);
+      expect(String(warn.mock.calls[0][0])).toContain('below one sector set');
+      // Once: a per-frame figure that stays there must not become a log.
       streamer.setGlobalMapBytes(DESKTOP.envelopeBytes);
       expect(streamer.stats().budget).toBe(0);
-      expect(warn).toHaveBeenCalledTimes(1);
-      expect(String(warn.mock.calls[0][0])).toContain('Surface tiles off');
-      // Once: a per-frame figure that stays there must not become a log.
-      streamer.setGlobalMapBytes(DESKTOP.envelopeBytes + 1);
       expect(warn).toHaveBeenCalledTimes(1);
     } finally {
       warn.mockRestore();
@@ -1599,22 +1610,27 @@ describe('SectorStreamer', () => {
       'f6 +5_1',
       'f6 +6_1',
       'f9 * 2s of looking',
-      // The give-back is immediate and takes the weakest first.
+      // The give-back is immediate and takes the weakest first — but only as
+      // far as the floor: the script asks for room for two sets and a desktop
+      // keeps three whatever the globe maps have taken, so the third set
+      // stays where it used to go.
       "f11 * the globe's own map grows: room for two sets",
       'f11 -6_1',
-      'f11 -3_1',
       'f13 * 2s of looking',
       // The one eviction for a candidate: it out-ranks the weakest resident
       // by more than the margin, and takes exactly that one sector.
-      'f13 -5_1',
+      'f13 -3_1',
       'f13 +7_1',
-      // Everything is dropped and streams back on the next frame, strongest
-      // first, into the budget as it now stands.
+      // Everything is dropped and streams back, strongest first, into the
+      // budget as it now stands — three sets, so one of them lands a frame
+      // later than the two the in-flight cap admits at once.
       'f16 * context loss',
       'f16 -4_1',
+      'f16 -5_1',
       'f16 -7_1',
       'f16 +7_1',
       'f16 +4_1',
+      'f17 +5_1',
     ]);
   });
 
@@ -1668,5 +1684,90 @@ describe('SectorStreamer', () => {
     // …its eastern neighbour at that neighbour's western edge, same latitude.
     const edge = sphereDirection(3 / 8, 1.5 / 4, new THREE.Vector3());
     expect(asked.get('3_1')!.distanceTo(edge)).toBeLessThan(1e-12);
+  });
+});
+
+describe('the sector floor', () => {
+  let loader: FakeLoader;
+  let warm: FakeWarm;
+
+  beforeEach(() => {
+    loader = new FakeLoader();
+    warm = new FakeWarm();
+  });
+
+  const withFloor = (limits = DESKTOP) =>
+    new SectorStreamer({ limits, load: loader.load, warm: warm.warm });
+  const INSIDE = new THREE.Vector3(0, 0, 0); // every sector faces a camera at the centre
+
+  it('is whole Earth sector sets: two on a phone, three on a desktop', () => {
+    // A fraction of a set would be budget nothing can spend.
+    expect(TOUCH.sectorFloorBytes).toBe(2 * sectorSetGpuBytes(SECTOR_SETS.Earth));
+    expect(DESKTOP.sectorFloorBytes).toBe(3 * sectorSetGpuBytes(SECTOR_SETS.Earth));
+  });
+
+  it('keeps a budget for the tiles however much the globe maps have taken', () => {
+    const s = withFloor();
+    s.register(earthHandle());
+    s.setGlobalMapBytes(DESKTOP.envelopeBytes);
+    expect(s.stats().budget).toBe(DESKTOP.sectorFloorBytes);
+    // Even asked for more than the whole envelope: the ladder cannot borrow
+    // against the floor by overshooting it.
+    s.setGlobalMapBytes(4 * DESKTOP.envelopeBytes);
+    expect(s.stats().budget).toBe(DESKTOP.sectorFloorBytes);
+    expect(s.stats().floor).toBe(DESKTOP.sectorFloorBytes);
+  });
+
+  it('holds a working set at the floor rather than going quiet', () => {
+    const s = withFloor();
+    s.register(earthHandle());
+    loader.auto = true;
+    const sizes: Record<string, number> = {};
+    for (let c = 0; c < 8; c++) { sizes[`${c}_1`] = 2 + 0.01 * c; sizes[`${c}_2`] = 2.1 + 0.01 * c; }
+    for (let f = 0; f < 24; f++) s.update('Earth', INSIDE, measureOf(sizes), f * 16);
+    expect(s.stats().resident).toBe(EARTH_FITS_DESKTOP);
+    // The globe maps take the whole envelope. Three sets are still drawn:
+    // the surface at 20x magnification keeps the tiles it needs most.
+    s.setGlobalMapBytes(DESKTOP.envelopeBytes);
+    const held = s.stats();
+    expect(held.resident).toBe(3);
+    expect(held.residentBytes + held.reserved).toBeLessThanOrEqual(held.budget);
+  });
+
+  it('owes nothing while no body can want a tile', () => {
+    // `?sectors=0` builds no streamer at all; a mode between activations has
+    // one with nothing registered. Neither may make the ladder reserve
+    // memory for tiles that cannot load.
+    const s = withFloor();
+    expect(s.floorBytes()).toBe(0);
+    s.setGlobalMapBytes(DESKTOP.envelopeBytes);
+    expect(s.stats().budget).toBe(0);
+    s.register(earthHandle());
+    expect(s.floorBytes()).toBe(DESKTOP.sectorFloorBytes);
+    expect(s.stats().budget).toBe(DESKTOP.sectorFloorBytes);
+  });
+
+  it('never gives the tiles more than their ceiling to honour a floor', () => {
+    const s = new SectorStreamer({
+      limits: { ...TOUCH, sectorFloorBytes: 4 * TOUCH.ceilingBytes },
+      load: loader.load,
+      warm: warm.warm,
+    });
+    s.register(earthHandle());
+    s.setGlobalMapBytes(TOUCH.envelopeBytes);
+    expect(s.stats().budget).toBe(TOUCH.ceilingBytes);
+  });
+
+  it('leaves the budget alone while the envelope has room', () => {
+    // The floor is a floor, not a reservation: it takes nothing from the
+    // tiles when the globe maps are small, which is every desktop session.
+    const s = withFloor();
+    s.register(earthHandle());
+    s.setGlobalMapBytes(0);
+    expect(s.stats().budget).toBe(DESKTOP.ceilingBytes);
+    s.setGlobalMapBytes(DESKTOP.envelopeBytes - DESKTOP.ceilingBytes);
+    expect(s.stats().budget).toBe(DESKTOP.ceilingBytes);
+    s.setGlobalMapBytes(DESKTOP.envelopeBytes - 4 * EARTH_SET_BYTES);
+    expect(s.stats().budget).toBe(4 * EARTH_SET_BYTES);
   });
 });

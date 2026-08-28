@@ -1,6 +1,6 @@
 /**
  * GENERATED — written by `node tools/gen-tiles.mjs` from the tile sets on
- * disk (and mirrored in public/textures/tiles/sets.json). Never edit by hand.
+ * disk (and mirrored in public/textures/tiles/sets.v1.json). Never edit by hand.
  *
  * A sector tile set is published under a folder named for its own contents,
  * tiles/<key>/<tier>.<setHash8>/, and this table is where the app reads that

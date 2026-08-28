@@ -24,6 +24,7 @@ import { SECTOR_SET_TABLE, type GeneratedSectorSet } from './sectorSets.generate
 import { PLANET_TEXTURE_FILES } from '../PlanetFactory';
 
 const TEXTURES = resolve(__dirname, '../../../public/textures');
+const SETS_JSON = resolve(TEXTURES, 'tiles/sets.v1.json');
 
 /** Canvas size from a WebP container: VP8 (lossy), VP8L (lossless) or VP8X
  *  (extended) first chunk. */
@@ -94,23 +95,25 @@ describe('sector tile sets: what the app asks for', () => {
   });
 
   it('crops match the layout cut from the base map’s real width', () => {
+    // The app builds its crop layout from the width and span in the table;
+    // this is the check that the arithmetic reproduces the tile size gen-tiles
+    // actually measured on disk.
     for (const [body, spec] of Object.entries(SECTOR_SETS)) {
       for (const [slot, crop] of Object.entries(spec.crops)) {
         const entry = SECTOR_SET_TABLE[`${crop.key}/${crop.tier}`];
-        const layout = dataCropLayout(SECTOR_GRID_16K, crop.baseWidth, crop.spanU ?? 1);
+        const layout = dataCropLayout(SECTOR_GRID_16K, crop.baseWidth, crop.spanU);
         expect({ width: entry.tileWidth, height: entry.tileHeight }, `${body} ${slot}`).toEqual({
           width: layout.width,
           height: layout.height,
         });
-        expect(entry.baseWidth, `${body} ${slot}`).toBe(crop.baseWidth);
-        expect(entry.spanU, `${body} ${slot}`).toBe(crop.spanU ?? 1);
       }
     }
   });
 
   it('every set key is the file stem of the map it was cut from', () => {
-    // The stem carries a re-based map's new name into its tiles' paths, so a
-    // globe and its tiles can never come from two different worlds.
+    // The stem carries a re-based map's new name into its tiles' paths, so
+    // tiles cut from one map can never be paired with a globe drawing
+    // another.
     const stem = (file: string) => file.replace(/^.*\//, '').replace(/\.webp$/, '');
     expect(SECTOR_SETS.Earth.color.key).toBe(stem(PLANET_TEXTURE_FILES.earthDay));
     expect(SECTOR_SETS.Mars.color.key).toBe(stem(PLANET_TEXTURE_FILES.mars));
@@ -166,6 +169,14 @@ describe('sector tile sets: the files on disk', () => {
         });
       }
     }
+  });
+
+  it('ships the same table in sets.v1.json as in the generated module', () => {
+    // gen-tiles writes both from one object in one pass, so they can only
+    // differ if a run was interrupted or one of them was hand-edited — and
+    // sets.v1.json is what a publisher or a smoke script reads to find the
+    // folder the app is asking for.
+    expect(JSON.parse(readFileSync(SETS_JSON, 'utf8'))).toEqual(SECTOR_SET_TABLE);
   });
 
   it('every set folder is named for the bytes inside it', () => {

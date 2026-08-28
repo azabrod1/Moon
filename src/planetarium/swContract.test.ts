@@ -1,6 +1,11 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import template from '../../tools/sw.template.js?raw';
+import swPlugin, { tileOriginFrom } from '../../tools/swPlugin.mjs';
 import { resolveTileUrl, tileSetPath } from './world/texturePolicy';
+import { SECTOR_SET_TABLE } from './world/sectorSets.generated';
 
 // The service worker ships as generated JS the compiler never sees
 // (tools/swPlugin.mjs injects the manifest into tools/sw.template.js at
@@ -32,7 +37,20 @@ const tileUrlOn = (hash: string, c = 2, r = 1) =>
 const TILE_URL = tileUrlOn(TILE_SET.hash);
 const MOON_BYTES = new TextEncoder().encode('moon-pixels');
 const STAR_BYTES = new TextEncoder().encode('star-records');
-const TILE_BYTES = new TextEncoder().encode('tile-pixels');
+
+/** Bytes shaped like a WebP file: 'RIFF', the size field, 'WEBP', payload.
+ *  The worker reads those first 12 bytes before it stores a tile, so a tile
+ *  body in this suite has to carry them. */
+function webpBytes(payload: string): Uint8Array {
+  const body = new TextEncoder().encode(payload);
+  const out = new Uint8Array(12 + body.length);
+  out.set(new TextEncoder().encode('RIFF'), 0);
+  new DataView(out.buffer).setUint32(4, 4 + body.length, true);
+  out.set(new TextEncoder().encode('WEBP'), 8);
+  out.set(body, 12);
+  return out;
+}
+const TILE_BYTES = webpBytes('tile-pixels');
 
 async function sha256Hex(bytes: Uint8Array): Promise<string> {
   const digest = await crypto.subtle.digest('SHA-256', bytes.slice().buffer);
@@ -268,6 +286,31 @@ describe('service worker template: content-addressed tile sets', () => {
     }
   });
 
+  it('never stores a complete 200 whose body is not a WebP container', async () => {
+    // A tile key has no digest and no expiry, so a wrong 200 from an edge —
+    // an error page, a mis-purged object, a proxy's own page, any of them
+    // with permissive CORS — would pin that sector wrong for as long as the
+    // app names the set. The page still gets the bytes; nothing is stored.
+    const page = '<!doctype html><title>Not found</title>';
+    const harness = bootWorker(
+      MANIFEST,
+      [],
+      new Map([[TILE_URL, () => new Response(page, { status: 200, headers: { 'content-type': 'text/html' } })]]),
+      tileHost,
+    );
+    const { responded, waits } = dispatchFetch(harness, new Request(TILE_URL));
+    expect(await (await responded!).text()).toBe(page);
+    await Promise.all(waits);
+    expect(harness.store.size).toBe(0);
+    // The same request with real WebP bytes is stored — the check is the
+    // body's shape, not a blanket refusal.
+    const good = bootWorker(MANIFEST, [], healthyNetwork(), tileHost);
+    const hit = dispatchFetch(good, new Request(TILE_URL));
+    await hit.responded!;
+    await Promise.all(hit.waits);
+    expect([...good.store.keys()]).toEqual([TILE_URL]);
+  });
+
   it('with an empty allowlist behaves exactly as a same-origin-only worker', () => {
     const harness = bootWorker(MANIFEST, [], healthyNetwork());
     expect(dispatchFetch(harness, new Request(TILE_URL)).responded).toBeUndefined();
@@ -309,5 +352,97 @@ describe('service worker template: lifecycle', () => {
     expect(harness.self.clients.claim).toHaveBeenCalled();
     expect(harness.store.has(keep)).toBe(true);
     expect(harness.store.has(stale)).toBe(false);
+  });
+});
+
+// The build plugin, driven the way Vite drives it. The tile origin is the
+// seam that matters here: the app reads VITE_TILE_ORIGIN from
+// import.meta.env, which Vite fills from .env files AND process.env, and it
+// never writes an .env value back into process.env. A plugin reading
+// process.env would therefore build an empty allowlist for a build whose app
+// fetches from a CDN — every tile uncached, nothing in the log.
+describe('service worker build plugin: tile origin and allowlist', () => {
+  const TILE_HOST = 'https://cdn.test/gh/user/moon-tiles@v1';
+  let dist = '';
+  let savedEnv: string | undefined;
+
+  /** A dist tree with the little the plugin insists on: the five data
+   *  directories, a boot-warm script whose files all exist, and two fonts. */
+  function fakeDist(): string {
+    const dir = mkdtempSync(join(tmpdir(), 'moon-sw-'));
+    for (const d of ['textures', 'stardata', 'fonts', 'models', 'historic']) {
+      mkdirSync(join(dir, d), { recursive: true });
+    }
+    const warm: string[] = [];
+    for (let i = 0; i < 22; i++) {
+      warm.push(`t${i}.webp`);
+      writeFileSync(join(dir, 'textures', `t${i}.webp`), `pixels-${i}`);
+    }
+    writeFileSync(join(dir, 'stardata', 'bright-stars.v1.bin'), 'records');
+    writeFileSync(join(dir, 'fonts', 'a.woff2'), 'font-a');
+    writeFileSync(join(dir, 'fonts', 'b.woff2'), 'font-b');
+    writeFileSync(
+      join(dir, 'index.html'),
+      `<!doctype html><html><body><script id="boot-texture-warm">\n` +
+        `const files = [${warm.map((f) => `'${f}'`).join(', ')}];\n` +
+        `for (let i = 0; i < files.length; i++) warm('/textures/' + files[i]);\n` +
+        `warm('/stardata/bright-stars.v1.bin');\n` +
+        `</script></body></html>\n`,
+    );
+    return dir;
+  }
+
+  function runPlugin(env: Record<string, string | boolean | undefined>): string {
+    const plugin = swPlugin();
+    plugin.configResolved({ root: dist, base: '/', build: { outDir: dist }, env });
+    plugin.closeBundle();
+    return readFileSync(join(dist, 'sw.js'), 'utf8');
+  }
+
+  /** One injected constant back out of the generated worker. */
+  function injected(sw: string, name: string): unknown {
+    const head = `const ${name} = `;
+    const line = sw.split('\n').find((l) => l.startsWith(head));
+    expect(line, `${name} not injected`).toBeDefined();
+    return JSON.parse(line!.slice(head.length, -1));
+  }
+
+  beforeEach(() => {
+    dist = fakeDist();
+    // The whole point is that nothing reaches the plugin through process.env.
+    savedEnv = process.env.VITE_TILE_ORIGIN;
+    delete process.env.VITE_TILE_ORIGIN;
+  });
+
+  afterEach(() => {
+    rmSync(dist, { recursive: true, force: true });
+    if (savedEnv === undefined) delete process.env.VITE_TILE_ORIGIN;
+    else process.env.VITE_TILE_ORIGIN = savedEnv;
+  });
+
+  it('takes the tile origin from config.env, where an .env file lands', () => {
+    const sw = runPlugin({ VITE_TILE_ORIGIN: `${TILE_HOST}/` });
+    expect(injected(sw, 'TILE_ORIGINS')).toEqual(['https://cdn.test']);
+    // Every set the app names, under the host, at the hash it will ask for.
+    const sets = injected(sw, 'TILE_SETS') as string[];
+    expect(sets.length).toBe(Object.keys(SECTOR_SET_TABLE).length);
+    for (const [id, entry] of Object.entries(SECTOR_SET_TABLE)) {
+      const [key, tier] = id.split('/');
+      expect(sets).toContain(`${TILE_HOST}/${tileSetPath(key, tier, entry.setHash8)}`);
+    }
+  });
+
+  it('allows nothing off-origin when no tile origin is configured', () => {
+    // Tiles are then ordinary same-origin data files — but this dist has no
+    // tile folders, which is the case the build has to refuse rather than
+    // ship a plausible app with quietly soft hero bodies.
+    expect(() => runPlugin({})).toThrow(/VITE_TILE_ORIGIN is unset/);
+  });
+
+  it('refuses a tile origin that is not an absolute URL', () => {
+    expect(() => tileOriginFrom({ VITE_TILE_ORIGIN: 'cdn.test/tiles' })).toThrow(/not an absolute URL/);
+    expect(tileOriginFrom({ VITE_TILE_ORIGIN: '  https://cdn.test/tiles//  ' })).toBe('https://cdn.test/tiles');
+    expect(tileOriginFrom({})).toBe('');
+    expect(tileOriginFrom(undefined)).toBe('');
   });
 });

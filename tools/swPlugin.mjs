@@ -48,11 +48,18 @@ function walkFiles(dir) {
   return out;
 }
 
-/** Where tiles are served from, the same VITE_TILE_ORIGIN the app reads
- *  (world/texturePolicy.ts) — one variable, so the worker's allowlist and the
- *  app's fetches cannot point at different hosts. Empty is the app's origin. */
-function tileOrigin() {
-  const raw = (process.env.VITE_TILE_ORIGIN ?? '').trim().replace(/\/+$/, '');
+/** Where tiles are served from, read out of Vite's resolved `config.env` —
+ *  the very object that backs `import.meta.env` in the app
+ *  (world/texturePolicy.ts). It has to be that object and not process.env:
+ *  Vite merges `.env` files into config.env and never writes them back to
+ *  process.env, so a VITE_TILE_ORIGIN set in .env.production would leave the
+ *  app fetching from the host while the worker allowed nothing — tiles
+ *  uncached, no error. Empty is the app's own origin.
+ *
+ *  Exported for swContract.test.ts, which drives the plugin with a fake
+ *  config.env to pin exactly that. */
+export function tileOriginFrom(env) {
+  const raw = (env?.VITE_TILE_ORIGIN ?? '').trim().replace(/\/+$/, '');
   if (!raw) return '';
   try {
     new URL(raw);
@@ -81,12 +88,14 @@ function generatedTileSets() {
 export default function swPlugin() {
   let outDir = '';
   let base = '/';
+  let origin = '';
   return {
     name: 'moon-service-worker',
     apply: 'build',
     configResolved(config) {
       outDir = path.resolve(config.root, config.build.outDir);
       base = config.base;
+      origin = tileOriginFrom(config.env);
       if (!base.startsWith('/')) {
         // Manifest keys are absolute pathnames because the worker matches on
         // url.pathname; a relative base ('./') would emit keys no request
@@ -149,7 +158,6 @@ export default function swPlugin() {
       // Tiles fail open to the base map, so a build that names sets nothing
       // will serve produces a plausible-looking app with soft hero bodies and
       // no error anywhere. Fail here instead.
-      const origin = tileOrigin();
       if (!origin) {
         for (const set of sets) {
           if (!existsSync(path.join(outDir, set.dir))) {

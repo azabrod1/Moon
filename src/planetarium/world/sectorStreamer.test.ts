@@ -372,18 +372,26 @@ describe('SectorStreamer', () => {
     expect(loader.requests.map((r) => r.url)).toEqual([expect.stringMatching(/tiles\/mars-normal\.v2\/2k\.[0-9a-f]{8}\/2_1\.webp$/)]);
   });
 
-  it('says in the console that a tile did not load — once, in dev', () => {
+  it('warns once that a tile did not load, naming the set and the URL', () => {
     // A tile failure is invisible by design: the base map carries on. A wrong
     // tile origin or a set that was never published would otherwise look like
-    // nothing more than a slightly soft planet.
+    // nothing more than a slightly soft planet. It goes through debugWarn, so
+    // it reaches the ?debug=1 overlay in a build as well as the console — a
+    // wrong tile origin only exists in a build.
     resetTileFetchNoticeForTests();
     const warned = vi.spyOn(console, 'warn').mockImplementation(() => {});
     try {
       streamer.update('Earth', cameraOver(2, 1), measureOf({ '2_1': 2 }), 0);
       loader.failAll();
       expect(warned).toHaveBeenCalledTimes(1);
-      expect(String(warned.mock.calls[0][0])).toMatch(/tiles\/earth-day\.v2\/16k\.[0-9a-f]{8}\/2_1\.webp/);
-      // Every later failure is the same news; one line is the whole point.
+      const line = String(warned.mock.calls[0][0]);
+      // debugWarn's prefix: the same line reaches window.__dbgLog, which is
+      // the ?debug=1 overlay on a device with no console to read.
+      expect(line.startsWith('[WARN] ')).toBe(true);
+      expect(line).toMatch(/tiles\/earth-day\.v2\/16k\.[0-9a-f]{8}\/2_1\.webp/);
+      expect(line).toContain('earth-day.v2/16k');
+      // One line is all a session gets: every later failure carries the same
+      // information as the first.
       streamer.update('Earth', cameraOver(3, 1), measureOf({ '3_1': 2 }), 4 * SECTOR_RETRY_MS);
       loader.failAll();
       expect(warned).toHaveBeenCalledTimes(1);

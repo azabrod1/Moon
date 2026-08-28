@@ -74,13 +74,26 @@ export function resolveTileUrl(key: string, tier: string, hash: string, c: numbe
   return `${TILE_BASE}${tileSetPath(key, tier, hash)}${c}_${r}.webp`;
 }
 
-/** The published hash of a shipped set. Throws rather than compose a URL that
- *  would 404: tiles fail open to the base map, so a set named but not cut
- *  would show as a quietly soft globe instead of an error. */
+/** The published hash of a shipped set, or an empty string for a set the
+ *  generated table does not name. Failing open is deliberate: this resolves
+ *  while the SECTOR_SETS literal is built at module evaluation, so a throw
+ *  here is a blank app before any code has run — including the `?sectors=0`
+ *  switch that would turn streaming off. An empty hash instead 404s the
+ *  tiles, which the body already survives by drawing its base map, and
+ *  sectorStreamer's warning names the set. sectorTiles.assets.test.ts is
+ *  what keeps every set the app names present in the table. */
 export function sectorSetHash(key: string, tier: string): string {
+  return SECTOR_SET_TABLE[`${key}/${tier}`]?.setHash8 ?? '';
+}
+
+/** The layout gen-tiles measured a set's tiles at: the width of the equirect
+ *  they were cut from and how many sectors of longitude one tile spans. The
+ *  crop arithmetic reads these instead of hand-copied numbers, so a re-cut at
+ *  another width cannot leave the app sampling the old one. Unknown sets get
+ *  a zero width on the same fail-open contract as the hash. */
+export function sectorSetLayout(key: string, tier: string): { baseWidth: number; spanU: number } {
   const entry = SECTOR_SET_TABLE[`${key}/${tier}`];
-  if (!entry) throw new Error(`no tile set ${key}/${tier} — run node tools/gen-tiles.mjs --index`);
-  return entry.setHash8;
+  return { baseWidth: entry?.baseWidth ?? 0, spanU: entry?.spanU ?? 1 };
 }
 
 // Smallest GL max-texture-size that can hold a tier's maps. The boot tier has

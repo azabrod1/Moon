@@ -6,6 +6,7 @@ import {
   resolveTextureUrl,
   resolveTileUrl,
   sectorSetHash,
+  sectorSetLayout,
   tileSetPath,
   TEXTURE_TIERS,
   type TextureTier,
@@ -49,9 +50,25 @@ describe('resolveTileUrl', () => {
     expect(resolveTileUrl('moon', '16k', 'abcd1234', 0, 0).startsWith(import.meta.env.BASE_URL)).toBe(true);
   });
 
-  it('reads a shipped set’s hash from the generated table, and refuses an unknown one', () => {
-    expect(sectorSetHash('earth-day.v2', '16k')).toBe(SECTOR_SET_TABLE['earth-day.v2/16k'].setHash8);
-    expect(() => sectorSetHash('earth-day.v2', '32k')).toThrow(/gen-tiles/);
+  it('reads a shipped set’s hash and layout from the generated table', () => {
+    const entry = SECTOR_SET_TABLE['earth-day.v2/16k'];
+    expect(sectorSetHash('earth-day.v2', '16k')).toBe(entry.setHash8);
+    expect(sectorSetLayout('earth-day.v2', '16k')).toEqual({
+      baseWidth: entry.baseWidth,
+      spanU: entry.spanU,
+    });
+  });
+
+  it('fails open on a set the table does not name, rather than throwing', () => {
+    // These resolve while sectorStreamer's SECTOR_SETS literal is being built,
+    // at module evaluation: a throw there is a blank app, and `?sectors=0` is
+    // read after that import so nothing could turn streaming off first. An
+    // empty hash 404s instead, which the body survives by keeping its base
+    // map. sectorTiles.assets.test.ts is what keeps the shipped sets named.
+    expect(sectorSetHash('earth-day.v2', '32k')).toBe('');
+    expect(sectorSetLayout('earth-day.v2', '32k')).toEqual({ baseWidth: 0, spanU: 1 });
+    expect(resolveTileUrl('earth-day.v2', '32k', sectorSetHash('earth-day.v2', '32k'), 0, 0))
+      .toContain('textures/tiles/earth-day.v2/32k./0_0.webp');
   });
 });
 

@@ -59,13 +59,16 @@ import {
 } from './sectorGrid';
 import { SECTOR_RENDER_ORDER, createSectorMaterial, syncSectorMaterial } from './sectorMaterial';
 import { loadStreamedTexture, type TextureLoad } from './textureBitmapLoader';
-import { applyTextureDefaults, resolveTileUrl, sectorSetHash } from './texturePolicy';
+import { applyTextureDefaults, resolveTileUrl, sectorSetHash, sectorSetLayout } from './texturePolicy';
+import { debugWarn } from '../../shared/debug';
 import { TIER_RANK } from '../PlanetFactory';
 import { queueTextureWarm, type WarmOutcome } from './textureWarmer';
 
 export type CropSlot = 'bumpMap' | 'normalMap' | 'roughnessMap';
 
-/** One published tile set — the three things a tile URL is made of. */
+/** One published tile set: what a tile URL is made of, plus the layout the
+ *  tiles were cut at. Every field comes from the generated table, so a set
+ *  cut at another width or span cannot be sampled with the old numbers. */
 export interface SectorTileSet {
   /** Tile-set key under textures/tiles/: the FILE STEM of the map the set was
    *  cut from (`earth-roughness.v2` for earth-roughness.v2.webp), so a base
@@ -76,13 +79,11 @@ export interface SectorTileSet {
   tier: string;
   /** Hash of the whole set's bytes, from the generated table. */
   hash: string;
-}
-
-export interface SectorCropSpec extends SectorTileSet {
-  /** Width of the base map — the crop layout (content + gutter) follows. */
+  /** Width of the map the set was cut from — the crop layout (content +
+   *  gutter) follows from it. */
   baseWidth: number;
-  /** Sectors of longitude a crop spans (normal maps: 2, see sectorGrid). */
-  spanU?: number;
+  /** Sectors of longitude one tile spans (normal maps: 2, see sectorGrid). */
+  spanU: number;
 }
 
 export interface SectorSetSpec {
@@ -92,13 +93,14 @@ export interface SectorSetSpec {
   /** Crops for the relief / roughness slots the base material carries. A slot
    *  the base does not currently have is not loaded; if the base gains one
    *  later (Mars's relief arrives after boot) resident sectors reload. */
-  crops: Partial<Record<CropSlot, SectorCropSpec>>;
+  crops: Partial<Record<CropSlot, SectorTileSet>>;
 }
 
-/** A set's identity as the app names it: key, tier, and the hash gen-tiles
- *  published it under. */
+/** A set as the app names it: key and tier, resolved against the table
+ *  gen-tiles publishes for the hash its URLs carry and the layout its tiles
+ *  were measured to have. */
 function tileSet(key: string, tier: string): SectorTileSet {
-  return { key, tier, hash: sectorSetHash(key, tier) };
+  return { key, tier, hash: sectorSetHash(key, tier), ...sectorSetLayout(key, tier) };
 }
 
 /** URL of one sector's tile in a set. */
@@ -106,17 +108,26 @@ function tileUrlOf(set: SectorTileSet, sector: Sector): string {
   return resolveTileUrl(set.key, set.tier, set.hash, sector.c, sector.r);
 }
 
+/** How a set is named everywhere it has to be talked about: the generated
+ *  table's key, so a warning points straight at the row that is missing. */
+function setName(set: SectorTileSet): string {
+  return `${set.key}/${set.tier}`;
+}
+
 let tileFetchFailureNoticed = false;
 
 /** Tiles fail open to the base map by design, which means a tile origin
  *  pointing at nothing, a set that was never published, or a host outage all
  *  look the same as a body that is simply far away — softer, with nothing in
- *  the console. Say it once, in dev, with the URL that failed. */
-function noteTileFetchFailure(url: string, err: unknown): void {
-  if (!import.meta.env.DEV || tileFetchFailureNoticed) return;
+ *  the console. Say it once per session, naming the set and the URL, through
+ *  debugWarn so it reaches the `?debug=1` overlay on a device as well as the
+ *  console on a desktop. Prod says it too: a wrong tile origin only exists in
+ *  a build, so dev-only would print it exactly where it cannot happen. */
+function noteTileFetchFailure(set: string, url: string, err: unknown): void {
+  if (tileFetchFailureNoticed) return;
   tileFetchFailureNoticed = true;
   const reason = err instanceof Error ? err.message : String(err);
-  console.warn(`Sector tile did not load, surfaces stay on the base map: ${url} (${reason})`);
+  debugWarn(`Sector tile set ${set} did not load, surfaces stay on the base map: ${url} (${reason})`);
 }
 
 /** Test seam: forget that the tile-failure notice was already printed. */
@@ -130,27 +141,27 @@ export function resetTileFetchNoticeForTests(): void {
  *
  *  Each set is named by the file stem of the map it was cut from or matched
  *  to, plus the hash of its own bytes that gen-tiles published it under
- *  (sectorTiles.assets.test pins both). The hash is what keeps a globe and
- *  its tiles coherent through any cache: a re-cut set lands in a folder
- *  nothing has ever asked for, so a stale tile body is not something a cache
- *  can hold, only something it can miss. The stem carries the same guarantee
- *  one level up — a base map that changes ships under a new name
- *  (`.v2` -> `.v3`) and takes its tiles with it. */
+ *  (sectorTiles.assets.test pins both). The hash keeps a globe and its tiles
+ *  coherent through any cache: a re-cut set lands in a folder nothing has
+ *  ever asked for, so the only thing a cache can do with an old tile body is
+ *  miss it. The stem carries the same guarantee one level up — a base map
+ *  that changes ships under a new name (`.v2` -> `.v3`) and takes its tiles
+ *  with it. */
 export const SECTOR_SETS: Record<string, SectorSetSpec> = {
   Earth: {
     color: tileSet('earth-day.v2', '16k'),
     crops: {
-      bumpMap: { ...tileSet('earth-bump', '2k'), baseWidth: 2048 },
-      roughnessMap: { ...tileSet('earth-roughness.v2', '4k'), baseWidth: 4096 },
+      bumpMap: tileSet('earth-bump', '2k'),
+      roughnessMap: tileSet('earth-roughness.v2', '4k'),
     },
   },
   Mars: {
     color: tileSet('mars.v2', '16k'),
-    crops: { normalMap: { ...tileSet('mars-normal.v2', '2k'), baseWidth: 1440, spanU: 2 } },
+    crops: { normalMap: tileSet('mars-normal.v2', '2k') },
   },
   Moon: {
     color: tileSet('moon', '16k'),
-    crops: { normalMap: { ...tileSet('moon-normal', '4k'), baseWidth: 2880, spanU: 2 } },
+    crops: { normalMap: tileSet('moon-normal', '4k') },
   },
 };
 
@@ -661,9 +672,10 @@ export class SectorStreamer {
     slot.gen = gen;
     const stillWanted = () => slot.gen === gen;
 
-    const maps: Array<{ name: MapName; url: string; kind: 'color' | 'data'; layout: TileLayout }> = [
+    const maps: Array<{ name: MapName; set: string; url: string; kind: 'color' | 'data'; layout: TileLayout }> = [
       {
         name: 'map',
+        set: setName(handle.spec.color),
         url: tileUrlOf(handle.spec.color, slot.sector),
         kind: 'color',
         layout: SECTOR_TILE,
@@ -674,9 +686,10 @@ export class SectorStreamer {
       if (!crop || !realMapIn(handle.material, cropSlot)) continue;
       maps.push({
         name: cropSlot,
+        set: setName(crop),
         url: tileUrlOf(crop, slot.sector),
         kind: 'data',
-        layout: dataCropLayout(this.grid, crop.baseWidth, crop.spanU ?? 1),
+        layout: dataCropLayout(this.grid, crop.baseWidth, crop.spanU),
       });
     }
     const loading: SectorLoad = {
@@ -731,7 +744,7 @@ export class SectorStreamer {
           });
         },
         (err) => {
-          if (stillWanted()) noteTileFetchFailure(m.url, err);
+          if (stillWanted()) noteTileFetchFailure(m.set, m.url, err);
           fail();
         },
         stillWanted,

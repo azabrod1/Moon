@@ -20,7 +20,7 @@
 // tiles/<key>/<tier>.<setHash8>/ — so a tile pathname is a promise about the
 // bytes behind it: either those exact bytes or a 404, never a re-cut set
 // under a name something already cached. Every run rewrites
-// tiles/sets.json and src/planetarium/world/sectorSets.generated.ts from the
+// tiles/sets.v1.json and src/planetarium/world/sectorSets.generated.ts from the
 // folders on disk, which is where the app reads the hashes it puts in URLs.
 //
 // Prereq (not a package.json dependency — this runs once per asset drop):
@@ -41,7 +41,10 @@ sharp.concurrency(0);
 
 const TEX = path.resolve('public/textures');
 const TILES = path.join(TEX, 'tiles');
-const SETS_JSON = path.join(TILES, 'sets.json');
+// Pathname-versioned because it sits inside a service-worker data directory,
+// where a file's name has to promise its format (the swPlugin manifest
+// invariant): a shape change ships as sets.v2.json.
+const SETS_JSON = path.join(TILES, 'sets.v1.json');
 const GENERATED_TS = path.resolve('src/planetarium/world/sectorSets.generated.ts');
 const args = process.argv.slice(2);
 const flag = (n) => args.includes(`--${n}`);
@@ -347,6 +350,13 @@ async function describeSet(dir, files) {
   if (files.length !== cols * rows) {
     throw new Error(`${dir}: ${files.length} tiles do not fill a ${cols}x${rows} grid`);
   }
+  // Against the grid, not against itself: the highest indices only say how
+  // far the tiles that exist reach, so a set missing its whole last column
+  // measures as a complete 7x4 and would publish a layout the app then
+  // samples every sector with.
+  if (cols !== GRID.cols || rows !== GRID.rows) {
+    throw new Error(`${dir}: ${cols}x${rows} tiles, not the ${GRID.cols}x${GRID.rows} grid`);
+  }
   let size;
   for (const name of files) {
     const { width, height } = await sharp(path.join(dir, name)).metadata();
@@ -380,7 +390,7 @@ async function describeSet(dir, files) {
 function generatedSource(sets) {
   return `/**
  * GENERATED — written by \`node tools/gen-tiles.mjs\` from the tile sets on
- * disk (and mirrored in public/textures/tiles/sets.json). Never edit by hand.
+ * disk (and mirrored in public/textures/tiles/sets.v1.json). Never edit by hand.
  *
  * A sector tile set is published under a folder named for its own contents,
  * tiles/<key>/<tier>.<setHash8>/, and this table is where the app reads that
@@ -420,33 +430,46 @@ export const SECTOR_SET_TABLE: Record<string, GeneratedSectorSet> = /* table:beg
 }
 
 /**
- * Rewrite tiles/sets.json and the generated table from the sets on disk,
+ * Rewrite tiles/sets.v1.json and the generated table from the sets on disk,
  * moving any set whose folder name is not its own hash (which is how a set
  * cut before this naming, or edited in place, is adopted).
  */
 async function indexSets() {
-  const sets = {};
+  // Every folder is hashed before any of them is moved. A rename is a
+  // destructive operation on a sibling's name, so the two folders of one
+  // <key>/<tier> have to be caught while both are still on disk — renaming
+  // as we walk would delete whichever folder already held the real hash name
+  // and leave the run to die on the missing directory.
+  const found = [];
+  const byId = new Map();
   for (const key of (await readdir(TILES)).sort()) {
     const keyDir = path.join(TILES, key);
     if (!(await stat(keyDir)).isDirectory()) continue;
     for (const folder of (await readdir(keyDir)).sort()) {
-      let dir = path.join(keyDir, folder);
+      const dir = path.join(keyDir, folder);
       if (!(await stat(dir)).isDirectory()) continue;
       const tier = folder.split('.')[0];
       const files = tileNames(await readdir(dir));
       if (files.length === 0) throw new Error(`${dir}: no tiles`);
-      const setHash = await setHash8(dir, files);
-      if (folder !== `${tier}.${setHash}`) {
-        const moved = path.join(keyDir, `${tier}.${setHash}`);
-        await rm(moved, { recursive: true, force: true });
-        await rename(dir, moved);
-        console.log(`  ${key}/${folder} -> ${tier}.${setHash}`);
-        dir = moved;
-      }
       const id = `${key}/${tier}`;
-      if (sets[id]) throw new Error(`${id}: two set folders — delete the stale one`);
-      sets[id] = { setHash8: setHash, ...(await describeSet(dir, files)) };
+      const seen = byId.get(id);
+      if (seen) {
+        throw new Error(`${id}: two set folders, ${seen} and ${folder} — delete the stale one`);
+      }
+      byId.set(id, folder);
+      found.push({ id, key, tier, folder, keyDir, dir, files, setHash: await setHash8(dir, files) });
     }
+  }
+
+  const sets = {};
+  for (const set of found) {
+    let dir = set.dir;
+    if (set.folder !== `${set.tier}.${set.setHash}`) {
+      dir = path.join(set.keyDir, `${set.tier}.${set.setHash}`);
+      await rename(set.dir, dir);
+      console.log(`  ${set.key}/${set.folder} -> ${set.tier}.${set.setHash}`);
+    }
+    sets[set.id] = { setHash8: set.setHash, ...(await describeSet(dir, set.files)) };
   }
   await writeFile(SETS_JSON, `${JSON.stringify(sets, null, 2)}\n`);
   await writeFile(GENERATED_TS, generatedSource(sets));

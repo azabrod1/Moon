@@ -34,8 +34,9 @@
  * a set's own content hash is in its folder name, so a tile path is either
  * new or a 404 and the body under it can never go stale. Those are stored
  * cache-first by full URL with no digest and no ?swv= — the path IS the
- * identity, a truncated transfer still fails at arrayBuffer(), and the
- * digests are checked where the bytes are published, not on every device.
+ * identity, a truncated transfer still fails at arrayBuffer(), a body that
+ * is not a WebP container is refused, and the digests are checked where the
+ * bytes are published, not on every device.
  * Every cache key here is an absolute href for that reason: the activate
  * prune compares what cache.keys() hands back (always absolute) against
  * these keys, and pathname-shaped keys would make every off-origin entry
@@ -69,7 +70,13 @@ function cacheKey(pathname) {
  *  Deliberately only the sets the app names at its coarsest level: Cache
  *  Storage for off-origin bodies is charged to THIS origin, and WebKit
  *  evicts a whole origin at once, so an unbounded tile appetite could evict
- *  the boot precache this worker exists for. */
+ *  the boot precache this worker exists for.
+ *
+ *  A prefix is the whole published path, host included, so the path a host
+ *  serves tiles under has to stay fixed — a CDN ref that moves (jsDelivr
+ *  `@v1` -> `@v2`) makes every held tile unknown to the prune and every
+ *  device re-download the sets it already had. The set hash is the part that
+ *  is meant to move when the bytes do. */
 const TILE_SET_HREFS = TILE_SETS.map(absolute);
 
 /** The cache key for a content-addressed tile on an allowlisted origin, or
@@ -108,16 +115,35 @@ async function verifyAndPut(cache, pathname, response) {
   return true;
 }
 
+/** True when the bytes begin `RIFF....WEBP` — a WebP container's first 12
+ *  bytes. Cheap, and the only thing standing between a tile key with no
+ *  digest and no expiry and a body that is not a tile at all. */
+function looksLikeWebp(body) {
+  if (body.byteLength < 12) return false;
+  const b = new Uint8Array(body, 0, 12);
+  return b[0] === 0x52 && b[1] === 0x49 && b[2] === 0x46 && b[3] === 0x46 // 'RIFF'
+    && b[8] === 0x57 && b[9] === 0x45 && b[10] === 0x42 && b[11] === 0x50; // 'WEBP'
+}
+
 /**
  * Store a content-addressed tile under its full URL. No digest: the set hash
- * in the path is the identity, so the only failure this has to exclude is an
- * incomplete transfer — and arrayBuffer() rejects on one. status 200 only,
- * which also excludes an opaque cross-origin response (status 0): a host
- * without CORS must stay a visible failure, never a cached one.
+ * in the path is the identity, so the failures this has to exclude are an
+ * incomplete transfer — arrayBuffer() rejects on one — and a body that is
+ * complete but is not the tile. status 200 only, which also excludes an
+ * opaque cross-origin response (status 0): a host without CORS must stay a
+ * visible failure, never a cached one.
+ *
+ * The WebP check is what keeps a wrong 200 from becoming permanent. A tile
+ * key has no digest and no expiry, so an edge serving an HTML error page, a
+ * mis-purged object or an interception proxy's page with permissive CORS
+ * would pin that sector wrong for as long as the app names the set. Anything
+ * that is not a WebP container is served to the page and cached nowhere, so
+ * the next fetch can get it right.
  */
 async function putImmutable(cache, href, response) {
   if (response.status !== 200) return false;
   const body = await response.arrayBuffer();
+  if (!looksLikeWebp(body)) return false;
   await cache.put(href, new Response(body, {
     headers: { 'content-type': response.headers.get('content-type') || 'application/octet-stream' },
   }));

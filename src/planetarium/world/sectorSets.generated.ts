@@ -77,7 +77,7 @@ export const SECTOR_SET_TABLE: Record<string, GeneratedSectorSet> = /* table:beg
     "fileCount": 128
   },
   "earth-night.v2/16k": {
-    "setHash8": "94dfda55",
+    "setHash8": "48403b04",
     "grid": {
       "cols": 8,
       "rows": 4
@@ -91,7 +91,7 @@ export const SECTOR_SET_TABLE: Record<string, GeneratedSectorSet> = /* table:beg
     "fileCount": 32
   },
   "earth-night.v2/32k": {
-    "setHash8": "abb03849",
+    "setHash8": "8ff30f72",
     "grid": {
       "cols": 16,
       "rows": 8

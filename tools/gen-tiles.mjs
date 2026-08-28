@@ -219,6 +219,157 @@ function gradeOceanInPlace(raw) {
   return water;
 }
 
+/**
+ * Black Marble's no-data fill, keyed on the SOURCE pixels and replaced with
+ * the map's own background.
+ *
+ * The VIIRS composite has no night-lights data over Antarctica and paints it
+ * a flat blue. On an additive night shell that draws as a bright cap over a
+ * continent that should be dark — 10 % of the map, from -70.3 deg to the pole,
+ * with 137 stray pixels in the north and none at the north cap, which is
+ * ordinary background.
+ *
+ * Measured on the 500 m tifs, the fill is not one colour but FOUR, in a fixed
+ * 2x2 chroma dither: (43,51,85), (42,50,84), (43,50,84), (43,51,84) and
+ * nothing else — 100 % of three Antarctic samples 400 px across, taken a
+ * hemisphere apart. The background dithers the same way, around (4,5,14)
+ * (mid-ocean and the Arctic: (3,4,14), (4,5,15), (4,5,14), (3,5,14)), which
+ * is what a masked pixel becomes: the value the map's own open ocean
+ * resamples to, so the cap joins the sea instead of becoming a black
+ * silhouette against it — the same artifact the other way round.
+ *
+ * The key is those four values and nothing near them. Greenland's ice sheet
+ * is the nearest thing on the map, at (41,49,80)-(42,50,81): three counts
+ * away in blue, and a tolerance wide enough to be comfortable about the fill
+ * would start taking the ice. There is no latitude band either — the fill is
+ * a continent, not a cap, and a +/-85 deg rule would leave 15 deg of blue at
+ * the south while zeroing Arctic OCEAN that was never no-data.
+ *
+ * It runs on source pixels, before the resample, so no target pixel is ever
+ * a blend of fill and ground: a mask applied afterwards would have to key
+ * blended values, and 3.6 % of the resampled cap sits a count off the fill
+ * colour from the dither alone.
+ */
+const BLACK_MARBLE_NODATA = [
+  [43, 51, 85], [42, 50, 84], [43, 50, 84], [43, 51, 84],
+];
+const BLACK_MARBLE_BACKGROUND = [
+  [3, 4, 14], [4, 5, 15], [4, 5, 14], [3, 5, 14],
+];
+/** What the four background values average to, and what a region of them
+ *  resamples to: the value the masked cap has to read as. */
+const BLACK_MARBLE_BACKGROUND_MEAN = [4, 5, 14];
+
+/** Fill dither in, background dither out, value for value. Not one flat
+ *  colour: the encoder quantises a dead-flat field differently from a dithered
+ *  one, and a flat patch of the background's mean came back two counts of blue
+ *  away from the sea beside it in the 4K rung. Swapping the pattern instead
+ *  leaves the cap statistically identical to open water. */
+function maskNoDataInPlace(raw) {
+  let hits = 0;
+  for (let i = 0; i < raw.length; i += 3) {
+    const r = raw[i], g = raw[i + 1], b = raw[i + 2];
+    for (let k = 0; k < BLACK_MARBLE_NODATA.length; k++) {
+      const [fr, fg, fb] = BLACK_MARBLE_NODATA[k];
+      if (r !== fr || g !== fg || b !== fb) continue;
+      const [br, bg, bb] = BLACK_MARBLE_BACKGROUND[k];
+      raw[i] = br; raw[i + 1] = bg; raw[i + 2] = bb;
+      hits++;
+      break;
+    }
+  }
+  return hits;
+}
+
+/** Within a count of the fill on every channel. Not a test for the fill on its
+ *  own — Greenland's ice sheet resamples to the same neighbourhood, which is
+ *  the whole reason the key is exact — but a measure of how much of the map is
+ *  that colour: 10 % before the mask, 0.007 % after, and what is left is
+ *  Greenland. */
+function nearNoData(r, g, b) {
+  const [fr, fg, fb] = BLACK_MARBLE_NODATA[0];
+  return Math.abs(r - fr) <= 1 && Math.abs(g - fg) <= 1 && Math.abs(b - fb) <= 1;
+}
+
+/** Above this fraction of the map, the fill-coloured pixels are the fill and
+ *  not the ice sheets: an unmasked cut is 10 %, a masked one 0.007 %. */
+const NODATA_RESIDUE_MAX = 0.0005;
+
+/** The first row of a `height`-row equirect at or below 80 deg south — the
+ *  latitude past which the composite is nothing but no-data fill. */
+const antarcticRow = (height) => Math.ceil(((90 + 80) / 180) * height);
+
+/**
+ * The mask ran, asserted on the pixels every artifact of this cut is made
+ * from. Two measurements, because the fill is a place as well as a colour:
+ * below 80 deg south the composite is nothing BUT fill, so after the mask that
+ * band is the background and nothing else; and over the whole map the
+ * fill-coloured pixels drop from 10 % to a rounding error, all of it Greenland
+ * ice the exact key deliberately spares. This is the one step of the night cut
+ * with nothing downstream to notice it was skipped — a set cut without it
+ * looks plausible everywhere except over a continent nobody photographs.
+ */
+function noDataGateRaw(raw, width, height, what) {
+  const [r1, g1, b1] = BLACK_MARBLE_BACKGROUND_MEAN;
+  let left = 0;
+  for (let i = 0; i < raw.length; i += 3) {
+    if (nearNoData(raw[i], raw[i + 1], raw[i + 2])) left++;
+  }
+  const y0 = antarcticRow(height);
+  let notBackground = 0;
+  for (let y = y0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      const i = (y * width + x) * 3;
+      // A count of slack: a resample of a flat field rounds.
+      if (Math.abs(raw[i] - r1) > 1 || Math.abs(raw[i + 1] - g1) > 1 || Math.abs(raw[i + 2] - b1) > 1) notBackground++;
+    }
+  }
+  const band = (height - y0) * width;
+  const residue = left / (width * height);
+  if (notBackground > 0 || residue > NODATA_RESIDUE_MAX) {
+    throw new Error(`${what}: ${notBackground} of ${band} px below 80S are not ${BLACK_MARBLE_BACKGROUND_MEAN} and ${(100 * residue).toFixed(3)} % of the map is within a count of ${BLACK_MARBLE_NODATA[0]} — the no-data mask did not run`);
+  }
+  console.log(`  no-data gate ${what.padEnd(26)} PASS (${band} px below 80S all background; ${left} px (${(100 * residue).toFixed(4)} %) near the fill colour, the ice sheets)`);
+}
+
+/**
+ * And the same thing seen on a file the app actually draws. Not against a
+ * fixed value — a lossy encode of a flat navy field comes back a couple of
+ * counts off, and by a different couple at each size — but against the map's
+ * OWN open ocean, read out of the same file: after the mask Antarctica has to
+ * read like empty sea and nothing like the fill.
+ */
+async function polarBandGate(file) {
+  const { data, info } = await sharp(file, { limitInputPixels: false })
+    .removeAlpha().raw().toBuffer({ resolveWithObject: true });
+  const meanOf = (x0, y0, x1, y1) => {
+    const m = [0, 0, 0];
+    let n = 0;
+    for (let y = y0; y < y1; y++) {
+      for (let x = x0; x < x1; x++) {
+        const i = (y * info.width + x) * 3;
+        m[0] += data[i]; m[1] += data[i + 1]; m[2] += data[i + 2];
+        n++;
+      }
+    }
+    return m.map((v) => v / n);
+  };
+  const cap = meanOf(0, antarcticRow(info.height), info.width, info.height);
+  // Mid-Pacific, 5 deg either side of the equator: the emptiest water there is.
+  const sea = meanOf(
+    Math.round(info.width * ((-170 + 180) / 360)), Math.round(info.height * (85 / 180)),
+    Math.round(info.width * ((-150 + 180) / 360)), Math.round(info.height * (95 / 180)),
+  );
+  const off = Math.max(...cap.map((v, k) => Math.abs(v - sea[k])));
+  const fromFill = Math.max(...cap.map((v, k) => Math.abs(v - BLACK_MARBLE_NODATA[0][k])));
+  const name = path.relative(TEX, file);
+  const say = (m) => m.map((v) => v.toFixed(1)).join(',');
+  if (off > 1) {
+    throw new Error(`${name}: below 80S the mean is (${say(cap)}) against open ocean at (${say(sea)}) — ${off.toFixed(1)} counts apart, and the no-data fill is ${say(BLACK_MARBLE_NODATA[0].map(Number))}`);
+  }
+  console.log(`  polar band  ${name.padEnd(26)} PASS (cap ${say(cap)} vs ocean ${say(sea)}, ${off.toFixed(1)} counts apart; ${fromFill.toFixed(0)} from the fill)`);
+}
+
 async function writeWebp(pipeline, out) {
   await mkdir(path.dirname(out), { recursive: true });
   await pipeline.webp(PHOTO_WEBP).toFile(out);
@@ -958,9 +1109,11 @@ async function mosaicSource(files, across, down) {
  *
  * A per-pixel grade (the ocean lift) is applied to each band as it is
  * written, which is the same thing as grading the whole map — that is what
- * makes a child's water match its parent's.
+ * makes a child's water match its parent's. A per-pixel MASK (the night
+ * lights' no-data fill) runs a step earlier, on the source region itself,
+ * because what it keys on only exists before the resample blends it.
  */
-async function buildMosaicLevelRaw(mosaic, grid, content, outFile, grade) {
+async function buildMosaicLevelRaw(mosaic, grid, content, outFile, grade, mask) {
   const { width, height } = gridSize(grid, content);
   const shareW = width / mosaic.across;
   const g = gcd(width, mosaic.width);
@@ -993,6 +1146,9 @@ async function buildMosaicLevelRaw(mosaic, grid, content, outFile, grade) {
         const region = await mosaic.read(
           sc * mosaic.tileWidth - q, sy0 - q, mosaic.tileWidth + 2 * q, srcPerBand + 2 * q,
         );
+        // Keyed on source values, before the resample: afterwards every pixel
+        // near the boundary is a blend and there is nothing exact to key on.
+        if (mask) mask(region);
         const piece = await sharp(region, {
           raw: { width: mosaic.tileWidth + 2 * q, height: srcPerBand + 2 * q, channels: 3 },
           limitInputPixels: false,
@@ -1033,6 +1189,9 @@ const JOBS = {
   earth: {
     key: 'earth-day.v2',
     grade: gradeOceanInPlace,
+    // The grade runs inside the resample, so it is part of the bytes the
+    // level cache holds and the cache's name has to say so.
+    rawToken: 'ocean-grade.v1',
     levels: [
       { tier: '16k', grid: GRID_16K, source: { kind: 'single', file: () => cache('bmng_200408_21600.jpg') } },
       {
@@ -1061,6 +1220,12 @@ const JOBS = {
   // the same pipeline; no grade — the lights are the measurement.
   'earth-night': {
     key: 'earth-night.v2',
+    // Antarctica's no-data fill, keyed on source values and replaced before
+    // the resample (see maskNoDataInPlace) — so it IS baked into the cached
+    // level, and the token below is what keeps a machine that already holds
+    // an unmasked one from cutting through it again.
+    mask: maskNoDataInPlace,
+    rawToken: 'no-data.v1',
     levels: [
       {
         tier: '16k',
@@ -1127,6 +1292,13 @@ const JOBS = {
 async function levelRowSource(job, level) {
   const { width, height } = gridSize(level.grid, CONTENT);
   const src = level.source;
+  // A mask keys SOURCE values, and these two branches only ever see a source
+  // that has already been resampled (sharp resizes inside the decode), where
+  // the key would be matching blends. No job declares one; say so rather than
+  // quietly masking the wrong pixels.
+  if (job.mask && src.kind !== 'mosaic') {
+    throw new Error(`${job.key}: a no-data mask needs source pixels, which a ${src.kind} source is not read at`);
+  }
   if (src.kind === 'single') {
     const raw = await fullRaw(src.file(), width, height, job.match);
     const water = job.grade ? job.grade(raw) : undefined;
@@ -1137,19 +1309,29 @@ async function levelRowSource(job, level) {
     const water = job.grade ? job.grade(raw) : undefined;
     return { rows: memoryRowSource(raw, width, height), water };
   }
+  // The cached resample's NAME states every transform baked into it (today
+  // only the ocean grade), so changing one cannot be silently skipped by a
+  // machine that already holds the old bytes. A per-pixel mask is deliberately
+  // not one of them: it runs on the rows below, after the cache, where no
+  // cache can reach it.
+  const stem = [job.key, level.tier, `${width}x${height}`, job.rawToken].filter(Boolean).join('.');
+  const out = cache('levels', `${stem}.rgb`);
+  await mkdir(path.dirname(out), { recursive: true });
+  if ((await exists(out)) && (await stat(out)).size === width * height * 3) {
+    console.log(`  resampled equirect already in the cache: ${path.relative(process.cwd(), out)}`);
+    // The cached bytes only mean anything as "these sources at this size", so
+    // the digests are still checked — but the source planes are not decoded
+    // for a mosaic nothing is going to read.
+    for (const file of src.files()) await checkSourceDigest(file);
+    return { rows: await fileRowSource(out, width, height) };
+  }
   const mosaic = await mosaicSource(src.files(), src.across, src.down);
   try {
-    const out = cache('levels', `${job.key}.${level.tier}.${width}x${height}.rgb`);
-    await mkdir(path.dirname(out), { recursive: true });
-    if (!(await exists(out)) || (await stat(out)).size !== width * height * 3) {
-      await buildMosaicLevelRaw(mosaic, level.grid, CONTENT, out, job.grade);
-    } else {
-      console.log(`  resampled equirect already in the cache: ${path.relative(process.cwd(), out)}`);
-    }
-    return { rows: await fileRowSource(out, width, height) };
+    await buildMosaicLevelRaw(mosaic, level.grid, CONTENT, out, job.grade, job.mask);
   } finally {
     await mosaic.close();
   }
+  return { rows: await fileRowSource(out, width, height) };
 }
 
 // ---------------------------------------------------------------------------
@@ -1205,7 +1387,14 @@ for (const name of names) {
         // The boot map and the ladder rungs come from level 0: they are the
         // same product one resample coarser, which is what makes every step
         // up the ladder a pure sharpen.
-        if (index === 0) await writeDownsamples(await rows.whole(), rows.width, rows.height, job.downsamples ?? []);
+        if (index === 0) {
+          // One read of the level: the mask makes a fresh masked copy per
+          // call, and this one is a third of a gigabyte.
+          const whole = await rows.whole();
+          if (job.mask) noDataGateRaw(whole, rows.width, rows.height, `${job.key} level 0`);
+          await writeDownsamples(whole, rows.width, rows.height, job.downsamples ?? []);
+          if (job.mask) for (const d of job.downsamples ?? []) await polarBandGate(d.out);
+        }
         await cutGrid(rows, level.grid, CONTENT, job.key, level.tier, job.webp ?? PHOTO_WEBP);
         await verify(job.key, level.tier, level.grid, CONTENT, job.ref);
         await seamGate(job.key, level.tier, level.grid, CONTENT);

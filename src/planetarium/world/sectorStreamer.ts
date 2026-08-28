@@ -518,6 +518,12 @@ export interface SectorStats {
     gpuBytes: number;
     /** The same counts split by pyramid level, coarsest first. */
     byLevel: Array<{ resident: number; loading: number; gpuBytes: number }>;
+    /** Every slot the last selection WANTED, by id, with the screen-space
+     *  error that ranked it — resident, loading and blocked alike. The lists
+     *  above say what got in; this says what asked and how strongly, which is
+     *  the only way to tell a level nothing demands from a level the budget
+     *  is refusing. */
+    scores: Record<string, number>;
   }>;
 }
 
@@ -1206,9 +1212,11 @@ export class SectorStreamer {
       const loading: string[] = [];
       const reloading: string[] = [];
       const byLevel = body.levels.map(() => ({ resident: 0, loading: 0, gpuBytes: 0 }));
+      const scores: Record<string, number> = {};
       let gpuBytes = 0;
       for (const s of body.slots) {
         const id = slotId(s);
+        if (s.score > 0) scores[id] = s.score;
         const level = byLevel[s.level];
         if (s.state === 'resident') {
           resident.push(id);
@@ -1230,7 +1238,7 @@ export class SectorStreamer {
       out.loading += loading.length;
       out.inflight += loading.length + reloading.length;
       out.gpuBytes += gpuBytes;
-      out.bodies[name] = { resident, loading, reloading, maxTexelPx: body.maxTexelPx, gpuBytes, byLevel };
+      out.bodies[name] = { resident, loading, reloading, maxTexelPx: body.maxTexelPx, gpuBytes, byLevel, scores };
     }
     return out;
   }

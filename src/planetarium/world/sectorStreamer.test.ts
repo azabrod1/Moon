@@ -1012,6 +1012,25 @@ describe('SectorStreamer', () => {
     expect(mars.mesh.children).toHaveLength(1);
   });
 
+  it('stats name every sector the selection wanted, with the score that ranked it', () => {
+    // The resident list says what got in; without the scores beside it there
+    // is no way to tell a level nothing demands from a level the byte budget
+    // is refusing — which is the whole question a finer level raises.
+    loader.auto = true;
+    twoLevelEarth();
+    const measure = measureLevels(TWO_LEVELS, { '2_1': 2 * CHILD_WANT_PX });
+    for (let f = 0; f < 6; f++) streamer.update('Earth', overLevel1(5, 3), measure, f * 16);
+    const body = streamer.stats().bodies.Earth;
+    expect(Object.keys(body.scores).sort()).toEqual(body.resident.slice().sort());
+    // A child scores its parent's divided by the level step, by design: the
+    // parent covers four times the ground for the same bytes.
+    for (const child of ['L1/4_2', 'L1/4_3', 'L1/5_2', 'L1/5_3']) {
+      expect(body.scores[child], child).toBeCloseTo(body.scores['2_1'] / LEVEL_STEP, 6);
+    }
+    // Nothing off the frame or under the threshold is listed at all.
+    expect(body.scores['0_0']).toBeUndefined();
+  });
+
   /** Every level-0 sector at a size, for filling the working set. */
   function field(px: (c: number, r: number) => number): Record<string, number> {
     const sizes: Record<string, number> = {};

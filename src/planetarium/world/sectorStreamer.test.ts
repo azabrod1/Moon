@@ -10,11 +10,13 @@ import {
   SECTOR_FETCH_POOL_DESKTOP,
   SECTOR_INFLIGHT_CAP_DESKTOP,
   SECTOR_LEVEL_16K,
+  SECTOR_MAX_LEVEL,
   SECTOR_RELEASE_TEXEL_PX,
   SECTOR_RESIDENT_CAP_DESKTOP,
   SECTOR_RESIDENT_CAP_TOUCH,
   SECTOR_RELEASE_TEXEL_PX_TOUCH,
   SECTOR_RETRY_MS,
+  SECTOR_SEGMENTS,
   SECTOR_SETS,
   SECTOR_WANT_TEXEL_PX,
   SECTOR_WANT_TEXEL_PX_TOUCH,
@@ -1133,6 +1135,29 @@ describe('SectorStreamer', () => {
     expect(streamer.stats().bodies.Earth.resident.slice().sort()).toEqual(before);
     streamer.update('Earth', INSIDE, measureOf(withNewcomer), SECTOR_EVICT_DWELL_MS);
     expect(streamer.stats().bodies.Earth.resident).toContain('0_0');
+  });
+
+  it('refuses a set deeper than the segment lattice can carry', () => {
+    // Every level halves the segments; the deepest allowed still leaves a
+    // sector more than three across, which is where three clamps a sphere.
+    expect(SECTOR_SEGMENTS >> SECTOR_MAX_LEVEL).toBeGreaterThanOrEqual(3);
+    const level = (i: number): SectorLevel => ({
+      tier: `${i}`,
+      grid: { cols: SECTOR_GRID_16K.cols << i, rows: SECTOR_GRID_16K.rows << i },
+      layout: SECTOR_TILE,
+      sourceWidth: SECTOR_LEVEL_16K.sourceWidth << i,
+    });
+    const deep = earthHandle();
+    deep.name = 'Deep';
+    const levels = [];
+    for (let i = 0; i <= SECTOR_MAX_LEVEL; i++) levels.push(level(i));
+    deep.spec = { ...SECTOR_SETS.Earth, levels };
+    expect(() => streamer.register(deep)).not.toThrow();
+    deep.spec = { ...SECTOR_SETS.Earth, levels: [...levels, level(SECTOR_MAX_LEVEL + 1)] };
+    expect(() => streamer.register(deep)).toThrow(/sector levels/);
+    // The refused registration left the body it replaced alone.
+    expect(streamer.has('Deep')).toBe(true);
+    expect(() => streamer.register({ ...deep, spec: { ...SECTOR_SETS.Earth, levels: [] } })).toThrow();
   });
 
   it('takes the fetch pool by the whole set, so no set starts that the pool cannot carry', () => {

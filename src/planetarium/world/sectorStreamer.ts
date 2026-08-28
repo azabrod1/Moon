@@ -46,8 +46,11 @@
  * comes from that. Level 0 sits on the globe, level k on level k−1 with its
  * grid doubled; the parent of a slot is the arithmetic (⌊c/2⌋, ⌊r/2⌋), and
  * its segments halve as the grid doubles so every level lands on the same
- * vertex lattice. Slots exist only for the levels a spec declares, so a body
- * that ships one level costs exactly one level's worth of work.
+ * vertex lattice. That halving is what bounds the depth: past
+ * SECTOR_MAX_LEVEL a sector has too few segments left to sit on the lattice
+ * at all, and a set that declares more is refused when the body registers.
+ * Slots exist only for the levels a spec declares, so a body that ships one
+ * level costs exactly one level's worth of work.
  *
  * One demand rule serves every level — a sector is wanted where the map BELOW
  * it is magnified — and the pyramid is what keeps the working set from
@@ -281,6 +284,13 @@ export const SECTOR_ATTEMPT_TIMEOUT_MS = 60_000;
  *  grid. A level halves it as the grid doubles, so every level's vertices
  *  land on that one lattice and no sector fights another for depth. */
 export const SECTOR_SEGMENTS = 32;
+/** Deepest level a set may declare, checked when the body registers. Two is
+ *  as far as any source goes (a 65K-class colour map for Earth and Mars, one
+ *  level for the Moon), and it is also where the geometry stays honest: each
+ *  level halves the segment count, and below three segments three clamps the
+ *  sphere and the sector's vertices would stop landing on the globe's
+ *  lattice. */
+export const SECTOR_MAX_LEVEL = 2;
 
 /** How a sector reads on screen this frame, from the mode's projection. */
 export interface SectorMeasure {
@@ -592,8 +602,12 @@ export class SectorStreamer {
   }
 
   register(handle: SectorBodyHandle): void {
-    this.unregister(handle.name);
     const levels = handle.spec.levels;
+    if (levels.length === 0) throw new Error(`${handle.name} declares no sector levels`);
+    if (levels.length - 1 > SECTOR_MAX_LEVEL) {
+      throw new Error(`${handle.name} declares ${levels.length} sector levels; ${SECTOR_MAX_LEVEL + 1} is the most a set may carry`);
+    }
+    this.unregister(handle.name);
     const slots: SectorSlot[] = [];
     // Coarsest level first, so the per-frame pass measures a parent before
     // the children whose visit it gates.
@@ -1224,7 +1238,8 @@ export class SectorStreamer {
     // A reload's geometry is the outgoing mesh's: same sector, same globe.
     const previousMesh = slot.mesh;
     const geometry = previousMesh?.geometry ?? sectorSphereGeometry(
-      handle.radiusAU, body.levels[slot.level].grid, slot.sector, SECTOR_SEGMENTS >> slot.level,
+      handle.radiusAU, body.levels[slot.level].grid, slot.sector,
+      Math.max(3, SECTOR_SEGMENTS >> slot.level),
     );
     const material = createSectorMaterial(handle.material, {
       map,

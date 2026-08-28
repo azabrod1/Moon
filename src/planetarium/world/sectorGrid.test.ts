@@ -102,6 +102,21 @@ describe('sector levels', () => {
     }
   });
 
+  it('never rewrites uvs against a lattice the sphere does not have', () => {
+    // Three clamps a sphere at three segments across; a geometry asked for
+    // fewer must still get a uv per vertex, not NaNs off the end of a
+    // shorter walk.
+    for (const segments of [0, 1, 2, 3]) {
+      const geo = sectorSphereGeometry(1, G, { c: 2, r: 1 }, segments);
+      const uv = geo.getAttribute('uv');
+      expect(uv.count).toBe(geo.getAttribute('position').count);
+      for (let i = 0; i < uv.count; i++) {
+        expect(Number.isFinite(uv.getX(i))).toBe(true);
+        expect(Number.isFinite(uv.getY(i))).toBe(true);
+      }
+    }
+  });
+
   it('a child\'s uvs stay inside its own rectangle, which is inside its parent\'s', () => {
     const child = finerGrid(G);
     for (const s of [{ c: 3, r: 2 }, { c: 14, r: 6 }]) {

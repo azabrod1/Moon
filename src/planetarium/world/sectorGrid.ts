@@ -291,6 +291,10 @@ export function sectorSphereGeometry(
   s: Sector,
   segments: number,
 ): THREE.SphereGeometry {
+  // Three clamps a sphere at three segments across and two down. The uv
+  // rewrite below walks the lattice the geometry actually got, so the clamp
+  // is applied here rather than left to disagree with it.
+  segments = Math.max(3, Math.floor(segments));
   const args = sectorSphereArgs(grid, s);
   const geo = new THREE.SphereGeometry(
     radius, segments, segments, args.phiStart, args.phiLength, args.thetaStart, args.thetaLength,

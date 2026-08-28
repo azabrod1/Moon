@@ -67,7 +67,7 @@ function earthHandle(): SectorBodyHandle & { fineCalls: number } {
   augmentSurfaceMaterial(material, 'earth');
   material.userData.colorTierRank = 2; // a real boot map is on the globe
   const mesh = new THREE.Mesh(new THREE.SphereGeometry(R, 16, 8), material);
-  const handle = {
+  const handle: SectorBodyHandle & { fineCalls: number } = {
     name: 'Earth',
     spec: SECTOR_SETS.Earth,
     mesh,
@@ -562,6 +562,24 @@ describe('SectorStreamer', () => {
     // A 2K boot map is magnified twice as much at the same on-screen scale.
     earth.material.map!.image = { width: 2048, height: 1024 };
     streamer.update('Earth', cameraOver(2, 1), measureOf({ '2_1': SECTOR_WANT_TEXEL_PX / 2 + 0.02 }), 64);
+    expect(streamer.stats().resident).toBe(1);
+  });
+
+  it('measures against the ladder top a body will reach, not the boot map it still draws', () => {
+    loader.auto = true;
+    // A Moon booting on 2K with an 8K rung: measured against 2K, a sector
+    // would be admitted now and released the moment the 8K lands.
+    earth.material.map!.image = { width: 2048, height: 1024 };
+    earth.topMapWidth = 8192;
+    streamer.update('Earth', cameraOver(2, 1), measureOf({ '2_1': 2 * SECTOR_WANT_TEXEL_PX - 0.02 }), 0);
+    expect(loader.requests.length).toBe(0);
+    streamer.update('Earth', cameraOver(2, 1), measureOf({ '2_1': 2 * SECTOR_WANT_TEXEL_PX + 0.02 }), 16);
+    expect(streamer.stats().resident).toBe(1);
+    // The drawn map wins when it is the wider (Earth boots at 4096 with no ladder).
+    streamer.dropAll();
+    earth.material.map!.image = { width: 4096, height: 2048 };
+    earth.topMapWidth = 2048;
+    streamer.update('Earth', cameraOver(2, 1), measureOf({ '2_1': SECTOR_WANT_TEXEL_PX + 0.02 }), 32);
     expect(streamer.stats().resident).toBe(1);
   });
 

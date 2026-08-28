@@ -121,14 +121,17 @@ export const SECTOR_SETS: Record<string, SectorSetSpec> = {
 };
 
 /** A sector is wanted once one texel of the globe's OWN map spans this many
- *  DEVICE pixels at the sector's centre — the base is then visibly magnified
- *  and a tile has detail to add — and released only once that falls under
- *  the second value, so a disc breathing around the threshold never flaps a
- *  21 MiB upload. Measured against the map actually on the globe (the Moon's
- *  8K rung needs twice the magnification a 4K map does before a tile shows
- *  anything; a tile under that is 21 MiB of GPU memory for nothing visible),
- *  and in device pixels, so a 3× phone wants tiles where a 1× monitor does
- *  not. */
+ *  DEVICE pixels at the sector's nearest point — the base is then visibly
+ *  magnified and a tile has detail to add — and released only once that
+ *  falls under the second value, so a disc breathing around the threshold
+ *  never flaps a 21 MiB upload. Measured against the finest colour map the
+ *  globe will hold on this device (SectorBodyHandle.topMapWidth), or the
+ *  one it draws if that is wider: the Moon's 8K rung needs twice the
+ *  magnification a 4K map does before a tile shows anything (a tile under
+ *  that is 21 MiB of GPU memory for nothing visible), and measuring against
+ *  the 2K boot map while the 8K is still in flight would admit sectors the
+ *  8K's arrival then releases — a sharpen that un-sharpens. In device
+ *  pixels, so a 3× phone wants tiles where a 1× monitor does not. */
 export const SECTOR_WANT_TEXEL_PX = 1.25;
 export const SECTOR_RELEASE_TEXEL_PX = 0.8;
 /** Map width assumed while a globe's map has no readable image (never in
@@ -185,6 +188,10 @@ export interface SectorBodyHandle {
   mesh: THREE.Mesh;
   material: THREE.MeshStandardMaterial;
   radiusAU: number;
+  /** Width of the finest colour map this device will hold for the globe
+   *  (its tier ladder's top), the map magnification is measured against.
+   *  Omitted for a body with no ladder: its boot map is its finest. */
+  topMapWidth?: number;
   /** Rebuild the globe on its fine grid now (idempotent); sectors must not
    *  show over a coarse globe, whose chords they would float above. */
   ensureFineGeometry: () => void;
@@ -309,10 +316,11 @@ function cropsReady(mat: THREE.MeshStandardMaterial, spec: SectorSetSpec): boole
  *  local units (equatorial). Read from the texture itself — the boot tier is
  *  not literally 2048 wide for every body, and a tier swap changes the map
  *  under a registered material. */
-function baseTexelLength(mat: THREE.MeshStandardMaterial, radius: number): number {
-  const img = mat.map?.image as { width?: unknown } | undefined;
-  const width = img && typeof img.width === 'number' && img.width > 0 ? img.width : SECTOR_FALLBACK_MAP_WIDTH;
-  return (2 * Math.PI * radius) / width;
+function baseTexelLength(handle: SectorBodyHandle): number {
+  const img = handle.material.map?.image as { width?: unknown } | undefined;
+  const drawn = img && typeof img.width === 'number' && img.width > 0 ? img.width : 0;
+  const width = Math.max(drawn, handle.topMapWidth ?? 0) || SECTOR_FALLBACK_MAP_WIDTH;
+  return (2 * Math.PI * handle.radiusAU) / width;
 }
 
 /** Close a tile's decoded bitmap once it is resident: the upload is paid, a
@@ -410,7 +418,7 @@ export class SectorStreamer {
     this.lastNowMs = nowMs;
     const { handle, slots } = body;
 
-    const texelLen = baseTexelLength(handle.material, handle.radiusAU);
+    const texelLen = baseTexelLength(handle);
     body.maxTexelPx = 0;
     if (
       suspend === 'all'

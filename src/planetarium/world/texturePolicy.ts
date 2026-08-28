@@ -44,6 +44,11 @@ export function resolveTileUrl(key: string, tier: string, c: number, r: number):
 // no floor: it is what the device gets when nothing larger fits.
 const TIER_MIN_TEXTURE_SIZE: Record<TextureTier, number> = { '2k': 0, '4k': 4096, '8k': 8192 };
 
+/** Nominal map width of a tier. The boot tier's is nominal only — a body
+ *  may boot wider (earth-day at 4096); readers that care take the larger
+ *  of this and the map's real width. */
+export const TIER_MAP_WIDTH: Record<TextureTier, number> = { '2k': 2048, '4k': 4096, '8k': 8192 };
+
 // Captured once from the live renderer before any texture loads: anisotropy
 // needs the GL context, and the max texture size decides which tiers are even
 // loadable. The defaults are safe pre-capture — anisotropy 1 is "off", and

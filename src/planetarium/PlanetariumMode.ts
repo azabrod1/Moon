@@ -125,7 +125,7 @@ import {
 } from './world/sunGlareMask';
 import { MoonPainter } from './world/MoonPainter';
 import { ProceduralMoonTexturer } from './world/ProceduralMoonTexturer';
-import { captureDeviceTextureCaps, resolveTextureUrl } from './world/texturePolicy';
+import { captureDeviceTextureCaps, resolveTextureUrl, TIER_MAP_WIDTH } from './world/texturePolicy';
 import { warmBitmapUploadProbe } from './world/textureBitmapLoader';
 import { planetshineIntensity } from './world/planetshine';
 import {
@@ -471,6 +471,14 @@ const SUN_WORLD_POSITION = { x: 0, y: 0, z: 0 };
 export interface PlanetariumActivationProgress {
   completedUnits: number;
   totalUnits: number;
+}
+
+/** Width of the finest colour map a body's ladder will reach on this device
+ *  — the one its sectors' magnification is measured against — or undefined
+ *  for a body whose boot map is its finest. */
+function topMapWidthOf(ups: readonly TextureUpgrade[], material: THREE.Material): number | undefined {
+  const up = ups.find((u) => u.material === material);
+  return up ? TIER_MAP_WIDTH[up.effectiveMaxTier] : undefined;
 }
 
 export class PlanetariumMode {
@@ -2369,12 +2377,14 @@ export class PlanetariumMode {
     for (const planet of this.solarSystem.planets) {
       const spec = SECTOR_SETS[planet.data.name];
       if (!spec) continue;
+      const material = planet.mesh.material as THREE.MeshStandardMaterial;
       sectors.register({
         name: planet.data.name,
         spec,
         mesh: planet.mesh,
-        material: planet.mesh.material as THREE.MeshStandardMaterial,
+        material,
         radiusAU: planet.data.radiusAU,
+        topMapWidth: topMapWidthOf(planet.textureUpgrades, material),
         ensureFineGeometry: () => { upgradeGeometryOnApproach(planet.geometryUpgrade, Number.POSITIVE_INFINITY); },
       });
     }
@@ -2382,12 +2392,14 @@ export class PlanetariumMode {
       for (const m of moons) {
         const spec = SECTOR_SETS[m.data.name];
         if (!spec) continue;
+        const material = m.mesh.material as THREE.MeshStandardMaterial;
         sectors.register({
           name: m.data.name,
           spec,
           mesh: m.mesh,
-          material: m.mesh.material as THREE.MeshStandardMaterial,
+          material,
           radiusAU: m.data.radiusAU,
+          topMapWidth: topMapWidthOf(m.textureUpgrades, material),
           ensureFineGeometry: () => { upgradeGeometryOnApproach(m.geometryUpgrade, Number.POSITIVE_INFINITY); },
         });
       }
@@ -2403,9 +2415,9 @@ export class PlanetariumMode {
    * Sun in the globe's local frame (radius = catalog radius there, whatever
    * the render scale), the magnification bound at its nearest surface point,
    * then per facing sector its frame membership (the lens-aware footprint of
-   * its bounding sphere) and the magnification at its centre — DEVICE pixels
-   * per local unit, which the streamer turns into pixels per texel of the
-   * map the globe actually draws.
+   * its bounding sphere) and the magnification at its nearest point — DEVICE
+   * pixels per local unit, which the streamer turns into pixels per texel of
+   * the finest map the globe will hold.
    */
   private updateSectorStreaming(): void {
     const sectors = this.sectors;

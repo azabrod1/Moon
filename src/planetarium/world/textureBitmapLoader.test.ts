@@ -47,16 +47,26 @@ describe('loadStreamedTexture', () => {
     expect(onLoad).toHaveBeenCalledWith(tex);
   });
 
-  it('hands the caller\'s abort signal to the fetch, and never starts one already aborted', async () => {
+  it('ends the fetch when the caller aborts, and never starts one already aborted', async () => {
     setBitmapProbeForTests(true);
-    const fetchSpy = vi.fn(async () => ({ ok: true, blob: async () => new Blob() }));
+    const signals: AbortSignal[] = [];
+    let land!: () => void;
+    const gate = new Promise<void>((r) => { land = r; });
+    const fetchSpy = vi.fn(async (_url: string, init: { signal: AbortSignal }) => {
+      signals.push(init.signal);
+      await gate;
+      return { ok: true, blob: async () => new Blob() };
+    });
     vi.stubGlobal('fetch', fetchSpy);
     vi.stubGlobal('createImageBitmap', vi.fn(async () => fakeBitmap()));
     const live = new AbortController();
     loadStreamedTexture('textures/maps/c.jpg', vi.fn(), vi.fn(), undefined, live.signal);
     await flush();
     expect(fetchSpy).toHaveBeenCalledTimes(1);
-    expect((fetchSpy.mock.calls[0] as unknown[])[1]).toEqual({ signal: live.signal });
+    expect(signals[0].aborted).toBe(false);
+    live.abort();
+    expect(signals[0].aborted).toBe(true); // the only waiter is gone
+    land();
     const gone = new AbortController();
     gone.abort();
     const onError = vi.fn();
@@ -64,6 +74,61 @@ describe('loadStreamedTexture', () => {
     await flush();
     expect(fetchSpy).toHaveBeenCalledTimes(1);
     expect(onError).toHaveBeenCalledTimes(1);
+  });
+
+  it('shares one transfer between callers asking for the same map at once', async () => {
+    setBitmapProbeForTests(true);
+    let land!: () => void;
+    const gate = new Promise<void>((r) => { land = r; });
+    const fetchSpy = vi.fn(async () => { await gate; return { ok: true, blob: async () => new Blob() }; });
+    const decode = vi.fn(async () => fakeBitmap());
+    vi.stubGlobal('fetch', fetchSpy);
+    vi.stubGlobal('createImageBitmap', decode);
+    const url = 'textures/tiles/earth-bump/2k/2_1.webp';
+    const loads = [vi.fn(), vi.fn(), vi.fn(), vi.fn()];
+    for (const onLoad of loads) loadStreamedTexture(url, onLoad, vi.fn());
+    await flush();
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+    land();
+    await flush();
+    await flush();
+    // Every caller is served, each with its own decode and its own texture:
+    // one of them disposing must not take the others' image away.
+    expect(decode).toHaveBeenCalledTimes(4);
+    const textures = loads.map((l) => {
+      expect(l).toHaveBeenCalledTimes(1);
+      return l.mock.calls[0][0] as THREE.Texture;
+    });
+    expect(new Set(textures.map((t) => t.image)).size).toBe(4);
+    // A transfer that has landed is not reused: the next caller fetches.
+    loadStreamedTexture(url, vi.fn(), vi.fn());
+    await flush();
+    expect(fetchSpy).toHaveBeenCalledTimes(2);
+  });
+
+  it('ends a shared transfer only once the last caller has dropped it', async () => {
+    setBitmapProbeForTests(true);
+    const signals: AbortSignal[] = [];
+    let land!: () => void;
+    const gate = new Promise<void>((r) => { land = r; });
+    vi.stubGlobal('fetch', vi.fn(async (_url: string, init: { signal: AbortSignal }) => {
+      signals.push(init.signal);
+      await gate;
+      return { ok: true, blob: async () => new Blob() };
+    }));
+    vi.stubGlobal('createImageBitmap', vi.fn(async () => fakeBitmap()));
+    const url = 'textures/tiles/earth-bump/2k/3_1.webp';
+    const first = new AbortController();
+    const second = new AbortController();
+    loadStreamedTexture(url, vi.fn(), vi.fn(), undefined, first.signal);
+    loadStreamedTexture(url, vi.fn(), vi.fn(), undefined, second.signal);
+    await flush();
+    expect(signals).toHaveLength(1);
+    first.abort();
+    expect(signals[0].aborted).toBe(false); // the other caller still wants it
+    second.abort();
+    expect(signals[0].aborted).toBe(true);
+    land();
   });
 
   it('delivers a pre-flipped bitmap texture when the probe passes', async () => {

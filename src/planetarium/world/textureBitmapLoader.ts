@@ -15,6 +15,11 @@
  * shared `textureLoader`, whose worst case is the old slower upload, never a
  * flipped map.
  *
+ * One transfer per URL: callers that ask for the same map while it is in the
+ * air share the bytes and each decode their own bitmap, so a texture stays
+ * one caller's to close or dispose. The transfer is abandoned only when the
+ * last of them drops it.
+ *
  * Failure taxonomy: transport errors (HTTP status, network, stream) surface
  * to the caller's onError, so retry ladders and tier cooldowns behave exactly
  * as they always did. A decode failure on a real image is different — the
@@ -103,21 +108,83 @@ function bitmapUploadUsable(): Promise<boolean> {
   return bitmapFlipProbe;
 }
 
+interface SharedFetch {
+  bytes: Promise<Blob>;
+  abort: AbortController;
+  waiters: number;
+  settled: boolean;
+}
+
+/**
+ * Transfers in flight, by URL. The same map is asked for by several callers
+ * at once as a matter of course — four sibling sectors sample the same crop
+ * of their coarse ancestor, and a tier upgrade can want a map the boot warm
+ * is already fetching — and four identical requests would each take a slot
+ * out of the caller's fetch pool for one file. One transfer serves every
+ * waiter; each still decodes its own bitmap, so it owns an image it may
+ * close or dispose without touching anyone else's. The transfer ends only
+ * when the LAST waiter drops it: one caller losing interest must not cancel
+ * the bytes another is still waiting for.
+ */
+const sharedFetches = new Map<string, SharedFetch>();
+
+function fetchSharedBlob(url: string, signal?: AbortSignal): Promise<Blob> {
+  let entry = sharedFetches.get(url);
+  if (!entry) {
+    const created: SharedFetch = { bytes: null as unknown as Promise<Blob>, abort: new AbortController(), waiters: 0, settled: false };
+    created.bytes = (async () => {
+      try {
+        const response = await (takeBootWarmResponse(url) ?? fetch(url, { signal: created.abort.signal }));
+        if (!response.ok) throw new Error(`HTTP ${response.status} for ${url}`);
+        return await response.blob();
+      } finally {
+        created.settled = true;
+        if (sharedFetches.get(url) === created) sharedFetches.delete(url);
+      }
+    })();
+    // Every waiter attaches its own handlers below; this keeps a failure from
+    // being reported as unhandled in the turn before they do.
+    created.bytes.catch(() => {});
+    sharedFetches.set(url, created);
+    entry = created;
+  }
+  const held = entry;
+  held.waiters += 1;
+  let dropped = false;
+  const drop = () => {
+    if (dropped) return;
+    dropped = true;
+    held.waiters -= 1;
+    if (held.waiters === 0 && !held.settled) {
+      if (sharedFetches.get(url) === held) sharedFetches.delete(url);
+      held.abort.abort();
+    }
+  };
+  signal?.addEventListener('abort', drop, { once: true });
+  return held.bytes.then(
+    (blob) => { signal?.removeEventListener('abort', drop); drop(); return blob; },
+    (err) => { signal?.removeEventListener('abort', drop); drop(); throw err; },
+  );
+}
+
 /** Fetch a map as an ImageBitmap with the flip baked in, wrapped in a texture
  *  that knows not to flip again. */
 async function loadBitmapTexture(url: string, stillWanted?: () => boolean, signal?: AbortSignal): Promise<THREE.Texture> {
   let blob: Blob;
   try {
-    const response = await (takeBootWarmResponse(url) ?? fetch(url, { signal }));
-    if (!response.ok) throw new Error(`HTTP ${response.status} for ${url}`);
-    blob = await response.blob();
+    blob = await fetchSharedBlob(url, signal);
   } catch (err) {
     throw new TextureTransportError(err instanceof Error ? err.message : String(err));
   }
-  // The fetch itself cannot be recalled, but the decode can be declined: an
-  // attempt superseded while its bytes were in the air stops here, before a
-  // full-size bitmap (~128MB at 8K) is created for nobody. Reported as a
-  // transport error: the caller's own staleness guard makes it a no-op.
+  // The transfer is shared, so it lands even for a caller that aborted while
+  // it was in the air — that caller stops here rather than decoding.
+  if (signal?.aborted) {
+    throw new TextureTransportError(`aborted: ${url}`);
+  }
+  // The bytes cannot be recalled, but the decode can be declined: an attempt
+  // superseded while they were in the air stops here, before a full-size
+  // bitmap (~128MB at 8K) is created for nobody. Reported as a transport
+  // error: the caller's own staleness guard makes it a no-op.
   if (stillWanted && !stillWanted()) {
     throw new TextureTransportError(`superseded: ${url}`);
   }

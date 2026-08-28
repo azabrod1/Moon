@@ -622,12 +622,29 @@ describe('SectorStreamer', () => {
     // Sunset: kept while big (score 0 — the first to go under cap pressure).
     streamer.update('Earth', cameraOver(2, 1), measureOf({ '2_1': 2 }), 32, 'none', sunOver(6, 2));
     expect(streamer.stats().resident).toBe(1);
-    // Twilight — the sector centre just past the terminator (dot ≈ −0.08,
-    // inside SECTOR_NIGHT_DOT) — is still fetchable: its day-side half is lit.
+    // Twilight — the sector centre just past the terminator (dot ≈ −0.08) —
+    // is still fetchable: its day-side half is lit.
     streamer.dropAll();
     const twilight = sunOver(2, 1).applyAxisAngle(new THREE.Vector3(0, 1, 0), THREE.MathUtils.degToRad(105));
     streamer.update('Earth', cameraOver(2, 1), measureOf({ '2_1': 2 }), 48, 'none', twilight);
     expect(streamer.stats().resident).toBe(1);
+    // The centre well into the night (dot ≈ −0.44) but the sector's sunward
+    // corner still 5° on the day side: that lit strip is fetchable too.
+    const centre = sectorCentreDirection(G, { c: 2, r: 1 }, new THREE.Vector3());
+    const corner = sphereDirection(2 / G.cols, 2 / G.rows, new THREE.Vector3()); // west edge, equator
+    const sunPastCornerBy = (deg: number) => {
+      const axis = new THREE.Vector3().crossVectors(centre, corner).normalize();
+      return corner.clone().applyAxisAngle(axis, THREE.MathUtils.degToRad(deg));
+    };
+    streamer.dropAll();
+    const cornerLit = sunPastCornerBy(85);
+    expect(centre.dot(cornerLit)).toBeLessThan(-0.4);
+    streamer.update('Earth', cameraOver(2, 1), measureOf({ '2_1': 2 }), 64, 'none', cornerLit);
+    expect(streamer.stats().resident).toBe(1);
+    // And once even that corner is past the twilight margin, nothing.
+    streamer.dropAll();
+    streamer.update('Earth', cameraOver(2, 1), measureOf({ '2_1': 2 }), 80, 'none', sunPastCornerBy(100));
+    expect(streamer.stats().resident).toBe(0);
   });
 
   it('a crop failing while the colour tile waits in the warm queue counts as ONE failure', () => {

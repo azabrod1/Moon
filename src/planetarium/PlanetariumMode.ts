@@ -670,6 +670,11 @@ export class PlanetariumMode {
    *  slow turner (the Moon: 27× Earth) keeps streaming at rates that would
    *  spin Earth into a blur. */
   private static readonly SECTOR_SPIN_SUSPEND_DEG_PER_S = 3.75;
+  /** Admissions resume only once the rate has stayed under this lower figure
+   *  for the hold: a body turning at the suspend rate would otherwise pulse
+   *  admissions on and off with frame jitter. */
+  private static readonly SECTOR_SPIN_RESUME_DEG_PER_S = 3;
+  private static readonly SECTOR_SPIN_HOLD_MS = 400;
   // Speculative warm of the Earth+Moon pair's first colour steps a beat after
   // activation: eclipse vantages land on Earth and the Moon is the most-taken
   // first close-up, so spending idle seconds on their fetch+decode means a
@@ -902,7 +907,7 @@ export class PlanetariumMode {
   private readonly sectorWorldQuat = new THREE.Quaternion();
   private readonly sectorWorldQuatInv = new THREE.Quaternion();
   /** Last frame's world orientation per streamed body, for the spin gate. */
-  private readonly sectorSpin = new Map<string, { quat: THREE.Quaternion; tMs: number }>();
+  private readonly sectorSpin = new Map<string, { quat: THREE.Quaternion; tMs: number; heldUntilMs: number }>();
   // Its own projection scratch: the LOD loop's is read after its call by
   // consumers that expect it untouched.
   private sectorProjection: SphereScreenProjection = {
@@ -2454,11 +2459,18 @@ export class PlanetariumMode {
       if (prev) {
         const dtS = (nowMs - prev.tMs) / 1000;
         const angle = 2 * Math.acos(Math.min(1, Math.abs(prev.quat.dot(this.sectorWorldQuat))));
-        spinning = dtS > 0 && (angle * RAD2DEG) / dtS > PlanetariumMode.SECTOR_SPIN_SUSPEND_DEG_PER_S;
+        const rate = dtS > 0 ? (angle * RAD2DEG) / dtS : 0;
+        // Latched: past the suspend rate the hold starts, and any rate above
+        // the resume rate while held extends it.
+        const held = nowMs < prev.heldUntilMs;
+        if (rate > PlanetariumMode.SECTOR_SPIN_SUSPEND_DEG_PER_S || (held && rate > PlanetariumMode.SECTOR_SPIN_RESUME_DEG_PER_S)) {
+          prev.heldUntilMs = nowMs + PlanetariumMode.SECTOR_SPIN_HOLD_MS;
+        }
+        spinning = nowMs < prev.heldUntilMs;
         prev.quat.copy(this.sectorWorldQuat);
         prev.tMs = nowMs;
       } else {
-        this.sectorSpin.set(name, { quat: this.sectorWorldQuat.clone(), tMs: nowMs });
+        this.sectorSpin.set(name, { quat: this.sectorWorldQuat.clone(), tMs: nowMs, heldUntilMs: 0 });
       }
       // The ground under a surface observer isn't drawn (the near plane culls
       // it) and every sector "faces" a camera on the surface: hold nothing.

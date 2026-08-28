@@ -137,11 +137,15 @@ export const SECTOR_RELEASE_TEXEL_PX = 0.8;
 /** Map width assumed while a globe's map has no readable image (never in
  *  practice: a real map is an ImageBitmap or a painted canvas). */
 const SECTOR_FALLBACK_MAP_WIDTH = 4096;
-/** A sector whose centre is further past the terminator than this (dot of
- *  the sector centre with the sun direction, in the globe's frame) is never
- *  fetched: the sector's day-side edge is then within a few degrees of the
- *  terminator, and the night fill draws nothing a tile could sharpen. */
-export const SECTOR_NIGHT_DOT = -0.3;
+/** A sector whose most-lit point — the point of it nearest the sub-solar
+ *  point — is still this far past the terminator (its dot with the sun
+ *  direction, in the globe's frame) is never fetched: no part of it is lit,
+ *  and the night fill draws nothing a tile could sharpen. Measured at the
+ *  lit edge, not the centre: an equatorial sector reaches 31° from its
+ *  centre, and a centre test that let 14° of lit terminator strip stay on
+ *  the base map. The margin past zero is the few degrees of twilight the
+ *  atmosphere renders beyond the terminator. */
+export const SECTOR_NIGHT_DOT = -0.1;
 
 /** Resident sectors (meshes with a tile on the GPU) across all bodies. The
  *  wall view has ~12 sectors facing the camera; the cap holds the largest. */
@@ -343,6 +347,7 @@ export class SectorStreamer {
   private readonly camScratch = new THREE.Vector3();
   private readonly camDirScratch = new THREE.Vector3();
   private readonly pointScratch = new THREE.Vector3();
+  private readonly sunPointScratch = new THREE.Vector3();
 
   constructor(opts: SectorStreamerOptions) {
     this.grid = opts.grid ?? SECTOR_GRID_16K;
@@ -446,7 +451,8 @@ export class SectorStreamer {
         if (m) {
           texelPx = m.pxPerLocalUnit * texelLen;
           if (texelPx > body.maxTexelPx) body.maxTexelPx = texelPx;
-          const night = sunLocal !== null && slot.centreDir.dot(sunLocal) < SECTOR_NIGHT_DOT;
+          const night = sunLocal !== null
+            && sectorNearestDirection(this.grid, slot.sector, sunLocal, this.sunPointScratch).dot(sunLocal) < SECTOR_NIGHT_DOT;
           fetchable = !m.offscreen && !night;
           if (fetchable) score = texelPx * (0.5 + 0.5 * Math.max(0, Math.min(1, m.centrality)));
         }

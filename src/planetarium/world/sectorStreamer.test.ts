@@ -1019,6 +1019,29 @@ describe('SectorStreamer', () => {
     expect(s.bodies.Earth.resident.slice().sort()).toEqual(['5_2', '6_2', '7_2']);
   });
 
+  it('a budget collapse and a base map landing in the same frame never overshoot the budget', () => {
+    loader.auto = true;
+    earth.material.roughnessMap = null; // the gloss map has not landed yet
+    const sizes: Record<string, number> = {};
+    for (let c = 0; c < 8; c++) { sizes[`${c}_1`] = 2 + 0.01 * c; sizes[`${c}_2`] = 2.1 + 0.01 * c; }
+    for (let f = 0; f < 24; f++) streamer.update('Earth', INSIDE, measureOf(sizes), f * 16);
+    expect(streamer.stats().resident).toBeGreaterThan(4);
+    // One frame carries both: the gloss map lands (every resident is drawn
+    // under the old signature and wants reloading) and the envelope closes to
+    // less than one set (every resident has to go). The reload list must not
+    // hand a released slot a fetch budgeted for the crops it was missing.
+    loader.auto = false;
+    loader.requests.length = 0;
+    earth.material.roughnessMap = new THREE.Texture();
+    streamer.setGlobalMapBytes(SECTOR_ENVELOPE_BYTES_DESKTOP - Math.round(0.6 * EARTH_SET_BYTES));
+    streamer.update('Earth', INSIDE, measureOf(sizes), 10_000);
+    const s = streamer.stats();
+    expect(s.residentBytes + s.reserved).toBeLessThanOrEqual(s.budget);
+    // …and nothing is in the air for a slot that gave its maps up.
+    expect(loader.requests).toEqual([]);
+    expect(s.inflight).toBe(0);
+  });
+
   it('leaves a sector alone for a moment after admitting it, whatever turns up next', () => {
     loader.auto = true;
     const sizes: Record<string, number> = {};

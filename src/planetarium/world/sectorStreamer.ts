@@ -807,6 +807,14 @@ export class SectorStreamer {
     // Only where a fetch is allowed at all (on the frame, on the day side —
     // score > 0): a resident past the limb keeps its old set until a pan
     // brings it back, as an admission there would wait too.
+    // A budget that shrank under the working set (a globe map arrived, the
+    // envelope closed) gives sectors back until it holds again — the one
+    // path where a sector goes without the view changing. It runs FIRST, on
+    // the slots as they are: a sector released after it had been collected
+    // to reload would be handed to a reload that budgeted for the couple of
+    // crops it was missing and then fetched a whole fresh set.
+    this.trimToBudget();
+
     const stale: Array<{ body: SectorBody; slot: SectorSlot }> = [];
     const candidates: Array<{ body: SectorBody; slot: SectorSlot }> = [];
     for (const body of bodies) {
@@ -820,14 +828,12 @@ export class SectorStreamer {
         }
       }
     }
-    // A budget that shrank under the working set (a globe map arrived, the
-    // envelope closed) gives sectors back until it holds again — the one
-    // path where a sector goes without the view changing.
-    this.trimToBudget();
-
     stale.sort((a, b) => b.slot.score - a.slot.score);
     for (const s of stale) {
       if (!this.canStartLoad()) break;
+      // Only a resident with nothing in the air still has a set to reload:
+      // anything else lost the maps the reservation below is sized against.
+      if (s.slot.state !== 'resident' || s.slot.loading) continue;
       // The maps a reload fetches are bytes the resident does not hold yet.
       if (!this.roomFor(this.reloadBytes(s.body, s.slot))) continue;
       this.startLoad(s.body, s.slot, s.body.signature);
@@ -1033,6 +1039,15 @@ export class SectorStreamer {
    *  callback checks the generation stamped here, so a release, a failure or
    *  an abandonment in between makes a late arrival dispose itself. */
   private startLoad(body: SectorBody, slot: SectorSlot, signature: string): void {
+    // Only a slot that is committed to holding the set may fetch it. An idle
+    // slot would reserve against maps it no longer has, hold the bytes in a
+    // state no eviction can reclaim, and never reach the mesh: `admit` moves
+    // the slot to 'loading' first, and a reload runs on a resident.
+    if (slot.state === 'idle') throw new Error(`sector load started on an idle slot ${slotId(slot)}`);
+    // Never two loads for one slot: the earlier one's fetches end here rather
+    // than running on for a set nothing will take, and its reservation goes
+    // back before this one is sized.
+    if (slot.loading) this.abandonLoad(slot);
     const { handle } = body;
     const gen = ++this.generation;
     slot.gen = gen;

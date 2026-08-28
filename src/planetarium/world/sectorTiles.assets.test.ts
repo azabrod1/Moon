@@ -94,6 +94,21 @@ describe('sector tile sets: what the app asks for', () => {
     }
   });
 
+  it('normal-map crops span two sectors, scalar crops one', () => {
+    // The tangent frame a normal map is sampled in needs the neighbouring
+    // sector on both sides; bump and roughness are scalars and need none.
+    // The runtime reads spanU from the generated table, so a re-cut at the
+    // wrong span would agree with itself everywhere — this is the one place
+    // the span is stated rather than measured.
+    for (const [body, spec] of Object.entries(SECTOR_SETS)) {
+      for (const [slot, crop] of Object.entries(spec.crops)) {
+        const want = slot === 'normalMap' ? 2 : 1;
+        expect(crop.spanU, `${body} ${slot}`).toBe(want);
+        expect(SECTOR_SET_TABLE[`${crop.key}/${crop.tier}`].spanU, `${body} ${slot}`).toBe(want);
+      }
+    }
+  });
+
   it('crops match the layout cut from the base map’s real width', () => {
     // The app builds its crop layout from the width and span in the table;
     // this is the check that the arithmetic reproduces the tile size gen-tiles

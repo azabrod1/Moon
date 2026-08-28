@@ -34,9 +34,9 @@
  * a set's own content hash is in its folder name, so a tile path is either
  * new or a 404 and the body under it can never go stale. Those are stored
  * cache-first by full URL with no digest and no ?swv= — the path IS the
- * identity, a truncated transfer still fails at arrayBuffer(), a body that
- * is not a WebP container is refused, and the digests are checked where the
- * bytes are published, not on every device.
+ * identity, a body shorter than its own WebP header claims or that is not a
+ * WebP container is refused, and the digests are checked where the bytes are
+ * published, not on every device.
  * Every cache key here is an absolute href for that reason: the activate
  * prune compares what cache.keys() hands back (always absolute) against
  * these keys, and pathname-shaped keys would make every off-origin entry
@@ -115,21 +115,31 @@ async function verifyAndPut(cache, pathname, response) {
   return true;
 }
 
-/** True when the bytes begin `RIFF....WEBP` — a WebP container's first 12
- *  bytes. Cheap, and the only thing standing between a tile key with no
- *  digest and no expiry and a body that is not a tile at all. */
+/** True when the bytes are one whole WebP container: `RIFF`, a size field
+ *  that accounts for every byte that arrived, `WEBP`, and an image chunk
+ *  (VP8, VP8L or VP8X) where the first chunk belongs. The size check is the
+ *  truncation guard — a transfer the server closed early arrives as a
+ *  normally ended stream, arrayBuffer() resolves with the short body, and
+ *  only the header's own byte count says it is short. The chunk check is
+ *  what refuses a body that merely starts like a tile. Cheap, and the only
+ *  thing standing between a tile key with no digest and no expiry and a
+ *  body that is not a tile at all. */
 function looksLikeWebp(body) {
-  if (body.byteLength < 12) return false;
-  const b = new Uint8Array(body, 0, 12);
-  return b[0] === 0x52 && b[1] === 0x49 && b[2] === 0x46 && b[3] === 0x46 // 'RIFF'
-    && b[8] === 0x57 && b[9] === 0x45 && b[10] === 0x42 && b[11] === 0x50; // 'WEBP'
+  if (body.byteLength < 16) return false;
+  const b = new Uint8Array(body, 0, 16);
+  const tag = (at) => String.fromCharCode(b[at], b[at + 1], b[at + 2], b[at + 3]);
+  if (tag(0) !== 'RIFF' || tag(8) !== 'WEBP') return false;
+  const riffSize = new DataView(body).getUint32(4, true);
+  if (riffSize + 8 !== body.byteLength) return false;
+  const chunk = tag(12);
+  return chunk === 'VP8 ' || chunk === 'VP8L' || chunk === 'VP8X';
 }
 
 /**
  * Store a content-addressed tile under its full URL. No digest: the set hash
  * in the path is the identity, so the failures this has to exclude are an
- * incomplete transfer — arrayBuffer() rejects on one — and a body that is
- * complete but is not the tile. status 200 only, which also excludes an
+ * incomplete transfer and a body that is complete but is not the tile —
+ * looksLikeWebp covers both. status 200 only, which also excludes an
  * opaque cross-origin response (status 0): a host without CORS must stay a
  * visible failure, never a cached one.
  *

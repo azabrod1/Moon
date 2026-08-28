@@ -457,19 +457,24 @@ async function indexSets() {
         throw new Error(`${id}: two set folders, ${seen} and ${folder} — delete the stale one`);
       }
       byId.set(id, folder);
-      found.push({ id, key, tier, folder, keyDir, dir, files, setHash: await setHash8(dir, files) });
+      // Hash and measure while nothing has moved: a set that fails its grid
+      // or dimension check must fail with its folder where it was found, not
+      // already renamed to a content hash that names a broken set.
+      found.push({
+        id, key, tier, folder, keyDir, dir, files,
+        setHash: await setHash8(dir, files),
+        layout: await describeSet(dir, files),
+      });
     }
   }
 
   const sets = {};
   for (const set of found) {
-    let dir = set.dir;
     if (set.folder !== `${set.tier}.${set.setHash}`) {
-      dir = path.join(set.keyDir, `${set.tier}.${set.setHash}`);
-      await rename(set.dir, dir);
+      await rename(set.dir, path.join(set.keyDir, `${set.tier}.${set.setHash}`));
       console.log(`  ${set.key}/${set.folder} -> ${set.tier}.${set.setHash}`);
     }
-    sets[set.id] = { setHash8: set.setHash, ...(await describeSet(dir, set.files)) };
+    sets[set.id] = { setHash8: set.setHash, ...set.layout };
   }
   await writeFile(SETS_JSON, `${JSON.stringify(sets, null, 2)}\n`);
   await writeFile(GENERATED_TS, generatedSource(sets));

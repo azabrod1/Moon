@@ -59,14 +59,25 @@ function walkFiles(dir) {
  *  Exported for swContract.test.ts, which drives the plugin with a fake
  *  config.env to pin exactly that. */
 export function tileOriginFrom(env) {
-  const raw = (env?.VITE_TILE_ORIGIN ?? '').trim().replace(/\/+$/, '');
+  const raw = (env?.VITE_TILE_ORIGIN ?? '').trim();
   if (!raw) return '';
+  let url;
   try {
-    new URL(raw);
+    url = new URL(raw);
   } catch {
     throw new Error(`sw: VITE_TILE_ORIGIN "${raw}" is not an absolute URL`);
   }
-  return raw;
+  // The tile path is appended to this string, so anything after the path —
+  // a query, a fragment, credentials — would swallow it: the app would
+  // request `?token=abc/tiles/…` and the worker, which ignores queried
+  // requests, would allow nothing.
+  if (url.protocol !== 'https:' && url.protocol !== 'http:') {
+    throw new Error(`sw: VITE_TILE_ORIGIN "${raw}" must be an http(s) URL`);
+  }
+  if (url.username || url.password || url.search || url.hash || raw.endsWith('?') || raw.endsWith('#')) {
+    throw new Error(`sw: VITE_TILE_ORIGIN "${raw}" must be a bare origin and path, with no query, fragment or credentials`);
+  }
+  return url.origin + url.pathname.replace(/\/+$/, '');
 }
 
 /** The tile sets the app names, read out of the table gen-tiles generates —

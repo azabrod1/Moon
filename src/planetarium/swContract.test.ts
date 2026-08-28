@@ -38,16 +38,20 @@ const TILE_URL = tileUrlOn(TILE_SET.hash);
 const MOON_BYTES = new TextEncoder().encode('moon-pixels');
 const STAR_BYTES = new TextEncoder().encode('star-records');
 
-/** Bytes shaped like a WebP file: 'RIFF', the size field, 'WEBP', payload.
- *  The worker reads those first 12 bytes before it stores a tile, so a tile
- *  body in this suite has to carry them. */
+/** Bytes shaped like a whole WebP file: 'RIFF', a size field covering every
+ *  byte after it, 'WEBP', then one VP8L chunk holding the payload. The
+ *  worker checks the size against what arrived and the first chunk's tag
+ *  before it stores a tile, so a tile body in this suite has to carry both. */
 function webpBytes(payload: string): Uint8Array {
   const body = new TextEncoder().encode(payload);
-  const out = new Uint8Array(12 + body.length);
-  out.set(new TextEncoder().encode('RIFF'), 0);
-  new DataView(out.buffer).setUint32(4, 4 + body.length, true);
-  out.set(new TextEncoder().encode('WEBP'), 8);
-  out.set(body, 12);
+  const out = new Uint8Array(20 + body.length);
+  const ascii = (text: string) => new TextEncoder().encode(text);
+  out.set(ascii('RIFF'), 0);
+  new DataView(out.buffer).setUint32(4, 12 + body.length, true);
+  out.set(ascii('WEBP'), 8);
+  out.set(ascii('VP8L'), 12);
+  new DataView(out.buffer).setUint32(16, body.length, true);
+  out.set(body, 20);
   return out;
 }
 const TILE_BYTES = webpBytes('tile-pixels');
@@ -311,6 +315,45 @@ describe('service worker template: content-addressed tile sets', () => {
     expect([...good.store.keys()]).toEqual([TILE_URL]);
   });
 
+  it('never stores a tile whose bytes stop short of what its own header claims', async () => {
+    // A server that closes the connection early ends the stream normally:
+    // arrayBuffer() resolves with the short body and nothing else says it is
+    // short. The RIFF size field does. Without that check a half tile would
+    // be pinned under a key that never expires.
+    const short = TILE_BYTES.slice(0, TILE_BYTES.length - 3);
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(short.slice(0, 9));
+        controller.enqueue(short.slice(9));
+        controller.close();
+      },
+    });
+    const harness = bootWorker(
+      MANIFEST,
+      [],
+      new Map([[TILE_URL, () => new Response(stream, { status: 200, headers: { 'content-type': 'image/webp' } })]]),
+      tileHost,
+    );
+    const { responded, waits } = dispatchFetch(harness, new Request(TILE_URL));
+    expect(new Uint8Array(await (await responded!).arrayBuffer())).toEqual(short);
+    await Promise.all(waits);
+    expect(harness.store.size).toBe(0);
+    // The same refusal for a body that is a RIFF/WEBP header over something
+    // that is not an image chunk.
+    const wrongChunk = TILE_BYTES.slice();
+    wrongChunk.set(new TextEncoder().encode('ICCP'), 12);
+    const other = bootWorker(
+      MANIFEST,
+      [],
+      new Map([[TILE_URL, () => new Response(wrongChunk, { status: 200, headers: { 'content-type': 'image/webp' } })]]),
+      tileHost,
+    );
+    const miss = dispatchFetch(other, new Request(TILE_URL));
+    await miss.responded!;
+    await Promise.all(miss.waits);
+    expect(other.store.size).toBe(0);
+  });
+
   it('with an empty allowlist behaves exactly as a same-origin-only worker', () => {
     const harness = bootWorker(MANIFEST, [], healthyNetwork());
     expect(dispatchFetch(harness, new Request(TILE_URL)).responded).toBeUndefined();
@@ -442,6 +485,14 @@ describe('service worker build plugin: tile origin and allowlist', () => {
   it('refuses a tile origin that is not an absolute URL', () => {
     expect(() => tileOriginFrom({ VITE_TILE_ORIGIN: 'cdn.test/tiles' })).toThrow(/not an absolute URL/);
     expect(tileOriginFrom({ VITE_TILE_ORIGIN: '  https://cdn.test/tiles//  ' })).toBe('https://cdn.test/tiles');
+    // The tile path is appended to the origin, so anything that would land
+    // the path inside a query, a fragment or the credentials is refused.
+    expect(() => tileOriginFrom({ VITE_TILE_ORIGIN: 'https://cdn.test/x?token=abc' })).toThrow(/no query/);
+    expect(() => tileOriginFrom({ VITE_TILE_ORIGIN: 'https://cdn.test/x?' })).toThrow(/no query/);
+    expect(() => tileOriginFrom({ VITE_TILE_ORIGIN: 'https://cdn.test/x#tiles' })).toThrow(/no query/);
+    expect(() => tileOriginFrom({ VITE_TILE_ORIGIN: 'https://user:pw@cdn.test/x' })).toThrow(/no query/);
+    expect(() => tileOriginFrom({ VITE_TILE_ORIGIN: 'ftp://cdn.test/x' })).toThrow(/http\(s\)/);
+    expect(tileOriginFrom({ VITE_TILE_ORIGIN: 'https://CDN.test/gh/moon-tiles@main/' })).toBe('https://cdn.test/gh/moon-tiles@main');
     expect(tileOriginFrom({})).toBe('');
     expect(tileOriginFrom(undefined)).toBe('');
   });

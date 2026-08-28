@@ -54,8 +54,14 @@
  *
  * One demand rule serves every level — a sector is wanted where the map BELOW
  * it is magnified — and the pyramid is what keeps the working set from
- * fighting itself. Scores rank in multiples of the level's own threshold, the
- * only comparable form. A sector with a finer one live over it is never given
+ * fighting itself. Scores are that magnification over the threshold at which
+ * a tile is worth fetching: screen-space error, in device pixels of the map
+ * the sector would replace. At one spot a child scores its parent's divided
+ * by the level step, because the map under it is that much finer — so the
+ * coarser level goes first wherever both are asked for, which is what the
+ * pyramid wants: the parent covers four times the ground for the same bytes
+ * and is the fallback under every child. A sector with a finer one live over
+ * it is never given
  * up: it is that sector's instant fallback, and losing it would drop the
  * surface under a resident tile all the way to the globe (which is what a
  * child admitted while its parent was cooling down falls back to — a softness
@@ -265,11 +271,13 @@ export const SECTOR_FETCH_POOL_TOUCH = 3;
 export const SECTOR_EVICT_DWELL_MS = 1_000;
 
 /** A candidate evicts the weakest resident only when it out-ranks it by this
- *  factor — the admission hysteresis that keeps the working set stable.
- *  Scores are LEVEL-NEUTRAL for this comparison: a sector ranks by how far
- *  past its OWN threshold it is (texel px ÷ want), never by raw texel px,
- *  which is measured against a different map at every level and would make
- *  every coarse sector out-rank every fine one by the level's ratio. */
+ *  factor — the admission hysteresis that keeps the working set stable. The
+ *  ranking is screen-space error over the want threshold, which is
+ *  comparable across levels and bodies because every level measures the map
+ *  IT would replace: a level-1 sector reads the pixels per texel of level
+ *  0's source where a level-0 sector reads the globe's own map. Two sectors
+ *  over the same ground therefore differ by the level step, coarse above
+ *  fine, which is the order the pyramid wants. */
 export const SECTOR_ADMIT_MARGIN = 1.25;
 
 /** Cooldown after a failed sector load, doubling per consecutive failure. */
@@ -789,10 +797,11 @@ export class SectorStreamer {
           const night = sunLocal !== null
             && sectorNearestDirection(grid, slot.sector, sunLocal, this.sunPointScratch).dot(sunLocal) < SECTOR_NIGHT_DOT;
           fetchable = !m.offscreen && !night;
-          // In multiples of this level's OWN want threshold — 1 is exactly at
-          // it, 4 is four times past it. That is the only form in which two
-          // levels, each measured against a different map, can be ranked
-          // against each other at all.
+          // Screen-space error over the threshold: 1 is exactly at the want
+          // size, 4 is four times past it. Every level reads the map it
+          // would itself replace, so one number ranks them all — and two
+          // sectors over the same ground come out coarse first, by the
+          // level step between their maps.
           if (fetchable) {
             score = (texelPx / this.wantTexelPx) * (0.5 + 0.5 * Math.max(0, Math.min(1, m.centrality)));
           }

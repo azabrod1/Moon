@@ -28,7 +28,7 @@ import {
   type SectorSetSpec,
 } from './sectorStreamer';
 import { SECTOR_RENDER_ORDER } from './sectorMaterial';
-import { SECTOR_GRID_16K, finerGrid, sectorCentreDirection, sectorTileTransform, dataCropLayout, SECTOR_TILE, sphereDirection } from './sectorGrid';
+import { SECTOR_GRID_16K, ancestorSector, finerGrid, sectorCentreDirection, sectorTileTransform, dataCropLayout, SECTOR_TILE, sphereDirection } from './sectorGrid';
 import { augmentSurfaceMaterial } from './surfaceShading';
 import type { WarmOutcome } from './textureWarmer';
 
@@ -117,17 +117,31 @@ const LEVEL_1: SectorLevel = {
   sourceWidth: 2 * SECTOR_LEVEL_16K.sourceWidth,
 };
 const TWO_LEVELS = [SECTOR_LEVEL_16K, LEVEL_1];
+/** The step between the two levels: a level-1 sector's demand is read against
+ *  level 0's source, which is this many times finer than the globe's own map,
+ *  so at one spot a child reads that many times fewer px per texel than its
+ *  parent. It is also the globe magnification at which a child first has
+ *  anything to add — the campaign's "~4 px per 16K texel" wall. */
+const LEVEL_STEP = SECTOR_LEVEL_16K.sourceWidth / 4096;
+const CHILD_WANT_PX = SECTOR_WANT_TEXEL_PX * LEVEL_STEP;
 
-/** Surface length of the texel a level's demand is measured against: the
- *  globe's map for level 0, the level below's source for the rest. */
-function refTexelLen(levels: SectorLevel[], level: number): number {
-  return level === 0 ? TEXEL_LEN_4K : (2 * Math.PI * R) / levels[level - 1].sourceWidth;
-}
-
-/** A measure over a pyramid: sizes are keyed by the stats id ("c_r" at level
- *  0, "L1/c_r" below it) and given in texel px OF THAT LEVEL'S OWN reference
- *  map, so one number means the same thing at every level. */
-function measureLevels(levels: SectorLevel[], sizes: Record<string, number>, centrality = 1) {
+/** A measure over a pyramid. Sizes are keyed by LEVEL-0 sector and given in
+ *  device px per texel of the GLOBE's map there — one physical magnification
+ *  per place on the sphere, which is what a projection can actually produce.
+ *  Every level over that place is measured through the same number, so a
+ *  level cannot be handed a magnification its parent does not have: the
+ *  streamer derives each level's own texel reading from it, and a child
+ *  comes out at its parent's divided by the level step.
+ *
+ *  `offscreen` is per SLOT (by stats id): frame membership really is a
+ *  per-sector fact, and a parent's nearest point can leave the frame while a
+ *  child's stays on it. */
+function measureLevels(
+  levels: SectorLevel[],
+  sizes: Record<string, number>,
+  centrality = 1,
+  offscreen: ReadonlySet<string> = new Set(),
+) {
   return (centre: THREE.Vector3, _radius?: number, _dir?: THREE.Vector3): SectorMeasure | null => {
     for (let level = 0; level < levels.length; level++) {
       const grid = levels[level].grid;
@@ -135,8 +149,15 @@ function measureLevels(levels: SectorLevel[], sizes: Record<string, number>, cen
         for (let c = 0; c < grid.cols; c++) {
           const d = sectorCentreDirection(grid, { c, r }, new THREE.Vector3()).multiplyScalar(R);
           if (d.distanceTo(centre) < 1e-9) {
-            const px = sizes[level === 0 ? `${c}_${r}` : `L${level}/${c}_${r}`];
-            return px === undefined ? null : { pxPerLocalUnit: px / refTexelLen(levels, level), centrality };
+            const base = ancestorSector({ c, r }, level);
+            const px = sizes[`${base.c}_${base.r}`];
+            if (px === undefined) return null;
+            const id = level === 0 ? `${c}_${r}` : `L${level}/${c}_${r}`;
+            return {
+              pxPerLocalUnit: px / TEXEL_LEN_4K,
+              centrality,
+              offscreen: offscreen.has(id),
+            };
           }
         }
       }
@@ -792,18 +813,23 @@ describe('SectorStreamer', () => {
   it('a finer level fetches its own colour tile and its parent\'s crops, through the parent\'s transform', () => {
     loader.auto = true;
     const earth2 = twoLevelEarth();
-    // Child (5, 3) is a quarter of level 0's (2, 1); both are past their own
-    // threshold at this pose, and each fetches its own copy of the crop.
-    streamer.update('Earth', overLevel1(5, 3), measureLevels(TWO_LEVELS, { '2_1': 2, 'L1/5_3': 2 }), 0);
-    expect(loader.requests.map((r) => r.url).sort()).toEqual([
-      expect.stringMatching(/tiles\/earth-bump\/2k\/2_1\.webp$/),
-      expect.stringMatching(/tiles\/earth-bump\/2k\/2_1\.webp$/),
-      expect.stringMatching(/tiles\/earth-day\.v2\/16k\/2_1\.webp$/),
-      expect.stringMatching(/tiles\/earth-day\.v2\/32k\/5_3\.webp$/),
-      expect.stringMatching(/tiles\/earth-roughness\.v2\/4k\/2_1\.webp$/),
-      expect.stringMatching(/tiles\/earth-roughness\.v2\/4k\/2_1\.webp$/),
-    ]);
-    const child = (earth2.mesh.children as THREE.Mesh[]).find((m) => m.renderOrder === SECTOR_RENDER_ORDER - 1)!;
+    // Twice past the magnification at which level 0's own source runs out:
+    // sector (2, 1) and all four of the level-1 sectors inside it are asked
+    // for, and each child fetches its own copy of the parent's crops.
+    const measure = measureLevels(TWO_LEVELS, { '2_1': 2 * CHILD_WANT_PX });
+    for (let f = 0; f < 6; f++) streamer.update('Earth', overLevel1(5, 3), measure, f * 16);
+    expect(streamer.stats().bodies.Earth.resident.slice().sort())
+      .toEqual(['2_1', 'L1/4_2', 'L1/4_3', 'L1/5_2', 'L1/5_3']);
+    const urls = loader.requests.map((r) => r.url);
+    expect(urls).toContainEqual(expect.stringMatching(/tiles\/earth-day\.v2\/16k\/2_1\.webp$/));
+    for (const c of ['4_2', '5_2', '4_3', '5_3']) {
+      expect(urls).toContainEqual(expect.stringMatching(new RegExp(`tiles/earth-day\\.v2/32k/${c}\\.webp$`)));
+    }
+    // The parent's crop tile, once per sector that draws it: the parent and
+    // its four children.
+    expect(urls.filter((u) => /tiles\/earth-bump\/2k\/2_1\.webp$/.test(u))).toHaveLength(5);
+    expect(urls.filter((u) => /tiles\/earth-roughness\.v2\/4k\/2_1\.webp$/.test(u))).toHaveLength(5);
+    const child = (earth2.mesh.children as THREE.Mesh[]).find((m) => m.name.endsWith('L1/5_3'))!;
     const mat = child.material as THREE.MeshStandardMaterial;
     // The colour tile carries its own level's transform…
     const tileT = sectorTileTransform(G1, { c: 5, r: 3 }, SECTOR_TILE);
@@ -825,11 +851,13 @@ describe('SectorStreamer', () => {
   it('a finer sector draws before the level above it, on half the segments', () => {
     loader.auto = true;
     const earth2 = twoLevelEarth();
-    streamer.update('Earth', overLevel1(5, 3), measureLevels(TWO_LEVELS, { '2_1': 2, 'L1/5_3': 2 }), 0);
+    const measure = measureLevels(TWO_LEVELS, { '2_1': 2 * CHILD_WANT_PX });
+    for (let f = 0; f < 6; f++) streamer.update('Earth', overLevel1(5, 3), measure, f * 16);
     const meshes = earth2.mesh.children as THREE.Mesh[];
-    expect(meshes).toHaveLength(2);
+    expect(meshes).toHaveLength(5);
     const byOrder = meshes.slice().sort((a, b) => a.renderOrder - b.renderOrder);
-    expect(byOrder.map((m) => m.renderOrder)).toEqual([SECTOR_RENDER_ORDER - 1, SECTOR_RENDER_ORDER]);
+    expect(byOrder[0].renderOrder).toBe(SECTOR_RENDER_ORDER - 1);
+    expect(byOrder[4].renderOrder).toBe(SECTOR_RENDER_ORDER);
     for (const m of byOrder) {
       const mat = m.material as THREE.MeshStandardMaterial;
       const level = m.renderOrder === SECTOR_RENDER_ORDER ? 0 : 1;
@@ -842,10 +870,11 @@ describe('SectorStreamer', () => {
   it('stats keep the level-0 ids flat and namespace the levels below, with per-level counts', () => {
     loader.auto = true;
     twoLevelEarth();
-    streamer.update('Earth', overLevel1(5, 3), measureLevels(TWO_LEVELS, { '2_1': 2, 'L1/5_3': 2 }), 0);
+    const measure = measureLevels(TWO_LEVELS, { '2_1': 2 * CHILD_WANT_PX });
+    for (let f = 0; f < 6; f++) streamer.update('Earth', overLevel1(5, 3), measure, f * 16);
     const body = streamer.stats().bodies.Earth;
-    expect(body.resident.slice().sort()).toEqual(['2_1', 'L1/5_3']);
-    expect(body.byLevel.map((l) => l.resident)).toEqual([1, 1]);
+    expect(body.resident.slice().sort()).toEqual(['2_1', 'L1/4_2', 'L1/4_3', 'L1/5_2', 'L1/5_3']);
+    expect(body.byLevel.map((l) => l.resident)).toEqual([1, 4]);
     expect(body.byLevel[1].gpuBytes).toBe(0); // the fakes carry no image
     // A single-level body still reports one level and bare ids.
     const mars = marsWithoutRelief();
@@ -874,71 +903,82 @@ describe('SectorStreamer', () => {
       const inner = measureLevels(TWO_LEVELS, sizes);
       return (centre: THREE.Vector3, radius: number, dir: THREE.Vector3) => { measured++; return inner(centre, radius, dir); };
     };
-    streamer.update('Earth', cam, counting({ '2_1': 4, 'L1/5_3': SECTOR_WANT_TEXEL_PX - 0.01 }), 0);
+    streamer.update('Earth', cam, counting({ '2_1': CHILD_WANT_PX - 0.01 }), 0);
     expect(streamer.stats().bodies.Earth.resident).toEqual(['2_1']);
-    // …and once the level-0 source is magnified too, the child joins it.
-    streamer.update('Earth', cam, measureLevels(TWO_LEVELS, { '2_1': 4, 'L1/5_3': SECTOR_WANT_TEXEL_PX + 0.01 }), 16);
-    expect(streamer.stats().bodies.Earth.resident.slice().sort()).toEqual(['2_1', 'L1/5_3']);
+    // …and once the globe is magnified past the level step — which is when
+    // level 0's own source runs out of texels — the children join it.
+    streamer.update('Earth', cam, measureLevels(TWO_LEVELS, { '2_1': CHILD_WANT_PX + 0.01 }), 16);
+    const resident = streamer.stats().bodies.Earth.resident;
+    expect(resident).toContain('2_1');
+    expect(resident.filter((id) => id.startsWith('L1/')).length).toBeGreaterThan(0);
     // A sub-tree under a parent with nothing to add costs no projection.
     const beforeGated = measured;
     streamer.update('Earth', cam, counting({}), 32);
     expect(measured - beforeGated).toBeLessThanOrEqual(G.cols * G.rows);
   });
 
-  it('a finer sector can take a coarser one\'s place: ranking is by how far past its own threshold', () => {
+  it('a finer sector takes a coarser one\'s place when it reads further past the want size', () => {
     loader.auto = true;
     twoLevelEarth();
-    // A field just past the want size, and one child four times past its own.
-    // In raw texel px the child measures a quarter of any of them.
-    const sizes = { ...field(() => 1.1), '2_1': 4, 'L1/5_3': 4 };
-    for (let f = 0; f < 4; f++) streamer.update('Earth', INSIDE, measureLevels(TWO_LEVELS, sizes), f * 16);
-    const resident = streamer.stats().bodies.Earth.resident;
-    expect(resident).toContain('L1/5_3');
-    expect(resident).toContain('2_1');
-    expect(resident.filter((id) => id.startsWith('L1/'))).toHaveLength(1);
+    // A field of level-0 sectors barely past the want size, and one spot
+    // magnified far enough that even the children there — reading their
+    // parent's magnification divided by the level step — are four times past
+    // it. The finer level is not outranked by the coarse field.
+    const sizes = { ...field(() => 1.1), '2_1': 4 * CHILD_WANT_PX };
+    for (let f = 0; f < 40; f++) streamer.update('Earth', INSIDE, measureLevels(TWO_LEVELS, sizes), f * 16);
+    const s = streamer.stats();
+    expect(s.bodies.Earth.resident).toContain('2_1');
+    expect(s.bodies.Earth.byLevel[1].resident).toBe(4);
+    expect(s.resident).toBe(EARTH_FITS_DESKTOP);
+    expect(s.residentBytes + s.reserved).toBeLessThanOrEqual(s.budget);
   });
 
   it('never evicts a sector a finer one is drawing over', () => {
     loader.auto = true;
     twoLevelEarth();
-    const strong = { ...field(() => 1.5), '2_1': 5, 'L1/5_3': 3 };
-    for (let f = 0; f < 4; f++) streamer.update('Earth', INSIDE, measureLevels(TWO_LEVELS, strong), f * 16);
+    const strong = { ...field(() => 1.5), '2_1': 2 * CHILD_WANT_PX };
+    for (let f = 0; f < 40; f++) streamer.update('Earth', INSIDE, measureLevels(TWO_LEVELS, strong), f * 16);
     const full = streamer.stats().bodies.Earth.resident.slice().sort();
     expect(full).toContain('2_1');
-    expect(full).toContain('L1/5_3');
-    // The parent's own magnification falls to the hysteresis band — the
-    // weakest thing resident — while its child stays sharp. A newcomer that
-    // out-ranks everything takes the weakest sector WITHOUT a resident child.
-    const weakParent = { ...strong, '2_1': 0.7 };
-    streamer.update('Earth', INSIDE, measureLevels(TWO_LEVELS, weakParent), 5_000);
+    expect(full.filter((id) => id.startsWith('L1/'))).toHaveLength(4);
+    // The parent's own nearest point swings off the frame while its
+    // children's stay on it: it scores nothing and is the weakest thing
+    // resident. A newcomer that out-ranks everything still takes a sector
+    // WITHOUT a resident child instead.
+    const parentOff = new Set(['2_1']);
+    streamer.update('Earth', INSIDE, measureLevels(TWO_LEVELS, strong, 1, parentOff), 5_000);
     for (let f = 0; f < 4; f++) {
-      streamer.update('Earth', INSIDE, measureLevels(TWO_LEVELS, { ...weakParent, '7_3': 40 }), 6_000 + f * 16);
+      streamer.update('Earth', INSIDE, measureLevels(TWO_LEVELS, { ...strong, '7_3': 40 }, 1, parentOff), 6_000 + f * 16);
     }
     const after = streamer.stats().bodies.Earth.resident;
     expect(after).toContain('7_3');
-    expect(after).toContain('2_1'); // held under its child, though it ranks last
-    expect(after).toContain('L1/5_3');
-    expect(after.length).toBe(full.length);
+    expect(after).toContain('2_1'); // held under its children, though it ranks last
+    expect(after.filter((id) => id.startsWith('L1/2_'))).toHaveLength(0);
+    expect(streamer.stats().bodies.Earth.byLevel[1].resident).toBeGreaterThan(0);
   });
 
   it('suppresses a parent every child of which is resident, and wants it back the moment one is lost', () => {
     twoLevelEarth();
-    const children = { 'L1/4_2': 3, 'L1/5_2': 3, 'L1/4_3': 3, 'L1/5_3': 3 };
     const cam = overLevel1(5, 3);
-    // The parent's own tile fails once and cools down; its children land.
-    streamer.update('Earth', cam, measureLevels(TWO_LEVELS, { '2_1': 4 }), 0);
+    const measure = measureLevels(TWO_LEVELS, { '2_1': 2 * CHILD_WANT_PX });
+    // The parent's own tile fails once and cools down. At this magnification
+    // level 0's source has not run out yet, so nothing finer is in flight to
+    // fail with it; its children land on the frames after.
+    streamer.update('Earth', cam, measureLevels(TWO_LEVELS, { '2_1': CHILD_WANT_PX - 0.01 }), 0);
     loader.failAll();
     loader.auto = true;
-    for (let f = 1; f <= 4; f++) streamer.update('Earth', cam, measureLevels(TWO_LEVELS, { '2_1': 4, ...children }), f * 16);
+    for (let f = 1; f <= 8; f++) streamer.update('Earth', cam, measure, f * 16);
     expect(streamer.stats().bodies.Earth.resident.slice().sort())
       .toEqual(['L1/4_2', 'L1/4_3', 'L1/5_2', 'L1/5_3']);
     // Past the cooldown it is wanted and idle, but nothing of it would show.
     loader.requests.length = 0;
-    streamer.update('Earth', cam, measureLevels(TWO_LEVELS, { '2_1': 4, ...children }), SECTOR_RETRY_MS + 100);
+    streamer.update('Earth', cam, measure, SECTOR_RETRY_MS + 100);
     expect(loader.requests).toEqual([]);
-    // Lose one child and the parent is the fallback under the other three.
-    const oneLost = { ...children, 'L1/4_2': SECTOR_RELEASE_TEXEL_PX - 0.01 };
-    streamer.update('Earth', cam, measureLevels(TWO_LEVELS, { '2_1': 4, ...oneLost }), SECTOR_RETRY_MS + 200);
+    // The camera drops to a hover close enough that one of the four children
+    // goes over the horizon and is released. The parent is the fallback
+    // under the other three, and is asked for again.
+    streamer.update('Earth', overLevel1(4, 2, 1.03), measure, SECTOR_RETRY_MS + 200);
+    expect(streamer.stats().bodies.Earth.byLevel[1].resident).toBe(3);
     expect(loader.requests.map((r) => r.url)).toContainEqual(
       expect.stringMatching(/tiles\/earth-day\.v2\/16k\/2_1\.webp$/),
     );
@@ -1072,9 +1112,7 @@ describe('SectorStreamer', () => {
     twoLevelEarth();
     // A parent and all four of its children resident: every parent is
     // protected by a child, so the first sweep can only see leaves.
-    const measure = measureLevels(TWO_LEVELS, {
-      '2_1': 4, 'L1/4_2': 4, 'L1/5_2': 4, 'L1/4_3': 4, 'L1/5_3': 4,
-    });
+    const measure = measureLevels(TWO_LEVELS, { '2_1': 2 * CHILD_WANT_PX });
     for (let f = 0; f < 8; f++) streamer.update('Earth', INSIDE, measure, f * 16);
     const before = streamer.stats();
     expect(before.bodies.Earth.byLevel.map((l) => l.resident)).toEqual([1, 4]);
@@ -1231,7 +1269,7 @@ describe('SectorStreamer', () => {
     twoLevelEarth();
     const sizes = {
       ...field((c, r) => 1.5 + 0.01 * (c + G.cols * r)),
-      '2_1': 8, 'L1/4_2': 4, 'L1/5_2': 4, 'L1/4_3': 4, 'L1/5_3': 4,
+      '2_1': 2 * CHILD_WANT_PX,
     };
     const measure = measureLevels(TWO_LEVELS, sizes);
     let churn = 0;
@@ -1257,19 +1295,19 @@ describe('SectorStreamer', () => {
   it('drops every level on context loss and streams them all back', () => {
     loader.auto = true;
     twoLevelEarth();
-    const measure = measureLevels(TWO_LEVELS, { '2_1': 4, 'L1/5_3': 4 });
-    streamer.update('Earth', overLevel1(5, 3), measure, 0);
+    const measure = measureLevels(TWO_LEVELS, { '2_1': 2 * CHILD_WANT_PX });
+    for (let f = 0; f < 6; f++) streamer.update('Earth', overLevel1(5, 3), measure, f * 16);
     const before = streamer.stats().bodies.Earth.resident.slice().sort();
-    expect(before).toEqual(['2_1', 'L1/5_3']);
+    expect(before).toEqual(['2_1', 'L1/4_2', 'L1/4_3', 'L1/5_2', 'L1/5_3']);
     streamer.dropAll();
     let s = streamer.stats();
     expect(s.resident).toBe(0);
     expect(s.residentBytes).toBe(0);
     expect(s.reserved).toBe(0);
-    streamer.update('Earth', overLevel1(5, 3), measure, 16);
+    for (let f = 6; f < 12; f++) streamer.update('Earth', overLevel1(5, 3), measure, f * 16);
     s = streamer.stats();
     expect(s.bodies.Earth.resident.slice().sort()).toEqual(before);
-    expect(s.residentBytes).toBe(2 * EARTH_SET_BYTES);
+    expect(s.residentBytes).toBe(5 * EARTH_SET_BYTES);
   });
 
   it('asks the measure about each sector at its point nearest the camera, not its centre', () => {

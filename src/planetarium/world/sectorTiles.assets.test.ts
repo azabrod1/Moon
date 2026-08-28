@@ -10,7 +10,7 @@
 import { describe, it, expect } from 'vitest';
 import { readFileSync, readdirSync, existsSync } from 'node:fs';
 import { resolve } from 'node:path';
-import { SECTOR_GRID_16K, SECTOR_TILE, dataCropLayout } from './sectorGrid';
+import { SECTOR_GRID_16K, dataCropLayout, type SectorGrid } from './sectorGrid';
 import { SECTOR_SETS } from './sectorStreamer';
 import { PLANET_TEXTURE_FILES } from '../PlanetFactory';
 
@@ -41,8 +41,8 @@ function tileDir(key: string, tier: string): string {
   return resolve(TEXTURES, 'tiles', key, tier);
 }
 
-function expectFullSet(dir: string, size: { width: number; height: number }) {
-  const { cols, rows } = SECTOR_GRID_16K;
+function expectFullSet(dir: string, size: { width: number; height: number }, grid: SectorGrid = SECTOR_GRID_16K) {
+  const { cols, rows } = grid;
   const files = readdirSync(dir).filter((f) => f.endsWith('.webp')).sort();
   const expected: string[] = [];
   for (let r = 0; r < rows; r++) for (let c = 0; c < cols; c++) expected.push(`${c}_${r}.webp`);
@@ -52,9 +52,21 @@ function expectFullSet(dir: string, size: { width: number; height: number }) {
 
 describe('shipped sector tile sets', () => {
   for (const [body, set] of Object.entries(SECTOR_SETS)) {
-    it(`${body}: 32 colour tiles at the 2048² tile layout`, () => {
-      expectFullSet(tileDir(set.colorKey, '16k'), { width: SECTOR_TILE.width, height: SECTOR_TILE.height });
-    });
+    for (const [level, spec] of set.levels.entries()) {
+      it(`${body}: level ${level} ships a full ${spec.grid.cols}×${spec.grid.rows} set of ${spec.layout.width}² tiles`, () => {
+        // Every level a spec declares must be on disk in full: a missing tile
+        // is a soft patch of surface, which nothing else would report.
+        expectFullSet(
+          tileDir(set.colorKey, spec.tier),
+          { width: spec.layout.width, height: spec.layout.height },
+          spec.grid,
+        );
+        // The source width the finer level's demand is read against is the
+        // one the tiles were actually cut from.
+        expect(spec.grid.cols * (spec.layout.width - 2 * spec.layout.gutterX) / spec.layout.spanU)
+          .toBe(spec.sourceWidth);
+      });
+    }
 
     for (const [slot, crop] of Object.entries(set.crops)) {
       it(`${body}: ${slot} crops match the layout cut from the base map's real width`, () => {
@@ -78,7 +90,9 @@ describe('shipped sector tile sets', () => {
     expect(SECTOR_SETS.Mars.crops.normalMap!.key).toBe(stem(PLANET_TEXTURE_FILES.marsNormal));
     expect(SECTOR_SETS.Moon.crops.normalMap!.key).toBe(stem(PLANET_TEXTURE_FILES.moonNormal));
     for (const [body, set] of Object.entries(SECTOR_SETS)) {
-      expect(existsSync(tileDir(set.colorKey, '16k')), `${body}: no 16k folder for ${set.colorKey}`).toBe(true);
+      for (const spec of set.levels) {
+        expect(existsSync(tileDir(set.colorKey, spec.tier)), `${body}: no ${spec.tier} folder for ${set.colorKey}`).toBe(true);
+      }
     }
   });
 

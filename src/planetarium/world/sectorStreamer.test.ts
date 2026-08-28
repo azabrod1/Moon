@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
 import * as THREE from 'three';
 import {
   SECTOR_ADMIT_MARGIN,
@@ -13,6 +13,7 @@ import {
   SECTOR_WANT_TEXEL_PX,
   SECTOR_WANT_TEXEL_PX_TOUCH,
   SectorStreamer,
+  resetTileFetchNoticeForTests,
   type SectorBodyHandle,
   type SectorMeasure,
 } from './sectorStreamer';
@@ -369,6 +370,26 @@ describe('SectorStreamer', () => {
     expect(loader.requests).toEqual([]); // cooling down, not hammering
     streamer.update('Mars', cameraOver(2, 1), measureOf({ '2_1': 2 }), 32 + SECTOR_RETRY_MS);
     expect(loader.requests.map((r) => r.url)).toEqual([expect.stringMatching(/tiles\/mars-normal\.v2\/2k\.[0-9a-f]{8}\/2_1\.webp$/)]);
+  });
+
+  it('says in the console that a tile did not load — once, in dev', () => {
+    // A tile failure is invisible by design: the base map carries on. A wrong
+    // tile origin or a set that was never published would otherwise look like
+    // nothing more than a slightly soft planet.
+    resetTileFetchNoticeForTests();
+    const warned = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      streamer.update('Earth', cameraOver(2, 1), measureOf({ '2_1': 2 }), 0);
+      loader.failAll();
+      expect(warned).toHaveBeenCalledTimes(1);
+      expect(String(warned.mock.calls[0][0])).toMatch(/tiles\/earth-day\.v2\/16k\.[0-9a-f]{8}\/2_1\.webp/);
+      // Every later failure is the same news; one line is the whole point.
+      streamer.update('Earth', cameraOver(3, 1), measureOf({ '3_1': 2 }), 4 * SECTOR_RETRY_MS);
+      loader.failAll();
+      expect(warned).toHaveBeenCalledTimes(1);
+    } finally {
+      warned.mockRestore();
+    }
   });
 
   it('abandons a reload whose set the base no longer has, keeping the resident', () => {

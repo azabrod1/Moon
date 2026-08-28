@@ -28,7 +28,31 @@ export function resolveTextureUrl(file: string, tier: TextureTier): string {
   return tier === '2k' ? `${TEXTURE_BASE}${file}` : `${TEXTURE_BASE}${tier}/${file}`;
 }
 
-/** Sector tile sets live under
+/**
+ * Where tile sets are fetched from — the ONE place that reads it. Empty (the
+ * default) means the app's own origin, exactly like the rest of textures/.
+ * `VITE_TILE_ORIGIN` at build time points tiles, and only tiles, at another
+ * host: a URL prefix including whatever path the host mirrors them under
+ * ('https://cdn.example/gh/user/moon-tiles@v1'), with the same
+ * textures/tiles/… layout beneath it. tools/swPlugin.mjs reads the same
+ * variable to build the worker's allowlist, so the two cannot disagree about
+ * where tiles live.
+ *
+ * `?tiles=<origin>` overrides it in dev, so a set that has not been published
+ * yet can be served from a local checkout. It moves only the app's fetches:
+ * the worker's allowlist is baked at build time and this cannot widen it (and
+ * the worker does not run in dev at all).
+ */
+const TILE_BASE = ((): string => {
+  const configured = import.meta.env.VITE_TILE_ORIGIN ?? '';
+  const override = import.meta.env.DEV && typeof location !== 'undefined'
+    ? new URLSearchParams(location.search).get('tiles')
+    : null;
+  const origin = (override ?? configured).trim().replace(/\/+$/, '');
+  return origin ? `${origin}/` : import.meta.env.BASE_URL;
+})();
+
+/** Where one tile sits under a tile base:
  *  textures/tiles/<key>/<tier>.<setHash8>/<c>_<r>.webp — the key is the file
  *  stem of the map the set was cut from ('earth-day.v2'), a colour set's tier
  *  names its source resolution ('16k'), a data crop's the base map it was cut
@@ -42,8 +66,12 @@ export function resolveTextureUrl(file: string, tier: TextureTier): string {
  *  new path by construction and no cache, near or far, can pair an old body
  *  with new code. The stem is the same rule one level up: a re-based base map
  *  ships under a new name and takes its tiles with it. */
+export function tileSetPath(key: string, tier: string, hash: string): string {
+  return `textures/tiles/${key}/${tier}.${hash}/`;
+}
+
 export function resolveTileUrl(key: string, tier: string, hash: string, c: number, r: number): string {
-  return `${TEXTURE_BASE}tiles/${key}/${tier}.${hash}/${c}_${r}.webp`;
+  return `${TILE_BASE}${tileSetPath(key, tier, hash)}${c}_${r}.webp`;
 }
 
 /** The published hash of a shipped set. Throws rather than compose a URL that

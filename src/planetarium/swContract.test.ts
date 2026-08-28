@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import template from '../../tools/sw.template.js?raw';
+import { resolveTileUrl, tileSetPath } from './world/texturePolicy';
 
 // The service worker ships as generated JS the compiler never sees
 // (tools/swPlugin.mjs injects the manifest into tools/sw.template.js at
@@ -19,9 +20,16 @@ const ORIGIN = 'https://site.test';
 const TILE_ORIGIN = 'https://tiles.test';
 const MOON_PATH = '/Moon/textures/moon.webp';
 const STAR_PATH = '/Moon/stardata/bright-stars.v1.bin';
-// A content-addressed set folder: <tier>.<hash of the set's own files>.
-const TILE_SET_PREFIX = `${TILE_ORIGIN}/textures/tiles/earth-day.v2/16k.1a2b3c4d/`;
-const TILE_URL = `${TILE_SET_PREFIX}2_1.webp`;
+// Built the way a build with VITE_TILE_ORIGIN set builds them: the allowlist
+// entry is the app's own set path under the tile origin, and the request is
+// the app's own tile URL under the same. The two formulas live apart — the
+// app's in texturePolicy, the worker's prefix match in the template — so
+// pinning them here is what stops one from drifting into serving nothing.
+const TILE_SET = { key: 'earth-day.v2', tier: '16k', hash: '1a2b3c4d' };
+const TILE_SET_PREFIX = `${TILE_ORIGIN}/${tileSetPath(TILE_SET.key, TILE_SET.tier, TILE_SET.hash)}`;
+const tileUrlOn = (hash: string, c = 2, r = 1) =>
+  TILE_ORIGIN + resolveTileUrl(TILE_SET.key, TILE_SET.tier, hash, c, r);
+const TILE_URL = tileUrlOn(TILE_SET.hash);
 const MOON_BYTES = new TextEncoder().encode('moon-pixels');
 const STAR_BYTES = new TextEncoder().encode('star-records');
 const TILE_BYTES = new TextEncoder().encode('tile-pixels');
@@ -214,6 +222,13 @@ describe('service worker template: content-addressed tile sets', () => {
     expect(harness.netFetch).toHaveBeenCalledTimes(1);
   });
 
+  it('allows exactly the URL the app builds for a set it names', () => {
+    // The allowlist entry and the request come from two different pieces of
+    // code — the build's prefix and the app's resolveTileUrl — and a drift
+    // between them is a worker that quietly caches nothing.
+    expect(TILE_URL).toBe(`${TILE_SET_PREFIX}2_1.webp`);
+  });
+
   it('ignores a cross-origin tile whose origin is not allowlisted', () => {
     const harness = bootWorker(MANIFEST, [], healthyNetwork(), { origins: [], sets: [TILE_SET_PREFIX] });
     const { responded } = dispatchFetch(harness, new Request(TILE_URL));
@@ -224,7 +239,7 @@ describe('service worker template: content-addressed tile sets', () => {
   it('ignores anything on an allowlisted origin that is not one of the named sets', () => {
     const harness = bootWorker(MANIFEST, [], healthyNetwork(), tileHost);
     const outside = [
-      `${TILE_ORIGIN}/textures/tiles/earth-day.v2/16k.deadbeef/2_1.webp`, // a set the app no longer names
+      tileUrlOn('deadbeef'), // a set the app no longer names
       `${TILE_ORIGIN}/index.html`,
       `${TILE_ORIGIN}/textures/moon.webp`,
       `${TILE_SET_PREFIX}2_1.webp?v=2`, // a query would alias one cached body
@@ -261,8 +276,8 @@ describe('service worker template: content-addressed tile sets', () => {
 
   it('activate keeps tiles of the sets it still names and prunes the rest', async () => {
     const harness = bootWorker(MANIFEST, [], healthyNetwork(), tileHost);
-    const dropped = `${TILE_ORIGIN}/textures/tiles/earth-day.v2/16k.deadbeef/2_1.webp`;
-    const elsewhere = 'https://other.test/textures/tiles/earth-day.v2/16k.1a2b3c4d/2_1.webp';
+    const dropped = tileUrlOn('deadbeef');
+    const elsewhere = 'https://other.test' + resolveTileUrl(TILE_SET.key, TILE_SET.tier, TILE_SET.hash, 2, 1);
     for (const href of [TILE_URL, dropped, elsewhere]) {
       harness.store.set(href, { body: TILE_BYTES.slice(), type: 'image/webp' });
     }

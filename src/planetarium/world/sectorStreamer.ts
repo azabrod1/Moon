@@ -106,6 +106,24 @@ function tileUrlOf(set: SectorTileSet, sector: Sector): string {
   return resolveTileUrl(set.key, set.tier, set.hash, sector.c, sector.r);
 }
 
+let tileFetchFailureNoticed = false;
+
+/** Tiles fail open to the base map by design, which means a tile origin
+ *  pointing at nothing, a set that was never published, or a host outage all
+ *  look the same as a body that is simply far away — softer, with nothing in
+ *  the console. Say it once, in dev, with the URL that failed. */
+function noteTileFetchFailure(url: string, err: unknown): void {
+  if (!import.meta.env.DEV || tileFetchFailureNoticed) return;
+  tileFetchFailureNoticed = true;
+  const reason = err instanceof Error ? err.message : String(err);
+  console.warn(`Sector tile did not load, surfaces stay on the base map: ${url} (${reason})`);
+}
+
+/** Test seam: forget that the tile-failure notice was already printed. */
+export function resetTileFetchNoticeForTests(): void {
+  tileFetchFailureNoticed = false;
+}
+
 /** The bodies that ship a sector set, by catalog name. Colour tiles are the
  *  16K sets; every crop is the base map it names, sector-cut with the same
  *  gutter (tools/gen-tiles.mjs writes both).
@@ -712,7 +730,10 @@ export class SectorStreamer {
             if (loading.pending === 0) this.materialize(body, slot);
           });
         },
-        () => fail(),
+        (err) => {
+          if (stillWanted()) noteTileFetchFailure(m.url, err);
+          fail();
+        },
         stillWanted,
         loading.abort.signal,
       );

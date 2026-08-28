@@ -20,9 +20,10 @@
  * Sector tile sets are injected separately from the manifest: their folder
  * names carry a hash of their own contents, so the worker caches them with
  * no digest and no expiry, and an off-origin set needs its origin on an
- * allowlist before the worker will touch it at all. Both lists are emitted
- * here so there is one build-time source for what the app fetches and what
- * the worker is allowed to keep.
+ * allowlist before the worker will touch it at all. The sets come from the
+ * table gen-tiles generates and the origin from VITE_TILE_ORIGIN — the same
+ * two sources the app resolves its tile URLs through, so the worker cannot
+ * end up allowing a different host or a different set than the app fetches.
  */
 import { createHash } from 'node:crypto';
 import { readdirSync, readFileSync, statSync, writeFileSync, existsSync } from 'node:fs';
@@ -45,6 +46,20 @@ function walkFiles(dir) {
     else out.push(full);
   }
   return out;
+}
+
+/** Where tiles are served from, the same VITE_TILE_ORIGIN the app reads
+ *  (world/texturePolicy.ts) — one variable, so the worker's allowlist and the
+ *  app's fetches cannot point at different hosts. Empty is the app's origin. */
+function tileOrigin() {
+  const raw = (process.env.VITE_TILE_ORIGIN ?? '').trim().replace(/\/+$/, '');
+  if (!raw) return '';
+  try {
+    new URL(raw);
+  } catch {
+    throw new Error(`sw: VITE_TILE_ORIGIN "${raw}" is not an absolute URL`);
+  }
+  return raw;
 }
 
 /** The tile sets the app names, read out of the table gen-tiles generates —
@@ -131,17 +146,24 @@ export default function swPlugin() {
       // precache checks above.
       const sets = generatedTileSets();
       if (sets.length === 0) throw new Error('sw: the generated tile-set table names no sets');
-      for (const set of sets) {
-        // A set folder named by a hash the tiles on disk don't have is a
-        // 404 per tile at runtime and a globe that just looks soft.
-        if (!existsSync(path.join(outDir, set.dir))) {
-          throw new Error(`sw: tile set ${set.id} is not in dist under ${set.dir}`);
+      // Tiles fail open to the base map, so a build that names sets nothing
+      // will serve produces a plausible-looking app with soft hero bodies and
+      // no error anywhere. Fail here instead.
+      const origin = tileOrigin();
+      if (!origin) {
+        for (const set of sets) {
+          if (!existsSync(path.join(outDir, set.dir))) {
+            throw new Error(
+              `sw: tile set ${set.id} is not in dist under ${set.dir} and VITE_TILE_ORIGIN is unset — ` +
+                'ship the tiles or point the build at the host that has them',
+            );
+          }
         }
       }
-      const tileSets = sets.map((set) => base + set.dir);
-      // Off-origin tile hosts, empty while the tiles ship with the app: the
-      // worker touches a cross-origin request only for an origin named here.
-      const tileOrigins = [];
+      const tileSets = sets.map((set) => (origin ? `${origin}/` : base) + set.dir);
+      // The worker touches a cross-origin request only for an origin named
+      // here; empty means tiles are the app's own, like every other texture.
+      const tileOrigins = origin ? [new URL(origin).origin] : [];
 
       const template = readFileSync(TEMPLATE_PATH, 'utf8');
       const marker = '/* __INJECT_MANIFEST__ */';

@@ -138,7 +138,7 @@ import {
   type SilhouetteTarget,
   type SilhouetteAdvanceOptions,
 } from './world/shadeSmoothing';
-import { debugError, debugWarn } from '../shared/debug';
+import { debugError, debugLog, debugWarn } from '../shared/debug';
 import { cssHexColor } from '../shared/color';
 import { markerQuadPx } from './planetMarkers';
 import { CRUISE_TAP_FLOORS, SYSTEM_TAP_FLOORS, stepThrottleTap, systemSpeedFactor, type SystemSpeedResult } from './throttlePolicy';
@@ -961,6 +961,15 @@ export class PlanetariumMode {
    *  Null when disabled (`?sectors=0`) or before the system exists. */
   private sectors: SectorStreamer | null = null;
   private readonly sectorsEnabled = new URLSearchParams(location.search).get('sectors') !== '0';
+  /** The memory readout under `?debug=1` (reportMemoryDebug). The overlay is
+   *  the only console a phone has without a cable, so the line has to be rare
+   *  enough to read: one every 5 s, or as soon as a figure moves by more than
+   *  a twentieth. */
+  private static readonly MEMORY_DEBUG_PERIOD_MS = 5_000;
+  private static readonly MEMORY_DEBUG_MOVE = 0.05;
+  private memoryDebugAtMs = Number.NEGATIVE_INFINITY;
+  private memoryDebugLast: number[] | null = null;
+  private memoryDebugBootReported = false;
   /** Latched from webglcontextlost to webglcontextrestored: a GL call on a
    *  lost context silently succeeds, so an upload "warmed" in that window is
    *  a texture that never reached the GPU — nothing may be admitted until
@@ -2794,6 +2803,129 @@ export class PlanetariumMode {
     return bytes;
   }
 
+  /** GPU bytes one texture holds, from the image that is really there: its
+   *  texel count times four bytes — or one, for a GPU-compressed upload —
+   *  plus a third for the mip chain when it has one. */
+  private static textureGpuBytes(tex: THREE.Texture): number {
+    const compressed = tex as THREE.CompressedTexture;
+    if (compressed.isCompressedTexture) {
+      let bytes = 0;
+      for (const level of compressed.mipmaps ?? []) bytes += (level as { data?: { byteLength?: number } })?.data?.byteLength ?? 0;
+      if (bytes > 0) return bytes;
+    }
+    const img = tex.image as { width?: unknown; height?: unknown } | undefined;
+    const w = img && typeof img.width === 'number' ? img.width : 0;
+    const h = img && typeof img.height === 'number' ? img.height : 0;
+    if (!(w > 0 && h > 0)) return 0;
+    const mipped = tex.generateMipmaps !== false || (tex.mipmaps?.length ?? 0) > 1;
+    return Math.round(w * h * 4 * (mipped ? 4 / 3 : 1));
+  }
+
+  /** GPU bytes the maps every device carries hold: the first-paint texture of
+   *  every body, its bump / roughness / night / cloud maps, the rings. The
+   *  ladder's own figure (liveGlobalMapBytes) deliberately leaves these out —
+   *  they are not optional — which is exactly why the envelope has to be set
+   *  above them, and why the number is worth printing once. Deduplicated by
+   *  texture: a bump map aliased onto a colour map is one allocation. */
+  private bootTextureGpuBytes(): number {
+    if (!this.solarSystem) return 0;
+    const seen = new Set<string>();
+    let bytes = 0;
+    const add = (value: unknown): void => {
+      const tex = value as THREE.Texture | null;
+      if (!tex || !tex.isTexture || seen.has(tex.uuid)) return;
+      seen.add(tex.uuid);
+      bytes += PlanetariumMode.textureGpuBytes(tex);
+    };
+    const walk = (root: THREE.Object3D): void => {
+      root.traverse((o) => {
+        const material = (o as THREE.Mesh).material;
+        for (const mat of Array.isArray(material) ? material : material ? [material] : []) {
+          for (const value of Object.values(mat as unknown as Record<string, unknown>)) add(value);
+          const uniforms = (mat as THREE.ShaderMaterial).uniforms;
+          if (uniforms) for (const u of Object.values(uniforms)) add(u?.value);
+        }
+      });
+    };
+    walk(this.solarSystem.sun);
+    for (const planet of this.solarSystem.planets) walk(planet.group);
+    for (const moons of this.planetMoons.values()) for (const m of moons) walk(m.mesh);
+    return bytes;
+  }
+
+  /** GPU bytes the frame itself holds at this device's pixel ratio: the
+   *  drawing buffer, and — when the world renders through the composer — its
+   *  two half-float targets plus the bloom chain (a half-resolution bright
+   *  pass and five horizontal/vertical pairs halving from there). An estimate
+   *  of a chain main.ts owns, printed for the same reason as the boot maps:
+   *  a 1170x2532 phone at DPR 3 pays it before a single map loads.
+   */
+  private renderTargetGpuBytes(): number {
+    const size = this.renderer.getDrawingBufferSize(new THREE.Vector2());
+    const w = Math.max(1, Math.round(size.x));
+    const h = Math.max(1, Math.round(size.y));
+    // The default framebuffer: colour, and depth+stencil beside it.
+    let bytes = w * h * 4 + w * h * 4;
+    if (!this.rendersThroughComposer()) return bytes;
+    bytes += 2 * w * h * 8;
+    if (!this.useBloom) return bytes;
+    let bw = Math.round(w / 2);
+    let bh = Math.round(h / 2);
+    bytes += bw * bh * 8;
+    for (let i = 0; i < 5; i++) {
+      bytes += 2 * bw * bh * 8;
+      bw = Math.round(bw / 2);
+      bh = Math.round(bh / 2);
+    }
+    return bytes;
+  }
+
+  /** The `?debug=1` memory line: what the ladder and the tiles hold against
+   *  the envelope they share, on the device's own screen. Once at boot it
+   *  also prints the two figures the envelope does NOT count — the boot maps
+   *  and the render targets — because an envelope is only honest next to the
+   *  fixed load underneath it.
+   */
+  private reportMemoryDebug(nowMs: number): void {
+    if (!window.__dbgEnabled) return;
+    const mib = (bytes: number): number => Math.round((bytes / (1024 * 1024)) * 10) / 10;
+    if (!this.memoryDebugBootReported && this.solarSystem) {
+      this.memoryDebugBootReported = true;
+      const size = this.renderer.getDrawingBufferSize(new THREE.Vector2());
+      debugLog('Memory at boot', {
+        bootMapsMiB: mib(this.bootTextureGpuBytes()),
+        renderTargetsMiB: mib(this.renderTargetGpuBytes()),
+        drawingBuffer: `${Math.round(size.x)}x${Math.round(size.y)}`,
+        dpr: Math.round(this.renderer.getPixelRatio() * 100) / 100,
+      });
+    }
+    const stats = this.sectors?.stats() ?? null;
+    const globalBytes = this.liveGlobalMapBytes();
+    const figures = stats
+      ? [globalBytes, stats.residentBytes, stats.reserved, stats.budget, stats.envelope]
+      : [globalBytes];
+    const previous = this.memoryDebugLast;
+    const moved = !previous || previous.length !== figures.length ||
+      figures.some((f, i) => Math.abs(f - previous[i]) > PlanetariumMode.MEMORY_DEBUG_MOVE * Math.max(1, previous[i]));
+    if (!moved && nowMs - this.memoryDebugAtMs < PlanetariumMode.MEMORY_DEBUG_PERIOD_MS) return;
+    this.memoryDebugAtMs = nowMs;
+    this.memoryDebugLast = figures;
+    // The class the numbers came from. Until the device classifier exists
+    // this is the legacy touch predicate under its own name, so the line
+    // reads the same before and after that seam moves.
+    const deviceClass = this.touchFirstDevice() ? 'legacy-touch' : 'legacy-desktop';
+    debugLog('Memory', stats
+      ? {
+        class: deviceClass,
+        globeMapsMiB: mib(globalBytes),
+        tilesMiB: mib(stats.residentBytes),
+        reservedMiB: mib(stats.reserved),
+        budgetMiB: mib(stats.budget),
+        envelopeMiB: mib(stats.envelope),
+      }
+      : { class: deviceClass, globeMapsMiB: mib(globalBytes), tiles: 'off' });
+  }
+
   /** Dev bridge: what the streamer holds right now. */
   devSectorStats(): SectorStats | null {
     return this.sectors?.stats() ?? null;
@@ -3215,6 +3347,7 @@ export class PlanetariumMode {
       // budget and the load deadlines stay current while the measuring stops.
       this.maintainSectorStreaming();
     }
+    this.reportMemoryDebug(performance.now());
 
     // The HTML label/marker projections below read camera.matrixWorldInverse,
     // which the renderer refreshes only at render time — after this update().

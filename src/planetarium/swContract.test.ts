@@ -475,6 +475,22 @@ describe('service worker build plugin: tile origin and allowlist', () => {
     }
   });
 
+  it('never names a root-level HTML file, so a page like probe.html stays outside it', () => {
+    // The worker caches data directories only and precaches what the boot
+    // warm script names. A page dropped into public/ — the GPU memory probe
+    // is the one that exists — must therefore be invisible to it: cached
+    // HTML is how an app goes stale through its own worker.
+    writeFileSync(join(dist, 'probe.html'), '<!doctype html><title>probe</title>');
+    const sw = runPlugin({ VITE_TILE_ORIGIN: `${TILE_HOST}/` });
+    const manifest = injected(sw, 'MANIFEST') as Record<string, string>;
+    const precache = injected(sw, 'PRECACHE') as string[];
+    for (const pathname of [...Object.keys(manifest), ...precache]) {
+      expect(pathname.endsWith('.html'), `${pathname} is HTML`).toBe(false);
+    }
+    expect(manifest['/probe.html']).toBeUndefined();
+    expect(precache).not.toContain('/probe.html');
+  });
+
   it('allows nothing off-origin when no tile origin is configured', () => {
     // Tiles are then ordinary same-origin data files — but this dist has no
     // tile folders, which is the case the build has to refuse rather than

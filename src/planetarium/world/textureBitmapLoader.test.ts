@@ -47,6 +47,25 @@ describe('loadStreamedTexture', () => {
     expect(onLoad).toHaveBeenCalledWith(tex);
   });
 
+  it('hands the caller\'s abort signal to the fetch, and never starts one already aborted', async () => {
+    setBitmapProbeForTests(true);
+    const fetchSpy = vi.fn(async () => ({ ok: true, blob: async () => new Blob() }));
+    vi.stubGlobal('fetch', fetchSpy);
+    vi.stubGlobal('createImageBitmap', vi.fn(async () => fakeBitmap()));
+    const live = new AbortController();
+    loadStreamedTexture('textures/maps/c.jpg', vi.fn(), vi.fn(), undefined, live.signal);
+    await flush();
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+    expect((fetchSpy.mock.calls[0] as unknown[])[1]).toEqual({ signal: live.signal });
+    const gone = new AbortController();
+    gone.abort();
+    const onError = vi.fn();
+    loadStreamedTexture('textures/maps/d.jpg', vi.fn(), onError, undefined, gone.signal);
+    await flush();
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+    expect(onError).toHaveBeenCalledTimes(1);
+  });
+
   it('delivers a pre-flipped bitmap texture when the probe passes', async () => {
     setBitmapProbeForTests(true);
     const bitmap = fakeBitmap();

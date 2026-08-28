@@ -155,6 +155,10 @@ export const SECTOR_ADMIT_MARGIN = 1.25;
 /** Cooldown after a failed sector load, doubling per consecutive failure. */
 export const SECTOR_RETRY_MS = 8_000;
 const SECTOR_RETRY_MAX_DOUBLINGS = 4;
+/** A load older than this is given up on and its fetch aborted: two hung
+ *  requests would otherwise hold the desktop in-flight allowance for the
+ *  session. The same figure as the tier ladder's attempt timeout. */
+export const SECTOR_ATTEMPT_TIMEOUT_MS = 60_000;
 
 /** Segments per 45° sector: 32 × 8 = the globe's 256-segment fine grid. */
 export const SECTOR_SEGMENTS = 32;
@@ -225,6 +229,9 @@ interface SectorSlot {
 
 interface SectorLoad {
   signature: string;
+  startedAtMs: number;
+  /** Ends the fetches when the load is abandoned for any reason. */
+  abort: AbortController;
   pending: number;
   loaded: Partial<Record<MapName, THREE.Texture>>;
   owned: THREE.Texture[];
@@ -439,6 +446,7 @@ export class SectorStreamer {
       slot.score = score;
       slot.wanted = fetchable && texelPx > SECTOR_WANT_TEXEL_PX;
       slot.keep = texelPx > SECTOR_RELEASE_TEXEL_PX;
+      if (slot.loading && nowMs - slot.loading.startedAtMs > SECTOR_ATTEMPT_TIMEOUT_MS) this.failLoad(slot);
       if (slot.state !== 'idle' && !slot.keep) this.release(slot);
       // A load for a set the base no longer has is abandoned: a fresh
       // admission starts over (nothing of it was showing), a resident's
@@ -575,7 +583,9 @@ export class SectorStreamer {
         layout: dataCropLayout(this.grid, crop.baseWidth, crop.spanU ?? 1),
       });
     }
-    const loading: SectorLoad = { signature, pending: 0, loaded: {}, owned: [] };
+    const loading: SectorLoad = {
+      signature, startedAtMs: this.lastNowMs, abort: new AbortController(), pending: 0, loaded: {}, owned: [],
+    };
     slot.loading = loading;
     // A reload keeps every map the resident already draws that the new set
     // still names; only the rest is fetched.
@@ -592,18 +602,7 @@ export class SectorStreamer {
     }
 
     const fail = () => {
-      if (!stillWanted()) return;
-      // The attempt is over BEFORE its textures are disposed: the warm pump's
-      // dispose hook reports 'disposed' synchronously from inside
-      // tex.dispose(), and that report must find nothing left to fail.
-      // A resident whose reload failed keeps drawing its old set.
-      if (slot.state === 'loading') slot.state = 'idle';
-      slot.gen = ++this.generation;
-      this.disposeLoaded(slot);
-      slot.loading = undefined;
-      slot.failStreak += 1;
-      slot.retryAtMs =
-        this.lastNowMs + SECTOR_RETRY_MS * 2 ** Math.min(slot.failStreak - 1, SECTOR_RETRY_MAX_DOUBLINGS);
+      if (stillWanted()) this.failLoad(slot);
     };
 
     for (const m of toFetch) {
@@ -636,8 +635,26 @@ export class SectorStreamer {
         },
         () => fail(),
         stillWanted,
+        loading.abort.signal,
       );
     }
+  }
+
+  /** The load in flight is over — an error, a warm that could not complete,
+   *  the attempt timeout. A fresh admission goes back to idle; a resident
+   *  whose reload failed keeps drawing its old set. Either retries after a
+   *  cooldown that doubles per consecutive failure. */
+  private failLoad(slot: SectorSlot): void {
+    // The attempt is over BEFORE its textures are disposed: the warm pump's
+    // dispose hook reports 'disposed' synchronously from inside
+    // tex.dispose(), and that report must find nothing left to fail.
+    if (slot.state === 'loading') slot.state = 'idle';
+    slot.gen = ++this.generation;
+    this.disposeLoaded(slot);
+    slot.loading = undefined;
+    slot.failStreak += 1;
+    slot.retryAtMs =
+      this.lastNowMs + SECTOR_RETRY_MS * 2 ** Math.min(slot.failStreak - 1, SECTOR_RETRY_MAX_DOUBLINGS);
   }
 
   /** Put the landed set on the globe. For a reload this is the swap: the new
@@ -687,9 +704,11 @@ export class SectorStreamer {
     slot.loading = undefined;
   }
 
+  /** End a load's fetches and dispose what it decoded so far. */
   private disposeLoaded(slot: SectorSlot): void {
     const loading = slot.loading;
     if (!loading) return;
+    loading.abort.abort();
     // Detach first: a dispose hook may re-enter this slot mid-loop.
     const owned = loading.owned;
     loading.owned = [];

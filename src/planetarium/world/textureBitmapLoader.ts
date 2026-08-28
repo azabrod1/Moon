@@ -40,6 +40,11 @@ export type TextureLoad = (
    *  path never needed this — its decode was always deferred to the apply
    *  callback, behind the caller's own staleness guard. */
   stillWanted?: () => boolean,
+  /** Aborts the fetch itself. A caller that stops wanting a texture while
+   *  its bytes are still in the air (a sector released mid-pan) ends the
+   *  transfer here rather than letting it complete for nobody. The image
+   *  path cannot abort; it only declines the decode. */
+  signal?: AbortSignal,
 ) => void;
 
 /** Thrown for transport failures — the cases where re-fetching through
@@ -100,10 +105,10 @@ function bitmapUploadUsable(): Promise<boolean> {
 
 /** Fetch a map as an ImageBitmap with the flip baked in, wrapped in a texture
  *  that knows not to flip again. */
-async function loadBitmapTexture(url: string, stillWanted?: () => boolean): Promise<THREE.Texture> {
+async function loadBitmapTexture(url: string, stillWanted?: () => boolean, signal?: AbortSignal): Promise<THREE.Texture> {
   let blob: Blob;
   try {
-    const response = await (takeBootWarmResponse(url) ?? fetch(url));
+    const response = await (takeBootWarmResponse(url) ?? fetch(url, { signal }));
     if (!response.ok) throw new Error(`HTTP ${response.status} for ${url}`);
     blob = await response.blob();
   } catch (err) {
@@ -142,7 +147,7 @@ async function loadBitmapTexture(url: string, stillWanted?: () => boolean): Prom
  * `textureLoader` otherwise. The seam both the durable fetch and the tier
  * ladder call.
  */
-export const loadStreamedTexture: TextureLoad = (url, onLoad, onError, stillWanted) => {
+export const loadStreamedTexture: TextureLoad = (url, onLoad, onError, stillWanted, signal) => {
   // No API means no probe to wait for: fall back synchronously, preserving
   // the bare-loader timing (three's own loader also dispatches sync). This is
   // also the path the DOM-free tests drive their injected loaders through.
@@ -153,7 +158,7 @@ export const loadStreamedTexture: TextureLoad = (url, onLoad, onError, stillWant
   bitmapUploadUsable().then((usable) => {
     // Interest can lapse while the one-time probe is still resolving; don't
     // even start the fetch for an attempt already superseded.
-    if (stillWanted && !stillWanted()) {
+    if ((stillWanted && !stillWanted()) || signal?.aborted) {
       onError(new TextureTransportError(`superseded: ${url}`));
       return;
     }
@@ -161,7 +166,7 @@ export const loadStreamedTexture: TextureLoad = (url, onLoad, onError, stillWant
       textureLoader.load(url, onLoad, undefined, onError);
       return;
     }
-    loadBitmapTexture(url, stillWanted).then(onLoad, (err) => {
+    loadBitmapTexture(url, stillWanted, signal).then(onLoad, (err) => {
       if (err instanceof TextureTransportError) onError(err);
       // A decode failure spends one fallback load — but not for a caller
       // whose interest lapsed mid-decode: that would re-fetch for nobody.

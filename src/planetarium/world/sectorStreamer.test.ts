@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach } from 'vitest';
 import * as THREE from 'three';
 import {
   SECTOR_ADMIT_MARGIN,
+  SECTOR_ATTEMPT_TIMEOUT_MS,
   SECTOR_INFLIGHT_CAP_DESKTOP,
   SECTOR_RELEASE_TEXEL_PX,
   SECTOR_RESIDENT_CAP_DESKTOP,
@@ -21,10 +22,10 @@ import type { WarmOutcome } from './textureWarmer';
 /** A scripted loader: records every URL, and lets a test resolve or fail
  *  each one later (or synchronously with `auto`). */
 class FakeLoader {
-  requests: Array<{ url: string; onLoad: (t: THREE.Texture) => void; onError: (e: unknown) => void; stillWanted?: () => boolean }> = [];
+  requests: Array<{ url: string; onLoad: (t: THREE.Texture) => void; onError: (e: unknown) => void; stillWanted?: () => boolean; signal?: AbortSignal }> = [];
   auto = false;
-  load = (url: string, onLoad: (t: THREE.Texture) => void, onError: (e: unknown) => void, stillWanted?: () => boolean) => {
-    this.requests.push({ url, onLoad, onError, stillWanted });
+  load = (url: string, onLoad: (t: THREE.Texture) => void, onError: (e: unknown) => void, stillWanted?: () => boolean, signal?: AbortSignal) => {
+    this.requests.push({ url, onLoad, onError, stillWanted, signal });
     if (this.auto) onLoad(new THREE.Texture());
   };
   resolveAll(): number {
@@ -366,6 +367,35 @@ describe('SectorStreamer', () => {
     expect(sectorMat(earth).map).toBe(colourTile);
     expect(bumpGone()).toBe(true);
     expect(streamer.stats().bodies.Earth.resident).toEqual(['2_1']);
+  });
+
+  it('aborts the fetches of a sector released while they are in the air', () => {
+    streamer.update('Earth', cameraOver(2, 1), measureOf({ '2_1': 2 }), 0);
+    expect(loader.requests.length).toBeGreaterThan(0);
+    expect(loader.requests.every((r) => r.signal && !r.signal.aborted)).toBe(true);
+    streamer.update('Earth', cameraOver(2, 1), measureOf({ '2_1': 0.1 }), 16);
+    expect(loader.requests.every((r) => r.signal!.aborted)).toBe(true);
+  });
+
+  it('gives up on a load that never settles, aborts it, and retries after the backoff', () => {
+    streamer.update('Earth', cameraOver(2, 1), measureOf({ '2_1': 2 }), 0);
+    const first = loader.requests.splice(0);
+    expect(first.length).toBeGreaterThan(0);
+    streamer.update('Earth', cameraOver(2, 1), measureOf({ '2_1': 2 }), SECTOR_ATTEMPT_TIMEOUT_MS);
+    expect(streamer.stats().bodies.Earth.loading).toEqual(['2_1']); // not yet
+    expect(loader.requests).toEqual([]);
+    const t = SECTOR_ATTEMPT_TIMEOUT_MS + 1;
+    streamer.update('Earth', cameraOver(2, 1), measureOf({ '2_1': 2 }), t);
+    expect(streamer.stats().bodies.Earth.loading).toEqual([]);
+    expect(first.every((r) => r.signal!.aborted)).toBe(true);
+    expect(loader.requests).toEqual([]); // cooling down before the retry
+    streamer.update('Earth', cameraOver(2, 1), measureOf({ '2_1': 2 }), t + SECTOR_RETRY_MS);
+    expect(loader.requests.length).toBe(first.length);
+    // The hung callbacks, arriving now, are ignored.
+    const late = new THREE.Texture();
+    first[0].onLoad(late);
+    expect(streamer.stats().bodies.Earth.loading).toEqual(['2_1']);
+    expect(streamer.stats().bodies.Earth.resident).toEqual([]);
   });
 
   it('counts an in-place reload against the in-flight cap', () => {

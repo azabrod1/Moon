@@ -17,6 +17,7 @@ import {
   type CompareIntroModel,
   type EndCardModel,
 } from '../compareLogic';
+import { cssHexColor } from '../../shared/color';
 
 export type PresetKey = '10' | 'half' | 'fill' | 'one';
 export type ChipSlot = 'container' | 'filler';
@@ -201,7 +202,7 @@ export class ComparePanel {
     if (!slider) return;
     const p = Math.round(Math.min(1, Math.max(0, pouredFrac)) * 100);
     const t = Math.round(Math.min(1, Math.max(0, Math.max(pouredFrac, targetFrac))) * 100);
-    const tint = `#${(colorHex & 0xffffff).toString(16).padStart(6, '0')}`;
+    const tint = cssHexColor(colorHex);
     slider.style.background =
       `linear-gradient(90deg, ${tint} 0 ${p}%, rgba(94,139,255,0.45) ${p}% ${t}%, rgba(255,255,255,0.10) ${t}% 100%)`;
   }
@@ -288,7 +289,7 @@ export class ComparePanel {
         // Catalog-tinted dot for the filler the count names (ComparePicker.makeRow idiom).
         const dot = document.createElement('span');
         dot.className = 'pk-dot';
-        dot.style.background = `#${(row.color & 0xffffff).toString(16).padStart(6, '0')}`;
+        dot.style.background = cssHexColor(row.color);
         const info = document.createElement('span');
         info.className = 'pk-info';
         const small = document.createElement('small');

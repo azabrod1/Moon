@@ -31,11 +31,13 @@ describe('sig3', () => {
     expect(sig3(332_946)).toBe('333,000');
   });
 
-  it('switches form exactly at a thousand, not at the rounded value', () => {
-    // 999.5 rounds to 1000 at three figures but is still below the grouping
-    // threshold, so it comes out of toPrecision as it stands.
-    expect(sig3(999.5)).toBe('1.00e+3');
-    expect(sig3(999.9)).toBe('1.00e+3');
+  it('groups a value that ROUNDS to a thousand — never scientific notation', () => {
+    // 999.5 rounds to 1000 at three figures; deciding the grouping branch on
+    // the raw value would hand it to toPrecision, which prints "1.00e+3" —
+    // the exact form this function exists to avoid.
+    expect(sig3(999.5)).toBe('1,000');
+    expect(sig3(999.9)).toBe('1,000');
+    expect(sig3(-999.9)).toBe('-1,000');
   });
 
   it('prints zero as zero, not as 0.00', () => {

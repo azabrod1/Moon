@@ -27,12 +27,12 @@ import {
   ATMOSPHERES,
   planetArchetype,
   moonArchetype,
+  createAtmosphereMaterial,
   type AtmosphereConfig,
 } from '../planetarium/PlanetFactory';
 import { augmentSurfaceMaterial, type SurfaceArchetype } from '../planetarium/world/surfaceShading';
 import { createPlanetariumStarfield, setStarfieldPixelRatio } from '../planetarium/world/starfield';
 import { captureDeviceTextureCaps } from '../planetarium/world/texturePolicy';
-import { atmosphereVertexShader, atmosphereFragmentShader } from '../shared/shaders/atmosphere';
 import { PLANETARIUM_BODIES, SUN_DATA, type PlanetData } from '../planetarium/planets/planetData';
 import { MOONS, type MoonData } from '../planetarium/planets/moonData';
 import { mouthGeometry, SpherePhysics, defaultPhysicsParams, PACK_CEILING } from './spherePhysics';
@@ -3812,27 +3812,11 @@ function makeAtmosphereGhost(config: AtmosphereConfig): THREE.Mesh {
   // 128×64 to match the glass shells: the additive fringe hugs the silhouette,
   // and a coarser shell's faceting beads it into glints spaced along the limb.
   const geo = new THREE.SphereGeometry(CONTAINER_R * config.scale, 128, 64);
-  const mat = new THREE.ShaderMaterial({
-    vertexShader: atmosphereVertexShader,
-    fragmentShader: atmosphereFragmentShader,
-    uniforms: {
-      uSunDirWorld: { value: KEY_LIGHT_DIR.clone() },
-      alphaScale: { value: ATMOSPHERE_GHOST_ALPHA }, // the ghost's fixed presence
-      uDayColor: { value: new THREE.Vector3(...config.dayColor) },
-      uSunsetColor: { value: new THREE.Vector3(...config.sunsetColor) },
-      uMieColor: { value: new THREE.Vector3(...config.mieColor) },
-      uRayleighStrength: { value: config.rayleighStrength },
-      uMieStrength: { value: config.mieStrength },
-      uMieG: { value: config.mieG },
-      uPower: { value: config.power },
-      uIntensity: { value: config.intensity },
-      uHaloStrength: { value: config.haloStrength },
-      uPlanetRadius: { value: CONTAINER_R },
-    },
-    transparent: true,
-    side: THREE.BackSide,
-    depthWrite: false,
-    blending: THREE.AdditiveBlending,
+  // The shared assembly, keyed to the studio light at the ghost's fixed
+  // presence — this material is never fed per frame.
+  const mat = createAtmosphereMaterial(config, CONTAINER_R, {
+    initialAlpha: ATMOSPHERE_GHOST_ALPHA,
+    initialSunDir: KEY_LIGHT_DIR,
   });
   const mesh = new THREE.Mesh(geo, mat);
   mesh.renderOrder = 4; // over the front shell, so the halo adds on top of the rim

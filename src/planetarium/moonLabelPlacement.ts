@@ -33,6 +33,36 @@ export const LABEL_READABLE_RADIUS_PX = 1.0;
  *  alpha WITH illumination forced full, so darkness alone never strips a name. */
 export const LABEL_DOT_MIN_ALPHA = 0.03;
 
+/** Canvas width (px) at or above which off-screen moons pin labels to the
+ *  margins uncapped. 641 is the far side of the 640px line the rest of the UI
+ *  breaks its layout on. */
+export const EDGE_LABEL_MIN_CANVAS_W_PX = 641;
+
+/** Edge labels a planet system may hold on a phone-width canvas. One is the
+ *  useful number: an edge label's worth is scarcity — Earth's lone Moon pinned
+ *  to a margin is wayfinding, six Saturn names stacked down it are noise that
+ *  says the same thing once. */
+export const NARROW_EDGE_LABELS_PER_SYSTEM = 1;
+
+/**
+ * How many edge-clamped labels (moons off past the screen margin) each planet
+ * system may pin to the margins of a canvas this wide.
+ *
+ * A desktop canvas takes them all: a dimmed name at the margin is cheap
+ * wayfinding across a frame wide enough to hold a moon system. A phone's frame
+ * is not — a system spans wider than the view, so nearly every moon is
+ * off-screen at once, and their labels stack down the two side margins as a
+ * column of names for things that aren't there (stacked VERTICALLY, so the
+ * de-overlap contest never thins them). There each system keeps only its
+ * top-ranked moon — the rank the contest already runs, incumbency and all, so
+ * the survivor is the same moon frame to frame. The nav target and the reveal
+ * are exempt from the cap (though they fill it): the player asked for those by
+ * hand.
+ */
+export function edgeLabelSystemCap(canvasW: number): number {
+  return canvasW >= EDGE_LABEL_MIN_CANVAS_W_PX ? Infinity : NARROW_EDGE_LABELS_PER_SYSTEM;
+}
+
 export interface MoonLabelPlacementParams {
   /** Dark-label style band, read against the dot's ACTUAL alpha: the `.unlit`
    *  class turns on below `unlitEnterAlpha` and off above `unlitLeaveAlpha`.
@@ -91,6 +121,8 @@ export const MOON_LABEL_PLACEMENT_PARAMS: MoonLabelPlacementParams = {
 export interface MoonLabelCandidate {
   /** Catalog name — the identity incumbency is tracked by. */
   name: string;
+  /** Parent planet's catalog name — the system the edge-label cap counts by. */
+  parent: string;
   sx: number;
   sy: number;
   onScreen: boolean;
@@ -240,11 +272,19 @@ function rectsCollide(
  *
  * `prevPlaced` is the previous frame's placed set; pass an empty set to run the
  * contest cold (after a teleport, or the first frame of a scene).
+ *
+ * `edgeCapPerSystem` bounds how many edge-clamped labels each planet system may
+ * place (see edgeLabelSystemCap) — the target and the reveal always place but
+ * still fill their system's cap. Counting inside the contest rather than in the
+ * gathering pass is the point: the survivors are the top of the very rank order
+ * the sort just built, incumbency defence included, so the capped pick cannot
+ * strobe between near-equal moons.
  */
 export function placeMoonLabels(
   candidates: MoonLabelCandidate[],
   prevPlaced: ReadonlySet<string>,
   params: MoonLabelPlacementParams = MOON_LABEL_PLACEMENT_PARAMS,
+  edgeCapPerSystem: number = Infinity,
 ): void {
   candidates.sort(
     (a, b) =>
@@ -259,16 +299,19 @@ export function placeMoonLabels(
   for (let i = 0; i < candidates.length; i++) {
     const c = candidates[i];
     const cSettled = prevPlaced.has(c.name);
+    const capped = !c.onScreen && !c.isTarget && !c.isRevealed;
     let collides = false;
+    let edgePeers = 0;
     for (let j = 0; j < placedCount; j++) {
       const p = candidates[j];
+      if (capped && !p.onScreen && p.parent === c.parent) edgePeers++;
       if (bothAlwaysDraw(c, p)) continue;
       if (rectsCollide(c, p, cSettled && prevPlaced.has(p.name), params)) {
         collides = true;
         break;
       }
     }
-    if (collides) {
+    if (collides || (capped && edgePeers >= edgeCapPerSystem)) {
       c.placed = false;
       continue;
     }

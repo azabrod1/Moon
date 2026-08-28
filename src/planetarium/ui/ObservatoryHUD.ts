@@ -59,12 +59,15 @@ export function isRepeatedSurfacePauseActivation(
  * its synthetic `click` when the surrounding Surface HUD changes rapidly.
  * Act on pointerup, then consume that gesture's normal follow-up click. A
  * keyboard/assistive click (`detail === 0`) still takes the click path.
+ * Returns the removal for the document-level listeners it installs (element
+ * listeners die with the element; these would outlive the HUD), or null when
+ * the element is absent.
  */
 function bindReliableSurfacePress(
   el: HTMLElement | null,
   onPress: (event: Event) => void,
-): void {
-  if (!el) return;
+): (() => void) | null {
+  if (!el) return null;
   let activePointerId: number | null = null;
   let pointerClickPending = false;
   el.addEventListener('pointerdown', (event) => {
@@ -88,6 +91,10 @@ function bindReliableSurfacePress(
   };
   document.addEventListener('pointerup', retireGesture);
   document.addEventListener('pointercancel', retireGesture);
+  const teardown = () => {
+    document.removeEventListener('pointerup', retireGesture);
+    document.removeEventListener('pointercancel', retireGesture);
+  };
   el.addEventListener('pointerup', (event) => {
     if (!event.isPrimary || event.button !== 0 || event.pointerId !== activePointerId) return;
     activePointerId = null;
@@ -103,6 +110,7 @@ function bindReliableSurfacePress(
     pointerClickPending = false;
     onPress(event);
   });
+  return teardown;
 }
 
 /** Which marker the HUD draws over the tracked target this frame. */
@@ -140,6 +148,9 @@ export class ObservatoryHUD {
   private clusterMaxY = Infinity;
   private lastMarkerCss = '';
   private wired = false;
+  /** Removals for the document-level gesture-retire listeners the reliable
+   *  presses install — the one part of the wiring that outlives the elements. */
+  private documentTeardowns: Array<() => void> = [];
 
   constructor(
     private onExit: () => void,
@@ -176,12 +187,13 @@ export class ObservatoryHUD {
     document.getElementById('surface-exit')?.addEventListener('click', () => this.onExit());
     document.getElementById('surface-observatory')?.addEventListener('click', () => this.onObservatory());
     this.lookatEl?.addEventListener('click', () => this.onTargetMenu());
-    bindReliableSurfacePress(this.swapEl, () => this.onSwap());
+    const swapTeardown = bindReliableSurfacePress(this.swapEl, () => this.onSwap());
+    if (swapTeardown) this.documentTeardowns.push(swapTeardown);
     this.trackPillEl?.addEventListener('click', () => this.onResumeTracking());
     // The chevron is the way back when the target left the frame in free look.
     this.chevronEl?.addEventListener('click', () => this.onResumeTracking());
     // Transport strip — the surface view's only time controls.
-    bindReliableSurfacePress(document.getElementById('surface-tb-pause'), (event) => {
+    const pauseTeardown = bindReliableSurfacePress(document.getElementById('surface-tb-pause'), (event) => {
       // Dispatch the command the rendered label promised. The owner guards a
       // just-paused clock too, but reject a repeated activation here using the
       // physical event time. A long WebGL task can delay Safari's delivery of
@@ -195,6 +207,7 @@ export class ObservatoryHUD {
       this.lastPauseActivationTimestampMs = timestampMs;
       this.onTimeAction(this.paused ? 'resume' : 'pause');
     });
+    if (pauseTeardown) this.documentTeardowns.push(pauseTeardown);
     document.getElementById('surface-tb-slower')?.addEventListener('click', () => this.onTimeAction('slower'));
     document.getElementById('surface-tb-faster')?.addEventListener('click', () => this.onTimeAction('faster'));
     document.getElementById('surface-tb-now')?.addEventListener('click', () => this.onTimeAction('now'));
@@ -345,5 +358,14 @@ export class ObservatoryHUD {
       this.lookatEl.style.display = state.showLookatChip ? '' : 'none';
       if (state.showLookatChip) setText('surface-lookat-name', state.targetName);
     }
+  }
+
+  /** Owner teardown: drop the document-level listeners, which would otherwise
+   *  keep this HUD — and its owner, through the callbacks — reachable and
+   *  firing after the mode is disposed. Element listeners die with their
+   *  elements; `wired` stays set so a stale bind() cannot re-wire. */
+  dispose(): void {
+    for (const teardown of this.documentTeardowns) teardown();
+    this.documentTeardowns.length = 0;
   }
 }

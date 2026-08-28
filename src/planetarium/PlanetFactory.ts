@@ -430,6 +430,9 @@ export interface TextureUpgrade {
    *  on the boot map. Cleared once a tier at or above the failed one
    *  applies. */
   lastFailure?: { tier: TextureTier; streak: number };
+  /** A committed arrival's warm-up target — see armArrivalWarmGoal. Set only
+   *  through arm/disarm so the one-shot-per-tier semantics hold. */
+  warmGoal?: TextureTier;
 }
 
 /** True once this handle has fetched everything the device can hold — the
@@ -488,6 +491,41 @@ const TEXTURE_UPGRADE_TIERS: Record<string, readonly TextureTier[]> = {
 // deck's: it would sit beside Earth's 4K day map and the sector tiles in the
 // close approach the sectors serve.
 const TOUCH_TIER_CAP: Partial<Record<string, TextureTier>> = { earthClouds: '4k', moon: '4k' };
+
+// The Moon's 8K tier ships GPU-compressed (KTX2/UASTC, mip chain baked by
+// tools/gen-moon-ktx2.mjs): the raw upload of a 33MP RGBA map is the largest
+// unsliceable main-thread bill in the app — measured as THE dropped frame
+// right after a Moon teleport — while a compressed upload takes a few
+// milliseconds and stays compressed in VRAM (~45MB instead of ~180MB). The
+// wire cost is real (UASTC+zstd is a few times the webp), paid only when a
+// session earns the tier and cached by the service worker thereafter. The
+// webp stays on disk as the runtime fallback: the override is consulted only
+// while a KTX2 loader is bound, so tests and a session whose transcoder
+// failed to load fetch the classic map instead.
+const TIER_FILE_OVERRIDES: Record<string, Partial<Record<TextureTier, string>>> = {
+  moon: { '8k': 'moon.ktx2' },
+};
+
+type Ktx2TierLoad = (
+  url: string,
+  onLoad: (tex: THREE.Texture) => void,
+  onError: (err: unknown) => void,
+) => void;
+let ktx2TierLoader: Ktx2TierLoad | null = null;
+
+/** Bind (or clear, with null) the KTX2 tier fetch. The mode binds a lazy
+ *  KTX2Loader wrapper at init and clears it at dispose; while unbound every
+ *  entry in TIER_FILE_OVERRIDES is inert. */
+export function bindKtx2TierLoader(fn: Ktx2TierLoad | null): void {
+  ktx2TierLoader = fn;
+}
+
+/** The file a tier fetch actually asks for — the compressed override when its
+ *  loader is bound, the key's shared classic file otherwise. */
+export function resolveTierFile(key: string, tier: TextureTier): string {
+  const override = ktx2TierLoader ? TIER_FILE_OVERRIDES[key]?.[tier] : undefined;
+  return override ?? PLANET_TEXTURE_FILES[key];
+}
 
 // Colour-map precedence: procedural floor 0, then one rank per tier. Ranks are
 // what make every apply order-independent — a late boot-map arrival can't
@@ -814,7 +852,14 @@ export function upgradeTextureOnApproach(
   // The attempt this callback belongs to was abandoned (discarded, or timed
   // out and superseded) if the handle no longer carries its generation.
   const abandoned = () => up.attempt?.generation !== generation;
-  const url = resolveTextureUrl(PLANET_TEXTURE_FILES[up.key], tier);
+  // Capture the KTX2 binding with the file choice, so an unbind between the
+  // resolve and the fetch can't strand a .ktx2 URL on the image loader.
+  const ktx2 = ktx2TierLoader;
+  const file = resolveTierFile(up.key, tier);
+  const url = resolveTextureUrl(file, tier);
+  const load: TextureLoad = file.endsWith('.ktx2') && ktx2
+    ? (u, onLoad, onError) => ktx2(u, onLoad, onError)
+    : loadUpgradeTexture;
   // Deliberately a plain load, not the durable seam: this is an optional
   // sharpen wanted only while the body fills the view. A failure leaves
   // whatever is already on the material — the boot map, or the procedural
@@ -822,7 +867,7 @@ export function upgradeTextureOnApproach(
   // gets is demand-driven rather than durable: a cooldown, then another
   // attempt only if the body still earns the tier on a later frame. A base map
   // is chased for the whole session because nothing else can stand in for it.
-  loadUpgradeTexture(
+  load(
     url,
     (tex) => {
       if (abandoned()) {
@@ -902,6 +947,72 @@ export function cancelTextureUpgrade(
   if (!up.attempt || flavor === 'keep') return;
   up.attempt = undefined;
   up.retryAtMs = nowMs + UPGRADE_RETRY_MS;
+}
+
+// --- Arrival warm goals ------------------------------------------------------
+//
+// The on-screen triggers are reactive: each rung's fetch starts only when the
+// live disc crosses its screen fraction, which for a teleport approach means
+// mid-glide — every tier lands as a fetch+decode+unsliceable-upload spike in
+// front of a moving camera (the measured "touch of stuttering" on a first
+// Moon approach; worst on WebKit, where the upload bill is largest). But a
+// committed jump KNOWS its destination, and its hands-off glide is certain to
+// cross every trigger within seconds — so a warm goal lets the ladder climb
+// from jump commit instead: fetch+decode overlap the arrival veil and the
+// early glide, and the uploads drain under the veil's unbounded pump or on
+// the gentlest frames of the approach.
+//
+// Veil-neutral by construction: a goal only ever starts the same attempts the
+// triggers would, and an arrival cover's wait-list (PlanetariumMode's
+// coverWaitList) admits nothing but the landed pair's FIRST-tier attempts —
+// so a cruise jump's veil lifts exactly as it did before warm goals existed.
+//
+// One-shot per tier, never a background loop: a tier that has EVER failed is
+// left to the demand-driven trigger (which retries only while the body fills
+// the view), so an armed goal on a device that can't decode 8K cannot keep
+// re-downloading it after the player has flown away. Goals are disarmed by
+// the teleport-away sweep and mode disposal.
+
+/**
+ * Arm a handle for a committed arrival: the goal is the top tier any
+ * on-screen trigger could pull (fraction 1 — the body filling the viewport,
+ * which a completed approach reaches). Returns false — and leaves the handle
+ * unarmed — when no fetchable step remains for this device.
+ */
+export function armArrivalWarmGoal(up: TextureUpgrade): boolean {
+  const goal = earnedUpgradeTier(up, 1);
+  if (!goal || !resolveUpgradeTier(up, goal)) {
+    up.warmGoal = undefined;
+    return false;
+  }
+  up.warmGoal = goal;
+  return true;
+}
+
+export function disarmArrivalWarmGoal(up: TextureUpgrade): void {
+  up.warmGoal = undefined;
+}
+
+/**
+ * One frame of goal-driven climbing: start the next rung when the handle is
+ * free, exactly as an on-screen trigger would. Returns false once the goal
+ * has disarmed itself — reached, unreachable, or handed back to the trigger
+ * by a failure — so callers can prune their armed list.
+ */
+export function pumpArrivalWarmGoal(up: TextureUpgrade, nowMs: number): boolean {
+  const goal = up.warmGoal;
+  if (!goal) return false;
+  const next = resolveUpgradeTier(up, goal);
+  if (!next) {
+    up.warmGoal = undefined;
+    return false;
+  }
+  if (up.lastFailure && TIER_RANK[up.lastFailure.tier] >= TIER_RANK[next]) {
+    up.warmGoal = undefined;
+    return false;
+  }
+  if (canAttempt(up, nowMs)) upgradeTextureOnApproach(up, next, nowMs);
+  return true;
 }
 
 // Higher-resolution RELIEF tiers on disk, per normal-map key. The Moon's
@@ -1106,15 +1217,23 @@ function createFallbackTexture(key: string, kind: MapKind = 'color'): THREE.Text
   return tex;
 }
 
-function createAtmosphereGlow(radiusAU: number, config: AtmosphereConfig): THREE.Mesh {
-  const geo = new THREE.SphereGeometry(radiusAU * config.scale, 64, 32);
-  const mat = new THREE.ShaderMaterial({
+/**
+ * The atmosphere glow ShaderMaterial — the ONE place the shader's uniform
+ * block is assembled from an AtmosphereConfig, shared with the volume-compare
+ * ghost so a uniform added to shared/shaders/atmosphere.ts is wired here and
+ * nowhere else. Callers own geometry, scale and render order.
+ */
+export function createAtmosphereMaterial(
+  config: AtmosphereConfig,
+  planetRadius: number,
+  opts?: { initialAlpha?: number; initialSunDir?: THREE.Vector3 },
+): THREE.ShaderMaterial {
+  return new THREE.ShaderMaterial({
     vertexShader: atmosphereVertexShader,
     fragmentShader: atmosphereFragmentShader,
     uniforms: {
-      // Fed per frame from the body's sun direction and approach distance.
-      uSunDirWorld: { value: new THREE.Vector3(0, 0, 1) },
-      alphaScale: { value: 0.0 }, // faded out until the per-frame distance feed runs (no first-frame flash)
+      uSunDirWorld: { value: opts?.initialSunDir?.clone() ?? new THREE.Vector3(0, 0, 1) },
+      alphaScale: { value: opts?.initialAlpha ?? 0.0 },
       uDayColor: { value: new THREE.Vector3(...config.dayColor) },
       uSunsetColor: { value: new THREE.Vector3(...config.sunsetColor) },
       uMieColor: { value: new THREE.Vector3(...config.mieColor) },
@@ -1124,15 +1243,20 @@ function createAtmosphereGlow(radiusAU: number, config: AtmosphereConfig): THREE
       uPower: { value: config.power },
       uIntensity: { value: config.intensity },
       uHaloStrength: { value: config.haloStrength },
-      uPlanetRadius: { value: radiusAU },
+      uPlanetRadius: { value: planetRadius },
     },
     transparent: true,
     side: THREE.BackSide,
     depthWrite: false,
     blending: THREE.AdditiveBlending,
   });
+}
 
-  return new THREE.Mesh(geo, mat);
+function createAtmosphereGlow(radiusAU: number, config: AtmosphereConfig): THREE.Mesh {
+  const geo = new THREE.SphereGeometry(radiusAU * config.scale, 64, 32);
+  // alphaScale starts at 0: faded out until the per-frame distance feed runs
+  // (no first-frame flash); uSunDirWorld is fed per frame the same way.
+  return new THREE.Mesh(geo, createAtmosphereMaterial(config, radiusAU));
 }
 
 // Earth's companion shells sit just above the globe: the night lights hug the
@@ -1160,6 +1284,15 @@ export interface PlanetMesh {
   /** Silhouette detail, rebuilt on close approach — the globe and every shell
    *  that draws an edge at the body's own radius. */
   geometryUpgrade: GeometryUpgrade;
+  /** Live heliocentric position (AU), stashed by the mode's rebuild pass.
+   *  Typed here (not on userData) so the dozen per-frame readers share one
+   *  nullability story instead of each restating the shape through a cast.
+   *  Absent until the first rebuild. */
+  worldPosAU?: { x: number; y: number; z: number };
+  /** Per-frame world velocity (AU/s on the capped frame dt) for the
+   *  governor's moving-body credit; zeroed across clock discontinuities.
+   *  Absent until the first velocity pass. */
+  worldVelAUPerS?: { x: number; y: number; z: number };
 }
 
 // Icy / high-albedo moons get the icy night-fill (and, later, a specular ice

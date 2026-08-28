@@ -14,7 +14,10 @@ import { lensShaderGLSL } from '../three/lensShader';
  *  full together. One definition site — the GLSL interpolates it. */
 export const SUN_WHITEOUT_SLAM_EDGE = 0.85;
 
-export const sunPhotosphereVertexShader = /* glsl */ `
+/** Object-space vertex transform shared by the photosphere and the
+ *  prominence shell — same varyings, same math. One definition; both public
+ *  names below keep their API. */
+const sunObjectSpaceVertexShader = /* glsl */ `
 varying vec3 vNormal;
 varying vec3 vPosition;
 varying vec3 vObjectDirection;
@@ -27,16 +30,10 @@ void main() {
 }
 `;
 
-export const sunPhotosphereFragmentShader = /* glsl */ `
-uniform float time;
-uniform float uAtmosphereMix;
-uniform vec3 uAtmosphereColor;
-uniform float uInteriorFade;
-uniform float uWhiteout;
-varying vec3 vNormal;
-varying vec3 vPosition;
-varying vec3 vObjectDirection;
-
+/** hash31 + noise3, the object-space value-noise pair both Sun fragment
+ *  shaders build on. Interpolated into each program (separate compiles, so
+ *  the shared names never collide). */
+const sunNoiseGLSL = /* glsl */ `
 float hash31(vec3 p) {
   p = fract(p * 0.1031);
   p += dot(p, p.yzx + 33.33);
@@ -62,7 +59,20 @@ float noise3(vec3 p) {
     f.z
   );
 }
+`;
 
+export const sunPhotosphereVertexShader = sunObjectSpaceVertexShader;
+
+export const sunPhotosphereFragmentShader = /* glsl */ `
+uniform float time;
+uniform float uAtmosphereMix;
+uniform vec3 uAtmosphereColor;
+uniform float uInteriorFade;
+uniform float uWhiteout;
+varying vec3 vNormal;
+varying vec3 vPosition;
+varying vec3 vObjectDirection;
+${sunNoiseGLSL}
 float fbm3(vec3 p) {
   float value = 0.0;
   float amplitude = 0.5;
@@ -216,18 +226,7 @@ void main() {
 export const SUN_GLARE_EXTENT_SOLAR_RADII = 8;
 
 /** Thin, broken chromosphere shell for close-approach limb detail. */
-export const sunProminenceVertexShader = /* glsl */ `
-varying vec3 vNormal;
-varying vec3 vPosition;
-varying vec3 vObjectDirection;
-
-void main() {
-  vNormal = normalize(normalMatrix * normal);
-  vPosition = (modelViewMatrix * vec4(position, 1.0)).xyz;
-  vObjectDirection = normalize(position);
-  gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
-}
-`;
+export const sunProminenceVertexShader = sunObjectSpaceVertexShader;
 
 export const sunProminenceFragmentShader = /* glsl */ `
 uniform float time;
@@ -235,41 +234,16 @@ uniform float uCloseVisibility;
 varying vec3 vNormal;
 varying vec3 vPosition;
 varying vec3 vObjectDirection;
-
-float prominenceHash(vec3 p) {
-  p = fract(p * 0.1031);
-  p += dot(p, p.yzx + 33.33);
-  return fract((p.x + p.y) * p.z);
-}
-
-float prominenceNoise(vec3 p) {
-  vec3 i = floor(p);
-  vec3 f = fract(p);
-  f = f * f * (3.0 - 2.0 * f);
-  return mix(
-    mix(
-      mix(prominenceHash(i), prominenceHash(i + vec3(1.0, 0.0, 0.0)), f.x),
-      mix(prominenceHash(i + vec3(0.0, 1.0, 0.0)), prominenceHash(i + vec3(1.0, 1.0, 0.0)), f.x),
-      f.y
-    ),
-    mix(
-      mix(prominenceHash(i + vec3(0.0, 0.0, 1.0)), prominenceHash(i + vec3(1.0, 0.0, 1.0)), f.x),
-      mix(prominenceHash(i + vec3(0.0, 1.0, 1.0)), prominenceHash(i + vec3(1.0, 1.0, 1.0)), f.x),
-      f.y
-    ),
-    f.z
-  );
-}
-
+${sunNoiseGLSL}
 void main() {
   vec3 viewDir = normalize(-vPosition);
   float mu = abs(dot(viewDir, normalize(vNormal)));
   float limb = pow(1.0 - clamp(mu, 0.0, 1.0), 4.5);
   vec3 p = normalize(vObjectDirection);
-  float broad = prominenceNoise(p * 5.2 + vec3(time * 0.018, 0.0, -time * 0.011));
-  float fine = prominenceNoise(p * 17.0 + broad * 1.8);
+  float broad = noise3(p * 5.2 + vec3(time * 0.018, 0.0, -time * 0.011));
+  float fine = noise3(p * 17.0 + broad * 1.8);
   float activeArc = smoothstep(0.60, 0.82, broad) * smoothstep(0.42, 0.78, fine);
-  float spicules = smoothstep(0.52, 0.88, prominenceNoise(p * 43.0 - time * 0.015));
+  float spicules = smoothstep(0.52, 0.88, noise3(p * 43.0 - time * 0.015));
   float structure = activeArc * 0.82 + spicules * 0.18;
   float alpha = limb * structure * uCloseVisibility * 0.72;
   if (alpha < 0.004) discard;

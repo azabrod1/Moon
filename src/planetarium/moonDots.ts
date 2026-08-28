@@ -26,14 +26,10 @@ import { STAR_POINT_MAPPING, starPointVisual, type StarPointMapping, type StarPo
 // size a disc without touching photometry (shadow guides) import it there.
 // Re-exported so the dot pipeline's own consumers keep one import.
 export { discDiameterPx } from '../shared/math/discScreenSize';
+import { smoothstepEdges as smoothstep } from '../shared/math/smoothstep';
 
 const clamp = (v: number, min: number, max: number) => Math.max(min, Math.min(max, v));
 const lerp = (x: number, y: number, t: number) => (1 - t) * x + t * y;
-function smoothstep(edge0: number, edge1: number, x: number): number {
-  if (edge0 === edge1) return x < edge0 ? 0 : 1;
-  const t = clamp((x - edge0) / (edge1 - edge0), 0, 1);
-  return t * t * (3 - 2 * t);
-}
 
 export interface MoonDotParams {
   /** Apparent-magnitude zero point of the render-proxy flux model. Calibrated so

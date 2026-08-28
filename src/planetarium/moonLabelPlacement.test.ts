@@ -1,8 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import {
+  EDGE_LABEL_MIN_CANVAS_W_PX,
   LABEL_DOT_MIN_ALPHA,
   MOON_LABEL_PLACEMENT_PARAMS,
+  NARROW_EDGE_LABELS_PER_SYSTEM,
   clampAnchorClearOfDisc,
+  edgeLabelSystemCap,
   placeMoonLabels,
   type AnchorSlide,
   type MoonLabelCandidate,
@@ -13,6 +16,7 @@ const P = MOON_LABEL_PLACEMENT_PARAMS;
 /** A candidate at the origin, on screen, plain tier, 40 px wide. */
 const cand = (name: string, over: Partial<MoonLabelCandidate> = {}): MoonLabelCandidate => ({
   name,
+  parent: 'Jupiter',
   sx: 0,
   sy: 0,
   onScreen: true,
@@ -46,6 +50,63 @@ describe('moonLabelPlacement — the dark-label band', () => {
 
   it('leaves above where it enters, so the style cannot pulse with the dot', () => {
     expect(P.unlitLeaveAlpha).toBeGreaterThan(P.unlitEnterAlpha);
+  });
+});
+
+describe('moonLabelPlacement — the phone edge-label cap', () => {
+  // Well-separated rows, so the cap — not rect collision — decides each case.
+  const row = (name: string, i: number, over: Partial<MoonLabelCandidate> = {}) =>
+    cand(name, { sy: i * 3 * P.labelHeightPx, onScreen: false, priorityPx: 10 - i, ...over });
+
+  it('is uncapped at desktop width, one per system at phone width', () => {
+    expect(edgeLabelSystemCap(EDGE_LABEL_MIN_CANVAS_W_PX)).toBe(Infinity);
+    expect(edgeLabelSystemCap(EDGE_LABEL_MIN_CANVAS_W_PX - 1)).toBe(NARROW_EDGE_LABELS_PER_SYSTEM);
+    // 641 is the far side of the UI's shared 640px line, and one edge label is
+    // wayfinding where a column of them is noise.
+    expect(EDGE_LABEL_MIN_CANVAS_W_PX).toBe(641);
+    expect(NARROW_EDGE_LABELS_PER_SYSTEM).toBe(1);
+  });
+
+  it('keeps a lone moon system’s edge label — Earth stays wayfindable', () => {
+    const cs = [row('Moon', 0, { parent: 'Earth' })];
+    placeMoonLabels(cs, NONE, P, 1);
+    expect(placed(cs)).toEqual(['Moon']);
+  });
+
+  it('thins a crowded system to its top-ranked moon', () => {
+    const cs = [row('Rhea', 0), row('Dione', 1), row('Tethys', 2)];
+    placeMoonLabels(cs, NONE, P, 1);
+    expect(placed(cs)).toEqual(['Rhea']);
+  });
+
+  it('caps per system, not across the sky', () => {
+    const cs = [
+      row('Rhea', 0, { parent: 'Saturn' }),
+      row('Dione', 1, { parent: 'Saturn' }),
+      row('Moon', 2, { parent: 'Earth' }),
+    ];
+    placeMoonLabels(cs, NONE, P, 1);
+    expect(placed(cs)).toEqual(['Moon', 'Rhea']);
+  });
+
+  it('never touches on-screen labels', () => {
+    const cs = [row('Rhea', 0), row('Dione', 1, { onScreen: true }), row('Tethys', 2, { onScreen: true })];
+    placeMoonLabels(cs, NONE, P, 1);
+    expect(placed(cs)).toEqual(['Dione', 'Rhea', 'Tethys']);
+  });
+
+  it('always places the target and the reveal, and they fill the cap', () => {
+    // The player asked for these by hand — but a system already represented at
+    // the margin by the moon you are flying at needs no second name there.
+    const cs = [row('Rhea', 0), row('Iapetus', 1, { isTarget: true }), row('Dione', 2, { isRevealed: true })];
+    placeMoonLabels(cs, NONE, P, 1);
+    expect(placed(cs)).toEqual(['Dione', 'Iapetus']);
+  });
+
+  it('defaults to uncapped when no cap is passed — desktop is untouched', () => {
+    const cs = [row('Rhea', 0), row('Dione', 1), row('Tethys', 2)];
+    placeMoonLabels(cs, NONE);
+    expect(placed(cs)).toEqual(['Dione', 'Rhea', 'Tethys']);
   });
 });
 

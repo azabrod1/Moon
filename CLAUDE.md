@@ -10,11 +10,12 @@ npm run build      # TypeScript check + production build (dist/)
 npm test           # vitest — astronomy + planetarium unit/golden tests
 npm run gen:moons  # Regenerate satellite elements + goldens from JPL (--offline uses .moon-data-cache/)
 npm run gen:maps   # Regenerate derived texture maps (runs in headless Chromium)
+npm run gen:ktx2   # Regenerate the Moon's GPU-compressed 8K tier from its webp (headless Chromium + bundled basisu)
 ```
 
 **Run `npm run build` and `npm test` after every change.** There is no linter; the strict tsconfig (`noUnusedLocals`/`noUnusedParameters`) is what catches refactor leftovers. CI runs the same then deploys Pages on push to `main`. `planning/` is gitignored local scratch — never commit it; stage by explicit path, never `git add -A`.
 
-Manual testing: the DEV-only `window.__moon` console bridge (defined in `src/main.ts`) drives the app so you never click by hand — camera/clock (`jumpTo`, `frame`, `setTimeMs`, `setTimeRate`), landed/Observatory hooks (`land`, `openObservatory`, `lookUp`, `lookAt`, `jumpEvent`, `exitSurface`), tutorial (`tutorialStart`/`tutorialNext`/`tutorialState`), motion forensics (`traceStart`/`traceStop`). `frame()` only poses the camera and never routes through the landed code — exercise landed-mode changes through the landed hooks.
+Manual testing: the DEV-only `window.__moon` console bridge (defined in `src/main.ts`) drives the app so you never click by hand — camera/clock (`jumpTo`, `travelTo` — the real travel pipeline with veil + arrival warm-up, `frame`, `setTimeMs`, `setTimeRate`), landed/Observatory hooks (`land`, `openObservatory`, `lookUp`, `lookAt`, `jumpEvent`, `exitSurface`), tutorial (`tutorialStart`/`tutorialNext`/`tutorialState`), motion forensics (`traceStart`/`traceStop`). `frame()` only poses the camera and never routes through the landed code — exercise landed-mode changes through the landed hooks.
 
 Headless screenshots: `node tools/shoot.mjs` drives the same bridge; the method, the real-GPU flags, and the before/after recipe are in the `headless-webgl-screenshots` skill. `tools/` holds the wider capture/forensics kit — look there before writing a new one. Ad-hoc Playwright scripts live inside the repo (`tools/` or `planning/`), never `/tmp` (ESM resolves `node_modules` from the script's location).
 

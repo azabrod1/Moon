@@ -283,4 +283,3 @@ export const ASTEROID_BELT = {
 };
 
 export const LIGHT_SPEED_AU_PER_S = 1 / 499.0; // ~0.002 AU/s
-export const LIGHT_SPEED_KM_PER_S = 299_792.458;

@@ -84,6 +84,12 @@ export function touchTextureBudget(): boolean {
  */
 export function applyTextureDefaults(tex: THREE.Texture, kind: MapKind): void {
   tex.anisotropy = chosenAnisotropy;
+  // A GPU-compressed texture (a KTX2 tier) keeps everything else its loader
+  // read from the file: colour space comes from the container's DFD, the mip
+  // chain is baked, and the upload takes three's standard immutable path —
+  // its blocks are already sRGB-encoded, so the driver conversion the
+  // mutableStorage escape hatch below dodges never happens for it.
+  if ((tex as THREE.CompressedTexture).isCompressedTexture) return;
   tex.colorSpace = kind === 'color' ? THREE.SRGBColorSpace : THREE.NoColorSpace;
   // Opt out of three's immutable texStorage2D allocation (the flag is our
   // patches/three escape hatch): for sRGB maps the driver pays a full-image

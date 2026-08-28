@@ -23,6 +23,7 @@ import {
 import {
   markerAlbedoProxy,
   markerMagnitude,
+  markerQuadPx,
   markerVisual,
   PLANET_MARKER_PARAMS,
   type PlanetMarkerVisual,
@@ -478,8 +479,8 @@ export class PlanetLabels {
     // instead — a fraction of the smaller viewport axis, clamped so phones
     // get a compact dot and desktops keep the stock look — like the HTML
     // labels beside them, which never grew with zoom.
-    const markerQuadPx = THREE.MathUtils.clamp(0.032 * Math.min(canvasWidth, canvasHeight), 18, 30);
-    const markerScale = (markerQuadPx * 2 * halfFovTan) / Math.max(canvasHeight, 1);
+    const quadPx = markerQuadPx(canvasWidth, canvasHeight);
+    const markerScale = (quadPx * 2 * halfFovTan) / Math.max(canvasHeight, 1);
     const camX = this.camera.position.x;
     const camY = this.camera.position.y;
     const camZ = this.camera.position.z;

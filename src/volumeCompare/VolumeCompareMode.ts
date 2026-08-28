@@ -12,6 +12,7 @@
  * landed, disposes what it loaded and bails.
  */
 import * as THREE from 'three';
+import { MOBILE_BREAKPOINT_PX, isPhoneViewport } from '../shared/dom';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { DEG2RAD } from '../shared/math/angles';
 import {
@@ -289,7 +290,7 @@ export class VolumeCompareMode {
 
     // Phones get lighter physics caps — captured once per activation (a mid-pour
     // desktop resize keeps its caps; re-entering the mode re-reads the width).
-    const isMobile = window.matchMedia('(max-width: 640px)').matches;
+    const isMobile = isPhoneViewport();
     const capScale = isMobile ? COMPARE_TUNABLES.mobileCapScale : 1;
     this.compareScene.setCapScale(capScale);
     this.liveCapTotal = COMPARE_TUNABLES.marbleTotalCap * capScale;
@@ -377,7 +378,7 @@ export class VolumeCompareMode {
    * indifferent. Desktop only — the mobile card is a bottom sheet.
    */
   private applyCardPan(dt: number): void {
-    const desktop = window.innerWidth > 640;
+    const desktop = window.innerWidth > MOBILE_BREAKPOINT_PX;
     const want = desktop && this.cardPresented && this.panel.isEndCardShown() ? CARD_PAN_X : 0;
     this.cardPanX += (want - this.cardPanX) * (1 - Math.exp(-dt / 0.1)); // ~300 ms ease
     const delta = this.cardPanX - this.appliedPanX;
@@ -406,7 +407,7 @@ export class VolumeCompareMode {
     let wantPanY = this.pourPanY; // hold by default (desktop, sub-unity, or mid-drag)
     // Freeze while the user is orbiting so the centring never fights a vertical
     // drag; resume centring the moment they let go.
-    if (window.innerWidth <= 640 && !this.comparison.subUnity && !this.dragging) {
+    if (window.innerWidth <= MOBILE_BREAKPOINT_PX && !this.comparison.subUnity && !this.dragging) {
       const vh = window.innerHeight || 1;
       const barTop = this.measuredBandTopPx > 0 ? this.measuredBandTopPx : vh;
       const desiredCentrePx = barTop / 2; // centre of the band [0, barTop]
@@ -418,7 +419,7 @@ export class VolumeCompareMode {
       const p11 = this.camera.projectionMatrix.elements[5] || 2.7;
       const worldPerPx = this.lastDefaultDistance / (p11 * vh * 0.5);
       wantPanY = this.pourPanY - errPx * worldPerPx; // pan up (−) to lift a low vessel
-    } else if (window.innerWidth > 640 || this.comparison.subUnity) {
+    } else if (window.innerWidth > MOBILE_BREAKPOINT_PX || this.comparison.subUnity) {
       wantPanY = 0; // desktop / sub-unity: no vertical pan (applyCardPan owns the card)
     }
     this.pourPanY += (wantPanY - this.pourPanY) * (1 - Math.exp(-dt / 0.25)); // ~0.7 s ease
@@ -437,7 +438,7 @@ export class VolumeCompareMode {
    * DOM is otherwise stable so it stays cheap (ObservatoryHUD measure precedent).
    */
   private remeasureBand(): void {
-    if (window.innerWidth > 640) {
+    if (window.innerWidth > MOBILE_BREAKPOINT_PX) {
       this.measuredBandTopPx = 0;
       return;
     }
@@ -972,7 +973,7 @@ export class VolumeCompareMode {
   private updateMobilePreviewLabel(): void {
     const presence = this.compareScene.previewPresence();
     if (
-      window.innerWidth > 640 ||
+      window.innerWidth > MOBILE_BREAKPOINT_PX ||
       !this.texturesReady ||
       this.comparison.subUnity ||
       this.comparison.regime === 'sand' ||
@@ -1045,7 +1046,7 @@ export class VolumeCompareMode {
     // On a narrow phone the scale preview parks to the RIGHT of the vessel and clips
     // off-frame. Fit BOTH the vessel and the preview's bounding sphere horizontally.
     // Desktop (>640px) keeps the EXACT default numbers — this branch is skipped.
-    if (window.innerWidth <= 640 && this.comparison.regime !== 'sand') {
+    if (window.innerWidth <= MOBILE_BREAKPOINT_PX && this.comparison.regime !== 'sand') {
       this.fitPreviewMobile(this.compareScene.previewBounds(), dist);
       return;
     }
@@ -1137,7 +1138,7 @@ export class VolumeCompareMode {
       this.controls.target.copy(target);
       const az = -33; // side azimuth catches the key-lit belly
       const vhPx = Math.max(1, window.innerHeight);
-      const floorPx = window.innerWidth <= 640 ? 60 : 96; // a hair above the 56/90 contract
+      const floorPx = window.innerWidth <= MOBILE_BREAKPOINT_PX ? 60 : 96; // a hair above the 56/90 contract
       const p11 = 1 / Math.tan(vHalf); // vertical projection factor (screenR = p11·R·vh/2 / dist)
       const dist = Math.min(this.controls.maxDistance, (p11 * R * vhPx * 0.5) / floorPx);
       // Keep the camera OUTSIDE the giant: start near-level (shows the wedge

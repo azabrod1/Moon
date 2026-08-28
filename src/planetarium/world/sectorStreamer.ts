@@ -855,7 +855,12 @@ export class SectorStreamer {
     candidates.sort((a, b) => b.slot.score - a.slot.score || a.slot.level - b.slot.level);
     for (const candidate of candidates) {
       if (!this.canStartLoad()) break;
-      if (!this.makeRoom(candidate.slot, this.slotSetBytes(candidate.body, candidate.slot), nowMs)) break;
+      // A candidate that cannot be paid for is passed over, not the end of
+      // the pass: sets differ in size between levels and between bodies, so
+      // a cheaper or smaller one behind it may still fit in the room there
+      // is. `makeRoom` releases nothing unless the whole victim set is
+      // proven, so a refusal here has cost nothing.
+      if (!this.makeRoom(candidate.slot, this.slotSetBytes(candidate.body, candidate.slot), nowMs)) continue;
       this.admit(candidate.body, candidate.slot, candidate.body.signature);
     }
   }

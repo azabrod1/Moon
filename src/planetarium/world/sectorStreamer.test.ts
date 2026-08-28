@@ -1019,6 +1019,50 @@ describe('SectorStreamer', () => {
     expect(s.bodies.Earth.resident.slice().sort()).toEqual(['5_2', '6_2', '7_2']);
   });
 
+  /** A body whose tiles are a quarter the size of Earth's and carry no
+   *  crops — the small-set case a level below the coarsest is, and the Moon's
+   *  1726² tiles are. */
+  const SMALL_LEVEL: SectorLevel = {
+    tier: '8k',
+    grid: SECTOR_GRID_16K,
+    layout: { ...SECTOR_TILE, width: 1024, height: 1024 },
+    sourceWidth: SECTOR_GRID_16K.cols * (1024 - 16),
+  };
+  function smallTileBody(): ReturnType<typeof earthHandle> {
+    const h = earthHandle();
+    h.name = 'Small';
+    h.spec = { colorKey: 'moon', crops: {}, levels: [SMALL_LEVEL] };
+    h.material.bumpMap = null;
+    h.material.roughnessMap = null;
+    streamer.register(h);
+    return h;
+  }
+
+  it('a candidate too big for the room left does not block a smaller one behind it', () => {
+    loader.auto = true;
+    smallTileBody();
+    const small = sectorSetGpuBytes({ colorKey: 'moon', crops: {}, levels: [SMALL_LEVEL] });
+    expect(small).toBeLessThan(EARTH_SET_BYTES);
+    // Four Earth sectors, all past the dwell and all ranking together.
+    const earthSizes = { '2_1': 3, '3_1': 3, '4_1': 3, '5_1': 3 };
+    for (let f = 0; f < 8; f++) streamer.update('Earth', INSIDE, measureOf(earthSizes), f * 16);
+    const held = streamer.stats().residentBytes;
+    expect(streamer.stats().resident).toBe(4);
+    // Leave room for one small set and nothing like an Earth one.
+    streamer.setGlobalMapBytes(SECTOR_ENVELOPE_BYTES_DESKTOP - held - 2 * small);
+    // The strongest candidate is an Earth sector that would need a victim it
+    // does not out-rank by the margin; behind it a small tile that fits in
+    // the room already free.
+    streamer.beginFrame();
+    streamer.update('Earth', INSIDE, measureOf({ ...earthSizes, '0_0': 3 * SECTOR_ADMIT_MARGIN * 0.9 }), 10_000);
+    streamer.update('Small', INSIDE, measureOf({ '0_0': 2 }), 10_000);
+    streamer.endFrame();
+    const s = streamer.stats();
+    expect(s.bodies.Earth.resident).not.toContain('0_0'); // blocked by the margin
+    expect(s.bodies.Small.resident.concat(s.bodies.Small.loading)).toEqual(['0_0']);
+    expect(s.residentBytes + s.reserved).toBeLessThanOrEqual(s.budget);
+  });
+
   it('gives back a whole pyramid in one call, parents included', () => {
     loader.auto = true;
     twoLevelEarth();

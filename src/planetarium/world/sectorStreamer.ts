@@ -189,16 +189,30 @@ interface SectorSlot {
   score: number;
   keep: boolean;
   wanted: boolean;
-  /** Crop-slot signature of the base when this sector was loaded. */
+  /** Crop-slot signature of the set this sector draws (a resident) or last
+   *  drew. A resident whose signature no longer matches the base's reloads
+   *  IN PLACE: the old sector stays on the globe while the new set loads. */
   signature: string;
-  /** In-flight load: `owned` holds every decoded texture from the moment it
-   *  exists (queued for warming or resident), so a release can dispose it —
-   *  which also dequeues it from the warm pump through its dispose hook. */
-  loading?: { pending: number; loaded: Partial<Record<MapName, THREE.Texture>>; owned: THREE.Texture[] };
+  /** In-flight load — a fresh admission, or a resident's in-place reload.
+   *  `owned` holds every decoded texture from the moment it exists (queued
+   *  for warming or landed), so a release can dispose it — which also
+   *  dequeues it from the warm pump through its dispose hook. A reload
+   *  reuses the maps the resident already draws (its colour tile above all:
+   *  the same URL, and the one upload that costs); those stay in `maps`,
+   *  never in `owned`, until the swap decides which of them survive. */
+  loading?: SectorLoad;
   mesh?: THREE.Mesh;
-  textures: THREE.Texture[];
+  /** The maps the resident mesh draws, by material slot. */
+  maps: Partial<Record<MapName, THREE.Texture>>;
   failStreak: number;
   retryAtMs: number;
+}
+
+interface SectorLoad {
+  signature: string;
+  pending: number;
+  loaded: Partial<Record<MapName, THREE.Texture>>;
+  owned: THREE.Texture[];
 }
 
 interface SectorBody {
@@ -328,7 +342,7 @@ export class SectorStreamer {
           keep: false,
           wanted: false,
           signature: '',
-          textures: [],
+          maps: {},
           failStreak: 0,
           retryAtMs: 0,
         });
@@ -410,7 +424,14 @@ export class SectorStreamer {
       slot.score = score;
       slot.wanted = fetchable && texelPx > SECTOR_WANT_TEXEL_PX;
       slot.keep = texelPx > SECTOR_RELEASE_TEXEL_PX;
-      if (slot.state !== 'idle' && (!slot.keep || slot.signature !== signature)) this.release(slot);
+      if (slot.state !== 'idle' && !slot.keep) this.release(slot);
+      // A load for a set the base no longer has is abandoned: a fresh
+      // admission starts over (nothing of it was showing), a resident's
+      // reload is dropped and the resident stays as it is.
+      else if (slot.loading && slot.loading.signature !== signature) {
+        if (slot.state === 'loading') this.release(slot);
+        else this.abandonLoad(slot);
+      }
     }
 
     // Mirror the globe's scalar state onto every live sector (eclipse tint,
@@ -422,6 +443,18 @@ export class SectorStreamer {
     }
 
     if (suspend === 'admissions') return;
+
+    // Residents drawn under another crop signature reload in place, ahead of
+    // new admissions: the base gained (or lost) a relief map, and a sector
+    // that shades differently from the globe around it is the worse defect.
+    // Releasing them instead would blink each one sharp -> soft -> sharp.
+    const stale = slots
+      .filter((s) => s.state === 'resident' && !s.loading && s.signature !== signature && nowMs >= s.retryAtMs)
+      .sort((a, b) => b.score - a.score);
+    for (const slot of stale) {
+      if (this.inflightCount() >= this.inflightCap) break;
+      this.startLoad(body, slot, signature);
+    }
 
     const candidates = slots
       .filter((s) => s.wanted && s.state === 'idle' && nowMs >= s.retryAtMs)
@@ -472,9 +505,10 @@ export class SectorStreamer {
     return n;
   }
 
+  /** Loads in flight: fresh admissions and in-place reloads alike. */
   private inflightCount(): number {
     let n = 0;
-    for (const body of this.bodies.values()) for (const s of body.slots) if (s.state === 'loading') n++;
+    for (const body of this.bodies.values()) for (const s of body.slots) if (s.loading) n++;
     return n;
   }
 
@@ -490,16 +524,23 @@ export class SectorStreamer {
   }
 
   private admit(body: SectorBody, slot: SectorSlot, signature: string): void {
-    const { handle } = body;
-    const gen = ++this.generation;
     slot.state = 'loading';
-    slot.gen = gen;
-    slot.signature = signature;
-    const stillWanted = () => slot.gen === gen && slot.state === 'loading';
     // The globe goes onto its fine grid now, not when the tile lands: the
     // fetch in between keeps the sphere rebuild off the frame that pays the
     // 16 MiB upload (idempotent; a no-op once the body is fine).
-    handle.ensureFineGeometry();
+    body.handle.ensureFineGeometry();
+    this.startLoad(body, slot, signature);
+  }
+
+  /** Fetch the set the base's current signature calls for into `slot` — a
+   *  fresh admission (state 'loading') or a resident's in-place reload. Every
+   *  callback checks the generation stamped here, so a release, a failure or
+   *  an abandonment in between makes a late arrival dispose itself. */
+  private startLoad(body: SectorBody, slot: SectorSlot, signature: string): void {
+    const { handle } = body;
+    const gen = ++this.generation;
+    slot.gen = gen;
+    const stillWanted = () => slot.gen === gen;
 
     const maps: Array<{ name: MapName; url: string; kind: 'color' | 'data'; layout: TileLayout }> = [
       {
@@ -519,19 +560,29 @@ export class SectorStreamer {
         layout: dataCropLayout(this.grid, crop.baseWidth, crop.spanU ?? 1),
       });
     }
-    const loading = {
-      pending: maps.length,
-      loaded: {} as Partial<Record<MapName, THREE.Texture>>,
-      owned: [] as THREE.Texture[],
-    };
+    const loading: SectorLoad = { signature, pending: 0, loaded: {}, owned: [] };
     slot.loading = loading;
+    // A reload keeps every map the resident already draws that the new set
+    // still names; only the rest is fetched.
+    const toFetch = maps.filter((m) => {
+      const have = slot.maps[m.name];
+      if (have) loading.loaded[m.name] = have;
+      return !have;
+    });
+    loading.pending = toFetch.length;
+    if (loading.pending === 0) {
+      // The base lost a map: the sector simply drops its crop of it.
+      this.materialize(body, slot);
+      return;
+    }
 
     const fail = () => {
       if (!stillWanted()) return;
       // The attempt is over BEFORE its textures are disposed: the warm pump's
       // dispose hook reports 'disposed' synchronously from inside
       // tex.dispose(), and that report must find nothing left to fail.
-      slot.state = 'idle';
+      // A resident whose reload failed keeps drawing its old set.
+      if (slot.state === 'loading') slot.state = 'idle';
       slot.gen = ++this.generation;
       this.disposeLoaded(slot);
       slot.loading = undefined;
@@ -540,7 +591,7 @@ export class SectorStreamer {
         this.lastNowMs + SECTOR_RETRY_MS * 2 ** Math.min(slot.failStreak - 1, SECTOR_RETRY_MAX_DOUBLINGS);
     };
 
-    for (const m of maps) {
+    for (const m of toFetch) {
       this.load(
         m.url,
         (tex) => {
@@ -574,13 +625,19 @@ export class SectorStreamer {
     }
   }
 
+  /** Put the landed set on the globe. For a reload this is the swap: the new
+   *  mesh goes in and the old comes out in the same call, so no frame shows
+   *  the soft base between them, and only the old maps the new set does not
+   *  reuse are disposed. */
   private materialize(body: SectorBody, slot: SectorSlot): void {
     const { handle } = body;
-    const loaded = slot.loading?.loaded;
-    if (!loaded?.map) return;
+    const loading = slot.loading;
+    const map = loading?.loaded.map;
+    if (!loading || !map) return;
+    const loaded = loading.loaded;
     const geometry = sectorSphereGeometry(handle.radiusAU, this.grid, slot.sector, SECTOR_SEGMENTS);
     const material = createSectorMaterial(handle.material, {
-      map: loaded.map,
+      map,
       bumpMap: loaded.bumpMap ?? null,
       normalMap: loaded.normalMap ?? null,
       roughnessMap: loaded.roughnessMap ?? null,
@@ -589,11 +646,30 @@ export class SectorStreamer {
     mesh.name = `${handle.name} sector ${slot.sector.c}_${slot.sector.r}`;
     mesh.renderOrder = SECTOR_RENDER_ORDER;
     handle.mesh.add(mesh);
+    const previousMesh = slot.mesh;
+    const previousMaps = slot.maps;
     slot.mesh = mesh;
-    slot.textures = Object.values(loaded);
+    slot.maps = { ...loaded };
+    slot.signature = loading.signature;
     slot.loading = undefined;
     slot.state = 'resident';
     slot.failStreak = 0;
+    if (previousMesh) this.removeMesh(previousMesh);
+    const kept = new Set(Object.values(slot.maps));
+    for (const tex of Object.values(previousMaps)) if (!kept.has(tex)) tex.dispose();
+  }
+
+  private removeMesh(mesh: THREE.Mesh): void {
+    mesh.removeFromParent();
+    mesh.geometry.dispose();
+    (mesh.material as THREE.Material).dispose();
+  }
+
+  /** Drop a resident's in-flight reload; the resident keeps drawing. */
+  private abandonLoad(slot: SectorSlot): void {
+    slot.gen = ++this.generation;
+    this.disposeLoaded(slot);
+    slot.loading = undefined;
   }
 
   private disposeLoaded(slot: SectorSlot): void {
@@ -616,13 +692,11 @@ export class SectorStreamer {
     this.disposeLoaded(slot);
     slot.loading = undefined;
     if (slot.mesh) {
-      slot.mesh.removeFromParent();
-      slot.mesh.geometry.dispose();
-      (slot.mesh.material as THREE.Material).dispose();
+      this.removeMesh(slot.mesh);
       slot.mesh = undefined;
     }
-    for (const tex of slot.textures) tex.dispose();
-    slot.textures = [];
+    for (const tex of Object.values(slot.maps)) tex.dispose();
+    slot.maps = {};
     slot.state = 'idle';
   }
 }

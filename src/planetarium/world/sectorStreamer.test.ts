@@ -260,29 +260,135 @@ describe('SectorStreamer', () => {
     expect(streamer.stats().loading).toBe(0);
   });
 
-  it('reloads a resident sector when the base gains a relief map it lacks', () => {
-    loader.auto = true;
+  /** A Mars whose relief has not arrived: sectors load colour only. */
+  function marsWithoutRelief(): ReturnType<typeof earthHandle> {
     const mars = earthHandle();
     mars.name = 'Mars';
     mars.spec = SECTOR_SETS.Mars;
     mars.material.bumpMap = null;
     mars.material.roughnessMap = null;
-    mars.material.normalMap = null; // relief not arrived yet
+    mars.material.normalMap = null;
     streamer.register(mars);
+    return mars;
+  }
+  const sectorMesh = (h: SectorBodyHandle) => h.mesh.children[0] as THREE.Mesh;
+  const sectorMat = (h: SectorBodyHandle) => sectorMesh(h).material as THREE.MeshStandardMaterial;
+  const disposed = (r: { addEventListener: THREE.Texture['addEventListener'] }) => {
+    let d = false;
+    (r as THREE.Texture).addEventListener('dispose', () => { d = true; });
+    return () => d;
+  };
+
+  it('reloads a resident sector in place when the base gains a relief map it lacks', () => {
+    const mars = marsWithoutRelief();
+    loader.auto = true;
     streamer.update('Mars', cameraOver(2, 1), measureOf({ '2_1': 2 }), 0);
     expect(streamer.stats().bodies.Mars.resident).toEqual(['2_1']);
     expect(loader.requests.map((r) => r.url)).toEqual([expect.stringMatching(/tiles\/mars\/16k\/2_1\.webp$/)]);
     loader.requests.length = 0;
+    const before = sectorMesh(mars);
+    const colourTile = sectorMat(mars).map!;
+    const oldMaterialGone = disposed(sectorMat(mars));
+    loader.auto = false;
     mars.material.normalMap = new THREE.Texture(); // MOLA relief lands
     streamer.update('Mars', cameraOver(2, 1), measureOf({ '2_1': 2 }), 16);
-    // Released and re-admitted in the same frame, this time with the crop.
+    // Only the crop is fetched — the colour tile is the same URL and the one
+    // upload that costs — and the old sector keeps drawing meanwhile.
+    expect(loader.requests.map((r) => r.url)).toEqual([expect.stringMatching(/tiles\/mars-normal\/2k\/2_1\.webp$/)]);
     expect(streamer.stats().bodies.Mars.resident).toEqual(['2_1']);
+    expect(sectorMesh(mars)).toBe(before);
+    expect(mars.mesh.children).toHaveLength(1);
+    loader.resolveAll();
+    // The swap: new mesh with the crop, old material disposed, colour tile reused.
+    expect(mars.mesh.children).toHaveLength(1);
+    expect(sectorMesh(mars)).not.toBe(before);
+    expect(sectorMat(mars).normalMap).not.toBeNull();
+    expect(sectorMat(mars).map).toBe(colourTile);
+    expect(oldMaterialGone()).toBe(true);
+    expect(streamer.stats().bodies.Mars.resident).toEqual(['2_1']);
+    // Settled: the next frame asks for nothing more.
+    streamer.update('Mars', cameraOver(2, 1), measureOf({ '2_1': 2 }), 32);
+    expect(loader.requests).toEqual([]);
+  });
+
+  it('keeps a resident drawing when its reload fails, and retries after the backoff', () => {
+    const mars = marsWithoutRelief();
+    loader.auto = true;
+    streamer.update('Mars', cameraOver(2, 1), measureOf({ '2_1': 2 }), 0);
+    const before = sectorMesh(mars);
+    loader.auto = false;
+    loader.requests.length = 0;
+    mars.material.normalMap = new THREE.Texture();
+    streamer.update('Mars', cameraOver(2, 1), measureOf({ '2_1': 2 }), 16);
+    expect(loader.requests).toHaveLength(1);
+    loader.failAll();
+    expect(streamer.stats().bodies.Mars.resident).toEqual(['2_1']);
+    expect(sectorMesh(mars)).toBe(before);
+    streamer.update('Mars', cameraOver(2, 1), measureOf({ '2_1': 2 }), 32);
+    expect(loader.requests).toEqual([]); // cooling down, not hammering
+    streamer.update('Mars', cameraOver(2, 1), measureOf({ '2_1': 2 }), 32 + SECTOR_RETRY_MS);
+    expect(loader.requests.map((r) => r.url)).toEqual([expect.stringMatching(/tiles\/mars-normal\/2k\/2_1\.webp$/)]);
+  });
+
+  it('abandons a reload whose set the base no longer has, keeping the resident', () => {
+    const mars = marsWithoutRelief();
+    loader.auto = true;
+    streamer.update('Mars', cameraOver(2, 1), measureOf({ '2_1': 2 }), 0);
+    const before = sectorMesh(mars);
+    loader.auto = false;
+    mars.material.normalMap = new THREE.Texture();
+    streamer.update('Mars', cameraOver(2, 1), measureOf({ '2_1': 2 }), 16);
+    const request = loader.requests.splice(0)[0];
+    mars.material.normalMap = null; // the relief went away again
+    streamer.update('Mars', cameraOver(2, 1), measureOf({ '2_1': 2 }), 32);
+    expect(loader.requests).toEqual([]);
+    expect(sectorMesh(mars)).toBe(before);
+    // The late crop finds its attempt gone and disposes itself.
+    const late = new THREE.Texture();
+    const lateGone = disposed(late);
+    request.onLoad(late);
+    expect(lateGone()).toBe(true);
+    expect(sectorMesh(mars)).toBe(before);
+  });
+
+  it('drops a crop without a fetch when the base loses that map', () => {
+    loader.auto = true;
+    streamer.update('Earth', cameraOver(2, 1), measureOf({ '2_1': 2 }), 0);
+    expect(sectorMat(earth).bumpMap).not.toBeNull();
+    const colourTile = sectorMat(earth).map!;
+    const oldBump = sectorMat(earth).bumpMap!;
+    const bumpGone = disposed(oldBump);
+    loader.requests.length = 0;
+    earth.material.bumpMap = null;
+    streamer.update('Earth', cameraOver(2, 1), measureOf({ '2_1': 2 }), 16);
+    expect(loader.requests).toEqual([]);
+    expect(sectorMat(earth).bumpMap).toBeNull();
+    expect(sectorMat(earth).map).toBe(colourTile);
+    expect(bumpGone()).toBe(true);
+    expect(streamer.stats().bodies.Earth.resident).toEqual(['2_1']);
+  });
+
+  it('counts an in-place reload against the in-flight cap', () => {
+    const mars = marsWithoutRelief();
+    loader.auto = true;
+    streamer.update('Mars', cameraOver(2, 1), measureOf({ '2_1': 2, '3_1': 1.9, '1_1': 1.8 }), 0);
+    expect(streamer.stats().bodies.Mars.resident.sort()).toEqual(['1_1', '2_1', '3_1']);
+    loader.auto = false;
+    loader.requests.length = 0;
+    mars.material.normalMap = new THREE.Texture();
+    streamer.update('Mars', cameraOver(2, 1), measureOf({ '2_1': 2, '3_1': 1.9, '1_1': 1.8, '2_0': 1.7 }), 16);
+    // Two reloads fill the desktop cap; the third resident and the new 2_0 wait.
+    expect(loader.requests).toHaveLength(SECTOR_INFLIGHT_CAP_DESKTOP);
+    expect(loader.requests.every((r) => /mars-normal/.test(r.url))).toBe(true);
+    expect(streamer.stats().bodies.Mars.resident.sort()).toEqual(['1_1', '2_1', '3_1']);
+    loader.resolveAll();
+    streamer.update('Mars', cameraOver(2, 1), measureOf({ '2_1': 2, '3_1': 1.9, '1_1': 1.8, '2_0': 1.7 }), 32);
+    // The third reload goes first, then the admission (its tile and crop).
     expect(loader.requests.map((r) => r.url).sort()).toEqual([
-      expect.stringMatching(/tiles\/mars-normal\/2k\/2_1\.webp$/),
-      expect.stringMatching(/tiles\/mars\/16k\/2_1\.webp$/),
+      expect.stringMatching(/tiles\/mars-normal\/2k\/1_1\.webp$/),
+      expect.stringMatching(/tiles\/mars-normal\/2k\/2_0\.webp$/),
+      expect.stringMatching(/tiles\/mars\/16k\/2_0\.webp$/),
     ]);
-    const mat = (mars.mesh.children[0] as THREE.Mesh).material as THREE.MeshStandardMaterial;
-    expect(mat.normalMap).not.toBeNull();
   });
 
   it('mirrors the base material scalars onto live sectors every frame', () => {

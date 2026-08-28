@@ -2,16 +2,25 @@
  * The shipped tile sets against the layout the app reads them with. The tool
  * that cuts tiles (tools/gen-tiles.mjs) and the runtime that samples them
  * (sectorGrid / sectorStreamer) hold the same gutter, grid and crop-width
- * arithmetic independently; this test is the one place that ties the files
- * on disk to the runtime's numbers, so a regeneration with a different
- * gutter, a base map at a new width, or a missing tile fails CI instead of
- * shipping misregistered sectors. Reads only WebP headers — no decode.
+ * arithmetic independently; this test ties them together through the table
+ * gen-tiles generates, so a regeneration with a different gutter, a base map
+ * at a new width, or a set the app doesn't name fails CI instead of shipping
+ * misregistered sectors.
+ *
+ * Two halves, deliberately separate. The first needs nothing but the
+ * generated table and the base maps, and stays true wherever the tiles are
+ * served from. The second reads the tile files themselves — including
+ * recomputing each set's hash from its bytes — and is the half that belongs
+ * to gen-tiles once the sets are published from their own repository rather
+ * than from public/. Reads only WebP headers — no decode.
  */
 import { describe, it, expect } from 'vitest';
+import { createHash } from 'node:crypto';
 import { readFileSync, readdirSync, existsSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { SECTOR_GRID_16K, SECTOR_TILE, dataCropLayout } from './sectorGrid';
-import { SECTOR_SETS } from './sectorStreamer';
+import { SECTOR_SETS, type SectorTileSet } from './sectorStreamer';
+import { SECTOR_SET_TABLE, type GeneratedSectorSet } from './sectorSets.generated';
 import { PLANET_TEXTURE_FILES } from '../PlanetFactory';
 
 const TEXTURES = resolve(__dirname, '../../../public/textures');
@@ -37,49 +46,79 @@ function webpSize(file: string): { width: number; height: number } {
   throw new Error(`${file}: unknown WebP chunk ${chunk}`);
 }
 
-function tileDir(key: string, tier: string): string {
-  return resolve(TEXTURES, 'tiles', key, tier);
-}
-
-function expectFullSet(dir: string, size: { width: number; height: number }) {
-  const { cols, rows } = SECTOR_GRID_16K;
-  const files = readdirSync(dir).filter((f) => f.endsWith('.webp')).sort();
-  const expected: string[] = [];
-  for (let r = 0; r < rows; r++) for (let c = 0; c < cols; c++) expected.push(`${c}_${r}.webp`);
-  expect(files).toEqual(expected.sort());
-  for (const f of files) expect(webpSize(resolve(dir, f))).toEqual(size);
-}
-
-describe('shipped sector tile sets', () => {
-  for (const [body, set] of Object.entries(SECTOR_SETS)) {
-    it(`${body}: 32 colour tiles at the 2048² tile layout`, () => {
-      expectFullSet(tileDir(set.colorKey, '16k'), { width: SECTOR_TILE.width, height: SECTOR_TILE.height });
-    });
-
-    for (const [slot, crop] of Object.entries(set.crops)) {
-      it(`${body}: ${slot} crops match the layout cut from the base map's real width`, () => {
-        const layout = dataCropLayout(SECTOR_GRID_16K, crop.baseWidth, crop.spanU ?? 1);
-        expectFullSet(tileDir(crop.key, crop.tier), { width: layout.width, height: layout.height });
-      });
+/** Every set the app names, with the table entry it resolves to. */
+function appSets(): Array<{ body: string; slot: string; set: SectorTileSet; entry: GeneratedSectorSet }> {
+  const out = [];
+  for (const [body, spec] of Object.entries(SECTOR_SETS)) {
+    for (const [slot, set] of [['map', spec.color] as const, ...Object.entries(spec.crops)]) {
+      const entry = SECTOR_SET_TABLE[`${set.key}/${set.tier}`];
+      expect(entry, `${body} ${slot}: no generated entry for ${set.key}/${set.tier}`).toBeDefined();
+      out.push({ body, slot, set, entry });
     }
   }
+  return out;
+}
+
+function setDir(set: SectorTileSet): string {
+  return resolve(TEXTURES, 'tiles', set.key, `${set.tier}.${set.hash}`);
+}
+
+describe('sector tile sets: what the app asks for', () => {
+  it('names a generated set, at the hash the table publishes', () => {
+    // The hash in the URL is the whole promise a tile path makes; a stale one
+    // is a 404, and a 404 is a globe that quietly stays soft.
+    for (const { body, slot, set, entry } of appSets()) {
+      expect(set.hash, `${body} ${slot}`).toBe(entry.setHash8);
+      expect(set.hash, `${body} ${slot}`).toMatch(/^[0-9a-f]{8}$/);
+    }
+  });
+
+  it('reads every set at the grid and gutter it was cut with', () => {
+    for (const { body, slot, entry } of appSets()) {
+      expect(entry.grid, `${body} ${slot}`).toEqual(SECTOR_GRID_16K);
+      expect(entry.gutter, `${body} ${slot}`).toBe(SECTOR_TILE.gutterY);
+      expect(entry.fileCount, `${body} ${slot}`).toBe(SECTOR_GRID_16K.cols * SECTOR_GRID_16K.rows);
+      expect(entry.baseWidth, `${body} ${slot}`).toBe(entry.content * entry.grid.cols);
+    }
+  });
+
+  it('colour tiles are the 2048² tile layout', () => {
+    for (const spec of Object.values(SECTOR_SETS)) {
+      const entry = SECTOR_SET_TABLE[`${spec.color.key}/${spec.color.tier}`];
+      expect({ width: entry.tileWidth, height: entry.tileHeight }).toEqual({
+        width: SECTOR_TILE.width,
+        height: SECTOR_TILE.height,
+      });
+      expect(entry.spanU).toBe(SECTOR_TILE.spanU);
+    }
+  });
+
+  it('crops match the layout cut from the base map’s real width', () => {
+    for (const [body, spec] of Object.entries(SECTOR_SETS)) {
+      for (const [slot, crop] of Object.entries(spec.crops)) {
+        const entry = SECTOR_SET_TABLE[`${crop.key}/${crop.tier}`];
+        const layout = dataCropLayout(SECTOR_GRID_16K, crop.baseWidth, crop.spanU ?? 1);
+        expect({ width: entry.tileWidth, height: entry.tileHeight }, `${body} ${slot}`).toEqual({
+          width: layout.width,
+          height: layout.height,
+        });
+        expect(entry.baseWidth, `${body} ${slot}`).toBe(crop.baseWidth);
+        expect(entry.spanU, `${body} ${slot}`).toBe(crop.spanU ?? 1);
+      }
+    }
+  });
 
   it('every set key is the file stem of the map it was cut from', () => {
-    // The stem carries a re-based map's new name into its tiles' paths, so
-    // the service worker can never pair an old globe with new tiles or the
-    // reverse (it may serve a one-deploy-old body under an unchanged
-    // pathname for a boot).
+    // The stem carries a re-based map's new name into its tiles' paths, so a
+    // globe and its tiles can never come from two different worlds.
     const stem = (file: string) => file.replace(/^.*\//, '').replace(/\.webp$/, '');
-    expect(SECTOR_SETS.Earth.colorKey).toBe(stem(PLANET_TEXTURE_FILES.earthDay));
-    expect(SECTOR_SETS.Mars.colorKey).toBe(stem(PLANET_TEXTURE_FILES.mars));
-    expect(SECTOR_SETS.Moon.colorKey).toBe(stem(PLANET_TEXTURE_FILES.moon));
+    expect(SECTOR_SETS.Earth.color.key).toBe(stem(PLANET_TEXTURE_FILES.earthDay));
+    expect(SECTOR_SETS.Mars.color.key).toBe(stem(PLANET_TEXTURE_FILES.mars));
+    expect(SECTOR_SETS.Moon.color.key).toBe(stem(PLANET_TEXTURE_FILES.moon));
     expect(SECTOR_SETS.Earth.crops.bumpMap!.key).toBe(stem(PLANET_TEXTURE_FILES.earthBump));
     expect(SECTOR_SETS.Earth.crops.roughnessMap!.key).toBe(stem(PLANET_TEXTURE_FILES.earthRoughness));
     expect(SECTOR_SETS.Mars.crops.normalMap!.key).toBe(stem(PLANET_TEXTURE_FILES.marsNormal));
     expect(SECTOR_SETS.Moon.crops.normalMap!.key).toBe(stem(PLANET_TEXTURE_FILES.moonNormal));
-    for (const [body, set] of Object.entries(SECTOR_SETS)) {
-      expect(existsSync(tileDir(set.colorKey, '16k')), `${body}: no 16k folder for ${set.colorKey}`).toBe(true);
-    }
   });
 
   it('every crop set names the width of the base map it was cut from', () => {
@@ -102,6 +141,46 @@ describe('shipped sector tile sets', () => {
         expect(existsSync(path), `${base.file} missing on disk`).toBe(true);
         expect(webpSize(path).width, `${crop.key} baseWidth vs ${base.file}`).toBe(crop.baseWidth * base.shippedScale);
       }
+    }
+  });
+});
+
+describe('sector tile sets: the files on disk', () => {
+  // This half only holds while the sets ship inside the app. Once they are
+  // published from their own repository the same checks live in
+  // `gen-tiles --verify`, where the bytes are.
+  it('every named set is a full grid of tiles at its declared size', () => {
+    for (const { body, slot, set, entry } of appSets()) {
+      const dir = setDir(set);
+      expect(existsSync(dir), `${body} ${slot}: no folder ${set.key}/${set.tier}.${set.hash}`).toBe(true);
+      const files = readdirSync(dir).filter((f) => f.endsWith('.webp')).sort();
+      const expected: string[] = [];
+      for (let r = 0; r < entry.grid.rows; r++) {
+        for (let c = 0; c < entry.grid.cols; c++) expected.push(`${c}_${r}.webp`);
+      }
+      expect(files, `${body} ${slot}`).toEqual(expected.sort());
+      for (const f of files) {
+        expect(webpSize(resolve(dir, f)), `${body} ${slot} ${f}`).toEqual({
+          width: entry.tileWidth,
+          height: entry.tileHeight,
+        });
+      }
+    }
+  });
+
+  it('every set folder is named for the bytes inside it', () => {
+    // gen-tiles' recipe: SHA-256 over the sorted `<name>\0<file sha256>\n`
+    // list of the whole set, first 8 hex. One changed tile moves the folder,
+    // which is what lets a tile URL be cached with no expiry.
+    for (const { body, slot, set } of appSets()) {
+      const dir = setDir(set);
+      const files = readdirSync(dir).filter((f) => f.endsWith('.webp')).sort();
+      const hash = createHash('sha256');
+      for (const name of files) {
+        const digest = createHash('sha256').update(readFileSync(resolve(dir, name))).digest('hex');
+        hash.update(`${name}\0${digest}\n`);
+      }
+      expect(hash.digest('hex').slice(0, 8), `${body} ${slot} ${set.key}/${set.tier}`).toBe(set.hash);
     }
   });
 });

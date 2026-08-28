@@ -59,64 +59,80 @@ import {
 } from './sectorGrid';
 import { SECTOR_RENDER_ORDER, createSectorMaterial, syncSectorMaterial } from './sectorMaterial';
 import { loadStreamedTexture, type TextureLoad } from './textureBitmapLoader';
-import { applyTextureDefaults, resolveTileUrl, type TextureTier } from './texturePolicy';
+import { applyTextureDefaults, resolveTileUrl, sectorSetHash } from './texturePolicy';
 import { TIER_RANK } from '../PlanetFactory';
 import { queueTextureWarm, type WarmOutcome } from './textureWarmer';
 
 export type CropSlot = 'bumpMap' | 'normalMap' | 'roughnessMap';
 
-export interface SectorCropSpec {
-  /** Tile-set key under textures/tiles/: the FILE STEM of the base map the
-   *  crops were cut from (`earth-roughness.v2` for earth-roughness.v2.webp),
-   *  so a base that ships under a new name takes its crops with it — see
-   *  SECTOR_SETS. */
+/** One published tile set — the three things a tile URL is made of. */
+export interface SectorTileSet {
+  /** Tile-set key under textures/tiles/: the FILE STEM of the map the set was
+   *  cut from (`earth-roughness.v2` for earth-roughness.v2.webp), so a base
+   *  that ships under a new name takes its tiles with it — see SECTOR_SETS. */
   key: string;
-  /** The base map's tier folder the crops were cut from. */
-  tier: TextureTier;
-  /** Width of that base map — the crop layout (content + gutter) follows. */
+  /** Tier folder: a colour set's source resolution, a crop's the tier of the
+   *  base map it was cut from. */
+  tier: string;
+  /** Hash of the whole set's bytes, from the generated table. */
+  hash: string;
+}
+
+export interface SectorCropSpec extends SectorTileSet {
+  /** Width of the base map — the crop layout (content + gutter) follows. */
   baseWidth: number;
   /** Sectors of longitude a crop spans (normal maps: 2, see sectorGrid). */
   spanU?: number;
 }
 
 export interface SectorSetSpec {
-  /** Tile-set key of the colour tiles: the file stem of the globe's own
-   *  colour map (its boot file, or the tier the tiles were matched to). */
-  colorKey: string;
+  /** The colour tiles: cut from the globe's own colour map (its boot file, or
+   *  the tier the tiles were matched to). */
+  color: SectorTileSet;
   /** Crops for the relief / roughness slots the base material carries. A slot
    *  the base does not currently have is not loaded; if the base gains one
    *  later (Mars's relief arrives after boot) resident sectors reload. */
   crops: Partial<Record<CropSlot, SectorCropSpec>>;
 }
 
+/** A set's identity as the app names it: key, tier, and the hash gen-tiles
+ *  published it under. */
+function tileSet(key: string, tier: string): SectorTileSet {
+  return { key, tier, hash: sectorSetHash(key, tier) };
+}
+
+/** URL of one sector's tile in a set. */
+function tileUrlOf(set: SectorTileSet, sector: Sector): string {
+  return resolveTileUrl(set.key, set.tier, set.hash, sector.c, sector.r);
+}
+
 /** The bodies that ship a sector set, by catalog name. Colour tiles are the
  *  16K sets; every crop is the base map it names, sector-cut with the same
  *  gutter (tools/gen-tiles.mjs writes both).
  *
- *  Every key is the file stem of the map it was cut from or matched to
- *  (sectorTiles.assets.test pins this). That is what keeps a globe and its
- *  tiles coherent through the service worker: the worker may serve a
- *  one-deploy-old body under any pathname it already holds for a boot, so a
- *  base map that changes ships under a new name (`.v2` -> `.v3`) — and with
- *  the stem in the tile paths, a set cut from the new map cannot be reached
- *  through the old paths, nor the old set through the new. A re-cut of a
- *  set whose base did not change (a layout change, a new gutter) bumps the
- *  base's name for the same reason. */
+ *  Each set is named by the file stem of the map it was cut from or matched
+ *  to, plus the hash of its own bytes that gen-tiles published it under
+ *  (sectorTiles.assets.test pins both). The hash is what keeps a globe and
+ *  its tiles coherent through any cache: a re-cut set lands in a folder
+ *  nothing has ever asked for, so a stale tile body is not something a cache
+ *  can hold, only something it can miss. The stem carries the same guarantee
+ *  one level up — a base map that changes ships under a new name
+ *  (`.v2` -> `.v3`) and takes its tiles with it. */
 export const SECTOR_SETS: Record<string, SectorSetSpec> = {
   Earth: {
-    colorKey: 'earth-day.v2',
+    color: tileSet('earth-day.v2', '16k'),
     crops: {
-      bumpMap: { key: 'earth-bump', tier: '2k', baseWidth: 2048 },
-      roughnessMap: { key: 'earth-roughness.v2', tier: '4k', baseWidth: 4096 },
+      bumpMap: { ...tileSet('earth-bump', '2k'), baseWidth: 2048 },
+      roughnessMap: { ...tileSet('earth-roughness.v2', '4k'), baseWidth: 4096 },
     },
   },
   Mars: {
-    colorKey: 'mars.v2',
-    crops: { normalMap: { key: 'mars-normal.v2', tier: '2k', baseWidth: 1440, spanU: 2 } },
+    color: tileSet('mars.v2', '16k'),
+    crops: { normalMap: { ...tileSet('mars-normal.v2', '2k'), baseWidth: 1440, spanU: 2 } },
   },
   Moon: {
-    colorKey: 'moon',
-    crops: { normalMap: { key: 'moon-normal', tier: '4k', baseWidth: 2880, spanU: 2 } },
+    color: tileSet('moon', '16k'),
+    crops: { normalMap: { ...tileSet('moon-normal', '4k'), baseWidth: 2880, spanU: 2 } },
   },
 };
 
@@ -630,7 +646,7 @@ export class SectorStreamer {
     const maps: Array<{ name: MapName; url: string; kind: 'color' | 'data'; layout: TileLayout }> = [
       {
         name: 'map',
-        url: resolveTileUrl(handle.spec.colorKey, '16k', slot.sector.c, slot.sector.r),
+        url: tileUrlOf(handle.spec.color, slot.sector),
         kind: 'color',
         layout: SECTOR_TILE,
       },
@@ -640,7 +656,7 @@ export class SectorStreamer {
       if (!crop || !realMapIn(handle.material, cropSlot)) continue;
       maps.push({
         name: cropSlot,
-        url: resolveTileUrl(crop.key, crop.tier, slot.sector.c, slot.sector.r),
+        url: tileUrlOf(crop, slot.sector),
         kind: 'data',
         layout: dataCropLayout(this.grid, crop.baseWidth, crop.spanU ?? 1),
       });

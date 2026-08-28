@@ -141,9 +141,9 @@ describe('SectorStreamer', () => {
     streamer.update('Earth', cameraOver(2, 1), measureOf({ '2_1': 2 }), 0);
     const urls = loader.requests.map((r) => r.url).sort();
     expect(urls).toEqual([
-      expect.stringMatching(/textures\/tiles\/earth-bump\/2k\/2_1\.webp$/),
-      expect.stringMatching(/textures\/tiles\/earth-day\.v2\/16k\/2_1\.webp$/),
-      expect.stringMatching(/textures\/tiles\/earth-roughness\.v2\/4k\/2_1\.webp$/),
+      expect.stringMatching(/textures\/tiles\/earth-bump\/2k\.[0-9a-f]{8}\/2_1\.webp$/),
+      expect.stringMatching(/textures\/tiles\/earth-day\.v2\/16k\.[0-9a-f]{8}\/2_1\.webp$/),
+      expect.stringMatching(/textures\/tiles\/earth-roughness\.v2\/4k\.[0-9a-f]{8}\/2_1\.webp$/),
     ]);
     expect(streamer.stats().bodies.Earth.loading).toEqual(['2_1']);
   });
@@ -302,7 +302,7 @@ describe('SectorStreamer', () => {
     loader.auto = true;
     streamer.update('Mars', cameraOver(2, 1), measureOf({ '2_1': 2 }), 0);
     expect(streamer.stats().bodies.Mars.resident).toEqual(['2_1']);
-    expect(loader.requests.map((r) => r.url)).toEqual([expect.stringMatching(/tiles\/mars\.v2\/16k\/2_1\.webp$/)]);
+    expect(loader.requests.map((r) => r.url)).toEqual([expect.stringMatching(/tiles\/mars\.v2\/16k\.[0-9a-f]{8}\/2_1\.webp$/)]);
     loader.requests.length = 0;
     const before = sectorMesh(mars);
     const colourTile = sectorMat(mars).map!;
@@ -312,7 +312,7 @@ describe('SectorStreamer', () => {
     streamer.update('Mars', cameraOver(2, 1), measureOf({ '2_1': 2 }), 16);
     // Only the crop is fetched — the colour tile is the same URL and the one
     // upload that costs — and the old sector keeps drawing meanwhile.
-    expect(loader.requests.map((r) => r.url)).toEqual([expect.stringMatching(/tiles\/mars-normal\.v2\/2k\/2_1\.webp$/)]);
+    expect(loader.requests.map((r) => r.url)).toEqual([expect.stringMatching(/tiles\/mars-normal\.v2\/2k\.[0-9a-f]{8}\/2_1\.webp$/)]);
     expect(streamer.stats().bodies.Mars.resident).toEqual(['2_1']);
     expect(streamer.stats().bodies.Mars.reloading).toEqual(['2_1']);
     expect(streamer.stats().inflight).toBe(1);
@@ -349,7 +349,7 @@ describe('SectorStreamer', () => {
     expect(loader.requests).toEqual([]);
     // Sunrise: now it reloads.
     streamer.update('Mars', cameraOver(2, 1), measureOf({ '2_1': 2 }), 32, 'none', sunOver(2, 1));
-    expect(loader.requests.map((r) => r.url)).toEqual([expect.stringMatching(/tiles\/mars-normal\.v2\/2k\/2_1\.webp$/)]);
+    expect(loader.requests.map((r) => r.url)).toEqual([expect.stringMatching(/tiles\/mars-normal\.v2\/2k\.[0-9a-f]{8}\/2_1\.webp$/)]);
   });
 
   it('keeps a resident drawing when its reload fails, and retries after the backoff', () => {
@@ -368,7 +368,7 @@ describe('SectorStreamer', () => {
     streamer.update('Mars', cameraOver(2, 1), measureOf({ '2_1': 2 }), 32);
     expect(loader.requests).toEqual([]); // cooling down, not hammering
     streamer.update('Mars', cameraOver(2, 1), measureOf({ '2_1': 2 }), 32 + SECTOR_RETRY_MS);
-    expect(loader.requests.map((r) => r.url)).toEqual([expect.stringMatching(/tiles\/mars-normal\.v2\/2k\/2_1\.webp$/)]);
+    expect(loader.requests.map((r) => r.url)).toEqual([expect.stringMatching(/tiles\/mars-normal\.v2\/2k\.[0-9a-f]{8}\/2_1\.webp$/)]);
   });
 
   it('abandons a reload whose set the base no longer has, keeping the resident', () => {
@@ -474,9 +474,9 @@ describe('SectorStreamer', () => {
     streamer.update('Mars', cameraOver(2, 1), measureOf({ '2_1': 2, '3_1': 1.9, '1_1': 1.8, '2_0': 1.7 }), 32);
     // The third reload goes first, then the admission (its tile and crop).
     expect(loader.requests.map((r) => r.url).sort()).toEqual([
-      expect.stringMatching(/tiles\/mars-normal\.v2\/2k\/1_1\.webp$/),
-      expect.stringMatching(/tiles\/mars-normal\.v2\/2k\/2_0\.webp$/),
-      expect.stringMatching(/tiles\/mars\.v2\/16k\/2_0\.webp$/),
+      expect.stringMatching(/tiles\/mars-normal\.v2\/2k\.[0-9a-f]{8}\/1_1\.webp$/),
+      expect.stringMatching(/tiles\/mars-normal\.v2\/2k\.[0-9a-f]{8}\/2_0\.webp$/),
+      expect.stringMatching(/tiles\/mars\.v2\/16k\.[0-9a-f]{8}\/2_0\.webp$/),
     ]);
   });
 

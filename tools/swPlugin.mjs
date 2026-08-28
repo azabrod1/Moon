@@ -33,6 +33,9 @@ const DATA_DIRS = ['textures', 'stardata', 'fonts', 'models', 'historic'];
 const MIN_WARM_TEXTURES = 21;
 const TILE_ROOT = 'textures/tiles';
 const TEMPLATE_PATH = fileURLToPath(new URL('./sw.template.js', import.meta.url));
+const GENERATED_SETS_PATH = fileURLToPath(new URL('../src/planetarium/world/sectorSets.generated.ts', import.meta.url));
+const TABLE_BEGIN = '/* table:begin */';
+const TABLE_END = '/* table:end */';
 
 function walkFiles(dir) {
   const out = [];
@@ -44,23 +47,20 @@ function walkFiles(dir) {
   return out;
 }
 
-/** URL prefixes of the shipped tile sets — one per <key>/<tier> folder under
- *  textures/tiles/. The worker matches cached tiles against these, so a set
- *  that leaves the app is pruned off devices that hold it. */
-function tileSetPrefixes(outDir, base) {
-  const root = path.join(outDir, TILE_ROOT);
-  if (!existsSync(root)) return [];
-  const prefixes = [];
-  for (const key of readdirSync(root)) {
-    const keyDir = path.join(root, key);
-    if (!statSync(keyDir).isDirectory()) continue;
-    for (const tier of readdirSync(keyDir)) {
-      if (statSync(path.join(keyDir, tier)).isDirectory()) {
-        prefixes.push(`${base}${TILE_ROOT}/${key}/${tier}/`);
-      }
-    }
-  }
-  return prefixes.sort();
+/** The tile sets the app names, read out of the table gen-tiles generates —
+ *  the same table the app resolves its tile URLs through, so the worker
+ *  cannot end up allowing a set nothing fetches or refusing one it does. That
+ *  file emits its literal as JSON between markers for exactly this reason. */
+function generatedTileSets() {
+  const source = readFileSync(GENERATED_SETS_PATH, 'utf8');
+  const begin = source.indexOf(TABLE_BEGIN);
+  const end = source.indexOf(TABLE_END);
+  if (begin < 0 || end < 0) throw new Error('sw: sectorSets.generated.ts has no table markers');
+  const table = JSON.parse(source.slice(begin + TABLE_BEGIN.length, end));
+  return Object.entries(table).map(([id, set]) => {
+    const [key, tier] = id.split('/');
+    return { id, dir: `${TILE_ROOT}/${key}/${tier}.${set.setHash8}/` };
+  });
 }
 
 export default function swPlugin() {
@@ -129,8 +129,16 @@ export default function swPlugin() {
       // legitimate: an empty one silently turns tile caching off and lets the
       // activate prune delete every tile a device holds. Loud, like the
       // precache checks above.
-      const tileSets = tileSetPrefixes(outDir, base);
-      if (tileSets.length === 0) throw new Error(`sw: no tile sets found under dist/${TILE_ROOT}/`);
+      const sets = generatedTileSets();
+      if (sets.length === 0) throw new Error('sw: the generated tile-set table names no sets');
+      for (const set of sets) {
+        // A set folder named by a hash the tiles on disk don't have is a
+        // 404 per tile at runtime and a globe that just looks soft.
+        if (!existsSync(path.join(outDir, set.dir))) {
+          throw new Error(`sw: tile set ${set.id} is not in dist under ${set.dir}`);
+        }
+      }
+      const tileSets = sets.map((set) => base + set.dir);
       // Off-origin tile hosts, empty while the tiles ship with the app: the
       // worker touches a cross-origin request only for an origin named here.
       const tileOrigins = [];

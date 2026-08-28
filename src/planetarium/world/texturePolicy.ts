@@ -7,6 +7,7 @@
  * loader.
  */
 import * as THREE from 'three';
+import { SECTOR_SET_TABLE } from './sectorSets.generated';
 
 /** Every resolution tier that exists, ascending. This list names them and
  *  fixes that ascending convention: the device clamp walks it directly, and a
@@ -27,17 +28,31 @@ export function resolveTextureUrl(file: string, tier: TextureTier): string {
   return tier === '2k' ? `${TEXTURE_BASE}${file}` : `${TEXTURE_BASE}${tier}/${file}`;
 }
 
-/** Sector tile sets live under textures/tiles/<key>/<tier>/<c>_<r>.webp —
- *  the key is the file stem of the map the set was cut from ('earth-day.v2'),
- *  a colour set's tier names its source resolution ('16k'), a data crop's
- *  the base map it was cut from ('2k', '4k'). Cut by tools/gen-tiles.mjs.
- *  Everything the app reads into a pathname — the map's identity through
+/** Sector tile sets live under
+ *  textures/tiles/<key>/<tier>.<setHash8>/<c>_<r>.webp — the key is the file
+ *  stem of the map the set was cut from ('earth-day.v2'), a colour set's tier
+ *  names its source resolution ('16k'), a data crop's the base map it was cut
+ *  from ('2k', '4k'), and the hash is over the whole set's bytes. Cut by
+ *  tools/gen-tiles.mjs, which writes the hashes into sectorSets.generated.ts.
+ *
+ *  The set hash is what the pathname promises: exactly those bytes or a 404.
+ *  Everything else the app reads into a pathname — the map's identity through
  *  its stem, the 8×4 grid, the 8-px gutter, the two-sector-wide normal crops
- *  (sectorGrid) — is that pathname's contract: the service worker may serve
- *  a one-deploy-old body under it for a boot, so a re-based map or a layout
- *  change ships under a new name, never as new code reading old paths. */
-export function resolveTileUrl(key: string, tier: string, c: number, r: number): string {
-  return `${TEXTURE_BASE}tiles/${key}/${tier}/${c}_${r}.webp`;
+ *  (sectorGrid) — is a layout the set was cut at, so a re-cut set lands on a
+ *  new path by construction and no cache, near or far, can pair an old body
+ *  with new code. The stem is the same rule one level up: a re-based base map
+ *  ships under a new name and takes its tiles with it. */
+export function resolveTileUrl(key: string, tier: string, hash: string, c: number, r: number): string {
+  return `${TEXTURE_BASE}tiles/${key}/${tier}.${hash}/${c}_${r}.webp`;
+}
+
+/** The published hash of a shipped set. Throws rather than compose a URL that
+ *  would 404: tiles fail open to the base map, so a set named but not cut
+ *  would show as a quietly soft globe instead of an error. */
+export function sectorSetHash(key: string, tier: string): string {
+  const entry = SECTOR_SET_TABLE[`${key}/${tier}`];
+  if (!entry) throw new Error(`no tile set ${key}/${tier} — run node tools/gen-tiles.mjs --index`);
+  return entry.setHash8;
 }
 
 // Smallest GL max-texture-size that can hold a tier's maps. The boot tier has

@@ -1082,6 +1082,7 @@ describe('SectorStreamer', () => {
     const away = new Set(['L1/4_3', 'L1/5_2', 'L1/5_3']);
     const earthMeasure = measureLevels(TWO_LEVELS, sizes, 1, away);
     streamer.update('Earth', INSIDE, earthMeasure, 0);
+    streamer.update('Earth', INSIDE, earthMeasure, 16); // drawn: the dwell starts
     expect(streamer.stats().bodies.Earth.resident.slice().sort()).toEqual(['2_1', 'L1/4_2']);
     // The order the two are given up in has to be child first: a parent
     // released early would drop the surface under a sector still drawing.
@@ -1331,12 +1332,14 @@ describe('SectorStreamer', () => {
     const sizes: Record<string, number> = {};
     for (let c = 0; c < 8; c++) { sizes[`${c}_1`] = 2 + 0.01 * c; sizes[`${c}_2`] = 2.1 + 0.01 * c; }
     streamer.update('Earth', INSIDE, measureOf(sizes), 0);
+    const drawn = 16;
+    streamer.update('Earth', INSIDE, measureOf(sizes), drawn); // the frame they first draw on
     const before = streamer.stats().bodies.Earth.resident.slice().sort();
-    // A far stronger candidate, while everything resident is seconds old.
+    // A far stronger candidate, while everything resident is a moment old.
     const withNewcomer = { ...sizes, '0_0': 50 };
-    streamer.update('Earth', INSIDE, measureOf(withNewcomer), SECTOR_EVICT_DWELL_MS - 1);
+    streamer.update('Earth', INSIDE, measureOf(withNewcomer), drawn + SECTOR_EVICT_DWELL_MS - 1);
     expect(streamer.stats().bodies.Earth.resident.slice().sort()).toEqual(before);
-    streamer.update('Earth', INSIDE, measureOf(withNewcomer), SECTOR_EVICT_DWELL_MS);
+    streamer.update('Earth', INSIDE, measureOf(withNewcomer), drawn + SECTOR_EVICT_DWELL_MS);
     expect(streamer.stats().bodies.Earth.resident).toContain('0_0');
   });
 
@@ -1408,7 +1411,7 @@ describe('SectorStreamer', () => {
     expect(streamer.stats().reserved).toBe(sectorSetGpuBytes(spec));
   });
 
-  it('starts the eviction dwell when the tile lands, not when the fetch does', () => {
+  it('starts the eviction dwell on the frame a tile is first drawn, not when its fetch lands', () => {
     // Room for exactly one Earth set, so every admission is a replacement.
     streamer.setGlobalMapBytes(SECTOR_ENVELOPE_BYTES_DESKTOP - EARTH_SET_BYTES);
     streamer.update('Earth', INSIDE, measureOf({ '2_1': 2 }), 0);
@@ -1417,15 +1420,21 @@ describe('SectorStreamer', () => {
     // still in the air: nothing has been uploaded for it to protect.
     streamer.update('Earth', INSIDE, measureOf({ '2_1': 2, '5_2': 40 }), 16);
     expect(streamer.stats().bodies.Earth.loading).toEqual(['5_2']);
+    // The tile lands and uploads on a frame that draws no surface at all —
+    // the warm pump runs under the open system map too — and the frame that
+    // first shows the sector comes minutes later.
     loader.resolveAll();
     expect(streamer.stats().bodies.Earth.resident).toEqual(['5_2']);
-    // From the landing, the upload is safe for the dwell however strong the
-    // next candidate is…
+    const shown = 600_000;
     const pressure = measureOf({ '5_2': 40, '0_0': 400 });
-    streamer.update('Earth', INSIDE, pressure, 16 + SECTOR_EVICT_DWELL_MS - 1);
+    streamer.update('Earth', INSIDE, pressure, shown);
+    expect(streamer.stats().bodies.Earth.resident).toEqual(['5_2']); // its first frame on screen
+    // From there the upload is safe for the dwell however strong the next
+    // candidate is…
+    streamer.update('Earth', INSIDE, pressure, shown + SECTOR_EVICT_DWELL_MS - 1);
     expect(streamer.stats().bodies.Earth.resident).toEqual(['5_2']);
     // …and no longer.
-    streamer.update('Earth', INSIDE, pressure, 16 + SECTOR_EVICT_DWELL_MS);
+    streamer.update('Earth', INSIDE, pressure, shown + SECTOR_EVICT_DWELL_MS);
     expect(streamer.stats().bodies.Earth.loading).toEqual(['0_0']);
   });
 

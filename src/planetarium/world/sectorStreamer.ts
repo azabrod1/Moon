@@ -14,7 +14,7 @@
  * reserved from the known tile layouts the moment a load starts rather than
  * counted after its decode, so two loads in flight cannot overshoot it by a
  * tile each. A resident sector is only evicted for a candidate that out-ranks
- * it by a margin, and not until it has been resident a moment: a plain LRU
+ * it by a margin, and not until it has been on screen a moment: a plain LRU
  * would churn 21 MiB uploads every frame at the wall, where more sectors face
  * the camera than the budget holds. The size that matters is the texels of
  * the map below on screen (device pixels per texel at the sector's nearest
@@ -265,13 +265,16 @@ export const SECTOR_INFLIGHT_CAP_TOUCH = 1;
  *  the slot cap alone would put six requests on the wire at once. */
 export const SECTOR_FETCH_POOL_DESKTOP = 6;
 export const SECTOR_FETCH_POOL_TOUCH = 3;
-/** How long a sector is safe from eviction after its tile LANDS. Without it
- *  a working set at the budget could hand the same slot back and forth
- *  between two candidates a hair apart, paying an upload each time. It runs
- *  from the upload because that is what it protects: a load still in the air
- *  has paid nothing, so a far stronger candidate may take its reservation
- *  and its fetch is aborted rather than finished for a tile that would be
- *  evicted on its first frame. */
+/** How long a sector is safe from eviction once it is DRAWN. Without it a
+ *  working set at the budget could hand the same slot back and forth between
+ *  two candidates a hair apart, paying an upload each time. A load still in
+ *  the air has paid nothing, so a far stronger candidate may take its
+ *  reservation and its fetch is aborted rather than finished for a tile that
+ *  would be evicted on its first frame — but from the first frame the tile
+ *  is on screen it is protected. That first frame is what the clock runs
+ *  from, not the upload: a tile can land while the surface is not being
+ *  drawn at all (the system map owns the frame), and a dwell counted from
+ *  there would already be spent by the time anyone saw the sector. */
 export const SECTOR_EVICT_DWELL_MS = 1_000;
 
 /** A candidate evicts the weakest resident only when it out-ranks it by this
@@ -369,8 +372,13 @@ interface SectorSlot {
    *  the budget is committed before a byte is decoded. */
   bytes: number;
   reserved: number;
-  /** When this slot last went live, for the eviction dwell. */
+  /** The frame this sector was first drawn on, and whether that frame has
+   *  happened: a tile can materialise while the surface is not being drawn,
+   *  so the dwell starts at the first `update` that measures the sector, not
+   *  at the upload. An unpresented resident has not started its dwell and is
+   *  never taken for a candidate. */
   liveSinceMs: number;
+  presented: boolean;
   /** In-flight load — a fresh admission, or a resident's in-place reload.
    *  `owned` holds every decoded texture from the moment it exists (queued
    *  for warming or landed), so a release can dispose it — which also
@@ -649,6 +657,7 @@ export class SectorStreamer {
             bytes: 0,
             reserved: 0,
             liveSinceMs: 0,
+            presented: false,
             maps: {},
             failStreak: 0,
             retryAtMs: 0,
@@ -862,9 +871,16 @@ export class SectorStreamer {
 
     // Mirror the globe's scalar state onto every live sector (eclipse tint,
     // relief scale) — cheap, and what keeps a sector from reading as a patch.
+    // This is also the frame a fresh sector is first drawn on, which is where
+    // its eviction dwell starts: reaching it means the surface is being
+    // rendered, which the frame its tile uploaded on need not have been.
     for (const slot of slots) {
       if (slot.state === 'resident' && slot.mesh) {
         syncSectorMaterial(slot.mesh.material as THREE.MeshStandardMaterial, handle.material);
+        if (!slot.presented) {
+          slot.presented = true;
+          slot.liveSinceMs = nowMs;
+        }
       }
     }
 
@@ -971,7 +987,7 @@ export class SectorStreamer {
         let children = 0;
         for (const child of s.children) if (child.state !== 'idle') children += 1;
         standing.set(s, children);
-        if (s.state === 'resident' && nowMs - s.liveSinceMs < SECTOR_EVICT_DWELL_MS) continue;
+        if (s.state === 'resident' && (!s.presented || nowMs - s.liveSinceMs < SECTOR_EVICT_DWELL_MS)) continue;
         (children === 0 ? frontier : covering).push(s);
       }
     }
@@ -1356,9 +1372,11 @@ export class SectorStreamer {
     slot.reserved = 0;
     slot.bytes = 0;
     for (const name of Object.keys(slot.maps) as MapName[]) slot.bytes += this.mapBytes(body, slot, name);
-    // The dwell runs from the upload, and a reload does not restart it: the
-    // sector has been on the globe since it first landed.
-    if (!previousMesh) slot.liveSinceMs = this.lastNowMs;
+    // The dwell runs from the first frame this sector is drawn on, which is
+    // not necessarily this one: the upload is paid by the warm pump, which
+    // runs whether or not the surface is being rendered. A reload does not
+    // restart it — the sector has been on the globe since it first landed.
+    if (!previousMesh) slot.presented = false;
     slot.state = 'resident';
     slot.failStreak = 0;
     if (previousMesh) this.removeMesh(previousMesh, true);
@@ -1409,6 +1427,7 @@ export class SectorStreamer {
     slot.maps = {};
     slot.bytes = 0;
     slot.reserved = 0;
+    slot.presented = false;
     slot.state = 'idle';
   }
 }

@@ -17,7 +17,8 @@ import {
   firstUpgradeTier,
   initialColorTierRank,
   loadTexture,
-  colorMapGpuBytes,
+  appliedTierGpuBytes,
+  equirectMapGpuBytes,
   lodMeasurementRelevant,
   makeGeometryUpgrade,
   makeTextureUpgrade,
@@ -1321,34 +1322,28 @@ describe('lodMeasurementRelevant', () => {
   });
 });
 
-describe('colour map GPU bytes', () => {
+describe('the ladder\'s live weight', () => {
   const mib = (bytes: number) => bytes / (1024 * 1024);
 
-  it('counts the map on a material as RGBA8 with its mips', () => {
-    const mat = new THREE.MeshStandardMaterial();
-    expect(colorMapGpuBytes(mat)).toBe(0); // nothing on it yet
-    mat.map = new THREE.Texture({ width: 4096, height: 2048 } as unknown as ImageBitmap);
-    expect(colorMapGpuBytes(mat)).toBe(Math.round(4096 * 2048 * 4 * (4 / 3)));
-    expect(mib(colorMapGpuBytes(mat))).toBeCloseTo(42.7, 1);
-    mat.map = new THREE.Texture({ width: 8192, height: 4096 } as unknown as ImageBitmap);
-    expect(mib(colorMapGpuBytes(mat))).toBeCloseTo(170.7, 1); // an 8K rung
+  it('counts an equirect map as RGBA8 with its mips', () => {
+    expect(mib(equirectMapGpuBytes(4096))).toBeCloseTo(42.7, 1);
+    expect(mib(equirectMapGpuBytes(8192))).toBeCloseTo(170.7, 1);
+    // A transcoded upload is one byte a texel, not four.
+    expect(mib(equirectMapGpuBytes(8192, true))).toBeCloseTo(42.7, 1);
+    expect(equirectMapGpuBytes(0)).toBe(0);
   });
 
-  it('counts a GPU-compressed upload at a quarter of that', () => {
-    // The transcoded 8K a device that can hold it gets: one byte a texel.
-    const mat = new THREE.MeshStandardMaterial();
-    const tex = new THREE.Texture({ width: 8192, height: 4096 } as unknown as ImageBitmap);
-    (tex as unknown as { isCompressedTexture: boolean }).isCompressedTexture = true;
-    mat.map = tex;
-    expect(mib(colorMapGpuBytes(mat))).toBeCloseTo(42.7, 1);
-  });
-
-  it('falls back to the nominal width of the tier that applied when the image is gone', () => {
-    const mat = new THREE.MeshStandardMaterial();
-    mat.map = new THREE.Texture();
-    mat.map.image = undefined; // the bitmap was closed after its upload
-    expect(colorMapGpuBytes(mat)).toBe(0); // and no tier is recorded
-    mat.userData.colorTierRank = TIER_RANK['4k'];
-    expect(mib(colorMapGpuBytes(mat))).toBeCloseTo(42.7, 1);
+  it('weighs a handle by the tier it has applied, and nothing while it is on its boot map', () => {
+    const material = new THREE.MeshStandardMaterial();
+    const up = makeTextureUpgrade('moon', material)!;
+    expect(appliedTierGpuBytes(up)).toBe(0); // still on the map it booted with
+    up.appliedTier = '4k';
+    expect(mib(appliedTierGpuBytes(up))).toBeCloseTo(42.7, 1);
+    up.appliedTier = '8k';
+    expect(mib(appliedTierGpuBytes(up))).toBeCloseTo(170.7, 1);
+    // …at a quarter of that once the 8K arrives GPU-compressed.
+    material.map = new THREE.Texture();
+    (material.map as unknown as { isCompressedTexture: boolean }).isCompressedTexture = true;
+    expect(mib(appliedTierGpuBytes(up))).toBeCloseTo(42.7, 1);
   });
 });

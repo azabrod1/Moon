@@ -34,7 +34,7 @@ import {
   SUN_POLE_RA_DEG,
   type PlanetData,
 } from './planets/planetData';
-import { applySunGlowTier, canAttempt, cancelNormalUpgrade, colorMapGpuBytes, cancelTextureUpgrade, createMoonMeshes, createShaderWarmupProbes, earnedUpgradeTier, firstUpgradeTier, lodMeasurementRelevant, needsUpgradeCover, normalUpgradePending, resolveUpgradeTier, setWarmEligibleMoonParents, upgradeComplete, upgradeGeometryOnApproach, upgradeNormalOnApproach, upgradeTextureOnApproach, ATMOSPHERES, ATMOSPHERE_SHELL_SCALES, PLANET_TEXTURE_FILES, UPGRADE_TRIGGER_FRACTION, type MoonMesh, type TextureUpgrade } from './PlanetFactory';
+import { appliedTierGpuBytes, applySunGlowTier, canAttempt, cancelNormalUpgrade, cancelTextureUpgrade, createMoonMeshes, createShaderWarmupProbes, earnedUpgradeTier, firstUpgradeTier, lodMeasurementRelevant, needsUpgradeCover, normalUpgradePending, resolveUpgradeTier, setWarmEligibleMoonParents, upgradeComplete, upgradeGeometryOnApproach, upgradeNormalOnApproach, upgradeTextureOnApproach, ATMOSPHERES, ATMOSPHERE_SHELL_SCALES, PLANET_TEXTURE_FILES, UPGRADE_TRIGGER_FRACTION, type MoonMesh, type TextureUpgrade } from './PlanetFactory';
 import type { SurfaceShadingFx } from './world/surfaceShading';
 import { bindTextureWarmer, invalidateTextureWarmCache, pumpTextureWarmQueue, queueTextureWarm, resetTextureWarmer } from './world/textureWarmer';
 import { SECTOR_SETS, SectorStreamer, type SectorMeasure, type SectorStats, type SectorSuspend } from './world/sectorStreamer';
@@ -2597,21 +2597,22 @@ export class PlanetariumMode {
   }
 
   /**
-   * GPU bytes the globe colour maps hold right now — every body's surface map
-   * plus Earth's cloud deck, the maps the tier ladder streams in. The sector
-   * budget is what one memory envelope leaves over these, so a Moon on its 8K
-   * rung and a body streaming tiles cannot each spend the device's memory as
-   * if the other were not there.
+   * GPU bytes the colour tiers the ladder has streamed in are holding right
+   * now — the Moon's 8K rung, Earth's cloud deck, every close-approach
+   * upgrade. The sector budget is what one memory envelope leaves over these,
+   * so a body on its finest map and a body streaming tiles cannot each spend
+   * the device's memory as if the other were not there. The boot maps every
+   * device carries regardless are not in it: this figure is the ladder's
+   * OPTIONAL weight, which is what the envelope was measured against.
    */
   private liveGlobalMapBytes(): number {
     if (!this.solarSystem) return 0;
     let bytes = 0;
     for (const planet of this.solarSystem.planets) {
-      bytes += colorMapGpuBytes(planet.mesh.material as THREE.Material);
-      if (planet.cloudsMesh) bytes += colorMapGpuBytes(planet.cloudsMesh.material as THREE.Material);
+      for (const up of planet.textureUpgrades) bytes += appliedTierGpuBytes(up);
     }
     for (const moons of this.planetMoons.values()) {
-      for (const m of moons) bytes += colorMapGpuBytes(m.mesh.material as THREE.Material);
+      for (const m of moons) for (const up of m.textureUpgrades) bytes += appliedTierGpuBytes(up);
     }
     return bytes;
   }

@@ -437,7 +437,7 @@ function slotId(slot: SectorSlot): string {
 /** GPU bytes an image of this layout holds: RGBA8 at its pixel size plus a
  *  third for its mip chain. Known before the fetch — which is what lets an
  *  admission reserve what it is about to hold. */
-export function layoutGpuBytes(layout: TileLayout): number {
+function layoutGpuBytes(layout: TileLayout): number {
   return Math.round(layout.width * layout.height * 4 * (4 / 3));
 }
 
@@ -738,7 +738,11 @@ export class SectorStreamer {
       // kept this frame — a parent's own map is 4x coarser, so where it has
       // nothing to add its children have less, and the pass skips the whole
       // sub-tree rather than projecting it. Slots are in level order, so the
-      // parent's verdict is already this frame's.
+      // parent's verdict is already this frame's. That gate is what keeps the
+      // pass cheap enough to run every frame: at a close pose, three bodies
+      // cost 12 projections a frame at one level and 30 with a second — not
+      // the four times the slot count — and the whole selection and
+      // reconcile is tens of microseconds.
       const gated = slot.parent !== undefined && !slot.parent.wanted && !slot.parent.keep;
       if (!gated && sectorMayFaceCamera(slot.centreDir, slot.angularRadius, this.camScratch, handle.radiusAU)) {
         // Measured where the sector is most magnified — its point nearest the

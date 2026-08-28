@@ -1019,6 +1019,25 @@ describe('SectorStreamer', () => {
     expect(s.bodies.Earth.resident.slice().sort()).toEqual(['5_2', '6_2', '7_2']);
   });
 
+  it('gives back a whole pyramid in one call, parents included', () => {
+    loader.auto = true;
+    twoLevelEarth();
+    // A parent and all four of its children resident: every parent is
+    // protected by a child, so the first sweep can only see leaves.
+    const measure = measureLevels(TWO_LEVELS, {
+      '2_1': 4, 'L1/4_2': 4, 'L1/5_2': 4, 'L1/4_3': 4, 'L1/5_3': 4,
+    });
+    for (let f = 0; f < 8; f++) streamer.update('Earth', INSIDE, measure, f * 16);
+    const before = streamer.stats();
+    expect(before.bodies.Earth.byLevel.map((l) => l.resident)).toEqual([1, 4]);
+    // The envelope closes on it entirely.
+    streamer.setGlobalMapBytes(SECTOR_ENVELOPE_BYTES_DESKTOP);
+    const s = streamer.stats();
+    expect(s.budget).toBe(0);
+    expect(s.residentBytes + s.reserved).toBe(0);
+    expect(s.resident).toBe(0);
+  });
+
   it('gives sectors back the moment the envelope closes, not on the next frame', () => {
     loader.auto = true;
     const sizes: Record<string, number> = {};

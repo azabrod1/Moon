@@ -61,7 +61,9 @@
  * pressure is one half of a cycle that would evict a child to pay for it. It
  * becomes a candidate again the frame a child is lost. Among candidates the
  * coarser level goes first: it covers its children's ground at a quarter of
- * the bytes.
+ * the bytes. When a budget shrinks under a full pyramid the give-back works
+ * from the leaves inward — each child released frees its parent to go too —
+ * so the byte bound holds within the one call at any depth.
  *
  * Pure apart from three's scene graph: the loader, the warm pump and the
  * screen measurement are injected, so the policy is unit-tested without a
@@ -404,7 +406,9 @@ export interface SectorStats {
   gpuBytes: number;
   /** What the budget actually counts: the bytes the resident sets hold and
    *  the bytes the loads in flight have reserved, both from the tile
-   *  layouts. `residentBytes + reserved <= budget` holds on every path. */
+   *  layouts. `residentBytes + reserved <= budget` holds whenever this is
+   *  read: every path that admits, reloads or shrinks the budget leaves the
+   *  working set inside it before it returns, a pyramid of levels included. */
   residentBytes: number;
   reserved: number;
   /** This device's sector budget right now — its ceiling, or what the total
@@ -882,17 +886,23 @@ export class SectorStreamer {
     return true;
   }
 
-  /** Give up the weakest sectors until what is held fits the budget again. */
+  /** Give up the weakest sectors until what is held fits the budget again.
+   *  The frontier is recomputed after every release, which is what makes the
+   *  bound hold within this one call for a pyramid: a parent is protected
+   *  while a finer sector draws over it, so the first pass sees only leaves,
+   *  and each child released turns its parent into one. Nothing is safe from
+   *  this pass — the memory is already spent, and a dwell that held it would
+   *  only spend more — so it converges: the deepest live sector is always
+   *  evictable, and every release makes a slot idle for good. */
   private trimToBudget(): void {
-    let over = this.heldBytes() - this.budget();
-    if (over <= 0) return;
-    // Nothing is safe from this pass: the memory is already spent, and a
-    // dwell that held it would only spend more.
-    const victims = this.evictable(Number.POSITIVE_INFINITY).sort((a, b) => a.score - b.score || b.level - a.level);
-    for (const victim of victims) {
-      if (over <= 0) break;
-      over -= victim.bytes + victim.reserved;
-      this.release(victim);
+    while (this.heldBytes() > this.budget()) {
+      const victims = this.evictable(Number.POSITIVE_INFINITY);
+      if (victims.length === 0) return;
+      let weakest = victims[0];
+      for (const v of victims) {
+        if (v.score < weakest.score || (v.score === weakest.score && v.level > weakest.level)) weakest = v;
+      }
+      this.release(weakest);
     }
   }
 

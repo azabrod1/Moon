@@ -12,9 +12,14 @@
  * and centrality, the top N (a per-device cap) are wanted, and a resident
  * sector is only evicted for a candidate that out-ranks it by a margin — a
  * plain LRU would churn 21 MiB uploads every frame at the wall, where more
- * sectors face the camera than the cap allows. Hysteresis (want above 600
- * device px, release below 400) keeps a sector from flapping as the disc
- * breathes, and the cap plus the in-flight limit bound GPU and CPU memory.
+ * sectors face the camera than the cap allows. The size that matters is the
+ * globe's OWN texels on screen (device pixels per texel at the sector
+ * centre): a tile is wanted once the base is visibly magnified and released
+ * once it no longer is, with hysteresis between, so a disc breathing around
+ * the threshold never flaps a 21 MiB upload, and the cap plus the in-flight
+ * limit bound GPU and CPU memory. A sector that is magnified but off the
+ * frame or on the night side is never fetched, yet stays resident while it
+ * is magnified — a pan or a sunrise brings it back for free.
  *
  * A tile is drawn only once it is resident on the GPU: the fetch decodes off
  * the main thread (textureBitmapLoader), the warm pump uploads it on its
@@ -26,10 +31,11 @@
  *
  * Sector meshes are children of the globe mesh, so they inherit its spin,
  * pole and the moon render-curve scale; their vertices coincide with the
- * globe's fine (256-segment) grid, which the streamer forces before the first
- * sector shows. Their materials are built from the globe's (sectorMaterial),
- * share its per-frame shading uniforms, and mirror its scalar state every
- * frame; they own every texture they draw.
+ * globe's fine (256-segment) grid, which the streamer forces when a body's
+ * first sector is admitted — the fetch then separates that rebuild from the
+ * frame that pays the tile's upload. Their materials are built from the
+ * globe's (sectorMaterial), share its per-frame shading uniforms, and mirror
+ * its scalar state every frame; they own every texture they draw.
  *
  * Pure apart from three's scene graph: the loader, the warm pump and the
  * screen measurement are injected, so the policy is unit-tested without a
@@ -45,6 +51,7 @@ import {
   sectorBoundingSphere,
   sectorCentreDirection,
   sectorMayFaceCamera,
+  sectorNearestDirection,
   sectorSphereGeometry,
   type Sector,
   type SectorGrid,
@@ -98,12 +105,25 @@ export const SECTOR_SETS: Record<string, SectorSetSpec> = {
   },
 };
 
-/** A sector is wanted once its bounding sphere spans this many DEVICE pixels
- *  — where the 4K base's 512 texels per sector fall under one texel per
- *  pixel — and released only once it shrinks under the second value, so a
- *  disc breathing around the threshold never flaps a 21 MiB upload. */
-export const SECTOR_WANT_DEVICE_PX = 600;
-export const SECTOR_RELEASE_DEVICE_PX = 400;
+/** A sector is wanted once one texel of the globe's OWN map spans this many
+ *  DEVICE pixels at the sector's centre — the base is then visibly magnified
+ *  and a tile has detail to add — and released only once that falls under
+ *  the second value, so a disc breathing around the threshold never flaps a
+ *  21 MiB upload. Measured against the map actually on the globe (the Moon's
+ *  8K rung needs twice the magnification a 4K map does before a tile shows
+ *  anything; a tile under that is 21 MiB of GPU memory for nothing visible),
+ *  and in device pixels, so a 3× phone wants tiles where a 1× monitor does
+ *  not. */
+export const SECTOR_WANT_TEXEL_PX = 1.25;
+export const SECTOR_RELEASE_TEXEL_PX = 0.8;
+/** Map width assumed while a globe's map has no readable image (never in
+ *  practice: a real map is an ImageBitmap or a painted canvas). */
+const SECTOR_FALLBACK_MAP_WIDTH = 4096;
+/** A sector whose centre is further past the terminator than this (dot of
+ *  the sector centre with the sun direction, in the globe's frame) is never
+ *  fetched: the sector's day-side edge is then within a few degrees of the
+ *  terminator, and the night fill draws nothing a tile could sharpen. */
+export const SECTOR_NIGHT_DOT = -0.3;
 
 /** Resident sectors (meshes with a tile on the GPU) across all bodies. The
  *  wall view has ~12 sectors facing the camera; the cap holds the largest. */
@@ -126,10 +146,15 @@ export const SECTOR_SEGMENTS = 32;
 
 /** How a sector reads on screen this frame, from the mode's projection. */
 export interface SectorMeasure {
-  /** Projected diameter of the sector's bounding sphere in device pixels. */
-  devicePx: number;
+  /** Device pixels one unit of surface length covers at the sector's centre
+   *  (in the globe's LOCAL units), foreshortened by the view angle — the
+   *  base map's texel size on screen is this times the texel's length. */
+  pxPerLocalUnit: number;
   /** 1 at the screen centre, falling to 0 at the frame edge. */
   centrality: number;
+  /** The footprint lies entirely outside the frame: kept while big (it is
+   *  one pan away), never fetched. */
+  offscreen?: boolean;
 }
 
 /** A body registered for streaming: the globe mesh sectors attach to (its
@@ -179,6 +204,8 @@ interface SectorSlot {
 interface SectorBody {
   handle: SectorBodyHandle;
   slots: SectorSlot[];
+  /** Diagnostic: the largest texel magnification measured this frame. */
+  maxTexelPx: number;
 }
 
 export interface SectorStreamerOptions {
@@ -191,7 +218,13 @@ export interface SectorStreamerOptions {
 export interface SectorStats {
   resident: number;
   loading: number;
-  bodies: Record<string, { resident: string[]; loading: string[] }>;
+  bodies: Record<string, {
+    resident: string[];
+    loading: string[];
+    /** Largest device-px-per-base-texel measured for the body this frame
+     *  (0 while nothing faces the camera or the body is gated off). */
+    maxTexelPx: number;
+  }>;
 }
 
 /** A real map in a material slot — not the procedural stand-in a failed
@@ -221,6 +254,31 @@ function cropSignature(mat: THREE.MeshStandardMaterial, spec: SectorSetSpec): st
   return sig;
 }
 
+/** No crop slot the set names is showing a procedural stand-in. While one
+ *  is (a boot fetch timed out; the real map lands late), the globe shades
+ *  through the flat stand-in — roughness 0.5 everywhere — and a sector cut
+ *  without that map would shade differently: a matte rectangle in the sun
+ *  glint. A slot the base simply has no map in yet is fine (the sector then
+ *  has none either, and reloads when the map arrives). */
+function cropsReady(mat: THREE.MeshStandardMaterial, spec: SectorSetSpec): boolean {
+  for (const slot of ['bumpMap', 'normalMap', 'roughnessMap'] as const) {
+    if (!spec.crops[slot]) continue;
+    const tex = mat[slot];
+    if (tex && tex.userData?.proceduralFallback === true) return false;
+  }
+  return true;
+}
+
+/** Surface length of one texel of the globe's colour map, in the globe's
+ *  local units (equatorial). Read from the texture itself — the boot tier is
+ *  not literally 2048 wide for every body, and a tier swap changes the map
+ *  under a registered material. */
+function baseTexelLength(mat: THREE.MeshStandardMaterial, radius: number): number {
+  const img = mat.map?.image as { width?: unknown } | undefined;
+  const width = img && typeof img.width === 'number' && img.width > 0 ? img.width : SECTOR_FALLBACK_MAP_WIDTH;
+  return (2 * Math.PI * radius) / width;
+}
+
 /** Close a tile's decoded bitmap once it is resident: the upload is paid, a
  *  context loss drops the sector rather than re-uploading, and 16 MiB of RAM
  *  per tile goes back. Idempotent — the loader's dispose hook closes too. */
@@ -239,6 +297,8 @@ export class SectorStreamer {
   private generation = 0;
   private lastNowMs = 0;
   private readonly camScratch = new THREE.Vector3();
+  private readonly camDirScratch = new THREE.Vector3();
+  private readonly pointScratch = new THREE.Vector3();
 
   constructor(opts: SectorStreamerOptions) {
     this.grid = opts.grid ?? SECTOR_GRID_16K;
@@ -274,7 +334,7 @@ export class SectorStreamer {
         });
       }
     }
-    this.bodies.set(handle.name, { handle, slots });
+    this.bodies.set(handle.name, { handle, slots, maxTexelPx: 0 });
   }
 
   unregister(name: string): void {
@@ -299,35 +359,57 @@ export class SectorStreamer {
   update(
     name: string,
     camLocal: THREE.Vector3,
-    measure: (bsCentreLocal: THREE.Vector3, bsRadiusLocal: number) => SectorMeasure | null,
+    measure: (bsCentreLocal: THREE.Vector3, bsRadiusLocal: number, surfaceDirLocal: THREE.Vector3) => SectorMeasure | null,
     nowMs: number,
     suspend: SectorSuspend = 'none',
+    /** Direction to the Sun in the same local frame; omitted = no night gate. */
+    sunLocal: THREE.Vector3 | null = null,
+    /** pxPerLocalUnit at the globe's nearest surface point — an upper bound
+     *  for every sector, so a globe whose closest texel is still under the
+     *  release size releases everything without measuring a sector. */
+    pxPerLocalUnitNearest = Number.POSITIVE_INFINITY,
   ): void {
     const body = this.bodies.get(name);
     if (!body) return;
     this.lastNowMs = nowMs;
     const { handle, slots } = body;
 
-    if (suspend === 'all' || !realAlbedoOn(handle.material)) {
+    const texelLen = baseTexelLength(handle.material, handle.radiusAU);
+    body.maxTexelPx = 0;
+    if (
+      suspend === 'all'
+      || !realAlbedoOn(handle.material)
+      || !cropsReady(handle.material, handle.spec)
+      || pxPerLocalUnitNearest * texelLen < SECTOR_RELEASE_TEXEL_PX
+    ) {
       for (const slot of slots) this.release(slot);
       return;
     }
 
     const signature = cropSignature(handle.material, handle.spec);
     this.camScratch.copy(camLocal);
+    this.camDirScratch.copy(camLocal).normalize();
     for (const slot of slots) {
-      let devicePx = 0;
+      let texelPx = 0;
       let score = 0;
+      let fetchable = false;
       if (sectorMayFaceCamera(slot.centreDir, slot.angularRadius, this.camScratch, handle.radiusAU)) {
-        const m = measure(slot.bsCentre, slot.bsRadius);
+        // Measured where the sector is most magnified — its point nearest the
+        // sub-camera point — not at its centre, which a camera over a
+        // neighbouring sector sees foreshortened.
+        sectorNearestDirection(this.grid, slot.sector, this.camDirScratch, this.pointScratch);
+        const m = measure(slot.bsCentre, slot.bsRadius, this.pointScratch);
         if (m) {
-          devicePx = m.devicePx;
-          score = devicePx * (0.5 + 0.5 * Math.max(0, Math.min(1, m.centrality)));
+          texelPx = m.pxPerLocalUnit * texelLen;
+          if (texelPx > body.maxTexelPx) body.maxTexelPx = texelPx;
+          const night = sunLocal !== null && slot.centreDir.dot(sunLocal) < SECTOR_NIGHT_DOT;
+          fetchable = !m.offscreen && !night;
+          if (fetchable) score = texelPx * (0.5 + 0.5 * Math.max(0, Math.min(1, m.centrality)));
         }
       }
       slot.score = score;
-      slot.wanted = devicePx > SECTOR_WANT_DEVICE_PX;
-      slot.keep = devicePx > SECTOR_RELEASE_DEVICE_PX;
+      slot.wanted = fetchable && texelPx > SECTOR_WANT_TEXEL_PX;
+      slot.keep = texelPx > SECTOR_RELEASE_TEXEL_PX;
       if (slot.state !== 'idle' && (!slot.keep || slot.signature !== signature)) this.release(slot);
     }
 
@@ -355,18 +437,9 @@ export class SectorStreamer {
     }
   }
 
-  /** Drop every sector of bodies not named — a teleport's destination keeps
-   *  its own; everything else is disposed now (and leaves the warm queue with
-   *  its textures), so no upload for a left-behind body lands on arrival. */
-  releaseAllExcept(keep: ReadonlySet<string>): void {
-    for (const [name, body] of this.bodies) {
-      if (keep.has(name)) continue;
-      for (const slot of body.slots) this.release(slot);
-    }
-  }
-
-  /** Drop everything (context loss, mode teardown); bodies stay registered
-   *  and stream back in on later frames. */
+  /** Drop everything (an arrival, context loss, mode teardown); bodies stay
+   *  registered and stream back in on later frames — from the service-worker
+   *  cache when they were resident before. */
   dropAll(): void {
     for (const body of this.bodies.values()) for (const slot of body.slots) this.release(slot);
   }
@@ -388,7 +461,7 @@ export class SectorStreamer {
       }
       out.resident += resident.length;
       out.loading += loading.length;
-      out.bodies[name] = { resident, loading };
+      out.bodies[name] = { resident, loading, maxTexelPx: body.maxTexelPx };
     }
     return out;
   }
@@ -423,6 +496,10 @@ export class SectorStreamer {
     slot.gen = gen;
     slot.signature = signature;
     const stillWanted = () => slot.gen === gen && slot.state === 'loading';
+    // The globe goes onto its fine grid now, not when the tile lands: the
+    // fetch in between keeps the sphere rebuild off the frame that pays the
+    // 16 MiB upload (idempotent; a no-op once the body is fine).
+    handle.ensureFineGeometry();
 
     const maps: Array<{ name: MapName; url: string; kind: 'color' | 'data'; layout: TileLayout }> = [
       {
@@ -451,8 +528,12 @@ export class SectorStreamer {
 
     const fail = () => {
       if (!stillWanted()) return;
-      this.disposeLoaded(slot);
+      // The attempt is over BEFORE its textures are disposed: the warm pump's
+      // dispose hook reports 'disposed' synchronously from inside
+      // tex.dispose(), and that report must find nothing left to fail.
       slot.state = 'idle';
+      slot.gen = ++this.generation;
+      this.disposeLoaded(slot);
       slot.loading = undefined;
       slot.failStreak += 1;
       slot.retryAtMs =
@@ -497,7 +578,6 @@ export class SectorStreamer {
     const { handle } = body;
     const loaded = slot.loading?.loaded;
     if (!loaded?.map) return;
-    handle.ensureFineGeometry();
     const geometry = sectorSphereGeometry(handle.radiusAU, this.grid, slot.sector, SECTOR_SEGMENTS);
     const material = createSectorMaterial(handle.material, {
       map: loaded.map,
@@ -519,9 +599,11 @@ export class SectorStreamer {
   private disposeLoaded(slot: SectorSlot): void {
     const loading = slot.loading;
     if (!loading) return;
-    for (const tex of loading.owned) tex.dispose();
+    // Detach first: a dispose hook may re-enter this slot mid-loop.
+    const owned = loading.owned;
     loading.owned = [];
     loading.loaded = {};
+    for (const tex of owned) tex.dispose();
   }
 
   /** Back to idle from any state: the mesh leaves the globe, and every

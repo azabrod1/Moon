@@ -119,12 +119,16 @@ export function invalidateTextureWarmCache(): void {
   warmedVersions = new WeakMap();
 }
 
-/** Full teardown (mode dispose) and test isolation seam. */
+/** Full teardown (mode dispose) and test isolation seam. Entries still
+ *  queued settle 'disposed' — the pump will never upload them, and the
+ *  exactly-once contract holds through a teardown too. */
 export function resetTextureWarmer(): void {
   for (const [tex, onDispose] of disposeListeners) tex.removeEventListener('dispose', onDispose);
   disposeListeners.clear();
+  const pending = [...residentCallbacks.values()];
   residentCallbacks.clear();
   queue.length = 0;
   uploadFn = null;
   invalidateTextureWarmCache();
+  for (const cb of pending) cb('disposed');
 }

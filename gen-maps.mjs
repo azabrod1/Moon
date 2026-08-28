@@ -49,10 +49,13 @@ const srcDir = path.resolve(arg('src', TEX));
 // the LOLA TIFF present replaces it with the 16-bit derivation below —
 // visually equivalent at this scale, minus the 8-bit terracing.
 const JOBS = {
-  'earth-roughness': { src: 'earth-day.webp', from: TEX, out: 'earth-roughness.png', fn: 'oceanRoughness', scale: 0.25 },
+  'earth-roughness': { src: 'earth-day.v2.webp', from: TEX, out: 'earth-roughness.v2.png', fn: 'oceanRoughness', scale: 0.25 },
   'moon-normal':     { src: 'ldem_16_uint.tif', out: 'moon-normal.png', fn: 'normalsFromHeights', scale: 0.25, decode: 'uint16-tiff', opts: { strength: 3.0 } },
   'moon-normal-4k':  { src: 'ldem_16_uint.tif', out: '4k/moon-normal.png', fn: 'normalsFromHeights', scale: 0.5, decode: 'uint16-tiff', opts: { strength: 6.0 } },
-  'mars-normal':     { src: 'mars-mola.jpg',   out: 'mars-normal.png',     fn: 'heightToNormal', scale: 0.25, opts: { strength: 2.4, mola: true } },
+  // MOLA_cylin.jpg runs 0–360°E with longitude 0 at its left edge; every Mars
+  // colour map here (and the tiles) puts −180° at the left. rollU shifts the
+  // relief by half a turn so Olympus Mons shades where the colour draws it.
+  'mars-normal':     { src: 'mars-mola.jpg',   out: 'mars-normal.v2.png',  fn: 'heightToNormal', scale: 0.25, opts: { strength: 2.4, mola: true, rollU: 0.5 } },
 };
 
 async function exists(p) {
@@ -293,7 +296,11 @@ async function runJob(page, name) {
       // grayscale (which interpolates cleanly), so colour blending can't fabricate
       // false lows at sharp red/blue elevation boundaries.
       cv.width = nw; cv.height = nh;
-      ctx.drawImage(img, 0, 0);
+      // rollU: shift the source east by that fraction of a turn (drawn twice,
+      // wrapping), for a source whose longitude origin differs from the maps'.
+      const shift = Math.round(nw * (opts.rollU || 0));
+      ctx.drawImage(img, shift, 0);
+      if (shift) ctx.drawImage(img, shift - nw, 0);
       const grey = ctx.createImageData(nw, nh);
       T.molaToHeight(ctx.getImageData(0, 0, nw, nh), grey, nw, nh);
       ctx.putImageData(grey, 0, 0);

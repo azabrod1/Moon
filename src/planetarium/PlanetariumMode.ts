@@ -37,7 +37,7 @@ import {
 import { applySunGlowTier, canAttempt, cancelNormalUpgrade, cancelTextureUpgrade, createMoonMeshes, createShaderWarmupProbes, earnedUpgradeTier, firstUpgradeTier, lodMeasurementRelevant, needsUpgradeCover, normalUpgradePending, resolveUpgradeTier, setWarmEligibleMoonParents, upgradeComplete, upgradeGeometryOnApproach, upgradeNormalOnApproach, upgradeTextureOnApproach, ATMOSPHERES, ATMOSPHERE_SHELL_SCALES, PLANET_TEXTURE_FILES, UPGRADE_TRIGGER_FRACTION, type MoonMesh, type TextureUpgrade } from './PlanetFactory';
 import type { SurfaceShadingFx } from './world/surfaceShading';
 import { bindTextureWarmer, invalidateTextureWarmCache, pumpTextureWarmQueue, queueTextureWarm, resetTextureWarmer } from './world/textureWarmer';
-import { SECTOR_RELEASE_DEVICE_PX, SECTOR_SETS, SectorStreamer, type SectorMeasure, type SectorStats, type SectorSuspend } from './world/sectorStreamer';
+import { SECTOR_SETS, SectorStreamer, type SectorMeasure, type SectorStats, type SectorSuspend } from './world/sectorStreamer';
 import { loadBrightStarCatalog } from './world/starCatalogLoader';
 import {
   advancePlanetariumTime,
@@ -170,7 +170,7 @@ import {
   type SurfaceTarget,
   type SurfaceTargetChoice,
 } from './surfaceView';
-import { DEG2RAD } from '../shared/math/angles';
+import { DEG2RAD, RAD2DEG } from '../shared/math/angles';
 import { applyDesignFov, displayFovDeg } from '../shared/math/lensProjection';
 import { SUN_GLARE_EXTENT_SOLAR_RADII, SUN_VEIL_BETA, SUN_VEIL_SCALE_H } from '../shared/shaders/sun';
 import { landedFrameCamDistAU, landedMinDistanceAU, landedNearAU, LANDED_NEAR_AU } from './landedView';
@@ -655,10 +655,13 @@ export class PlanetariumMode {
   // Per-frame time budget for warm texture uploads: small maps batch within
   // it, a big one takes its frame alone (the pump always uploads at least one).
   private static readonly TEXTURE_WARM_BUDGET_MS = 6;
-  /** Above this simulation rate (s/s) a globe turns visibly under the camera
-   *  (Earth: 3.75°/s at 900 s/s), so admitting sector tiles would only churn
-   *  21 MiB uploads — residents hold, nothing new starts. */
-  private static readonly SECTOR_SPIN_SUSPEND_RATE = 900;
+  /** Above this rotation rate on screen (degrees of body spin per real
+   *  second — Earth at 900 s/s) a globe turns visibly under the camera, so
+   *  admitting sector tiles would only churn 21 MiB uploads — residents hold,
+   *  nothing new starts. Measured per body from its world orientation, so a
+   *  slow turner (the Moon: 27× Earth) keeps streaming at rates that would
+   *  spin Earth into a blur. */
+  private static readonly SECTOR_SPIN_SUSPEND_DEG_PER_S = 3.75;
   // Speculative warm of the Earth+Moon pair's first colour steps a beat after
   // activation: eclipse vantages land on Earth and the Moon is the most-taken
   // first close-up, so spending idle seconds on their fetch+decode means a
@@ -883,6 +886,15 @@ export class PlanetariumMode {
   private readonly sectorCamLocal = new THREE.Vector3();
   private readonly sectorWorldCentre = new THREE.Vector3();
   private readonly sectorWorldScale = new THREE.Vector3();
+  private readonly sectorSunLocal = new THREE.Vector3();
+  private readonly sectorSunWorld = new THREE.Vector3();
+  private readonly sectorPoint = new THREE.Vector3();
+  private readonly sectorNormal = new THREE.Vector3();
+  private readonly sectorToCam = new THREE.Vector3();
+  private readonly sectorWorldQuat = new THREE.Quaternion();
+  private readonly sectorWorldQuatInv = new THREE.Quaternion();
+  /** Last frame's world orientation per streamed body, for the spin gate. */
+  private readonly sectorSpin = new Map<string, { quat: THREE.Quaternion; tMs: number }>();
   // Its own projection scratch: the LOD loop's is read after its call by
   // consumers that expect it untouched.
   private sectorProjection: SphereScreenProjection = {
@@ -2387,11 +2399,13 @@ export class PlanetariumMode {
    * Per-frame sector streaming for the hero bodies. Runs every frame for
    * every registered body, independently of updateBodyLOD's skips: a fully
    * upgraded globe filling the view is exactly the one whose sectors must
-   * keep being measured, admitted and released. Per body: the camera in the
-   * globe's local frame (radius = catalog radius there, whatever the render
-   * scale), a whole-disc size gate, then per facing sector the exact lens-
-   * aware footprint of its bounding sphere in DEVICE pixels — the unit the
-   * texel-density thresholds are in.
+   * keep being measured, admitted and released. Per body: the camera and the
+   * Sun in the globe's local frame (radius = catalog radius there, whatever
+   * the render scale), the magnification bound at its nearest surface point,
+   * then per facing sector its frame membership (the lens-aware footprint of
+   * its bounding sphere) and the magnification at its centre — DEVICE pixels
+   * per local unit, which the streamer turns into pixels per texel of the
+   * map the globe actually draws.
    */
   private updateSectorStreaming(): void {
     const sectors = this.sectors;
@@ -2404,45 +2418,88 @@ export class PlanetariumMode {
     const canvasH = this.renderer.domElement.clientHeight;
     const dpr = this.renderer.getPixelRatio();
     const nowMs = performance.now();
-    const spinning = Math.abs(this.timeState.rate) > PlanetariumMode.SECTOR_SPIN_SUSPEND_RATE;
     const chart = this.isMapOpen();
     const grounded = this.landedView === 'surface' ? this.landedOn?.name ?? null : null;
+    // The projections below read the camera's inverse world matrix; this
+    // pass must not depend on the LOD pass (skipped under the chart) having
+    // refreshed it this frame.
+    this.camera.updateMatrixWorld();
+    this.solarSystem.sun.getWorldPosition(this.sectorSunWorld);
+    // Device pixels a world unit covers at unit distance, on the display FOV
+    // (the lens pass keeps the centre of the frame at this scale; the
+    // streamer's hysteresis absorbs the edge distortion).
+    const focalDevicePx = ((canvasH / 2) / Math.tan(0.5 * displayFovDeg(this.camera) * DEG2RAD)) * dpr;
 
     const visit = (name: string, mesh: THREE.Mesh, radiusAU: number, hidden: boolean) => {
       if (!sectors.has(name)) return;
+      mesh.getWorldPosition(this.sectorWorldCentre); // refreshes matrixWorld too
+      mesh.getWorldQuaternion(this.sectorWorldQuat);
+      this.sectorWorldQuatInv.copy(this.sectorWorldQuat).invert();
+      // Spin gate: how fast this body's orientation turned since its last
+      // visit, in degrees per real second.
+      let spinning = false;
+      const prev = this.sectorSpin.get(name);
+      if (prev) {
+        const dtS = (nowMs - prev.tMs) / 1000;
+        const angle = 2 * Math.acos(Math.min(1, Math.abs(prev.quat.dot(this.sectorWorldQuat))));
+        spinning = dtS > 0 && (angle * RAD2DEG) / dtS > PlanetariumMode.SECTOR_SPIN_SUSPEND_DEG_PER_S;
+        prev.quat.copy(this.sectorWorldQuat);
+        prev.tMs = nowMs;
+      } else {
+        this.sectorSpin.set(name, { quat: this.sectorWorldQuat.clone(), tMs: nowMs });
+      }
       // The ground under a surface observer isn't drawn (the near plane culls
       // it) and every sector "faces" a camera on the surface: hold nothing.
       // A hidden globe (an unpainted or out-of-range moon) holds nothing either.
       let suspend: SectorSuspend = 'none';
       if (hidden || grounded === name) suspend = 'all';
       else if (spinning || chart) suspend = 'admissions';
-      mesh.getWorldPosition(this.sectorWorldCentre); // refreshes matrixWorld too
       const worldScale = mesh.getWorldScale(this.sectorWorldScale).x;
       const worldR = radiusAU * worldScale;
       this.sectorCamLocal.copy(this.camera.position);
       mesh.worldToLocal(this.sectorCamLocal);
-      // Whole-disc gate: no sector's bounding sphere can reach the release
-      // size while the conservative disc estimate sits under it.
-      const discEst = estimateSphereScreenDiameterPx(this.sectorWorldCentre, worldR, this.camera, canvasW, canvasH);
-      if (discEst * dpr < SECTOR_RELEASE_DEVICE_PX) {
-        sectors.update(name, this.sectorCamLocal, () => null, nowMs, suspend);
-        return;
-      }
-      const measure = (bsCentreLocal: THREE.Vector3, bsRadiusLocal: number): SectorMeasure | null => {
+      // Sun direction in the globe's frame, for the night-side gate.
+      this.sectorSunLocal.copy(this.sectorSunWorld).sub(this.sectorWorldCentre).normalize()
+        .applyQuaternion(this.sectorWorldQuatInv);
+      // The most magnified surface point is the nearest one: device pixels
+      // per local unit there bound every sector, and let the streamer skip
+      // the per-sector work for a globe that is not close.
+      const distCentre = this.sectorWorldCentre.distanceTo(this.camera.position);
+      const pxPerLocalUnitNearest = (focalDevicePx * worldScale) / Math.max(distCentre - worldR, 1e-12);
+      const measure = (
+        bsCentreLocal: THREE.Vector3, bsRadiusLocal: number, surfaceDirLocal: THREE.Vector3,
+      ): SectorMeasure | null => {
+        // Frame membership and centrality from the bounding sphere's footprint.
         this.sectorWorldCentre.copy(bsCentreLocal);
         mesh.localToWorld(this.sectorWorldCentre);
-        const r = bsRadiusLocal * worldScale;
-        const est = estimateSphereScreenDiameterPx(this.sectorWorldCentre, r, this.camera, canvasW, canvasH);
-        if (est * dpr < SECTOR_RELEASE_DEVICE_PX) return null;
-        const fp = projectSphereToScreen(this.sectorWorldCentre, r, this.camera, canvasW, canvasH, this.sectorProjection);
+        const fp = projectSphereToScreen(
+          this.sectorWorldCentre, bsRadiusLocal * worldScale, this.camera, canvasW, canvasH, this.sectorProjection,
+        );
         if (!(fp.diameterPx > 0)) return null;
-        // Entirely outside the frame: nothing to sharpen.
-        if (fp.maxX < 0 || fp.minX > canvasW || fp.maxY < 0 || fp.minY > canvasH) return null;
+        // Entirely outside the frame: nothing to sharpen, but a resident one
+        // is a pan away — the streamer keeps it while it stays magnified.
+        const offscreen = fp.maxX < 0 || fp.minX > canvasW || fp.maxY < 0 || fp.minY > canvasH;
         const dx = (fp.footprintX - canvasW / 2) / Math.max(canvasW / 2, 1);
         const dy = (fp.footprintY - canvasH / 2) / Math.max(canvasH / 2, 1);
-        return { devicePx: fp.diameterPx * dpr, centrality: Math.max(0, 1 - Math.hypot(dx, dy)) };
+        // Magnification at the surface point the streamer asks about (the
+        // sector's point nearest the camera's): device pixels per local unit
+        // at its distance, foreshortened by the angle between the surface
+        // normal there and the line of sight.
+        this.sectorNormal.copy(surfaceDirLocal);
+        this.sectorPoint.copy(this.sectorNormal).multiplyScalar(radiusAU);
+        mesh.localToWorld(this.sectorPoint);
+        this.sectorNormal.applyQuaternion(this.sectorWorldQuat);
+        this.sectorToCam.copy(this.camera.position).sub(this.sectorPoint);
+        const dist = this.sectorToCam.length();
+        if (!(dist > 0)) return null;
+        const facing = Math.max(0, this.sectorToCam.dot(this.sectorNormal) / dist);
+        return {
+          pxPerLocalUnit: (focalDevicePx * worldScale * facing) / dist,
+          centrality: Math.max(0, 1 - Math.hypot(dx, dy)),
+          offscreen,
+        };
       };
-      sectors.update(name, this.sectorCamLocal, measure, nowMs, suspend);
+      sectors.update(name, this.sectorCamLocal, measure, nowMs, suspend, this.sectorSunLocal, pxPerLocalUnitNearest);
     };
 
     for (const planet of this.solarSystem.planets) {
@@ -2518,6 +2575,10 @@ export class PlanetariumMode {
     this.dotNavMoon = null;
     this.clearMoonLabelIncumbents();
     this.clearBodyReveal();
+    // Another mode gets the GPU memory back; sectors stream in again from the
+    // service-worker cache on the next activation.
+    this.sectors?.dropAll();
+    this.sectorSpin.clear();
     // A live tutorial hands the pre-tutorial state back first, synchronously — the
     // teardown below (excursion drop, landed exit, save) then applies to the
     // restored journey exactly as it would for a non-tutorialing player.

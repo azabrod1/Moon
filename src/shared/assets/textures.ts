@@ -6,7 +6,7 @@
 const BASE = import.meta.env.BASE_URL + 'textures/';
 
 export const TEXTURES = {
-  EARTH_DAY: BASE + 'earth-day.webp',
+  EARTH_DAY: BASE + 'earth-day.v2.webp',
   EARTH_BUMP: BASE + 'earth-bump.webp',
   MOON: BASE + 'moon.webp',
   MILKY_WAY: BASE + 'starmap_milkyway.jpg',

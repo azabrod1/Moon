@@ -199,4 +199,20 @@ describe('textureWarmer onOutcome', () => {
     expect(calls).toEqual(['second']);
     expect(uploaded.length).toBe(1);
   });
+
+  it('a teardown settles every pending callback as disposed, exactly once', () => {
+    bindTextureWarmer((tex) => uploaded.push(tex));
+    const a = new THREE.Texture();
+    const b = new THREE.Texture();
+    const calls: string[] = [];
+    queueTextureWarm(a, (o) => calls.push(`a:${o}`));
+    queueTextureWarm(b, (o) => calls.push(`b:${o}`));
+    resetTextureWarmer();
+    expect(calls.sort()).toEqual(['a:disposed', 'b:disposed']);
+    // Nothing survives the reset: a later dispose or pump reports nothing more.
+    a.dispose();
+    pumpTextureWarmQueue(Number.POSITIVE_INFINITY);
+    expect(calls.length).toBe(2);
+    expect(uploaded).toEqual([]);
+  });
 });

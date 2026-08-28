@@ -188,11 +188,11 @@ async function cutDataCrops(srcPath, key, tier, spanU = 1) {
  *  must be of the mask that matches the tiles' coastlines. */
 async function regenerateEarthRoughness() {
   execFileSync('node', ['gen-maps.mjs', 'earth-roughness'], { stdio: 'inherit' });
-  const png = path.join(TEX, 'earth-roughness.png');
-  const out = path.join(TEX, 'earth-roughness.webp');
+  const png = path.join(TEX, 'earth-roughness.v2.png');
+  const out = path.join(TEX, 'earth-roughness.v2.webp');
   await sharp(png).webp(DATA_WEBP).toFile(out);
   await unlink(png);
-  console.log(`  earth-roughness.webp regenerated from the new day map (${((await stat(out)).size / 1024).toFixed(0)} KB)`);
+  console.log(`  earth-roughness.v2.webp regenerated from the new day map (${((await stat(out)).size / 1024).toFixed(0)} KB)`);
 }
 
 async function writeDownsamples(raw, outs) {
@@ -318,12 +318,16 @@ const JOBS = {
     key: 'earth-day',
     src: () => path.join(CACHE, 'bmng_200408_21600.jpg'),
     grade: gradeOceanInPlace,
-    downsamples: [{ w: 4096, h: 2048, out: path.join(TEX, 'earth-day.webp') }],
-    ref: path.join(TEX, 'earth-day.webp'),
+    // `.v2`: a re-based map ships under a NEW pathname. The service worker
+    // serves the previous deploy's body for a pathname it already holds for
+    // one boot, and a globe drawn from the old map under tiles cut from the
+    // new one would show every sector as a rectangle of a different world.
+    downsamples: [{ w: 4096, h: 2048, out: path.join(TEX, 'earth-day.v2.webp') }],
+    ref: path.join(TEX, 'earth-day.v2.webp'),
     derive: regenerateEarthRoughness,
     dataCrops: [
       { src: path.join(TEX, 'earth-bump.webp'), key: 'earth-bump', tier: '2k' },
-      { src: path.join(TEX, 'earth-roughness.webp'), key: 'earth-roughness', tier: '2k' },
+      { src: path.join(TEX, 'earth-roughness.v2.webp'), key: 'earth-roughness', tier: '2k' },
     ],
   },
   // LROC WAC colour (NASA SVS CGI Moon Kit lroc_color_poles_16k.tif), the same
@@ -349,11 +353,11 @@ const JOBS = {
     // q85 at 2× (A/B'd on Kasei Valles) for a third fewer bytes (35 → ~22 MB).
     webp: { quality: 75, effort: 5 },
     downsamples: [
-      { w: 4096, h: 2048, out: path.join(TEX, '4k', 'mars.webp') },
-      { w: 2048, h: 1024, out: path.join(TEX, 'mars.webp') },
+      { w: 4096, h: 2048, out: path.join(TEX, '4k', 'mars.v2.webp') },
+      { w: 2048, h: 1024, out: path.join(TEX, 'mars.v2.webp') },
     ],
-    ref: path.join(TEX, '4k', 'mars.webp'),
-    dataCrops: [{ src: path.join(TEX, 'mars-normal.webp'), key: 'mars-normal', tier: '2k', spanU: 2 }],
+    ref: path.join(TEX, '4k', 'mars.v2.webp'),
+    dataCrops: [{ src: path.join(TEX, 'mars-normal.v2.webp'), key: 'mars-normal', tier: '2k', spanU: 2 }],
   },
   // Solar System Scope 4K steps for the planets whose 8K/4K sources passed the
   // same-product gate against the shipped 2K boot maps (RMS 3.6 / 1.6 / 1.6).
@@ -364,7 +368,7 @@ const JOBS = {
 
 const names = flag('all') ? Object.keys(JOBS) : jobsWanted;
 if (names.length === 0) {
-  console.error('usage: node tools/gen-tiles.mjs <job...> | --all  [--verify] [--cache=dir]');
+  console.error('usage: node tools/gen-tiles.mjs <job...> | --all  [--verify | --crops] [--cache=dir]');
   process.exit(2);
 }
 for (const name of names) {
@@ -372,11 +376,17 @@ for (const name of names) {
   if (!job) { console.error(`unknown job ${name}`); process.exit(2); }
   const t0 = Date.now();
   console.log(`== ${name}`);
-  if (job.flat) {
+  if (flag('verify')) {
+    // Check only: a flat job has no tile set to verify, and must not be
+    // re-encoded by a verification run.
+    if (!job.flat) await verify(job.key, job.ref);
+  } else if (flag('crops')) {
+    // Data crops only: a relief / roughness map changed under an unchanged
+    // colour set (the tiles and downsamples are left alone).
+    for (const d of job.dataCrops ?? []) await cutDataCrops(d.src, d.key, d.tier, d.spanU ?? 1);
+  } else if (job.flat) {
     await writeWebp(sharp(job.flat.src(), { limitInputPixels: false }).removeAlpha()
       .resize(4096, 2048, { fit: 'fill', kernel: 'lanczos3' }), job.flat.out);
-  } else if (flag('verify')) {
-    await verify(job.key, job.ref);
   } else {
     const raw = job.raw ? await job.raw() : await fullRaw(job.src(), job.match);
     if (job.grade) job.grade(raw);

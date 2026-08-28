@@ -10,7 +10,12 @@
  * Tile {c}_{r} on disk (tools/gen-tiles.mjs) is the sub-rectangle
  * u ∈ [c/cols, (c+1)/cols], v ∈ [1−(r+1)/rows, 1−r/rows] of the same equirect
  * the base map is — column 0 at the western edge, row 0 at the north — so the
- * tile and the base map agree on every surface point by construction.
+ * tile and the base map agree on every surface point by construction. The
+ * grid, the gutter and the crop widths below are what a tile PATHNAME means:
+ * the service worker can serve a one-deploy-old tile under an unchanged path
+ * for a boot, so a layout change ships under a new tier folder or key
+ * (texturePolicy.resolveTileUrl), never as new code reading the old paths;
+ * sectorTiles.assets.test.ts pins every shipped file to this layout.
  *
  * Normal-map crops are cut TWO sectors wide (the sector centred, half a
  * neighbour each side): three derives the tangent frame from screen-space
@@ -158,6 +163,28 @@ export function sphereDirection(u: number, v: number, out: THREE.Vector3): THREE
 /** Unit direction of the sector's centre in the body frame. */
 export function sectorCentreDirection(grid: SectorGrid, s: Sector, out: THREE.Vector3): THREE.Vector3 {
   return sphereDirection((s.c + 0.5) / grid.cols, (s.r + 0.5) / grid.rows, out);
+}
+
+/**
+ * The surface direction of a sector nearest (in longitude and latitude) to a
+ * given direction: for a camera along `dir`, the point where the sector is
+ * most magnified — a sector 45° wide is foreshortened at its centre while
+ * its near edge fills the screen. A sector containing `dir` returns `dir`.
+ */
+export function sectorNearestDirection(grid: SectorGrid, s: Sector, dir: THREE.Vector3, out: THREE.Vector3): THREE.Vector3 {
+  // Inverse of sphereDirection: θ from y, φ from the (z, −x) plane.
+  const v = Math.acos(Math.max(-1, Math.min(1, dir.y))) / Math.PI;
+  let u = Math.atan2(dir.z, -dir.x) / (2 * Math.PI);
+  if (u < 0) u += 1;
+  const u0 = s.c / grid.cols;
+  const u1 = (s.c + 1) / grid.cols;
+  // Longitude wraps: clamp against whichever image of the sector is nearer.
+  const uc = (u0 + u1) / 2;
+  if (u - uc > 0.5) u -= 1;
+  else if (uc - u > 0.5) u += 1;
+  const cu = Math.max(u0, Math.min(u1, u));
+  const cv = Math.max(s.r / grid.rows, Math.min((s.r + 1) / grid.rows, v));
+  return sphereDirection(cu, cv, out);
 }
 
 const cornerScratch = new THREE.Vector3();

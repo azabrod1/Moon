@@ -88,7 +88,7 @@ const voyager1Milestones: HistoricMilestone[] = [
     imageCredit: 'NASA',
     imageSourceLabel: 'Voyager 1’s Launch Vehicle',
     imageSourceUrl: 'https://science.nasa.gov/image-detail/pia21739/',
-    ...textureFallback('earth-day.webp', 'Earth'),
+    ...textureFallback('earth-day.v2.webp', 'Earth'),
   },
   {
     id: 'jupiter',
@@ -160,7 +160,7 @@ const voyager2Milestones: HistoricMilestone[] = [
     imageCredit: 'NASA/JPL',
     imageSourceLabel: 'Voyager 2 prelaunch view',
     imageSourceUrl: 'https://photojournal.jpl.nasa.gov/catalog/PIA21746',
-    ...textureFallback('earth-day.webp', 'Earth'),
+    ...textureFallback('earth-day.v2.webp', 'Earth'),
   },
   {
     id: 'jupiter',
@@ -264,7 +264,7 @@ const cassiniMilestones: HistoricMilestone[] = [
     imageCredit: 'NASA',
     imageSourceLabel: 'Remembering Cassini’s beautiful launch',
     imageSourceUrl: 'https://science.nasa.gov/missions/cassini/remembering-cassinis-beautiful-launch-19-years-ago/',
-    ...textureFallback('earth-day.webp', 'Earth'),
+    ...textureFallback('earth-day.v2.webp', 'Earth'),
   },
   {
     id: 'venus-assist',
@@ -363,7 +363,7 @@ const newHorizonsMilestones: HistoricMilestone[] = [
     imageCredit: 'NASA',
     imageSourceLabel: 'January 2006: New Horizons launched',
     imageSourceUrl: 'https://www.nasa.gov/image-article/january-2006-new-horizons-launched/',
-    ...textureFallback('earth-day.webp', 'Earth'),
+    ...textureFallback('earth-day.v2.webp', 'Earth'),
   },
   {
     id: 'jupiter-assist',
@@ -435,7 +435,7 @@ const junoMilestones: HistoricMilestone[] = [
     imageCredit: 'NASA',
     imageSourceLabel: 'Juno lifts off',
     imageSourceUrl: 'https://www.nasa.gov/image-article/juno-lifts-off/',
-    ...textureFallback('earth-day.webp', 'Earth'),
+    ...textureFallback('earth-day.v2.webp', 'Earth'),
   },
   {
     id: 'earth-flyby',
@@ -451,7 +451,7 @@ const junoMilestones: HistoricMilestone[] = [
     imageCredit: 'NASA/JPL-Caltech',
     imageSourceLabel: 'Juno’s approach to the Earth-Moon system',
     imageSourceUrl: 'https://science.nasa.gov/photojournal/junos-approach-to-the-earth-moon-system/',
-    ...textureFallback('earth-day.webp', 'Earth'),
+    ...textureFallback('earth-day.v2.webp', 'Earth'),
   },
   {
     id: 'jupiter-arrival',

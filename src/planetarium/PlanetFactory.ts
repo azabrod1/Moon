@@ -136,13 +136,18 @@ export function setWarmEligibleMoonParents(parents: ReadonlySet<string>): void {
 export const PLANET_TEXTURE_FILES: Record<string, string> = {
   mercury: 'mercury.webp',
   venus: 'venus.webp',
-  earthDay: 'earth-day.webp',
+  // `.v2` marks a map whose content was re-based under this key: the service
+  // worker serves the previous deploy's body for a pathname it already holds
+  // for one boot, and the sector tiles cut from the new map (new pathnames)
+  // would then overlay the old globe as rectangles of a different product.
+  // A re-based map therefore ships under a new pathname, never the old one.
+  earthDay: 'earth-day.v2.webp',
   earthNight: 'earth-night.webp',
   earthClouds: 'earth-clouds.webp',
   earthBump: 'earth-bump.webp',
-  earthRoughness: 'earth-roughness.webp',
-  mars: 'mars.webp',
-  marsNormal: 'mars-normal.webp',
+  earthRoughness: 'earth-roughness.v2.webp',
+  mars: 'mars.v2.webp',
+  marsNormal: 'mars-normal.v2.webp',
   jupiter: 'jupiter.webp',
   saturn: 'saturn.webp',
   uranus: 'uranus.webp',

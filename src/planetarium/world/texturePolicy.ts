@@ -29,7 +29,12 @@ export function resolveTextureUrl(file: string, tier: TextureTier): string {
 
 /** Sector tile sets live under textures/tiles/<key>/<tier>/<c>_<r>.webp —
  *  a colour set's tier names its source resolution ('16k'), a data crop's
- *  the base map it was cut from ('2k', '4k'). Cut by tools/gen-tiles.mjs. */
+ *  the base map it was cut from ('2k', '4k'). Cut by tools/gen-tiles.mjs.
+ *  The layout the app reads into a pathname — the 8×4 grid, the 8-px gutter,
+ *  the two-sector-wide normal crops (sectorGrid) — is part of that pathname's
+ *  contract: the service worker may serve a one-deploy-old body under it for
+ *  a boot, so a layout change ships under a new folder (a new tier name or
+ *  key), never as new code reading the old paths. */
 export function resolveTileUrl(key: string, tier: string, c: number, r: number): string {
   return `${TEXTURE_BASE}tiles/${key}/${tier}/${c}_${r}.webp`;
 }

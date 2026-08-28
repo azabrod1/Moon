@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import * as THREE from 'three';
 import {
+  sectorNearestDirection,
   SECTOR_GRID_16K,
   SECTOR_TILE,
   applySectorTileTransform,
@@ -239,5 +240,38 @@ describe('sectorMayFaceCamera', () => {
   it('a camera at or inside the surface sees everything (no degenerate acos)', () => {
     const dir = new THREE.Vector3(0, 0, 1);
     expect(sectorMayFaceCamera(dir, 0.5, new THREE.Vector3(0, 0, -0.5), R)).toBe(true);
+  });
+});
+
+describe('sectorNearestDirection', () => {
+  const G = SECTOR_GRID_16K;
+  const dirOf = (u: number, v: number) => sphereDirection(u, v, new THREE.Vector3());
+
+  it('returns the direction itself when the sector contains it', () => {
+    const d = dirOf(2.3 / 8, 1.6 / 4); // inside sector (2, 1)
+    const out = sectorNearestDirection(G, { c: 2, r: 1 }, d, new THREE.Vector3());
+    expect(out.distanceTo(d)).toBeLessThan(1e-12);
+  });
+
+  it('clamps to the near edge of a neighbouring sector, in longitude and latitude', () => {
+    const d = dirOf(2.3 / 8, 1.6 / 4);
+    // Sector (3, 1) lies east: nearest point is on its western edge at the same latitude.
+    expect(sectorNearestDirection(G, { c: 3, r: 1 }, d, new THREE.Vector3()).distanceTo(dirOf(3 / 8, 1.6 / 4))).toBeLessThan(1e-12);
+    // Sector (2, 2) lies south: nearest point is on its northern edge at the same longitude.
+    expect(sectorNearestDirection(G, { c: 2, r: 2 }, d, new THREE.Vector3()).distanceTo(dirOf(2.3 / 8, 2 / 4))).toBeLessThan(1e-12);
+    // A diagonal neighbour meets at the shared corner.
+    expect(sectorNearestDirection(G, { c: 3, r: 2 }, d, new THREE.Vector3()).distanceTo(dirOf(3 / 8, 2 / 4))).toBeLessThan(1e-12);
+  });
+
+  it('wraps in longitude: the eastern edge of column 7 is next to column 0', () => {
+    const d = dirOf(0.2 / 8, 1.5 / 4); // just inside column 0
+    const out = sectorNearestDirection(G, { c: 7, r: 1 }, d, new THREE.Vector3());
+    expect(out.distanceTo(dirOf(1, 1.5 / 4))).toBeLessThan(1e-12); // column 7's eastern edge (u = 1 ≡ 0)
+  });
+
+  it('a polar sector reaches the pole itself', () => {
+    const d = new THREE.Vector3(0, 1, 0); // the north pole
+    const out = sectorNearestDirection(G, { c: 5, r: 0 }, d, new THREE.Vector3());
+    expect(out.distanceTo(d)).toBeLessThan(1e-9);
   });
 });

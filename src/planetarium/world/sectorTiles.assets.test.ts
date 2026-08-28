@@ -8,7 +8,7 @@
  * shipping misregistered sectors. Reads only WebP headers — no decode.
  */
 import { describe, it, expect } from 'vitest';
-import { readFileSync, readdirSync, existsSync } from 'node:fs';
+import { closeSync, openSync, readSync, readdirSync, existsSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { SECTOR_GRID_16K, dataCropLayout, type SectorGrid } from './sectorGrid';
 import { SECTOR_SETS } from './sectorStreamer';
@@ -19,7 +19,16 @@ const TEXTURES = resolve(__dirname, '../../../public/textures');
 /** Canvas size from a WebP container: VP8 (lossy), VP8L (lossless) or VP8X
  *  (extended) first chunk. */
 function webpSize(file: string): { width: number; height: number } {
-  const b = readFileSync(file);
+  // The header only: a level of tiles is 128 files and a level below it 512,
+  // and reading them whole would put hundreds of megabytes through every
+  // test run for thirty bytes of it.
+  const b = Buffer.alloc(32);
+  const fd = openSync(file, 'r');
+  try {
+    readSync(fd, b, 0, b.length, 0);
+  } finally {
+    closeSync(fd);
+  }
   expect(b.toString('ascii', 0, 4)).toBe('RIFF');
   expect(b.toString('ascii', 8, 12)).toBe('WEBP');
   const chunk = b.toString('ascii', 12, 16);

@@ -653,7 +653,13 @@ export class SectorStreamer {
    *  colour maps, which only the mode can see). The sector budget is what
    *  the envelope leaves over them. */
   setGlobalMapBytes(bytes: number): void {
+    const before = this.globalBytes;
     this.globalBytes = Math.max(0, bytes);
+    // The budget is a public number and shrinking it is what makes the
+    // working set too big: the sectors go back in the same call, so no
+    // caller can ever read a stats() where what is held is over what is
+    // allowed. Growing it takes nothing from anyone.
+    if (this.globalBytes > before) this.trimToBudget();
   }
 
   /** What the sectors may hold together: their own ceiling, or whatever the

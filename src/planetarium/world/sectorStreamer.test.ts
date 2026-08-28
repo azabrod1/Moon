@@ -1019,6 +1019,20 @@ describe('SectorStreamer', () => {
     expect(s.bodies.Earth.resident.slice().sort()).toEqual(['5_2', '6_2', '7_2']);
   });
 
+  it('gives sectors back the moment the envelope closes, not on the next frame', () => {
+    loader.auto = true;
+    const sizes: Record<string, number> = {};
+    for (let c = 0; c < 8; c++) { sizes[`${c}_1`] = 2 + 0.01 * c; sizes[`${c}_2`] = 2.1 + 0.01 * c; }
+    for (let f = 0; f < 24; f++) streamer.update('Earth', INSIDE, measureOf(sizes), f * 16);
+    expect(streamer.stats().resident).toBe(EARTH_FITS_DESKTOP);
+    // A globe map lands between frames. Nothing calls update() before the
+    // next stats() read, and the invariant still has to hold in it.
+    streamer.setGlobalMapBytes(SECTOR_ENVELOPE_BYTES_DESKTOP - 2 * EARTH_SET_BYTES);
+    const s = streamer.stats();
+    expect(s.resident).toBe(2);
+    expect(s.residentBytes + s.reserved).toBeLessThanOrEqual(s.budget);
+  });
+
   it('a budget collapse and a base map landing in the same frame never overshoot the budget', () => {
     loader.auto = true;
     earth.material.roughnessMap = null; // the gloss map has not landed yet

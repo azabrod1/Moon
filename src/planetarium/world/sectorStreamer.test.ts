@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
 import * as THREE from 'three';
 import {
   SECTOR_ADMIT_MARGIN,
@@ -1122,6 +1122,23 @@ describe('SectorStreamer', () => {
     expect(s.budget).toBe(0);
     expect(s.residentBytes + s.reserved).toBe(0);
     expect(s.resident).toBe(0);
+  });
+
+  it('says once when the globe maps have taken the whole envelope', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      streamer.setGlobalMapBytes(SECTOR_ENVELOPE_BYTES_DESKTOP - 1);
+      expect(warn).not.toHaveBeenCalled();
+      streamer.setGlobalMapBytes(SECTOR_ENVELOPE_BYTES_DESKTOP);
+      expect(streamer.stats().budget).toBe(0);
+      expect(warn).toHaveBeenCalledTimes(1);
+      expect(String(warn.mock.calls[0][0])).toContain('Surface tiles off');
+      // Once: a per-frame figure that stays there must not become a log.
+      streamer.setGlobalMapBytes(SECTOR_ENVELOPE_BYTES_DESKTOP + 1);
+      expect(warn).toHaveBeenCalledTimes(1);
+    } finally {
+      warn.mockRestore();
+    }
   });
 
   it('gives sectors back the moment the envelope closes, not on the next frame', () => {

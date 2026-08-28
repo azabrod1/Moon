@@ -99,6 +99,7 @@ import { createSectorMaterial, sectorRenderOrder, syncSectorMaterial } from './s
 import { loadStreamedTexture, type TextureLoad } from './textureBitmapLoader';
 import { applyTextureDefaults, resolveTileUrl, type TextureTier } from './texturePolicy';
 import { TIER_RANK } from '../PlanetFactory';
+import { debugWarn } from '../../shared/debug';
 import { queueTextureWarm, type WarmOutcome } from './textureWarmer';
 
 /** The material slots a sector may carry a crop of, in a fixed order. */
@@ -588,6 +589,7 @@ export class SectorStreamer {
   private readonly wantTexelPx: number;
   private readonly releaseTexelPx: number;
   private globalBytes = 0;
+  private warnedNoBudget = false;
   private generation = 0;
   private lastNowMs = 0;
   private batching = false;
@@ -694,6 +696,16 @@ export class SectorStreamer {
     // caller can ever read a stats() where what is held is over what is
     // allowed. Growing it takes nothing from anyone.
     if (this.globalBytes > before) this.trimToBudget();
+    // Streaming that has quietly switched itself off looks like a soft
+    // surface, not like a fault. Say it once, with the two figures that
+    // explain it.
+    if (this.budget() === 0 && !this.warnedNoBudget) {
+      this.warnedNoBudget = true;
+      debugWarn('Surface tiles off: the globe maps alone fill the memory envelope', {
+        globeMapsMiB: Math.round(this.globalBytes / (1024 * 1024)),
+        envelopeMiB: Math.round(this.envelopeBytes / (1024 * 1024)),
+      });
+    }
   }
 
   /** What the sectors may hold together: their own ceiling, or whatever the

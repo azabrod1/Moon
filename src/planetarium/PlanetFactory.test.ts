@@ -32,6 +32,7 @@ import {
   resolveUpgradeTier,
   setUpgradeTextureLoader,
   shouldApplyColorTier,
+  TEXTURE_UPGRADE_TIERS,
   TIER_RANK,
   upgradeComplete,
   upgradeGeometryOnApproach,
@@ -43,6 +44,12 @@ import {
 } from './PlanetFactory';
 import { retryDelayMs, urlSpread } from './world/textureRetryPolicy';
 import { captureDeviceTextureCaps, type TextureTier } from './world/texturePolicy';
+import {
+  SECTOR_ENVELOPE_BYTES_DESKTOP,
+  SECTOR_ENVELOPE_BYTES_TOUCH,
+  SECTOR_SETS,
+  sectorSetGpuBytes,
+} from './world/sectorStreamer';
 import { bindTextureWarmer, pumpTextureWarmQueue, queueTextureWarm, resetTextureWarmer } from './world/textureWarmer';
 
 // Device caps are captured from the live renderer; a fake renderer is the seam.
@@ -1350,6 +1357,70 @@ describe('the ladder\'s live weight', () => {
     material.map = new THREE.Texture();
     (material.map as unknown as { isCompressedTexture: boolean }).isCompressedTexture = true;
     expect(mib(appliedTierGpuBytes(up))).toBeCloseTo(42.7, 1);
+  });
+});
+
+describe('the ladder against the sector memory envelope', () => {
+  const mib = (bytes: number) => bytes / (1024 * 1024);
+  /** Every body with a ladder on the top tier this profile allows, all at
+   *  once, with nothing GPU-compressed — the heaviest the ladder can be on a
+   *  device whose transcoder is unavailable and every optional map has been
+   *  earned. `appliedTierGpuBytes` reads the texture, so the maps here are
+   *  the real widths of the tiers. */
+  function ladderWorstCaseBytes(touch: boolean): number {
+    withMaxTextureSize(16384, touch);
+    let bytes = 0;
+    for (const key of Object.keys(TEXTURE_UPGRADE_TIERS)) {
+      const material = new THREE.MeshStandardMaterial();
+      materials.push(material);
+      const up = makeTextureUpgrade(key, material)!;
+      up.appliedTier = up.effectiveMaxTier;
+      const width = up.appliedTier === '8k' ? 8192 : 4096;
+      material.map = new THREE.Texture({ width, height: width / 2 } as unknown as HTMLImageElement);
+      bytes += appliedTierGpuBytes(up);
+    }
+    return bytes;
+  }
+
+  it('leaves a desktop room for seven surface sector sets even at its heaviest', () => {
+    const worst = ladderWorstCaseBytes(false);
+    // Six 4K planets, plus the Moon's 8K and the cloud deck's 8K.
+    expect(mib(worst)).toBeCloseTo(597.3, 1);
+    const budget = SECTOR_ENVELOPE_BYTES_DESKTOP - worst;
+    expect(mib(budget)).toBeCloseTo(170.7, 1);
+    expect(budget / sectorSetGpuBytes(SECTOR_SETS.Earth)).toBeGreaterThanOrEqual(7);
+  });
+
+  it('leaves a phone nothing at its heaviest: every 4K map at once fills the envelope', () => {
+    const worst = ladderWorstCaseBytes(true);
+    // Eight 4K maps — the touch caps hold both 8K rungs down to 4K.
+    expect(mib(worst)).toBeCloseTo(341.3, 1);
+    // Over the envelope, so the sector budget is nothing: a phone that has
+    // approached every body streams no tiles until the ladder gives maps
+    // back. The streamer says so once rather than going quiet.
+    expect(worst).toBeGreaterThan(SECTOR_ENVELOPE_BYTES_TOUCH);
+    // A phone that has approached the two hero bodies alone still streams.
+    const heroes = 3 * 42.7 * 1024 * 1024; // Moon 4K, cloud deck 4K, Mars 4K
+    expect(SECTOR_ENVELOPE_BYTES_TOUCH - heroes)
+      .toBeGreaterThanOrEqual(5 * sectorSetGpuBytes(SECTOR_SETS.Earth));
+  });
+
+  it('charges a GPU-compressed rung the blocks its container really carries', () => {
+    withMaxTextureSize(16384);
+    const material = new THREE.MeshStandardMaterial();
+    materials.push(material);
+    const up = makeTextureUpgrade('moon', material)!;
+    up.appliedTier = '8k';
+    // A transcoded 8K with a full mip chain at 4 bits a texel.
+    const mipmaps: Array<{ width: number; height: number; data: Uint8Array }> = [];
+    for (let w = 8192, h = 4096; w >= 4; w >>= 1, h >>= 1) {
+      mipmaps.push({ width: w, height: h, data: new Uint8Array((w * h) / 2) });
+    }
+    material.map = new THREE.CompressedTexture(mipmaps, 8192, 4096);
+    expect(mib(appliedTierGpuBytes(up))).toBeCloseTo(21.3, 1);
+    // …and the nominal figure only stands in for a texture with no image.
+    material.map = new THREE.Texture();
+    expect(mib(appliedTierGpuBytes(up))).toBeCloseTo(170.7, 1);
   });
 });
 

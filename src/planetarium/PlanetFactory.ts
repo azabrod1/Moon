@@ -469,7 +469,7 @@ export function upgradeComplete(up: TextureUpgrade): boolean {
 // which is why the cloud deck climbs to 8K: with the ground streamed at 16K,
 // a 4K deck is the soft layer on top of it. The 8K deck is the SSS product
 // itself (the 4K is its downsample: RMS 7 against it, equal means).
-const TEXTURE_UPGRADE_TIERS: Record<string, readonly TextureTier[]> = {
+export const TEXTURE_UPGRADE_TIERS: Record<string, readonly TextureTier[]> = {
   mercury: ['4k'],
   venus: ['4k'],
   mars: ['4k'],
@@ -543,15 +543,36 @@ export function equirectMapGpuBytes(width: number, compressed = false): number {
 }
 
 /**
- * Estimated GPU bytes the tier this handle has APPLIED holds, from that
- * tier's nominal width — 0 while the body is still on the boot map every
- * device carries anyway. Summed over the bodies, this is the ladder's live
- * weight, which the sector streamer's memory envelope has to share with: a
- * Moon on its 8K rung leaves its tiles what it actually leaves.
+ * GPU bytes the tier this handle has APPLIED holds — 0 while the body is
+ * still on the boot map every device carries anyway. Summed over the bodies,
+ * this is the ladder's live weight, which the sector streamer's memory
+ * envelope has to share with: a Moon on its 8K rung leaves its tiles what it
+ * actually leaves.
+ *
+ * Read from the texture that is really there, not from the tier's nominal
+ * size: a GPU-compressed rung holds exactly the blocks its container carries
+ * (a quarter to an eighth of the raw map, and the ratio is the format's, not
+ * ours to assume), and a map is not always the width its tier is named for
+ * — the cloud deck's 4K is 4096 across where the Moon's is 4096 too but
+ * Earth's day map boots wider. The nominal figure is the fallback for a
+ * texture with no readable image.
  */
 export function appliedTierGpuBytes(up: TextureUpgrade): number {
   if (!up.appliedTier) return 0;
-  const map = up.material.map as { isCompressedTexture?: boolean } | null;
+  const map = up.material.map as
+    | (THREE.Texture & { isCompressedTexture?: boolean; mipmaps?: Array<{ data?: { byteLength?: number } } | null> })
+    | null;
+  if (map?.isCompressedTexture) {
+    let bytes = 0;
+    for (const level of map.mipmaps ?? []) bytes += level?.data?.byteLength ?? 0;
+    if (bytes > 0) return bytes;
+  }
+  const img = map?.image as { width?: unknown; height?: unknown } | undefined;
+  const w = img && typeof img.width === 'number' ? img.width : 0;
+  const h = img && typeof img.height === 'number' ? img.height : 0;
+  if (w > 0 && h > 0) {
+    return Math.round(w * h * (map?.isCompressedTexture ? 1 : 4) * (4 / 3));
+  }
   return equirectMapGpuBytes(TIER_MAP_WIDTH[up.appliedTier], map?.isCompressedTexture === true);
 }
 

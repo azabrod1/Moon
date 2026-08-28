@@ -976,8 +976,9 @@ export class SectorStreamer {
     let free = this.budget() - this.heldBytes();
     let live = this.liveCount();
     if (free >= need && live < this.residentCap) return true;
-    // Every live sector that has earned nothing this pass has to protect,
-    // split by whether a finer one is still drawing over it.
+    // Every live sector this pass may take, split by whether a finer one is
+    // still drawing over it. A resident inside its dwell is in neither list:
+    // it has an upload to protect, and nothing here can plan it away.
     const standing = new Map<SectorSlot, number>();
     const frontier: SectorSlot[] = [];
     const covering: SectorSlot[] = [];

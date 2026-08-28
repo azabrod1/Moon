@@ -1133,6 +1133,27 @@ describe('SectorStreamer', () => {
     expect(streamer.stats().bodies.Earth.resident).toContain('0_0');
   });
 
+  it('starts the eviction dwell when the tile lands, not when the fetch does', () => {
+    // Room for exactly one Earth set, so every admission is a replacement.
+    streamer.setGlobalMapBytes(SECTOR_ENVELOPE_BYTES_DESKTOP - EARTH_SET_BYTES);
+    streamer.update('Earth', INSIDE, measureOf({ '2_1': 2 }), 0);
+    expect(streamer.stats().bodies.Earth.loading).toEqual(['2_1']);
+    // A far stronger candidate takes the reservation while the fetch is
+    // still in the air: nothing has been uploaded for it to protect.
+    streamer.update('Earth', INSIDE, measureOf({ '2_1': 2, '5_2': 40 }), 16);
+    expect(streamer.stats().bodies.Earth.loading).toEqual(['5_2']);
+    loader.resolveAll();
+    expect(streamer.stats().bodies.Earth.resident).toEqual(['5_2']);
+    // From the landing, the upload is safe for the dwell however strong the
+    // next candidate is…
+    const pressure = measureOf({ '5_2': 40, '0_0': 400 });
+    streamer.update('Earth', INSIDE, pressure, 16 + SECTOR_EVICT_DWELL_MS - 1);
+    expect(streamer.stats().bodies.Earth.resident).toEqual(['5_2']);
+    // …and no longer.
+    streamer.update('Earth', INSIDE, pressure, 16 + SECTOR_EVICT_DWELL_MS);
+    expect(streamer.stats().bodies.Earth.loading).toEqual(['0_0']);
+  });
+
   it('settles under budget pressure: two hundred frames at one pose, no churn and no starved child', () => {
     loader.auto = true;
     twoLevelEarth();

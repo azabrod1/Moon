@@ -252,9 +252,13 @@ export const SECTOR_INFLIGHT_CAP_TOUCH = 1;
  *  the slot cap alone would put six requests on the wire at once. */
 export const SECTOR_FETCH_POOL_DESKTOP = 6;
 export const SECTOR_FETCH_POOL_TOUCH = 3;
-/** How long a sector is safe from eviction after it is admitted. Without it
+/** How long a sector is safe from eviction after its tile LANDS. Without it
  *  a working set at the budget could hand the same slot back and forth
- *  between two candidates a hair apart, paying an upload each time. */
+ *  between two candidates a hair apart, paying an upload each time. It runs
+ *  from the upload because that is what it protects: a load still in the air
+ *  has paid nothing, so a far stronger candidate may take its reservation
+ *  and its fetch is aborted rather than finished for a tile that would be
+ *  evicted on its first frame. */
 export const SECTOR_EVICT_DWELL_MS = 1_000;
 
 /** A candidate evicts the weakest resident only when it out-ranks it by this
@@ -912,13 +916,16 @@ export class SectorStreamer {
   }
 
   /** Live sectors that may be given up now: nothing finer is drawing over
-   *  them, and they have been live long enough to have earned their upload. */
+   *  them, and a resident has been drawing long enough to have earned its
+   *  upload. A fresh admission still fetching has paid for nothing yet, so it
+   *  stays replaceable — taking it aborts a transfer instead of throwing a
+   *  finished upload away. */
   private evictable(nowMs: number): SectorSlot[] {
     const out: SectorSlot[] = [];
     for (const body of this.bodies.values()) {
       for (const s of body.slots) {
         if (s.state === 'idle' || hasLiveChild(s)) continue;
-        if (nowMs - s.liveSinceMs < SECTOR_EVICT_DWELL_MS) continue;
+        if (s.state === 'resident' && nowMs - s.liveSinceMs < SECTOR_EVICT_DWELL_MS) continue;
         out.push(s);
       }
     }
@@ -1047,7 +1054,6 @@ export class SectorStreamer {
 
   private admit(body: SectorBody, slot: SectorSlot, signature: string): void {
     slot.state = 'loading';
-    slot.liveSinceMs = this.lastNowMs;
     // The globe goes onto its fine grid now, not when the tile lands: the
     // fetch in between keeps the sphere rebuild off the frame that pays the
     // 16 MiB upload (idempotent; a no-op once the body is fine).
@@ -1220,6 +1226,9 @@ export class SectorStreamer {
     slot.reserved = 0;
     slot.bytes = 0;
     for (const name of Object.keys(slot.maps) as MapName[]) slot.bytes += this.mapBytes(body, slot, name);
+    // The dwell runs from the upload, and a reload does not restart it: the
+    // sector has been on the globe since it first landed.
+    if (!previousMesh) slot.liveSinceMs = this.lastNowMs;
     slot.state = 'resident';
     slot.failStreak = 0;
     if (previousMesh) this.removeMesh(previousMesh, true);

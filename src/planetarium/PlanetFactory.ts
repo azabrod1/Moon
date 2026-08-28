@@ -142,7 +142,7 @@ export const PLANET_TEXTURE_FILES: Record<string, string> = {
   // would then overlay the old globe as rectangles of a different product.
   // A re-based map therefore ships under a new pathname, never the old one.
   earthDay: 'earth-day.v2.webp',
-  earthNight: 'earth-night.webp',
+  earthNight: 'earth-night.v2.webp',
   earthClouds: 'earth-clouds.webp',
   earthBump: 'earth-bump.webp',
   earthRoughness: 'earth-roughness.v2.webp',
@@ -405,7 +405,10 @@ export function loadTexture(
  */
 export interface TextureUpgrade {
   key: string; // PLANET_TEXTURE_FILES key
-  material: THREE.MeshStandardMaterial;
+  /** The material this ladder sharpens. Its colour map is read and written
+   *  through materialColorMap, so a shader shell (Earth's night lights) climbs
+   *  the ladder exactly like a standard material's `map`. */
+  material: THREE.Material;
   /** Steps available for this key, ascending — the goal is the last one. */
   tiers: readonly TextureTier[];
   /** This device's ceiling, resolved once at creation (the caps are captured
@@ -478,6 +481,10 @@ export const TEXTURE_UPGRADE_TIERS: Record<string, readonly TextureTier[]> = {
   pluto: ['4k'],
   moon: ['4k', '8k'],
   earthClouds: ['4k', '8k'],
+  // Black Marble 2016 at 500 m, cut down the same ladder as the day map. The
+  // 2K night map the app booted on for years is 20 km per pixel — from the
+  // near band that is a smear where a lit coastline should be.
+  earthNight: ['4k', '8k'],
 };
 
 // Per-key ceiling on touch devices, applied over the GL clamp. An 8K RGBA map
@@ -490,7 +497,7 @@ export const TEXTURE_UPGRADE_TIERS: Record<string, readonly TextureTier[]> = {
 // against this ceiling) take over at a fraction of the memory. The cloud
 // deck's: it would sit beside Earth's 4K day map and the sector tiles in the
 // close approach the sectors serve.
-const TOUCH_TIER_CAP: Partial<Record<string, TextureTier>> = { earthClouds: '4k', moon: '4k' };
+const TOUCH_TIER_CAP: Partial<Record<string, TextureTier>> = { earthClouds: '4k', moon: '4k', earthNight: '4k' };
 
 // The Moon's 8K tier ships GPU-compressed (KTX2/UASTC, mip chain baked by
 // tools/gen-moon-ktx2.mjs): the raw upload of a 33MP RGBA map is the largest
@@ -559,7 +566,7 @@ export function equirectMapGpuBytes(width: number, compressed = false): number {
  */
 export function appliedTierGpuBytes(up: TextureUpgrade): number {
   if (!up.appliedTier) return 0;
-  const map = up.material.map as
+  const map = materialColorMap(up.material) as
     | (THREE.Texture & { isCompressedTexture?: boolean; mipmaps?: Array<{ data?: { byteLength?: number } } | null> })
     | null;
   if (map?.isCompressedTexture) {
@@ -596,7 +603,7 @@ let upgradeGeneration = 0;
 
 export function makeTextureUpgrade(
   key: string | undefined,
-  material: THREE.MeshStandardMaterial,
+  material: THREE.Material,
 ): TextureUpgrade | undefined {
   if (!key) return undefined;
   const tiers = TEXTURE_UPGRADE_TIERS[key];
@@ -831,8 +838,10 @@ export function shouldApplyColorTier(currentRank: number, arrivingRank: number):
  *  loadTexture hands back either the real map or a procedural fallback, and the
  *  guard above can only protect the real one if the two are told apart — an
  *  unstamped material reads as the floor, so a fallback and a real 2K would
- *  otherwise both look replaceable by anything. */
-export function initialColorTierRank(tex: { userData?: Record<string, unknown> }): number {
+ *  otherwise both look replaceable by anything. A material built with no map
+ *  at all is the floor too: the first arrival is the best thing it has. */
+export function initialColorTierRank(tex: { userData?: Record<string, unknown> } | null | undefined): number {
+  if (!tex) return 0;
   return tex.userData?.proceduralFallback === true ? 0 : 2;
 }
 
@@ -842,19 +851,46 @@ export function initialColorTierRank(tex: { userData?: Record<string, unknown> }
 // order-independent: a late boot-map arrival can't downgrade an 8K that
 // already won. Disposes whatever it replaces (or itself). Exported for the
 // tests that pin that ordering.
-export function applyColorTierTexture(mat: THREE.MeshStandardMaterial, tex: THREE.Texture, rank: number): boolean {
+/**
+ * A material's colour map, wherever it keeps one. A standard material keeps it
+ * in `map`; a shader material keeps it in a uniform and names that uniform in
+ * `userData.colorMapUniform` — Earth's night lights are a shader shell, and
+ * they climb the same tier ladder as the globe under them. One accessor pair
+ * is what lets one rank guard, one upgrade handle and one byte estimate serve
+ * both instead of the ladder knowing which kind of material it is holding.
+ */
+export function materialColorMap(mat: THREE.Material): THREE.Texture | null {
+  const uniform = mat.userData.colorMapUniform as string | undefined;
+  if (uniform) {
+    return ((mat as THREE.ShaderMaterial).uniforms[uniform]?.value as THREE.Texture | null) ?? null;
+  }
+  return (mat as THREE.MeshStandardMaterial).map ?? null;
+}
+
+function setMaterialColorMap(mat: THREE.Material, tex: THREE.Texture): void {
+  const uniform = mat.userData.colorMapUniform as string | undefined;
+  if (uniform) {
+    (mat as THREE.ShaderMaterial).uniforms[uniform].value = tex;
+    return;
+  }
+  const std = mat as THREE.MeshStandardMaterial;
+  const prev = std.map;
+  std.map = tex;
+  // Colour-as-bump bodies (non-gas planets with no normal map) alias the same
+  // texture as bumpMap; move the alias onto the upgraded map so the dispose
+  // by the caller can't leave bumpMap pointing at freed GPU memory.
+  if (std.bumpMap === prev) std.bumpMap = tex;
+  std.color.setRGB(1, 1, 1);
+}
+
+export function applyColorTierTexture(mat: THREE.Material, tex: THREE.Texture, rank: number): boolean {
   const current = (mat.userData.colorTierRank as number | undefined) ?? 0;
   if (!shouldApplyColorTier(current, rank)) {
     tex.dispose();
     return false;
   }
-  const prev = mat.map;
-  mat.map = tex;
-  // Colour-as-bump bodies (non-gas planets with no normal map) alias the same
-  // texture as bumpMap; move the alias onto the upgraded map so the dispose
-  // below can't leave bumpMap pointing at freed GPU memory.
-  if (mat.bumpMap === prev) mat.bumpMap = tex;
-  mat.color.setRGB(1, 1, 1);
+  const prev = materialColorMap(mat);
+  setMaterialColorMap(mat, tex);
   mat.userData.colorTierRank = rank;
   mat.needsUpdate = true;
   // Assign-new-before-dispose-old (above) so no frame samples a freed texture.
@@ -1399,7 +1435,7 @@ export function connectLateDetailMap(
  */
 export function connectLateColorMap(
   slot: LateTextureSlot,
-  material: THREE.MeshStandardMaterial,
+  material: THREE.Material,
   rank: number,
 ): void {
   slot.connect((tex) => afterDecode(tex, () => {
@@ -1429,11 +1465,17 @@ export function wireEarthLateDetail(
   cloudMat: THREE.MeshStandardMaterial,
   earthMat: THREE.MeshStandardMaterial,
 ): void {
-  connectLateDetailMap(
-    slots.night, nightMat,
-    () => nightMat.uniforms.nightTexture.value as THREE.Texture | null,
-    (tex) => { nightMat.uniforms.nightTexture.value = tex; },
+  // The night lights are a colour map on a shader shell: it keeps the texture
+  // in a uniform rather than in `map`, so this is where that uniform is named
+  // and the boot map's rank stamped — the late arrival below and the tier
+  // ladder then swap it through the one rank guard, and a boot map that
+  // recovered late loses to a tier the approach already installed rather than
+  // overwriting (and freeing) it. The cloud deck is the same shape, in `map`.
+  nightMat.userData.colorMapUniform = 'nightTexture';
+  nightMat.userData.colorTierRank = initialColorTierRank(
+    nightMat.uniforms.nightTexture.value as THREE.Texture | null,
   );
+  connectLateColorMap(slots.night, nightMat, TIER_RANK['2k']);
   connectLateColorMap(slots.clouds, cloudMat, TIER_RANK['2k']);
   connectLateDetailMap(slots.bump, earthMat, () => earthMat.bumpMap, (tex) => { earthMat.bumpMap = tex; });
   connectLateDetailMap(
@@ -1613,8 +1655,13 @@ export async function createPlanetMesh(planet: PlanetData): Promise<PlanetMesh> 
 
     // Detail maps that missed their timeout replace the fallback in place —
     // otherwise Earth keeps flat grey city lights, a blank cloud deck, or a
-    // noise-free ocean for the session.
+    // noise-free ocean for the session. This also declares where the night
+    // shell keeps its colour map, which the handle below then sharpens.
     wireEarthLateDetail(earthLate, nightMat, cloudMat, earthMat);
+    // The night lights climb their own ladder on their own shell, like the
+    // cloud deck: 500 m Black Marble where the boot map is 20 km per pixel.
+    const nightUpgrade = makeTextureUpgrade('earthNight', nightMat);
+    if (nightUpgrade) textureUpgrades.push(nightUpgrade);
   }
 
   let rings: THREE.Mesh | undefined;

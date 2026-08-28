@@ -27,6 +27,7 @@ import {
   lodMeasurementRelevant,
   makeGeometryUpgrade,
   makeTextureUpgrade,
+  materialColorMap,
   needsGeometryUpgrade,
   needsUpgradeCover,
   resolveUpgradeTier,
@@ -343,7 +344,7 @@ describe('what a fetch puts on the material', () => {
     arrival.finishDecode();
     await flush();
 
-    expect(up.material.map).toBe(arrival.tex);
+    expect(materialColorMap(up.material)).toBe(arrival.tex);
     expect(up.appliedTier).toBe('8k');
     expect(up.attempt).toBeUndefined();
     pumpTextureWarmQueue(Number.POSITIVE_INFINITY);
@@ -361,7 +362,7 @@ describe('what a fetch puts on the material', () => {
     await flush();
 
     expect(disposed()).toBe(true);
-    expect(up.material.map).toBeNull();
+    expect(materialColorMap(up.material)).toBeNull();
     expect(up.appliedTier).toBeNull();
   });
 
@@ -377,7 +378,7 @@ describe('what a fetch puts on the material', () => {
     await flush();
 
     expect(disposed()).toBe(true);
-    expect(up.material.map).toBeNull();
+    expect(materialColorMap(up.material)).toBeNull();
     expect(up.appliedTier).toBeNull();
   });
 
@@ -391,7 +392,7 @@ describe('what a fetch puts on the material', () => {
     arrival.finishDecode();
     await flush();
 
-    expect(up.material.map).toBe(arrival.tex);
+    expect(materialColorMap(up.material)).toBe(arrival.tex);
     expect(up.appliedTier).toBe('4k');
   });
 
@@ -406,13 +407,13 @@ describe('what a fetch puts on the material', () => {
     pending[0].onLoad(stale.tex);
     await flush();
     expect(staleDisposed()).toBe(true);
-    expect(up.material.map).toBeNull();
+    expect(materialColorMap(up.material)).toBeNull();
 
     const fresh = arriving();
     pending[1].onLoad(fresh.tex);
     fresh.finishDecode();
     await flush();
-    expect(up.material.map).toBe(fresh.tex);
+    expect(materialColorMap(up.material)).toBe(fresh.tex);
     // The superseding attempt re-resolved from the boot floor: the first rung.
     expect(up.appliedTier).toBe('4k');
   });
@@ -1360,6 +1361,63 @@ describe('the ladder\'s live weight', () => {
   });
 });
 
+describe('Earth\'s night lights on the colour ladder', () => {
+  // The night map is a colour map on a shader shell rather than in `map`, so
+  // it is the one place the ladder has to find a material's map somewhere
+  // else. Everything below is the same machinery the globe and the cloud deck
+  // use — that is the point of it.
+  function nightMaterial(boot: THREE.Texture | null): THREE.ShaderMaterial {
+    const mat = new THREE.ShaderMaterial({ uniforms: { nightTexture: { value: boot } } });
+    wireEarthLateDetail(
+      { night: createLateTextureSlot(), clouds: createLateTextureSlot(), bump: createLateTextureSlot(), roughness: createLateTextureSlot() },
+      mat, new THREE.MeshStandardMaterial(), new THREE.MeshStandardMaterial(),
+    );
+    return mat;
+  }
+
+  it('reads and writes the map through the uniform the material names', () => {
+    const boot = fakeTexture('boot');
+    const mat = nightMaterial(boot);
+    expect(materialColorMap(mat)).toBe(boot);
+    const sharper = fakeTexture('4k');
+    expect(applyColorTierTexture(mat, sharper, TIER_RANK['4k'])).toBe(true);
+    expect(mat.uniforms.nightTexture.value).toBe(sharper);
+    expect(materialColorMap(mat)).toBe(sharper);
+    // …and a standard material is still read out of `map`.
+    const std = new THREE.MeshStandardMaterial({ map: boot });
+    expect(materialColorMap(std)).toBe(boot);
+  });
+
+  it('refuses a lower tier once a higher one is on the shell', () => {
+    const mat = nightMaterial(fakeTexture('boot'));
+    const sharper = fakeTexture('8k');
+    applyColorTierTexture(mat, sharper, TIER_RANK['8k']);
+    const late = fakeTexture('2k late');
+    const spy = disposeSpy(late);
+    expect(applyColorTierTexture(mat, late, TIER_RANK['2k'])).toBe(false);
+    expect(mat.uniforms.nightTexture.value).toBe(sharper);
+    expect(spy.disposed).toBe(true);
+  });
+
+  it('climbs to 8K on a desktop and stops at 4K on a phone', () => {
+    withMaxTextureSize(16384);
+    expect(makeTextureUpgrade('earthNight', nightMaterial(null))!.tiers).toEqual(['4k', '8k']);
+    expect(makeTextureUpgrade('earthNight', nightMaterial(null))!.effectiveMaxTier).toBe('8k');
+    withMaxTextureSize(16384, true);
+    expect(makeTextureUpgrade('earthNight', nightMaterial(null))!.effectiveMaxTier).toBe('4k');
+  });
+
+  it('weighs against the sector envelope like any other colour map', () => {
+    withMaxTextureSize(16384);
+    const mat = nightMaterial(fakeTexture('boot'));
+    const up = makeTextureUpgrade('earthNight', mat)!;
+    expect(appliedTierGpuBytes(up)).toBe(0); // still on the boot map
+    up.appliedTier = '8k';
+    mat.uniforms.nightTexture.value = new THREE.Texture({ width: 8192, height: 4096 } as unknown as HTMLImageElement);
+    expect(appliedTierGpuBytes(up) / (1024 * 1024)).toBeCloseTo(170.7, 1);
+  });
+});
+
 describe('the ladder against the sector memory envelope', () => {
   const mib = (bytes: number) => bytes / (1024 * 1024);
   /** Every body with a ladder on the top tier this profile allows, all at
@@ -1382,19 +1440,27 @@ describe('the ladder against the sector memory envelope', () => {
     return bytes;
   }
 
-  it('leaves a desktop room for seven surface sector sets even at its heaviest', () => {
+  it('leaves a desktop nothing at its heaviest, and five sector sets in the case it really hits', () => {
     const worst = ladderWorstCaseBytes(false);
-    // Six 4K planets, plus the Moon's 8K and the cloud deck's 8K.
-    expect(mib(worst)).toBeCloseTo(597.3, 1);
-    const budget = SECTOR_ENVELOPE_BYTES_DESKTOP - worst;
-    expect(mib(budget)).toBeCloseTo(170.7, 1);
-    expect(budget / sectorSetGpuBytes(SECTOR_SETS.Earth)).toBeGreaterThanOrEqual(7);
+    // Six 4K planets plus THREE 8K maps — the Moon, the cloud deck and the
+    // night lights — which is the whole envelope: a desktop that has toured
+    // every body, earned every top rung and cannot transcode the Moon's
+    // compressed tier streams no tiles. The ladder never gives a map back
+    // today, so that state is permanent for the session once reached.
+    expect(mib(worst)).toBeCloseTo(768.0, 1);
+    expect(SECTOR_ENVELOPE_BYTES_DESKTOP - worst).toBeLessThanOrEqual(0);
+    // The case a desktop session actually reaches: the Moon's 8K ships
+    // GPU-compressed, which hands ~128 MiB back — five Earth sector sets.
+    const real = worst - equirectMapGpuBytes(8192) + equirectMapGpuBytes(8192, true);
+    const budget = SECTOR_ENVELOPE_BYTES_DESKTOP - real;
+    expect(mib(budget)).toBeCloseTo(128.0, 1);
+    expect(budget / sectorSetGpuBytes(SECTOR_SETS.Earth)).toBeGreaterThanOrEqual(5);
   });
 
   it('leaves a phone nothing at its heaviest: every 4K map at once fills the envelope', () => {
     const worst = ladderWorstCaseBytes(true);
-    // Eight 4K maps — the touch caps hold both 8K rungs down to 4K.
-    expect(mib(worst)).toBeCloseTo(341.3, 1);
+    // Nine 4K maps — the touch caps hold all three 8K rungs down to 4K.
+    expect(mib(worst)).toBeCloseTo(384.0, 1);
     // Over the envelope, so the sector budget is nothing: a phone that has
     // approached every body streams no tiles until the ladder gives maps
     // back. The streamer says so once rather than going quiet.
@@ -1596,7 +1662,7 @@ describe('the compressed 8K tier override', () => {
     ktx2Calls[0].onLoad(tex);
     await flush();
     expect(up.appliedTier).toBe('8k');
-    expect(up.material.map).toBe(tex);
+    expect(materialColorMap(up.material)).toBe(tex);
     expect(tex.colorSpace).toBe(THREE.SRGBColorSpace);
     expect(tex.userData.mutableStorage).toBeUndefined(); // compressed keeps texStorage2D
     pumpTextureWarmQueue(Number.POSITIVE_INFINITY);

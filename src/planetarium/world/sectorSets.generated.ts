@@ -76,6 +76,34 @@ export const SECTOR_SET_TABLE: Record<string, GeneratedSectorSet> = /* table:beg
     "spanU": 1,
     "fileCount": 128
   },
+  "earth-night.v2/16k": {
+    "setHash8": "94dfda55",
+    "grid": {
+      "cols": 8,
+      "rows": 4
+    },
+    "content": 2032,
+    "gutter": 8,
+    "tileWidth": 2048,
+    "tileHeight": 2048,
+    "baseWidth": 16256,
+    "spanU": 1,
+    "fileCount": 32
+  },
+  "earth-night.v2/32k": {
+    "setHash8": "abb03849",
+    "grid": {
+      "cols": 16,
+      "rows": 8
+    },
+    "content": 2032,
+    "gutter": 8,
+    "tileWidth": 2048,
+    "tileHeight": 2048,
+    "baseWidth": 32512,
+    "spanU": 1,
+    "fileCount": 128
+  },
   "earth-roughness.v2/4k": {
     "setHash8": "a10813ad",
     "grid": {

@@ -478,13 +478,16 @@ const TEXTURE_UPGRADE_TIERS: Record<string, readonly TextureTier[]> = {
 };
 
 // Per-key ceiling on touch devices, applied over the GL clamp. An 8K RGBA map
-// is 171 MiB resident with its mips; the cloud deck's 8K would sit beside
-// the Moon's 8K, Earth's 4K day map and the 16K sector tiles in the one view
-// the app is built around (Earth close, Moon in the sky). A desktop GPU holds
-// that; a phone's shared memory is the app's known weak spot (an unexplained
-// crash teleporting to the Moon on an iPhone). The Moon keeps its 8K — it is
-// the flagship telescope map — and the deck stops at 4K.
-const TOUCH_TIER_CAP: Partial<Record<string, TextureTier>> = { earthClouds: '4k' };
+// is 171 MiB resident with its mips, and a phone's shared memory is the
+// app's known weak spot (an unexplained crash teleporting to the Moon on an
+// iPhone). Neither 8K earns its place there. The Moon's: at the telescope's
+// default framing on a phone the disc is ~630 device pixels, where a 4K
+// texel already spans half a pixel — the 8K first shows once the disc
+// passes ~1600 device pixels, and from there the 16K sector tiles (measured
+// against this ceiling) take over at a fraction of the memory. The cloud
+// deck's: it would sit beside Earth's 4K day map and the sector tiles in the
+// close approach the sectors serve.
+const TOUCH_TIER_CAP: Partial<Record<string, TextureTier>> = { earthClouds: '4k', moon: '4k' };
 
 // Colour-map precedence: procedural floor 0, then one rank per tier. Ranks are
 // what make every apply order-independent — a late boot-map arrival can't

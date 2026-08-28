@@ -88,13 +88,17 @@ describe('upgrade ladders', () => {
     expect(handle('earthClouds').effectiveMaxTier).toBe('8k');
   });
 
-  it('stops the cloud deck at 4K on a touch device, and only the deck', () => {
-    // A second 8K resident beside the Moon's is a phone-memory risk; the
-    // Moon's own 8K is the telescope map and keeps its goal.
+  it('stops both 8K maps at 4K on a touch device, whatever the GL cap', () => {
+    // 171 MiB each in a phone's shared memory, for detail its display only
+    // shows at magnifications the sector tiles serve.
     withMaxTextureSize(16384, true);
     expect(handle('earthClouds').effectiveMaxTier).toBe('4k');
-    expect(handle('moon').effectiveMaxTier).toBe('8k');
+    expect(handle('moon').effectiveMaxTier).toBe('4k');
     expect(resolveUpgradeTier(handle('earthClouds'), '8k')).toBe('4k');
+    expect(resolveUpgradeTier(handle('moon'), '8k')).toBe('4k');
+    // Desktop keeps the goals.
+    withMaxTextureSize(16384, false);
+    expect(handle('moon').effectiveMaxTier).toBe('8k');
   });
 
   it('builds no ladder for a key with nothing higher on disk', () => {

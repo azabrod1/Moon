@@ -26,7 +26,7 @@ import {
   SUN_GLARE_EXTENT_SOLAR_RADII,
 } from '../shared/shaders/sun';
 import { debugWarn } from '../shared/debug';
-import { applyTextureDefaults, clampTier, resolveTextureUrl, TIER_MAP_WIDTH, type TextureTier, type MapKind, touchTextureBudget } from './world/texturePolicy';
+import { applyTextureDefaults, clampTier, deviceTextureProfile, resolveTextureUrl, TIER_MAP_WIDTH, type TextureTier, type MapKind } from './world/texturePolicy';
 import { augmentSurfaceMaterial, type SurfaceArchetype, type SurfaceShadingFx } from './world/surfaceShading';
 import { queueTextureWarm } from './world/textureWarmer';
 import { createLensShaderUniforms } from '../shared/three/lensShader';
@@ -480,17 +480,10 @@ export const TEXTURE_UPGRADE_TIERS: Record<string, readonly TextureTier[]> = {
   earthClouds: ['4k', '8k'],
 };
 
-// Per-key ceiling on touch devices, applied over the GL clamp. An 8K RGBA map
-// is 171 MiB resident with its mips, and a phone's shared memory is the
-// app's known weak spot (an unexplained crash teleporting to the Moon on an
-// iPhone). Neither 8K earns its place there. The Moon's: at the telescope's
-// default framing on a phone the disc is ~630 device pixels, where a 4K
-// texel already spans half a pixel — the 8K first shows once the disc
-// passes ~1600 device pixels, and from there the 16K sector tiles (measured
-// against this ceiling) take over at a fraction of the memory. The cloud
-// deck's: it would sit beside Earth's 4K day map and the sector tiles in the
-// close approach the sectors serve.
-const TOUCH_TIER_CAP: Partial<Record<string, TextureTier>> = { earthClouds: '4k', moon: '4k' };
+// A device profile may cap a key below its ladder's top, over the GL clamp:
+// an 8K RGBA map is 171 MiB resident with its mips, which is a question of
+// total residency rather than of whether one map fits. The caps and their
+// reasoning are the profile's (world/gpuEnvelope).
 
 // The Moon's 8K tier ships GPU-compressed (KTX2/UASTC, mip chain baked by
 // tools/gen-moon-ktx2.mjs): the raw upload of a 33MP RGBA map is the largest
@@ -602,8 +595,8 @@ export function makeTextureUpgrade(
   const tiers = TEXTURE_UPGRADE_TIERS[key];
   if (!tiers) return undefined;
   let top = tiers[tiers.length - 1];
-  const cap = TOUCH_TIER_CAP[key];
-  if (cap && touchTextureBudget() && TIER_RANK[cap] < TIER_RANK[top]) top = cap;
+  const cap = deviceTextureProfile().tierCaps[key];
+  if (cap && TIER_RANK[cap] < TIER_RANK[top]) top = cap;
   return {
     key,
     material,

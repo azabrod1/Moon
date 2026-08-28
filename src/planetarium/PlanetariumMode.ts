@@ -127,7 +127,8 @@ import {
 } from './world/sunGlareMask';
 import { MoonPainter } from './world/MoonPainter';
 import { ProceduralMoonTexturer } from './world/ProceduralMoonTexturer';
-import { captureDeviceTextureCaps, resolveTextureUrl, TIER_MAP_WIDTH } from './world/texturePolicy';
+import { captureDeviceCaps, resolveTextureUrl, TIER_MAP_WIDTH } from './world/texturePolicy';
+import { classifyDevice, legacyProfile, readDeviceSignals, type DeviceClass, type DeviceProfile } from './world/gpuEnvelope';
 import { warmBitmapUploadProbe } from './world/textureBitmapLoader';
 import { planetshineIntensity } from './world/planetshine';
 import {
@@ -960,6 +961,12 @@ export class PlanetariumMode {
   /** Sector streaming (world/sectorStreamer): the hero bodies' 16K tiles.
    *  Null when disabled (`?sectors=0`) or before the system exists. */
   private sectors: SectorStreamer | null = null;
+  /** What this device is and what it may spend, read once in the constructor
+   *  (world/gpuEnvelope). The class is collected and logged; the numbers come
+   *  from the profile. */
+  private readonly deviceSignals: ReturnType<typeof readDeviceSignals>;
+  private readonly deviceClass: DeviceClass;
+  private readonly deviceProfile: DeviceProfile;
   private readonly sectorsEnabled = new URLSearchParams(location.search).get('sectors') !== '0';
   /** The memory readout under `?debug=1` (reportMemoryDebug). The overlay is
    *  the only console a phone has without a cable, so the line has to be rare
@@ -1871,11 +1878,17 @@ export class PlanetariumMode {
     this.renderer = renderer;
     this.useBloom = useBloom;
     this.rendersThroughComposer = rendersThroughComposer;
-    // Capture device texture caps from the live renderer before any body loads,
-    // so anisotropy and tier limits apply to the very first textures created.
-    // The touch budget is the same device class the sector caps and the
-    // boot warm use, not a bare touchscreen test: a touch laptop is a desktop.
-    captureDeviceTextureCaps(renderer, this.touchFirstDevice());
+    // Read the device once, before any body loads, so anisotropy and tier
+    // limits apply to the very first textures created and every later
+    // decision spends the same numbers. The signals and the profile are this
+    // mode's for its lifetime — a chassis change takes effect on the next
+    // load, not under a live working set.
+    this.deviceSignals = readDeviceSignals(renderer.getContext());
+    this.deviceClass = classifyDevice(this.deviceSignals);
+    // The numbers still come from the device test the app shipped with, so
+    // the class above changes nothing yet: it is collected and logged while
+    // the measurements that will size it are gathered.
+    this.deviceProfile = captureDeviceCaps(renderer, legacyProfile(this.deviceSignals));
     // Resolve the bitmap-upload probe during construction: every streamed
     // boot texture awaits its verdict before fetching, so starting it here
     // takes it off the first fetch's critical path.
@@ -2504,7 +2517,7 @@ export class PlanetariumMode {
       // network but pays no residency up front. (Quality tiers stay
       // capability-based — this split concerns speculation only, and
       // saveData is absent on iOS Safari so it cannot be the gate.)
-      const cacheOnly = this.touchFirstDevice();
+      const cacheOnly = this.deviceProfile.cacheOnlyWarm;
       for (const up of this.landingPairUpgrades({ type: 'planet', name: 'Earth' })) {
         // The live loader's attempt/cooldown gate, so a re-armed timer never
         // duplicates a pending desktop attempt. The cache-only fetch marks no
@@ -2532,24 +2545,13 @@ export class PlanetariumMode {
     }, PlanetariumMode.BOOT_PAIR_WARM_DELAY_MS);
   }
 
-  /** A phone or tablet: the device class that gets cache-only speculation and
-   *  the smaller sector-tile working set. Capability-based quality tiers are
-   *  unaffected; this only sizes what is held in memory on speculation. */
-  private touchFirstDevice(): boolean {
-    return (
-      /iPad|iPhone|iPod/.test(navigator.userAgent) ||
-      (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1) || // iPadOS desktop UA
-      (navigator.maxTouchPoints > 0 && window.innerWidth <= 1024)
-    );
-  }
-
   /** Wire the hero bodies' sector sets (SECTOR_SETS) onto their globe meshes.
    *  Sector meshes become children of the globe, so they ride its spin, pole
    *  and (for the Moon) the render-curve scale; the streamer forces the fine
    *  silhouette grid before the first sector shows. */
   private registerSectorBodies(): void {
     if (!this.sectorsEnabled || !this.solarSystem) return;
-    const sectors = new SectorStreamer({ touch: this.touchFirstDevice() });
+    const sectors = new SectorStreamer({ limits: this.deviceProfile });
     for (const planet of this.solarSystem.planets) {
       const spec = SECTOR_SETS[planet.data.name];
       if (!spec) continue;
@@ -2910,20 +2912,20 @@ export class PlanetariumMode {
     if (!moved && nowMs - this.memoryDebugAtMs < PlanetariumMode.MEMORY_DEBUG_PERIOD_MS) return;
     this.memoryDebugAtMs = nowMs;
     this.memoryDebugLast = figures;
-    // The class the numbers came from. Until the device classifier exists
-    // this is the legacy touch predicate under its own name, so the line
-    // reads the same before and after that seam moves.
-    const deviceClass = this.touchFirstDevice() ? 'legacy-touch' : 'legacy-desktop';
+    // What the device was read as, beside the profile the numbers actually
+    // came from. They disagree on a handful of devices, and the line is
+    // where that shows before the class is allowed to size anything.
     debugLog('Memory', stats
       ? {
-        class: deviceClass,
+        class: this.deviceClass,
+        profile: this.deviceProfile.id,
         globeMapsMiB: mib(globalBytes),
         tilesMiB: mib(stats.residentBytes),
         reservedMiB: mib(stats.reserved),
         budgetMiB: mib(stats.budget),
         envelopeMiB: mib(stats.envelope),
       }
-      : { class: deviceClass, globeMapsMiB: mib(globalBytes), tiles: 'off' });
+      : { class: this.deviceClass, profile: this.deviceProfile.id, globeMapsMiB: mib(globalBytes), tiles: 'off' });
   }
 
   /** Dev bridge: what the streamer holds right now. */

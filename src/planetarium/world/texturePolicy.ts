@@ -8,6 +8,7 @@
  */
 import * as THREE from 'three';
 import { SECTOR_SET_TABLE } from './sectorSets.generated';
+import { LEGACY_DESKTOP_PROFILE, type DeviceProfile } from './gpuEnvelope';
 
 /** Every resolution tier that exists, ascending. This list names them and
  *  fixes that ascending convention: the device clamp walks it directly, and a
@@ -107,30 +108,49 @@ export const TIER_MAP_WIDTH: Record<TextureTier, number> = { '2k': 2048, '4k': 4
 
 // Captured once from the live renderer before any texture loads: anisotropy
 // needs the GL context, and the max texture size decides which tiers are even
-// loadable. The defaults are safe pre-capture — anisotropy 1 is "off", and
-// 4096 admits the 4K tier while holding 8K back until a real cap is known.
+// loadable. The defaults are safe pre-capture — anisotropy 1 is "off", 4096
+// admits the 4K tier while holding 8K back until a real cap is known, and the
+// desktop profile spends nothing a device cannot afford until the real one
+// arrives.
 let chosenAnisotropy = 1;
 let maxTextureSize = 4096;
-let touchBudget = false;
+let deviceProfile: DeviceProfile = LEGACY_DESKTOP_PROFILE;
+let capsCaptured = false;
 
-export function captureDeviceTextureCaps(
-  renderer: THREE.WebGLRenderer,
-  touch: boolean = typeof window !== 'undefined' && 'ontouchstart' in window,
-): void {
-  // Cap at 8: past the point of visible return for these few large spheres and
-  // the rings, and cheaper than the 16 most desktops report.
+/**
+ * Take the device's caps and its memory profile, once. The first caller wins
+ * and every later one gets that same snapshot back: the app has one renderer
+ * and one session's worth of decisions resolved against these — a body's
+ * ladder ceiling is fixed when its handle is made, the sector streamer's
+ * limits are readonly from its constructor — so a second capture with a
+ * different profile would split one session across two policies. Volume
+ * compare and the planetarium both call it, in whichever order the session
+ * takes them.
+ */
+export function captureDeviceCaps(renderer: THREE.WebGLRenderer, profile: DeviceProfile): DeviceProfile {
+  if (capsCaptured) return deviceProfile;
+  // Cap anisotropy at 8: past the point of visible return for these few large
+  // spheres and the rings, and cheaper than the 16 most desktops report.
   chosenAnisotropy = Math.min(8, renderer.capabilities.getMaxAnisotropy());
   maxTextureSize = renderer.capabilities.maxTextureSize;
-  touchBudget = touch;
+  deviceProfile = profile;
+  capsCaptured = true;
+  return deviceProfile;
 }
 
-/** True on a touch device. WebGL exposes no GPU-memory figure, and a phone's
- *  GL max-texture-size (16384 on every recent iPhone) says nothing about how
- *  many 8K maps its shared memory will hold at once — so the one budget
- *  decision that is about total residency, not a single map's size, falls
- *  back on this coarse signal. See TOUCH_TIER_CAP in PlanetFactory. */
-export function touchTextureBudget(): boolean {
-  return touchBudget;
+/** The captured profile — the memory numbers every consumer reads. */
+export function deviceTextureProfile(): DeviceProfile {
+  return deviceProfile;
+}
+
+/** Tests capture repeatedly, with a fake renderer, to ask what a given device
+ *  would do. Production captures once (see above); this is what lets a test
+ *  ask a second question. */
+export function resetDeviceCapsForTests(): void {
+  chosenAnisotropy = 1;
+  maxTextureSize = 4096;
+  deviceProfile = LEGACY_DESKTOP_PROFILE;
+  capsCaptured = false;
 }
 
 /**

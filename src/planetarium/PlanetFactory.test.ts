@@ -43,20 +43,19 @@ import {
   type TextureUpgrade,
 } from './PlanetFactory';
 import { retryDelayMs, urlSpread } from './world/textureRetryPolicy';
-import { captureDeviceTextureCaps, type TextureTier } from './world/texturePolicy';
-import {
-  SECTOR_ENVELOPE_BYTES_DESKTOP,
-  SECTOR_ENVELOPE_BYTES_TOUCH,
-  SECTOR_SETS,
-  sectorSetGpuBytes,
-} from './world/sectorStreamer';
+import { captureDeviceCaps, resetDeviceCapsForTests, type TextureTier } from './world/texturePolicy';
+import { LEGACY_DESKTOP_PROFILE, LEGACY_TOUCH_PROFILE } from './world/gpuEnvelope';
+import { SECTOR_SETS, sectorSetGpuBytes } from './world/sectorStreamer';
 import { bindTextureWarmer, pumpTextureWarmQueue, queueTextureWarm, resetTextureWarmer } from './world/textureWarmer';
 
-// Device caps are captured from the live renderer; a fake renderer is the seam.
+// Device caps are captured from the live renderer; a fake renderer is the
+// seam. Production captures once, so a test asking a second question clears
+// the first.
 function withMaxTextureSize(size: number, touch = false): void {
-  captureDeviceTextureCaps({
+  resetDeviceCapsForTests();
+  captureDeviceCaps({
     capabilities: { getMaxAnisotropy: () => 8, maxTextureSize: size },
-  } as unknown as THREE.WebGLRenderer, touch);
+  } as unknown as THREE.WebGLRenderer, touch ? LEGACY_TOUCH_PROFILE : LEGACY_DESKTOP_PROFILE);
 }
 
 const materials: THREE.MeshStandardMaterial[] = [];
@@ -1386,7 +1385,7 @@ describe('the ladder against the sector memory envelope', () => {
     const worst = ladderWorstCaseBytes(false);
     // Six 4K planets, plus the Moon's 8K and the cloud deck's 8K.
     expect(mib(worst)).toBeCloseTo(597.3, 1);
-    const budget = SECTOR_ENVELOPE_BYTES_DESKTOP - worst;
+    const budget = LEGACY_DESKTOP_PROFILE.envelopeBytes - worst;
     expect(mib(budget)).toBeCloseTo(170.7, 1);
     expect(budget / sectorSetGpuBytes(SECTOR_SETS.Earth)).toBeGreaterThanOrEqual(7);
   });
@@ -1398,10 +1397,10 @@ describe('the ladder against the sector memory envelope', () => {
     // Over the envelope, so the sector budget is nothing: a phone that has
     // approached every body streams no tiles until the ladder gives maps
     // back. The streamer says so once rather than going quiet.
-    expect(worst).toBeGreaterThan(SECTOR_ENVELOPE_BYTES_TOUCH);
+    expect(worst).toBeGreaterThan(LEGACY_TOUCH_PROFILE.envelopeBytes);
     // A phone that has approached the two hero bodies alone still streams.
     const heroes = 3 * 42.7 * 1024 * 1024; // Moon 4K, cloud deck 4K, Mars 4K
-    expect(SECTOR_ENVELOPE_BYTES_TOUCH - heroes)
+    expect(LEGACY_TOUCH_PROFILE.envelopeBytes - heroes)
       .toBeGreaterThanOrEqual(5 * sectorSetGpuBytes(SECTOR_SETS.Earth));
   });
 

@@ -1,7 +1,9 @@
 import * as THREE from 'three';
 import { afterEach, describe, it, expect } from 'vitest';
 import {
-  captureDeviceTextureCaps,
+  captureDeviceCaps,
+  deviceTextureProfile,
+  resetDeviceCapsForTests,
   clampTier,
   resolveTextureUrl,
   resolveTileUrl,
@@ -12,17 +14,48 @@ import {
   type TextureTier,
 } from './texturePolicy';
 import { SECTOR_SET_TABLE } from './sectorSets.generated';
+import { LEGACY_DESKTOP_PROFILE, LEGACY_TOUCH_PROFILE } from './gpuEnvelope';
 
 // The caps are module state captured from the live renderer; a fake renderer is
-// the seam. 4096 is the pre-capture default — restore it so test order can't
-// leak a cap into another file's expectations.
+// the seam. Production captures once, so a test that wants a second answer
+// clears the first. 4096 is the pre-capture default — restore it so test order
+// can't leak a cap into another file's expectations.
 function withMaxTextureSize(size: number): void {
-  captureDeviceTextureCaps({
+  resetDeviceCapsForTests();
+  captureDeviceCaps({
     capabilities: { getMaxAnisotropy: () => 8, maxTextureSize: size },
-  } as unknown as THREE.WebGLRenderer);
+  } as unknown as THREE.WebGLRenderer, LEGACY_DESKTOP_PROFILE);
 }
 
 afterEach(() => withMaxTextureSize(4096));
+
+function fakeRenderer(maxTextureSize: number): THREE.WebGLRenderer {
+  return {
+    capabilities: { getMaxAnisotropy: () => 8, maxTextureSize },
+  } as unknown as THREE.WebGLRenderer;
+}
+
+describe('captureDeviceCaps', () => {
+  it('keeps the first capture and hands it back to every later caller', () => {
+    // Volume compare and the planetarium both capture, in whichever order a
+    // session opens them, and they share one renderer. A second capture used
+    // to overwrite the first — so a visit to volume compare re-decided the
+    // planetarium's memory profile for the rest of the session, while every
+    // ladder handle already built kept the old one.
+    resetDeviceCapsForTests();
+    expect(captureDeviceCaps(fakeRenderer(16384), LEGACY_TOUCH_PROFILE)).toBe(LEGACY_TOUCH_PROFILE);
+    expect(deviceTextureProfile()).toBe(LEGACY_TOUCH_PROFILE);
+    expect(captureDeviceCaps(fakeRenderer(4096), LEGACY_DESKTOP_PROFILE)).toBe(LEGACY_TOUCH_PROFILE);
+    expect(deviceTextureProfile()).toBe(LEGACY_TOUCH_PROFILE);
+    // The GL caps of that first capture stand too: 8K stays loadable.
+    expect(clampTier('8k')).toBe('8k');
+  });
+
+  it('spends the desktop numbers until a real device is read', () => {
+    resetDeviceCapsForTests();
+    expect(deviceTextureProfile()).toBe(LEGACY_DESKTOP_PROFILE);
+  });
+});
 
 describe('resolveTextureUrl', () => {
   it('keeps boot-tier assets in the flat textures folder', () => {

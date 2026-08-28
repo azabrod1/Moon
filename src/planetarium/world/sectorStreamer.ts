@@ -101,6 +101,7 @@ import { applyTextureDefaults, resolveTileUrl, sectorSetHash, sectorSetLayout } 
 import { TIER_RANK } from '../PlanetFactory';
 import { debugWarn } from '../../shared/debug';
 import { queueTextureWarm, type WarmOutcome } from './textureWarmer';
+import type { SectorMemoryLimits } from './gpuEnvelope';
 
 /** The material slots a sector may carry a crop of, in a fixed order. */
 export const CROP_SLOTS = ['bumpMap', 'normalMap', 'roughnessMap'] as const;
@@ -242,7 +243,10 @@ export const SECTOR_SETS: Record<string, SectorSetSpec> = {
   },
 };
 
-/** A sector is wanted once one texel of the map BELOW it spans this many
+/* The want and release thresholds (wantTexelPx / releaseTexelPx, handed in
+ * with the rest of a device's numbers from world/gpuEnvelope) mean this:
+ *
+ *  A sector is wanted once one texel of the map BELOW it spans that many
  *  DEVICE pixels at the sector's nearest point — that map is then visibly
  *  magnified and a tile has detail to add — and released only once that
  *  falls under the second value, so a disc breathing around the threshold
@@ -256,18 +260,7 @@ export const SECTOR_SETS: Record<string, SectorSetSpec> = {
  *  that is 21 MiB of GPU memory for nothing visible), and measuring against
  *  the 2K boot map while the 8K is still in flight would admit sectors the
  *  8K's arrival then releases — a sharpen that un-sharpens. In device
- *  pixels, so a 3× phone wants tiles where a 1× monitor does not.
- *
- *  Desktop asks at 1.0: a base texel spanning one device pixel is the point
- *  where a finer map first shows, and the fetch after that is the only
- *  delay. Touch asks later, at 1.25: its 2–3× displays already reach that
- *  magnification at nearly twice the distance, and every earlier tile is a
- *  200 KB fetch and 21 MiB of shared memory on the device with the least
- *  of both. */
-export const SECTOR_WANT_TEXEL_PX = 1.0;
-export const SECTOR_RELEASE_TEXEL_PX = 0.65;
-export const SECTOR_WANT_TEXEL_PX_TOUCH = 1.25;
-export const SECTOR_RELEASE_TEXEL_PX_TOUCH = 0.8;
+ *  pixels, so a 3× phone wants tiles where a 1× monitor does not. */
 /** Map width assumed while a globe's map has no readable image (never in
  *  practice: a real map is an ImageBitmap or a painted canvas). */
 const SECTOR_FALLBACK_MAP_WIDTH = 4096;
@@ -281,36 +274,12 @@ const SECTOR_FALLBACK_MAP_WIDTH = 4096;
  *  atmosphere renders beyond the terminator. */
 export const SECTOR_NIGHT_DOT = -0.1;
 
-/** What the sectors of every body together may hold on the GPU. This is the
- *  real bound: bytes, reserved from the known tile layouts at admission
- *  rather than counted after the decode, so two loads in flight cannot
- *  overshoot it by 45 MiB between them. An Earth sector set — its 2048²
- *  tile plus its copies of the bump and roughness crops — is ~23.1 MiB, so
- *  desktop holds eleven and touch six. Six is what a phone held before the
- *  budget was in bytes at all, and a phone's shared memory is the app's
- *  known weak spot: 128 MiB would hold five. */
-export const SECTOR_BUDGET_BYTES_DESKTOP = 256 * 1024 * 1024;
-export const SECTOR_BUDGET_BYTES_TOUCH = 144 * 1024 * 1024;
-/** Ceiling on the sector budget PLUS the globe maps live at the same time
- *  (the tier ladder's applied colour maps, which the mode reports). The
- *  sector budget is whatever this leaves under the figure above, so a Moon
- *  8K and Earth's cloud deck take their share out of the tiles rather than
- *  stacking on top of them. */
-export const SECTOR_ENVELOPE_BYTES_DESKTOP = 768 * 1024 * 1024;
-export const SECTOR_ENVELOPE_BYTES_TOUCH = 320 * 1024 * 1024;
-
-/** Resident sectors (meshes with a tile on the GPU) across all bodies —
- *  an emergency ceiling on draw calls only. The byte budget above is what
- *  decides the working set; this is generous enough that it never does. */
-export const SECTOR_RESIDENT_CAP_DESKTOP = 16;
-export const SECTOR_RESIDENT_CAP_TOUCH = 8;
-/** Sector loads (colour + crops of one sector count as one) in flight. */
-export const SECTOR_INFLIGHT_CAP_DESKTOP = 2;
-export const SECTOR_INFLIGHT_CAP_TOUCH = 1;
-/** Individual map fetches in flight: one sector is up to three of them, so
- *  the slot cap alone would put six requests on the wire at once. */
-export const SECTOR_FETCH_POOL_DESKTOP = 6;
-export const SECTOR_FETCH_POOL_TOUCH = 3;
+/** Every number above is per device and comes in through
+ *  SectorStreamerOptions.limits — the byte ceiling the sectors may hold,
+ *  the envelope they share with the ladder's globe maps, the resident /
+ *  in-flight / fetch caps, and the two texel thresholds. world/gpuEnvelope
+ *  is the one place a device becomes those numbers; the streamer only spends
+ *  them. */
 /** How long a sector is safe from eviction once it is DRAWN. Without it a
  *  working set at the budget could hand the same slot back and forth between
  *  two candidates a hair apart, paying an upload each time. A load still in
@@ -467,7 +436,8 @@ interface SectorBody {
 }
 
 export interface SectorStreamerOptions {
-  touch: boolean;
+  /** This device's memory numbers (world/gpuEnvelope). */
+  limits: SectorMemoryLimits;
   load?: TextureLoad;
   warm?: (tex: THREE.Texture, onOutcome: (o: WarmOutcome) => void) => void;
 }
@@ -659,13 +629,13 @@ export class SectorStreamer {
   constructor(opts: SectorStreamerOptions) {
     this.load = opts.load ?? loadStreamedTexture;
     this.warm = opts.warm ?? queueTextureWarm;
-    this.residentCap = opts.touch ? SECTOR_RESIDENT_CAP_TOUCH : SECTOR_RESIDENT_CAP_DESKTOP;
-    this.inflightCap = opts.touch ? SECTOR_INFLIGHT_CAP_TOUCH : SECTOR_INFLIGHT_CAP_DESKTOP;
-    this.fetchPool = opts.touch ? SECTOR_FETCH_POOL_TOUCH : SECTOR_FETCH_POOL_DESKTOP;
-    this.ceilingBytes = opts.touch ? SECTOR_BUDGET_BYTES_TOUCH : SECTOR_BUDGET_BYTES_DESKTOP;
-    this.envelopeBytes = opts.touch ? SECTOR_ENVELOPE_BYTES_TOUCH : SECTOR_ENVELOPE_BYTES_DESKTOP;
-    this.wantTexelPx = opts.touch ? SECTOR_WANT_TEXEL_PX_TOUCH : SECTOR_WANT_TEXEL_PX;
-    this.releaseTexelPx = opts.touch ? SECTOR_RELEASE_TEXEL_PX_TOUCH : SECTOR_RELEASE_TEXEL_PX;
+    this.residentCap = opts.limits.residentCap;
+    this.inflightCap = opts.limits.inflightCap;
+    this.fetchPool = opts.limits.fetchPool;
+    this.ceilingBytes = opts.limits.ceilingBytes;
+    this.envelopeBytes = opts.limits.envelopeBytes;
+    this.wantTexelPx = opts.limits.wantTexelPx;
+    this.releaseTexelPx = opts.limits.releaseTexelPx;
   }
 
   register(handle: SectorBodyHandle): void {

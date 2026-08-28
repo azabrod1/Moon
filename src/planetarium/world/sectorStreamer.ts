@@ -255,8 +255,9 @@ export const SECTOR_SETS: Record<string, SectorSetSpec> = {
  *  source, so a finer level is asked for exactly where the level above it
  *  has run out of texels. Measured against the finest colour map the globe
  *  can currently reach on its tier ladder (SectorBodyHandle.topMapWidth — a
- *  rung refused for want of memory, or given back under pressure, lowers
- *  it), or the one it draws if that is wider: the Moon's 8K rung needs twice the
+ *  rung refused for want of memory, or given back under pressure, lowers it,
+ *  never below the rung being drawn), or against the drawn map's own width
+ *  for a body with no ladder: the Moon's 8K rung needs twice the
  *  magnification a 4K map does before a tile shows anything (a tile under
  *  that is 21 MiB of GPU memory for nothing visible), and measuring against
  *  the 2K boot map while the 8K is still in flight would admit sectors the
@@ -347,12 +348,15 @@ export interface SectorBodyHandle {
   material: THREE.MeshStandardMaterial;
   radiusAU: number;
   /** Width of the finest colour map the globe can currently reach on its
-   *  tier ladder — what the map magnification is measured against. Read per
+   *  tier ladder, and never less than the nominal width of the rung it is
+   *  drawing — what the map magnification is measured against. Read per
    *  frame, not stored: a rung refused for want of memory, released under
    *  pressure or failed to load moves the top down, and sectors measured
    *  against a map the globe will not hold arrive at twice the magnification
-   *  they were meant to. Omitted for a body with no ladder: its boot map is
-   *  its finest. */
+   *  they were meant to. Where this is given it is the ONLY reference: the
+   *  drawn texture's image is a stand-in once the upload is paid and says
+   *  nothing about the map. Omitted for a body with no ladder: its boot map
+   *  is its finest, is never swapped, and its own width is the truth. */
   topMapWidth?: () => number | undefined;
   /** Rebuild the globe on its fine grid now (idempotent); sectors must not
    *  show over a coarse globe, whose chords they would float above. */
@@ -578,14 +582,23 @@ function cropsReady(mat: THREE.MeshStandardMaterial, spec: SectorSetSpec): boole
 }
 
 /** Surface length of one texel of the globe's colour map, in the globe's
- *  local units (equatorial). Read from the texture itself — the boot tier is
- *  not literally 2048 wide for every body, and a tier swap changes the map
- *  under a registered material. */
+ *  local units (equatorial).
+ *
+ *  A body with a tier ladder answers for its own reference width, and that
+ *  answer is the whole of it: the drawn texture's image is NOT the map it
+ *  draws — an applied rung replaces its decoded source with a small stand-in
+ *  once the upload is paid, so a globe holding 4096 texels reports a
+ *  four-figure-smaller image and every tile over it would be admitted at that
+ *  ratio of the magnification it was sized for. The image is read only for a
+ *  body with no ladder, whose boot map is its finest and is never swapped. */
 function baseTexelLength(handle: SectorBodyHandle): number {
-  const img = handle.material.map?.image as { width?: unknown } | undefined;
-  const drawn = img && typeof img.width === 'number' && img.width > 0 ? img.width : 0;
-  const width = Math.max(drawn, handle.topMapWidth?.() ?? 0) || SECTOR_FALLBACK_MAP_WIDTH;
-  return (2 * Math.PI * handle.radiusAU) / width;
+  const reference = handle.topMapWidth?.();
+  let width = reference && reference > 0 ? reference : 0;
+  if (!width && !handle.topMapWidth) {
+    const img = handle.material.map?.image as { width?: unknown } | undefined;
+    if (img && typeof img.width === 'number' && img.width > 0) width = img.width;
+  }
+  return (2 * Math.PI * handle.radiusAU) / (width || SECTOR_FALLBACK_MAP_WIDTH);
 }
 
 /** A finer sector of this one is live (resident, or a load away from it).

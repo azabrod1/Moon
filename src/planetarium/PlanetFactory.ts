@@ -436,8 +436,22 @@ export interface TextureUpgrade {
   /** The swap down in flight, if any: the tier being fetched to replace the
    *  rung with, and the identity a late arrival is checked against. Distinct
    *  from `attempt` — a body may be handing a map back while nothing is
-   *  climbing, and never the other way round. */
-  release?: { toTier: TextureTier; generation: number; startedAtMs: number; restore?: boolean };
+   *  climbing, and never the other way round. `abort` ends the transfer when
+   *  the swap is abandoned: a swap given up on has no reader left, and a
+   *  stalled link is exactly where one abandoned transfer per timeout would
+   *  otherwise accumulate for the session. */
+  release?: {
+    toTier: TextureTier;
+    generation: number;
+    startedAtMs: number;
+    restore?: boolean;
+    abort?: AbortController;
+  };
+  /** GPU bytes the map a swap has DECODED but not yet assigned will hold.
+   *  Between the decode and the assignment both maps are on the device, so
+   *  both are in the ledger — otherwise the transient is spent behind the
+   *  back of the admission test and the tiles are never trimmed for it. */
+  pendingReleaseBytes?: number;
   /** Wall-clock instant the last rung was given back. For a few seconds after
    *  one, this handle earns nothing: every borderline case then resolves
    *  toward keeping what is there rather than paying the download twice. */
@@ -449,6 +463,11 @@ export interface TextureUpgrade {
    *  every frame for the rest of the session. */
   releaseRetryAtMs?: number;
   releaseFailures?: number;
+  /** How many swaps down in a row were abandoned for taking too long. Counted
+   *  apart from the failures because a hung fetch and a refused one need
+   *  different cooldowns — the hang has already cost the full timeout — while
+   *  both mean the same thing to the player: the maps are not coming back. */
+  releaseTimeouts?: number;
   /** Wall-clock instant the body's screen fraction last fell under the
    *  release band, or undefined while it is at or above it. Tracked on every
    *  frame and reset on every crossing back up, so the dwell measures how
@@ -630,8 +649,11 @@ export function appliedTierGpuBytes(up: TextureUpgrade): number {
  * one subsystem's.
  */
 export function appliedTierHeldBytes(up: TextureUpgrade): number {
-  if (!up.appliedTier) return 0; // the boot map is not the ladder's weight
-  return appliedTierGpuBytes(up) + retainedSourceBytes(up.material.map);
+  // A swap whose map has decoded but not yet been assigned holds both at
+  // once, and the transient is real device memory whoever is asking.
+  const pending = up.pendingReleaseBytes ?? 0;
+  if (!up.appliedTier) return pending; // the boot map is not the ladder's weight
+  return appliedTierGpuBytes(up) + retainedSourceBytes(up.material.map) + pending;
 }
 
 /** Bytes of decoded image a texture is still holding in RAM. Only the bitmap
@@ -641,9 +663,9 @@ export function appliedTierHeldBytes(up: TextureUpgrade): number {
 export function retainedSourceBytes(tex: THREE.Texture | null | undefined): number {
   const map = tex as (THREE.Texture & { isCompressedTexture?: boolean }) | null | undefined;
   if (!map || map.isCompressedTexture) return 0;
-  // A rung whose source has been closed keeps a thumbnail of it to re-upload
-  // from after a context loss — 128 KB against the 33 MiB it replaced, which
-  // is not what a memory envelope is about.
+  // A rung whose source has been closed keeps a small stand-in to re-upload
+  // from after a context loss — 2 MiB against the 33 MiB it replaced, and a
+  // couple of rungs' worth across the whole scene.
   if (map.userData?.sourceReleased === true) return 0;
   const img = map.image as { width?: unknown; height?: unknown; close?: unknown } | undefined;
   if (!img || typeof img.close !== 'function') return 0; // an <img> element, not a bitmap
@@ -710,6 +732,27 @@ export function reachableTopTier(up: TextureUpgrade): TextureTier | null {
     best = tier;
   }
   return best;
+}
+
+/**
+ * Width of the colour map the surface tiles measure their magnification
+ * against: the finest tier the ladder can reach, never below the nominal
+ * width of the rung the body is DRAWING.
+ *
+ * Nominal, never the drawn texture's own image width, because that image is
+ * not the map: an applied rung replaces its decoded source with a small
+ * stand-in once the upload is paid, so the image behind a 4K map reports a
+ * few hundred pixels while the GPU holds 4096. And the floor matters because
+ * a ladder with nothing reachable above it reports no top at all — a body
+ * released to its boot map while memory is tight is drawing 2048 and would
+ * otherwise be measured against whatever was left in the image slot. Tiles
+ * sized against a map the globe does not hold arrive at many times the
+ * magnification they were meant for, and are never released again.
+ */
+export function ladderMapReferenceWidth(up: TextureUpgrade): number {
+  const top = reachableTopTier(up);
+  const drawn = TIER_MAP_WIDTH[up.appliedTier ?? BOOT_TIER];
+  return Math.max(drawn, top ? TIER_MAP_WIDTH[top] : 0);
 }
 
 /**
@@ -1231,11 +1274,33 @@ export const RELEASE_ATTEMPT_TIMEOUT_MS = 20_000;
 const RELEASE_RETRY_MS = 8_000;
 const RELEASE_RETRY_MAX_DOUBLINGS = 4;
 
+/** Cooldown after a swap down abandoned for taking too long, doubling per
+ *  consecutive timeout up to five minutes. It starts at the timeout itself
+ *  because the fetch has already had that long and not landed: without a
+ *  cooldown the dwell is still served the moment the swap is abandoned, so
+ *  the same body starts a fresh fetch on the very next frame and a stalled
+ *  link costs one abandoned transfer every twenty seconds for the session. */
+const RELEASE_TIMEOUT_RETRY_MS = RELEASE_ATTEMPT_TIMEOUT_MS;
+const RELEASE_TIMEOUT_RETRY_MAX_MS = 300_000;
+
 /** True once a swap down has been in the air too long to wait for. The map
  *  the body is drawing stays either way; abandoning only frees the planner to
  *  ask another body. */
 export function releaseExpired(up: TextureUpgrade, nowMs: number): boolean {
   return up.release !== undefined && nowMs - up.release.startedAtMs > RELEASE_ATTEMPT_TIMEOUT_MS;
+}
+
+/** Give up on a swap down that never landed: end its transfer, count the
+ *  timeout, and hold this handle off until the cooldown. A hang is as good a
+ *  reason to stop asking as a refusal — the difference is only that it costs
+ *  the full timeout to learn. */
+export function expireTierRelease(up: TextureUpgrade, nowMs = performance.now()): void {
+  if (!up.release) return;
+  cancelTierRelease(up);
+  const streak = (up.releaseTimeouts ?? 0) + 1;
+  up.releaseTimeouts = streak;
+  up.releaseRetryAtMs = nowMs
+    + Math.min(RELEASE_TIMEOUT_RETRY_MS * 2 ** (streak - 1), RELEASE_TIMEOUT_RETRY_MAX_MS);
 }
 
 /** Keep this handle's "how long has it been small" clock. Called every frame
@@ -1317,13 +1382,21 @@ export function releaseColorTier(mat: THREE.MeshStandardMaterial, tex: THREE.Tex
 export function startTierRelease(
   up: TextureUpgrade,
   nowMs = performance.now(),
-  opts: { restore?: boolean; onSettled?: (released: boolean) => void } = {},
+  opts: {
+    restore?: boolean;
+    onSettled?: (released: boolean) => void;
+    /** Called the moment the low map's bytes enter (and leave) the ledger, so
+     *  a caller that shares the envelope with another manager can hand it the
+     *  new figure before anything is drawn or admitted against it. */
+    onLedgerChange?: () => void;
+  } = {},
 ): boolean {
   if (!up.appliedTier || up.release || up.attempt) return false;
   const toTier = opts.restore ? up.appliedTier : releaseTargetTier(up);
   if (!toTier) return false;
   const generation = ++upgradeGeneration;
-  up.release = { toTier, generation, startedAtMs: nowMs, restore: opts.restore };
+  const abort = typeof AbortController === 'function' ? new AbortController() : undefined;
+  up.release = { toTier, generation, startedAtMs: nowMs, restore: opts.restore, abort };
   const abandoned = () => up.release?.generation !== generation;
   const ktx2 = ktx2TierLoader;
   const file = resolveTierFile(up.key, toTier);
@@ -1348,9 +1421,18 @@ export function startTierRelease(
           tex.dispose();
           return;
         }
+        // Decoded and about to be assigned: for these few statements the
+        // device holds the map being given back AND the one replacing it, so
+        // the transient goes into the ledger first and comes out with the
+        // high map. Whoever shares the envelope trims for it synchronously,
+        // rather than discovering the peak a frame after it has passed.
+        up.pendingReleaseBytes = textureGpuBytes(tex, TIER_MAP_WIDTH[toTier]);
+        opts.onLedgerChange?.();
         releaseColorTier(up.material, tex, TIER_RANK[toTier]);
+        up.pendingReleaseBytes = undefined;
         queueTextureWarm(tex, (outcome) => { if (outcome === 'warmed') releaseUpgradeSource(tex); });
         up.releaseFailures = undefined;
+        up.releaseTimeouts = undefined;
         up.releaseRetryAtMs = undefined;
         if (!opts.restore) {
           up.appliedTier = up.tiers.includes(toTier) ? toTier : null;
@@ -1384,21 +1466,72 @@ export function startTierRelease(
       });
     },
     () => !abandoned(),
+    abort?.signal,
   );
   return true;
 }
 
-/** Abandon a swap in flight (a timeout, a teleport away, mode disposal). The
- *  download completes for nobody and disposes itself on arrival. */
-export function cancelTierRelease(up: TextureUpgrade): void {
-  up.release = undefined;
+/** A rung waiting to fetch back the map a lost GL context took, and the
+ *  stand-in texture it is waiting to replace. The texture is carried so an
+ *  entry whose material has moved on — an upgrade landed, a release swapped a
+ *  map in — is recognised as answered rather than re-fetched. */
+export interface RestoreRefetchEntry {
+  up: TextureUpgrade;
+  tex: THREE.Texture;
 }
 
-/** Longest side a released rung's stand-in image keeps. Big enough that a
- *  context restore paints a recognisable globe from it while the real map is
- *  re-fetched, small enough to be free (a 256x128 bitmap is 128 KB against
- *  the 33 MiB of a 4K decode). */
-const RESTORE_STANDIN_WIDTH = 256;
+/**
+ * Take the next stand-in that may fetch its real map back, dropping the
+ * entries that no longer need one.
+ *
+ * One at a time and only what the ledger admits: a context is lost because
+ * the system reclaimed memory, so the answer to it must not be every globe
+ * map decoding at once. A handle that is busy, and a rung the ledger cannot
+ * fit today, both stay queued — an upgrade that fails mid-restore, or a
+ * squeeze that passes, must not leave a body on a stand-in for the session.
+ * A rung that can never fit again is taken from the queue with `restore`
+ * false: it is handed back instead, which fetches a smaller real map in place
+ * of the stand-in.
+ */
+export function takeRestoreRefetch(
+  queue: RestoreRefetchEntry[],
+): { up: TextureUpgrade; restore: boolean } | null {
+  for (let i = 0; i < queue.length; i++) {
+    const { up, tex } = queue[i];
+    if (!up.appliedTier || up.material.map !== tex) {
+      queue.splice(i, 1);
+      i--;
+      continue;
+    }
+    if (up.attempt || up.release) continue;
+    const room = tierAdmission(up, up.appliedTier);
+    if (room === 'blocked') continue;
+    queue.splice(i, 1);
+    return { up, restore: room === 'admit' };
+  }
+  return null;
+}
+
+/** Abandon a swap in flight (a timeout, a teleport away, mode disposal). The
+ *  transfer is aborted rather than left to complete for nobody — the only
+ *  reader it had is this handle, and it has stopped waiting. A KTX2 rung
+ *  cannot be aborted (its loader takes no signal); it disposes itself on
+ *  arrival instead. */
+export function cancelTierRelease(up: TextureUpgrade): void {
+  const release = up.release;
+  up.release = undefined;
+  up.pendingReleaseBytes = undefined;
+  release?.abort?.abort();
+}
+
+/** Longest side a released rung's stand-in image keeps. The width of the map
+ *  every device boots on, less one 2:1 rung: a restored context re-uploads
+ *  this, so what the player sees for the second the real map takes to come
+ *  back is a boot-map-class globe rather than a smear. 2 MiB per rung
+ *  (1024x512 RGBA) against the 33 MiB of a 4K decode and the 134 of an 8K —
+ *  the accepted price of that second, and small enough that the ladder's
+ *  whole set of stand-ins is a rounding error against the envelope. */
+export const RESTORE_STANDIN_WIDTH = 1024;
 
 /**
  * Close a rung's decoded source once its upload is paid.
@@ -1409,19 +1542,20 @@ const RESTORE_STANDIN_WIDTH = 256;
  * to any measure of texture memory. On the devices this matters on that RAM
  * is the same pool as the GPU's.
  *
- * So the full image is replaced by a thumbnail of itself and closed. What is
+ * So the full image is replaced by a stand-in of itself and closed. What is
  * left can still be uploaded, so a context restore paints a soft globe rather
  * than throwing on a detached bitmap, and the mode re-fetches the real map
- * (from the service-worker cache) behind it. Fails open: a browser that will
- * not resize keeps the full image, which the ledger goes on counting.
+ * (from the service-worker cache) behind it. Fails open in every direction: a
+ * browser with no `createImageBitmap`, one that rejects the resize, and one
+ * that accepts the options and hands back a full-size copy anyway all keep
+ * the original image — and the ledger goes on counting it, because the claim
+ * this function exists to make is an accounting one and a resize nobody
+ * checked is not evidence.
  */
-function releaseUpgradeSource(tex: THREE.Texture): void {
+export function releaseUpgradeSource(tex: THREE.Texture): void {
   const img = tex.image as (ImageBitmap & { close?: () => void }) | undefined;
   if (!img || typeof img.close !== 'function' || !(img.width > RESTORE_STANDIN_WIDTH)) return;
   if (typeof createImageBitmap !== 'function') return;
-  // What it holds on the GPU stops being readable from the image the moment
-  // the thumbnail takes its place; stash the figure first.
-  tex.userData.gpuBytes = textureGpuBytes(tex);
   const width = RESTORE_STANDIN_WIDTH;
   const height = Math.max(1, Math.round(img.height * (width / img.width)));
   let disposed = false;
@@ -1440,6 +1574,16 @@ function releaseUpgradeSource(tex: THREE.Texture): void {
         small.close();
         return;
       }
+      if (small.width !== width) {
+        // A copy at the original size is not a stand-in: it costs what the
+        // source cost, and swapping it in would report the source released
+        // while the same bytes are still held.
+        small.close();
+        return;
+      }
+      // What it holds on the GPU stops being readable from the image the
+      // moment the stand-in takes its place; stash the figure first.
+      tex.userData.gpuBytes = textureGpuBytes(tex);
       tex.image = small; // does not touch the source version: no re-upload
       tex.userData.sourceReleased = true;
       tex.addEventListener('dispose', () => small.close());
@@ -1492,6 +1636,32 @@ export function armArrivalWarmGoal(up: TextureUpgrade): boolean {
 
 export function disarmArrivalWarmGoal(up: TextureUpgrade): void {
   up.warmGoal = undefined;
+}
+
+/**
+ * Whether a committed arrival's warm goals have outlived the arrival.
+ *
+ * The time-box exists for ONE case: a goal the ladder could not fit, which
+ * stays armed while a release might still make room for it. That is a wait on
+ * memory, and it has to end with the arrival it belongs to, or a fly-past
+ * leaves a goal pumping for a body over the horizon.
+ *
+ * With nothing squeezing the ladder there is no such wait, and a goal is the
+ * ordinary staged climb: over a slow link a cold arrival's 2K -> 4K -> 8K
+ * routinely runs past any arrival grace, and cutting it short hands the
+ * remaining rungs back to the on-screen triggers — which is the mid-approach
+ * upload spike in front of a moving camera that the goals exist to remove.
+ * So the box is not applied where it answers nothing.
+ */
+export function arrivalWarmGoalsExpired(
+  pressure: boolean,
+  travel: { doneAtMs: number | null } | null,
+  nowMs: number,
+  graceMs: number,
+): boolean {
+  if (!pressure) return false;
+  if (!travel) return true; // nothing is arriving; the goals belong to no trip
+  return travel.doneAtMs !== null && nowMs - travel.doneAtMs >= graceMs;
 }
 
 /**

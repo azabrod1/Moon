@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { describe, it, expect, afterEach, beforeEach, vi } from 'vitest';
 import * as THREE from 'three';
 import {
   SECTOR_ADMIT_MARGIN,
@@ -19,6 +19,17 @@ import {
   type SectorSetSpec,
 } from './sectorStreamer';
 import { LEGACY_DESKTOP_PROFILE, LEGACY_TOUCH_PROFILE } from './gpuEnvelope';
+import {
+  appliedTierHeldBytes,
+  bindTierAdmission,
+  equirectMapGpuBytes,
+  ladderMapReferenceWidth,
+  makeTextureUpgrade,
+  RESTORE_STANDIN_WIDTH,
+  setUpgradeTextureLoader,
+  startTierRelease,
+  TIER_RANK,
+} from '../PlanetFactory';
 import { SECTOR_RENDER_ORDER } from './sectorMaterial';
 import { SECTOR_GRID_16K, ancestorSector, finerGrid, sectorCentreDirection, sectorTileTransform, dataCropLayout, SECTOR_TILE, sphereDirection } from './sectorGrid';
 import { augmentSurfaceMaterial } from './surfaceShading';
@@ -777,12 +788,58 @@ describe('SectorStreamer', () => {
     expect(loader.requests.length).toBe(0);
     streamer.update('Earth', cameraOver(2, 1), measureOf({ '2_1': 2 * DESKTOP.wantTexelPx + 0.02 }), 16);
     expect(streamer.stats().resident).toBe(1);
-    // The drawn map wins when it is the wider (Earth boots at 4096 with no ladder).
+    // A body with no ladder reads the map it draws instead: Earth's globe map
+    // boots at 4096 and nothing ever swaps it.
     streamer.dropAll();
     earth.material.map!.image = { width: 4096, height: 2048 };
-    earth.topMapWidth = () => 2048;
-    streamer.update('Earth', cameraOver(2, 1), measureOf({ '2_1': DESKTOP.wantTexelPx + 0.02 }), 32);
+    earth.topMapWidth = undefined;
+    streamer.update('Earth', cameraOver(2, 1), measureOf({ '2_1': DESKTOP.wantTexelPx - 0.02 }), 32);
+    expect(streamer.stats().resident).toBe(0);
+    streamer.update('Earth', cameraOver(2, 1), measureOf({ '2_1': DESKTOP.wantTexelPx + 0.02 }), 48);
     expect(streamer.stats().resident).toBe(1);
+  });
+
+  it('takes the ladder\'s answer as the whole reference, however wide the image is', () => {
+    loader.auto = true;
+    // The texture's image is not the map: an applied rung swaps a small
+    // stand-in into it once the upload is paid, so nothing about the image
+    // may raise or lower what a laddered body is measured against.
+    earth.topMapWidth = () => 2048;
+    earth.material.map!.image = { width: 4096, height: 2048 };
+    streamer.update('Earth', cameraOver(2, 1), measureOf({ '2_1': 1 }), 0);
+    expect(streamer.stats().bodies.Earth.maxTexelPx).toBeCloseTo(2, 10);
+    streamer.dropAll();
+    earth.material.map!.image = { width: 128, height: 64 };
+    streamer.update('Earth', cameraOver(2, 1), measureOf({ '2_1': 1 }), 16);
+    expect(streamer.stats().bodies.Earth.maxTexelPx).toBeCloseTo(2, 10);
+  });
+
+  it('measures a released rung against the map it draws, not the stand-in in its image', () => {
+    loader.auto = true;
+    // The whole seam, as the app wires it: a laddered body answers from its
+    // ladder, and the ladder is under enough pressure to have given its rung
+    // back. The globe draws its 2048-wide boot map; the image behind it is
+    // the stand-in a context restore would re-upload from. Measured against
+    // THAT, every tile would be admitted at the ratio of the two widths, and
+    // none of them could ever fall under the release size again.
+    const up = makeTextureUpgrade('mars', earth.material)!;
+    earth.topMapWidth = () => ladderMapReferenceWidth(up);
+    bindTierAdmission(() => 'blocked');
+    try {
+      up.appliedTier = null;
+      earth.material.map!.image = { width: RESTORE_STANDIN_WIDTH, height: RESTORE_STANDIN_WIDTH / 2 };
+      streamer.update('Earth', cameraOver(2, 1), measureOf({ '2_1': 1 }), 0);
+      const onStandin = streamer.stats().bodies.Earth.maxTexelPx;
+      streamer.dropAll();
+      // The same pose with the real boot map still in the image slot.
+      earth.material.map!.image = { width: 2048, height: 1024 };
+      streamer.update('Earth', cameraOver(2, 1), measureOf({ '2_1': 1 }), 16);
+      const onRealMap = streamer.stats().bodies.Earth.maxTexelPx;
+      expect(onStandin / onRealMap).toBeCloseTo(1, 10);
+      expect(onStandin).toBeCloseTo(2, 10); // 4096/2048 x the 4K-scale size asked for
+    } finally {
+      bindTierAdmission(null);
+    }
   });
 
   it('releases everything without measuring when even the nearest texel is under the release size', () => {
@@ -1769,5 +1826,90 @@ describe('the sector floor', () => {
     expect(s.stats().budget).toBe(DESKTOP.ceilingBytes);
     s.setGlobalMapBytes(DESKTOP.envelopeBytes - 4 * EARTH_SET_BYTES);
     expect(s.stats().budget).toBe(4 * EARTH_SET_BYTES);
+  });
+});
+
+describe('the transient of a globe-map swap', () => {
+  let loader: FakeLoader;
+  let warm: FakeWarm;
+  let restoreTierLoader: (() => void) | null = null;
+  let tierFetch: Array<{ onLoad: (t: THREE.Texture) => void }> = [];
+  const flush = () => new Promise<void>((resolve) => setTimeout(resolve, 0));
+
+  beforeEach(() => {
+    loader = new FakeLoader();
+    warm = new FakeWarm();
+    tierFetch = [];
+    const previous = setUpgradeTextureLoader((_url, onLoad) => { tierFetch.push({ onLoad }); });
+    restoreTierLoader = () => setUpgradeTextureLoader(previous);
+  });
+
+  afterEach(() => {
+    restoreTierLoader?.();
+    restoreTierLoader = null;
+  });
+
+  it('trims the tiles for both maps before the low one is assigned', async () => {
+    const SET = EARTH_SET_BYTES;
+    const HIGH = equirectMapGpuBytes(4096); // the rung being given back
+    const LOW = equirectMapGpuBytes(2048); // the boot map replacing it
+    // An envelope the globe map plus three sector sets fill exactly, with no
+    // floor, so the squeeze the transient causes is visible in the tiles.
+    const limits = {
+      ...DESKTOP,
+      sectorFloorBytes: 0,
+      envelopeBytes: HIGH + 3 * SET,
+      ceilingBytes: 4 * SET,
+    };
+    const streamer = new SectorStreamer({ limits, load: loader.load, warm: warm.warm });
+    streamer.register(earthHandle());
+    loader.auto = true;
+    const sizes: Record<string, number> = {};
+    for (let c = 0; c < 6; c++) sizes[`${c}_1`] = 2 + 0.01 * c;
+    const inside = new THREE.Vector3(0, 0, 0); // every sector faces a camera at the centre
+
+    const material = new THREE.MeshStandardMaterial();
+    const up = makeTextureUpgrade('mars', material)!;
+    up.appliedTier = '4k';
+    material.map = new THREE.Texture({ width: 4096, height: 2048 } as unknown as HTMLImageElement);
+    material.userData.colorTierRank = TIER_RANK['4k'];
+    const tellStreamer = () => streamer.setGlobalMapBytes(appliedTierHeldBytes(up));
+
+    tellStreamer();
+    for (let f = 0; f < 8; f++) streamer.update('Earth', inside, measureOf(sizes), f * 16);
+    const before = streamer.stats();
+    expect(before.budget).toBe(3 * SET);
+    expect(before.resident).toBe(3);
+
+    let during: ReturnType<typeof streamer.stats> | null = null;
+    let drawnAtChange: number | undefined;
+    startTierRelease(up, 0, {
+      onLedgerChange: () => {
+        tellStreamer();
+        during = streamer.stats();
+        drawnAtChange = (material.map!.image as { width: number }).width;
+      },
+    });
+    tierFetch[0].onLoad(new THREE.Texture({ width: 2048, height: 1024 } as unknown as HTMLImageElement));
+    await flush();
+
+    const seen = during!;
+    // The body was still drawing its 4K map when the tiles were trimmed: the
+    // transient is charged and answered before it is spent, not a frame after
+    // the peak has passed.
+    expect(drawnAtChange).toBe(4096);
+    expect(seen.globalBytes).toBe(HIGH + LOW);
+    expect(seen.budget).toBe(3 * SET - LOW);
+    expect(seen.resident).toBe(2);
+    expect(seen.residentBytes + seen.reserved).toBeLessThanOrEqual(seen.budget);
+
+    tellStreamer();
+    const after = streamer.stats();
+    // Back on the boot map every device carries anyway, which is not the
+    // ladder's optional weight: the tiles have the whole envelope again.
+    expect(after.globalBytes).toBe(0);
+    expect(up.appliedTier).toBeNull();
+    expect(after.residentBytes + after.reserved).toBeLessThanOrEqual(after.budget);
+    material.dispose();
   });
 });

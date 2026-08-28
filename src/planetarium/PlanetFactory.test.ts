@@ -4,6 +4,7 @@ import {
   applyColorTierTexture,
   applyNormalTierTexture,
   armArrivalWarmGoal,
+  arrivalWarmGoalsExpired,
   bindKtx2TierLoader,
   canAttempt,
   cancelTextureUpgrade,
@@ -27,6 +28,8 @@ import {
   bindTierAdmission,
   cancelTierRelease,
   equirectMapGpuBytes,
+  expireTierRelease,
+  ladderMapReferenceWidth,
   reachableTopTier,
   releaseBandFraction,
   releaseColorTier,
@@ -34,13 +37,17 @@ import {
   releaseDwellMs,
   releaseExpired,
   releaseTargetTier,
+  releaseUpgradeSource,
+  retainedSourceBytes,
   startTierRelease,
+  takeRestoreRefetch,
   textureGpuBytes,
   tierUploadBytes,
   trackReleaseBand,
   RELEASE_ATTEMPT_TIMEOUT_MS,
   RELEASE_BAND_DIVISOR,
   RELEASE_REEARN_GRACE_MS,
+  RESTORE_STANDIN_WIDTH,
   type TierAdmission,
   lodMeasurementRelevant,
   makeGeometryUpgrade,
@@ -61,7 +68,7 @@ import {
   type TextureUpgrade,
 } from './PlanetFactory';
 import { retryDelayMs, urlSpread } from './world/textureRetryPolicy';
-import { captureDeviceCaps, resetDeviceCapsForTests, type TextureTier } from './world/texturePolicy';
+import { captureDeviceCaps, resetDeviceCapsForTests, TIER_MAP_WIDTH, type TextureTier } from './world/texturePolicy';
 import { ladderCeilingBytes, LEGACY_DESKTOP_PROFILE, LEGACY_TOUCH_PROFILE } from './world/gpuEnvelope';
 import { SECTOR_SETS, sectorSetGpuBytes } from './world/sectorStreamer';
 import { bindTextureWarmer, pumpTextureWarmQueue, queueTextureWarm, resetTextureWarmer } from './world/textureWarmer';
@@ -2090,5 +2097,400 @@ describe('what the ladder is allowed to hold', () => {
     bindTierAdmission(null);
     up.lastFailure = { tier: '4k', streak: 1 };
     expect(reachableTopTier(up)).toBeNull();
+  });
+});
+
+describe('the map width the tiles are measured against', () => {
+  afterEach(() => bindTierAdmission(null));
+
+  it('never falls below the rung the body is drawing', () => {
+    const up = handle('moon');
+    // Nothing applied yet: the finest rung the ladder can reach governs.
+    expect(ladderMapReferenceWidth(up)).toBe(TIER_MAP_WIDTH['8k']);
+    up.appliedTier = '4k';
+    bindTierAdmission((_u, tier) => (tier === '8k' ? 'blocked' : 'admit'));
+    expect(ladderMapReferenceWidth(up)).toBe(TIER_MAP_WIDTH['4k']);
+    // Released all the way back to the boot map while the ladder is still
+    // blocked: nothing above is reachable, and the globe is drawing 2048.
+    // The image behind that map is a stand-in kept for a context restore, so
+    // reading the map's width off it would measure the tiles against a few
+    // hundred texels and admit them at many times the magnification they are
+    // sized for.
+    up.appliedTier = null;
+    bindTierAdmission(() => 'blocked');
+    expect(reachableTopTier(up)).toBeNull();
+    up.material.map = new THREE.Texture(
+      { width: RESTORE_STANDIN_WIDTH, height: RESTORE_STANDIN_WIDTH / 2 } as unknown as HTMLImageElement,
+    );
+    expect(ladderMapReferenceWidth(up)).toBe(TIER_MAP_WIDTH['2k']);
+  });
+});
+
+describe('fetching the maps back after a lost context', () => {
+  afterEach(() => bindTierAdmission(null));
+
+  /** A rung as a restore finds it: a real tier applied, a stand-in image. */
+  function onStandin(key: string): { up: TextureUpgrade; tex: THREE.Texture } {
+    const up = handle(key);
+    up.appliedTier = '4k';
+    const tex = new THREE.Texture(
+      { width: RESTORE_STANDIN_WIDTH, height: RESTORE_STANDIN_WIDTH / 2, close: () => {} } as unknown as HTMLImageElement,
+    );
+    tex.userData.sourceReleased = true;
+    tex.userData.gpuBytes = equirectMapGpuBytes(4096);
+    up.material.map = tex;
+    return { up, tex };
+  }
+
+  it('hands back one rung at a time, nearest first as queued', () => {
+    const near = onStandin('moon');
+    const far = onStandin('mars');
+    const queue = [near, far];
+    expect(takeRestoreRefetch(queue)).toEqual({ up: near.up, restore: true });
+    expect(queue).toHaveLength(1);
+    expect(takeRestoreRefetch(queue)).toEqual({ up: far.up, restore: true });
+    expect(queue).toHaveLength(0);
+    expect(takeRestoreRefetch(queue)).toBeNull();
+  });
+
+  it('leaves nothing stranded when an upgrade in flight fails', () => {
+    const busy = onStandin('moon');
+    startAttempt(busy.up, '8k');
+    const free = onStandin('mars');
+    const queue = [busy, free];
+    // The busy handle is skipped, not dropped: a fetch in flight is the one
+    // moment a context is most likely to be lost.
+    expect(takeRestoreRefetch(queue)).toEqual({ up: free.up, restore: true });
+    expect(queue).toEqual([busy]);
+    expect(takeRestoreRefetch(queue)).toBeNull();
+    // The upgrade fails, leaving the stand-in on the material. Nothing else
+    // would ever re-drive the re-fetch, so the queue still has to.
+    cancelTextureUpgrade(busy.up, 'discard');
+    expect(takeRestoreRefetch(queue)).toEqual({ up: busy.up, restore: true });
+  });
+
+  it('waits on a squeeze and gives the rung back where it can never fit', () => {
+    const blocked = onStandin('moon');
+    const queue = [blocked];
+    bindTierAdmission(() => 'blocked');
+    // A release may still make room: keep asking rather than decoding a map
+    // the ledger has just said it cannot hold.
+    expect(takeRestoreRefetch(queue)).toBeNull();
+    expect(queue).toHaveLength(1);
+    bindTierAdmission(() => 'refuse');
+    // Nothing can make room for this rung again — so it is handed back
+    // instead, which fetches a smaller real map over the stand-in.
+    expect(takeRestoreRefetch(queue)).toEqual({ up: blocked.up, restore: false });
+    expect(queue).toHaveLength(0);
+  });
+
+  it('drops an entry whose real map arrived by another route', () => {
+    const answered = onStandin('moon');
+    answered.up.material.map = new THREE.Texture(); // an upgrade landed
+    const queue = [answered];
+    expect(takeRestoreRefetch(queue)).toBeNull();
+    expect(queue).toHaveLength(0);
+  });
+});
+
+describe('a swap down that never lands', () => {
+  type Pending = {
+    url: string;
+    onLoad: (tex: THREE.Texture) => void;
+    onError: (err: unknown) => void;
+    signal?: AbortSignal;
+  };
+  let pending: Pending[] = [];
+  let restore: (() => void) | null = null;
+
+  beforeEach(() => {
+    pending = [];
+    const previous = setUpgradeTextureLoader((url, onLoad, onError, _wanted, signal) => {
+      pending.push({ url, onLoad, onError, signal });
+    });
+    restore = () => setUpgradeTextureLoader(previous);
+  });
+
+  afterEach(() => {
+    restore?.();
+    restore = null;
+  });
+
+  function onFourK(): TextureUpgrade {
+    const up = handle('moon');
+    up.material.map = new THREE.Texture({ width: 4096, height: 2048 } as unknown as HTMLImageElement);
+    up.material.userData.colorTierRank = TIER_RANK['4k'];
+    up.appliedTier = '4k';
+    up.belowBandSinceMs = 0;
+    return up;
+  }
+
+  it('ends the transfer and backs off before the same body is asked again', () => {
+    const up = onFourK();
+    expect(releaseDue(up, 60_000)).toBe(true);
+    startTierRelease(up, 60_000);
+    expect(pending).toHaveLength(1);
+    expect(pending[0].signal?.aborted).toBe(false);
+
+    const expiredAt = 60_000 + RELEASE_ATTEMPT_TIMEOUT_MS + 1;
+    expect(releaseExpired(up, expiredAt)).toBe(true);
+    expireTierRelease(up, expiredAt);
+    // The only reader the transfer had has stopped waiting for it.
+    expect(pending[0].signal?.aborted).toBe(true);
+    expect(up.release).toBeUndefined();
+    expect(up.releaseTimeouts).toBe(1);
+    // The dwell is still served, so without a cooldown the planner starts a
+    // fresh fetch for the same body on the very next frame.
+    expect(releaseDue(up, expiredAt + 1)).toBe(false);
+    expect(releaseDue(up, expiredAt + RELEASE_ATTEMPT_TIMEOUT_MS - 1)).toBe(false);
+    expect(releaseDue(up, expiredAt + RELEASE_ATTEMPT_TIMEOUT_MS + 1)).toBe(true);
+  });
+
+  it('doubles the wait per timeout, to a five-minute cap', () => {
+    const up = onFourK();
+    startTierRelease(up, 0);
+    expireTierRelease(up, 0);
+    expect(up.releaseRetryAtMs).toBe(RELEASE_ATTEMPT_TIMEOUT_MS);
+    startTierRelease(up, 1_000);
+    expireTierRelease(up, 1_000);
+    expect(up.releaseTimeouts).toBe(2);
+    expect(up.releaseRetryAtMs).toBe(1_000 + 2 * RELEASE_ATTEMPT_TIMEOUT_MS);
+    up.releaseTimeouts = 20; // a link that has been gone all session
+    startTierRelease(up, 2_000);
+    expireTierRelease(up, 2_000);
+    expect(up.releaseRetryAtMs).toBe(2_000 + 300_000);
+  });
+
+  it('forgets the timeouts once a swap gets through', async () => {
+    const up = onFourK();
+    startTierRelease(up, 0);
+    expireTierRelease(up, 0);
+    startTierRelease(up, 1_000);
+    pending[1].onLoad(new THREE.Texture());
+    await new Promise<void>((resolve) => setTimeout(resolve, 0));
+    expect(up.releaseTimeouts).toBeUndefined();
+    expect(up.releaseRetryAtMs).toBeUndefined();
+  });
+});
+
+describe('the transient a swap down holds', () => {
+  type Pending = { url: string; onLoad: (tex: THREE.Texture) => void; onError: (err: unknown) => void };
+  let pending: Pending[] = [];
+  let restore: (() => void) | null = null;
+  const flush = () => new Promise<void>((resolve) => setTimeout(resolve, 0));
+
+  beforeEach(() => {
+    pending = [];
+    const previous = setUpgradeTextureLoader((url, onLoad, onError) => {
+      pending.push({ url, onLoad, onError });
+    });
+    restore = () => setUpgradeTextureLoader(previous);
+  });
+
+  afterEach(() => {
+    restore?.();
+    restore = null;
+  });
+
+  it('is in the ledger from the low map\'s decode until the swap', async () => {
+    const up = handle('moon');
+    up.material.map = new THREE.Texture({ width: 8192, height: 4096 } as unknown as HTMLImageElement);
+    up.material.userData.colorTierRank = TIER_RANK['8k'];
+    up.appliedTier = '8k';
+    const high = equirectMapGpuBytes(8192);
+    const low = equirectMapGpuBytes(4096);
+    expect(appliedTierHeldBytes(up)).toBeCloseTo(high, 0);
+
+    const seen: Array<{ bytes: number; drawnWidth: number }> = [];
+    startTierRelease(up, 1_000, {
+      onLedgerChange: () => {
+        // Both maps are on the device here: the high one is still what the
+        // body draws, and the low one has decoded. Whoever shares the
+        // envelope has to be told before the transient is spent, not after.
+        seen.push({ bytes: appliedTierHeldBytes(up), drawnWidth: (up.material.map!.image as { width: number }).width });
+      },
+    });
+    pending[0].onLoad(new THREE.Texture({ width: 4096, height: 2048 } as unknown as HTMLImageElement));
+    await flush();
+
+    expect(seen).toHaveLength(1);
+    expect(seen[0].drawnWidth).toBe(8192); // reported before the assignment
+    expect(seen[0].bytes).toBeCloseTo(high + low, 0);
+    // And out again with the high map, in the same frame.
+    expect(up.pendingReleaseBytes).toBeUndefined();
+    expect(appliedTierHeldBytes(up)).toBeCloseTo(low, 0);
+  });
+
+  it('leaves nothing charged when the swap is abandoned', () => {
+    const up = handle('mars');
+    up.material.map = new THREE.Texture({ width: 4096, height: 2048 } as unknown as HTMLImageElement);
+    up.appliedTier = '4k';
+    startTierRelease(up, 1_000);
+    up.pendingReleaseBytes = 999;
+    cancelTierRelease(up);
+    expect(up.pendingReleaseBytes).toBeUndefined();
+  });
+});
+
+describe('how long a committed arrival keeps its warm goals', () => {
+  const GRACE = 10_000;
+
+  it('lets a cold climb run as long as it needs while nothing is squeezing the ladder', () => {
+    // The box exists for a goal waiting on memory. With none of that waiting
+    // to do, a goal is the ordinary staged climb — which over a slow link
+    // outlasts any arrival grace, and whose remaining rungs would otherwise
+    // land as upload spikes in front of a moving camera.
+    expect(arrivalWarmGoalsExpired(false, { doneAtMs: 0 }, 100 * GRACE, GRACE)).toBe(false);
+    expect(arrivalWarmGoalsExpired(false, null, 100 * GRACE, GRACE)).toBe(false);
+  });
+
+  it('boxes a goal to its arrival once the ladder is squeezed', () => {
+    expect(arrivalWarmGoalsExpired(true, { doneAtMs: null }, 100 * GRACE, GRACE)).toBe(false);
+    expect(arrivalWarmGoalsExpired(true, { doneAtMs: 0 }, GRACE - 1, GRACE)).toBe(false);
+    expect(arrivalWarmGoalsExpired(true, { doneAtMs: 0 }, GRACE, GRACE)).toBe(true);
+    // Nothing is arriving at all: the goals belong to no trip.
+    expect(arrivalWarmGoalsExpired(true, null, 0, GRACE)).toBe(true);
+  });
+});
+
+describe('a slow cold arrival', () => {
+  let pending: Array<{ url: string; onLoad: (tex: THREE.Texture) => void; onError: (err: unknown) => void }>;
+  let restore: (() => void) | null = null;
+  const flush = () => new Promise<void>((resolve) => setTimeout(resolve, 0));
+
+  beforeEach(() => {
+    pending = [];
+    const previous = setUpgradeTextureLoader((url, onLoad, onError) => {
+      pending.push({ url, onLoad, onError });
+    });
+    restore = () => setUpgradeTextureLoader(previous);
+  });
+
+  afterEach(() => {
+    restore?.();
+    restore = null;
+  });
+
+  it('climbs 4K then 8K however long the link takes over it', async () => {
+    const up = handle('moon');
+    armArrivalWarmGoal(up);
+    expect(pumpArrivalWarmGoal(up, 0)).toBe(true);
+    // A minute of link for the first rung — six times the arrival grace.
+    pending[0].onLoad(new THREE.Texture({ width: 4096, height: 2048 } as unknown as HTMLImageElement));
+    await flush();
+    expect(up.appliedTier).toBe('4k');
+    // The goal is untouched: nothing is squeezing the ladder, so nothing
+    // hands the last rung back to the on-screen trigger.
+    expect(arrivalWarmGoalsExpired(false, { doneAtMs: 0 }, 60_000, 10_000)).toBe(false);
+    expect(pumpArrivalWarmGoal(up, 60_000)).toBe(true);
+    pending[1].onLoad(new THREE.Texture({ width: 8192, height: 4096 } as unknown as HTMLImageElement));
+    await flush();
+    expect(up.appliedTier).toBe('8k');
+    expect(pumpArrivalWarmGoal(up, 120_000)).toBe(false); // reached, not abandoned
+  });
+});
+
+describe('closing a rung\'s decoded source once its upload is paid', () => {
+  type FakeBitmap = { width: number; height: number; closed: boolean; close: () => void };
+  function fakeBitmap(width: number, height: number): FakeBitmap {
+    const bmp: FakeBitmap = { width, height, closed: false, close: () => { bmp.closed = true; } };
+    return bmp;
+  }
+  const host = globalThis as unknown as { createImageBitmap?: unknown };
+  const previous = host.createImageBitmap;
+  let asked: Array<{ resolve: (b: FakeBitmap) => void; reject: (e: unknown) => void; opts: ImageBitmapOptions }>;
+  const flush = () => new Promise<void>((resolve) => setTimeout(resolve, 0));
+
+  beforeEach(() => {
+    asked = [];
+    host.createImageBitmap = (_img: unknown, opts: ImageBitmapOptions) =>
+      new Promise<FakeBitmap>((resolve, reject) => { asked.push({ resolve, reject, opts }); });
+  });
+
+  afterEach(() => {
+    if (previous === undefined) delete host.createImageBitmap;
+    else host.createImageBitmap = previous;
+  });
+
+  /** A 4K rung as the warm pump leaves it: uploaded, source still in RAM. */
+  function warmedRung(): { tex: THREE.Texture; source: FakeBitmap } {
+    const source = fakeBitmap(4096, 2048);
+    return { tex: new THREE.Texture(source as unknown as HTMLImageElement), source };
+  }
+
+  it('leaves a boot-map-class globe behind, not a smear', () => {
+    // What a restored context re-uploads while the real map is fetched back:
+    // the boot map's width less one 2:1 rung, at 2 MiB a rung.
+    expect(RESTORE_STANDIN_WIDTH).toBe(1024);
+    expect(RESTORE_STANDIN_WIDTH * (RESTORE_STANDIN_WIDTH / 2) * 4).toBe(2 * 1024 * 1024);
+  });
+
+  it('swaps in a stand-in of the stated width and closes the source', async () => {
+    const { tex, source } = warmedRung();
+    expect(retainedSourceBytes(tex)).toBe(4096 * 2048 * 4);
+    releaseUpgradeSource(tex);
+    expect(asked[0].opts.resizeWidth).toBe(RESTORE_STANDIN_WIDTH);
+    expect(asked[0].opts.resizeHeight).toBe(RESTORE_STANDIN_WIDTH / 2);
+    const small = fakeBitmap(RESTORE_STANDIN_WIDTH, RESTORE_STANDIN_WIDTH / 2);
+    asked[0].resolve(small);
+    await flush();
+    expect(tex.image).toBe(small);
+    expect(source.closed).toBe(true);
+    expect(tex.userData.sourceReleased).toBe(true);
+    // What it holds on the GPU is unreadable from the stand-in, so the figure
+    // is stashed before the swap and survives it.
+    expect(tex.userData.gpuBytes).toBe(equirectMapGpuBytes(4096));
+    expect(textureGpuBytes(tex)).toBe(equirectMapGpuBytes(4096));
+    expect(retainedSourceBytes(tex)).toBe(0);
+    tex.dispose();
+    expect(small.closed).toBe(true); // the stand-in goes with the texture
+  });
+
+  it('keeps counting a source a browser hands back unresized', async () => {
+    const { tex, source } = warmedRung();
+    releaseUpgradeSource(tex);
+    // The options were accepted and the resize ignored: a full-size copy.
+    const copy = fakeBitmap(4096, 2048);
+    asked[0].resolve(copy);
+    await flush();
+    expect(tex.image).toBe(source);
+    expect(source.closed).toBe(false);
+    expect(copy.closed).toBe(true); // the copy is what goes, not the source
+    expect(tex.userData.sourceReleased).toBeUndefined();
+    expect(tex.userData.gpuBytes).toBeUndefined();
+    // The claim this makes is an accounting one, so an unchecked resize must
+    // not be allowed to report memory that is still held as freed.
+    expect(retainedSourceBytes(tex)).toBe(4096 * 2048 * 4);
+  });
+
+  it('keeps the source when the resize rejects', async () => {
+    const { tex, source } = warmedRung();
+    releaseUpgradeSource(tex);
+    asked[0].reject(new Error('no'));
+    await flush();
+    expect(tex.image).toBe(source);
+    expect(source.closed).toBe(false);
+    expect(retainedSourceBytes(tex)).toBe(4096 * 2048 * 4);
+  });
+
+  it('closes a stand-in the texture disposed mid-resize will never draw', async () => {
+    const { tex, source } = warmedRung();
+    releaseUpgradeSource(tex);
+    tex.dispose();
+    const small = fakeBitmap(RESTORE_STANDIN_WIDTH, RESTORE_STANDIN_WIDTH / 2);
+    asked[0].resolve(small);
+    await flush();
+    expect(small.closed).toBe(true);
+    expect(tex.image).toBe(source);
+    expect(tex.userData.sourceReleased).toBeUndefined();
+  });
+
+  it('asks for nothing where there is nothing to gain', () => {
+    // Already at the stand-in size, and an image with no bitmap behind it.
+    releaseUpgradeSource(new THREE.Texture(
+      fakeBitmap(RESTORE_STANDIN_WIDTH, RESTORE_STANDIN_WIDTH / 2) as unknown as HTMLImageElement,
+    ));
+    releaseUpgradeSource(new THREE.Texture({ width: 4096, height: 2048 } as unknown as HTMLImageElement));
+    expect(asked).toHaveLength(0);
   });
 });

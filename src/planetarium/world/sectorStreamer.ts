@@ -238,10 +238,13 @@ export const SECTOR_NIGHT_DOT = -0.1;
 /** What the sectors of every body together may hold on the GPU. This is the
  *  real bound: bytes, reserved from the known tile layouts at admission
  *  rather than counted after the decode, so two loads in flight cannot
- *  overshoot it by 45 MiB between them. A desktop set of ten Earth sectors is
- *  ~240 MiB; a phone's shared memory is the app's known weak spot. */
+ *  overshoot it by 45 MiB between them. An Earth sector set — its 2048²
+ *  tile plus its copies of the bump and roughness crops — is ~23.1 MiB, so
+ *  desktop holds eleven and touch six. Six is what a phone held before the
+ *  budget was in bytes at all, and a phone's shared memory is the app's
+ *  known weak spot: 128 MiB would hold five. */
 export const SECTOR_BUDGET_BYTES_DESKTOP = 256 * 1024 * 1024;
-export const SECTOR_BUDGET_BYTES_TOUCH = 128 * 1024 * 1024;
+export const SECTOR_BUDGET_BYTES_TOUCH = 144 * 1024 * 1024;
 /** Ceiling on the sector budget PLUS the globe maps live at the same time
  *  (the tier ladder's applied colour maps, which the mode reports). The
  *  sector budget is whatever this leaves under the figure above, so a Moon

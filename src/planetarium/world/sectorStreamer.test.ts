@@ -300,6 +300,11 @@ describe('SectorStreamer', () => {
     expect(after).toContain('0_0');
   });
 
+  it('holds six Earth sectors on a phone and eleven on a desktop', () => {
+    expect(EARTH_FITS_TOUCH).toBe(6);
+    expect(EARTH_FITS_DESKTOP).toBe(11);
+  });
+
   it('holds a smaller working set on touch devices', () => {
     const s = new SectorStreamer({ touch: true, load: loader.load, warm: warm.warm });
     s.register(earth);

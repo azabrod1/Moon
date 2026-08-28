@@ -1,5 +1,5 @@
 {
-  "_": "Sources under .moon-data-cache/ that tools/gen-tiles.mjs and gen-maps.mjs read, with the SHA-256 the shipped assets were cut from. gen-tiles refuses a source whose digest differs: a re-downloaded product that changed upstream would otherwise re-cut a set silently. Update a digest only together with the assets cut from it.",
+  "_": "Sources under .moon-data-cache/ that tools/gen-tiles.mjs and gen-maps.mjs read, with the SHA-256 the shipped assets were cut from (streamed, so a half-gigabyte source is not read into memory for a hash). gen-tiles refuses a source whose digest differs: a re-downloaded product that changed upstream would otherwise re-cut a set silently. Update a digest only together with the assets cut from it. Cut with sharp 0.35.4 (libvips): the resample kernel is the tool's, so a different sharp can move every tile's bytes and with them the set hash in the pathname.",
   "bmng_200408_21600.jpg": {
     "sha256": "926be7253be90a1fd57071a33afbfe7a712a2dfe0d5b5b4602bc5dfbcfdc2c89",
     "bytes": 21206743,
@@ -45,6 +45,166 @@
     "product": "Solar System Scope 8K Earth clouds (CC BY 4.0)",
     "used_by": [
       "8k/earth-clouds.webp (encode-textures q60)"
+    ]
+  },
+  "bmng_200408_21600x21600_A1.jpg": {
+    "sha256": "80351fd9ce7eb7f2fbd827fdc5f23526429baefe6eaf091876042fc94c80013c",
+    "bytes": 45275119,
+    "width": 21600,
+    "height": 21600,
+    "product": "NASA Blue Marble Next Generation, August 2004, plain (flat ocean), 500 m tile A1 of the 4x2 grid (columns A-D west to east, rows 1-2 north to south) that makes the 86400x43200 whole",
+    "used_by": [
+      "gen-tiles earth level 1 (32k)"
+    ]
+  },
+  "bmng_200408_21600x21600_B1.jpg": {
+    "sha256": "654dc2c927ba44830edfbd843d4dff0264f03f8016eff89260de5b7b766fb963",
+    "bytes": 42811635,
+    "width": 21600,
+    "height": 21600,
+    "product": "NASA Blue Marble Next Generation, August 2004, plain (flat ocean), 500 m tile B1 of the 4x2 grid (columns A-D west to east, rows 1-2 north to south) that makes the 86400x43200 whole",
+    "used_by": [
+      "gen-tiles earth level 1 (32k)"
+    ]
+  },
+  "bmng_200408_21600x21600_C1.jpg": {
+    "sha256": "3d7fe4fa9bb2c56d233e6e01e9212348604d9b6490f472710745a3b9ea4cd5cc",
+    "bytes": 79011533,
+    "width": 21600,
+    "height": 21600,
+    "product": "NASA Blue Marble Next Generation, August 2004, plain (flat ocean), 500 m tile C1 of the 4x2 grid (columns A-D west to east, rows 1-2 north to south) that makes the 86400x43200 whole",
+    "used_by": [
+      "gen-tiles earth level 1 (32k)"
+    ]
+  },
+  "bmng_200408_21600x21600_D1.jpg": {
+    "sha256": "20f5b09793b0bdb949e9a3a996efa6eb6eacf8c98e40c646ea1f3be3059def5b",
+    "bytes": 57030241,
+    "width": 21600,
+    "height": 21600,
+    "product": "NASA Blue Marble Next Generation, August 2004, plain (flat ocean), 500 m tile D1 of the 4x2 grid (columns A-D west to east, rows 1-2 north to south) that makes the 86400x43200 whole",
+    "used_by": [
+      "gen-tiles earth level 1 (32k)"
+    ]
+  },
+  "bmng_200408_21600x21600_A2.jpg": {
+    "sha256": "b996913af7858f94365ced0e189579a706c30495cde85cfcee1967a63a46fd8b",
+    "bytes": 20531767,
+    "width": 21600,
+    "height": 21600,
+    "product": "NASA Blue Marble Next Generation, August 2004, plain (flat ocean), 500 m tile A2 of the 4x2 grid (columns A-D west to east, rows 1-2 north to south) that makes the 86400x43200 whole",
+    "used_by": [
+      "gen-tiles earth level 1 (32k)"
+    ]
+  },
+  "bmng_200408_21600x21600_B2.jpg": {
+    "sha256": "10ba13cd1d1751d16f7f8c375900a6f3dad826a7dba95486410154fb72fa4224",
+    "bytes": 40015715,
+    "width": 21600,
+    "height": 21600,
+    "product": "NASA Blue Marble Next Generation, August 2004, plain (flat ocean), 500 m tile B2 of the 4x2 grid (columns A-D west to east, rows 1-2 north to south) that makes the 86400x43200 whole",
+    "used_by": [
+      "gen-tiles earth level 1 (32k)"
+    ]
+  },
+  "bmng_200408_21600x21600_C2.jpg": {
+    "sha256": "725bced59b4a90ed14d0ff05bc3b0526fe12f65a891a959afe7d496860accbed",
+    "bytes": 31917274,
+    "width": 21600,
+    "height": 21600,
+    "product": "NASA Blue Marble Next Generation, August 2004, plain (flat ocean), 500 m tile C2 of the 4x2 grid (columns A-D west to east, rows 1-2 north to south) that makes the 86400x43200 whole",
+    "used_by": [
+      "gen-tiles earth level 1 (32k)"
+    ]
+  },
+  "bmng_200408_21600x21600_D2.jpg": {
+    "sha256": "00a840df7a226fec4cdb82847cf6d877782bf0f1f3167ede2083b633d3361310",
+    "bytes": 36915637,
+    "width": 21600,
+    "height": 21600,
+    "product": "NASA Blue Marble Next Generation, August 2004, plain (flat ocean), 500 m tile D2 of the 4x2 grid (columns A-D west to east, rows 1-2 north to south) that makes the 86400x43200 whole",
+    "used_by": [
+      "gen-tiles earth level 1 (32k)"
+    ]
+  },
+  "BlackMarble_2016_A1_geo.tif": {
+    "sha256": "5fdf5ed5b54efe4ab26a89c32d3b76823868f56fab7e31f442a626b44a8285f3",
+    "bytes": 321170093,
+    "width": 21600,
+    "height": 21600,
+    "product": "NASA Black Marble 2016 VIIRS night lights, 500 m tile A1 of the 4x2 grid (columns A-D west to east, rows 1-2 north to south) that makes the 86400x43200 whole; eoimages.gsfc.nasa.gov/images/imagerecords/144000/144898/",
+    "used_by": [
+      "gen-tiles earth-night levels 0-1 (16k, 32k) + the earth-night.v2 boot/4K/8K maps"
+    ]
+  },
+  "BlackMarble_2016_B1_geo.tif": {
+    "sha256": "64cf02bc6f90a583ea6695167ab4b24084f82d80266eee3cadfec75b65eff3ec",
+    "bytes": 310401888,
+    "width": 21600,
+    "height": 21600,
+    "product": "NASA Black Marble 2016 VIIRS night lights, 500 m tile B1 of the 4x2 grid (columns A-D west to east, rows 1-2 north to south) that makes the 86400x43200 whole; eoimages.gsfc.nasa.gov/images/imagerecords/144000/144898/",
+    "used_by": [
+      "gen-tiles earth-night levels 0-1 (16k, 32k) + the earth-night.v2 boot/4K/8K maps"
+    ]
+  },
+  "BlackMarble_2016_C1_geo.tif": {
+    "sha256": "ab4114432971c19ff079c656a31997ec159572657db605028dc5b6b65d3c9ac6",
+    "bytes": 503603258,
+    "width": 21600,
+    "height": 21600,
+    "product": "NASA Black Marble 2016 VIIRS night lights, 500 m tile C1 of the 4x2 grid (columns A-D west to east, rows 1-2 north to south) that makes the 86400x43200 whole; eoimages.gsfc.nasa.gov/images/imagerecords/144000/144898/",
+    "used_by": [
+      "gen-tiles earth-night levels 0-1 (16k, 32k) + the earth-night.v2 boot/4K/8K maps"
+    ]
+  },
+  "BlackMarble_2016_D1_geo.tif": {
+    "sha256": "7e07f7d7de87e80feb76acfd607a3939ad6e927c7a7cf79a25f175b7269fb7f5",
+    "bytes": 387774688,
+    "width": 21600,
+    "height": 21600,
+    "product": "NASA Black Marble 2016 VIIRS night lights, 500 m tile D1 of the 4x2 grid (columns A-D west to east, rows 1-2 north to south) that makes the 86400x43200 whole; eoimages.gsfc.nasa.gov/images/imagerecords/144000/144898/",
+    "used_by": [
+      "gen-tiles earth-night levels 0-1 (16k, 32k) + the earth-night.v2 boot/4K/8K maps"
+    ]
+  },
+  "BlackMarble_2016_A2_geo.tif": {
+    "sha256": "55b5b0e035c66566c190b780b58fd4a3676c02c7297bb4b33d5b4f3fc6ec9474",
+    "bytes": 171407332,
+    "width": 21600,
+    "height": 21600,
+    "product": "NASA Black Marble 2016 VIIRS night lights, 500 m tile A2 of the 4x2 grid (columns A-D west to east, rows 1-2 north to south) that makes the 86400x43200 whole; eoimages.gsfc.nasa.gov/images/imagerecords/144000/144898/",
+    "used_by": [
+      "gen-tiles earth-night levels 0-1 (16k, 32k) + the earth-night.v2 boot/4K/8K maps"
+    ]
+  },
+  "BlackMarble_2016_B2_geo.tif": {
+    "sha256": "4db1112fe6c959f2789256ca176e137f6678a8a83fc4ab61359da86f0f4fdfd5",
+    "bytes": 270956469,
+    "width": 21600,
+    "height": 21600,
+    "product": "NASA Black Marble 2016 VIIRS night lights, 500 m tile B2 of the 4x2 grid (columns A-D west to east, rows 1-2 north to south) that makes the 86400x43200 whole; eoimages.gsfc.nasa.gov/images/imagerecords/144000/144898/",
+    "used_by": [
+      "gen-tiles earth-night levels 0-1 (16k, 32k) + the earth-night.v2 boot/4K/8K maps"
+    ]
+  },
+  "BlackMarble_2016_C2_geo.tif": {
+    "sha256": "9942b433d60ec1578c47ff1eb5eae16f52c194cc6a9b70f467a4d0a6e5ba58f9",
+    "bytes": 230172417,
+    "width": 21600,
+    "height": 21600,
+    "product": "NASA Black Marble 2016 VIIRS night lights, 500 m tile C2 of the 4x2 grid (columns A-D west to east, rows 1-2 north to south) that makes the 86400x43200 whole; eoimages.gsfc.nasa.gov/images/imagerecords/144000/144898/",
+    "used_by": [
+      "gen-tiles earth-night levels 0-1 (16k, 32k) + the earth-night.v2 boot/4K/8K maps"
+    ]
+  },
+  "BlackMarble_2016_D2_geo.tif": {
+    "sha256": "0f6f770a37a066bf934ca0cec334f46526a86db0cf06de7e51c8a9f847da4146",
+    "bytes": 237917468,
+    "width": 21600,
+    "height": 21600,
+    "product": "NASA Black Marble 2016 VIIRS night lights, 500 m tile D2 of the 4x2 grid (columns A-D west to east, rows 1-2 north to south) that makes the 86400x43200 whole; eoimages.gsfc.nasa.gov/images/imagerecords/144000/144898/",
+    "used_by": [
+      "gen-tiles earth-night levels 0-1 (16k, 32k) + the earth-night.v2 boot/4K/8K maps"
     ]
   }
 }

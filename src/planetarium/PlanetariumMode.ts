@@ -2582,12 +2582,17 @@ export class PlanetariumMode {
       sectors.update(name, this.sectorCamLocal, measure, nowMs, suspend, this.sectorSunLocal, pxPerLocalUnitNearest);
     };
 
+    // Measure every body first, then let the streamer reconcile them together:
+    // the bodies are visited in catalog order, and a working set decided body
+    // by body would rank Earth's fresh scores against the Moon's last frame.
+    sectors.beginFrame();
     for (const planet of this.solarSystem.planets) {
       visit(planet.data.name, planet.mesh, planet.data.radiusAU, !planet.mesh.visible);
     }
     for (const moons of this.planetMoons.values()) {
       for (const m of moons) visit(m.data.name, m.mesh, m.data.radiusAU, !m.mesh.visible);
     }
+    sectors.endFrame();
   }
 
   /** Dev bridge: what the streamer holds right now. */

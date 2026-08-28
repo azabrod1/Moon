@@ -46,6 +46,20 @@
  * vertex lattice. Slots exist only for the levels a spec declares, so a body
  * that ships one level costs exactly one level's worth of work.
  *
+ * One demand rule serves every level — a sector is wanted where the map BELOW
+ * it is magnified — and the pyramid is what keeps the working set from
+ * fighting itself. Scores rank in multiples of the level's own threshold, the
+ * only comparable form. A sector with a finer one live over it is never given
+ * up: it is that sector's instant fallback, and losing it would drop the
+ * surface under a resident tile all the way to the globe (which is what a
+ * child admitted while its parent was cooling down falls back to — a softness
+ * step, never a hole). A sector every child of which is resident is not
+ * admitted at all: nothing of it would show, and re-admitting it under
+ * pressure is one half of a cycle that would evict a child to pay for it. It
+ * becomes a candidate again the frame a child is lost. Among candidates the
+ * coarser level goes first: it covers its children's ground at a quarter of
+ * the bytes.
+ *
  * Pure apart from three's scene graph: the loader, the warm pump and the
  * screen measurement are injected, so the policy is unit-tested without a
  * renderer. PlanetariumMode owns the per-frame call and the device facts.
@@ -165,11 +179,14 @@ export const SECTOR_SETS: Record<string, SectorSetSpec> = {
   },
 };
 
-/** A sector is wanted once one texel of the globe's OWN map spans this many
- *  DEVICE pixels at the sector's nearest point — the base is then visibly
+/** A sector is wanted once one texel of the map BELOW it spans this many
+ *  DEVICE pixels at the sector's nearest point — that map is then visibly
  *  magnified and a tile has detail to add — and released only once that
  *  falls under the second value, so a disc breathing around the threshold
- *  never flaps a 21 MiB upload. Measured against the finest colour map the
+ *  never flaps a 21 MiB upload. One rule per level: the map below a level-0
+ *  sector is the globe's own, the map below a level-k sector is level k−1's
+ *  source, so a finer level is asked for exactly where the level above it
+ *  has run out of texels. Measured against the finest colour map the
  *  globe will hold on this device (SectorBodyHandle.topMapWidth), or the
  *  one it draws if that is wider: the Moon's 8K rung needs twice the
  *  magnification a 4K map does before a tile shows anything (a tile under
@@ -210,7 +227,11 @@ export const SECTOR_INFLIGHT_CAP_DESKTOP = 2;
 export const SECTOR_INFLIGHT_CAP_TOUCH = 1;
 
 /** A candidate evicts the weakest resident only when it out-ranks it by this
- *  factor — the admission hysteresis that keeps the working set stable. */
+ *  factor — the admission hysteresis that keeps the working set stable.
+ *  Scores are LEVEL-NEUTRAL for this comparison: a sector ranks by how far
+ *  past its OWN threshold it is (texel px ÷ want), never by raw texel px,
+ *  which is measured against a different map at every level and would make
+ *  every coarse sector out-rank every fine one by the level's ratio. */
 export const SECTOR_ADMIT_MARGIN = 1.25;
 
 /** Cooldown after a failed sector load, doubling per consecutive failure. */
@@ -315,6 +336,14 @@ interface SectorBody {
   handle: SectorBodyHandle;
   slots: SectorSlot[];
   levels: SectorLevel[];
+  /** Surface length of the texel each level's demand is measured against —
+   *  level 0's is the globe's own map and moves with its tier ladder, the
+   *  rest are the level above's source and never change. */
+  texelLens: number[];
+  /** This frame's crop signature and whether loads may start for this body
+   *  (the reconcile pass runs after every body is measured). */
+  signature: string;
+  admitting: boolean;
   /** Diagnostic: the largest texel magnification measured this frame. */
   maxTexelPx: number;
 }
@@ -424,6 +453,24 @@ function baseTexelLength(handle: SectorBodyHandle): number {
   return (2 * Math.PI * handle.radiusAU) / width;
 }
 
+/** A finer sector of this one is live (resident, or a load away from it).
+ *  Such a sector draws over part of this one and falls back to it, so this
+ *  one is not the streamer's to give up. */
+function hasLiveChild(slot: SectorSlot): boolean {
+  for (const child of slot.children) if (child.state !== 'idle') return true;
+  return false;
+}
+
+/** Every finer sector of this one is already resident: nothing of it is
+ *  visible, so admitting it would buy a frame of nothing and cost a victim.
+ *  It becomes a candidate again the moment one of those children is lost —
+ *  which is the frame it becomes the fallback under the rest. */
+function covered(slot: SectorSlot): boolean {
+  if (slot.children.length === 0) return false;
+  for (const child of slot.children) if (child.state !== 'resident') return false;
+  return true;
+}
+
 /** Close a tile's decoded bitmap once it is resident: the upload is paid, a
  *  context loss drops the sector rather than re-uploading, and 16 MiB of RAM
  *  per tile goes back. Idempotent — the loader's dispose hook closes too. */
@@ -442,6 +489,8 @@ export class SectorStreamer {
   private readonly releaseTexelPx: number;
   private generation = 0;
   private lastNowMs = 0;
+  private batching = false;
+  private readonly batch: SectorBody[] = [];
   private readonly camScratch = new THREE.Vector3();
   private readonly camDirScratch = new THREE.Vector3();
   private readonly pointScratch = new THREE.Vector3();
@@ -500,7 +549,12 @@ export class SectorStreamer {
         }
       }
     }
-    this.bodies.set(handle.name, { handle, slots, levels, maxTexelPx: 0 });
+    const texelLens = levels.map((_, i) => (
+      i === 0 ? 0 : (2 * Math.PI * handle.radiusAU) / levels[i - 1].sourceWidth
+    ));
+    this.bodies.set(handle.name, {
+      handle, slots, levels, texelLens, signature: '', admitting: false, maxTexelPx: 0,
+    });
   }
 
   unregister(name: string): void {
@@ -512,6 +566,27 @@ export class SectorStreamer {
 
   has(name: string): boolean {
     return this.bodies.has(name);
+  }
+
+  /**
+   * Open a frame in which several bodies are measured before any of them is
+   * admitted or evicted. Between this and `endFrame`, `update` only measures;
+   * the one reconcile then ranks every body's sectors against every other's
+   * — Earth's fresh scores against the Moon's fresh scores, never against
+   * last frame's. Without it each `update` reconciles on its own, which is
+   * what a single-body caller wants.
+   */
+  beginFrame(): void {
+    this.batching = true;
+    this.batch.length = 0;
+  }
+
+  /** Close the frame `beginFrame` opened: reconcile every body measured in it. */
+  endFrame(): void {
+    if (!this.batching) return;
+    this.batching = false;
+    const measured = this.batch.splice(0);
+    this.reconcile(measured, this.lastNowMs);
   }
 
   /**
@@ -540,15 +615,20 @@ export class SectorStreamer {
     this.lastNowMs = nowMs;
     const { handle, slots } = body;
 
-    const texelLen = baseTexelLength(handle);
+    // The texel each level's demand is read against: the globe's own map for
+    // level 0, the level above's source below that.
+    body.texelLens[0] = baseTexelLength(handle);
     body.maxTexelPx = 0;
     if (
       suspend === 'all'
       || !realAlbedoOn(handle.material)
       || !cropsReady(handle.material, handle.spec)
-      || pxPerLocalUnitNearest * texelLen < this.releaseTexelPx
+      // Level 0 reads the coarsest texel of the pyramid, so its bound bounds
+      // every level below it too.
+      || pxPerLocalUnitNearest * body.texelLens[0] < this.releaseTexelPx
     ) {
       for (const slot of slots) this.release(slot);
+      body.admitting = false;
       return;
     }
 
@@ -560,19 +640,32 @@ export class SectorStreamer {
       let score = 0;
       let fetchable = false;
       const grid = body.levels[slot.level].grid;
-      if (sectorMayFaceCamera(slot.centreDir, slot.angularRadius, this.camScratch, handle.radiusAU)) {
+      // Slots below level 0 are visited only under a parent that is wanted or
+      // kept this frame — a parent's own map is 4x coarser, so where it has
+      // nothing to add its children have less, and the pass skips the whole
+      // sub-tree rather than projecting it. Slots are in level order, so the
+      // parent's verdict is already this frame's.
+      const gated = slot.parent !== undefined && !slot.parent.wanted && !slot.parent.keep;
+      if (!gated && sectorMayFaceCamera(slot.centreDir, slot.angularRadius, this.camScratch, handle.radiusAU)) {
         // Measured where the sector is most magnified — its point nearest the
         // sub-camera point — not at its centre, which a camera over a
         // neighbouring sector sees foreshortened.
         sectorNearestDirection(grid, slot.sector, this.camDirScratch, this.pointScratch);
         const m = measure(slot.bsCentre, slot.bsRadius, this.pointScratch);
         if (m) {
-          texelPx = m.pxPerLocalUnit * texelLen;
-          if (texelPx > body.maxTexelPx) body.maxTexelPx = texelPx;
+          texelPx = m.pxPerLocalUnit * body.texelLens[slot.level];
+          // The diagnostic stays level 0's, in the one unit every probe reads.
+          if (slot.level === 0 && texelPx > body.maxTexelPx) body.maxTexelPx = texelPx;
           const night = sunLocal !== null
             && sectorNearestDirection(grid, slot.sector, sunLocal, this.sunPointScratch).dot(sunLocal) < SECTOR_NIGHT_DOT;
           fetchable = !m.offscreen && !night;
-          if (fetchable) score = texelPx * (0.5 + 0.5 * Math.max(0, Math.min(1, m.centrality)));
+          // In multiples of this level's OWN want threshold — 1 is exactly at
+          // it, 4 is four times past it. That is the only form in which two
+          // levels, each measured against a different map, can be ranked
+          // against each other at all.
+          if (fetchable) {
+            score = (texelPx / this.wantTexelPx) * (0.5 + 0.5 * Math.max(0, Math.min(1, m.centrality)));
+          }
         }
       }
       slot.score = score;
@@ -597,8 +690,18 @@ export class SectorStreamer {
       }
     }
 
-    if (suspend === 'admissions') return;
+    body.signature = signature;
+    body.admitting = suspend === 'none';
+    if (this.batching) this.batch.push(body);
+    else this.reconcile([body], nowMs);
+  }
 
+  /**
+   * Start and stop loads for the bodies measured this frame. Split from the
+   * measurement so that every body's scores are this frame's before any of
+   * them competes for the working set.
+   */
+  private reconcile(bodies: SectorBody[], nowMs: number): void {
     // Residents drawn under another crop signature reload in place, ahead of
     // new admissions: the base gained (or lost) a relief map, and a sector
     // that shades differently from the globe around it is the worse defect.
@@ -606,25 +709,37 @@ export class SectorStreamer {
     // Only where a fetch is allowed at all (on the frame, on the day side —
     // score > 0): a resident past the limb keeps its old set until a pan
     // brings it back, as an admission there would wait too.
-    const stale = slots
-      .filter((s) => s.state === 'resident' && !s.loading && s.score > 0 && s.signature !== signature && nowMs >= s.retryAtMs)
-      .sort((a, b) => b.score - a.score);
-    for (const slot of stale) {
+    const stale: Array<{ body: SectorBody; slot: SectorSlot }> = [];
+    const candidates: Array<{ body: SectorBody; slot: SectorSlot }> = [];
+    for (const body of bodies) {
+      if (!body.admitting) continue;
+      for (const slot of body.slots) {
+        if (slot.state === 'resident' && !slot.loading && slot.score > 0
+          && slot.signature !== body.signature && nowMs >= slot.retryAtMs) {
+          stale.push({ body, slot });
+        } else if (slot.wanted && slot.state === 'idle' && nowMs >= slot.retryAtMs && !covered(slot)) {
+          candidates.push({ body, slot });
+        }
+      }
+    }
+    stale.sort((a, b) => b.slot.score - a.slot.score);
+    for (const s of stale) {
       if (this.inflightCount() >= this.inflightCap) break;
-      this.startLoad(body, slot, signature);
+      this.startLoad(s.body, s.slot, s.body.signature);
     }
 
-    const candidates = slots
-      .filter((s) => s.wanted && s.state === 'idle' && nowMs >= s.retryAtMs)
-      .sort((a, b) => b.score - a.score);
+    // Strongest first, and the coarser level first among equals: a parent
+    // covers its children's ground at a quarter of the bytes, so it is the
+    // better first admission wherever both are asked for.
+    candidates.sort((a, b) => b.slot.score - a.slot.score || a.slot.level - b.slot.level);
     for (const candidate of candidates) {
       if (this.inflightCount() >= this.inflightCap) break;
       if (this.liveCount() >= this.residentCap) {
-        const weakest = this.weakestResident();
-        if (!weakest || weakest.score * SECTOR_ADMIT_MARGIN >= candidate.score) break;
+        const weakest = this.weakestEvictable();
+        if (!weakest || weakest.score * SECTOR_ADMIT_MARGIN >= candidate.slot.score) break;
         this.release(weakest);
       }
-      this.admit(body, candidate, signature);
+      this.admit(candidate.body, candidate.slot, candidate.body.signature);
     }
   }
 
@@ -687,12 +802,19 @@ export class SectorStreamer {
     return n;
   }
 
-  private weakestResident(): SectorSlot | null {
+  /** The live sector to give up first: the weakest normalised score, the
+   *  deeper level between equals. Never one that has a live sector of a finer
+   *  level over it — that finer sector's instant fallback is this one, and
+   *  taking it away would drop the surface under a resident tile to the
+   *  globe. */
+  private weakestEvictable(): SectorSlot | null {
     let weakest: SectorSlot | null = null;
     for (const body of this.bodies.values()) {
       for (const s of body.slots) {
-        if (s.state === 'idle') continue;
-        if (!weakest || s.score < weakest.score) weakest = s;
+        if (s.state === 'idle' || hasLiveChild(s)) continue;
+        if (!weakest || s.score < weakest.score || (s.score === weakest.score && s.level > weakest.level)) {
+          weakest = s;
+        }
       }
     }
     return weakest;

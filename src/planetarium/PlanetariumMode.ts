@@ -38,7 +38,11 @@ import { appliedTierGpuBytes, applySunGlowTier, armArrivalWarmGoal, bindKtx2Tier
 import type { KTX2Loader } from 'three/examples/jsm/loaders/KTX2Loader.js';
 import type { SurfaceShadingFx } from './world/surfaceShading';
 import { bindTextureWarmer, invalidateTextureWarmCache, pumpTextureWarmQueue, queueTextureWarm, resetTextureWarmer } from './world/textureWarmer';
-import { SECTOR_SETS, SectorStreamer, type SectorMeasure, type SectorStats, type SectorSuspend } from './world/sectorStreamer';
+import {
+  SECTOR_NIGHT_SETS, SECTOR_SETS, SectorStreamer, sectorFamilyKey,
+  type SectorMeasure, type SectorStats, type SectorSuspend,
+} from './world/sectorStreamer';
+import { earthNightSectorFamily } from './world/earthNightMaterial';
 import { loadBrightStarCatalog } from './world/starCatalogLoader';
 import {
   advancePlanetariumTime,
@@ -2534,26 +2538,46 @@ export class PlanetariumMode {
     );
   }
 
-  /** Wire the hero bodies' sector sets (SECTOR_SETS) onto their globe meshes.
-   *  Sector meshes become children of the globe, so they ride its spin, pole
+  /** Wire the hero bodies' sector sets onto the meshes they draw over.
+   *  Sector meshes become children of that mesh, so they ride its spin, pole
    *  and (for the Moon) the render-curve scale; the streamer forces the fine
-   *  silhouette grid before the first sector shows. */
+   *  silhouette grid before the first sector shows. A body with night lights
+   *  registers a second family on its night shell (SECTOR_NIGHT_SETS): the
+   *  same streamer, the same budget, its own lighting gate. */
   private registerSectorBodies(): void {
     if (!this.sectorsEnabled || !this.solarSystem) return;
     const sectors = new SectorStreamer({ touch: this.touchFirstDevice() });
     for (const planet of this.solarSystem.planets) {
+      const fine = () => { upgradeGeometryOnApproach(planet.geometryUpgrade, Number.POSITIVE_INFINITY); };
       const spec = SECTOR_SETS[planet.data.name];
-      if (!spec) continue;
-      const material = planet.mesh.material as THREE.MeshStandardMaterial;
-      sectors.register({
-        name: planet.data.name,
-        spec,
-        mesh: planet.mesh,
-        material,
-        radiusAU: planet.data.radiusAU,
-        topMapWidth: topMapWidthOf(planet.textureUpgrades, material),
-        ensureFineGeometry: () => { upgradeGeometryOnApproach(planet.geometryUpgrade, Number.POSITIVE_INFINITY); },
-      });
+      if (spec) {
+        const material = planet.mesh.material as THREE.MeshStandardMaterial;
+        sectors.register({
+          name: planet.data.name,
+          spec,
+          mesh: planet.mesh,
+          material,
+          radiusAU: planet.data.radiusAU,
+          topMapWidth: topMapWidthOf(planet.textureUpgrades, material),
+          ensureFineGeometry: fine,
+        });
+      }
+      const nightSpec = SECTOR_NIGHT_SETS[planet.data.name];
+      const nightMat = planet.nightMaterial;
+      if (nightSpec && nightMat && planet.nightMesh && planet.nightRadiusAU) {
+        sectors.register({
+          name: planet.data.name,
+          spec: nightSpec,
+          mesh: planet.nightMesh,
+          material: nightMat,
+          family: earthNightSectorFamily(nightMat),
+          // The shell's own radius, not the globe's: a sector built 6 km low
+          // would sit under the shell it is there to replace.
+          radiusAU: planet.nightRadiusAU,
+          topMapWidth: topMapWidthOf(planet.textureUpgrades, nightMat),
+          ensureFineGeometry: fine,
+        });
+      }
     }
     for (const moons of this.planetMoons.values()) {
       for (const m of moons) {
@@ -2620,15 +2644,18 @@ export class PlanetariumMode {
     // bound below carries that factor to stay an upper bound on every sector.
     const maxFrameScale = lensMaxFrameScale(designFovDeg, this.camera.aspect, lensStrength);
 
-    const visit = (name: string, mesh: THREE.Mesh, radiusAU: number, hidden: boolean) => {
-      if (!sectors.has(name)) return;
+    // `key` names one family (sectorFamilyKey), `name` the body it belongs to
+    // — the landed check and the suspend rules are the body's, whichever of
+    // its families is being measured.
+    const visit = (key: string, name: string, mesh: THREE.Mesh, radiusAU: number, hidden: boolean) => {
+      if (!sectors.has(key)) return;
       mesh.getWorldPosition(this.sectorWorldCentre); // refreshes matrixWorld too
       mesh.getWorldQuaternion(this.sectorWorldQuat);
       this.sectorWorldQuatInv.copy(this.sectorWorldQuat).invert();
       // Spin gate: how fast this body's orientation turned since its last
       // visit, in degrees per real second.
       let spinning = false;
-      const prev = this.sectorSpin.get(name);
+      const prev = this.sectorSpin.get(key);
       if (prev) {
         const dtS = (nowMs - prev.tMs) / 1000;
         const angle = 2 * Math.acos(Math.min(1, Math.abs(prev.quat.dot(this.sectorWorldQuat))));
@@ -2643,7 +2670,7 @@ export class PlanetariumMode {
         prev.quat.copy(this.sectorWorldQuat);
         prev.tMs = nowMs;
       } else {
-        this.sectorSpin.set(name, { quat: this.sectorWorldQuat.clone(), tMs: nowMs, heldUntilMs: 0 });
+        this.sectorSpin.set(key, { quat: this.sectorWorldQuat.clone(), tMs: nowMs, heldUntilMs: 0 });
       }
       // The ground under a surface observer isn't drawn (the near plane culls
       // it) and every sector "faces" a camera on the surface: hold nothing.
@@ -2731,7 +2758,7 @@ export class PlanetariumMode {
           offscreen,
         };
       };
-      sectors.update(name, this.sectorCamLocal, measure, nowMs, suspend, this.sectorSunLocal, pxPerLocalUnitNearest);
+      sectors.update(key, this.sectorCamLocal, measure, nowMs, suspend, this.sectorSunLocal, pxPerLocalUnitNearest);
     };
 
     // Measure every body first, then let the streamer reconcile them together:
@@ -2745,10 +2772,19 @@ export class PlanetariumMode {
     // reads as tiles quietly stopping rather than as an error.
     try {
       for (const planet of this.solarSystem.planets) {
-        visit(planet.data.name, planet.mesh, planet.data.radiusAU, !planet.mesh.visible);
+        const name = planet.data.name;
+        visit(name, name, planet.mesh, planet.data.radiusAU, !planet.mesh.visible);
+        // The night shell has a visibility of its own (the Earth-detail range
+        // gate), so its family reads that flag rather than the globe's.
+        if (planet.nightMesh && planet.nightRadiusAU) {
+          visit(
+            sectorFamilyKey(name, 'night'), name, planet.nightMesh, planet.nightRadiusAU,
+            !planet.nightMesh.visible,
+          );
+        }
       }
       for (const moons of this.planetMoons.values()) {
-        for (const m of moons) visit(m.data.name, m.mesh, m.data.radiusAU, !m.mesh.visible);
+        for (const m of moons) visit(m.data.name, m.data.name, m.mesh, m.data.radiusAU, !m.mesh.visible);
       }
     } finally {
       sectors.endFrame();

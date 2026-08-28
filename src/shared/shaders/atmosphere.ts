@@ -103,6 +103,27 @@ void main() {
 }
 `;
 
+// Night lights: how much of the map a point draws, from the cosine between its
+// surface normal and the direction to the sun. Full strength once the sun is
+// this far below the local horizon, gone by the lit edge — the few degrees of
+// twilight in between are where the lights fade up. Exported because anything
+// that decides which ground the lights cover (which sectors are worth a tile,
+// how strongly they rank) has to read the same two numbers the shader does,
+// and the GLSL below is written from them so the two cannot drift apart.
+export const EARTH_NIGHT_MIX_DARK = -0.3;
+export const EARTH_NIGHT_MIX_LIT = -0.1;
+
+/** The shader's `nightMix` for one sun cosine: 0 in daylight, 1 in full night.
+ *  Note the shader's own response is this SQUARED — the mix multiplies the rgb
+ *  and the alpha, and additive blending with a non-premultiplied source takes
+ *  the alpha as its factor — so a comparison between two night surfaces is
+ *  only meaningful at the same sun elevation. */
+export function earthNightMix(sunDot: number): number {
+  const t = (sunDot - EARTH_NIGHT_MIX_DARK) / (EARTH_NIGHT_MIX_LIT - EARTH_NIGHT_MIX_DARK);
+  const c = t < 0 ? 0 : t > 1 ? 1 : t;
+  return 1 - c * c * (3 - 2 * c);
+}
+
 export const earthNightVertexShader = /* glsl */ `
 varying vec2 vUv;
 varying vec3 vNormal;
@@ -118,17 +139,25 @@ void main() {
 }
 `;
 
+// uUvOffset / uUvRepeat select the part of `nightTexture` this mesh draws.
+// The whole-globe shell takes (0,0) and (1,1); a sector tile takes the
+// transform that lands its own global equirect rectangle on the tile's
+// interior, inside the gutter. A hand-written shader gets no `mapTransform`
+// from three, so the rectangle has to arrive as uniforms — a sector left on
+// the identity would stretch its tile's western eighth across the whole patch.
 export const earthNightFragmentShader = /* glsl */ `
 uniform sampler2D nightTexture;
+uniform vec2 uUvOffset;
+uniform vec2 uUvRepeat;
 varying vec2 vUv;
 varying vec3 vNormal;
 varying vec3 vSunDir;
 
 void main() {
-  vec4 nightColor = texture2D(nightTexture, vUv);
+  vec4 nightColor = texture2D(nightTexture, vUv * uUvRepeat + uUvOffset);
   // Show night lights only on dark side
   float sunDot = dot(vNormal, vSunDir);
-  float nightMix = 1.0 - smoothstep(-0.3, -0.1, sunDot); // ordered edges (reversed smoothstep is undefined)
+  float nightMix = 1.0 - smoothstep(${EARTH_NIGHT_MIX_DARK.toFixed(1)}, ${EARTH_NIGHT_MIX_LIT.toFixed(1)}, sunDot); // ordered edges (reversed smoothstep is undefined)
   gl_FragColor = vec4(nightColor.rgb * nightMix * 1.5, nightMix * nightColor.a);
 }
 `;

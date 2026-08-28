@@ -10,6 +10,7 @@ import {
   SECTOR_FETCH_POOL_DESKTOP,
   SECTOR_INFLIGHT_CAP_DESKTOP,
   SECTOR_MAX_LEVEL,
+  SECTOR_NIGHT_DOT,
   SECTOR_RELEASE_TEXEL_PX,
   SECTOR_RESIDENT_CAP_DESKTOP,
   SECTOR_RESIDENT_CAP_TOUCH,
@@ -20,6 +21,9 @@ import {
   SECTOR_WANT_TEXEL_PX,
   SECTOR_WANT_TEXEL_PX_TOUCH,
   SectorStreamer,
+  sectorFamilyKey,
+  sectorLevel16k,
+  sectorLevel32k,
   levelSourceWidth,
   resetTileFetchNoticeForTests,
   sectorSetGpuBytes,
@@ -30,7 +34,9 @@ import {
   type SectorSetSpec,
 } from './sectorStreamer';
 import { SECTOR_RENDER_ORDER } from './sectorMaterial';
-import { SECTOR_GRID_16K, ancestorSector, finerGrid, sectorCentreDirection, sectorTileTransform, dataCropLayout, SECTOR_TILE, sphereDirection } from './sectorGrid';
+import { createEarthNightShellMaterial, earthNightSectorFamily } from './earthNightMaterial';
+import { EARTH_NIGHT_MIX_LIT, earthNightMix } from '../../shared/shaders/atmosphere';
+import { SECTOR_GRID_16K, ancestorSector, finerGrid, sectorCentreDirection, sectorNearestDirection, sectorTileTransform, dataCropLayout, SECTOR_TILE, sphereDirection } from './sectorGrid';
 import { augmentSurfaceMaterial } from './surfaceShading';
 import type { WarmOutcome } from './textureWarmer';
 
@@ -78,7 +84,9 @@ const EARTH_FITS_TOUCH = Math.floor(SECTOR_BUDGET_BYTES_TOUCH / EARTH_SET_BYTES)
 // the streamer assumes 4096 wide); measureOf turns them into pxPerLocalUnit.
 const TEXEL_LEN_4K = (2 * Math.PI * R) / 4096;
 
-function earthHandle(): SectorBodyHandle & { fineCalls: number } {
+type TestHandle = SectorBodyHandle & { fineCalls: number; material: THREE.MeshStandardMaterial };
+
+function earthHandle(): TestHandle {
   const material = new THREE.MeshStandardMaterial({
     map: new THREE.Texture(),
     bumpMap: new THREE.Texture(),
@@ -87,7 +95,7 @@ function earthHandle(): SectorBodyHandle & { fineCalls: number } {
   augmentSurfaceMaterial(material, 'earth');
   material.userData.colorTierRank = 2; // a real boot map is on the globe
   const mesh = new THREE.Mesh(new THREE.SphereGeometry(R, 16, 8), material);
-  const handle: SectorBodyHandle & { fineCalls: number } = {
+  const handle: TestHandle = {
     name: 'Earth',
     spec: SECTOR_SETS.Earth,
     mesh,
@@ -140,20 +148,23 @@ function measureLevels(
   sizes: Record<string, number>,
   centrality = 1,
   offscreen: ReadonlySet<string> = new Set(),
+  /** Radius the measured body's sectors are built at — the night family's is
+   *  its shell's, a thousandth above the globe's. */
+  radius = R,
 ) {
   return (centre: THREE.Vector3, _radius?: number, _dir?: THREE.Vector3): SectorMeasure | null => {
     for (let level = 0; level < levels.length; level++) {
       const grid = levels[level].grid;
       for (let r = 0; r < grid.rows; r++) {
         for (let c = 0; c < grid.cols; c++) {
-          const d = sectorCentreDirection(grid, { c, r }, new THREE.Vector3()).multiplyScalar(R);
+          const d = sectorCentreDirection(grid, { c, r }, new THREE.Vector3()).multiplyScalar(radius);
           if (d.distanceTo(centre) < 1e-9) {
             const base = ancestorSector({ c, r }, level);
             const px = sizes[`${base.c}_${base.r}`];
             if (px === undefined) return null;
             const id = level === 0 ? `${c}_${r}` : `L${level}/${c}_${r}`;
             return {
-              pxPerLocalUnit: px / TEXEL_LEN_4K,
+              pxPerLocalUnit: px / ((2 * Math.PI * radius) / 4096),
               centrality,
               offscreen: offscreen.has(id),
             };
@@ -163,6 +174,60 @@ function measureLevels(
     }
     return null;
   };
+}
+
+// --- Earth's night family: a second set of sectors on the night shell -------
+
+/** The night shell's radius. PlanetFactory builds it a thousandth of a radius
+ *  above the globe, and the sectors that replace it are built at the same
+ *  height — a sector at the globe's radius would sit under the shell it is
+ *  there to suppress. */
+const NIGHT_R = R * 1.001;
+/** Earth's night pyramid: the Black Marble sets, no crops (relief and gloss
+ *  are daylight terms), so a night sector costs its colour tile alone. */
+const NIGHT_SPEC: SectorSetSpec = {
+  crops: {},
+  levels: [sectorLevel16k('earth-night.v2'), sectorLevel32k('earth-night.v2')],
+};
+const NIGHT_SET_BYTES = sectorSetGpuBytes(NIGHT_SPEC);
+
+function earthNightHandle(): TestHandle & { material: THREE.ShaderMaterial } {
+  const material = createEarthNightShellMaterial(new THREE.Texture());
+  material.userData.colorTierRank = 2; // a real boot map is on the shell
+  const mesh = new THREE.Mesh(new THREE.SphereGeometry(NIGHT_R, 16, 8), material);
+  const handle = {
+    name: 'Earth',
+    spec: NIGHT_SPEC,
+    mesh,
+    material,
+    family: earthNightSectorFamily(material),
+    radiusAU: NIGHT_R,
+    fineCalls: 0,
+    ensureFineGeometry: () => { handle.fineCalls++; },
+  } as unknown as TestHandle & { material: THREE.ShaderMaterial };
+  return handle;
+}
+
+/** A measure for the night family's sectors, on the shell's radius. */
+function measureNight(sizes: Record<string, number>, centrality = 1) {
+  return measureLevels(NIGHT_SPEC.levels, sizes, centrality, new Set(), NIGHT_R);
+}
+
+const NIGHT_KEY = sectorFamilyKey('Earth', 'night');
+const SEC = { c: 2, r: 1 };
+
+/** The sun as an exact unit vector, `deg` around the pole from straight over
+ *  sector 2_1: 0 is noon there, 180 is midnight. */
+function sunPastSector(deg: number): THREE.Vector3 {
+  return sectorCentreDirection(G, SEC, new THREE.Vector3())
+    .applyAxisAngle(new THREE.Vector3(0, 1, 0), THREE.MathUtils.degToRad(deg));
+}
+
+/** The sun cosine at the sector's most lit and darkest points — what the two
+ *  families' gates are read at. */
+function sectorSunExtremes(sun: THREE.Vector3): { lit: number; dark: number } {
+  const at = (dir: THREE.Vector3) => sectorNearestDirection(G, SEC, dir, new THREE.Vector3()).dot(sun);
+  return { lit: at(sun), dark: at(sun.clone().negate()) };
 }
 
 describe('SectorStreamer', () => {
@@ -1639,5 +1704,188 @@ describe('SectorStreamer', () => {
     // …its eastern neighbour at that neighbour's western edge, same latitude.
     const edge = sphereDirection(3 / 8, 1.5 / 4, new THREE.Vector3());
     expect(asked.get('3_1')!.distanceTo(edge)).toBeLessThan(1e-12);
+  });
+});
+
+describe('a body\'s night family: a second set of sectors on the night shell', () => {
+  let loader: FakeLoader;
+  let warm: FakeWarm;
+  let streamer: SectorStreamer;
+  let day: TestHandle;
+  let night: TestHandle & { material: THREE.ShaderMaterial };
+
+  beforeEach(() => {
+    loader = new FakeLoader();
+    warm = new FakeWarm();
+    streamer = new SectorStreamer({ touch: false, load: loader.load, warm: warm.warm });
+    day = earthHandle();
+    night = earthNightHandle();
+    streamer.register(day);
+    streamer.register(night);
+  });
+
+  /** One frame in which both of Earth's families are measured before either
+   *  is admitted — how the mode drives them. `sizes` is in device px per texel
+   *  of the 4K map, the same physical magnification for both. */
+  function frame(
+    sizes: Record<string, number>,
+    sun: THREE.Vector3 | null,
+    nowMs: number,
+    nightSizes: Record<string, number> = sizes,
+  ): void {
+    streamer.beginFrame();
+    streamer.update('Earth', cameraOver(2, 1), measureOf(sizes), nowMs, 'none', sun);
+    streamer.update(NIGHT_KEY, cameraOver(2, 1), measureNight(nightSizes), nowMs, 'none', sun);
+    streamer.endFrame();
+  }
+
+  const held = () => {
+    const ids = streamer.stats().bodies.Earth?.resident ?? [];
+    return {
+      day: ids.filter((id) => !id.startsWith('night/')),
+      night: ids.filter((id) => id.startsWith('night/')),
+    };
+  };
+
+  it('wants a sector on the mirror of the day rule, at three exact sun angles', () => {
+    loader.auto = true;
+    // Noon over the sector, 15 deg past the terminator, midnight — the sun an
+    // exact unit vector each time. Day is refused once its MOST LIT point is
+    // past the twilight margin; night until its DARKEST point is past the
+    // shell's lit edge, which is the same test read from the other end.
+    const cases: Array<{ deg: number; day: boolean; night: boolean }> = [
+      { deg: 0, day: true, night: false },
+      { deg: 105, day: true, night: true },
+      { deg: 180, day: false, night: true },
+    ];
+    let t = 0;
+    for (const c of cases) {
+      streamer.dropAll();
+      const sun = sunPastSector(c.deg);
+      frame({ '2_1': 2 }, sun, (t += 1000));
+      const { lit, dark } = sectorSunExtremes(sun);
+      const what = `sun ${c.deg} deg past the sector (lit ${lit.toFixed(3)}, dark ${dark.toFixed(3)})`;
+      expect(held().day.length > 0, `day at ${what}`).toBe(c.day);
+      expect(held().night.length > 0, `night at ${what}`).toBe(c.night);
+      // …and the residency really is the predicate, not a coincidence of pose.
+      expect(held().day.length > 0).toBe(lit >= SECTOR_NIGHT_DOT);
+      expect(held().night.length > 0).toBe(dark < EARTH_NIGHT_MIX_LIT);
+    }
+  });
+
+  it('wants BOTH families across the terminator, each scaled by what it lights', () => {
+    loader.auto = true;
+    const sun = sunPastSector(105);
+    frame({ '2_1': 2 }, sun, 1000);
+    const scores = streamer.stats().bodies.Earth.scores;
+    expect(held().day).toEqual(['2_1']);
+    expect(held().night).toEqual(['night/2_1']);
+    // The unscaled score this magnification and centrality would give.
+    const full = 2 / SECTOR_WANT_TEXEL_PX;
+    expect(scores['2_1']).toBeLessThan(full);
+    expect(scores['night/2_1']).toBeLessThan(full);
+    // The night score IS the shell's own mask, averaged over the sector's four
+    // corners, its centre and the darkest point its gate is read at.
+    const u0 = SEC.c / G.cols;
+    const u1 = (SEC.c + 1) / G.cols;
+    const v0 = SEC.r / G.rows;
+    const v1 = (SEC.r + 1) / G.rows;
+    const samples = [
+      sphereDirection(u0, v0, new THREE.Vector3()),
+      sphereDirection(u1, v0, new THREE.Vector3()),
+      sphereDirection(u0, v1, new THREE.Vector3()),
+      sphereDirection(u1, v1, new THREE.Vector3()),
+      sectorCentreDirection(G, SEC, new THREE.Vector3()),
+      sectorNearestDirection(G, SEC, sun.clone().negate(), new THREE.Vector3()),
+    ];
+    const mix = samples.reduce((a, d) => a + earthNightMix(d.dot(sun)), 0) / samples.length;
+    expect(scores['night/2_1']).toBeCloseTo(full * mix, 9);
+  });
+
+  it('hands the terminator to whichever family lights more of it', () => {
+    loader.auto = true;
+    const scoresAt = (deg: number) => {
+      streamer.dropAll();
+      frame({ '2_1': 2 }, sunPastSector(deg), 1000 * deg + 1000);
+      const s = streamer.stats().bodies.Earth.scores;
+      return { day: s['2_1'] ?? 0, night: s['night/2_1'] ?? 0 };
+    };
+    const early = scoresAt(95); // the sector is mostly still in daylight
+    const late = scoresAt(160); // …and mostly in the dark
+    expect(early.day).toBeGreaterThan(early.night);
+    expect(late.night).toBeGreaterThan(late.day);
+  });
+
+  it('reserves a night sector\'s colour tile and nothing else', () => {
+    // No crops: relief and gloss are daylight terms with no slot in the night
+    // material, so a night sector is one 2048 tile where a day one is a tile
+    // plus its own copies of the bump and roughness crops.
+    expect(NIGHT_SET_BYTES).toBe(Math.round(2048 * 2048 * 4 * (4 / 3)));
+    expect(NIGHT_SET_BYTES).toBeLessThan(EARTH_SET_BYTES);
+    streamer.update(NIGHT_KEY, cameraOver(2, 1), measureNight({ '2_1': 2 }), 0);
+    expect(loader.requests.map((r) => r.url).filter((u) => /earth-night/.test(u))).toHaveLength(1);
+    expect(loader.requests).toHaveLength(1);
+    expect(streamer.stats().reserved).toBe(NIGHT_SET_BYTES);
+    loader.resolveAll();
+    expect(streamer.stats().residentBytes).toBe(NIGHT_SET_BYTES);
+    const mesh = night.mesh.children[0] as THREE.Mesh;
+    expect(mesh.renderOrder).toBe(SECTOR_RENDER_ORDER);
+  });
+
+  it('evicts across families by score alone, in both directions', () => {
+    loader.auto = true;
+    // Room for one set of either family.
+    streamer.setGlobalMapBytes(SECTOR_ENVELOPE_BYTES_DESKTOP - EARTH_SET_BYTES);
+    const strong = 2 * SECTOR_ADMIT_MARGIN + 0.5;
+    const stronger = strong * SECTOR_ADMIT_MARGIN + 0.5;
+    let clock = 0;
+    // A resident is safe until it has been drawn for a second, so each pose
+    // gets a frame to appear on and a second past the dwell.
+    const hold = (sizes: Record<string, number>, nightSizes: Record<string, number>) => {
+      frame(sizes, null, (clock += 16), nightSizes);
+      frame(sizes, null, (clock += SECTOR_EVICT_DWELL_MS + 100), nightSizes);
+    };
+    // The night family takes the room first, nothing being asked of the day
+    // one…
+    hold({}, { '2_1': 2 });
+    expect(held()).toEqual({ day: [], night: ['night/2_1'] });
+    // …and a day sector that out-ranks it by more than the margin takes it.
+    hold({ '3_1': strong }, { '2_1': 2 });
+    expect(held()).toEqual({ day: ['3_1'], night: [] });
+    // The mirror, same margin the other way: nothing here reads the side.
+    hold({ '3_1': strong }, { '1_1': stronger });
+    expect(held()).toEqual({ day: [], night: ['night/1_1'] });
+  });
+
+  it('drops both families on a context loss and streams both back', () => {
+    loader.auto = true;
+    frame({ '2_1': 2 }, null, 0);
+    expect(day.mesh.children).toHaveLength(1);
+    expect(night.mesh.children).toHaveLength(1);
+    streamer.dropAll();
+    expect(day.mesh.children).toHaveLength(0);
+    expect(night.mesh.children).toHaveLength(0);
+    expect(streamer.stats().resident).toBe(0);
+    frame({ '2_1': 2 }, null, 32);
+    expect(streamer.stats().resident).toBe(2);
+  });
+
+  it('keys the families apart but reports one line per body', () => {
+    loader.auto = true;
+    frame({ '2_1': 2 }, null, 0);
+    // Registering the night family did not evict the day one, and both are
+    // under the body's own name with the night slots namespaced inside it.
+    expect(Object.keys(streamer.stats().bodies)).toEqual(['Earth']);
+    expect(streamer.stats().bodies.Earth.resident.slice().sort()).toEqual(['2_1', 'night/2_1']);
+    expect(streamer.stats().bodies.Earth.byLevel[0].resident).toBe(2);
+    expect(streamer.has('Earth')).toBe(true);
+    expect(streamer.has(NIGHT_KEY)).toBe(true);
+    // Dropping one family leaves the other standing.
+    streamer.unregister('Earth');
+    expect(streamer.has('Earth')).toBe(false);
+    expect(streamer.has(NIGHT_KEY)).toBe(true);
+    expect(streamer.stats().bodies.Earth.resident).toEqual(['night/2_1']);
+    expect(day.mesh.children).toHaveLength(0);
+    expect(night.mesh.children).toHaveLength(1);
   });
 });

@@ -11,8 +11,6 @@ import { createPlanetRings, RING_CONFIGS, type RingShadingFx } from './planets/r
 import {
   atmosphereVertexShader,
   atmosphereFragmentShader,
-  earthNightVertexShader,
-  earthNightFragmentShader,
 } from '../shared/shaders/atmosphere';
 import {
   sunGlareFragmentShader,
@@ -29,6 +27,7 @@ import { debugWarn } from '../shared/debug';
 import { applyTextureDefaults, clampTier, resolveTextureUrl, TIER_MAP_WIDTH, type TextureTier, type MapKind, touchTextureBudget } from './world/texturePolicy';
 import { augmentSurfaceMaterial, type SurfaceArchetype, type SurfaceShadingFx } from './world/surfaceShading';
 import { queueTextureWarm } from './world/textureWarmer';
+import { createEarthNightShellMaterial } from './world/earthNightMaterial';
 import { createLensShaderUniforms } from '../shared/three/lensShader';
 import { fetchTextureDurably, type DurableTextureFetch } from './world/textureRetry';
 import { loadStreamedTexture, type TextureLoad } from './world/textureBitmapLoader';
@@ -1360,6 +1359,10 @@ export interface PlanetMesh {
   atmosphere?: THREE.Mesh;
   nightMesh?: THREE.Mesh;
   nightMaterial?: THREE.ShaderMaterial; // For Earth night lights
+  /** Unscaled radius the night shell is built at — what anything that has to
+   *  sit ON the shell (its streamed sector tiles) builds its geometry at, so
+   *  the shell's height above the globe is stated once. */
+  nightRadiusAU?: number;
   cloudsMesh?: THREE.Mesh;
   fx?: SurfaceShadingFx;
   /** Colour-map ladders streamed in on close approach — one per upgradable
@@ -1612,18 +1615,10 @@ export async function createPlanetMesh(planet: PlanetData): Promise<PlanetMesh> 
 
     const nightGeo = new THREE.SphereGeometry(planet.radiusAU * EARTH_NIGHT_SHELL_SCALE, segments, segments / 2);
     // Bound locally as well as returned: the late-detail wiring below needs the
-    // material itself, and the returned handle is optional.
-    const nightMat = new THREE.ShaderMaterial({
-      uniforms: {
-        nightTexture: { value: nightTex },
-        sunDirection: { value: new THREE.Vector3(1, 0, 0) },
-      },
-      vertexShader: earthNightVertexShader,
-      fragmentShader: earthNightFragmentShader,
-      transparent: true,
-      blending: THREE.AdditiveBlending,
-      depthWrite: false,
-    });
+    // material itself, and the returned handle is optional. Built through the
+    // same factory the night SECTORS use, so a tile drawn over the shell is the
+    // shell's own program on a sharper map rather than a second version of it.
+    const nightMat = createEarthNightShellMaterial(nightTex);
     nightMaterial = nightMat;
     nightMesh = new THREE.Mesh(nightGeo, nightMat);
     group.add(nightMesh);
@@ -1688,7 +1683,11 @@ export async function createPlanetMesh(planet: PlanetData): Promise<PlanetMesh> 
     ...(cloudsMesh ? [{ mesh: cloudsMesh, radiusAU: planet.radiusAU * EARTH_CLOUD_SHELL_SCALE }] : []),
   ]);
 
-  return { group, mesh, data: planet, rings, ringFx, atmosphere, nightMesh, nightMaterial, cloudsMesh, fx, textureUpgrades, geometryUpgrade };
+  return {
+    group, mesh, data: planet, rings, ringFx, atmosphere, nightMesh, nightMaterial,
+    nightRadiusAU: nightMesh ? planet.radiusAU * EARTH_NIGHT_SHELL_SCALE : undefined,
+    cloudsMesh, fx, textureUpgrades, geometryUpgrade,
+  };
 }
 
 export function createPlanetariumSun(useBloom = true): THREE.Group {

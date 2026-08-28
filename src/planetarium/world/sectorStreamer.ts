@@ -32,13 +32,39 @@
  * service-worker cache); on WebGL context loss every sector is dropped and
  * streams back in.
  *
- * Sector meshes are children of the globe mesh, so they inherit its spin,
- * pole and the moon render-curve scale; their vertices coincide with the
- * globe's fine (256-segment) grid, which the streamer forces when a body's
- * first sector is admitted — the fetch then separates that rebuild from the
- * frame that pays the tile's upload. Their materials are built from the
- * globe's (sectorMaterial), share its per-frame shading uniforms, and mirror
+ * Sector meshes are children of the mesh their family draws on, so they
+ * inherit its spin, pole and the moon render-curve scale; their vertices
+ * coincide with that mesh's fine (256-segment) grid, which the streamer
+ * forces when a body's first sector is admitted — the fetch then separates
+ * that rebuild from the frame that pays the tile's upload. Their materials
+ * are built from that mesh's own, share its per-frame uniforms, and mirror
  * its scalar state every frame; they own every texture they draw.
+ *
+ * A body may register more than one FAMILY — one per lighting side. The day
+ * family overlays the globe and shades like it; Earth's night family overlays
+ * the night-lights shell and glows like it. They are separate handles, keyed
+ * (name, side), competing for the one budget on one ranking; everything that
+ * differs between them (which material a sector gets, what keeps it in step,
+ * where its colour map's width is read, and which sun elevations it draws at)
+ * is on the handle's SectorFamily, so nothing below asks which side it is
+ * serving. What a family reports to the outside is merged back per BODY: one
+ * Earth line in stats(), with the night family's slots namespaced inside it.
+ *
+ * The light gate is per family and is a two-sided mirror of one rule: a
+ * sector is fetched only where the family draws something. Day measures the
+ * sector's MOST LIT point (the point nearest the sub-solar one) and refuses it
+ * once even that is past the terminator's twilight margin; night measures the
+ * DARKEST point (the point nearest the anti-solar one) and refuses it until
+ * that one is past the lit edge of the shell's own night mask — which is
+ * exactly the condition for some pixel of the sector to draw at all. Both
+ * families want the sectors in the terminator band, and that is right: the
+ * shell blends them there. What separates them there is the SCORE, which each
+ * family scales by the fraction of the sector it actually contributes: the
+ * mean of its own weight at six points of the sector (its four corners, its
+ * centre, and the extreme point its gate is measured at). Day's weight ramps
+ * from the twilight margin to full sun, night's is the shell's own night mask
+ * — so at the terminator a pair of tiles for the same ground is ranked by how
+ * much of that ground each one lights, instead of both being paid for in full.
  *
  * A set is a PYRAMID of levels (SectorSetSpec.levels), and nothing here is
  * written for a particular one: a slot carries its level, the level carries
@@ -92,11 +118,12 @@ import {
   sectorMayFaceCamera,
   sectorNearestDirection,
   sectorSphereGeometry,
+  sphereDirection,
   type Sector,
   type SectorGrid,
   type TileLayout,
 } from './sectorGrid';
-import { createSectorMaterial, sectorRenderOrder, syncSectorMaterial } from './sectorMaterial';
+import { createSectorMaterial, sectorRenderOrder, syncSectorMaterial, type SectorMaps } from './sectorMaterial';
 import { loadStreamedTexture, type TextureLoad } from './textureBitmapLoader';
 import { applyTextureDefaults, resolveTileUrl, sectorSetHash, sectorSetLayout } from './texturePolicy';
 import { TIER_RANK } from '../PlanetFactory';
@@ -253,6 +280,13 @@ export const SECTOR_SETS: Record<string, SectorSetSpec> = {
   },
 };
 
+/** The night-lights pyramids, by catalog name: a SECOND family for a body
+ *  that draws its night side on a shell of its own, streamed onto that shell
+ *  the way the sets above are streamed onto the globe. No crops — relief and
+ *  gloss are daylight terms, and the night material has no slot for them — so
+ *  a night sector costs its colour tile and nothing else. */
+export const SECTOR_NIGHT_SETS: Record<string, SectorSetSpec> = {};
+
 /** A sector is wanted once one texel of the map BELOW it spans this many
  *  DEVICE pixels at the sector's nearest point — that map is then visibly
  *  magnified and a tile has detail to add — and released only once that
@@ -282,14 +316,16 @@ export const SECTOR_RELEASE_TEXEL_PX_TOUCH = 0.8;
 /** Map width assumed while a globe's map has no readable image (never in
  *  practice: a real map is an ImageBitmap or a painted canvas). */
 const SECTOR_FALLBACK_MAP_WIDTH = 4096;
-/** A sector whose most-lit point — the point of it nearest the sub-solar
+/** A DAY sector whose most-lit point — the point of it nearest the sub-solar
  *  point — is still this far past the terminator (its dot with the sun
  *  direction, in the globe's frame) is never fetched: no part of it is lit,
  *  and the night fill draws nothing a tile could sharpen. Measured at the
  *  lit edge, not the centre: an equatorial sector reaches 31° from its
  *  centre, and a centre test that let 14° of lit terminator strip stay on
  *  the base map. The margin past zero is the few degrees of twilight the
- *  atmosphere renders beyond the terminator. */
+ *  atmosphere renders beyond the terminator. The night family has an edge of
+ *  its own, which is the shell's night mask (SectorFamily.lightEdge); the two
+ *  are separate numbers that happen to be equal today. */
 export const SECTOR_NIGHT_DOT = -0.1;
 
 /** What the sectors of every body together may hold on the GPU. This is the
@@ -377,14 +413,80 @@ export interface SectorMeasure {
   offscreen?: boolean;
 }
 
-/** A body registered for streaming: the globe mesh sectors attach to (its
- *  transform is theirs), the material they shade like, and the unscaled
- *  radius the sector geometry is built at. */
+/** Which lighting side a family's sectors draw on. */
+export type SectorSide = 'day' | 'night';
+
+/**
+ * How one lighting side's sectors are built and kept in step with the surface
+ * under them — the whole of what one family does differently from another.
+ * The day family (below) overlays the globe with a standard material shaded
+ * like it; Earth's night family overlays the night-lights shell with the
+ * shell's own program.
+ */
+export interface SectorFamily {
+  side: SectorSide;
+  /** The sun cosine at which this family stops drawing: day fades out BELOW
+   *  it, night fades in below it. The gate reads it at the sector's extreme
+   *  point — the most lit one for day, the darkest for night. */
+  lightEdge: number;
+  /** Fraction of full strength this family draws at one sun cosine: 0 where
+   *  it contributes nothing, 1 where it contributes everything. Averaged over
+   *  a sector to scale its score, so a sector the family barely lights does
+   *  not out-rank one it lights entirely. */
+  weight(sunDot: number): number;
+  /** The material one sector of this family draws with. */
+  createMaterial(maps: SectorMaps, level: number): THREE.Material;
+  /** Mirror whatever per-frame state the surface below carries onto one live
+   *  sector material. Called once per frame per resident. */
+  syncMaterial(mat: THREE.Material): void;
+  /** Texels across the colour map the surface below is DRAWING right now
+   *  (0 while it has no readable image) — half of what a sector's demand is
+   *  measured against, the other half being the ladder's top. */
+  drawnColorMapWidth(): number;
+}
+
+/** The default family: sectors on the globe, shading exactly like it, wanted
+ *  wherever the globe is lit. Everything here is what the streamer did before
+ *  a second family existed. */
+export function daySectorFamily(base: THREE.MeshStandardMaterial): SectorFamily {
+  return {
+    side: 'day',
+    lightEdge: SECTOR_NIGHT_DOT,
+    // Ramped over the same twilight margin the gate allows, so the weight is
+    // the sector's lit fraction with a soft terminator rather than a step.
+    weight: (sunDot) => {
+      const t = (sunDot - SECTOR_NIGHT_DOT) / (0 - SECTOR_NIGHT_DOT);
+      const c = t < 0 ? 0 : t > 1 ? 1 : t;
+      return c * c * (3 - 2 * c);
+    },
+    createMaterial: (maps, level) => createSectorMaterial(base, maps, level),
+    syncMaterial: (mat) => syncSectorMaterial(mat as THREE.MeshStandardMaterial, base),
+    drawnColorMapWidth: () => {
+      const img = base.map?.image as { width?: unknown } | undefined;
+      return img && typeof img.width === 'number' ? img.width : 0;
+    },
+  };
+}
+
+/** How a body's families are told apart everywhere one is named: the body's
+ *  own name IS the day family, so every probe and call site that predates a
+ *  second family still means what it meant. */
+export function sectorFamilyKey(name: string, side: SectorSide): string {
+  return side === 'day' ? name : `${name} ${side}`;
+}
+
+/** A body's sectors on ONE lighting side: the mesh they attach to (its
+ *  transform is theirs), the material below them, the unscaled radius the
+ *  sector geometry is built at — the shell's, not the globe's, for a family
+ *  that draws on a shell — and how the family builds and keeps them. */
 export interface SectorBodyHandle {
   name: string;
   spec: SectorSetSpec;
   mesh: THREE.Mesh;
-  material: THREE.MeshStandardMaterial;
+  material: THREE.Material;
+  /** Omitted is the day family over `material`, which must then be a
+   *  MeshStandardMaterial. */
+  family?: SectorFamily;
   radiusAU: number;
   /** Width of the finest colour map this device will hold for the globe
    *  (its tier ladder's top), the map magnification is measured against.
@@ -411,6 +513,10 @@ interface SectorSlot {
   parent?: SectorSlot;
   children: SectorSlot[];
   centreDir: THREE.Vector3;
+  /** Where the family's light weight is sampled to scale this sector's score:
+   *  its four corners and its centre, in the body frame. Fixed for the life of
+   *  the body, so a frame costs five dot products per measured sector. */
+  sampleDirs: THREE.Vector3[];
   angularRadius: number;
   bsCentre: THREE.Vector3;
   bsRadius: number;
@@ -463,6 +569,9 @@ interface SectorLoad {
 
 interface SectorBody {
   handle: SectorBodyHandle;
+  /** (name, side), the key this family is registered and updated under. */
+  key: string;
+  family: SectorFamily;
   slots: SectorSlot[];
   levels: SectorLevel[];
   /** Surface length of the texel each level's demand is measured against —
@@ -507,6 +616,9 @@ export interface SectorStats {
   budget: number;
   envelope: number;
   globalBytes: number;
+  /** By BODY, not by family: a body's day and night sectors are merged into
+   *  one entry under its catalog name, so a reader that predates the second
+   *  family still sees one Earth line with everything Earth holds in it. */
   bodies: Record<string, {
     resident: string[];
     loading: string[];
@@ -529,10 +641,32 @@ export interface SectorStats {
 
 /** A slot's id in the stats: bare `c_r` at level 0 — the ids every probe
  *  script already reads — and namespaced `L1/c_r` below it, so no two levels
- *  of the same body can collide in one flat list. */
-function slotId(slot: SectorSlot): string {
+ *  of the same body can collide in one flat list. A body's non-day families
+ *  are namespaced again (`night/c_r`, `night/L1/c_r`), because the stats merge
+ *  them into one entry per body. */
+function slotId(slot: SectorSlot, side: SectorSide = 'day'): string {
   const cell = `${slot.sector.c}_${slot.sector.r}`;
-  return slot.level === 0 ? cell : `L${slot.level}/${cell}`;
+  const withLevel = slot.level === 0 ? cell : `L${slot.level}/${cell}`;
+  return side === 'day' ? withLevel : `${side}/${withLevel}`;
+}
+
+/** Where a sector's share of the light is sampled: its four corners and its
+ *  centre. Five points is what separates a sector the family lights entirely
+ *  from one it lights along an edge, which is all the score needs; the gate's
+ *  own extreme point is added to them per frame, so a sector that is fetchable
+ *  can never average to a weight of zero. */
+function sectorLightSamples(grid: SectorGrid, s: Sector): THREE.Vector3[] {
+  const u0 = s.c / grid.cols;
+  const u1 = (s.c + 1) / grid.cols;
+  const v0 = s.r / grid.rows;
+  const v1 = (s.r + 1) / grid.rows;
+  return [
+    sphereDirection(u0, v0, new THREE.Vector3()),
+    sphereDirection(u1, v0, new THREE.Vector3()),
+    sphereDirection(u0, v1, new THREE.Vector3()),
+    sphereDirection(u1, v1, new THREE.Vector3()),
+    sectorCentreDirection(grid, s, new THREE.Vector3()),
+  ];
 }
 
 /** GPU bytes an image of this layout holds: RGBA8 at its pixel size plus a
@@ -575,8 +709,11 @@ function textureGpuBytes(tex: THREE.Texture): number {
 /** A real map in a material slot — not the procedural stand-in a failed
  *  boot fetch leaves there (a crop of the real map over a flat fallback would
  *  be a rectangle of relief on a smooth globe). */
-function realMapIn(mat: THREE.MeshStandardMaterial, slot: CropSlot): boolean {
-  const tex = mat[slot];
+function realMapIn(mat: THREE.Material, slot: CropSlot): boolean {
+  // The crop slots are MeshStandardMaterial's; a family whose base has none
+  // (the night shell is a ShaderMaterial) reads undefined here and declares
+  // no crops, which is the same answer.
+  const tex = (mat as Partial<THREE.MeshStandardMaterial>)[slot];
   return !!tex && tex.userData?.proceduralFallback !== true;
 }
 
@@ -584,14 +721,14 @@ function realMapIn(mat: THREE.MeshStandardMaterial, slot: CropSlot): boolean {
  *  real tile may overlay. A body still on its procedural floor (a fallback
  *  after a failed fetch, a painted moon before its photo lands) would show a
  *  sector as a rectangle of a different world. */
-function realAlbedoOn(mat: THREE.MeshStandardMaterial): boolean {
+function realAlbedoOn(mat: THREE.Material): boolean {
   const rank = mat.userData?.colorTierRank as number | undefined;
   return (rank ?? 0) >= TIER_RANK['2k'];
 }
 
 /** Which crop slots the base material carries right now — sectors loaded
  *  under a different signature reload so their maps stay the base's. */
-function cropSignature(mat: THREE.MeshStandardMaterial, spec: SectorSetSpec): string {
+function cropSignature(mat: THREE.Material, spec: SectorSetSpec): string {
   let sig = '';
   for (const slot of CROP_SLOTS) {
     if (spec.crops[slot] && realMapIn(mat, slot)) sig += slot[0];
@@ -605,24 +742,25 @@ function cropSignature(mat: THREE.MeshStandardMaterial, spec: SectorSetSpec): st
  *  without that map would shade differently: a matte rectangle in the sun
  *  glint. A slot the base simply has no map in yet is fine (the sector then
  *  has none either, and reloads when the map arrives). */
-function cropsReady(mat: THREE.MeshStandardMaterial, spec: SectorSetSpec): boolean {
+function cropsReady(mat: THREE.Material, spec: SectorSetSpec): boolean {
   for (const slot of CROP_SLOTS) {
     if (!spec.crops[slot]) continue;
-    const tex = mat[slot];
+    const tex = (mat as Partial<THREE.MeshStandardMaterial>)[slot];
     if (tex && tex.userData?.proceduralFallback === true) return false;
   }
   return true;
 }
 
-/** Surface length of one texel of the globe's colour map, in the globe's
- *  local units (equatorial). Read from the texture itself — the boot tier is
- *  not literally 2048 wide for every body, and a tier swap changes the map
- *  under a registered material. */
-function baseTexelLength(handle: SectorBodyHandle): number {
-  const img = handle.material.map?.image as { width?: unknown } | undefined;
-  const drawn = img && typeof img.width === 'number' && img.width > 0 ? img.width : 0;
-  const width = Math.max(drawn, handle.topMapWidth ?? 0) || SECTOR_FALLBACK_MAP_WIDTH;
-  return (2 * Math.PI * handle.radiusAU) / width;
+/** Surface length of one texel of the colour map below this family, in the
+ *  body's local units (equatorial). The width comes from the family — the
+ *  globe's `map` for the day one, the night shell's uniform for Earth's night
+ *  one — read from the texture itself, because the boot tier is not literally
+ *  2048 wide for every body and a tier swap changes the map under a registered
+ *  material. */
+function baseTexelLength(body: SectorBody): number {
+  const drawn = Math.max(0, body.family.drawnColorMapWidth());
+  const width = Math.max(drawn, body.handle.topMapWidth ?? 0) || SECTOR_FALLBACK_MAP_WIDTH;
+  return (2 * Math.PI * body.handle.radiusAU) / width;
 }
 
 /** A finer sector of this one is live (resident, or a load away from it).
@@ -672,6 +810,7 @@ export class SectorStreamer {
   private readonly camDirScratch = new THREE.Vector3();
   private readonly pointScratch = new THREE.Vector3();
   private readonly sunPointScratch = new THREE.Vector3();
+  private readonly antiSunScratch = new THREE.Vector3();
 
   constructor(opts: SectorStreamerOptions) {
     this.load = opts.load ?? loadStreamedTexture;
@@ -685,13 +824,19 @@ export class SectorStreamer {
     this.releaseTexelPx = opts.touch ? SECTOR_RELEASE_TEXEL_PX_TOUCH : SECTOR_RELEASE_TEXEL_PX;
   }
 
+  /** Register one family of one body. A body's families are keyed (name,
+   *  side), so registering its night lights leaves its day sectors standing;
+   *  re-registering the SAME family replaces it, which is what a rebuilt
+   *  scene graph needs. */
   register(handle: SectorBodyHandle): void {
     const levels = handle.spec.levels;
-    if (levels.length === 0) throw new Error(`${handle.name} declares no sector levels`);
+    const family = handle.family ?? daySectorFamily(handle.material as THREE.MeshStandardMaterial);
+    const key = sectorFamilyKey(handle.name, family.side);
+    if (levels.length === 0) throw new Error(`${key} declares no sector levels`);
     if (levels.length - 1 > SECTOR_MAX_LEVEL) {
-      throw new Error(`${handle.name} declares ${levels.length} sector levels; ${SECTOR_MAX_LEVEL + 1} is the most a set may carry`);
+      throw new Error(`${key} declares ${levels.length} sector levels; ${SECTOR_MAX_LEVEL + 1} is the most a set may carry`);
     }
-    this.unregister(handle.name);
+    this.unregister(key);
     const slots: SectorSlot[] = [];
     // Coarsest level first, so the per-frame pass measures a parent before
     // the children whose visit it gates.
@@ -708,6 +853,7 @@ export class SectorStreamer {
             level,
             children: [],
             centreDir: sectorCentreDirection(grid, sector, new THREE.Vector3()),
+            sampleDirs: sectorLightSamples(grid, sector),
             angularRadius: sectorAngularRadius(grid, sector),
             bsCentre,
             bsRadius: bs.radius,
@@ -740,24 +886,26 @@ export class SectorStreamer {
     const texelLens = levels.map((_, i) => (
       i === 0 ? 0 : (2 * Math.PI * handle.radiusAU) / levelSourceWidth(levels[i - 1])
     ));
-    this.bodies.set(handle.name, {
-      handle, slots, levels, texelLens, signature: '', admitting: false, maxTexelPx: 0,
+    this.bodies.set(key, {
+      handle, key, family, slots, levels, texelLens, signature: '', admitting: false, maxTexelPx: 0,
     });
   }
 
-  unregister(name: string): void {
-    const body = this.bodies.get(name);
+  /** Drop one family, by the key it was registered under (a body's own name
+   *  for its day sectors — see sectorFamilyKey). */
+  unregister(key: string): void {
+    const body = this.bodies.get(key);
     if (!body) return;
     for (const slot of body.slots) this.release(slot);
-    this.bodies.delete(name);
+    this.bodies.delete(key);
     // A body measured earlier in an open frame must leave the batch with it:
     // reconciling it would admit sectors whose bytes nothing counts any more.
     const queued = this.batch.indexOf(body);
     if (queued >= 0) this.batch.splice(queued, 1);
   }
 
-  has(name: string): boolean {
-    return this.bodies.has(name);
+  has(key: string): boolean {
+    return this.bodies.has(key);
   }
 
   /** The GPU bytes the globe maps hold right now (the tier ladder's applied
@@ -843,7 +991,7 @@ export class SectorStreamer {
    * whatever they hold — call every registered body every frame.
    */
   update(
-    name: string,
+    key: string,
     camLocal: THREE.Vector3,
     measure: (bsCentreLocal: THREE.Vector3, bsRadiusLocal: number, surfaceDirLocal: THREE.Vector3) => SectorMeasure | null,
     nowMs: number,
@@ -855,14 +1003,14 @@ export class SectorStreamer {
      *  release size releases everything without measuring a sector. */
     pxPerLocalUnitNearest = Number.POSITIVE_INFINITY,
   ): void {
-    const body = this.bodies.get(name);
+    const body = this.bodies.get(key);
     if (!body) return;
     this.lastNowMs = nowMs;
-    const { handle, slots } = body;
+    const { handle, slots, family } = body;
 
-    // The texel each level's demand is read against: the globe's own map for
-    // level 0, the level above's source below that.
-    body.texelLens[0] = baseTexelLength(handle);
+    // The texel each level's demand is read against: the map below this
+    // family for level 0, the level above's source below that.
+    body.texelLens[0] = baseTexelLength(body);
     body.maxTexelPx = 0;
     if (
       suspend === 'all'
@@ -880,6 +1028,10 @@ export class SectorStreamer {
     const signature = cropSignature(handle.material, handle.spec);
     this.camScratch.copy(camLocal);
     this.camDirScratch.copy(camLocal).normalize();
+    // The family's gate is read at the sector's extreme point: the point
+    // nearest the sub-solar one for day, nearest the anti-solar one for night.
+    const towardExtreme = sunLocal === null ? null
+      : family.side === 'day' ? sunLocal : this.antiSunScratch.copy(sunLocal).negate();
     for (const slot of slots) {
       let texelPx = 0;
       let score = 0;
@@ -905,16 +1057,38 @@ export class SectorStreamer {
           texelPx = m.pxPerLocalUnit * body.texelLens[slot.level];
           // The diagnostic stays level 0's, in the one unit every probe reads.
           if (slot.level === 0 && texelPx > body.maxTexelPx) body.maxTexelPx = texelPx;
-          const night = sunLocal !== null
-            && sectorNearestDirection(grid, slot.sector, sunLocal, this.sunPointScratch).dot(sunLocal) < SECTOR_NIGHT_DOT;
-          fetchable = !m.offscreen && !night;
+          // Unlit for this family: no pixel of the sector draws anything a
+          // tile could sharpen. Day is refused past the terminator's twilight
+          // margin, night until the shell's night mask opens — the same test
+          // read from the two ends of the sector.
+          let lightFraction = 1;
+          if (sunLocal !== null && towardExtreme !== null) {
+            const extremeDot = sectorNearestDirection(grid, slot.sector, towardExtreme, this.sunPointScratch)
+              .dot(sunLocal);
+            const unlit = family.side === 'day'
+              ? extremeDot < family.lightEdge
+              : extremeDot >= family.lightEdge;
+            if (unlit) fetchable = false;
+            else {
+              let sum = family.weight(extremeDot);
+              for (const d of slot.sampleDirs) sum += family.weight(d.dot(sunLocal));
+              lightFraction = sum / (slot.sampleDirs.length + 1);
+              fetchable = !m.offscreen;
+            }
+          } else {
+            fetchable = !m.offscreen;
+          }
           // Screen-space error over the threshold: 1 is exactly at the want
           // size, 4 is four times past it. Every level reads the map it
           // would itself replace, so one number ranks them all — and two
           // sectors over the same ground come out coarse first, by the
-          // level step between their maps.
+          // level step between their maps. Scaled by how much of the sector
+          // this family actually lights, so a pair of families over the
+          // terminator is ranked by what each one draws there.
           if (fetchable) {
-            score = (texelPx / this.wantTexelPx) * (0.5 + 0.5 * Math.max(0, Math.min(1, m.centrality)));
+            score = (texelPx / this.wantTexelPx)
+              * (0.5 + 0.5 * Math.max(0, Math.min(1, m.centrality)))
+              * lightFraction;
           }
         }
       }
@@ -939,7 +1113,7 @@ export class SectorStreamer {
     // rendered, which the frame its tile uploaded on need not have been.
     for (const slot of slots) {
       if (slot.state === 'resident' && slot.mesh) {
-        syncSectorMaterial(slot.mesh.material as THREE.MeshStandardMaterial, handle.material);
+        family.syncMaterial(slot.mesh.material as THREE.Material);
         if (!slot.presented) {
           slot.presented = true;
           slot.liveSinceMs = nowMs;
@@ -1207,15 +1381,18 @@ export class SectorStreamer {
       globalBytes: this.globalBytes,
       bodies: {},
     };
-    for (const [name, body] of this.bodies) {
-      const resident: string[] = [];
-      const loading: string[] = [];
-      const reloading: string[] = [];
-      const byLevel = body.levels.map(() => ({ resident: 0, loading: 0, gpuBytes: 0 }));
-      const scores: Record<string, number> = {};
+    for (const body of this.bodies.values()) {
+      // Families merge into one entry per BODY: a reader asking what Earth
+      // holds gets everything Earth holds, day and night, and the ids inside
+      // say which family each slot belongs to.
+      const entry = out.bodies[body.handle.name] ??= {
+        resident: [], loading: [], reloading: [], maxTexelPx: 0, gpuBytes: 0, byLevel: [], scores: {},
+      };
+      const { resident, loading, reloading, byLevel, scores } = entry;
+      while (byLevel.length < body.levels.length) byLevel.push({ resident: 0, loading: 0, gpuBytes: 0 });
       let gpuBytes = 0;
       for (const s of body.slots) {
-        const id = slotId(s);
+        const id = slotId(s, body.family.side);
         if (s.score > 0) scores[id] = s.score;
         const level = byLevel[s.level];
         if (s.state === 'resident') {
@@ -1234,11 +1411,14 @@ export class SectorStreamer {
         out.residentBytes += s.bytes;
         out.reserved += s.reserved;
       }
-      out.resident += resident.length;
-      out.loading += loading.length;
-      out.inflight += loading.length + reloading.length;
+      entry.maxTexelPx = Math.max(entry.maxTexelPx, body.maxTexelPx);
+      entry.gpuBytes += gpuBytes;
       out.gpuBytes += gpuBytes;
-      out.bodies[name] = { resident, loading, reloading, maxTexelPx: body.maxTexelPx, gpuBytes, byLevel, scores };
+    }
+    for (const entry of Object.values(out.bodies)) {
+      out.resident += entry.resident.length;
+      out.loading += entry.loading.length;
+      out.inflight += entry.loading.length + entry.reloading.length;
     }
     return out;
   }
@@ -1281,7 +1461,7 @@ export class SectorStreamer {
     // slot would reserve against maps it no longer has, hold the bytes in a
     // state no eviction can reclaim, and never reach the mesh: `admit` moves
     // the slot to 'loading' first, and a reload runs on a resident.
-    if (slot.state === 'idle') throw new Error(`sector load started on an idle slot ${slotId(slot)}`);
+    if (slot.state === 'idle') throw new Error(`sector load started on an idle slot ${slotId(slot, body.family.side)}`);
     // Never two loads for one slot: the earlier one's fetches end here rather
     // than running on for a set nothing will take, and its reservation goes
     // back before this one is sized.
@@ -1424,14 +1604,14 @@ export class SectorStreamer {
       handle.radiusAU, body.levels[slot.level].grid, slot.sector,
       Math.max(3, SECTOR_SEGMENTS >> slot.level),
     );
-    const material = createSectorMaterial(handle.material, {
+    const material = body.family.createMaterial({
       map,
       bumpMap: loaded.bumpMap ?? null,
       normalMap: loaded.normalMap ?? null,
       roughnessMap: loaded.roughnessMap ?? null,
     }, slot.level);
     const mesh = new THREE.Mesh(geometry, material);
-    mesh.name = `${handle.name} sector ${slotId(slot)}`;
+    mesh.name = `${handle.name} sector ${slotId(slot, body.family.side)}`;
     mesh.renderOrder = sectorRenderOrder(slot.level);
     handle.mesh.add(mesh);
     const previousMaps = slot.maps;

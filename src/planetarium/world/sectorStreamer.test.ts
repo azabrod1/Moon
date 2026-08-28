@@ -3,6 +3,10 @@ import * as THREE from 'three';
 import {
   SECTOR_ADMIT_MARGIN,
   SECTOR_ATTEMPT_TIMEOUT_MS,
+  SECTOR_BUDGET_BYTES_DESKTOP,
+  SECTOR_BUDGET_BYTES_TOUCH,
+  SECTOR_ENVELOPE_BYTES_DESKTOP,
+  SECTOR_EVICT_DWELL_MS,
   SECTOR_INFLIGHT_CAP_DESKTOP,
   SECTOR_LEVEL_16K,
   SECTOR_RELEASE_TEXEL_PX,
@@ -14,6 +18,7 @@ import {
   SECTOR_WANT_TEXEL_PX,
   SECTOR_WANT_TEXEL_PX_TOUCH,
   SectorStreamer,
+  sectorSetGpuBytes,
   type SectorBodyHandle,
   type SectorLevel,
   type SectorMeasure,
@@ -57,6 +62,11 @@ class FakeWarm {
 
 const G = SECTOR_GRID_16K;
 const R = 1;
+// What one Earth sector costs the budget (its 2048² tile plus its own copies
+// of the bump and roughness crops) and how many of them each device holds.
+const EARTH_SET_BYTES = sectorSetGpuBytes(SECTOR_SETS.Earth);
+const EARTH_FITS_DESKTOP = Math.floor(SECTOR_BUDGET_BYTES_DESKTOP / EARTH_SET_BYTES);
+const EARTH_FITS_TOUCH = Math.floor(SECTOR_BUDGET_BYTES_TOUCH / EARTH_SET_BYTES);
 // Sizes in these tests are TEXEL magnifications (device px per base-map texel)
 // for the 4K map the fake material is taken to draw (no readable image, so
 // the streamer assumes 4096 wide); measureOf turns them into pxPerLocalUnit.
@@ -238,35 +248,44 @@ describe('SectorStreamer', () => {
     expect(streamer.stats().bodies.Earth.loading.slice().sort()).toEqual(['2_1', '3_1']);
   });
 
-  it('caps residents and only evicts the weakest for a candidate that out-ranks it by the margin', () => {
+  it('holds what the byte budget holds, and only evicts for a candidate that out-ranks by the margin', () => {
     loader.auto = true;
+    // The budget is what bounds the working set; the count cap is the
+    // emergency ceiling above it and never binds for a set this size.
+    expect(EARTH_FITS_DESKTOP).toBeLessThan(SECTOR_RESIDENT_CAP_DESKTOP);
     const sizes: Record<string, number> = {};
     for (let c = 0; c < 8; c++) { sizes[`${c}_1`] = 2 + 0.01 * c; sizes[`${c}_2`] = 2.1 + 0.01 * c; }
-    // Fill the cap over a few frames (in-flight limit paces admissions).
+    // Fill the budget over a few frames (in-flight limit paces admissions).
     for (let f = 0; f < 12; f++) streamer.update('Earth', new THREE.Vector3(0, 0, 0), measureOf(sizes), f * 16);
-    expect(streamer.stats().resident).toBe(SECTOR_RESIDENT_CAP_DESKTOP);
-    const before = streamer.stats().bodies.Earth.resident.slice().sort();
+    expect(streamer.stats().resident).toBe(EARTH_FITS_DESKTOP);
+    const stats = streamer.stats();
+    expect(stats.residentBytes).toBe(EARTH_FITS_DESKTOP * EARTH_SET_BYTES);
+    expect(stats.residentBytes + stats.reserved).toBeLessThanOrEqual(stats.budget);
+    const before = stats.bodies.Earth.resident.slice().sort();
     // A new sector slightly larger than the weakest resident does not evict it…
     const weakestPx = Math.min(...before.map((id) => sizes[id]));
     sizes['0_0'] = weakestPx * SECTOR_ADMIT_MARGIN * 0.99;
-    streamer.update('Earth', new THREE.Vector3(0, 0, 0), measureOf(sizes), 1000);
+    streamer.update('Earth', new THREE.Vector3(0, 0, 0), measureOf(sizes), 2_000);
     expect(streamer.stats().bodies.Earth.resident.slice().sort()).toEqual(before);
     // …one that out-ranks it by the margin does, and takes its place.
     sizes['0_0'] = weakestPx * SECTOR_ADMIT_MARGIN * 1.01;
-    streamer.update('Earth', new THREE.Vector3(0, 0, 0), measureOf(sizes), 1016);
+    streamer.update('Earth', new THREE.Vector3(0, 0, 0), measureOf(sizes), 2_016);
     const after = streamer.stats().bodies.Earth.resident;
-    expect(after.length).toBe(SECTOR_RESIDENT_CAP_DESKTOP);
+    expect(after.length).toBe(EARTH_FITS_DESKTOP);
     expect(after).toContain('0_0');
   });
 
-  it('uses the touch caps on touch devices', () => {
+  it('holds a smaller working set on touch devices', () => {
     const s = new SectorStreamer({ touch: true, load: loader.load, warm: warm.warm });
     s.register(earth);
     loader.auto = true;
+    expect(EARTH_FITS_TOUCH).toBeLessThan(EARTH_FITS_DESKTOP);
+    expect(EARTH_FITS_TOUCH).toBeLessThan(SECTOR_RESIDENT_CAP_TOUCH);
     const sizes: Record<string, number> = {};
     for (let c = 0; c < 8; c++) sizes[`${c}_1`] = 2 + 0.01 * c;
     for (let f = 0; f < 12; f++) s.update('Earth', new THREE.Vector3(0, 0, 0), measureOf(sizes), f * 16);
-    expect(s.stats().resident).toBe(SECTOR_RESIDENT_CAP_TOUCH);
+    expect(s.stats().resident).toBe(EARTH_FITS_TOUCH);
+    expect(s.stats().residentBytes).toBeLessThanOrEqual(SECTOR_BUDGET_BYTES_TOUCH);
   });
 
   it('a load superseded by release never materializes and drops its bytes', () => {
@@ -954,6 +973,110 @@ describe('SectorStreamer', () => {
     // …and the working set goes to the body that is actually magnified.
     expect(earthFirst.moon).toBeGreaterThan(0);
     expect(earthFirst.earth).toBe(0);
+  });
+
+  it('reserves what a load will hold before it starts, and gives it back when the load does not land', () => {
+    streamer.update('Earth', INSIDE, measureOf({ '2_1': 2, '3_1': 1.9 }), 0);
+    let s = streamer.stats();
+    // Two loads in flight hold nothing on the GPU yet and have committed
+    // their full sets: the figure that keeps two 22 MiB tiles from landing
+    // on a budget with room for one.
+    expect(s.loading).toBe(SECTOR_INFLIGHT_CAP_DESKTOP);
+    expect(s.reserved).toBe(SECTOR_INFLIGHT_CAP_DESKTOP * EARTH_SET_BYTES);
+    expect(s.residentBytes).toBe(0);
+    expect(s.gpuBytes).toBe(0);
+    expect(s.residentBytes + s.reserved).toBeLessThanOrEqual(s.budget);
+    loader.failAll();
+    expect(streamer.stats().reserved).toBe(0);
+    // What lands is held as resident bytes instead, and dropAll gives back both.
+    loader.auto = true;
+    streamer.update('Earth', INSIDE, measureOf({ '2_1': 2 }), SECTOR_RETRY_MS + 1);
+    s = streamer.stats();
+    expect(s.residentBytes).toBe(EARTH_SET_BYTES);
+    expect(s.reserved).toBe(0);
+    streamer.dropAll();
+    s = streamer.stats();
+    expect(s.residentBytes).toBe(0);
+    expect(s.reserved).toBe(0);
+  });
+
+  it('takes the sector budget out of one envelope with the globe maps, and gives sectors back when it shrinks', () => {
+    loader.auto = true;
+    expect(streamer.stats().budget).toBe(SECTOR_BUDGET_BYTES_DESKTOP);
+    const sizes: Record<string, number> = {};
+    for (let c = 0; c < 8; c++) { sizes[`${c}_1`] = 2 + 0.01 * c; sizes[`${c}_2`] = 2.1 + 0.01 * c; }
+    streamer.update('Earth', INSIDE, measureOf(sizes), 0);
+    expect(streamer.stats().resident).toBe(EARTH_FITS_DESKTOP);
+    // The globe maps grow (an 8K rung lands) and the envelope leaves the
+    // sectors room for three.
+    streamer.setGlobalMapBytes(SECTOR_ENVELOPE_BYTES_DESKTOP - 3 * EARTH_SET_BYTES);
+    expect(streamer.stats().budget).toBe(3 * EARTH_SET_BYTES);
+    streamer.update('Earth', INSIDE, measureOf(sizes), 16);
+    const s = streamer.stats();
+    expect(s.resident).toBe(3);
+    expect(s.residentBytes + s.reserved).toBeLessThanOrEqual(s.budget);
+    // The three kept are the strongest.
+    expect(s.bodies.Earth.resident.slice().sort()).toEqual(['5_2', '6_2', '7_2']);
+  });
+
+  it('leaves a sector alone for a moment after admitting it, whatever turns up next', () => {
+    loader.auto = true;
+    const sizes: Record<string, number> = {};
+    for (let c = 0; c < 8; c++) { sizes[`${c}_1`] = 2 + 0.01 * c; sizes[`${c}_2`] = 2.1 + 0.01 * c; }
+    streamer.update('Earth', INSIDE, measureOf(sizes), 0);
+    const before = streamer.stats().bodies.Earth.resident.slice().sort();
+    // A far stronger candidate, while everything resident is seconds old.
+    const withNewcomer = { ...sizes, '0_0': 50 };
+    streamer.update('Earth', INSIDE, measureOf(withNewcomer), SECTOR_EVICT_DWELL_MS - 1);
+    expect(streamer.stats().bodies.Earth.resident.slice().sort()).toEqual(before);
+    streamer.update('Earth', INSIDE, measureOf(withNewcomer), SECTOR_EVICT_DWELL_MS);
+    expect(streamer.stats().bodies.Earth.resident).toContain('0_0');
+  });
+
+  it('settles under budget pressure: two hundred frames at one pose, no churn and no starved child', () => {
+    loader.auto = true;
+    twoLevelEarth();
+    const sizes = {
+      ...field((c, r) => 1.5 + 0.01 * (c + G.cols * r)),
+      '2_1': 8, 'L1/4_2': 4, 'L1/5_2': 4, 'L1/4_3': 4, 'L1/5_3': 4,
+    };
+    const measure = measureLevels(TWO_LEVELS, sizes);
+    let churn = 0;
+    let previous = '';
+    for (let f = 0; f < 200; f++) {
+      streamer.update('Earth', INSIDE, measure, f * 16);
+      const now = streamer.stats().bodies.Earth.resident.slice().sort().join(' ');
+      if (f > 0 && now !== previous) churn += 1;
+      previous = now;
+    }
+    expect(churn).toBe(0);
+    const s = streamer.stats();
+    // The parent and all four of its children are resident: a finer level
+    // that ranks above the coarse field is not starved by it.
+    for (const id of ['2_1', 'L1/4_2', 'L1/5_2', 'L1/4_3', 'L1/5_3']) {
+      expect(s.bodies.Earth.resident).toContain(id);
+    }
+    expect(s.bodies.Earth.byLevel[1].resident).toBe(4);
+    expect(s.residentBytes + s.reserved).toBeLessThanOrEqual(s.budget);
+    expect(s.resident).toBe(EARTH_FITS_DESKTOP);
+  });
+
+  it('drops every level on context loss and streams them all back', () => {
+    loader.auto = true;
+    twoLevelEarth();
+    const measure = measureLevels(TWO_LEVELS, { '2_1': 4, 'L1/5_3': 4 });
+    streamer.update('Earth', overLevel1(5, 3), measure, 0);
+    const before = streamer.stats().bodies.Earth.resident.slice().sort();
+    expect(before).toEqual(['2_1', 'L1/5_3']);
+    streamer.dropAll();
+    let s = streamer.stats();
+    expect(s.resident).toBe(0);
+    expect(s.residentBytes).toBe(0);
+    expect(s.reserved).toBe(0);
+    streamer.update('Earth', overLevel1(5, 3), measure, 16);
+    s = streamer.stats();
+    expect(s.bodies.Earth.resident.slice().sort()).toEqual(before);
+    expect(s.residentBytes).toBe(2 * EARTH_SET_BYTES);
   });
 
   it('asks the measure about each sector at its point nearest the camera, not its centre', () => {

@@ -9,17 +9,20 @@
  * veil, or a half-loaded surface — the base map IS the fallback.
  *
  * The working set is bounded and stable: sectors are ranked by projected size
- * and centrality, the top N (a per-device cap) are wanted, and a resident
- * sector is only evicted for a candidate that out-ranks it by a margin — a
- * plain LRU would churn 21 MiB uploads every frame at the wall, where more
- * sectors face the camera than the cap allows. The size that matters is the
- * globe's OWN texels on screen (device pixels per texel at the sector
- * centre): a tile is wanted once the base is visibly magnified and released
+ * and centrality, and what bounds them is BYTES — a per-device budget, taken
+ * out of one memory envelope with the globe maps the tier ladder streams, and
+ * reserved from the known tile layouts the moment a load starts rather than
+ * counted after its decode, so two loads in flight cannot overshoot it by a
+ * tile each. A resident sector is only evicted for a candidate that out-ranks
+ * it by a margin, and not until it has been resident a moment: a plain LRU
+ * would churn 21 MiB uploads every frame at the wall, where more sectors face
+ * the camera than the budget holds. The size that matters is the texels of
+ * the map below on screen (device pixels per texel at the sector's nearest
+ * point): a tile is wanted once that map is visibly magnified and released
  * once it no longer is, with hysteresis between, so a disc breathing around
- * the threshold never flaps a 21 MiB upload, and the cap plus the in-flight
- * limit bound GPU and CPU memory. A sector that is magnified but off the
- * frame or on the night side is never fetched, yet stays resident while it
- * is magnified — a pan or a sunrise brings it back for free.
+ * the threshold never flaps a 21 MiB upload. A sector that is magnified but
+ * off the frame or on the night side is never fetched, yet stays resident
+ * while it is magnified — a pan or a sunrise brings it back for free.
  *
  * A tile is drawn only once it is resident on the GPU: the fetch decodes off
  * the main thread (textureBitmapLoader), the warm pump uploads it on its
@@ -87,7 +90,9 @@ import { applyTextureDefaults, resolveTileUrl, type TextureTier } from './textur
 import { TIER_RANK } from '../PlanetFactory';
 import { queueTextureWarm, type WarmOutcome } from './textureWarmer';
 
-export type CropSlot = 'bumpMap' | 'normalMap' | 'roughnessMap';
+/** The material slots a sector may carry a crop of, in a fixed order. */
+export const CROP_SLOTS = ['bumpMap', 'normalMap', 'roughnessMap'] as const;
+export type CropSlot = (typeof CROP_SLOTS)[number];
 
 export interface SectorCropSpec {
   /** Tile-set key under textures/tiles/: the FILE STEM of the base map the
@@ -218,13 +223,37 @@ const SECTOR_FALLBACK_MAP_WIDTH = 4096;
  *  atmosphere renders beyond the terminator. */
 export const SECTOR_NIGHT_DOT = -0.1;
 
-/** Resident sectors (meshes with a tile on the GPU) across all bodies. The
- *  wall view has ~12 sectors facing the camera; the cap holds the largest. */
-export const SECTOR_RESIDENT_CAP_DESKTOP = 10;
-export const SECTOR_RESIDENT_CAP_TOUCH = 6;
-/** Tile fetches (colour + crops of one sector count as one) in flight. */
+/** What the sectors of every body together may hold on the GPU. This is the
+ *  real bound: bytes, reserved from the known tile layouts at admission
+ *  rather than counted after the decode, so two loads in flight cannot
+ *  overshoot it by 45 MiB between them. A desktop set of ten Earth sectors is
+ *  ~240 MiB; a phone's shared memory is the app's known weak spot. */
+export const SECTOR_BUDGET_BYTES_DESKTOP = 256 * 1024 * 1024;
+export const SECTOR_BUDGET_BYTES_TOUCH = 128 * 1024 * 1024;
+/** Ceiling on the sector budget PLUS the globe maps live at the same time
+ *  (the tier ladder's applied colour maps, which the mode reports). The
+ *  sector budget is whatever this leaves under the figure above, so a Moon
+ *  8K and Earth's cloud deck take their share out of the tiles rather than
+ *  stacking on top of them. */
+export const SECTOR_ENVELOPE_BYTES_DESKTOP = 768 * 1024 * 1024;
+export const SECTOR_ENVELOPE_BYTES_TOUCH = 320 * 1024 * 1024;
+
+/** Resident sectors (meshes with a tile on the GPU) across all bodies —
+ *  an emergency ceiling on draw calls only. The byte budget above is what
+ *  decides the working set; this is generous enough that it never does. */
+export const SECTOR_RESIDENT_CAP_DESKTOP = 16;
+export const SECTOR_RESIDENT_CAP_TOUCH = 8;
+/** Sector loads (colour + crops of one sector count as one) in flight. */
 export const SECTOR_INFLIGHT_CAP_DESKTOP = 2;
 export const SECTOR_INFLIGHT_CAP_TOUCH = 1;
+/** Individual map fetches in flight: one sector is up to three of them, so
+ *  the slot cap alone would put six requests on the wire at once. */
+export const SECTOR_FETCH_POOL_DESKTOP = 6;
+export const SECTOR_FETCH_POOL_TOUCH = 3;
+/** How long a sector is safe from eviction after it is admitted. Without it
+ *  a working set at the budget could hand the same slot back and forth
+ *  between two candidates a hair apart, paying an upload each time. */
+export const SECTOR_EVICT_DWELL_MS = 1_000;
 
 /** A candidate evicts the weakest resident only when it out-ranks it by this
  *  factor — the admission hysteresis that keeps the working set stable.
@@ -307,6 +336,13 @@ interface SectorSlot {
    *  drew. A resident whose signature no longer matches the base's reloads
    *  IN PLACE: the old sector stays on the globe while the new set loads. */
   signature: string;
+  /** Bytes the maps this slot draws hold, and the bytes its in-flight load
+   *  has RESERVED for the maps it is fetching — both from the layouts, so
+   *  the budget is committed before a byte is decoded. */
+  bytes: number;
+  reserved: number;
+  /** When this slot last went live, for the eviction dwell. */
+  liveSinceMs: number;
   /** In-flight load — a fresh admission, or a resident's in-place reload.
    *  `owned` holds every decoded texture from the moment it exists (queued
    *  for warming or landed), so a release can dispose it — which also
@@ -363,9 +399,19 @@ export interface SectorStats {
   inflight: number;
   /** GPU memory the sector textures hold, estimated from their dimensions
    *  (RGBA8 plus a third for mips) — resident sets and what loads have
-   *  decoded so far. The caps are counts; this is the figure to read them
-   *  against on a device: ten colour tiles alone are ~213 MiB. */
+   *  decoded so far. Measured after the decode, so it lags the two figures
+   *  below; ten colour tiles alone are ~213 MiB. */
   gpuBytes: number;
+  /** What the budget actually counts: the bytes the resident sets hold and
+   *  the bytes the loads in flight have reserved, both from the tile
+   *  layouts. `residentBytes + reserved <= budget` holds on every path. */
+  residentBytes: number;
+  reserved: number;
+  /** This device's sector budget right now — its ceiling, or what the total
+   *  envelope leaves over the globe maps (globalBytes), whichever is less. */
+  budget: number;
+  envelope: number;
+  globalBytes: number;
   bodies: Record<string, {
     resident: string[];
     loading: string[];
@@ -386,6 +432,31 @@ export interface SectorStats {
 function slotId(slot: SectorSlot): string {
   const cell = `${slot.sector.c}_${slot.sector.r}`;
   return slot.level === 0 ? cell : `L${slot.level}/${cell}`;
+}
+
+/** GPU bytes an image of this layout holds: RGBA8 at its pixel size plus a
+ *  third for its mip chain. Known before the fetch — which is what lets an
+ *  admission reserve what it is about to hold. */
+export function layoutGpuBytes(layout: TileLayout): number {
+  return Math.round(layout.width * layout.height * 4 * (4 / 3));
+}
+
+/** GPU bytes one sector of a set holds at `level`: its colour tile plus its
+ *  own copy of every crop the base material carries (`has`). Sectors are
+ *  self-contained — four children of one parent hold four copies of the same
+ *  crop — and the budget counts every copy. */
+export function sectorSetGpuBytes(
+  spec: SectorSetSpec,
+  level = 0,
+  has: (slot: CropSlot) => boolean = () => true,
+): number {
+  let bytes = layoutGpuBytes(spec.levels[level].layout);
+  for (const slot of CROP_SLOTS) {
+    const crop = spec.crops[slot];
+    if (!crop || !has(slot)) continue;
+    bytes += layoutGpuBytes(dataCropLayout(spec.levels[0].grid, crop.baseWidth, crop.spanU ?? 1));
+  }
+  return bytes;
 }
 
 /** Estimated GPU bytes of a texture: RGBA8 at its image size, plus mips.
@@ -421,7 +492,7 @@ function realAlbedoOn(mat: THREE.MeshStandardMaterial): boolean {
  *  under a different signature reload so their maps stay the base's. */
 function cropSignature(mat: THREE.MeshStandardMaterial, spec: SectorSetSpec): string {
   let sig = '';
-  for (const slot of ['bumpMap', 'normalMap', 'roughnessMap'] as const) {
+  for (const slot of CROP_SLOTS) {
     if (spec.crops[slot] && realMapIn(mat, slot)) sig += slot[0];
   }
   return sig;
@@ -434,7 +505,7 @@ function cropSignature(mat: THREE.MeshStandardMaterial, spec: SectorSetSpec): st
  *  glint. A slot the base simply has no map in yet is fine (the sector then
  *  has none either, and reloads when the map arrives). */
 function cropsReady(mat: THREE.MeshStandardMaterial, spec: SectorSetSpec): boolean {
-  for (const slot of ['bumpMap', 'normalMap', 'roughnessMap'] as const) {
+  for (const slot of CROP_SLOTS) {
     if (!spec.crops[slot]) continue;
     const tex = mat[slot];
     if (tex && tex.userData?.proceduralFallback === true) return false;
@@ -485,8 +556,12 @@ export class SectorStreamer {
   private readonly warm: (tex: THREE.Texture, onOutcome: (o: WarmOutcome) => void) => void;
   private readonly residentCap: number;
   private readonly inflightCap: number;
+  private readonly fetchPool: number;
+  private readonly ceilingBytes: number;
+  private readonly envelopeBytes: number;
   private readonly wantTexelPx: number;
   private readonly releaseTexelPx: number;
+  private globalBytes = 0;
   private generation = 0;
   private lastNowMs = 0;
   private batching = false;
@@ -501,6 +576,9 @@ export class SectorStreamer {
     this.warm = opts.warm ?? queueTextureWarm;
     this.residentCap = opts.touch ? SECTOR_RESIDENT_CAP_TOUCH : SECTOR_RESIDENT_CAP_DESKTOP;
     this.inflightCap = opts.touch ? SECTOR_INFLIGHT_CAP_TOUCH : SECTOR_INFLIGHT_CAP_DESKTOP;
+    this.fetchPool = opts.touch ? SECTOR_FETCH_POOL_TOUCH : SECTOR_FETCH_POOL_DESKTOP;
+    this.ceilingBytes = opts.touch ? SECTOR_BUDGET_BYTES_TOUCH : SECTOR_BUDGET_BYTES_DESKTOP;
+    this.envelopeBytes = opts.touch ? SECTOR_ENVELOPE_BYTES_TOUCH : SECTOR_ENVELOPE_BYTES_DESKTOP;
     this.wantTexelPx = opts.touch ? SECTOR_WANT_TEXEL_PX_TOUCH : SECTOR_WANT_TEXEL_PX;
     this.releaseTexelPx = opts.touch ? SECTOR_RELEASE_TEXEL_PX_TOUCH : SECTOR_RELEASE_TEXEL_PX;
   }
@@ -533,6 +611,9 @@ export class SectorStreamer {
             keep: false,
             wanted: false,
             signature: '',
+            bytes: 0,
+            reserved: 0,
+            liveSinceMs: 0,
             maps: {},
             failStreak: 0,
             retryAtMs: 0,
@@ -566,6 +647,19 @@ export class SectorStreamer {
 
   has(name: string): boolean {
     return this.bodies.has(name);
+  }
+
+  /** The GPU bytes the globe maps hold right now (the tier ladder's applied
+   *  colour maps, which only the mode can see). The sector budget is what
+   *  the envelope leaves over them. */
+  setGlobalMapBytes(bytes: number): void {
+    this.globalBytes = Math.max(0, bytes);
+  }
+
+  /** What the sectors may hold together: their own ceiling, or whatever the
+   *  total envelope leaves over the globe maps, whichever is less. */
+  budget(): number {
+    return Math.max(0, Math.min(this.ceilingBytes, this.envelopeBytes - this.globalBytes));
   }
 
   /**
@@ -722,9 +816,16 @@ export class SectorStreamer {
         }
       }
     }
+    // A budget that shrank under the working set (a globe map arrived, the
+    // envelope closed) gives sectors back until it holds again — the one
+    // path where a sector goes without the view changing.
+    this.trimToBudget();
+
     stale.sort((a, b) => b.slot.score - a.slot.score);
     for (const s of stale) {
-      if (this.inflightCount() >= this.inflightCap) break;
+      if (!this.canStartLoad()) break;
+      // The maps a reload fetches are bytes the resident does not hold yet.
+      if (!this.roomFor(this.reloadBytes(s.body, s.slot))) continue;
       this.startLoad(s.body, s.slot, s.body.signature);
     }
 
@@ -733,14 +834,105 @@ export class SectorStreamer {
     // better first admission wherever both are asked for.
     candidates.sort((a, b) => b.slot.score - a.slot.score || a.slot.level - b.slot.level);
     for (const candidate of candidates) {
-      if (this.inflightCount() >= this.inflightCap) break;
-      if (this.liveCount() >= this.residentCap) {
-        const weakest = this.weakestEvictable();
-        if (!weakest || weakest.score * SECTOR_ADMIT_MARGIN >= candidate.slot.score) break;
-        this.release(weakest);
-      }
+      if (!this.canStartLoad()) break;
+      if (!this.makeRoom(candidate.slot, this.slotSetBytes(candidate.body, candidate.slot), nowMs)) break;
       this.admit(candidate.body, candidate.slot, candidate.body.signature);
     }
+  }
+
+  /** Room for `need` more bytes, freeing the weakest sectors for it if the
+   *  candidate has earned them. Multi-victim: a 22 MiB tile may need more
+   *  than one, and the candidate is measured against the STRONGEST of the
+   *  ones it would take, not the weakest — taking a sector that ranks near
+   *  it is what a margin exists to prevent. */
+  private makeRoom(candidate: SectorSlot, need: number, nowMs: number): boolean {
+    const budget = this.budget();
+    let free = budget - this.heldBytes();
+    let live = this.liveCount();
+    if (free >= need && live < this.residentCap) return true;
+    const victims = this.evictable(nowMs).sort((a, b) => a.score - b.score || b.level - a.level);
+    const taking: SectorSlot[] = [];
+    let strongest = 0;
+    for (const victim of victims) {
+      if (free >= need && live < this.residentCap) break;
+      taking.push(victim);
+      free += victim.bytes + victim.reserved;
+      live -= 1;
+      strongest = Math.max(strongest, victim.score);
+    }
+    if (free < need || live >= this.residentCap) return false;
+    if (taking.length > 0 && strongest * SECTOR_ADMIT_MARGIN >= candidate.score) return false;
+    for (const victim of taking) this.release(victim);
+    return true;
+  }
+
+  /** Give up the weakest sectors until what is held fits the budget again. */
+  private trimToBudget(): void {
+    let over = this.heldBytes() - this.budget();
+    if (over <= 0) return;
+    // Nothing is safe from this pass: the memory is already spent, and a
+    // dwell that held it would only spend more.
+    const victims = this.evictable(Number.POSITIVE_INFINITY).sort((a, b) => a.score - b.score || b.level - a.level);
+    for (const victim of victims) {
+      if (over <= 0) break;
+      over -= victim.bytes + victim.reserved;
+      this.release(victim);
+    }
+  }
+
+  /** Live sectors that may be given up now: nothing finer is drawing over
+   *  them, and they have been live long enough to have earned their upload. */
+  private evictable(nowMs: number): SectorSlot[] {
+    const out: SectorSlot[] = [];
+    for (const body of this.bodies.values()) {
+      for (const s of body.slots) {
+        if (s.state === 'idle' || hasLiveChild(s)) continue;
+        if (nowMs - s.liveSinceMs < SECTOR_EVICT_DWELL_MS) continue;
+        out.push(s);
+      }
+    }
+    return out;
+  }
+
+  /** Room for `need` more bytes without taking anything from anyone. */
+  private roomFor(need: number): boolean {
+    return this.heldBytes() + need <= this.budget();
+  }
+
+  /** Bytes held: what the resident sets draw plus what the loads in flight
+   *  have reserved. The figure the budget bounds. */
+  private heldBytes(): number {
+    let bytes = 0;
+    for (const body of this.bodies.values()) for (const s of body.slots) bytes += s.bytes + s.reserved;
+    return bytes;
+  }
+
+  /** Bytes a fresh admission of this slot would hold. */
+  private slotSetBytes(body: SectorBody, slot: SectorSlot): number {
+    return sectorSetGpuBytes(body.handle.spec, slot.level, (s) => realMapIn(body.handle.material, s));
+  }
+
+  /** Bytes a resident's in-place reload would ADD: the maps of the new set it
+   *  does not already draw. */
+  private reloadBytes(body: SectorBody, slot: SectorSlot): number {
+    let bytes = 0;
+    for (const name of CROP_SLOTS) {
+      if (!body.handle.spec.crops[name] || !realMapIn(body.handle.material, name) || slot.maps[name]) continue;
+      bytes += this.mapBytes(body, slot, name);
+    }
+    return bytes;
+  }
+
+  /** Bytes one of a slot's maps holds, from the layout its image is cut on. */
+  private mapBytes(body: SectorBody, slot: SectorSlot, name: MapName): number {
+    if (name === 'map') return layoutGpuBytes(body.levels[slot.level].layout);
+    const crop = body.handle.spec.crops[name];
+    return crop ? layoutGpuBytes(dataCropLayout(body.levels[0].grid, crop.baseWidth, crop.spanU ?? 1)) : 0;
+  }
+
+  /** Another load may start: a slot allowance and a fetch out of the pool. */
+  private canStartLoad(): boolean {
+    return this.inflightCount() < this.inflightCap && this.fetchCount() < this.fetchPool;
   }
 
   /** Drop everything (an arrival, context loss, mode teardown); bodies stay
@@ -756,7 +948,18 @@ export class SectorStreamer {
   }
 
   stats(): SectorStats {
-    const out: SectorStats = { resident: 0, loading: 0, inflight: 0, gpuBytes: 0, bodies: {} };
+    const out: SectorStats = {
+      resident: 0,
+      loading: 0,
+      inflight: 0,
+      gpuBytes: 0,
+      residentBytes: 0,
+      reserved: 0,
+      budget: this.budget(),
+      envelope: this.envelopeBytes,
+      globalBytes: this.globalBytes,
+      bodies: {},
+    };
     for (const [name, body] of this.bodies) {
       const resident: string[] = [];
       const loading: string[] = [];
@@ -779,6 +982,8 @@ export class SectorStreamer {
         for (const tex of s.loading?.owned ?? []) slotBytes += textureGpuBytes(tex);
         level.gpuBytes += slotBytes;
         gpuBytes += slotBytes;
+        out.residentBytes += s.bytes;
+        out.reserved += s.reserved;
       }
       out.resident += resident.length;
       out.loading += loading.length;
@@ -802,26 +1007,16 @@ export class SectorStreamer {
     return n;
   }
 
-  /** The live sector to give up first: the weakest normalised score, the
-   *  deeper level between equals. Never one that has a live sector of a finer
-   *  level over it — that finer sector's instant fallback is this one, and
-   *  taking it away would drop the surface under a resident tile to the
-   *  globe. */
-  private weakestEvictable(): SectorSlot | null {
-    let weakest: SectorSlot | null = null;
-    for (const body of this.bodies.values()) {
-      for (const s of body.slots) {
-        if (s.state === 'idle' || hasLiveChild(s)) continue;
-        if (!weakest || s.score < weakest.score || (s.score === weakest.score && s.level > weakest.level)) {
-          weakest = s;
-        }
-      }
-    }
-    return weakest;
+  /** Individual map fetches in flight — a sector is up to three of them. */
+  private fetchCount(): number {
+    let n = 0;
+    for (const body of this.bodies.values()) for (const s of body.slots) n += s.loading?.pending ?? 0;
+    return n;
   }
 
   private admit(body: SectorBody, slot: SectorSlot, signature: string): void {
     slot.state = 'loading';
+    slot.liveSinceMs = this.lastNowMs;
     // The globe goes onto its fine grid now, not when the tile lands: the
     // fetch in between keeps the sphere rebuild off the frame that pays the
     // 16 MiB upload (idempotent; a no-op once the body is fine).
@@ -857,7 +1052,7 @@ export class SectorStreamer {
         layout: level.layout,
       },
     ];
-    for (const cropSlot of ['bumpMap', 'normalMap', 'roughnessMap'] as const) {
+    for (const cropSlot of CROP_SLOTS) {
       const crop = handle.spec.crops[cropSlot];
       if (!crop || !realMapIn(handle.material, cropSlot)) continue;
       maps.push({
@@ -880,6 +1075,12 @@ export class SectorStreamer {
       if (have) loading.loaded[m.name] = have;
       return !have;
     });
+    // The bytes this load is about to hold are committed to it now, from the
+    // layouts, and released when it lands, fails or is abandoned — counting
+    // them after the decode would let two loads overshoot the budget by a
+    // tile each in the seconds between.
+    slot.reserved = 0;
+    for (const m of toFetch) slot.reserved += this.mapBytes(body, slot, m.name);
     loading.pending = toFetch.length;
     if (loading.pending === 0) {
       // The base lost a map: the sector simply drops its crop of it.
@@ -939,6 +1140,7 @@ export class SectorStreamer {
     slot.gen = ++this.generation;
     this.disposeLoaded(slot);
     slot.loading = undefined;
+    slot.reserved = 0;
     slot.failStreak += 1;
     slot.retryAtMs =
       this.lastNowMs + SECTOR_RETRY_MS * 2 ** Math.min(slot.failStreak - 1, SECTOR_RETRY_MAX_DOUBLINGS);
@@ -974,6 +1176,10 @@ export class SectorStreamer {
     slot.maps = { ...loaded };
     slot.signature = loading.signature;
     slot.loading = undefined;
+    // The reservation becomes what the sector actually holds.
+    slot.reserved = 0;
+    slot.bytes = 0;
+    for (const name of Object.keys(slot.maps) as MapName[]) slot.bytes += this.mapBytes(body, slot, name);
     slot.state = 'resident';
     slot.failStreak = 0;
     if (previousMesh) this.removeMesh(previousMesh, true);
@@ -992,6 +1198,7 @@ export class SectorStreamer {
     slot.gen = ++this.generation;
     this.disposeLoaded(slot);
     slot.loading = undefined;
+    slot.reserved = 0;
   }
 
   /** End a load's fetches and dispose what it decoded so far. */
@@ -1021,6 +1228,8 @@ export class SectorStreamer {
     }
     for (const tex of Object.values(slot.maps)) tex.dispose();
     slot.maps = {};
+    slot.bytes = 0;
+    slot.reserved = 0;
     slot.state = 'idle';
   }
 }

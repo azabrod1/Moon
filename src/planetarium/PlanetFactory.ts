@@ -26,7 +26,7 @@ import {
   SUN_GLARE_EXTENT_SOLAR_RADII,
 } from '../shared/shaders/sun';
 import { debugWarn } from '../shared/debug';
-import { applyTextureDefaults, clampTier, resolveTextureUrl, type TextureTier, type MapKind, touchTextureBudget } from './world/texturePolicy';
+import { applyTextureDefaults, clampTier, resolveTextureUrl, TEXTURE_TIERS, TIER_MAP_WIDTH, type TextureTier, type MapKind, touchTextureBudget } from './world/texturePolicy';
 import { augmentSurfaceMaterial, type SurfaceArchetype, type SurfaceShadingFx } from './world/surfaceShading';
 import { queueTextureWarm } from './world/textureWarmer';
 import { createLensShaderUniforms } from '../shared/three/lensShader';
@@ -493,6 +493,33 @@ const TOUCH_TIER_CAP: Partial<Record<string, TextureTier>> = { earthClouds: '4k'
 // what make every apply order-independent — a late boot-map arrival can't
 // downgrade a higher tier that already won.
 export const TIER_RANK: Record<TextureTier, number> = { '2k': 2, '4k': 4, '8k': 8 };
+
+/**
+ * Estimated GPU bytes the colour map on a material holds: its texel count
+ * times four bytes — or one, for a GPU-compressed upload, which is what a
+ * transcoded map costs — plus a third for its mip chain. The size comes from
+ * the image while it is readable, and from the nominal width of the tier that
+ * applied otherwise (an equirect map is twice as wide as it is tall). Summed
+ * over the bodies, this is what the sector streamer's memory envelope has to
+ * share with: a globe already holding an 8K map leaves its tiles what it
+ * actually leaves.
+ */
+export function colorMapGpuBytes(material: THREE.Material): number {
+  const tex = (material as THREE.MeshStandardMaterial).map;
+  if (!tex) return 0;
+  const img = tex.image as { width?: unknown; height?: unknown } | undefined;
+  let width = typeof img?.width === 'number' ? img.width : 0;
+  let height = typeof img?.height === 'number' ? img.height : 0;
+  if (!(width > 0 && height > 0)) {
+    const rank = material.userData?.colorTierRank as number | undefined;
+    const tier = TEXTURE_TIERS.find((t) => TIER_RANK[t] === rank);
+    width = tier ? TIER_MAP_WIDTH[tier] : 0;
+    height = width / 2;
+  }
+  if (!(width > 0 && height > 0)) return 0;
+  const bytesPerTexel = (tex as { isCompressedTexture?: boolean }).isCompressedTexture ? 1 : 4;
+  return Math.round(width * height * bytesPerTexel * (4 / 3));
+}
 
 // A hung fetch must not own a handle for the session: past this age a fresh
 // approach may supersede the in-flight attempt. TextureLoader cannot abort, so

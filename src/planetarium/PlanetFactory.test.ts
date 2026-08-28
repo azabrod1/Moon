@@ -17,6 +17,7 @@ import {
   firstUpgradeTier,
   initialColorTierRank,
   loadTexture,
+  colorMapGpuBytes,
   lodMeasurementRelevant,
   makeGeometryUpgrade,
   makeTextureUpgrade,
@@ -1317,5 +1318,37 @@ describe('lodMeasurementRelevant', () => {
     const up = handle('moon');
     expect(lodMeasurementRelevant(geoApplied(), [up], Infinity, H, null)).toBe(true);
     expect(lodMeasurementRelevant(makeGeometryUpgrade([]), [], Infinity, H, null)).toBe(true);
+  });
+});
+
+describe('colour map GPU bytes', () => {
+  const mib = (bytes: number) => bytes / (1024 * 1024);
+
+  it('counts the map on a material as RGBA8 with its mips', () => {
+    const mat = new THREE.MeshStandardMaterial();
+    expect(colorMapGpuBytes(mat)).toBe(0); // nothing on it yet
+    mat.map = new THREE.Texture({ width: 4096, height: 2048 } as unknown as ImageBitmap);
+    expect(colorMapGpuBytes(mat)).toBe(Math.round(4096 * 2048 * 4 * (4 / 3)));
+    expect(mib(colorMapGpuBytes(mat))).toBeCloseTo(42.7, 1);
+    mat.map = new THREE.Texture({ width: 8192, height: 4096 } as unknown as ImageBitmap);
+    expect(mib(colorMapGpuBytes(mat))).toBeCloseTo(170.7, 1); // an 8K rung
+  });
+
+  it('counts a GPU-compressed upload at a quarter of that', () => {
+    // The transcoded 8K a device that can hold it gets: one byte a texel.
+    const mat = new THREE.MeshStandardMaterial();
+    const tex = new THREE.Texture({ width: 8192, height: 4096 } as unknown as ImageBitmap);
+    (tex as unknown as { isCompressedTexture: boolean }).isCompressedTexture = true;
+    mat.map = tex;
+    expect(mib(colorMapGpuBytes(mat))).toBeCloseTo(42.7, 1);
+  });
+
+  it('falls back to the nominal width of the tier that applied when the image is gone', () => {
+    const mat = new THREE.MeshStandardMaterial();
+    mat.map = new THREE.Texture();
+    mat.map.image = undefined; // the bitmap was closed after its upload
+    expect(colorMapGpuBytes(mat)).toBe(0); // and no tier is recorded
+    mat.userData.colorTierRank = TIER_RANK['4k'];
+    expect(mib(colorMapGpuBytes(mat))).toBeCloseTo(42.7, 1);
   });
 });

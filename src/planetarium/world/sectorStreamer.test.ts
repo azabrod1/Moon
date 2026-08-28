@@ -1058,6 +1058,53 @@ describe('SectorStreamer', () => {
     expect(streamer.stats().bodies.Earth.byLevel[1].resident).toBeGreaterThan(0);
   });
 
+  it('takes a parent along with the last child drawing over it, in one call', () => {
+    loader.auto = true;
+    const earth2 = twoLevelEarth();
+    // A body whose set is bigger than one Earth sector but smaller than two,
+    // so the only room for it is a child AND the parent that child covers.
+    const bigSpec: SectorSetSpec = {
+      ...SECTOR_SETS.Earth,
+      crops: { ...SECTOR_SETS.Earth.crops, normalMap: { key: 'mars-normal.v2', tier: '2k', baseWidth: 1440, spanU: 2 } },
+    };
+    const BIG_SET_BYTES = sectorSetGpuBytes(bigSpec);
+    expect(BIG_SET_BYTES).toBeGreaterThan(EARTH_SET_BYTES);
+    expect(BIG_SET_BYTES).toBeLessThan(2 * EARTH_SET_BYTES);
+    const big = earthHandle();
+    big.name = 'Big';
+    big.spec = bigSpec;
+    big.material.normalMap = new THREE.Texture();
+    streamer.register(big);
+    // One spot magnified past the level step, with three of the four finer
+    // sectors there off the frame: the parent ends up with exactly one child
+    // drawing over it.
+    const sizes = { '2_1': 2 * CHILD_WANT_PX };
+    const away = new Set(['L1/4_3', 'L1/5_2', 'L1/5_3']);
+    const earthMeasure = measureLevels(TWO_LEVELS, sizes, 1, away);
+    streamer.update('Earth', INSIDE, earthMeasure, 0);
+    expect(streamer.stats().bodies.Earth.resident.slice().sort()).toEqual(['2_1', 'L1/4_2']);
+    // The order the two are given up in has to be child first: a parent
+    // released early would drop the surface under a sector still drawing.
+    const dropped: string[] = [];
+    for (const mesh of earth2.mesh.children as THREE.Mesh[]) {
+      const name = mesh.name;
+      (mesh.material as THREE.MeshStandardMaterial).map!.addEventListener('dispose', () => dropped.push(name));
+    }
+    // Room for exactly what the two of them hold, and a far stronger
+    // candidate that needs all of it.
+    streamer.setGlobalMapBytes(SECTOR_ENVELOPE_BYTES_DESKTOP - 2 * EARTH_SET_BYTES);
+    expect(streamer.stats().resident).toBe(2);
+    streamer.beginFrame();
+    streamer.update('Earth', INSIDE, earthMeasure, 2_000);
+    streamer.update('Big', INSIDE, measureOf({ '0_0': 40 }), 2_000);
+    streamer.endFrame();
+    const s = streamer.stats();
+    expect(s.bodies.Big.resident).toEqual(['0_0']);
+    expect(s.bodies.Earth.resident).toEqual([]);
+    expect(dropped).toEqual(['Earth sector L1/4_2', 'Earth sector 2_1']);
+    expect(s.residentBytes + s.reserved).toBeLessThanOrEqual(s.budget);
+  });
+
   it('suppresses a parent every child of which is resident, and wants it back the moment one is lost', () => {
     twoLevelEarth();
     const cam = overLevel1(5, 3);

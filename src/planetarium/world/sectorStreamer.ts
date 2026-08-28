@@ -943,23 +943,64 @@ export class SectorStreamer {
    *  candidate has earned them. Multi-victim: a 22 MiB tile may need more
    *  than one, and the candidate is measured against the STRONGEST of the
    *  ones it would take, not the weakest — taking a sector that ranks near
-   *  it is what a margin exists to prevent. */
+   *  it is what a margin exists to prevent.
+   *
+   *  The frontier moves as the plan grows. A sector a finer one is drawing
+   *  over is not the streamer's to give up, but planning that finer one away
+   *  exposes it, and it is then as takeable as any leaf: each slot carries
+   *  the count of its live children still standing, and joins the frontier
+   *  when the last of them is planned away. A frontier taken once instead
+   *  would leave a candidate that needs both a child and the parent under it
+   *  seeing only the child, concluding there is no room, and starving for as
+   *  long as the pose held. Nothing is released until the whole set is proven
+   *  and the margin is cleared, and then in the order it was planned —
+   *  children before parents, so no sector ever loses its fallback while it
+   *  is still drawing. */
   private makeRoom(candidate: SectorSlot, need: number, nowMs: number): boolean {
-    const budget = this.budget();
-    let free = budget - this.heldBytes();
+    let free = this.budget() - this.heldBytes();
     let live = this.liveCount();
     if (free >= need && live < this.residentCap) return true;
-    const victims = this.evictable(nowMs).sort((a, b) => a.score - b.score || b.level - a.level);
+    // Every live sector that has earned nothing this pass has to protect,
+    // split by whether a finer one is still drawing over it.
+    const standing = new Map<SectorSlot, number>();
+    const frontier: SectorSlot[] = [];
+    const covering: SectorSlot[] = [];
+    for (const body of this.bodies.values()) {
+      for (const s of body.slots) {
+        if (s.state === 'idle') continue;
+        let children = 0;
+        for (const child of s.children) if (child.state !== 'idle') children += 1;
+        standing.set(s, children);
+        if (s.state === 'resident' && nowMs - s.liveSinceMs < SECTOR_EVICT_DWELL_MS) continue;
+        (children === 0 ? frontier : covering).push(s);
+      }
+    }
     const taking: SectorSlot[] = [];
     let strongest = 0;
-    for (const victim of victims) {
-      if (free >= need && live < this.residentCap) break;
+    while (free < need || live >= this.residentCap) {
+      // The weakest of the frontier, deepest first among equals: the level
+      // that covers the least ground for its bytes goes first.
+      let pick = -1;
+      for (let i = 0; i < frontier.length; i++) {
+        const s = frontier[i];
+        if (pick < 0 || s.score < frontier[pick].score
+          || (s.score === frontier[pick].score && s.level > frontier[pick].level)) pick = i;
+      }
+      if (pick < 0) return false;
+      const victim = frontier.splice(pick, 1)[0];
       taking.push(victim);
       free += victim.bytes + victim.reserved;
       live -= 1;
       strongest = Math.max(strongest, victim.score);
+      // The sector above it is one child closer to being exposed.
+      const parent = victim.parent;
+      const left = parent ? standing.get(parent) : undefined;
+      if (parent && left !== undefined) {
+        standing.set(parent, left - 1);
+        const waiting = left - 1 === 0 ? covering.indexOf(parent) : -1;
+        if (waiting >= 0) frontier.push(covering.splice(waiting, 1)[0]);
+      }
     }
-    if (free < need || live >= this.residentCap) return false;
     if (taking.length > 0 && strongest * SECTOR_ADMIT_MARGIN >= candidate.score) return false;
     for (const victim of taking) this.release(victim);
     return true;
@@ -975,7 +1016,7 @@ export class SectorStreamer {
    *  evictable, and every release makes a slot idle for good. */
   private trimToBudget(): void {
     while (this.heldBytes() > this.budget()) {
-      const victims = this.evictable(Number.POSITIVE_INFINITY);
+      const victims = this.evictable();
       if (victims.length === 0) return;
       let weakest = victims[0];
       for (const v of victims) {
@@ -985,17 +1026,15 @@ export class SectorStreamer {
     }
   }
 
-  /** Live sectors that may be given up now: nothing finer is drawing over
-   *  them, and a resident has been drawing long enough to have earned its
-   *  upload. A fresh admission still fetching has paid for nothing yet, so it
-   *  stays replaceable — taking it aborts a transfer instead of throwing a
-   *  finished upload away. */
-  private evictable(nowMs: number): SectorSlot[] {
+  /** Live sectors the give-back pass may take: everything a finer one is not
+   *  drawing over. The dwell does not protect anything here — the memory is
+   *  already spent, and holding it would only spend more — so a pyramid
+   *  unwinds leaf by leaf within the one call. */
+  private evictable(): SectorSlot[] {
     const out: SectorSlot[] = [];
     for (const body of this.bodies.values()) {
       for (const s of body.slots) {
         if (s.state === 'idle' || hasLiveChild(s)) continue;
-        if (s.state === 'resident' && nowMs - s.liveSinceMs < SECTOR_EVICT_DWELL_MS) continue;
         out.push(s);
       }
     }

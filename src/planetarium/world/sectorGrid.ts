@@ -17,11 +17,14 @@
  * u ∈ [c/cols, (c+1)/cols], v ∈ [1−(r+1)/rows, 1−r/rows] of the same equirect
  * the base map is — column 0 at the western edge, row 0 at the north — so the
  * tile and the base map agree on every surface point by construction. The
- * grid, the gutter and the crop widths below are what a tile PATHNAME means:
- * the service worker can serve a one-deploy-old tile under an unchanged path
- * for a boot, so a layout change ships under a new tier folder or key
- * (texturePolicy.resolveTileUrl), never as new code reading the old paths;
- * sectorTiles.assets.test.ts pins every shipped file to this layout.
+ * grid, the gutter and the crop widths below are what a tile PATHNAME means,
+ * and what makes that safe is that a set's folder carries a hash of its own
+ * bytes: a set re-cut at another layout lands on a path nothing has ever
+ * asked for, so no cache anywhere can hand new code an old tile. (The file
+ * stem in the path is the same rule for the map above it — a re-based base
+ * map ships under a new name.) Layout changes still ship as a re-cut, never
+ * as new code reading old paths; sectorTiles.assets.test.ts holds the
+ * shipped sets to the numbers here.
  *
  * Normal-map crops are cut TWO sectors wide (the sector centred, half a
  * neighbour each side): three derives the tangent frame from screen-space

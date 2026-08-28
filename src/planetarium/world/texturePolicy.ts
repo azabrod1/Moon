@@ -7,6 +7,7 @@
  * loader.
  */
 import * as THREE from 'three';
+import { SECTOR_SET_TABLE } from './sectorSets.generated';
 
 /** Every resolution tier that exists, ascending. This list names them and
  *  fixes that ascending convention: the device clamp walks it directly, and a
@@ -27,17 +28,72 @@ export function resolveTextureUrl(file: string, tier: TextureTier): string {
   return tier === '2k' ? `${TEXTURE_BASE}${file}` : `${TEXTURE_BASE}${tier}/${file}`;
 }
 
-/** Sector tile sets live under textures/tiles/<key>/<tier>/<c>_<r>.webp —
- *  the key is the file stem of the map the set was cut from ('earth-day.v2'),
- *  a colour set's tier names its source resolution ('16k'), a data crop's
- *  the base map it was cut from ('2k', '4k'). Cut by tools/gen-tiles.mjs.
- *  Everything the app reads into a pathname — the map's identity through
+/**
+ * Where tile sets are fetched from — the ONE place that reads it. Empty (the
+ * default) means the app's own origin, exactly like the rest of textures/.
+ * `VITE_TILE_ORIGIN` at build time points tiles, and only tiles, at another
+ * host: a URL prefix including whatever path the host mirrors them under
+ * ('https://cdn.example/gh/user/moon-tiles@v1'), with the same
+ * textures/tiles/… layout beneath it. tools/swPlugin.mjs reads the same
+ * variable to build the worker's allowlist, so the two cannot disagree about
+ * where tiles live.
+ *
+ * `?tiles=<origin>` overrides it in dev, so a set that has not been published
+ * yet can be served from a local checkout. It moves only the app's fetches:
+ * the worker's allowlist is baked at build time and this cannot widen it (and
+ * the worker does not run in dev at all).
+ */
+const TILE_BASE = ((): string => {
+  const configured = import.meta.env.VITE_TILE_ORIGIN ?? '';
+  const override = import.meta.env.DEV && typeof location !== 'undefined'
+    ? new URLSearchParams(location.search).get('tiles')
+    : null;
+  const origin = (override ?? configured).trim().replace(/\/+$/, '');
+  return origin ? `${origin}/` : import.meta.env.BASE_URL;
+})();
+
+/** Where one tile sits under a tile base:
+ *  textures/tiles/<key>/<tier>.<setHash8>/<c>_<r>.webp — the key is the file
+ *  stem of the map the set was cut from ('earth-day.v2'), a colour set's tier
+ *  names its source resolution ('16k'), a data crop's the base map it was cut
+ *  from ('2k', '4k'), and the hash is over the whole set's bytes. Cut by
+ *  tools/gen-tiles.mjs, which writes the hashes into sectorSets.generated.ts.
+ *
+ *  The set hash is what the pathname promises: exactly those bytes or a 404.
+ *  Everything else the app reads into a pathname — the map's identity through
  *  its stem, the 8×4 grid, the 8-px gutter, the two-sector-wide normal crops
- *  (sectorGrid) — is that pathname's contract: the service worker may serve
- *  a one-deploy-old body under it for a boot, so a re-based map or a layout
- *  change ships under a new name, never as new code reading old paths. */
-export function resolveTileUrl(key: string, tier: string, c: number, r: number): string {
-  return `${TEXTURE_BASE}tiles/${key}/${tier}/${c}_${r}.webp`;
+ *  (sectorGrid) — is a layout the set was cut at, so a re-cut set lands on a
+ *  new path by construction and no cache, near or far, can pair an old body
+ *  with new code. The stem is the same rule one level up: a re-based base map
+ *  ships under a new name and takes its tiles with it. */
+export function tileSetPath(key: string, tier: string, hash: string): string {
+  return `textures/tiles/${key}/${tier}.${hash}/`;
+}
+
+export function resolveTileUrl(key: string, tier: string, hash: string, c: number, r: number): string {
+  return `${TILE_BASE}${tileSetPath(key, tier, hash)}${c}_${r}.webp`;
+}
+
+/** The published hash of a shipped set, or an empty string for a set the
+ *  generated table does not name. Failing open is deliberate: this resolves
+ *  while the SECTOR_SETS literal is built at module evaluation, so a throw
+ *  here is a blank app before any code has run — including the `?sectors=0`
+ *  switch that would turn streaming off. An empty hash instead 404s the
+ *  tiles, which the body already survives by drawing its base map, and
+ *  sectorStreamer's warning names the set. sectorTiles.assets.test.ts is
+ *  what keeps every set the app names present in the table. */
+export function sectorSetHash(key: string, tier: string): string {
+  return SECTOR_SET_TABLE[`${key}/${tier}`]?.setHash8 ?? '';
+}
+
+/** The layout gen-tiles measured a set's tiles at: the width of the equirect
+ *  they were cut from and how many sectors of longitude one tile spans. The
+ *  crop arithmetic reads these instead of hand-copied numbers, so a re-cut at
+ *  another width cannot leave the app sampling the old one. Unknown sets get
+ *  a zero width on the same fail-open contract as the hash. */
+export function sectorSetLayout(key: string, tier: string): { baseWidth: number; spanU: number } {
+  const entry = SECTOR_SET_TABLE[`${key}/${tier}`];
+  return { baseWidth: entry?.baseWidth ?? 0, spanU: entry?.spanU ?? 1 };
 }
 
 // Smallest GL max-texture-size that can hold a tier's maps. The boot tier has

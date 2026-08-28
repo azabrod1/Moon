@@ -3086,9 +3086,10 @@ export class PlanetariumMode {
     // allows the in-system setting — several standoffs per second. Cap the
     // closing speed at K × surface distance and the receding speed at the
     // distance-tied leave law instead (same escape hatch as the throttle),
-    // each measured in the body's own rest frame — its velocity along the
-    // nose rides on top (movingBodySpeedCap), so a body sweeping toward the
-    // ship can shove it but never trap it.
+    // each measured in the body's own rest frame — its motion rides on top
+    // (movingBodySpeedCap: nose credit leaving, sightline-recession credit
+    // closing), so a body sweeping toward the ship can shove it but never
+    // trap it, and a fleeing body can still be caught by the glide.
     // Tightening applies instantly; loosening runs through a short
     // transition ease onto the leave law, so a flyby ends with a steady
     // pull-away, never a time-exponential detonation.
@@ -11298,9 +11299,13 @@ export class PlanetariumMode {
    *  has no collision shell, and the system throttle's inner edge sits
    *  INSIDE the photosphere, so this glide is the only brake. Each body's
    *  law is evaluated in ITS rest frame (movingBodySpeedCap credits the
-   *  body's velocity along the nose): a moon sweeping into the ship used to
-   *  outrun the world-frame leave creep and bulldoze it forever — with the
-   *  credit the ship can always walk off the moving shell. */
+   *  body's velocity along the nose on the leave side and its recession
+   *  along the sightline on the approach side): a moon sweeping into the
+   *  ship used to outrun the world-frame leave creep and bulldoze it
+   *  forever, and a planet's trailing face used to outrun the world-frame
+   *  glide so a chasing ship stalled ~30 km/s short of it forever — with
+   *  the credits the ship can always walk off a moving shell and glide onto
+   *  a receding one. */
   private computeBodySpeedCap(): number {
     const f = this.player.writeForwardDirection(this.tmpForwardDir);
     let cap = Infinity;
@@ -11320,6 +11325,7 @@ export class PlanetariumMode {
       const c = movingBodySpeedCap(
         dist - surfaceR, surfaceR, cos,
         vxAUPerS * f.x + vyAUPerS * f.y + vzAUPerS * f.z,
+        (vxAUPerS * dx + vyAUPerS * dy + vzAUPerS * dz) / dist,
         kPerS, BODY_APPROACH_V_MIN_AU_S,
       );
       if (c < cap) cap = c;

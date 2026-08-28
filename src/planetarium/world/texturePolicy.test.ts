@@ -1,6 +1,17 @@
 import * as THREE from 'three';
 import { afterEach, describe, it, expect } from 'vitest';
-import { captureDeviceTextureCaps, clampTier, resolveTextureUrl, TEXTURE_TIERS, type TextureTier } from './texturePolicy';
+import {
+  captureDeviceTextureCaps,
+  clampTier,
+  resolveTextureUrl,
+  resolveTileUrl,
+  sectorSetHash,
+  sectorSetLayout,
+  tileSetPath,
+  TEXTURE_TIERS,
+  type TextureTier,
+} from './texturePolicy';
+import { SECTOR_SET_TABLE } from './sectorSets.generated';
 
 // The caps are module state captured from the live renderer; a fake renderer is
 // the seam. 4096 is the pre-capture default — restore it so test order can't
@@ -23,6 +34,41 @@ describe('resolveTextureUrl', () => {
   it('routes higher tiers to their own subfolder, same filename', () => {
     expect(resolveTextureUrl('mars.webp', '4k')).toMatch(/textures\/4k\/mars\.webp$/);
     expect(resolveTextureUrl('moon.webp', '8k')).toMatch(/textures\/8k\/moon\.webp$/);
+  });
+});
+
+describe('resolveTileUrl', () => {
+  it('puts the set hash in the folder, next to the tier', () => {
+    expect(tileSetPath('earth-day.v2', '16k', 'abcd1234')).toBe('textures/tiles/earth-day.v2/16k.abcd1234/');
+    expect(resolveTileUrl('earth-day.v2', '16k', 'abcd1234', 2, 1))
+      .toMatch(/^\/textures\/tiles\/earth-day\.v2\/16k\.abcd1234\/2_1\.webp$/);
+  });
+
+  it('serves tiles from the app’s own origin unless a tile origin is built in', () => {
+    // The default build sets no VITE_TILE_ORIGIN, so a tile URL is rooted at
+    // the app's base path like every other texture.
+    expect(resolveTileUrl('moon', '16k', 'abcd1234', 0, 0).startsWith(import.meta.env.BASE_URL)).toBe(true);
+  });
+
+  it('reads a shipped set’s hash and layout from the generated table', () => {
+    const entry = SECTOR_SET_TABLE['earth-day.v2/16k'];
+    expect(sectorSetHash('earth-day.v2', '16k')).toBe(entry.setHash8);
+    expect(sectorSetLayout('earth-day.v2', '16k')).toEqual({
+      baseWidth: entry.baseWidth,
+      spanU: entry.spanU,
+    });
+  });
+
+  it('fails open on a set the table does not name, rather than throwing', () => {
+    // These resolve while sectorStreamer's SECTOR_SETS literal is being built,
+    // at module evaluation: a throw there is a blank app, and `?sectors=0` is
+    // read after that import so nothing could turn streaming off first. An
+    // empty hash 404s instead, which the body survives by keeping its base
+    // map. sectorTiles.assets.test.ts is what keeps the shipped sets named.
+    expect(sectorSetHash('earth-day.v2', '32k')).toBe('');
+    expect(sectorSetLayout('earth-day.v2', '32k')).toEqual({ baseWidth: 0, spanU: 1 });
+    expect(resolveTileUrl('earth-day.v2', '32k', sectorSetHash('earth-day.v2', '32k'), 0, 0))
+      .toContain('textures/tiles/earth-day.v2/32k./0_0.webp');
   });
 });
 

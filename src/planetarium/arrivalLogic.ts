@@ -484,29 +484,43 @@ export function contactAimStep(
 
 /**
  * Engine-speed allowance near a MOVING body: the governed law plus a credit
- * for the body's velocity component along the nose. A moon sweeping into a
- * parked ship used to outrun the world-frame leave creep and bulldoze it
- * across the sky forever; with the credit the ship can always hold station
- * against the shell and walk off it — riding the train, then stepping off.
+ * for the body's own motion, so both laws hold in the BODY's rest frame. A
+ * moon sweeping into a parked ship used to outrun the world-frame leave
+ * creep and bulldoze it across the sky forever; and a ship chasing a
+ * planet's trailing face used to stall ~30 km/s short of it forever (the
+ * world-frame glide can never out-close a body fleeing at orbital speed) —
+ * with the credits the ship can always hold station against a shell, walk
+ * off it, and glide onto a receding one.
  *
- * The credit is tapered by the SAME approach weight the law blends on: full
- * on a leaving or tangent course (the trap fix lives entirely on that side —
- * the graze aims tangent-plus-bias, never back into the band), fading to
- * zero on a committed closing course. Without the taper, a body CROSSING the
- * sightline with motion partly along the nose would sell closing speed the
- * glide never granted (v·f̂ > 0 while v contributes nothing to the actual
- * closing rate) — at warp, enough to slam the shell at full throttle.
- * Motion against the nose earns nothing either way.
+ * The credit blends on the SAME approach weight the laws blend on, and each
+ * side gets the component that is genuinely free in the body frame:
+ *
+ * - Leave side (weight → 0): the body's velocity along the NOSE (v·f̂) —
+ *   holding station against a shoving shell means flying the shove's own
+ *   speed along your heading; the graze aims tangent-plus-bias, so an
+ *   escaping ship lives entirely on this side.
+ * - Approach side (weight → 1): the body's RECESSION along the sightline
+ *   (v·r̂, r̂ toward the body) — every km/s it flees along your line of
+ *   sight is a km/s that never closes the gap. Deliberately NOT v·f̂: a
+ *   body CROSSING the sightline has v·f̂ > 0 while contributing nothing to
+ *   the closing rate, and crediting it would sell closing speed the glide
+ *   never granted — at warp, enough to slam the shell at full throttle.
+ *
+ * Motion against the credited direction earns nothing on either side.
  */
 export function movingBodySpeedCap(
   surfaceDistAU: number,
   surfaceRadiusAU: number,
   cosApproach: number,
   bodyVelAlongNoseAUPerS: number,
+  bodyVelAlongSightAUPerS: number,
   kPerS: number,
   vMinAUPerS: number,
 ): number {
-  const credit = Math.max(0, bodyVelAlongNoseAUPerS) * (1 - approachBlendWeight(cosApproach));
+  const w = approachBlendWeight(cosApproach);
+  const credit =
+    w * Math.max(0, bodyVelAlongSightAUPerS)
+    + (1 - w) * Math.max(0, bodyVelAlongNoseAUPerS);
   return governedSpeedCap(surfaceDistAU, surfaceRadiusAU, cosApproach, kPerS, vMinAUPerS) + credit;
 }
 
@@ -515,9 +529,21 @@ export function movingBodySpeedCap(
  * for moons AND planets. Checking only the endpoint tunnels — at override
  * speeds a frame step (~4,800 km at 60 fps, ~30,000 km on a 100 ms hitch)
  * out-strides a terrestrial planet's shell diameter, and it tunnels exactly
- * at moon scale even at governed speeds. Returns the unit outward direction
- * from the sphere center at the segment's closest approach, or null when the
- * swept path stays clear (the common case — no allocation there).
+ * at moon scale even at governed speeds. Returns the unit outward pushback
+ * direction from the sphere center, or null when nothing needs resolving
+ * (the common case — no allocation there).
+ *
+ * A segment whose DEEPEST point is its own start is a departure, not an
+ * impact: the ship was already at the shell (or the moving shell advanced
+ * onto it since last frame) and every point it flew is shallower. Such a
+ * frame resolves by its ENDPOINT — clear of the sphere: no contact at all
+ * (the overlap self-resolved; snapping it back to the start's radial would
+ * cancel the very progress the escape made, which is how a planet's leading
+ * face used to pin a fleeing ship against the shell forever); still inside:
+ * push out along the endpoint's own radial, keeping the frame's slide and
+ * clamping only its height at the shell. Any sweep that deepens past its
+ * start keeps the closest-approach contact — that is the anti-tunneling
+ * half, and an arrival park unchanged.
  *
  * A dead-center pass has no radial direction; push back along the incoming
  * segment, and a zero-length segment dead on the center falls back to +X.
@@ -543,6 +569,16 @@ export function sweepSegmentSphere(
   let oz = p0z + dz * t - cz;
   let d = Math.sqrt(ox * ox + oy * oy + oz * oz);
   if (d >= radius) return null;
+  if (t === 0) {
+    // Deepest at the start: a departing (or swallowed-in-place) frame.
+    // Resolve by the endpoint — out clean, or held at the shell on its own
+    // radial — never by dragging the ship back to where the frame began.
+    ox = p1x - cx;
+    oy = p1y - cy;
+    oz = p1z - cz;
+    d = Math.sqrt(ox * ox + oy * oy + oz * oz);
+    if (d >= radius) return null;
+  }
   if (d < 1e-9) {
     ox = -dx;
     oy = -dy;

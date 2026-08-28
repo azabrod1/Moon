@@ -42,11 +42,11 @@
  *
  * A set is a PYRAMID of levels (SectorSetSpec.levels), and nothing here is
  * written for a particular one: a slot carries its level, the level carries
- * its grid, tile layout and source width, and every URL and UV transform
- * comes from that. Level 0 sits on the globe, level k on level k−1 with its
- * grid doubled; the parent of a slot is the arithmetic (⌊c/2⌋, ⌊r/2⌋), and
- * its segments halve as the grid doubles so every level lands on the same
- * vertex lattice. That halving is what bounds the depth: past
+ * its own published tile set, grid and tile layout, and every URL, source
+ * width and UV transform comes from that. Level 0 sits on the globe, level k
+ * on level k−1 with its grid doubled; the parent of a slot is the arithmetic
+ * (⌊c/2⌋, ⌊r/2⌋), and its segments halve as the grid doubles so every level
+ * lands on the same vertex lattice. That halving is what bounds the depth: past
  * SECTOR_MAX_LEVEL a sector has too few segments left to sit on the lattice
  * at all, and a set that declares more is refused when the body registers.
  * Slots exist only for the levels a spec declares, so a body that ships one
@@ -97,7 +97,7 @@ import {
 } from './sectorGrid';
 import { createSectorMaterial, sectorRenderOrder, syncSectorMaterial } from './sectorMaterial';
 import { loadStreamedTexture, type TextureLoad } from './textureBitmapLoader';
-import { applyTextureDefaults, resolveTileUrl, type TextureTier } from './texturePolicy';
+import { applyTextureDefaults, resolveTileUrl, sectorSetHash, sectorSetLayout } from './texturePolicy';
 import { TIER_RANK } from '../PlanetFactory';
 import { debugWarn } from '../../shared/debug';
 import { queueTextureWarm, type WarmOutcome } from './textureWarmer';
@@ -106,93 +106,139 @@ import { queueTextureWarm, type WarmOutcome } from './textureWarmer';
 export const CROP_SLOTS = ['bumpMap', 'normalMap', 'roughnessMap'] as const;
 export type CropSlot = (typeof CROP_SLOTS)[number];
 
-export interface SectorCropSpec {
-  /** Tile-set key under textures/tiles/: the FILE STEM of the base map the
-   *  crops were cut from (`earth-roughness.v2` for earth-roughness.v2.webp),
-   *  so a base that ships under a new name takes its crops with it — see
-   *  SECTOR_SETS. */
+/** One published tile set: what a tile URL is made of, plus the layout the
+ *  tiles were cut at. Every field comes from the generated table, so a set
+ *  cut at another width or span cannot be sampled with the old numbers. */
+export interface SectorTileSet {
+  /** Tile-set key under textures/tiles/: the FILE STEM of the map the set was
+   *  cut from (`earth-roughness.v2` for earth-roughness.v2.webp), so a base
+   *  that ships under a new name takes its tiles with it — see SECTOR_SETS. */
   key: string;
-  /** The base map's tier folder the crops were cut from. */
-  tier: TextureTier;
-  /** Width of that base map — the crop layout (content + gutter) follows. */
+  /** Tier folder: a colour set's source resolution, a crop's the tier of the
+   *  base map it was cut from. */
+  tier: string;
+  /** Hash of the whole set's bytes, from the generated table. */
+  hash: string;
+  /** Width of the equirect the set was cut from, as gen-tiles measured it: a
+   *  crop's layout (content + gutter) follows from it, and a colour level's
+   *  is the source width the level below reads its demand against. */
   baseWidth: number;
-  /** Sectors of longitude a crop spans (normal maps: 2, see sectorGrid). */
-  spanU?: number;
+  /** Sectors of longitude one tile spans (normal maps: 2, see sectorGrid). */
+  spanU: number;
 }
 
-/** One level of a body's tile pyramid: the colour tiles cut from one source,
- *  on one grid, in one pixel layout. Level 0 sits on the globe; level k sits
- *  on level k−1, its grid doubled and its sectors a quarter the size. */
+/** One level of a body's tile pyramid: one published tile set, on one grid,
+ *  in one pixel layout. Level 0 sits on the globe; level k sits on level
+ *  k−1, its grid doubled and its sectors a quarter the size. A level is a
+ *  set like any other — sets are keyed `<key>/<tier>`, so the levels of one
+ *  key are separate rows of the generated table, each under its own hash. */
 export interface SectorLevel {
-  /** Tier folder the level's colour tiles live under (texturePolicy
-   *  .resolveTileUrl) — by convention the source's width class ('16k'). */
-  tier: string;
+  /** The colour tiles of this level, at the hash the table publishes. */
+  set: SectorTileSet;
   grid: SectorGrid;
   /** Pixel layout of one of this level's colour tiles. */
   layout: TileLayout;
-  /** Width of the equirect source this level's tiles were cut from. It is
-   *  what the level BELOW measures magnification against: a level-1 tile has
-   *  something to add exactly when a level-0 texel is already magnified. */
-  sourceWidth: number;
+}
+
+/** Width of the equirect a level's tiles were cut from: `cols` sectors of
+ *  content, which is what cutting a map into a grid means. It is what the
+ *  level BELOW measures magnification against — a level-1 tile has something
+ *  to add exactly when a level-0 texel is already magnified. Read off the
+ *  layout the tiles are actually sampled through rather than declared beside
+ *  it, so the two cannot disagree; sectorTiles.assets.test.ts holds it
+ *  against the width gen-tiles measured on the files. */
+export function levelSourceWidth(level: SectorLevel): number {
+  return (level.grid.cols * (level.layout.width - 2 * level.layout.gutterX)) / level.layout.spanU;
 }
 
 export interface SectorSetSpec {
-  /** Tile-set key of the colour tiles: the file stem of the globe's own
-   *  colour map (its boot file, or the tier the tiles were matched to). The
-   *  key is the same at every level; the level's tier folder separates them. */
-  colorKey: string;
   /** Crops for the relief / roughness slots the base material carries. A slot
    *  the base does not currently have is not loaded; if the base gains one
    *  later (Mars's relief arrives after boot) resident sectors reload. Crops
    *  belong to LEVEL 0: mesh uvs are global, so a finer sector samples its
    *  level-0 ancestor's crop through that ancestor's own transform — the same
    *  file, the same offset/repeat, no sub-rectangle. */
-  crops: Partial<Record<CropSlot, SectorCropSpec>>;
-  /** The pyramid, coarsest first. Slots exist only for the levels declared
-   *  here, so a body with one level costs exactly what it costs today. */
+  crops: Partial<Record<CropSlot, SectorTileSet>>;
+  /** The pyramid of colour tiles, coarsest first. Slots exist only for the
+   *  levels declared here, so a body with one level costs exactly what it
+   *  costs today. */
   levels: SectorLevel[];
 }
 
-/** The 16K colour level every shipped set is cut at: 8 × 4 sectors of 2048²
- *  tiles with an 8-px gutter, from a 16256-wide equirect (8 × 2032 content). */
-export const SECTOR_LEVEL_16K: SectorLevel = {
-  tier: '16k',
-  grid: SECTOR_GRID_16K,
-  layout: SECTOR_TILE,
-  sourceWidth: SECTOR_GRID_16K.cols * (SECTOR_TILE.width - 2 * SECTOR_TILE.gutterX),
-};
+/** A set as the app names it: key and tier, resolved against the table
+ *  gen-tiles publishes for the hash its URLs carry and the layout its tiles
+ *  were measured to have. */
+export function tileSet(key: string, tier: string): SectorTileSet {
+  return { key, tier, hash: sectorSetHash(key, tier), ...sectorSetLayout(key, tier) };
+}
+
+/** URL of one sector's tile in a set. */
+function tileUrlOf(set: SectorTileSet, sector: Sector): string {
+  return resolveTileUrl(set.key, set.tier, set.hash, sector.c, sector.r);
+}
+
+/** How a set is named everywhere it has to be talked about: the generated
+ *  table's key, so a warning points straight at the row that is missing. */
+function setName(set: SectorTileSet): string {
+  return `${set.key}/${set.tier}`;
+}
+
+let tileFetchFailureNoticed = false;
+
+/** Tiles fail open to the base map by design, which means a tile origin
+ *  pointing at nothing, a set that was never published, or a host outage all
+ *  look the same as a body that is simply far away — softer, with nothing in
+ *  the console. Say it once per session, naming the set and the URL, through
+ *  debugWarn so it reaches the `?debug=1` overlay on a device as well as the
+ *  console on a desktop. Prod says it too: a wrong tile origin only exists in
+ *  a build, so dev-only would print it exactly where it cannot happen. */
+function noteTileFetchFailure(set: string, url: string, err: unknown): void {
+  if (tileFetchFailureNoticed) return;
+  tileFetchFailureNoticed = true;
+  const reason = err instanceof Error ? err.message : String(err);
+  debugWarn(`Sector tile set ${set} did not load, surfaces stay on the base map: ${url} (${reason})`);
+}
+
+/** Test seam: forget that the tile-failure notice was already printed. */
+export function resetTileFetchNoticeForTests(): void {
+  tileFetchFailureNoticed = false;
+}
+
+/** A key's 16K colour level, the level 0 of every shipped set: 8 × 4 sectors
+ *  of 2048² tiles with an 8-px gutter, from a 16256-wide equirect (8 × 2032
+ *  content). One per key, not one shared constant — each key's set is its own
+ *  bytes and carries its own hash. */
+export function sectorLevel16k(key: string): SectorLevel {
+  return { set: tileSet(key, '16k'), grid: SECTOR_GRID_16K, layout: SECTOR_TILE };
+}
 
 /** The bodies that ship a sector set, by catalog name. Colour tiles are the
  *  16K sets; every crop is the base map it names, sector-cut with the same
  *  gutter (tools/gen-tiles.mjs writes both).
  *
- *  Every key is the file stem of the map it was cut from or matched to
- *  (sectorTiles.assets.test pins this). That is what keeps a globe and its
- *  tiles coherent through the service worker: the worker may serve a
- *  one-deploy-old body under any pathname it already holds for a boot, so a
- *  base map that changes ships under a new name (`.v2` -> `.v3`) — and with
- *  the stem in the tile paths, a set cut from the new map cannot be reached
- *  through the old paths, nor the old set through the new. A re-cut of a
- *  set whose base did not change (a layout change, a new gutter) bumps the
- *  base's name for the same reason. */
+ *  Each set — every colour level and every crop — is named by the file stem
+ *  of the map it was cut from or matched to, plus the hash of its own bytes
+ *  that gen-tiles published it under (sectorTiles.assets.test pins both).
+ *  The hash keeps a globe and its tiles coherent through any cache: a re-cut
+ *  set lands in a folder nothing has ever asked for, so the only thing a
+ *  cache can do with an old tile body is miss it. The stem carries the same
+ *  guarantee one level up — a base map that changes ships under a new name
+ *  (`.v2` -> `.v3`) and takes its tiles with it. */
 export const SECTOR_SETS: Record<string, SectorSetSpec> = {
   Earth: {
-    colorKey: 'earth-day.v2',
     crops: {
-      bumpMap: { key: 'earth-bump', tier: '2k', baseWidth: 2048 },
-      roughnessMap: { key: 'earth-roughness.v2', tier: '4k', baseWidth: 4096 },
+      bumpMap: tileSet('earth-bump', '2k'),
+      roughnessMap: tileSet('earth-roughness.v2', '4k'),
     },
-    levels: [SECTOR_LEVEL_16K],
+    levels: [sectorLevel16k('earth-day.v2')],
   },
   Mars: {
-    colorKey: 'mars.v2',
-    crops: { normalMap: { key: 'mars-normal.v2', tier: '2k', baseWidth: 1440, spanU: 2 } },
-    levels: [SECTOR_LEVEL_16K],
+    crops: { normalMap: tileSet('mars-normal.v2', '2k') },
+    levels: [sectorLevel16k('mars.v2')],
   },
   Moon: {
-    colorKey: 'moon',
-    crops: { normalMap: { key: 'moon-normal', tier: '4k', baseWidth: 2880, spanU: 2 } },
-    levels: [SECTOR_LEVEL_16K],
+    crops: { normalMap: tileSet('moon-normal', '4k') },
+    levels: [sectorLevel16k('moon')],
   },
 };
 
@@ -492,7 +538,7 @@ export function sectorSetGpuBytes(
   for (const slot of CROP_SLOTS) {
     const crop = spec.crops[slot];
     if (!crop || !has(slot)) continue;
-    bytes += layoutGpuBytes(dataCropLayout(spec.levels[0].grid, crop.baseWidth, crop.spanU ?? 1));
+    bytes += layoutGpuBytes(dataCropLayout(spec.levels[0].grid, crop.baseWidth, crop.spanU));
   }
   return bytes;
 }
@@ -675,7 +721,7 @@ export class SectorStreamer {
       }
     }
     const texelLens = levels.map((_, i) => (
-      i === 0 ? 0 : (2 * Math.PI * handle.radiusAU) / levels[i - 1].sourceWidth
+      i === 0 ? 0 : (2 * Math.PI * handle.radiusAU) / levelSourceWidth(levels[i - 1])
     ));
     this.bodies.set(handle.name, {
       handle, slots, levels, texelLens, signature: '', admitting: false, maxTexelPx: 0,
@@ -1091,7 +1137,7 @@ export class SectorStreamer {
   private mapBytes(body: SectorBody, slot: SectorSlot, name: MapName): number {
     if (name === 'map') return layoutGpuBytes(body.levels[slot.level].layout);
     const crop = body.handle.spec.crops[name];
-    return crop ? layoutGpuBytes(dataCropLayout(body.levels[0].grid, crop.baseWidth, crop.spanU ?? 1)) : 0;
+    return crop ? layoutGpuBytes(dataCropLayout(body.levels[0].grid, crop.baseWidth, crop.spanU)) : 0;
   }
 
   /** Map fetches a load for this slot would put on the wire: its colour tile
@@ -1234,10 +1280,11 @@ export class SectorStreamer {
     const level = body.levels[slot.level];
     const base = body.levels[0];
     const baseSector = ancestorSector(slot.sector, slot.level);
-    const maps: Array<{ name: MapName; url: string; kind: 'color' | 'data'; grid: SectorGrid; sector: Sector; layout: TileLayout }> = [
+    const maps: Array<{ name: MapName; set: string; url: string; kind: 'color' | 'data'; grid: SectorGrid; sector: Sector; layout: TileLayout }> = [
       {
         name: 'map',
-        url: resolveTileUrl(handle.spec.colorKey, level.tier, slot.sector.c, slot.sector.r),
+        set: setName(level.set),
+        url: tileUrlOf(level.set, slot.sector),
         kind: 'color',
         grid: level.grid,
         sector: slot.sector,
@@ -1249,11 +1296,12 @@ export class SectorStreamer {
       if (!crop || !realMapIn(handle.material, cropSlot)) continue;
       maps.push({
         name: cropSlot,
-        url: resolveTileUrl(crop.key, crop.tier, baseSector.c, baseSector.r),
+        set: setName(crop),
+        url: tileUrlOf(crop, baseSector),
         kind: 'data',
         grid: base.grid,
         sector: baseSector,
-        layout: dataCropLayout(base.grid, crop.baseWidth, crop.spanU ?? 1),
+        layout: dataCropLayout(base.grid, crop.baseWidth, crop.spanU),
       });
     }
     const loading: SectorLoad = {
@@ -1313,7 +1361,10 @@ export class SectorStreamer {
             if (loading.pending === 0) this.materialize(body, slot);
           });
         },
-        () => fail(),
+        (err) => {
+          if (stillWanted()) noteTileFetchFailure(m.set, m.url, err);
+          fail();
+        },
         stillWanted,
         loading.abort.signal,
       );

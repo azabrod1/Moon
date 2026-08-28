@@ -16,6 +16,14 @@
  * build FAILS if the script is missing, a warm file doesn't exist in dist,
  * or the texture count collapses (the gen-maps "loud missing source"
  * convention).
+ *
+ * Sector tile sets are injected separately from the manifest: their folder
+ * names carry a hash of their own contents, so the worker caches them with
+ * no digest and no expiry, and an off-origin set needs its origin on an
+ * allowlist before the worker will touch it at all. The sets come from the
+ * table gen-tiles generates and the origin from VITE_TILE_ORIGIN — the same
+ * two sources the app resolves its tile URLs through, so the worker cannot
+ * end up allowing a different host or a different set than the app fetches.
  */
 import { createHash } from 'node:crypto';
 import { readdirSync, readFileSync, statSync, writeFileSync, existsSync } from 'node:fs';
@@ -24,7 +32,11 @@ import { fileURLToPath } from 'node:url';
 
 const DATA_DIRS = ['textures', 'stardata', 'fonts', 'models', 'historic'];
 const MIN_WARM_TEXTURES = 21;
+const TILE_ROOT = 'textures/tiles';
 const TEMPLATE_PATH = fileURLToPath(new URL('./sw.template.js', import.meta.url));
+const GENERATED_SETS_PATH = fileURLToPath(new URL('../src/planetarium/world/sectorSets.generated.ts', import.meta.url));
+const TABLE_BEGIN = '/* table:begin */';
+const TABLE_END = '/* table:end */';
 
 function walkFiles(dir) {
   const out = [];
@@ -36,15 +48,65 @@ function walkFiles(dir) {
   return out;
 }
 
+/** Where tiles are served from, read out of Vite's resolved `config.env` —
+ *  the very object that backs `import.meta.env` in the app
+ *  (world/texturePolicy.ts). It has to be that object and not process.env:
+ *  Vite merges `.env` files into config.env and never writes them back to
+ *  process.env, so a VITE_TILE_ORIGIN set in .env.production would leave the
+ *  app fetching from the host while the worker allowed nothing — tiles
+ *  uncached, no error. Empty is the app's own origin.
+ *
+ *  Exported for swContract.test.ts, which drives the plugin with a fake
+ *  config.env to pin exactly that. */
+export function tileOriginFrom(env) {
+  const raw = (env?.VITE_TILE_ORIGIN ?? '').trim();
+  if (!raw) return '';
+  let url;
+  try {
+    url = new URL(raw);
+  } catch {
+    throw new Error(`sw: VITE_TILE_ORIGIN "${raw}" is not an absolute URL`);
+  }
+  // The tile path is appended to this string, so anything after the path —
+  // a query, a fragment, credentials — would swallow it: the app would
+  // request `?token=abc/tiles/…` and the worker, which ignores queried
+  // requests, would allow nothing.
+  if (url.protocol !== 'https:' && url.protocol !== 'http:') {
+    throw new Error(`sw: VITE_TILE_ORIGIN "${raw}" must be an http(s) URL`);
+  }
+  if (url.username || url.password || url.search || url.hash || raw.endsWith('?') || raw.endsWith('#')) {
+    throw new Error(`sw: VITE_TILE_ORIGIN "${raw}" must be a bare origin and path, with no query, fragment or credentials`);
+  }
+  return url.origin + url.pathname.replace(/\/+$/, '');
+}
+
+/** The tile sets the app names, read out of the table gen-tiles generates —
+ *  the same table the app resolves its tile URLs through, so the worker
+ *  cannot end up allowing a set nothing fetches or refusing one it does. That
+ *  file emits its literal as JSON between markers for exactly this reason. */
+function generatedTileSets() {
+  const source = readFileSync(GENERATED_SETS_PATH, 'utf8');
+  const begin = source.indexOf(TABLE_BEGIN);
+  const end = source.indexOf(TABLE_END);
+  if (begin < 0 || end < 0) throw new Error('sw: sectorSets.generated.ts has no table markers');
+  const table = JSON.parse(source.slice(begin + TABLE_BEGIN.length, end));
+  return Object.entries(table).map(([id, set]) => {
+    const [key, tier] = id.split('/');
+    return { id, dir: `${TILE_ROOT}/${key}/${tier}.${set.setHash8}/` };
+  });
+}
+
 export default function swPlugin() {
   let outDir = '';
   let base = '/';
+  let origin = '';
   return {
     name: 'moon-service-worker',
     apply: 'build',
     configResolved(config) {
       outDir = path.resolve(config.root, config.build.outDir);
       base = config.base;
+      origin = tileOriginFrom(config.env);
       if (!base.startsWith('/')) {
         // Manifest keys are absolute pathnames because the worker matches on
         // url.pathname; a relative base ('./') would emit keys no request
@@ -98,15 +160,43 @@ export default function swPlugin() {
         throw new Error(`sw: precache collapsed to ${precache.length} entries`);
       }
 
+      // The tile list is the worker's whole picture of what tile bytes are
+      // legitimate: an empty one silently turns tile caching off and lets the
+      // activate prune delete every tile a device holds. Loud, like the
+      // precache checks above.
+      const sets = generatedTileSets();
+      if (sets.length === 0) throw new Error('sw: the generated tile-set table names no sets');
+      // Tiles fail open to the base map, so a build that names sets nothing
+      // will serve produces a plausible-looking app with soft hero bodies and
+      // no error anywhere. Fail here instead.
+      if (!origin) {
+        for (const set of sets) {
+          if (!existsSync(path.join(outDir, set.dir))) {
+            throw new Error(
+              `sw: tile set ${set.id} is not in dist under ${set.dir} and VITE_TILE_ORIGIN is unset — ` +
+                'ship the tiles or point the build at the host that has them',
+            );
+          }
+        }
+      }
+      const tileSets = sets.map((set) => (origin ? `${origin}/` : base) + set.dir);
+      // The worker touches a cross-origin request only for an origin named
+      // here; empty means tiles are the app's own, like every other texture.
+      const tileOrigins = origin ? [new URL(origin).origin] : [];
+
       const template = readFileSync(TEMPLATE_PATH, 'utf8');
       const marker = '/* __INJECT_MANIFEST__ */';
       if (!template.includes(marker)) throw new Error('sw: template inject marker missing');
       const sw = template.replace(
         marker,
-        `const MANIFEST = ${JSON.stringify(manifest)};\nconst PRECACHE = ${JSON.stringify(precache)};`,
+        `const MANIFEST = ${JSON.stringify(manifest)};\nconst PRECACHE = ${JSON.stringify(precache)};\n` +
+          `const TILE_ORIGINS = ${JSON.stringify(tileOrigins)};\nconst TILE_SETS = ${JSON.stringify(tileSets)};`,
       );
       writeFileSync(path.join(outDir, 'sw.js'), sw);
-      console.log(`sw.js: ${Object.keys(manifest).length} manifest entries, ${precache.length} precached`);
+      console.log(
+        `sw.js: ${Object.keys(manifest).length} manifest entries, ${precache.length} precached, ` +
+          `${tileSets.length} tile sets${tileOrigins.length ? ` from ${tileOrigins.join(' ')}` : ''}`,
+      );
     },
   };
 }

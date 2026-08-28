@@ -583,6 +583,34 @@ describe('sweepSegmentSphere — the shared collision test', () => {
     expect(hit).not.toBeNull();
     expect(Math.hypot(hit!.ox, hit!.oy, hit!.oz)).toBeCloseTo(1, 12);
   });
+
+  it('a departing frame whose start the moving shell swallowed is NOT a contact', () => {
+    // The leading-face trap: the ship parked ON the shell last frame, the
+    // planet advanced onto that point, and the ship flew outward+tangential
+    // to a clear endpoint. Deepest point of the segment is its start — a
+    // contact here would re-park the ship and cancel the frame's escape
+    // progress, which pinned fleeing ships against a planet's leading face
+    // forever.
+    const start = { x: R * 0.9999, y: 0, z: 0 }; // just inside (shell moved over it)
+    const end = { x: R * 1.001, y: R * 0.02, z: 0 }; // receding, clear of the shell
+    expect(sweepSegmentSphere(start.x, start.y, start.z, end.x, end.y, end.z, 0, 0, 0, R))
+      .toBeNull();
+  });
+
+  it('a start-deepest frame still inside resolves by its ENDPOINT radial, keeping the slide', () => {
+    // The body outran the ship this frame: hold it on the shell, but on the
+    // endpoint's own radial — the tangential progress survives, only the
+    // height clamps.
+    const hit = sweepSegmentSphere(
+      R * 0.99, 0, 0,
+      R * 0.995, R * 0.05, 0,
+      0, 0, 0, R,
+    );
+    expect(hit).not.toBeNull();
+    const len = Math.hypot(R * 0.995, R * 0.05);
+    expect(hit!.ox).toBeCloseTo((R * 0.995) / len, 9);
+    expect(hit!.oy).toBeCloseTo((R * 0.05) / len, 9);
+  });
 });
 
 describe('moonArrivalPose — ladder fixtures', () => {
@@ -1097,32 +1125,48 @@ describe('contactAimStep', () => {
 
 describe('movingBodySpeedCap', () => {
   it('matches the plain law for a body at rest', () => {
-    expect(movingBodySpeedCap(1e-4, 1e-5, 0.5, 0, K, VMIN))
+    expect(movingBodySpeedCap(1e-4, 1e-5, 0.5, 0, 0, K, VMIN))
       .toBe(governedSpeedCap(1e-4, 1e-5, 0.5, K, VMIN));
   });
 
-  it('credits the body velocity along the nose on top of the law', () => {
+  it('credits the body velocity along the nose on top of the leave law', () => {
+    // Nose dead away from a chasing body: v·f̂ = B, v·r̂ = −B (closing).
     const B = 30 / KM_PER_AU;
-    expect(movingBodySpeedCap(SHIP_CLEARANCE_AU, 1e-5, -1, B, K, VMIN))
+    expect(movingBodySpeedCap(SHIP_CLEARANCE_AU, 1e-5, -1, B, -B, K, VMIN))
       .toBeCloseTo(governedSpeedCap(SHIP_CLEARANCE_AU, 1e-5, -1, K, VMIN) + B, 15);
   });
 
   it('motion against the nose earns no credit', () => {
-    expect(movingBodySpeedCap(1e-4, 1e-5, 1, -30 / KM_PER_AU, K, VMIN))
+    // Head-on at an oncoming body: v·f̂ = −B and v·r̂ = −B — closing motion
+    // buys nothing on either side.
+    const B = 30 / KM_PER_AU;
+    expect(movingBodySpeedCap(1e-4, 1e-5, 1, -B, -B, K, VMIN))
       .toBe(governedSpeedCap(1e-4, 1e-5, 1, K, VMIN));
   });
 
-  it('a committed closing course earns no credit either — a crossing body must not sell closing speed', () => {
+  it('a crossing body must not sell closing speed', () => {
     // Nose 0.8-aligned with the body, body velocity partly along the nose but
     // ⊥ the sightline: v·f̂ > 0 yet nothing about the geometry reduces the
     // real closing rate, so the glide contract must hold exactly.
-    expect(movingBodySpeedCap(1e-4, 1e-5, 0.8, 30 / KM_PER_AU, K, VMIN))
+    expect(movingBodySpeedCap(1e-4, 1e-5, 0.8, 30 / KM_PER_AU, 0, K, VMIN))
       .toBe(governedSpeedCap(1e-4, 1e-5, 0.8, K, VMIN));
   });
 
-  it('the credit tapers on the same blend the law uses (half-weight at cos 0.15)', () => {
+  it('credits recession along the sightline on a committed closing course', () => {
+    // Chasing a body fleeing dead along the nose (v·f̂ = v·r̂ = B): the cap
+    // rides B above the world-frame glide, so the RELATIVE closing rate is
+    // exactly the glide — without this the trailing-face tailgate never
+    // closes the last stretch (the body flees faster than the glide floor).
     const B = 30 / KM_PER_AU;
-    expect(movingBodySpeedCap(1e-4, 1e-5, 0.15, B, K, VMIN))
+    expect(movingBodySpeedCap(1e-4, 1e-5, 1, B, B, K, VMIN))
+      .toBeCloseTo(governedSpeedCap(1e-4, 1e-5, 1, K, VMIN) + B, 15);
+  });
+
+  it('the nose credit tapers on the same blend the law uses (half-weight at cos 0.15)', () => {
+    // Sightline recession zero (crossing geometry), so only the tapered
+    // nose-side credit remains.
+    const B = 30 / KM_PER_AU;
+    expect(movingBodySpeedCap(1e-4, 1e-5, 0.15, B, 0, K, VMIN))
       .toBeCloseTo(governedSpeedCap(1e-4, 1e-5, 0.15, K, VMIN) + B / 2, 15);
   });
 
@@ -1148,7 +1192,7 @@ describe('movingBodySpeedCap', () => {
       let h = 0;
       for (let t = 0; t < 10; t += dt) {
         const cap = credited
-          ? movingBodySpeedCap(h + SHIP_CLEARANCE_AU, renderedR, -1, B, K, VMIN)
+          ? movingBodySpeedCap(h + SHIP_CLEARANCE_AU, renderedR, -1, B, -B, K, VMIN)
           : governedSpeedCap(h + SHIP_CLEARANCE_AU, renderedR, -1, K, VMIN);
         h = Math.max(0, h + (Math.min(commanded, cap) - B) * dt);
       }

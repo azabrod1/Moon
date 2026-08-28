@@ -16,15 +16,23 @@
 // .moon-data-cache/ (gitignored); the Mars source is fetched from the USGS WMS
 // as 2048x2048 GetMap tiles (their max is 4096 wide, the 232 m mosaic is 12 GB).
 //
+// A set lives in a folder named for its own contents —
+// tiles/<key>/<tier>.<setHash8>/ — so a tile pathname is a promise about the
+// bytes behind it: either those exact bytes or a 404, never a re-cut set
+// under a name something already cached. Every run rewrites
+// tiles/sets.v1.json and src/planetarium/world/sectorSets.generated.ts from the
+// folders on disk, which is where the app reads the hashes it puts in URLs.
+//
 // Prereq (not a package.json dependency — this runs once per asset drop):
 //   npm i --no-save sharp
 // Usage:
 //   node tools/gen-tiles.mjs earth            # one job
 //   node tools/gen-tiles.mjs --all            # every job
 //   node tools/gen-tiles.mjs earth --verify   # reassemble + gate only
+//   node tools/gen-tiles.mjs --index          # re-hash the sets on disk only
 //   --cache=<dir>  source cache (default .moon-data-cache)
 import sharp from 'sharp';
-import { mkdir, writeFile, access, stat, readFile } from 'node:fs/promises';
+import { mkdir, writeFile, access, stat, readFile, readdir, rename, rm } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
 import path from 'node:path';
 
@@ -32,6 +40,12 @@ sharp.cache(false);
 sharp.concurrency(0);
 
 const TEX = path.resolve('public/textures');
+const TILES = path.join(TEX, 'tiles');
+// Pathname-versioned because it sits inside a service-worker data directory,
+// where a file's name has to promise its format (the swPlugin manifest
+// invariant): a shape change ships as sets.v2.json.
+const SETS_JSON = path.join(TILES, 'sets.v1.json');
+const GENERATED_TS = path.resolve('src/planetarium/world/sectorSets.generated.ts');
 const args = process.argv.slice(2);
 const flag = (n) => args.includes(`--${n}`);
 const opt = (n, d) => { const h = args.find((a) => a.startsWith(`--${n}=`)); return h ? h.slice(n.length + 3) : d; };
@@ -182,10 +196,54 @@ async function padWrapClamp(raw, w, h, channels, gx, gy) {
     .raw().toBuffer();
 }
 
+const tileNames = (files) => files.filter((f) => /^\d+_\d+\.webp$/.test(f)).sort();
+
+/**
+ * A set's identity: the first 8 hex of a SHA-256 over the sorted
+ * `<name>\0<file sha256>\n` list of every tile in it. Over the WHOLE set, so
+ * one changed tile moves the folder — a partial re-cut cannot hide under a
+ * name a client already has cached.
+ */
+async function setHash8(dir, files) {
+  const h = createHash('sha256');
+  for (const name of files) {
+    h.update(`${name}\0${createHash('sha256').update(await readFile(path.join(dir, name))).digest('hex')}\n`);
+  }
+  return h.digest('hex').slice(0, 8);
+}
+
+/** The one folder holding a (key, tier) set. */
+async function setDir(key, tier) {
+  const keyDir = path.join(TILES, key);
+  const found = (await readdir(keyDir)).filter((f) => f.split('.')[0] === tier);
+  if (found.length !== 1) {
+    throw new Error(`${key}: expected one ${tier} set folder, found ${found.join(', ') || 'none'}`);
+  }
+  return path.join(keyDir, found[0]);
+}
+
+/** Move a freshly cut set from its staging folder into the folder its own
+ *  hash names, and drop whatever set of that (key, tier) was there before —
+ *  the app names exactly one, and two would leave the index nothing to
+ *  choose between. */
+async function finalizeSet(key, tier, staging) {
+  const files = tileNames(await readdir(staging));
+  const hash = await setHash8(staging, files);
+  const keyDir = path.join(TILES, key);
+  for (const folder of await readdir(keyDir)) {
+    if (folder.split('.')[0] === tier && folder !== `${tier}.staging`) {
+      await rm(path.join(keyDir, folder), { recursive: true, force: true });
+    }
+  }
+  const dir = path.join(keyDir, `${tier}.${hash}`);
+  await rename(staging, dir);
+  return dir;
+}
+
 /**
  * Cut an equirect (w × h, `content` px per sector) into gutter-padded sector
- * images under tiles/<key>/<tier>/ (key = the base map's file stem, so a
- * re-based map's new name carries its tiles' paths with it): each
+ * images under tiles/<key>/<tier>.<setHash8>/ (key = the base map's file
+ * stem, so a re-based map's new name carries its tiles' paths with it): each
  * `spanU · content + 2·gutter` px wide
  * (the sector plus (spanU−1)/2 of a neighbour each side — normal maps use 2,
  * see world/sectorGrid.ts) and `content + 2·gutter` px tall.
@@ -200,10 +258,14 @@ async function cutGrid(raw, w, h, channels, content, key, tier, webpOpts, spanU 
   const padded = await padWrapClamp(raw, w, h, channels, lead + gx, g);
   const width = spanU * (content + 2 * g);
   const height = content + 2 * g;
+  // Staged first, moved into place under the hash of what was written: the
+  // folder can never name a set that is still half there.
+  const staging = path.join(TILES, key, `${tier}.staging`);
+  await rm(staging, { recursive: true, force: true });
   let total = 0;
   for (let r = 0; r < GRID.rows; r++) {
     for (let c = 0; c < GRID.cols; c++) {
-      const out = path.join(TEX, 'tiles', key, tier, `${c}_${r}.webp`);
+      const out = path.join(staging, `${c}_${r}.webp`);
       // The left pad is exactly lead + gx, so the crop for column c starts at
       // c·content in padded coordinates whatever its span.
       const pipeline = sharp(padded, { raw: { width: w + 2 * (lead + gx), height: h + 2 * g, channels }, limitInputPixels: false })
@@ -213,7 +275,8 @@ async function cutGrid(raw, w, h, channels, content, key, tier, webpOpts, spanU 
       total += (await stat(out)).size;
     }
   }
-  console.log(`  tiles/${key}/${tier}: ${GRID.cols * GRID.rows} × ${width}×${height} ${(total / 1e6).toFixed(1)} MB`);
+  const dir = await finalizeSet(key, tier, staging);
+  console.log(`  tiles/${key}/${path.basename(dir)}: ${GRID.cols * GRID.rows} × ${width}×${height} ${(total / 1e6).toFixed(1)} MB`);
 }
 
 const cutTiles = (raw, key, webpOpts = PHOTO_WEBP) => cutGrid(raw, FULL_W, FULL_H, 3, CONTENT, key, '16k', webpOpts);
@@ -271,6 +334,153 @@ async function writeDownsamples(raw, outs) {
   }
 }
 
+/** The layout a set on disk actually has, read from its own files. The app
+ *  holds the same numbers (world/sectorGrid.ts) and samples tiles through
+ *  them, so they are measured here rather than assumed: a set cut at another
+ *  gutter or grid has to fail a check, not shift every sector by a few
+ *  texels. */
+async function describeSet(dir, files) {
+  let cols = 0;
+  let rows = 0;
+  for (const name of files) {
+    const [c, r] = name.replace('.webp', '').split('_').map(Number);
+    cols = Math.max(cols, c + 1);
+    rows = Math.max(rows, r + 1);
+  }
+  if (files.length !== cols * rows) {
+    throw new Error(`${dir}: ${files.length} tiles do not fill a ${cols}x${rows} grid`);
+  }
+  // Against the grid, not against itself: the highest indices only say how
+  // far the tiles that exist reach, so a set missing its whole last column
+  // measures as a complete 7x4 and would publish a layout the app then
+  // samples every sector with.
+  if (cols !== GRID.cols || rows !== GRID.rows) {
+    throw new Error(`${dir}: ${cols}x${rows} tiles, not the ${GRID.cols}x${GRID.rows} grid`);
+  }
+  let size;
+  for (const name of files) {
+    const { width, height } = await sharp(path.join(dir, name)).metadata();
+    if (!size) size = { width, height };
+    else if (width !== size.width || height !== size.height) {
+      throw new Error(`${dir}: ${name} is ${width}x${height}, not ${size.width}x${size.height}`);
+    }
+  }
+  const gutter = GRID.gutter;
+  const content = size.height - 2 * gutter;
+  // Width is spanU whole sectors plus the same gutter FRACTION as the height
+  // (world/sectorGrid.ts), so the ratio is the span exactly.
+  if (size.width % size.height !== 0) {
+    throw new Error(`${dir}: ${size.width}x${size.height} is not a whole number of sectors wide`);
+  }
+  return {
+    grid: { cols, rows },
+    content,
+    gutter,
+    tileWidth: size.width,
+    tileHeight: size.height,
+    baseWidth: content * cols,
+    spanU: size.width / size.height,
+    fileCount: files.length,
+  };
+}
+
+/** The generated table the app reads its set hashes from. The object literal
+ *  is emitted as JSON between markers so tools/swPlugin.mjs can read the same
+ *  table at build time without a TypeScript toolchain. */
+function generatedSource(sets) {
+  return `/**
+ * GENERATED — written by \`node tools/gen-tiles.mjs\` from the tile sets on
+ * disk (and mirrored in public/textures/tiles/sets.v1.json). Never edit by hand.
+ *
+ * A sector tile set is published under a folder named for its own contents,
+ * tiles/<key>/<tier>.<setHash8>/, and this table is where the app reads that
+ * hash. The set hash is what a tile pathname promises: those exact bytes or a
+ * 404, never a re-cut set under a name a cache already holds — which is what
+ * lets a tile be cached forever, on a CDN or in the service worker, without a
+ * revalidation. The layout numbers are the ones the tiles were measured to
+ * have; world/sectorGrid.ts samples them with the same arithmetic and
+ * sectorTiles.assets.test.ts holds the two together.
+ *
+ * The literal below is JSON between its markers so tools/swPlugin.mjs can
+ * read the same table at build time without a TypeScript toolchain.
+ */
+
+export interface GeneratedSectorSet {
+  /** First 8 hex of SHA-256 over the sorted (file name, file SHA-256) list
+   *  of the whole set — and the suffix of the folder it lives in. */
+  setHash8: string;
+  grid: { cols: number; rows: number };
+  /** Surface px per sector inside the gutter. */
+  content: number;
+  gutter: number;
+  tileWidth: number;
+  tileHeight: number;
+  /** Width of the equirect the set was cut from: content × cols. */
+  baseWidth: number;
+  /** Sectors of longitude one tile spans (normal-map crops: 2). */
+  spanU: number;
+  fileCount: number;
+}
+
+/** Every shipped set, keyed \`<key>/<tier>\`. */
+export const SECTOR_SET_TABLE: Record<string, GeneratedSectorSet> = /* table:begin */ ${
+    JSON.stringify(sets, null, 2)
+  } /* table:end */;
+`;
+}
+
+/**
+ * Rewrite tiles/sets.v1.json and the generated table from the sets on disk,
+ * moving any set whose folder name is not its own hash (which is how a set
+ * cut before this naming, or edited in place, is adopted).
+ */
+async function indexSets() {
+  // Every folder is hashed before any of them is moved. A rename is a
+  // destructive operation on a sibling's name, so the two folders of one
+  // <key>/<tier> have to be caught while both are still on disk — renaming
+  // as we walk would delete whichever folder already held the real hash name
+  // and leave the run to die on the missing directory.
+  const found = [];
+  const byId = new Map();
+  for (const key of (await readdir(TILES)).sort()) {
+    const keyDir = path.join(TILES, key);
+    if (!(await stat(keyDir)).isDirectory()) continue;
+    for (const folder of (await readdir(keyDir)).sort()) {
+      const dir = path.join(keyDir, folder);
+      if (!(await stat(dir)).isDirectory()) continue;
+      const tier = folder.split('.')[0];
+      const files = tileNames(await readdir(dir));
+      if (files.length === 0) throw new Error(`${dir}: no tiles`);
+      const id = `${key}/${tier}`;
+      const seen = byId.get(id);
+      if (seen) {
+        throw new Error(`${id}: two set folders, ${seen} and ${folder} — delete the stale one`);
+      }
+      byId.set(id, folder);
+      // Hash and measure while nothing has moved: a set that fails its grid
+      // or dimension check must fail with its folder where it was found, not
+      // already renamed to a content hash that names a broken set.
+      found.push({
+        id, key, tier, folder, keyDir, dir, files,
+        setHash: await setHash8(dir, files),
+        layout: await describeSet(dir, files),
+      });
+    }
+  }
+
+  const sets = {};
+  for (const set of found) {
+    if (set.folder !== `${set.tier}.${set.setHash}`) {
+      await rename(set.dir, path.join(set.keyDir, `${set.tier}.${set.setHash}`));
+      console.log(`  ${set.key}/${set.folder} -> ${set.tier}.${set.setHash}`);
+    }
+    sets[set.id] = { setHash8: set.setHash, ...set.layout };
+  }
+  await writeFile(SETS_JSON, `${JSON.stringify(sets, null, 2)}\n`);
+  await writeFile(GENERATED_TS, generatedSource(sets));
+  console.log(`  indexed ${Object.keys(sets).length} sets -> ${path.relative(process.cwd(), SETS_JSON)}`);
+}
+
 /** Reassemble the written tiles at 512px each into a 4096x2048 mosaic and
  *  compare it with the boot/4K map: per-channel mean delta and RMS in 0-255
  *  units, the tools/texdiff.mjs thresholds (mean <= 2, RMS <= 6). A tile
@@ -279,10 +489,11 @@ async function verify(key, refPath) {
   const q = CONTENT / 4; // 508: each sector's content at quarter scale
   const W = GRID.cols * q;
   const H = GRID.rows * q;
+  const dir = await setDir(key, '16k');
   const composites = [];
   for (let r = 0; r < GRID.rows; r++) {
     for (let c = 0; c < GRID.cols; c++) {
-      const tile = path.join(TEX, 'tiles', key, '16k', `${c}_${r}.webp`);
+      const tile = path.join(dir, `${c}_${r}.webp`);
       composites.push({
         input: await sharp(tile)
           .extract({ left: GRID.gutter, top: GRID.gutter, width: CONTENT, height: CONTENT })
@@ -438,8 +649,8 @@ const JOBS = {
 };
 
 const names = flag('all') ? Object.keys(JOBS) : jobsWanted;
-if (names.length === 0) {
-  console.error('usage: node tools/gen-tiles.mjs <job...> | --all  [--verify | --crops] [--cache=dir]');
+if (names.length === 0 && !flag('index')) {
+  console.error('usage: node tools/gen-tiles.mjs <job...> | --all | --index  [--verify | --crops] [--cache=dir]');
   process.exit(2);
 }
 for (const name of names) {
@@ -471,3 +682,8 @@ for (const name of names) {
   }
   console.log(`  ${((Date.now() - t0) / 1000).toFixed(0)} s`);
 }
+// Always last, whatever ran: the app reads its set hashes out of the
+// generated table, so a cut that did not refresh it would leave every URL
+// pointing at the set it replaced.
+console.log('== index');
+await indexSets();

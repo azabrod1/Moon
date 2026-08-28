@@ -1073,8 +1073,10 @@ const JOBS = {
         source: { kind: 'mosaic', files: () => NASA_500M_TILES((t) => `BlackMarble_2016_${t}_geo.tif`), across: 4, down: 2 },
       },
     ],
+    // Boot map and one rung. No 8K: the tier ladder stops at 4K for the night
+    // lights (an uncompressed 8K map is 170.7 MiB of the sector memory
+    // envelope), so an 8K file here would ship bytes nothing fetches.
     downsamples: [
-      { w: 8192, h: 4096, out: path.join(TEX, '8k', 'earth-night.v2.webp') },
       { w: 4096, h: 2048, out: path.join(TEX, '4k', 'earth-night.v2.webp') },
       { w: 2048, h: 1024, out: path.join(TEX, 'earth-night.v2.webp') },
     ],

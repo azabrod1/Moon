@@ -46,6 +46,7 @@ import {
 import { retryDelayMs, urlSpread } from './world/textureRetryPolicy';
 import { captureDeviceTextureCaps, type TextureTier } from './world/texturePolicy';
 import {
+  SECTOR_BUDGET_BYTES_DESKTOP,
   SECTOR_ENVELOPE_BYTES_DESKTOP,
   SECTOR_ENVELOPE_BYTES_TOUCH,
   SECTOR_SETS,
@@ -1399,10 +1400,10 @@ describe('Earth\'s night lights on the colour ladder', () => {
     expect(spy.disposed).toBe(true);
   });
 
-  it('climbs to 8K on a desktop and stops at 4K on a phone', () => {
+  it('stops at 4K on every profile — there is no 8K night map to fetch', () => {
     withMaxTextureSize(16384);
-    expect(makeTextureUpgrade('earthNight', nightMaterial(null))!.tiers).toEqual(['4k', '8k']);
-    expect(makeTextureUpgrade('earthNight', nightMaterial(null))!.effectiveMaxTier).toBe('8k');
+    expect(makeTextureUpgrade('earthNight', nightMaterial(null))!.tiers).toEqual(['4k']);
+    expect(makeTextureUpgrade('earthNight', nightMaterial(null))!.effectiveMaxTier).toBe('4k');
     withMaxTextureSize(16384, true);
     expect(makeTextureUpgrade('earthNight', nightMaterial(null))!.effectiveMaxTier).toBe('4k');
   });
@@ -1412,9 +1413,9 @@ describe('Earth\'s night lights on the colour ladder', () => {
     const mat = nightMaterial(fakeTexture('boot'));
     const up = makeTextureUpgrade('earthNight', mat)!;
     expect(appliedTierGpuBytes(up)).toBe(0); // still on the boot map
-    up.appliedTier = '8k';
-    mat.uniforms.nightTexture.value = new THREE.Texture({ width: 8192, height: 4096 } as unknown as HTMLImageElement);
-    expect(appliedTierGpuBytes(up) / (1024 * 1024)).toBeCloseTo(170.7, 1);
+    up.appliedTier = '4k';
+    mat.uniforms.nightTexture.value = new THREE.Texture({ width: 4096, height: 2048 } as unknown as HTMLImageElement);
+    expect(appliedTierGpuBytes(up) / (1024 * 1024)).toBeCloseTo(42.7, 1);
   });
 });
 
@@ -1440,26 +1441,33 @@ describe('the ladder against the sector memory envelope', () => {
     return bytes;
   }
 
-  it('leaves a desktop nothing at its heaviest, and five sector sets in the case it really hits', () => {
+  it('leaves a desktop five sector sets at its heaviest, and its whole budget in the case it really hits', () => {
     const worst = ladderWorstCaseBytes(false);
-    // Six 4K planets plus THREE 8K maps — the Moon, the cloud deck and the
-    // night lights — which is the whole envelope: a desktop that has toured
-    // every body, earned every top rung and cannot transcode the Moon's
-    // compressed tier streams no tiles. The ladder never gives a map back
-    // today, so that state is permanent for the session once reached.
-    expect(mib(worst)).toBeCloseTo(768.0, 1);
-    expect(SECTOR_ENVELOPE_BYTES_DESKTOP - worst).toBeLessThanOrEqual(0);
+    // Seven 4K maps plus TWO 8K ones — the Moon and the cloud deck: a desktop
+    // that has toured every body, earned every top rung and cannot transcode
+    // the Moon's compressed tier still has 128 MiB of the envelope left, five
+    // Earth sector sets. The ladder never gives a map back today, so whatever
+    // this leaves is what the session streams within from then on.
+    expect(mib(worst)).toBeCloseTo(640.0, 1);
+    const worstBudget = SECTOR_ENVELOPE_BYTES_DESKTOP - worst;
+    expect(mib(worstBudget)).toBeCloseTo(128.0, 1);
+    expect(worstBudget / sectorSetGpuBytes(SECTOR_SETS.Earth)).toBeGreaterThanOrEqual(5);
     // The case a desktop session actually reaches: the Moon's 8K ships
-    // GPU-compressed, which hands ~128 MiB back — five Earth sector sets.
+    // GPU-compressed, which hands ~128 MiB more back and leaves the sector
+    // budget whole — the streamer runs at its own cap, eleven Earth sets,
+    // with the envelope no longer the binding limit.
     const real = worst - equirectMapGpuBytes(8192) + equirectMapGpuBytes(8192, true);
     const budget = SECTOR_ENVELOPE_BYTES_DESKTOP - real;
-    expect(mib(budget)).toBeCloseTo(128.0, 1);
-    expect(budget / sectorSetGpuBytes(SECTOR_SETS.Earth)).toBeGreaterThanOrEqual(5);
+    expect(mib(budget)).toBeCloseTo(256.0, 1);
+    // Whole to within the rounding of nine map estimates, not 3 bytes short
+    // of anything the streamer can spend.
+    expect(SECTOR_BUDGET_BYTES_DESKTOP - budget).toBeLessThan(1024);
+    expect(budget / sectorSetGpuBytes(SECTOR_SETS.Earth)).toBeGreaterThanOrEqual(11);
   });
 
   it('leaves a phone nothing at its heaviest: every 4K map at once fills the envelope', () => {
     const worst = ladderWorstCaseBytes(true);
-    // Nine 4K maps — the touch caps hold all three 8K rungs down to 4K.
+    // Nine 4K maps — the touch caps hold both 8K rungs down to 4K.
     expect(mib(worst)).toBeCloseTo(384.0, 1);
     // Over the envelope, so the sector budget is nothing: a phone that has
     // approached every body streams no tiles until the ladder gives maps

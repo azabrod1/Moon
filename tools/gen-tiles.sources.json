@@ -134,7 +134,7 @@
     "height": 21600,
     "product": "NASA Black Marble 2016 VIIRS night lights, 500 m tile A1 of the 4x2 grid (columns A-D west to east, rows 1-2 north to south) that makes the 86400x43200 whole; eoimages.gsfc.nasa.gov/images/imagerecords/144000/144898/",
     "used_by": [
-      "gen-tiles earth-night levels 0-1 (16k, 32k) + the earth-night.v2 boot/4K/8K maps"
+      "gen-tiles earth-night levels 0-1 (16k, 32k) + the earth-night.v2 boot/4K maps"
     ]
   },
   "BlackMarble_2016_B1_geo.tif": {
@@ -144,7 +144,7 @@
     "height": 21600,
     "product": "NASA Black Marble 2016 VIIRS night lights, 500 m tile B1 of the 4x2 grid (columns A-D west to east, rows 1-2 north to south) that makes the 86400x43200 whole; eoimages.gsfc.nasa.gov/images/imagerecords/144000/144898/",
     "used_by": [
-      "gen-tiles earth-night levels 0-1 (16k, 32k) + the earth-night.v2 boot/4K/8K maps"
+      "gen-tiles earth-night levels 0-1 (16k, 32k) + the earth-night.v2 boot/4K maps"
     ]
   },
   "BlackMarble_2016_C1_geo.tif": {
@@ -154,7 +154,7 @@
     "height": 21600,
     "product": "NASA Black Marble 2016 VIIRS night lights, 500 m tile C1 of the 4x2 grid (columns A-D west to east, rows 1-2 north to south) that makes the 86400x43200 whole; eoimages.gsfc.nasa.gov/images/imagerecords/144000/144898/",
     "used_by": [
-      "gen-tiles earth-night levels 0-1 (16k, 32k) + the earth-night.v2 boot/4K/8K maps"
+      "gen-tiles earth-night levels 0-1 (16k, 32k) + the earth-night.v2 boot/4K maps"
     ]
   },
   "BlackMarble_2016_D1_geo.tif": {
@@ -164,7 +164,7 @@
     "height": 21600,
     "product": "NASA Black Marble 2016 VIIRS night lights, 500 m tile D1 of the 4x2 grid (columns A-D west to east, rows 1-2 north to south) that makes the 86400x43200 whole; eoimages.gsfc.nasa.gov/images/imagerecords/144000/144898/",
     "used_by": [
-      "gen-tiles earth-night levels 0-1 (16k, 32k) + the earth-night.v2 boot/4K/8K maps"
+      "gen-tiles earth-night levels 0-1 (16k, 32k) + the earth-night.v2 boot/4K maps"
     ]
   },
   "BlackMarble_2016_A2_geo.tif": {
@@ -174,7 +174,7 @@
     "height": 21600,
     "product": "NASA Black Marble 2016 VIIRS night lights, 500 m tile A2 of the 4x2 grid (columns A-D west to east, rows 1-2 north to south) that makes the 86400x43200 whole; eoimages.gsfc.nasa.gov/images/imagerecords/144000/144898/",
     "used_by": [
-      "gen-tiles earth-night levels 0-1 (16k, 32k) + the earth-night.v2 boot/4K/8K maps"
+      "gen-tiles earth-night levels 0-1 (16k, 32k) + the earth-night.v2 boot/4K maps"
     ]
   },
   "BlackMarble_2016_B2_geo.tif": {
@@ -184,7 +184,7 @@
     "height": 21600,
     "product": "NASA Black Marble 2016 VIIRS night lights, 500 m tile B2 of the 4x2 grid (columns A-D west to east, rows 1-2 north to south) that makes the 86400x43200 whole; eoimages.gsfc.nasa.gov/images/imagerecords/144000/144898/",
     "used_by": [
-      "gen-tiles earth-night levels 0-1 (16k, 32k) + the earth-night.v2 boot/4K/8K maps"
+      "gen-tiles earth-night levels 0-1 (16k, 32k) + the earth-night.v2 boot/4K maps"
     ]
   },
   "BlackMarble_2016_C2_geo.tif": {
@@ -194,7 +194,7 @@
     "height": 21600,
     "product": "NASA Black Marble 2016 VIIRS night lights, 500 m tile C2 of the 4x2 grid (columns A-D west to east, rows 1-2 north to south) that makes the 86400x43200 whole; eoimages.gsfc.nasa.gov/images/imagerecords/144000/144898/",
     "used_by": [
-      "gen-tiles earth-night levels 0-1 (16k, 32k) + the earth-night.v2 boot/4K/8K maps"
+      "gen-tiles earth-night levels 0-1 (16k, 32k) + the earth-night.v2 boot/4K maps"
     ]
   },
   "BlackMarble_2016_D2_geo.tif": {
@@ -204,7 +204,7 @@
     "height": 21600,
     "product": "NASA Black Marble 2016 VIIRS night lights, 500 m tile D2 of the 4x2 grid (columns A-D west to east, rows 1-2 north to south) that makes the 86400x43200 whole; eoimages.gsfc.nasa.gov/images/imagerecords/144000/144898/",
     "used_by": [
-      "gen-tiles earth-night levels 0-1 (16k, 32k) + the earth-night.v2 boot/4K/8K maps"
+      "gen-tiles earth-night levels 0-1 (16k, 32k) + the earth-night.v2 boot/4K maps"
     ]
   }
 }

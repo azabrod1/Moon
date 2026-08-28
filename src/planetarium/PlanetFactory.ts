@@ -481,10 +481,15 @@ export const TEXTURE_UPGRADE_TIERS: Record<string, readonly TextureTier[]> = {
   pluto: ['4k'],
   moon: ['4k', '8k'],
   earthClouds: ['4k', '8k'],
-  // Black Marble 2016 at 500 m, cut down the same ladder as the day map. The
-  // 2K night map the app booted on for years is 20 km per pixel — from the
-  // near band that is a smear where a lit coastline should be.
-  earthNight: ['4k', '8k'],
+  // Black Marble 2016 at 500 m. The 2K night map the app booted on for years
+  // is 20 km per pixel — from the near band that is a smear where a lit
+  // coastline should be — which the 4K rung answers for 42.7 MiB. There is no
+  // 8K rung: uncompressed it holds 170.7 MiB of the 768 MiB sector envelope
+  // on every desktop that has flown past the night side, and the near band it
+  // would serve is the night tile family's to carry. A GPU-compressed rung
+  // costs a quarter of that and can take the step when that pipeline covers
+  // maps other than the Moon's.
+  earthNight: ['4k'],
 };
 
 // Per-key ceiling on touch devices, applied over the GL clamp. An 8K RGBA map
@@ -497,7 +502,7 @@ export const TEXTURE_UPGRADE_TIERS: Record<string, readonly TextureTier[]> = {
 // against this ceiling) take over at a fraction of the memory. The cloud
 // deck's: it would sit beside Earth's 4K day map and the sector tiles in the
 // close approach the sectors serve.
-const TOUCH_TIER_CAP: Partial<Record<string, TextureTier>> = { earthClouds: '4k', moon: '4k', earthNight: '4k' };
+const TOUCH_TIER_CAP: Partial<Record<string, TextureTier>> = { earthClouds: '4k', moon: '4k' };
 
 // The Moon's 8K tier ships GPU-compressed (KTX2/UASTC, mip chain baked by
 // tools/gen-moon-ktx2.mjs): the raw upload of a 33MP RGBA map is the largest

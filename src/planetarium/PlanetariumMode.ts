@@ -127,6 +127,15 @@ import {
 } from './world/sunGlareMask';
 import { MoonPainter } from './world/MoonPainter';
 import { ProceduralMoonTexturer } from './world/ProceduralMoonTexturer';
+import { AtmosphereLut, type AtmosphereBakeStats } from './world/atmosphereLut';
+import {
+  ATMOSPHERE_TABLE_SIZES_FULL,
+  ATMOSPHERE_TABLE_SIZES_HALF,
+  atmosphereParams,
+  scatteringTexture3DCoords,
+  scatteringUvwzFromRMuMuSNu,
+  transmittanceUvFromRMu,
+} from './world/atmosphereModel';
 import { captureDeviceTextureCaps, resolveTextureUrl, TIER_MAP_WIDTH } from './world/texturePolicy';
 import { warmBitmapUploadProbe } from './world/textureBitmapLoader';
 import { planetshineIntensity } from './world/planetshine';
@@ -490,6 +499,14 @@ function topMapWidthOf(ups: readonly TextureUpgrade[], material: THREE.Material)
   return up ? TIER_MAP_WIDTH[up.effectiveMaxTier] : undefined;
 }
 
+/** True once boot has handed the frame to the user. Speculative GPU work waits
+ *  for it: anything done while the load screen is up is boot time, whatever
+ *  timer it was armed on. */
+function loadScreenHidden(): boolean {
+  const el = document.getElementById('loading-screen');
+  return !el || el.classList.contains('hidden');
+}
+
 export class PlanetariumMode {
   // The cruise rig (clearance pads, chase distance, occluder disc, zoom
   // floor) lives in cruiseView.ts as one derived chain.
@@ -743,6 +760,10 @@ export class PlanetariumMode {
   // one frame somewhere in the seconds after the fetch lands).
   private bootPairWarmTimer: number | undefined;
   private static readonly BOOT_PAIR_WARM_DELAY_MS = 5000;
+  /** The atmosphere bake goes after the pair warm, not with it: both want the
+   *  same idle, and the warm's decode and upload are the ones a first arrival
+   *  waits on. */
+  private static readonly ATMOSPHERE_BAKE_DELAY_MS = 6000;
   // Arrival veil re-entrancy guard (rapid picks, or a pick while one is running).
   private arrivalInFlight = false;
   /** Monotonic veil-cover token: each veiled arrival claims the veil, so a
@@ -1840,6 +1861,11 @@ export class PlanetariumMode {
   // couple of frames later — the first live frames must not compile anything
   // it missed (that stall is the very thing it exists to prevent).
   private shaderWarmupProgramCount: number | null = null;
+  /** Precomputed atmosphere tables. Built in the boot idle, never behind the
+   *  load screen; nothing draws with them yet. */
+  private atmosphereLut: AtmosphereLut | null = null;
+  private atmosphereBakeTimer = 0;
+  private devAtmosphereLut: AtmosphereLut | null = null;
   private framesSinceShaderWarmup = 0;
 
   constructor(
@@ -1887,6 +1913,7 @@ export class PlanetariumMode {
     // the arrival veil are unchanged — only the per-moon paint moves to the GPU.
     this.moonTexturer = new ProceduralMoonTexturer(renderer);
     this.moonPainter = new MoonPainter(this.moonTexturer.paint);
+    this.atmosphereLut = new AtmosphereLut(renderer, { touch: this.touchFirstDevice() });
     // WebGL context loss invalidates render-target textures (no CPU backing), so
     // GPU-painted moons would render black after a restore. Reset them to repaint
     // and re-validate the GPU path on restore (else it stays on the CPU path).
@@ -1899,6 +1926,10 @@ export class PlanetariumMode {
       // from the service-worker cache after the restore.
       this.glContextLost = true;
       this.sectors?.dropAll();
+      // The tables are render-target textures with no CPU backing: they die
+      // with the context, and the atmosphere falls back to the analytic shell
+      // until a re-bake validates.
+      this.atmosphereLut?.onContextLost();
       this.invalidateRtPaintedMoons(this.moonTexturer.onContextLost());
       // Dots gate on painted moons — blank them with the same invalidation so a
       // stale dot can't outlive the mesh it belonged to.
@@ -1910,6 +1941,7 @@ export class PlanetariumMode {
       // "uploaded" into nothing: drop it before the latch clears.
       this.sectors?.dropAll();
       this.glContextLost = false;
+      this.atmosphereLut?.onContextRestored();
     });
     this.player = new PlayerShip();
     this.store = new PlanetariumStore();
@@ -2458,6 +2490,7 @@ export class PlanetariumMode {
     snapConstellations();
 
     this.scheduleBootPairWarm();
+    this.scheduleAtmosphereBake();
 
     reportActivationProgress(FIRST_PLANETARIUM_ACTIVATION_TOTAL_UNITS);
     performance.measure('plm:activate', 'plm:activate:start');
@@ -2513,6 +2546,33 @@ export class PlanetariumMode {
         }
       }
     }, PlanetariumMode.BOOT_PAIR_WARM_DELAY_MS);
+  }
+
+  /** Arm the atmosphere table bake. It runs in the boot idle, never behind the
+   *  load screen: a four-order bake is a few hundred layer draws and hundreds
+   *  of millions of dependent fetches, which on a phone is seconds of a boot
+   *  the load screen would otherwise be holding. The analytic shell carries the
+   *  look meanwhile — a complete look, so nothing is half-loaded — and the
+   *  tables only become the tier once every one of them validates.
+   *
+   *  The bake's own programs are deliberately NOT in the boot warm-up set: the
+   *  warm-up compiles what the live path draws, and these seven link once, out
+   *  here in the idle, where a cold-cache link costs nobody a frame. Putting
+   *  them in the warm set would move that cost onto the boot the warm-up exists
+   *  to shorten. */
+  private scheduleAtmosphereBake(): void {
+    window.clearTimeout(this.atmosphereBakeTimer);
+    this.atmosphereBakeTimer = window.setTimeout(() => {
+      if (!this.active || !this.atmosphereLut) return;
+      // Two things own the frame ahead of speculation: the load screen (the
+      // bake must never be inside the boot it would lengthen) and an arrival
+      // veil. Yield to both and try again.
+      if (!loadScreenHidden() || this.arrivalVeilUp()) {
+        this.scheduleAtmosphereBake();
+        return;
+      }
+      void this.atmosphereLut.bake('Earth');
+    }, PlanetariumMode.ATMOSPHERE_BAKE_DELAY_MS);
   }
 
   /** A phone or tablet: the device class that gets cache-only speculation and
@@ -12060,6 +12120,86 @@ export class PlanetariumMode {
       sunYPx: (-projection.ndcY * 0.5 + 0.5) * height,
       sunRadiusPx: projection.radiusPx,
     };
+  }
+
+  /** Headless-QA readback for the atmosphere tables: the tier's state, the
+   *  probe result, and every bake's numbers. */
+  devAtmosphereState(): unknown {
+    const lut = this.devAtmosphereLut ?? this.atmosphereLut;
+    if (!lut) return null;
+    return {
+      state: lut.state,
+      capability: lut.capability,
+      orders: lut.orders,
+      sizes: lut.sizes,
+      programs: this.renderer.info.programs?.length ?? 0,
+      textureBytesResident: this.renderer.info.memory.textures,
+      stats: lut.stats(),
+    };
+  }
+
+  /** Bake one body's tables into a measurement instance — its own targets and
+   *  its own programs, so a harness can time a configuration without becoming
+   *  the tier the app reads. */
+  async devAtmosphereBake(options?: {
+    body?: string;
+    orders?: number;
+    half?: boolean;
+    drawsPerSlice?: number;
+  }): Promise<AtmosphereBakeStats | null> {
+    this.devAtmosphereLut?.dispose();
+    this.devAtmosphereLut = new AtmosphereLut(this.renderer, {
+      register: false,
+      orders: options?.orders,
+      sizes: options?.half ? ATMOSPHERE_TABLE_SIZES_HALF : ATMOSPHERE_TABLE_SIZES_FULL,
+      drawsPerSlice: options?.drawsPerSlice,
+    });
+    await this.devAtmosphereLut.bake(options?.body ?? 'Earth');
+    const stats = this.devAtmosphereLut.stats();
+    // A failed bake still records its numbers, with `validated: false`.
+    return stats[stats.length - 1] ?? null;
+  }
+
+  /** Read table values back through the 8-bit blit path, at the same table
+   *  coordinates the shaders would address. */
+  devAtmosphereSample(
+    samples: ReadonlyArray<{
+      kind: 'transmittance' | 'scattering';
+      r: number;
+      mu: number;
+      muS?: number;
+      nu?: number;
+      hitsGround?: boolean;
+      scale?: number;
+    }>,
+    body = 'Earth',
+  ): number[][] | null {
+    const lut = this.devAtmosphereLut ?? this.atmosphereLut;
+    const tables = lut?.tables(body);
+    if (!lut || !tables) return null;
+    const params = atmosphereParams(body);
+    return samples.map((s) => {
+      if (s.kind === 'transmittance') {
+        return lut.readSample({
+          mode: 0,
+          uv: transmittanceUvFromRMu(params, s.r, s.mu, tables.sizes),
+          transmittance: tables.transmittance,
+          scale: s.scale ?? 1,
+        });
+      }
+      const uvwz = scatteringUvwzFromRMuMuSNu(
+        params, s.r, s.mu, s.muS ?? 1, s.nu ?? 1, s.hitsGround ?? false, tables.sizes,
+      );
+      const coords = scatteringTexture3DCoords(uvwz, tables.sizes);
+      return lut.readSample({
+        mode: 1,
+        scattering: tables.scattering,
+        uvw0: coords.uvw0,
+        uvw1: coords.uvw1,
+        nuLerp: coords.lerp,
+        scale: s.scale ?? 1,
+      });
+    });
   }
 
   /** Headless-QA readback for transient Sun optics and atmospheric grazing. */

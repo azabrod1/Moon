@@ -598,6 +598,18 @@ function installDevHooks() {
       planetariumMode?.devSetShipSunOcclusion(enabled) ?? false,
     sunGlareMask: () => planetariumMode?.devSunGlareMask() ?? null,
     eclipseDebug: () => planetariumMode?.devEclipseDebug() ?? null,
+    // Precomputed atmosphere tables: tier state, a measurement bake, and table
+    // readback through the 8-bit blit.
+    atmoState: () => planetariumMode?.devAtmosphereState() ?? null,
+    atmoBake: (options?: { body?: string; orders?: number; half?: boolean; drawsPerSlice?: number }) =>
+      planetariumMode?.devAtmosphereBake(options) ?? Promise.resolve(null),
+    atmoSample: (
+      samples: ReadonlyArray<{
+        kind: 'transmittance' | 'scattering';
+        r: number; mu: number; muS?: number; nu?: number; hitsGround?: boolean; scale?: number;
+      }>,
+      body?: string,
+    ) => planetariumMode?.devAtmosphereSample(samples, body) ?? null,
     setVeil: (opts: { warmth?: number; strength?: number }) =>
       planetariumMode?.devSetVeil(opts ?? {}) ?? false,
     setDiamondScale: (k: number) => planetariumMode?.devSetDiamondScale(k) ?? false,

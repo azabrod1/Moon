@@ -125,7 +125,7 @@ describe('SectorStreamer', () => {
     expect(urls).toEqual([
       expect.stringMatching(/textures\/tiles\/earth-bump\/2k\/2_1\.webp$/),
       expect.stringMatching(/textures\/tiles\/earth-day\/16k\/2_1\.webp$/),
-      expect.stringMatching(/textures\/tiles\/earth-roughness\/2k\/2_1\.webp$/),
+      expect.stringMatching(/textures\/tiles\/earth-roughness\/4k\/2_1\.webp$/),
     ]);
     expect(streamer.stats().bodies.Earth.loading).toEqual(['2_1']);
   });

@@ -4,11 +4,10 @@
 // result is written back to public/textures/.
 //
 //   node gen-maps.mjs                 # run every job
-//   node gen-maps.mjs earth-roughness # run one job
+//   node gen-maps.mjs moon-normal     # run one job
 //   node gen-maps.mjs --src=/tmp/dl   # read sources from elsewhere (downloads)
 //
 // Jobs:
-//   earth-roughness  earth-day.jpg     -> earth-roughness.png  (ocean glossy, land matte)
 //   moon-normal      ldem_16_uint.tif  -> moon-normal.png      (boot-tier tangent-space normal)
 //   moon-normal-4k   ldem_16_uint.tif  -> 4k/moon-normal.png   (close-approach tier)
 //   mars-normal      megt90n000eb.img  -> mars-normal.v2.png
@@ -49,7 +48,6 @@ const srcDir = path.resolve(arg('src', TEX));
 // the LOLA TIFF present replaces it with the 16-bit derivation below —
 // visually equivalent at this scale, minus the 8-bit terracing.
 const JOBS = {
-  'earth-roughness': { src: 'earth-day.v2.webp', from: TEX, out: 'earth-roughness.v2.png', fn: 'oceanRoughness', scale: 0.25 },
   'moon-normal':     { src: 'ldem_16_uint.tif', out: 'moon-normal.png', fn: 'normalsFromHeights', scale: 0.25, decode: 'uint16-tiff', opts: { strength: 3.0 } },
   'moon-normal-4k':  { src: 'ldem_16_uint.tif', out: '4k/moon-normal.png', fn: 'normalsFromHeights', scale: 0.5, decode: 'uint16-tiff', opts: { strength: 6.0 } },
   // MOLA MEGDR 16 pixel/degree DEM (PDS megt90n000eb.img: 5760x2880 big-endian
@@ -118,22 +116,6 @@ function readUint16Tiff(buf) {
 const PAGE_TRANSFORMS = `
 (function () {
   function clamp01(v) { return v < 0 ? 0 : v > 1 ? 1 : v; }
-
-  // Ocean glint: a roughness map where water is glossy (low roughness -> a tight
-  // solar specular = the blue-marble sun glint) and land/cloud/ice is matte.
-  // Ocean is the blue-dominant, darker pixels of a true-color day map; the green
-  // channel carries roughness (MeshStandardMaterial samples roughnessMap.g).
-  function oceanRoughness(src, dst, w, h) {
-    const s = src.data, d = dst.data;
-    for (let i = 0; i < s.length; i += 4) {
-      const r = s[i] / 255, g = s[i + 1] / 255, b = s[i + 2] / 255;
-      const blueDom = b - Math.max(r, g);          // > 0 over blue water, <= 0 on land/ice
-      const ocean = clamp01((blueDom - 0.01) * 10.0); // clean ocean/land split
-      const rough = 0.92 - ocean * 0.47;           // land 0.92 -> ocean ~0.45 (broad sheen, not a hot mirror dot)
-      const v = Math.round(rough * 255);
-      d[i] = v; d[i + 1] = v; d[i + 2] = v; d[i + 3] = 255;
-    }
-  }
 
   // MOLA-style rainbow relief -> scalar elevation. The colormap sweeps blue
   // (low) through cyan/green/yellow to red (high), so HUE tracks elevation
@@ -225,7 +207,7 @@ const PAGE_TRANSFORMS = `
     }
   }
 
-  return { oceanRoughness, heightToNormal, normalsFromHeights, resampleHeights, molaToHeight };
+  return { heightToNormal, normalsFromHeights, resampleHeights, molaToHeight };
 })()
 `;
 

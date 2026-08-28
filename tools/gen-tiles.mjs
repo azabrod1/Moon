@@ -24,8 +24,7 @@
 //   node tools/gen-tiles.mjs earth --verify   # reassemble + gate only
 //   --cache=<dir>  source cache (default .moon-data-cache)
 import sharp from 'sharp';
-import { mkdir, writeFile, access, stat, unlink } from 'node:fs/promises';
-import { execFileSync } from 'node:child_process';
+import { mkdir, writeFile, access, stat } from 'node:fs/promises';
 import path from 'node:path';
 
 sharp.cache(false);
@@ -47,7 +46,10 @@ const jobsWanted = args.filter((a) => !a.startsWith('--'));
 // crops of the base maps with the same 8-px gutter, so the relief under a
 // sector is exactly the base's relief; normal-map crops are cut two sectors
 // wide so their UV transform is uniform (sectorGrid explains the tangent
-// frame reason).
+// frame reason). Earth's ocean-gloss mask is not a base map but a DERIVED
+// one: classified per 16K source pixel (the same classifier that grades the
+// ocean colour, so gloss and blue agree at every coast), area-averaged to
+// 4096 for its crops and to 2048 for the boot file.
 export const GRID = { cols: 8, rows: 4, tile: 2048, gutter: 8 };
 const CONTENT = GRID.tile - 2 * GRID.gutter; // 2032
 const FULL_W = GRID.cols * CONTENT; // 16256
@@ -94,30 +96,50 @@ async function fullRaw(srcPath, matchRef) {
 const rawOf = (buf) => sharp(buf, { raw: { width: FULL_W, height: FULL_H, channels: 3 }, limitInputPixels: false });
 
 /**
- * Ocean grade for the plain Blue Marble NG: its deep water is nearly black
- * (mean ≈ 3,5,20), which in the app's lighting reads as a dark ball with
- * clouds. NASA Eyes ships the same product with its ocean lifted to a
- * saturated blue (≈ 2,30,83, measured on their 4096 faces); this reproduces
- * that. Deep-water pixels — blue-dominant and dark — are shifted by the
- * difference of the two means, through a soft mask so coasts and shallow
- * shelves (brighter, less blue-dominant) blend rather than step. Land, ice
- * and cloud are untouched; the BMNG's own ocean variation survives.
+ * Ocean grade for the plain Blue Marble NG, and the water mask its gloss
+ * comes from, in one pass. The product's deep water is nearly black (mean
+ * ≈ 3,5,20), which in the app's lighting reads as a dark ball with clouds;
+ * NASA Eyes ships the same product with its ocean lifted to a saturated blue
+ * (≈ 2,30,83, measured on their 4096 faces), reproduced here by shifting
+ * dark-water pixels by the difference of the two means, so the BMNG's own
+ * ocean variation survives.
+ *
+ * Water is classified on the source pixel, two ways. DARK: the flat-ocean
+ * product paints every sea and large lake close to black — the open ocean
+ * (2,5,20) but also the Persian Gulf, Caspian, Baltic and Yellow Sea at
+ * (0,3,4), which a blue-dominance test misses and would leave as black holes
+ * beside a blue ocean. Land never gets that dark (the darkest rainforest
+ * sits at luminance 25+, water under 12), so a luminance ramp splits them;
+ * the greenest of the dark forest pixels, which reach into the ramp, are
+ * held back by a green-over-blue term that dark lakes (Superior 9,18,8) do
+ * not trip. SHALLOW: the bright turquoise banks and reef shelves
+ * (Bahamas 8,127,151) are water too, and gloss over them is the sun glint
+ * the real coast shows; blue-over-red finds them, and nothing on land is
+ * blue-over-red by more than a few units (ice, snow and salt are neutral).
+ * Only the dark class takes the colour shift: the shelves are already lit.
+ *
+ * Returns the water score per pixel (0..255), full resolution, for the
+ * roughness mask.
  */
 function gradeOceanInPlace(raw) {
   const OCEAN_SRC = [3, 5, 20];
   const OCEAN_DST = [2, 30, 83];
   const shift = OCEAN_DST.map((d, i) => d - OCEAN_SRC[i]);
   const clamp01 = (x) => (x < 0 ? 0 : x > 1 ? 1 : x);
-  for (let i = 0; i < raw.length; i += 3) {
+  const water = new Uint8Array(raw.length / 3);
+  for (let i = 0, p = 0; i < raw.length; i += 3, p++) {
     const r = raw[i], g = raw[i + 1], b = raw[i + 2];
-    const blueDom = clamp01((b - Math.max(r, g) - 4) / 8);
-    const dark = clamp01((110 - Math.max(r, g, b)) / 40);
-    const m = blueDom * dark;
-    if (m <= 0) continue;
-    raw[i] = Math.max(0, Math.min(255, Math.round(r + m * shift[0])));
-    raw[i + 1] = Math.max(0, Math.min(255, Math.round(g + m * shift[1])));
-    raw[i + 2] = Math.max(0, Math.min(255, Math.round(b + m * shift[2])));
+    const lum = 0.299 * r + 0.587 * g + 0.114 * b;
+    const veg = clamp01((g - b - 8) / 8);
+    const dark = clamp01((22 - lum) / 10) * (1 - veg);
+    const shallow = clamp01((b - r - 25) / 20);
+    water[p] = Math.round(Math.max(dark, shallow) * 255);
+    if (dark <= 0) continue;
+    raw[i] = Math.max(0, Math.min(255, Math.round(r + dark * shift[0])));
+    raw[i + 1] = Math.max(0, Math.min(255, Math.round(g + dark * shift[1])));
+    raw[i + 2] = Math.max(0, Math.min(255, Math.round(b + dark * shift[2])));
   }
+  return water;
 }
 
 async function writeWebp(pipeline, out) {
@@ -183,16 +205,36 @@ async function cutDataCrops(srcPath, key, tier, spanU = 1) {
   await cutGrid(data, info.width, info.height, info.channels, content, key, tier, DATA_WEBP, spanU);
 }
 
-/** Earth's ocean-gloss mask is DERIVED from the day map (gen-maps.mjs), so a
- *  re-based day map regenerates it here, before its crops are cut: the crops
- *  must be of the mask that matches the tiles' coastlines. */
-async function regenerateEarthRoughness() {
-  execFileSync('node', ['gen-maps.mjs', 'earth-roughness'], { stdio: 'inherit' });
-  const png = path.join(TEX, 'earth-roughness.v2.png');
+/** Earth's roughness map from the water score gradeOceanInPlace returns:
+ *  water glossy (0.45 — a broad sun sheen, not a mirror dot), land matte
+ *  (0.92), stored in every channel (MeshStandardMaterial reads .g). The
+ *  full-resolution score is area-averaged down, so a coast is a soft
+ *  fractional edge rather than a stair of 16K texels: to 4096 for the
+ *  sector crops (a quarter of the colour tiles' resolution is where the
+ *  glint edge stops lagging the coast at any distance the rig allows), and
+ *  to 2048 for the boot map the far view samples. The averaged score is
+ *  quantised to 16 levels first: a coast edge in 16 steps of 0.03
+ *  roughness is indistinguishable from a continuous one under the sheen,
+ *  and the lossless boot file drops from 282 KB to 81 KB for it. */
+async function deriveEarthRoughness(water) {
+  const ROUGH_LAND = 0.92, ROUGH_WATER = 0.45, LEVELS = 16;
+  const W = 4096, H = 2048;
+  const scoreAt = (w, h) => sharp(water, { raw: { width: FULL_W, height: FULL_H, channels: 1 }, limitInputPixels: false })
+    .resize(w, h, { fit: 'fill', kernel: 'mitchell' }).raw().toBuffer();
+  const roughOf = (score) => {
+    const rough = Buffer.alloc(score.length * 3);
+    for (let p = 0; p < score.length; p++) {
+      const q = Math.round((score[p] / 255) * (LEVELS - 1)) / (LEVELS - 1);
+      const v = Math.round((ROUGH_LAND - q * (ROUGH_LAND - ROUGH_WATER)) * 255);
+      rough[3 * p] = v; rough[3 * p + 1] = v; rough[3 * p + 2] = v;
+    }
+    return rough;
+  };
   const out = path.join(TEX, 'earth-roughness.v2.webp');
-  await sharp(png).webp(DATA_WEBP).toFile(out);
-  await unlink(png);
-  console.log(`  earth-roughness.v2.webp regenerated from the new day map (${((await stat(out)).size / 1024).toFixed(0)} KB)`);
+  await sharp(roughOf(await scoreAt(W / 2, H / 2)), { raw: { width: W / 2, height: H / 2, channels: 3 } })
+    .webp(DATA_WEBP).toFile(out);
+  console.log(`  ${path.relative(TEX, out).padEnd(34)} ${((await stat(out)).size / 1024).toFixed(0).padStart(6)} KB`);
+  await cutGrid(roughOf(await scoreAt(W, H)), W, H, 3, W / GRID.cols, 'earth-roughness', '4k', DATA_WEBP);
 }
 
 async function writeDownsamples(raw, outs) {
@@ -324,10 +366,11 @@ const JOBS = {
     // new one would show every sector as a rectangle of a different world.
     downsamples: [{ w: 4096, h: 2048, out: path.join(TEX, 'earth-day.v2.webp') }],
     ref: path.join(TEX, 'earth-day.v2.webp'),
-    derive: regenerateEarthRoughness,
+    // The gloss mask and its crops come out of the grade pass (see
+    // gradeOceanInPlace), not from a shipped base map.
+    derive: deriveEarthRoughness,
     dataCrops: [
       { src: path.join(TEX, 'earth-bump.webp'), key: 'earth-bump', tier: '2k' },
-      { src: path.join(TEX, 'earth-roughness.v2.webp'), key: 'earth-roughness', tier: '2k' },
     ],
   },
   // LROC WAC colour (NASA SVS CGI Moon Kit lroc_color_poles_16k.tif), the same
@@ -382,18 +425,20 @@ for (const name of names) {
     if (!job.flat) await verify(job.key, job.ref);
   } else if (flag('crops')) {
     // Data crops only: a relief / roughness map changed under an unchanged
-    // colour set (the tiles and downsamples are left alone).
+    // colour set (the tiles and downsamples are left alone). A derived map
+    // needs the graded source again, but not its tiles.
     for (const d of job.dataCrops ?? []) await cutDataCrops(d.src, d.key, d.tier, d.spanU ?? 1);
+    if (job.derive) await job.derive(job.grade(await fullRaw(job.src(), job.match)));
   } else if (job.flat) {
     await writeWebp(sharp(job.flat.src(), { limitInputPixels: false }).removeAlpha()
       .resize(4096, 2048, { fit: 'fill', kernel: 'lanczos3' }), job.flat.out);
   } else {
     const raw = job.raw ? await job.raw() : await fullRaw(job.src(), job.match);
-    if (job.grade) job.grade(raw);
+    const derived = job.grade ? job.grade(raw) : undefined;
     await writeDownsamples(raw, job.downsamples);
     await cutTiles(raw, job.key, job.webp);
     await verify(job.key, job.ref);
-    if (job.derive) await job.derive();
+    if (job.derive) await job.derive(derived);
     for (const d of job.dataCrops ?? []) await cutDataCrops(d.src, d.key, d.tier, d.spanU ?? 1);
   }
   console.log(`  ${((Date.now() - t0) / 1000).toFixed(0)} s`);

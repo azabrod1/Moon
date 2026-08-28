@@ -66,19 +66,23 @@ describe('shipped sector tile sets', () => {
 
   it('every crop set names the width of the base map it was cut from', () => {
     // The base maps the crops overlay, by their PLANET_TEXTURE_FILES key.
-    const baseFiles: Record<string, string> = {
-      'earth-bump': PLANET_TEXTURE_FILES.earthBump,
-      'earth-roughness': PLANET_TEXTURE_FILES.earthRoughness,
-      'mars-normal': PLANET_TEXTURE_FILES.marsNormal,
-      'moon-normal': `4k/${PLANET_TEXTURE_FILES.moonNormal}`,
+    // The map each crop set was cut from. Earth's gloss mask is derived at
+    // 4096 by gen-tiles and its crops cut there; the whole-globe map ships at
+    // half that width (the far view needs no more), so its shipped file is
+    // exactly a 2x downsample of the crops' base.
+    const baseFiles: Record<string, { file: string; shippedScale: number }> = {
+      'earth-bump': { file: PLANET_TEXTURE_FILES.earthBump, shippedScale: 1 },
+      'earth-roughness': { file: PLANET_TEXTURE_FILES.earthRoughness, shippedScale: 0.5 },
+      'mars-normal': { file: PLANET_TEXTURE_FILES.marsNormal, shippedScale: 1 },
+      'moon-normal': { file: `4k/${PLANET_TEXTURE_FILES.moonNormal}`, shippedScale: 1 },
     };
     for (const set of Object.values(SECTOR_SETS)) {
       for (const crop of Object.values(set.crops)) {
-        const file = baseFiles[crop.key];
-        expect(file, `no base map known for crop set ${crop.key}`).toBeDefined();
-        const path = resolve(TEXTURES, file);
-        expect(existsSync(path), `${file} missing on disk`).toBe(true);
-        expect(webpSize(path).width, `${crop.key} baseWidth vs ${file}`).toBe(crop.baseWidth);
+        const base = baseFiles[crop.key];
+        expect(base, `no base map known for crop set ${crop.key}`).toBeDefined();
+        const path = resolve(TEXTURES, base.file);
+        expect(existsSync(path), `${base.file} missing on disk`).toBe(true);
+        expect(webpSize(path).width, `${crop.key} baseWidth vs ${base.file}`).toBe(crop.baseWidth * base.shippedScale);
       }
     }
   });

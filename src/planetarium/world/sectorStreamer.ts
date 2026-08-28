@@ -92,7 +92,7 @@ export const SECTOR_SETS: Record<string, SectorSetSpec> = {
     colorKey: 'earth-day',
     crops: {
       bumpMap: { key: 'earth-bump', tier: '2k', baseWidth: 2048 },
-      roughnessMap: { key: 'earth-roughness', tier: '2k', baseWidth: 1024 },
+      roughnessMap: { key: 'earth-roughness', tier: '4k', baseWidth: 4096 },
     },
   },
   Mars: {

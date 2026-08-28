@@ -1137,6 +1137,29 @@ describe('SectorStreamer', () => {
     expect(streamer.stats().bodies.Earth.resident).toContain('0_0');
   });
 
+  it('a frame left open by a throw does not hold the streamer in measure-only mode', () => {
+    loader.auto = true;
+    streamer.beginFrame();
+    streamer.update('Earth', INSIDE, measureOf({ '2_1': 6 }), 0);
+    // Something between the two calls threw: endFrame never ran. The mode
+    // pairs them in a finally, and a teardown closes the frame regardless.
+    streamer.dropAll();
+    expect(streamer.stats().resident).toBe(0);
+    streamer.update('Earth', INSIDE, measureOf({ '2_1': 6 }), 16);
+    expect(streamer.stats().bodies.Earth.resident).toEqual(['2_1']);
+  });
+
+  it('a body unregistered inside an open frame is not reconciled at the end of it', () => {
+    loader.auto = true;
+    streamer.beginFrame();
+    streamer.update('Earth', INSIDE, measureOf({ '2_1': 6 }), 0);
+    streamer.unregister('Earth');
+    streamer.endFrame();
+    expect(streamer.has('Earth')).toBe(false);
+    expect(loader.requests).toEqual([]);
+    expect(streamer.stats().reserved).toBe(0);
+  });
+
   it('refuses a set deeper than the segment lattice can carry', () => {
     // Every level halves the segments; the deepest allowed still leaves a
     // sector more than three across, which is where three clamps a sphere.

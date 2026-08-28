@@ -665,6 +665,10 @@ export class SectorStreamer {
     if (!body) return;
     for (const slot of body.slots) this.release(slot);
     this.bodies.delete(name);
+    // A body measured earlier in an open frame must leave the batch with it:
+    // reconciling it would admit sectors whose bytes nothing counts any more.
+    const queued = this.batch.indexOf(body);
+    if (queued >= 0) this.batch.splice(queued, 1);
   }
 
   has(name: string): boolean {
@@ -1011,6 +1015,11 @@ export class SectorStreamer {
    *  cache when they were resident before. */
   dropAll(): void {
     for (const body of this.bodies.values()) for (const slot of body.slots) this.release(slot);
+    // Whatever frame was open is over: a batch left behind by a caller that
+    // never reached its endFrame must not hold every later frame in
+    // measure-only mode.
+    this.batching = false;
+    this.batch.length = 0;
   }
 
   dispose(): void {

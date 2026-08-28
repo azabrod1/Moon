@@ -2739,13 +2739,20 @@ export class PlanetariumMode {
     // by body would rank Earth's fresh scores against the Moon's last frame.
     sectors.setGlobalMapBytes(this.liveGlobalMapBytes());
     sectors.beginFrame();
-    for (const planet of this.solarSystem.planets) {
-      visit(planet.data.name, planet.mesh, planet.data.radiusAU, !planet.mesh.visible);
+    // Paired: between these two the streamer only measures. A body that
+    // threw on the way past would otherwise leave the frame open for good —
+    // every later frame measuring and none of them ever reconciling, which
+    // reads as tiles quietly stopping rather than as an error.
+    try {
+      for (const planet of this.solarSystem.planets) {
+        visit(planet.data.name, planet.mesh, planet.data.radiusAU, !planet.mesh.visible);
+      }
+      for (const moons of this.planetMoons.values()) {
+        for (const m of moons) visit(m.data.name, m.mesh, m.data.radiusAU, !m.mesh.visible);
+      }
+    } finally {
+      sectors.endFrame();
     }
-    for (const moons of this.planetMoons.values()) {
-      for (const m of moons) visit(m.data.name, m.mesh, m.data.radiusAU, !m.mesh.visible);
-    }
-    sectors.endFrame();
   }
 
   /**

@@ -115,3 +115,14 @@ export function markerVisual(
   out.brightness = lerp(1, p.brightnessMin, t);
   return out;
 }
+
+/**
+ * The beacon quad's on-screen size (px) for a viewport — a viewport-pinned
+ * band, not photometry. ONE definition on purpose: PlanetLabels draws the
+ * sprite at this size and the tap-pick in PlanetariumMode derives its catch
+ * radius from it, and the two MUST agree or taps land beside the marker they
+ * aim at.
+ */
+export function markerQuadPx(canvasWidth: number, canvasHeight: number): number {
+  return clamp(0.032 * Math.min(canvasWidth, canvasHeight), 18, 30);
+}

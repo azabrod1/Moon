@@ -15,6 +15,7 @@
  * allocation in hot per-frame loops.
  */
 import * as THREE from 'three';
+import { DEG2RAD } from '../math/angles';
 
 import {
   lensUnwarpNdc,
@@ -137,24 +138,6 @@ export function projectToScreen(
   return result;
 }
 
-/** Raw rectilinear/overscan projection, before the planetarium lens pass. */
-export function projectToSourceScreen(
-  pos: { x: number; y: number; z: number },
-  camera: THREE.Camera,
-  width: number,
-  height: number,
-  out?: ScreenProjection,
-): ScreenProjection {
-  scratch.set(pos.x, pos.y, pos.z).project(camera);
-  const result = out ?? { x: 0, y: 0, ndcX: 0, ndcY: 0, ndcZ: 0 };
-  result.x = (scratch.x * 0.5 + 0.5) * width;
-  result.y = (-scratch.y * 0.5 + 0.5) * height;
-  result.ndcX = scratch.x;
-  result.ndcY = scratch.y;
-  result.ndcZ = scratch.z;
-  return result;
-}
-
 /** Per-call constants of the rim-ray projection: the render-frustum tangent
  *  and the lens warp context, both fixed for a given camera pose. Hoisted by
  *  `prepareRimContext` so the 32-ray loops below pay per-point math only —
@@ -211,13 +194,15 @@ function setPointFootprint(result: SphereScreenProjection): SphereScreenProjecti
 /** Conservative viewport-covering footprint at the projected centre — the
  *  fallback when the sphere's tangent geometry can't be sampled but it isn't
  *  provably off-frame. A guess, flagged `'covering'` so consumers can tell it
- *  from a real measurement. */
+ *  from a real measurement. `radius` overrides the viewport-diagonal default
+ *  for the one caller whose zero-radius sphere must cover nothing. */
 function setCoveringFootprint(
   result: SphereScreenProjection,
   width: number,
   height: number,
+  radius?: number,
 ): SphereScreenProjection {
-  const coveringRadius = Math.hypot(width, height);
+  const coveringRadius = radius ?? Math.hypot(width, height);
   result.footprintX = result.x;
   result.footprintY = result.y;
   result.radiusPx = coveringRadius;
@@ -267,17 +252,7 @@ export function projectSphereToScreen(
     return setPointFootprint(result);
   }
   if (!(distance > safeRadius) || safeRadius === 0) {
-    const coveringRadius = safeRadius === 0 ? 0 : Math.hypot(width, height);
-    result.footprintX = result.x;
-    result.footprintY = result.y;
-    result.radiusPx = coveringRadius;
-    result.diameterPx = coveringRadius * 2;
-    result.minX = result.x - coveringRadius;
-    result.maxX = result.x + coveringRadius;
-    result.minY = result.y - coveringRadius;
-    result.maxY = result.y + coveringRadius;
-    result.footprintKind = 'covering';
-    return result;
+    return setCoveringFootprint(result, width, height, safeRadius === 0 ? 0 : undefined);
   }
 
   sphereDirection.copy(sphereCentreView).multiplyScalar(1 / distance);
@@ -426,7 +401,7 @@ export function estimateSphereScreenDiameterPx(
   if (!conformal) {
     const rimAngle = Math.acos(THREE.MathUtils.clamp(-sphereCentreView.z / distance, -1, 1))
       + Math.asin(THREE.MathUtils.clamp(sinAlpha, 0, 1));
-    if (rimAngle > 45 * (Math.PI / 180)) return Infinity;
+    if (rimAngle > 45 * DEG2RAD) return Infinity;
   }
   // Radial rim pair: within the plane spanned by the view axis and the centre
   // direction — where every projection in the lens family stretches most.

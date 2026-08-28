@@ -13,6 +13,7 @@
  * open + on each keystroke; nothing renders per-frame.
  */
 import { groupDeckBodies, filterDeckRows, type DeckRow } from '../../planetarium/deckLogic';
+import { cssHexColor } from '../../shared/color';
 import { PLANETARIUM_BODIES, SUN_DATA } from '../../planetarium/planets/planetData';
 import { MOONS } from '../../planetarium/planets/moonData';
 import { bodyDisplayName, pluralizeBody } from '../compareLogic';
@@ -133,7 +134,7 @@ export class ComparePicker {
     row.className = 'pk-row' + (isPlanet ? ' pk-planet' : '') + (isMoon ? ' pk-moon' : '');
     const dot = document.createElement('span');
     dot.className = 'pk-dot';
-    dot.style.background = `#${(color & 0xffffff).toString(16).padStart(6, '0')}`;
+    dot.style.background = cssHexColor(color);
     const info = document.createElement('span');
     info.className = 'pk-info';
     const b = document.createElement('b');

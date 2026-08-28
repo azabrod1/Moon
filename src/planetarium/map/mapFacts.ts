@@ -41,14 +41,18 @@ export interface MapFacts {
 
 /**
  * Three significant figures, and above a thousand a rounded, grouped integer —
- * "384,000 km" rather than "3.84e+5". A non-finite value is printed as itself
- * rather than dressed up as a measurement.
+ * "384,000 km" rather than "3.84e+5". The grouping branch is decided on the
+ * ROUNDED value: 999.6 is 1000 at three figures, and toPrecision would print
+ * it as "1.00e+3" — the exact notation this function exists to avoid. A
+ * non-finite value is printed as itself rather than dressed up as a
+ * measurement.
  */
 export function sig3(value: number): string {
   if (!Number.isFinite(value)) return String(value);
   if (value === 0) return '0';
-  if (Math.abs(value) >= 1000) {
-    return Math.round(Number(value.toPrecision(3))).toLocaleString('en-US');
+  const rounded = Number(value.toPrecision(3));
+  if (Math.abs(rounded) >= 1000) {
+    return Math.round(rounded).toLocaleString('en-US');
   }
   return value.toPrecision(3);
 }

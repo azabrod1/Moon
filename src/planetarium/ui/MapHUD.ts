@@ -1,3 +1,5 @@
+import { cssHexColor } from '../../shared/color';
+import { isPhoneViewport } from '../../shared/dom';
 import type { MapCardAction, MapVerb } from '../map/mapLogic';
 import type { FactRow } from '../map/mapFacts';
 import type { MapEventRowModel } from '../map/mapEvents';
@@ -54,7 +56,7 @@ function panelCeilingPx(): number {
  *  than of a rect — a rect read mid-fold answers with the animation's
  *  progress, not the layout. */
 function phoneLayout(): boolean {
-  return window.matchMedia('(max-width: 640px)').matches;
+  return isPhoneViewport();
 }
 
 /** While the phone sheet is open the help chip floats above its top-right
@@ -575,7 +577,7 @@ export class MapHUD {
 
   /** Catalog tint as CSS — the rows carry 0xRRGGBB. */
   private static rowColorCss(row: MapFocusRow): string {
-    return `#${row.color.toString(16).padStart(6, '0')}`;
+    return cssHexColor(row.color);
   }
 
   /** Rebuild the picker — the planet grid, the tray roster behind it, and the

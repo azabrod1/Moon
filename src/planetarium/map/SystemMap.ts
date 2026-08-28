@@ -1070,6 +1070,15 @@ export class SystemMap {
     name: null,
     clearanceDist: Infinity,
   };
+  /** Scan memo: the steady overview otherwise runs the full scan twice per
+   *  frame (applyBounds, then the zoom buttons' availability refresh). Valid
+   *  only while nothing feeding it has moved — same frame (bodies froze
+   *  between updates) AND same camera position (a wheel notch dollies
+   *  mid-frame and its re-seat must see fresh clearance). Drawn radii carry a
+   *  documented one-frame lag already, so a same-frame same-pose replay is
+   *  within the scan's own tolerance. */
+  private nearestDrawnFrame = -1;
+  private nearestDrawnCamPos = new THREE.Vector3(Number.NaN, 0, 0);
 
   // Dive transition (camera pose only — the mode owns the clock, the fade, the
   // token, and the commit). beginDive snapshots the start pose so a cancel can
@@ -1630,6 +1639,71 @@ export class SystemMap {
     this.setLayers(null);
     this.hideRingLabels();
     this.projectionRevision++;
+  }
+
+  /** Forget every held pointer. The book normally survives open/close because
+   *  it mirrors physical contact — but a pointer whose terminal event never
+   *  reaches the window at all (focus lost mid-contact, a pen lifted outside
+   *  without capture) would stand in it forever, permanently suppressing the
+   *  wheel's pivot re-seat and pinch detection. The owner calls this on window
+   *  blur: any contact genuinely surviving the blur re-registers on its next
+   *  pointerdown. */
+  retirePointers(): void {
+    this.zoomPointers.clear();
+  }
+
+  /**
+   * Terminal teardown — the owner's dispose path, never open/close. The map
+   * holds window/canvas listeners, OrbitControls, its own GPU resources and
+   * label DOM; without this, a disposed PlanetariumMode stays reachable (and
+   * onZoomPointerMove keeps running) through the window listeners forever,
+   * and every recreation would stack fresh label DIVs beside orphaned ones in
+   * the static containers. Borrowed world textures are dropped, never
+   * disposed — the two mapGlobes rules hold to the end.
+   */
+  dispose(): void {
+    this.close();
+    const el = this.renderer.domElement;
+    window.removeEventListener('wheel', this.onZoomWheelBeforeDolly, { capture: true });
+    el.removeEventListener('wheel', this.onZoomWheel);
+    el.removeEventListener('pointerdown', this.onZoomPointerDown);
+    el.removeEventListener('pointercancel', this.onZoomPointerUp);
+    window.removeEventListener('pointermove', this.onZoomPointerMove);
+    window.removeEventListener('pointerup', this.onZoomPointerUp);
+    window.removeEventListener('pointercancel', this.onZoomPointerUp);
+    this.controls.dispose();
+
+    // close() already dropped every borrowed texture (adoptTexture(mat, null)
+    // for planets, rings and moons), so the sweep below can only meet owned
+    // resources. material.dispose() never disposes maps, so the owned canvas
+    // textures follow by hand.
+    this.scene.traverse((obj) => {
+      // Sprites share one module-level geometry across the whole app — theirs
+      // is not this map's to dispose. Their materials ARE per-instance.
+      if (!(obj as THREE.Sprite).isSprite) (obj as THREE.Mesh).geometry?.dispose();
+      const material = (obj as { material?: THREE.Material | THREE.Material[] }).material;
+      if (Array.isArray(material)) for (const m of material) m.dispose();
+      else material?.dispose();
+    });
+    this.glowTex?.dispose();
+    this.glowTex = null;
+    this.shipChevronTex.dispose();
+    this.shipRingTex.dispose();
+    (this.sun.material as THREE.SpriteMaterial).map?.dispose();
+    (this.sunHalo.material as THREE.SpriteMaterial).map?.dispose();
+    this.scene.clear();
+
+    // The label containers are static in index.html — they outlive this map,
+    // so the DIVs this instance appended must leave with it.
+    for (const label of this.labels.values()) label.remove();
+    this.labels.clear();
+    this.labelContainer = null;
+    for (const label of this.ringLabels) label.remove();
+    this.ringLabels.length = 0;
+    this.ringLabelShown.length = 0;
+    this.ringLabelX.length = 0;
+    this.ringLabelY.length = 0;
+    this.ringLabelContainer = null;
   }
 
   /** Segmented scale control: animate the blend toward compressed / true scale.
@@ -2324,7 +2398,11 @@ export class SystemMap {
       this.applyFollowBounds();
       this.controls.update();
     } else if (this.cam.camState === 'focusFly' && this.cam.focusName) {
-      this.applyFocusClip(this.cam.focusName);
+      // The body being LEFT is passed too, exactly as the flight's own frames
+      // do: a resize during the first stretch is still inside the departed
+      // body's shell, and metering only against the distant destination would
+      // slice its near limb for the replayed frame.
+      this.applyFocusClip(this.cam.focusName, this.nearestBodyName());
     } else {
       return;
     }
@@ -2710,6 +2788,14 @@ export class SystemMap {
    */
   private nearestDrawnSurface(): { name: string | null; clearanceDist: number } {
     const out = this.nearestDrawn;
+    if (
+      this.nearestDrawnFrame === this.frameRevision
+      && this.nearestDrawnCamPos.equals(this.camera.position)
+    ) {
+      return out;
+    }
+    this.nearestDrawnFrame = this.frameRevision;
+    this.nearestDrawnCamPos.copy(this.camera.position);
     out.name = null;
     out.clearanceDist = Infinity;
     const sunClearance = this.drawnClearanceRadiusAU(SUN_DATA.name);
@@ -5918,22 +6004,30 @@ export class SystemMap {
     this.labelChromeForH = 0;
   }
 
+  // refreshLabelChrome's helpers, hoisted: the pass runs every frame, and
+  // closures built inside it would be two fresh allocations per frame.
+  private measurableChromeRect(el: HTMLElement | null | undefined): DOMRect | null {
+    const rect = el?.getBoundingClientRect();
+    return rect && rect.height > 0 && rect.top > 0 ? rect : null;
+  }
+
+  private chromeObstacle(rect: DOMRect): { left: number; top: number; right: number; bottom: number } {
+    const pad = 4;
+    return {
+      left: rect.left - pad,
+      top: rect.top - pad,
+      right: rect.right + pad,
+      bottom: rect.bottom + pad,
+    };
+  }
+
   private refreshLabelChrome(w: number, h: number): void {
     // A panel that spans the width is a BAND (labels stop above it); one that
     // does not is a corner OBSTACLE (labels dodge its rect). Bands come from
     // the phone's sheets, obstacles from the desktop's corner instruments —
     // the same test the card dock uses, so all three models agree.
-    const measurable = (el: HTMLElement | null | undefined): DOMRect | null => {
-      const rect = el?.getBoundingClientRect();
-      return rect && rect.height > 0 && rect.top > 0 ? rect : null;
-    };
-    const pad = 4;
-    const asObstacle = (rect: DOMRect) => ({
-      left: rect.left - pad,
-      top: rect.top - pad,
-      right: rect.right + pad,
-      bottom: rect.bottom + pad,
-    });
+    const measurable = this.measurableChromeRect;
+    const asObstacle = this.chromeObstacle;
     if (this.labelChromeForW !== w || this.labelChromeForH !== h) {
       this.labelChromeForW = w;
       this.labelChromeForH = h;

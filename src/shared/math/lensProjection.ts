@@ -21,7 +21,7 @@
  * and the CPU seam share one definition.
  */
 
-const DEG = Math.PI / 180;
+import { DEG2RAD as DEG } from './angles';
 
 /** Default lens strength: full stereographic. Conformal, so every sphere
  *  renders as a true circle from any direction — a 0.7 blend was tried first

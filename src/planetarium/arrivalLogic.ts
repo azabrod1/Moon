@@ -5,10 +5,13 @@
  * by default), which crosses a body standoff in about a second. These
  * functions give every body its own approach AND departure dynamics — both
  * tied to distance, so arrivals glide and departures pull away instead of
- * detonating off a time ramp — (and moons their arrival pose);
- * PlanetariumMode feeds live positions and applies the results.
+ * detonating off a time ramp — (and moons their arrival pose), plus the
+ * shell-contact graze and the moving-body speed credit that keep a bump a
+ * deflection rather than a reversal or a trap; PlanetariumMode feeds live
+ * positions and applies the results.
  */
 import * as THREE from 'three';
+import { smoothstepUnclamped } from '../shared/math/smoothstep';
 import { KM_PER_AU } from '../astronomy/constants';
 import { DEG2RAD } from '../shared/math/angles';
 import { SHIP_CLEARANCE_AU } from './cruiseView';
@@ -59,6 +62,14 @@ export const LEAVE_HEADSTART_RADII = 0.2;
  *  subjective timeline. */
 export const LEAVE_VALVE_KNEE_RADII = 0.38;
 
+/** The approach-cosine smoothstep the two laws blend over — and the same
+ *  weight the moving-body credit tapers on, so "how much is this course a
+ *  closing course" has exactly one definition. */
+function approachBlendWeight(cosApproach: number): number {
+  const t = THREE.MathUtils.clamp(cosApproach / 0.3, 0, 1);
+  return smoothstepUnclamped(t);
+}
+
 /**
  * Proximity speed cap near one body. Closing, speed is limited to
  * K × (distance to the rendered surface), floored at vMin — the glide.
@@ -95,8 +106,7 @@ export function governedSpeedCap(
   const kneeAU = LEAVE_VALVE_KNEE_RADII * shellRadiusAU;
   const valve = liftAU > kneeAU ? (liftAU / kneeAU) ** 2 : 1;
   const vOut = Math.max(kPerS * liftAU * valve, vMinAUPerS);
-  const t = THREE.MathUtils.clamp(cosApproach / 0.3, 0, 1);
-  const w = t * t * (3 - 2 * t);
+  const w = approachBlendWeight(cosApproach);
   if (w <= 0) return vOut;
   const vIn = Math.max(Math.max(surfaceDistAU, 0) * kPerS, vMinAUPerS);
   if (w >= 1) return vIn;
@@ -253,7 +263,7 @@ export function moonArrivalCameraLookWeight(
     0,
     1,
   );
-  const eased = t * t * (3 - 2 * t);
+  const eased = smoothstepUnclamped(t);
   return 1 - eased;
 }
 
@@ -273,7 +283,7 @@ export const MOON_ARRIVAL_RELEASE_S = 0.35;
 export function moonArrivalReleaseFade(releaseElapsedS: number): number {
   if (!(releaseElapsedS > 0)) return 1;
   const t = THREE.MathUtils.clamp(releaseElapsedS / MOON_ARRIVAL_RELEASE_S, 0, 1);
-  return 1 - t * t * (3 - 2 * t);
+  return 1 - smoothstepUnclamped(t);
 }
 
 /** Engage band for the flythrough tracking look, in fractions of the arrival
@@ -372,6 +382,132 @@ export interface SweepContact {
   ox: number;
   oy: number;
   oz: number;
+}
+
+// --- Shell-contact response: the graze -------------------------------------
+//
+// A hands-off bump deflects instead of reversing: keep the forward
+// direction's tangential part (slide around the limb), add a small outward
+// bias (peel away), and swing the nose there over a few tenths of a second.
+// The old response snapped the nose 180° to the radial in one frame — it
+// discarded the approach direction, whipped the chase camera, and on a
+// MOVING body's leading face aimed the ship straight along the bulldozer
+// blade, the direction that never slides off.
+
+/** Outward bias added to the graze tangent (≈8.5°): enough that a hands-off
+ *  contact drifts clear instead of orbiting the shell, shallow enough that
+ *  the deflection reads as a nudge, not a swerve (flying QA: the first cut's
+ *  14° was "should be even less dramatic"). */
+export const GRAZE_OUTWARD_BIAS = 0.15;
+
+/** Below this tangential magnitude a hit counts as dead-center — no usable
+ *  slide direction — and the aim veers onto a stable perpendicular instead:
+ *  water splitting on a stone, never a 180° boomerang. The perpendicular
+ *  also keeps the ease well-conditioned (the target is never antipodal to
+ *  the nose, so the swing has a defined plane). */
+export const GRAZE_TANGENT_MIN = 0.05;
+
+/** A contact only re-aims a nose still pointed at/along the body (outward
+ *  component under this); a ship already leaving keeps its heading. */
+export const CONTACT_ALIGN_OUT_MAX = 0.15;
+
+/** e-fold time of the contact re-aim swing — ~95% of the turn in ~0.6 s:
+ *  a guided deflection, not a one-frame snap (softened with the bias in the
+ *  same QA pass). Wide swings may ride into the TTL before the half-degree
+ *  done latch; the ~1° they land with is visually settled. */
+export const CONTACT_AIM_TAU_S = 0.2;
+
+/** The armed re-aim survives this long past the last contact frame, then
+ *  expires — a stale target can't steer a later, unrelated flight. */
+export const CONTACT_AIM_TTL_S = 1.0;
+
+const CONTACT_AIM_DONE_COS = Math.cos(0.5 * DEG2RAD);
+
+/** Stable unit perpendicular to `n`: cross with the axis `n` leans on least.
+ *  Depends on `n` alone, so repeated contacts on a slowly rotating normal
+ *  keep choosing a continuous veer direction. */
+function stablePerpendicular(nx: number, ny: number, nz: number, out: THREE.Vector3): THREE.Vector3 {
+  const ax = Math.abs(nx);
+  const ay = Math.abs(ny);
+  const az = Math.abs(nz);
+  if (ax <= ay && ax <= az) out.set(0, -nz, ny);
+  else if (ay <= az) out.set(nz, 0, -nx);
+  else out.set(-ny, nx, 0);
+  return out.normalize();
+}
+
+/**
+ * Deflected aim for a hands-off shell contact: the forward direction's
+ * tangential part plus GRAZE_OUTWARD_BIAS along the outward normal, unit
+ * length. Dead-center hits (tangential part under GRAZE_TANGENT_MIN) use the
+ * stable perpendicular as the slide direction. `f` and `n` are unit vectors;
+ * writes and returns `out`.
+ */
+export function grazeDeflectAim(
+  fx: number, fy: number, fz: number,
+  nx: number, ny: number, nz: number,
+  out: THREE.Vector3,
+): THREE.Vector3 {
+  const along = fx * nx + fy * ny + fz * nz;
+  out.set(fx - along * nx, fy - along * ny, fz - along * nz);
+  const tangentLen = out.length();
+  if (tangentLen < GRAZE_TANGENT_MIN) stablePerpendicular(nx, ny, nz, out);
+  else out.divideScalar(tangentLen);
+  out.x += GRAZE_OUTWARD_BIAS * nx;
+  out.y += GRAZE_OUTWARD_BIAS * ny;
+  out.z += GRAZE_OUTWARD_BIAS * nz;
+  return out.normalize();
+}
+
+/**
+ * One frame of the contact re-aim swing: rotate the unit `dir` toward the
+ * unit `target` with the frame-rate-invariant gain 1 − e^(−dt/τ) (nlerp —
+ * grazeDeflectAim never returns a target antipodal to the nose, so the blend
+ * stays well-conditioned). Reads before writing, so `out` may alias `dir`.
+ * Returns true once the produced direction sits within half a degree of the
+ * target.
+ */
+export function contactAimStep(
+  dir: THREE.Vector3,
+  target: THREE.Vector3,
+  dtS: number,
+  out: THREE.Vector3,
+): boolean {
+  const g = 1 - Math.exp(-dtS / CONTACT_AIM_TAU_S);
+  const x = dir.x + (target.x - dir.x) * g;
+  const y = dir.y + (target.y - dir.y) * g;
+  const z = dir.z + (target.z - dir.z) * g;
+  if (x * x + y * y + z * z < 1e-12) out.copy(target);
+  else out.set(x, y, z).normalize();
+  return out.dot(target) >= CONTACT_AIM_DONE_COS;
+}
+
+/**
+ * Engine-speed allowance near a MOVING body: the governed law plus a credit
+ * for the body's velocity component along the nose. A moon sweeping into a
+ * parked ship used to outrun the world-frame leave creep and bulldoze it
+ * across the sky forever; with the credit the ship can always hold station
+ * against the shell and walk off it — riding the train, then stepping off.
+ *
+ * The credit is tapered by the SAME approach weight the law blends on: full
+ * on a leaving or tangent course (the trap fix lives entirely on that side —
+ * the graze aims tangent-plus-bias, never back into the band), fading to
+ * zero on a committed closing course. Without the taper, a body CROSSING the
+ * sightline with motion partly along the nose would sell closing speed the
+ * glide never granted (v·f̂ > 0 while v contributes nothing to the actual
+ * closing rate) — at warp, enough to slam the shell at full throttle.
+ * Motion against the nose earns nothing either way.
+ */
+export function movingBodySpeedCap(
+  surfaceDistAU: number,
+  surfaceRadiusAU: number,
+  cosApproach: number,
+  bodyVelAlongNoseAUPerS: number,
+  kPerS: number,
+  vMinAUPerS: number,
+): number {
+  const credit = Math.max(0, bodyVelAlongNoseAUPerS) * (1 - approachBlendWeight(cosApproach));
+  return governedSpeedCap(surfaceDistAU, surfaceRadiusAU, cosApproach, kPerS, vMinAUPerS) + credit;
 }
 
 /**

@@ -21,6 +21,7 @@
  */
 import * as THREE from 'three';
 import { SUN_VEIL_BETA, SUN_VEIL_SCALE_H } from '../../shared/shaders/sun';
+import { smoothstepEdges as smoothstep } from '../../shared/math/smoothstep';
 import {
   applyLensShaderUniforms,
   createLensShaderUniforms,
@@ -58,13 +59,6 @@ export interface SunGlareMaskParams {
   coreOuterPx: number;
   /** Viewport height, CSS px — the Moffat's length scale. */
   viewportHeight: number;
-}
-
-/** Clamped smoothstep, matching GLSL `smoothstep(edge0, edge1, x)`. */
-function smoothstep(edge0: number, edge1: number, x: number): number {
-  if (edge0 === edge1) return x < edge0 ? 0 : 1;
-  const t = Math.min(1, Math.max(0, (x - edge0) / (edge1 - edge0)));
-  return t * t * (3 - 2 * t);
 }
 
 /** Clamp to [0, 1]. */

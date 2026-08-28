@@ -5,6 +5,7 @@ import {
   markerVisual,
   PLANET_MARKER_PARAMS,
   type PlanetMarkerVisual,
+  markerQuadPx,
 } from './planetMarkers';
 import { PLANETARIUM_BODIES } from './planets/planetData';
 
@@ -134,5 +135,15 @@ describe('planetMarkers — visual ramp', () => {
       expect(v.sizeMul, `mag=${mag}`).toBeLessThanOrEqual(1);
       expect(v.sizeMul, `mag=${mag}`).toBeGreaterThanOrEqual(PLANET_MARKER_PARAMS.sizeMinScale);
     }
+  });
+});
+
+describe('markerQuadPx', () => {
+  it('pins the quad to the viewport inside the 18..30 px band', () => {
+    // The band the sprite draws at AND the tap-pick derives its catch radius
+    // from — one definition, so the two cannot drift apart.
+    expect(markerQuadPx(320, 568)).toBe(18);     // small phone: floor
+    expect(markerQuadPx(700, 900)).toBeCloseTo(0.032 * 700, 10); // in-band
+    expect(markerQuadPx(2560, 1440)).toBe(30);   // desktop: cap
   });
 });

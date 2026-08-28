@@ -58,12 +58,14 @@ function slug(value) {
 
 const browser = await chromium.launch({
   headless: true,
+  executablePath: process.env.PW_CHROMIUM || undefined, // pinned-browser environments
   args: [
     '--use-gl=angle',
     '--use-angle=metal',
     '--enable-gpu',
     '--ignore-gpu-blocklist',
     '--enable-unsafe-swiftshader',
+    ...(process.env.PW_NO_SANDBOX ? ['--no-sandbox'] : []),
   ],
 });
 

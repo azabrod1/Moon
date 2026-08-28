@@ -718,6 +718,30 @@ export class SectorStreamer {
   }
 
   /**
+   * The upkeep a frame owes the streamer even when it measures nothing. The
+   * measurement pass belongs to the world render and stops with it (the
+   * system map owns the frame, the body is not drawn), but two things behind
+   * it do not stop: the tier ladder keeps applying globe maps, and the
+   * fetches in flight keep ageing. Without this the sectors would hold their
+   * old share of an envelope that has since shrunk — for as long as the map
+   * stays open — and a request that hung would keep its slot in the in-flight
+   * allowance for the rest of the session.
+   *
+   * Nothing is measured or admitted here: the working set only ever gets
+   * smaller. Call it every frame; `update` does the rest on the frames the
+   * surface is actually drawn.
+   */
+  maintain(globalMapBytes: number, nowMs: number): void {
+    this.lastNowMs = nowMs;
+    this.setGlobalMapBytes(globalMapBytes);
+    for (const body of this.bodies.values()) {
+      for (const slot of body.slots) {
+        if (slot.loading && nowMs - slot.loading.startedAtMs > SECTOR_ATTEMPT_TIMEOUT_MS) this.failLoad(slot);
+      }
+    }
+  }
+
+  /**
    * Open a frame in which several bodies are measured before any of them is
    * admitted or evicted. Between this and `endFrame`, `update` only measures;
    * the one reconcile then ranks every body's sectors against every other's

@@ -2756,6 +2756,24 @@ export class PlanetariumMode {
   }
 
   /**
+   * What the sector streamer is owed on a frame that measures nothing (the
+   * system map owns it). The ladder behind the chart keeps applying globe
+   * maps and the tile fetches keep ageing, so the sectors' share of the
+   * memory envelope and the deadline on a hung load are kept current here.
+   * Trims and expires only — nothing is fetched for a surface the frame
+   * does not draw.
+   */
+  private maintainSectorStreaming(): void {
+    const sectors = this.sectors;
+    if (!sectors || !this.solarSystem) return;
+    if (this.glContextLost) {
+      sectors.dropAll();
+      return;
+    }
+    sectors.maintain(this.liveGlobalMapBytes(), performance.now());
+  }
+
+  /**
    * GPU bytes the colour tiers the ladder has streamed in are holding right
    * now — the Moon's 8K rung, Earth's cloud deck, every close-approach
    * upgrade. The sector budget is what one memory envelope leaves over these,
@@ -3190,6 +3208,11 @@ export class PlanetariumMode {
       // Sector tiles are world render too: nothing to measure or fetch for a
       // chart that never draws the spheres.
       this.updateSectorStreaming();
+    } else {
+      // What the streamer is owed regardless: the ladder keeps applying globe
+      // maps behind the chart and the tile fetches keep ageing, so the byte
+      // budget and the load deadlines stay current while the measuring stops.
+      this.maintainSectorStreaming();
     }
 
     // The HTML label/marker projections below read camera.matrixWorldInverse,
@@ -15497,6 +15520,10 @@ export class PlanetariumMode {
     if (!mapOpen) {
       this.updateBodyLOD();
       this.updateSectorStreaming();
+    } else {
+      // Same as the cruise branch: the streamer's budget and load deadlines
+      // keep moving while the chart owns the frame and nothing is measured.
+      this.maintainSectorStreaming();
     }
     // Shadow spots/guides live in the world scene, which the map never draws —
     // same gate as the cruise branch, and they rebuild on the first frame back.

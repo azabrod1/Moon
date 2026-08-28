@@ -535,6 +535,39 @@ describe('SectorStreamer', () => {
     expect(streamer.stats().bodies.Earth.resident).toEqual([]);
   });
 
+  it('expires a hung load on a frame that measures nothing, and admits nothing there', () => {
+    // The world render stops (the chart owns the frame) but the fetch in
+    // flight keeps ageing: a request that hung must not hold its slot in the
+    // in-flight allowance until the chart closes.
+    streamer.update('Earth', cameraOver(2, 1), measureOf({ '2_1': 2 }), 0);
+    const first = loader.requests.splice(0);
+    expect(first.length).toBeGreaterThan(0);
+    streamer.maintain(0, SECTOR_ATTEMPT_TIMEOUT_MS);
+    expect(streamer.stats().bodies.Earth.loading).toEqual(['2_1']); // not yet
+    streamer.maintain(0, SECTOR_ATTEMPT_TIMEOUT_MS + 1);
+    expect(streamer.stats().bodies.Earth.loading).toEqual([]);
+    expect(streamer.stats().reserved).toBe(0);
+    expect(first.every((r) => r.signal!.aborted)).toBe(true);
+    // And nothing is measured or fetched for a surface the frame never drew.
+    expect(loader.requests).toEqual([]);
+  });
+
+  it('gives sectors back on a frame that measures nothing, when the envelope closed behind it', () => {
+    loader.auto = true;
+    const sizes: Record<string, number> = {};
+    for (let c = 0; c < 8; c++) { sizes[`${c}_1`] = 2 + 0.01 * c; sizes[`${c}_2`] = 2.1 + 0.01 * c; }
+    streamer.update('Earth', INSIDE, measureOf(sizes), 0);
+    expect(streamer.stats().resident).toBe(EARTH_FITS_DESKTOP);
+    // A globe map lands while the chart is up: the sectors' share of the
+    // envelope shrinks, and they give it back on that frame rather than
+    // sitting over the envelope until the chart closes.
+    streamer.maintain(SECTOR_ENVELOPE_BYTES_DESKTOP - 2 * EARTH_SET_BYTES, 16);
+    const s = streamer.stats();
+    expect(s.budget).toBe(2 * EARTH_SET_BYTES);
+    expect(s.resident).toBe(2);
+    expect(s.residentBytes + s.reserved).toBeLessThanOrEqual(s.budget);
+  });
+
   it('counts an in-place reload against the in-flight cap', () => {
     const mars = marsWithoutRelief();
     loader.auto = true;

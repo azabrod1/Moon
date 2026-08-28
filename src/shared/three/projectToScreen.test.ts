@@ -1,8 +1,15 @@
 import { describe, expect, it } from 'vitest';
 import * as THREE from 'three';
-import { applyDesignFov } from '../math/lensProjection';
+import {
+  applyDesignFov,
+  displayFovDeg,
+  lensDisplayHalfTan,
+  lensMaxFrameScale,
+} from '../math/lensProjection';
 import {
   estimateSphereScreenDiameterPx,
+  placeSphereInFrustum,
+  projectedStepScale,
   projectSphereToScreen,
   projectToScreen,
   screenPointToWorldRay,
@@ -373,5 +380,216 @@ describe('estimateSphereScreenDiameterPx', () => {
     const centre = new THREE.Vector3(Math.sin(theta) * 10, 0, -Math.cos(theta) * 10);
     const radius = Math.sin(8 * (Math.PI / 180)) * 10;
     expect(estimateSphereScreenDiameterPx(centre, radius, rectilinear, width, height)).toBe(Infinity);
+  });
+});
+
+/** The camera's own lens strength, the way every consumer must read it. */
+function strengthOf(camera: THREE.PerspectiveCamera): number {
+  const lens = camera.userData.lens as
+    | { strength: number; effectiveStrength?: number }
+    | undefined;
+  return lens ? lens.effectiveStrength ?? lens.strength : 0;
+}
+
+/** Displayed pixels one world unit covers at unit distance at the centre of
+ *  the frame — the streamer's focal length. */
+function centreFocalPx(camera: THREE.PerspectiveCamera, height: number): number {
+  return (height / 2) / lensDisplayHalfTan(displayFovDeg(camera), strengthOf(camera));
+}
+
+/** Two perpendicular steps of length `step`, both perpendicular to `dir`. */
+function perpendicularSteps(dir: THREE.Vector3, step: number): [THREE.Vector3, THREE.Vector3] {
+  const u = new THREE.Vector3()
+    .crossVectors(dir, Math.abs(dir.y) < 0.9 ? new THREE.Vector3(0, 1, 0) : new THREE.Vector3(1, 0, 0))
+    .normalize();
+  const v = new THREE.Vector3().crossVectors(dir, u).normalize();
+  return [u.multiplyScalar(step), v.multiplyScalar(step)];
+}
+
+describe('projectedStepScale', () => {
+  const width = 1600;
+  const height = 900;
+  const step = 1e-4;
+
+  it('matches the scalar view-angle formula for a patch square to the camera', () => {
+    const camera = lensCamera(width, height);
+    const distance = 9;
+    const [u, v] = perpendicularSteps(new THREE.Vector3(0, 0, -1), step);
+    const scale = projectedStepScale(
+      new THREE.Vector3(0, 0, -distance), u, v, camera, width, height,
+    );
+    expect(scale).not.toBeNull();
+    // Square to the camera the patch is isotropic, and the old
+    // focal x cos(view angle) / distance reading agrees with it (the cosine is
+    // 1 here) — as long as the focal length is the DISPLAYED one.
+    const expected = centreFocalPx(camera, height) / distance;
+    expect(Math.abs((scale!.maxPx / step) / expected - 1)).toBeLessThan(0.01);
+    expect(Math.abs(scale!.minPx / scale!.maxPx - 1)).toBeLessThan(0.01);
+    // The lens fits the design FOV onto the frame edge stereographically, so
+    // its half-tangent is not tan(fov / 2): reading the scale off the tangent
+    // gives up ~8% of the magnification at this FOV.
+    const tangentFocalPx = (height / 2) / Math.tan(THREE.MathUtils.degToRad(displayFovDeg(camera) / 2));
+    expect(tangentFocalPx / centreFocalPx(camera, height)).toBeCloseTo(0.928, 3);
+  });
+
+  it('reports the un-foreshortened tangent scale at the limb, where the cosine reads zero', () => {
+    const camera = lensCamera(width, height);
+    const centre = new THREE.Vector3(0, 0, -10);
+    const radius = 1;
+    // The tangent point: the one place on the limb where the surface normal is
+    // exactly perpendicular to the line of sight.
+    const sinAlpha = radius / centre.length();
+    const toCentre = centre.clone().normalize();
+    const normal = toCentre.clone().multiplyScalar(-sinAlpha)
+      .addScaledVector(new THREE.Vector3(1, 0, 0), Math.sqrt(1 - sinAlpha * sinAlpha));
+    const point = centre.clone().addScaledVector(normal, radius);
+    const toCam = point.clone().negate();
+    const distance = toCam.length();
+    expect(Math.abs(toCam.dot(normal) / distance)).toBeLessThan(1e-12);
+    const [u, v] = perpendicularSteps(normal, step);
+    const scale = projectedStepScale(point, u, v, camera, width, height);
+    expect(scale).not.toBeNull();
+    // The tangent direction along the limb draws at the full scale for its
+    // distance, so the patch is several pixels wide...
+    const facingScale = centreFocalPx(camera, height) / distance;
+    expect((scale!.maxPx / step) / facingScale).toBeGreaterThan(0.99);
+    expect((scale!.maxPx / step) / facingScale).toBeLessThan(1.02);
+    // ...while the direction across it is edge on. The cosine reports only
+    // this one, which is what left the limb rendering from the base map.
+    expect(scale!.minPx / scale!.maxPx).toBeLessThan(0.01);
+  });
+
+  it('reads the same whichever perpendicular pair measures the patch', () => {
+    const camera = lensCamera(width, height);
+    const point = new THREE.Vector3(2, -1, -8);
+    const normal = new THREE.Vector3(0.3, 0.5, 0.81).normalize();
+    const [u, v] = perpendicularSteps(normal, step);
+    const base = projectedStepScale(point, u, v, camera, width, height);
+    const turned = { max: 0, min: 0 };
+    for (const deg of [17, 33, 61, 90]) {
+      const rot = new THREE.Quaternion().setFromAxisAngle(normal, THREE.MathUtils.degToRad(deg));
+      const scale = projectedStepScale(
+        point, u.clone().applyQuaternion(rot), v.clone().applyQuaternion(rot),
+        camera, width, height,
+      );
+      turned.max = Math.max(turned.max, Math.abs(scale!.maxPx / base!.maxPx - 1));
+      turned.min = Math.max(turned.min, Math.abs(scale!.minPx / base!.minPx - 1));
+    }
+    // Equal to the difference two forward differences can make: the singular
+    // values themselves do not depend on the basis.
+    expect(turned.max).toBeLessThan(1e-4);
+    expect(turned.min).toBeLessThan(1e-3);
+  });
+
+  it('reports nothing for a point behind the camera, on its plane, or inside the near plane', () => {
+    const camera = lensCamera(width, height);
+    const [u, v] = perpendicularSteps(new THREE.Vector3(0, 0, -1), step);
+    expect(projectedStepScale(new THREE.Vector3(0, 0, 5), u, v, camera, width, height)).toBeNull();
+    expect(projectedStepScale(new THREE.Vector3(0, 0, 0), u, v, camera, width, height)).toBeNull();
+    expect(projectedStepScale(new THREE.Vector3(0.2, 0.1, -1e-9), u, v, camera, width, height)).toBeNull();
+    // Behind a camera that has been moved and turned, too.
+    camera.position.set(5, 2, -3);
+    camera.lookAt(6, 2, -3);
+    camera.updateMatrixWorld(true);
+    expect(projectedStepScale(new THREE.Vector3(-5, 2, -3), u, v, camera, width, height)).toBeNull();
+    expect(projectedStepScale(new THREE.Vector3(15, 2, -3), u, v, camera, width, height)).not.toBeNull();
+  });
+
+  it('never exceeds the frame-scale bound bodies are gated on', () => {
+    // What the sector streamer relies on to skip a whole globe: the centre
+    // focal length times lensMaxFrameScale, over the distance, bounds the
+    // magnification of any patch anywhere in the frame.
+    for (const [w, h] of [[390, 844], [1600, 900]] as const) {
+      for (const camera of sweepCameras(w, h)) {
+        const bound = centreFocalPx(camera, h)
+          * lensMaxFrameScale(displayFovDeg(camera), camera.aspect, strengthOf(camera));
+        for (const ndcX of [0, 0.5, 1]) {
+          for (const ndcY of [0, 0.5, 1]) {
+            const distance = 10;
+            const ray = screenPointToWorldRay(
+              (ndcX * 0.5 + 0.5) * w, (-ndcY * 0.5 + 0.5) * h, camera, w, h, new THREE.Vector3(),
+            );
+            const [u, v] = perpendicularSteps(ray, step);
+            const scale = projectedStepScale(
+              ray.clone().multiplyScalar(distance), u, v, camera, w, h,
+            );
+            expect(scale).not.toBeNull();
+            expect(scale!.maxPx / step).toBeLessThanOrEqual((bound / distance) * 1.002);
+          }
+        }
+      }
+    }
+  });
+});
+
+describe('placeSphereInFrustum', () => {
+  const width = 1600;
+  const height = 900;
+
+  it('never calls a sphere aside while its measured footprint is on the frame', () => {
+    // The property the sector streamer's off-frame test rests on: whatever the
+    // 32-ray measurement can see, the plane tests keep.
+    for (const [w, h] of [[390, 844], [1600, 900]] as const) {
+      for (const camera of sweepCameras(w, h)) {
+        const designFov = camera.userData.lens?.designFovDeg ?? camera.fov;
+        for (const offFraction of [0, 0.5, 0.95, 1.2, 2]) {
+          for (const az of [0, 45, 90, 200]) {
+            for (const alphaDeg of [0.05, 2, 8, 30]) {
+              const { centre, radius } = sphereAt((designFov / 2) * offFraction, az, alphaDeg);
+              const full = projectSphereToScreen(centre, radius, camera, w, h);
+              const onFrame = full.footprintKind !== 'none'
+                && full.maxX >= 0 && full.minX <= w && full.maxY >= 0 && full.minY <= h;
+              if (!onFrame) continue;
+              // A rectilinear camera stretches a wide sphere past 60° off axis
+              // into a footprint millions of pixels across, which straddles the
+              // canvas by arithmetic rather than by being visible. Nothing
+              // consumes a reading like that; skip it rather than pretend the
+              // plane tests should agree with it.
+              if (full.radiusPx > Math.hypot(w, h) * 4) continue;
+              expect(placeSphereInFrustum(centre, radius, camera)).toBe('inside');
+            }
+          }
+        }
+      }
+    }
+  });
+
+  it('keeps a sphere the camera sits inside, whatever its centre projects to', () => {
+    // The grazing-limb case: the camera is inside a sector's bounding sphere,
+    // whose centre sits behind the camera plane and projects far off frame.
+    const camera = lensCamera(width, height);
+    const centre = new THREE.Vector3(0.9, 0, 0.2);
+    const radius = 4;
+    const projected = projectSphereToScreen(centre, radius, camera, width, height);
+    expect(projected.footprintKind).toBe('covering');
+    expect(projected.footprintX).toBeLessThan(0); // the misleading reading
+    expect(placeSphereInFrustum(centre, radius, camera)).toBe('inside');
+  });
+
+  it('reports behind and aside for spheres that reach no pixel', () => {
+    const camera = lensCamera(width, height);
+    expect(placeSphereInFrustum(new THREE.Vector3(0, 0, 10), 1, camera)).toBe('behind');
+    expect(placeSphereInFrustum(new THREE.Vector3(0, 0, -10), 1, camera)).toBe('inside');
+    const rad85 = THREE.MathUtils.degToRad(85);
+    expect(placeSphereInFrustum(
+      new THREE.Vector3(Math.sin(rad85) * 10, 0, -Math.cos(rad85) * 10), 1.8, camera,
+    )).toBe('aside');
+    // Translated and turned camera: the tests are in view space, not world.
+    camera.position.set(5, 2, -3);
+    camera.lookAt(6, 2, -3);
+    camera.updateMatrixWorld(true);
+    expect(placeSphereInFrustum(new THREE.Vector3(15, 2, -3), 1, camera)).toBe('inside');
+    expect(placeSphereInFrustum(new THREE.Vector3(-5, 2, -3), 1, camera)).toBe('behind');
+    expect(placeSphereInFrustum(new THREE.Vector3(15, 60, -3), 1, camera)).toBe('aside');
+  });
+
+  it('holds the overscan margin inside: the displayed frame is a subset of it', () => {
+    const camera = lensCamera(width, height);
+    // Just past the displayed frame's top edge, well inside the wider render
+    // frustum the lens pass resamples.
+    const theta = THREE.MathUtils.degToRad(displayFovDeg(camera) / 2 + 4);
+    const centre = new THREE.Vector3(0, Math.sin(theta) * 10, -Math.cos(theta) * 10);
+    expect(camera.fov).toBeGreaterThan(displayFovDeg(camera));
+    expect(placeSphereInFrustum(centre, 0.01, camera)).toBe('inside');
   });
 });

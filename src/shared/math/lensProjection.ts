@@ -245,6 +245,22 @@ export function lensDisplayHalfTan(designFovDeg: number, strength: number): numb
 }
 
 /**
+ * The largest local screen scale anywhere in the DISPLAYED frame, as a
+ * multiple of its scale at the centre. The blend stretches steadily outward
+ * from the axis — radially by dR/dtheta, tangentially by R(theta)/sin theta —
+ * so the extreme sits at the frame's corner. Multiply the centre scale
+ * ((height/2) / lensDisplayHalfTan, in pixels per radian) by this for a bound
+ * that holds wherever in the frame a feature lands.
+ */
+export function lensMaxFrameScale(designFovDeg: number, aspect: number, strength: number): number {
+  const theta = lensCornerTheta(designFovDeg, aspect, strength);
+  if (!(theta > 0)) return 1;
+  const radial = (1 - strength) / Math.cos(theta) ** 2 + strength / Math.cos(theta / 2) ** 2;
+  const tangential = lensRadial(theta, strength) / Math.sin(theta);
+  return Math.max(radial, tangential, 1);
+}
+
+/**
  * Apply a camera's design FOV: stores it on `userData.lens` and sets the
  * actual render FOV to the overscan the lens warp needs (identity when the
  * lens is off). The ONE way any code should set the planetarium camera's

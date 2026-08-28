@@ -464,6 +464,121 @@ export function estimateSphereScreenDiameterPx(
   return Math.max(radialExtent, tangentialExtent) * ESTIMATE_MARGIN;
 }
 
+/** Where a sphere sits relative to what the camera can draw. `'behind'` = no
+ *  part of it is in front of the near plane; `'aside'` = in front, but wholly
+ *  outside one of the frustum's side planes; `'inside'` = it intersects. */
+export type SphereFrustumPlacement = 'behind' | 'aside' | 'inside';
+
+/**
+ * Plane tests against the camera's own frustum — no projection, so no pose
+ * degenerates. Under the lens pass this frustum is the OVERSCAN source the
+ * warp resamples, which is why `camera.fov` is the right FOV here (it is a
+ * membership test, never a size): the displayed frame is a subset of it, so
+ * `'aside'` means the sphere reaches no drawn pixel, while a sphere in the
+ * overscan margin is reported `'inside'` — one pan from being drawn.
+ *
+ * The truthful answer for the poses a projected footprint cannot describe: a
+ * camera inside the sphere, or a sphere spanning the camera plane, is
+ * `'inside'` here rather than a circle of guessed radius around a projected
+ * centre that has swung off the frame.
+ */
+export function placeSphereInFrustum(
+  centre: { x: number; y: number; z: number },
+  radius: number,
+  camera: THREE.PerspectiveCamera,
+): SphereFrustumPlacement {
+  const safeRadius = Math.max(radius, 0);
+  sphereCentreView.set(centre.x, centre.y, centre.z).applyMatrix4(camera.matrixWorldInverse);
+  if (sphereCentreView.z - safeRadius > -camera.near) return 'behind';
+  const tanHalfY = Math.tan(THREE.MathUtils.degToRad(camera.fov * 0.5));
+  const tanHalfX = tanHalfY * camera.aspect;
+  const outsideX = Math.abs(sphereCentreView.x) + sphereCentreView.z * tanHalfX
+    > safeRadius * Math.hypot(1, tanHalfX);
+  const outsideY = Math.abs(sphereCentreView.y) + sphereCentreView.z * tanHalfY
+    > safeRadius * Math.hypot(1, tanHalfY);
+  return outsideX || outsideY ? 'aside' : 'inside';
+}
+
+/** Screen-space scale of a small patch of surface: the singular values of the
+ *  displayed projection's 2x2 Jacobian there, in CSS px per step. */
+export interface ProjectedStepScale {
+  /** Pixels the patch covers along the more magnified of the two screen
+   *  directions — its longest on-screen dimension. */
+  maxPx: number;
+  /** Pixels along the less magnified one; 0 for a patch seen edge-on. */
+  minPx: number;
+  /** The patch's own displayed position (CSS px, top-left origin) — measured
+   *  on the way, and the honest anchor for how central the patch is. */
+  x: number;
+  y: number;
+}
+
+const jacobianPoint = new THREE.Vector3();
+const jacobianView = new THREE.Vector3();
+const jacobianBase: ScreenProjection = { x: 0, y: 0, ndcX: 0, ndcY: 0, ndcZ: 0 };
+const jacobianU: ScreenProjection = { x: 0, y: 0, ndcX: 0, ndcY: 0, ndcZ: 0 };
+const jacobianV: ScreenProjection = { x: 0, y: 0, ndcX: 0, ndcY: 0, ndcZ: 0 };
+
+/**
+ * How large a small patch of surface at `point` draws, measured through the
+ * same displayed projection as the renderer: project the point and the point
+ * displaced by `stepU` and `stepV` (world space, perpendicular, equal length),
+ * and take the singular values of the 2x2 matrix of the two screen
+ * displacements. Both values are per step, and both are independent of which
+ * perpendicular pair of that length was passed.
+ *
+ * The larger singular value is the patch's longest screen dimension. A scalar
+ * cosine between the surface normal and the line of sight reports the SMALLER
+ * one: at the limb one tangent direction is foreshortened to nothing while the
+ * direction along the limb still draws at full scale, so the cosine reads near
+ * zero for a patch that is plainly several pixels wide.
+ *
+ * Returns null when `point` is not in front of the near plane by at least a
+ * step — the perspective divide flips sign across the camera plane, so there
+ * is no honest scale to report there.
+ */
+export function projectedStepScale(
+  point: { x: number; y: number; z: number },
+  stepU: { x: number; y: number; z: number },
+  stepV: { x: number; y: number; z: number },
+  camera: THREE.PerspectiveCamera,
+  width: number,
+  height: number,
+  out?: ProjectedStepScale,
+): ProjectedStepScale | null {
+  const step = Math.sqrt(Math.max(
+    stepU.x * stepU.x + stepU.y * stepU.y + stepU.z * stepU.z,
+    stepV.x * stepV.x + stepV.y * stepV.y + stepV.z * stepV.z,
+  ));
+  jacobianView.set(point.x, point.y, point.z).applyMatrix4(camera.matrixWorldInverse);
+  if (!(jacobianView.z < -Math.max(camera.near, step))) return null;
+  projectToScreen(point, camera, width, height, jacobianBase);
+  jacobianPoint.set(point.x + stepU.x, point.y + stepU.y, point.z + stepU.z);
+  projectToScreen(jacobianPoint, camera, width, height, jacobianU);
+  jacobianPoint.set(point.x + stepV.x, point.y + stepV.y, point.z + stepV.z);
+  projectToScreen(jacobianPoint, camera, width, height, jacobianV);
+  const a = jacobianU.x - jacobianBase.x;
+  const b = jacobianU.y - jacobianBase.y;
+  const c = jacobianV.x - jacobianBase.x;
+  const d = jacobianV.y - jacobianBase.y;
+  // Singular values from the eigenvalues of the Gram matrix of [[a, c], [b, d]]
+  // — closed form, and stable when one column collapses.
+  const uu = a * a + b * b;
+  const vv = c * c + d * d;
+  const uv = a * c + b * d;
+  const mean = (uu + vv) * 0.5;
+  const spread = Math.sqrt(Math.max(((uu - vv) * 0.5) ** 2 + uv * uv, 0));
+  const maxPx = Math.sqrt(Math.max(mean + spread, 0));
+  const minPx = Math.sqrt(Math.max(mean - spread, 0));
+  if (!Number.isFinite(maxPx) || !Number.isFinite(minPx)) return null;
+  const result = out ?? { maxPx: 0, minPx: 0, x: 0, y: 0 };
+  result.maxPx = maxPx;
+  result.minPx = minPx;
+  result.x = jacobianBase.x;
+  result.y = jacobianBase.y;
+  return result;
+}
+
 /** Build a world-space ray through a displayed screen point. */
 export function screenPointToWorldRay(
   screenX: number,

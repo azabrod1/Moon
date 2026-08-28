@@ -24,7 +24,8 @@
 //   node tools/gen-tiles.mjs earth --verify   # reassemble + gate only
 //   --cache=<dir>  source cache (default .moon-data-cache)
 import sharp from 'sharp';
-import { mkdir, writeFile, access, stat } from 'node:fs/promises';
+import { mkdir, writeFile, access, stat, readFile } from 'node:fs/promises';
+import { createHash } from 'node:crypto';
 import path from 'node:path';
 
 sharp.cache(false);
@@ -79,7 +80,23 @@ async function colormatchOp(srcPipeline, refPath) {
 
 /** Decode a source into a 16384x8192 RGB raw buffer (Lanczos), optionally
  *  colour-matched. One decode + resize per job; the tiles are cut from this. */
+/** The source digests the shipped sets were cut from (gen-tiles.sources.json).
+ *  A source that fails its digest is refused: the same product re-downloaded
+ *  after an upstream change would otherwise re-cut a set silently, and six
+ *  months on nobody could say which bytes a tile came from. A source the
+ *  manifest does not list is used as is (the WMS cache is many files). */
+async function checkSourceDigest(srcPath) {
+  const manifest = JSON.parse(await readFile(new URL('./gen-tiles.sources.json', import.meta.url), 'utf8'));
+  const entry = manifest[path.basename(srcPath)];
+  if (!entry) return;
+  const digest = createHash('sha256').update(await readFile(srcPath)).digest('hex');
+  if (digest !== entry.sha256) {
+    throw new Error(`${path.basename(srcPath)}: sha256 ${digest} is not the manifest's ${entry.sha256} — a different source; update gen-tiles.sources.json together with the assets cut from it`);
+  }
+}
+
 async function fullRaw(srcPath, matchRef) {
+  await checkSourceDigest(srcPath);
   let p = sharp(srcPath, { limitInputPixels: false }).removeAlpha();
   if (matchRef) {
     const { k, b } = await colormatchOp(p, matchRef);

@@ -1,0 +1,50 @@
+{
+  "_": "Sources under .moon-data-cache/ that tools/gen-tiles.mjs and gen-maps.mjs read, with the SHA-256 the shipped assets were cut from. gen-tiles refuses a source whose digest differs: a re-downloaded product that changed upstream would otherwise re-cut a set silently. Update a digest only together with the assets cut from it.",
+  "bmng_200408_21600.jpg": {
+    "sha256": "926be7253be90a1fd57071a33afbfe7a712a2dfe0d5b5b4602bc5dfbcfdc2c89",
+    "bytes": 21206743,
+    "width": 21600,
+    "height": 10800,
+    "product": "NASA Blue Marble Next Generation, August 2004, plain (flat ocean), 21600x10800 JPEG",
+    "used_by": [
+      "gen-tiles earth"
+    ]
+  },
+  "lroc_color_poles_16k.tif": {
+    "sha256": "dbff4356479764d89f9fd7722140043eddbc2cafbad4dec5950858e2df77ac54",
+    "bytes": 187004094,
+    "product": "NASA SVS CGI Moon Kit, LROC WAC colour with poles, 16K TIFF",
+    "used_by": [
+      "gen-tiles moon"
+    ]
+  },
+  "megt90n000eb.img": {
+    "sha256": "d18d9b9ab8c5516d02e157dd2cde0f1d0d160c21940e953ba22391269a545e7b",
+    "bytes": 33177600,
+    "width": 5760,
+    "height": 2880,
+    "product": "PDS MOLA MEGDR 16 pixel/degree DEM, big-endian int16 metres, 0-360E",
+    "used_by": [
+      "gen-maps mars-normal"
+    ]
+  },
+  "ldem_16_uint.tif": {
+    "sha256": "45a2b32d56e81ed30db07fead8abc842b249b6511219d9ca2c53f81bc2dc5d62",
+    "bytes": 33201026,
+    "product": "NASA SVS CGI Moon Kit, LOLA 16 pixel/degree DEM, uint16 TIFF",
+    "used_by": [
+      "gen-maps moon-normal",
+      "gen-maps moon-normal-4k"
+    ]
+  },
+  "sss_8k_earth_clouds.jpg": {
+    "sha256": "c792eca228989d36ebb45d3ea6ff1198be5e21a25d70d2fbcb2124ffd14ba7f5",
+    "bytes": 11619184,
+    "width": 8192,
+    "height": 4096,
+    "product": "Solar System Scope 8K Earth clouds (CC BY 4.0)",
+    "used_by": [
+      "8k/earth-clouds.webp (encode-textures q60)"
+    ]
+  }
+}

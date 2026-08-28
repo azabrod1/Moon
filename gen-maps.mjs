@@ -11,7 +11,7 @@
 //   earth-roughness  earth-day.jpg     -> earth-roughness.png  (ocean glossy, land matte)
 //   moon-normal      ldem_16_uint.tif  -> moon-normal.png      (boot-tier tangent-space normal)
 //   moon-normal-4k   ldem_16_uint.tif  -> 4k/moon-normal.png   (close-approach tier)
-//   mars-normal      mars-mola.jpg     -> mars-normal.png
+//   mars-normal      megt90n000eb.img  -> mars-normal.v2.png
 //
 // height->normal jobs need an elevation source dropped in first (USGS/LOLA/MOLA);
 // they no-op with a notice if the source file is absent. Jobs whose source is a
@@ -34,7 +34,7 @@ const srcDir = path.resolve(arg('src', TEX));
 // optional `decode` for sources no browser can read, and transform options.
 // The normal jobs need an elevation source dropped into srcDir (--src=...) first:
 //   ldem_16_uint.tif <- SVS CGI Moon Kit (LOLA), 5760x2880 unsigned 16-bit
-//   mars-mola.jpg    <- NASA marsoweb MOLA_cylin.jpg (colorized; mola:true decodes hue->elevation)
+//   megt90n000eb.img <- PDS MOLA MEGDR 16 ppd DEM (pds-geosciences.wustl.edu, mgsl_300x/meg016; 0-360E, rolled by rollU)
 //
 // moon-normal's strength is tied to its output resolution: per-texel height
 // deltas shrink as texels get smaller, so halving the sample spacing needs
@@ -52,10 +52,12 @@ const JOBS = {
   'earth-roughness': { src: 'earth-day.v2.webp', from: TEX, out: 'earth-roughness.v2.png', fn: 'oceanRoughness', scale: 0.25 },
   'moon-normal':     { src: 'ldem_16_uint.tif', out: 'moon-normal.png', fn: 'normalsFromHeights', scale: 0.25, decode: 'uint16-tiff', opts: { strength: 3.0 } },
   'moon-normal-4k':  { src: 'ldem_16_uint.tif', out: '4k/moon-normal.png', fn: 'normalsFromHeights', scale: 0.5, decode: 'uint16-tiff', opts: { strength: 6.0 } },
-  // MOLA_cylin.jpg runs 0–360°E with longitude 0 at its left edge; every Mars
-  // colour map here (and the tiles) puts −180° at the left. rollU shifts the
-  // relief by half a turn so Olympus Mons shades where the colour draws it.
-  'mars-normal':     { src: 'mars-mola.jpg',   out: 'mars-normal.v2.png',  fn: 'heightToNormal', scale: 0.25, opts: { strength: 2.4, mola: true, rollU: 0.5 } },
+  // MOLA MEGDR 16 pixel/degree DEM (PDS megt90n000eb.img: 5760x2880 big-endian
+  // 16-bit metres, 0–360°E with longitude 0 at its left edge). Every Mars
+  // colour map here (and the tiles) puts −180° at the left, so rollU shifts
+  // the relief by half a turn: Olympus Mons shades where the colour draws it.
+  // 16-bit heights, like the Moon's: no 8-bit terracing across the plains.
+  'mars-normal':     { src: 'megt90n000eb.img', out: 'mars-normal.v2.png', fn: 'normalsFromHeights', scale: 0.25, decode: 'int16be-raw', dims: { width: 5760, height: 2880 }, opts: { strength: 2.4, rollU: 0.5 } },
 };
 
 async function exists(p) {
@@ -229,8 +231,37 @@ const PAGE_TRANSFORMS = `
 
 // The 16-bit height path never touches an <img>: the samples cross into the page
 // as raw bytes, become floats there, and only the finished normal map is rasterized.
+// A raw big-endian 16-bit grid (a PDS MEGDR .img: no header, dimensions from
+// its label), read into the same normalized 16-bit field the TIFF path yields
+// (min..max of the samples → 0..65535, so `strength` means the same fraction
+// of the body's relief per texel) and rolled by `rollU` of a turn so a
+// 0–360°E product lines up with the −180°-left colour maps.
+function readInt16BeRaw(buf, width, height, rollU = 0) {
+  const n = width * height;
+  if (buf.length < n * 2) throw new Error(`expected ${n * 2} bytes for ${width}x${height} int16, got ${buf.length}`);
+  let min = Infinity, max = -Infinity;
+  for (let i = 0; i < n; i++) {
+    const v = buf.readInt16BE(i * 2);
+    if (v < min) min = v;
+    if (v > max) max = v;
+  }
+  const shift = ((Math.round(width * rollU) % width) + width) % width;
+  const scale = 65535 / Math.max(max - min, 1);
+  const data = new Uint16Array(n);
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      const sx = (x - shift + width) % width; // content moves east by `shift`
+      data[y * width + x] = Math.round((buf.readInt16BE((y * width + sx) * 2) - min) * scale);
+    }
+  }
+  console.log(`[gen-maps] int16 grid ${width}x${height}: heights ${min}..${max}, rolled ${shift} px`);
+  return { width, height, data };
+}
+
 async function runHeightJob(page, def, buf) {
-  const tif = readUint16Tiff(buf);
+  const tif = def.decode === 'int16be-raw'
+    ? readInt16BeRaw(buf, def.dims.width, def.dims.height, (def.opts && def.opts.rollU) || 0)
+    : readUint16Tiff(buf);
   const w = Math.round(tif.width * def.scale), h = Math.round(tif.height * def.scale);
   return page.evaluate(async ({ b64, sw, sh, w, h, fn, opts, transforms }) => {
     const T = eval(transforms);
@@ -271,7 +302,7 @@ async function runJob(page, name) {
     return false;
   }
   const buf = await readFile(srcPath);
-  if (def.decode === 'uint16-tiff') {
+  if (def.decode === 'uint16-tiff' || def.decode === 'int16be-raw') {
     const b64 = await runHeightJob(page, def, buf);
     await writeFile(path.join(TEX, def.out), Buffer.from(b64, 'base64'));
     console.log(`[gen-maps] ${name}: ${def.src} -> ${def.out}`);

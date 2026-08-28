@@ -33,18 +33,82 @@ afterEach(() => {
 });
 
 describe('loadStreamedTexture', () => {
-  it('falls back to the shared TextureLoader when the probe refuses', async () => {
+  it('decodes through the image path when the probe refuses, from the bytes it already fetched', async () => {
     setBitmapProbeForTests(false);
     // API present (else the sync no-API path short-circuits before the probe).
     vi.stubGlobal('createImageBitmap', vi.fn());
+    const fetchSpy = vi.fn(async () => ({ ok: true, blob: async () => new Blob(['map']) }));
+    vi.stubGlobal('fetch', fetchSpy);
+    const revoke = vi.spyOn(URL, 'revokeObjectURL');
     const { calls } = deferredLoad();
     const onLoad = vi.fn();
     loadStreamedTexture('textures/a.jpg', onLoad, vi.fn());
     await flush();
-    expect(calls.map((c) => c.url)).toEqual(['textures/a.jpg']);
+    // One transfer, and the image reads it back through an object URL rather
+    // than asking the network for the same file again.
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+    expect(calls).toHaveLength(1);
+    expect(calls[0].url.startsWith('blob:')).toBe(true);
+    expect(revoke).not.toHaveBeenCalled();
     const tex = new THREE.Texture();
     calls[0].onLoad(tex);
     expect(onLoad).toHaveBeenCalledWith(tex);
+    expect(revoke).toHaveBeenCalledWith(calls[0].url);
+    // The blob URL is nobody's business downstream: the texture is named
+    // after the map it actually is.
+    expect(tex.name).toBe('a.jpg');
+    expect(tex.userData.sourceUrl).toBe('textures/a.jpg');
+  });
+
+  it('shares one transfer between image-fallback callers, each decoding its own image', async () => {
+    setBitmapProbeForTests(false);
+    vi.stubGlobal('createImageBitmap', vi.fn());
+    let land!: () => void;
+    const gate = new Promise<void>((r) => { land = r; });
+    const fetchSpy = vi.fn(async () => { await gate; return { ok: true, blob: async () => new Blob(['map']) }; });
+    vi.stubGlobal('fetch', fetchSpy);
+    const { calls } = deferredLoad();
+    const url = 'textures/tiles/earth-day.v2/16k/2_1.webp';
+    const loads = [vi.fn(), vi.fn()];
+    for (const onLoad of loads) loadStreamedTexture(url, onLoad, vi.fn());
+    await flush();
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+    land();
+    await flush();
+    // Each caller owns the texture it is handed, so each decodes its own
+    // image from its own object URL.
+    expect(calls).toHaveLength(2);
+    expect(new Set(calls.map((c) => c.url)).size).toBe(2);
+    for (let i = 0; i < loads.length; i++) {
+      calls[i].onLoad(new THREE.Texture());
+      expect(loads[i]).toHaveBeenCalledTimes(1);
+    }
+  });
+
+  it('ends an image-fallback transfer only once the last caller has dropped it', async () => {
+    setBitmapProbeForTests(false);
+    vi.stubGlobal('createImageBitmap', vi.fn());
+    const signals: AbortSignal[] = [];
+    let land!: () => void;
+    const gate = new Promise<void>((r) => { land = r; });
+    vi.stubGlobal('fetch', vi.fn(async (_url: string, init: { signal: AbortSignal }) => {
+      signals.push(init.signal);
+      await gate;
+      return { ok: true, blob: async () => new Blob(['map']) };
+    }));
+    deferredLoad();
+    const url = 'textures/tiles/earth-day.v2/16k/4_1.webp';
+    const first = new AbortController();
+    const second = new AbortController();
+    loadStreamedTexture(url, vi.fn(), vi.fn(), undefined, first.signal);
+    loadStreamedTexture(url, vi.fn(), vi.fn(), undefined, second.signal);
+    await flush();
+    expect(signals).toHaveLength(1);
+    first.abort();
+    expect(signals[0].aborted).toBe(false); // the other caller still wants it
+    second.abort();
+    expect(signals[0].aborted).toBe(true);
+    land();
   });
 
   it('ends the fetch when the caller aborts, and never starts one already aborted', async () => {
@@ -214,9 +278,10 @@ describe('loadStreamedTexture', () => {
     expect(onError.mock.calls[0][0]).toBeInstanceOf(TextureTransportError);
   });
 
-  it('spends one TextureLoader fallback on a decode failure', async () => {
+  it('spends one image decode of the same bytes on a bitmap decode failure', async () => {
     setBitmapProbeForTests(true);
-    vi.stubGlobal('fetch', vi.fn(async () => ({ ok: true, blob: async () => new Blob() })));
+    const fetchSpy = vi.fn(async () => ({ ok: true, blob: async () => new Blob(['map']) }));
+    vi.stubGlobal('fetch', fetchSpy);
     vi.stubGlobal('createImageBitmap', vi.fn(async () => { throw new Error('too large'); }));
     const { calls } = deferredLoad();
     const onLoad = vi.fn();
@@ -224,7 +289,10 @@ describe('loadStreamedTexture', () => {
     loadStreamedTexture('textures/d.jpg', onLoad, onError);
     await flush();
     expect(onError).not.toHaveBeenCalled();
-    expect(calls.map((c) => c.url)).toEqual(['textures/d.jpg']);
+    // The fallback decodes the bytes in hand: the file is fetched once.
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+    expect(calls).toHaveLength(1);
+    expect(calls[0].url.startsWith('blob:')).toBe(true);
     const tex = new THREE.Texture();
     calls[0].onLoad(tex);
     expect(onLoad).toHaveBeenCalledWith(tex);

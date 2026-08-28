@@ -15,16 +15,19 @@
  * shared `textureLoader`, whose worst case is the old slower upload, never a
  * flipped map.
  *
- * One transfer per URL: callers that ask for the same map while it is in the
- * air share the bytes and each decode their own bitmap, so a texture stays
- * one caller's to close or dispose. The transfer is abandoned only when the
- * last of them drops it.
+ * One transfer per URL, whichever decoder runs: callers that ask for the same
+ * map while it is in the air share the bytes and each decode their own image,
+ * so a texture stays one caller's to close or dispose. The transfer is
+ * abandoned only when the last of them drops it. The HTMLImageElement path is
+ * fed from the same blob through an object URL rather than by asking for the
+ * file again — a second request would be off the shared transfer and outside
+ * the caller's fetch pool, and could not be aborted at all.
  *
  * Failure taxonomy: transport errors (HTTP status, network, stream) surface
  * to the caller's onError, so retry ladders and tier cooldowns behave exactly
  * as they always did. A decode failure on a real image is different — the
  * probe passed on a sample, but this platform balked at the full-size decode
- * (size limits, memory pressure) — so one fallback load through the
+ * (size limits, memory pressure) — so one fallback decode through the
  * HTMLImageElement path is spent before surfacing the error.
  */
 import * as THREE from 'three';
@@ -167,27 +170,17 @@ function fetchSharedBlob(url: string, signal?: AbortSignal): Promise<Blob> {
   );
 }
 
-/** Fetch a map as an ImageBitmap with the flip baked in, wrapped in a texture
- *  that knows not to flip again. */
-async function loadBitmapTexture(url: string, stillWanted?: () => boolean, signal?: AbortSignal): Promise<THREE.Texture> {
-  let blob: Blob;
-  try {
-    blob = await fetchSharedBlob(url, signal);
-  } catch (err) {
-    throw new TextureTransportError(err instanceof Error ? err.message : String(err));
-  }
-  // The transfer is shared, so it lands even for a caller that aborted while
-  // it was in the air — that caller stops here rather than decoding.
-  if (signal?.aborted) {
-    throw new TextureTransportError(`aborted: ${url}`);
-  }
-  // The bytes cannot be recalled, but the decode can be declined: an attempt
-  // superseded while they were in the air stops here, before a full-size
-  // bitmap (~128MB at 8K) is created for nobody. Reported as a transport
-  // error: the caller's own staleness guard makes it a no-op.
-  if (stillWanted && !stillWanted()) {
-    throw new TextureTransportError(`superseded: ${url}`);
-  }
+/** Name a texture after the file it was decoded from. Neither an ImageBitmap
+ *  nor an object URL carries a usable src, and the perf/debug telemetry
+ *  identifies uploads by their image's URL. */
+function stampSource(tex: THREE.Texture, url: string): void {
+  tex.name = url.split(/[?#]/)[0].split('/').filter(Boolean).pop() ?? url;
+  tex.userData.sourceUrl = url;
+}
+
+/** Decode fetched bytes as an ImageBitmap with the flip baked in, wrapped in
+ *  a texture that knows not to flip again. */
+async function decodeBitmapTexture(blob: Blob, url: string): Promise<THREE.Texture> {
   const bitmap = await createImageBitmap(blob, {
     imageOrientation: 'flipY',
     premultiplyAlpha: 'none',
@@ -195,11 +188,8 @@ async function loadBitmapTexture(url: string, stillWanted?: () => boolean, signa
   const tex = new THREE.Texture(bitmap);
   tex.flipY = false; // baked into the bitmap above
   tex.needsUpdate = true;
-  // ImageBitmaps carry no src, so stamp the texture for the perf/debug
-  // telemetry that identifies uploads by their image's URL — and mark the
-  // baked flip for any consumer that reads the pixels back on the CPU.
-  tex.name = url.split(/[?#]/)[0].split('/').filter(Boolean).pop() ?? url;
-  tex.userData.sourceUrl = url;
+  stampSource(tex, url);
+  // Mark the baked flip for any consumer that reads the pixels back on the CPU.
   tex.userData.bitmapPreFlipped = true;
   // The GPU copy made at upload is independent of the bitmap, and an applied
   // texture must KEEP its image (three re-uploads from it after a context
@@ -207,6 +197,40 @@ async function loadBitmapTexture(url: string, stillWanted?: () => boolean, signa
   // decoded bitmap (~128MB at 8K) lingers until GC notices.
   tex.addEventListener('dispose', () => bitmap.close());
   return tex;
+}
+
+/** Decode fetched bytes through the HTMLImageElement path — the platform
+ *  whose bitmap flip the probe refused, and the image this one balked at.
+ *  The bytes are already in hand, so the image reads them from an object URL
+ *  of its own, revoked as soon as it is done with them: asking the network
+ *  for the same file a second time would run outside the shared transfer and
+ *  outside the caller's fetch pool, and nothing could abort it. */
+function decodeImageTexture(
+  blob: Blob,
+  url: string,
+  onLoad: (tex: THREE.Texture) => void,
+  onError: (err: unknown) => void,
+): void {
+  let objectUrl: string;
+  try {
+    objectUrl = URL.createObjectURL(blob);
+  } catch (err) {
+    onError(err);
+    return;
+  }
+  textureLoader.load(
+    objectUrl,
+    (tex) => {
+      URL.revokeObjectURL(objectUrl);
+      stampSource(tex, url);
+      onLoad(tex);
+    },
+    undefined,
+    (err) => {
+      URL.revokeObjectURL(objectUrl);
+      onError(err);
+    },
+  );
 }
 
 /**
@@ -222,25 +246,52 @@ export const loadStreamedTexture: TextureLoad = (url, onLoad, onError, stillWant
     textureLoader.load(url, onLoad, undefined, onError);
     return;
   }
-  bitmapUploadUsable().then((usable) => {
+  void (async () => {
+    const usable = await bitmapUploadUsable();
     // Interest can lapse while the one-time probe is still resolving; don't
     // even start the fetch for an attempt already superseded.
     if ((stillWanted && !stillWanted()) || signal?.aborted) {
       onError(new TextureTransportError(`superseded: ${url}`));
       return;
     }
-    if (!usable) {
-      textureLoader.load(url, onLoad, undefined, onError);
+    // One transfer feeds whichever decoder runs below.
+    let blob: Blob;
+    try {
+      blob = await fetchSharedBlob(url, signal);
+    } catch (err) {
+      onError(new TextureTransportError(err instanceof Error ? err.message : String(err)));
       return;
     }
-    loadBitmapTexture(url, stillWanted, signal).then(onLoad, (err) => {
-      if (err instanceof TextureTransportError) onError(err);
-      // A decode failure spends one fallback load — but not for a caller
-      // whose interest lapsed mid-decode: that would re-fetch for nobody.
-      else if (stillWanted && !stillWanted()) onError(err);
-      else textureLoader.load(url, onLoad, undefined, onError);
-    });
-  });
+    // The transfer is shared, so it lands even for a caller that aborted while
+    // it was in the air — that caller stops here rather than decoding.
+    if (signal?.aborted) {
+      onError(new TextureTransportError(`aborted: ${url}`));
+      return;
+    }
+    // The bytes cannot be recalled, but the decode can be declined: an attempt
+    // superseded while they were in the air stops here, before a full-size
+    // image (~128MB at 8K) is created for nobody. Reported as a transport
+    // error: the caller's own staleness guard makes it a no-op.
+    if (stillWanted && !stillWanted()) {
+      onError(new TextureTransportError(`superseded: ${url}`));
+      return;
+    }
+    if (!usable) {
+      decodeImageTexture(blob, url, onLoad, onError);
+      return;
+    }
+    let tex: THREE.Texture;
+    try {
+      tex = await decodeBitmapTexture(blob, url);
+    } catch (err) {
+      // A decode failure spends one fallback decode of the same bytes — but
+      // not for a caller whose interest lapsed mid-decode.
+      if (stillWanted && !stillWanted()) onError(err);
+      else decodeImageTexture(blob, url, onLoad, onError);
+      return;
+    }
+    onLoad(tex);
+  })();
 };
 
 /** Start the one-time flip probe now, so its round through the microtask

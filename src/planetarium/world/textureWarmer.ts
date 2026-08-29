@@ -24,6 +24,52 @@ import { smoothTraceArmed, smoothTraceEvent } from '../smoothnessTrace';
 
 type WarmUpload = (tex: THREE.Texture) => void;
 
+/**
+ * What share of a frame the pump may spend uploading.
+ *
+ * The budget has to be a fraction of the frame, not a constant: 6 ms is a
+ * third of a 60 Hz frame and most of a 120 Hz one, so a figure tuned on one
+ * display eats the other. Measured at 120 Hz, a fixed 6 ms put the boot warm's
+ * 4K maps 16-18 ms apart on adjacent frames, over two vsyncs each.
+ */
+export const WARM_BUDGET_FRACTION = 0.35;
+/** Below this the pump cannot finish anything and the queue never drains. */
+export const WARM_BUDGET_FLOOR_MS = 2;
+/** The old fixed budget, which a 60 Hz frame still lands on. Never spend more. */
+export const WARM_BUDGET_CAP_MS = 6;
+/**
+ * How long the queue may sit while the pump repays an overrun.
+ *
+ * An upload is unsliceable and its cost unknowable until it is paid, so the
+ * pump can only choose whether to START one — the last upload of a call is
+ * what overruns, and that overrun is the price of not slicing. What this
+ * bounds is how often the price may be paid: the pump sits out the overrun it
+ * caused, and this caps that wait, so a queue always makes progress inside a
+ * quarter second however big the maps are.
+ */
+export const WARM_STARVE_MS = 250;
+
+/** The pump's budget for a frame of this measured length. */
+export function warmBudgetMs(frameIntervalMs: number): number {
+  if (!Number.isFinite(frameIntervalMs) || frameIntervalMs <= 0) return WARM_BUDGET_CAP_MS;
+  const share = frameIntervalMs * WARM_BUDGET_FRACTION;
+  return Math.min(WARM_BUDGET_CAP_MS, Math.max(WARM_BUDGET_FLOOR_MS, share));
+}
+
+/**
+ * Whether the pump may upload this frame. False only while it is repaying an
+ * overrun — and never for longer than WARM_STARVE_MS, so a starving queue
+ * always gets its forced upload through.
+ */
+export function warmPumpAllowed(
+  nowMs: number,
+  repayUntilMs: number,
+  lastUploadAtMs: number | null,
+): boolean {
+  if (nowMs >= repayUntilMs) return true;
+  return lastUploadAtMs === null || nowMs - lastUploadAtMs >= WARM_STARVE_MS;
+}
+
 let uploadFn: WarmUpload | null = null;
 const queue: THREE.Texture[] = [];
 // A drained texture stays resident until it is disposed, mutated (which bumps
@@ -31,6 +77,9 @@ const queue: THREE.Texture[] = [];
 // version so repeated landed-vantage swaps do not call renderer.initTexture
 // again for the same Moon albedo/normal pair every frame.
 let warmedVersions = new WeakMap<THREE.Texture, number>();
+// When the pump may upload again, and when it last did — the overrun ledger.
+let warmRepayUntilMs = 0;
+let warmLastUploadAtMs: number | null = null;
 // One listener per queued texture, removed on drain or dispose, so long-lived
 // textures don't retain warm-up closures for their whole life.
 const disposeListeners = new Map<THREE.Texture, () => void>();
@@ -87,8 +136,10 @@ export function queueTextureWarm(tex: THREE.Texture, onOutcome?: (outcome: WarmO
  * largest unsliceable upload the app has) takes its frame alone.
  */
 export function pumpTextureWarmQueue(budgetMs: number): void {
-  if (!uploadFn) return;
+  if (!uploadFn || queue.length === 0) return;
   const start = performance.now();
+  // Sit out an overrun already owed, unless the queue would starve for it.
+  if (!warmPumpAllowed(start, warmRepayUntilMs, warmLastUploadAtMs)) return;
   while (queue.length > 0) {
     const tex = queue.shift()!;
     const onDispose = disposeListeners.get(tex);
@@ -128,8 +179,16 @@ export function pumpTextureWarmQueue(budgetMs: number): void {
     residentCallbacks.delete(tex);
     if (uploaded) warmedVersions.set(tex, tex.version);
     onOutcome?.(uploaded ? 'warmed' : 'failed');
-    if (performance.now() - start >= budgetMs) return;
+    warmLastUploadAtMs = performance.now();
+    const spent = warmLastUploadAtMs - start;
+    if (spent >= budgetMs) {
+      // Charge the overrun forward rather than paying another next frame:
+      // consecutive big maps are what turn one slow upload into a stutter.
+      warmRepayUntilMs = warmLastUploadAtMs + Math.max(0, spent - budgetMs);
+      return;
+    }
   }
+  warmRepayUntilMs = 0;
 }
 
 /** A restored WebGL context has no copy of any previously warmed texture. */
@@ -147,6 +206,8 @@ export function resetTextureWarmer(): void {
   residentCallbacks.clear();
   queue.length = 0;
   uploadFn = null;
+  warmRepayUntilMs = 0;
+  warmLastUploadAtMs = null;
   invalidateTextureWarmCache();
   for (const cb of pending) cb('disposed');
 }

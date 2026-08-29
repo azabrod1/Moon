@@ -38,7 +38,7 @@ import {
 import { appliedTierHeldBytes, applySunGlowTier, armArrivalWarmGoal, arrivalUpgradeTier, arrivalWarmGoalsExpired, bindKtx2TierLoader, bindTierAdmission, cancelTierRelease, canAttempt, cancelNormalUpgrade, cancelTextureUpgrade, createMoonMeshes, createShaderWarmupProbes, disarmArrivalWarmGoal, earnedUpgradeTier, expireTierRelease, ladderMapReferenceWidth, lodMeasurementRelevant, materialColorMap, needsUpgradeCover, normalUpgradePending, pumpArrivalWarmGoal, reachableTopTier, releaseDue, releaseExpired, releaseTargetTier, retainedSourceBytes, resolveTierFile, resolveUpgradeTier, setWarmEligibleMoonParents, startTierRelease, takeRestoreRefetch, tierUploadBytes, trackReleaseBand, upgradeComplete, upgradeGeometryOnApproach, upgradeNormalOnApproach, upgradeTextureOnApproach, ATMOSPHERES, ATMOSPHERE_SHELL_SCALES, UPGRADE_TRIGGER_FRACTION, type MoonMesh, type PlanetMesh, type TextureUpgrade, type TierAdmission } from './PlanetFactory';
 import type { KTX2Loader } from 'three/examples/jsm/loaders/KTX2Loader.js';
 import type { SurfaceShadingFx } from './world/surfaceShading';
-import { bindTextureWarmer, invalidateTextureWarmCache, pumpTextureWarmQueue, queueTextureWarm, resetTextureWarmer } from './world/textureWarmer';
+import { bindTextureWarmer, invalidateTextureWarmCache, pumpTextureWarmQueue, queueTextureWarm, resetTextureWarmer, warmBudgetMs } from './world/textureWarmer';
 import { smoothTraceVeil } from './smoothnessTrace';
 import {
   SECTOR_NIGHT_SETS, SECTOR_SETS, SectorStreamer, sectorFamilyKey,
@@ -804,7 +804,18 @@ export class PlanetariumMode {
 
   // Per-frame time budget for warm texture uploads: small maps batch within
   // it, a big one takes its frame alone (the pump always uploads at least one).
-  private static readonly TEXTURE_WARM_BUDGET_MS = 6;
+  /**
+   * A slow average of the frame interval, for anything that must size work
+   * against the refresh rather than a fixed millisecond figure.
+   *
+   * Averaged rather than read live, and clamped before folding in, because a
+   * single hitch would otherwise raise the estimate and licence more work on
+   * exactly the frames that are already late.
+   */
+  private frameIntervalMs = 16.7;
+  private static readonly FRAME_INTERVAL_EMA_ALPHA = 0.05;
+  private static readonly FRAME_INTERVAL_MIN_MS = 4;
+  private static readonly FRAME_INTERVAL_MAX_MS = 40;
   /** Above this rotation rate on screen (degrees of body spin per real
    *  second — Earth at 900 s/s) a globe turns visibly under the camera, so
    *  admitting sector tiles would only churn 21 MiB uploads — residents hold,
@@ -3761,6 +3772,10 @@ export class PlanetariumMode {
     // veil a frame late would blame the world for the cut's first hitch.
     if (import.meta.env.DEV) smoothTraceVeil(this.arrivalVeilUp());
     this.lastFrameDtMs = dt * 1000;
+    this.frameIntervalMs += (Math.min(
+      PlanetariumMode.FRAME_INTERVAL_MAX_MS,
+      Math.max(PlanetariumMode.FRAME_INTERVAL_MIN_MS, this.lastFrameDtMs),
+    ) - this.frameIntervalMs) * PlanetariumMode.FRAME_INTERVAL_EMA_ALPHA;
     this.frameStamp++;
     if (this.shaderWarmupProgramCount !== null && ++this.framesSinceShaderWarmup >= 3) {
       const now = this.renderer.info.programs?.length ?? 0;
@@ -3782,7 +3797,7 @@ export class PlanetariumMode {
     // being asked of the frame — otherwise the whole decode+upload bill lands
     // inside whatever gesture first draws the map. Runs in every mode so
     // landed sessions warm up too.
-    pumpTextureWarmQueue(PlanetariumMode.TEXTURE_WARM_BUDGET_MS);
+    pumpTextureWarmQueue(warmBudgetMs(this.frameIntervalMs));
     // Climb any committed destination's warm ladder (see
     // warmArrivalDestination) — a no-op the moment every goal has disarmed.
     this.pumpArrivalWarmGoals();

@@ -24,7 +24,7 @@ import {
   type SectorMeasure,
   type SectorSetSpec,
 } from './sectorStreamer';
-import { LEGACY_DESKTOP_PROFILE, LEGACY_TOUCH_PROFILE } from './gpuEnvelope';
+import { APPLE_PHONE_PROFILE, LEGACY_DESKTOP_PROFILE, LEGACY_TOUCH_PROFILE } from './gpuEnvelope';
 import {
   appliedTierHeldBytes,
   bindTierAdmission,
@@ -82,7 +82,11 @@ const R = 1;
 /** The two sets of device numbers the streamer is built with today. The
  *  streamer takes numbers, not a device guess, so a test says which. */
 const DESKTOP = LEGACY_DESKTOP_PROFILE;
+/** An Android or other-platform phone or tablet: the numbers the app shipped
+ *  with, kept because no device on those platforms has been measured. */
 const TOUCH = LEGACY_TOUCH_PROFILE;
+/** An Apple phone, which holds the desktop numbers on a measurement. */
+const APPLE_PHONE = APPLE_PHONE_PROFILE;
 /** The same desktop numbers with no sector floor. Most of the tests below
  *  squeeze the budget to one set or to nothing to watch what the streamer
  *  gives up first — a squeeze the shipped floor is there to prevent, and
@@ -1846,15 +1850,16 @@ describe('SectorStreamer', () => {
     expect(stats.bodies.Earth.scores['4_2']).toBeCloseTo(1.4 / 2, 9);
   });
 
-  it('takes the same level-0 decisions on the phone numbers: a golden trace', () => {
+  it('takes the same level-0 decisions on an Android phone: a golden trace', () => {
     const { events } = goldenTrace(
       (load) => new SectorStreamer({ limits: TOUCH, load, warm: warm.warm }),
       TOUCH.envelopeBytes,
     );
-    // The same script, the same four sets, the same order — one admission a
-    // frame instead of two, because the phone's in-flight cap is 1. The
-    // budget is the phone's smaller envelope less the same four sets, so
-    // what the working set holds is unchanged; only the pace differs.
+    // An Android or other-platform touch device, on the numbers the app
+    // shipped with: the same script, the same four sets, the same order —
+    // one admission a frame instead of two, because its in-flight cap is 1.
+    // The budget is its smaller envelope less the same four sets, so what
+    // the working set holds is unchanged; only the pace differs.
     expect(events).toEqual([
       'f0 +2_1',
       'f1 +3_1',
@@ -1878,6 +1883,51 @@ describe('SectorStreamer', () => {
       'f16 +7_1',
       'f17 +4_1',
     ]);
+  });
+
+  it('takes the desktop decisions on an Apple phone: a golden trace', () => {
+    const { events } = goldenTrace(
+      (load) => new SectorStreamer({ limits: APPLE_PHONE, load, warm: warm.warm }),
+      APPLE_PHONE.envelopeBytes,
+    );
+    // A phone-shaped device on the measured numbers. Read against the
+    // Android trace above, the differences are the whole of what the
+    // measurement bought: two admissions a frame instead of one (f0 takes
+    // 2_1 AND 3_1), and a floor of three sets instead of two — which is why
+    // the globe map growing at f11 gives back one sector here and two there,
+    // and why the context loss streams three back rather than two.
+    expect(events).toEqual([
+      'f0 +2_1',
+      'f0 +3_1',
+      'f1 +1_1',
+      'f1 +4_1',
+      'f4 * 2s of looking',
+      'f6 -1_1',
+      'f6 -2_1',
+      'f6 +5_1',
+      'f6 +6_1',
+      'f9 * 2s of looking',
+      "f11 * the globe's own map grows: room for two sets",
+      'f11 -6_1',
+      'f13 * 2s of looking',
+      'f13 -3_1',
+      'f13 +7_1',
+      'f16 * context loss',
+      'f16 -4_1',
+      'f16 -5_1',
+      'f16 -7_1',
+      'f16 +7_1',
+      'f16 +4_1',
+      'f17 +5_1',
+    ]);
+    // And it IS the desktop trace: the same script over the same numbers
+    // takes the same decisions, which is what "the desktop row on a phone"
+    // means when it is spent rather than written down.
+    const desktop = goldenTrace(
+      (load) => new SectorStreamer({ limits: DESKTOP, load, warm: warm.warm }),
+      DESKTOP.envelopeBytes,
+    );
+    expect(events).toEqual(desktop.events);
   });
 
   it('scales a day sector by how much of it the sun is on', () => {

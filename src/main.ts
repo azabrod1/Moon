@@ -630,6 +630,7 @@ function installDevHooks() {
     travelTo: (name: string) => planetariumMode?.devTravelTo(name) ?? false,
     land: (name: string) => planetariumMode?.devLand(name) ?? false,
     observe: (name: string) => planetariumMode?.devObserve(name) ?? false,
+    device: () => planetariumMode?.devDeviceProfile() ?? null,
     sectors: () => planetariumMode?.devSectorStats() ?? null,
     ladder: () => planetariumMode?.devLadderStats() ?? null,
     lookUp: () => planetariumMode?.devLookUp() ?? false,

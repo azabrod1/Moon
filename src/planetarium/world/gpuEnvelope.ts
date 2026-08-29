@@ -8,8 +8,9 @@
  * whether ONE map can be loaded and nothing about how many may be resident,
  * and the one number that matters — how much a tab may hold before the system
  * closes it — is unpublished on the platform where it binds (iOS). So the
- * device is classified from what it does say, and the classes carry measured
- * numbers.
+ * device is classified from what it does say, and the class it lands on —
+ * crossed with the platform family, because a measurement only carries as far
+ * as the platform it was taken on — names the numbers it may spend.
  *
  * What each signal is worth, measured on real hardware and in the Playwright
  * harness that stands in for Safari:
@@ -39,6 +40,14 @@
 import type { TextureTier } from './texturePolicy';
 
 export type DeviceClass = 'phone' | 'tablet' | 'desktop' | 'limited';
+
+/** Whose memory behaviour a device has, which is a different question from
+ *  how big its chassis is. An envelope is measured on hardware, and a
+ *  measurement carries only as far as the platform it was taken on: what an
+ *  iPhone holds says nothing about what an Android phone holds, and the two
+ *  are the same size. Splitting the table this way is what lets a measured
+ *  row move without dragging every unmeasured device along with it. */
+export type PlatformFamily = 'apple' | 'android' | 'other';
 
 /** Everything the classifier reads, as literal values, so a device can be
  *  recorded once and replayed in a test. Fields a browser withholds are null
@@ -103,8 +112,14 @@ export interface SectorMemoryLimits {
  *  two ladder decisions that are about total residency rather than a single
  *  map's size. */
 export interface DeviceProfile extends SectorMemoryLimits {
-  /** Which branch of the table these numbers came from, for the debug line. */
-  id: 'legacy-touch' | 'legacy-desktop';
+  /** Which row of the table these numbers came from, for the debug line. */
+  id: 'apple-phone' | 'apple-tablet' | 'legacy-touch' | 'legacy-desktop' | 'limited';
+  /** Where the row's numbers come from, in a form the debug overlay can show
+   *  on a device with no console: the device and date they were measured on,
+   *  or that they are the numbers the app shipped with and no run has
+   *  replaced. A phone showing `legacy` is a phone whose numbers are still a
+   *  guess. */
+  provenance: 'measured 2026-08-29 iPhone' | 'measured 2026-08-29 iPad' | 'legacy' | 'unmeasured';
   /** The speculative boot warm pulls its bytes into the HTTP cache only,
    *  rather than decoding and uploading maps a session may never visit. */
   cacheOnlyWarm: boolean;
@@ -147,19 +162,22 @@ export function fillRateTierCaps(cls: DeviceClass): Partial<Record<string, Textu
 }
 
 /**
- * A touch-first device's numbers. An Earth sector set — its 2048² tile plus
- * its copies of the bump and roughness crops — is ~23.1 MiB, so this holds
- * six of them, and never fewer than two whatever the globe maps have taken.
- * Six is what a phone held before the budget was in bytes at all, and a
- * phone's shared memory is the app's known weak spot.
+ * The numbers a touch device gets while nobody has measured its platform.
+ * An Earth sector set — its 2048x2048 tile plus its copies of the bump and
+ * roughness crops — is ~23.1 MiB, so this holds six of them, and never fewer
+ * than two whatever the globe maps have taken. Six is what a phone held
+ * before the budget was in bytes at all.
  *
  * It asks for tiles later than a desktop, at 1.25 device pixels per texel:
- * a 2–3× display reaches that magnification at nearly twice the distance, and
+ * a 2-3x display reaches that magnification at nearly twice the distance, and
  * every earlier tile is a 200 KB fetch and 21 MiB of shared memory on the
- * device with the least of both.
+ * device with the least of both. That is a cost argument rather than a demand
+ * one, and it stands only while the cost is unmeasured — which on Android and
+ * on everything that is neither Apple nor Android it still is.
  */
 export const LEGACY_TOUCH_PROFILE: DeviceProfile = {
   id: 'legacy-touch',
+  provenance: 'legacy',
   envelopeBytes: 320 * MiB,
   ceilingBytes: 144 * MiB,
   sectorFloorBytes: 2 * EARTH_SECTOR_SET_BYTES,
@@ -181,6 +199,7 @@ export const LEGACY_TOUCH_PROFILE: DeviceProfile = {
  */
 export const LEGACY_DESKTOP_PROFILE: DeviceProfile = {
   id: 'legacy-desktop',
+  provenance: 'legacy',
   envelopeBytes: 768 * MiB,
   ceilingBytes: 256 * MiB,
   sectorFloorBytes: 3 * EARTH_SECTOR_SET_BYTES,
@@ -192,6 +211,147 @@ export const LEGACY_DESKTOP_PROFILE: DeviceProfile = {
   cacheOnlyWarm: false,
   tierCaps: fillRateTierCaps('desktop'),
 };
+
+/**
+ * An Apple phone: the desktop numbers, on the evidence below.
+ *
+ * A page that allocates 4096x2048 RGBA maps with mips — 42.7 MiB each, the
+ * app's own rung shape — writing down each attempt before it makes it, so a
+ * tab the system kills leaves the size that killed it behind:
+ *
+ *   iPhone 16 Pro Max class, iOS 18.7 / Safari 26.6, 2026-08-29:
+ *   46 maps = 1962.7 MiB, still drawing. No kill was recorded at any size.
+ *
+ * 1962.7 MiB is six times the 320 MiB this device was being given. There is
+ * no headroom fraction to take of a ceiling that was never reached, so the
+ * number here is not a fraction of anything: it is the desktop working set,
+ * which the device holds several times over.
+ *
+ * What stays smaller than a desktop's is the cloud deck, and for a reason
+ * that is not memory — see FILL_RATE_TIER_CAP.
+ */
+export const APPLE_PHONE_PROFILE: DeviceProfile = {
+  id: 'apple-phone',
+  provenance: 'measured 2026-08-29 iPhone',
+  envelopeBytes: 768 * MiB,
+  ceilingBytes: 256 * MiB,
+  sectorFloorBytes: 3 * EARTH_SECTOR_SET_BYTES,
+  residentCap: 16,
+  inflightCap: 2,
+  fetchPool: 6,
+  wantTexelPx: 1.0,
+  releaseTexelPx: 0.65,
+  cacheOnlyWarm: false,
+  tierCaps: fillRateTierCaps('phone'),
+};
+
+/**
+ * An Apple tablet, on the same probe:
+ *
+ *   iPad Pro 11" class, iPadOS / Safari 26.5, 2026-08-29:
+ *   95 maps = 4053.3 MiB — the probe's own 4 GiB stop, reached with the
+ *   device showing no sign of giving way. `ceiling-not-reached`.
+ *
+ * So the tablet's true ceiling is unknown from above rather than from below,
+ * and it takes the phone's row for the same reason: a working set the
+ * measurement clears by more than five times.
+ */
+export const APPLE_TABLET_PROFILE: DeviceProfile = {
+  id: 'apple-tablet',
+  provenance: 'measured 2026-08-29 iPad',
+  envelopeBytes: 768 * MiB,
+  ceilingBytes: 256 * MiB,
+  sectorFloorBytes: 3 * EARTH_SECTOR_SET_BYTES,
+  residentCap: 16,
+  inflightCap: 2,
+  fetchPool: 6,
+  wantTexelPx: 1.0,
+  releaseTexelPx: 0.65,
+  cacheOnlyWarm: false,
+  tierCaps: fillRateTierCaps('tablet'),
+};
+
+/**
+ * A software rasteriser or a device that reports 2 GB of system RAM: two
+ * Earth sector sets under the ceiling, one under the floor, and an envelope
+ * small enough that the 171 MiB 8K cloud deck fails the ladder's arithmetic
+ * without needing a cap of its own. It keeps the conservative want threshold
+ * and the cache-only boot warm for the same reason the unmeasured touch rows
+ * do: nothing has been measured here either, and this is the class with the
+ * least to spend if the guess is wrong.
+ */
+export const LIMITED_PROFILE: DeviceProfile = {
+  id: 'limited',
+  provenance: 'unmeasured',
+  envelopeBytes: 192 * MiB,
+  ceilingBytes: 2 * EARTH_SECTOR_SET_BYTES,
+  sectorFloorBytes: 1 * EARTH_SECTOR_SET_BYTES,
+  residentCap: 4,
+  inflightCap: 1,
+  fetchPool: 2,
+  wantTexelPx: 1.25,
+  releaseTexelPx: 0.8,
+  cacheOnlyWarm: true,
+  tierCaps: fillRateTierCaps('limited'),
+};
+
+/**
+ * What a device may spend, by platform family and class. The whole of the
+ * device-to-numbers mapping is these twelve cells.
+ *
+ * | family / class | envelope | tiles | floor | res | flight | fetch | want / rel | boot warm |
+ * |---|---|---|---|---|---|---|---|---|
+ * | apple / phone   | 768 | 256 | 3 sets | 16 | 2 | 6 | 1.0 / 0.65 | full   |
+ * | apple / tablet  | 768 | 256 | 3 sets | 16 | 2 | 6 | 1.0 / 0.65 | full   |
+ * | android/ phone  | 320 | 144 | 2 sets |  8 | 1 | 3 | 1.25 / 0.8 | cached |
+ * | android/ tablet | 320 | 144 | 2 sets |  8 | 1 | 3 | 1.25 / 0.8 | cached |
+ * | other  / phone  | 320 | 144 | 2 sets |  8 | 1 | 3 | 1.25 / 0.8 | cached |
+ * | other  / tablet | 320 | 144 | 2 sets |  8 | 1 | 3 | 1.25 / 0.8 | cached |
+ * | any    / desktop| 768 | 256 | 3 sets | 16 | 2 | 6 | 1.0 / 0.65 | full   |
+ * | any    / limited| 192 |  46 | 1 set  |  4 | 1 | 2 | 1.25 / 0.8 | cached |
+ *
+ * MiB, except the floors, which are whole Earth sector sets because a
+ * fraction of a set admits no tile.
+ *
+ * The two apple rows carry their measurements in their own comments; every
+ * other row is what the app shipped with, kept because no device in that
+ * family has been walked up to its ceiling. A row moves when a run says so.
+ *
+ * On the baseline the app itself holds before any of this is spent — 244 MiB
+ * on a phone, read off the boot readout: at the sizes the Apple rows were
+ * measured at it does not bear on them, because neither Apple device reached
+ * a ceiling for it to be subtracted from. It is still inside the android and
+ * other rows implicitly: 320 MiB was chosen against an app that already held
+ * roughly that much, and re-deriving those rows without re-measuring them
+ * would be arithmetic on an unmeasured number.
+ */
+export const DEVICE_PROFILES: Readonly<Record<PlatformFamily, Readonly<Record<DeviceClass, DeviceProfile>>>> = {
+  apple: {
+    phone: APPLE_PHONE_PROFILE,
+    tablet: APPLE_TABLET_PROFILE,
+    desktop: LEGACY_DESKTOP_PROFILE,
+    limited: LIMITED_PROFILE,
+  },
+  android: {
+    phone: LEGACY_TOUCH_PROFILE,
+    tablet: LEGACY_TOUCH_PROFILE,
+    desktop: LEGACY_DESKTOP_PROFILE,
+    limited: LIMITED_PROFILE,
+  },
+  other: {
+    phone: LEGACY_TOUCH_PROFILE,
+    tablet: LEGACY_TOUCH_PROFILE,
+    desktop: LEGACY_DESKTOP_PROFILE,
+    limited: LIMITED_PROFILE,
+  },
+};
+
+/** The row a class and a family land on. `limited` is the same row in every
+ *  family: a software rasteriser is a fact about the renderer, and no
+ *  platform measurement reaches past it. */
+export function deviceProfileFor(cls: DeviceClass, family: PlatformFamily): DeviceProfile {
+  return DEVICE_PROFILES[family][cls];
+}
 
 // --- The envelope arithmetic -------------------------------------------------
 //
@@ -318,14 +478,35 @@ export function classifyDevice(s: DeviceSignals): DeviceClass {
 }
 
 /**
+ * Whose platform this is. Android first: an Android UA never claims to be a
+ * Mac, and reading it first keeps the Apple test to what it is for. The
+ * Apple test is deliberately wider than the classifier's touch tell — a
+ * MacBook is an Apple device with no touchscreen at all — because the family
+ * says which measurement applies, not which chassis this is.
+ */
+export function platformFamily(s: DeviceSignals): PlatformFamily {
+  if (androidDevice(s)) return 'android';
+  if (/iPad|iPhone|iPod|Macintosh|Mac OS X/.test(s.userAgent)) return 'apple';
+  if (/^Mac/.test(s.platform) || s.uaPlatform === 'macOS') return 'apple';
+  return 'other';
+}
+
+/** The numbers a device gets: its class, its family, and the cell where the
+ *  two meet. The one call the app makes. */
+export function profileForDevice(s: DeviceSignals): DeviceProfile {
+  return deviceProfileFor(classifyDevice(s), platformFamily(s));
+}
+
+/**
  * The device test the app shipped with, preserved exactly: an iOS user agent,
  * a Mac platform with more than one touch point, or any touchscreen in a
- * window 1024 CSS px or narrower. It is what chooses the numbers while the
- * class above is only being collected, so that introducing the classifier
- * changes no device's behaviour. Note the third arm measures the WINDOW, not
- * the screen — a touch laptop with a narrow window takes the touch numbers
- * today, which is one of the devices the class will move when it is allowed
- * to size anything.
+ * window 1024 CSS px or narrower. Nothing calls it any more — the table above
+ * chooses the numbers now — and it is kept as the reference the switch was
+ * measured against: the tests run both predicates over every recorded device
+ * and assert that the set of devices whose numbers move is exactly the
+ * accepted list. Note the third arm measures the WINDOW, not the screen,
+ * which is why a touch laptop with a narrow window used to be handed a
+ * phone's memory.
  */
 export function legacyTouchFirst(s: DeviceSignals): boolean {
   return (
@@ -335,7 +516,7 @@ export function legacyTouchFirst(s: DeviceSignals): boolean {
   );
 }
 
-/** The profile the legacy test picks. */
+/** The profile the legacy test picked. Reference only; see above. */
 export function legacyProfile(s: DeviceSignals): DeviceProfile {
   return legacyTouchFirst(s) ? LEGACY_TOUCH_PROFILE : LEGACY_DESKTOP_PROFILE;
 }

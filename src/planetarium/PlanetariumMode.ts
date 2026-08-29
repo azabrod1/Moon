@@ -134,12 +134,14 @@ import { ProceduralMoonTexturer } from './world/ProceduralMoonTexturer';
 import { captureDeviceCaps, resolveTextureUrl, type TextureTier } from './world/texturePolicy';
 import {
   classifyDevice,
+  deviceProfileFor,
   ladderCeilingBytes,
-  legacyProfile,
   planRelease,
+  platformFamily,
   readDeviceSignals,
   type DeviceClass,
   type DeviceProfile,
+  type PlatformFamily,
   type ReleaseCandidate,
 } from './world/gpuEnvelope';
 import { warmBitmapUploadProbe } from './world/textureBitmapLoader';
@@ -1029,10 +1031,11 @@ export class PlanetariumMode {
    *  Null when disabled (`?sectors=0`) or before the system exists. */
   private sectors: SectorStreamer | null = null;
   /** What this device is and what it may spend, read once in the constructor
-   *  (world/gpuEnvelope). The class is collected and logged; the numbers come
-   *  from the profile. */
+   *  (world/gpuEnvelope). The class and the platform family together pick the
+   *  row; the row carries every number the ladder and the streamer spend. */
   private readonly deviceSignals: ReturnType<typeof readDeviceSignals>;
   private readonly deviceClass: DeviceClass;
+  private readonly deviceFamily: PlatformFamily;
   private readonly deviceProfile: DeviceProfile;
   private readonly sectorsEnabled = new URLSearchParams(location.search).get('sectors') !== '0';
   /** The memory readout under `?debug=1` (reportMemoryDebug). The overlay is
@@ -1985,10 +1988,11 @@ export class PlanetariumMode {
     // load, not under a live working set.
     this.deviceSignals = readDeviceSignals(renderer.getContext());
     this.deviceClass = classifyDevice(this.deviceSignals);
-    // The numbers still come from the device test the app shipped with, so
-    // the class above changes nothing yet: it is collected and logged while
-    // the measurements that will size it are gathered.
-    this.deviceProfile = captureDeviceCaps(renderer, devEnvelopeOverride(legacyProfile(this.deviceSignals)));
+    this.deviceFamily = platformFamily(this.deviceSignals);
+    this.deviceProfile = captureDeviceCaps(
+      renderer,
+      devEnvelopeOverride(deviceProfileFor(this.deviceClass, this.deviceFamily)),
+    );
     // Resolve the bitmap-upload probe during construction: every streamed
     // boot texture awaits its verdict before fetching, so starting it here
     // takes it off the first fetch's critical path.
@@ -3349,13 +3353,16 @@ export class PlanetariumMode {
     if (!moved && nowMs - this.memoryDebugAtMs < PlanetariumMode.MEMORY_DEBUG_PERIOD_MS) return;
     this.memoryDebugAtMs = nowMs;
     this.memoryDebugLast = figures;
-    // What the device was read as, beside the profile the numbers actually
-    // came from. They disagree on a handful of devices, and the line is
-    // where that shows before the class is allowed to size anything.
+    // What the device was read as, which row that picked, and whether that
+    // row's numbers were measured on hardware or are still the ones the app
+    // shipped with. On a phone this overlay is the only console there is, so
+    // a device reporting a surprise reports it here.
     debugLog('Memory', stats
       ? {
         class: this.deviceClass,
+        family: this.deviceFamily,
         profile: this.deviceProfile.id,
+        provenance: this.deviceProfile.provenance,
         globeMapsMiB: mib(globalBytes),
         tilesMiB: mib(stats.residentBytes),
         reservedMiB: mib(stats.reserved),
@@ -3363,7 +3370,52 @@ export class PlanetariumMode {
         floorMiB: mib(stats.floor),
         envelopeMiB: mib(stats.envelope),
       }
-      : { class: this.deviceClass, profile: this.deviceProfile.id, globeMapsMiB: mib(globalBytes), tiles: 'off' });
+      : {
+        class: this.deviceClass,
+        family: this.deviceFamily,
+        profile: this.deviceProfile.id,
+        provenance: this.deviceProfile.provenance,
+        globeMapsMiB: mib(globalBytes),
+        tiles: 'off',
+      });
+  }
+
+  /** Dev bridge: what this device was read as and what that lets it spend.
+   *  The browser gates assert the row rather than infer it from the bytes
+   *  that follow from it. */
+  devDeviceProfile(): {
+    deviceClass: DeviceClass;
+    family: PlatformFamily;
+    profile: DeviceProfile['id'];
+    provenance: DeviceProfile['provenance'];
+    envelopeBytes: number;
+    ceilingBytes: number;
+    sectorFloorBytes: number;
+    residentCap: number;
+    inflightCap: number;
+    fetchPool: number;
+    wantTexelPx: number;
+    releaseTexelPx: number;
+    cacheOnlyWarm: boolean;
+    tierCaps: Record<string, string>;
+  } {
+    const p = this.deviceProfile;
+    return {
+      deviceClass: this.deviceClass,
+      family: this.deviceFamily,
+      profile: p.id,
+      provenance: p.provenance,
+      envelopeBytes: p.envelopeBytes,
+      ceilingBytes: p.ceilingBytes,
+      sectorFloorBytes: p.sectorFloorBytes,
+      residentCap: p.residentCap,
+      inflightCap: p.inflightCap,
+      fetchPool: p.fetchPool,
+      wantTexelPx: p.wantTexelPx,
+      releaseTexelPx: p.releaseTexelPx,
+      cacheOnlyWarm: p.cacheOnlyWarm,
+      tierCaps: { ...p.tierCaps } as Record<string, string>,
+    };
   }
 
   /** Dev bridge: what the streamer holds right now. */

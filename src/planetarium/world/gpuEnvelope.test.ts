@@ -1,18 +1,27 @@
 import { describe, it, expect } from 'vitest';
 import {
   classifyDevice,
+  deviceProfileFor,
   fillRateTierCaps,
   ladderCeilingBytes,
   legacyProfile,
   legacyTouchFirst,
   planRelease,
+  platformFamily,
+  profileForDevice,
   sectorBudgetBytes,
+  APPLE_PHONE_PROFILE,
+  APPLE_TABLET_PROFILE,
+  DEVICE_PROFILES,
   EARTH_SECTOR_SET_BYTES,
   FILL_RATE_TIER_CAP,
   LEGACY_DESKTOP_PROFILE,
   LEGACY_TOUCH_PROFILE,
+  LIMITED_PROFILE,
   type DeviceClass,
+  type DeviceProfile,
   type DeviceSignals,
+  type PlatformFamily,
   type ReleaseCandidate,
 } from './gpuEnvelope';
 import { SECTOR_SETS, sectorSetGpuBytes } from './sectorStreamer';
@@ -52,6 +61,11 @@ const UA = {
   windows: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36',
   chromeos: 'Mozilla/5.0 (X11; CrOS x86_64 14541.0.0) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36',
   firefox: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:128.0) Gecko/20100101 Firefox/128.0',
+  // The two devices the Apple envelope was measured on, at the OS and Safari
+  // versions probe.html recorded: iOS 18.7 / Safari 26.6 and iPadOS /
+  // Safari 26.5. Everything else in those two fixtures is the reading itself.
+  iphone187: 'Mozilla/5.0 (iPhone; CPU iPhone OS 18_7 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/26.6 Mobile/15E148 Safari/604.1',
+  ipados265: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/26.5 Safari/605.1.15',
 };
 
 interface Fixture {
@@ -59,16 +73,22 @@ interface Fixture {
   signals: DeviceSignals;
   /** What the classifier makes of it. */
   deviceClass: DeviceClass;
-  /** And which numbers the app gives it today, which is what commit-for-
-   *  commit behaviour identity rests on. */
+  /** Whose platform it is, which decides whether a measurement reaches it. */
+  family: PlatformFamily;
+  /** The row those two land on, and so every number it spends. */
+  row: DeviceProfile['id'];
+  /** And which numbers the app gave it before the class was allowed to size
+   *  anything — the reference the switch is measured against. */
   legacy: 'legacy-touch' | 'legacy-desktop';
 }
 
 /**
- * One row per device the classifier has to get right. The three Playwright
- * WebKit rows were read off the harness itself (planning/_envelope-wk-signals.mjs)
- * and the desktop Chromium figures off this machine; the rest are the
- * published chassis sizes and the user-agent strings those devices send.
+ * One row per device the classifier has to get right. The two rows marked as
+ * probe readings are the devices the Apple envelope was measured on, copied
+ * from what probe.html reported on them; the three Playwright WebKit rows
+ * were read off the harness itself (planning/_envelope-wk-signals.mjs) and
+ * the desktop Chromium figures off this machine; the rest are the published
+ * chassis sizes and the user-agent strings those devices send.
  */
 const FIXTURES: Fixture[] = [
   {
@@ -79,6 +99,8 @@ const FIXTURES: Fixture[] = [
       anyPointerCoarse: true, pointerCoarse: true, renderer: 'Apple GPU', hardwareConcurrency: 8,
     }),
     deviceClass: 'phone',
+    family: 'apple',
+    row: 'apple-phone',
     legacy: 'legacy-touch',
   },
   {
@@ -89,6 +111,8 @@ const FIXTURES: Fixture[] = [
       anyPointerCoarse: true, pointerCoarse: true, renderer: 'Apple GPU', hardwareConcurrency: 8,
     }),
     deviceClass: 'phone',
+    family: 'apple',
+    row: 'apple-phone',
     legacy: 'legacy-touch',
   },
   {
@@ -99,6 +123,8 @@ const FIXTURES: Fixture[] = [
       anyPointerCoarse: true, pointerCoarse: true, renderer: 'Apple GPU', hardwareConcurrency: 8,
     }),
     deviceClass: 'tablet',
+    family: 'apple',
+    row: 'apple-tablet',
     legacy: 'legacy-touch',
   },
   {
@@ -109,6 +135,39 @@ const FIXTURES: Fixture[] = [
       anyPointerCoarse: true, pointerCoarse: true, renderer: 'Apple GPU', hardwareConcurrency: 8,
     }),
     deviceClass: 'tablet',
+    family: 'apple',
+    row: 'apple-tablet',
+    legacy: 'legacy-touch',
+  },
+  {
+    // The phone the 768 MiB row was measured on: 46 maps of 42.7 MiB —
+    // 1962.7 MiB — still drawing, no kill at any size (2026-08-29).
+    name: "Alex's iPhone, as probe.html read it",
+    signals: signals({
+      userAgent: UA.iphone187, platform: 'iPhone', maxTouchPoints: 5,
+      innerWidth: 430, screenWidth: 430, screenHeight: 932, devicePixelRatio: 3,
+      anyPointerCoarse: true, pointerCoarse: true, renderer: 'Apple GPU',
+      deviceMemory: null, hardwareConcurrency: 4,
+    }),
+    deviceClass: 'phone',
+    family: 'apple',
+    row: 'apple-phone',
+    legacy: 'legacy-touch',
+  },
+  {
+    // And the tablet: 95 maps — 4053.3 MiB, the probe's own 4 GiB stop —
+    // with the device still showing nothing (2026-08-29). MacIntel with five
+    // touch points is the iPad tell; it sends a desktop Safari UA.
+    name: "Alex's iPad, as probe.html read it",
+    signals: signals({
+      userAgent: UA.ipados265, platform: 'MacIntel', maxTouchPoints: 5,
+      innerWidth: 834, screenWidth: 834, screenHeight: 1062, devicePixelRatio: 2,
+      anyPointerCoarse: true, pointerCoarse: true, renderer: 'Apple GPU',
+      deviceMemory: null, hardwareConcurrency: 8,
+    }),
+    deviceClass: 'tablet',
+    family: 'apple',
+    row: 'apple-tablet',
     legacy: 'legacy-touch',
   },
   {
@@ -121,6 +180,8 @@ const FIXTURES: Fixture[] = [
       deviceMemory: 8, hardwareConcurrency: 8, uaPlatform: 'Android', uaMobile: true,
     }),
     deviceClass: 'phone',
+    family: 'android',
+    row: 'legacy-touch',
     legacy: 'legacy-touch',
   },
   {
@@ -133,6 +194,8 @@ const FIXTURES: Fixture[] = [
       deviceMemory: 8, hardwareConcurrency: 8, uaPlatform: 'Android', uaMobile: false,
     }),
     deviceClass: 'tablet',
+    family: 'android',
+    row: 'legacy-touch',
     legacy: 'legacy-touch',
   },
   {
@@ -145,6 +208,8 @@ const FIXTURES: Fixture[] = [
       deviceMemory: 8, hardwareConcurrency: 8, uaPlatform: 'Android', uaMobile: false,
     }),
     deviceClass: 'tablet',
+    family: 'android',
+    row: 'legacy-touch',
     legacy: 'legacy-touch',
   },
   {
@@ -157,6 +222,8 @@ const FIXTURES: Fixture[] = [
       deviceMemory: 8, hardwareConcurrency: 8, uaPlatform: 'Android', uaMobile: false,
     }),
     deviceClass: 'tablet',
+    family: 'android',
+    row: 'legacy-touch',
     legacy: 'legacy-desktop',
   },
   {
@@ -169,6 +236,8 @@ const FIXTURES: Fixture[] = [
       deviceMemory: 8, hardwareConcurrency: 12, uaPlatform: 'Windows', uaMobile: false,
     }),
     deviceClass: 'desktop',
+    family: 'other',
+    row: 'legacy-desktop',
     legacy: 'legacy-touch',
   },
   {
@@ -181,6 +250,8 @@ const FIXTURES: Fixture[] = [
       deviceMemory: 8, hardwareConcurrency: 12, uaPlatform: 'Windows', uaMobile: false,
     }),
     deviceClass: 'desktop',
+    family: 'other',
+    row: 'legacy-desktop',
     legacy: 'legacy-desktop',
   },
   {
@@ -193,6 +264,8 @@ const FIXTURES: Fixture[] = [
       deviceMemory: 4, hardwareConcurrency: 4, uaPlatform: 'Chrome OS', uaMobile: false,
     }),
     deviceClass: 'tablet',
+    family: 'other',
+    row: 'legacy-touch',
     legacy: 'legacy-desktop',
   },
   {
@@ -205,6 +278,8 @@ const FIXTURES: Fixture[] = [
       deviceMemory: 8, hardwareConcurrency: 12, uaPlatform: 'macOS', uaMobile: false,
     }),
     deviceClass: 'desktop',
+    family: 'apple',
+    row: 'legacy-desktop',
     legacy: 'legacy-desktop',
   },
   {
@@ -215,6 +290,8 @@ const FIXTURES: Fixture[] = [
       anyPointerCoarse: false, pointerCoarse: false, renderer: 'Apple GPU', hardwareConcurrency: 8,
     }),
     deviceClass: 'desktop',
+    family: 'apple',
+    row: 'legacy-desktop',
     legacy: 'legacy-desktop',
   },
   {
@@ -225,6 +302,8 @@ const FIXTURES: Fixture[] = [
       anyPointerCoarse: true, pointerCoarse: true, renderer: 'Apple GPU', hardwareConcurrency: 8,
     }),
     deviceClass: 'phone',
+    family: 'apple',
+    row: 'apple-phone',
     legacy: 'legacy-touch',
   },
   {
@@ -235,6 +314,8 @@ const FIXTURES: Fixture[] = [
       anyPointerCoarse: true, pointerCoarse: true, renderer: 'Apple GPU', hardwareConcurrency: 8,
     }),
     deviceClass: 'phone',
+    family: 'apple',
+    row: 'apple-phone',
     legacy: 'legacy-desktop',
   },
   {
@@ -246,6 +327,8 @@ const FIXTURES: Fixture[] = [
       renderer: null, deviceMemory: null, hardwareConcurrency: 2,
     }),
     deviceClass: 'desktop',
+    family: 'other',
+    row: 'legacy-desktop',
     legacy: 'legacy-desktop',
   },
   {
@@ -257,6 +340,8 @@ const FIXTURES: Fixture[] = [
       uaPlatform: 'Windows', uaMobile: false,
     }),
     deviceClass: 'limited',
+    family: 'other',
+    row: 'limited',
     legacy: 'legacy-desktop',
   },
   {
@@ -269,6 +354,8 @@ const FIXTURES: Fixture[] = [
       deviceMemory: 2, hardwareConcurrency: 8, uaPlatform: 'Android', uaMobile: true,
     }),
     deviceClass: 'limited',
+    family: 'android',
+    row: 'limited',
     legacy: 'legacy-touch',
   },
 ];
@@ -345,10 +432,138 @@ describe('classifyDevice', () => {
   });
 });
 
-describe('the compatibility profile', () => {
-  it('pins the numbers the app ships with, verbatim', () => {
+describe('the class table', () => {
+  /** The numbers a row spends, without the label on it: what a device holds
+   *  is these ten fields, and two rows that agree on them are the same
+   *  policy under two names. */
+  const numbersOf = (p: DeviceProfile) => ({
+    envelopeBytes: p.envelopeBytes,
+    ceilingBytes: p.ceilingBytes,
+    sectorFloorBytes: p.sectorFloorBytes,
+    residentCap: p.residentCap,
+    inflightCap: p.inflightCap,
+    fetchPool: p.fetchPool,
+    wantTexelPx: p.wantTexelPx,
+    releaseTexelPx: p.releaseTexelPx,
+    cacheOnlyWarm: p.cacheOnlyWarm,
+    tierCaps: p.tierCaps,
+  });
+
+  for (const fixture of FIXTURES) {
+    it(`reads ${fixture.name} as ${fixture.family} and gives it the ${fixture.row} numbers`, () => {
+      expect(platformFamily(fixture.signals)).toBe(fixture.family);
+      expect(profileForDevice(fixture.signals).id).toBe(fixture.row);
+      // And by the two keys separately, so a fixture cannot pass on a
+      // classifier and a family that happen to cancel each other out.
+      expect(deviceProfileFor(fixture.deviceClass, fixture.family).id).toBe(fixture.row);
+    });
+  }
+
+  it('has a row for every class in every family', () => {
+    const families: PlatformFamily[] = ['apple', 'android', 'other'];
+    const classes: DeviceClass[] = ['phone', 'tablet', 'desktop', 'limited'];
+    for (const family of families) {
+      for (const cls of classes) {
+        const row = deviceProfileFor(cls, family);
+        expect(row.envelopeBytes, `${family}/${cls}`).toBeGreaterThan(0);
+        expect(row.sectorFloorBytes, `${family}/${cls}`).toBeLessThanOrEqual(row.ceilingBytes);
+        expect(row.ceilingBytes, `${family}/${cls}`).toBeLessThanOrEqual(row.envelopeBytes);
+      }
+    }
+    expect(Object.keys(DEVICE_PROFILES).sort()).toEqual(['android', 'apple', 'other']);
+  });
+
+  it('gives an Apple phone and an Apple tablet the desktop numbers', () => {
+    // The measurement, in one assertion: an iPhone held 1962.7 MiB and an
+    // iPad 4053.3 with no kill, so neither is asked to spend less than the
+    // machine that was never in doubt. The cloud deck's cap is the only
+    // difference, and it is about fill rate rather than memory.
+    for (const row of [APPLE_PHONE_PROFILE, APPLE_TABLET_PROFILE]) {
+      expect(numbersOf(row)).toEqual({
+        ...numbersOf(LEGACY_DESKTOP_PROFILE),
+        tierCaps: { earthClouds: '4k' },
+      });
+      expect(row.envelopeBytes).toBe(768 * MiB);
+      expect(row.ceilingBytes).toBe(256 * MiB);
+      expect(row.sectorFloorBytes).toBe(3 * EARTH_SECTOR_SET_BYTES);
+      expect(row.cacheOnlyWarm).toBe(false);
+    }
+    expect(APPLE_PHONE_PROFILE.provenance).toBe('measured 2026-08-29 iPhone');
+    expect(APPLE_TABLET_PROFILE.provenance).toBe('measured 2026-08-29 iPad');
+  });
+
+  it('leaves every unmeasured touch row exactly as the app shipped it', () => {
+    // Android and everything that is neither Apple nor Android: nobody has
+    // walked one of these up to its ceiling, so nothing here may move.
+    for (const family of ['android', 'other'] as PlatformFamily[]) {
+      for (const cls of ['phone', 'tablet'] as DeviceClass[]) {
+        const row = deviceProfileFor(cls, family);
+        expect(row.id, `${family}/${cls}`).toBe('legacy-touch');
+        expect(numbersOf(row), `${family}/${cls}`).toEqual(numbersOf(LEGACY_TOUCH_PROFILE));
+        expect(row.provenance, `${family}/${cls}`).toBe('legacy');
+      }
+    }
+    expect(numbersOf(LEGACY_TOUCH_PROFILE)).toEqual({
+      envelopeBytes: 320 * MiB,
+      ceilingBytes: 144 * MiB,
+      sectorFloorBytes: 2 * EARTH_SECTOR_SET_BYTES,
+      residentCap: 8,
+      inflightCap: 1,
+      fetchPool: 3,
+      wantTexelPx: 1.25,
+      releaseTexelPx: 0.8,
+      cacheOnlyWarm: true,
+      tierCaps: { earthClouds: '4k' },
+    });
+  });
+
+  it('gives every family the same desktop row and the same limited one', () => {
+    // A desktop is a desktop, and a software rasteriser is a fact about the
+    // renderer that no platform measurement reaches past.
+    for (const family of ['apple', 'android', 'other'] as PlatformFamily[]) {
+      expect(deviceProfileFor('desktop', family)).toBe(LEGACY_DESKTOP_PROFILE);
+      expect(deviceProfileFor('limited', family)).toBe(LIMITED_PROFILE);
+    }
+    expect(LIMITED_PROFILE.envelopeBytes).toBe(192 * MiB);
+    expect(LIMITED_PROFILE.ceilingBytes).toBe(2 * EARTH_SECTOR_SET_BYTES);
+    expect(LIMITED_PROFILE.sectorFloorBytes).toBe(EARTH_SECTOR_SET_BYTES);
+    // It needs no cloud-deck cap of its own: the 8K deck is 171 MiB and the
+    // ladder may hold 192 less the tiles' floor, so the arithmetic refuses it
+    // before any fill-rate argument is reached.
+    expect(LIMITED_PROFILE.tierCaps).toEqual({});
+    expect(ladderCeilingBytes(LIMITED_PROFILE, LIMITED_PROFILE.sectorFloorBytes)).toBeLessThan(171 * MiB);
+  });
+
+  it('caps the cloud deck on a phone and a tablet of every family', () => {
+    for (const family of ['apple', 'android', 'other'] as PlatformFamily[]) {
+      expect(deviceProfileFor('phone', family).tierCaps, family).toEqual({ earthClouds: '4k' });
+      expect(deviceProfileFor('tablet', family).tierCaps, family).toEqual({ earthClouds: '4k' });
+      expect(deviceProfileFor('desktop', family).tierCaps, family).toEqual({});
+    }
+    // Including the Apple phone, which is on the desktop's memory numbers and
+    // still does not shade a full-screen 8K transparent shell.
+    expect(profileForDevice(FIXTURES[0].signals).tierCaps).toEqual({ earthClouds: '4k' });
+    expect(profileForDevice(FIXTURES[0].signals).envelopeBytes).toBe(768 * MiB);
+  });
+
+  it('warms the boot pair for real on Apple and into the cache elsewhere', () => {
+    // The speculative Earth+Moon warm decodes and uploads, or pulls the same
+    // bytes into the HTTP cache and no further. Which one a device gets is
+    // the same question as whether it has room for two maps a session may
+    // never visit — and the Apple measurement answers yes.
+    for (const cls of ['phone', 'tablet'] as DeviceClass[]) {
+      expect(deviceProfileFor(cls, 'apple').cacheOnlyWarm, `apple/${cls}`).toBe(false);
+      expect(deviceProfileFor(cls, 'android').cacheOnlyWarm, `android/${cls}`).toBe(true);
+      expect(deviceProfileFor(cls, 'other').cacheOnlyWarm, `other/${cls}`).toBe(true);
+    }
+    expect(deviceProfileFor('desktop', 'other').cacheOnlyWarm).toBe(false);
+    expect(deviceProfileFor('limited', 'apple').cacheOnlyWarm).toBe(true);
+  });
+
+  it('pins the two legacy rows verbatim, labels and all', () => {
     expect(LEGACY_TOUCH_PROFILE).toEqual({
       id: 'legacy-touch',
+      provenance: 'legacy',
       envelopeBytes: 320 * MiB,
       ceilingBytes: 144 * MiB,
       sectorFloorBytes: 2 * EARTH_SECTOR_SET_BYTES,
@@ -366,6 +581,7 @@ describe('the compatibility profile', () => {
     });
     expect(LEGACY_DESKTOP_PROFILE).toEqual({
       id: 'legacy-desktop',
+      provenance: 'legacy',
       envelopeBytes: 768 * MiB,
       ceilingBytes: 256 * MiB,
       sectorFloorBytes: 3 * EARTH_SECTOR_SET_BYTES,
@@ -379,10 +595,11 @@ describe('the compatibility profile', () => {
     });
   });
 
-  it('is the exact device test the app shipped with, on every recorded device', () => {
+  it('keeps the shipped device test intact as the reference it is measured against', () => {
     // Three arms: an iOS user agent, a Mac platform with more than one touch
     // point (iPadOS and "Request Desktop Website" both land here), and any
-    // touchscreen in a window 1024 CSS px or narrower.
+    // touchscreen in a window 1024 CSS px or narrower. Nothing calls it; the
+    // two tests below are what it is for.
     for (const fixture of FIXTURES) {
       const expected = (
         /iPad|iPhone|iPod/.test(fixture.signals.userAgent) ||
@@ -394,28 +611,74 @@ describe('the compatibility profile', () => {
     }
   });
 
-  it('names exactly the devices the class would move, once it is allowed to', () => {
-    // The class is collected and logged; the numbers still come from the
-    // predicate above. This is the list that has to be accepted before the
-    // two are joined — a device on it changes what it holds in memory.
-    // A phone or a tablet would take today's touch numbers and a desktop
-    // today's desktop ones, so those agree silently. `limited` is a third set
-    // of numbers, so every device landing there moves whatever it takes now.
-    const keepsItsNumbers = (f: Fixture): boolean => {
-      const found = classifyDevice(f.signals);
-      if (found === 'limited') return false;
-      return f.legacy === (found === 'desktop' ? 'legacy-desktop' : 'legacy-touch');
-    };
+  it('names exactly the devices whose numbers the switch moves', () => {
+    // Every device here holds something different from today. The list is
+    // accepted, not discovered: a device that appears or disappears from it
+    // is a change in what real hardware does.
     const moved = FIXTURES
-      .filter((f) => !keepsItsNumbers(f))
-      .map((f) => `${f.name}: ${f.legacy} -> ${classifyDevice(f.signals)}`);
+      .filter((f) => JSON.stringify(numbersOf(legacyProfile(f.signals))) !== JSON.stringify(numbersOf(profileForDevice(f.signals))))
+      .map((f) => `${f.name}: ${legacyProfile(f.signals).id} -> ${profileForDevice(f.signals).id}`);
     expect(moved).toEqual([
-      'Samsung DeX: an Android phone driving a 1920x1080 desktop: legacy-desktop -> tablet',
-      'Windows touch laptop, window dragged to 1024 CSS px: legacy-touch -> desktop',
-      'Chromebook with a touchscreen, 1366x768: legacy-desktop -> tablet',
-      'Playwright WebKit, phone viewport with its own desktop UA: legacy-desktop -> phone',
+      'iPhone 15 Pro, Safari: legacy-touch -> apple-phone',
+      'iPhone with Request Desktop Website — a Mac UA on a phone chassis: legacy-touch -> apple-phone',
+      'iPad Pro 13", which always sends a desktop UA: legacy-touch -> apple-tablet',
+      'iPad mini: legacy-touch -> apple-tablet',
+      "Alex's iPhone, as probe.html read it: legacy-touch -> apple-phone",
+      "Alex's iPad, as probe.html read it: legacy-touch -> apple-tablet",
+      'Samsung DeX: an Android phone driving a 1920x1080 desktop: legacy-desktop -> legacy-touch',
+      'Windows touch laptop, window dragged to 1024 CSS px: legacy-touch -> legacy-desktop',
+      'Chromebook with a touchscreen, 1366x768: legacy-desktop -> legacy-touch',
+      'Playwright WebKit, emulated iPhone with the iOS UA: legacy-touch -> apple-phone',
+      'Playwright WebKit, phone viewport with its own desktop UA: legacy-desktop -> apple-phone',
       'SwiftShader: no GPU at all: legacy-desktop -> limited',
       'A 2 GB Android phone: legacy-touch -> limited',
+    ]);
+    // The Android tablet with a mouse changes class — the primary pointer is
+    // fine and only `any-pointer` sees its screen — but not its numbers: its
+    // window was already inside the shipped test's 1024 px arm. The DeX row
+    // is the same move with numbers attached, because its window is wider.
+    const mouse = FIXTURES.find((f) => f.name.includes('with a mouse'))!;
+    expect(classifyDevice(mouse.signals)).toBe('tablet');
+    expect(moved.some((m) => m.includes('with a mouse'))).toBe(false);
+  });
+
+  it('states each of those moves in numbers', () => {
+    const shape = (p: DeviceProfile) => {
+      const sets = Math.round(p.sectorFloorBytes / EARTH_SECTOR_SET_BYTES);
+      return `${Math.round(p.envelopeBytes / MiB)}/${Math.round(p.ceilingBytes / MiB)} MiB, floor ${sets === 1 ? '1 set' : `${sets} sets`}, ` +
+        `${p.residentCap}/${p.inflightCap}/${p.fetchPool}, want ${p.wantTexelPx}/${p.releaseTexelPx}, ` +
+        `warm ${p.cacheOnlyWarm ? 'cached' : 'full'}, caps ${JSON.stringify(p.tierCaps)}`;
+    };
+    const seen = new Map<string, string>();
+    for (const f of FIXTURES) {
+      const was = legacyProfile(f.signals);
+      const now = profileForDevice(f.signals);
+      if (shape(was) === shape(now)) continue;
+      const key = `${was.id} -> ${now.id}`;
+      if (!seen.has(key)) seen.set(key, `${key}\n    was ${shape(was)}\n    now ${shape(now)}`);
+    }
+    expect([...seen.values()]).toEqual([
+      'legacy-touch -> apple-phone\n' +
+      '    was 320/144 MiB, floor 2 sets, 8/1/3, want 1.25/0.8, warm cached, caps {"earthClouds":"4k"}\n' +
+      '    now 768/256 MiB, floor 3 sets, 16/2/6, want 1/0.65, warm full, caps {"earthClouds":"4k"}',
+      'legacy-touch -> apple-tablet\n' +
+      '    was 320/144 MiB, floor 2 sets, 8/1/3, want 1.25/0.8, warm cached, caps {"earthClouds":"4k"}\n' +
+      '    now 768/256 MiB, floor 3 sets, 16/2/6, want 1/0.65, warm full, caps {"earthClouds":"4k"}',
+      'legacy-desktop -> legacy-touch\n' +
+      '    was 768/256 MiB, floor 3 sets, 16/2/6, want 1/0.65, warm full, caps {}\n' +
+      '    now 320/144 MiB, floor 2 sets, 8/1/3, want 1.25/0.8, warm cached, caps {"earthClouds":"4k"}',
+      'legacy-touch -> legacy-desktop\n' +
+      '    was 320/144 MiB, floor 2 sets, 8/1/3, want 1.25/0.8, warm cached, caps {"earthClouds":"4k"}\n' +
+      '    now 768/256 MiB, floor 3 sets, 16/2/6, want 1/0.65, warm full, caps {}',
+      'legacy-desktop -> apple-phone\n' +
+      '    was 768/256 MiB, floor 3 sets, 16/2/6, want 1/0.65, warm full, caps {}\n' +
+      '    now 768/256 MiB, floor 3 sets, 16/2/6, want 1/0.65, warm full, caps {"earthClouds":"4k"}',
+      'legacy-desktop -> limited\n' +
+      '    was 768/256 MiB, floor 3 sets, 16/2/6, want 1/0.65, warm full, caps {}\n' +
+      '    now 192/46 MiB, floor 1 set, 4/1/2, want 1.25/0.8, warm cached, caps {}',
+      'legacy-touch -> limited\n' +
+      '    was 320/144 MiB, floor 2 sets, 8/1/3, want 1.25/0.8, warm cached, caps {"earthClouds":"4k"}\n' +
+      '    now 192/46 MiB, floor 1 set, 4/1/2, want 1.25/0.8, warm cached, caps {}',
     ]);
   });
 });

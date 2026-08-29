@@ -33,7 +33,7 @@ import {
 import { augmentSurfaceMaterial, type SurfaceArchetype } from '../planetarium/world/surfaceShading';
 import { createPlanetariumStarfield, setStarfieldPixelRatio } from '../planetarium/world/starfield';
 import { captureDeviceCaps } from '../planetarium/world/texturePolicy';
-import { legacyProfile, readDeviceSignals } from '../planetarium/world/gpuEnvelope';
+import { profileForDevice, readDeviceSignals } from '../planetarium/world/gpuEnvelope';
 import { PLANETARIUM_BODIES, SUN_DATA, type PlanetData } from '../planetarium/planets/planetData';
 import { MOONS, type MoonData } from '../planetarium/planets/moonData';
 import { mouthGeometry, SpherePhysics, defaultPhysicsParams, PACK_CEILING } from './spherePhysics';
@@ -1918,7 +1918,7 @@ export class CompareScene {
       // same snapshot back. This used to read a bare touchscreen test of its
       // own and overwrite the planetarium's profile for the rest of the
       // session.
-      captureDeviceCaps(this.renderer, legacyProfile(readDeviceSignals(this.renderer.getContext())));
+      captureDeviceCaps(this.renderer, profileForDevice(readDeviceSignals(this.renderer.getContext())));
       this.capsCaptured = true;
     }
     const [ghost, fillerTex] = await Promise.all([

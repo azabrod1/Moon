@@ -35,7 +35,6 @@ import {
   ARRIVAL_MAX_OFFAXIS_DEG,
   MOON_ARRIVAL_SEPARATION_CAP,
   MOON_ARRIVAL_STANDOFF_FLOOR_AU,
-  FLYBY_MIN_IMPACT_CAM_DISTS,
   SUN_APPROACH_SURFACE_RADII,
   SUN_ARRIVAL_RADII,
   type BodyCapState,
@@ -44,7 +43,6 @@ import {
   passGeometryMinAU,
   estimatePassDurationS,
   scoreApproachLane,
-  isFlybyClass,
   LANE_CLEAN_RATIO,
   type LaneBody,
   type ArrivalPose,
@@ -799,41 +797,57 @@ describe('arrivalPose — catalog sweep (all moons, three orbit phases)', () => 
           pose.position.distanceTo(inp.parentPos),
           `${moon.name}: parent clearance`,
         ).toBeGreaterThan(inp.parentClearance - 1e-12);
-        // The arrival class is exactly the gate formula: the flyby needs
-        // its impact parameter to clear the camera boom.
-        expect(pose.flyby, `${moon.name}: arrival class`).toBe(
-          inp.renderedR * ARRIVAL_IMPACT_RADII >=
-            inp.camDist * FLYBY_MIN_IMPACT_CAM_DISTS,
-        );
+        // Every arrival is a pass: closest approach of the forward ray to
+        // the moon's center is the impact parameter, above the bubble.
         const fwd = pose.aimPoint.clone().sub(pose.position).normalize();
         const toMoon = inp.targetPos.clone().sub(pose.position);
         const closest = toMoon
           .clone()
           .addScaledVector(fwd, -toMoon.dot(fwd))
           .length();
-        if (pose.flyby) {
-          // The flyby misses the moon: closest approach of the forward ray to
-          // the moon's center is the impact parameter, above the bubble.
-          expect(closest, `${moon.name}: flyby miss distance`).toBeGreaterThanOrEqual(
-            collisionR * 1.15 - 1e-12,
-          );
-        } else {
-          // Planet-style: aimed dead at the body — the governed glide, not
-          // miss geometry, is what stops the ship.
-          expect(pose.aimPoint.distanceTo(inp.targetPos), `${moon.name}: direct aim`).toBe(0);
-        }
+        expect(closest, `${moon.name}: flyby miss distance`).toBeGreaterThanOrEqual(
+          collisionR * 1.15 - 1e-12,
+        );
       }
     }
   });
 
-  it('the split lands below the moonlet swarm: only the smallest arrivals park', () => {
-    for (const name of ['Moon', 'Io', 'Europa', 'Ganymede', 'Callisto', 'Titan', 'Triton', 'Charon', 'Miranda', 'Phoebe', 'Pan', 'Puck']) {
-      expect(arrivalPose(catalogInputs(name)).flyby, name).toBe(true);
+  it('no moon parks: every arrival in the catalogue is a pass past the limb', () => {
+    // There is no park class. The seven that used to have one — Mars's two,
+    // the innermost Uranian, and Pluto's four minors — fly the same authored
+    // pass as the Moon; at that scale the hull clearance floor, not the
+    // 1.8-rendered-radii composition, is what authors the miss.
+    for (const moon of MOONS) {
+      const inp = catalogInputs(moon.name);
+      const pose = arrivalPose(inp);
+      const collisionR = moonCollisionRadius(inp.renderedR, inp.shipClearance);
+      expect(pose.impactParameterAU, `${moon.name}: authored b`)
+        .toBeGreaterThanOrEqual(collisionR * 1.15 - 1e-12);
+      expect(pose.aimPoint.distanceTo(inp.targetPos), `${moon.name}: aim is off-center`)
+        .toBeGreaterThan(0);
     }
-    // The seven whose rendered radius is under the gate — Mars's two, the
-    // innermost Uranian, and Pluto's minors.
+    // Named, so the ruling reads off the test: these are the seven that
+    // used to park.
     for (const name of ['Phobos', 'Deimos', 'Cordelia', 'Styx', 'Nix', 'Kerberos', 'Hydra']) {
-      expect(arrivalPose(catalogInputs(name)).flyby, name).toBe(false);
+      const inp = catalogInputs(name);
+      const pose = arrivalPose(inp);
+      const collisionR = moonCollisionRadius(inp.renderedR, inp.shipClearance);
+      const dist = pose.position.distanceTo(inp.targetPos);
+      const missM = collisionR * 1.15;
+      const clearB = (missM * dist) / Math.sqrt(dist * dist - missM * missM);
+      const composed = Math.min(
+        inp.renderedR * ARRIVAL_IMPACT_RADII,
+        dist * Math.sin(ARRIVAL_MAX_OFFAXIS_DEG * DEG2RAD),
+      );
+      expect(pose.impactParameterAU, `${name}: authored b`)
+        .toBeCloseTo(Math.max(composed, clearB), 15);
+      // Six of the seven are hull-clearance bound: the pad does not shrink
+      // with the mesh, so below ~250 km of rendered radius it is wider than
+      // the 1.8-radii composition and is what authors the miss. Cordelia,
+      // the largest of them, is still composed at 1.8 radii.
+      if (name !== 'Cordelia') {
+        expect(clearB, `${name}: clearance floor binds`).toBeGreaterThan(composed);
+      }
     }
   });
 
@@ -1144,24 +1158,14 @@ function poseCenterMissAU(pose: ArrivalPose, targetPos: THREE.Vector3): number {
   return rel.addScaledVector(u, -Math.max(rel.dot(u), 0)).length();
 }
 
-describe('the shared flyby gate', () => {
-  it('every planet flies — the park class is genuinely moonlet-scale', () => {
-    for (const name of PLANET_NAMES) {
-      const planet = PLANETARIUM_BODIES.find((b) => b.name === name)!;
-      expect(isFlybyClass(planet.radiusAU, CAM_DIST_AU), name).toBe(true);
-    }
-    // Threshold sanity: the gate is measured in camera booms, so the 1/64
-    // rig puts the park side under ~244 km of rendered radius (it was ~490
-    // at the 1/32 boom this gate was first measured against).
-    const thresholdAU = (CAM_DIST_AU * FLYBY_MIN_IMPACT_CAM_DISTS) / ARRIVAL_IMPACT_RADII;
-    expect(thresholdAU * KM_PER_AU).toBeGreaterThan(200);
-    expect(thresholdAU * KM_PER_AU).toBeLessThan(300);
-  });
-
-  it('the pass-geometry minimum is inert for every catalog flyby moon', () => {
+describe('the one arrival law', () => {
+  it('the pass-geometry minimum is inert for every catalog moon', () => {
+    // The apparent-size law outgrows it (22.9 R against 8.83 R), so for the
+    // whole catalogue the standoff is still the disc-size law — the minimum
+    // only guards a body small enough that its 5° disc would sit closer than
+    // the pass needs.
     for (const moon of MOONS) {
       const inp = catalogInputs(moon.name);
-      if (!isFlybyClass(inp.renderedR, inp.camDist)) continue;
       const half = (MOON_ARRIVAL_APPARENT_DIAMETER_DEG / 2) * DEG2RAD;
       const apparentLaw = inp.renderedR / Math.sin(half) - inp.camDist;
       expect(apparentLaw, moon.name).toBeGreaterThanOrEqual(
@@ -1176,7 +1180,6 @@ describe('planet flyby pose — catalog sweep', () => {
     for (const name of PLANET_NAMES) {
       const inp = planetInputs(name);
       const pose = arrivalPose(inp);
-      expect(pose.flyby, name).toBe(true);
       const standoff = arrivalStandoffAU(inp);
       expect(pose.position.distanceTo(inp.targetPos), name).toBeCloseTo(standoff, 12);
       // ~8.8 radii, never the legacy floor for real planets.
@@ -1220,7 +1223,6 @@ describe('planet flyby pose — catalog sweep', () => {
       ringOuterAU: planet.radiusAU * ring.outerFactor,
     });
     const pose = arrivalPose(inp);
-    expect(pose.flyby).toBe(true);
     const u = pose.aimPoint.clone().sub(pose.position).normalize();
     const rel = inp.targetPos.clone().sub(pose.position);
     const atPass = pose.position.clone().addScaledVector(u, Math.max(rel.dot(u), 0));
@@ -1493,30 +1495,32 @@ describe('representative moon pose goldens — byte-stable', () => {
   // (1.46875e-6 AU) when the rig went to 1/64: the standoff is measured from
   // the camera, so a shorter trail drops the ship that much farther out. Aim
   // points and impact parameters are unchanged by the rig, and stayed pinned.
-  it('Io (flyby class)', () => {
+  it('Io — composition-bound b', () => {
     const pose = arrivalPose(catalogInputs('Io'));
-    expect(pose.flyby).toBe(true);
     expect(pose.position.x).toBeCloseTo(5.2047391511412595, 15);
     expect(pose.position.z).toBeCloseTo(0.0018158336145122137, 15);
     expect(pose.aimPoint.x).toBeCloseTo(5.2051560177500615, 15);
     expect(pose.aimPoint.z).toBeCloseTo(0.0017831343892584413, 15);
-    expect(pose.impactParameterAU!).toBeCloseTo(0.000032844660015313005, 18);
+    expect(pose.impactParameterAU).toBeCloseTo(0.000032844660015313005, 18);
   });
 
-  it('Phobos (park class)', () => {
+  it('Phobos — clearance-floor b, the ex-park class', () => {
+    // The drop is where the park put it (the apparent-size law was already
+    // the binding term), but the aim now carries an impact parameter: at
+    // moonlet scale the hull clearance floor authors it, not 1.8 radii.
     const pose = arrivalPose(catalogInputs('Phobos'));
-    expect(pose.flyby).toBe(false);
     expect(pose.position.x).toBeCloseTo(1.5240406028410485, 15);
     expect(pose.position.z).toBeCloseTo(0.000040375948823000805, 18);
-    expect(pose.aimPoint.x).toBeCloseTo(1.5240479362461139, 15);
+    expect(pose.aimPoint.x).toBeCloseTo(1.524047936266211, 15);
+    expect(pose.aimPoint.z).toBeCloseTo(0.00003961755218834627, 18);
+    expect(pose.impactParameterAU).toBeCloseTo(7.585909166131592e-7, 19);
   });
 
-  it('Charon (separation-cap-bound flyby)', () => {
+  it('Charon — separation-cap-bound standoff', () => {
     const pose = arrivalPose(catalogInputs('Charon'));
-    expect(pose.flyby).toBe(true);
     expect(pose.position.x).toBeCloseTo(39.480041231023293, 14);
     expect(pose.aimPoint.z).toBeCloseTo(0.000077073748822255761, 18);
-    expect(pose.impactParameterAU!).toBeCloseTo(0.0000072915476329704215, 19);
+    expect(pose.impactParameterAU).toBeCloseTo(0.0000072915476329704215, 19);
   });
 });
 
@@ -1532,7 +1536,6 @@ describe('fail-closed edges', () => {
       ringOuterAU: planet.radiusAU * 1000,
     });
     const pose = arrivalPose(inp);
-    expect(pose.flyby).toBe(true);
     // The chosen drop must NOT be the plain sunward radial (which flies the
     // sheet dead-on); it must carry real elevation off the doomed axis.
     const sunDir = inp.targetPos.clone().multiplyScalar(-1).normalize();

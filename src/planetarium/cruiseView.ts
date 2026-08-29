@@ -23,10 +23,11 @@
  * last push a slow glide, and pulling back restores full sharpness. Scaling
  * deeper again waits on a level below 32K, or on detail synthesis.
  *
- * The chase distance is also the unit the moon-arrival split is measured in
- * (FLYBY_MIN_IMPACT_CAM_DISTS), so halving it moved that line: 26
- * more of the moonlet swarm now get the flyby rather than a planet-style
- * park.
+ * The chase distance is also the arrival's camera correction: the standoff
+ * is measured from back here, so halving the trail drops the ship one boom
+ * length farther out, and the smallest moons' whole encounter now fits
+ * inside the trail. That is deliberate — every body flies the same pass,
+ * with no park class (arrivalLogic.arrivalPose).
  */
 import { KM_PER_AU } from '../astronomy/constants';
 import { DEG2RAD } from '../shared/math/angles';

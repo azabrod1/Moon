@@ -2,11 +2,12 @@
 // the REAL map-Travel funnel per target, records the authored pose from
 // __moon.arrivalPose() and a 100 ms trace of distance + speed + governor
 // owner, then asserts the arrival contract:
-//   flyby class - drop at the authored standoff (planets ~8.8 radii), pass
-//     at the authored 1.8-rendered-radii impact parameter (never a graze),
-//     no foreign body BINDING the speed cap on the approach (the Deimos
-//     signature), a completed departure;
-//   park class - at rest at the standoff, aimed dead at the body.
+//   drop at the authored standoff (planets ~8.8 radii), a pass at the
+//   authored impact parameter — 1.8 rendered radii, or the hull clearance
+//   floor where that is wider, which is the moonlet case — never a graze,
+//   no foreign body BINDING the speed cap on the approach (the Deimos
+//   signature), and a completed departure. No arrival parks: the smallest
+//   moons in the catalogue fly the same pass as the Moon.
 // The clock is PINNED per scenario: incidental-moon encounters are epoch
 // lottery, so a drifting epoch would make failures unreproducible.
 //
@@ -21,22 +22,28 @@ const URL_BASE = process.env.MOON_URL || 'http://localhost:5173/';
 const EPOCH_MS = Date.UTC(2026, 7, 22);
 
 const ALL = [
-  { key: 'mars', name: 'Mars', ms: 45_000, cls: 'flyby' },
-  { key: 'mars-epoch2', name: 'Mars', ms: 45_000, cls: 'flyby', epochMs: EPOCH_MS + 10 * 86400e3 },
-  { key: 'mercury', name: 'Mercury', ms: 40_000, cls: 'flyby' },
-  { key: 'venus', name: 'Venus', ms: 45_000, cls: 'flyby' },
-  { key: 'jupiter', name: 'Jupiter', ms: 60_000, cls: 'flyby' },
-  { key: 'saturn', name: 'Saturn', ms: 60_000, cls: 'flyby' },
-  { key: 'uranus', name: 'Uranus', ms: 60_000, cls: 'flyby' },
+  { key: 'mars', name: 'Mars', ms: 45_000 },
+  { key: 'mars-epoch2', name: 'Mars', ms: 45_000, epochMs: EPOCH_MS + 10 * 86400e3 },
+  { key: 'mercury', name: 'Mercury', ms: 40_000 },
+  { key: 'venus', name: 'Venus', ms: 45_000 },
+  { key: 'jupiter', name: 'Jupiter', ms: 60_000 },
+  { key: 'saturn', name: 'Saturn', ms: 60_000 },
+  { key: 'uranus', name: 'Uranus', ms: 60_000 },
   // Uranus at its ~2030 solstice: the ring pole rides the sun line — the
   // pole-on geometry the candidate fan must rotate away from.
-  { key: 'uranus-2030', name: 'Uranus', ms: 60_000, cls: 'flyby', epochMs: Date.UTC(2030, 9, 1) },
-  { key: 'neptune', name: 'Neptune', ms: 60_000, cls: 'flyby' },
-  { key: 'pluto', name: 'Pluto', ms: 45_000, cls: 'flyby' },
-  { key: 'io', name: 'Io', ms: 30_000, cls: 'flyby', parent: 'Jupiter' },
-  { key: 'ganymede', name: 'Ganymede', ms: 30_000, cls: 'flyby', parent: 'Jupiter' },
-  { key: 'deimos', name: 'Deimos', ms: 15_000, cls: 'park', parent: 'Mars' },
-  { key: 'styx', name: 'Styx', ms: 15_000, cls: 'park', parent: 'Pluto' },
+  { key: 'uranus-2030', name: 'Uranus', ms: 60_000, epochMs: Date.UTC(2030, 9, 1) },
+  { key: 'neptune', name: 'Neptune', ms: 60_000 },
+  { key: 'pluto', name: 'Pluto', ms: 45_000 },
+  { key: 'io', name: 'Io', ms: 30_000, parent: 'Jupiter' },
+  { key: 'ganymede', name: 'Ganymede', ms: 30_000, parent: 'Jupiter' },
+  // The two smallest passes in the battery — the ex-park class. Their whole
+  // encounter fits inside the camera boom, so the window is the moonlet
+  // glide's own timeline, not the boom's. Styx gets the long one: its
+  // authored miss clears the collision shell by 10 km, the pass grazes it,
+  // and the graze costs it roughly twice Deimos's time to settle and sling
+  // (measured 31.7 s against 16.1 s).
+  { key: 'deimos', name: 'Deimos', ms: 30_000, parent: 'Mars' },
+  { key: 'styx', name: 'Styx', ms: 60_000, parent: 'Pluto' },
 ];
 const only = process.argv[2] ? process.argv[2].split(',') : null;
 const TARGETS = only ? ALL.filter((t) => only.includes(t.key)) : ALL;
@@ -152,24 +159,6 @@ for (const T of TARGETS) {
   const perigee = samples.reduce((m, s) => Math.min(m, s.dist), Infinity);
   const perigeeIdx = samples.findIndex((s) => s.dist === perigee);
 
-  if (T.cls === 'park') {
-    note(T.key, pose.flyby === false, 'park class stays park', String(pose.flyby));
-    const missR = len(sub(aim, body)) / R;
-    note(T.key, missR < 1e-6, 'aim is dead-center', missR.toFixed(6));
-    // Only after arrival: the first ~half second of trace is the veil
-    // window, sampled at the OLD position with the ship still under way —
-    // and the very first arrived frame can still show the pre-jump HUD text
-    // (the panel refreshes on the frame loop), so two samples of grace.
-    const arrived = samples.filter((s) => s.dist < pose.standoffAU * 2).slice(2);
-    const anySpeed = arrived.some((s) => (s.speedKmS ?? 0) > 0 || s.moving === true);
-    note(T.key, arrived.length > 0 && !anySpeed, 'ship stays parked (speed 0, moving false)',
-      `${arrived.length} arrived samples`);
-    note(T.key, perigee > pose.standoffAU * 0.85 && perigee < pose.standoffAU * 1.15,
-      'holds the standoff', `${(perigee / pose.standoffAU).toFixed(3)}x`);
-    continue;
-  }
-
-  note(T.key, pose.flyby === true, 'flyby class flies', String(pose.flyby));
   if (!T.parent) {
     const ratio = pose.standoffAU / R;
     note(T.key, ratio > 8.5 && ratio < 9.2, 'planet standoff ~8.8 radii', ratio.toFixed(3));
@@ -177,17 +166,28 @@ for (const T of TARGETS) {
   // Authored b comes straight off the pose record (the aim point includes
   // the one-shot lead, so re-deriving from the jump-time center is off by
   // exactly the lead); the ray check below still guards gross aim breakage.
+  // The law is max(1.8 rendered radii, the hull clearance floor): the pad
+  // does not shrink with the mesh, so at moonlet scale the floor is the
+  // wider term and the pass flies it instead.
   const bAU = pose.bAU ?? IMPACT_RADII * R;
-  note(T.key, bAU > 0.9 * IMPACT_RADII * R && bAU < 1.15 * IMPACT_RADII * R,
-    'authored impact parameter near 1.8 rendered radii', (bAU / (IMPACT_RADII * R)).toFixed(4));
+  const bLaw = Math.max(IMPACT_RADII * R, 1.15 * pose.shellAU);
+  note(T.key, bAU > 0.98 * bLaw && bAU < 1.06 * bLaw,
+    'authored b is max(1.8 radii, clearance floor)',
+    `${(bAU / bLaw).toFixed(4)} of law, ${(bAU / R).toFixed(2)} R`);
+  // Measured against the LED centre, not the jump-time one: the aim is
+  // composed around where the body will be at closest approach, and at
+  // moonlet scale that lead is several times the impact parameter itself
+  // (Deimos and Styx read 1.74x against the jump-time centre while their
+  // FLOWN perigees sit on the authored b).
+  const aimCentre = v3(pose.aimCenter);
   const u = sub(aim, pos);
   const uLen = len(u);
   const un = { x: u.x / uLen, y: u.y / uLen, z: u.z / uLen };
-  const rel = sub(body, pos);
+  const rel = sub(aimCentre, pos);
   const along = Math.max(dot(rel, un), 0);
   const missAU = len(sub(rel, { x: un.x * along, y: un.y * along, z: un.z * along }));
   const authored = missAU / bAU;
-  note(T.key, authored > 0.9 && authored < 1.1, 'aim ray passes at the authored b',
+  note(T.key, authored > 0.9 && authored < 1.1, 'aim ray passes the led centre at the authored b',
     authored.toFixed(4));
 
   const measured = perigee / bAU;

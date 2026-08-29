@@ -237,19 +237,6 @@ export const ARRIVAL_IMPACT_RADII = 1.8;
  *  under their separation caps would otherwise push the disc out of frame. */
 export const ARRIVAL_MAX_OFFAXIS_DEG = 12;
 
-/** The flyby needs its lateral show to dwarf the chase rig: below this
- *  many camera-boom lengths of impact parameter, the whole pass — perigee,
- *  abeam slide, sling — happens INSIDE the camera's own trail distance, and
- *  reads as teleporting on top of a rock while the view crawls. Those moons
- *  arrive planet-style instead: aimed dead at the body, the governed glide
- *  as the show. Measured in boom lengths, so the line moves with the rig:
- *  the shorter the trail, the smaller a body may be and still be worth
- *  flying past. On the current rig the line sits at ~244 km of RENDERED
- *  radius, under the moonlet swarm — every named moon and most moonlets
- *  fly, and seven arrivals park (Phobos, Deimos, Cordelia, and Pluto's
- *  four minors). */
-export const FLYBY_MIN_IMPACT_CAM_DISTS = 2;
-
 /**
  * How strongly a moon teleport's camera should keep looking at the moon.
  * The flyby path still aims past the limb; only the camera is decoupled from
@@ -431,16 +418,18 @@ export interface ArrivalInputs {
 
 export interface ArrivalPose {
   position: THREE.Vector3;
-  /** Heading target. Flyby arrivals offset it from the moon's center so
-   *  forward flight is a flyby past the limb; direct arrivals aim at the
-   *  center itself and let the governed glide park the ship. */
+  /** Heading target, offset from the body's center by the impact parameter
+   *  so forward flight is a pass past the limb. */
   aimPoint: THREE.Vector3;
-  /** True when this arrival stages the near-miss flyby (and its camera
-   *  tracking); false for the head-on park at moonlet-scale bodies. */
-  flyby: boolean;
-  /** The authored impact parameter (AU) behind a flyby aim — the probe
-   *  battery asserts measured perigees against this. Absent on parks. */
-  impactParameterAU?: number;
+  /** The authored impact parameter (AU) behind the aim — the probe battery
+   *  asserts measured perigees against this. */
+  impactParameterAU: number;
+  /** The point the aim was composed around: the target's center advanced by
+   *  the one-shot lead, so `|aimPoint − aimCenter| === impactParameterAU`.
+   *  The jump-time center is the WRONG datum to re-derive the miss from —
+   *  at moonlet scale the lead dwarfs the impact parameter — so the battery
+   *  measures the authored ray against this instead. */
+  aimCenter: THREE.Vector3;
 }
 
 /** Collision bubble around a moon mesh: rendered radius plus the full hull
@@ -686,14 +675,6 @@ function rayPassesNear(
   return toPoint.addScaledVector(dir, -along).length() < radius;
 }
 
-/** Flyby-vs-park classification, the shared gate: a pass whose lateral show
- *  would fit inside a couple of camera booms reads as teleporting on top of
- *  a rock, so those bodies park instead. Every planet clears this (Pluto by
- *  2.4×); the park class is genuinely moonlet-scale (rendered ≲ 490 km). */
-export function isFlybyClass(renderedR: number, camDist: number): boolean {
-  return renderedR * ARRIVAL_IMPACT_RADII >= camDist * FLYBY_MIN_IMPACT_CAM_DISTS;
-}
-
 /**
  * Standoff distance from the target's center.
  *
@@ -705,11 +686,10 @@ export function isFlybyClass(renderedR: number, camDist: number): boolean {
  * legacy planet floor; no apparent-size term (planets deliberately arrive
  * looming ~13°) and no separation cap.
  *
- * Flyby-class bodies of BOTH kinds also stand at least the pass-geometry
- * minimum out, so the off-axis ceiling never shaves the authored impact
- * parameter into the measured hover band. For every catalog moon this term
- * is inert (the apparent-size law stands farther out — pinned by the sweep
- * test); park-class standoffs skip it so those poses stay byte-stable.
+ * Every body of BOTH kinds also stands at least the pass-geometry minimum
+ * out, so the off-axis ceiling never shaves the authored impact parameter
+ * into the measured hover band. For every catalog moon this term is inert
+ * (the apparent-size law stands farther out — pinned by the sweep test).
  *
  * `arrivalPose` places the ship exactly this far out, so
  * |pose.position − targetPos| == this value by construction; the moon
@@ -717,9 +697,7 @@ export function isFlybyClass(renderedR: number, camDist: number): boolean {
  */
 export function arrivalStandoffAU(inp: ArrivalInputs): number {
   const collisionR = moonCollisionRadius(inp.renderedR, inp.shipClearance);
-  const passMin = isFlybyClass(inp.renderedR, inp.camDist)
-    ? passGeometryMinAU(inp.renderedR)
-    : 0;
+  const passMin = passGeometryMinAU(inp.renderedR);
   if (inp.kind === 'planet') {
     return Math.max(
       passMin,
@@ -776,11 +754,10 @@ export function autopilotArrived(distToMoonCenterAU: number, standoffAU: number)
  * superior conjunction); fallback is outward along the parent→moon radial,
  * which always clears the parent, its rings, and the line of sight.
  *
- * Aim: for flyby-class moons, offset by an impact parameter so full
- * thrust sweeps past the limb; moonlets whose pass would fit inside the
- * camera boom aim dead at the body instead (planet-style, flyby:false).
+ * Aim: offset by an impact parameter so full thrust sweeps past the limb.
  * The clearance floor outranks composition — without it the smallest
- * curve-rendered moons keep almost no miss margin. Side selection selects the perp
+ * curve-rendered moons keep almost no miss margin, and at moonlet scale it
+ * is what actually authors the miss. Side selection selects the perp
  * toward the parent so the moon slides to the opposite third and the two
  * flank the frame; the forward ray is checked against the parent's HARD
  * collision sphere only (ring moons orbit entirely inside the ring-aware
@@ -793,7 +770,7 @@ export function autopilotArrived(distToMoonCenterAU: number, standoffAU: number)
  */
 export function arrivalPose(inp: ArrivalInputs): ArrivalPose {
   if (inp.kind === 'planet') return planetFlybyPose(inp);
-  const { targetPos, parentPos, renderedR } = inp;
+  const { targetPos, parentPos } = inp;
   const dist = arrivalStandoffAU(inp);
 
   const sunDir = targetPos.clone().multiplyScalar(-1).normalize();
@@ -806,14 +783,6 @@ export function arrivalPose(inp: ArrivalInputs): ArrivalPose {
   if (position.distanceTo(parentPos) < inp.parentClearance || occluded) {
     sunSideLegal = false;
     position = outwardRadialPosition(inp, dist);
-  }
-
-  // Moonlets get the head-on arrival: aimed dead at the body, no flyby
-  // offset — their pass would fit inside the camera boom (see the gate
-  // constant). The glide clamps at the collision shell, so no miss geometry
-  // is needed, and a parked pose needs no aim lead.
-  if (!isFlybyClass(renderedR, inp.camDist)) {
-    return { position, aimPoint: targetPos.clone(), flyby: false };
   }
 
   let aimPoint = moonFlybyAim(inp, position);
@@ -835,8 +804,8 @@ export function arrivalPose(inp: ArrivalInputs): ArrivalPose {
   return {
     position,
     aimPoint,
-    flyby: true,
     impactParameterAU: impactParameterAU(inp, position.distanceTo(targetPos)),
+    aimCenter: ledTargetPos(inp, position),
   };
 }
 
@@ -1028,14 +997,6 @@ function planetFlybyPose(inp: ArrivalInputs): ArrivalPose {
   if (sunDir.lengthSq() < 1e-8) sunDir.set(-1, 0.25, 0);
   sunDir.normalize();
 
-  if (!isFlybyClass(renderedR, inp.camDist)) {
-    return {
-      position: targetPos.clone().addScaledVector(sunDir, dist),
-      aimPoint: targetPos.clone(),
-      flyby: false,
-    };
-  }
-
   // Orthobasis around the sun line for the candidate fan.
   const e1 = new THREE.Vector3().crossVectors(FLIGHT_UP_SCENE, sunDir);
   if (e1.lengthSq() < 1e-12) e1.crossVectors(new THREE.Vector3(1, 0, 0), sunDir);
@@ -1065,8 +1026,8 @@ function planetFlybyPose(inp: ArrivalInputs): ArrivalPose {
   const withB = (position: THREE.Vector3, aimPoint: THREE.Vector3): ArrivalPose => ({
     position,
     aimPoint,
-    flyby: true,
     impactParameterAU: impactParameterAU(inp, position.distanceTo(targetPos)),
+    aimCenter: ledTargetPos(inp, position),
   });
 
   let best: ArrivalPose | null = null;

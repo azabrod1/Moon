@@ -2188,6 +2188,30 @@ describe('a body\'s night family: a second set of sectors on the night shell', (
     expect(streamer.stats().resident).toBe(2);
   });
 
+  it('splits the merged line by lighting side, so terminator contention is readable', () => {
+    // The merged entry says the body holds two sets; only byFamily says which
+    // side each went to, and that is the whole question at the terminator,
+    // where both families rank on one budget.
+    loader.auto = true;
+    frame({ '2_1': 2 }, null, 0);
+    const earth = streamer.stats().bodies.Earth;
+    expect(earth.resident).toHaveLength(2);
+    expect(earth.byFamily.day?.resident).toBe(1);
+    expect(earth.byFamily.night?.resident).toBe(1);
+    // Both views count the same slots.
+    expect((earth.byFamily.day?.residentBytes ?? 0) + (earth.byFamily.night?.residentBytes ?? 0))
+      .toBe(streamer.stats().residentBytes);
+    expect((earth.byFamily.day?.gpuBytes ?? 0) + (earth.byFamily.night?.gpuBytes ?? 0))
+      .toBe(earth.gpuBytes);
+  });
+
+  it('lists only the sides a body actually has', () => {
+    loader.auto = true;
+    frame({ '2_1': 2 }, null, 0);
+    streamer.unregister(NIGHT_KEY);
+    expect(Object.keys(streamer.stats().bodies.Earth.byFamily)).toEqual(['day']);
+  });
+
   it('keys the families apart but reports one line per body', () => {
     loader.auto = true;
     frame({ '2_1': 2 }, null, 0);

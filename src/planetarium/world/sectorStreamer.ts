@@ -660,6 +660,19 @@ export interface SectorStats {
      *  everything here, so a body with two families adds both into one level:
      *  only the ids in `resident` say which family a slot belongs to. */
     byLevel: Array<{ resident: number; loading: number; gpuBytes: number }>;
+    /** The same figures split by LIGHTING SIDE, which the merged view above
+     *  cannot show. At the terminator a body's day and night families compete
+     *  on one budget and one ranking, and the merged entry says only that the
+     *  body holds ten sets — not that six of them are night. Only the sides a
+     *  body actually has appear, so a one-family body still reads as one line.
+     *  `residentBytes` is what the budget counts; `gpuBytes` is measured after
+     *  the decode and lags it. */
+    byFamily: Partial<Record<SectorSide, {
+      resident: number;
+      loading: number;
+      gpuBytes: number;
+      residentBytes: number;
+    }>>;
     /** Every slot the last selection WANTED, by id, with the screen-space
      *  error that ranked it — resident, loading and blocked alike. The lists
      *  above say what got in; this says what asked and how strongly, which is
@@ -1453,10 +1466,17 @@ export class SectorStreamer {
       // holds gets everything Earth holds, day and night, and the ids inside
       // say which family each slot belongs to.
       const entry = out.bodies[body.handle.name] ??= {
-        resident: [], loading: [], reloading: [], maxTexelPx: 0, gpuBytes: 0, byLevel: [], scores: {},
+        resident: [], loading: [], reloading: [], maxTexelPx: 0, gpuBytes: 0, byLevel: [],
+        byFamily: {}, scores: {},
       };
       const { resident, loading, reloading, byLevel, scores } = entry;
       while (byLevel.length < body.levels.length) byLevel.push({ resident: 0, loading: 0, gpuBytes: 0 });
+      // One family per (name, side), so this entry is this family's alone —
+      // written through the merged one so a reader sees both views of the
+      // same slots rather than two totals that could drift apart.
+      const family = entry.byFamily[body.family.side] ??= {
+        resident: 0, loading: 0, gpuBytes: 0, residentBytes: 0,
+      };
       let gpuBytes = 0;
       for (const s of body.slots) {
         const id = slotId(s, body.family.side);
@@ -1465,16 +1485,20 @@ export class SectorStreamer {
         if (s.state === 'resident') {
           resident.push(id);
           level.resident += 1;
+          family.resident += 1;
           if (s.loading) reloading.push(id);
         } else if (s.state === 'loading') {
           loading.push(id);
           level.loading += 1;
+          family.loading += 1;
         }
         let slotBytes = 0;
         for (const tex of Object.values(s.maps)) slotBytes += textureGpuBytes(tex);
         for (const tex of s.loading?.owned ?? []) slotBytes += textureGpuBytes(tex);
         level.gpuBytes += slotBytes;
+        family.gpuBytes += slotBytes;
         gpuBytes += slotBytes;
+        family.residentBytes += s.bytes;
         out.residentBytes += s.bytes;
         out.reserved += s.reserved;
       }

@@ -28,7 +28,6 @@ import {
   appliedTierHeldBytes,
   bindTierAdmission,
   cancelTierRelease,
-  equirectMapGpuBytes,
   expireTierRelease,
   ladderMapReferenceWidth,
   reachableTopTier,
@@ -39,10 +38,8 @@ import {
   releaseExpired,
   releaseTargetTier,
   releaseUpgradeSource,
-  retainedSourceBytes,
   startTierRelease,
   takeRestoreRefetch,
-  textureGpuBytes,
   tierUploadBytes,
   trackReleaseBand,
   RELEASE_ATTEMPT_TIMEOUT_MS,
@@ -69,6 +66,7 @@ import {
   wireEarthLateDetail,
   type TextureUpgrade,
 } from './PlanetFactory';
+import { equirectMapGpuBytes, retainedSourceBytes, textureGpuBytes } from './world/textureBytes';
 import { retryDelayMs, urlSpread } from './world/textureRetryPolicy';
 import { captureDeviceCaps, resetDeviceCapsForTests, TIER_MAP_WIDTH, type TextureTier } from './world/texturePolicy';
 import { ladderCeilingBytes, LEGACY_DESKTOP_PROFILE, LEGACY_TOUCH_PROFILE } from './world/gpuEnvelope';

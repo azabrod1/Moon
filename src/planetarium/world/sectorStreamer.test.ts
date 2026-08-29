@@ -28,7 +28,6 @@ import { APPLE_PHONE_PROFILE, LEGACY_DESKTOP_PROFILE, LEGACY_TOUCH_PROFILE } fro
 import {
   appliedTierHeldBytes,
   bindTierAdmission,
-  equirectMapGpuBytes,
   ladderMapReferenceWidth,
   makeTextureUpgrade,
   RESTORE_STANDIN_WIDTH,
@@ -36,6 +35,7 @@ import {
   startTierRelease,
   TIER_RANK,
 } from '../PlanetFactory';
+import { equirectMapGpuBytes } from './textureBytes';
 import { SECTOR_RENDER_ORDER } from './sectorMaterial';
 import { createEarthNightShellMaterial, earthNightSectorFamily } from './earthNightMaterial';
 import { createSurfaceAirFx } from './surfaceShading';

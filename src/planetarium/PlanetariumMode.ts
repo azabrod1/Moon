@@ -35,7 +35,7 @@ import {
   type PlanetData,
   LIGHT_SPEED_AU_PER_S,
 } from './planets/planetData';
-import { appliedNormalHeldBytes, appliedTierHeldBytes, applySunGlowTier, armArrivalWarmGoal, arrivalUpgradeTier, arrivalWarmGoalsExpired, bindKtx2TierLoader, bindTierAdmission, cancelTierRelease, canAttempt, cancelNormalUpgrade, cancelTextureUpgrade, createAtmosphereMaterial, createMoonMeshes, createShaderWarmupProbes, disarmArrivalWarmGoal, earnedUpgradeTier, expireTierRelease, ladderMapReferenceWidth, lodMeasurementRelevant, materialColorMap, needsUpgradeCover, normalUpgradePending, pumpArrivalWarmGoal, reachableTopTier, releaseDue, releaseExpired, releaseTargetTier, retainedSourceBytes, resolveTierFile, resolveUpgradeTier, setWarmEligibleMoonParents, sphereWidthSegments, startTierRelease, takeRestoreRefetch, tierUploadBytes, trackReleaseBand, upgradeComplete, upgradeGeometryOnApproach, upgradeNormalOnApproach, upgradeTextureOnApproach, ATMOSPHERES, ATMOSPHERE_SHELL_SCALES, UPGRADE_TRIGGER_FRACTION, type MoonMesh, type NormalUpgrade, type PlanetMesh, type TextureUpgrade, type TierAdmission } from './PlanetFactory';
+import { appliedNormalHeldBytes, appliedTierHeldBytes, applySunGlowTier, armArrivalWarmGoal, arrivalUpgradeTier, arrivalWarmGoalsExpired, bindKtx2TierLoader, bindTierAdmission, cancelTierRelease, canAttempt, cancelNormalUpgrade, cancelTextureUpgrade, createAtmosphereMaterial, createMoonMeshes, createShaderWarmupProbes, disarmArrivalWarmGoal, earnedUpgradeTier, expireTierRelease, ladderMapReferenceWidth, lodMeasurementRelevant, materialColorMap, needsUpgradeCover, normalUpgradePending, pumpArrivalWarmGoal, reachableTopTier, releaseDue, releaseExpired, releaseTargetTier, resolveTierFile, resolveUpgradeTier, setWarmEligibleMoonParents, sphereWidthSegments, startTierRelease, takeRestoreRefetch, tierUploadBytes, trackReleaseBand, upgradeComplete, upgradeGeometryOnApproach, upgradeNormalOnApproach, upgradeTextureOnApproach, ATMOSPHERES, ATMOSPHERE_SHELL_SCALES, UPGRADE_TRIGGER_FRACTION, type MoonMesh, type NormalUpgrade, type PlanetMesh, type TextureUpgrade, type TierAdmission } from './PlanetFactory';
 import type { KTX2Loader } from 'three/examples/jsm/loaders/KTX2Loader.js';
 import { disposeCloudDetailTexture } from './world/cloudDetailNoise';
 import { bindSurfaceAir, clearSurfaceAir, surfaceShadingArgsOf, type SurfaceShadingFx } from './world/surfaceShading';
@@ -137,6 +137,7 @@ import {
 import { MoonPainter } from './world/MoonPainter';
 import { ProceduralMoonTexturer } from './world/ProceduralMoonTexturer';
 import { captureDeviceCaps, resolveTextureUrl, type TextureTier } from './world/texturePolicy';
+import { retainedSourceBytes, textureGpuBytes } from './world/textureBytes';
 import {
   classifyDevice,
   deviceProfileFor,
@@ -3514,24 +3515,6 @@ export class PlanetariumMode {
     return null;
   }
 
-  /** GPU bytes one texture holds, from the image that is really there: its
-   *  texel count times four bytes — or one, for a GPU-compressed upload —
-   *  plus a third for the mip chain when it has one. */
-  private static textureGpuBytes(tex: THREE.Texture): number {
-    const compressed = tex as THREE.CompressedTexture;
-    if (compressed.isCompressedTexture) {
-      let bytes = 0;
-      for (const level of compressed.mipmaps ?? []) bytes += (level as { data?: { byteLength?: number } })?.data?.byteLength ?? 0;
-      if (bytes > 0) return bytes;
-    }
-    const img = tex.image as { width?: unknown; height?: unknown } | undefined;
-    const w = img && typeof img.width === 'number' ? img.width : 0;
-    const h = img && typeof img.height === 'number' ? img.height : 0;
-    if (!(w > 0 && h > 0)) return 0;
-    const mipped = tex.generateMipmaps !== false || (tex.mipmaps?.length ?? 0) > 1;
-    return Math.round(w * h * 4 * (mipped ? 4 / 3 : 1));
-  }
-
   /** GPU bytes the maps every device carries hold: the first-paint texture of
    *  every body, its bump / roughness / night / cloud maps, the rings. The
    *  ladder's own figure (liveGlobalMapBytes) deliberately leaves these out —
@@ -3546,7 +3529,7 @@ export class PlanetariumMode {
       const tex = value as THREE.Texture | null;
       if (!tex || !tex.isTexture || seen.has(tex.uuid)) return;
       seen.add(tex.uuid);
-      bytes += PlanetariumMode.textureGpuBytes(tex);
+      bytes += textureGpuBytes(tex);
     };
     const walk = (root: THREE.Object3D): void => {
       root.traverse((o) => {

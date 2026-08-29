@@ -146,6 +146,7 @@ import { TIER_RANK } from '../PlanetFactory';
 import { debugWarn } from '../../shared/debug';
 import { queueTextureWarm, type WarmOutcome } from './textureWarmer';
 import { sectorBudgetBytes, type SectorStreamerLimits } from './gpuEnvelope';
+import { layoutGpuBytes, textureGpuBytes } from './textureBytes';
 import { smoothTraceEvent } from '../smoothnessTrace';
 
 /** The material slots a sector may carry a crop of, in a fixed order. */
@@ -703,13 +704,6 @@ function sectorLightSamples(grid: SectorGrid, s: Sector): THREE.Vector3[] {
   ];
 }
 
-/** GPU bytes an image of this layout holds: RGBA8 at its pixel size plus a
- *  third for its mip chain. Known before the fetch — which is what lets an
- *  admission reserve what it is about to hold. */
-function layoutGpuBytes(layout: TileLayout): number {
-  return Math.round(layout.width * layout.height * 4 * (4 / 3));
-}
-
 /** GPU bytes one sector of a set holds at `level`: its colour tile plus its
  *  own copy of every crop the base material carries (`has`). Sectors are
  *  self-contained — four children of one parent hold four copies of the same
@@ -726,18 +720,6 @@ export function sectorSetGpuBytes(
     bytes += layoutGpuBytes(dataCropLayout(spec.levels[0].grid, crop.baseWidth, crop.spanU));
   }
   return bytes;
-}
-
-/** Estimated GPU bytes of a texture: RGBA8 at its image size, plus mips.
- *  Read from the image while it is still attached; a resident tile's bitmap
- *  is closed after its upload, so the figure is stashed on the texture at
- *  decode (userData.gpuBytes) and read from there afterwards. */
-function textureGpuBytes(tex: THREE.Texture): number {
-  const stashed = tex.userData?.gpuBytes;
-  if (typeof stashed === 'number') return stashed;
-  const img = tex.image as { width?: unknown; height?: unknown } | undefined;
-  if (!img || typeof img.width !== 'number' || typeof img.height !== 'number') return 0;
-  return Math.round(img.width * img.height * 4 * (4 / 3));
 }
 
 /** A real map in a material slot — not the procedural stand-in a failed

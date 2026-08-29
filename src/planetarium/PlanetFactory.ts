@@ -11,7 +11,8 @@
  * 2. The globe texture ladder those meshes climb, and everything that prices
  *    it: a TextureUpgrade per material holding the 2K/4K/8K rungs and at most
  *    one in-flight attempt; the GPU byte ledger that says what a rung costs
- *    before anything is fetched; the admission gate a device's memory profile
+ *    before anything is fetched (over world/textureBytes, which prices one
+ *    texture for both this ladder and the sector streamer); the admission gate a device's memory profile
  *    installs over that ledger (bindTierAdmission — whose default admits
  *    everything, so an unbound ladder has no ceiling); the release state
  *    machine that hands a rung back under pressure (banner: "Giving a rung
@@ -52,6 +53,7 @@ import { createEarthNightShellMaterial } from './world/earthNightMaterial';
 import { createLensShaderUniforms } from '../shared/three/lensShader';
 import { fetchTextureDurably, type DurableTextureFetch } from './world/textureRetry';
 import { loadStreamedTexture, type TextureLoad } from './world/textureBitmapLoader';
+import { equirectMapGpuBytes, retainedSourceBytes, textureGpuBytes } from './world/textureBytes';
 
 // A colour-tier fetch goes through this indirection so the completion,
 // staleness and failure paths that decide what reaches the GPU can be
@@ -703,54 +705,6 @@ const BOOT_MAP_WIDTH: Record<string, number> = { earthDay: 4096 };
 export const TIER_RANK: Record<TextureTier, number> = { '2k': 2, '4k': 4, '8k': 8 };
 
 /**
- * GPU bytes an equirect colour map of this width holds: its texel count (a
- * 2:1 map) times four bytes — or one, for a GPU-compressed upload, which is
- * what a transcoded map costs — plus a third for its mip chain.
- */
-export function equirectMapGpuBytes(width: number, compressed = false): number {
-  if (!(width > 0)) return 0;
-  return Math.round(width * (width / 2) * (compressed ? 1 : 4) * (4 / 3));
-}
-
-/**
- * GPU bytes one colour map holds, read from the texture that is really there
- * rather than from the tier's nominal size: a GPU-compressed rung holds
- * exactly the blocks its container carries (a quarter to an eighth of the raw
- * map, and the ratio is the format's, not ours to assume), and a map is not
- * always the width its tier is named for — Earth's day map boots wider than
- * its tier name. `nominalWidth` is the fallback for a texture with no
- * readable image; 0 asks for no fallback.
- *
- * A rung whose decoded source has been closed after its upload keeps the
- * figure stashed on the texture (userData.gpuBytes): what is on the GPU has
- * not changed, only what is left in RAM to read it from. Same convention as
- * the sector tiles, whose bitmaps are closed for the same reason.
- *
- * Takes a plain texture, not a handle, so the same measurement runs on a
- * decoded CANDIDATE before it is applied — the moment the admission test has
- * to weigh it, and the moment a handle-shaped reader can say nothing at all.
- */
-export function textureGpuBytes(tex: THREE.Texture | null | undefined, nominalWidth = 0): number {
-  const map = tex as
-    | (THREE.Texture & { isCompressedTexture?: boolean; mipmaps?: Array<{ data?: { byteLength?: number } } | null> })
-    | null
-    | undefined;
-  if (!map) return 0;
-  const stashed = map.userData?.gpuBytes;
-  if (typeof stashed === 'number') return stashed;
-  if (map.isCompressedTexture) {
-    let bytes = 0;
-    for (const level of map.mipmaps ?? []) bytes += level?.data?.byteLength ?? 0;
-    if (bytes > 0) return bytes;
-  }
-  const img = map.image as { width?: unknown; height?: unknown } | undefined;
-  const w = img && typeof img.width === 'number' ? img.width : 0;
-  const h = img && typeof img.height === 'number' ? img.height : 0;
-  if (w > 0 && h > 0) return Math.round(w * h * (map.isCompressedTexture ? 1 : 4) * (4 / 3));
-  return equirectMapGpuBytes(nominalWidth, map.isCompressedTexture === true);
-}
-
-/**
  * GPU bytes the tier this handle has APPLIED holds — 0 while the body is
  * still on the boot map every device carries anyway. Summed over the bodies,
  * this is the ladder's live weight, which the sector streamer's memory
@@ -796,24 +750,6 @@ export function appliedNormalHeldBytes(up: NormalUpgrade | undefined): number {
   if (!up || up.state !== 'done') return 0;
   const map = up.material.normalMap;
   return textureGpuBytes(map, TIER_MAP_WIDTH[up.tier]) + retainedSourceBytes(map);
-}
-
-/** Bytes of decoded image a texture is still holding in RAM. Only the bitmap
- *  path retains one; a compressed texture's mip data is what
- *  `textureGpuBytes` already measures, and counting it twice would make one
- *  honest measurement look like two. */
-export function retainedSourceBytes(tex: THREE.Texture | null | undefined): number {
-  const map = tex as (THREE.Texture & { isCompressedTexture?: boolean }) | null | undefined;
-  if (!map || map.isCompressedTexture) return 0;
-  // A rung whose source has been closed keeps a small stand-in to re-upload
-  // from after a context loss — 2 MiB against the 33 MiB it replaced, and a
-  // couple of rungs' worth across the whole scene.
-  if (map.userData?.sourceReleased === true) return 0;
-  const img = map.image as { width?: unknown; height?: unknown; close?: unknown } | undefined;
-  if (!img || typeof img.close !== 'function') return 0; // an <img> element, not a bitmap
-  const w = typeof img.width === 'number' ? img.width : 0;
-  const h = typeof img.height === 'number' ? img.height : 0;
-  return w > 0 && h > 0 ? w * h * 4 : 0;
 }
 
 /**

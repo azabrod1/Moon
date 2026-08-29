@@ -2150,7 +2150,12 @@ export class PlanetariumMode {
     // layer draws and ~10^9 dependent fetches — so it is asked of the device
     // CLASS rather than of the profile's byte numbers, which an Apple phone was
     // measured to share with a desktop. Same reasoning as FILL_RATE_TIER_CAP.
-    this.atmosphereLut = new AtmosphereLut(renderer, { touch: this.deviceClass !== 'desktop' });
+    this.atmosphereLut = new AtmosphereLut(renderer, {
+      touch: this.deviceClass !== 'desktop',
+      // The bake's slices are a share of the frame, so they read the same
+      // smoothed interval the warm pump's budget does.
+      frameIntervalMs: () => this.frameIntervalMs,
+    });
     // WebGL context loss invalidates render-target textures (no CPU backing), so
     // GPU-painted moons would render black after a restore. Reset them to repaint
     // and re-validate the GPU path on restore (else it stays on the CPU path).
@@ -13665,6 +13670,7 @@ export class PlanetariumMode {
       orders: options?.orders,
       sizes: options?.half ? ATMOSPHERE_TABLE_SIZES_HALF : ATMOSPHERE_TABLE_SIZES_FULL,
       drawsPerSlice: options?.drawsPerSlice,
+      frameIntervalMs: () => this.frameIntervalMs,
     });
     await this.devAtmosphereLut.bake(options?.body ?? 'Earth');
     const stats = this.devAtmosphereLut.stats();

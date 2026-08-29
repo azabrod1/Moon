@@ -38,6 +38,15 @@
  * meanwhile — the tier switches on only once every table is written and
  * validated, never by waiting.
  *
+ * A slice is sized by GPU COST, not by draw count. Submitting a layer draw is
+ * 0.0-0.2 ms of main thread whatever the layer costs, so a budget measured on
+ * the CPU cannot see the difference between eight transmittance quads and eight
+ * scattering-density layers — and eight of the latter is 20 ms of GPU against a
+ * 120 Hz frame's 8.33. Each pass therefore carries a relative weight, a timer
+ * query measures one layer of each pass on the device before the first real
+ * draw, and a slice takes as many draws as fit a share of the measured frame
+ * interval. The submission budget stays as the CPU-side guard.
+ *
  * The bake's own programs are deliberately outside the boot warm-up set —
  * nothing here draws until the tables exist — so a bake opens with a LINK
  * PHASE that compiles, links and primes ONE of them per frame before the first
@@ -129,6 +138,16 @@ export interface AtmosphereBakeStats {
    *  so a lost context during the first bake is not invisible. */
   aborted: boolean;
   slices: number;
+  /** Layer draws the cost probe ran ahead of the bake proper — two per pass it
+   *  had no measurement for, and zero once the session has them all or the
+   *  device has no timer query. They are included in `drawCalls`. */
+  probeDraws: number;
+  /** GPU ms one layer draw of each pass measured at, where a timer query
+   *  answered. Empty on a device without EXT_disjoint_timer_query_webgl2. */
+  measuredPassMs: Partial<Record<AtmospherePass, number>>;
+  /** What the slice budget actually priced each pass at — the measured figure
+   *  where there was one, the weight table's where there was not. */
+  passCostsMs: Record<AtmospherePass, number>;
   /** One row per program linked before the first layer draw, in link order. A
    *  bake whose programs are all already linked — a second body, a repeat
    *  measurement — reads empty. */
@@ -151,6 +170,12 @@ interface LinkStep {
 
 interface DrawStep {
   readonly kind: 'draw';
+  readonly pass: AtmospherePass;
+  /** Whether running this draw a second time, before the bake proper, leaves
+   *  the tables where it found them. The cost probe re-runs one draw per pass
+   *  ahead of every real draw, so a probed draw must overwrite its target
+   *  rather than add to it — an accumulating fold would count its order twice. */
+  readonly probeSafe: boolean;
   run(): void;
 }
 
@@ -161,9 +186,14 @@ export interface AtmosphereLutOptions {
   touch?: boolean;
   orders?: number;
   sizes?: AtmosphereTableSizes;
-  /** Layer draws submitted per frame. `Infinity` bakes in one block, which is
-   *  what a measurement harness wants and a boot never does. */
+  /** Ceiling on the layer draws submitted per frame, above the cost budget's
+   *  own limit. `Infinity` turns both off and bakes in one block, which is what
+   *  a measurement harness wants and a boot never does. */
   drawsPerSlice?: number;
+  /** The frame interval the slice budget is a share of, read once per slice.
+   *  The mode passes its own smoothed interval; without one the budget assumes
+   *  the fastest display it expects to meet. */
+  frameIntervalMs?: () => number;
   /** False for a measurement instance, so it does not become the tier the rest
    *  of the app reads. */
   register?: boolean;
@@ -173,6 +203,9 @@ export interface AtmosphereLutOptions {
  *  most of it for a quarter of the work, which is the touch budget. */
 const DESKTOP_ORDERS = 4;
 const TOUCH_ORDERS = 2;
+/** Ceiling on a slice's draw count, whatever the cost budget allows. The
+ *  budget is what sizes a slice; this only stops an implausibly cheap cost
+ *  estimate from turning one frame into the whole bake. */
 const DEFAULT_DRAWS_PER_SLICE = 8;
 /** Bakes in a row that produce no tables — a failed validation, a throw, or a
  *  context lost mid-flight — after which the session stops trying. Each retry
@@ -180,9 +213,156 @@ const DEFAULT_DRAWS_PER_SLICE = 8;
  *  shown it cannot hold them, and the analytic shell is a complete look. */
 const MAX_CONSECUTIVE_BAKE_FAILURES = 3;
 /** Submission budget per draw slice — draws only; a link step is a slice of its
- *  own. Submission is not execution, so the draw count is the real limiter;
- *  this only stops a slice running long on a slow driver. */
+ *  own. This is the CPU guard, and it cannot see the cost that actually sizes a
+ *  slice: submitting a layer draw is 0.0-0.2 ms of main thread whether the GPU
+ *  then spends 20 µs on it or a millisecond. It only stops a slice running long
+ *  on a slow driver; ATMOSPHERE_PASS_WEIGHTS below is what bounds the GPU. */
 const SLICE_SUBMIT_BUDGET_MS = 6;
+
+/**
+ * The bake's passes, priced one layer draw at a time.
+ *
+ * The slice budget needs a per-pass cost because the passes differ by two
+ * orders of magnitude: the direct irradiance is a 64x16 quad, while one
+ * scattering-density layer is a double angular integral over two 3D tables and
+ * costs two hundred times as much. A fixed draw count spends the same frame
+ * budget on eight of either, which is how the density block came to submit
+ * 20 ms of GPU into a 120 Hz frame while the main thread showed 0.2 ms — and
+ * the frame that was finally dropped was a later one, because a GPU that falls
+ * behind surfaces the backlog downstream of what caused it.
+ *
+ * `combine` folds one order into the accumulator and `indirectIrradiance` runs
+ * the irradiance program in its sky mode; both cost the same whether they
+ * overwrite or accumulate, so each is one pass.
+ */
+export type AtmospherePass =
+  | 'transmittance'
+  | 'directIrradiance'
+  | 'singleScattering'
+  | 'combine'
+  | 'scatteringDensity'
+  | 'indirectIrradiance'
+  | 'multipleScattering';
+
+/**
+ * Relative GPU cost of one layer draw of each pass, used until the device
+ * measures itself. A device with EXT_disjoint_timer_query_webgl2 times one
+ * layer of every pass before the bake's first real draw and prices the slices
+ * from those microseconds instead; this table is what a device without the
+ * extension — or one whose queries come back disjoint — plans with.
+ *
+ * Timed on an Apple GPU the ratios came out near 2 : 0.05 : 1.4 : 1 : 8 : 5 :
+ * 1.4 in this order. The density anchor holds and the rest do not, by up to
+ * four times either way, which is the whole reason a device that can time
+ * itself does rather than trusting this.
+ */
+export const ATMOSPHERE_PASS_WEIGHTS: Readonly<Record<AtmospherePass, number>> = {
+  transmittance: 1,
+  directIrradiance: 1,
+  singleScattering: 4,
+  combine: 1,
+  scatteringDensity: 8,
+  indirectIrradiance: 2,
+  multipleScattering: 6,
+};
+
+/** GPU ms one unit of weight is worth before anything has been measured, set so
+ *  the table's heaviest pass prices at what one scattering-density layer
+ *  measured at (2.0-2.8 ms on an Apple GPU through ANGLE/Metal). Deliberately
+ *  not the cheaper reading: a device with no timer query is one nothing can
+ *  size for, and guessing low buys bake wall time with dropped frames, while
+ *  guessing high spends only wall time, behind a look that is already
+ *  complete. */
+export const ATMOSPHERE_UNIT_COST_MS = 0.25;
+
+/** Share of the frame the bake's draws may hold on the GPU — the same figure
+ *  and the same reasoning as the warm pump's WARM_BUDGET_FRACTION: a budget
+ *  stated as a constant is a third of a 60 Hz frame and most of a 120 Hz one. */
+export const BAKE_BUDGET_FRACTION = 0.35;
+/** Frame intervals outside this band are a stalled tab or a broken sample, not
+ *  a refresh rate; the same clamp the mode's own frame-interval EMA applies. */
+const BAKE_INTERVAL_MIN_MS = 4;
+const BAKE_INTERVAL_MAX_MS = 40;
+/** Assumed when no interval is measurable. 120 Hz rather than 60: guessing the
+ *  slower display hands a 120 Hz frame twice its share and drops it, while
+ *  guessing the faster one costs a 60 Hz machine only bake wall time, spent
+ *  behind a look that is already complete. */
+export const BAKE_DEFAULT_INTERVAL_MS = 8.33;
+
+/** The GPU time one slice of layer draws may hold, for a frame of this
+ *  measured length. */
+export function bakeSliceBudgetMs(frameIntervalMs: number): number {
+  const interval = Number.isFinite(frameIntervalMs) && frameIntervalMs > 0
+    ? Math.min(BAKE_INTERVAL_MAX_MS, Math.max(BAKE_INTERVAL_MIN_MS, frameIntervalMs))
+    : BAKE_DEFAULT_INTERVAL_MS;
+  return interval * BAKE_BUDGET_FRACTION;
+}
+
+/**
+ * What one layer draw of each pass costs in ms: the measured figure where a
+ * timer query returned one, and the pass's weight priced in ms where it did
+ * not.
+ *
+ * The price of a weight unit comes from the passes that WERE measured — their
+ * mean measured-ms-per-weight — so a device that timed only some of them still
+ * plans the rest against its own speed rather than against a constant tuned on
+ * another GPU. That derived price is never allowed BELOW the constant, though:
+ * the queries a disjoint discards are whichever were in flight, so a probe can
+ * come back holding the 64x16 irradiance quad and not the density layer, and a
+ * unit priced off the quad alone would admit eight density layers to a slice —
+ * the 20 ms frame this budget exists to prevent. Under-pricing an unmeasured
+ * pass drops frames; over-pricing it costs bake wall time behind a complete
+ * look, so the constant is a floor. With nothing measured at all it is the
+ * price.
+ */
+export function bakePassCostsMs(
+  measuredMs: Readonly<Partial<Record<AtmospherePass, number>>>,
+): Record<AtmospherePass, number> {
+  const passes = Object.keys(ATMOSPHERE_PASS_WEIGHTS) as AtmospherePass[];
+  const usable = (pass: AtmospherePass): number | null => {
+    const ms = measuredMs[pass];
+    return typeof ms === 'number' && Number.isFinite(ms) && ms > 0 ? ms : null;
+  };
+  let unit = ATMOSPHERE_UNIT_COST_MS;
+  const ratios: number[] = [];
+  for (const pass of passes) {
+    const ms = usable(pass);
+    if (ms !== null) ratios.push(ms / ATMOSPHERE_PASS_WEIGHTS[pass]);
+  }
+  if (ratios.length > 0) {
+    unit = Math.max(ATMOSPHERE_UNIT_COST_MS, ratios.reduce((a, b) => a + b, 0) / ratios.length);
+  }
+  const costs = {} as Record<AtmospherePass, number>;
+  for (const pass of passes) {
+    costs[pass] = usable(pass) ?? ATMOSPHERE_PASS_WEIGHTS[pass] * unit;
+  }
+  return costs;
+}
+
+/**
+ * How many of the coming layer draws a frame may take: as many as fit the
+ * budget, and never fewer than one.
+ *
+ * The floor is not a rounding convenience. A pass whose single layer already
+ * costs more than a whole frame's share would otherwise admit nothing, and the
+ * bake would spin on a step it never runs.
+ */
+export function bakeSliceDrawCount(
+  upcoming: readonly AtmospherePass[],
+  costsMs: Readonly<Record<AtmospherePass, number>>,
+  budgetMs: number,
+  maxDraws: number,
+): number {
+  let spent = 0;
+  let count = 0;
+  while (count < upcoming.length && count < maxDraws) {
+    const next = spent + costsMs[upcoming[count]];
+    if (count > 0 && next > budgetMs) break;
+    spent = next;
+    count++;
+  }
+  return count;
+}
 
 // ---------------------------------------------------------------------------
 // GLSL
@@ -1106,6 +1286,12 @@ export class AtmosphereLut {
   readonly sizes: AtmosphereTableSizes;
   readonly orders: number;
   private readonly drawsPerSlice: number;
+  private readonly frameIntervalMs: () => number;
+  /** Measured GPU ms for one layer draw of each pass, filled by the cost probe
+   *  and kept for the session: the figure describes the device and the table
+   *  sizes, so a second body plans against the first body's measurements.
+   *  Cleared with the context, whose programs it describes. */
+  private measuredPassMs: Partial<Record<AtmospherePass, number>> = {};
   private readonly ready = new Map<string, AtmosphereTables>();
   /** The render targets behind `ready`'s textures — a texture has no way back
    *  to the target that owns its GPU memory. */
@@ -1159,6 +1345,7 @@ export class AtmosphereLut {
     this.sizes = options.sizes ?? profile.sizes;
     this.orders = Math.max(1, Math.floor(options.orders ?? profile.orders));
     this.drawsPerSlice = options.drawsPerSlice ?? DEFAULT_DRAWS_PER_SLICE;
+    this.frameIntervalMs = options.frameIntervalMs ?? (() => BAKE_DEFAULT_INTERVAL_MS);
     if (options.register !== false) activeLut = this;
   }
 
@@ -1197,16 +1384,26 @@ export class AtmosphereLut {
     return this.bakeStats;
   }
 
-  /** The step list a bake of `body` would run, as kinds and program names.
-   *  The ordering contract — every link before every draw, one program to a
-   *  step — is what a test can hold this to without a GPU. Builds and drops
+  /** The step list a bake of `body` would run, as kinds, program names and the
+   *  pass each draw belongs to. The ordering contract — every link before every
+   *  draw, one program to a step — and the pass tagging the slice budget prices
+   *  against are what a test can hold this to without a GPU. Builds and drops
    *  the bake's targets, which allocate nothing until a draw binds them. */
-  bakeStepPlan(body: string): Array<{ kind: 'link' | 'draw'; program: string }> {
+  bakeStepPlan(body: string): Array<{
+    kind: 'link' | 'draw';
+    program: string;
+    pass: AtmospherePass | '';
+    probeSafe: boolean;
+  }> {
     this.ensureMaterials();
     const targets = this.createTargets();
     try {
-      return this.buildSteps(atmosphereParams(body), targets)
-        .map((step) => ({ kind: step.kind, program: step.kind === 'link' ? step.program : '' }));
+      return this.buildSteps(atmosphereParams(body), targets).map((step) => ({
+        kind: step.kind,
+        program: step.kind === 'link' ? step.program : '',
+        pass: step.kind === 'draw' ? step.pass : '',
+        probeSafe: step.kind === 'draw' && step.probeSafe,
+      }));
     } finally {
       this.disposeResident(targets);
     }
@@ -1261,6 +1458,7 @@ export class AtmosphereLut {
     const drawsBefore = this.drawCount;
     let submitMs = 0;
     let slices = 0;
+    let probeDraws = 0;
     const links: AtmosphereLinkTiming[] = [];
     this.baking++;
     let targets: BakeTargets | null = null;
@@ -1282,6 +1480,9 @@ export class AtmosphereLut {
         validated,
         aborted,
         slices,
+        probeDraws,
+        measuredPassMs: { ...this.measuredPassMs },
+        passCostsMs: bakePassCostsMs(this.measuredPassMs),
         links: [...links],
       });
     };
@@ -1312,12 +1513,21 @@ export class AtmosphereLut {
         // phase collapses back into the one frame it exists to spread.
         await nextFrame();
       }
-      // Draw phase. The submission budget now covers draws alone.
+      // Cost probe. One layer of each pass, timed on the GPU, so the slices
+      // below are sized by what this device actually spends.
+      probeDraws = await this.measurePassCosts(steps, generation);
+      if (this.disposed || this.contextLost || generation !== this.generation) {
+        record(false, true);
+        return false;
+      }
+      // Draw phase. The submission budget now covers draws alone, and the cost
+      // budget — not the draw count — is what decides how many fit.
       while (i < steps.length) {
         if (this.disposed || this.contextLost || generation !== this.generation) {
           record(false, true);
           return false;
         }
+        const allowed = this.sliceDrawCount(steps, i);
         const sliceStart = performance.now();
         const prevTarget = this.renderer.getRenderTarget();
         const prevAutoClear = this.renderer.autoClear;
@@ -1326,7 +1536,7 @@ export class AtmosphereLut {
         try {
           while (
             i < steps.length
-            && inSlice < this.drawsPerSlice
+            && inSlice < allowed
             && performance.now() - sliceStart < SLICE_SUBMIT_BUDGET_MS
           ) {
             const step = steps[i];
@@ -1419,6 +1629,10 @@ export class AtmosphereLut {
     this.liveBytes = 0;
     this.capable = null;
     this.capableMs = null;
+    // The measurements describe programs that died with the context, and the
+    // restore may land on a different GPU entirely (a driver reset, a switch
+    // off the discrete card): the re-bake measures again.
+    this.measuredPassMs = {};
   }
 
   /** Re-bake every body this session has asked for — the ones that were ready
@@ -1594,13 +1808,108 @@ export class AtmosphereLut {
     this.ready.clear();
   }
 
+  /**
+   * Time one layer draw of each pass, before the bake's first real draw, so
+   * the slice budget prices THIS GPU instead of a weight table measured on
+   * another one. Nothing to do once the session has every pass, and nothing to
+   * do on a device without the timer query — the weights stand.
+   *
+   * The probe re-runs real draws rather than synthetic ones, so every pass is
+   * timed with the tables it will really sample: bind a 1x1 placeholder instead
+   * and the density pass's billion dependent fetches all hit cache, which is
+   * the one number that must not be optimistic. Re-running is safe because the
+   * probe precedes every real draw and each of those overwrites the layer it
+   * lands on — which is also why only `probeSafe` draws are eligible: a draw
+   * that accumulates would fold its order in twice.
+   *
+   * Each pass is drawn twice and only the second draw is timed. The first is
+   * where the driver builds the pipeline state for this program against a
+   * half-float table — the link phase primes against a 1x1 8-bit target, which
+   * does not key the same — and it measures two to eight times the steady-state
+   * cost. Believing that reading would price every later slice of the pass off
+   * a cost that is paid once.
+   *
+   * A timed draw gets a frame to itself and nothing else on it. Two draws in
+   * one frame read wrong in both directions on a tile GPU — a repeat of the
+   * same draw waits out its predecessor behind a write-after-write barrier and
+   * the query times the wait too, while a different draw after the query closes
+   * still lands in the same command encoder and leaks into its result. So the
+   * probe is two rounds of one draw per frame: every pass warmed, then every
+   * pass timed, the same one-cost-to-a-frame shape as the link phase.
+   */
+  private async measurePassCosts(
+    steps: readonly BakeStep[],
+    generation: number,
+  ): Promise<number> {
+    if (!Number.isFinite(this.drawsPerSlice)) return 0;
+    const probes = new Map<AtmospherePass, DrawStep>();
+    for (const step of steps) {
+      if (step.kind !== 'draw' || !step.probeSafe) continue;
+      if (this.measuredPassMs[step.pass] !== undefined || probes.has(step.pass)) continue;
+      probes.set(step.pass, step);
+    }
+    if (probes.size === 0) return 0;
+    const timer = GpuPassTimer.create(this.renderer);
+    if (!timer) return 0;
+    const measured = new Map<string, number>();
+    let drawn = 0;
+    for (const round of ['warm', 'time'] as const) {
+      for (const [pass, step] of probes) {
+        if (this.disposed || this.contextLost || generation !== this.generation) break;
+        const timing = round === 'time' && timer.begin(pass);
+        const prevTarget = this.renderer.getRenderTarget();
+        const prevAutoClear = this.renderer.autoClear;
+        this.renderer.autoClear = false;
+        try {
+          step.run();
+        } finally {
+          if (timing) timer.end();
+          this.renderer.autoClear = prevAutoClear;
+          this.renderer.setRenderTarget(prevTarget);
+        }
+        drawn++;
+        await nextFrame();
+        timer.poll(measured);
+      }
+    }
+    await timer.drain(measured);
+    for (const [pass, ms] of measured) {
+      this.measuredPassMs[pass as AtmospherePass] = ms;
+    }
+    return drawn;
+  }
+
+  /** How many of the draws from `from` this frame may submit: the cost budget's
+   *  answer, under the draw-count ceiling. A non-finite ceiling is the
+   *  measurement harness asking for the whole bake in one block, and turns the
+   *  budget off with it. */
+  private sliceDrawCount(steps: readonly BakeStep[], from: number): number {
+    if (!Number.isFinite(this.drawsPerSlice)) return steps.length - from;
+    const maxDraws = Math.max(1, Math.floor(this.drawsPerSlice));
+    const upcoming: AtmospherePass[] = [];
+    for (let j = from; j < steps.length && upcoming.length < maxDraws; j++) {
+      const step = steps[j];
+      if (step.kind !== 'draw') break;
+      upcoming.push(step.pass);
+    }
+    return bakeSliceDrawCount(
+      upcoming,
+      bakePassCostsMs(this.measuredPassMs),
+      bakeSliceBudgetMs(this.frameIntervalMs()),
+      maxDraws,
+    );
+  }
+
   /** The link steps, then one thunk per draw in Bruneton's order. Each draw is
    *  one layer of one pass, so the frame slicing has somewhere to cut. */
   private buildSteps(params: AtmosphereParams, t: BakeTargets): BakeStep[] {
     const m = this.materials!;
     const steps: BakeStep[] = [];
-    const draws: Array<() => void> = [];
+    const draws: DrawStep[] = [];
     const layers = this.sizes.scatteringR;
+    const push = (pass: AtmospherePass, probeSafe: boolean, run: () => void): void => {
+      draws.push({ kind: 'draw', pass, probeSafe, run });
+    };
 
     for (const mat of [m.transmittance, m.singleScattering, m.irradiance,
       m.scatteringDensity, m.multipleScattering, m.combine]) {
@@ -1628,12 +1937,12 @@ export class AtmosphereLut {
 
     // Transmittance, and a cleared irradiance accumulator: the accumulator holds
     // the SKY's irradiance only, so the direct term never enters it.
-    draws.push(() => {
+    push('transmittance', true, () => {
       this.clear(t.irradiance);
       this.draw(m.transmittance, t.transmittance);
     });
 
-    draws.push(() => {
+    push('directIrradiance', true, () => {
       m.irradiance.uniforms.uMode.value = 0;
       m.irradiance.uniforms.uTransmittance.value = t.transmittance.texture;
       this.draw(m.irradiance, t.deltaIrradiance);
@@ -1644,7 +1953,7 @@ export class AtmosphereLut {
     m.singleScattering.uniforms.uTransmittance.value = t.transmittance.texture;
     for (const [mode, target] of [[0, t.deltaRayleigh], [1, t.deltaMie]] as const) {
       for (let layer = 0; layer < layers; layer++) {
-        draws.push(() => {
+        push('singleScattering', true, () => {
           m.singleScattering.uniforms.uMode.value = mode;
           m.singleScattering.uniforms.uTransmittance.value = t.transmittance.texture;
           this.draw(m.singleScattering, target, layer);
@@ -1652,7 +1961,7 @@ export class AtmosphereLut {
       }
     }
     for (let layer = 0; layer < layers; layer++) {
-      draws.push(() => {
+      push('combine', true, () => {
         m.combine.uniforms.uMode.value = 0;
         m.combine.uniforms.uSourceA.value = t.deltaRayleigh.texture;
         m.combine.uniforms.uSourceB.value = t.deltaMie.texture;
@@ -1666,7 +1975,7 @@ export class AtmosphereLut {
       // single-scattering deltas; from order 3 on it is the multiple-scattering
       // delta, which by then has overwritten the Rayleigh one.
       for (let layer = 0; layer < layers; layer++) {
-        draws.push(() => {
+        push('scatteringDensity', true, () => {
           const u = m.scatteringDensity.uniforms;
           u.uTransmittance.value = t.transmittance.texture;
           u.uSingleRayleigh.value = t.deltaRayleigh.texture;
@@ -1679,7 +1988,7 @@ export class AtmosphereLut {
       }
       // Indirect irradiance for the previous order, into the delta and then
       // added to the accumulator.
-      draws.push(() => {
+      push('indirectIrradiance', true, () => {
         const u = m.irradiance.uniforms;
         u.uMode.value = 1;
         u.uTransmittance.value = t.transmittance.texture;
@@ -1690,7 +1999,7 @@ export class AtmosphereLut {
         setAccumulating(m.irradiance, false);
         this.draw(m.irradiance, t.deltaIrradiance);
       });
-      draws.push(() => {
+      push('indirectIrradiance', false, () => {
         setAccumulating(m.irradiance, true);
         this.draw(m.irradiance, t.irradiance);
         setAccumulating(m.irradiance, false);
@@ -1699,14 +2008,14 @@ export class AtmosphereLut {
       // multiple-scattering delta writes over the Rayleigh one — nothing reads
       // it again.
       for (let layer = 0; layer < layers; layer++) {
-        draws.push(() => {
+        push('multipleScattering', true, () => {
           m.multipleScattering.uniforms.uTransmittance.value = t.transmittance.texture;
           m.multipleScattering.uniforms.uScatteringDensity.value = t.deltaScatteringDensity.texture;
           this.draw(m.multipleScattering, t.deltaRayleigh, layer);
         });
       }
       for (let layer = 0; layer < layers; layer++) {
-        draws.push(() => {
+        push('combine', false, () => {
           m.combine.uniforms.uMode.value = 1;
           m.combine.uniforms.uSourceA.value = t.deltaRayleigh.texture;
           setAccumulating(m.combine, true);
@@ -1716,7 +2025,7 @@ export class AtmosphereLut {
       }
     }
 
-    for (const run of draws) steps.push({ kind: 'draw', run });
+    steps.push(...draws);
     return steps;
   }
 
@@ -2003,6 +2312,115 @@ function setAccumulating(material: THREE.ShaderMaterial, on: boolean): void {
   material.blendEquationAlpha = THREE.AddEquation;
   material.blendSrcAlpha = THREE.OneFactor;
   material.blendDstAlpha = THREE.OneFactor;
+}
+
+/** Frames a finished query is given to become readable before the pass is
+ *  written off as unmeasurable. A retired draw normally answers on the next
+ *  one; anything still pending after this is a driver that will not be waited
+ *  for on the boot idle. */
+const GPU_QUERY_POLL_FRAMES = 4;
+
+/**
+ * GPU timer queries through EXT_disjoint_timer_query_webgl2, one open at a
+ * time and any number in flight.
+ *
+ * The extension is optional — some drivers never expose it and Chrome withdraws
+ * it on others — so every caller must have an answer for a missing reading. A
+ * result may also come back DISJOINT, which does not mean the draw was slow:
+ * the GPU was interrupted while the query ran and the number describes the
+ * interruption. Those are discarded rather than believed, because one wrong
+ * large reading would size every later slice from it.
+ *
+ * Only one query may be OPEN at a time, but a closed one may be read whenever
+ * the GPU has retired its work, so the probe opens one per frame and collects
+ * them all afterwards rather than waiting out each in turn.
+ */
+class GpuPassTimer {
+  private open: WebGLQuery | null = null;
+  private readonly inFlight: Array<{ key: string; query: WebGLQuery }> = [];
+
+  private constructor(
+    private readonly gl: WebGL2RenderingContext,
+    private readonly timeElapsed: number,
+    private readonly gpuDisjoint: number,
+  ) {}
+
+  static create(renderer: THREE.WebGLRenderer): GpuPassTimer | null {
+    const gl = renderer.getContext() as WebGL2RenderingContext | null;
+    if (!gl || typeof gl.createQuery !== 'function' || gl.isContextLost()) return null;
+    const ext = gl.getExtension('EXT_disjoint_timer_query_webgl2') as
+      { TIME_ELAPSED_EXT: number; GPU_DISJOINT_EXT: number } | null;
+    if (!ext) return null;
+    return new GpuPassTimer(gl, ext.TIME_ELAPSED_EXT, ext.GPU_DISJOINT_EXT);
+  }
+
+  /** Open a query around the draws that follow. False when the driver would
+   *  not give one, in which case `end` must not be called. */
+  begin(key: string): boolean {
+    if (this.open) return false;
+    const query = this.gl.createQuery();
+    if (!query) return false;
+    this.gl.beginQuery(this.timeElapsed, query);
+    this.open = query;
+    this.inFlight.push({ key, query });
+    return true;
+  }
+
+  end(): void {
+    if (!this.open) return;
+    this.gl.endQuery(this.timeElapsed);
+    this.open = null;
+  }
+
+  /**
+   * Read whatever has become readable since the last call, keyed as it was
+   * opened. Must be called every frame the probe runs: reading GPU_DISJOINT_EXT
+   * CLEARS it, so the flag only means "a disjoint since you last looked" — poll
+   * it once at the end of a seven-frame probe and one interruption anywhere in
+   * those frames voids every reading taken.
+   *
+   * A disjoint therefore discards the queries still in flight, which are the
+   * only ones it could have spanned, and keeps the results already banked.
+   */
+  poll(into: Map<string, number>): void {
+    const gl = this.gl;
+    if (gl.isContextLost()) return;
+    if (gl.getParameter(this.gpuDisjoint)) {
+      for (const { query } of this.inFlight) gl.deleteQuery(query);
+      this.inFlight.length = 0;
+      return;
+    }
+    for (let i = this.inFlight.length - 1; i >= 0; i--) {
+      const { key, query } = this.inFlight[i];
+      if (query === this.open) continue;
+      if (!gl.getQueryParameter(query, gl.QUERY_RESULT_AVAILABLE)) continue;
+      this.inFlight.splice(i, 1);
+      const ns = gl.getQueryParameter(query, gl.QUERY_RESULT) as number;
+      gl.deleteQuery(query);
+      if (Number.isFinite(ns) && ns > 0) into.set(key, ns / 1e6);
+    }
+  }
+
+  /**
+   * Poll across a few more frames for the queries still outstanding, then give
+   * up on them. Never blocks: the answer exists only once the GPU has retired
+   * the work, and waiting for it on the main thread would cost the frame this
+   * whole mechanism exists to protect. A pass left unread keeps the weight
+   * table's estimate.
+   */
+  async drain(into: Map<string, number>): Promise<void> {
+    try {
+      for (let frame = 0; frame < GPU_QUERY_POLL_FRAMES && this.inFlight.length > 0; frame++) {
+        await nextFrame();
+        this.poll(into);
+      }
+    } finally {
+      if (!this.gl.isContextLost()) {
+        for (const { query } of this.inFlight) this.gl.deleteQuery(query);
+      }
+      this.inFlight.length = 0;
+    }
+  }
 }
 
 function nextFrame(): Promise<void> {

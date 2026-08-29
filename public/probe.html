@@ -27,6 +27,23 @@
   the tab going into the background, the page closing, a storage error —
   writes "aborted" first, so an ordinary interruption is never read as a
   kill.
+
+  Two things the protocol as written did not survive, both seen on a real
+  iPhone at about 2 GiB:
+
+  A kill can beat the write. iOS ends the whole content process, and a
+  localStorage write that has only been handed to the event loop is not yet
+  on disk when that happens — so the run's last record was the SURVIVAL of
+  the step before, and no "attempting" record existed to be read as a kill.
+  Two answers, both here: past 1.5 GiB the page waits a full second between
+  the write and the allocation, and on load a run whose last word is a
+  survival, with no result recorded for it, is read as a death at the step
+  after — stated as an inference, because that is what it is.
+
+  A mirror is only useful if it is read. The cookie and the URL were written
+  and never consulted, and the URL is lost the moment the address is retyped
+  rather than reloaded. All three stores are read on load now and the most
+  advanced record of the three wins.
 -->
 <style>
   :root {
@@ -171,6 +188,14 @@
   var FINE = { w: 2048, h: 1024 };
   var STEP_MS = 250;
   var CEILING_BYTES = 4 * 1024 * 1024 * 1024;
+  // Past this size a kill is close enough to be racing the record of it. A
+  // localStorage write handed to the event loop is not yet on disk, and iOS
+  // ends the content process without unwinding anything — so above here the
+  // page stops trusting one task's worth of yielding and waits a full second
+  // between saying what it is about to do and doing it. The cost is a second
+  // a step over the last few steps of a run.
+  var SLOW_WRITE_BYTES = 1536 * MiB;
+  var SLOW_WRITE_MS = 1000;
 
   var el = function (id) { return document.getElementById(id); };
   var statusEl = el('status');
@@ -319,13 +344,59 @@
   }
 
   function mirror(record) {
+    // The survived figure rides along, so a record recovered from a mirror
+    // alone still says what the device held, not only what it was reaching
+    // for when it stopped.
     var compact = 'v' + record.v + '.' + record.runId + '.s' + record.step + '.' +
-      Math.round(record.attemptMiB) + 'MiB.' + record.state;
+      Math.round(record.attemptMiB) + 'MiB.' + record.state + '.' + record.survivedMiB;
     // Two more stores that survive different things: a cookie is written
     // synchronously by a different subsystem, and the URL survives a reload
     // and is readable on screen even if both stores lose the write.
     try { document.cookie = 'moonprobe=' + compact + '; max-age=604800; path=/; SameSite=Lax'; } catch (e) {}
     try { history.replaceState(null, '', '#probe=' + compact); } catch (e) {}
+  }
+
+  /** A mirrored record, back from its compact form. Partial: it carries the
+   *  run, the step, the size and the state, and nothing else the full record
+   *  holds. The trailing survived figure is optional, so a cookie written by
+   *  an earlier build still parses. */
+  function parseCompact(text) {
+    var m = /^v(\d+)\.([a-z0-9-]+)\.s(\d+)\.(\d+)MiB\.([a-z-]+)(?:\.([0-9.]+))?$/.exec(text || '');
+    if (!m || Number(m[1]) !== VERSION) return null;
+    return {
+      v: VERSION,
+      runId: m[2],
+      step: Number(m[3]),
+      attemptMiB: Number(m[4]),
+      state: m[5],
+      survivedMiB: m[6] === undefined ? null : Number(m[6]),
+      partial: true,
+    };
+  }
+
+  function readCookieRecord() {
+    try {
+      var m = /(?:^|;\s*)moonprobe=([^;]*)/.exec(document.cookie || '');
+      return m ? parseCompact(decodeURIComponent(m[1])) : null;
+    } catch (e) { return null; }
+  }
+
+  function readHashRecord() {
+    try {
+      var m = /[#&]probe=([^&]*)/.exec(location.hash || '');
+      return m ? parseCompact(decodeURIComponent(m[1])) : null;
+    } catch (e) { return null; }
+  }
+
+  /** Which of two records was written later. Steps run in order, and inside
+   *  one step the attempt is written before whatever became of it, so an
+   *  attempt is the earlier write at the same step. */
+  function later(a, b) {
+    if (!a) return b;
+    if (!b) return a;
+    if (a.step !== b.step) return a.step > b.step ? a : b;
+    var rank = function (r) { return r.state === 'attempting' ? 0 : 1; };
+    return rank(a) >= rank(b) ? a : b;
   }
 
   function writeRecord(record) {
@@ -339,13 +410,53 @@
     mirror(record);
   }
 
-  function readRecord() {
+  function readStoredRecord() {
     try {
       var raw = localStorage.getItem(KEY_RUN);
       if (!raw) return null;
       var rec = JSON.parse(raw);
       return rec && rec.v === VERSION ? rec : null;
     } catch (e) { return null; }
+  }
+
+  /**
+   * The last thing any of the three stores heard, whichever heard it last.
+   * A kill can land between a localStorage write and the disk; the cookie is
+   * written by a different subsystem and the URL by a third, and any of them
+   * may be the only one that kept the last word. When the winner is a
+   * mirror, the full record from the same run fills in what the compact form
+   * does not carry.
+   */
+  function readRecord() {
+    var stored = readStoredRecord();
+    var best = later(later(stored, readCookieRecord()), readHashRecord());
+    if (!best || best === stored || !best.partial) return best;
+    if (!stored || stored.runId !== best.runId) return best;
+    var merged = {};
+    var k;
+    for (k in stored) if (Object.prototype.hasOwnProperty.call(stored, k)) merged[k] = stored[k];
+    for (k in best) if (Object.prototype.hasOwnProperty.call(best, k)) {
+      if (best[k] !== null && best[k] !== undefined) merged[k] = best[k];
+    }
+    // The full record's attemptBytes belongs to ITS step, not this one.
+    if (merged.step !== stored.step) merged.attemptBytes = null;
+    return merged;
+  }
+
+  /** Forget the run record in all three stores. A record left in any one of
+   *  them is reported again on the next load. */
+  function clearRecord() {
+    try { localStorage.removeItem(KEY_RUN); } catch (e) {}
+    try { document.cookie = 'moonprobe=; max-age=0; path=/; SameSite=Lax'; } catch (e) {}
+    try { history.replaceState(null, '', location.pathname + location.search); } catch (e) {}
+  }
+
+  /** Whether a run already reached a verdict. A run that finished wrote one;
+   *  a run whose tab was closed under it did not. */
+  function resultFor(id) {
+    var list = readResults();
+    for (var i = 0; i < list.length; i++) if (list[i].runId === id) return list[i];
+    return null;
   }
 
   function readResults() {
@@ -597,6 +708,7 @@
       // Give the write a turn to reach the store before the dangerous part.
       await task();
       await frame();
+      if (attempt > SLOW_WRITE_BYTES) await wait(SLOW_WRITE_MS);
       if (stopped) return;
 
       var failure = allocate(shape);
@@ -678,10 +790,15 @@
   // ---- reporting ----------------------------------------------------------
 
   var signals = null;
+  /** Set when this load read a death out of a missing record rather than out
+   *  of a record of one. It changes how the number should be read, so it
+   *  travels with the number. */
+  var inferredDeath = false;
 
   function refreshJson() {
     el('json').value = JSON.stringify({
       probe: VERSION,
+      inferredDeath: inferredDeath,
       step: COARSE_SHAPE,
       fineStep: FINE_SHAPE,
       internalFormat: sizedFormat ? 'RGBA8' : 'RGBA (unsized)',
@@ -697,7 +814,46 @@
     var box = el('previous');
     if (!prev) return;
     box.hidden = false;
-    if (prev.state === 'attempting') {
+    if (prev.state === 'survived' && prev.runId !== runId && !resultFor(prev.runId)) {
+      // A run whose last word is a survival and which never reached a
+      // verdict did not stop of its own accord: every clean ending writes
+      // one, and every step writes its intent before acting on it. So the
+      // page was gone before the next intent could be written — which is
+      // what a content process ended at full speed looks like from here.
+      var stepBytes = prev.phase === 'fine' ? FINE_SHAPE.bytes : COARSE_SHAPE.bytes;
+      var heldThen = typeof prev.attemptBytes === 'number' && prev.attemptBytes > 0
+        ? prev.attemptBytes
+        : Math.round((prev.survivedMiB || prev.attemptMiB || 0) * MiB);
+      var nextMiB = mib(heldThen + stepBytes);
+      // A record recovered from a mirror written by an older build carries no
+      // survived figure; on a survival the attempt IS the survival.
+      var survivedMiB = prev.survivedMiB === null || prev.survivedMiB === undefined
+        ? prev.attemptMiB
+        : prev.survivedMiB;
+      inferredDeath = true;
+      box.innerHTML =
+        '<p class="result bad">The last run was killed — read, not recorded.</p>' +
+        '<p>It recorded step ' + prev.step + ' as survived at <strong>' + survivedMiB +
+        ' MiB</strong> and then recorded nothing at all. Every step writes what it is about to try ' +
+        'before it tries it, so a run that ends on a survival ended between those two writes: it died ' +
+        'at step ' + (prev.step + 1) + ', attempting <strong>' + nextMiB + ' MiB</strong>.</p>' +
+        '<p class="note">The ceiling is at or just under ' + survivedMiB +
+        ' MiB. This is an inference from a missing record rather than a record of a death — run it ' +
+        'again and see whether the two runs agree.</p>';
+      addResult({
+        runId: prev.runId,
+        ts: prev.ts || Date.now(),
+        kind: 'killed',
+        reason: 'the run ended on a survival with no verdict: the tab was closed under it',
+        inferredDeath: true,
+        survivableMiB: survivedMiB,
+        survivableTextures: prev.survivedTextures === undefined ? null : prev.survivedTextures,
+        diedAttemptingMiB: nextMiB,
+        coarseStepMiB: mib(COARSE_SHAPE.bytes),
+        fineStepMiB: mib(FINE_SHAPE.bytes),
+      });
+      clearRecord();
+    } else if (prev.state === 'attempting') {
       // Nothing marked this run finished, so whatever stopped it was not the
       // page: the tab was closed under it at that size.
       box.innerHTML =
@@ -718,8 +874,9 @@
         fineStepMiB: mib(FINE_SHAPE.bytes),
       });
       // Consumed: the kill is now in the results list, and leaving the
-      // record behind would report it again on every later load.
-      try { localStorage.removeItem(KEY_RUN); } catch (e) {}
+      // record behind — in ANY of the three stores — would report it again on
+      // every later load.
+      clearRecord();
     } else if (prev.state === 'aborted') {
       box.innerHTML =
         '<p class="result warn">The last run stopped early.</p>' +

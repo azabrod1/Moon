@@ -40,6 +40,10 @@ const POSES = [
   'nadir-1.05r',
   'oblique-1.05r',
   'terminator-1.5r',
+  // The same framing under a gibbous Moon standing 30 degrees over the
+  // terminator: past the terminator the Sun's own light on the ground is gone,
+  // so what weights the Moon's is the whole of how the crossing reads.
+  'terminator-1.5r-gibbous',
   // The night side under three Moons. A night pose is a pose AND a Moon: the
   // set's original sits at a thin waning crescent, and the pair beside it is
   // the same framing with the second source at full strength and at nothing,
@@ -62,6 +66,9 @@ const POSE_TIME: Record<string, string> = {
   // the rest of the set is a total lunar eclipse, which is no moonlight at all.
   'night-1.05r-moonlit': '2026-04-02T02:00:00Z',   // full, phase angle 2.9 deg
   'night-1.05r-newmoon': '2026-03-19T01:00:00Z',   // new, 178.2 deg
+  // Gibbous: 30.7 degrees of phase, which is also how high it stands over the
+  // brightest point of the terminator the frame is looking at.
+  'terminator-1.5r-gibbous': '2026-03-30T12:00:00Z',
   // Central total eclipse, gamma 0.14: the umbra lands near the sub-solar
   // point rather than out by the limb, and the Moon is close enough that the
   // umbra reaches the ground at all — an annular eclipse feeds no caster.
@@ -221,6 +228,31 @@ describe('the atmosphere goldens', () => {
     }
   });
 
+  it('lights the terminator band under a Moon standing over it', () => {
+    // The Moon's PHASE ANGLE is how high it stands over the highest point of
+    // the terminator: the terminator is 90 degrees from the sub-solar point and
+    // the Moon is (180 - phase) from it. So this pose is a Moon 30.7 degrees up
+    // over the band the frame is looking at, which is the configuration the
+    // Moon's own weight and the Sun's disagree about.
+    const gibbous = read('terminator-1.5r-gibbous.lut');
+    expect(gibbous.moonPhaseDeg!).toBeGreaterThan(25);
+    expect(gibbous.moonPhaseDeg!).toBeLessThan(35);
+    // Weighted by the SUN's elevation the Moon's light arrives 14.5 degrees
+    // late and the ground in between is black. The three grid points along the
+    // bottom of the terminator band are where that shows: the middle one reads
+    // 0,0,0 with the Sun's weight and is lit on the Moon's own.
+    for (const i of [17, 18, 19]) {
+      const rgb = gibbous.samples[i];
+      expect(Math.max(...rgb), `sample ${i} of the terminator band`).toBeGreaterThan(0);
+    }
+    // And it is the Moon doing it: the same three points on the tier with no
+    // second source at all are dark.
+    const analytic = read('terminator-1.5r-gibbous.analytic');
+    const sum = (g: Golden): number =>
+      [17, 18, 19].reduce((a, i) => a + g.samples[i].reduce((x, y) => x + y, 0), 0);
+    expect(sum(gibbous)).toBeGreaterThan(sum(analytic));
+  });
+
   it('shows the Moon lighting the night side it stands over', () => {
     // The two night dates frame different ground — the Earth has turned between
     // them — so what separates them is not one being brighter than the other.
@@ -297,7 +329,7 @@ describe('the atmosphere goldens', () => {
     expect(hash(shell.vertexShader))
       .toBe('604724ecd98c07ab9465d5cce0bbc7285e1ed2627fe5f2d7b69ec6ddbba3b1fc');
     expect(hash(shell.fragmentShader))
-      .toBe('8972702a1ba500a2d8c045c2c9917087d3fefe4aa3e7baffc172950b1610f0f1');
+      .toBe('717269d530edcc25a036e2fa6ecd1a6bb4b8215a25f5beab706908893288d907');
   });
 
   it('shows the LUT tier drawing a different limb from the analytic one', () => {

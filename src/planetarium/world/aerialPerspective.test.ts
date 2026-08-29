@@ -26,6 +26,7 @@ import { MOONS } from '../planets/moonData';
 import { KM_PER_AU } from '../../astronomy/constants';
 import {
   AIR_LOOKUP_RADIUS,
+  NIGHT_LIGHTS_AIR_LOOKUP_RADIUS,
   augmentSurfaceMaterial,
   bindSurfaceAir,
   clearSurfaceAir,
@@ -117,7 +118,7 @@ describe('the injected surface shader', () => {
     expect(hash(shader.vertexShader))
       .toBe('862f7224fafb480070aebf0c7c125dddbd78c879780eb072e96988333154322a');
     expect(hash(shader.fragmentShader))
-      .toBe('bedb32a46094864f50f752f725deccea0c52d55f032f75dfa34652a59783147c');
+      .toBe('5dac015e77f51d20dbded28c5b2b63f25a01edf88310a0faf48b3dacc7a407e3');
   });
 
   it('reuses the tables\' own lookup GLSL rather than a second transcription', () => {
@@ -466,5 +467,38 @@ describe('the night-lights shell', () => {
     // The pre-air line, untouched: with the switch at 0 the fallback device
     // renders what it always did.
     expect(earthNightFragmentShader).toContain('vec3 lit = nightColor.rgb * nightMix * 1.5;');
+  });
+
+  it('looks its air up at the ground the lights are painted on', () => {
+    // The mesh floats above the globe so it never z-fights it. At Earth's 8 km
+    // Rayleigh scale height that clearance is more than half the column by
+    // mass, so the segment's far end is substituted back down to the surface —
+    // the same uniform the cloud deck moves the other way.
+    expect(NIGHT_LIGHTS_AIR_LOOKUP_RADIUS).toBe(1);
+    expect(earthNightFragmentShader).toContain(
+      'normalize(vAirFrag) * uAirLookupRadius, normalize(sunDirection));',
+    );
+    expect(earthNightFragmentShader).toContain('uniform float uAirLookupRadius;');
+    const factory = src('../PlanetFactory.ts');
+    expect(factory).toContain('uAirLookupRadius: { value: NIGHT_LIGHTS_AIR_LOOKUP_RADIUS },');
+    // And the mesh really is off the ground, or none of this would matter.
+    expect(factory).toContain('const EARTH_NIGHT_SHELL_SCALE = 1.001;');
+  });
+
+  it('is most of the air, which is why the substitution is worth making', () => {
+    const params = atmosphereParams('Earth');
+    const at = (radius: number, angleDeg: number): RGB => {
+      const a = (angleDeg * Math.PI) / 180;
+      const seg = aerialSegmentRay(
+        params, [1.05, 0, 0], [radius * Math.cos(a), radius * Math.sin(a), 0], [1, 0, 0],
+      );
+      expect(seg.valid).toBe(true);
+      return transmittanceOverSegment(params, seg.r, seg.mu, seg.d);
+    };
+    // Straight down the mesh's own radius keeps a fifth of the blue the ground
+    // loses; along the ground, which is where a city at the limb is seen, it
+    // keeps eight times as much light as the ground under it does.
+    expect(at(1.001, 0)[2] / at(NIGHT_LIGHTS_AIR_LOOKUP_RADIUS, 0)[2]).toBeGreaterThan(1.15);
+    expect(at(1.001, 17.5)[2] / at(NIGHT_LIGHTS_AIR_LOOKUP_RADIUS, 17.5)[2]).toBeGreaterThan(5);
   });
 });

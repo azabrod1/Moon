@@ -5,8 +5,9 @@
 // The poses are the ones the campaign is judged on: the whole-disc limb from
 // 8 R, the near band from 1.05 R aimed over the horizon, straight down and
 // obliquely along the ground from the same stand point (the two the aerial
-// perspective is judged on), the terminator edge-on from 1.5 R, the night side
-// past it under three Moons (a crescent, a full one and none), a total solar
+// perspective is judged on), the terminator edge-on from 1.5 R under no Moon
+// worth the name and under a gibbous one standing over it, the night side past
+// it under three Moons (a crescent, a full one and none), a total solar
 // eclipse with the umbra on the day disc, one pose INSIDE the air (only a dev
 // pose can reach it), and the volume-compare ghost, whose shell is pinned
 // analytic.
@@ -97,6 +98,16 @@ const POSES = [
   { name: 'nadir-1.05r', kRadii: 1.05, fov: 60, phase: 0, aim: 0 },
   { name: 'oblique-1.05r', kRadii: 1.05, fov: 60, phase: 0, aim: 0.72 },
   { name: 'terminator-1.5r', kRadii: 1.5, fov: 50, phase: 90 },
+  // The same framing under a gibbous Moon standing over the terminator, which
+  // is the one configuration the Moon's weight and the Sun's disagree about:
+  // past the terminator the Sun's light on the ground is gone, so whatever
+  // weights the Moon decides how the crossing reads. The Moon's PHASE ANGLE is
+  // the highest it stands over the terminator anywhere on it -- the terminator
+  // is 90 degrees from the sub-solar point and the Moon is (180 - phase) from
+  // it -- so 30.7 degrees of phase is a Moon 30.7 degrees up, and 29.0 over the
+  // arc this frame can see. The limb scan crosses the terminator on the centre
+  // row, which makes it the crossing this pose exists to record.
+  { name: 'terminator-1.5r-gibbous', kRadii: 1.5, fov: 50, phase: 90, time: '2026-03-30T12:00:00Z' },
   { name: 'night-1.05r', kRadii: 1.05, fov: 60, phase: 150 },
   // The same night side under a Moon and under none. A night pose is a pose AND
   // a Moon: at 2026-04-02 02:00 UTC the Moon is as full as it gets without
@@ -150,6 +161,18 @@ const POSES = [
 // is what a compiler does with a longer shader, on the pose where a pixel spans
 // the most surface. Everything is inside the goldens' max(1, 3 %) tolerance,
 // and at 1.05 R, where the deck fills the frame, not one pixel moves.
+//
+// The same pose is where the biggest single-pixel move in the set lives: a 2x2
+// cluster at the outermost anti-aliased edge of the 148-pixel disc, at one
+// azimuth, which moved 64/255 across one earlier commit. It is not capture
+// noise — one build captured in two sessions reproduces the whole frame bit for
+// bit, and the cluster is byte-identical from one commit to the next unless the
+// shader text changes. At 8 R a pixel spans about two thousand kilometres of
+// surface and the whole atmosphere is roughly one pixel wide, so a partially
+// covered edge pixel is a lever: an ULP of difference in where the limb falls
+// moves the coverage fraction, and the coverage fraction is most of the value.
+// Nothing samples it — the grid and the limb scan are elsewhere — so what pins
+// it is the shader hash beside the radiances.
 const TIER_URLS = {
   analytic: '/?auto=planetarium',
   lut: '/?auto=planetarium',

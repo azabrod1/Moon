@@ -14,14 +14,30 @@
  *   - Moon-shadow transits: a moon between the Sun and a fragment casts an
  *     umbra/penumbra spot onto the globe (Io's shadow crawling across Jupiter).
  *
- * The night side's own light is the fifth term, and where a body has tables it
- * REPLACES the starlight fill rather than joining it: the multiple-scattering
- * ambient out of the irradiance table, plus the Moon as a second directional
- * source, both faded out through the one `nightWeight` every non-solar source
- * in the app shares. Two night-fill models on one fragment lift the dark
- * hemisphere twice, so the authored one is switched off by the same uniform
- * that switches the air on — which leaves it as the answer for airless bodies
- * and for the tier with no tables, where it always was.
+ * The night side's own light is the fifth term, and where a body has tables the
+ * irradiance table's multiple-scattering ambient stands in for the starlight
+ * fill. It does not JOIN it and it does not simply replace it: the two are
+ * combined with max(), so the fill is the floor the night side may never go
+ * under and the table is what lifts it above that floor. Adding them would lift
+ * one fragment through two models of the same thing; switching the fill off
+ * outright would let the tier with the tables come out darker than the tier
+ * without them, which inverts every other tier difference in the app. With the
+ * air off the table's term is zero and the floor is the whole night side, which
+ * is what it always was on an airless body and on a device with no tier.
+ *
+ * The Moon is the sixth, and it is weighted by its OWN elevation rather than by
+ * the Sun's: `moonUpWeight` times the complement of this surface's day factor,
+ * which is the term the Sun's own light on the fragment arrives on. Gate it by
+ * the Sun's night weight instead and the ground runs through a minimum at the
+ * terminator — the Sun's light gone, the Moon's not yet arrived — with a
+ * gibbous Moon standing right over it.
+ *
+ * What a night fragment costs, in dependent table fetches: 6 by day (two for
+ * the transmittance in front of it, four for that air's in-scatter), 7 past the
+ * terminator with no Moon up (the sky's own irradiance), and 13 with one (its
+ * irradiance, its beam's transmittance, and four for its in-scatter on the same
+ * segment). The last four are behind a uniform branch as well as the weight, so
+ * a body with no moon and a new-Moon Earth pay none of them.
  *
  * Aerial perspective is the fourth term and the only one that reads a texture:
  * where a body has precomputed scattering tables, every surface fragment is
@@ -54,13 +70,16 @@ import {
   type AtmosphereTables,
 } from './atmosphereLut';
 import { AIRLIGHT_SCALE } from './atmosphereModel';
-import { NIGHT_WEIGHT_GLSL } from './nightSources';
+import { MOON_UP_GLSL, NIGHT_WEIGHT_GLSL } from './nightSources';
 import { PLANETS } from '../planets/planetData';
 
 /** The cloud deck is a surface class of its own: it hazes and eclipses like the
- *  ground under it, and carries none of the ground's own night terms — the
- *  globe beneath it already lifts the night side, and a second lift there would
- *  count it twice. */
+ *  ground under it, and it draws the same night terms every other surface does
+ *  — the sky's ambient and the Moon — which is what makes moonlit cloud tops
+ *  read silver. What it does NOT carry is an authored starlight fill of its own
+ *  (`NIGHT_FILL.cloud` is zero): the globe beneath it already has one, and the
+ *  deck's blend is not premultiplied, so the table terms compose exactly once
+ *  where a second authored floor would be a second lift. */
 export type SurfaceArchetype = 'airless' | 'rocky' | 'gas' | 'icy' | 'earth' | 'cloud';
 
 /** Ring annulus that shadows this body's surface (object-space radii, AU). */
@@ -105,7 +124,7 @@ export interface SurfaceShadingFx {
   air: SurfaceAirFx;
 }
 
-interface NightFill {
+export interface NightFill {
   color: number;      // cool starlight tint (linear-ish hex)
   strength: number;   // peak night-side fraction of albedo (kept small)
   termWidth: number;  // half-width of the day/night rolloff, in dot(n, sun)
@@ -115,27 +134,58 @@ interface NightFill {
 // Keyed to surface class, not atmosphere depth, so Venus and Titan (thick haze)
 // sit tighter here than reality; the atmosphere phase models their wrap properly.
 //
-// Where a body has tables this fill is switched off and the sky's own ambient
-// stands in its place, and the swap is level-neutral — measured, not intended.
-// At the new-Moon night pose, with the night-lights shell's own transmittance
-// taken out of both frames, the mean over every lit pixel is 2.61/12.28/23.99
-// of 255 without the tables against 2.69/12.54/23.91 with them: a third of one
-// 8-bit step apart. What DOES take light off the night hemisphere on the tier
-// with tables is that shell — an additive layer seen through ten airmasses of
-// air at the limb runs 3.1 green and 8.7 blue darker across the whole
-// hemisphere, and this fill's own worth is an order of magnitude under that.
-const NIGHT_FILL: Record<SurfaceArchetype, NightFill> = {
+// Where a body has tables the sky's own ambient stands in for this fill and
+// this fill is the floor under it, and the swap is level-neutral — measured,
+// not intended. At the new-Moon night pose, with the night-lights shell's own
+// transmittance taken out of both frames, the mean over every lit pixel is
+// 2.61/12.28/23.99 of 255 without the tables against 2.70/12.58/23.93 with
+// them: a third of one 8-bit step apart, and on the right side of zero in two
+// channels of three. The floor itself is worth 0.01/0.05/0.06 of a step there
+// — take it out and the frame moves that far — because the two models of the
+// same light happen to agree to within it, which is what makes max() the right
+// way to combine them rather than a choice between them.
+//
+// What DOES take light off the night hemisphere on the tier with tables is
+// that shell. City lights are painted on the ground and seen through the whole
+// column — ten airmasses of it at the limb — and over this frame, which is a
+// night side looked at from 1.05 R with most of its ground near the limb, that
+// is 5.3 green and 14.7 blue off the mean. All of it: with the lights left
+// unattenuated the two tiers land within a third of a step of each other.
+export const NIGHT_FILL: Record<SurfaceArchetype, NightFill> = {
   airless: { color: 0x223044, strength: 0.05, termWidth: 0.10 },
   rocky:   { color: 0x243246, strength: 0.06, termWidth: 0.16 },
   gas:     { color: 0x2a3550, strength: 0.08, termWidth: 0.24 },
   icy:     { color: 0x28384f, strength: 0.07, termWidth: 0.12 },
   earth:   { color: 0x1c2c44, strength: 0.05, termWidth: 0.16 },
   // No fill of its own: the deck is translucent and the globe's fill shows
-  // through it, so a second one would double the night side's floor. The
-  // terminator width is the globe's, because the same rolloff gates the
-  // eclipse spot on both and the two have to move together.
+  // through it, so a second one would double the night side's floor. Its share
+  // of the table's own night terms it does draw, and that is what silvers a
+  // moonlit cloud top. The terminator width is the globe's, because the same
+  // rolloff gates the eclipse spot on both and the two have to move together.
   cloud:   { color: 0x000000, strength: 0.0, termWidth: 0.16 },
 };
+
+/**
+ * How much of the authored fill survives as the floor under the table's own
+ * night ambient, on a body that has tables. 1.0 is the fill itself: the look
+ * with no tables is the reference, and the tier with them is never allowed to
+ * come out darker than it. Turn it down and the tables are allowed to take the
+ * night side below the authored floor by that fraction; at 0 the floor is gone
+ * and the table is the whole answer.
+ */
+export const NIGHT_FLOOR_FRACTION = 1.0;
+
+/**
+ * Where the night-lights shell looks its air up, in the radius units the tables
+ * are baked in. The lights are painted on the GROUND; their mesh stands a few
+ * kilometres above it so it never z-fights the globe, and at Earth's 8 km
+ * Rayleigh scale height those few kilometres are more than half the column and
+ * essentially all of the Mie. So the segment's far end is substituted back down
+ * to the surface — the same substitution the cloud deck makes, in the other
+ * direction — and a city is seen through the whole air rather than through the
+ * thin top of it.
+ */
+export const NIGHT_LIGHTS_AIR_LOOKUP_RADIUS = 1.0;
 
 // View-angle limb darkening: a body's disc dims toward its edge as the line of
 // sight grazes the surface — the single biggest "reads as a real photo" cue for
@@ -304,7 +354,7 @@ varying vec3 vObjPos;
 varying vec3 vPlanetshineViewDir;
 varying vec3 vAirCam;
 varying vec3 vAirFrag;
-${RING_SHADOW_OPACITY_GLSL}${MOON_SHADOW_TRACE_GLSL}${ATMOSPHERE_LOOKUP_BODY_GLSL}${AERIAL_PERSPECTIVE_GLSL}${NIGHT_WEIGHT_GLSL}`;
+${RING_SHADOW_OPACITY_GLSL}${MOON_SHADOW_TRACE_GLSL}${ATMOSPHERE_LOOKUP_BODY_GLSL}${AERIAL_PERSPECTIVE_GLSL}${NIGHT_WEIGHT_GLSL}${MOON_UP_GLSL}`;
 
 // Injected after lighting but before <opaque_fragment> writes outgoingLight into
 // gl_FragColor — so terms land in linear radiance (tone-mapped downstream) and
@@ -315,50 +365,67 @@ const SURFACE_FRAGMENT_BODY = /* glsl */ `{
   // by the photosphere is void black in any real exposure, and the starlight
   // fill or earthshine would read as fog painted on the silhouette.
   float nightKeep = 1.0 - uSilhouette;
-  // The Sun's elevation at THIS fragment: the geometric quantity every
-  // non-solar source is weighted by, so the airglow on the limb, the moonlight
-  // on the ground and the haze in front of it all fade along one line instead
-  // of three. Zero where there is no air, which is where the authored fill
-  // below is the whole night side instead.
+  // Which way is up at this fragment: the geometry both night weights and every
+  // table lookup below are read from.
+  vec3 up = normalize(vAirFrag);
+  // The Sun's elevation at THIS fragment: the quantity the sources the daylight
+  // sky drowns are weighted by, so the airglow on the limb and the sky's own
+  // ambient on the ground fade along one line rather than two. Zero where there
+  // is no air, which is where the authored floor below is the whole night side.
   float airNight = uAirDensity > 0.0
-      ? nightWeight(clampCosine(dot(normalize(vAirFrag), normalize(uSunDirWorld)))) * nightKeep
+      ? nightWeight(clampCosine(dot(up, normalize(uSunDirWorld)))) * nightKeep
       : 0.0;
-  // The authored starlight floor, and the seam it sits on: where the tables are
-  // bound they carry the night side's own light, and this fill would be a
-  // second model of the same thing lifting the same fragment twice. So the fill
-  // is the airless and the fallback-tier answer, and the table's is the other.
-  outgoingLight += diffuseColor.rgb * uNightColor
-      * (uNightStrength * (1.0 - uAirDensity) * (1.0 - dayFactor) * nightKeep);
+  // The Moon's weight is the Moon's own, not the Sun's. It lights this fragment
+  // whenever it stands above the fragment's horizon, and it arrives on the
+  // complement of the day factor — the exact term the Sun's own light on this
+  // fragment leaves on — so the two hand over across the terminator instead of
+  // both being weak in the middle of it.
+  float moonNight = uAirDensity > 0.0
+      ? moonUpWeight(clampCosine(dot(up, normalize(uMoonDirWorld))))
+          * (1.0 - dayFactor) * nightKeep
+      : 0.0;
+  // The authored starlight floor, and the sky's own ambient that stands in for
+  // it where the tables are bound. They are combined with max() rather than
+  // added: two models of one thing added together lift the fragment twice, and
+  // switching the authored one off outright lets the tier with the tables come
+  // out darker than the tier without them. With the air off the ambient is
+  // exactly zero and the floor is the whole night side, unchanged.
+  vec3 nightFloor = diffuseColor.rgb * uNightColor
+      * (uNightStrength * (1.0 - dayFactor) * nightKeep * ${NIGHT_FLOOR_FRACTION.toFixed(6)});
+  vec3 nightAmbient = vec3(0.0);
+  if (airNight > 0.0) {
+    // The irradiance table is the light a horizontal surface receives from the
+    // whole sky. Both irradiances below turn into radiance by albedo/pi — the
+    // same law three's own diffuse BRDF applies to the Sun, which is what the
+    // bridge these numbers come through was calibrated against. Drop the 1/pi
+    // and the night side is lit three times harder than the day side for the
+    // same irradiance.
+    float rFrag = clampRadius(length(vAirFrag) / uPlanetRadius);
+    float muSSun = clampCosine(dot(up, normalize(uSunDirWorld)));
+    nightAmbient = diffuseColor.rgb * RECIPROCAL_PI
+        * (getIrradiance(uIrradiance, rFrag, muSSun) * uAirlightScale * uSolarIrradiance)
+        * airNight;
+  }
+  outgoingLight += max(nightAmbient, nightFloor);
   // Planetshine: parent-lit glow on the night side. Albedo-multiplicative,
   // so the eclipse color-dim carries through it automatically.
   if (uPlanetshineIntensity > 0.0) {
     float pl = max(dot(normalize(normal), normalize(vPlanetshineViewDir)), 0.0);
     outgoingLight += diffuseColor.rgb * uPlanetshineColor * (uPlanetshineIntensity * pl * (1.0 - dayFactor) * nightKeep);
   }
-  // The night side's own light, where a body has tables: the sky's
-  // multiple-scattering ambient — the term that replaces the authored fill —
-  // plus the Moon's direct beam through the air above this fragment. The
-  // ambient is read for both sources from one table: the irradiance table is
-  // the light a horizontal surface receives from the whole sky, and which sky
-  // it is depends only on where its source is.
-  if (airNight > 0.0) {
-    vec3 up = normalize(vAirFrag);
+  // The Moon: its beam through the air above this fragment, and the same
+  // irradiance table read with the Moon as the source — which sky it is depends
+  // only on where the source is. Behind a uniform branch as well as the weight,
+  // so a body with no moon, a new Moon and every day fragment pay none of the
+  // six fetches in here.
+  if (moonNight > 0.0 && uMoonIrradiance.g > 0.0) {
     float rFrag = clampRadius(length(vAirFrag) / uPlanetRadius);
-    float muSSun = clampCosine(dot(up, normalize(uSunDirWorld)));
-    vec3 moonDir = normalize(uMoonDirWorld);
-    float muSMoon = clampCosine(dot(up, moonDir));
-    vec3 ambient = getIrradiance(uIrradiance, rFrag, muSSun)
-            * uAirlightScale * uSolarIrradiance
-        + getIrradiance(uIrradiance, rFrag, muSMoon) * uMoonIrradiance;
-    vec3 direct = uMoonIrradiance
+    float muSMoon = clampCosine(dot(up, normalize(uMoonDirWorld)));
+    vec3 moonAmbient = getIrradiance(uIrradiance, rFrag, muSMoon) * uMoonIrradiance;
+    vec3 moonDirect = uMoonIrradiance
         * getTransmittanceToSun(uTransmittance, rFrag, muSMoon)
         * max(dot(normalize(normal), normalize(vMoonViewDir)), 0.0);
-    // Both are irradiances, and a Lambertian surface turns an irradiance into a
-    // radiance by albedo/pi — the same law three's own diffuse BRDF applies to
-    // the Sun, which is what the bridge these numbers come through was
-    // calibrated against. Drop the 1/pi here and the night side is lit three
-    // times harder than the day side for the same irradiance.
-    outgoingLight += diffuseColor.rgb * RECIPROCAL_PI * (ambient + direct) * airNight;
+    outgoingLight += diffuseColor.rgb * RECIPROCAL_PI * (moonAmbient + moonDirect) * moonNight;
   }
   // Icy moons: a cool Fresnel rim on the back-lit limb (ice scatters light).
   // Scaled by the (eclipse-dimmed) albedo brightness so it fades when the
@@ -423,11 +490,12 @@ const SURFACE_FRAGMENT_BODY = /* glsl */ `{
           * uAirlightScale * (uSolarIrradiance * sunVisible);
       // The Moon lights the same column. One traversal, one transmittance: only
       // the two angles that involve the source change, so the second source is
-      // a second pair of lookups and nothing else. Behind the night weight, so
-      // by day it is a branch and no fetches.
-      if (airNight > 0.0) {
+      // a second pair of lookups and nothing else. Behind the Moon's own weight
+      // and behind a uniform branch, so a day fragment, a new Moon and a body
+      // with no moon at all cost a branch and no fetches.
+      if (moonNight > 0.0 && uMoonIrradiance.g > 0.0) {
         airS += aerialInscatter(uScattering, aerialForLight(seg, normalize(uMoonDirWorld)), airT)
-            * uMoonIrradiance * airNight;
+            * uMoonIrradiance * moonNight;
       }
       outgoingLight = outgoingLight * airT + airS;
     }

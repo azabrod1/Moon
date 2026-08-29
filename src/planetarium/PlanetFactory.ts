@@ -27,7 +27,12 @@ import {
 } from '../shared/shaders/sun';
 import { debugWarn } from '../shared/debug';
 import { applyTextureDefaults, clampTier, resolveTextureUrl, type TextureTier, type MapKind, touchTextureBudget } from './world/texturePolicy';
-import { augmentSurfaceMaterial, type SurfaceArchetype, type SurfaceShadingFx } from './world/surfaceShading';
+import {
+  augmentSurfaceMaterial,
+  NIGHT_LIGHTS_AIR_LOOKUP_RADIUS,
+  type SurfaceArchetype,
+  type SurfaceShadingFx,
+} from './world/surfaceShading';
 import { createAtmosphereShellMaterial } from './world/atmosphereShell';
 import {
   AERIAL_PERSPECTIVE_GLSL,
@@ -1600,6 +1605,9 @@ export async function createPlanetMesh(planet: PlanetData): Promise<PlanetMesh> 
         // The body's own air, the same objects the globe and the deck read, so
         // the lights dim through exactly the column that hazes the ground.
         ...fx.air,
+        // ...and all of that column: the lights are on the ground, this shell
+        // is not, and the difference is most of the air.
+        uAirLookupRadius: { value: NIGHT_LIGHTS_AIR_LOOKUP_RADIUS },
       },
       // The lookup half of the table GLSL, then the aerial functions, then the
       // shader that calls them: the conventions here are not recoverable from

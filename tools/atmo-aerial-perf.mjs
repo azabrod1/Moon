@@ -10,6 +10,13 @@
 // too), B = the LUT tier. One session, one pose, one canvas size: everything
 // except the air is identical between the two halves.
 //
+// Or, with --timeB, A and B are two CLOCKS with the air on at both: the second
+// source costs four dependent 3D fetches on every night fragment that has a
+// Moon up, and the only way to see them is the same pose under a full Moon and
+// under none. The pose's own clock has to be set on both sides of the framing —
+// a pose is an absolute camera position worked out from where the body is, so
+// moving the clock after it leaves the camera aimed at where Earth used to be.
+//
 // INTERLEAVED, A,B,A,B: one A followed by one B puts every slow drift in the
 // machine — thermal throttling, the texture ladder still arriving, the exposure
 // still settling — inside the difference the whole number is. Alternating and
@@ -21,6 +28,8 @@
 //   node tools/atmo-aerial-perf.mjs --url=http://localhost:5646
 //   node tools/atmo-aerial-perf.mjs --w=1400 --h=1400 --dpr=2   # fill-bound
 //   node tools/atmo-aerial-perf.mjs --repeats=3                 # A,B,A,B,A,B
+//   node tools/atmo-aerial-perf.mjs --phase=150 \
+//     --time=2026-03-19T01:00:00Z --timeB=2026-04-02T02:00:00Z   # new vs full Moon
 //
 // vsync is off. With it on, a 1.3 Mpx frame on a desktop GPU reports the
 // display's period and measures the display.
@@ -42,8 +51,11 @@ const PHASE = Number(arg('phase', '0'));
 // pass-to-pass spread is printed so it can be compared against the delta.
 const REPEATS = Number(arg('repeats', '2'));
 // The clock, because at night what the frame costs depends on whether there is
-// a Moon in it: a full one is a second table lookup on every fragment.
-const TIME = arg('time', '');
+// a Moon in it: one that is up is four more dependent 3D fetches on every night
+// fragment. Equinox noon is the set's own default; --timeB turns the A/B from
+// the tier into the two clocks.
+const TIME = Date.parse(arg('time', '2026-03-20T12:00:00Z'));
+const TIME_B = arg('timeB', '') ? Date.parse(arg('timeB', '')) : null;
 
 const { chromium } = await import('playwright');
 const browser = await chromium.launch({
@@ -76,7 +88,7 @@ await page.waitForFunction(() => {
   return !ls || ls.classList.contains('hidden');
 }, { timeout: 60000 }).catch(() => {});
 await page.evaluate(() => window.__moon.setChrome(false));
-await page.evaluate(() => window.__moon.setTimeMs(Date.parse('2026-03-20T12:00:00Z')));
+await page.evaluate((t) => window.__moon.setTimeMs(t), TIME);
 await page.evaluate(() => window.__moon.setTimeRate(0));
 const state = await page.waitForFunction(
   () => (window.__moon.atmoState()?.state === 'ready' ? window.__moon.atmoState() : null),
@@ -84,12 +96,15 @@ const state = await page.waitForFunction(
 ).then((h) => h.jsonValue()).catch(() => null);
 if (!state) throw new Error('tables never baked — nothing to A/B');
 
-async function measure(tier) {
+async function measure(tier, timeMs) {
   const wearing = await page.evaluate((t) => window.__moon.atmoTier(t), tier);
-  if (TIME) await page.evaluate((t) => window.__moon.setTimeMs(t), Date.parse(TIME));
+  // The clock FIRST, then the framing, then the clock again: pinCapture is free
+  // to move the camera's near plane and the framing hook reads where the body
+  // is, so both ends of the pose have to be on the pose's own date.
+  await page.evaluate((t) => window.__moon.setTimeMs(t), timeMs);
   await page.evaluate(([k, a, p]) => window.__moon.limbView('Earth', k, 60, p, a), [K, AIM, PHASE]);
   await page.evaluate(([d]) => window.__moon.pinCapture({ near: 1e-6, exposure: 1, pixelRatio: d }), [DPR]);
-  await page.evaluate(() => window.__moon.setTimeMs(Date.parse('2026-03-20T12:00:00Z')));
+  await page.evaluate((t) => window.__moon.setTimeMs(t), timeMs);
   await page.waitForTimeout(1500); // settle: texture tiers, exposure, the swap itself
   const samples = await page.evaluate((n) => new Promise((resolve) => {
     const out = [];
@@ -111,27 +126,42 @@ async function measure(tier) {
   const mean = samples.reduce((x, y) => x + y, 0) / samples.length;
   samples.sort((a, b) => a - b);
   const pick = (q) => samples[Math.min(samples.length - 1, Math.floor(samples.length * q))];
-  return { wearing: wearing?.Earth, mean, median: pick(0.5), p90: pick(0.9), min: samples[0] };
+  const moon = await page.evaluate(() => window.__moon.atmoNight?.('Earth') ?? null);
+  return {
+    wearing: wearing?.Earth, mean, median: pick(0.5), p90: pick(0.9), min: samples[0],
+    phaseDeg: moon?.phaseDeg ?? null,
+  };
 }
+
+// Either the tier is the A/B (the air against no air) or the clock is (a Moon
+// against none, on the tier that has one).
+const SIDES = TIME_B === null
+  ? { a: { label: 'air off', tier: 'analytic', time: TIME }, b: { label: 'air on ', tier: null, time: TIME } }
+  : { a: { label: 'clock A', tier: null, time: TIME }, b: { label: 'clock B', tier: null, time: TIME_B } };
 
 const passes = [];
 for (let i = 0; i < REPEATS; i++) {
-  passes.push({ pass: i + 1, a: await measure('analytic'), b: await measure(null) });
+  passes.push({
+    pass: i + 1,
+    a: await measure(SIDES.a.tier, SIDES.a.time),
+    b: await measure(SIDES.b.tier, SIDES.b.time),
+  });
 }
 const mpx = (W * DPR * H * DPR) / 1e6;
 console.log(`[aerial-perf] ${W}x${H} DPR ${DPR} = ${mpx.toFixed(2)} Mpx, pose ${K} R aim ${AIM}`
-  + `, ${REPEATS} interleaved A,B pairs`);
+  + ` phase ${PHASE}, ${REPEATS} interleaved A,B pairs`);
 for (const p of passes) {
-  console.log(`  pass ${p.pass}  air off ${p.a.mean.toFixed(4)} ms (shell=${p.a.wearing})`
-    + `   air on ${p.b.mean.toFixed(4)} ms (shell=${p.b.wearing})`
+  const phase = (m) => (m.phaseDeg === null ? 'none' : `${m.phaseDeg.toFixed(1)} deg`);
+  console.log(`  pass ${p.pass}  ${SIDES.a.label} ${p.a.mean.toFixed(4)} ms (shell=${p.a.wearing}, moon ${phase(p.a)})`
+    + `   ${SIDES.b.label} ${p.b.mean.toFixed(4)} ms (shell=${p.b.wearing}, moon ${phase(p.b)})`
     + `   delta ${(p.b.mean - p.a.mean >= 0 ? '+' : '')}${(p.b.mean - p.a.mean).toFixed(3)}`);
 }
 const mean = (xs) => xs.reduce((x, y) => x + y, 0) / xs.length;
 const spread = (xs) => Math.max(...xs) - Math.min(...xs);
 const aMean = mean(passes.map((p) => p.a.mean));
 const bMean = mean(passes.map((p) => p.b.mean));
-console.log(`  pooled   air off ${aMean.toFixed(4)} ms (pass spread ${spread(passes.map((p) => p.a.mean)).toFixed(3)})`);
-console.log(`           air on  ${bMean.toFixed(4)} ms (pass spread ${spread(passes.map((p) => p.b.mean)).toFixed(3)})`);
+console.log(`  pooled   ${SIDES.a.label} ${aMean.toFixed(4)} ms (pass spread ${spread(passes.map((p) => p.a.mean)).toFixed(3)})`);
+console.log(`           ${SIDES.b.label} ${bMean.toFixed(4)} ms (pass spread ${spread(passes.map((p) => p.b.mean)).toFixed(3)})`);
 const d = bMean - aMean;
 console.log(`  delta    ${d >= 0 ? '+' : ''}${d.toFixed(3)} ms  (${(d / mpx).toFixed(3)} ms/Mpx)`);
 console.log(`  page errors ${errors.length}`);

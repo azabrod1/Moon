@@ -35,8 +35,8 @@
  *    point the view ray reaches, where the air it carries is densest.
  *
  * Past the terminator the sky is no longer the Sun's. Two more sources draw
- * there, both weighted by the one `nightWeight` every non-solar term in the app
- * shares, read here at the ray's lowest point:
+ * there, both weighted by the shared `nightWeight`, read here at the ray's
+ * lowest point:
  *
  *  - **Airglow** is emitted in a thin layer of the upper air, not scattered
  *    from anything, so it is computed on the whole ray — including the rays
@@ -46,7 +46,12 @@
  *  - **The Moon** is a second light on the same air: the same tables, the same
  *    fetch count, with the two angles that involve the source swapped. Its
  *    irradiance uniform carries its distance, its phase, its own eclipse and
- *    its redder spectrum, so the shader cannot tell the two sources apart.
+ *    its redder spectrum, so the shader cannot tell the two sources apart. It
+ *    keeps the shared weight where the ground does not, and the reason is that
+ *    the Sun's own in-scatter does not collapse at the terminator the way its
+ *    light on the ground does — it becomes twilight, which drowns moonlight for
+ *    real. On top of it the Moon's own elevation at the same point, so a Moon
+ *    that has set lights nothing whatever the Sun is doing.
  *
  * What this tier still does not carry is the city glow — the upward-scattered
  * light that makes a city visible through cloud.
@@ -68,7 +73,13 @@ import {
   type AtmosphereTableSizes,
 } from './atmosphereModel';
 import { MAX_MOON_SHADOWS, MOON_SHADOW_TRACE_GLSL, type SurfaceShadingFx } from './surfaceShading';
-import { AIRGLOW_GLSL, AIRGLOW_LIMB_CAP, NIGHT_WEIGHT_GLSL, airglowUniforms } from './nightSources';
+import {
+  AIRGLOW_GLSL,
+  AIRGLOW_LIMB_CAP,
+  MOON_UP_GLSL,
+  NIGHT_WEIGHT_GLSL,
+  airglowUniforms,
+} from './nightSources';
 
 const SHELL_VERTEX = /* glsl */`
 uniform vec3 uSunDirWorld;
@@ -127,6 +138,7 @@ out vec4 fragColor;
 
 ${MOON_SHADOW_TRACE_GLSL}
 ${NIGHT_WEIGHT_GLSL}
+${MOON_UP_GLSL}
 ${AIRGLOW_GLSL}
 
 void main() {
@@ -212,16 +224,27 @@ void main() {
     // lookup is the sunlit one with the two angles that involve the source
     // swapped. Behind the night weight, so by day it costs a branch and no
     // fetches at all.
+    //
+    // The sky is the one place the Sun's own weight is right for the Moon as
+    // well. Past the terminator the Sun's in-scatter does not collapse the way
+    // its light on the ground does — it becomes twilight, and twilight really
+    // does drown moonlight over the ten degrees or so it takes to fade — so
+    // there is no trough here for the Moon to fill. What is added is the Moon's
+    // own elevation at the same point the Sun's was read: a Moon that has set
+    // lights nothing, whatever the Sun is doing.
     if (night > 0.0 && uMoonIrradiance.g > 0.0) {
       vec3 moon = normalize(vMoonObj);
-      float nuMoon = clampCosine(dot(view, moon));
-      vec4 lunar = getScattering3DRGBA(
-          uScattering, r, mu, clampCosine(dot(origin, moon) / r), nuMoon, false);
-      vec3 lunarRayleigh = max(lunar.rgb, vec3(0.0));
-      vec3 lunarMie = max(getExtrapolatedSingleMieScattering(lunar), vec3(0.0));
-      radiance += (lunarRayleigh * rayleighPhaseFunction(nuMoon)
-              + lunarMie * miePhaseFunction(uMiePhaseG, nuMoon))
-          * uMoonIrradiance * night;
+      float moonNight = night * moonUpWeight(clampCosine(dot(normalize(lowest), moon)));
+      if (moonNight > 0.0) {
+        float nuMoon = clampCosine(dot(view, moon));
+        vec4 lunar = getScattering3DRGBA(
+            uScattering, r, mu, clampCosine(dot(origin, moon) / r), nuMoon, false);
+        vec3 lunarRayleigh = max(lunar.rgb, vec3(0.0));
+        vec3 lunarMie = max(getExtrapolatedSingleMieScattering(lunar), vec3(0.0));
+        radiance += (lunarRayleigh * rayleighPhaseFunction(nuMoon)
+                + lunarMie * miePhaseFunction(uMiePhaseG, nuMoon))
+            * uMoonIrradiance * moonNight;
+      }
     }
   }
 

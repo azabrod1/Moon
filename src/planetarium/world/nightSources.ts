@@ -12,12 +12,27 @@
  * with the physical ratio kept beside it so the two can never be confused. Each
  * constant below says which of the two it is.
  *
- * One weight, not three. Every source here fades out through `nightWeight`,
- * which reads the SAME geometric quantity the airlight does — the Sun's
- * elevation at the ray's lowest point on the shell, at the fragment on a
- * surface. A source with a gate of its own switches off along a line that does
- * not coincide with the terminator, and that line lands in the twilight band,
- * which is the part of the picture the whole campaign is about.
+ * One weight for the sources the daylight sky drowns. Airglow and the sky's
+ * own ambient fade out through `nightWeight`, which reads the SAME geometric
+ * quantity the airlight does — the Sun's elevation at the ray's lowest point on
+ * the shell, at the fragment on a surface. A source with a gate of its own
+ * switches off along a line that does not coincide with the terminator, and
+ * that line lands in the twilight band, which is the part of the picture the
+ * whole campaign is about.
+ *
+ * The Moon is not one of those sources, and `moonUpWeight` is why. The Moon
+ * lights the ground whenever it is above that ground's horizon, wherever the
+ * Sun is; gate its beam by the SUN's elevation and the ground goes through a
+ * minimum at the terminator, four times darker than the ground five degrees
+ * into the day side and thirteen times darker than the same ground fifteen
+ * degrees into the night, with a gibbous Moon standing right over it. So the
+ * Moon's terms ride its own elevation instead, times the complement of the
+ * ground's own day factor — the exact term the Sun's light on that fragment
+ * arrives on, so the two cross over without a trough between them. The sky is
+ * the other way round: past the terminator the Sun's in-scatter does not
+ * collapse, it becomes twilight, and twilight really does drown moonlight for
+ * the ten degrees or so it takes to fade. So the shell keeps the shared weight
+ * and multiplies the Moon's own elevation into it.
  */
 import { PLANETS } from '../planets/planetData';
 import { AIRLIGHT_SCALE, type RGB } from './atmosphereModel';
@@ -25,7 +40,7 @@ import { AIRLIGHT_SCALE, type RGB } from './atmosphereModel';
 export type Vec3 = readonly [number, number, number];
 
 // ---------------------------------------------------------------------------
-// The shared weight
+// The two weights
 // ---------------------------------------------------------------------------
 
 /** Sine of the Sun's elevation at which every non-solar source is at full
@@ -63,6 +78,36 @@ float nightWeight(float sunElevSin) {
 }
 `;
 
+/** Sine of the Moon's own elevation at which its light is at full strength on
+ *  the ground below: 2.9 degrees up. Not a twilight ramp — moonlight has no
+ *  twilight to fade through — but a horizon is never a step either, so the beam
+ *  arrives over the last few degrees rather than switching on. */
+export const MOON_UP_FULL_SIN = 0.05;
+
+/**
+ * How much of the Moon's own light reaches a point where the MOON's elevation
+ * has this sine: 0 with the Moon down, 1 with it up. Mirrored exactly by
+ * `moonUpWeight` in MOON_UP_GLSL, from the one constant above.
+ *
+ * This is only half of what the Moon's terms are multiplied by. The other half
+ * is the complement of the surface's own day factor, which is the term the
+ * Sun's light on that fragment arrives on: the two sources hand over to each
+ * other across the terminator instead of both being weak in the middle of it.
+ */
+export function moonUpWeight(moonElevSin: number): number {
+  return smoothstep(0, MOON_UP_FULL_SIN, moonElevSin);
+}
+
+/** The GLSL half of `moonUpWeight`, from the same constant. */
+export const MOON_UP_GLSL = /* glsl */`
+// 1 with the Moon up, 0 with it down. The Moon's terms ride this and the
+// complement of the surface's own day factor, never the Sun's night weight:
+// the Moon lights the ground whenever it is above that ground's horizon.
+float moonUpWeight(float moonElevSin) {
+  return smoothstep(0.0, ${MOON_UP_FULL_SIN.toFixed(6)}, moonElevSin);
+}
+`;
+
 // ---------------------------------------------------------------------------
 // Airglow
 // ---------------------------------------------------------------------------
@@ -92,11 +137,14 @@ export interface AirglowSpec {
   readonly orangeKm: readonly [number, number];
   /** Radiance of a VERTICAL path through each layer, in the scene's linear
    *  units. Authored, not physical, and set against the photograph at the night
-   *  limb: at the 20x the limb stretches it to, the green line lands at 0.006
-   *  linear, a thin thread a couple of dozen 8-bit steps above the black behind
-   *  it and dimmer than the moonlit air below it — which is the order the two
-   *  read in from orbit. Straight down it is 1/20 of that and invisible, which
-   *  is also right. */
+   *  limb. What the eye gets is the number AFTER the tone curve, and that is
+   *  the whole of the level: at the 20x the limb stretches it to the green line
+   *  is 6.5e-3 of linear radiance, which through ACES at exposure 1 and the
+   *  sRGB transfer is 3.8 of 255 — a four-step thread, dimmer than the moonlit
+   *  air below it, which is the order the two read in from orbit. (ACES is not
+   *  a gamma curve near black: its slope there flattens a linear value that a
+   *  bare sRGB encode would put twenty steps up.) Straight down the line is
+   *  1/20 of that and rounds to nothing, which is also right. */
   readonly greenRadiance: number;
   readonly orangeRadiance: number;
 }
@@ -356,6 +404,11 @@ export const PEAK_TABLE_SKY_RADIANCE = 2.2;
  *
  * It exists so that "no night source blooms" is an assertion and not an
  * intention: a test re-derives both sweeps, holds them under these numbers, and
- * holds this one times the authored night constants under the bloom threshold.
+ * holds the whole composed night fragment under the bloom threshold.
+ *
+ * Only the NIGHT sources. The Sun's own sky is over the threshold by
+ * construction — 0.85 x the 3.0 the photometry bridge scales it by — and that
+ * is deliberate: a bloomed daylight limb is the look. Nothing here is a clamp
+ * on the physical sky, and nothing anywhere else is either.
  */
 export const PEAK_REACHABLE_SKY_RADIANCE = 0.85;

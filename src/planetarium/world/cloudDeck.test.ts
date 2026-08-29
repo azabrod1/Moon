@@ -6,6 +6,8 @@ import {
   CLOUD_COVERAGE_GLSL,
   CLOUD_COVERAGE_HIGH,
   CLOUD_COVERAGE_LOW,
+  CLOUD_ALBEDO,
+  CLOUD_ALBEDO_BLEND,
   CLOUD_CITY_GLOW,
   CLOUD_DETAIL_ERODE,
   CLOUD_DETAIL_FADE_END,
@@ -124,6 +126,27 @@ describe('the deck\'s alpha in the surface augmentation', () => {
     expect(shader.fragmentShader).toContain('cloudAlpha = cloudCoverage(');
     expect(shader.fragmentShader).toContain('diffuseColor.a *= cloudAlpha;');
     expect(shader.fragmentShader).toContain('float cloudCoverage(float linearLuminance)');
+  });
+
+  it('replaces the map\'s brightness with the cloud\'s own albedo, before the lights', () => {
+    // The map states COVERAGE. Once the alpha carries that, drawing the map's
+    // own value as the albedo counts the same fraction twice: a half-covered
+    // pixel comes out at half the cloud's brightness AND half the ground's,
+    // which is a dark ring around every cloud over bright ground — measured at
+    // 22 % below the desert beside it before this landed. And it has to happen
+    // upstream of the lights: three reads diffuseColor into the lighting long
+    // before <opaque_fragment>, so a colour changed there lights nothing.
+    const glsl = compiled('cloud').shader.fragmentShader;
+    const albedo = glsl.indexOf('diffuseColor.rgb * pow(uCloudAlbedo');
+    expect(albedo).toBeGreaterThan(-1);
+    expect(albedo).toBeLessThan(glsl.indexOf('#include <opaque_fragment>'));
+    expect(glsl).toContain(CLOUD_ALBEDO_BLEND.toFixed(6));
+    expect((compiled('cloud').shader.uniforms.uCloudAlbedo as { value: number }).value).toBe(CLOUD_ALBEDO);
+    // Not all of it: above the coverage curve's upper edge every pixel is fully
+    // covered and what is left of the map's brightness is real cloud thickness,
+    // so a fully normalised deck draws its interiors as one flat white.
+    expect(CLOUD_ALBEDO_BLEND).toBeGreaterThan(0);
+    expect(CLOUD_ALBEDO_BLEND).toBeLessThan(1);
   });
 
   it('stays one compiled program for every body', () => {
@@ -303,7 +326,7 @@ describe('the deck\'s detail term', () => {
     // exactly such a condition: on a driver that takes the licence, the deck
     // gets a wrong mip and a wrong slope wherever the quad straddles the fade.
     const glsl = compiled('cloud').shader.fragmentShader;
-    const block = glsl.slice(glsl.indexOf('float cloudDetailN = 0.0;'), glsl.indexOf('vec4 detail = textureGrad'));
+    const block = glsl.slice(glsl.indexOf('float cloudAlpha = 1.0;'), glsl.indexOf('vec4 detail = textureGrad'));
     const inner = glsl.slice(glsl.indexOf('if (cloudDetailW > 0.0) {'), glsl.indexOf('#include <opaque_fragment>'));
     // Four for the deck's own geometry and two for the ground's frame under it.
     expect(block.match(/dFd[xy]\(/g)).toHaveLength(6);
@@ -315,7 +338,7 @@ describe('the deck\'s detail term', () => {
     expect(glsl.indexOf('normal = normalize(nrm - surfGrad'))
       .toBeLessThan(glsl.indexOf('#include <opaque_fragment>'));
     expect(glsl.indexOf('#include <normal_fragment_maps>'))
-      .toBeLessThan(glsl.indexOf('float cloudDetailN = 0.0;'));
+      .toBeLessThan(glsl.indexOf('float cloudAlpha = 1.0;'));
   });
 
   it('shares one detail map across every deck material', () => {

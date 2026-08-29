@@ -80,6 +80,8 @@ import {
 import { AIRLIGHT_SCALE } from './atmosphereModel';
 import { EARTH_NIGHT_COLD_CUT } from '../../shared/shaders/atmosphere';
 import {
+  CLOUD_ALBEDO,
+  CLOUD_ALBEDO_BLEND,
   CLOUD_CITY_GLOW,
   CLOUD_COVERAGE_GLSL,
   CLOUD_DETAIL_ERODE,
@@ -370,6 +372,7 @@ uniform float uAirDensity;
 uniform float uAirLookupRadius;
 uniform float uCloudDeck;
 uniform sampler2D uCloudDetail;
+uniform float uCloudAlbedo;
 uniform float uCloudDetailErode;
 uniform float uCloudDetailRelief;
 uniform sampler2D uNightLights;
@@ -402,8 +405,7 @@ ${RING_SHADOW_OPACITY_GLSL}${MOON_SHADOW_TRACE_GLSL}${ATMOSPHERE_LOOKUP_BODY_GLS
 // read by the alpha term further down — the map holds the field and its own
 // gradient in one texel, so the erosion and the relief share the fetch.
 const SURFACE_NORMAL_BODY = /* glsl */ `
-float cloudDetailN = 0.0;
-float cloudDetailW = 0.0;
+float cloudAlpha = 1.0;
 vec2 cloudNightUv = vec2(0.0);
 vec2 cloudNightDx = vec2(0.0);
 vec2 cloudNightDy = vec2(0.0);
@@ -436,11 +438,31 @@ if (uCloudDeck > 0.0) {
   vec2 detailUv = vec2(atan(dir.z, dir.x), asin(clamp(dir.y, -1.0, 1.0))) * ${CLOUD_DETAIL_UV_PER_RADIAN.toFixed(7)};
   vec2 duvX = dAngX * ${CLOUD_DETAIL_UV_PER_RADIAN.toFixed(7)};
   vec2 duvY = dAngY * ${CLOUD_DETAIL_UV_PER_RADIAN.toFixed(7)};
-  cloudDetailW = cloudDetailFade(max(length(duvX), length(duvY)) * ${CLOUD_DETAIL_SIZE.toFixed(1)});
+  float cloudDetailW = cloudDetailFade(max(length(duvX), length(duvY)) * ${CLOUD_DETAIL_SIZE.toFixed(1)});
   // Explicit gradients, for the same reason the angles' were taken by hand: the
   // mip has to be chosen off a quantity that is continuous across the cut.
   vec4 detail = textureGrad(uCloudDetail, detailUv, duvX, duvY);
-  cloudDetailN = detail.r;
+  // The deck's alpha is the coverage its own map states. It is worked out HERE,
+  // upstream of every light, because the colour has to change with it: the map
+  // states coverage and not albedo, so once the alpha carries that coverage the
+  // colour must be the cloud's own or the same fraction is counted twice — a
+  // half-covered pixel drawn at half the cloud's brightness AND half the
+  // ground's, which is a dark ring around every cloud over bright ground.
+  float cloudLum = dot(diffuseColor.rgb, vec3(${LUMINANCE_WEIGHTS.map((w) => w.toFixed(4)).join(', ')}));
+  cloudAlpha = cloudCoverage(cloudLum);
+  // ...eroded by the detail noise where the coverage is at an EDGE. A cloud
+  // map's edges are the resolution its authoring stopped at; the noise puts the
+  // ragged margin back. Solid cloud keeps its interior and clear sky gains no
+  // wisps — the band is zero at both ends.
+  cloudAlpha *= mix(1.0, mix(1.0 - uCloudDetailErode, 1.0, detail.r),
+      cloudEdgeBand(cloudAlpha) * cloudDetailW);
+  // The hue survives; the brightness is pulled toward the cloud's own albedo by
+  // however much of the map is coverage rather than albedo. All of it and the
+  // solid interiors are one flat white with no structure; none of it and the
+  // ring comes back.
+  diffuseColor.rgb = min(
+      diffuseColor.rgb * pow(uCloudAlbedo / max(cloudLum, 0.001), ${CLOUD_ALBEDO_BLEND.toFixed(6)}),
+      vec3(1.0));
   if (cloudDetailW > 0.0) {
     // The packed gradient back into a real slope: field per tile of uv, times
     // the height that field's range stands for. The height is stated against
@@ -460,23 +482,13 @@ if (uCloudDeck > 0.0) {
 }`;
 
 const SURFACE_FRAGMENT_BODY = /* glsl */ `{
-  // The cloud deck's alpha is the coverage its own map states, and every other
-  // surface keeps the alpha it already had. A deck at a flat opacity dims clear
-  // sky by that fraction everywhere and caps the thickest cloud at it; reading
-  // the map means a pixel over clear sky has no deck on it at all. The alpha is
-  // 1 on every other surface, so the terms below that scale by it are the
-  // deck's alone without a second branch.
-  float cloudAlpha = 1.0;
-  if (uCloudDeck > 0.0) {
-    cloudAlpha = cloudCoverage(dot(diffuseColor.rgb, vec3(${LUMINANCE_WEIGHTS.map((w) => w.toFixed(4)).join(', ')})));
-    // ...eroded by the detail noise where the coverage is at an EDGE. A cloud
-    // map's edges are the resolution its authoring stopped at; the noise puts
-    // the ragged margin back. Solid cloud keeps its interior and clear sky
-    // gains no wisps — the band is zero at both ends.
-    cloudAlpha *= mix(1.0, mix(1.0 - uCloudDetailErode, 1.0, cloudDetailN),
-        cloudEdgeBand(cloudAlpha) * cloudDetailW);
-    diffuseColor.a *= cloudAlpha;
-  }
+  // The deck's alpha, worked out with its colour above where the lights could
+  // still see both. A deck at a flat opacity dims clear sky by that fraction
+  // everywhere and caps the thickest cloud at it; reading the map means a pixel
+  // over clear sky has no deck on it at all. The alpha is 1 on every other
+  // surface, so the terms below that scale by it are the deck's alone without a
+  // second branch.
+  diffuseColor.a *= cloudAlpha;
   // The sine of the Sun's elevation at this fragment, off the perturbed normal:
   // the Sun's own Lambert term, which is what the day factor and the Moon's
   // weight below both read so the two describe one crossing.
@@ -792,6 +804,7 @@ export function augmentSurfaceMaterial(
       ? cloudDetailTexture() as THREE.Texture
       : surfaceAirDummies().map2D as THREE.Texture,
   };
+  const uCloudAlbedo = { value: CLOUD_ALBEDO };
   const uCloudDetailErode = { value: archetype === 'cloud' ? CLOUD_DETAIL_ERODE : 0 };
   const uCloudCityGlow = { value: archetype === 'cloud' ? CLOUD_CITY_GLOW : 0 };
   // The detail's relief as a fraction of the body's own radius, which is what
@@ -820,6 +833,7 @@ export function augmentSurfaceMaterial(
     shader.uniforms.uAirLookupRadius = uAirLookupRadius;
     shader.uniforms.uCloudDeck = uCloudDeck;
     shader.uniforms.uCloudDetail = uCloudDetail;
+    shader.uniforms.uCloudAlbedo = uCloudAlbedo;
     shader.uniforms.uCloudDetailErode = uCloudDetailErode;
     shader.uniforms.uCloudCityGlow = uCloudCityGlow;
     shader.uniforms.uCloudDetailRelief = uCloudDetailRelief;

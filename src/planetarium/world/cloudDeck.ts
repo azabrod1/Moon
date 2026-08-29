@@ -17,10 +17,16 @@
  * The curve is authored against the map's STORED luminance — what the eight-bit
  * file holds — not the linear value the sampler returns, because "clear sky"
  * and "thick cloud" are gradings of the file. On the shipped map (2K, the same
- * product every rung is cut from) the authored pair leaves 25.8 % of the globe
- * fully clear, drives 14.6 % to full opacity, and averages 0.31 over the sphere
- * by area — a third of a step from the flat 0.35 it replaces, so the disc's
- * overall exposure is where it was while its contrast is entirely different.
+ * product every rung is cut from) the authored pair leaves 21.7 % of the globe
+ * fully clear, drives 5.9 % to full opacity, and averages 0.25 over the sphere
+ * by area.
+ *
+ * The upper edge is high — 0.75, not the 0.6 the disc's mean alone would
+ * suggest — because what the night side needs is GRADATION. At 0.6 a seventh of
+ * the world is fully opaque cloud, and over the night hemisphere that is a
+ * bright sheet with cities extinguished under it; at 0.75 the same field runs
+ * through the whole range and the lights read through it, which is what an
+ * orbital night photograph shows. The day disc is indifferent between the two.
  *
  * The map's compression noise reaches the alpha through this curve, which is
  * new: the deck's webp is encoded at q60 because it used to draw at 0.35. The
@@ -29,9 +35,9 @@
  */
 
 /** Stored luminance at and below which there is no cloud at all. */
-export const CLOUD_COVERAGE_LOW = 0.08;
+export const CLOUD_COVERAGE_LOW = 0.06;
 /** ...and at which the deck is fully opaque. */
-export const CLOUD_COVERAGE_HIGH = 0.6;
+export const CLOUD_COVERAGE_HIGH = 0.75;
 
 /**
  * The transfer the stored luminance is recovered through. The maps are ordinary
@@ -67,6 +73,39 @@ float cloudCoverage(float linearLuminance) {
   return smoothstep(${CLOUD_COVERAGE_LOW.toFixed(6)}, ${CLOUD_COVERAGE_HIGH.toFixed(6)}, stored);
 }
 `;
+
+/**
+ * The albedo the deck is drawn at, once its alpha carries the coverage.
+ *
+ * The cloud map states COVERAGE, not albedo: a mid-grey texel is a pixel half
+ * covered by white cloud, not a pixel of grey cloud. Drawing it as its own
+ * value once the alpha already carries that coverage counts the same fraction
+ * twice, and over bright ground the result is a dark ring around every cloud —
+ * a half-covered pixel comes out at half the cloud's brightness AND half the
+ * desert's. So the map's luminance sets the alpha and this sets the colour.
+ *
+ * 0.85 is a cloud top's own reflectance. It reads well against the ground it
+ * covers: Earth's day map runs about 0.5 over bright desert and 0.05 over open
+ * ocean, so cloud is the brightest thing on the lit disc, which is what it is.
+ * The map's HUE survives — only its brightness is replaced — so a tinted map
+ * still tints the deck.
+ */
+export const CLOUD_ALBEDO = 0.85;
+
+/**
+ * How much of the map's brightness is COVERAGE rather than the cloud's own
+ * albedo: 1 hands all of it to the alpha and draws the deck at a flat 0.85,
+ * 0 leaves the map as the albedo and puts the dark ring back.
+ *
+ * Not 1, because the two are not cleanly separable. Above the coverage curve's
+ * upper edge every pixel is fully covered and the map's remaining variation is
+ * real — thicker cloud IS brighter cloud — so a fully normalised deck draws its
+ * solid interiors as one flat white with no structure at all. 0.8 keeps a fifth
+ * of the map's brightness range as albedo: thin cloud lands near 0.55 and solid
+ * cloud near 0.81, so the interiors have shape and the edges still sit above
+ * the desert they cover rather than below it.
+ */
+export const CLOUD_ALBEDO_BLEND = 0.8;
 
 /**
  * How deep the deck's relief reads, as the material's `normalScale`.

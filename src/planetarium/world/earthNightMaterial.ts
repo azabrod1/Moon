@@ -55,10 +55,6 @@ import { NIGHT_LIGHTS_AIR_LOOKUP_RADIUS, type SurfaceAirFx } from './surfaceShad
 import type { SectorMaps } from './sectorMaterial';
 import type { SectorFamily } from './sectorStreamer';
 
-/** The per-frame uniform every night-lights mesh shares: the world-space
- *  direction to the Sun, written once per frame by the mode. */
-export type EarthNightSunUniform = { value: THREE.Vector3 };
-
 /** The only uniforms a night sector owns rather than shares with its shell:
  *  its own tile, and which rectangle of that tile it draws. Everything else in
  *  the shell's uniform set is handed over by reference. */

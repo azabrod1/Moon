@@ -64,11 +64,29 @@ JSON lands under `/tmp/moon-shots/smooth/<label>/`: one file per scenario
 (analysis plus the whole frame trace) and a `summary.json`. Exit status is
 non-zero when any scenario failed.
 
-Before you start: `ps aux | grep -i chrom | grep -v grep`. A KTX2 encode or
-another builder's Playwright run will be sharing the GPU, and the numbers are
-then meaningless — wait for it. The battery runs one browser, one tab, and
-closes each context before opening the next, for the same reason. It refuses to
-run at all if the renderer string says SwiftShader.
+Only one browser run may touch this machine at a time — a second Chromium on the
+same GPU makes every number fiction, and has already killed one battery
+mid-scenario. The gate takes `/tmp/moon-browser.lock` itself and waits for it,
+so there is nothing to remember; every other browser run on the machine takes
+the same lock:
+
+```bash
+until mkdir /tmp/moon-browser.lock 2>/dev/null; do sleep 10; done
+echo $$ > /tmp/moon-browser.lock/pid
+trap 'rm -rf /tmp/moon-browser.lock' EXIT
+```
+
+A lock whose pid is dead may be removed — the gate clears one automatically and
+says so. Within its own run the battery uses one browser and one tab, closing
+each context before opening the next, and it refuses to run at all if the
+renderer string says SwiftShader.
+
+## Verifying the instrument
+
+`--scenario=selftest` injects deliberate 30, 60 and 120 ms main-thread blocks
+after the reveal and fails unless the trace shows a gap for each. A gate that
+cannot see a stall it caused itself is not evidence when it reports none, so run
+this after any change to the recorder.
 
 ### Scenarios
 

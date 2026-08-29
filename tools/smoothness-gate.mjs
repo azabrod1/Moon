@@ -9,7 +9,10 @@
 // Needs a dev server (this checkout, `npx vite --port 5656 --strictPort`) and,
 // for the sector tiles, a tile host (`node planning/_tiles-serve.mjs` on 5622).
 // Runs ONE browser and ONE tab at a time on the real GPU: a second WebGL tab
-// steals the GPU process and every number below becomes fiction.
+// steals the GPU process and every number below becomes fiction. That is
+// enforced machine-wide, not by convention — this takes /tmp/moon-browser.lock
+// and waits for it, as every browser run on this machine does. A concurrent
+// battery has already killed one run of this one mid-scenario.
 //
 // The record comes from the app's own DEV frame trace (smoothnessTrace.ts),
 // armed with ?smooth=1 before the first frame so a cold boot is measurable.
@@ -28,7 +31,7 @@
 // Frames under the veil are counted and reported separately rather than
 // dropped, so a hitch that merely hid behind a cut is still visible.
 import { chromium } from 'playwright';
-import { mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 function arg(name, def) {
@@ -198,6 +201,61 @@ async function descendTo(page, name, targetRadii, budgetMs = 25_000) {
 // ----------------------------------------------------------------- scenarios
 
 const SCENARIOS = [
+  {
+    // Proves the instrument before anyone trusts a number from it. Two known
+    // main-thread blocks are injected after the reveal; the trace must show
+    // them. A gate that cannot see a 60 ms stall it caused itself cannot be
+    // believed when it reports none. Not part of the battery — ask for it.
+    id: 'selftest',
+    title: 'Instrument check: inject known main-thread blocks and see them',
+    device: DESKTOP,
+    selfTestOnly: true,
+    async run(page, note) {
+      note(`renderer: ${await bootTo(page, '', 60)}`);
+      await sleep(2_000);
+      await mark(page, 'selftest');
+      const blocks = await page.evaluate(async () => {
+        const seen = [];
+        const blockOnce = (ms) => new Promise((resolve) => {
+          requestAnimationFrame(() => {
+            const until = performance.now() + ms;
+            while (performance.now() < until) { /* hold the main thread */ }
+            seen.push(ms);
+            resolve();
+          });
+        });
+        for (const ms of [30, 60, 120]) {
+          await blockOnce(ms);
+          await new Promise((r) => setTimeout(r, 600));
+        }
+        return seen;
+      });
+      note(`injected blocks: ${blocks.join(', ')} ms`);
+    },
+    // The trace has to show a gap at least as long as each block it was given.
+    verify(analysis, trace) {
+      const problems = [];
+      const after = trace.gapMs
+        .map((gap, i) => ({ gap, i }))
+        .filter((g) => g.gap !== null && g.i >= analysis.revealFrame)
+        .map((g) => g.gap);
+      for (const ms of [30, 60, 120]) {
+        // Allow a little slack under the injected figure for timer resolution;
+        // anything materially below it means the recorder is not seeing stalls.
+        if (!after.some((gap) => gap >= ms * 0.9)) {
+          problems.push(`no frame gap near the injected ${ms} ms block —`
+            + ` the recorder cannot see main-thread stalls`);
+        }
+      }
+      if (analysis.over2x < 3) {
+        problems.push(`only ${analysis.over2x} frame(s) over two vsyncs;`
+          + ' three injected blocks should each produce one');
+      }
+      // The blocks run inside a rAF callback, so their cost lands on the NEXT
+      // frame. The worst frames must therefore be attributed, not bare.
+      return problems;
+    },
+  },
   {
     id: 'boot',
     title: 'Cold boot → first frame → the idle warm settling',
@@ -537,6 +595,67 @@ function analyze(trace, scenario, notes) {
   };
 }
 
+// --------------------------------------------------------------------- lock
+
+// One browser run at a time, machine-wide. mkdir is the atomic claim; the pid
+// inside is what lets a crashed run's lock be reclaimed rather than blocking
+// the machine until someone notices.
+const LOCK_DIR = '/tmp/moon-browser.lock';
+
+function lockHolder() {
+  let pid;
+  try {
+    pid = Number(readFileSync(join(LOCK_DIR, 'pid'), 'utf8').trim());
+  } catch {
+    // Claimed but not yet stamped: a live run mid-handshake, so wait for it.
+    return { alive: true, pid: null };
+  }
+  if (!Number.isInteger(pid) || pid <= 0) return { alive: false, pid };
+  try {
+    process.kill(pid, 0);
+    return { alive: true, pid };
+  } catch {
+    return { alive: false, pid };
+  }
+}
+
+async function takeBrowserLock() {
+  let announced = false;
+  for (;;) {
+    try {
+      mkdirSync(LOCK_DIR);
+      break;
+    } catch (err) {
+      if (err.code !== 'EEXIST') throw err;
+      const holder = lockHolder();
+      if (!holder.alive) {
+        process.stdout.write(`[gate] clearing a stale lock (pid ${holder.pid} is gone)\n`);
+        rmSync(LOCK_DIR, { recursive: true, force: true });
+        continue;
+      }
+      if (!announced) {
+        process.stdout.write(`[gate] another browser run holds ${LOCK_DIR}`
+          + `${holder.pid ? ` (pid ${holder.pid})` : ''} — waiting for it\n`);
+        announced = true;
+      }
+      await sleep(10_000);
+    }
+  }
+  writeFileSync(join(LOCK_DIR, 'pid'), String(process.pid));
+  if (announced) process.stdout.write('[gate] lock acquired\n');
+  let released = false;
+  const release = () => {
+    if (released) return;
+    released = true;
+    try { rmSync(LOCK_DIR, { recursive: true, force: true }); } catch { /* already gone */ }
+  };
+  process.on('exit', release);
+  for (const signal of ['SIGINT', 'SIGTERM', 'SIGHUP']) {
+    process.on(signal, () => { release(); process.exit(130); });
+  }
+  return release;
+}
+
 // ------------------------------------------------------------------ printing
 
 const pad = (s, n) => String(s).padEnd(n);
@@ -590,7 +709,9 @@ if (RESCORE) {
 
 mkdirSync(OUT_DIR, { recursive: true });
 
-const chosen = ONLY.length ? SCENARIOS.filter((s) => ONLY.includes(s.id)) : SCENARIOS;
+const chosen = ONLY.length
+  ? SCENARIOS.filter((s) => ONLY.includes(s.id))
+  : SCENARIOS.filter((s) => !s.selfTestOnly);
 if (!chosen.length) {
   console.error(`No scenario matched ${ONLY.join(',')}. Known: ${SCENARIOS.map((s) => s.id).join(', ')}`);
   process.exit(2);
@@ -609,6 +730,7 @@ const launchBrowser = () => chromium.launch({
     '--enable-unsafe-swiftshader',
   ],
 });
+const releaseLock = await takeBrowserLock();
 let browser = await launchBrowser();
 
 const results = [];
@@ -644,6 +766,11 @@ try {
     }
     const analysis = analyze(trace, scenario, notes);
     analysis.wallSeconds = Math.round((Date.now() - startedAt) / 100) / 10;
+    if (scenario.verify) {
+      const problems = scenario.verify(analysis, trace);
+      analysis.failures = problems;
+      analysis.verdict = problems.length ? 'FAIL' : 'PASS';
+    }
     results.push(analysis);
     writeFileSync(join(OUT_DIR, `${scenario.id}.json`), JSON.stringify({ analysis, trace }, null, 1));
     process.stdout.write(
@@ -654,6 +781,7 @@ try {
   }
 } finally {
   await browser.close();
+  releaseLock();
 }
 
 writeFileSync(join(OUT_DIR, 'summary.json'), JSON.stringify(results, null, 1));

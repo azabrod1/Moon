@@ -160,13 +160,24 @@ void main() {
  * Requires the table sizes as #defines (atmosphereTableDefines) and the uniform
  * block (atmosphereLookupUniforms + applyAtmosphereParams).
  */
-export const ATMOSPHERE_LOOKUP_GLSL = /* glsl */`
+const ATMOSPHERE_LOOKUP_PREAMBLE_GLSL = /* glsl */`
 precision highp float;
 precision highp sampler2D;
 precision highp sampler3D;
 
 #define PI 3.141592653589793
+`;
 
+/**
+ * The lookup GLSL without its precision block and PI define — the form for a
+ * consumer that is INJECTED into a shader three already wrote a header for
+ * (`augmentSurfaceMaterial`'s hook, the night-lights shell). Three declares
+ * every sampler precision itself and `<common>` defines PI, and a macro
+ * redefinition mid-shader is a redefinition however identical the text is.
+ * A standalone consumer wants ATMOSPHERE_LOOKUP_GLSL, which is this with the
+ * header back on.
+ */
+export const ATMOSPHERE_LOOKUP_BODY_GLSL = /* glsl */`
 // The bake is normalised: one unit of solar irradiance. The render multiplies
 // the body's own scale back in, using the scene's authored light falloff.
 const vec3 SOLAR_IRRADIANCE = vec3(1.0);
@@ -437,6 +448,109 @@ void getRMuSFromIrradianceTextureUv(vec2 uv, out float r, out float mu_s) {
 
 vec3 getIrradiance(sampler2D tex, float r, float mu_s) {
   return texture(tex, getIrradianceTextureUvFromRMuS(r, mu_s)).rgb;
+}
+`;
+
+export const ATMOSPHERE_LOOKUP_GLSL = ATMOSPHERE_LOOKUP_PREAMBLE_GLSL + ATMOSPHERE_LOOKUP_BODY_GLSL;
+
+/**
+ * Aerial perspective: the air between the camera and a point in front of it,
+ * for the surfaces that draw that point — the globe, its streamed sectors, the
+ * cloud deck, the night-lights shell. The shell above handles the other half,
+ * the rays that miss every surface.
+ *
+ * The tables hold the whole path from a point to the far boundary, so a SEGMENT
+ * is the difference of two lookups, one at each end, with the far one carried
+ * back through the segment's own transmittance. `color * T + S` is the whole
+ * contract: a multiplicative layer applies both, an ADDITIVE layer over a
+ * surface applies T alone, because the surface underneath already added S.
+ *
+ * Needs ATMOSPHERE_LOOKUP_BODY_GLSL (or ATMOSPHERE_LOOKUP_GLSL) ahead of it,
+ * the table sizes as #defines, and the uniform block filled.
+ */
+export const AERIAL_PERSPECTIVE_GLSL = /* glsl */`
+struct AerialSegment {
+  bool valid;
+  bool hitsGround;
+  // Where the segment STARTS — the atmosphere entry point, not the camera —
+  // and its three angles re-derived there.
+  float r;
+  float mu;
+  float muS;
+  float nu;
+  float d;        // entry point -> the point being shaded
+};
+
+// The segment from the camera to the point, both in the radius units the
+// tables are baked in (surface r = 1) about the body's centre, in any frame the
+// two and the Sun share.
+AerialSegment aerialSegment(vec3 camera, vec3 point, vec3 sunDir) {
+  AerialSegment seg = AerialSegment(false, false, 0.0, 0.0, 0.0, 0.0, 0.0);
+  vec3 toPoint = point - camera;
+  float span = length(toPoint);
+  // A degenerate segment has no direction to normalize; normalize(0) is
+  // undefined and reads as NaN on Metal.
+  if (!(span > 0.0)) return seg;
+  vec3 view = toPoint / span;
+  float r = length(camera);
+  if (!(r > 0.0)) return seg;
+  float rmu = dot(camera, view);
+
+  if (r > uTopRadius) {
+    // The viewer is in space, which is every pose the app can steer to: the
+    // camera floor and the landed eye are both above the modelled top. Look the
+    // table up at the camera's own radius and every ray clamps to its top row.
+    float disc = rmu * rmu - r * r + uTopRadius * uTopRadius;
+    if (disc < 0.0) return seg;                 // the ray misses the air
+    float dEntry = -rmu - sqrt(disc);
+    if (dEntry <= 0.0 || dEntry >= span) return seg;
+    camera += view * dEntry;
+    // r*mu at the entry point is exactly -sqrt(disc): written that way it stays
+    // a number of size ~0.2 rather than a difference of two of size r.
+    rmu = -sqrt(disc);
+    r = uTopRadius;
+    span -= dEntry;
+  } else {
+    r = clampRadius(r);
+  }
+
+  seg.valid = true;
+  seg.r = r;
+  seg.mu = clampCosine(rmu / r);
+  seg.muS = clampCosine(dot(camera, sunDir) / r);
+  seg.nu = clampCosine(dot(view, sunDir));
+  seg.d = span;
+  seg.hitsGround = rayIntersectsGround(r, seg.mu);
+  return seg;
+}
+
+/** What survives the segment: the fraction of the surface's own light that
+ *  reaches the camera. A difference of two optical depths, never a quotient of
+ *  two transmittances. */
+vec3 aerialTransmittance(sampler2D tex, AerialSegment seg) {
+  return getTransmittance(tex, seg.r, seg.mu, seg.d, seg.hitsGround);
+}
+
+/** What the segment adds: sunlight scattered into it, at one unit of solar
+ *  irradiance. The caller scales it by the body's own irradiance and by the
+ *  bridge to the scene's light. */
+vec3 aerialInscatter(sampler3D tex, AerialSegment seg, vec3 transmittance) {
+  vec4 nearEnd = getScattering3DRGBA(tex, seg.r, seg.mu, seg.muS, seg.nu, seg.hitsGround);
+  float rP = clampRadius(safeSqrt(seg.d * seg.d + 2.0 * seg.r * seg.mu * seg.d + seg.r * seg.r));
+  float muP = clampCosine((seg.r * seg.mu + seg.d) / rP);
+  float muSP = clampCosine((seg.r * seg.muS + seg.d * seg.nu) / rP);
+  vec4 farEnd = getScattering3DRGBA(tex, rP, muP, muSP, seg.nu, seg.hitsGround);
+  // Interpolation can push the difference the wrong side of zero where the two
+  // ends nearly coincide; the Mie recovery divides by the red channel, so a
+  // negative there comes back as coloured speckle rather than as nothing.
+  vec4 delta = vec4(max(nearEnd.rgb - transmittance * farEnd.rgb, vec3(0.0)),
+                    max(nearEnd.a - transmittance.r * farEnd.a, 0.0));
+  vec3 mie = getExtrapolatedSingleMieScattering(delta);
+  // Mie's lobe is aimed at the Sun. Below the horizon there is no lobe left to
+  // aim, and the difference form's residue reads as a bright seam.
+  mie *= smoothstep(0.0, 0.01, seg.muS);
+  return delta.rgb * rayleighPhaseFunction(seg.nu)
+      + mie * miePhaseFunction(uMiePhaseG, seg.nu);
 }
 `;
 
@@ -802,6 +916,22 @@ export function atmosphereLutState(): AtmosphereLutState {
 
 export function atmosphereTables(body: string): AtmosphereTables | undefined {
   return activeLut?.tables(body);
+}
+
+/**
+ * The table dimensions THIS session addresses. One profile is chosen per
+ * session (by device class, in the baker's constructor) and the addressing GLSL
+ * takes them as #defines, so every material that can ever sample these tables
+ * has to compile with the same set or the program cache forks — and a material
+ * that compiled with the other set would read the table at the wrong stride.
+ *
+ * Read at material-construction time, which is after the baker exists: the
+ * Planetarium builds it in its own constructor, before any body is built. The
+ * full profile is the answer before then and on a device with no tier at all,
+ * where the samplers are dummies and nothing reads them anyway.
+ */
+export function atmosphereSessionSizes(): AtmosphereTableSizes {
+  return activeLut?.sizes ?? ATMOSPHERE_TABLE_SIZES_FULL;
 }
 
 export class AtmosphereLut {

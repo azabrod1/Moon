@@ -32,6 +32,12 @@ const DIR = fileURLToPath(new URL('../../../tools/goldens/atmosphere/', import.m
 const POSES = [
   'limb-8r',
   'limb-1.05r',
+  // Straight down and along the ground toward the horizon, from the same
+  // 1.05 R stand point: the two poses aerial perspective is judged on. Nadir is
+  // the whole frame of ground under one thin airmass; oblique is the same
+  // column seen end-on, where it thickens into haze.
+  'nadir-1.05r',
+  'oblique-1.05r',
   'terminator-1.5r',
   'night-1.05r',
   'inside-air',

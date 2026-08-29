@@ -36,7 +36,7 @@ import {
 } from './planets/planetData';
 import { applySunGlowTier, armArrivalWarmGoal, bindKtx2TierLoader, canAttempt, cancelNormalUpgrade, cancelTextureUpgrade, createMoonMeshes, createAtmosphereMaterial, createShaderWarmupProbes, disarmArrivalWarmGoal, earnedUpgradeTier, firstUpgradeTier, lodMeasurementRelevant, needsUpgradeCover, normalUpgradePending, pumpArrivalWarmGoal, resolveUpgradeTier, setWarmEligibleMoonParents, upgradeComplete, upgradeGeometryOnApproach, upgradeNormalOnApproach, upgradeTextureOnApproach, ATMOSPHERES, ATMOSPHERE_SHELL_SCALES, PLANET_TEXTURE_FILES, UPGRADE_TRIGGER_FRACTION, type MoonMesh, type PlanetMesh, type TextureUpgrade } from './PlanetFactory';
 import type { KTX2Loader } from 'three/examples/jsm/loaders/KTX2Loader.js';
-import { surfaceShadingArgsOf, type SurfaceShadingFx } from './world/surfaceShading';
+import { bindSurfaceAir, clearSurfaceAir, surfaceShadingArgsOf, type SurfaceShadingFx } from './world/surfaceShading';
 import { bindTextureWarmer, invalidateTextureWarmCache, pumpTextureWarmQueue, queueTextureWarm, resetTextureWarmer } from './world/textureWarmer';
 import { SECTOR_SETS, SectorStreamer, type SectorMeasure, type SectorStats, type SectorSuspend } from './world/sectorStreamer';
 import { loadBrightStarCatalog } from './world/starCatalogLoader';
@@ -4149,10 +4149,42 @@ export class PlanetariumMode {
       .copy(from.uniforms.uSunDirWorld.value as THREE.Vector3);
   }
 
+  /**
+   * Keep a body's SURFACES on the same tier its shell is on: the globe, its
+   * streamed sectors, the cloud deck and the night lights all read one air
+   * block, and this is where the tables reach it. Off — and let go of the
+   * textures — wherever the shell would be wearing the analytic material: a
+   * device with no tier, a body with no tables, the window between a lost
+   * context and the re-bake, and the dev pin that captures the A/B.
+   *
+   * The two numbers beside the tables are the bridge out of a bake normalised
+   * to unit irradiance, and they are the SCENE's, not physics': the distance
+   * law is the one the point light lighting the ground uses.
+   */
+  private syncSurfaceAir(planet: PlanetMesh): void {
+    const air = planet.fx?.air;
+    if (!air) return;
+    const tables = this.devAtmosphereTier === 'analytic'
+      ? null
+      : this.atmosphereLut?.tables(planet.data.name) ?? null;
+    if (!tables) {
+      clearSurfaceAir(air);
+      return;
+    }
+    const wp = planet.worldPosAU;
+    bindSurfaceAir(
+      air,
+      tables,
+      planet.data.radiusAU,
+      wp ? solarIrradianceScale(Math.sqrt(wp.x * wp.x + wp.y * wp.y + wp.z * wp.z)) : 1,
+    );
+  }
+
   private updatePlanetScaling() {
     if (!this.solarSystem) return;
     for (const planet of this.solarSystem.planets) {
       planet.group.scale.setScalar(1);
+      this.syncSurfaceAir(planet);
 
       // Atmosphere alpha: fade in as player approaches the planet's system radius
       if (planet.atmosphere) {
@@ -12566,7 +12598,7 @@ export class PlanetariumMode {
    * center — the close-approach view where silhouette tessellation shows.
    * Stands on the sunlit side so the limb is lit. Dev bridge only.
    */
-  devLimbView(name: string, kRadii = 1.5, fovDeg = 50, phaseDeg = 0): boolean {
+  devLimbView(name: string, kRadii = 1.5, fovDeg = 50, phaseDeg = 0, aimFrac = 1): boolean {
     if (!this.solarSystem) return false;
     const body = this.planetWorldPositions.get(name);
     const r = this.solarSystem.planets.find((p) => p.data.name === name)?.data.radiusAU;
@@ -12598,11 +12630,28 @@ export class PlanetariumMode {
     const v = new THREE.Vector3().crossVectors(w, up).normalize();
     const rd = r / d;
     const n = w.clone().multiplyScalar(-rd).addScaledVector(v, Math.sqrt(1 - rd * rd));
-    const tangentOffset = new THREE.Vector3(
+    let tangentOffset = new THREE.Vector3(
       body.x + r * n.x - this.player.posX,
       body.y + r * n.y - this.player.posY,
       body.z + r * n.z - this.player.posZ,
     );
+    // aimFrac swings the aim between straight down (0) and the tangent point
+    // (1, the default and the expression above, kept verbatim so the poses that
+    // use it are unmoved). The angle it lerps is the one AT THE CAMERA, whose
+    // limit is asin(R/d) — 72 degrees from nadir at 1.05 R, so a nadir frame
+    // and a limb frame from the same stand point share no sky at all. What sits
+    // between them is the view along the ground toward the horizon, which is
+    // where aerial perspective actually reads.
+    if (aimFrac < 1) {
+      const limbAngle = Math.asin(Math.min(rd, 1));
+      const aim = w.clone().multiplyScalar(Math.cos(aimFrac * limbAngle))
+        .addScaledVector(v, Math.sin(aimFrac * limbAngle));
+      // Where that aim meets the surface, so the orbit target is a real point
+      // on the body rather than a direction of arbitrary length.
+      const along = d * aim.dot(w);
+      const hit = along - Math.sqrt(Math.max(along * along - (d * d - r * r), 0));
+      tangentOffset = aim.multiplyScalar(hit > 0 ? hit : d - r);
+    }
     const cam = this.camera as THREE.PerspectiveCamera;
     cam.position.set(0, 0, 0);
     // applyDesignFov (via setDisplayFov) is the only legal camera.fov writer
@@ -16291,6 +16340,12 @@ export class PlanetariumMode {
           ? ((this.timeState.currentUtcMs / 3_600_000) * 0.02) % (Math.PI * 2)
           : 0;
         planet.cloudsMesh.rotation.y = cloudDrift;
+        // The deck's shading traces the eclipse casters and the ring plane in
+        // the BODY frame, and this drift is exactly how far its own object
+        // space has turned out of it. Unfed, a moon's umbra would land on the
+        // clouds at a longitude of its own.
+        const cloudArgs = surfaceShadingArgsOf(planet.cloudsMesh.material as THREE.Material);
+        if (cloudArgs) cloudArgs.uFrameSpin.value = cloudDrift;
       }
       const localSunDir = this.tmpLocalSunDir
         .copy(state.sunDirection)

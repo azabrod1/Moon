@@ -3,9 +3,11 @@
 // has no composer, no bloom and no tables).
 //
 // The poses are the ones the campaign is judged on: the whole-disc limb from
-// 8 R, the near band from 1.05 R aimed over the horizon, the terminator edge-on
-// from 1.5 R, the night side past it, one pose INSIDE the air (only a dev pose
-// can reach it), and the volume-compare ghost, whose shell is pinned analytic.
+// 8 R, the near band from 1.05 R aimed over the horizon, straight down and
+// obliquely along the ground from the same stand point (the two the aerial
+// perspective is judged on), the terminator edge-on from 1.5 R, the night side
+// past it, one pose INSIDE the air (only a dev pose can reach it), and the
+// volume-compare ghost, whose shell is pinned analytic.
 //
 // Every capture runs through __moon.pinCapture: the near plane, the tone-mapping
 // exposure and the pixel ratio are all driven per frame by things that have
@@ -75,6 +77,14 @@ for (let i = 0; i <= 40; i++) LIMB_SCAN.push([0.35 + (i * 0.3) / 40, 0.5]);
 const POSES = [
   { name: 'limb-8r', kRadii: 8, fov: 50, phase: 0 },
   { name: 'limb-1.05r', kRadii: 1.05, fov: 60, phase: 0 },
+  // The two aerial-perspective poses, both from the ISS's altitude band. Down
+  // the whole frame is ground, so what the air does is what it does to the
+  // ground: transmittance and nothing else near nadir. Oblique looks along it
+  // toward the horizon, where the same column is ten airmasses deep and the
+  // haze reads as haze. `aim` is the fraction of the way from straight down to
+  // the tangent point, measured at the camera.
+  { name: 'nadir-1.05r', kRadii: 1.05, fov: 60, phase: 0, aim: 0 },
+  { name: 'oblique-1.05r', kRadii: 1.05, fov: 60, phase: 0, aim: 0.72 },
   { name: 'terminator-1.5r', kRadii: 1.5, fov: 50, phase: 90 },
   { name: 'night-1.05r', kRadii: 1.05, fov: 60, phase: 150 },
   // Inside the air: 1.008 R is 51 km up, under the 100 km top. No camera the
@@ -284,8 +294,8 @@ try {
 
     for (const pose of POSES) {
       const ok = await page.evaluate(
-        ([k, f, p]) => window.__moon.limbView('Earth', k, f, p),
-        [pose.kRadii, hero ? pose.fov : pose.fov, pose.phase],
+        ([k, f, p, a]) => window.__moon.limbView('Earth', k, f, p, a),
+        [pose.kRadii, pose.fov, pose.phase, pose.aim ?? 1],
       );
       if (!ok) throw new Error(`pose ${pose.name} refused`);
       // Pin after the pose: a framing hook is free to touch the near plane, and
@@ -299,7 +309,8 @@ try {
       await page.evaluate(() => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r))));
       const samples = await capture(page, path.join(outDir, `${pose.name}.${tier}`), {
         pose: pose.name, tier, body: 'Earth', kRadii: pose.kRadii, fovDeg: pose.fov,
-        phaseDeg: pose.phase, near: pinned.near, exposure: pinned.exposure, pixelRatio: 1,
+        phaseDeg: pose.phase, aimFrac: pose.aim ?? 1,
+        near: pinned.near, exposure: pinned.exposure, pixelRatio: 1,
         timeUtcMs: TIME_MS,
       });
       const mean = samples.flat().reduce((a, b) => a + b, 0) / (samples.length * 3);

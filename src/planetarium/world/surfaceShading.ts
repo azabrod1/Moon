@@ -14,12 +14,37 @@
  *   - Moon-shadow transits: a moon between the Sun and a fragment casts an
  *     umbra/penumbra spot onto the globe (Io's shadow crawling across Jupiter).
  *
+ * Aerial perspective is the fourth term and the only one that reads a texture:
+ * where a body has precomputed scattering tables, every surface fragment is
+ * multiplied by the transmittance of the air between it and the camera and has
+ * that air's own in-scattered light added on top (`color * T + S`). It lives
+ * here, rather than in the globe's material alone, because a streamed sector
+ * draws ABOVE the globe and would otherwise be the one unhazed layer, in
+ * exactly the near-band view the haze exists for.
+ *
  * The injected GLSL is byte-identical for every body (only uniforms differ), so
- * materials still share compiled programs — no custom cache key needed.
+ * materials still share compiled programs — no custom cache key needed. That
+ * holds for the air too: a body without tables takes the same text with
+ * `uAirDensity` at zero, rather than a shorter variant that would fork the
+ * program cache per body and per tier.
  */
 import * as THREE from 'three';
+import {
+  AERIAL_PERSPECTIVE_GLSL,
+  ATMOSPHERE_LOOKUP_BODY_GLSL,
+  atmosphereLookupUniforms,
+  atmosphereSessionSizes,
+  atmosphereTableDefines,
+  applyAtmosphereParams,
+  type AtmosphereTables,
+} from './atmosphereLut';
+import { AIRLIGHT_SCALE } from './atmosphereModel';
 
-export type SurfaceArchetype = 'airless' | 'rocky' | 'gas' | 'icy' | 'earth';
+/** The cloud deck is a surface class of its own: it hazes and eclipses like the
+ *  ground under it, and carries none of the ground's own night terms — the
+ *  globe beneath it already lifts the night side, and a second lift there would
+ *  count it twice. */
+export type SurfaceArchetype = 'airless' | 'rocky' | 'gas' | 'icy' | 'earth' | 'cloud';
 
 /** Ring annulus that shadows this body's surface (object-space radii, AU). */
 export interface RingShadowConfig {
@@ -29,6 +54,21 @@ export interface RingShadowConfig {
 
 /** Up to this many moons cast a shadow onto any one parent at once. */
 export const MAX_MOON_SHADOWS = 4;
+
+/**
+ * One body's atmosphere, as the uniform block every surface that draws that
+ * body reads: the tables, the parameters that address them, and the two
+ * numbers that bridge a bake normalised to unit WHITE irradiance back to the
+ * scene's own Sun. It lives inside `SurfaceShadingFx` so a streamed sector
+ * inherits it through the same re-augment that gives it the eclipse casters —
+ * a second uniform set is how a tile ends up hazed differently from the globe
+ * one pixel away.
+ *
+ * `uAirDensity` is the switch, not a scale: 0 on an airless body, on a device
+ * with no tier, and between a lost context and the re-bake. The air's actual
+ * depth is in the tables.
+ */
+export type SurfaceAirFx = Record<string, THREE.IUniform>;
 
 /** Per-frame-updated uniforms the mode feeds from each body's real position. */
 export interface SurfaceShadingFx {
@@ -44,6 +84,8 @@ export interface SurfaceShadingFx {
    *  black in any real exposure — the camera belongs to the ring or corona
    *  behind it, and the visibility lifts would read as fog on the silhouette. */
   uSilhouette: { value: number };
+  /** This body's air. Shared by every material that draws its surface. */
+  air: SurfaceAirFx;
 }
 
 interface NightFill {
@@ -61,6 +103,11 @@ const NIGHT_FILL: Record<SurfaceArchetype, NightFill> = {
   gas:     { color: 0x2a3550, strength: 0.08, termWidth: 0.24 },
   icy:     { color: 0x28384f, strength: 0.07, termWidth: 0.12 },
   earth:   { color: 0x1c2c44, strength: 0.05, termWidth: 0.16 },
+  // No fill of its own: the deck is translucent and the globe's fill shows
+  // through it, so a second one would double the night side's floor. The
+  // terminator width is the globe's, because the same rolloff gates the
+  // eclipse spot on both and the two have to move together.
+  cloud:   { color: 0x000000, strength: 0.0, termWidth: 0.16 },
 };
 
 // View-angle limb darkening: a body's disc dims toward its edge as the line of
@@ -74,6 +121,9 @@ const LIMB_DARKENING: Record<SurfaceArchetype, number> = {
   gas:     0.55,
   icy:     0.0,
   earth:   0.3,
+  // The globe under the deck carries the disc's edge; darkening the deck as
+  // well would dim that edge twice.
+  cloud:   0.0,
 };
 
 // Analytic stand-in for Saturn's ring opacity across the annulus (t: 0 inner …
@@ -120,14 +170,38 @@ float moonShadowOcclusion(vec3 toMoon, float moonRadius, vec3 sunDir, float sunT
 const SURFACE_VERTEX_DECLS = /* glsl */ `
 uniform vec3 uSunDirWorld;
 uniform vec3 uPlanetshineDir;
+uniform float uFrameSpin;
 varying vec3 vSunViewDir;
 varying vec3 vObjPos;
-varying vec3 vPlanetshineViewDir;`;
+varying vec3 vPlanetshineViewDir;
+varying vec3 vAirCam;
+varying vec3 vAirFrag;`;
 
 const SURFACE_VERTEX_BODY = /* glsl */ `
 vSunViewDir = normalize((viewMatrix * vec4(uSunDirWorld, 0.0)).xyz);
 vPlanetshineViewDir = normalize((viewMatrix * vec4(uPlanetshineDir, 0.0)).xyz);
-vObjPos = position;`;
+// vObjPos is the BODY frame — the frame the eclipse casters, the ring plane and
+// the local sun direction are all stated in. A mesh that carries a spin of its
+// own on top of the body's (the cloud deck drifts) would trace them at the
+// wrong longitude, putting a second eclipse spot on the clouds beside the one
+// on the ground. Zero for every mesh that shares the body's own frame, and the
+// branch is what keeps those byte-identical rather than off by a rounded cosine.
+if (uFrameSpin == 0.0) {
+  vObjPos = position;
+} else {
+  float spinC = cos(uFrameSpin);
+  float spinS = sin(uFrameSpin);
+  vObjPos = vec3(position.x * spinC + position.z * spinS,
+                 position.y,
+                 position.z * spinC - position.x * spinS);
+}
+// The air's geometry is frame-free: the camera and the fragment as offsets from
+// the body's centre, in world axes, against a world sun direction. The
+// fragment's offset comes off the rotation alone — going through world position
+// and back would subtract two numbers of the body's heliocentric size to get
+// one the size of its radius.
+vAirCam = cameraPosition - modelMatrix[3].xyz;
+vAirFrag = mat3(modelMatrix) * position;`;
 
 const SURFACE_FRAGMENT_DECLS = /* glsl */ `
 uniform vec3 uNightColor;
@@ -144,10 +218,19 @@ uniform float uPlanetshineIntensity;
 uniform float uSilhouette;
 uniform float uIcyRim;
 uniform float uLimbDarkening;
+uniform vec3 uSunDirWorld;
+uniform float uAirDensity;
+uniform float uPlanetRadius;
+uniform float uSolarIrradiance;
+uniform vec3 uAirlightScale;
+uniform sampler2D uTransmittance;
+uniform sampler3D uScattering;
 varying vec3 vSunViewDir;
 varying vec3 vObjPos;
 varying vec3 vPlanetshineViewDir;
-${RING_SHADOW_OPACITY_GLSL}${MOON_SHADOW_TRACE_GLSL}`;
+varying vec3 vAirCam;
+varying vec3 vAirFrag;
+${RING_SHADOW_OPACITY_GLSL}${MOON_SHADOW_TRACE_GLSL}${ATMOSPHERE_LOOKUP_BODY_GLSL}${AERIAL_PERSPECTIVE_GLSL}`;
 
 // Injected after lighting but before <opaque_fragment> writes outgoingLight into
 // gl_FragColor — so terms land in linear radiance (tone-mapped downstream) and
@@ -187,17 +270,38 @@ const SURFACE_FRAGMENT_BODY = /* glsl */ `{
   }
   // Moon-shadow transits: a moon sunward of this fragment casts an
   // umbra/penumbra spot (cone narrows with distance behind the moon).
+  // Accumulated into ONE visible-Sun factor rather than applied per caster,
+  // because the air in front of this fragment has to be dimmed by the same
+  // number: two expressions of the same eclipse drift apart, and the way that
+  // shows is a spot on the haze offset from the spot on the ground.
+  float sunVisible = 1.0;
   for (int i = 0; i < ${MAX_MOON_SHADOWS}; i++) {
     if (i >= uMoonShadowCount) break;
     float occ = moonShadowOcclusion(uMoonShadow[i].xyz - vObjPos, uMoonShadow[i].w, sd, uSunTan);
-    outgoingLight *= 1.0 - occ * dayFactor;
+    sunVisible *= 1.0 - occ * dayFactor;
   }
+  outgoingLight *= sunVisible;
   // Limb darkening: the disc dims toward its edge as the view ray grazes the
   // surface. mu = cos of the view angle — 1 at disc centre, 0 at the limb.
   // Applied last so it shades every lit term equally; 0 disables it.
   if (uLimbDarkening > 0.0) {
     float mu = max(dot(normalize(normal), normalize(vViewPosition)), 0.0);
     outgoingLight *= 1.0 - uLimbDarkening * (1.0 - mu);
+  }
+  // Aerial perspective, last: everything above is light leaving this fragment,
+  // and all of it crosses the same air on the way to the camera. What survives
+  // is x T; what the air itself sends is + S. Zero on a body with no
+  // tables, on a device with no tier, and between a lost context and the
+  // re-bake — the same text either way, so one program serves every body.
+  if (uAirDensity > 0.0) {
+    AerialSegment seg = aerialSegment(
+        vAirCam / uPlanetRadius, vAirFrag / uPlanetRadius, normalize(uSunDirWorld));
+    if (seg.valid) {
+      vec3 airT = aerialTransmittance(uTransmittance, seg);
+      vec3 airS = aerialInscatter(uScattering, seg, airT);
+      outgoingLight = outgoingLight * airT
+          + airS * uAirlightScale * (uSolarIrradiance * sunVisible);
+    }
   }
 }`;
 
@@ -210,12 +314,82 @@ export interface SurfaceShadingArgs {
   ringShadow?: RingShadowConfig;
   sunTan: number;
   fx: SurfaceShadingFx;
+  /** This mesh's own rotation about the pole, on top of the body's — the cloud
+   *  deck drifts, and its object space is that much out of the body frame the
+   *  eclipse casters are given in. Zero for a mesh that shares the frame. */
+  uFrameSpin: { value: number };
 }
 const augmentArgs = new WeakMap<THREE.Material, SurfaceShadingArgs>();
 
 /** The augmentation a material received, or undefined for a plain one. */
 export function surfaceShadingArgsOf(mat: THREE.Material): SurfaceShadingArgs | undefined {
   return augmentArgs.get(mat);
+}
+
+/** 1×1 stand-ins, shared by every augmented material: no sampler is ever left
+ *  for the renderer to fill with an empty of its own, which for a `sampler3D`
+ *  is the first place a driver would have to invent one. Sampling them is never
+ *  legal — wherever they are what is bound, `uAirDensity` is 0. */
+let airDummies: { map2D: THREE.DataTexture; map3D: THREE.Data3DTexture } | null = null;
+function surfaceAirDummies(): { map2D: THREE.DataTexture; map3D: THREE.Data3DTexture } {
+  if (!airDummies) {
+    const map2D = new THREE.DataTexture(new Uint8Array(4), 1, 1);
+    map2D.needsUpdate = true;
+    const map3D = new THREE.Data3DTexture(new Uint8Array(4), 1, 1, 1);
+    map3D.minFilter = THREE.LinearFilter;
+    map3D.magFilter = THREE.LinearFilter;
+    map3D.needsUpdate = true;
+    airDummies = { map2D, map3D };
+  }
+  return airDummies;
+}
+
+/** A body's air, switched off and pointed at the stand-ins. */
+export function createSurfaceAirFx(): SurfaceAirFx {
+  const dummies = surfaceAirDummies();
+  const air: SurfaceAirFx = {
+    ...atmosphereLookupUniforms(),
+    uAirDensity: { value: 0 },
+    uPlanetRadius: { value: 1 },
+    uSolarIrradiance: { value: 1 },
+    uAirlightScale: { value: new THREE.Vector3(...AIRLIGHT_SCALE) },
+  };
+  air.uTransmittance.value = dummies.map2D;
+  air.uIrradiance.value = dummies.map2D;
+  air.uScattering.value = dummies.map3D;
+  return air;
+}
+
+/**
+ * Point a body's surfaces at its finished tables and switch the air on.
+ * `planetRadius` is the surface radius in the same units the vertex stage hands
+ * over (world AU), because that is what the lookup divides by to reach the
+ * radius units the tables are baked in.
+ */
+export function bindSurfaceAir(
+  air: SurfaceAirFx,
+  tables: AtmosphereTables,
+  planetRadius: number,
+  solarIrradiance: number,
+): void {
+  applyAtmosphereParams(air, tables.params);
+  air.uTransmittance.value = tables.transmittance;
+  air.uScattering.value = tables.scattering;
+  air.uIrradiance.value = tables.irradiance;
+  air.uPlanetRadius.value = planetRadius;
+  air.uSolarIrradiance.value = solarIrradiance;
+  air.uAirDensity.value = 1;
+}
+
+/** Switch the air off and let go of the tables: a lost context frees their
+ *  textures, and a sampler still pointed at one is a bind of a dead name. */
+export function clearSurfaceAir(air: SurfaceAirFx): void {
+  if (air.uAirDensity.value === 0 && air.uScattering.value === surfaceAirDummies().map3D) return;
+  const dummies = surfaceAirDummies();
+  air.uAirDensity.value = 0;
+  air.uTransmittance.value = dummies.map2D;
+  air.uIrradiance.value = dummies.map2D;
+  air.uScattering.value = dummies.map3D;
 }
 
 export function augmentSurfaceMaterial(
@@ -229,6 +403,9 @@ export function augmentSurfaceMaterial(
    *  same values (a streamed sector tinted differently from the globe under
    *  it is a rectangle in the middle of an eclipse). */
   shared?: SurfaceShadingFx,
+  /** Share the spin of the mesh this material's own mesh hangs under (a
+   *  streamed sector is a child of the globe mesh, so it inherits its frame). */
+  sharedSpin?: { value: number },
 ): SurfaceShadingFx {
   const night = NIGHT_FILL[archetype];
 
@@ -245,8 +422,10 @@ export function augmentSurfaceMaterial(
     uPlanetshineDir: { value: new THREE.Vector3(1, 0, 0) },
     uPlanetshineIntensity: { value: 0 },
     uSilhouette: { value: 0 },
+    air: createSurfaceAirFx(),
   };
-  augmentArgs.set(mat, { archetype, ringShadow, sunTan, fx });
+  const uFrameSpin = sharedSpin ?? { value: 0 };
+  augmentArgs.set(mat, { archetype, ringShadow, sunTan, fx, uFrameSpin });
   const uNightColor = { value: new THREE.Color(night.color) };
   const uNightStrength = { value: night.strength };
   const uTermWidth = { value: night.termWidth };
@@ -273,6 +452,8 @@ export function augmentSurfaceMaterial(
     shader.uniforms.uSilhouette = fx.uSilhouette;
     shader.uniforms.uIcyRim = uIcyRim;
     shader.uniforms.uLimbDarkening = uLimbDarkening;
+    shader.uniforms.uFrameSpin = uFrameSpin;
+    for (const name of Object.keys(fx.air)) shader.uniforms[name] = fx.air[name];
 
     shader.vertexShader = shader.vertexShader
       .replace('#include <common>', `#include <common>${SURFACE_VERTEX_DECLS}`)
@@ -282,6 +463,11 @@ export function augmentSurfaceMaterial(
       .replace('#include <common>', `#include <common>${SURFACE_FRAGMENT_DECLS}`)
       .replace('#include <opaque_fragment>', `${SURFACE_FRAGMENT_BODY}\n#include <opaque_fragment>`);
   };
+  // The table dimensions are #defines, and a define is part of three's program
+  // cache key — so every augmented material carries the same set, whether or
+  // not its body has any air. Split them per body and the cache forks per body;
+  // omit them and the injected lookup does not compile at all.
+  mat.defines = { ...mat.defines, ...atmosphereTableDefines(atmosphereSessionSizes()) };
   mat.needsUpdate = true;
   return fx;
 }

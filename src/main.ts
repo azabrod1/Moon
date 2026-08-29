@@ -582,8 +582,11 @@ function installDevHooks() {
       planetariumMode?.devFrameBody(name, fillFraction, phaseAngleDeg, distMul, offNdcX, offNdcY) ?? false,
     viewFrom: (fromName: string, toName: string, fovDeg?: number) =>
       planetariumMode?.devViewFrom(fromName, toName, fovDeg) ?? false,
-    limbView: (name: string, kRadii?: number, fovDeg?: number, phaseDeg?: number) =>
-      planetariumMode?.devLimbView(name, kRadii, fovDeg, phaseDeg) ?? false,
+    // aimFrac swings the aim from straight down (0) to the tangent point (1,
+    // the default): the poses between them are the ones that look along the
+    // ground toward the horizon.
+    limbView: (name: string, kRadii?: number, fovDeg?: number, phaseDeg?: number, aimFrac?: number) =>
+      planetariumMode?.devLimbView(name, kRadii, fovDeg, phaseDeg, aimFrac) ?? false,
     frameSun: (distanceAU?: number, fovDeg?: number, offNdcX?: number, offNdcY?: number) =>
       planetariumMode?.devFrameSun(distanceAU, fovDeg, offNdcX, offNdcY) ?? false,
     frameSunBehindShip: (

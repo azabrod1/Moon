@@ -14,7 +14,7 @@ import {
 } from './atmosphereModel';
 import { atmosphereTableDefines } from './atmosphereLut';
 import { atmosphereShellRay, createAtmosphereShellMaterial, type Vec3 } from './atmosphereShell';
-import { MOON_SHADOW_TRACE_GLSL } from './surfaceShading';
+import { MOON_SHADOW_TRACE_GLSL, createSurfaceAirFx } from './surfaceShading';
 
 const src = (relative: string): string =>
   readFileSync(fileURLToPath(new URL(relative, import.meta.url)), 'utf8');
@@ -163,6 +163,7 @@ describe('the LUT shell material', () => {
       uPlanetshineDir: { value: new THREE.Vector3() },
       uPlanetshineIntensity: { value: 0 },
       uSilhouette: { value: 0 },
+      air: createSurfaceAirFx(),
     };
     const mat = createAtmosphereShellMaterial({
       planetRadius: RADIUS_AU, body: 'Earth', sizes: ATMOSPHERE_TABLE_SIZES_FULL, fx,

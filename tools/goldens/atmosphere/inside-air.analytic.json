@@ -5,6 +5,7 @@
   "kRadii": 1.008,
   "fovDeg": 70,
   "phaseDeg": 0,
+  "aimFrac": 1,
   "near": 1e-8,
   "exposure": 1,
   "pixelRatio": 1,

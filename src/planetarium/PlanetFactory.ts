@@ -29,6 +29,12 @@ import { debugWarn } from '../shared/debug';
 import { applyTextureDefaults, clampTier, resolveTextureUrl, type TextureTier, type MapKind, touchTextureBudget } from './world/texturePolicy';
 import { augmentSurfaceMaterial, type SurfaceArchetype, type SurfaceShadingFx } from './world/surfaceShading';
 import { createAtmosphereShellMaterial } from './world/atmosphereShell';
+import {
+  AERIAL_PERSPECTIVE_GLSL,
+  ATMOSPHERE_LOOKUP_GLSL,
+  atmosphereSessionSizes,
+  atmosphereTableDefines,
+} from './world/atmosphereLut';
 import { ATMOSPHERE_TABLE_SIZES_FULL, type AtmosphereTableSizes } from './world/atmosphereModel';
 import { queueTextureWarm } from './world/textureWarmer';
 import { createLensShaderUniforms } from '../shared/three/lensShader';
@@ -1591,9 +1597,19 @@ export async function createPlanetMesh(planet: PlanetData): Promise<PlanetMesh> 
       uniforms: {
         nightTexture: { value: nightTex },
         sunDirection: { value: new THREE.Vector3(1, 0, 0) },
+        // The body's own air, the same objects the globe and the deck read, so
+        // the lights dim through exactly the column that hazes the ground.
+        ...fx.air,
       },
+      // The lookup half of the table GLSL, then the aerial functions, then the
+      // shader that calls them: the conventions here are not recoverable from
+      // the textures, so there is one text and every consumer prepends it. The
+      // standalone form, with its own precision block and PI — a ShaderMaterial
+      // gets no <common> chunk to supply either.
       vertexShader: earthNightVertexShader,
-      fragmentShader: earthNightFragmentShader,
+      fragmentShader:
+        ATMOSPHERE_LOOKUP_GLSL + AERIAL_PERSPECTIVE_GLSL + earthNightFragmentShader,
+      defines: atmosphereTableDefines(atmosphereSessionSizes()),
       transparent: true,
       blending: THREE.AdditiveBlending,
       depthWrite: false,
@@ -1614,6 +1630,19 @@ export async function createPlanetMesh(planet: PlanetData): Promise<PlanetMesh> 
     // directions — its upgrade handle and its late slot — and both have to be
     // able to tell the map construction got from the procedural fallback.
     cloudMat.userData.colorTierRank = initialColorTierRank(cloudTex);
+    // The deck shades like the surface under it: the globe's own eclipse
+    // casters (which it has never had — a moon's umbra crossed the ground and
+    // left the clouds above it in full sun) and the air in front of it.
+    //
+    // The alpha blend is what makes `x T + S` come out right on two layers, and
+    // it only works because this material is NOT premultiplied: the composite is
+    // a(T_c C + S_c) + (1-a)(T_g G + S_g), which counts the in-scatter exactly
+    // once — the short path on the fraction of the pixel that stops at the deck,
+    // the full path on the fraction that reaches the ground. Convert it to
+    // premultiplied alpha and the airlight is silently scaled by the cloud
+    // fraction. The frame spin is fed per frame beside the mesh's own drift, so
+    // the eclipse spot on the deck stays over the one on the ground.
+    augmentSurfaceMaterial(cloudMat, 'cloud', ringShadow, sunTan, fx);
     cloudsMesh = new THREE.Mesh(cloudGeo, cloudMat);
     group.add(cloudsMesh);
     // The cloud deck is its own colour map on its own shell, so it carries its

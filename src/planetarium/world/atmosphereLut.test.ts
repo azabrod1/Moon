@@ -144,6 +144,24 @@ describe('the bake step list', () => {
       .toEqual(['transmittance', 'irradiance', 'singleScattering', 'combine', 'probe']);
   });
 
+  it('a link step forces the driver\u2019s build before it primes with a draw', () => {
+    // A compile reporting ready has only had its link JOB finished; on
+    // ANGLE/Metal the pipeline behind it is built by the first call that needs
+    // the program. Left to the prime draw, that build is what the draw costs.
+    // Running the shared resolve phase here first is what makes the split in
+    // the timing row mean anything, and it must run BEFORE the prime draw.
+    const lut = readFileSync(resolve(__dirname, 'atmosphereLut.ts'), 'utf8');
+    const step = /private linkStep\([\s\S]*?\n  \}/.exec(lut)?.[0] ?? '';
+    expect(step).toContain('resolveProgramLinks(this.renderer');
+    expect(step.indexOf('resolveProgramLinks')).toBeLessThan(step.indexOf('const primeStart'));
+    // Every program the compile just created, on this step's own frame: the
+    // step already owns a frame, so spreading them further only adds frames.
+    expect(step).toMatch(/resolveProgramLinks\(this\.renderer, \{\s*\n\s*perFrame: Number\.POSITIVE_INFINITY,/);
+    // The resolve is main-thread time inside the step and has to be counted as
+    // such, or a cold link vanishes from the bake's own submission total.
+    expect(lut).toContain('submitMs += timing.submitMs + timing.resolveMs + timing.primeMs;');
+  });
+
   it('adds no draws and drops none', () => {
     // Bruneton's passes at four orders over the full tables: transmittance and
     // the direct irradiance, the two single-scattering deltas and their

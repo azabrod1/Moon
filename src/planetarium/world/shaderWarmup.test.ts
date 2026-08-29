@@ -1,4 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 import * as THREE from 'three';
 import {
   resolveProgramLinks,
@@ -500,5 +502,23 @@ describe('warmUpSceneShaders resolve phase', () => {
     expect(onError).toHaveBeenCalledWith('resolve', expect.any(Error));
     expect(resolved).toEqual([]);
     expect(rig.renders).toHaveLength(1);
+  });
+});
+
+describe('how the app spends the resolve phase', () => {
+  const mode = (): string => readFileSync(resolve(__dirname, '../PlanetariumMode.ts'), 'utf8');
+
+  it('resolves everything behind the load screen and one to a frame in the idle', () => {
+    // Under the load screen a yielded frame IS boot time, and the driver's
+    // builds are paid under it either way, so the boot warm-up takes them all
+    // in one task.
+    expect(mode()).toMatch(
+      /probeGroups: \[probes\.group, shadowProbes\.group\],[\s\S]{0,400}?resolvePerFrame: Number\.POSITIVE_INFINITY,/,
+    );
+    // The idle warm-up must NOT: nothing covers those frames, so a build that
+    // shares one with another is the dropped frame this exists to remove.
+    const shell = /private async warmAtmosphereShellProgram[\s\S]*?\n  \}/.exec(mode())?.[0] ?? '';
+    expect(shell).toContain('warmUpSceneShaders(');
+    expect(shell).not.toContain('resolvePerFrame');
   });
 });

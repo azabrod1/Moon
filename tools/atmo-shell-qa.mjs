@@ -6,9 +6,10 @@
 // 8 R, the near band from 1.05 R aimed over the horizon, straight down and
 // obliquely along the ground from the same stand point (the two the aerial
 // perspective is judged on), the terminator edge-on from 1.5 R, the night side
-// past it under three Moons (a crescent, a full one and none), one pose INSIDE
-// the air (only a dev pose can reach it), and the volume-compare ghost, whose
-// shell is pinned analytic.
+// past it under three Moons (a crescent, a full one and none), a total solar
+// eclipse with the umbra on the day disc, one pose INSIDE the air (only a dev
+// pose can reach it), and the volume-compare ghost, whose shell is pinned
+// analytic.
 //
 // A pose can carry a clock of its own, and the night ones do: what lights the
 // night side is the Moon, and which Moon that is comes off the ephemeris at the
@@ -22,6 +23,7 @@
 //   npx vite --port 5640 --strictPort
 //   node tools/atmo-shell-qa.mjs --out=tools/goldens/atmosphere
 //   node tools/atmo-shell-qa.mjs --out=/tmp/moon-shots/atmo2 --w=1600 --h=900 --hero
+//   node tools/atmo-shell-qa.mjs --poses=eclipse-2.5r          # one pose, re-checked
 //
 // Writes <pose>.<tier>.png plus <pose>.<tier>.json — 20 sampled radiances on a
 // fixed grid and a 41-point scan across the limb, which is the part a test can
@@ -52,6 +54,10 @@ const W = Number(arg('w', '512'));
 const H = Number(arg('h', '512'));
 const hero = flag('hero'); // wide framing set for the side-by-side, not the goldens
 const only = arg('tiers', 'analytic,lut,nofloat').split(',');
+// A subset of the poses, for a targeted re-check. The pin file is always
+// re-emitted from every JSON on disk, so a filtered run leaves the rest alone
+// rather than dropping them.
+const onlyPoses = arg('poses', '');
 // Default near plane, in AU. Per pose, because the right value depends on how
 // close the camera is: 1e-6 AU is 149.6 km, which is fine at 1.05 R (the camera
 // is 319 km up) and clips the globe and half the shell away at 1.008 R (51 km
@@ -107,6 +113,15 @@ const POSES = [
   // useless pose for judging moonlight.
   { name: 'night-1.05r-moonlit', kRadii: 1.05, fov: 60, phase: 150, time: '2026-04-02T02:00:00Z' },
   { name: 'night-1.05r-newmoon', kRadii: 1.05, fov: 60, phase: 150, time: '2026-03-19T01:00:00Z' },
+  // An eclipse, because two commits now argue the umbra from shared uniforms
+  // and a shared GLSL function and nothing has ever measured it. 2027-08-02 is
+  // a central total eclipse (gamma 0.14), so the shadow lands near the
+  // sub-solar point rather than out by the limb where a nadir frame would clip
+  // it, and the Moon is close enough that its umbra reaches the ground at all
+  // -- an annular eclipse feeds no caster, by the same test the app uses. The
+  // whole day disc is in frame from 2.5 R, which is the only way to see the
+  // spot on the ground and the spot on the deck above it at once.
+  { name: 'eclipse-2.5r', kRadii: 2.5, fov: 60, phase: 0, aim: 0, time: '2027-08-02T10:06:00Z' },
   // Inside the air: 1.008 R is 51 km up, under the 100 km top. No camera the
   // app steers can be here — this is the only exercise the inside branch gets,
   // and it needs a near plane under 51 km or the frame is mostly clipped globe:
@@ -121,6 +136,20 @@ const POSES = [
 // shell's draw order moved: the fallback is what it always was EXCEPT for the
 // cloud-deck notch across the innermost band of the limb, which is gone on
 // purpose. Nothing else about it changed, and this is where that is recorded.
+//
+// What "unchanged" means for it, measured rather than asserted (tools/
+// atmo-pixdiff.mjs): adding the aerial term left this tier byte-identical at
+// four of its five poses, and at 8 R moved 1362 of 262144 pixels — 1348 of them
+// by exactly 1/255, the rest by up to 5. Those pixels are spread over the
+// DISC'S AREA, not gathered in a ring at its edge: their median radius about
+// their own centroid is 53.8 px, 0.68 of the 79.4 px the furthest of them
+// reaches, where an even scatter over a disc gives 0.707 and a ring gives ~1.
+// The analytic tier moved the same way at the same pose (1581 px, 1576 of them
+// by 1, 0.73), and the volume-compare ghost — a scene with no air in it at all
+// — moved 269 px by 1. The arithmetic is unchanged with the air off; what moved
+// is what a compiler does with a longer shader, on the pose where a pixel spans
+// the most surface. Everything is inside the goldens' max(1, 3 %) tolerance,
+// and at 1.05 R, where the deck fills the frame, not one pixel moves.
 const TIER_URLS = {
   analytic: '/?auto=planetarium',
   lut: '/?auto=planetarium',
@@ -145,6 +174,8 @@ async function emitPins() {
     kRadii: ${g.kRadii ?? 'null'},
     near: ${g.near ?? 'null'},
     moonPhaseDeg: ${g.moonPhaseDeg == null ? 'null' : g.moonPhaseDeg.toFixed(4)},
+    casterCount: ${g.casterCount ?? 0},
+    cloudFrameSpin: ${g.cloudFrameSpin == null ? 'null' : g.cloudFrameSpin.toFixed(6)},
     samples: [
 ${rows(g.samples)}
     ],
@@ -187,6 +218,15 @@ export interface AtmosphereGoldenPin {
    *  full Moon over the night side, 180 a new one and no second source at all.
    *  Null where nothing baked tables to light. */
   readonly moonPhaseDeg: number | null;
+  /** How many moons were casting a shadow onto this body when the frame was
+   *  drawn. Nonzero at one pose, which is the only place the eclipse the ground
+   *  and the air share is measured rather than argued. */
+  readonly casterCount: number;
+  /** The cloud deck's own spin, radians, on top of the body's. The deck traces
+   *  the casters in the body frame, so this is exactly the correction that
+   *  keeps the umbra on the clouds over the one on the ground; null where no
+   *  deck was drawn. */
+  readonly cloudFrameSpin: number | null;
   readonly samples: readonly (readonly [number, number, number])[];
   readonly limbScan: readonly (readonly [number, number, number])[];
 }
@@ -319,6 +359,7 @@ try {
     }
 
     for (const pose of POSES) {
+      if (onlyPoses && !onlyPoses.split(',').includes(pose.name)) continue;
       // The clock FIRST, then the framing. A pose is an absolute camera
       // position worked out from where the body is, so moving the clock after
       // it leaves the camera pointing at where Earth used to be — seventeen
@@ -342,6 +383,10 @@ try {
       // The Moon the frame was taken under, read off the uniforms the shaders
       // are about to draw with rather than assumed from the date.
       const night = await page.evaluate(() => window.__moon.atmoNight?.('Earth') ?? null);
+      // And the eclipse the frame was taken under: the casters the ground and
+      // the air in front of it are tracing, and the spin the deck above them is
+      // drawn at. Read off the uniforms rather than assumed from the date.
+      const shadow = await page.evaluate(() => window.__moon.surfaceCasters?.('Earth') ?? null);
       const samples = await capture(page, path.join(outDir, `${pose.name}.${tier}`), {
         pose: pose.name, tier, body: 'Earth', kRadii: pose.kRadii, fovDeg: pose.fov,
         phaseDeg: pose.phase, aimFrac: pose.aim ?? 1,
@@ -349,6 +394,9 @@ try {
         timeUtcMs: poseTime,
         moonPhaseDeg: night?.phaseDeg ?? null,
         moonIrradiance: night?.moonIrradiance ?? null,
+        casterCount: shadow?.count ?? 0,
+        casters: shadow?.casters ?? [],
+        cloudFrameSpin: shadow?.cloudFrameSpin ?? null,
       });
       const mean = samples.flat().reduce((a, b) => a + b, 0) / (samples.length * 3);
       const peak = Math.max(...samples.flat());
@@ -377,8 +425,10 @@ try {
     await capture(page, path.join(outDir, 'volume-compare.analytic'), {
       pose: 'volume-compare', tier: 'analytic', body: 'ghost',
       near: null, exposure: 1, pixelRatio: 1, timeUtcMs: null,
-      // Its own mode, its own scene, no body and so no Moon over one.
+      // Its own mode, its own scene, no body and so no Moon over one, and
+      // nothing to cast a shadow on.
       moonPhaseDeg: null, moonIrradiance: null,
+      casterCount: 0, casters: [], cloudFrameSpin: null,
     });
     console.log('[atmo-qa] volume-compare ghost captured');
     if (errors.length) for (const e of errors.slice(0, 5)) console.log('     ', e);

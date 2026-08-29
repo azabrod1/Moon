@@ -4,16 +4,28 @@ import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { earthNightFragmentShader, earthNightVertexShader } from '../../shared/shaders/atmosphere';
-import { ATMOSPHERE_TABLE_SIZES_FULL, atmosphereParams } from './atmosphereModel';
+import {
+  ATMOSPHERE_TABLE_SIZES_FULL,
+  atmosphereParams,
+  profileDensity,
+  transmittanceOverSegment,
+  type AtmosphereParams,
+  type RGB,
+} from './atmosphereModel';
 import {
   AERIAL_PERSPECTIVE_GLSL,
   ATMOSPHERE_LOOKUP_BODY_GLSL,
   ATMOSPHERE_LOOKUP_GLSL,
+  aerialSegmentRay,
   atmosphereTableDefines,
   type AtmosphereTables,
 } from './atmosphereLut';
 import { createAtmosphereShellMaterial } from './atmosphereShell';
+import { PLANETS } from '../planets/planetData';
+import { MOONS } from '../planets/moonData';
+import { KM_PER_AU } from '../../astronomy/constants';
 import {
+  AIR_LOOKUP_RADIUS,
   augmentSurfaceMaterial,
   bindSurfaceAir,
   clearSurfaceAir,
@@ -105,7 +117,7 @@ describe('the injected surface shader', () => {
     expect(hash(shader.vertexShader))
       .toBe('862f7224fafb480070aebf0c7c125dddbd78c879780eb072e96988333154322a');
     expect(hash(shader.fragmentShader))
-      .toBe('6beea9f484c0f7dd8842b1b2c738ee483e9eadea6cc7bab91712b57c95ac1ff4');
+      .toBe('bedb32a46094864f50f752f725deccea0c52d55f032f75dfa34652a59783147c');
   });
 
   it('reuses the tables\' own lookup GLSL rather than a second transcription', () => {
@@ -219,6 +231,32 @@ describe('the eclipse on the ground and on the air', () => {
     expect(glsl).toContain('uSolarIrradiance * sunVisible');
   });
 
+  it('lets a moon whose umbra only reaches near perigee be a caster at all', () => {
+    // A caster's umbra reaches the surface when the moon is wider than the
+    // shadow cone has converged over the distance it stands off — radius >
+    // distance x the Sun's angular radius there. Earth's Moon fails that at its
+    // MEAN distance and passes it well before perigee, which is what a total
+    // solar eclipse IS. So the candidate set has to ORDER on the mean rather
+    // than reject on it, or the one eclipse anybody would go and look at casts
+    // no shadow on the ground and none on the air in front of it.
+    const sunAngularRadius = (695_700 / KM_PER_AU) / 1.0149;   // Earth in early August
+    const moon = MOONS.find((m) => m.name === 'Moon')!;
+    const reachLimitKm = (moon.radiusAU / sunAngularRadius) * KM_PER_AU;
+    expect(reachLimitKm).toBeLessThan(384_400);      // not at the mean distance
+    expect(reachLimitKm).toBeGreaterThan(356_500);   // comfortably so at perigee
+    const mode = src('../PlanetariumMode.ts');
+    const casterBlock = mode.slice(
+      mode.indexOf('const reachesAtMeanDistance'),
+      mode.indexOf('this.moonShadowCasterCache.set'),
+    );
+    expect(casterBlock).not.toBe('');
+    expect(casterBlock).toContain('reachesAtMeanDistance(b)');
+    expect(casterBlock).not.toMatch(/\.filter\([^)]*reachesAtMeanDistance/);
+    // And the live per-frame check, which is what actually admits one, still
+    // measures the distance the moon is at right now.
+    expect(mode).toContain('&& m.data.radiusAU > offset.length() * sunTanAtParent');
+  });
+
   it('gives the cloud deck the casters it never had, in the body\'s frame', () => {
     const factory = src('../PlanetFactory.ts');
     // The deck shares the globe's fx — the same caster values, not a second set.
@@ -253,6 +291,154 @@ describe('the cloud deck', () => {
     const surface = src('./surfaceShading.ts');
     expect(surface).toMatch(/cloud:\s*\{ color: 0x000000, strength: 0\.0/);
     expect(surface).toMatch(/cloud:\s*0\.0,/);
+  });
+});
+
+describe('the segment, against the reference integral', () => {
+  // aerialSegment is the third transcription of the entry-point shift and the
+  // only one that also carries a LENGTH: the tables hold whole paths from a
+  // point to the far boundary, so a segment is a difference of two of them and
+  // its length is the only thing that says which difference. A sha of the
+  // injected text catches an edit; it does not catch a WRONG edit, and neither
+  // does a re-recorded capture. This does: the mirror's coordinates are fed to
+  // the module's own reference integral and held against a brute-force
+  // integration along the SAME segment in 3D, which shares no geometry code
+  // with it at all.
+  const params = atmosphereParams('Earth');
+  type Point = readonly [number, number, number];
+
+  /** Optical depth along the straight line from `camera` to `point`, summed in
+   *  3D and truncated at the modelled top exactly as the model is. Nothing here
+   *  knows about entry points, mu, or the folded axis. */
+  function opticalDepthAlongLine(camera: Point, point: Point, samples = 200000): RGB {
+    const step: Point = [point[0] - camera[0], point[1] - camera[1], point[2] - camera[2]];
+    const length = Math.hypot(step[0], step[1], step[2]);
+    let rayleigh = 0;
+    let mie = 0;
+    let ozone = 0;
+    for (let i = 0; i <= samples; i++) {
+      const t = i / samples;
+      const radius = Math.hypot(
+        camera[0] + step[0] * t, camera[1] + step[1] * t, camera[2] + step[2] * t,
+      );
+      if (radius > params.topRadius) continue;   // above the model there is no air
+      const altitude = radius - params.bottomRadius;
+      const weight = i === 0 || i === samples ? 0.5 : 1;
+      rayleigh += profileDensity(params.rayleighDensity, altitude) * weight;
+      mie += profileDensity(params.mieDensity, altitude) * weight;
+      ozone += profileDensity(params.absorptionDensity, altitude) * weight;
+    }
+    const dx = length / samples;
+    return [0, 1, 2].map((c) => dx * (
+      params.rayleighScattering[c] * rayleigh
+      + params.mieExtinction[c] * mie
+      + params.absorptionExtinction[c] * ozone
+    )) as unknown as RGB;
+  }
+
+  /** What the shader's coordinates say the segment's optical depth is. */
+  function opticalDepthFromSegment(
+    p: AtmosphereParams, camera: Point, point: Point,
+  ): { tau: RGB; transmittance: RGB } {
+    const seg = aerialSegmentRay(p, camera, point, [1, 0, 0]);
+    expect(seg.valid).toBe(true);
+    const transmittance = transmittanceOverSegment(p, seg.r, seg.mu, seg.d);
+    return { tau: transmittance.map((t) => -Math.log(t)) as unknown as RGB, transmittance };
+  }
+
+  // Straight down at the ISS's altitude, and the same stand point looking along
+  // the ground to a point 17.5 degrees away — the two poses the goldens capture
+  // and the two regimes the segment has: one airmass and about twenty.
+  const CAMERA: Point = [1.05, 0, 0];
+  const OBLIQUE = (17.5 * Math.PI) / 180;
+  const POSES: { name: string; point: Point }[] = [
+    { name: 'nadir', point: [1, 0, 0] },
+    { name: 'along the ground, 17.5 degrees away', point: [Math.cos(OBLIQUE), Math.sin(OBLIQUE), 0] },
+  ];
+
+  for (const pose of POSES) {
+    it(`agrees with a 3D integration of the same line (${pose.name})`, () => {
+      const mine = opticalDepthFromSegment(params, CAMERA, pose.point);
+      const reference = opticalDepthAlongLine(CAMERA, pose.point);
+      for (let c = 0; c < 3; c++) {
+        expect(reference[c]).toBeGreaterThan(0.01);   // a pose with no air proves nothing
+        expect(
+          Math.abs(mine.tau[c] - reference[c]) / reference[c],
+          `${pose.name} ${'rgb'[c]}: tau ${mine.tau[c]} vs ${reference[c]}`,
+        ).toBeLessThan(0.05);
+      }
+    });
+  }
+
+  it('ends at the fragment, not at the ground under it', () => {
+    // The segment is geometric, never a ray-vs-ground solve: a point held above
+    // the surface has to come back with the shorter path, or every raised layer
+    // is hazed as though it sat on the ground.
+    const ground = opticalDepthFromSegment(params, CAMERA, [1, 0, 0]);
+    const raised = opticalDepthFromSegment(params, CAMERA, [1.005, 0, 0]);
+    for (let c = 0; c < 3; c++) expect(raised.tau[c]).toBeLessThan(ground.tau[c]);
+  });
+
+  it('returns nothing for a ray that never reaches the air', () => {
+    // Both rejects, and neither may return a NaN: an invalid segment is how a
+    // fragment outside the tables' domain gets no air rather than a speckle.
+    const missesEntirely = aerialSegmentRay(params, [8, 0, 0], [8, 1, 0], [1, 0, 0]);
+    expect(missesEntirely.valid).toBe(false);
+    const zeroLength = aerialSegmentRay(params, [1.05, 0, 0], [1.05, 0, 0], [1, 0, 0]);
+    expect(zeroLength.valid).toBe(false);
+  });
+});
+
+describe('where the cloud deck looks its air up', () => {
+  const params = atmosphereParams('Earth');
+  const CAMERA = [1.05, 0, 0] as const;
+
+  it('is a physical cloud top, not the mesh radius', () => {
+    // 10 km up. The mesh is at 1.01 R because up close the deck owns the
+    // silhouette, and 1.01 R is 64 km — above the whole air.
+    const earthRadiusKm = PLANETS.find((p) => p.name === 'Earth')!.radiusKm;
+    expect((AIR_LOOKUP_RADIUS.cloud - 1) * earthRadiusKm).toBeCloseTo(10, 9);
+    expect((1.01 - 1) * earthRadiusKm).toBeGreaterThan(60);
+    expect(AIR_LOOKUP_RADIUS.cloud).toBeLessThan(params.topRadius);
+    expect(AIR_LOOKUP_RADIUS.cloud).toBeGreaterThan(params.bottomRadius);
+    // Every other surface ends its segment at its own fragment.
+    for (const archetype of ['airless', 'rocky', 'gas', 'icy', 'earth'] as const) {
+      expect(AIR_LOOKUP_RADIUS[archetype], archetype).toBe(0);
+    }
+  });
+
+  it('is the difference between no air at all and the haze band', () => {
+    // The mesh radius makes `x T + S` a no-op, and the deck's own 0.35 alpha
+    // then takes 35 % of the ground's airlight off every pixel it covers.
+    const at = (radius: number, angleDeg: number): RGB => {
+      const a = (angleDeg * Math.PI) / 180;
+      const seg = aerialSegmentRay(
+        params, CAMERA, [radius * Math.cos(a), radius * Math.sin(a), 0], [1, 0, 0],
+      );
+      expect(seg.valid).toBe(true);
+      return transmittanceOverSegment(params, seg.r, seg.mu, seg.d);
+    };
+    // Straight down: the mesh sees no air; the cloud top sees about a quarter
+    // of the ground's column.
+    expect(at(1.01, 0)[2]).toBeGreaterThan(0.999);
+    expect(at(AIR_LOOKUP_RADIUS.cloud, 0)[2]).toBeLessThan(0.94);
+    // And along the ground, which is the band this exists for: the deck at its
+    // mesh radius keeps essentially all its contrast where a photograph has
+    // none left.
+    expect(at(1.01, 17.5)[2]).toBeGreaterThan(0.99);
+    expect(at(AIR_LOOKUP_RADIUS.cloud, 17.5)[2]).toBeLessThan(0.1);
+  });
+
+  it('substitutes the radius and leaves the direction alone', () => {
+    const glsl = compile(augmented('cloud')).fragmentShader;
+    expect(glsl).toContain('vec3 airEnd = uAirLookupRadius > 0.0');
+    expect(glsl).toContain('? normalize(vAirFrag) * uAirLookupRadius');
+    expect(glsl).toContain(': vAirFrag / uPlanetRadius;');
+    // One text for every surface: the deck differs by the uniform's value only.
+    expect(compile(augmented('earth')).fragmentShader).toBe(glsl);
+    const uniforms = compile(augmented('cloud')).uniforms;
+    expect(uniforms.uAirLookupRadius.value).toBe(AIR_LOOKUP_RADIUS.cloud);
+    expect(compile(augmented('earth')).uniforms.uAirLookupRadius.value).toBe(0);
   });
 });
 

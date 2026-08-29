@@ -16,6 +16,9 @@
     0,
     0
   ],
+  "casterCount": 0,
+  "casters": [],
+  "cloudFrameSpin": 3.32225303522862,
   "width": 512,
   "height": 512,
   "grid": [

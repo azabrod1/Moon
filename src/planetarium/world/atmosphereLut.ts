@@ -57,8 +57,11 @@ import {
   ATMOSPHERE_TABLE_SIZES_HALF,
   atmosphereParams,
   bodySolarIrradianceScale,
+  clampCosine,
+  clampRadius,
   computeSingleScattering,
   opticalDepthToTopBoundary,
+  rayIntersectsGround,
   scatteringTexture3DCoords,
   scatteringTextureWidth,
   scatteringUvwzFromRMuMuSNu,
@@ -467,6 +470,11 @@ export const ATMOSPHERE_LOOKUP_GLSL = ATMOSPHERE_LOOKUP_PREAMBLE_GLSL + ATMOSPHE
  *
  * Needs ATMOSPHERE_LOOKUP_BODY_GLSL (or ATMOSPHERE_LOOKUP_GLSL) ahead of it,
  * the table sizes as #defines, and the uniform block filled.
+ *
+ * `aerialSegmentRay` below is `aerialSegment` in TypeScript, so the one part of
+ * this a unit test can reach — where the segment starts, how long it is, which
+ * half of the folded mu axis it reads — is held against the module's own
+ * reference integral rather than against a re-recorded capture.
  */
 export const AERIAL_PERSPECTIVE_GLSL = /* glsl */`
 struct AerialSegment {
@@ -571,6 +579,99 @@ vec3 aerialInscatter(sampler3D tex, AerialSegment seg, vec3 transmittance) {
       + mie * miePhaseFunction(uMiePhaseG, seg.nu);
 }
 `;
+
+// ---------------------------------------------------------------------------
+// The segment setup, in TypeScript
+// ---------------------------------------------------------------------------
+
+type Vec3 = readonly [number, number, number];
+
+const dot3 = (a: Vec3, b: Vec3): number => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+
+/** Where a camera-to-point segment lands in the tables. The same fields
+ *  `AerialSegment` carries in GLSL, in the same order. */
+export interface AerialSegmentRay {
+  /** False for a segment the tables describe nothing of: the ray misses the
+   *  air, the air is behind the camera, or the two ends coincide. */
+  readonly valid: boolean;
+  readonly hitsGround: boolean;
+  /** The four table coordinates, AT THE ENTRY POINT. */
+  readonly r: number;
+  readonly mu: number;
+  readonly muS: number;
+  readonly nu: number;
+  /** Entry point -> the point being shaded, in radius units. */
+  readonly d: number;
+  readonly origin: Vec3;
+  readonly view: Vec3;
+}
+
+/**
+ * Mirrors `aerialSegment` in AERIAL_PERSPECTIVE_GLSL line for line, in the
+ * frame the shader works in: the body's own, radius units, origin at its
+ * centre. A shader cannot be unit-tested and this can, so the two are kept in
+ * step by hand.
+ *
+ * Three things here exist nowhere else in the app and are what a test can
+ * reach: the segment LENGTH (the tables hold whole paths to the boundary, so a
+ * segment is a difference and its length is the only thing that says which
+ * difference), the `hitsGround` flag that picks which half of the folded mu
+ * axis both ends are read from, and the `dEntry >= span` reject for a point
+ * the ray reaches before the air does.
+ */
+export function aerialSegmentRay(
+  params: AtmosphereParams,
+  camera: Vec3,
+  point: Vec3,
+  sun: Vec3,
+): AerialSegmentRay {
+  const miss: AerialSegmentRay = {
+    valid: false, hitsGround: false, r: 0, mu: 0, muS: 0, nu: 0, d: 0,
+    origin: [0, 0, 0], view: [0, 0, 0],
+  };
+  const toPoint: Vec3 = [point[0] - camera[0], point[1] - camera[1], point[2] - camera[2]];
+  let span = Math.sqrt(dot3(toPoint, toPoint));
+  // A degenerate segment has no direction to normalize; normalize(0) is
+  // undefined and reads as NaN on Metal.
+  if (!(span > 0)) return miss;
+  const view: Vec3 = [toPoint[0] / span, toPoint[1] / span, toPoint[2] / span];
+  let origin = camera;
+  let r = Math.sqrt(dot3(origin, origin));
+  if (!(r > 0)) return miss;
+  let rmu = dot3(origin, view);
+
+  if (r > params.topRadius) {
+    const disc = rmu * rmu - r * r + params.topRadius * params.topRadius;
+    if (disc < 0) return miss;                    // the ray misses the air
+    const dEntry = -rmu - Math.sqrt(disc);
+    if (dEntry <= 0 || dEntry >= span) return miss;
+    origin = [
+      origin[0] + view[0] * dEntry,
+      origin[1] + view[1] * dEntry,
+      origin[2] + view[2] * dEntry,
+    ];
+    // r*mu at the entry point is exactly -sqrt(disc): written that way it stays
+    // a number of size ~0.2 rather than a difference of two of size r.
+    rmu = -Math.sqrt(disc);
+    r = params.topRadius;
+    span -= dEntry;
+  } else {
+    r = clampRadius(params, r);
+  }
+
+  const mu = clampCosine(rmu / r);
+  return {
+    valid: true,
+    hitsGround: rayIntersectsGround(params, r, mu),
+    r,
+    mu,
+    muS: clampCosine(dot3(origin, sun) / r),
+    nu: clampCosine(dot3(view, sun)),
+    d: span,
+    origin,
+    view,
+  };
+}
 
 /** The bake's own numerical integrals. Only the passes that WRITE a table need
  *  them; a consumer that reads the tables must never carry a 500-iteration loop

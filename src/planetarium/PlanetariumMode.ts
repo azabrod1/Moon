@@ -4445,18 +4445,28 @@ export class PlanetariumMode {
         // mean-distance prefilter; the live per-frame umbra check below stays.
         let casterCache = this.moonShadowCasterCache.get(planet.data.name);
         if (!casterCache || Math.abs(casterCache.sunTan - sunTanAtParent) > casterCache.sunTan * 0.005) {
+          // Whether a moon's umbra reaches the surface at its MEAN distance.
+          // orbitalRadiusAU is that mean, and the loop below re-checks the live
+          // distance every frame, so this ORDERS the candidates rather than
+          // rejecting any: a big far moon whose umbra falls short (Iapetus,
+          // Nereid) can never take a slot from a real caster (Tethys, Galatea),
+          // and a moon whose umbra reaches only near perigee still gets a slot
+          // where one is spare. Rejecting on the mean instead costs Earth every
+          // total solar eclipse there is — the Moon's umbra reaches the ground
+          // at 357 000 km and falls 24 km short of it at 384 400.
+          const reachesAtMeanDistance = (mm: MoonMesh): boolean =>
+            mm.data.radiusAU > mm.data.orbitalRadiusAU * sunTanAtParent;
           casterCache = {
             sunTan: sunTanAtParent,
             names: new Set(
               [...moons]
-                // Filter to moons whose umbra actually reaches the surface FIRST,
-                // then take the largest few — else a big, far moon whose umbra falls
-                // short (Iapetus, Nereid) steals a slot from a real caster (Tethys,
-                // Galatea). orbitalRadiusAU is the mean distance; the loop re-checks
-                // the live distance per frame.
-                .filter((mm) => mm.data.radiusAU / parentR > 0.003
-                  && mm.data.radiusAU > mm.data.orbitalRadiusAU * sunTanAtParent)
+                // A spot too small to see is never worth a slot at all.
+                .filter((mm) => mm.data.radiusAU / parentR > 0.003)
+                // Largest first, then the ones that reach ahead of the ones that
+                // do not: sort is stable, so size still orders within each group.
                 .sort((a, b) => b.data.radiusAU - a.data.radiusAU)
+                .sort((a, b) =>
+                  Number(reachesAtMeanDistance(b)) - Number(reachesAtMeanDistance(a)))
                 .slice(0, surfFx.uMoonShadow.value.length)
                 .map((mm) => mm.data.name),
             ),
@@ -12450,6 +12460,27 @@ export class PlanetariumMode {
       phaseDeg: (air.uAirDensity.value as number) > 0
         ? this.moonlightPhase.get(body) ?? null
         : null,
+    };
+  }
+
+  /** The eclipse casters a body's surfaces and the air in front of them are
+   *  tracing this frame, and the spin its cloud deck is drawn under. A golden
+   *  pose that means to catch an umbra has to be able to say one was there, and
+   *  the deck's frame correction is a rotation nothing else in a capture
+   *  records. Centres are in the body frame, AU, with the caster's radius in w. */
+  devSurfaceCasters(body = 'Earth'): unknown {
+    const planet = this.solarSystem?.planets.find((p) => p.data.name === body);
+    const fx = planet?.fx;
+    if (!planet || !fx) return null;
+    const count = fx.uMoonShadowCount.value;
+    const cloudArgs = planet.cloudsMesh
+      ? surfaceShadingArgsOf(planet.cloudsMesh.material as THREE.Material)
+      : undefined;
+    return {
+      body,
+      count,
+      casters: fx.uMoonShadow.value.slice(0, count).map((c) => [c.x, c.y, c.z, c.w]),
+      cloudFrameSpin: cloudArgs?.uFrameSpin.value ?? null,
     };
   }
 

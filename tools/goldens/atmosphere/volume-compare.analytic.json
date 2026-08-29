@@ -8,6 +8,9 @@
   "timeUtcMs": null,
   "moonPhaseDeg": null,
   "moonIrradiance": null,
+  "casterCount": 0,
+  "casters": [],
+  "cloudFrameSpin": null,
   "width": 512,
   "height": 512,
   "grid": [

@@ -615,6 +615,10 @@ function installDevHooks() {
     // What lights a body's night side this frame: the Moon's direction, its
     // irradiance and its phase.
     atmoNight: (body?: string) => planetariumMode?.devAtmosphereNight(body) ?? null,
+    // The eclipse casters a body's shading is tracing this frame, and the spin
+    // its cloud deck is drawn under: what a golden pose of an umbra records
+    // beside the radiances.
+    surfaceCasters: (body?: string) => planetariumMode?.devSurfaceCasters(body) ?? null,
     // Hold the shells on the analytic tier (null: whatever the tables allow),
     // and report the material each one is wearing.
     atmoTier: (tier: 'analytic' | null) => planetariumMode?.devSetAtmosphereTier(tier) ?? null,

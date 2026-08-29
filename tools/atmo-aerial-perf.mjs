@@ -10,9 +10,17 @@
 // too), B = the LUT tier. One session, one pose, one canvas size: everything
 // except the air is identical between the two halves.
 //
+// INTERLEAVED, A,B,A,B: one A followed by one B puts every slow drift in the
+// machine — thermal throttling, the texture ladder still arriving, the exposure
+// still settling — inside the difference the whole number is. Alternating and
+// pooling cancels any drift that is linear over the run, and the per-pass rows
+// below show what the drift was, so a delta smaller than the spread between
+// passes can be read as the noise it is.
+//
 //   npx vite --port 5646 --strictPort
 //   node tools/atmo-aerial-perf.mjs --url=http://localhost:5646
 //   node tools/atmo-aerial-perf.mjs --w=1400 --h=1400 --dpr=2   # fill-bound
+//   node tools/atmo-aerial-perf.mjs --repeats=3                 # A,B,A,B,A,B
 //
 // vsync is off. With it on, a 1.3 Mpx frame on a desktop GPU reports the
 // display's period and measures the display.
@@ -30,6 +38,9 @@ const K = Number(arg('k', '1.05'));
 // Where round the body the camera stands: 0 is the sub-solar side, 150 is past
 // the terminator, which is the pose the non-solar sources cost anything at.
 const PHASE = Number(arg('phase', '0'));
+// How many A,B pairs. Two is the minimum that says anything about drift; the
+// pass-to-pass spread is printed so it can be compared against the delta.
+const REPEATS = Number(arg('repeats', '2'));
 // The clock, because at night what the frame costs depends on whether there is
 // a Moon in it: a full one is a second table lookup on every fragment.
 const TIME = arg('time', '');
@@ -103,15 +114,26 @@ async function measure(tier) {
   return { wearing: wearing?.Earth, mean, median: pick(0.5), p90: pick(0.9), min: samples[0] };
 }
 
-const a = await measure('analytic');
-const b = await measure(null);
-const mpx = (W * DPR * H * DPR) / 1e6;
-console.log(`[aerial-perf] ${W}x${H} DPR ${DPR} = ${mpx.toFixed(2)} Mpx, pose ${K} R aim ${AIM}`);
-for (const [label, r] of [['air off (analytic)', a], ['air on (LUT)', b]]) {
-  console.log(`  ${label.padEnd(20)} shell=${r.wearing} mean ${r.mean.toFixed(4)} ms  median ${r.median.toFixed(3)}  p90 ${r.p90.toFixed(3)}`);
+const passes = [];
+for (let i = 0; i < REPEATS; i++) {
+  passes.push({ pass: i + 1, a: await measure('analytic'), b: await measure(null) });
 }
-const d = b.mean - a.mean;
-console.log(`  delta               ${d >= 0 ? '+' : ''}${d.toFixed(3)} ms  (${(d / mpx).toFixed(3)} ms/Mpx)`);
+const mpx = (W * DPR * H * DPR) / 1e6;
+console.log(`[aerial-perf] ${W}x${H} DPR ${DPR} = ${mpx.toFixed(2)} Mpx, pose ${K} R aim ${AIM}`
+  + `, ${REPEATS} interleaved A,B pairs`);
+for (const p of passes) {
+  console.log(`  pass ${p.pass}  air off ${p.a.mean.toFixed(4)} ms (shell=${p.a.wearing})`
+    + `   air on ${p.b.mean.toFixed(4)} ms (shell=${p.b.wearing})`
+    + `   delta ${(p.b.mean - p.a.mean >= 0 ? '+' : '')}${(p.b.mean - p.a.mean).toFixed(3)}`);
+}
+const mean = (xs) => xs.reduce((x, y) => x + y, 0) / xs.length;
+const spread = (xs) => Math.max(...xs) - Math.min(...xs);
+const aMean = mean(passes.map((p) => p.a.mean));
+const bMean = mean(passes.map((p) => p.b.mean));
+console.log(`  pooled   air off ${aMean.toFixed(4)} ms (pass spread ${spread(passes.map((p) => p.a.mean)).toFixed(3)})`);
+console.log(`           air on  ${bMean.toFixed(4)} ms (pass spread ${spread(passes.map((p) => p.b.mean)).toFixed(3)})`);
+const d = bMean - aMean;
+console.log(`  delta    ${d >= 0 ? '+' : ''}${d.toFixed(3)} ms  (${(d / mpx).toFixed(3)} ms/Mpx)`);
 console.log(`  page errors ${errors.length}`);
 await context.close();
 await browser.close();

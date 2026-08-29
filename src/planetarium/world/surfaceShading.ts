@@ -31,6 +31,12 @@
  * draws ABOVE the globe and would otherwise be the one unhazed layer, in
  * exactly the near-band view the haze exists for.
  *
+ * That segment ends at the fragment for every surface drawn at the altitude it
+ * stands for, and at an authored radius for the one that is not: the cloud
+ * deck's mesh sits at 1.01 R so that up close the deck owns the silhouette,
+ * which puts it above the whole air. `AIR_LOOKUP_RADIUS` is where each
+ * archetype's segment really ends.
+ *
  * The injected GLSL is byte-identical for every body (only uniforms differ), so
  * materials still share compiled programs — no custom cache key needed. That
  * holds for the air too: a body without tables takes the same text with
@@ -49,6 +55,7 @@ import {
 } from './atmosphereLut';
 import { AIRLIGHT_SCALE } from './atmosphereModel';
 import { NIGHT_WEIGHT_GLSL } from './nightSources';
+import { PLANETS } from '../planets/planetData';
 
 /** The cloud deck is a surface class of its own: it hazes and eclipses like the
  *  ground under it, and carries none of the ground's own night terms — the
@@ -134,6 +141,45 @@ const LIMB_DARKENING: Record<SurfaceArchetype, number> = {
   // The globe under the deck carries the disc's edge; darkening the deck as
   // well would dim that edge twice.
   cloud:   0.0,
+};
+
+/** A physical cloud top, km above the surface. A whole-globe deck stands for
+ *  everything from a 2 km marine layer to a 16 km anvil; 10 is the middle of
+ *  that range and the altitude the deck's air is looked up at. */
+const CLOUD_TOP_KM = 10;
+
+const EARTH_RADIUS_KM = PLANETS.find((p) => p.name === 'Earth')!.radiusKm;
+
+// Where a surface's air segment ENDS, in the radius units the tables are baked
+// in (1 = the surface). 0 leaves the segment at the fragment's own radius,
+// which is right for every mesh drawn at the altitude it stands for.
+//
+// The cloud deck is not one of those. Its mesh is at 1.01 R because up close
+// the deck, not the globe, is the body's silhouette — and 1.01 R is 64 km,
+// above 99.97 % of the Rayleigh column and all of the Mie and the ozone. Look
+// the air up there and `x T + S` is a no-op in every pose the app can reach,
+// while the deck's own 0.35 alpha still takes 35 % of the ground's airlight
+// off every pixel of the day disc, and 35 % of every pixel at the horizon is
+// an unhazed cloud image in the one band a photograph washes out. So the deck
+// looks its air up at the physical cloud top instead: the same ray in the same
+// direction, with the radius substituted for the segment's far end.
+//
+// The substituted point is always still on the visible side of the globe: a
+// deck fragment is only drawn where its normal faces the camera, which is
+// within arccos(R_deck/d) of the camera axis, and that cone is strictly
+// narrower than the globe's own arccos(R_globe/d) because the deck is the
+// larger sphere.
+//
+// These are radius units and the only body with a deck is Earth, so the deck's
+// entry is 10 km expressed against Earth's radius. A second body that grew one
+// would want its own altitude divided by its own radius, not this number.
+export const AIR_LOOKUP_RADIUS: Record<SurfaceArchetype, number> = {
+  airless: 0,
+  rocky:   0,
+  gas:     0,
+  icy:     0,
+  earth:   0,
+  cloud:   1 + CLOUD_TOP_KM / EARTH_RADIUS_KM,
 };
 
 // Analytic stand-in for Saturn's ring opacity across the annulus (t: 0 inner …
@@ -235,6 +281,7 @@ uniform vec3 uSunDirWorld;
 uniform vec3 uMoonDirWorld;
 uniform vec3 uMoonIrradiance;
 uniform float uAirDensity;
+uniform float uAirLookupRadius;
 uniform float uPlanetRadius;
 uniform float uSolarIrradiance;
 uniform vec3 uAirlightScale;
@@ -349,8 +396,17 @@ const SURFACE_FRAGMENT_BODY = /* glsl */ `{
   // tables, on a device with no tier, and between a lost context and the
   // re-bake — the same text either way, so one program serves every body.
   if (uAirDensity > 0.0) {
+    // Where the segment ends. A mesh drawn at the altitude it stands for ends
+    // at its own fragment; the cloud deck is drawn at 1.01 R to own the
+    // silhouette, which is 64 km up and above the whole column, so its air is
+    // looked up at a physical cloud top instead. Same ray, same direction, the
+    // radius substituted — and the whole substitution is one uniform, so the
+    // injected text stays identical for every surface.
+    vec3 airEnd = uAirLookupRadius > 0.0
+        ? normalize(vAirFrag) * uAirLookupRadius
+        : vAirFrag / uPlanetRadius;
     AerialSegment seg = aerialSegment(
-        vAirCam / uPlanetRadius, vAirFrag / uPlanetRadius, normalize(uSunDirWorld));
+        vAirCam / uPlanetRadius, airEnd, normalize(uSunDirWorld));
     if (seg.valid) {
       vec3 airT = aerialTransmittance(uTransmittance, seg);
       vec3 airS = aerialInscatter(uScattering, seg, airT)
@@ -502,6 +558,7 @@ export function augmentSurfaceMaterial(
   const uSunTan = { value: sunTan };
   const uIcyRim = { value: archetype === 'icy' ? 1 : 0 };
   const uLimbDarkening = { value: LIMB_DARKENING[archetype] };
+  const uAirLookupRadius = { value: AIR_LOOKUP_RADIUS[archetype] };
 
   mat.onBeforeCompile = (shader) => {
     shader.uniforms.uSunDirWorld = fx.uSunDirWorld;
@@ -520,6 +577,7 @@ export function augmentSurfaceMaterial(
     shader.uniforms.uSilhouette = fx.uSilhouette;
     shader.uniforms.uIcyRim = uIcyRim;
     shader.uniforms.uLimbDarkening = uLimbDarkening;
+    shader.uniforms.uAirLookupRadius = uAirLookupRadius;
     shader.uniforms.uFrameSpin = uFrameSpin;
     for (const name of Object.keys(fx.air)) shader.uniforms[name] = fx.air[name];
 

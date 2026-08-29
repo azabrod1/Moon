@@ -6,6 +6,7 @@ import { ATMOSPHERE_GOLDEN_PINS, goldenChannelTolerance } from './atmosphereGold
 import { ATMOSPHERE_TABLE_SIZES_FULL } from './atmosphereModel';
 import { createAtmosphereShellMaterial } from './atmosphereShell';
 import { PLANETS } from '../planets/planetData';
+import { MOONS } from '../planets/moonData';
 
 /**
  * The atmosphere shell's golden captures (tools/atmo-shell-qa.mjs).
@@ -46,6 +47,10 @@ const POSES = [
   'night-1.05r',
   'night-1.05r-moonlit',
   'night-1.05r-newmoon',
+  // A total solar eclipse with the umbra on the day disc: the one pose where
+  // the shadow the ground and the air in front of it share is measured rather
+  // than argued from the uniforms they read it out of.
+  'eclipse-2.5r',
   'inside-air',
 ];
 
@@ -57,6 +62,10 @@ const POSE_TIME: Record<string, string> = {
   // the rest of the set is a total lunar eclipse, which is no moonlight at all.
   'night-1.05r-moonlit': '2026-04-02T02:00:00Z',   // full, phase angle 2.9 deg
   'night-1.05r-newmoon': '2026-03-19T01:00:00Z',   // new, 178.2 deg
+  // Central total eclipse, gamma 0.14: the umbra lands near the sub-solar
+  // point rather than out by the limb, and the Moon is close enough that the
+  // umbra reaches the ground at all — an annular eclipse feeds no caster.
+  'eclipse-2.5r': '2027-08-02T10:06:00Z',
 };
 const DEFAULT_TIME = '2026-03-20T12:00:00Z';       // equinox noon, 160.7 deg
 
@@ -67,6 +76,7 @@ const DEFAULT_TIME = '2026-03-20T12:00:00Z';       // equinox noon, 160.7 deg
 const TIERS = ['analytic', 'lut', 'nofloat'];
 
 const EARTH_RADIUS_AU = PLANETS.find((p) => p.name === 'Earth')!.radiusAU;
+const SUN_RADIUS_AU = 695_700 / 149_597_870.7;
 
 interface Golden {
   pose: string;
@@ -79,6 +89,9 @@ interface Golden {
   timeUtcMs: number | null;
   moonPhaseDeg: number | null;
   moonIrradiance: [number, number, number] | null;
+  casterCount: number;
+  casters: [number, number, number, number][];
+  cloudFrameSpin: number | null;
   width: number;
   height: number;
   grid: [number, number][];
@@ -219,6 +232,47 @@ describe('the atmosphere goldens', () => {
     const added = (pose: string): number => lit(`${pose}.lut`) - lit(`${pose}.analytic`);
     expect(added('night-1.05r-moonlit')).toBeGreaterThan(added('night-1.05r-newmoon'));
     expect(added('night-1.05r-moonlit')).toBeGreaterThan(0);
+  });
+
+  it('caught a moon\'s umbra on the ground, at one pose and only there', () => {
+    // Two commits argued the eclipse from shared uniforms and a shared GLSL
+    // function: the ground and the air in front of it dim by one number, and
+    // the deck above them traces the same casters in the same frame. This is
+    // the frame where a caster was actually there. Everything downstream of it
+    // — the spot on the ground, the spot on the haze, the spot on the clouds —
+    // lands in the pinned radiances.
+    const eclipse = read('eclipse-2.5r.lut');
+    expect(eclipse.casterCount).toBe(1);
+    const moon = MOONS.find((m) => m.name === 'Moon')!;
+    expect(eclipse.casters[0][3]).toBeCloseTo(moon.radiusAU, 12);
+    // And a TOTAL one, which is the only kind that casts an umbra at all: the
+    // Moon has to be near enough that its shadow cone still has width where
+    // Earth is. At the Sun's angular size from here that is inside about
+    // 379 000 km, against a mean distance of 384 400 — the pose is not just a
+    // new Moon, it is a close one.
+    const centre = eclipse.casters[0];
+    const distanceAU = Math.hypot(centre[0], centre[1], centre[2]);
+    const sunAngularRadius = SUN_RADIUS_AU / 1.015;   // Earth in early August
+    expect(distanceAU).toBeLessThan(moon.radiusAU / sunAngularRadius);
+    expect(distanceAU).toBeGreaterThan(0.0022);
+  });
+
+  it('records the frame the cloud deck was drawn in', () => {
+    // The deck carries a drift of its own on top of the body's spin, so its
+    // object space is that far out of the frame the caster centres are stated
+    // in. Unfed — or fed with the wrong sign — the umbra on the clouds lands at
+    // a longitude of its own, beside the one on the ground. The correction is a
+    // rotation nothing in a capture would otherwise record.
+    for (const name of CAPTURES) {
+      const golden = read(name);
+      const pinned = ATMOSPHERE_GOLDEN_PINS[name];
+      expect(golden.casterCount, name).toBe(pinned.casterCount);
+      if (pinned.cloudFrameSpin === null) expect(golden.cloudFrameSpin, name).toBeNull();
+      else expect(golden.cloudFrameSpin!, name).toBeCloseTo(pinned.cloudFrameSpin, 5);
+    }
+    // It is a real rotation at the eclipse pose, not a zero that would make the
+    // correction untested.
+    expect(Math.abs(read('eclipse-2.5r.lut').cloudFrameSpin!)).toBeGreaterThan(0.01);
   });
 
   it('pins the near plane each capture was taken with', () => {

@@ -77,6 +77,10 @@ export interface SmoothTrace {
   longTasks: SmoothLongTask[];
 }
 
+// Five and a half minutes at 120 Hz. Long scenarios pass their own size via
+// ?smoothFrames — the recorder stops at the end of the buffer rather than
+// wrapping, because a ring would discard the boot and the reveal mark that
+// every scenario's "after reveal" window is measured from.
 const DEFAULT_MAX_FRAMES = 40_000;
 const MAX_EVENTS = 8_000;
 const MAX_LONG_TASKS = 2_000;
@@ -370,7 +374,12 @@ export function summarizeFrames(
 // the flag here rather than from the dev bridge is the whole point: the bridge
 // is installed several async steps into init, long after the first frame.
 if (import.meta.env.DEV && typeof location !== 'undefined') {
-  if (new URLSearchParams(location.search).get('smooth') === '1') {
-    smoothTraceStart({ armedBy: 'url', userAgent: navigator.userAgent });
+  const params = new URLSearchParams(location.search);
+  if (params.get('smooth') === '1') {
+    const asked = Number(params.get('smoothFrames'));
+    smoothTraceStart(
+      { armedBy: 'url', userAgent: navigator.userAgent },
+      Number.isFinite(asked) && asked > 0 ? asked : DEFAULT_MAX_FRAMES,
+    );
   }
 }

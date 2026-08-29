@@ -8,18 +8,46 @@ one you run when the battery says FAIL and you need to see the stack.
 The rule both oracles score against, per scenario:
 
 > **PASS** when, after the loading screen is gone and outside the arrival
-> veil's sanctioned cuts, no frame took more than **33 ms** (two vsyncs at
-> 60 Hz), **p99 ≤ 20 ms**, and no **long task ran past 50 ms**.
-> Otherwise **FAIL**, naming the frames and what fired on them.
+> veil's sanctioned cuts, no frame took longer than **two vsyncs at the
+> machine's own refresh rate**, **p99 ≤ 20 ms**, and no **long task ran past
+> 50 ms**. Otherwise **FAIL**, naming the frames and what fired on them.
+
+The machine's refresh is read from the run itself: on an unloaded run the
+median gap *is* one vsync, so the budget is 2 × p50 — 16.7 ms on a 120 Hz Mac,
+33 ms on a 60 Hz one. Stating it that way keeps one rule meaning one thing
+everywhere, instead of quietly handing the faster machine two extra refreshes
+of slack. A four-vsync count rides along as the severity split, and the fixed
+33 ms / 50 ms columns stay in the table so two machines' runs can be read side
+by side.
+
+One check on the rule: a run whose own median has drifted to two refreshes
+would relax its own budget. So p50 is printed beside every verdict — a p50 that
+is not near a plausible refresh rate invalidates the run, not the rule.
 
 Frames under the arrival veil are counted and reported but not scored: the veil
 is an opaque cover the app raises on purpose, and the point of separating them
 is to see a hitch that merely *hid* behind a cut rather than to forgive it.
 
-A note on the machine: on a 120 Hz display the median gap is 8.3 ms, so a 33 ms
-budget is four vsyncs there, not two. The threshold is stated in milliseconds
-because that is what a person feels; read the reported p50 to know how many
-refreshes it is on the machine that produced a run.
+Thresholds move; the runs behind them are expensive. `--rescore=<dir>` re-scores
+stored traces under the current rule without opening a browser.
+
+A run that outran its frame buffer scores **INCOMPLETE**, never PASS: frames the
+recorder could not hold are unmeasured, not clean, and a PASS over them would be
+a claim about seconds nobody looked at. Each scenario sizes its own buffer from
+the wall time it expects (`?smoothFrames=`); a scenario that grows needs its
+budget grown with it.
+
+Two things about how a gap is attributed, both of which have misled a reading of
+this data before:
+
+- A frame's gap is `raf(N) − raf(N−1)`, so the work that made it late ran during
+  frame **N−1**. A 19 ms texture upload tagged on frame 309 shows up as a 49.9 ms
+  gap on frame 310. The worst-frame report blames N−1 for that reason; a report
+  that blamed N would show an empty cause list for every hitch it found.
+- That off-by-one, plus the veil windows' one-frame dilation, makes the gate
+  slightly lenient at a veil's leading edge: unveiled work whose cost lands on
+  the veil's first frame is excused. That is the right way to err for a cut the
+  app raises on purpose, but it is a choice, not an accident.
 
 ## Oracle 1 — the headless battery
 

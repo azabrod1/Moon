@@ -4,6 +4,7 @@
 //
 //   node tools/smoothness-gate.mjs --label=baseline
 //   node tools/smoothness-gate.mjs --scenario=boot,earth-near --json
+//   node tools/smoothness-gate.mjs --rescore=/tmp/moon-shots/smooth/baseline
 //
 // Needs a dev server (this checkout, `npx vite --port 5656 --strictPort`) and,
 // for the sector tiles, a tile host (`node planning/_tiles-serve.mjs` on 5622).
@@ -16,12 +17,18 @@
 // one-word cause for the heavy events that fired inside it.
 //
 // VERDICT (per scenario): PASS when, after the loading screen is gone and
-// outside the arrival veil's sanctioned cuts, no frame took more than 33 ms
-// (two vsyncs at 60 Hz), p99 is at most 20 ms, and no long task ran past
-// 50 ms. Frames under the veil are counted and reported separately rather
-// than dropped, so a hitch that merely hid behind a cut is still visible.
+// outside the arrival veil's sanctioned cuts, no frame took longer than TWO
+// vsyncs at the machine's own refresh rate, p99 is at most 20 ms, and no long
+// task ran past 50 ms. The machine's rate is read from the run itself — the
+// median gap — so the same rule means the same thing on a 60 Hz display
+// (33 ms) and a 120 Hz one (16.7 ms) instead of quietly forgiving two extra
+// refreshes on the faster machine. A four-vsync count rides along as the
+// severity split, and fixed 33/50 ms columns stay for cross-machine reading.
+//
+// Frames under the veil are counted and reported separately rather than
+// dropped, so a hitch that merely hid behind a cut is still visible.
 import { chromium } from 'playwright';
-import { mkdirSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 function arg(name, def) {
@@ -36,8 +43,10 @@ const LABEL = arg('label', 'baseline');
 const OUT_DIR = join(arg('out', '/tmp/moon-shots/smooth'), LABEL);
 const ONLY = arg('scenario', '').split(',').map((s) => s.trim()).filter(Boolean);
 const PRINT_JSON = has('json');
+const RESCORE = arg('rescore', '');
 
-// Two vsyncs at 60 Hz. A frame past this is a visible hitch, not jitter.
+// Fixed thresholds, kept so two machines' runs can be read side by side. The
+// verdict does not use them: it uses two of the run's own vsyncs (see analyze).
 const HITCH_MS = 33;
 const BAD_MS = 50;
 const P99_BUDGET_MS = 20;
@@ -62,13 +71,17 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 // ---------------------------------------------------------------- page setup
 
-function appUrl(extra = '') {
+// The recorder stops at the end of its buffer rather than wrapping, so a
+// scenario that outruns it loses its TAIL — silently, if nobody looks. Each
+// scenario declares the wall seconds it expects and the buffer is sized from
+// that with room to spare, at 120 Hz plus a wide margin.
+function appUrl(extra = '', expectSeconds = 120) {
   const params = new URLSearchParams();
   params.set('auto', 'planetarium');
   params.set('smooth', '1');
+  params.set('smoothFrames', String(Math.ceil(expectSeconds * 130 * 1.5)));
   if (TILES) params.set('tiles', TILES);
-  const url = `${URL_BASE}/?${params.toString()}${extra}`;
-  return url;
+  return `${URL_BASE}/?${params.toString()}${extra}`;
 }
 
 async function openPage(browser, device) {
@@ -100,14 +113,15 @@ async function openPage(browser, device) {
   const page = await context.newPage();
   const notes = [];
   page.on('pageerror', (e) => notes.push(`pageerror: ${String(e).slice(0, 200)}`));
+  page.on('crash', () => notes.push('the renderer process CRASHED'));
   page.on('console', (m) => {
     if (m.type() === 'error') notes.push(`console: ${m.text().slice(0, 200)}`);
   });
   return { context, page, notes };
 }
 
-async function bootTo(page, extra = '') {
-  await page.goto(appUrl(extra), { waitUntil: 'domcontentloaded' });
+async function bootTo(page, extra = '', expectSeconds = 120) {
+  await page.goto(appUrl(extra, expectSeconds), { waitUntil: 'domcontentloaded' });
   // waitForFunction takes the page argument second; an options object in that
   // slot is passed to the predicate and the wait silently uses its default.
   await page.waitForFunction(() => window.__moon?.ready?.(), null, { timeout: 120_000 });
@@ -189,7 +203,7 @@ const SCENARIOS = [
     title: 'Cold boot → first frame → the idle warm settling',
     device: DESKTOP,
     async run(page, note) {
-      note(`renderer: ${await bootTo(page)}`);
+      note(`renderer: ${await bootTo(page, '', 30)}`);
       // The boot-idle warm runs after the reveal; nothing may cost a frame.
       await mark(page, 'idle-warm');
       await sleep(15_000);
@@ -200,7 +214,7 @@ const SCENARIOS = [
     title: 'travelTo Earth → arrival → governed descent to the near band → 20 s hover',
     device: DESKTOP,
     async run(page, note) {
-      await bootTo(page);
+      await bootTo(page, '', 140);
       await sleep(2_000);
       const failed = await travelAndSettle(page, 'Earth');
       if (failed) note(failed);
@@ -219,7 +233,7 @@ const SCENARIOS = [
     title: 'Slow pan across the terminator in the near band (day/night families swap)',
     device: DESKTOP,
     async run(page, note) {
-      await bootTo(page);
+      await bootTo(page, '', 180);
       await sleep(2_000);
       const failed = await travelAndSettle(page, 'Earth');
       if (failed) note(failed);
@@ -244,7 +258,7 @@ const SCENARIOS = [
     title: 'Earth → Moon → Mars → Earth, arrivals and departures',
     device: DESKTOP,
     async run(page, note) {
-      await bootTo(page);
+      await bootTo(page, '', 560);
       await sleep(2_000);
       for (const body of ['Earth', 'Moon', 'Mars', 'Earth']) {
         const failed = await travelAndSettle(page, body, 6_000);
@@ -259,7 +273,7 @@ const SCENARIOS = [
     // The envelope is read when the device profile is resolved, so it has to
     // be on the boot URL — it cannot be turned on mid-run.
     async run(page, note) {
-      await bootTo(page, '&envelope=200');
+      await bootTo(page, '&envelope=200', 460);
       await sleep(2_000);
       const failed = await travelAndSettle(page, 'Earth');
       if (failed) note(failed);
@@ -282,7 +296,7 @@ const SCENARIOS = [
     title: 'Tiny-moon flybys: Phobos, then Styx',
     device: DESKTOP,
     async run(page, note) {
-      await bootTo(page);
+      await bootTo(page, '', 220);
       await sleep(2_000);
       for (const body of ['Phobos', 'Styx']) {
         const failed = await travelAndSettle(page, body, 8_000);
@@ -295,7 +309,7 @@ const SCENARIOS = [
     title: 'Planet tour at 60× time rate',
     device: DESKTOP,
     async run(page, note) {
-      await bootTo(page);
+      await bootTo(page, '', 900);
       await sleep(2_000);
       await page.evaluate(() => window.__moon.setTimeRate(60));
       for (const body of ['Mercury', 'Venus', 'Earth', 'Mars', 'Jupiter', 'Saturn', 'Uranus', 'Neptune']) {
@@ -310,7 +324,7 @@ const SCENARIOS = [
     title: 'Phone (430×932 @3): travel to Earth, governed descent, 20 s hover',
     device: PHONE,
     async run(page, note) {
-      await bootTo(page);
+      await bootTo(page, '', 160);
       await sleep(2_000);
       note(`device: ${JSON.stringify(await page.evaluate(() => window.__moon.device()))}`);
       const failed = await travelAndSettle(page, 'Earth');
@@ -328,7 +342,7 @@ const SCENARIOS = [
     title: 'Phone (430×932 @3): slow pan across the terminator',
     device: PHONE,
     async run(page, note) {
-      await bootTo(page);
+      await bootTo(page, '', 200);
       await sleep(2_000);
       const failed = await travelAndSettle(page, 'Earth');
       if (failed) note(failed);
@@ -403,16 +417,22 @@ function analyze(trace, scenario, notes) {
   const sum = gaps.reduce((a, b) => a + b, 0);
 
   const hitches = scored.filter((s) => s.gap > HITCH_MS);
-  const worst = scored.slice().sort((a, b) => b.gap - a.gap).slice(0, 10).map(({ i, gap }) => ({
+  const worstFirst = scored.slice().sort((a, b) => b.gap - a.gap);
+  // A frame's gap is raf(N) − raf(N−1), so the work that made it late ran
+  // DURING frame N−1. Attribute the blame there; frame N is the one that
+  // arrived late, not the one that spent the time.
+  const eventsOf = (i) => (eventsByFrame.get(i) ?? []).map((e) => ({
+    kind: e.kind,
+    name: e.name,
+    durationMs: e.durationMs,
+  }));
+  const worst = worstFirst.slice(0, 10).map(({ i, gap }) => ({
     frame: i,
     atMs: atMs[i],
     gapMs: round2(gap),
-    causes: causeNames(causeMask[i]).filter((c) => c !== 'veil'),
-    events: (eventsByFrame.get(i) ?? []).map((e) => ({
-      kind: e.kind,
-      name: e.name,
-      durationMs: e.durationMs,
-    })),
+    causes: causeNames(causeMask[Math.max(0, i - 1)] | causeMask[i]).filter((c) => c !== 'veil'),
+    blamedOn: Math.max(0, i - 1),
+    events: [...eventsOf(Math.max(0, i - 1)), ...eventsOf(i)],
   }));
 
   const tasksAfterReveal = longTasks.filter((t) => t.atMs >= revealAtMs);
@@ -441,10 +461,21 @@ function analyze(trace, scenario, notes) {
 
   const maxMs = round2(sorted.at(-1) ?? 0);
   const p99 = round2(percentile(sorted, 0.99));
+  // The machine's own refresh, read from the run: on an unloaded run the
+  // median gap IS one vsync. A run whose median has itself drifted to two
+  // refreshes would relax its own budget, so p50 is reported beside every
+  // verdict — a p50 that is not near a plausible refresh invalidates the run,
+  // not the rule.
+  const vsyncMs = round2(percentile(sorted, 0.5));
+  const twoVsyncMs = round2(vsyncMs * 2);
+  const fourVsyncMs = round2(vsyncMs * 4);
+  const over2x = scored.filter((s) => s.gap > twoVsyncMs).length;
+  const over4x = scored.filter((s) => s.gap > fourVsyncMs).length;
   const maxTaskMs = tasksOutside.reduce((m, t) => Math.max(m, t.durationMs), 0);
   const failures = [];
-  if (maxMs > HITCH_MS) {
-    failures.push(`${hitches.length} frame(s) over ${HITCH_MS} ms outside veils, worst ${maxMs} ms`);
+  if (maxMs > twoVsyncMs) {
+    failures.push(`${over2x} frame(s) over two vsyncs (${twoVsyncMs} ms) outside veils,`
+      + ` ${over4x} of them over four (${fourVsyncMs} ms), worst ${maxMs} ms`);
   }
   if (p99 > P99_BUDGET_MS) failures.push(`p99 ${p99} ms over the ${P99_BUDGET_MS} ms budget`);
   if (maxTaskMs > LONG_TASK_MS) {
@@ -452,10 +483,20 @@ function analyze(trace, scenario, notes) {
       + ` over ${LONG_TASK_MS} ms after reveal, worst ${round2(maxTaskMs)} ms`);
   }
 
+  // Frames the buffer could not hold are unmeasured, not clean: a PASS over a
+  // run whose tail was never recorded would be a claim about seconds nobody
+  // looked at.
+  if (trace.dropped > 0) {
+    const lastAtMs = atMs.at(-1) ?? 0;
+    failures.push(`${trace.dropped} frame(s) past the buffer went unrecorded —`
+      + ` nothing after ${round2(lastAtMs / 1000)} s was scored`);
+  }
+  const verdict = trace.dropped > 0 ? 'INCOMPLETE' : (failures.length ? 'FAIL' : 'PASS');
+
   return {
     scenario: scenario.id,
     title: scenario.title,
-    verdict: failures.length ? 'FAIL' : 'PASS',
+    verdict,
     failures,
     frames: gapMs.length,
     droppedFrames: trace.dropped,
@@ -466,7 +507,12 @@ function analyze(trace, scenario, notes) {
     veilWindows: windows.length,
     veilMsTotal: round2(veilSpans.reduce((a, [x, y]) => a + (y - x), 0)),
     meanMs: gaps.length ? round2(sum / gaps.length) : 0,
-    p50Ms: round2(percentile(sorted, 0.5)),
+    p50Ms: vsyncMs,
+    vsyncMs,
+    twoVsyncMs,
+    fourVsyncMs,
+    over2x,
+    over4x,
     p95Ms: round2(percentile(sorted, 0.95)),
     p99Ms: p99,
     maxMs,
@@ -491,7 +537,56 @@ function analyze(trace, scenario, notes) {
   };
 }
 
+// ------------------------------------------------------------------ printing
+
+const pad = (s, n) => String(s).padEnd(n);
+const num = (s, n) => String(s).padStart(n);
+
+function printTable(results, label) {
+  console.log(`\n=== smoothness gate: ${label} ===`);
+  console.log([
+    pad('scenario', 18), num('frames', 7), num('p50', 6), num('mean', 6), num('p95', 6),
+    num('p99', 6), num('max', 8), num('>2x', 5), num('>4x', 5), num('>33', 5), num('>50', 5),
+    num('tasks', 6), num('up>8', 6), '  verdict',
+  ].join(''));
+  for (const r of results) {
+    console.log([
+      pad(r.scenario, 18), num(r.scoredFrames ?? '-', 7), num(r.p50Ms ?? '-', 6),
+      num(r.meanMs ?? '-', 6), num(r.p95Ms ?? '-', 6), num(r.p99Ms ?? '-', 6),
+      num(r.maxMs ?? '-', 8), num(r.over2x ?? '-', 5), num(r.over4x ?? '-', 5),
+      num(r.over33 ?? '-', 5), num(r.over50 ?? '-', 5),
+      num(r.longTasksOutsideVeils ?? '-', 6), num(r.uploadsOverBudget ?? '-', 6),
+      '  ', r.verdict,
+    ].join(''));
+    for (const f of r.failures ?? []) console.log(`${' '.repeat(18)}- ${f}`);
+  }
+}
+
 // ---------------------------------------------------------------------- main
+
+// Re-score stored traces under the current rule. A gate's thresholds move; the
+// runs behind them are expensive, so a rule change must not cost a re-run.
+if (RESCORE) {
+  const rescored = [];
+  for (const file of readdirSync(RESCORE).sort()) {
+    if (!file.endsWith('.json') || file === 'summary.json') continue;
+    const stored = JSON.parse(readFileSync(join(RESCORE, file), 'utf8'));
+    if (!stored.trace) continue;
+    const previous = stored.analysis ?? {};
+    const analysis = analyze(
+      stored.trace,
+      { id: previous.scenario ?? file.replace(/\.json$/, ''), title: previous.title ?? '' },
+      previous.notes ?? [],
+    );
+    analysis.wallSeconds = previous.wallSeconds;
+    rescored.push(analysis);
+    writeFileSync(join(RESCORE, file), JSON.stringify({ analysis, trace: stored.trace }, null, 1));
+  }
+  writeFileSync(join(RESCORE, 'summary.json'), JSON.stringify(rescored, null, 1));
+  printTable(rescored, `${RESCORE} (re-scored)`);
+  if (PRINT_JSON) console.log(JSON.stringify(rescored, null, 1));
+  process.exit(rescored.some((r) => r.verdict !== 'PASS') ? 1 : 0);
+}
 
 mkdirSync(OUT_DIR, { recursive: true });
 
@@ -501,7 +596,9 @@ if (!chosen.length) {
   process.exit(2);
 }
 
-const browser = await chromium.launch({
+// A crashed browser must not take the rest of the battery down with it: the
+// scenario that died is recorded as such and the next one gets a fresh one.
+const launchBrowser = () => chromium.launch({
   headless: true,
   executablePath: process.env.PW_CHROMIUM || undefined,
   args: [
@@ -512,12 +609,17 @@ const browser = await chromium.launch({
     '--enable-unsafe-swiftshader',
   ],
 });
+let browser = await launchBrowser();
 
 const results = [];
 try {
   for (const scenario of chosen) {
     const startedAt = Date.now();
     process.stdout.write(`[gate] ${scenario.id}: ${scenario.title}\n`);
+    if (!browser.isConnected()) {
+      process.stdout.write('       browser had died; relaunching\n');
+      browser = await launchBrowser();
+    }
     const { context, page, notes } = await openPage(browser, scenario.device);
     const note = (message) => notes.push(message);
     let trace = null;
@@ -556,22 +658,7 @@ try {
 
 writeFileSync(join(OUT_DIR, 'summary.json'), JSON.stringify(results, null, 1));
 
-const pad = (s, n) => String(s).padEnd(n);
-const num = (s, n) => String(s).padStart(n);
-console.log(`\n=== smoothness gate: ${LABEL} ===`);
-console.log([
-  pad('scenario', 18), num('frames', 7), num('mean', 7), num('p95', 7), num('p99', 7),
-  num('max', 8), num('>33', 5), num('>50', 5), num('tasks', 6), num('up>8', 6), '  verdict',
-].join(''));
-for (const r of results) {
-  console.log([
-    pad(r.scenario, 18), num(r.scoredFrames ?? '-', 7), num(r.meanMs ?? '-', 7),
-    num(r.p95Ms ?? '-', 7), num(r.p99Ms ?? '-', 7), num(r.maxMs ?? '-', 8),
-    num(r.over33 ?? '-', 5), num(r.over50 ?? '-', 5), num(r.longTasksOutsideVeils ?? '-', 6),
-    num(r.uploadsOverBudget ?? '-', 6), '  ', r.verdict,
-  ].join(''));
-  for (const f of r.failures ?? []) console.log(`${' '.repeat(18)}- ${f}`);
-}
+printTable(results, LABEL);
 console.log(`\nJSON: ${OUT_DIR}`);
 if (PRINT_JSON) console.log(JSON.stringify(results, null, 1));
 

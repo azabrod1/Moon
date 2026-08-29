@@ -12161,10 +12161,12 @@ export class PlanetariumMode {
   }
 
   /** Read table values back through the 8-bit blit path, at the same table
-   *  coordinates the shaders would address. */
+   *  coordinates the shaders would address. `combined` returns the radiance a
+   *  lookup gives — both phase functions and the single-Mie recovery, evaluated
+   *  in the shader — and `irradiance` reads the sky-irradiance table. */
   devAtmosphereSample(
     samples: ReadonlyArray<{
-      kind: 'transmittance' | 'scattering';
+      kind: 'transmittance' | 'scattering' | 'combined' | 'irradiance';
       r: number;
       mu: number;
       muS?: number;
@@ -12184,6 +12186,17 @@ export class PlanetariumMode {
           mode: 0,
           uv: transmittanceUvFromRMu(params, s.r, s.mu, tables.sizes),
           transmittance: tables.transmittance,
+          params,
+          scale: s.scale ?? 1,
+        });
+      }
+      if (s.kind === 'irradiance') {
+        return lut.readSample({
+          mode: 3,
+          irradiance: tables.irradiance,
+          params,
+          r: s.r,
+          muS: s.muS ?? 1,
           scale: s.scale ?? 1,
         });
       }
@@ -12192,11 +12205,13 @@ export class PlanetariumMode {
       );
       const coords = scatteringTexture3DCoords(uvwz, tables.sizes);
       return lut.readSample({
-        mode: 1,
+        mode: s.kind === 'combined' ? 2 : 1,
         scattering: tables.scattering,
         uvw0: coords.uvw0,
         uvw1: coords.uvw1,
         nuLerp: coords.lerp,
+        params,
+        nu: s.nu ?? 1,
         scale: s.scale ?? 1,
       });
     });

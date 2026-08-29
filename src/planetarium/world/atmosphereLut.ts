@@ -43,7 +43,10 @@
  * peak drops from five 3D targets to four.
  *
  * A lost context invalidates every render-target texture with no CPU backing:
- * the tables go with it, the tier drops, and the bake re-runs on restore.
+ * the tables go with it, the tier drops, and the restore re-bakes every body
+ * this session has ASKED for — not every body that had finished, which is empty
+ * during the first bake and would lose the tier for the rest of the session.
+ * Three bakes in a row that produce nothing end the retrying.
  */
 import * as THREE from 'three';
 import { debugLog, debugWarn } from '../../shared/debug';
@@ -54,12 +57,15 @@ import {
   ATMOSPHERE_TABLE_SIZES_HALF,
   atmosphereParams,
   bodySolarIrradianceScale,
+  computeSingleScattering,
+  opticalDepthToTopBoundary,
   scatteringTexture3DCoords,
   scatteringTextureWidth,
   scatteringUvwzFromRMuMuSNu,
   transmittanceUvFromRMu,
   type AtmosphereParams,
   type AtmosphereTableSizes,
+  type RGB,
 } from './atmosphereModel';
 
 export type AtmosphereLutState = 'unavailable' | 'baking' | 'ready';
@@ -90,6 +96,12 @@ export interface AtmosphereBakeStats {
   residentBytes: number;
   orders: number;
   validated: boolean;
+  /** True when the bake was abandoned for a reason it could see: the context
+   *  already reported lost, or the instance disposed. A context that dies
+   *  mid-draw usually throws out of the draw before the event lands, and that
+   *  row simply reads `validated: false`. Either way the attempt is recorded,
+   *  so a lost context during the first bake is not invisible. */
+  aborted: boolean;
   slices: number;
 }
 
@@ -111,6 +123,11 @@ export interface AtmosphereLutOptions {
 const DESKTOP_ORDERS = 4;
 const TOUCH_ORDERS = 2;
 const DEFAULT_DRAWS_PER_SLICE = 8;
+/** Bakes in a row that produce no tables — a failed validation, a throw, or a
+ *  context lost mid-flight — after which the session stops trying. Each retry
+ *  costs a few hundred draws and 32 MiB of scratch on a device that has already
+ *  shown it cannot hold them, and the analytic shell is a complete look. */
+const MAX_CONSECUTIVE_BAKE_FAILURES = 3;
 /** Submission budget per slice. Submission is not execution, so the draw count
  *  is the real limiter; this only stops a slice running long on a slow driver. */
 const SLICE_SUBMIT_BUDGET_MS = 6;
@@ -221,7 +238,8 @@ float computeOpticalLengthToTopAtmosphereBoundary(int profile, float r, float mu
 // transmittance is ~1e-6 — a half-float subnormal that GPUs flush to zero — and
 // the segment transmittance below is a quotient of two of them, so the zero
 // arrives as an infinity or a NaN and speckles the horizon and the terminator,
-// the two features these tables exist to draw. Optical depth spans 0..~13,
+// the two features these tables exist to draw. Optical depth spans 0..~22
+// (measured max in Earth's table: 21.7, blue, a horizon path at the ground),
 // where half precision has room, and the segment becomes a difference.
 vec3 computeOpticalDepthToTopAtmosphereBoundary(float r, float mu) {
   return uRayleighScattering * computeOpticalLengthToTopAtmosphereBoundary(0, r, mu) +
@@ -291,6 +309,19 @@ float rayleighPhaseFunction(float nu) {
 float miePhaseFunction(float g, float nu) {
   float k = 3.0 / (8.0 * PI) * (1.0 - g * g) / (2.0 + g * g);
   return k * (1.0 + nu * nu) / pow(1.0 + g * g - 2.0 * g * nu, 1.5);
+}
+
+// The accumulator stores Rayleigh in rgb and only the RED Mie channel in alpha;
+// the other two are recovered by assuming Mie and Rayleigh have the same
+// spectral shape along the path. The division by the red Rayleigh channel goes
+// to zero exactly where the difference form lives — the limb and the far side
+// of the terminator — so a non-positive red returns no Mie at all rather than
+// coloured speckle there.
+vec3 getExtrapolatedSingleMieScattering(vec4 scattering) {
+  if (scattering.r <= 0.0) return vec3(0.0);
+  return scattering.rgb * (scattering.a / scattering.r)
+      * (uRayleighScattering.r / uMieScattering.r)
+      * (uMieScattering / uRayleighScattering);
 }
 
 // --- scattering table addressing ------------------------------------------
@@ -673,25 +704,41 @@ void main() {
 `;
 
 /** Reads one table sample into an 8-bit target, high byte or low byte, so a
- *  16-bit value survives a readback that is only allowed to be 8-bit. */
+ *  16-bit value survives a readback that is only allowed to be 8-bit. Built on
+ *  BAKE_COMMON, so modes 2 and 3 exercise the SHADER's phase functions, Mie
+ *  recovery and irradiance addressing — the transcription that has no other
+ *  check against the TypeScript reference. */
 const PROBE_FRAGMENT = /* glsl */`
-precision highp float;
-precision highp sampler2D;
-precision highp sampler3D;
 uniform sampler2D uTransmittance;
 uniform sampler3D uScattering;
+uniform sampler2D uIrradiance;
+// 0 = a transmittance texel; 1 = a scattering texel with the nu lerp;
+// 2 = the combined radiance a lookup returns, both phases applied and the
+//     single-Mie term recovered; 3 = an irradiance texel, addressed by (r, mu_s).
 uniform int uMode;
 uniform vec2 uUv;
 uniform vec3 uUvw0;
 uniform vec3 uUvw1;
 uniform float uNuLerp;
+uniform float uNu;
+uniform float uProbeR;
+uniform float uProbeMuS;
 uniform float uScale;
 uniform int uByte;
 out vec4 fragColor;
 void main() {
-  vec4 v = uMode == 0
-      ? texture(uTransmittance, uUv)
-      : mix(texture(uScattering, uUvw0), texture(uScattering, uUvw1), uNuLerp);
+  vec4 v;
+  if (uMode == 0) {
+    v = texture(uTransmittance, uUv);
+  } else if (uMode == 3) {
+    v = vec4(getIrradiance(uIrradiance, uProbeR, uProbeMuS), 1.0);
+  } else {
+    vec4 t = mix(texture(uScattering, uUvw0), texture(uScattering, uUvw1), uNuLerp);
+    v = uMode == 1 ? t : vec4(
+        t.rgb * rayleighPhaseFunction(uNu)
+        + getExtrapolatedSingleMieScattering(t) * miePhaseFunction(uMiePhaseG, uNu),
+        1.0);
+  }
   vec4 s = clamp(v * uScale, 0.0, 1.0);
   fragColor = uByte == 0 ? floor(s * 255.0) / 255.0 : fract(s * 255.0);
 }
@@ -763,7 +810,14 @@ export class AtmosphereLut {
   private contextLost = false;
   private generation = 0;
   private disposed = false;
-  private lostBodies: string[] = [];
+  /** Every body a bake has been asked for this session, whether or not it ever
+   *  finished. A context lost during the FIRST bake finds nothing ready, so a
+   *  restore that re-baked only what HAD been ready would re-bake nothing —
+   *  and the one-shot timer that armed the bake has already fired, so nothing
+   *  else would ask again either. */
+  private readonly requested = new Set<string>();
+  private consecutiveFailures = 0;
+  private givenUp = false;
 
   constructor(
     private readonly renderer: THREE.WebGLRenderer,
@@ -802,6 +856,7 @@ export class AtmosphereLut {
    * slicing, not each other).
    */
   bake(body: string): Promise<boolean> {
+    if (ATMOSPHERE_SPECS[body]) this.requested.add(body);
     const run = this.bakeChain.then(() => this.runBake(body));
     // The chain must survive a rejection or every later bake is dropped.
     this.bakeChain = run.catch(() => undefined);
@@ -811,7 +866,7 @@ export class AtmosphereLut {
   private async runBake(body: string): Promise<boolean> {
     if (this.disposed || this.contextLost) return false;
     if (this.ready.has(body)) return true;
-    if (!ATMOSPHERE_SPECS[body]) return false;
+    if (!ATMOSPHERE_SPECS[body] || this.givenUp) return false;
     if (this.capable === null) this.capable = canGPUDoAtmosphereLut(this.renderer);
     if (!this.capable) return false;
 
@@ -824,13 +879,36 @@ export class AtmosphereLut {
     let slices = 0;
     this.baking++;
     let targets: BakeTargets | null = null;
+    let succeeded = false;
+    const record = (validated: boolean, aborted: boolean): void => {
+      this.bakeStats.push({
+        body,
+        wallMs: performance.now() - wallStart,
+        submitMs,
+        drawCalls: this.drawCount - drawsBefore,
+        programsBefore,
+        programsAfter: this.renderer.info.programs?.length ?? 0,
+        peakBytes: this.peakBytes,
+        residentBytes: targets
+          ? targetBytes(targets.transmittance, 1) + targetBytes(targets.irradiance, 1)
+            + targetBytes(targets.scattering, this.sizes.scatteringR)
+          : 0,
+        orders: this.orders,
+        validated,
+        aborted,
+        slices,
+      });
+    };
     try {
       this.ensureMaterials();
       targets = this.createTargets();
       const steps = this.buildSteps(params, targets);
       let i = 0;
       while (i < steps.length) {
-        if (this.disposed || this.contextLost || generation !== this.generation) return false;
+        if (this.disposed || this.contextLost || generation !== this.generation) {
+          record(false, true);
+          return false;
+        }
         const sliceStart = performance.now();
         const prevTarget = this.renderer.getRenderTarget();
         const prevAutoClear = this.renderer.autoClear;
@@ -864,22 +942,7 @@ export class AtmosphereLut {
         irradiance: targets.irradiance.texture,
       };
       const validated = this.validate(params, targets);
-      const residentBytes = targetBytes(targets.transmittance, 1)
-        + targetBytes(targets.irradiance, 1)
-        + targetBytes(targets.scattering, this.sizes.scatteringR);
-      this.bakeStats.push({
-        body,
-        wallMs: performance.now() - wallStart,
-        submitMs,
-        drawCalls: this.drawCount - drawsBefore,
-        programsBefore,
-        programsAfter: this.renderer.info.programs?.length ?? 0,
-        peakBytes: this.peakBytes,
-        residentBytes,
-        orders: this.orders,
-        validated,
-        slices,
-      });
+      record(validated, false);
       if (!validated) {
         // Fail-closed: a table that cannot be read back is a table that cannot
         // be trusted, and the analytic shell is a complete look on its own.
@@ -893,17 +956,41 @@ export class AtmosphereLut {
       this.ready.set(body, tables);
       this.residentTargets.set(body, [targets.transmittance, targets.irradiance, targets.scattering]);
       targets = null;
+      succeeded = true;
+      this.consecutiveFailures = 0;
       debugLog('Atmosphere LUT baked', this.bakeStats[this.bakeStats.length - 1]);
       return true;
     } catch (err) {
-      debugWarn('Atmosphere LUT bake failed; staying on the analytic tier', { body, err: String(err) });
-      this.capable = false;
+      // A draw into a context that has just gone throws out of three before the
+      // lost-context event is dispatched, and that throw says nothing about the
+      // device — only a failure under a live context marks it incapable.
+      const cutShort = this.contextLost || this.disposed || generation !== this.generation;
+      debugWarn('Atmosphere LUT bake failed; staying on the analytic tier',
+        { body, cutShort, err: String(err) });
+      record(false, cutShort);
+      if (!cutShort) this.capable = false;
       return false;
     } finally {
       this.baking--;
       // A bake that never reached its hand-off owns everything it made.
       if (targets) this.disposeResident(targets);
+      if (!succeeded && !this.disposed) this.noteFailedBake(body);
     }
+  }
+
+  /** A bake that produced no tables. Three of those in a row and the session
+   *  stops re-baking: a device that keeps losing the context mid-bake would
+   *  otherwise retry on every restore, each retry costing the memory that is
+   *  making it lose the context. */
+  private noteFailedBake(body: string): void {
+    this.consecutiveFailures++;
+    if (this.givenUp || this.consecutiveFailures < MAX_CONSECUTIVE_BAKE_FAILURES) return;
+    this.givenUp = true;
+    this.capable = false;
+    debugWarn(
+      'Atmosphere LUT gave up after repeated failed bakes; staying on the analytic tier',
+      { body, attempts: this.consecutiveFailures },
+    );
   }
 
   /** The tables are render-target textures with no CPU backing: a lost context
@@ -912,14 +999,14 @@ export class AtmosphereLut {
   onContextLost(): void {
     this.contextLost = true;
     this.generation++;
-    this.lostBodies = [...this.ready.keys()];
     this.dropReady();
     this.liveBytes = 0;
     this.capable = null;
   }
 
-  /** Re-bake whatever had been baked before the loss. The tier stays down until
-   *  each one validates again — never a stale table over a new context. */
+  /** Re-bake every body this session has asked for — the ones that were ready
+   *  and the one that was still baking when the context went. The tier stays
+   *  down until each validates again: never a stale table over a new context. */
   onContextRestored(): void {
     this.contextLost = false;
     // Programs and targets went with the context; the materials must be rebuilt
@@ -930,9 +1017,7 @@ export class AtmosphereLut {
     this.quad = null;
     this.quadScene = new THREE.Scene();
     this.probeTarget = null;
-    const bodies = this.lostBodies;
-    this.lostBodies = [];
-    for (const body of bodies) void this.bake(body);
+    for (const body of [...this.requested]) void this.bake(body);
   }
 
   dispose(): void {
@@ -1013,25 +1098,20 @@ export class AtmosphereLut {
         uSourceB: { value: null },
         uMode: { value: 0 },
       }),
-      probe: new THREE.ShaderMaterial({
-        vertexShader: BAKE_VERTEX,
-        fragmentShader: PROBE_FRAGMENT,
-        glslVersion: THREE.GLSL3,
-        precision: 'highp',
-        depthTest: false,
-        depthWrite: false,
-        blending: THREE.NoBlending,
-        uniforms: {
-          uTransmittance: { value: null },
-          uScattering: { value: null },
-          uMode: { value: 0 },
-          uUv: { value: new THREE.Vector2() },
-          uUvw0: { value: new THREE.Vector3() },
-          uUvw1: { value: new THREE.Vector3() },
-          uNuLerp: { value: 0 },
-          uScale: { value: 1 },
-          uByte: { value: 0 },
-        },
+      probe: make(PROBE_FRAGMENT, {
+        uTransmittance: { value: null },
+        uScattering: { value: null },
+        uIrradiance: { value: null },
+        uMode: { value: 0 },
+        uUv: { value: new THREE.Vector2() },
+        uUvw0: { value: new THREE.Vector3() },
+        uUvw1: { value: new THREE.Vector3() },
+        uNuLerp: { value: 0 },
+        uNu: { value: 0 },
+        uProbeR: { value: 0 },
+        uProbeMuS: { value: 0 },
+        uScale: { value: 1 },
+        uByte: { value: 0 },
       }),
     };
     this.quad = new THREE.Mesh(new THREE.PlaneGeometry(2, 2));
@@ -1228,38 +1308,67 @@ export class AtmosphereLut {
 
   /**
    * Read one transmittance sample and one scattering sample back through the
-   * 8-bit blit and compare them with what the model says they must be. Any
-   * non-finite value, or a zero where the reference is not zero, fails the
-   * whole tier for the session.
+   * 8-bit blit and hold every channel against the CPU reference's value for the
+   * same coordinate. A non-finite read, or any channel outside its band, fails
+   * the whole tier for the session.
+   *
+   * Comparing against the reference rather than against the sample's own other
+   * channels is what makes this a test: "blue exceeds red" is also true of a
+   * table where two channels have clipped to the probe's ceiling, and of most
+   * ways a parameter can be wrong.
    */
   private validate(params: AtmosphereParams, t: BakeTargets): boolean {
+    const check = (
+      label: string,
+      read: readonly number[],
+      expected: RGB,
+      band: { min: number; max: number },
+    ): boolean => {
+      for (let c = 0; c < 3; c++) {
+        const v = read[c];
+        const ok = Number.isFinite(v) && v >= expected[c] * band.min && v <= expected[c] * band.max;
+        if (!ok) {
+          debugWarn('Atmosphere LUT sample outside its band', {
+            label, channel: c, read: v, expected: expected[c], band,
+          });
+          return false;
+        }
+      }
+      return true;
+    };
     try {
-      // Straight up from the ground: a real optical depth, with blue
-      // extinguished harder than red.
+      // Straight up from the ground: a real optical depth, and one the
+      // reference integrates in well under a millisecond.
       const uv = transmittanceUvFromRMu(params, params.bottomRadius, 1, this.sizes);
-      const tr = this.readSample({
-        mode: 0, uv, scale: OPTICAL_DEPTH_PROBE_SCALE, transmittance: t.transmittance.texture,
+      const tau = this.readSample({
+        mode: 0, uv, params, scale: OPTICAL_DEPTH_PROBE_SCALE,
+        transmittance: t.transmittance.texture,
       });
-      if (!tr.every(Number.isFinite)) return false;
-      if (!(tr[0] > 0.001 && tr[0] < 4)) return false;
-      if (!(tr[2] > tr[0])) return false;
+      const tauRef = opticalDepthToTopBoundary(
+        params, params.bottomRadius, 1, VALIDATION_TRANSMITTANCE_SAMPLES,
+      );
+      if (!check('opticalDepth', tau, tauRef, OPTICAL_DEPTH_VALIDATION_BAND)) return false;
 
-      // A sunlit sky ray just above the ground: it must scatter, and it must
-      // scatter more blue than red.
-      const r = params.bottomRadius + 0.2 * (params.topRadius - params.bottomRadius);
-      const uvwz = scatteringUvwzFromRMuMuSNu(params, r, 0.4, 0.8, 0.3, false, this.sizes);
+      // A sunlit sky ray a fifth of the way up the shell.
+      const s = SCATTERING_VALIDATION_SAMPLE;
+      const r = params.bottomRadius
+        + s.altitudeFraction * (params.topRadius - params.bottomRadius);
+      const uvwz = scatteringUvwzFromRMuMuSNu(params, r, s.mu, s.muS, s.nu, false, this.sizes);
       const coords = scatteringTexture3DCoords(uvwz, this.sizes);
       const sc = this.readSample({
         mode: 1,
+        params,
         scattering: t.scattering.texture,
         uvw0: coords.uvw0,
         uvw1: coords.uvw1,
         nuLerp: coords.lerp,
         scale: SCATTERING_PROBE_SCALE,
       });
-      if (!sc.every(Number.isFinite)) return false;
-      if (!(sc[0] > 0) || !(sc[2] > sc[0])) return false;
-      return true;
+      const scRef = computeSingleScattering(
+        params, r, s.mu, s.muS, s.nu, false,
+        VALIDATION_SCATTERING_SAMPLES, VALIDATION_TRANSMITTANCE_SAMPLES,
+      ).rayleigh;
+      return check('singleScattering', sc, scRef, SCATTERING_VALIDATION_BAND);
     } catch (err) {
       debugWarn('Atmosphere LUT validation threw', { err: String(err) });
       return false;
@@ -1273,17 +1382,25 @@ export class AtmosphereLut {
    * whose tables are perfectly good.
    */
   readSample(sample: {
-    mode: 0 | 1;
+    mode: 0 | 1 | 2 | 3;
     uv?: { u: number; v: number };
     transmittance?: THREE.Texture;
     scattering?: THREE.Texture;
+    irradiance?: THREE.Texture;
     uvw0?: readonly [number, number, number];
     uvw1?: readonly [number, number, number];
     nuLerp?: number;
+    /** Modes 2 and 3 evaluate shader code that reads the body's own
+     *  parameters, so they need the same set the bake was given. */
+    params?: AtmosphereParams;
+    nu?: number;
+    r?: number;
+    muS?: number;
     scale: number;
   }): [number, number, number, number] {
     this.ensureMaterials();
     const probe = this.materials!.probe;
+    if (sample.params) setAtmosphereUniforms(probe, sample.params);
     if (!this.probeTarget) {
       this.probeTarget = new THREE.WebGLRenderTarget(4, 4, {
         depthBuffer: false,
@@ -1294,6 +1411,10 @@ export class AtmosphereLut {
     probe.uniforms.uMode.value = sample.mode;
     probe.uniforms.uTransmittance.value = sample.transmittance ?? null;
     probe.uniforms.uScattering.value = sample.scattering ?? null;
+    probe.uniforms.uIrradiance.value = sample.irradiance ?? null;
+    probe.uniforms.uNu.value = sample.nu ?? 0;
+    probe.uniforms.uProbeR.value = sample.r ?? 0;
+    probe.uniforms.uProbeMuS.value = sample.muS ?? 0;
     if (sample.uv) (probe.uniforms.uUv.value as THREE.Vector2).set(sample.uv.u, sample.uv.v);
     if (sample.uvw0) {
       (probe.uniforms.uUvw0.value as THREE.Vector3).set(sample.uvw0[0], sample.uvw0[1], sample.uvw0[2]);
@@ -1323,13 +1444,50 @@ export class AtmosphereLut {
   }
 }
 
-/** Range selector for the scattering probe: single-scattering radiance at unit
- *  irradiance sits around 1e-2, so the 16-bit window is put there. */
-export const SCATTERING_PROBE_SCALE = 64;
+/** Range selector for the scattering probe. The readback window is [0, 1], and
+ *  a channel that clips at the top is then compared against the ceiling rather
+ *  than against the table: at 64 the validated sample's green and blue both
+ *  read exactly 1/64 and the comparison silently became "red is below 1/64".
+ *  Earth's sample is 0.012 / 0.028 / 0.079, so 8 leaves all three inside the
+ *  window with room for the band around them. */
+export const SCATTERING_PROBE_SCALE = 8;
 
-/** Optical depth runs to ~13 on a horizon path; this brings it inside the
- *  probe blit's [0, 1] window. */
+/** Optical depth runs to ~22 on a horizon path, which this scale would clip.
+ *  It is chosen for the ZENITH texel the validation reads (tau_red 0.083); a
+ *  horizon sample needs the ranging ladder the check tool carries. */
 export const OPTICAL_DEPTH_PROBE_SCALE = 1 / 16;
+
+/** The one scattering texel the tier is validated on: a sunlit sky ray a fifth
+ *  of the way up the shell, where every channel is clear of half-float's
+ *  subnormals. Exported so a test can hold the probe scale against the value
+ *  the CPU reference says will be read there. */
+export const SCATTERING_VALIDATION_SAMPLE = {
+  altitudeFraction: 0.2,
+  mu: 0.4,
+  muS: 0.8,
+  nu: 0.3,
+} as const;
+
+/** How far a validated channel may sit from the CPU reference. The table
+ *  carries every scattering order and the reference carries one, so the ceiling
+ *  is generous by construction — Earth's four-order table reads 1.3-1.5x the
+ *  reference here, and a brighter ground or thicker aerosol raises that — while
+ *  the floor is what a black, clipped, half-written or wrongly scaled table
+ *  falls through. The blue channel can reach the probe's ceiling before the
+ *  band's top; red, an eighth of the way up the window, is what carries the
+ *  upper test. */
+export const SCATTERING_VALIDATION_BAND = { min: 0.5, max: 3.0 } as const;
+
+/** Optical depth has no order structure — both sides integrate the same
+ *  quantity — so the band is only the readback's own precision and the coarser
+ *  sample count below. */
+export const OPTICAL_DEPTH_VALIDATION_BAND = { min: 0.85, max: 1.15 } as const;
+
+/** Sample counts for the reference integrals inside `validate()`. This runs on
+ *  the device at the end of every bake, so it is coarser than the reference's
+ *  own defaults — still far inside the bands above, and about a millisecond. */
+const VALIDATION_TRANSMITTANCE_SAMPLES = 200;
+const VALIDATION_SCATTERING_SAMPLES = 20;
 
 /** Add the pass's output to whatever the target already holds. NOT three's
  *  AdditiveBlending: that is `blendFunc(SRC_ALPHA, ONE)` unless the material is

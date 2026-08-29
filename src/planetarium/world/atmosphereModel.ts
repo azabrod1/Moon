@@ -158,6 +158,18 @@ const EARTH_SPEC: AtmosphereSpec = {
  * it with taper room to spare (7.5 km against a 4.1 km silhouette sagitta).
  * 40 km is 3.6 scale heights and leaves 2.6 % of the column above it —
  * a smaller error than the day-to-day dust variability the τ is drawn from.
+ *
+ * That is the column argument, and it is not the limb argument. What a limb
+ * shows is the optical depth of a GRAZING ray at the top, where the airmass is
+ * ~√(πR/2H): Earth's 100 km top leaves 0.265 · e^(−100/8) · 35 ≈ 3.4e-5 there,
+ * i.e. nothing, tapering over 27 km of mesh (3.4 scale heights). Mars' 40 km
+ * top leaves 0.5 · e^(−40/11) · 22 ≈ 0.29 — bright enough to read as a ring on
+ * the limb where the table stops, and only 7.5 km of mesh (0.68 dust scale
+ * heights) to take it to zero in. So Mars' first drawn shell has to settle one
+ * of two things: raise the mesh scale (which moves the collision floor by
+ * 20 km, with the ship and camera pins re-checked) or put a taller top under a
+ * larger shell. That is a decision to make against the picture, with the shell
+ * drawing — the parameters here are the ones a limb will expose.
  */
 const MARS_SPEC: AtmosphereSpec = {
   topKm: 40,
@@ -767,7 +779,8 @@ export function opticalLengthToTopBoundary(
  * the transmittance. This is what the table stores: transmittance on a long
  * path is ~1e-6, which is a half-float subnormal that GPUs flush to zero, and
  * the segment transmittance is then a division by that zero. Optical depth
- * spans 0..~13 instead, where half precision is comfortable, and the segment
+ * spans 0..~22 instead (measured max in Earth's table: 21.7, blue, a horizon
+ * path at the ground), where half precision is comfortable, and the segment
  * becomes a difference of two depths rather than a ratio of two transmittances.
  */
 export function opticalDepthToTopBoundary(
@@ -904,4 +917,78 @@ export function computeSingleScattering(
     rayleigh: [rSum * dx * rs[0], gSum * dx * rs[1], bSum * dx * rs[2]],
     mie: [rMieSum * dx * ms[0], gMieSum * dx * ms[1], bMieSum * dx * ms[2]],
   };
+}
+
+/** Single scattering at (r, μ, μ_s, ν) WITH both phase functions applied — the
+ *  radiance a lookup returns, as opposed to the phase-free pair the table
+ *  stores. This is the form the sky's own irradiance integrates, and the form a
+ *  combined table lookup has to reproduce, so it is the one place the two phase
+ *  functions are exercised end to end. */
+export function singleScatteringRadiance(
+  params: AtmosphereParams,
+  r: number,
+  mu: number,
+  muS: number,
+  nu: number,
+  intersectsGround: boolean,
+  samples = REFERENCE_SCATTERING_SAMPLES,
+  transmittanceSamples = REFERENCE_TRANSMITTANCE_SAMPLES,
+): RGB {
+  const s = computeSingleScattering(
+    params, r, mu, muS, nu, intersectsGround, samples, transmittanceSamples,
+  );
+  const pr = rayleighPhase(nu);
+  const pm = miePhase(params.miePhaseG, nu);
+  return [
+    s.rayleigh[0] * pr + s.mie[0] * pm,
+    s.rayleigh[1] * pr + s.mie[1] * pm,
+    s.rayleigh[2] * pr + s.mie[2] * pm,
+  ];
+}
+
+/**
+ * Irradiance on the horizontal at (r, μ_s) from the sky's FIRST-ORDER
+ * scattering — what the bake's indirect-irradiance pass writes into the
+ * irradiance table when it runs for order 1, and the only part of that table a
+ * table-free reference can reproduce (every later order integrates the
+ * multiple-scattering table, which has no closed form here).
+ *
+ * The hemisphere quadrature is deliberately the bake's own — `directions`
+ * midpoint samples in θ over the upper half and twice that in φ — so the two
+ * sides differ by the table's interpolation, never by the grid. The inner
+ * sample counts default to the reference's own: this runs `directions²/2`
+ * single-scattering integrals per call, which is seconds rather than
+ * milliseconds, and cutting them is not free — at the ground row a 25/250
+ * integration lands 20 % below a 50/500 one.
+ */
+export function computeIndirectIrradianceOrder1(
+  params: AtmosphereParams,
+  r: number,
+  muS: number,
+  samples = REFERENCE_SCATTERING_SAMPLES,
+  transmittanceSamples = REFERENCE_TRANSMITTANCE_SAMPLES,
+  directions = 32,
+): RGB {
+  const dphi = Math.PI / directions;
+  const dtheta = Math.PI / directions;
+  const sunX = safeSqrt(1 - muS * muS);
+  const out: [number, number, number] = [0, 0, 0];
+  for (let j = 0; j < directions / 2; j++) {
+    const theta = (j + 0.5) * dtheta;
+    const cosTheta = Math.cos(theta);
+    const sinTheta = Math.sin(theta);
+    const domega = dtheta * dphi * sinTheta;
+    for (let i = 0; i < 2 * directions; i++) {
+      const phi = (i + 0.5) * dphi;
+      const nu = Math.cos(phi) * sinTheta * sunX + cosTheta * muS;
+      const radiance = singleScatteringRadiance(
+        params, r, cosTheta, muS, nu, false, samples, transmittanceSamples,
+      );
+      const w = cosTheta * domega;
+      out[0] += radiance[0] * w;
+      out[1] += radiance[1] * w;
+      out[2] += radiance[2] * w;
+    }
+  }
+  return out;
 }

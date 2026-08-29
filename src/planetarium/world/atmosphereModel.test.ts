@@ -12,12 +12,14 @@ import {
   distanceToTopBoundary,
   extrapolateSingleMieScattering,
   irradianceUvFromRMuS,
+  miePhase,
   opticalDepthToTopBoundary,
   opticalLengthToTopBoundary,
   rMuFromTransmittanceUv,
   rMuMuSNuFromScatteringUvwz,
   rMuSFromIrradianceUv,
   rayIntersectsGround,
+  rayleighPhase,
   scatteringTexture3DCoords,
   scatteringTextureWidth,
   scatteringUvwzFromRMuMuSNu,
@@ -341,5 +343,57 @@ describe('CPU reference', () => {
     // Along the horizon: the half-chord of the shell.
     const chord = Math.sqrt(earth.topRadius ** 2 - earth.bottomRadius ** 2);
     expect(distanceToTopBoundary(earth, earth.bottomRadius, 0)).toBeCloseTo(chord, 12);
+  });
+});
+
+describe('phase functions', () => {
+  /** The whole solid angle, by Simpson over nu: 2*PI * integral(-1..1) p dnu. */
+  const sphereIntegral = (p: (nu: number) => number): number => {
+    const n = 20000;
+    let sum = 0;
+    for (let i = 0; i <= n; i++) {
+      const w = i === 0 || i === n ? 1 : (i % 2 === 1 ? 4 : 2);
+      sum += w * p(-1 + (2 * i) / n);
+    }
+    return 2 * Math.PI * ((sum * (2 / n)) / 3);
+  };
+
+  it('pins the Rayleigh constant and integrates to one over the sphere', () => {
+    expect(rayleighPhase(0)).toBeCloseTo(3 / (16 * Math.PI), 15);
+    expect(rayleighPhase(1)).toBeCloseTo(3 / (8 * Math.PI), 15);
+    expect(rayleighPhase(-1)).toBeCloseTo(3 / (8 * Math.PI), 15);
+    // A phase function that does not integrate to 1 is an energy scale hiding
+    // inside every order past the first.
+    expect(sphereIntegral(rayleighPhase)).toBeCloseTo(1, 9);
+  });
+
+  it('stays bounded away from zero, which the order accumulation divides by', () => {
+    // Orders past the first are stored divided by the Rayleigh phase, so one
+    // multiply at lookup recovers them all; the division is only safe because
+    // the minimum is 3/16pi, at nu = 0.
+    let min = Infinity;
+    for (let i = 0; i <= 2000; i++) min = Math.min(min, rayleighPhase(-1 + i / 1000));
+    expect(min).toBeCloseTo(3 / (16 * Math.PI), 12);
+    expect(min).toBeGreaterThan(0.059);
+  });
+
+  it('normalises Mie and holds its forward-to-back ratio at g = 0.83', () => {
+    const g = ATMOSPHERE_SPECS.Earth.miePhaseG;
+    expect(g).toBe(0.83);
+    expect(sphereIntegral((nu) => miePhase(g, nu))).toBeCloseTo(1, 6);
+    // Analytic for this phase function: ((1+g)/(1-g))^3, i.e. 1248x forward.
+    expect(miePhase(g, 1) / miePhase(g, -1)).toBeCloseTo(((1 + g) / (1 - g)) ** 3, 4);
+    expect(miePhase(g, 1) / miePhase(g, -1)).toBeGreaterThan(1000);
+    // At g = 0 the Henyey-Greenstein form IS the Rayleigh phase, which pins
+    // both constants against each other.
+    for (const nu of [-1, -0.3, 0, 0.25, 1]) {
+      expect(miePhase(0, nu)).toBeCloseTo(rayleighPhase(nu), 12);
+    }
+  });
+
+  it('scatters Mars\' dust less forward than Earth\'s aerosol', () => {
+    const mars = ATMOSPHERE_SPECS.Mars.miePhaseG;
+    expect(mars).toBe(0.63);
+    expect(miePhase(mars, 1)).toBeLessThan(miePhase(ATMOSPHERE_SPECS.Earth.miePhaseG, 1));
   });
 });

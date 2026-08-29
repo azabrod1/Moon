@@ -605,7 +605,7 @@ function installDevHooks() {
       planetariumMode?.devAtmosphereBake(options) ?? Promise.resolve(null),
     atmoSample: (
       samples: ReadonlyArray<{
-        kind: 'transmittance' | 'scattering';
+        kind: 'transmittance' | 'scattering' | 'combined' | 'irradiance';
         r: number; mu: number; muS?: number; nu?: number; hitsGround?: boolean; scale?: number;
       }>,
       body?: string,

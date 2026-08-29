@@ -1,6 +1,9 @@
 import { describe, it, expect } from 'vitest';
 import * as THREE from 'three';
 import {
+  SCATTERING_PROBE_SCALE,
+  SCATTERING_VALIDATION_BAND,
+  SCATTERING_VALIDATION_SAMPLE,
   atmosphereLutProfile,
   createScatteringTarget,
   createTableTarget,
@@ -8,7 +11,10 @@ import {
 import {
   ATMOSPHERE_TABLE_SIZES_FULL,
   ATMOSPHERE_TABLE_SIZES_HALF,
+  atmosphereParams,
+  computeSingleScattering,
   scatteringTextureWidth,
+  scatteringUvwzFromRMuMuSNu,
 } from './atmosphereModel';
 
 describe('atmosphere table targets', () => {
@@ -81,6 +87,36 @@ describe('atmosphere table targets', () => {
     } finally {
       full.dispose();
       half.dispose();
+    }
+  });
+});
+
+describe('table validation probe', () => {
+  it('reads the validated sample well inside the probe window, on both profiles', () => {
+    // The probe blit clamps to [0, 1]: a channel that reaches the ceiling is
+    // compared against the ceiling and not against the table, and the tier then
+    // turns on or off for the wrong reason. Nothing about the sample is
+    // size-dependent, so the same margin has to hold for both table profiles.
+    const earth = atmosphereParams('Earth');
+    const s = SCATTERING_VALIDATION_SAMPLE;
+    const r = earth.bottomRadius + s.altitudeFraction * (earth.topRadius - earth.bottomRadius);
+    const expected = computeSingleScattering(earth, r, s.mu, s.muS, s.nu, false, 32, 200).rayleigh;
+    for (const sizes of [ATMOSPHERE_TABLE_SIZES_FULL, ATMOSPHERE_TABLE_SIZES_HALF]) {
+      const uvwz = scatteringUvwzFromRMuMuSNu(earth, r, s.mu, s.muS, s.nu, false, sizes);
+      // A sky ray: the upper half of the folded mu axis.
+      expect(uvwz.uMu).toBeGreaterThan(0.5);
+      // Blue can reach the probe's ceiling before the top of the accepted band;
+      // the upper test is carried by the smallest channel, which must not.
+      const smallest = Math.min(...expected);
+      expect(smallest * SCATTERING_PROBE_SCALE * SCATTERING_VALIDATION_BAND.max)
+        .toBeLessThan(0.95);
+      for (const channel of expected) {
+        const read = channel * SCATTERING_PROBE_SCALE;
+        expect(read).toBeGreaterThan(0.05);
+        expect(read).toBeLessThan(0.95);
+        // The bottom of the accepted band has to stay readable too.
+        expect(read * SCATTERING_VALIDATION_BAND.min).toBeGreaterThan(0.002);
+      }
     }
   });
 });

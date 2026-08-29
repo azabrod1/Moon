@@ -38,6 +38,8 @@ import {
 import { createAtmosphereShellMaterial } from './atmosphereShell';
 import { NIGHT_FILL, NIGHT_FLOOR_FRACTION, augmentSurfaceMaterial } from './surfaceShading';
 import { BLOOM_THRESHOLD } from '../../app/bloomConfig';
+import { EARTH_NIGHT_MIX_SCALE } from '../../shared/shaders/atmosphere';
+import { CLOUD_CITY_GLOW } from './cloudDeck';
 import { PLANETS } from '../planets/planetData';
 
 /**
@@ -573,8 +575,12 @@ describe('the bloom threshold', () => {
     }
     // City lights are the one night source that is allowed to bloom, and this
     // commit does not touch them.
+    expect(EARTH_NIGHT_MIX_SCALE).toBe(1.5);
     expect(src('../../shared/shaders/atmosphere.ts'))
-      .toContain('vec3 lit = nightColor.rgb * nightMix * 1.5;');
+      .toContain('vec3 lit = nightColor.rgb * nightMix * ${EARTH_NIGHT_MIX_SCALE.toFixed(1)};');
+    // The same lights glowing up through the cloud deck are a fraction of that,
+    // so nothing the deck adds can bloom where the lights themselves would not.
+    expect(CLOUD_CITY_GLOW).toBeLessThan(EARTH_NIGHT_MIX_SCALE);
   });
 
   it('is above all of them ON ONE FRAGMENT, which is what the pass thresholds', () => {

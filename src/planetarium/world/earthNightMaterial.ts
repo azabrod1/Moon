@@ -89,9 +89,15 @@ export function createEarthNightShellMaterial(
   map: THREE.Texture | null,
   air: SurfaceAirFx,
 ): THREE.ShaderMaterial {
+  // The map goes into the AIR's own uniform, and the shell reads that object
+  // under its own name. The cloud deck glows cities through itself from the
+  // same object, so the ladder that sharpens the shell's map sharpens what the
+  // deck lights with — a uniform of its own would leave the deck on the boot
+  // map for the rest of the session.
+  air.uNightLights.value = map;
   return nightMaterial(
     {
-      nightTexture: { value: map },
+      nightTexture: air.uNightLights,
       sunDirection: { value: new THREE.Vector3(1, 0, 0) },
       uUvOffset: { value: new THREE.Vector2(0, 0) },
       uUvRepeat: { value: new THREE.Vector2(1, 1) },

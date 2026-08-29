@@ -54,6 +54,13 @@
  * which puts it above the whole air. `AIR_LOOKUP_RADIUS` is where each
  * archetype's segment really ends.
  *
+ * The injection has three points, not two: the declarations at <common>, the
+ * cloud deck's detail at <normal_fragment_maps> — the one place where the
+ * perturbed normal exists and no light has read it yet — and everything else
+ * before <opaque_fragment>, after the lighting, where the terms above land in
+ * linear radiance. A normal moved at the third point would shade this file's
+ * own night terms and leave three's lights on a smooth sphere.
+ *
  * The injected GLSL is byte-identical for every body (only uniforms differ), so
  * materials still share compiled programs — no custom cache key needed. That
  * holds for the air too: a body without tables takes the same text with
@@ -71,11 +78,31 @@ import {
   type AtmosphereTables,
 } from './atmosphereLut';
 import { AIRLIGHT_SCALE } from './atmosphereModel';
+import { EARTH_NIGHT_COLD_CUT } from '../../shared/shaders/atmosphere';
+import {
+  CLOUD_ALBEDO,
+  CLOUD_ALBEDO_BLEND,
+  CLOUD_CITY_GLOW,
+  CLOUD_COVERAGE_GLSL,
+  CLOUD_DETAIL_ERODE,
+  CLOUD_DETAIL_GLSL,
+  CLOUD_DETAIL_RELIEF_KM,
+  LUMINANCE_WEIGHTS,
+  SPHERE_EQUIRECT_UV_GLSL,
+} from './cloudDeck';
+import {
+  CLOUD_DETAIL_SIZE,
+  CLOUD_DETAIL_GRADIENT_SCALE,
+  CLOUD_DETAIL_UV_PER_RADIAN,
+  cloudDetailTexture,
+} from './cloudDetailNoise';
 import { MOON_UP_GLSL, NIGHT_WEIGHT_GLSL, SUN_DOWN_GLSL } from './nightSources';
 import { PLANETS } from '../planets/planetData';
 
-/** The cloud deck is a surface class of its own: it hazes and eclipses like the
- *  ground under it, and it draws the same night terms every other surface does
+/** The cloud deck is a surface class of its own: its alpha is the coverage its
+ *  own map states rather than a flat opacity (world/cloudDeck), it hazes and
+ *  eclipses like the ground under it, and it draws the same night terms every
+ *  other surface does
  *  — the sky's ambient and the Moon — which is what makes moonlit cloud tops
  *  read silver. What it does NOT carry is an authored starlight fill of its own
  *  (`NIGHT_FILL.cloud` is zero): the globe beneath it already has one, and the
@@ -219,9 +246,9 @@ const EARTH_RADIUS_KM = PLANETS.find((p) => p.name === 'Earth')!.radiusKm;
 // the deck, not the globe, is the body's silhouette — and 1.01 R is 64 km,
 // above 99.97 % of the Rayleigh column and all of the Mie and the ozone. Look
 // the air up there and `x T + S` is a no-op in every pose the app can reach,
-// while the deck's own 0.35 alpha still takes 35 % of the ground's airlight
-// off every pixel of the day disc, and 35 % of every pixel at the horizon is
-// an unhazed cloud image in the one band a photograph washes out. So the deck
+// while the deck's own alpha still takes that fraction of the ground's airlight
+// off every pixel it covers, and a covered pixel at the horizon is then an
+// unhazed cloud image in the one band a photograph washes out. So the deck
 // looks its air up at the physical cloud top instead: the same ray in the same
 // direction, with the radius substituted for the segment's far end.
 //
@@ -343,6 +370,13 @@ uniform vec3 uMoonDirWorld;
 uniform vec3 uMoonIrradiance;
 uniform float uAirDensity;
 uniform float uAirLookupRadius;
+uniform float uCloudDeck;
+uniform sampler2D uCloudDetail;
+uniform float uCloudAlbedo;
+uniform float uCloudDetailErode;
+uniform float uCloudDetailRelief;
+uniform sampler2D uNightLights;
+uniform float uCloudCityGlow;
 uniform float uPlanetRadius;
 uniform float uSolarIrradiance;
 uniform vec3 uAirlightScale;
@@ -355,12 +389,106 @@ varying vec3 vObjPos;
 varying vec3 vPlanetshineViewDir;
 varying vec3 vAirCam;
 varying vec3 vAirFrag;
-${RING_SHADOW_OPACITY_GLSL}${MOON_SHADOW_TRACE_GLSL}${ATMOSPHERE_LOOKUP_BODY_GLSL}${AERIAL_PERSPECTIVE_GLSL}${NIGHT_WEIGHT_GLSL}${MOON_UP_GLSL}${SUN_DOWN_GLSL}`;
+${RING_SHADOW_OPACITY_GLSL}${MOON_SHADOW_TRACE_GLSL}${ATMOSPHERE_LOOKUP_BODY_GLSL}${AERIAL_PERSPECTIVE_GLSL}${NIGHT_WEIGHT_GLSL}${MOON_UP_GLSL}${SUN_DOWN_GLSL}${CLOUD_COVERAGE_GLSL}${CLOUD_DETAIL_GLSL}${SPHERE_EQUIRECT_UV_GLSL}`;
 
 // Injected after lighting but before <opaque_fragment> writes outgoingLight into
 // gl_FragColor — so terms land in linear radiance (tone-mapped downstream) and
 // read the perturbed view-space `normal`.
+// Injected right after three's own normal-map chunk, which is where the
+// perturbed `normal` first exists and still upstream of every light. The deck's
+// detail has to land here rather than beside the terms below: those run after
+// the lighting, so a normal moved there would shade the deck's own night terms
+// and leave the Sun lighting a smooth sphere.
+//
+// One texel of the tileable noise map per deck fragment, and a uniform branch
+// and nothing else on every other surface. The two locals it leaves behind are
+// read by the alpha term further down — the map holds the field and its own
+// gradient in one texel, so the erosion and the relief share the fetch.
+const SURFACE_NORMAL_BODY = /* glsl */ `
+float cloudAlpha = 1.0;
+vec2 cloudNightUv = vec2(0.0);
+vec2 cloudNightDx = vec2(0.0);
+vec2 cloudNightDy = vec2(0.0);
+if (uCloudDeck > 0.0) {
+  // Where this fragment is on the deck, as longitude and latitude. Every
+  // derivative the block needs is taken HERE, inside the one branch that is
+  // uniform across the draw: a derivative under a per-fragment condition is
+  // undefined, and the fade below is exactly such a condition.
+  vec3 dir = normalize(vAirFrag);
+  vec3 ddx = dFdx(dir);
+  vec3 ddy = dFdy(dir);
+  vec3 sx = dFdx(-vViewPosition);
+  vec3 sy = dFdy(-vViewPosition);
+  // Where this fragment stands over the GROUND, in the body's own frame — the
+  // frame the night map is painted in. The deck drifts on top of the body's
+  // spin, so its own UV is that drift out of register with the cities under it.
+  // The derivatives come with it: the lookup happens under a per-fragment
+  // condition further down, where an implicit one is undefined.
+  vec3 objDir = normalize(vObjPos);
+  cloudNightUv = sphereEquirectUv(objDir);
+  cloudNightDx = sphereEquirectUvGrad(objDir, dFdx(objDir));
+  cloudNightDy = sphereEquirectUvGrad(objDir, dFdy(objDir));
+  float cosLat = max(sqrt(dir.x * dir.x + dir.z * dir.z), 1e-4);
+  // The angles' screen derivatives, taken analytically from the direction's.
+  // atan() has a branch cut at the antimeridian, and reading its derivative
+  // through dFdx would put one pixel of enormous gradient down that line — the
+  // wrong mip and no detail on it. cos(latitude) is the same sqrt for both.
+  vec2 dAngX = vec2((dir.x * ddx.z - dir.z * ddx.x) / (cosLat * cosLat), ddx.y / cosLat);
+  vec2 dAngY = vec2((dir.x * ddy.z - dir.z * ddy.x) / (cosLat * cosLat), ddy.y / cosLat);
+  vec2 detailUv = vec2(atan(dir.z, dir.x), asin(clamp(dir.y, -1.0, 1.0))) * ${CLOUD_DETAIL_UV_PER_RADIAN.toFixed(7)};
+  vec2 duvX = dAngX * ${CLOUD_DETAIL_UV_PER_RADIAN.toFixed(7)};
+  vec2 duvY = dAngY * ${CLOUD_DETAIL_UV_PER_RADIAN.toFixed(7)};
+  float cloudDetailW = cloudDetailFade(max(length(duvX), length(duvY)) * ${CLOUD_DETAIL_SIZE.toFixed(1)});
+  // Explicit gradients, for the same reason the angles' were taken by hand: the
+  // mip has to be chosen off a quantity that is continuous across the cut.
+  vec4 detail = textureGrad(uCloudDetail, detailUv, duvX, duvY);
+  // The deck's alpha is the coverage its own map states. It is worked out HERE,
+  // upstream of every light, because the colour has to change with it: the map
+  // states coverage and not albedo, so once the alpha carries that coverage the
+  // colour must be the cloud's own or the same fraction is counted twice — a
+  // half-covered pixel drawn at half the cloud's brightness AND half the
+  // ground's, which is a dark ring around every cloud over bright ground.
+  float cloudLum = dot(diffuseColor.rgb, vec3(${LUMINANCE_WEIGHTS.map((w) => w.toFixed(4)).join(', ')}));
+  cloudAlpha = cloudCoverage(cloudLum);
+  // ...eroded by the detail noise where the coverage is at an EDGE. A cloud
+  // map's edges are the resolution its authoring stopped at; the noise puts the
+  // ragged margin back. Solid cloud keeps its interior and clear sky gains no
+  // wisps — the band is zero at both ends.
+  cloudAlpha *= mix(1.0, mix(1.0 - uCloudDetailErode, 1.0, detail.r),
+      cloudEdgeBand(cloudAlpha) * cloudDetailW);
+  // The hue survives; the brightness is pulled toward the cloud's own albedo by
+  // however much of the map is coverage rather than albedo. All of it and the
+  // solid interiors are one flat white with no structure; none of it and the
+  // ring comes back.
+  diffuseColor.rgb = min(
+      diffuseColor.rgb * pow(uCloudAlbedo / max(cloudLum, 0.001), ${CLOUD_ALBEDO_BLEND.toFixed(6)}),
+      vec3(1.0));
+  if (cloudDetailW > 0.0) {
+    // The packed gradient back into a real slope: field per tile of uv, times
+    // the height that field's range stands for. The height is stated against
+    // the body's own radius, so it is kilometres of cloud top and not a number
+    // tuned against one frame.
+    vec2 g = (detail.gb * 2.0 - 1.0) * ${CLOUD_DETAIL_GRADIENT_SCALE.toFixed(1)};
+    vec3 nrm = normalize(normal);
+    vec3 r1 = cross(sy, nrm);
+    vec3 r2 = cross(nrm, sx);
+    float det = dot(sx, r1);
+    if (abs(det) > 1e-30) {
+      vec3 surfGrad = (dot(g, duvX) * r1 + dot(g, duvY) * r2)
+          * (uCloudDetailRelief * uPlanetRadius / det);
+      normal = normalize(nrm - surfGrad * cloudDetailW);
+    }
+  }
+}`;
+
 const SURFACE_FRAGMENT_BODY = /* glsl */ `{
+  // The deck's alpha, worked out with its colour above where the lights could
+  // still see both. A deck at a flat opacity dims clear sky by that fraction
+  // everywhere and caps the thickest cloud at it; reading the map means a pixel
+  // over clear sky has no deck on it at all. The alpha is 1 on every other
+  // surface, so the terms below that scale by it are the deck's alone without a
+  // second branch.
+  diffuseColor.a *= cloudAlpha;
   // The sine of the Sun's elevation at this fragment, off the perturbed normal:
   // the Sun's own Lambert term, which is what the day factor and the Moon's
   // weight below both read so the two describe one crossing.
@@ -386,6 +514,12 @@ const SURFACE_FRAGMENT_BODY = /* glsl */ `{
   // on this fragment is exactly zero and there is nothing left to double-light,
   // and fading only as the Sun climbs above it. Weight it by anything centred
   // on the terminator and the crossing dips there instead of handing over.
+  // The deck's night weight is the shared one, but it is NOT the air's: a city
+  // glowing through cloud happens on a device that baked no tables at all, so
+  // it cannot ride uAirDensity the way the sky's own ambient does.
+  float cloudNight = uCloudDeck > 0.0
+      ? nightWeight(clampCosine(dot(up, normalize(uSunDirWorld)))) * nightKeep
+      : 0.0;
   float moonNight = uAirDensity > 0.0
       ? moonUpWeight(clampCosine(dot(up, normalize(uMoonDirWorld))))
           * sunDownWeight(sunElevSin, uTermWidth) * nightKeep
@@ -472,6 +606,19 @@ const SURFACE_FRAGMENT_BODY = /* glsl */ `{
   if (uLimbDarkening > 0.0) {
     float mu = max(dot(normalize(normal), normalize(vViewPosition)), 0.0);
     outgoingLight *= 1.0 - uLimbDarkening * (1.0 - mu);
+  }
+  // Lit from below: the city lights on the ground under this deck fragment,
+  // shining up into it. Added after the eclipse factor and the limb term
+  // because neither applies — a moon's umbra does not put a city out, and the
+  // deck has no limb darkening of its own — and before the air, because the
+  // glow crosses the same column everything else leaving this fragment does.
+  if (cloudNight > 0.0 && uCloudCityGlow > 0.0) {
+    vec3 city = textureGrad(uNightLights, cloudNightUv, cloudNightDx, cloudNightDy).rgb;
+    // The same warm-chroma gate the lights themselves draw through: the map's
+    // ice and its background are cold and are not lights, and an ice sheet
+    // glowing up through the clouds over Greenland is a continent that blooms.
+    city *= smoothstep(${(-EARTH_NIGHT_COLD_CUT / 255).toFixed(6)}, 0.0, city.r - city.b);
+    outgoingLight += city * (uCloudCityGlow * cloudAlpha * cloudNight);
   }
   // Aerial perspective, last: everything above is light leaving this fragment,
   // and all of it crosses the same air on the way to the camera. What survives
@@ -561,6 +708,12 @@ export function createSurfaceAirFx(): SurfaceAirFx {
     // around it — and because the mode writes it once per body per frame.
     uMoonDirWorld: { value: new THREE.Vector3(0, 0, 1) },
     uMoonIrradiance: { value: new THREE.Vector3() },
+    // The body's night map, for the same reason: the night-lights shell draws
+    // it and the cloud deck glows cities through itself from it, and a second
+    // uniform would leave the deck lighting the boot map for the session after
+    // the shell's ladder sharpened its own. The 1x1 stand-in until a body has
+    // one — sampling it is never legal, because uCloudCityGlow is then 0.
+    uNightLights: { value: dummies.map2D },
   };
   air.uTransmittance.value = dummies.map2D;
   air.uIrradiance.value = dummies.map2D;
@@ -643,6 +796,22 @@ export function augmentSurfaceMaterial(
   const uIcyRim = { value: archetype === 'icy' ? 1 : 0 };
   const uLimbDarkening = { value: LIMB_DARKENING[archetype] };
   const uAirLookupRadius = { value: AIR_LOOKUP_RADIUS[archetype] };
+  const uCloudDeck = { value: archetype === 'cloud' ? 1 : 0 };
+  // The detail map is built once and shared; every other surface binds the same
+  // 1x1 stand-in the air's samplers do, and never reads it.
+  const uCloudDetail = {
+    value: archetype === 'cloud'
+      ? cloudDetailTexture() as THREE.Texture
+      : surfaceAirDummies().map2D as THREE.Texture,
+  };
+  const uCloudAlbedo = { value: CLOUD_ALBEDO };
+  const uCloudDetailErode = { value: archetype === 'cloud' ? CLOUD_DETAIL_ERODE : 0 };
+  const uCloudCityGlow = { value: archetype === 'cloud' ? CLOUD_CITY_GLOW : 0 };
+  // The detail's relief as a fraction of the body's own radius, which is what
+  // the shader multiplies by uPlanetRadius to reach a real slope.
+  const uCloudDetailRelief = {
+    value: archetype === 'cloud' ? CLOUD_DETAIL_RELIEF_KM / EARTH_RADIUS_KM : 0,
+  };
 
   mat.onBeforeCompile = (shader) => {
     shader.uniforms.uSunDirWorld = fx.uSunDirWorld;
@@ -662,6 +831,12 @@ export function augmentSurfaceMaterial(
     shader.uniforms.uIcyRim = uIcyRim;
     shader.uniforms.uLimbDarkening = uLimbDarkening;
     shader.uniforms.uAirLookupRadius = uAirLookupRadius;
+    shader.uniforms.uCloudDeck = uCloudDeck;
+    shader.uniforms.uCloudDetail = uCloudDetail;
+    shader.uniforms.uCloudAlbedo = uCloudAlbedo;
+    shader.uniforms.uCloudDetailErode = uCloudDetailErode;
+    shader.uniforms.uCloudCityGlow = uCloudCityGlow;
+    shader.uniforms.uCloudDetailRelief = uCloudDetailRelief;
     shader.uniforms.uFrameSpin = uFrameSpin;
     for (const name of Object.keys(fx.air)) shader.uniforms[name] = fx.air[name];
 
@@ -671,6 +846,7 @@ export function augmentSurfaceMaterial(
 
     shader.fragmentShader = shader.fragmentShader
       .replace('#include <common>', `#include <common>${SURFACE_FRAGMENT_DECLS}`)
+      .replace('#include <normal_fragment_maps>', `#include <normal_fragment_maps>${SURFACE_NORMAL_BODY}`)
       .replace('#include <opaque_fragment>', `${SURFACE_FRAGMENT_BODY}\n#include <opaque_fragment>`);
   };
   // The table dimensions are #defines, and a define is part of three's program

@@ -8,7 +8,7 @@
 // ground and S the light that column sends. Fitting the pair recovers both
 // without a probe, a uniform readback or a second shader — and it is the only
 // measurement that sees the COMPOSITE, which is what a viewer sees: the cloud
-// deck draws over the globe at 0.35 alpha, so what lands on screen is
+// deck draws over the globe, so what lands on screen is
 // a(T_c C + S_c) + (1-a)(T_g G + S_g) and the fit reports the mixture.
 //
 // Reading it: the slope comes back as the GROUND's own transmittance whatever
@@ -16,8 +16,17 @@
 // deck's contribution in the constant. The intercept is the mixture,
 // a*S_c + (1-a)*S_g, so intercept/S_g is 1 only if the deck's own segment is as
 // deep as the ground's. A deck drawn at 1.01 R sits above the whole air and
-// makes S_c zero, which pins the ratio at 1-a = 0.65 no matter what the tables
-// say.
+// makes S_c zero, which pins the ratio at 1-a.
+//
+// That `a` is per pixel, and the whole-frame fit is therefore a MIXTURE of two
+// populations: clear sky, which lies on the ground's own line, and cloud, which
+// lies on slope 1 through the origin because the deck's own segment carries no
+// air. `--band=lo,hi` fits only the pixels whose analytic luminance falls
+// between those two quantiles of the frame, which is how the clear population
+// is separated: on a day nadir pose cloud is the bright end of the same frame,
+// so a band under it is ground seen through the air and nothing else. Not the
+// darkest pixels alone — deep ocean spans too little radiance to determine a
+// slope, and the fit there is dominated by the airlight it is meant to measure.
 //
 // No browser: the PNGs are decoded here (zlib plus the five PNG filters) and
 // three's ACES tone map is inverted analytically, so this runs against goldens
@@ -41,6 +50,10 @@ const EXPOSURE = Number(arg('exposure', '1'));
 // tone map's own saturate and 0 is below the quantisation.
 const HIGH = Number(arg('high', '250'));
 const LOW = Number(arg('low', '2'));
+// Fit only pixels whose analytic luminance falls in this quantile band of the
+// frame, so the clear-sky population is separated from the cloud one. The whole
+// frame by default.
+const BAND = arg('band', '0,1').split(',').map(Number);
 
 // three's ACESFilmicToneMapping, inverted. Forward: multiply by
 // exposure/0.6, ACESInputMat, RRTAndODTFit, ACESOutputMat, saturate. The fit
@@ -109,9 +122,26 @@ for (const stem of stems) {
   const b = decodePng(readFileSync(`${stem}.lut.png`));
   if (a.width !== b.width || a.height !== b.height) throw new Error(`${stem}: size mismatch`);
   const sums = [0, 1, 2].map(() => ({ n: 0, sx: 0, sy: 0, sxx: 0, sxy: 0 }));
+  // The luminance cut, when one is asked for: the DARK-th quantile of the
+  // analytic frame over the pixels the fit would otherwise use.
+  const lumAt = (i) => 0.2126 * a.pixels[i] + 0.7152 * a.pixels[i + 1] + 0.0722 * a.pixels[i + 2];
+  let loCut = -Infinity;
+  let hiCut = Infinity;
+  if (BAND[0] > 0 || BAND[1] < 1) {
+    const lum = [];
+    for (let p = 0; p < a.width * a.height; p++) lum.push(lumAt(p * a.channels));
+    lum.sort((x, y) => x - y);
+    const at = (q) => lum[Math.max(0, Math.min(lum.length - 1, Math.floor(q * lum.length)))];
+    loCut = at(BAND[0]);
+    hiCut = at(BAND[1]);
+  }
   for (let p = 0; p < a.width * a.height; p++) {
     const ia = p * a.channels;
     const ib = p * b.channels;
+    if (loCut > -Infinity || hiCut < Infinity) {
+      const l = lumAt(ia);
+      if (l < loCut || l > hiCut) continue;
+    }
     // Saturated or black in EITHER frame carries no slope.
     const bytes = [a.pixels[ia], a.pixels[ia + 1], a.pixels[ia + 2],
       b.pixels[ib], b.pixels[ib + 1], b.pixels[ib + 2]];
@@ -129,7 +159,8 @@ for (const stem of stems) {
       s.sxy += ra[c] * rb[c];
     }
   }
-  console.log(`\n${stem}  ${a.width}x${a.height}, exposure ${EXPOSURE}`);
+  console.log(`\n${stem}  ${a.width}x${a.height}, exposure ${EXPOSURE}`
+    + (BAND[0] > 0 || BAND[1] < 1 ? `, luminance band ${BAND[0]}..${BAND[1]}` : ''));
   const slopes = [];
   const intercepts = [];
   for (let c = 0; c < 3; c++) {

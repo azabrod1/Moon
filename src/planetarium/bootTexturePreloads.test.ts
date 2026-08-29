@@ -71,6 +71,9 @@ describe('index.html boot texture fetch-warm', () => {
     const durableWave = new Set([
       PLANET_TEXTURE_FILES.moonNormal,
       PLANET_TEXTURE_FILES.marsNormal,
+      // The cloud deck's relief is fetched durably too: the deck draws flat
+      // until it lands rather than holding first paint for it.
+      PLANET_TEXTURE_FILES.earthCloudsNormal,
       PLANET_TEXTURE_FILES.moon,
       PLANET_TEXTURE_FILES.io,
       PLANET_TEXTURE_FILES.europa,

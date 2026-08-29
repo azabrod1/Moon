@@ -662,11 +662,12 @@ describe('arrivalPose — ladder fixtures', () => {
       const b = pose.aimPoint.distanceTo(inp.targetPos);
       const collisionR = moonCollisionRadius(inp.renderedR, inp.shipClearance);
       expect(b).toBeGreaterThanOrEqual(collisionR * 1.15 - 1e-12);
-      // The swing ceiling holds except where the clearance floor outranks it
-      // (close parks on the smallest meshes); even there the swing stays
-      // shallow — a hand-width past the ceiling, not out of frame. The
-      // clearance aim is the exact perpendicular-miss form the pose uses.
-      const missM = collisionR * 1.15;
+      // Every body on this list composes under the swing ceiling: it is the
+      // moonlets, not these, where a floor outranks it and the aim swings
+      // past 12°. The floor angle is derived here in the exact
+      // perpendicular-miss form the pose uses, so the bound stays the law's
+      // and not a copy of one body's number.
+      const missM = Math.max(collisionR * 1.15, CAM_DIST_AU);
       const clearanceDeg =
         Math.atan2((missM * dist) / Math.sqrt(dist * dist - missM * missM), dist) * RAD2DEG;
       const offAxis =
@@ -677,6 +678,54 @@ describe('arrivalPose — ladder fixtures', () => {
       expect(offAxis * RAD2DEG).toBeLessThanOrEqual(15);
       expect(Math.atan2(b, dist) * RAD2DEG).toBeCloseTo(offAxis * RAD2DEG, 5);
     }
+  });
+
+  it('one camera boom floors the miss — and is inert wherever 1.8 radii already clears it', () => {
+    // The whole ladder: b is max(1.8 rendered radii capped by the swing
+    // ceiling, the hull-clearance miss, one camera boom). The boom term can
+    // only reach a body whose entire authored pass would fit inside the
+    // camera's trail, so re-derive every aim with it dropped: wherever 1.8
+    // radii is already wider than a boom — every planet, and all but the six
+    // smallest moons — the two agree bit for bit and nothing moved.
+    const authoredB = (inp: ArrivalInputs, dist: number, withBoom: boolean) => {
+      const collisionR = moonCollisionRadius(inp.renderedR, inp.shipClearance);
+      const missM = withBoom
+        ? Math.max(collisionR * 1.15, CAM_DIST_AU)
+        : collisionR * 1.15;
+      const clearB = (missM * dist) / Math.sqrt(dist * dist - missM * missM);
+      return Math.max(
+        Math.min(
+          inp.renderedR * ARRIVAL_IMPACT_RADII,
+          dist * Math.sin(ARRIVAL_MAX_OFFAXIS_DEG * DEG2RAD),
+        ),
+        clearB,
+      );
+    };
+    const bodies = [
+      ...MOONS.map((m) => ({ name: m.name, inp: catalogInputs(m.name) })),
+      ...PLANET_NAMES.map((n) => ({ name: n, inp: planetInputs(n) })),
+    ];
+    const floored: string[] = [];
+    for (const { name, inp } of bodies) {
+      const pose = arrivalPose(inp);
+      const dist = pose.position.distanceTo(inp.targetPos);
+      expect(pose.impactParameterAU, `${name}: b is the ladder`).toBe(
+        authoredB(inp, dist, true),
+      );
+      if (inp.renderedR * ARRIVAL_IMPACT_RADII > CAM_DIST_AU) {
+        expect(authoredB(inp, dist, true), `${name}: boom floor inert`).toBe(
+          authoredB(inp, dist, false),
+        );
+      } else {
+        expect(pose.impactParameterAU, `${name}: boom floor binds`).toBeGreaterThan(
+          authoredB(inp, dist, false),
+        );
+        floored.push(name);
+      }
+    }
+    // Only the moonlets: six meshes small enough that 1.8 of their radii
+    // still fits inside the camera's trail.
+    expect(floored).toEqual(['Phobos', 'Deimos', 'Styx', 'Nix', 'Kerberos', 'Hydra']);
   });
 });
 
@@ -815,14 +864,19 @@ describe('arrivalPose — catalog sweep (all moons, three orbit phases)', () => 
   it('no moon parks: every arrival in the catalogue is a pass past the limb', () => {
     // There is no park class. The seven that used to have one — Mars's two,
     // the innermost Uranian, and Pluto's four minors — fly the same authored
-    // pass as the Moon; at that scale the hull clearance floor, not the
-    // 1.8-rendered-radii composition, is what authors the miss.
+    // pass as the Moon; at that scale a floor authors the miss, not the
+    // 1.8-rendered-radii composition.
     for (const moon of MOONS) {
       const inp = catalogInputs(moon.name);
       const pose = arrivalPose(inp);
       const collisionR = moonCollisionRadius(inp.renderedR, inp.shipClearance);
       expect(pose.impactParameterAU, `${moon.name}: authored b`)
         .toBeGreaterThanOrEqual(collisionR * 1.15 - 1e-12);
+      // And never inside the camera's own trail: the chase camera rides one
+      // boom behind the ship, so a body authored to pass closer than that
+      // crosses between the camera and the ship instead of past the bow.
+      expect(pose.impactParameterAU, `${moon.name}: one camera boom`)
+        .toBeGreaterThanOrEqual(CAM_DIST_AU);
       expect(pose.aimPoint.distanceTo(inp.targetPos), `${moon.name}: aim is off-center`)
         .toBeGreaterThan(0);
     }
@@ -833,7 +887,7 @@ describe('arrivalPose — catalog sweep (all moons, three orbit phases)', () => 
       const pose = arrivalPose(inp);
       const collisionR = moonCollisionRadius(inp.renderedR, inp.shipClearance);
       const dist = pose.position.distanceTo(inp.targetPos);
-      const missM = collisionR * 1.15;
+      const missM = Math.max(collisionR * 1.15, CAM_DIST_AU);
       const clearB = (missM * dist) / Math.sqrt(dist * dist - missM * missM);
       const composed = Math.min(
         inp.renderedR * ARRIVAL_IMPACT_RADII,
@@ -841,12 +895,16 @@ describe('arrivalPose — catalog sweep (all moons, three orbit phases)', () => 
       );
       expect(pose.impactParameterAU, `${name}: authored b`)
         .toBeCloseTo(Math.max(composed, clearB), 15);
-      // Six of the seven are hull-clearance bound: the pad does not shrink
-      // with the mesh, so below ~250 km of rendered radius it is wider than
-      // the 1.8-radii composition and is what authors the miss. Cordelia,
-      // the largest of them, is still composed at 1.8 radii.
-      if (name !== 'Cordelia') {
-        expect(clearB, `${name}: clearance floor binds`).toBeGreaterThan(composed);
+      // Six of the seven fly the boom: their mesh plus the hull pad is
+      // narrower than the camera's trail, so the trail is the widest term
+      // and is what authors the miss. Cordelia, the largest of them,
+      // composes a pass two booms wide at 1.8 radii and never sees a floor.
+      if (name === 'Cordelia') {
+        expect(composed, `${name}: composed at 1.8 radii`).toBeGreaterThan(clearB);
+      } else {
+        expect(clearB, `${name}: boom floor binds`).toBeGreaterThan(composed);
+        expect(collisionR * 1.15, `${name}: shell miss is narrower than the boom`)
+          .toBeLessThan(CAM_DIST_AU);
       }
     }
   });
@@ -1338,13 +1396,44 @@ describe('the one-shot aim lead', () => {
     const standoff = arrivalStandoffAU(inp);
     const expectedS = estimatePassDurationS(
       standoff - inp.renderedR,
-      (ARRIVAL_IMPACT_RADII - 1) * inp.renderedR,
+      // The glide ends at the AUTHORED pass altitude — the impact parameter
+      // above the surface. Where the 1.8-radii composition binds, as it does
+      // for every planet, that is exactly 0.8 rendered radii.
+      unled.impactParameterAU - inp.renderedR,
       25_000 / KM_PER_AU,
+    );
+    expect(unled.impactParameterAU - inp.renderedR).toBeCloseTo(
+      (ARRIVAL_IMPACT_RADII - 1) * inp.renderedR,
+      18,
     );
     expect(shift.length()).toBeCloseTo(vel.length() * expectedS, 10);
     expect(shift.clone().normalize().dot(vel.clone().normalize())).toBeCloseTo(1, 6);
     expect(expectedS).toBeGreaterThan(5);
     expect(expectedS).toBeLessThan(15);
+  });
+
+  it('a floored pass leads on ITS altitude, not the composition\u2019s', () => {
+    // Deimos flies one camera boom out, four rendered radii above the
+    // surface. An estimate that still integrated the glide down to 0.8 radii
+    // would run seconds long, and the aim would lead past the encounter it
+    // exists to correct — measured as a flown perigee a quarter wide of the
+    // authored miss.
+    const base = catalogInputs('Deimos');
+    const vel = new THREE.Vector3(0, 0, 24 / KM_PER_AU); // Mars-system-ish
+    const inp = { ...base, targetVelAUPerS: vel, commandedAUPerS: 25_000 / KM_PER_AU };
+    const pose = arrivalPose(inp);
+    const s0 = pose.position.distanceTo(base.targetPos) - inp.renderedR;
+    const ledS = estimatePassDurationS(
+      s0, pose.impactParameterAU - inp.renderedR, 25_000 / KM_PER_AU,
+    );
+    const composedS = estimatePassDurationS(
+      s0, (ARRIVAL_IMPACT_RADII - 1) * inp.renderedR, 25_000 / KM_PER_AU,
+    );
+    expect(pose.aimCenter.distanceTo(base.targetPos)).toBeCloseTo(
+      vel.length() * ledS,
+      18,
+    );
+    expect(composedS - ledS).toBeGreaterThan(5);
   });
 
   it('zero velocity reproduces the un-led aim exactly', () => {
@@ -1504,16 +1593,19 @@ describe('representative moon pose goldens — byte-stable', () => {
     expect(pose.impactParameterAU).toBeCloseTo(0.000032844660015313005, 18);
   });
 
-  it('Phobos — clearance-floor b, the ex-park class', () => {
+  it('Phobos — boom-floor b, the ex-park class', () => {
     // The drop is where the park put it (the apparent-size law was already
-    // the binding term), but the aim now carries an impact parameter: at
-    // moonlet scale the hull clearance floor authors it, not 1.8 radii.
+    // the binding term), but the aim carries an impact parameter: at moonlet
+    // scale a floor authors it, not 1.8 radii — and the widest floor is the
+    // camera boom, so the miss is one trail length rather than the 113 km
+    // the hull clearance alone asked for.
     const pose = arrivalPose(catalogInputs('Phobos'));
     expect(pose.position.x).toBeCloseTo(1.5240406028410485, 15);
     expect(pose.position.z).toBeCloseTo(0.000040375948823000805, 18);
-    expect(pose.aimPoint.x).toBeCloseTo(1.524047936266211, 15);
-    expect(pose.aimPoint.z).toBeCloseTo(0.00003961755218834627, 18);
-    expect(pose.impactParameterAU).toBeCloseTo(7.585909166131592e-7, 19);
+    expect(pose.aimPoint.x).toBeCloseTo(1.5240479362858297, 15);
+    expect(pose.aimPoint.z).toBeCloseTo(0.00003887701823419518, 18);
+    expect(pose.impactParameterAU).toBeCloseTo(0.000001499124871024117, 19);
+    expect(pose.impactParameterAU).toBeGreaterThan(CAM_DIST_AU);
   });
 
   it('Charon — separation-cap-bound standoff', () => {

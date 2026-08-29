@@ -19,7 +19,7 @@ import * as THREE from 'three';
 import { smoothstepUnclamped } from '../shared/math/smoothstep';
 import { KM_PER_AU } from '../astronomy/constants';
 import { DEG2RAD } from '../shared/math/angles';
-import { SHIP_CLEARANCE_AU } from './cruiseView';
+import { SHIP_CLEARANCE_AU, CRUISE_CAM_DIST_AU } from './cruiseView';
 import { FLIGHT_UP_SCENE } from './flightFrame';
 
 /** Approach dynamics, every body class: distance to the surface e-folds every
@@ -225,7 +225,7 @@ export const MOON_ARRIVAL_APPARENT_DIAMETER_DEG = 5;
 
 /** Flyby impact parameter in rendered radii: full thrust straight ahead
  *  passes the moon's center at this distance — under a radius of sky above
- *  the limb. The clearance floor below still outranks this on the smallest
+ *  the limb. The two floors below still outrank this on the smallest
  *  meshes. Tighter reads closer but kills the pass: the proximity governor
  *  meters speed by height above the collision shell, and a perigee that
  *  falls inside the departure knee turns the flyby into a hover
@@ -234,7 +234,9 @@ export const MOON_ARRIVAL_APPARENT_DIAMETER_DEG = 5;
 export const ARRIVAL_IMPACT_RADII = 1.8;
 
 /** Ceiling on how far the aim may swing off the moon: tiny meshes parked
- *  under their separation caps would otherwise push the disc out of frame. */
+ *  under their separation caps would otherwise push the disc out of frame.
+ *  A ceiling, not a law — the miss floors outrank it where a pass would
+ *  otherwise cross the hull pad or the camera's trail. */
 export const ARRIVAL_MAX_OFFAXIS_DEG = 12;
 
 /**
@@ -755,9 +757,11 @@ export function autopilotArrived(distToMoonCenterAU: number, standoffAU: number)
  * which always clears the parent, its rings, and the line of sight.
  *
  * Aim: offset by an impact parameter so full thrust sweeps past the limb.
- * The clearance floor outranks composition — without it the smallest
- * curve-rendered moons keep almost no miss margin, and at moonlet scale it
- * is what actually authors the miss. Side selection selects the perp
+ * Two floors outrank composition, and at moonlet scale one of them is what
+ * actually authors the miss: the hull clearance pad (without it the
+ * smallest curve-rendered moons keep almost no miss margin) and one camera
+ * boom (a closer pass would cross inside the camera's own trail instead of
+ * in front of the ship). Side selection selects the perp
  * toward the parent so the moon slides to the opposite third and the two
  * flank the frame; the forward ray is checked against the parent's HARD
  * collision sphere only (ring moons orbit entirely inside the ring-aware
@@ -849,16 +853,27 @@ function outwardRadialPosition(inp: ArrivalInputs, dist: number): THREE.Vector3 
 }
 
 /** The authored impact parameter as an aim offset from the (led) center:
- *  shared by both body classes. Clearance outranks BOTH composition terms:
- *  at close parks (the standoff floor on the smallest meshes) the swing
- *  ceiling can fall under the required miss, and safety wins — the aim may
- *  swing a few degrees past ARRIVAL_MAX_OFFAXIS_DEG there (≤ ~14° in the
- *  catalog, pinned by the ladder test). A ray aimed b off-center passes the
+ *  shared by both body classes. Two floors outrank BOTH composition terms,
+ *  because at close parks (the standoff floor on the smallest meshes) the
+ *  swing ceiling can fall under the miss the pass needs, and geometry wins
+ *  over framing there:
+ *
+ *  - the hull clearance miss, so the ray never enters the collision shell;
+ *  - one camera boom, so the pass happens in FRONT of the ship and never
+ *    inside the camera's own trail. The chase camera rides one boom behind
+ *    the ship, so a body authored to pass closer than that flies between
+ *    the camera and the ship — or through the camera's own viewpoint —
+ *    instead of past the bow. Below ~250 km of rendered radius that is
+ *    every pass the clearance floor alone would author.
+ *
+ *  Where a floor binds, the aim may swing past ARRIVAL_MAX_OFFAXIS_DEG
+ *  (≤ ~27° in the catalog, at the tightest parks — Styx and Kerberos;
+ *  pinned by the ladder test). A ray aimed b off-center passes the
  *  center at b·cos(offAxis), so an exact miss of m needs
  *  b = m·d/√(d²−m²) — always real, the standoff keeps d well above m. */
 function impactParameterAU(inp: ArrivalInputs, dist: number): number {
   const collisionR = moonCollisionRadius(inp.renderedR, inp.shipClearance);
-  const missM = collisionR * 1.15;
+  const missM = Math.max(collisionR * 1.15, CRUISE_CAM_DIST_AU);
   const clearB = (missM * dist) / Math.sqrt(dist * dist - missM * missM);
   return Math.max(
     Math.min(
@@ -873,13 +888,22 @@ function impactParameterAU(inp: ArrivalInputs, dist: number): number {
  *  lead. Without it the pass geometry is drift-luck — Mercury moves ~10% of
  *  its own impact parameter during an approach (into the measured hover
  *  band), and Mars's orbital motion is what turned the old dead-center aim
- *  into a 130 km graze. Zero/absent velocity reproduces the un-led aim. */
+ *  into a 130 km graze. Zero/absent velocity reproduces the un-led aim.
+ *
+ *  The glide the estimate integrates ends at the authored pass altitude, so
+ *  it reads the impact parameter rather than a fixed multiple of the mesh:
+ *  where a floor outranks the 1.8-radii composition the ship levels off far
+ *  higher than 0.8 rendered radii, and an estimate that still integrated
+ *  down to 0.8 runs several seconds long — at moonlet scale that is a lead
+ *  wide enough to throw the flown perigee off the authored miss by a
+ *  quarter. Where the composition binds, b − R IS 0.8 R and nothing moves. */
 function ledTargetPos(inp: ArrivalInputs, position: THREE.Vector3): THREE.Vector3 {
   const vel = inp.targetVelAUPerS;
   if (!vel || vel.lengthSq() === 0) return inp.targetPos.clone();
-  const surfaceDist0 = position.distanceTo(inp.targetPos) - inp.renderedR;
+  const dist = position.distanceTo(inp.targetPos);
+  const surfaceDist0 = dist - inp.renderedR;
   const passHeight = Math.max(
-    (ARRIVAL_IMPACT_RADII - 1) * inp.renderedR,
+    impactParameterAU(inp, dist) - inp.renderedR,
     inp.renderedR * 0.25,
   );
   const passS = estimatePassDurationS(

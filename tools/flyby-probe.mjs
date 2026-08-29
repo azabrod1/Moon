@@ -4,10 +4,11 @@
 // owner, then asserts the arrival contract:
 //   drop at the authored standoff (planets ~8.8 radii), a pass at the
 //   authored impact parameter — 1.8 rendered radii, or the hull clearance
-//   floor where that is wider, which is the moonlet case — never a graze,
-//   no foreign body BINDING the speed cap on the approach (the Deimos
-//   signature), and a completed departure. No arrival parks: the smallest
-//   moons in the catalogue fly the same pass as the Moon.
+//   floor or one camera boom where either is wider, which is the moonlet
+//   case — never a graze, never inside the camera's own trail, no foreign
+//   body BINDING the speed cap on the approach (the Deimos signature), and
+//   a completed departure. No arrival parks: the smallest moons in the
+//   catalogue fly the same pass as the Moon.
 // The clock is PINNED per scenario: incidental-moon encounters are epoch
 // lottery, so a drifting epoch would make failures unreproducible.
 //
@@ -36,12 +37,12 @@ const ALL = [
   { key: 'pluto', name: 'Pluto', ms: 45_000 },
   { key: 'io', name: 'Io', ms: 30_000, parent: 'Jupiter' },
   { key: 'ganymede', name: 'Ganymede', ms: 30_000, parent: 'Jupiter' },
-  // The two smallest passes in the battery — the ex-park class. Their whole
-  // encounter fits inside the camera boom, so the window is the moonlet
-  // glide's own timeline, not the boom's. Styx gets the long one: its
-  // authored miss clears the collision shell by 10 km, the pass grazes it,
-  // and the graze costs it roughly twice Deimos's time to settle and sling
-  // (measured 31.7 s against 16.1 s).
+  // The two smallest passes in the battery — the ex-park class. Both fly
+  // the camera-boom floor: a miss of one trail length, which at Styx is
+  // nearly four collision shells, so neither touches its shell. The window
+  // is the moonlet glide's own timeline; Styx keeps the long one because
+  // its standoff sits on the arrival floor and its sling is the slowest in
+  // the catalogue.
   { key: 'deimos', name: 'Deimos', ms: 30_000, parent: 'Mars' },
   { key: 'styx', name: 'Styx', ms: 60_000, parent: 'Pluto' },
 ];
@@ -166,14 +167,22 @@ for (const T of TARGETS) {
   // Authored b comes straight off the pose record (the aim point includes
   // the one-shot lead, so re-deriving from the jump-time center is off by
   // exactly the lead); the ray check below still guards gross aim breakage.
-  // The law is max(1.8 rendered radii, the hull clearance floor): the pad
-  // does not shrink with the mesh, so at moonlet scale the floor is the
-  // wider term and the pass flies it instead.
+  // The law is max(1.8 rendered radii, the hull clearance floor, one camera
+  // boom): neither floor shrinks with the mesh, so at moonlet scale a floor
+  // is the wider term and the pass flies it instead. The boom floor is what
+  // keeps the pass in front of the ship — a closer miss would cross inside
+  // the camera's own trail.
   const bAU = pose.bAU ?? IMPACT_RADII * R;
-  const bLaw = Math.max(IMPACT_RADII * R, 1.15 * pose.shellAU);
-  note(T.key, bAU > 0.98 * bLaw && bAU < 1.06 * bLaw,
-    'authored b is max(1.8 radii, clearance floor)',
-    `${(bAU / bLaw).toFixed(4)} of law, ${(bAU / R).toFixed(2)} R`);
+  // The band's top allows the swing factor: b is the OFFSET that produces
+  // the required miss, so it exceeds the floor by 1/cos(off-axis) — 12% at
+  // Styx, the widest swing in the catalogue, and ~0 for every planet.
+  const bLaw = Math.max(IMPACT_RADII * R, 1.15 * pose.shellAU, pose.camDistAU);
+  note(T.key, bAU > 0.98 * bLaw && bAU < 1.15 * bLaw,
+    'authored b is max(1.8 radii, clearance floor, one camera boom)',
+    `${(bAU / bLaw).toFixed(4)} of law, ${(bAU / R).toFixed(2)} R, ${(bAU / pose.camDistAU).toFixed(2)} booms`);
+  note(T.key, bAU >= pose.camDistAU,
+    'the pass never crosses inside the camera trail',
+    `${(bAU / pose.camDistAU).toFixed(3)} booms`);
   // Measured against the LED centre, not the jump-time one: the aim is
   // composed around where the body will be at closest approach, and at
   // moonlet scale that lead is several times the impact parameter itself
@@ -186,11 +195,24 @@ for (const T of TARGETS) {
   const rel = sub(aimCentre, pos);
   const along = Math.max(dot(rel, un), 0);
   const missAU = len(sub(rel, { x: un.x * along, y: un.y * along, z: un.z * along }));
-  const authored = missAU / bAU;
-  note(T.key, authored > 0.9 && authored < 1.1, 'aim ray passes the led centre at the authored b',
-    authored.toFixed(4));
+  // b is the aim OFFSET; the MISS it produces is b shaved by the swing —
+  // and by whatever part of the one-shot lead lies along the same
+  // perpendicular. What the law floors is the miss, so that is what is
+  // asserted: the ray clears the required miss, and can never exceed the
+  // offset that produced it. At planet scale the two are the same number to
+  // a third of a percent; at a floored moonlet pass the swing reaches 26°
+  // and the miss runs ~11% under b. The 2% slack under the floor is the
+  // lead's perpendicular component, which the aim composes around the led
+  // centre while measuring the offset from the jump-time one — 1.6 km on
+  // Styx's 220.
+  const missFloor = Math.max(1.15 * pose.shellAU, pose.camDistAU);
+  note(T.key, missAU >= missFloor * 0.98 && missAU <= bAU * 1.001,
+    'aim ray clears the required miss, never exceeding the authored b',
+    `${(missAU / missFloor).toFixed(3)} of floor, ${(missAU / bAU).toFixed(4)} of b`);
 
-  const measured = perigee / bAU;
+  // The flown pass is measured against the ray's own miss for the same
+  // reason: that, not the offset, is the geometry the ship was aimed at.
+  const measured = perigee / missAU;
   note(T.key, measured > 0.85 && measured < 1.25, 'measured perigee near authored',
     measured.toFixed(4));
   note(T.key, perigee >= 1.2 * R, 'never a graze', `${(perigee / R).toFixed(3)} R`);
@@ -201,9 +223,18 @@ for (const T of TARGETS) {
   // cap — that reads as a slightly conservative glide — but only while it
   // stays within 0.80 of the target's own law; below that it surges on
   // release (measured: 0.83 shadows seamlessly, 0.54 dances).
+  // The sling is cut off in TIME, not in radii: the cap opens as the
+  // approach stops being a closing course, which happens a few tenths of a
+  // second before perigee whatever the pass is worth in rendered radii. A
+  // floored moonlet turns at nine radii, where the old `2.5 R` bound would
+  // have counted its whole sling as glide; a second of exclusion is scale
+  // free, and the dance this test was written for ran for many seconds
+  // mid-approach, nowhere near it.
   const KM_PER_AU = 1.496e8;
+  const slingFromS = samples[perigeeIdx].t - 1;
   const glide = samples.filter((s, i) =>
-    i <= perigeeIdx && s.dist < pose.standoffAU * 0.8 && s.dist > R * 2.5 &&
+    i <= perigeeIdx && s.t <= slingFromS &&
+    s.dist < pose.standoffAU * 0.8 && s.dist > R * 2.5 &&
     Number.isFinite(s.speedKmS));
   let rises = 0;
   for (let i = 1; i < glide.length; i++) {

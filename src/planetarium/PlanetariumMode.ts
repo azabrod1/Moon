@@ -1268,10 +1268,14 @@ export class PlanetariumMode {
      *  the datum the authored miss is measured from. */
     aimCenter: number[];
     renderedRAU: number;
-    /** Collision shell the miss is floored on (rendered radius + hull pad):
-     *  at moonlet scale the pad, not the 1.8-radii composition, is what
-     *  authors the impact parameter, and the battery asserts the max. */
+    /** Collision shell one of the two floors under the miss is derived from
+     *  (rendered radius + hull pad). */
     shellAU: number;
+    /** The chase camera's trail length — the other floor: no authored pass
+     *  may miss by less than one boom, or the body crosses between the
+     *  camera and the ship. At moonlet scale it is the widest of the three
+     *  terms, and the battery asserts the max of all three. */
+    camDistAU: number;
     standoffAU: number;
     bAU: number;
   } | null = null;
@@ -12395,6 +12399,7 @@ export class PlanetariumMode {
       aimCenter: pose.aimCenter.toArray(),
       renderedRAU: planet.radiusAU * this.planetScale,
       shellAU: moonCollisionRadius(planet.radiusAU * this.planetScale, SHIP_CLEARANCE_AU),
+      camDistAU: CRUISE_CAM_DIST_AU,
       standoffAU: pose.position.distanceTo(targetPos),
       bAU: pose.impactParameterAU,
     };
@@ -12429,9 +12434,9 @@ export class PlanetariumMode {
     // (An always-on look here put ~20° between the arrival and settled
     // poses, and every first input paid it as a visible adjust.)
     // Every moon flies: the smallest bodies in the catalogue get the same
-    // pass as the Moon, staged on the clearance floor rather than the
-    // 1.8-radii composition (at moonlet scale the hull pad is the wider of
-    // the two, so the miss it authors is what the ship actually flies).
+    // pass as the Moon, staged on a miss floor rather than the 1.8-radii
+    // composition (at moonlet scale the widest term is the camera's own
+    // trail length, so that is the miss the ship actually flies).
     this.tmpAimDir
       .copy(destination.bodyPosition)
       .sub(destination.position);
@@ -12468,6 +12473,7 @@ export class PlanetariumMode {
       aimCenter: destination.aimCenter.toArray(),
       renderedRAU: renderedRForPose,
       shellAU: moonCollisionRadius(renderedRForPose, SHIP_CLEARANCE_AU),
+      camDistAU: CRUISE_CAM_DIST_AU,
       standoffAU: destination.position.distanceTo(destination.bodyPosition),
       bAU: destination.impactParameterAU,
     };

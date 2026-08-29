@@ -141,7 +141,7 @@ const FIXTURES: Fixture[] = [
     legacy: 'unmeasured-touch',
   },
   {
-    // The phone the 768 MiB row was measured on: 46 maps of 42.7 MiB —
+    // The phone the 1024 MiB row is half of: 46 maps of 42.7 MiB —
     // 1962.7 MiB — still drawing, no kill at any size (2026-08-29).
     name: "Alex's iPhone, as probe.html read it",
     signals: signals({
@@ -474,23 +474,42 @@ describe('the class table', () => {
     expect(Object.keys(DEVICE_PROFILES).sort()).toEqual(['android', 'apple', 'other']);
   });
 
-  it('gives an Apple phone and an Apple tablet the desktop numbers', () => {
-    // The measurement, in one assertion: an iPhone held 1962.7 MiB and an
-    // iPad 4053.3 with no kill, so neither is asked to spend less than the
-    // machine that was never in doubt. The cloud deck's cap is the only
-    // difference, and it is about fill rate rather than memory.
+  it('gives the Apple rows half of what their devices were measured to hold', () => {
+    // The measurement, in assertions: an iPhone survived 1962.7 MiB and an
+    // iPad held 4053.3 with no kill, so neither is asked to spend a desktop's
+    // 768 — but neither is given the whole of what it held either, because
+    // the tab is one of several the device is keeping alive.
+    expect(APPLE_PHONE_PROFILE.envelopeBytes).toBe(1024 * MiB);
+    // Half of 1962.7 is 981, and the rows are written in 256 MiB steps, so
+    // the phone's is the step at 52 % rather than at exactly half.
+    expect(APPLE_PHONE_PROFILE.envelopeBytes / (1962.7 * MiB)).toBeCloseTo(0.52, 2);
+    expect(APPLE_TABLET_PROFILE.envelopeBytes).toBe(1536 * MiB);
+    // The iPad's figure is where the probe stopped, not where the device
+    // gave way, so its row is a step over the phone rather than half of a
+    // limit nothing established — and well under the run either way.
+    expect(APPLE_TABLET_PROFILE.envelopeBytes).toBeLessThan(4053.3 * MiB / 2);
+    expect(APPLE_TABLET_PROFILE.envelopeBytes)
+      .toBe(APPLE_PHONE_PROFILE.envelopeBytes + APPLE_PHONE_PROFILE.ceilingBytes);
+
     for (const row of [APPLE_PHONE_PROFILE, APPLE_TABLET_PROFILE]) {
-      expect(numbersOf(row)).toEqual({
+      expect(row.envelopeBytes).toBeGreaterThan(UNMEASURED_DESKTOP_PROFILE.envelopeBytes);
+      // The tiles' ceiling is more than 16 resident sectors can spend, so
+      // what stops a measured Apple device is the draw-call cap rather than
+      // an arithmetic refusal.
+      expect(row.ceilingBytes).toBe(512 * MiB);
+      expect(row.residentCap * SECTOR_SET_FLOOR_UNIT_BYTES).toBeLessThan(row.ceilingBytes);
+      // Everything that is not a byte count is still the desktop's.
+      expect({ ...numbersOf(row), envelopeBytes: 0, ceilingBytes: 0 }).toEqual({
         ...numbersOf(UNMEASURED_DESKTOP_PROFILE),
+        envelopeBytes: 0,
+        ceilingBytes: 0,
         tierCaps: { earthClouds: '4k' },
       });
-      expect(row.envelopeBytes).toBe(768 * MiB);
-      expect(row.ceilingBytes).toBe(256 * MiB);
       expect(row.sectorFloorBytes).toBe(3 * SECTOR_SET_FLOOR_UNIT_BYTES);
       expect(row.cacheOnlyWarm).toBe(false);
     }
-    expect(APPLE_PHONE_PROFILE.provenance).toBe('measured 2026-08-29 iPhone');
-    expect(APPLE_TABLET_PROFILE.provenance).toBe('measured 2026-08-29 iPad');
+    expect(APPLE_PHONE_PROFILE.provenance).toBe('measured 2026-08-29 iPhone, half of 1962.7 MiB');
+    expect(APPLE_TABLET_PROFILE.provenance).toBe('measured 2026-08-29 iPad, under half of 4053.3 MiB');
   });
 
   it('leaves every unmeasured touch row exactly as the app shipped it', () => {
@@ -541,10 +560,10 @@ describe('the class table', () => {
       expect(deviceProfileFor('tablet', family).tierCaps, family).toEqual({ earthClouds: '4k' });
       expect(deviceProfileFor('desktop', family).tierCaps, family).toEqual({});
     }
-    // Including the Apple phone, which is on the desktop's memory numbers and
+    // Including the Apple phone, which holds more memory than a desktop and
     // still does not shade a full-screen 8K transparent shell.
     expect(profileForDevice(FIXTURES[0].signals).tierCaps).toEqual({ earthClouds: '4k' });
-    expect(profileForDevice(FIXTURES[0].signals).envelopeBytes).toBe(768 * MiB);
+    expect(profileForDevice(FIXTURES[0].signals).envelopeBytes).toBe(1024 * MiB);
   });
 
   it('warms the boot pair for real on Apple and into the cache elsewhere', () => {
@@ -661,10 +680,10 @@ describe('the class table', () => {
     expect([...seen.values()]).toEqual([
       'unmeasured-touch -> apple-phone\n' +
       '    was 320/144 MiB, floor 2 sets, 8/1/3, want 1.25/0.8, warm cached, caps {"earthClouds":"4k"}\n' +
-      '    now 768/256 MiB, floor 3 sets, 16/2/6, want 1/0.65, warm full, caps {"earthClouds":"4k"}',
+      '    now 1024/512 MiB, floor 3 sets, 16/2/6, want 1/0.65, warm full, caps {"earthClouds":"4k"}',
       'unmeasured-touch -> apple-tablet\n' +
       '    was 320/144 MiB, floor 2 sets, 8/1/3, want 1.25/0.8, warm cached, caps {"earthClouds":"4k"}\n' +
-      '    now 768/256 MiB, floor 3 sets, 16/2/6, want 1/0.65, warm full, caps {"earthClouds":"4k"}',
+      '    now 1536/512 MiB, floor 3 sets, 16/2/6, want 1/0.65, warm full, caps {"earthClouds":"4k"}',
       'unmeasured-desktop -> unmeasured-touch\n' +
       '    was 768/256 MiB, floor 3 sets, 16/2/6, want 1/0.65, warm full, caps {}\n' +
       '    now 320/144 MiB, floor 2 sets, 8/1/3, want 1.25/0.8, warm cached, caps {"earthClouds":"4k"}',
@@ -673,7 +692,7 @@ describe('the class table', () => {
       '    now 768/256 MiB, floor 3 sets, 16/2/6, want 1/0.65, warm full, caps {}',
       'unmeasured-desktop -> apple-phone\n' +
       '    was 768/256 MiB, floor 3 sets, 16/2/6, want 1/0.65, warm full, caps {}\n' +
-      '    now 768/256 MiB, floor 3 sets, 16/2/6, want 1/0.65, warm full, caps {"earthClouds":"4k"}',
+      '    now 1024/512 MiB, floor 3 sets, 16/2/6, want 1/0.65, warm full, caps {"earthClouds":"4k"}',
       'unmeasured-desktop -> limited\n' +
       '    was 768/256 MiB, floor 3 sets, 16/2/6, want 1/0.65, warm full, caps {}\n' +
       '    now 192/46 MiB, floor 1 set, 4/1/2, want 1.25/0.8, warm cached, caps {}',

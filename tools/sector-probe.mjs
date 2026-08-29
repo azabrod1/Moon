@@ -408,7 +408,7 @@ const SCENARIOS = {
       hasTouch: true, isMobile: true, userAgent: IPHONE_UA,
     }, {
       deviceClass: 'phone', family: 'apple', profile: 'apple-phone',
-      envelopeBytes: 768 * MiB, ceilingBytes: 256 * MiB, cacheOnlyWarm: false,
+      envelopeBytes: 1024 * MiB, ceilingBytes: 512 * MiB, cacheOnlyWarm: false,
     });
     try {
       await apple.page.evaluate(() => window.__moon.jumpTo('Earth', 0.13));
@@ -475,7 +475,7 @@ const SCENARIOS = {
       hasTouch: true, isMobile: true, userAgent: IPAD_UA,
     }, {
       deviceClass: 'tablet', family: 'apple', profile: 'apple-tablet',
-      envelopeBytes: 768 * MiB, ceilingBytes: 256 * MiB, cacheOnlyWarm: false,
+      envelopeBytes: 1536 * MiB, ceilingBytes: 512 * MiB, cacheOnlyWarm: false,
     });
     await ipad.ctx.close();
 

@@ -126,9 +126,13 @@ export interface DeviceProfile extends SectorStreamerLimits {
   id: 'apple-phone' | 'apple-tablet' | 'unmeasured-touch' | 'unmeasured-desktop' | 'limited';
   /** Where the row's numbers come from, in a form the debug overlay can show
    *  on a device with no console: the device and date they were measured on,
-   *  or that no run has replaced the numbers the app shipped with. A phone
-   *  showing `unmeasured` is a phone whose numbers are still a guess. */
-  provenance: 'measured 2026-08-29 iPhone' | 'measured 2026-08-29 iPad' | 'unmeasured';
+   *  the figure the run reached and what was taken of it, or that no run has
+   *  replaced the numbers the app shipped with. A phone showing `unmeasured`
+   *  is a phone whose numbers are still a guess. */
+  provenance:
+    | 'measured 2026-08-29 iPhone, half of 1962.7 MiB'
+    | 'measured 2026-08-29 iPad, under half of 4053.3 MiB'
+    | 'unmeasured';
   /** The speculative boot warm pulls its bytes into the HTTP cache only,
    *  rather than decoding and uploading maps a session may never visit. */
   cacheOnlyWarm: boolean;
@@ -226,28 +230,37 @@ export const UNMEASURED_DESKTOP_PROFILE: DeviceProfile = {
 };
 
 /**
- * An Apple phone: the desktop numbers, on the evidence below.
+ * An Apple phone: more than a desktop, at half what it was measured to hold.
  *
  * A page that allocates 4096x2048 RGBA maps with mips — 42.7 MiB each, the
  * app's own rung shape — writing down each attempt before it makes it, so a
  * tab the system kills leaves the size that killed it behind:
  *
  *   iPhone 16 Pro Max class, iOS 18.7 / Safari 26.6, 2026-08-29:
- *   46 maps = 1962.7 MiB, still drawing. No kill was recorded at any size.
+ *   46 maps = 1962.7 MiB, still drawing. Two runs stopped at exactly that
+ *   step, which is the WebContent process's own ceiling near 2 GiB rather
+ *   than a number this app chose.
  *
- * 1962.7 MiB is six times the 320 MiB this device was being given. There is
- * no headroom fraction to take of a ceiling that was never reached, so the
- * number here is not a fraction of anything: it is the desktop working set,
- * which the device holds several times over.
+ * 1024 MiB is half of the 1962.7 that survived, on the 256 MiB step above
+ * it (52 %): the page is one tab among whatever else the phone is holding,
+ * and half a measured ceiling is the most that can be claimed without a
+ * second app on the device deciding whether this one lives. It is still 3.2x
+ * the 320 MiB this row used to give.
+ *
+ * The 512 MiB the tiles may take of it is deliberately more than the tiles
+ * can spend: 16 resident sectors of ~23.1 MiB is 370 MiB, so what limits a
+ * phone here is the draw-call cap and not an arithmetic refusal — which is
+ * what lets the finest level be reached at all on a device whose display is
+ * dense enough to ask for it.
  *
  * What stays smaller than a desktop's is the cloud deck, and for a reason
  * that is not memory — see FILL_RATE_TIER_CAP.
  */
 export const APPLE_PHONE_PROFILE: DeviceProfile = {
   id: 'apple-phone',
-  provenance: 'measured 2026-08-29 iPhone',
-  envelopeBytes: 768 * MiB,
-  ceilingBytes: 256 * MiB,
+  provenance: 'measured 2026-08-29 iPhone, half of 1962.7 MiB',
+  envelopeBytes: 1024 * MiB,
+  ceilingBytes: 512 * MiB,
   sectorFloorBytes: 3 * SECTOR_SET_FLOOR_UNIT_BYTES,
   residentCap: 16,
   inflightCap: 2,
@@ -265,15 +278,20 @@ export const APPLE_PHONE_PROFILE: DeviceProfile = {
  *   95 maps = 4053.3 MiB — the probe's own 4 GiB stop, reached with the
  *   device showing no sign of giving way. `ceiling-not-reached`.
  *
- * So the tablet's true ceiling is unknown from above rather than from below,
- * and it takes the phone's row for the same reason: a working set the
- * measurement clears by more than five times.
+ * 1536 MiB is not half of 4053.3, because 4053.3 is not a ceiling: it is
+ * where the probe stopped asking. Halving a number the device never
+ * argued with would be claiming a limit that was never measured, so the
+ * tablet is given one step over the phone — the phone's half-of-measured
+ * plus the 512 MiB the tiles may take — which the run clears by 2.6x.
+ *
+ * The tile ceiling is the phone's for the same reason it is the phone's
+ * there: 16 resident sectors cannot spend it, so the cap is what binds.
  */
 export const APPLE_TABLET_PROFILE: DeviceProfile = {
   id: 'apple-tablet',
-  provenance: 'measured 2026-08-29 iPad',
-  envelopeBytes: 768 * MiB,
-  ceilingBytes: 256 * MiB,
+  provenance: 'measured 2026-08-29 iPad, under half of 4053.3 MiB',
+  envelopeBytes: 1536 * MiB,
+  ceilingBytes: 512 * MiB,
   sectorFloorBytes: 3 * SECTOR_SET_FLOOR_UNIT_BYTES,
   residentCap: 16,
   inflightCap: 2,
@@ -314,8 +332,8 @@ export const LIMITED_PROFILE: DeviceProfile = {
  *
  * | family / class | envelope | tiles | floor | res | flight | fetch | want / rel | boot warm |
  * |---|---|---|---|---|---|---|---|---|
- * | apple / phone   | 768 | 256 | 3 sets | 16 | 2 | 6 | 1.0 / 0.65 | full   |
- * | apple / tablet  | 768 | 256 | 3 sets | 16 | 2 | 6 | 1.0 / 0.65 | full   |
+ * | apple / phone   |1024 | 512 | 3 sets | 16 | 2 | 6 | 1.0 / 0.65 | full   |
+ * | apple / tablet  |1536 | 512 | 3 sets | 16 | 2 | 6 | 1.0 / 0.65 | full   |
  * | android/ phone  | 320 | 144 | 2 sets |  8 | 1 | 3 | 1.25 / 0.8 | cached |
  * | android/ tablet | 320 | 144 | 2 sets |  8 | 1 | 3 | 1.25 / 0.8 | cached |
  * | other  / phone  | 320 | 144 | 2 sets |  8 | 1 | 3 | 1.25 / 0.8 | cached |
@@ -331,9 +349,9 @@ export const LIMITED_PROFILE: DeviceProfile = {
  * family has been walked up to its ceiling. A row moves when a run says so.
  *
  * On the baseline the app itself holds before any of this is spent — 244 MiB
- * on a phone, read off the boot readout: at the sizes the Apple rows were
- * measured at it does not bear on them, because neither Apple device reached
- * a ceiling for it to be subtracted from. It is still inside the android and
+ * on a phone, read off the boot readout: the Apple rows are half of what
+ * their devices held with that baseline already inside the measurement, so
+ * it is paid for rather than added on top. It is still inside the android and
  * other rows implicitly: 320 MiB was chosen against an app that already held
  * roughly that much, and re-deriving those rows without re-measuring them
  * would be arithmetic on an unmeasured number.

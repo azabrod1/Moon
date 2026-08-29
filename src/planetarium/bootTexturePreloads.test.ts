@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import html from '../../index.html?raw';
-import { PLANET_TEXTURE_FILES } from './PlanetFactory';
+import { PLANET_TEXTURE_FILES } from './world/textureLadder';
 import { BRIGHT_STAR_BIN_FILE } from './data/brightStars';
 import { takeBootWarmResponse } from './world/textureBitmapLoader';
 

@@ -21,7 +21,7 @@ import {
   PLANET_TEXTURE_FILES,
   TEXTURE_UPGRADE_TIERS,
   TIER_FILE_OVERRIDES,
-} from './PlanetFactory';
+} from './world/textureLadder';
 import { TIER_MAP_WIDTH, type TextureTier } from './world/texturePolicy';
 
 const TEXTURES = resolve(__dirname, '../../public/textures');

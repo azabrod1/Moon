@@ -1,6 +1,18 @@
 import * as THREE from 'three';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
+  connectLateDetailMap,
+  createLateTextureSlot,
+  createMoonMeshes,
+  FALLBACK_AFTER_FAILURES,
+  loadTexture,
+  lodMeasurementRelevant,
+  makeGeometryUpgrade,
+  needsGeometryUpgrade,
+  upgradeGeometryOnApproach,
+  wireEarthLateDetail,
+} from './PlanetFactory';
+import {
   applyColorTierTexture,
   applyNormalTierTexture,
   armArrivalWarmGoal,
@@ -16,14 +28,9 @@ import {
   makeNormalUpgrade,
   normalUpgradePending,
   upgradeNormalOnApproach,
-  connectLateDetailMap,
-  createLateTextureSlot,
-  createMoonMeshes,
   earnedUpgradeTier,
-  FALLBACK_AFTER_FAILURES,
   firstUpgradeTier,
   initialColorTierRank,
-  loadTexture,
   appliedTierGpuBytes,
   appliedTierHeldBytes,
   bindTierAdmission,
@@ -47,11 +54,8 @@ import {
   RELEASE_REEARN_GRACE_MS,
   RESTORE_STANDIN_WIDTH,
   type TierAdmission,
-  lodMeasurementRelevant,
-  makeGeometryUpgrade,
   makeTextureUpgrade,
   materialColorMap,
-  needsGeometryUpgrade,
   needsUpgradeCover,
   resolveUpgradeTier,
   setUpgradeTextureLoader,
@@ -59,13 +63,11 @@ import {
   TEXTURE_UPGRADE_TIERS,
   TIER_RANK,
   upgradeComplete,
-  upgradeGeometryOnApproach,
   upgradeTextureOnApproach,
   UPGRADE_TRIGGER_FRACTION,
   upgradeTriggerFraction,
-  wireEarthLateDetail,
   type TextureUpgrade,
-} from './PlanetFactory';
+} from './world/textureLadder';
 import { equirectMapGpuBytes, retainedSourceBytes, textureGpuBytes } from './world/textureBytes';
 import { retryDelayMs, urlSpread } from './world/textureRetryPolicy';
 import { captureDeviceCaps, resetDeviceCapsForTests, TIER_MAP_WIDTH, type TextureTier } from './world/texturePolicy';

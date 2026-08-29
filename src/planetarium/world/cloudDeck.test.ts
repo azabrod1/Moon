@@ -29,7 +29,7 @@ import {
   NORMAL_UPGRADE_TIERS,
   PLANET_TEXTURE_FILES,
   TIER_RANK,
-} from '../PlanetFactory';
+} from './textureLadder';
 import { equirectMapGpuBytes } from './textureBytes';
 import { EARTH_NIGHT_COLD_CUT, EARTH_NIGHT_MIX_SCALE, earthNightFragmentShader } from '../../shared/shaders/atmosphere';
 import { createEarthNightShellMaterial } from './earthNightMaterial';

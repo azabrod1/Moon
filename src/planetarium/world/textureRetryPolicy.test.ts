@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { PLANET_TEXTURE_FILES } from '../PlanetFactory';
+import { PLANET_TEXTURE_FILES } from './textureLadder';
 import {
   DEFAULT_TEXTURE_RETRY_POLICY,
   newTextureRetryState,

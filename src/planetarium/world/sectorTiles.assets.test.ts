@@ -28,7 +28,7 @@ import { resolve } from 'node:path';
 import { SECTOR_GRID_16K, SECTOR_TILE, dataCropLayout, type SectorGrid } from './sectorGrid';
 import { SECTOR_NIGHT_SETS, SECTOR_SETS, levelSourceWidth, type SectorSetSpec, type SectorSide, type SectorTileSet } from './sectorStreamer';
 import { SECTOR_SET_TABLE, type GeneratedSectorSet } from './sectorSets.generated';
-import { PLANET_TEXTURE_FILES } from '../PlanetFactory';
+import { PLANET_TEXTURE_FILES } from './textureLadder';
 // The function that names a set on disk, not a copy of its formula: two
 // implementations would be two opinions about what a folder name promises.
 import { setHash8, tileNames } from '../../../tools/tileSetHash.mjs';

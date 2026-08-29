@@ -34,7 +34,7 @@ import {
   setUpgradeTextureLoader,
   startTierRelease,
   TIER_RANK,
-} from '../PlanetFactory';
+} from './textureLadder';
 import { equirectMapGpuBytes } from './textureBytes';
 import { SECTOR_RENDER_ORDER } from './sectorMaterial';
 import { createEarthNightShellMaterial, earthNightSectorFamily } from './earthNightMaterial';

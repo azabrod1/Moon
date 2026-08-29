@@ -39,9 +39,26 @@ const POSES = [
   'nadir-1.05r',
   'oblique-1.05r',
   'terminator-1.5r',
+  // The night side under three Moons. A night pose is a pose AND a Moon: the
+  // set's original sits at a thin waning crescent, and the pair beside it is
+  // the same framing with the second source at full strength and at nothing,
+  // switched by the ephemeris at the pose's own date rather than by a flag.
   'night-1.05r',
+  'night-1.05r-moonlit',
+  'night-1.05r-newmoon',
   'inside-air',
 ];
+
+/** The clock each pose is captured at. Earth's spin, its clouds, its
+ *  terminator and — for the night poses — its Moon are all in the frame, so a
+ *  golden taken at wall-clock time compares against nothing. */
+const POSE_TIME: Record<string, string> = {
+  // As full as the Moon gets without being eclipsed. The nearest full Moon to
+  // the rest of the set is a total lunar eclipse, which is no moonlight at all.
+  'night-1.05r-moonlit': '2026-04-02T02:00:00Z',   // full, phase angle 2.9 deg
+  'night-1.05r-newmoon': '2026-03-19T01:00:00Z',   // new, 178.2 deg
+};
+const DEFAULT_TIME = '2026-03-20T12:00:00Z';       // equinox noon, 160.7 deg
 
 // Three sessions, not two: the analytic tier, the LUT tier, and the no-float
 // fallback device (?nofloat=1 — no float targets, so no composer, no bloom and
@@ -60,6 +77,8 @@ interface Golden {
   exposure: number;
   pixelRatio: number;
   timeUtcMs: number | null;
+  moonPhaseDeg: number | null;
+  moonIrradiance: [number, number, number] | null;
   width: number;
   height: number;
   grid: [number, number][];
@@ -98,7 +117,7 @@ describe('the atmosphere goldens', () => {
         expect(golden.near).toBeGreaterThan(0);
         expect(golden.exposure).toBe(1);
         expect(golden.pixelRatio).toBe(1);
-        expect(golden.timeUtcMs).toBe(Date.parse('2026-03-20T12:00:00Z'));
+        expect(golden.timeUtcMs).toBe(Date.parse(POSE_TIME[pose] ?? DEFAULT_TIME));
         expect(golden.width).toBe(512);
       }
     }
@@ -166,6 +185,42 @@ describe('the atmosphere goldens', () => {
     }
   });
 
+  it('was captured under the Moon its pose asks for', () => {
+    // The night terms are fed from the live ephemeris, so what a night golden
+    // records is only meaningful with the Moon it was taken under written down
+    // beside it. Held against the pins for the same reason the radiances are.
+    // Recorded on the tier that has a Moon. The other two draw no non-solar
+    // source at all, and their captures say so with a null rather than with
+    // whatever the ephemeris happened to be doing.
+    expect(read('night-1.05r-moonlit.lut').moonPhaseDeg!).toBeLessThan(5);
+    expect(read('night-1.05r-newmoon.lut').moonPhaseDeg!).toBeGreaterThan(175);
+    expect(read('night-1.05r.lut').moonPhaseDeg!).toBeGreaterThan(150);
+    for (const tier of ['analytic', 'nofloat']) {
+      expect(read(`night-1.05r-moonlit.${tier}`).moonPhaseDeg, tier).toBeNull();
+    }
+    for (const name of CAPTURES) {
+      const actual = read(name).moonPhaseDeg;
+      const pinned = ATMOSPHERE_GOLDEN_PINS[name].moonPhaseDeg;
+      if (pinned === null || actual === null) expect(actual, name).toBe(pinned);
+      // The pin file carries four decimals of a degree, which is 400 metres of
+      // the Moon's orbit and far finer than anything the frame shows.
+      else expect(actual, name).toBeCloseTo(pinned, 3);
+    }
+  });
+
+  it('shows the Moon lighting the night side it stands over', () => {
+    // The two night dates frame different ground — the Earth has turned between
+    // them — so what separates them is not one being brighter than the other.
+    // It is how much the LUT tier ADDS over the analytic one at the same pose
+    // and the same instant: at full Moon that is airglow plus moonlight, at new
+    // Moon it is airglow and the sky's own ambient alone.
+    const lit = (name: string): number =>
+      read(name).samples.reduce((a, [r, g, b]) => a + r + g + b, 0);
+    const added = (pose: string): number => lit(`${pose}.lut`) - lit(`${pose}.analytic`);
+    expect(added('night-1.05r-moonlit')).toBeGreaterThan(added('night-1.05r-newmoon'));
+    expect(added('night-1.05r-moonlit')).toBeGreaterThan(0);
+  });
+
   it('pins the near plane each capture was taken with', () => {
     for (const name of CAPTURES) {
       expect(read(name).near, name).toBe(ATMOSPHERE_GOLDEN_PINS[name].near);
@@ -188,7 +243,7 @@ describe('the atmosphere goldens', () => {
     expect(hash(shell.vertexShader))
       .toBe('604724ecd98c07ab9465d5cce0bbc7285e1ed2627fe5f2d7b69ec6ddbba3b1fc');
     expect(hash(shell.fragmentShader))
-      .toBe('9c86562d05a246eff7b9c2c08713e4db31a508f85d9a3d6eb572f8082da85756');
+      .toBe('8972702a1ba500a2d8c045c2c9917087d3fefe4aa3e7baffc172950b1610f0f1');
   });
 
   it('shows the LUT tier drawing a different limb from the analytic one', () => {

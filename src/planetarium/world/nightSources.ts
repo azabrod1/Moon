@@ -91,10 +91,12 @@ export interface AirglowSpec {
   /** Orange (630 nm) fringe, km above the surface — above the green layer. */
   readonly orangeKm: readonly [number, number];
   /** Radiance of a VERTICAL path through each layer, in the scene's linear
-   *  units. Authored, not physical: see the module header. The night sky's
-   *  in-scattered airlight at this exposure runs 0.01-0.13, so the green line
-   *  seen straight down is about 1% of a daylight haze band, and about 25% of
-   *  one where the limb stretches it. */
+   *  units. Authored, not physical, and set against the photograph at the night
+   *  limb: at the 20x the limb stretches it to, the green line lands at 0.006
+   *  linear, a thin thread a couple of dozen 8-bit steps above the black behind
+   *  it and dimmer than the moonlit air below it — which is the order the two
+   *  read in from orbit. Straight down it is 1/20 of that and invisible, which
+   *  is also right. */
   readonly greenRadiance: number;
   readonly orangeRadiance: number;
 }
@@ -118,8 +120,8 @@ export const AIRGLOW_SPECS: Readonly<Record<string, AirglowSpec>> = {
   Earth: {
     greenKm: [90, 100],
     orangeKm: [100, 120],
-    greenRadiance: 1.8e-3,
-    orangeRadiance: 6.0e-4,
+    greenRadiance: 3.0e-4,
+    orangeRadiance: 1.2e-4,
   },
 };
 
@@ -256,13 +258,13 @@ export const LUNAR_IRRADIANCE_RATIO = 1 / 4.4e5;
 /**
  * The gain that makes the night side a long exposure. AUTHORED: the ISS night
  * frames it is drawn against are seconds at f/1.4 and ISO 6400 where a daylight
- * frame is a thousandth at f/8 and ISO 200, which is about 2e5x; a quarter of
- * that is used, because the app's night side is already lifted by its city
- * lights. Full moonlight therefore lands at 0.09 of sunlight on this scale —
- * two and a half stops down, which is where a moonlit ocean sits in a
- * photograph.
+ * frame is a thousandth at f/8 and ISO 200 — about 2e5x — and this is a little
+ * over half of that, set at the night golden against the photograph. Full
+ * moonlight lands at 0.27 of sunlight on this scale, which is under two stops
+ * down: the moonlit ocean and the moonlit cloud tops read, and the city lights
+ * over them still read brighter, as they do in the photograph.
  */
-export const MOONLIGHT_NIGHT_GAIN = 4.0e4;
+export const MOONLIGHT_NIGHT_GAIN = 1.2e5;
 
 /**
  * Lunar light is redder than solar. B-V is 0.92 for the Moon against 0.65 for
@@ -334,14 +336,26 @@ export const MULTIPLE_SCATTERING_HEADROOM = 1.5;
 
 /**
  * The brightest sky radiance a lookup returns at one unit of solar irradiance,
- * before the photometry bridge. Swept out of the CPU reference over every
- * geometry the table can address: the worst is the aureole — the horizon looked
- * at along a low Sun, where the Mie lobe is 5.6/sr and the path is the longest
- * the air has — at 1.41 single-scattered, and this is that with the
- * multiple-scattering headroom on top.
- *
- * It exists so that "no night source blooms" is an assertion and not an
- * intention: a test re-derives the sweep, holds it under this number, and holds
- * this number times the authored night constants under the bloom threshold.
+ * anywhere in the table, before the photometry bridge. The worst is the aureole
+ * — the horizon looked at along a low Sun FROM THE GROUND, where the Mie lobe
+ * is 5.6/sr and the path is the longest the air has — at 1.41 single-scattered,
+ * and this is that with the multiple-scattering headroom on top.
  */
 export const PEAK_TABLE_SKY_RADIANCE = 2.2;
+
+/**
+ * The brightest one the app can actually draw, which is a different number and
+ * the one the bloom contract rests on. Every scattering lookup this renderer
+ * makes starts at the atmosphere ENTRY point: the shell advances its ray there
+ * and the aerial segment starts there, because a lookup at the camera's own
+ * radius clamps to the top row and comes back flat. At the top row the peak is
+ * 0.075. The one way further in is the dev pose inside the air at 51 km, where
+ * the table reaches 0.55 — and that is the number here, with the
+ * multiple-scattering headroom on top, because a contract that only holds for
+ * poses the shipped app can reach is not one worth writing down.
+ *
+ * It exists so that "no night source blooms" is an assertion and not an
+ * intention: a test re-derives both sweeps, holds them under these numbers, and
+ * holds this one times the authored night constants under the bloom threshold.
+ */
+export const PEAK_REACHABLE_SKY_RADIANCE = 0.85;

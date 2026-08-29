@@ -27,6 +27,12 @@ const DPR = Number(arg('dpr', '2'));
 const FRAMES = Number(arg('frames', '400'));
 const AIM = Number(arg('aim', '0.72'));
 const K = Number(arg('k', '1.05'));
+// Where round the body the camera stands: 0 is the sub-solar side, 150 is past
+// the terminator, which is the pose the non-solar sources cost anything at.
+const PHASE = Number(arg('phase', '0'));
+// The clock, because at night what the frame costs depends on whether there is
+// a Moon in it: a full one is a second table lookup on every fragment.
+const TIME = arg('time', '');
 
 const { chromium } = await import('playwright');
 const browser = await chromium.launch({
@@ -69,7 +75,8 @@ if (!state) throw new Error('tables never baked — nothing to A/B');
 
 async function measure(tier) {
   const wearing = await page.evaluate((t) => window.__moon.atmoTier(t), tier);
-  await page.evaluate(([k, a]) => window.__moon.limbView('Earth', k, 60, 0, a), [K, AIM]);
+  if (TIME) await page.evaluate((t) => window.__moon.setTimeMs(t), Date.parse(TIME));
+  await page.evaluate(([k, a, p]) => window.__moon.limbView('Earth', k, 60, p, a), [K, AIM, PHASE]);
   await page.evaluate(([d]) => window.__moon.pinCapture({ near: 1e-6, exposure: 1, pixelRatio: d }), [DPR]);
   await page.evaluate(() => window.__moon.setTimeMs(Date.parse('2026-03-20T12:00:00Z')));
   await page.waitForTimeout(1500); // settle: texture tiers, exposure, the swap itself

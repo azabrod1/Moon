@@ -12443,7 +12443,13 @@ export class PlanetariumMode {
       airOn: (air.uAirDensity.value as number) > 0,
       moonDirWorld: [dir.x, dir.y, dir.z],
       moonIrradiance: [irradiance.x, irradiance.y, irradiance.z],
-      phaseDeg: this.moonlightPhase.get(body) ?? null,
+      // Only while the air is on: with the tier pinned off nothing updates the
+      // Moon, and a value left over from before the pin would read as this
+      // frame's. A capture that records a stale Moon is worse than one that
+      // records none.
+      phaseDeg: (air.uAirDensity.value as number) > 0
+        ? this.moonlightPhase.get(body) ?? null
+        : null,
     };
   }
 

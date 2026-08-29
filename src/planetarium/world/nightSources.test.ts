@@ -9,6 +9,7 @@ import {
   MOONLIGHT_SOURCES,
   MOON_SPECTRUM,
   MULTIPLE_SCATTERING_HEADROOM,
+  PEAK_REACHABLE_SKY_RADIANCE,
   NIGHT_WEIGHT_FULL_SIN,
   NIGHT_WEIGHT_GLSL,
   NIGHT_WEIGHT_ZERO_SIN,
@@ -172,7 +173,10 @@ describe('airglow', () => {
     expect(airglowRadiance('Earth', [d, 0, 0], view, 0.06)).toEqual([0, 0, 0]);
     // ...and everything at night.
     const night = airglowRadiance('Earth', [d, 0, 0], view, -0.4);
-    expect(night[1]).toBeGreaterThan(0.02);
+    // A thin thread, not a rim: a couple of dozen 8-bit steps over black once
+    // the limb has stretched it, and a twentieth of that seen from above.
+    expect(night[1]).toBeGreaterThan(0.004);
+    expect(night[1]).toBeLessThan(0.02);
     // Green line over an orange fringe: the green channel leads.
     expect(night[1]).toBeGreaterThan(night[0]);
   });
@@ -258,7 +262,7 @@ describe('moonlight', () => {
     // Two lookups into the table, one per source; the rest of the matches are
     // the lookup GLSL's own definitions.
     expect(shell.match(/getScattering3DRGBA\(\s+uScattering/g)).toHaveLength(2);
-    expect(shell).toContain('if (night > 0.0 && uMoonIrradiance != vec3(0.0)) {');
+    expect(shell).toContain('if (night > 0.0 && uMoonIrradiance.g > 0.0) {');
     const surface = surfaceFragment();
     expect(surface).toContain('aerialForLight(seg, normalize(uMoonDirWorld))');
     // The transmittance of the segment is the camera's, not the source's: one
@@ -279,7 +283,9 @@ describe('the night ground', () => {
     // ...and the table's own ambient is what stands in its place.
     expect(surface).toContain('getIrradiance(uIrradiance, rFrag, muSSun)');
     expect(surface).toContain('getIrradiance(uIrradiance, rFrag, muSMoon) * uMoonIrradiance');
-    expect(surface).toContain('outgoingLight += diffuseColor.rgb * (ambient + direct) * airNight;');
+    expect(surface).toContain(
+      'outgoingLight += diffuseColor.rgb * RECIPROCAL_PI * (ambient + direct) * airNight;',
+    );
     // The ambient is a night term: by day the ground is lit by the point light
     // and nothing here touches it.
     expect(surface).toContain('float airNight = uAirDensity > 0.0');
@@ -295,39 +301,60 @@ describe('the night ground', () => {
 });
 
 describe('the bloom threshold', () => {
-  it('is above the brightest radiance any table lookup can return, once swept', () => {
-    // Re-derived rather than remembered: the sweep runs the CPU reference over
-    // every geometry the table addresses and finds the worst — the aureole, the
-    // horizon looked at along a low Sun.
+  /** The brightest single-scattered radiance in the table at one starting
+   *  radius, over every geometry the addressing can reach from it. */
+  const sweep = (r: number): number => {
     const p = atmosphereParams('Earth');
-    const H = p.topRadius - p.bottomRadius;
     let peak = 0;
-    for (let i = 0; i <= 8; i++) {
-      const r = p.bottomRadius + (H * i) / 8;
-      for (let j = 0; j <= 16; j++) {
-        const mu = -1 + (2 * j) / 16;
-        const ground = rayIntersectsGround(p, r, mu);
-        for (const muS of [1, 0.8, 0.4, 0.1, 0, -0.2]) {
-          const s = Math.sqrt(Math.max(0, (1 - mu * mu) * (1 - muS * muS)));
-          for (const nu of [mu * muS + s, mu * muS - s, mu * muS]) {
-            const radiance = singleScatteringRadiance(p, r, mu, muS, nu, ground, 30, 200);
-            peak = Math.max(peak, radiance[0], radiance[1], radiance[2]);
-          }
+    for (let j = 0; j <= 16; j++) {
+      const mu = -1 + (2 * j) / 16;
+      const ground = rayIntersectsGround(p, r, mu);
+      for (const muS of [1, 0.8, 0.4, 0.1, 0, -0.2]) {
+        const s = Math.sqrt(Math.max(0, (1 - mu * mu) * (1 - muS * muS)));
+        for (const nu of [mu * muS + s, mu * muS - s, mu * muS]) {
+          const radiance = singleScatteringRadiance(p, r, mu, muS, nu, ground, 30, 200);
+          peak = Math.max(peak, radiance[0], radiance[1], radiance[2]);
         }
       }
     }
+    return peak;
+  };
+
+  it('is above the brightest radiance any table lookup can return, once swept', () => {
+    // Re-derived rather than remembered. Over the whole table the worst is the
+    // aureole — the horizon looked at along a low Sun FROM THE GROUND.
+    const p = atmosphereParams('Earth');
+    const H = p.topRadius - p.bottomRadius;
+    let peak = 0;
+    for (let i = 0; i <= 8; i++) peak = Math.max(peak, sweep(p.bottomRadius + (H * i) / 8));
     expect(peak).toBeGreaterThan(1);
     expect(peak * MULTIPLE_SCATTERING_HEADROOM).toBeLessThanOrEqual(PEAK_TABLE_SKY_RADIANCE);
   });
 
+  it('is above the brightest one the app can actually draw, which is 30x lower', () => {
+    // Every lookup this renderer makes starts at the atmosphere entry point,
+    // because a lookup at the camera's own radius clamps to the top row and
+    // comes back flat. The one exception is the dev pose inside the air, and
+    // the contract is written for that one rather than for the top row alone.
+    const p = atmosphereParams('Earth');
+    const top = sweep(p.topRadius);
+    const insideAirPose = sweep(p.bottomRadius + 0.008);
+    expect(top).toBeLessThan(0.12);
+    expect(top * MULTIPLE_SCATTERING_HEADROOM).toBeLessThan(PEAK_REACHABLE_SKY_RADIANCE);
+    expect(insideAirPose * MULTIPLE_SCATTERING_HEADROOM)
+      .toBeLessThanOrEqual(PEAK_REACHABLE_SKY_RADIANCE);
+    expect(PEAK_REACHABLE_SKY_RADIANCE).toBeLessThan(PEAK_TABLE_SKY_RADIANCE);
+  });
+
   it('is above every night source at its brightest', () => {
-    // The moonlit sky: the worst lookup the tables hold, under a full Moon.
+    // The moonlit sky: the worst lookup the app can draw, under a full Moon.
     const full = moonIrradiance(1, 0);
-    const moonlitSky = PEAK_TABLE_SKY_RADIANCE * Math.max(...full);
+    const moonlitSky = PEAK_REACHABLE_SKY_RADIANCE * Math.max(...full);
     expect(moonlitSky).toBeLessThan(BLOOM_THRESHOLD);
     // The moonlit ground: the sky's whole irradiance plus the Moon's own beam,
-    // on a perfectly white surface, is at most twice the irradiance itself.
-    expect(2 * Math.max(...full)).toBeLessThan(BLOOM_THRESHOLD);
+    // on a perfectly white surface, is at most twice the irradiance itself,
+    // through a Lambertian 1/pi.
+    expect((2 / Math.PI) * Math.max(...full)).toBeLessThan(BLOOM_THRESHOLD);
     // The airglow line, fully limb-brightened.
     const glow = airglowUniforms('Earth');
     for (let c = 0; c < 3; c++) {

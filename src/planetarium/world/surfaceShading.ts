@@ -296,7 +296,12 @@ const SURFACE_FRAGMENT_BODY = /* glsl */ `{
     vec3 direct = uMoonIrradiance
         * getTransmittanceToSun(uTransmittance, rFrag, muSMoon)
         * max(dot(normalize(normal), normalize(vMoonViewDir)), 0.0);
-    outgoingLight += diffuseColor.rgb * (ambient + direct) * airNight;
+    // Both are irradiances, and a Lambertian surface turns an irradiance into a
+    // radiance by albedo/pi — the same law three's own diffuse BRDF applies to
+    // the Sun, which is what the bridge these numbers come through was
+    // calibrated against. Drop the 1/pi here and the night side is lit three
+    // times harder than the day side for the same irradiance.
+    outgoingLight += diffuseColor.rgb * RECIPROCAL_PI * (ambient + direct) * airNight;
   }
   // Icy moons: a cool Fresnel rim on the back-lit limb (ice scatters light).
   // Scaled by the (eclipse-dimmed) albedo brightness so it fades when the

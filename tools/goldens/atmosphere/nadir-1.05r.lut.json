@@ -10,6 +10,12 @@
   "exposure": 1,
   "pixelRatio": 1,
   "timeUtcMs": 1774008000000,
+  "moonPhaseDeg": 160.6947478264706,
+  "moonIrradiance": [
+    0.0014922950731035376,
+    0.001349121405273166,
+    0.0008590526365352601
+  ],
   "width": 512,
   "height": 512,
   "grid": [

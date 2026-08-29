@@ -212,7 +212,7 @@ void main() {
     // lookup is the sunlit one with the two angles that involve the source
     // swapped. Behind the night weight, so by day it costs a branch and no
     // fetches at all.
-    if (night > 0.0 && uMoonIrradiance != vec3(0.0)) {
+    if (night > 0.0 && uMoonIrradiance.g > 0.0) {
       vec3 moon = normalize(vMoonObj);
       float nuMoon = clampCosine(dot(view, moon));
       vec4 lunar = getScattering3DRGBA(

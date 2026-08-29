@@ -10,6 +10,13 @@
 //
 // Writes the individual frames, iss-vs-app-day.png (the four-panel board) and
 // horizon-haze.png (a 2x crop of the far ground fading into the limb).
+//
+// --night swaps the daylight frames for the same geometry past the terminator,
+// on a full-Moon clock, and puts the photograph the campaign is drawn from in
+// the board beside them:
+//
+//   node tools/atmo-aerial-shots.mjs --night --out=/tmp/moon-shots/atmo4 \
+//     --photo=/path/to/the/iss/frame.png
 import { mkdir, writeFile, readFile } from 'node:fs/promises';
 import path from 'node:path';
 
@@ -21,9 +28,18 @@ const url = arg('url', 'http://localhost:5646');
 const out = arg('out', '/tmp/moon-shots/atmo3');
 const W = Number(arg('w', '900'));
 const H = Number(arg('h', '675'));
+const night = process.argv.includes('--night');
+// The photograph the night board is judged against, unedited. Left out and the
+// board is just the two tiers.
+const photo = arg('photo', '');
 // Northern summer, late morning UTC: the sub-solar point sits over the Sahara,
-// so the arrival frame is desert under a clear sky rather than ocean.
-const TIME_MS = Date.parse(arg('time', '2026-06-21T11:00:00Z'));
+// so the arrival frame is desert under a clear sky rather than ocean. At night
+// the clock is the Moon's instead: 2026-04-02 02:00 UTC is as full as the Moon
+// gets without being eclipsed (phase angle 2.9 degrees), so it stands over the
+// middle of the night hemisphere and lights the ground the camera is looking
+// along. The fuller Moon a month earlier is a total lunar eclipse and gives no
+// light at all — the eclipse term working, and a useless frame.
+const TIME_MS = Date.parse(arg('time', night ? '2026-04-02T02:00:00Z' : '2026-06-21T11:00:00Z'));
 
 const { chromium } = await import('playwright');
 const browser = await chromium.launch({
@@ -61,10 +77,18 @@ async function session(tier) {
   return { context, page };
 }
 
-const POSES = [
-  { name: 'arrival', pose: (p) => p.evaluate(() => window.__moon.jumpTo('Earth', 0.13)) },
-  { name: 'oblique', pose: (p) => p.evaluate(() => window.__moon.limbView('Earth', 1.05, 60, 0, 0.72)) },
-];
+const POSES = night
+  ? [
+    // The ISS geometry past the terminator: 1.05 R, looking along the ground
+    // toward the horizon, 150 degrees round from the sub-solar point.
+    { name: 'night-oblique', pose: (p) => p.evaluate(() => window.__moon.limbView('Earth', 1.05, 60, 150, 0.72)) },
+    // And the limb itself, where the airglow line lives.
+    { name: 'night-limb', pose: (p) => p.evaluate(() => window.__moon.limbView('Earth', 1.05, 60, 150, 1)) },
+  ]
+  : [
+    { name: 'arrival', pose: (p) => p.evaluate(() => window.__moon.jumpTo('Earth', 0.13)) },
+    { name: 'oblique', pose: (p) => p.evaluate(() => window.__moon.limbView('Earth', 1.05, 60, 0, 0.72)) },
+  ];
 
 for (const tier of ['analytic', 'lut']) {
   const { context, page } = await session(tier);
@@ -76,13 +100,15 @@ for (const tier of ['analytic', 'lut']) {
     await page.waitForTimeout(4000);
     await page.evaluate(() => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r))));
     await writeFile(path.join(out, `${name}.${tier}.png`), await page.screenshot());
-    console.log(`[shots] ${name}.${tier}`);
+    const moon = await page.evaluate(() => window.__moon.atmoNight?.('Earth') ?? null);
+    console.log(`[shots] ${name}.${tier}`
+      + (moon ? `  moon phase ${moon.phaseDeg?.toFixed(1)} deg, irradiance ${moon.moonIrradiance.map((v) => v.toFixed(4)).join('/')}` : ''));
   }
   await context.close();
 }
 
 /** Lay panels out with captions and shoot the result. */
-async function board(cells, file, cols, scale = 1) {
+async function board(cells, file, cols, scale = 1, note = '') {
   const context = await browser.newContext({ viewport: { width: 100, height: 100 }, deviceScaleFactor: 1 });
   const page = await context.newPage();
   const figures = [];
@@ -93,23 +119,52 @@ async function board(cells, file, cols, scale = 1) {
            <img src="${uri}" style="margin-left:${-c.crop.x * scale}px;margin-top:${-c.crop.y * scale}px;width:${c.width * scale}px">
          </div>`
       : `<img src="${uri}">`;
-    figures.push(`<figure>${crop}<figcaption>${c.label}</figcaption></figure>`);
+    figures.push(
+      `<figure${c.span ? ' class="span"' : ''}>${crop}<figcaption>${c.label}</figcaption></figure>`);
   }
   await page.setContent(`<style>
     body { margin:0; background:#0b0d10; font:600 15px/1.4 ui-sans-serif,system-ui,sans-serif; color:#c9d2dd; }
+    .board { width:max-content; }
     .grid { display:grid; grid-template-columns:repeat(${cols},max-content); gap:14px; padding:14px; width:max-content; }
     figure { margin:0; }
-    img { display:block; }
+    figure.span { grid-column:1 / -1; }
+    img { display:block; max-width:900px; height:auto; }
     .crop { overflow:hidden; }
     figcaption { padding-top:6px; letter-spacing:.02em; }
-  </style><div class="grid">${figures.join('')}</div>`);
-  const el = await page.$('.grid');
+    .note { padding:0 14px 14px; font-weight:400; color:#8b96a4; max-width:${cols * 900}px; }
+  </style><div class="board"><div class="grid">${figures.join('')}</div>${
+    note ? `<div class="note">${note}</div>` : ''}</div>`);
+  const el = await page.$('.board');
   await writeFile(file, await el.screenshot());
   console.log(`[shots] ${file}`);
   await context.close();
 }
 
 const px = W * 2; // deviceScaleFactor 2
+if (night) {
+  await board([
+    ...(photo ? [{
+      file: photo,
+      label: 'the photograph, unedited',
+      width: px,
+      span: true,
+    }] : []),
+    { file: path.join(out, 'night-oblique.analytic.png'), label: 'past the terminator, no tables', width: px },
+    { file: path.join(out, 'night-oblique.lut.png'), label: 'past the terminator, airglow + moonlight', width: px },
+    { file: path.join(out, 'night-limb.analytic.png'), label: 'the night limb, no tables', width: px },
+    { file: path.join(out, 'night-limb.lut.png'), label: 'the night limb, airglow + moonlight', width: px },
+  ], path.join(out, 'iss-vs-app-night.png'), 2, 1,
+  'City lights here are the 2K night map on its own shell — this branch has no '
+  + 'streamed night tiles. The Moon is full and stands over the middle of the '
+  + 'night hemisphere; the analytic panels are the same frame with no tables, '
+  + 'which is what the weakest hardware draws.');
+  // What the app's night side is drawn from, so the board is not read as more
+  // than it is: this branch has no night TILES, and the city lights in these
+  // frames are the 2K night map on its own shell.
+  console.log('[shots] night board: city lights are the 2K night map, not the streamed night tiles');
+  await browser.close();
+  process.exit(0);
+}
 await board([
   { file: path.join(out, 'arrival.analytic.png'), label: 'arrival range, no aerial perspective', width: px },
   { file: path.join(out, 'arrival.lut.png'), label: 'arrival range, hazed', width: px },

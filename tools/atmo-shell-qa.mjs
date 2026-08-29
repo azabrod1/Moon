@@ -6,8 +6,13 @@
 // 8 R, the near band from 1.05 R aimed over the horizon, straight down and
 // obliquely along the ground from the same stand point (the two the aerial
 // perspective is judged on), the terminator edge-on from 1.5 R, the night side
-// past it, one pose INSIDE the air (only a dev pose can reach it), and the
-// volume-compare ghost, whose shell is pinned analytic.
+// past it under three Moons (a crescent, a full one and none), one pose INSIDE
+// the air (only a dev pose can reach it), and the volume-compare ghost, whose
+// shell is pinned analytic.
+//
+// A pose can carry a clock of its own, and the night ones do: what lights the
+// night side is the Moon, and which Moon that is comes off the ephemeris at the
+// pose's own date. The capture records the phase angle it actually got.
 //
 // Every capture runs through __moon.pinCapture: the near plane, the tone-mapping
 // exposure and the pixel ratio are all driven per frame by things that have
@@ -87,6 +92,21 @@ const POSES = [
   { name: 'oblique-1.05r', kRadii: 1.05, fov: 60, phase: 0, aim: 0.72 },
   { name: 'terminator-1.5r', kRadii: 1.5, fov: 50, phase: 90 },
   { name: 'night-1.05r', kRadii: 1.05, fov: 60, phase: 150 },
+  // The same night side under a Moon and under none. A night pose is a pose AND
+  // a Moon: at 2026-04-02 02:00 UTC the Moon is as full as it gets without
+  // being eclipsed (phase angle 2.9 degrees), so it stands over the middle of
+  // the night hemisphere and lights the ground the camera is looking at; at
+  // 2026-03-19 01:00 UTC it is new (178.2 degrees), which is the same frame
+  // with the second source switched off by the ephemeris rather than by a flag.
+  // The set's own night-1.05r sits at a thin waning crescent (160.7 degrees,
+  // 0.2% of full) and stays the airglow pose it was.
+  //
+  // The nearest full Moon to the rest of the set, 2026-03-03, is a total lunar
+  // eclipse: phase angle 0.4 degrees and no moonlight at all, because a Moon
+  // inside Earth's shadow lights nothing. Which is the term working, and a
+  // useless pose for judging moonlight.
+  { name: 'night-1.05r-moonlit', kRadii: 1.05, fov: 60, phase: 150, time: '2026-04-02T02:00:00Z' },
+  { name: 'night-1.05r-newmoon', kRadii: 1.05, fov: 60, phase: 150, time: '2026-03-19T01:00:00Z' },
   // Inside the air: 1.008 R is 51 km up, under the 100 km top. No camera the
   // app steers can be here — this is the only exercise the inside branch gets,
   // and it needs a near plane under 51 km or the frame is mostly clipped globe:
@@ -124,6 +144,7 @@ async function emitPins() {
     blocks.push(`  '${name}': {
     kRadii: ${g.kRadii ?? 'null'},
     near: ${g.near ?? 'null'},
+    moonPhaseDeg: ${g.moonPhaseDeg == null ? 'null' : g.moonPhaseDeg.toFixed(4)},
     samples: [
 ${rows(g.samples)}
     ],
@@ -162,6 +183,10 @@ export interface AtmosphereGoldenPin {
   readonly kRadii: number | null;
   /** The near plane the capture was taken with, AU. */
   readonly near: number | null;
+  /** Sun-Moon-Earth phase angle at the capture's own clock, degrees: 0 is a
+   *  full Moon over the night side, 180 a new one and no second source at all.
+   *  Null where nothing baked tables to light. */
+  readonly moonPhaseDeg: number | null;
   readonly samples: readonly (readonly [number, number, number])[];
   readonly limbScan: readonly (readonly [number, number, number])[];
 }
@@ -284,7 +309,8 @@ try {
       { timeout: BAKE_TIMEOUT_MS },
     ).then((h) => h.jsonValue()).catch(() => null);
     const wearing = await page.evaluate((t) => window.__moon.atmoTier(t === 'lut' ? null : 'analytic'), tier);
-    console.log(`[atmo-qa] ${tier}: tables ${state ? 'ready' : 'none'}, shell Earth=${wearing?.Earth}`);
+    console.log(`[atmo-qa] ${tier}: tables ${state ? 'ready' : 'none'}, shell Earth=${wearing?.Earth}`
+      + `, programs ${state?.programs ?? (await page.evaluate(() => window.__moon.atmoState()?.programs ?? null))}`);
     if (tier === 'lut' && wearing?.Earth !== 'lut') throw new Error('LUT tier never switched on');
     if (tier !== 'lut' && wearing?.Earth !== 'analytic') throw new Error(`${tier}: shell is not analytic`);
     if (tier === 'nofloat') {
@@ -293,6 +319,12 @@ try {
     }
 
     for (const pose of POSES) {
+      // The clock FIRST, then the framing. A pose is an absolute camera
+      // position worked out from where the body is, so moving the clock after
+      // it leaves the camera pointing at where Earth used to be — seventeen
+      // days of orbit away, on the poses that carry a date of their own.
+      const poseTime = pose.time ? Date.parse(pose.time) : TIME_MS;
+      await page.evaluate((t) => window.__moon.setTimeMs(t), poseTime);
       const ok = await page.evaluate(
         ([k, f, p, a]) => window.__moon.limbView('Earth', k, f, p, a),
         [pose.kRadii, pose.fov, pose.phase, pose.aim ?? 1],
@@ -304,20 +336,30 @@ try {
         ([near, exposure]) => window.__moon.pinCapture({ near, exposure, pixelRatio: 1 }),
         [pose.near ?? NEAR_AU, EXPOSURE],
       );
-      await page.evaluate((t) => window.__moon.setTimeMs(t), TIME_MS);
+      await page.evaluate((t) => window.__moon.setTimeMs(t), poseTime);
       await page.waitForTimeout(1200);
       await page.evaluate(() => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r))));
+      // The Moon the frame was taken under, read off the uniforms the shaders
+      // are about to draw with rather than assumed from the date.
+      const night = await page.evaluate(() => window.__moon.atmoNight?.('Earth') ?? null);
       const samples = await capture(page, path.join(outDir, `${pose.name}.${tier}`), {
         pose: pose.name, tier, body: 'Earth', kRadii: pose.kRadii, fovDeg: pose.fov,
         phaseDeg: pose.phase, aimFrac: pose.aim ?? 1,
         near: pinned.near, exposure: pinned.exposure, pixelRatio: 1,
-        timeUtcMs: TIME_MS,
+        timeUtcMs: poseTime,
+        moonPhaseDeg: night?.phaseDeg ?? null,
+        moonIrradiance: night?.moonIrradiance ?? null,
       });
       const mean = samples.flat().reduce((a, b) => a + b, 0) / (samples.length * 3);
       const peak = Math.max(...samples.flat());
       summary.push(`${pose.name.padEnd(16)} ${tier.padEnd(9)} mean ${mean.toFixed(2).padStart(6)}  peak ${String(peak).padStart(3)}`);
       console.log(`[atmo-qa] ${pose.name} ${tier} -> mean ${mean.toFixed(2)} peak ${peak}`);
     }
+    // After every pose: the programs a night pose links on top of the boot set.
+    // A night source that forks the program cache would show here and nowhere
+    // else, because it only draws where the Sun is not.
+    console.log(`[atmo-qa] ${tier}: programs after the poses `
+      + `${await page.evaluate(() => window.__moon.atmoState()?.programs ?? null)}`);
     if (errors.length) {
       console.log(`[atmo-qa] page errors (${errors.length}):`);
       for (const e of errors.slice(0, 8)) console.log('    ', e);
@@ -335,6 +377,8 @@ try {
     await capture(page, path.join(outDir, 'volume-compare.analytic'), {
       pose: 'volume-compare', tier: 'analytic', body: 'ghost',
       near: null, exposure: 1, pixelRatio: 1, timeUtcMs: null,
+      // Its own mode, its own scene, no body and so no Moon over one.
+      moonPhaseDeg: null, moonIrradiance: null,
     });
     console.log('[atmo-qa] volume-compare ghost captured');
     if (errors.length) for (const e of errors.slice(0, 5)) console.log('     ', e);

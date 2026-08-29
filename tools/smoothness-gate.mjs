@@ -47,6 +47,9 @@ const OUT_DIR = join(arg('out', '/tmp/moon-shots/smooth'), LABEL);
 const ONLY = arg('scenario', '').split(',').map((s) => s.trim()).filter(Boolean);
 const PRINT_JSON = has('json');
 const RESCORE = arg('rescore', '');
+// Which browser to measure in. The default headless shell is an OLD-headless
+// binary with no real display; a real Chrome is the ground truth a person sees.
+const ENGINE = arg('engine', 'shell');
 
 // Fixed thresholds, kept so two machines' runs can be read side by side. The
 // verdict does not use them: it uses two of the run's own vsyncs (see analyze).
@@ -125,13 +128,18 @@ async function openPage(browser, device) {
 
 async function bootTo(page, extra = '', expectSeconds = 120) {
   await page.goto(appUrl(extra, expectSeconds), { waitUntil: 'domcontentloaded' });
-  // waitForFunction takes the page argument second; an options object in that
-  // slot is passed to the predicate and the wait silently uses its default.
-  await page.waitForFunction(() => window.__moon?.ready?.(), null, { timeout: 120_000 });
-  await page.waitForFunction(() => {
-    const screen = document.getElementById('loading-screen');
-    return !screen || screen.classList.contains('hidden');
-  }, null, { timeout: 120_000 });
+  // In-page again, and one round trip: the boot scenario's scored window opens
+  // the instant the loading screen goes, so a per-frame CDP poll waiting for
+  // exactly that would be polling across the frames it is about to score.
+  await page.evaluate(async (timeoutMs) => {
+    const nap = (ms) => new Promise((resolve) => { setTimeout(resolve, ms); });
+    const deadline = performance.now() + timeoutMs;
+    const revealed = () => {
+      const screen = document.getElementById('loading-screen');
+      return !!window.__moon?.ready?.() && (!screen || screen.classList.contains('hidden'));
+    };
+    while (performance.now() < deadline && !revealed()) await nap(100);
+  }, 120_000);
   // A software rasteriser would make every number below fiction, and it fails
   // silently: the app renders, just on the CPU.
   const renderer = await page.evaluate(() => {
@@ -149,30 +157,38 @@ async function bootTo(page, extra = '', expectSeconds = 120) {
 
 const mark = (page, label) => page.evaluate((l) => window.__moon.smoothMark(l), label);
 
-/** How close the ship is in the body's own radii — the only distance that
- *  means the same thing at Phobos and at Jupiter. probe() reports the radius
- *  and the absolute range; nothing reports the ratio. */
-const radiiFrom = (page, name) => page.evaluate((n) => {
-  const p = window.__moon.probe(n);
-  return p && p.found && p.radiusAU ? p.distToBodyAU / p.radiusAU : null;
-}, name);
-
 /** Travel through the real pick pipeline and wait out the veil and the park. */
 async function travelAndSettle(page, name, settleMs = 4_000) {
   await mark(page, `travel:${name}`);
   const ok = await page.evaluate((n) => window.__moon.travelTo(n), name);
   if (!ok) return `travelTo(${name}) refused`;
-  // The flight needs a beat to start, or "not moving" reads as arrived when
-  // it only means the ship has not left yet.
-  await sleep(2_500);
-  await page.waitForFunction(
-    (n) => { const p = window.__moon.probe(n); return !!p && p.moving === false; },
-    name,
-    { timeout: 120_000 },
-  ).catch(() => {});
-  await sleep(settleMs);
-  const radii = await radiiFrom(page, name);
-  return radii === null || radii > 400 ? `${name}: parked ${radii} radii out` : null;
+  // ONE round trip: the waiting happens inside the page. waitForFunction's
+  // default polling injects its predicate and runs it on every animation
+  // frame, so a harness that waits that way is adding app work to the frames
+  // it is about to score — a gate must not measure its own instrumentation.
+  const settled = await page.evaluate(async ({ n, timeoutMs, tailMs }) => {
+    const nap = (ms) => new Promise((resolve) => { setTimeout(resolve, ms); });
+    const radiiNow = () => {
+      const p = window.__moon.probe(n);
+      return p && p.found && p.radiusAU ? p.distToBodyAU / p.radiusAU : null;
+    };
+    // The flight needs a beat to start, or a stationary read is "has not left
+    // yet" rather than "arrived".
+    await nap(2_500);
+    const deadline = performance.now() + timeoutMs;
+    while (performance.now() < deadline) {
+      if (window.__moon.probe(n)?.moving === false) {
+        await nap(tailMs);
+        return { radii: radiiNow(), timedOut: false };
+      }
+      await nap(200);
+    }
+    return { radii: radiiNow(), timedOut: true };
+  }, { n: name, timeoutMs: 120_000, tailMs: settleMs });
+  if (settled.timedOut) return `${name}: never settled, ${settled.radii} radii out`;
+  return settled.radii === null || settled.radii > 400
+    ? `${name}: parked ${settled.radii} radii out`
+    : null;
 }
 
 /** Hold a key for a while, letting the app's own governor decide the motion. */
@@ -184,18 +200,28 @@ async function holdKey(page, key, ms) {
 
 /** Throttle toward the body until it fills the target radii, or time runs out. */
 async function descendTo(page, name, targetRadii, budgetMs = 25_000) {
-  const started = Date.now();
   await page.keyboard.down('w');
   try {
-    while (Date.now() - started < budgetMs) {
-      const radii = await radiiFrom(page, name);
-      if (radii !== null && radii <= targetRadii) break;
-      await sleep(250);
-    }
+    // Again one round trip: two key events bracket the descent and the watch
+    // between them runs in-page, so the only traffic across a scored window is
+    // the input a pilot would really generate.
+    return await page.evaluate(async ({ n, target, timeoutMs }) => {
+      const nap = (ms) => new Promise((resolve) => { setTimeout(resolve, ms); });
+      const radiiNow = () => {
+        const p = window.__moon.probe(n);
+        return p && p.found && p.radiusAU ? p.distToBodyAU / p.radiusAU : null;
+      };
+      const deadline = performance.now() + timeoutMs;
+      while (performance.now() < deadline) {
+        const radii = radiiNow();
+        if (radii !== null && radii <= target) break;
+        await nap(250);
+      }
+      return radiiNow();
+    }, { n: name, target: targetRadii, timeoutMs: budgetMs });
   } finally {
     await page.keyboard.up('w');
   }
-  return radiiFrom(page, name);
 }
 
 // ----------------------------------------------------------------- scenarios
@@ -265,6 +291,49 @@ const SCENARIOS = [
       // The boot-idle warm runs after the reveal; nothing may cost a frame.
       await mark(page, 'idle-warm');
       await sleep(15_000);
+    },
+  },
+  {
+    // Artefact hunt, cut to the scene that actually failed: a long cruise at
+    // 60x, mid-flight, 40-160 s after the travel began — where tour-60x's
+    // Uranus leg put 161 of its 187 over-budget frames. The two differ in one
+    // thing only: whether the harness talks to the page across the scored
+    // window. If the once-per-second beat shows up with NOTHING crossing the
+    // wire, it is the engine; if only under polling, it is the measurement.
+    id: 'uranus-quiet',
+    title: 'Artefact probe: 120 s mid-cruise to Uranus at 60x, no protocol traffic',
+    device: DESKTOP,
+    selfTestOnly: true,
+    async run(page, note) {
+      note(`renderer: ${await bootTo(page, '', 200)}`);
+      await sleep(2_000);
+      await page.evaluate(() => { window.__moon.setTimeRate(60); window.__moon.travelTo('Uranus'); });
+      await sleep(40_000);
+      await mark(page, 'window');
+      await sleep(120_000);
+    },
+  },
+  {
+    id: 'uranus-polled',
+    title: 'Artefact probe: the same cruise, with waitForFunction polling on raf',
+    device: DESKTOP,
+    selfTestOnly: true,
+    async run(page, note) {
+      note(`renderer: ${await bootTo(page, '', 200)}`);
+      await sleep(2_000);
+      await page.evaluate(() => { window.__moon.setTimeRate(60); window.__moon.travelTo('Uranus'); });
+      await sleep(40_000);
+      await mark(page, 'window');
+      // The predicate the baseline harness actually used. devProbe is not a
+      // cheap read: it refreshes world matrices, projects to screen, walks the
+      // moon map and reads label style off the DOM. waitForFunction's default
+      // polling runs that IN THE PAGE on every animation frame, so the harness
+      // was adding app work to the frames it was scoring.
+      await page.waitForFunction(
+        (n) => { const p = window.__moon.probe(n); return !!p && p.moving === false; },
+        'Uranus',
+        { timeout: 120_000 },
+      ).catch(() => {});
     },
   },
   {
@@ -726,17 +795,38 @@ if (!chosen.length) {
 
 // A crashed browser must not take the rest of the battery down with it: the
 // scenario that died is recorded as such and the next one gets a fresh one.
-const launchBrowser = () => chromium.launch({
-  headless: true,
-  executablePath: process.env.PW_CHROMIUM || undefined,
-  args: [
-    '--use-gl=angle',
-    '--use-angle=metal',
-    '--enable-gpu',
-    '--ignore-gpu-blocklist',
-    '--enable-unsafe-swiftshader',
-  ],
-});
+const GPU_ARGS = [
+  '--use-gl=angle',
+  '--use-angle=metal',
+  '--enable-gpu',
+  '--ignore-gpu-blocklist',
+  '--enable-unsafe-swiftshader',
+];
+
+// shell   — chrome-headless-shell, Playwright's default for headless: true.
+//           Old headless, no display, its own frame scheduler.
+// new     — full Chromium under --headless=new: the same renderer a person
+//           runs, with the window never shown.
+// chrome  — installed Google Chrome, headed. Ground truth, and the only engine
+//           that must stay visible: an occluded window throttles rAF to 1 Hz
+//           and every gap it reports is a lie.
+const ENGINES = {
+  shell: { headless: true, args: GPU_ARGS },
+  new: { headless: true, channel: 'chromium', args: GPU_ARGS },
+  chrome: { headless: false, channel: 'chrome', args: GPU_ARGS },
+};
+
+const launchBrowser = () => {
+  const options = ENGINES[ENGINE];
+  if (!options) {
+    console.error(`Unknown --engine=${ENGINE}. Known: ${Object.keys(ENGINES).join(', ')}`);
+    process.exit(2);
+  }
+  return chromium.launch({
+    executablePath: process.env.PW_CHROMIUM || undefined,
+    ...options,
+  });
+};
 const releaseLock = await takeBrowserLock();
 let browser = await launchBrowser();
 

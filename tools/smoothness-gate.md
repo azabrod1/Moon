@@ -81,6 +81,51 @@ says so. Within its own run the battery uses one browser and one tab, closing
 each context before opening the next, and it refuses to run at all if the
 renderer string says SwiftShader.
 
+## A known artefact: never wait with `waitForFunction`
+
+The first baseline reported a once-per-second stutter of 14-26 ms in four
+scenarios, worst on `tour-60x`'s Uranus leg (161 of its 187 over-budget frames).
+Real Chrome through the devtools MCP, driven through the same scenes, showed no
+such beat at all. It was the harness measuring itself.
+
+Playwright's `waitForFunction` defaults to `polling: 'raf'`, which **injects the
+predicate into the page and runs it on every animation frame**. The predicate
+was `window.__moon.probe(name)`, and `devProbe` is not a cheap read: it
+refreshes world matrices, projects to screen, walks the moon map and reads label
+style off the DOM. On legs where the predicate never came true the wait ran its
+full 120 s, so that work landed on every frame of exactly the window being
+scored — which is why the hitches clustered on the legs that never settled, and
+why Uranus, with the most moons to walk, was worst.
+
+Moving every wait in-page — one `page.evaluate` whose loop runs inside the page,
+rather than a per-frame injected predicate — removed it:
+
+| `tour-60x`, same shell engine | >2 vsyncs | >4 vsyncs | worst | Uranus leg |
+| --- | --- | --- | --- | --- |
+| `waitForFunction` polling | 187 | 8 | 40.1 ms | 161 |
+| waits run in-page | 2 | 1 | 41.7 ms | 0 |
+
+The one survivor is a real fault, not an artefact: an 8K cloud-deck upload.
+
+So: **no scored window may contain a `waitForFunction`**, and more generally no
+repeated evaluation from out of process. Wait with a single `page.evaluate` that
+polls inside the page on a timer. Keyboard and pointer input are the exception
+worth keeping — that traffic is the gesture under test.
+
+Isolating this took two false negatives worth remembering. A probe that polled a
+trivial predicate (`window.__neverTrue === 42`) showed nothing, because the cost
+is in the predicate, not the polling. And a probe that polled the real predicate
+also showed nothing, because there the ship *did* arrive, so the wait resolved
+early and the polling stopped. The artefact needs a predicate that is both
+expensive and never satisfied.
+
+`--engine=shell|new|chrome` selects the browser: `chrome-headless-shell`
+(default), full Chromium under `--headless=new`, or headed Google Chrome.
+The engine turned out not to be the cause here — a 120 s mid-cruise at 60x with
+no wire traffic is clean on the shell — but a headed `--engine=chrome` run stays
+the tiebreaker when a result looks like it belongs to the measurement. Keep that
+window visible: an occluded one throttles rAF to 1 Hz.
+
 ## Verifying the instrument
 
 `--scenario=selftest` injects deliberate 30, 60 and 120 ms main-thread blocks

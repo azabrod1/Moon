@@ -10,7 +10,7 @@
     "gen:moons": "node gen-moons.mjs",
     "gen:constellations": "node gen-constellations.mjs",
     "gen:maps": "node gen-maps.mjs",
-    "gen:ktx2": "node tools/gen-moon-ktx2.mjs",
+    "gen:ktx2": "node tools/gen-ktx2.mjs --all",
     "gen:tiles": "node tools/gen-tiles.mjs",
     "publish:tiles": "node tools/publish-tiles.mjs",
     "build": "tsc && vite build",
@@ -24,8 +24,8 @@
     "vite": "^8.0.3"
   },
   "devDependencies": {
+    "@gpu-tex-enc/basis": "^1.16.4",
     "@types/node": "^25.5.2",
-    "basis_universal": "^1.16.4-1",
     "patch-package": "^8.0.1",
     "playwright": "^1.60.0",
     "vitest": "^4.1.8"

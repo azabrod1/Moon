@@ -55,5 +55,6 @@ Generated / transcribed sources: `src/astronomy/satelliteElements.ts` is generat
 ### Publishing tiles
 
 Sector tile sets are data and ship from their own repo through jsDelivr, not from this one: `node tools/publish-tiles.mjs --root=<tiles root> --repo=<checkout of the tiles repo>` re-hashes every set the root's `sets.v1.json` names against its bytes, copies the new folders in, commits, and prints the `VITE_TILE_ORIGIN=https://cdn.jsdelivr.net/gh/<user>/<repo>@<ref>` the app builds against — it never pushes and never deletes.
+`.env.production` pins that origin so a local `npm run build` produces what CI deploys, and a build with an origin set deletes `textures/tiles` from `dist/` and from the worker's manifest — every tile URL points at the host, so shipping the folder too would deploy 45 MB nothing fetches (`public/textures/tiles` stays: it is what a build with no origin ships, and what the asset tests read).
 A published path never moves: a folder name is the set's own content hash, so a re-cut set arrives as a new folder and the old sets stay for clients still asking for them (pruning is by hand, and 404s those clients into their base map).
 `--dry-run` prints the plan and touches nothing; `--verify-only` checks a root against its own table with no checkout.

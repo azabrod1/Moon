@@ -24,9 +24,17 @@
  * table gen-tiles generates and the origin from VITE_TILE_ORIGIN — the same
  * two sources the app resolves its tile URLs through, so the worker cannot
  * end up allowing a different host or a different set than the app fetches.
+ *
+ * With a tile origin set this also DELETES textures/tiles from dist, because
+ * the same variable that sends every tile fetch to the host makes the copy
+ * under dist bytes nothing will ever request. The deletion and the manifest
+ * are one step for the reason they are here together: a build that shipped
+ * the folder and a worker that named it would be 45 MB deployed and
+ * precachable at once, and a build that deleted it after the manifest was
+ * taken would leave the worker naming files that are gone.
  */
 import { createHash } from 'node:crypto';
-import { readdirSync, readFileSync, statSync, writeFileSync, existsSync } from 'node:fs';
+import { readdirSync, readFileSync, rmSync, statSync, writeFileSync, existsSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -115,6 +123,16 @@ export default function swPlugin() {
       }
     },
     closeBundle() {
+      // The tiles are the host's when an origin is set: every tile URL the app
+      // builds points there, so a copy of textures/tiles under dist is 45 MB
+      // in the deployed artifact that no request will ever reach. Vite has
+      // already copied public/ by the time closeBundle runs, so this is a
+      // delete rather than a filter — and it runs BEFORE the manifest walk
+      // below, which is what stops the worker from naming files this build is
+      // about to remove. public/textures/tiles itself stays: it is what the
+      // no-origin build ships and what the asset tests read.
+      if (origin) rmSync(path.join(outDir, TILE_ROOT), { recursive: true, force: true });
+
       const manifest = {};
       for (const dir of DATA_DIRS) {
         const abs = path.join(outDir, dir);

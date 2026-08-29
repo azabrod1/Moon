@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import template from '../../tools/sw.template.js?raw';
@@ -435,6 +435,23 @@ describe('service worker build plugin: tile origin and allowlist', () => {
     return dir;
   }
 
+  /** Every set the app names, as a folder under dist holding one tile — the
+   *  shape `public/textures/tiles` copies into dist, at the size the plugin
+   *  actually looks at (it checks that a set's folder is there, never what is
+   *  in it). A dist with these is a build that could ship the tiles itself. */
+  function fakeTiles(dir: string): string[] {
+    const dirs: string[] = [];
+    for (const [id, entry] of Object.entries(SECTOR_SET_TABLE)) {
+      const [key, tier] = id.split('/');
+      const rel = tileSetPath(key, tier, entry.setHash8);
+      mkdirSync(join(dir, rel), { recursive: true });
+      writeFileSync(join(dir, rel, '0_0.webp'), `tile-${id}`);
+      dirs.push(rel);
+    }
+    writeFileSync(join(dir, 'textures', 'tiles', 'sets.v1.json'), JSON.stringify(SECTOR_SET_TABLE));
+    return dirs;
+  }
+
   function runPlugin(env: Record<string, string | boolean | undefined>): string {
     const plugin = swPlugin();
     plugin.configResolved({ root: dist, base: '/', build: { outDir: dist }, env });
@@ -496,6 +513,42 @@ describe('service worker build plugin: tile origin and allowlist', () => {
     // tile folders, which is the case the build has to refuse rather than
     // ship a plausible app with quietly soft hero bodies.
     expect(() => runPlugin({})).toThrow(/VITE_TILE_ORIGIN is unset/);
+  });
+
+  it('deletes the tile folders from dist when the tiles come from a host', () => {
+    // Vite copies public/ into dist before this plugin runs, so a build
+    // pointed at a host would otherwise deploy 45 MB of tiles beside an app
+    // that fetches every one of them from the host instead. Nothing may
+    // survive: not a folder, not the index beside them.
+    const dirs = fakeTiles(dist);
+    expect(dirs.length).toBeGreaterThan(0);
+    const sw = runPlugin({ VITE_TILE_ORIGIN: `${TILE_HOST}/` });
+    expect(existsSync(join(dist, 'textures', 'tiles'))).toBe(false);
+    // And the worker cannot name what the build just removed — the manifest
+    // is taken after the delete, so its only tiles are the host's, which live
+    // in the allowlist and never in the manifest.
+    const manifest = injected(sw, 'MANIFEST') as Record<string, string>;
+    for (const pathname of Object.keys(manifest)) {
+      expect(pathname.includes('/textures/tiles/'), `${pathname} is a tile`).toBe(false);
+    }
+    const sets = injected(sw, 'TILE_SETS') as string[];
+    expect(sets.length).toBe(dirs.length);
+    for (const rel of dirs) expect(sets).toContain(`${TILE_HOST}/${rel}`);
+    expect(injected(sw, 'TILE_ORIGINS')).toEqual(['https://cdn.test']);
+  });
+
+  it('keeps the tile folders, and names them same-origin, when there is no host', () => {
+    // The other half of the same switch: with no origin the app's own tiles
+    // are what it ships, so they stay in dist AND become ordinary manifest
+    // entries with a digest — the deletion above must be the origin's doing
+    // and nothing else's.
+    const dirs = fakeTiles(dist);
+    const sw = runPlugin({});
+    for (const rel of dirs) expect(existsSync(join(dist, rel, '0_0.webp')), rel).toBe(true);
+    const manifest = injected(sw, 'MANIFEST') as Record<string, string>;
+    for (const rel of dirs) expect(manifest[`/${rel}0_0.webp`], rel).toBeDefined();
+    expect(injected(sw, 'TILE_SETS')).toEqual(dirs.map((rel) => `/${rel}`));
+    expect(injected(sw, 'TILE_ORIGINS')).toEqual([]);
   });
 
   it('refuses a tile origin that is not an absolute URL', () => {

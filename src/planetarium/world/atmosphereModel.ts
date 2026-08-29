@@ -29,8 +29,9 @@
  *    globe with a point light whose decay is 0.3, not 2, so a physically baked
  *    table dropped next to that ground would be ~2× too faint at Mars and ~2×
  *    too bright at Venus. `solarIrradianceScale` reproduces the renderer's own
- *    falloff law instead, normalised at Earth, and `AIRLIGHT_SCALE` is the one
- *    global knob between baked radiance and the display-referred frame.
+ *    falloff law instead, normalised at Earth, and `AIRLIGHT_SCALE` carries the
+ *    rest of the bridge from baked radiance to the display-referred frame — per
+ *    channel, because the scene's Sun is warm and the tables are baked white.
  *    Normalising also keeps the single-Mie channel (the smallest number in the
  *    scattering layout) clear of half-float underflow at 6.1e-5.
  *
@@ -244,17 +245,21 @@ export function bodySolarIrradianceScale(name: string): number {
 }
 
 /**
- * The single global multiplier between baked radiance (solar irradiance 1.0)
+ * The global multiplier between baked radiance (solar irradiance 1.0, WHITE)
  * and the renderer's display-referred frame. It is the SCENE's solar
- * irradiance at Earth: the globe is lit by a point light of intensity 3, and
- * three's Lambert term makes that intensity the perpendicular irradiance the
- * ground reflects (radiance = intensity * cos * albedo / pi), so air baked at
- * an irradiance of 1 next to it would sit three stops of exposure below the
- * disc it hazes. The distance law is the other half of the same bridge
- * (SOLAR_DISTANCE_DECAY); a test holds this to the light's intensity for the
- * same reason it holds that to the light's decay.
+ * irradiance at Earth, per channel: the globe is lit by a point light of
+ * intensity 3 and colour 0xfff5e0, and three's Lambert term makes
+ * `intensity * color` the perpendicular irradiance the ground reflects
+ * (radiance = intensity * color * cos * albedo / pi). So air baked at an
+ * irradiance of 1 next to it would sit three stops of exposure below the disc
+ * it hazes — and, scaled by a single number, would be lit by a WHITE Sun while
+ * the ground under it is lit by a warm one: +9.5% green and +34% blue on a limb
+ * whose whole reading is its blue. The three values are the light's intensity
+ * times its colour decoded to the linear working space; the distance law is the
+ * other half of the same bridge (SOLAR_DISTANCE_DECAY). A test holds all three
+ * against the light's own constants, for the same reason it holds the decay.
  */
-export const AIRLIGHT_SCALE = 3.0;
+export const AIRLIGHT_SCALE: RGB = [3.0, 2.739295955374419, 2.2362126286050854];
 
 /** Angular radius of the Sun as seen from Earth, radians — softens the
  *  transmittance-to-Sun terminator so the ground does not switch on in one

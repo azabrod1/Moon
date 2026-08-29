@@ -33,6 +33,15 @@
  *    frame `uMoonShadow`'s caster centres are given in, and the same uniform
  *    values apply without a second set. The trace is evaluated at the lowest
  *    point the view ray reaches, where the air it carries is densest.
+ *
+ * What this tier does not carry yet is the night side. Past the terminator its
+ * twilight is the multiple-scattering orders and nothing else, which reads
+ * several times quieter than the analytic tier's sunset band — that band is an
+ * authored orange wash, not a computed one. The glow that belongs there comes
+ * with the non-solar sources (airglow, moonlight, city glow). The daylight
+ * comparison between the two tiers is likewise only fair once the surface
+ * materials carry aerial perspective: the air in FRONT of the disc is theirs to
+ * draw, and until they do, neither tier hazes the ground.
  */
 import * as THREE from 'three';
 import {
@@ -85,7 +94,10 @@ uniform sampler3D uScattering;
 uniform float uPlanetRadius;
 uniform float alphaScale;
 uniform float uSolarIrradiance;
-uniform float uAirlightScale;
+// Per channel: the tables are baked at WHITE unit irradiance, and the scene's
+// Sun is a warm point light. A scalar here lights the air with a whiter Sun
+// than the ground below it.
+uniform vec3 uAirlightScale;
 uniform vec4 uMoonShadow[${MAX_MOON_SHADOWS}];
 uniform int uMoonShadowCount;
 uniform float uSunTan;
@@ -122,7 +134,10 @@ void main() {
     float dEntry = -rmu - sqrt(disc);
     if (dEntry <= 0.0) return;              // the air is behind the camera
     origin += view * dEntry;
-    rmu += dEntry;
+    // r*mu at the entry point is rmu + dEntry, which is exactly -sqrt(disc):
+    // written that way it stays a number of size ~0.2 instead of a difference
+    // of two numbers of size r, which at 8 R spends four of highp's digits.
+    rmu = -sqrt(disc);
     r = uTopRadius;
   } else {
     // Inside the air — dev poses only; the table already starts at the camera.
@@ -155,7 +170,7 @@ void main() {
   }
 
   fragColor = vec4(
-      radiance * (uSolarIrradiance * uAirlightScale * sunVisible * alphaScale), 1.0);
+      radiance * uAirlightScale * (uSolarIrradiance * sunVisible * alphaScale), 1.0);
 }
 `;
 
@@ -206,7 +221,7 @@ export function createAtmosphereShellMaterial(
     alphaScale: { value: options.initialAlpha ?? 0.0 },
     uPlanetRadius: { value: options.planetRadius },
     uSolarIrradiance: { value: 1 },
-    uAirlightScale: { value: AIRLIGHT_SCALE },
+    uAirlightScale: { value: new THREE.Vector3(...AIRLIGHT_SCALE) },
     uMoonShadow: options.fx?.uMoonShadow
       ?? { value: Array.from({ length: MAX_MOON_SHADOWS }, () => new THREE.Vector4()) },
     uMoonShadowCount: options.fx?.uMoonShadowCount ?? { value: 0 },
@@ -317,7 +332,9 @@ export function atmosphereShellRay(
       origin[1] + view[1] * dEntry,
       origin[2] + view[2] * dEntry,
     ];
-    rmu += dEntry;
+    // rmu + dEntry is exactly -sqrt(disc); the closed form keeps the entry
+    // point's r*mu off a subtraction of two numbers of size r.
+    rmu = -Math.sqrt(disc);
     r = params.topRadius;
     entryDistance = dEntry;
   } else {

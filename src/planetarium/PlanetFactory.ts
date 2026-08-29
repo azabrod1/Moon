@@ -218,6 +218,12 @@ const SUN_RADIUS_AU = 695_700 / 149_597_870.7;
  *  test holds the two together. */
 export const SUN_LIGHT_INTENSITY = 3;
 export const SUN_LIGHT_DECAY = 0.3;
+/** The light's colour, sRGB. Exported for the same reason: a scattering table
+ *  baked at WHITE unit irradiance has to be scaled back by this colour as well
+ *  as by the intensity, or the air is lit by a different Sun from the ground
+ *  under it — and on a limb whose whole point is its blue, the excess lands in
+ *  the one channel nobody would think to doubt. */
+export const SUN_LIGHT_COLOR = 0xfff5e0;
 
 // Exported so the volume-compare mode's ghost shell reads the same tuning —
 // a hand-kept copy would drift the moment these numbers get touched.
@@ -1299,7 +1305,14 @@ export function createAtmosphereMaterial(
  *  on depth and falls back to construction order, which put the air UNDER the
  *  cloud deck: wherever the deck's sphere overhangs the globe's silhouette it
  *  multiplied the airlight behind it by its own 0.35 alpha, notching the
- *  innermost band of the limb — the brightest part of it. */
+ *  innermost band of the limb — the brightest part of it.
+ *
+ *  It sits on the shared MESH, so it applies to whichever material the shell is
+ *  wearing. That is deliberate: the notch was a bug on the analytic tier too,
+ *  and a per-tier order would leave the artefact on exactly the hardware that
+ *  cannot have the other one. So the no-float fallback is what it always was
+ *  except for the notch, which is gone on purpose — the one pixel-level
+ *  difference this change makes to a device with no float targets. */
 export const ATMOSPHERE_SHELL_RENDER_ORDER = 1;
 
 function createAtmosphereGlow(radiusAU: number, config: AtmosphereConfig): THREE.Mesh {
@@ -1858,7 +1871,7 @@ export function createPlanetariumSun(useBloom = true): THREE.Group {
   lensGhosts.frustumCulled = false;
   group.add(lensGhosts);
 
-  const light = new THREE.PointLight(0xfff5e0, SUN_LIGHT_INTENSITY, 0, SUN_LIGHT_DECAY);
+  const light = new THREE.PointLight(SUN_LIGHT_COLOR, SUN_LIGHT_INTENSITY, 0, SUN_LIGHT_DECAY);
   group.add(light);
 
   group.userData.sunMaterial = sunMat;

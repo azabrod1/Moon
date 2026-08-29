@@ -2463,32 +2463,20 @@ export class PlanetariumMode {
       // mid-gesture. Runs after restoreState/starfield/constellations so the
       // compiled set matches what a restored session actually renders.
       performance.mark('plm:precompile:start');
-      // The atmosphere shell's LUT program is warmed with the rest: the tier
-      // swaps in mid-flight when the bake validates, and a link at that moment
-      // is a dropped frame in the near band. Skipped where no tier is possible.
       const probes = createShaderWarmupProbes();
       // The landed system's shadow visuals attach at landing, after this
       // compile pass — probe their material families here too, or the first
       // surface-view entry links those programs mid-gesture (a frozen frame
       // that reads as a dead click on slow GPUs).
       const shadowProbes = createShadowVisualsWarmupProbes();
-      // The atmosphere shell swaps to its LUT material mid-flight, the moment
-      // the bake validates — a link there is a dropped frame in the near band,
-      // where the shell fills the screen. Warmed with the live material, not a
-      // copy of it: a program is freed with the material that holds it, so a
-      // throwaway probe material would take its own program with it.
-      const atmoProbes = this.createAtmosphereWarmupProbes();
       this.scene.add(probes.group, shadowProbes.group);
-      if (atmoProbes) this.scene.add(atmoProbes.group);
       // Compile with the live path's kind of target bound (three keys every
       // program on it) and force the links with one 1-pixel draw — see
       // world/shaderWarmup.ts for the why and the pinned contract. Fail-open:
       // on any failure lazy first-draw compilation remains the fallback.
       const { compiled } = await warmUpSceneShaders(this.renderer, this.scene, this.camera, {
         drawsThroughComposer: this.rendersThroughComposer(),
-        probeGroups: atmoProbes
-          ? [probes.group, shadowProbes.group, atmoProbes.group]
-          : [probes.group, shadowProbes.group],
+        probeGroups: [probes.group, shadowProbes.group],
         onError: (stage, err) => debugError(`Shader warm-up ${stage} failed`, err),
       });
       this.shaderWarmupProgramCount = this.renderer.info.programs?.length ?? null;
@@ -2500,10 +2488,6 @@ export class PlanetariumMode {
         this.scene.remove(probes.group, shadowProbes.group);
         probes.dispose();
         shadowProbes.dispose();
-        if (atmoProbes) {
-          this.scene.remove(atmoProbes.group);
-          atmoProbes.dispose();
-        }
       });
       performance.measure('plm:precompile', 'plm:precompile:start');
     }
@@ -2588,11 +2572,14 @@ export class PlanetariumMode {
    *  look meanwhile — a complete look, so nothing is half-loaded — and the
    *  tables only become the tier once every one of them validates.
    *
-   *  The bake's own programs are deliberately NOT in the boot warm-up set: the
-   *  warm-up compiles what the live path draws, and these seven link once, out
-   *  here in the idle, where a cold-cache link costs nobody a frame. Putting
-   *  them in the warm set would move that cost onto the boot the warm-up exists
-   *  to shorten. */
+   *  Nothing this tier needs is in the boot warm-up set: not the bake's own
+   *  seven programs, not the capability probe (a 3D layer render and a
+   *  synchronous pixel readback — a full pipeline flush), and not the shell's
+   *  own program. The warm-up compiles what the live path draws, under the load
+   *  screen, and none of this draws until the tables exist. All of it links out
+   *  here in the idle instead, where a cold-cache link costs nobody a frame;
+   *  putting any of it in the warm set moves the cost onto the boot the warm-up
+   *  exists to shorten. */
   private scheduleAtmosphereBake(): void {
     window.clearTimeout(this.atmosphereBakeTimer);
     this.atmosphereBakeTimer = window.setTimeout(() => {
@@ -2604,8 +2591,37 @@ export class PlanetariumMode {
         this.scheduleAtmosphereBake();
         return;
       }
-      void this.atmosphereLut.bake('Earth');
+      void this.warmAtmosphereShellProgram().then(() => {
+        if (!this.active) return;
+        return this.atmosphereLut?.bake('Earth');
+      });
     }, PlanetariumMode.ATMOSPHERE_BAKE_DELAY_MS);
+  }
+
+  /** Link the LUT shell's program here in the idle, before the bake it will
+   *  draw with. The tier swaps in mid-flight the moment the tables validate,
+   *  and a cold link at that moment is a dropped frame in the near band, where
+   *  the shell fills the screen. Warmed with the LIVE material, not a copy: a
+   *  program is freed with the material that holds it, so a throwaway probe
+   *  material would take its own program down with it.
+   *
+   *  Fail-open throughout — this only buys a smooth swap, and lazy first-draw
+   *  compilation is the fallback. */
+  private async warmAtmosphereShellProgram(): Promise<void> {
+    const atmoProbes = this.createAtmosphereWarmupProbes();
+    if (!atmoProbes) return;
+    this.scene.add(atmoProbes.group);
+    const { compiled } = await warmUpSceneShaders(this.renderer, this.scene, this.camera, {
+      drawsThroughComposer: this.rendersThroughComposer(),
+      probeGroups: [atmoProbes.group],
+      onError: (stage, err) => debugError(`Atmosphere shell warm-up ${stage} failed`, err),
+    });
+    // Disposal waits on compileAsync's own poll: disposing mid-poll throws
+    // inside a timer callback no try/catch here could reach.
+    void compiled.then(() => {
+      this.scene.remove(atmoProbes.group);
+      atmoProbes.dispose();
+    });
   }
 
   /** A phone or tablet: the device class that gets cache-only speculation and
@@ -4049,11 +4065,12 @@ export class PlanetariumMode {
     return shells.lut;
   }
 
-  /** One invisible speck wearing the LUT shell material, for the boot warm-up
+  /** One invisible speck wearing the LUT shell material, for the idle warm pass
    *  to compile. One program covers every body — the table sizes are the only
    *  thing in its key, and one profile is chosen per session — so Earth's
    *  material stands for all of them. Null where the device has no tier: a
-   *  program that can never draw is a cold link spent on nothing. */
+   *  program that can never draw is a cold link spent on nothing, and asking
+   *  runs the capability probe, which is why this is not on the boot path. */
   private createAtmosphereWarmupProbes(): { group: THREE.Group; dispose: () => void } | null {
     if (!this.atmosphereLut?.probeCapability() || !this.solarSystem) return null;
     const planet = this.solarSystem.planets.find(
@@ -4097,6 +4114,19 @@ export class PlanetariumMode {
         bindAtmosphereShellTables(shells.lut, tables);
         shells.bound = tables;
       }
+      // The tables are baked at one unit of solar irradiance, so the render
+      // multiplies the body's own back in — by the SCENE's falloff law, the one
+      // its point light lights the ground with, or the air would sit at a
+      // different exposure from the surface under it. Written here, from the
+      // position this frame's rebuild pass has already stored, rather than in
+      // that pass: the analytic material has no such uniform, so a value
+      // written to whichever material is WORN would skip the incoming one and
+      // leave it drawing its constructed 1.0 for the swap frame. Earth's own
+      // value sits within 0.5% of 1 and would hide that; Mars' is 13.6% away.
+      const wp = planet.worldPosAU;
+      material.uniforms.uSolarIrradiance.value = wp
+        ? solarIrradianceScale(Math.sqrt(wp.x * wp.x + wp.y * wp.y + wp.z * wp.z))
+        : 1;
       if (mesh.material !== material) {
         this.carryShellUniforms(shells.analytic, material);
         mesh.material = material;
@@ -16286,17 +16316,6 @@ export class PlanetariumMode {
         const atmoMat = planet.atmosphere.material as THREE.ShaderMaterial;
         if (atmoMat.uniforms.uSunDirWorld) {
           atmoMat.uniforms.uSunDirWorld.value.copy(state.sunDirection);
-        }
-        // The tables are baked at one unit of solar irradiance, so the render
-        // multiplies the body's own back in — by the SCENE's falloff law, the
-        // one its point light lights the ground with, or the air would sit at a
-        // different exposure from the surface under it.
-        if (atmoMat.uniforms.uSolarIrradiance) {
-          atmoMat.uniforms.uSolarIrradiance.value = solarIrradianceScale(Math.sqrt(
-            state.positionAU.x * state.positionAU.x
-            + state.positionAU.y * state.positionAU.y
-            + state.positionAU.z * state.positionAU.z,
-          ));
         }
       }
 

@@ -85,7 +85,7 @@ describe('the LUT shell material', () => {
   });
 
   it('compiles to one program for every body on one table profile', () => {
-    // What makes the boot warm-up's single probe cover every shell: the shader
+    // What makes the warm pass's single probe cover every shell: the shader
     // text and the defines are the whole program key, and neither carries the
     // body or its radius.
     const earth = createAtmosphereShellMaterial({
@@ -106,18 +106,27 @@ describe('the LUT shell material', () => {
     expect(half.defines).not.toEqual(earth.defines);
   });
 
-  it('is in the boot warm-up set, wearing the material that will draw it', () => {
+  it('is warmed in the idle pass, not on the boot path, wearing the material that will draw it', () => {
     const mode = src('../PlanetariumMode.ts');
     // Warmed only where a tier is possible: a program that can never draw is a
     // cold link spent on nothing.
     expect(mode).toContain('if (!this.atmosphereLut?.probeCapability() || !this.solarSystem) return null;');
     // And warmed with the LIVE material. three frees a program with the
     // material that holds it, so a throwaway probe material would take the
-    // program with it when the warm-up disposes the probes — which is the one
+    // program with it when the warm pass disposes the probes — which is the one
     // way this can silently buy nothing.
     expect(mode).toMatch(/createAtmosphereWarmupProbes\(\)[\s\S]*?const material = planet \? this\.ensureLutShellMaterial\(planet\) : null;/);
     expect(mode).toMatch(/return \{ group, dispose: \(\) => geometry\.dispose\(\) \};/);
-    expect(mode).toMatch(/probeGroups: atmoProbes/);
+    // The link happens in the boot IDLE, ahead of the bake it will draw with —
+    // not under the load screen. Asking for the probe runs the capability
+    // probe, whose 3D layer render and synchronous readback flush the pipeline,
+    // and the program itself is a cold-cache link; neither belongs on a boot
+    // that draws no LUT shell until the tables exist.
+    expect(mode).toMatch(/warmAtmosphereShellProgram\(\)[\s\S]{0,200}?bake\('Earth'\)/);
+    expect(mode).toMatch(/probeGroups: \[atmoProbes\.group\]/);
+    // The boot warm-up's own set is the two probe groups and nothing else.
+    expect(mode).toContain('probeGroups: [probes.group, shadowProbes.group],');
+    expect(mode).not.toMatch(/probeGroups: atmoProbes/);
   });
 
   it('is built only for bodies that have a table to read', () => {
@@ -141,7 +150,7 @@ describe('the LUT shell material', () => {
     expect(lut.fragmentShader).toContain(MOON_SHADOW_TRACE_GLSL);
     expect(lut.fragmentShader).toContain('sunVisible *= 1.0 - moonShadowOcclusion(');
     // The visible-Sun factor has to reach the radiance, not just be computed.
-    expect(lut.fragmentShader).toMatch(/radiance \* \(uSolarIrradiance \* uAirlightScale \* sunVisible \* alphaScale\)/);
+    expect(lut.fragmentShader).toMatch(/radiance \* uAirlightScale \* \(uSolarIrradiance \* sunVisible \* alphaScale\)/);
   });
 
   it('takes the casters from the body\'s shared shading uniforms', () => {

@@ -1,4 +1,5 @@
 import { describe, it, expect } from 'vitest';
+import * as THREE from 'three';
 import {
   ATMOSPHERE_SPECS,
   ATMOSPHERE_TABLE_SIZES_FULL,
@@ -29,7 +30,8 @@ import {
   transmittanceUvFromRMu,
   toRadiusUnits,
 } from './atmosphereModel';
-import { ATMOSPHERES, SUN_LIGHT_DECAY, SUN_LIGHT_INTENSITY } from '../PlanetFactory';
+import { ATMOSPHERES, SUN_LIGHT_COLOR, SUN_LIGHT_DECAY, SUN_LIGHT_INTENSITY } from '../PlanetFactory';
+import { createAtmosphereShellMaterial } from './atmosphereShell';
 import { PLANETS } from '../planets/planetData';
 
 const KM_PER_AU = 149_597_870.7;
@@ -134,11 +136,32 @@ describe('solar irradiance scale', () => {
     expect(solarIrradianceScale(2)).not.toBeCloseTo(1 / 4, 3);
   });
 
-  it('carries the light\'s own intensity into the airlight scale', () => {
-    // The tables are baked at one unit of irradiance; the ground is lit at the
-    // light's intensity. Air and ground have to be at the same exposure, so the
-    // bridge is the intensity itself — read from the light, not authored.
-    expect(AIRLIGHT_SCALE).toBe(SUN_LIGHT_INTENSITY);
+  it('carries the light\'s own intensity AND colour into the airlight scale', () => {
+    // The tables are baked at one unit of WHITE irradiance; the ground is lit
+    // at the light's intensity, in the light's colour. Air and ground have to
+    // be under the same Sun, so the bridge is intensity x colour — read from
+    // the light, not authored. three's own decode is what does the sRGB->linear
+    // step for the light, so it does it here too: a re-transcribed transfer
+    // function would be a second place to be wrong.
+    const lit = new THREE.Color(SUN_LIGHT_COLOR).multiplyScalar(SUN_LIGHT_INTENSITY);
+    expect(AIRLIGHT_SCALE[0]).toBeCloseTo(lit.r, 12);
+    expect(AIRLIGHT_SCALE[1]).toBeCloseTo(lit.g, 12);
+    expect(AIRLIGHT_SCALE[2]).toBeCloseTo(lit.b, 12);
+    // Red is the intensity outright (the light's red is full scale), and the
+    // warm cast is real: a scalar scale would put +9.5% green and +34% blue
+    // into the air relative to the ground it hazes.
+    expect(AIRLIGHT_SCALE[0]).toBe(SUN_LIGHT_INTENSITY);
+    expect(AIRLIGHT_SCALE[0] / AIRLIGHT_SCALE[1]).toBeCloseTo(1.095, 3);
+    expect(AIRLIGHT_SCALE[0] / AIRLIGHT_SCALE[2]).toBeCloseTo(1.342, 3);
+  });
+
+  it('reaches the shader as a vec3, applied to the sky radiance', () => {
+    const material = createAtmosphereShellMaterial({
+      planetRadius: 4.2635e-5, body: 'Earth', sizes: ATMOSPHERE_TABLE_SIZES_FULL,
+    });
+    expect(material.fragmentShader).toContain('uniform vec3 uAirlightScale;');
+    const value = material.uniforms.uAirlightScale.value as THREE.Vector3;
+    expect([value.x, value.y, value.z]).toEqual([...AIRLIGHT_SCALE]);
   });
 
   it('is 1 at Earth and 1.524^-0.3 at Mars', () => {

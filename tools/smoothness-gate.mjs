@@ -166,7 +166,7 @@ async function travelAndSettle(page, name, settleMs = 4_000) {
   // default polling injects its predicate and runs it on every animation
   // frame, so a harness that waits that way is adding app work to the frames
   // it is about to score — a gate must not measure its own instrumentation.
-  const settled = await page.evaluate(async ({ n, timeoutMs, tailMs }) => {
+  const settled = await page.evaluate(async ({ n, timeoutMs, tailMs, arriveRadii, arriveClosing }) => {
     const nap = (ms) => new Promise((resolve) => { setTimeout(resolve, ms); });
     const radiiNow = () => {
       const p = window.__moon.probe(n);
@@ -176,18 +176,38 @@ async function travelAndSettle(page, name, settleMs = 4_000) {
     // yet" rather than "arrived".
     await nap(2_500);
     const deadline = performance.now() + timeoutMs;
+    // Arrival is a place AND a stillness. player.moving reads false through
+    // the veil and through scripted transfers, so waiting on it let a scenario
+    // call itself parked while the range was still collapsing — and then
+    // measure a cruise it had named a hover.
+    let still = 0;
+    let closingPerS = null;
     while (performance.now() < deadline) {
-      if (window.__moon.probe(n)?.moving === false) {
-        await nap(tailMs);
-        return { radii: radiiNow(), timedOut: false };
-      }
+      const before = radiiNow();
+      const atMs = performance.now();
       await nap(200);
+      const after = radiiNow();
+      if (before === null || after === null) continue;
+      closingPerS = Math.abs(after - before) / ((performance.now() - atMs) / 1000);
+      still = (after <= arriveRadii && closingPerS <= arriveClosing) ? still + 1 : 0;
+      if (still >= 3) {
+        await nap(tailMs);
+        return { radii: radiiNow(), closingPerS, timedOut: false };
+      }
     }
-    return { radii: radiiNow(), timedOut: true };
-  }, { n: name, timeoutMs: 120_000, tailMs: settleMs });
-  if (settled.timedOut) return `${name}: never settled, ${settled.radii} radii out`;
-  return settled.radii === null || settled.radii > 400
-    ? `${name}: parked ${settled.radii} radii out`
+    return { radii: radiiNow(), closingPerS, timedOut: true };
+  }, {
+    n: name,
+    timeoutMs: 120_000,
+    tailMs: settleMs,
+    // Generous in radii, because arrivals deliberately stand off and a
+    // moonlet's radius is tiny; strict about stillness, because that is the
+    // half the old signal got wrong.
+    arriveRadii: 400,
+    arriveClosing: 0.5,
+  });
+  return settled.timedOut
+    ? `${name}: never settled — ${settled.radii} radii out, closing ${settled.closingPerS}/s`
     : null;
 }
 
@@ -420,12 +440,15 @@ const SCENARIOS = [
   },
   {
     id: 'moonlets',
-    title: 'Tiny-moon flybys: Phobos, then Styx',
+    title: 'Tiny-moon flybys: Mars, then Phobos and Deimos',
     device: DESKTOP,
     async run(page, note) {
       await bootTo(page, '', 220);
       await sleep(2_000);
-      for (const body of ['Phobos', 'Styx']) {
+      // Mars first. A moonlet reached from wherever the boot leaves the ship
+      // is a multi-minute cruise that arrives inside no sane timeout, and the
+      // run then measures that cruise instead of the flyby it is named for.
+      for (const body of ['Mars', 'Phobos', 'Deimos']) {
         const failed = await travelAndSettle(page, body, 8_000);
         if (failed) note(failed);
       }

@@ -10,7 +10,9 @@
  * lifted by hand (the city lights are drawn at 1.5x the night map). So the
  * daylight side stays physical and the night side is drawn at a stated gain,
  * with the physical ratio kept beside it so the two can never be confused. Each
- * constant below says which of the two it is.
+ * constant below says which of the two it is. Moonlight's COLOUR is authored
+ * the same way and for the same reason — a long exposure of it is cool, the
+ * spectrum that produced it is warm — and MOONLIGHT_TINT carries both numbers.
  *
  * One weight for the sources the daylight sky drowns. Airglow and the sky's
  * own ambient fade out through `nightWeight`, which reads the SAME geometric
@@ -345,22 +347,79 @@ export const LUNAR_IRRADIANCE_RATIO = 1 / 4.4e5;
 /**
  * The gain that makes the night side a long exposure. AUTHORED: the ISS night
  * frames it is drawn against are seconds at f/1.4 and ISO 6400 where a daylight
- * frame is a thousandth at f/8 and ISO 200 — about 2e5x — and this is a little
- * over half of that, set at the night golden against the photograph. Full
- * moonlight lands at 0.27 of sunlight on this scale, which is under two stops
- * down: the moonlit ocean and the moonlit cloud tops read, and the city lights
- * over them still read brighter, as they do in the photograph.
+ * frame is a thousandth at f/8 and ISO 200 — about 2e5x — and this is most of
+ * that. Full moonlight lands at 0.40 of sunlight on this scale, 1.3 stops down.
+ *
+ * Set by measuring the picture rather than by taste. In the ISS pose the app is
+ * held to — 1.05 R over the night side under a full Moon — the moonlit cloud
+ * tops now read 0.42 of full scale after the tone curve, which is what the same
+ * measurement gives on the reference photograph: the upper quartile of display
+ * luminance over a field of cloud, cities left out. At the earlier 1.2e5 they
+ * read 0.32 and the frame was visibly darker than the photograph. The moonlit
+ * ground showing between the clouds moves 0.10 to 0.15 and stays a third of the
+ * tops, which is the order the two read in from orbit.
+ *
+ * The ceiling is the bloom threshold, not the picture. A night fragment is the
+ * ground's own light plus the air in front of it plus the airglow, and all of
+ * the moon-sourced part of that scales with this number; the binding channel is
+ * red at a low Moon, where the aureole is the longest path the table has. The
+ * composed sum reaches 1.0 at 1.85e5, so this sits at 0.95 of the ceiling, and
+ * the test below re-derives both rather than remembering either. Raising it
+ * further is not a taste question — past that line a night source blooms.
  */
-export const MOONLIGHT_NIGHT_GAIN = 1.2e5;
+export const MOONLIGHT_NIGHT_GAIN = 1.75e5;
 
 /**
- * Lunar light is redder than solar. B-V is 0.92 for the Moon against 0.65 for
- * the Sun, so the blue channel carries 10^(-0.4 x 0.27) = 0.78 of what a grey
- * scaling of the solar tables would give it; V-R differs by 0.01 mag, which is
- * the red channel's 1.01. Normalised on green, so the factor reddens the light
- * without changing how much of it there is.
+ * Lunar light is redder than solar, and this is by how much. B-V is 0.92 for
+ * the Moon against 0.65 for the Sun, so the blue channel carries
+ * 10^(-0.4 x 0.27) = 0.78 of what a grey scaling of the solar tables would give
+ * it; V-R differs by 0.01 mag, which is the red channel's 1.01. Normalised on
+ * green.
+ *
+ * PHYSICAL, and nothing draws with it. It stays here because it is what the
+ * tables would compute, beside the tint that is actually used, so the two can
+ * never be confused for one another.
  */
-export const MOON_SPECTRUM: RGB = [1.01, 1.0, 0.78];
+export const MOON_SPECTRUM_PHYSICAL: RGB = [1.01, 1.0, 0.78];
+
+/** Rec.709 luminance of a linear-sRGB triple. */
+const luminance = (c: RGB): number => 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2];
+
+/** The same amount of light in a different colour: a triple scaled so its
+ *  Rec.709 luminance is exactly 1. */
+function unitLuminance(c: RGB): RGB {
+  const l = luminance(c);
+  return [c[0] / l, c[1] / l, c[2] / l];
+}
+
+/** The cool tint as authored, before that normalisation — the numbers a reader
+ *  should recognise in MOONLIGHT_TINT, which is this triple and a divisor. */
+export const MOONLIGHT_TINT_AUTHORED: RGB = [0.8, 0.92, 1.15];
+
+/**
+ * The colour moonlight is DRAWN in, and it is not the spectrum above.
+ *
+ * A LOOK choice: a photograph renders moonlight cool, because a camera balanced
+ * for daylight puts the Moon's slightly redder sunlight on the blue side of
+ * neutral, and a dark-adapted eye does the same thing for its own reason — at
+ * scotopic levels the rods take over and their peak sits 50 nm blueward of the
+ * cones' (the Purkinje shift), so a moonlit cloud top looks blue-white to the
+ * person under it. The physical warm spectrum is what the tables compute; this
+ * is what the picture needs, and the picture is what this is for. Nothing on
+ * the daylight side is touched by it.
+ *
+ * Normalised to unit Rec.709 luminance, so this constant says what colour
+ * moonlight is and MOONLIGHT_NIGHT_GAIN alone says how much of it there is.
+ * (The physical spectrum's own luminance is 0.986, so the swap is a change of
+ * hue and not of level.)
+ *
+ * Applied once, in `moonIrradiance`, which is the single factor every
+ * moon-sourced term is built from: the beam on the ground, the sky's own
+ * irradiance on it, the air's in-scatter, and the cloud deck lit by all three.
+ * Tinting any one of them on its own is how a moonlit cloud ends up a different
+ * colour from the moonlit air around it.
+ */
+export const MOONLIGHT_TINT: RGB = unitLuminance(MOONLIGHT_TINT_AUTHORED);
 
 const DEG = Math.PI / 180;
 
@@ -395,6 +454,10 @@ export const MOONLIGHT_SOURCES: Readonly<Record<string, string>> = { Earth: 'Moo
  * Sun, and carries the same bridge out of a bake normalised to unit white
  * irradiance.
  *
+ * It is also the one place MOONLIGHT_TINT is applied, and that is what makes
+ * every moon-sourced term one colour: the beam, the sky's irradiance, the
+ * air's in-scatter and the cloud deck all reduce to a table lookup times this.
+ *
  * `sunVisibleFraction` is the Moon's own eclipse: a Moon inside Earth's shadow
  * stops lighting the ground under it, which is the one night of the year this
  * term has to get right.
@@ -410,9 +473,9 @@ export function moonIrradiance(
     * lunarPhaseBrightness(phaseAngleDeg)
     * Math.min(1, Math.max(0, sunVisibleFraction));
   return [
-    AIRLIGHT_SCALE[0] * MOON_SPECTRUM[0] * k,
-    AIRLIGHT_SCALE[1] * MOON_SPECTRUM[1] * k,
-    AIRLIGHT_SCALE[2] * MOON_SPECTRUM[2] * k,
+    AIRLIGHT_SCALE[0] * MOONLIGHT_TINT[0] * k,
+    AIRLIGHT_SCALE[1] * MOONLIGHT_TINT[1] * k,
+    AIRLIGHT_SCALE[2] * MOONLIGHT_TINT[2] * k,
   ];
 }
 

@@ -7,7 +7,9 @@ import {
   AIRGLOW_SPECS,
   MOONLIGHT_NIGHT_GAIN,
   MOONLIGHT_SOURCES,
-  MOON_SPECTRUM,
+  MOONLIGHT_TINT,
+  MOONLIGHT_TINT_AUTHORED,
+  MOON_SPECTRUM_PHYSICAL,
   MOON_UP_FULL_SIN,
   MOON_UP_GLSL,
   MULTIPLE_SCATTERING_HEADROOM,
@@ -36,9 +38,11 @@ import {
   singleScatteringRadiance,
 } from './atmosphereModel';
 import { createAtmosphereShellMaterial } from './atmosphereShell';
-import { NIGHT_FILL, NIGHT_FLOOR_FRACTION, augmentSurfaceMaterial } from './surfaceShading';
+import {
+  NIGHT_FILL, NIGHT_FLOOR_FRACTION, augmentSurfaceMaterial, type SurfaceArchetype,
+} from './surfaceShading';
 import { BLOOM_THRESHOLD } from '../../app/bloomConfig';
-import { EARTH_NIGHT_MIX_SCALE } from '../../shared/shaders/atmosphere';
+import { EARTH_NIGHT_MIX_SCALE, EARTH_NIGHT_WARM } from '../../shared/shaders/atmosphere';
 import { CLOUD_CITY_GLOW } from './cloudDeck';
 import { PLANETS } from '../planets/planetData';
 
@@ -51,9 +55,9 @@ const src = (relative: string): string =>
   readFileSync(fileURLToPath(new URL(relative, import.meta.url)), 'utf8');
 
 /** The injected surface shader, as three would assemble it. */
-function surfaceFragment(): string {
+function surfaceFragment(archetype: SurfaceArchetype = 'earth'): string {
   const mat = new THREE.MeshStandardMaterial();
-  augmentSurfaceMaterial(mat, 'earth');
+  augmentSurfaceMaterial(mat, archetype);
   const shader = {
     uniforms: {} as Record<string, THREE.IUniform>,
     vertexShader: '#include <common>\nvoid main() {\n#include <begin_vertex>\n}',
@@ -398,15 +402,62 @@ describe('moonlight', () => {
   it('is the physical ratio times a stated exposure gain, and says which is which', () => {
     expect(LUNAR_IRRADIANCE_RATIO).toBeCloseTo(1 / 4.4e5, 12);
     const full = moonIrradiance(1, 0);
-    // Green carries the bridge unchanged; the spectrum only reddens it.
-    expect(full[1]).toBeCloseTo(
-      AIRLIGHT_SCALE[1] * LUNAR_IRRADIANCE_RATIO * MOONLIGHT_NIGHT_GAIN, 12,
-    );
-    expect(MOON_SPECTRUM[2]).toBeLessThan(MOON_SPECTRUM[1]);
-    expect(MOON_SPECTRUM[0]).toBeGreaterThan(MOON_SPECTRUM[1]);
-    // Blue relative to green, against the same ratio for the Sun's own light:
-    // lunar light is the redder of the two.
-    expect(full[2] / full[1]).toBeLessThan(AIRLIGHT_SCALE[2] / AIRLIGHT_SCALE[1]);
+    // A full Moon is four factors and nothing else: the bake's own bridge, the
+    // physical ratio, the stated exposure gain, and the tint that says only
+    // which colour the result is drawn in.
+    for (let c = 0; c < 3; c++) {
+      expect(full[c]).toBeCloseTo(
+        AIRLIGHT_SCALE[c] * MOONLIGHT_TINT[c]
+          * LUNAR_IRRADIANCE_RATIO * MOONLIGHT_NIGHT_GAIN, 12,
+      );
+    }
+  });
+
+  it('is drawn in a cool tint that carries no level of its own', () => {
+    // The look choice: a normalisation, not a scaling. Rec.709 luminance of the
+    // tint is exactly 1, so what colour moonlight is and how much of it there
+    // is are two constants and never one.
+    const luminance = (c: readonly number[]): number =>
+      0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2];
+    expect(luminance(MOONLIGHT_TINT)).toBeCloseTo(1, 12);
+    // ...and it is the authored triple and nothing else: the same ratios, one
+    // divisor apart.
+    for (let c = 0; c < 3; c++) {
+      expect(MOONLIGHT_TINT[c]).toBeCloseTo(
+        MOONLIGHT_TINT_AUTHORED[c] / luminance(MOONLIGHT_TINT_AUTHORED), 12,
+      );
+    }
+    // Cool: blue over green over red, which is the direction of the choice.
+    expect(MOONLIGHT_TINT[2]).toBeGreaterThan(MOONLIGHT_TINT[1]);
+    expect(MOONLIGHT_TINT[1]).toBeGreaterThan(MOONLIGHT_TINT[0]);
+    // The physical spectrum is kept beside it and runs the other way, so the
+    // two can never be read as the same thing.
+    expect(MOON_SPECTRUM_PHYSICAL[2]).toBeLessThan(MOON_SPECTRUM_PHYSICAL[1]);
+    expect(MOON_SPECTRUM_PHYSICAL[0]).toBeGreaterThan(MOON_SPECTRUM_PHYSICAL[1]);
+    // Blue against green, measured against the same ratio for the Sun's own
+    // light: the drawn Moon is the bluer of the two, where the physical one is
+    // the redder.
+    const full = moonIrradiance(1, 0);
+    expect(full[2] / full[1]).toBeGreaterThan(AIRLIGHT_SCALE[2] / AIRLIGHT_SCALE[1]);
+    const physical = MOON_SPECTRUM_PHYSICAL;
+    expect(physical[2] / physical[1]).toBeLessThan(1);
+  });
+
+  it('tints every moon-sourced term at once, because there is one factor', () => {
+    // The beam, the sky's irradiance on the ground, the air's in-scatter and
+    // the cloud deck are four terms and one multiplier: each is a table lookup
+    // times uMoonIrradiance, which is moonIrradiance() and the only place the
+    // tint is applied. A term that reached for the tint itself would be the one
+    // that could drift to a different colour.
+    const sources = src('./nightSources.ts');
+    expect(sources.match(/MOONLIGHT_TINT\[/g)).toHaveLength(3);   // the three channels, once
+    const surface = surfaceFragment();
+    expect(surface).toContain('vec3 moonAmbient = getIrradiance(uIrradiance, rFrag, muSMoon) * uMoonIrradiance;');
+    expect(surface).toContain('vec3 moonDirect = uMoonIrradiance');
+    expect(surface).toContain('* uMoonIrradiance * moonNight;');
+    expect(shellFragment()).toContain('* uMoonIrradiance * moonNight;');
+    // ...and the deck is a surface, so its moon lighting is that same text.
+    expect(surfaceFragment('cloud')).toBe(surface);
   });
 
   it('goes out with the Moon: new, eclipsed, or a planet without one', () => {
@@ -573,11 +624,16 @@ describe('the bloom threshold', () => {
     for (let c = 0; c < 3; c++) {
       expect((glow.green[c] + glow.orange[c]) * AIRGLOW_LIMB_CAP).toBeLessThan(BLOOM_THRESHOLD);
     }
-    // City lights are the one night source that is allowed to bloom, and this
-    // commit does not touch them.
+    // City lights are the one night source that is allowed to bloom, and the
+    // warm gain they are drawn in cannot widen that: red is held at 1 and the
+    // other two come down, so no channel leaves this line above the map's own
+    // value times the mix scale.
     expect(EARTH_NIGHT_MIX_SCALE).toBe(1.5);
-    expect(src('../../shared/shaders/atmosphere.ts'))
-      .toContain('vec3 lit = nightColor.rgb * nightMix * ${EARTH_NIGHT_MIX_SCALE.toFixed(1)};');
+    expect(Math.max(...EARTH_NIGHT_WARM)).toBe(1);
+    expect(src('../../shared/shaders/atmosphere.ts')).toContain(
+      'vec3 lit = nightColor.rgb * nightMix * ${EARTH_NIGHT_MIX_SCALE.toFixed(1)}'
+        + ' * ${EARTH_NIGHT_WARM_GLSL};',
+    );
     // The same lights glowing up through the cloud deck are a fraction of that,
     // so nothing the deck adds can bloom where the lights themselves would not.
     expect(CLOUD_CITY_GLOW).toBeLessThan(EARTH_NIGHT_MIX_SCALE);
@@ -606,6 +662,8 @@ describe('the bloom threshold', () => {
       ...(['airless', 'rocky', 'gas', 'icy', 'earth', 'cloud'] as const)
         .map((archetype) => NIGHT_FILL[archetype].strength),
     );
+    /** The largest exposure gain any fragment in the sweep still admits. */
+    let maxGain = Infinity;
     for (const muS of [1, 0.6, 0.3, 0.1, 0.05, 0]) {
       // The moonlit sky's irradiance on the ground, from the module's own
       // reference rather than from the bound: at the horizon it is a fortieth
@@ -624,7 +682,23 @@ describe('the bloom threshold', () => {
         const composed = fill + ground + haze[c] * full[c]
           + (glow.green[c] + glow.orange[c]) * AIRGLOW_LIMB_CAP;
         expect(composed, `muS ${muS} channel ${'rgb'[c]}`).toBeLessThan(BLOOM_THRESHOLD);
+        // ...and how much of the way to the threshold the exposure gain has
+        // taken it. Everything in `composed` except the fill and the airglow is
+        // proportional to the gain, so the largest gain this fragment admits
+        // falls straight out of the same numbers — which is what makes the
+        // headroom a measurement rather than a memory.
+        const perGain = (composed - fill - (glow.green[c] + glow.orange[c]) * AIRGLOW_LIMB_CAP)
+          / MOONLIGHT_NIGHT_GAIN;
+        const constant = fill + (glow.green[c] + glow.orange[c]) * AIRGLOW_LIMB_CAP;
+        maxGain = Math.min(maxGain, (BLOOM_THRESHOLD - constant) / perGain);
       }
     }
+    // The ceiling the module's own comment quotes, re-derived, and where the
+    // gain sits under it. Both bounds, so neither a raised gain nor a ceiling
+    // that quietly moved can pass unremarked.
+    expect(maxGain).toBeGreaterThan(1.8e5);
+    expect(maxGain).toBeLessThan(1.9e5);
+    expect(MOONLIGHT_NIGHT_GAIN).toBeLessThan(maxGain);
+    expect(MOONLIGHT_NIGHT_GAIN / maxGain).toBeGreaterThan(0.9);
   });
 });

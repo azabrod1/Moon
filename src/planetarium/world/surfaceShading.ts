@@ -78,7 +78,7 @@ import {
   type AtmosphereTables,
 } from './atmosphereLut';
 import { AIRLIGHT_SCALE } from './atmosphereModel';
-import { EARTH_NIGHT_COLD_CUT } from '../../shared/shaders/atmosphere';
+import { EARTH_NIGHT_COLD_CUT, EARTH_NIGHT_WARM_GLSL } from '../../shared/shaders/atmosphere';
 import {
   CLOUD_ALBEDO,
   CLOUD_ALBEDO_BLEND,
@@ -618,7 +618,13 @@ const SURFACE_FRAGMENT_BODY = /* glsl */ `{
     // ice and its background are cold and are not lights, and an ice sheet
     // glowing up through the clouds over Greenland is a continent that blooms.
     city *= smoothstep(${(-EARTH_NIGHT_COLD_CUT / 255).toFixed(6)}, 0.0, city.r - city.b);
-    outgoingLight += city * (uCloudCityGlow * cloudAlpha * cloudNight);
+    // ...and then the warm gain the lights themselves are drawn in, so one town
+    // is one colour whether it is seen through this deck or in clear air beside
+    // it. After the chroma gate, never before: the gate reads the map's own
+    // r - b to tell a light from an ice sheet, and a tint applied first would
+    // be classifying its own output.
+    outgoingLight += city * ${EARTH_NIGHT_WARM_GLSL}
+        * (uCloudCityGlow * cloudAlpha * cloudNight);
   }
   // Aerial perspective, last: everything above is light leaving this fragment,
   // and all of it crosses the same air on the way to the camera. What survives

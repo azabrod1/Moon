@@ -158,6 +158,33 @@ export const EARTH_NIGHT_COLD_CUT = 12;
  */
 export const EARTH_NIGHT_MIX_SCALE = 1.5;
 
+/**
+ * The colour the lights are drawn in, as a gain on whatever tint the map's own
+ * pixel already has.
+ *
+ * A LOOK choice, and the counterpart to the cool tint moonlight is drawn in:
+ * ground lighting is warm — sodium and high-pressure lamps run 2000-3000 K —
+ * and a night frame from orbit reads as warm cities under cool moonlit cloud.
+ * The composite map is already warm and this pushes it further, which is what
+ * separates a city from the moonlight over it once both are on the same
+ * fragment.
+ *
+ * Not luminance-normalised, unlike the moonlight tint. Red is held at 1 and the
+ * other two come down, so nothing is brighter than the map already draws it and
+ * the lights' own bloom headroom is unchanged.
+ *
+ * Read by all three places the lights are drawn: the night-lights shell, the
+ * night sector tiles that replace patches of it (the same program, so the same
+ * text), and the glow the cloud deck picks up from the cities under it. A
+ * second transcription is how a city would end up one colour through cloud and
+ * another beside it.
+ */
+export const EARTH_NIGHT_WARM: readonly [number, number, number] = [1.0, 0.82, 0.55];
+
+/** EARTH_NIGHT_WARM as the GLSL literal every one of those three shaders
+ *  multiplies by — one text, generated from the one constant. */
+export const EARTH_NIGHT_WARM_GLSL = `vec3(${EARTH_NIGHT_WARM.map((v) => v.toFixed(2)).join(', ')})`;
+
 /** The shader's `nightMix` for one sun cosine: 0 in daylight, 1 in full night.
  *  Note the shader's own response is this SQUARED — the mix multiplies the rgb
  *  and the alpha, and additive blending with a non-premultiplied source takes
@@ -222,7 +249,7 @@ void main() {
   // Show night lights only on dark side
   float sunDot = dot(vNormal, vSunDir);
   float nightMix = 1.0 - smoothstep(${EARTH_NIGHT_MIX_DARK.toFixed(1)}, ${EARTH_NIGHT_MIX_LIT.toFixed(1)}, sunDot); // ordered edges (reversed smoothstep is undefined)
-  vec3 lit = nightColor.rgb * nightMix * ${EARTH_NIGHT_MIX_SCALE.toFixed(1)};
+  vec3 lit = nightColor.rgb * nightMix * ${EARTH_NIGHT_MIX_SCALE.toFixed(1)} * ${EARTH_NIGHT_WARM_GLSL};
   if (uAirDensity > 0.0) {
     AerialSegment seg = aerialSegment(
         vAirCam / uPlanetRadius, normalize(vAirFrag) * uAirLookupRadius, normalize(sunDirection));

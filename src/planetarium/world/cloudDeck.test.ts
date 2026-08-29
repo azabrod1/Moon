@@ -31,7 +31,10 @@ import {
   TIER_RANK,
 } from './textureLadder';
 import { equirectMapGpuBytes } from './textureBytes';
-import { EARTH_NIGHT_COLD_CUT, EARTH_NIGHT_MIX_SCALE, earthNightFragmentShader } from '../../shared/shaders/atmosphere';
+import {
+  EARTH_NIGHT_COLD_CUT, EARTH_NIGHT_MIX_SCALE, EARTH_NIGHT_WARM_GLSL,
+  earthNightFragmentShader,
+} from '../../shared/shaders/atmosphere';
 import { createEarthNightShellMaterial } from './earthNightMaterial';
 import { augmentSurfaceMaterial, createSurfaceAirFx, type SurfaceArchetype } from './surfaceShading';
 import { mapTexture } from '../testing/upgradeHarness';
@@ -364,7 +367,10 @@ describe('the deck lit from below', () => {
 
   it('weights the glow by the cover and by the shared night ramp', () => {
     const glsl = compiled('cloud').shader.fragmentShader;
-    expect(glsl).toContain('outgoingLight += city * (uCloudCityGlow * cloudAlpha * cloudNight);');
+    expect(glsl).toContain(
+      `outgoingLight += city * ${EARTH_NIGHT_WARM_GLSL}\n        `
+        + '* (uCloudCityGlow * cloudAlpha * cloudNight);',
+    );
     // The deck's night weight is the SHARED ramp, so the glow fades along the
     // same line the airglow and the sky's ambient do...
     expect(glsl).toContain('cloudNight = uCloudDeck > 0.0\n      ? nightWeight(');

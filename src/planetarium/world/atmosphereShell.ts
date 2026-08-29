@@ -51,12 +51,13 @@
  *  - **The Moon** is a second light on the same air: the same tables, the same
  *    fetch count, with the two angles that involve the source swapped. Its
  *    irradiance uniform carries its distance, its phase, its own eclipse and
- *    its redder spectrum, so the shader cannot tell the two sources apart. It
- *    keeps the shared weight where the ground does not, and the reason is that
- *    the Sun's own in-scatter does not collapse at the terminator the way its
- *    light on the ground does — it becomes twilight, which drowns moonlight for
- *    real. On top of it the Moon's own elevation at the same point, so a Moon
- *    that has set lights nothing whatever the Sun is doing.
+ *    the cool tint moonlight is drawn in, so the shader cannot tell the two
+ *    sources apart. It keeps the shared weight where the ground does not, and
+ *    the reason is that the Sun's own in-scatter does not collapse at the
+ *    terminator the way its light on the ground does — it becomes twilight,
+ *    which drowns moonlight for real. On top of it the Moon's own elevation at
+ *    the same point, so a Moon that has set lights nothing whatever the Sun is
+ *    doing.
  *
  * What this tier still does not carry is the city glow — the upward-scattered
  * light that makes a city visible through cloud.
@@ -132,8 +133,9 @@ uniform float uSolarIrradiance;
 // than the ground below it.
 uniform vec3 uAirlightScale;
 // The same bridge for the Moon, with its distance, its phase, its own eclipse
-// and its redder spectrum already in it — so a moonlit lookup costs exactly
-// what a sunlit one does. Zero on a body with no moon worth the second fetch.
+// and the tint moonlight is drawn in already in it — so a moonlit lookup costs
+// exactly what a sunlit one does. Zero on a body with no moon worth the second
+// fetch.
 uniform vec3 uMoonIrradiance;
 uniform vec4 uMoonShadow[${MAX_MOON_SHADOWS}];
 uniform int uMoonShadowCount;
